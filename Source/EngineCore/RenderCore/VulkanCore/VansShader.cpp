@@ -7,8 +7,6 @@
 
 #include "../../AssetCore/Importers/Shader/VansShaderArtifactCache.h"
 #include "../../Util/VansLog.h"
-//#include "spirv_cross/spirv_cross.hpp"
-//#include "spirv_cross/spirv_glsl.hpp"
 
 #include <iostream>
 #include <algorithm>
@@ -96,7 +94,13 @@ bool CompileShaderModuleData(
 	std::map<VkShaderStageFlagBits, VansGraphics::ShaderModuleData>& outModuleData,
 	Vans::VansShaderArtifactPrepareResult& outPrepared)
 {
-	if (explicitStageFiles.empty())
+	if (Vans::VansShaderArtifactCache::IsCookedOnlyMode())
+	{
+		// Packaged runtime resolves complete stage sets from the cooked program index.
+		// Source paths are authoring metadata only and must not be inspected here.
+		outModuleData.clear();
+	}
+	else if (explicitStageFiles.empty())
 	{
 		std::vector<std::string> shader_files = GetShaderFilesInFolder(shader_folder);
 		if (shader_files.empty())
@@ -259,71 +263,6 @@ bool CreateShaderModulesFromData(VkDevice device, std::map<VkShaderStageFlagBits
 	return true;
 }
 }
-
-//static std::vector<uint32_t> ToUint32Words(const std::vector<unsigned char>& bytes)
-//{
-//	if (bytes.size() % sizeof(uint32_t) != 0)
-//		throw std::runtime_error("SPIR-V size is not a multiple of 4 bytes");
-//	std::vector<uint32_t> words(bytes.size() / sizeof(uint32_t));
-//	memcpy(words.data(), bytes.data(), bytes.size());
-//	return words;
-//}
-//
-//void ReflectShaderResources(const std::vector<uint32_t>& spirv_words)
-//{
-//	if (spirv_words.empty() || spirv_words[0] != 0x07230203u) 
-//	{
-//		std::cerr << "Invalid SPIR-V (bad magic/empty)\n";
-//		return;
-//	}
-//
-//	// 1. Initialize SPIRV-Cross
-//	spirv_cross::Compiler compiler(spirv_words);
-//
-//	// 2. Get a list of all shader resources
-//	spirv_cross::ShaderResources resources = compiler.get_shader_resources();
-//
-//	//std::cout << "--- Uniform Buffers ---" << std::endl;
-//	//for (const auto& resource : resources.uniform_buffers) 
-//	//{
-//	//	// Get resource info
-//	//	std::string name = compiler.get_name(resource.id);
-//	//	uint32_t binding = compiler.get_decoration(resource.id, spv::DecorationBinding);
-//	//	uint32_t set = compiler.get_decoration(resource.id, spv::DecorationDescriptorSet);
-//
-//	//	// Get buffer size and member info
-//	//	const auto& type = compiler.get_type(resource.base_type_id);
-//	//	size_t buffer_size = compiler.get_declared_struct_size(type);
-//
-//	//	std::cout << "UBO: " << name
-//	//		<< " | Set: " << set
-//	//		<< " | Binding: " << binding
-//	//		<< " | Size: " << buffer_size << " bytes" << std::endl;
-//	//}
-//
-//	//std::cout << "\n--- Sampled Images (Textures) ---" << std::endl;
-//	//for (const auto& resource : resources.sampled_images) 
-//	//{
-//	//	std::string name = compiler.get_name(resource.id);
-//	//	uint32_t binding = compiler.get_decoration(resource.id, spv::DecorationBinding);
-//	//	uint32_t set = compiler.get_decoration(resource.id, spv::DecorationDescriptorSet);
-//
-//	//	std::cout << "Texture: " << name
-//	//		<< " | Set: " << set
-//	//		<< " | Binding: " << binding << std::endl;
-//	//}
-//
-//	//std::cout << "\n--- Stage Outputs ---" << std::endl;
-//	//for (const auto& resource : resources.stage_outputs) 
-//	//{
-//	//	std::string name = compiler.get_name(resource.id);
-//	//	uint32_t location = compiler.get_decoration(resource.id, spv::DecorationLocation);
-//
-//	//	std::cout << "Output: " << name
-//	//		<< " | Location: " << location << std::endl;
-//	//}
-//}
-
 
 bool VansGraphics::VansShader::InitShader(VkDevice& logic_device, const std::string& shader_folder)
 {

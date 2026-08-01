@@ -42,6 +42,16 @@ std::optional<uint32_t> ReadOptionalUIntField(const VansSerializedValue& object,
 	return std::nullopt;
 }
 
+std::optional<int32_t> ReadOptionalIntField(const VansSerializedValue& object, const char* key)
+{
+	const VansSerializedValue* field = FindObjectField(object, key);
+	if (!field || field->kind != VansSerializedValue::Kind::Int)
+	{
+		return std::nullopt;
+	}
+	return static_cast<int32_t>(field->intValue);
+}
+
 std::optional<bool> ReadOptionalBoolField(const VansSerializedValue& object, const char* key)
 {
 	const VansSerializedValue* field = FindObjectField(object, key);
@@ -172,6 +182,50 @@ std::optional<VansSceneVolumetricCloudSettingsConfig> DecodeVolumetricClouds(con
 	return config;
 }
 
+std::optional<VansScenePostProcessSettingsConfig> DecodePostProcess(
+	const VansSerializedValue& sceneSettings)
+{
+	const VansSerializedValue* postProcess = ReadObjectField(sceneSettings, "postProcess");
+	if (!postProcess)
+	{
+		return std::nullopt;
+	}
+
+	VansScenePostProcessSettingsConfig config;
+	if (const VansSerializedValue* exposure = ReadObjectField(*postProcess, "exposure"))
+	{
+		config.enableAutoExposure = ReadOptionalBoolField(*exposure, "enableAutoExposure");
+		config.exposureCompensation = ReadOptionalFloatField(*exposure, "exposureCompensation");
+		config.minEV100 = ReadOptionalFloatField(*exposure, "minEV100");
+		config.maxEV100 = ReadOptionalFloatField(*exposure, "maxEV100");
+		config.adaptationSpeedUp = ReadOptionalFloatField(*exposure, "adaptationSpeedUp");
+		config.adaptationSpeedDown = ReadOptionalFloatField(*exposure, "adaptationSpeedDown");
+	}
+	if (const VansSerializedValue* bloom = ReadObjectField(*postProcess, "bloom"))
+	{
+		config.enableBloom = ReadOptionalBoolField(*bloom, "enable");
+		config.bloomThreshold = ReadOptionalFloatField(*bloom, "threshold");
+		config.bloomKnee = ReadOptionalFloatField(*bloom, "knee");
+		config.bloomIntensity = ReadOptionalFloatField(*bloom, "intensity");
+		config.bloomScatter = ReadOptionalFloatField(*bloom, "scatter");
+	}
+	if (const VansSerializedValue* toneMapping = ReadObjectField(*postProcess, "toneMapping"))
+	{
+		config.toneMapperType = ReadOptionalIntField(*toneMapping, "type");
+		config.whitePoint = ReadOptionalFloatField(*toneMapping, "whitePoint");
+	}
+	if (const VansSerializedValue* colorGrading = ReadObjectField(*postProcess, "colorGrading"))
+	{
+		config.enableColorGrading = ReadOptionalBoolField(*colorGrading, "enable");
+		config.contrast = ReadOptionalFloatField(*colorGrading, "contrast");
+		config.saturation = ReadOptionalFloatField(*colorGrading, "saturation");
+		config.hueShift = ReadOptionalFloatField(*colorGrading, "hueShift");
+		config.temperature = ReadOptionalFloatField(*colorGrading, "temperature");
+		config.tint = ReadOptionalFloatField(*colorGrading, "tint");
+	}
+	return config;
+}
+
 std::optional<VansSceneGISettingsConfig> DecodeGISettings(const VansSerializedValue& sceneSettings)
 {
 	const VansSerializedValue* gi = ReadObjectField(sceneSettings, "globalIllumination");
@@ -237,6 +291,7 @@ VansSceneRenderSettingsConfig VansSceneRenderSettingsConfigReader::Read(
 	config.heightFog = DecodeHeightFog(sceneSettings);
 	config.volumetricFog = DecodeVolumetricFog(sceneSettings);
 	config.volumetricClouds = DecodeVolumetricClouds(sceneSettings);
+	config.postProcess = DecodePostProcess(sceneSettings);
 	config.globalIllumination = DecodeGISettings(sceneSettings);
 	config.mainCameraHiZCulling = DecodeMainCameraHiZCulling(sceneSettings);
 	return config;

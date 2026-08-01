@@ -243,7 +243,7 @@ void AmbientBRDF_Cloth(BRDFData brdf, ClothMaterialPayload cloth,
 void CalculateDirectLight_Cloth(BRDFData brdf, ClothMaterialPayload cloth,
                                 vec3 clothTangent,
                                 sampler2DArray cascadeShadowMap, float viewDepth,
-                                sampler2DShadow punctualShadowMap,
+                                sampler2DArrayShadow punctualShadowMap,
                                 float screenSpaceShadow,
                                 inout LightResult lightResult)
 {

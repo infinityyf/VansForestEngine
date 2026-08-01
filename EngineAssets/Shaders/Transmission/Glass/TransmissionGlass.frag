@@ -12,7 +12,7 @@
 layout(set = 1, binding = 0) uniform sampler2D opaqueSceneColor;
 layout(set = 1, binding = 2) uniform sampler2D opaqueDepth;
 layout(set = 1, binding = 3) uniform sampler2DArray cascadeShadowMap;
-layout(set = 1, binding = 4) uniform sampler2DShadow punctualShadowMap;
+layout(set = 1, binding = 4) uniform sampler2DArrayShadow punctualShadowMap;
 layout(set = 0, binding = 50) uniform sampler2D globalPBRTextures[];
 
 layout(location = 0) in vec2 fragUV;

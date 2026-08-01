@@ -489,13 +489,11 @@ namespace VansGraphics
 		static constexpr const char* RT_CLOUD_MAIN_NOISE     = "Runtime.Cloud.MainNoise3D";
 
 		static constexpr const char* RT_CLOUD_DETAIL_NOISE   = "Runtime.Cloud.DetailNoise3D";
+		static constexpr const char* RT_EXPOSURE_LUMINANCE   = "Runtime.PostProcess.Exposure.Luminance";
+		static constexpr const char* RT_EXPOSURE_CURRENT     = "Runtime.PostProcess.Exposure.Current";
 
 
 
-
-		static constexpr const char* RT_EXPOSURE_LUMINANCE  = "Runtime.PostProcess.Exposure.Luminance";
-
-		static constexpr const char* RT_EXPOSURE_CURRENT    = "Runtime.PostProcess.Exposure.Current";
 
 		static constexpr const char* RT_BLOOM_PREFILTER     = "Runtime.PostProcess.Bloom.Prefilter";
 
@@ -923,23 +921,13 @@ namespace VansGraphics
 		std::vector<VkDescriptorSet> m_PunctualShadowDebugDescriptorSets;
 		VansComputeShader* m_PunctualShadowDebugShader = nullptr;
 
-
-
-
 		VansComputeShader* m_ExposureLuminanceShader = nullptr;
+		VkDescriptorSetLayout m_ExposureLuminanceSetLayout = VK_NULL_HANDLE;
+		std::vector<VkDescriptorSet> m_ExposureLuminanceDescriptorSets;
 
-		VkDescriptorSetLayout          m_ExposureLuminanceSetLayout      = VK_NULL_HANDLE;
-
-		std::vector<VkDescriptorSet>   m_ExposureLuminanceDescriptorSets;
-
-
-
-		VansComputeShader* m_ExposureAdaptShader    = nullptr;
-
-		VkDescriptorSetLayout          m_ExposureAdaptSetLayout          = VK_NULL_HANDLE;
-
-		std::vector<VkDescriptorSet>   m_ExposureAdaptDescriptorSets;
-
+		VansComputeShader* m_ExposureAdaptShader = nullptr;
+		VkDescriptorSetLayout m_ExposureAdaptSetLayout = VK_NULL_HANDLE;
+		std::vector<VkDescriptorSet> m_ExposureAdaptDescriptorSets;
 
 
 
@@ -973,7 +961,6 @@ namespace VansGraphics
 
 
 		VansVKBuffer m_PostProcessParamsCBBuffer;
-
 		VansVKBuffer m_ExposureAdaptParamsCBBuffer;
 
 		VansVKBuffer m_BloomParamsCBBuffer;

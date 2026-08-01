@@ -45,7 +45,6 @@ namespace VansGraphics
         //     "srgb"     : true              // 可选，默认 true
         //   }
         void Load(const std::vector<Vans::VansSceneVideoResourceRequest>& videos,
-                  const std::string& projectRoot,
                   VansVKDevice* device);
 
         // ── 单条查找 ──────────────────────────────────────────────────────────

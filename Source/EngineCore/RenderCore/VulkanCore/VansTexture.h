@@ -9,6 +9,9 @@
 
 namespace VansGraphics
 {
+	class VansVKDevice;
+	struct VansTextureMipChainUpload;
+
 	enum TextureType
 	{
 		TEXTURE_2D = 0,
@@ -48,6 +51,11 @@ namespace VansGraphics
 
 		//读取texture数据
 		void LoadTexture(VansVKCommandBuffer& command_buffer, const TextureLoadDesc& loadDesc);
+		bool TryPrepareCookedBatchUpload(
+			VansVKDevice& vkDevice,
+			const TextureLoadDesc& loadDesc,
+			VansTextureMipChainUpload& upload,
+			std::vector<std::uint8_t>& uploadStorage);
 
 		void LoadTexture(VansVKCommandBuffer& command_buffer, 
 			std::string texture_path, 

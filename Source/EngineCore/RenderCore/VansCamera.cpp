@@ -329,6 +329,27 @@ glm::mat4 VansGraphics::VansCamera::GetProjectiveMatrix()
     return glm::perspective(glm::radians(m_Fov), m_AspectRatio, m_NearClip, m_FarClip);
 }
 
+bool VansGraphics::VansCamera::ProjectWorldToViewport(
+    const glm::vec3& worldPosition,
+    glm::vec3& viewportPosition)
+{
+    // 脚本投影发生在 Rendering() 之前，因此这里主动读取最新绑定 Transform。
+    SyncFromTransform();
+    const glm::vec4 clip = GetProjectiveMatrix() * GetViewMatrix() * glm::vec4(worldPosition, 1.0f);
+    if (clip.w <= 0.0001f)
+        return false;
+
+    const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+    viewportPosition = glm::vec3(
+        ndc.x * 0.5f + 0.5f,
+        0.5f - ndc.y * 0.5f,
+        ndc.z);
+
+    return ndc.x >= -1.0f && ndc.x <= 1.0f &&
+           ndc.y >= -1.0f && ndc.y <= 1.0f &&
+           ndc.z >= -1.0f && ndc.z <= 1.0f;
+}
+
 VansGraphics::VansCamera::~VansCamera()
 {
     VansVKDescriptorManager::GetInstance()->DestroyDescriptorSetLayout(m_CameraBufferLayout);

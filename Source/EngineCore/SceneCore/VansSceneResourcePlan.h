@@ -10,7 +10,9 @@ namespace Vans
 struct VansSceneMeshResourceRequest
 {
 	std::string name;
+	std::string assetGuid;
 	std::string path;
+	std::string artifactPath;
 	bool needTangent = true;
 	bool supportRayTracing = true;
 	bool needCpuData = false;
@@ -18,11 +20,13 @@ struct VansSceneMeshResourceRequest
 	bool loadMultiMesh = false;
 	bool rebuildIdentityBoneOffsetsFromHierarchy = false;
 	bool remapWeaponAttachmentBonesToHands = false;
+	bool cookedOnly = false;
 };
 
 struct VansSceneTextureResourceRequest
 {
 	std::string name;
+	std::string assetGuid;
 	std::string path;
 	std::string artifactPath;
 	int textureType = 0;
@@ -32,11 +36,13 @@ struct VansSceneTextureResourceRequest
 	std::string precision = "low8";
 	int importChannel = 4;
 	std::string addressMode = "repeat";
+	bool cookedOnly = false;
 };
 
 struct VansSceneAudioResourceRequest
 {
 	std::string name;
+	std::string assetGuid;
 	std::string path;
 	std::string playMode = "static";
 	bool loop = false;
@@ -52,6 +58,7 @@ struct VansSceneAudioResourceRequest
 struct VansSceneVideoResourceRequest
 {
 	std::string name;
+	std::string assetGuid;
 	std::string path;
 	bool loop = true;
 	bool autoplay = false;
@@ -61,6 +68,7 @@ struct VansSceneVideoResourceRequest
 struct VansSceneShaderResourceRequest
 {
 	std::string name;
+	std::string assetGuid;
 	std::string source;
 	std::string kind = "graphics";
 	int pushConstantSize = -1;

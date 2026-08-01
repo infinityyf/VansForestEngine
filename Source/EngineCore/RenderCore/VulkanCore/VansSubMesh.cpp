@@ -18,6 +18,19 @@
 #include <cmath>
 #include <cctype>
 
+namespace
+{
+	bool HasMeshGpuUploadTarget(
+		VkDevice logic_device,
+		VkQueue queue,
+		VansGraphics::VansVKCommandBuffer* commandbuffer)
+	{
+		return logic_device != VK_NULL_HANDLE &&
+			queue != VK_NULL_HANDLE &&
+			commandbuffer != nullptr;
+	}
+}
+
 static uint16_t FloatToHalf(float f)
 {
 	return glm::packHalf1x16(f);
@@ -208,10 +221,21 @@ void VansGraphics::VansMesh::LoadMultiMesh(VkDevice& logic_device, VkQueue& queu
 	VansVKCommandBuffer* commandbuffer, const std::string& file_name, bool import_tangent,
 	bool supportRayTracing, bool needCPUData, float scaleFactor,
 	bool rebuildIdentityBoneOffsetsFromHierarchy,
-	bool remapWeaponAttachmentBonesToHands)
+	bool remapWeaponAttachmentBonesToHands,
+	const std::string& cachePath,
+	bool trustCacheWithoutSource)
 {
 	m_IsMultiMesh = true;
 	m_SupportRayTracing = false;
+	m_LogicalDevice = logic_device;
+	m_MeshRawPositionDataEnableCPURead = needCPUData;
+
+	if (TryLoadMeshCache(logic_device, queue, commandbuffer,
+		cachePath, file_name, import_tangent, supportRayTracing,
+		needCPUData, true, scaleFactor, trustCacheWithoutSource))
+	{
+		return;
+	}
 
 	Assimp::Importer importer;
 	auto processFlag = aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_GenNormals | aiProcess_GenSmoothNormals;
@@ -319,6 +343,7 @@ void VansGraphics::VansMesh::LoadMultiMesh(VkDevice& logic_device, VkQueue& queu
 		}
 	}
 
+	const bool canWriteStaticCache = !cachePath.empty() && !sceneHasBones;
 	for (size_t i = 0; i < allMeshes.size(); ++i)
 	{
 		const CollectedAiMesh& collectedMesh = allMeshes[i];
@@ -334,7 +359,7 @@ void VansGraphics::VansMesh::LoadMultiMesh(VkDevice& logic_device, VkQueue& queu
 			xform = &collectedMesh.transform;
 
 		VansMesh* slice = new VansMesh(needCPUData, supportRayTracing);
-		if (slice->LoadMeshSubmeshFromScene(logic_device, queue, commandbuffer, scene, collectedMesh.mesh, xform, import_tangent, supportRayTracing, scaleFactor))
+		if (slice->LoadMeshSubmeshFromScene(logic_device, queue, commandbuffer, scene, collectedMesh.mesh, xform, import_tangent, supportRayTracing, scaleFactor, canWriteStaticCache))
 		{
 			slice->m_SourceNodeName = collectedMesh.nodeName;
 			m_SubMeshes.push_back(slice);
@@ -344,6 +369,13 @@ void VansGraphics::VansMesh::LoadMultiMesh(VkDevice& logic_device, VkQueue& queu
 		{
 			delete slice;
 		}
+	}
+
+	if (canWriteStaticCache && SaveMeshCache(cachePath, file_name, import_tangent, true, scaleFactor))
+	{
+		for (VansMesh* slice : m_SubMeshes)
+			if (slice)
+				slice->ReleaseCpuImportDataAfterUpload();
 	}
 
 	VANS_LOG("[LoadMultiMesh] Loaded " << m_SubMeshes.size() << " submeshes from: " << file_name);
@@ -389,7 +421,7 @@ bool VansGraphics::VansMesh::LoadMeshSubmesh(VkDevice& logic_device, VkQueue& qu
 }
 
 bool VansGraphics::VansMesh::LoadMeshSubmeshFromScene(VkDevice& logic_device, VkQueue& queue,
-	VansVKCommandBuffer* commandbuffer, const aiScene* scene, aiMesh* mesh, const aiMatrix4x4* meshTransform, bool import_tangent, bool supportRayTracing, float scaleFactor)
+	VansVKCommandBuffer* commandbuffer, const aiScene* scene, aiMesh* mesh, const aiMatrix4x4* meshTransform, bool import_tangent, bool supportRayTracing, float scaleFactor, bool keepImportDataAfterUpload)
 {
 	if (!scene || !mesh)
 	{
@@ -527,125 +559,12 @@ bool VansGraphics::VansMesh::LoadMeshSubmeshFromScene(VkDevice& logic_device, Vk
 		m_VertexInputAttributeDescriptions.push_back({ 4, 0, VK_FORMAT_R16G16B16_SFLOAT, 11 * sizeof(uint16_t) });
 	}
 
-	// Upload to GPU (same path as LoadMesh)
-	VkDeviceSize vertexBufferSize = m_MeshRawData.size() * sizeof(uint16_t);
-	VkDeviceSize indexBufferSize  = m_MeshTriangleIndex.size() * sizeof(uint32_t);
-	VkDeviceSize totalUploadSize = vertexBufferSize + indexBufferSize;
+	if (!HasMeshGpuUploadTarget(logic_device, queue, commandbuffer))
+		return true;
 
-	VANS_LOG("[LoadMeshSubmeshFromScene] material='" << m_SourceMaterialName
-		<< "' vertices=" << m_VertexCount
-		<< " indices=" << m_IndexCount
-		<< " triangles=" << (m_IndexCount / 3)
-		<< " vertexBytes=" << vertexBufferSize
-		<< " indexBytes=" << indexBufferSize
-		<< " totalUploadBytes=" << totalUploadSize);
+	return UploadRawMeshToGpu(logic_device, queue, commandbuffer,
+		"LoadMeshSubmeshFromScene", keepImportDataAfterUpload);
 
-	VansVKBuffer stagingVertex, stagingIndex;
-	if (!stagingVertex.CreatVulkanBuffer(logic_device, vertexBufferSize, VK_FORMAT_UNDEFINED,
-		VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
-	{
-		VANS_LOG_ERROR("[LoadMeshSubmeshFromScene] Failed to create vertex staging buffer. bytes=" << vertexBufferSize);
-		return false;
-	}
-	if (!stagingIndex.CreatVulkanBuffer(logic_device, indexBufferSize, VK_FORMAT_UNDEFINED,
-		VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
-	{
-		VANS_LOG_ERROR("[LoadMeshSubmeshFromScene] Failed to create index staging buffer. bytes=" << indexBufferSize);
-		stagingVertex.DestroyVulkanBuffer(logic_device);
-		return false;
-	}
-
-	if (!stagingVertex.SetBufferData(m_MeshRawData.data(), 0, vertexBufferSize))
-	{
-		VANS_LOG_ERROR("[LoadMeshSubmeshFromScene] Failed to upload vertex staging data. bytes=" << vertexBufferSize);
-		stagingVertex.DestroyVulkanBuffer(logic_device);
-		stagingIndex.DestroyVulkanBuffer(logic_device);
-		return false;
-	}
-	if (!stagingIndex.SetBufferData(m_MeshTriangleIndex.data(), 0, indexBufferSize))
-	{
-		VANS_LOG_ERROR("[LoadMeshSubmeshFromScene] Failed to upload index staging data. bytes=" << indexBufferSize);
-		stagingVertex.DestroyVulkanBuffer(logic_device);
-		stagingIndex.DestroyVulkanBuffer(logic_device);
-		return false;
-	}
-
-	VkBufferUsageFlags vertexUsage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-	VkBufferUsageFlags indexUsage  = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
-
-	// When ray tracing is requested, add device-address and AS build-input flags
-	// so that BuildBLAS can query buffer addresses and use them as geometry input.
-	if (m_SupportRayTracing)
-	{
-		vertexUsage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
-			| VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR
-			| VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-		indexUsage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
-			| VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR
-			| VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-	}
-
-	if (!m_VertexBuffer.CreatVulkanBuffer(logic_device, vertexBufferSize, VK_FORMAT_R16_SFLOAT,
-		vertexUsage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
-	{
-		VANS_LOG_ERROR("[LoadMeshSubmeshFromScene] Failed to create GPU vertex buffer. bytes=" << vertexBufferSize);
-		stagingVertex.DestroyVulkanBuffer(logic_device);
-		stagingIndex.DestroyVulkanBuffer(logic_device);
-		return false;
-	}
-	if (!m_IndexBuffer.CreatVulkanBuffer(logic_device, indexBufferSize, VK_FORMAT_R32_UINT,
-		indexUsage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
-	{
-		VANS_LOG_ERROR("[LoadMeshSubmeshFromScene] Failed to create GPU index buffer. bytes=" << indexBufferSize);
-		stagingVertex.DestroyVulkanBuffer(logic_device);
-		stagingIndex.DestroyVulkanBuffer(logic_device);
-		return false;
-	}
-
-	if (!commandbuffer->BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
-	{
-		VANS_LOG_ERROR("[LoadMeshSubmeshFromScene] Failed to begin GPU buffer upload command buffer.");
-		stagingVertex.DestroyVulkanBuffer(logic_device);
-		stagingIndex.DestroyVulkanBuffer(logic_device);
-		return false;
-	}
-	commandbuffer->CopyBuffer(stagingVertex.GetNativeBuffer(), m_VertexBuffer.GetNativeBuffer(), 0, 0, vertexBufferSize);
-	commandbuffer->CopyBuffer(stagingIndex.GetNativeBuffer(), m_IndexBuffer.GetNativeBuffer(), 0, 0, indexBufferSize);
-	if (!commandbuffer->EndCommandBufferRecord())
-	{
-		VANS_LOG_ERROR("[LoadMeshSubmeshFromScene] Failed to end GPU buffer upload command buffer.");
-		stagingVertex.DestroyVulkanBuffer(logic_device);
-		stagingIndex.DestroyVulkanBuffer(logic_device);
-		return false;
-	}
-	if (!VansVKCommandBuffer::SubmitCommands(queue, logic_device, { commandbuffer->GetVKCommandBuffer() }, {}, {}, commandbuffer->m_CommandBufferFinishSubmitFence))
-	{
-		VANS_LOG_ERROR("[LoadMeshSubmeshFromScene] Failed to submit GPU buffer upload command buffer.");
-		stagingVertex.DestroyVulkanBuffer(logic_device);
-		stagingIndex.DestroyVulkanBuffer(logic_device);
-		return false;
-	}
-	if (!commandbuffer->ResetCommandBuffer(false))
-	{
-		VANS_LOG_ERROR("[LoadMeshSubmeshFromScene] Failed to reset GPU buffer upload command buffer.");
-		stagingVertex.DestroyVulkanBuffer(logic_device);
-		stagingIndex.DestroyVulkanBuffer(logic_device);
-		return false;
-	}
-
-	stagingVertex.DestroyVulkanBuffer(logic_device);
-	stagingIndex.DestroyVulkanBuffer(logic_device);
-
-	m_MeshRawData.clear();
-	if (!m_MeshRawPositionDataEnableCPURead)
-	{
-		m_MeshRawPositionData.clear();
-		m_MeshTriangleIndex.clear();
-	}
-
-	return true;
 }
 
 std::vector<std::string> VansGraphics::VansMesh::GetSubmeshMaterialNames(const std::string& file_name)

@@ -28,7 +28,7 @@ layout(set = 1, binding = 5) uniform sampler3D previousSHR;
 layout(set = 1, binding = 6) uniform sampler3D previousSHG;
 layout(set = 1, binding = 7) uniform sampler3D previousSHB;
 layout(set = 1, binding = 8) uniform sampler2D shadowMap;
-layout(set = 1, binding = 9) uniform sampler2DShadow punctualShadowMap;
+layout(set = 1, binding = 9) uniform sampler2DArrayShadow punctualShadowMap;
 layout(set = 1, binding = 10, std430) buffer pbrDataBuffer
 {
     f16vec4 albedoRoughness[];

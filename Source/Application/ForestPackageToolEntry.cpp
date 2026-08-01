@@ -1,4 +1,4 @@
-#include "../EngineCore/EditorCore/Packaging/VansGamePackageBuilder.h"
+#include "../EngineCore/PackagingCore/VansGamePackageBuilder.h"
 
 #include <filesystem>
 #include <fstream>
@@ -29,6 +29,8 @@ namespace
 		bool includeLibrary = true;
 		bool includeBinaries = true;
 		bool overwriteExisting = true;
+		bool useCookedResourcePlan = true;
+		bool prewarmResourceCaches = true;
 		bool showHelp = false;
 	};
 
@@ -105,11 +107,13 @@ namespace
 			<< "Usage:\n"
 			<< "  ForestPackageTool --project <projectRoot> [--scene <scenePath>] [options]\n\n"
 			<< "Options:\n"
-			<< "  --platform Windows       Target platform. Android is reserved but not implemented.\n"
+			<< "  --platform Windows       Target platform.\n"
 			<< "  --engine-root <path>     Engine source root containing EngineAssets.\n"
 			<< "  --binary-dir <path>      Directory containing ForestGameLauncher.exe and ForestRuntime.dll.\n"
 			<< "  --no-engine-assets       Do not copy EngineAssets.\n"
 			<< "  --no-library             Do not copy project Library.\n"
+			<< "  --legacy-assets          Package with the old asset scan path and full Library copy.\n"
+			<< "  --no-cache-prewarm       Do not build missing cooked resource caches before packaging.\n"
 			<< "  --no-binaries            Do not copy launcher/runtime binaries.\n"
 			<< "  --no-overwrite           Fail if the package output already exists.\n"
 			<< "  --help                   Show this help.\n";
@@ -120,11 +124,6 @@ namespace
 		if (value == "Windows" || value == "windows" || value == "Win64" || value == "win64")
 		{
 			platform = Vans::VansGamePackagePlatform::Windows;
-			return true;
-		}
-		if (value == "Android" || value == "android")
-		{
-			platform = Vans::VansGamePackagePlatform::Android;
 			return true;
 		}
 		return false;
@@ -187,6 +186,14 @@ namespace
 			else if (arg == "--no-library")
 			{
 				options.includeLibrary = false;
+			}
+			else if (arg == "--legacy-assets" || arg == "--no-cooked-resource-plan")
+			{
+				options.useCookedResourcePlan = false;
+			}
+			else if (arg == "--no-cache-prewarm")
+			{
+				options.prewarmResourceCaches = false;
 			}
 			else if (arg == "--no-binaries")
 			{
@@ -285,6 +292,8 @@ int main(int argc, char** argv)
 	request.includeLibrary = options.includeLibrary;
 	request.includeBinaries = options.includeBinaries;
 	request.overwriteExisting = options.overwriteExisting;
+	request.useCookedResourcePlan = options.useCookedResourcePlan;
+	request.prewarmResourceCaches = options.prewarmResourceCaches;
 
 	const Vans::VansGamePackageResult result = Vans::VansGamePackageBuilder::Build(request);
 	if (!result)
@@ -296,5 +305,6 @@ int main(int argc, char** argv)
 	std::cout << "Package built successfully" << std::endl;
 	std::cout << "Output: " << result.outputPath << std::endl;
 	std::cout << "Copied files: " << result.copiedFileCount << std::endl;
+	std::cout << "Missing cooked artifacts: " << result.missingCookedArtifactCount << std::endl;
 	return 0;
 }

@@ -52,14 +52,6 @@ namespace VansGraphics
 	class VansPcgWindow;
 	class VansHiZCullWindow;
 
-	/// 编辑器运行控制状态
-	enum class VansEditorPlayState
-	{
-		Editing,  // 默认：场景已加载，时间不推进
-		Playing,  // 运行中：时间推进，物理与脚本均激活
-		Paused,   // 暂停：时间冻结，物理与脚本停止
-	};
-
 	//编辑器窗口
 	class VansEditorWindow
 	{
@@ -137,7 +129,7 @@ namespace VansGraphics
 		static void OpenSelectedAnimationGraph();
 
 		/// 查询当前是否处于编辑模式（非 Playing / Paused）
-		static bool IsEditing() { return m_PlayState == VansEditorPlayState::Editing; }
+		static bool IsEditing();
 
 		static std::vector<VansGraphics::VansCamera*> m_Cameras;
 
@@ -196,9 +188,6 @@ namespace VansGraphics
 
 		/// True once a project has been successfully opened/created
 		static bool m_ProjectLoaded;
-
-		/// 当前编辑器运行状态
-		static VansEditorPlayState m_PlayState;
 
 		/// 当前已加载场景的绝对路径（Stop 时用于重载）
 		static std::string m_CurrentLoadedScenePath;

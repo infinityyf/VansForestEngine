@@ -11,7 +11,9 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <memory>
 #include <unordered_map>
+#include <vector>
 
 namespace VansGraphics
 {
@@ -165,15 +167,27 @@ VkPrimitiveTopology ParsePrimitiveTopology(const std::string& value, VkPrimitive
 
 namespace VansGraphics
 {
-void VansSceneProjectResourceBuilder::LoadMeshes(VansScene& scene,
+bool VansSceneProjectResourceBuilder::LoadMeshes(VansScene& scene,
     const std::vector<Vans::VansSceneMeshResourceRequest>& meshes,
-    const std::string& pathPrefix,
+    const Vans::VansSceneResourceLoadContext& loadContext,
     VkDevice& device,
     VansVKDevice* vkDevice)
 {
+	bool success = true;
     for (const auto& sceneMesh : meshes)
     {
-        std::string meshPath = pathPrefix + sceneMesh.path;
+        const Vans::VansResolvedSceneResourcePath resolved = loadContext.ResolveMesh(sceneMesh);
+		if ((resolved.cookedOnly && !resolved.artifactAvailable) ||
+			(!resolved.artifactAvailable && !resolved.sourceAvailable))
+		{
+			VANS_LOG_ERROR("[SceneResource] Mesh '" << sceneMesh.name
+				<< "' cannot be resolved from asset index. guid=" << sceneMesh.assetGuid
+				<< " source=" << resolved.sourcePath.string()
+				<< " artifact=" << resolved.artifactPath.string());
+			success = false;
+			continue;
+		}
+        std::string meshPath = resolved.sourcePath.string();
         bool import_tangent = sceneMesh.needTangent;
         bool loadMultiMesh = sceneMesh.loadMultiMesh;
         float scaleFactor = sceneMesh.scaleFactor;
@@ -189,21 +203,40 @@ void VansSceneProjectResourceBuilder::LoadMeshes(VansScene& scene,
             mesh->LoadMultiMesh(device, vkDevice->GetGraphicsQueue(), &(vkDevice->GetCommandBuffer()), meshPath,
                 import_tangent, generate_as, needCpuData, scaleFactor,
                 sceneMesh.rebuildIdentityBoneOffsetsFromHierarchy,
-                sceneMesh.remapWeaponAttachmentBonesToHands);
+                sceneMesh.remapWeaponAttachmentBonesToHands,
+                resolved.artifactPath.string(),
+                resolved.cookedOnly);
+			if (mesh->m_SubMeshes.empty())
+			{
+				VANS_LOG_ERROR("[SceneResource] Multi-mesh load produced no renderable submeshes: "
+					<< sceneMesh.assetGuid);
+				delete mesh;
+				success = false;
+				continue;
+			}
             mesh->SetName(sceneMesh.name);
             scene.AddMeshAsset(mesh);
         }
 
 		else
 		{
-			bool generate_as = sceneMesh.supportRayTracing;
-			bool needCpuData = sceneMesh.needCpuData;
+            bool generate_as = sceneMesh.supportRayTracing;
+            bool needCpuData = sceneMesh.needCpuData;
             VansMesh* mesh   = new VansMesh(needCpuData, generate_as);
-            mesh->LoadMesh(device, vkDevice->GetGraphicsQueue(), &(vkDevice->GetCommandBuffer()), meshPath.c_str(), import_tangent);
+            mesh->LoadMesh(device, vkDevice->GetGraphicsQueue(), &(vkDevice->GetCommandBuffer()), meshPath.c_str(), import_tangent, resolved.artifactPath.string(), resolved.cookedOnly);
+			if (mesh->GetMeshVertexCount() == 0 || mesh->GetIndexCount() == 0)
+			{
+				VANS_LOG_ERROR("[SceneResource] Mesh load produced empty geometry: "
+					<< sceneMesh.assetGuid);
+				delete mesh;
+				success = false;
+				continue;
+			}
             mesh->SetName(sceneMesh.name);
             scene.AddMeshAsset(mesh);
         }
     }
+	return success;
 }
 
 void VansSceneProjectResourceBuilder::LoadShadersFromRegistry(VansScene& scene,
@@ -225,7 +258,7 @@ void VansSceneProjectResourceBuilder::LoadShadersFromRegistry(VansScene& scene,
 
 void VansSceneProjectResourceBuilder::RegisterShaders(VansScene& scene,
     const std::vector<Vans::VansSceneShaderResourceRequest>& shaders,
-    const std::string& pathPrefix,
+    const Vans::VansSceneResourceLoadContext& loadContext,
     VkDevice& device,
     bool loadRegisteredShaders)
 {
@@ -241,14 +274,15 @@ void VansSceneProjectResourceBuilder::RegisterShaders(VansScene& scene,
             continue;
         }
 
-        const std::string& source = shaderRequest.source;
-        if (source.empty())
-        {
-            VANS_LOG_WARN("[VansScene] Shader asset '" << entry.name << "' has no source/path");
-            continue;
-        }
+		const Vans::VansResolvedSceneResourcePath resolved = loadContext.ResolveShader(shaderRequest);
+		if (!resolved.valid)
+		{
+			VANS_LOG_ERROR("[VansScene] Shader asset '" << entry.name
+				<< "' cannot be resolved from asset index: " << resolved.error);
+			continue;
+		}
 
-        entry.relativePath = ResolvePathUnderPrefix(pathPrefix, source).string();
+		entry.relativePath = resolved.sourcePath.string();
         entry.kind = shaderRequest.kind == "compute"
             ? VansManagedShaderKind::Compute
             : (shaderRequest.kind == "rayTracing" || shaderRequest.kind == "raytracing"
@@ -295,16 +329,33 @@ void VansSceneProjectResourceBuilder::RegisterShaders(VansScene& scene,
     scene.SyncShaderAssetsFromShaderManager();
 }
 
-void VansSceneProjectResourceBuilder::LoadTextures(VansScene& scene,
+bool VansSceneProjectResourceBuilder::LoadTextures(VansScene& scene,
     const std::vector<Vans::VansSceneTextureResourceRequest>& textures,
-    const std::string& pathPrefix,
-    const std::string& enginePrefix,
+    const Vans::VansSceneResourceLoadContext& loadContext,
     VansVKDevice* vkDevice,
     bool includeDefaultTextureSet)
 {
-    for (const auto& sceneTexture : textures)
+    struct PendingCookedTexture
     {
-        std::string texturePath = pathPrefix + sceneTexture.path;
+        VansTexture* texture = nullptr;
+        std::vector<std::uint8_t> storage;
+        VansTextureMipChainUpload upload{};
+    };
+    std::vector<std::unique_ptr<PendingCookedTexture>> pendingCookedTextures;
+    pendingCookedTextures.reserve(textures.size());
+    std::size_t cookedBatchPreparedCount = 0;
+    std::size_t sourceFallbackCount = 0;
+
+	for (const auto& sceneTexture : textures)
+	{
+		const Vans::VansResolvedSceneResourcePath resolved = loadContext.ResolveTexture(sceneTexture);
+		if (!resolved.valid)
+		{
+			VANS_LOG_ERROR("[SceneResource] Texture '" << sceneTexture.name
+				<< "' cannot be resolved from asset index: " << resolved.error);
+			return false;
+		}
+        std::string texturePath = resolved.sourcePath.string();
         VansTexture* texture    = new VansTexture();
         texture->m_TextureType  = static_cast<TextureType>(sceneTexture.textureType);
         bool isSRGB             = sceneTexture.srgb;
@@ -320,8 +371,19 @@ void VansSceneProjectResourceBuilder::LoadTextures(VansScene& scene,
                 sceneTexture.precision,
                 sceneTexture.importChannel,
                 sceneTexture.addressMode,
-                sceneTexture.artifactPath);
+                resolved.artifactPath.string());
+            auto pending = std::make_unique<PendingCookedTexture>();
+            pending->texture = texture;
+			if (resolved.artifactAvailable &&
+				texture->TryPrepareCookedBatchUpload(*vkDevice, desc, pending->upload, pending->storage))
+            {
+                texture->SetName(sceneTexture.name);
+                pendingCookedTextures.push_back(std::move(pending));
+                ++cookedBatchPreparedCount;
+                continue;
+            }
             LoadTexture2DFromDesc(*texture, *vkDevice, desc);
+            ++sourceFallbackCount;
             break;
         }
         case TEXTURE_CUBE:
@@ -334,24 +396,65 @@ void VansSceneProjectResourceBuilder::LoadTextures(VansScene& scene,
         scene.AddTextureAsset(texture);
     }
 
-    if (includeDefaultTextureSet)
+    if (!pendingCookedTextures.empty())
+    {
+        std::vector<VansTextureMipChainUpload> uploads;
+        uploads.reserve(pendingCookedTextures.size());
+        for (const auto& pending : pendingCookedTextures)
+        {
+            pending->upload.data = pending->storage.data();
+            uploads.push_back(pending->upload);
+        }
+
+        if (!vkDevice->SubmitTextureMipChainUploadBatch(vkDevice->GetCommandBuffer(), uploads))
+        {
+            VANS_LOG_ERROR("[TextureBatchUpload] Batch upload failed; prepared textures may be incomplete");
+        }
+
+        for (const auto& pending : pendingCookedTextures)
+            scene.AddTextureAsset(pending->texture);
+    }
+
+    VANS_LOG("[TextureBatchUpload] Prepared " << cookedBatchPreparedCount
+        << " cooked 2D textures, fallback=" << sourceFallbackCount);
+
+	if (includeDefaultTextureSet)
     {
         // Default textures are always loaded from the engine's EngineAssets directory.
-        VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, enginePrefix + "EngineAssets/Textures/Default/defaultAlbedo.png",    "defaultAlbedo",    vkDevice, false);
-        VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, enginePrefix + "EngineAssets/Textures/Default/defaultMetal.png",     "defaultMetal",     vkDevice, false);
-        VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, enginePrefix + "EngineAssets/Textures/Default/defaultRoughness.png", "defaultRoughness", vkDevice, false);
-        VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, enginePrefix + "EngineAssets/Textures/Default/defaultAo.png",        "defaultAo",        vkDevice, false);
-        VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, enginePrefix + "EngineAssets/Textures/Default/defaultNormal.png",    "defaultNormal",    vkDevice, false);
-    }
+        VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, loadContext.ResolveEnginePath("EngineAssets/Textures/Default/defaultAlbedo.png").string(),    "defaultAlbedo",    vkDevice, false);
+        VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, loadContext.ResolveEnginePath("EngineAssets/Textures/Default/defaultMetal.png").string(),     "defaultMetal",     vkDevice, false);
+        VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, loadContext.ResolveEnginePath("EngineAssets/Textures/Default/defaultRoughness.png").string(), "defaultRoughness", vkDevice, false);
+        VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, loadContext.ResolveEnginePath("EngineAssets/Textures/Default/defaultAo.png").string(),        "defaultAo",        vkDevice, false);
+		VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, loadContext.ResolveEnginePath("EngineAssets/Textures/Default/defaultNormal.png").string(),    "defaultNormal",    vkDevice, false);
+	}
+	return true;
 }
 
 void VansSceneProjectResourceBuilder::ImportDefaultTexture(VansScene& scene, const std::string& path, const std::string& name, VansVKDevice* vkDevice, bool isSRGB)
 {
-    //默认pbr贴图
-    std::string texturePath = path;
     VansTexture* defaultMetalTexture = new VansTexture();
     defaultMetalTexture->m_TextureType = TEXTURE_2D;
-    LoadTexture2DFromDesc(*defaultMetalTexture, *vkDevice, BuildTextureLoadDesc(texturePath, isSRGB));
+    std::uint8_t pixel[4] = { 255, 255, 255, 255 };
+    if (name == "defaultMetal")
+    {
+        pixel[0] = 0;
+        pixel[1] = 0;
+        pixel[2] = 0;
+    }
+    else if (name == "defaultNormal")
+    {
+        pixel[0] = 128;
+        pixel[1] = 128;
+        pixel[2] = 255;
+    }
+    defaultMetalTexture->LoadFromMemory(
+        vkDevice->GetCommandBuffer(),
+        pixel,
+        sizeof(pixel),
+        1,
+        1,
+        isSRGB ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM,
+        VK_SAMPLER_ADDRESS_MODE_REPEAT);
     defaultMetalTexture->SetName(name);
     scene.AddTextureAsset(defaultMetalTexture);
 }
@@ -387,13 +490,15 @@ VansTexture* VansSceneProjectResourceBuilder::LoadOrGetTexture(VansScene& scene,
     VansTexture* texture = new VansTexture();
     texture->m_TextureType = TEXTURE_2D;
     std::string cookedPath;
-    if (Vans::VansAssetDatabase* database = Vans::VansProjectManager::Get().GetAssetDatabase())
-    {
-        if (const auto record = database->Find(std::filesystem::path(absPath)))
-            cookedPath = record->artifactPath.string();
-    }
-    LoadTexture2DFromDesc(*texture, *vkDevice,
-        BuildTextureLoadDesc(absPath, isSRGB, true, true, "low8", 4, "repeat", cookedPath));
+	std::string sourcePath = absPath;
+	if (const auto record = Vans::VansProjectManager::Get().FindAssetRecordByPath(std::filesystem::path(absPath)))
+	{
+		cookedPath = record->artifactPath.string();
+		if (!record->sourcePath.empty())
+			sourcePath = record->sourcePath.string();
+	}
+	LoadTexture2DFromDesc(*texture, *vkDevice,
+		BuildTextureLoadDesc(sourcePath, isSRGB, true, true, "low8", 4, "repeat", cookedPath));
     texture->SetName(texName);
     scene.AddTextureAsset(texture);
 

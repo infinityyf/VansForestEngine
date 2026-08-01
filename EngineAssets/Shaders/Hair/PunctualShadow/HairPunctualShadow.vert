@@ -7,8 +7,8 @@
 
 layout(push_constant) uniform LightShadowIndex
 {
-    int lightIndex;
-    int shadowFaceIndex;
+    int shadowViewIndex;
+    int unusedShadowFaceIndex;
     int materialIndex;
     int objectIndex;
     int animationEnabled;
@@ -21,20 +21,7 @@ layout(location = 0) out vec2 fragUV;
 void main()
 {
     mat4 modelMatrix = ModelBuffer.transforms[objectIndex].ModelMatrix;
-    int pointLightCount = int(uPointLightCount);
-    int spotLightCount = int(uSpotLightCount);
-    int rectLightStart = pointLightCount + spotLightCount;
-
-    uint metaIndex;
-    if (lightIndex < pointLightCount)
-        metaIndex = uPointLights[lightIndex].shadowMetaIndex;
-    else if (lightIndex < rectLightStart)
-        metaIndex = uSpotLights[lightIndex - pointLightCount].shadowMetaIndex;
-    else
-        metaIndex = uRectLights[lightIndex - rectLightStart].shadowMetaIndex;
-
-    PunctualShadowData shadow = uPunctualShadows[metaIndex];
-    mat4 shadowMatrix = uPunctualShadowViews[shadow.firstView + uint(shadowFaceIndex)].worldToShadow;
+    mat4 shadowMatrix = uPunctualShadowViews[uint(shadowViewIndex)].worldToShadow;
 
     vec4 skinnedPosition = position;
     if (animationEnabled != 0)

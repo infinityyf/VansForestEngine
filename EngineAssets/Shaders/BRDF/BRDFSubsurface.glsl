@@ -91,7 +91,7 @@ vec3 DirectBurleyTransmission(BRDFData brdf, vec3 lightDirection,
 void CalculateDirectTransmission_Subsurface(
     BRDFData brdfData, SubsurfaceParams sss,
     sampler2DArray cascadeShadowMap, float viewDepth,
-    sampler2DShadow punctualShadowMap, float screenSpaceShadow,
+    sampler2DArrayShadow punctualShadowMap, float screenSpaceShadow,
     inout vec3 transmission)
 {
     transmission = vec3(0.0);

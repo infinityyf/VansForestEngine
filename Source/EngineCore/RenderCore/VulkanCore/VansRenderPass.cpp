@@ -141,6 +141,22 @@ void VansGraphics::VansVKRenderPass::DestroyRenderPass(VkDevice& logic_device)
 
 void VansGraphics::VansFrameBuffer::CreateFrameBuffer(VkDevice& logic_device, VkRenderPass& render_pass, const std::vector<VkImageView>& image_views, VkExtent3D framebuffer_size)
 {
+	if (logic_device == VK_NULL_HANDLE || render_pass == VK_NULL_HANDLE ||
+		framebuffer_size.width == 0 || framebuffer_size.height == 0 || framebuffer_size.depth == 0)
+	{
+		VANS_LOG_ERROR("[VansFrameBuffer] Refusing framebuffer creation with an invalid device, render pass, or extent.");
+		return;
+	}
+	for (std::size_t attachmentIndex = 0; attachmentIndex < image_views.size(); ++attachmentIndex)
+	{
+		if (image_views[attachmentIndex] == VK_NULL_HANDLE)
+		{
+			VANS_LOG_ERROR("[VansFrameBuffer] Refusing framebuffer creation: attachment "
+				<< attachmentIndex << " is VK_NULL_HANDLE (attachments=" << image_views.size()
+				<< ", extent=" << framebuffer_size.width << "x" << framebuffer_size.height << ").");
+			return;
+		}
+	}
 	VkFramebufferCreateInfo framebuffer_create_info = 
 	{
 		 VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
@@ -357,10 +373,10 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 	std::vector<VkAttachmentDescription> gbufferAttachmentDescs =
 	{
 		// loadOp=CLEAR 时使用 UNDEFINED 作为 initialLayout：不关心旧内容，避免第 2+ 帧 layout 不匹配绘定义行为
+		{ 0, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+		{ 0, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+		{ 0, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
 		{ 0, VK_FORMAT_R32G32B32A32_SFLOAT, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
-		{ 0, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
-		{ 0, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
-		{ 0, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
 		// D32_SFLOAT_S8_UINT: 32位浮点深度+8位 stencil；同样用 UNDEFINED 作为 initialLayout
 		{ 0, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
 	};
@@ -1046,7 +1062,7 @@ void VansGraphics::VansRenderPassManager::SetupVansPunctualShadowRenderPass(VkDe
 		{ resolution.width,resolution.height,1 },
 		VK_FORMAT_D32_SFLOAT,
 		1,
-		1,
+		VANS_PUNCTUAL_SHADOW_ATLAS_COUNT,
 		VK_IMAGE_TYPE_2D,
 		VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
 		VK_SAMPLE_COUNT_1_BIT,
@@ -1067,9 +1083,18 @@ void VansGraphics::VansRenderPassManager::SetupVansPunctualShadowRenderPass(VkDe
 	VansGraphics::vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
 #endif
 
-	m_VansPunctualShadowPass.m_FrameBuffers.resize(1);
-	std::vector<VkImageView> image_views = { m_PunctualShadowMapImage.GetImageView() };
-	m_VansPunctualShadowPass.m_FrameBuffers[0].CreateFrameBuffer(logic_device, m_VansPunctualShadowPass.m_RenderPass, image_views, { resolution.width, resolution.height, 1 });
+	m_VansPunctualShadowPass.m_FrameBuffers.resize(VANS_PUNCTUAL_SHADOW_ATLAS_COUNT);
+	for (uint32_t atlasIndex = 0; atlasIndex < VANS_PUNCTUAL_SHADOW_ATLAS_COUNT; ++atlasIndex)
+	{
+		m_PunctualShadowLayerViews[atlasIndex] =
+			m_PunctualShadowMapImage.CreateLayerMipView(logic_device, atlasIndex, 0);
+		std::vector<VkImageView> imageViews = { m_PunctualShadowLayerViews[atlasIndex] };
+		m_VansPunctualShadowPass.m_FrameBuffers[atlasIndex].CreateFrameBuffer(
+			logic_device,
+			m_VansPunctualShadowPass.m_RenderPass,
+			imageViews,
+			{ resolution.width, resolution.height, 1 });
+	}
 
 	m_LogicDevice = logic_device;
 
@@ -2033,6 +2058,11 @@ void VansGraphics::VansRenderPassManager::DestroyRenderPass()
 	m_CascadeShadowMapImage.DestroyVulkanImage(m_LogicDevice);
 	m_CascadeShadowMapDepthImage.DestroyVulkanImage(m_LogicDevice);
 
+	// Framebuffers own the per-layer views, so destroy them before releasing the
+	// views and the shared two-layer depth image.
+	m_VansPunctualShadowPass.DestroyRenderPass(m_LogicDevice);
+	for (VkImageView& layerView : m_PunctualShadowLayerViews)
+		VansVKImage::DestroyImageView(m_LogicDevice, layerView);
 	m_PunctualShadowMapImage.DestroyVulkanImage(m_LogicDevice);
 
 	m_NormalImage.DestroyVulkanImage(m_LogicDevice);
@@ -2061,7 +2091,6 @@ void VansGraphics::VansRenderPassManager::DestroyRenderPass()
 	m_VansHairDeepOpacityPass.DestroyRenderPass(m_LogicDevice);
 	m_VansWaterGBufferPass.DestroyRenderPass(m_LogicDevice);
 	m_VansShadowPass.DestroyRenderPass(m_LogicDevice);
-	m_VansPunctualShadowPass.DestroyRenderPass(m_LogicDevice);
 	m_VansMotionVectorPass.DestroyRenderPass(m_LogicDevice);
 	m_VansUIPass.DestroyRenderPass(m_LogicDevice);
 	m_VansSceneUIPass.DestroyRenderPass(m_LogicDevice);

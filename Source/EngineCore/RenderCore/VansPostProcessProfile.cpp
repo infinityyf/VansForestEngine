@@ -1,5 +1,6 @@
 #include "VansPostProcessProfile.h"
 #include "VansGraphicsDevice.h"
+#include <algorithm>
 
 namespace VansGraphics
 {
@@ -27,13 +28,12 @@ namespace VansGraphics
 	VansExposureAdaptParamsGPU VansPostProcessProfile::ToExposureAdaptParams(float deltaTime) const
 	{
 		VansExposureAdaptParamsGPU p;
-		p.m_MinEV100              = m_MinEV100;
-		p.m_MaxEV100              = m_MaxEV100;
-		p.m_AdaptationSpeedUp     = m_AdaptationSpeedUp;
-		p.m_AdaptationSpeedDown   = m_AdaptationSpeedDown;
-		p.m_DeltaTime             = deltaTime;
-		p.m_ExposureCompensation  = m_ExposureCompensation;
-		p.m_EnableAutoExposure    = m_EnableAutoExposure ? 1 : 0;
+		p.m_MinEV100 = (std::min)(m_MinEV100, m_MaxEV100);
+		p.m_MaxEV100 = (std::max)(m_MinEV100, m_MaxEV100);
+		p.m_AdaptationSpeedUp = (std::max)(m_AdaptationSpeedUp, 0.0f);
+		p.m_AdaptationSpeedDown = (std::max)(m_AdaptationSpeedDown, 0.0f);
+		p.m_DeltaTime = std::clamp(deltaTime, 0.0f, 0.25f);
+		p.m_EnableAutoExposure = m_EnableAutoExposure ? 1 : 0;
 		return p;
 	}
 

@@ -179,17 +179,15 @@ void VansGraphics::VansScene::AddMaterialAsset(VansAsset* asset)
 }
 
 void VansGraphics::VansScene::LoadProjectAudioResources(
-	const std::vector<Vans::VansSceneAudioResourceRequest>& audios,
-	const std::string& assetPrefix)
+	const std::vector<Vans::VansSceneAudioResourceRequest>& audios)
 {
-	m_AudioManager.Load(audios, assetPrefix);
+	m_AudioManager.Load(audios);
 }
 
 void VansGraphics::VansScene::LoadProjectVideoResources(
-	const std::vector<Vans::VansSceneVideoResourceRequest>& videos,
-	const std::string& assetPrefix)
+	const std::vector<Vans::VansSceneVideoResourceRequest>& videos)
 {
-	m_VideoManager.Load(videos, assetPrefix, m_RuntimeResourceDevice);
+	m_VideoManager.Load(videos, m_RuntimeResourceDevice);
 }
 
 void VansGraphics::VansScene::SyncShaderAssetsFromShaderManager()
@@ -1898,12 +1896,15 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
     //scratch izhi
     m_TLASScratchBuffer.CreatVulkanBuffer(
         device,
-        buildSizesInfo.buildScratchSize,
+        buildSizesInfo.buildScratchSize + vans_device->GetAccelerationStructureScratchAlignment() - 1,
         VK_FORMAT_R32_SFLOAT,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-    VkDeviceAddress scratchAddress = m_TLASScratchBuffer.GetDeviceAddress(device);
+    const VkDeviceSize scratchAlignment = vans_device->GetAccelerationStructureScratchAlignment();
+    const VkDeviceAddress scratchBaseAddress = m_TLASScratchBuffer.GetDeviceAddress(device);
+    const VkDeviceAddress scratchAddress =
+        (scratchBaseAddress + scratchAlignment - 1) & ~(scratchAlignment - 1);
 
 
     // 创建缓冲区
@@ -2366,6 +2367,38 @@ bool VansGraphics::VansScene::DestroyEntity(const std::string& entityName)
         return false;
     }
     return DestroyEntity(obj);
+}
+
+bool VansGraphics::VansScene::QueueDestroyEntity(VansScriptObject* obj)
+{
+    if (!obj || obj->m_EntityGuid.empty())
+        return false;
+
+    const auto liveIt = std::find(m_SceneObjects.begin(), m_SceneObjects.end(), obj);
+    if (liveIt == m_SceneObjects.end())
+        return false;
+
+    if (std::find(m_PendingEntityDestructionGuids.begin(),
+                  m_PendingEntityDestructionGuids.end(),
+                  obj->m_EntityGuid) == m_PendingEntityDestructionGuids.end())
+    {
+        m_PendingEntityDestructionGuids.push_back(obj->m_EntityGuid);
+    }
+    return true;
+}
+
+void VansGraphics::VansScene::FlushPendingEntityDestructions()
+{
+    if (m_PendingEntityDestructionGuids.empty())
+        return;
+
+    auto pending = std::move(m_PendingEntityDestructionGuids);
+    m_PendingEntityDestructionGuids.clear();
+    for (const std::string& guid : pending)
+    {
+        if (VansScriptObject* obj = FindObjectByGuid(guid))
+            DestroyEntity(obj);
+    }
 }
 
 bool VansGraphics::VansScene::DestroyEntity(VansScriptObject* obj)

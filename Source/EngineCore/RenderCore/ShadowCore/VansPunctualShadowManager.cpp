@@ -12,6 +12,19 @@ namespace
 	constexpr uint32_t kDowngradeConfirmationFrames = 30;
 	constexpr float kAtlasFadeInStep = 1.0f / 6.0f;
 	constexpr float kAtlasFadeOutStep = 1.0f / 8.0f;
+	constexpr uint32_t kShadowOwnerSignature = 0xA5000000u;
+	constexpr uint32_t kShadowOwnerAtlasShift = 16u;
+
+	uint32_t BuildShadowOwnerKey(
+		VansGraphics::VansPunctualShadowLightType type,
+		uint32_t gpuLightIndex,
+		uint32_t atlasIndex)
+	{
+		return kShadowOwnerSignature |
+			((atlasIndex & 0x3u) << kShadowOwnerAtlasShift) |
+			((static_cast<uint32_t>(type) & 0x3u) << 8u) |
+			(gpuLightIndex & 0xffu);
+	}
 
 	bool NearlyEqual(float a, float b, float epsilon = kEpsilon)
 	{
@@ -66,9 +79,11 @@ namespace
 namespace VansGraphics
 {
 	VansPunctualShadowManager::VansPunctualShadowManager(uint32_t atlasSize, uint32_t basePageSize, uint32_t gutter)
-		: m_AtlasAllocator(atlasSize, basePageSize, gutter)
+		: m_AtlasAllocators{
+			VansShadowAtlasAllocator(atlasSize, basePageSize, gutter),
+			VansShadowAtlasAllocator(atlasSize, basePageSize, gutter) }
 	{
-		m_Budget.atlasPageBudget = m_AtlasAllocator.GetTotalPages();
+		m_Budget.atlasPageBudget = GetTotalAtlasPages();
 	}
 
 	void VansPunctualShadowManager::Reset()
@@ -82,10 +97,13 @@ namespace VansGraphics
 		m_NextAtomicGroupId = 1;
 		m_DebugPreviewHeartbeat = 1;
 		m_DebugPreviewForceRefresh = true;
-		m_AtlasAllocator.Reset(
-			m_AtlasAllocator.GetAtlasSize(),
-			m_AtlasAllocator.GetBasePageSize(),
-			m_AtlasAllocator.GetGutter());
+		for (VansShadowAtlasAllocator& allocator : m_AtlasAllocators)
+		{
+			allocator.Reset(
+				allocator.GetAtlasSize(),
+				allocator.GetBasePageSize(),
+				allocator.GetGutter());
+		}
 	}
 
 	void VansPunctualShadowManager::RemoveLight(uint32_t stableLightId)
@@ -124,6 +142,8 @@ namespace VansGraphics
 		{
 			Runtime& runtime = m_Runtimes[input.stableLightId];
 			const bool projectionChanged = runtime.hasPreviousInput && ProjectionChanged(runtime, input);
+			if (runtime.hasPreviousInput && runtime.input.type != input.type)
+				ReleaseRuntime(runtime);
 			runtime.input = input;
 			runtime.requiredFaceMask = RequiredFaceMask(input.type);
 			runtime.seenThisFrame = true;
@@ -167,7 +187,7 @@ namespace VansGraphics
 			candidate.pageCost = PageCost(
 				candidate.resolution,
 				ViewCount(input.type),
-				m_AtlasAllocator.GetBasePageSize());
+				m_AtlasAllocators[0].GetBasePageSize());
 			candidates.push_back(candidate);
 		}
 
@@ -181,20 +201,22 @@ namespace VansGraphics
 				return a.runtime->importance > b.runtime->importance;
 			const float aUtility = a.runtime->importance / static_cast<float>((std::max)(a.pageCost, 1u));
 			const float bUtility = b.runtime->importance / static_cast<float>((std::max)(b.pageCost, 1u));
-			return aUtility > bUtility;
+			if (!NearlyEqual(aUtility, bUtility))
+				return aUtility > bUtility;
+			return a.runtime->input.stableLightId < b.runtime->input.stableLightId;
 		});
 
-		uint32_t virtualPagesRemaining = (std::min)(m_Budget.atlasPageBudget, m_AtlasAllocator.GetTotalPages());
+		uint32_t virtualPagesRemaining = (std::min)(m_Budget.atlasPageBudget, GetTotalAtlasPages());
 		std::vector<Runtime*> orderedRuntimes;
 		orderedRuntimes.reserve(candidates.size());
 		for (Candidate& candidate : candidates)
 		{
 			uint16_t resolution = candidate.resolution;
 			uint32_t cost = candidate.pageCost;
-			while (cost > virtualPagesRemaining && resolution > m_AtlasAllocator.GetBasePageSize())
+			while (cost > virtualPagesRemaining && resolution > m_AtlasAllocators[0].GetBasePageSize())
 			{
 				resolution = DownshiftResolution(resolution);
-				cost = PageCost(resolution, ViewCount(candidate.runtime->input.type), m_AtlasAllocator.GetBasePageSize());
+				cost = PageCost(resolution, ViewCount(candidate.runtime->input.type), m_AtlasAllocators[0].GetBasePageSize());
 			}
 
 			if (cost > virtualPagesRemaining)
@@ -275,7 +297,9 @@ namespace VansGraphics
 
 		BuildRenderJobs(orderedRuntimes);
 		BuildGPUData(lights);
-		m_Statistics.usedAtlasPages = m_AtlasAllocator.GetUsedPages();
+		m_Statistics.usedAtlasPages = 0;
+		for (const VansShadowAtlasAllocator& allocator : m_AtlasAllocators)
+			m_Statistics.usedAtlasPages += allocator.GetUsedPages();
 	}
 
 	void VansPunctualShadowManager::InvalidateAllCasters(uint32_t dirtyReason)
@@ -315,13 +339,35 @@ namespace VansGraphics
 		return found != m_LightToMetaIndex.end() ? found->second : VANS_INVALID_SHADOW_INDEX;
 	}
 
+	bool VansPunctualShadowManager::HasRenderJobs(uint32_t atlasIndex) const
+	{
+		return std::any_of(m_RenderJobs.begin(), m_RenderJobs.end(), [atlasIndex](const auto& job)
+		{
+			return job.atlasIndex == atlasIndex;
+		});
+	}
+
+	const VansShadowAtlasAllocator& VansPunctualShadowManager::GetAtlasAllocator(uint32_t atlasIndex) const
+	{
+		return m_AtlasAllocators[(std::min)(atlasIndex, VANS_PUNCTUAL_SHADOW_ATLAS_COUNT - 1u)];
+	}
+
+	uint32_t VansPunctualShadowManager::GetTotalAtlasPages() const
+	{
+		uint32_t totalPages = 0;
+		for (const VansShadowAtlasAllocator& allocator : m_AtlasAllocators)
+			totalPages += allocator.GetTotalPages();
+		return totalPages;
+	}
+
 	VansPunctualShadowDebugSnapshot VansPunctualShadowManager::CaptureDebugSnapshot() const
 	{
 		VansPunctualShadowDebugSnapshot snapshot;
 		snapshot.frameIndex = m_FrameIndex;
-		snapshot.atlasSize = m_AtlasAllocator.GetAtlasSize();
-		snapshot.basePageSize = m_AtlasAllocator.GetBasePageSize();
-		snapshot.gutter = m_AtlasAllocator.GetGutter();
+		snapshot.atlasSize = m_AtlasAllocators[0].GetAtlasSize();
+		snapshot.atlasCount = VANS_PUNCTUAL_SHADOW_ATLAS_COUNT;
+		snapshot.basePageSize = m_AtlasAllocators[0].GetBasePageSize();
+		snapshot.gutter = m_AtlasAllocators[0].GetGutter();
 		snapshot.budget = m_Budget;
 		snapshot.statistics = m_Statistics;
 		snapshot.lights.reserve(m_Runtimes.size());
@@ -583,7 +629,7 @@ namespace VansGraphics
 			runtime.pendingFaceMask = 0;
 		}
 
-		if (!m_AtlasAllocator.AllocateGroup(resolution, ViewCount(runtime.input.type), runtime.pendingBlocks))
+		if (!AllocateGroup(resolution, ViewCount(runtime.input.type), runtime.pendingBlocks))
 		{
 			++m_Statistics.allocationFailures;
 			runtime.state = runtime.input.settings.fallback == VansShadowFallback::ScreenSpace
@@ -601,14 +647,45 @@ namespace VansGraphics
 		return true;
 	}
 
+	bool VansPunctualShadowManager::AllocateGroup(
+		uint16_t resolution,
+		uint32_t viewCount,
+		std::array<VansShadowAtlasBlock, 6>& outBlocks)
+	{
+		std::array<uint32_t, VANS_PUNCTUAL_SHADOW_ATLAS_COUNT> order{};
+		for (uint32_t atlasIndex = 0; atlasIndex < VANS_PUNCTUAL_SHADOW_ATLAS_COUNT; ++atlasIndex)
+			order[atlasIndex] = atlasIndex;
+		std::stable_sort(order.begin(), order.end(), [&](uint32_t lhs, uint32_t rhs)
+		{
+			return m_AtlasAllocators[lhs].GetUsedPages() < m_AtlasAllocators[rhs].GetUsedPages();
+		});
+
+		for (uint32_t atlasIndex : order)
+		{
+			if (!m_AtlasAllocators[atlasIndex].AllocateGroup(resolution, viewCount, outBlocks))
+				continue;
+			for (uint32_t view = 0; view < viewCount; ++view)
+				outBlocks[view].atlasIndex = static_cast<uint16_t>(atlasIndex);
+			return true;
+		}
+		outBlocks = {};
+		return false;
+	}
+
+	bool VansPunctualShadowManager::ValidateBlock(const VansShadowAtlasBlock& block) const
+	{
+		return block.atlasIndex < VANS_PUNCTUAL_SHADOW_ATLAS_COUNT &&
+			m_AtlasAllocators[block.atlasIndex].Validate(block);
+	}
+
 	void VansPunctualShadowManager::ReleaseBlocks(
 		std::array<VansShadowAtlasBlock, 6>& blocks,
 		uint32_t viewCount)
 	{
 		for (uint32_t view = 0; view < viewCount; ++view)
 		{
-			if (blocks[view].IsValid())
-				m_AtlasAllocator.Free(blocks[view]);
+			if (blocks[view].IsValid() && blocks[view].atlasIndex < VANS_PUNCTUAL_SHADOW_ATLAS_COUNT)
+				m_AtlasAllocators[blocks[view].atlasIndex].Free(blocks[view]);
 			blocks[view] = {};
 		}
 	}
@@ -673,6 +750,7 @@ namespace VansGraphics
 						job.faceIndex = static_cast<uint8_t>(face);
 						job.resolution = runtime->pendingResolution;
 						job.shadowCasterMask = runtime->input.settings.shadowCasterMask;
+						job.atlasIndex = block.atlasIndex;
 						job.atlasRect = { block.x, block.y, block.resolution, block.resolution };
 						job.worldToShadow = BuildShadowMatrix(*runtime, face, block);
 						m_RenderJobs.push_back(std::move(job));
@@ -715,6 +793,7 @@ namespace VansGraphics
 				job.faceIndex = static_cast<uint8_t>(face);
 				job.resolution = runtime->activeResolution;
 				job.shadowCasterMask = runtime->input.settings.shadowCasterMask;
+				job.atlasIndex = block.atlasIndex;
 				job.atlasRect = { block.x, block.y, block.resolution, block.resolution };
 				job.worldToShadow = BuildShadowMatrix(*runtime, face, block);
 				m_RenderJobs.push_back(std::move(job));
@@ -745,12 +824,19 @@ namespace VansGraphics
 	{
 		m_GPUShadowData.reserve(lights.size());
 		m_GPUShadowViews.reserve(VANS_MAX_PUNCTUAL_SHADOW_VIEWS);
+		std::unordered_map<uint32_t, uint32_t> stableIdUseCounts;
+		stableIdUseCounts.reserve(lights.size());
+		for (const VansPunctualShadowLightInput& input : lights)
+			++stableIdUseCounts[input.stableLightId];
 
 		for (const VansPunctualShadowLightInput& input : lights)
 		{
 			Runtime& runtime = m_Runtimes[input.stableLightId];
 			const uint32_t metaIndex = static_cast<uint32_t>(m_GPUShadowData.size());
-			m_LightToMetaIndex[input.stableLightId] = metaIndex;
+			const bool hasUniqueStableId = input.stableLightId != 0 &&
+				stableIdUseCounts[input.stableLightId] == 1u;
+			if (hasUniqueStableId)
+				m_LightToMetaIndex[input.stableLightId] = metaIndex;
 
 			VansPunctualShadowGPU gpu;
 			gpu.sourceRadius = input.settings.sourceRadius;
@@ -767,12 +853,13 @@ namespace VansGraphics
 			if (input.settings.affectsGI)
 				gpu.flags |= VansShadowGPU_AffectsGI;
 
-			bool allocationValid = shadowEnabled && runtime.activeResolution != 0 &&
+			bool allocationValid = hasUniqueStableId && shadowEnabled && runtime.activeResolution != 0 &&
 				runtime.projectionValid && runtime.validFaceMask == runtime.requiredFaceMask;
 			if (allocationValid)
 			{
 				for (uint32_t face = 0; face < ViewCount(input.type); ++face)
-					allocationValid = allocationValid && m_AtlasAllocator.Validate(runtime.activeBlocks[face]);
+					allocationValid = allocationValid && ValidateBlock(runtime.activeBlocks[face]) &&
+						runtime.activeBlocks[face].atlasIndex == runtime.activeBlocks[0].atlasIndex;
 			}
 
 			if (allocationValid)
@@ -780,7 +867,7 @@ namespace VansGraphics
 				gpu.flags |= VansShadowGPU_HasAtlas;
 				gpu.firstView = static_cast<uint32_t>(m_GPUShadowViews.size());
 				gpu.viewCount = ViewCount(input.type);
-				gpu.generation = runtime.allocationGeneration;
+				gpu.ownerKey = BuildShadowOwnerKey(input.type, input.gpuLightIndex, runtime.activeBlocks[0].atlasIndex);
 				if (runtime.state != VansShadowRuntimeState::Evicting)
 					runtime.atlasWeight = (std::min)(1.0f, runtime.atlasWeight + kAtlasFadeInStep);
 				gpu.atlasWeight = runtime.atlasWeight;
@@ -805,7 +892,11 @@ namespace VansGraphics
 			const uint32_t metaIndex = GetShadowMetaIndex(job.stableLightId);
 			job.shadowMetaIndex = metaIndex;
 			if (metaIndex < m_GPUShadowData.size() && m_GPUShadowData[metaIndex].firstView != VANS_INVALID_SHADOW_INDEX)
-				job.shadowViewIndex = m_GPUShadowData[metaIndex].firstView + job.faceIndex;
+			{
+				const uint32_t viewIndex = m_GPUShadowData[metaIndex].firstView + job.faceIndex;
+				if (viewIndex < m_GPUShadowViews.size())
+					job.shadowViewIndex = viewIndex;
+			}
 		}
 	}
 
@@ -868,7 +959,7 @@ namespace VansGraphics
 	{
 		VansPunctualShadowViewGPU view;
 		view.worldToShadow = BuildShadowMatrix(runtime, faceIndex, block);
-		const float atlasSize = static_cast<float>(m_AtlasAllocator.GetAtlasSize());
+		const float atlasSize = static_cast<float>(m_AtlasAllocators[0].GetAtlasSize());
 		const float resolution = static_cast<float>(block.resolution);
 		view.atlasScaleBias = glm::vec4(
 			resolution / atlasSize,

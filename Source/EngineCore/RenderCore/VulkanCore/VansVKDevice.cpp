@@ -210,7 +210,12 @@ namespace VansGraphics
 
 	bool VansVKDevice::CheckPhysicDeviceFeature(VkPhysicalDevice device)
 	{
-		//使用1.2
+		// Vulkan 1.1/1.2 promoted features must be requested through the versioned
+		// feature structs only. Chaining their legacy extension structs alongside
+		// VkPhysicalDeviceVulkan12Features is invalid and can corrupt driver state.
+		m_DeviceFeatures2 = {};
+		m_Features11 = {};
+		m_Features12 = {};
 		m_Features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
 		m_Features12.pNext = nullptr;
 
@@ -229,22 +234,7 @@ namespace VansGraphics
 			m_Features12.pNext = &m_AcceralteFeature;
 		}
 
-		//支持struct
-		m_ScalarBlockFeature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES;
-		m_ScalarBlockFeature.scalarBlockLayout = VK_TRUE;
-		m_ScalarBlockFeature.pNext = &m_Features11;
-
-		m_DescriptorIndexingFeature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
-		m_DescriptorIndexingFeature.pNext = &m_ScalarBlockFeature;
-		m_DescriptorIndexingFeature.runtimeDescriptorArray = VK_TRUE;
-		m_DescriptorIndexingFeature.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
-		m_DescriptorIndexingFeature.descriptorBindingPartiallyBound = VK_TRUE;
-		m_DescriptorIndexingFeature.descriptorBindingVariableDescriptorCount = VK_TRUE;
-		// 允许在 GPU 执行期间更新 bindless 采样器纹理数组（视频切换时需要）
-		m_DescriptorIndexingFeature.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
-
-
-		m_DeviceFeatures2.pNext = &m_DescriptorIndexingFeature;
+		m_DeviceFeatures2.pNext = &m_Features11;
 		m_DeviceFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
 
 
@@ -436,7 +426,7 @@ namespace VansGraphics
 
 	void* VansVKDevice::GetNativeCommandBuffer()
 	{
-		return &(m_VansVKCommandBuffer.GetVKCommandBuffer());
+		return &(CurrentGraphicsCommandBuffer().GetVKCommandBuffer());
 	}
 
 	bool VansVKDevice::CreateVKFence(bool signaled, VkFence& fence)
@@ -445,7 +435,7 @@ namespace VansGraphics
 		{
 			 VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
 			 nullptr,
-			 signaled ? VK_FENCE_CREATE_SIGNALED_BIT : 0
+			 signaled ? VK_FENCE_CREATE_SIGNALED_BIT : static_cast<VkFenceCreateFlags>(0)
 		};
 
 		VkResult result = VansGraphics::vkCreateFence(m_VansVKLogicDevice, &fence_create_info, nullptr, &fence);
@@ -495,17 +485,26 @@ namespace VansGraphics
 
 	void VansVKDevice::DestroyVKFence(VkFence& fence)
 	{
+		if (fence == VK_NULL_HANDLE)
+			return;
 		VansGraphics::vkDestroyFence(m_VansVKLogicDevice, fence, nullptr);
+		fence = VK_NULL_HANDLE;
 	}
 
 	void VansVKDevice::DestroyVKSemaphore(VkSemaphore& semaphore)
 	{
+		if (semaphore == VK_NULL_HANDLE)
+			return;
 		VansGraphics::vkDestroySemaphore(m_VansVKLogicDevice, semaphore, nullptr);
+		semaphore = VK_NULL_HANDLE;
 	}
 
 	void VansVKDevice::DestroyVKEvent(VkEvent& eventHandle)
 	{
+		if (eventHandle == VK_NULL_HANDLE)
+			return;
 		VansGraphics::vkDestroyEvent(m_VansVKLogicDevice, eventHandle, nullptr);
+		eventHandle = VK_NULL_HANDLE;
 	}
 
 	bool VansVKDevice::PrepareVulkanLibrary()
@@ -839,6 +838,7 @@ namespace VansGraphics
 		VansVKDescriptorManager::GetInstance()->DestroyDescriptorPool();
 
 		m_StageBuffer.DestroyVulkanBuffer(m_VansVKLogicDevice);
+		DestroyFrameContextRingResources();
 
 		DestroyVKFence(m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
 		DestroyVKFence(m_VansVKRayTracingCommandBuffer.m_CommandBufferFinishSubmitFence);

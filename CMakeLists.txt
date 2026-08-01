@@ -18,117 +18,130 @@ add_library(Forest::RuntimeCore ALIAS ForestRuntimeCore)
 forest_apply_common_settings(ForestRuntimeCore)
 forest_apply_source_groups(ForestRuntimeCore)
 
-target_compile_definitions(ForestRuntimeCore
-    PUBLIC
-        FOREST_RUNTIME_CORE=1
-        VANS_SCRIPT_LUA=$<BOOL:${VANS_SCRIPT_LUA}>
-        VANS_SCRIPT_LUA_HOT_RELOAD_EDITOR=$<BOOL:${VANS_SCRIPT_LUA_HOT_RELOAD_EDITOR}>
-)
-
 target_link_libraries(ForestRuntimeCore
     PUBLIC
         ForestThirdParty
-        ForestExternalSpirvCross
         ForestExternalNoesisVk
 )
 
-if(FOREST_BUILD_EDITOR)
-    add_library(ForestEditorCore STATIC
-        ${FOREST_EDITOR_CORE_SOURCES}
-    )
-    add_library(Forest::EditorCore ALIAS ForestEditorCore)
+add_library(ForestPackagingCore STATIC
+    ${FOREST_PACKAGING_CORE_SOURCES}
+)
+add_library(Forest::PackagingCore ALIAS ForestPackagingCore)
 
-    forest_apply_common_settings(ForestEditorCore)
-    forest_apply_source_groups(ForestEditorCore)
+forest_apply_common_settings(ForestPackagingCore)
+forest_apply_source_groups(ForestPackagingCore)
 
-    target_compile_definitions(ForestEditorCore
-        PUBLIC
-            FOREST_EDITOR=1
-        PRIVATE
-            FOREST_ENGINE_SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}"
-    )
+target_link_libraries(ForestPackagingCore
+    PUBLIC
+        ForestRuntimeCore
+)
 
-    target_link_libraries(ForestEditorCore
-        PUBLIC
-            ForestRuntimeCore
-            ForestExternalImGui
-    )
-    add_executable(ForestEditor
-        Source/Application/ForestEngineEntry.cpp
-    )
+add_library(ForestEditorCore STATIC
+    ${FOREST_EDITOR_CORE_SOURCES}
+)
+add_library(Forest::EditorCore ALIAS ForestEditorCore)
 
-    forest_apply_common_settings(ForestEditor)
-    set_target_properties(ForestEditor PROPERTIES OUTPUT_NAME "ForestEditor")
+forest_apply_common_settings(ForestEditorCore)
+forest_apply_source_groups(ForestEditorCore)
 
-    target_link_libraries(ForestEditor
-        PRIVATE
-            ForestEditorCore
-    )
+target_compile_definitions(ForestEditorCore
+    PRIVATE
+        FOREST_ENGINE_SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}"
+)
 
-    forest_copy_runtime_dlls(ForestEditor)
-    forest_copy_engine_assets(ForestEditor)
-    forest_copy_editor_runtime_assets(ForestEditor)
-endif()
+target_link_libraries(ForestEditorCore
+    PUBLIC
+        ForestRuntimeCore
+        ForestExternalImGui
+    PRIVATE
+        ForestPackagingCore
+)
+add_executable(ForestEditor
+    Source/Application/ForestEngineEntry.cpp
+)
 
-if(FOREST_BUILD_PACKAGE_TOOL)
-    if(NOT TARGET ForestEditorCore)
-        message(FATAL_ERROR "ForestPackageTool requires ForestEditorCore. Enable FOREST_BUILD_EDITOR or disable FOREST_BUILD_PACKAGE_TOOL.")
-    endif()
+forest_apply_common_settings(ForestEditor)
+set_target_properties(ForestEditor PROPERTIES OUTPUT_NAME "ForestEditor")
 
-    add_executable(ForestPackageTool
-        Source/Application/ForestPackageToolEntry.cpp
-    )
+target_link_libraries(ForestEditor
+    PRIVATE
+        ForestEditorCore
+)
 
-    forest_apply_common_settings(ForestPackageTool)
-    set_target_properties(ForestPackageTool PROPERTIES OUTPUT_NAME "ForestPackageTool")
+forest_copy_runtime_dlls(ForestEditor)
+forest_copy_engine_assets(ForestEditor)
 
-    target_compile_definitions(ForestPackageTool
-        PRIVATE
-            FOREST_PACKAGE_TOOL=1
-            FOREST_ENGINE_SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}"
-    )
+add_executable(ForestPackageTool
+    Source/Application/ForestPackageToolEntry.cpp
+)
 
-    target_link_libraries(ForestPackageTool
-        PRIVATE
-            ForestEditorCore
-    )
+forest_apply_common_settings(ForestPackageTool)
+set_target_properties(ForestPackageTool PROPERTIES OUTPUT_NAME "ForestPackageTool")
 
-    forest_copy_runtime_dlls(ForestPackageTool)
-endif()
+target_compile_definitions(ForestPackageTool
+    PRIVATE
+        FOREST_ENGINE_SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}"
+)
 
-if(FOREST_BUILD_GAME_LAUNCHER)
-    add_executable(ForestGameLauncher
-        Source/Application/ForestGameLauncherEntry.cpp
-    )
+target_link_libraries(ForestPackageTool
+    PRIVATE
+        ForestPackagingCore
+)
 
-    forest_apply_common_settings(ForestGameLauncher)
-    set_target_properties(ForestGameLauncher PROPERTIES OUTPUT_NAME "ForestGameLauncher")
+forest_copy_runtime_dlls(ForestPackageTool)
 
-    target_compile_definitions(ForestGameLauncher
-        PRIVATE
-            FOREST_GAME_LAUNCHER=1
-    )
+add_executable(ForestGameLauncher
+    Source/Application/ForestGameLauncherEntry.cpp
+)
 
-    forest_copy_runtime_dlls(ForestGameLauncher)
-endif()
+forest_apply_common_settings(ForestGameLauncher)
+set_target_properties(ForestGameLauncher PROPERTIES OUTPUT_NAME "ForestGameLauncher")
 
-if(FOREST_BUILD_RUNTIME_SHARED)
-    add_library(ForestRuntime SHARED
-        ${FOREST_RUNTIME_EXPORT_SOURCES}
-    )
+forest_copy_runtime_dlls(ForestGameLauncher)
 
-    forest_apply_common_settings(ForestRuntime)
-    set_target_properties(ForestRuntime PROPERTIES OUTPUT_NAME "ForestRuntime")
+add_library(ForestRuntime SHARED
+    ${FOREST_RUNTIME_EXPORT_SOURCES}
+)
 
-    target_compile_definitions(ForestRuntime
-        PRIVATE
-            FOREST_RUNTIME_EXPORTS=1
-    )
+forest_apply_common_settings(ForestRuntime)
+set_target_properties(ForestRuntime PROPERTIES OUTPUT_NAME "ForestRuntime")
 
-    target_link_libraries(ForestRuntime
-        PRIVATE
-            ForestRuntimeCore
-    )
+target_compile_definitions(ForestRuntime
+    PRIVATE
+        FOREST_RUNTIME_EXPORTS=1
+)
 
-    forest_copy_runtime_dlls(ForestRuntime)
-endif()
+target_link_libraries(ForestRuntime
+    PRIVATE
+        ForestRuntimeCore
+)
+
+forest_copy_runtime_dlls(ForestRuntime)
+
+enable_testing()
+
+add_executable(ForestContractTests
+    ${FOREST_CONTRACT_TEST_SOURCES}
+)
+forest_apply_common_settings(ForestContractTests)
+forest_apply_source_groups(ForestContractTests)
+target_link_libraries(ForestContractTests
+    PRIVATE
+        ForestRuntimeCore
+)
+add_test(NAME ForestContractTests COMMAND ForestContractTests)
+
+add_custom_target(ForestGamePackageBinaries
+    DEPENDS
+        ForestRuntime
+        ForestGameLauncher
+)
+
+add_custom_target(ForestEngineComplete ALL
+    DEPENDS
+        ForestEditor
+        ForestPackageTool
+        ForestGamePackageBinaries
+        ForestContractTests
+)

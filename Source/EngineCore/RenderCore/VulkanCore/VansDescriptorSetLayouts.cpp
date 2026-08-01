@@ -224,37 +224,9 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_PostProcess(
 		{POSTPROCESS_BINDING_COLOR_INPUT,  VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,      1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 		// binding 1：Bloom 合成结果（Compute 前序输出）
 		{POSTPROCESS_BINDING_BLOOM_RESULT, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-		// binding 2：1x1 当前曝光值（R16F，auto-exposure 输出）
 		{POSTPROCESS_BINDING_EXPOSURE_VAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 		// binding 3：后处理参数 UBO（Exposure / Bloom / ToneMapping / ColorGrading）
 		{POSTPROCESS_BINDING_PP_PARAMS,    VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-	};
-	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
-}
-
-// ============================================================
-// Exposure Luminance Compute：SceneColorHDR → 64x64 亮度缩图
-// ============================================================
-void VansDescriptorSetLayoutFactory::CreateAndAllocate_ExposureLuminance(
-	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
-{
-	std::vector<VkDescriptorSetLayoutBinding> bindings = {
-		{EXPOSURE_LUM_BINDING_SRC_COLOR, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{EXPOSURE_LUM_BINDING_LUM_OUT,   VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-	};
-	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
-}
-
-// ============================================================
-// Exposure Adapt Compute：64x64 亮度 → 1x1 曝光值自适应收敛
-// ============================================================
-void VansDescriptorSetLayoutFactory::CreateAndAllocate_ExposureAdapt(
-	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
-{
-	std::vector<VkDescriptorSetLayoutBinding> bindings = {
-		{EXPOSURE_ADAPT_BINDING_LUM_IN,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{EXPOSURE_ADAPT_BINDING_EXP_OUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{EXPOSURE_ADAPT_BINDING_PARAMS,  VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }
@@ -981,6 +953,27 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterWaveCompute(
 		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{WATER_WAVE_BINDING_DERIVATIVE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1,
 		 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_ExposureLuminance(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{EXPOSURE_LUM_BINDING_SRC_COLOR, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{EXPOSURE_LUM_BINDING_LUM_OUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_ExposureAdapt(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{EXPOSURE_ADAPT_BINDING_LUM_IN, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{EXPOSURE_ADAPT_BINDING_EXP_OUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{EXPOSURE_ADAPT_BINDING_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }

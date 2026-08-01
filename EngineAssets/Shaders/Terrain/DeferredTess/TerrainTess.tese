@@ -57,60 +57,14 @@ void main()
     {
         vec2 worldXZ = worldPos.xz;
 
-        // 在 tessellation 有效距离边界处平滑淡出噪声细节。
-        float distToCamera = length(worldPos - cameraPosition.xyz);
-        float noiseFade = 1.0 - smoothstep(
-            tessParams.tessDistance * noiseParams.fadeStart,
-            tessParams.tessDistance,
-            distToCamera
-        );
+        float noiseFade = TerrainGeometryNoiseFade(worldPos);
 
         if (noiseFade > 0.001)
         {
-            // 细分等级越高，可见细节越多，但不超过运行时配置。
-            int effectiveOctaves = min(
-                noiseParams.noiseOctaves,
-                1 + int(log2(max(1.0, gl_TessLevelInner[0])))
-            );
-
+            int effectiveOctaves = TerrainGeometryNoiseOctaves();
             float gradEps = 0.02;
-
-            if (noiseParams.noiseWarpStrength > 0.001)
-            {
-                noiseDisp = terrainDetailFbmWarped(
-                    worldXZ * noiseParams.noiseFrequency,
-                    effectiveOctaves,
-                    noiseParams.noiseGain,
-                    noiseParams.noiseLacunarity,
-                    noiseParams.noiseWarpStrength
-                );
-                noiseGrad = terrainDetailGradientWarped(
-                    worldXZ,
-                    noiseParams.noiseFrequency,
-                    effectiveOctaves,
-                    noiseParams.noiseGain,
-                    noiseParams.noiseLacunarity,
-                    noiseParams.noiseWarpStrength,
-                    gradEps
-                );
-            }
-            else
-            {
-                noiseDisp = terrainDetailFbm(
-                    worldXZ * noiseParams.noiseFrequency,
-                    effectiveOctaves,
-                    noiseParams.noiseGain,
-                    noiseParams.noiseLacunarity
-                );
-                noiseGrad = terrainDetailGradient(
-                    worldXZ,
-                    noiseParams.noiseFrequency,
-                    effectiveOctaves,
-                    noiseParams.noiseGain,
-                    noiseParams.noiseLacunarity,
-                    gradEps
-                );
-            }
+            noiseDisp = TerrainEvaluateGeometryNoise(worldXZ, effectiveOctaves);
+            noiseGrad = TerrainEvaluateGeometryNoiseGradient(worldXZ, effectiveOctaves, gradEps);
 
             noiseDisp *= noiseParams.noiseStrength * noiseFade;
             worldPos.y += noiseDisp;

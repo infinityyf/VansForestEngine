@@ -79,6 +79,13 @@ bool VansNoesisUISystem::Initialize(const VansUIInitDesc& desc)
     // 8. 创建输入适配器
     m_InputAdapter = std::make_unique<VansNoesisInputAdapter>();
     m_InputAdapter->Initialize();
+    m_InputAdapter->SetSceneViewport(
+        0.0f,
+        0.0f,
+        static_cast<float>(m_ScreenWidth),
+        static_cast<float>(m_ScreenHeight),
+        static_cast<float>(m_ScreenWidth),
+        static_cast<float>(m_ScreenHeight));
 
     // 9. 加载引擎全局基础主题
     LoadGlobalTheme();
@@ -253,6 +260,16 @@ void VansNoesisUISystem::SetScreenSize(uint32_t width, uint32_t height)
 {
     m_ScreenWidth  = width;
     m_ScreenHeight = height;
+    if (m_InputAdapter)
+    {
+        m_InputAdapter->SetSceneViewport(
+            0.0f,
+            0.0f,
+            static_cast<float>(m_ScreenWidth),
+            static_cast<float>(m_ScreenHeight),
+            static_cast<float>(m_ScreenWidth),
+            static_cast<float>(m_ScreenHeight));
+    }
 
     for (auto& doc : m_Documents)
     {
@@ -379,8 +396,17 @@ void VansNoesisUISystem::InstallProviders()
 
     // 字体回退链：Noesis 在 FontFamily 缺少字形时按此顺序查找
     // 顺序：Arial（各平台最广泛）→ Segoe UI（Windows 默认）
-    const char* fontFallbacks[] = { "Arial", "Segoe UI" };
-    Noesis::GUI::SetFontFallbacks(fontFallbacks, 2);
+    const char* fontFallbacks[] = {
+        "Arial",
+        "Microsoft YaHei",
+        "SimSun",
+        "SimHei",
+        "Segoe UI",
+        "Noto Sans CJK SC",
+        "Source Han Sans SC"
+    };
+    Noesis::GUI::SetFontFallbacks(fontFallbacks,
+        static_cast<uint32_t>(sizeof(fontFallbacks) / sizeof(fontFallbacks[0])));
 
     // 默认字体属性：大小 15pt，Normal weight/stretch/style
     Noesis::GUI::SetFontDefaultProperties(

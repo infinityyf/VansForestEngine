@@ -62,9 +62,15 @@ namespace Vans
 		m_FSRSettings.sharpness = std::clamp(sharpness, 0.0f, 1.0f);
 	}
 
-	void VansProjectSettings::SetCommandRecordingSettings(bool parallelEnabled)
+	void VansProjectSettings::SetCommandRecordingSettings(
+		bool parallelEnabled,
+		bool frameContextRingEnabled,
+		std::uint32_t framesInFlight)
 	{
 		m_CommandRecordingSettings.parallelEnabled = parallelEnabled;
+		m_CommandRecordingSettings.frameContextRingEnabled = frameContextRingEnabled;
+		// 当前只为非 async 主路径启用双帧 ring，配置读取时统一夹取，避免非法项目配置扩大资源生命周期复杂度。
+		m_CommandRecordingSettings.framesInFlight = std::clamp<std::uint32_t>(framesInFlight, 1u, 2u);
 	}
 
 	void VansProjectSettings::SetMainCameraHiZCullSettings(const VansProjectMainCameraHiZCullSettings& settings)
@@ -98,12 +104,17 @@ namespace Vans
 				for (const std::string& warning : warnings)
 					VANS_LOG_WARN("[ProjectSettings] " << warning);
 				SetFSRSettings(renderSettings.fsrSettings.mode, renderSettings.fsrSettings.sharpness);
-				SetCommandRecordingSettings(renderSettings.commandRecordingSettings.parallelEnabled);
+				SetCommandRecordingSettings(
+					renderSettings.commandRecordingSettings.parallelEnabled,
+					renderSettings.commandRecordingSettings.frameContextRingEnabled,
+					renderSettings.commandRecordingSettings.framesInFlight);
 				SetMainCameraHiZCullSettings(renderSettings.mainCameraHiZCullSettings);
 				VANS_LOG("[ProjectSettings] Loaded render settings: " << renderSettingsPath
 					<< ", fsr.mode=" << ToString(m_FSRSettings.mode)
 					<< ", fsr.sharpness=" << m_FSRSettings.sharpness
 					<< ", commandRecording.parallelEnabled=" << m_CommandRecordingSettings.parallelEnabled
+					<< ", commandRecording.frameContextRingEnabled=" << m_CommandRecordingSettings.frameContextRingEnabled
+					<< ", commandRecording.framesInFlight=" << m_CommandRecordingSettings.framesInFlight
 					<< ", mainCameraHiZCulling.enabled=" << m_MainCameraHiZCullSettings.enabled);
 				loadedAnySettings = true;
 			}

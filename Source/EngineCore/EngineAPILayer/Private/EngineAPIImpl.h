@@ -65,7 +65,7 @@ namespace Vans::EditorAPI
 		FSRSettingsSnapshot GetFSRSettings() const override;
 		void SetFSRSettings(FSRUpscaleMode mode, float sharpness) override;
 		CommandRecordingSettingsSnapshot GetCommandRecordingSettings() const override;
-		void SetCommandRecordingSettings(bool parallelEnabled) override;
+		void SetCommandRecordingSettings(const CommandRecordingSettingsSnapshot& settings) override;
 		void SetSceneViewportExtent(std::uint32_t width, std::uint32_t height) override;
 		std::vector<RenderTexturePreview> QueryRenderTexturePreviews(RenderTextureFilter filter) const override;
 		void RequestPunctualShadowDebugPreview() override;
@@ -125,7 +125,7 @@ namespace Vans::EditorAPI
 		std::string GetProjectRootPath() const override;
 		bool IsRuntimeSceneReady() const override;
 		bool IsRuntimeSceneSwitching() const override;
-		bool LoadRuntimeScene(const std::string& scenePath, RuntimeSceneLoadMode mode) override;
+		RuntimeSceneLoadResult LoadRuntimeScene(const std::string& scenePath, RuntimeSceneLoadMode mode) override;
 		void UnloadRuntimeScene() override;
 		bool AreRuntimeProjectResourcesLoaded() const override;
 		void UnloadRuntimeProjectResources() override;
@@ -146,6 +146,7 @@ namespace Vans::EditorAPI
 		void ApplyLightingSettings(const LightingSettingsSnapshot& settings) override;
 		PostProcessSettingsSnapshot GetPostProcessSettings() const override;
 		void ApplyPostProcessSettings(const PostProcessSettingsSnapshot& settings) override;
+		void CommitPostProcessSettings() override;
 		FogSettings GetFogSettings() const override;
 		void ApplyFogSettings(const FogSettings& settings) override;
 		void CommitHeightFogSettings() override;
@@ -198,6 +199,7 @@ namespace Vans::EditorAPI
 		RuntimeRenderDeviceHandle m_Device = nullptr;
 		VansScriptContext* m_ScriptContext = nullptr;
 		EnginePlayState m_PlayState = EnginePlayState::Edit;
+		std::uint64_t m_SceneContentRevision = 0;
 		std::vector<std::unique_ptr<IEngineCommand>> m_UndoStack;
 		std::vector<std::unique_ptr<IEngineCommand>> m_RedoStack;
 		std::vector<ScenePropertyEdit> m_PendingScenePropertyEdits;

@@ -917,7 +917,15 @@ bool VansGraphics::VansVKCommandBuffer::SubmitCommands(VkQueue& queue, VkDevice&
 
 	if (wait_fence)
 	{
-		WaitForFence(device, fence);
+		if (fence == VK_NULL_HANDLE)
+		{
+			VANS_LOG_ERROR("Synchronous command submission requires a valid fence.");
+			return false;
+		}
+		if (!WaitForFence(device, fence))
+		{
+			return false;
+		}
 	}
 
 	return true;

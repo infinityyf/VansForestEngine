@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../VansScene.h"
+#include "../../SceneCore/VansSceneResourceLoadContext.h"
 #include "../../SceneCore/VansSceneResourcePlan.h"
 
 namespace VansGraphics
@@ -8,10 +9,10 @@ namespace VansGraphics
 	class VansSceneProjectResourceBuilder
 	{
 	public:
-		static void LoadMeshes(
+		static bool LoadMeshes(
 			VansScene& scene,
 			const std::vector<Vans::VansSceneMeshResourceRequest>& meshes,
-			const std::string& pathPrefix,
+			const Vans::VansSceneResourceLoadContext& loadContext,
 			VkDevice& device,
 			VansVKDevice* vkDevice);
 
@@ -23,15 +24,14 @@ namespace VansGraphics
 		static void RegisterShaders(
 			VansScene& scene,
 			const std::vector<Vans::VansSceneShaderResourceRequest>& shaders,
-			const std::string& pathPrefix,
+			const Vans::VansSceneResourceLoadContext& loadContext,
 			VkDevice& device,
 			bool loadRegisteredShaders = true);
 
-		static void LoadTextures(
+		static bool LoadTextures(
 			VansScene& scene,
 			const std::vector<Vans::VansSceneTextureResourceRequest>& textures,
-			const std::string& pathPrefix,
-			const std::string& enginePrefix,
+			const Vans::VansSceneResourceLoadContext& loadContext,
 			VansVKDevice* vkDevice,
 			bool includeDefaultTextureSet = true);
 

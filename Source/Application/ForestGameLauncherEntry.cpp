@@ -1,7 +1,5 @@
 #include <filesystem>
-#include <fstream>
 #include <iostream>
-#include <sstream>
 #include <string>
 #include <chrono>
 #include <cstdlib>
@@ -25,61 +23,6 @@ namespace
 			return fs::path(buffer);
 #endif
 		return fs::absolute(argv0);
-	}
-
-	std::string ReadTextFile(const fs::path& path)
-	{
-		std::ifstream file(path, std::ios::binary);
-		if (!file)
-			return {};
-
-		std::ostringstream stream;
-		stream << file.rdbuf();
-		return stream.str();
-	}
-
-	std::string ReadJsonStringField(const std::string& json, const std::string& fieldName)
-	{
-		const std::string key = "\"" + fieldName + "\"";
-		const std::size_t keyPos = json.find(key);
-		if (keyPos == std::string::npos)
-			return {};
-
-		const std::size_t colonPos = json.find(':', keyPos + key.size());
-		if (colonPos == std::string::npos)
-			return {};
-
-		const std::size_t quoteStart = json.find('"', colonPos + 1);
-		if (quoteStart == std::string::npos)
-			return {};
-
-		std::string value;
-		bool escaping = false;
-		for (std::size_t i = quoteStart + 1; i < json.size(); ++i)
-		{
-			const char c = json[i];
-			if (escaping)
-			{
-				switch (c)
-				{
-				case 'n': value.push_back('\n'); break;
-				case 'r': value.push_back('\r'); break;
-				case 't': value.push_back('\t'); break;
-				default: value.push_back(c); break;
-				}
-				escaping = false;
-				continue;
-			}
-			if (c == '\\')
-			{
-				escaping = true;
-				continue;
-			}
-			if (c == '"')
-				break;
-			value.push_back(c);
-		}
-		return value;
 	}
 
 #ifdef _WIN32
@@ -230,24 +173,9 @@ int main(int argc, char** argv)
 	const fs::path manifestPath = contentRoot / "ForestPackage.json";
 	const fs::path runtimeDllPath = binaryRoot / "ForestRuntime.dll";
 
-	const std::string manifestText = ReadTextFile(manifestPath);
-	if (manifestText.empty())
-	{
-		std::cerr << "[ForestGameLauncher] Package manifest not found: "
-			<< manifestPath.string() << std::endl;
-		return 2;
-	}
-
-	const std::string platform = ReadJsonStringField(manifestText, "platform");
-	const std::string scene = ReadJsonStringField(manifestText, "scene");
-	const std::string startupMode = ReadJsonStringField(manifestText, "startupMode");
-
 	std::cout << "ForestGameLauncher" << std::endl;
 	std::cout << "Package root: " << packageRoot.string() << std::endl;
 	std::cout << "Content root: " << contentRoot.string() << std::endl;
-	std::cout << "Platform: " << platform << std::endl;
-	std::cout << "Startup mode: " << (startupMode.empty() ? "play" : startupMode) << std::endl;
-	std::cout << "Scene: " << scene << std::endl;
 
 #ifdef _WIN32
 	ForestRuntimeApi runtimeApi;

@@ -66,7 +66,7 @@ layout(set = 1, binding = 5, rgba32f ) uniform image2D ssao;
 layout(set = 1, binding = 6) uniform sampler2D ssgi;
 layout(set = 1, binding = 7, rgba32f ) uniform image2D ssr;
 layout(set = 1, binding = 8) uniform sampler2DArray cascadeShadowMap;
-layout(set = 1, binding = 9) uniform sampler2DShadow punctualShadowMap;
+layout(set = 1, binding = 9) uniform sampler2DArrayShadow punctualShadowMap;
 layout( set = 1, binding = 13 ) uniform sampler2D fogResult;
 layout( set = 1, binding = 14 ) uniform sampler2D screenSpaceShadow;
 
@@ -86,7 +86,7 @@ float DielectricF0FromIOR(float ior)
 
 bool EvaluateSubsurfaceSourceAtUV(vec2 uv, int centerMaterialIndex,
                                   sampler2DArray directionalShadows,
-                                  sampler2DShadow punctualShadows,
+                                  sampler2DArrayShadow punctualShadows,
                                   out vec3 diffuseSource,
                                   out vec3 samplePosition,
                                   out vec3 sampleNormal)
@@ -145,7 +145,7 @@ bool EvaluateSubsurfaceSourceAtUV(vec2 uv, int centerMaterialIndex,
 vec3 EvaluateScreenSpaceBurleyDiffusion(
     BRDFData centerBRDF, SubsurfaceParams sss, int materialIndex,
     vec2 centerUV, vec3 localDiffuse,
-    sampler2DArray directionalShadows, sampler2DShadow punctualShadows)
+    sampler2DArray directionalShadows, sampler2DArrayShadow punctualShadows)
 {
     float amount = clamp(sss.subsurfaceAmount, 0.0, 1.0);
     vec3 distance = max(sss.scatteringDistance, vec3(5e-5));

@@ -55,15 +55,15 @@ std::string ResolveTextureGuidFromAlias(const std::string& textureName, const st
 	if (VansAssetGuid::TryParse(textureName, parsed))
 		return textureName;
 
-	VansAssetDatabase* database = VansProjectManager::Get().GetAssetDatabase();
-	if (database == nullptr)
+	const auto candidates = VansProjectManager::Get().EnumerateAssetRecords();
+	if (candidates.empty())
 		return {};
 
 	const std::string wantedStem = LowerAsciiCopy(std::filesystem::path(textureName).stem().string());
 	const std::string wantedFile = LowerAsciiCopy(textureName);
 	const std::string preferredToken = LowerAsciiCopy(preferredRoot);
 	std::string fallbackGuid;
-	for (const VansAssetRecord& candidate : database->All())
+	for (const VansAssetRecord& candidate : candidates)
 	{
 		if (candidate.type != VansAssetType::Texture || candidate.state == VansAssetState::Missing)
 			continue;
@@ -83,16 +83,22 @@ std::string ResolveTextureGuidFromAlias(const std::string& textureName, const st
 	return fallbackGuid;
 }
 
+const std::filesystem::path& RuntimeReadPath(const VansAssetRecord& record)
+{
+	return !record.artifactPath.empty() ? record.artifactPath : record.sourcePath;
+}
+
+const std::filesystem::path& AuthoringReadPath(const VansAssetRecord& record)
+{
+	return !record.authoringPath.empty() ? record.authoringPath : record.sourcePath;
+}
+
 std::string RuntimeAssetNameFromGuid(const std::string& guid)
 {
 	if (guid.empty())
 		return {};
 
-	auto* database = VansProjectManager::Get().GetAssetDatabase();
-	if (!database)
-		return guid;
-
-	for (const VansAssetRecord& record : database->All())
+	for (const VansAssetRecord& record : VansProjectManager::Get().EnumerateAssetRecords())
 	{
 		if (record.guid.ToString() != guid)
 			continue;
@@ -109,7 +115,7 @@ std::string RuntimeAssetNameFromGuid(const std::string& guid)
 		if (record.type == VansAssetType::Shader)
 		{
 			VansShaderAuthoringAsset shader;
-			if (VansShaderAuthoringAssetStorage::Load(record.sourcePath, shader, error) && !shader.name.empty())
+			if (VansShaderAuthoringAssetStorage::Load(AuthoringReadPath(record), shader, error) && !shader.name.empty())
 				return shader.name;
 		}
 		return guid;
@@ -130,24 +136,20 @@ std::string ProjectRelativeAssetPathFromGuid(
 	if (!VansAssetGuid::TryParse(guidText, guid))
 		return guidText;
 
-	VansAssetDatabase* database = VansProjectManager::Get().GetAssetDatabase();
-	if (!database)
-		return guidText;
-
-	std::optional<VansAssetRecord> record = database->Find(guid);
+	std::optional<VansAssetRecord> record = VansProjectManager::Get().FindAssetRecord(guid);
 	if (!record || record->type != expectedType || record->state == VansAssetState::Missing)
 		return guidText;
 
 	if (projectRoot.empty())
-		return record->sourcePath.generic_string();
+		return RuntimeReadPath(*record).generic_string();
 
 	std::error_code ec;
 	std::filesystem::path relative = std::filesystem::relative(
-		record->sourcePath,
+		RuntimeReadPath(*record),
 		std::filesystem::path(projectRoot),
 		ec);
 	if (ec || relative.empty())
-		return record->sourcePath.generic_string();
+		return RuntimeReadPath(*record).generic_string();
 
 	std::string result = relative.generic_string();
 	if (leadingSlash && !result.empty() && result.front() != '/')
@@ -179,19 +181,15 @@ VansSerializedValue RuntimeShaderAssetFromReference(const VansSerializedValue& r
 	if (!VansAssetGuid::TryParse(guidText, guid))
 		return VansSerializedValue::Object({});
 
-	auto* database = VansProjectManager::Get().GetAssetDatabase();
-	if (!database)
-		return VansSerializedValue::Object({});
-
-	std::optional<VansAssetRecord> record = database->Find(guid);
+	std::optional<VansAssetRecord> record = VansProjectManager::Get().FindAssetRecord(guid);
 	if (!record || record->type != VansAssetType::Shader)
 		return VansSerializedValue::Object({});
 
 	VansShaderAuthoringAsset shader;
 	std::string error;
-	if (!VansShaderAuthoringAssetStorage::Load(record->sourcePath, shader, error))
+	if (!VansShaderAuthoringAssetStorage::Load(AuthoringReadPath(*record), shader, error))
 	{
-		VANS_LOG_ERROR("[SceneRuntimeProjection] Cannot read shader asset: " << record->sourcePath.string() << " (" << error << ")");
+		VANS_LOG_ERROR("[SceneRuntimeProjection] Cannot read shader asset: " << AuthoringReadPath(*record).string() << " (" << error << ")");
 		return VansSerializedValue::Object({});
 	}
 	return shader.root.kind == VansSerializedValue::Kind::Object
@@ -311,9 +309,9 @@ std::optional<VansSceneMaterialConfig> RuntimeMaterialConfigFromAsset(const Vans
 {
 	VansMaterialAuthoringAsset asset;
 	std::string error;
-	if (!VansMaterialAuthoringAssetStorage::Load(record.sourcePath, asset, error))
+	if (!VansMaterialAuthoringAssetStorage::Load(AuthoringReadPath(record), asset, error))
 	{
-		VANS_LOG_ERROR("[SceneRuntimeProjection] Cannot read material asset: " << record.sourcePath.string() << " (" << error << ")");
+		VANS_LOG_ERROR("[SceneRuntimeProjection] Cannot read material asset: " << AuthoringReadPath(record).string() << " (" << error << ")");
 		return std::nullopt;
 	}
 
@@ -975,9 +973,10 @@ bool VansSceneRuntimeProjection::BuildRuntimeSceneContentPlan(
 		outPlan.reflectionProbes = VansSceneReflectionProbeConfigReader::Read(*settings);
 	}
 
-	if (VansAssetDatabase* database = VansProjectManager::Get().GetAssetDatabase())
+	const auto materialRecords = VansProjectManager::Get().EnumerateAssetRecords();
+	if (!materialRecords.empty())
 	{
-		for (const VansAssetRecord& record : database->All())
+		for (const VansAssetRecord& record : materialRecords)
 		{
 			if (record.type != VansAssetType::Material || record.state == VansAssetState::Missing)
 				continue;

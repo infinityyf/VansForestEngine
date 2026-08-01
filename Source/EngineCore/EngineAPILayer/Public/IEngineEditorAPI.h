@@ -51,7 +51,7 @@ namespace Vans::EditorAPI
 		virtual FSRSettingsSnapshot GetFSRSettings() const = 0;
 		virtual void SetFSRSettings(FSRUpscaleMode mode, float sharpness) = 0;
 		virtual CommandRecordingSettingsSnapshot GetCommandRecordingSettings() const = 0;
-		virtual void SetCommandRecordingSettings(bool parallelEnabled) = 0;
+		virtual void SetCommandRecordingSettings(const CommandRecordingSettingsSnapshot& settings) = 0;
 		virtual void SetSceneViewportExtent(std::uint32_t width, std::uint32_t height) = 0;
 		virtual std::vector<RenderTexturePreview> QueryRenderTexturePreviews(RenderTextureFilter filter) const = 0;
 		virtual void RequestPunctualShadowDebugPreview() = 0;
@@ -111,7 +111,7 @@ namespace Vans::EditorAPI
 		virtual std::string GetProjectRootPath() const = 0;
 		virtual bool IsRuntimeSceneReady() const = 0;
 		virtual bool IsRuntimeSceneSwitching() const = 0;
-		virtual bool LoadRuntimeScene(const std::string& scenePath, RuntimeSceneLoadMode mode) = 0;
+		virtual RuntimeSceneLoadResult LoadRuntimeScene(const std::string& scenePath, RuntimeSceneLoadMode mode) = 0;
 		virtual void UnloadRuntimeScene() = 0;
 		virtual bool AreRuntimeProjectResourcesLoaded() const = 0;
 		virtual void UnloadRuntimeProjectResources() = 0;
@@ -132,6 +132,7 @@ namespace Vans::EditorAPI
 		virtual void ApplyLightingSettings(const LightingSettingsSnapshot& settings) = 0;
 		virtual PostProcessSettingsSnapshot GetPostProcessSettings() const = 0;
 		virtual void ApplyPostProcessSettings(const PostProcessSettingsSnapshot& settings) = 0;
+		virtual void CommitPostProcessSettings() = 0;
 		virtual FogSettings GetFogSettings() const = 0;
 		virtual void ApplyFogSettings(const FogSettings& settings) = 0;
 		virtual void CommitHeightFogSettings() = 0;

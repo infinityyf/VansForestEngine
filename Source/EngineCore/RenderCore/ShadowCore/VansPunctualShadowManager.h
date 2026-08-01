@@ -30,6 +30,7 @@ namespace VansGraphics
 
 		uint32_t GetShadowMetaIndex(uint32_t stableLightId) const;
 		bool HasRenderJobs() const { return !m_RenderJobs.empty(); }
+		bool HasRenderJobs(uint32_t atlasIndex) const;
 
 		const std::vector<VansPunctualShadowGPU>& GetGPUShadowData() const { return m_GPUShadowData; }
 		const std::vector<VansPunctualShadowViewGPU>& GetGPUShadowViews() const { return m_GPUShadowViews; }
@@ -40,7 +41,8 @@ namespace VansGraphics
 		const VansPunctualShadowBudget& GetBudget() const { return m_Budget; }
 		void SetBudget(const VansPunctualShadowBudget& budget) { m_Budget = budget; }
 
-		const VansShadowAtlasAllocator& GetAtlasAllocator() const { return m_AtlasAllocator; }
+		const VansShadowAtlasAllocator& GetAtlasAllocator(uint32_t atlasIndex) const;
+		uint32_t GetTotalAtlasPages() const;
 		VansPunctualShadowDebugSnapshot CaptureDebugSnapshot() const;
 		void RequestDebugPreview();
 		bool ConsumeDebugPreviewRefreshRequest();
@@ -99,6 +101,8 @@ namespace VansGraphics
 		bool ProjectionChanged(const Runtime& runtime, const VansPunctualShadowLightInput& input) const;
 
 		bool EnsurePendingAllocation(Runtime& runtime, uint16_t resolution);
+		bool AllocateGroup(uint16_t resolution, uint32_t viewCount, std::array<VansShadowAtlasBlock, 6>& outBlocks);
+		bool ValidateBlock(const VansShadowAtlasBlock& block) const;
 		void ReleaseBlocks(std::array<VansShadowAtlasBlock, 6>& blocks, uint32_t viewCount);
 		void ReleaseRuntime(Runtime& runtime);
 		void PromotePending(Runtime& runtime);
@@ -108,7 +112,7 @@ namespace VansGraphics
 		glm::mat4 BuildShadowMatrix(const Runtime& runtime, uint32_t faceIndex, const VansShadowAtlasBlock& block) const;
 		VansPunctualShadowViewGPU BuildGPUView(const Runtime& runtime, uint32_t faceIndex, const VansShadowAtlasBlock& block) const;
 
-		VansShadowAtlasAllocator m_AtlasAllocator;
+		std::array<VansShadowAtlasAllocator, VANS_PUNCTUAL_SHADOW_ATLAS_COUNT> m_AtlasAllocators;
 		VansPunctualShadowBudget m_Budget;
 		std::unordered_map<uint32_t, Runtime> m_Runtimes;
 		std::unordered_map<uint32_t, uint32_t> m_LightToMetaIndex;

@@ -1105,8 +1105,7 @@ void VansVegetationSystem::DrawTreePunctualShadow(VansVKCommandBuffer& graphicsC
                                                   const std::vector<VkDescriptorSetLayout>& baseDescSetLayouts,
                                                   const std::vector<VkDescriptorSet>& baseDescSets,
                                                   int pushConstantTransformIndex,
-                                                  int lightIndex,
-                                                  int shadowFaceIndex)
+                                                  int shadowViewIndex)
 {
 	if (!m_TreeEnabled || !m_TreePunctualShadowShader || m_TreeDrawConfigsGPU.empty())
 		return;
@@ -1143,8 +1142,7 @@ void VansVegetationSystem::DrawTreePunctualShadow(VansVKCommandBuffer& graphicsC
 		graphicsCmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *m_TreePunctualShadowShader, 0, sets, {});
 
 		TreePunctualShadowPushConstants pc = {};
-		pc.lightIndex = lightIndex;
-		pc.shadowFaceIndex = shadowFaceIndex;
+		pc.shadowViewIndex = shadowViewIndex;
 		pc.materialIndex = materialIndex;
 		pc.objectIndex = pushConstantTransformIndex;
 		pc.visibleOffset = cfg.visibleOffset;

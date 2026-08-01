@@ -4,6 +4,7 @@
 #include "../AssetCore/Serialization/VansSerializedValueLegacyJsonAdapter.h"
 #include "../AssetCore/Storage/VansMaterialAuthoringAssetStorage.h"
 #include "../AssetCore/VansAssetMeta.h"
+#include "../AssetCore/VansBuiltInAssetCatalog.h"
 #include "../AssetCore/VansMaterialAuthoringAsset.h"
 #include "../AssetCore/VansShaderAuthoringAsset.h"
 #include "../AssetCore/Storage/VansAssetMetaStorage.h"
@@ -127,6 +128,7 @@ namespace
 
 		VansSceneShaderResourceRequest request;
 		request.name = shader.name.empty() ? record.guid.ToString() : shader.name;
+		request.assetGuid = record.guid.ToString();
 		request.source = ReadSerializedStringField(root, "source");
 		if (request.source.empty())
 			request.source = ReadSerializedStringField(root, "path");
@@ -448,14 +450,15 @@ namespace
 VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResourcePlan(
 	VansAssetDatabase& database,
 	const std::filesystem::path& scenePath,
-	const std::unordered_map<std::string, std::string>& runtimeAssetBindings)
+	const std::unordered_map<std::string, std::string>& runtimeAssetBindings,
+	VansAssetDatabase* builtInAssetDatabase)
 {
 	VansSceneAssetDependencyBuildResult result;
 
 	const std::filesystem::path projectRoot = database.AssetsRoot().parent_path();
 	for (const auto& [alias, guid] : runtimeAssetBindings)
 	{
-		if (alias != "fullScreenQuad" && alias != "plane")
+		if (!VansBuiltInAssetCatalog::IsReservedRuntimeAlias(alias))
 			result.requiredModels.insert(guid);
 	}
 
@@ -552,7 +555,10 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 			const bool isFbx = record.sourcePath.extension() == ".fbx" || record.sourcePath.extension() == ".FBX";
 			VansSceneMeshResourceRequest request;
 			request.name = record.guid.ToString();
+			request.assetGuid = record.guid.ToString();
 			request.path = relativePath;
+			if (!database.ArtifactRoot().empty())
+				request.artifactPath = (database.ArtifactRoot() / "Meshes" / (record.guid.ToString() + ".vmesh")).string();
 			request.needTangent = meta.ReadBoolSetting("generateTangents", true);
 			request.supportRayTracing = meta.ReadBoolSetting("buildRayTracingData", true);
 			request.needCpuData = meta.ReadBoolSetting("keepCpuMeshData", false) ||
@@ -574,6 +580,7 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 				? meta.ReadStringSetting("sourcePath") : relativePath;
 			VansSceneTextureResourceRequest request;
 			request.name = record.guid.ToString();
+			request.assetGuid = record.guid.ToString();
 			request.path = texturePath;
 			request.artifactPath = record.artifactPath.string();
 			request.textureType = isCubemap ? SceneTextureCube : SceneTexture2D;
@@ -612,6 +619,7 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 			const std::string runtimeName = meta.ReadStringSetting("runtimeName");
 			VansSceneAudioResourceRequest request;
 			request.name = runtimeName.empty() ? record.guid.ToString() : runtimeName;
+			request.assetGuid = record.guid.ToString();
 			request.path = relativePath;
 			const std::string playMode = meta.ReadStringSetting("playMode");
 			request.playMode = playMode.empty() ? "static" : playMode;
@@ -630,11 +638,56 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 			const std::string runtimeName = meta.ReadStringSetting("runtimeName");
 			VansSceneVideoResourceRequest request;
 			request.name = runtimeName.empty() ? record.guid.ToString() : runtimeName;
+			request.assetGuid = record.guid.ToString();
 			request.path = relativePath;
 			request.loop = meta.ReadBoolSetting("loop", true);
 			request.autoplay = meta.ReadBoolSetting("autoPlay", false);
 			request.srgb = meta.ReadBoolSetting("sRGB", true);
 			result.resourcePlan.videos.push_back(std::move(request));
+		}
+	}
+
+	if (builtInAssetDatabase != nullptr)
+	{
+		for (const VansBuiltInAssetEntry& entry : VansBuiltInAssetCatalog::Entries())
+		{
+			if (entry.type != VansAssetType::Model)
+				continue;
+
+			VansAssetGuid guid;
+			if (!VansAssetGuid::TryParse(entry.guid, guid))
+			{
+				VANS_LOG_ERROR("[AssetDatabase] Invalid built-in asset guid: " << entry.guid);
+				return result;
+			}
+
+			const std::optional<VansAssetRecord> record = builtInAssetDatabase->Find(guid);
+			if (!record || record->state == VansAssetState::Missing)
+			{
+				VANS_LOG_ERROR("[AssetDatabase] Required built-in asset is missing: " << entry.sourcePath);
+				return result;
+			}
+
+			VansAssetMeta meta;
+			std::string metaError;
+			if (!VansAssetMetaStorage::Load(record->metaPath, meta, metaError))
+			{
+				VANS_LOG_ERROR("[AssetDatabase] " << metaError);
+				return result;
+			}
+
+			VansSceneMeshResourceRequest request;
+			request.name = record->guid.ToString();
+			request.assetGuid = record->guid.ToString();
+			request.path = record->sourcePath.string();
+			request.artifactPath = (
+				builtInAssetDatabase->ArtifactRoot() / "Meshes" / (request.assetGuid + ".vmesh")).string();
+			request.needTangent = meta.ReadBoolSetting("generateTangents", true);
+			request.supportRayTracing = meta.ReadBoolSetting("buildRayTracingData", true);
+			request.needCpuData = meta.ReadBoolSetting("keepCpuMeshData", false);
+			request.scaleFactor = meta.ReadFloatSetting("scaleFactor", "scale", 1.0f);
+			request.loadMultiMesh = meta.ReadBoolSetting("loadMultiMesh", false);
+			result.resourcePlan.meshes.push_back(std::move(request));
 		}
 	}
 

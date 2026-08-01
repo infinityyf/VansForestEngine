@@ -21,8 +21,6 @@ PostProcessProfileJson VansPostProcessProfileLegacyJsonCodec::Encode(const VansP
 {
 	const VansPostProcessProfile& p = profile;
 	PostProcessProfileJson root;
-	root["version"] = VansPostProcessProfile::PROFILE_VERSION;
-
 	root["general"]["enablePostProcess"] = p.m_EnablePostProcess;
 	root["general"]["enableHDR"] = p.m_EnableHDR;
 

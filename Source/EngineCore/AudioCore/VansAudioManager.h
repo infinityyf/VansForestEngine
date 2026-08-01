@@ -45,9 +45,8 @@ namespace VansEngine
         VansAudioManager& operator=(VansAudioManager&&)      = default;
 
         // ── 项目级加载（LoadResources 中调用） ──────────────────────────────
-        // audioArray: generated descriptors containing name/path/play_mode/loop/auto_play.
-        // assetPrefix  : VansProjectManager::GetProjectRootPath()，用于拼接完整路径
-        void Load(const std::vector<Vans::VansSceneAudioResourceRequest>& audios, const std::string& assetPrefix);
+        // audioArray: generated descriptors containing resolved path/playback settings.
+        void Load(const std::vector<Vans::VansSceneAudioResourceRequest>& audios);
 
         // ── 场景级配置（LoadSceneObjects / LoadSceneContent 中调用） ────────
         // Each record contains a resolved asset runtime name and optional overrides.

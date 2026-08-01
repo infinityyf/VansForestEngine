@@ -378,7 +378,7 @@ void VansGraphics::VansRenderNode::DrawPunctualShadowWithPassShader(VansVKComman
                                                                       VansGraphicsShader* passShader,
                                                                       const std::vector<VkDescriptorSet>& descSets,
                                                                       const std::vector<VkDescriptorSetLayout>& descSetLayouts,
-                                                                      int lightIndex, int shadowFaceIndex)
+	                                                                  int shadowViewIndex)
 {
 	if (!passShader) return;
 
@@ -394,8 +394,9 @@ void VansGraphics::VansRenderNode::DrawPunctualShadowWithPassShader(VansVKComman
 	if (pipeline == nullptr)
 		return;
 
-	// PunctualShadow shader expects: { lightIndex, shadowFaceIndex, materialIndex, objectIndex, animationEnabled }
-	int data[5] = { lightIndex, shadowFaceIndex, 0, m_TransfromIndex, m_AnimationEnabled ? 1 : 0 };
+	// The render job owns the exact view. Passing it directly prevents a light
+	// array reorder from redirecting this draw into another light's tile.
+	int data[5] = { shadowViewIndex, 0, 0, m_TransfromIndex, m_AnimationEnabled ? 1 : 0 };
 	cmd.UpdatePushConstants(*pipeline, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 		0, passShader->GetPushConstantSize(), data);
 
@@ -879,11 +880,10 @@ void VansGraphics::VansPostProcessRenderNode::UpdateDescriptorSets(VansMaterialM
 			{ {
 				bloomResult->GetImage().GetSampler(),
 				bloomResult->GetImage().GetImageView(),
-				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+				VK_IMAGE_LAYOUT_GENERAL
 			} });
 	}
 
-	// 绑定曝光当前值贴图
 	VansTexture* exposureCurrent = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_EXPOSURE_CURRENT);
 	if (exposureCurrent)
 	{
@@ -894,7 +894,7 @@ void VansGraphics::VansPostProcessRenderNode::UpdateDescriptorSets(VansMaterialM
 			{ {
 				exposureCurrent->GetImage().GetSampler(),
 				exposureCurrent->GetImage().GetImageView(),
-				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+				VK_IMAGE_LAYOUT_GENERAL
 			} });
 	}
 
@@ -1300,13 +1300,13 @@ void VansGraphics::VansVegetationRenderNode::DrawShadow(VansVKCommandBuffer& cmd
 		m_TransfromIndex);
 }
 
-void VansGraphics::VansVegetationRenderNode::DrawPunctualShadow(VansVKCommandBuffer& cmd, GlobalStateData& global_state, int lightIndex, int shadowFaceIndex)
+void VansGraphics::VansVegetationRenderNode::DrawPunctualShadow(VansVKCommandBuffer& cmd, GlobalStateData& global_state, int shadowViewIndex)
 {
 	if (!m_VegetationSystem)
 		return;
 	m_VegetationSystem->DrawTreePunctualShadow(cmd, global_state,
 		m_UsedDescSetLayouts, m_UsedDescSets,
-		m_TransfromIndex, lightIndex, shadowFaceIndex);
+		m_TransfromIndex, shadowViewIndex);
 }
 
 // ── VansDecalRenderNode ────────────────────────────────────────────────────

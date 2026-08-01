@@ -26,6 +26,7 @@ namespace VansGraphics { class VansTexture; }
 
 namespace Vans { struct VansSceneAudioResourceRequest; struct VansSceneVideoResourceRequest; }
 namespace Vans { struct VansSceneObjectBuildPlan; }
+namespace Vans { struct VansPackagedResourcePlan; }
 
 namespace VansGraphics { class VansCamera; }
 
@@ -57,6 +58,7 @@ class VansScriptObject;
 #include "VansTransformSlotAllocator.h"
 
 #include <vector>
+#include <atomic>
 
 #include <map>
 
@@ -310,9 +312,9 @@ namespace VansGraphics
 
 		VansVKDevice* GetRuntimeResourceDevice() const { return m_RuntimeResourceDevice; }
 
-		void LoadProjectAudioResources(const std::vector<Vans::VansSceneAudioResourceRequest>& audios, const std::string& assetPrefix);
+		void LoadProjectAudioResources(const std::vector<Vans::VansSceneAudioResourceRequest>& audios);
 
-		void LoadProjectVideoResources(const std::vector<Vans::VansSceneVideoResourceRequest>& videos, const std::string& assetPrefix);
+		void LoadProjectVideoResources(const std::vector<Vans::VansSceneVideoResourceRequest>& videos);
 
 		void SyncShaderAssetsFromShaderManager();
 
@@ -373,6 +375,9 @@ namespace VansGraphics
 		VansMainCameraHiZCullSettings m_MainCameraHiZCullSettings;
 		VansMainCameraHiZHistoryState m_MainCameraHiZHistory;
 		VansMainCameraVisibilityStats m_MainCameraVisibilityStats;
+		// low 32 bits: HiZ 门控前 DC；high 32 bits: 被 HiZ 门控剔除的 DC。
+		// 打包为一次原子更新，保证并行命令录制时快照中的三项 DC 统计相互一致。
+		std::atomic<uint64_t> m_MainCameraHiZDrawCallStatsPacked{ 0 };
 		std::vector<VansMainCameraCullCandidate> m_MainCameraCullCandidates;
 		std::vector<VansMainCameraHiZCulledNodeDebug> m_MainCameraHiZCulledDebugNodes;
 		std::vector<VansMainCameraCullObjectGPU> m_MainCameraCullObjectsGPU;
@@ -396,6 +401,7 @@ namespace VansGraphics
 		std::vector<VansVKBuffer> m_ClothStagingBuffers;
 		VansEngine::VansPhysicsVehicle* m_Vehicle = nullptr;
 		std::vector<VansScriptObject*> m_SceneObjects;
+		std::vector<std::string> m_PendingEntityDestructionGuids;
 
 
 	public:
@@ -720,6 +726,8 @@ namespace VansGraphics
 
 			const std::filesystem::path& scenePath, VansVKDevice* device);
 
+		bool LoadPackagedProjectAssets(const Vans::VansPackagedResourcePlan& packagePlan, VansVKDevice* device);
+
 
 
 		/// Load a scene file and prepare all GPU resources (PBR, transform,
@@ -728,7 +736,7 @@ namespace VansGraphics
 
 		/// will unload the previous scene first.
 
-		void LoadSceneForRendering(const char* scenePath, VansVKDevice* device, VansSceneLoadMode mode = VansSceneLoadMode::Editor);
+		bool LoadSceneForRendering(const char* scenePath, VansVKDevice* device, VansSceneLoadMode mode = VansSceneLoadMode::Editor);
 
 
 
@@ -799,6 +807,12 @@ namespace VansGraphics
 		bool DestroyEntity(const std::string& entityName);
 
 		bool DestroyEntity(VansScriptObject* obj);
+
+		// 脚本和事件回调不得在遍历生命周期列表时直接释放实体。
+		// 此接口把销毁推迟到下一个脚本帧边界，并统一清理实体拥有的全部子系统资源。
+		bool QueueDestroyEntity(VansScriptObject* obj);
+
+		void FlushPendingEntityDestructions();
 
 
 
@@ -879,7 +893,7 @@ namespace VansGraphics
 
 		void SetMainCameraHiZCullSettings(const VansMainCameraHiZCullSettings& settings);
 		const VansMainCameraHiZCullSettings& GetMainCameraHiZCullSettings() const { return m_MainCameraHiZCullSettings; }
-		const VansMainCameraVisibilityStats& GetMainCameraVisibilityStats() const { return m_MainCameraVisibilityStats; }
+		VansMainCameraVisibilityStats GetMainCameraVisibilityStats() const;
 		const std::vector<VansMainCameraHiZCulledNodeDebug>& GetMainCameraHiZCulledDebugNodes() const { return m_MainCameraHiZCulledDebugNodes; }
 		void BuildMainCameraCullCandidates(VkExtent2D extent);
 		bool UploadMainCameraCullCandidates(VansVKDevice& device);
@@ -897,6 +911,7 @@ namespace VansGraphics
 		void ConsumeMainCameraHiZReadback();
 		void UpdateMainCameraHiZHistory(VkExtent2D extent);
 		bool ShouldMainCameraCullClassRunHiZ(VansMainCameraCullClass cullClass) const;
+		bool ShouldDrawMainCameraNode(VansRenderNode* node);
 		void AppendMainCameraCullCandidate(VansRenderNode* node, VansMainCameraCullClass cullClass, const glm::mat4& viewProjection);
 
 	public:

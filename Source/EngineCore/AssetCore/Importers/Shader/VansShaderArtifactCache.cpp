@@ -29,6 +29,7 @@ namespace Vans
 		constexpr const char* kCompilerArguments = "-V --target-env vulkan1.2";
 		constexpr std::uint64_t kMaxStageBytes = 64ull * 1024ull * 1024ull;
 		std::mutex g_ArtifactWriteMutex;
+		std::filesystem::path g_RuntimeCookedArtifactRoot;
 
 		std::filesystem::path NormalizePath(const std::filesystem::path& path)
 		{
@@ -258,6 +259,22 @@ namespace Vans
 		prepared.artifactRoot = ResolveArtifactRoot(request);
 		prepared.compileResult.programId = request.programId;
 		prepared.compileResult.sourceRevision = request.sourceRevision;
+		if (IsCookedOnlyMode())
+		{
+			VansShaderArtifactPrepareResult cooked;
+			if (TryLoadActive(request, prepared.artifactRoot, cooked))
+			{
+				cooked.cacheHit = true;
+				cooked.success = true;
+				m_Hits.fetch_add(1, std::memory_order_relaxed);
+				VANS_LOG("[ShaderArtifact] Cooked hit '" << request.programId << "'");
+				return cooked;
+			}
+			prepared.compileResult.diagnostics.emplace_back(
+				"Required cooked shader artifact is missing for '" + request.programId + "'");
+			m_Misses.fetch_add(1, std::memory_order_relaxed);
+			return prepared;
+		}
 
 		const VansShaderDependencyScanResult dependencies = m_Compiler.ScanDependencies(request);
 		std::string sourceFingerprint;
@@ -294,11 +311,6 @@ namespace Vans
 				return prepared;
 			}
 			m_CompileFailures.fetch_add(1, std::memory_order_relaxed);
-		}
-		else if (IsCookedOnlyMode())
-		{
-			prepared.compileResult.diagnostics.emplace_back(
-				"Cooked-only shader mode forbids source compiler fallback for '" + request.programId + "'");
 		}
 		else
 		{
@@ -570,6 +582,8 @@ namespace Vans
 
 	bool VansShaderArtifactCache::IsCookedOnlyMode()
 	{
+		if (!g_RuntimeCookedArtifactRoot.empty())
+			return true;
 		const char* mode = std::getenv("FORESTENGINE_SHADER_MODE");
 		if (!mode)
 			return false;
@@ -581,6 +595,8 @@ namespace Vans
 	{
 		if (!request.artifactRoot.empty())
 			return NormalizePath(request.artifactRoot);
+		if (!g_RuntimeCookedArtifactRoot.empty())
+			return g_RuntimeCookedArtifactRoot;
 		if (IsCookedOnlyMode())
 			if (const char* cookedRoot = std::getenv("FORESTENGINE_COOKED_SHADER_DIR"))
 				return NormalizePath(cookedRoot);
@@ -596,5 +612,15 @@ namespace Vans
 			current = current.parent_path();
 		}
 		return std::filesystem::current_path() / "Library" / "Artifacts" / "Shaders";
+	}
+
+	void VansShaderArtifactCache::ConfigureCookedRuntime(const std::filesystem::path& artifactRoot)
+	{
+		g_RuntimeCookedArtifactRoot = NormalizePath(artifactRoot);
+	}
+
+	void VansShaderArtifactCache::ResetRuntimeConfiguration()
+	{
+		g_RuntimeCookedArtifactRoot.clear();
 	}
 }

@@ -10,6 +10,7 @@
 namespace VansGraphics
 {
 	constexpr uint32_t VANS_INVALID_SHADOW_INDEX = (std::numeric_limits<uint32_t>::max)();
+	constexpr uint32_t VANS_PUNCTUAL_SHADOW_ATLAS_COUNT = 2;
 	constexpr uint32_t VANS_MAX_PUNCTUAL_LIGHTS = 160;
 	constexpr uint32_t VANS_MAX_PUNCTUAL_SHADOW_VIEWS = 480;
 
@@ -109,6 +110,7 @@ namespace VansGraphics
 	struct VansShadowAtlasBlock
 	{
 		uint32_t nodeIndex = VANS_INVALID_SHADOW_INDEX;
+		uint16_t atlasIndex = 0;
 		uint16_t generation = 0;
 		uint16_t resolution = 0;
 		uint16_t x = 0;
@@ -180,7 +182,7 @@ namespace VansGraphics
 		uint32_t firstView = VANS_INVALID_SHADOW_INDEX;
 		uint32_t viewCount = 0;
 		uint32_t flags = VansShadowGPU_None;
-		uint32_t generation = 0;
+		uint32_t ownerKey = 0;
 
 		float atlasWeight = 0.0f;
 		float sourceRadius = 0.02f;
@@ -205,6 +207,7 @@ namespace VansGraphics
 		uint32_t gpuLightIndex = 0;
 		uint32_t shadowMetaIndex = VANS_INVALID_SHADOW_INDEX;
 		uint32_t shadowViewIndex = VANS_INVALID_SHADOW_INDEX;
+		uint32_t atlasIndex = 0;
 		uint32_t atomicGroupId = 0;
 		uint32_t dirtyReasons = VansShadowDirty_None;
 		VansPunctualShadowLightType lightType = VansPunctualShadowLightType::Point;
@@ -270,6 +273,7 @@ namespace VansGraphics
 	{
 		uint64_t frameIndex = 0;
 		uint32_t atlasSize = 0;
+		uint32_t atlasCount = VANS_PUNCTUAL_SHADOW_ATLAS_COUNT;
 		uint32_t basePageSize = 0;
 		uint32_t gutter = 0;
 		VansPunctualShadowBudget budget;

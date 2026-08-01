@@ -7,8 +7,8 @@
 #include "../VansScene.h"
 
 #include "../VansPostProcessProfile.h"
-
 #include "../../VansTimer.h"
+
 
 #include <algorithm>
 
@@ -941,6 +941,31 @@ namespace VansGraphics
 	{
 
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+		if (renderPassManager == nullptr || manager == nullptr)
+		{
+			return;
+		}
+
+		const bool ssrResourcesReady =
+			manager->m_SSRTraceShader != nullptr &&
+			manager->m_SSRResolveShader != nullptr &&
+			manager->m_SSRTemporalAAShader != nullptr &&
+			manager->m_SSRTraceSetLayout != VK_NULL_HANDLE &&
+			manager->m_SSRResolveSetLayout != VK_NULL_HANDLE &&
+			manager->m_SSRAASetLayout != VK_NULL_HANDLE &&
+			!manager->m_SSRTraceDescriptorSets.empty() &&
+			!manager->m_SSRResolveDescriptorSets.empty() &&
+			!manager->m_SSRAADescriptorSets.empty() &&
+			manager->m_SSRTraceDescriptorSets[0] != VK_NULL_HANDLE &&
+			manager->m_SSRResolveDescriptorSets[0] != VK_NULL_HANDLE &&
+			manager->m_SSRAADescriptorSets[0] != VK_NULL_HANDLE;
+		if (!ssrResourcesReady)
+		{
+			// SSR 的 shader / layout / descriptor 由渲染数据准备阶段创建。
+			// DemoHall 首帧资源较重，开启 frame context ring 后可能更早进入本 pass；
+			// 资源未完整就绪时必须跳过本帧，并保持 descriptor generation 为脏，下一帧继续尝试。
+			return;
+		}
 
 
 
@@ -989,10 +1014,6 @@ namespace VansGraphics
 			return;
 
 		}
-
-
-
-		MarkFeatureDescriptorCurrent(m_SSRDescSetGeneration);
 
 
 
@@ -1307,6 +1328,8 @@ namespace VansGraphics
 				}, 0);
 
 		VansVKDescriptorManager::GetInstance()->CommitDescriptorUpdates();
+
+		MarkFeatureDescriptorCurrent(m_SSRDescSetGeneration);
 
 	}
 
@@ -1644,6 +1667,24 @@ namespace VansGraphics
 	{
 		UpdateSSRDescriptorSets(renderPassManager);
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+		if (manager == nullptr ||
+			manager->m_SSRTraceShader == nullptr ||
+			manager->m_SSRResolveShader == nullptr ||
+			manager->m_SSRTemporalAAShader == nullptr ||
+			manager->m_SSRTraceSetLayout == VK_NULL_HANDLE ||
+			manager->m_SSRResolveSetLayout == VK_NULL_HANDLE ||
+			manager->m_SSRAASetLayout == VK_NULL_HANDLE ||
+			manager->m_SSRTraceDescriptorSets.empty() ||
+			manager->m_SSRResolveDescriptorSets.empty() ||
+			manager->m_SSRAADescriptorSets.empty() ||
+			manager->m_SSRTraceDescriptorSets[0] == VK_NULL_HANDLE ||
+			manager->m_SSRResolveDescriptorSets[0] == VK_NULL_HANDLE ||
+			manager->m_SSRAADescriptorSets[0] == VK_NULL_HANDLE ||
+			!IsFeatureDescriptorCurrent(m_SSRDescSetGeneration))
+		{
+			return;
+		}
+
 		computeCmd.EnsureComputeShader(*manager->m_SSRTraceShader, { m_Scene->GetGlobalDescriptorSetLayout(), manager->m_SSRTraceSetLayout });
 		computeCmd.DispatchCompute(*manager->m_SSRTraceShader, (m_RenderWidth + 7) / 8, (m_RenderHeight + 7) / 8, 1, { m_Scene->GetGlobalDescriptorSet(), manager->m_SSRTraceDescriptorSets[0] });
 		RecordShaderWriteToReadMemoryDependency(computeCmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
@@ -1878,9 +1919,10 @@ namespace VansGraphics
 		const float deltaTime = static_cast<float>(VansGraphics::VansTimer::GetEditorDeltaTime());
 
 		VansPostProcessParamsGPU ppParams = profile.ToGPUParams();
-		VansExposureAdaptParamsGPU expParams = profile.ToExposureAdaptParams(deltaTime);
+		VansExposureAdaptParamsGPU exposureParams = profile.ToExposureAdaptParams(deltaTime);
 		manager->m_PostProcessParamsCBBuffer.SetBufferData(&ppParams, 0, sizeof(VansPostProcessParamsGPU));
-		manager->m_ExposureAdaptParamsCBBuffer.SetBufferData(&expParams, 0, sizeof(VansExposureAdaptParamsGPU));
+		manager->m_ExposureAdaptParamsCBBuffer.SetBufferData(
+			&exposureParams, 0, sizeof(VansExposureAdaptParamsGPU));
 
 		if (profile.m_IsDirty)
 		{
@@ -1894,35 +1936,79 @@ namespace VansGraphics
 	{
 		if (IsFeatureDescriptorCurrent(m_PPExposureDescSetGeneration)) return;
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
-		if (manager->m_ExposureLuminanceDescriptorSets.empty() || manager->m_ExposureAdaptDescriptorSets.empty()) return;
-		VansTexture* lumRT = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_EXPOSURE_LUMINANCE);
-		VansTexture* currentRT = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_EXPOSURE_CURRENT);
-		if (lumRT == nullptr || currentRT == nullptr) return;
+		if (manager->m_ExposureLuminanceDescriptorSets.empty()
+			|| manager->m_ExposureAdaptDescriptorSets.empty()) return;
+
+		VansTexture* luminance = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_EXPOSURE_LUMINANCE);
+		VansTexture* exposure = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_EXPOSURE_CURRENT);
+		if (luminance == nullptr || exposure == nullptr) return;
+
 		auto& sceneColor = renderPassManager->GetColor();
 		auto* desc = VansVKDescriptorManager::GetInstance();
 		desc->BeginDescriptorUpdate();
-		desc->WriteImageDescriptor(manager->m_ExposureLuminanceDescriptorSets[0], EXPOSURE_LUM_BINDING_SRC_COLOR, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {{ sceneColor.GetSampler(), sceneColor.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
-		desc->WriteImageDescriptor(manager->m_ExposureLuminanceDescriptorSets[0], EXPOSURE_LUM_BINDING_LUM_OUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, {{ lumRT->GetImage().GetSampler(), lumRT->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
+		desc->WriteImageDescriptor(
+			manager->m_ExposureLuminanceDescriptorSets[0],
+			EXPOSURE_LUM_BINDING_SRC_COLOR,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{ sceneColor.GetSampler(), sceneColor.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
+		desc->WriteImageDescriptor(
+			manager->m_ExposureLuminanceDescriptorSets[0],
+			EXPOSURE_LUM_BINDING_LUM_OUT,
+			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			{{ luminance->GetImage().GetSampler(), luminance->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
 		desc->CommitDescriptorUpdates();
+
 		desc->BeginDescriptorUpdate();
-		desc->WriteImageDescriptor(manager->m_ExposureAdaptDescriptorSets[0], EXPOSURE_ADAPT_BINDING_LUM_IN, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {{ lumRT->GetImage().GetSampler(), lumRT->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
-		desc->WriteImageDescriptor(manager->m_ExposureAdaptDescriptorSets[0], EXPOSURE_ADAPT_BINDING_EXP_OUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, {{ currentRT->GetImage().GetSampler(), currentRT->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-		desc->WriteBufferDescriptor(manager->m_ExposureAdaptDescriptorSets[0], EXPOSURE_ADAPT_BINDING_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, {{ manager->m_ExposureAdaptParamsCBBuffer.GetNativeBuffer(), 0, manager->m_ExposureAdaptParamsCBBuffer.GetBufferSize() }});
+		desc->WriteImageDescriptor(
+			manager->m_ExposureAdaptDescriptorSets[0],
+			EXPOSURE_ADAPT_BINDING_LUM_IN,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{ luminance->GetImage().GetSampler(), luminance->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
+		desc->WriteImageDescriptor(
+			manager->m_ExposureAdaptDescriptorSets[0],
+			EXPOSURE_ADAPT_BINDING_EXP_OUT,
+			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			{{ exposure->GetImage().GetSampler(), exposure->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
+		desc->WriteBufferDescriptor(
+			manager->m_ExposureAdaptDescriptorSets[0],
+			EXPOSURE_ADAPT_BINDING_PARAMS,
+			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			{{ manager->m_ExposureAdaptParamsCBBuffer.GetNativeBuffer(), 0,
+			   manager->m_ExposureAdaptParamsCBBuffer.GetBufferSize() }});
 		desc->CommitDescriptorUpdates();
 		MarkFeatureDescriptorCurrent(m_PPExposureDescSetGeneration);
 	}
 
-	void VansVKDevice::UpdateExposure(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)
+	void VansVKDevice::UpdateExposure(
+		VansRenderPassManager* renderPassManager,
+		VansVKCommandBuffer& computeCmd)
 	{
 		UpdateExposureDescriptorSets(renderPassManager);
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
-		if (manager->m_ExposureLuminanceShader == nullptr || manager->m_ExposureAdaptShader == nullptr) return;
-		computeCmd.EnsureComputeShader(*manager->m_ExposureLuminanceShader, { m_Scene->GetGlobalDescriptorSetLayout(), manager->m_ExposureLuminanceSetLayout });
-		computeCmd.DispatchCompute(*manager->m_ExposureLuminanceShader, (64 + 7) / 8, (64 + 7) / 8, 1, { m_Scene->GetGlobalDescriptorSet(), manager->m_ExposureLuminanceDescriptorSets[0] });
-		RecordShaderWriteToReadMemoryDependency(computeCmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-		computeCmd.EnsureComputeShader(*manager->m_ExposureAdaptShader, { m_Scene->GetGlobalDescriptorSetLayout(), manager->m_ExposureAdaptSetLayout });
-		computeCmd.DispatchCompute(*manager->m_ExposureAdaptShader, 1, 1, 1, { m_Scene->GetGlobalDescriptorSet(), manager->m_ExposureAdaptDescriptorSets[0] });
-		RecordShaderWriteToReadMemoryDependency(computeCmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+		if (manager->m_ExposureLuminanceShader == nullptr
+			|| manager->m_ExposureAdaptShader == nullptr
+			|| manager->m_ExposureLuminanceDescriptorSets.empty()
+			|| manager->m_ExposureAdaptDescriptorSets.empty()) return;
+
+		computeCmd.EnsureComputeShader(
+			*manager->m_ExposureLuminanceShader,
+			{ m_Scene->GetGlobalDescriptorSetLayout(), manager->m_ExposureLuminanceSetLayout });
+		computeCmd.DispatchCompute(
+			*manager->m_ExposureLuminanceShader,
+			8, 8, 1,
+			{ m_Scene->GetGlobalDescriptorSet(), manager->m_ExposureLuminanceDescriptorSets[0] });
+		RecordShaderWriteToReadMemoryDependency(
+			computeCmd,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+		computeCmd.EnsureComputeShader(
+			*manager->m_ExposureAdaptShader,
+			{ m_Scene->GetGlobalDescriptorSetLayout(), manager->m_ExposureAdaptSetLayout });
+		computeCmd.DispatchCompute(
+			*manager->m_ExposureAdaptShader,
+			1, 1, 1,
+			{ m_Scene->GetGlobalDescriptorSet(), manager->m_ExposureAdaptDescriptorSets[0] });
 	}
 
 	void VansVKDevice::UpdateBloomDescriptorSets(VansRenderPassManager* renderPassManager)
@@ -1949,7 +2035,7 @@ namespace VansGraphics
 		for (int i = 0; i < 4; ++i)
 		{
 			desc->BeginDescriptorUpdate();
-			desc->WriteImageDescriptor(manager->m_BloomDownsampleDescriptorSets[i], BLOOM_DOWNSAMPLE_BINDING_SRC, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {{ dsInputs[i]->GetImage().GetSampler(), dsInputs[i]->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
+			desc->WriteImageDescriptor(manager->m_BloomDownsampleDescriptorSets[i], BLOOM_DOWNSAMPLE_BINDING_SRC, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {{ dsInputs[i]->GetImage().GetSampler(), dsInputs[i]->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
 			desc->WriteImageDescriptor(manager->m_BloomDownsampleDescriptorSets[i], BLOOM_DOWNSAMPLE_BINDING_DST, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, {{ dsOutputs[i]->GetImage().GetSampler(), dsOutputs[i]->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
 			desc->CommitDescriptorUpdates();
 		}
@@ -1959,8 +2045,8 @@ namespace VansGraphics
 		for (int i = 0; i < 4; ++i)
 		{
 			desc->BeginDescriptorUpdate();
-			desc->WriteImageDescriptor(manager->m_BloomUpsampleDescriptorSets[i], BLOOM_UPSAMPLE_BINDING_SRC_LO, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {{ usLo[i]->GetImage().GetSampler(), usLo[i]->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
-			desc->WriteImageDescriptor(manager->m_BloomUpsampleDescriptorSets[i], BLOOM_UPSAMPLE_BINDING_SRC_HI, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {{ usHi[i]->GetImage().GetSampler(), usHi[i]->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
+			desc->WriteImageDescriptor(manager->m_BloomUpsampleDescriptorSets[i], BLOOM_UPSAMPLE_BINDING_SRC_LO, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {{ usLo[i]->GetImage().GetSampler(), usLo[i]->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
+			desc->WriteImageDescriptor(manager->m_BloomUpsampleDescriptorSets[i], BLOOM_UPSAMPLE_BINDING_SRC_HI, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {{ usHi[i]->GetImage().GetSampler(), usHi[i]->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
 			desc->WriteImageDescriptor(manager->m_BloomUpsampleDescriptorSets[i], BLOOM_UPSAMPLE_BINDING_DST, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, {{ usDst[i]->GetImage().GetSampler(), usDst[i]->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
 			desc->WriteBufferDescriptor(manager->m_BloomUpsampleDescriptorSets[i], BLOOM_UPSAMPLE_BINDING_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, {{ manager->m_BloomParamsCBBuffer.GetNativeBuffer(), 0, manager->m_BloomParamsCBBuffer.GetBufferSize() }});
 			desc->CommitDescriptorUpdates();

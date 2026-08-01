@@ -7,7 +7,6 @@ namespace VansGraphics
 {
 
 void VansVideoManager::Load(const std::vector<Vans::VansSceneVideoResourceRequest>& videos,
-                            const std::string& projectRoot,
                             VansVKDevice* device)
 {
     if (!device)
@@ -30,7 +29,7 @@ void VansVideoManager::Load(const std::vector<Vans::VansSceneVideoResourceReques
             continue;
         }
 
-        const std::string absPath = projectRoot + relPath;
+        const std::string absPath = std::filesystem::path(relPath).lexically_normal().string();
 
         if (!std::filesystem::exists(absPath))
         {

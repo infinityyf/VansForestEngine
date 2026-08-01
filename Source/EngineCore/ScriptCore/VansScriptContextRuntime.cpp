@@ -129,6 +129,19 @@ LuaComponentUserdata* CheckComponent(lua_State* L, int index)
 		luaL_checkudata(L, index, "Vans.Component"));
 }
 
+VansScriptObject* ResolveObject(LuaObjectUserdata* handle)
+{
+	if (!handle)
+		return nullptr;
+	auto* scene = Scene();
+	if (!scene)
+		return nullptr;
+	for (auto* object : scene->GetSceneObjects())
+		if (object == handle->object)
+			return object;
+	return nullptr;
+}
+
 void PushVec3(lua_State* L, const glm::vec3& value)
 {
 	lua_createtable(L, 0, 3);
@@ -255,21 +268,21 @@ int LuaTransformTranslate(lua_State* L)
 
 int LuaObjectIsValid(lua_State* L)
 {
-	auto* object = CheckObject(L, 1)->object;
+	auto* object = ResolveObject(CheckObject(L, 1));
 	lua_pushboolean(L, object != nullptr);
 	return 1;
 }
 
 int LuaObjectGetName(lua_State* L)
 {
-	auto* object = CheckObject(L, 1)->object;
+	auto* object = ResolveObject(CheckObject(L, 1));
 	lua_pushstring(L, object ? object->m_ObjectName.c_str() : "");
 	return 1;
 }
 
 int LuaObjectGetTransform(lua_State* L)
 {
-	auto* object = CheckObject(L, 1)->object;
+	auto* object = ResolveObject(CheckObject(L, 1));
 	if (!object)
 		lua_pushnil(L);
 	else
@@ -279,21 +292,21 @@ int LuaObjectGetTransform(lua_State* L)
 
 int LuaObjectGetTransformID(lua_State* L)
 {
-	auto* object = CheckObject(L, 1)->object;
+	auto* object = ResolveObject(CheckObject(L, 1));
 	lua_pushinteger(L, object ? static_cast<lua_Integer>(object->m_TransformID) : -1);
 	return 1;
 }
 
 int LuaObjectGetComponentCount(lua_State* L)
 {
-	auto* object = CheckObject(L, 1)->object;
+	auto* object = ResolveObject(CheckObject(L, 1));
 	lua_pushinteger(L, object ? static_cast<lua_Integer>(object->m_Components.size()) : 0);
 	return 1;
 }
 
 int LuaObjectGetComponentByIndex(lua_State* L)
 {
-	auto* object = CheckObject(L, 1)->object;
+	auto* object = ResolveObject(CheckObject(L, 1));
 	const lua_Integer index = luaL_checkinteger(L, 2);
 	if (!object || index < 0 || static_cast<std::size_t>(index) >= object->m_Components.size())
 	{
@@ -307,8 +320,20 @@ int LuaObjectGetComponentByIndex(lua_State* L)
 template<typename T>
 int PushObjectComponent(lua_State* L)
 {
-	auto* object = CheckObject(L, 1)->object;
+	auto* object = ResolveObject(CheckObject(L, 1));
 	PushComponent(L, object ? object->GetComponent<T>() : nullptr);
+	return 1;
+}
+
+int LuaObjectDestroy(lua_State* L)
+{
+	auto* handle = CheckObject(L, 1);
+	auto* object = ResolveObject(handle);
+	auto* scene = Scene();
+	const bool queued = scene && object && scene->QueueDestroyEntity(object);
+	if (queued)
+		handle->object = nullptr;
+	lua_pushboolean(L, queued);
 	return 1;
 }
 
@@ -523,6 +548,41 @@ int LuaComponentQueueMove(lua_State* L)
 			luaL_optnumber(L, deltaTimeIndex, VansGraphics::VansTimer::GetDeltaTime()));
 		cct->m_ControllerNode->QueueMove(movement, deltaTime);
 	}
+	return 0;
+}
+
+int LuaComponentVehicleSetInputs(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* vehicle = dynamic_cast<VansScriptVehicleComponent*>(component);
+	if (vehicle && vehicle->m_Vehicle)
+	{
+		const float throttle = static_cast<float>(luaL_optnumber(L, 2, 0.0));
+		const float brake = static_cast<float>(luaL_optnumber(L, 3, 0.0));
+		const float steer = static_cast<float>(luaL_optnumber(L, 4, 0.0));
+		const float handbrake = static_cast<float>(luaL_optnumber(L, 5, 0.0));
+		auto& physics = VansEngine::VansPhysicsSystem::GetInstance();
+		std::lock_guard<std::mutex> simLock(physics.GetSimulationMutex());
+		vehicle->m_Vehicle->SetInputs(throttle, brake, steer, handbrake);
+	}
+	return 0;
+}
+
+int LuaComponentVehicleSetGear(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* vehicle = dynamic_cast<VansScriptVehicleComponent*>(component);
+	if (vehicle && vehicle->m_Vehicle)
+		vehicle->m_Vehicle->SetGear(static_cast<std::uint32_t>(luaL_checkinteger(L, 2)));
+	return 0;
+}
+
+int LuaComponentVehicleSetAutomaticGear(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* vehicle = dynamic_cast<VansScriptVehicleComponent*>(component);
+	if (vehicle && vehicle->m_Vehicle)
+		vehicle->m_Vehicle->SetAutomaticGear(lua_toboolean(L, 2) != 0);
 	return 0;
 }
 
@@ -746,6 +806,18 @@ int LuaComponentGetFarClip(lua_State* L)
 	auto* camera = dynamic_cast<VansScriptCameraComponent*>(component);
 	lua_pushnumber(L, camera && camera->m_Camera ? camera->m_Camera->GetFarClip() : 0.0f);
 	return 1;
+}
+
+int LuaComponentWorldToViewport(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* camera = dynamic_cast<VansScriptCameraComponent*>(component);
+	glm::vec3 viewport(0.0f);
+	const bool visible = camera && camera->m_Camera &&
+		camera->m_Camera->ProjectWorldToViewport(ReadVec3(L, 2), viewport);
+	PushVec3(L, viewport);
+	lua_pushboolean(L, visible);
+	return 2;
 }
 
 int LuaComponentSetDriveMode(lua_State* L)
@@ -2453,6 +2525,7 @@ void VansScriptContext::RegisterLuaBindings()
 		{ "getComponentCount", LuaObjectGetComponentCount },
 		{ "get_component_by_index", LuaObjectGetComponentByIndex },
 		{ "getComponentByIndex", LuaObjectGetComponentByIndex },
+		{ "destroy", LuaObjectDestroy },
 		{ "get_render_comp", PushObjectComponent<VansScriptRenderComponent> },
 		{ "getRenderComp", PushObjectComponent<VansScriptRenderComponent> },
 		{ "get_anim_comp", PushObjectComponent<VansScriptAnimationComponent> },
@@ -2514,6 +2587,12 @@ void VansScriptContext::RegisterLuaBindings()
 		{ "get_file_path", LuaComponentGetFilePath },
 		{ "move", LuaComponentQueueMove },
 		{ "queue_move", LuaComponentQueueMove },
+		{ "set_inputs", LuaComponentVehicleSetInputs },
+		{ "setInputs", LuaComponentVehicleSetInputs },
+		{ "set_gear", LuaComponentVehicleSetGear },
+		{ "setGear", LuaComponentVehicleSetGear },
+		{ "set_automatic_gear", LuaComponentVehicleSetAutomaticGear },
+		{ "setAutomaticGear", LuaComponentVehicleSetAutomaticGear },
 		{ "get_position", LuaComponentGetPosition },
 		{ "set_position", LuaComponentSetPosition },
 		{ "is_grounded", LuaComponentIsGrounded },
@@ -2551,6 +2630,7 @@ void VansScriptContext::RegisterLuaBindings()
 		{ "set_near_clip", LuaComponentSetNearClip },
 		{ "get_far_clip", LuaComponentGetFarClip },
 		{ "set_far_clip", LuaComponentSetFarClip },
+		{ "world_to_viewport", LuaComponentWorldToViewport },
 		{ "load_asset", LuaComponentLoadParticle },
 		{ "set_asset_path", LuaComponentSetAssetPath },
 		{ "get_asset_path", LuaComponentGetAssetPath },
@@ -2749,6 +2829,7 @@ void VansScriptContext::VansScriptUpdateCameraScripts()
 void VansScriptContext::VansScriptPreUpdate()
 {
 	if (!m_Scene) return;
+	m_Scene->FlushPendingEntityDestructions();
 	Vans::VansEventBus::Get().Flush(Vans::VansEventLane::Physics);
 }
 

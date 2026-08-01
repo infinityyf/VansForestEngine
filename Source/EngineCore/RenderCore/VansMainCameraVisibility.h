@@ -99,6 +99,9 @@ namespace VansGraphics
 		uint32_t frustumVisibleCount = 0;
 		uint32_t hizCulledCount = 0;
 		uint32_t forcedVisibleCount = 0;
+		uint32_t preCullDrawCallCount = 0;
+		uint32_t culledDrawCallCount = 0;
+		uint32_t drawnDrawCallCount = 0;
 		bool enabled = false;
 		bool historyValid = false;
 	};

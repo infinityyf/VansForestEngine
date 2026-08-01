@@ -2,6 +2,7 @@
 #include "VansMesh.h"
 #include "VansVKCommandBuffer.h"
 #include "VansVKDevice.h"
+#include "../../Util/VansFileFingerprint.h"
 #include "../../Util/VansLog.h"
 #include <iostream>
 
@@ -14,7 +15,13 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <limits>
+#include <string>
+#include <type_traits>
 
 namespace
 {
@@ -117,6 +124,191 @@ namespace
 			return (std::numeric_limits<float>::max)();
 		const glm::vec3 e = glm::max(obb.halfExtent, glm::vec3(1.0e-5f));
 		return e.x * e.y * e.z;
+	}
+
+	constexpr std::array<char, 8> kMeshCacheMagic = { 'V', 'A', 'N', 'S', 'M', 'S', 'H', '\0' };
+	constexpr uint32_t kMeshCacheVersion = 2;
+	constexpr uint32_t kMeshCacheFlagMultiMesh = 1u << 0;
+	constexpr uint64_t kMeshCacheMaxVectorItems = 256ull * 1024ull * 1024ull;
+
+	struct MeshCacheFileStamp
+	{
+		uint64_t size = 0;
+		int64_t writeTime = 0;
+		uint64_t contentHash = 0;
+	};
+
+	struct MeshCacheHeader
+	{
+		char magic[8] = {};
+		uint32_t version = 0;
+		uint32_t flags = 0;
+		uint32_t submeshCount = 0;
+		uint32_t importTangent = 0;
+		float scaleFactor = 1.0f;
+		uint64_t sourceSize = 0;
+		int64_t sourceWriteTime = 0;
+		uint64_t sourceHash = 0;
+	};
+
+	struct MeshCacheChunkHeader
+	{
+		int32_t vertexCount = 0;
+		int32_t indexCount = 0;
+		uint32_t vertexDataSize = 0;
+		uint32_t reserved = 0;
+	};
+
+	static_assert(std::is_trivially_copyable_v<MeshCacheHeader>);
+	static_assert(std::is_trivially_copyable_v<MeshCacheChunkHeader>);
+
+	bool GetMeshCacheFileStamp(const std::filesystem::path& path, MeshCacheFileStamp& stamp)
+	{
+		Vans::VansFileFingerprint fingerprint;
+		if (!Vans::ComputeFileFingerprint(path, fingerprint))
+			return false;
+		stamp.size = fingerprint.size;
+		stamp.writeTime = fingerprint.writeTime;
+		stamp.contentHash = fingerprint.contentHash;
+		return true;
+	}
+
+	template<typename T>
+	bool WritePod(std::ostream& out, const T& value)
+	{
+		static_assert(std::is_trivially_copyable_v<T>);
+		out.write(reinterpret_cast<const char*>(&value), sizeof(T));
+		return out.good();
+	}
+
+	template<typename T>
+	bool ReadPod(std::istream& in, T& value)
+	{
+		static_assert(std::is_trivially_copyable_v<T>);
+		in.read(reinterpret_cast<char*>(&value), sizeof(T));
+		return in.good();
+	}
+
+	bool WriteString(std::ostream& out, const std::string& value)
+	{
+		const uint32_t size = static_cast<uint32_t>(std::min<size_t>(value.size(), UINT32_MAX));
+		if (!WritePod(out, size))
+			return false;
+		if (size > 0)
+			out.write(value.data(), size);
+		return out.good();
+	}
+
+	bool ReadString(std::istream& in, std::string& value)
+	{
+		uint32_t size = 0;
+		if (!ReadPod(in, size))
+			return false;
+		value.resize(size);
+		if (size > 0)
+			in.read(value.data(), size);
+		return in.good();
+	}
+
+	template<typename T>
+	bool WriteVector(std::ostream& out, const std::vector<T>& values)
+	{
+		static_assert(std::is_trivially_copyable_v<T>);
+		const uint64_t count = static_cast<uint64_t>(values.size());
+		if (!WritePod(out, count))
+			return false;
+		if (!values.empty())
+			out.write(reinterpret_cast<const char*>(values.data()), values.size() * sizeof(T));
+		return out.good();
+	}
+
+	template<typename T>
+	bool ReadVector(std::istream& in, std::vector<T>& values)
+	{
+		static_assert(std::is_trivially_copyable_v<T>);
+		uint64_t count = 0;
+		if (!ReadPod(in, count) || count > kMeshCacheMaxVectorItems)
+			return false;
+		values.resize(static_cast<size_t>(count));
+		if (!values.empty())
+			in.read(reinterpret_cast<char*>(values.data()), values.size() * sizeof(T));
+		return in.good();
+	}
+
+	bool WriteMaterialInfo(std::ostream& out, const VansGraphics::FBXSubmeshMaterialInfo& info)
+	{
+		return WriteString(out, info.materialName)
+			&& WriteString(out, info.diffuseTexPath)
+			&& WriteString(out, info.normalTexPath)
+			&& WriteString(out, info.metallicTexPath)
+			&& WriteString(out, info.roughnessTexPath)
+			&& WriteString(out, info.aoTexPath)
+			&& WriteString(out, info.opacityTexPath)
+			&& WritePod(out, info.diffuseColor)
+			&& WritePod(out, info.specularColor)
+			&& WritePod(out, info.emissiveColor)
+			&& WritePod(out, info.opacity)
+			&& WritePod(out, info.metallic)
+			&& WritePod(out, info.roughness)
+			&& WritePod(out, info.specularFactor)
+			&& WritePod(out, info.shininess)
+			&& WritePod(out, info.reflectionFactor);
+	}
+
+	bool ReadMaterialInfo(std::istream& in, VansGraphics::FBXSubmeshMaterialInfo& info)
+	{
+		return ReadString(in, info.materialName)
+			&& ReadString(in, info.diffuseTexPath)
+			&& ReadString(in, info.normalTexPath)
+			&& ReadString(in, info.metallicTexPath)
+			&& ReadString(in, info.roughnessTexPath)
+			&& ReadString(in, info.aoTexPath)
+			&& ReadString(in, info.opacityTexPath)
+			&& ReadPod(in, info.diffuseColor)
+			&& ReadPod(in, info.specularColor)
+			&& ReadPod(in, info.emissiveColor)
+			&& ReadPod(in, info.opacity)
+			&& ReadPod(in, info.metallic)
+			&& ReadPod(in, info.roughness)
+			&& ReadPod(in, info.specularFactor)
+			&& ReadPod(in, info.shininess)
+			&& ReadPod(in, info.reflectionFactor);
+	}
+
+	bool MeshCacheHeaderMatches(
+		const MeshCacheHeader& header,
+		const MeshCacheFileStamp& sourceStamp,
+		bool importTangent,
+		bool expectMultiMesh,
+		float scaleFactor,
+		bool trustCacheWithoutSource)
+	{
+		if (std::memcmp(header.magic, kMeshCacheMagic.data(), kMeshCacheMagic.size()) != 0)
+			return false;
+		if (header.version != kMeshCacheVersion)
+			return false;
+		if (((header.flags & kMeshCacheFlagMultiMesh) != 0) != expectMultiMesh)
+			return false;
+		if ((header.importTangent != 0) != importTangent)
+			return false;
+		if (std::abs(header.scaleFactor - scaleFactor) > 0.0001f)
+			return false;
+		if (trustCacheWithoutSource)
+			return header.submeshCount > 0;
+		return header.sourceSize == sourceStamp.size &&
+			header.sourceWriteTime == sourceStamp.writeTime &&
+			header.sourceHash == sourceStamp.contentHash &&
+			header.submeshCount > 0;
+	}
+
+	bool HasMeshGpuUploadTarget(
+		VkDevice logic_device,
+		VkQueue queue,
+		VansGraphics::VansVKCommandBuffer* commandbuffer)
+	{
+		return logic_device != VK_NULL_HANDLE &&
+			queue != VK_NULL_HANDLE &&
+			commandbuffer != nullptr;
 	}
 }
 
@@ -260,6 +452,489 @@ void VansGraphics::VansMesh::RebuildLocalOBBFromPositions(const std::vector<glm:
 	m_LocalOBB = best;
 }
 
+void VansGraphics::VansMesh::ConfigureVertexInputLayout(bool import_tangent)
+{
+	m_VertexDataSize = 8 * sizeof(uint16_t);
+	if (import_tangent)
+		m_VertexDataSize += 6 * sizeof(uint16_t);
+
+	m_VertexInputBindingDescriptions =
+	{
+		{
+			0,
+			m_VertexDataSize,
+			VK_VERTEX_INPUT_RATE_VERTEX
+		}
+	};
+
+	m_VertexInputAttributeDescriptions =
+	{
+		{
+			 0,
+			 0,
+			 VK_FORMAT_R16G16B16_SFLOAT,
+			 0
+		 },
+		 {
+			 1,
+			 0,
+			 VK_FORMAT_R16G16_SFLOAT,
+			 3 * sizeof(uint16_t)
+		 },
+		 {
+			 2,
+			 0,
+			 VK_FORMAT_R16G16B16_SFLOAT,
+			 5 * sizeof(uint16_t)
+		 }
+	};
+	if (import_tangent)
+	{
+		m_VertexInputAttributeDescriptions.push_back(
+			{
+				3,
+				0,
+				VK_FORMAT_R16G16B16_SFLOAT,
+				8 * sizeof(uint16_t)
+			}
+		);
+		m_VertexInputAttributeDescriptions.push_back(
+			{
+				4,
+				0,
+				VK_FORMAT_R16G16B16_SFLOAT,
+				11 * sizeof(uint16_t)
+			}
+		);
+	}
+}
+
+void VansGraphics::VansMesh::ReleaseCpuImportDataAfterUpload()
+{
+	m_MeshRawData.clear();
+	if (!m_MeshRawPositionDataEnableCPURead)
+	{
+		m_MeshRawPositionData.clear();
+		m_MeshRawTexCoordData.clear();
+		m_MeshTriangleIndex.clear();
+	}
+}
+
+bool VansGraphics::VansMesh::UploadRawMeshToGpu(
+	VkDevice& logic_device,
+	VkQueue& queue,
+	VansVKCommandBuffer* commandbuffer,
+	const char* context,
+	bool keepImportDataAfterUpload)
+{
+	const char* label = context ? context : "VansMesh";
+	if (commandbuffer == nullptr || m_MeshRawData.empty() || m_MeshTriangleIndex.empty())
+	{
+		VANS_LOG_ERROR("[" << label << "] Cannot upload empty mesh data");
+		return false;
+	}
+
+	VkDeviceSize vertexBufferSize = m_MeshRawData.size() * sizeof(uint16_t);
+	VkDeviceSize indexBufferSize = m_MeshTriangleIndex.size() * sizeof(uint32_t);
+
+	VansVKBuffer stagingVertexBuffer;
+	if (!stagingVertexBuffer.CreatVulkanBuffer(logic_device,
+		vertexBufferSize,
+		VK_FORMAT_UNDEFINED,
+		VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+	{
+		VANS_LOG_ERROR("[" << label << "] Failed to create vertex staging buffer. bytes=" << vertexBufferSize);
+		return false;
+	}
+
+	VansVKBuffer stagingIndexBuffer;
+	if (!stagingIndexBuffer.CreatVulkanBuffer(logic_device,
+		indexBufferSize,
+		VK_FORMAT_UNDEFINED,
+		VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+	{
+		VANS_LOG_ERROR("[" << label << "] Failed to create index staging buffer. bytes=" << indexBufferSize);
+		stagingVertexBuffer.DestroyVulkanBuffer(logic_device);
+		return false;
+	}
+
+	if (!stagingVertexBuffer.SetBufferData(m_MeshRawData.data(), 0, vertexBufferSize) ||
+		!stagingIndexBuffer.SetBufferData(m_MeshTriangleIndex.data(), 0, indexBufferSize))
+	{
+		VANS_LOG_ERROR("[" << label << "] Failed to upload staging mesh data");
+		stagingVertexBuffer.DestroyVulkanBuffer(logic_device);
+		stagingIndexBuffer.DestroyVulkanBuffer(logic_device);
+		return false;
+	}
+
+	VkBufferUsageFlags vertexUsage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+	VkBufferUsageFlags indexUsage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+	if (m_SupportRayTracing)
+	{
+		vertexUsage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+			| VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR
+			| VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+		indexUsage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+			| VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR
+			| VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+	}
+
+	if (!m_VertexBuffer.CreatVulkanBuffer(logic_device,
+		vertexBufferSize,
+		VK_FORMAT_R16_SFLOAT,
+		vertexUsage,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
+	{
+		VANS_LOG_ERROR("[" << label << "] Failed to create GPU vertex buffer. bytes=" << vertexBufferSize);
+		stagingVertexBuffer.DestroyVulkanBuffer(logic_device);
+		stagingIndexBuffer.DestroyVulkanBuffer(logic_device);
+		return false;
+	}
+
+	if (!m_IndexBuffer.CreatVulkanBuffer(logic_device,
+		indexBufferSize,
+		VK_FORMAT_R32_UINT,
+		indexUsage,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
+	{
+		VANS_LOG_ERROR("[" << label << "] Failed to create GPU index buffer. bytes=" << indexBufferSize);
+		stagingVertexBuffer.DestroyVulkanBuffer(logic_device);
+		stagingIndexBuffer.DestroyVulkanBuffer(logic_device);
+		return false;
+	}
+
+	if (!commandbuffer->BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
+	{
+		VANS_LOG_ERROR("[" << label << "] Failed to begin mesh GPU upload command buffer");
+		stagingVertexBuffer.DestroyVulkanBuffer(logic_device);
+		stagingIndexBuffer.DestroyVulkanBuffer(logic_device);
+		return false;
+	}
+
+	commandbuffer->CopyBuffer(stagingVertexBuffer.GetNativeBuffer(), m_VertexBuffer.GetNativeBuffer(), 0, 0, vertexBufferSize);
+	commandbuffer->CopyBuffer(stagingIndexBuffer.GetNativeBuffer(), m_IndexBuffer.GetNativeBuffer(), 0, 0, indexBufferSize);
+
+	if (!commandbuffer->EndCommandBufferRecord()
+		|| !VansVKCommandBuffer::SubmitCommands(queue, logic_device, { commandbuffer->GetVKCommandBuffer() }, {}, {}, commandbuffer->m_CommandBufferFinishSubmitFence)
+		|| !commandbuffer->ResetCommandBuffer(false))
+	{
+		VANS_LOG_ERROR("[" << label << "] Failed to submit mesh GPU upload");
+		stagingVertexBuffer.DestroyVulkanBuffer(logic_device);
+		stagingIndexBuffer.DestroyVulkanBuffer(logic_device);
+		return false;
+	}
+
+	stagingVertexBuffer.DestroyVulkanBuffer(logic_device);
+	stagingIndexBuffer.DestroyVulkanBuffer(logic_device);
+
+	if (!keepImportDataAfterUpload)
+		ReleaseCpuImportDataAfterUpload();
+	return true;
+}
+
+bool VansGraphics::VansMesh::TryLoadMeshCache(
+	VkDevice& logic_device,
+	VkQueue& queue,
+	VansVKCommandBuffer* commandbuffer,
+	const std::string& cachePath,
+	const std::string& sourcePath,
+	bool import_tangent,
+	bool supportRayTracing,
+	bool needCPUData,
+	bool expectMultiMesh,
+	float scaleFactor,
+	bool trustCacheWithoutSource)
+{
+	if (cachePath.empty())
+		return false;
+
+	MeshCacheFileStamp sourceStamp{};
+	if (!trustCacheWithoutSource && !GetMeshCacheFileStamp(sourcePath, sourceStamp))
+		return false;
+
+	std::ifstream in(cachePath, std::ios::binary);
+	if (!in.is_open())
+		return false;
+
+	MeshCacheHeader header{};
+	if (!ReadPod(in, header) ||
+		!MeshCacheHeaderMatches(header, sourceStamp, import_tangent, expectMultiMesh, scaleFactor, trustCacheWithoutSource))
+	{
+		return false;
+	}
+
+	for (auto* subMesh : m_SubMeshes)
+		delete subMesh;
+	m_SubMeshes.clear();
+	m_SubmeshMaterialInfos.clear();
+	m_HasAnimation = false;
+	m_AnimImportResult = {};
+
+	auto readMeshChunk = [&](VansMesh& mesh) -> bool
+	{
+		MeshCacheChunkHeader chunk{};
+		if (!ReadPod(in, chunk) || chunk.vertexCount <= 0 || chunk.indexCount <= 0)
+			return false;
+
+		mesh.m_VertexCount = chunk.vertexCount;
+		mesh.m_IndexCount = chunk.indexCount;
+		mesh.m_LogicalDevice = logic_device;
+		mesh.m_MeshRawPositionDataEnableCPURead = needCPUData;
+		mesh.m_SupportRayTracing = supportRayTracing;
+		mesh.m_MeshRawDataCPULoaded = true;
+		if (!ReadString(in, mesh.m_SourceMaterialName) ||
+			!ReadString(in, mesh.m_SourceNodeName) ||
+			!ReadVector(in, mesh.m_MeshRawData) ||
+			!ReadVector(in, mesh.m_MeshRawPositionData) ||
+			!ReadVector(in, mesh.m_MeshRawTexCoordData) ||
+			!ReadVector(in, mesh.m_MeshTriangleIndex))
+		{
+			return false;
+		}
+
+		mesh.ConfigureVertexInputLayout(import_tangent);
+		if (chunk.vertexDataSize != 0 && chunk.vertexDataSize != mesh.m_VertexDataSize)
+			return false;
+		mesh.RebuildLocalBoundsFromRawPositions();
+		if (!HasMeshGpuUploadTarget(logic_device, queue, commandbuffer))
+			return true;
+		return mesh.UploadRawMeshToGpu(logic_device, queue, commandbuffer, "MeshCache", false);
+	};
+
+	if (expectMultiMesh)
+	{
+		m_IsMultiMesh = true;
+		m_SupportRayTracing = false;
+		for (uint32_t i = 0; i < header.submeshCount; ++i)
+		{
+			VansMesh* slice = new VansMesh(needCPUData, supportRayTracing);
+			slice->m_IsSubmesh = true;
+			if (!readMeshChunk(*slice))
+			{
+				delete slice;
+				for (auto* subMesh : m_SubMeshes)
+					delete subMesh;
+				m_SubMeshes.clear();
+				m_SubmeshMaterialInfos.clear();
+				return false;
+			}
+			FBXSubmeshMaterialInfo info;
+			if (!ReadMaterialInfo(in, info))
+			{
+				delete slice;
+				for (auto* subMesh : m_SubMeshes)
+					delete subMesh;
+				m_SubMeshes.clear();
+				m_SubmeshMaterialInfos.clear();
+				return false;
+			}
+			m_SubMeshes.push_back(slice);
+			m_SubmeshMaterialInfos.push_back(std::move(info));
+		}
+	}
+	else
+	{
+		m_IsMultiMesh = false;
+		m_SupportRayTracing = supportRayTracing;
+		if (!readMeshChunk(*this))
+			return false;
+	}
+
+	VANS_LOG("[MeshCache] Hit " << cachePath);
+	return true;
+}
+
+bool VansGraphics::VansMesh::IsMeshCacheCurrent(
+	const std::string& cachePath,
+	const std::string& sourcePath,
+	bool import_tangent,
+	bool expectMultiMesh,
+	float scaleFactor)
+{
+	if (cachePath.empty())
+		return false;
+
+	MeshCacheFileStamp sourceStamp{};
+	if (!GetMeshCacheFileStamp(sourcePath, sourceStamp))
+		return false;
+
+	std::ifstream in(cachePath, std::ios::binary);
+	if (!in.is_open())
+		return false;
+
+	MeshCacheHeader header{};
+	return ReadPod(in, header) &&
+		MeshCacheHeaderMatches(
+			header,
+			sourceStamp,
+			import_tangent,
+			expectMultiMesh,
+			scaleFactor,
+			false);
+}
+
+VansGraphics::VansMeshCacheBuildStatus VansGraphics::VansMesh::BuildMeshCache(
+	const std::string& file_name,
+	bool import_tangent,
+	bool expectMultiMesh,
+	float scaleFactor,
+	bool rebuildIdentityBoneOffsetsFromHierarchy,
+	bool remapWeaponAttachmentBonesToHands,
+	const std::string& cachePath,
+	std::string& error)
+{
+	error.clear();
+	if (cachePath.empty())
+	{
+		error = "Mesh cache path is empty";
+		return VansMeshCacheBuildStatus::Failed;
+	}
+
+	if (IsMeshCacheCurrent(cachePath, file_name, import_tangent, expectMultiMesh, scaleFactor))
+		return VansMeshCacheBuildStatus::Current;
+
+	std::error_code ec;
+	if (!std::filesystem::is_regular_file(file_name, ec))
+	{
+		error = "Mesh source does not exist: " + file_name;
+		return VansMeshCacheBuildStatus::Failed;
+	}
+
+	VkDevice nullDevice = VK_NULL_HANDLE;
+	VkQueue nullQueue = VK_NULL_HANDLE;
+	VansVKCommandBuffer* nullCommandBuffer = nullptr;
+	VansMesh mesh(/*needCPUData=*/true, /*supportRayTracing=*/false);
+	if (expectMultiMesh)
+	{
+		mesh.LoadMultiMesh(
+			nullDevice,
+			nullQueue,
+			nullCommandBuffer,
+			file_name,
+			import_tangent,
+			/*supportRayTracing=*/false,
+			/*needCPUData=*/true,
+			scaleFactor,
+			rebuildIdentityBoneOffsetsFromHierarchy,
+			remapWeaponAttachmentBonesToHands,
+			cachePath,
+			/*trustCacheWithoutSource=*/false);
+	}
+	else
+	{
+		mesh.LoadMesh(
+			nullDevice,
+			nullQueue,
+			nullCommandBuffer,
+			file_name,
+			import_tangent,
+			cachePath,
+			/*trustCacheWithoutSource=*/false);
+	}
+
+	// Skeletal meshes retain their rig and skinning payload in the indexed package
+	// resource artifact. The static .vmesh representation is deliberately not used.
+	if (expectMultiMesh && !mesh.m_AnimImportResult.skeleton.bones.empty())
+		return VansMeshCacheBuildStatus::NotEligible;
+
+	if (!IsMeshCacheCurrent(cachePath, file_name, import_tangent, expectMultiMesh, scaleFactor))
+	{
+		error = "Failed to build current mesh cache: " + cachePath;
+		return VansMeshCacheBuildStatus::Failed;
+	}
+	return VansMeshCacheBuildStatus::Cooked;
+}
+
+bool VansGraphics::VansMesh::SaveMeshCache(
+	const std::string& cachePath,
+	const std::string& sourcePath,
+	bool import_tangent,
+	bool expectMultiMesh,
+	float scaleFactor) const
+{
+	if (cachePath.empty())
+		return false;
+
+	MeshCacheFileStamp sourceStamp{};
+	if (!GetMeshCacheFileStamp(sourcePath, sourceStamp))
+		return false;
+
+	std::error_code ec;
+	std::filesystem::create_directories(std::filesystem::path(cachePath).parent_path(), ec);
+	if (ec)
+		return false;
+
+	const std::filesystem::path temporaryPath = std::filesystem::path(cachePath).string() + ".tmp";
+	std::ofstream out(temporaryPath, std::ios::binary | std::ios::trunc);
+	if (!out.is_open())
+		return false;
+
+	MeshCacheHeader header{};
+	std::memcpy(header.magic, kMeshCacheMagic.data(), kMeshCacheMagic.size());
+	header.version = kMeshCacheVersion;
+	header.flags = expectMultiMesh ? kMeshCacheFlagMultiMesh : 0u;
+	header.submeshCount = expectMultiMesh ? static_cast<uint32_t>(m_SubMeshes.size()) : 1u;
+	header.importTangent = import_tangent ? 1u : 0u;
+	header.scaleFactor = scaleFactor;
+	header.sourceSize = sourceStamp.size;
+	header.sourceWriteTime = sourceStamp.writeTime;
+	header.sourceHash = sourceStamp.contentHash;
+	if (!WritePod(out, header))
+		return false;
+
+	auto writeMeshChunk = [&](const VansMesh& mesh) -> bool
+	{
+		MeshCacheChunkHeader chunk{};
+		chunk.vertexCount = mesh.m_VertexCount;
+		chunk.indexCount = mesh.m_IndexCount;
+		chunk.vertexDataSize = mesh.m_VertexDataSize;
+		return WritePod(out, chunk)
+			&& WriteString(out, mesh.m_SourceMaterialName)
+			&& WriteString(out, mesh.m_SourceNodeName)
+			&& WriteVector(out, mesh.m_MeshRawData)
+			&& WriteVector(out, mesh.m_MeshRawPositionData)
+			&& WriteVector(out, mesh.m_MeshRawTexCoordData)
+			&& WriteVector(out, mesh.m_MeshTriangleIndex);
+	};
+
+	if (expectMultiMesh)
+	{
+		for (size_t i = 0; i < m_SubMeshes.size(); ++i)
+		{
+			if (!m_SubMeshes[i] || !writeMeshChunk(*m_SubMeshes[i]))
+				return false;
+			const FBXSubmeshMaterialInfo info = i < m_SubmeshMaterialInfos.size()
+				? m_SubmeshMaterialInfos[i]
+				: FBXSubmeshMaterialInfo{};
+			if (!WriteMaterialInfo(out, info))
+				return false;
+		}
+	}
+	else if (!writeMeshChunk(*this))
+	{
+		return false;
+	}
+
+	out.close();
+	if (!out.good())
+		return false;
+	std::filesystem::rename(temporaryPath, cachePath, ec);
+	if (ec)
+	{
+		ec.clear();
+		std::filesystem::remove(cachePath, ec);
+		ec.clear();
+		std::filesystem::rename(temporaryPath, cachePath, ec);
+		if (ec)
+			return false;
+	}
+
+	VANS_LOG("[MeshCache] Wrote " << cachePath);
+	return true;
+}
+
 uint16_t FloatToHalf(float f) 
 {
 	// 这里需要一个 float16 转换算法，或者使用 glm::packHalf1x16
@@ -349,13 +1024,19 @@ VansGraphics::VansMesh::VansMesh(bool needCPUData, bool supportRayTracing)
 	m_SupportRayTracing = supportRayTracing;
 }
 
-void VansGraphics::VansMesh::LoadMesh(VkDevice& logic_device, VkQueue& queue, VansVKCommandBuffer* commandbuffer, const std::string& file_name, bool import_tangent)
+void VansGraphics::VansMesh::LoadMesh(VkDevice& logic_device, VkQueue& queue, VansVKCommandBuffer* commandbuffer, const std::string& file_name, bool import_tangent, const std::string& cachePath, bool trustCacheWithoutSource)
 {
 	VANS_LOG("Load Mesh : " << file_name);
 	m_LogicalDevice = logic_device;
 	m_MeshRawDataCPULoaded = false;
 	m_VertexCount = 0;
 	ResetLocalBounds();
+	if (TryLoadMeshCache(logic_device, queue, commandbuffer,
+		cachePath, file_name, import_tangent, m_SupportRayTracing,
+		m_MeshRawPositionDataEnableCPURead, false, 1.0f, trustCacheWithoutSource))
+	{
+		return;
+	}
 	//用assimp
 	Assimp::Importer importer;
 	auto processFlag = aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_GenNormals;
@@ -375,149 +1056,11 @@ void VansGraphics::VansMesh::LoadMesh(VkDevice& logic_device, VkQueue& queue, Va
 
 	m_IndexCount = m_MeshTriangleIndex.size();
 
-	m_VertexDataSize = 8 * sizeof(uint16_t);
-	if (import_tangent)
-	{
-		m_VertexDataSize += 6 * sizeof(uint16_t);
-	}
-	m_VertexInputBindingDescriptions = 
-	{
-		{
-			0,
-			m_VertexDataSize,
-			VK_VERTEX_INPUT_RATE_VERTEX
-		}
-	};
-
-	m_VertexInputAttributeDescriptions =
-	{
-		{
-			 0,
-			 0,
-			 VK_FORMAT_R16G16B16_SFLOAT,
-			 0
-		 },
-		 {
-			 1,
-			 0,
-			 VK_FORMAT_R16G16_SFLOAT,
-			 3 * sizeof(uint16_t)
-		 },
-		 {
-			 2,
-			 0,
-			 VK_FORMAT_R16G16B16_SFLOAT,
-			 5 * sizeof(uint16_t)
-		 }
-	};
-	if (import_tangent)
-	{
-		m_VertexInputAttributeDescriptions.push_back(
-			{
-				3,
-				0,
-				VK_FORMAT_R16G16B16_SFLOAT,
-				8 * sizeof(uint16_t)
-			}
-		);
-		m_VertexInputAttributeDescriptions.push_back(
-			{
-				4,
-				0,
-				VK_FORMAT_R16G16B16_SFLOAT,
-				11 * sizeof(uint16_t)
-			}
-		);
-	}
-
-	VkDeviceSize vertexBufferSize = m_MeshRawData.size() * sizeof(uint16_t);
-    VkDeviceSize indexBufferSize = m_MeshTriangleIndex.size() * sizeof(uint32_t); // 注意：之前是 sizeof(int)，建议明确使用 uint32_t
-
-    // =================================================================================
-    // 1. 创建 Staging Buffers (CPU 可写，主机可见)
-    // =================================================================================
-    
-    // 假设 VansVKBuffer 有一个 CreateStagingBuffer 辅助函数，或者直接使用 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
-    VansVKBuffer stagingVertexBuffer;
-    stagingVertexBuffer.CreatVulkanBuffer(logic_device,
-        vertexBufferSize,
-        VK_FORMAT_UNDEFINED, // Staging buffer 格式通常不重要
-        VK_BUFFER_USAGE_TRANSFER_SRC_BIT, // 关键：作为传输源
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-    VansVKBuffer stagingIndexBuffer;
-    stagingIndexBuffer.CreatVulkanBuffer(logic_device,
-        indexBufferSize,
-        VK_FORMAT_UNDEFINED,
-        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-    // 2. 将数据拷贝到 Staging Buffers
-    stagingVertexBuffer.SetBufferData(m_MeshRawData.data(), 0, vertexBufferSize);
-    stagingIndexBuffer.SetBufferData(m_MeshTriangleIndex.data(), 0, indexBufferSize);
-
-    // =================================================================================
-    // 3. 创建真正的 GPU Buffers (Device Local，性能最高)
-    // =================================================================================
-    
-    VkBufferUsageFlags vertexUsage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-    VkBufferUsageFlags indexUsage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-
-    vertexUsage |= VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-        indexUsage |= VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-
-    m_VertexBuffer.CreatVulkanBuffer(logic_device,
-        vertexBufferSize,
-        VK_FORMAT_R16_SFLOAT,
-        vertexUsage,
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT); // 关键：显卡专用内存
-
-    m_IndexBuffer.CreatVulkanBuffer(logic_device,
-        indexBufferSize,
-        VK_FORMAT_R32_UINT,
-        indexUsage,
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-    // =================================================================================
-    // 4. 执行 Copy 命令 (Staging -> Device Local)
-    // =================================================================================
-    
-    // 这里你需要一个即时执行的 CommandBuffer (Single Time Command)
-    // 假设你有这样的工具函数 VansVKFunctions::BeginSingleTimeCommands / EndSingleTimeCommands
-	if (!commandbuffer->BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
-	{
-		VANS_LOG_ERROR("[VansMesh] Failed to begin mesh GPU buffer upload command buffer.");
-		stagingVertexBuffer.DestroyVulkanBuffer(logic_device);
-		stagingIndexBuffer.DestroyVulkanBuffer(logic_device);
+	ConfigureVertexInputLayout(import_tangent);
+	SaveMeshCache(cachePath, file_name, import_tangent, false, 1.0f);
+	if (!HasMeshGpuUploadTarget(logic_device, queue, commandbuffer))
 		return;
-	}
-	commandbuffer->CopyBuffer(stagingVertexBuffer.GetNativeBuffer(), m_VertexBuffer.GetNativeBuffer(), 0, 0, vertexBufferSize);
-	commandbuffer->CopyBuffer(stagingIndexBuffer.GetNativeBuffer(), m_IndexBuffer.GetNativeBuffer(), 0, 0, indexBufferSize);
-	
-	if (!commandbuffer->EndCommandBufferRecord()
-		|| !VansVKCommandBuffer::SubmitCommands(queue, logic_device, { commandbuffer->GetVKCommandBuffer() }, {}, {}, commandbuffer->m_CommandBufferFinishSubmitFence)
-		|| !commandbuffer->ResetCommandBuffer(false))
-	{
-		VANS_LOG_ERROR("[VansMesh] Failed to submit mesh GPU buffer upload.");
-		stagingVertexBuffer.DestroyVulkanBuffer(logic_device);
-		stagingIndexBuffer.DestroyVulkanBuffer(logic_device);
-		return;
-	}
-
-    // =================================================================================
-    // 5. 清理 Staging Buffers
-    // =================================================================================
-    stagingVertexBuffer.DestroyVulkanBuffer(logic_device);
-    stagingIndexBuffer.DestroyVulkanBuffer(logic_device);
-
-    // 释放CPU端内存数据
-    m_MeshRawData.clear();
-	if (!m_MeshRawPositionDataEnableCPURead)
-	{
-		m_MeshRawPositionData.clear();
-		m_MeshRawTexCoordData.clear();
-		m_MeshTriangleIndex.clear();
-	}
+	UploadRawMeshToGpu(logic_device, queue, commandbuffer, "VansMesh", false);
 }
 
 void VansGraphics::VansMesh::BuildBLAS(VansVKDevice& device, VansVKCommandBuffer& commandBuffer)
@@ -588,12 +1131,15 @@ void VansGraphics::VansMesh::BuildBLAS(VansVKDevice& device, VansVKCommandBuffer
 
 	m_BLASScratchBuffer.CreatVulkanBuffer(
 		logic_device,
-		buildSizesInfo.buildScratchSize,
+		buildSizesInfo.buildScratchSize + device.GetAccelerationStructureScratchAlignment() - 1,
 		VK_FORMAT_R32_SFLOAT,
 		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-	buildGeometryInfo.scratchData.deviceAddress = m_BLASScratchBuffer.GetDeviceAddress(logic_device);
+	const VkDeviceSize scratchAlignment = device.GetAccelerationStructureScratchAlignment();
+	const VkDeviceAddress scratchBaseAddress = m_BLASScratchBuffer.GetDeviceAddress(logic_device);
+	buildGeometryInfo.scratchData.deviceAddress =
+		(scratchBaseAddress + scratchAlignment - 1) & ~(scratchAlignment - 1);
 
 	//创建加速结构
 	const VkAccelerationStructureBuildRangeInfoKHR* pRangeInfo = &buildRangeInfo;

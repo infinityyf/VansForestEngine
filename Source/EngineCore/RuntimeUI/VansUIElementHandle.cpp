@@ -1,9 +1,12 @@
 #include "Public/VansUIElementHandle.h"
 
 #include <NsGui/BaseButton.h>
+#include <NsGui/Canvas.h>
 #include <NsGui/ContentControl.h>
+#include <NsGui/FrameworkElement.h>
 #include <NsGui/RoutedEvent.h>
 #include <NsGui/TextBlock.h>
+#include <NsGui/TranslateTransform.h>
 #include <NsGui/UIElement.h>
 
 #include <algorithm>
@@ -26,6 +29,16 @@ namespace VansRuntime
             std::transform(value.begin(), value.end(), value.begin(),
                 [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
             return value;
+        }
+
+        bool ParseFloat(const std::string& value, float& result)
+        {
+            char* parseEnd = nullptr;
+            const double parsed = std::strtod(value.c_str(), &parseEnd);
+            if (parseEnd == value.c_str())
+                return false;
+            result = static_cast<float>(parsed);
+            return true;
         }
     }
 
@@ -128,10 +141,46 @@ namespace VansRuntime
 
         if (name == "opacity")
         {
-            char* parseEnd = nullptr;
-            const double parsed = std::strtod(value.c_str(), &parseEnd);
-            if (parseEnd != value.c_str())
-                element->SetOpacity(static_cast<float>(std::clamp(parsed, 0.0, 1.0)));
+			float parsed = 0.0f;
+			if (ParseFloat(value, parsed))
+				element->SetOpacity(std::clamp(parsed, 0.0f, 1.0f));
+			return;
         }
+
+		float parsed = 0.0f;
+		if (!ParseFloat(value, parsed))
+			return;
+
+		if (name == "canvas.left" || name == "left")
+		{
+			Noesis::Canvas::SetLeft(element, parsed);
+			return;
+		}
+		if (name == "canvas.top" || name == "top")
+		{
+			Noesis::Canvas::SetTop(element, parsed);
+			return;
+		}
+		if (name == "width" || name == "height")
+		{
+			if (auto* frameworkElement = Noesis::DynamicCast<Noesis::FrameworkElement*>(element))
+			{
+				if (name == "width") frameworkElement->SetWidth(parsed);
+				else frameworkElement->SetHeight(parsed);
+			}
+			return;
+		}
+		if (name == "translatex" || name == "translate.x" ||
+			name == "translatey" || name == "translate.y")
+		{
+			auto* translation = Noesis::DynamicCast<Noesis::TranslateTransform*>(element->GetRenderTransform());
+			if (!translation)
+			{
+				translation = new Noesis::TranslateTransform();
+				element->SetRenderTransform(translation);
+			}
+			if (name == "translatex" || name == "translate.x") translation->SetX(parsed);
+			else translation->SetY(parsed);
+		}
     }
 }

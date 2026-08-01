@@ -75,7 +75,18 @@ void VansGraphics::VansScene::ResetMainCameraHiZVisibility()
 	m_MainCameraForceVisibleFramesByNodeId.clear();
 	m_MainCameraHiZHistory = VansMainCameraHiZHistoryState{};
 	m_MainCameraVisibilityStats = VansMainCameraVisibilityStats{};
+	m_MainCameraHiZDrawCallStatsPacked.store(0, std::memory_order_relaxed);
 	m_MainCameraHasPendingVisibilityReadback = false;
+}
+
+VansGraphics::VansMainCameraVisibilityStats VansGraphics::VansScene::GetMainCameraVisibilityStats() const
+{
+	VansMainCameraVisibilityStats stats = m_MainCameraVisibilityStats;
+	const uint64_t packed = m_MainCameraHiZDrawCallStatsPacked.load(std::memory_order_relaxed);
+	stats.preCullDrawCallCount = static_cast<uint32_t>(packed);
+	stats.culledDrawCallCount = static_cast<uint32_t>(packed >> 32u);
+	stats.drawnDrawCallCount = stats.preCullDrawCallCount - stats.culledDrawCallCount;
+	return stats;
 }
 
 void VansGraphics::VansScene::ReleaseMainCameraHiZGpuResources(VkDevice device)
@@ -336,6 +347,7 @@ void VansGraphics::VansScene::BuildMainCameraCullCandidates(VkExtent2D extent)
 	m_MainCameraVisibilityStats.frustumVisibleCount = 0;
 	m_MainCameraVisibilityStats.forcedVisibleCount = 0;
 	m_MainCameraVisibilityStats.enabled = m_MainCameraHiZCullSettings.enabled;
+	m_MainCameraHiZDrawCallStatsPacked.store(0, std::memory_order_relaxed);
 
 	if (!m_MainCameraHiZCullSettings.enabled || m_Camera == nullptr)
 	{
@@ -385,6 +397,23 @@ bool VansGraphics::VansScene::IsMainCameraNodeVisible(VansRenderNode* node) cons
 		return true;
 	const auto it = m_MainCameraDrawVisibilityByNodeId.find(MakeMainCameraCullNodeId(node));
 	return it == m_MainCameraDrawVisibilityByNodeId.end() ? true : it->second;
+}
+
+bool VansGraphics::VansScene::ShouldDrawMainCameraNode(VansRenderNode* node)
+{
+	const bool visible = IsMainCameraNodeVisible(node);
+	if (node == nullptr ||
+		m_MainCameraCullIndexByNodeId.find(MakeMainCameraCullNodeId(node)) == m_MainCameraCullIndexByNodeId.end())
+	{
+		return visible;
+	}
+
+	const uint64_t preCullIncrement = 1u;
+	const uint64_t culledIncrement = visible ? 0u : (uint64_t{ 1 } << 32u);
+	m_MainCameraHiZDrawCallStatsPacked.fetch_add(
+		preCullIncrement | culledIncrement,
+		std::memory_order_relaxed);
+	return visible;
 }
 
 void VansGraphics::VansScene::MarkMainCameraHiZCullDispatched()

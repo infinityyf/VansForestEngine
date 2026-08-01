@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <vector>
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <unordered_map>
 
@@ -325,23 +326,60 @@ std::string VansNoesisFontProvider::MakeCompactStem(const std::string& filename)
     std::string stem = (dotPos != std::string::npos) ? filename.substr(0, dotPos) : filename;
     std::string out;
     out.reserve(stem.size());
-    for (char c : stem) if (c != ' ') out += (char)tolower(c);
+    for (char c : stem)
+        if (c != ' ')
+            out += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return out;
 }
 
 // 生成 family 查找键列表（原小写 + 紧凑形式）
 std::vector<std::string> VansNoesisFontProvider::MakeFamilyKeys(const char* familyName)
 {
-    std::string lower = familyName;
-    for (auto& c : lower) c = (char)tolower(c);
+    std::string lower = familyName ? familyName : "";
+    for (auto& c : lower)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 
     std::string compact;
     compact.reserve(lower.size());
     for (char c : lower) if (c != ' ') compact += c;
 
     std::vector<std::string> keys;
-    keys.push_back(lower);
+    if (!lower.empty())
+        keys.push_back(lower);
     if (compact != lower) keys.push_back(compact);
+
+    static const std::unordered_map<std::string, std::vector<std::string>> aliases = {
+        { "microsoftyahei", { "msyh", "msyhbd", "msyhl" } },
+        { "microsoft yahei", { "msyh", "msyhbd", "msyhl" } },
+        { "yahei", { "msyh", "msyhbd", "msyhl" } },
+        { "simsun", { "simsun", "simsunb" } },
+        { "simsunextg", { "simsunextg" } },
+        { "simhei", { "simhei" } },
+        { "simkai", { "simkai" } },
+        { "fangsong", { "simfang" } },
+        { "simfang", { "simfang" } },
+        { "dengxian", { "deng", "dengb", "dengl" } },
+        { "noto sans cjk sc", { "notosanscjksc", "notosanssc" } },
+        { "notosanscjksc", { "notosanscjksc", "notosanssc" } },
+        { "source han sans sc", { "sourcehansanssc", "sourcehansanscn" } },
+        { "sourcehansanssc", { "sourcehansanssc", "sourcehansanscn" } },
+    };
+
+    const auto appendAlias = [&keys](const std::string& key)
+    {
+        const auto aliasIt = aliases.find(key);
+        if (aliasIt == aliases.end())
+            return;
+
+        for (const std::string& alias : aliasIt->second)
+        {
+            if (std::find(keys.begin(), keys.end(), alias) == keys.end())
+                keys.push_back(alias);
+        }
+    };
+
+    appendAlias(lower);
+    appendAlias(compact);
     return keys;
 }
 
@@ -392,8 +430,9 @@ std::vector<std::string> VansNoesisFontProvider::BuildSearchDirs() const
 
 const std::string& VansNoesisFontProvider::ResolveFamilyPath(const char* familyName) const
 {
-    std::string lowerFamily = familyName;
-    for (auto& c : lowerFamily) c = (char)tolower(c);
+    std::string lowerFamily = familyName ? familyName : "";
+    for (auto& c : lowerFamily)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 
     auto cached = m_FamilyPathCache.find(lowerFamily);
     if (cached != m_FamilyPathCache.end()) return cached->second;

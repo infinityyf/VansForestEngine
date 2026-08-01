@@ -33,18 +33,10 @@ namespace VansGraphics
 			if (!Vans::VansAssetGuid::TryParse(guidText, guid))
 				return std::nullopt;
 
-			Vans::VansAssetDatabase* database = Vans::VansProjectManager::Get().GetAssetDatabase();
-			if (!database)
-			{
-				VANS_LOG_WARN("[PCG] Cannot resolve placement mask texture guid without a loaded AssetDatabase: "
-					<< guidText);
-				return std::nullopt;
-			}
-
-			std::optional<Vans::VansAssetRecord> record = database->Find(guid);
+			std::optional<Vans::VansAssetRecord> record = Vans::VansProjectManager::Get().FindAssetRecord(guid);
 			if (!record)
 			{
-				VANS_LOG_WARN("[PCG] Placement mask texture guid was not found in AssetDatabase: " << guidText);
+				VANS_LOG_WARN("[PCG] Placement mask texture guid was not found in project asset index: " << guidText);
 				return std::nullopt;
 			}
 			if (record->type != Vans::VansAssetType::Texture)

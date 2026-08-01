@@ -34,8 +34,6 @@ namespace VansGraphics
 		m_TerrainTessShader = nullptr;
         m_ParamsUBO.DestroyVulkanBuffer(m_Device->GetLogicDevice());
         m_InstanceBuffer.DestroyVulkanBuffer(m_Device->GetLogicDevice());
-        m_NearInstanceBuffer.DestroyVulkanBuffer(m_Device->GetLogicDevice());
-        m_FarInstanceBuffer.DestroyVulkanBuffer(m_Device->GetLogicDevice());
         m_TessParamsUBO.DestroyVulkanBuffer(m_Device->GetLogicDevice());
         m_NoiseDetailUBO.DestroyVulkanBuffer(m_Device->GetLogicDevice());
 
@@ -443,20 +441,10 @@ namespace VansGraphics
         if (m_InstanceBufferCapacity > 0)
         {
             m_InstanceBuffer.DestroyVulkanBuffer(m_Device->GetLogicDevice());
-            m_NearInstanceBuffer.DestroyVulkanBuffer(m_Device->GetLogicDevice());
-            m_FarInstanceBuffer.DestroyVulkanBuffer(m_Device->GetLogicDevice());
         }
 
         const VkDeviceSize bufferSize = sizeof(TerrainInstanceData) * newCapacity;
         m_InstanceBuffer.CreatVulkanBuffer(
-            m_Device->GetLogicDevice(), bufferSize, VK_FORMAT_R32_SFLOAT,
-            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        m_NearInstanceBuffer.CreatVulkanBuffer(
-            m_Device->GetLogicDevice(), bufferSize, VK_FORMAT_R32_SFLOAT,
-            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        m_FarInstanceBuffer.CreatVulkanBuffer(
             m_Device->GetLogicDevice(), bufferSize, VK_FORMAT_R32_SFLOAT,
             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
@@ -583,63 +571,157 @@ namespace VansGraphics
         VANS_LOG_WARN("Terrain LOD 2:1 balance reached iteration limit, node count=" << nodes.size());
     }
 
-    int VansTerrain::ComputeStitchFlags(const TerrainNode& node, const std::vector<TerrainNode>& nodes) const
+    VansTerrain::TerrainLodGrid VansTerrain::BuildLodGrid(const std::vector<TerrainNode>& nodes) const
     {
-        int stitchFlags = 0;
-        // 地形只覆盖 heightmap 对应的固定世界范围，CDLOD 只改变该范围内的细分层级。
-        const float terrainMin = -m_TerrainSize * 0.5f;
-        const float terrainMax = m_TerrainSize * 0.5f;
+        TerrainLodGrid grid;
+        grid.terrainMin = -m_TerrainSize * 0.5f;
+        grid.cellSize = GetMinPatchWorldSize();
+        grid.cellCount = std::max(1u, static_cast<uint32_t>(std::ceil(m_TerrainSize / grid.cellSize)));
+        grid.lodByCell.assign(static_cast<size_t>(grid.cellCount) * grid.cellCount, -1);
 
-        for (const TerrainNode& neighbor : nodes)
+        auto toCellFloor = [&](float value)
         {
-            if (&neighbor == &node || neighbor.lodLevel >= node.lodLevel)
-            {
-                continue;
-            }
+            const float local = (value - grid.terrainMin) / grid.cellSize;
+            return std::clamp(static_cast<int>(std::floor(local + TerrainLodEpsilon)), 0, static_cast<int>(grid.cellCount));
+        };
+        auto toCellCeil = [&](float value)
+        {
+            const float local = (value - grid.terrainMin) / grid.cellSize;
+            return std::clamp(static_cast<int>(std::ceil(local - TerrainLodEpsilon)), 0, static_cast<int>(grid.cellCount));
+        };
 
-            if (node.x > terrainMin + TerrainLodEpsilon && std::abs((neighbor.x + neighbor.size) - node.x) < TerrainLodEpsilon &&
-                TerrainRangesOverlap(node.z, node.z + node.size, neighbor.z, neighbor.z + neighbor.size))
+        for (const TerrainNode& node : nodes)
+        {
+            const int x0 = toCellFloor(node.x);
+            const int x1 = toCellCeil(node.x + node.size);
+            const int z0 = toCellFloor(node.z);
+            const int z1 = toCellCeil(node.z + node.size);
+            for (int z = z0; z < z1; ++z)
+            for (int x = x0; x < x1; ++x)
             {
-                stitchFlags |= 1;
-            }
-
-            if (node.x + node.size < terrainMax - TerrainLodEpsilon && std::abs((node.x + node.size) - neighbor.x) < TerrainLodEpsilon &&
-                TerrainRangesOverlap(node.z, node.z + node.size, neighbor.z, neighbor.z + neighbor.size))
-            {
-                stitchFlags |= 2;
-            }
-
-            if (node.z > terrainMin + TerrainLodEpsilon && std::abs((neighbor.z + neighbor.size) - node.z) < TerrainLodEpsilon &&
-                TerrainRangesOverlap(node.x, node.x + node.size, neighbor.x, neighbor.x + neighbor.size))
-            {
-                stitchFlags |= 4;
-            }
-
-            if (node.z + node.size < terrainMax - TerrainLodEpsilon && std::abs((node.z + node.size) - neighbor.z) < TerrainLodEpsilon &&
-                TerrainRangesOverlap(node.x, node.x + node.size, neighbor.x, neighbor.x + neighbor.size))
-            {
-                stitchFlags |= 8;
+                grid.lodByCell[static_cast<size_t>(z) * grid.cellCount + static_cast<size_t>(x)] = node.lodLevel;
             }
         }
+
+        return grid;
+    }
+
+    int VansTerrain::ComputeStitchFlags(const TerrainNode& node, const TerrainLodGrid& lodGrid) const
+    {
+        int stitchFlags = 0;
+        if (lodGrid.cellCount == 0 || lodGrid.lodByCell.empty())
+            return stitchFlags;
+
+        const float terrainMin = lodGrid.terrainMin;
+        const float terrainMax = lodGrid.terrainMin + m_TerrainSize;
+
+        auto toCellFloor = [&](float value)
+        {
+            const float local = (value - lodGrid.terrainMin) / lodGrid.cellSize;
+            return std::clamp(static_cast<int>(std::floor(local + TerrainLodEpsilon)), 0, static_cast<int>(lodGrid.cellCount));
+        };
+        auto toCellCeil = [&](float value)
+        {
+            const float local = (value - lodGrid.terrainMin) / lodGrid.cellSize;
+            return std::clamp(static_cast<int>(std::ceil(local - TerrainLodEpsilon)), 0, static_cast<int>(lodGrid.cellCount));
+        };
+        auto sampleLod = [&](int x, int z)
+        {
+            if (x < 0 || z < 0 || x >= static_cast<int>(lodGrid.cellCount) || z >= static_cast<int>(lodGrid.cellCount))
+                return -1;
+            return lodGrid.lodByCell[static_cast<size_t>(z) * lodGrid.cellCount + static_cast<size_t>(x)];
+        };
+        auto anyCoarserAlongZ = [&](int xCell, int z0, int z1)
+        {
+            for (int z = z0; z < z1; ++z)
+            {
+                const int neighborLod = sampleLod(xCell, z);
+                if (neighborLod >= 0 && neighborLod < node.lodLevel)
+                    return true;
+            }
+            return false;
+        };
+        auto anyCoarserAlongX = [&](int zCell, int x0, int x1)
+        {
+            for (int x = x0; x < x1; ++x)
+            {
+                const int neighborLod = sampleLod(x, zCell);
+                if (neighborLod >= 0 && neighborLod < node.lodLevel)
+                    return true;
+            }
+            return false;
+        };
+
+        const int x0 = toCellFloor(node.x);
+        const int x1 = toCellCeil(node.x + node.size);
+        const int z0 = toCellFloor(node.z);
+        const int z1 = toCellCeil(node.z + node.size);
+
+        if (node.x > terrainMin + TerrainLodEpsilon && anyCoarserAlongZ(x0 - 1, z0, z1))
+            stitchFlags |= 1;
+
+        if (node.x + node.size < terrainMax - TerrainLodEpsilon && anyCoarserAlongZ(x1, z0, z1))
+            stitchFlags |= 2;
+
+        if (node.z > terrainMin + TerrainLodEpsilon && anyCoarserAlongX(z0 - 1, x0, x1))
+            stitchFlags |= 4;
+
+        if (node.z + node.size < terrainMax - TerrainLodEpsilon && anyCoarserAlongX(z1, x0, x1))
+            stitchFlags |= 8;
 
         return stitchFlags;
     }
 
+    VansTerrain::TerrainLodBuildSignature VansTerrain::BuildLodSignature(const glm::vec3& cameraPosition) const
+    {
+        const float cameraCellSize = std::max(1.0f, GetMinPatchWorldSize() * 0.5f);
+        TerrainLodBuildSignature signature;
+        signature.cameraCellX = static_cast<int64_t>(std::floor(cameraPosition.x / cameraCellSize));
+        signature.cameraCellZ = static_cast<int64_t>(std::floor(cameraPosition.z / cameraCellSize));
+        signature.tessellationEnabled = m_EnableTessellation;
+        signature.splitDistMult = m_SplitDistMult;
+        signature.lodDistanceRatio = m_LodDistanceRatio;
+        signature.tessellationDistance = m_TessellationDistance;
+        signature.tessLodBias = m_TessLodBias;
+        return signature;
+    }
+
+    bool VansTerrain::CanReuseLodResult(const TerrainLodBuildSignature& signature) const
+    {
+        return m_LodCacheValid &&
+            signature.cameraCellX == m_LastLodSignature.cameraCellX &&
+            signature.cameraCellZ == m_LastLodSignature.cameraCellZ &&
+            signature.tessellationEnabled == m_LastLodSignature.tessellationEnabled &&
+            signature.splitDistMult == m_LastLodSignature.splitDistMult &&
+            signature.lodDistanceRatio == m_LastLodSignature.lodDistanceRatio &&
+            signature.tessellationDistance == m_LastLodSignature.tessellationDistance &&
+            signature.tessLodBias == m_LastLodSignature.tessLodBias;
+    }
+
     void VansTerrain::Update(VansCamera* camera)
     {
+        if (!camera)
+            return;
+
+        const TerrainLodBuildSignature signature = BuildLodSignature(camera->GetPosition());
+        if (CanReuseLodResult(signature))
+            return;
+
         m_InstanceDataCPU.clear();
-        m_NearInstanceDataCPU.clear();
-        m_FarInstanceDataCPU.clear();
+        m_FarInstanceCount = 0;
+        m_NearInstanceCount = 0;
 
         TerrainNode root = { -m_TerrainSize * 0.5f, -m_TerrainSize * 0.5f, m_TerrainSize, 0 };
         std::vector<TerrainNode> leafNodes;
         CollectLeafNodes(root, camera->GetPosition(), leafNodes);
         BalanceLeafNodes(leafNodes);
+        const TerrainLodGrid lodGrid = BuildLodGrid(leafNodes);
 
         const glm::vec3& camPos = camera->GetPosition();
-        m_InstanceDataCPU.reserve(leafNodes.size());
-        m_NearInstanceDataCPU.reserve(leafNodes.size());
-        m_FarInstanceDataCPU.reserve(leafNodes.size());
+        std::vector<TerrainInstanceData> farInstances;
+        std::vector<TerrainInstanceData> nearInstances;
+        farInstances.reserve(leafNodes.size());
+        nearInstances.reserve(leafNodes.size());
         for (const TerrainNode& node : leafNodes)
         {
             float centerX = node.x + node.size * 0.5f;
@@ -650,40 +732,32 @@ namespace VansGraphics
             data.Offset      = glm::vec2(node.x, node.z);
             data.Scale       = node.size / static_cast<float>(m_PatchGridSize);
             data.Lod         = static_cast<float>(node.lodLevel);
-            data.StitchFlags = static_cast<float>(ComputeStitchFlags(node, leafNodes));
+            data.StitchFlags = static_cast<float>(ComputeStitchFlags(node, lodGrid));
             data.padding0    = glm::vec3(0.0);
-
-            m_InstanceDataCPU.push_back(data);
 
             if (m_EnableTessellation && dist < m_TessellationDistance)
             {
-                m_NearInstanceDataCPU.push_back(data);
+                nearInstances.push_back(data);
             }
             else
             {
-                m_FarInstanceDataCPU.push_back(data);
+                farInstances.push_back(data);
             }
         }
 
-        // 上传近场、远场和完整实例数据前，先确保缓冲容量足够。
-        const uint32_t requiredCapacity = static_cast<uint32_t>(std::max({
-            m_InstanceDataCPU.size(),
-            m_NearInstanceDataCPU.size(),
-            m_FarInstanceDataCPU.size()
-        }));
-        EnsureInstanceBufferCapacity(requiredCapacity);
+        m_FarInstanceCount = static_cast<uint32_t>(farInstances.size());
+        m_NearInstanceCount = static_cast<uint32_t>(nearInstances.size());
+        m_InstanceDataCPU.reserve(farInstances.size() + nearInstances.size());
+        m_InstanceDataCPU.insert(m_InstanceDataCPU.end(), farInstances.begin(), farInstances.end());
+        m_InstanceDataCPU.insert(m_InstanceDataCPU.end(), nearInstances.begin(), nearInstances.end());
 
-        if (!m_NearInstanceDataCPU.empty())
-            m_NearInstanceBuffer.SetBufferData(m_NearInstanceDataCPU.data(), 0,
-                sizeof(TerrainInstanceData) * m_NearInstanceDataCPU.size());
-        if (!m_FarInstanceDataCPU.empty())
-            m_FarInstanceBuffer.SetBufferData(m_FarInstanceDataCPU.data(), 0,
-                sizeof(TerrainInstanceData) * m_FarInstanceDataCPU.size());
-
-        // 完整实例集供阴影和运动向量 pass 使用。
+        EnsureInstanceBufferCapacity(static_cast<uint32_t>(m_InstanceDataCPU.size()));
         if (!m_InstanceDataCPU.empty())
             m_InstanceBuffer.SetBufferData(m_InstanceDataCPU.data(), 0,
                 sizeof(TerrainInstanceData) * m_InstanceDataCPU.size());
+
+        m_LastLodSignature = signature;
+        m_LodCacheValid = true;
     }
 
     void VansTerrain::Draw(VansVKCommandBuffer& cmd, GlobalStateData& globalState, std::vector<VkDescriptorSetLayout>& layouts, std::vector<VkDescriptorSet>& sets)
@@ -698,12 +772,12 @@ namespace VansGraphics
             globalState.vertexInputBindingDescriptions = &m_BasePatchMesh->m_VertexInputBindingDescriptions;
         };
 
-        // 1. 远场 patch：普通 VS 管线（TRIANGLE_LIST）
-        if (!m_FarInstanceDataCPU.empty())
+        // 1. 远场 patch：普通 VS 管线（TRIANGLE_LIST），使用单实例缓冲的前半段。
+        if (m_FarInstanceCount > 0)
         {
             bindMeshBuffers();
 
-            VkBuffer instanceBuffers[] = { m_FarInstanceBuffer.GetNativeBuffer() };
+            VkBuffer instanceBuffers[] = { m_InstanceBuffer.GetNativeBuffer() };
             VkDeviceSize instanceOffsets[] = { 0 };
             cmd.BindVertexBuffers(1, 1, instanceBuffers, instanceOffsets);
 
@@ -712,15 +786,15 @@ namespace VansGraphics
             cmd.BindGraphicsPipeline(*m_TerrainShader->GetGraphicsPipeline());
 
             cmd.DrawIndexed(m_BasePatchMesh->GetIndexCount(),
-                static_cast<uint32_t>(m_FarInstanceDataCPU.size()), 0, 0, 0);
+                m_FarInstanceCount, 0, 0, 0);
         }
 
-        // 2. 近场 patch：tessellation 管线（PATCH_LIST）
-        if (m_EnableTessellation && !m_NearInstanceDataCPU.empty())
+        // 2. 近场 patch：tessellation 管线（PATCH_LIST），通过 firstInstance 读取单缓冲后半段。
+        if (m_EnableTessellation && m_NearInstanceCount > 0)
         {
             bindMeshBuffers();
 
-            VkBuffer instanceBuffers[] = { m_NearInstanceBuffer.GetNativeBuffer() };
+            VkBuffer instanceBuffers[] = { m_InstanceBuffer.GetNativeBuffer() };
             VkDeviceSize instanceOffsets[] = { 0 };
             cmd.BindVertexBuffers(1, 1, instanceBuffers, instanceOffsets);
 
@@ -729,7 +803,7 @@ namespace VansGraphics
             cmd.BindGraphicsPipeline(*m_TerrainTessShader->GetGraphicsPipeline());
 
             cmd.DrawIndexed(m_BasePatchMesh->GetIndexCount(),
-                static_cast<uint32_t>(m_NearInstanceDataCPU.size()), 0, 0, 0);
+                m_NearInstanceCount, 0, 0, m_FarInstanceCount);
         }
     }
     void VansTerrain::DrawShadow(VansVKCommandBuffer& cmd, GlobalStateData& globalState, std::vector<VkDescriptorSetLayout>& layouts, std::vector<VkDescriptorSet>& sets)

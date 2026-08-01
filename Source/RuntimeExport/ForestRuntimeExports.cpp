@@ -1,9 +1,11 @@
 #include "ForestRuntimeCAPI.h"
 
 #include "../EngineCore/AudioCore/VansAudioSystem.h"
+#include "../EngineCore/AssetCore/Importers/Shader/VansShaderArtifactCache.h"
 #include "../EngineCore/Configration/VansConfigration.h"
 #include "../EngineCore/EventCore/VansEventBus.h"
 #include "../EngineCore/PhysicsCore/VansPhysics.h"
+#include "../EngineCore/PhysicsCore/VansPhysicsVehicle.h"
 #include "../EngineCore/ProjectSystem/VansProjectManager.h"
 #include "../EngineCore/RenderCore/SceneBuild/VansSceneProjectResourceBuilder.h"
 #include "../EngineCore/RenderCore/VansCamera.h"
@@ -12,8 +14,10 @@
 #include "../EngineCore/RenderCore/VansShaderManager.h"
 #include "../EngineCore/RenderCore/VulkanCore/VansVKDevice.h"
 #include "../EngineCore/RuntimeCore/VansRuntimeWindow.h"
-#include "../EngineCore/RuntimeCore/VansFramePhase.h"
+#include "../EngineCore/RuntimeCore/VansPackageManifest.h"
+#include "../EngineCore/RuntimeCore/VansRuntimeFrameScheduler.h"
 #include "../EngineCore/RuntimeCore/VansThreadContract.h"
+#include "../EngineCore/SceneCore/VansPackagedResourcePlan.h"
 #include "../EngineCore/ScriptCore/VansScriptContext.h"
 #include "../EngineCore/Util/VansInputManager.h"
 #include "../EngineCore/RuntimeUI/Public/VansUISystem.h"
@@ -22,10 +26,10 @@
 #include "../EngineCore/VansTimer.h"
 
 #include <filesystem>
-#include <fstream>
 #include <memory>
-#include <sstream>
+#include <mutex>
 #include <string>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -36,6 +40,7 @@ struct ForestRuntimeHandle
 	fs::path manifestPath;
 	fs::path contentRoot;
 	std::string loadedScene;
+	std::string resourcePlan;
 	std::string startupMode = "play";
 	std::string projectRoot;
 	std::string lastError;
@@ -52,59 +57,76 @@ struct ForestRuntimeHandle
 
 namespace
 {
-	std::string ReadTextFile(const fs::path& path)
-	{
-		std::ifstream file(path, std::ios::binary);
-		if (!file)
-			return {};
+	std::mutex g_ActiveRuntimeMutex;
+	ForestRuntimeHandle* g_ActiveRuntime = nullptr;
 
-		std::ostringstream stream;
-		stream << file.rdbuf();
-		return stream.str();
+	bool ClaimActiveRuntime(ForestRuntimeHandle* runtime)
+	{
+		std::lock_guard<std::mutex> lock(g_ActiveRuntimeMutex);
+		if (g_ActiveRuntime != nullptr && g_ActiveRuntime != runtime)
+			return false;
+		g_ActiveRuntime = runtime;
+		return true;
 	}
 
-	std::string ReadJsonStringField(const std::string& json, const std::string& fieldName)
+	void ReleaseActiveRuntime(ForestRuntimeHandle* runtime)
 	{
-		const std::string key = "\"" + fieldName + "\"";
-		const std::size_t keyPos = json.find(key);
-		if (keyPos == std::string::npos)
-			return {};
+		std::lock_guard<std::mutex> lock(g_ActiveRuntimeMutex);
+		if (g_ActiveRuntime == runtime)
+			g_ActiveRuntime = nullptr;
+	}
 
-		const std::size_t colonPos = json.find(':', keyPos + key.size());
-		if (colonPos == std::string::npos)
-			return {};
+	Vans::VansAssetType AssetTypeFromString(const std::string& value)
+	{
+		if (value == "model") return Vans::VansAssetType::Model;
+		if (value == "texture") return Vans::VansAssetType::Texture;
+		if (value == "material") return Vans::VansAssetType::Material;
+		if (value == "shader") return Vans::VansAssetType::Shader;
+		if (value == "audio") return Vans::VansAssetType::Audio;
+		if (value == "video") return Vans::VansAssetType::Video;
+		if (value == "scene") return Vans::VansAssetType::Scene;
+		if (value == "particle") return Vans::VansAssetType::Particle;
+		if (value == "animationClip") return Vans::VansAssetType::AnimationClip;
+		if (value == "animatorController") return Vans::VansAssetType::AnimatorController;
+		if (value == "clothProfile") return Vans::VansAssetType::ClothProfile;
+		if (value == "postProcessProfile") return Vans::VansAssetType::PostProcessProfile;
+		if (value == "ragdollProfile") return Vans::VansAssetType::RagdollProfile;
+		return Vans::VansAssetType::Unknown;
+	}
 
-		const std::size_t quoteStart = json.find('"', colonPos + 1);
-		if (quoteStart == std::string::npos)
-			return {};
+	Vans::VansAssetArtifactFormat ArtifactFormatFromString(const std::string& value)
+	{
+		if (value == "imported") return Vans::VansAssetArtifactFormat::Imported;
+		if (value == "source") return Vans::VansAssetArtifactFormat::Source;
+		return Vans::VansAssetArtifactFormat::None;
+	}
 
-		std::string value;
-		bool escaping = false;
-		for (std::size_t i = quoteStart + 1; i < json.size(); ++i)
+	std::vector<Vans::VansAssetRecord> BuildRuntimeAssetRecords(
+		const std::vector<Vans::VansPackagedAssetIndexRecord>& assetIndex)
+	{
+		std::vector<Vans::VansAssetRecord> records;
+		records.reserve(assetIndex.size());
+		for (const Vans::VansPackagedAssetIndexRecord& indexRecord : assetIndex)
 		{
-			const char c = json[i];
-			if (escaping)
-			{
-				switch (c)
-				{
-				case 'n': value.push_back('\n'); break;
-				case 'r': value.push_back('\r'); break;
-				case 't': value.push_back('\t'); break;
-				default: value.push_back(c); break;
-				}
-				escaping = false;
+			Vans::VansAssetGuid guid;
+			if (!Vans::VansAssetGuid::TryParse(indexRecord.guid, guid))
 				continue;
-			}
-			if (c == '\\')
-			{
-				escaping = true;
-				continue;
-			}
-			if (c == '"')
-				break;
-			value.push_back(c);
+
+			Vans::VansAssetRecord record;
+			record.guid = guid;
+			record.type = AssetTypeFromString(indexRecord.type);
+			record.state = indexRecord.missing
+				? Vans::VansAssetState::Missing
+				: Vans::VansAssetState::Discovered;
+			record.sourcePath = indexRecord.sourcePath;
+			record.authoringPath = indexRecord.authoringPath;
+			record.artifactPath = indexRecord.artifactPath;
+			record.artifactFormat = ArtifactFormatFromString(indexRecord.artifactFormat);
+			record.sourceHash = indexRecord.sourceHash;
+			record.metaHash = indexRecord.metaHash;
+			records.push_back(std::move(record));
 		}
-		return value;
+		return records;
 	}
 
 	void SetError(ForestRuntimeHandle* runtime, std::string message)
@@ -140,6 +162,8 @@ namespace
 		if (!runtime)
 		return;
 
+	VansEngine::VansPhysicsSystem::GetInstance().SetPreSimulateCallback(nullptr);
+
 	if (runtime->device)
 	{
 		runtime->device->WaitForDevice();
@@ -158,7 +182,11 @@ namespace
 			runtime->scene->UnloadProjectResources(runtime->device.get());
 		}
 
+		if (runtime->device)
+			runtime->device->GetPipelineCacheService().Flush(VansGraphics::VansPipelineCacheFlushReason::Manual);
 		VansRuntime::VansUISystem::Get().Shutdown();
+		if (runtime->device)
+			runtime->device->GetPipelineCacheService().Flush(VansGraphics::VansPipelineCacheFlushReason::Shutdown);
 		Vans::VansInputManager::Get().Shutdown();
 		VansGraphics::VansShaderManager::Get().Clear();
 
@@ -212,6 +240,11 @@ FOREST_RUNTIME_API int ForestRuntime_LoadPackage(ForestRuntimeHandle* runtime, c
 {
 	if (!runtime)
 		return 0;
+	if (runtime->packageLoaded)
+	{
+		SetError(runtime, "A package is already loaded by this runtime handle");
+		return 0;
+	}
 	if (!manifestPath || manifestPath[0] == '\0')
 	{
 		SetError(runtime, "Package manifest path is empty");
@@ -226,44 +259,27 @@ FOREST_RUNTIME_API int ForestRuntime_LoadPackage(ForestRuntimeHandle* runtime, c
 		return 0;
 	}
 
-	const std::string manifestText = ReadTextFile(manifest);
-	if (manifestText.empty())
+	const Vans::VansPackageManifestLoadResult manifestLoad =
+		Vans::VansPackageManifestIO::Load(manifest);
+	if (!manifestLoad)
 	{
-		SetError(runtime, "Package manifest is empty or unreadable: " + manifest.string());
+		SetError(runtime, manifestLoad.error);
 		return 0;
 	}
-
-	const std::string format = ReadJsonStringField(manifestText, "format");
-	if (format != "ForestGamePackage")
-	{
-		SetError(runtime, "Unsupported package manifest format: " + format);
-		return 0;
-	}
-
-	const std::string platform = ReadJsonStringField(manifestText, "platform");
-	if (platform != "Windows")
-	{
-		SetError(runtime, "Unsupported package platform: " + platform);
-		return 0;
-	}
-
-	const std::string scene = ReadJsonStringField(manifestText, "scene");
-	if (scene.empty())
-	{
-		SetError(runtime, "Package manifest does not specify a scene");
-		return 0;
-	}
-
-	std::string startupMode = ReadJsonStringField(manifestText, "startupMode");
-	if (startupMode.empty())
-		startupMode = "play";
-	if (startupMode != "play")
-	{
-		SetError(runtime, "Unsupported package startup mode: " + startupMode);
-		return 0;
-	}
+	const Vans::VansPackageManifest& packageManifest = manifestLoad.manifest;
+	const std::string& scene = packageManifest.scene;
+	const std::string& startupMode = packageManifest.startupMode;
 
 	const fs::path contentRoot = manifest.parent_path();
+	const fs::path shaderArtifactRoot =
+		(contentRoot / packageManifest.shaderArtifacts).lexically_normal();
+	if (!fs::exists(shaderArtifactRoot / "cooked-shader-manifest.json", ec)
+		|| !fs::is_regular_file(shaderArtifactRoot / "cooked-shader-manifest.json", ec))
+	{
+		SetError(runtime, "Packaged shader artifact index does not exist: "
+			+ (shaderArtifactRoot / "cooked-shader-manifest.json").string());
+		return 0;
+	}
 	const fs::path projectConfigPath = contentRoot / "ForestProject.json";
 	if (!fs::exists(projectConfigPath, ec) || !fs::is_regular_file(projectConfigPath, ec))
 	{
@@ -278,6 +294,25 @@ FOREST_RUNTIME_API int ForestRuntime_LoadPackage(ForestRuntimeHandle* runtime, c
 		return 0;
 	}
 
+	const std::string& resourcePlan = packageManifest.resourcePlan;
+	fs::path resourcePlanPath;
+	if (!resourcePlan.empty())
+	{
+		resourcePlanPath = (contentRoot / resourcePlan).lexically_normal();
+		if (!fs::exists(resourcePlanPath, ec) || !fs::is_regular_file(resourcePlanPath, ec))
+		{
+			SetError(runtime, "Packaged resource plan does not exist: " + resourcePlanPath.string());
+			return 0;
+		}
+	}
+
+	if (!ClaimActiveRuntime(runtime))
+	{
+		SetError(runtime, "ForestRuntime supports one active runtime handle per process");
+		return 0;
+	}
+	Vans::VansShaderArtifactCache::ConfigureCookedRuntime(shaderArtifactRoot);
+
 	if (VansConfigration* configuration = VansConfigration::GetInstance())
 		configuration->SetProjectRootPath(contentRoot.string());
 
@@ -285,11 +320,14 @@ FOREST_RUNTIME_API int ForestRuntime_LoadPackage(ForestRuntimeHandle* runtime, c
 	Vans::VansProjectOpenOptions openOptions;
 	openOptions.updateLastOpenedAt = false;
 	openOptions.updateRecentProjects = false;
-	openOptions.loadProjectSettings = false;
-	openOptions.scanAssets = true;
+	openOptions.loadProjectSettings = true;
+	openOptions.scanAssets = resourcePlan.empty();
+	openOptions.assetPolicy = Vans::VansAssetOperationPolicy::ReadOnly();
 	if (!projectManager.OpenProject(contentRoot.string(), openOptions))
 	{
 		SetError(runtime, "Cannot open packaged project: " + contentRoot.string());
+		Vans::VansShaderArtifactCache::ResetRuntimeConfiguration();
+		ReleaseActiveRuntime(runtime);
 		return 0;
 	}
 	projectManager.GetSceneManager().SetCurrentScene(scene);
@@ -299,6 +337,7 @@ FOREST_RUNTIME_API int ForestRuntime_LoadPackage(ForestRuntimeHandle* runtime, c
 	runtime->manifestPath = manifest;
 	runtime->contentRoot = contentRoot;
 	runtime->loadedScene = scene;
+	runtime->resourcePlan = resourcePlan;
 	runtime->startupMode = startupMode;
 	runtime->projectRoot = projectManager.GetProjectRootPath();
 	runtime->lastError.clear();
@@ -381,18 +420,37 @@ FOREST_RUNTIME_API int ForestRuntime_LoadCurrentScene(ForestRuntimeHandle* runti
 	}
 
 	Vans::VansProjectManager& projectManager = Vans::VansProjectManager::Get();
-	Vans::VansAssetDatabase* database = projectManager.GetAssetDatabase();
-	if (!database)
-	{
-		SetError(runtime, "Packaged project has no asset database");
-		return 0;
-	}
-
 	const fs::path scenePath = (runtime->contentRoot / runtime->loadedScene).lexically_normal();
-	if (!runtime->scene->LoadProjectAssets(*database, scenePath, runtime->device.get()))
+	if (!runtime->resourcePlan.empty())
 	{
-		SetError(runtime, "Project asset loading failed for scene: " + scenePath.string());
-		return 0;
+		const fs::path resourcePlanPath = (runtime->contentRoot / runtime->resourcePlan).lexically_normal();
+		Vans::VansPackagedResourcePlan packagePlan;
+		std::string planError;
+		if (!Vans::VansPackagedResourcePlanIO::Load(resourcePlanPath, runtime->contentRoot, packagePlan, planError))
+		{
+			SetError(runtime, "Cannot load packaged resource plan: " + planError);
+			return 0;
+		}
+		projectManager.SetPackagedAssetRecords(BuildRuntimeAssetRecords(packagePlan.assetIndex));
+		if (!runtime->scene->LoadPackagedProjectAssets(packagePlan, runtime->device.get()))
+		{
+			SetError(runtime, "Packaged project asset loading failed for scene: " + scenePath.string());
+			return 0;
+		}
+	}
+	else
+	{
+		Vans::VansAssetDatabase* database = projectManager.GetAssetDatabase();
+		if (!database)
+		{
+			SetError(runtime, "Packaged project has no asset database");
+			return 0;
+		}
+		if (!runtime->scene->LoadProjectAssets(*database, scenePath, runtime->device.get()))
+		{
+			SetError(runtime, "Project asset loading failed for scene: " + scenePath.string());
+			return 0;
+		}
 	}
 
 	runtime->camera = std::make_unique<VansGraphics::VansCamera>(runtime->device.get());
@@ -402,14 +460,22 @@ FOREST_RUNTIME_API int ForestRuntime_LoadCurrentScene(ForestRuntimeHandle* runti
 	runtime->scriptContext->VansScriptSetup();
 	VANS_LOG("[ForestRuntime] Runtime script context ready");
 
-	runtime->scene->LoadSceneForRendering(scenePath.string().c_str(), runtime->device.get(), VansGraphics::VansSceneLoadMode::Runtime);
-	if (!runtime->scene->IsSceneReady())
+	if (!runtime->scene->LoadSceneForRendering(
+			scenePath.string().c_str(),
+			runtime->device.get(),
+			VansGraphics::VansSceneLoadMode::Runtime) ||
+		!runtime->scene->IsSceneReady())
 	{
 		SetError(runtime, "Scene failed to become ready: " + scenePath.string());
 		return 0;
 	}
 
 	runtime->scriptContext->SetScene(runtime->scene.get());
+	VansEngine::VansPhysicsSystem::GetInstance().SetPreSimulateCallback([scene = runtime->scene.get()](float deltaTimeSeconds)
+	{
+		if (scene && scene->GetVehicle())
+			scene->GetVehicle()->Step(deltaTimeSeconds);
+	});
 	VansEngine::VansPhysicsSystem::GetInstance().StartSimulation();
 	VANS_LOG("[ForestRuntime] Runtime play simulation started");
 	VansGraphics::VansTimer::Reset();
@@ -441,24 +507,26 @@ FOREST_RUNTIME_API int ForestRuntime_Tick(ForestRuntimeHandle* runtime, float)
 	}
 	if (runtime->sceneLoaded && runtime->scene && runtime->scene->IsSceneReady())
 	{
-		VANS_SET_FRAME_PHASE(VansFramePhase::GameLogic);
-		Vans::VansEventBus::Get().Flush(Vans::VansEventLane::Physics);
-
-		if (VansEngine::VansPhysicsSystem::GetInstance().IsSimulationRunning())
-			runtime->scene->UpdatePhysicsTransforms();
-
-		if (runtime->scriptContext)
+		Vans::VansRuntimeGameplayFrame frame;
+		frame.sceneReady = true;
+		frame.simulationRunning = VansEngine::VansPhysicsSystem::GetInstance().IsSimulationRunning();
+		frame.gameplayActive = true;
+		frame.syncPhysicsTransforms = [&] { runtime->scene->UpdatePhysicsTransforms(); };
+		frame.updateNonCameraScripts = [&]
 		{
-			Vans::VansEventBus::Get().Flush(Vans::VansEventLane::Script);
-			runtime->scriptContext->SetScene(runtime->scene.get());
-			runtime->scriptContext->VansScriptUpdateNonCameraScripts();
-		}
-
-		if (VansEngine::VansPhysicsSystem::GetInstance().IsSimulationRunning())
-			runtime->scene->UpdateCharControllerTransforms();
-
-		if (runtime->scriptContext)
-			runtime->scriptContext->VansScriptUpdateCameraScripts();
+			if (runtime->scriptContext)
+			{
+				runtime->scriptContext->SetScene(runtime->scene.get());
+				runtime->scriptContext->VansScriptUpdateNonCameraScripts();
+			}
+		};
+		frame.flushCharacterControllerTransforms = [&] { runtime->scene->UpdateCharControllerTransforms(); };
+		frame.updateCameraScripts = [&]
+		{
+			if (runtime->scriptContext)
+				runtime->scriptContext->VansScriptUpdateCameraScripts();
+		};
+		Vans::VansRuntimeFrameScheduler::RunGameplay(frame);
 	}
 	return 1;
 }
@@ -501,16 +569,29 @@ FOREST_RUNTIME_API void ForestRuntime_Shutdown(ForestRuntimeHandle* runtime)
 		return;
 	if (!runtime->packageLoaded && !runtime->projectLoaded && !runtime->coreInitialized &&
 		!runtime->graphicsInitialized && !runtime->sceneLoaded)
+	{
+		Vans::VansShaderArtifactCache::ResetRuntimeConfiguration();
+		ReleaseActiveRuntime(runtime);
 		return;
+	}
+
+	if (runtime->coreInitialized)
+	{
+		VansEngine::VansPhysicsSystem::GetInstance().PauseSimulation();
+		VansEngine::VansPhysicsSystem::GetInstance().StopSimulation();
+	}
 
 	ShutdownGraphics(runtime);
 	runtime->packageLoaded = false;
 	runtime->projectLoaded = false;
 	runtime->loadedScene.clear();
+	runtime->resourcePlan.clear();
 	runtime->projectRoot.clear();
 	runtime->lastError.clear();
 	Vans::VansProjectManager::Get().CloseProject();
 	ShutdownRuntimeCore(runtime);
+	Vans::VansShaderArtifactCache::ResetRuntimeConfiguration();
+	ReleaseActiveRuntime(runtime);
 }
 
 FOREST_RUNTIME_API const char* ForestRuntime_GetLastError(ForestRuntimeHandle* runtime)

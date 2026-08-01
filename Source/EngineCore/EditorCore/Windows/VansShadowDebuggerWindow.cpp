@@ -80,11 +80,13 @@ namespace
 			return;
 		}
 
-		const float size = std::min(ImGui::GetContentRegionAvail().x, 680.0f);
-		ImGui::Image(preview.texture, ImVec2(size, size));
+		const uint32_t atlasCount = std::max(snapshot.atlasCount, 1u);
+		const float width = std::min(ImGui::GetContentRegionAvail().x, 900.0f);
+		const float atlasDisplaySize = width / static_cast<float>(atlasCount);
+		ImGui::Image(preview.texture, ImVec2(width, atlasDisplaySize));
 		const ImVec2 imageMin = ImGui::GetItemRectMin();
 		ImDrawList* drawList = ImGui::GetWindowDrawList();
-		const float scale = size / static_cast<float>(snapshot.atlasSize);
+		const float scale = atlasDisplaySize / static_cast<float>(snapshot.atlasSize);
 
 		for (std::size_t lightIndex = 0; lightIndex < snapshot.lights.size(); ++lightIndex)
 		{
@@ -93,7 +95,7 @@ namespace
 			for (const auto& view : light.atlasViews)
 			{
 				const ImVec2 rectMin(
-					imageMin.x + static_cast<float>(view.x) * scale,
+					imageMin.x + static_cast<float>(view.atlasIndex) * atlasDisplaySize + static_cast<float>(view.x) * scale,
 					imageMin.y + static_cast<float>(view.y) * scale);
 				const ImVec2 rectMax(
 					rectMin.x + static_cast<float>(view.resolution) * scale,
@@ -143,12 +145,15 @@ namespace
 		for (const auto& view : light.atlasViews)
 		{
 			ImGui::TableNextColumn();
-			ImGui::Text("Face %u | %ux%u | (%u, %u)",
-				view.faceIndex, view.resolution, view.resolution, view.x, view.y);
+			ImGui::Text("Atlas %u | Face %u | %ux%u | (%u, %u)",
+				view.atlasIndex, view.faceIndex, view.resolution, view.resolution, view.x, view.y);
 			const float atlasSize = static_cast<float>(snapshot.atlasSize);
-			const ImVec2 uv0(static_cast<float>(view.x) / atlasSize, static_cast<float>(view.y) / atlasSize);
+			const float atlasCount = static_cast<float>(std::max(snapshot.atlasCount, 1u));
+			const ImVec2 uv0(
+				(static_cast<float>(view.atlasIndex) + static_cast<float>(view.x) / atlasSize) / atlasCount,
+				static_cast<float>(view.y) / atlasSize);
 			const ImVec2 uv1(
-				static_cast<float>(view.x + view.resolution) / atlasSize,
+				(static_cast<float>(view.atlasIndex) + static_cast<float>(view.x + view.resolution) / atlasSize) / atlasCount,
 				static_cast<float>(view.y + view.resolution) / atlasSize);
 			const float width = ImGui::GetContentRegionAvail().x;
 			ImGui::Image(snapshot.atlasPreview.texture, ImVec2(width, width), uv0, uv1);
@@ -200,8 +205,8 @@ void VansGraphics::VansShadowDebuggerWindow::ShowWindow(Vans::EditorAPI::IEngine
 	const float pageUsage = snapshot.totalPages > 0
 		? static_cast<float>(snapshot.usedPages) / static_cast<float>(snapshot.totalPages)
 		: 0.0f;
-	ImGui::Text("Atlas %ux%u | Pages %u/%u | Resident %u lights / %u views",
-		snapshot.atlasSize, snapshot.atlasSize, snapshot.usedPages, snapshot.totalPages,
+	ImGui::Text("Atlas %ux%u x %u | Pages %u/%u | Resident %u lights / %u views",
+		snapshot.atlasSize, snapshot.atlasSize, snapshot.atlasCount, snapshot.usedPages, snapshot.totalPages,
 		snapshot.residentLights, snapshot.residentViews);
 	ImGui::ProgressBar(pageUsage, ImVec2(-1.0f, 0.0f));
 	ImGui::Text("This frame: %u rendered views, %llu dirty texels | Fallback lights: %u | Allocation failures: %u",

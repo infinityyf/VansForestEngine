@@ -2315,7 +2315,10 @@ namespace Vans::EditorAPI
 		const std::filesystem::path sourcePath(assetPath);
 		std::string registrationError;
 		if (!database->Find(sourcePath))
-			database->RegisterOrRefresh(sourcePath, true, registrationError);
+			database->RegisterOrRefresh(
+				sourcePath,
+				VansAssetOperationPolicy::Authoring(),
+				registrationError);
 
 		if (const auto record = database->Find(sourcePath))
 		{
@@ -2371,7 +2374,9 @@ namespace Vans::EditorAPI
 		std::string refreshError;
 		result.success = database->RegisterOrRefresh(
 			std::filesystem::path(assetPath),
-			importIfMissing,
+			importIfMissing
+				? VansAssetOperationPolicy::Authoring()
+				: VansAssetOperationPolicy::ReadOnly(),
 			refreshError);
 		result.message = refreshError;
 		return result;
@@ -2479,6 +2484,8 @@ namespace Vans::EditorAPI
 
 		if (auto* device = static_cast<VansGraphics::VansVKDevice*>(m_Device))
 		{
+			device->GetPipelineCacheService().RefreshPersistencePath();
+
 			const Vans::VansProjectFSRSettings& fsrSettings =
 				projectManager.GetProjectSettings().GetFSRSettings();
 			const VkExtent2D viewportExtent = device->GetRequestedSceneViewportExtent();
@@ -2491,6 +2498,9 @@ namespace Vans::EditorAPI
 			const Vans::VansProjectCommandRecordingSettings& commandRecordingSettings =
 				projectManager.GetProjectSettings().GetCommandRecordingSettings();
 			device->SetParallelCommandRecordingEnabled(commandRecordingSettings.parallelEnabled);
+			device->SetFrameContextRingEnabled(
+				commandRecordingSettings.frameContextRingEnabled,
+				commandRecordingSettings.framesInFlight);
 		}
 		return result;
 	}
@@ -2501,7 +2511,11 @@ namespace Vans::EditorAPI
 
 		auto& projectManager = Vans::VansProjectManager::Get();
 		if (projectManager.IsProjectLoaded())
+		{
 			projectManager.CloseProject();
+			if (auto* device = static_cast<VansGraphics::VansVKDevice*>(m_Device))
+				device->GetPipelineCacheService().RefreshPersistencePath();
+		}
 	}
 
 	ProjectConfigSnapshot EngineAPIImpl::GetProjectConfigSnapshot() const
@@ -2629,7 +2643,7 @@ namespace Vans::EditorAPI
 	void EngineAPIImpl::ScanProjectAssets()
 	{
 		if (Vans::VansAssetDatabase* database = Vans::VansProjectManager::Get().GetAssetDatabase())
-			database->Scan();
+			database->Scan(VansAssetOperationPolicy::Authoring());
 	}
 
 	EditorTextureHandle EngineAPIImpl::GetViewportTexture(ViewportId) const
@@ -2723,19 +2737,29 @@ namespace Vans::EditorAPI
 			return settings;
 
 		settings.parallelEnabled = device->IsParallelCommandRecordingEnabled();
+		settings.frameContextRingEnabled = device->IsFrameContextRingEnabled();
+		settings.framesInFlight = device->GetConfiguredFramesInFlight();
 		return settings;
 	}
 
-	void EngineAPIImpl::SetCommandRecordingSettings(bool parallelEnabled)
+	void EngineAPIImpl::SetCommandRecordingSettings(const CommandRecordingSettingsSnapshot& settings)
 	{
 		auto* device = static_cast<VansGraphics::VansVKDevice*>(m_Device);
 		if (device)
-			device->SetParallelCommandRecordingEnabled(parallelEnabled);
+		{
+			device->SetParallelCommandRecordingEnabled(settings.parallelEnabled);
+			device->SetFrameContextRingEnabled(
+				settings.frameContextRingEnabled,
+				settings.framesInFlight);
+		}
 
 		auto& projectManager = Vans::VansProjectManager::Get();
 		if (projectManager.IsProjectLoaded())
 		{
-			projectManager.GetProjectSettings().SetCommandRecordingSettings(parallelEnabled);
+			projectManager.GetProjectSettings().SetCommandRecordingSettings(
+				settings.parallelEnabled,
+				settings.frameContextRingEnabled,
+				settings.framesInFlight);
 			if (!projectManager.SaveProjectSettings())
 			{
 				VANS_LOG_WARN("[EngineAPI] Failed to persist command recording project settings");
@@ -2851,9 +2875,10 @@ namespace Vans::EditorAPI
 		snapshot.available = true;
 		snapshot.frameIndex = runtime.frameIndex;
 		snapshot.atlasSize = runtime.atlasSize;
+		snapshot.atlasCount = runtime.atlasCount;
 		snapshot.basePageSize = runtime.basePageSize;
 		snapshot.gutter = runtime.gutter;
-		snapshot.totalPages = lightManager->GetPunctualShadowManager().GetAtlasAllocator().GetTotalPages();
+		snapshot.totalPages = lightManager->GetPunctualShadowManager().GetTotalAtlasPages();
 		snapshot.usedPages = runtime.statistics.usedAtlasPages;
 		snapshot.residentLights = runtime.statistics.residentLights;
 		snapshot.residentViews = runtime.statistics.residentViews;
@@ -2951,6 +2976,7 @@ namespace Vans::EditorAPI
 					continue;
 				PunctualShadowAtlasViewSnapshot view;
 				view.faceIndex = face;
+				view.atlasIndex = block.atlasIndex;
 				view.x = block.x;
 				view.y = block.y;
 				view.resolution = block.resolution;
@@ -4021,7 +4047,7 @@ namespace Vans::EditorAPI
 		if (!scene)
 			return snapshot;
 
-		const VansGraphics::VansMainCameraVisibilityStats& stats = scene->GetMainCameraVisibilityStats();
+		const VansGraphics::VansMainCameraVisibilityStats stats = scene->GetMainCameraVisibilityStats();
 		snapshot.available = true;
 		snapshot.enabled = stats.enabled;
 		snapshot.historyValid = stats.historyValid;
@@ -4029,6 +4055,9 @@ namespace Vans::EditorAPI
 		snapshot.frustumVisibleCount = stats.frustumVisibleCount;
 		snapshot.hizCulledCount = stats.hizCulledCount;
 		snapshot.forcedVisibleCount = stats.forcedVisibleCount;
+		snapshot.preCullDrawCallCount = stats.preCullDrawCallCount;
+		snapshot.culledDrawCallCount = stats.culledDrawCallCount;
+		snapshot.drawnDrawCallCount = stats.drawnDrawCallCount;
 
 		const auto& culledNodes = scene->GetMainCameraHiZCulledDebugNodes();
 		snapshot.culledNodes.reserve(culledNodes.size());
@@ -4504,12 +4533,37 @@ namespace Vans::EditorAPI
 		return scene && scene->IsSceneSwitching();
 	}
 
-	bool EngineAPIImpl::LoadRuntimeScene(const std::string& scenePath, RuntimeSceneLoadMode mode)
+	RuntimeSceneLoadResult EngineAPIImpl::LoadRuntimeScene(const std::string& scenePath, RuntimeSceneLoadMode mode)
 	{
+		RuntimeSceneLoadResult result;
+		result.requestedMode = mode;
+		result.contentRevision = m_SceneContentRevision;
+
 		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
 		auto* device = static_cast<VansGraphics::VansVKDevice*>(m_Device);
-		if (!scene || !device || scenePath.empty())
-			return false;
+		if (!scene)
+		{
+			result.diagnostics.push_back({ "runtime_scene_unbound", "Runtime scene is not bound" });
+			return result;
+		}
+		if (!device)
+		{
+			result.diagnostics.push_back({ "runtime_device_unbound", "Runtime render device is not bound" });
+			return result;
+		}
+		if (scenePath.empty())
+		{
+			result.diagnostics.push_back({ "scene_path_empty", "Scene path is empty" });
+			return result;
+		}
+		if (!scene->AreResourcesLoaded())
+		{
+			result.finalState = scene->IsSceneReady()
+				? RuntimeSceneLoadFinalState::Ready
+				: RuntimeSceneLoadFinalState::Empty;
+			result.diagnostics.push_back({ "project_resources_not_loaded", "Project resources must be loaded before the scene" });
+			return result;
+		}
 
 		if (scene->IsSceneReady() || scene->IsSceneSwitching())
 		{
@@ -4521,8 +4575,19 @@ namespace Vans::EditorAPI
 			mode == RuntimeSceneLoadMode::Runtime
 				? VansGraphics::VansSceneLoadMode::Runtime
 				: VansGraphics::VansSceneLoadMode::Editor;
-		scene->LoadSceneForRendering(scenePath.c_str(), device, runtimeMode);
-		return true;
+		if (!scene->LoadSceneForRendering(scenePath.c_str(), device, runtimeMode) || !scene->IsSceneReady())
+		{
+			result.finalState = scene->IsSceneReady()
+				? RuntimeSceneLoadFinalState::Ready
+				: RuntimeSceneLoadFinalState::Empty;
+			result.diagnostics.push_back({ "scene_build_failed", "Scene content could not be built and prepared for rendering" });
+			return result;
+		}
+
+		result.success = true;
+		result.finalState = RuntimeSceneLoadFinalState::Ready;
+		result.contentRevision = ++m_SceneContentRevision;
+		return result;
 	}
 
 	void EngineAPIImpl::UnloadRuntimeScene()
@@ -4908,6 +4973,43 @@ namespace Vans::EditorAPI
 		if (!settings.available)
 			return;
 		SubmitCommand(std::make_unique<SetPostProcessSettingsCommand>(settings));
+	}
+
+	void EngineAPIImpl::CommitPostProcessSettings()
+	{
+		const PostProcessSettingsSnapshot settings = GetPostProcessSettings();
+		if (!settings.available)
+			return;
+
+		m_PendingScenePropertyEdits.push_back({ "/settings/postProcess", ScenePropertyValues::Object({
+			{ "exposure", ScenePropertyValues::Object({
+				{ "enableAutoExposure", ScenePropertyValues::Bool(settings.enableAutoExposure) },
+				{ "exposureCompensation", ScenePropertyValues::Float(settings.exposureCompensation) },
+				{ "minEV100", ScenePropertyValues::Float(settings.minEV100) },
+				{ "maxEV100", ScenePropertyValues::Float(settings.maxEV100) },
+				{ "adaptationSpeedUp", ScenePropertyValues::Float(settings.adaptationSpeedUp) },
+				{ "adaptationSpeedDown", ScenePropertyValues::Float(settings.adaptationSpeedDown) }
+			}) },
+			{ "bloom", ScenePropertyValues::Object({
+				{ "enable", ScenePropertyValues::Bool(settings.enableBloom) },
+				{ "threshold", ScenePropertyValues::Float(settings.bloomThreshold) },
+				{ "knee", ScenePropertyValues::Float(settings.bloomKnee) },
+				{ "intensity", ScenePropertyValues::Float(settings.bloomIntensity) },
+				{ "scatter", ScenePropertyValues::Float(settings.bloomScatter) }
+			}) },
+			{ "toneMapping", ScenePropertyValues::Object({
+				{ "type", ScenePropertyValues::Int(settings.toneMapperType) },
+				{ "whitePoint", ScenePropertyValues::Float(settings.whitePoint) }
+			}) },
+			{ "colorGrading", ScenePropertyValues::Object({
+				{ "enable", ScenePropertyValues::Bool(settings.enableColorGrading) },
+				{ "contrast", ScenePropertyValues::Float(settings.contrast) },
+				{ "saturation", ScenePropertyValues::Float(settings.saturation) },
+				{ "hueShift", ScenePropertyValues::Float(settings.hueShift) },
+				{ "temperature", ScenePropertyValues::Float(settings.temperature) },
+				{ "tint", ScenePropertyValues::Float(settings.tint) }
+			}) }
+		}) });
 	}
 
 	void EngineAPIImpl::ApplyFogSettings(const FogSettings& settings)

@@ -69,6 +69,13 @@ bool VansProjectSettingsLegacyJsonCodec::DecodeRenderSettings(
 			const nlohmann::json& commandRecording = root["commandRecording"];
 			settings.commandRecordingSettings.parallelEnabled =
 				commandRecording.value("parallelEnabled", true);
+			settings.commandRecordingSettings.frameContextRingEnabled =
+				commandRecording.value("frameContextRingEnabled", false);
+			settings.commandRecordingSettings.framesInFlight =
+				std::clamp<std::uint32_t>(
+					commandRecording.value("framesInFlight", 2u),
+					1u,
+					2u);
 		}
 
 		if (root.contains("mainCameraHiZCulling") && root["mainCameraHiZCulling"].is_object())
@@ -113,7 +120,9 @@ nlohmann::json VansProjectSettingsLegacyJsonCodec::EncodeRenderSettings(
 		{ "sharpness", settings.fsrSettings.sharpness }
 	};
 	root["commandRecording"] = {
-		{ "parallelEnabled", settings.commandRecordingSettings.parallelEnabled }
+		{ "parallelEnabled", settings.commandRecordingSettings.parallelEnabled },
+		{ "frameContextRingEnabled", settings.commandRecordingSettings.frameContextRingEnabled },
+		{ "framesInFlight", settings.commandRecordingSettings.framesInFlight }
 	};
 	root["mainCameraHiZCulling"] = {
 		{ "enabled", settings.mainCameraHiZCullSettings.enabled },

@@ -11,6 +11,7 @@
 #include "VansVKImage.h"
 #include "VansVKBuffer.h"
 #include "VansPipeline.h"
+#include "../ShadowCore/VansPunctualShadowTypes.h"
 
 namespace VansGraphics
 {
@@ -124,6 +125,7 @@ namespace VansGraphics
 		VkSampler   m_CascadeShadowSampler;        // reuse sampler for cascade array
 
 		VansVKImage m_PunctualShadowMapImage;
+		VkImageView m_PunctualShadowLayerViews[VANS_PUNCTUAL_SHADOW_ATLAS_COUNT] = {};
 
 
 		VansVKImage m_NormalImage;

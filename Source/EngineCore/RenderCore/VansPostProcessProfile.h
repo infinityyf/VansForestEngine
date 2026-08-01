@@ -46,19 +46,20 @@ namespace VansGraphics
 	static_assert(sizeof(VansPostProcessParamsGPU) == 80,
 		"Post-process CPU UBO layout must match PostProcess.frag");
 
-	// Exposure Adapt Compute Shader 使用的 UBO（Set 1, Binding 2）
 	struct alignas(16) VansExposureAdaptParamsGPU
 	{
-		float   m_MinEV100           = -6.0f;    // 自动曝光最小 EV100
-		float   m_MaxEV100           = 16.0f;    // 自动曝光最大 EV100
-		float   m_AdaptationSpeedUp  = 3.0f;     // 亮场收敛速度（单位/秒）
-		float   m_AdaptationSpeedDown= 1.0f;     // 暗场收敛速度（单位/秒）
+		float   m_MinEV100 = -6.0f;
+		float   m_MaxEV100 = 16.0f;
+		float   m_AdaptationSpeedUp = 3.0f;
+		float   m_AdaptationSpeedDown = 1.0f;
 
-		float   m_DeltaTime          = 0.016f;   // 当前帧 delta（秒），CPU 每帧写入
-		float   m_ExposureCompensation = 0.0f;   // EV 偏移量（与 GPU 端一致）
-		int32_t m_EnableAutoExposure = 1;        // 0=手动曝光，1=自动适应（复用原 _pad0 位置，不改变结构体大小）
+		float   m_DeltaTime = 0.016f;
+		float   _pad0 = 0.0f;
+		int32_t m_EnableAutoExposure = 1;
 		float   _pad1 = 0.0f;
 	};
+	static_assert(sizeof(VansExposureAdaptParamsGPU) == 32,
+		"Exposure adaptation CPU UBO layout must match ExposureAdapt.comp");
 
 	// Bloom（Prefilter + Upsample）共用 UBO
 	struct alignas(16) VansBloomParamsGPU
@@ -77,8 +78,6 @@ namespace VansGraphics
 	{
 	public:
 		// 版本号，用于未来字段迁移
-		static constexpr int32_t PROFILE_VERSION = 1;
-
 		// ---------- General ----------
 		bool    m_EnablePostProcess    = true;
 		bool    m_EnableHDR            = true;

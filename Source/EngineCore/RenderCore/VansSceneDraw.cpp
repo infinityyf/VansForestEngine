@@ -136,7 +136,7 @@ void VansGraphics::VansScene::DrawMotionVectorNodeRange(VansVKCommandBuffer& cmd
         auto& node = m_OpaqueRenderNodes[nodeIndex];
         if (node == nullptr || !node->IsEnabled()) continue;
 		if (m_Camera != nullptr && !IsNodeVisibleInFrustum(node, viewProjection)) continue;
-		if (!IsMainCameraNodeVisible(node)) continue;
+		if (!ShouldDrawMainCameraNode(node)) continue;
 
         auto* opaque = static_cast<VansCommonRenderNode*>(node);
 
@@ -173,13 +173,10 @@ void VansGraphics::VansScene::DrawPunctualShadowJob(const VansPunctualShadowRend
     cmd.SetViewport(0, { viewPort });
     cmd.SetScissor(0, { scissor });
 
-	const int pointCount = static_cast<int>((std::min)(m_LightManager.GetPointLights().size(), static_cast<size_t>(m_LightManager.GetMaxPointLightCount())));
-	const int spotCount = static_cast<int>((std::min)(m_LightManager.GetSpotLight().size(), static_cast<size_t>(m_LightManager.GetMaxSpotLightCount())));
-	int shaderLightIndex = static_cast<int>(job.gpuLightIndex);
-	if (job.lightType == VansPunctualShadowLightType::Spot)
-		shaderLightIndex += pointCount;
-	else if (job.lightType == VansPunctualShadowLightType::Rect)
-		shaderLightIndex += pointCount + spotCount;
+	if (job.shadowViewIndex == VANS_INVALID_SHADOW_INDEX ||
+		job.shadowViewIndex >= VANS_MAX_PUNCTUAL_SHADOW_VIEWS)
+		return;
+	const int shaderViewIndex = static_cast<int>(job.shadowViewIndex);
 
 	const auto isSelectedCaster = [&](const VansRenderNode* node)
 	{
@@ -200,7 +197,7 @@ void VansGraphics::VansScene::DrawPunctualShadowJob(const VansPunctualShadowRend
 
         node->DrawPunctualShadowWithPassShader(cmd, globalStateData, shader,
                                                 opaque->m_ShadowDescSets, opaque->m_ShadowDescSetLayouts,
-											shaderLightIndex, static_cast<int>(job.faceIndex));
+											shaderViewIndex);
     }
 
 	for (auto& node : m_HairRenderNodes)
@@ -213,12 +210,12 @@ void VansGraphics::VansScene::DrawPunctualShadowJob(const VansPunctualShadowRend
 		if (!shader) continue;
 		node->DrawPunctualShadowWithPassShader(cmd, globalStateData, shader,
 			hairNode->m_ShadowDescSets, hairNode->m_ShadowDescSetLayouts,
-			shaderLightIndex, static_cast<int>(job.faceIndex));
+			shaderViewIndex);
 	}
 
     if (m_VegetationRenderNode && m_VegetationRenderNode->IsEnabled())
         static_cast<VansVegetationRenderNode*>(m_VegetationRenderNode)->DrawPunctualShadow(
-			cmd, globalStateData, shaderLightIndex, static_cast<int>(job.faceIndex));
+			cmd, globalStateData, shaderViewIndex);
 }
 
 void VansGraphics::VansScene::DrawSkyBoxNode()
@@ -265,7 +262,7 @@ void VansGraphics::VansScene::DrawOpaqueNodeRange(VansVKCommandBuffer& cmd, Glob
         {
             continue;
         }
-        if (!IsMainCameraNodeVisible(node))
+        if (!ShouldDrawMainCameraNode(node))
         {
             continue;
         }
@@ -445,7 +442,7 @@ void VansGraphics::VansScene::DrawTransParentNodes()
 
     for (auto* node : sortedNodes)
     {
-        if (!IsMainCameraNodeVisible(node))
+        if (!ShouldDrawMainCameraNode(node))
             continue;
         node->Draw(cmd, globalStateData);
     }
@@ -462,7 +459,7 @@ void VansGraphics::VansScene::DrawHairVisibilityNodes()
 	{
 		if (node == nullptr || !node->IsEnabled())
 			continue;
-		if (!IsMainCameraNodeVisible(node))
+		if (!ShouldDrawMainCameraNode(node))
 			continue;
 		if (oitLayout != VK_NULL_HANDLE && oitSet != VK_NULL_HANDLE)
 		{
@@ -502,7 +499,7 @@ void VansGraphics::VansScene::DrawForwardOpaqueAfterDeferredNodes()
         {
             continue;
         }
-        if (!IsMainCameraNodeVisible(node))
+        if (!ShouldDrawMainCameraNode(node))
         {
             continue;
         }
@@ -557,7 +554,7 @@ void VansGraphics::VansScene::DrawDecalNodeRange(VansVKCommandBuffer& cmd, Globa
     {
         auto& node = m_DecalRenderNodes[nodeIndex];
         if (node == nullptr || !node->IsEnabled()) continue;
-        if (!IsMainCameraNodeVisible(node)) continue;
+        if (!ShouldDrawMainCameraNode(node)) continue;
         node->Draw(cmd, globalStateData);
     }
 }

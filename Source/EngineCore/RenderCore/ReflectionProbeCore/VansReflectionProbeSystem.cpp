@@ -36,7 +36,7 @@
 #include <system_error>
 #include <../../GLM/gtc/matrix_transform.hpp>
 #define STB_IMAGE_WRITE_IMPLEMENTATION
-#include "../../../../External/tinygltf/stb_image_write.h"
+#include <stb_image_write.h>
 
 namespace fs = std::filesystem;
 

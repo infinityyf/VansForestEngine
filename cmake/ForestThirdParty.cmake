@@ -7,8 +7,7 @@ add_library(ForestThirdParty INTERFACE)
 
 set(FOREST_LUA_DIR "${FOREST_EXTERNAL_DIR}/Lua/lua-5.4.8" CACHE INTERNAL "")
 
-if(VANS_SCRIPT_LUA)
-    set(FOREST_LUA_SOURCES
+set(FOREST_LUA_SOURCES
         "${FOREST_LUA_DIR}/src/lapi.c"
         "${FOREST_LUA_DIR}/src/lauxlib.c"
         "${FOREST_LUA_DIR}/src/lbaselib.c"
@@ -41,17 +40,16 @@ if(VANS_SCRIPT_LUA)
         "${FOREST_LUA_DIR}/src/lutf8lib.c"
         "${FOREST_LUA_DIR}/src/lvm.c"
         "${FOREST_LUA_DIR}/src/lzio.c"
-    )
-    set_source_files_properties(${FOREST_LUA_SOURCES} PROPERTIES LANGUAGE CXX)
-    add_library(ForestExternalLua STATIC ${FOREST_LUA_SOURCES})
-    source_group(TREE "${FOREST_ROOT}" FILES ${FOREST_LUA_SOURCES})
-    forest_apply_common_settings(ForestExternalLua)
-    target_include_directories(ForestExternalLua PUBLIC "${FOREST_LUA_DIR}/src")
-    target_compile_definitions(ForestExternalLua
-        PUBLIC
-            LUA_COMPAT_5_3
-    )
-endif()
+)
+set_source_files_properties(${FOREST_LUA_SOURCES} PROPERTIES LANGUAGE CXX)
+add_library(ForestExternalLua STATIC ${FOREST_LUA_SOURCES})
+source_group(TREE "${FOREST_ROOT}" FILES ${FOREST_LUA_SOURCES})
+forest_apply_common_settings(ForestExternalLua)
+target_include_directories(ForestExternalLua PUBLIC "${FOREST_LUA_DIR}/src")
+target_compile_definitions(ForestExternalLua
+    PUBLIC
+        LUA_COMPAT_5_3
+)
 
 target_include_directories(ForestThirdParty
     INTERFACE
@@ -60,7 +58,6 @@ target_include_directories(ForestThirdParty
         "${FOREST_EXTERNAL_DIR}/assimp/include"
         "${FOREST_EXTERNAL_DIR}/json/include"
         "${FOREST_EXTERNAL_DIR}/STBImge"
-        "${FOREST_EXTERNAL_DIR}/tinygltf"
         "${FOREST_EXTERNAL_DIR}/GUI/glfw-3.3.9/include"
         "${FOREST_EXTERNAL_DIR}/Graphics/Vulkan/1.4.321.1/Include"
         "${FOREST_EXTERNAL_DIR}/NvCloth/include"
@@ -113,25 +110,7 @@ target_link_libraries(ForestThirdParty
         OpenAL32
 )
 
-if(VANS_SCRIPT_LUA)
-    target_link_libraries(ForestThirdParty INTERFACE ForestExternalLua)
-endif()
-
-add_library(ForestExternalSpirvCross STATIC
-    "${FOREST_EXTERNAL_DIR}/spirv_cross/spirv_cfg.cpp"
-    "${FOREST_EXTERNAL_DIR}/spirv_cross/spirv_cpp.cpp"
-    "${FOREST_EXTERNAL_DIR}/spirv_cross/spirv_cross.cpp"
-    "${FOREST_EXTERNAL_DIR}/spirv_cross/spirv_cross_c.cpp"
-    "${FOREST_EXTERNAL_DIR}/spirv_cross/spirv_cross_parsed_ir.cpp"
-    "${FOREST_EXTERNAL_DIR}/spirv_cross/spirv_cross_util.cpp"
-    "${FOREST_EXTERNAL_DIR}/spirv_cross/spirv_glsl.cpp"
-    "${FOREST_EXTERNAL_DIR}/spirv_cross/spirv_hlsl.cpp"
-    "${FOREST_EXTERNAL_DIR}/spirv_cross/spirv_msl.cpp"
-    "${FOREST_EXTERNAL_DIR}/spirv_cross/spirv_parser.cpp"
-    "${FOREST_EXTERNAL_DIR}/spirv_cross/spirv_reflect.cpp"
-)
-forest_apply_common_settings(ForestExternalSpirvCross)
-target_link_libraries(ForestExternalSpirvCross PUBLIC ForestThirdParty)
+target_link_libraries(ForestThirdParty INTERFACE ForestExternalLua)
 
 add_library(ForestExternalNoesisVk STATIC
     "${FOREST_EXTERNAL_DIR}/NoesisGUI/Src/Packages/Render/VKRenderDevice/Src/Render.VKRenderDevice.cpp"
@@ -148,10 +127,9 @@ target_link_libraries(ForestExternalNoesisVk PUBLIC ForestThirdParty)
 
 add_library(ForestExternalImGui STATIC
     "${FOREST_EXTERNAL_DIR}/GUI/imgui-1.90.2/backends/imgui_impl_glfw.cpp"
-    "${FOREST_EXTERNAL_DIR}/GUI/imgui-1.90.2/backends/imgui_impl_vulkan.cpp"
-    "${FOREST_EXTERNAL_DIR}/GUI/imgui-1.90.2/imgui.cpp"
-    "${FOREST_EXTERNAL_DIR}/GUI/imgui-1.90.2/imgui_demo.cpp"
-    "${FOREST_EXTERNAL_DIR}/GUI/imgui-1.90.2/imgui_draw.cpp"
+        "${FOREST_EXTERNAL_DIR}/GUI/imgui-1.90.2/backends/imgui_impl_vulkan.cpp"
+        "${FOREST_EXTERNAL_DIR}/GUI/imgui-1.90.2/imgui.cpp"
+        "${FOREST_EXTERNAL_DIR}/GUI/imgui-1.90.2/imgui_draw.cpp"
     "${FOREST_EXTERNAL_DIR}/GUI/imgui-1.90.2/imgui_tables.cpp"
     "${FOREST_EXTERNAL_DIR}/GUI/imgui-1.90.2/imgui_widgets.cpp"
     "${FOREST_EXTERNAL_DIR}/GUI/ImGuizmo/ImGuizmo.cpp"
@@ -205,7 +183,4 @@ function(forest_copy_engine_assets target_name)
         COMMENT "Copying ForestEngine built-in assets"
         VERBATIM
     )
-endfunction()
-
-function(forest_copy_editor_runtime_assets target_name)
 endfunction()

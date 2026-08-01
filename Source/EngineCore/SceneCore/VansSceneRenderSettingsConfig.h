@@ -59,6 +59,29 @@ struct VansSceneVolumetricCloudSettingsConfig
 	std::optional<float> shadowDensityScale;
 };
 
+struct VansScenePostProcessSettingsConfig
+{
+	std::optional<bool> enableAutoExposure;
+	std::optional<float> exposureCompensation;
+	std::optional<float> minEV100;
+	std::optional<float> maxEV100;
+	std::optional<float> adaptationSpeedUp;
+	std::optional<float> adaptationSpeedDown;
+	std::optional<bool> enableBloom;
+	std::optional<float> bloomThreshold;
+	std::optional<float> bloomKnee;
+	std::optional<float> bloomIntensity;
+	std::optional<float> bloomScatter;
+	std::optional<int32_t> toneMapperType;
+	std::optional<float> whitePoint;
+	std::optional<bool> enableColorGrading;
+	std::optional<float> contrast;
+	std::optional<float> saturation;
+	std::optional<float> hueShift;
+	std::optional<float> temperature;
+	std::optional<float> tint;
+};
+
 struct VansSceneGISettingsConfig
 {
 	std::optional<std::array<uint32_t, 3>> gridDimensions;
@@ -99,6 +122,7 @@ struct VansSceneRenderSettingsConfig
 	std::optional<VansSceneHeightFogSettingsConfig> heightFog;
 	std::optional<VansSceneVolumetricFogSettingsConfig> volumetricFog;
 	std::optional<VansSceneVolumetricCloudSettingsConfig> volumetricClouds;
+	std::optional<VansScenePostProcessSettingsConfig> postProcess;
 	std::optional<VansSceneGISettingsConfig> globalIllumination;
 	std::optional<VansSceneMainCameraHiZCullSettingsConfig> mainCameraHiZCulling;
 };

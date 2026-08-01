@@ -24,6 +24,8 @@ namespace Vans
 	struct VansProjectCommandRecordingSettings
 	{
 		bool parallelEnabled = true;
+		bool frameContextRingEnabled = false;
+		std::uint32_t framesInFlight = 2;
 	};
 
 	struct VansProjectMainCameraHiZCullSettings
@@ -54,7 +56,7 @@ namespace Vans
 		const VansProjectFSRSettings& GetFSRSettings() const { return m_FSRSettings; }
 		void SetFSRSettings(VansProjectFSRMode mode, float sharpness);
 		const VansProjectCommandRecordingSettings& GetCommandRecordingSettings() const { return m_CommandRecordingSettings; }
-		void SetCommandRecordingSettings(bool parallelEnabled);
+		void SetCommandRecordingSettings(bool parallelEnabled, bool frameContextRingEnabled, std::uint32_t framesInFlight);
 		const VansProjectMainCameraHiZCullSettings& GetMainCameraHiZCullSettings() const { return m_MainCameraHiZCullSettings; }
 		void SetMainCameraHiZCullSettings(const VansProjectMainCameraHiZCullSettings& settings);
 

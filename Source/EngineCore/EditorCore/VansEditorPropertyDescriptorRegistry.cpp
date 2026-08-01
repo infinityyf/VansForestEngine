@@ -47,19 +47,7 @@ const AssetReferenceRule* ResolveDeclaredAssetReferenceRule(
         { "cloth", "data", "profilepath", EditorAPI::AssetType::ClothProfile, ObjectReferenceStoragePolicy::GuidString },
         { "", "", "shader", EditorAPI::AssetType::Shader, ObjectReferenceStoragePolicy::GuidObject },
         { "", "textures", "", EditorAPI::AssetType::Texture, ObjectReferenceStoragePolicy::GuidObject },
-        { "", "parameters", "basecolor", EditorAPI::AssetType::Texture, ObjectReferenceStoragePolicy::GuidObject },
-        { "", "parameters", "normal", EditorAPI::AssetType::Texture, ObjectReferenceStoragePolicy::GuidObject },
-        { "", "parameters", "metal", EditorAPI::AssetType::Texture, ObjectReferenceStoragePolicy::GuidObject },
-        { "", "parameters", "metallic", EditorAPI::AssetType::Texture, ObjectReferenceStoragePolicy::GuidObject },
-        { "", "parameters", "roughness", EditorAPI::AssetType::Texture, ObjectReferenceStoragePolicy::GuidObject },
-        { "", "parameters", "ao", EditorAPI::AssetType::Texture, ObjectReferenceStoragePolicy::GuidObject },
-        { "", "parameters", "occlusion", EditorAPI::AssetType::Texture, ObjectReferenceStoragePolicy::GuidObject },
-        { "", "parameters", "emissive", EditorAPI::AssetType::Texture, ObjectReferenceStoragePolicy::GuidObject },
-        { "", "parameters", "opacity", EditorAPI::AssetType::Texture, ObjectReferenceStoragePolicy::GuidObject },
-        { "", "parameters", "alpha", EditorAPI::AssetType::Texture, ObjectReferenceStoragePolicy::GuidObject },
-        { "", "parameters", "transmission", EditorAPI::AssetType::Texture, ObjectReferenceStoragePolicy::GuidObject },
-        { "", "parameters", "thickness", EditorAPI::AssetType::Texture, ObjectReferenceStoragePolicy::GuidObject },
-        { "", "parameters", "mask", EditorAPI::AssetType::Texture, ObjectReferenceStoragePolicy::GuidObject },
+        { "", "customTextures", "", EditorAPI::AssetType::Texture, ObjectReferenceStoragePolicy::GuidObject },
     };
 
     for (const AssetReferenceRule& rule : rules)

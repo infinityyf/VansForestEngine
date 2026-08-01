@@ -72,6 +72,7 @@ namespace VansGraphics
 
 		void TickPersistence();
 		bool Flush(VansPipelineCacheFlushReason reason);
+		void RefreshPersistencePath();
 
 		bool IsInitialized() const { return m_Initialized; }
 		const std::filesystem::path& GetCacheFilePath() const { return m_CacheFilePath; }
@@ -91,6 +92,7 @@ namespace VansGraphics
 		bool ReadCacheFile(std::vector<uint8_t>& outPayload, bool logFailures) const;
 		bool ValidateVulkanPayload(const std::vector<uint8_t>& payload) const;
 		bool MergeDiskCacheLocked();
+		bool MergeChildCachesIntoMainLocked(bool destroyChildren);
 		void MergeAndDestroyChildCachesLocked();
 		bool FlushLocked(VansPipelineCacheFlushReason reason);
 		void MarkPipelineCreatedLocked(VansPipelineCachePipelineKind kind);

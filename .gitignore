@@ -6,6 +6,8 @@ x64
 /.claude
 /.build
 /.github
-/EngineAssets/Models
+/EngineAssets/Models/*
+!/EngineAssets/Models/fullscreen.obj.meta
+!/EngineAssets/Models/plane.obj.meta
 /EngineAssets/Textures
 /openspec

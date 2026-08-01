@@ -917,12 +917,12 @@ namespace VansGraphics
 		// The diagnostic image is intentionally smaller than the 4096² runtime
 		// Atlas. It is refreshed only on request/Atlas updates and is never used by
 		// lighting, so debug visualization cannot expand the production footprint.
-		constexpr int kPreviewResolution = 512;
+		constexpr int kPreviewAtlasResolution = 512;
 		VansTexture* preview = new VansTexture();
 		preview->InitTextureWithoutData(
 			m_VansVKCommandBuffer,
-			kPreviewResolution,
-			kPreviewResolution,
+			kPreviewAtlasResolution * static_cast<int>(VANS_PUNCTUAL_SHADOW_ATLAS_COUNT),
+			kPreviewAtlasResolution,
 			1,
 			VK_FORMAT_R8G8B8A8_UNORM,
 			false,
@@ -1252,14 +1252,43 @@ namespace VansGraphics
 		VansTexture* exposureLum = new VansTexture();
 		exposureLum->InitTextureWithoutData(
 			m_VansVKCommandBuffer, 64, 64, 1,
-			VK_FORMAT_R16_SFLOAT, false, false, true);
+			VK_FORMAT_R16_SFLOAT, false, false, true,
+			VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_EXPOSURE_LUMINANCE, exposureLum);
 
 		VansTexture* exposureCurrent = new VansTexture();
 		exposureCurrent->InitTextureWithoutData(
 			m_VansVKCommandBuffer, 1, 1, 1,
-			VK_FORMAT_R16_SFLOAT, false, false, true);
+			VK_FORMAT_R16_SFLOAT, false, false, true,
+			VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_EXPOSURE_CURRENT, exposureCurrent);
+		if (m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
+		{
+			VkClearColorValue initialExposure{};
+			m_VansVKCommandBuffer.ClearColorImage(
+				exposureCurrent->GetImage(), VK_IMAGE_LAYOUT_GENERAL, initialExposure);
+			VkMemoryBarrier clearToExposure{};
+			clearToExposure.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+			clearToExposure.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+			clearToExposure.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+			m_VansVKCommandBuffer.PipelineBarrier(
+				VK_PIPELINE_STAGE_TRANSFER_BIT,
+				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+				{ clearToExposure });
+			const bool initialized = m_VansVKCommandBuffer.EndCommandBufferRecord()
+				&& VansVKCommandBuffer::SubmitCommands(
+					m_VansVKGraphicsQueue,
+					m_VansVKLogicDevice,
+					{ m_VansVKCommandBuffer.GetVKCommandBuffer() },
+					{}, {}, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence)
+				&& m_VansVKCommandBuffer.ResetCommandBuffer(false);
+			if (!initialized)
+				VANS_LOG_ERROR("[PostProcess] Failed to initialize auto-exposure state texture.");
+		}
+		else
+		{
+			VANS_LOG_ERROR("[PostProcess] Failed to record auto-exposure state initialization.");
+		}
 
 		VansTexture* bloomPrefilter = new VansTexture();
 		bloomPrefilter->InitTextureWithoutData(
@@ -1299,9 +1328,7 @@ namespace VansGraphics
 
 		// ---- Shader 创建 ----
 		manager->m_ExposureLuminanceShader = VansGraphics::VansShaderManager::Get().FindComputeShader("ExposureLuminance");
-
 		manager->m_ExposureAdaptShader = VansGraphics::VansShaderManager::Get().FindComputeShader("ExposureAdapt");
-
 		manager->m_BloomPrefilterShader = VansGraphics::VansShaderManager::Get().FindComputeShader("BloomPrefilter");
 
 		manager->m_BloomDownsampleShader = VansGraphics::VansShaderManager::Get().FindComputeShader("BloomDownsample");
@@ -1323,7 +1350,7 @@ namespace VansGraphics
 		// ---- UBO 创建与初始化 ----
 		VansPostProcessProfile& defaultProfile = manager->m_PostProcessProfile;
 		VansPostProcessParamsGPU ppParams  = defaultProfile.ToGPUParams();
-		VansExposureAdaptParamsGPU expParams = defaultProfile.ToExposureAdaptParams(0.016f);
+		VansExposureAdaptParamsGPU exposureParams = defaultProfile.ToExposureAdaptParams(0.0f);
 		VansBloomParamsGPU bloomParams     = defaultProfile.ToBloomParams();
 
 		manager->m_PostProcessParamsCBBuffer.CreatVulkanBuffer(
@@ -1336,7 +1363,8 @@ namespace VansGraphics
 			m_VansVKLogicDevice, sizeof(VansExposureAdaptParamsGPU), VK_FORMAT_R32_SFLOAT,
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-		manager->m_ExposureAdaptParamsCBBuffer.SetBufferData(&expParams, 0, sizeof(VansExposureAdaptParamsGPU));
+		manager->m_ExposureAdaptParamsCBBuffer.SetBufferData(
+			&exposureParams, 0, sizeof(VansExposureAdaptParamsGPU));
 
 		manager->m_BloomParamsCBBuffer.CreatVulkanBuffer(
 			m_VansVKLogicDevice, sizeof(VansBloomParamsGPU), VK_FORMAT_R32_SFLOAT,

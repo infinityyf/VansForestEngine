@@ -225,6 +225,30 @@ namespace Vans::EditorAPI
 		Runtime
 	};
 
+	enum class RuntimeSceneLoadFinalState
+	{
+		Unchanged,
+		Empty,
+		Ready
+	};
+
+	struct RuntimeSceneLoadDiagnostic
+	{
+		std::string code;
+		std::string message;
+	};
+
+	struct RuntimeSceneLoadResult
+	{
+		bool success = false;
+		RuntimeSceneLoadMode requestedMode = RuntimeSceneLoadMode::Editor;
+		RuntimeSceneLoadFinalState finalState = RuntimeSceneLoadFinalState::Unchanged;
+		std::uint64_t contentRevision = 0;
+		std::vector<RuntimeSceneLoadDiagnostic> diagnostics;
+
+		explicit operator bool() const { return success; }
+	};
+
 	using PropertyValue = std::variant<
 		std::monostate,
 		bool,
@@ -492,6 +516,7 @@ namespace Vans::EditorAPI
 	struct PunctualShadowAtlasViewSnapshot
 	{
 		std::uint32_t faceIndex = 0;
+		std::uint32_t atlasIndex = 0;
 		std::uint32_t x = 0;
 		std::uint32_t y = 0;
 		std::uint32_t resolution = 0;
@@ -539,6 +564,7 @@ namespace Vans::EditorAPI
 		bool available = false;
 		std::uint64_t frameIndex = 0;
 		std::uint32_t atlasSize = 0;
+		std::uint32_t atlasCount = 0;
 		std::uint32_t basePageSize = 0;
 		std::uint32_t gutter = 0;
 		std::uint32_t totalPages = 0;
@@ -708,6 +734,8 @@ namespace Vans::EditorAPI
 	struct CommandRecordingSettingsSnapshot
 	{
 		bool parallelEnabled = true;
+		bool frameContextRingEnabled = false;
+		std::uint32_t framesInFlight = 2;
 	};
 
 	struct GIInspectorSettingsSnapshot
@@ -771,6 +799,9 @@ namespace Vans::EditorAPI
 		std::uint32_t frustumVisibleCount = 0;
 		std::uint32_t hizCulledCount = 0;
 		std::uint32_t forcedVisibleCount = 0;
+		std::uint32_t preCullDrawCallCount = 0;
+		std::uint32_t culledDrawCallCount = 0;
+		std::uint32_t drawnDrawCallCount = 0;
 		std::vector<MainCameraHiZCulledNodeSnapshot> culledNodes;
 	};
 

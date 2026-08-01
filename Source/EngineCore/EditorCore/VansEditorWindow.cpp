@@ -32,12 +32,13 @@
 #include "../Util/VansInputManager.h"
 #include "../Util/VansLog.h"
 #include "../RuntimeCore/VansFramePhase.h"
+#include "../RuntimeCore/VansRuntimeFrameScheduler.h"
 #include "../Configration/VansConfigration.h"
 
 #include "../AssetCore/VansAssetGuid.h"
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../AnimationCore/VansAnimationNode.h"
-#include "Packaging/VansGamePackageBuilder.h"
+#include "../PackagingCore/VansGamePackageBuilder.h"
 #include "Windows/VansProjectSelector.h"
 #include "../SceneCore/VansSceneDocumentLoader.h"
 #include "../SceneCore/VansSceneSaveService.h"
@@ -426,8 +427,6 @@ std::unique_ptr<Vans::VansProjectSelector> VansGraphics::VansEditorWindow::m_Pro
 bool VansGraphics::VansEditorWindow::m_ProjectLoaded = false;
 std::string VansGraphics::VansEditorWindow::m_PendingScenePath;
 
-// 运行控制状态：默认处于编辑模式（时间冻结）
-VansGraphics::VansEditorPlayState VansGraphics::VansEditorWindow::m_PlayState = VansGraphics::VansEditorPlayState::Editing;
 std::string VansGraphics::VansEditorWindow::m_CurrentLoadedScenePath;
 // 延迟加载模式：默认 Editor
 Vans::EditorAPI::RuntimeSceneLoadMode VansGraphics::VansEditorWindow::m_PendingSceneLoadMode = Vans::EditorAPI::RuntimeSceneLoadMode::Editor;
@@ -454,9 +453,14 @@ Vans::EditorAPI::IEngineEditorAPI* VansGraphics::VansEditorWindow::GetEditorAPI(
     return m_EditorAPI;
 }
 
+bool VansGraphics::VansEditorWindow::IsEditing()
+{
+	return GetMutableEditorAPI().GetPlayState() == Vans::EditorAPI::EnginePlayState::Edit;
+}
+
 void VansGraphics::VansEditorWindow::ReloadCurrentSceneForEditing()
 {
-	if (m_PlayState != VansEditorPlayState::Editing || m_CurrentLoadedScenePath.empty())
+	if (!IsEditing() || m_CurrentLoadedScenePath.empty())
 		return;
 	m_PendingSceneLoadMode = Vans::EditorAPI::RuntimeSceneLoadMode::Editor;
 	m_PendingScenePath = m_CurrentLoadedScenePath;
@@ -464,7 +468,7 @@ void VansGraphics::VansEditorWindow::ReloadCurrentSceneForEditing()
 
 void VansGraphics::VansEditorWindow::ProcessRuntimeMultiMeshHierarchyExpansion()
 {
-    if (m_PlayState != VansEditorPlayState::Editing || !m_PendingScenePath.empty())
+    if (!IsEditing() || !m_PendingScenePath.empty())
         return;
     auto& editorAPI = GetMutableEditorAPI();
     if (!editorAPI.IsRuntimeSceneReady() || !m_SceneDocument || !m_SceneEditService || !m_SceneSaveService)
@@ -659,7 +663,7 @@ bool VansGraphics::VansEditorWindow::CreateVansEditorWindow(int width, int heigh
 
 void VansGraphics::VansEditorWindow::OnPlay()
 {
-    if (m_PlayState != VansEditorPlayState::Editing)
+    if (!IsEditing())
         return;
 
     if (m_CurrentLoadedScenePath.empty())
@@ -683,7 +687,7 @@ void VansGraphics::VansEditorWindow::OnPlay()
 
 void VansGraphics::VansEditorWindow::OnPause()
 {
-    if (m_PlayState != VansEditorPlayState::Playing)
+    if (GetMutableEditorAPI().GetPlayState() != Vans::EditorAPI::EnginePlayState::Play)
         return;
 
     // 冻结逻辑时间
@@ -692,14 +696,13 @@ void VansGraphics::VansEditorWindow::OnPause()
     // 暂停物理（线程仍存活，仅冻结步进）
     GetMutableEditorAPI().PauseRuntimePhysics();
 
-    m_PlayState = VansEditorPlayState::Paused;
     GetMutableEditorAPI().SetPlayState(Vans::EditorAPI::EnginePlayState::Pause);
     VANS_LOG("[Editor] Scene paused");
 }
 
 void VansGraphics::VansEditorWindow::OnResume()
 {
-    if (m_PlayState != VansEditorPlayState::Paused)
+    if (GetMutableEditorAPI().GetPlayState() != Vans::EditorAPI::EnginePlayState::Pause)
         return;
 
     // 恢复逻辑时间
@@ -708,14 +711,13 @@ void VansGraphics::VansEditorWindow::OnResume()
     // 恢复物理步进
     GetMutableEditorAPI().ResumeRuntimePhysics();
 
-    m_PlayState = VansEditorPlayState::Playing;
     GetMutableEditorAPI().SetPlayState(Vans::EditorAPI::EnginePlayState::Play);
     VANS_LOG("[Editor] Scene resumed");
 }
 
 void VansGraphics::VansEditorWindow::OnStop()
 {
-    if (m_PlayState == VansEditorPlayState::Editing)
+    if (IsEditing())
         return;
 
     // 冻结时间，防止重载期间推进
@@ -725,7 +727,6 @@ void VansGraphics::VansEditorWindow::OnStop()
     GetMutableEditorAPI().PauseRuntimePhysics();
 
     // 提前切回编辑模式，避免重载期间触发脚本 Update
-    m_PlayState = VansEditorPlayState::Editing;
     GetMutableEditorAPI().SetPlayState(Vans::EditorAPI::EnginePlayState::Edit);
 
     // Stop = 卸载场景，以 Editor 模式重新加载
@@ -778,6 +779,7 @@ void VansGraphics::VansEditorWindow::DrawPlayControlToolbar()
 
     auto& editorAPI = GetMutableEditorAPI();
     const bool sceneReady = editorAPI.IsRuntimeSceneReady() && !editorAPI.IsRuntimeSceneSwitching();
+	const Vans::EditorAPI::EnginePlayState playState = editorAPI.GetPlayState();
 
     constexpr float BUTTON_WIDTH   = 62.0f;
     constexpr float BUTTON_HEIGHT  = 18.0f;
@@ -794,7 +796,7 @@ void VansGraphics::VansEditorWindow::DrawPlayControlToolbar()
 
     // ── ? Play ──────────────────────────────────────────────────────────
     // Editing 状态下可点击；其余状态置灰
-    const bool canPlay = sceneReady && (m_PlayState == VansEditorPlayState::Editing);
+    const bool canPlay = sceneReady && (playState == Vans::EditorAPI::EnginePlayState::Edit);
     if (!canPlay) ImGui::BeginDisabled();
     ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.13f, 0.45f, 0.13f, 1.00f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.18f, 0.60f, 0.18f, 1.00f));
@@ -808,14 +810,14 @@ void VansGraphics::VansEditorWindow::DrawPlayControlToolbar()
 
     // ── ? Pause / ? Resume ──────────────────────────────────────────────
     // Playing 时显示 Pause（可点），Paused 时显示 Resume（可点），Editing 时置灰
-    const bool canPause  = sceneReady && (m_PlayState == VansEditorPlayState::Playing);
-    const bool canResume = sceneReady && (m_PlayState == VansEditorPlayState::Paused);
+    const bool canPause  = sceneReady && (playState == Vans::EditorAPI::EnginePlayState::Play);
+    const bool canResume = sceneReady && (playState == Vans::EditorAPI::EnginePlayState::Pause);
     const bool pauseActive = canPause || canResume;
     if (!pauseActive) ImGui::BeginDisabled();
     ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.50f, 0.40f, 0.05f, 1.00f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.70f, 0.55f, 0.08f, 1.00f));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.40f, 0.32f, 0.04f, 1.00f));
-    const char* pauseLabel = (m_PlayState == VansEditorPlayState::Paused)
+    const char* pauseLabel = (playState == Vans::EditorAPI::EnginePlayState::Pause)
         ? u8"\u25b6 Resume"
         : u8"\u23f8 Pause";
     if (ImGui::Button(pauseLabel, ImVec2(BUTTON_WIDTH, BUTTON_HEIGHT)))
@@ -830,7 +832,7 @@ void VansGraphics::VansEditorWindow::DrawPlayControlToolbar()
 
     // ── ? Stop ──────────────────────────────────────────────────────────
     // Playing 或 Paused 状态下可点击；Editing 时置灰
-    const bool canStop = sceneReady && (m_PlayState != VansEditorPlayState::Editing);
+    const bool canStop = sceneReady && (playState != Vans::EditorAPI::EnginePlayState::Edit);
     if (!canStop) ImGui::BeginDisabled();
     ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.45f, 0.10f, 0.10f, 1.00f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.65f, 0.14f, 0.14f, 1.00f));
@@ -845,7 +847,7 @@ void VansGraphics::VansEditorWindow::DrawPlayControlToolbar()
 
 void VansGraphics::VansEditorWindow::DrawBuildMenu()
 {
-    static Vans::VansGamePackagePlatform selectedPlatform = Vans::VansGamePackagePlatform::Windows;
+    constexpr Vans::VansGamePackagePlatform selectedPlatform = Vans::VansGamePackagePlatform::Windows;
     static std::string lastPackageStatus;
     static std::string lastPackageOutputPath;
     static bool lastPackageSucceeded = false;
@@ -855,24 +857,9 @@ void VansGraphics::VansEditorWindow::DrawBuildMenu()
     if (!ImGui::BeginMenu("Build"))
         return;
 
-    if (ImGui::BeginMenu("Platform"))
-    {
-        const bool windowsSelected = selectedPlatform == Vans::VansGamePackagePlatform::Windows;
-        if (ImGui::MenuItem("Windows", nullptr, windowsSelected))
-            selectedPlatform = Vans::VansGamePackagePlatform::Windows;
-
-        ImGui::BeginDisabled();
-        const bool androidSelected = selectedPlatform == Vans::VansGamePackagePlatform::Android;
-        ImGui::MenuItem("Android", nullptr, androidSelected);
-        ImGui::EndDisabled();
-
-        ImGui::EndMenu();
-    }
-
     const std::string projectRootPath = editorAPI.GetProjectRootPath();
     const bool hasProject = !projectRootPath.empty();
     const bool hasScene = !m_CurrentLoadedScenePath.empty();
-    const bool platformImplemented = selectedPlatform == Vans::VansGamePackagePlatform::Windows;
     const std::string sceneLabel = hasScene
         ? std::filesystem::path(m_CurrentLoadedScenePath).filename().string()
         : std::string("<none>");
@@ -881,7 +868,7 @@ void VansGraphics::VansEditorWindow::DrawBuildMenu()
     ImGui::Text("Platform: %s", Vans::ToString(selectedPlatform));
     ImGui::Text("Scene: %s", sceneLabel.c_str());
 
-    const bool canPackage = hasProject && hasScene && platformImplemented;
+    const bool canPackage = hasProject && hasScene;
     if (!canPackage)
         ImGui::BeginDisabled();
 
@@ -924,9 +911,7 @@ void VansGraphics::VansEditorWindow::DrawBuildMenu()
     if (!canPackage)
         ImGui::EndDisabled();
 
-    if (!platformImplemented)
-        ImGui::TextDisabled("Android packaging is reserved for a future toolchain.");
-    else if (!hasProject)
+    if (!hasProject)
         ImGui::TextDisabled("Open a project before packaging.");
     else if (!hasScene)
         ImGui::TextDisabled("Load a scene before packaging.");
@@ -1032,9 +1017,28 @@ void VansGraphics::VansEditorWindow::ProcessPendingSceneLoad()
 
     VANS_LOG("[Editor] Loading deferred scene: " << m_PendingScenePath
              << " [mode=" << (m_PendingSceneLoadMode == Vans::EditorAPI::RuntimeSceneLoadMode::Editor ? "Editor" : "Runtime") << "]");
+
+	Vans::SceneDocumentLoadResult pendingDocumentLoad;
+	if (m_PendingSceneLoadMode == Vans::EditorAPI::RuntimeSceneLoadMode::Editor)
+	{
+		pendingDocumentLoad = Vans::VansSceneDocumentLoader::Load(m_PendingScenePath);
+		if (!pendingDocumentLoad)
+		{
+			for (const auto& diagnostic : pendingDocumentLoad.diagnostics)
+				VANS_LOG_ERROR("[SceneDocument] " << diagnostic.propertyPointer << " " << diagnostic.message);
+			VANS_LOG_ERROR("[Editor] Scene document validation failed before runtime scene switch: " << m_PendingScenePath);
+			m_PendingScenePath.clear();
+			return;
+		}
+	}
+
     auto& editorAPI = GetMutableEditorAPI();
-    if (!editorAPI.LoadRuntimeScene(m_PendingScenePath, m_PendingSceneLoadMode))
+    const Vans::EditorAPI::RuntimeSceneLoadResult sceneLoadResult =
+		editorAPI.LoadRuntimeScene(m_PendingScenePath, m_PendingSceneLoadMode);
+    if (!sceneLoadResult)
     {
+		for (const auto& diagnostic : sceneLoadResult.diagnostics)
+			VANS_LOG_ERROR("[Editor] Scene load " << diagnostic.code << ": " << diagnostic.message);
         VANS_LOG_ERROR("[Editor] Runtime scene load request failed: " << m_PendingScenePath);
         m_PendingScenePath.clear();
         return;
@@ -1045,27 +1049,16 @@ void VansGraphics::VansEditorWindow::ProcessPendingSceneLoad()
 
     if (m_PendingSceneLoadMode == Vans::EditorAPI::RuntimeSceneLoadMode::Editor)
     {
-		auto loadResult = Vans::VansSceneDocumentLoader::Load(m_PendingScenePath);
-		if (loadResult)
-		{
-			m_SceneDocument = std::move(loadResult.document);
-			m_SceneEditService = std::make_unique<Vans::VansSceneEditService>(*m_SceneDocument);
-			m_RuntimeMultiMeshExpansionScannedStateId = 0;
-			VANS_LOG("[SceneDocument] Document ready: " << m_PendingScenePath);
-		}
-		else
-		{
-			m_SceneEditService.reset();
-			m_SceneDocument.reset();
-			for (const auto& diagnostic : loadResult.diagnostics)
-				VANS_LOG_ERROR("[SceneDocument] " << diagnostic.propertyPointer << " " << diagnostic.message);
-		}
+		m_SceneDocument = std::move(pendingDocumentLoad.document);
+		m_SceneEditService = std::make_unique<Vans::VansSceneEditService>(*m_SceneDocument);
+		m_RuntimeMultiMeshExpansionScannedStateId = 0;
+		VANS_LOG("[SceneDocument] Document ready: " << m_PendingScenePath
+			<< " [revision=" << sceneLoadResult.contentRevision << "]");
 
         // Editor 模式：冻结时间，Scene 视口控制器负责编辑器相机漫游。
         // 保留场景 Camera component 的初始姿态，但不让预览相机继续受场景 Transform 约束。
         DetachEditorViewportCamerasFromSceneTransforms();
         VansTimer::SetTimePaused(true);
-        m_PlayState = VansEditorPlayState::Editing;
         editorAPI.SetPlayState(Vans::EditorAPI::EnginePlayState::Edit);
     }
     else
@@ -1073,8 +1066,8 @@ void VansGraphics::VansEditorWindow::ProcessPendingSceneLoad()
         // Runtime 模式：解冻时间，启动物理，进入 Playing 状态。
         // Play 模式下相机由脚本接管，Scene 视口控制器会拒绝编辑器漫游输入。
         VansTimer::SetTimePaused(false);
+        GetMutableEditorAPI().InstallRuntimeVehiclePhysicsStepCallback();
         GetMutableEditorAPI().StartRuntimePhysicsIfNeeded();
-        m_PlayState = VansEditorPlayState::Playing;
         editorAPI.SetPlayState(Vans::EditorAPI::EnginePlayState::Play);
         VANS_LOG("[Editor] Scene started playing (Runtime mode)");
     }
@@ -1291,7 +1284,7 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& devic
         }
 
         // 顶部菜单栏
-		const bool editingMode = m_PlayState == VansEditorPlayState::Editing;
+		const bool editingMode = IsEditing();
 		const bool sceneDocumentReady = editingMode && m_SceneDocument && m_SceneDocument->IsHealthy();
 		const bool hasDirtyAssets = Vans::VansAssetDocumentRegistry::Get().HasDirtyDocuments();
 		std::shared_ptr<Vans::VansOpenAssetDocument> selectedAssetDocument;
@@ -1820,16 +1813,6 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         auto& editorAPI = GetMutableEditorAPI();
         editorAPI.BindGlobalRuntime(m_GraphicsDevice);
 
-        // Synchronize rigid-body physics transforms to render transforms.
-        // IMPORTANT: This uses PxSceneReadLock internally to prevent race conditions
-        // with the background physics simulation thread.
-        if (editorAPI.IsRuntimePhysicsRunning() && editorAPI.IsRuntimeSceneReady())
-        {
-            Vans::VansEventBus::Get().Flush(Vans::VansEventLane::Physics);
-            VANS_PROFILE_SCOPE("Physics::SyncRigidBodies", Vans::ProfileCategory::Physics);
-            editorAPI.SyncRuntimePhysicsTransforms();
-        }
-
         // ── Script update BEFORE CCT flush and BEFORE rendering ──────────
         // Correct game-loop order:
         //   ① UpdatePhysicsTransforms  — read async rigid-body results
@@ -1841,27 +1824,35 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         //                                      (zero-frame lag)
         //   ④ VansScriptUpdateCameraScripts — camera follows refreshed CCT transform
         //   ⑤ camera.Rendering         — render with up-to-date positions
-        if (editorAPI.IsRuntimeSceneReady() && m_PlayState == VansEditorPlayState::Playing)
+        Vans::VansRuntimeGameplayFrame gameplayFrame;
+        gameplayFrame.sceneReady = editorAPI.IsRuntimeSceneReady();
+        gameplayFrame.simulationRunning =
+            gameplayFrame.sceneReady && editorAPI.IsRuntimePhysicsRunning();
+        gameplayFrame.gameplayActive =
+            gameplayFrame.sceneReady &&
+            editorAPI.GetPlayState() == Vans::EditorAPI::EnginePlayState::Play;
+        gameplayFrame.syncPhysicsTransforms = [&editorAPI]
         {
-            Vans::VansEventBus::Get().Flush(Vans::VansEventLane::Script);
+            // Uses PxSceneReadLock internally to synchronize with async simulation.
+            VANS_PROFILE_SCOPE("Physics::SyncRigidBodies", Vans::ProfileCategory::Physics);
+            editorAPI.SyncRuntimePhysicsTransforms();
+        };
+        gameplayFrame.updateNonCameraScripts = [&editorAPI]
+        {
             VANS_PROFILE_SCOPE("Script::Update", Vans::ProfileCategory::Script);
             editorAPI.UpdateRuntimeNonCameraScripts();
-        }
-
-        // Flush CCT displacements queued by scripts this frame.
-        if (editorAPI.IsRuntimePhysicsRunning() && editorAPI.IsRuntimeSceneReady())
+        };
+        gameplayFrame.flushCharacterControllerTransforms = [&editorAPI]
         {
             VANS_PROFILE_SCOPE("Physics::FlushCharacterController", Vans::ProfileCategory::Physics);
             editorAPI.FlushRuntimeCharacterControllerTransforms();
-        }
-
-        // 相机脚本必须在 CCT 刷新后执行，否则 MainCamera 在场景对象列表中排在角色前面时，
-        // 会读取上一帧的角色位置，表现为跟随失效或明显滞后。
-        if (editorAPI.IsRuntimeSceneReady() && m_PlayState == VansEditorPlayState::Playing)
+        };
+        gameplayFrame.updateCameraScripts = [&editorAPI]
         {
             VANS_PROFILE_SCOPE("Script::UpdateCameraScripts", Vans::ProfileCategory::Script);
             editorAPI.UpdateRuntimeCameraScripts();
-        }
+        };
+        Vans::VansRuntimeFrameScheduler::RunGameplay(gameplayFrame);
 
         // ── Deferred resource & scene loading ───────────────────────────
         // Process pending loads BEFORE command buffer recording.
@@ -1906,14 +1897,6 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
             camera.Present();
         }
 
-        ImDrawData* draw_data = ImGui::GetDrawData();
-        const bool is_minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f);
-        if (!is_minimized)
-        {
-
-        }
-
-
         // Update and Render additional Platform Windows
         if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
         {
@@ -1927,6 +1910,7 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
             if (profilerFrameActive)
                 m_GraphicsDevice->EndGpuProfilerFrame();
         }
+
     }
 
     m_Cameras.clear();

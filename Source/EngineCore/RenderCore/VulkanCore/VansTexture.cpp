@@ -911,6 +911,79 @@ namespace VansGraphics
 		return true;
 	}
 
+	bool VansTexture::TryPrepareCookedBatchUpload(
+		VansVKDevice& vkDevice,
+		const TextureLoadDesc& loadDesc,
+		VansTextureMipChainUpload& upload,
+		std::vector<std::uint8_t>& uploadStorage)
+	{
+		if (loadDesc.cookedPath.empty())
+			return false;
+
+		Vans::VansCookedTextureData cooked;
+		std::string error;
+		if (!Vans::VansTextureCooker::LoadArtifact(loadDesc.cookedPath, cooked, error))
+			return false;
+		if (cooked.format != Vans::VansCookedTextureFormat::BC3 ||
+			cooked.width == 0 || cooked.height == 0 || cooked.mips.empty() || cooked.data.empty() ||
+			cooked.data.size() > static_cast<size_t>(std::numeric_limits<int>::max()))
+		{
+			return false;
+		}
+
+		VkDevice device = vkDevice.GetLogicDevice();
+		const VkFormat format = loadDesc.isSRGB
+			? VK_FORMAT_BC3_SRGB_BLOCK
+			: VK_FORMAT_BC3_UNORM_BLOCK;
+		const VkExtent3D extent = { cooked.width, cooked.height, 1 };
+		if (!m_Image.CreateVulkanImage(
+			device,
+			extent,
+			format,
+			static_cast<uint32_t>(cooked.mips.size()),
+			1,
+			VK_IMAGE_TYPE_2D,
+			VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+			VK_SAMPLE_COUNT_1_BIT,
+			false,
+			true,
+			true,
+			loadDesc.addressMode))
+		{
+			return false;
+		}
+
+		std::vector<VkBufferImageCopy> regions;
+		regions.reserve(cooked.mips.size());
+		for (std::size_t mipIndex = 0; mipIndex < cooked.mips.size(); ++mipIndex)
+		{
+			const Vans::VansCookedTextureMip& mip = cooked.mips[mipIndex];
+			VkBufferImageCopy region{};
+			region.bufferOffset = static_cast<VkDeviceSize>(mip.offset);
+			region.bufferRowLength = 0;
+			region.bufferImageHeight = 0;
+			region.imageSubresource = {
+				VK_IMAGE_ASPECT_COLOR_BIT,
+				static_cast<uint32_t>(mipIndex),
+				0,
+				1
+			};
+			region.imageOffset = { 0, 0, 0 };
+			region.imageExtent = { mip.width, mip.height, 1 };
+			regions.push_back(region);
+		}
+
+		uploadStorage = std::move(cooked.data);
+		upload.destImage = &m_Image;
+		upload.data = uploadStorage.data();
+		upload.dataSize = static_cast<int>(uploadStorage.size());
+		upload.regions = std::move(regions);
+		upload.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		m_TextureWidth = static_cast<int>(cooked.width);
+		m_TextureHeight = static_cast<int>(cooked.height);
+		return true;
+	}
+
 	void VansTexture::LoadCubeTexture(VansVKCommandBuffer& command_buffer, std::string texture_parent_path, bool isSRGB)
 	{
 		VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);

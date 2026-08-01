@@ -337,7 +337,7 @@ void AmbientBRDF_Skin(BRDFData brdf, SkinMaterialParams skin,
 // Cascade shadow map version of skin lighting
 void CalculateDirectLight_Skin(BRDFData brdfData, float curvature,
                                SkinMaterialParams skin,
-                               sampler2DArray cascadeShadowMap, float viewDepth, sampler2DShadow punctualShadowMap,
+                               sampler2DArray cascadeShadowMap, float viewDepth, sampler2DArrayShadow punctualShadowMap,
                                float screenSpaceShadow,
                                inout LightResult lightResult)
 {

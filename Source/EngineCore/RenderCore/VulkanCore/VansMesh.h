@@ -25,6 +25,14 @@ namespace VansGraphics { class VansVKDevice; class VansVKCommandBuffer; }
 
 namespace VansGraphics
 {
+	enum class VansMeshCacheBuildStatus
+	{
+		Current,
+		Cooked,
+		NotEligible,
+		Failed
+	};
+
 	struct VansMeshLocalOBB
 	{
 		glm::vec3 center = glm::vec3(0.0f);
@@ -167,7 +175,10 @@ namespace VansGraphics
 
 	public:
 
-		void LoadMesh(VkDevice& logic_device, VkQueue& queue, VansVKCommandBuffer* commandbuffer,const std::string& file_name, bool import_tangent = false);
+		void LoadMesh(VkDevice& logic_device, VkQueue& queue, VansVKCommandBuffer* commandbuffer,
+			const std::string& file_name, bool import_tangent = false,
+			const std::string& cachePath = {},
+			bool trustCacheWithoutSource = false);
 
 		// Loads only the specified aiMesh index from a file (used for submesh splitting).
 		// Returns false if the index is out of range.
@@ -217,7 +228,8 @@ namespace VansGraphics
 		// Internal helper to populate this mesh from an already-loaded aiScene/aiMesh (avoids re-reading files per submesh).
 		bool LoadMeshSubmeshFromScene(VkDevice& logic_device, VkQueue& queue, VansVKCommandBuffer* commandbuffer,
 			const aiScene* scene, aiMesh* mesh, const aiMatrix4x4* meshTransform = nullptr,
-			bool import_tangent = false, bool supportRayTracing = false, float scaleFactor = 1.0f);
+			bool import_tangent = false, bool supportRayTracing = false, float scaleFactor = 1.0f,
+			bool keepImportDataAfterUpload = false);
 
 		// Loads the whole file then splits it into per-material VansMesh slices stored in m_SubMeshes.
 		// Also populates m_SubmeshMaterialInfos with texture paths and material metadata.
@@ -225,7 +237,9 @@ namespace VansGraphics
 			const std::string& file_name, bool import_tangent = false,
 			bool supportRayTracing = false, bool needCPUData = false, float scaleFactor = 1.0f,
 			bool rebuildIdentityBoneOffsetsFromHierarchy = false,
-			bool remapWeaponAttachmentBonesToHands = false);
+			bool remapWeaponAttachmentBonesToHands = false,
+			const std::string& cachePath = {},
+			bool trustCacheWithoutSource = false);
 
 		// Static helper: extract FBXSubmeshMaterialInfo for each submesh from a file without GPU upload.
 		static std::vector<FBXSubmeshMaterialInfo> GetSubmeshMaterialInfos(const std::string& file_name);
@@ -233,6 +247,15 @@ namespace VansGraphics
 		// Lightweight probe: open the file with Assimp and return the number of aiMeshes
 		// without uploading any GPU data.  Used by the scene loader for auto-detection.
 		static uint32_t ProbeSubmeshCount(const std::string& file_name);
+
+		static bool IsMeshCacheCurrent(const std::string& cachePath, const std::string& sourcePath,
+			bool import_tangent, bool expectMultiMesh, float scaleFactor);
+
+		static VansMeshCacheBuildStatus BuildMeshCache(const std::string& file_name, bool import_tangent,
+			bool expectMultiMesh, float scaleFactor,
+			bool rebuildIdentityBoneOffsetsFromHierarchy,
+			bool remapWeaponAttachmentBonesToHands,
+			const std::string& cachePath, std::string& error);
 
 		void BuildBLAS(VansVKDevice& device, VansVKCommandBuffer& commandBuffer);
 
@@ -264,5 +287,16 @@ namespace VansGraphics
 		void ExpandLocalBounds(const glm::vec3& point);
 		void RebuildLocalBoundsFromRawPositions();
 		void RebuildLocalOBBFromPositions(const std::vector<glm::vec3>& positions);
+		void ConfigureVertexInputLayout(bool import_tangent);
+		bool UploadRawMeshToGpu(VkDevice& logic_device, VkQueue& queue, VansVKCommandBuffer* commandbuffer,
+			const char* context, bool keepImportDataAfterUpload = false);
+		void ReleaseCpuImportDataAfterUpload();
+		bool TryLoadMeshCache(VkDevice& logic_device, VkQueue& queue, VansVKCommandBuffer* commandbuffer,
+			const std::string& cachePath, const std::string& sourcePath,
+			bool import_tangent, bool supportRayTracing, bool needCPUData,
+			bool expectMultiMesh, float scaleFactor,
+			bool trustCacheWithoutSource = false);
+		bool SaveMeshCache(const std::string& cachePath, const std::string& sourcePath,
+			bool import_tangent, bool expectMultiMesh, float scaleFactor) const;
 	};
 }

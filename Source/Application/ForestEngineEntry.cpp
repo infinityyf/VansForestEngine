@@ -1,4 +1,3 @@
-//#if defined FOREST_EDITOR
 #include "../EngineCore/EditorCore/VansEditorWindow.h"
 
 #include "../EngineCore/RenderCore/VulkanCore/VansVKDevice.h"

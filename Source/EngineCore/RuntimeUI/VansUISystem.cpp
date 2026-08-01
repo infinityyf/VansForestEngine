@@ -92,13 +92,18 @@ void VansUISystem::Shutdown()
     VansUIComponentRegistry::Get().CloseAll();
     VansUIResourceRegistry::Get().Clear();
 
+    if (m_Impl->m_ScreenManager)
+    {
+        m_Impl->m_ScreenManager->CloseAll();
+        m_Impl->m_ScreenManager.reset();
+    }
+
     if (m_Impl->m_NoesisSystem)
     {
         m_Impl->m_NoesisSystem->Shutdown();
         m_Impl->m_NoesisSystem.reset();
     }
 
-    m_Impl->m_ScreenManager.reset();
     m_Impl.reset();
 }
 

@@ -15,9 +15,12 @@
 #include "VansProjectSettings.h"
 #include "VansPathResolver.h"
 #include "VansSceneManager.h"
+#include "../AssetCore/VansAssetDatabase.h"
 
 #include <memory>
+#include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace Vans {
@@ -30,6 +33,7 @@ struct VansProjectOpenOptions
 	bool updateRecentProjects = true;
 	bool loadProjectSettings = true;
 	bool scanAssets = true;
+	VansAssetOperationPolicy assetPolicy = VansAssetOperationPolicy::Authoring();
 };
 
 class VansProjectManager
@@ -72,6 +76,12 @@ public:
 	const VansPathResolver&  GetPathResolver()     const { return m_PathResolver; }
 	VansAssetDatabase*       GetAssetDatabase()          { return m_AssetDatabase.get(); }
 	const VansAssetDatabase* GetAssetDatabase() const    { return m_AssetDatabase.get(); }
+	VansAssetDatabase*       GetBuiltInAssetDatabase()   { return m_BuiltInAssetDatabase.get(); }
+	const VansAssetDatabase* GetBuiltInAssetDatabase() const { return m_BuiltInAssetDatabase.get(); }
+	void SetPackagedAssetRecords(std::vector<VansAssetRecord> records);
+	std::optional<VansAssetRecord> FindAssetRecord(VansAssetGuid guid) const;
+	std::optional<VansAssetRecord> FindAssetRecordByPath(const std::filesystem::path& path) const;
+	std::vector<VansAssetRecord> EnumerateAssetRecords() const;
 	bool SaveProjectSettings() const;
 	VansProjectConfigDiagnostics GetProjectConfigDiagnostics() const;
 	bool SetProjectDefaultScene(const std::string& sceneRelativePath, std::string& error);
@@ -99,6 +109,10 @@ private:
 	VansPathResolver  m_PathResolver;
 	VansSceneManager  m_SceneManager;
 	std::unique_ptr<VansAssetDatabase> m_AssetDatabase;
+	std::unique_ptr<VansAssetDatabase> m_BuiltInAssetDatabase;
+	std::vector<VansAssetRecord> m_PackagedAssetRecords;
+	std::unordered_map<std::string, std::size_t> m_PackagedAssetRecordsByGuid;
+	std::unordered_map<std::string, std::size_t> m_PackagedAssetRecordsByPath;
 };
 
 } // namespace Vans

@@ -19,7 +19,7 @@ layout(location = 5) in vec3 fragBillboardForward;
 layout(set = 1, binding = 0) uniform sampler2D positiveAxesTex;
 layout(set = 1, binding = 1) uniform sampler2D negativeAxesTex;
 layout(set = 1, binding = 2) uniform sampler2DArray cascadeShadowMap;
-layout(set = 1, binding = 3) uniform sampler2DShadow punctualShadowMap;
+layout(set = 1, binding = 3) uniform sampler2DArrayShadow punctualShadowMap;
 
 layout(location = 0) out vec4 outColor;
 

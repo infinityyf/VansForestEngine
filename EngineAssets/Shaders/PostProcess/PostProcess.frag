@@ -97,9 +97,10 @@ void main()
     vec3 bloom = texture(bloomResult, uv).rgb;
     hdr += bloom * uPP.m_BloomIntensity;
 
-    float currentEV = texelFetch(exposureEV, ivec2(0, 0), 0).r;
-    float totalEV = currentEV + uPP.m_ExposureCompensation;
-    hdr *= pow(2.0, totalEV);
+	float currentEV = texelFetch(exposureEV, ivec2(0, 0), 0).r;
+	if (isnan(currentEV) || isinf(currentEV))
+		currentEV = 0.0;
+	hdr *= exp2(currentEV + uPP.m_ExposureCompensation);
 
     if (uPP.m_EnableColorGrading != 0)
         hdr = WhiteBalance(hdr, uPP.m_Temperature, uPP.m_Tint);

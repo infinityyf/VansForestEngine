@@ -2,11 +2,11 @@
 
 #include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "../../AssetCore/Storage/VansFileStorage.h"
+#include "../../ProjectSystem/VansProjectManager.h"
 #include "../../Util/VansLog.h"
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
@@ -55,17 +55,6 @@ namespace VansGraphics
 #else
 			return 2;
 #endif
-		}
-
-		std::string SanitizePathComponent(std::string value)
-		{
-			for (char& c : value)
-			{
-				const unsigned char byte = static_cast<unsigned char>(c);
-				if (!std::isalnum(byte) && c != '-' && c != '_')
-					c = '_';
-			}
-			return value.empty() ? "Editor" : value;
 		}
 
 		std::string UUIDToString(const uint8_t* uuid)
@@ -283,6 +272,44 @@ namespace VansGraphics
 		return FlushLocked(reason);
 	}
 
+	void VansPipelineCacheService::RefreshPersistencePath()
+	{
+		std::lock_guard<std::mutex> lock(m_Mutex);
+		if (!m_Initialized)
+			return;
+
+		const std::filesystem::path nextPath = ResolveCacheFilePath(m_Identity);
+		if (nextPath == m_CacheFilePath)
+			return;
+
+		const std::filesystem::path previousPath = m_CacheFilePath;
+		if (m_Dirty && !FlushLocked(VansPipelineCacheFlushReason::Manual))
+		{
+			VANS_LOG_WARN("[PipelineCache] Failed to flush previous persistence path before switching: "
+				<< previousPath.string());
+		}
+
+		m_CacheFilePath = nextPath;
+		m_LastDiskPayloadHash = 0;
+		m_WriteEnabled = true;
+
+		std::error_code ec;
+		std::filesystem::create_directories(m_CacheFilePath.parent_path(), ec);
+		if (ec)
+		{
+			m_WriteEnabled = false;
+			VANS_LOG_WARN("[PipelineCache] Cache directory is not writable: "
+				<< m_CacheFilePath.parent_path().string());
+		}
+		else if (!MergeDiskCacheLocked())
+		{
+			VANS_LOG_WARN("[PipelineCache] Failed to merge cache at the new persistence path");
+		}
+
+		VANS_LOG("[PipelineCache] Persistence path switched from " << previousPath.string()
+			<< " to " << m_CacheFilePath.string());
+	}
+
 	bool VansPipelineCacheService::CreateCacheLocked(const std::vector<uint8_t>& initialData, VkPipelineCache& outCache)
 	{
 		VkPipelineCacheCreateInfo createInfo{};
@@ -409,10 +436,10 @@ namespace VansGraphics
 		return true;
 	}
 
-	void VansPipelineCacheService::MergeAndDestroyChildCachesLocked()
+	bool VansPipelineCacheService::MergeChildCachesIntoMainLocked(bool destroyChildren)
 	{
 		if (m_ChildCaches.empty() || m_Device == VK_NULL_HANDLE)
-			return;
+			return false;
 
 		std::vector<VkPipelineCache> children;
 		children.reserve(m_ChildCaches.size());
@@ -422,19 +449,33 @@ namespace VansGraphics
 				children.push_back(pair.second);
 		}
 
+		bool merged = false;
 		if (!children.empty() && m_Cache != VK_NULL_HANDLE)
 		{
 			const VkResult result = VansGraphics::vkMergePipelineCaches(
 				m_Device, m_Cache, static_cast<uint32_t>(children.size()), children.data());
 			if (result == VK_SUCCESS)
+			{
 				m_Dirty = true;
+				VANS_LOG("[PipelineCache] Merged " << children.size() << " child caches");
+				merged = true;
+			}
 			else
 				VANS_LOG_WARN("[PipelineCache] Failed to merge child caches. VkResult=" << result);
 		}
 
-		for (VkPipelineCache child : children)
-			VansGraphics::vkDestroyPipelineCache(m_Device, child, nullptr);
-		m_ChildCaches.clear();
+		if (destroyChildren)
+		{
+			for (VkPipelineCache child : children)
+				VansGraphics::vkDestroyPipelineCache(m_Device, child, nullptr);
+			m_ChildCaches.clear();
+		}
+		return merged;
+	}
+
+	void VansPipelineCacheService::MergeAndDestroyChildCachesLocked()
+	{
+		MergeChildCachesIntoMainLocked(true);
 	}
 
 	bool VansPipelineCacheService::FlushLocked(VansPipelineCacheFlushReason reason)
@@ -443,6 +484,8 @@ namespace VansGraphics
 			return false;
 		if (reason == VansPipelineCacheFlushReason::Shutdown)
 			MergeAndDestroyChildCachesLocked();
+		else
+			MergeChildCachesIntoMainLocked(false);
 		if (!m_Dirty)
 			return true;
 		if (!m_WriteEnabled)
@@ -538,16 +581,15 @@ namespace VansGraphics
 		{
 			root = overrideRoot;
 		}
-		else if (const char* localAppData = std::getenv("LOCALAPPDATA"))
+		else if (Vans::VansProjectManager::Get().IsProjectLoaded())
 		{
-			const char* productEnv = std::getenv("FORESTENGINE_PRODUCT_ID");
-			const std::string product = SanitizePathComponent(productEnv ? productEnv : "Editor");
-			root = std::filesystem::path(localAppData) / "ForestEngine" / product / "PipelineCache" / "Vulkan";
+			root = std::filesystem::path(Vans::VansProjectManager::Get().GetProjectRootPath()) /
+				"Library" / "PipelineCache" / "Vulkan";
 		}
 		else
 		{
-			std::error_code ec;
-			root = std::filesystem::temp_directory_path(ec) / "ForestEngine" / "PipelineCache" / "Vulkan";
+			root = std::filesystem::path(Vans::VansProjectManager::Get().GetPathResolver().GetEngineRoot()) /
+				"Library" / "PipelineCache" / "Vulkan";
 		}
 
 		std::ostringstream deviceFolder;

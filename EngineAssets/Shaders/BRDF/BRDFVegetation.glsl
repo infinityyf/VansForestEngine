@@ -92,7 +92,7 @@ void DirectBRDF_Vegetation(BRDFData brdf, vec3 lightDirection, VegetationParams 
 
 void CalculateDirectLight_Vegetation(BRDFData brdfData, VegetationParams veg,
                                      sampler2DArray cascadeShadowMap, float viewDepth,
-                                     sampler2DShadow punctualShadowMap,
+                                     sampler2DArrayShadow punctualShadowMap,
                                      float screenSpaceShadow,
                                      inout LightResult lightResult)
 {

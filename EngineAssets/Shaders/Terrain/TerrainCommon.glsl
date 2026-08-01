@@ -121,3 +121,82 @@ layout(set = 1, binding = 8) uniform NoiseDetailParams {
     float fadeStart;          // 距离衰减起始比例 [0,1]，默认 0.7
     float noisePadding;
 } noiseParams;
+
+int TerrainGeometryNoiseOctaves()
+{
+    return min(noiseParams.noiseOctaves, 2);
+}
+
+float TerrainGeometryNoiseFade(vec3 worldPos)
+{
+    if (noiseParams.noiseStrength <= 0.0)
+    {
+        return 0.0;
+    }
+
+    float distToCamera = length(worldPos - cameraPosition.xyz);
+    return 1.0 - smoothstep(
+        tessParams.tessDistance * noiseParams.fadeStart,
+        tessParams.tessDistance,
+        distToCamera
+    );
+}
+
+float TerrainEvaluateGeometryNoise(vec2 worldXZ, int octaves)
+{
+    if (noiseParams.noiseWarpStrength > 0.001)
+    {
+        return terrainDetailFbmWarped(
+            worldXZ * noiseParams.noiseFrequency,
+            octaves,
+            noiseParams.noiseGain,
+            noiseParams.noiseLacunarity,
+            noiseParams.noiseWarpStrength
+        );
+    }
+
+    return terrainDetailFbm(
+        worldXZ * noiseParams.noiseFrequency,
+        octaves,
+        noiseParams.noiseGain,
+        noiseParams.noiseLacunarity
+    );
+}
+
+vec2 TerrainEvaluateGeometryNoiseGradient(vec2 worldXZ, int octaves, float gradEps)
+{
+    if (noiseParams.noiseWarpStrength > 0.001)
+    {
+        return terrainDetailGradientWarped(
+            worldXZ,
+            noiseParams.noiseFrequency,
+            octaves,
+            noiseParams.noiseGain,
+            noiseParams.noiseLacunarity,
+            noiseParams.noiseWarpStrength,
+            gradEps
+        );
+    }
+
+    return terrainDetailGradient(
+        worldXZ,
+        noiseParams.noiseFrequency,
+        octaves,
+        noiseParams.noiseGain,
+        noiseParams.noiseLacunarity,
+        gradEps
+    );
+}
+
+vec3 TerrainApplyGeometryNoise(vec3 worldPos)
+{
+    float noiseFade = TerrainGeometryNoiseFade(worldPos);
+    if (noiseFade <= 0.001)
+    {
+        return worldPos;
+    }
+
+    float noiseDisp = TerrainEvaluateGeometryNoise(worldPos.xz, TerrainGeometryNoiseOctaves());
+    worldPos.y += noiseDisp * noiseParams.noiseStrength * noiseFade;
+    return worldPos;
+}

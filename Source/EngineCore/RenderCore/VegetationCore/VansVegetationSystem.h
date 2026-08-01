@@ -220,8 +220,8 @@ namespace VansGraphics
 
 	struct TreePunctualShadowPushConstants
 	{
-		int lightIndex;
-		int shadowFaceIndex;
+		int shadowViewIndex;
+		int reserved;
 		int materialIndex;
 		int objectIndex;
 		uint32_t visibleOffset;
@@ -331,8 +331,7 @@ namespace VansGraphics
 		                             const std::vector<VkDescriptorSetLayout>& baseDescSetLayouts,
 		                             const std::vector<VkDescriptorSet>& baseDescSets,
 		                             int pushConstantTransformIndex,
-		                             int lightIndex,
-		                             int shadowFaceIndex);
+		                             int shadowViewIndex);
 
 		// ── Cleanup ────────────────────────────────────────────────────
 		void Cleanup(VkDevice device);

@@ -2,14 +2,26 @@
 #include "../Util/VansLog.h"
 #include "../Configration/VansConfigration.h"
 #include "../AssetCore/VansAssetDatabase.h"
+#include "../AssetCore/VansBuiltInAssetCatalog.h"
 #include "Storage/VansProjectScaffoldStorage.h"
 
 #include <filesystem>
 #include <algorithm>
+#include <cctype>
 
 namespace fs = std::filesystem;
 
 namespace Vans {
+namespace
+{
+	std::string NormalizeAssetLookupPath(std::filesystem::path path)
+	{
+		std::string value = path.lexically_normal().generic_string();
+		std::transform(value.begin(), value.end(), value.begin(),
+			[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+		return value;
+	}
+}
 
 // -----------------------------------------------------------------------
 // Singleton
@@ -138,18 +150,45 @@ bool VansProjectManager::OpenProject(const std::string& projectRootPath, const V
 
 	if (options.scanAssets)
 	{
+		m_PackagedAssetRecords.clear();
+		m_PackagedAssetRecordsByGuid.clear();
+		m_PackagedAssetRecordsByPath.clear();
 		m_AssetDatabase = std::make_unique<VansAssetDatabase>(
 			fs::path(root) / m_Config.assetsRoot,
 			fs::path(root) / m_Config.importedArtifactRoot);
-		const VansAssetScanResult assetScan = m_AssetDatabase->Scan();
+		const VansAssetScanResult assetScan = m_AssetDatabase->Scan(options.assetPolicy);
 		for (const std::string& error : assetScan.errors)
 			VANS_LOG_ERROR("[AssetDatabase] " << error);
 		VANS_LOG("[AssetDatabase] Registered " << assetScan.registered
-			<< " assets, generated " << assetScan.generatedMeta << " meta files");
+			<< " assets, generated " << assetScan.generatedMeta
+			<< " meta files, cooked " << assetScan.cookedArtifacts << " artifacts");
+
+		const fs::path builtInArtifactRoot =
+			fs::path(root) / m_Config.importedArtifactRoot / "Engine";
+		m_BuiltInAssetDatabase = std::make_unique<VansAssetDatabase>(
+			fs::path(m_PathResolver.GetEngineRoot()) / "EngineAssets",
+			builtInArtifactRoot);
+		std::vector<std::string> builtInErrors;
+		if (!VansBuiltInAssetCatalog::RegisterAssets(
+			*m_BuiltInAssetDatabase,
+			m_PathResolver.GetEngineRoot(),
+			VansAssetOperationPolicy::ReadOnly(),
+			builtInErrors))
+		{
+			for (const std::string& error : builtInErrors)
+				VANS_LOG_ERROR("[BuiltInAssetDatabase] " << error);
+			m_AssetDatabase.reset();
+			m_BuiltInAssetDatabase.reset();
+			m_Loaded = false;
+			return false;
+		}
+		VANS_LOG("[BuiltInAssetDatabase] Registered "
+			<< m_BuiltInAssetDatabase->All().size() << " required engine assets");
 	}
 	else
 	{
 		m_AssetDatabase.reset();
+		m_BuiltInAssetDatabase.reset();
 	}
 
 	if (options.updateRecentProjects)
@@ -173,10 +212,89 @@ void VansProjectManager::CloseProject()
 
 	m_SceneManager.Clear();
 	m_AssetDatabase.reset();
+	m_BuiltInAssetDatabase.reset();
 	m_Config = {};
 	m_ProjectSettings.SetDefaults();
 	m_ProjectRootPath.clear();
 	m_Loaded = false;
+	m_PackagedAssetRecords.clear();
+	m_PackagedAssetRecordsByGuid.clear();
+	m_PackagedAssetRecordsByPath.clear();
+}
+
+void VansProjectManager::SetPackagedAssetRecords(std::vector<VansAssetRecord> records)
+{
+	m_PackagedAssetRecords = std::move(records);
+	m_PackagedAssetRecordsByGuid.clear();
+	m_PackagedAssetRecordsByPath.clear();
+	for (std::size_t i = 0; i < m_PackagedAssetRecords.size(); ++i)
+	{
+		const VansAssetRecord& record = m_PackagedAssetRecords[i];
+		m_PackagedAssetRecordsByGuid[record.guid.ToString()] = i;
+		if (!record.sourcePath.empty())
+			m_PackagedAssetRecordsByPath[NormalizeAssetLookupPath(record.sourcePath)] = i;
+		if (!record.artifactPath.empty())
+			m_PackagedAssetRecordsByPath[NormalizeAssetLookupPath(record.artifactPath)] = i;
+	}
+	VANS_LOG("[ProjectManager] Packaged asset index loaded: " << m_PackagedAssetRecords.size() << " records");
+}
+
+std::optional<VansAssetRecord> VansProjectManager::FindAssetRecord(VansAssetGuid guid) const
+{
+	if (m_AssetDatabase)
+	{
+		if (const auto projectRecord = m_AssetDatabase->Find(guid))
+			return projectRecord;
+		if (m_BuiltInAssetDatabase)
+			return m_BuiltInAssetDatabase->Find(guid);
+		return std::nullopt;
+	}
+
+	auto it = m_PackagedAssetRecordsByGuid.find(guid.ToString());
+	if (it == m_PackagedAssetRecordsByGuid.end() || it->second >= m_PackagedAssetRecords.size())
+		return std::nullopt;
+	return m_PackagedAssetRecords[it->second];
+}
+
+std::optional<VansAssetRecord> VansProjectManager::FindAssetRecordByPath(const std::filesystem::path& path) const
+{
+	if (m_AssetDatabase)
+	{
+		if (const auto projectRecord = m_AssetDatabase->Find(path))
+			return projectRecord;
+		if (m_BuiltInAssetDatabase)
+		{
+			if (const auto builtInRecord = m_BuiltInAssetDatabase->Find(path))
+				return builtInRecord;
+		}
+		const std::string wanted = NormalizeAssetLookupPath(path);
+		for (const VansAssetRecord& record : EnumerateAssetRecords())
+		{
+			if (!record.artifactPath.empty() && NormalizeAssetLookupPath(record.artifactPath) == wanted)
+				return record;
+		}
+		return std::nullopt;
+	}
+
+	auto it = m_PackagedAssetRecordsByPath.find(NormalizeAssetLookupPath(path));
+	if (it == m_PackagedAssetRecordsByPath.end() || it->second >= m_PackagedAssetRecords.size())
+		return std::nullopt;
+	return m_PackagedAssetRecords[it->second];
+}
+
+std::vector<VansAssetRecord> VansProjectManager::EnumerateAssetRecords() const
+{
+	if (m_AssetDatabase)
+	{
+		std::vector<VansAssetRecord> records = m_AssetDatabase->All();
+		if (m_BuiltInAssetDatabase)
+		{
+			std::vector<VansAssetRecord> builtInRecords = m_BuiltInAssetDatabase->All();
+			records.insert(records.end(), builtInRecords.begin(), builtInRecords.end());
+		}
+		return records;
+	}
+	return m_PackagedAssetRecords;
 }
 
 bool VansProjectManager::SaveProjectSettings() const

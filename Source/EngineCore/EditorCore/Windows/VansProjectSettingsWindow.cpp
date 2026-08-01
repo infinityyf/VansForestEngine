@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstdio>
+#include <cstdint>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -180,7 +181,28 @@ void VansProjectSettingsWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 				editorAPI.GetCommandRecordingSettings();
 			bool parallelRecording = commandRecording.parallelEnabled;
 			if (ImGui::Checkbox("Parallel Command Recording", &parallelRecording))
-				editorAPI.SetCommandRecordingSettings(parallelRecording);
+			{
+				commandRecording.parallelEnabled = parallelRecording;
+				editorAPI.SetCommandRecordingSettings(commandRecording);
+			}
+			bool frameContextRing = commandRecording.frameContextRingEnabled;
+			if (ImGui::Checkbox("Frame Context Ring", &frameContextRing))
+			{
+				commandRecording.frameContextRingEnabled = frameContextRing;
+				if (commandRecording.framesInFlight < 2)
+					commandRecording.framesInFlight = 2;
+				editorAPI.SetCommandRecordingSettings(commandRecording);
+			}
+			int framesInFlight = static_cast<int>(commandRecording.framesInFlight);
+			ImGui::BeginDisabled(!commandRecording.frameContextRingEnabled);
+			ImGui::SetNextItemWidth(120.0f);
+			if (ImGui::SliderInt("Frames In Flight", &framesInFlight, 1, 2))
+			{
+				commandRecording.framesInFlight = static_cast<std::uint32_t>(framesInFlight);
+				editorAPI.SetCommandRecordingSettings(commandRecording);
+			}
+			ImGui::EndDisabled();
+			ImGui::TextDisabled("关闭 Frame Context Ring 时会回到旧的 CPU 等待提交路径。");
 			ImGui::EndTabItem();
 		}
 

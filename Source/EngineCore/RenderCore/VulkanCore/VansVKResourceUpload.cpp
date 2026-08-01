@@ -5,8 +5,28 @@
 
 namespace VansGraphics
 {
+	namespace
+	{
+		VkDeviceSize AlignUploadOffset(VkDeviceSize offset)
+		{
+			constexpr VkDeviceSize kUploadAlignment = 256;
+			return (offset + kUploadAlignment - 1) & ~(kUploadAlignment - 1);
+		}
+	}
+
 	void VansVKDevice::ResetFrameStageUploadAllocator()
 	{
+		const VkDeviceSize totalSize = m_StageBuffer.GetBufferSize();
+		if (IsFrameContextRingActive() && m_ActiveFrameContextSlot != nullptr && m_ConfiguredFramesInFlight > 1)
+		{
+			m_FrameStageBufferCapacity = totalSize / m_ConfiguredFramesInFlight;
+			m_FrameStageBufferBaseOffset = m_FrameStageBufferCapacity * m_ActiveFrameContextSlot->slotIndex;
+			m_FrameStageBufferOffset = m_FrameStageBufferBaseOffset;
+			return;
+		}
+
+		m_FrameStageBufferBaseOffset = 0;
+		m_FrameStageBufferCapacity = totalSize;
 		m_FrameStageBufferOffset = 0;
 	}
 
@@ -28,9 +48,11 @@ namespace VansGraphics
 		constexpr VkDeviceSize UPLOAD_ALIGNMENT = 256;
 		VkDeviceSize uploadOffset = (m_FrameStageBufferOffset + UPLOAD_ALIGNMENT - 1) & ~(UPLOAD_ALIGNMENT - 1);
 		VkDeviceSize uploadEnd = uploadOffset + static_cast<VkDeviceSize>(dataSize);
-		if (uploadEnd > m_StageBuffer.GetBufferSize())
+		const VkDeviceSize frameUploadLimit = m_FrameStageBufferBaseOffset + m_FrameStageBufferCapacity;
+		if (uploadEnd > frameUploadLimit)
 		{
-			VANS_LOG_ERROR("[VansVKDevice] 本帧 staging 上传空间不足，size=" << dataSize);
+			VANS_LOG_ERROR("[VansVKDevice] 本帧 staging 上传空间不足，size=" << dataSize
+				<< ", slotCapacity=" << m_FrameStageBufferCapacity);
 			return false;
 		}
 
@@ -404,5 +426,125 @@ namespace VansGraphics
 			return false;
 		}
 		return cmd.ResetCommandBuffer(false);
+	}
+
+	bool VansVKDevice::SubmitTextureMipChainUploadBatch(
+		VansVKCommandBuffer& cmd,
+		const std::vector<VansTextureMipChainUpload>& uploads)
+	{
+		if (uploads.empty())
+			return true;
+
+		const VkDeviceSize stageCapacity = m_StageBuffer.GetBufferSize();
+		if (stageCapacity == 0)
+			return false;
+
+		auto submitChunk = [&]() -> bool
+		{
+			if (!cmd.EndCommandBufferRecord())
+				return false;
+			if (!VansVKCommandBuffer::SubmitCommands(
+				m_VansVKGraphicsQueue,
+				m_VansVKLogicDevice,
+				{ cmd.GetVKCommandBuffer() },
+				{}, {},
+				cmd.m_CommandBufferFinishSubmitFence))
+			{
+				return false;
+			}
+			return cmd.ResetCommandBuffer(false);
+		};
+
+		bool recording = false;
+		VkDeviceSize stageOffset = 0;
+		std::size_t submittedChunks = 0;
+		for (const VansTextureMipChainUpload& upload : uploads)
+		{
+			if (!upload.destImage || !upload.data || upload.dataSize <= 0 || upload.regions.empty())
+				return false;
+
+			const VkDeviceSize alignedOffset = AlignUploadOffset(stageOffset);
+			const VkDeviceSize uploadSize = static_cast<VkDeviceSize>(upload.dataSize);
+			if (uploadSize > stageCapacity)
+			{
+				VANS_LOG_ERROR("[TextureBatchUpload] Single cooked texture exceeds staging capacity. size="
+					<< upload.dataSize << ", capacity=" << stageCapacity);
+				return false;
+			}
+
+			if (recording && alignedOffset + uploadSize > stageCapacity)
+			{
+				if (!submitChunk())
+					return false;
+				recording = false;
+				stageOffset = 0;
+				++submittedChunks;
+			}
+
+			const VkDeviceSize currentOffset = AlignUploadOffset(stageOffset);
+			if (!recording)
+			{
+				if (!cmd.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
+					return false;
+				recording = true;
+			}
+
+			if (!m_StageBuffer.SetBufferData(upload.data, currentOffset, uploadSize))
+				return false;
+
+			VansVKImage& destImage = *upload.destImage;
+			const VkImageLayout originalLayout = destImage.m_ImageLayout;
+			const VkPipelineStageFlags beforeStage = originalLayout == VK_IMAGE_LAYOUT_UNDEFINED
+				? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+				: VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+			const VkAccessFlags beforeAccess = originalLayout == VK_IMAGE_LAYOUT_UNDEFINED
+				? 0
+				: VK_ACCESS_SHADER_READ_BIT;
+			destImage.SetImageMemoryBarrier(cmd, beforeStage, VK_PIPELINE_STAGE_TRANSFER_BIT,
+				{
+					destImage.m_VansVKImage,
+					beforeAccess,
+					VK_ACCESS_TRANSFER_WRITE_BIT,
+					originalLayout,
+					VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+					VK_QUEUE_FAMILY_IGNORED,
+					VK_QUEUE_FAMILY_IGNORED,
+					destImage.m_ImageAspect
+				});
+
+			std::vector<VkBufferImageCopy> adjustedRegions = upload.regions;
+			for (VkBufferImageCopy& region : adjustedRegions)
+				region.bufferOffset += currentOffset;
+			VansVKMemoryManager::CopyBufferToImage(
+				cmd, m_StageBuffer, destImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, adjustedRegions);
+
+			if (upload.finalLayout != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+			{
+				destImage.SetImageMemoryBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+					{
+						destImage.m_VansVKImage,
+						VK_ACCESS_TRANSFER_WRITE_BIT,
+						VK_ACCESS_SHADER_READ_BIT,
+						VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+						upload.finalLayout,
+						VK_QUEUE_FAMILY_IGNORED,
+						VK_QUEUE_FAMILY_IGNORED,
+						destImage.m_ImageAspect
+					});
+			}
+
+			stageOffset = currentOffset + uploadSize;
+		}
+
+		if (recording)
+		{
+			if (!submitChunk())
+				return false;
+			++submittedChunks;
+		}
+
+		VANS_LOG("[TextureBatchUpload] Uploaded " << uploads.size()
+			<< " cooked textures in " << submittedChunks << " submissions");
+		return true;
 	}
 }

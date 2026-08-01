@@ -37,6 +37,9 @@ namespace VansGraphics
 		static void ApplyVolumetricCloudSettings(
 			VansMaterialManager& materialManager,
 			const std::optional<Vans::VansSceneVolumetricCloudSettingsConfig>& config);
+		static void ApplyPostProcessSettings(
+			VansMaterialManager& materialManager,
+			const std::optional<Vans::VansScenePostProcessSettingsConfig>& config);
 		static void ApplyMainCameraHiZCullSettings(
 			VansScene& scene,
 			const std::optional<Vans::VansSceneMainCameraHiZCullSettingsConfig>& config);

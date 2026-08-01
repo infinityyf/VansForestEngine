@@ -12,11 +12,13 @@ namespace VansGraphics
 {
 namespace
 {
-	void DrawCount(const char* label, std::uint32_t value)
+	void DrawCount(const char* label, std::uint32_t value, const char* description)
 	{
 		ImGui::TableNextRow();
 		ImGui::TableSetColumnIndex(0);
 		ImGui::TextUnformatted(label);
+		if (description != nullptr && ImGui::IsItemHovered())
+			ImGui::SetTooltip("%s", description);
 		ImGui::TableSetColumnIndex(1);
 		ImGui::Text("%u", value);
 	}
@@ -48,16 +50,32 @@ void VansHiZCullWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 	ImGui::Text("Enabled: %s", snapshot.enabled ? "Yes" : "No");
 	ImGui::SameLine();
 	ImGui::Text("History: %s", snapshot.historyValid ? "Valid" : "Invalid");
+	ImGui::TextDisabled("DC scope: main-camera draw calls evaluated by HiZ only");
+	if (ImGui::IsItemHovered())
+	{
+		ImGui::SetTooltip(
+			"Excludes draw calls that do not pass through main-camera HiZ, such as shadows, terrain, vegetation, particles, and post-process passes.");
+	}
 
 	if (ImGui::BeginTable("HiZCullStats", 2, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg))
 	{
 		ImGui::TableSetupColumn("Metric");
 		ImGui::TableSetupColumn("Count", ImGuiTableColumnFlags_WidthFixed, 96.0f);
 		ImGui::TableHeadersRow();
-		DrawCount("Candidates", snapshot.candidateCount);
-		DrawCount("Frustum Visible", snapshot.frustumVisibleCount);
-		DrawCount("HiZ Culled", snapshot.hizCulledCount);
-		DrawCount("Forced Visible", snapshot.forcedVisibleCount);
+		DrawCount("Candidate Nodes", snapshot.candidateCount,
+			"Nodes with usable static bounds that passed CPU frustum culling and belong to a HiZ-enabled render class.");
+		DrawCount("Frustum Visible Nodes", snapshot.frustumVisibleCount,
+			"Bounded nodes inside the main-camera frustum, including render classes for which HiZ may be disabled.");
+		DrawCount("HiZ Culled Nodes", snapshot.hizCulledCount,
+			"Candidate nodes reported occluded by the latest completed HiZ GPU readback.");
+		DrawCount("Forced Visible Nodes", snapshot.forcedVisibleCount,
+			"Nodes kept visible because bounds are unavailable or their bounds changed recently.");
+		DrawCount("DC Before HiZ", snapshot.preCullDrawCallCount,
+			"Draw calls that reached the main-camera HiZ visibility gate this frame.");
+		DrawCount("DC Culled by HiZ", snapshot.culledDrawCallCount,
+			"Draw calls rejected by the main-camera HiZ visibility result.");
+		DrawCount("DC Actually Drawn", snapshot.drawnDrawCallCount,
+			"HiZ-processed draw calls allowed through to render-node command recording.");
 		ImGui::EndTable();
 	}
 

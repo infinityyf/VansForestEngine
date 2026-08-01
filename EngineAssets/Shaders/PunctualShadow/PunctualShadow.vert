@@ -8,8 +8,8 @@
 
 layout(push_constant) uniform LightShadowIndex 
 {
-    int lightIndex;
-    int shadowFaceIndex;
+    int shadowViewIndex;
+    int unusedShadowFaceIndex;
     int materialIndex;
     int objectIndex;
     int animationEnabled;
@@ -67,21 +67,7 @@ void main()
         applySkinning(pos);
     }
 
-    int pointLightCount = int(uPointLightCount);
-    int spotLightCount  = int(uSpotLightCount);
-    int rectLightStart  = pointLightCount + spotLightCount;
-
-    uint metaIndex;
-    if (lightIndex < pointLightCount)
-        metaIndex = uPointLights[lightIndex].shadowMetaIndex;
-    else if (lightIndex < rectLightStart)
-        metaIndex = uSpotLights[lightIndex - pointLightCount].shadowMetaIndex;
-    else
-        metaIndex = uRectLights[lightIndex - rectLightStart].shadowMetaIndex;
-
-    PunctualShadowData shadow = uPunctualShadows[metaIndex];
-    uint viewIndex = shadow.firstView + uint(shadowFaceIndex);
-    vec4 clipCoord = uPunctualShadowViews[viewIndex].worldToShadow * ModelMatrix * pos;
+    vec4 clipCoord = uPunctualShadowViews[uint(shadowViewIndex)].worldToShadow * ModelMatrix * pos;
     clipCoord.z = clipCoord.z * 0.5 + clipCoord.w * 0.5;
     gl_Position = clipCoord;
 }

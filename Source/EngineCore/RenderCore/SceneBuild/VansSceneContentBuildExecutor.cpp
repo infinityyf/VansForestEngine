@@ -103,6 +103,7 @@ bool VansSceneContentBuildExecutor::BuildFromPlan(
 	ApplyHeightFogSettings(*scene.GetMaterialManager(), renderSettings.heightFog);
 	ApplyVolumetricFogSettings(*scene.GetMaterialManager(), renderSettings.volumetricFog);
 	ApplyVolumetricCloudSettings(*scene.GetMaterialManager(), renderSettings.volumetricClouds);
+	ApplyPostProcessSettings(*scene.GetMaterialManager(), renderSettings.postProcess);
 	ApplyMainCameraHiZCullSettings(scene, renderSettings.mainCameraHiZCulling);
 	if (Vans::VansProjectManager::Get().IsProjectLoaded())
 	{
@@ -231,6 +232,56 @@ void VansSceneContentBuildExecutor::ApplyVolumetricCloudSettings(
 	params.densityRemapHigh = std::max(params.densityRemapHigh, params.densityRemapLow + 0.01f);
 	params.detailErosionHigh = std::max(params.detailErosionHigh, params.detailErosionLow + 0.01f);
 	materialManager.UploadCloudParamsToGPU();
+}
+
+void VansSceneContentBuildExecutor::ApplyPostProcessSettings(
+	VansMaterialManager& materialManager,
+	const std::optional<Vans::VansScenePostProcessSettingsConfig>& config)
+{
+	VansPostProcessProfile& profile = materialManager.m_PostProcessProfile;
+	profile.ResetToDefaults();
+	if (!config.has_value())
+	{
+		return;
+	}
+
+	ApplyOptionalValue(config->enableAutoExposure, profile.m_EnableAutoExposure);
+	ApplyOptionalValue(config->exposureCompensation, profile.m_ExposureCompensation);
+	ApplyOptionalValue(config->minEV100, profile.m_MinEV100);
+	ApplyOptionalValue(config->maxEV100, profile.m_MaxEV100);
+	ApplyOptionalValue(config->adaptationSpeedUp, profile.m_AdaptationSpeedUp);
+	ApplyOptionalValue(config->adaptationSpeedDown, profile.m_AdaptationSpeedDown);
+	ApplyOptionalValue(config->enableBloom, profile.m_EnableBloom);
+	ApplyOptionalValue(config->bloomThreshold, profile.m_BloomThreshold);
+	ApplyOptionalValue(config->bloomKnee, profile.m_BloomKnee);
+	ApplyOptionalValue(config->bloomIntensity, profile.m_BloomIntensity);
+	ApplyOptionalValue(config->bloomScatter, profile.m_BloomScatter);
+	ApplyOptionalValue(config->toneMapperType, profile.m_ToneMapperType);
+	ApplyOptionalValue(config->whitePoint, profile.m_WhitePoint);
+	ApplyOptionalValue(config->enableColorGrading, profile.m_EnableColorGrading);
+	ApplyOptionalValue(config->contrast, profile.m_Contrast);
+	ApplyOptionalValue(config->saturation, profile.m_Saturation);
+	ApplyOptionalValue(config->hueShift, profile.m_HueShift);
+	ApplyOptionalValue(config->temperature, profile.m_Temperature);
+	ApplyOptionalValue(config->tint, profile.m_Tint);
+
+	profile.m_ExposureCompensation = std::clamp(profile.m_ExposureCompensation, -16.0f, 16.0f);
+	profile.m_MinEV100 = std::clamp(profile.m_MinEV100, -24.0f, 24.0f);
+	profile.m_MaxEV100 = std::clamp(profile.m_MaxEV100, profile.m_MinEV100, 24.0f);
+	profile.m_AdaptationSpeedUp = std::clamp(profile.m_AdaptationSpeedUp, 0.0f, 20.0f);
+	profile.m_AdaptationSpeedDown = std::clamp(profile.m_AdaptationSpeedDown, 0.0f, 20.0f);
+	profile.m_BloomThreshold = std::clamp(profile.m_BloomThreshold, 0.0f, 64.0f);
+	profile.m_BloomKnee = std::clamp(profile.m_BloomKnee, 0.0f, 1.0f);
+	profile.m_BloomIntensity = std::clamp(profile.m_BloomIntensity, 0.0f, 10.0f);
+	profile.m_BloomScatter = std::clamp(profile.m_BloomScatter, 0.0f, 1.0f);
+	profile.m_ToneMapperType = std::clamp(profile.m_ToneMapperType, 0, 2);
+	profile.m_WhitePoint = std::clamp(profile.m_WhitePoint, 0.1f, 64.0f);
+	profile.m_Contrast = std::clamp(profile.m_Contrast, 0.0f, 4.0f);
+	profile.m_Saturation = std::clamp(profile.m_Saturation, 0.0f, 4.0f);
+	profile.m_HueShift = std::clamp(profile.m_HueShift, -1.0f, 1.0f);
+	profile.m_Temperature = std::clamp(profile.m_Temperature, -1.0f, 1.0f);
+	profile.m_Tint = std::clamp(profile.m_Tint, -1.0f, 1.0f);
+	profile.m_IsDirty = true;
 }
 
 void VansSceneContentBuildExecutor::ApplyGISettings(

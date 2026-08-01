@@ -5,6 +5,7 @@
 #include "../SceneCore/VansSceneResourcePlan.h"
 #include "../Util/VansLog.h"
 
+#include <filesystem>
 #include <utility>
 
 namespace VansEngine
@@ -13,8 +14,7 @@ namespace VansEngine
 VansAudioManager::~VansAudioManager() = default;
 
 void VansAudioManager::Load(
-    const std::vector<Vans::VansSceneAudioResourceRequest>& audios,
-    const std::string& assetPrefix)
+    const std::vector<Vans::VansSceneAudioResourceRequest>& audios)
 {
     for (const Vans::VansSceneAudioResourceRequest& entry : audios)
     {
@@ -33,7 +33,7 @@ void VansAudioManager::Load(
             continue;
         }
 
-        const std::string fullPath = assetPrefix + "/" + rel;
+        const std::string fullPath = std::filesystem::path(rel).lexically_normal().string();
 
         AudioNodeProperties props;
         props.m_Name = name;

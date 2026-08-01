@@ -67,7 +67,7 @@ struct PunctualShadowData
     uint firstView;
     uint viewCount;
     uint flags;
-    uint generation;
+    uint ownerKey;
     float atlasWeight;
     float sourceRadius;
     float maxShadowDistance;
@@ -103,6 +103,10 @@ struct LightResult
 #define PUNCTUAL_SHADOW_HERO               (1u << 2u)
 #define PUNCTUAL_SHADOW_AFFECTS_FOG        (1u << 3u)
 #define PUNCTUAL_SHADOW_AFFECTS_GI         (1u << 4u)
+#define PUNCTUAL_SHADOW_OWNER_SIGNATURE    0xA5000000u
+#define PUNCTUAL_SHADOW_OWNER_ATLAS_SHIFT  16u
+#define PUNCTUAL_SHADOW_OWNER_ATLAS_MASK   (0x3u << PUNCTUAL_SHADOW_OWNER_ATLAS_SHIFT)
+#define PUNCTUAL_SHADOW_ATLAS_COUNT        2u
 
 #if !defined(LightCBBind)
     #define LightCBBind 0
@@ -292,10 +296,25 @@ uint GetPunctualShadowMetaIndex(uint lightType, int lightIndex)
     if (lightIndex < 0)
         return INVALID_SHADOW_INDEX;
     if (lightType == 0u)
-        return uPointLights[lightIndex].shadowMetaIndex;
+        return uint(lightIndex) < uPointLightCount ? uPointLights[lightIndex].shadowMetaIndex : INVALID_SHADOW_INDEX;
     if (lightType == 1u)
-        return uSpotLights[lightIndex].shadowMetaIndex;
-    return uRectLights[lightIndex].shadowMetaIndex;
+        return uint(lightIndex) < uSpotLightCount ? uSpotLights[lightIndex].shadowMetaIndex : INVALID_SHADOW_INDEX;
+    return uint(lightIndex) < GetRectLightCount() ? uRectLights[lightIndex].shadowMetaIndex : INVALID_SHADOW_INDEX;
+}
+
+bool IsPunctualShadowOwner(PunctualShadowData shadow, uint lightType, int lightIndex)
+{
+    if (lightIndex < 0 || lightIndex > 255)
+        return false;
+    uint expected = PUNCTUAL_SHADOW_OWNER_SIGNATURE |
+        ((lightType & 0x3u) << 8u) | (uint(lightIndex) & 0xffu);
+    return (shadow.ownerKey & ~PUNCTUAL_SHADOW_OWNER_ATLAS_MASK) == expected;
+}
+
+uint GetPunctualShadowAtlasIndex(PunctualShadowData shadow)
+{
+    return (shadow.ownerKey & PUNCTUAL_SHADOW_OWNER_ATLAS_MASK) >>
+        PUNCTUAL_SHADOW_OWNER_ATLAS_SHIFT;
 }
 
 float GetPunctualLightRange(uint lightType, int lightIndex)
@@ -332,7 +351,7 @@ float SamplePunctualShadowAtlas(
     vec3 positionWS,
     vec3 normalWS,
     vec3 lightDirectionWS,
-    sampler2DShadow shadowMap,
+    sampler2DArrayShadow shadowMap,
     uint lightType,
     int lightIndex,
     int qualityProfile)
@@ -343,7 +362,12 @@ float SamplePunctualShadowAtlas(
 
     PunctualShadowData shadow = uPunctualShadows[metaIndex];
     if (!HasPunctualShadowFlag(shadow.flags, PUNCTUAL_SHADOW_HAS_ATLAS) ||
-        shadow.firstView == INVALID_SHADOW_INDEX || shadow.viewCount == 0u)
+        shadow.firstView == INVALID_SHADOW_INDEX || shadow.viewCount == 0u ||
+        !IsPunctualShadowOwner(shadow, lightType, lightIndex))
+        return 1.0;
+
+    uint atlasIndex = GetPunctualShadowAtlasIndex(shadow);
+    if (atlasIndex >= PUNCTUAL_SHADOW_ATLAS_COUNT)
         return 1.0;
 #ifdef PUNCTUAL_SHADOW_CONSUMER_FOG
     if (!HasPunctualShadowFlag(shadow.flags, PUNCTUAL_SHADOW_AFFECTS_FOG))
@@ -354,20 +378,28 @@ float SamplePunctualShadowAtlas(
         return 1.0;
 #endif
 
-    uint face = 0u;
-    if (lightType == 0u)
-    {
-        face = uint(GetCubemapFaceIndex(positionWS - uPointLights[lightIndex].position.xyz));
-    }
-    if (face >= shadow.viewCount || shadow.firstView + face >= uPunctualShadowViewCount)
+    if (shadow.firstView >= uPunctualShadowViewCount ||
+        shadow.viewCount > uPunctualShadowViewCount - shadow.firstView)
         return 1.0;
 
-    PunctualShadowViewData shadowView = uPunctualShadowViews[shadow.firstView + face];
+    // All faces of one allocation share resolution/bias parameters. Compute the
+    // receiver bias first, then choose a point-light face from the biased
+    // position so a normal offset cannot project through the wrong cube face.
+    PunctualShadowViewData shadowView = uPunctualShadowViews[shadow.firstView];
     float lightRange = max(GetPunctualLightRange(lightType, lightIndex), 0.001);
-    float normalSlope = 1.0 - clamp(dot(normalize(normalWS), normalize(lightDirectionWS)), 0.0, 1.0);
+    vec3 safeNormal = normalWS * inversesqrt(max(dot(normalWS, normalWS), 1e-8));
+    vec3 safeLightDirection = lightDirectionWS * inversesqrt(max(dot(lightDirectionWS, lightDirectionWS), 1e-8));
+    float normalSlope = 1.0 - clamp(dot(safeNormal, safeLightDirection), 0.0, 1.0);
     float worldTexel = lightRange / max(shadowView.texelBiasParams.w, 1.0);
-    vec3 biasedPosition = positionWS + normalize(normalWS) *
+    vec3 biasedPosition = positionWS + safeNormal *
         worldTexel * shadowView.texelBiasParams.z * (1.0 + normalSlope * 2.0);
+
+    uint face = 0u;
+    if (lightType == 0u)
+        face = uint(GetCubemapFaceIndex(biasedPosition - uPointLights[lightIndex].position.xyz));
+    if (face >= shadow.viewCount)
+        return 1.0;
+    shadowView = uPunctualShadowViews[shadow.firstView + face];
 
     vec4 clip = shadowView.worldToShadow * vec4(biasedPosition, 1.0);
     if (clip.w <= 1e-6)
@@ -375,14 +407,20 @@ float SamplePunctualShadowAtlas(
     vec3 ndc = clip.xyz / clip.w;
     vec2 localUV = ndc.xy * 0.5 + 0.5;
     float receiverDepth = ndc.z * 0.5 + 0.5;
-    if (any(lessThanEqual(localUV, vec2(0.0))) ||
-        any(greaterThanEqual(localUV, vec2(1.0))) ||
-        receiverDepth <= 0.0 || receiverDepth >= 1.0)
+    if (receiverDepth <= 0.0 || receiverDepth >= 1.0)
         return 1.0;
+
+    // The projection contains a gutter guard band. Clamp tiny face/cone-edge
+    // excursions into that guard band instead of returning fully lit, which
+    // otherwise creates bright seams and visible light leaks.
+    localUV = clamp(localUV, vec2(0.0), vec2(1.0));
 
     vec2 atlasUV = localUV * shadowView.atlasScaleBias.xy + shadowView.atlasScaleBias.zw;
     atlasUV = clamp(atlasUV, shadowView.atlasClamp.xy, shadowView.atlasClamp.zw);
-    float depthReference = receiverDepth - shadowView.texelBiasParams.y * shadowView.texelBiasParams.x;
+    float depthReference = clamp(
+        receiverDepth - shadowView.texelBiasParams.y * shadowView.texelBiasParams.x,
+        0.0,
+        1.0);
 
     int tapCount = qualityProfile <= 0 ? 1 : (qualityProfile == 1 ? 4 : (qualityProfile == 2 ? 8 : 12));
     float distanceToLight = lightRange;
@@ -413,7 +451,7 @@ float SamplePunctualShadowAtlas(
             atlasUV + kernel * penumbraTexels * atlasTexel,
             shadowView.atlasClamp.xy,
             shadowView.atlasClamp.zw);
-        visibility += texture(shadowMap, vec3(sampleUV, depthReference));
+        visibility += texture(shadowMap, vec4(sampleUV, float(atlasIndex), depthReference));
     }
     visibility /= float(tapCount);
     return mix(1.0, visibility, clamp(shadow.atlasWeight, 0.0, 1.0));
@@ -422,14 +460,14 @@ float SamplePunctualShadowAtlas(
 
 
 
-float SamplePointShadowMap(vec3 position_world, sampler2DShadow shadowMap, int lightIndex)
+float SamplePointShadowMap(vec3 position_world, sampler2DArrayShadow shadowMap, int lightIndex)
 {
     return SamplePunctualShadowAtlas(position_world, normalize(uPointLights[lightIndex].position.xyz - position_world),
         normalize(uPointLights[lightIndex].position.xyz - position_world),
         shadowMap, 0u, lightIndex, 0);
 }
 
-float SampleSpotShadowMap(vec3 position_world, sampler2DShadow shadowMap, int lightIndex)
+float SampleSpotShadowMap(vec3 position_world, sampler2DArrayShadow shadowMap, int lightIndex)
 {
     return SamplePunctualShadowAtlas(position_world, normalize(uSpotLights[lightIndex].position.xyz - position_world),
         normalize(uSpotLights[lightIndex].position.xyz - position_world),
@@ -437,7 +475,7 @@ float SampleSpotShadowMap(vec3 position_world, sampler2DShadow shadowMap, int li
 }
 
 // Hard rect-shadow sampling for volumetric fog (Phase 4).
-float SampleRectShadowMap(vec3 position_world, sampler2DShadow shadowMap, int lightIndex)
+float SampleRectShadowMap(vec3 position_world, sampler2DArrayShadow shadowMap, int lightIndex)
 {
     return SamplePunctualShadowAtlas(position_world, normalize(uRectLights[lightIndex].position_halfW.xyz - position_world),
         normalize(uRectLights[lightIndex].position_halfW.xyz - position_world),
@@ -449,14 +487,14 @@ float SampleRectShadowMap(vec3 position_world, sampler2DShadow shadowMap, int li
 //   tan(θ) 在 grazing 时正确趋向无穷（被 max 限制），在正向光照时为 0。
 // 调用方在投影前将 position_world += normalWS * normalOffset 然后投影，
 // 避免 NDC 空间固定偏置因透视压缩在中等距离（2–5m）产生数十厘米的 peter-panning。
-float SamplePointShadowMapBRDF(vec3 position_world, vec3 normalWS, vec3 lightDirectionWS, sampler2DShadow shadowMap, int lightIndex)
+float SamplePointShadowMapBRDF(vec3 position_world, vec3 normalWS, vec3 lightDirectionWS, sampler2DArrayShadow shadowMap, int lightIndex)
 {
     uint metaIndex = uPointLights[lightIndex].shadowMetaIndex;
     int quality = GetPunctualShadowQuality(metaIndex);
     return SamplePunctualShadowAtlas(position_world, normalWS, lightDirectionWS, shadowMap, 0u, lightIndex, quality);
 }
 
-float SampleSpotShadowMapBRDF(vec3 position_world, vec3 normalWS, vec3 lightDirectionWS, sampler2DShadow shadowMap, int lightIndex)
+float SampleSpotShadowMapBRDF(vec3 position_world, vec3 normalWS, vec3 lightDirectionWS, sampler2DArrayShadow shadowMap, int lightIndex)
 {
     uint metaIndex = uSpotLights[lightIndex].shadowMetaIndex;
     int quality = GetPunctualShadowQuality(metaIndex);
@@ -464,7 +502,7 @@ float SampleSpotShadowMapBRDF(vec3 position_world, vec3 normalWS, vec3 lightDire
 }
 
 // RectLight uses the same metadata/view indirection as point and spot lights.
-float SampleRectShadowMapBRDF(vec3 position_world, vec3 normalWS, vec3 lightDirectionWS, sampler2DShadow shadowMap, int lightIndex)
+float SampleRectShadowMapBRDF(vec3 position_world, vec3 normalWS, vec3 lightDirectionWS, sampler2DArrayShadow shadowMap, int lightIndex)
 {
     uint metaIndex = uRectLights[lightIndex].shadowMetaIndex;
     int quality = GetPunctualShadowQuality(metaIndex);
@@ -486,7 +524,8 @@ float BlendPunctualShadowFallback(
     if (metaIndex != INVALID_SHADOW_INDEX && metaIndex < uint(MAX_PUNCTUAL_SHADOWS))
     {
         PunctualShadowData shadow = uPunctualShadows[metaIndex];
-        if (HasPunctualShadowFlag(shadow.flags, PUNCTUAL_SHADOW_HAS_ATLAS))
+        if (HasPunctualShadowFlag(shadow.flags, PUNCTUAL_SHADOW_HAS_ATLAS) &&
+            IsPunctualShadowOwner(shadow, lightType, lightIndex))
             atlasWeight = clamp(shadow.atlasWeight, 0.0, 1.0);
     }
     return clamp(atlasResolved + (fallbackVisibility - 1.0) * (1.0 - atlasWeight), 0.0, 1.0);
@@ -864,7 +903,7 @@ float SampleGICascadeShadow(vec3 positionWS, vec3 normalWS, sampler2D shadowMap)
     return mix(1.0, visibility / float(sampleCount), confidence);
 }
 
-void CalculateDirectDiffuse(vec3 positionWS, vec3 normalWS, sampler2D shadowMap, sampler2DShadow punctualShadowMap, vec4 surfaceAlbedoRoughness, inout vec3 diffuseResult)
+void CalculateDirectDiffuse(vec3 positionWS, vec3 normalWS, sampler2D shadowMap, sampler2DArrayShadow punctualShadowMap, vec4 surfaceAlbedoRoughness, inout vec3 diffuseResult)
 {
     diffuseResult = vec3(0.0);
     vec3 albedo = clamp(surfaceAlbedoRoughness.rgb, vec3(0.0), vec3(1.0));
@@ -936,7 +975,7 @@ void EvaluateRectLightLTC(
 // profileIndex = -1 means "no IES", in which case callers should skip the call.
 float SampleIESProfile(int profileIndex, vec3 lightDir, vec3 nadirDir);
 
-void CalculateDirectLight(BRDFData brdfData, sampler2DArray cascadeShadowMap, float viewDepth, sampler2DShadow punctualShadowMap, float screenSpaceShadow, inout LightResult lightResult)
+void CalculateDirectLight(BRDFData brdfData, sampler2DArray cascadeShadowMap, float viewDepth, sampler2DArrayShadow punctualShadowMap, float screenSpaceShadow, inout LightResult lightResult)
 {
     lightResult.directDiffuse = vec3(0);
     lightResult.directSpecular = vec3(0);

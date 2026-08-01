@@ -114,6 +114,10 @@ namespace VansGraphics
 
         glm::mat4 GetProjectiveMatrix();
 
+        // 将世界坐标投影到左上角为原点的归一化视口坐标。
+        // 返回 false 表示点位于相机后方或视锥之外。
+        bool ProjectWorldToViewport(const glm::vec3& worldPosition, glm::vec3& viewportPosition);
+
         void ApplyCameraSettings(const Vans::VansSceneCameraSettingsConfig& cameraSettings);
 
         void ResetToDefaults();

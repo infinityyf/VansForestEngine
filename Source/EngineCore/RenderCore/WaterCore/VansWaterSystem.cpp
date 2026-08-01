@@ -1579,15 +1579,22 @@ void VansWaterSystem::EnsureSSRDescriptorSet(VansVKImage* hzbImage)
     if (m_SSRSet != VK_NULL_HANDLE) return;  // already created
     if (hzbImage == nullptr) return;
     if (!m_Initialized || !m_DescriptorsReady) return;
+    if (m_WaterSSRShader == nullptr || m_SSRParamsBufferCreated == false)
+        return;
 
     auto* descMgr = VansVKDescriptorManager::GetInstance();
     auto* rp = VansRenderPassManager::GetInstance();
-    if (!rp) return;
+    if (descMgr == nullptr || rp == nullptr) return;
 
     // Create layout + allocate set
     std::vector<VkDescriptorSet> sets;
     VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterSSRCompute(
         m_SSRLayout, sets, 1);
+    if (m_SSRLayout == VK_NULL_HANDLE || sets.empty() || sets[0] == VK_NULL_HANDLE)
+    {
+        VANS_LOG_WARN("[VansWaterSystem] Water SSR descriptor set allocation skipped because layout/set is not ready.");
+        return;
+    }
     m_SSRSet = sets[0];
 
     descMgr->BeginDescriptorUpdate();

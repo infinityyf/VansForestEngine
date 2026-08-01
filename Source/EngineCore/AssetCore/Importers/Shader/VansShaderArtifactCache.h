@@ -55,6 +55,8 @@ namespace Vans
 			std::string& error) const;
 
 		VansShaderArtifactCacheStats GetStats() const;
+		static void ConfigureCookedRuntime(const std::filesystem::path& artifactRoot);
+		static void ResetRuntimeConfiguration();
 		static bool IsCookedOnlyMode();
 		static std::filesystem::path ResolveArtifactRoot(const VansShaderCompileRequest& request);
 

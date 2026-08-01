@@ -27,43 +27,7 @@ void main()
     float height;
     vec3 worldPos = TerrainBuildWorldPosition(inPos.xz, instanceOffset, instanceScale, instanceStitchFlags, heightUV, height);
 
-    // 远场普通 VS 也执行与 TES 同源的低频噪声位移，避免近/远管线高度不一致。
-    if (noiseParams.noiseStrength > 0.0)
-    {
-        float distToCamera = length(worldPos - cameraPosition.xyz);
-        float noiseFade = 1.0 - smoothstep(
-            tessParams.tessDistance * noiseParams.fadeStart,
-            tessParams.tessDistance,
-            distToCamera
-        );
-
-        if (noiseFade > 0.001)
-        {
-            int effectiveOctaves = min(noiseParams.noiseOctaves, 2);
-            float noiseDisp = 0.0;
-            if (noiseParams.noiseWarpStrength > 0.001)
-            {
-                noiseDisp = terrainDetailFbmWarped(
-                    worldPos.xz * noiseParams.noiseFrequency,
-                    effectiveOctaves,
-                    noiseParams.noiseGain,
-                    noiseParams.noiseLacunarity,
-                    noiseParams.noiseWarpStrength
-                );
-            }
-            else
-            {
-                noiseDisp = terrainDetailFbm(
-                    worldPos.xz * noiseParams.noiseFrequency,
-                    effectiveOctaves,
-                    noiseParams.noiseGain,
-                    noiseParams.noiseLacunarity
-                );
-            }
-
-            worldPos.y += noiseDisp * noiseParams.noiseStrength * noiseFade;
-        }
-    }
+    worldPos = TerrainApplyGeometryNoise(worldPos);
 
     gl_Position = VPMatrix * vec4(worldPos, 1.0);
 

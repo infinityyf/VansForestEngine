@@ -26,6 +26,7 @@ namespace Vans
 		static VansSceneAssetDependencyBuildResult BuildResourcePlan(
 			VansAssetDatabase& database,
 			const std::filesystem::path& scenePath,
-			const std::unordered_map<std::string, std::string>& runtimeAssetBindings);
+			const std::unordered_map<std::string, std::string>& runtimeAssetBindings,
+			VansAssetDatabase* builtInAssetDatabase = nullptr);
 	};
 }

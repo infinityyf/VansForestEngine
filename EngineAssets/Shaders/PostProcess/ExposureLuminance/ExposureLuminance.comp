@@ -22,6 +22,8 @@ void main()
     vec2 uv = (vec2(coord) + 0.5) / vec2(outSize);
 
     vec3 hdr = texture(srcColor, uv).rgb;
+	if (any(isnan(hdr)) || any(isinf(hdr)))
+		hdr = vec3(0.0);
 
     // 防止 NaN / INF 影响对数平均
     float lum = clamp(Luminance(hdr), 1e-6, 256.0);

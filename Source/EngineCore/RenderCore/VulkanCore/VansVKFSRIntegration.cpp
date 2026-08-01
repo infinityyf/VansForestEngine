@@ -104,11 +104,12 @@ namespace VansGraphics
 
 	void VansVKDevice::RecordFSROutputToSwapchain()
 	{
+		VansVKCommandBuffer& frameGraphicsCommandBuffer = CurrentGraphicsCommandBuffer();
 		VansVKImage& fsrOut = m_FSRController.GetTempFSRImage();
 		const VkImageLayout previousFSRLayout = fsrOut.GetImageLayout();
 
 		VansRenderGraphVulkanSyncRecorder::RecordImageTransition(
-			m_VansVKCommandBuffer,
+			frameGraphicsCommandBuffer,
 			fsrOut,
 			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
 			VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -118,7 +119,7 @@ namespace VansGraphics
 			VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 
 		m_VansVKSurface.RecordSwapChainImageBarrier(
-			m_VansVKCommandBuffer,
+			frameGraphicsCommandBuffer,
 			VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
 			VK_PIPELINE_STAGE_TRANSFER_BIT,
 			{
@@ -157,7 +158,7 @@ namespace VansGraphics
 			1
 		};
 
-		m_VansVKCommandBuffer.BlitImageRegions(
+		frameGraphicsCommandBuffer.BlitImageRegions(
 			fsrOut.GetImage(),
 			VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
 			m_VansVKSurface.GetSwapChainImage(m_SwapChainImageIndex),
@@ -166,7 +167,7 @@ namespace VansGraphics
 			VK_FILTER_LINEAR);
 
 		m_VansVKSurface.RecordSwapChainImageBarrier(
-			m_VansVKCommandBuffer,
+			frameGraphicsCommandBuffer,
 			VK_PIPELINE_STAGE_TRANSFER_BIT,
 			VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 			{
@@ -181,7 +182,7 @@ namespace VansGraphics
 			});
 
 		VansRenderGraphVulkanSyncRecorder::RecordImageTransition(
-			m_VansVKCommandBuffer,
+			frameGraphicsCommandBuffer,
 			fsrOut,
 			VK_PIPELINE_STAGE_TRANSFER_BIT,
 			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,

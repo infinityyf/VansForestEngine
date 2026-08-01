@@ -210,8 +210,33 @@ namespace VansGraphics
         // 执行 2:1 平衡，保证着色器边缘吸附的前提成立。
         void BalanceLeafNodes(std::vector<TerrainNode>& nodes);
 
-        // 根据最终叶子集合计算边缘缝合标记
-        int ComputeStitchFlags(const TerrainNode& node, const std::vector<TerrainNode>& nodes) const;
+        struct TerrainLodGrid
+        {
+            float terrainMin = 0.0f;
+            float cellSize = 1.0f;
+            uint32_t cellCount = 0;
+            std::vector<int> lodByCell;
+        };
+
+        struct TerrainLodBuildSignature
+        {
+            int64_t cameraCellX = 0;
+            int64_t cameraCellZ = 0;
+            bool tessellationEnabled = false;
+            float splitDistMult = 0.0f;
+            float lodDistanceRatio = 0.0f;
+            float tessellationDistance = 0.0f;
+            float tessLodBias = 0.0f;
+        };
+
+        // 根据最终叶子集合构建最小 patch cell LOD 表，避免每个 patch 全量扫描邻居。
+        TerrainLodGrid BuildLodGrid(const std::vector<TerrainNode>& nodes) const;
+
+        // 根据 LOD 表计算边缘缝合标记。
+        int ComputeStitchFlags(const TerrainNode& node, const TerrainLodGrid& lodGrid) const;
+
+        TerrainLodBuildSignature BuildLodSignature(const glm::vec3& cameraPosition) const;
+        bool CanReuseLodResult(const TerrainLodBuildSignature& signature) const;
 
         // 判断四叉树节点是否需要继续细分。
         bool ShouldSplit(const TerrainNode& node, const glm::vec3& camPos);
@@ -254,11 +279,11 @@ namespace VansGraphics
         VansVKBuffer m_InstanceBuffer;
         std::vector<TerrainInstanceData> m_InstanceDataCPU;
 
-        // 按近场细分和远场 VS-only 拆分的实例缓冲。
-        VansVKBuffer m_NearInstanceBuffer;
-        VansVKBuffer m_FarInstanceBuffer;
-        std::vector<TerrainInstanceData> m_NearInstanceDataCPU;
-        std::vector<TerrainInstanceData> m_FarInstanceDataCPU;
+        // 单实例缓冲按 far -> near 排列；Draw 使用 firstInstance 切 range，shadow/motion 复用全集。
+        uint32_t m_FarInstanceCount = 0;
+        uint32_t m_NearInstanceCount = 0;
+        bool m_LodCacheValid = false;
+        TerrainLodBuildSignature m_LastLodSignature;
 
         // 细分参数 UBO（binding 7）
         VansVKBuffer m_TessParamsUBO;

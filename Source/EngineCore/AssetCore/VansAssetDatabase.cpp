@@ -1,8 +1,7 @@
 #include "VansAssetDatabase.h"
-#if !defined(FOREST_RUNTIME_CORE)
 #include "Importers/VansTextureCooker.h"
-#endif
 #include "Storage/VansAssetMetaStorage.h"
+#include "../Util/VansFileFingerprint.h"
 #include "../Util/VansLog.h"
 
 #include <algorithm>
@@ -21,6 +20,25 @@ std::wstring LowerExtension(const std::filesystem::path& path)
 }
 }
 
+VansAssetOperationPolicy VansAssetOperationPolicy::ReadOnly()
+{
+    return {};
+}
+
+VansAssetOperationPolicy VansAssetOperationPolicy::Authoring()
+{
+    VansAssetOperationPolicy policy;
+    policy.meta = VansAssetMetaPolicy::CreateMissing;
+    return policy;
+}
+
+VansAssetOperationPolicy VansAssetOperationPolicy::Cooking()
+{
+    VansAssetOperationPolicy policy = Authoring();
+    policy.artifact = VansAssetArtifactPolicy::CookIfNeeded;
+    return policy;
+}
+
 VansAssetDatabase::VansAssetDatabase(
     std::filesystem::path assetsRoot,
     std::filesystem::path artifactRoot)
@@ -31,7 +49,7 @@ VansAssetDatabase::VansAssetDatabase(
 {
 }
 
-VansAssetScanResult VansAssetDatabase::Scan()
+VansAssetScanResult VansAssetDatabase::Scan(const VansAssetOperationPolicy& policy)
 {
     VansAssetScanResult result;
     std::error_code ec;
@@ -63,11 +81,14 @@ VansAssetScanResult VansAssetDatabase::Scan()
             continue;
         const bool hadMeta = std::filesystem::exists(VansAssetMeta::MetaPathFor(it->path()));
         std::string error;
-        if (RegisterOrRefresh(it->path(), true, error))
+        bool artifactCooked = false;
+        if (RegisterOrRefresh(it->path(), policy, error, &artifactCooked))
         {
             ++result.registered;
             if (!hadMeta)
                 ++result.generatedMeta;
+            if (artifactCooked)
+                ++result.cookedArtifacts;
         }
         else
             result.errors.push_back(std::move(error));
@@ -75,8 +96,14 @@ VansAssetScanResult VansAssetDatabase::Scan()
     return result;
 }
 
-bool VansAssetDatabase::RegisterOrRefresh(const std::filesystem::path& sourcePath, bool createMeta, std::string& error)
+bool VansAssetDatabase::RegisterOrRefresh(
+    const std::filesystem::path& sourcePath,
+    const VansAssetOperationPolicy& policy,
+    std::string& error,
+    bool* artifactCooked)
 {
+    if (artifactCooked)
+        *artifactCooked = false;
     const std::filesystem::path normalized = Normalize(sourcePath);
     std::error_code ec;
     if (!std::filesystem::is_regular_file(normalized, ec))
@@ -100,7 +127,7 @@ bool VansAssetDatabase::RegisterOrRefresh(const std::filesystem::path& sourcePat
     }
     else
     {
-        if (!createMeta)
+        if (policy.meta != VansAssetMetaPolicy::CreateMissing)
         {
             error = "Asset has no meta: " + normalized.string();
             return false;
@@ -116,18 +143,26 @@ bool VansAssetDatabase::RegisterOrRefresh(const std::filesystem::path& sourcePat
         return false;
     }
 
+    VansFileFingerprint sourceFingerprint;
+    if (!ComputeFileFingerprint(normalized, sourceFingerprint, &error))
+        return false;
+
+    VansFileFingerprint metaFingerprint;
+    if (!ComputeFileFingerprint(metaPath, metaFingerprint, &error))
+        return false;
+
     std::filesystem::path cookedArtifactPath;
     std::string textureCookError;
-#if !defined(FOREST_RUNTIME_CORE)
-    VansTextureCookResult textureCook;
-    if (type == VansAssetType::Texture)
+    if (type == VansAssetType::Texture && policy.artifact == VansAssetArtifactPolicy::CookIfNeeded)
     {
-        textureCook = VansTextureCooker::CookIfNeeded(
+        const VansTextureCookResult textureCook = VansTextureCooker::CookIfNeeded(
             normalized, metaPath, meta, m_ArtifactRoot);
         cookedArtifactPath = textureCook.artifactPath;
         textureCookError = textureCook.error;
         if (textureCook.status == VansTextureCookStatus::Cooked)
         {
+            if (artifactCooked)
+                *artifactCooked = true;
             VANS_LOG("[TextureCooker] Cooked " << normalized.string()
                 << " -> " << textureCook.artifactPath.string());
         }
@@ -137,7 +172,20 @@ bool VansAssetDatabase::RegisterOrRefresh(const std::filesystem::path& sourcePat
                 << "; runtime source fallback remains enabled");
         }
     }
-#endif
+	else if (type == VansAssetType::Texture && !m_ArtifactRoot.empty())
+	{
+        const std::filesystem::path packagedTextureArtifact =
+            m_ArtifactRoot / "Textures" / (meta.guid.ToString() + ".vtex");
+		if (std::filesystem::is_regular_file(packagedTextureArtifact, ec))
+			cookedArtifactPath = packagedTextureArtifact;
+	}
+	else if (type == VansAssetType::Model && !m_ArtifactRoot.empty())
+	{
+		const std::filesystem::path meshArtifact =
+			m_ArtifactRoot / "Meshes" / (meta.guid.ToString() + ".vmesh");
+		if (std::filesystem::is_regular_file(meshArtifact, ec))
+			cookedArtifactPath = meshArtifact;
+	}
 
     std::unique_lock lock(m_Mutex);
     const std::wstring key = PathKey(normalized);
@@ -158,7 +206,15 @@ bool VansAssetDatabase::RegisterOrRefresh(const std::filesystem::path& sourcePat
     record.type = type;
     record.sourcePath = normalized;
     record.metaPath = metaPath;
+	record.authoringPath = type == VansAssetType::Material || type == VansAssetType::Shader
+		? normalized
+		: std::filesystem::path{};
     record.artifactPath = cookedArtifactPath;
+    record.artifactFormat = record.artifactPath.empty()
+        ? VansAssetArtifactFormat::None
+        : VansAssetArtifactFormat::Imported;
+    record.sourceHash = sourceFingerprint.contentHash;
+    record.metaHash = metaFingerprint.contentHash;
     record.state = record.artifactPath.empty()
         ? VansAssetState::Discovered
         : VansAssetState::CpuReady;

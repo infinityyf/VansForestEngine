@@ -38,6 +38,13 @@ enum class VansAssetState
     Missing
 };
 
+enum class VansAssetArtifactFormat
+{
+    None,
+    Imported,
+    Source
+};
+
 struct VansAssetRecord
 {
     VansAssetGuid guid;
@@ -45,7 +52,11 @@ struct VansAssetRecord
     VansAssetState state = VansAssetState::Discovered;
     std::filesystem::path sourcePath;
     std::filesystem::path metaPath;
+	std::filesystem::path authoringPath;
     std::filesystem::path artifactPath;
+    VansAssetArtifactFormat artifactFormat = VansAssetArtifactFormat::None;
+    std::uint64_t sourceHash = 0;
+    std::uint64_t metaHash = 0;
     std::uint64_t generation = 0;
     std::string error;
 };
@@ -54,9 +65,32 @@ struct VansAssetScanResult
 {
     std::size_t registered = 0;
     std::size_t generatedMeta = 0;
+    std::size_t cookedArtifacts = 0;
     std::vector<std::string> errors;
 
     explicit operator bool() const { return errors.empty(); }
+};
+
+enum class VansAssetMetaPolicy
+{
+    RequireExisting,
+    CreateMissing
+};
+
+enum class VansAssetArtifactPolicy
+{
+    ResolveExisting,
+    CookIfNeeded
+};
+
+struct VansAssetOperationPolicy
+{
+    VansAssetMetaPolicy meta = VansAssetMetaPolicy::RequireExisting;
+    VansAssetArtifactPolicy artifact = VansAssetArtifactPolicy::ResolveExisting;
+
+    static VansAssetOperationPolicy ReadOnly();
+    static VansAssetOperationPolicy Authoring();
+    static VansAssetOperationPolicy Cooking();
 };
 
 class VansAssetDatabase
@@ -66,13 +100,18 @@ public:
         std::filesystem::path assetsRoot,
         std::filesystem::path artifactRoot = {});
 
-    VansAssetScanResult Scan();
-    bool RegisterOrRefresh(const std::filesystem::path& sourcePath, bool createMeta, std::string& error);
+    VansAssetScanResult Scan(const VansAssetOperationPolicy& policy);
+    bool RegisterOrRefresh(
+        const std::filesystem::path& sourcePath,
+        const VansAssetOperationPolicy& policy,
+        std::string& error,
+        bool* artifactCooked = nullptr);
     bool RemovePath(const std::filesystem::path& sourcePath);
     std::optional<VansAssetRecord> Find(VansAssetGuid guid) const;
     std::optional<VansAssetRecord> Find(const std::filesystem::path& sourcePath) const;
     std::vector<VansAssetRecord> All() const;
     const std::filesystem::path& AssetsRoot() const { return m_AssetsRoot; }
+    const std::filesystem::path& ArtifactRoot() const { return m_ArtifactRoot; }
 
     static VansAssetType Classify(const std::filesystem::path& sourcePath);
     static std::string ImporterFor(VansAssetType type);

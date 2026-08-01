@@ -29,7 +29,7 @@ namespace VansEngine
     struct AudioNodeProperties
     {
         std::string    m_Name;               // Runtime name generated from the asset record.
-        std::string    m_FilePath;           // 音频文件绝对路径（assetPrefix + "/" + relPath）
+        std::string    m_FilePath;           // Resolved audio file path.
         AudioPlayMode  m_PlayMode   = AudioPlayMode::Static;
         bool           m_Loop       = false;
         bool           m_AutoPlay   = false;

@@ -77,7 +77,10 @@ void VansGraphics::VansPostProcessWindow::ShowWindow(
 
 	ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.45f, 1.0f), "LIVE");
 	ImGui::SameLine();
-	ImGui::TextDisabled("Changes are applied to the active runtime profile immediately.");
+	const bool canPersist = editorAPI.GetPlayState() == Vans::EditorAPI::EnginePlayState::Edit;
+	ImGui::TextDisabled(canPersist
+		? "Changes are applied immediately and stored in the scene document. Use Ctrl+S to save."
+		: "Play mode changes affect the active runtime only and are not saved.");
 	ImGui::Separator();
 
 	bool changed = false;
@@ -127,6 +130,8 @@ void VansGraphics::VansPostProcessWindow::ShowWindow(
 
 	if (changed)
 		editorAPI.ApplyPostProcessSettings(settings);
+	if (g_CommandMergeBoundaryReached && canPersist)
+		editorAPI.CommitPostProcessSettings();
 
 	ImGui::Separator();
 	if (ImGui::Button("Reset to Defaults"))
@@ -135,6 +140,8 @@ void VansGraphics::VansPostProcessWindow::ShowWindow(
 		defaults.available = true;
 		editorAPI.BreakCommandMergeGroup();
 		editorAPI.ApplyPostProcessSettings(defaults);
+		if (canPersist)
+			editorAPI.CommitPostProcessSettings();
 		editorAPI.BreakCommandMergeGroup();
 	}
 

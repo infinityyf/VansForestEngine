@@ -277,8 +277,7 @@ VansTexture* VansSceneMaterialBuilder::ResolveMaterialTexture(
             Vans::VansAssetGuid textureGuid;
             if (Vans::VansAssetGuid::TryParse(textureName, textureGuid))
             {
-                auto* database = Vans::VansProjectManager::Get().GetAssetDatabase();
-                const auto record = database ? database->Find(textureGuid) : std::nullopt;
+                const auto record = Vans::VansProjectManager::Get().FindAssetRecord(textureGuid);
                 if (record && record->type == Vans::VansAssetType::Texture &&
                     record->state != Vans::VansAssetState::Missing)
                 {
@@ -287,7 +286,10 @@ VansTexture* VansSceneMaterialBuilder::ResolveMaterialTexture(
                         keyName == "diffuse_texture" ||
                         keyName == "albedo_texture" ||
 						keyName == "emissive_texture";
-                    texture = scene.FindOrLoadTexture(record->sourcePath.string(), isSRGB);
+					const std::filesystem::path runtimePath = !record->artifactPath.empty()
+						? record->artifactPath
+						: record->sourcePath;
+					texture = scene.FindOrLoadTexture(runtimePath.string(), isSRGB);
                 }
             }
         }
@@ -639,13 +641,15 @@ void VansSceneMaterialBuilder::PopulateMaterial(
                         Vans::VansAssetGuid textureGuid;
                         if (Vans::VansAssetGuid::TryParse(textureName, textureGuid))
                         {
-                            auto* database = Vans::VansProjectManager::Get().GetAssetDatabase();
-                            const auto record = database ? database->Find(textureGuid) : std::nullopt;
+                            const auto record = Vans::VansProjectManager::Get().FindAssetRecord(textureGuid);
                             if (record && record->type == Vans::VansAssetType::Texture &&
                                 record->state != Vans::VansAssetState::Missing)
                             {
                                 const bool isSRGB = slotName == "diffuse" || slotName == "basecolor" || slotName == "baseColor";
-                                tex = scene.FindOrLoadTexture(record->sourcePath.string(), isSRGB);
+								const std::filesystem::path runtimePath = !record->artifactPath.empty()
+									? record->artifactPath
+									: record->sourcePath;
+								tex = scene.FindOrLoadTexture(runtimePath.string(), isSRGB);
                             }
                         }
                     }

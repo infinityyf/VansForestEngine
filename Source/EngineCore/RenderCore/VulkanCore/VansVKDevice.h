@@ -15,6 +15,7 @@
 
 #include "../../ScriptCore/VansCommonUtils.h"
 #include "../FidelityFXCore/VansFSR.h"
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -22,6 +23,16 @@
 namespace VansGraphics
 {
 	class INativeWindowProvider;
+	class VansVKImage;
+
+	struct VansTextureMipChainUpload
+	{
+		VansVKImage* destImage = nullptr;
+		const void* data = nullptr;
+		int dataSize = 0;
+		std::vector<VkBufferImageCopy> regions;
+		VkImageLayout finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	};
 
 	struct QueueInfo 
 	{
@@ -38,6 +49,8 @@ namespace VansGraphics
 		//memory update
 		VansVKBuffer m_StageBuffer;
 		VkDeviceSize m_FrameStageBufferOffset = 0;
+		VkDeviceSize m_FrameStageBufferBaseOffset = 0;
+		VkDeviceSize m_FrameStageBufferCapacity = 0;
 
 		//梭有cmd都写在这
 	public :
@@ -52,6 +65,9 @@ namespace VansGraphics
 			int dataSize,
 			const std::vector<VkBufferImageCopy>& regions,
 			VkImageLayout finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		bool SubmitTextureMipChainUploadBatch(
+			VansVKCommandBuffer& cmd,
+			const std::vector<VansTextureMipChainUpload>& uploads);
 
 		// 每帧开始时重置临时上传分配器。该接口只重置 CPU 侧 offset，调用前必须确保上一帧图形提交已完成。
 		void ResetFrameStageUploadAllocator();
@@ -129,6 +145,9 @@ namespace VansGraphics
 		float GetFSRSharpness() const { return m_FSRController.GetSharpness(); }
 		bool IsParallelCommandRecordingEnabled() const { return m_EnableParallelCommandRecording; }
 		void SetParallelCommandRecordingEnabled(bool enabled) { m_EnableParallelCommandRecording = enabled; }
+		bool IsFrameContextRingEnabled() const { return m_EnableFrameContextRing; }
+		uint32_t GetConfiguredFramesInFlight() const { return m_ConfiguredFramesInFlight; }
+		void SetFrameContextRingEnabled(bool enabled, uint32_t framesInFlight);
 		VkExtent2D GetRequestedSceneViewportExtent() const { return m_RequestedSceneViewportExtent; }
 
 		// 窗口大小改变时重建交换链和UI渲染pass
@@ -190,6 +209,12 @@ namespace VansGraphics
 		VkPhysicalDeviceProperties GetDeviceProperties() { return m_DeviceProperties; }
 
 		VkPhysicalDeviceRayTracingPipelinePropertiesKHR GetRayTracingProperties() { return m_RayTracingProperties; }
+		VkDeviceSize GetAccelerationStructureScratchAlignment() const
+		{
+			return m_AccelerationProps.minAccelerationStructureScratchOffsetAlignment > 0
+				? m_AccelerationProps.minAccelerationStructureScratchOffsetAlignment
+				: 1;
+		}
 
 		//获取graphics queue
 		VkQueue& GetGraphicsQueue() { return m_VansVKGraphicsQueue; };
@@ -223,7 +248,7 @@ namespace VansGraphics
 
 		void DrawMotionVectorPass(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd);
 
-		void DrawPunctualShadowMap(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd);
+		void DrawPunctualShadowMap(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd, uint32_t atlasIndex);
 		bool RecordShadowMapParallel(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer, int framebufferIndex);
 
 		void DrawSceneForward(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
@@ -308,10 +333,10 @@ namespace VansGraphics
 		// TileLight Build pass: culls lights per tile each frame
 		void BuildTileLightLists(VansVKCommandBuffer& cmd);
 
-		// 后处理 Compute Pass：Exposure + Bloom
+		// 后处理 Compute Pass：自动曝光与 Bloom
 		void UpdateExposure(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 		void UpdateBloom(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
-		// 检测后处理 Profile 脏标记，将 CPU 参数上传到三个 UBO（每帧调用，开销极低）
+		// 上传逐帧曝光参数，并在配置变化时更新 Bloom 参数。
 		void UploadPostProcessProfileIfDirty();
 		void ProcessPendingGISettings();
 
@@ -451,6 +476,32 @@ namespace VansGraphics
 		void PreparePostProcessRenderData();
 
 	private:
+		static constexpr uint32_t kMaxFrameContextsInFlight = 2;
+
+		struct VansFrameContextRingSlot
+		{
+			uint32_t slotIndex = 0;
+			uint64_t frameNumber = 0;
+			uint32_t swapchainImageIndex = 0;
+			VansVKCommandBuffer graphicsCommandBuffer;
+			VkSemaphore imageAcquiredSemaphore = VK_NULL_HANDLE;
+			bool gpuWorkPending = false;
+			bool commandBufferRecording = false;
+			bool frameSubmitSucceeded = true;
+			VansDeferredDeleteQueue deferredDeletes;
+		};
+
+		bool IsFrameContextRingActive() const;
+		bool EnsureFrameContextRingResources();
+		bool RecreateFrameContextPresentSemaphores();
+		void DestroyFrameContextRingResources();
+		bool BeginFrameContextRingFrame();
+		bool WaitForFrameContextRingSlot(VansFrameContextRingSlot& slot);
+		void BindCurrentFrameContextToLegacyResources();
+		void BindCurrentFrameContextToSlot(VansFrameContextRingSlot& slot);
+		VansVKCommandBuffer& CurrentGraphicsCommandBuffer();
+		const VansVKCommandBuffer& CurrentGraphicsCommandBuffer() const;
+		VansDeferredDeleteQueue& CurrentDeferredDeleteQueue();
 
 		//用于渲染GPU上进行同步
 		uint64_t m_RenderFrameNumber = 0;
@@ -471,6 +522,16 @@ namespace VansGraphics
 		// Set to true to enable shadow-parallel async path.
 		bool m_UseAsyncCompute = false;
 		bool m_EnableParallelCommandRecording = true;
+		bool m_EnableFrameContextRing = false;
+		bool m_FrameContextRingResourcesReady = false;
+		uint32_t m_ConfiguredFramesInFlight = 1;
+		uint32_t m_CurrentFrameContextSlotIndex = 0;
+		VansFrameContextRingSlot* m_ActiveFrameContextSlot = nullptr;
+		std::array<VansFrameContextRingSlot, kMaxFrameContextsInFlight> m_FrameContextRingSlots;
+		std::vector<VkFence> m_SwapchainImageInFlightFences;
+		std::vector<VkSemaphore> m_SwapchainImageRenderFinishedSemaphores;
+		VkFence m_LastSubmittedGraphicsFence = VK_NULL_HANDLE;
+		bool m_LastSubmittedGraphicsFencePending = false;
 		bool m_ShadowSecondaryCommandBuffersNeedReset = false;
 		bool m_MotionVectorSecondaryCommandBuffersNeedReset = false;
 		bool m_GBufferSecondaryCommandBuffersNeedReset = false;

@@ -20,57 +20,12 @@ layout(location = 6) in float instanceStitchFlags;
 layout(location = 0) out vec4 vCurrentClipPos;
 layout(location = 1) out vec4 vPreviousClipPos;
 
-vec3 ApplyTerrainVertexNoise(vec3 worldPos)
-{
-    if (noiseParams.noiseStrength <= 0.0)
-    {
-        return worldPos;
-    }
-
-    float distToCamera = length(worldPos - cameraPosition.xyz);
-    float noiseFade = 1.0 - smoothstep(
-        tessParams.tessDistance * noiseParams.fadeStart,
-        tessParams.tessDistance,
-        distToCamera
-    );
-
-    if (noiseFade <= 0.001)
-    {
-        return worldPos;
-    }
-
-    int effectiveOctaves = min(noiseParams.noiseOctaves, 2);
-    float noiseDisp = 0.0;
-    if (noiseParams.noiseWarpStrength > 0.001)
-    {
-        noiseDisp = terrainDetailFbmWarped(
-            worldPos.xz * noiseParams.noiseFrequency,
-            effectiveOctaves,
-            noiseParams.noiseGain,
-            noiseParams.noiseLacunarity,
-            noiseParams.noiseWarpStrength
-        );
-    }
-    else
-    {
-        noiseDisp = terrainDetailFbm(
-            worldPos.xz * noiseParams.noiseFrequency,
-            effectiveOctaves,
-            noiseParams.noiseGain,
-            noiseParams.noiseLacunarity
-        );
-    }
-
-    worldPos.y += noiseDisp * noiseParams.noiseStrength * noiseFade;
-    return worldPos;
-}
-
 void main()
 {
     vec2 heightUV;
     float height;
     vec3 worldPos = TerrainBuildWorldPosition(inPos.xz, instanceOffset, instanceScale, instanceStitchFlags, heightUV, height);
-    worldPos = ApplyTerrainVertexNoise(worldPos);
+    worldPos = TerrainApplyGeometryNoise(worldPos);
 
     // Motion vectors use unjittered matrices; gl_Position remains jittered to match GBuffer rasterization.
     vec4 currentClip = UnjitteredVPMatrix * vec4(worldPos, 1.0);

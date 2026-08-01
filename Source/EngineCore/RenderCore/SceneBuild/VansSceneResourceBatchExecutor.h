@@ -11,6 +11,7 @@ namespace VansGraphics
 namespace Vans
 {
 	struct VansSceneResourceBuildPlan;
+	class VansSceneResourceLoadContext;
 }
 
 namespace VansGraphics
@@ -18,10 +19,13 @@ namespace VansGraphics
 	class VansSceneResourceBatchExecutor
 	{
 	public:
-		static void Execute(VansScene& scene, const Vans::VansSceneResourceBuildPlan& resourcePlan);
+		static bool Execute(VansScene& scene, const Vans::VansSceneResourceBuildPlan& resourcePlan);
+		static bool Execute(
+			VansScene& scene,
+			const Vans::VansSceneResourceBuildPlan& resourcePlan,
+			const Vans::VansSceneResourceLoadContext& loadContext);
 
 	private:
-		static void LoadEngineMeshes(VansScene& scene, const std::string& enginePrefix, VansVKDevice* vkDevice);
 		static void FinalizeResourceBatch(VansScene& scene);
 	};
 }
