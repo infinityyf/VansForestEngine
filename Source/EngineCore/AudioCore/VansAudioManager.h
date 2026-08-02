@@ -1,6 +1,8 @@
 #pragma once
+#include "VansAudioBus.h"
 #include "VansAudioNode.h"
 #include <unordered_map>
+#include <unordered_set>
 #include <memory>
 #include <string>
 #include <vector>
@@ -13,6 +15,28 @@ namespace Vans
 
 namespace VansEngine
 {
+    struct AudioMixConfig;
+
+    struct AudioBusDebugEntry
+    {
+        std::string name;
+        AudioBusState state;
+        float effectiveGain = 1.0f;
+        int activeVoiceCount = 0;
+    };
+
+    struct AudioDuckingRuleDebugEntry
+    {
+        AudioDuckingRule rule;
+        bool active = false;
+    };
+
+    struct AudioVoiceLeaseFrameStats
+    {
+        int suspendedThisFrame = 0;
+        int resumedThisFrame = 0;
+    };
+
     // ===========================================================================
     // VansAudioManager — 管理场景内所有音频节点的生命周期
     //
@@ -63,7 +87,28 @@ namespace VansEngine
         void TickAll(double deltaTime,
                      float camPosX, float camPosY, float camPosZ,
                      float camFwdX, float camFwdY, float camFwdZ,
-                     float camUpX,  float camUpY,  float camUpZ);
+                     float camUpX,  float camUpY,  float camUpZ,
+                     float camVelX = 0.0f, float camVelY = 0.0f, float camVelZ = 0.0f);
+
+        void SetBusGain(const std::string& busName, float gain);
+        void SetBusLowpassHighFrequencyGain(const std::string& busName, float highFrequencyGain);
+        void SetBusMuted(const std::string& busName, bool muted);
+        void SetBusSoloed(const std::string& busName, bool soloed);
+        void FadeBusGain(const std::string& busName, float targetGain, float fadeSeconds);
+        void ApplyBusSnapshot(const AudioBusSnapshot& snapshot);
+        bool ApplyNamedBusSnapshot(const std::string& snapshotName);
+        void ApplyMixConfig(const AudioMixConfig& config);
+        void AddDuckingRule(AudioDuckingRule rule);
+        void ClearDuckingRules();
+        void UpdateDucking(const std::vector<std::string>& activeBusNames);
+        AudioBusState GetBusState(const std::string& busName) const;
+        float GetEffectiveBusGain(const std::string& busName) const;
+        std::vector<AudioBusDebugEntry> GetBusDebugSnapshot() const;
+        std::vector<AudioDuckingRuleDebugEntry> GetDuckingRuleDebugSnapshot() const;
+        void BeginVoiceLeaseFrame();
+        void RecordVoiceLeaseTransition(bool hardwareActiveBefore, bool hardwareActiveAfter);
+        AudioVoiceLeaseFrameStats GetVoiceLeaseFrameStats() const { return m_VoiceLeaseFrameStats; }
+        void SuppressResourceAutoPlay(const std::string& sourceName);
 
         // ── 场景切换时停止所有播放（不释放资源） ─────────────────────────────
         void StopAll();
@@ -79,7 +124,20 @@ namespace VansEngine
 
     private:
         // name → VansAudioNode（unique_ptr 持有所有权）
+        AudioBusState& EnsureBus(const std::string& busName);
+        const AudioBusState* FindBus(const std::string& busName) const;
+        bool HasSoloedBus() const;
+        void TickBusFades(float deltaTime);
+        void ApplyBusGains();
+
         std::unordered_map<std::string, std::unique_ptr<VansAudioNode>> m_Nodes;
+        std::unordered_map<std::string, AudioBusState> m_Buses;
+        std::unordered_map<std::string, AudioBusSnapshot> m_NamedSnapshots;
+        std::vector<AudioDuckingRule> m_DuckingRules;
+        std::unordered_set<std::string> m_ActiveDuckingRuleKeys;
+        std::unordered_map<std::string, int> m_ActiveBusVoiceCounts;
+        std::unordered_set<std::string> m_SuppressedResourceAutoPlay;
+        AudioVoiceLeaseFrameStats m_VoiceLeaseFrameStats;
     };
 
 } // namespace VansEngine

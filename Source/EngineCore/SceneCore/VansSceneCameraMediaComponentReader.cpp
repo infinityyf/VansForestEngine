@@ -2,6 +2,9 @@
 
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
 
+#include <algorithm>
+#include <cstdint>
+
 namespace Vans
 {
 namespace
@@ -20,6 +23,28 @@ std::optional<float> ReadOptionalFloatField(const VansSerializedValue& object, c
 	if (found->kind == VansSerializedValue::Kind::Float || found->kind == VansSerializedValue::Kind::Int)
 		return static_cast<float>(ReadSerializedNumber(*found));
 	return std::nullopt;
+}
+
+float ReadFloatFieldClamped(
+	const VansSerializedValue& object,
+	const char* key,
+	float fallback,
+	float minValue,
+	float maxValue)
+{
+	const std::optional<float> value = ReadOptionalFloatField(object, key);
+	return std::clamp(value.value_or(fallback), minValue, maxValue);
+}
+
+int ReadIntFieldClamped(
+	const VansSerializedValue& object,
+	const char* key,
+	int fallback,
+	int minValue,
+	int maxValue)
+{
+	const std::int64_t value = ReadSerializedIntField(object, key, fallback);
+	return std::clamp(static_cast<int>(value), minValue, maxValue);
 }
 
 std::string DefaultSourceNameResolver(const VansSerializedValue& source)
@@ -61,7 +86,73 @@ std::optional<VansSceneAudioComponentConfig> VansSceneCameraMediaComponentReader
 		return std::nullopt;
 
 	if (std::optional<std::string> sourceName = ReadSourceName(audioNode, sourceResolver))
-		return VansSceneAudioComponentConfig{ *sourceName };
+	{
+		VansSceneAudioComponentConfig config;
+		config.sourceName = *sourceName;
+		config.occlusionEnabled = ReadSerializedBoolField(audioNode, "occlusionEnabled", false);
+		config.occlusionGain = ReadFloatFieldClamped(audioNode, "occlusionGain", config.occlusionGain, 0.0f, 1.0f);
+		config.occlusionHighFrequencyGain = ReadFloatFieldClamped(
+			audioNode,
+			"occlusionHighFrequencyGain",
+			config.occlusionHighFrequencyGain,
+			0.0f,
+			1.0f);
+		config.occlusionMaterial = VansEngine::NormalizeAudioOcclusionMaterialName(
+			ReadSerializedStringField(audioNode, "occlusionMaterial", config.occlusionMaterial));
+		config.occlusionMaterialThickness = ReadFloatFieldClamped(
+			audioNode,
+			"occlusionMaterialThickness",
+			config.occlusionMaterialThickness,
+			0.0f,
+			4.0f);
+		config.occlusionAttack = ReadFloatFieldClamped(audioNode, "occlusionAttack", config.occlusionAttack, 0.001f, 10.0f);
+		config.occlusionRelease = ReadFloatFieldClamped(audioNode, "occlusionRelease", config.occlusionRelease, 0.001f, 10.0f);
+		config.occlusionQueryInterval = ReadFloatFieldClamped(
+			audioNode,
+			"occlusionQueryInterval",
+			config.occlusionQueryInterval,
+			0.016f,
+			10.0f);
+		config.occlusionMaxDistance = ReadFloatFieldClamped(
+			audioNode,
+			"occlusionMaxDistance",
+			config.occlusionMaxDistance,
+			0.01f,
+			100000.0f);
+		config.occlusionMaxQueriesPerFrame = ReadIntFieldClamped(
+			audioNode,
+			"occlusionMaxQueriesPerFrame",
+			config.occlusionMaxQueriesPerFrame,
+			1,
+			64);
+		config.lowpassHighFrequencyGain = ReadFloatFieldClamped(
+			audioNode,
+			"lowpassHighFrequencyGain",
+			config.lowpassHighFrequencyGain,
+			0.0f,
+			1.0f);
+		config.coneEnabled = ReadSerializedBoolField(audioNode, "coneEnabled", false);
+		config.coneInnerAngle = ReadFloatFieldClamped(
+			audioNode,
+			"coneInnerAngle",
+			config.coneInnerAngle,
+			0.0f,
+			360.0f);
+		config.coneOuterAngle = ReadFloatFieldClamped(
+			audioNode,
+			"coneOuterAngle",
+			config.coneOuterAngle,
+			config.coneInnerAngle,
+			360.0f);
+		config.coneOuterGain = ReadFloatFieldClamped(
+			audioNode,
+			"coneOuterGain",
+			config.coneOuterGain,
+			0.0f,
+			1.0f);
+		config.dopplerEnabled = ReadSerializedBoolField(audioNode, "dopplerEnabled", false);
+		return config;
+	}
 	return std::nullopt;
 }
 

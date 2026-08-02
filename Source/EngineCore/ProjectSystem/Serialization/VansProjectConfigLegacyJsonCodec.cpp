@@ -44,6 +44,7 @@ namespace Vans
 
 			config.renderSettings = root.value("renderSettings", "ProjectSettings/RenderSettings.json");
 			config.physicsSettings = root.value("physicsSettings", "ProjectSettings/PhysicsSettings.json");
+			config.audioSettings = root.value("audioSettings", "ProjectSettings/AudioMix.json");
 			config.collisionLayerSettings = root.value("collisionLayerSettings", "ProjectSettings/PhysicsLayers.json");
 
 			config.assetDirectories.clear();
@@ -84,6 +85,7 @@ namespace Vans
 		root["runtimeAssetBindings"] = config.runtimeAssetBindings;
 		root["renderSettings"] = config.renderSettings;
 		root["physicsSettings"] = config.physicsSettings;
+		root["audioSettings"] = config.audioSettings;
 		root["collisionLayerSettings"] = config.collisionLayerSettings;
 
 		nlohmann::json directories = nlohmann::json::object();

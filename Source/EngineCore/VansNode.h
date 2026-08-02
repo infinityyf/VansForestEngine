@@ -2,24 +2,17 @@
 
 namespace VansGraphics
 {
-    // ─────────────────────────────────────────────────────────────────
-    //  VansNode — 所有引擎功能 Node 的共同基类
+    // Common base for runtime engine nodes.
     //
-    //  提供统一的 enable/disable/destroy 生命周期接口。
-    //  各功能 Node（Render / Physics / Animation / Audio / Cloth / …）
-    //  继承此类并重写虚函数以实现各自的开关语义。
-    //
-    //  位置：Source/EngineCore/VansNode.h（引擎根目录）
-    //  原因：PhysicsCore / AudioCore 等模块需继承此基类，
-    //        放在 RenderCore 会产生反向依赖，破坏模块分层。
-    // ─────────────────────────────────────────────────────────────────
+    // Provides a unified enable/disable/destroy lifecycle used by render,
+    // physics, animation, audio, cloth, and other node types.
     class VansNode
     {
     public:
         VansNode() = default;
         virtual ~VansNode() = default;
 
-        // ── 开关控制 ──────────────────────────────────────────────
+        // Enable state control.
         void SetEnabled(bool enabled)
         {
             if (m_Enabled == enabled) return;
@@ -32,7 +25,7 @@ namespace VansGraphics
 
         bool IsEnabled() const { return m_Enabled; }
 
-        // ── 销毁 ──────────────────────────────────────────────────
+        // Destroy hook.
         void Destroy()
         {
             OnDestroy();
@@ -40,12 +33,12 @@ namespace VansGraphics
         }
 
     protected:
-        // 子类重写以定义各自的开关行为
+        // Derived nodes override these hooks to implement their own lifecycle behavior.
         virtual void OnEnable()  {}
         virtual void OnDisable() {}
         virtual void OnDestroy() {}
 
-        bool m_Enabled = true;  // protected: 允许派生类构造函数直接初始化
+        bool m_Enabled = true;
     };
 
 } // namespace VansGraphics

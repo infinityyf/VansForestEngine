@@ -152,6 +152,11 @@ namespace Vans::EditorAPI
 		virtual RuntimeTransformSnapshot GetRuntimeTransform(const std::string& entityGuid) const = 0;
 		virtual void ApplyRuntimeTransform(const RuntimeTransformEdit& edit) = 0;
 		virtual std::vector<RuntimeMultiMeshGroupSnapshot> BuildRuntimeMultiMeshExpansionSnapshot() = 0;
+		virtual AudioBusDebugSnapshot GetAudioBusDebugSnapshot() const = 0;
+		virtual void SetAudioBusGain(const std::string& busName, float gain) = 0;
+		virtual void SetAudioBusMuted(const std::string& busName, bool muted) = 0;
+		virtual void SetAudioBusSoloed(const std::string& busName, bool soloed) = 0;
+		virtual void SetAudioMaxActiveVoices(int maxActiveVoices) = 0;
 		virtual void SetRuntimePhysicsFixedTimeStep(float deltaTimeSeconds) = 0;
 		virtual std::vector<std::string> GetRuntimeCollisionLayerNames() const = 0;
 		virtual void InstallRuntimeVehiclePhysicsStepCallback() = 0;

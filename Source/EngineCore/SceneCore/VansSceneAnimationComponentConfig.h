@@ -35,6 +35,17 @@ namespace Vans
 		float blendWeight = 0.0f;
 	};
 
+	struct VansSceneAnimationRetargetConfig
+	{
+		bool enabled = false;
+		std::string profile;
+		std::string sourceModel;
+		std::string sourceAnimator;
+		std::string runtimeMode = "source_proxy";
+		std::string cachePolicy = "read_or_build";
+		bool debugDraw = false;
+	};
+
 	struct VansSceneAnimationComponentConfig
 	{
 		bool valid = false;
@@ -45,6 +56,7 @@ namespace Vans
 		bool rootMotion = false;
 		std::string rootBone;
 		std::string name;
+		std::optional<VansSceneAnimationRetargetConfig> retarget;
 		std::optional<VansGraphics::MotionMatchingSettings> motionMatching;
 		std::optional<VansGraphics::FootPlacementSettings> footPlacement;
 		std::vector<VansSceneAnimationBoneBindingConfig> boneBindings;

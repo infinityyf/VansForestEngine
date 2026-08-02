@@ -21,6 +21,8 @@ inline std::string CanonicalRuntimeComponentKeyForName(std::string componentName
 	if (componentName == "rectlight") return "rect_light";
 	if (componentName == "camera") return "camera";
 	if (componentName == "audio") return "audio";
+	if (componentName == "audioreverbzone") return "audio_reverb_zone";
+	if (componentName == "audiovolume") return "audio_volume";
 	if (componentName == "video") return "video";
 	if (componentName == "particle") return "particle";
 	if (componentName == "animation") return "animation";

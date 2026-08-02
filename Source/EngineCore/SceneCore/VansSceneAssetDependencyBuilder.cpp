@@ -10,6 +10,7 @@
 #include "../AssetCore/Storage/VansAssetMetaStorage.h"
 #include "../AssetCore/Storage/VansJsonFileStorage.h"
 #include "../AssetCore/Storage/VansShaderAuthoringAssetStorage.h"
+#include "../AudioCore/VansAudioBus.h"
 #include "../SceneCore/VansSceneDocumentLoader.h"
 #include "../SceneCore/VansSceneSchema.h"
 #include "../Util/VansLog.h"
@@ -72,6 +73,72 @@ namespace
 	{
 		const VansSerializedValue* field = FindObjectField(object, key);
 		return field != nullptr && field->kind == VansSerializedValue::Kind::Array ? field : nullptr;
+	}
+
+	VansSkeletalMeshImportSettings ReadSkeletalImportSettings(const VansAssetMeta& meta)
+	{
+		VansSkeletalMeshImportSettings settings;
+		const VansSerializedValue snapshot = meta.SerializedSettingsSnapshot();
+		const VansSerializedValue* skeletal = FindObjectField(snapshot, "skeletalImport");
+		if (skeletal && skeletal->kind == VansSerializedValue::Kind::Object)
+		{
+			settings.bindPoseSource = ReadSerializedStringField(
+				*skeletal,
+				"bindPoseSource",
+				settings.bindPoseSource);
+			settings.meshNodeTransformPolicy = ReadSerializedStringField(
+				*skeletal,
+				"meshNodeTransformPolicy",
+				settings.meshNodeTransformPolicy);
+			settings.rigidAttachmentPolicy = ReadSerializedStringField(
+				*skeletal,
+				"rigidAttachmentPolicy",
+				settings.rigidAttachmentPolicy);
+			settings.diagnostics = ReadSerializedBoolField(
+				*skeletal,
+				"diagnostics",
+				settings.diagnostics);
+
+			const VansSerializedValue* legacy = FindObjectField(*skeletal, "legacyFixups");
+			if (legacy && legacy->kind == VansSerializedValue::Kind::Object)
+			{
+				settings.legacyFixups.repairInvalidIdentityBindPose = ReadSerializedBoolField(
+					*legacy,
+					"repairInvalidIdentityBindPose",
+					settings.legacyFixups.repairInvalidIdentityBindPose);
+				settings.legacyFixups.remapWeaponAttachmentsToHands = ReadSerializedBoolField(
+					*legacy,
+					"remapWeaponAttachmentsToHands",
+					settings.legacyFixups.remapWeaponAttachmentsToHands);
+				settings.legacyFixups.nearestBoneRigidBind = ReadSerializedBoolField(
+					*legacy,
+					"nearestBoneRigidBind",
+					settings.legacyFixups.nearestBoneRigidBind);
+			}
+			if (settings.rigidAttachmentPolicy == "legacyNearestBone")
+			{
+				settings.legacyFixups.nearestBoneRigidBind = true;
+				settings.rigidAttachmentPolicy = "preserveNodeOffset";
+			}
+			return settings;
+		}
+
+		// Compatibility input only. New asset metadata should use skeletalImport.
+		const bool hasLegacyBindFixup =
+			FindObjectField(snapshot, "rebuildIdentityBoneOffsetsFromHierarchy") != nullptr;
+		const bool hasLegacyWeaponFixup =
+			FindObjectField(snapshot, "remapWeaponAttachmentBonesToHands") != nullptr;
+		if (hasLegacyBindFixup || hasLegacyWeaponFixup)
+		{
+			settings.legacyFixups.nearestBoneRigidBind = true;
+			settings.legacyFixups.repairInvalidIdentityBindPose = meta.ReadBoolSetting(
+				"rebuildIdentityBoneOffsetsFromHierarchy",
+				settings.legacyFixups.repairInvalidIdentityBindPose);
+			settings.legacyFixups.remapWeaponAttachmentsToHands = meta.ReadBoolSetting(
+				"remapWeaponAttachmentBonesToHands",
+				settings.legacyFixups.remapWeaponAttachmentsToHands);
+		}
+		return settings;
 	}
 
 	std::string ReadAssetGuidReference(const VansSerializedValue& value)
@@ -565,10 +632,7 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 				meshColliderModels.find(record.guid.ToString()) != meshColliderModels.end();
 			request.scaleFactor = meta.ReadFloatSetting("scaleFactor", "scale", 1.0f);
 			request.loadMultiMesh = meta.ReadBoolSetting("loadMultiMesh", isFbx);
-			request.rebuildIdentityBoneOffsetsFromHierarchy = meta.ReadBoolSetting(
-				"rebuildIdentityBoneOffsetsFromHierarchy", false);
-			request.remapWeaponAttachmentBonesToHands = meta.ReadBoolSetting(
-				"remapWeaponAttachmentBonesToHands", false);
+			request.skeletalImport = ReadSkeletalImportSettings(meta);
 			result.resourcePlan.meshes.push_back(std::move(request));
 		}
 		else if (record.type == VansAssetType::Texture)
@@ -631,6 +695,12 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 			request.referenceDistance = meta.ReadFloatSetting("referenceDistance", 1.0f);
 			request.maxDistance = meta.ReadFloatSetting("maxDistance", 100.0f);
 			request.rolloff = meta.ReadFloatSetting("rolloff", 1.0f);
+			const std::string attenuationMode = meta.ReadStringSetting("attenuationMode");
+			request.attenuationMode = attenuationMode.empty() ? "linear" : attenuationMode;
+			request.reverbSend = meta.ReadFloatSetting("reverbSend", 0.0f);
+			request.bus = VansEngine::NormalizeAudioBusName(meta.ReadStringSetting("bus"));
+			request.lowpassHighFrequencyGain =
+				std::clamp(meta.ReadFloatSetting("lowpassHighFrequencyGain", 1.0f), 0.0f, 1.0f);
 			result.resourcePlan.audios.push_back(std::move(request));
 		}
 		else if (record.type == VansAssetType::Video)

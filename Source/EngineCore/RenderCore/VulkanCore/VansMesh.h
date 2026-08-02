@@ -9,6 +9,7 @@
 
 #include "../VansGraphicsBuffer.h"
 #include "../VansAsset.h"
+#include "../../AssetCore/VansSkeletalMeshImportSettings.h"
 #include "VansVKBuffer.h"
 #include "../../AnimationCore/VansAnimationTypes.h"
 #include "VansSubMesh.h"
@@ -236,8 +237,7 @@ namespace VansGraphics
 		void LoadMultiMesh(VkDevice& logic_device, VkQueue& queue, VansVKCommandBuffer* commandbuffer,
 			const std::string& file_name, bool import_tangent = false,
 			bool supportRayTracing = false, bool needCPUData = false, float scaleFactor = 1.0f,
-			bool rebuildIdentityBoneOffsetsFromHierarchy = false,
-			bool remapWeaponAttachmentBonesToHands = false,
+			const Vans::VansSkeletalMeshImportSettings& skeletalImport = Vans::VansSkeletalMeshImportSettings{},
 			const std::string& cachePath = {},
 			bool trustCacheWithoutSource = false);
 
@@ -253,8 +253,7 @@ namespace VansGraphics
 
 		static VansMeshCacheBuildStatus BuildMeshCache(const std::string& file_name, bool import_tangent,
 			bool expectMultiMesh, float scaleFactor,
-			bool rebuildIdentityBoneOffsetsFromHierarchy,
-			bool remapWeaponAttachmentBonesToHands,
+			const Vans::VansSkeletalMeshImportSettings& skeletalImport,
 			const std::string& cachePath, std::string& error);
 
 		void BuildBLAS(VansVKDevice& device, VansVKCommandBuffer& commandBuffer);

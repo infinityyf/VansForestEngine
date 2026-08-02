@@ -34,6 +34,7 @@ struct VansSceneObjectBuildConfig
 	VansSceneVehicleObjectConfig vehicleObject;
 	VansSceneLightComponentConfig lightComponents;
 	VansSceneCameraMediaComponentConfig cameraMediaComponents;
+	std::optional<VansSceneAudioReverbZoneConfig> audioReverbZone;
 	std::optional<VansSceneAnimationComponentConfig> animation;
 	std::optional<VansSceneParticleComponentConfig> particle;
 	VansScriptComponentDescriptors scriptComponents;

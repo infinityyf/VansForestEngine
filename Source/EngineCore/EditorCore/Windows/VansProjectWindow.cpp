@@ -1,6 +1,13 @@
 ﻿#include "VansProjectWindow.h"
 #include "../VansEditorWindow.h"
 #include "../VansEditorObjectReference.h"
+#include "../../AudioCore/Storage/VansAudioBusSnapshotAssetStorage.h"
+#include "../../AudioCore/Storage/VansAudioDuckingRulesAssetStorage.h"
+#include "../../AudioCore/Storage/VansAudioReverbPresetAssetStorage.h"
+#include "../../AudioCore/VansAudioBusSnapshotAsset.h"
+#include "../../AudioCore/VansAudioDuckingRulesAsset.h"
+#include "../../AudioCore/VansAudioReverbPresetAsset.h"
+#include "../../AudioCore/VansAudioReverbPreset.h"
 #include "../../SceneCore/VansSceneDocumentLoader.h"
 #include "../../Util/VansLog.h"
 #include "../VansEditorSelection.h"
@@ -8,6 +15,101 @@
 #include <filesystem>
 #include <functional>
 #include <string>
+
+namespace
+{
+enum class AudioControlAssetTemplate
+{
+    ReverbPreset,
+    BusSnapshot,
+    DuckingRules
+};
+
+std::filesystem::path MakeUniqueAssetPath(
+    const std::filesystem::path& directory,
+    const std::string& baseName,
+    const std::string& extension)
+{
+    std::filesystem::path candidate = directory / (baseName + extension);
+    if (!std::filesystem::exists(candidate))
+        return candidate;
+
+    for (int index = 1; index < 1000; ++index)
+    {
+        candidate = directory / (baseName + " " + std::to_string(index) + extension);
+        if (!std::filesystem::exists(candidate))
+            return candidate;
+    }
+    return {};
+}
+
+std::filesystem::path CreateAudioControlAsset(
+    const std::filesystem::path& directory,
+    AudioControlAssetTemplate assetTemplate,
+    std::string& error)
+{
+    error.clear();
+    if (directory.empty())
+    {
+        error = "No target folder selected";
+        return {};
+    }
+
+    switch (assetTemplate)
+    {
+    case AudioControlAssetTemplate::ReverbPreset:
+    {
+        const std::filesystem::path path = MakeUniqueAssetPath(directory, "Room Reverb", ".vreverb");
+        if (path.empty())
+        {
+            error = "Cannot allocate a unique reverb preset name";
+            return {};
+        }
+
+        Vans::VansAudioReverbPresetAsset asset;
+        asset.displayName = "Room Reverb";
+        asset.parameters = VansEngine::GetAudioReverbPresetParameters(VansEngine::AudioReverbPreset::Room);
+        return Vans::VansAudioReverbPresetAssetStorage::SaveAtomic(path, asset, error) ? path : std::filesystem::path{};
+    }
+    case AudioControlAssetTemplate::BusSnapshot:
+    {
+        const std::filesystem::path path = MakeUniqueAssetPath(directory, "Gameplay Mix", ".vaudiosnapshot");
+        if (path.empty())
+        {
+            error = "Cannot allocate a unique bus snapshot name";
+            return {};
+        }
+
+        Vans::VansAudioBusSnapshotAsset asset;
+        asset.displayName = "Gameplay Mix";
+        asset.snapshot.fadeSeconds = 0.25f;
+        asset.snapshot.buses = {
+            VansEngine::AudioBusSnapshotEntry{ "Music", 0.8f },
+            VansEngine::AudioBusSnapshotEntry{ "SFX", 1.0f },
+            VansEngine::AudioBusSnapshotEntry{ "Voice", 1.0f }
+        };
+        return Vans::VansAudioBusSnapshotAssetStorage::SaveAtomic(path, asset, error) ? path : std::filesystem::path{};
+    }
+    case AudioControlAssetTemplate::DuckingRules:
+    {
+        const std::filesystem::path path = MakeUniqueAssetPath(directory, "Voice Ducking", ".vducking");
+        if (path.empty())
+        {
+            error = "Cannot allocate a unique ducking rules name";
+            return {};
+        }
+
+        Vans::VansAudioDuckingRulesAsset asset;
+        asset.displayName = "Voice Ducking";
+        asset.rules = { VansEngine::AudioDuckingRule{} };
+        return Vans::VansAudioDuckingRulesAssetStorage::SaveAtomic(path, asset, error) ? path : std::filesystem::path{};
+    }
+    default:
+        error = "Unsupported audio control asset template";
+        return {};
+    }
+}
+}
 
 void VansGraphics::VansProjectWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
@@ -71,6 +173,53 @@ void VansGraphics::VansProjectWindow::DrawProjectContents(Vans::EditorAPI::IEngi
 
         // Right Panel: File List
         ImGui::BeginChild("RightPanel", ImVec2(0, 0), true);
+
+        static std::string s_AudioAssetCreateStatus;
+        auto createAndSelectAudioAsset = [&](AudioControlAssetTemplate assetTemplate)
+        {
+            std::string error;
+            const std::filesystem::path createdPath = CreateAudioControlAsset(currentPath, assetTemplate, error);
+            if (createdPath.empty())
+            {
+                s_AudioAssetCreateStatus = error.empty() ? "Audio asset creation failed" : error;
+                VANS_LOG_ERROR("[Project] " << s_AudioAssetCreateStatus);
+                return;
+            }
+
+            const Vans::EditorAPI::AssetRefreshResult refresh =
+                editorAPI.RefreshProjectAsset(createdPath.string(), true);
+            if (!refresh.success)
+            {
+                s_AudioAssetCreateStatus = "Created, but asset refresh failed: " + refresh.message;
+                VANS_LOG_ERROR("[Project] " << s_AudioAssetCreateStatus);
+                return;
+            }
+
+            Vans::VansEditorSelection::SelectAsset(createdPath);
+            s_AudioAssetCreateStatus = "Created " + createdPath.filename().string();
+            VANS_LOG("[Project] " << s_AudioAssetCreateStatus);
+        };
+
+        if (root.projectLoaded)
+        {
+            if (ImGui::Button("Create Audio"))
+                ImGui::OpenPopup("CreateAudioAssetPopup");
+            if (ImGui::BeginPopup("CreateAudioAssetPopup"))
+            {
+                if (ImGui::MenuItem("Reverb Preset"))
+                    createAndSelectAudioAsset(AudioControlAssetTemplate::ReverbPreset);
+                if (ImGui::MenuItem("Bus Snapshot"))
+                    createAndSelectAudioAsset(AudioControlAssetTemplate::BusSnapshot);
+                if (ImGui::MenuItem("Ducking Rules"))
+                    createAndSelectAudioAsset(AudioControlAssetTemplate::DuckingRules);
+                ImGui::EndPopup();
+            }
+            if (!s_AudioAssetCreateStatus.empty())
+            {
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s", s_AudioAssetCreateStatus.c_str());
+            }
+        }
 
         static float padding = 10.0f;
         static float thumbnailSize = 64.0f;

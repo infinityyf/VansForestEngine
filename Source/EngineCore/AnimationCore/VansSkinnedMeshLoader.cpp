@@ -1,4 +1,4 @@
-#include "VansSkinnedMeshLoader.h"
+﻿#include "VansSkinnedMeshLoader.h"
 #include "VansAnimationClip.h"
 #include "../Util/VansLog.h"
 
@@ -8,19 +8,22 @@
 #include <assimp/postprocess.h>
 
 #include <../../GLM/glm.hpp>
+#include <../../GLM/gtc/matrix_transform.hpp>
 #include <../../GLM/gtc/quaternion.hpp>
 #include <../../GLM/gtc/type_ptr.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <filesystem>
 #include <functional>
 #include <set>
+#include <unordered_map>
 #include <unordered_set>
 
 using namespace VansGraphics;
 
-// ─── Helper: convert Assimp mat4 → glm::mat4 (transpose: Assimp is row-major) ───
+// Helper: convert Assimp mat4 -> glm::mat4 (transpose: Assimp is row-major).
 
 static glm::mat4 ConvertMat4(const aiMatrix4x4& m)
 {
@@ -30,6 +33,143 @@ static glm::mat4 ConvertMat4(const aiMatrix4x4& m)
 		m.a3, m.b3, m.c3, m.d3,
 		m.a4, m.b4, m.c4, m.d4
 	);
+}
+
+static std::string ToLowerAscii(std::string value)
+{
+	std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+		return static_cast<char>(std::tolower(c));
+	});
+	return value;
+}
+
+static bool ShouldBakeSkinnedMeshNodeTransform(const Vans::VansSkeletalMeshImportSettings& importSettings)
+{
+	const std::string policy = ToLowerAscii(importSettings.meshNodeTransformPolicy);
+	return policy == "bakeskinned" ||
+		policy == "bakeskinnedmeshes" ||
+		policy == "bakeall" ||
+		policy == "bakenodetransform";
+}
+
+static bool IsAutoMeshNodeTransformPolicy(const Vans::VansSkeletalMeshImportSettings& importSettings)
+{
+	const std::string policy = ToLowerAscii(importSettings.meshNodeTransformPolicy);
+	return policy.empty() ||
+		policy == "auto" ||
+		policy == "automatic";
+}
+
+static bool ShouldUseHierarchyBindPose(const Vans::VansSkeletalMeshImportSettings& importSettings)
+{
+	const std::string source = ToLowerAscii(importSettings.bindPoseSource);
+	return source == "hierarchy" ||
+		source == "nodehierarchy" ||
+		source == "skeletonhierarchy" ||
+		source == "restpose";
+}
+
+static bool ShouldRigidBindUnskinnedBoneChildren(const Vans::VansSkeletalMeshImportSettings& importSettings)
+{
+	const std::string policy = ToLowerAscii(importSettings.rigidAttachmentPolicy);
+	return policy.empty() ||
+		policy == "auto" ||
+		policy == "preservenodeoffset" ||
+		policy == "rigid" ||
+		policy == "rigidbind" ||
+		policy == "bonechild";
+}
+
+static aiMatrix4x4 MakeIdentityAiMatrix()
+{
+	aiMatrix4x4 transform;
+	transform.a1 = 1.0f; transform.a2 = 0.0f; transform.a3 = 0.0f; transform.a4 = 0.0f;
+	transform.b1 = 0.0f; transform.b2 = 1.0f; transform.b3 = 0.0f; transform.b4 = 0.0f;
+	transform.c1 = 0.0f; transform.c2 = 0.0f; transform.c3 = 1.0f; transform.c4 = 0.0f;
+	transform.d1 = 0.0f; transform.d2 = 0.0f; transform.d3 = 0.0f; transform.d4 = 1.0f;
+	return transform;
+}
+
+static float MaxAbsMatrixDiff(const glm::mat4& a, const glm::mat4& b)
+{
+	float maxDiff = 0.0f;
+	for (int column = 0; column < 4; ++column)
+	{
+		for (int row = 0; row < 4; ++row)
+		{
+			maxDiff = std::max(maxDiff, std::abs(a[column][row] - b[column][row]));
+		}
+	}
+	return maxDiff;
+}
+
+static float MaxAbsIdentityDiff(const glm::mat4& matrix)
+{
+	return MaxAbsMatrixDiff(matrix, glm::mat4(1.0f));
+}
+
+static bool IsNearlyIdentityAiMatrix(const aiMatrix4x4& transform, float epsilon = 1.0e-4f)
+{
+	const float values[16] = {
+		transform.a1, transform.a2, transform.a3, transform.a4,
+		transform.b1, transform.b2, transform.b3, transform.b4,
+		transform.c1, transform.c2, transform.c3, transform.c4,
+		transform.d1, transform.d2, transform.d3, transform.d4
+	};
+	for (int i = 0; i < 16; ++i)
+	{
+		const float expected = (i == 0 || i == 5 || i == 10 || i == 15) ? 1.0f : 0.0f;
+		if (std::abs(values[i] - expected) > epsilon)
+			return false;
+	}
+	return true;
+}
+
+static bool ShouldBakeSkinnedMeshNodeTransform(
+	const Vans::VansSkeletalMeshImportSettings& importSettings,
+	const aiScene* scene,
+	const std::unordered_map<uint32_t, aiMatrix4x4>& meshToModelTransform)
+{
+	if (ShouldBakeSkinnedMeshNodeTransform(importSettings))
+		return true;
+
+	if (!IsAutoMeshNodeTransformPolicy(importSettings) || !scene)
+		return false;
+
+	for (uint32_t meshIndex = 0; meshIndex < scene->mNumMeshes; ++meshIndex)
+	{
+		const aiMesh* mesh = scene->mMeshes[meshIndex];
+		if (!mesh || mesh->mNumBones == 0)
+			continue;
+
+		const auto transformIt = meshToModelTransform.find(meshIndex);
+		if (transformIt != meshToModelTransform.end() &&
+			!IsNearlyIdentityAiMatrix(transformIt->second))
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static void BuildMeshToModelTransformMap(const aiNode* node,
+	const aiMatrix4x4& parentTransform,
+	std::unordered_map<uint32_t, aiMatrix4x4>& outMeshToModelTransform)
+{
+	if (!node)
+		return;
+
+	const aiMatrix4x4 accumulatedTransform = parentTransform * node->mTransformation;
+	for (uint32_t i = 0; i < node->mNumMeshes; ++i)
+	{
+		const uint32_t meshIndex = node->mMeshes[i];
+		if (outMeshToModelTransform.find(meshIndex) == outMeshToModelTransform.end())
+			outMeshToModelTransform[meshIndex] = accumulatedTransform;
+	}
+
+	for (uint32_t i = 0; i < node->mNumChildren; ++i)
+		BuildMeshToModelTransformMap(node->mChildren[i], accumulatedTransform, outMeshToModelTransform);
 }
 
 static glm::vec3 ConvertVec3(const aiVector3D& v)
@@ -43,17 +183,17 @@ static glm::quat ConvertQuat(const aiQuaternion& q)
 }
 
 
-// ════════════════════════════════════════════════════════════════
-//  ProcessAnimatedMesh — main entry point
-// ════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
+// ProcessAnimatedMesh: main entry point
+// ---------------------------------------------------------------------------
 
 bool VansGraphics::VansSkinnedMeshLoader::ProcessAnimatedMesh(
 	const aiScene* scene,
 	const std::string& fbxFilePath,
 	uint32_t totalVertexCount,
+	float scaleFactor,
 	VansAnimationImportResult& outResult,
-	bool rebuildIdentityBoneOffsetsFromHierarchy,
-	bool remapWeaponAttachmentBonesToHands)
+	const Vans::VansSkeletalMeshImportSettings& importSettings)
 {
 	if (!scene)
 	{
@@ -62,7 +202,7 @@ bool VansGraphics::VansSkinnedMeshLoader::ProcessAnimatedMesh(
 	}
 
 	// Step 1: Check if any mesh has bones.
-	// Animations are optional – a bind-pose model (no clips) still needs the full
+	// Animations are optional; a bind-pose model with no clips still needs the full
 	// skeleton + bone-weight pipeline so the GPU skinning path is enabled.
 	bool sceneHasBones = false;
 	for (uint32_t m = 0; m < scene->mNumMeshes && !sceneHasBones; m++)
@@ -80,10 +220,16 @@ bool VansGraphics::VansSkinnedMeshLoader::ProcessAnimatedMesh(
 	         << (scene->HasAnimations()
 	             ? " (" + std::to_string(scene->mNumAnimations) + " animation clip(s))"
 	             : " (bind-pose only, no animation clips)"));
+	if (importSettings.diagnostics)
+	{
+		VANS_LOG("[SkeletalImport] Skeleton import settings: bindPoseSource=\""
+			<< importSettings.bindPoseSource
+			<< "\" meshNodeTransformPolicy=\"" << importSettings.meshNodeTransformPolicy
+			<< "\" scaleFactor=" << scaleFactor);
+	}
 
 	// Step 2: Extract skeleton
-	ExtractSkeleton(scene, outResult.skeleton, rebuildIdentityBoneOffsetsFromHierarchy,
-		remapWeaponAttachmentBonesToHands);
+	ExtractSkeleton(scene, outResult.skeleton, scaleFactor, importSettings);
 
 	if (outResult.skeleton.bones.empty())
 	{
@@ -92,13 +238,13 @@ bool VansGraphics::VansSkinnedMeshLoader::ProcessAnimatedMesh(
 		return true;
 	}
 
-	// Skeleton successfully extracted – mark as having a skeletal rig.
+	// Skeleton successfully extracted; mark as having a skeletal rig.
 	// Even without animation clips the bone pipeline must run (identity-pose skinning).
 	outResult.hasAnimation = true;
 
 	// Step 3: Extract bone weights per vertex
 	ExtractVertexBoneData(scene, outResult.skeleton, totalVertexCount, outResult.vertexBoneData,
-		remapWeaponAttachmentBonesToHands);
+		importSettings);
 
 	// Step 4: For each animation clip, check cache or extract
 	std::string clipDir  = GetParentDirectory(fbxFilePath);
@@ -148,7 +294,7 @@ bool VansGraphics::VansSkinnedMeshLoader::ProcessAnimatedMesh(
 			}
 			else
 			{
-				// Cache is corrupt — re-extract
+			// Cache is corrupt; re-extract.
 				VANS_LOG_WARN("[VansSkinnedMeshLoader] Failed to load cached clip, re-extracting: " << vclipPath);
 				ExtractClipFromAssimp(anim, outResult.skeleton, clip);
 				clip.clipName = clipName;
@@ -173,11 +319,11 @@ bool VansGraphics::VansSkinnedMeshLoader::ProcessAnimatedMesh(
 	return true;
 }
 
-// ════════════════════════════════════════════════════════════════
-//  ExtractSkeleton
-// ════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
+// ExtractSkeleton
+// ---------------------------------------------------------------------------
 
-// ── Helper: find an aiNode by name in the scene tree ──
+// Helper: find an aiNode by name in the scene tree.
 static const aiNode* FindAiNodeByName(const aiNode* node, const std::string& name)
 {
 	if (!node) return nullptr;
@@ -191,7 +337,7 @@ static const aiNode* FindAiNodeByName(const aiNode* node, const std::string& nam
 	return nullptr;
 }
 
-// ── Helper: compute the offset matrix for a hierarchy-only node ──
+// Helper: compute the offset matrix for a hierarchy-only node.
 // The offset matrix transforms from model space to bone-local space.
 // For a bone that is part of the node tree, this is the inverse of the
 // accumulated (model-space) transform of that node.
@@ -206,7 +352,7 @@ static glm::mat4 ComputeOffsetMatrixFromNode(const aiNode* node)
 		chain.push_back(cur);
 		cur = cur->mParent;
 	}
-	// Walk from root → node
+	// Walk from root to node.
 	for (int i = (int)chain.size() - 1; i >= 0; i--)
 		modelSpaceTransform = modelSpaceTransform * ConvertMat4(chain[i]->mTransformation);
 
@@ -273,16 +419,41 @@ static const char* FindWeaponAttachmentHand(const aiNode* node)
 	return nullptr;
 }
 
+struct WeightedBoneSource
+{
+	const aiBone* bone = nullptr;
+	glm::mat4 normalizedOffsetMatrix = glm::mat4(1.0f);
+	glm::mat4 vertexToModelSpace = glm::mat4(1.0f);
+	uint32_t firstMeshIndex = 0;
+};
+
 void VansGraphics::VansSkinnedMeshLoader::ExtractSkeleton(const aiScene* scene,
                                                            Skeleton& outSkeleton,
-                                                           bool rebuildIdentityBoneOffsetsFromHierarchy,
-                                                           bool remapWeaponAttachmentBonesToHands)
+                                                           float scaleFactor,
+                                                           const Vans::VansSkeletalMeshImportSettings& importSettings)
 {
 	outSkeleton.bones.clear();
 	outSkeleton.boneNameToIndex.clear();
 
-	// ── Phase 1: Collect all unique bones that have vertex weights (from meshes) ──
-	std::unordered_map<std::string, const aiBone*> weightedBones;
+	// Phase 1: Collect all unique bones that have vertex weights from meshes.
+	// If a skinned mesh node transform is baked into its vertices, the imported
+	// inverse-bind matrix must be moved into that same model space:
+	//     v_model = meshNodeTransform * v_meshLocal
+	//     offset_model = offset_meshLocal * inverse(meshNodeTransform)
+	// This lets a single Skeleton keep stable offsets even when a character is
+	// split into many skinned mesh nodes in the FBX.
+	std::unordered_map<uint32_t, aiMatrix4x4> meshToModelTransform;
+	BuildMeshToModelTransformMap(scene->mRootNode, MakeIdentityAiMatrix(), meshToModelTransform);
+
+	std::unordered_map<std::string, WeightedBoneSource> weightedBones;
+	const bool bakeSkinnedMeshNodeTransform =
+		ShouldBakeSkinnedMeshNodeTransform(importSettings, scene, meshToModelTransform);
+	const bool useHierarchyBindPose = ShouldUseHierarchyBindPose(importSettings);
+	if (importSettings.diagnostics && bakeSkinnedMeshNodeTransform)
+	{
+		VANS_LOG("[SkeletalImport] Baking skinned mesh-node transforms into vertices"
+			<< " (meshNodeTransformPolicy=\"" << importSettings.meshNodeTransformPolicy << "\")");
+	}
 	for (uint32_t m = 0; m < scene->mNumMeshes; m++)
 	{
 		const aiMesh* mesh = scene->mMeshes[m];
@@ -290,12 +461,53 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractSkeleton(const aiScene* scene,
 		{
 			const aiBone* bone = mesh->mBones[b];
 			std::string boneName = bone->mName.C_Str();
-			if (weightedBones.find(boneName) == weightedBones.end())
-				weightedBones[boneName] = bone;
+			const aiNode* weightedNode = FindAiNodeByName(scene->mRootNode, boneName);
+			glm::mat4 normalizedOffset =
+				(useHierarchyBindPose && weightedNode)
+					? ComputeOffsetMatrixFromNode(weightedNode)
+					: ConvertMat4(bone->mOffsetMatrix);
+			if (bakeSkinnedMeshNodeTransform && !useHierarchyBindPose)
+			{
+				auto transformIt = meshToModelTransform.find(m);
+				if (transformIt != meshToModelTransform.end())
+				{
+					glm::mat4 vertexToModelSpace = ConvertMat4(transformIt->second);
+					if (scaleFactor != 1.0f)
+						vertexToModelSpace = glm::scale(glm::mat4(1.0f), glm::vec3(scaleFactor)) * vertexToModelSpace;
+					normalizedOffset = normalizedOffset * glm::inverse(vertexToModelSpace);
+				}
+			}
+
+			glm::mat4 vertexToModelSpace(1.0f);
+			if (bakeSkinnedMeshNodeTransform)
+			{
+				auto transformIt = meshToModelTransform.find(m);
+				if (transformIt != meshToModelTransform.end())
+					vertexToModelSpace = ConvertMat4(transformIt->second);
+			}
+			if (scaleFactor != 1.0f)
+				vertexToModelSpace = glm::scale(glm::mat4(1.0f), glm::vec3(scaleFactor)) * vertexToModelSpace;
+
+			auto insertResult = weightedBones.emplace(
+				boneName,
+				WeightedBoneSource{ bone, normalizedOffset, vertexToModelSpace, m });
+			if (!insertResult.second && importSettings.diagnostics)
+			{
+				const float diff = MaxAbsMatrixDiff(insertResult.first->second.normalizedOffsetMatrix, normalizedOffset);
+				if (diff > 1.0e-3f)
+				{
+					VANS_LOG_WARN("[SkeletalImport] Bone \"" << boneName
+						<< "\" has different inverse-bind offsets across skinned meshes after normalization"
+						<< " (firstMesh=" << insertResult.first->second.firstMeshIndex
+						<< ", mesh=" << m
+						<< ", maxAbsDiff=" << diff
+						<< ", meshNodeTransformPolicy=\"" << importSettings.meshNodeTransformPolicy << "\")");
+				}
+			}
 		}
 	}
 
-	// ── Phase 2: For each weighted bone, walk UP the aiNode tree and collect ──
+	// Phase 2: For each weighted bone, walk up the aiNode tree and collect
 	//    all ancestor nodes until we reach the scene root. This ensures
 	//    hierarchy-only bones (like "Bip01") that have no direct vertex
 	//    weights but serve as parents in the bone chain are included.
@@ -339,7 +551,7 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractSkeleton(const aiScene* scene,
 		}
 	}
 
-	// ── Phase 3: Create BoneInfo for each bone name ──
+	// Phase 3: Create BoneInfo for each bone name.
 	int boneIndex = 0;
 	for (const auto& name : allBoneNames)
 	{
@@ -353,9 +565,9 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractSkeleton(const aiScene* scene,
 		auto wbIt = weightedBones.find(name);
 		if (wbIt != weightedBones.end())
 		{
-			info.offsetMatrix = ConvertMat4(wbIt->second->mOffsetMatrix);
+			info.offsetMatrix = wbIt->second.normalizedOffsetMatrix;
 			const aiNode* weightedNode = FindAiNodeByName(scene->mRootNode, name);
-			if (rebuildIdentityBoneOffsetsFromHierarchy && weightedNode)
+			if (importSettings.legacyFixups.repairInvalidIdentityBindPose && weightedNode)
 			{
 				const glm::mat4 hierarchyOffset = ComputeOffsetMatrixFromNode(weightedNode);
 				if (!IsNearlyIdentity(hierarchyOffset) &&
@@ -363,12 +575,12 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractSkeleton(const aiScene* scene,
 					 HasGrossBindTranslationError(info.offsetMatrix, hierarchyOffset)))
 				{
 					info.offsetMatrix = hierarchyOffset;
-					VANS_LOG("[VansSkinnedMeshLoader] Rebuilt invalid inverse-bind from hierarchy for bone: \""
+					VANS_LOG("[VansSkinnedMeshLoader] Legacy fixup rebuilt inverse-bind from hierarchy for bone: \""
 						<< name << "\"");
 				}
 			}
 
-			if (remapWeaponAttachmentBonesToHands && weightedNode)
+			if (importSettings.legacyFixups.remapWeaponAttachmentsToHands && weightedNode)
 			{
 				const char* handName = FindWeaponAttachmentHand(weightedNode);
 				glm::mat4 handRelativeTransform(1.0f);
@@ -399,7 +611,7 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractSkeleton(const aiScene* scene,
 		boneIndex++;
 	}
 
-	// ── Phase 4: Resolve parent-child hierarchy by walking the aiNode tree ──
+	// Phase 4: Resolve parent-child hierarchy by walking the aiNode tree.
 	BuildHierarchyFromNodeTree(scene->mRootNode, outSkeleton, -1);
 
 	// Store global inverse transform
@@ -420,14 +632,62 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractSkeleton(const aiScene* scene,
 	VANS_LOG("[VansSkinnedMeshLoader] Skeleton extracted: " << outSkeleton.bones.size()
 	         << " bones (" << hierarchyOnlyCount << " hierarchy-only)");
 
-	// ── Phase 5: 构建拓扑遍历顺序（父骨骼在子骨骼之前）──
+	// Phase 5: Build topological traversal order with parents before children.
 	outSkeleton.BuildTopologicalOrder();
+
+	if (importSettings.diagnostics)
+	{
+		std::vector<glm::mat4> bindGlobals(outSkeleton.bones.size(), glm::mat4(1.0f));
+		for (size_t i = 0; i < outSkeleton.bones.size(); ++i)
+			bindGlobals[i] = outSkeleton.bones[i].localTransform;
+
+		const auto accumulateBone = [&](int index)
+		{
+			if (index < 0 || index >= static_cast<int>(outSkeleton.bones.size()))
+				return;
+			const int parentIndex = outSkeleton.bones[index].parentIndex;
+			if (parentIndex >= 0 && parentIndex < static_cast<int>(outSkeleton.bones.size()))
+				bindGlobals[index] = bindGlobals[parentIndex] * bindGlobals[index];
+		};
+
+		if (!outSkeleton.topologicalOrder.empty())
+		{
+			for (int index : outSkeleton.topologicalOrder)
+				accumulateBone(index);
+		}
+		else
+		{
+			for (int index = 0; index < static_cast<int>(outSkeleton.bones.size()); ++index)
+				accumulateBone(index);
+		}
+
+		float worstBindResidual = 0.0f;
+		std::string worstBoneName;
+		for (const BoneInfo& bone : outSkeleton.bones)
+		{
+			if (weightedBones.find(bone.name) == weightedBones.end())
+				continue;
+			const auto weightedIt = weightedBones.find(bone.name);
+			const glm::mat4 residual =
+				bindGlobals[bone.id] *
+				bone.offsetMatrix;
+			const float diff = MaxAbsIdentityDiff(residual);
+			if (diff > worstBindResidual)
+			{
+				worstBindResidual = diff;
+				worstBoneName = bone.name;
+			}
+		}
+		VANS_LOG("[SkeletalImport] Bind-pose skin residual: maxAbsIdentityDiff="
+			<< worstBindResidual << " bone=\"" << worstBoneName
+			<< "\" meshNodeTransformPolicy=\"" << importSettings.meshNodeTransformPolicy << "\"");
+	}
 }
 
-// ════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 //  BuildHierarchyFromNodeTree
 //  Recursively walk aiNode tree, match node names to bone names.
-// ════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 
 void VansGraphics::VansSkinnedMeshLoader::BuildHierarchyFromNodeTree(
 	const aiNode* node, Skeleton& skeleton, int parentIndex)
@@ -491,10 +751,10 @@ void VansGraphics::VansSkinnedMeshLoader::BuildHierarchyFromNodeTree(
 	visit(node, parentIndex);
 }
 
-// ════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 //  Helper: build a map from mesh index (scene->mMeshes[]) to the aiNode that owns it.
 //  A mesh can appear in multiple nodes; we record the first one found (depth-first).
-// ════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 
 static void BuildMeshToNodeMap(const aiNode* node,
                                std::unordered_map<uint32_t, const aiNode*>& meshToNode)
@@ -510,16 +770,16 @@ static void BuildMeshToNodeMap(const aiNode* node,
 		BuildMeshToNodeMap(node->mChildren[i], meshToNode);
 }
 
-// ════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 //  Helper: walk up the aiNode tree from a given node and return the
 //  bone ID of the nearest ancestor whose name matches a bone in the skeleton.
 //  Returns -1 if no bone ancestor is found.
-// ════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 
 static int FindNearestBoneAncestor(const aiNode* node,
                                    const VansGraphics::Skeleton& skeleton)
 {
-	// Start from the node itself — its name may already be a bone (e.g. rigid mesh
+	// Start from the node itself; its name may already be a bone (for example,
 	// has the same name as the bone, or the node IS the bone).
 	const aiNode* current = node;
 	while (current)
@@ -536,16 +796,16 @@ static int FindNearestBoneAncestor(const aiNode* node,
 	return -1;
 }
 
-// ════════════════════════════════════════════════════════════════
-//  ExtractVertexBoneData
-// ════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
+// ExtractVertexBoneData
+// ---------------------------------------------------------------------------
 
 void VansGraphics::VansSkinnedMeshLoader::ExtractVertexBoneData(
 	const aiScene* scene,
 	const Skeleton& skeleton,
 	uint32_t totalVertexCount,
 	std::vector<VertexBoneData>& outData,
-	bool remapWeaponAttachmentBonesToHands)
+	const Vans::VansSkeletalMeshImportSettings& importSettings)
 {
 	outData.clear();
 	outData.resize(totalVertexCount);
@@ -573,7 +833,7 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractVertexBoneData(
 				continue;
 
 			int boneID = it->second;
-			if (remapWeaponAttachmentBonesToHands && boneName.rfind("grenade", 0) == 0)
+			if (importSettings.legacyFixups.remapWeaponAttachmentsToHands && boneName.rfind("grenade", 0) == 0)
 			{
 				const auto weaponIt = skeleton.boneNameToIndex.find("weapon_r");
 				if (weaponIt != skeleton.boneNameToIndex.end())
@@ -581,7 +841,7 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractVertexBoneData(
 			}
 			// FBX files commonly emit bone entries for the full skeleton in every
 			// sub-mesh, even when a bone has zero influence on that mesh's vertices.
-			// Skip silently — this is expected Assimp behaviour, not an error.
+			// Skip silently; this is expected Assimp behavior, not an error.
 			if (!bone->mWeights || bone->mNumWeights == 0)
 				continue;
 
@@ -610,10 +870,20 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractVertexBoneData(
 		vertexOffset += mesh->mNumVertices;
 	}
 
-	// ── Second pass: rigid-bind fixup for unskinned meshes parented to bones ──
-	// Build mesh-index → aiNode map so we can walk up the node tree.
+	// Second pass: generic rigid attachments for unskinned meshes parented to bones.
+	// These meshes are authored as rigid child nodes rather than skinned meshes.
+	// Their vertices have already been baked into model space; assigning them to
+	// the nearest ancestor bone with weight 1.0 makes:
+	//     boneAnimated * inverse(boneBind) * vertexModel
+	// evaluate to vertexModel in bind pose, preserving the FBX node offset while
+	// letting the attachment follow animation.
+	// Build a mesh-index to aiNode map so we can walk up the node tree.
 	std::unordered_map<uint32_t, const aiNode*> meshToNode;
 	BuildMeshToNodeMap(scene->mRootNode, meshToNode);
+
+	const bool useRigidAttachmentBind =
+		ShouldRigidBindUnskinnedBoneChildren(importSettings) ||
+		importSettings.legacyFixups.nearestBoneRigidBind;
 
 	for (uint32_t m = 0; m < scene->mNumMeshes; m++)
 	{
@@ -641,6 +911,17 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractVertexBoneData(
 		if (!allUnbound)
 			continue;
 
+		if (!useRigidAttachmentBind)
+		{
+			if (importSettings.diagnostics)
+			{
+				VANS_LOG("[SkeletalImport] Preserving unskinned mesh " << m
+					<< " (" << mesh->mNumVertices
+					<< " vertices) without legacy nearest-bone skin weights.");
+			}
+			continue;
+		}
+
 		// Find the aiNode that owns this mesh, then walk up to find a bone ancestor
 		auto nodeIt = meshToNode.find(m);
 		if (nodeIt == meshToNode.end())
@@ -649,7 +930,7 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractVertexBoneData(
 		const aiNode* ownerNode = nodeIt->second;
 		int parentBoneID = FindNearestBoneAncestor(ownerNode, skeleton);
 		if (parentBoneID < 0)
-			continue;   // no bone ancestor found — leave unbound
+			continue;   // no bone ancestor found; leave unbound
 
 		// Rigid-bind: assign all vertices to the parent bone with weight 1.0
 		for (uint32_t v = start; v < end && v < totalVertexCount; v++)
@@ -657,9 +938,23 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractVertexBoneData(
 			outData[v].AddBoneInfluence(parentBoneID, 1.0f);
 		}
 
-		VANS_LOG("[VansSkinnedMeshLoader] Rigid-bind fixup: mesh " << m
-		         << " (" << mesh->mNumVertices << " vertices) → bone \""
-		         << skeleton.bones[parentBoneID].name << "\" (id=" << parentBoneID << ")");
+		if (importSettings.legacyFixups.nearestBoneRigidBind &&
+			!ShouldRigidBindUnskinnedBoneChildren(importSettings))
+		{
+			VANS_LOG("[VansSkinnedMeshLoader] Legacy nearest-bone rigid-bind: mesh " << m
+			         << " (" << mesh->mNumVertices << " vertices) -> bone \""
+			         << skeleton.bones[parentBoneID].name << "\" (id=" << parentBoneID << ")");
+		}
+		else
+		{
+			if (importSettings.diagnostics)
+			{
+				VANS_LOG("[SkeletalImport] Rigid attachment bind: mesh " << m
+				         << " (" << mesh->mNumVertices << " vertices) -> bone \""
+				         << skeleton.bones[parentBoneID].name << "\" (id=" << parentBoneID
+				         << ", policy=\"" << importSettings.rigidAttachmentPolicy << "\")");
+			}
+		}
 	}
 
 	// Normalize all weights
@@ -670,9 +965,9 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractVertexBoneData(
 	         << totalVertexCount << " vertices");
 }
 
-// ════════════════════════════════════════════════════════════════
-//  ExtractClipFromAssimp
-// ════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
+// ExtractClipFromAssimp
+// ---------------------------------------------------------------------------
 
 void VansGraphics::VansSkinnedMeshLoader::ExtractClipFromAssimp(
 	const aiAnimation* anim,
@@ -721,7 +1016,7 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractClipFromAssimp(
 			BoneKeyframe kf;
 			kf.time = t;
 
-			// ─── Sample position at time t ───
+			// Sample position at time t.
 			if (channel->mNumPositionKeys == 1)
 			{
 				kf.position = ConvertVec3(channel->mPositionKeys[0].mValue);
@@ -749,7 +1044,7 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractClipFromAssimp(
 					kf.position = ConvertVec3(channel->mPositionKeys[channel->mNumPositionKeys - 1].mValue);
 			}
 
-			// ─── Sample rotation at time t ───
+			// Sample rotation at time t.
 			if (channel->mNumRotationKeys == 1)
 			{
 				kf.rotation = ConvertQuat(channel->mRotationKeys[0].mValue);
@@ -779,7 +1074,7 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractClipFromAssimp(
 					kf.rotation = ConvertQuat(channel->mRotationKeys[channel->mNumRotationKeys - 1].mValue);
 			}
 
-			// ─── Sample scale at time t ───
+			// Sample scale at time t.
 			if (channel->mNumScalingKeys == 1)
 			{
 				kf.scale = ConvertVec3(channel->mScalingKeys[0].mValue);
@@ -815,9 +1110,9 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractClipFromAssimp(
 	         << "\" (" << outClip.duration << "s, " << anim->mNumChannels << " channels)");
 }
 
-// ════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 //  Utility functions
-// ════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 
 std::string VansGraphics::VansSkinnedMeshLoader::GetParentDirectory(const std::string& filePath)
 {
@@ -836,14 +1131,14 @@ bool VansGraphics::VansSkinnedMeshLoader::FileExists(const std::string& filePath
 	return std::filesystem::exists(filePath);
 }
 
-// ═══════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 //  ExtractExternAnimationClips
 //
 //  Opens an external FBX file and extracts ONLY animation clips,
 //  mapping bone channels to the origin model's skeleton by name.
-//  No bone weights are read — those come from the origin model.
+//  No bone weights are read; those come from the origin model.
 //  Clips are cached as .vclip files alongside the external FBX.
-// ═══════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 
 bool VansGraphics::VansSkinnedMeshLoader::ExtractExternAnimationClips(
 	const std::string& externFbxPath,
@@ -870,7 +1165,7 @@ bool VansGraphics::VansSkinnedMeshLoader::ExtractExternAnimationClips(
 		return false;
 	}
 
-	// Open the external FBX — only need minimal processing (no tangents, no normals)
+	// Open the external FBX; only minimal processing is needed (no tangents or normals).
 	Assimp::Importer importer;
 	const aiScene* scene = importer.ReadFile(externFbxPath,
 		aiProcess_Triangulate | aiProcess_FlipUVs);
@@ -878,7 +1173,7 @@ bool VansGraphics::VansSkinnedMeshLoader::ExtractExternAnimationClips(
 	if (!scene)
 	{
 		VANS_LOG_ERROR("[VansSkinnedMeshLoader] Failed to load extern animation FBX: "
-		               << externFbxPath << " — " << importer.GetErrorString());
+		               << externFbxPath << ": " << importer.GetErrorString());
 		return false;
 	}
 

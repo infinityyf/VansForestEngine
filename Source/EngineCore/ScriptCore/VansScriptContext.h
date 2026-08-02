@@ -1,4 +1,7 @@
 #pragma once
+#include "../AudioCore/VansAudioOcclusion.h"
+#include "../AudioCore/VansAudioReverbPreset.h"
+#include "../AudioCore/VansAudioSourceBinding.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -129,6 +132,7 @@ class VansScriptRenderComponent : public VansScriptComponent
 {
 public:
 	VansGraphics::VansRenderNode* m_RenderNode = nullptr;
+	std::vector<VansGraphics::VansRenderNode*> m_RenderNodes;
 protected:
 	void OnEnable() override;
 	void OnDisable() override;
@@ -257,12 +261,37 @@ class VansScriptAudioComponent : public VansScriptComponent
 {
 public:
 	VansScriptAudioComponent() { m_ComponentName = "Audio"; }
-	VansEngine::VansAudioNode* m_AudioNode = nullptr;
-	VansEngine::VansAudioManager* m_AudioManager = nullptr;
+	VansEngine::VansAudioSourceBinding m_Source;
+	VansEngine::AudioOcclusionSettings m_OcclusionSettings;
+	VansEngine::AudioOcclusionState m_OcclusionState;
+	VansEngine::AudioConeSettings m_ConeSettings;
+	bool m_DopplerEnabled = false;
+	bool m_HasLastAudioPosition = false;
+	float m_LastAudioPositionX = 0.0f;
+	float m_LastAudioPositionY = 0.0f;
+	float m_LastAudioPositionZ = 0.0f;
 	bool SwitchSource(const std::string& name);
 protected:
 	void OnEnable() override;
 	void OnDisable() override;
+};
+
+class VansScriptAudioReverbZoneComponent : public VansScriptComponent
+{
+public:
+	VansScriptAudioReverbZoneComponent() { m_ComponentName = "AudioReverbZone"; }
+	std::string m_Shape = "sphere";
+	std::string m_Preset = "generic";
+	std::string m_PresetAssetGuid;
+	VansEngine::AudioReverbPresetParameters m_PresetParameters;
+	bool m_OverridePresetParameters = false;
+	float m_Radius = 8.0f;
+	float m_HalfExtentX = 4.0f;
+	float m_HalfExtentY = 4.0f;
+	float m_HalfExtentZ = 4.0f;
+	float m_FadeDistance = 2.0f;
+	float m_WetGain = 0.6f;
+	int m_Priority = 0;
 };
 
 class VansScriptVideoComponent : public VansScriptComponent

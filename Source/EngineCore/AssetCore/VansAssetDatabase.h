@@ -25,7 +25,10 @@ enum class VansAssetType
     AnimatorController,
     ClothProfile,
     PostProcessProfile,
-    RagdollProfile
+    RagdollProfile,
+    AudioReverbPreset,
+    AudioBusSnapshot,
+    AudioDuckingRules
 };
 
 enum class VansAssetState

@@ -101,6 +101,7 @@ namespace Vans
 		ValidateRequiredPath(diagnostics, "/assetDatabase/importedArtifactRoot", config.importedArtifactRoot);
 		ValidateRequiredPath(diagnostics, "/renderSettings", config.renderSettings);
 		ValidateRequiredPath(diagnostics, "/physicsSettings", config.physicsSettings);
+		ValidateRequiredPath(diagnostics, "/audioSettings", config.audioSettings);
 		ValidateRequiredPath(diagnostics, "/collisionLayerSettings", config.collisionLayerSettings);
 
 		if (config.metaExtension.empty() || config.metaExtension.front() != '.')
@@ -190,4 +191,3 @@ namespace Vans
 		return false;
 	}
 }
-

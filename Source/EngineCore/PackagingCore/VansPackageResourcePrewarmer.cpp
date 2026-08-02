@@ -102,8 +102,7 @@ namespace Vans
 				request.needTangent,
 				request.loadMultiMesh,
 				request.scaleFactor,
-				request.rebuildIdentityBoneOffsetsFromHierarchy,
-				request.remapWeaponAttachmentBonesToHands,
+				request.skeletalImport,
 				cachePath.string(),
 				error);
 

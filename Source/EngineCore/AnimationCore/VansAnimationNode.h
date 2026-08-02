@@ -3,6 +3,7 @@
 #include "../VansNode.h"
 #include "VansAnimationTypes.h"
 #include "VansAnimationController.h"
+#include "Retargeting/VansRetargetProcessor.h"
 #include "../ScriptCore/VansTransform.h"
 #include "../RenderCore/VulkanCore/VansVKBuffer.h"
 
@@ -12,56 +13,51 @@
 #endif
 #include "vulkan/vulkan.h"
 
-#include <string>
-#include <vector>
-#include <unordered_map>
 #include <memory>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace VansGraphics
 {
 	class VansRenderNode;
 
-	// ────────────────────────────────────────────────────────────────
-	//  VansAnimationNode
-	//
-	//  场景中的动画实体（存储在 VansScene::m_AnimationNodes[]）。
-	//  每个 Node 关联一组 VansRenderNode（蒙皮网格），持有骨骼数据，
-	//  通过绑定的 VansAnimationController 驱动状态机和混合逻辑，
-	//  在 CPU 侧完成骨骼矩阵计算后上传到 GPU。
-	//
-	//  Controller 管理: clips / states / transitions / parameters / playback
-	//  Node 管理: skeleton / GPU 资源 / bone overrides / root motion 应用
-	// ────────────────────────────────────────────────────────────────
-
+	// Scene animation entity stored in VansScene::m_AnimationNodes.
+	// A node owns skeleton/GPU state, binds one or more VansRenderNode meshes,
+	// and delegates clip/state-machine playback to VansAnimationController.
 	class VansAnimationNode : public VansNode
 	{
 	public:
-		// ─── 构造 & 析构 ───
+		// Construction
 		VansAnimationNode(const std::string& name);
 		~VansAnimationNode();
 
-		// ─── 关联 RenderNode ───
+		// Render node binding
 		void SetRenderNode(VansRenderNode* renderNode);
 		void SetRenderNodes(const std::vector<VansRenderNode*>& nodes);
 		VansRenderNode* GetRenderNode() const { return m_RenderNodes.empty() ? nullptr : m_RenderNodes[0]; }
 		const std::vector<VansRenderNode*>& GetRenderNodes() const { return m_RenderNodes; }
 
-		// ─── 骨骼 ───
+		// Skeleton
 		void SetSkeleton(const Skeleton& skeleton);
 		const Skeleton& GetSkeleton() const { return m_Skeleton; }
 
-		// ─── Controller 绑定 ───
+		// Controller binding
 		void SetController(VansAnimationController* controller);
 		VansAnimationController* GetController() const { return m_Controller; }
+		void ConfigureRetargetSource(const Skeleton& sourceSkeleton,
+		                             std::unique_ptr<VansAnimationController> sourceController,
+		                             const VansRetargetRuntimeDesc& desc);
+		bool IsRetargetEnabled() const { return m_RetargetEnabled; }
 
-		// ─── 播放控制（委托给 Controller）───
+		// Playback control, delegated to the active controller.
 		void Play();
 		void Play(const std::string& stateName);
 		void Pause();
 		void Resume();
 		void Stop();
 
-		// ─── 状态查询（委托给 Controller）───
+		// State queries
 		AnimationState GetState() const;
 		float GetCurrentPlayTime() const;
 		float GetDuration() const;
@@ -69,10 +65,10 @@ namespace VansGraphics
 		std::string GetCurrentStateName() const;
 		float GetSpeed() const;
 
-		// ─── Events ───
+		// Events
 		void AddEvent(const std::string& clipName, AnimationEvent event);
 
-		// ─── Root Motion ───
+		// Root motion
 		void EnableRootMotion(bool enable);
 		bool IsRootMotionEnabled() const;
 		void SetTransformID(uint32_t transformID);
@@ -81,14 +77,14 @@ namespace VansGraphics
 		glm::vec3 GetRootMotionDelta() const;
 		glm::quat GetRootRotationDelta() const;
 
-		// ─── Bone Overrides (IK / Procedural) ───
+		// Bone overrides for IK/procedural animation.
 		void SetBoneLocalTransform(const std::string& boneName, const glm::mat4& transform);
 		void ClearBoneOverride(const std::string& boneName);
 
-		// ─── 每帧更新（VansScene 调用）───
+		// Per-frame update, called by VansScene.
 		void Update(float deltaTime);
 
-		// ─── GPU 资源管理 ───
+		// GPU resources
 		bool InitGPUResources(VkDevice device, uint32_t framesInFlight);
 		void DestroyGPUResources();
 		void UploadBoneMatrices(uint32_t frameIndex);
@@ -99,54 +95,64 @@ namespace VansGraphics
 		VansVKBuffer& GetBoneWeightBuffer(uint32_t submeshIndex) { return m_PerSubmeshBoneWeightBuffers[submeshIndex]; }
 		uint32_t GetSubmeshBufferCount() const { return static_cast<uint32_t>(m_PerSubmeshBoneIDBuffers.size()); }
 
-		// ─── 访问器 ───
+		// Accessors
 		std::string GetName() const { return m_Name; }
 		const BoneMatricesSSBO& GetBoneSSBO() const;
 
-		// ─── .vanimator 文件路径（编辑器用）───
+		// .vanimator file path for editor/runtime diagnostics.
 		void SetAnimatorFilePath(const std::string& path) { m_AnimatorFilePath = path; }
 		std::string GetAnimatorFilePath() const { return m_AnimatorFilePath; }
 
 	private:
 		std::string m_Name;
 
-		// ─── 关联 render node(s) ───
+		// Bound render node(s)
 		std::vector<VansRenderNode*> m_RenderNodes;
 
-		// ─── 骨骼 ───
+		// Target skeleton driven by this node.
 		Skeleton m_Skeleton;
 
-		// ─── 动画控制器（外部持有，Node 不拥有生命周期）───
+		// Scene-owned target controller plus optional source-proxy controller.
 		VansAnimationController* m_Controller = nullptr;
+		std::unique_ptr<VansAnimationController> m_SourceController;
+		Skeleton m_SourceSkeleton;
+		VansRetargetRuntimeDesc m_RetargetDesc;
+		VansRetargetProcessor m_RetargetProcessor;
+		bool m_RetargetEnabled = false;
+		bool m_RetargetPoseAuditLogged = false;
+		int m_LastRetargetSourceMMSwitchCount = -1;
+		std::string m_LastRetargetSourceMMActiveClip;
+		std::string m_LastRetargetSourceMMSelectedClip;
 
-		// ─── .vanimator 文件路径 ───
+		// .vanimator file path
 		std::string m_AnimatorFilePath;
 
-		// ─── Root Motion 应用 ───
+		// Root motion application
 		uint32_t m_TransformID           = 0;
 		bool     m_HasTransformID        = false;
 
-		// ─── Bone Overrides ───
+		// Bone overrides
 		std::unordered_map<std::string, glm::mat4> m_BoneOverrides;
 
-		// ─── Events ───
+		// Events
 		std::unordered_map<std::string, std::vector<AnimationEvent>> m_Events;
 		float m_LastEventTime = 0.0f;
 
-		// ─── CPU 侧骨骼矩阵（无 Controller 时使用的 fallback）───
+		// CPU-side fallback bone matrix storage used when no controller exists.
 		BoneMatricesSSBO m_BoneMatricesSSBO;
 
-		// ─── GPU Buffers ───
+		// GPU buffers
 		VkDevice m_Device = VK_NULL_HANDLE;
 		std::vector<VansVKBuffer> m_BoneBuffers;
 		uint32_t m_FramesInFlight = 0;
 		std::vector<VansVKBuffer> m_PerSubmeshBoneIDBuffers;
 		std::vector<VansVKBuffer> m_PerSubmeshBoneWeightBuffers;
 
-		// ─── 内部方法 ───
+		// Internal helpers
 		void ApplyBoneOverrides(std::vector<glm::mat4>& localTransforms);
 		void ApplyRootMotionToTransform(const glm::vec3& deltaPos, const glm::quat& deltaRot);
 		void FireEvents();
+		void SyncRetargetParameters();
 	};
 
 }  // namespace VansGraphics

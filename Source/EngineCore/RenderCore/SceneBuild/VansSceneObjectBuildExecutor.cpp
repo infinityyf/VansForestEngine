@@ -114,12 +114,16 @@ void VansGraphics::VansScene::LoadSceneObjects(
 				renderConfig.transform = objectConfig.transform;
 
 			VansRenderNode* rn = VansSceneRenderNodeBuilder::LoadSingleRenderNode(*this, device, renderConfig);
+			std::vector<VansRenderNode*> renderNodes;
 
 			if (!rn)
 			{
 				auto groupIt = m_MultiMeshGroups.find(renderConfig.name);
 				if (groupIt != m_MultiMeshGroups.end() && !groupIt->second.childNodes.empty())
+				{
 					rn = groupIt->second.childNodes[0];
+					renderNodes = groupIt->second.childNodes;
+				}
 			}
 
 			if (rn)
@@ -130,9 +134,15 @@ void VansGraphics::VansScene::LoadSceneObjects(
 				auto* rc = new VansScriptRenderComponent();
 				rc->m_ComponentName = "render";
 				rc->m_RenderNode = rn;
+				if (renderNodes.empty())
+					renderNodes.push_back(rn);
+				rc->m_RenderNodes = std::move(renderNodes);
 
-				if (!objectConfig.renderEnabled && rc->m_RenderNode)
-					rc->m_RenderNode->SetEnabled(false);
+				if (!objectConfig.renderEnabled)
+				{
+					for (auto* renderNode : rc->m_RenderNodes)
+						if (renderNode) renderNode->SetEnabled(false);
+				}
 				rc->m_Enabled = objectConfig.renderEnabled;
 
 				obj->AddComponent(rc);
@@ -178,6 +188,26 @@ void VansGraphics::VansScene::LoadSceneObjects(
 			*obj,
 			objectConfig.cameraMediaComponents,
 			ensureObjectTransform);
+
+		if (objectConfig.audioReverbZone)
+		{
+			ensureObjectTransform();
+			auto* reverbZone = new VansScriptAudioReverbZoneComponent();
+			reverbZone->m_ComponentName = objectConfig.audioReverbZone->componentType;
+			reverbZone->m_Shape = objectConfig.audioReverbZone->shape;
+			reverbZone->m_Preset = objectConfig.audioReverbZone->preset;
+			reverbZone->m_PresetAssetGuid = objectConfig.audioReverbZone->presetAssetGuid;
+			reverbZone->m_PresetParameters = objectConfig.audioReverbZone->presetParameters;
+			reverbZone->m_OverridePresetParameters = objectConfig.audioReverbZone->overridePresetParameters;
+			reverbZone->m_Radius = objectConfig.audioReverbZone->radius;
+			reverbZone->m_HalfExtentX = objectConfig.audioReverbZone->halfExtents[0];
+			reverbZone->m_HalfExtentY = objectConfig.audioReverbZone->halfExtents[1];
+			reverbZone->m_HalfExtentZ = objectConfig.audioReverbZone->halfExtents[2];
+			reverbZone->m_FadeDistance = objectConfig.audioReverbZone->fadeDistance;
+			reverbZone->m_WetGain = objectConfig.audioReverbZone->wetGain;
+			reverbZone->m_Priority = objectConfig.audioReverbZone->priority;
+			obj->AddComponent(reverbZone);
+		}
 
 		if (objectConfig.animation)
 		{

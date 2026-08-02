@@ -17,9 +17,9 @@
 
 using namespace VansGraphics;
 
-// ════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 //  Construction & Destruction
-// ════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 
 VansAnimationController::VansAnimationController()
 {
@@ -133,9 +133,9 @@ void VansAnimationController::SetFootPlacementRuntimeState(const FootPlacementRu
 	m_FootPlacementState = state;
 }
 
-// ════════════════════════════════════════════════════════════════
-//  参数管理
-// ════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
+// Parameter management.
+// ---------------------------------------------------------------------------
 
 void VansAnimationController::AddParameter(const std::string& name, AnimatorParamType type)
 {
@@ -279,9 +279,9 @@ void VansAnimationController::FeedExternalBoneWorldTransforms(
 	BuildFinalMatrices(modelSpaceTransforms, skeleton);
 }
 
-// ════════════════════════════════════════════════════════════════
-//  State 管理
-// ════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
+// State management.
+// ---------------------------------------------------------------------------
 
 void VansAnimationController::AddState(const AnimatorState& state)
 {
@@ -319,9 +319,9 @@ void VansAnimationController::SetDefaultState(const std::string& stateName)
 	m_DefaultStateName = stateName;
 }
 
-// ════════════════════════════════════════════════════════════════
-//  Transition 管理
-// ════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
+// Transition management.
+// ---------------------------------------------------------------------------
 
 void VansAnimationController::AddTransition(const AnimatorTransition& transition)
 {
@@ -344,9 +344,9 @@ const std::vector<AnimatorTransition>& VansAnimationController::GetTransitions()
 	return m_Transitions;
 }
 
-// ════════════════════════════════════════════════════════════════
-//  Clip 管理
-// ════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
+// Clip management.
+// ---------------------------------------------------------------------------
 
 void VansAnimationController::AddClip(const std::string& name, VansAnimationClip&& clip)
 {
@@ -407,9 +407,9 @@ void VansAnimationController::BindStateClips()
 	}
 }
 
-// ════════════════════════════════════════════════════════════════
-//  播放控制
-// ════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
+// Playback control.
+// ---------------------------------------------------------------------------
 
 void VansAnimationController::Play()
 {
@@ -482,9 +482,9 @@ float VansAnimationController::GetSpeed() const
 	return m_GlobalSpeed;
 }
 
-// ════════════════════════════════════════════════════════════════
-//  状态查询
-// ════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
+// State query.
+// ---------------------------------------------------------------------------
 
 std::string VansAnimationController::GetCurrentStateName() const
 {
@@ -532,9 +532,9 @@ float VansAnimationController::GetNormalizedTime() const
 	return GetCurrentPlayTime() / dur;
 }
 
-// ════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 //  Root Motion
-// ════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
 
 void VansAnimationController::EnableRootMotion(bool enable)
 {
@@ -562,9 +562,9 @@ void VansAnimationController::SetBoneOverrides(const std::unordered_map<std::str
 	m_BoneOverrides = overrides;
 }
 
-// ════════════════════════════════════════════════════════════════
-//  核心更新（每帧调用）
-// ════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
+// Core per-frame update.
+// ---------------------------------------------------------------------------
 
 void VansAnimationController::Update(float deltaTime, const Skeleton& skeleton)
 {
@@ -575,15 +575,15 @@ void VansAnimationController::Update(float deltaTime, const Skeleton& skeleton)
 	if (boneCount == 0)
 		return;
 
-	// ════════════════════════════════════════════════════════════
-	//  AnimGraph 求值路径
-	// ════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
+	// AnimGraph evaluation path.
+// ---------------------------------------------------------------------------
 	if (m_Graph)
 	{
-		// 推进节点内部时间（乘以 GlobalSpeed，使速度滑条生效）
+		// Advance node-local time, scaled by GlobalSpeed.
 		m_Graph->AdvanceTime(deltaTime * m_GlobalSpeed);
 
-		// 构建求值上下文
+		// Build evaluation context.
 		AnimGraphContext ctx;
 		ctx.deltaTime  = deltaTime;
 		ctx.skeleton   = &skeleton;
@@ -592,14 +592,14 @@ void VansAnimationController::Update(float deltaTime, const Skeleton& skeleton)
 		ctx.motionMatching = m_MotionMatching.get();
 		ctx.ownerWorldTransform = m_OwnerWorldTransform;
 
-		// pull 求值: Output → 上游节点递归采样
+		// Pull the Output node, recursively sampling upstream graph nodes.
 		AnimGraphPose pose = m_Graph->Evaluate(ctx);
 		if (!pose.valid || pose.localTransforms.size() != boneCount)
 			return;
 
 		std::vector<glm::mat4> localTransforms = std::move(pose.localTransforms);
 
-		// 骨骼覆盖 / Root Motion / 层级 / 最终矩阵 与 v1 共用
+		// Bone overrides, root motion, layers, and final matrices share the v1 path.
 		ApplyBoneOverrides(localTransforms, skeleton);
 
 		if (m_RootBoneIndex < 0)
@@ -682,9 +682,9 @@ void VansAnimationController::Update(float deltaTime, const Skeleton& skeleton)
 	}
 }
 
-// ════════════════════════════════════════════════════════════════
-//  内部方法: AdvanceStateTime
-// ════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
+// Internal method: AdvanceStateTime
+// ---------------------------------------------------------------------------
 
 void VansAnimationController::AdvanceStateTime(AnimatorState& state, float dt)
 {
@@ -715,13 +715,13 @@ void VansAnimationController::AdvanceStateTime(AnimatorState& state, float dt)
 	}
 }
 
-// ════════════════════════════════════════════════════════════════
-//  内部方法: EvaluateTransitions
-// ════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
+// Internal method: EvaluateTransitions
+// ---------------------------------------------------------------------------
 
 void VansAnimationController::EvaluateTransitions()
 {
-	// 正在混合中时，只有 Any State ("*") 过渡可以打断
+	// During blending, only Any State ('*') transitions may interrupt.
 	bool currentlyBlending = (m_BlendState == ControllerBlendState::Blending);
 
 	for (const auto& transition : m_Transitions)
@@ -732,19 +732,19 @@ void VansAnimationController::EvaluateTransitions()
 		if (!isAnyState && !isFromCurrent)
 			continue;
 
-		// Any State 过渡的目标不能是当前状态（防止无限循环）
+		// An Any State target cannot be the current state; prevents infinite loops.
 		if (isAnyState && transition.toState == m_CurrentStateName)
 			continue;
 
-		// 非 Any State 过渡不打断正在进行的混合
+		// Non-Any-State transitions do not interrupt an active blend.
 		if (currentlyBlending && !isAnyState)
 			continue;
 
-		// 检查目标状态是否存在
+		// Check whether the target state exists.
 		if (m_States.find(transition.toState) == m_States.end())
 			continue;
 
-		// 检查 exitTime 条件
+		// Check exitTime conditions.
 		if (transition.hasExitTime)
 		{
 			AnimatorState* fromState = GetState(isAnyState ? m_CurrentStateName : transition.fromState);
@@ -756,11 +756,11 @@ void VansAnimationController::EvaluateTransitions()
 			}
 		}
 
-		// 检查参数条件
+		// Check parameter conditions.
 		if (!CheckConditions(transition))
 			continue;
 
-		// 满足所有条件，触发过渡
+		// All conditions passed; trigger the transition.
 		StartTransition(transition);
 		return;
 	}
@@ -814,7 +814,7 @@ bool VansAnimationController::CompareValue(T a, CompareOp op, T b)
 	return false;
 }
 
-// 显式实例化模板
+// Explicit template instantiations.
 template bool VansAnimationController::CompareValue<float>(float, CompareOp, float);
 template bool VansAnimationController::CompareValue<int>(int, CompareOp, int);
 
@@ -837,7 +837,7 @@ void VansAnimationController::StartTransition(const AnimatorTransition& transiti
 	m_BlendState       = ControllerBlendState::Blending;
 	m_PlaybackState    = AnimationState::Blending;
 
-	// 重置目标状态的播放时间
+	// Reset the target state's playback time.
 	AnimatorState* targetState = GetState(transition.toState);
 	if (targetState)
 		targetState->currentTime = targetState->startTime;
@@ -854,9 +854,9 @@ float VansAnimationController::GetStateNormalizedTime(const AnimatorState& state
 	return (state.currentTime - state.startTime) / range;
 }
 
-// ════════════════════════════════════════════════════════════════
-//  内部方法: ComputeBoneTransforms
-// ════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
+// Internal method: ComputeBoneTransforms
+// ---------------------------------------------------------------------------
 
 void VansAnimationController::ComputeBoneTransforms(const AnimatorState& state,
                                                      const Skeleton& skeleton,
@@ -887,9 +887,9 @@ void VansAnimationController::ComputeBoneTransforms(const AnimatorState& state,
 	}
 }
 
-// ════════════════════════════════════════════════════════════════
-//  内部方法: BlendTransforms
-// ════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
+// Internal method: BlendTransforms
+// ---------------------------------------------------------------------------
 
 void VansAnimationController::BlendTransforms(const std::vector<glm::mat4>& a,
                                                const std::vector<glm::mat4>& b,
@@ -922,9 +922,9 @@ void VansAnimationController::BlendTransforms(const std::vector<glm::mat4>& a,
 	}
 }
 
-// ════════════════════════════════════════════════════════════════
-//  内部方法: ApplyBoneOverrides
-// ════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
+// Internal method: ApplyBoneOverrides
+// ---------------------------------------------------------------------------
 
 void VansAnimationController::ApplyBoneOverrides(std::vector<glm::mat4>& localTransforms,
                                                   const Skeleton& skeleton)
@@ -944,9 +944,9 @@ void VansAnimationController::ApplyBoneOverrides(std::vector<glm::mat4>& localTr
 	}
 }
 
-// ════════════════════════════════════════════════════════════════
-//  内部方法: ExtractRootMotion
-// ════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
+// Internal method: ExtractRootMotion
+// ---------------------------------------------------------------------------
 
 void VansAnimationController::ApplyFootPlacement(float deltaTime,
                                                  const Skeleton& skeleton,
@@ -1048,7 +1048,7 @@ void VansAnimationController::ExtractRootMotion(std::vector<glm::mat4>& localTra
 		m_LastRootMotionDelta   = deltaPos;
 		m_LastRootRotationDelta = deltaRot;
 
-		// 诊断: 前 20 帧输出 delta
+		// Diagnostics: print delta for the first 20 frames.
 		static int s_DbgFrameCount = 0;
 		if (s_DbgFrameCount < 20)
 		{
@@ -1059,7 +1059,7 @@ void VansAnimationController::ExtractRootMotion(std::vector<glm::mat4>& localTra
 		}
 	}
 
-	// 将 root bone 的水平位移归零，保留垂直分量
+	// 将 root bone 的水平位移归零，保留垂直分量。
 	glm::vec3 skeletonPos = glm::vec3(0.0f, rootPos.y, 0.0f);
 	glm::mat4 T = glm::translate(glm::mat4(1.0f), skeletonPos);
 	glm::mat4 R = glm::toMat4(rootRot);
@@ -1067,17 +1067,18 @@ void VansAnimationController::ExtractRootMotion(std::vector<glm::mat4>& localTra
 	localTransforms[m_RootBoneIndex] = T * R * S;
 }
 
-// ════════════════════════════════════════════════════════════════
-//  内部方法: UpdateHierarchy
-// ════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
+// Internal method: UpdateHierarchy
+// ---------------------------------------------------------------------------
 
 void VansAnimationController::UpdateHierarchy(std::vector<glm::mat4>& localTransforms,
                                                const Skeleton& skeleton)
 {
 	uint32_t boneCount = static_cast<uint32_t>(skeleton.bones.size());
 
-	// 按拓扑顺序遍历（父骨骼保证在子骨骼之前），解决 parentIndex > childIndex 时
-	// 单遍遍历结果错误的问题
+	// Iterate in topological order so parents are processed before children.
+	// Iterate in topological order to avoid incorrect results when parent indices
+	// are greater than child indices.
 	if (!skeleton.topologicalOrder.empty())
 	{
 		for (int b : skeleton.topologicalOrder)
@@ -1089,7 +1090,7 @@ void VansAnimationController::UpdateHierarchy(std::vector<glm::mat4>& localTrans
 	}
 	else
 	{
-		// 回退：若无拓扑顺序则按索引遍历（仅当 parentIndex < childIndex 时正确）
+		// Fallback: index order only works when parentIndex < childIndex.
 		for (uint32_t b = 0; b < boneCount; b++)
 		{
 			const BoneInfo& bone = skeleton.bones[b];
@@ -1099,14 +1100,14 @@ void VansAnimationController::UpdateHierarchy(std::vector<glm::mat4>& localTrans
 	}
 }
 
-// ════════════════════════════════════════════════════════════════
-//  内部方法: BuildFinalMatrices
-// ════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
+// Internal method: BuildFinalMatrices
+// ---------------------------------------------------------------------------
 
 void VansAnimationController::BuildFinalMatrices(const std::vector<glm::mat4>& globalTransforms,
                                                    const Skeleton& skeleton)
 {
-	// 缓存模型空间全局骨骼矩阵，供骨骼附着点系统读取。
+	// Cache model-space global bone matrices for the bone attachment system.
 	m_CachedGlobalTransforms = globalTransforms;
 
 	uint32_t boneCount = static_cast<uint32_t>(skeleton.bones.size());
@@ -1125,9 +1126,9 @@ void VansAnimationController::BuildFinalMatrices(const std::vector<glm::mat4>& g
 		m_BoneMatricesSSBO.boneMatrices[i] = glm::mat4(1.0f);
 }
 
-// ════════════════════════════════════════════════════════════════
-//  内部方法: InterpolateKeyframes
-// ════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
+// Internal method: InterpolateKeyframes
+// ---------------------------------------------------------------------------
 
 void VansAnimationController::InterpolateKeyframes(const std::vector<BoneKeyframe>& keyframes,
                                                     float time,
@@ -1193,7 +1194,7 @@ int VansAnimationController::DetectRootBoneIndex(const Skeleton& skeleton) const
 	auto rootIt = skeleton.boneNameToIndex.find("root");
 	if (rootIt != skeleton.boneNameToIndex.end())
 		return rootIt->second;
-	// 找到骨架根节点（parentIndex == -1）
+	// Find the skeleton root node (parentIndex == -1).
 	int skeletonRoot = -1;
 	for (uint32_t i = 0; i < static_cast<uint32_t>(skeleton.bones.size()); i++)
 	{
@@ -1206,17 +1207,17 @@ int VansAnimationController::DetectRootBoneIndex(const Skeleton& skeleton) const
 	if (skeletonRoot < 0)
 		return -1;
 
-	// 获取当前片段，判断哪些骨骼有动画关键帧
+	// Inspect the current clip to find bones that have animation keyframes.
 	const AnimatorState* current = GetState(m_CurrentStateName);
 	const VansAnimationClip* clip = current ? current->clip : nullptr;
 
-	// 如果骨架根自身就有关键帧位移数据，直接使用
+	// If the skeleton root itself has keyed translation data, use it directly.
 	if (clip && skeletonRoot < static_cast<int>(clip->boneKeyframes.size())
 	    && !clip->boneKeyframes[skeletonRoot].empty())
 		return skeletonRoot;
 
-	// 否则 BFS 查找第一个带关键帧的子孙骨骼作为 root motion 源
-	// （典型情况：场景根 "Adam_Reference" 无动画，运动数据在 "Bip01"）
+	// Otherwise, BFS to find the first descendant bone with keyed translation as the root-motion source.
+	// Typical case: scene root has no animation, while motion data lives on a child root bone.
 	std::queue<int> bfsQueue;
 	for (int child : skeleton.bones[skeletonRoot].children)
 		bfsQueue.push(child);
@@ -1234,6 +1235,6 @@ int VansAnimationController::DetectRootBoneIndex(const Skeleton& skeleton) const
 			bfsQueue.push(child);
 	}
 
-	// 回退：没有找到带关键帧的骨骼，使用骨架根
+	// Fallback: no keyed bone was found, so use the skeleton root.
 	return skeletonRoot;
 }

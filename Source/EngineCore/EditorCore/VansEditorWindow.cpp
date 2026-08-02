@@ -25,6 +25,7 @@
 #include "Windows/VansShadowDebuggerWindow.h"
 #include "Windows/VansPcgWindow.h"
 #include "Windows/VansHiZCullWindow.h"
+#include "Windows/VansAudioDebugWindow.h"
 
 #include "../Util/VansProfiler.h"
 #include "../Util/VansJobSystem.h"
@@ -372,6 +373,7 @@ bool VansGraphics::VansEditorWindow::m_ShadowDebuggerWindowOpen = false;
 bool VansGraphics::VansEditorWindow::m_PcgWindowOpen = false;
 bool VansGraphics::VansEditorWindow::m_HiZCullWindowOpen = false;
 bool VansGraphics::VansEditorWindow::m_ProjectSettingsWindowOpen = false;
+bool VansGraphics::VansEditorWindow::m_AudioDebugWindowOpen = false;
 
 bool VansGraphics::VansEditorWindow::m_WireframeMode = false;
 bool VansGraphics::VansEditorWindow::m_VehicleDebugGizmos = false;
@@ -421,6 +423,7 @@ VansGraphics::VansPostProcessWindow* VansGraphics::VansEditorWindow::m_PostProce
 VansGraphics::VansShadowDebuggerWindow* VansGraphics::VansEditorWindow::m_ShadowDebuggerWindow;
 VansGraphics::VansPcgWindow* VansGraphics::VansEditorWindow::m_PcgWindow;
 VansGraphics::VansHiZCullWindow* VansGraphics::VansEditorWindow::m_HiZCullWindow;
+VansGraphics::VansAudioDebugWindow* VansGraphics::VansEditorWindow::m_AudioDebugWindow;
 
 // Project selector overlay
 std::unique_ptr<Vans::VansProjectSelector> VansGraphics::VansEditorWindow::m_ProjectSelector;
@@ -981,6 +984,8 @@ void VansGraphics::VansEditorWindow::CreateWindowComponents()
 
     m_HiZCullWindow = AddEditorWindowComponent<VansHiZCullWindow>(m_Windows);
 
+    m_AudioDebugWindow = AddEditorWindowComponent<VansAudioDebugWindow>(m_Windows);
+
 }
 
 // ============================================================================
@@ -1459,6 +1464,7 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& devic
                 ImGui::MenuItem("Profiler", nullptr, &m_ProfilerWindowOpen);
                 ImGui::MenuItem("Project Settings", nullptr, &m_ProjectSettingsWindowOpen);
                 ImGui::MenuItem("UI Editor", nullptr, &m_UIEditorWindowOpen);
+                ImGui::MenuItem("Audio Debug", nullptr, &m_AudioDebugWindowOpen);
                 ImGui::Separator();
                 if (ImGui::BeginMenu("Animation"))
                 {
@@ -1945,6 +1951,8 @@ void VansGraphics::VansEditorWindow::DestroyVansEditorWindow()
     m_PostProcessWindow = nullptr;
     m_ShadowDebuggerWindow = nullptr;
     m_PcgWindow = nullptr;
+    m_HiZCullWindow = nullptr;
+    m_AudioDebugWindow = nullptr;
 
     // Destroy GPU profiler
 #if VANS_PROFILER_ENABLED

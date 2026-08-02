@@ -16,6 +16,8 @@
 #include "../AnimationCore/VansAnimationNode.h"
 #include "../AudioCore/VansAudioManager.h"
 #include "../AudioCore/VansAudioNode.h"
+#include "../AudioCore/Storage/VansAudioBusSnapshotAssetStorage.h"
+#include "../AudioCore/Storage/VansAudioDuckingRulesAssetStorage.h"
 #include "../Configration/VansConfigration.h"
 #include "../EventCore/VansEventBus.h"
 #include "../ParticleCore/Storage/VansParticleAssetStorage.h"
@@ -49,7 +51,9 @@
 #include <cmath>
 #include <filesystem>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
+#include <utility>
 
 extern "C"
 {
@@ -85,6 +89,12 @@ VansGraphics::VansScene* Scene()
 {
 	auto* context = Context();
 	return context ? context->GetScene() : nullptr;
+}
+
+VansEngine::VansAudioManager* AudioManager()
+{
+	auto* scene = Scene();
+	return scene ? scene->GetAudioManager() : nullptr;
 }
 
 std::filesystem::path ResolveScriptPath(const std::string& scriptPath)
@@ -363,7 +373,7 @@ int LuaComponentPlay(lua_State* L)
 	auto* component = CheckComponent(L, 1)->component;
 	if (auto* audio = dynamic_cast<VansScriptAudioComponent*>(component))
 	{
-		if (audio->m_AudioNode) audio->m_AudioNode->Play();
+		audio->m_Source.Play();
 	}
 	else if (auto* video = dynamic_cast<VansScriptVideoComponent*>(component))
 	{
@@ -385,7 +395,7 @@ int LuaComponentPause(lua_State* L)
 	auto* component = CheckComponent(L, 1)->component;
 	if (auto* audio = dynamic_cast<VansScriptAudioComponent*>(component))
 	{
-		if (audio->m_AudioNode) audio->m_AudioNode->Pause();
+		audio->m_Source.Pause();
 	}
 	else if (auto* video = dynamic_cast<VansScriptVideoComponent*>(component))
 	{
@@ -407,7 +417,7 @@ int LuaComponentStop(lua_State* L)
 	auto* component = CheckComponent(L, 1)->component;
 	if (auto* audio = dynamic_cast<VansScriptAudioComponent*>(component))
 	{
-		if (audio->m_AudioNode) audio->m_AudioNode->Stop();
+		audio->m_Source.Stop();
 	}
 	else if (auto* particle = dynamic_cast<VansScriptParticleComponent*>(component))
 	{
@@ -425,7 +435,7 @@ int LuaComponentResume(lua_State* L)
 	auto* component = CheckComponent(L, 1)->component;
 	if (auto* audio = dynamic_cast<VansScriptAudioComponent*>(component))
 	{
-		if (audio->m_AudioNode) audio->m_AudioNode->Resume();
+		audio->m_Source.Resume();
 	}
 	else if (auto* video = dynamic_cast<VansScriptVideoComponent*>(component))
 	{
@@ -513,7 +523,7 @@ int LuaComponentIsPlaying(lua_State* L)
 	auto* component = CheckComponent(L, 1)->component;
 	bool value = false;
 	if (auto* audio = dynamic_cast<VansScriptAudioComponent*>(component))
-		value = audio->m_AudioNode && audio->m_AudioNode->IsPlaying();
+		value = audio->m_Source.IsPlaying();
 	else if (auto* video = dynamic_cast<VansScriptVideoComponent*>(component))
 		value = video->m_VideoTex && video->m_VideoTex->IsPlaying();
 	else if (auto* particle = dynamic_cast<VansScriptParticleComponent*>(component))
@@ -527,7 +537,7 @@ int LuaComponentIsPaused(lua_State* L)
 	auto* component = CheckComponent(L, 1)->component;
 	bool value = false;
 	if (auto* audio = dynamic_cast<VansScriptAudioComponent*>(component))
-		value = audio->m_AudioNode && audio->m_AudioNode->IsPaused();
+		value = audio->m_Source.IsPaused();
 	else if (auto* video = dynamic_cast<VansScriptVideoComponent*>(component))
 		value = video->m_VideoTex && video->m_VideoTex->IsReady() && !video->m_VideoTex->IsPlaying();
 	else if (auto* particle = dynamic_cast<VansScriptParticleComponent*>(component))
@@ -596,7 +606,7 @@ int LuaComponentSetPosition(lua_State* L)
 	}
 	else if (auto* audio = dynamic_cast<VansScriptAudioComponent*>(component))
 	{
-		if (audio->m_AudioNode) audio->m_AudioNode->SetPosition(position.x, position.y, position.z);
+		audio->m_Source.SetPosition(position.x, position.y, position.z);
 	}
 	return 0;
 }
@@ -723,7 +733,7 @@ int LuaComponentGetVolume(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
 	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
-	lua_pushnumber(L, audio && audio->m_AudioNode ? audio->m_AudioNode->GetVolume() : 0.0f);
+	lua_pushnumber(L, audio ? audio->m_Source.GetVolume() : 0.0f);
 	return 1;
 }
 
@@ -731,8 +741,8 @@ int LuaComponentSetVolume(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
 	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
-	if (audio && audio->m_AudioNode)
-		audio->m_AudioNode->SetVolume(static_cast<float>(luaL_checknumber(L, 2)));
+	if (audio)
+		audio->m_Source.SetVolume(static_cast<float>(luaL_checknumber(L, 2)));
 	return 0;
 }
 
@@ -740,7 +750,7 @@ int LuaComponentGetPitch(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
 	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
-	lua_pushnumber(L, audio && audio->m_AudioNode ? audio->m_AudioNode->GetPitch() : 0.0f);
+	lua_pushnumber(L, audio ? audio->m_Source.GetPitch() : 0.0f);
 	return 1;
 }
 
@@ -748,8 +758,8 @@ int LuaComponentSetPitch(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
 	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
-	if (audio && audio->m_AudioNode)
-		audio->m_AudioNode->SetPitch(static_cast<float>(luaL_checknumber(L, 2)));
+	if (audio)
+		audio->m_Source.SetPitch(static_cast<float>(luaL_checknumber(L, 2)));
 	return 0;
 }
 
@@ -757,7 +767,7 @@ int LuaComponentGetLoop(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
 	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
-	lua_pushboolean(L, audio && audio->m_AudioNode && audio->m_AudioNode->GetLoop());
+	lua_pushboolean(L, audio && audio->m_Source.GetLoop());
 	return 1;
 }
 
@@ -765,8 +775,601 @@ int LuaComponentSetLoop(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
 	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
-	if (audio && audio->m_AudioNode)
-		audio->m_AudioNode->SetLoop(lua_toboolean(L, 2) != 0);
+	if (audio)
+		audio->m_Source.SetLoop(lua_toboolean(L, 2) != 0);
+	return 0;
+}
+
+int LuaComponentGetSpatial(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
+	lua_pushboolean(L, audio && audio->m_Source.GetSpatial());
+	return 1;
+}
+
+int LuaComponentSetSpatial(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
+	if (audio)
+		audio->m_Source.SetSpatial(lua_toboolean(L, 2) != 0);
+	return 0;
+}
+
+int LuaComponentGetRefDistance(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
+	lua_pushnumber(L, audio ? audio->m_Source.GetRefDistance() : 0.0f);
+	return 1;
+}
+
+int LuaComponentSetRefDistance(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
+	if (audio)
+		audio->m_Source.SetRefDistance(static_cast<float>(luaL_checknumber(L, 2)));
+	return 0;
+}
+
+int LuaComponentGetMaxDistance(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
+	lua_pushnumber(L, audio ? audio->m_Source.GetMaxDistance() : 0.0f);
+	return 1;
+}
+
+int LuaComponentSetMaxDistance(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
+	if (audio)
+		audio->m_Source.SetMaxDistance(static_cast<float>(luaL_checknumber(L, 2)));
+	return 0;
+}
+
+int LuaComponentGetRolloff(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
+	lua_pushnumber(L, audio ? audio->m_Source.GetRolloff() : 0.0f);
+	return 1;
+}
+
+int LuaComponentSetRolloff(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
+	if (audio)
+		audio->m_Source.SetRolloff(static_cast<float>(luaL_checknumber(L, 2)));
+	return 0;
+}
+
+int LuaComponentGetAttenuationMode(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
+	lua_pushstring(L, audio
+		? VansEngine::AudioAttenuationModeToString(audio->m_Source.GetAttenuationMode())
+		: "");
+	return 1;
+}
+
+int LuaComponentSetAttenuationMode(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
+	if (audio)
+		audio->m_Source.SetAttenuationMode(
+			VansEngine::AudioAttenuationModeFromString(luaL_checkstring(L, 2)));
+	return 0;
+}
+
+int LuaComponentGetReverbSend(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
+	lua_pushnumber(L, audio ? audio->m_Source.GetReverbSend() : 0.0f);
+	return 1;
+}
+
+int LuaComponentSetReverbSend(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
+	if (audio)
+		audio->m_Source.SetReverbSend(static_cast<float>(luaL_checknumber(L, 2)));
+	return 0;
+}
+
+int LuaComponentGetLowpassHighFrequencyGain(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
+	lua_pushnumber(L, audio ? audio->m_Source.GetLowpassHighFrequencyGain() : 1.0f);
+	return 1;
+}
+
+int LuaComponentSetLowpassHighFrequencyGain(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
+	if (audio)
+		audio->m_Source.SetLowpassHighFrequencyGain(static_cast<float>(luaL_checknumber(L, 2)));
+	return 0;
+}
+
+int LuaComponentGetBus(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
+	lua_pushstring(L, audio ? audio->m_Source.GetBusName().c_str() : "");
+	return 1;
+}
+
+int LuaComponentSetBus(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
+	if (audio)
+		audio->m_Source.SetBusName(luaL_checkstring(L, 2));
+	return 0;
+}
+
+void PushLuaAudioBusState(lua_State* L, const VansEngine::AudioBusState& state, float effectiveGain)
+{
+	lua_newtable(L);
+	lua_pushnumber(L, state.gain); lua_setfield(L, -2, "gain");
+	lua_pushnumber(L, state.targetGain); lua_setfield(L, -2, "target_gain");
+	lua_pushnumber(L, effectiveGain); lua_setfield(L, -2, "effective_gain");
+	lua_pushnumber(L, state.lowpassHighFrequencyGain); lua_setfield(L, -2, "lowpass_high_frequency_gain");
+	lua_pushnumber(L, state.lowpassHighFrequencyGain); lua_setfield(L, -2, "lowpassHighFrequencyGain");
+	lua_pushboolean(L, state.muted); lua_setfield(L, -2, "muted");
+	lua_pushboolean(L, state.soloed); lua_setfield(L, -2, "soloed");
+	lua_pushboolean(L, VansEngine::IsAudioBusFading(state)); lua_setfield(L, -2, "fading");
+}
+
+bool ReadLuaOptionalNumberField(lua_State* L, int tableIndex, const char* field, float& value)
+{
+	lua_getfield(L, tableIndex, field);
+	const bool hasValue = lua_isnumber(L, -1) != 0;
+	if (hasValue)
+		value = static_cast<float>(lua_tonumber(L, -1));
+	lua_pop(L, 1);
+	return hasValue;
+}
+
+bool ReadLuaOptionalBoolField(lua_State* L, int tableIndex, const char* field, bool& value)
+{
+	lua_getfield(L, tableIndex, field);
+	const bool hasValue = lua_isboolean(L, -1) != 0;
+	if (hasValue)
+		value = lua_toboolean(L, -1) != 0;
+	lua_pop(L, 1);
+	return hasValue;
+}
+
+std::string ReadLuaOptionalStringField(lua_State* L, int tableIndex, const char* field)
+{
+	lua_getfield(L, tableIndex, field);
+	std::string value;
+	if (lua_isstring(L, -1))
+		value = lua_tostring(L, -1);
+	lua_pop(L, 1);
+	return value;
+}
+
+bool ReadLuaAudioSnapshotEntry(
+	lua_State* L,
+	int keyIndex,
+	int valueIndex,
+	VansEngine::AudioBusSnapshotEntry& entry)
+{
+	keyIndex = lua_absindex(L, keyIndex);
+	valueIndex = lua_absindex(L, valueIndex);
+
+	if (lua_isnumber(L, valueIndex) && lua_type(L, keyIndex) == LUA_TSTRING)
+	{
+		entry.busName = lua_tostring(L, keyIndex);
+		entry.gain = static_cast<float>(lua_tonumber(L, valueIndex));
+		return true;
+	}
+
+	if (!lua_istable(L, valueIndex))
+		return false;
+
+	entry.busName = ReadLuaOptionalStringField(L, valueIndex, "bus");
+	if (entry.busName.empty())
+		entry.busName = ReadLuaOptionalStringField(L, valueIndex, "name");
+	if (entry.busName.empty() && lua_type(L, keyIndex) == LUA_TSTRING)
+		entry.busName = lua_tostring(L, keyIndex);
+	if (entry.busName.empty())
+		return false;
+
+	if (!ReadLuaOptionalNumberField(L, valueIndex, "gain", entry.gain))
+	{
+		lua_rawgeti(L, valueIndex, 1);
+		if (lua_isnumber(L, -1))
+			entry.gain = static_cast<float>(lua_tonumber(L, -1));
+		lua_pop(L, 1);
+	}
+
+	entry.overrideMuted = ReadLuaOptionalBoolField(L, valueIndex, "muted", entry.muted);
+	entry.overrideSoloed = ReadLuaOptionalBoolField(L, valueIndex, "soloed", entry.soloed);
+	entry.overrideLowpassHighFrequencyGain =
+		ReadLuaOptionalNumberField(L, valueIndex, "lowpassHighFrequencyGain", entry.lowpassHighFrequencyGain) ||
+		ReadLuaOptionalNumberField(L, valueIndex, "lowpass_high_frequency_gain", entry.lowpassHighFrequencyGain);
+	return true;
+}
+
+int LuaAudioSetBusGain(lua_State* L)
+{
+	auto* manager = AudioManager();
+	if (manager)
+		manager->SetBusGain(luaL_checkstring(L, 1), static_cast<float>(luaL_checknumber(L, 2)));
+	lua_pushboolean(L, manager != nullptr);
+	return 1;
+}
+
+int LuaAudioSetBusLowpassHighFrequencyGain(lua_State* L)
+{
+	auto* manager = AudioManager();
+	if (manager)
+		manager->SetBusLowpassHighFrequencyGain(
+			luaL_checkstring(L, 1),
+			static_cast<float>(luaL_checknumber(L, 2)));
+	lua_pushboolean(L, manager != nullptr);
+	return 1;
+}
+
+int LuaAudioFadeBusGain(lua_State* L)
+{
+	auto* manager = AudioManager();
+	if (manager)
+	{
+		manager->FadeBusGain(
+			luaL_checkstring(L, 1),
+			static_cast<float>(luaL_checknumber(L, 2)),
+			static_cast<float>(luaL_optnumber(L, 3, 0.25)));
+	}
+	lua_pushboolean(L, manager != nullptr);
+	return 1;
+}
+
+int LuaAudioSetBusMuted(lua_State* L)
+{
+	auto* manager = AudioManager();
+	if (manager)
+		manager->SetBusMuted(luaL_checkstring(L, 1), lua_toboolean(L, 2) != 0);
+	lua_pushboolean(L, manager != nullptr);
+	return 1;
+}
+
+int LuaAudioSetBusSoloed(lua_State* L)
+{
+	auto* manager = AudioManager();
+	if (manager)
+		manager->SetBusSoloed(luaL_checkstring(L, 1), lua_toboolean(L, 2) != 0);
+	lua_pushboolean(L, manager != nullptr);
+	return 1;
+}
+
+int LuaAudioGetBusState(lua_State* L)
+{
+	auto* manager = AudioManager();
+	if (!manager)
+	{
+		lua_pushnil(L);
+		return 1;
+	}
+
+	const std::string busName = luaL_checkstring(L, 1);
+	PushLuaAudioBusState(
+		L,
+		manager->GetBusState(busName),
+		manager->GetEffectiveBusGain(busName));
+	return 1;
+}
+
+int LuaAudioApplySnapshot(lua_State* L)
+{
+	auto* manager = AudioManager();
+	if (!manager)
+	{
+		lua_pushinteger(L, 0);
+		return 1;
+	}
+
+	luaL_checktype(L, 1, LUA_TTABLE);
+	const int snapshotTable = lua_absindex(L, 1);
+	VansEngine::AudioBusSnapshot snapshot;
+	snapshot.fadeSeconds = static_cast<float>(luaL_optnumber(L, 2, snapshot.fadeSeconds));
+	ReadLuaOptionalNumberField(L, snapshotTable, "fadeSeconds", snapshot.fadeSeconds);
+	ReadLuaOptionalNumberField(L, snapshotTable, "fade_seconds", snapshot.fadeSeconds);
+
+	lua_pushnil(L);
+	while (lua_next(L, snapshotTable) != 0)
+	{
+		if (lua_type(L, -2) == LUA_TSTRING)
+		{
+			const std::string key = lua_tostring(L, -2);
+			if (key == "fadeSeconds" || key == "fade_seconds")
+			{
+				lua_pop(L, 1);
+				continue;
+			}
+		}
+
+		VansEngine::AudioBusSnapshotEntry entry;
+		if (ReadLuaAudioSnapshotEntry(L, -2, -1, entry))
+			snapshot.buses.push_back(entry);
+		lua_pop(L, 1);
+	}
+
+	manager->ApplyBusSnapshot(snapshot);
+	lua_pushinteger(L, static_cast<lua_Integer>(snapshot.buses.size()));
+	return 1;
+}
+
+int LuaAudioApplyNamedSnapshot(lua_State* L)
+{
+	auto* manager = AudioManager();
+	const bool applied = manager && manager->ApplyNamedBusSnapshot(luaL_checkstring(L, 1));
+	lua_pushboolean(L, applied);
+	return 1;
+}
+
+std::filesystem::path AudioControlAssetReadPath(const Vans::VansAssetRecord& record)
+{
+	if (!record.authoringPath.empty())
+		return record.authoringPath;
+	if (!record.artifactPath.empty() && record.artifactFormat == Vans::VansAssetArtifactFormat::Source)
+		return record.artifactPath;
+	return record.sourcePath;
+}
+
+std::optional<Vans::VansAssetRecord> FindAudioControlAssetRecord(const std::string& token)
+{
+	auto& projectManager = Vans::VansProjectManager::Get();
+	Vans::VansAssetGuid guid;
+	if (Vans::VansAssetGuid::TryParse(token, guid))
+		return projectManager.FindAssetRecord(guid);
+	return std::nullopt;
+}
+
+int LuaAudioApplySnapshotAsset(lua_State* L)
+{
+	auto* manager = AudioManager();
+	if (!manager)
+	{
+		lua_pushinteger(L, 0);
+		return 1;
+	}
+
+	const std::string token = luaL_checkstring(L, 1);
+	const auto record = FindAudioControlAssetRecord(token);
+	if (!record || record->type != Vans::VansAssetType::AudioBusSnapshot)
+	{
+		VANS_LOG_WARN("[LuaAudio] Audio bus snapshot asset not found: " << token);
+		lua_pushinteger(L, 0);
+		return 1;
+	}
+
+	Vans::VansAudioBusSnapshotAsset asset;
+	std::string error;
+	if (!Vans::VansAudioBusSnapshotAssetStorage::Load(AudioControlAssetReadPath(*record), asset, error))
+	{
+		VANS_LOG_WARN("[LuaAudio] Failed to load audio bus snapshot asset '" << token << "': " << error);
+		lua_pushinteger(L, 0);
+		return 1;
+	}
+
+	if (lua_isnumber(L, 2))
+		asset.snapshot.fadeSeconds = static_cast<float>(lua_tonumber(L, 2));
+
+	manager->ApplyBusSnapshot(asset.snapshot);
+	lua_pushinteger(L, static_cast<lua_Integer>(asset.snapshot.buses.size()));
+	return 1;
+}
+
+bool ReadLuaAudioDuckingRule(lua_State* L, int tableIndex, VansEngine::AudioDuckingRule& rule)
+{
+	tableIndex = lua_absindex(L, tableIndex);
+	rule.triggerBusName = ReadLuaOptionalStringField(L, tableIndex, "trigger");
+	if (rule.triggerBusName.empty())
+		rule.triggerBusName = ReadLuaOptionalStringField(L, tableIndex, "trigger_bus");
+	if (rule.triggerBusName.empty())
+		rule.triggerBusName = ReadLuaOptionalStringField(L, tableIndex, "triggerBus");
+
+	rule.targetBusName = ReadLuaOptionalStringField(L, tableIndex, "target");
+	if (rule.targetBusName.empty())
+		rule.targetBusName = ReadLuaOptionalStringField(L, tableIndex, "target_bus");
+	if (rule.targetBusName.empty())
+		rule.targetBusName = ReadLuaOptionalStringField(L, tableIndex, "targetBus");
+
+	ReadLuaOptionalNumberField(L, tableIndex, "gain", rule.targetGain);
+	ReadLuaOptionalNumberField(L, tableIndex, "target_gain", rule.targetGain);
+	ReadLuaOptionalNumberField(L, tableIndex, "targetGain", rule.targetGain);
+	ReadLuaOptionalNumberField(L, tableIndex, "attack", rule.attackSeconds);
+	ReadLuaOptionalNumberField(L, tableIndex, "attack_seconds", rule.attackSeconds);
+	ReadLuaOptionalNumberField(L, tableIndex, "attackSeconds", rule.attackSeconds);
+	ReadLuaOptionalNumberField(L, tableIndex, "release", rule.releaseSeconds);
+	ReadLuaOptionalNumberField(L, tableIndex, "release_seconds", rule.releaseSeconds);
+	ReadLuaOptionalNumberField(L, tableIndex, "releaseSeconds", rule.releaseSeconds);
+	ReadLuaOptionalBoolField(L, tableIndex, "enabled", rule.enabled);
+	rule.Normalize();
+	return !rule.triggerBusName.empty() && !rule.targetBusName.empty();
+}
+
+int LuaAudioAddDuckingRule(lua_State* L)
+{
+	auto* manager = AudioManager();
+	if (!manager)
+	{
+		lua_pushboolean(L, false);
+		return 1;
+	}
+
+	VansEngine::AudioDuckingRule rule;
+	if (lua_istable(L, 1))
+	{
+		if (!ReadLuaAudioDuckingRule(L, 1, rule))
+		{
+			lua_pushboolean(L, false);
+			return 1;
+		}
+	}
+	else
+	{
+		rule.triggerBusName = luaL_checkstring(L, 1);
+		rule.targetBusName = luaL_checkstring(L, 2);
+		rule.targetGain = static_cast<float>(luaL_optnumber(L, 3, rule.targetGain));
+		rule.attackSeconds = static_cast<float>(luaL_optnumber(L, 4, rule.attackSeconds));
+		rule.releaseSeconds = static_cast<float>(luaL_optnumber(L, 5, rule.releaseSeconds));
+		rule.Normalize();
+	}
+
+	manager->AddDuckingRule(rule);
+	lua_pushboolean(L, true);
+	return 1;
+}
+
+int LuaAudioClearDuckingRules(lua_State* L)
+{
+	auto* manager = AudioManager();
+	if (manager)
+		manager->ClearDuckingRules();
+	lua_pushboolean(L, manager != nullptr);
+	return 1;
+}
+
+int LuaAudioLoadDuckingRulesAsset(lua_State* L)
+{
+	auto* manager = AudioManager();
+	if (!manager)
+	{
+		lua_pushinteger(L, 0);
+		return 1;
+	}
+
+	const std::string token = luaL_checkstring(L, 1);
+	const auto record = FindAudioControlAssetRecord(token);
+	if (!record || record->type != Vans::VansAssetType::AudioDuckingRules)
+	{
+		VANS_LOG_WARN("[LuaAudio] Audio ducking rules asset not found: " << token);
+		lua_pushinteger(L, 0);
+		return 1;
+	}
+
+	Vans::VansAudioDuckingRulesAsset asset;
+	std::string error;
+	if (!Vans::VansAudioDuckingRulesAssetStorage::Load(AudioControlAssetReadPath(*record), asset, error))
+	{
+		VANS_LOG_WARN("[LuaAudio] Failed to load audio ducking rules asset '" << token << "': " << error);
+		lua_pushinteger(L, 0);
+		return 1;
+	}
+
+	const bool clearExisting = lua_isboolean(L, 2)
+		? (lua_toboolean(L, 2) != 0)
+		: true;
+	if (clearExisting)
+		manager->ClearDuckingRules();
+	for (VansEngine::AudioDuckingRule rule : asset.rules)
+		manager->AddDuckingRule(std::move(rule));
+	lua_pushinteger(L, static_cast<lua_Integer>(asset.rules.size()));
+	return 1;
+}
+
+int LuaComponentGetOcclusionEnabled(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
+	lua_pushboolean(L, audio && audio->m_OcclusionSettings.enabled);
+	return 1;
+}
+
+int LuaComponentSetOcclusionEnabled(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
+	if (audio)
+		audio->m_OcclusionSettings.enabled = lua_toboolean(L, 2) != 0;
+	return 0;
+}
+
+int LuaComponentSetOcclusionParams(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
+	if (!audio)
+		return 0;
+
+	audio->m_OcclusionSettings.blockedGain =
+		static_cast<float>(luaL_optnumber(L, 2, audio->m_OcclusionSettings.blockedGain));
+	audio->m_OcclusionSettings.blockedHighFrequencyGain =
+		static_cast<float>(luaL_optnumber(L, 3, audio->m_OcclusionSettings.blockedHighFrequencyGain));
+	audio->m_OcclusionSettings.queryIntervalSeconds =
+		static_cast<float>(luaL_optnumber(L, 4, audio->m_OcclusionSettings.queryIntervalSeconds));
+	audio->m_OcclusionSettings.Normalize();
+	return 0;
+}
+
+int LuaComponentSetOcclusionMaterial(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
+	if (!audio)
+		return 0;
+
+	audio->m_OcclusionSettings.material =
+		VansEngine::NormalizeAudioOcclusionMaterialName(luaL_optstring(L, 2, "custom"));
+	audio->m_OcclusionSettings.materialThickness =
+		static_cast<float>(luaL_optnumber(L, 3, audio->m_OcclusionSettings.materialThickness));
+	audio->m_OcclusionSettings.Normalize();
+	return 0;
+}
+
+int LuaComponentGetDopplerEnabled(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
+	lua_pushboolean(L, audio && audio->m_DopplerEnabled);
+	return 1;
+}
+
+int LuaComponentSetDopplerEnabled(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
+	if (audio)
+	{
+		audio->m_DopplerEnabled = lua_toboolean(L, 2) != 0;
+		if (!audio->m_DopplerEnabled)
+			audio->m_Source.SetVelocity(0.0f, 0.0f, 0.0f);
+	}
+	return 0;
+}
+
+int LuaComponentSetCone(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
+	if (!audio)
+		return 0;
+
+	audio->m_ConeSettings.enabled = lua_toboolean(L, 2) != 0;
+	audio->m_ConeSettings.innerAngleDegrees =
+		static_cast<float>(luaL_optnumber(L, 3, audio->m_ConeSettings.innerAngleDegrees));
+	audio->m_ConeSettings.outerAngleDegrees =
+		static_cast<float>(luaL_optnumber(L, 4, audio->m_ConeSettings.outerAngleDegrees));
+	audio->m_ConeSettings.outerGain =
+		static_cast<float>(luaL_optnumber(L, 5, audio->m_ConeSettings.outerGain));
+	audio->m_ConeSettings.Normalize();
+	audio->m_Source.SetCone(audio->m_ConeSettings);
 	return 0;
 }
 
@@ -774,7 +1377,7 @@ int LuaComponentGetFilePath(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
 	if (auto* audio = dynamic_cast<VansScriptAudioComponent*>(component))
-		lua_pushstring(L, audio->m_AudioNode ? audio->m_AudioNode->GetFilePath().c_str() : "");
+		lua_pushstring(L, audio->m_Source.GetFilePath().c_str());
 	else if (auto* video = dynamic_cast<VansScriptVideoComponent*>(component))
 		lua_pushstring(L, video->m_VideoName.c_str());
 	else if (auto* particle = dynamic_cast<VansScriptParticleComponent*>(component))
@@ -1925,8 +2528,27 @@ VansScriptObject::~VansScriptObject()
 		VansGraphics::VansTransformStore::FreeTransform(m_TransformID);
 }
 
-void VansScriptRenderComponent::OnEnable() { if (m_RenderNode) m_RenderNode->SetEnabled(true); }
-void VansScriptRenderComponent::OnDisable() { if (m_RenderNode) m_RenderNode->SetEnabled(false); }
+void VansScriptRenderComponent::OnEnable()
+{
+	if (!m_RenderNodes.empty())
+	{
+		for (auto* renderNode : m_RenderNodes)
+			if (renderNode) renderNode->SetEnabled(true);
+		return;
+	}
+	if (m_RenderNode) m_RenderNode->SetEnabled(true);
+}
+
+void VansScriptRenderComponent::OnDisable()
+{
+	if (!m_RenderNodes.empty())
+	{
+		for (auto* renderNode : m_RenderNodes)
+			if (renderNode) renderNode->SetEnabled(false);
+		return;
+	}
+	if (m_RenderNode) m_RenderNode->SetEnabled(false);
+}
 void VansScriptPhysicsComponent::OnEnable() { if (m_PhysicsNode) m_PhysicsNode->SetEnabled(true); }
 void VansScriptPhysicsComponent::OnDisable() { if (m_PhysicsNode) m_PhysicsNode->SetEnabled(false); }
 void VansScriptClothComponent::OnEnable() { if (m_ClothNode) m_ClothNode->SetEnabled(true); }
@@ -1935,8 +2557,13 @@ void VansScriptAnimationComponent::OnEnable() { if (m_AnimNode) m_AnimNode->SetE
 void VansScriptAnimationComponent::OnDisable() { if (m_AnimNode) m_AnimNode->SetEnabled(false); }
 void VansScriptCameraComponent::OnEnable() { if (m_Camera) m_Camera->SetEnabled(true); }
 void VansScriptCameraComponent::OnDisable() { if (m_Camera) m_Camera->SetEnabled(false); }
-void VansScriptAudioComponent::OnEnable() { if (m_AudioNode) m_AudioNode->SetEnabled(true); }
-void VansScriptAudioComponent::OnDisable() { if (m_AudioNode) m_AudioNode->SetEnabled(false); }
+void VansScriptAudioComponent::OnEnable() { m_Source.SetEnabled(true); }
+void VansScriptAudioComponent::OnDisable()
+{
+	m_Source.SetVelocity(0.0f, 0.0f, 0.0f);
+	m_Source.SetEnabled(false);
+	m_HasLastAudioPosition = false;
+}
 void VansScriptParticleComponent::OnEnable() { Play(); }
 void VansScriptParticleComponent::OnDisable() { Pause(); }
 
@@ -2062,13 +2689,13 @@ bool VansScriptCharacterControllerComponent::IsFollowRagdollEnabled() const { re
 
 bool VansScriptAudioComponent::SwitchSource(const std::string& name)
 {
-	if (!m_AudioManager) return false;
-	auto* newNode = m_AudioManager->Get(name);
-	if (!newNode) return false;
-	if (m_AudioNode && m_AudioNode->IsBound() && (m_AudioNode->IsPlaying() || m_AudioNode->IsPaused()))
-		m_AudioNode->Stop();
-	m_AudioNode = newNode;
-	return true;
+	const bool switched = m_Source.SwitchSource(name);
+	if (switched)
+	{
+		m_Source.SetVelocity(0.0f, 0.0f, 0.0f);
+		m_HasLastAudioPosition = false;
+	}
+	return switched;
 }
 
 bool VansScriptVideoComponent::SwitchSource(const std::string& name)
@@ -2584,6 +3211,29 @@ void VansScriptContext::RegisterLuaBindings()
 		{ "set_pitch", LuaComponentSetPitch },
 		{ "get_loop", LuaComponentGetLoop },
 		{ "set_loop", LuaComponentSetLoop },
+		{ "get_spatial", LuaComponentGetSpatial },
+		{ "set_spatial", LuaComponentSetSpatial },
+		{ "get_ref_distance", LuaComponentGetRefDistance },
+		{ "set_ref_distance", LuaComponentSetRefDistance },
+		{ "get_max_distance", LuaComponentGetMaxDistance },
+		{ "set_max_distance", LuaComponentSetMaxDistance },
+		{ "get_rolloff", LuaComponentGetRolloff },
+		{ "set_rolloff", LuaComponentSetRolloff },
+		{ "get_attenuation_mode", LuaComponentGetAttenuationMode },
+		{ "set_attenuation_mode", LuaComponentSetAttenuationMode },
+		{ "get_reverb_send", LuaComponentGetReverbSend },
+		{ "set_reverb_send", LuaComponentSetReverbSend },
+		{ "get_lowpass_high_frequency_gain", LuaComponentGetLowpassHighFrequencyGain },
+		{ "set_lowpass_high_frequency_gain", LuaComponentSetLowpassHighFrequencyGain },
+		{ "get_bus", LuaComponentGetBus },
+		{ "set_bus", LuaComponentSetBus },
+		{ "get_occlusion_enabled", LuaComponentGetOcclusionEnabled },
+		{ "set_occlusion_enabled", LuaComponentSetOcclusionEnabled },
+		{ "set_occlusion_params", LuaComponentSetOcclusionParams },
+		{ "set_occlusion_material", LuaComponentSetOcclusionMaterial },
+		{ "get_doppler_enabled", LuaComponentGetDopplerEnabled },
+		{ "set_doppler_enabled", LuaComponentSetDopplerEnabled },
+		{ "set_cone", LuaComponentSetCone },
 		{ "get_file_path", LuaComponentGetFilePath },
 		{ "move", LuaComponentQueueMove },
 		{ "queue_move", LuaComponentQueueMove },
@@ -2651,6 +3301,33 @@ void VansScriptContext::RegisterLuaBindings()
 	lua_pushcfunction(L, LuaLog); lua_setfield(L, -2, "log");
 	lua_pushcfunction(L, LuaFindObject); lua_setfield(L, -2, "find_object");
 	lua_pushcfunction(L, LuaTimeSeconds); lua_setfield(L, -2, "time_seconds");
+
+	lua_newtable(L);
+	lua_pushcfunction(L, LuaAudioSetBusGain); lua_setfield(L, -2, "set_bus_gain");
+	lua_pushcfunction(L, LuaAudioSetBusGain); lua_setfield(L, -2, "setBusGain");
+	lua_pushcfunction(L, LuaAudioSetBusLowpassHighFrequencyGain); lua_setfield(L, -2, "set_bus_lowpass_high_frequency_gain");
+	lua_pushcfunction(L, LuaAudioSetBusLowpassHighFrequencyGain); lua_setfield(L, -2, "setBusLowpassHighFrequencyGain");
+	lua_pushcfunction(L, LuaAudioFadeBusGain); lua_setfield(L, -2, "fade_bus_gain");
+	lua_pushcfunction(L, LuaAudioFadeBusGain); lua_setfield(L, -2, "fadeBusGain");
+	lua_pushcfunction(L, LuaAudioSetBusMuted); lua_setfield(L, -2, "set_bus_muted");
+	lua_pushcfunction(L, LuaAudioSetBusMuted); lua_setfield(L, -2, "setBusMuted");
+	lua_pushcfunction(L, LuaAudioSetBusSoloed); lua_setfield(L, -2, "set_bus_soloed");
+	lua_pushcfunction(L, LuaAudioSetBusSoloed); lua_setfield(L, -2, "setBusSoloed");
+	lua_pushcfunction(L, LuaAudioGetBusState); lua_setfield(L, -2, "get_bus_state");
+	lua_pushcfunction(L, LuaAudioGetBusState); lua_setfield(L, -2, "getBusState");
+	lua_pushcfunction(L, LuaAudioApplySnapshot); lua_setfield(L, -2, "apply_snapshot");
+	lua_pushcfunction(L, LuaAudioApplySnapshot); lua_setfield(L, -2, "applySnapshot");
+	lua_pushcfunction(L, LuaAudioApplyNamedSnapshot); lua_setfield(L, -2, "apply_named_snapshot");
+	lua_pushcfunction(L, LuaAudioApplyNamedSnapshot); lua_setfield(L, -2, "applyNamedSnapshot");
+	lua_pushcfunction(L, LuaAudioApplySnapshotAsset); lua_setfield(L, -2, "apply_snapshot_asset");
+	lua_pushcfunction(L, LuaAudioApplySnapshotAsset); lua_setfield(L, -2, "applySnapshotAsset");
+	lua_pushcfunction(L, LuaAudioAddDuckingRule); lua_setfield(L, -2, "add_ducking_rule");
+	lua_pushcfunction(L, LuaAudioAddDuckingRule); lua_setfield(L, -2, "addDuckingRule");
+	lua_pushcfunction(L, LuaAudioClearDuckingRules); lua_setfield(L, -2, "clear_ducking_rules");
+	lua_pushcfunction(L, LuaAudioClearDuckingRules); lua_setfield(L, -2, "clearDuckingRules");
+	lua_pushcfunction(L, LuaAudioLoadDuckingRulesAsset); lua_setfield(L, -2, "load_ducking_rules_asset");
+	lua_pushcfunction(L, LuaAudioLoadDuckingRulesAsset); lua_setfield(L, -2, "loadDuckingRulesAsset");
+	lua_setfield(L, -2, "audio");
 
 	lua_newtable(L);
 	lua_pushcfunction(L, LuaPhysicsRaycast); lua_setfield(L, -2, "raycast");

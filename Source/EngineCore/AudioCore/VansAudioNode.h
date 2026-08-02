@@ -7,6 +7,10 @@
 #include <queue>
 #include <atomic>
 #include <cstdint>
+#include "VansAudioAttenuation.h"
+#include "VansAudioBus.h"
+#include "VansAudioDirectionality.h"
+#include "VansAudioOcclusion.h"
 #include "../VansNode.h"
 
 // 不在头文件中引入 OpenAL / FFmpeg 头（用无符号整型替代 ALuint）
@@ -39,6 +43,10 @@ namespace VansEngine
         float          m_RefDist    = 1.0f;  // 参考距离（衰减计算起点）
         float          m_MaxDist    = 100.0f;// 最大距离（超过此距离音量归零）
         float          m_RollOff    = 1.0f;  // 滚降因子（仅 Spatial=true 时有效）
+        std::string    m_AttenuationMode = "linear";
+        float          m_ReverbSend = 0.0f;  // [0, 1], 0 = dry only
+        std::string    m_BusName = "SFX";
+        float          m_LowpassHighFrequencyGain = 1.0f; // [0, 1], 1 = full bandwidth
     };
 
     // ===========================================================================
@@ -97,21 +105,46 @@ namespace VansEngine
 
         void  SetRefDistance(float d);
         void  SetMaxDistance(float d);
+        void  SetRolloff(float rolloff);
+        void  SetAttenuationMode(AudioAttenuationMode mode);
+        void  SetReverbSend(float send);
+        void  SetLowpassHighFrequencyGain(float highFrequencyGain);
+        void  SetBusName(const std::string& busName);
+        void  SetBusGain(float gain);
+        void  SetBusLowpassHighFrequencyGain(float highFrequencyGain);
+        void  SetVirtualizationGain(float gain);
         float GetRefDist()  const { return m_Properties.m_RefDist; }
         float GetMaxDist()  const { return m_Properties.m_MaxDist; }
-        // 按线性模型手动设置距离衰减 gain（绕过 OpenAL 距离模型）
+        float GetRolloff()  const { return m_Properties.m_RollOff; }
+        float GetReverbSend() const { return m_Properties.m_ReverbSend; }
+        float GetLowpassHighFrequencyGain() const { return m_Properties.m_LowpassHighFrequencyGain; }
+        const std::string& GetBusName() const { return m_Properties.m_BusName; }
+        float GetBusGain() const { return m_BusGain; }
+        float GetVirtualizationGain() const { return m_VirtualizationGain; }
+        AudioAttenuationMode GetAttenuationMode() const { return m_AttenuationModeRuntime; }
+        // 按当前衰减模型更新距离 gain。调用方只提供 Listener 位置，避免散落公式。
+        void  UpdateDistanceGain(float listenerX, float listenerY, float listenerZ);
+        // 手动设置距离衰减 gain，后续会与基础音量 / bus / occlusion 统一提交。
         void  SetSpatialGain(float distanceGain);
         // 查询 OpenAL source 的实际 AL_SOURCE_RELATIVE 状态（用于诊断）
+        void  SetOcclusion(float gain, float highFrequencyGain);
+        void  SetVelocity(float x, float y, float z);
+        void  SetDirection(float x, float y, float z);
+        void  SetCone(AudioConeSettings settings);
         int   GetALSourceRelative() const;
 
         // ── 状态查询 ────────────────────────────────────────────────────────
         bool IsPlaying() const;
         bool IsPaused()  const;
-        bool IsBound()   const { return m_SourceId != 0; }
+        bool IsBound()   const { return m_SourceId != 0 || m_HardwareVoiceSuspended; }
+        bool IsHardwareVoiceActive() const { return m_SourceId != 0; }
 
         const std::string& GetName()     const { return m_Properties.m_Name;     }
         const std::string& GetFilePath() const { return m_Properties.m_FilePath; }
         bool               IsAutoPlay()  const { return m_Properties.m_AutoPlay; }
+        const AudioNodeProperties& GetProperties() const { return m_Properties; }
+        bool CanCreateStaticInstance() const;
+        uint32_t GetStaticBufferId() const { return m_StaticBufferId; }
 
         // ── 每帧驱动（Streaming 模式需要主线程调用） ─────────────────────────
         // 检查 OpenAL Source 状态，向 Source 补充已处理完的 Buffer
@@ -122,17 +155,46 @@ namespace VansEngine
         bool OpenStatic();
 
         // ── Streaming 模式辅助 ──────────────────────────────────────────────
+        bool EnsureStreamingReady();
         bool OpenStreaming();
+        void SuspendHardwareVoice();
+        bool ResumeHardwareVoice();
         void StartDecodeThread();
         void StopDecodeThread();
         void DecodeThreadFunc();          // 后台解码线程入口
         void RefillStreamBuffers();       // 主线程：将 PCM 队列中的数据上传到空闲 Buffer
+        int QueueStreamBuffersFromPCMQueue(int maxBuffers);
 
         // ── OpenAL 格式计算 ──────────────────────────────────────────────────
         static int32_t GetAlFormat(int channels); // 返回 ALenum(内联值)
+        void ApplySpatialProperties();
+        void ApplyDirectionalProperties();
+        void ApplyEffectSends();
+        void ApplyDirectLowpass();
+        void CommitGain();
 
     private:
         AudioNodeProperties m_Properties;
+        AudioAttenuationMode m_AttenuationModeRuntime = AudioAttenuationMode::Linear;
+        float m_PositionX = 0.0f;
+        float m_PositionY = 0.0f;
+        float m_PositionZ = 0.0f;
+        float m_VelocityX = 0.0f;
+        float m_VelocityY = 0.0f;
+        float m_VelocityZ = 0.0f;
+        float m_DirectionX = 0.0f;
+        float m_DirectionY = 0.0f;
+        float m_DirectionZ = 1.0f;
+        AudioConeSettings m_ConeSettings;
+        float m_DistanceGain = 1.0f;
+        float m_OcclusionGain = 1.0f;
+        float m_BusGain = 1.0f;
+        float m_BusLowpassHighFrequencyGain = 1.0f;
+        float m_VirtualizationGain = 1.0f;
+        float m_LastCommittedGain = -1.0f;
+        uint32_t m_ReverbSendFilterId = 0;
+        uint32_t m_DirectLowpassFilterId = 0;
+        float m_OcclusionHighFrequencyGain = 1.0f;
 
         // OpenAL 对象（ALuint 底层为 unsigned int）
         uint32_t m_SourceId = 0;                         // alGenSources() 返回值
@@ -144,6 +206,11 @@ namespace VansEngine
         static constexpr int STREAM_BUFFER_COUNT = 4;
         static constexpr int STREAM_CHUNK_SAMPLES = 8192; // 每次填充的样本数（每通道）
         uint32_t m_StreamBuffers[STREAM_BUFFER_COUNT] = {};
+        bool m_StreamingReady = false;
+        bool m_StreamingInitFailed = false;
+        bool m_HardwareVoiceSuspended = false;
+        bool m_LogicalPlaying = false;
+        bool m_LogicalPaused = false;
 
         // Streaming 后台解码线程资源
         std::unique_ptr<VansAudioDecoder> m_Decoder;

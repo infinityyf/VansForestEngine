@@ -6,6 +6,9 @@
 #include "VansShaderManager.h"
 #include "BRDFData/VansLight.h"
 #include "../Configration/VansConfigration.h"
+#include "../AudioCore/VansAudioReverbEnvironment.h"
+#include "../AudioCore/VansAudioSystem.h"
+#include "../AudioCore/VansAudioVirtualization.h"
 #include "../PhysicsCore/VansPhysics.h"
 #include "../PhysicsCore/VansPhysicsNode.h"
 #include "../PhysicsCore/VansPhysicsVehicle.h"
@@ -34,6 +37,7 @@
 #include "../Util/VansProfiler.h"
 #include <iostream>
 #include <algorithm>
+#include <cmath>
 #include <unordered_map>
 #include <unordered_set>
 #include <filesystem>
@@ -46,6 +50,62 @@
 
 namespace
 {
+	struct AudioOcclusionQueryTarget
+	{
+		VansScriptAudioComponent* component = nullptr;
+		glm::vec3 sourcePosition{ 0.0f };
+		float distance = 0.0f;
+		uint32_t ignoredTransformID = 0;
+	};
+
+	class AudioOcclusionQueryFilter final : public physx::PxQueryFilterCallback
+	{
+	public:
+		explicit AudioOcclusionQueryFilter(uint32_t ignoredTransformID)
+			: m_IgnoredTransformID(ignoredTransformID)
+		{
+		}
+
+		physx::PxQueryHitType::Enum preFilter(
+			const physx::PxFilterData&,
+			const physx::PxShape* shape,
+			const physx::PxRigidActor* actor,
+			physx::PxHitFlags&) override
+		{
+			return Filter(shape, actor);
+		}
+
+		physx::PxQueryHitType::Enum postFilter(
+			const physx::PxFilterData&,
+			const physx::PxQueryHit&,
+			const physx::PxShape* shape,
+			const physx::PxRigidActor* actor) override
+		{
+			return Filter(shape, actor);
+		}
+
+	private:
+		physx::PxQueryHitType::Enum Filter(
+			const physx::PxShape* shape,
+			const physx::PxRigidActor* actor) const
+		{
+			if (!shape)
+				return physx::PxQueryHitType::eNONE;
+			const physx::PxFilterData target = shape->getQueryFilterData();
+			if ((target.word2 & 0x1u) != 0u)
+				return physx::PxQueryHitType::eNONE;
+			if (m_IgnoredTransformID != 0 && actor && actor->userData)
+			{
+				auto* node = static_cast<VansEngine::VansPhysicsNode*>(actor->userData);
+				if (node && node->GetTransformID() == m_IgnoredTransformID)
+					return physx::PxQueryHitType::eNONE;
+			}
+			return physx::PxQueryHitType::eBLOCK;
+		}
+
+		uint32_t m_IgnoredTransformID = 0;
+	};
+
 	VansGraphics::VansAsset* FindAssetInLookup(
 		const std::unordered_map<std::string, VansGraphics::VansAsset*>& lookup,
 		const std::string& name)
@@ -839,6 +899,8 @@ void VansGraphics::VansScene::UnLoadScene()
 
 	VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
 	VkDevice nativeDevice = vkDevice ? vkDevice->GetLogicDevice() : VK_NULL_HANDLE;
+	m_AudioEnvironmentReverbWetGain = 1.0f;
+	VansEngine::VansAudioSystem::GetInstance().SetDefaultReverbWetGain(m_AudioEnvironmentReverbWetGain);
 	ResetMainCameraHiZVisibility();
 	if (nativeDevice != VK_NULL_HANDLE)
 		ReleaseMainCameraHiZGpuResources(nativeDevice);
@@ -1237,6 +1299,7 @@ void VansGraphics::VansScene::UnloadProjectResources(VansVKDevice* device)
         device->WaitForDevice();
     }
 
+    ReleaseAudioSourceBindings();
     m_VideoManager.Clear();
     m_AudioManager.Clear();
 
@@ -1341,6 +1404,17 @@ void VansGraphics::VansScene::UpdateSceneData()
         m_VideoManager.TickAll(VansTimer::GetLastFrameDelta());
     }
 
+    // 同步空间音频 source 位置（在 ResolveParentChildTransforms 之后，确保世界坐标已最终确定）
+    {
+        VANS_PROFILE_SCOPE("Audio::SyncSourcePositions", Vans::ProfileCategory::Audio);
+        SyncAudioSourcePositions(static_cast<float>(VansTimer::GetLastFrameDelta()));
+    }
+
+    {
+        VANS_PROFILE_SCOPE("Audio::ReverbEnvironment", Vans::ProfileCategory::Audio);
+        UpdateAudioReverbEnvironment(static_cast<float>(VansTimer::GetLastFrameDelta()));
+    }
+
     // 推进所有音频节点：更新 Listener 位置、驱动 Streaming 节点补充 Buffer
     {
         VANS_PROFILE_SCOPE("Audio::TickAll", Vans::ProfileCategory::Audio);
@@ -1351,7 +1425,10 @@ void VansGraphics::VansScene::UpdateSceneData()
             VansTimer::GetLastFrameDelta(),
             camPos.x, camPos.y, camPos.z,
             camFwd.x, camFwd.y, camFwd.z,
-            camUp.x,  camUp.y,  camUp.z);
+            camUp.x,  camUp.y,  camUp.z,
+            m_AudioListenerVelocityX,
+            m_AudioListenerVelocityY,
+            m_AudioListenerVelocityZ);
     }
 
     // 粒子系统：同步对象 Transform，推进后台运行时，并上传本帧实例数据。
@@ -1410,12 +1487,6 @@ void VansGraphics::VansScene::UpdateSceneData()
                     particleViewMatrix);
             }
         }
-    }
-
-    // 同步空间音频 source 位置（在 ResolveParentChildTransforms 之后，确保世界坐标已最终确定）
-    {
-        VANS_PROFILE_SCOPE("Audio::SyncSourcePositions", Vans::ProfileCategory::Audio);
-        SyncAudioSourcePositions();
     }
 
     // Update dirty physics transforms to GPU
@@ -1563,41 +1634,347 @@ void VansGraphics::VansScene::SyncLightTransforms()
 // 位置同步到对应 ScriptObject 的世界坐标。需要在 ResolveParentChildTransforms
 // 之后、TickAll 之前调用，确保使用最新的世界坐标。
 // ============================================================
-void VansGraphics::VansScene::SyncAudioSourcePositions()
+void VansGraphics::VansScene::SyncAudioSourcePositions(float deltaTime)
 {
-    glm::vec4 camPos = m_Camera->GetPosition();
+    if (!m_Camera)
+        return;
+
+    const glm::vec4 camPos = m_Camera->GetPosition();
+    const glm::vec3 listener(camPos.x, camPos.y, camPos.z);
+    const bool canComputeVelocity = deltaTime > 0.0001f;
+    const glm::vec3 listenerVelocity =
+        canComputeVelocity && m_AudioHasLastListenerPosition
+        ? (listener - glm::vec3(
+            m_AudioLastListenerX,
+            m_AudioLastListenerY,
+            m_AudioLastListenerZ)) / deltaTime
+        : glm::vec3(0.0f);
+    m_AudioHasLastListenerPosition = true;
+    m_AudioLastListenerX = listener.x;
+    m_AudioLastListenerY = listener.y;
+    m_AudioLastListenerZ = listener.z;
+    bool anyDopplerEnabled = false;
+    std::vector<AudioOcclusionQueryTarget> occlusionTargets;
+    int queryBudget = 0;
+    std::vector<VansEngine::AudioVoiceCandidate> voiceCandidates;
+    std::vector<VansScriptAudioComponent*> voiceComponents;
 
     for (auto* obj : m_SceneObjects)
     {
         if (!obj) continue;
         auto* audioComp = obj->GetComponent<VansScriptAudioComponent>();
-        if (!audioComp || !audioComp->m_AudioNode) continue;
-        if (!audioComp->m_AudioNode->GetSpatial()) continue;
+        if (!audioComp || !audioComp->m_Source.IsBound()) continue;
+
+        glm::vec3 sourcePosition = listener;
+        if (obj->m_TransformID != 0)
+        {
+            const auto& t = VansTransformStore::GetTransform(obj->m_TransformID);
+            sourcePosition = t.m_Position;
+        }
+        const float dx = sourcePosition.x - listener.x;
+        const float dy = sourcePosition.y - listener.y;
+        const float dz = sourcePosition.z - listener.z;
+
+        VansEngine::AudioVoiceCandidate candidate;
+        candidate.stableIndex = voiceCandidates.size();
+        candidate.bound = audioComp->m_Source.IsBound();
+        candidate.objectActive = obj->IsActive();
+        candidate.componentEnabled = audioComp->IsEnabled();
+        candidate.playing = audioComp->m_Source.IsPlaying();
+        candidate.spatial = audioComp->m_Source.GetSpatial();
+        candidate.listenerDistance = std::sqrt(dx * dx + dy * dy + dz * dz);
+        candidate.maxDistance = audioComp->m_Source.GetMaxDistance();
+        candidate.effectiveGain =
+            audioComp->m_Source.GetVolume() *
+            m_AudioManager.GetEffectiveBusGain(audioComp->m_Source.GetBusName());
+
+        voiceComponents.push_back(audioComp);
+        voiceCandidates.push_back(candidate);
+    }
+
+    const VansEngine::AudioVoiceSelection voiceSelection =
+        VansEngine::SelectAudioVoices(voiceCandidates, m_AudioVoiceBudgetSettings);
+    std::vector<std::string> activeAudioBuses;
+    m_AudioManager.BeginVoiceLeaseFrame();
+    for (std::size_t i = 0; i < voiceComponents.size(); ++i)
+    {
+        const bool activeVoice = i < voiceSelection.active.size() && voiceSelection.active[i];
+        const VansEngine::AudioVoiceCandidate& candidate = voiceCandidates[i];
+        const bool virtualized = candidate.playing &&
+            (!candidate.objectActive || !candidate.componentEnabled || !activeVoice);
+        const bool hardwareActiveBefore = voiceComponents[i]->m_Source.IsHardwareVoiceActive();
+        voiceComponents[i]->m_Source.SetVirtualizationGain(virtualized ? 0.0f : 1.0f);
+        m_AudioManager.RecordVoiceLeaseTransition(
+            hardwareActiveBefore,
+            voiceComponents[i]->m_Source.IsHardwareVoiceActive());
+        if (candidate.playing && candidate.objectActive && candidate.componentEnabled && activeVoice)
+            activeAudioBuses.push_back(voiceComponents[i]->m_Source.GetBusName());
+    }
+    m_AudioManager.UpdateDucking(activeAudioBuses);
+
+    for (auto* obj : m_SceneObjects)
+    {
+        if (!obj) continue;
+        auto* audioComp = obj->GetComponent<VansScriptAudioComponent>();
+        if (!audioComp || !audioComp->m_Source.IsBound()) continue;
+        audioComp->m_Source.SetBusGain(
+            m_AudioManager.GetEffectiveBusGain(audioComp->m_Source.GetBusName()));
+        const VansEngine::AudioBusState masterBusState = m_AudioManager.GetBusState("Master");
+        const VansEngine::AudioBusState sourceBusState =
+            m_AudioManager.GetBusState(audioComp->m_Source.GetBusName());
+        audioComp->m_Source.SetBusLowpassHighFrequencyGain(
+            masterBusState.lowpassHighFrequencyGain *
+                (audioComp->m_Source.GetBusName() == "Master"
+                    ? 1.0f
+                    : sourceBusState.lowpassHighFrequencyGain));
+        audioComp->m_Source.Tick();
+        if (!audioComp->m_Source.GetSpatial())
+        {
+            audioComp->m_Source.SetVelocity(0.0f, 0.0f, 0.0f);
+            audioComp->m_HasLastAudioPosition = false;
+            continue;
+        }
         if (obj->m_TransformID == 0) continue;
 
         const auto& t = VansTransformStore::GetTransform(obj->m_TransformID);
-        audioComp->m_AudioNode->SetPosition(t.m_Position.x, t.m_Position.y, t.m_Position.z);
+        audioComp->m_Source.SetPosition(t.m_Position.x, t.m_Position.y, t.m_Position.z);
+        audioComp->m_Source.UpdateDistanceGain(camPos.x, camPos.y, camPos.z);
 
-        float dx   = t.m_Position.x - camPos.x;
-        float dy   = t.m_Position.y - camPos.y;
-        float dz   = t.m_Position.z - camPos.z;
-        float dist = std::sqrt(dx*dx + dy*dy + dz*dz);
+        const glm::vec3 sourcePosition = t.m_Position;
+        glm::vec3 sourceVelocity(0.0f);
+        if (audioComp->m_DopplerEnabled && canComputeVelocity && audioComp->m_HasLastAudioPosition)
+        {
+            sourceVelocity = (sourcePosition - glm::vec3(
+                audioComp->m_LastAudioPositionX,
+                audioComp->m_LastAudioPositionY,
+                audioComp->m_LastAudioPositionZ)) / deltaTime;
+            anyDopplerEnabled = true;
+        }
+        audioComp->m_HasLastAudioPosition = true;
+        audioComp->m_LastAudioPositionX = sourcePosition.x;
+        audioComp->m_LastAudioPositionY = sourcePosition.y;
+        audioComp->m_LastAudioPositionZ = sourcePosition.z;
+        audioComp->m_Source.SetVelocity(sourceVelocity.x, sourceVelocity.y, sourceVelocity.z);
 
-        // 手动线性衰减，完全绕过 OpenAL 距离模型
-        // gain = clamp(1 - (dist - ref) / (max - ref), 0, 1)
-        float ref  = audioComp->m_AudioNode->GetRefDist();
-        float maxD = audioComp->m_AudioNode->GetMaxDist();
-        float gain = 1.0f;
-        if (dist >= maxD)
+        audioComp->m_ConeSettings.Normalize();
+        if (audioComp->m_ConeSettings.enabled)
         {
-            gain = 0.0f;
+            glm::mat4 rotMat = glm::mat4(1.0f);
+            rotMat = glm::rotate(rotMat, glm::radians(t.m_Rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
+            rotMat = glm::rotate(rotMat, glm::radians(t.m_Rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+            rotMat = glm::rotate(rotMat, glm::radians(t.m_Rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+            const glm::vec3 forward = glm::normalize(glm::vec3(rotMat[2]));
+            audioComp->m_Source.SetDirection(forward.x, forward.y, forward.z);
         }
-        else if (dist > ref)
+        audioComp->m_Source.SetCone(audioComp->m_ConeSettings);
+
+        audioComp->m_OcclusionSettings.Normalize();
+        if (!audioComp->m_OcclusionSettings.enabled)
         {
-            gain = 1.0f - (dist - ref) / (maxD - ref);
+            audioComp->m_OcclusionState = VansEngine::AudioOcclusionState{};
+            audioComp->m_Source.SetOcclusion(1.0f, 1.0f);
+            continue;
         }
-        audioComp->m_AudioNode->SetSpatialGain(gain);
+
+        const float distance = glm::length(sourcePosition - listener);
+        if (distance > audioComp->m_OcclusionSettings.maxQueryDistance || distance <= 0.001f)
+        {
+            audioComp->m_OcclusionState.lastBlocked = false;
+            audioComp->m_OcclusionState.queryTimer = 0.0f;
+            audioComp->m_OcclusionState = VansEngine::UpdateAudioOcclusionState(
+                audioComp->m_OcclusionState,
+                audioComp->m_OcclusionSettings,
+                false,
+                deltaTime);
+            audioComp->m_Source.SetOcclusion(
+                audioComp->m_OcclusionState.gain,
+                audioComp->m_OcclusionState.highFrequencyGain);
+            continue;
+        }
+
+        audioComp->m_OcclusionState.queryTimer += std::max(deltaTime, 0.0f);
+        queryBudget = std::max(queryBudget, audioComp->m_OcclusionSettings.maxQueriesPerFrame);
+        occlusionTargets.push_back(AudioOcclusionQueryTarget{
+            audioComp,
+            sourcePosition,
+            distance,
+            obj->m_TransformID });
     }
+
+    if (!occlusionTargets.empty() && queryBudget > 0)
+    {
+        auto& physics = VansEngine::VansPhysicsSystem::GetInstance();
+        physx::PxScene* scene = physics.GetScene();
+        const std::size_t targetCount = occlusionTargets.size();
+        m_AudioOcclusionQueryCursor %= targetCount;
+        std::size_t nextCursor = m_AudioOcclusionQueryCursor;
+
+        if (scene)
+        {
+            std::lock_guard<std::mutex> lock(physics.GetSimulationMutex());
+            physx::PxSceneReadLock scopedReadLock(*scene);
+            for (std::size_t visited = 0; visited < targetCount && queryBudget > 0; ++visited)
+            {
+                const std::size_t index = (m_AudioOcclusionQueryCursor + visited) % targetCount;
+                AudioOcclusionQueryTarget& target = occlusionTargets[index];
+                if (!target.component)
+                    continue;
+
+                auto& state = target.component->m_OcclusionState;
+                const auto& settings = target.component->m_OcclusionSettings;
+                if (state.queryTimer < settings.queryIntervalSeconds)
+                    continue;
+
+                state.queryTimer = 0.0f;
+                --queryBudget;
+                nextCursor = (index + 1) % targetCount;
+
+                const glm::vec3 directionVector = target.sourcePosition - listener;
+                const float directionLength = glm::length(directionVector);
+                if (directionLength <= 0.001f)
+                {
+                    state.lastBlocked = false;
+                    continue;
+                }
+
+                const glm::vec3 direction = directionVector / directionLength;
+                physx::PxQueryFilterData filterData;
+                filterData.flags = physx::PxQueryFlag::eSTATIC |
+                    physx::PxQueryFlag::eDYNAMIC |
+                    physx::PxQueryFlag::ePREFILTER;
+                AudioOcclusionQueryFilter filter(target.ignoredTransformID);
+                physx::PxRaycastBuffer hit;
+                state.lastBlocked = scene->raycast(
+                    physx::PxVec3(listener.x, listener.y, listener.z),
+                    physx::PxVec3(direction.x, direction.y, direction.z),
+                    std::min(directionLength, settings.maxQueryDistance),
+                    hit,
+                    physx::PxHitFlag::eDEFAULT,
+                    filterData,
+                    &filter) && hit.hasBlock;
+            }
+        }
+
+        m_AudioOcclusionQueryCursor = nextCursor;
+
+        for (AudioOcclusionQueryTarget& target : occlusionTargets)
+        {
+            if (!target.component)
+                continue;
+            auto& state = target.component->m_OcclusionState;
+            state = VansEngine::UpdateAudioOcclusionState(
+                state,
+                target.component->m_OcclusionSettings,
+                state.lastBlocked,
+                deltaTime);
+            target.component->m_Source.SetOcclusion(state.gain, state.highFrequencyGain);
+        }
+    }
+
+    if (anyDopplerEnabled)
+    {
+        m_AudioListenerVelocityX = listenerVelocity.x;
+        m_AudioListenerVelocityY = listenerVelocity.y;
+        m_AudioListenerVelocityZ = listenerVelocity.z;
+    }
+    else
+    {
+        m_AudioListenerVelocityX = 0.0f;
+        m_AudioListenerVelocityY = 0.0f;
+        m_AudioListenerVelocityZ = 0.0f;
+    }
+}
+
+void VansGraphics::VansScene::ReleaseAudioSourceBindings()
+{
+    for (auto* obj : m_SceneObjects)
+    {
+        if (!obj) continue;
+        auto* audioComp = obj->GetComponent<VansScriptAudioComponent>();
+        if (audioComp)
+            audioComp->m_Source.Clear();
+    }
+}
+
+void VansGraphics::VansScene::UpdateAudioReverbEnvironment(float deltaTime)
+{
+    auto& audioSystem = VansEngine::VansAudioSystem::GetInstance();
+    if (!m_Camera || !audioSystem.IsInitialized())
+        return;
+
+    const glm::vec4 listener = m_Camera->GetPosition();
+    bool hasZone = false;
+    std::vector<VansEngine::AudioReverbZoneEvaluation> evaluations;
+
+    for (auto* obj : m_SceneObjects)
+    {
+        if (!obj || !obj->IsActive() || obj->m_TransformID == 0)
+            continue;
+
+        auto* zone = obj->GetComponent<VansScriptAudioReverbZoneComponent>();
+        if (!zone || !zone->IsEnabled())
+            continue;
+
+        hasZone = true;
+        const auto& transform = VansTransformStore::GetTransform(obj->m_TransformID);
+        VansEngine::AudioReverbZoneState zoneState;
+        zoneState.shape = VansEngine::AudioReverbZoneShapeFromString(zone->m_Shape);
+        zoneState.centerX = transform.m_Position.x;
+        zoneState.centerY = transform.m_Position.y;
+        zoneState.centerZ = transform.m_Position.z;
+        glm::mat4 zoneRotation = glm::mat4(1.0f);
+        zoneRotation = glm::rotate(zoneRotation, glm::radians(transform.m_Rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
+        zoneRotation = glm::rotate(zoneRotation, glm::radians(transform.m_Rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+        zoneRotation = glm::rotate(zoneRotation, glm::radians(transform.m_Rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+        const glm::vec3 zoneRight = glm::normalize(glm::vec3(zoneRotation[0]));
+        const glm::vec3 zoneUp = glm::normalize(glm::vec3(zoneRotation[1]));
+        const glm::vec3 zoneForward = glm::normalize(glm::vec3(zoneRotation[2]));
+        zoneState.rightX = zoneRight.x;
+        zoneState.rightY = zoneRight.y;
+        zoneState.rightZ = zoneRight.z;
+        zoneState.upX = zoneUp.x;
+        zoneState.upY = zoneUp.y;
+        zoneState.upZ = zoneUp.z;
+        zoneState.forwardX = zoneForward.x;
+        zoneState.forwardY = zoneForward.y;
+        zoneState.forwardZ = zoneForward.z;
+        zoneState.radius = zone->m_Radius;
+        zoneState.halfExtentX = zone->m_HalfExtentX;
+        zoneState.halfExtentY = zone->m_HalfExtentY;
+        zoneState.halfExtentZ = zone->m_HalfExtentZ;
+        zoneState.fadeDistance = zone->m_FadeDistance;
+        zoneState.wetGain = zone->m_WetGain;
+        zoneState.priority = zone->m_Priority;
+        zoneState.preset = VansEngine::AudioReverbPresetFromString(zone->m_Preset);
+        zoneState.presetParameters = zone->m_PresetParameters;
+        zoneState.overridePresetParameters = zone->m_OverridePresetParameters;
+
+        const VansEngine::AudioReverbZoneEvaluation evaluation =
+            VansEngine::EvaluateReverbZone(listener.x, listener.y, listener.z, zoneState);
+        evaluations.push_back(evaluation);
+    }
+
+    if (!hasZone)
+    {
+        m_AudioEnvironmentReverbWetGain = 1.0f;
+        audioSystem.SetDefaultReverbPreset(VansEngine::AudioReverbPreset::Generic);
+        audioSystem.SetDefaultReverbWetGain(m_AudioEnvironmentReverbWetGain);
+        return;
+    }
+
+    const VansEngine::AudioReverbEnvironmentEvaluation environment =
+        VansEngine::EvaluateReverbEnvironment(evaluations);
+
+    audioSystem.SetDefaultReverbPreset(environment.preset);
+    audioSystem.SetDefaultReverbParameters(
+        environment.presetParameters,
+        VansEngine::AudioReverbPresetToString(environment.preset));
+    const float targetWetGain = environment.affectsListener ? environment.wetGain : 0.0f;
+    m_AudioEnvironmentReverbWetGain = VansEngine::ComputeSmoothedReverbWetGain(
+        m_AudioEnvironmentReverbWetGain,
+        targetWetGain,
+        deltaTime);
+    audioSystem.SetDefaultReverbWetGain(m_AudioEnvironmentReverbWetGain);
 }
 
 void VansGraphics::VansScene::UpdateAnimations(float deltaTime){
@@ -2494,7 +2871,7 @@ bool VansGraphics::VansScene::DestroyEntity(VansScriptObject* obj)
 
         // ── Audio：停止播放（项目级资源，不 delete）────────────────────────
         if (auto* au = dynamic_cast<VansScriptAudioComponent*>(comp))
-            if (au->m_AudioNode) au->m_AudioNode->Stop();
+            au->m_Source.Stop();
 
         // ── Video：暂停（项目级资源，不 delete）────────────────────────────
         if (auto* vi = dynamic_cast<VansScriptVideoComponent*>(comp))

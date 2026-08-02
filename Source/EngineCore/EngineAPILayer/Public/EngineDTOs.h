@@ -105,6 +105,101 @@ namespace Vans::EditorAPI
 		Vec3 direction;
 	};
 
+	struct AudioBusDebugState
+	{
+		std::string name;
+		float gain = 1.0f;
+		float duckingGain = 1.0f;
+		float effectiveGain = 1.0f;
+		int activeVoiceCount = 0;
+		bool muted = false;
+		bool soloed = false;
+	};
+
+	struct AudioDuckingRuleDebugState
+	{
+		std::string triggerBusName;
+		std::string targetBusName;
+		float targetGain = 1.0f;
+		float attackSeconds = 0.0f;
+		float releaseSeconds = 0.0f;
+		bool enabled = false;
+		bool active = false;
+	};
+
+	struct AudioSourceDebugState
+	{
+		std::string objectName;
+		std::string sourceName;
+		std::string busName;
+		Vec3 position;
+		float listenerDistance = 0.0f;
+		float volume = 1.0f;
+		float effectiveBusGain = 1.0f;
+		float reverbSend = 0.0f;
+		float occlusionGain = 1.0f;
+		float occlusionHighFrequencyGain = 1.0f;
+		std::string occlusionMaterial = "custom";
+		float occlusionMaterialThickness = 1.0f;
+		float occlusionQueryTimer = 0.0f;
+		bool bound = false;
+		bool objectActive = false;
+		bool componentEnabled = false;
+		bool playing = false;
+		bool paused = false;
+		bool spatial = false;
+		bool usesInstance = false;
+		bool usesPrivateNode = false;
+		bool hardwareVoiceActive = false;
+		bool virtualized = false;
+		bool occlusionEnabled = false;
+		bool occlusionBlocked = false;
+		bool dopplerEnabled = false;
+	};
+
+	struct AudioReverbZoneDebugState
+	{
+		std::string objectName;
+		std::string componentType = "AudioReverbZone";
+		std::string shape;
+		std::string preset;
+		Vec3 position;
+		float blend = 0.0f;
+		float wetGain = 0.0f;
+		float effectiveWetGain = 0.0f;
+		int priority = 0;
+		bool affectsListener = false;
+		bool selected = false;
+	};
+
+	struct AudioBusDebugSnapshot
+	{
+		bool available = false;
+		bool audioSystemInitialized = false;
+		bool efxSupported = false;
+		std::string defaultReverbPreset = "generic";
+		float defaultReverbWetGain = 0.0f;
+		bool listenerAvailable = false;
+		Vec3 listenerPosition;
+		int sourceCount = 0;
+		int boundSourceCount = 0;
+		int playingSourceCount = 0;
+		int spatialSourceCount = 0;
+		int virtualizedSourceCount = 0;
+		int hardwareVoiceActiveCount = 0;
+		int hardwareVoiceSuspendedThisFrame = 0;
+		int hardwareVoiceResumedThisFrame = 0;
+		int activeSourceLeaseCount = 0;
+		int pooledSourceCount = 0;
+		int maxActiveVoices = 32;
+		int reverbZoneCount = 0;
+		int affectingReverbZoneCount = 0;
+		std::vector<AudioBusDebugState> buses;
+		std::vector<AudioDuckingRuleDebugState> duckingRules;
+		std::vector<AudioSourceDebugState> sources;
+		std::vector<AudioReverbZoneDebugState> reverbZones;
+	};
+
 	struct RuntimeTransformSnapshot
 	{
 		bool available = false;
@@ -340,7 +435,10 @@ namespace Vans::EditorAPI
 		AnimatorController,
 		ClothProfile,
 		PostProcessProfile,
-		RagdollProfile
+		RagdollProfile,
+		AudioReverbPreset,
+		AudioBusSnapshot,
+		AudioDuckingRules
 	};
 
 	struct AssetTypeFilter

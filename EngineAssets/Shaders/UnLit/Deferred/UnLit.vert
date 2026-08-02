@@ -1,4 +1,4 @@
-#version 450
+﻿#version 450
 #extension GL_GOOGLE_include_directive : require
 
 #include "../../Common/CameraData.glsl"
@@ -23,28 +23,28 @@ layout( push_constant ) uniform MaterialPushConsts
     int animationEnabled;   // 0 = static, 1 = skinned
 } materialConst;
 
-// ── Per-Vertex Bone ID SSBO (set 3, binding 0) ─────────────────────────
+// Per-vertex bone ID SSBO (set 3, binding 0).
 // Per-submesh bone IDs for animated nodes, shared dummy for static nodes.
 layout(std430, set = 3, binding = 0) readonly buffer BoneIDBuffer
 {
     ivec4 boneIDs[];
 } BoneIDData;
 
-// ── Bone Matrices SSBO (set 3, binding 1) ───────────────────────────────
+// Bone matrices SSBO (set 3, binding 1).
 // Real bone data for animated nodes, shared dummy (64 bytes) for static nodes.
 layout(std430, set = 3, binding = 1) readonly buffer BoneMatrixBuffer
 {
     mat4 boneMatrices[];
 } BoneBuffer;
 
-// ── Per-Vertex Bone Weight SSBO (set 3, binding 2) ─────────────────────
+// Per-vertex bone weight SSBO (set 3, binding 2).
 // Per-submesh bone weights for animated nodes, shared dummy for static nodes.
 layout(std430, set = 3, binding = 2) readonly buffer BoneWeightBuffer
 {
     vec4 weights[];
 } WeightBuffer;
 
-// ── Skinning helper ───────────────────────────────────────────────────
+// Skinning helper.
 void applySkinning(inout vec4 pos, inout vec3 norm, inout vec3 tan, inout vec3 bitan)
 {
     ivec4 ids = BoneIDData.boneIDs[gl_VertexIndex];
@@ -67,7 +67,7 @@ void applySkinning(inout vec4 pos, inout vec3 norm, inout vec3 tan, inout vec3 b
 
     pos = skinMatrix * pos;
     mat3 skinMat3 = mat3(skinMatrix);
-    // 使用长度检测代替直接 normalize，防止零向量（UV退化切线等情况）产生 NaN
+    // Use length checks instead of direct normalize to avoid NaNs from zero vectors.
     vec3 sn = skinMat3 * norm;
     vec3 st = skinMat3 * tan;
     vec3 sb = skinMat3 * bitan;
@@ -98,7 +98,7 @@ void main()
 
     gl_Position  = VPMatrix * ModelMatrix * pos;
     mat3 normalMatrix = mat3(NormalMatrix);
-    // 防御性 normalize：当输入为零向量时提供合理的回退值，避免 NaN 写入 GBuffer
+    // Normalize defensively; provide stable fallbacks for zero vectors before writing GBuffer.
     vec3 n_ws  = normalMatrix * n;
     vec3 t_ws  = normalMatrix * t;
     vec3 bt_ws = normalMatrix * bt;

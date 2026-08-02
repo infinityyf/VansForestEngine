@@ -40,6 +40,8 @@ const AssetReferenceRule* ResolveDeclaredAssetReferenceRule(
         { "modelrenderer", "data", "model", EditorAPI::AssetType::Model, ObjectReferenceStoragePolicy::GuidObject },
         { "modelrenderer", "materialoverrides", "", EditorAPI::AssetType::Material, ObjectReferenceStoragePolicy::GuidObject },
         { "audio", "data", "source", EditorAPI::AssetType::Audio, ObjectReferenceStoragePolicy::GuidObject },
+        { "audiovolume", "data", "presetasset", EditorAPI::AssetType::AudioReverbPreset, ObjectReferenceStoragePolicy::GuidObject },
+        { "audioreverbzone", "data", "presetasset", EditorAPI::AssetType::AudioReverbPreset, ObjectReferenceStoragePolicy::GuidObject },
         { "video", "data", "source", EditorAPI::AssetType::Video, ObjectReferenceStoragePolicy::GuidObject },
         { "particle", "data", "asset", EditorAPI::AssetType::Particle, ObjectReferenceStoragePolicy::GuidString },
         { "animation", "data", "animator", EditorAPI::AssetType::AnimatorController, ObjectReferenceStoragePolicy::GuidString },

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "../ScriptCore/VansCommonUtils.h"
 #include <../../GLM/glm.hpp>
@@ -13,7 +13,7 @@
 
 namespace VansGraphics
 {
-	// ─── Constants ───
+	// Constants
 
 	// Paragon rigs commonly contain more than 128 deformation/helper bones.
 	// Keep this in sync with the GPU bone-matrix storage capacity; the shaders
@@ -23,7 +23,7 @@ namespace VansGraphics
 	constexpr uint32_t VCLIP_VERSION      = 1;
 	constexpr char     VCLIP_MAGIC[]      = "VCLIP";
 
-	// ─── Enums ───
+	// Enums
 
 	enum class AnimationState
 	{
@@ -33,7 +33,7 @@ namespace VansGraphics
 		Blending
 	};
 
-	// ─── Keyframe ───
+	// Keyframe
 
 	struct BoneKeyframe
 	{
@@ -43,7 +43,7 @@ namespace VansGraphics
 		glm::vec3 scale;      // local scale
 	};
 
-	// ─── Bone Info ───
+	// Bone Info
 
 	struct BoneInfo
 	{
@@ -56,7 +56,7 @@ namespace VansGraphics
 		std::vector<int> children;
 	};
 
-	// ─── Skeleton ───
+	// Skeleton
 
 	struct Skeleton
 	{
@@ -64,18 +64,19 @@ namespace VansGraphics
 		std::unordered_map<std::string, int>     boneNameToIndex;
 		glm::mat4                                globalInverseTransform = glm::mat4(1.0f);
 
-		// 拓扑排序后的骨骼索引序列（父骨骼保证在子骨骼之前）
-		// UpdateHierarchy 必须按此顺序遍历，否则 parent index > child index 时结果错误
-		std::vector<int>                         topologicalOrder;
+		// Bone indices in topological order. Parents are guaranteed to appear before children.
+		// UpdateHierarchy must iterate in this order; otherwise parent indices greater than child
+		// indices can produce incorrect transforms.
+		std::vector<int> topologicalOrder;
 
-		// 根据 bones[].parentIndex / children 计算拓扑遍历顺序（BFS）
+		// Recompute topological traversal order from bones[].parentIndex and children using BFS.
 		void BuildTopologicalOrder()
 		{
 			const size_t N = bones.size();
 			topologicalOrder.clear();
 			topologicalOrder.reserve(N);
 
-			// BFS 从所有根骨骼开始
+			// Start BFS from every root bone.
 			std::queue<int> q;
 			for (size_t i = 0; i < N; i++)
 			{
@@ -106,7 +107,7 @@ namespace VansGraphics
 				}
 			}
 
-			// 安全检查：如果有骨骼未被遍历到（孤立骨骼），追加到末尾
+			// Safety check: append any isolated bones that were not reached by traversal.
 			if (topologicalOrder.size() < N)
 			{
 				for (size_t i = 0; i < N; i++)
@@ -121,7 +122,7 @@ namespace VansGraphics
 		}
 	};
 
-	// ─── Animation Clip ───
+	// Animation Clip
 
 	struct VansAnimationClip
 	{
@@ -132,7 +133,7 @@ namespace VansGraphics
 		std::vector<std::vector<BoneKeyframe>>     boneKeyframes;
 	};
 
-	// ─── Clip Info (lightweight, from Peek) ───
+	// Clip Info (lightweight, from Peek)
 
 	struct VansAnimationClipInfo
 	{
@@ -142,7 +143,7 @@ namespace VansGraphics
 		uint32_t    version    = 0;
 	};
 
-	// ─── Play Settings ───
+	// Play Settings
 
 	struct AnimationPlaySettings
 	{
@@ -155,7 +156,7 @@ namespace VansGraphics
 		bool  pingPong      = false;
 	};
 
-	// ─── Animation Event ───
+	// Animation Event
 
 	struct AnimationEvent
 	{
@@ -164,14 +165,14 @@ namespace VansGraphics
 		std::function<void()>   callback;
 	};
 
-	// ─── Bone Matrices SSBO (uploaded to GPU) ───
+	// Bone Matrices SSBO (uploaded to GPU)
 
 	struct BoneMatricesSSBO
 	{
 		glm::mat4 boneMatrices[MAX_BONES];
 	};
 
-	// ─── Vertex Bone Data (per-vertex, 4 influences max) ───
+	// Vertex Bone Data (per-vertex, 4 influences max)
 	// Full struct used during import/extraction on CPU side.
 
 	struct VertexBoneData
@@ -183,7 +184,7 @@ namespace VansGraphics
 		void Normalize();
 	};
 
-	// ─── GPU-side split structs (separate SSBO per submesh, no offset needed) ───
+	// GPU-side split structs (separate SSBO per submesh, no offset needed)
 	// Binding 0: Per-vertex bone IDs
 	struct VertexBoneID
 	{
@@ -196,7 +197,7 @@ namespace VansGraphics
 		float weights[MAX_BONE_INFLUENCE] = { 0.0f, 0.0f, 0.0f, 0.0f };
 	};
 
-	// ─── Import Result (returned by VansSkinnedMeshLoader) ───
+	// Import Result (returned by VansSkinnedMeshLoader)
 
 	struct VansAnimationImportResult
 	{

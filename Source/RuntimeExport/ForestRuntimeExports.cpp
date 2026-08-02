@@ -91,6 +91,9 @@ namespace
 		if (value == "clothProfile") return Vans::VansAssetType::ClothProfile;
 		if (value == "postProcessProfile") return Vans::VansAssetType::PostProcessProfile;
 		if (value == "ragdollProfile") return Vans::VansAssetType::RagdollProfile;
+		if (value == "audioReverbPreset") return Vans::VansAssetType::AudioReverbPreset;
+		if (value == "audioBusSnapshot") return Vans::VansAssetType::AudioBusSnapshot;
+		if (value == "audioDuckingRules") return Vans::VansAssetType::AudioDuckingRules;
 		return Vans::VansAssetType::Unknown;
 	}
 

@@ -45,6 +45,8 @@
 #include "../../AnimationCore/VansAnimationController.h"
 #include "../../EventCore/VansEventBus.h"
 #include "../../AnimationCore/MotionMatching/VansMotionMatching.h"
+#include "../../AudioCore/VansAudioReverbEnvironment.h"
+#include "../../AudioCore/VansAudioSystem.h"
 #include "../../ScriptCore/VansScriptContext.h"
 #include "../../ScriptCore/VansTransform.h"
 #include "../../../Graphics/Vulkan/VansVKFunctions.h"
@@ -551,6 +553,9 @@ namespace Vans::EditorAPI
 			case Vans::VansAssetType::ClothProfile: return AssetType::ClothProfile;
 			case Vans::VansAssetType::PostProcessProfile: return AssetType::PostProcessProfile;
 			case Vans::VansAssetType::RagdollProfile: return AssetType::RagdollProfile;
+			case Vans::VansAssetType::AudioReverbPreset: return AssetType::AudioReverbPreset;
+			case Vans::VansAssetType::AudioBusSnapshot: return AssetType::AudioBusSnapshot;
+			case Vans::VansAssetType::AudioDuckingRules: return AssetType::AudioDuckingRules;
 			default: return AssetType::Unknown;
 			}
 		}
@@ -5302,6 +5307,225 @@ namespace Vans::EditorAPI
 		}
 
 		return snapshots;
+	}
+
+	AudioBusDebugSnapshot EngineAPIImpl::GetAudioBusDebugSnapshot() const
+	{
+		AudioBusDebugSnapshot snapshot;
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		if (!scene)
+			return snapshot;
+
+		const VansEngine::VansAudioManager* audioManager = scene->GetAudioManager();
+		if (!audioManager)
+			return snapshot;
+
+		snapshot.available = true;
+		const VansEngine::VansAudioSystem& audioSystem = VansEngine::VansAudioSystem::GetInstance();
+		snapshot.audioSystemInitialized = audioSystem.IsInitialized();
+		snapshot.efxSupported = audioSystem.IsEfxSupported();
+		snapshot.maxActiveVoices =
+			static_cast<int>(scene->GetAudioVoiceBudgetSettings().maxActiveVoices);
+		snapshot.defaultReverbPreset = audioSystem.GetDefaultReverbPresetName();
+		snapshot.defaultReverbWetGain = audioSystem.GetDefaultReverbWetGain();
+		snapshot.activeSourceLeaseCount = static_cast<int>(audioSystem.GetActiveSourceLeaseCount());
+		snapshot.pooledSourceCount = static_cast<int>(audioSystem.GetPooledSourceCount());
+		const VansEngine::AudioVoiceLeaseFrameStats voiceLeaseStats =
+			audioManager->GetVoiceLeaseFrameStats();
+		snapshot.hardwareVoiceSuspendedThisFrame = voiceLeaseStats.suspendedThisFrame;
+		snapshot.hardwareVoiceResumedThisFrame = voiceLeaseStats.resumedThisFrame;
+		const std::vector<VansEngine::AudioBusDebugEntry> buses =
+			audioManager->GetBusDebugSnapshot();
+		snapshot.buses.reserve(buses.size());
+		for (const VansEngine::AudioBusDebugEntry& bus : buses)
+		{
+			snapshot.buses.push_back(AudioBusDebugState{
+				bus.name,
+				bus.state.gain,
+				bus.state.duckingGain,
+				bus.effectiveGain,
+				bus.activeVoiceCount,
+				bus.state.muted,
+				bus.state.soloed });
+		}
+		const std::vector<VansEngine::AudioDuckingRuleDebugEntry> duckingRules =
+			audioManager->GetDuckingRuleDebugSnapshot();
+		snapshot.duckingRules.reserve(duckingRules.size());
+		for (const VansEngine::AudioDuckingRuleDebugEntry& entry : duckingRules)
+		{
+			snapshot.duckingRules.push_back(AudioDuckingRuleDebugState{
+				entry.rule.triggerBusName,
+				entry.rule.targetBusName,
+				entry.rule.targetGain,
+				entry.rule.attackSeconds,
+				entry.rule.releaseSeconds,
+				entry.rule.enabled,
+				entry.active });
+		}
+
+		glm::vec3 listenerPosition(0.0f);
+		if (VansGraphics::VansCamera* camera = scene->GetCamera())
+		{
+			const glm::vec4 cameraPosition = camera->GetPosition();
+			listenerPosition = glm::vec3(cameraPosition.x, cameraPosition.y, cameraPosition.z);
+			snapshot.listenerAvailable = true;
+			snapshot.listenerPosition = Vec3{ listenerPosition.x, listenerPosition.y, listenerPosition.z };
+		}
+
+		int selectedReverbZoneIndex = -1;
+		VansEngine::AudioReverbZoneEvaluation selectedReverbEvaluation;
+		const std::vector<VansScriptObject*>& sceneObjects = scene->GetSceneObjects();
+		snapshot.sources.reserve(sceneObjects.size());
+		snapshot.reverbZones.reserve(sceneObjects.size());
+		for (const VansScriptObject* object : sceneObjects)
+		{
+			if (!object)
+				continue;
+
+			const bool hasTransform =
+				object->m_TransformID != 0 &&
+				object->m_TransformID < VansGraphics::VansTransformStore::GlobalTransforms.size();
+			glm::vec3 objectPosition(0.0f);
+			if (hasTransform)
+			{
+				const VansGraphics::VansTransform& transform =
+					VansGraphics::VansTransformStore::GetTransform(object->m_TransformID);
+				objectPosition = glm::vec3(
+					transform.m_Position.x,
+					transform.m_Position.y,
+					transform.m_Position.z);
+			}
+
+			if (const auto* audio = object->GetComponent<VansScriptAudioComponent>())
+			{
+				AudioSourceDebugState source;
+				source.objectName = object->m_ObjectName;
+				source.sourceName = audio->m_Source.GetSourceName();
+				source.busName = audio->m_Source.GetBusName();
+				source.position = Vec3{ objectPosition.x, objectPosition.y, objectPosition.z };
+				if (snapshot.listenerAvailable)
+				{
+					const glm::vec3 delta = objectPosition - listenerPosition;
+					source.listenerDistance = std::sqrt(
+						delta.x * delta.x + delta.y * delta.y + delta.z * delta.z);
+				}
+				source.volume = audio->m_Source.GetVolume();
+				source.effectiveBusGain = audioManager->GetEffectiveBusGain(source.busName);
+				source.reverbSend = audio->m_Source.GetReverbSend();
+				source.occlusionGain = audio->m_OcclusionState.gain;
+				source.occlusionHighFrequencyGain = audio->m_OcclusionState.highFrequencyGain;
+				source.occlusionMaterial = audio->m_OcclusionSettings.material;
+				source.occlusionMaterialThickness = audio->m_OcclusionSettings.materialThickness;
+				source.occlusionQueryTimer = audio->m_OcclusionState.queryTimer;
+				source.bound = audio->m_Source.IsBound();
+				source.objectActive = object->IsActive();
+				source.componentEnabled = audio->IsEnabled();
+				source.playing = audio->m_Source.IsPlaying();
+				source.paused = audio->m_Source.IsPaused();
+				source.spatial = audio->m_Source.GetSpatial();
+				source.usesInstance = audio->m_Source.UsesInstance();
+				source.usesPrivateNode = audio->m_Source.UsesPrivateNode();
+				source.hardwareVoiceActive = audio->m_Source.IsHardwareVoiceActive();
+				source.virtualized = source.playing && audio->m_Source.GetVirtualizationGain() <= 0.0005f;
+				source.occlusionEnabled = audio->m_OcclusionSettings.enabled;
+				source.occlusionBlocked = audio->m_OcclusionState.lastBlocked;
+				source.dopplerEnabled = audio->m_DopplerEnabled;
+				snapshot.sourceCount += 1;
+				if (source.bound) snapshot.boundSourceCount += 1;
+				if (source.playing) snapshot.playingSourceCount += 1;
+				if (source.spatial) snapshot.spatialSourceCount += 1;
+				if (source.virtualized) snapshot.virtualizedSourceCount += 1;
+				if (source.hardwareVoiceActive) snapshot.hardwareVoiceActiveCount += 1;
+				snapshot.sources.push_back(std::move(source));
+			}
+
+			if (const auto* zone = object->GetComponent<VansScriptAudioReverbZoneComponent>())
+			{
+				VansEngine::AudioReverbZoneState zoneState;
+				zoneState.shape = VansEngine::AudioReverbZoneShapeFromString(zone->m_Shape);
+				zoneState.centerX = objectPosition.x;
+				zoneState.centerY = objectPosition.y;
+				zoneState.centerZ = objectPosition.z;
+				zoneState.radius = zone->m_Radius;
+				zoneState.halfExtentX = zone->m_HalfExtentX;
+				zoneState.halfExtentY = zone->m_HalfExtentY;
+				zoneState.halfExtentZ = zone->m_HalfExtentZ;
+				zoneState.fadeDistance = zone->m_FadeDistance;
+				zoneState.wetGain = zone->m_WetGain;
+				zoneState.priority = zone->m_Priority;
+				zoneState.preset = VansEngine::AudioReverbPresetFromString(zone->m_Preset);
+				zoneState.presetParameters = zone->m_PresetParameters;
+				zoneState.overridePresetParameters = zone->m_OverridePresetParameters;
+
+				const VansEngine::AudioReverbZoneEvaluation evaluation =
+					snapshot.listenerAvailable
+					? VansEngine::EvaluateReverbZone(
+						listenerPosition.x,
+						listenerPosition.y,
+						listenerPosition.z,
+						zoneState)
+					: VansEngine::AudioReverbZoneEvaluation{};
+				if (VansEngine::ShouldSelectReverbZoneCandidate(
+					selectedReverbEvaluation,
+					evaluation))
+				{
+					selectedReverbEvaluation = evaluation;
+					selectedReverbZoneIndex = static_cast<int>(snapshot.reverbZones.size());
+				}
+
+				AudioReverbZoneDebugState zoneDebug;
+				zoneDebug.objectName = object->m_ObjectName;
+				zoneDebug.componentType = zone->m_ComponentName;
+				zoneDebug.shape = VansEngine::AudioReverbZoneShapeToString(zoneState.shape);
+				zoneDebug.preset = zone->m_OverridePresetParameters
+					? (VansEngine::AudioReverbPresetToString(zoneState.preset) + std::string(" custom"))
+					: VansEngine::AudioReverbPresetToString(zoneState.preset);
+				zoneDebug.position = Vec3{ objectPosition.x, objectPosition.y, objectPosition.z };
+				zoneDebug.blend = evaluation.blend;
+				zoneDebug.wetGain = zoneState.wetGain;
+				zoneDebug.effectiveWetGain = evaluation.wetGain;
+				zoneDebug.priority = zoneState.priority;
+				zoneDebug.affectsListener = evaluation.affectsListener;
+				snapshot.reverbZoneCount += 1;
+				if (zoneDebug.affectsListener)
+					snapshot.affectingReverbZoneCount += 1;
+				snapshot.reverbZones.push_back(std::move(zoneDebug));
+			}
+		}
+		if (selectedReverbZoneIndex >= 0 &&
+			selectedReverbZoneIndex < static_cast<int>(snapshot.reverbZones.size()))
+		{
+			snapshot.reverbZones[static_cast<std::size_t>(selectedReverbZoneIndex)].selected = true;
+		}
+		return snapshot;
+	}
+
+	void EngineAPIImpl::SetAudioBusGain(const std::string& busName, float gain)
+	{
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		if (scene && scene->GetAudioManager())
+			scene->GetAudioManager()->SetBusGain(busName, gain);
+	}
+
+	void EngineAPIImpl::SetAudioBusMuted(const std::string& busName, bool muted)
+	{
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		if (scene && scene->GetAudioManager())
+			scene->GetAudioManager()->SetBusMuted(busName, muted);
+	}
+
+	void EngineAPIImpl::SetAudioBusSoloed(const std::string& busName, bool soloed)
+	{
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		if (scene && scene->GetAudioManager())
+			scene->GetAudioManager()->SetBusSoloed(busName, soloed);
+	}
+
+	void EngineAPIImpl::SetAudioMaxActiveVoices(int maxActiveVoices)
+	{
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		if (scene)
+			scene->SetAudioMaxActiveVoices(static_cast<std::size_t>(std::max(1, maxActiveVoices)));
 	}
 
 	void EngineAPIImpl::SetRuntimePhysicsFixedTimeStep(float deltaTimeSeconds)

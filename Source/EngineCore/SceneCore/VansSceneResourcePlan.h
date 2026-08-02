@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../AssetCore/VansSkeletalMeshImportSettings.h"
+
 #include <cstdint>
 #include <map>
 #include <string>
@@ -18,8 +20,7 @@ struct VansSceneMeshResourceRequest
 	bool needCpuData = false;
 	float scaleFactor = 1.0f;
 	bool loadMultiMesh = false;
-	bool rebuildIdentityBoneOffsetsFromHierarchy = false;
-	bool remapWeaponAttachmentBonesToHands = false;
+	VansSkeletalMeshImportSettings skeletalImport;
 	bool cookedOnly = false;
 };
 
@@ -53,6 +54,10 @@ struct VansSceneAudioResourceRequest
 	float referenceDistance = 1.0f;
 	float maxDistance = 100.0f;
 	float rolloff = 1.0f;
+	std::string attenuationMode = "linear";
+	float reverbSend = 0.0f;
+	std::string bus = "SFX";
+	float lowpassHighFrequencyGain = 1.0f;
 };
 
 struct VansSceneVideoResourceRequest

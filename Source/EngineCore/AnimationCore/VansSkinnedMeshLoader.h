@@ -1,6 +1,7 @@
 #pragma once
 
 #include "VansAnimationTypes.h"
+#include "../AssetCore/VansSkeletalMeshImportSettings.h"
 #include <string>
 
 struct aiScene;
@@ -11,18 +12,18 @@ namespace VansGraphics
 {
 	class VansMesh;
 
-	// ────────────────────────────────────────────────────────────────
-	//  VansSkinnedMeshLoader
+	// -----------------------------------------------------------------------
+	// VansSkinnedMeshLoader
 	//
-	//  Extension to the Assimp import pipeline. After Assimp loads an FBX/glTF file,
-	//  this class extracts skeletal animation data:
-	//    - Skeleton (bone hierarchy + offset matrices)
-	//    - Per-vertex bone influences (IDs + weights)
-	//    - Animation clips (one per aiAnimation)
+	// Extension to the Assimp import pipeline. After Assimp loads an FBX/glTF
+	// file, this class extracts skeletal animation data:
+	//   - Skeleton (bone hierarchy + offset matrices)
+	//   - Per-vertex bone influences (IDs + weights)
+	//   - Animation clips (one per aiAnimation)
 	//
-	//  It also handles .vclip caching: if cached clips exist on disk next to the FBX,
-	//  they are loaded directly instead of re-extracting from Assimp.
-	// ────────────────────────────────────────────────────────────────
+	// It also handles .vclip caching: if cached clips exist on disk next to the
+	// FBX, they are loaded directly instead of re-extracting from Assimp.
+	// -----------------------------------------------------------------------
 
 	class VansSkinnedMeshLoader
 	{
@@ -33,21 +34,25 @@ namespace VansGraphics
 		static bool ProcessAnimatedMesh(const aiScene* scene,
 		                                const std::string& fbxFilePath,
 		                                uint32_t totalVertexCount,
+		                                float scaleFactor,
 		                                VansAnimationImportResult& outResult,
-		                                bool rebuildIdentityBoneOffsetsFromHierarchy = false,
-		                                bool remapWeaponAttachmentBonesToHands = false);
+		                                const Vans::VansSkeletalMeshImportSettings& importSettings =
+		                                    Vans::VansSkeletalMeshImportSettings{});
 
 		// Extract skeleton from the aiScene (bone hierarchy, offset matrices, parent-child).
-		static void ExtractSkeleton(const aiScene* scene, Skeleton& outSkeleton,
-		                            bool rebuildIdentityBoneOffsetsFromHierarchy = false,
-		                            bool remapWeaponAttachmentBonesToHands = false);
+		static void ExtractSkeleton(const aiScene* scene,
+		                            Skeleton& outSkeleton,
+		                            float scaleFactor = 1.0f,
+		                            const Vans::VansSkeletalMeshImportSettings& importSettings =
+		                                Vans::VansSkeletalMeshImportSettings{});
 
 		// Extract per-vertex bone data (IDs + weights) from all meshes in the scene.
 		static void ExtractVertexBoneData(const aiScene* scene,
 		                                  const Skeleton& skeleton,
 		                                  uint32_t totalVertexCount,
 		                                  std::vector<VertexBoneData>& outData,
-		                                  bool remapWeaponAttachmentBonesToHands = false);
+		                                  const Vans::VansSkeletalMeshImportSettings& importSettings =
+		                                      Vans::VansSkeletalMeshImportSettings{});
 
 		// Extract a single animation clip from an aiAnimation.
 		static void ExtractClipFromAssimp(const aiAnimation* anim,
@@ -55,8 +60,8 @@ namespace VansGraphics
 		                                  VansAnimationClip& outClip);
 
 		// Load animation clips from an external FBX file, mapping bone channels
-		// to an existing (origin model) skeleton. Only animation data is extracted
-		// — no bone weights. Clips are cached as .vclip files alongside the
+		// to an existing origin-model skeleton. Only animation data is extracted,
+		// without bone weights. Clips are cached as .vclip files alongside the
 		// external FBX. Returns true if at least one clip was extracted.
 		static bool ExtractExternAnimationClips(
 		    const std::string& externFbxPath,

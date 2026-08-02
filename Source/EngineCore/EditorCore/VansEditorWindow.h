@@ -51,6 +51,7 @@ namespace VansGraphics
 	class VansShadowDebuggerWindow;
 	class VansPcgWindow;
 	class VansHiZCullWindow;
+	class VansAudioDebugWindow;
 
 	//编辑器窗口
 	class VansEditorWindow
@@ -77,6 +78,7 @@ namespace VansGraphics
 		static bool m_PcgWindowOpen;
 		static bool m_HiZCullWindowOpen;
 		static bool m_ProjectSettingsWindowOpen;
+		static bool m_AudioDebugWindowOpen;
 
 		static bool m_WireframeMode;
 		static bool m_VehicleDebugGizmos;
@@ -180,6 +182,8 @@ namespace VansGraphics
 		static VansPcgWindow* m_PcgWindow;
 
 		static VansHiZCullWindow* m_HiZCullWindow;
+
+		static VansAudioDebugWindow* m_AudioDebugWindow;
 
 	private:
 

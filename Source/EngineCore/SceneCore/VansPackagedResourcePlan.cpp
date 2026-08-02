@@ -59,6 +59,60 @@ namespace
 		return NormalizePathString(path);
 	}
 
+	Json EncodeSkeletalImport(const VansSkeletalMeshImportSettings& settings)
+	{
+		Json json;
+		json["bindPoseSource"] = settings.bindPoseSource;
+		json["meshNodeTransformPolicy"] = settings.meshNodeTransformPolicy;
+		json["rigidAttachmentPolicy"] = settings.rigidAttachmentPolicy;
+		json["diagnostics"] = settings.diagnostics;
+		json["legacyFixups"] = Json::object();
+		json["legacyFixups"]["repairInvalidIdentityBindPose"] =
+			settings.legacyFixups.repairInvalidIdentityBindPose;
+		json["legacyFixups"]["remapWeaponAttachmentsToHands"] =
+			settings.legacyFixups.remapWeaponAttachmentsToHands;
+		json["legacyFixups"]["nearestBoneRigidBind"] =
+			settings.legacyFixups.nearestBoneRigidBind;
+		return json;
+	}
+
+	VansSkeletalMeshImportSettings DecodeSkeletalImport(const Json& json)
+	{
+		VansSkeletalMeshImportSettings settings;
+		if (!json.is_object())
+			return settings;
+
+		settings.bindPoseSource = json.value("bindPoseSource", settings.bindPoseSource);
+		settings.meshNodeTransformPolicy =
+			json.value("meshNodeTransformPolicy", settings.meshNodeTransformPolicy);
+		settings.rigidAttachmentPolicy =
+			json.value("rigidAttachmentPolicy", settings.rigidAttachmentPolicy);
+		settings.diagnostics = json.value("diagnostics", settings.diagnostics);
+
+		if (const auto legacyIt = json.find("legacyFixups");
+			legacyIt != json.end() && legacyIt->is_object())
+		{
+			settings.legacyFixups.repairInvalidIdentityBindPose =
+				legacyIt->value(
+					"repairInvalidIdentityBindPose",
+					settings.legacyFixups.repairInvalidIdentityBindPose);
+			settings.legacyFixups.remapWeaponAttachmentsToHands =
+				legacyIt->value(
+					"remapWeaponAttachmentsToHands",
+					settings.legacyFixups.remapWeaponAttachmentsToHands);
+			settings.legacyFixups.nearestBoneRigidBind =
+				legacyIt->value(
+					"nearestBoneRigidBind",
+					settings.legacyFixups.nearestBoneRigidBind);
+		}
+		if (settings.rigidAttachmentPolicy == "legacyNearestBone")
+		{
+			settings.legacyFixups.nearestBoneRigidBind = true;
+			settings.rigidAttachmentPolicy = "preserveNodeOffset";
+		}
+		return settings;
+	}
+
 	Json EncodeMesh(const VansSceneMeshResourceRequest& request, const fs::path& contentRoot)
 	{
 		Json json;
@@ -71,8 +125,7 @@ namespace
 		json["needCpuData"] = request.needCpuData;
 		json["scaleFactor"] = request.scaleFactor;
 		json["loadMultiMesh"] = request.loadMultiMesh;
-		json["rebuildIdentityBoneOffsetsFromHierarchy"] = request.rebuildIdentityBoneOffsetsFromHierarchy;
-		json["remapWeaponAttachmentBonesToHands"] = request.remapWeaponAttachmentBonesToHands;
+		json["skeletalImport"] = EncodeSkeletalImport(request.skeletalImport);
 		json["cookedOnly"] = request.cookedOnly;
 		return json;
 	}
@@ -89,10 +142,29 @@ namespace
 		request.needCpuData = json.value("needCpuData", request.needCpuData);
 		request.scaleFactor = json.value("scaleFactor", request.scaleFactor);
 		request.loadMultiMesh = json.value("loadMultiMesh", request.loadMultiMesh);
-		request.rebuildIdentityBoneOffsetsFromHierarchy =
-			json.value("rebuildIdentityBoneOffsetsFromHierarchy", request.rebuildIdentityBoneOffsetsFromHierarchy);
-		request.remapWeaponAttachmentBonesToHands =
-			json.value("remapWeaponAttachmentBonesToHands", request.remapWeaponAttachmentBonesToHands);
+		if (const auto skeletalIt = json.find("skeletalImport");
+			skeletalIt != json.end())
+		{
+			request.skeletalImport = DecodeSkeletalImport(*skeletalIt);
+		}
+		else
+		{
+			// Backward compatibility for already-packaged plans. New plans should
+			// write these under skeletalImport.legacyFixups instead.
+			request.skeletalImport.legacyFixups.repairInvalidIdentityBindPose =
+				json.value(
+					"rebuildIdentityBoneOffsetsFromHierarchy",
+					request.skeletalImport.legacyFixups.repairInvalidIdentityBindPose);
+			request.skeletalImport.legacyFixups.remapWeaponAttachmentsToHands =
+				json.value(
+					"remapWeaponAttachmentBonesToHands",
+					request.skeletalImport.legacyFixups.remapWeaponAttachmentsToHands);
+			if (json.contains("rebuildIdentityBoneOffsetsFromHierarchy") ||
+				json.contains("remapWeaponAttachmentBonesToHands"))
+			{
+				request.skeletalImport.legacyFixups.nearestBoneRigidBind = true;
+			}
+		}
 		request.cookedOnly = json.value("cookedOnly", request.cookedOnly);
 		return request;
 	}
@@ -148,6 +220,10 @@ namespace
 		json["referenceDistance"] = request.referenceDistance;
 		json["maxDistance"] = request.maxDistance;
 		json["rolloff"] = request.rolloff;
+		json["attenuationMode"] = request.attenuationMode;
+		json["reverbSend"] = request.reverbSend;
+		json["bus"] = request.bus;
+		json["lowpassHighFrequencyGain"] = request.lowpassHighFrequencyGain;
 		return json;
 	}
 
@@ -166,6 +242,11 @@ namespace
 		request.referenceDistance = json.value("referenceDistance", request.referenceDistance);
 		request.maxDistance = json.value("maxDistance", request.maxDistance);
 		request.rolloff = json.value("rolloff", request.rolloff);
+		request.attenuationMode = json.value("attenuationMode", request.attenuationMode);
+		request.reverbSend = json.value("reverbSend", request.reverbSend);
+		request.bus = json.value("bus", request.bus);
+		request.lowpassHighFrequencyGain =
+			json.value("lowpassHighFrequencyGain", request.lowpassHighFrequencyGain);
 		return request;
 	}
 

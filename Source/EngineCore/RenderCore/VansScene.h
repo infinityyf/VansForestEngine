@@ -52,11 +52,13 @@ class VansScriptObject;
 #include "VansVideoManager.h"
 
 #include "../AudioCore/VansAudioManager.h"
+#include "../AudioCore/VansAudioVirtualization.h"
 
 #include "ReflectionProbeCore/VansReflectionProbeSystem.h"
 
 #include "VansTransformSlotAllocator.h"
 
+#include <algorithm>
 #include <vector>
 #include <atomic>
 
@@ -877,7 +879,11 @@ namespace VansGraphics
 
 		// spatial=true ? AudioComponent ????? OpenAL source?
 
-		void SyncAudioSourcePositions();
+		void SyncAudioSourcePositions(float deltaTime);
+
+		void ReleaseAudioSourceBindings();
+
+		void UpdateAudioReverbEnvironment(float deltaTime);
 
 
 
@@ -1172,6 +1178,13 @@ namespace VansGraphics
 
 		const VansEngine::VansAudioManager* GetAudioManager() const { return &m_AudioManager; }
 
+		const VansEngine::AudioVoiceBudgetSettings& GetAudioVoiceBudgetSettings() const { return m_AudioVoiceBudgetSettings; }
+
+		void SetAudioMaxActiveVoices(std::size_t maxActiveVoices)
+		{
+			m_AudioVoiceBudgetSettings.maxActiveVoices = std::max<std::size_t>(1, maxActiveVoices);
+		}
+
 
 
 		VansSceneLoadMode GetLoadMode() const { return m_LoadMode; }
@@ -1307,6 +1320,16 @@ namespace VansGraphics
 		// AssetDatabase records are uploaded by the legacy resource batch executor and released with the project.
 
 		VansEngine::VansAudioManager m_AudioManager;
+		VansEngine::AudioVoiceBudgetSettings m_AudioVoiceBudgetSettings;
+		float m_AudioEnvironmentReverbWetGain = 1.0f;
+		std::size_t m_AudioOcclusionQueryCursor = 0;
+		bool m_AudioHasLastListenerPosition = false;
+		float m_AudioLastListenerX = 0.0f;
+		float m_AudioLastListenerY = 0.0f;
+		float m_AudioLastListenerZ = 0.0f;
+		float m_AudioListenerVelocityX = 0.0f;
+		float m_AudioListenerVelocityY = 0.0f;
+		float m_AudioListenerVelocityZ = 0.0f;
 
 
 

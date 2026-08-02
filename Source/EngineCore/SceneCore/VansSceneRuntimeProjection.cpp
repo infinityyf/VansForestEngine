@@ -7,6 +7,8 @@
 #include "../AssetCore/Storage/VansAssetMetaStorage.h"
 #include "../AssetCore/Storage/VansMaterialAuthoringAssetStorage.h"
 #include "../AssetCore/Storage/VansShaderAuthoringAssetStorage.h"
+#include "../AudioCore/VansAudioReverbEnvironment.h"
+#include "../AudioCore/Storage/VansAudioReverbPresetAssetStorage.h"
 #include "../ProjectSystem/VansProjectManager.h"
 #include "../Util/VansLog.h"
 #include "../ScriptCore/VansScriptComponentReader.h"
@@ -166,6 +168,49 @@ std::string RuntimeAssetNameFromReference(const VansSerializedValue& reference)
 
 	const std::string guid = ReadSerializedStringField(reference, "guid");
 	return RuntimeAssetNameFromGuid(guid);
+}
+
+std::string AssetGuidFromReference(const VansSerializedValue& reference)
+{
+	if (reference.kind == VansSerializedValue::Kind::String)
+		return reference.stringValue;
+	if (reference.kind != VansSerializedValue::Kind::Object)
+		return {};
+	return ReadSerializedStringField(reference, "guid");
+}
+
+bool TryApplyAudioReverbPresetAsset(
+	const VansSerializedValue& reference,
+	VansSceneAudioReverbZoneConfig& config)
+{
+	const std::string guidText = AssetGuidFromReference(reference);
+	if (guidText.empty())
+		return false;
+
+	VansAssetGuid guid;
+	if (!VansAssetGuid::TryParse(guidText, guid))
+		return false;
+
+	const std::optional<VansAssetRecord> record = VansProjectManager::Get().FindAssetRecord(guid);
+	if (!record || record->type != VansAssetType::AudioReverbPreset ||
+		record->state == VansAssetState::Missing)
+	{
+		return false;
+	}
+
+	VansAudioReverbPresetAsset asset;
+	std::string error;
+	if (!VansAudioReverbPresetAssetStorage::Load(AuthoringReadPath(*record), asset, error))
+	{
+		VANS_LOG_ERROR("[SceneRuntimeProjection] Cannot read audio reverb preset asset: "
+			<< AuthoringReadPath(*record).string() << " (" << error << ")");
+		return false;
+	}
+
+	config.presetAssetGuid = guidText;
+	config.presetParameters = asset.parameters;
+	config.overridePresetParameters = true;
+	return true;
 }
 
 VansSerializedValue RuntimeShaderAssetFromReference(const VansSerializedValue& reference)
@@ -438,7 +483,8 @@ std::string RuntimeComponentKey(const std::string& type)
 		{ "Physics", "physics" }, { "Camera", "camera" }, { "Animation", "animation" },
 		{ "CharacterController", "charController" }, { "DirectionalLight", "directional_light" },
 		{ "PointLight", "point_light" }, { "SpotLight", "spot_light" }, { "RectLight", "rect_light" },
-		{ "Audio", "audio" }, { "Video", "video" }, { "Particle", "particle" },
+		{ "Audio", "audio" }, { "AudioVolume", "audio_volume" },
+		{ "AudioReverbZone", "audio_reverb_zone" }, { "Video", "video" }, { "Particle", "particle" },
 		{ "Cloth", "cloth" }, { "Vehicle", "vehicle" }
 	};
 
@@ -531,6 +577,38 @@ std::optional<std::uint32_t> ReadSerializedUInt32Field(const VansSerializedValue
 	return std::nullopt;
 }
 
+float ReadFloatFieldClamped(
+	const VansSerializedValue& object,
+	const char* key,
+	float fallback,
+	float minValue,
+	float maxValue)
+{
+	const VansSerializedValue* field = FindObjectField(object, key);
+	if (!field)
+		return fallback;
+	const double value = ReadSerializedNumber(*field, fallback);
+	return std::clamp(static_cast<float>(value), minValue, maxValue);
+}
+
+int ReadIntFieldClamped(
+	const VansSerializedValue& object,
+	const char* key,
+	int fallback,
+	int minValue,
+	int maxValue)
+{
+	const VansSerializedValue* field = FindObjectField(object, key);
+	if (!field)
+		return fallback;
+	int value = fallback;
+	if (field->kind == VansSerializedValue::Kind::Int)
+		value = static_cast<int>(field->intValue);
+	else if (field->kind == VansSerializedValue::Kind::Float)
+		value = static_cast<int>(field->floatValue);
+	return std::clamp(value, minValue, maxValue);
+}
+
 std::array<float, 3> ReadSerializedFloat3ArrayField(
 	const VansSerializedValue& object,
 	const char* key,
@@ -544,6 +622,18 @@ std::array<float, 3> ReadSerializedFloat3ArrayField(
 		static_cast<float>(ReadSerializedNumber(value->arrayItems[0], fallback[0])),
 		static_cast<float>(ReadSerializedNumber(value->arrayItems[1], fallback[1])),
 		static_cast<float>(ReadSerializedNumber(value->arrayItems[2], fallback[2]))
+	};
+}
+
+std::array<float, 3> ClampFloat3(
+	const std::array<float, 3>& value,
+	float minValue,
+	float maxValue)
+{
+	return std::array<float, 3>{
+		std::clamp(value[0], minValue, maxValue),
+		std::clamp(value[1], minValue, maxValue),
+		std::clamp(value[2], minValue, maxValue)
 	};
 }
 
@@ -831,6 +921,66 @@ VansSceneCameraMediaComponentConfig ReadAuthoringCameraMediaComponents(const Van
 	return config;
 }
 
+std::optional<VansSceneAudioReverbZoneConfig> ReadAuthoringAudioReverbZoneComponent(
+	const VansSerializedValue& entity)
+{
+	const VansSerializedValue* zoneComponent = FindComponent(entity, "AudioVolume");
+	std::string componentType = "AudioVolume";
+	if (!zoneComponent)
+	{
+		zoneComponent = FindComponent(entity, "AudioReverbZone");
+		componentType = "AudioReverbZone";
+	}
+	if (!zoneComponent || !ReadSerializedBoolField(*zoneComponent, "enabled", true))
+		return std::nullopt;
+
+	VansSerializedValue emptyData = VansSerializedValue::Object({});
+	const VansSerializedValue* data = FindSerializedObjectField(*zoneComponent, "data");
+	const VansSerializedValue& zoneData = data ? *data : emptyData;
+
+	VansSceneAudioReverbZoneConfig config;
+	config.componentType = componentType;
+	config.shape = VansEngine::AudioReverbZoneShapeToString(
+		VansEngine::AudioReverbZoneShapeFromString(
+			ReadSerializedStringField(zoneData, "shape", config.shape)));
+	config.preset = VansEngine::AudioReverbPresetToString(
+		VansEngine::AudioReverbPresetFromString(
+			ReadSerializedStringField(zoneData, "preset", config.preset)));
+	config.radius = ReadFloatFieldClamped(zoneData, "radius", config.radius, 0.01f, 100000.0f);
+	config.halfExtents = ClampFloat3(
+		ReadSerializedFloat3ArrayField(zoneData, "halfExtents", config.halfExtents),
+		0.01f,
+		100000.0f);
+	config.fadeDistance = ReadFloatFieldClamped(zoneData, "fadeDistance", config.fadeDistance, 0.0f, 100000.0f);
+	config.wetGain = ReadFloatFieldClamped(zoneData, "wetGain", config.wetGain, 0.0f, 1.0f);
+	config.priority = ReadIntFieldClamped(zoneData, "priority", config.priority, -1000, 1000);
+	config.presetParameters = VansEngine::GetAudioReverbPresetParameters(
+		VansEngine::AudioReverbPresetFromString(config.preset));
+	const bool inlineOverridePresetParameters = ReadSerializedBoolField(
+		zoneData,
+		"overridePresetParameters",
+		false);
+	if (inlineOverridePresetParameters)
+	{
+		config.overridePresetParameters = true;
+		auto readPresetParameter = [&](const char* key, float fallback, float minValue, float maxValue)
+		{
+			const VansSerializedValue* field = FindObjectField(zoneData, key);
+			if (!field)
+				return fallback;
+			return std::clamp(static_cast<float>(ReadSerializedNumber(*field, fallback)), minValue, maxValue);
+		};
+		config.presetParameters.density = readPresetParameter("density", config.presetParameters.density, 0.0f, 1.0f);
+		config.presetParameters.diffusion = readPresetParameter("diffusion", config.presetParameters.diffusion, 0.0f, 1.0f);
+		config.presetParameters.gain = readPresetParameter("gain", config.presetParameters.gain, 0.0f, 1.0f);
+		config.presetParameters.gainHF = readPresetParameter("gainHF", config.presetParameters.gainHF, 0.0f, 1.0f);
+		config.presetParameters.decayTime = readPresetParameter("decayTime", config.presetParameters.decayTime, 0.1f, 20.0f);
+	}
+	if (const VansSerializedValue* presetAsset = FindObjectField(zoneData, "presetAsset"))
+		TryApplyAudioReverbPresetAsset(*presetAsset, config);
+	return config;
+}
+
 std::optional<VansSceneMultiMeshRootConfig> ReadAuthoringMultiMeshRootComponent(
 	const VansSerializedValue& entity)
 {
@@ -917,6 +1067,7 @@ bool AppendAuthoringEntityToContentPlan(
 	objectConfig.vehicleObject = VansSceneVehicleComponentReader::ReadAuthoringComponents(entity);
 	objectConfig.lightComponents = ReadAuthoringLightComponents(entity);
 	objectConfig.cameraMediaComponents = ReadAuthoringCameraMediaComponents(entity);
+	objectConfig.audioReverbZone = ReadAuthoringAudioReverbZoneComponent(entity);
 	objectConfig.animation = VansSceneAnimationComponentReader::ReadFromAuthoringEntity(entity);
 	if (objectConfig.animation)
 	{

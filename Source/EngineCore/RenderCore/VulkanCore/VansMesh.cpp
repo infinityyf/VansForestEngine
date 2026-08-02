@@ -1,4 +1,4 @@
-#include "../../../Graphics/Vulkan/VansVKFunctions.h"
+﻿#include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansMesh.h"
 #include "VansVKCommandBuffer.h"
 #include "VansVKDevice.h"
@@ -127,7 +127,7 @@ namespace
 	}
 
 	constexpr std::array<char, 8> kMeshCacheMagic = { 'V', 'A', 'N', 'S', 'M', 'S', 'H', '\0' };
-	constexpr uint32_t kMeshCacheVersion = 2;
+	constexpr uint32_t kMeshCacheVersion = 3;
 	constexpr uint32_t kMeshCacheFlagMultiMesh = 1u << 0;
 	constexpr uint64_t kMeshCacheMaxVectorItems = 256ull * 1024ull * 1024ull;
 
@@ -780,8 +780,7 @@ VansGraphics::VansMeshCacheBuildStatus VansGraphics::VansMesh::BuildMeshCache(
 	bool import_tangent,
 	bool expectMultiMesh,
 	float scaleFactor,
-	bool rebuildIdentityBoneOffsetsFromHierarchy,
-	bool remapWeaponAttachmentBonesToHands,
+	const Vans::VansSkeletalMeshImportSettings& skeletalImport,
 	const std::string& cachePath,
 	std::string& error)
 {
@@ -817,8 +816,7 @@ VansGraphics::VansMeshCacheBuildStatus VansGraphics::VansMesh::BuildMeshCache(
 			/*supportRayTracing=*/false,
 			/*needCPUData=*/true,
 			scaleFactor,
-			rebuildIdentityBoneOffsetsFromHierarchy,
-			remapWeaponAttachmentBonesToHands,
+			skeletalImport,
 			cachePath,
 			/*trustCacheWithoutSource=*/false);
 	}
@@ -937,7 +935,7 @@ bool VansGraphics::VansMesh::SaveMeshCache(
 
 uint16_t FloatToHalf(float f) 
 {
-	// 这里需要一个 float16 转换算法，或者使用 glm::packHalf1x16
+	// Convert float32 to float16 using glm's pack helper.
 	return glm::packHalf1x16(f);
 }
 
@@ -1037,7 +1035,7 @@ void VansGraphics::VansMesh::LoadMesh(VkDevice& logic_device, VkQueue& queue, Va
 	{
 		return;
 	}
-	//用assimp
+	//鐢╝ssimp
 	Assimp::Importer importer;
 	auto processFlag = aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_GenNormals;
 	if (import_tangent)
@@ -1066,11 +1064,11 @@ void VansGraphics::VansMesh::LoadMesh(VkDevice& logic_device, VkQueue& queue, Va
 void VansGraphics::VansMesh::BuildBLAS(VansVKDevice& device, VansVKCommandBuffer& commandBuffer)
 {
 	VkDevice logic_device = device.GetLogicDevice();
-	// 获取顶点缓冲区地址
+	// Get the vertex buffer address.
 	VkDeviceAddress vertexBufferAddress = m_VertexBuffer.GetDeviceAddress(logic_device);
 	VkDeviceAddress indexBufferAddress = m_IndexBuffer.GetDeviceAddress(logic_device);
 
-	// 定义几何数据
+	// 瀹氫箟鍑犱綍鏁版嵁
 	VkAccelerationStructureGeometryTrianglesDataKHR triangles{};
 	triangles.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
 	triangles.vertexFormat = VK_FORMAT_R16G16B16_SFLOAT;
@@ -1089,7 +1087,7 @@ void VansGraphics::VansMesh::BuildBLAS(VansVKDevice& device, VansVKCommandBuffer
 
 
 
-	// 计算构建大小
+	// Compute build size.
 	VkAccelerationStructureBuildGeometryInfoKHR buildGeometryInfo{};
 	buildGeometryInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
 	buildGeometryInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
@@ -1111,7 +1109,7 @@ void VansGraphics::VansMesh::BuildBLAS(VansVKDevice& device, VansVKCommandBuffer
 	buildSizesInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
 	device.GetAccelerationStructureBuildSizes(&buildGeometryInfo, primitiveCounts, &buildSizesInfo);
 
-	//给blas创建buffer
+	//缁檅las鍒涘缓buffer
 	m_BottomLevelASBuffer.CreatVulkanBuffer(
 		logic_device,
 		buildSizesInfo.accelerationStructureSize,
@@ -1141,7 +1139,7 @@ void VansGraphics::VansMesh::BuildBLAS(VansVKDevice& device, VansVKCommandBuffer
 	buildGeometryInfo.scratchData.deviceAddress =
 		(scratchBaseAddress + scratchAlignment - 1) & ~(scratchAlignment - 1);
 
-	//创建加速结构
+	// Create acceleration structure.
 	const VkAccelerationStructureBuildRangeInfoKHR* pRangeInfo = &buildRangeInfo;
 	commandBuffer.BuildAccelerationStructures(&buildGeometryInfo, pRangeInfo);
 }
@@ -1164,7 +1162,7 @@ void VansGraphics::VansMesh::ReleaseASTempData(VkDevice& logic_device)
 }
 
 // ============================================================================
-// InitFromRawData — build a mesh from pre-computed vertex + index arrays
+// InitFromRawData: build a mesh from pre-computed vertex and index arrays.
 // ============================================================================
 void VansGraphics::VansMesh::InitFromRawData(
 	VkDevice device,

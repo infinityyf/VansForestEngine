@@ -58,6 +58,7 @@ void VansProjectConfig::SetDefaults(const std::string& name)
 	scriptSearchPaths = { "Scripts" };
 	renderSettings = "ProjectSettings/RenderSettings.json";
 	physicsSettings = "ProjectSettings/PhysicsSettings.json";
+	audioSettings = "ProjectSettings/AudioMix.json";
 	collisionLayerSettings = "ProjectSettings/PhysicsLayers.json";
 }
 

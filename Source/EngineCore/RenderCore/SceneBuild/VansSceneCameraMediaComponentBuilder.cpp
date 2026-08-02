@@ -51,9 +51,36 @@ void VansSceneCameraMediaComponentBuilder::BuildCameraAudioVideo(
 		{
 			ensureObjectTransform();
 			auto* audioComp = new VansScriptAudioComponent();
-			audioComp->m_AudioNode = audioNode;
-			audioComp->m_AudioManager = audioManager;
+			audioComp->m_Source.Bind(audioManager, audioNode, audioName);
+			audioComp->m_Source.SetLowpassHighFrequencyGain(
+				components.audio->lowpassHighFrequencyGain);
+			audioComp->m_OcclusionSettings.enabled = components.audio->occlusionEnabled;
+			audioComp->m_OcclusionSettings.blockedGain = components.audio->occlusionGain;
+			audioComp->m_OcclusionSettings.blockedHighFrequencyGain =
+				components.audio->occlusionHighFrequencyGain;
+			audioComp->m_OcclusionSettings.material = components.audio->occlusionMaterial;
+			audioComp->m_OcclusionSettings.materialThickness =
+				components.audio->occlusionMaterialThickness;
+			audioComp->m_OcclusionSettings.attackSeconds = components.audio->occlusionAttack;
+			audioComp->m_OcclusionSettings.releaseSeconds = components.audio->occlusionRelease;
+			audioComp->m_OcclusionSettings.queryIntervalSeconds =
+				components.audio->occlusionQueryInterval;
+			audioComp->m_OcclusionSettings.maxQueryDistance =
+				components.audio->occlusionMaxDistance;
+			audioComp->m_OcclusionSettings.maxQueriesPerFrame =
+				components.audio->occlusionMaxQueriesPerFrame;
+			audioComp->m_OcclusionSettings.Normalize();
+			audioComp->m_ConeSettings.enabled = components.audio->coneEnabled;
+			audioComp->m_ConeSettings.innerAngleDegrees = components.audio->coneInnerAngle;
+			audioComp->m_ConeSettings.outerAngleDegrees = components.audio->coneOuterAngle;
+			audioComp->m_ConeSettings.outerGain = components.audio->coneOuterGain;
+			audioComp->m_ConeSettings.Normalize();
+			audioComp->m_DopplerEnabled = components.audio->dopplerEnabled;
+			if (audioComp->m_Source.UsesIndependentPlayback() && audioNode->IsAutoPlay())
+				audioComp->m_Source.Play();
 			object.AddComponent(audioComp);
+			VANS_LOG("[LoadSceneObjects] Audio component '" << audioName
+				<< "' attached to object: " << object.m_ObjectName);
 		}
 		else
 		{

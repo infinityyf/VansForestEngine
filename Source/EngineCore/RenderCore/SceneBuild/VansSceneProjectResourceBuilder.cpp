@@ -202,8 +202,7 @@ bool VansSceneProjectResourceBuilder::LoadMeshes(VansScene& scene,
 
             mesh->LoadMultiMesh(device, vkDevice->GetGraphicsQueue(), &(vkDevice->GetCommandBuffer()), meshPath,
                 import_tangent, generate_as, needCpuData, scaleFactor,
-                sceneMesh.rebuildIdentityBoneOffsetsFromHierarchy,
-                sceneMesh.remapWeaponAttachmentBonesToHands,
+                sceneMesh.skeletalImport,
                 resolved.artifactPath.string(),
                 resolved.cookedOnly);
 			if (mesh->m_SubMeshes.empty())

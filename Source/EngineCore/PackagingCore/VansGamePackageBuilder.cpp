@@ -604,6 +604,9 @@ namespace
 		case Vans::VansAssetType::ClothProfile: return "clothProfile";
 		case Vans::VansAssetType::PostProcessProfile: return "postProcessProfile";
 		case Vans::VansAssetType::RagdollProfile: return "ragdollProfile";
+		case Vans::VansAssetType::AudioReverbPreset: return "audioReverbPreset";
+		case Vans::VansAssetType::AudioBusSnapshot: return "audioBusSnapshot";
+		case Vans::VansAssetType::AudioDuckingRules: return "audioDuckingRules";
 		default: return "unknown";
 		}
 	}
@@ -1057,7 +1060,10 @@ namespace
 		for (const Vans::VansAssetRecord& sourceRecord : database.All())
 		{
 			if (sourceRecord.type != Vans::VansAssetType::Material &&
-				sourceRecord.type != Vans::VansAssetType::Shader)
+				sourceRecord.type != Vans::VansAssetType::Shader &&
+				sourceRecord.type != Vans::VansAssetType::AudioReverbPreset &&
+				sourceRecord.type != Vans::VansAssetType::AudioBusSnapshot &&
+				sourceRecord.type != Vans::VansAssetType::AudioDuckingRules)
 				continue;
 
 			const std::string guid = sourceRecord.guid.ToString();
@@ -1071,6 +1077,13 @@ namespace
 					guid, sourceRecord.sourcePath, false, cookedPlan);
 				record->authoringPath = cachedPath.generic_string();
 				if (sourceRecord.type == Vans::VansAssetType::Material)
+				{
+					record->artifactPath = cachedPath.generic_string();
+					record->artifactFormat = "source";
+				}
+				if (sourceRecord.type == Vans::VansAssetType::AudioReverbPreset ||
+					sourceRecord.type == Vans::VansAssetType::AudioBusSnapshot ||
+					sourceRecord.type == Vans::VansAssetType::AudioDuckingRules)
 				{
 					record->artifactPath = cachedPath.generic_string();
 					record->artifactFormat = "source";

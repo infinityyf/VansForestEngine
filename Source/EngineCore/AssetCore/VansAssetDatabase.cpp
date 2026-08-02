@@ -292,6 +292,9 @@ VansAssetType VansAssetDatabase::Classify(const std::filesystem::path& sourcePat
     if (extension == L".clothprofile") return VansAssetType::ClothProfile;
     if (extension == L".pprofile") return VansAssetType::PostProcessProfile;
     if (extension == L".ragdoll") return VansAssetType::RagdollProfile;
+    if (extension == L".vreverb") return VansAssetType::AudioReverbPreset;
+    if (extension == L".vaudiosnapshot" || extension == L".vbusnapshot") return VansAssetType::AudioBusSnapshot;
+    if (extension == L".vducking") return VansAssetType::AudioDuckingRules;
     return VansAssetType::Unknown;
 }
 
@@ -312,6 +315,9 @@ std::string VansAssetDatabase::ImporterFor(VansAssetType type)
     case VansAssetType::ClothProfile: return "ClothProfileImporter";
     case VansAssetType::PostProcessProfile: return "PostProcessProfileImporter";
     case VansAssetType::RagdollProfile: return "RagdollProfileImporter";
+    case VansAssetType::AudioReverbPreset: return "AudioReverbPresetImporter";
+    case VansAssetType::AudioBusSnapshot: return "AudioBusSnapshotImporter";
+    case VansAssetType::AudioDuckingRules: return "AudioDuckingRulesImporter";
     default: return {};
     }
 }

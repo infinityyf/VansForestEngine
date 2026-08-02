@@ -88,6 +88,281 @@ namespace
 		return value;
 	}
 
+	bool ContainsAnyToken(const std::string& text, const std::vector<std::string>& tokens)
+	{
+		if (tokens.empty())
+			return false;
+		const std::string loweredText = ToLower(text);
+		for (const std::string& token : tokens)
+		{
+			if (!token.empty() && loweredText.find(ToLower(token)) != std::string::npos)
+				return true;
+		}
+		return false;
+	}
+
+	bool EndsWithToken(const std::string& text, const std::string& suffix)
+	{
+		return text.size() >= suffix.size() &&
+			text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
+	}
+
+	std::vector<std::string> MergeTokens(const std::vector<std::string>& a,
+	                                     const std::vector<std::string>& b)
+	{
+		std::vector<std::string> merged = a;
+		merged.insert(merged.end(), b.begin(), b.end());
+		return merged;
+	}
+
+	bool ShouldIncludeAutoDatabaseClip(
+		const std::string& clipName,
+		const std::vector<std::string>& includeTokens,
+		const std::vector<std::string>& excludeTokens)
+	{
+		if (!includeTokens.empty() && !ContainsAnyToken(clipName, includeTokens))
+			return false;
+		if (ContainsAnyToken(clipName, excludeTokens))
+			return false;
+		return true;
+	}
+
+	std::string InferAutoDatabasePhase(const std::string& clipName)
+	{
+		const std::string name = ToLower(clipName);
+		if (name.find("start") != std::string::npos)
+			return "Start";
+		if (name.find("stop") != std::string::npos)
+			return "Stop";
+		if (name.find("turn") != std::string::npos)
+			return "Turn";
+		if (name.find("transition") != std::string::npos)
+			return "Transition";
+		if (name.find("to") != std::string::npos)
+			return "Transition";
+		if (name.find("idle") != std::string::npos)
+			return "Idle";
+		return "Move";
+	}
+
+	bool InferAutoDatabaseLoop(const std::string& clipName)
+	{
+		const std::string name = ToLower(clipName);
+		const std::string phase = InferAutoDatabasePhase(clipName);
+		const std::string loweredPhase = ToLower(phase);
+		if (loweredPhase == "start" ||
+		    loweredPhase == "stop" ||
+		    loweredPhase == "turn" ||
+		    loweredPhase == "transition")
+		{
+			return false;
+		}
+		return name.find("loop") != std::string::npos ||
+			name.find("idle") != std::string::npos ||
+			name.find("walk") != std::string::npos ||
+			name.find("run") != std::string::npos ||
+			name.find("sprint") != std::string::npos ||
+			name.find("crouch") != std::string::npos;
+	}
+
+	int InferAutoMoveStateFromName(const std::string& name,
+	                               const MotionMatchingStateSemantics& states)
+	{
+		const std::string lowered = ToLower(name);
+		if (lowered.find("sprint") != std::string::npos)
+			return 3;
+		if (lowered.find("run") != std::string::npos)
+			return 2;
+		if (lowered.find("walk") != std::string::npos)
+			return 1;
+		if (lowered.find("crouch") != std::string::npos)
+			return states.crouchState;
+		return states.idleState;
+	}
+
+	void InferAutoMoveStateTransition(const std::string& clipName,
+	                                  const std::string& phase,
+	                                  const MotionMatchingStateSemantics& states,
+	                                  int& sourceMoveState,
+	                                  int& targetMoveState)
+	{
+		const std::string lowered = ToLower(clipName);
+		const std::string loweredPhase = ToLower(phase);
+		const size_t toPos = lowered.find("to");
+		if (toPos != std::string::npos && toPos > 0 && toPos + 2 < lowered.size())
+		{
+			sourceMoveState = InferAutoMoveStateFromName(lowered.substr(0, toPos), states);
+			targetMoveState = InferAutoMoveStateFromName(lowered.substr(toPos + 2), states);
+			return;
+		}
+
+		targetMoveState = InferAutoMoveStateFromName(lowered, states);
+		sourceMoveState = targetMoveState;
+		if (loweredPhase == "idle")
+		{
+			if (lowered.find("crouch") == std::string::npos)
+				targetMoveState = states.idleState;
+			sourceMoveState = targetMoveState;
+		}
+		else if (loweredPhase == "start")
+		{
+			sourceMoveState = targetMoveState == states.crouchState ? states.crouchState : states.idleState;
+		}
+		else if (loweredPhase == "stop")
+		{
+			sourceMoveState = targetMoveState;
+			targetMoveState = sourceMoveState == states.crouchState ? states.crouchState : states.idleState;
+		}
+	}
+
+	int InferAutoDirectionBucket(const std::string& clipName)
+	{
+		const std::string name = ToLower(clipName);
+		auto hasDirectionToken = [&](const std::string& token) -> bool
+		{
+			return name.find("_" + token + "_") != std::string::npos ||
+				EndsWithToken(name, "_" + token);
+		};
+		if (hasDirectionToken("fl")) return 1;
+		if (hasDirectionToken("l")) return 2;
+		if (hasDirectionToken("bl")) return 3;
+		if (hasDirectionToken("b")) return 4;
+		if (hasDirectionToken("br")) return 5;
+		if (hasDirectionToken("r")) return 6;
+		if (hasDirectionToken("fr")) return 7;
+		if (hasDirectionToken("f")) return 0;
+		return -1;
+	}
+
+	void InferAutoTurnMetadata(const std::string& clipName, MotionMatchingDatabaseClip& clip)
+	{
+		const std::string name = ToLower(clipName);
+		if (name.find("turn") == std::string::npos)
+			return;
+
+		if (name.find("_l_") != std::string::npos)
+			clip.turnDirectionSign = 1;
+		else if (name.find("_r_") != std::string::npos)
+			clip.turnDirectionSign = -1;
+
+		if (name.find("180") != std::string::npos)
+			clip.turnBucketDelta = 4;
+		else if (name.find("135") != std::string::npos)
+			clip.turnBucketDelta = 3;
+		else if (name.find("090") != std::string::npos || name.find("_90") != std::string::npos)
+			clip.turnBucketDelta = 2;
+		else if (name.find("045") != std::string::npos || name.find("_45") != std::string::npos)
+			clip.turnBucketDelta = 1;
+	}
+
+	void FillAutoDatabaseClipMetadata(MotionMatchingDatabaseClip& databaseClip,
+	                                  const MotionMatchingDatabase& database,
+	                                  const MotionMatchingSettings& settings)
+	{
+		if (databaseClip.phase.empty() || ToLower(databaseClip.phase) == "any" || databaseClip.phase == "*")
+			databaseClip.phase = InferAutoDatabasePhase(databaseClip.name);
+		const std::string effectivePhase = databaseClip.phase.empty() ? database.phase : databaseClip.phase;
+		InferAutoMoveStateTransition(
+			databaseClip.name,
+			effectivePhase,
+			settings.states,
+			databaseClip.sourceMoveState,
+			databaseClip.targetMoveState);
+		if (databaseClip.directionBucket < 0)
+			databaseClip.directionBucket = InferAutoDirectionBucket(databaseClip.name);
+		InferAutoTurnMetadata(databaseClip.name, databaseClip);
+	}
+
+	int PopulateAutoDatabaseClips(MotionMatchingDatabase& database,
+	                              const MotionMatchingSettings& settings,
+	                              const std::unordered_map<std::string, VansAnimationClip>& clips)
+	{
+		if (!database.clips.empty())
+		{
+			for (MotionMatchingDatabaseClip& databaseClip : database.clips)
+				FillAutoDatabaseClipMetadata(databaseClip, database, settings);
+			return static_cast<int>(database.clips.size());
+		}
+
+		const std::vector<std::string> includeTokens =
+			database.includeTokens.empty() ? settings.includeClipTokens : database.includeTokens;
+		const std::vector<std::string> excludeTokens =
+			MergeTokens(settings.excludeClipTokens, database.excludeTokens);
+
+		for (const auto& [clipName, clip] : clips)
+		{
+			if (clip.duration <= kEpsilon)
+				continue;
+			if (!ShouldIncludeAutoDatabaseClip(clipName, includeTokens, excludeTokens))
+				continue;
+			const std::string inferredPhase = InferAutoDatabasePhase(clipName);
+			const std::string databasePhase = ToLower(database.phase);
+			if (!databasePhase.empty() && databasePhase != "any" && databasePhase != "*" &&
+			    databasePhase != ToLower(inferredPhase))
+			{
+				continue;
+			}
+
+			MotionMatchingDatabaseClip databaseClip;
+			databaseClip.name = clipName;
+			databaseClip.loop = InferAutoDatabaseLoop(clipName);
+			databaseClip.phase = (database.phase.empty() || ToLower(database.phase) == "any" || database.phase == "*")
+				? inferredPhase
+				: database.phase;
+			FillAutoDatabaseClipMetadata(databaseClip, database, settings);
+			database.clips.push_back(std::move(databaseClip));
+		}
+
+		return static_cast<int>(database.clips.size());
+	}
+
+	bool EnsureAutoDatabase(
+		MotionMatchingSettings& settings,
+		const std::unordered_map<std::string, VansAnimationClip>& clips)
+	{
+		if (!settings.autoBuild)
+			return true;
+
+		if (settings.databases.empty())
+		{
+			MotionMatchingDatabase database;
+			database.name = "AutoPoseSearch";
+			database.schema = "Default";
+			database.normalizationSet = "Auto";
+			database.stance = "Any";
+			database.phase = "Any";
+			database.enabled = true;
+			settings.databases.push_back(std::move(database));
+		}
+
+		int generatedClipCount = 0;
+		for (MotionMatchingDatabase& database : settings.databases)
+			generatedClipCount += PopulateAutoDatabaseClips(database, settings, clips);
+
+		if (generatedClipCount <= 0)
+			return false;
+
+		if (settings.selectorRows.empty())
+		{
+			MotionMatchingSelectorRow row;
+			row.name = "Auto";
+			row.stance = "Any";
+			row.phase = "Any";
+			for (const MotionMatchingDatabase& database : settings.databases)
+				if (database.enabled)
+					row.databases.push_back(database.name);
+			settings.selectorRows.push_back(std::move(row));
+		}
+
+		VANS_LOG("[MotionMatching] Auto-built PoseSearch database config from clip tokens: clips="
+			<< generatedClipCount
+			<< " databases=" << settings.databases.size()
+			<< " selectorRows=" << settings.selectorRows.size()
+			<< " includeTokens=" << settings.includeClipTokens.size()
+			<< " excludeTokens=" << settings.excludeClipTokens.size());
+		return true;
+	}
+
 	float NormalizeAngle(float angle)
 	{
 		constexpr float kPi = 3.14159265358979323846f;
@@ -949,6 +1224,7 @@ bool VansMotionMatchingRuntime::BuildDatabase(const std::unordered_map<std::stri
 	if (m_Rig.head < 0)
 		VANS_LOG_WARN("[MotionMatching] Head bone not found; height feature will be 0.");
 	m_DebugData.rigReady = true;
+	EnsureAutoDatabase(m_Settings, clips);
 	if (m_Settings.databases.empty())
 	{
 		VANS_LOG_WARN("[MotionMatching] Cannot build database: no explicit PoseSearch databases configured.");

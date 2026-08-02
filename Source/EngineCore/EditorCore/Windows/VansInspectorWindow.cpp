@@ -11,6 +11,7 @@
 #include "../VansEditorWindow.h"
 #include "../VansSceneEditService.h"
 #include "../VansSceneObjectReferenceResolver.h"
+#include "../../AudioCore/VansAudioPreviewPlayer.h"
 #include "../../AssetCore/VansAssetGuid.h"
 #include "../../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../../SceneCore/VansSceneDocument.h"
@@ -26,6 +27,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -92,6 +94,9 @@ const char* AssetTypeName(Vans::EditorAPI::AssetType type)
     case Vans::EditorAPI::AssetType::ClothProfile: return "Cloth Profile";
     case Vans::EditorAPI::AssetType::PostProcessProfile: return "Post Process Profile";
     case Vans::EditorAPI::AssetType::RagdollProfile: return "Ragdoll Profile";
+    case Vans::EditorAPI::AssetType::AudioReverbPreset: return "Audio Reverb Preset";
+    case Vans::EditorAPI::AssetType::AudioBusSnapshot: return "Audio Bus Snapshot";
+    case Vans::EditorAPI::AssetType::AudioDuckingRules: return "Audio Ducking Rules";
     default: return "Asset";
     }
 }
@@ -106,6 +111,17 @@ const std::vector<const char*>* EnumOptions(const std::string& key)
         "pbr", "pbr_emissive", "coat", "transparent", "pbr_transmission", "skin", "cloth", "hair", "subsurface", "grass", "emissive", "decal" };
     static const std::vector<const char*> colorSpace{ "sRGB", "linear" };
     static const std::vector<const char*> playMode{ "static", "streaming" };
+    static const std::vector<const char*> attenuationMode{ "linear", "inverse", "exponential" };
+    static const std::vector<const char*> audioBus{ "SFX", "Music", "UI", "Ambient", "Voice", "Master" };
+    static const std::vector<const char*> audioControlKind{
+        "AudioReverbPreset", "AudioBusSnapshot", "AudioDuckingRules"
+    };
+    static const std::vector<const char*> reverbPreset{
+        "generic", "room", "hall", "cave", "underwater"
+    };
+    static const std::vector<const char*> audioOcclusionMaterial{
+        "custom", "thin", "wood", "stone", "metal", "glass", "fabric"
+    };
     static const std::vector<const char*> normals{ "ifMissing", "always", "never" };
     static const std::vector<const char*> axis{ "auto", "x", "y", "z", "-x", "-y", "-z" };
     static const std::vector<const char*> collision{ "none", "mesh", "convex" };
@@ -119,11 +135,36 @@ const std::vector<const char*>* EnumOptions(const std::string& key)
     if (field == "materialtype") return &materialType;
     if (field == "colorspace") return &colorSpace;
     if (field == "playmode") return &playMode;
+    if (field == "attenuationmode") return &attenuationMode;
+    if (field == "bus" || field == "trigger" || field == "target" ||
+        field == "triggerbus" || field == "targetbus")
+        return &audioBus;
+    if (field == "assetkind") return &audioControlKind;
+    if (field == "preset") return &reverbPreset;
+    if (field == "occlusionmaterial") return &audioOcclusionMaterial;
     if (field == "generatenormals") return &normals;
     if (field == "sourceupaxis") return &axis;
     if (field == "collision") return &collision;
     if (field == "climbingmode") return &climbing;
     if (field == "drive_mode") return &driveMode;
+    return nullptr;
+}
+
+const std::vector<const char*>* AudioReverbZoneShapeOptions(
+    const std::string& label,
+    const std::string& componentType)
+{
+    static const std::vector<const char*> reverbZoneShape{ "sphere", "box" };
+    static const std::vector<const char*> reverbZonePreset{
+        "generic", "room", "hall", "cave", "underwater"
+    };
+    const std::string loweredComponent = Lower(componentType);
+    if ((loweredComponent == "audioreverbzone" || loweredComponent == "audiovolume") &&
+        Lower(label) == "shape")
+        return &reverbZoneShape;
+    if ((loweredComponent == "audioreverbzone" || loweredComponent == "audiovolume") &&
+        Lower(label) == "preset")
+        return &reverbZonePreset;
     return nullptr;
 }
 
@@ -242,8 +283,44 @@ Vans::VansSerializedValue DefaultSerializedComponentData(const std::string& type
         fields.insert(fields.end(), shadows.begin(), shadows.end());
         return Value::Object(std::move(fields));
     }
-    if (type == "Audio" || type == "Video")
+    if (type == "Audio")
+        return Value::Object({
+            { "source", guidReference() },
+            { "occlusionEnabled", Value::Bool(false) },
+            { "occlusionGain", Value::Float(0.45) },
+            { "occlusionHighFrequencyGain", Value::Float(0.35) },
+            { "occlusionMaterial", Value::String("custom") },
+            { "occlusionMaterialThickness", Value::Float(1.0) },
+            { "occlusionAttack", Value::Float(0.08) },
+            { "occlusionRelease", Value::Float(0.18) },
+            { "occlusionQueryInterval", Value::Float(0.12) },
+            { "occlusionMaxDistance", Value::Float(100.0) },
+            { "occlusionMaxQueriesPerFrame", Value::Int(4) },
+            { "coneEnabled", Value::Bool(false) },
+            { "coneInnerAngle", Value::Float(360.0) },
+            { "coneOuterAngle", Value::Float(360.0) },
+            { "coneOuterGain", Value::Float(1.0) },
+            { "dopplerEnabled", Value::Bool(false) }
+        });
+    if (type == "Video")
         return Value::Object({ { "source", guidReference() } });
+    if (type == "AudioReverbZone" || type == "AudioVolume")
+        return Value::Object({
+            { "shape", Value::String("sphere") },
+            { "preset", Value::String("generic") },
+            { "presetAsset", guidReference() },
+            { "radius", Value::Float(8.0) },
+            { "halfExtents", vec3(4.0, 4.0, 4.0) },
+            { "fadeDistance", Value::Float(2.0) },
+            { "wetGain", Value::Float(0.6) },
+            { "priority", Value::Int(0) },
+            { "overridePresetParameters", Value::Bool(false) },
+            { "density", Value::Float(1.0) },
+            { "diffusion", Value::Float(1.0) },
+            { "gain", Value::Float(0.32) },
+            { "gainHF", Value::Float(0.89) },
+            { "decayTime", Value::Float(1.49) }
+        });
     if (type == "Particle")
         return Value::Object({
             { "asset", Value::String("") },
@@ -381,6 +458,325 @@ float ReadSerializedFloatOr(const Vans::VansSerializedValue* value, float fallba
         value->kind == Vans::VansSerializedValue::Kind::Float)
         ? static_cast<float>(Vans::ReadSerializedNumber(*value))
         : fallback;
+}
+
+bool AudioScalarLimits(const std::string& label, const std::string& parentKey,
+    float& minValue, float& maxValue, float& speed)
+{
+    if (Lower(parentKey) != "import settings")
+        return false;
+
+    const std::string field = Lower(label);
+    if (field == "volume")
+    {
+        minValue = 0.0f;
+        maxValue = 1.0f;
+        speed = 0.01f;
+        return true;
+    }
+    if (field == "pitch")
+    {
+        minValue = 0.01f;
+        maxValue = 4.0f;
+        speed = 0.01f;
+        return true;
+    }
+    if (field == "referencedistance")
+    {
+        minValue = 0.01f;
+        maxValue = 10000.0f;
+        speed = 0.05f;
+        return true;
+    }
+    if (field == "maxdistance")
+    {
+        minValue = 0.02f;
+        maxValue = 10000.0f;
+        speed = 0.1f;
+        return true;
+    }
+    if (field == "rolloff")
+    {
+        minValue = 0.0f;
+        maxValue = 8.0f;
+        speed = 0.01f;
+        return true;
+    }
+    if (field == "reverbsend")
+    {
+        minValue = 0.0f;
+        maxValue = 1.0f;
+        speed = 0.01f;
+        return true;
+    }
+    return false;
+}
+
+bool AudioReverbZoneScalarLimits(const std::string& label, const std::string& componentType,
+    float& minValue, float& maxValue, float& speed)
+{
+    const std::string loweredComponent = Lower(componentType);
+    if (loweredComponent != "audioreverbzone" && loweredComponent != "audiovolume")
+        return false;
+
+    const std::string field = Lower(label);
+    if (field == "radius" || field == "fadedistance")
+    {
+        minValue = field == "radius" ? 0.01f : 0.0f;
+        maxValue = 100000.0f;
+        speed = 0.05f;
+        return true;
+    }
+    if (field == "wetgain")
+    {
+        minValue = 0.0f;
+        maxValue = 1.0f;
+        speed = 0.01f;
+        return true;
+    }
+    if (field == "density" || field == "diffusion" || field == "gain" || field == "gainhf")
+    {
+        minValue = 0.0f;
+        maxValue = 1.0f;
+        speed = 0.01f;
+        return true;
+    }
+    if (field == "decaytime")
+    {
+        minValue = 0.1f;
+        maxValue = 20.0f;
+        speed = 0.05f;
+        return true;
+    }
+    return false;
+}
+
+bool AudioComponentScalarLimits(const std::string& label, const std::string& componentType,
+    float& minValue, float& maxValue, float& speed)
+{
+    if (Lower(componentType) != "audio")
+        return false;
+
+    const std::string field = Lower(label);
+    if (field == "occlusiongain" || field == "occlusionhighfrequencygain")
+    {
+        minValue = 0.0f;
+        maxValue = 1.0f;
+        speed = 0.01f;
+        return true;
+    }
+    if (field == "occlusionattack" || field == "occlusionrelease" ||
+        field == "occlusionqueryinterval")
+    {
+        minValue = 0.001f;
+        maxValue = 10.0f;
+        speed = 0.005f;
+        return true;
+    }
+    if (field == "occlusionmaxdistance")
+    {
+        minValue = 0.01f;
+        maxValue = 100000.0f;
+        speed = 0.1f;
+        return true;
+    }
+    if (field == "occlusionmaterialthickness")
+    {
+        minValue = 0.0f;
+        maxValue = 4.0f;
+        speed = 0.01f;
+        return true;
+    }
+    if (field == "coneinnerangle" || field == "coneouterangle")
+    {
+        minValue = 0.0f;
+        maxValue = 360.0f;
+        speed = 1.0f;
+        return true;
+    }
+    if (field == "coneoutergain")
+    {
+        minValue = 0.0f;
+        maxValue = 1.0f;
+        speed = 0.01f;
+        return true;
+    }
+    if (field == "occlusionmaxqueriesperframe")
+    {
+        minValue = 1.0f;
+        maxValue = 64.0f;
+        speed = 1.0f;
+        return true;
+    }
+    return false;
+}
+
+bool AudioControlAssetScalarLimits(const std::string& label, const std::string& pointer,
+    float& minValue, float& maxValue, float& speed)
+{
+    const std::string field = Lower(label);
+    const std::string path = Lower(pointer);
+    if (path.find("/rules/") != std::string::npos)
+    {
+        if (field == "gain" || field == "targetgain" || field == "target_gain")
+        {
+            minValue = 0.0f;
+            maxValue = 1.0f;
+            speed = 0.01f;
+            return true;
+        }
+        if (field == "attack" || field == "attackseconds" || field == "attack_seconds" ||
+            field == "release" || field == "releaseseconds" || field == "release_seconds")
+        {
+            minValue = 0.0f;
+            maxValue = 10.0f;
+            speed = 0.01f;
+            return true;
+        }
+    }
+    if (path.find("/buses/") != std::string::npos && field == "gain")
+    {
+        minValue = 0.0f;
+        maxValue = 4.0f;
+        speed = 0.01f;
+        return true;
+    }
+    if (field == "fadeseconds" || field == "fade_seconds")
+    {
+        minValue = 0.0f;
+        maxValue = 60.0f;
+        speed = 0.01f;
+        return true;
+    }
+    if (path.find("/parameters/") != std::string::npos)
+    {
+        if (field == "density" || field == "diffusion" || field == "gain" || field == "gainhf")
+        {
+            minValue = 0.0f;
+            maxValue = 1.0f;
+            speed = 0.01f;
+            return true;
+        }
+        if (field == "decaytime")
+        {
+            minValue = 0.1f;
+            maxValue = 20.0f;
+            speed = 0.05f;
+            return true;
+        }
+    }
+    return false;
+}
+
+std::optional<Vans::VansSerializedValue> DefaultAudioControlArrayElement(
+    const std::string& label,
+    const std::string& pointer)
+{
+    using Value = Vans::VansSerializedValue;
+    const std::string field = Lower(label);
+    const std::string path = Lower(pointer);
+    if (field == "rules" || path.find("/rules") != std::string::npos)
+    {
+        return Value::Object({
+            { "trigger", Value::String("Voice") },
+            { "target", Value::String("Music") },
+            { "gain", Value::Float(0.35) },
+            { "attack", Value::Float(0.08) },
+            { "release", Value::Float(0.35) },
+            { "enabled", Value::Bool(true) }
+        });
+    }
+    if (field == "buses" || path.find("/buses") != std::string::npos)
+    {
+        return Value::Object({
+            { "bus", Value::String("Music") },
+            { "gain", Value::Float(1.0) }
+        });
+    }
+    return std::nullopt;
+}
+
+bool IsAudioMetaRoot(const Vans::VansSerializedValue& metaRoot)
+{
+    return Vans::ReadSerializedStringField(metaRoot, "importer") == "AudioImporter";
+}
+
+bool EnsureSerializedField(
+    Vans::VansSerializedValue& object,
+    const std::string& name,
+    Vans::VansSerializedValue defaultValue)
+{
+    if (object.kind != Vans::VansSerializedValue::Kind::Object)
+        object = Vans::VansSerializedValue::Object({});
+    if (Vans::FindObjectField(object, name))
+        return false;
+    Vans::SetSerializedObjectField(object, name, std::move(defaultValue));
+    return true;
+}
+
+bool NormalizeAudioImportSettings(Vans::VansSerializedValue& settings)
+{
+    using Value = Vans::VansSerializedValue;
+    bool changed = false;
+    changed |= EnsureSerializedField(settings, "playMode", Value::String("static"));
+    changed |= EnsureSerializedField(settings, "loop", Value::Bool(false));
+    changed |= EnsureSerializedField(settings, "autoPlay", Value::Bool(false));
+    changed |= EnsureSerializedField(settings, "volume", Value::Float(1.0));
+    changed |= EnsureSerializedField(settings, "pitch", Value::Float(1.0));
+    changed |= EnsureSerializedField(settings, "spatial", Value::Bool(false));
+    changed |= EnsureSerializedField(settings, "referenceDistance", Value::Float(1.0));
+    changed |= EnsureSerializedField(settings, "maxDistance", Value::Float(100.0));
+    changed |= EnsureSerializedField(settings, "rolloff", Value::Float(1.0));
+    changed |= EnsureSerializedField(settings, "attenuationMode", Value::String("linear"));
+    changed |= EnsureSerializedField(settings, "reverbSend", Value::Float(0.0));
+    changed |= EnsureSerializedField(settings, "bus", Value::String("SFX"));
+    return changed;
+}
+
+VansEngine::VansAudioPreviewSettings BuildAudioPreviewSettings(const Vans::VansSerializedValue* settings)
+{
+    VansEngine::VansAudioPreviewSettings preview;
+    if (!settings || settings->kind != Vans::VansSerializedValue::Kind::Object)
+        return preview;
+
+    const std::string playMode = Vans::ReadSerializedStringField(*settings, "playMode", "streaming");
+    preview.streaming = Lower(playMode) == "streaming";
+    preview.loop = Vans::ReadSerializedBoolField(*settings, "loop", false);
+    preview.volume = std::clamp(
+        ReadSerializedFloatOr(Vans::FindObjectField(*settings, "volume"), preview.volume),
+        0.0f,
+        4.0f);
+    preview.pitch = std::max(
+        ReadSerializedFloatOr(Vans::FindObjectField(*settings, "pitch"), preview.pitch),
+        0.01f);
+    preview.spatial = Vans::ReadSerializedBoolField(*settings, "spatial", false);
+    preview.referenceDistance = std::max(
+        ReadSerializedFloatOr(Vans::FindObjectField(*settings, "referenceDistance"), preview.referenceDistance),
+        0.01f);
+    preview.maxDistance = std::max(
+        ReadSerializedFloatOr(Vans::FindObjectField(*settings, "maxDistance"), preview.maxDistance),
+        preview.referenceDistance + 0.01f);
+    preview.rolloff = std::max(
+        ReadSerializedFloatOr(Vans::FindObjectField(*settings, "rolloff"), preview.rolloff),
+        0.0f);
+    preview.attenuationMode = Vans::ReadSerializedStringField(*settings, "attenuationMode", preview.attenuationMode);
+    if (preview.attenuationMode.empty())
+        preview.attenuationMode = "linear";
+    preview.reverbSend = std::clamp(
+        ReadSerializedFloatOr(Vans::FindObjectField(*settings, "reverbSend"), preview.reverbSend),
+        0.0f,
+        1.0f);
+    preview.bus = Vans::ReadSerializedStringField(*settings, "bus", preview.bus);
+    if (preview.bus.empty())
+        preview.bus = "Preview";
+    return preview;
+}
+
+std::filesystem::path NormalizePreviewPath(std::filesystem::path path)
+{
+    if (!path.is_absolute())
+        path = std::filesystem::absolute(path);
+    return path.lexically_normal();
 }
 
 bool IsSerializedNumericVector(const Vans::VansSerializedValue& value, std::size_t minimum, std::size_t maximum)
@@ -974,6 +1370,8 @@ struct VansInspectorWindow::Impl
     void DrawSceneEntity(Vans::EditorAPI::IEngineEditorAPI& api);
     void DrawSceneSettings();
     void DrawAsset(Vans::EditorAPI::IEngineEditorAPI& api);
+    void DrawAudioAssetPreview(const std::filesystem::path& sourcePath,
+        const Vans::VansSerializedValue& metaRoot);
     bool DrawSerializedValue(const std::string& label, Vans::VansSerializedValue& value,
         const std::string& pointer, bool readOnly = false,
         const std::string& componentType = {}, const std::string& parentKey = {});
@@ -994,6 +1392,7 @@ struct VansInspectorWindow::Impl
     std::shared_ptr<Vans::VansOpenAssetDocument> m_AssetDocuments;
     std::string m_Error;
     std::vector<std::string> m_CollisionLayerNames;
+    VansEngine::VansAudioPreviewPlayer m_AudioPreview;
     Vans::EditorAPI::IEngineEditorAPI* m_ActiveAPI = nullptr;
     bool m_PendingVehicleRebuild = false;
     std::optional<Vans::ObjectReferenceAssignment> m_PendingObjectReferenceEdit;
@@ -1408,7 +1807,8 @@ bool VansInspectorWindow::Impl::DrawSerializedValue(
                 const std::string childPointer = pointer + "/" + EscapePointerToken(fieldName);
                 const bool identity = fieldName == "id" || fieldName == "guid" ||
                     fieldName == "sceneGuid" || fieldName == "schemaVersion" ||
-                    fieldName == "version" || fieldName == "importer";
+                    fieldName == "version" || fieldName == "importer" ||
+                    fieldName == "assetKind";
                 changed |= DrawSerializedValue(
                     fieldName,
                     fieldValue,
@@ -1491,14 +1891,45 @@ bool VansInspectorWindow::Impl::DrawSerializedValue(
         }
         else if (ImGui::TreeNodeEx(FriendlyLabel(label).c_str(), ImGuiTreeNodeFlags_DefaultOpen))
         {
-            for (std::size_t index = 0; index < value.arrayItems.size(); ++index)
+            for (std::size_t index = 0; index < value.arrayItems.size();)
+            {
+                const std::string elementPointer = pointer + "/" + std::to_string(index);
+                if (!readOnly)
+                {
+                    ImGui::PushID(elementPointer.c_str());
+                    if (ImGui::SmallButton("Remove"))
+                    {
+                        value.arrayItems.erase(value.arrayItems.begin() + static_cast<std::ptrdiff_t>(index));
+                        changed = true;
+                        ImGui::PopID();
+                        continue;
+                    }
+                    ImGui::SameLine();
+                    ImGui::PopID();
+                }
                 changed |= DrawSerializedValue(
                     "Element " + std::to_string(index),
                     value.arrayItems[index],
-                    pointer + "/" + std::to_string(index),
+                    elementPointer,
                     readOnly,
                     componentType,
                     label);
+                ++index;
+            }
+            if (!readOnly)
+            {
+                if (std::optional<Vans::VansSerializedValue> defaultElement =
+                    DefaultAudioControlArrayElement(label, pointer))
+                {
+                    const std::string buttonLabel =
+                        Lower(label) == "rules" ? "Add Rule" : "Add Bus";
+                    if (ImGui::SmallButton(buttonLabel.c_str()))
+                    {
+                        value.arrayItems.push_back(std::move(*defaultElement));
+                        changed = true;
+                    }
+                }
+            }
             ImGui::TreePop();
         }
         break;
@@ -1533,6 +1964,43 @@ bool VansInspectorWindow::Impl::DrawSerializedValue(
             if (ImGui::SliderFloat("##value", &normalized, 0.0f, 1.0f, "%.3f"))
             {
                 value = Vans::VansSerializedValue::Float(normalized);
+                changed = true;
+            }
+        }
+        else if (AudioControlAssetScalarLimits(label, pointer, minValue, maxValue, speed))
+        {
+            float numeric = static_cast<float>(edited);
+            if (ImGui::DragFloat("##value", &numeric, speed, minValue, maxValue, "%.3f"))
+            {
+                value = Vans::VansSerializedValue::Float(std::clamp(numeric, minValue, maxValue));
+                changed = true;
+            }
+        }
+        else if (AudioScalarLimits(label, parentKey, minValue, maxValue, speed))
+        {
+            float numeric = static_cast<float>(edited);
+            if (ImGui::DragFloat("##value", &numeric, speed, minValue, maxValue, "%.3f"))
+            {
+                value = Vans::VansSerializedValue::Float(std::clamp(numeric, minValue, maxValue));
+                changed = true;
+            }
+        }
+        else if (AudioReverbZoneScalarLimits(label, componentType, minValue, maxValue, speed))
+        {
+            float numeric = static_cast<float>(edited);
+            if (ImGui::DragFloat("##value", &numeric, speed, minValue, maxValue, "%.3f"))
+            {
+                value = Vans::VansSerializedValue::Float(std::clamp(numeric, minValue, maxValue));
+                changed = true;
+            }
+        }
+        else if (AudioComponentScalarLimits(label, componentType, minValue, maxValue, speed))
+        {
+            float numeric = static_cast<float>(edited);
+            if (ImGui::DragFloat("##value", &numeric, speed, minValue, maxValue, "%.3f"))
+            {
+                value = Vans::VansSerializedValue::Int(
+                    static_cast<std::int64_t>(std::clamp(numeric, minValue, maxValue)));
                 changed = true;
             }
         }
@@ -1590,6 +2058,30 @@ bool VansInspectorWindow::Impl::DrawSerializedValue(
                 changed = true;
             }
         }
+        else if (AudioControlAssetScalarLimits(label, pointer, minValue, maxValue, speed))
+        {
+            if (ImGui::DragFloat("##value", &edited, speed, minValue, maxValue, "%.3f"))
+            {
+                value = Vans::VansSerializedValue::Float(std::clamp(edited, minValue, maxValue));
+                changed = true;
+            }
+        }
+        else if (AudioScalarLimits(label, parentKey, minValue, maxValue, speed))
+        {
+            if (ImGui::DragFloat("##value", &edited, speed, minValue, maxValue, "%.3f"))
+            {
+                value = Vans::VansSerializedValue::Float(std::clamp(edited, minValue, maxValue));
+                changed = true;
+            }
+        }
+        else if (AudioReverbZoneScalarLimits(label, componentType, minValue, maxValue, speed))
+        {
+            if (ImGui::DragFloat("##value", &edited, speed, minValue, maxValue, "%.3f"))
+            {
+                value = Vans::VansSerializedValue::Float(std::clamp(edited, minValue, maxValue));
+                changed = true;
+            }
+        }
         else if (MaterialScalarLimits(label, parentKey, minValue, maxValue, speed))
         {
             if (ImGui::DragFloat("##value", &edited, speed, minValue, maxValue, "%.3f"))
@@ -1620,6 +2112,21 @@ bool VansInspectorWindow::Impl::DrawSerializedValue(
                 for (const std::string& option : m_CollisionLayerNames)
                 {
                     if (ImGui::Selectable(option.c_str(), current == option))
+                    {
+                        value = Vans::VansSerializedValue::String(option);
+                        changed = true;
+                    }
+                }
+                ImGui::EndCombo();
+            }
+        }
+        else if (const auto* options = AudioReverbZoneShapeOptions(label, componentType))
+        {
+            if (ImGui::BeginCombo("##value", current.c_str()))
+            {
+                for (const char* option : *options)
+                {
+                    if (ImGui::Selectable(option, current == option))
                     {
                         value = Vans::VansSerializedValue::String(option);
                         changed = true;
@@ -1869,7 +2376,7 @@ void VansInspectorWindow::Impl::DrawSceneEntity(Vans::EditorAPI::IEngineEditorAP
         {
             static const char* types[] = { "ModelRenderer", "Physics", "Camera", "Animation",
                 "CharacterController", "DirectionalLight", "PointLight", "SpotLight", "RectLight",
-                "Audio", "Video", "Particle", "Cloth", "Vehicle", "Script" };
+                "Audio", "AudioVolume", "AudioReverbZone", "Video", "Particle", "Cloth", "Vehicle", "Script" };
             for (const char* type : types)
             {
                 const bool singleton = std::strcmp(type, "ModelRenderer") == 0 || std::strcmp(type, "Physics") == 0;
@@ -1959,6 +2466,8 @@ void VansInspectorWindow::Impl::DrawSceneSettings()
 
 bool VansInspectorWindow::Impl::LoadAssetDocuments(const std::filesystem::path& sourcePath)
 {
+    if (sourcePath != m_AssetPath)
+        m_AudioPreview.Stop();
     m_AssetPath = sourcePath;
     m_AssetDocuments = Vans::VansAssetDocumentRegistry::Get().GetOrOpen(sourcePath);
     m_Error = m_AssetDocuments ? m_AssetDocuments->lastError : "Cannot open asset document";
@@ -1987,6 +2496,55 @@ bool VansInspectorWindow::Impl::SaveAssetDocuments(bool reloadSceneOnSuccess)
     if (reloadSceneOnSuccess && result.wroteFile)
         VansEditorWindow::ReloadCurrentSceneForEditing();
     return true;
+}
+
+void VansInspectorWindow::Impl::DrawAudioAssetPreview(
+    const std::filesystem::path& sourcePath,
+    const Vans::VansSerializedValue& metaRoot)
+{
+    if (!IsAudioMetaRoot(metaRoot))
+        return;
+
+    const std::filesystem::path previewPath = NormalizePreviewPath(sourcePath);
+    const Vans::VansSerializedValue* settings = Vans::FindObjectField(metaRoot, "settings");
+    const VansEngine::VansAudioPreviewSettings previewSettings = BuildAudioPreviewSettings(settings);
+
+    const bool sameAsset = !m_AudioPreview.CurrentPath().empty() &&
+        NormalizePreviewPath(m_AudioPreview.CurrentPath()).wstring() == previewPath.wstring();
+    const bool playing = sameAsset && m_AudioPreview.IsPlaying();
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Preview");
+    ImGui::PushID("AudioAssetPreview");
+    if (playing)
+        ImGui::BeginDisabled();
+    if (ImGui::Button("Play"))
+    {
+        std::string previewError;
+        if (!m_AudioPreview.Play(previewPath, previewSettings, previewError))
+            m_Error = previewError;
+        else
+            m_Error.clear();
+    }
+    if (playing)
+        ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (!playing)
+        ImGui::BeginDisabled();
+    if (ImGui::Button("Stop"))
+        m_AudioPreview.Stop();
+    if (!playing)
+        ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", playing ? "Playing" : "Stopped");
+    ImGui::TextDisabled(
+        "%s  volume %.2f  pitch %.2f  bus %s%s",
+        previewSettings.streaming ? "Streaming" : "Static",
+        previewSettings.volume,
+        previewSettings.pitch,
+        previewSettings.bus.c_str(),
+        previewSettings.spatial ? "  spatial" : "");
+    ImGui::PopID();
 }
 
 void VansInspectorWindow::Impl::DrawAsset(Vans::EditorAPI::IEngineEditorAPI& api)
@@ -2058,10 +2616,15 @@ void VansInspectorWindow::Impl::DrawAsset(Vans::EditorAPI::IEngineEditorAPI& api
     if (m_AssetDocuments && m_AssetDocuments->metaDocument.IsLoaded())
     {
         const Vans::VansSerializedValue metaRoot = m_AssetDocuments->metaDocument.SerializedRootSnapshot();
+        const bool audioMeta = IsAudioMetaRoot(metaRoot);
+        DrawAudioAssetPreview(selected, metaRoot);
         if (const Vans::VansSerializedValue* settingsValue = Vans::FindObjectField(metaRoot, "settings"))
         {
             Vans::VansSerializedValue editedSettings = *settingsValue;
-            if (DrawSerializedValue("Import Settings", editedSettings, "/meta/settings"))
+            const bool normalizedSettings =
+                audioMeta ? NormalizeAudioImportSettings(editedSettings) : false;
+            if (DrawSerializedValue("Import Settings", editedSettings, "/meta/settings") ||
+                normalizedSettings)
             {
                 const Vans::AssetDocumentEditResult result =
                     Vans::VansAssetDocumentEditService::Set(
@@ -2071,6 +2634,18 @@ void VansInspectorWindow::Impl::DrawAsset(Vans::EditorAPI::IEngineEditorAPI& api
                 if (!result)
                     VANS_LOG_ERROR("[Inspector] " << result.message);
             }
+        }
+        else if (audioMeta)
+        {
+            Vans::VansSerializedValue editedSettings = Vans::VansSerializedValue::Object({});
+            NormalizeAudioImportSettings(editedSettings);
+            const Vans::AssetDocumentEditResult result =
+                Vans::VansAssetDocumentEditService::Set(
+                    m_AssetDocuments->metaDocument,
+                    Vans::MakeDocumentPropertyPath(Vans::DocumentPropertySpace::AssetMeta, "/settings"),
+                    std::move(editedSettings));
+            if (!result)
+                VANS_LOG_ERROR("[Inspector] " << result.message);
         }
         if (ImGui::TreeNode("Asset Identity"))
         {
@@ -2098,6 +2673,7 @@ void VansInspectorWindow::Impl::DrawAsset(Vans::EditorAPI::IEngineEditorAPI& api
 
 void VansInspectorWindow::Impl::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& api)
 {
+    m_AudioPreview.Tick();
     ImGui::Begin("Inspector");
     m_ActiveAPI = &api;
     m_CollisionLayerNames = api.GetRuntimeCollisionLayerNames();

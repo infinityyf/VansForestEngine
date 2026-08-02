@@ -32,6 +32,7 @@
 #include "../PhysicsCore/VansRagdollSystem.h"
 #include "VansVideoManager.h"
 #include "../AudioCore/VansAudioManager.h"
+#include "../AudioCore/VansAudioMixConfig.h"
 #include "../AudioCore/VansAudioSystem.h"
 
 #include "VulkanCore/VansMesh.h"
@@ -85,6 +86,40 @@ namespace
 	{
 		VANS_LOG("[SceneLoadProfile] " << phase << "=" << SceneLoadMsSince(start) << "ms");
 	}
+
+	void ApplyProjectAudioMixConfig(VansScene& scene)
+	{
+		const Vans::VansProjectConfig& projectConfig =
+			Vans::VansProjectManager::Get().GetConfig();
+		if (projectConfig.audioSettings.empty())
+			return;
+
+		std::filesystem::path mixPath = std::filesystem::path(projectConfig.audioSettings);
+		if (mixPath.is_relative())
+			mixPath = std::filesystem::path(Vans::VansProjectManager::Get().GetProjectRootPath()) / mixPath;
+
+		std::error_code ec;
+		if (!std::filesystem::is_regular_file(mixPath, ec))
+		{
+			VANS_LOG_WARN("[AudioMix] Project audio mix config not found: " << mixPath.string());
+			return;
+		}
+
+		VansEngine::AudioMixConfig mixConfig;
+		std::string error;
+		if (!VansEngine::VansAudioMixConfigStorage::Load(mixPath, mixConfig, error))
+		{
+			VANS_LOG_ERROR("[AudioMix] Cannot load project audio mix config: "
+				<< mixPath.string() << " (" << error << ")");
+			return;
+		}
+
+		if (VansEngine::VansAudioManager* audioManager = scene.GetAudioManager())
+		{
+			audioManager->ApplyMixConfig(mixConfig);
+			VANS_LOG("[AudioMix] Applied project audio mix config: " << mixPath.string());
+		}
+	}
 }
 
 bool VansGraphics::VansScene::LoadProjectAssets(Vans::VansAssetDatabase& database,
@@ -129,6 +164,7 @@ bool VansGraphics::VansScene::LoadProjectAssets(Vans::VansAssetDatabase& databas
 		return false;
 
 	phaseStart = SceneLoadClock::now();
+    ReleaseAudioSourceBindings();
     m_VideoManager.Clear();
     m_AudioManager.Clear();
 	LogSceneLoadPhase("projectAssets.clearMediaManagers", phaseStart);
@@ -140,6 +176,10 @@ bool VansGraphics::VansScene::LoadProjectAssets(Vans::VansAssetDatabase& databas
 	if (!VansSceneResourceBatchExecutor::Execute(*this, assetBatch.resourcePlan))
 		return false;
 	LogSceneLoadPhase("projectAssets.resourceBatch", phaseStart);
+
+	phaseStart = SceneLoadClock::now();
+	ApplyProjectAudioMixConfig(*this);
+	LogSceneLoadPhase("projectAssets.audioMix", phaseStart);
 
 	phaseStart = SceneLoadClock::now();
 	for (const Vans::VansBuiltInAssetEntry& entry : Vans::VansBuiltInAssetCatalog::Entries())
@@ -203,6 +243,7 @@ bool VansGraphics::VansScene::LoadPackagedProjectAssets(
 	try
 	{
 		auto phaseStart = SceneLoadClock::now();
+		ReleaseAudioSourceBindings();
 		m_VideoManager.Clear();
 		m_AudioManager.Clear();
 		LogSceneLoadPhase("packagedProjectAssets.clearMediaManagers", phaseStart);
@@ -221,6 +262,10 @@ bool VansGraphics::VansScene::LoadPackagedProjectAssets(
 		if (!VansSceneResourceBatchExecutor::Execute(*this, packagePlan.resourcePlan, loadContext))
 			return false;
 		LogSceneLoadPhase("packagedProjectAssets.resourceBatch", phaseStart);
+
+		phaseStart = SceneLoadClock::now();
+		ApplyProjectAudioMixConfig(*this);
+		LogSceneLoadPhase("packagedProjectAssets.audioMix", phaseStart);
 
 		phaseStart = SceneLoadClock::now();
 		for (const Vans::VansBuiltInAssetEntry& entry : Vans::VansBuiltInAssetCatalog::Entries())

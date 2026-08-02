@@ -79,6 +79,26 @@ namespace VansGraphics
 
 
 
+        aiMatrix4x4 MakeIdentityAiMatrix()
+
+        {
+
+            aiMatrix4x4 transform;
+
+            transform.a1 = 1.0f; transform.a2 = 0.0f; transform.a3 = 0.0f; transform.a4 = 0.0f;
+
+            transform.b1 = 0.0f; transform.b2 = 1.0f; transform.b3 = 0.0f; transform.b4 = 0.0f;
+
+            transform.c1 = 0.0f; transform.c2 = 0.0f; transform.c3 = 1.0f; transform.c4 = 0.0f;
+
+            transform.d1 = 0.0f; transform.d2 = 0.0f; transform.d3 = 0.0f; transform.d4 = 1.0f;
+
+            return transform;
+
+        }
+
+
+
         void AppendAiNodeMeshes(aiNode* node,
 
                                 const aiScene* scene,
@@ -2521,7 +2541,7 @@ namespace VansGraphics
 
         {
 
-            result.m_Error = "Assimp ????: " + std::string(importer.GetErrorString())
+            result.m_Error = "Assimp 导入失败: " + std::string(importer.GetErrorString())
 
                              + " (path: " + modelPath + ")";
 
@@ -2531,7 +2551,7 @@ namespace VansGraphics
 
 
 
-        aiMatrix4x4 identityTransform;
+        aiMatrix4x4 identityTransform = MakeIdentityAiMatrix();
 
         ClothEditorRawMeshData rawData;
 

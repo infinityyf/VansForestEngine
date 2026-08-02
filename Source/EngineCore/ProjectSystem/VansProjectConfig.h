@@ -40,6 +40,7 @@ struct VansProjectConfig
 
 	std::string renderSettings;
 	std::string physicsSettings;
+	std::string audioSettings;
 	std::string collisionLayerSettings;
 
 	// ── Serialisation ──────────────────────────────────────────────

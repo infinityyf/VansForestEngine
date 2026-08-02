@@ -101,6 +101,8 @@ namespace VansGraphics
 		std::string phase = "Move";
 		bool enabled = true;
 		std::vector<int> moveStates;
+		std::vector<std::string> includeTokens;
+		std::vector<std::string> excludeTokens;
 		std::vector<MotionMatchingDatabaseClip> clips;
 	};
 
@@ -157,6 +159,8 @@ namespace VansGraphics
 		MotionFeatureSchema schema;
 		MotionMatchingParameterMap parameters;
 		MotionMatchingStateSemantics states;
+		std::vector<std::string> includeClipTokens;
+		std::vector<std::string> excludeClipTokens;
 		std::vector<MotionMatchingDatabase> databases;
 		std::vector<MotionMatchingSelectorRow> selectorRows;
 	};

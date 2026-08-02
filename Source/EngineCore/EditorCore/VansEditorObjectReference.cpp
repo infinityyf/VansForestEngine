@@ -211,6 +211,9 @@ const char* ToString(EditorAPI::AssetType assetType)
     case EditorAPI::AssetType::ClothProfile: return "ClothProfile";
     case EditorAPI::AssetType::PostProcessProfile: return "PostProcessProfile";
     case EditorAPI::AssetType::RagdollProfile: return "RagdollProfile";
+    case EditorAPI::AssetType::AudioReverbPreset: return "AudioReverbPreset";
+    case EditorAPI::AssetType::AudioBusSnapshot: return "AudioBusSnapshot";
+    case EditorAPI::AssetType::AudioDuckingRules: return "AudioDuckingRules";
     default: return "Unknown";
     }
 }
@@ -232,6 +235,9 @@ EditorAPI::AssetType EditorAssetTypeFromString(const std::string& value)
     if (type == "clothprofile") return EditorAPI::AssetType::ClothProfile;
     if (type == "postprocessprofile") return EditorAPI::AssetType::PostProcessProfile;
     if (type == "ragdollprofile") return EditorAPI::AssetType::RagdollProfile;
+    if (type == "audioreverbpreset") return EditorAPI::AssetType::AudioReverbPreset;
+    if (type == "audiobussnapshot") return EditorAPI::AssetType::AudioBusSnapshot;
+    if (type == "audioduckingrules") return EditorAPI::AssetType::AudioDuckingRules;
     return EditorAPI::AssetType::Unknown;
 }
 

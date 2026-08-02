@@ -7,6 +7,7 @@
 #include "../../AnimationCore/VansAnimatorIO.h"
 #include "../../AnimationCore/VansAnimGraph.h"
 #include "../../AnimationCore/VansAnimationClipLoader.h"
+#include "../../AnimationCore/VansSkinnedMeshLoader.h"
 #include "../../AnimationCore/VansBoneAttachmentSystem.h"
 #include "../../PhysicsCore/VansCharacterControllerNode.h"
 #include "../../PhysicsCore/Storage/VansRagdollProfileStorage.h"
@@ -14,10 +15,249 @@
 #include "../../ScriptCore/VansScriptContext.h"
 #include "../../Util/VansLog.h"
 
+#include <assimp/Importer.hpp>
+#include <assimp/postprocess.h>
+#include <assimp/scene.h>
+#include <nlohmann/json.hpp>
+
+#include <filesystem>
+#include <fstream>
+#include <memory>
+
 namespace VansGraphics
 {
 	namespace
 	{
+		std::string EnsureDirectoryPrefix(const std::filesystem::path& directory)
+		{
+			std::string value = directory.lexically_normal().string();
+			if (!value.empty() &&
+			    value.back() != '\\' &&
+			    value.back() != '/')
+			{
+				value.push_back(static_cast<char>(std::filesystem::path::preferred_separator));
+			}
+			return value;
+		}
+
+		std::string ResolveProjectAssetPath(const std::string& projectRoot, const std::string& assetPath)
+		{
+			if (assetPath.empty())
+				return "";
+
+			std::filesystem::path path(assetPath);
+			if (path.is_absolute())
+				return path.lexically_normal().string();
+
+			const std::filesystem::path projectRelative =
+				(std::filesystem::path(projectRoot) / path).lexically_normal();
+			if (std::filesystem::exists(projectRelative))
+				return projectRelative.string();
+
+			std::filesystem::path ancestor = std::filesystem::path(projectRoot).lexically_normal();
+			while (!ancestor.empty())
+			{
+				const std::filesystem::path candidate = (ancestor / path).lexically_normal();
+				if (std::filesystem::exists(candidate))
+					return candidate.string();
+
+				const std::filesystem::path parent = ancestor.parent_path();
+				if (parent == ancestor)
+					break;
+				ancestor = parent;
+			}
+
+			return projectRelative.string();
+		}
+
+		uint32_t CountVerticesWithBoneInfluence(const std::vector<VertexBoneData>& boneData)
+		{
+			uint32_t count = 0;
+			for (const VertexBoneData& vertex : boneData)
+			{
+				for (int influence = 0; influence < MAX_BONE_INFLUENCE; ++influence)
+				{
+					if (vertex.boneIDs[influence] >= 0 && vertex.weights[influence] > 0.0f)
+					{
+						++count;
+						break;
+					}
+				}
+			}
+			return count;
+		}
+
+		void ApplyRetargetProfileOptions(const std::string& profilePath, VansRetargetRuntimeDesc& desc)
+		{
+			if (profilePath.empty() || !std::filesystem::exists(profilePath))
+				return;
+
+			std::ifstream input(profilePath);
+			if (!input)
+			{
+				VANS_LOG_WARN("[Retarget] Could not open profile: " << profilePath);
+				return;
+			}
+
+			nlohmann::json root;
+			try
+			{
+				input >> root;
+			}
+			catch (const std::exception& e)
+			{
+				VANS_LOG_WARN("[Retarget] Could not parse profile: " << profilePath
+					<< " (" << e.what() << ")");
+				return;
+			}
+
+			const auto optionsIt = root.find("retarget_options");
+			if (optionsIt == root.end() || !optionsIt->is_object())
+				return;
+
+			const auto scaleIt = optionsIt->find("translation_scale");
+			if (scaleIt != optionsIt->end() && scaleIt->is_number())
+			{
+				desc.translationScale = scaleIt->get<float>();
+				desc.hasExplicitTranslationScale = true;
+				desc.translationScaleMode = "explicit";
+			}
+			else if (scaleIt != optionsIt->end() && scaleIt->is_string())
+			{
+				desc.translationScaleMode = scaleIt->get<std::string>();
+				desc.hasExplicitTranslationScale = false;
+			}
+
+			const auto alignmentIt = optionsIt->find("root_alignment");
+			if (alignmentIt != optionsIt->end() && alignmentIt->is_string())
+				desc.rootAlignmentMode = alignmentIt->get<std::string>();
+
+			const auto modelRotationIt = optionsIt->find("model_space_rotation_degrees");
+			if (modelRotationIt != optionsIt->end() && modelRotationIt->is_array() && modelRotationIt->size() >= 3)
+			{
+				desc.modelSpaceRotationDegrees = glm::vec3(
+					(*modelRotationIt)[0].get<float>(),
+					(*modelRotationIt)[1].get<float>(),
+					(*modelRotationIt)[2].get<float>());
+			}
+		}
+
+		std::string ResolveClipPrefixForAnimator(
+			const std::string& fullAnimatorPath,
+			const std::vector<AnimatorClipRef>& clipRefs,
+			const std::string& fallbackPrefix)
+		{
+			if (clipRefs.empty())
+				return fallbackPrefix;
+
+			const std::filesystem::path firstClipRef(clipRefs.front().path);
+			if (firstClipRef.is_absolute())
+				return "";
+
+			std::filesystem::path candidate = std::filesystem::path(fullAnimatorPath).parent_path();
+			while (!candidate.empty())
+			{
+				const std::filesystem::path resolved = candidate / firstClipRef;
+				if (std::filesystem::exists(resolved))
+					return EnsureDirectoryPrefix(candidate);
+
+				const std::filesystem::path parent = candidate.parent_path();
+				if (parent == candidate)
+					break;
+				candidate = parent;
+			}
+
+			return fallbackPrefix;
+		}
+
+		bool LoadSkeletonFromModel(const std::string& fullModelPath, Skeleton& outSkeleton)
+		{
+			Assimp::Importer importer;
+			const aiScene* scene = importer.ReadFile(
+				fullModelPath,
+				aiProcess_Triangulate |
+				aiProcess_FlipUVs |
+				aiProcess_GenNormals);
+
+			if (!scene)
+			{
+				VANS_LOG_WARN("[Retarget] failed to import source model: "
+					<< fullModelPath << " (" << importer.GetErrorString() << ")");
+				return false;
+			}
+
+			VansSkinnedMeshLoader::ExtractSkeleton(scene, outSkeleton);
+			if (outSkeleton.bones.empty())
+			{
+				VANS_LOG_WARN("[Retarget] source model has no skeleton: " << fullModelPath);
+				return false;
+			}
+
+			return true;
+		}
+
+		std::unique_ptr<VansAnimationController> LoadAnimatorController(
+			const std::string& fullAnimatorPath,
+			const std::string& fallbackClipPrefix,
+			const Skeleton& skeleton,
+			const MotionMatchingSettings* motionMatchingSettings,
+			bool enableRootMotion,
+			const std::string& logOwner)
+		{
+			AnimatorAssetData assetData;
+			if (!VansAnimatorIO::Load(fullAnimatorPath, assetData))
+			{
+				VANS_LOG_WARN("[Retarget] failed to load source .vanimator for '"
+					<< logOwner << "': " << fullAnimatorPath);
+				return nullptr;
+			}
+
+			const std::string clipPrefix = ResolveClipPrefixForAnimator(
+				fullAnimatorPath,
+				assetData.clipRefs,
+				fallbackClipPrefix);
+			auto clipsMap = VansAnimationClipLoader::LoadClipsFromRefs(
+				assetData.clipRefs,
+				clipPrefix,
+				&skeleton);
+
+			auto controller = std::make_unique<VansAnimationController>();
+			controller->SetName(assetData.name);
+
+			for (const auto& param : assetData.parameters)
+			{
+				controller->AddParameter(param.name, param.type);
+				switch (param.type)
+				{
+				case AnimatorParamType::Float: controller->SetFloat(param.name, param.floatVal); break;
+				case AnimatorParamType::Bool: controller->SetBool(param.name, param.boolVal); break;
+				case AnimatorParamType::Int: controller->SetInt(param.name, param.intVal); break;
+				case AnimatorParamType::Trigger: break;
+				case AnimatorParamType::Vector3: controller->SetVector3(param.name, param.vec3Val); break;
+				case AnimatorParamType::Quaternion: controller->SetQuaternion(param.name, param.quatVal); break;
+				}
+			}
+
+			for (auto& [name, clip] : clipsMap)
+				controller->AddClip(name, std::move(clip));
+
+			if (assetData.animGraph)
+				controller->SetGraph(std::move(assetData.animGraph));
+			else
+				VANS_LOG_WARN("[Retarget] source .vanimator has no graph node: " << fullAnimatorPath);
+
+			if (motionMatchingSettings)
+				controller->ConfigureMotionMatching(*motionMatchingSettings);
+
+			if (enableRootMotion)
+				controller->EnableRootMotion(true);
+
+			VANS_LOG("[Retarget] loaded source controller for '" << logOwner
+				<< "': " << fullAnimatorPath
+				<< " clips=" << controller->GetClipNames().size());
+			return controller;
+		}
+
 		VansEngine::PhysicsColliderType ParseShapeType(const std::string& value)
 		{
 			if (value == "box") return VansEngine::PhysicsColliderType::Box;
@@ -252,6 +492,53 @@ namespace VansGraphics
 		animNode->SetTransformID(group.sharedTransformID);
 		animNode->SetController(controller);
 
+		if (animConfig.retarget && animConfig.retarget->enabled)
+		{
+			const Vans::VansSceneAnimationRetargetConfig& retargetConfig = *animConfig.retarget;
+			if (retargetConfig.sourceModel.empty() || retargetConfig.sourceAnimator.empty())
+			{
+				VANS_LOG_WARN("[Retarget] '" << objectName
+					<< "' retarget is enabled but source_model/source_animator is missing");
+			}
+			else
+			{
+				const std::string fullSourceModelPath = ResolveProjectAssetPath(projectRoot, retargetConfig.sourceModel);
+				const std::string fullSourceAnimatorPath = ResolveProjectAssetPath(projectRoot, retargetConfig.sourceAnimator);
+				const std::string fullProfilePath = ResolveProjectAssetPath(projectRoot, retargetConfig.profile);
+
+				Skeleton sourceSkeleton;
+				if (LoadSkeletonFromModel(fullSourceModelPath, sourceSkeleton))
+				{
+					const MotionMatchingSettings* mmSettings =
+						animConfig.motionMatching ? &(*animConfig.motionMatching) : nullptr;
+					std::unique_ptr<VansAnimationController> sourceController =
+						LoadAnimatorController(
+							fullSourceAnimatorPath,
+							projectRoot,
+							sourceSkeleton,
+							mmSettings,
+							enableRootMotion,
+							objectName);
+
+					if (sourceController)
+					{
+						VansRetargetRuntimeDesc retargetDesc;
+						retargetDesc.profilePath = fullProfilePath;
+						retargetDesc.sourceModelPath = fullSourceModelPath;
+						retargetDesc.sourceAnimatorPath = fullSourceAnimatorPath;
+						retargetDesc.runtimeMode = retargetConfig.runtimeMode;
+						retargetDesc.cachePolicy = retargetConfig.cachePolicy;
+						retargetDesc.debugDraw = retargetConfig.debugDraw;
+						ApplyRetargetProfileOptions(fullProfilePath, retargetDesc);
+						animNode->ConfigureRetargetSource(
+							sourceSkeleton,
+							std::move(sourceController),
+							retargetDesc);
+					}
+				}
+			}
+		}
+
 		if (!animatorPath.empty())
 			animNode->SetAnimatorFilePath(projectRoot + animatorPath);
 
@@ -264,28 +551,50 @@ namespace VansGraphics
 			const uint32_t submeshIndex = childNode->m_SubmeshIndex != UINT32_MAX
 				? childNode->m_SubmeshIndex
 				: static_cast<uint32_t>(ci);
-			childNode->m_HasSkeletonBone = true;
-			childNode->m_AnimationEnabled = true;
-			childNode->m_AnimOwner = animNode;
 			childNode->m_AnimSubmeshIndex = submeshIndex;
-			if (submeshIndex < animNode->GetSubmeshBufferCount())
+			const bool hasSubmeshBoneDataSlot =
+				submeshIndex < meshAsset->m_SubMeshBoneData.size();
+			const uint32_t influencedVertexCount = hasSubmeshBoneDataSlot
+				? CountVerticesWithBoneInfluence(meshAsset->m_SubMeshBoneData[submeshIndex])
+				: 0u;
+			const uint32_t submeshBoneVertexCount = hasSubmeshBoneDataSlot
+				? static_cast<uint32_t>(meshAsset->m_SubMeshBoneData[submeshIndex].size())
+				: 0u;
+			const bool hasSubmeshBoneData =
+				influencedVertexCount > 0;
+			if (animConfig.retarget && animConfig.retarget->debugDraw)
 			{
+				VANS_LOG("[LoadAnimComp] " << nodeName
+					<< " bind submesh[" << submeshIndex << "] node='" << childNode->m_NodeName
+					<< "' boneVertices=" << influencedVertexCount << "/" << submeshBoneVertexCount
+					<< " animEnabled=" << (hasSubmeshBoneData ? 1 : 0));
+			}
+			if (hasSubmeshBoneData && submeshIndex < animNode->GetSubmeshBufferCount())
+			{
+				childNode->m_HasSkeletonBone = true;
+				childNode->m_AnimationEnabled = true;
+				childNode->m_AnimOwner = animNode;
 				childNode->m_AnimBoneIDBuffer = &animNode->GetBoneIDBuffer(submeshIndex);
 				childNode->m_AnimBoneWeightBuffer = &animNode->GetBoneWeightBuffer(submeshIndex);
 				childNode->MarkAnimationDescriptorDirty();
 			}
 			else
 			{
+				childNode->m_HasSkeletonBone = false;
 				childNode->m_AnimationEnabled = false;
+				childNode->m_AnimOwner = nullptr;
 				childNode->m_AnimBoneIDBuffer = nullptr;
 				childNode->m_AnimBoneWeightBuffer = nullptr;
-				VANS_LOG_WARN("[LoadAnimComp] submesh index " << submeshIndex
-					<< " has no bone buffer for node '" << childNode->m_NodeName << "'");
+				if (submeshIndex >= animNode->GetSubmeshBufferCount())
+				{
+					VANS_LOG_WARN("[LoadAnimComp] submesh index " << submeshIndex
+						<< " has no bone buffer for node '" << childNode->m_NodeName << "'");
+				}
 			}
 		}
 
 		scene.RegisterAnimationRuntime(animNode, controller);
-		controller->Play();
+		animNode->Play();
 
 		if (!animConfig.boneBindings.empty())
 		{
