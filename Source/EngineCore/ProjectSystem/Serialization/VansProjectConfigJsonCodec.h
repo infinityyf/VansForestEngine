@@ -9,7 +9,7 @@ namespace Vans
 	struct RecentProjectEntry;
 	struct VansProjectConfig;
 
-	class VansProjectConfigLegacyJsonCodec
+	class VansProjectConfigJsonCodec
 	{
 	public:
 		static bool DecodeProjectConfig(

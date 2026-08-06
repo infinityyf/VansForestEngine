@@ -1,4 +1,4 @@
-#include "VansProjectSettingsLegacyJsonCodec.h"
+#include "VansProjectSettingsJsonCodec.h"
 
 #include <nlohmann/json.hpp>
 
@@ -33,7 +33,7 @@ VansProjectFSRMode ParseFSRMode(const std::string& value, std::vector<std::strin
 }
 }
 
-bool VansProjectSettingsLegacyJsonCodec::DecodeRenderSettings(
+bool VansProjectSettingsJsonCodec::DecodeRenderSettings(
 	const nlohmann::json& root,
 	VansProjectRenderSettingsData& settings,
 	std::vector<std::string>& warnings,
@@ -110,7 +110,7 @@ bool VansProjectSettingsLegacyJsonCodec::DecodeRenderSettings(
 	return true;
 }
 
-nlohmann::json VansProjectSettingsLegacyJsonCodec::EncodeRenderSettings(
+nlohmann::json VansProjectSettingsJsonCodec::EncodeRenderSettings(
 	const VansProjectRenderSettingsData& settings)
 {
 	nlohmann::json root;
@@ -141,7 +141,7 @@ nlohmann::json VansProjectSettingsLegacyJsonCodec::EncodeRenderSettings(
 	return root;
 }
 
-bool VansProjectSettingsLegacyJsonCodec::DecodePhysicsSettings(
+bool VansProjectSettingsJsonCodec::DecodePhysicsSettings(
 	const nlohmann::json& root,
 	VansProjectPhysicsSettingsData& settings,
 	std::string& error)
@@ -160,7 +160,7 @@ bool VansProjectSettingsLegacyJsonCodec::DecodePhysicsSettings(
 	return true;
 }
 
-nlohmann::json VansProjectSettingsLegacyJsonCodec::EncodePhysicsSettings(
+nlohmann::json VansProjectSettingsJsonCodec::EncodePhysicsSettings(
 	const VansProjectPhysicsSettingsData& settings)
 {
 	nlohmann::json root;

@@ -1,7 +1,7 @@
 #include "VansPcgDebugDataService.h"
 
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
-#include "../AssetCore/Serialization/VansSerializedValueLegacyJsonAdapter.h"
+#include "../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 #include "../AssetCore/Storage/VansJsonFileStorage.h"
 #include "../RenderCore/PcgCore/VansPcgSceneConfigAdapter.h"
 #include "../SceneCore/VansSceneDocument.h"
@@ -54,7 +54,7 @@ Vans::VansSerializedValue ReadSerializedJsonFile(const std::filesystem::path& pa
 	Json root = ReadJsonFile(path);
 	if (!root.is_object())
 		return EmptyObject();
-	return Vans::DecodeSerializedValueLegacyJson(root);
+	return Vans::DecodeSerializedValueJson(root);
 }
 
 const Vans::VansSerializedValue* ReadSerializedObjectField(

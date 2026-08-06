@@ -49,6 +49,8 @@ namespace VansGraphics
 		                             std::unique_ptr<VansAnimationController> sourceController,
 		                             const VansRetargetRuntimeDesc& desc);
 		bool IsRetargetEnabled() const { return m_RetargetEnabled; }
+		const Skeleton& GetRetargetSourceSkeleton() const { return m_SourceSkeleton; }
+		const VansAnimationController* GetRetargetSourceController() const { return m_SourceController.get(); }
 
 		// Playback control, delegated to the active controller.
 		void Play();
@@ -138,6 +140,15 @@ namespace VansGraphics
 		std::unordered_map<std::string, std::vector<AnimationEvent>> m_Events;
 		float m_LastEventTime = 0.0f;
 
+		struct NodeTransformBinding
+		{
+			std::string nodeName;
+			std::string nodePath;
+			uint32_t transformID = UINT32_MAX;
+			VansRenderNode* renderNode = nullptr;
+		};
+		std::vector<NodeTransformBinding> m_NodeTransformBindings;
+
 		// CPU-side fallback bone matrix storage used when no controller exists.
 		BoneMatricesSSBO m_BoneMatricesSSBO;
 
@@ -151,6 +162,8 @@ namespace VansGraphics
 		// Internal helpers
 		void ApplyBoneOverrides(std::vector<glm::mat4>& localTransforms);
 		void ApplyRootMotionToTransform(const glm::vec3& deltaPos, const glm::quat& deltaRot);
+		void RebuildNodeTransformBindings();
+		void ApplySampledNodeTransforms();
 		void FireEvents();
 		void SyncRetargetParameters();
 	};

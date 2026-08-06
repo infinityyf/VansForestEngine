@@ -1,7 +1,7 @@
 #include "VansUIDocumentLoader.h"
 
 #include "../../AssetCore/Serialization/VansJsonDocumentCodec.h"
-#include "../../AssetCore/Serialization/VansSerializedValueLegacyJsonAdapter.h"
+#include "../../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 #include "../../AssetCore/Storage/VansFileStorage.h"
 
 #include <nlohmann/json.hpp>
@@ -37,7 +37,7 @@ namespace VansRuntime
 		if (!Vans::VansJsonDocumentCodec::Parse(bytes, jsonRoot, error))
 			return false;
 
-		document.root = Vans::DecodeSerializedValueLegacyJson(jsonRoot);
+		document.root = Vans::DecodeSerializedValueJson(jsonRoot);
 		document.sourcePath = path;
 		document.contentHash = HashBytes(bytes);
 		return true;

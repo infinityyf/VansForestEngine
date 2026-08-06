@@ -1,6 +1,6 @@
 #include "VansParticleAssetStorage.h"
 
-#include "../Serialization/VansParticleAssetLegacyJsonCodec.h"
+#include "../Serialization/VansParticleAssetJsonCodec.h"
 #include "../../AssetCore/Storage/VansJsonFileStorage.h"
 
 #include <nlohmann/json.hpp>
@@ -15,7 +15,7 @@ bool VansParticleAssetStorage::Load(
     Vans::ParticleJson root;
     if (!Vans::VansJsonFileStorage::Read(filePath, root, error))
         return false;
-    return VansParticleAssetLegacyJsonCodec::Decode(root, filePath, asset, error);
+    return VansParticleAssetJsonCodec::Decode(root, filePath, asset, error);
 }
 
 bool VansParticleAssetStorage::SaveAtomic(
@@ -25,7 +25,7 @@ bool VansParticleAssetStorage::SaveAtomic(
 {
     return Vans::VansJsonFileStorage::WriteAtomic(
         filePath,
-        VansParticleAssetLegacyJsonCodec::Encode(asset),
+        VansParticleAssetJsonCodec::Encode(asset),
         error);
 }
 }

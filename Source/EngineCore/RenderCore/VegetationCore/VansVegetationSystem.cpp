@@ -960,7 +960,7 @@ void VansVegetationSystem::Draw(VansVKCommandBuffer& graphicsCmd, VansGraphicsSh
 			GrassDrawPushConstants pc = {};
 			pc.materialIndex    = cfg.materialIndex;
 			pc.objectIndex      = pushConstantTransformIndex;
-			pc.animationEnabled = 1;
+			pc.vertexFeatureMask = 0u;
 			pc.boneCount        = m_BoneCountPerInstance;
 			pc.subBladeCount    = m_SubBladeCount;
 			pc.grassHeight      = m_BladeHeight;

@@ -7,6 +7,7 @@
 #include "VansSceneAssetRegistry.h"
 
 #include "VansMainCameraVisibility.h"
+#include "../SceneRuntime/VansRuntimeWorld.h"
 
 #include "WaterCore/VansWaterConfig.h"
 
@@ -40,6 +41,10 @@ namespace VansGraphics { class VansParticleRenderNode; }
 namespace VansGraphics { class VansVKCommandBuffer; }
 
 class VansScriptObject;
+class VansLuaScriptComponent;
+class VansScriptAudioComponent;
+class VansScriptVideoComponent;
+class VansScriptParticleComponent;
 
 #include "BRDFData/VansLight.h"
 
@@ -61,6 +66,7 @@ class VansScriptObject;
 #include <algorithm>
 #include <vector>
 #include <atomic>
+#include <memory>
 
 #include <map>
 
@@ -197,7 +203,9 @@ namespace VansGraphics
 
 		glm::vec3 scale    = glm::vec3(1);
 
-		uint32_t sharedTransformID = 0;            // transform owned by the first child
+		uint32_t sharedTransformID = 0;            // group root transform or first child transform
+
+		bool ownsSharedTransform = false;
 
 		std::vector<VansRenderNode*> childNodes;   // opaque + transparent children
 
@@ -404,6 +412,7 @@ namespace VansGraphics
 		VansEngine::VansPhysicsVehicle* m_Vehicle = nullptr;
 		std::vector<VansScriptObject*> m_SceneObjects;
 		std::vector<std::string> m_PendingEntityDestructionGuids;
+		std::unique_ptr<Vans::VansRuntimeWorld> m_RuntimeWorld;
 
 
 	public:
@@ -451,6 +460,20 @@ namespace VansGraphics
 		const std::vector<VansAnimationNode*>& GetAnimationNodes() const { return m_AnimationNodes; }
 
 		const std::vector<VansScriptObject*>& GetSceneObjects() const { return m_SceneObjects; }
+		Vans::VansRuntimeWorld* GetRuntimeWorld() { return m_RuntimeWorld.get(); }
+		const Vans::VansRuntimeWorld* GetRuntimeWorld() const { return m_RuntimeWorld.get(); }
+		bool ApplyRuntimeComponentEnabled(
+			Vans::VansComponentHandle component,
+			bool effectiveEnabled);
+		bool CopyRuntimeUIOpenScreens(
+			Vans::VansComponentHandle component,
+			std::vector<std::uint64_t>& outOpenScreens) const;
+		bool SyncRuntimeScriptComponentFromFacade(
+			const std::string& componentGuid,
+			const VansLuaScriptComponent& component);
+		bool SyncRuntimeAudioComponentFromFacade(VansScriptAudioComponent& component);
+		bool SyncRuntimeVideoComponentFromFacade(VansScriptVideoComponent& component);
+		bool SyncRuntimeParticleComponentFromFacade(VansScriptParticleComponent& component);
 
 		VansScriptObject* FindSceneObjectByName(const std::string& name) const { return FindObjectByName(name); }
 
@@ -465,6 +488,10 @@ namespace VansGraphics
 		void SetTransformParentID(uint32_t childTransformID, uint32_t parentTransformID) { m_TransformParentSystem.SetParent(childTransformID, parentTransformID); }
 
 		void ClearTransformParentID(uint32_t childTransformID) { m_TransformParentSystem.ClearParent(childTransformID); }
+
+		bool SetEntityParentByGuid(const std::string& childEntityGuid, const std::string& parentEntityGuid);
+		bool SetEntityNameByGuid(const std::string& entityGuid, const std::string& name);
+		bool SetEntityActiveByGuid(const std::string& entityGuid, bool active);
 
 
 
@@ -559,20 +586,19 @@ namespace VansGraphics
 
 
 
-		// Animation descriptor set (Set 3): Bone Matrices SSBO + Bone Weight SSBO
-
-		// Per-node for animated VansCommonRenderNodes; static nodes bind this shared dummy set.
+		// Vertex deformation descriptor set (Set 3): skeletal skinning buffers.
+		// Per-node for skinned geometry; static nodes bind this shared dummy set.
 	private:
 
-		VkDescriptorSetLayout m_AnimationDescriptorSetLayout = VK_NULL_HANDLE;
+		VkDescriptorSetLayout m_VertexDeformationDescriptorSetLayout = VK_NULL_HANDLE;
 
-		VkDescriptorSet m_AnimationDescriptorSet = VK_NULL_HANDLE;  // shared dummy for static nodes
+		VkDescriptorSet m_VertexDeformationDescriptorSet = VK_NULL_HANDLE;  // shared dummy for static nodes
 
 	public:
 
-		VkDescriptorSetLayout GetAnimationDescriptorSetLayout() const { return m_AnimationDescriptorSetLayout; }
+		VkDescriptorSetLayout GetVertexDeformationDescriptorSetLayout() const { return m_VertexDeformationDescriptorSetLayout; }
 
-		VkDescriptorSet GetAnimationDescriptorSet() const { return m_AnimationDescriptorSet; }
+		VkDescriptorSet GetVertexDeformationDescriptorSet() const { return m_VertexDeformationDescriptorSet; }
 
 
 
@@ -780,34 +806,6 @@ namespace VansGraphics
 
 
 
-        // =====================================================================
-
-        // Runtime Dynamic Entity API锛堣繍琛屾椂鍔ㄦ€佸疄浣撳鍒狅級
-
-        // =====================================================================
-
-
-
-
-
-		VansScriptObject* CreateEntity(
-
-			VkDevice& device, const std::string& entityName,
-
-			const std::string& meshName, const std::string& materialName,
-
-			const glm::vec3& position, const glm::vec3& rotation = glm::vec3(0.0f),
-
-			const glm::vec3& scale = glm::vec3(1.0f),
-
-			const std::string& parentName = "");
-
-
-
-
-
-		bool DestroyEntity(const std::string& entityName);
-
 		bool DestroyEntity(VansScriptObject* obj);
 
 		// 脚本和事件回调不得在遍历生命周期列表时直接释放实体。
@@ -815,16 +813,6 @@ namespace VansGraphics
 		bool QueueDestroyEntity(VansScriptObject* obj);
 
 		void FlushPendingEntityDestructions();
-
-
-
-
-
-		bool CanCreateEntity() const;
-
-
-
-
 
 		bool GrowTransformBuffer(VkDevice& device, uint32_t newCapacity);
 

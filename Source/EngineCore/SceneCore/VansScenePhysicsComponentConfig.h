@@ -45,12 +45,6 @@ struct VansSceneClothCollisionSphereConfig
 struct VansSceneClothNodeConfig
 {
 	std::optional<std::string> profilePath;
-	std::optional<float> stiffness;
-	std::optional<float> damping;
-	std::optional<float> friction;
-	std::optional<bool> selfCollision;
-	std::optional<std::array<float, 3>> gravity;
-	std::vector<uint32_t> pinnedParticles;
 	std::optional<float> physicsAttachOffsetY;
 	std::vector<VansSceneClothCollisionSphereConfig> collisionSpheres;
 };

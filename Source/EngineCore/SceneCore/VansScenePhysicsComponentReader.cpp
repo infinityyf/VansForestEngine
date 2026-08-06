@@ -84,22 +84,6 @@ std::optional<std::array<float, 3>> ReadOptionalFloat3Field(
 	};
 }
 
-std::vector<uint32_t> ReadPinnedParticles(const VansSerializedValue& clothNode)
-{
-	std::vector<uint32_t> result;
-	const VansSerializedValue* found = ReadArrayField(clothNode, "pinnedParticles");
-	if (!found)
-		return result;
-
-	result.reserve(found->arrayItems.size());
-	for (const VansSerializedValue& value : found->arrayItems)
-	{
-		if (value.kind == VansSerializedValue::Kind::Int && value.intValue >= 0)
-			result.push_back(static_cast<uint32_t>(value.intValue));
-	}
-	return result;
-}
-
 std::vector<VansSceneClothCollisionSphereConfig> ReadCollisionSpheres(
 	const VansSerializedValue& clothNode)
 {
@@ -231,12 +215,6 @@ VansSceneClothNodeConfig VansScenePhysicsComponentReader::ReadClothNode(
 		return config;
 
 	config.profilePath = ReadOptionalAssetReferenceField(clothNode, "profilePath");
-	config.stiffness = ReadOptionalFloatField(clothNode, "stiffness");
-	config.damping = ReadOptionalFloatField(clothNode, "damping");
-	config.friction = ReadOptionalFloatField(clothNode, "friction");
-	config.selfCollision = ReadOptionalBoolField(clothNode, "selfCollision");
-	config.gravity = ReadOptionalFloat3Field(clothNode, "gravity");
-	config.pinnedParticles = ReadPinnedParticles(clothNode);
 	config.physicsAttachOffsetY = ReadOptionalFloatField(clothNode, "physicsAttachOffsetY");
 	config.collisionSpheres = ReadCollisionSpheres(clothNode);
 	return config;

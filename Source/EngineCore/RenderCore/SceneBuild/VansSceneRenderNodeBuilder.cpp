@@ -4,10 +4,31 @@
 #include "../VulkanCore/VansMesh.h"
 #include "../../Util/VansLog.h"
 
+#include <../../GLM/gtc/quaternion.hpp>
+#define GLM_ENABLE_EXPERIMENTAL
+#include <../../GLM/gtx/matrix_decompose.hpp>
+#include <../../GLM/gtx/quaternion.hpp>
+
 namespace VansGraphics
 {
 namespace
 {
+bool DecomposeMatrixToPRS(const glm::mat4& matrix,
+                          glm::vec3& outPosition,
+                          glm::vec3& outRotationDegrees,
+                          glm::vec3& outScale)
+{
+	glm::quat rotation(1.0f, 0.0f, 0.0f, 0.0f);
+	glm::vec3 skew;
+	glm::vec4 perspective;
+	if (!glm::decompose(matrix, outScale, rotation, outPosition, skew, perspective))
+		return false;
+
+	rotation = glm::normalize(rotation);
+	outRotationDegrees = glm::degrees(glm::eulerAngles(rotation));
+	return true;
+}
+
 glm::vec3 ToVec3(const std::array<float, 3>& value)
 {
 	return glm::vec3(value[0], value[1], value[2]);
@@ -510,6 +531,20 @@ void VansSceneRenderNodeBuilder::ExpandMultiMeshToRenderNodes(VansScene& scene,
     group.position   = position;
     group.rotation   = rotation;
     group.scale      = scale;
+    const bool hasNodeTransformAnimation = multiMesh->m_HasNodeTransformAnimation;
+    if (hasNodeTransformAnimation)
+    {
+        group.sharedTransformID = VansTransformStore::AllocateTransform();
+        group.ownsSharedTransform = true;
+        VansTransform& rootTransform = VansTransformStore::GetTransform(group.sharedTransformID);
+        rootTransform.m_Position = position;
+        rootTransform.m_Rotation = rotation;
+        rootTransform.m_Scale = scale;
+    }
+    else
+    {
+        group.ownsSharedTransform = false;
+    }
 
     const auto& subMeshes  = multiMesh->m_SubMeshes;
     const auto& matInfos   = multiMesh->m_SubmeshMaterialInfos;
@@ -662,16 +697,33 @@ void VansSceneRenderNodeBuilder::ExpandMultiMeshToRenderNodes(VansScene& scene,
         renderNode->m_ParentGroupName = resolvedParentName;
         renderNode->m_ParentEntityGuid = parentEntityGuid;
 
-        // All children share the first child's transform so they move together.
-        if (group.childNodes.empty())
+        if (hasNodeTransformAnimation)
         {
-            // First child — owns the transform; set position from JSON.
+            glm::vec3 childPosition(0.0f);
+            glm::vec3 childRotation(0.0f);
+            glm::vec3 childScale(1.0f);
+            const glm::mat4 rootWorld =
+                VansTransformStore::GetTransform(group.sharedTransformID).GetModelMatrix();
+            if (DecomposeMatrixToPRS(rootWorld * subMesh->m_SourceNodeBindModelTransform,
+                                     childPosition,
+                                     childRotation,
+                                     childScale))
+            {
+                renderNode->SetTransformData(childPosition, childRotation, childScale);
+            }
+            else
+            {
+                renderNode->SetTransformData(position, rotation, scale);
+            }
+        }
+        else if (group.childNodes.empty())
+        {
+            // First child owns the transform; set position from JSON.
             renderNode->SetTransformData(position, rotation, scale);
             group.sharedTransformID = renderNode->m_TransformID;
         }
         else
         {
-            // Subsequent children — share the first child's transform.
             renderNode->ShareTransform(group.sharedTransformID);
         }
         renderNode->SetName(renderNodeName);

@@ -26,6 +26,7 @@
 #include "Windows/VansPcgWindow.h"
 #include "Windows/VansHiZCullWindow.h"
 #include "Windows/VansAudioDebugWindow.h"
+#include "Windows/VansSkeletonDebugWindow.h"
 
 #include "../Util/VansProfiler.h"
 #include "../Util/VansJobSystem.h"
@@ -326,6 +327,44 @@ namespace
             }) }
         });
     }
+
+    bool RecreateRuntimeMultiMeshExpansionEntities(
+        Vans::EditorAPI::IEngineEditorAPI& editorAPI,
+        const std::vector<std::string>& parentEntityIds,
+        const std::vector<Vans::VansSerializedValue>& runtimeEntities)
+    {
+        if (parentEntityIds.empty() || runtimeEntities.empty())
+            return false;
+
+        for (const std::string& parentEntityId : parentEntityIds)
+        {
+            Vans::EditorAPI::RuntimeEntityDestroyRequest destroyRequest;
+            destroyRequest.entityGuid = parentEntityId;
+            if (!editorAPI.DestroyRuntimeEntity(destroyRequest).destroyed)
+            {
+                VANS_LOG_WARN("[MultiMeshHierarchy] Runtime destroy failed for expanded parent '"
+                    << parentEntityId << "'");
+                return false;
+            }
+        }
+
+        Vans::EditorAPI::RuntimeSceneEntitiesCreateRequest createRequest;
+        createRequest.sceneEntities.reserve(runtimeEntities.size());
+        for (const Vans::VansSerializedValue& entity : runtimeEntities)
+            createRequest.sceneEntities.push_back(Vans::FromSerializedValue(entity));
+
+        const Vans::EditorAPI::RuntimeSceneEntitiesCreateResult createResult =
+            editorAPI.CreateRuntimeSceneEntities(createRequest);
+        if (!createResult.created)
+        {
+            if (!createResult.message.empty())
+                VANS_LOG_WARN("[MultiMeshHierarchy] Runtime entity rebuild failed: "
+                    << createResult.message);
+            return false;
+        }
+
+        return true;
+    }
 }
 
 
@@ -374,10 +413,15 @@ bool VansGraphics::VansEditorWindow::m_PcgWindowOpen = false;
 bool VansGraphics::VansEditorWindow::m_HiZCullWindowOpen = false;
 bool VansGraphics::VansEditorWindow::m_ProjectSettingsWindowOpen = false;
 bool VansGraphics::VansEditorWindow::m_AudioDebugWindowOpen = false;
+bool VansGraphics::VansEditorWindow::m_SkeletonDebugWindowOpen = false;
 
 bool VansGraphics::VansEditorWindow::m_WireframeMode = false;
 bool VansGraphics::VansEditorWindow::m_VehicleDebugGizmos = false;
 bool VansGraphics::VansEditorWindow::m_HiZCullDebugVisualization = false;
+bool VansGraphics::VansEditorWindow::m_SkeletonDebugGizmos = false;
+bool VansGraphics::VansEditorWindow::m_SkeletonDebugSelectedOnly = true;
+bool VansGraphics::VansEditorWindow::m_SkeletonDebugShowNames = false;
+bool VansGraphics::VansEditorWindow::m_SkeletonDebugShowRetargetSource = true;
 
 VansGraphics::VansBasicWindow VansGraphics::VansEditorWindow::m_VansEditorWindow;
 //支持多个相机
@@ -424,6 +468,7 @@ VansGraphics::VansShadowDebuggerWindow* VansGraphics::VansEditorWindow::m_Shadow
 VansGraphics::VansPcgWindow* VansGraphics::VansEditorWindow::m_PcgWindow;
 VansGraphics::VansHiZCullWindow* VansGraphics::VansEditorWindow::m_HiZCullWindow;
 VansGraphics::VansAudioDebugWindow* VansGraphics::VansEditorWindow::m_AudioDebugWindow;
+VansGraphics::VansSkeletonDebugWindow* VansGraphics::VansEditorWindow::m_SkeletonDebugWindow;
 
 // Project selector overlay
 std::unique_ptr<Vans::VansProjectSelector> VansGraphics::VansEditorWindow::m_ProjectSelector;
@@ -492,6 +537,8 @@ void VansGraphics::VansEditorWindow::ProcessRuntimeMultiMeshHierarchyExpansion()
 
     Vans::VansSerializedValue newEntities = *sourceEntities;
     std::vector<Vans::VansSerializedValue> pendingChildEntities;
+    std::vector<Vans::VansSerializedValue> runtimeEntitiesToRecreate;
+    std::vector<std::string> runtimeParentEntityIdsToReplace;
     bool changed = false;
     const auto groups = editorAPI.BuildRuntimeMultiMeshExpansionSnapshot();
     std::unordered_map<std::string, const Vans::EditorAPI::RuntimeMultiMeshGroupSnapshot*> groupsByName;
@@ -580,8 +627,13 @@ void VansGraphics::VansEditorWindow::ProcessRuntimeMultiMeshHierarchyExpansion()
         Vans::SetSerializedObjectField(entity, "components",
             Vans::VansSerializedValue::Array(std::move(components)));
 
+        runtimeParentEntityIdsToReplace.push_back(entityId);
+        runtimeEntitiesToRecreate.push_back(entity);
         for (auto& childEntity : childEntities)
+        {
+            runtimeEntitiesToRecreate.push_back(childEntity);
             pendingChildEntities.push_back(std::move(childEntity));
+        }
 
         changed = true;
     }
@@ -610,7 +662,16 @@ void VansGraphics::VansEditorWindow::ProcessRuntimeMultiMeshHierarchyExpansion()
         return;
     }
 
-    VANS_LOG("[MultiMeshHierarchy] Runtime expansion persisted to scene. Reloading editor scene.");
+    if (RecreateRuntimeMultiMeshExpansionEntities(
+        editorAPI,
+        runtimeParentEntityIdsToReplace,
+        runtimeEntitiesToRecreate))
+    {
+        VANS_LOG("[MultiMeshHierarchy] Runtime expansion persisted to scene and applied incrementally.");
+        return;
+    }
+
+    VANS_LOG_WARN("[MultiMeshHierarchy] Runtime expansion persisted to scene but incremental apply failed. Reloading editor scene.");
     ReloadCurrentSceneForEditing();
 }
 
@@ -986,6 +1047,8 @@ void VansGraphics::VansEditorWindow::CreateWindowComponents()
 
     m_AudioDebugWindow = AddEditorWindowComponent<VansAudioDebugWindow>(m_Windows);
 
+    m_SkeletonDebugWindow = AddEditorWindowComponent<VansSkeletonDebugWindow>(m_Windows);
+
 }
 
 // ============================================================================
@@ -1322,6 +1385,35 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& devic
 					selectedAssetDocument->sourcePath,
 					selectedAssetDocument->sourceDocument.SerializedRootSnapshot()));
 		};
+		auto applySceneRuntimePatchOrReload = [&](const Vans::SceneEditResult& result)
+		{
+			if (!result)
+				return;
+			if (result.runtimeChangeApplied)
+				return;
+			if (result.runtimeParentPreviewSupported)
+			{
+				Vans::EditorAPI::RuntimeEntityPreviewChange previewChange;
+				previewChange.parentEdits.push_back({
+					result.changedEntityGuid,
+					result.changedParentEntityGuid });
+				if (editorAPI.ApplyRuntimeEntityPreviewChange(previewChange))
+					return;
+			}
+			if (result.runtimePreviewSupported && m_SceneDocument)
+			{
+				const Vans::EditorAPI::RuntimeEntityPreviewChange previewChange =
+					Vans::BuildRuntimeEntityPreviewChangeFromSceneRoot(
+						m_SceneDocument->SerializedRootSnapshot(),
+						result.changedEntityGuid);
+				if (!previewChange.Empty())
+				{
+					if (editorAPI.ApplyRuntimeEntityPreviewChange(previewChange))
+						return;
+				}
+			}
+			ReloadCurrentSceneForEditing();
+		};
 		auto undoEditorChange = [&]()
 		{
 			if (canUndoAssetDocument)
@@ -1336,8 +1428,7 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& devic
 			if (canUndoSceneDocument)
 			{
 				auto result = m_SceneEditService->Undo();
-				if (result)
-					ReloadCurrentSceneForEditing();
+				applySceneRuntimePatchOrReload(result);
 				return;
 			}
 			if (editorAPI.CanUndo())
@@ -1357,8 +1448,7 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& devic
 			if (canRedoSceneDocument)
 			{
 				auto result = m_SceneEditService->Redo();
-				if (result)
-					ReloadCurrentSceneForEditing();
+				applySceneRuntimePatchOrReload(result);
 				return;
 			}
 			if (editorAPI.CanRedo())
@@ -1382,7 +1472,6 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& devic
 			{
 				const Vans::SceneSaveResult saveResult = m_SceneSaveService->Save(*m_SceneDocument);
 				if (!saveResult) VANS_LOG_ERROR("[SceneSave] " << saveResult.message);
-				else if (saveResult.wroteFile) ReloadCurrentSceneForEditing();
 			}
 			else if ((canUndoAssetDocument || canUndoSceneDocument || canUndoRuntimeCommand) && ImGui::IsKeyPressed(ImGuiKey_Z, false))
 			{
@@ -1403,7 +1492,6 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& devic
 				{
 					const Vans::SceneSaveResult saveResult = m_SceneSaveService->Save(*m_SceneDocument);
 					if (!saveResult) VANS_LOG_ERROR("[SceneSave] " << saveResult.message);
-					else if (saveResult.wroteFile) ReloadCurrentSceneForEditing();
 				}
 				if (ImGui::MenuItem("Save Asset", nullptr, false, selectedAssetDirty))
 				{
@@ -1472,6 +1560,7 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& devic
                     {
                         OpenSelectedAnimationGraph();
                     }
+                    ImGui::MenuItem("Skeleton Debug", nullptr, &m_SkeletonDebugWindowOpen);
                     if (!canOpenSelectedAnimationGraph)
                     {
                         ImGui::TextDisabled("Select an entity with Animation");
@@ -1953,6 +2042,7 @@ void VansGraphics::VansEditorWindow::DestroyVansEditorWindow()
     m_PcgWindow = nullptr;
     m_HiZCullWindow = nullptr;
     m_AudioDebugWindow = nullptr;
+    m_SkeletonDebugWindow = nullptr;
 
     // Destroy GPU profiler
 #if VANS_PROFILER_ENABLED

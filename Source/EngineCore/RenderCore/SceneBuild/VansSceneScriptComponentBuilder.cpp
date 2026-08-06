@@ -5,10 +5,12 @@
 namespace VansGraphics
 {
 
-void VansSceneScriptComponentBuilder::BuildUIControllers(
+std::vector<VansScriptUIComponent*> VansSceneScriptComponentBuilder::BuildUIControllers(
 	VansScriptObject& object,
 	const VansScriptUIComponentDescriptors& uiComponents)
 {
+	std::vector<VansScriptUIComponent*> result;
+	result.reserve(uiComponents.size());
 	for (const VansScriptUIComponentDescriptor& descriptor : uiComponents)
 	{
 		auto* uiComp = new VansScriptUIComponent();
@@ -20,13 +22,17 @@ void VansSceneScriptComponentBuilder::BuildUIControllers(
 		object.AddComponent(uiComp);
 		if (descriptor.enabled)
 			uiComp->SetEnabled(true);
+		result.push_back(uiComp);
 	}
+	return result;
 }
 
-void VansSceneScriptComponentBuilder::BuildScripts(
+std::vector<VansLuaScriptComponent*> VansSceneScriptComponentBuilder::BuildScripts(
 	VansScriptObject& object,
 	const VansScriptComponentDescriptors& scriptComponents)
 {
+	std::vector<VansLuaScriptComponent*> result;
+	result.reserve(scriptComponents.size());
 	for (const VansScriptComponentDescriptor& descriptor : scriptComponents)
 	{
 		if (descriptor.language != VansScriptLanguage::Lua)
@@ -46,7 +52,9 @@ void VansSceneScriptComponentBuilder::BuildScripts(
 		{
 			scriptContext->RegisterScriptComponent(&object, luaComp);
 		}
+		result.push_back(luaComp);
 	}
+	return result;
 }
 
 }

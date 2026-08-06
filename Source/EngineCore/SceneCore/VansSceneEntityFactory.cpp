@@ -96,10 +96,11 @@ VansSerializedValue BuildMaterialOverrides(const std::string& materialGuid)
 VansSerializedValue BuildTransformComponent(
     const std::array<float, 3>& position,
     const std::array<float, 4>& rotation,
-    const std::array<float, 3>& scale)
+    const std::array<float, 3>& scale,
+    const std::string& componentGuid = {})
 {
     return Object({
-        { "id", String(NewGuidString()) },
+        { "id", String(componentGuid.empty() ? NewGuidString() : componentGuid) },
         { "type", String("Transform") },
         { "version", Int(1) },
         { "enabled", Bool(true) },
@@ -111,10 +112,12 @@ VansSerializedValue BuildTransformComponent(
     });
 }
 
-VansSerializedValue BuildModelRendererComponent(VansSerializedValue data)
+VansSerializedValue BuildModelRendererComponent(
+    VansSerializedValue data,
+    const std::string& componentGuid = {})
 {
     return Object({
-        { "id", String(NewGuidString()) },
+        { "id", String(componentGuid.empty() ? NewGuidString() : componentGuid) },
         { "type", String("ModelRenderer") },
         { "version", Int(1) },
         { "enabled", Bool(true) },
@@ -153,8 +156,12 @@ SceneModelEntityFactoryResult VansSceneEntityFactory::BuildSingleModelEntity(
         { "name", String(request.entityName) },
         { "parent", VansSerializedValue::Null() },
         { "components", VansSerializedValue::Array({
-        BuildTransformComponent(request.position, request.rotation, request.scale),
-        BuildModelRendererComponent(std::move(modelData))
+        BuildTransformComponent(
+            request.position,
+            request.rotation,
+            request.scale,
+            request.transformComponentGuid),
+        BuildModelRendererComponent(std::move(modelData), request.modelRendererComponentGuid)
         }) }
     });
 
@@ -186,7 +193,11 @@ SceneModelEntityFactoryResult VansSceneEntityFactory::BuildMultiMeshEntityHierar
         { "name", String(request.entityName) },
         { "parent", VansSerializedValue::Null() },
         { "components", VansSerializedValue::Array({
-        BuildTransformComponent(request.position, request.rotation, request.scale),
+        BuildTransformComponent(
+            request.position,
+            request.rotation,
+            request.scale,
+            request.transformComponentGuid),
         std::move(rootComp)
         }) }
     });

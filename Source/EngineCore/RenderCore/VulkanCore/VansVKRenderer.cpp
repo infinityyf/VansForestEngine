@@ -25,6 +25,8 @@
 
 namespace VansGraphics
 {
+	extern PFN_vkWaitForFences vkWaitForFences;
+
 	namespace
 	{
 		constexpr uint64_t kRenderGraphFnvOffsetBasis = 14695981039346656037ull;
@@ -801,6 +803,31 @@ namespace VansGraphics
 		{
 			m_LastSubmittedGraphicsFence = VK_NULL_HANDLE;
 			m_LastSubmittedGraphicsFencePending = false;
+		}
+		return true;
+	}
+
+	bool VansVKDevice::WaitForFrameContextRingSlotGpuIdle(const VansFrameContextRingSlot& slot)
+	{
+		if (!slot.gpuWorkPending)
+			return true;
+
+		const VkFence fence = slot.graphicsCommandBuffer.m_CommandBufferFinishSubmitFence;
+		if (fence == VK_NULL_HANDLE)
+			return true;
+
+		VANS_PROFILE_WAIT("Vulkan::WaitFence.FrameSlotGpuIdle");
+		const VkResult result = VansGraphics::vkWaitForFences(
+			m_VansVKLogicDevice,
+			1,
+			&fence,
+			VK_TRUE,
+			UINT64_MAX);
+		if (result != VK_SUCCESS)
+		{
+			VANS_LOG_ERROR("[VansVKDevice] Failed to wait frame-context-ring slot GPU idle. VkResult="
+				<< static_cast<int>(result));
+			return false;
 		}
 		return true;
 	}
@@ -2081,8 +2108,10 @@ namespace VansGraphics
 		{
 			if (IsFrameContextRingActive() && m_ActiveFrameContextSlot != nullptr)
 			{
-				// ReflectionProbe bake 会采样本帧阴影图；这里保留显式等待，避免读到尚未完成的 GPU 写入。
-				if (!WaitForFrameContextRingSlot(*m_ActiveFrameContextSlot))
+				// ReflectionProbe bake samples this frame's shadow map. Wait for GPU completion here,
+				// but keep the frame slot pending until the next reuse so present synchronization
+				// and per-slot deferred deletes remain intact.
+				if (!WaitForFrameContextRingSlotGpuIdle(*m_ActiveFrameContextSlot))
 				{
 					m_CurrentFrameContext.frameSubmitSucceeded = false;
 					VANS_LOG_ERROR("[VansVKDevice] Failed to wait frame slot before reflection probe bake.");

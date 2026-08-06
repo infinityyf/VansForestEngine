@@ -4,6 +4,7 @@
 #include "../VansNode.h"
 #include "VansMaterial.h"
 #include "VansRenderBounds.h"
+#include "VansVertexDeformationState.h"
 #include "../ScriptCore/VansTransform.h"
 #include "BRDFData/VansLight.h"
 #include <cstdint>
@@ -71,22 +72,14 @@ namespace VansGraphics
 			// materials are always disabled even when the serialized mode is "auto".
 			bool m_RayTracingEnabled = true;
 
-			// ── Animation support ───────────────────────────────────────────────
-			// True when this node's mesh has a skeleton (bones), regardless of whether
-			// any animation clips are currently playing.  Controls whether the real
-			// bone matrix + bone weight buffers are bound in Set 3 (descriptor setup time).
+			// Vertex deformation state owns shader-facing skinning resources.
+			VansVertexDeformationState m_VertexDeformationState;
+
+			// Legacy editor/animation state retained for scene diagnostics and playback.
 			bool m_HasSkeletonBone = false;
-			// True when the animation system is actively driving this node (clips playing).
-			// Pushed to the shader each draw call as animationEnabled push constant so the
-			// vertex shader knows whether to run the skinning math.
 			bool m_AnimationEnabled = false;
-			// Back-reference to the owning VansAnimationNode (null for static nodes).
 			VansAnimationNode* m_AnimOwner = nullptr;
-			// Index of this submesh within the animation node's per-submesh buffer arrays.
-			// Used to look up the correct bone ID and weight buffers.
 			uint32_t m_AnimSubmeshIndex = 0;
-			// Pointers to this submesh's individual bone ID and weight GPU buffers.
-			// Set by ExpandMultiMeshToRenderNodes; null for static / whole-mesh nodes.
 			VansVKBuffer* m_AnimBoneIDBuffer     = nullptr;
 			VansVKBuffer* m_AnimBoneWeightBuffer  = nullptr;
 
@@ -196,6 +189,9 @@ namespace VansGraphics
 		const VansRenderBounds& GetWorldBounds() const { return m_WorldBounds; }
 
 		void BeforeDrawCall();
+
+		bool HasValidSkeletalSkinningResources() const;
+		std::uint32_t BuildVertexFeatureMask() const;
 
 		virtual void Draw(VansVKCommandBuffer& cmd, GlobalStateData& global_state);
 

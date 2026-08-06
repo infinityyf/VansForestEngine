@@ -57,7 +57,9 @@ namespace VansGraphics
 		// Extract a single animation clip from an aiAnimation.
 		static void ExtractClipFromAssimp(const aiAnimation* anim,
 		                                  const Skeleton& skeleton,
-		                                  VansAnimationClip& outClip);
+		                                  VansAnimationClip& outClip,
+		                                  const aiScene* scene = nullptr,
+		                                  float scaleFactor = 1.0f);
 
 		// Load animation clips from an external FBX file, mapping bone channels
 		// to an existing origin-model skeleton. Only animation data is extracted,

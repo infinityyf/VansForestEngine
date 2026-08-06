@@ -8,7 +8,7 @@
 
 namespace Vans
 {
-	class VansProjectSettingsLegacyJsonCodec
+	class VansProjectSettingsJsonCodec
 	{
 	public:
 		static bool DecodeRenderSettings(

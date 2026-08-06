@@ -144,13 +144,14 @@ bool LoadRectLightStaticEmissiveTexture(
 }
 }
 
-void VansSceneLightComponentBuilder::BuildLights(
+VansSceneLightBuildResult VansSceneLightComponentBuilder::BuildLights(
 	VansScene& scene,
 	VansScriptObject& object,
 	const Vans::VansSceneLightComponentConfig& config,
 	const std::string& projectRoot,
 	const std::function<void()>& ensureObjectTransform)
 {
+	VansSceneLightBuildResult result;
 	VansLightManager& lightManager = *scene.GetLightManager();
 	VansMaterialManager& materialManager = *scene.GetMaterialManager();
 	VansIESProfileManager& iesProfileManager = *scene.GetIESProfileManager();
@@ -172,6 +173,7 @@ void VansSceneLightComponentBuilder::BuildLights(
 		dlComp->m_LightManager = &lightManager;
 		dlComp->m_LightIndex = idx;
 		object.AddComponent(dlComp);
+		result.directionalLight = dlComp;
 		VANS_LOG("[LoadSceneObjects] 创建方向光组件 '" << object.m_ObjectName << "' idx=" << idx);
 	}
 
@@ -205,6 +207,7 @@ void VansSceneLightComponentBuilder::BuildLights(
 		plComp->m_LightManager = &lightManager;
 		plComp->m_LightIndex = idx;
 		object.AddComponent(plComp);
+		result.pointLight = plComp;
 		VANS_LOG("[LoadSceneObjects] 创建点光源组件 '" << object.m_ObjectName << "' idx=" << idx);
 	}
 
@@ -243,6 +246,7 @@ void VansSceneLightComponentBuilder::BuildLights(
 		slComp->m_LightManager = &lightManager;
 		slComp->m_LightIndex = idx;
 		object.AddComponent(slComp);
+		result.spotLight = slComp;
 		VANS_LOG("[LoadSceneObjects] 创建聚光灯组件 '" << object.m_ObjectName << "' idx=" << idx);
 	}
 
@@ -266,7 +270,7 @@ void VansSceneLightComponentBuilder::BuildLights(
 		rectLight.m_TextureSlot = -1.0f;
 		rectLight.m_TexLodBias = rl.textureLodBias.value_or(0.0f);
 		VansPunctualShadowSettings shadowSettings =
-			ReadShadowSettings(rl.shadow, rl.shadow.legacyShadow.value_or(false));
+			ReadShadowSettings(rl.shadow, false);
 
 		const std::string emissiveTexPath = rl.emissiveTexture.value_or("");
 		const std::string emissiveVideoName = rl.emissiveVideo.value_or("");
@@ -319,8 +323,10 @@ void VansSceneLightComponentBuilder::BuildLights(
 		}
 
 		object.AddComponent(rlComp);
+		result.rectLight = rlComp;
 		VANS_LOG("[LoadSceneObjects] 创建面光源组件 '" << object.m_ObjectName << "' idx=" << idx);
 	}
+	return result;
 }
 
 void VansSceneLightComponentBuilder::BindExplicitVideoComponentToRectLight(

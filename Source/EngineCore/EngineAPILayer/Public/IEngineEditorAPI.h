@@ -103,9 +103,9 @@ namespace Vans::EditorAPI
 		virtual ProjectMeshInfoSnapshot GetProjectMeshInfo(const std::string& meshName) const = 0;
 		virtual void RegisterProjectMeshAlias(const ProjectMeshAliasRequest& request) = 0;
 		virtual std::string GetDefaultMaterialAssetName() const = 0;
-		virtual RuntimeModelEntityCreateResult CreateRuntimeModelEntity(const RuntimeModelEntityCreateRequest& request) = 0;
+		virtual RuntimeSceneEntitiesCreateResult CreateRuntimeSceneEntities(const RuntimeSceneEntitiesCreateRequest& request) = 0;
 		virtual ModelAssetPlacementPayload PrepareModelAssetPlacement(const ModelAssetPlacementRequest& request) = 0;
-		virtual RuntimeEntityDestroyResult DestroyRuntimeEntityByName(const RuntimeEntityDestroyRequest& request) = 0;
+		virtual RuntimeEntityDestroyResult DestroyRuntimeEntity(const RuntimeEntityDestroyRequest& request) = 0;
 		virtual RuntimeEntityReparentResult ReparentRuntimeEntity(const RuntimeEntityReparentRequest& request) = 0;
 		virtual std::string MakeUniqueRuntimeEntityName(const std::string& baseName) const = 0;
 		virtual std::string GetProjectRootPath() const = 0;
@@ -120,11 +120,12 @@ namespace Vans::EditorAPI
 		virtual bool HasAnimationDebugNodes() const = 0;
 		virtual VansGraphics::VansAnimationNode* FindRuntimeAnimationNodeByEntityGuid(const std::string& entityGuid) const = 0;
 		virtual MotionMatchingDebugSnapshot GetMotionMatchingDebugSnapshot() const = 0;
+		virtual SkeletonDebugSnapshot GetSkeletonDebugSnapshot(const std::string& entityGuidFilter) const = 0;
 		virtual void SetFootIKDebugVisualization(bool enabled) = 0;
 		virtual FootIKDebugSnapshot GetFootIKDebugSnapshot() const = 0;
 		virtual TerrainSettingsSnapshot GetTerrainSettings() const = 0;
 		virtual void ApplyTerrainSettings(const TerrainSettingsSnapshot& settings) = 0;
-		virtual void ApplyRuntimeEntityPreviewChange(const RuntimeEntityPreviewChange& change) = 0;
+		virtual bool ApplyRuntimeEntityPreviewChange(const RuntimeEntityPreviewChange& change) = 0;
 		virtual bool ApplyRuntimeMaterialPreviewChange(const RuntimeMaterialPreviewChange& change) = 0;
 
 		virtual void CommitLightingChanges() = 0;

@@ -1,6 +1,6 @@
 #include "VansSceneSaveService.h"
 #include "VansSceneDocument.h"
-#include "../AssetCore/Serialization/VansSerializedValueLegacyJsonAdapter.h"
+#include "../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 #include "../AssetCore/Storage/VansStagedFileTransaction.h"
 #include "Storage/VansSceneFileStorage.h"
 #include "VansSceneDocumentLoader.h"
@@ -30,9 +30,9 @@ SceneSaveResult VansSceneSaveService::SaveSnapshot(VansSceneDocument& document,
     bool checkSourceFingerprint, bool allowOverwrite) const
 {
     const SceneJson snapshotRoot =
-        EncodeSerializedValueLegacyJson<SceneJson>(snapshot.SerializedRootSnapshot());
+        EncodeSerializedValueJson<SceneJson>(snapshot.SerializedRootSnapshot());
     if (!document.IsHealthy() || !snapshotRoot.is_object() ||
-        !VansSceneSchema::ValidateLegacyJson(snapshotRoot).empty())
+        !VansSceneSchema::ValidateSceneJson(snapshotRoot).empty())
         return { SceneSaveError::InvalidDocument, "Cannot save an invalid scene document", rawTarget, false };
     if (rawTarget.empty())
         return { SceneSaveError::InvalidTarget, "Scene save target is empty", rawTarget, false };
@@ -57,7 +57,7 @@ SceneSaveResult VansSceneSaveService::SaveSnapshot(VansSceneDocument& document,
 
     VansStagedFile stage;
     std::string stageError;
-    if (!VansSceneFileStorage::StageLegacySceneDocument(target, snapshotRoot, stage, stageError))
+    if (!VansSceneFileStorage::StageSceneDocument(target, snapshotRoot, stage, stageError))
     {
         return { SceneSaveError::WriteFailed, stageError, target, false };
     }

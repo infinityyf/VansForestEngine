@@ -10,13 +10,16 @@
 #include "MotionMatching/VansMotionMatching.h"
 #include <../../GLM/gtc/constants.hpp>
 #include <../../GLM/gtc/quaternion.hpp>
+#include <../../GLM/gtc/matrix_transform.hpp>
 #define GLM_ENABLE_EXPERIMENTAL
 #include <../../GLM/gtx/quaternion.hpp>
+#include <../../GLM/gtx/matrix_decompose.hpp>
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <cmath>
 #include <functional>
 #include <sstream>
+#include <unordered_map>
 
 namespace VansGraphics
 {
@@ -25,6 +28,186 @@ namespace VansGraphics
 	// ═════════════════════════════════════════════════════════════
 
 	// Pose 线性混合辅助（对每根骨骼的 4x4 矩阵做分量 lerp）
+	static glm::mat4 ComposeTRS(const glm::vec3& position,
+	                            const glm::quat& rotation,
+	                            const glm::vec3& scale)
+	{
+		return glm::translate(glm::mat4(1.0f), position) *
+			glm::toMat4(glm::normalize(rotation)) *
+			glm::scale(glm::mat4(1.0f), scale);
+	}
+
+	static void InterpolateTransformKeyframes(const std::vector<TransformKeyframe>& keyframes,
+	                                          float time,
+	                                          const glm::mat4& fallbackLocalTransform,
+	                                          glm::vec3& outPos,
+	                                          glm::quat& outRot,
+	                                          glm::vec3& outScale)
+	{
+		if (keyframes.empty())
+		{
+			glm::vec3 skew;
+			glm::vec4 perspective;
+			outRot = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+			outPos = glm::vec3(0.0f);
+			outScale = glm::vec3(1.0f);
+			glm::decompose(fallbackLocalTransform, outScale, outRot, outPos, skew, perspective);
+			outRot = glm::normalize(outRot);
+			return;
+		}
+
+		if (keyframes.size() == 1)
+		{
+			outPos = keyframes[0].position;
+			outRot = glm::normalize(keyframes[0].rotation);
+			outScale = keyframes[0].scale;
+			return;
+		}
+
+		size_t idx = 0;
+		for (size_t i = 0; i < keyframes.size() - 1; ++i)
+		{
+			if (time < keyframes[i + 1].time)
+			{
+				idx = i;
+				break;
+			}
+			idx = i;
+		}
+
+		const size_t next = std::min(idx + 1, keyframes.size() - 1);
+		if (idx == next)
+		{
+			outPos = keyframes[idx].position;
+			outRot = glm::normalize(keyframes[idx].rotation);
+			outScale = keyframes[idx].scale;
+			return;
+		}
+
+		const float dt = keyframes[next].time - keyframes[idx].time;
+		const float t = (dt > 0.0f)
+			? std::clamp((time - keyframes[idx].time) / dt, 0.0f, 1.0f)
+			: 0.0f;
+		outPos = glm::mix(keyframes[idx].position, keyframes[next].position, t);
+		outRot = glm::normalize(glm::slerp(keyframes[idx].rotation, keyframes[next].rotation, t));
+		outScale = glm::mix(keyframes[idx].scale, keyframes[next].scale, t);
+	}
+
+	static void SampleNodeTransformChannels(const VansAnimationClip& clip,
+	                                        float sampleTime,
+	                                        std::vector<SampledNodeTransform>& outTransforms)
+	{
+		outTransforms.clear();
+		const size_t channelCount = clip.nodeTransformChannels.size();
+		if (channelCount == 0)
+			return;
+
+		std::vector<glm::mat4> localTransforms(channelCount, glm::mat4(1.0f));
+		std::vector<glm::mat4> modelTransforms(channelCount, glm::mat4(1.0f));
+		std::vector<bool> resolved(channelCount, false);
+
+		for (size_t i = 0; i < channelCount; ++i)
+		{
+			const NodeTransformChannel& channel = clip.nodeTransformChannels[i];
+			glm::vec3 position(0.0f);
+			glm::quat rotation(1.0f, 0.0f, 0.0f, 0.0f);
+			glm::vec3 scale(1.0f);
+			InterpolateTransformKeyframes(channel.keyframes, sampleTime,
+			                              channel.bindLocalTransform,
+			                              position, rotation, scale);
+			localTransforms[i] = ComposeTRS(position, rotation, scale);
+		}
+
+		std::function<glm::mat4(size_t)> resolveModelTransform = [&](size_t index) -> glm::mat4
+		{
+			if (resolved[index])
+				return modelTransforms[index];
+
+			const NodeTransformChannel& channel = clip.nodeTransformChannels[index];
+			glm::mat4 parentModel(1.0f);
+			if (channel.parentChannelIndex >= 0 &&
+				static_cast<size_t>(channel.parentChannelIndex) < channelCount)
+			{
+				parentModel = resolveModelTransform(static_cast<size_t>(channel.parentChannelIndex));
+			}
+			else
+			{
+				parentModel = channel.bindModelTransform * glm::inverse(channel.bindLocalTransform);
+			}
+
+			modelTransforms[index] = parentModel * localTransforms[index];
+			resolved[index] = true;
+			return modelTransforms[index];
+		};
+
+		outTransforms.reserve(channelCount);
+		for (size_t i = 0; i < channelCount; ++i)
+		{
+			SampledNodeTransform sampled;
+			sampled.channelIndex = static_cast<uint32_t>(i);
+			sampled.nodeName = clip.nodeTransformChannels[i].nodeName;
+			sampled.nodePath = clip.nodeTransformChannels[i].nodePath;
+			sampled.modelTransform = resolveModelTransform(i);
+			outTransforms.push_back(std::move(sampled));
+		}
+	}
+
+	static std::string MakeNodeTransformKey(const SampledNodeTransform& transform)
+	{
+		return !transform.nodePath.empty() ? transform.nodePath : transform.nodeName;
+	}
+
+	static glm::mat4 BlendMatricesAsTRS(const glm::mat4& a, const glm::mat4& b, float alpha)
+	{
+		glm::vec3 scaleA(1.0f), scaleB(1.0f), skew;
+		glm::quat rotA(1.0f, 0.0f, 0.0f, 0.0f), rotB(1.0f, 0.0f, 0.0f, 0.0f);
+		glm::vec3 posA(0.0f), posB(0.0f);
+		glm::vec4 perspective;
+		glm::decompose(a, scaleA, rotA, posA, skew, perspective);
+		glm::decompose(b, scaleB, rotB, posB, skew, perspective);
+		return ComposeTRS(glm::mix(posA, posB, alpha),
+		                  glm::slerp(glm::normalize(rotA), glm::normalize(rotB), alpha),
+		                  glm::mix(scaleA, scaleB, alpha));
+	}
+
+	static std::vector<SampledNodeTransform> BlendNodeTransforms(
+		const std::vector<SampledNodeTransform>& a,
+		const std::vector<SampledNodeTransform>& b,
+		float alpha)
+	{
+		if (a.empty()) return b;
+		if (b.empty()) return a;
+
+		std::unordered_map<std::string, const SampledNodeTransform*> bByKey;
+		bByKey.reserve(b.size());
+		for (const auto& transform : b)
+			bByKey[MakeNodeTransformKey(transform)] = &transform;
+
+		std::vector<SampledNodeTransform> result;
+		result.reserve(std::max(a.size(), b.size()));
+		for (const auto& transformA : a)
+		{
+			const std::string key = MakeNodeTransformKey(transformA);
+			auto it = bByKey.find(key);
+			if (it == bByKey.end())
+			{
+				result.push_back(transformA);
+				continue;
+			}
+
+			SampledNodeTransform blended = transformA;
+			blended.modelTransform = BlendMatricesAsTRS(transformA.modelTransform,
+			                                            it->second->modelTransform,
+			                                            alpha);
+			result.push_back(std::move(blended));
+			bByKey.erase(it);
+		}
+
+		for (const auto& [key, transform] : bByKey)
+			result.push_back(*transform);
+		return result;
+	}
+
 	static AnimGraphPose BlendPoses(const AnimGraphPose& a, const AnimGraphPose& b, float alpha)
 	{
 		AnimGraphPose result;
@@ -43,6 +226,9 @@ namespace VansGraphics
 						a.localTransforms[i][col][row] * (1.0f - clampedAlpha) +
 						b.localTransforms[i][col][row] * clampedAlpha;
 		}
+		result.sampledNodeTransforms = BlendNodeTransforms(a.sampledNodeTransforms,
+		                                                   b.sampledNodeTransforms,
+		                                                   clampedAlpha);
 		result.valid = true;
 		return result;
 	}
@@ -72,6 +258,7 @@ namespace VansGraphics
 						base.localTransforms[i][col][row] + addDelta * w;
 				}
 		}
+		result.sampledNodeTransforms = base.sampledNodeTransforms;
 		result.valid = true;
 		return result;
 	}
@@ -290,7 +477,8 @@ namespace VansGraphics
 			pose.localTransforms[bi] = T * R * S;
 		}
 
-		pose.valid = true;
+		SampleNodeTransformChannels(clip, sampleTime, pose.sampledNodeTransforms);
+		pose.valid = !pose.localTransforms.empty() || !pose.sampledNodeTransforms.empty();
 		return pose;
 	}
 
@@ -908,7 +1096,8 @@ namespace VansGraphics
 			pose.localTransforms[bi] = T * R * S;
 		}
 
-		pose.valid = true;
+		SampleNodeTransformChannels(clip, sampleTime, pose.sampledNodeTransforms);
+		pose.valid = !pose.localTransforms.empty() || !pose.sampledNodeTransforms.empty();
 		return pose;
 	}
 

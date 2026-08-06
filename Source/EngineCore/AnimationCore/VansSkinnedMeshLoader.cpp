@@ -11,6 +11,8 @@
 #include <../../GLM/gtc/matrix_transform.hpp>
 #include <../../GLM/gtc/quaternion.hpp>
 #include <../../GLM/gtc/type_ptr.hpp>
+#define GLM_ENABLE_EXPERIMENTAL
+#include <../../GLM/gtx/matrix_decompose.hpp>
 
 #include <algorithm>
 #include <cctype>
@@ -182,6 +184,266 @@ static glm::quat ConvertQuat(const aiQuaternion& q)
 	return glm::quat(q.w, q.x, q.y, q.z);
 }
 
+static const aiNode* FindAiNodeByName(const aiNode* node, const std::string& name);
+
+static bool AnimationHasNodeTransformChannels(
+	const aiScene* scene,
+	const aiAnimation* anim,
+	const Skeleton& skeleton)
+{
+	if (!scene || !anim)
+		return false;
+	for (uint32_t c = 0; c < anim->mNumChannels; ++c)
+	{
+		const aiNodeAnim* channel = anim->mChannels[c];
+		if (!channel)
+			continue;
+		const std::string nodeName = channel->mNodeName.C_Str();
+		if (skeleton.boneNameToIndex.find(nodeName) != skeleton.boneNameToIndex.end())
+			continue;
+		if (FindAiNodeByName(scene->mRootNode, nodeName) != nullptr)
+			return true;
+	}
+	return false;
+}
+
+static glm::mat4 ConvertNodeMatrixScaled(const aiMatrix4x4& m, float scaleFactor)
+{
+	glm::mat4 result = ConvertMat4(m);
+	result[3].x *= scaleFactor;
+	result[3].y *= scaleFactor;
+	result[3].z *= scaleFactor;
+	return result;
+}
+
+struct AiNodeTransformInfo
+{
+	const aiNode* node = nullptr;
+	std::string nodeName;
+	std::string nodePath;
+	glm::mat4 bindLocalTransform = glm::mat4(1.0f);
+	glm::mat4 bindModelTransform = glm::mat4(1.0f);
+};
+
+static void CollectNodeTransformInfos(
+	const aiNode* node,
+	const std::string& parentPath,
+	const glm::mat4& parentModelTransform,
+	float scaleFactor,
+	std::vector<AiNodeTransformInfo>& outInfos,
+	std::unordered_map<std::string, size_t>& outFirstNameToInfo,
+	std::unordered_map<const aiNode*, size_t>& outNodeToInfo)
+{
+	if (!node)
+		return;
+
+	AiNodeTransformInfo info;
+	info.node = node;
+	info.nodeName = node->mName.C_Str();
+	info.nodePath = parentPath.empty() ? info.nodeName : parentPath + "/" + info.nodeName;
+	info.bindLocalTransform = ConvertNodeMatrixScaled(node->mTransformation, scaleFactor);
+	info.bindModelTransform = parentModelTransform * info.bindLocalTransform;
+
+	const size_t index = outInfos.size();
+	outInfos.push_back(info);
+	outNodeToInfo[node] = index;
+	if (!info.nodeName.empty() && outFirstNameToInfo.find(info.nodeName) == outFirstNameToInfo.end())
+		outFirstNameToInfo[info.nodeName] = index;
+
+	for (uint32_t i = 0; i < node->mNumChildren; ++i)
+	{
+		CollectNodeTransformInfos(
+			node->mChildren[i],
+			info.nodePath,
+			info.bindModelTransform,
+			scaleFactor,
+			outInfos,
+			outFirstNameToInfo,
+			outNodeToInfo);
+	}
+}
+
+static bool DecomposeTRS(const glm::mat4& matrix, glm::vec3& outPosition, glm::quat& outRotation, glm::vec3& outScale)
+{
+	glm::vec3 skew;
+	glm::vec4 perspective;
+	if (!glm::decompose(matrix, outScale, outRotation, outPosition, skew, perspective))
+		return false;
+	outRotation = glm::normalize(outRotation);
+	return true;
+}
+
+static glm::vec3 SampleVectorKeys(
+	const aiVectorKey* keys,
+	uint32_t keyCount,
+	double sampleTicks,
+	const glm::vec3& fallback,
+	float scaleFactorForPosition)
+{
+	if (!keys || keyCount == 0)
+		return fallback;
+	if (keyCount == 1 || sampleTicks <= keys[0].mTime)
+		return ConvertVec3(keys[0].mValue) * scaleFactorForPosition;
+	if (sampleTicks >= keys[keyCount - 1].mTime)
+		return ConvertVec3(keys[keyCount - 1].mValue) * scaleFactorForPosition;
+
+	for (uint32_t k = 0; k < keyCount - 1; ++k)
+	{
+		if (sampleTicks <= keys[k + 1].mTime)
+		{
+			const double t0 = keys[k].mTime;
+			const double t1 = keys[k + 1].mTime;
+			float alpha = (t1 > t0) ? static_cast<float>((sampleTicks - t0) / (t1 - t0)) : 0.0f;
+			alpha = glm::clamp(alpha, 0.0f, 1.0f);
+			return glm::mix(
+				ConvertVec3(keys[k].mValue) * scaleFactorForPosition,
+				ConvertVec3(keys[k + 1].mValue) * scaleFactorForPosition,
+				alpha);
+		}
+	}
+
+	return fallback;
+}
+
+static glm::quat SampleQuatKeys(
+	const aiQuatKey* keys,
+	uint32_t keyCount,
+	double sampleTicks,
+	const glm::quat& fallback)
+{
+	if (!keys || keyCount == 0)
+		return fallback;
+	if (keyCount == 1 || sampleTicks <= keys[0].mTime)
+		return ConvertQuat(keys[0].mValue);
+	if (sampleTicks >= keys[keyCount - 1].mTime)
+		return ConvertQuat(keys[keyCount - 1].mValue);
+
+	for (uint32_t k = 0; k < keyCount - 1; ++k)
+	{
+		if (sampleTicks <= keys[k + 1].mTime)
+		{
+			const double t0 = keys[k].mTime;
+			const double t1 = keys[k + 1].mTime;
+			float alpha = (t1 > t0) ? static_cast<float>((sampleTicks - t0) / (t1 - t0)) : 0.0f;
+			alpha = glm::clamp(alpha, 0.0f, 1.0f);
+			aiQuaternion out;
+			aiQuaternion::Interpolate(out, keys[k].mValue, keys[k + 1].mValue, alpha);
+			return ConvertQuat(out);
+		}
+	}
+
+	return fallback;
+}
+
+static void ExtractNodeTransformChannelsFromAssimp(
+	const aiScene* scene,
+	const aiAnimation* anim,
+	const Skeleton& skeleton,
+	float scaleFactor,
+	VansAnimationClip& outClip)
+{
+	if (!scene || !scene->mRootNode || !anim)
+		return;
+
+	std::vector<AiNodeTransformInfo> nodeInfos;
+	std::unordered_map<std::string, size_t> firstNameToInfo;
+	std::unordered_map<const aiNode*, size_t> nodeToInfo;
+	CollectNodeTransformInfos(
+		scene->mRootNode,
+		"",
+		glm::mat4(1.0f),
+		scaleFactor,
+		nodeInfos,
+		firstNameToInfo,
+		nodeToInfo);
+
+	std::unordered_map<const aiNode*, int> nodeToChannelIndex;
+	for (uint32_t c = 0; c < anim->mNumChannels; ++c)
+	{
+		const aiNodeAnim* channel = anim->mChannels[c];
+		if (!channel)
+			continue;
+
+		const std::string nodeName = channel->mNodeName.C_Str();
+		if (skeleton.boneNameToIndex.find(nodeName) != skeleton.boneNameToIndex.end())
+			continue;
+
+		const auto infoIt = firstNameToInfo.find(nodeName);
+		if (infoIt == firstNameToInfo.end())
+			continue;
+
+		const AiNodeTransformInfo& info = nodeInfos[infoIt->second];
+		std::set<float> timestamps;
+		for (uint32_t k = 0; k < channel->mNumPositionKeys; ++k)
+			timestamps.insert(static_cast<float>(channel->mPositionKeys[k].mTime / outClip.ticksPerSecond));
+		for (uint32_t k = 0; k < channel->mNumRotationKeys; ++k)
+			timestamps.insert(static_cast<float>(channel->mRotationKeys[k].mTime / outClip.ticksPerSecond));
+		for (uint32_t k = 0; k < channel->mNumScalingKeys; ++k)
+			timestamps.insert(static_cast<float>(channel->mScalingKeys[k].mTime / outClip.ticksPerSecond));
+		if (timestamps.empty())
+			continue;
+
+		glm::vec3 bindPosition(0.0f);
+		glm::quat bindRotation(1.0f, 0.0f, 0.0f, 0.0f);
+		glm::vec3 bindScale(1.0f);
+		DecomposeTRS(info.bindLocalTransform, bindPosition, bindRotation, bindScale);
+
+		NodeTransformChannel outChannel;
+		outChannel.nodeName = info.nodeName;
+		outChannel.nodePath = info.nodePath;
+		outChannel.bindLocalTransform = info.bindLocalTransform;
+		outChannel.bindModelTransform = info.bindModelTransform;
+		outChannel.keyframes.reserve(timestamps.size());
+
+		for (float time : timestamps)
+		{
+			const double sampleTicks = static_cast<double>(time) * outClip.ticksPerSecond;
+			TransformKeyframe kf;
+			kf.time = time;
+			kf.position = SampleVectorKeys(
+				channel->mPositionKeys,
+				channel->mNumPositionKeys,
+				sampleTicks,
+				bindPosition,
+				scaleFactor);
+			kf.rotation = SampleQuatKeys(
+				channel->mRotationKeys,
+				channel->mNumRotationKeys,
+				sampleTicks,
+				bindRotation);
+			kf.scale = SampleVectorKeys(
+				channel->mScalingKeys,
+				channel->mNumScalingKeys,
+				sampleTicks,
+				bindScale,
+				1.0f);
+			outChannel.keyframes.push_back(kf);
+		}
+
+		const int channelIndex = static_cast<int>(outClip.nodeTransformChannels.size());
+		nodeToChannelIndex[info.node] = channelIndex;
+		outClip.nodeTransformChannels.push_back(std::move(outChannel));
+	}
+
+	for (NodeTransformChannel& channel : outClip.nodeTransformChannels)
+	{
+		const auto infoIt = firstNameToInfo.find(channel.nodeName);
+		if (infoIt == firstNameToInfo.end())
+			continue;
+		const aiNode* parent = nodeInfos[infoIt->second].node ? nodeInfos[infoIt->second].node->mParent : nullptr;
+		while (parent)
+		{
+			auto parentIt = nodeToChannelIndex.find(parent);
+			if (parentIt != nodeToChannelIndex.end())
+			{
+				channel.parentChannelIndex = parentIt->second;
+				break;
+			}
+			parent = parent->mParent;
+		}
+	}
+}
+
 
 // ---------------------------------------------------------------------------
 // ProcessAnimatedMesh: main entry point
@@ -212,7 +474,56 @@ bool VansGraphics::VansSkinnedMeshLoader::ProcessAnimatedMesh(
 	if (!sceneHasBones)
 	{
 		outResult.hasAnimation = false;
-		VANS_LOG("[VansSkinnedMeshLoader] No bones found in: " << fbxFilePath);
+		outResult.skeleton = {};
+		outResult.vertexBoneData.clear();
+		outResult.clips.clear();
+
+		if (scene->HasAnimations())
+		{
+			std::string clipDir = GetParentDirectory(fbxFilePath);
+			std::string baseName = GetFileBaseName(fbxFilePath);
+			for (uint32_t i = 0; i < scene->mNumAnimations; i++)
+			{
+				aiAnimation* anim = scene->mAnimations[i];
+				std::string clipName = anim->mName.C_Str();
+				if (clipName.empty())
+					clipName = baseName + "_clip" + std::to_string(i);
+				for (char& c : clipName)
+				{
+					if (c == ' ' || c == '/' || c == '\\' || c == ':')
+						c = '_';
+				}
+
+				std::string vclipPath = clipDir + "/" + baseName + "_" + clipName + ".vclip";
+				VansAnimationClip clip;
+				if (FileExists(vclipPath))
+				{
+					Skeleton cachedSkeleton;
+					if (!VansAnimationClipIO::Load(vclipPath, clip, cachedSkeleton) ||
+						(AnimationHasNodeTransformChannels(scene, anim, outResult.skeleton) &&
+						 clip.nodeTransformChannels.empty()))
+					{
+						ExtractClipFromAssimp(anim, outResult.skeleton, clip, scene, scaleFactor);
+						clip.clipName = clipName;
+						VansAnimationClipIO::Save(vclipPath, clip, outResult.skeleton);
+					}
+				}
+				else
+				{
+					ExtractClipFromAssimp(anim, outResult.skeleton, clip, scene, scaleFactor);
+					clip.clipName = clipName;
+					VansAnimationClipIO::Save(vclipPath, clip, outResult.skeleton);
+				}
+				if (!clip.nodeTransformChannels.empty())
+				{
+					outResult.clips.push_back(std::move(clip));
+				}
+			}
+			outResult.hasAnimation = !outResult.clips.empty();
+		}
+
+		VANS_LOG("[VansSkinnedMeshLoader] No bones found in: " << fbxFilePath
+		         << ", node transform clips=" << outResult.clips.size());
 		return true;
 	}
 
@@ -278,12 +589,18 @@ bool VansGraphics::VansSkinnedMeshLoader::ProcessAnimatedMesh(
 				// Validate that cached skeleton matches the freshly extracted one.
 				// If the bone count changed (e.g. hierarchy-only bones now included),
 				// the cache is stale and must be re-extracted.
-				if (cachedSkeleton.bones.size() != outResult.skeleton.bones.size())
+				const bool cachedMissingNodeChannels =
+					AnimationHasNodeTransformChannels(scene, anim, outResult.skeleton) &&
+					clip.nodeTransformChannels.empty();
+				if (cachedSkeleton.bones.size() != outResult.skeleton.bones.size() ||
+					cachedMissingNodeChannels)
 				{
-					VANS_LOG_WARN("[VansSkinnedMeshLoader] Cached clip bone count ("
-					              << cachedSkeleton.bones.size() << ") != current skeleton ("
-					              << outResult.skeleton.bones.size() << "), re-extracting: " << vclipPath);
-					ExtractClipFromAssimp(anim, outResult.skeleton, clip);
+					VANS_LOG_WARN("[VansSkinnedMeshLoader] Cached clip stale (cachedBones="
+					              << cachedSkeleton.bones.size() << ", currentBones="
+					              << outResult.skeleton.bones.size()
+					              << ", missingNodeChannels=" << (cachedMissingNodeChannels ? 1 : 0)
+					              << "), re-extracting: " << vclipPath);
+					ExtractClipFromAssimp(anim, outResult.skeleton, clip, scene, scaleFactor);
 					clip.clipName = clipName;
 					VansAnimationClipIO::Save(vclipPath, clip, outResult.skeleton);
 				}
@@ -296,7 +613,7 @@ bool VansGraphics::VansSkinnedMeshLoader::ProcessAnimatedMesh(
 			{
 			// Cache is corrupt; re-extract.
 				VANS_LOG_WARN("[VansSkinnedMeshLoader] Failed to load cached clip, re-extracting: " << vclipPath);
-				ExtractClipFromAssimp(anim, outResult.skeleton, clip);
+				ExtractClipFromAssimp(anim, outResult.skeleton, clip, scene, scaleFactor);
 				clip.clipName = clipName;
 				VansAnimationClipIO::Save(vclipPath, clip, outResult.skeleton);
 			}
@@ -304,7 +621,7 @@ bool VansGraphics::VansSkinnedMeshLoader::ProcessAnimatedMesh(
 		else
 		{
 			// Slow path: extract from Assimp, then save cache
-			ExtractClipFromAssimp(anim, outResult.skeleton, clip);
+			ExtractClipFromAssimp(anim, outResult.skeleton, clip, scene, scaleFactor);
 			clip.clipName = clipName;
 			VansAnimationClipIO::Save(vclipPath, clip, outResult.skeleton);
 			VANS_LOG("[VansSkinnedMeshLoader] Extracted and cached clip: " << vclipPath);
@@ -529,25 +846,6 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractSkeleton(const aiScene* scene,
 			if (!ancestorName.empty())
 				allBoneNames.insert(ancestorName);
 			ancestor = ancestor->mParent;
-		}
-	}
-
-	// Also add bones that are referenced by animation channels but have no weights
-	if (scene->HasAnimations())
-	{
-		for (uint32_t a = 0; a < scene->mNumAnimations; a++)
-		{
-			const aiAnimation* anim = scene->mAnimations[a];
-			for (uint32_t c = 0; c < anim->mNumChannels; c++)
-			{
-				std::string channelName = anim->mChannels[c]->mNodeName.C_Str();
-				if (allBoneNames.count(channelName))
-					continue; // already included
-				// Only add if it's an ancestor or descendant of an existing bone
-				const aiNode* node = FindAiNodeByName(scene->mRootNode, channelName);
-				if (node)
-					allBoneNames.insert(channelName);
-			}
 		}
 	}
 
@@ -972,7 +1270,9 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractVertexBoneData(
 void VansGraphics::VansSkinnedMeshLoader::ExtractClipFromAssimp(
 	const aiAnimation* anim,
 	const Skeleton& skeleton,
-	VansAnimationClip& outClip)
+	VansAnimationClip& outClip,
+	const aiScene* scene,
+	float scaleFactor)
 {
 	if (!anim) return;
 
@@ -984,6 +1284,7 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractClipFromAssimp(
 
 	uint32_t boneCount = (uint32_t)skeleton.bones.size();
 	outClip.boneKeyframes.resize(boneCount);
+	outClip.nodeTransformChannels.clear();
 
 	// Process each channel (one channel per animated bone)
 	for (uint32_t c = 0; c < anim->mNumChannels; c++)
@@ -1106,8 +1407,12 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractClipFromAssimp(
 		}
 	}
 
+	ExtractNodeTransformChannelsFromAssimp(scene, anim, skeleton, scaleFactor, outClip);
+
 	VANS_LOG("[VansSkinnedMeshLoader] Extracted clip \"" << outClip.clipName
-	         << "\" (" << outClip.duration << "s, " << anim->mNumChannels << " channels)");
+	         << "\" (" << outClip.duration << "s, " << anim->mNumChannels
+	         << " channels, nodeTransformChannels="
+	         << outClip.nodeTransformChannels.size() << ")");
 }
 
 // ---------------------------------------------------------------------------
@@ -1217,7 +1522,7 @@ bool VansGraphics::VansSkinnedMeshLoader::ExtractExternAnimationClips(
 					VANS_LOG_WARN("[VansSkinnedMeshLoader] Cached extern clip bone count ("
 					              << cachedSkeleton.bones.size() << ") != origin skeleton ("
 					              << originSkeleton.bones.size() << "), re-extracting: " << vclipPath);
-					ExtractClipFromAssimp(anim, originSkeleton, clip);
+					ExtractClipFromAssimp(anim, originSkeleton, clip, scene);
 					clip.clipName = clipName;
 					VansAnimationClipIO::Save(vclipPath, clip, originSkeleton);
 				}
@@ -1229,7 +1534,7 @@ bool VansGraphics::VansSkinnedMeshLoader::ExtractExternAnimationClips(
 			else
 			{
 				VANS_LOG_WARN("[VansSkinnedMeshLoader] Failed to load cached extern clip, re-extracting: " << vclipPath);
-				ExtractClipFromAssimp(anim, originSkeleton, clip);
+				ExtractClipFromAssimp(anim, originSkeleton, clip, scene);
 				clip.clipName = clipName;
 				VansAnimationClipIO::Save(vclipPath, clip, originSkeleton);
 			}
@@ -1237,7 +1542,7 @@ bool VansGraphics::VansSkinnedMeshLoader::ExtractExternAnimationClips(
 		else
 		{
 			// Extract clip using the ORIGIN skeleton so bone indices match
-			ExtractClipFromAssimp(anim, originSkeleton, clip);
+			ExtractClipFromAssimp(anim, originSkeleton, clip, scene);
 			clip.clipName = clipName;
 			VansAnimationClipIO::Save(vclipPath, clip, originSkeleton);
 			VANS_LOG("[VansSkinnedMeshLoader] Extracted and cached extern clip: " << vclipPath);

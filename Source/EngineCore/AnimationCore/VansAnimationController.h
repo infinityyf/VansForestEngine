@@ -205,6 +205,7 @@ namespace VansGraphics
 		const BoneMatricesSSBO& GetBoneMatricesSSBO() const { return m_BoneMatricesSSBO; }
 		const glm::mat4& GetCachedGlobalTransform(int boneIndex) const;
 		const std::vector<glm::mat4>& GetCachedGlobalTransforms() const { return m_CachedGlobalTransforms; }
+		const std::vector<SampledNodeTransform>& GetSampledNodeTransforms() const { return m_SampledNodeTransforms; }
 		void FeedExternalBoneWorldTransforms(const std::vector<glm::mat4>& modelSpaceTransforms,
 		                                    const Skeleton& skeleton);
 
@@ -271,6 +272,7 @@ namespace VansGraphics
 		// ─── 输出 ───
 		BoneMatricesSSBO m_BoneMatricesSSBO;
 		std::vector<glm::mat4> m_CachedGlobalTransforms;
+		std::vector<SampledNodeTransform> m_SampledNodeTransforms;
 
 		// ─── AnimGraph ───
 		std::unique_ptr<VansAnimGraph> m_Graph;

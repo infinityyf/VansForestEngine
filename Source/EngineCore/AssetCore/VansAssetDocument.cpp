@@ -1,6 +1,6 @@
 #include "VansAssetDocument.h"
 
-#include "Serialization/VansSerializedValueLegacyJsonAdapter.h"
+#include "Serialization/VansSerializedValueJsonAdapter.h"
 #include "Storage/VansFileStorage.h"
 #include "Storage/VansJsonFileStorage.h"
 #include "VansAssetDocumentJson.h"
@@ -87,7 +87,7 @@ bool VansAssetDocument::Load(const std::filesystem::path& path, std::string& err
             error = "Asset document root must be an object: " + path.string();
             return false;
         }
-        *m_Root = DecodeSerializedValueLegacyJson(root);
+        *m_Root = DecodeSerializedValueJson(root);
         m_Path = std::filesystem::absolute(path).lexically_normal();
         m_LoadedFingerprint = Fingerprint(m_Path, error);
         if (!m_LoadedFingerprint.exists)
@@ -145,7 +145,7 @@ bool VansAssetDocument::StageSave(VansAssetDocumentSaveStage& stage, std::string
     stage.targetPath = m_Path;
     stage.stateId = m_CurrentStateId;
 
-    AssetDocumentJson root = EncodeSerializedValueLegacyJson<AssetDocumentJson>(*m_Root);
+    AssetDocumentJson root = EncodeSerializedValueJson<AssetDocumentJson>(*m_Root);
     VansStagedFile fileStage;
     if (!VansJsonFileStorage::StageWrite(m_Path, root, fileStage, error))
     {

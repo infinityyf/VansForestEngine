@@ -143,23 +143,22 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_Object(
 }
 
 // ============================================================
-// Set 3: Per-Node Animation Layout (3 bindings: Bone IDs + Bone Matrices + Bone Weights)
-// Used exclusively by VansCommonRenderNode (deferred opaque geometry).
-// Animated nodes get real buffers; static nodes bind scene-shared dummy buffers.
-// Each submesh gets its own bone ID and weight buffers (no offset needed).
+// Set 3: Vertex Deformation Layout (3 bindings: Bone IDs + Bone Matrices + Bone Weights)
+// Geometry nodes with skeletal skinning bind real buffers; static nodes bind shared dummy buffers.
+// Each submesh gets its own bone ID and weight buffers, so no offset is needed.
 // ============================================================
-void VansDescriptorSetLayoutFactory::CreateAndAllocate_Animation(
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_VertexDeformation(
 	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
 {
 	std::vector<VkDescriptorSetLayoutBinding> bindings = {
 		// binding 0: Per-vertex Bone IDs SSBO (ivec4 per vertex, per-submesh)
-		{ANIMATION_BINDING_BONEID_SSBO,     VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		{VERTEX_DEFORMATION_BINDING_BONEID_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
 		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
 		// binding 1: Bone Matrices SSBO (mat4[MAX_BONES])
-		{ANIMATION_BINDING_BONE_SSBO,       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		{VERTEX_DEFORMATION_BINDING_BONE_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
 		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
 		// binding 2: Per-vertex Bone Weights SSBO (vec4 per vertex, per-submesh)
-		{ANIMATION_BINDING_BONEWEIGHT_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		{VERTEX_DEFORMATION_BINDING_BONEWEIGHT_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
 		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount, VansDescriptorLifetimeRole::ScenePersistent);

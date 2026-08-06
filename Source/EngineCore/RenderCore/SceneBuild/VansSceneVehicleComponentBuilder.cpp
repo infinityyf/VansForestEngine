@@ -382,16 +382,17 @@ bool ParseConfiguredWheelOrder(
 }
 }
 
-void VansSceneVehicleComponentBuilder::AddVehiclePlaceholder(
+VansScriptVehicleComponent* VansSceneVehicleComponentBuilder::AddVehiclePlaceholder(
 	VansScriptObject& object,
 	const Vans::VansSceneVehicleObjectConfig& objectConfig)
 {
 	if (!objectConfig.vehicle)
-		return;
+		return nullptr;
 	auto* vehicleComp = new VansScriptVehicleComponent();
 	vehicleComp->m_ComponentName = "vehicle";
 	vehicleComp->m_Vehicle = nullptr;
 	object.AddComponent(vehicleComp);
+	return vehicleComp;
 }
 
 std::unordered_set<uint32_t> VansSceneVehicleComponentBuilder::ResolveVehicles(

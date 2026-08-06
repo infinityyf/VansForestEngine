@@ -26,6 +26,7 @@ struct VansSceneObjectBuildConfig
 	std::string entityGuid;
 	std::string name;
 	std::string parentEntityGuid;
+	bool active = true;
 	std::optional<VansSceneTransformConfig> transform;
 	std::optional<VansSceneRenderNodeConfig> render;
 	bool renderEnabled = true;

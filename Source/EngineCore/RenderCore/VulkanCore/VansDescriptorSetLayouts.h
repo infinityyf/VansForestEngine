@@ -13,7 +13,7 @@ namespace VansGraphics
 		DS_GLOBAL       = 0,  // Per-frame global data (Camera, Lights, Materials, IBL, Bindless)
 		DS_PASS         = 1,  // Per-pass data (varies per render pass / compute dispatch)
 		DS_OBJECT       = 2,  // Per-object data (Transform SSBO, shared by all geometry nodes)
-		DS_ANIMATION    = 3,  // Per-node animation data (Bone matrices + bone weight SSBOs)
+		DS_VERTEX_DEFORMATION = 3,  // Per-node vertex deformation data
 		DS_COUNT
 	};
 
@@ -51,15 +51,14 @@ namespace VansGraphics
 	};
 
 	// ====================================================================
-	// Set 3 (Per-Node Animation) Binding Indices
-	// Only used by VansCommonRenderNode for deferred opaque geometry.
-	// Animated nodes get real bone/weight buffers; static nodes get shared dummies.
+	// Set 3 (Vertex Deformation) Binding Indices
+	// Geometry nodes with skeletal skinning bind real buffers; static nodes bind shared dummies.
 	// ====================================================================
-	enum AnimationBinding : uint32_t
+	enum VertexDeformationBinding : uint32_t
 	{
-		ANIMATION_BINDING_BONEID_SSBO      = 0,   // Per-vertex bone IDs SSBO (ivec4 per vertex, per-submesh)
-		ANIMATION_BINDING_BONE_SSBO        = 1,   // Bone matrices SSBO (mat4[MAX_BONES])
-		ANIMATION_BINDING_BONEWEIGHT_SSBO  = 2,   // Per-vertex bone weights SSBO (vec4 per vertex, per-submesh)
+		VERTEX_DEFORMATION_BINDING_BONEID_SSBO = 0,
+		VERTEX_DEFORMATION_BINDING_BONE_SSBO = 1,
+		VERTEX_DEFORMATION_BINDING_BONEWEIGHT_SSBO = 2,
 	};
 
 	// ====================================================================
@@ -807,7 +806,7 @@ namespace VansGraphics
 		// ==============================================
 		static void CreateAndAllocate_Global(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t maxBindlessTextures = MAX_BINDLESS_TEXTURES, uint32_t setCount = 1);
 		static void CreateAndAllocate_Object(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
-		static void CreateAndAllocate_Animation(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_VertexDeformation(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_PostProcess(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_DeferredLighting(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_SkyBox(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);

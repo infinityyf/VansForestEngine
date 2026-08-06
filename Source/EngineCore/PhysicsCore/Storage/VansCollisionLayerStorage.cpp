@@ -1,6 +1,6 @@
 #include "VansCollisionLayerStorage.h"
 
-#include "../Serialization/VansCollisionLayerLegacyJsonCodec.h"
+#include "../Serialization/VansCollisionLayerJsonCodec.h"
 #include "../VansCollisionLayerConfig.h"
 #include "../../AssetCore/Storage/VansJsonFileStorage.h"
 
@@ -21,7 +21,7 @@ namespace VansEngine
 		if (!Vans::VansJsonFileStorage::Read(path, root, error))
 			return VansCollisionLayerLoadStatus::ReadFailed;
 
-		if (!VansCollisionLayerLegacyJsonCodec::Decode(root, config))
+		if (!VansCollisionLayerJsonCodec::Decode(root, config))
 		{
 			error = "Invalid collision layer settings JSON";
 			return VansCollisionLayerLoadStatus::DecodeFailed;

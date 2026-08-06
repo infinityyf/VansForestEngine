@@ -1,6 +1,6 @@
 #include "VansRagdollProfileStorage.h"
 
-#include "../Serialization/VansRagdollProfileLegacyJsonCodec.h"
+#include "../Serialization/VansRagdollProfileJsonCodec.h"
 #include "../../AssetCore/Storage/VansJsonFileStorage.h"
 
 #include <nlohmann/json.hpp>
@@ -19,7 +19,7 @@ bool VansRagdollProfileStorage::Load(
         return false;
     }
 
-    if (!VansRagdollProfileLegacyJsonCodec::Decode(root, profile, error))
+    if (!VansRagdollProfileJsonCodec::Decode(root, profile, error))
     {
         error = "Invalid ragdoll profile " + filePath.string() + ": " + error;
         return false;

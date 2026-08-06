@@ -7,13 +7,11 @@
 #include "../../AssetCore/VansAssetMeta.h"
 #include "../../AssetCore/Storage/VansAssetMetaStorage.h"
 #include "../../ProjectSystem/VansProjectManager.h"
-#include "../../RenderCore/VansMaterial.h"
 #include "../../RenderCore/VansScene.h"
 #include "../../RenderCore/VulkanCore/VansMesh.h"
 #include "../../RenderCore/VulkanCore/VansVKDevice.h"
 #include "../../SceneCore/VansSceneDocument.h"
 #include "../../SceneCore/VansSceneEntityFactory.h"
-#include "../../ScriptCore/VansScriptContext.h"
 #include "../../Util/VansLog.h"
 
 #include <../../GLM/glm.hpp>
@@ -215,29 +213,6 @@ std::string GetDefaultMaterialAssetName(VansGraphics::VansScene* scene)
     return materials[0]->m_AssetName;
 }
 
-RuntimeModelEntityCreateResult CreateRuntimeModelEntity(
-    VansGraphics::VansScene* scene,
-    VansGraphics::VansVKDevice* device,
-    const RuntimeModelEntityCreateRequest& request)
-{
-    RuntimeModelEntityCreateResult result;
-    if (!scene || !device || request.entityName.empty() || request.meshName.empty())
-        return result;
-
-    const glm::vec3 position(request.position.x, request.position.y, request.position.z);
-    VansScriptObject* object = scene->CreateEntity(
-        device->GetLogicDevice(),
-        request.entityName,
-        request.meshName,
-        request.materialName,
-        position);
-    if (!object)
-        return result;
-
-    result.created = true;
-    result.entityGuid = object->m_EntityGuid;
-    return result;
-}
 }
 
 ModelAssetPlacementPayload ModelAssetPlacementPreparationService::Prepare(
@@ -311,29 +286,22 @@ ModelAssetPlacementPayload ModelAssetPlacementPreparationService::Prepare(
         }
 
         sceneEntities = Vans::VansSceneEntityFactory::BuildMultiMeshEntityHierarchy(sceneRequest);
+        payload.runtimeEntityGuid = sceneEntities.rootEntityId;
     }
     else
     {
-        RuntimeModelEntityCreateRequest createRequest;
-        createRequest.entityName = uniqueName;
-        createRequest.meshName = meshName;
-        createRequest.materialName = "DefaultPBR";
-        createRequest.position = request.worldPosition;
-        const RuntimeModelEntityCreateResult createResult =
-            CreateRuntimeModelEntity(scene, device, createRequest);
-        if (!createResult.created)
-        {
-            payload.message = "Runtime model entity creation failed";
-            return payload;
-        }
-
+        const std::string entityGuid = Vans::VansAssetGuid::New().ToString();
+        const std::string transformComponentGuid = Vans::VansAssetGuid::New().ToString();
+        const std::string renderComponentGuid = Vans::VansAssetGuid::New().ToString();
         Vans::SceneModelEntityFactoryRequest sceneRequest =
             BuildSceneRequest(uniqueName, request.assetGuid, request.worldPosition);
         sceneRequest.defaultMaterialGuid = GetDefaultMaterialAssetName(scene);
+        sceneRequest.transformComponentGuid = transformComponentGuid;
+        sceneRequest.modelRendererComponentGuid = renderComponentGuid;
         sceneEntities = Vans::VansSceneEntityFactory::BuildSingleModelEntity(
             sceneRequest,
-            createResult.entityGuid);
-        payload.runtimeEntityGuid = createResult.entityGuid;
+            entityGuid);
+        payload.runtimeEntityGuid = sceneEntities.rootEntityId;
     }
 
     payload.sceneEntities.reserve(sceneEntities.entities.size());

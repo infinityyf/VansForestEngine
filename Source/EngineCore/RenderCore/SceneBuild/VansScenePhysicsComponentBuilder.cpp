@@ -5,7 +5,7 @@
 
 namespace VansGraphics
 {
-void VansScenePhysicsComponentBuilder::BuildPhysicsClothAndCharacter(
+VansScenePhysicsBuildResult VansScenePhysicsComponentBuilder::BuildPhysicsClothAndCharacter(
 	VansScene& scene,
 	VansScriptObject& object,
 	const Vans::VansScenePhysicsComponentsConfig& components,
@@ -13,6 +13,7 @@ void VansScenePhysicsComponentBuilder::BuildPhysicsClothAndCharacter(
 	bool hasObjectTransform,
 	const std::function<void()>& ensureObjectTransform)
 {
+	VansScenePhysicsBuildResult result;
 	if (components.physics)
 	{
 		auto* renderComp = object.GetComponent<VansScriptRenderComponent>();
@@ -35,6 +36,7 @@ void VansScenePhysicsComponentBuilder::BuildPhysicsClothAndCharacter(
 			physicsComp->m_Enabled = enabled;
 
 			object.AddComponent(physicsComp);
+			result.physics = physicsComp;
 		}
 	}
 
@@ -57,6 +59,7 @@ void VansScenePhysicsComponentBuilder::BuildPhysicsClothAndCharacter(
 			clothComp->m_ClothNode = clothNode;
 			clothComp->m_ProfilePath = profilePath;
 			object.AddComponent(clothComp);
+			result.cloth = clothComp;
 		}
 	}
 
@@ -77,7 +80,9 @@ void VansScenePhysicsComponentBuilder::BuildPhysicsClothAndCharacter(
 			auto* controllerComp = new VansScriptCharacterControllerComponent();
 			controllerComp->m_ControllerNode = controllerNode;
 			object.AddComponent(controllerComp);
+			result.characterController = controllerComp;
 		}
 	}
+	return result;
 }
 }

@@ -3,7 +3,7 @@
 
 #include "../../Common/ModelData.glsl"
 #include "../../Lights/LightsData.glsl"
-#include "../../Common/AnimationSkinning.glsl"
+#include "../../Common/VertexDeformation.glsl"
 
 layout(push_constant) uniform LightShadowIndex
 {
@@ -11,7 +11,7 @@ layout(push_constant) uniform LightShadowIndex
     int unusedShadowFaceIndex;
     int materialIndex;
     int objectIndex;
-    int animationEnabled;
+    uint vertexFeatureMask;
 };
 
 layout(location = 0) in vec4 position;
@@ -23,10 +23,9 @@ void main()
     mat4 modelMatrix = ModelBuffer.transforms[objectIndex].ModelMatrix;
     mat4 shadowMatrix = uPunctualShadowViews[uint(shadowViewIndex)].worldToShadow;
 
-    vec4 skinnedPosition = position;
-    if (animationEnabled != 0)
-        VansApplyAnimationSkinningPosition(skinnedPosition);
-    vec4 clipCoord = shadowMatrix * modelMatrix * skinnedPosition;
+    vec4 localPosition = position;
+    VansApplyVertexPositionDeformation(localPosition, vertexFeatureMask);
+    vec4 clipCoord = shadowMatrix * modelMatrix * localPosition;
     clipCoord.z = clipCoord.z * 0.5 + clipCoord.w * 0.5;
     gl_Position = clipCoord;
 

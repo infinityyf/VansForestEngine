@@ -112,6 +112,7 @@ namespace VansGraphics
 	struct AnimGraphPose
 	{
 		std::vector<glm::mat4> localTransforms;   // 每根骨骼的局部变换
+		std::vector<SampledNodeTransform> sampledNodeTransforms;
 		bool                   valid = false;
 		bool                   hasFootPlacement = false;
 		int                    footPlacementNodeId = -1;

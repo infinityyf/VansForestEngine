@@ -9,7 +9,7 @@
 
 namespace Vans
 {
-class VansAssetMetaLegacyJsonCodec
+class VansAssetMetaJsonCodec
 {
 public:
     static bool Encode(const VansAssetMeta& meta, nlohmann::ordered_json& root, std::string& error);

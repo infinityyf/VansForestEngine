@@ -6,6 +6,7 @@
 #include "../VansSceneHierarchyService.h"
 #include "../VansSceneEditService.h"
 #include "../VansSceneObjectReferenceRemapper.h"
+#include "../VansScenePropertyValueAdapter.h"
 #include "../../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../../SceneCore/VansSceneDocument.h"
 #include "../../Util/VansLog.h"
@@ -161,32 +162,90 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
                 ImGui::EndDragDropTarget();
             }
 
-            auto deleteEntity = [&editorAPI, entities, &id, &name]()
+            auto deleteEntity = [&editorAPI, entities, &id]()
             {
-                if (!id.empty())
-                {
-                    for (std::size_t i = 0; i < entities->arrayItems.size(); ++i)
-                    {
-                        const Vans::VansSerializedValue& entity = entities->arrayItems[i];
-                        if (Vans::ReadSerializedStringField(entity, "id") == id)
-                        {
-                            if (auto* editService = VansEditorWindow::GetSceneEditService())
-                            {
-                                editService->Remove(Vans::MakeDocumentPropertyPath(
-                                    Vans::DocumentPropertySpace::Scene,
-                                    "/entities/" + std::to_string(i)));
-                            }
-                            break;
-                        }
-                    }
-                }
+                if (id.empty())
+                    return;
 
-                Vans::EditorAPI::RuntimeEntityDestroyRequest request;
-                request.entityName = name;
-                editorAPI.DestroyRuntimeEntityByName(request);
+                for (std::size_t i = 0; i < entities->arrayItems.size(); ++i)
+                {
+                    const Vans::VansSerializedValue& entity = entities->arrayItems[i];
+                    if (Vans::ReadSerializedStringField(entity, "id") != id)
+                        continue;
+
+                    Vans::VansSerializedValue removedEntity = entity;
+                    std::vector<Vans::EditorAPI::ScenePropertyValue> runtimeEntities;
+                    runtimeEntities.push_back(Vans::FromSerializedValue(removedEntity));
+
+                    std::vector<std::string> childGuids;
+                    for (const Vans::VansSerializedValue& candidateChild : entities->arrayItems)
+                    {
+                        if (Vans::ReadSerializedStringField(candidateChild, "parent") == id)
+                            childGuids.push_back(Vans::ReadSerializedStringField(candidateChild, "id"));
+                    }
+
+                    auto destroyRuntimeEntity = [&editorAPI, entityGuid = id]()
+                    {
+                        Vans::EditorAPI::RuntimeEntityDestroyRequest request;
+                        request.entityGuid = entityGuid;
+                        return editorAPI.DestroyRuntimeEntity(request).destroyed;
+                    };
+                    auto createRuntimeEntity = [&editorAPI, runtimeEntities, childGuids, entityGuid = id]()
+                    {
+                        Vans::EditorAPI::RuntimeSceneEntitiesCreateRequest request;
+                        request.sceneEntities = runtimeEntities;
+                        const Vans::EditorAPI::RuntimeSceneEntitiesCreateResult createResult =
+                            editorAPI.CreateRuntimeSceneEntities(request);
+                        if (!createResult.created)
+                        {
+                            if (!createResult.message.empty())
+                                VANS_LOG_WARN("[Hierarchy] Runtime delete undo create failed: "
+                                    << createResult.message);
+                            return false;
+                        }
+
+                        bool reparentedAll = true;
+                        for (const std::string& childGuid : childGuids)
+                        {
+                            if (childGuid.empty())
+                                continue;
+                            Vans::EditorAPI::RuntimeEntityReparentRequest reparentRequest;
+                            reparentRequest.childEntityGuid = childGuid;
+                            reparentRequest.newParentEntityGuid = entityGuid;
+                            const Vans::EditorAPI::RuntimeEntityReparentResult reparentResult =
+                                editorAPI.ReparentRuntimeEntity(reparentRequest);
+                            if (!reparentResult.applied && !reparentResult.message.empty())
+                            {
+                                VANS_LOG_WARN("[Hierarchy] Runtime delete undo child reparent failed: "
+                                    << reparentResult.message);
+                            }
+                            reparentedAll = reparentResult.applied && reparentedAll;
+                        }
+                        return reparentedAll;
+                    };
+
+                    Vans::SceneEditLifecycleHooks hooks;
+                    hooks.afterExecute = destroyRuntimeEntity;
+                    hooks.afterUndo = createRuntimeEntity;
+                    hooks.afterRedo = destroyRuntimeEntity;
+
+                    if (auto* editService = VansEditorWindow::GetSceneEditService())
+                    {
+                        Vans::SceneEditResult result = editService->Remove(
+                            Vans::MakeDocumentPropertyPath(
+                                Vans::DocumentPropertySpace::Scene,
+                                "/entities/" + std::to_string(i)),
+                            std::move(hooks));
+                        if (!result)
+                            VANS_LOG_ERROR("[Hierarchy] Delete failed: " << result.message);
+                        else if (!result.runtimeChangeApplied)
+                            VansEditorWindow::ReloadCurrentSceneForEditing();
+                    }
+                    return;
+                }
             };
 
-            auto duplicateEntity = [&document, &id]()
+            auto duplicateEntity = [&editorAPI, &document, &id]()
             {
                 if (id.empty())
                     return;
@@ -203,13 +262,53 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
                 }
 
                 const std::string duplicatedRootGuid = duplicate.duplicatedRootGuid;
+                std::vector<std::string> duplicatedEntityGuids;
+                std::vector<Vans::EditorAPI::ScenePropertyValue> runtimeEntities;
+                duplicatedEntityGuids.reserve(duplicate.entities.size());
+                runtimeEntities.reserve(duplicate.entities.size());
+                for (const Vans::VansSerializedValue& entity : duplicate.entities)
+                {
+                    duplicatedEntityGuids.push_back(Vans::ReadSerializedStringField(entity, "id"));
+                    runtimeEntities.push_back(Vans::FromSerializedValue(entity));
+                }
+
+                auto createRuntimeEntities = [&editorAPI, runtimeEntities]()
+                {
+                    Vans::EditorAPI::RuntimeSceneEntitiesCreateRequest request;
+                    request.sceneEntities = runtimeEntities;
+                    const Vans::EditorAPI::RuntimeSceneEntitiesCreateResult result =
+                        editorAPI.CreateRuntimeSceneEntities(request);
+                    if (!result.created && !result.message.empty())
+                        VANS_LOG_WARN("[Hierarchy] Runtime duplicate create failed: " << result.message);
+                    return result.created;
+                };
+
+                Vans::SceneEditLifecycleHooks hooks;
+                hooks.afterExecute = createRuntimeEntities;
+                hooks.afterUndo = [&editorAPI, duplicatedEntityGuids]()
+                {
+                    bool destroyedAll = true;
+                    for (auto it = duplicatedEntityGuids.rbegin(); it != duplicatedEntityGuids.rend(); ++it)
+                    {
+                        if (it->empty())
+                            continue;
+                        Vans::EditorAPI::RuntimeEntityDestroyRequest request;
+                        request.entityGuid = *it;
+                        destroyedAll = editorAPI.DestroyRuntimeEntity(request).destroyed && destroyedAll;
+                    }
+                    return destroyedAll;
+                };
+                hooks.afterRedo = createRuntimeEntities;
+
                 Vans::SceneEditResult editResult =
-                    editService->AppendEntities(std::move(duplicate.entities));
+                    editService->AppendEntities(std::move(duplicate.entities), std::move(hooks));
                 if (!editResult)
                 {
                     VANS_LOG_ERROR("[Hierarchy] Duplicate failed: " << editResult.message);
                     return;
                 }
+                if (!editResult.runtimeChangeApplied)
+                    VansEditorWindow::ReloadCurrentSceneForEditing();
                 if (!duplicatedRootGuid.empty())
                     Vans::VansEditorSelection::SelectEntity(duplicatedRootGuid);
             };

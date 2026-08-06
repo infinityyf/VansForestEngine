@@ -1,6 +1,6 @@
 #include "VansAssetMetaStorage.h"
 
-#include "../Serialization/VansAssetMetaLegacyJsonCodec.h"
+#include "../Serialization/VansAssetMetaJsonCodec.h"
 #include "VansJsonFileStorage.h"
 
 #include <nlohmann/json.hpp>
@@ -19,7 +19,7 @@ bool VansAssetMetaStorage::Load(
         nlohmann::ordered_json root;
         if (!VansJsonFileStorage::Read(metaPath, root, error))
             return false;
-        return VansAssetMetaLegacyJsonCodec::Decode(root, metaPath, result, error);
+        return VansAssetMetaJsonCodec::Decode(root, metaPath, result, error);
     }
     catch (const std::exception& exception)
     {
@@ -34,7 +34,7 @@ bool VansAssetMetaStorage::SaveAtomic(
     std::string& error)
 {
     nlohmann::ordered_json root;
-    if (!VansAssetMetaLegacyJsonCodec::Encode(meta, root, error))
+    if (!VansAssetMetaJsonCodec::Encode(meta, root, error))
         return false;
 
     if (!VansJsonFileStorage::WriteAtomic(metaPath, root, error))
@@ -57,7 +57,7 @@ bool VansAssetMetaStorage::StageSave(
     std::string& error)
 {
     nlohmann::ordered_json root;
-    if (!VansAssetMetaLegacyJsonCodec::Encode(meta, root, error))
+    if (!VansAssetMetaJsonCodec::Encode(meta, root, error))
         return false;
     return VansJsonFileStorage::StageWrite(metaPath, root, stage, error);
 }

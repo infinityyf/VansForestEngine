@@ -1,5 +1,5 @@
-#include "VansParticleAssetLegacyJsonCodec.h"
-#include "VansParticleEmitterLegacyJsonCodec.h"
+#include "VansParticleAssetJsonCodec.h"
+#include "VansParticleEmitterJsonCodec.h"
 
 #include <nlohmann/json.hpp>
 
@@ -9,7 +9,7 @@
 
 namespace VansGraphics
 {
-Vans::ParticleJson VansParticleAssetLegacyJsonCodec::Encode(const VansParticleAsset& asset)
+Vans::ParticleJson VansParticleAssetJsonCodec::Encode(const VansParticleAsset& asset)
 {
     Vans::ParticleJson root;
     root["version"] = asset.m_Version;
@@ -26,13 +26,13 @@ Vans::ParticleJson VansParticleAssetLegacyJsonCodec::Encode(const VansParticleAs
     for (const auto& emitter : asset.m_Emitters)
     {
         if (emitter)
-            emitters.push_back(VansParticleEmitterLegacyJsonCodec::EncodeEmitter(*emitter));
+            emitters.push_back(VansParticleEmitterJsonCodec::EncodeEmitter(*emitter));
     }
     root["emitters"] = std::move(emitters);
     return root;
 }
 
-bool VansParticleAssetLegacyJsonCodec::Decode(
+bool VansParticleAssetJsonCodec::Decode(
     const Vans::ParticleJson& root,
     const std::filesystem::path& filePath,
     VansParticleAsset& asset,
@@ -59,7 +59,7 @@ bool VansParticleAssetLegacyJsonCodec::Decode(
             for (const auto& emitterJson : root["emitters"])
             {
                 auto emitter = std::make_unique<VansParticleEmitter>();
-                VansParticleEmitterLegacyJsonCodec::DecodeEmitter(emitterJson, *emitter);
+                VansParticleEmitterJsonCodec::DecodeEmitter(emitterJson, *emitter);
                 decoded.m_Emitters.push_back(std::move(emitter));
             }
         }

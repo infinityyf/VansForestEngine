@@ -3,7 +3,7 @@
 
 #include "../../Common/CameraData.glsl"
 #include "../../Common/ModelData.glsl"
-#include "../../Common/AnimationSkinning.glsl"
+#include "../../Common/VertexDeformation.glsl"
 
 layout(location = 0) in vec4 position;
 layout(location = 1) in vec2 uv;
@@ -21,7 +21,7 @@ layout(push_constant) uniform MaterialPushConsts
 {
     int materialIndex;
     int objectIndex;
-    int animationEnabled;
+    uint vertexFeatureMask;
     int passUser0;
 } materialConst;
 
@@ -30,20 +30,20 @@ void main()
     mat4 modelMatrix = ModelBuffer.transforms[materialConst.objectIndex].ModelMatrix;
     mat4 normalMatrix = ModelBuffer.transforms[materialConst.objectIndex].NormalMatrix;
 
-    vec4 skinnedPosition = position;
-    vec3 skinnedNormal = normal;
-    vec3 skinnedTangent = tangent;
-    vec3 skinnedBitangent = bitangent;
-    if (materialConst.animationEnabled != 0)
-        VansApplyAnimationSkinning(skinnedPosition, skinnedNormal, skinnedTangent, skinnedBitangent);
+    VansVertexSurface surface;
+    surface.position = position;
+    surface.normal = normal;
+    surface.tangent = tangent;
+    surface.bitangent = bitangent;
+    VansApplyVertexDeformation(surface, materialConst.vertexFeatureMask);
 
-    vec4 worldPos = modelMatrix * skinnedPosition;
+    vec4 worldPos = modelMatrix * surface.position;
     gl_Position = VPMatrix * worldPos;
 
     mat3 nrm = mat3(normalMatrix);
-    normalWS = normalize(nrm * skinnedNormal);
-    tangentWS = normalize(nrm * skinnedTangent);
-    bitangentWS = normalize(nrm * skinnedBitangent);
+    normalWS = normalize(nrm * surface.normal);
+    tangentWS = normalize(nrm * surface.tangent);
+    bitangentWS = normalize(nrm * surface.bitangent);
     positionWS = worldPos.xyz;
     fragUV = uv;
 }

@@ -376,7 +376,7 @@ bool VansAnimationClipLoader::TryCreateFromFBX(const std::string& vclipPath,
 		}
 
 		VansAnimationClip clip;
-		VansSkinnedMeshLoader::ExtractClipFromAssimp(anim, *skeletonToUse, clip);
+		VansSkinnedMeshLoader::ExtractClipFromAssimp(anim, *skeletonToUse, clip, scene);
 		clip.clipName = clipName;
 
 		// 总是保存前缀格式: {fbxBaseName}_{clipName}.vclip

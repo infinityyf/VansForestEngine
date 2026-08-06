@@ -16,7 +16,7 @@ namespace VansGraphics
 		std::string cachePolicy = "read_or_build";
 		std::string translationScaleMode = "auto_from_pelvis_local_translation";
 		std::string rootAlignmentMode = "none";
-		glm::vec3 modelSpaceRotationDegrees = glm::vec3(0.0f);
+		std::string targetModelSpaceAlignmentMode = "none";
 		float translationScale = 1.0f;
 		bool hasExplicitTranslationScale = false;
 		bool debugDraw = false;
@@ -54,7 +54,11 @@ namespace VansGraphics
 		};
 
 		std::vector<BoneMapEntry> m_BoneMap;
+		std::vector<glm::mat4> m_SourceBindModelTransforms;
+		std::vector<glm::mat4> m_TargetBindModelTransforms;
 		VansRetargetBuildStats m_Stats;
+		glm::mat4 m_TargetModelSpaceCorrection = glm::mat4(1.0f);
+		bool m_HasTargetModelSpaceCorrection = false;
 		bool m_Valid = false;
 
 		static glm::mat4 ComposeTransform(
@@ -73,6 +77,11 @@ namespace VansGraphics
 			const std::vector<glm::mat4>& localTransforms,
 			const Skeleton& skeleton,
 			std::vector<glm::mat4>& outModelTransforms);
+		static std::vector<glm::mat4> BuildBindModelTransforms(const Skeleton& skeleton);
+		static bool TryBuildHumanoidBasis(
+			const Skeleton& skeleton,
+			const std::vector<glm::mat4>& modelTransforms,
+			glm::mat3& outBasis);
 		static int FindBone(const Skeleton& skeleton, const char* name);
 	};
 }

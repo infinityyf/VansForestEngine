@@ -117,9 +117,9 @@ namespace Vans::EditorAPI
 		ProjectMeshInfoSnapshot GetProjectMeshInfo(const std::string& meshName) const override;
 		void RegisterProjectMeshAlias(const ProjectMeshAliasRequest& request) override;
 		std::string GetDefaultMaterialAssetName() const override;
-		RuntimeModelEntityCreateResult CreateRuntimeModelEntity(const RuntimeModelEntityCreateRequest& request) override;
+		RuntimeSceneEntitiesCreateResult CreateRuntimeSceneEntities(const RuntimeSceneEntitiesCreateRequest& request) override;
 		ModelAssetPlacementPayload PrepareModelAssetPlacement(const ModelAssetPlacementRequest& request) override;
-		RuntimeEntityDestroyResult DestroyRuntimeEntityByName(const RuntimeEntityDestroyRequest& request) override;
+		RuntimeEntityDestroyResult DestroyRuntimeEntity(const RuntimeEntityDestroyRequest& request) override;
 		RuntimeEntityReparentResult ReparentRuntimeEntity(const RuntimeEntityReparentRequest& request) override;
 		std::string MakeUniqueRuntimeEntityName(const std::string& baseName) const override;
 		std::string GetProjectRootPath() const override;
@@ -134,11 +134,12 @@ namespace Vans::EditorAPI
 		bool HasAnimationDebugNodes() const override;
 		VansGraphics::VansAnimationNode* FindRuntimeAnimationNodeByEntityGuid(const std::string& entityGuid) const override;
 		MotionMatchingDebugSnapshot GetMotionMatchingDebugSnapshot() const override;
+		SkeletonDebugSnapshot GetSkeletonDebugSnapshot(const std::string& entityGuidFilter) const override;
 		void SetFootIKDebugVisualization(bool enabled) override;
 		FootIKDebugSnapshot GetFootIKDebugSnapshot() const override;
 		TerrainSettingsSnapshot GetTerrainSettings() const override;
 		void ApplyTerrainSettings(const TerrainSettingsSnapshot& settings) override;
-		void ApplyRuntimeEntityPreviewChange(const RuntimeEntityPreviewChange& change) override;
+		bool ApplyRuntimeEntityPreviewChange(const RuntimeEntityPreviewChange& change) override;
 		bool ApplyRuntimeMaterialPreviewChange(const RuntimeMaterialPreviewChange& change) override;
 
 		void CommitLightingChanges() override;
@@ -198,7 +199,11 @@ namespace Vans::EditorAPI
 	private:
 		RenderTexturePreview BuildReflectionProbePreview(RenderTextureFilter filter) const;
 		RenderTexturePreview BuildWaterTexturePreview(RenderTextureFilter filter) const;
-		void SetRuntimeComponentEnabled(const std::string& entityGuid, const std::string& componentType, bool enabled);
+		bool SetRuntimeComponentEnabled(
+			const std::string& entityGuid,
+			const std::string& componentGuid,
+			const std::string& componentType,
+			bool enabled);
 
 		RuntimeSceneHandle m_Scene = nullptr;
 		RuntimeRenderDeviceHandle m_Device = nullptr;

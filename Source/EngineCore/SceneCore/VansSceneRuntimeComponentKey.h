@@ -12,9 +12,11 @@ inline std::string CanonicalRuntimeComponentKeyForName(std::string componentName
 		[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
 	if (componentName == "render") return "render";
+	if (componentName == "transform") return "transform";
+	if (componentName == "modelrenderer") return "render";
 	if (componentName == "physics") return "physics";
 	if (componentName == "cloth") return "cloth";
-	if (componentName == "charactercontroller") return "charController";
+	if (componentName == "charactercontroller" || componentName == "charcontroller") return "charController";
 	if (componentName == "directionallight") return "directional_light";
 	if (componentName == "pointlight") return "point_light";
 	if (componentName == "spotlight") return "spot_light";
@@ -26,7 +28,11 @@ inline std::string CanonicalRuntimeComponentKeyForName(std::string componentName
 	if (componentName == "video") return "video";
 	if (componentName == "particle") return "particle";
 	if (componentName == "animation") return "animation";
+	if (componentName == "animator") return "animation";
+	if (componentName == "ragdoll") return "ragdoll";
 	if (componentName == "vehicle") return "vehicle";
+	if (componentName == "uicontroller") return "ui";
+	if (componentName == "luascript") return "script";
 	return componentName;
 }
 }

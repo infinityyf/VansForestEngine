@@ -1,6 +1,6 @@
 #include "VansMaterialAuthoringAssetStorage.h"
 
-#include "../Serialization/VansSerializedValueLegacyJsonAdapter.h"
+#include "../Serialization/VansSerializedValueJsonAdapter.h"
 #include "../VansAssetDocument.h"
 #include "../VansAssetDocumentJson.h"
 #include "VansJsonFileStorage.h"
@@ -27,7 +27,7 @@ bool VansMaterialAuthoringAssetStorage::StageWrite(
     std::string& error)
 {
     const AssetDocumentJson root =
-        EncodeSerializedValueLegacyJson<AssetDocumentJson>(WriteMaterialAuthoringAssetRoot(asset));
+        EncodeSerializedValueJson<AssetDocumentJson>(WriteMaterialAuthoringAssetRoot(asset));
     return VansJsonFileStorage::StageWrite(path, root, stage, error);
 }
 }

@@ -411,6 +411,140 @@ VansScriptObject* VansGraphics::VansScene::FindObjectByGuid(const std::string& g
     return nullptr;
 }
 
+bool VansGraphics::VansScene::SetEntityParentByGuid(
+    const std::string& childEntityGuid,
+    const std::string& parentEntityGuid)
+{
+    if (childEntityGuid.empty() || childEntityGuid == parentEntityGuid)
+        return false;
+
+    VansScriptObject* child = FindObjectByGuid(childEntityGuid);
+    if (!child)
+        return false;
+
+    if (!parentEntityGuid.empty())
+    {
+        VansScriptObject* parent = FindObjectByGuid(parentEntityGuid);
+        if (!parent)
+            return false;
+        m_TransformParentSystem.SetParent(child->m_TransformID, parent->m_TransformID);
+    }
+    else if (m_TransformParentSystem.HasParent(child->m_TransformID))
+    {
+        m_TransformParentSystem.ClearParent(child->m_TransformID);
+    }
+
+    if (m_RuntimeWorld)
+    {
+        Vans::VansEntityHandle childHandle =
+            m_RuntimeWorld->Entities().FindByGuid(childEntityGuid);
+        Vans::VansEntityHandle parentHandle;
+        if (!parentEntityGuid.empty())
+            parentHandle = m_RuntimeWorld->Entities().FindByGuid(parentEntityGuid);
+        if (!childHandle.IsValid() || (!parentEntityGuid.empty() && !parentHandle.IsValid()))
+            return false;
+
+        m_RuntimeWorld->Commands().SetParent(childHandle, parentHandle);
+        m_RuntimeWorld->FlushCommands();
+
+        const Vans::VansEntityRecord* childRecord = m_RuntimeWorld->Entities().Get(childHandle);
+        const bool runtimeParentMatches =
+            childRecord &&
+            (parentEntityGuid.empty() ? !childRecord->parent.IsValid() : childRecord->parent == parentHandle);
+        if (!runtimeParentMatches)
+            return false;
+
+        for (const Vans::VansComponentHandle component :
+            m_RuntimeWorld->CollectComponentsInSubtree(childHandle))
+        {
+            const bool effectiveEnabled =
+                m_RuntimeWorld->IsComponentEffectivelyEnabled(component);
+            ApplyRuntimeComponentEnabled(component, effectiveEnabled);
+        }
+    }
+
+    VansTransformStore::TransformIDToTransformDirty[child->m_TransformID] = true;
+    return true;
+}
+
+bool VansGraphics::VansScene::SetEntityNameByGuid(
+    const std::string& entityGuid,
+    const std::string& name)
+{
+    if (entityGuid.empty())
+        return false;
+    VansScriptObject* object = FindObjectByGuid(entityGuid);
+    if (!object)
+        return false;
+
+    bool runtimeUpdated = true;
+    if (m_RuntimeWorld)
+    {
+        const Vans::VansEntityHandle entity =
+            m_RuntimeWorld->Entities().FindByGuid(entityGuid);
+        if (!entity.IsValid())
+        {
+            runtimeUpdated = false;
+        }
+        else
+        {
+            m_RuntimeWorld->Commands().SetEntityName(entity, name);
+            m_RuntimeWorld->FlushCommands();
+            const Vans::VansEntityRecord* record = m_RuntimeWorld->Entities().Get(entity);
+            runtimeUpdated = record && record->name == name;
+        }
+    }
+    if (!runtimeUpdated)
+        return false;
+
+    object->m_ObjectName = name;
+    return true;
+}
+
+bool VansGraphics::VansScene::SetEntityActiveByGuid(
+    const std::string& entityGuid,
+    bool active)
+{
+    if (entityGuid.empty())
+        return false;
+    VansScriptObject* object = FindObjectByGuid(entityGuid);
+    if (!object)
+        return false;
+
+    bool runtimeUpdated = true;
+    if (m_RuntimeWorld)
+    {
+        const Vans::VansEntityHandle entity =
+            m_RuntimeWorld->Entities().FindByGuid(entityGuid);
+        if (!entity.IsValid())
+        {
+            runtimeUpdated = false;
+        }
+        else
+        {
+            m_RuntimeWorld->Commands().SetEntityActive(entity, active);
+            m_RuntimeWorld->FlushCommands();
+            const Vans::VansEntityRecord* record = m_RuntimeWorld->Entities().Get(entity);
+            runtimeUpdated = record && record->selfActive == active;
+            if (runtimeUpdated)
+            {
+                for (const Vans::VansComponentHandle component :
+                    m_RuntimeWorld->CollectComponentsInSubtree(entity))
+                {
+                    const bool effectiveEnabled =
+                        m_RuntimeWorld->IsComponentEffectivelyEnabled(component);
+                    ApplyRuntimeComponentEnabled(component, effectiveEnabled);
+                }
+            }
+        }
+    }
+    if (!runtimeUpdated)
+        return false;
+
+    object->SetActive(active);
+    return true;
+}
+
 VansGraphics::VansRenderNode* VansGraphics::VansScene::FindPrimaryRenderNodeByEntityGuid(const std::string& guid) const
 {
     VansScriptObject* obj = FindObjectByGuid(guid);

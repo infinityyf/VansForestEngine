@@ -33,19 +33,36 @@ VansSceneAssetPlacementService::Result VansSceneAssetPlacementService::PlaceMode
         entities.push_back(std::move(entity));
     }
 
+    const bool expectsRuntimeAppend =
+        !payload.runtimeEntityGuid.empty() && !payload.sceneEntities.empty();
     Vans::SceneEditLifecycleHooks hooks;
-    if (!payload.runtimeEntityGuid.empty())
+    if (expectsRuntimeAppend)
     {
+        std::vector<Vans::EditorAPI::ScenePropertyValue> runtimeSceneEntities =
+            payload.sceneEntities;
+        auto createRuntimeEntities =
+            [&editorAPI, runtimeSceneEntities]()
+            {
+                Vans::EditorAPI::RuntimeSceneEntitiesCreateRequest createRequest;
+                createRequest.sceneEntities = runtimeSceneEntities;
+                return editorAPI.CreateRuntimeSceneEntities(createRequest).created;
+            };
+        hooks.afterExecute = createRuntimeEntities;
         hooks.afterUndo = [&editorAPI, runtimeEntityGuid = payload.runtimeEntityGuid]()
         {
             Vans::EditorAPI::RuntimeEntityDestroyRequest destroyRequest;
             destroyRequest.entityGuid = runtimeEntityGuid;
-            editorAPI.DestroyRuntimeEntityByName(destroyRequest);
+            return editorAPI.DestroyRuntimeEntity(destroyRequest).destroyed;
         };
+        hooks.afterRedo = createRuntimeEntities;
     }
 
     const Vans::SceneEditResult result =
         editService.AppendEntities(std::move(entities), std::move(hooks));
-    return result ? Result{ true, {} } : Result{ false, result.message };
+    if (!result)
+        return { false, result.message };
+    if (expectsRuntimeAppend && !result.runtimeChangeApplied)
+        return { false, "Runtime model entity creation failed" };
+    return { true, {} };
 }
 }

@@ -92,7 +92,6 @@ VansSceneLightShadowConfig DecodeShadowConfig(const VansSerializedValue& lightNo
 {
 	VansSceneLightShadowConfig config;
 	config.castShadows = ReadOptionalBoolField(lightNode, "castShadows");
-	config.legacyShadow = ReadOptionalBoolField(lightNode, "shadow");
 	config.policy = ReadOptionalStringField(lightNode, "shadowPolicy");
 	config.priority = ReadOptionalIntField(lightNode, "shadowPriority");
 	config.resolution = ReadOptionalResolutionField(lightNode, "shadowResolution");

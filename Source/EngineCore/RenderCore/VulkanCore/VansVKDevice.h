@@ -497,6 +497,7 @@ namespace VansGraphics
 		void DestroyFrameContextRingResources();
 		bool BeginFrameContextRingFrame();
 		bool WaitForFrameContextRingSlot(VansFrameContextRingSlot& slot);
+		bool WaitForFrameContextRingSlotGpuIdle(const VansFrameContextRingSlot& slot);
 		void BindCurrentFrameContextToLegacyResources();
 		void BindCurrentFrameContextToSlot(VansFrameContextRingSlot& slot);
 		VansVKCommandBuffer& CurrentGraphicsCommandBuffer();

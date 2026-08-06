@@ -26,7 +26,7 @@ layout( push_constant ) uniform MaterialPushConsts
 {
     int materialIndex;
     int objectIndex;
-    int animationEnabled;
+    uint vertexFeatureMask;
 } materialConst;
 
 // ── MRT 输出（3 个颜色附件，与 DecalRenderPass 附件顺序一致） ──────────────

@@ -8,7 +8,7 @@
 
 namespace VansGraphics
 {
-class VansParticleAssetLegacyJsonCodec
+class VansParticleAssetJsonCodec
 {
 public:
     static Vans::ParticleJson Encode(const VansParticleAsset& asset);

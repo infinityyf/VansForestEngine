@@ -19,7 +19,7 @@ layout(push_constant) uniform MaterialPushConsts
 {
     int materialIndex;
     int objectIndex;
-    int animationEnabled;
+    uint vertexFeatureMask;
 } materialConst;
 
 layout(location = 0) out vec4 outNormal;    // .xyz = world normal, .w = physical thickness (mm)

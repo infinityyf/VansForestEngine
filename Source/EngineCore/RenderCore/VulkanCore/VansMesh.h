@@ -197,9 +197,12 @@ namespace VansGraphics
 
 		// The aiNode name from which this submesh was collected (set by LoadMultiMesh).
 		std::string m_SourceNodeName;
+		std::string m_SourceNodePath;
+		glm::mat4 m_SourceNodeBindModelTransform = glm::mat4(1.0f);
 
 		// ── Animation metadata (set by LoadMultiMesh when FBX contains bones/animations) ──
 		bool m_HasAnimation = false;
+		bool m_HasNodeTransformAnimation = false;
 		VansAnimationImportResult m_AnimImportResult;
 
 		// Optional path to an external FBX that provides animation clips only.

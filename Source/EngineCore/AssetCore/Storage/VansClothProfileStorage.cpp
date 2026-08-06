@@ -1,6 +1,6 @@
 #include "VansClothProfileStorage.h"
 
-#include "../Serialization/VansClothProfileLegacyJsonCodec.h"
+#include "../Serialization/VansClothProfileJsonCodec.h"
 #include "VansJsonFileStorage.h"
 
 #include <nlohmann/json.hpp>
@@ -15,7 +15,7 @@ bool VansClothProfileStorage::Load(
     ClothProfileJson root;
     if (!Vans::VansJsonFileStorage::Read(filePath, root, error))
         return false;
-    return VansClothProfileLegacyJsonCodec::Decode(root, filePath, profile, error);
+    return VansClothProfileJsonCodec::Decode(root, filePath, profile, error);
 }
 
 bool VansClothProfileStorage::SaveAtomic(
@@ -25,7 +25,7 @@ bool VansClothProfileStorage::SaveAtomic(
 {
     return Vans::VansJsonFileStorage::WriteAtomic(
         filePath,
-        VansClothProfileLegacyJsonCodec::Encode(profile),
+        VansClothProfileJsonCodec::Encode(profile),
         error);
 }
 }

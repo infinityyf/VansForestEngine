@@ -168,6 +168,11 @@ VansEngine::VansClothNode* VansGraphics::VansScenePhysicsComponentBuilder::LoadC
     }
 
     ClothNodeProperties clothProps;
+    if (!config.profilePath)
+    {
+        VANS_LOG_ERROR("[VansScenePhysicsComponentBuilder] LoadClothNode: Cloth component requires profilePath.");
+        return nullptr;
+    }
 
     // ── 新格式：通过 profilePath 从 .clothprofile 文件加载配置 ──────────────
     if (config.profilePath)
@@ -213,14 +218,7 @@ VansEngine::VansClothNode* VansGraphics::VansScenePhysicsComponentBuilder::LoadC
     }
     else
     {
-        // ── Inline legacy component values（向后兼容）───────────────────────
-        clothProps.enabled = true;
-        if (config.stiffness)     clothProps.stiffness     = *config.stiffness;
-        if (config.damping)       clothProps.damping       = *config.damping;
-        if (config.friction)      clothProps.friction      = *config.friction;
-        if (config.selfCollision) clothProps.selfCollision = *config.selfCollision;
-        if (config.gravity)       clothProps.gravity       = (*config.gravity)[1];
-        clothProps.pinnedParticleIndices = config.pinnedParticles;
+        return nullptr;
     }
 
     // 解析 physicsAttachOffsetY — 无论使用 profilePath 还是旧格式均适用

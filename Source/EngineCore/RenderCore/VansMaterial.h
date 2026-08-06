@@ -285,7 +285,7 @@ namespace VansGraphics
 
 		int transformIndex;   // index into per-object transform SSBO
 
-		int animationEnabled; // 1 = skinned, 0 = static
+		std::uint32_t vertexFeatureMask; // mesh/render-item vertex deformation flags
 
 		int passUser0;        // reserved for pass-specific data; keeps ABI at 16 bytes
 

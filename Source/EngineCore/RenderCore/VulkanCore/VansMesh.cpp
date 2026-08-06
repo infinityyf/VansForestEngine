@@ -127,7 +127,7 @@ namespace
 	}
 
 	constexpr std::array<char, 8> kMeshCacheMagic = { 'V', 'A', 'N', 'S', 'M', 'S', 'H', '\0' };
-	constexpr uint32_t kMeshCacheVersion = 3;
+	constexpr uint32_t kMeshCacheVersion = 4;
 	constexpr uint32_t kMeshCacheFlagMultiMesh = 1u << 0;
 	constexpr uint64_t kMeshCacheMaxVectorItems = 256ull * 1024ull * 1024ull;
 
@@ -686,6 +686,8 @@ bool VansGraphics::VansMesh::TryLoadMeshCache(
 		mesh.m_MeshRawDataCPULoaded = true;
 		if (!ReadString(in, mesh.m_SourceMaterialName) ||
 			!ReadString(in, mesh.m_SourceNodeName) ||
+			!ReadString(in, mesh.m_SourceNodePath) ||
+			!ReadPod(in, mesh.m_SourceNodeBindModelTransform) ||
 			!ReadVector(in, mesh.m_MeshRawData) ||
 			!ReadVector(in, mesh.m_MeshRawPositionData) ||
 			!ReadVector(in, mesh.m_MeshRawTexCoordData) ||
@@ -891,6 +893,8 @@ bool VansGraphics::VansMesh::SaveMeshCache(
 		return WritePod(out, chunk)
 			&& WriteString(out, mesh.m_SourceMaterialName)
 			&& WriteString(out, mesh.m_SourceNodeName)
+			&& WriteString(out, mesh.m_SourceNodePath)
+			&& WritePod(out, mesh.m_SourceNodeBindModelTransform)
 			&& WriteVector(out, mesh.m_MeshRawData)
 			&& WriteVector(out, mesh.m_MeshRawPositionData)
 			&& WriteVector(out, mesh.m_MeshRawTexCoordData)

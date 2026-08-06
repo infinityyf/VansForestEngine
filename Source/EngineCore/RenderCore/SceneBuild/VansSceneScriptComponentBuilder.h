@@ -4,15 +4,26 @@
 
 #include "../../ScriptCore/VansScriptTypes.h"
 
+#include <vector>
+
+class VansLuaScriptComponent;
+class VansScriptUIComponent;
+
 namespace VansGraphics
 {
+	struct VansSceneScriptBuildResult
+	{
+		std::vector<VansScriptUIComponent*> uiControllers;
+		std::vector<VansLuaScriptComponent*> scripts;
+	};
+
 	class VansSceneScriptComponentBuilder
 	{
 	public:
-		static void BuildScripts(
+		static std::vector<VansLuaScriptComponent*> BuildScripts(
 			VansScriptObject& object,
 			const VansScriptComponentDescriptors& scriptComponents);
-		static void BuildUIControllers(
+		static std::vector<VansScriptUIComponent*> BuildUIControllers(
 			VansScriptObject& object,
 			const VansScriptUIComponentDescriptors& uiComponents);
 	};

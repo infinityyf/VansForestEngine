@@ -86,4 +86,38 @@ inline ScenePropertyValue FromSerializedValue(const Vans::VansSerializedValue& v
         return {};
     }
 }
+
+inline Vans::VansSerializedValue ToSerializedValue(const ScenePropertyValue& value)
+{
+    switch (value.kind)
+    {
+    case ScenePropertyValue::Kind::Bool:
+        return Vans::VansSerializedValue::Bool(value.boolValue);
+    case ScenePropertyValue::Kind::Int:
+        return Vans::VansSerializedValue::Int(value.intValue);
+    case ScenePropertyValue::Kind::Float:
+        return Vans::VansSerializedValue::Float(value.floatValue);
+    case ScenePropertyValue::Kind::String:
+        return Vans::VansSerializedValue::String(value.stringValue);
+    case ScenePropertyValue::Kind::Array:
+    {
+        std::vector<Vans::VansSerializedValue> items;
+        items.reserve(value.arrayItems.size());
+        for (const ScenePropertyValue& item : value.arrayItems)
+            items.push_back(ToSerializedValue(item));
+        return Vans::VansSerializedValue::Array(std::move(items));
+    }
+    case ScenePropertyValue::Kind::Object:
+    {
+        std::vector<std::pair<std::string, Vans::VansSerializedValue>> fields;
+        fields.reserve(value.objectFields.size());
+        for (const auto& [name, field] : value.objectFields)
+            fields.emplace_back(name, ToSerializedValue(field));
+        return Vans::VansSerializedValue::Object(std::move(fields));
+    }
+    case ScenePropertyValue::Kind::Null:
+    default:
+        return Vans::VansSerializedValue::Null();
+    }
+}
 }

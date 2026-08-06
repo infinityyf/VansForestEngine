@@ -6,4 +6,5 @@
 namespace Vans
 {
 VansSerializedValue ToSerializedValue(const EditorAPI::ScenePropertyValue& value);
+EditorAPI::ScenePropertyValue FromSerializedValue(const VansSerializedValue& value);
 }

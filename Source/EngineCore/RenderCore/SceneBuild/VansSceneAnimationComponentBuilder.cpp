@@ -132,14 +132,9 @@ namespace VansGraphics
 			if (alignmentIt != optionsIt->end() && alignmentIt->is_string())
 				desc.rootAlignmentMode = alignmentIt->get<std::string>();
 
-			const auto modelRotationIt = optionsIt->find("model_space_rotation_degrees");
-			if (modelRotationIt != optionsIt->end() && modelRotationIt->is_array() && modelRotationIt->size() >= 3)
-			{
-				desc.modelSpaceRotationDegrees = glm::vec3(
-					(*modelRotationIt)[0].get<float>(),
-					(*modelRotationIt)[1].get<float>(),
-					(*modelRotationIt)[2].get<float>());
-			}
+			const auto targetAlignmentIt = optionsIt->find("target_model_space_alignment");
+			if (targetAlignmentIt != optionsIt->end() && targetAlignmentIt->is_string())
+				desc.targetModelSpaceAlignmentMode = targetAlignmentIt->get<std::string>();
 		}
 
 		std::string ResolveClipPrefixForAnimator(
@@ -343,10 +338,21 @@ namespace VansGraphics
 			return nullptr;
 		}
 
-		if (meshAsset->m_AnimImportResult.skeleton.bones.empty())
+		const bool hasSkeleton = !meshAsset->m_AnimImportResult.skeleton.bones.empty();
+		bool hasNodeTransformClips = false;
+		for (const VansAnimationClip& clip : meshAsset->m_AnimImportResult.clips)
+		{
+			if (!clip.nodeTransformChannels.empty())
+			{
+				hasNodeTransformClips = true;
+				break;
+			}
+		}
+
+		if (!hasSkeleton && !hasNodeTransformClips)
 		{
 			VANS_LOG_WARN("[LoadAnimComp] mesh_group '" << meshGroupName
-				<< "' has no skeleton. Skipping '" << objectName << "'");
+				<< "' has no skeleton or node transform animation. Skipping '" << objectName << "'");
 			return nullptr;
 		}
 
@@ -438,7 +444,7 @@ namespace VansGraphics
 				state.name = clipName;
 				state.clipName = clipName;
 				state.speed = 1.0f;
-				state.loop = true;
+				state.loop = animConfig.loop;
 				state.rootMotion = enableRootMotion;
 				smNode->m_States.push_back(state);
 			}
@@ -472,7 +478,7 @@ namespace VansGraphics
 				<< " selectorRows=" << mmSettings.selectorRows.size());
 		}
 
-		if (animConfig.footPlacement)
+		if (animConfig.footPlacement && hasSkeleton)
 		{
 			FootPlacementSettings fpSettings = *animConfig.footPlacement;
 			controller->ConfigureFootPlacement(fpSettings, meshAsset->m_AnimImportResult.skeleton);
@@ -574,8 +580,14 @@ namespace VansGraphics
 				childNode->m_HasSkeletonBone = true;
 				childNode->m_AnimationEnabled = true;
 				childNode->m_AnimOwner = animNode;
+				childNode->m_AnimSubmeshIndex = submeshIndex;
 				childNode->m_AnimBoneIDBuffer = &animNode->GetBoneIDBuffer(submeshIndex);
 				childNode->m_AnimBoneWeightBuffer = &animNode->GetBoneWeightBuffer(submeshIndex);
+				childNode->m_VertexDeformationState.skinningOwner = animNode;
+				childNode->m_VertexDeformationState.submeshIndex = submeshIndex;
+				childNode->m_VertexDeformationState.boneIDBuffer = childNode->m_AnimBoneIDBuffer;
+				childNode->m_VertexDeformationState.boneWeightBuffer = childNode->m_AnimBoneWeightBuffer;
+				childNode->m_VertexDeformationState.featureMask = VANS_VERTEX_FEATURE_SKELETAL_SKINNING;
 				childNode->MarkAnimationDescriptorDirty();
 			}
 			else
@@ -583,9 +595,11 @@ namespace VansGraphics
 				childNode->m_HasSkeletonBone = false;
 				childNode->m_AnimationEnabled = false;
 				childNode->m_AnimOwner = nullptr;
+				childNode->m_AnimSubmeshIndex = submeshIndex;
 				childNode->m_AnimBoneIDBuffer = nullptr;
 				childNode->m_AnimBoneWeightBuffer = nullptr;
-				if (submeshIndex >= animNode->GetSubmeshBufferCount())
+				childNode->m_VertexDeformationState = VansVertexDeformationState{};
+				if (hasSkeleton && submeshIndex >= animNode->GetSubmeshBufferCount())
 				{
 					VANS_LOG_WARN("[LoadAnimComp] submesh index " << submeshIndex
 						<< " has no bone buffer for node '" << childNode->m_NodeName << "'");
@@ -594,7 +608,8 @@ namespace VansGraphics
 		}
 
 		scene.RegisterAnimationRuntime(animNode, controller);
-		animNode->Play();
+		if (animConfig.autoPlay)
+			animNode->Play();
 
 		if (!animConfig.boneBindings.empty())
 		{
@@ -679,7 +694,7 @@ namespace VansGraphics
 		VANS_LOG("[LoadAnimComp] Created animation component '" << nodeName
 			<< "' with " << controller->GetClipNames().size() << " clip(s), "
 			<< meshAsset->m_AnimImportResult.skeleton.bones.size() << " bones, "
-			<< group.childNodes.size() << " render node(s)");
+			<< group.childNodes.size() << " render node(s), autoPlay=" << (animConfig.autoPlay ? 1 : 0));
 
 		return animNode;
 	}
@@ -783,10 +798,10 @@ namespace VansGraphics
 
 			if (animationNode)
 			{
-				const bool animationEnabled = pending.animationConfig->enabled;
-				if (!animationEnabled)
+				const bool componentEnabled = pending.animationConfig->enabled;
+				if (!componentEnabled)
 					animationNode->SetEnabled(false);
-				pending.component->m_Enabled = animationEnabled;
+				pending.component->m_Enabled = componentEnabled;
 			}
 
 			if (!animationNode)

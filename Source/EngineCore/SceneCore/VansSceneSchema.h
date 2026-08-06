@@ -49,9 +49,9 @@ struct VansSceneData
 class VansSceneSchema
 {
 public:
-    static SceneDiagnostics ValidateLegacyJson(const SceneJson& root);
-    static bool DeserializeLegacyJson(const SceneJson& root, VansSceneData& scene, SceneDiagnostics& diagnostics);
-    static SceneJson SerializeLegacyJson(const VansSceneData& scene);
+    static SceneDiagnostics ValidateSceneJson(const SceneJson& root);
+    static bool DeserializeSceneJson(const SceneJson& root, VansSceneData& scene, SceneDiagnostics& diagnostics);
+    static SceneJson SerializeSceneJson(const VansSceneData& scene);
 
     static VansSceneComponentData MakeTransform(const VansSceneTransform& transform = {});
     static VansSceneComponentData MakeModelRenderer(VansAssetGuid model);

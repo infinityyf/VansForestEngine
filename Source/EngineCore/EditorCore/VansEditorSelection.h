@@ -13,22 +13,22 @@ class VansEditorSelection
 public:
     static void SelectEntity(std::string entityGuid)
     {
-        VansEditorSelectionService::Get().SelectEntity(std::move(entityGuid), "LegacyFacade");
+        VansEditorSelectionService::Get().SelectEntity(std::move(entityGuid), "EditorSelectionFacade");
     }
 
 	static void SelectScene()
 	{
-		VansEditorSelectionService::Get().SelectScene("LegacyFacade");
+		VansEditorSelectionService::Get().SelectScene("EditorSelectionFacade");
 	}
 
     static void SelectAsset(std::filesystem::path assetPath)
     {
-        VansEditorSelectionService::Get().SelectAsset(std::move(assetPath), "LegacyFacade");
+        VansEditorSelectionService::Get().SelectAsset(std::move(assetPath), "EditorSelectionFacade");
     }
 
     static void Clear()
     {
-        VansEditorSelectionService::Get().Clear("LegacyFacade");
+        VansEditorSelectionService::Get().Clear("EditorSelectionFacade");
     }
 
     static const std::string& EntityGuid() { return VansEditorSelectionService::Get().EntityGuid(); }

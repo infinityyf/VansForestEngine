@@ -5,7 +5,7 @@
 namespace Vans
 {
 template <typename Json>
-Json EncodeSerializedValueLegacyJson(const VansSerializedValue& value)
+Json EncodeSerializedValueJson(const VansSerializedValue& value)
 {
     switch (value.kind)
     {
@@ -21,14 +21,14 @@ Json EncodeSerializedValueLegacyJson(const VansSerializedValue& value)
     {
         Json result = Json::array();
         for (const VansSerializedValue& item : value.arrayItems)
-            result.push_back(EncodeSerializedValueLegacyJson<Json>(item));
+            result.push_back(EncodeSerializedValueJson<Json>(item));
         return result;
     }
     case VansSerializedValue::Kind::Object:
     {
         Json result = Json::object();
         for (const auto& [name, field] : value.objectFields)
-            result[name] = EncodeSerializedValueLegacyJson<Json>(field);
+            result[name] = EncodeSerializedValueJson<Json>(field);
         return result;
     }
     case VansSerializedValue::Kind::Null:
@@ -38,7 +38,7 @@ Json EncodeSerializedValueLegacyJson(const VansSerializedValue& value)
 }
 
 template <typename Json>
-VansSerializedValue DecodeSerializedValueLegacyJson(const Json& value)
+VansSerializedValue DecodeSerializedValueJson(const Json& value)
 {
     if (value.is_boolean())
         return VansSerializedValue::Bool(value.template get<bool>());
@@ -55,7 +55,7 @@ VansSerializedValue DecodeSerializedValueLegacyJson(const Json& value)
         std::vector<VansSerializedValue> items;
         items.reserve(value.size());
         for (const Json& item : value)
-            items.push_back(DecodeSerializedValueLegacyJson(item));
+            items.push_back(DecodeSerializedValueJson(item));
         return VansSerializedValue::Array(std::move(items));
     }
     if (value.is_object())
@@ -63,7 +63,7 @@ VansSerializedValue DecodeSerializedValueLegacyJson(const Json& value)
         std::vector<std::pair<std::string, VansSerializedValue>> fields;
         fields.reserve(value.size());
         for (auto entry = value.begin(); entry != value.end(); ++entry)
-            fields.emplace_back(entry.key(), DecodeSerializedValueLegacyJson(entry.value()));
+            fields.emplace_back(entry.key(), DecodeSerializedValueJson(entry.value()));
         return VansSerializedValue::Object(std::move(fields));
     }
     return VansSerializedValue::Null();

@@ -15,6 +15,7 @@
 #include "../ParticleCore/VansParticleAsset.h"
 #include "../ParticleCore/VansParticleRuntime.h"
 #include "../RuntimeUI/Public/VansUIRuntimeHandles.h"
+#include "../SceneRuntime/VansRuntimeHandle.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -56,6 +57,14 @@ class VansPhysicsNode;
 class VansPhysicsVehicle;
 }
 
+enum class VansScriptLightIndexKind : std::uint8_t
+{
+	Directional,
+	Point,
+	Spot,
+	Rect
+};
+
 struct VansScriptPhysicsEventInfo
 {
 	std::string otherName;
@@ -86,12 +95,27 @@ public:
 
 	void SetEnabled(bool enabled);
 	bool IsEnabled() const { return m_Enabled; }
+	bool IsEffectivelyEnabled() const { return m_EffectiveEnabled; }
+	virtual void MirrorRuntimeEnabledState(bool selfEnabled, bool effectiveEnabled);
+	virtual void MirrorRuntimeOpenScreens(const std::vector<std::uint64_t>& openScreens) {}
+	void ApplyOwnerActive(bool active);
 	void Destroy();
+	virtual void RebindSceneLightIndex(
+		VansScriptLightIndexKind kind,
+		int oldIndex,
+		int newIndex) {}
 
 protected:
 	virtual void OnEnable() {}
 	virtual void OnDisable() {}
 	virtual void OnDestroy() {}
+
+private:
+	void RefreshEffectiveEnabled();
+
+	bool m_OwnerActive = true;
+	bool m_EffectiveEnabled = true;
+	bool m_Destroyed = false;
 };
 
 class VansScriptObject
@@ -107,6 +131,7 @@ public:
 	void SetActive(bool active);
 	bool IsActive() const { return m_Active; }
 	void AddComponent(VansScriptComponent* comp);
+	std::uint32_t ReleaseOwnedTransform();
 
 	template<typename T>
 	T* GetComponent() const
@@ -120,12 +145,6 @@ public:
 	}
 
 	~VansScriptObject();
-};
-
-class VansScriptTransform : public VansScriptComponent
-{
-public:
-	int m_TransformID = 0;
 };
 
 class VansScriptRenderComponent : public VansScriptComponent
@@ -217,6 +236,10 @@ public:
 	VansScriptDirectionalLightComponent() { m_ComponentName = "DirectionalLight"; }
 	VansGraphics::VansLightManager* m_LightManager = nullptr;
 	int m_LightIndex = -1;
+	void RebindSceneLightIndex(
+		VansScriptLightIndexKind kind,
+		int oldIndex,
+		int newIndex) override;
 };
 
 class VansScriptPointLightComponent : public VansScriptComponent
@@ -225,6 +248,10 @@ public:
 	VansScriptPointLightComponent() { m_ComponentName = "PointLight"; }
 	VansGraphics::VansLightManager* m_LightManager = nullptr;
 	int m_LightIndex = -1;
+	void RebindSceneLightIndex(
+		VansScriptLightIndexKind kind,
+		int oldIndex,
+		int newIndex) override;
 };
 
 class VansScriptSpotLightComponent : public VansScriptComponent
@@ -233,6 +260,10 @@ public:
 	VansScriptSpotLightComponent() { m_ComponentName = "SpotLight"; }
 	VansGraphics::VansLightManager* m_LightManager = nullptr;
 	int m_LightIndex = -1;
+	void RebindSceneLightIndex(
+		VansScriptLightIndexKind kind,
+		int oldIndex,
+		int newIndex) override;
 };
 
 class VansScriptVideoComponent;
@@ -245,6 +276,10 @@ public:
 	int m_LightIndex = -1;
 	std::string m_EmissiveTexturePath;
 	VansScriptVideoComponent* m_VideoComponent = nullptr;
+	void RebindSceneLightIndex(
+		VansScriptLightIndexKind kind,
+		int oldIndex,
+		int newIndex) override;
 };
 
 class VansScriptCameraComponent : public VansScriptComponent
@@ -255,6 +290,7 @@ public:
 protected:
 	void OnEnable() override;
 	void OnDisable() override;
+	void OnDestroy() override;
 };
 
 class VansScriptAudioComponent : public VansScriptComponent
@@ -274,6 +310,7 @@ public:
 protected:
 	void OnEnable() override;
 	void OnDisable() override;
+	void OnDestroy() override;
 };
 
 class VansScriptAudioReverbZoneComponent : public VansScriptComponent
@@ -304,6 +341,9 @@ public:
 	int m_BindlessFirstSlot = -1;
 	VansGraphics::VansMaterialManager* m_MaterialManagerRef = nullptr;
 	bool SwitchSource(const std::string& name);
+
+protected:
+	void OnDestroy() override;
 };
 
 class VansScriptParticleComponent : public VansScriptComponent
@@ -328,10 +368,12 @@ public:
 	void ClearWorldPositionOverride();
 	bool LoadAsset(const std::string& path);
 	void OnUpdate(float deltaTime);
+	void MirrorRuntimeEnabledState(bool selfEnabled, bool effectiveEnabled) override;
 
 protected:
 	void OnEnable() override;
 	void OnDisable() override;
+	void OnDestroy() override;
 };
 
 class VansLuaScriptComponent : public VansScriptComponent
@@ -373,6 +415,7 @@ public:
 protected:
 	void OnEnable() override;
 	void OnDisable() override;
+	void OnDestroy() override;
 
 private:
 	friend class VansScriptContext;
@@ -395,11 +438,11 @@ public:
 	void ReleasePreloaded();
 	void OpenConfiguredScreens();
 	void CloseOpenedScreens();
+	void MirrorRuntimeOpenScreens(const std::vector<std::uint64_t>& openScreens) override;
 
 protected:
 	void OnEnable() override;
 	void OnDisable() override;
-	void OnDestroy() override;
 };
 
 class VansScriptContext
@@ -435,7 +478,20 @@ private:
 	{
 		VansScriptObject* owner = nullptr;
 		VansLuaScriptComponent* component = nullptr;
+		std::string entityGuid;
+		std::string componentGuid;
+		Vans::VansEntityHandle runtimeEntity;
+		Vans::VansComponentHandle runtimeComponent;
 		bool cameraScript = false;
+	};
+
+	struct ScriptEventSubscriber
+	{
+		VansLuaScriptComponent* component = nullptr;
+		std::string entityGuid;
+		std::string componentGuid;
+		Vans::VansEntityHandle runtimeEntity;
+		Vans::VansComponentHandle runtimeComponent;
 	};
 
 	lua_State* m_LuaState = nullptr;
@@ -443,12 +499,14 @@ private:
 	VansGraphics::VansScene* m_Scene = nullptr;
 	std::string m_ActiveProjectRoot;
 	std::vector<ScheduledScript> m_ScheduledScripts;
-	std::unordered_map<std::uint32_t, std::vector<VansLuaScriptComponent*>> m_EventSubscribers;
+	std::unordered_map<std::uint32_t, std::vector<ScriptEventSubscriber>> m_EventSubscribers;
 	Vans::VansScopedEventConnections m_EventConnections;
 
 	void VansScriptPreUpdate();
 	void UpdateScriptComponents(bool cameraScriptsOnly, bool skipCameraScripts);
 	void RebuildScriptSchedule();
+	bool ResolveRuntimeHandles(ScheduledScript& scheduled) const;
+	bool ResolveRuntimeHandles(ScriptEventSubscriber& subscriber) const;
 	void HandlePhysicsContactEvent(const VansEngine::VansPhysicsContactEvent& event);
 	void DispatchEventToObject(
 		const VansEngine::VansPhysicsContactEvent& event,

@@ -323,6 +323,65 @@ void VansGizmos::Draw(Vans::EditorAPI::IEngineEditorAPI& api,
         }
     }
 
+    if (VansEditorWindow::m_SkeletonDebugGizmos)
+    {
+        const std::string filterGuid = VansEditorWindow::m_SkeletonDebugSelectedOnly
+            ? Vans::VansEditorSelection::EntityGuid()
+            : std::string();
+        const auto skeletonSnapshot = api.GetSkeletonDebugSnapshot(filterGuid);
+        if (skeletonSnapshot.available)
+        {
+            const glm::mat4 viewProjection = camera->GetProjectiveMatrix() * camera->GetViewMatrix();
+            ImDrawList* drawList = ImGui::GetWindowDrawList();
+            auto project = [&](const glm::vec3& world, ImVec2& screen) -> bool
+            {
+                glm::vec4 clip = viewProjection * glm::vec4(world, 1.0f);
+                if (clip.w <= 1e-4f) return false;
+                glm::vec3 ndc = glm::vec3(clip) / clip.w;
+                screen = ImVec2(windowPos.x + (ndc.x * 0.5f + 0.5f) * windowSize.x,
+                    windowPos.y + (-ndc.y * 0.5f + 0.5f) * windowSize.y);
+                return ndc.z >= 0.0f && ndc.z <= 1.0f;
+            };
+
+            constexpr ImU32 kBoneColor = IM_COL32(80, 220, 255, 230);
+            constexpr ImU32 kJointColor = IM_COL32(255, 240, 120, 240);
+            constexpr ImU32 kRootColor = IM_COL32(255, 120, 80, 250);
+            constexpr ImU32 kSourceBoneColor = IM_COL32(220, 120, 255, 210);
+            constexpr ImU32 kSourceJointColor = IM_COL32(255, 190, 255, 230);
+            constexpr ImU32 kSourceRootColor = IM_COL32(255, 120, 210, 250);
+            for (const auto& rig : skeletonSnapshot.rigs)
+            {
+                if (rig.retargetSource && !VansEditorWindow::m_SkeletonDebugShowRetargetSource)
+                    continue;
+                const ImU32 boneColor = rig.retargetSource ? kSourceBoneColor : kBoneColor;
+                const ImU32 jointColor = rig.retargetSource ? kSourceJointColor : kJointColor;
+                const ImU32 rootColor = rig.retargetSource ? kSourceRootColor : kRootColor;
+                for (int i = 0; i < static_cast<int>(rig.bones.size()); ++i)
+                {
+                    const auto& bone = rig.bones[i];
+                    const glm::vec3 boneWorld = ToGlm(bone.worldPosition);
+                    ImVec2 boneScreen;
+                    if (!project(boneWorld, boneScreen))
+                        continue;
+
+                    if (bone.parentIndex >= 0 && bone.parentIndex < static_cast<int>(rig.bones.size()))
+                    {
+                        ImVec2 parentScreen;
+                        if (project(ToGlm(rig.bones[bone.parentIndex].worldPosition), parentScreen))
+                            drawList->AddLine(parentScreen, boneScreen, boneColor, rig.retargetSource ? 1.4f : 1.8f);
+                    }
+
+                    drawList->AddCircleFilled(boneScreen, bone.parentIndex < 0 ? 4.0f : 2.4f,
+                        bone.parentIndex < 0 ? rootColor : jointColor, 10);
+                    if (VansEditorWindow::m_SkeletonDebugShowNames)
+                        drawList->AddText(ImVec2(boneScreen.x + 5.0f, boneScreen.y - 5.0f),
+                            rig.retargetSource ? IM_COL32(255, 220, 255, 230) : IM_COL32(235, 245, 255, 230),
+                            bone.name.c_str());
+                }
+            }
+        }
+    }
+
     const std::string selectedGuid = Vans::VansEditorSelection::EntityGuid();
     auto transform = api.GetRuntimeTransform(selectedGuid);
     if (!transform.available)  return;

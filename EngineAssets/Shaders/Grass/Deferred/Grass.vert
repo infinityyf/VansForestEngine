@@ -21,7 +21,7 @@ layout( push_constant ) uniform GrassDrawPC
 {
     int   materialIndex;
     int   objectIndex;
-    int   animationEnabled;
+    uint  vertexFeatureMask;
     uint  boneCount;
     uint  subBladeCount;
     float grassHeight;

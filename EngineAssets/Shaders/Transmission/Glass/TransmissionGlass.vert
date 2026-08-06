@@ -3,6 +3,7 @@
 
 #include "../../Common/CameraData.glsl"
 #include "../../Common/ModelData.glsl"
+#include "../../Common/VertexDeformation.glsl"
 
 layout(location = 0) in vec4 position;
 layout(location = 1) in vec2 uv;
@@ -21,7 +22,7 @@ layout(push_constant) uniform DrawPushConsts
 {
     int materialIndex;
     int transformIndex;
-    int animationEnabled;
+    uint vertexFeatureMask;
     int passUser0;
 } pc;
 
@@ -30,11 +31,18 @@ void main()
     mat4 model = ModelBuffer.transforms[pc.transformIndex].ModelMatrix;
     mat4 normalMatrix = ModelBuffer.transforms[pc.transformIndex].NormalMatrix;
 
-    vec4 world = model * position;
+    VansVertexSurface surface;
+    surface.position = position;
+    surface.normal = normal;
+    surface.tangent = tangent;
+    surface.bitangent = bitangent;
+    VansApplyVertexDeformation(surface, pc.vertexFeatureMask);
+
+    vec4 world = model * surface.position;
     positionWS = world.xyz;
-    normalWS = normalize(mat3(normalMatrix) * normal);
-    tangentWS = normalize(mat3(model) * tangent);
-    bitangentWS = normalize(mat3(model) * bitangent);
+    normalWS = normalize(mat3(normalMatrix) * surface.normal);
+    tangentWS = normalize(mat3(model) * surface.tangent);
+    bitangentWS = normalize(mat3(model) * surface.bitangent);
     fragUV = uv;
     clipPos = VPMatrix * world;
     gl_Position = clipPos;

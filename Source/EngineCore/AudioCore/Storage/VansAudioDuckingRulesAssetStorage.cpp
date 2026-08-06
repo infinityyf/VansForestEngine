@@ -1,6 +1,6 @@
 #include "VansAudioDuckingRulesAssetStorage.h"
 
-#include "../../AssetCore/Serialization/VansSerializedValueLegacyJsonAdapter.h"
+#include "../../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 #include "../../AssetCore/Storage/VansJsonFileStorage.h"
 #include "../../AssetCore/VansAssetDocument.h"
 #include "../../AssetCore/VansAssetDocumentJson.h"
@@ -27,7 +27,7 @@ bool VansAudioDuckingRulesAssetStorage::StageWrite(
     std::string& error)
 {
     const AssetDocumentJson root =
-        EncodeSerializedValueLegacyJson<AssetDocumentJson>(WriteAudioDuckingRulesAssetRoot(asset));
+        EncodeSerializedValueJson<AssetDocumentJson>(WriteAudioDuckingRulesAssetRoot(asset));
     return VansJsonFileStorage::StageWrite(path, root, stage, error);
 }
 
@@ -37,7 +37,7 @@ bool VansAudioDuckingRulesAssetStorage::SaveAtomic(
     std::string& error)
 {
     const AssetDocumentJson root =
-        EncodeSerializedValueLegacyJson<AssetDocumentJson>(WriteAudioDuckingRulesAssetRoot(asset));
+        EncodeSerializedValueJson<AssetDocumentJson>(WriteAudioDuckingRulesAssetRoot(asset));
     return VansJsonFileStorage::WriteAtomic(path, root, error);
 }
 }

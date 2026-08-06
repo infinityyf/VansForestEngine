@@ -9,12 +9,13 @@
 
 namespace VansGraphics
 {
-void VansSceneCameraMediaComponentBuilder::BuildCameraAudioVideo(
+VansSceneCameraMediaBuildResult VansSceneCameraMediaComponentBuilder::BuildCameraAudioVideo(
 	VansScene& scene,
 	VansScriptObject& object,
 	const Vans::VansSceneCameraMediaComponentConfig& components,
 	const std::function<void()>& ensureObjectTransform)
 {
+	VansSceneCameraMediaBuildResult result;
 	if (components.camera)
 	{
 		ensureObjectTransform();
@@ -36,6 +37,7 @@ void VansSceneCameraMediaComponentBuilder::BuildCameraAudioVideo(
 			auto* cameraComp = new VansScriptCameraComponent();
 			cameraComp->m_Camera = camera;
 			object.AddComponent(cameraComp);
+			result.camera = cameraComp;
 
 			VANS_LOG("[LoadSceneObjects] Camera component attached to object: "
 				<< object.m_ObjectName << ", TransformID=" << object.m_TransformID);
@@ -79,6 +81,7 @@ void VansSceneCameraMediaComponentBuilder::BuildCameraAudioVideo(
 			if (audioComp->m_Source.UsesIndependentPlayback() && audioNode->IsAutoPlay())
 				audioComp->m_Source.Play();
 			object.AddComponent(audioComp);
+			result.audio = audioComp;
 			VANS_LOG("[LoadSceneObjects] Audio component '" << audioName
 				<< "' attached to object: " << object.m_ObjectName);
 		}
@@ -94,7 +97,7 @@ void VansSceneCameraMediaComponentBuilder::BuildCameraAudioVideo(
 		const std::string& videoName = components.video->sourceName;
 		if (object.GetComponent<VansScriptVideoComponent>() != nullptr)
 		{
-			return;
+			return result;
 		}
 
 		VansVideoManager* videoManager = scene.GetVideoManager();
@@ -106,15 +109,17 @@ void VansSceneCameraMediaComponentBuilder::BuildCameraAudioVideo(
 			videoComp->m_VideoTex = videoTex;
 			videoComp->m_VideoManager = videoManager;
 			object.AddComponent(videoComp);
+			result.video = videoComp;
 			VANS_LOG("[LoadSceneObjects] Video component '" << videoName
 				<< "' attached to object: " << object.m_ObjectName);
 		}
 		else
 		{
 			VANS_LOG_WARN("[LoadSceneObjects] Video resource not found '" << videoName
-				<< "' for object: " << object.m_ObjectName);
+			<< "' for object: " << object.m_ObjectName);
 		}
 	}
+	return result;
 }
 
 }

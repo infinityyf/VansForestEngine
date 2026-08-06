@@ -20,18 +20,26 @@
 #include "../EngineCore/RenderCore/ShadowCore/VansPunctualShadowManager.h"
 #include "../EngineCore/RuntimeCore/VansPackageManifest.h"
 #include "../EngineCore/RuntimeCore/VansRuntimeFrameScheduler.h"
+#include "../EngineCore/SceneRuntime/VansRuntimeComponentTypes.h"
+#include "../EngineCore/SceneRuntime/VansRuntimeWorld.h"
 #include "../EngineCore/SceneCore/VansPackagedResourcePlan.h"
 #include "../EngineCore/SceneCore/VansSceneContentBuildPlan.h"
 #include "../EngineCore/SceneCore/VansSceneCameraMediaComponentReader.h"
 #include "../EngineCore/SceneCore/VansSceneRuntimeProjection.h"
 #include "../EngineCore/SceneCore/VansSceneSchema.h"
+#include "../EngineCore/SceneCore/VansSceneRuntimeComponentKey.h"
 #include "../EngineCore/SceneCore/VansSceneRenderSettingsConfigReader.h"
 #include "../EngineCore/AssetCore/Serialization/VansSerializedValue.h"
+#include "../EngineCore/AnimationCore/VansAnimationClip.h"
 #include "../EngineCore/AnimationCore/VansAnimationController.h"
 #include "../EngineCore/AnimationCore/MotionMatching/VansMotionMatching.h"
+#include "../EngineCore/ParticleCore/VansParticleRuntime.h"
+#include "../EngineCore/ScriptCore/VansScriptContext.h"
+#include "../EngineCore/ScriptCore/VansTransform.h"
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -173,6 +181,982 @@ bool TestGameplayFrameOrder()
     return Expect(trace.empty(), "Gameplay callbacks ran without a ready scene");
 }
 
+struct RuntimeWorldTestComponent
+{
+	int value = 0;
+};
+
+bool TestRuntimeWorldEntityLifetimeContract()
+{
+	Vans::VansRuntimeWorld world;
+	Vans::VansEntityHandle parent = world.CreateEntity({ "parent-guid", "Parent" });
+	Vans::VansEntityHandle child = world.CreateEntity({ "child-guid", "Child", parent });
+
+	if (!Expect(world.IsAlive(parent) && world.IsAlive(child),
+		"Runtime world did not create live entities"))
+		return false;
+	if (!Expect(world.Entities().FindByGuid("child-guid") == child,
+		"Runtime world guid index did not resolve child entity"))
+		return false;
+	if (!Expect(world.Entities().FindByName("Parent") == parent,
+		"Runtime world name index did not resolve parent entity"))
+		return false;
+	if (!Expect(world.SetEntityName(parent, "RenamedParent"),
+		"Runtime world failed to rename entity"))
+		return false;
+	if (!Expect(
+		world.Entities().FindByName("Parent") == Vans::VansEntityHandle{} &&
+			world.Entities().FindByName("RenamedParent") == parent &&
+			world.Entities().Get(parent)->name == "RenamedParent",
+		"Runtime world rename did not update name index and entity record"))
+		return false;
+	if (!Expect(world.Entities().Get(parent)->children.size() == 1,
+		"Runtime world parent did not track child entity"))
+		return false;
+	Vans::VansEntityHandle inactive = world.CreateEntity({ "inactive-guid", "Inactive", {}, false });
+	if (!Expect(
+		world.IsAlive(inactive) &&
+		!world.Entities().IsHierarchyActive(inactive) &&
+		world.Entities().Get(inactive)->selfActive == false,
+		"Runtime world create entity did not preserve inactive authoring state"))
+		return false;
+	const std::vector<Vans::VansEntityHandle> aliveBeforeDestroy =
+		world.Entities().CollectAliveEntities();
+	if (!Expect(
+		aliveBeforeDestroy.size() == 3 &&
+		std::find(aliveBeforeDestroy.begin(), aliveBeforeDestroy.end(), parent) != aliveBeforeDestroy.end() &&
+		std::find(aliveBeforeDestroy.begin(), aliveBeforeDestroy.end(), child) != aliveBeforeDestroy.end() &&
+		std::find(aliveBeforeDestroy.begin(), aliveBeforeDestroy.end(), inactive) != aliveBeforeDestroy.end(),
+		"Runtime world alive entity enumeration did not include all live entities"))
+		return false;
+
+	const std::uint32_t oldGeneration = parent.generation;
+	if (!Expect(world.DestroyEntity(parent), "Runtime world failed to destroy parent entity"))
+		return false;
+	if (!Expect(!world.IsAlive(parent) && !world.IsAlive(child),
+		"Runtime world default destroy did not destroy child subtree"))
+		return false;
+	const std::vector<Vans::VansEntityHandle> aliveAfterDestroy =
+		world.Entities().CollectAliveEntities();
+	if (!Expect(
+		aliveAfterDestroy.size() == 1 &&
+		aliveAfterDestroy[0] == inactive,
+		"Runtime world alive entity enumeration retained destroyed entities"))
+		return false;
+
+	Vans::VansEntityHandle reused = world.CreateEntity({ "reused-guid", "Reused" });
+	return Expect(reused.index == parent.index && reused.generation != oldGeneration,
+		"Runtime world entity handle generation did not advance after slot reuse");
+}
+
+bool TestRuntimeWorldParentEditContract()
+{
+	Vans::VansRuntimeWorld world;
+	Vans::VansEntityHandle parent = world.CreateEntity({ "parent-guid", "Parent" });
+	Vans::VansEntityHandle child = world.CreateEntity({ "child-guid", "Child" });
+
+	if (!Expect(world.SetParent(child, parent), "Runtime world failed to apply parent edit"))
+		return false;
+	const Vans::VansEntityRecord* parentRecord = world.Entities().Get(parent);
+	const Vans::VansEntityRecord* childRecord = world.Entities().Get(child);
+	if (!Expect(parentRecord && parentRecord->children.size() == 1 && parentRecord->children[0] == child,
+		"Runtime world parent edit did not update parent child list"))
+		return false;
+	if (!Expect(childRecord && childRecord->parent == parent,
+		"Runtime world parent edit did not update child parent handle"))
+		return false;
+
+	auto& storage = world.RegisterStorage<RuntimeWorldTestComponent>(11);
+	const Vans::VansComponentHandle parentComponent =
+		storage.Add(parent, RuntimeWorldTestComponent{ 1 }, "parent-component-guid", true, true);
+	const Vans::VansComponentHandle childComponent =
+		storage.Add(child, RuntimeWorldTestComponent{ 2 }, "child-component-guid", true, true);
+	const std::vector<Vans::VansComponentHandle> subtreeComponents =
+		world.CollectComponentsInSubtree(parent);
+	if (!Expect(
+		std::find(subtreeComponents.begin(), subtreeComponents.end(), parentComponent) != subtreeComponents.end() &&
+			std::find(subtreeComponents.begin(), subtreeComponents.end(), childComponent) != subtreeComponents.end(),
+		"Runtime world subtree component collection did not include parent and child components"))
+		return false;
+
+	if (!Expect(world.SetEntityActive(parent, false),
+		"Runtime world failed to deactivate parent entity"))
+		return false;
+	if (!Expect(!world.Entities().IsHierarchyActive(child),
+		"Runtime world parent active state did not propagate to child"))
+		return false;
+	if (!Expect(
+		!world.IsComponentEffectivelyEnabled(parentComponent) &&
+			!world.IsComponentEffectivelyEnabled(childComponent),
+		"Runtime world parent active state did not propagate to subtree components"))
+		return false;
+
+	if (!Expect(world.SetParent(child, {}),
+		"Runtime world failed to clear parent edit"))
+		return false;
+	childRecord = world.Entities().Get(child);
+	if (!Expect(childRecord && !childRecord->parent.IsValid(),
+		"Runtime world clear parent edit left child parent handle valid"))
+		return false;
+	if (!Expect(world.Entities().IsHierarchyActive(child),
+		"Runtime world clear parent edit did not detach child hierarchy active state"))
+		return false;
+	if (!Expect(world.IsComponentEffectivelyEnabled(childComponent),
+		"Runtime world clear parent edit did not restore child component effective enabled"))
+		return false;
+
+	return true;
+}
+
+bool TestRuntimeWorldComponentEnabledContract()
+{
+	Vans::VansRuntimeWorld world;
+	Vans::VansEntityHandle entity = world.CreateEntity({ "entity-guid", "Entity" });
+	auto& storage = world.RegisterStorage<RuntimeWorldTestComponent>(1);
+	Vans::VansComponentHandle component =
+		storage.Add(entity, RuntimeWorldTestComponent{ 7 }, "component-guid", false, true);
+
+	if (!Expect(storage.Contains(component), "Runtime component storage did not retain component handle"))
+		return false;
+	if (!Expect(!world.IsComponentEffectivelyEnabled(component),
+		"Disabled runtime component became effective enabled"))
+		return false;
+
+	if (!Expect(world.SetComponentEnabled(component, true),
+		"Runtime world failed to enable component"))
+		return false;
+	if (!Expect(world.IsComponentSelfEnabled(component) && world.IsComponentEffectivelyEnabled(component),
+		"Enabled runtime component did not become effective enabled"))
+		return false;
+
+	if (!Expect(world.SetEntityActive(entity, false),
+		"Runtime world failed to deactivate entity"))
+		return false;
+	if (!Expect(world.IsComponentSelfEnabled(component) && !world.IsComponentEffectivelyEnabled(component),
+		"Entity active change overwrote component self enabled state"))
+		return false;
+
+	if (!Expect(world.SetEntityActive(entity, true),
+		"Runtime world failed to reactivate entity"))
+		return false;
+	if (!Expect(world.IsComponentSelfEnabled(component) && world.IsComponentEffectivelyEnabled(component),
+		"Runtime component did not recover effective enabled after entity reactivation"))
+		return false;
+
+	const Vans::VansComponentHandle removed = component;
+	Vans::VansComponentHandle survivor =
+		storage.Add(entity, RuntimeWorldTestComponent{ 8 }, "component-guid-survivor", true, true);
+	if (!Expect(world.RemoveComponent(component), "Runtime world failed to remove component"))
+		return false;
+	if (!Expect(!storage.Contains(removed),
+		"Runtime component storage allowed stale handle after remove"))
+		return false;
+	if (!Expect(world.FindComponentByGuid("component-guid").IsValid() == false,
+		"Runtime component guid index retained removed component"))
+		return false;
+	if (!Expect(world.FindComponentByGuid("component-guid-survivor") == survivor,
+		"Runtime component guid index did not update moved component after remove"))
+		return false;
+
+	Vans::VansComponentHandle added =
+		storage.Add(entity, RuntimeWorldTestComponent{ 9 }, "component-guid-2", true, true);
+	return Expect(added.index == removed.index && added.generation != removed.generation,
+		"Runtime component handle generation did not advance after slot reuse");
+}
+
+bool TestRuntimeWorldComponentLifetimeContract()
+{
+	Vans::VansRuntimeWorld world;
+	Vans::VansEntityHandle parent = world.CreateEntity({ "parent-guid", "Parent" });
+	Vans::VansEntityHandle child = world.CreateEntity({ "child-guid", "Child", parent });
+
+	auto* parentRenderNode =
+		reinterpret_cast<VansGraphics::VansRenderNode*>(static_cast<std::uintptr_t>(0x1234));
+	Vans::VansRuntimeRenderComponent parentRenderComponent{ parentRenderNode };
+	parentRenderComponent.renderNodes.push_back(parentRenderNode);
+	Vans::VansComponentHandle parentComponent = world.AddComponent(
+		parent,
+		Vans::VansRuntimeComponentType_Render,
+		parentRenderComponent,
+		"parent-render-guid",
+		true);
+	auto* childAudioNode =
+		reinterpret_cast<VansEngine::VansAudioNode*>(static_cast<std::uintptr_t>(0x1111));
+	auto* childAudioBinding =
+		reinterpret_cast<VansEngine::VansAudioSourceBinding*>(static_cast<std::uintptr_t>(0x2222));
+	Vans::VansRuntimeAudioComponent childAudioComponent;
+	childAudioComponent.audioNode = childAudioNode;
+	childAudioComponent.sourceBinding = childAudioBinding;
+	childAudioComponent.sourceName = "child-audio";
+	Vans::VansComponentHandle childComponent = world.AddComponent(
+		child,
+		Vans::VansRuntimeComponentType_Audio,
+		childAudioComponent,
+		"child-audio-guid",
+		true);
+
+	const auto* renderStorage = static_cast<const Vans::VansComponentStorage<Vans::VansRuntimeRenderComponent>*>(
+		world.FindStorage(Vans::VansRuntimeComponentType_Render));
+	const auto* audioStorage = static_cast<const Vans::VansComponentStorage<Vans::VansRuntimeAudioComponent>*>(
+		world.FindStorage(Vans::VansRuntimeComponentType_Audio));
+	if (!Expect(renderStorage && renderStorage->Contains(parentComponent),
+		"Runtime world did not register parent runtime component"))
+		return false;
+	const Vans::VansRuntimeRenderComponent* storedRenderComponent = renderStorage->Get(parentComponent);
+	if (!Expect(
+		storedRenderComponent &&
+			storedRenderComponent->renderNode == parentRenderNode &&
+			storedRenderComponent->renderNodes.size() == 1 &&
+			storedRenderComponent->renderNodes[0] == parentRenderNode,
+		"Runtime world did not store parent render component data"))
+		return false;
+	if (!Expect(audioStorage && audioStorage->Contains(childComponent),
+		"Runtime world did not register child runtime component"))
+		return false;
+	const Vans::VansRuntimeAudioComponent* storedAudioComponent = audioStorage->Get(childComponent);
+	if (!Expect(
+		storedAudioComponent &&
+			storedAudioComponent->audioNode == childAudioNode &&
+			storedAudioComponent->sourceBinding == childAudioBinding,
+		"Runtime world did not store child audio component data"))
+		return false;
+	if (!Expect(world.FindComponentByGuid("parent-render-guid", Vans::VansRuntimeComponentType_Render) == parentComponent,
+		"Runtime world did not resolve component by stable guid and type"))
+		return false;
+	if (!Expect(world.FindComponentByGuid("child-audio-guid") == childComponent,
+		"Runtime world did not resolve component by stable guid across storages"))
+		return false;
+
+	if (!Expect(world.DestroyEntity(parent),
+		"Runtime world failed to destroy entity with runtime components"))
+		return false;
+	if (!Expect(!renderStorage->Contains(parentComponent),
+		"Runtime world left destroyed entity component alive"))
+		return false;
+	if (!Expect(!audioStorage->Contains(childComponent),
+		"Runtime world left destroyed child component alive"))
+		return false;
+	return Expect(!world.FindComponentByGuid("child-audio-guid").IsValid(),
+		"Runtime world left destroyed component guid indexed");
+}
+
+bool TestRuntimeComponentKeyCanonicalizationContract()
+{
+	if (!Expect(Vans::CanonicalRuntimeComponentKeyForName("Transform") == "transform",
+		"Transform did not canonicalize to transform runtime component key"))
+		return false;
+	if (!Expect(Vans::CanonicalRuntimeComponentKeyForName("ModelRenderer") == "render",
+		"ModelRenderer did not canonicalize to render runtime component key"))
+		return false;
+	if (!Expect(Vans::CanonicalRuntimeComponentKeyForName("Animator") == "animation",
+		"Animator did not canonicalize to animation runtime component key"))
+		return false;
+	if (!Expect(Vans::CanonicalRuntimeComponentKeyForName("CharacterController") == "charController",
+		"CharacterController did not canonicalize to character controller runtime component key"))
+		return false;
+	if (!Expect(Vans::CanonicalRuntimeComponentKeyForName("charController") == "charController",
+		"Canonical character controller runtime component key was not idempotent"))
+		return false;
+	if (!Expect(Vans::CanonicalRuntimeComponentKeyForName("UIController") == "ui",
+		"UIController did not canonicalize to UI runtime component key"))
+		return false;
+	if (!Expect(Vans::CanonicalRuntimeComponentKeyForName("LuaScript") == "script",
+		"LuaScript did not canonicalize to script runtime component key"))
+		return false;
+	return Expect(Vans::VansRuntimeComponentTypeIdForKey("transform") == Vans::VansRuntimeComponentType_Transform,
+		"Transform runtime component key did not resolve to transform type id");
+}
+
+bool TestRuntimeWorldCommandBufferContract()
+{
+	Vans::VansRuntimeWorld world;
+	world.Commands().CreateEntity({ "queued-guid", "Queued" });
+	if (!Expect(world.Commands().PendingCount() == 1,
+		"Runtime world command buffer did not queue create command"))
+		return false;
+
+	world.FlushCommands();
+	Vans::VansEntityHandle queued = world.Entities().FindByGuid("queued-guid");
+	if (!Expect(world.IsAlive(queued),
+		"Runtime world command buffer did not flush create command"))
+		return false;
+
+	Vans::VansEntityHandle parent = world.CreateEntity({ "queued-parent-guid", "QueuedParent" });
+	world.Commands().SetParent(queued, parent);
+	world.FlushCommands();
+	const Vans::VansEntityRecord* parentRecord = world.Entities().Get(parent);
+	const Vans::VansEntityRecord* childRecord = world.Entities().Get(queued);
+	if (!Expect(parentRecord &&
+		std::find(parentRecord->children.begin(), parentRecord->children.end(), queued) != parentRecord->children.end() &&
+		childRecord &&
+		childRecord->parent == parent,
+		"Runtime world command buffer did not flush parent command"))
+		return false;
+
+	world.Commands().SetEntityActive(queued, false);
+	world.FlushCommands();
+	if (!Expect(!world.Entities().IsHierarchyActive(queued),
+		"Runtime world command buffer did not flush active command"))
+		return false;
+
+	if (!Expect(world.CollectComponentsOwnedBy(queued).empty(),
+		"Runtime world collect owned components returned entries before component add"))
+		return false;
+
+	world.Commands().SetEntityName(queued, "QueuedRenamed");
+	world.FlushCommands();
+	if (!Expect(
+		world.Entities().FindByName("Queued") == Vans::VansEntityHandle{} &&
+			world.Entities().FindByName("QueuedRenamed") == queued,
+		"Runtime world command buffer did not flush entity name command"))
+		return false;
+
+	world.Commands().AddTransformComponent(
+		queued,
+		"queued-transform-guid",
+		42,
+		true);
+	world.FlushCommands();
+	Vans::VansComponentHandle component = world.FindComponentByGuid(
+		"queued-transform-guid",
+		Vans::VansRuntimeComponentType_Transform);
+	auto* storage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeTransformComponent>*>(
+		world.FindStorage(Vans::VansRuntimeComponentType_Transform));
+	if (!Expect(storage && world.IsComponentSelfEnabled(component),
+		"Runtime world command buffer did not flush component add command"))
+		return false;
+	const Vans::VansRuntimeTransformComponent* transformComponent = storage->Get(component);
+	if (!Expect(transformComponent && transformComponent->transformStoreId == 42,
+		"Runtime world command buffer did not store transform component data"))
+		return false;
+	const std::vector<Vans::VansComponentHandle> queuedComponents =
+		world.CollectComponentsOwnedBy(queued);
+	if (!Expect(
+		std::find(queuedComponents.begin(), queuedComponents.end(), component) != queuedComponents.end(),
+		"Runtime world collect owned components did not include transform component"))
+		return false;
+
+	world.Commands().SetComponentEnabled(component, false);
+	world.FlushCommands();
+	if (!Expect(!world.IsComponentSelfEnabled(component),
+		"Runtime world command buffer did not flush component enabled command"))
+		return false;
+
+	world.Commands().RemoveComponent(component);
+	world.FlushCommands();
+	if (!Expect(!storage->Contains(component),
+		"Runtime world command buffer did not flush component remove command"))
+		return false;
+	if (!Expect(!world.FindComponentByGuid("queued-transform-guid").IsValid(),
+		"Runtime world command buffer retained removed component guid"))
+		return false;
+
+	auto* renderNode =
+		reinterpret_cast<VansGraphics::VansRenderNode*>(static_cast<std::uintptr_t>(0x5678));
+	world.Commands().AddRenderComponent(
+		queued,
+		"queued-render-guid",
+		renderNode,
+		std::vector<VansGraphics::VansRenderNode*>{ renderNode },
+		true);
+	world.FlushCommands();
+	Vans::VansComponentHandle renderComponent = world.FindComponentByGuid(
+		"queued-render-guid",
+		Vans::VansRuntimeComponentType_Render);
+	auto* renderStorage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeRenderComponent>*>(
+		world.FindStorage(Vans::VansRuntimeComponentType_Render));
+	const Vans::VansRuntimeRenderComponent* renderComponentData =
+		renderStorage ? renderStorage->Get(renderComponent) : nullptr;
+	if (!Expect(
+		renderComponentData &&
+			renderComponentData->renderNode == renderNode &&
+			renderComponentData->renderNodes.size() == 1 &&
+			renderComponentData->renderNodes[0] == renderNode,
+		"Runtime world command buffer did not store render component data"))
+		return false;
+
+	auto* physicsNode =
+		reinterpret_cast<VansEngine::VansPhysicsNode*>(static_cast<std::uintptr_t>(0x1357));
+	world.Commands().AddPhysicsComponent(
+		queued,
+		"queued-physics-guid",
+		physicsNode,
+		true);
+	world.FlushCommands();
+	Vans::VansComponentHandle physicsComponent = world.FindComponentByGuid(
+		"queued-physics-guid",
+		Vans::VansRuntimeComponentType_Physics);
+	auto* physicsStorage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimePhysicsComponent>*>(
+		world.FindStorage(Vans::VansRuntimeComponentType_Physics));
+	const Vans::VansRuntimePhysicsComponent* physicsComponentData =
+		physicsStorage ? physicsStorage->Get(physicsComponent) : nullptr;
+	if (!Expect(physicsComponentData && physicsComponentData->physicsNode == physicsNode,
+		"Runtime world command buffer did not store physics component data"))
+		return false;
+
+	auto* clothNode =
+		reinterpret_cast<VansEngine::VansClothNode*>(static_cast<std::uintptr_t>(0x2468));
+	world.Commands().AddClothComponent(
+		queued,
+		"queued-cloth-guid",
+		clothNode,
+		"Profiles/cloth.profile",
+		true);
+	world.FlushCommands();
+	Vans::VansComponentHandle clothComponent = world.FindComponentByGuid(
+		"queued-cloth-guid",
+		Vans::VansRuntimeComponentType_Cloth);
+	auto* clothStorage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeClothComponent>*>(
+		world.FindStorage(Vans::VansRuntimeComponentType_Cloth));
+	const Vans::VansRuntimeClothComponent* clothComponentData =
+		clothStorage ? clothStorage->Get(clothComponent) : nullptr;
+	if (!Expect(
+		clothComponentData &&
+			clothComponentData->clothNode == clothNode &&
+			clothComponentData->profilePath == "Profiles/cloth.profile",
+		"Runtime world command buffer did not store cloth component data"))
+		return false;
+
+	auto* controllerNode =
+		reinterpret_cast<VansEngine::VansCharacterControllerNode*>(static_cast<std::uintptr_t>(0x3579));
+	world.Commands().AddCharacterControllerComponent(
+		queued,
+		"queued-controller-guid",
+		controllerNode,
+		true);
+	world.FlushCommands();
+	Vans::VansComponentHandle controllerComponent = world.FindComponentByGuid(
+		"queued-controller-guid",
+		Vans::VansRuntimeComponentType_CharacterController);
+	auto* controllerStorage =
+		static_cast<Vans::VansComponentStorage<Vans::VansRuntimeCharacterControllerComponent>*>(
+			world.FindStorage(Vans::VansRuntimeComponentType_CharacterController));
+	const Vans::VansRuntimeCharacterControllerComponent* controllerComponentData =
+		controllerStorage ? controllerStorage->Get(controllerComponent) : nullptr;
+	if (!Expect(controllerComponentData && controllerComponentData->controllerNode == controllerNode,
+		"Runtime world command buffer did not store character controller component data"))
+		return false;
+
+	auto* vehicle =
+		reinterpret_cast<VansEngine::VansPhysicsVehicle*>(static_cast<std::uintptr_t>(0x468A));
+	world.Commands().AddVehicleComponent(
+		queued,
+		"queued-vehicle-guid",
+		vehicle,
+		true);
+	world.FlushCommands();
+	Vans::VansComponentHandle vehicleComponent = world.FindComponentByGuid(
+		"queued-vehicle-guid",
+		Vans::VansRuntimeComponentType_Vehicle);
+	auto* vehicleStorage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeVehicleComponent>*>(
+		world.FindStorage(Vans::VansRuntimeComponentType_Vehicle));
+	const Vans::VansRuntimeVehicleComponent* vehicleComponentData =
+		vehicleStorage ? vehicleStorage->Get(vehicleComponent) : nullptr;
+	if (!Expect(vehicleComponentData && vehicleComponentData->vehicle == vehicle,
+		"Runtime world command buffer did not store vehicle component data"))
+		return false;
+
+	auto* animationNode =
+		reinterpret_cast<VansGraphics::VansAnimationNode*>(static_cast<std::uintptr_t>(0x579B));
+	world.Commands().AddAnimationComponent(
+		queued,
+		"queued-animation-guid",
+		animationNode,
+		true);
+	world.FlushCommands();
+	Vans::VansComponentHandle animationComponent = world.FindComponentByGuid(
+		"queued-animation-guid",
+		Vans::VansRuntimeComponentType_Animation);
+	auto* animationStorage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeAnimationComponent>*>(
+		world.FindStorage(Vans::VansRuntimeComponentType_Animation));
+	const Vans::VansRuntimeAnimationComponent* animationComponentData =
+		animationStorage ? animationStorage->Get(animationComponent) : nullptr;
+	if (!Expect(animationComponentData && animationComponentData->animationNode == animationNode,
+		"Runtime world command buffer did not store animation component data"))
+		return false;
+
+	world.Commands().AddRagdollComponent(
+		queued,
+		"queued-ragdoll-guid",
+		animationNode,
+		2,
+		"Profiles/hero.ragdoll",
+		"Hero",
+		12,
+		11,
+		true);
+	world.FlushCommands();
+	Vans::VansComponentHandle ragdollComponent = world.FindComponentByGuid(
+		"queued-ragdoll-guid",
+		Vans::VansRuntimeComponentType_Ragdoll);
+	auto* ragdollStorage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeRagdollComponent>*>(
+		world.FindStorage(Vans::VansRuntimeComponentType_Ragdoll));
+	const Vans::VansRuntimeRagdollComponent* ragdollComponentData =
+		ragdollStorage ? ragdollStorage->Get(ragdollComponent) : nullptr;
+	if (!Expect(
+		ragdollComponentData &&
+			ragdollComponentData->animationNode == animationNode &&
+			ragdollComponentData->initialDriveMode == 2 &&
+			ragdollComponentData->profilePath == "Profiles/hero.ragdoll" &&
+			ragdollComponentData->profileName == "Hero" &&
+			ragdollComponentData->configuredBodyCount == 12 &&
+			ragdollComponentData->configuredJointCount == 11,
+		"Runtime world command buffer did not store ragdoll component data"))
+		return false;
+
+	auto* audioNode =
+		reinterpret_cast<VansEngine::VansAudioNode*>(static_cast<std::uintptr_t>(0x5ACE));
+	auto* audioBinding =
+		reinterpret_cast<VansEngine::VansAudioSourceBinding*>(static_cast<std::uintptr_t>(0x5ACF));
+	VansEngine::AudioOcclusionSettings occlusionSettings;
+	occlusionSettings.enabled = true;
+	occlusionSettings.material = "wood";
+	VansEngine::AudioOcclusionState occlusionState;
+	occlusionState.gain = 0.7f;
+	occlusionState.highFrequencyGain = 0.4f;
+	occlusionState.lastBlocked = true;
+	VansEngine::AudioConeSettings coneSettings;
+	coneSettings.enabled = true;
+	coneSettings.innerAngleDegrees = 45.0f;
+	coneSettings.outerAngleDegrees = 120.0f;
+	coneSettings.outerGain = 0.25f;
+	world.Commands().AddAudioComponent(
+		queued,
+		"queued-audio-guid",
+		audioNode,
+		audioBinding,
+		"ambience",
+		coneSettings,
+		true,
+		true,
+		1.0f,
+		2.0f,
+		3.0f,
+		occlusionSettings,
+		occlusionState,
+		true);
+	world.FlushCommands();
+	Vans::VansComponentHandle audioComponent = world.FindComponentByGuid(
+		"queued-audio-guid",
+		Vans::VansRuntimeComponentType_Audio);
+	auto* audioStorage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeAudioComponent>*>(
+		world.FindStorage(Vans::VansRuntimeComponentType_Audio));
+	const Vans::VansRuntimeAudioComponent* audioComponentData =
+		audioStorage ? audioStorage->Get(audioComponent) : nullptr;
+	if (!Expect(
+			audioComponentData &&
+			audioComponentData->audioNode == audioNode &&
+			audioComponentData->sourceBinding == audioBinding &&
+			audioComponentData->sourceName == "ambience" &&
+			audioComponentData->coneSettings.enabled &&
+			audioComponentData->coneSettings.innerAngleDegrees == 45.0f &&
+			audioComponentData->coneSettings.outerAngleDegrees == 120.0f &&
+			audioComponentData->coneSettings.outerGain == 0.25f &&
+			audioComponentData->dopplerEnabled &&
+			audioComponentData->hasLastAudioPosition &&
+			audioComponentData->lastAudioPositionX == 1.0f &&
+			audioComponentData->lastAudioPositionY == 2.0f &&
+			audioComponentData->lastAudioPositionZ == 3.0f &&
+			audioComponentData->occlusionSettings.enabled &&
+			audioComponentData->occlusionSettings.material == "wood" &&
+			audioComponentData->occlusionState.gain == 0.7f &&
+			audioComponentData->occlusionState.highFrequencyGain == 0.4f &&
+			audioComponentData->occlusionState.lastBlocked,
+		"Runtime world command buffer did not store audio component data"))
+		return false;
+
+	Vans::VansRuntimeAudioReverbZoneComponent reverbZone;
+	reverbZone.shape = "box";
+	reverbZone.preset = "cave";
+	reverbZone.presetAssetGuid = "preset-guid";
+	reverbZone.overridePresetParameters = true;
+	reverbZone.radius = 9.0f;
+	reverbZone.halfExtentX = 4.0f;
+	reverbZone.halfExtentY = 5.0f;
+	reverbZone.halfExtentZ = 6.0f;
+	reverbZone.fadeDistance = 1.5f;
+	reverbZone.wetGain = 0.75f;
+	reverbZone.priority = 2;
+	world.Commands().AddAudioReverbZoneComponent(
+		queued,
+		Vans::VansRuntimeComponentType_AudioReverbZone,
+		"queued-reverb-guid",
+		reverbZone,
+		true);
+	world.FlushCommands();
+	Vans::VansComponentHandle reverbComponent = world.FindComponentByGuid(
+		"queued-reverb-guid",
+		Vans::VansRuntimeComponentType_AudioReverbZone);
+	auto* reverbStorage =
+		static_cast<Vans::VansComponentStorage<Vans::VansRuntimeAudioReverbZoneComponent>*>(
+			world.FindStorage(Vans::VansRuntimeComponentType_AudioReverbZone));
+	const Vans::VansRuntimeAudioReverbZoneComponent* reverbComponentData =
+		reverbStorage ? reverbStorage->Get(reverbComponent) : nullptr;
+	if (!Expect(
+		reverbComponentData &&
+			reverbComponentData->shape == "box" &&
+			reverbComponentData->preset == "cave" &&
+			reverbComponentData->presetAssetGuid == "preset-guid" &&
+			reverbComponentData->overridePresetParameters &&
+			reverbComponentData->radius == 9.0f &&
+			reverbComponentData->halfExtentX == 4.0f &&
+			reverbComponentData->halfExtentY == 5.0f &&
+			reverbComponentData->halfExtentZ == 6.0f &&
+			reverbComponentData->fadeDistance == 1.5f &&
+			reverbComponentData->wetGain == 0.75f &&
+			reverbComponentData->priority == 2,
+		"Runtime world command buffer did not store audio reverb component data"))
+		return false;
+
+	auto* videoTexture =
+		reinterpret_cast<VansGraphics::VansVideoTexture*>(static_cast<std::uintptr_t>(0x2345));
+	auto* videoManager =
+		reinterpret_cast<VansGraphics::VansVideoManager*>(static_cast<std::uintptr_t>(0x3456));
+	world.Commands().AddVideoComponent(
+		queued,
+		"queued-video-guid",
+		videoTexture,
+		videoManager,
+		7,
+		true);
+	world.FlushCommands();
+	Vans::VansComponentHandle videoComponent = world.FindComponentByGuid(
+		"queued-video-guid",
+		Vans::VansRuntimeComponentType_Video);
+	auto* videoStorage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeVideoComponent>*>(
+		world.FindStorage(Vans::VansRuntimeComponentType_Video));
+	const Vans::VansRuntimeVideoComponent* videoComponentData =
+		videoStorage ? videoStorage->Get(videoComponent) : nullptr;
+	if (!Expect(
+		videoComponentData &&
+			videoComponentData->videoTexture == videoTexture &&
+			videoComponentData->videoManager == videoManager &&
+			videoComponentData->bindlessFirstSlot == 7,
+		"Runtime world command buffer did not store video component data"))
+		return false;
+
+	auto* particleRuntime =
+		reinterpret_cast<VansGraphics::VansParticleRuntime*>(static_cast<std::uintptr_t>(0x4567));
+	auto* particleRenderNode =
+		reinterpret_cast<VansGraphics::VansParticleRenderNode*>(static_cast<std::uintptr_t>(0x6789));
+	world.Commands().AddParticleComponent(
+		queued,
+		"queued-particle-guid",
+		particleRuntime,
+		particleRenderNode,
+		true,
+		false,
+		4.25f,
+		true,
+		1.5f,
+		2.5f,
+		3.5f,
+		true);
+	world.FlushCommands();
+	Vans::VansComponentHandle particleComponent = world.FindComponentByGuid(
+		"queued-particle-guid",
+		Vans::VansRuntimeComponentType_Particle);
+	auto* particleStorage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeParticleComponent>*>(
+		world.FindStorage(Vans::VansRuntimeComponentType_Particle));
+	const Vans::VansRuntimeParticleComponent* particleComponentData =
+		particleStorage ? particleStorage->Get(particleComponent) : nullptr;
+	if (!Expect(
+		particleComponentData &&
+			particleComponentData->runtime == particleRuntime &&
+			particleComponentData->renderNode == particleRenderNode &&
+			particleComponentData->playOnAwake &&
+			!particleComponentData->isPlaying &&
+			particleComponentData->playTime == 4.25f &&
+			particleComponentData->hasWorldPositionOverride &&
+			particleComponentData->worldPositionOverrideX == 1.5f &&
+			particleComponentData->worldPositionOverrideY == 2.5f &&
+			particleComponentData->worldPositionOverrideZ == 3.5f,
+		"Runtime world command buffer did not store particle component data"))
+		return false;
+
+	auto* camera =
+		reinterpret_cast<VansGraphics::VansCamera*>(static_cast<std::uintptr_t>(0x789A));
+	world.Commands().AddCameraComponent(
+		queued,
+		"queued-camera-guid",
+		camera,
+		true);
+	world.FlushCommands();
+	Vans::VansComponentHandle cameraComponent = world.FindComponentByGuid(
+		"queued-camera-guid",
+		Vans::VansRuntimeComponentType_Camera);
+	auto* cameraStorage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeCameraComponent>*>(
+		world.FindStorage(Vans::VansRuntimeComponentType_Camera));
+	const Vans::VansRuntimeCameraComponent* cameraComponentData =
+		cameraStorage ? cameraStorage->Get(cameraComponent) : nullptr;
+	if (!Expect(cameraComponentData && cameraComponentData->camera == camera,
+		"Runtime world command buffer did not store camera component data"))
+		return false;
+
+	auto* lightManager =
+		reinterpret_cast<VansGraphics::VansLightManager*>(static_cast<std::uintptr_t>(0x89AB));
+	world.Commands().AddLightComponent(
+		queued,
+		Vans::VansRuntimeComponentType_PointLight,
+		"queued-point-light-guid",
+		lightManager,
+		3,
+		Vans::VansRuntimeLightKind::Point,
+		true);
+	world.FlushCommands();
+	Vans::VansComponentHandle lightComponent = world.FindComponentByGuid(
+		"queued-point-light-guid",
+		Vans::VansRuntimeComponentType_PointLight);
+	auto* lightStorage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeLightComponent>*>(
+		world.FindStorage(Vans::VansRuntimeComponentType_PointLight));
+	const Vans::VansRuntimeLightComponent* lightComponentData =
+		lightStorage ? lightStorage->Get(lightComponent) : nullptr;
+	if (!Expect(
+		lightComponentData &&
+			lightComponentData->lightManager == lightManager &&
+			lightComponentData->lightIndex == 3 &&
+			lightComponentData->kind == Vans::VansRuntimeLightKind::Point,
+		"Runtime world command buffer did not store light component data"))
+		return false;
+
+	Vans::VansRuntimeUIComponent uiComponentData;
+	uiComponentData.autoOpenScreens = { "MainMenu", "Hud" };
+	uiComponentData.preloadScreens = { "Inventory" };
+	uiComponentData.openScreens = { 10, 11 };
+	world.Commands().AddUIComponent(
+		queued,
+		"queued-ui-guid",
+		uiComponentData,
+		true);
+	world.FlushCommands();
+	Vans::VansComponentHandle uiComponent = world.FindComponentByGuid(
+		"queued-ui-guid",
+		Vans::VansRuntimeComponentType_UI);
+	auto* uiStorage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeUIComponent>*>(
+		world.FindStorage(Vans::VansRuntimeComponentType_UI));
+	const Vans::VansRuntimeUIComponent* storedUIComponent =
+		uiStorage ? uiStorage->Get(uiComponent) : nullptr;
+	if (!Expect(
+		storedUIComponent &&
+			storedUIComponent->autoOpenScreens.size() == 2 &&
+			storedUIComponent->autoOpenScreens[0] == "MainMenu" &&
+			storedUIComponent->preloadScreens.size() == 1 &&
+			storedUIComponent->preloadScreens[0] == "Inventory" &&
+			storedUIComponent->openScreens.size() == 2 &&
+			storedUIComponent->openScreens[1] == 11,
+		"Runtime world command buffer did not store UI component data"))
+		return false;
+
+	Vans::VansRuntimeScriptComponent scriptComponentData;
+	scriptComponentData.scriptPath = "Scripts/player.lua";
+	scriptComponentData.entryName = "Player";
+	scriptComponentData.enableRequested = true;
+	scriptComponentData.state = Vans::VansRuntimeScriptState::Unloaded;
+	scriptComponentData.isValid = false;
+	scriptComponentData.hasStarted = false;
+	Vans::VansRuntimeScriptFieldValue scriptField;
+	scriptField.type = Vans::VansRuntimeScriptFieldType::Float;
+	scriptField.floatValue = 4.5;
+	scriptComponentData.serializedFields.emplace("speed", scriptField);
+	world.Commands().AddScriptComponent(
+		queued,
+		"queued-script-guid",
+		scriptComponentData,
+		true);
+	world.FlushCommands();
+	Vans::VansComponentHandle componentOwnedByDestroyedEntity = world.FindComponentByGuid(
+		"queued-script-guid",
+		Vans::VansRuntimeComponentType_Script);
+	auto* scriptStorage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeScriptComponent>*>(
+		world.FindStorage(Vans::VansRuntimeComponentType_Script));
+	if (!Expect(scriptStorage && scriptStorage->Contains(componentOwnedByDestroyedEntity),
+		"Runtime world command buffer did not add destroy-owned component"))
+		return false;
+	const Vans::VansRuntimeScriptComponent* storedScriptComponent =
+		scriptStorage->Get(componentOwnedByDestroyedEntity);
+	if (!Expect(
+		storedScriptComponent &&
+			storedScriptComponent->scriptPath == "Scripts/player.lua" &&
+			storedScriptComponent->entryName == "Player" &&
+			storedScriptComponent->serializedFields.count("speed") == 1 &&
+			storedScriptComponent->serializedFields.at("speed").floatValue == 4.5,
+		"Runtime world command buffer did not store script component data"))
+		return false;
+
+	world.Commands().DestroyEntity(queued);
+	world.FlushCommands();
+	if (!Expect(!world.IsAlive(queued),
+		"Runtime world command buffer did not flush destroy command"))
+		return false;
+	return Expect(!scriptStorage->Contains(componentOwnedByDestroyedEntity) &&
+		!world.FindComponentByGuid("queued-script-guid").IsValid(),
+		"Runtime world command buffer destroy did not clear owned components");
+}
+
+struct ScriptComponentEnabledProbe final : public VansScriptComponent
+{
+	int enableCount = 0;
+	int disableCount = 0;
+	int destroyCount = 0;
+
+protected:
+	void OnEnable() override { ++enableCount; }
+	void OnDisable() override { ++disableCount; }
+	void OnDestroy() override { ++destroyCount; }
+};
+
+bool TestScriptObjectActiveDoesNotOverwriteComponentEnabledContract()
+{
+	VansScriptObject object;
+	auto* component = new ScriptComponentEnabledProbe();
+	component->SetEnabled(false);
+	object.AddComponent(component);
+
+	if (!Expect(!component->IsEnabled() && !component->IsEffectivelyEnabled(),
+		"Disabled component became effective enabled when added to active object"))
+		return false;
+
+	object.SetActive(false);
+	if (!Expect(!component->IsEnabled() && !component->IsEffectivelyEnabled(),
+		"Object deactivation overwrote component self enabled state"))
+		return false;
+
+	object.SetActive(true);
+	if (!Expect(!component->IsEnabled() && !component->IsEffectivelyEnabled(),
+		"Object reactivation enabled a component that was disabled by itself"))
+		return false;
+
+	component->SetEnabled(true);
+	return Expect(component->IsEnabled() && component->IsEffectivelyEnabled(),
+		"Component did not become effective enabled after self enable on active object");
+}
+
+bool TestScriptComponentDestroyIsIdempotentContract()
+{
+	ScriptComponentEnabledProbe component;
+	component.Destroy();
+	component.Destroy();
+
+	if (!Expect(!component.IsEnabled() && !component.IsEffectivelyEnabled(),
+		"Destroyed component remained enabled"))
+		return false;
+	if (!Expect(component.disableCount == 1,
+		"Destroyed component disabled more than once"))
+		return false;
+	return Expect(component.destroyCount == 1,
+		"Destroyed component ran OnDestroy more than once");
+}
+
+bool TestScriptComponentRuntimeEnabledMirrorHasNoBackendCallbacksContract()
+{
+	ScriptComponentEnabledProbe component;
+	component.SetEnabled(false);
+	if (!Expect(component.disableCount == 1 && component.enableCount == 0,
+		"Probe did not enter the expected disabled baseline"))
+		return false;
+
+	component.MirrorRuntimeEnabledState(true, true);
+	if (!Expect(component.IsEnabled() && component.IsEffectivelyEnabled(),
+		"Runtime enabled mirror did not update wrapper visible state"))
+		return false;
+	if (!Expect(component.enableCount == 0 && component.disableCount == 1,
+		"Runtime enabled mirror triggered backend enable/disable callbacks"))
+		return false;
+
+	component.MirrorRuntimeEnabledState(false, false);
+	if (!Expect(!component.IsEnabled() && !component.IsEffectivelyEnabled(),
+		"Runtime disabled mirror did not update wrapper visible state"))
+		return false;
+	return Expect(component.enableCount == 0 && component.disableCount == 1,
+		"Runtime disabled mirror triggered backend enable/disable callbacks");
+}
+
+bool TestScriptParticleRuntimeEnabledMirrorContract()
+{
+	VansScriptParticleComponent component;
+	component.m_Runtime = std::make_unique<VansGraphics::VansParticleRuntime>();
+
+	component.MirrorRuntimeEnabledState(true, true);
+	if (!Expect(component.IsEnabled() && component.IsEffectivelyEnabled(),
+		"Particle runtime mirror did not update enabled state"))
+		return false;
+	if (!Expect(component.m_IsPlaying && component.m_Runtime->m_IsPlaying,
+		"Particle runtime mirror did not start playback state"))
+		return false;
+
+	component.MirrorRuntimeEnabledState(true, false);
+	if (!Expect(component.IsEnabled() && !component.IsEffectivelyEnabled(),
+		"Particle runtime mirror did not preserve self enabled state while disabling effective state"))
+		return false;
+	return Expect(!component.m_IsPlaying && !component.m_Runtime->m_IsPlaying,
+		"Particle runtime mirror did not pause playback state");
+}
+
+bool TestScriptUIRuntimeOpenScreensMirrorContract()
+{
+	VansScriptUIComponent component;
+	component.MirrorRuntimeOpenScreens({ 17, 23 });
+	if (!Expect(component.m_OpenScreens.size() == 2 &&
+		component.m_OpenScreens[0] == 17 &&
+		component.m_OpenScreens[1] == 23,
+		"UI runtime mirror did not copy open screen handles"))
+		return false;
+
+	component.MirrorRuntimeEnabledState(false, false);
+	if (!Expect(!component.IsEnabled() && !component.IsEffectivelyEnabled(),
+		"UI runtime mirror did not update enabled facade state"))
+		return false;
+
+	component.MirrorRuntimeOpenScreens({});
+	return Expect(component.m_OpenScreens.empty(),
+		"UI runtime mirror did not clear open screen handles");
+}
+
+bool TestScriptObjectOwnedTransformReleaseContract()
+{
+	const std::uint32_t transformID = VansGraphics::VansTransformStore::AllocateTransform();
+	const std::size_t queueSizeAfterAllocate = VansGraphics::VansTransformStore::FreeTransformIndices.size();
+
+	auto* object = new VansScriptObject();
+	object->m_TransformID = transformID;
+	object->m_OwnsTransform = true;
+
+	if (!Expect(object->ReleaseOwnedTransform() == transformID,
+		"Script object did not release its owned transform id"))
+	{
+		delete object;
+		VansGraphics::VansTransformStore::FreeTransform(transformID);
+		return false;
+	}
+
+	delete object;
+	if (!Expect(VansGraphics::VansTransformStore::FreeTransformIndices.size() == queueSizeAfterAllocate,
+		"Script object destructor freed a transform after ownership release"))
+	{
+		VansGraphics::VansTransformStore::FreeTransform(transformID);
+		return false;
+	}
+
+	VansGraphics::VansTransformStore::FreeTransform(transformID);
+	return Expect(
+		VansGraphics::VansTransformStore::FreeTransformIndices.size() == queueSizeAfterAllocate + 1,
+		"Released transform was not freed exactly once by the caller");
+}
+
+bool TestScriptLightIndexRebindFacadeContract()
+{
+	VansScriptRectLightComponent rectLight;
+	rectLight.m_LightIndex = 7;
+	VansScriptComponent* base = &rectLight;
+	base->RebindSceneLightIndex(VansScriptLightIndexKind::Point, 7, 3);
+	if (!Expect(rectLight.m_LightIndex == 7,
+		"Rect light component responded to the wrong scene light index kind"))
+		return false;
+	base->RebindSceneLightIndex(VansScriptLightIndexKind::Rect, 7, 3);
+	return Expect(rectLight.m_LightIndex == 3,
+		"Rect light component did not rebind its scene light index");
+}
+
 VansGraphics::Skeleton BuildContractHumanoidSkeleton()
 {
     using namespace VansGraphics;
@@ -285,6 +1269,81 @@ bool TestMotionMatchingAutoBuildLocomotionMetadataContract()
     if (!Expect(selectedWalk, "Walk query did not select a Walk clip from auto-built metadata"))
         return false;
     return Expect(walkDebug.switches > 0, "Walk query did not switch away from idle");
+}
+
+std::string BuildMinimalVClipHeader(bool includeNodeTransformChannels)
+{
+    std::string header =
+        R"({"clipName":"ConfiguredSkeletalOnly","duration":0.0,"ticksPerSecond":60.0,"boneCount":0,)"
+        R"("globalInverseTransform":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1],"bones":[])";
+    if (includeNodeTransformChannels)
+        header += R"(,"nodeTransformChannels":[])";
+    header += "}";
+    return header;
+}
+
+bool WriteMinimalVClip(const fs::path& path, bool includeNodeTransformChannels)
+{
+    const std::string header = BuildMinimalVClipHeader(includeNodeTransformChannels);
+    const char magic[6] = {'V', 'C', 'L', 'I', 'P', '\0'};
+    const std::uint32_t version = 1;
+    const std::uint32_t headerSize = static_cast<std::uint32_t>(header.size());
+    const std::uint64_t payloadSize = 0;
+
+    std::ofstream out(path, std::ios::binary);
+    out.write(magic, sizeof(magic));
+    out.write(reinterpret_cast<const char*>(&version), sizeof(version));
+    out.write(reinterpret_cast<const char*>(&headerSize), sizeof(headerSize));
+    out.write(reinterpret_cast<const char*>(&payloadSize), sizeof(payloadSize));
+    out.write(header.data(), static_cast<std::streamsize>(header.size()));
+    return static_cast<bool>(out);
+}
+
+bool WriteVClipMeta(const fs::path& clipPath, bool hasNodeTransformChannels)
+{
+    std::ofstream out(clipPath.string() + ".meta", std::ios::binary);
+    out << R"({"guid":"contract-test-vclip","importer":"AnimationClipImporter","version":1,"settings":{"nodeTransformChannels":)"
+        << (hasNodeTransformChannels ? "true" : "false")
+        << R"(},"subAssets":{}})";
+    return static_cast<bool>(out);
+}
+
+bool TestAnimationClipNodeTransformChannelConfigContract()
+{
+    using namespace VansGraphics;
+
+    TemporaryDirectory temporary;
+    VansAnimationClip clip;
+    Skeleton skeleton;
+
+    const fs::path unconfiguredClip = temporary.path / "unconfigured_skeletal_only.vclip";
+    if (!Expect(WriteMinimalVClip(unconfiguredClip, false),
+        "Failed to write unconfigured skeletal-only vclip fixture"))
+        return false;
+    if (!Expect(!VansAnimationClipIO::Load(unconfiguredClip.string(), clip, skeleton),
+        "Skeletal-only vclip without nodeTransformChannels resource config loaded unexpectedly"))
+        return false;
+
+    const fs::path configuredClip = temporary.path / "configured_skeletal_only.vclip";
+    if (!Expect(WriteMinimalVClip(configuredClip, false) && WriteVClipMeta(configuredClip, false),
+        "Failed to write configured skeletal-only vclip fixture"))
+        return false;
+    if (!Expect(VansAnimationClipIO::Load(configuredClip.string(), clip, skeleton),
+        "Skeletal-only vclip with nodeTransformChannels=false config did not load"))
+        return false;
+    if (!Expect(clip.nodeTransformChannels.empty(),
+        "Skeletal-only vclip config created unexpected node transform channels"))
+        return false;
+
+    const fs::path currentClip = temporary.path / "current_empty_node_channels.vclip";
+    if (!Expect(WriteMinimalVClip(currentClip, true),
+        "Failed to write current-format empty node transform channel fixture"))
+        return false;
+    if (!Expect(VansAnimationClipIO::Load(currentClip.string(), clip, skeleton),
+        "Current-format vclip with explicit nodeTransformChannels did not load"))
+        return false;
+
+    return true;
 }
 
 bool TestAudioDistanceAttenuationContract()
@@ -1445,8 +2504,36 @@ int main()
         return 2;
     if (!TestGameplayFrameOrder())
         return 3;
+    if (!TestRuntimeWorldEntityLifetimeContract())
+        return 23;
+    if (!TestRuntimeWorldParentEditContract())
+        return 27;
+    if (!TestRuntimeWorldComponentEnabledContract())
+        return 24;
+    if (!TestRuntimeWorldComponentLifetimeContract())
+        return 29;
+    if (!TestRuntimeComponentKeyCanonicalizationContract())
+        return 30;
+    if (!TestRuntimeWorldCommandBufferContract())
+        return 25;
+    if (!TestScriptObjectActiveDoesNotOverwriteComponentEnabledContract())
+        return 26;
+    if (!TestScriptComponentDestroyIsIdempotentContract())
+        return 28;
+    if (!TestScriptComponentRuntimeEnabledMirrorHasNoBackendCallbacksContract())
+        return 35;
+    if (!TestScriptParticleRuntimeEnabledMirrorContract())
+        return 36;
+    if (!TestScriptUIRuntimeOpenScreensMirrorContract())
+        return 37;
+    if (!TestScriptObjectOwnedTransformReleaseContract())
+        return 33;
+    if (!TestScriptLightIndexRebindFacadeContract())
+        return 34;
     if (!TestMotionMatchingAutoBuildLocomotionMetadataContract())
         return 31;
+    if (!TestAnimationClipNodeTransformChannelConfigContract())
+        return 32;
     if (!TestAudioDistanceAttenuationContract())
         return 4;
     if (!TestAudioBusContract())

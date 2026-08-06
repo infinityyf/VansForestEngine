@@ -1,6 +1,7 @@
 #include "VansAnimationNode.h"
 #include "MotionMatching/VansMotionMatching.h"
 #include "../RenderCore/VansRenderNode.h"
+#include "../RenderCore/VulkanCore/VansMesh.h"
 #include "../ScriptCore/VansTransform.h"
 #include "../Util/VansLog.h"
 
@@ -15,11 +16,29 @@
 #include <cctype>
 #include <cstring>
 #include <cmath>
+#include <unordered_map>
+#include <unordered_set>
 
 using namespace VansGraphics;
 
 namespace
 {
+	bool DecomposeMatrixToPRS(const glm::mat4& matrix,
+	                          glm::vec3& outPosition,
+	                          glm::vec3& outRotationDegrees,
+	                          glm::vec3& outScale)
+	{
+		glm::quat rotation(1.0f, 0.0f, 0.0f, 0.0f);
+		glm::vec3 skew;
+		glm::vec4 perspective;
+		if (!glm::decompose(matrix, outScale, rotation, outPosition, skew, perspective))
+			return false;
+
+		rotation = glm::normalize(rotation);
+		outRotationDegrees = glm::degrees(glm::eulerAngles(rotation));
+		return true;
+	}
+
 	int FindPoseAuditBone(const Skeleton& skeleton, const char* name)
 	{
 		auto it = skeleton.boneNameToIndex.find(name);
@@ -83,33 +102,6 @@ namespace
 		       normalized == "feettoowner" ||
 		       normalized == "feet_to_owner_ground" ||
 		       normalized == "owner_ground";
-	}
-
-	bool HasModelSpaceRotation(const glm::vec3& degrees)
-	{
-		return glm::length(degrees) > 1.0e-5f;
-	}
-
-	glm::mat4 MakeModelSpaceRotation(const glm::vec3& degrees)
-	{
-		glm::mat4 rotation(1.0f);
-		if (std::abs(degrees.x) > 1.0e-5f)
-			rotation = glm::rotate(rotation, glm::radians(degrees.x), glm::vec3(1.0f, 0.0f, 0.0f));
-		if (std::abs(degrees.y) > 1.0e-5f)
-			rotation = glm::rotate(rotation, glm::radians(degrees.y), glm::vec3(0.0f, 1.0f, 0.0f));
-		if (std::abs(degrees.z) > 1.0e-5f)
-			rotation = glm::rotate(rotation, glm::radians(degrees.z), glm::vec3(0.0f, 0.0f, 1.0f));
-		return rotation;
-	}
-
-	void ApplyModelSpaceRotation(const glm::vec3& degrees, std::vector<glm::mat4>& modelTransforms)
-	{
-		if (!HasModelSpaceRotation(degrees))
-			return;
-
-		const glm::mat4 correction = MakeModelSpaceRotation(degrees);
-		for (glm::mat4& transform : modelTransforms)
-			transform = correction * transform;
 	}
 
 	bool ApplyOwnerFeetAlignment(
@@ -255,6 +247,7 @@ namespace
 				<< " rightLegPelvisDistance=" << rightLegLength);
 		}
 	}
+
 }
 // Construction / destruction
 VansAnimationNode::VansAnimationNode(const std::string& name)
@@ -306,10 +299,7 @@ void VansAnimationNode::ConfigureRetargetSource(
 		<< " translationScale=" << stats.translationScale
 		<< " translationScaleMode='" << desc.translationScaleMode << "'"
 		<< " rootAlignment='" << desc.rootAlignmentMode << "'"
-		<< " modelSpaceRotationDegrees=("
-		<< desc.modelSpaceRotationDegrees.x << ","
-		<< desc.modelSpaceRotationDegrees.y << ","
-		<< desc.modelSpaceRotationDegrees.z << ")"
+		<< " targetModelSpaceAlignment='" << desc.targetModelSpaceAlignmentMode << "'"
 		<< " sourceModel='" << desc.sourceModelPath
 		<< "' sourceAnimator='" << desc.sourceAnimatorPath << "'");
 }
@@ -321,11 +311,13 @@ void VansAnimationNode::ConfigureRetargetSource(
 void VansAnimationNode::SetRenderNode(VansRenderNode* renderNode)
 {
 	m_RenderNodes = { renderNode };
+	RebuildNodeTransformBindings();
 }
 
 void VansAnimationNode::SetRenderNodes(const std::vector<VansRenderNode*>& nodes)
 {
 	m_RenderNodes = nodes;
+	RebuildNodeTransformBindings();
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -355,6 +347,7 @@ void VansAnimationNode::SetController(VansAnimationController* controller)
 		VANS_LOG("[VansAnimationNode] " << m_Name << ": controller '" 
 		         << m_Controller->GetName() << "' bound");
 	}
+	RebuildNodeTransformBindings();
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -554,6 +547,121 @@ void VansAnimationNode::ClearBoneOverride(const std::string& boneName)
 //  每帧更新
 // ════════════════════════════════════════════════════════════════
 
+void VansAnimationNode::RebuildNodeTransformBindings()
+{
+	m_NodeTransformBindings.clear();
+	if (!m_Controller || m_RenderNodes.empty())
+		return;
+
+	std::unordered_set<std::string> animatedPaths;
+	std::unordered_set<std::string> animatedNames;
+	for (const auto& [clipName, clip] : m_Controller->GetClipsMap())
+	{
+		for (const NodeTransformChannel& channel : clip.nodeTransformChannels)
+		{
+			if (!channel.nodePath.empty())
+				animatedPaths.insert(channel.nodePath);
+			if (!channel.nodeName.empty())
+				animatedNames.insert(channel.nodeName);
+		}
+	}
+	if (animatedPaths.empty() && animatedNames.empty())
+		return;
+
+	for (VansRenderNode* renderNode : m_RenderNodes)
+	{
+		if (!renderNode || renderNode->m_TransformID == UINT32_MAX)
+			continue;
+
+		const VansMesh* mesh = renderNode->m_Mesh;
+		const std::string nodePath = mesh ? mesh->m_SourceNodePath : std::string();
+		const std::string nodeName = mesh ? mesh->m_SourceNodeName : std::string();
+		const bool matchesPath = !nodePath.empty() && animatedPaths.count(nodePath) > 0;
+		const bool matchesName = !nodeName.empty() && animatedNames.count(nodeName) > 0;
+		if (!matchesPath && !matchesName)
+			continue;
+
+		NodeTransformBinding binding;
+		binding.nodeName = nodeName;
+		binding.nodePath = nodePath;
+		binding.transformID = renderNode->m_TransformID;
+		binding.renderNode = renderNode;
+		m_NodeTransformBindings.push_back(binding);
+
+		renderNode->m_HasSkeletonBone = false;
+		renderNode->m_AnimationEnabled = false;
+		renderNode->m_AnimOwner = nullptr;
+		renderNode->m_AnimBoneIDBuffer = nullptr;
+		renderNode->m_AnimBoneWeightBuffer = nullptr;
+		renderNode->m_VertexDeformationState = VansVertexDeformationState{};
+		renderNode->MarkAnimationDescriptorDirty();
+	}
+
+	if (!m_NodeTransformBindings.empty())
+	{
+		VANS_LOG("[VansAnimationNode] " << m_Name << ": bound "
+			<< m_NodeTransformBindings.size() << " node transform channel(s)");
+	}
+}
+
+void VansAnimationNode::ApplySampledNodeTransforms()
+{
+	if (!m_Controller || m_NodeTransformBindings.empty())
+		return;
+
+	const auto& sampledTransforms = m_Controller->GetSampledNodeTransforms();
+	if (sampledTransforms.empty())
+		return;
+
+	std::unordered_map<std::string, const SampledNodeTransform*> byPath;
+	std::unordered_map<std::string, const SampledNodeTransform*> byName;
+	for (const SampledNodeTransform& sampled : sampledTransforms)
+	{
+		if (!sampled.nodePath.empty())
+			byPath[sampled.nodePath] = &sampled;
+		if (!sampled.nodeName.empty())
+			byName[sampled.nodeName] = &sampled;
+	}
+
+	const glm::mat4 ownerWorld = m_HasTransformID
+		? VansTransformStore::GetTransform(m_TransformID).GetModelMatrix()
+		: glm::mat4(1.0f);
+
+	for (const NodeTransformBinding& binding : m_NodeTransformBindings)
+	{
+		const SampledNodeTransform* sampled = nullptr;
+		if (!binding.nodePath.empty())
+		{
+			auto it = byPath.find(binding.nodePath);
+			if (it != byPath.end())
+				sampled = it->second;
+		}
+		if (!sampled && !binding.nodeName.empty())
+		{
+			auto it = byName.find(binding.nodeName);
+			if (it != byName.end())
+				sampled = it->second;
+		}
+		if (!sampled || binding.transformID == UINT32_MAX)
+			continue;
+
+		glm::vec3 position(0.0f);
+		glm::vec3 rotationDegrees(0.0f);
+		glm::vec3 scale(1.0f);
+		if (!DecomposeMatrixToPRS(ownerWorld * sampled->modelTransform,
+		                          position,
+		                          rotationDegrees,
+		                          scale))
+			continue;
+
+		VansTransform& transform = VansTransformStore::GetTransform(binding.transformID);
+		transform.m_Position = position;
+		transform.m_Rotation = rotationDegrees;
+		transform.m_Scale = scale;
+		VansTransformStore::TransformIDToTransformDirty[binding.transformID] = true;
+	}
+}
+
 void VansAnimationNode::Update(float deltaTime)
 {
 	if (!m_Controller)
@@ -602,8 +710,6 @@ void VansAnimationNode::Update(float deltaTime)
 			m_Skeleton,
 			targetModelTransforms))
 		{
-			ApplyModelSpaceRotation(m_RetargetDesc.modelSpaceRotationDegrees, targetModelTransforms);
-
 			if (m_HasTransformID && IsOwnerFeetAlignmentMode(m_RetargetDesc.rootAlignmentMode))
 			{
 				const glm::mat4 ownerWorld = VansTransformStore::GetTransform(m_TransformID).GetModelMatrix();
@@ -656,6 +762,7 @@ void VansAnimationNode::Update(float deltaTime)
 				m_SourceController->GetRootRotationDelta());
 		}
 
+		ApplySampledNodeTransforms();
 		FireEvents();
 		return;
 	}
@@ -686,6 +793,7 @@ void VansAnimationNode::Update(float deltaTime)
 	}
 
 	// 3. Fire events; the node still owns event dispatch.
+	ApplySampledNodeTransforms();
 	FireEvents();
 }
 

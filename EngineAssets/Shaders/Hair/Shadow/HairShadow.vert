@@ -4,7 +4,7 @@
 #define LightCBBind 0
 #include "../../Common/ModelData.glsl"
 #include "../../Lights/LightsData.glsl"
-#include "../../Common/AnimationSkinning.glsl"
+#include "../../Common/VertexDeformation.glsl"
 
 layout(location = 0) in vec4 position;
 layout(location = 1) in vec2 uv;
@@ -17,16 +17,15 @@ layout(push_constant) uniform MaterialPushConsts
     int materialIndex;
     int objectIndex;
     int cascadeIndex;
-    int animationEnabled;
+    uint vertexFeatureMask;
 } materialConst;
 
 void main()
 {
     mat4 modelMatrix = ModelBuffer.transforms[materialConst.objectIndex].ModelMatrix;
-    vec4 skinnedPosition = position;
-    if (materialConst.animationEnabled != 0)
-        VansApplyAnimationSkinningPosition(skinnedPosition);
-    vec4 clipCoord = uDirectionLight.shadowMatrix[materialConst.cascadeIndex] * modelMatrix * skinnedPosition;
+    vec4 localPosition = position;
+    VansApplyVertexPositionDeformation(localPosition, materialConst.vertexFeatureMask);
+    vec4 clipCoord = uDirectionLight.shadowMatrix[materialConst.cascadeIndex] * modelMatrix * localPosition;
     clipCoord.z = clipCoord.z * 0.5 + 0.5;
     gl_Position = clipCoord;
     shadowDepth = clipCoord.z;

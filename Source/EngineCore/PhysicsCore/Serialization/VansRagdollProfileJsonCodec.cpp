@@ -1,4 +1,4 @@
-#include "VansRagdollProfileLegacyJsonCodec.h"
+#include "VansRagdollProfileJsonCodec.h"
 
 #include "../../Util/VansLog.h"
 
@@ -22,7 +22,7 @@ glm::vec3 ReadVec3(const RagdollJson& source, const char* key, const glm::vec3& 
 }
 }
 
-bool VansRagdollProfileLegacyJsonCodec::Decode(
+bool VansRagdollProfileJsonCodec::Decode(
     const RagdollJson& root,
     RagdollProfile& profile,
     std::string& error)

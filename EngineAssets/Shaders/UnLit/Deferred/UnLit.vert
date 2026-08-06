@@ -3,6 +3,8 @@
 
 #include "../../Common/CameraData.glsl"
 #include "../../Common/ModelData.glsl"
+#include "../../Common/DrawPushConstants.glsl"
+#include "../../Common/VertexDeformation.glsl"
 
 layout( location = 0 ) in vec4 position;
 layout( location = 1 ) in vec2 uv;
@@ -16,92 +18,25 @@ layout( location = 2 ) out vec3 tangent_ws;
 layout( location = 3 ) out vec3 bitangent_ws;
 layout( location = 4 ) out vec3 position_world;
 
-layout( push_constant ) uniform MaterialPushConsts
-{
-    int materialIndex;
-    int objectIndex;
-    int animationEnabled;   // 0 = static, 1 = skinned
-} materialConst;
-
-// Per-vertex bone ID SSBO (set 3, binding 0).
-// Per-submesh bone IDs for animated nodes, shared dummy for static nodes.
-layout(std430, set = 3, binding = 0) readonly buffer BoneIDBuffer
-{
-    ivec4 boneIDs[];
-} BoneIDData;
-
-// Bone matrices SSBO (set 3, binding 1).
-// Real bone data for animated nodes, shared dummy (64 bytes) for static nodes.
-layout(std430, set = 3, binding = 1) readonly buffer BoneMatrixBuffer
-{
-    mat4 boneMatrices[];
-} BoneBuffer;
-
-// Per-vertex bone weight SSBO (set 3, binding 2).
-// Per-submesh bone weights for animated nodes, shared dummy for static nodes.
-layout(std430, set = 3, binding = 2) readonly buffer BoneWeightBuffer
-{
-    vec4 weights[];
-} WeightBuffer;
-
-// Skinning helper.
-void applySkinning(inout vec4 pos, inout vec3 norm, inout vec3 tan, inout vec3 bitan)
-{
-    ivec4 ids = BoneIDData.boneIDs[gl_VertexIndex];
-    vec4  wts = WeightBuffer.weights[gl_VertexIndex];
-
-    mat4 skinMatrix = mat4(0.0);
-    float totalWeight = 0.0;
-    for (int i = 0; i < 4; ++i)
-    {
-        if (ids[i] >= 0)
-        {
-            skinMatrix  += wts[i] * BoneBuffer.boneMatrices[ids[i]];
-            totalWeight += wts[i];
-        }
-    }
-
-    // Vertices with no bone influence (all IDs == -1) keep their bind-pose position.
-    if (totalWeight < 0.0001)
-        return;
-
-    pos = skinMatrix * pos;
-    mat3 skinMat3 = mat3(skinMatrix);
-    // Use length checks instead of direct normalize to avoid NaNs from zero vectors.
-    vec3 sn = skinMat3 * norm;
-    vec3 st = skinMat3 * tan;
-    vec3 sb = skinMat3 * bitan;
-    float snLen = dot(sn, sn);
-    float stLen = dot(st, st);
-    float sbLen = dot(sb, sb);
-    norm  = snLen > 1e-8 ? sn * inversesqrt(snLen) : norm;
-    tan   = stLen > 1e-8 ? st * inversesqrt(stLen) : tan;
-    bitan = sbLen > 1e-8 ? sb * inversesqrt(sbLen) : bitan;
-}
-
 void main() 
 {
     int objectIndex = materialConst.objectIndex;
     mat4 ModelMatrix  = ModelBuffer.transforms[objectIndex].ModelMatrix;
     mat4 NormalMatrix = ModelBuffer.transforms[objectIndex].NormalMatrix;
 
-    vec4 pos  = position;
-    vec3 n    = normal;
-    vec3 t    = tangent;
-    vec3 bt   = bitangent;
+    VansVertexSurface surface;
+    surface.position = position;
+    surface.normal = normal;
+    surface.tangent = tangent;
+    surface.bitangent = bitangent;
+    VansApplyVertexDeformation(surface, materialConst.vertexFeatureMask);
 
-    // Apply skeletal skinning if this is an animated node
-    if (materialConst.animationEnabled != 0)
-    {
-        applySkinning(pos, n, t, bt);
-    }
-
-    gl_Position  = VPMatrix * ModelMatrix * pos;
+    gl_Position  = VPMatrix * ModelMatrix * surface.position;
     mat3 normalMatrix = mat3(NormalMatrix);
     // Normalize defensively; provide stable fallbacks for zero vectors before writing GBuffer.
-    vec3 n_ws  = normalMatrix * n;
-    vec3 t_ws  = normalMatrix * t;
-    vec3 bt_ws = normalMatrix * bt;
+    vec3 n_ws  = normalMatrix * surface.normal;
+    vec3 t_ws  = normalMatrix * surface.tangent;
+    vec3 bt_ws = normalMatrix * surface.bitangent;
     float nl = dot(n_ws,  n_ws);
     float tl = dot(t_ws,  t_ws);
     float bl = dot(bt_ws, bt_ws);
@@ -110,5 +45,5 @@ void main()
     bitangent_ws = bl > 1e-8 ? bt_ws * inversesqrt(bl) : cross(normal_ws, tangent_ws);
 
     frag_uv        = uv;
-    position_world = (ModelMatrix * pos).xyz;
+    position_world = (ModelMatrix * surface.position).xyz;
 }

@@ -1,4 +1,4 @@
-#include "VansCollisionLayerLegacyJsonCodec.h"
+#include "VansCollisionLayerJsonCodec.h"
 
 #include "../VansCollisionLayerConfig.h"
 
@@ -6,7 +6,7 @@
 
 namespace VansEngine
 {
-	bool VansCollisionLayerLegacyJsonCodec::Decode(
+	bool VansCollisionLayerJsonCodec::Decode(
 		const nlohmann::json& root,
 		VansCollisionLayerConfig& config)
 	{

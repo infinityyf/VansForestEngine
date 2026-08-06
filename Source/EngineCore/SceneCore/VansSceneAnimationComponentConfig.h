@@ -54,6 +54,8 @@ namespace Vans
 		std::string animator;
 		std::string externClips;
 		bool rootMotion = false;
+		bool autoPlay = true;
+		bool loop = true;
 		std::string rootBone;
 		std::string name;
 		std::optional<VansSceneAnimationRetargetConfig> retarget;

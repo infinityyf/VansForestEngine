@@ -11,14 +11,14 @@
 namespace VansEngine
 {
 	// ============================================================================
-	// VansCollisionFilterShader — 替代 PxDefaultSimulationFilterShader
+	// VansCollisionFilterShader 鈥?鏇夸唬 PxDefaultSimulationFilterShader
 	// ============================================================================
 	PxFilterFlags VansCollisionFilterShader(
 		PxFilterObjectAttributes attributes0, PxFilterData filterData0,
 		PxFilterObjectAttributes attributes1, PxFilterData filterData1,
 		PxPairFlags& pairFlags, const void* constantBlock, PxU32 constantBlockSize)
 	{
-		// PhysX 内建 Trigger 检测（PxShapeFlag::eTRIGGER_SHAPE）
+		// PhysX 鍐呭缓 Trigger 妫€娴嬶紙PxShapeFlag::eTRIGGER_SHAPE锛?
 		if (PxFilterObjectIsTrigger(attributes0) || PxFilterObjectIsTrigger(attributes1))
 		{
 			pairFlags = PxPairFlag::eTRIGGER_DEFAULT
@@ -27,7 +27,7 @@ namespace VansEngine
 			return PxFilterFlag::eDEFAULT;
 		}
 
-		// Layer 碰撞矩阵检查
+		// Layer 纰版挒鐭╅樀妫€鏌?
 		uint32_t layerA = filterData0.word0;
 		uint32_t layerB = filterData1.word0;
 		uint32_t maskA  = filterData0.word1;
@@ -35,7 +35,7 @@ namespace VansEngine
 		uint32_t groupA = filterData0.word3;
 		uint32_t groupB = filterData1.word3;
 
-		// Ragdoll 同一实例内部默认不做接触求解，避免身体部件互相卡住导致无法自然下落。
+		// Ragdoll 鍚屼竴瀹炰緥鍐呴儴榛樿涓嶅仛鎺ヨЕ姹傝В锛岄伩鍏嶈韩浣撻儴浠朵簰鐩稿崱浣忓鑷存棤娉曡嚜鐒朵笅钀姐€?
 		if (groupA != 0 && groupA == groupB)
 		{
 			return PxFilterFlag::eSUPPRESS;
@@ -46,7 +46,7 @@ namespace VansEngine
 			return PxFilterFlag::eSUPPRESS;
 		}
 
-		// 自定义 Trigger 标志检查（word2 bit0）
+		// 鑷畾涔?Trigger 鏍囧織妫€鏌ワ紙word2 bit0锛?
 		bool isTriggerA = (filterData0.word2 & 0x1) != 0;
 		bool isTriggerB = (filterData1.word2 & 0x1) != 0;
 
@@ -58,7 +58,7 @@ namespace VansEngine
 			return PxFilterFlag::eDEFAULT;
 		}
 
-		// 正常碰撞
+		// 姝ｅ父纰版挒
 		pairFlags = PxPairFlag::eCONTACT_DEFAULT
 		          | PxPairFlag::eNOTIFY_TOUCH_FOUND
 		          | PxPairFlag::eNOTIFY_TOUCH_LOST
@@ -94,8 +94,8 @@ namespace VansEngine
 	// ============================================================================
 	void* VansPhysicsAllocator::allocate(size_t size, const char* typeName, const char* filename, int line)
 	{
-		// PhysX 内部部分路径可能请求 0 字节临时缓冲，Windows _aligned_malloc(0, 16) 会返回 nullptr。
-		// PhysX 要求 allocator 不能返回 nullptr，否则会触发 eABORT。
+		// PhysX 鍐呴儴閮ㄥ垎璺緞鍙兘璇锋眰 0 瀛楄妭涓存椂缂撳啿锛學indows _aligned_malloc(0, 16) 浼氳繑鍥?nullptr銆?
+		// PhysX 瑕佹眰 allocator 涓嶈兘杩斿洖 nullptr锛屽惁鍒欎細瑙﹀彂 eABORT銆?
 		size_t allocSize = (std::max)(size, static_cast<size_t>(16));
 		return _aligned_malloc(allocSize, 16);
 	}
@@ -190,7 +190,7 @@ namespace VansEngine
 
 		VANS_LOG("[PhysX] Scene pair filtering enabled: kineKine=eKEEP, staticKine=eKEEP");
 
-		// 注册碰撞 / 触发事件回调
+		// 娉ㄥ唽纰版挒 / 瑙﹀彂浜嬩欢鍥炶皟
 		m_EventCallback = new VansPhysicsEventCallback();
 		sceneDesc.simulationEventCallback = m_EventCallback;
 		
@@ -222,11 +222,11 @@ namespace VansEngine
 		// Initialize NvCloth CPU simulation
 		VansClothSystem::GetInstance().Initialize();
 
-		// 创建 CCT Manager（每个 PxScene 只能创建一个）
+		// 鍒涘缓 CCT Manager锛堟瘡涓?PxScene 鍙兘鍒涘缓涓€涓級
 		m_ControllerManager = PxCreateControllerManager(*m_Scene);
 		if (!m_ControllerManager)
 		{
-			VANS_LOG_ERROR("[VansPhysics] PxCreateControllerManager 失败");
+			VANS_LOG_ERROR("[VansPhysics] PxCreateControllerManager 澶辫触");
 			return false;
 		}
 
@@ -235,26 +235,42 @@ namespace VansEngine
 
 	void VansPhysicsSystem::Shutdown()
 	{
-		// Shutdown NvCloth before destroying PhysX
-		VansClothSystem::GetInstance().Shutdown();
-
 		StopSimulation();
 
-		// CCT Manager 必须在 PxScene 释放之前释放
+		const bool hadResources =
+			(m_ControllerManager != nullptr) ||
+			(m_DefaultMaterial != nullptr) ||
+			(m_Scene != nullptr) ||
+			(m_Dispatcher != nullptr) ||
+			(m_Physics != nullptr) ||
+			(m_Pvd != nullptr) ||
+			(m_Foundation != nullptr) ||
+			(m_CookingParams != nullptr) ||
+			(m_EventCallback != nullptr);
+
+		VansClothSystem::GetInstance().Shutdown();
+
+		// The singleton destructor can call Shutdown() after explicit engine shutdown.
+		// Make repeated calls harmless by never releasing stale PhysX pointers twice.
+		if (!hadResources)
+			return;
+
+		// Release the controller manager before the PxScene.
 		if (m_ControllerManager)
 		{
 			m_ControllerManager->release();
 			m_ControllerManager = nullptr;
 		}
 
-		if (m_DefaultMaterial) m_DefaultMaterial->release();
-		if (m_Scene) m_Scene->release();
-		if (m_Dispatcher) m_Dispatcher->release();
-		if (m_Physics) m_Physics->release();
-		if (m_Pvd) m_Pvd->release();
-		if (m_Foundation) m_Foundation->release();
-		if (m_CookingParams) delete m_CookingParams;
+		if (m_DefaultMaterial) { m_DefaultMaterial->release(); m_DefaultMaterial = nullptr; }
+		if (m_Scene) { m_Scene->release(); m_Scene = nullptr; }
+		if (m_Dispatcher) { m_Dispatcher->release(); m_Dispatcher = nullptr; }
+		if (m_Physics) { m_Physics->release(); m_Physics = nullptr; }
+		if (m_Pvd) { m_Pvd->release(); m_Pvd = nullptr; }
+		if (m_Foundation) { m_Foundation->release(); m_Foundation = nullptr; }
+		if (m_CookingParams) { delete m_CookingParams; m_CookingParams = nullptr; }
 		if (m_EventCallback) { delete m_EventCallback; m_EventCallback = nullptr; }
+		m_PreSimulateCallback = nullptr;
 
 		VANS_LOG("[PhysX] Shutdown complete");
 	}
@@ -330,11 +346,11 @@ namespace VansEngine
 		{
 			VANS_PROFILE_SCOPE("PhysicsThread::Loop", Vans::ProfileCategory::Physics);
 
-			// 物理模拟被暂停时，不步进仅等待
+			// 鐗╃悊妯℃嫙琚殏鍋滄椂锛屼笉姝ヨ繘浠呯瓑寰?
 			if (m_IsPaused.load())
 			{
 				VANS_PROFILE_SCOPE("PhysicsThread::SleepPaused", Vans::ProfileCategory::Wait);
-				lastTime = Clock::now(); // 防止恢复后积累大量未执行的步进
+				lastTime = Clock::now(); // 闃叉鎭㈠鍚庣Н绱ぇ閲忔湭鎵ц鐨勬杩?
 				std::this_thread::sleep_for(std::chrono::milliseconds(5));
 				continue;
 			}

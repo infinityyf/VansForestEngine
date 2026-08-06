@@ -7,17 +7,9 @@
 
 namespace Vans
 {
-bool VansSceneFileStorage::ReadLegacySceneDocument(
+bool VansSceneFileStorage::ReadSceneDocument(
 	const std::filesystem::path& path,
 	SceneJson& root,
-	std::string& error)
-{
-	return VansJsonFileStorage::Read(path, root, error);
-}
-
-bool VansSceneFileStorage::ReadLegacySceneDocument(
-	const std::filesystem::path& path,
-	RuntimeSceneJson& root,
 	std::string& error)
 {
 	return VansJsonFileStorage::Read(path, root, error);
@@ -27,11 +19,11 @@ bool VansSceneFileStorage::CreateEmptySceneDocument(const std::filesystem::path&
 {
 	VansSceneData sceneData;
 	sceneData.sceneGuid = VansAssetGuid::New();
-	const SceneJson root = VansSceneSchema::SerializeLegacyJson(sceneData);
-	return WriteLegacySceneDocument(path, root, error);
+	const SceneJson root = VansSceneSchema::SerializeSceneJson(sceneData);
+	return WriteSceneDocument(path, root, error);
 }
 
-bool VansSceneFileStorage::StageLegacySceneDocument(
+bool VansSceneFileStorage::StageSceneDocument(
 	const std::filesystem::path& path,
 	const SceneJson& root,
 	VansStagedFile& stage,
@@ -40,7 +32,7 @@ bool VansSceneFileStorage::StageLegacySceneDocument(
 	return VansJsonFileStorage::StageWrite(path, root, stage, error);
 }
 
-bool VansSceneFileStorage::WriteLegacySceneDocument(
+bool VansSceneFileStorage::WriteSceneDocument(
 	const std::filesystem::path& path,
 	const SceneJson& root,
 	std::string& error)

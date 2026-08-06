@@ -8,7 +8,7 @@
 
 namespace VansEngine
 {
-class VansClothProfileLegacyJsonCodec
+class VansClothProfileJsonCodec
 {
 public:
     static ClothProfileJson Encode(const VansClothProfile& profile);

@@ -9,6 +9,7 @@
 #include "VansEditorTextureBridge.h"
 #include "../../AssetCore/VansAssetDatabase.h"
 #include "../../AssetCore/VansAssetGuid.h"
+#include "../../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../../Configration/VansConfigration.h"
 #include "../../ProjectSystem/VansProjectManager.h"
 #include "../../RenderCore/VansCamera.h"
@@ -34,6 +35,11 @@
 #include "../../PhysicsCore/VansPhysicsVehicle.h"
 #include "../../SceneCore/VansSceneDocument.h"
 #include "../../SceneCore/VansSceneEntityFactory.h"
+#include "../../SceneCore/VansSceneRuntimeProjection.h"
+#include "../../SceneCore/VansSceneSchema.h"
+#include "../../SceneCore/VansSceneRuntimeComponentKey.h"
+#include "../../SceneCore/VansSceneContentBuildPlan.h"
+#include "../../SceneRuntime/VansRuntimeComponentTypes.h"
 #include "../../RuntimeUI/Public/VansUIDocument.h"
 #include "../../RuntimeUI/Public/VansUIScreen.h"
 #include "../../RuntimeUI/Public/VansUISystem.h"
@@ -569,6 +575,52 @@ namespace Vans::EditorAPI
 			int index = -1;
 		};
 
+		std::uint16_t RuntimeLightComponentTypeForPatch(RuntimeLightPatchType type)
+		{
+			switch (type)
+			{
+			case RuntimeLightPatchType::Directional:
+				return Vans::VansRuntimeComponentType_DirectionalLight;
+			case RuntimeLightPatchType::Point:
+				return Vans::VansRuntimeComponentType_PointLight;
+			case RuntimeLightPatchType::Spot:
+				return Vans::VansRuntimeComponentType_SpotLight;
+			case RuntimeLightPatchType::Rect:
+				return Vans::VansRuntimeComponentType_RectLight;
+			}
+			return Vans::VansInvalidComponentTypeId;
+		}
+
+		template <typename T>
+		const T* GetRuntimeComponentPayload(
+			const Vans::VansRuntimeWorld& runtimeWorld,
+			Vans::VansComponentHandle component,
+			std::uint16_t expectedType)
+		{
+			if (component.typeId != expectedType)
+				return nullptr;
+			const auto* storage = static_cast<const Vans::VansComponentStorage<T>*>(
+				runtimeWorld.FindStorage(expectedType));
+			return storage ? storage->Get(component) : nullptr;
+		}
+
+		std::uint32_t ResolveRuntimeEntityTransformId(
+			const Vans::VansRuntimeWorld& runtimeWorld,
+			Vans::VansEntityHandle entity)
+		{
+			for (Vans::VansComponentHandle component : runtimeWorld.CollectComponentsOwnedBy(entity))
+			{
+				if (const auto* transform = GetRuntimeComponentPayload<Vans::VansRuntimeTransformComponent>(
+					runtimeWorld,
+					component,
+					Vans::VansRuntimeComponentType_Transform))
+				{
+					return transform->transformStoreId;
+				}
+			}
+			return UINT32_MAX;
+		}
+
 		std::uint32_t ResolveRuntimeTransformId(
 			VansGraphics::VansScene* scene,
 			const std::string& entityGuid)
@@ -576,10 +628,13 @@ namespace Vans::EditorAPI
 			if (!scene || entityGuid.empty())
 				return UINT32_MAX;
 
-			if (VansGraphics::VansRenderNode* node = scene->FindPrimaryRenderNodeByEntityGuid(entityGuid))
-				return node->m_TransformID;
-			if (VansScriptObject* obj = scene->FindObjectByGuid(entityGuid))
-				return obj->m_TransformID;
+			if (const auto* runtimeWorld = scene->GetRuntimeWorld())
+			{
+				const Vans::VansEntityHandle entity = runtimeWorld->Entities().FindByGuid(entityGuid);
+				const std::uint32_t transformId = ResolveRuntimeEntityTransformId(*runtimeWorld, entity);
+				if (transformId != UINT32_MAX)
+					return transformId;
+			}
 			return UINT32_MAX;
 		}
 
@@ -627,28 +682,26 @@ namespace Vans::EditorAPI
 			if (!scene || patch.entityGuid.empty())
 				return binding;
 
-			VansScriptObject* obj = scene->FindObjectByGuid(patch.entityGuid);
-			if (!obj)
+			const Vans::VansRuntimeWorld* runtimeWorld = scene->GetRuntimeWorld();
+			if (!runtimeWorld)
 				return binding;
 
-			switch (patch.type)
+			const Vans::VansEntityHandle entity =
+				runtimeWorld->Entities().FindByGuid(patch.entityGuid);
+			if (!entity.IsValid())
+				return binding;
+
+			const std::uint16_t runtimeType = RuntimeLightComponentTypeForPatch(patch.type);
+			for (Vans::VansComponentHandle component : runtimeWorld->CollectComponentsOwnedBy(entity))
 			{
-			case RuntimeLightPatchType::Directional:
-				if (auto* component = obj->GetComponent<VansScriptDirectionalLightComponent>())
-					binding = { component->m_LightManager, component->m_LightIndex };
-				break;
-			case RuntimeLightPatchType::Point:
-				if (auto* component = obj->GetComponent<VansScriptPointLightComponent>())
-					binding = { component->m_LightManager, component->m_LightIndex };
-				break;
-			case RuntimeLightPatchType::Spot:
-				if (auto* component = obj->GetComponent<VansScriptSpotLightComponent>())
-					binding = { component->m_LightManager, component->m_LightIndex };
-				break;
-			case RuntimeLightPatchType::Rect:
-				if (auto* component = obj->GetComponent<VansScriptRectLightComponent>())
-					binding = { component->m_LightManager, component->m_LightIndex };
-				break;
+				if (const auto* runtimeLight = GetRuntimeComponentPayload<Vans::VansRuntimeLightComponent>(
+					*runtimeWorld,
+					component,
+					runtimeType))
+				{
+					binding = { runtimeLight->lightManager, runtimeLight->lightIndex };
+					break;
+				}
 			}
 
 			return binding;
@@ -4409,26 +4462,76 @@ namespace Vans::EditorAPI
 		return materials[0]->m_AssetName;
 	}
 
-	RuntimeModelEntityCreateResult EngineAPIImpl::CreateRuntimeModelEntity(const RuntimeModelEntityCreateRequest& request)
+	RuntimeSceneEntitiesCreateResult EngineAPIImpl::CreateRuntimeSceneEntities(
+		const RuntimeSceneEntitiesCreateRequest& request)
 	{
-		RuntimeModelEntityCreateResult result;
+		RuntimeSceneEntitiesCreateResult result;
 		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
 		auto* device = static_cast<VansGraphics::VansVKDevice*>(m_Device);
-		if (!scene || !device || request.entityName.empty() || request.meshName.empty())
+		if (!scene || !device)
+		{
+			result.message = "Runtime scene or render device is not available";
 			return result;
-
-		const glm::vec3 position(request.position.x, request.position.y, request.position.z);
-		VansScriptObject* object = scene->CreateEntity(
-			device->GetLogicDevice(),
-			request.entityName,
-			request.meshName,
-			request.materialName,
-			position);
-		if (!object)
+		}
+		if (request.sceneEntities.empty())
+		{
+			result.message = "No runtime scene entities requested";
 			return result;
+		}
 
+		std::vector<Vans::VansSerializedValue> entities;
+		entities.reserve(request.sceneEntities.size());
+		for (const ScenePropertyValue& value : request.sceneEntities)
+		{
+			Vans::VansSerializedValue entity = ScenePropertyValues::ToSerializedValue(value);
+			if (entity.kind != Vans::VansSerializedValue::Kind::Object)
+			{
+				result.message = "Runtime scene entity payload must contain objects";
+				return result;
+			}
+			const std::string entityGuid = Vans::ReadSerializedStringField(entity, "id");
+			if (entityGuid.empty())
+			{
+				result.message = "Runtime scene entity payload is missing an id";
+				return result;
+			}
+			result.entityGuids.push_back(entityGuid);
+			entities.push_back(std::move(entity));
+		}
+
+		Vans::VansSerializedValue sceneRoot = Vans::VansSerializedValue::Object({
+			{ "schemaVersion", Vans::VansSerializedValue::Int(Vans::VansSceneSchemaVersion) },
+			{ "settings", Vans::VansSerializedValue::Object({}) },
+			{ "entities", Vans::VansSerializedValue::Array(std::move(entities)) }
+		});
+
+		Vans::VansSceneContentBuildPlan buildPlan;
+		std::string planError;
+		const std::string projectRoot = GetProjectRootPath();
+		if (!Vans::VansSceneRuntimeProjection::BuildRuntimeSceneContentPlan(
+			sceneRoot,
+			projectRoot,
+			buildPlan,
+			planError))
+		{
+			result.message = planError.empty()
+				? "Could not build runtime scene entity plan"
+				: planError;
+			return result;
+		}
+
+		VkDevice logicalDevice = device->GetLogicDevice();
+		scene->LoadSceneObjects(logicalDevice, buildPlan.objects, projectRoot);
+		scene->GetLightManager()->CreateLightUniformData(logicalDevice);
+		for (const std::string& entityGuid : result.entityGuids)
+		{
+			if (!scene->FindObjectByGuid(entityGuid))
+			{
+				result.message = "Runtime scene entity was not created: " + entityGuid;
+				return result;
+			}
+		}
 		result.created = true;
-		result.entityGuid = object->m_EntityGuid;
 		return result;
 	}
 
@@ -4437,7 +4540,7 @@ namespace Vans::EditorAPI
 		return ModelAssetPlacementPreparationService::Prepare(request, m_Scene, m_Device);
 	}
 
-	RuntimeEntityDestroyResult EngineAPIImpl::DestroyRuntimeEntityByName(const RuntimeEntityDestroyRequest& request)
+	RuntimeEntityDestroyResult EngineAPIImpl::DestroyRuntimeEntity(const RuntimeEntityDestroyRequest& request)
 	{
 		RuntimeEntityDestroyResult result;
 		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
@@ -4449,12 +4552,8 @@ namespace Vans::EditorAPI
 			if (VansScriptObject* obj = scene->FindObjectByGuid(request.entityGuid))
 			{
 				result.destroyed = scene->DestroyEntity(obj);
-				return result;
 			}
 		}
-
-		if (!request.entityName.empty())
-			result.destroyed = scene->DestroyEntity(request.entityName);
 		return result;
 	}
 
@@ -4478,33 +4577,12 @@ namespace Vans::EditorAPI
 			return result;
 		}
 
-		const std::uint32_t childTransformId = ResolveRuntimeTransformId(scene, request.childEntityGuid);
-		if (childTransformId == UINT32_MAX)
-		{
-			result.message = "Child runtime transform was not found";
-			return result;
-		}
-
-		if (request.newParentEntityGuid.empty())
-		{
-			scene->ClearTransformParentID(childTransformId);
-			VansGraphics::VansTransformStore::TransformIDToTransformDirty[childTransformId] = true;
-			result.applied = true;
-			result.message = "Runtime entity parent cleared";
-			return result;
-		}
-
-		const std::uint32_t parentTransformId = ResolveRuntimeTransformId(scene, request.newParentEntityGuid);
-		if (parentTransformId == UINT32_MAX)
-		{
-			result.message = "Parent runtime transform was not found";
-			return result;
-		}
-
-		scene->SetTransformParentID(childTransformId, parentTransformId);
-		VansGraphics::VansTransformStore::TransformIDToTransformDirty[childTransformId] = true;
-		result.applied = true;
-		result.message = "Runtime entity reparented";
+		result.applied = scene->SetEntityParentByGuid(
+			request.childEntityGuid,
+			request.newParentEntityGuid);
+		result.message = result.applied
+			? (request.newParentEntityGuid.empty() ? "Runtime entity parent cleared" : "Runtime entity reparented")
+			: "Runtime entity parent edit failed";
 		return result;
 	}
 
@@ -4779,6 +4857,143 @@ namespace Vans::EditorAPI
 		return snapshot;
 	}
 
+	SkeletonDebugSnapshot EngineAPIImpl::GetSkeletonDebugSnapshot(const std::string& entityGuidFilter) const
+	{
+		SkeletonDebugSnapshot snapshot;
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		if (!scene)
+			return snapshot;
+
+		auto matchesFilter = [&](VansGraphics::VansAnimationNode* animNode) -> bool
+		{
+			if (entityGuidFilter.empty())
+				return true;
+			if (!animNode)
+				return false;
+			for (auto* renderNode : animNode->GetRenderNodes())
+			{
+				if (!renderNode)
+					continue;
+				if (renderNode->m_EntityGuid == entityGuidFilter ||
+				    renderNode->m_ParentEntityGuid == entityGuidFilter)
+				{
+					return true;
+				}
+			}
+			return false;
+		};
+
+		auto buildFallbackGlobals = [](const VansGraphics::Skeleton& skeleton)
+		{
+			std::vector<glm::mat4> globals(skeleton.bones.size(), glm::mat4(1.0f));
+			auto applyBone = [&](int index)
+			{
+				if (index < 0 || index >= static_cast<int>(skeleton.bones.size()))
+					return;
+				const auto& bone = skeleton.bones[index];
+				if (bone.parentIndex >= 0 && bone.parentIndex < static_cast<int>(globals.size()))
+					globals[index] = globals[bone.parentIndex] * bone.localTransform;
+				else
+					globals[index] = bone.localTransform;
+			};
+
+			if (!skeleton.topologicalOrder.empty())
+			{
+				for (int index : skeleton.topologicalOrder)
+					applyBone(index);
+			}
+			else
+			{
+				for (int index = 0; index < static_cast<int>(skeleton.bones.size()); ++index)
+					applyBone(index);
+			}
+			return globals;
+		};
+
+		auto appendRig = [&](
+			VansGraphics::VansAnimationNode* animNode,
+			const VansGraphics::Skeleton& skeleton,
+			const VansGraphics::VansAnimationController* controller,
+			const glm::mat4& ownerWorld,
+			const std::string& role,
+			bool retargetSource)
+		{
+			if (!animNode || skeleton.bones.empty())
+				return;
+
+			std::vector<glm::mat4> fallbackGlobals;
+			const std::vector<glm::mat4>* globals = nullptr;
+			if (controller && controller->GetCachedGlobalTransforms().size() == skeleton.bones.size())
+				globals = &controller->GetCachedGlobalTransforms();
+			else
+			{
+				fallbackGlobals = buildFallbackGlobals(skeleton);
+				globals = &fallbackGlobals;
+			}
+
+			SkeletonDebugRigSnapshot rig;
+			rig.nodeName = retargetSource ? animNode->GetName() + " Source" : animNode->GetName();
+			rig.role = role;
+			rig.retargetSource = retargetSource;
+			if (controller)
+			{
+				rig.currentState = controller->GetCurrentStateName();
+				rig.currentTime = controller->GetCurrentPlayTime();
+				rig.normalizedTime = controller->GetNormalizedTime();
+				rig.playing = controller->GetPlaybackState() == VansGraphics::AnimationState::Playing;
+				if (const auto* motionMatching = controller->GetMotionMatchingDebugData())
+				{
+					rig.activeClip = motionMatching->activeClip;
+					rig.selectedClip = motionMatching->selectedClip;
+				}
+			}
+			if (auto* renderNode = animNode->GetRenderNode())
+				rig.entityGuid = renderNode->m_ParentEntityGuid.empty() ? renderNode->m_EntityGuid : renderNode->m_ParentEntityGuid;
+			rig.bones.reserve(skeleton.bones.size());
+
+			for (size_t i = 0; i < skeleton.bones.size(); ++i)
+			{
+				const glm::mat4 boneWorld = ownerWorld * (*globals)[i];
+				SkeletonDebugBoneSnapshot bone;
+				bone.name = skeleton.bones[i].name;
+				bone.parentIndex = skeleton.bones[i].parentIndex;
+				bone.worldPosition = ToEditorVec3(glm::vec3(boneWorld[3]));
+				rig.bones.push_back(std::move(bone));
+			}
+
+			snapshot.rigs.push_back(std::move(rig));
+		};
+
+		for (auto* animNode : scene->GetAnimationNodes())
+		{
+			if (!animNode || !matchesFilter(animNode))
+				continue;
+
+			const VansGraphics::Skeleton& skeleton = animNode->GetSkeleton();
+			if (skeleton.bones.empty())
+				continue;
+
+			glm::mat4 ownerWorld(1.0f);
+			const uint32_t transformId = animNode->GetTransformID();
+			if (transformId < VansGraphics::VansTransformStore::GlobalTransforms.size())
+				ownerWorld = VansGraphics::VansTransformStore::GetTransform(transformId).GetModelMatrix();
+
+			appendRig(animNode, skeleton, animNode->GetController(), ownerWorld, "Target", false);
+			if (animNode->IsRetargetEnabled() && animNode->GetRetargetSourceController())
+			{
+				appendRig(animNode,
+					animNode->GetRetargetSourceSkeleton(),
+					animNode->GetRetargetSourceController(),
+					ownerWorld,
+					"Retarget Source",
+					true);
+			}
+		}
+
+		snapshot.available = !snapshot.rigs.empty();
+		return snapshot;
+	}
+
 	void EngineAPIImpl::SetFootIKDebugVisualization(bool enabled)
 	{
 		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
@@ -4870,66 +5085,146 @@ namespace Vans::EditorAPI
 		terrain->SetLodDistanceRatio(settings.lodDistanceRatio);
 	}
 
-	void EngineAPIImpl::ApplyRuntimeEntityPreviewChange(const RuntimeEntityPreviewChange& change)
+	bool EngineAPIImpl::ApplyRuntimeEntityPreviewChange(const RuntimeEntityPreviewChange& change)
 	{
 		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
 		if (!scene || change.Empty())
-			return;
+			return false;
+
+		bool applied = false;
+		bool failed = false;
+		for (const RuntimeEntityNameEdit& nameEdit : change.nameEdits)
+		{
+			const bool nameApplied = scene->SetEntityNameByGuid(nameEdit.entityGuid, nameEdit.name);
+			applied = nameApplied || applied;
+			failed = !nameApplied || failed;
+		}
+
+		for (const RuntimeEntityActiveEdit& activeEdit : change.activeEdits)
+		{
+			const bool activeApplied = scene->SetEntityActiveByGuid(activeEdit.entityGuid, activeEdit.active);
+			applied = activeApplied || applied;
+			failed = !activeApplied || failed;
+		}
 
 		for (const RuntimeComponentEnabledEdit& componentEdit : change.componentEnabled)
-			SetRuntimeComponentEnabled(componentEdit.entityGuid, componentEdit.componentType, componentEdit.enabled);
+		{
+			const bool componentApplied = SetRuntimeComponentEnabled(
+				componentEdit.entityGuid,
+				componentEdit.componentGuid,
+				componentEdit.componentType,
+				componentEdit.enabled);
+			applied = componentApplied || applied;
+			failed = !componentApplied || failed;
+		}
+
+		for (const RuntimeEntityParentEdit& parentEdit : change.parentEdits)
+		{
+			const bool parentApplied = scene->SetEntityParentByGuid(parentEdit.entityGuid, parentEdit.parentEntityGuid);
+			applied = parentApplied || applied;
+			failed = !parentApplied || failed;
+		}
 
 		if (change.hasTransform)
-			ApplyRuntimeTransform(change.transform);
+		{
+			const bool transformApplied = !change.transform.entityGuid.empty();
+			if (transformApplied)
+				ApplyRuntimeTransform(change.transform);
+			applied = transformApplied || applied;
+			failed = !transformApplied || failed;
+		}
 
 		for (RuntimeLightEdit lightEdit : change.lights)
+		{
 			SubmitCommand(std::make_unique<SetRuntimeLightPropertiesCommand>(std::move(lightEdit)));
+			applied = true;
+		}
 
 		if (!change.materialOverrides.empty())
 		{
 			VansGraphics::VansMaterialLiveEditService liveEdit;
 			for (const RuntimeRendererMaterialOverrideEdit& edit : change.materialOverrides)
-				liveEdit.ApplyRendererMaterialOverride(scene, edit);
+			{
+				const bool materialApplied = liveEdit.ApplyRendererMaterialOverride(scene, edit);
+				applied = materialApplied || applied;
+				failed = !materialApplied || failed;
+			}
 		}
+
+		return applied && !failed;
 	}
 
-	void EngineAPIImpl::SetRuntimeComponentEnabled(
+	bool EngineAPIImpl::SetRuntimeComponentEnabled(
 		const std::string& entityGuid,
+		const std::string& componentGuid,
 		const std::string& componentType,
 		bool enabled)
 	{
 		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
-		if (!scene || entityGuid.empty() || componentType.empty())
-			return;
+		if (!scene || componentGuid.empty())
+			return false;
 
-		VansScriptObject* obj = scene->FindObjectByGuid(entityGuid);
+		const std::string runtimeKey = Vans::CanonicalRuntimeComponentKeyForName(componentType);
+		Vans::VansComponentHandle runtimeComponent;
+		bool projectedByRuntime = false;
+		bool runtimeEffectiveEnabled = enabled;
+		if (auto* runtimeWorld = scene->GetRuntimeWorld())
+		{
+			const std::uint16_t typeId = Vans::VansRuntimeComponentTypeIdForKey(runtimeKey);
+			runtimeComponent = runtimeWorld->FindComponentByGuid(componentGuid, typeId);
+			if (runtimeComponent.IsValid())
+			{
+				runtimeWorld->Commands().SetComponentEnabled(runtimeComponent, enabled);
+				runtimeWorld->FlushCommands();
+				runtimeEffectiveEnabled = runtimeWorld->IsComponentEffectivelyEnabled(runtimeComponent);
+				projectedByRuntime = scene->ApplyRuntimeComponentEnabled(
+					runtimeComponent,
+					runtimeEffectiveEnabled);
+			}
+		}
+
+		VansScriptObject* obj = entityGuid.empty() ? nullptr : scene->FindObjectByGuid(entityGuid);
 		if (!obj)
-			return;
-
-		static const std::unordered_map<std::string, std::string> kTypeToRuntime = {
-			{"ModelRenderer",       "render"},
-			{"Physics",             "physics"},
-			{"Camera",              "camera"},
-			{"Cloth",               "cloth"},
-			{"Vehicle",             "vehicle"},
-			{"Animator",            "animation"},
-			{"Animation",           "animation"},
-			{"CharacterController", "CharacterController"},
-		};
-
-		std::string runtimeName = componentType;
-		auto mapIt = kTypeToRuntime.find(componentType);
-		if (mapIt != kTypeToRuntime.end())
-			runtimeName = mapIt->second;
+			return projectedByRuntime;
 
 		for (auto* comp : obj->m_Components)
 		{
-			if (comp && comp->m_ComponentName == runtimeName)
+			if (!comp)
+				continue;
+			if (comp->m_ComponentGuid == componentGuid)
 			{
-				comp->SetEnabled(enabled);
-				return;
+				const std::string componentRuntimeKey =
+					Vans::CanonicalRuntimeComponentKeyForName(comp->m_ComponentName);
+				if (!runtimeKey.empty() && componentRuntimeKey != runtimeKey)
+				{
+					VANS_LOG_WARN("[RuntimePreview] Component enabled edit type mismatch: entity='"
+						<< entityGuid << "' component='" << componentGuid
+						<< "' expected='" << runtimeKey << "' actual='" << componentRuntimeKey << "'");
+				}
+				if (projectedByRuntime)
+				{
+					comp->MirrorRuntimeEnabledState(enabled, runtimeEffectiveEnabled);
+					if (runtimeComponent.typeId == Vans::VansRuntimeComponentType_UI)
+					{
+						std::vector<std::uint64_t> openScreens;
+						if (scene->CopyRuntimeUIOpenScreens(runtimeComponent, openScreens))
+							comp->MirrorRuntimeOpenScreens(openScreens);
+					}
+				}
+				else
+				{
+					comp->SetEnabled(enabled);
+					if (runtimeComponent.IsValid() &&
+						runtimeComponent.typeId == Vans::VansRuntimeComponentType_Script)
+					{
+						if (auto* luaComponent = dynamic_cast<VansLuaScriptComponent*>(comp))
+							scene->SyncRuntimeScriptComponentFromFacade(componentGuid, *luaComponent);
+					}
+				}
+				return true;
 			}
 		}
+		return projectedByRuntime;
 	}
 
 	bool EngineAPIImpl::ApplyRuntimeMaterialPreviewChange(const RuntimeMaterialPreviewChange& change)
@@ -5233,13 +5528,32 @@ namespace Vans::EditorAPI
 		if (!bestNode->m_ParentEntityGuid.empty())
 			return bestNode->m_ParentEntityGuid;
 
-		for (VansScriptObject* obj : scene->GetSceneObjects())
+		const Vans::VansRuntimeWorld* runtimeWorld = scene->GetRuntimeWorld();
+		if (!runtimeWorld)
+			return {};
+
+		for (Vans::VansEntityHandle entity : runtimeWorld->Entities().CollectAliveEntities())
 		{
-			if (!obj)
+			const Vans::VansEntityRecord* entityRecord = runtimeWorld->Entities().Get(entity);
+			if (!entityRecord)
 				continue;
-			if (auto* render = obj->GetComponent<VansScriptRenderComponent>())
-				if (render->m_RenderNode == bestNode)
-					return obj->m_EntityGuid;
+			const std::vector<Vans::VansComponentHandle> components =
+				runtimeWorld->CollectComponentsOwnedBy(entity);
+			for (Vans::VansComponentHandle component : components)
+			{
+				const auto* render = GetRuntimeComponentPayload<Vans::VansRuntimeRenderComponent>(
+					*runtimeWorld,
+					component,
+					Vans::VansRuntimeComponentType_Render);
+				if (!render)
+					continue;
+				if (render->renderNode == bestNode ||
+					std::find(render->renderNodes.begin(), render->renderNodes.end(), bestNode) !=
+						render->renderNodes.end())
+				{
+					return entityRecord->stableGuid;
+				}
+			}
 		}
 		return {};
 	}
@@ -5374,122 +5688,152 @@ namespace Vans::EditorAPI
 
 		int selectedReverbZoneIndex = -1;
 		VansEngine::AudioReverbZoneEvaluation selectedReverbEvaluation;
-		const std::vector<VansScriptObject*>& sceneObjects = scene->GetSceneObjects();
-		snapshot.sources.reserve(sceneObjects.size());
-		snapshot.reverbZones.reserve(sceneObjects.size());
-		for (const VansScriptObject* object : sceneObjects)
+		const Vans::VansRuntimeWorld* runtimeWorld = scene->GetRuntimeWorld();
+		if (!runtimeWorld)
+			return snapshot;
+
+		const std::vector<Vans::VansEntityHandle> entities =
+			runtimeWorld->Entities().CollectAliveEntities();
+		snapshot.sources.reserve(entities.size());
+		snapshot.reverbZones.reserve(entities.size());
+		for (Vans::VansEntityHandle entity : entities)
 		{
-			if (!object)
+			const Vans::VansEntityRecord* entityRecord = runtimeWorld->Entities().Get(entity);
+			if (!entityRecord)
 				continue;
 
-			const bool hasTransform =
-				object->m_TransformID != 0 &&
-				object->m_TransformID < VansGraphics::VansTransformStore::GlobalTransforms.size();
+			const std::uint32_t transformId = ResolveRuntimeEntityTransformId(*runtimeWorld, entity);
+			const bool hasTransform = transformId < VansGraphics::VansTransformStore::GlobalTransforms.size();
 			glm::vec3 objectPosition(0.0f);
 			if (hasTransform)
 			{
 				const VansGraphics::VansTransform& transform =
-					VansGraphics::VansTransformStore::GetTransform(object->m_TransformID);
+					VansGraphics::VansTransformStore::GetTransform(transformId);
 				objectPosition = glm::vec3(
 					transform.m_Position.x,
 					transform.m_Position.y,
 					transform.m_Position.z);
 			}
 
-			if (const auto* audio = object->GetComponent<VansScriptAudioComponent>())
+			const std::vector<Vans::VansComponentHandle> components =
+				runtimeWorld->CollectComponentsOwnedBy(entity);
+			for (Vans::VansComponentHandle component : components)
 			{
-				AudioSourceDebugState source;
-				source.objectName = object->m_ObjectName;
-				source.sourceName = audio->m_Source.GetSourceName();
-				source.busName = audio->m_Source.GetBusName();
-				source.position = Vec3{ objectPosition.x, objectPosition.y, objectPosition.z };
-				if (snapshot.listenerAvailable)
+				if (const auto* audio = GetRuntimeComponentPayload<Vans::VansRuntimeAudioComponent>(
+					*runtimeWorld,
+					component,
+					Vans::VansRuntimeComponentType_Audio))
 				{
-					const glm::vec3 delta = objectPosition - listenerPosition;
-					source.listenerDistance = std::sqrt(
-						delta.x * delta.x + delta.y * delta.y + delta.z * delta.z);
-				}
-				source.volume = audio->m_Source.GetVolume();
-				source.effectiveBusGain = audioManager->GetEffectiveBusGain(source.busName);
-				source.reverbSend = audio->m_Source.GetReverbSend();
-				source.occlusionGain = audio->m_OcclusionState.gain;
-				source.occlusionHighFrequencyGain = audio->m_OcclusionState.highFrequencyGain;
-				source.occlusionMaterial = audio->m_OcclusionSettings.material;
-				source.occlusionMaterialThickness = audio->m_OcclusionSettings.materialThickness;
-				source.occlusionQueryTimer = audio->m_OcclusionState.queryTimer;
-				source.bound = audio->m_Source.IsBound();
-				source.objectActive = object->IsActive();
-				source.componentEnabled = audio->IsEnabled();
-				source.playing = audio->m_Source.IsPlaying();
-				source.paused = audio->m_Source.IsPaused();
-				source.spatial = audio->m_Source.GetSpatial();
-				source.usesInstance = audio->m_Source.UsesInstance();
-				source.usesPrivateNode = audio->m_Source.UsesPrivateNode();
-				source.hardwareVoiceActive = audio->m_Source.IsHardwareVoiceActive();
-				source.virtualized = source.playing && audio->m_Source.GetVirtualizationGain() <= 0.0005f;
-				source.occlusionEnabled = audio->m_OcclusionSettings.enabled;
-				source.occlusionBlocked = audio->m_OcclusionState.lastBlocked;
-				source.dopplerEnabled = audio->m_DopplerEnabled;
-				snapshot.sourceCount += 1;
-				if (source.bound) snapshot.boundSourceCount += 1;
-				if (source.playing) snapshot.playingSourceCount += 1;
-				if (source.spatial) snapshot.spatialSourceCount += 1;
-				if (source.virtualized) snapshot.virtualizedSourceCount += 1;
-				if (source.hardwareVoiceActive) snapshot.hardwareVoiceActiveCount += 1;
-				snapshot.sources.push_back(std::move(source));
-			}
+					AudioSourceDebugState source;
+					source.objectName = entityRecord->name;
+					source.sourceName = audio->sourceName;
+					source.position = Vec3{ objectPosition.x, objectPosition.y, objectPosition.z };
+					if (snapshot.listenerAvailable)
+					{
+						const glm::vec3 delta = objectPosition - listenerPosition;
+						source.listenerDistance = std::sqrt(
+							delta.x * delta.x + delta.y * delta.y + delta.z * delta.z);
+					}
+					if (audio->sourceBinding)
+					{
+						source.sourceName = audio->sourceBinding->GetSourceName();
+						source.busName = audio->sourceBinding->GetBusName();
+						source.volume = audio->sourceBinding->GetVolume();
+						source.reverbSend = audio->sourceBinding->GetReverbSend();
+						source.bound = audio->sourceBinding->IsBound();
+						source.playing = audio->sourceBinding->IsPlaying();
+						source.paused = audio->sourceBinding->IsPaused();
+						source.spatial = audio->sourceBinding->GetSpatial();
+						source.usesInstance = audio->sourceBinding->UsesInstance();
+						source.usesPrivateNode = audio->sourceBinding->UsesPrivateNode();
+						source.hardwareVoiceActive = audio->sourceBinding->IsHardwareVoiceActive();
+						source.virtualized =
+							source.playing && audio->sourceBinding->GetVirtualizationGain() <= 0.0005f;
+					}
+					source.effectiveBusGain = audioManager->GetEffectiveBusGain(source.busName);
+					source.objectActive = entityRecord->selfActive;
+					source.componentEnabled = runtimeWorld->IsComponentSelfEnabled(component);
+					source.dopplerEnabled = audio->dopplerEnabled;
+					source.occlusionGain = audio->occlusionState.gain;
+					source.occlusionHighFrequencyGain = audio->occlusionState.highFrequencyGain;
+					source.occlusionMaterial = audio->occlusionSettings.material;
+					source.occlusionMaterialThickness = audio->occlusionSettings.materialThickness;
+					source.occlusionQueryTimer = audio->occlusionState.queryTimer;
+					source.occlusionEnabled = audio->occlusionSettings.enabled;
+					source.occlusionBlocked = audio->occlusionState.lastBlocked;
 
-			if (const auto* zone = object->GetComponent<VansScriptAudioReverbZoneComponent>())
-			{
-				VansEngine::AudioReverbZoneState zoneState;
-				zoneState.shape = VansEngine::AudioReverbZoneShapeFromString(zone->m_Shape);
-				zoneState.centerX = objectPosition.x;
-				zoneState.centerY = objectPosition.y;
-				zoneState.centerZ = objectPosition.z;
-				zoneState.radius = zone->m_Radius;
-				zoneState.halfExtentX = zone->m_HalfExtentX;
-				zoneState.halfExtentY = zone->m_HalfExtentY;
-				zoneState.halfExtentZ = zone->m_HalfExtentZ;
-				zoneState.fadeDistance = zone->m_FadeDistance;
-				zoneState.wetGain = zone->m_WetGain;
-				zoneState.priority = zone->m_Priority;
-				zoneState.preset = VansEngine::AudioReverbPresetFromString(zone->m_Preset);
-				zoneState.presetParameters = zone->m_PresetParameters;
-				zoneState.overridePresetParameters = zone->m_OverridePresetParameters;
-
-				const VansEngine::AudioReverbZoneEvaluation evaluation =
-					snapshot.listenerAvailable
-					? VansEngine::EvaluateReverbZone(
-						listenerPosition.x,
-						listenerPosition.y,
-						listenerPosition.z,
-						zoneState)
-					: VansEngine::AudioReverbZoneEvaluation{};
-				if (VansEngine::ShouldSelectReverbZoneCandidate(
-					selectedReverbEvaluation,
-					evaluation))
-				{
-					selectedReverbEvaluation = evaluation;
-					selectedReverbZoneIndex = static_cast<int>(snapshot.reverbZones.size());
+					snapshot.sourceCount += 1;
+					if (source.bound) snapshot.boundSourceCount += 1;
+					if (source.playing) snapshot.playingSourceCount += 1;
+					if (source.spatial) snapshot.spatialSourceCount += 1;
+					if (source.virtualized) snapshot.virtualizedSourceCount += 1;
+					if (source.hardwareVoiceActive) snapshot.hardwareVoiceActiveCount += 1;
+					snapshot.sources.push_back(std::move(source));
 				}
 
-				AudioReverbZoneDebugState zoneDebug;
-				zoneDebug.objectName = object->m_ObjectName;
-				zoneDebug.componentType = zone->m_ComponentName;
-				zoneDebug.shape = VansEngine::AudioReverbZoneShapeToString(zoneState.shape);
-				zoneDebug.preset = zone->m_OverridePresetParameters
-					? (VansEngine::AudioReverbPresetToString(zoneState.preset) + std::string(" custom"))
-					: VansEngine::AudioReverbPresetToString(zoneState.preset);
-				zoneDebug.position = Vec3{ objectPosition.x, objectPosition.y, objectPosition.z };
-				zoneDebug.blend = evaluation.blend;
-				zoneDebug.wetGain = zoneState.wetGain;
-				zoneDebug.effectiveWetGain = evaluation.wetGain;
-				zoneDebug.priority = zoneState.priority;
-				zoneDebug.affectsListener = evaluation.affectsListener;
-				snapshot.reverbZoneCount += 1;
-				if (zoneDebug.affectsListener)
-					snapshot.affectingReverbZoneCount += 1;
-				snapshot.reverbZones.push_back(std::move(zoneDebug));
+				if (component.typeId == Vans::VansRuntimeComponentType_AudioReverbZone ||
+					component.typeId == Vans::VansRuntimeComponentType_AudioVolume)
+				{
+					const auto* zone = GetRuntimeComponentPayload<Vans::VansRuntimeAudioReverbZoneComponent>(
+						*runtimeWorld,
+						component,
+						component.typeId);
+					if (!zone)
+						continue;
+
+					VansEngine::AudioReverbZoneState zoneState;
+					zoneState.shape = VansEngine::AudioReverbZoneShapeFromString(zone->shape);
+					zoneState.centerX = objectPosition.x;
+					zoneState.centerY = objectPosition.y;
+					zoneState.centerZ = objectPosition.z;
+					zoneState.radius = zone->radius;
+					zoneState.halfExtentX = zone->halfExtentX;
+					zoneState.halfExtentY = zone->halfExtentY;
+					zoneState.halfExtentZ = zone->halfExtentZ;
+					zoneState.fadeDistance = zone->fadeDistance;
+					zoneState.wetGain = zone->wetGain;
+					zoneState.priority = zone->priority;
+					zoneState.preset = VansEngine::AudioReverbPresetFromString(zone->preset);
+					zoneState.presetParameters = zone->presetParameters;
+					zoneState.overridePresetParameters = zone->overridePresetParameters;
+
+					const VansEngine::AudioReverbZoneEvaluation evaluation =
+						snapshot.listenerAvailable
+						? VansEngine::EvaluateReverbZone(
+							listenerPosition.x,
+							listenerPosition.y,
+							listenerPosition.z,
+							zoneState)
+						: VansEngine::AudioReverbZoneEvaluation{};
+					if (VansEngine::ShouldSelectReverbZoneCandidate(
+						selectedReverbEvaluation,
+						evaluation))
+					{
+						selectedReverbEvaluation = evaluation;
+						selectedReverbZoneIndex = static_cast<int>(snapshot.reverbZones.size());
+					}
+
+					AudioReverbZoneDebugState zoneDebug;
+					zoneDebug.objectName = entityRecord->name;
+					zoneDebug.componentType =
+						component.typeId == Vans::VansRuntimeComponentType_AudioVolume
+						? "AudioVolume"
+						: "AudioReverbZone";
+					zoneDebug.shape = VansEngine::AudioReverbZoneShapeToString(zoneState.shape);
+					zoneDebug.preset = zone->overridePresetParameters
+						? (VansEngine::AudioReverbPresetToString(zoneState.preset) + std::string(" custom"))
+						: VansEngine::AudioReverbPresetToString(zoneState.preset);
+					zoneDebug.position = Vec3{ objectPosition.x, objectPosition.y, objectPosition.z };
+					zoneDebug.blend = evaluation.blend;
+					zoneDebug.wetGain = zoneState.wetGain;
+					zoneDebug.effectiveWetGain = evaluation.wetGain;
+					zoneDebug.priority = zoneState.priority;
+					zoneDebug.affectsListener = evaluation.affectsListener;
+					snapshot.reverbZoneCount += 1;
+					if (zoneDebug.affectsListener)
+						snapshot.affectingReverbZoneCount += 1;
+					snapshot.reverbZones.push_back(std::move(zoneDebug));
+				}
 			}
 		}
 		if (selectedReverbZoneIndex >= 0 &&

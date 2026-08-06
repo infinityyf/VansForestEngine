@@ -4,7 +4,9 @@
 
 #include <nlohmann/json.hpp>
 #include <cstring>
+#include <fstream>
 #include <limits>
+#include <optional>
 #include <sstream>
 
 using json = nlohmann::json;
@@ -26,6 +28,14 @@ static constexpr size_t BYTES_PER_KEYFRAME  = sizeof(float) + sizeof(glm::vec3) 
 // ─── Helper: write one keyframe to binary stream ───
 
 static void WriteKeyframe(std::ostream& out, const BoneKeyframe& kf)
+{
+	out.write(reinterpret_cast<const char*>(&kf.time),     sizeof(float));
+	out.write(reinterpret_cast<const char*>(&kf.position), sizeof(glm::vec3));
+	out.write(reinterpret_cast<const char*>(&kf.rotation), sizeof(glm::quat));
+	out.write(reinterpret_cast<const char*>(&kf.scale),    sizeof(glm::vec3));
+}
+
+static void WriteKeyframe(std::ostream& out, const TransformKeyframe& kf)
 {
 	out.write(reinterpret_cast<const char*>(&kf.time),     sizeof(float));
 	out.write(reinterpret_cast<const char*>(&kf.position), sizeof(glm::vec3));
@@ -78,6 +88,39 @@ static bool ReadKeyframe(BinarySpanReader& reader, BoneKeyframe& kf)
 		reader.ReadBytes(&kf.position, sizeof(glm::vec3)) &&
 		reader.ReadBytes(&kf.rotation, sizeof(glm::quat)) &&
 		reader.ReadBytes(&kf.scale, sizeof(glm::vec3));
+}
+
+static bool ReadKeyframe(BinarySpanReader& reader, TransformKeyframe& kf)
+{
+	return reader.ReadBytes(&kf.time, sizeof(float)) &&
+		reader.ReadBytes(&kf.position, sizeof(glm::vec3)) &&
+		reader.ReadBytes(&kf.rotation, sizeof(glm::quat)) &&
+		reader.ReadBytes(&kf.scale, sizeof(glm::vec3));
+}
+
+static std::optional<bool> ReadNodeTransformChannelsSetting(const std::string& filePath)
+{
+	std::ifstream meta(filePath + ".meta", std::ios::binary);
+	if (!meta)
+		return std::nullopt;
+
+	json metaJson;
+	try
+	{
+		meta >> metaJson;
+	}
+	catch (const json::parse_error&)
+	{
+		return std::nullopt;
+	}
+
+	if (!metaJson.contains("settings") || !metaJson["settings"].is_object())
+		return std::nullopt;
+
+	const json& settings = metaJson["settings"];
+	if (settings.contains("nodeTransformChannels") && settings["nodeTransformChannels"].is_boolean())
+		return settings["nodeTransformChannels"].get<bool>();
+	return std::nullopt;
 }
 
 static bool ReadClipEnvelope(
@@ -196,9 +239,25 @@ bool VansGraphics::VansAnimationClipIO::Save(const std::string& filePath,
 	}
 	header["bones"] = bonesJson;
 
+	json nodeChannelsJson = json::array();
+	uint64_t totalNodeTransformKeyframes = 0;
+	for (const NodeTransformChannel& channel : clip.nodeTransformChannels)
+	{
+		json channelJson;
+		channelJson["nodeName"] = channel.nodeName;
+		channelJson["nodePath"] = channel.nodePath;
+		channelJson["parentChannelIndex"] = channel.parentChannelIndex;
+		channelJson["bindLocalTransform"] = Mat4ToJson(channel.bindLocalTransform);
+		channelJson["bindModelTransform"] = Mat4ToJson(channel.bindModelTransform);
+		channelJson["keyframeCount"] = static_cast<uint32_t>(channel.keyframes.size());
+		totalNodeTransformKeyframes += channel.keyframes.size();
+		nodeChannelsJson.push_back(channelJson);
+	}
+	header["nodeTransformChannels"] = nodeChannelsJson;
+
 	std::string headerStr = header.dump();
 	uint32_t headerSize   = (uint32_t)headerStr.size();
-	uint64_t payloadSize  = totalKeyframes * BYTES_PER_KEYFRAME;
+	uint64_t payloadSize  = (totalKeyframes + totalNodeTransformKeyframes) * BYTES_PER_KEYFRAME;
 
 	// ── Write file ──
 	std::ostringstream file(std::ios::binary);
@@ -223,6 +282,11 @@ bool VansGraphics::VansAnimationClipIO::Save(const std::string& filePath,
 				WriteKeyframe(file, kf);
 		}
 	}
+	for (const NodeTransformChannel& channel : clip.nodeTransformChannels)
+	{
+		for (const TransformKeyframe& kf : channel.keyframes)
+			WriteKeyframe(file, kf);
+	}
 
 	if (!file)
 	{
@@ -238,7 +302,9 @@ bool VansGraphics::VansAnimationClipIO::Save(const std::string& filePath,
 	}
 
 	VANS_LOG("[VansAnimationClipIO] Saved: " << filePath
-	         << " (" << skeleton.bones.size() << " bones, " << totalKeyframes << " keyframes)");
+	         << " (" << skeleton.bones.size() << " bones, " << totalKeyframes
+	         << " bone keyframes, " << clip.nodeTransformChannels.size()
+	         << " node transform channels)");
 	return true;
 }
 
@@ -258,10 +324,11 @@ bool VansGraphics::VansAnimationClipIO::Load(const std::string& filePath,
 		return false;
 
 	// ── Read binary header ──
-	if (version > VCLIP_VERSION)
+	if (version != VCLIP_VERSION)
 	{
-		VANS_LOG_WARN("[VansAnimationClipIO] File version " << version
-		             << " is newer than supported " << VCLIP_VERSION << ", attempting load anyway.");
+		VANS_LOG_ERROR("[VansAnimationClipIO] Unsupported clip format version " << version
+		             << " in: " << filePath << " (expected " << VCLIP_VERSION << ")");
+		return false;
 	}
 
 	// ── Read JSON header ──
@@ -279,6 +346,7 @@ bool VansGraphics::VansAnimationClipIO::Load(const std::string& filePath,
 	outClip.clipName       = header.value("clipName", "");
 	outClip.duration       = header.value("duration", 0.0f);
 	outClip.ticksPerSecond = header.value("ticksPerSecond", 60.0f);
+	outClip.nodeTransformChannels.clear();
 
 	// ── Reconstruct skeleton ──
 	if (header.contains("globalInverseTransform"))
@@ -315,6 +383,39 @@ bool VansGraphics::VansAnimationClipIO::Load(const std::string& filePath,
 		outSkeleton.boneNameToIndex[bone.name] = bone.id;
 	}
 
+	std::vector<uint32_t> nodeKeyframeCounts;
+	if (!header.contains("nodeTransformChannels") || !header["nodeTransformChannels"].is_array())
+	{
+		const std::optional<bool> nodeTransformChannels = ReadNodeTransformChannelsSetting(filePath);
+		if (!nodeTransformChannels || *nodeTransformChannels)
+		{
+			VANS_LOG_ERROR("[VansAnimationClipIO] Missing nodeTransformChannels in current clip format: "
+				<< filePath << " (set settings.nodeTransformChannels=false for skeletal-only clips)");
+			return false;
+		}
+	}
+	else
+	{
+		const auto& channelsJson = header["nodeTransformChannels"];
+		outClip.nodeTransformChannels.resize(channelsJson.size());
+		nodeKeyframeCounts.resize(channelsJson.size(), 0);
+		for (size_t i = 0; i < channelsJson.size(); ++i)
+		{
+			const auto& cj = channelsJson[i];
+			NodeTransformChannel& channel = outClip.nodeTransformChannels[i];
+			channel.nodeName = cj.value("nodeName", "");
+			channel.nodePath = cj.value("nodePath", "");
+			channel.parentChannelIndex = cj.value("parentChannelIndex", -1);
+			channel.bindLocalTransform = cj.contains("bindLocalTransform")
+				? JsonToMat4(cj["bindLocalTransform"])
+				: glm::mat4(1.0f);
+			channel.bindModelTransform = cj.contains("bindModelTransform")
+				? JsonToMat4(cj["bindModelTransform"])
+				: glm::mat4(1.0f);
+			nodeKeyframeCounts[i] = cj.value("keyframeCount", (uint32_t)0);
+		}
+	}
+
 	// ── Read binary payload ──
 	for (uint32_t b = 0; b < boneCount; b++)
 	{
@@ -325,6 +426,19 @@ bool VansGraphics::VansAnimationClipIO::Load(const std::string& filePath,
 			if (!ReadKeyframe(payloadReader, outClip.boneKeyframes[b][k]))
 			{
 				VANS_LOG_ERROR("[VansAnimationClipIO] Truncated keyframe payload in: " << filePath);
+				return false;
+			}
+		}
+	}
+	for (size_t i = 0; i < outClip.nodeTransformChannels.size(); ++i)
+	{
+		uint32_t kfCount = i < nodeKeyframeCounts.size() ? nodeKeyframeCounts[i] : 0;
+		outClip.nodeTransformChannels[i].keyframes.resize(kfCount);
+		for (uint32_t k = 0; k < kfCount; ++k)
+		{
+			if (!ReadKeyframe(payloadReader, outClip.nodeTransformChannels[i].keyframes[k]))
+			{
+				VANS_LOG_ERROR("[VansAnimationClipIO] Truncated node transform keyframe payload in: " << filePath);
 				return false;
 			}
 		}
@@ -348,13 +462,18 @@ bool VansGraphics::VansAnimationClipIO::Peek(const std::string& filePath,
 	BinarySpanReader payloadReader;
 	if (!ReadClipEnvelope(filePath, bytes, outInfo.version, headerStr, payloadReader, false))
 		return false;
+	if (outInfo.version != VCLIP_VERSION)
+		return false;
 
 	try
 	{
 		json header = json::parse(headerStr);
+		if (!header.contains("nodeTransformChannels") || !header["nodeTransformChannels"].is_array())
+			return false;
 		outInfo.clipName  = header.value("clipName", "");
 		outInfo.duration  = header.value("duration", 0.0f);
 		outInfo.boneCount = header.value("boneCount", (uint32_t)0);
+		outInfo.nodeTransformChannelCount = static_cast<uint32_t>(header["nodeTransformChannels"].size());
 	}
 	catch (...)
 	{

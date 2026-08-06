@@ -1,7 +1,7 @@
 #include "VansSceneAssetDependencyBuilder.h"
 
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
-#include "../AssetCore/Serialization/VansSerializedValueLegacyJsonAdapter.h"
+#include "../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 #include "../AssetCore/Storage/VansMaterialAuthoringAssetStorage.h"
 #include "../AssetCore/VansAssetMeta.h"
 #include "../AssetCore/VansBuiltInAssetCatalog.h"
@@ -44,7 +44,7 @@ namespace
 		}
 		if (!root.is_object())
 			return EmptyObject();
-		return DecodeSerializedValueLegacyJson(root);
+		return DecodeSerializedValueJson(root);
 	}
 
 	VansSerializedValue LoadSceneDocumentOrEmpty(const std::filesystem::path& path)

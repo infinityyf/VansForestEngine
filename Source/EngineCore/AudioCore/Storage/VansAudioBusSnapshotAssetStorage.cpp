@@ -1,6 +1,6 @@
 #include "VansAudioBusSnapshotAssetStorage.h"
 
-#include "../../AssetCore/Serialization/VansSerializedValueLegacyJsonAdapter.h"
+#include "../../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 #include "../../AssetCore/Storage/VansJsonFileStorage.h"
 #include "../../AssetCore/VansAssetDocument.h"
 #include "../../AssetCore/VansAssetDocumentJson.h"
@@ -27,7 +27,7 @@ bool VansAudioBusSnapshotAssetStorage::StageWrite(
     std::string& error)
 {
     const AssetDocumentJson root =
-        EncodeSerializedValueLegacyJson<AssetDocumentJson>(WriteAudioBusSnapshotAssetRoot(asset));
+        EncodeSerializedValueJson<AssetDocumentJson>(WriteAudioBusSnapshotAssetRoot(asset));
     return VansJsonFileStorage::StageWrite(path, root, stage, error);
 }
 
@@ -37,7 +37,7 @@ bool VansAudioBusSnapshotAssetStorage::SaveAtomic(
     std::string& error)
 {
     const AssetDocumentJson root =
-        EncodeSerializedValueLegacyJson<AssetDocumentJson>(WriteAudioBusSnapshotAssetRoot(asset));
+        EncodeSerializedValueJson<AssetDocumentJson>(WriteAudioBusSnapshotAssetRoot(asset));
     return VansJsonFileStorage::WriteAtomic(path, root, error);
 }
 }

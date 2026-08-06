@@ -4,9 +4,11 @@
 
 #include "../RuntimeCore/VansThreadContract.h"
 #include "VansShaderManager.h"
+#include "VansCamera.h"
 #include "BRDFData/VansLight.h"
 #include "../Configration/VansConfigration.h"
 #include "../AudioCore/VansAudioReverbEnvironment.h"
+#include "../AudioCore/VansAudioSourceBinding.h"
 #include "../AudioCore/VansAudioSystem.h"
 #include "../AudioCore/VansAudioVirtualization.h"
 #include "../PhysicsCore/VansPhysics.h"
@@ -26,6 +28,11 @@
 #include "VegetationCore/VansVegetationSystem.h"
 #include "VansParticleRenderNode.h"
 #include "../ParticleCore/VansParticleManager.h"
+#include "../ParticleCore/VansParticleRuntime.h"
+#include "../RuntimeUI/Public/VansUIScreen.h"
+#include "../RuntimeUI/Public/VansUISystem.h"
+#include "../SceneRuntime/VansRuntimeComponentTypes.h"
+#include "../SceneRuntime/VansRuntimeWorld.h"
 #include "../AnimationCore/VansAnimationNode.h"
 #include "../AnimationCore/VansBoneAttachmentSystem.h"
 #include "../AnimationCore/VansSkinnedMeshLoader.h"
@@ -38,6 +45,7 @@
 #include <iostream>
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include <filesystem>
@@ -52,7 +60,7 @@ namespace
 {
 	struct AudioOcclusionQueryTarget
 	{
-		VansScriptAudioComponent* component = nullptr;
+		Vans::VansComponentHandle component;
 		glm::vec3 sourcePosition{ 0.0f };
 		float distance = 0.0f;
 		uint32_t ignoredTransformID = 0;
@@ -130,6 +138,26 @@ namespace
 		return nullptr;
 	}
 
+	Vans::VansRuntimeScriptState ToRuntimeScriptState(VansLuaScriptState state)
+	{
+		switch (state)
+		{
+		case VansLuaScriptState::Loading:
+			return Vans::VansRuntimeScriptState::Loading;
+		case VansLuaScriptState::Active:
+			return Vans::VansRuntimeScriptState::Active;
+		case VansLuaScriptState::Disabled:
+			return Vans::VansRuntimeScriptState::Disabled;
+		case VansLuaScriptState::Faulted:
+			return Vans::VansRuntimeScriptState::Faulted;
+		case VansLuaScriptState::Destroyed:
+			return Vans::VansRuntimeScriptState::Destroyed;
+		case VansLuaScriptState::Unloaded:
+		default:
+			return Vans::VansRuntimeScriptState::Unloaded;
+		}
+	}
+
 	void RegisterAssetByName(
 		std::unordered_map<std::string, VansGraphics::VansAsset*>& lookup,
 		VansGraphics::VansAsset* asset)
@@ -144,6 +172,160 @@ namespace
 		shadowBounds.min = bounds.min;
 		shadowBounds.max = bounds.max;
 		return shadowBounds;
+	}
+
+	template <typename T>
+	const T* GetRuntimeComponentPayload(
+		const Vans::VansRuntimeWorld& runtimeWorld,
+		Vans::VansComponentHandle component,
+		std::uint16_t expectedType)
+	{
+		if (component.typeId != expectedType)
+			return nullptr;
+		const auto* storage = static_cast<const Vans::VansComponentStorage<T>*>(
+			runtimeWorld.FindStorage(expectedType));
+		return storage ? storage->Get(component) : nullptr;
+	}
+
+	std::uint32_t ResolveRuntimeEntityTransformId(
+		const Vans::VansRuntimeWorld& runtimeWorld,
+		Vans::VansEntityHandle entity)
+	{
+		for (Vans::VansComponentHandle component : runtimeWorld.CollectComponentsOwnedBy(entity))
+		{
+			if (const auto* transform = GetRuntimeComponentPayload<Vans::VansRuntimeTransformComponent>(
+				runtimeWorld,
+				component,
+				Vans::VansRuntimeComponentType_Transform))
+			{
+				return transform->transformStoreId;
+			}
+		}
+		return UINT32_MAX;
+	}
+
+	struct RuntimeSceneDestroyReferences
+	{
+		VansGraphics::VansRenderNode* renderNode = nullptr;
+		VansGraphics::VansParticleRenderNode* particleRenderNode = nullptr;
+		VansGraphics::VansAnimationNode* animationNode = nullptr;
+		VansEngine::VansPhysicsNode* physicsNode = nullptr;
+		VansEngine::VansClothNode* clothNode = nullptr;
+		VansEngine::VansCharacterControllerNode* characterControllerNode = nullptr;
+		VansEngine::VansPhysicsVehicle* vehicle = nullptr;
+		int directionalLightIndex = -1;
+		int pointLightIndex = -1;
+		int spotLightIndex = -1;
+		int rectLightIndex = -1;
+		bool hasRagdoll = false;
+	};
+
+	RuntimeSceneDestroyReferences CollectRuntimeSceneDestroyReferences(
+		const Vans::VansRuntimeWorld& runtimeWorld,
+		Vans::VansEntityHandle entity)
+	{
+		RuntimeSceneDestroyReferences references;
+		for (Vans::VansComponentHandle component : runtimeWorld.CollectComponentsOwnedBy(entity))
+		{
+			switch (component.typeId)
+			{
+			case Vans::VansRuntimeComponentType_Render:
+				if (const auto* render = GetRuntimeComponentPayload<Vans::VansRuntimeRenderComponent>(
+					runtimeWorld,
+					component,
+					Vans::VansRuntimeComponentType_Render))
+				{
+					references.renderNode = render->renderNode;
+					if (!references.renderNode && !render->renderNodes.empty())
+						references.renderNode = render->renderNodes.front();
+				}
+				break;
+			case Vans::VansRuntimeComponentType_Physics:
+				if (const auto* physics = GetRuntimeComponentPayload<Vans::VansRuntimePhysicsComponent>(
+					runtimeWorld,
+					component,
+					Vans::VansRuntimeComponentType_Physics))
+					references.physicsNode = physics->physicsNode;
+				break;
+			case Vans::VansRuntimeComponentType_Cloth:
+				if (const auto* cloth = GetRuntimeComponentPayload<Vans::VansRuntimeClothComponent>(
+					runtimeWorld,
+					component,
+					Vans::VansRuntimeComponentType_Cloth))
+					references.clothNode = cloth->clothNode;
+				break;
+			case Vans::VansRuntimeComponentType_CharacterController:
+				if (const auto* cct = GetRuntimeComponentPayload<Vans::VansRuntimeCharacterControllerComponent>(
+					runtimeWorld,
+					component,
+					Vans::VansRuntimeComponentType_CharacterController))
+					references.characterControllerNode = cct->controllerNode;
+				break;
+			case Vans::VansRuntimeComponentType_Vehicle:
+				if (const auto* vehicle = GetRuntimeComponentPayload<Vans::VansRuntimeVehicleComponent>(
+					runtimeWorld,
+					component,
+					Vans::VansRuntimeComponentType_Vehicle))
+					references.vehicle = vehicle->vehicle;
+				break;
+			case Vans::VansRuntimeComponentType_Animation:
+				if (const auto* animation = GetRuntimeComponentPayload<Vans::VansRuntimeAnimationComponent>(
+					runtimeWorld,
+					component,
+					Vans::VansRuntimeComponentType_Animation))
+					references.animationNode = animation->animationNode;
+				break;
+			case Vans::VansRuntimeComponentType_Ragdoll:
+				if (const auto* ragdoll = GetRuntimeComponentPayload<Vans::VansRuntimeRagdollComponent>(
+					runtimeWorld,
+					component,
+					Vans::VansRuntimeComponentType_Ragdoll))
+				{
+					references.hasRagdoll = true;
+					if (!references.animationNode)
+						references.animationNode = ragdoll->animationNode;
+				}
+				break;
+			case Vans::VansRuntimeComponentType_Particle:
+				if (const auto* particle = GetRuntimeComponentPayload<Vans::VansRuntimeParticleComponent>(
+					runtimeWorld,
+					component,
+					Vans::VansRuntimeComponentType_Particle))
+					references.particleRenderNode = particle->renderNode;
+				break;
+			case Vans::VansRuntimeComponentType_DirectionalLight:
+				if (const auto* light = GetRuntimeComponentPayload<Vans::VansRuntimeLightComponent>(
+					runtimeWorld,
+					component,
+					Vans::VansRuntimeComponentType_DirectionalLight))
+					references.directionalLightIndex = light->lightIndex;
+				break;
+			case Vans::VansRuntimeComponentType_PointLight:
+				if (const auto* light = GetRuntimeComponentPayload<Vans::VansRuntimeLightComponent>(
+					runtimeWorld,
+					component,
+					Vans::VansRuntimeComponentType_PointLight))
+					references.pointLightIndex = light->lightIndex;
+				break;
+			case Vans::VansRuntimeComponentType_SpotLight:
+				if (const auto* light = GetRuntimeComponentPayload<Vans::VansRuntimeLightComponent>(
+					runtimeWorld,
+					component,
+					Vans::VansRuntimeComponentType_SpotLight))
+					references.spotLightIndex = light->lightIndex;
+				break;
+			case Vans::VansRuntimeComponentType_RectLight:
+				if (const auto* light = GetRuntimeComponentPayload<Vans::VansRuntimeLightComponent>(
+					runtimeWorld,
+					component,
+					Vans::VansRuntimeComponentType_RectLight))
+					references.rectLightIndex = light->lightIndex;
+				break;
+			default:
+				break;
+			}
+		}
+		return references;
 	}
 
 }
@@ -453,9 +635,8 @@ void VansGraphics::VansScene::CreateGlobalDescriptorSet(VkDevice device)
         }});
     descManager->CommitDescriptorUpdates();
 
-    // ── Create shared dummy animation buffers and Set 3 for static nodes ─────────
-    // Animated VansCommonRenderNodes allocate their own per-node Set 3 with real buffers.
-    // Static nodes bind this shared dummy set (never read since animationEnabled==0).
+    // Create shared dummy vertex-deformation buffers and Set 3 for static nodes.
+    // Skinned geometry allocates per-node Set 3 with real buffers.
     m_DummyBoneIDBuffer.CreatVulkanBuffer(device, 64, VK_FORMAT_R32_SFLOAT,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
@@ -467,26 +648,26 @@ void VansGraphics::VansScene::CreateGlobalDescriptorSet(VkDevice device)
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
     std::vector<VkDescriptorSet> animSets;
-    VansDescriptorSetLayoutFactory::CreateAndAllocate_Animation(m_AnimationDescriptorSetLayout, animSets);
-    m_AnimationDescriptorSet = animSets[0];
+    VansDescriptorSetLayoutFactory::CreateAndAllocate_VertexDeformation(m_VertexDeformationDescriptorSetLayout, animSets);
+    m_VertexDeformationDescriptorSet = animSets[0];
 
     descManager->BeginDescriptorUpdate();
     // binding 0: Dummy Bone ID SSBO (per-submesh bone IDs)
     descManager->WriteBufferDescriptor(
-        m_AnimationDescriptorSet,
-        ANIMATION_BINDING_BONEID_SSBO,
+        m_VertexDeformationDescriptorSet,
+        VERTEX_DEFORMATION_BINDING_BONEID_SSBO,
         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
         {{ m_DummyBoneIDBuffer.GetNativeBuffer(), 0, 64 }});
     // binding 1: Dummy Bone Matrices SSBO
     descManager->WriteBufferDescriptor(
-        m_AnimationDescriptorSet,
-        ANIMATION_BINDING_BONE_SSBO,
+        m_VertexDeformationDescriptorSet,
+        VERTEX_DEFORMATION_BINDING_BONE_SSBO,
         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
         {{ m_DummyBoneBuffer.GetNativeBuffer(), 0, 64 }});
     // binding 2: Dummy Bone Weight SSBO (per-submesh bone weights)
     descManager->WriteBufferDescriptor(
-        m_AnimationDescriptorSet,
-        ANIMATION_BINDING_BONEWEIGHT_SSBO,
+        m_VertexDeformationDescriptorSet,
+        VERTEX_DEFORMATION_BINDING_BONEWEIGHT_SSBO,
         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
         {{ m_DummyWeightBuffer.GetNativeBuffer(), 0, 64 }});
     descManager->CommitDescriptorUpdates();
@@ -896,6 +1077,9 @@ void VansGraphics::VansScene::UnLoadScene()
     VANS_ASSERT_MAIN_THREAD();
 
 	VANS_LOG("[VansScene] UnLoadScene started");
+	ReleaseAudioSourceBindings();
+	if (m_RuntimeWorld)
+		m_RuntimeWorld->Clear();
 
 	VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
 	VkDevice nativeDevice = vkDevice ? vkDevice->GetLogicDevice() : VK_NULL_HANDLE;
@@ -930,24 +1114,14 @@ void VansGraphics::VansScene::UnLoadScene()
 	}
 	VANS_LOG("[VansScene] Step 1: scene runtime textures cleared; screen-space textures retained");
 
-	// ── 2. 清理脚本对象（仅释放 wrapper，不释放底层 Node）─────────────────
+	// ── 2. 清理脚本对象（组件 Destroy 负责自身生命周期收尾）─────────────────
     VANS_UNLOAD_STEP(2, "Clear script objects and script modules");
 	for (auto* obj : m_SceneObjects)
 	{
-		if (!obj) continue;
-		for (auto* comp : obj->m_Components)
-		{
-			auto* luaComp = dynamic_cast<VansLuaScriptComponent*>(comp);
-			if (luaComp) luaComp->Teardown();
-
-            auto* particleComp = dynamic_cast<VansScriptParticleComponent*>(comp);
-            if (particleComp && particleComp->m_Runtime)
-            {
-                VansParticleManager::Instance().UnregisterRuntime(particleComp->m_Runtime.get());
-            }
-		}
+		delete obj;
 	}
-	VANS_LOG("[VansScene] Step 2a: 鑴氭湰缁勪欢宸?Teardown");
+	m_SceneObjects.clear();
+	VANS_LOG("[VansScene] Step 2a: SceneObjects released");
     VansParticleManager::Instance().Shutdown();
 
 	// ScriptContext 中的 tracked modules 也一并清理。
@@ -955,12 +1129,7 @@ void VansGraphics::VansScene::UnLoadScene()
 	{
 		VansScriptContext::GetInstance()->ClearTrackedModules();
 	}
-	for (auto* obj : m_SceneObjects)
-	{
-		delete obj;
-	}
-	m_SceneObjects.clear();
-    VANS_LOG("[VansScene] Step 2b: SceneObjects released");
+	VANS_LOG("[VansScene] Step 2b: script modules and particles cleared");
 
 	// ── 3-5. 清理物理节点 / 载具 / 布料（需要持有物理线程锁）─────────────
 	// 物理模拟在独立线程运行，必须先获得 SimulationMutex 再操作 PxScene。
@@ -1146,6 +1315,11 @@ void VansGraphics::VansScene::UnLoadScene()
 	// ── 10. 清理 Multi-mesh 分组 ────────────────────────────────────────
     VANS_UNLOAD_STEP(10, "娓呯悊 Multi-mesh 鍒嗙粍鍜屽瓙缃戞牸鏌ユ壘鏉＄洰");
 	VANS_LOG("[VansScene] Step 10: clearing multi-mesh groups (count=" << m_MultiMeshGroups.size() << ")");
+	for (auto& [groupName, group] : m_MultiMeshGroups)
+	{
+		if (group.ownsSharedTransform)
+			VansTransformStore::FreeTransform(group.sharedTransformID);
+	}
 	m_MultiMeshGroups.clear();
 
     // 子网格对象本身由父级 multi-mesh 的 m_SubMeshes 拥有，此处仅清除非拥有查找列表，
@@ -1256,13 +1430,13 @@ void VansGraphics::VansScene::UnLoadScene()
 	}
 	descMgr->DestroyDescriptorSetLayout(m_ObjectDescriptorSetLayout);
 
-	if (m_AnimationDescriptorSet != VK_NULL_HANDLE)
+	if (m_VertexDeformationDescriptorSet != VK_NULL_HANDLE)
 	{
-		std::vector<VkDescriptorSet> tmp = { m_AnimationDescriptorSet };
+		std::vector<VkDescriptorSet> tmp = { m_VertexDeformationDescriptorSet };
 		descMgr->DestroyDescriptorSet(tmp);
-		m_AnimationDescriptorSet = VK_NULL_HANDLE;
+		m_VertexDeformationDescriptorSet = VK_NULL_HANDLE;
 	}
-	descMgr->DestroyDescriptorSetLayout(m_AnimationDescriptorSetLayout);
+	descMgr->DestroyDescriptorSetLayout(m_VertexDeformationDescriptorSetLayout);
 
 	if (m_EmptyPassDescriptorSet != VK_NULL_HANDLE)
 	{
@@ -1437,23 +1611,43 @@ void VansGraphics::VansScene::UpdateSceneData()
         const float deltaTime = static_cast<float>(VansTimer::GetLastFrameDelta());
         {
             VANS_PROFILE_SCOPE("Particle::PrepareLocalToWorld", Vans::ProfileCategory::Particles);
-            for (auto* obj : m_SceneObjects)
+            if (m_RuntimeWorld)
             {
-                if (!obj || obj->m_TransformID == 0) continue;
-
-                auto* particleComp = obj->GetComponent<VansScriptParticleComponent>();
-                if (!particleComp || !particleComp->m_Runtime) continue;
-
-                if (particleComp->m_HasWorldPositionOverride)
+                auto* storage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeParticleComponent>*>(
+                    m_RuntimeWorld->FindStorage(Vans::VansRuntimeComponentType_Particle));
+                if (storage)
                 {
-                    glm::mat4x4 overrideMatrix(1.f);
-                    overrideMatrix[3] = glm::vec4(particleComp->m_WorldPositionOverride, 1.f);
-                    particleComp->m_Runtime->m_LocalToWorld = overrideMatrix;
-                }
-                else
-                {
-                    auto& t = VansTransformStore::GetTransform(obj->m_TransformID);
-                    particleComp->m_Runtime->m_LocalToWorld = t.GetModelMatrix();
+                    for (Vans::VansEntityHandle entity : m_RuntimeWorld->Entities().CollectAliveEntities())
+                    {
+                        const std::uint32_t transformId = ResolveRuntimeEntityTransformId(*m_RuntimeWorld, entity);
+                        if (transformId >= VansTransformStore::GlobalTransforms.size())
+                            continue;
+
+                        for (Vans::VansComponentHandle component : m_RuntimeWorld->CollectComponentsOwnedBy(entity))
+                        {
+                            if (component.typeId != Vans::VansRuntimeComponentType_Particle)
+                                continue;
+                            auto* particle = storage->Get(component);
+                            if (!particle || !particle->runtime)
+                                continue;
+
+                            if (particle->hasWorldPositionOverride)
+                            {
+                                glm::mat4x4 overrideMatrix(1.f);
+                                overrideMatrix[3] = glm::vec4(
+                                    particle->worldPositionOverrideX,
+                                    particle->worldPositionOverrideY,
+                                    particle->worldPositionOverrideZ,
+                                    1.f);
+                                particle->runtime->m_LocalToWorld = overrideMatrix;
+                            }
+                            else
+                            {
+                                auto& t = VansTransformStore::GetTransform(transformId);
+                                particle->runtime->m_LocalToWorld = t.GetModelMatrix();
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1471,20 +1665,31 @@ void VansGraphics::VansScene::UpdateSceneData()
         {
             VANS_PROFILE_SCOPE("Particle::UploadInstanceBuffers", Vans::ProfileCategory::Particles);
             const glm::mat4 particleViewMatrix = m_Camera ? m_Camera->GetViewMatrix() : glm::mat4(1.0f);
-            for (auto* obj : m_SceneObjects)
+            if (m_RuntimeWorld)
             {
-                if (!obj) continue;
+                auto* storage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeParticleComponent>*>(
+                    m_RuntimeWorld->FindStorage(Vans::VansRuntimeComponentType_Particle));
+                if (storage)
+                {
+                    for (Vans::VansEntityHandle entity : m_RuntimeWorld->Entities().CollectAliveEntities())
+                    {
+                        for (Vans::VansComponentHandle component : m_RuntimeWorld->CollectComponentsOwnedBy(entity))
+                        {
+                            if (component.typeId != Vans::VansRuntimeComponentType_Particle)
+                                continue;
+                            auto* particle = storage->Get(component);
+                            if (!particle || !particle->runtime || !particle->renderNode)
+                                continue;
 
-                auto* particleComp = obj->GetComponent<VansScriptParticleComponent>();
-                if (!particleComp || !particleComp->m_Runtime || !particleComp->m_RenderNode) continue;
-
-                particleComp->m_PlayTime  = particleComp->m_Runtime->m_PlayTime;
-                particleComp->m_IsPlaying = particleComp->m_Runtime->m_IsPlaying;
-
-                particleComp->m_RenderNode->UpdateInstanceBuffer(
-                    nativeDevice,
-                    particleComp->m_Runtime->GetRenderBuffer(),
-                    particleViewMatrix);
+                            particle->playTime = particle->runtime->m_PlayTime;
+                            particle->isPlaying = particle->runtime->m_IsPlaying;
+                            particle->renderNode->UpdateInstanceBuffer(
+                                nativeDevice,
+                                particle->runtime->GetRenderBuffer(),
+                                particleViewMatrix);
+                        }
+                    }
+                }
             }
         }
     }
@@ -1524,17 +1729,36 @@ void VansGraphics::VansScene::RecordVideoUploads(VansVKCommandBuffer& cmd)
         if (!emissiveArray)
             return;
 
-        for (auto* obj : m_SceneObjects)
-        {
-            if (!obj) continue;
-            auto* rectComp = obj->GetComponent<VansScriptRectLightComponent>();
-            if (!rectComp || !rectComp->m_VideoComponent) continue;
+        if (!m_RuntimeWorld)
+            return;
 
-            VansVideoTexture* vid = rectComp->m_VideoComponent->m_VideoTex;
+        auto* rectLightStorage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeLightComponent>*>(
+            m_RuntimeWorld->FindStorage(Vans::VansRuntimeComponentType_RectLight));
+        auto* videoStorage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeVideoComponent>*>(
+            m_RuntimeWorld->FindStorage(Vans::VansRuntimeComponentType_Video));
+        if (!rectLightStorage || !videoStorage)
+            return;
+
+        for (Vans::VansEntityHandle entity : m_RuntimeWorld->Entities().CollectAliveEntities())
+        {
+            Vans::VansRuntimeLightComponent* rectLight = nullptr;
+            Vans::VansRuntimeVideoComponent* video = nullptr;
+            for (Vans::VansComponentHandle component : m_RuntimeWorld->CollectComponentsOwnedBy(entity))
+            {
+                if (component.typeId == Vans::VansRuntimeComponentType_RectLight)
+                    rectLight = rectLightStorage->Get(component);
+                else if (component.typeId == Vans::VansRuntimeComponentType_Video)
+                    video = videoStorage->Get(component);
+            }
+
+            if (!rectLight || !video)
+                continue;
+
+            VansVideoTexture* vid = video->videoTexture;
             if (!vid || !vid->IsReady()) continue;
 
             vid->RecordNewFrameToArrayLayer(
-                emissiveArray, cmd, rectComp->m_LightIndex);
+                emissiveArray, cmd, rectLight->lightIndex);
         }
     }
 }
@@ -1547,49 +1771,56 @@ void VansGraphics::VansScene::RecordVideoUploads(VansVKCommandBuffer& cmd)
 // ============================================================
 void VansGraphics::VansScene::SyncLightTransforms()
 {
-    for (auto* obj : m_SceneObjects)
-    {
-        if (!obj) continue;
+    if (!m_RuntimeWorld)
+        return;
 
-        // ── 方向光：同步旋转 Z 轴（取反后）作为 m_Direction ────────────────
-        auto* dirComp = obj->GetComponent<VansScriptDirectionalLightComponent>();
-        if (dirComp && dirComp->m_LightManager && dirComp->m_LightIndex >= 0)
+    for (Vans::VansEntityHandle entity : m_RuntimeWorld->Entities().CollectAliveEntities())
+    {
+        const std::uint32_t transformId = ResolveRuntimeEntityTransformId(*m_RuntimeWorld, entity);
+        if (transformId >= VansTransformStore::GlobalTransforms.size())
+            continue;
+
+        const auto& t = VansTransformStore::GetTransform(transformId);
+        const std::vector<Vans::VansComponentHandle> components =
+            m_RuntimeWorld->CollectComponentsOwnedBy(entity);
+        for (Vans::VansComponentHandle component : components)
         {
-            auto& lights = dirComp->m_LightManager->GetDirectionLights();
-            if (dirComp->m_LightIndex < (int)lights.size())
+            const auto* runtimeLight = GetRuntimeComponentPayload<Vans::VansRuntimeLightComponent>(
+                *m_RuntimeWorld,
+                component,
+                component.typeId);
+            if (!runtimeLight || !runtimeLight->lightManager || runtimeLight->lightIndex < 0)
+                continue;
+
+            if (component.typeId == Vans::VansRuntimeComponentType_DirectionalLight)
             {
-                const auto& t = VansTransformStore::GetTransform(obj->m_TransformID);
+                auto& lights = runtimeLight->lightManager->GetDirectionLights();
+                if (runtimeLight->lightIndex >= (int)lights.size())
+                    continue;
                 glm::mat4 rotMat = glm::mat4(1.0f);
                 rotMat = glm::rotate(rotMat, glm::radians(t.m_Rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
                 rotMat = glm::rotate(rotMat, glm::radians(t.m_Rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
                 rotMat = glm::rotate(rotMat, glm::radians(t.m_Rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
                 glm::vec3 forward = glm::normalize(glm::vec3(rotMat[2]));
                 // m_Direction = 朝向光源方向（与光线传播方向相反）
-                lights[dirComp->m_LightIndex].m_Direction = -forward;
+                lights[runtimeLight->lightIndex].m_Direction = -forward;
+                continue;
             }
-        }
 
-        // ── 点光源：同步位置 ───────────────────────────────────────────────
-        auto* pointComp = obj->GetComponent<VansScriptPointLightComponent>();
-        if (pointComp && pointComp->m_LightManager && pointComp->m_LightIndex >= 0)
-        {
-            auto& lights = pointComp->m_LightManager->GetPointLights();
-            if (pointComp->m_LightIndex < (int)lights.size())
+            if (component.typeId == Vans::VansRuntimeComponentType_PointLight)
             {
-                const auto& t = VansTransformStore::GetTransform(obj->m_TransformID);
-                lights[pointComp->m_LightIndex].m_Position = t.m_Position;
+                auto& lights = runtimeLight->lightManager->GetPointLights();
+                if (runtimeLight->lightIndex < (int)lights.size())
+                    lights[runtimeLight->lightIndex].m_Position = t.m_Position;
+                continue;
             }
-        }
 
-        // ── 聚光灯：同步位置与方向 ────────────────────────────────────────
-        auto* spotComp = obj->GetComponent<VansScriptSpotLightComponent>();
-        if (spotComp && spotComp->m_LightManager && spotComp->m_LightIndex >= 0)
-        {
-            auto& lights = spotComp->m_LightManager->GetSpotLight();
-            if (spotComp->m_LightIndex < (int)lights.size())
+            if (component.typeId == Vans::VansRuntimeComponentType_SpotLight)
             {
-                const auto& t = VansTransformStore::GetTransform(obj->m_TransformID);
-                lights[spotComp->m_LightIndex].m_Position = t.m_Position;
+                auto& lights = runtimeLight->lightManager->GetSpotLight();
+                if (runtimeLight->lightIndex >= (int)lights.size())
+                    continue;
+                lights[runtimeLight->lightIndex].m_Position = t.m_Position;
 
                 glm::mat4 rotMat = glm::mat4(1.0f);
                 rotMat = glm::rotate(rotMat, glm::radians(t.m_Rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
@@ -1599,19 +1830,15 @@ void VansGraphics::VansScene::SyncLightTransforms()
                 // Unity 中的聚光灯沿本地 -Z 发光，因此本地 +Z 是 GPU 侧用于
                 // 光照、阴影、体积雾和 IES 的锥体轴方向。
                 glm::vec3 towardLight = glm::normalize(glm::vec3(rotMat[2]));
-                lights[spotComp->m_LightIndex].m_Direction = towardLight;
+                lights[runtimeLight->lightIndex].m_Direction = towardLight;
+                continue;
             }
-        }
 
-        // ── 面光源：同步位置与三个基底向量（Right/Up/Normal）────────────────
-        // 与 Spot 一致：Normal 指向光源"照射方向"（与 SpotLight.m_Direction 取反同义）
-        auto* rectComp = obj->GetComponent<VansScriptRectLightComponent>();
-        if (rectComp && rectComp->m_LightManager && rectComp->m_LightIndex >= 0)
-        {
-            auto& lights = rectComp->m_LightManager->GetRectLights();
-            if (rectComp->m_LightIndex < (int)lights.size())
+            if (component.typeId == Vans::VansRuntimeComponentType_RectLight)
             {
-                const auto& t = VansTransformStore::GetTransform(obj->m_TransformID);
+                auto& lights = runtimeLight->lightManager->GetRectLights();
+                if (runtimeLight->lightIndex >= (int)lights.size())
+                    continue;
                 glm::mat4 rotMat = glm::mat4(1.0f);
                 rotMat = glm::rotate(rotMat, glm::radians(t.m_Rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
                 rotMat = glm::rotate(rotMat, glm::radians(t.m_Rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
@@ -1619,13 +1846,12 @@ void VansGraphics::VansScene::SyncLightTransforms()
                 glm::vec3 right   = glm::normalize(glm::vec3(rotMat[0]));   // local +X
                 glm::vec3 up      = glm::normalize(glm::vec3(rotMat[1]));   // local +Y
                 glm::vec3 forward = glm::normalize(glm::vec3(rotMat[2]));   // local +Z
-                lights[rectComp->m_LightIndex].m_Position = t.m_Position;
-                lights[rectComp->m_LightIndex].m_Right    = right;
-                lights[rectComp->m_LightIndex].m_Up       = up;
-                lights[rectComp->m_LightIndex].m_Normal   = forward;
+                lights[runtimeLight->lightIndex].m_Position = t.m_Position;
+                lights[runtimeLight->lightIndex].m_Right    = right;
+                lights[runtimeLight->lightIndex].m_Up       = up;
+                lights[runtimeLight->lightIndex].m_Normal   = forward;
             }
         }
-
     }
 }
 
@@ -1636,8 +1862,36 @@ void VansGraphics::VansScene::SyncLightTransforms()
 // ============================================================
 void VansGraphics::VansScene::SyncAudioSourcePositions(float deltaTime)
 {
-    if (!m_Camera)
+    if (!m_Camera || !m_RuntimeWorld)
         return;
+
+    auto* audioStorage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeAudioComponent>*>(
+        m_RuntimeWorld->FindStorage(Vans::VansRuntimeComponentType_Audio));
+    if (!audioStorage)
+        return;
+
+    struct RuntimeAudioEntry
+    {
+        Vans::VansEntityHandle entity;
+        Vans::VansComponentHandle component;
+        Vans::VansRuntimeAudioComponent* audio = nullptr;
+        std::uint32_t transformId = UINT32_MAX;
+    };
+
+    std::vector<RuntimeAudioEntry> audioEntries;
+    for (Vans::VansEntityHandle entity : m_RuntimeWorld->Entities().CollectAliveEntities())
+    {
+        const std::uint32_t transformId = ResolveRuntimeEntityTransformId(*m_RuntimeWorld, entity);
+        for (Vans::VansComponentHandle component : m_RuntimeWorld->CollectComponentsOwnedBy(entity))
+        {
+            if (component.typeId != Vans::VansRuntimeComponentType_Audio)
+                continue;
+            auto* audio = audioStorage->Get(component);
+            if (!audio || !audio->sourceBinding || !audio->sourceBinding->IsBound())
+                continue;
+            audioEntries.push_back(RuntimeAudioEntry{ entity, component, audio, transformId });
+        }
+    }
 
     const glm::vec4 camPos = m_Camera->GetPosition();
     const glm::vec3 listener(camPos.x, camPos.y, camPos.z);
@@ -1657,18 +1911,15 @@ void VansGraphics::VansScene::SyncAudioSourcePositions(float deltaTime)
     std::vector<AudioOcclusionQueryTarget> occlusionTargets;
     int queryBudget = 0;
     std::vector<VansEngine::AudioVoiceCandidate> voiceCandidates;
-    std::vector<VansScriptAudioComponent*> voiceComponents;
 
-    for (auto* obj : m_SceneObjects)
+    for (const RuntimeAudioEntry& entry : audioEntries)
     {
-        if (!obj) continue;
-        auto* audioComp = obj->GetComponent<VansScriptAudioComponent>();
-        if (!audioComp || !audioComp->m_Source.IsBound()) continue;
+        auto* source = entry.audio->sourceBinding;
 
         glm::vec3 sourcePosition = listener;
-        if (obj->m_TransformID != 0)
+        if (entry.transformId != UINT32_MAX)
         {
-            const auto& t = VansTransformStore::GetTransform(obj->m_TransformID);
+            const auto& t = VansTransformStore::GetTransform(entry.transformId);
             sourcePosition = t.m_Position;
         }
         const float dx = sourcePosition.x - listener.x;
@@ -1677,18 +1928,17 @@ void VansGraphics::VansScene::SyncAudioSourcePositions(float deltaTime)
 
         VansEngine::AudioVoiceCandidate candidate;
         candidate.stableIndex = voiceCandidates.size();
-        candidate.bound = audioComp->m_Source.IsBound();
-        candidate.objectActive = obj->IsActive();
-        candidate.componentEnabled = audioComp->IsEnabled();
-        candidate.playing = audioComp->m_Source.IsPlaying();
-        candidate.spatial = audioComp->m_Source.GetSpatial();
+        candidate.bound = source->IsBound();
+        candidate.objectActive = m_RuntimeWorld->Entities().IsHierarchyActive(entry.entity);
+        candidate.componentEnabled = m_RuntimeWorld->IsComponentSelfEnabled(entry.component);
+        candidate.playing = source->IsPlaying();
+        candidate.spatial = source->GetSpatial();
         candidate.listenerDistance = std::sqrt(dx * dx + dy * dy + dz * dz);
-        candidate.maxDistance = audioComp->m_Source.GetMaxDistance();
+        candidate.maxDistance = source->GetMaxDistance();
         candidate.effectiveGain =
-            audioComp->m_Source.GetVolume() *
-            m_AudioManager.GetEffectiveBusGain(audioComp->m_Source.GetBusName());
+            source->GetVolume() *
+            m_AudioManager.GetEffectiveBusGain(source->GetBusName());
 
-        voiceComponents.push_back(audioComp);
         voiceCandidates.push_back(candidate);
     }
 
@@ -1696,109 +1946,113 @@ void VansGraphics::VansScene::SyncAudioSourcePositions(float deltaTime)
         VansEngine::SelectAudioVoices(voiceCandidates, m_AudioVoiceBudgetSettings);
     std::vector<std::string> activeAudioBuses;
     m_AudioManager.BeginVoiceLeaseFrame();
-    for (std::size_t i = 0; i < voiceComponents.size(); ++i)
+    for (std::size_t i = 0; i < audioEntries.size(); ++i)
     {
+        auto* source = audioEntries[i].audio->sourceBinding;
         const bool activeVoice = i < voiceSelection.active.size() && voiceSelection.active[i];
         const VansEngine::AudioVoiceCandidate& candidate = voiceCandidates[i];
         const bool virtualized = candidate.playing &&
             (!candidate.objectActive || !candidate.componentEnabled || !activeVoice);
-        const bool hardwareActiveBefore = voiceComponents[i]->m_Source.IsHardwareVoiceActive();
-        voiceComponents[i]->m_Source.SetVirtualizationGain(virtualized ? 0.0f : 1.0f);
+        const bool hardwareActiveBefore = source->IsHardwareVoiceActive();
+        source->SetVirtualizationGain(virtualized ? 0.0f : 1.0f);
         m_AudioManager.RecordVoiceLeaseTransition(
             hardwareActiveBefore,
-            voiceComponents[i]->m_Source.IsHardwareVoiceActive());
+            source->IsHardwareVoiceActive());
         if (candidate.playing && candidate.objectActive && candidate.componentEnabled && activeVoice)
-            activeAudioBuses.push_back(voiceComponents[i]->m_Source.GetBusName());
+            activeAudioBuses.push_back(source->GetBusName());
     }
     m_AudioManager.UpdateDucking(activeAudioBuses);
 
-    for (auto* obj : m_SceneObjects)
+    for (RuntimeAudioEntry& entry : audioEntries)
     {
-        if (!obj) continue;
-        auto* audioComp = obj->GetComponent<VansScriptAudioComponent>();
-        if (!audioComp || !audioComp->m_Source.IsBound()) continue;
-        audioComp->m_Source.SetBusGain(
-            m_AudioManager.GetEffectiveBusGain(audioComp->m_Source.GetBusName()));
+        auto* audio = entry.audio;
+        auto* source = audio->sourceBinding;
+        if (!source || !source->IsBound())
+            continue;
+
+        source->SetBusGain(
+            m_AudioManager.GetEffectiveBusGain(source->GetBusName()));
         const VansEngine::AudioBusState masterBusState = m_AudioManager.GetBusState("Master");
         const VansEngine::AudioBusState sourceBusState =
-            m_AudioManager.GetBusState(audioComp->m_Source.GetBusName());
-        audioComp->m_Source.SetBusLowpassHighFrequencyGain(
+            m_AudioManager.GetBusState(source->GetBusName());
+        source->SetBusLowpassHighFrequencyGain(
             masterBusState.lowpassHighFrequencyGain *
-                (audioComp->m_Source.GetBusName() == "Master"
+                (source->GetBusName() == "Master"
                     ? 1.0f
                     : sourceBusState.lowpassHighFrequencyGain));
-        audioComp->m_Source.Tick();
-        if (!audioComp->m_Source.GetSpatial())
+        source->Tick();
+        if (!source->GetSpatial())
         {
-            audioComp->m_Source.SetVelocity(0.0f, 0.0f, 0.0f);
-            audioComp->m_HasLastAudioPosition = false;
+            source->SetVelocity(0.0f, 0.0f, 0.0f);
+            audio->hasLastAudioPosition = false;
             continue;
         }
-        if (obj->m_TransformID == 0) continue;
+        if (entry.transformId == UINT32_MAX)
+            continue;
 
-        const auto& t = VansTransformStore::GetTransform(obj->m_TransformID);
-        audioComp->m_Source.SetPosition(t.m_Position.x, t.m_Position.y, t.m_Position.z);
-        audioComp->m_Source.UpdateDistanceGain(camPos.x, camPos.y, camPos.z);
+        const auto& t = VansTransformStore::GetTransform(entry.transformId);
+        source->SetPosition(t.m_Position.x, t.m_Position.y, t.m_Position.z);
+        source->UpdateDistanceGain(camPos.x, camPos.y, camPos.z);
 
         const glm::vec3 sourcePosition = t.m_Position;
         glm::vec3 sourceVelocity(0.0f);
-        if (audioComp->m_DopplerEnabled && canComputeVelocity && audioComp->m_HasLastAudioPosition)
+        if (audio->dopplerEnabled && canComputeVelocity && audio->hasLastAudioPosition)
         {
             sourceVelocity = (sourcePosition - glm::vec3(
-                audioComp->m_LastAudioPositionX,
-                audioComp->m_LastAudioPositionY,
-                audioComp->m_LastAudioPositionZ)) / deltaTime;
+                audio->lastAudioPositionX,
+                audio->lastAudioPositionY,
+                audio->lastAudioPositionZ)) / deltaTime;
             anyDopplerEnabled = true;
         }
-        audioComp->m_HasLastAudioPosition = true;
-        audioComp->m_LastAudioPositionX = sourcePosition.x;
-        audioComp->m_LastAudioPositionY = sourcePosition.y;
-        audioComp->m_LastAudioPositionZ = sourcePosition.z;
-        audioComp->m_Source.SetVelocity(sourceVelocity.x, sourceVelocity.y, sourceVelocity.z);
+        audio->hasLastAudioPosition = true;
+        audio->lastAudioPositionX = sourcePosition.x;
+        audio->lastAudioPositionY = sourcePosition.y;
+        audio->lastAudioPositionZ = sourcePosition.z;
+        source->SetVelocity(sourceVelocity.x, sourceVelocity.y, sourceVelocity.z);
 
-        audioComp->m_ConeSettings.Normalize();
-        if (audioComp->m_ConeSettings.enabled)
+        audio->coneSettings.Normalize();
+        if (audio->coneSettings.enabled)
         {
             glm::mat4 rotMat = glm::mat4(1.0f);
             rotMat = glm::rotate(rotMat, glm::radians(t.m_Rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
             rotMat = glm::rotate(rotMat, glm::radians(t.m_Rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
             rotMat = glm::rotate(rotMat, glm::radians(t.m_Rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
             const glm::vec3 forward = glm::normalize(glm::vec3(rotMat[2]));
-            audioComp->m_Source.SetDirection(forward.x, forward.y, forward.z);
+            source->SetDirection(forward.x, forward.y, forward.z);
         }
-        audioComp->m_Source.SetCone(audioComp->m_ConeSettings);
+        source->SetCone(audio->coneSettings);
 
-        audioComp->m_OcclusionSettings.Normalize();
-        if (!audioComp->m_OcclusionSettings.enabled)
+        audio->occlusionSettings.Normalize();
+        if (!audio->occlusionSettings.enabled)
         {
-            audioComp->m_OcclusionState = VansEngine::AudioOcclusionState{};
-            audioComp->m_Source.SetOcclusion(1.0f, 1.0f);
+            audio->occlusionState = VansEngine::AudioOcclusionState{};
+            source->SetOcclusion(1.0f, 1.0f);
             continue;
         }
 
         const float distance = glm::length(sourcePosition - listener);
-        if (distance > audioComp->m_OcclusionSettings.maxQueryDistance || distance <= 0.001f)
+        if (distance > audio->occlusionSettings.maxQueryDistance || distance <= 0.001f)
         {
-            audioComp->m_OcclusionState.lastBlocked = false;
-            audioComp->m_OcclusionState.queryTimer = 0.0f;
-            audioComp->m_OcclusionState = VansEngine::UpdateAudioOcclusionState(
-                audioComp->m_OcclusionState,
-                audioComp->m_OcclusionSettings,
+            audio->occlusionState.lastBlocked = false;
+            audio->occlusionState.queryTimer = 0.0f;
+            audio->occlusionState = VansEngine::UpdateAudioOcclusionState(
+                audio->occlusionState,
+                audio->occlusionSettings,
                 false,
                 deltaTime);
-            audioComp->m_Source.SetOcclusion(
-                audioComp->m_OcclusionState.gain,
-                audioComp->m_OcclusionState.highFrequencyGain);
+            source->SetOcclusion(
+                audio->occlusionState.gain,
+                audio->occlusionState.highFrequencyGain);
             continue;
         }
 
-        audioComp->m_OcclusionState.queryTimer += std::max(deltaTime, 0.0f);
-        queryBudget = std::max(queryBudget, audioComp->m_OcclusionSettings.maxQueriesPerFrame);
+        audio->occlusionState.queryTimer += std::max(deltaTime, 0.0f);
+        queryBudget = std::max(queryBudget, audio->occlusionSettings.maxQueriesPerFrame);
         occlusionTargets.push_back(AudioOcclusionQueryTarget{
-            audioComp,
+            entry.component,
             sourcePosition,
             distance,
-            obj->m_TransformID });
+            entry.transformId });
     }
 
     if (!occlusionTargets.empty() && queryBudget > 0)
@@ -1817,11 +2071,12 @@ void VansGraphics::VansScene::SyncAudioSourcePositions(float deltaTime)
             {
                 const std::size_t index = (m_AudioOcclusionQueryCursor + visited) % targetCount;
                 AudioOcclusionQueryTarget& target = occlusionTargets[index];
-                if (!target.component)
+                auto* audio = audioStorage->Get(target.component);
+                if (!audio)
                     continue;
 
-                auto& state = target.component->m_OcclusionState;
-                const auto& settings = target.component->m_OcclusionSettings;
+                auto& state = audio->occlusionState;
+                const auto& settings = audio->occlusionSettings;
                 if (state.queryTimer < settings.queryIntervalSeconds)
                     continue;
 
@@ -1859,15 +2114,16 @@ void VansGraphics::VansScene::SyncAudioSourcePositions(float deltaTime)
 
         for (AudioOcclusionQueryTarget& target : occlusionTargets)
         {
-            if (!target.component)
+            auto* audio = audioStorage->Get(target.component);
+            if (!audio || !audio->sourceBinding)
                 continue;
-            auto& state = target.component->m_OcclusionState;
+            auto& state = audio->occlusionState;
             state = VansEngine::UpdateAudioOcclusionState(
                 state,
-                target.component->m_OcclusionSettings,
+                audio->occlusionSettings,
                 state.lastBlocked,
                 deltaTime);
-            target.component->m_Source.SetOcclusion(state.gain, state.highFrequencyGain);
+            audio->sourceBinding->SetOcclusion(state.gain, state.highFrequencyGain);
         }
     }
 
@@ -1887,71 +2143,99 @@ void VansGraphics::VansScene::SyncAudioSourcePositions(float deltaTime)
 
 void VansGraphics::VansScene::ReleaseAudioSourceBindings()
 {
-    for (auto* obj : m_SceneObjects)
+    if (!m_RuntimeWorld)
+        return;
+
+    auto* audioStorage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeAudioComponent>*>(
+        m_RuntimeWorld->FindStorage(Vans::VansRuntimeComponentType_Audio));
+    if (!audioStorage)
+        return;
+
+    for (Vans::VansEntityHandle entity : m_RuntimeWorld->Entities().CollectAliveEntities())
     {
-        if (!obj) continue;
-        auto* audioComp = obj->GetComponent<VansScriptAudioComponent>();
-        if (audioComp)
-            audioComp->m_Source.Clear();
+        for (Vans::VansComponentHandle component : m_RuntimeWorld->CollectComponentsOwnedBy(entity))
+        {
+            if (component.typeId != Vans::VansRuntimeComponentType_Audio)
+                continue;
+            if (auto* audio = audioStorage->Get(component); audio && audio->sourceBinding)
+                audio->sourceBinding->Clear();
+        }
     }
 }
 
 void VansGraphics::VansScene::UpdateAudioReverbEnvironment(float deltaTime)
 {
     auto& audioSystem = VansEngine::VansAudioSystem::GetInstance();
-    if (!m_Camera || !audioSystem.IsInitialized())
+    if (!m_Camera || !audioSystem.IsInitialized() || !m_RuntimeWorld)
         return;
 
     const glm::vec4 listener = m_Camera->GetPosition();
     bool hasZone = false;
     std::vector<VansEngine::AudioReverbZoneEvaluation> evaluations;
 
-    for (auto* obj : m_SceneObjects)
+    for (Vans::VansEntityHandle entity : m_RuntimeWorld->Entities().CollectAliveEntities())
     {
-        if (!obj || !obj->IsActive() || obj->m_TransformID == 0)
+        const std::uint32_t transformId = ResolveRuntimeEntityTransformId(*m_RuntimeWorld, entity);
+        if (transformId >= VansTransformStore::GlobalTransforms.size())
             continue;
 
-        auto* zone = obj->GetComponent<VansScriptAudioReverbZoneComponent>();
-        if (!zone || !zone->IsEnabled())
-            continue;
+        const auto& transform = VansTransformStore::GetTransform(transformId);
+        const std::vector<Vans::VansComponentHandle> components =
+            m_RuntimeWorld->CollectComponentsOwnedBy(entity);
+        for (Vans::VansComponentHandle component : components)
+        {
+            if (component.typeId != Vans::VansRuntimeComponentType_AudioReverbZone &&
+                component.typeId != Vans::VansRuntimeComponentType_AudioVolume)
+            {
+                continue;
+            }
+            if (!m_RuntimeWorld->IsComponentEffectivelyEnabled(component))
+                continue;
 
-        hasZone = true;
-        const auto& transform = VansTransformStore::GetTransform(obj->m_TransformID);
-        VansEngine::AudioReverbZoneState zoneState;
-        zoneState.shape = VansEngine::AudioReverbZoneShapeFromString(zone->m_Shape);
-        zoneState.centerX = transform.m_Position.x;
-        zoneState.centerY = transform.m_Position.y;
-        zoneState.centerZ = transform.m_Position.z;
-        glm::mat4 zoneRotation = glm::mat4(1.0f);
-        zoneRotation = glm::rotate(zoneRotation, glm::radians(transform.m_Rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
-        zoneRotation = glm::rotate(zoneRotation, glm::radians(transform.m_Rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
-        zoneRotation = glm::rotate(zoneRotation, glm::radians(transform.m_Rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
-        const glm::vec3 zoneRight = glm::normalize(glm::vec3(zoneRotation[0]));
-        const glm::vec3 zoneUp = glm::normalize(glm::vec3(zoneRotation[1]));
-        const glm::vec3 zoneForward = glm::normalize(glm::vec3(zoneRotation[2]));
-        zoneState.rightX = zoneRight.x;
-        zoneState.rightY = zoneRight.y;
-        zoneState.rightZ = zoneRight.z;
-        zoneState.upX = zoneUp.x;
-        zoneState.upY = zoneUp.y;
-        zoneState.upZ = zoneUp.z;
-        zoneState.forwardX = zoneForward.x;
-        zoneState.forwardY = zoneForward.y;
-        zoneState.forwardZ = zoneForward.z;
-        zoneState.radius = zone->m_Radius;
-        zoneState.halfExtentX = zone->m_HalfExtentX;
-        zoneState.halfExtentY = zone->m_HalfExtentY;
-        zoneState.halfExtentZ = zone->m_HalfExtentZ;
-        zoneState.fadeDistance = zone->m_FadeDistance;
-        zoneState.wetGain = zone->m_WetGain;
-        zoneState.priority = zone->m_Priority;
-        zoneState.preset = VansEngine::AudioReverbPresetFromString(zone->m_Preset);
-        zoneState.presetParameters = zone->m_PresetParameters;
-        zoneState.overridePresetParameters = zone->m_OverridePresetParameters;
+            const auto* zone = GetRuntimeComponentPayload<Vans::VansRuntimeAudioReverbZoneComponent>(
+                *m_RuntimeWorld,
+                component,
+                component.typeId);
+            if (!zone)
+                continue;
 
-        const VansEngine::AudioReverbZoneEvaluation evaluation =
-            VansEngine::EvaluateReverbZone(listener.x, listener.y, listener.z, zoneState);
-        evaluations.push_back(evaluation);
+            hasZone = true;
+            VansEngine::AudioReverbZoneState zoneState;
+            zoneState.shape = VansEngine::AudioReverbZoneShapeFromString(zone->shape);
+            zoneState.centerX = transform.m_Position.x;
+            zoneState.centerY = transform.m_Position.y;
+            zoneState.centerZ = transform.m_Position.z;
+            glm::mat4 zoneRotation = glm::mat4(1.0f);
+            zoneRotation = glm::rotate(zoneRotation, glm::radians(transform.m_Rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
+            zoneRotation = glm::rotate(zoneRotation, glm::radians(transform.m_Rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+            zoneRotation = glm::rotate(zoneRotation, glm::radians(transform.m_Rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+            const glm::vec3 zoneRight = glm::normalize(glm::vec3(zoneRotation[0]));
+            const glm::vec3 zoneUp = glm::normalize(glm::vec3(zoneRotation[1]));
+            const glm::vec3 zoneForward = glm::normalize(glm::vec3(zoneRotation[2]));
+            zoneState.rightX = zoneRight.x;
+            zoneState.rightY = zoneRight.y;
+            zoneState.rightZ = zoneRight.z;
+            zoneState.upX = zoneUp.x;
+            zoneState.upY = zoneUp.y;
+            zoneState.upZ = zoneUp.z;
+            zoneState.forwardX = zoneForward.x;
+            zoneState.forwardY = zoneForward.y;
+            zoneState.forwardZ = zoneForward.z;
+            zoneState.radius = zone->radius;
+            zoneState.halfExtentX = zone->halfExtentX;
+            zoneState.halfExtentY = zone->halfExtentY;
+            zoneState.halfExtentZ = zone->halfExtentZ;
+            zoneState.fadeDistance = zone->fadeDistance;
+            zoneState.wetGain = zone->wetGain;
+            zoneState.priority = zone->priority;
+            zoneState.preset = VansEngine::AudioReverbPresetFromString(zone->preset);
+            zoneState.presetParameters = zone->presetParameters;
+            zoneState.overridePresetParameters = zone->overridePresetParameters;
+
+            const VansEngine::AudioReverbZoneEvaluation evaluation =
+                VansEngine::EvaluateReverbZone(listener.x, listener.y, listener.z, zoneState);
+            evaluations.push_back(evaluation);
+        }
     }
 
     if (!hasZone)
@@ -2408,12 +2692,6 @@ std::vector<VansRenderNode*> VansGraphics::VansScene::CollectSSBOManagedRenderNo
     return result;
 }
 
-bool VansGraphics::VansScene::CanCreateEntity() const
-{
-    return m_TransformSlotAllocator.GetActiveCount()
-         < m_TransformSlotAllocator.GetMaxCapacity();
-}
-
 size_t VansGraphics::VansScene::GetTransformSlotCount() const
 {
     return m_TransformSlotAllocator.GetActiveCount();
@@ -2570,180 +2848,350 @@ void VansGraphics::VansScene::RemoveRenderNodeFromVector(VansRenderNode* node)
 void VansGraphics::VansScene::UpdateLightComponentIndex(
     int oldIndex, int newIndex, VansLightType type)
 {
+    std::optional<VansScriptLightIndexKind> lightKind;
+    std::uint16_t runtimeLightType = Vans::VansInvalidComponentTypeId;
+    switch (type)
+    {
+    case VansLightType::DIRECTIONAL:
+        lightKind = VansScriptLightIndexKind::Directional;
+        runtimeLightType = Vans::VansRuntimeComponentType_DirectionalLight;
+        break;
+    case VansLightType::POINT:
+        lightKind = VansScriptLightIndexKind::Point;
+        runtimeLightType = Vans::VansRuntimeComponentType_PointLight;
+        break;
+    case VansLightType::SPOT:
+        lightKind = VansScriptLightIndexKind::Spot;
+        runtimeLightType = Vans::VansRuntimeComponentType_SpotLight;
+        break;
+    case VansLightType::RECT:
+        lightKind = VansScriptLightIndexKind::Rect;
+        runtimeLightType = Vans::VansRuntimeComponentType_RectLight;
+        break;
+    default:
+        break;
+    }
+    if (!lightKind)
+        return;
+
+    if (m_RuntimeWorld && runtimeLightType != Vans::VansInvalidComponentTypeId)
+    {
+        auto* storage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeLightComponent>*>(
+            m_RuntimeWorld->FindStorage(runtimeLightType));
+        if (storage)
+        {
+            for (Vans::VansEntityHandle entity : m_RuntimeWorld->Entities().CollectAliveEntities())
+            {
+                for (Vans::VansComponentHandle component : m_RuntimeWorld->CollectComponentsOwnedBy(entity))
+                {
+                    if (component.typeId != runtimeLightType)
+                        continue;
+                    auto* runtimeLight = storage->Get(component);
+                    if (runtimeLight && runtimeLight->lightIndex == oldIndex)
+                        runtimeLight->lightIndex = newIndex;
+                }
+            }
+        }
+    }
+
     for (auto* obj : m_SceneObjects)
     {
         if (!obj) continue;
         for (auto* comp : obj->m_Components)
         {
-            if (!comp) continue;
-            switch (type)
-            {
-            case VansLightType::DIRECTIONAL:
-                if (auto* dl = dynamic_cast<VansScriptDirectionalLightComponent*>(comp))
-                    if (dl->m_LightIndex == oldIndex) dl->m_LightIndex = newIndex;
-                break;
-            case VansLightType::POINT:
-                if (auto* pl = dynamic_cast<VansScriptPointLightComponent*>(comp))
-                    if (pl->m_LightIndex == oldIndex) pl->m_LightIndex = newIndex;
-                break;
-            case VansLightType::SPOT:
-                if (auto* sl = dynamic_cast<VansScriptSpotLightComponent*>(comp))
-                    if (sl->m_LightIndex == oldIndex) sl->m_LightIndex = newIndex;
-                break;
-            case VansLightType::RECT:
-                if (auto* rl = dynamic_cast<VansScriptRectLightComponent*>(comp))
-                    if (rl->m_LightIndex == oldIndex) rl->m_LightIndex = newIndex;
-                break;
-            default: break;
-            }
+            if (comp)
+                comp->RebindSceneLightIndex(*lightKind, oldIndex, newIndex);
         }
     }
 }
 
-VansScriptObject* VansGraphics::VansScene::CreateEntity(
-    VkDevice& device, const std::string& entityName,
-    const std::string& meshName, const std::string& materialName,
-    const glm::vec3& position, const glm::vec3& rotation, const glm::vec3& scale,
-    const std::string& parentName)
+bool VansGraphics::VansScene::ApplyRuntimeComponentEnabled(
+	Vans::VansComponentHandle component,
+	bool effectiveEnabled)
 {
-    // ══════════════════════════════════════════════════════════════════════════════
-    //  Step 0: 前置检查
-    // ══════════════════════════════════════════════════════════════════════════════
-    if (!CanCreateEntity())
-    {
-        // 自动扩容：slot 耗尽时尝试翻倍容量
-        if (!GrowTransformBuffer(device, m_TransformSlotAllocator.GetMaxCapacity() * 2))
-        {
-            VANS_LOG_ERROR("[Scene] CreateEntity: slot exhausted and grow failed ("
-                << m_TransformSlotAllocator.GetActiveCount() << "/"
-                << m_TransformSlotAllocator.GetMaxCapacity() << ")");
-            return nullptr;
-        }
-    }
-    if (FindObjectByName(entityName))
-    {
-        VANS_LOG_ERROR("[Scene] CreateEntity: '" << entityName << "' already exists");
-        return nullptr;
-    }
+	if (!m_RuntimeWorld || !component.IsValid())
+		return false;
 
-    // ── Resolve mesh ────────────────────────────────────────────────────
-    VansAsset* meshAsset = GetMeshAsset(meshName);
-    if (!meshAsset)
-    {
-        VANS_LOG_ERROR("[Scene] CreateEntity: mesh '" << meshName << "' not found");
-        return nullptr;
-    }
-    VansMesh* mesh = static_cast<VansMesh*>(meshAsset);
-
-    // ── Resolve material (fallback to first available) ──────────────────
-    VansAsset* matAsset = GetMaterialAsset(materialName);
-    if (!matAsset && !m_AssetRegistry.GetMaterials().empty())
-        matAsset = m_AssetRegistry.GetMaterials()[0];
-    if (!matAsset)
-    {
-        VANS_LOG_ERROR("[Scene] CreateEntity: no material available");
-        return nullptr;
-    }
-    auto* material = static_cast<VansMaterial*>(matAsset);
-
-    // ══════════════════════════════════════════════════════════════════════════════
-    //  Step 1: 创建 VansScriptObject（桥接层容器）
-    // ══════════════════════════════════════════════════════════════════════════════
-    auto* obj = new VansScriptObject();
-    obj->m_EntityGuid = Vans::VansAssetGuid::New().ToString();
-    obj->m_ObjectName = entityName;
-    // obj->m_OwnsTransform = false（默认）：Transform 由 RenderNode 拥有并在其析构时释放
-
-    // ══════════════════════════════════════════════════════════════════════════════
-    //  Step 2: 创建 RenderNode
-    //
-    //  VansCommonRenderNode 构造函数内部调用 VansTransformStore::AllocateTransform()
-    //  并将 ID 存入 m_TransformID，m_OwnsTransform = true。
-    //  此处直接使用 SetTransformData 写入初始值，无需外部单独 Allocate。
-    // ══════════════════════════════════════════════════════════════════════════════
-    RenderNodeType nodeType = (material->m_MaterialType == VansMaterialType::VAN_TRANSPARENT ||
-        material->m_MaterialType == VansMaterialType::VAN_PBR_TRANSMISSION)
-        ? TRANSPARENT_NODE : OPAQUE_NODE;
-	if (material->m_MaterialType == VansMaterialType::VAN_CUSTOM_SHADER)
+	switch (component.typeId)
 	{
-		nodeType = material->HasPass(VansPass::GBUFFER)
-			? OPAQUE_NODE
-			: (material->m_CustomShaderDepthWrite
-				? FORWARD_OPAQUE_AFTER_DEFERRED_NODE
-				: TRANSPARENT_NODE);
+	case Vans::VansRuntimeComponentType_Transform:
+	case Vans::VansRuntimeComponentType_Vehicle:
+	case Vans::VansRuntimeComponentType_AudioReverbZone:
+	case Vans::VansRuntimeComponentType_AudioVolume:
+	case Vans::VansRuntimeComponentType_Video:
+	case Vans::VansRuntimeComponentType_DirectionalLight:
+	case Vans::VansRuntimeComponentType_PointLight:
+	case Vans::VansRuntimeComponentType_SpotLight:
+	case Vans::VansRuntimeComponentType_RectLight:
+		return true;
+	case Vans::VansRuntimeComponentType_Render:
+	{
+		auto* storage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeRenderComponent>*>(
+			m_RuntimeWorld->FindStorage(component.typeId));
+		auto* runtimeComponent = storage ? storage->Get(component) : nullptr;
+		if (!runtimeComponent)
+			return false;
+		if (!runtimeComponent->renderNodes.empty())
+		{
+			for (auto* renderNode : runtimeComponent->renderNodes)
+				if (renderNode) renderNode->SetEnabled(effectiveEnabled);
+		}
+		else if (runtimeComponent->renderNode)
+		{
+			runtimeComponent->renderNode->SetEnabled(effectiveEnabled);
+		}
+		return true;
 	}
+	case Vans::VansRuntimeComponentType_Physics:
+	{
+		auto* storage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimePhysicsComponent>*>(
+			m_RuntimeWorld->FindStorage(component.typeId));
+		auto* runtimeComponent = storage ? storage->Get(component) : nullptr;
+		if (!runtimeComponent)
+			return false;
+		if (runtimeComponent->physicsNode)
+			runtimeComponent->physicsNode->SetEnabled(effectiveEnabled);
+		return true;
+	}
+	case Vans::VansRuntimeComponentType_Cloth:
+	{
+		auto* storage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeClothComponent>*>(
+			m_RuntimeWorld->FindStorage(component.typeId));
+		auto* runtimeComponent = storage ? storage->Get(component) : nullptr;
+		if (!runtimeComponent)
+			return false;
+		if (runtimeComponent->clothNode)
+			runtimeComponent->clothNode->SetEnabled(effectiveEnabled);
+		return true;
+	}
+	case Vans::VansRuntimeComponentType_CharacterController:
+	{
+		auto* storage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeCharacterControllerComponent>*>(
+			m_RuntimeWorld->FindStorage(component.typeId));
+		auto* runtimeComponent = storage ? storage->Get(component) : nullptr;
+		if (!runtimeComponent)
+			return false;
+		if (runtimeComponent->controllerNode)
+			runtimeComponent->controllerNode->SetEnabled(effectiveEnabled);
+		return true;
+	}
+	case Vans::VansRuntimeComponentType_Animation:
+	{
+		auto* storage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeAnimationComponent>*>(
+			m_RuntimeWorld->FindStorage(component.typeId));
+		auto* runtimeComponent = storage ? storage->Get(component) : nullptr;
+		if (!runtimeComponent)
+			return false;
+		if (runtimeComponent->animationNode)
+			runtimeComponent->animationNode->SetEnabled(effectiveEnabled);
+		return true;
+	}
+	case Vans::VansRuntimeComponentType_Ragdoll:
+	{
+		auto* storage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeRagdollComponent>*>(
+			m_RuntimeWorld->FindStorage(component.typeId));
+		auto* runtimeComponent = storage ? storage->Get(component) : nullptr;
+		if (!runtimeComponent)
+			return false;
+		if (runtimeComponent->animationNode)
+			runtimeComponent->animationNode->SetEnabled(effectiveEnabled);
+		return true;
+	}
+	case Vans::VansRuntimeComponentType_Camera:
+	{
+		auto* storage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeCameraComponent>*>(
+			m_RuntimeWorld->FindStorage(component.typeId));
+		auto* runtimeComponent = storage ? storage->Get(component) : nullptr;
+		if (!runtimeComponent)
+			return false;
+		if (runtimeComponent->camera)
+			runtimeComponent->camera->SetEnabled(effectiveEnabled);
+		return true;
+	}
+	case Vans::VansRuntimeComponentType_Audio:
+	{
+		auto* storage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeAudioComponent>*>(
+			m_RuntimeWorld->FindStorage(component.typeId));
+		auto* runtimeComponent = storage ? storage->Get(component) : nullptr;
+		if (!runtimeComponent)
+			return false;
+		if (runtimeComponent->sourceBinding)
+		{
+			if (!effectiveEnabled)
+				runtimeComponent->sourceBinding->SetVelocity(0.0f, 0.0f, 0.0f);
+			runtimeComponent->sourceBinding->SetEnabled(effectiveEnabled);
+		}
+		else if (runtimeComponent->audioNode)
+		{
+			runtimeComponent->audioNode->SetEnabled(effectiveEnabled);
+		}
+		return true;
+	}
+	case Vans::VansRuntimeComponentType_Particle:
+	{
+		auto* storage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeParticleComponent>*>(
+			m_RuntimeWorld->FindStorage(component.typeId));
+		auto* runtimeComponent = storage ? storage->Get(component) : nullptr;
+		if (!runtimeComponent)
+			return false;
+		if (runtimeComponent->runtime)
+			runtimeComponent->runtime->m_IsPlaying = effectiveEnabled;
+		runtimeComponent->isPlaying = effectiveEnabled;
+		return true;
+	}
+	case Vans::VansRuntimeComponentType_UI:
+	{
+		auto* storage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeUIComponent>*>(
+			m_RuntimeWorld->FindStorage(component.typeId));
+		auto* runtimeComponent = storage ? storage->Get(component) : nullptr;
+		if (!runtimeComponent)
+			return false;
 
-    VansRenderNode* renderNode = nodeType == TRANSPARENT_NODE
-        ? static_cast<VansRenderNode*>(new VansTransparentRenderNode(device, nodeType))
-        : static_cast<VansRenderNode*>(new VansCommonRenderNode(device, nodeType));
-    renderNode->m_NodeName  = entityName;
-    renderNode->m_Mesh      = mesh;
-    renderNode->m_Material  = material;
-    renderNode->SetTransformData(position, rotation, scale);
+		if (!VansRuntime::VansUISystem::Get().IsInitialized())
+		{
+			if (!effectiveEnabled)
+				runtimeComponent->openScreens.clear();
+			return true;
+		}
 
-    // ── 分配 Transform SSBO 槽位 ─────────────────────────────────────────
-    uint32_t slot = m_TransformSlotAllocator.AllocateSlot();
-    assert(slot != TransformSlotAllocator::INVALID_SLOT);
-    renderNode->m_TransfromIndex = static_cast<int>(slot);
-
-    // ── 写入初始 ModelData 到持久映射的 SSBO ─────────────────────────────
-    renderNode->BeforeDrawCall();
-    m_InstanceTransformDataBuffer.UpdateMapped(
-        &renderNode->m_ModelData,
-        slot * sizeof(ModelDataStruct),
-        sizeof(ModelDataStruct));
-
-    // ── 注册到对应节点向量 ────────────────────────────────────────────────
-    RegistRenderNode(renderNode, nodeType);
-
-    // ── 创建描述符集 ──────────────────────────────────────────────────────
-    renderNode->CreateDescriptorSets(m_Camera, m_LightManager, m_MaterialManager);
-
-    // ══════════════════════════════════════════════════════════════════════════════
-    //  Step 3: 创建 VansScriptRenderComponent（桥接包装器）
-    // ══════════════════════════════════════════════════════════════════════════════
-    auto* rc = new VansScriptRenderComponent();
-    rc->m_ComponentName = "render";
-    rc->m_RenderNode    = renderNode;
-    obj->AddComponent(rc);
-    obj->m_TransformID  = renderNode->m_TransformID;
-
-    // ══════════════════════════════════════════════════════════════════════════════
-    //  Step 4: 建立层级关系
-    // ══════════════════════════════════════════════════════════════════════════════
-    if (!parentName.empty())
-    {
-        VansScriptObject* parent = FindObjectByName(parentName);
-        if (parent)
-            m_TransformParentSystem.SetParent(
-                renderNode->m_TransformID, parent->m_TransformID);
-        else
-            VANS_LOG("[Scene] CreateEntity: parent '" << parentName
-                << "' not found, placed at root");
-    }
-
-    // ══════════════════════════════════════════════════════════════════════════════
-    //  Step 5: 追加到 m_SceneObjects，标记 dirty
-    // ══════════════════════════════════════════════════════════════════════════════
-    m_SceneObjects.push_back(obj);
-    VansTransformStore::TransformIDToTransformDirty[renderNode->m_TransformID] = true;
-
-    VANS_LOG("[Scene] CreateEntity: '" << entityName
-        << "' mesh=" << meshName << " slot=" << slot
-        << " active=" << m_TransformSlotAllocator.GetActiveCount());
-
-    return obj;
+		if (effectiveEnabled)
+		{
+			for (const std::string& screenPath : runtimeComponent->preloadScreens)
+				VansRuntime::VansUISystem::Get().PreloadScreen(screenPath);
+			runtimeComponent->openScreens.clear();
+			for (const std::string& screenPath : runtimeComponent->autoOpenScreens)
+			{
+				auto screen = VansRuntime::VansUISystem::Get().LoadScreen(screenPath);
+				if (screen)
+					runtimeComponent->openScreens.push_back(screen->GetHandleId());
+			}
+		}
+		else
+		{
+			for (std::uint64_t screenId : runtimeComponent->openScreens)
+				VansRuntime::VansUISystem::Get().CloseScreen(screenId);
+			runtimeComponent->openScreens.clear();
+			for (const std::string& screenPath : runtimeComponent->preloadScreens)
+				VansRuntime::VansUISystem::Get().ReleaseScreen(screenPath);
+		}
+		return true;
+	}
+	case Vans::VansRuntimeComponentType_Script:
+		return false;
+	default:
+		return false;
+	}
 }
 
-bool VansGraphics::VansScene::DestroyEntity(const std::string& entityName)
+bool VansGraphics::VansScene::CopyRuntimeUIOpenScreens(
+	Vans::VansComponentHandle component,
+	std::vector<std::uint64_t>& outOpenScreens) const
 {
-    VansScriptObject* obj = FindObjectByName(entityName);
-    if (!obj)
-    {
-        VANS_LOG("[Scene] DestroyEntity: '" << entityName << "' not found");
-        return false;
-    }
-    return DestroyEntity(obj);
+	outOpenScreens.clear();
+	if (!m_RuntimeWorld || component.typeId != Vans::VansRuntimeComponentType_UI)
+		return false;
+	auto* storage = static_cast<const Vans::VansComponentStorage<Vans::VansRuntimeUIComponent>*>(
+		m_RuntimeWorld->FindStorage(component.typeId));
+	const auto* runtimeComponent = storage ? storage->Get(component) : nullptr;
+	if (!runtimeComponent)
+		return false;
+	outOpenScreens = runtimeComponent->openScreens;
+	return true;
+}
+
+bool VansGraphics::VansScene::SyncRuntimeScriptComponentFromFacade(
+	const std::string& componentGuid,
+	const VansLuaScriptComponent& component)
+{
+	if (!m_RuntimeWorld || componentGuid.empty())
+		return false;
+	const Vans::VansComponentHandle runtimeComponentHandle = m_RuntimeWorld->FindComponentByGuid(
+		componentGuid,
+		Vans::VansRuntimeComponentType_Script);
+	auto* storage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeScriptComponent>*>(
+		m_RuntimeWorld->FindStorage(Vans::VansRuntimeComponentType_Script));
+	auto* runtimeComponent = storage ? storage->Get(runtimeComponentHandle) : nullptr;
+	if (!runtimeComponent)
+		return false;
+	runtimeComponent->enableRequested = component.m_EnableRequested;
+	runtimeComponent->state = ToRuntimeScriptState(component.m_State);
+	runtimeComponent->isValid = component.m_IsValid;
+	runtimeComponent->hasStarted = component.m_HasStarted;
+	return true;
+}
+
+bool VansGraphics::VansScene::SyncRuntimeAudioComponentFromFacade(VansScriptAudioComponent& component)
+{
+	if (!m_RuntimeWorld || component.m_ComponentGuid.empty())
+		return false;
+
+	const Vans::VansComponentHandle runtimeComponentHandle = m_RuntimeWorld->FindComponentByGuid(
+		component.m_ComponentGuid,
+		Vans::VansRuntimeComponentType_Audio);
+	auto* storage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeAudioComponent>*>(
+		m_RuntimeWorld->FindStorage(Vans::VansRuntimeComponentType_Audio));
+	auto* runtimeComponent = storage ? storage->Get(runtimeComponentHandle) : nullptr;
+	if (!runtimeComponent)
+		return false;
+
+	runtimeComponent->audioNode = component.m_Source.GetNode();
+	runtimeComponent->sourceBinding = &component.m_Source;
+	runtimeComponent->sourceName = component.m_Source.GetSourceName();
+	runtimeComponent->coneSettings = component.m_ConeSettings;
+	runtimeComponent->dopplerEnabled = component.m_DopplerEnabled;
+	runtimeComponent->hasLastAudioPosition = component.m_HasLastAudioPosition;
+	runtimeComponent->lastAudioPositionX = component.m_LastAudioPositionX;
+	runtimeComponent->lastAudioPositionY = component.m_LastAudioPositionY;
+	runtimeComponent->lastAudioPositionZ = component.m_LastAudioPositionZ;
+	runtimeComponent->occlusionSettings = component.m_OcclusionSettings;
+	runtimeComponent->occlusionState = component.m_OcclusionState;
+	return true;
+}
+
+bool VansGraphics::VansScene::SyncRuntimeVideoComponentFromFacade(VansScriptVideoComponent& component)
+{
+	if (!m_RuntimeWorld || component.m_ComponentGuid.empty())
+		return false;
+
+	const Vans::VansComponentHandle runtimeComponentHandle = m_RuntimeWorld->FindComponentByGuid(
+		component.m_ComponentGuid,
+		Vans::VansRuntimeComponentType_Video);
+	auto* storage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeVideoComponent>*>(
+		m_RuntimeWorld->FindStorage(Vans::VansRuntimeComponentType_Video));
+	auto* runtimeComponent = storage ? storage->Get(runtimeComponentHandle) : nullptr;
+	if (!runtimeComponent)
+		return false;
+
+	runtimeComponent->videoTexture = component.m_VideoTex;
+	runtimeComponent->videoManager = component.m_VideoManager;
+	runtimeComponent->bindlessFirstSlot = component.m_BindlessFirstSlot;
+	return true;
+}
+
+bool VansGraphics::VansScene::SyncRuntimeParticleComponentFromFacade(VansScriptParticleComponent& component)
+{
+	if (!m_RuntimeWorld || component.m_ComponentGuid.empty())
+		return false;
+
+	const Vans::VansComponentHandle runtimeComponentHandle = m_RuntimeWorld->FindComponentByGuid(
+		component.m_ComponentGuid,
+		Vans::VansRuntimeComponentType_Particle);
+	auto* storage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeParticleComponent>*>(
+		m_RuntimeWorld->FindStorage(Vans::VansRuntimeComponentType_Particle));
+	auto* runtimeComponent = storage ? storage->Get(runtimeComponentHandle) : nullptr;
+	if (!runtimeComponent)
+		return false;
+
+	runtimeComponent->runtime = component.m_Runtime.get();
+	runtimeComponent->renderNode = component.m_RenderNode;
+	runtimeComponent->playOnAwake = component.m_PlayOnAwake;
+	runtimeComponent->isPlaying = component.m_IsPlaying;
+	runtimeComponent->playTime = component.m_PlayTime;
+	runtimeComponent->hasWorldPositionOverride = component.m_HasWorldPositionOverride;
+	runtimeComponent->worldPositionOverrideX = component.m_WorldPositionOverride.x;
+	runtimeComponent->worldPositionOverrideY = component.m_WorldPositionOverride.y;
+	runtimeComponent->worldPositionOverrideZ = component.m_WorldPositionOverride.z;
+	return true;
 }
 
 bool VansGraphics::VansScene::QueueDestroyEntity(VansScriptObject* obj)
@@ -2782,6 +3230,7 @@ bool VansGraphics::VansScene::DestroyEntity(VansScriptObject* obj)
 {
     if (!obj) return false;
     const std::string name = obj->m_ObjectName;
+	const std::string guid = obj->m_EntityGuid;
 
     // ══════════════════════════════════════════════════════════════════════════════
     //  0. 清除编辑器选中状态（必须在任意 delete 之前，防止悬垂比较）
@@ -2803,80 +3252,41 @@ bool VansGraphics::VansScene::DestroyEntity(VansScriptObject* obj)
             m_TransformParentSystem.ClearParent(childID);
     }
 
+	Vans::VansEntityHandle runtimeEntity;
+	if (m_RuntimeWorld && !guid.empty())
+		runtimeEntity = m_RuntimeWorld->Entities().FindByGuid(guid);
+	if (!m_RuntimeWorld || !runtimeEntity.IsValid())
+	{
+		VANS_LOG_ERROR("[VansScene] DestroyEntity missing runtime entity for guid='"
+			<< guid << "'");
+		return false;
+	}
+
     // ══════════════════════════════════════════════════════════════════════════════
-    //  2. 一遍扫描 m_Components，完成：
-    //       a) 收集所有底层 Node 指针（必须在 delete obj 前，析构后指针无效）
-    //       b) 生命周期前置操作（Teardown / Stop / Pause）
+    //  2. 从 RuntimeWorld typed component 收集底层 Node 指针与场景级索引。
+    //     必须在 delete obj 与 RuntimeWorld destroy 之前完成，避免 wrapper/facade
+    //     析构或 typed storage 删除后再访问悬垂指针。
     // ══════════════════════════════════════════════════════════════════════════════
-    VansGraphics::VansRenderNode*            renderNode   = nullptr;
-    VansGraphics::VansParticleRenderNode*    particleRN   = nullptr;
-    VansGraphics::VansAnimationNode*         animNode     = nullptr;
-    VansEngine::VansPhysicsNode*             physicsNode  = nullptr;
-    VansEngine::VansClothNode*               clothNode    = nullptr;
-    VansEngine::VansCharacterControllerNode* cctNode      = nullptr;
-    VansEngine::VansPhysicsVehicle*          vehicleNode  = nullptr;
-    bool                                     hasRagdoll   = false;
-    bool                                     ownsTransform = obj->m_OwnsTransform;
-    uint32_t                                 transformID   = obj->m_TransformID;
+    RuntimeSceneDestroyReferences destroyRefs;
+    const uint32_t                           releasedOwnedTransformID = obj->ReleaseOwnedTransform();
+    bool                                     ownsTransform = releasedOwnedTransformID != UINT32_MAX;
+    uint32_t                                 transformID   = ownsTransform ? releasedOwnedTransformID : obj->m_TransformID;
 
-    int dlightIdx = -1, plightIdx = -1, slightIdx = -1, rlightIdx = -1;
+	destroyRefs = CollectRuntimeSceneDestroyReferences(*m_RuntimeWorld, runtimeEntity);
 
-    for (auto* comp : obj->m_Components)
-    {
-        if (!comp) continue;
-
-        // ── 收集底层 Node 指针 ──
-        if      (auto* rc = dynamic_cast<VansScriptRenderComponent*>(comp))
-            renderNode   = rc->m_RenderNode;
-        else if (auto* pc = dynamic_cast<VansScriptPhysicsComponent*>(comp))
-            physicsNode  = pc->m_PhysicsNode;
-        else if (auto* cl = dynamic_cast<VansScriptClothComponent*>(comp))
-            clothNode    = cl->m_ClothNode;
-        else if (auto* ct = dynamic_cast<VansScriptCharacterControllerComponent*>(comp))
-            cctNode      = ct->m_ControllerNode;
-        else if (auto* an = dynamic_cast<VansScriptAnimationComponent*>(comp))
-            animNode     = an->m_AnimNode;
-        else if (auto* ve = dynamic_cast<VansScriptVehicleComponent*>(comp))
-        {
-            if (m_Vehicle == ve->m_Vehicle) vehicleNode = m_Vehicle;
-        }
-        else if (auto* dl = dynamic_cast<VansScriptDirectionalLightComponent*>(comp))
-            dlightIdx    = dl->m_LightIndex;
-        else if (auto* pl = dynamic_cast<VansScriptPointLightComponent*>(comp))
-            plightIdx    = pl->m_LightIndex;
-        else if (auto* sl = dynamic_cast<VansScriptSpotLightComponent*>(comp))
-            slightIdx    = sl->m_LightIndex;
-        else if (auto* rl = dynamic_cast<VansScriptRectLightComponent*>(comp))
-            rlightIdx    = rl->m_LightIndex;
-        else if (dynamic_cast<VansScriptRagdollComponent*>(comp))
-            hasRagdoll   = true;
-
-        // ── Camera：场景单例，不 delete，仅解绑 TransformID ─────────────
-        if (dynamic_cast<VansScriptCameraComponent*>(comp))
-        {
-            if (m_Camera)
-                m_Camera->SetTransformID(UINT32_MAX);
-        }
-
-        // ── Particle：注销运行时（m_Runtime 由 unique_ptr 析构前要先注销）──
-        if (auto* pt = dynamic_cast<VansScriptParticleComponent*>(comp))
-        {
-            if (pt->m_Runtime)
-                VansParticleManager::Instance().UnregisterRuntime(pt->m_Runtime.get());
-            particleRN = pt->m_RenderNode;
-        }
-
-        if (auto* luaScript = dynamic_cast<VansLuaScriptComponent*>(comp))
-            luaScript->Teardown();
-
-        // ── Audio：停止播放（项目级资源，不 delete）────────────────────────
-        if (auto* au = dynamic_cast<VansScriptAudioComponent*>(comp))
-            au->m_Source.Stop();
-
-        // ── Video：暂停（项目级资源，不 delete）────────────────────────────
-        if (auto* vi = dynamic_cast<VansScriptVideoComponent*>(comp))
-            if (vi->m_VideoTex) vi->m_VideoTex->Pause();
-    }
+    VansGraphics::VansRenderNode*            renderNode   = destroyRefs.renderNode;
+    VansGraphics::VansParticleRenderNode*    particleRN   = destroyRefs.particleRenderNode;
+    VansGraphics::VansAnimationNode*         animNode     = destroyRefs.animationNode;
+    VansEngine::VansPhysicsNode*             physicsNode  = destroyRefs.physicsNode;
+    VansEngine::VansClothNode*               clothNode    = destroyRefs.clothNode;
+    VansEngine::VansCharacterControllerNode* cctNode      = destroyRefs.characterControllerNode;
+    VansEngine::VansPhysicsVehicle*          vehicleNode  =
+        (destroyRefs.vehicle && m_Vehicle == destroyRefs.vehicle) ? m_Vehicle : nullptr;
+    bool                                     hasRagdoll   = destroyRefs.hasRagdoll;
+    int dlightIdx = destroyRefs.directionalLightIndex;
+    int plightIdx = destroyRefs.pointLightIndex;
+    int slightIdx = destroyRefs.spotLightIndex;
+    int rlightIdx = destroyRefs.rectLightIndex;
 
     // ══════════════════════════════════════════════════════════════════════════════
     //  3. 从 m_SceneObjects 移除，delete obj
@@ -2888,6 +3298,10 @@ bool VansGraphics::VansScene::DestroyEntity(VansScriptObject* obj)
     if (sit != m_SceneObjects.end()) m_SceneObjects.erase(sit);
     delete obj;     // 析构删除所有 VansScriptComponent wrapper
     obj = nullptr;  // 置空防止后续误用
+	m_RuntimeWorld->Commands().DestroyEntity(
+		runtimeEntity,
+		Vans::VansDestroyChildrenPolicy::ReparentToRoot);
+	m_RuntimeWorld->FlushCommands();
 
     // ══════════════════════════════════════════════════════════════════════════════
     //  4. 持物理锁：清理 Ragdoll / Vehicle / CCT / Cloth / Physics
@@ -2984,6 +3398,9 @@ bool VansGraphics::VansScene::DestroyEntity(VansScriptObject* obj)
             if (group.sourceMesh)
                 m_AssetRegistry.RemoveSceneSubMesh(group.sourceMesh);
 
+            if (group.ownsSharedTransform)
+                VansTransformStore::FreeTransform(group.sharedTransformID);
+
             m_MultiMeshGroups.erase(groupIt);
             RebuildAssetLookup();
         }
@@ -3013,7 +3430,7 @@ bool VansGraphics::VansScene::DestroyEntity(VansScriptObject* obj)
 
         // 5c. delete：
         //   - 析构函数内部调用 DestroyDescriptorSets
-        //   - 若 m_OwnsTransform==true，析构函数同时调用 VansTransformStore::FreeTransform
+        //   - RenderNode 自身拥有的 transform 由 RenderNode 析构释放
         delete renderNode;
         renderNode = nullptr;
     }
@@ -3115,9 +3532,9 @@ bool VansGraphics::VansScene::DestroyEntity(VansScriptObject* obj)
     //  renderNode->m_OwnsTransform==true，其析构函数（Step 5c）已调用
     //  VansTransformStore::FreeTransform(m_TransformID)。外部不可重复调用。
     //
-    //  当实体无 RenderNode（纯物理实体，obj->m_OwnsTransform==true）时，
-    //  LoadSceneObjects 会为其单独分配 transform 并设置 obj->m_OwnsTransform=true。
-    //  此处需要手动释放。
+    //  当实体无 RenderNode（纯物理实体，obj 原本拥有 transform）时，
+    //  DestroyEntity 已在 delete obj 前通过 ReleaseOwnedTransform() 接管所有权，
+    //  因此此处是唯一释放点。
     // ══════════════════════════════════════════════════════════════════════════════
     if (ownsTransform && renderNode == nullptr)
         VansTransformStore::FreeTransform(transformID);

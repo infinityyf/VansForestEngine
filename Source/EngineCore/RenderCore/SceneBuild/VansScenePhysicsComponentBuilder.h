@@ -5,12 +5,23 @@
 #include <functional>
 #include "../../SceneCore/VansScenePhysicsComponentConfig.h"
 
+class VansScriptCharacterControllerComponent;
+class VansScriptClothComponent;
+class VansScriptPhysicsComponent;
+
 namespace VansGraphics
 {
+	struct VansScenePhysicsBuildResult
+	{
+		VansScriptPhysicsComponent* physics = nullptr;
+		VansScriptClothComponent* cloth = nullptr;
+		VansScriptCharacterControllerComponent* characterController = nullptr;
+	};
+
 	class VansScenePhysicsComponentBuilder
 	{
 	public:
-		static void BuildPhysicsClothAndCharacter(
+		static VansScenePhysicsBuildResult BuildPhysicsClothAndCharacter(
 			VansScene& scene,
 			VansScriptObject& object,
 			const Vans::VansScenePhysicsComponentsConfig& components,

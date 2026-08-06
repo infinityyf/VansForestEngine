@@ -8,7 +8,7 @@
 
 namespace VansGraphics
 {
-class VansPostProcessProfileLegacyJsonCodec
+class VansPostProcessProfileJsonCodec
 {
 public:
 	static PostProcessProfileJson Encode(const VansPostProcessProfile& profile);

@@ -10,7 +10,6 @@ namespace Vans
 struct VansSceneLightShadowConfig
 {
 	std::optional<bool> castShadows;
-	std::optional<bool> legacyShadow;
 	std::optional<std::string> policy;
 	std::optional<int> priority;
 	std::optional<std::string> resolution;

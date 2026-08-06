@@ -23,6 +23,8 @@ struct SceneModelEntityFactoryRequest
     std::string entityName;
     std::string modelGuid;
     std::string defaultMaterialGuid;
+    std::string transformComponentGuid;
+    std::string modelRendererComponentGuid;
     std::array<float, 3> position = { 0.0f, 0.0f, 0.0f };
     std::array<float, 4> rotation = { 0.0f, 0.0f, 0.0f, 1.0f };
     std::array<float, 3> scale = { 1.0f, 1.0f, 1.0f };

@@ -2,7 +2,7 @@
 #include "VansSceneSchema.h"
 
 #include "../AssetCore/Serialization/VansJsonDocumentCodec.h"
-#include "../AssetCore/Serialization/VansSerializedValueLegacyJsonAdapter.h"
+#include "../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 #include "../AssetCore/Storage/VansFileStorage.h"
 
 #include <nlohmann/json.hpp>
@@ -68,7 +68,7 @@ bool VansSceneDocumentLoader::IsSceneDocumentFile(const std::filesystem::path& p
         return false;
     }
 
-    const SceneDiagnostics diagnostics = VansSceneSchema::ValidateLegacyJson(parsedRoot);
+    const SceneDiagnostics diagnostics = VansSceneSchema::ValidateSceneJson(parsedRoot);
     const bool hasSchemaError = std::any_of(
         diagnostics.begin(),
         diagnostics.end(),
@@ -104,9 +104,9 @@ SceneDocumentLoadResult VansSceneDocumentLoader::Load(const std::filesystem::pat
             result.diagnostics.push_back({ SceneDiagnosticSeverity::Error, "", error });
             return result;
         }
-        document->m_Diagnostics = VansSceneSchema::ValidateLegacyJson(parsedRoot);
+        document->m_Diagnostics = VansSceneSchema::ValidateSceneJson(parsedRoot);
         document->m_Root = std::make_unique<VansSerializedValue>(
-            DecodeSerializedValueLegacyJson(parsedRoot));
+            DecodeSerializedValueJson(parsedRoot));
         document->m_SourcePath = std::filesystem::absolute(path).lexically_normal();
         document->m_LoadedFingerprint = Fingerprint(document->m_SourcePath, &error);
 

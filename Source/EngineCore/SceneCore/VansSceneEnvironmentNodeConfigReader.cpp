@@ -1,7 +1,7 @@
 #include "VansSceneEnvironmentNodeConfigReader.h"
 
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
-#include "../AssetCore/Serialization/VansSerializedValueLegacyJsonAdapter.h"
+#include "../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 #include "../AssetCore/Storage/VansJsonFileStorage.h"
 #include "../Util/VansLog.h"
 
@@ -492,7 +492,7 @@ VansSerializedValue LoadVegetationConfigFromReference(
 	}
 	VANS_LOG("[VegetationConfig] Loaded config file: " << resolved.string());
 
-	VansSerializedValue resolvedNode = DecodeSerializedValueLegacyJson(loaded);
+	VansSerializedValue resolvedNode = DecodeSerializedValueJson(loaded);
 	if (vegetationNode.kind == VansSerializedValue::Kind::Object)
 	{
 		for (const auto& [key, value] : vegetationNode.objectFields)

@@ -32,7 +32,7 @@ std::string ResolveParticleTexturePath(const std::string& projectRoot, const std
 }
 }
 
-void VansSceneParticleComponentBuilder::BuildParticle(
+VansScriptParticleComponent* VansSceneParticleComponentBuilder::BuildParticle(
 	VansScene& scene,
 	VkDevice& device,
 	VansScriptObject& object,
@@ -45,7 +45,7 @@ void VansSceneParticleComponentBuilder::BuildParticle(
 {
 	if (particleConfig.assetPath.empty())
 	{
-		return;
+		return nullptr;
 	}
 
 	const std::string absPath = projectRoot + "/" + particleConfig.assetPath;
@@ -146,6 +146,7 @@ void VansSceneParticleComponentBuilder::BuildParticle(
 	}
 
 	object.AddComponent(particleComp);
+	return particleComp;
 }
 
 }

@@ -12,4 +12,11 @@ EditorAPI::RuntimeMaterialPreviewChange BuildRuntimeMaterialPreviewChange(
     const std::filesystem::path& assetPath,
     const VansSerializedValue& assetRoot,
     const std::string& changedPointer = {});
+
+EditorAPI::RuntimeEntityPreviewChange BuildRuntimeEntityPreviewChange(
+    const VansSerializedValue& entity);
+
+EditorAPI::RuntimeEntityPreviewChange BuildRuntimeEntityPreviewChangeFromSceneRoot(
+    const VansSerializedValue& sceneRoot,
+    const std::string& entityGuid);
 }

@@ -5,7 +5,7 @@
 
 namespace VansGraphics
 {
-class VansParticleEmitterLegacyJsonCodec
+class VansParticleEmitterJsonCodec
 {
 public:
     static Vans::ParticleJson EncodeEmitter(const VansParticleEmitter& emitter);

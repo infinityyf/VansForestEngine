@@ -5,6 +5,7 @@
 #include <../../GLM/gtx/quaternion.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <string>
 
@@ -12,6 +13,14 @@ using namespace VansGraphics;
 
 namespace
 {
+	std::string ToLowerAscii(std::string value)
+	{
+		std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+			return static_cast<char>(std::tolower(c));
+		});
+		return value;
+	}
+
 	float SafeLengthRatio(const glm::vec3& target, const glm::vec3& source)
 	{
 		const float sourceLen = glm::length(source);
@@ -30,6 +39,37 @@ namespace
 		       mode == "source_units" ||
 		       mode == "compatible_skeleton";
 	}
+
+	bool IsSourceBindPoseAlignmentMode(const std::string& mode)
+	{
+		const std::string normalized = ToLowerAscii(mode);
+		return normalized == "source_bind_pose" ||
+		       normalized == "sourcebindpose" ||
+		       normalized == "humanoid_bind_pose" ||
+		       normalized == "humanoidbindpose" ||
+		       normalized == "match_source_bind_pose" ||
+		       normalized == "matchsourcebindpose";
+	}
+
+	glm::vec3 ExtractTranslation(const glm::mat4& transform)
+	{
+		return glm::vec3(transform[3]);
+	}
+
+	glm::vec3 NormalizeOrFallback(const glm::vec3& value, const glm::vec3& fallback)
+	{
+		const float len = glm::length(value);
+		return len > 1.0e-5f ? value / len : fallback;
+	}
+
+	glm::mat4 Mat4FromMat3(const glm::mat3& value)
+	{
+		glm::mat4 result(1.0f);
+		result[0] = glm::vec4(value[0], 0.0f);
+		result[1] = glm::vec4(value[1], 0.0f);
+		result[2] = glm::vec4(value[2], 0.0f);
+		return result;
+	}
 }
 
 bool VansRetargetProcessor::Build(
@@ -41,6 +81,10 @@ bool VansRetargetProcessor::Build(
 	m_Stats = {};
 	m_Stats.sourceBoneCount = static_cast<uint32_t>(sourceSkeleton.bones.size());
 	m_Stats.targetBoneCount = static_cast<uint32_t>(targetSkeleton.bones.size());
+	m_SourceBindModelTransforms.clear();
+	m_TargetBindModelTransforms.clear();
+	m_TargetModelSpaceCorrection = glm::mat4(1.0f);
+	m_HasTargetModelSpaceCorrection = false;
 	m_Valid = false;
 
 	if (sourceSkeleton.bones.empty() || targetSkeleton.bones.empty())
@@ -94,6 +138,23 @@ bool VansRetargetProcessor::Build(
 			: 0;
 
 	m_Valid = !m_BoneMap.empty();
+	if (m_Valid)
+	{
+		m_SourceBindModelTransforms = BuildBindModelTransforms(sourceSkeleton);
+		m_TargetBindModelTransforms = BuildBindModelTransforms(targetSkeleton);
+	}
+
+	if (m_Valid && IsSourceBindPoseAlignmentMode(desc.targetModelSpaceAlignmentMode))
+	{
+		glm::mat3 sourceBasis(1.0f);
+		glm::mat3 targetBasis(1.0f);
+		if (TryBuildHumanoidBasis(sourceSkeleton, m_SourceBindModelTransforms, sourceBasis) &&
+		    TryBuildHumanoidBasis(targetSkeleton, m_TargetBindModelTransforms, targetBasis))
+		{
+			m_TargetModelSpaceCorrection = Mat4FromMat3(sourceBasis * glm::inverse(targetBasis));
+			m_HasTargetModelSpaceCorrection = true;
+		}
+	}
 	return m_Valid;
 }
 
@@ -116,6 +177,147 @@ bool VansRetargetProcessor::Process(
 
 	for (size_t targetIndex = 0; targetIndex < targetSkeleton.bones.size(); ++targetIndex)
 		targetLocalTransforms[targetIndex] = targetSkeleton.bones[targetIndex].localTransform;
+
+	if (m_HasTargetModelSpaceCorrection &&
+	    m_SourceBindModelTransforms.size() == sourceSkeleton.bones.size() &&
+	    m_TargetBindModelTransforms.size() == targetSkeleton.bones.size())
+	{
+		glm::quat targetToSourceRotation(1.0f, 0.0f, 0.0f, 0.0f);
+		glm::vec3 correctionTranslation;
+		glm::vec3 correctionScale;
+		DecomposeTransform(m_TargetModelSpaceCorrection,
+			correctionTranslation, targetToSourceRotation, correctionScale);
+
+		std::vector<glm::quat> desiredModelRotations(targetSkeleton.bones.size(),
+			glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+		for (size_t targetIndex = 0; targetIndex < targetSkeleton.bones.size(); ++targetIndex)
+		{
+			glm::vec3 translation;
+			glm::vec3 scale;
+			DecomposeTransform(m_TargetBindModelTransforms[targetIndex],
+				translation, desiredModelRotations[targetIndex], scale);
+		}
+
+		for (const BoneMapEntry& entry : m_BoneMap)
+		{
+			if (entry.sourceIndex < 0 ||
+			    entry.sourceIndex >= static_cast<int>(sourceModelTransforms.size()) ||
+			    entry.targetIndex < 0 ||
+			    entry.targetIndex >= static_cast<int>(targetLocalTransforms.size()))
+			{
+				continue;
+			}
+
+			glm::vec3 sourceModelTranslation;
+			glm::quat sourceModelRotation;
+			glm::vec3 sourceModelScale;
+			if (!DecomposeTransform(sourceModelTransforms[entry.sourceIndex],
+				sourceModelTranslation, sourceModelRotation, sourceModelScale))
+			{
+				continue;
+			}
+
+			glm::vec3 sourceBindModelTranslation;
+			glm::quat sourceBindModelRotation;
+			glm::vec3 sourceBindModelScale;
+			DecomposeTransform(m_SourceBindModelTransforms[entry.sourceIndex],
+				sourceBindModelTranslation, sourceBindModelRotation, sourceBindModelScale);
+
+			glm::vec3 targetBindModelTranslation;
+			glm::quat targetBindModelRotation;
+			glm::vec3 targetBindModelScale;
+			DecomposeTransform(m_TargetBindModelTransforms[entry.targetIndex],
+				targetBindModelTranslation, targetBindModelRotation, targetBindModelScale);
+
+			const glm::quat sourceDeltaRotation =
+				sourceModelRotation * glm::inverse(sourceBindModelRotation);
+			const glm::quat targetSpaceDeltaRotation =
+				glm::inverse(targetToSourceRotation) * sourceDeltaRotation * targetToSourceRotation;
+			desiredModelRotations[entry.targetIndex] =
+				glm::normalize(targetSpaceDeltaRotation * targetBindModelRotation);
+		}
+
+		const auto applyModelSpaceRotation = [&](int targetIndex)
+		{
+			if (targetIndex < 0 || targetIndex >= static_cast<int>(targetSkeleton.bones.size()))
+				return;
+
+			const BoneInfo& targetBone = targetSkeleton.bones[targetIndex];
+			glm::vec3 targetBindTranslation;
+			glm::quat targetBindRotation;
+			glm::vec3 targetBindScale;
+			DecomposeTransform(targetBone.localTransform,
+				targetBindTranslation, targetBindRotation, targetBindScale);
+
+			glm::quat targetLocalRotation = desiredModelRotations[targetIndex];
+			const int parentIndex = targetBone.parentIndex;
+			if (parentIndex >= 0 && parentIndex < static_cast<int>(desiredModelRotations.size()))
+			{
+				targetLocalRotation =
+					glm::inverse(desiredModelRotations[parentIndex]) *
+					desiredModelRotations[targetIndex];
+			}
+
+			targetLocalTransforms[targetIndex] =
+				ComposeTransform(targetBindTranslation, targetLocalRotation, targetBindScale);
+		};
+
+		if (!targetSkeleton.topologicalOrder.empty())
+		{
+			for (int targetIndex : targetSkeleton.topologicalOrder)
+				applyModelSpaceRotation(targetIndex);
+		}
+		else
+		{
+			for (int targetIndex = 0; targetIndex < static_cast<int>(targetSkeleton.bones.size()); ++targetIndex)
+				applyModelSpaceRotation(targetIndex);
+		}
+
+		for (const BoneMapEntry& entry : m_BoneMap)
+		{
+			if (!entry.copyTranslationDelta ||
+			    entry.sourceIndex < 0 ||
+			    entry.sourceIndex >= static_cast<int>(sourceLocalTransforms.size()) ||
+			    entry.targetIndex < 0 ||
+			    entry.targetIndex >= static_cast<int>(targetLocalTransforms.size()))
+			{
+				continue;
+			}
+
+			glm::vec3 sourceTranslation;
+			glm::quat sourceRotation;
+			glm::vec3 sourceScale;
+			if (!DecomposeTransform(sourceLocalTransforms[entry.sourceIndex],
+				sourceTranslation, sourceRotation, sourceScale))
+			{
+				continue;
+			}
+
+			glm::vec3 sourceBindTranslation;
+			glm::quat sourceBindRotation;
+			glm::vec3 sourceBindScale;
+			DecomposeTransform(sourceSkeleton.bones[entry.sourceIndex].localTransform,
+				sourceBindTranslation, sourceBindRotation, sourceBindScale);
+
+			glm::vec3 targetTranslation;
+			glm::quat targetRotation;
+			glm::vec3 targetScale;
+			DecomposeTransform(targetLocalTransforms[entry.targetIndex],
+				targetTranslation, targetRotation, targetScale);
+
+			targetTranslation += (sourceTranslation - sourceBindTranslation) * m_Stats.translationScale;
+			targetLocalTransforms[entry.targetIndex] =
+				ComposeTransform(targetTranslation, targetRotation, targetScale);
+		}
+
+		BuildModelFromLocal(targetLocalTransforms, targetSkeleton, outTargetModelTransforms);
+		if (m_HasTargetModelSpaceCorrection)
+		{
+			for (glm::mat4& transform : outTargetModelTransforms)
+				transform = m_TargetModelSpaceCorrection * transform;
+		}
+		return outTargetModelTransforms.size() == targetSkeleton.bones.size();
+	}
 
 	for (const BoneMapEntry& entry : m_BoneMap)
 	{
@@ -159,6 +361,11 @@ bool VansRetargetProcessor::Process(
 	}
 
 	BuildModelFromLocal(targetLocalTransforms, targetSkeleton, outTargetModelTransforms);
+	if (m_HasTargetModelSpaceCorrection)
+	{
+		for (glm::mat4& transform : outTargetModelTransforms)
+			transform = m_TargetModelSpaceCorrection * transform;
+	}
 	return outTargetModelTransforms.size() == targetSkeleton.bones.size();
 }
 
@@ -244,6 +451,69 @@ void VansRetargetProcessor::BuildModelFromLocal(
 		if (parentIndex >= 0 && parentIndex < static_cast<int>(boneCount))
 			outModelTransforms[index] = outModelTransforms[parentIndex] * outModelTransforms[index];
 	}
+}
+
+std::vector<glm::mat4> VansRetargetProcessor::BuildBindModelTransforms(const Skeleton& skeleton)
+{
+	std::vector<glm::mat4> localTransforms(skeleton.bones.size(), glm::mat4(1.0f));
+	for (size_t index = 0; index < skeleton.bones.size(); ++index)
+		localTransforms[index] = skeleton.bones[index].localTransform;
+
+	std::vector<glm::mat4> modelTransforms;
+	BuildModelFromLocal(localTransforms, skeleton, modelTransforms);
+	return modelTransforms;
+}
+
+bool VansRetargetProcessor::TryBuildHumanoidBasis(
+	const Skeleton& skeleton,
+	const std::vector<glm::mat4>& modelTransforms,
+	glm::mat3& outBasis)
+{
+	const int pelvis = FindBone(skeleton, "pelvis");
+	const int head = FindBone(skeleton, "head");
+	const int handL = FindBone(skeleton, "hand_l");
+	const int handR = FindBone(skeleton, "hand_r");
+	const int footL = FindBone(skeleton, "foot_l");
+	const int footR = FindBone(skeleton, "foot_r");
+
+	if (pelvis < 0 || head < 0 ||
+	    pelvis >= static_cast<int>(modelTransforms.size()) ||
+	    head >= static_cast<int>(modelTransforms.size()))
+	{
+		return false;
+	}
+
+	const glm::vec3 pelvisPosition = ExtractTranslation(modelTransforms[pelvis]);
+	const glm::vec3 headPosition = ExtractTranslation(modelTransforms[head]);
+	glm::vec3 up = NormalizeOrFallback(headPosition - pelvisPosition, glm::vec3(0.0f, 1.0f, 0.0f));
+
+	glm::vec3 right(0.0f);
+	if (handL >= 0 && handR >= 0 &&
+	    handL < static_cast<int>(modelTransforms.size()) &&
+	    handR < static_cast<int>(modelTransforms.size()))
+	{
+		right = ExtractTranslation(modelTransforms[handR]) - ExtractTranslation(modelTransforms[handL]);
+	}
+	if (glm::length(right) <= 1.0e-5f &&
+	    footL >= 0 && footR >= 0 &&
+	    footL < static_cast<int>(modelTransforms.size()) &&
+	    footR < static_cast<int>(modelTransforms.size()))
+	{
+		right = ExtractTranslation(modelTransforms[footR]) - ExtractTranslation(modelTransforms[footL]);
+	}
+	if (glm::length(right) <= 1.0e-5f)
+		return false;
+
+	right = NormalizeOrFallback(right, glm::vec3(1.0f, 0.0f, 0.0f));
+	right = NormalizeOrFallback(right - up * glm::dot(right, up), glm::vec3(1.0f, 0.0f, 0.0f));
+	glm::vec3 forward = NormalizeOrFallback(glm::cross(right, up), glm::vec3(0.0f, 0.0f, 1.0f));
+	right = NormalizeOrFallback(glm::cross(up, forward), right);
+
+	outBasis = glm::mat3(1.0f);
+	outBasis[0] = right;
+	outBasis[1] = up;
+	outBasis[2] = forward;
+	return true;
 }
 
 int VansRetargetProcessor::FindBone(const Skeleton& skeleton, const char* name)

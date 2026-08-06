@@ -1,6 +1,6 @@
 #include "VansProjectSettingsStorage.h"
 
-#include "../Serialization/VansProjectSettingsLegacyJsonCodec.h"
+#include "../Serialization/VansProjectSettingsJsonCodec.h"
 #include "../../AssetCore/Storage/VansJsonFileStorage.h"
 
 #include <nlohmann/json.hpp>
@@ -16,7 +16,7 @@ bool VansProjectSettingsStorage::LoadRenderSettings(
 	nlohmann::json root;
 	if (!VansJsonFileStorage::Read(filePath, root, error))
 		return false;
-	return VansProjectSettingsLegacyJsonCodec::DecodeRenderSettings(root, settings, warnings, error);
+	return VansProjectSettingsJsonCodec::DecodeRenderSettings(root, settings, warnings, error);
 }
 
 bool VansProjectSettingsStorage::SaveRenderSettings(
@@ -24,7 +24,7 @@ bool VansProjectSettingsStorage::SaveRenderSettings(
 	const VansProjectRenderSettingsData& settings,
 	std::string& error)
 {
-	const nlohmann::json root = VansProjectSettingsLegacyJsonCodec::EncodeRenderSettings(settings);
+	const nlohmann::json root = VansProjectSettingsJsonCodec::EncodeRenderSettings(settings);
 	return VansJsonFileStorage::WriteAtomic(filePath, root, error);
 }
 
@@ -36,7 +36,7 @@ bool VansProjectSettingsStorage::LoadPhysicsSettings(
 	nlohmann::json root;
 	if (!VansJsonFileStorage::Read(filePath, root, error))
 		return false;
-	return VansProjectSettingsLegacyJsonCodec::DecodePhysicsSettings(root, settings, error);
+	return VansProjectSettingsJsonCodec::DecodePhysicsSettings(root, settings, error);
 }
 
 bool VansProjectSettingsStorage::SavePhysicsSettings(
@@ -44,7 +44,7 @@ bool VansProjectSettingsStorage::SavePhysicsSettings(
 	const VansProjectPhysicsSettingsData& settings,
 	std::string& error)
 {
-	const nlohmann::json root = VansProjectSettingsLegacyJsonCodec::EncodePhysicsSettings(settings);
+	const nlohmann::json root = VansProjectSettingsJsonCodec::EncodePhysicsSettings(settings);
 	return VansJsonFileStorage::WriteAtomic(filePath, root, error);
 }
 }

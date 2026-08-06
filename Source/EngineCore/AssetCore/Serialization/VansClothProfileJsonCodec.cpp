@@ -1,4 +1,4 @@
-#include "VansClothProfileLegacyJsonCodec.h"
+#include "VansClothProfileJsonCodec.h"
 
 #include <nlohmann/json.hpp>
 
@@ -8,7 +8,7 @@
 
 namespace VansEngine
 {
-ClothProfileJson VansClothProfileLegacyJsonCodec::Encode(const VansClothProfile& profile)
+ClothProfileJson VansClothProfileJsonCodec::Encode(const VansClothProfile& profile)
 {
     const VansClothProfile& p = profile;
     ClothProfileJson root;
@@ -75,7 +75,7 @@ ClothProfileJson VansClothProfileLegacyJsonCodec::Encode(const VansClothProfile&
     return root;
 }
 
-bool VansClothProfileLegacyJsonCodec::Decode(
+bool VansClothProfileJsonCodec::Decode(
     const ClothProfileJson& root,
     const std::filesystem::path& filePath,
     VansClothProfile& profile,

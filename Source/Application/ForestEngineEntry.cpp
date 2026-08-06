@@ -73,6 +73,12 @@ bool InitializeGraphicsSystem()
 	{
 		VansEditorWindow::QueueProjectOpenForAutomation(autoProject);
 	}
+	if (std::getenv("FORESTENGINE_AUTOPEN_SKELETON_DEBUG"))
+	{
+		VansEditorWindow::m_SkeletonDebugWindowOpen = true;
+		VansEditorWindow::m_SkeletonDebugGizmos = true;
+		VansEditorWindow::m_SkeletonDebugShowRetargetSource = true;
+	}
 
 	// Setup vulkan backend
 	auto* vkDevice = new VansVKDevice({ 1280, 720 }, &VansEditorWindow::m_VansEditorWindow);

@@ -3,7 +3,8 @@
 
 #include "../../Common/CameraData.glsl"
 #include "../../Common/ModelData.glsl"
-#include "../../Common/AnimationSkinning.glsl"
+#include "../../Common/DrawPushConstants.glsl"
+#include "../../Common/VertexDeformation.glsl"
 
 layout( location = 0 ) in vec4 position;
 layout( location = 1 ) in vec2 uv;
@@ -17,32 +18,25 @@ layout( location = 2 ) out vec3 tangent_ws;
 layout( location = 3 ) out vec3 bitangent_ws;
 layout( location = 4 ) out vec3 position_world;
 
-layout( push_constant ) uniform MaterialPushConsts
-{
-    int materialIndex;
-    int objectIndex;
-    int animationEnabled;
-} materialConst;
-
 void main() 
 {
     int objectIndex = materialConst.objectIndex;
     mat4 ModelMatrix = ModelBuffer.transforms[objectIndex].ModelMatrix;
     mat4 NormalMatrix = ModelBuffer.transforms[objectIndex].NormalMatrix;
 
-    vec4 skinnedPosition = position;
-    vec3 skinnedNormal = normal;
-    vec3 skinnedTangent = tangent;
-    vec3 skinnedBitangent = bitangent;
-    if (materialConst.animationEnabled != 0)
-        VansApplyAnimationSkinning(skinnedPosition, skinnedNormal, skinnedTangent, skinnedBitangent);
+    VansVertexSurface surface;
+    surface.position = position;
+    surface.normal = normal;
+    surface.tangent = tangent;
+    surface.bitangent = bitangent;
+    VansApplyVertexDeformation(surface, materialConst.vertexFeatureMask);
 
-    gl_Position = VPMatrix * ModelMatrix * skinnedPosition;
+    gl_Position = VPMatrix * ModelMatrix * surface.position;
     mat3 normalMatrix = mat3(NormalMatrix);
-    normal_ws    = normalize(normalMatrix * skinnedNormal);
-    tangent_ws   = normalize(normalMatrix * skinnedTangent);
-    bitangent_ws = normalize(normalMatrix * skinnedBitangent);
+    normal_ws    = normalize(normalMatrix * surface.normal);
+    tangent_ws   = normalize(normalMatrix * surface.tangent);
+    bitangent_ws = normalize(normalMatrix * surface.bitangent);
 
     frag_uv= uv;
-    position_world = (ModelMatrix * skinnedPosition).xyz;
+    position_world = (ModelMatrix * surface.position).xyz;
 }

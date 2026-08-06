@@ -23,7 +23,7 @@ layout( push_constant ) uniform MaterialPushConsts
 {
     int materialIndex;
     int objectIndex;
-    int animationEnabled;
+    uint vertexFeatureMask;
 } materialConst;
 
 // G-Buffer MRT outputs

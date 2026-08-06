@@ -1,6 +1,6 @@
-#include "VansAssetMetaLegacyJsonCodec.h"
+#include "VansAssetMetaJsonCodec.h"
 
-#include "VansSerializedValueLegacyJsonAdapter.h"
+#include "VansSerializedValueJsonAdapter.h"
 
 #include <nlohmann/json.hpp>
 
@@ -8,7 +8,7 @@
 
 namespace Vans
 {
-bool VansAssetMetaLegacyJsonCodec::Encode(
+bool VansAssetMetaJsonCodec::Encode(
     const VansAssetMeta& meta,
     nlohmann::ordered_json& root,
     std::string& error)
@@ -24,7 +24,7 @@ bool VansAssetMetaLegacyJsonCodec::Encode(
         { "guid", meta.guid.ToString() },
         { "importer", meta.importer },
         { "version", meta.version },
-        { "settings", EncodeSerializedValueLegacyJson<nlohmann::ordered_json>(meta.SerializedSettingsSnapshot()) }
+        { "settings", EncodeSerializedValueJson<nlohmann::ordered_json>(meta.SerializedSettingsSnapshot()) }
     };
 
     auto subAssetsJson = nlohmann::ordered_json::object();
@@ -34,7 +34,7 @@ bool VansAssetMetaLegacyJsonCodec::Encode(
     return true;
 }
 
-bool VansAssetMetaLegacyJsonCodec::Decode(
+bool VansAssetMetaJsonCodec::Decode(
     const nlohmann::ordered_json& root,
     const std::filesystem::path& metaPath,
     VansAssetMeta& result,
@@ -51,7 +51,7 @@ bool VansAssetMetaLegacyJsonCodec::Decode(
     result.guid = guid;
     result.importer = root.value("importer", "");
     result.version = root.value("version", 1u);
-    result.SetSerializedSettings(DecodeSerializedValueLegacyJson(root.value("settings", nlohmann::ordered_json::object())));
+    result.SetSerializedSettings(DecodeSerializedValueJson(root.value("settings", nlohmann::ordered_json::object())));
     if (const auto it = root.find("subAssets"); it != root.end() && it->is_object())
     {
         for (auto entry = it->begin(); entry != it->end(); ++entry)

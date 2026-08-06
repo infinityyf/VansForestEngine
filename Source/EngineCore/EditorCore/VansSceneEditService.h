@@ -20,14 +20,20 @@ struct SceneEditResult
 {
     bool success = false;
     std::string message;
+    std::string changedEntityGuid;
+    std::string changedParentEntityGuid;
+    bool runtimePreviewSupported = false;
+    bool runtimeParentPreviewSupported = false;
+    bool runtimeChangeApplied = false;
 
     explicit operator bool() const { return success; }
 };
 
 struct SceneEditLifecycleHooks
 {
-    std::function<void()> afterUndo;
-    std::function<void()> afterRedo;
+    std::function<bool()> afterExecute;
+    std::function<bool()> afterUndo;
+    std::function<bool()> afterRedo;
 };
 
 class VansSceneEditService
@@ -50,7 +56,7 @@ public:
         const EditorAPI::RuntimeTransformSnapshot& transform);
     SceneEditResult AppendEntities(std::vector<VansSerializedValue> entities,
         SceneEditLifecycleHooks hooks = {});
-    SceneEditResult Remove(const DocumentPropertyPath& path);
+    SceneEditResult Remove(const DocumentPropertyPath& path, SceneEditLifecycleHooks hooks = {});
     SceneEditResult Undo();
     SceneEditResult Redo();
     void ClearHistory();
@@ -60,7 +66,7 @@ public:
 private:
     SceneEditResult Execute(std::unique_ptr<VansSceneEditCommand> command);
     SceneEditResult Set(const std::string& propertyPointer, VansSerializedValue value);
-    SceneEditResult Remove(const std::string& propertyPointer);
+    SceneEditResult Remove(const std::string& propertyPointer, SceneEditLifecycleHooks hooks = {});
 
     VansSceneDocument& m_Document;
     std::vector<std::unique_ptr<VansSceneEditCommand>> m_Undo;

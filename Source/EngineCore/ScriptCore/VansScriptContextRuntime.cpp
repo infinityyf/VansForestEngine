@@ -39,6 +39,8 @@
 #include "../RuntimeUI/Public/VansUIScreen.h"
 #include "../RuntimeUI/Public/VansUISystem.h"
 #include "../SceneCore/VansSceneRuntimeComponentKey.h"
+#include "../SceneRuntime/VansRuntimeComponentTypes.h"
+#include "../SceneRuntime/VansRuntimeWorld.h"
 #include "../Util/VansInputManager.h"
 #include "../Util/VansLog.h"
 #include "../Util/VansProfiler.h"
@@ -68,16 +70,20 @@ namespace
 struct LuaTransformUserdata
 {
 	std::uint32_t transformID = 0;
+	Vans::VansEntityHandle runtimeEntity;
+	Vans::VansComponentHandle runtimeComponent;
 };
 
 struct LuaObjectUserdata
 {
 	VansScriptObject* object = nullptr;
+	Vans::VansEntityHandle runtimeEntity;
 };
 
 struct LuaComponentUserdata
 {
 	VansScriptComponent* component = nullptr;
+	Vans::VansComponentHandle runtimeComponent;
 };
 
 VansScriptContext* Context()
@@ -121,34 +127,286 @@ int PushError(lua_State* L, const char* message)
 	return lua_error(L);
 }
 
+Vans::VansComponentHandle ResolveRuntimeComponentHandle(
+	const VansScriptObject* object,
+	const VansScriptComponent* component);
+Vans::VansEntityHandle ResolveRuntimeEntityHandle(const VansScriptObject* object);
+Vans::VansComponentHandle ResolveRuntimeTransformComponentHandle(
+	const VansScriptObject* object,
+	std::uint32_t transformID);
+VansScriptObject* FindObjectByTransformID(std::uint32_t transformID);
+
+void InvalidateTransformHandle(LuaTransformUserdata* handle)
+{
+	if (!handle)
+		return;
+	handle->transformID = UINT32_MAX;
+	handle->runtimeEntity = {};
+	handle->runtimeComponent = {};
+}
+
 LuaTransformUserdata* CheckTransform(lua_State* L, int index)
 {
-	return static_cast<LuaTransformUserdata*>(
+	auto* handle = static_cast<LuaTransformUserdata*>(
 		luaL_checkudata(L, index, "Vans.Transform"));
+	if (!handle || handle->transformID == UINT32_MAX)
+		return handle;
+	auto* scene = Scene();
+	auto* runtimeWorld = scene ? scene->GetRuntimeWorld() : nullptr;
+	if (!runtimeWorld)
+	{
+		InvalidateTransformHandle(handle);
+		return handle;
+	}
+	if (!handle->runtimeEntity.IsValid() || !runtimeWorld->IsAlive(handle->runtimeEntity) ||
+		!handle->runtimeComponent.IsValid() || !runtimeWorld->GetComponentHeader(handle->runtimeComponent))
+	{
+		VansScriptObject* object = FindObjectByTransformID(handle->transformID);
+		handle->runtimeEntity = ResolveRuntimeEntityHandle(object);
+		handle->runtimeComponent = ResolveRuntimeTransformComponentHandle(object, handle->transformID);
+	}
+	const Vans::VansComponentHeader* header = runtimeWorld->GetComponentHeader(handle->runtimeComponent);
+	if (!handle->runtimeEntity.IsValid() ||
+		!runtimeWorld->IsAlive(handle->runtimeEntity) ||
+		!header ||
+		header->owner != handle->runtimeEntity)
+	{
+		InvalidateTransformHandle(handle);
+	}
+	return handle;
 }
 
 LuaObjectUserdata* CheckObject(lua_State* L, int index)
 {
-	return static_cast<LuaObjectUserdata*>(
+	auto* handle = static_cast<LuaObjectUserdata*>(
 		luaL_checkudata(L, index, "Vans.Object"));
+	if (!handle || !handle->object)
+		return handle;
+	auto* scene = Scene();
+	auto* runtimeWorld = scene ? scene->GetRuntimeWorld() : nullptr;
+	if (!runtimeWorld)
+	{
+		handle->object = nullptr;
+		handle->runtimeEntity = {};
+		return handle;
+	}
+	if (!handle->runtimeEntity.IsValid())
+		handle->runtimeEntity = ResolveRuntimeEntityHandle(handle->object);
+	if (!handle->runtimeEntity.IsValid() || !runtimeWorld->IsAlive(handle->runtimeEntity))
+	{
+		handle->object = nullptr;
+		handle->runtimeEntity = {};
+	}
+	return handle;
 }
 
 LuaComponentUserdata* CheckComponent(lua_State* L, int index)
 {
-	return static_cast<LuaComponentUserdata*>(
+	auto* handle = static_cast<LuaComponentUserdata*>(
 		luaL_checkudata(L, index, "Vans.Component"));
+	if (!handle || !handle->component)
+		return handle;
+	auto* scene = Scene();
+	auto* runtimeWorld = scene ? scene->GetRuntimeWorld() : nullptr;
+	if (!runtimeWorld)
+	{
+		handle->component = nullptr;
+		return handle;
+	}
+	if (!handle->runtimeComponent.IsValid())
+	{
+		for (auto* object : scene->GetSceneObjects())
+		{
+			if (!object)
+				continue;
+			const auto found = std::find(object->m_Components.begin(), object->m_Components.end(), handle->component);
+			if (found != object->m_Components.end())
+			{
+				handle->runtimeComponent = ResolveRuntimeComponentHandle(object, handle->component);
+				break;
+			}
+		}
+	}
+	if (!handle->runtimeComponent.IsValid() ||
+		!runtimeWorld->GetComponentHeader(handle->runtimeComponent))
+	{
+		handle->component = nullptr;
+	}
+	return handle;
 }
 
 VansScriptObject* ResolveObject(LuaObjectUserdata* handle)
 {
-	if (!handle)
+	if (!handle || !handle->object)
 		return nullptr;
 	auto* scene = Scene();
-	if (!scene)
+	auto* runtimeWorld = scene ? scene->GetRuntimeWorld() : nullptr;
+	if (!runtimeWorld)
+	{
+		handle->object = nullptr;
+		handle->runtimeEntity = {};
 		return nullptr;
+	}
+	if (!handle->runtimeEntity.IsValid())
+		handle->runtimeEntity = ResolveRuntimeEntityHandle(handle->object);
+	if (!handle->runtimeEntity.IsValid() || !runtimeWorld->IsAlive(handle->runtimeEntity))
+	{
+		handle->object = nullptr;
+		handle->runtimeEntity = {};
+		return nullptr;
+	}
 	for (auto* object : scene->GetSceneObjects())
-		if (object == handle->object)
+	{
+		if (object != handle->object)
+			continue;
+		const Vans::VansEntityHandle entity = ResolveRuntimeEntityHandle(object);
+		if (entity == handle->runtimeEntity)
 			return object;
+		break;
+	}
+	handle->object = nullptr;
+	handle->runtimeEntity = {};
+	return nullptr;
+}
+
+Vans::VansEntityHandle ResolveRuntimeEntityHandle(const VansScriptObject* object)
+{
+	if (!object || object->m_EntityGuid.empty())
+		return Vans::VansEntityHandle{};
+	auto* scene = Scene();
+	auto* runtimeWorld = scene ? scene->GetRuntimeWorld() : nullptr;
+	if (!runtimeWorld)
+		return Vans::VansEntityHandle{};
+	const Vans::VansEntityHandle entity = runtimeWorld->Entities().FindByGuid(object->m_EntityGuid);
+	return runtimeWorld->IsAlive(entity) ? entity : Vans::VansEntityHandle{};
+}
+
+Vans::VansComponentHandle ResolveRuntimeTransformComponentHandle(
+	const VansScriptObject* object,
+	std::uint32_t transformID)
+{
+	auto* scene = Scene();
+	auto* runtimeWorld = scene ? scene->GetRuntimeWorld() : nullptr;
+	if (!runtimeWorld)
+		return Vans::VansComponentHandle{};
+	const Vans::VansEntityHandle entity = ResolveRuntimeEntityHandle(object);
+	if (!entity.IsValid())
+		return Vans::VansComponentHandle{};
+	const auto* storage = static_cast<const Vans::VansComponentStorage<Vans::VansRuntimeTransformComponent>*>(
+		runtimeWorld->FindStorage(Vans::VansRuntimeComponentType_Transform));
+	if (!storage)
+		return Vans::VansComponentHandle{};
+	const auto& headers = storage->Headers();
+	for (const Vans::VansComponentHeader& header : headers)
+	{
+		if (header.owner != entity)
+			continue;
+		const Vans::VansRuntimeTransformComponent* transform = storage->Get(header.self);
+		if (!transform)
+			continue;
+		if (transformID == UINT32_MAX || transform->transformStoreId == transformID)
+			return header.self;
+	}
+	return Vans::VansComponentHandle{};
+}
+
+Vans::VansComponentHandle ResolveRuntimeComponentHandle(
+	const VansScriptObject* object,
+	const VansScriptComponent* component)
+{
+	if (!object || !component || component->m_ComponentGuid.empty())
+		return Vans::VansComponentHandle{};
+	auto* scene = Scene();
+	auto* runtimeWorld = scene ? scene->GetRuntimeWorld() : nullptr;
+	if (!runtimeWorld)
+		return Vans::VansComponentHandle{};
+	const std::string runtimeKey = Vans::CanonicalRuntimeComponentKeyForName(component->m_ComponentName);
+	const std::uint16_t typeId = Vans::VansRuntimeComponentTypeIdForKey(runtimeKey);
+	if (typeId == Vans::VansInvalidComponentTypeId)
+		return Vans::VansComponentHandle{};
+	const Vans::VansComponentHandle handle = runtimeWorld->FindComponentByGuid(
+		component->m_ComponentGuid,
+		typeId);
+	const Vans::VansComponentHeader* header = runtimeWorld->GetComponentHeader(handle);
+	if (!header)
+		return Vans::VansComponentHandle{};
+	const Vans::VansEntityHandle entity = runtimeWorld->Entities().FindByGuid(object->m_EntityGuid);
+	if (!entity.IsValid() || header->owner != entity)
+		return Vans::VansComponentHandle{};
+	return handle;
+}
+
+Vans::VansRuntimeParticleComponent* RuntimeParticleComponent(LuaComponentUserdata* handle)
+{
+	if (!handle || handle->runtimeComponent.typeId != Vans::VansRuntimeComponentType_Particle)
+		return nullptr;
+	auto* scene = Scene();
+	auto* runtimeWorld = scene ? scene->GetRuntimeWorld() : nullptr;
+	if (!runtimeWorld || !runtimeWorld->GetComponentHeader(handle->runtimeComponent))
+		return nullptr;
+	auto* storage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeParticleComponent>*>(
+		runtimeWorld->FindStorage(Vans::VansRuntimeComponentType_Particle));
+	return storage ? storage->Get(handle->runtimeComponent) : nullptr;
+}
+
+void SyncRuntimeAudioComponent(VansScriptAudioComponent* audio)
+{
+	if (!audio)
+		return;
+	if (auto* scene = Scene())
+		scene->SyncRuntimeAudioComponentFromFacade(*audio);
+}
+
+void SyncRuntimeVideoComponent(VansScriptVideoComponent* video)
+{
+	if (!video)
+		return;
+	if (auto* scene = Scene())
+		scene->SyncRuntimeVideoComponentFromFacade(*video);
+}
+
+template <typename T>
+T* FindRuntimeBackedComponent(VansScriptObject* object)
+{
+	if (!object)
+		return nullptr;
+	for (auto* component : object->m_Components)
+	{
+		auto* typedComponent = dynamic_cast<T*>(component);
+		if (!typedComponent)
+			continue;
+		if (ResolveRuntimeComponentHandle(object, typedComponent).IsValid())
+			return typedComponent;
+	}
+	return nullptr;
+}
+
+std::size_t CountRuntimeBackedComponents(VansScriptObject* object)
+{
+	if (!object)
+		return 0;
+	std::size_t count = 0;
+	for (auto* component : object->m_Components)
+	{
+		if (ResolveRuntimeComponentHandle(object, component).IsValid())
+			++count;
+	}
+	return count;
+}
+
+VansScriptComponent* GetRuntimeBackedComponentByIndex(VansScriptObject* object, std::size_t targetIndex)
+{
+	if (!object)
+		return nullptr;
+	std::size_t runtimeIndex = 0;
+	for (auto* component : object->m_Components)
+	{
+		if (!ResolveRuntimeComponentHandle(object, component).IsValid())
+			continue;
+		if (runtimeIndex == targetIndex)
+			return component;
+		++runtimeIndex;
+	}
 	return nullptr;
 }
 
@@ -201,9 +459,20 @@ VansScriptObject* FindObjectByTransformID(std::uint32_t transformID)
 
 void PushTransform(lua_State* L, std::uint32_t transformID)
 {
+	VansScriptObject* object = FindObjectByTransformID(transformID);
+	const Vans::VansEntityHandle runtimeEntity = ResolveRuntimeEntityHandle(object);
+	const Vans::VansComponentHandle runtimeComponent =
+		ResolveRuntimeTransformComponentHandle(object, transformID);
+	if (!runtimeEntity.IsValid() || !runtimeComponent.IsValid())
+	{
+		lua_pushnil(L);
+		return;
+	}
 	auto* userdata = static_cast<LuaTransformUserdata*>(
 		lua_newuserdatauv(L, sizeof(LuaTransformUserdata), 0));
 	userdata->transformID = transformID;
+	userdata->runtimeEntity = runtimeEntity;
+	userdata->runtimeComponent = runtimeComponent;
 	luaL_getmetatable(L, "Vans.Transform");
 	lua_setmetatable(L, -2);
 }
@@ -218,6 +487,13 @@ void PushObject(lua_State* L, VansScriptObject* object)
 	auto* userdata = static_cast<LuaObjectUserdata*>(
 		lua_newuserdatauv(L, sizeof(LuaObjectUserdata), 0));
 	userdata->object = object;
+	userdata->runtimeEntity = ResolveRuntimeEntityHandle(object);
+	if (!userdata->runtimeEntity.IsValid())
+	{
+		lua_pop(L, 1);
+		lua_pushnil(L);
+		return;
+	}
 	luaL_getmetatable(L, "Vans.Object");
 	lua_setmetatable(L, -2);
 }
@@ -229,9 +505,30 @@ void PushComponent(lua_State* L, VansScriptComponent* component)
 		lua_pushnil(L);
 		return;
 	}
+	Vans::VansComponentHandle runtimeComponent;
+	if (auto* scene = Scene())
+	{
+		for (auto* object : scene->GetSceneObjects())
+		{
+			if (!object)
+				continue;
+			const auto found = std::find(object->m_Components.begin(), object->m_Components.end(), component);
+			if (found != object->m_Components.end())
+			{
+				runtimeComponent = ResolveRuntimeComponentHandle(object, component);
+				break;
+			}
+		}
+	}
+	if (!runtimeComponent.IsValid())
+	{
+		lua_pushnil(L);
+		return;
+	}
 	auto* userdata = static_cast<LuaComponentUserdata*>(
 		lua_newuserdatauv(L, sizeof(LuaComponentUserdata), 0));
 	userdata->component = component;
+	userdata->runtimeComponent = runtimeComponent;
 	luaL_getmetatable(L, "Vans.Component");
 	lua_setmetatable(L, -2);
 }
@@ -239,6 +536,11 @@ void PushComponent(lua_State* L, VansScriptComponent* component)
 int LuaTransformGetPosition(lua_State* L)
 {
 	auto* handle = CheckTransform(L, 1);
+	if (!handle || handle->transformID == UINT32_MAX)
+	{
+		lua_pushnil(L);
+		return 1;
+	}
 	auto& transform = VansGraphics::VansTransformStore::GetTransform(handle->transformID);
 	PushVec3(L, transform.m_Position);
 	return 1;
@@ -247,6 +549,8 @@ int LuaTransformGetPosition(lua_State* L)
 int LuaTransformSetPosition(lua_State* L)
 {
 	auto* handle = CheckTransform(L, 1);
+	if (!handle || handle->transformID == UINT32_MAX)
+		return 0;
 	auto& transform = VansGraphics::VansTransformStore::GetTransform(handle->transformID);
 	transform.m_Position = ReadVec3(L, 2);
 	return 0;
@@ -255,6 +559,11 @@ int LuaTransformSetPosition(lua_State* L)
 int LuaTransformGetRotation(lua_State* L)
 {
 	auto* handle = CheckTransform(L, 1);
+	if (!handle || handle->transformID == UINT32_MAX)
+	{
+		lua_pushnil(L);
+		return 1;
+	}
 	auto& transform = VansGraphics::VansTransformStore::GetTransform(handle->transformID);
 	PushVec3(L, transform.m_Rotation);
 	return 1;
@@ -263,6 +572,8 @@ int LuaTransformGetRotation(lua_State* L)
 int LuaTransformSetRotation(lua_State* L)
 {
 	auto* handle = CheckTransform(L, 1);
+	if (!handle || handle->transformID == UINT32_MAX)
+		return 0;
 	auto& transform = VansGraphics::VansTransformStore::GetTransform(handle->transformID);
 	transform.m_Rotation = ReadVec3(L, 2);
 	return 0;
@@ -271,6 +582,8 @@ int LuaTransformSetRotation(lua_State* L)
 int LuaTransformTranslate(lua_State* L)
 {
 	auto* handle = CheckTransform(L, 1);
+	if (!handle || handle->transformID == UINT32_MAX)
+		return 0;
 	auto& transform = VansGraphics::VansTransformStore::GetTransform(handle->transformID);
 	transform.m_Position += ReadVec3(L, 2);
 	return 0;
@@ -310,7 +623,7 @@ int LuaObjectGetTransformID(lua_State* L)
 int LuaObjectGetComponentCount(lua_State* L)
 {
 	auto* object = ResolveObject(CheckObject(L, 1));
-	lua_pushinteger(L, object ? static_cast<lua_Integer>(object->m_Components.size()) : 0);
+	lua_pushinteger(L, static_cast<lua_Integer>(CountRuntimeBackedComponents(object)));
 	return 1;
 }
 
@@ -318,12 +631,12 @@ int LuaObjectGetComponentByIndex(lua_State* L)
 {
 	auto* object = ResolveObject(CheckObject(L, 1));
 	const lua_Integer index = luaL_checkinteger(L, 2);
-	if (!object || index < 0 || static_cast<std::size_t>(index) >= object->m_Components.size())
+	if (!object || index < 0)
 	{
 		lua_pushnil(L);
 		return 1;
 	}
-	PushComponent(L, object->m_Components[static_cast<std::size_t>(index)]);
+	PushComponent(L, GetRuntimeBackedComponentByIndex(object, static_cast<std::size_t>(index)));
 	return 1;
 }
 
@@ -331,7 +644,7 @@ template<typename T>
 int PushObjectComponent(lua_State* L)
 {
 	auto* object = ResolveObject(CheckObject(L, 1));
-	PushComponent(L, object ? object->GetComponent<T>() : nullptr);
+	PushComponent(L, FindRuntimeBackedComponent<T>(object));
 	return 1;
 }
 
@@ -342,14 +655,25 @@ int LuaObjectDestroy(lua_State* L)
 	auto* scene = Scene();
 	const bool queued = scene && object && scene->QueueDestroyEntity(object);
 	if (queued)
+	{
 		handle->object = nullptr;
+		handle->runtimeEntity = {};
+	}
 	lua_pushboolean(L, queued);
 	return 1;
 }
 
 int LuaComponentIsValid(lua_State* L)
 {
-	lua_pushboolean(L, CheckComponent(L, 1)->component != nullptr);
+	auto* handle = CheckComponent(L, 1);
+	bool valid = handle && handle->component != nullptr;
+	if (valid && handle->runtimeComponent.IsValid())
+	{
+		auto* scene = Scene();
+		auto* runtimeWorld = scene ? scene->GetRuntimeWorld() : nullptr;
+		valid = runtimeWorld && runtimeWorld->GetComponentHeader(handle->runtimeComponent) != nullptr;
+	}
+	lua_pushboolean(L, valid);
 	return 1;
 }
 
@@ -520,28 +844,40 @@ int LuaComponentSwitchSource(lua_State* L)
 
 int LuaComponentIsPlaying(lua_State* L)
 {
-	auto* component = CheckComponent(L, 1)->component;
+	auto* handle = CheckComponent(L, 1);
+	auto* component = handle->component;
 	bool value = false;
 	if (auto* audio = dynamic_cast<VansScriptAudioComponent*>(component))
 		value = audio->m_Source.IsPlaying();
 	else if (auto* video = dynamic_cast<VansScriptVideoComponent*>(component))
 		value = video->m_VideoTex && video->m_VideoTex->IsPlaying();
 	else if (auto* particle = dynamic_cast<VansScriptParticleComponent*>(component))
-		value = particle->m_IsPlaying;
+	{
+		if (auto* runtimeParticle = RuntimeParticleComponent(handle))
+			value = runtimeParticle->isPlaying;
+		else
+			value = particle->m_IsPlaying;
+	}
 	lua_pushboolean(L, value);
 	return 1;
 }
 
 int LuaComponentIsPaused(lua_State* L)
 {
-	auto* component = CheckComponent(L, 1)->component;
+	auto* handle = CheckComponent(L, 1);
+	auto* component = handle->component;
 	bool value = false;
 	if (auto* audio = dynamic_cast<VansScriptAudioComponent*>(component))
 		value = audio->m_Source.IsPaused();
 	else if (auto* video = dynamic_cast<VansScriptVideoComponent*>(component))
 		value = video->m_VideoTex && video->m_VideoTex->IsReady() && !video->m_VideoTex->IsPlaying();
 	else if (auto* particle = dynamic_cast<VansScriptParticleComponent*>(component))
-		value = particle->m_Runtime != nullptr && !particle->m_IsPlaying;
+	{
+		if (auto* runtimeParticle = RuntimeParticleComponent(handle))
+			value = runtimeParticle->runtime != nullptr && !runtimeParticle->isPlaying;
+		else
+			value = particle->m_Runtime != nullptr && !particle->m_IsPlaying;
+	}
 	lua_pushboolean(L, value);
 	return 1;
 }
@@ -1297,7 +1633,10 @@ int LuaComponentSetOcclusionEnabled(lua_State* L)
 	auto* component = CheckComponent(L, 1)->component;
 	auto* audio = dynamic_cast<VansScriptAudioComponent*>(component);
 	if (audio)
+	{
 		audio->m_OcclusionSettings.enabled = lua_toboolean(L, 2) != 0;
+		SyncRuntimeAudioComponent(audio);
+	}
 	return 0;
 }
 
@@ -1315,6 +1654,7 @@ int LuaComponentSetOcclusionParams(lua_State* L)
 	audio->m_OcclusionSettings.queryIntervalSeconds =
 		static_cast<float>(luaL_optnumber(L, 4, audio->m_OcclusionSettings.queryIntervalSeconds));
 	audio->m_OcclusionSettings.Normalize();
+	SyncRuntimeAudioComponent(audio);
 	return 0;
 }
 
@@ -1330,6 +1670,7 @@ int LuaComponentSetOcclusionMaterial(lua_State* L)
 	audio->m_OcclusionSettings.materialThickness =
 		static_cast<float>(luaL_optnumber(L, 3, audio->m_OcclusionSettings.materialThickness));
 	audio->m_OcclusionSettings.Normalize();
+	SyncRuntimeAudioComponent(audio);
 	return 0;
 }
 
@@ -1350,6 +1691,7 @@ int LuaComponentSetDopplerEnabled(lua_State* L)
 		audio->m_DopplerEnabled = lua_toboolean(L, 2) != 0;
 		if (!audio->m_DopplerEnabled)
 			audio->m_Source.SetVelocity(0.0f, 0.0f, 0.0f);
+		SyncRuntimeAudioComponent(audio);
 	}
 	return 0;
 }
@@ -1370,6 +1712,7 @@ int LuaComponentSetCone(lua_State* L)
 		static_cast<float>(luaL_optnumber(L, 5, audio->m_ConeSettings.outerGain));
 	audio->m_ConeSettings.Normalize();
 	audio->m_Source.SetCone(audio->m_ConeSettings);
+	SyncRuntimeAudioComponent(audio);
 	return 0;
 }
 
@@ -1821,9 +2164,15 @@ int LuaComponentClearWorldPosition(lua_State* L)
 
 int LuaComponentGetPlayTime(lua_State* L)
 {
-	auto* component = CheckComponent(L, 1)->component;
+	auto* handle = CheckComponent(L, 1);
+	auto* component = handle->component;
 	if (auto* particle = dynamic_cast<VansScriptParticleComponent*>(component))
-		lua_pushnumber(L, particle->m_PlayTime);
+	{
+		if (auto* runtimeParticle = RuntimeParticleComponent(handle))
+			lua_pushnumber(L, runtimeParticle->playTime);
+		else
+			lua_pushnumber(L, particle->m_PlayTime);
+	}
 	else
 		lua_pushnumber(L, 0.0f);
 	return 1;
@@ -1943,8 +2292,7 @@ int LuaSelfGetTransform(lua_State* L)
 	lua_getfield(L, 1, "__owner");
 	if (!lua_isuserdata(L, -1))
 		return 1;
-	auto* object = static_cast<LuaObjectUserdata*>(
-		luaL_checkudata(L, -1, "Vans.Object"))->object;
+	auto* object = ResolveObject(CheckObject(L, -1));
 	lua_pop(L, 1);
 	if (!object)
 		lua_pushnil(L);
@@ -1963,10 +2311,9 @@ int LuaSelfGetOwnerComponent(lua_State* L)
 		lua_pushnil(L);
 		return 1;
 	}
-	auto* object = static_cast<LuaObjectUserdata*>(
-		luaL_checkudata(L, -1, "Vans.Object"))->object;
+	auto* object = ResolveObject(CheckObject(L, -1));
 	lua_pop(L, 1);
-	PushComponent(L, object ? object->GetComponent<T>() : nullptr);
+	PushComponent(L, FindRuntimeBackedComponent<T>(object));
 	return 1;
 }
 
@@ -2494,15 +2841,46 @@ void PushPhysicsEvent(lua_State* L, const VansScriptPhysicsEventInfo& info)
 
 void VansScriptComponent::SetEnabled(bool enabled)
 {
+	if (m_Destroyed) return;
 	if (m_Enabled == enabled) return;
 	m_Enabled = enabled;
-	if (enabled) OnEnable(); else OnDisable();
+	RefreshEffectiveEnabled();
+}
+
+void VansScriptComponent::MirrorRuntimeEnabledState(bool selfEnabled, bool effectiveEnabled)
+{
+	if (m_Destroyed) return;
+	m_Enabled = selfEnabled;
+	m_EffectiveEnabled = effectiveEnabled;
+}
+
+void VansScriptComponent::ApplyOwnerActive(bool active)
+{
+	if (m_Destroyed) return;
+	m_OwnerActive = active;
+	RefreshEffectiveEnabled();
 }
 
 void VansScriptComponent::Destroy()
 {
-	OnDestroy();
+	if (m_Destroyed) return;
+	if (m_EffectiveEnabled)
+	{
+		OnDisable();
+		m_EffectiveEnabled = false;
+	}
 	m_Enabled = false;
+	OnDestroy();
+	m_Destroyed = true;
+}
+
+void VansScriptComponent::RefreshEffectiveEnabled()
+{
+	const bool effective = m_Enabled && m_OwnerActive;
+	if (m_EffectiveEnabled == effective)
+		return;
+	m_EffectiveEnabled = effective;
+	if (effective) OnEnable(); else OnDisable();
 }
 
 void VansScriptObject::SetActive(bool active)
@@ -2510,19 +2888,34 @@ void VansScriptObject::SetActive(bool active)
 	if (m_Active == active) return;
 	m_Active = active;
 	for (auto* comp : m_Components)
-		if (comp) comp->SetEnabled(active);
+		if (comp) comp->ApplyOwnerActive(active);
 }
 
 void VansScriptObject::AddComponent(VansScriptComponent* comp)
 {
 	if (comp)
+	{
+		comp->ApplyOwnerActive(m_Active);
 		m_Components.push_back(comp);
+	}
+}
+
+std::uint32_t VansScriptObject::ReleaseOwnedTransform()
+{
+	if (!m_OwnsTransform)
+		return UINT32_MAX;
+	m_OwnsTransform = false;
+	return m_TransformID;
 }
 
 VansScriptObject::~VansScriptObject()
 {
 	for (auto* component : m_Components)
+	{
+		if (component)
+			component->Destroy();
 		delete component;
+	}
 	m_Components.clear();
 	if (m_OwnsTransform)
 		VansGraphics::VansTransformStore::FreeTransform(m_TransformID);
@@ -2549,6 +2942,7 @@ void VansScriptRenderComponent::OnDisable()
 	}
 	if (m_RenderNode) m_RenderNode->SetEnabled(false);
 }
+
 void VansScriptPhysicsComponent::OnEnable() { if (m_PhysicsNode) m_PhysicsNode->SetEnabled(true); }
 void VansScriptPhysicsComponent::OnDisable() { if (m_PhysicsNode) m_PhysicsNode->SetEnabled(false); }
 void VansScriptClothComponent::OnEnable() { if (m_ClothNode) m_ClothNode->SetEnabled(true); }
@@ -2557,15 +2951,34 @@ void VansScriptAnimationComponent::OnEnable() { if (m_AnimNode) m_AnimNode->SetE
 void VansScriptAnimationComponent::OnDisable() { if (m_AnimNode) m_AnimNode->SetEnabled(false); }
 void VansScriptCameraComponent::OnEnable() { if (m_Camera) m_Camera->SetEnabled(true); }
 void VansScriptCameraComponent::OnDisable() { if (m_Camera) m_Camera->SetEnabled(false); }
-void VansScriptAudioComponent::OnEnable() { m_Source.SetEnabled(true); }
+void VansScriptCameraComponent::OnDestroy()
+{
+	if (m_Camera) m_Camera->SetTransformID(UINT32_MAX);
+}
+void VansScriptAudioComponent::OnEnable()
+{
+	m_Source.SetEnabled(true);
+	SyncRuntimeAudioComponent(this);
+}
 void VansScriptAudioComponent::OnDisable()
 {
 	m_Source.SetVelocity(0.0f, 0.0f, 0.0f);
 	m_Source.SetEnabled(false);
 	m_HasLastAudioPosition = false;
+	SyncRuntimeAudioComponent(this);
+}
+void VansScriptAudioComponent::OnDestroy()
+{
+	m_Source.Stop();
+	SyncRuntimeAudioComponent(this);
 }
 void VansScriptParticleComponent::OnEnable() { Play(); }
 void VansScriptParticleComponent::OnDisable() { Pause(); }
+void VansScriptParticleComponent::OnDestroy()
+{
+	if (m_Runtime)
+		VansParticleManager::Instance().UnregisterRuntime(m_Runtime.get());
+}
 
 VansScriptUIComponent::~VansScriptUIComponent()
 {
@@ -2615,6 +3028,14 @@ void VansScriptUIComponent::CloseOpenedScreens()
 	m_OpenScreens.clear();
 }
 
+void VansScriptUIComponent::MirrorRuntimeOpenScreens(const std::vector<std::uint64_t>& openScreens)
+{
+	m_OpenScreens.clear();
+	m_OpenScreens.reserve(openScreens.size());
+	for (std::uint64_t screenId : openScreens)
+		m_OpenScreens.push_back(static_cast<VansRuntime::VansUIHandleId>(screenId));
+}
+
 void VansScriptUIComponent::OnEnable()
 {
 	Preload();
@@ -2625,11 +3046,6 @@ void VansScriptUIComponent::OnDisable()
 {
 	CloseOpenedScreens();
 	ReleasePreloaded();
-}
-
-void VansScriptUIComponent::OnDestroy()
-{
-	OnDisable();
 }
 
 VansScriptRagdollComponent::VansScriptRagdollComponent() { m_ComponentName = "Ragdoll"; }
@@ -2687,6 +3103,42 @@ void VansScriptCharacterControllerComponent::BindFollowRagdoll(VansScriptRagdoll
 void VansScriptCharacterControllerComponent::ClearFollowRagdoll() { if (m_ControllerNode) m_ControllerNode->ClearFollowRagdoll(); }
 bool VansScriptCharacterControllerComponent::IsFollowRagdollEnabled() const { return m_ControllerNode && m_ControllerNode->IsFollowRagdollEnabled(); }
 
+void VansScriptDirectionalLightComponent::RebindSceneLightIndex(
+	VansScriptLightIndexKind kind,
+	int oldIndex,
+	int newIndex)
+{
+	if (kind == VansScriptLightIndexKind::Directional && m_LightIndex == oldIndex)
+		m_LightIndex = newIndex;
+}
+
+void VansScriptPointLightComponent::RebindSceneLightIndex(
+	VansScriptLightIndexKind kind,
+	int oldIndex,
+	int newIndex)
+{
+	if (kind == VansScriptLightIndexKind::Point && m_LightIndex == oldIndex)
+		m_LightIndex = newIndex;
+}
+
+void VansScriptSpotLightComponent::RebindSceneLightIndex(
+	VansScriptLightIndexKind kind,
+	int oldIndex,
+	int newIndex)
+{
+	if (kind == VansScriptLightIndexKind::Spot && m_LightIndex == oldIndex)
+		m_LightIndex = newIndex;
+}
+
+void VansScriptRectLightComponent::RebindSceneLightIndex(
+	VansScriptLightIndexKind kind,
+	int oldIndex,
+	int newIndex)
+{
+	if (kind == VansScriptLightIndexKind::Rect && m_LightIndex == oldIndex)
+		m_LightIndex = newIndex;
+}
+
 bool VansScriptAudioComponent::SwitchSource(const std::string& name)
 {
 	const bool switched = m_Source.SwitchSource(name);
@@ -2694,6 +3146,7 @@ bool VansScriptAudioComponent::SwitchSource(const std::string& name)
 	{
 		m_Source.SetVelocity(0.0f, 0.0f, 0.0f);
 		m_HasLastAudioPosition = false;
+		SyncRuntimeAudioComponent(this);
 	}
 	return switched;
 }
@@ -2707,7 +3160,13 @@ bool VansScriptVideoComponent::SwitchSource(const std::string& name)
 		m_VideoTex->Pause();
 	m_VideoTex = newVideo;
 	m_VideoName = name;
+	SyncRuntimeVideoComponent(this);
 	return true;
+}
+
+void VansScriptVideoComponent::OnDestroy()
+{
+	if (m_VideoTex) m_VideoTex->Pause();
 }
 
 void VansScriptParticleComponent::Play()
@@ -2715,6 +3174,8 @@ void VansScriptParticleComponent::Play()
 	if (!m_Runtime) return;
 	m_IsPlaying = true;
 	m_Runtime->m_IsPlaying = true;
+	if (auto* scene = Scene())
+		scene->SyncRuntimeParticleComponentFromFacade(*this);
 }
 
 void VansScriptParticleComponent::Stop()
@@ -2727,6 +3188,8 @@ void VansScriptParticleComponent::Stop()
 	m_Runtime->m_AliveInstanceCount.store(0, std::memory_order_release);
 	for (auto& buffer : m_Runtime->m_InstanceBuffers)
 		buffer.clear();
+	if (auto* scene = Scene())
+		scene->SyncRuntimeParticleComponentFromFacade(*this);
 }
 
 void VansScriptParticleComponent::Pause()
@@ -2734,6 +3197,18 @@ void VansScriptParticleComponent::Pause()
 	if (!m_Runtime) return;
 	m_IsPlaying = false;
 	m_Runtime->m_IsPlaying = false;
+	if (auto* scene = Scene())
+		scene->SyncRuntimeParticleComponentFromFacade(*this);
+}
+
+void VansScriptParticleComponent::MirrorRuntimeEnabledState(bool selfEnabled, bool effectiveEnabled)
+{
+	VansScriptComponent::MirrorRuntimeEnabledState(selfEnabled, effectiveEnabled);
+	m_IsPlaying = effectiveEnabled;
+	if (m_Runtime)
+		m_Runtime->m_IsPlaying = effectiveEnabled;
+	if (auto* scene = Scene())
+		scene->SyncRuntimeParticleComponentFromFacade(*this);
 }
 
 void VansScriptParticleComponent::Restart()
@@ -2746,11 +3221,15 @@ void VansScriptParticleComponent::SetWorldPosition(float x, float y, float z)
 {
 	m_HasWorldPositionOverride = true;
 	m_WorldPositionOverride = glm::vec3(x, y, z);
+	if (auto* scene = Scene())
+		scene->SyncRuntimeParticleComponentFromFacade(*this);
 }
 
 void VansScriptParticleComponent::ClearWorldPositionOverride()
 {
 	m_HasWorldPositionOverride = false;
+	if (auto* scene = Scene())
+		scene->SyncRuntimeParticleComponentFromFacade(*this);
 }
 
 bool VansScriptParticleComponent::LoadAsset(const std::string& path)
@@ -2763,6 +3242,8 @@ bool VansScriptParticleComponent::LoadAsset(const std::string& path)
 	m_ParticleAsset = std::move(newAsset);
 	m_Runtime = std::make_unique<VansGraphics::VansParticleRuntime>();
 	m_Runtime->m_Asset = m_ParticleAsset.get();
+	if (auto* scene = Scene())
+		scene->SyncRuntimeParticleComponentFromFacade(*this);
 	return true;
 }
 
@@ -2771,6 +3252,8 @@ void VansScriptParticleComponent::OnUpdate(float deltaTime)
 	if (!m_Runtime || !m_IsPlaying) return;
 	m_Runtime->Update(deltaTime);
 	m_PlayTime = m_Runtime->m_PlayTime;
+	if (auto* scene = Scene())
+		scene->SyncRuntimeParticleComponentFromFacade(*this);
 }
 
 VansLuaScriptComponent::~VansLuaScriptComponent()
@@ -2999,6 +3482,11 @@ void VansLuaScriptComponent::Teardown()
 	m_Enabled = false;
 	m_HasStarted = false;
 	m_State = VansLuaScriptState::Unloaded;
+}
+
+void VansLuaScriptComponent::OnDestroy()
+{
+	Teardown();
 }
 
 void VansLuaScriptComponent::CallOnCollisionEnter(const VansScriptPhysicsEventInfo& info)
@@ -3424,6 +3912,8 @@ void VansScriptContext::ReloadAllLuaScripts()
 		scheduled.component->Teardown();
 		scheduled.component->Instantiate();
 		scheduled.component->Enable();
+		if (m_Scene && !scheduled.componentGuid.empty())
+			m_Scene->SyncRuntimeScriptComponentFromFacade(scheduled.componentGuid, *scheduled.component);
 	}
 }
 
@@ -3447,8 +3937,42 @@ void VansScriptContext::RegisterScriptComponent(VansScriptObject* owner, VansLua
 	if (existing != m_ScheduledScripts.end())
 		return;
 	const bool cameraScript = owner->GetComponent<VansScriptCameraComponent>() != nullptr;
-	m_ScheduledScripts.push_back({ owner, component, cameraScript });
-	m_EventSubscribers[owner->m_TransformID].push_back(component);
+	ScheduledScript scheduled;
+	scheduled.owner = owner;
+	scheduled.component = component;
+	scheduled.entityGuid = owner->m_EntityGuid;
+	scheduled.componentGuid = component->m_ComponentGuid;
+	scheduled.cameraScript = cameraScript;
+	if (m_Scene)
+	{
+		if (auto* runtimeWorld = m_Scene->GetRuntimeWorld())
+		{
+			if (!scheduled.entityGuid.empty())
+				scheduled.runtimeEntity = runtimeWorld->Entities().FindByGuid(scheduled.entityGuid);
+			if (!scheduled.componentGuid.empty())
+				scheduled.runtimeComponent = runtimeWorld->FindComponentByGuid(
+					scheduled.componentGuid,
+					Vans::VansRuntimeComponentType_Script);
+		}
+	}
+	m_ScheduledScripts.push_back(std::move(scheduled));
+	ScriptEventSubscriber subscriber;
+	subscriber.component = component;
+	subscriber.entityGuid = owner->m_EntityGuid;
+	subscriber.componentGuid = component->m_ComponentGuid;
+	if (m_Scene)
+	{
+		if (auto* runtimeWorld = m_Scene->GetRuntimeWorld())
+		{
+			if (!subscriber.entityGuid.empty())
+				subscriber.runtimeEntity = runtimeWorld->Entities().FindByGuid(subscriber.entityGuid);
+			if (!subscriber.componentGuid.empty())
+				subscriber.runtimeComponent = runtimeWorld->FindComponentByGuid(
+					subscriber.componentGuid,
+					Vans::VansRuntimeComponentType_Script);
+		}
+	}
+	m_EventSubscribers[owner->m_TransformID].push_back(std::move(subscriber));
 }
 
 void VansScriptContext::UnregisterScriptComponent(VansLuaScriptComponent* component)
@@ -3461,7 +3985,13 @@ void VansScriptContext::UnregisterScriptComponent(VansLuaScriptComponent* compon
 	for (auto it = m_EventSubscribers.begin(); it != m_EventSubscribers.end();)
 	{
 		auto& subscribers = it->second;
-		subscribers.erase(std::remove(subscribers.begin(), subscribers.end(), component), subscribers.end());
+		subscribers.erase(
+			std::remove_if(subscribers.begin(), subscribers.end(),
+				[component](const ScriptEventSubscriber& subscriber)
+				{
+					return subscriber.component == component;
+				}),
+			subscribers.end());
 		if (subscribers.empty()) it = m_EventSubscribers.erase(it);
 		else ++it;
 	}
@@ -3479,6 +4009,62 @@ void VansScriptContext::RebuildScriptSchedule()
 			if (auto* component = dynamic_cast<VansLuaScriptComponent*>(baseComponent))
 				RegisterScriptComponent(owner, component);
 	}
+}
+
+bool VansScriptContext::ResolveRuntimeHandles(ScheduledScript& scheduled) const
+{
+	if (!m_Scene)
+		return true;
+	auto* runtimeWorld = m_Scene->GetRuntimeWorld();
+	if (!runtimeWorld)
+		return true;
+
+	if ((!scheduled.runtimeEntity.IsValid() || !runtimeWorld->IsAlive(scheduled.runtimeEntity)) &&
+		!scheduled.entityGuid.empty())
+	{
+		scheduled.runtimeEntity = runtimeWorld->Entities().FindByGuid(scheduled.entityGuid);
+	}
+	if (!scheduled.runtimeEntity.IsValid() || !runtimeWorld->IsAlive(scheduled.runtimeEntity))
+		return false;
+
+	if ((!scheduled.runtimeComponent.IsValid() ||
+		!runtimeWorld->GetComponentHeader(scheduled.runtimeComponent)) &&
+		!scheduled.componentGuid.empty())
+	{
+		scheduled.runtimeComponent = runtimeWorld->FindComponentByGuid(
+			scheduled.componentGuid,
+			Vans::VansRuntimeComponentType_Script);
+	}
+	return scheduled.runtimeComponent.IsValid() &&
+		runtimeWorld->GetComponentHeader(scheduled.runtimeComponent) != nullptr;
+}
+
+bool VansScriptContext::ResolveRuntimeHandles(ScriptEventSubscriber& subscriber) const
+{
+	if (!m_Scene)
+		return true;
+	auto* runtimeWorld = m_Scene->GetRuntimeWorld();
+	if (!runtimeWorld)
+		return true;
+
+	if ((!subscriber.runtimeEntity.IsValid() || !runtimeWorld->IsAlive(subscriber.runtimeEntity)) &&
+		!subscriber.entityGuid.empty())
+	{
+		subscriber.runtimeEntity = runtimeWorld->Entities().FindByGuid(subscriber.entityGuid);
+	}
+	if (!subscriber.runtimeEntity.IsValid() || !runtimeWorld->IsAlive(subscriber.runtimeEntity))
+		return false;
+
+	if ((!subscriber.runtimeComponent.IsValid() ||
+		!runtimeWorld->GetComponentHeader(subscriber.runtimeComponent)) &&
+		!subscriber.componentGuid.empty())
+	{
+		subscriber.runtimeComponent = runtimeWorld->FindComponentByGuid(
+			subscriber.componentGuid,
+			Vans::VansRuntimeComponentType_Script);
+	}
+	return subscriber.runtimeComponent.IsValid() &&
+		runtimeWorld->GetComponentHeader(subscriber.runtimeComponent) != nullptr;
 }
 
 void VansScriptContext::VansScriptUpdate()
@@ -3514,12 +4100,14 @@ void VansScriptContext::UpdateScriptComponents(bool cameraScriptsOnly, bool skip
 {
 	if (!m_Scene) return;
 	const float deltaTime = static_cast<float>(VansGraphics::VansTimer::GetLastFrameDelta());
-	for (const ScheduledScript& scheduled : m_ScheduledScripts)
+	for (ScheduledScript& scheduled : m_ScheduledScripts)
 	{
 		if (cameraScriptsOnly && !scheduled.cameraScript) continue;
 		if (skipCameraScripts && scheduled.cameraScript) continue;
 		auto* component = scheduled.component;
 		if (!component) continue;
+		if (!ResolveRuntimeHandles(scheduled))
+			continue;
 		if (component->m_State == VansLuaScriptState::Unloaded &&
 			!component->m_ScriptPath.empty() &&
 			!component->m_EntryName.empty())
@@ -3527,8 +4115,12 @@ void VansScriptContext::UpdateScriptComponents(bool cameraScriptsOnly, bool skip
 			component->m_OwnerObject = scheduled.owner;
 			component->Instantiate();
 			component->Enable();
+			if (!scheduled.componentGuid.empty())
+				m_Scene->SyncRuntimeScriptComponentFromFacade(scheduled.componentGuid, *component);
 		}
 		component->CallUpdate(deltaTime);
+		if (!scheduled.componentGuid.empty())
+			m_Scene->SyncRuntimeScriptComponentFromFacade(scheduled.componentGuid, *component);
 	}
 }
 
@@ -3569,9 +4161,12 @@ void VansScriptContext::DispatchEventToObject(
 	info.contactNormal[2] = contactNormal.z;
 	info.impulse = impulse;
 
-	for (auto* component : subscriberIt->second)
+	for (ScriptEventSubscriber& subscriber : subscriberIt->second)
 	{
+		auto* component = subscriber.component;
 		if (!component) continue;
+		if (!ResolveRuntimeHandles(subscriber))
+			continue;
 		switch (event.type)
 		{
 		case VansEngine::VansPhysicsContactEventType::CollisionEnter:

@@ -48,7 +48,8 @@ private:
 class VansRemoveScenePropertyCommand final : public VansSceneEditCommand
 {
 public:
-    explicit VansRemoveScenePropertyCommand(std::string propertyPointer);
+    explicit VansRemoveScenePropertyCommand(std::string propertyPointer,
+        SceneEditLifecycleHooks hooks = {});
 
 private:
     SceneEditResult Execute(VansSceneDocument& document) override;
@@ -57,6 +58,7 @@ private:
 
     std::string m_PropertyPointer;
     VansSerializedValue m_OldValue;
+    SceneEditLifecycleHooks m_Hooks;
     SceneStateId m_BeforeState = 0;
     SceneStateId m_AfterState = 0;
 };
@@ -91,6 +93,7 @@ private:
 
     std::string m_ChildEntityGuid;
     std::string m_NewParentEntityGuid;
+    std::string m_OldParentEntityGuid;
     VansSerializedValue m_BeforeRoot;
     VansSerializedValue m_AfterRoot;
     SceneStateId m_BeforeState = 0;
@@ -150,6 +153,54 @@ bool TryRead(
         return false;
     value = *found;
     return true;
+}
+
+std::string TryReadEntityGuidForPointer(
+    const VansSerializedValue& root,
+    const std::string& pointer)
+{
+    const std::vector<std::string> tokens = SplitSerializedPointer(pointer);
+    if (tokens.size() < 2 || tokens[0] != "entities")
+        return {};
+    std::size_t entityIndex = 0;
+    try
+    {
+        entityIndex = static_cast<std::size_t>(std::stoull(tokens[1]));
+    }
+    catch (...)
+    {
+        return {};
+    }
+
+    const VansSerializedValue* entities = FindObjectField(root, "entities");
+    if (!entities || entities->kind != VansSerializedValue::Kind::Array ||
+        entityIndex >= entities->arrayItems.size())
+    {
+        return {};
+    }
+    return ReadSerializedStringField(entities->arrayItems[entityIndex], "id");
+}
+
+SceneEditResult RuntimePreviewEditResult(
+    std::string entityGuid,
+    std::string message = {})
+{
+    SceneEditResult result{ true, std::move(message) };
+    result.changedEntityGuid = std::move(entityGuid);
+    result.runtimePreviewSupported = !result.changedEntityGuid.empty();
+    return result;
+}
+
+SceneEditResult RuntimeParentPreviewEditResult(
+    std::string entityGuid,
+    std::string parentEntityGuid,
+    std::string message = {})
+{
+    SceneEditResult result{ true, std::move(message) };
+    result.changedEntityGuid = std::move(entityGuid);
+    result.changedParentEntityGuid = std::move(parentEntityGuid);
+    result.runtimeParentPreviewSupported = !result.changedEntityGuid.empty();
+    return result;
 }
 
 SceneEditResult RemoveAt(VansSerializedValue& root, const std::string& pointer)
@@ -353,8 +404,9 @@ SceneEditResult VansSetScenePropertyCommand::Execute(VansSceneDocument& document
         m_OldValue = std::move(oldValue);
     if (auto result = WriteAt(candidate, m_PropertyPointer, m_NewValue); !result)
         return result;
+    const std::string changedEntityGuid = TryReadEntityGuidForPointer(candidate, m_PropertyPointer);
     m_AfterState = document.ApplyEditedSerializedRoot(std::move(candidate));
-    return { true, {} };
+    return RuntimePreviewEditResult(changedEntityGuid);
 }
 
 SceneEditResult VansSetScenePropertyCommand::Undo(VansSceneDocument& document)
@@ -364,7 +416,11 @@ SceneEditResult VansSetScenePropertyCommand::Undo(VansSceneDocument& document)
         ? WriteAt(candidate, m_PropertyPointer, m_OldValue)
         : RemoveAt(candidate, m_PropertyPointer);
     if (result)
+    {
+        const std::string changedEntityGuid = TryReadEntityGuidForPointer(candidate, m_PropertyPointer);
         document.RestoreEditedSerializedRoot(std::move(candidate), m_BeforeState);
+        return RuntimePreviewEditResult(changedEntityGuid);
+    }
     return result;
 }
 
@@ -373,12 +429,19 @@ SceneEditResult VansSetScenePropertyCommand::Redo(VansSceneDocument& document)
     VansSerializedValue candidate = document.SerializedRootSnapshot();
     SceneEditResult result = WriteAt(candidate, m_PropertyPointer, m_NewValue);
     if (result)
+    {
+        const std::string changedEntityGuid = TryReadEntityGuidForPointer(candidate, m_PropertyPointer);
         document.RestoreEditedSerializedRoot(std::move(candidate), m_AfterState);
+        return RuntimePreviewEditResult(changedEntityGuid);
+    }
     return result;
 }
 
-VansRemoveScenePropertyCommand::VansRemoveScenePropertyCommand(std::string propertyPointer)
+VansRemoveScenePropertyCommand::VansRemoveScenePropertyCommand(
+    std::string propertyPointer,
+    SceneEditLifecycleHooks hooks)
     : m_PropertyPointer(std::move(propertyPointer))
+    , m_Hooks(std::move(hooks))
 {
 }
 
@@ -394,8 +457,15 @@ SceneEditResult VansRemoveScenePropertyCommand::Execute(VansSceneDocument& docum
     m_BeforeState = document.m_CurrentStateId;
     if (auto result = RemoveAt(candidate, m_PropertyPointer); !result)
         return result;
+    const std::string changedEntityGuid = TryReadEntityGuidForPointer(candidate, m_PropertyPointer);
     m_AfterState = document.ApplyEditedSerializedRoot(std::move(candidate));
-    return { true, {} };
+    if (m_Hooks.afterExecute)
+    {
+        SceneEditResult result = RuntimePreviewEditResult(changedEntityGuid);
+        result.runtimeChangeApplied = m_Hooks.afterExecute();
+        return result;
+    }
+    return RuntimePreviewEditResult(changedEntityGuid);
 }
 
 SceneEditResult VansRemoveScenePropertyCommand::Undo(VansSceneDocument& document)
@@ -403,7 +473,17 @@ SceneEditResult VansRemoveScenePropertyCommand::Undo(VansSceneDocument& document
     VansSerializedValue candidate = document.SerializedRootSnapshot();
     SceneEditResult result = WriteAt(candidate, m_PropertyPointer, m_OldValue);
     if (result)
+    {
+        const std::string changedEntityGuid = TryReadEntityGuidForPointer(candidate, m_PropertyPointer);
         document.RestoreEditedSerializedRoot(std::move(candidate), m_BeforeState);
+        if (m_Hooks.afterUndo)
+        {
+            SceneEditResult hookResult = RuntimePreviewEditResult(changedEntityGuid);
+            hookResult.runtimeChangeApplied = m_Hooks.afterUndo();
+            return hookResult;
+        }
+        return RuntimePreviewEditResult(changedEntityGuid);
+    }
     return result;
 }
 
@@ -412,7 +492,17 @@ SceneEditResult VansRemoveScenePropertyCommand::Redo(VansSceneDocument& document
     VansSerializedValue candidate = document.SerializedRootSnapshot();
     SceneEditResult result = RemoveAt(candidate, m_PropertyPointer);
     if (result)
+    {
+        const std::string changedEntityGuid = TryReadEntityGuidForPointer(candidate, m_PropertyPointer);
         document.RestoreEditedSerializedRoot(std::move(candidate), m_AfterState);
+        if (m_Hooks.afterRedo)
+        {
+            SceneEditResult hookResult = RuntimePreviewEditResult(changedEntityGuid);
+            hookResult.runtimeChangeApplied = m_Hooks.afterRedo();
+            return hookResult;
+        }
+        return RuntimePreviewEditResult(changedEntityGuid);
+    }
     return result;
 }
 
@@ -439,6 +529,12 @@ SceneEditResult VansAppendSceneEntitiesCommand::Execute(VansSceneDocument& docum
         entities->arrayItems.push_back(entity);
 
     m_AfterState = document.ApplyEditedSerializedRoot(std::move(candidate));
+    if (m_Hooks.afterExecute)
+    {
+        SceneEditResult result{ true, {} };
+        result.runtimeChangeApplied = m_Hooks.afterExecute();
+        return result;
+    }
     return { true, {} };
 }
 
@@ -461,7 +557,11 @@ SceneEditResult VansAppendSceneEntitiesCommand::Undo(VansSceneDocument& document
 
     document.RestoreEditedSerializedRoot(std::move(candidate), m_BeforeState);
     if (m_Hooks.afterUndo)
-        m_Hooks.afterUndo();
+    {
+        SceneEditResult result{ true, {} };
+        result.runtimeChangeApplied = m_Hooks.afterUndo();
+        return result;
+    }
     return { true, {} };
 }
 
@@ -484,7 +584,11 @@ SceneEditResult VansAppendSceneEntitiesCommand::Redo(VansSceneDocument& document
 
     document.RestoreEditedSerializedRoot(std::move(candidate), m_AfterState);
     if (m_Hooks.afterRedo)
-        m_Hooks.afterRedo();
+    {
+        SceneEditResult result{ true, {} };
+        result.runtimeChangeApplied = m_Hooks.afterRedo();
+        return result;
+    }
     return { true, {} };
 }
 
@@ -501,6 +605,14 @@ SceneEditResult VansReparentSceneEntityCommand::Execute(VansSceneDocument& docum
     VansSerializedValue candidate = document.SerializedRootSnapshot();
     m_BeforeRoot = candidate;
     m_BeforeState = document.m_CurrentStateId;
+    std::unordered_map<std::string, EntityHierarchyRecord> entitiesById;
+    std::string hierarchyError;
+    if (!TryBuildEntityHierarchy(m_BeforeRoot, entitiesById, hierarchyError))
+        return { false, hierarchyError };
+    const auto childIt = entitiesById.find(m_ChildEntityGuid);
+    if (childIt == entitiesById.end())
+        return { false, "Child entity does not exist" };
+    m_OldParentEntityGuid = childIt->second.parent;
 
     if (SceneEditResult result = ApplyEntityParent(
         candidate,
@@ -512,19 +624,19 @@ SceneEditResult VansReparentSceneEntityCommand::Execute(VansSceneDocument& docum
 
     m_AfterRoot = candidate;
     m_AfterState = document.ApplyEditedSerializedRoot(std::move(candidate));
-    return { true, {} };
+    return RuntimeParentPreviewEditResult(m_ChildEntityGuid, m_NewParentEntityGuid);
 }
 
 SceneEditResult VansReparentSceneEntityCommand::Undo(VansSceneDocument& document)
 {
     document.RestoreEditedSerializedRoot(m_BeforeRoot, m_BeforeState);
-    return { true, {} };
+    return RuntimeParentPreviewEditResult(m_ChildEntityGuid, m_OldParentEntityGuid);
 }
 
 SceneEditResult VansReparentSceneEntityCommand::Redo(VansSceneDocument& document)
 {
     document.RestoreEditedSerializedRoot(m_AfterRoot, m_AfterState);
-    return { true, {} };
+    return RuntimeParentPreviewEditResult(m_ChildEntityGuid, m_NewParentEntityGuid);
 }
 
 VansSetSceneEntityTransformCommand::VansSetSceneEntityTransformCommand(
@@ -548,19 +660,19 @@ SceneEditResult VansSetSceneEntityTransformCommand::Execute(VansSceneDocument& d
 
     m_AfterRoot = candidate;
     m_AfterState = document.ApplyEditedSerializedRoot(std::move(candidate));
-    return { true, {} };
+    return RuntimePreviewEditResult(m_EntityGuid);
 }
 
 SceneEditResult VansSetSceneEntityTransformCommand::Undo(VansSceneDocument& document)
 {
     document.RestoreEditedSerializedRoot(m_BeforeRoot, m_BeforeState);
-    return { true, {} };
+    return RuntimePreviewEditResult(m_EntityGuid);
 }
 
 SceneEditResult VansSetSceneEntityTransformCommand::Redo(VansSceneDocument& document)
 {
     document.RestoreEditedSerializedRoot(m_AfterRoot, m_AfterState);
-    return { true, {} };
+    return RuntimePreviewEditResult(m_EntityGuid);
 }
 
 SceneEditResult VansSceneEditService::Execute(std::unique_ptr<VansSceneEditCommand> command)
@@ -689,19 +801,23 @@ SceneEditResult VansSceneEditService::AppendEntities(std::vector<VansSerializedV
         std::move(entities), std::move(hooks)));
 }
 
-SceneEditResult VansSceneEditService::Remove(const std::string& propertyPointer)
+SceneEditResult VansSceneEditService::Remove(const std::string& propertyPointer,
+    SceneEditLifecycleHooks hooks)
 {
-    return Execute(std::make_unique<VansRemoveScenePropertyCommand>(propertyPointer));
+    return Execute(std::make_unique<VansRemoveScenePropertyCommand>(
+        propertyPointer,
+        std::move(hooks)));
 }
 
-SceneEditResult VansSceneEditService::Remove(const DocumentPropertyPath& path)
+SceneEditResult VansSceneEditService::Remove(const DocumentPropertyPath& path,
+    SceneEditLifecycleHooks hooks)
 {
     if (path.space != DocumentPropertySpace::Scene)
         return { false, "Scene remove target is not a scene document path" };
     std::string pathError;
     if (!ValidateDocumentPropertyPath(path, &pathError))
         return { false, pathError };
-    return Remove(ToDocumentPropertyPointer(path));
+    return Remove(ToDocumentPropertyPointer(path), std::move(hooks));
 }
 
 SceneEditResult VansSceneEditService::Undo()

@@ -4,12 +4,14 @@
 
 #include "../../SceneCore/VansSceneParticleComponentConfig.h"
 
+class VansScriptParticleComponent;
+
 namespace VansGraphics
 {
 	class VansSceneParticleComponentBuilder
 	{
 	public:
-		static void BuildParticle(
+		static VansScriptParticleComponent* BuildParticle(
 			VansScene& scene,
 			VkDevice& device,
 			VansScriptObject& object,

@@ -28,7 +28,7 @@ layout(push_constant) uniform DrawPushConsts
 {
     int materialIndex;
     int transformIndex;
-    int animationEnabled;
+    uint vertexFeatureMask;
     int passUser0;
 } pc;
 

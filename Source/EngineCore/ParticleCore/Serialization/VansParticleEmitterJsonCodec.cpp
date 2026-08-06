@@ -1,4 +1,4 @@
-#include "VansParticleEmitterLegacyJsonCodec.h"
+#include "VansParticleEmitterJsonCodec.h"
 
 #include <nlohmann/json.hpp>
 
@@ -544,7 +544,7 @@ void DecodeModule(const Vans::ParticleJson& root, VansParticleModule& module)
 }
 }
 
-Vans::ParticleJson VansParticleEmitterLegacyJsonCodec::EncodeEmitter(const VansParticleEmitter& emitter)
+Vans::ParticleJson VansParticleEmitterJsonCodec::EncodeEmitter(const VansParticleEmitter& emitter)
 {
     Vans::ParticleJson root;
     root["name"] = emitter.m_Name;
@@ -580,7 +580,7 @@ Vans::ParticleJson VansParticleEmitterLegacyJsonCodec::EncodeEmitter(const VansP
     return root;
 }
 
-void VansParticleEmitterLegacyJsonCodec::DecodeEmitter(
+void VansParticleEmitterJsonCodec::DecodeEmitter(
     const Vans::ParticleJson& root,
     VansParticleEmitter& emitter)
 {

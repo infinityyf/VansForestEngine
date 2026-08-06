@@ -1,4 +1,4 @@
-#include "VansProjectConfigLegacyJsonCodec.h"
+#include "VansProjectConfigJsonCodec.h"
 
 #include "../VansProjectConfig.h"
 
@@ -8,7 +8,7 @@
 
 namespace Vans
 {
-	bool VansProjectConfigLegacyJsonCodec::DecodeProjectConfig(
+	bool VansProjectConfigJsonCodec::DecodeProjectConfig(
 		const nlohmann::json& root,
 		VansProjectConfig& config,
 		std::string& error)
@@ -70,7 +70,7 @@ namespace Vans
 		return true;
 	}
 
-	nlohmann::json VansProjectConfigLegacyJsonCodec::EncodeProjectConfig(const VansProjectConfig& config)
+	nlohmann::json VansProjectConfigJsonCodec::EncodeProjectConfig(const VansProjectConfig& config)
 	{
 		nlohmann::json root;
 		root["projectName"] = config.projectName;
@@ -97,7 +97,7 @@ namespace Vans
 		return root;
 	}
 
-	bool VansProjectConfigLegacyJsonCodec::DecodeRecentProjects(
+	bool VansProjectConfigJsonCodec::DecodeRecentProjects(
 		const nlohmann::json& root,
 		std::vector<RecentProjectEntry>& entries,
 		std::string& error)
@@ -127,7 +127,7 @@ namespace Vans
 		return true;
 	}
 
-	nlohmann::json VansProjectConfigLegacyJsonCodec::EncodeRecentProjects(
+	nlohmann::json VansProjectConfigJsonCodec::EncodeRecentProjects(
 		const std::vector<RecentProjectEntry>& entries,
 		int maxRecentCount)
 	{

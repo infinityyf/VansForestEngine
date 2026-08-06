@@ -257,6 +257,7 @@ namespace Vans::EditorAPI
 	struct RuntimeComponentEnabledEdit
 	{
 		std::string entityGuid;
+		std::string componentGuid;
 		std::string componentType;
 		bool enabled = true;
 	};
@@ -268,10 +269,31 @@ namespace Vans::EditorAPI
 		std::string materialGuid;
 	};
 
+	struct RuntimeEntityParentEdit
+	{
+		std::string entityGuid;
+		std::string parentEntityGuid;
+	};
+
+	struct RuntimeEntityNameEdit
+	{
+		std::string entityGuid;
+		std::string name;
+	};
+
+	struct RuntimeEntityActiveEdit
+	{
+		std::string entityGuid;
+		bool active = true;
+	};
+
 	struct RuntimeEntityPreviewChange
 	{
 		bool hasTransform = false;
 		RuntimeTransformEdit transform;
+		std::vector<RuntimeEntityNameEdit> nameEdits;
+		std::vector<RuntimeEntityActiveEdit> activeEdits;
+		std::vector<RuntimeEntityParentEdit> parentEdits;
 		std::vector<RuntimeLightEdit> lights;
 		std::vector<RuntimeComponentEnabledEdit> componentEnabled;
 		std::vector<RuntimeRendererMaterialOverrideEdit> materialOverrides;
@@ -279,6 +301,9 @@ namespace Vans::EditorAPI
 		bool Empty() const
 		{
 			return !hasTransform &&
+				nameEdits.empty() &&
+				activeEdits.empty() &&
+				parentEdits.empty() &&
 				lights.empty() &&
 				componentEnabled.empty() &&
 				materialOverrides.empty();
@@ -1194,6 +1219,34 @@ namespace Vans::EditorAPI
 		std::vector<MotionMatchingDebugVisual> visuals;
 	};
 
+	struct SkeletonDebugBoneSnapshot
+	{
+		std::string name;
+		int parentIndex = -1;
+		Vec3 worldPosition;
+	};
+
+	struct SkeletonDebugRigSnapshot
+	{
+		std::string nodeName;
+		std::string entityGuid;
+		std::string role;
+		std::string currentState;
+		std::string activeClip;
+		std::string selectedClip;
+		float currentTime = 0.0f;
+		float normalizedTime = 0.0f;
+		bool playing = false;
+		bool retargetSource = false;
+		std::vector<SkeletonDebugBoneSnapshot> bones;
+	};
+
+	struct SkeletonDebugSnapshot
+	{
+		bool available = false;
+		std::vector<SkeletonDebugRigSnapshot> rigs;
+	};
+
 	struct FootIKDebugSampleSnapshot
 	{
 		Vec3 rayStart;
@@ -1230,23 +1283,20 @@ namespace Vans::EditorAPI
 		std::vector<FootIKDebugLegSnapshot> rightLegs;
 	};
 
-	struct RuntimeModelEntityCreateRequest
+	struct RuntimeSceneEntitiesCreateRequest
 	{
-		std::string entityName;
-		std::string meshName;
-		std::string materialName;
-		Vec3 position;
+		std::vector<ScenePropertyValue> sceneEntities;
 	};
 
-	struct RuntimeModelEntityCreateResult
+	struct RuntimeSceneEntitiesCreateResult
 	{
 		bool created = false;
-		std::string entityGuid;
+		std::vector<std::string> entityGuids;
+		std::string message;
 	};
 
 	struct RuntimeEntityDestroyRequest
 	{
-		std::string entityName;
 		std::string entityGuid;
 	};
 

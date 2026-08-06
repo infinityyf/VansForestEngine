@@ -1,6 +1,6 @@
 #include "VansSceneSchema.h"
 
-#include "../AssetCore/Serialization/VansSerializedValueLegacyJsonAdapter.h"
+#include "../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 
 #include <cstdint>
 #include <initializer_list>
@@ -50,7 +50,7 @@ VansSerializedValue SerializedObject(std::initializer_list<SerializedField> fiel
 }
 }
 
-SceneDiagnostics VansSceneSchema::ValidateLegacyJson(const Json& root)
+SceneDiagnostics VansSceneSchema::ValidateSceneJson(const Json& root)
 {
     SceneDiagnostics diagnostics;
     if (!root.is_object())
@@ -201,15 +201,15 @@ SceneDiagnostics VansSceneSchema::ValidateLegacyJson(const Json& root)
     return diagnostics;
 }
 
-bool VansSceneSchema::DeserializeLegacyJson(const Json& root, VansSceneData& scene, SceneDiagnostics& diagnostics)
+bool VansSceneSchema::DeserializeSceneJson(const Json& root, VansSceneData& scene, SceneDiagnostics& diagnostics)
 {
-    diagnostics = ValidateLegacyJson(root);
+    diagnostics = ValidateSceneJson(root);
     if (!diagnostics.empty())
         return false;
 
     scene = {};
     ReadGuid(root["sceneGuid"], scene.sceneGuid);
-    scene.settings = DecodeSerializedValueLegacyJson(root.value("settings", Json::object()));
+    scene.settings = DecodeSerializedValueJson(root.value("settings", Json::object()));
     for (const Json& entityJson : root["entities"])
     {
         VansSceneEntityData entity;
@@ -228,7 +228,7 @@ bool VansSceneSchema::DeserializeLegacyJson(const Json& root, VansSceneData& sce
             component.type = componentJson["type"].get<std::string>();
             component.version = componentJson["version"].get<std::uint32_t>();
             component.enabled = componentJson["enabled"].get<bool>();
-            component.data = DecodeSerializedValueLegacyJson(componentJson["data"]);
+            component.data = DecodeSerializedValueJson(componentJson["data"]);
             entity.components.push_back(std::move(component));
         }
         scene.entities.push_back(std::move(entity));
@@ -236,13 +236,13 @@ bool VansSceneSchema::DeserializeLegacyJson(const Json& root, VansSceneData& sce
     return true;
 }
 
-Json VansSceneSchema::SerializeLegacyJson(const VansSceneData& scene)
+Json VansSceneSchema::SerializeSceneJson(const VansSceneData& scene)
 {
     Json root = {
         { "schemaVersion", VansSceneSchemaVersion },
         { "sceneGuid", GuidJson(scene.sceneGuid) },
         { "entities", Json::array() },
-        { "settings", EncodeSerializedValueLegacyJson<Json>(scene.settings) }
+        { "settings", EncodeSerializedValueJson<Json>(scene.settings) }
     };
     for (const VansSceneEntityData& entity : scene.entities)
     {
@@ -259,7 +259,7 @@ Json VansSceneSchema::SerializeLegacyJson(const VansSceneData& scene)
                 { "type", component.type },
                 { "version", component.version },
                 { "enabled", component.enabled },
-                { "data", EncodeSerializedValueLegacyJson<Json>(component.data) }
+                { "data", EncodeSerializedValueJson<Json>(component.data) }
             });
         }
         root["entities"].push_back(std::move(entityJson));

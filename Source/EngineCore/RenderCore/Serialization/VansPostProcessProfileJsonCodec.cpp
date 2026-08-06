@@ -1,4 +1,4 @@
-#include "VansPostProcessProfileLegacyJsonCodec.h"
+#include "VansPostProcessProfileJsonCodec.h"
 
 #include <nlohmann/json.hpp>
 
@@ -17,7 +17,7 @@ const PostProcessProfileJson& SectionOrEmpty(const PostProcessProfileJson& root,
 }
 }
 
-PostProcessProfileJson VansPostProcessProfileLegacyJsonCodec::Encode(const VansPostProcessProfile& profile)
+PostProcessProfileJson VansPostProcessProfileJsonCodec::Encode(const VansPostProcessProfile& profile)
 {
 	const VansPostProcessProfile& p = profile;
 	PostProcessProfileJson root;
@@ -66,7 +66,7 @@ PostProcessProfileJson VansPostProcessProfileLegacyJsonCodec::Encode(const VansP
 	return root;
 }
 
-bool VansPostProcessProfileLegacyJsonCodec::Decode(
+bool VansPostProcessProfileJsonCodec::Decode(
 	const PostProcessProfileJson& root,
 	const std::filesystem::path& filePath,
 	VansPostProcessProfile& profile,

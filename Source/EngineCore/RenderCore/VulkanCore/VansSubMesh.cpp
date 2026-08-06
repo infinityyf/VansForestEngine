@@ -165,6 +165,7 @@ struct CollectedAiMesh
 	uint32_t meshIndex;
 	aiMatrix4x4 transform;
 	std::string nodeName;
+	std::string nodePath;
 };
 
 static aiVector3D TransformPosition(const aiMatrix4x4& transform, const aiVector3D& position)
@@ -192,6 +193,20 @@ static aiMatrix4x4 MakeIdentityAiMatrix()
 	transform.c1 = 0.0f; transform.c2 = 0.0f; transform.c3 = 1.0f; transform.c4 = 0.0f;
 	transform.d1 = 0.0f; transform.d2 = 0.0f; transform.d3 = 0.0f; transform.d4 = 1.0f;
 	return transform;
+}
+
+static glm::mat4 ConvertAiMatrixToGlmScaled(const aiMatrix4x4& transform, float scaleFactor)
+{
+	glm::mat4 result(
+		transform.a1, transform.b1, transform.c1, transform.d1,
+		transform.a2, transform.b2, transform.c2, transform.d2,
+		transform.a3, transform.b3, transform.c3, transform.d3,
+		transform.a4, transform.b4, transform.c4, transform.d4
+	);
+	result[3].x *= scaleFactor;
+	result[3].y *= scaleFactor;
+	result[3].z *= scaleFactor;
+	return result;
 }
 
 static bool IsNearlyIdentityMatrix(const aiMatrix4x4& transform, float epsilon = 1.0e-4f)
@@ -259,6 +274,23 @@ static bool ShouldBakeSkinnedMeshNodeTransform(
 	return false;
 }
 
+static bool HasNodeTransformChannelForMesh(
+	const VansGraphics::VansAnimationImportResult& animImport,
+	const CollectedAiMesh& collectedMesh)
+{
+	for (const VansGraphics::VansAnimationClip& clip : animImport.clips)
+	{
+		for (const VansGraphics::NodeTransformChannel& channel : clip.nodeTransformChannels)
+		{
+			if (!collectedMesh.nodePath.empty() && channel.nodePath == collectedMesh.nodePath)
+				return true;
+			if (!collectedMesh.nodeName.empty() && channel.nodeName == collectedMesh.nodeName)
+				return true;
+		}
+	}
+	return false;
+}
+
 // Recursively search the node tree for a node whose name matches exactly.
 static bool FindNodeByName(const aiNode* node, const std::string& targetName)
 {
@@ -273,20 +305,21 @@ static bool FindNodeByName(const aiNode* node, const std::string& targetName)
 
 // Walk the node tree and collect every aiMesh* with its accumulated node transform.
 // Only collects meshes from nodes that have a non-empty name.
-static void CollectAiMeshes(aiNode* node, const aiScene* scene, const aiMatrix4x4& parentTransform, std::vector<CollectedAiMesh>& out)
+static void CollectAiMeshes(aiNode* node, const aiScene* scene, const aiMatrix4x4& parentTransform, const std::string& parentPath, std::vector<CollectedAiMesh>& out)
 {
 	aiMatrix4x4 accumulatedTransform = parentTransform * node->mTransformation;
 
 	std::string name = node->mName.C_Str();
+	std::string nodePath = parentPath.empty() ? name : parentPath + "/" + name;
 	if (!name.empty() && node->mNumMeshes > 0)
 	{
 		for (uint32_t i = 0; i < node->mNumMeshes; i++)
 		{
-			out.push_back({ scene->mMeshes[node->mMeshes[i]], node->mMeshes[i], accumulatedTransform, name });
+			out.push_back({ scene->mMeshes[node->mMeshes[i]], node->mMeshes[i], accumulatedTransform, name, nodePath });
 		}
 	}
 	for (uint32_t i = 0; i < node->mNumChildren; i++)
-		CollectAiMeshes(node->mChildren[i], scene, accumulatedTransform, out);
+		CollectAiMeshes(node->mChildren[i], scene, accumulatedTransform, nodePath, out);
 }
 
 // ===========================================================================
@@ -305,9 +338,10 @@ void VansGraphics::VansMesh::LoadMultiMesh(VkDevice& logic_device, VkQueue& queu
 	m_LogicalDevice = logic_device;
 	m_MeshRawPositionDataEnableCPURead = needCPUData;
 
-	if (TryLoadMeshCache(logic_device, queue, commandbuffer,
-		cachePath, file_name, import_tangent, supportRayTracing,
-		needCPUData, true, scaleFactor, trustCacheWithoutSource))
+	if (trustCacheWithoutSource &&
+		TryLoadMeshCache(logic_device, queue, commandbuffer,
+			cachePath, file_name, import_tangent, supportRayTracing,
+			needCPUData, true, scaleFactor, trustCacheWithoutSource))
 	{
 		return;
 	}
@@ -330,7 +364,7 @@ void VansGraphics::VansMesh::LoadMultiMesh(VkDevice& logic_device, VkQueue& queu
 
 	aiMatrix4x4 identityTransform = MakeIdentityAiMatrix();
 	std::vector<CollectedAiMesh> allMeshes;
-	CollectAiMeshes(scene->mRootNode, scene, identityTransform, allMeshes);
+	CollectAiMeshes(scene->mRootNode, scene, identityTransform, "", allMeshes);
 	if (allMeshes.empty())
 	{
 		VANS_LOG_WARN("[LoadMultiMesh] No submeshes found in: " << file_name);
@@ -345,7 +379,15 @@ void VansGraphics::VansMesh::LoadMultiMesh(VkDevice& logic_device, VkQueue& queu
 		if (scene->mMeshes[m]->mNumBones > 0)
 			sceneHasBones = true;
 
-	if (sceneHasBones)
+	if (!sceneHasBones && !scene->HasAnimations() &&
+		TryLoadMeshCache(logic_device, queue, commandbuffer,
+			cachePath, file_name, import_tangent, supportRayTracing,
+			needCPUData, true, scaleFactor, trustCacheWithoutSource))
+	{
+		return;
+	}
+
+	if (sceneHasBones || scene->HasAnimations())
 	{
 		uint32_t totalVertices = 0;
 		for (uint32_t m = 0; m < scene->mNumMeshes; m++)
@@ -418,12 +460,24 @@ void VansGraphics::VansMesh::LoadMultiMesh(VkDevice& logic_device, VkQueue& queu
 		}
 	}
 
-	const bool canWriteStaticCache = !cachePath.empty() && !sceneHasBones;
+	m_HasNodeTransformAnimation = false;
+	for (const VansAnimationClip& clip : m_AnimImportResult.clips)
+	{
+		if (!clip.nodeTransformChannels.empty())
+		{
+			m_HasNodeTransformAnimation = true;
+			break;
+		}
+	}
+
+	const bool canWriteStaticCache = !cachePath.empty() && !sceneHasBones && !scene->HasAnimations();
 	const bool bakeSkinnedMeshNodeTransform =
 		ShouldBakeSkinnedMeshNodeTransform(skeletalImport, allMeshes);
 	for (size_t i = 0; i < allMeshes.size(); ++i)
 	{
 		const CollectedAiMesh& collectedMesh = allMeshes[i];
+		const bool hasNodeTransformChannel =
+			HasNodeTransformChannelForMesh(m_AnimImportResult, collectedMesh);
 		// If animated + skinned (has bones): the default policy preserves Assimp's
 		//   vertex/bind space. Some multi-skinned-mesh FBX files keep vertices in
 		//   each mesh node's local space; "bakeSkinned" normalizes those vertices
@@ -433,7 +487,9 @@ void VansGraphics::VansMesh::LoadMultiMesh(VkDevice& logic_device, VkQueue& queu
 		//   node transform so vertices end up in the same model-space as skinned verts.
 		// If static: always bake the node transform.
 		const aiMatrix4x4* xform;
-		if (m_HasAnimation)
+		if (hasNodeTransformChannel)
+			xform = nullptr;
+		else if (m_HasAnimation)
 			xform = (collectedMesh.mesh->mNumBones == 0 || bakeSkinnedMeshNodeTransform) ? &collectedMesh.transform : nullptr;
 		else
 			xform = &collectedMesh.transform;
@@ -454,6 +510,10 @@ void VansGraphics::VansMesh::LoadMultiMesh(VkDevice& logic_device, VkQueue& queu
 		if (slice->LoadMeshSubmeshFromScene(logic_device, queue, commandbuffer, scene, collectedMesh.mesh, xform, import_tangent, supportRayTracing, scaleFactor, canWriteStaticCache))
 		{
 			slice->m_SourceNodeName = collectedMesh.nodeName;
+			slice->m_SourceNodePath = collectedMesh.nodePath;
+			slice->m_SourceNodeBindModelTransform =
+				ConvertAiMatrixToGlmScaled(collectedMesh.transform, scaleFactor);
+			slice->m_HasNodeTransformAnimation = hasNodeTransformChannel;
 			m_SubMeshes.push_back(slice);
 			m_SubmeshMaterialInfos.push_back(BuildSubmeshMaterialInfo(scene, collectedMesh.mesh, baseDir));
 		}
@@ -500,7 +560,7 @@ bool VansGraphics::VansMesh::LoadMeshSubmesh(VkDevice& logic_device, VkQueue& qu
 	// Collect all aiMesh* in traversal order
 	aiMatrix4x4 identityTransform = MakeIdentityAiMatrix();
 	std::vector<CollectedAiMesh> allMeshes;
-	CollectAiMeshes(scene->mRootNode, scene, identityTransform, allMeshes);
+	CollectAiMeshes(scene->mRootNode, scene, identityTransform, "", allMeshes);
 
 	if (submeshIndex >= static_cast<uint32_t>(allMeshes.size()))
 	{
@@ -675,7 +735,7 @@ std::vector<std::string> VansGraphics::VansMesh::GetSubmeshMaterialNames(const s
 
 	aiMatrix4x4 identityTransform = MakeIdentityAiMatrix();
 	std::vector<CollectedAiMesh> allMeshes;
-	CollectAiMeshes(scene->mRootNode, scene, identityTransform, allMeshes);
+	CollectAiMeshes(scene->mRootNode, scene, identityTransform, "", allMeshes);
 
 	result.reserve(allMeshes.size());
 	for (const CollectedAiMesh& collectedMesh : allMeshes)
@@ -710,7 +770,7 @@ std::vector<VansGraphics::FBXSubmeshMaterialInfo> VansGraphics::VansMesh::GetSub
 
 	aiMatrix4x4 identityTransform = MakeIdentityAiMatrix();
 	std::vector<CollectedAiMesh> allMeshes;
-	CollectAiMeshes(scene->mRootNode, scene, identityTransform, allMeshes);
+	CollectAiMeshes(scene->mRootNode, scene, identityTransform, "", allMeshes);
 
 	result.reserve(allMeshes.size());
 	for (const CollectedAiMesh& collectedMesh : allMeshes)
@@ -731,6 +791,6 @@ uint32_t VansGraphics::VansMesh::ProbeSubmeshCount(const std::string& file_name)
 
 	aiMatrix4x4 identityTransform = MakeIdentityAiMatrix();
 	std::vector<CollectedAiMesh> allMeshes;
-	CollectAiMeshes(scene->mRootNode, scene, identityTransform, allMeshes);
+	CollectAiMeshes(scene->mRootNode, scene, identityTransform, "", allMeshes);
 	return static_cast<uint32_t>(allMeshes.size());
 }

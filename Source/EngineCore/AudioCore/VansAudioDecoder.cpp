@@ -1,7 +1,7 @@
 #include "VansAudioDecoder.h"
 #include "../Util/VansLog.h"
 
-// FFmpeg C 头文件必须在 extern "C" 块内引入，避免 C++ 名称修饰（与 VansVideoTexture.cpp 一致）
+// FFmpeg C headers must stay inside extern "C".
 extern "C"
 {
 #include <libavformat/avformat.h>
@@ -15,44 +15,36 @@ extern "C"
 namespace VansEngine
 {
 
-// ===========================================================================
-// 析构函数
-// ===========================================================================
 VansAudioDecoder::~VansAudioDecoder()
 {
     Close();
 }
 
-// ===========================================================================
-// Open — 打开音频文件，初始化 FFmpeg 解码上下文和 SwrContext 重采样器
-// ===========================================================================
 bool VansAudioDecoder::Open(const std::string& filePath,
                              int targetChannels,
                              int targetSampleRate)
 {
     if (filePath.empty())
     {
-        VANS_LOG_ERROR("[VansAudioDecoder] Open 失败：filePath 为空");
+        VANS_LOG_ERROR("[VansAudioDecoder] Open failed: empty filePath");
         return false;
     }
 
     m_FilePath = filePath;
 
-    // ── 1. 打开容器格式 ──────────────────────────────────────────────────────
     if (avformat_open_input(&m_FmtCtx, filePath.c_str(), nullptr, nullptr) < 0)
     {
-        VANS_LOG_ERROR("[VansAudioDecoder] avformat_open_input 失败: " << filePath);
+        VANS_LOG_ERROR("[VansAudioDecoder] avformat_open_input failed: " << filePath);
         return false;
     }
 
     if (avformat_find_stream_info(m_FmtCtx, nullptr) < 0)
     {
-        VANS_LOG_ERROR("[VansAudioDecoder] avformat_find_stream_info 失败: " << filePath);
+        VANS_LOG_ERROR("[VansAudioDecoder] avformat_find_stream_info failed: " << filePath);
         avformat_close_input(&m_FmtCtx);
         return false;
     }
 
-    // ── 2. 查找第一条音频流 ──────────────────────────────────────────────────
     m_AudioStream = -1;
     for (unsigned i = 0; i < m_FmtCtx->nb_streams; ++i)
     {
@@ -65,7 +57,7 @@ bool VansAudioDecoder::Open(const std::string& filePath,
 
     if (m_AudioStream < 0)
     {
-        VANS_LOG_ERROR("[VansAudioDecoder] 未找到音频流: " << filePath);
+        VANS_LOG_ERROR("[VansAudioDecoder] Audio stream not found: " << filePath);
         avformat_close_input(&m_FmtCtx);
         return false;
     }
@@ -73,17 +65,15 @@ bool VansAudioDecoder::Open(const std::string& filePath,
     AVStream*          stream   = m_FmtCtx->streams[m_AudioStream];
     AVCodecParameters* codecPar = stream->codecpar;
 
-    // 计算时长
     if (stream->duration != AV_NOPTS_VALUE)
         m_Duration = static_cast<double>(stream->duration) * av_q2d(stream->time_base);
     else if (m_FmtCtx->duration != AV_NOPTS_VALUE)
         m_Duration = static_cast<double>(m_FmtCtx->duration) / static_cast<double>(AV_TIME_BASE);
 
-    // ── 3. 初始化解码器 ──────────────────────────────────────────────────────
     const AVCodec* codec = avcodec_find_decoder(codecPar->codec_id);
     if (!codec)
     {
-        VANS_LOG_ERROR("[VansAudioDecoder] 找不到解码器: " << filePath);
+        VANS_LOG_ERROR("[VansAudioDecoder] Decoder not found: " << filePath);
         avformat_close_input(&m_FmtCtx);
         return false;
     }
@@ -91,7 +81,7 @@ bool VansAudioDecoder::Open(const std::string& filePath,
     m_CodecCtx = avcodec_alloc_context3(codec);
     if (!m_CodecCtx)
     {
-        VANS_LOG_ERROR("[VansAudioDecoder] avcodec_alloc_context3 失败");
+        VANS_LOG_ERROR("[VansAudioDecoder] avcodec_alloc_context3 failed");
         avformat_close_input(&m_FmtCtx);
         return false;
     }
@@ -99,26 +89,21 @@ bool VansAudioDecoder::Open(const std::string& filePath,
     if (avcodec_parameters_to_context(m_CodecCtx, codecPar) < 0 ||
         avcodec_open2(m_CodecCtx, codec, nullptr) < 0)
     {
-        VANS_LOG_ERROR("[VansAudioDecoder] 解码器初始化失败: " << filePath);
+        VANS_LOG_ERROR("[VansAudioDecoder] Decoder initialization failed: " << filePath);
         avcodec_free_context(&m_CodecCtx);
         avformat_close_input(&m_FmtCtx);
         return false;
     }
 
-    // ── 4. 确定目标格式 ──────────────────────────────────────────────────────
     m_TargetChannels   = (targetChannels   > 0) ? targetChannels   : m_CodecCtx->ch_layout.nb_channels;
     m_TargetSampleRate = (targetSampleRate > 0) ? targetSampleRate : m_CodecCtx->sample_rate;
 
-    // ── 5. 初始化 SwrContext 重采样器 ────────────────────────────────────────
-    // 统一输出：目标声道布局（mono/stereo）+ AV_SAMPLE_FMT_S16 + 目标采样率
-    // MSVC C++ 不支持 AV_CHANNEL_LAYOUT_MONO/STEREO（C99 复合字面量），
-    // 改用 av_channel_layout_default() 构造目标声道布局
     AVChannelLayout targetLayout = {};
     av_channel_layout_default(&targetLayout, m_TargetChannels);
 
     int swrRet = swr_alloc_set_opts2(
         &m_SwrCtx,
-        &targetLayout,             AV_SAMPLE_FMT_S16,     m_TargetSampleRate,
+        &targetLayout,             AV_SAMPLE_FMT_S16,      m_TargetSampleRate,
         &m_CodecCtx->ch_layout,    m_CodecCtx->sample_fmt, m_CodecCtx->sample_rate,
         0, nullptr);
 
@@ -126,23 +111,20 @@ bool VansAudioDecoder::Open(const std::string& filePath,
 
     if (swrRet < 0 || !m_SwrCtx || swr_init(m_SwrCtx) < 0)
     {
-        VANS_LOG_ERROR("[VansAudioDecoder] swr_alloc/init 失败: " << filePath);
+        VANS_LOG_ERROR("[VansAudioDecoder] swr_alloc/init failed: " << filePath);
         if (m_SwrCtx) { swr_free(&m_SwrCtx); m_SwrCtx = nullptr; }
         avcodec_free_context(&m_CodecCtx);
         avformat_close_input(&m_FmtCtx);
         return false;
     }
 
-    VANS_LOG("[VansAudioDecoder] 打开成功: " << filePath
+    VANS_LOG("[VansAudioDecoder] Opened: " << filePath
              << "  channels=" << m_TargetChannels
              << "  sampleRate=" << m_TargetSampleRate
              << "  duration=" << m_Duration << "s");
     return true;
 }
 
-// ===========================================================================
-// Close — 释放所有 FFmpeg 资源
-// ===========================================================================
 void VansAudioDecoder::Close()
 {
     if (m_SwrCtx)  { swr_free(&m_SwrCtx);               m_SwrCtx   = nullptr; }
@@ -153,11 +135,10 @@ void VansAudioDecoder::Close()
     m_Duration        = 0.0;
 }
 
-// ===========================================================================
-// DecodeNextChunk — 解码下一块约 4096 样本的 PCM（流式专用）
-// ===========================================================================
 AudioPCMChunk VansAudioDecoder::DecodeNextChunk()
 {
+    std::lock_guard<std::mutex> decodeLock(m_DecodeMutex);
+
     AudioPCMChunk chunk;
     chunk.channels   = m_TargetChannels;
     chunk.sampleRate = m_TargetSampleRate;
@@ -173,7 +154,7 @@ AudioPCMChunk VansAudioDecoder::DecodeNextChunk()
 
     if (!frame || !packet)
     {
-        VANS_LOG_ERROR("[VansAudioDecoder] DecodeNextChunk: 内存分配失败");
+        VANS_LOG_ERROR("[VansAudioDecoder] DecodeNextChunk: allocation failed");
         if (frame)  av_frame_free(&frame);
         if (packet) av_packet_free(&packet);
         chunk.endOfStream = true;
@@ -191,12 +172,9 @@ AudioPCMChunk VansAudioDecoder::DecodeNextChunk()
         int readRet = av_read_frame(m_FmtCtx, packet);
         if (readRet < 0)
         {
-            // EOF 或读取错误
-            // flush 解码器中的剩余帧
             avcodec_send_packet(m_CodecCtx, nullptr);
             while (avcodec_receive_frame(m_CodecCtx, frame) >= 0)
             {
-                // 重采样
                 int maxSamples = swr_get_out_samples(m_SwrCtx, frame->nb_samples);
                 if (maxSamples <= 0) { av_frame_unref(frame); continue; }
 
@@ -254,7 +232,6 @@ AudioPCMChunk VansAudioDecoder::DecodeNextChunk()
         }
     }
 
-    // flush 重采样器中的残余样本
     if (eof)
     {
         for (;;)
@@ -281,9 +258,6 @@ AudioPCMChunk VansAudioDecoder::DecodeNextChunk()
     return chunk;
 }
 
-// ===========================================================================
-// DecodeAll — 一次性解码全部 PCM（静态模式专用）
-// ===========================================================================
 std::vector<int16_t> VansAudioDecoder::DecodeAll(int& outChannels, int& outSampleRate)
 {
     outChannels   = m_TargetChannels;
@@ -302,21 +276,20 @@ std::vector<int16_t> VansAudioDecoder::DecodeAll(int& outChannels, int& outSampl
             break;
     }
 
-    VANS_LOG("[VansAudioDecoder] DecodeAll: " << allSamples.size() / m_TargetChannels << " 样本");
+    VANS_LOG("[VansAudioDecoder] DecodeAll: " << allSamples.size() / m_TargetChannels << " samples");
     return allSamples;
 }
 
-// ===========================================================================
-// Reset — seek 到文件开头并 flush 解码器（用于循环播放回绕）
-// ===========================================================================
 bool VansAudioDecoder::Reset()
 {
+    std::lock_guard<std::mutex> decodeLock(m_DecodeMutex);
+
     if (!m_FmtCtx || m_AudioStream < 0)
         return false;
 
     if (av_seek_frame(m_FmtCtx, m_AudioStream, 0, AVSEEK_FLAG_BACKWARD) < 0)
     {
-        VANS_LOG_WARN("[VansAudioDecoder] seek to start 失败: " << m_FilePath);
+        VANS_LOG_WARN("[VansAudioDecoder] seek to start failed: " << m_FilePath);
         return false;
     }
 
@@ -324,7 +297,7 @@ bool VansAudioDecoder::Reset()
         avcodec_flush_buffers(m_CodecCtx);
 
     if (m_SwrCtx)
-        swr_init(m_SwrCtx); // 重置重采样器内部状态
+        swr_init(m_SwrCtx);
 
     return true;
 }

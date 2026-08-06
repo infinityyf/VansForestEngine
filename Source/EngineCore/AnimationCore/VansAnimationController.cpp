@@ -568,12 +568,12 @@ void VansAnimationController::SetBoneOverrides(const std::unordered_map<std::str
 
 void VansAnimationController::Update(float deltaTime, const Skeleton& skeleton)
 {
+	m_SampledNodeTransforms.clear();
+
 	if (m_PlaybackState == AnimationState::Stopped || m_PlaybackState == AnimationState::Paused)
 		return;
 
 	uint32_t boneCount = static_cast<uint32_t>(skeleton.bones.size());
-	if (boneCount == 0)
-		return;
 
 // ---------------------------------------------------------------------------
 	// AnimGraph evaluation path.
@@ -594,12 +594,18 @@ void VansAnimationController::Update(float deltaTime, const Skeleton& skeleton)
 
 		// Pull the Output node, recursively sampling upstream graph nodes.
 		AnimGraphPose pose = m_Graph->Evaluate(ctx);
-		if (!pose.valid || pose.localTransforms.size() != boneCount)
+		if (!pose.valid)
+			return;
+
+		m_SampledNodeTransforms = std::move(pose.sampledNodeTransforms);
+		if (boneCount == 0)
+			return;
+		if (pose.localTransforms.size() != boneCount)
 			return;
 
 		std::vector<glm::mat4> localTransforms = std::move(pose.localTransforms);
 
-		// Bone overrides, root motion, layers, and final matrices share the v1 path.
+		// Bone overrides, root motion, layers, and final matrices share the skeletal path.
 		ApplyBoneOverrides(localTransforms, skeleton);
 
 		if (m_RootBoneIndex < 0)

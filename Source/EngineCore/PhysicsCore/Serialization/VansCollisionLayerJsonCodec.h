@@ -6,7 +6,7 @@ namespace VansEngine
 {
 	struct VansCollisionLayerConfig;
 
-	class VansCollisionLayerLegacyJsonCodec
+	class VansCollisionLayerJsonCodec
 	{
 	public:
 		static bool Decode(const nlohmann::json& root, VansCollisionLayerConfig& config);

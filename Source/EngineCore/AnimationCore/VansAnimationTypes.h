@@ -43,6 +43,32 @@ namespace VansGraphics
 		glm::vec3 scale;      // local scale
 	};
 
+	struct TransformKeyframe
+	{
+		float     time     = 0.0f;  // seconds
+		glm::vec3 position = glm::vec3(0.0f);
+		glm::quat rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+		glm::vec3 scale    = glm::vec3(1.0f);
+	};
+
+	struct NodeTransformChannel
+	{
+		std::string nodeName;
+		std::string nodePath;
+		int         parentChannelIndex = -1;
+		glm::mat4   bindLocalTransform = glm::mat4(1.0f);
+		glm::mat4   bindModelTransform = glm::mat4(1.0f);
+		std::vector<TransformKeyframe> keyframes;
+	};
+
+	struct SampledNodeTransform
+	{
+		uint32_t    channelIndex = 0;
+		std::string nodeName;
+		std::string nodePath;
+		glm::mat4   modelTransform = glm::mat4(1.0f);
+	};
+
 	// Bone Info
 
 	struct BoneInfo
@@ -131,6 +157,7 @@ namespace VansGraphics
 		float                                      ticksPerSecond = 60.0f;  // sample rate
 		// Per-bone keyframe channels: [boneIndex][keyframeIndex]
 		std::vector<std::vector<BoneKeyframe>>     boneKeyframes;
+		std::vector<NodeTransformChannel>          nodeTransformChannels;
 	};
 
 	// Clip Info (lightweight, from Peek)
@@ -140,6 +167,7 @@ namespace VansGraphics
 		std::string clipName;
 		float       duration   = 0.0f;
 		uint32_t    boneCount  = 0;
+		uint32_t    nodeTransformChannelCount = 0;
 		uint32_t    version    = 0;
 	};
 

@@ -580,6 +580,8 @@ VansSceneAnimationComponentConfig VansSceneAnimationComponentReader::ReadAnimati
 	config.animator = ReadAssetReferenceField(animationNode, "animator", "");
 	config.externClips = ReadSerializedStringField(animationNode, "extern_clips", "");
 	config.rootMotion = ReadBoolField(animationNode, "root_motion", false);
+	config.autoPlay = ReadBoolField(animationNode, "auto_play", ReadBoolField(animationNode, "autoPlay", true));
+	config.loop = ReadBoolField(animationNode, "loop", true);
 	config.rootBone = ReadSerializedStringField(animationNode, "root_bone", "");
 	config.name = ReadSerializedStringField(animationNode, "name", "");
 

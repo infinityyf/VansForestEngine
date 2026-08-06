@@ -737,13 +737,16 @@ bool TryBuildAuthoringRenderNode(
 	const std::string& entityGuid,
 	const std::string& parentEntityGuid,
 	VansSceneRenderNodeConfig& outRender,
-	bool& outSpecialRenderNode)
+	bool& outSpecialRenderNode,
+	bool& outRenderEnabled)
 {
 	outRender = {};
 	outSpecialRenderNode = false;
+	outRenderEnabled = true;
 
-	if (!rendererComponent || !ReadSerializedBoolField(*rendererComponent, "enabled", true))
+	if (!rendererComponent)
 		return false;
+	outRenderEnabled = ReadSerializedBoolField(*rendererComponent, "enabled", true);
 
 	const VansSerializedValue* data = FindSerializedObjectField(*rendererComponent, "data");
 	if (!data)
@@ -777,6 +780,8 @@ bool TryBuildAuthoringRenderNode(
 
 	const VansSerializedValue* renderRole = FindObjectField(*data, "renderRole");
 	outSpecialRenderNode = renderRole && renderRole->kind == VansSerializedValue::Kind::String;
+	if (outSpecialRenderNode && !outRenderEnabled)
+		return false;
 	return true;
 }
 
@@ -1016,6 +1021,7 @@ bool AppendAuthoringEntityToContentPlan(
 
 	VansSceneRenderNodeConfig render;
 	bool specialRenderNode = false;
+	bool renderEnabled = true;
 	const bool hasRender = TryBuildAuthoringRenderNode(
 		entity,
 		rendererComponent,
@@ -1023,7 +1029,8 @@ bool AppendAuthoringEntityToContentPlan(
 		entityGuid,
 		parentEntityGuid,
 		render,
-		specialRenderNode);
+		specialRenderNode,
+		renderEnabled);
 
 	if (specialRenderNode)
 	{
@@ -1035,10 +1042,18 @@ bool AppendAuthoringEntityToContentPlan(
 	objectConfig.entityGuid = entityGuid;
 	objectConfig.name = ReadSerializedStringField(entity, "name");
 	objectConfig.parentEntityGuid = parentEntityGuid;
+	objectConfig.active = ReadSerializedBoolField(entity, "active", true);
 	objectConfig.transform = BuildAuthoringObjectTransform(transformComponent);
+	if (transformComponent)
+	{
+		const std::string transformGuid = ReadSerializedStringField(*transformComponent, "id");
+		if (!transformGuid.empty())
+			objectConfig.componentGuids[CanonicalRuntimeComponentKeyForName("Transform")] = transformGuid;
+	}
 	if (hasRender)
 	{
 		objectConfig.render = std::move(render);
+		objectConfig.renderEnabled = renderEnabled;
 		const std::string renderGuid = rendererComponent
 			? ReadSerializedStringField(*rendererComponent, "id")
 			: std::string{};

@@ -79,7 +79,7 @@ namespace VansGraphics
 	{
 		int   materialIndex;
 		int   objectIndex;
-		int   animationEnabled;
+		uint32_t vertexFeatureMask;
 		uint32_t boneCount;
 		uint32_t subBladeCount;
 		float    grassHeight;

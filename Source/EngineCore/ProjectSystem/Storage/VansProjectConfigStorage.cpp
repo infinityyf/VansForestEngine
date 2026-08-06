@@ -1,6 +1,6 @@
 #include "VansProjectConfigStorage.h"
 
-#include "../Serialization/VansProjectConfigLegacyJsonCodec.h"
+#include "../Serialization/VansProjectConfigJsonCodec.h"
 #include "../VansProjectConfig.h"
 #include "../../AssetCore/Storage/VansJsonFileStorage.h"
 
@@ -20,7 +20,7 @@ namespace Vans
 			error = "Cannot read: " + filePath + " (" + readError + ")";
 			return false;
 		}
-		return VansProjectConfigLegacyJsonCodec::DecodeProjectConfig(root, config, error);
+		return VansProjectConfigJsonCodec::DecodeProjectConfig(root, config, error);
 	}
 
 	bool VansProjectConfigStorage::SaveProjectConfig(
@@ -28,7 +28,7 @@ namespace Vans
 		const VansProjectConfig& config,
 		std::string& error)
 	{
-		const nlohmann::json root = VansProjectConfigLegacyJsonCodec::EncodeProjectConfig(config);
+		const nlohmann::json root = VansProjectConfigJsonCodec::EncodeProjectConfig(config);
 		std::string writeError;
 		if (!VansJsonFileStorage::WriteAtomic(filePath, root, writeError))
 		{
@@ -46,7 +46,7 @@ namespace Vans
 		nlohmann::json root;
 		if (!VansJsonFileStorage::Read(filePath, root, error))
 			return false;
-		return VansProjectConfigLegacyJsonCodec::DecodeRecentProjects(root, entries, error);
+		return VansProjectConfigJsonCodec::DecodeRecentProjects(root, entries, error);
 	}
 
 	bool VansProjectConfigStorage::SaveRecentProjects(
@@ -56,7 +56,7 @@ namespace Vans
 		std::string& error)
 	{
 		const nlohmann::json root =
-			VansProjectConfigLegacyJsonCodec::EncodeRecentProjects(entries, maxRecentCount);
+			VansProjectConfigJsonCodec::EncodeRecentProjects(entries, maxRecentCount);
 		std::string writeError;
 		if (!VansJsonFileStorage::WriteAtomic(filePath, root, writeError))
 		{

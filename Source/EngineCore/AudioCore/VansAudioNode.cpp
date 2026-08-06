@@ -3,7 +3,7 @@
 #include "VansAudioSystem.h"
 #include "../Util/VansLog.h"
 
-// OpenAL 头文件仅在此 .cpp 中引入
+// Keep OpenAL headers local to this translation unit.
 #include <AL/al.h>
 #include <AL/alc.h>
 
@@ -15,17 +15,17 @@ namespace VansEngine
 {
 
 // ===========================================================================
-// 辅助：从声道数返回 OpenAL 格式值（al.h 中 #define 值的枚举镜像）
+// Return the OpenAL format value for a channel count.
 // ===========================================================================
 int32_t VansAudioNode::GetAlFormat(int channels)
 {
-    // ALenum 在 al.h 中定义：AL_FORMAT_MONO16 = 0x1101, AL_FORMAT_STEREO16 = 0x1103
+    // ALenum values mirror AL_FORMAT_MONO16 and AL_FORMAT_STEREO16.
     if (channels == 1) return 0x1101; // AL_FORMAT_MONO16
     return                      0x1103; // AL_FORMAT_STEREO16
 }
 
 // ===========================================================================
-// 析构函数
+// Destructor
 // ===========================================================================
 VansAudioNode::~VansAudioNode()
 {
@@ -33,7 +33,7 @@ VansAudioNode::~VansAudioNode()
 }
 
 // ===========================================================================
-// Open — 根据 PlayMode 分派到 Static 或 Streaming 实现
+// Open dispatches to static or streaming setup by play mode.
 // ===========================================================================
 bool VansAudioNode::Open(const AudioNodeProperties& props)
 {
@@ -65,7 +65,7 @@ bool VansAudioNode::Open(const AudioNodeProperties& props)
     m_LogicalPlaying = false;
     m_LogicalPaused = false;
 
-    // 创建 OpenAL Source
+    // Create an OpenAL source.
     m_SourceId = VansAudioSystem::GetInstance().AcquireSource();
     if (m_SourceId == 0)
     {
@@ -73,7 +73,7 @@ bool VansAudioNode::Open(const AudioNodeProperties& props)
         return false;
     }
 
-    // 基础 Source 属性
+    // Base source properties.
     alSourcef(m_SourceId, AL_PITCH, m_Properties.m_Pitch);
     alSourcei(m_SourceId, AL_LOOPING,
               (m_Properties.m_PlayMode == AudioPlayMode::Static && m_Properties.m_Loop)
@@ -107,7 +107,7 @@ bool VansAudioNode::Open(const AudioNodeProperties& props)
 }
 
 // ---------------------------------------------------------------------------
-// OpenStatic — 一次性解码全部 PCM，上传到单个 OpenAL Buffer
+// Decode the full file once and upload it into a single OpenAL buffer.
 // ---------------------------------------------------------------------------
 bool VansAudioNode::OpenStatic()
 {
@@ -115,7 +115,7 @@ bool VansAudioNode::OpenStatic()
     const int targetChannels = m_Properties.m_Spatial ? 1 : 2;
     if (!decoder.Open(m_Properties.m_FilePath, targetChannels))
     {
-        VANS_LOG_ERROR("[VansAudioNode] Static 解码失败: " << m_Properties.m_FilePath);
+        VANS_LOG_ERROR("[VansAudioNode] Static decode failed: " << m_Properties.m_FilePath);
         return false;
     }
 
@@ -125,14 +125,14 @@ bool VansAudioNode::OpenStatic()
 
     if (samples.empty())
     {
-        VANS_LOG_ERROR("[VansAudioNode] DecodeAll 返回空数据: " << m_Properties.m_FilePath);
+        VANS_LOG_ERROR("[VansAudioNode] DecodeAll returned empty data: " << m_Properties.m_FilePath);
         return false;
     }
 
     alGenBuffers(1, &m_StaticBufferId);
     if (alGetError() != AL_NO_ERROR)
     {
-        VANS_LOG_ERROR("[VansAudioNode] alGenBuffers 失败");
+        VANS_LOG_ERROR("[VansAudioNode] alGenBuffers failed");
         return false;
     }
 
@@ -144,20 +144,20 @@ bool VansAudioNode::OpenStatic()
 
     if (alGetError() != AL_NO_ERROR)
     {
-        VANS_LOG_ERROR("[VansAudioNode] alBufferData 失败");
+        VANS_LOG_ERROR("[VansAudioNode] alBufferData failed");
         alDeleteBuffers(1, &m_StaticBufferId);
         m_StaticBufferId = 0;
         return false;
     }
 
     alSourcei(m_SourceId, AL_BUFFER, static_cast<ALint>(m_StaticBufferId));
-    VANS_LOG("[VansAudioNode] Static 加载完成: " << m_Properties.m_Name
+    VANS_LOG("[VansAudioNode] Static load complete: " << m_Properties.m_Name
              << "  samples=" << samples.size() / channels);
     return true;
 }
 
 // ---------------------------------------------------------------------------
-// OpenStreaming — 打开解码器，预填充部分 Buffer，启动后台解码线程
+// Open the decoder, prefill buffers, and start the background decode thread.
 // ---------------------------------------------------------------------------
 bool VansAudioNode::OpenStreaming()
 {
@@ -165,7 +165,7 @@ bool VansAudioNode::OpenStreaming()
     const int targetChannels = m_Properties.m_Spatial ? 1 : 2;
     if (!m_Decoder->Open(m_Properties.m_FilePath, targetChannels))
     {
-        VANS_LOG_ERROR("[VansAudioNode] Streaming 打开失败: " << m_Properties.m_FilePath);
+        VANS_LOG_ERROR("[VansAudioNode] Streaming open failed: " << m_Properties.m_FilePath);
         m_Decoder.reset();
         return false;
     }
@@ -173,15 +173,21 @@ bool VansAudioNode::OpenStreaming()
     alGenBuffers(STREAM_BUFFER_COUNT, m_StreamBuffers);
     if (alGetError() != AL_NO_ERROR)
     {
-        VANS_LOG_ERROR("[VansAudioNode] alGenBuffers(Streaming) 失败");
+        VANS_LOG_ERROR("[VansAudioNode] alGenBuffers(Streaming) failed");
         m_Decoder.reset();
         return false;
     }
 
-    // 预填充前 STREAM_BUFFER_COUNT 个 Buffer
+    // Prefill the first streaming buffers.
     for (int i = 0; i < STREAM_BUFFER_COUNT; ++i)
     {
-        AudioPCMChunk chunk = m_Decoder->DecodeNextChunk();
+        AudioPCMChunk chunk;
+        {
+            std::lock_guard<std::mutex> decoderLock(m_DecoderMutex);
+            if (!m_Decoder || !m_Decoder->IsOpen())
+                continue;
+            chunk = m_Decoder->DecodeNextChunk();
+        }
         if (chunk.samples.empty()) break;
 
         alBufferData(m_StreamBuffers[i],
@@ -197,22 +203,22 @@ bool VansAudioNode::OpenStreaming()
 
     if (alGetError() != AL_NO_ERROR)
     {
-        VANS_LOG_ERROR("[VansAudioNode] 预填充 Buffer 失败");
+        VANS_LOG_ERROR("[VansAudioNode] Streaming buffer prefill failed");
         alDeleteBuffers(STREAM_BUFFER_COUNT, m_StreamBuffers);
         std::memset(m_StreamBuffers, 0, sizeof(m_StreamBuffers));
         m_Decoder.reset();
         return false;
     }
 
-    // 启动后台解码线程
+    // Start the background decode thread.
     StartDecodeThread();
 
-    VANS_LOG("[VansAudioNode] Streaming 初始化完成: " << m_Properties.m_Name);
+    VANS_LOG("[VansAudioNode] Streaming initialization complete: " << m_Properties.m_Name);
     return true;
 }
 
 // ===========================================================================
-// Close — 终止后台线程，释放 OpenAL 资源，释放解码器
+// Stop the background thread and release OpenAL and decoder resources.
 // ===========================================================================
 bool VansAudioNode::EnsureStreamingReady()
 {
@@ -311,7 +317,7 @@ bool VansAudioNode::ResumeHardwareVoice()
 
 void VansAudioNode::Close()
 {
-    // 先停止后台解码线程
+    // Stop the background decode thread first.
     StopDecodeThread();
 
     if (m_SourceId != 0)
@@ -325,9 +331,9 @@ void VansAudioNode::Close()
             m_SourceId,
             1.0f,
             m_DirectLowpassFilterId);
-        alSourcei(m_SourceId, AL_BUFFER, 0); // 解绑所有 Buffer
+        alSourcei(m_SourceId, AL_BUFFER, 0); // Detach all buffers.
 
-        // 取出 Streaming 模式下仍排队的 Buffer
+        // Drain any buffers still queued by streaming playback.
         if (m_Properties.m_PlayMode == AudioPlayMode::Streaming)
         {
             ALint queued = 0;
@@ -349,7 +355,7 @@ void VansAudioNode::Close()
         m_StaticBufferId = 0;
     }
 
-    // 清理 Streaming Buffers
+    // Release streaming buffers.
     if (m_Properties.m_PlayMode == AudioPlayMode::Streaming)
     {
         for (int i = 0; i < STREAM_BUFFER_COUNT; ++i)
@@ -368,7 +374,7 @@ void VansAudioNode::Close()
     m_LogicalPlaying = false;
     m_LogicalPaused = false;
 
-    // 清空 PCM 队列
+    // Clear the PCM queue.
     {
         std::lock_guard<std::mutex> lk(m_PCMQueueMtx);
         while (!m_PCMQueue.empty()) m_PCMQueue.pop();
@@ -391,7 +397,7 @@ void VansAudioNode::Play()
     std::lock_guard<std::mutex> lk(m_SourceMutex);
     if (m_SourceId == 0) return;
 
-    // Streaming 模式下 Loop 需要在解码线程侧处理（Source 不使用 AL_LOOPING=TRUE）
+    // Streaming loops are handled by the decoder path; the OpenAL source does not loop.
     alSourcePlay(m_SourceId);
     ALenum err = alGetError();
     if (err != AL_NO_ERROR)
@@ -422,13 +428,16 @@ void VansAudioNode::Stop()
                 std::lock_guard<std::mutex> lk2(m_PCMQueueMtx);
                 while (!m_PCMQueue.empty()) m_PCMQueue.pop();
             }
-            m_DecodeEOF.store(false);
-            m_Decoder->Reset();
+            {
+                std::lock_guard<std::mutex> decoderLock(m_DecoderMutex);
+                if (m_Decoder && m_Decoder->Reset())
+                    m_DecodeEOF.store(false);
+            }
             m_PCMQueueCv.notify_all();
         }
         return;
     }
-    alGetError();               // 清空挂起的 OpenAL 错误，避免污染后续调用
+    alGetError();               // Clear pending OpenAL errors before this operation.
     alSourceStop(m_SourceId);
     ALenum stopErr = alGetError();
     if (stopErr != AL_NO_ERROR)
@@ -439,7 +448,7 @@ void VansAudioNode::Stop()
         m_Decoder &&
         m_Decoder->IsOpen())
     {
-        // 清空排队 Buffer，重置解码器到文件开头
+        // Clear queued buffers and reset the decoder to the start.
         ALint queued = 0;
         alGetSourcei(m_SourceId, AL_BUFFERS_QUEUED, &queued);
         while (queued-- > 0)
@@ -453,13 +462,20 @@ void VansAudioNode::Stop()
             while (!m_PCMQueue.empty()) m_PCMQueue.pop();
         }
 
-        m_DecodeEOF.store(false);
-        m_Decoder->Reset();
+        {
+            std::lock_guard<std::mutex> decoderLock(m_DecoderMutex);
+            if (m_Decoder && m_Decoder->Reset())
+                m_DecodeEOF.store(false);
+        }
 
-        // 重新预填充前两个 Buffer
+        // Prefill the first two buffers again.
         for (int i = 0; i < 2; ++i)
         {
-            AudioPCMChunk chunk = m_Decoder->DecodeNextChunk();
+            AudioPCMChunk chunk;
+            {
+                std::lock_guard<std::mutex> decoderLock(m_DecoderMutex);
+                chunk = m_Decoder ? m_Decoder->DecodeNextChunk() : AudioPCMChunk{};
+            }
             if (chunk.samples.empty()) break;
 
             alBufferData(m_StreamBuffers[i],
@@ -491,7 +507,7 @@ void VansAudioNode::Resume()
 }
 
 // ===========================================================================
-// 实时参数设置
+// Runtime parameter updates.
 // ===========================================================================
 void VansAudioNode::SetVolume(float gain)
 {
@@ -510,7 +526,7 @@ void VansAudioNode::SetLoop(bool loop)
     m_Properties.m_Loop = loop;
     if (m_SourceId && m_Properties.m_PlayMode == AudioPlayMode::Static)
         alSourcei(m_SourceId, AL_LOOPING, loop ? AL_TRUE : AL_FALSE);
-    // Streaming 模式的 Loop 由 Tick() + 解码线程的 Reset() 处理
+    // Streaming loops are handled by Tick() and decoder Reset().
 }
 
 void VansAudioNode::SetPosition(float x, float y, float z)
@@ -773,7 +789,7 @@ void VansAudioNode::CommitGain()
 }
 
 // ===========================================================================
-// 状态查询
+// State queries.
 // ===========================================================================
 bool VansAudioNode::IsPlaying() const
 {
@@ -792,7 +808,7 @@ bool VansAudioNode::IsPaused() const
 }
 
 // ===========================================================================
-// Tick — 主线程每帧调用，为 Streaming Source 补充已处理的 Buffer
+// Main-thread update that refills processed streaming buffers.
 // ===========================================================================
 bool VansAudioNode::CanCreateStaticInstance() const
 {
@@ -809,7 +825,7 @@ void VansAudioNode::Tick()
 
     std::lock_guard<std::mutex> lk(m_SourceMutex);
 
-    // 检查并回收已处理完的 Buffer，用新的 PCM 数据重新填充
+    // Reclaim processed buffers and refill them with new PCM data.
     RefillStreamBuffers();
 
     ALint queuedBeforeStateCheck = 0;
@@ -817,7 +833,7 @@ void VansAudioNode::Tick()
     if (queuedBeforeStateCheck == 0)
         QueueStreamBuffersFromPCMQueue(STREAM_BUFFER_COUNT);
 
-    // 如果 Source 意外 STOPPED（Buffer 耗尽时会触发），且仍有数据，则重新 Play
+    // Restart a stopped source when buffered data is still available.
     ALint state = 0;
     alGetSourcei(m_SourceId, AL_SOURCE_STATE, &state);
     if (state == AL_STOPPED)
@@ -826,45 +842,56 @@ void VansAudioNode::Tick()
         alGetSourcei(m_SourceId, AL_BUFFERS_QUEUED, &queued);
         if (queued > 0)
         {
-            // Source stall：仍有 Buffer 但 Source 停了，重新触发
+            // Source stalled with queued buffers; trigger playback again.
             alSourcePlay(m_SourceId);
         }
         else if (m_DecodeEOF.load())
         {
-            // 所有 Buffer 已处理，且解码器已到文件末尾
+            // All buffers were processed and the decoder reached EOF.
             if (m_Properties.m_Loop)
             {
-                // 循环：重置解码器，重新预填充并播放
-                m_DecodeEOF.store(false);
-                m_Decoder->Reset();
+                // Loop restart: reset the decoder, prefill, then play again.
                 {
                     std::lock_guard<std::mutex> lk2(m_PCMQueueMtx);
                     while (!m_PCMQueue.empty()) m_PCMQueue.pop();
                 }
-                m_PCMQueueCv.notify_all();
 
-                for (int i = 0; i < 2; ++i)
+                bool resetSucceeded = false;
                 {
-                    AudioPCMChunk chunk = m_Decoder->DecodeNextChunk();
-                    if (chunk.samples.empty()) break;
+                    std::lock_guard<std::mutex> decoderLock(m_DecoderMutex);
+                    resetSucceeded = m_Decoder && m_Decoder->Reset();
+                    if (resetSucceeded)
+                    {
+                        m_DecodeEOF.store(false);
 
-                    alBufferData(m_StreamBuffers[i],
-                                 static_cast<ALenum>(GetAlFormat(chunk.channels)),
-                                 chunk.samples.data(),
-                                 static_cast<ALsizei>(chunk.samples.size() * sizeof(int16_t)),
-                                 static_cast<ALsizei>(chunk.sampleRate));
+                        for (int i = 0; i < 2; ++i)
+                        {
+                            AudioPCMChunk chunk = m_Decoder->DecodeNextChunk();
+                            if (chunk.samples.empty()) break;
 
-                    alSourceQueueBuffers(m_SourceId, 1, &m_StreamBuffers[i]);
-                    if (chunk.endOfStream) { m_DecodeEOF.store(true); break; }
+                            alBufferData(m_StreamBuffers[i],
+                                         static_cast<ALenum>(GetAlFormat(chunk.channels)),
+                                         chunk.samples.data(),
+                                         static_cast<ALsizei>(chunk.samples.size() * sizeof(int16_t)),
+                                         static_cast<ALsizei>(chunk.sampleRate));
+
+                            alSourceQueueBuffers(m_SourceId, 1, &m_StreamBuffers[i]);
+                            if (chunk.endOfStream) { m_DecodeEOF.store(true); break; }
+                        }
+                    }
                 }
-                alSourcePlay(m_SourceId);
+                if (resetSucceeded)
+                {
+                    m_PCMQueueCv.notify_all();
+                    alSourcePlay(m_SourceId);
+                }
             }
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// RefillStreamBuffers — 取出已处理的 Buffer，从 PCM 队列填充并重新入队
+// Refill processed buffers from the PCM queue and requeue them.
 // ---------------------------------------------------------------------------
 int VansAudioNode::QueueStreamBuffersFromPCMQueue(int maxBuffers)
 {
@@ -922,7 +949,7 @@ void VansAudioNode::RefillStreamBuffers()
         ALuint bufId = 0;
         alSourceUnqueueBuffers(m_SourceId, 1, &bufId);
 
-        // 从 PCM 队列取数据
+        // Pull data from the PCM queue.
         std::vector<int16_t> pcm;
         {
             std::lock_guard<std::mutex> lk(m_PCMQueueMtx);
@@ -932,11 +959,11 @@ void VansAudioNode::RefillStreamBuffers()
                 m_PCMQueue.pop();
             }
         }
-        m_PCMQueueCv.notify_one(); // 通知解码线程可以继续生产
+        m_PCMQueueCv.notify_one(); // Let the decode thread produce more data.
 
         if (pcm.empty()) continue;
 
-        // 假设 Decoder 设置的声道和采样率在 Open 时已固定
+        // Decoder output format is fixed after Open().
         int channels   = m_Decoder ? m_Decoder->GetChannels()   : 2;
         int sampleRate = m_Decoder ? m_Decoder->GetSampleRate() : 48000;
 
@@ -951,7 +978,7 @@ void VansAudioNode::RefillStreamBuffers()
 }
 
 // ===========================================================================
-// Streaming 后台解码线程
+// Streaming background decode thread.
 // ===========================================================================
 void VansAudioNode::StartDecodeThread()
 {
@@ -971,14 +998,14 @@ void VansAudioNode::StopDecodeThread()
 
 void VansAudioNode::DecodeThreadFunc()
 {
-    // PCM 队列最大容纳 4 块（≈ STREAM_BUFFER_COUNT），防止内存无限增长
+    // Bound the PCM queue to avoid unbounded memory growth.
     static constexpr int MAX_QUEUE_SIZE = STREAM_BUFFER_COUNT;
 
     while (!m_StopDecode.load())
     {
         if (!m_Decoder || !m_Decoder->IsOpen() || m_DecodeEOF.load())
         {
-            // 等待 Stop() / Reset() 重置 EOF 标志
+            // Wait until Stop() or Reset() clears the EOF state.
             std::unique_lock<std::mutex> lk(m_PCMQueueMtx);
             m_PCMQueueCv.wait(lk, [this] {
                 return m_StopDecode.load() || (!m_DecodeEOF.load() && m_Decoder && m_Decoder->IsOpen());
@@ -986,13 +1013,13 @@ void VansAudioNode::DecodeThreadFunc()
             continue;
         }
 
-        // 解码一块 PCM
+        // Decode one PCM block.
         AudioPCMChunk chunk = m_Decoder->DecodeNextChunk();
 
         {
             std::unique_lock<std::mutex> lk(m_PCMQueueMtx);
 
-            // 如果队列已满，等待主线程消费
+            // Wait for the main thread to consume data when the queue is full.
             m_PCMQueueCv.wait(lk, [this] {
                 return m_StopDecode.load() || (int)m_PCMQueue.size() < MAX_QUEUE_SIZE;
             });
@@ -1005,7 +1032,7 @@ void VansAudioNode::DecodeThreadFunc()
             if (chunk.endOfStream)
             {
                 m_DecodeEOF.store(true);
-                // 循环时由主线程 Tick() 重置 EOF + 重新 Reset() 解码器
+                // Looping is restarted by Tick(), which clears EOF and resets the decoder.
                 m_PCMQueueCv.notify_all();
                 continue;
             }

@@ -1,6 +1,6 @@
 #include "VansPostProcessProfileStorage.h"
 
-#include "../Serialization/VansPostProcessProfileLegacyJsonCodec.h"
+#include "../Serialization/VansPostProcessProfileJsonCodec.h"
 #include "../../AssetCore/Storage/VansJsonFileStorage.h"
 
 #include <nlohmann/json.hpp>
@@ -15,7 +15,7 @@ bool VansPostProcessProfileStorage::Load(
 	PostProcessProfileJson root;
 	if (!Vans::VansJsonFileStorage::Read(filePath, root, error))
 		return false;
-	return VansPostProcessProfileLegacyJsonCodec::Decode(root, filePath, profile, error);
+	return VansPostProcessProfileJsonCodec::Decode(root, filePath, profile, error);
 }
 
 bool VansPostProcessProfileStorage::SaveAtomic(
@@ -25,7 +25,7 @@ bool VansPostProcessProfileStorage::SaveAtomic(
 {
 	return Vans::VansJsonFileStorage::WriteAtomic(
 		filePath,
-		VansPostProcessProfileLegacyJsonCodec::Encode(profile),
+		VansPostProcessProfileJsonCodec::Encode(profile),
 		error);
 }
 }
