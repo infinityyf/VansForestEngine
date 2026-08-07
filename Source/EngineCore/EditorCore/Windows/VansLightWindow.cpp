@@ -468,6 +468,48 @@ void VansGraphics::VansLightWindow::DrawCloudParameters(Vans::EditorAPI::IEngine
     changed |= DragFloatTracked("Detail Erosion High", &cloudParams.detailErosionHigh, 0.005f, 0.01f, 1.0f, "%.3f");
     changed |= DragFloatTracked("Detail Edge Strength", &cloudParams.detailEdgeStrength, 0.01f, 0.0f, 3.0f, "%.3f");
     changed |= DragFloatTracked("Shadow Density", &cloudParams.shadowDensityScale, 0.01f, 0.0f, 5.0f, "%.3f");
+
+    ImGui::SeparatorText("HP Optical");
+    changed |= DragFloatTracked("Sigma T Ref", &cloudParams.sigmaTRef, 0.005f, 0.0f, 1.0f, "%.3f");
+    changed |= DragFloatTracked("View Absorption", &cloudParams.viewAbsorption, 0.01f, 0.0f, 5.0f, "%.3f");
+    changed |= DragFloatTracked("Light Absorption", &cloudParams.lightAbsorption, 0.01f, 0.0f, 5.0f, "%.3f");
+    changed |= DragFloatTracked("Single Scattering Albedo", &cloudParams.singleScatteringAlbedo, 0.0005f, 0.0f, 0.9999f, "%.4f");
+    changed |= DragFloatTracked("Scattering Tint R", &cloudParams.scatteringTintR, 0.01f, 0.0f, 4.0f, "%.3f");
+    changed |= DragFloatTracked("Scattering Tint G", &cloudParams.scatteringTintG, 0.01f, 0.0f, 4.0f, "%.3f");
+    changed |= DragFloatTracked("Scattering Tint B", &cloudParams.scatteringTintB, 0.01f, 0.0f, 4.0f, "%.3f");
+
+    ImGui::SeparatorText("HP Directional MS");
+    changed |= DragFloatTracked("Forward Eccentricity", &cloudParams.forwardEccentricity, 0.005f, 0.0f, 0.95f, "%.3f");
+    changed |= DragFloatTracked("Backward Eccentricity", &cloudParams.backwardEccentricity, 0.005f, 0.0f, 0.95f, "%.3f");
+    changed |= DragFloatTracked("MS Attenuation", &cloudParams.msAttenuation, 0.005f, 0.0f, 1.0f, "%.3f");
+    changed |= DragFloatTracked("MS Contribution", &cloudParams.msContribution, 0.005f, 0.0f, 1.0f, "%.3f");
+    changed |= DragFloatTracked("MS Eccentricity", &cloudParams.msEccentricity, 0.005f, 0.0f, 1.0f, "%.3f");
+
+    ImGui::SeparatorText("HP Diffuse Field");
+    changed |= DragFloatTracked("Scatter Source OD Scale", &cloudParams.scatterSourceODScale, 0.005f, 0.001f, 2.0f, "%.3f");
+    changed |= DragFloatTracked("Scatter Source Curve", &cloudParams.scatterSourceCurvePow, 0.01f, 0.01f, 4.0f, "%.3f");
+    changed |= DragFloatTracked("Phi Fwd Intensity", &cloudParams.phiFwdIntensity, 0.01f, 0.0f, 5.0f, "%.3f");
+    changed |= DragFloatTracked("Phi Fwd Depth Pow", &cloudParams.phiFwdDepthPow, 0.01f, 0.01f, 4.0f, "%.3f");
+    changed |= DragFloatTracked("Phi Fwd Depth Bias", &cloudParams.phiFwdDepthBias, 0.005f, -1.0f, 1.0f, "%.3f");
+    changed |= DragFloatTracked("Phi Fwd Build Scale", &cloudParams.phiFwdMSBuildScale, 0.01f, 0.0f, 5.0f, "%.3f");
+    changed |= DragFloatTracked("Phi Fwd Compress", &cloudParams.phiFwdCompress, 0.01f, 0.0f, 5.0f, "%.3f");
+    changed |= DragFloatTracked("Phi Fwd Max Distance", &cloudParams.phiFwdMaxDistance, 50.0f, 100.0f, 30000.0f, "%.0f m");
+    changed |= DragFloatTracked("Phi Fwd Cone Ratio", &cloudParams.phiFwdConeRatio, 0.01f, 1.01f, 3.0f, "%.3f");
+    changed |= DragFloatTracked("Phi Fwd Min Step", &cloudParams.phiFwdMinStep, 5.0f, 1.0f, 1000.0f, "%.0f m");
+    changed |= DragFloatTracked("Light Step Count", &cloudParams.lightStepCount, 1.0f, 1.0f, 16.0f, "%.0f");
+
+    ImGui::SeparatorText("HP Boundary / AO");
+    changed |= DragFloatTracked("AO Upward Scale", &cloudParams.aoUpwardScale, 0.01f, 0.0f, 5.0f, "%.3f");
+    changed |= DragFloatTracked("Ambient Bottom", &cloudParams.ambientBottomStrength, 0.01f, 0.0f, 2.0f, "%.3f");
+    changed |= DragFloatTracked("Ambient Top", &cloudParams.ambientTopStrength, 0.01f, 0.0f, 2.0f, "%.3f");
+    changed |= DragFloatTracked("Ambient Dusk Warmth", &cloudParams.ambientDuskWarmth, 0.01f, 0.0f, 1.0f, "%.3f");
+    changed |= DragFloatTracked("Boundary Confidence", &cloudParams.boundaryConfidence, 0.01f, 0.0f, 1.0f, "%.3f");
+    changed |= DragFloatTracked("Boundary Wrap", &cloudParams.boundaryWrap, 0.01f, 0.0f, 1.0f, "%.3f");
+    changed |= DragFloatTracked("Boundary Gradient Step", &cloudParams.boundaryGradientStep, 10.0f, 50.0f, 2000.0f, "%.0f m");
+    changed |= DragFloatTracked("Boundary Gradient Strength", &cloudParams.boundaryGradientStrength, 0.01f, 0.0f, 1.0f, "%.3f");
+
+    ImGui::SeparatorText("HP Debug");
+    changed |= DragFloatTracked("Shading Debug Mode", &cloudParams.shadingDebugMode, 1.0f, 0.0f, 8.0f, "%.0f");
     g_ActiveSceneSettingsGroup = SceneSettingsGroup::None;
 
     if (ImGui::Button("Reset Cloud Defaults"))

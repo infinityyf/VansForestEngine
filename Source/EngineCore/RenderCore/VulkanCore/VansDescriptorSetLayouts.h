@@ -39,6 +39,7 @@ namespace VansGraphics
 		GLOBAL_BINDING_REFLECTION_PROBE_BUFFER   = 14, // Reflection probe metadata SSBO
 		GLOBAL_BINDING_CUSTOM_MATERIAL_SSBO      = 15, // Custom shader material vec4s + texture indices
 		GLOBAL_BINDING_CLOTH_MATERIAL_SSBO       = 16, // Cloth model/color/anisotropy/transmission payloads
+		GLOBAL_BINDING_TREE_LEAF_MATERIAL_SSBO   = 17, // Tree leaf subsurface/transmission payloads
 		GLOBAL_BINDING_BINDLESS_TEXTURES        = 50,  // Variable count
 	};
 

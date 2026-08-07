@@ -741,6 +741,17 @@ void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
             m_MaterialManager.m_GlobalClothDataBuffer.GetBufferSize()
         }});
 
+    // Binding 17: Tree leaf extension payloads; indices match Binding 2 exactly.
+    descManager->WriteBufferDescriptor(
+        m_GlobalDescriptorSet,
+        GLOBAL_BINDING_TREE_LEAF_MATERIAL_SSBO,
+        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        {{
+            m_MaterialManager.m_GlobalTreeLeafDataBuffer.GetNativeBuffer(),
+            0,
+            m_MaterialManager.m_GlobalTreeLeafDataBuffer.GetBufferSize()
+        }});
+
     // Binding 3: BRDF LUT
     descManager->WriteImageDescriptor(
         m_GlobalDescriptorSet,
@@ -1098,12 +1109,13 @@ void VansGraphics::VansScene::UnLoadScene()
 	// ── 1. 清理场景级运行时纹理（SH 系数 + GI Visibility），保留屏幕空间纹理 ──
 	//  SSGI / SSAO / HZB / SSR / Fog 等屏幕空间纹理在 PrepareRenderingData()
 	//  时创建，不依赖场景内容，无需在场景切换时销毁。
-	//  SH 纹理由 RuntimeRenderTextureManager 拥有，使用 Remove（会 delete）。
+	//  GI SH/visibility 对象由 RayTracingCore 的 region runtime 释放；
+	//  这里仅注销兼容 key，避免 MaterialManager 在 ClearScenePBRData() 中重复 delete。
     VANS_UNLOAD_STEP(1, "娓呯悊鍦烘櫙绾ц繍琛屾椂绾圭悊");
-	m_MaterialManager.RemoveRuntimeRenderTexture(VansMaterialManager::RT_SH_R_RESULT);
-	m_MaterialManager.RemoveRuntimeRenderTexture(VansMaterialManager::RT_SH_G_RESULT);
-	m_MaterialManager.RemoveRuntimeRenderTexture(VansMaterialManager::RT_SH_B_RESULT);
-	m_MaterialManager.RemoveRuntimeRenderTexture(VansMaterialManager::RT_GI_VISIBILITY_ATLAS);
+	m_MaterialManager.UnregisterRuntimeRenderTexture(VansMaterialManager::RT_SH_R_RESULT);
+	m_MaterialManager.UnregisterRuntimeRenderTexture(VansMaterialManager::RT_SH_G_RESULT);
+	m_MaterialManager.UnregisterRuntimeRenderTexture(VansMaterialManager::RT_SH_B_RESULT);
+	m_MaterialManager.UnregisterRuntimeRenderTexture(VansMaterialManager::RT_GI_VISIBILITY_ATLAS);
 	m_MaterialManager.m_SSGITemporalFrame = 0;
 	m_MaterialManager.m_FogTemporalFrame  = 0;
 	m_MaterialManager.m_FogHistoryValid   = false;
@@ -1363,7 +1375,7 @@ void VansGraphics::VansScene::UnLoadScene()
     VANS_UNLOAD_STEP(14, "娓呯悊 Ray Tracing TLAS/BLAS 鍦烘櫙璧勬簮");
 	if (vkDevice)
 	{
-		vkDevice->GetRayTracingContext().CleanupSceneResources(nativeDevice);
+		vkDevice->GetRayTracingContext().CleanupSceneResources(nativeDevice, &m_MaterialManager);
 	}
 
 	// 清理 Scene 持有的 TLAS 数据

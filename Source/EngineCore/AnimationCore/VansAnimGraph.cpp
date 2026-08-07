@@ -864,24 +864,43 @@ namespace VansGraphics
 	void AnimGraphStateMachineNode::AdvanceTime(float dt)
 	{
 		// 推进当前状态的播放时间
+		auto advanceState = [](AnimatorState& state, float deltaTime)
+		{
+			if (!state.clip)
+				return;
+
+			const float start = state.startTime;
+			const float end = (state.endTime < 0.0f) ? state.clip->duration : state.endTime;
+			const float range = end - start;
+			if (range <= 0.0f)
+			{
+				state.currentTime = start;
+				return;
+			}
+
+			state.currentTime += deltaTime * state.speed;
+			if (state.loop)
+			{
+				state.currentTime = start + std::fmod(state.currentTime - start, range);
+				if (state.currentTime < start)
+					state.currentTime += range;
+			}
+			else
+			{
+				state.currentTime = std::clamp(state.currentTime, start, end);
+			}
+		};
+
 		AnimatorState* current = GetState(m_CurrentStateName);
 		if (current)
-		{
-			current->currentTime += dt * current->speed;
-			if (current->loop && current->clip && current->clip->duration > 0.0f)
-				current->currentTime = std::fmod(current->currentTime, current->clip->duration);
-		}
+			advanceState(*current, dt);
 
 		// 如果正在混合，也推进前一个状态
 		if (m_BlendState == ControllerBlendState::Blending)
 		{
 			AnimatorState* prev = GetState(m_PrevStateName);
 			if (prev)
-			{
-				prev->currentTime += dt * prev->speed;
-				if (prev->loop && prev->clip && prev->clip->duration > 0.0f)
-					prev->currentTime = std::fmod(prev->currentTime, prev->clip->duration);
-			}
+				advanceState(*prev, dt);
 		}
 	}
 
@@ -893,7 +912,7 @@ namespace VansGraphics
 		m_BlendState = ControllerBlendState::Idle;
 
 		for (auto& state : m_States)
-			state.currentTime = 0.0f;
+			state.currentTime = state.startTime;
 	}
 
 	AnimGraphPose AnimGraphStateMachineNode::Evaluate(const AnimGraphContext& ctx,
@@ -918,7 +937,7 @@ namespace VansGraphics
 		{
 			m_CurrentStateName = m_DefaultStateName;
 			AnimatorState* s = GetState(m_CurrentStateName);
-			if (s) s->currentTime = 0.0f;
+			if (s) s->currentTime = s->startTime;
 		}
 
 		// 求值 Transition
@@ -1050,7 +1069,7 @@ namespace VansGraphics
 		m_BlendState       = ControllerBlendState::Blending;
 
 		AnimatorState* newState = GetState(m_CurrentStateName);
-			if (newState) newState->currentTime = 0.0f;
+			if (newState) newState->currentTime = newState->startTime;
 	}
 
 	AnimGraphPose AnimGraphStateMachineNode::ComputeStatePose(const AnimatorState& state,
@@ -1062,18 +1081,20 @@ namespace VansGraphics
 		const VansAnimationClip& clip = *state.clip;
 		const Skeleton& skel = *ctx.skeleton;
 
-		float duration = clip.duration;
-		if (duration <= 0.0f) return pose;
+		const float start = state.startTime;
+		const float end = (state.endTime < 0.0f) ? clip.duration : state.endTime;
+		const float range = end - start;
+		if (range <= 0.0f) return pose;
 
 		float sampleTime = state.currentTime;
 		if (state.loop)
 		{
-			sampleTime = std::fmod(sampleTime, duration);
-			if (sampleTime < 0.0f) sampleTime += duration;
+			sampleTime = start + std::fmod(sampleTime - start, range);
+			if (sampleTime < start) sampleTime += range;
 		}
 		else
 		{
-			sampleTime = std::clamp(sampleTime, 0.0f, duration);
+			sampleTime = std::clamp(sampleTime, start, end);
 		}
 
 		size_t boneCount = skel.bones.size();

@@ -55,6 +55,38 @@ layout(set = 1, binding = 1) uniform CloudParamsUBO
     float detailErosionHigh;
     float detailEdgeStrength;
     float shadowDensityScale;
+    float sigmaTRef;
+    float viewAbsorption;
+    float lightAbsorption;
+    float singleScatteringAlbedo;
+    float forwardEccentricity;
+    float backwardEccentricity;
+    float msAttenuation;
+    float msContribution;
+    float msEccentricity;
+    float scatteringTintR;
+    float scatteringTintG;
+    float scatteringTintB;
+    float scatterSourceODScale;
+    float scatterSourceCurvePow;
+    float aoUpwardScale;
+    float ambientBottomStrength;
+    float ambientTopStrength;
+    float ambientDuskWarmth;
+    float boundaryConfidence;
+    float boundaryWrap;
+    float phiFwdIntensity;
+    float phiFwdDepthPow;
+    float phiFwdDepthBias;
+    float phiFwdMSBuildScale;
+    float phiFwdCompress;
+    float phiFwdMaxDistance;
+    float phiFwdConeRatio;
+    float phiFwdMinStep;
+    float lightStepCount;
+    float boundaryGradientStep;
+    float boundaryGradientStrength;
+    float shadingDebugMode;
 } uCloud;
 
 // --------------------------------------------------------------------------
@@ -64,6 +96,7 @@ layout(set = 1, binding = 2) uniform sampler3D cloudMainNoise;
 layout(set = 1, binding = 3) uniform sampler3D cloudDetailNoise;
 
 #include "../Common/CloudCommon.glsl"
+#include "../Common/CloudLightingHP.glsl"
 
 // --------------------------------------------------------------------------
 // 光线步进参数常量
@@ -96,16 +129,6 @@ vec3 ReconstructWorldRayDir(vec2 uv)
     // 逆视图矩阵旋转到世界空间（忽略平移）
     vec3 worldDir = normalize(mat3(InverseViewMatrix) * viewDir);
     return worldDir;
-}
-
-// --------------------------------------------------------------------------
-// Henyey-Greenstein 相位函数
-// --------------------------------------------------------------------------
-float CloudPhase(float cosTheta, float g)
-{
-    float g2  = g * g;
-    float denom = 1.0 + g2 - 2.0 * g * cosTheta;
-    return (1.0 - g2) / (4.0 * 3.14159265 * pow(max(denom, 1e-6), 1.5));
 }
 
 // --------------------------------------------------------------------------
@@ -144,14 +167,7 @@ void main()
         return;
     }
 
-    // 太阳方向（来自全局灯光数据，与 FogLightInjection.comp 保持一致）
-    vec3 sunDir   = normalize(uDirectionLight.direction.xyz);
-    // uDirectionLight.color 已由 CPU 预计算为大气衰减后的有效颜色，直接用于散射计算
-    vec3 sunColorAtmosphered = uDirectionLight.color.rgb * uDirectionLight.intensity * uCloud.sunBrightness;
-
-    // 相位函数：太阳入射方向与视线方向的夹角余弦
-    float cosTheta = dot(rayDir, sunDir);
-    float phase    = CloudPhase(cosTheta, uCloud.phaseG);  // 可调前向散射
+    CloudLightingEnv lightingEnv = EvaluateCloudLightingEnv(rayDir);
 
     // 自适应步数：基于最大步长计算，使增大厚度时采样数同步增加，避免云体被稀释
     float tRange   = shell.tEnd - shell.tStart;
@@ -167,55 +183,7 @@ void main()
         float t   = shell.tStart + (float(i) + 0.5) * stepSize;
         vec3  pos = rayOrigin + rayDir * t;
 
-        float d = SampleCloudDensity(pos);
-
-        if (d <= 0.0) continue;
-
-        // 太阳方向光程积分（简化阴影）
-        float sunVisibility = GetCloudSunVisibility(pos, sunDir);
-
-        // 粉末效应（powder sugar）增强云体光照立体感
-        float opticalDepth  = d * stepSize;
-        float stepT          = exp(-opticalDepth);
-        float powderTerm     = 1.0 - exp(-opticalDepth * 2.0); // 粉末增强
-
-        // 多重散射近似：天空环境光避免背光面完全黑
-        // 高度梯度：云顶（heightFrac=1）受更多天光，云底（heightFrac=0）受少量散射
-        float heightFrac = GetCloudHeightFraction(
-            pos.y - uCloud.planetRadius,
-            uCloud.cloudMinHeight,
-            uCloud.cloudMaxHeight
-        );
-        // 环境光颜色色调：正午偏蓝（天顶散射），黄昏随大气衰减变暖
-        float rawSunElevation = dot(sunDir, vec3(0.0, 1.0, 0.0));
-        float sunElevation = clamp(rawSunElevation, 0.0, 1.0);
-        float duskFactor   = 1.0 - smoothstep(0.02, 0.28, sunElevation);
-        float daySky       = smoothstep(-0.08, 0.16, rawSunElevation);
-        float horizonFactor = 1.0 - smoothstep(0.04, 0.24, abs(rawSunElevation));
-
-        vec3 skyBlue       = vec3(0.55, 0.72, 0.95);
-        vec3 duskSky       = vec3(0.95, 0.62, 0.28);
-        vec3 ambientColor  = mix(skyBlue, duskSky, duskFactor * 0.65);
-
-        vec3 ambientSky = ambientColor * mix(0.010, 0.038, daySky) * mix(0.45, 1.0, heightFrac)
-                        + vec3(0.002, 0.003, 0.006);
-
-        float forwardAlign = clamp(dot(rayDir, sunDir), 0.0, 1.0);
-        float silverPow = mix(10.0, 3.5, horizonFactor);
-        float silverLining = pow(forwardAlign, silverPow) * (0.35 + 0.65 * sunVisibility);
-        vec3 horizonGlow = sunColorAtmosphered * silverLining * mix(0.05, 0.34, horizonFactor);
-
-        vec3  scatterLit    = sunColorAtmosphered * sunVisibility * phase * powderTerm
-                            + horizonGlow
-                            + ambientSky;
-
-        // 有界散射积分：scatterIntegral = scatterLit * (1 - T_step)
-        // 等价于 FogRayMarch 中 sliceScattering*(1-T)/density，
-        // 此处 density 已被 scatterLit 中的相位/阴影因子吸收。
-        // 最大单步贡献 = scatterLit，总积分 ≤ scatterLit（有界，不会爆白）
-        vec3 scatterIntegral = scatterLit * (1.0 - stepT);
-        inscatter           += scatterIntegral * transmittance;
-        transmittance       *= stepT;
+        AccumulateHPCloudSample(pos, stepSize, lightingEnv, inscatter, transmittance);
 
         // 提前终止
         if (transmittance < TRANSMIT_CUTOFF) break;

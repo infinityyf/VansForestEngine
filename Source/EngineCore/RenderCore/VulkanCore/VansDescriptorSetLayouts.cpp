@@ -104,6 +104,9 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_Global(
 		// binding 16: cloth extension payload SSBO (same materialIndex as binding 2)
 		{GLOBAL_BINDING_CLOTH_MATERIAL_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
 		 MATERIAL_STAGES, nullptr},
+		// binding 17: tree leaf extension payload SSBO (same materialIndex as binding 2)
+		{GLOBAL_BINDING_TREE_LEAF_MATERIAL_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 MATERIAL_STAGES, nullptr},
 		// binding 50: Bindless PBR textures (fixed max count, no variable descriptor)
 		{GLOBAL_BINDING_BINDLESS_TEXTURES, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		 maxBindlessTextures, BINDLESS_TEX_STAGES, nullptr},

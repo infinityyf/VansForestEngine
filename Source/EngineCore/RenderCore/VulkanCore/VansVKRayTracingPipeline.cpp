@@ -23,14 +23,14 @@ namespace VansGraphics
 			auto* materialManager = m_Scene->GetMaterialManager();
 			if (materialManager != nullptr)
 			{
-				materialManager->RemoveRuntimeRenderTexture(VansMaterialManager::RT_SH_R_RESULT);
-				materialManager->RemoveRuntimeRenderTexture(VansMaterialManager::RT_SH_G_RESULT);
-				materialManager->RemoveRuntimeRenderTexture(VansMaterialManager::RT_SH_B_RESULT);
-				materialManager->RemoveRuntimeRenderTexture(VansMaterialManager::RT_GI_VISIBILITY_ATLAS);
+				materialManager->UnregisterRuntimeRenderTexture(VansMaterialManager::RT_SH_R_RESULT);
+				materialManager->UnregisterRuntimeRenderTexture(VansMaterialManager::RT_SH_G_RESULT);
+				materialManager->UnregisterRuntimeRenderTexture(VansMaterialManager::RT_SH_B_RESULT);
+				materialManager->UnregisterRuntimeRenderTexture(VansMaterialManager::RT_GI_VISIBILITY_ATLAS);
 				materialManager->m_SSGITemporalFrame = 0;
 			}
 
-			rayTracingContext.CleanupSceneResources(m_VansVKLogicDevice);
+			rayTracingContext.CleanupSceneResources(m_VansVKLogicDevice, materialManager);
 			rayTracingContext.CreateRayTracingResource(this, &m_VansVKCommandBuffer, m_Scene);
 			ResetFeatureDescriptorSets();
 			m_Scene->ClearGIProbeResourcesDirty();

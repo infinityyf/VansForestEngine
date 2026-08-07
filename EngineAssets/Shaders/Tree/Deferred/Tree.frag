@@ -4,6 +4,7 @@
 
 #include "../../Common/CameraData.glsl"
 #include "../../BRDF/BRDFData.glsl"
+#include "../../BRDF/TreeLeafData.glsl"
 
 layout(location = 0) in vec2 frag_uv;
 layout(location = 1) in vec3 normal_ws;
@@ -35,9 +36,12 @@ void main()
     float roughnessParam = materialData.roughness;
     float metallicParam = materialData.metallic;
     float aoParam = materialData.ao;
+    bool isLeaf = pc.alphaTestEnabled != 0u;
+    TreeLeafMaterialPayload leafPayload = GetTreeLeafMaterialPayload(materialIndex);
 
     vec4 albedoSample = texture(globalPBRTextures[materialIndex * 5 + 0], frag_uv, MaterialMipBias);
-    if (pc.alphaTestEnabled != 0u && albedoSample.a < 0.5)
+    float alphaClip = clamp(leafPayload.scattering.w, 0.0, 1.0);
+    if (isLeaf && albedoSample.a < alphaClip)
         discard;
 
     vec3 albedo = albedoParam * albedoSample.rgb;
@@ -58,10 +62,12 @@ void main()
     if (!gl_FrontFacing)
         n = -n;
 
+    float translucencyMask = aoSample.g > 0.001 ? aoSample.g : 1.0;
+    float leafTranslucency = isLeaf ? clamp(translucencyMask * leafPayload.subsurfaceColorAndStrength.a, 0.0, 1.0) : 0.0;
+
     float linearDepth = (ViewMatrix * vec4(position_world, 1.0)).z;
-    float leafTranslucency = (pc.alphaTestEnabled != 0u) ? 0.55 : 0.0;
     outNormal = vec4(n, leafTranslucency);
     outGBuffer0 = vec4(albedo, roughness);
-    outGBuffer1 = vec4(metallic, ao, float(MATERIAL_ID_TREE), 1.0);
+    outGBuffer1 = vec4(isLeaf ? 0.0 : metallic, ao, float(MATERIAL_ID_TREE), float(materialIndex));
     outGBuffer2 = vec4(position_world, -linearDepth);
 }

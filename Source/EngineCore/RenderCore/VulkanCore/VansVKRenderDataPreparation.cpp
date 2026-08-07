@@ -32,6 +32,7 @@ namespace VansGraphics
 		};
 		std::vector<PendingCustomTexture> pendingCustomTextures;
 		const VansClothGPUParam defaultClothPayload{};
+		const VansTreeLeafParamsGPU defaultTreeLeafPayload{};
 		std::unordered_set<VansTexture*> sceneTextures;
 		sceneTextures.reserve(m_Scene->GetTextureAssets().size());
 		for (auto* textureAsset : m_Scene->GetTextureAssets())
@@ -121,6 +122,7 @@ namespace VansGraphics
 				materialManager->m_GlobalPBRMaterial.push_back(pbr);
 				materialManager->m_GlobalPBRParamData.push_back(pbr->m_BasePBRParam);
 				materialManager->m_GlobalClothParamData.push_back(defaultClothPayload);
+				materialManager->m_GlobalTreeLeafParamData.push_back(pbr->m_TreeLeafParams);
 				appendTextureSlot(material, "baseColor", pbr->m_BaseColorTexture, "defaultAlbedo");
 				appendTextureSlot(material, "normal", pbr->m_NormalTexture, "defaultNormal");
 				appendTextureSlot(material, "metal", pbr->m_MetalTexture, "defaultMetal");
@@ -133,6 +135,7 @@ namespace VansGraphics
 				emissive->m_MaterialIndex = pbrMaterialIndex++;
 				materialManager->m_GlobalPBRParamData.push_back(emissive->m_BasePBRParam);
 				materialManager->m_GlobalClothParamData.push_back(defaultClothPayload);
+				materialManager->m_GlobalTreeLeafParamData.push_back(defaultTreeLeafPayload);
 
 				// Slots 1-4: not used by Emissive.frag but must be present to keep the 5-slot stride intact
 				appendTextureSlot(material, "emissive", emissive->m_EmissiveTexture, "defaultAlbedo");
@@ -147,6 +150,7 @@ namespace VansGraphics
 				emissive->m_MaterialIndex = pbrMaterialIndex++;
 				materialManager->m_GlobalPBRParamData.push_back(emissive->m_BasePBRParam);
 				materialManager->m_GlobalClothParamData.push_back(defaultClothPayload);
+				materialManager->m_GlobalTreeLeafParamData.push_back(defaultTreeLeafPayload);
 				appendTextureSlot(material, "baseColor", emissive->m_BaseColorTexture, "defaultAlbedo");
 				appendTextureSlot(material, "normal", emissive->m_NormalTexture, "defaultNormal");
 				appendTextureSlot(material, "metal", emissive->m_MetalTexture, "defaultMetal");
@@ -159,6 +163,7 @@ namespace VansGraphics
 				decal->m_MaterialIndex = pbrMaterialIndex++;
 				materialManager->m_GlobalPBRParamData.push_back(decal->m_BasePBRParam);
 				materialManager->m_GlobalClothParamData.push_back(defaultClothPayload);
+				materialManager->m_GlobalTreeLeafParamData.push_back(defaultTreeLeafPayload);
 				appendTextureSlot(material, "baseColor", decal->m_BaseColorTexture, "defaultAlbedo");
 				appendTextureSlot(material, "normal", decal->m_NormalTexture, "defaultNormal");
 				appendTextureSlot(material, "metal", decal->m_MetalTexture, "defaultMetal");
@@ -177,6 +182,7 @@ namespace VansGraphics
 
 				materialManager->m_GlobalPBRParamData.push_back(sss->m_BasePBRParam);
 				materialManager->m_GlobalClothParamData.push_back(defaultClothPayload);
+				materialManager->m_GlobalTreeLeafParamData.push_back(defaultTreeLeafPayload);
 				appendTextureSlot(material, "baseColor", sss->m_BaseColorTexture, "defaultAlbedo");
 				appendTextureSlot(material, "normal", sss->m_NormalTexture, "defaultNormal");
 				appendTextureSlot(material, "thickness", sss->m_ThicknessTexture, "defaultAo");
@@ -189,6 +195,7 @@ namespace VansGraphics
 				cloth->m_MaterialIndex = pbrMaterialIndex++;
 				materialManager->m_GlobalPBRParamData.push_back(cloth->m_BasePBRParam);
 				materialManager->m_GlobalClothParamData.push_back(cloth->BuildGPUParam());
+				materialManager->m_GlobalTreeLeafParamData.push_back(defaultTreeLeafPayload);
 				appendTextureSlot(material, "baseColor", cloth->m_BaseColorTexture, "defaultAlbedo");
 				appendTextureSlot(material, "normal", cloth->m_NormalTexture, "defaultNormal");
 				appendTextureSlot(material, "baseColor", cloth->m_BaseColorTexture, "defaultAlbedo");
@@ -201,6 +208,7 @@ namespace VansGraphics
 				skin->m_MaterialIndex = pbrMaterialIndex++;
 				materialManager->m_GlobalPBRParamData.push_back(skin->m_BasePBRParam);
 				materialManager->m_GlobalClothParamData.push_back(defaultClothPayload);
+				materialManager->m_GlobalTreeLeafParamData.push_back(defaultTreeLeafPayload);
 
 				// Skin samples its dedicated Set 4 textures, but still reserves the
 				// standard 5 bindless slots so later materialIndex * 5 lookups stay aligned.
@@ -246,6 +254,12 @@ namespace VansGraphics
 				<< materialManager->m_GlobalClothParamData.size() << ", pbrPayloads="
 				<< materialManager->m_GlobalPBRParamData.size());
 		}
+		if (materialManager->m_GlobalTreeLeafParamData.size() != materialManager->m_GlobalPBRParamData.size())
+		{
+			VANS_LOG_ERROR("[PreparePBRMaterialData] GlobalTreeLeafData index alignment is broken: leafPayloads="
+				<< materialManager->m_GlobalTreeLeafParamData.size() << ", pbrPayloads="
+				<< materialManager->m_GlobalPBRParamData.size());
+		}
 		if (pbrMaterialIndex > 2048)
 		{
 			VANS_LOG_ERROR("[PreparePBRMaterialData] " << pbrMaterialIndex
@@ -259,6 +273,8 @@ namespace VansGraphics
 		const VkDeviceSize materialDataSize = sizeof(VansBasePBRParam) * materialManager->m_GlobalPBRParamData.size();
 		const VkDeviceSize clothMaterialDataSize =
 			sizeof(VansClothGPUParam) * materialManager->m_GlobalClothParamData.size();
+		const VkDeviceSize treeLeafMaterialDataSize =
+			sizeof(VansTreeLeafParamsGPU) * materialManager->m_GlobalTreeLeafParamData.size();
 		const VkDeviceSize customMaterialDataSize =
 			sizeof(VansCustomMaterialPayload) * materialManager->m_GlobalCustomMaterialParamData.size();
 		materialManager->m_GlobalPBRDataBuffer.CreatVulkanBuffer(
@@ -270,6 +286,12 @@ namespace VansGraphics
 		materialManager->m_GlobalClothDataBuffer.CreatVulkanBuffer(
 			m_VansVKLogicDevice,
 			std::max<VkDeviceSize>(clothMaterialDataSize, sizeof(VansClothGPUParam)),
+			VK_FORMAT_R32_SFLOAT,
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+		materialManager->m_GlobalTreeLeafDataBuffer.CreatVulkanBuffer(
+			m_VansVKLogicDevice,
+			std::max<VkDeviceSize>(treeLeafMaterialDataSize, sizeof(VansTreeLeafParamsGPU)),
 			VK_FORMAT_R32_SFLOAT,
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
@@ -290,6 +312,11 @@ namespace VansGraphics
 			materialManager->m_GlobalClothDataBuffer.SetBufferData(
 				materialManager->m_GlobalClothParamData.data(), 0, static_cast<int>(clothMaterialDataSize));
 		}
+		if (treeLeafMaterialDataSize > 0)
+		{
+			materialManager->m_GlobalTreeLeafDataBuffer.SetBufferData(
+				materialManager->m_GlobalTreeLeafParamData.data(), 0, static_cast<int>(treeLeafMaterialDataSize));
+		}
 		if (customMaterialDataSize > 0)
 		{
 			materialManager->m_GlobalCustomMaterialDataBuffer.SetBufferData(
@@ -299,6 +326,7 @@ namespace VansGraphics
 		// Keep the PBR material buffer persistently mapped for fast per-frame CPU writes
 		materialManager->m_GlobalPBRDataBuffer.PersistentMap();
 		materialManager->m_GlobalClothDataBuffer.PersistentMap();
+		materialManager->m_GlobalTreeLeafDataBuffer.PersistentMap();
 		materialManager->m_GlobalCustomMaterialDataBuffer.PersistentMap();
 
 		VkDescriptorSetLayoutBinding globalPBRMaterialBufferBinding =
@@ -809,14 +837,13 @@ namespace VansGraphics
 		manager->m_SSGITemporalShader = VansGraphics::VansShaderManager::Get().FindComputeShader("SSGITemporal");
 
 		const VansGISettings& gi = m_Scene->GetGISettings();
-		const glm::vec3 volumeSize = glm::vec3(gi.gridDimensions) * gi.probeSpacingAxes;
-		const glm::vec3 volumeMin = gi.regionCenter - volumeSize * 0.5f;
+		const GIResolvedRegion primaryRegion = ResolveGIRegion(GetPrimaryGIRegionDesc(gi));
 		SSGIParamsGPU data{};
 		data.screenSize = glm::vec4(
 			(float)m_RenderWidth, (float)m_RenderHeight, 1.0f / m_RenderWidth, 1.0f / m_RenderHeight);
-		data.giVolumeMin = glm::vec4(volumeMin, 0.0f);
-		data.giVolumeSizeAndBias = glm::vec4(volumeSize, gi.normalBias);
-		data.traceParams = glm::vec4(gi.maxRayDistance, 0.75f, gi.volumeFadeDistance, 0.0f);
+		data.giVolumeMin = glm::vec4(primaryRegion.volumeMin, 0.0f);
+		data.giVolumeSizeAndBias = glm::vec4(primaryRegion.volumeSize, primaryRegion.normalBias);
+		data.traceParams = glm::vec4(primaryRegion.maxRayDistance, 0.75f, primaryRegion.volumeFadeDistance, 0.0f);
 		manager->m_SSGICBBuffer.CreatVulkanBuffer(
 			m_VansVKLogicDevice, sizeof(data), VK_FORMAT_R32_SFLOAT,
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,

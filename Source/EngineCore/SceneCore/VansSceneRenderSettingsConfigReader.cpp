@@ -14,6 +14,22 @@ const VansSerializedValue* ReadObjectField(const VansSerializedValue& object, co
 	return field && field->kind == VansSerializedValue::Kind::Object ? field : nullptr;
 }
 
+const VansSerializedValue* ReadArrayField(const VansSerializedValue& object, const char* key)
+{
+	const VansSerializedValue* field = FindObjectField(object, key);
+	return field && field->kind == VansSerializedValue::Kind::Array ? field : nullptr;
+}
+
+std::optional<std::string> ReadOptionalStringField(const VansSerializedValue& object, const char* key)
+{
+	const VansSerializedValue* field = FindObjectField(object, key);
+	if (!field || field->kind != VansSerializedValue::Kind::String)
+	{
+		return std::nullopt;
+	}
+	return field->stringValue;
+}
+
 std::optional<float> ReadOptionalFloatField(const VansSerializedValue& object, const char* key)
 {
 	const VansSerializedValue* field = FindObjectField(object, key);
@@ -105,6 +121,31 @@ std::optional<std::array<uint32_t, 3>> ReadOptionalUInt3Field(const VansSerializ
 	return values;
 }
 
+std::optional<VansSceneGIRegionSettingsConfig> DecodeGIRegionSettings(const VansSerializedValue& regionNode)
+{
+	if (regionNode.kind != VansSerializedValue::Kind::Object)
+	{
+		return std::nullopt;
+	}
+
+	VansSceneGIRegionSettingsConfig config;
+	config.stableId = ReadOptionalUIntField(regionNode, "stableId");
+	config.name = ReadOptionalStringField(regionNode, "name");
+	config.enabled = ReadOptionalBoolField(regionNode, "enabled");
+	config.center = ReadOptionalFloat3Field(regionNode, "center");
+	config.size = ReadOptionalFloat3Field(regionNode, "size");
+	config.gridDimensions = ReadOptionalUInt3Field(regionNode, "gridDimensions");
+	config.probeSpacingAxes = ReadOptionalFloat3Field(regionNode, "probeSpacingAxes");
+	config.raysPerProbe = ReadOptionalUIntField(regionNode, "raysPerProbe");
+	config.spatialUpdateDivisor = ReadOptionalUIntField(regionNode, "spatialUpdateDivisor");
+	config.directionUpdateSlices = ReadOptionalUIntField(regionNode, "directionUpdateSlices");
+	config.maxRayDistance = ReadOptionalFloatField(regionNode, "maxRayDistance");
+	config.normalBias = ReadOptionalFloatField(regionNode, "normalBias");
+	config.volumeFadeDistance = ReadOptionalFloatField(regionNode, "volumeFadeDistance");
+	config.priority = ReadOptionalFloatField(regionNode, "priority");
+	return config;
+}
+
 std::optional<VansSceneHeightFogSettingsConfig> DecodeHeightFog(const VansSerializedValue& sceneSettings)
 {
 	const VansSerializedValue* fog = ReadObjectField(sceneSettings, "heightFog");
@@ -179,6 +220,38 @@ std::optional<VansSceneVolumetricCloudSettingsConfig> DecodeVolumetricClouds(con
 	config.detailErosionHigh = ReadOptionalFloatField(*cloud, "detailErosionHigh");
 	config.detailEdgeStrength = ReadOptionalFloatField(*cloud, "detailEdgeStrength");
 	config.shadowDensityScale = ReadOptionalFloatField(*cloud, "shadowDensityScale");
+	config.sigmaTRef = ReadOptionalFloatField(*cloud, "sigmaTRef");
+	config.viewAbsorption = ReadOptionalFloatField(*cloud, "viewAbsorption");
+	config.lightAbsorption = ReadOptionalFloatField(*cloud, "lightAbsorption");
+	config.singleScatteringAlbedo = ReadOptionalFloatField(*cloud, "singleScatteringAlbedo");
+	config.forwardEccentricity = ReadOptionalFloatField(*cloud, "forwardEccentricity");
+	config.backwardEccentricity = ReadOptionalFloatField(*cloud, "backwardEccentricity");
+	config.msAttenuation = ReadOptionalFloatField(*cloud, "msAttenuation");
+	config.msContribution = ReadOptionalFloatField(*cloud, "msContribution");
+	config.msEccentricity = ReadOptionalFloatField(*cloud, "msEccentricity");
+	config.scatteringTintR = ReadOptionalFloatField(*cloud, "scatteringTintR");
+	config.scatteringTintG = ReadOptionalFloatField(*cloud, "scatteringTintG");
+	config.scatteringTintB = ReadOptionalFloatField(*cloud, "scatteringTintB");
+	config.scatterSourceODScale = ReadOptionalFloatField(*cloud, "scatterSourceODScale");
+	config.scatterSourceCurvePow = ReadOptionalFloatField(*cloud, "scatterSourceCurvePow");
+	config.aoUpwardScale = ReadOptionalFloatField(*cloud, "aoUpwardScale");
+	config.ambientBottomStrength = ReadOptionalFloatField(*cloud, "ambientBottomStrength");
+	config.ambientTopStrength = ReadOptionalFloatField(*cloud, "ambientTopStrength");
+	config.ambientDuskWarmth = ReadOptionalFloatField(*cloud, "ambientDuskWarmth");
+	config.boundaryConfidence = ReadOptionalFloatField(*cloud, "boundaryConfidence");
+	config.boundaryWrap = ReadOptionalFloatField(*cloud, "boundaryWrap");
+	config.phiFwdIntensity = ReadOptionalFloatField(*cloud, "phiFwdIntensity");
+	config.phiFwdDepthPow = ReadOptionalFloatField(*cloud, "phiFwdDepthPow");
+	config.phiFwdDepthBias = ReadOptionalFloatField(*cloud, "phiFwdDepthBias");
+	config.phiFwdMSBuildScale = ReadOptionalFloatField(*cloud, "phiFwdMSBuildScale");
+	config.phiFwdCompress = ReadOptionalFloatField(*cloud, "phiFwdCompress");
+	config.phiFwdMaxDistance = ReadOptionalFloatField(*cloud, "phiFwdMaxDistance");
+	config.phiFwdConeRatio = ReadOptionalFloatField(*cloud, "phiFwdConeRatio");
+	config.phiFwdMinStep = ReadOptionalFloatField(*cloud, "phiFwdMinStep");
+	config.lightStepCount = ReadOptionalFloatField(*cloud, "lightStepCount");
+	config.boundaryGradientStep = ReadOptionalFloatField(*cloud, "boundaryGradientStep");
+	config.boundaryGradientStrength = ReadOptionalFloatField(*cloud, "boundaryGradientStrength");
+	config.shadingDebugMode = ReadOptionalFloatField(*cloud, "shadingDebugMode");
 	return config;
 }
 
@@ -235,7 +308,19 @@ std::optional<VansSceneGISettingsConfig> DecodeGISettings(const VansSerializedVa
 	}
 
 	VansSceneGISettingsConfig config;
+	if (const VansSerializedValue* regions = ReadArrayField(*gi, "regions"))
+	{
+		for (const VansSerializedValue& regionNode : regions->arrayItems)
+		{
+			if (std::optional<VansSceneGIRegionSettingsConfig> region = DecodeGIRegionSettings(regionNode))
+			{
+				config.regions.push_back(*region);
+			}
+		}
+	}
 	config.gridDimensions = ReadOptionalUInt3Field(*gi, "gridDimensions");
+	config.gridSize = ReadOptionalUIntField(*gi, "gridSize");
+	config.probeSpacing = ReadOptionalFloatField(*gi, "probeSpacing");
 	config.probeSpacingAxes = ReadOptionalFloat3Field(*gi, "probeSpacingAxes");
 	config.regionCenter = ReadOptionalFloat3Field(*gi, "regionCenter");
 	config.raysPerProbe = ReadOptionalUIntField(*gi, "raysPerProbe");

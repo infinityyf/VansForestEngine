@@ -861,6 +861,29 @@ namespace Vans::EditorAPI
 		std::uint32_t framesInFlight = 2;
 	};
 
+	struct GIRegionSettingsSnapshot
+	{
+		std::uint32_t stableId = 0;
+		std::string name;
+		bool enabled = true;
+		Vec3 regionCenter = { 0.0f, 6.0f, 0.0f };
+		Vec3 size;
+		Vec3 volumeMin;
+		Vec3 volumeMax;
+		Vec3 gridDimensions;
+		Vec3 probeSpacingAxes;
+		float normalBias = 0.0f;
+		float maxRayDistance = 0.0f;
+		float volumeFadeDistance = 0.0f;
+		float priority = 0.0f;
+		std::uint32_t raysPerProbe = 0;
+		std::uint32_t spatialUpdateDivisor = 1;
+		std::uint32_t directionUpdateSlices = 1;
+		std::uint32_t totalProbeCount = 0;
+		std::uint64_t rayCacheEntries = 0;
+		float estimatedMemoryMB = 0.0f;
+	};
+
 	struct GIInspectorSettingsSnapshot
 	{
 		bool available = false;
@@ -884,6 +907,10 @@ namespace Vans::EditorAPI
 		float debugExposure = 1.0f;
 		std::uint32_t gizmoStride = 8;
 		std::uint32_t totalProbeCount = 0;
+		std::uint64_t totalRayCacheEntries = 0;
+		float totalEstimatedMemoryMB = 0.0f;
+		std::uint32_t selectedRegionIndex = 0;
+		std::vector<GIRegionSettingsSnapshot> regions;
 	};
 
 	struct GIProbeDebugEntrySnapshot
@@ -1490,6 +1517,38 @@ namespace Vans::EditorAPI
 		float detailErosionHigh = 0.810f;
 		float detailEdgeStrength = 0.270f;
 		float shadowDensityScale = 0.870f;
+		float sigmaTRef = 1.000f;
+		float viewAbsorption = 1.000f;
+		float lightAbsorption = 1.000f;
+		float singleScatteringAlbedo = 0.999f;
+		float forwardEccentricity = 0.700f;
+		float backwardEccentricity = 0.250f;
+		float msAttenuation = 0.500f;
+		float msContribution = 0.500f;
+		float msEccentricity = 0.500f;
+		float scatteringTintR = 1.000f;
+		float scatteringTintG = 1.000f;
+		float scatteringTintB = 1.000f;
+		float scatterSourceODScale = 0.120f;
+		float scatterSourceCurvePow = 1.000f;
+		float aoUpwardScale = 1.000f;
+		float ambientBottomStrength = 0.100f;
+		float ambientTopStrength = 0.350f;
+		float ambientDuskWarmth = 0.650f;
+		float boundaryConfidence = 0.750f;
+		float boundaryWrap = 0.350f;
+		float phiFwdIntensity = 0.800f;
+		float phiFwdDepthPow = 1.000f;
+		float phiFwdDepthBias = 0.050f;
+		float phiFwdMSBuildScale = 1.000f;
+		float phiFwdCompress = 1.000f;
+		float phiFwdMaxDistance = 6000.000f;
+		float phiFwdConeRatio = 1.450f;
+		float phiFwdMinStep = 80.000f;
+		float lightStepCount = 8.000f;
+		float boundaryGradientStep = 250.000f;
+		float boundaryGradientStrength = 0.000f;
+		float shadingDebugMode = 0.000f;
 	};
 
 	struct ShaderStageSourceSnapshot

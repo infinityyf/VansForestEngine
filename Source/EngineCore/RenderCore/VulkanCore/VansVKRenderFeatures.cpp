@@ -31,14 +31,13 @@ namespace VansGraphics
 		{
 			const float width = static_cast<float>(std::max(renderWidth, 1u));
 			const float height = static_cast<float>(std::max(renderHeight, 1u));
-			const glm::vec3 volumeSize = glm::vec3(gi.gridDimensions) * gi.probeSpacingAxes;
-			const glm::vec3 volumeMin = gi.regionCenter - volumeSize * 0.5f;
+			const GIResolvedRegion primaryRegion = ResolveGIRegion(GetPrimaryGIRegionDesc(gi));
 
 			SSGIParamsGPU data{};
 			data.screenSize = glm::vec4(width, height, 1.0f / width, 1.0f / height);
-			data.giVolumeMin = glm::vec4(volumeMin, 0.0f);
-			data.giVolumeSizeAndBias = glm::vec4(volumeSize, gi.normalBias);
-			data.traceParams = glm::vec4(gi.maxRayDistance, 0.75f, gi.volumeFadeDistance, 0.0f);
+			data.giVolumeMin = glm::vec4(primaryRegion.volumeMin, 0.0f);
+			data.giVolumeSizeAndBias = glm::vec4(primaryRegion.volumeSize, primaryRegion.normalBias);
+			data.traceParams = glm::vec4(primaryRegion.maxRayDistance, 0.75f, primaryRegion.volumeFadeDistance, 0.0f);
 			return data;
 		}
 
@@ -203,13 +202,21 @@ namespace VansGraphics
 
 		VansTexture* ssgiResult = getRuntimeTexture(VansMaterialManager::RT_SSGI_RESULT);
 
-		VansTexture* shrResult = getRuntimeTexture(VansMaterialManager::RT_SH_R_RESULT);
+		VansTexture* shrResult = rayTracingContext.GetGIRegionSHR(0);
+		if (shrResult == nullptr)
+			shrResult = getRuntimeTexture(VansMaterialManager::RT_SH_R_RESULT);
 
-		VansTexture* shgResult = getRuntimeTexture(VansMaterialManager::RT_SH_G_RESULT);
+		VansTexture* shgResult = rayTracingContext.GetGIRegionSHG(0);
+		if (shgResult == nullptr)
+			shgResult = getRuntimeTexture(VansMaterialManager::RT_SH_G_RESULT);
 
-		VansTexture* shbResult = getRuntimeTexture(VansMaterialManager::RT_SH_B_RESULT);
+		VansTexture* shbResult = rayTracingContext.GetGIRegionSHB(0);
+		if (shbResult == nullptr)
+			shbResult = getRuntimeTexture(VansMaterialManager::RT_SH_B_RESULT);
 
-		VansTexture* giVisibilityAtlas = getRuntimeTexture(VansMaterialManager::RT_GI_VISIBILITY_ATLAS);
+		VansTexture* giVisibilityAtlas = rayTracingContext.GetGIRegionVisibilityAtlas(0);
+		if (giVisibilityAtlas == nullptr)
+			giVisibilityAtlas = getRuntimeTexture(VansMaterialManager::RT_GI_VISIBILITY_ATLAS);
 
 		VansTexture* hzbResult = getRuntimeTexture(VansMaterialManager::RT_HZB_RESULT);
 

@@ -61,6 +61,8 @@ class VansScriptParticleComponent;
 
 #include "ReflectionProbeCore/VansReflectionProbeSystem.h"
 
+#include "GICore/VansGISettings.h"
+
 #include "VansTransformSlotAllocator.h"
 
 #include <algorithm>
@@ -136,50 +138,6 @@ namespace VansGraphics
 		Editor,
 
         Runtime   // 杩愯鏃舵ā寮?
-
-	};
-
-
-
-	// Scene-owned settings for the ray-traced diffuse GI probe volume.
-
-	struct VansGISettings
-
-	{
-
-		glm::uvec3 gridDimensions = glm::uvec3(80u);
-
-		glm::vec3 probeSpacingAxes = glm::vec3(0.5f);
-
-		glm::vec3 regionCenter = glm::vec3(0.0f, 6.0f, 0.0f);
-
-		uint32_t raysPerProbe = 256;
-
-		uint32_t spatialUpdateDivisor = 2;
-
-		uint32_t directionUpdateSlices = 16;
-
-		float maxRayDistance = 100.0f;
-
-		float normalBias = 0.25f;
-
-		float environmentIntensity = 5.0f;
-
-		float maxIndirectRadiance = 2.0f;
-
-		float maxSHL0 = 8.0f;
-
-		float volumeFadeDistance = 1.0f;
-
-		bool showProbeGizmos = false;
-
-		bool showProbeVolume = false;
-
-		uint32_t debugView = 0;
-
-		float debugExposure = 1.0f;
-
-		uint32_t gizmoStride = 8;
 
 	};
 
@@ -1113,16 +1071,12 @@ namespace VansGraphics
 
 		void SetGISettings(const VansGISettings& settings)
 		{
+			VansGISettings normalizedSettings = settings;
+			NormalizeGISettings(normalizedSettings);
 			const bool resourceLayoutChanged =
-				m_GISettings.gridDimensions != settings.gridDimensions ||
-				m_GISettings.raysPerProbe != settings.raysPerProbe ||
-				m_GISettings.probeSpacingAxes != settings.probeSpacingAxes ||
-				m_GISettings.maxRayDistance != settings.maxRayDistance ||
-				m_GISettings.regionCenter.x != settings.regionCenter.x ||
-				m_GISettings.regionCenter.y != settings.regionCenter.y ||
-				m_GISettings.regionCenter.z != settings.regionCenter.z;
+				!GISettingsResourceLayoutEquals(m_GISettings, normalizedSettings);
 
-			m_GISettings = settings;
+			m_GISettings = normalizedSettings;
 			if (resourceLayoutChanged)
 			{
 				m_GIProbeResourcesDirty = true;

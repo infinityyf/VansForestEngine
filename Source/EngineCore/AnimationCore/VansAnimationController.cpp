@@ -413,9 +413,27 @@ void VansAnimationController::BindStateClips()
 
 void VansAnimationController::Play()
 {
-	if (!m_Graph) return;
 	m_PlaybackState = AnimationState::Playing;
-	m_Graph->ResetAll();
+	m_BlendState    = ControllerBlendState::Idle;
+	m_BlendAlpha    = 0.0f;
+	m_PrevStateName.clear();
+
+	if (m_Graph)
+	{
+		m_Graph->ResetAll();
+		return;
+	}
+
+	const std::string stateName = !m_DefaultStateName.empty()
+		? m_DefaultStateName
+		: m_CurrentStateName;
+	if (!stateName.empty())
+	{
+		m_CurrentStateName = stateName;
+		if (AnimatorState* state = GetState(m_CurrentStateName))
+			state->currentTime = state->startTime;
+	}
+	BindStateClips();
 }
 
 void VansAnimationController::Play(const std::string& stateName)
@@ -457,6 +475,17 @@ void VansAnimationController::Stop()
 	m_PlaybackState = AnimationState::Stopped;
 	m_BlendState    = ControllerBlendState::Idle;
 	m_BlendAlpha    = 0.0f;
+	m_PrevStateName.clear();
+
+	if (m_Graph)
+		m_Graph->ResetAll();
+
+	for (auto& [name, state] : m_States)
+		state.currentTime = state.startTime;
+
+	m_RootMotionInitialized = false;
+	m_LastRootMotionDelta   = glm::vec3(0.0f);
+	m_LastRootRotationDelta = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
 }
 
 void VansAnimationController::Reset()

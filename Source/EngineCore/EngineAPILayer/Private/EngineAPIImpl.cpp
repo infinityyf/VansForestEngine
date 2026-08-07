@@ -68,6 +68,7 @@
 #include <cfloat>
 #include <cmath>
 #include <filesystem>
+#include <limits>
 #include <mutex>
 #include <unordered_map>
 #include <utility>
@@ -1830,6 +1831,38 @@ namespace Vans::EditorAPI
 			settings.detailErosionHigh = source.detailErosionHigh;
 			settings.detailEdgeStrength = source.detailEdgeStrength;
 			settings.shadowDensityScale = source.shadowDensityScale;
+			settings.sigmaTRef = source.sigmaTRef;
+			settings.viewAbsorption = source.viewAbsorption;
+			settings.lightAbsorption = source.lightAbsorption;
+			settings.singleScatteringAlbedo = source.singleScatteringAlbedo;
+			settings.forwardEccentricity = source.forwardEccentricity;
+			settings.backwardEccentricity = source.backwardEccentricity;
+			settings.msAttenuation = source.msAttenuation;
+			settings.msContribution = source.msContribution;
+			settings.msEccentricity = source.msEccentricity;
+			settings.scatteringTintR = source.scatteringTintR;
+			settings.scatteringTintG = source.scatteringTintG;
+			settings.scatteringTintB = source.scatteringTintB;
+			settings.scatterSourceODScale = source.scatterSourceODScale;
+			settings.scatterSourceCurvePow = source.scatterSourceCurvePow;
+			settings.aoUpwardScale = source.aoUpwardScale;
+			settings.ambientBottomStrength = source.ambientBottomStrength;
+			settings.ambientTopStrength = source.ambientTopStrength;
+			settings.ambientDuskWarmth = source.ambientDuskWarmth;
+			settings.boundaryConfidence = source.boundaryConfidence;
+			settings.boundaryWrap = source.boundaryWrap;
+			settings.phiFwdIntensity = source.phiFwdIntensity;
+			settings.phiFwdDepthPow = source.phiFwdDepthPow;
+			settings.phiFwdDepthBias = source.phiFwdDepthBias;
+			settings.phiFwdMSBuildScale = source.phiFwdMSBuildScale;
+			settings.phiFwdCompress = source.phiFwdCompress;
+			settings.phiFwdMaxDistance = source.phiFwdMaxDistance;
+			settings.phiFwdConeRatio = source.phiFwdConeRatio;
+			settings.phiFwdMinStep = source.phiFwdMinStep;
+			settings.lightStepCount = source.lightStepCount;
+			settings.boundaryGradientStep = source.boundaryGradientStep;
+			settings.boundaryGradientStrength = source.boundaryGradientStrength;
+			settings.shadingDebugMode = source.shadingDebugMode;
 			return settings;
 		}
 
@@ -1861,6 +1894,38 @@ namespace Vans::EditorAPI
 			destination.detailErosionHigh = settings.detailErosionHigh;
 			destination.detailEdgeStrength = settings.detailEdgeStrength;
 			destination.shadowDensityScale = settings.shadowDensityScale;
+			destination.sigmaTRef = settings.sigmaTRef;
+			destination.viewAbsorption = settings.viewAbsorption;
+			destination.lightAbsorption = settings.lightAbsorption;
+			destination.singleScatteringAlbedo = settings.singleScatteringAlbedo;
+			destination.forwardEccentricity = settings.forwardEccentricity;
+			destination.backwardEccentricity = settings.backwardEccentricity;
+			destination.msAttenuation = settings.msAttenuation;
+			destination.msContribution = settings.msContribution;
+			destination.msEccentricity = settings.msEccentricity;
+			destination.scatteringTintR = settings.scatteringTintR;
+			destination.scatteringTintG = settings.scatteringTintG;
+			destination.scatteringTintB = settings.scatteringTintB;
+			destination.scatterSourceODScale = settings.scatterSourceODScale;
+			destination.scatterSourceCurvePow = settings.scatterSourceCurvePow;
+			destination.aoUpwardScale = settings.aoUpwardScale;
+			destination.ambientBottomStrength = settings.ambientBottomStrength;
+			destination.ambientTopStrength = settings.ambientTopStrength;
+			destination.ambientDuskWarmth = settings.ambientDuskWarmth;
+			destination.boundaryConfidence = settings.boundaryConfidence;
+			destination.boundaryWrap = settings.boundaryWrap;
+			destination.phiFwdIntensity = settings.phiFwdIntensity;
+			destination.phiFwdDepthPow = settings.phiFwdDepthPow;
+			destination.phiFwdDepthBias = settings.phiFwdDepthBias;
+			destination.phiFwdMSBuildScale = settings.phiFwdMSBuildScale;
+			destination.phiFwdCompress = settings.phiFwdCompress;
+			destination.phiFwdMaxDistance = settings.phiFwdMaxDistance;
+			destination.phiFwdConeRatio = settings.phiFwdConeRatio;
+			destination.phiFwdMinStep = settings.phiFwdMinStep;
+			destination.lightStepCount = settings.lightStepCount;
+			destination.boundaryGradientStep = settings.boundaryGradientStep;
+			destination.boundaryGradientStrength = settings.boundaryGradientStrength;
+			destination.shadingDebugMode = settings.shadingDebugMode;
 		}
 
 		PostProcessSettingsSnapshot ToAPIPostProcessSettings(
@@ -3788,26 +3853,33 @@ namespace Vans::EditorAPI
 			return {};
 
 		const VansGraphics::VansGISettings& gi = scene->GetGISettings();
-		const glm::vec3 volumeSize = glm::vec3(gi.gridDimensions) * gi.probeSpacingAxes;
-		const glm::vec3 volumeMin = gi.regionCenter - volumeSize * 0.5f;
-		const glm::vec3 volumeMax = volumeMin + volumeSize;
+		const VansGraphics::GIResolvedRegion primaryRegion =
+			VansGraphics::ResolveGIRegion(VansGraphics::GetPrimaryGIRegionDesc(gi));
+		const glm::vec3 volumeMax = primaryRegion.volumeMin + primaryRegion.volumeSize;
+		auto estimateMemoryMB = [](const VansGraphics::GIResolvedRegion& region) {
+			const std::uint64_t bytesPerProbe =
+				48ull + 48ull + 8ull + 1024ull +
+				static_cast<std::uint64_t>(region.raysPerProbe) * (8ull + 8ull + 8ull + 8ull + 4ull);
+			return static_cast<float>(
+				static_cast<double>(region.probeCount * bytesPerProbe) / (1024.0 * 1024.0));
+		};
 
 		GIInspectorSettingsSnapshot settings;
 		settings.available = true;
-		settings.regionCenter = ToEditorVec3(gi.regionCenter);
-		settings.volumeMin = ToEditorVec3(volumeMin);
+		settings.regionCenter = ToEditorVec3(primaryRegion.center);
+		settings.volumeMin = ToEditorVec3(primaryRegion.volumeMin);
 		settings.volumeMax = ToEditorVec3(volumeMax);
 		settings.gridDimensions = {
-			static_cast<float>(gi.gridDimensions.x),
-			static_cast<float>(gi.gridDimensions.y),
-			static_cast<float>(gi.gridDimensions.z) };
-		settings.probeSpacingAxes = ToEditorVec3(gi.probeSpacingAxes);
-		settings.normalBias = gi.normalBias;
-		settings.maxRayDistance = gi.maxRayDistance;
-		settings.volumeFadeDistance = gi.volumeFadeDistance;
-		settings.raysPerProbe = gi.raysPerProbe;
-		settings.spatialUpdateDivisor = gi.spatialUpdateDivisor;
-		settings.directionUpdateSlices = gi.directionUpdateSlices;
+			static_cast<float>(primaryRegion.gridDimensions.x),
+			static_cast<float>(primaryRegion.gridDimensions.y),
+			static_cast<float>(primaryRegion.gridDimensions.z) };
+		settings.probeSpacingAxes = ToEditorVec3(primaryRegion.probeSpacingAxes);
+		settings.normalBias = primaryRegion.normalBias;
+		settings.maxRayDistance = primaryRegion.maxRayDistance;
+		settings.volumeFadeDistance = primaryRegion.volumeFadeDistance;
+		settings.raysPerProbe = primaryRegion.raysPerProbe;
+		settings.spatialUpdateDivisor = primaryRegion.spatialUpdateDivisor;
+		settings.directionUpdateSlices = primaryRegion.directionUpdateSlices;
 		settings.environmentIntensity = gi.environmentIntensity;
 		settings.maxIndirectRadiance = gi.maxIndirectRadiance;
 		settings.maxSHL0 = gi.maxSHL0;
@@ -3816,7 +3888,47 @@ namespace Vans::EditorAPI
 		settings.debugView = static_cast<int>(gi.debugView);
 		settings.debugExposure = gi.debugExposure;
 		settings.gizmoStride = gi.gizmoStride;
-		settings.totalProbeCount = gi.gridDimensions.x * gi.gridDimensions.y * gi.gridDimensions.z;
+		settings.selectedRegionIndex = gi.selectedRegionIndex;
+		settings.totalProbeCount = 0;
+		settings.totalRayCacheEntries = 0;
+		settings.totalEstimatedMemoryMB = 0.0f;
+		settings.regions.reserve(gi.regions.size());
+		for (const VansGraphics::GIProbeRegionDesc& regionDesc : gi.regions)
+		{
+			const VansGraphics::GIResolvedRegion region = VansGraphics::ResolveGIRegion(regionDesc);
+			GIRegionSettingsSnapshot regionSnapshot;
+			regionSnapshot.stableId = region.stableId;
+			regionSnapshot.name = region.name;
+			regionSnapshot.enabled = region.enabled;
+			regionSnapshot.regionCenter = ToEditorVec3(region.center);
+			regionSnapshot.size = ToEditorVec3(region.volumeSize);
+			regionSnapshot.volumeMin = ToEditorVec3(region.volumeMin);
+			regionSnapshot.volumeMax = ToEditorVec3(region.volumeMin + region.volumeSize);
+			regionSnapshot.gridDimensions = {
+				static_cast<float>(region.gridDimensions.x),
+				static_cast<float>(region.gridDimensions.y),
+				static_cast<float>(region.gridDimensions.z) };
+			regionSnapshot.probeSpacingAxes = ToEditorVec3(region.probeSpacingAxes);
+			regionSnapshot.normalBias = region.normalBias;
+			regionSnapshot.maxRayDistance = region.maxRayDistance;
+			regionSnapshot.volumeFadeDistance = region.volumeFadeDistance;
+			regionSnapshot.priority = region.priority;
+			regionSnapshot.raysPerProbe = region.raysPerProbe;
+			regionSnapshot.spatialUpdateDivisor = region.spatialUpdateDivisor;
+			regionSnapshot.directionUpdateSlices = region.directionUpdateSlices;
+			regionSnapshot.totalProbeCount = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+				region.probeCount,
+				std::numeric_limits<std::uint32_t>::max()));
+			regionSnapshot.rayCacheEntries = region.probeCount * region.raysPerProbe;
+			regionSnapshot.estimatedMemoryMB = estimateMemoryMB(region);
+			if (region.enabled)
+			{
+				settings.totalProbeCount += regionSnapshot.totalProbeCount;
+				settings.totalRayCacheEntries += regionSnapshot.rayCacheEntries;
+				settings.totalEstimatedMemoryMB += regionSnapshot.estimatedMemoryMB;
+			}
+			settings.regions.push_back(regionSnapshot);
+		}
 		return settings;
 	}
 
@@ -3838,49 +3950,127 @@ namespace Vans::EditorAPI
 				? std::max(value, 0.001f)
 				: std::max(fallback, 0.001f);
 		};
-		gi.gridDimensions = glm::uvec3(
-			clampDimension(settings.gridDimensions.x, gi.gridDimensions.x),
-			clampDimension(settings.gridDimensions.y, gi.gridDimensions.y),
-			clampDimension(settings.gridDimensions.z, gi.gridDimensions.z));
-		gi.probeSpacingAxes = glm::vec3(
-			clampSpacing(settings.probeSpacingAxes.x, gi.probeSpacingAxes.x),
-			clampSpacing(settings.probeSpacingAxes.y, gi.probeSpacingAxes.y),
-			clampSpacing(settings.probeSpacingAxes.z, gi.probeSpacingAxes.z));
-		gi.regionCenter = glm::vec3(settings.regionCenter.x, settings.regionCenter.y, settings.regionCenter.z);
-		gi.raysPerProbe = std::clamp(settings.raysPerProbe, 1u, 4096u);
-		gi.spatialUpdateDivisor = std::clamp(
-			settings.spatialUpdateDivisor, 1u,
-			std::min({ gi.gridDimensions.x, gi.gridDimensions.y, gi.gridDimensions.z }));
-		gi.directionUpdateSlices = std::clamp(settings.directionUpdateSlices, 1u, gi.raysPerProbe);
-		gi.maxRayDistance = std::max(settings.maxRayDistance, 0.001f);
-		gi.normalBias = std::max(settings.normalBias, 0.0f);
+		auto buildRegion = [&](const GIRegionSettingsSnapshot& snapshot, const VansGraphics::GIProbeRegionDesc& fallback) {
+			VansGraphics::GIProbeRegionDesc region = fallback;
+			region.stableId = snapshot.stableId != 0 ? snapshot.stableId : fallback.stableId;
+			region.name = snapshot.name.empty() ? fallback.name : snapshot.name;
+			region.enabled = snapshot.enabled;
+			region.center = glm::vec3(snapshot.regionCenter.x, snapshot.regionCenter.y, snapshot.regionCenter.z);
+			region.size = glm::vec3(
+				clampSpacing(snapshot.size.x, fallback.size.x),
+				clampSpacing(snapshot.size.y, fallback.size.y),
+				clampSpacing(snapshot.size.z, fallback.size.z));
+			region.probeSpacingAxes = glm::vec3(
+				clampSpacing(snapshot.probeSpacingAxes.x, fallback.probeSpacingAxes.x),
+				clampSpacing(snapshot.probeSpacingAxes.y, fallback.probeSpacingAxes.y),
+				clampSpacing(snapshot.probeSpacingAxes.z, fallback.probeSpacingAxes.z));
+			region.gridDimensions = glm::uvec3(
+				clampDimension(snapshot.gridDimensions.x, fallback.gridDimensions.x),
+				clampDimension(snapshot.gridDimensions.y, fallback.gridDimensions.y),
+				clampDimension(snapshot.gridDimensions.z, fallback.gridDimensions.z));
+			region.overrideGridDimensions = true;
+			region.raysPerProbe = std::clamp(snapshot.raysPerProbe, 1u, 4096u);
+			region.spatialUpdateDivisor = std::max(snapshot.spatialUpdateDivisor, 1u);
+			region.directionUpdateSlices = std::max(snapshot.directionUpdateSlices, 1u);
+			region.maxRayDistance = std::max(snapshot.maxRayDistance, 0.001f);
+			region.normalBias = std::max(snapshot.normalBias, 0.0f);
+			region.volumeFadeDistance = std::max(snapshot.volumeFadeDistance, 0.0f);
+			region.priority = snapshot.priority;
+			return region;
+		};
+
+		if (!settings.regions.empty())
+		{
+			const std::vector<VansGraphics::GIProbeRegionDesc> oldRegions = gi.regions;
+			gi.regions.clear();
+			gi.regions.reserve(settings.regions.size());
+			for (size_t index = 0; index < settings.regions.size(); ++index)
+			{
+				const VansGraphics::GIProbeRegionDesc fallback =
+					index < oldRegions.size() ? oldRegions[index] : VansGraphics::BuildLegacyGIRegionDesc(gi);
+				gi.regions.push_back(buildRegion(settings.regions[index], fallback));
+			}
+			gi.selectedRegionIndex = std::min<std::uint32_t>(
+				settings.selectedRegionIndex,
+				static_cast<std::uint32_t>(gi.regions.size() - 1u));
+		}
+		else
+		{
+			VansGraphics::GIProbeRegionDesc region = VansGraphics::BuildLegacyGIRegionDesc(gi);
+			region.center = glm::vec3(settings.regionCenter.x, settings.regionCenter.y, settings.regionCenter.z);
+			region.gridDimensions = glm::uvec3(
+				clampDimension(settings.gridDimensions.x, region.gridDimensions.x),
+				clampDimension(settings.gridDimensions.y, region.gridDimensions.y),
+				clampDimension(settings.gridDimensions.z, region.gridDimensions.z));
+			region.probeSpacingAxes = glm::vec3(
+				clampSpacing(settings.probeSpacingAxes.x, region.probeSpacingAxes.x),
+				clampSpacing(settings.probeSpacingAxes.y, region.probeSpacingAxes.y),
+				clampSpacing(settings.probeSpacingAxes.z, region.probeSpacingAxes.z));
+			region.size = glm::vec3(region.gridDimensions) * region.probeSpacingAxes;
+			region.raysPerProbe = std::clamp(settings.raysPerProbe, 1u, 4096u);
+			region.spatialUpdateDivisor = settings.spatialUpdateDivisor;
+			region.directionUpdateSlices = settings.directionUpdateSlices;
+			region.maxRayDistance = settings.maxRayDistance;
+			region.normalBias = settings.normalBias;
+			region.volumeFadeDistance = settings.volumeFadeDistance;
+			region.overrideGridDimensions = true;
+			gi.regions = { region };
+			gi.selectedRegionIndex = 0;
+		}
+
+		if (!gi.regions.empty())
+		{
+			const std::uint32_t selected = std::min<std::uint32_t>(
+				settings.selectedRegionIndex,
+				static_cast<std::uint32_t>(gi.regions.size() - 1u));
+			VansGraphics::GIProbeRegionDesc& selectedRegion = gi.regions[selected];
+			selectedRegion.center = glm::vec3(settings.regionCenter.x, settings.regionCenter.y, settings.regionCenter.z);
+			selectedRegion.gridDimensions = glm::uvec3(
+				clampDimension(settings.gridDimensions.x, selectedRegion.gridDimensions.x),
+				clampDimension(settings.gridDimensions.y, selectedRegion.gridDimensions.y),
+				clampDimension(settings.gridDimensions.z, selectedRegion.gridDimensions.z));
+			selectedRegion.probeSpacingAxes = glm::vec3(
+				clampSpacing(settings.probeSpacingAxes.x, selectedRegion.probeSpacingAxes.x),
+				clampSpacing(settings.probeSpacingAxes.y, selectedRegion.probeSpacingAxes.y),
+				clampSpacing(settings.probeSpacingAxes.z, selectedRegion.probeSpacingAxes.z));
+			selectedRegion.size = glm::vec3(selectedRegion.gridDimensions) * selectedRegion.probeSpacingAxes;
+			selectedRegion.raysPerProbe = std::clamp(settings.raysPerProbe, 1u, 4096u);
+			selectedRegion.spatialUpdateDivisor = settings.spatialUpdateDivisor;
+			selectedRegion.directionUpdateSlices = settings.directionUpdateSlices;
+			selectedRegion.maxRayDistance = settings.maxRayDistance;
+			selectedRegion.normalBias = settings.normalBias;
+			selectedRegion.volumeFadeDistance = settings.volumeFadeDistance;
+			selectedRegion.overrideGridDimensions = true;
+			gi.selectedRegionIndex = selected;
+		}
+
 		gi.environmentIntensity = std::max(settings.environmentIntensity, 0.0f);
 		gi.maxIndirectRadiance = std::max(settings.maxIndirectRadiance, 0.0f);
 		gi.maxSHL0 = std::max(settings.maxSHL0, 0.0f);
-		gi.volumeFadeDistance = std::max(settings.volumeFadeDistance, 0.0f);
 		gi.showProbeGizmos = settings.showProbeGizmos;
 		gi.showProbeVolume = settings.showProbeVolume;
 		gi.debugView = static_cast<std::uint32_t>(std::max(settings.debugView, 0));
 		gi.debugExposure = std::max(settings.debugExposure, 0.001f);
+		VansGraphics::NormalizeGISettings(gi);
+		const VansGraphics::GIResolvedRegion primaryRegion =
+			VansGraphics::ResolveGIRegion(VansGraphics::GetPrimaryGIRegionDesc(gi));
 		gi.gizmoStride = std::clamp(settings.gizmoStride, 1u,
-			std::max({ 1u, gi.gridDimensions.x, gi.gridDimensions.y, gi.gridDimensions.z }));
+			std::max({ 1u, primaryRegion.gridDimensions.x, primaryRegion.gridDimensions.y, primaryRegion.gridDimensions.z }));
 		scene->SetGISettings(gi);
 
 		auto* materialManager = scene->GetMaterialManager();
 		if (!device || !materialManager || materialManager->m_SSGICBBuffer.GetNativeBuffer() == VK_NULL_HANDLE)
 			return;
 
-		const glm::vec3 volumeSize = glm::vec3(gi.gridDimensions) * gi.probeSpacingAxes;
-		const glm::vec3 volumeMin = gi.regionCenter - volumeSize * 0.5f;
 		VansGraphics::SSGIParamsGPU data{};
 		data.screenSize = glm::vec4(
 			static_cast<float>(device->GetRenderWidth()),
 			static_cast<float>(device->GetRenderHeight()),
 			1.0f / std::max(1u, device->GetRenderWidth()),
 			1.0f / std::max(1u, device->GetRenderHeight()));
-		data.giVolumeMin = glm::vec4(volumeMin, 0.0f);
-		data.giVolumeSizeAndBias = glm::vec4(volumeSize, gi.normalBias);
-		data.traceParams = glm::vec4(gi.maxRayDistance, 0.75f, gi.volumeFadeDistance, 0.0f);
+		data.giVolumeMin = glm::vec4(primaryRegion.volumeMin, 0.0f);
+		data.giVolumeSizeAndBias = glm::vec4(primaryRegion.volumeSize, primaryRegion.normalBias);
+		data.traceParams = glm::vec4(primaryRegion.maxRayDistance, 0.75f, primaryRegion.volumeFadeDistance, 0.0f);
 		materialManager->m_SSGICBBuffer.SetBufferData(&data, 0, sizeof(data));
 	}
 
@@ -3902,9 +4092,16 @@ namespace Vans::EditorAPI
 			return m_GIProbeDebugSnapshot;
 		}
 
-		VansGraphics::VansTexture* shR = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_SH_R_RESULT);
-		VansGraphics::VansTexture* shG = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_SH_G_RESULT);
-		VansGraphics::VansTexture* shB = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_SH_B_RESULT);
+		auto& rayTracing = device->GetRayTracingContext();
+		VansGraphics::VansTexture* shR = rayTracing.GetGIRegionSHR(0);
+		VansGraphics::VansTexture* shG = rayTracing.GetGIRegionSHG(0);
+		VansGraphics::VansTexture* shB = rayTracing.GetGIRegionSHB(0);
+		if (!shR)
+			shR = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_SH_R_RESULT);
+		if (!shG)
+			shG = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_SH_G_RESULT);
+		if (!shB)
+			shB = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_SH_B_RESULT);
 		if (!shR || !shG || !shB)
 		{
 			m_GIProbeDebugSnapshot.status = "GI SH textures are not created yet.";
@@ -3912,7 +4109,9 @@ namespace Vans::EditorAPI
 		}
 
 		const VansGraphics::VansGISettings& gi = scene->GetGISettings();
-		const glm::uvec3 gridDimensions = glm::max(gi.gridDimensions, glm::uvec3(1u));
+		const VansGraphics::GIResolvedRegion primaryRegion =
+			VansGraphics::ResolveGIRegion(VansGraphics::GetPrimaryGIRegionDesc(gi));
+		const glm::uvec3 gridDimensions = glm::max(primaryRegion.gridDimensions, glm::uvec3(1u));
 		const std::uint32_t maxGridDimension = std::max({ gridDimensions.x, gridDimensions.y, gridDimensions.z });
 		stride = std::clamp(stride, 1u, maxGridDimension);
 		exposure = std::max(exposure, 0.001f);
@@ -4057,8 +4256,7 @@ namespace Vans::EditorAPI
 			return m_GIProbeDebugSnapshot;
 		}
 
-		const glm::vec3 volumeSize = glm::vec3(gridDimensions) * gi.probeSpacingAxes;
-		const glm::vec3 volumeMin = gi.regionCenter - volumeSize * 0.5f;
+		const glm::vec3 volumeMin = primaryRegion.volumeMin;
 		m_GIProbeDebugSnapshot.available = true;
 		m_GIProbeDebugSnapshot.gridDimensions = {
 			static_cast<float>(gridDimensions.x),
@@ -4083,7 +4281,7 @@ namespace Vans::EditorAPI
 			const float l1Energy = std::max({ l1.r, l1.g, l1.b });
 			GIProbeDebugEntrySnapshot entry;
 			entry.position = ToEditorVec3(
-				volumeMin + (glm::vec3(sample.x, sample.y, sample.z) + glm::vec3(0.5f)) * gi.probeSpacingAxes);
+				volumeMin + (glm::vec3(sample.x, sample.y, sample.z) + glm::vec3(0.5f)) * primaryRegion.probeSpacingAxes);
 			entry.l0Diffuse = ToEditorVec3(l0 * 0.28209479f * exposure);
 			entry.l1Ratio = std::clamp(l1Energy / l0Energy, 0.0f, 1.0f);
 			m_GIProbeDebugSnapshot.probes.push_back(entry);
@@ -5433,7 +5631,39 @@ namespace Vans::EditorAPI
 			{ "detailErosionLow", ScenePropertyValues::Float(settings.detailErosionLow) },
 			{ "detailErosionHigh", ScenePropertyValues::Float(settings.detailErosionHigh) },
 			{ "detailEdgeStrength", ScenePropertyValues::Float(settings.detailEdgeStrength) },
-			{ "shadowDensityScale", ScenePropertyValues::Float(settings.shadowDensityScale) }
+			{ "shadowDensityScale", ScenePropertyValues::Float(settings.shadowDensityScale) },
+			{ "sigmaTRef", ScenePropertyValues::Float(settings.sigmaTRef) },
+			{ "viewAbsorption", ScenePropertyValues::Float(settings.viewAbsorption) },
+			{ "lightAbsorption", ScenePropertyValues::Float(settings.lightAbsorption) },
+			{ "singleScatteringAlbedo", ScenePropertyValues::Float(settings.singleScatteringAlbedo) },
+			{ "forwardEccentricity", ScenePropertyValues::Float(settings.forwardEccentricity) },
+			{ "backwardEccentricity", ScenePropertyValues::Float(settings.backwardEccentricity) },
+			{ "msAttenuation", ScenePropertyValues::Float(settings.msAttenuation) },
+			{ "msContribution", ScenePropertyValues::Float(settings.msContribution) },
+			{ "msEccentricity", ScenePropertyValues::Float(settings.msEccentricity) },
+			{ "scatteringTintR", ScenePropertyValues::Float(settings.scatteringTintR) },
+			{ "scatteringTintG", ScenePropertyValues::Float(settings.scatteringTintG) },
+			{ "scatteringTintB", ScenePropertyValues::Float(settings.scatteringTintB) },
+			{ "scatterSourceODScale", ScenePropertyValues::Float(settings.scatterSourceODScale) },
+			{ "scatterSourceCurvePow", ScenePropertyValues::Float(settings.scatterSourceCurvePow) },
+			{ "aoUpwardScale", ScenePropertyValues::Float(settings.aoUpwardScale) },
+			{ "ambientBottomStrength", ScenePropertyValues::Float(settings.ambientBottomStrength) },
+			{ "ambientTopStrength", ScenePropertyValues::Float(settings.ambientTopStrength) },
+			{ "ambientDuskWarmth", ScenePropertyValues::Float(settings.ambientDuskWarmth) },
+			{ "boundaryConfidence", ScenePropertyValues::Float(settings.boundaryConfidence) },
+			{ "boundaryWrap", ScenePropertyValues::Float(settings.boundaryWrap) },
+			{ "phiFwdIntensity", ScenePropertyValues::Float(settings.phiFwdIntensity) },
+			{ "phiFwdDepthPow", ScenePropertyValues::Float(settings.phiFwdDepthPow) },
+			{ "phiFwdDepthBias", ScenePropertyValues::Float(settings.phiFwdDepthBias) },
+			{ "phiFwdMSBuildScale", ScenePropertyValues::Float(settings.phiFwdMSBuildScale) },
+			{ "phiFwdCompress", ScenePropertyValues::Float(settings.phiFwdCompress) },
+			{ "phiFwdMaxDistance", ScenePropertyValues::Float(settings.phiFwdMaxDistance) },
+			{ "phiFwdConeRatio", ScenePropertyValues::Float(settings.phiFwdConeRatio) },
+			{ "phiFwdMinStep", ScenePropertyValues::Float(settings.phiFwdMinStep) },
+			{ "lightStepCount", ScenePropertyValues::Float(settings.lightStepCount) },
+			{ "boundaryGradientStep", ScenePropertyValues::Float(settings.boundaryGradientStep) },
+			{ "boundaryGradientStrength", ScenePropertyValues::Float(settings.boundaryGradientStrength) },
+			{ "shadingDebugMode", ScenePropertyValues::Float(settings.shadingDebugMode) }
 		}) });
 	}
 

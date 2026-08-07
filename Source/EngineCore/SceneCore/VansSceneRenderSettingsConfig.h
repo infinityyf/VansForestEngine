@@ -3,6 +3,8 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <string>
+#include <vector>
 
 namespace Vans
 {
@@ -57,6 +59,38 @@ struct VansSceneVolumetricCloudSettingsConfig
 	std::optional<float> detailErosionHigh;
 	std::optional<float> detailEdgeStrength;
 	std::optional<float> shadowDensityScale;
+	std::optional<float> sigmaTRef;
+	std::optional<float> viewAbsorption;
+	std::optional<float> lightAbsorption;
+	std::optional<float> singleScatteringAlbedo;
+	std::optional<float> forwardEccentricity;
+	std::optional<float> backwardEccentricity;
+	std::optional<float> msAttenuation;
+	std::optional<float> msContribution;
+	std::optional<float> msEccentricity;
+	std::optional<float> scatteringTintR;
+	std::optional<float> scatteringTintG;
+	std::optional<float> scatteringTintB;
+	std::optional<float> scatterSourceODScale;
+	std::optional<float> scatterSourceCurvePow;
+	std::optional<float> aoUpwardScale;
+	std::optional<float> ambientBottomStrength;
+	std::optional<float> ambientTopStrength;
+	std::optional<float> ambientDuskWarmth;
+	std::optional<float> boundaryConfidence;
+	std::optional<float> boundaryWrap;
+	std::optional<float> phiFwdIntensity;
+	std::optional<float> phiFwdDepthPow;
+	std::optional<float> phiFwdDepthBias;
+	std::optional<float> phiFwdMSBuildScale;
+	std::optional<float> phiFwdCompress;
+	std::optional<float> phiFwdMaxDistance;
+	std::optional<float> phiFwdConeRatio;
+	std::optional<float> phiFwdMinStep;
+	std::optional<float> lightStepCount;
+	std::optional<float> boundaryGradientStep;
+	std::optional<float> boundaryGradientStrength;
+	std::optional<float> shadingDebugMode;
 };
 
 struct VansScenePostProcessSettingsConfig
@@ -82,9 +116,30 @@ struct VansScenePostProcessSettingsConfig
 	std::optional<float> tint;
 };
 
+struct VansSceneGIRegionSettingsConfig
+{
+	std::optional<uint32_t> stableId;
+	std::optional<std::string> name;
+	std::optional<bool> enabled;
+	std::optional<std::array<float, 3>> center;
+	std::optional<std::array<float, 3>> size;
+	std::optional<std::array<uint32_t, 3>> gridDimensions;
+	std::optional<std::array<float, 3>> probeSpacingAxes;
+	std::optional<uint32_t> raysPerProbe;
+	std::optional<uint32_t> spatialUpdateDivisor;
+	std::optional<uint32_t> directionUpdateSlices;
+	std::optional<float> maxRayDistance;
+	std::optional<float> normalBias;
+	std::optional<float> volumeFadeDistance;
+	std::optional<float> priority;
+};
+
 struct VansSceneGISettingsConfig
 {
+	std::vector<VansSceneGIRegionSettingsConfig> regions;
 	std::optional<std::array<uint32_t, 3>> gridDimensions;
+	std::optional<uint32_t> gridSize;
+	std::optional<float> probeSpacing;
 	std::optional<std::array<float, 3>> probeSpacingAxes;
 	std::optional<std::array<float, 3>> regionCenter;
 	std::optional<uint32_t> raysPerProbe;

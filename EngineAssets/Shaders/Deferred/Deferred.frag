@@ -16,6 +16,7 @@ layout( set = 1, binding = 15 ) uniform sampler2DArray rectLightEmissive;
 #include "../BRDF/BRDFSkin.glsl"
 #include "../BRDF/BRDFCloth.glsl"
 #include "../BRDF/BRDFSubsurface.glsl"
+#include "../BRDF/TreeLeafData.glsl"
 #include "../BRDF/BRDFVegetation.glsl"
 #include "../Common/CameraData.glsl"
 
@@ -354,35 +355,41 @@ void main()
         brdfData.ao = pow(min(ao, ssaoValue), 2.0);
 
         VegetationParams veg;
-        veg.translucency   = translucency;
-        veg.scatterWidth   = 0.55;    // 草片法线变化密，wrap 稍宽可减少暗面硬切
-        veg.sssDistortion  = 0.25;
-        veg.sssAmbient     = 0.06;
-        veg.sssPower        = 9.0;    // 草叶更细，透射锥比树叶略宽
+        veg.subsurfaceColor = brdfData.albedo * vec3(0.55, 0.85, 0.25) * clamp(translucency, 0.0, 1.0);
+        veg.opacity = 1.0;
+        veg.wrap = 0.5;
+        veg.scatterRoughness = 0.6;
+        veg.transmissionScale = 1.0;
+        veg.specularScale = 0.30;
 
         CalculateDirectLight_Vegetation(brdfData, veg, cascadeShadowMap, linearDepth, punctualShadowMap, sssShadow, lightResult);
-        AmbientBRDF_Vegetation(brdfData, viewDirection,
+        AmbientBRDF_Vegetation(brdfData, veg, viewDirection,
                                lightResult.ambientDiffuse, lightResult.ambientSpecular);
         lightResult.ambientSpecular = vec3(0.0); // grass blades: no ambient specular
     }
     else if (matID == MATERIAL_ID_TREE)
     {
         float leafTranslucency = clamp(normalData.w, 0.0, 1.0);
+        int treeMaterialIndex = int(round(gbufferData1.w));
         if (leafTranslucency > 0.0)
         {
-            // 树叶是薄片材质：使用 vegetation wrap diffuse 减少背光硬黑。
-            // 它只改变当前像素如何接收 direct/SSGI/probe GI，不把树加入 probe SH 更新源。
+            // Thin leaf pixels use UE-style two-sided foliage transmission.
+            // This affects the current pixel lighting only; leaves are not injected into probe SH.
             brdfData.ao = clamp(min(ao, ssaoValue), 0.0, 1.0);
+            TreeLeafMaterialPayload leafPayload = GetTreeLeafMaterialPayload(treeMaterialIndex);
+            vec4 leafSubsurface = max(leafPayload.subsurfaceColorAndStrength, vec4(0.0));
+            vec4 leafScattering = leafPayload.scattering;
 
             VegetationParams veg;
-            veg.translucency   = leafTranslucency;
-            veg.scatterWidth   = 0.5;
-            veg.sssDistortion  = 0.25;
-            veg.sssAmbient     = 0.06;
-            veg.sssPower       = 12.0; // 树叶保留更集中的逆光透射高亮
+            veg.subsurfaceColor = brdfData.albedo * leafSubsurface.rgb * leafTranslucency;
+            veg.opacity = 1.0;
+            veg.wrap = clamp(leafScattering.x, 0.0, 0.9);
+            veg.scatterRoughness = max(leafScattering.y, 0.05);
+            veg.transmissionScale = 1.0;
+            veg.specularScale = max(leafScattering.z, 0.0);
 
             CalculateDirectLight_Vegetation(brdfData, veg, cascadeShadowMap, linearDepth, punctualShadowMap, sssShadow, lightResult);
-            AmbientBRDF_Vegetation(brdfData, viewDirection,
+            AmbientBRDF_Vegetation(brdfData, veg, viewDirection,
                                    lightResult.ambientDiffuse, lightResult.ambientSpecular);
             lightResult.ambientSpecular *= 0.35;
         }

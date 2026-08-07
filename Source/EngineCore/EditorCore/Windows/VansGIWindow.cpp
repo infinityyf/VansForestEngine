@@ -5,6 +5,7 @@
 #include "imgui.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 
 namespace VansGraphics
@@ -78,10 +79,31 @@ void VansGIWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 			static_cast<unsigned>(settings.gridDimensions.x),
 			static_cast<unsigned>(settings.gridDimensions.y),
 			static_cast<unsigned>(settings.gridDimensions.z));
+		ImGui::Text("GI Regions: %u, Active Probes: %u",
+			static_cast<unsigned>(settings.regions.size()),
+			static_cast<unsigned>(settings.totalProbeCount));
+		ImGui::Text("Ray Cache Entries: %llu, Estimated GI Memory: %.1f MB",
+			static_cast<unsigned long long>(settings.totalRayCacheEntries),
+			settings.totalEstimatedMemoryMB);
 		ImGui::Text("Draft Total Probes: %u", draftTotalProbeCount);
 		ImGui::Text("Draft Volume Size: %.2f x %.2f x %.2f", draftVolumeSize[0], draftVolumeSize[1], draftVolumeSize[2]);
 		ImGui::Text("Runtime Min: %.2f, %.2f, %.2f", settings.volumeMin.x, settings.volumeMin.y, settings.volumeMin.z);
 		ImGui::Text("Runtime Max: %.2f, %.2f, %.2f", settings.volumeMax.x, settings.volumeMax.y, settings.volumeMax.z);
+		if (!settings.regions.empty() && ImGui::TreeNode("Region Cost"))
+		{
+			for (size_t index = 0; index < settings.regions.size(); ++index)
+			{
+				const auto& region = settings.regions[index];
+				ImGui::Text("%u: %s %s | %u probes | %llu rays | %.1f MB",
+					static_cast<unsigned>(index),
+					region.name.c_str(),
+					region.enabled ? "enabled" : "disabled",
+					static_cast<unsigned>(region.totalProbeCount),
+					static_cast<unsigned long long>(region.rayCacheEntries),
+					region.estimatedMemoryMB);
+			}
+			ImGui::TreePop();
+		}
 	}
 
 	if (ImGui::CollapsingHeader("Update", ImGuiTreeNodeFlags_DefaultOpen))

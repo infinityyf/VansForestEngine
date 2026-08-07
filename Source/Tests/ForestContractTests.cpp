@@ -32,6 +32,7 @@
 #include "../EngineCore/AssetCore/Serialization/VansSerializedValue.h"
 #include "../EngineCore/AnimationCore/VansAnimationClip.h"
 #include "../EngineCore/AnimationCore/VansAnimationController.h"
+#include "../EngineCore/AnimationCore/VansAnimGraph.h"
 #include "../EngineCore/AnimationCore/MotionMatching/VansMotionMatching.h"
 #include "../EngineCore/ParticleCore/VansParticleRuntime.h"
 #include "../EngineCore/ScriptCore/VansScriptContext.h"
@@ -1346,6 +1347,57 @@ bool TestAnimationClipNodeTransformChannelConfigContract()
     return true;
 }
 
+bool TestAnimationStateMachineRestartSamplesStartPoseContract()
+{
+    using namespace VansGraphics;
+
+    VansAnimationClip clip;
+    clip.clipName = "Break";
+    clip.duration = 1.0f;
+
+    NodeTransformChannel channel;
+    channel.nodeName = "Shard";
+    channel.nodePath = "Glass/Shard";
+    channel.keyframes.push_back({ 0.0f, glm::vec3(0.0f, 0.0f, 0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), glm::vec3(1.0f) });
+    channel.keyframes.push_back({ 1.0f, glm::vec3(10.0f, 0.0f, 0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), glm::vec3(1.0f) });
+    clip.nodeTransformChannels.push_back(channel);
+
+    auto stateMachine = std::make_unique<AnimGraphStateMachineNode>();
+    stateMachine->m_DefaultStateName = "Break";
+    stateMachine->m_CurrentStateName = "Break";
+
+    AnimatorState state;
+    state.name = "Break";
+    state.clipName = "Break";
+    state.loop = false;
+    stateMachine->m_States.push_back(state);
+
+    auto graph = std::make_unique<VansAnimGraph>();
+    const int stateMachineId = graph->AddNode(std::move(stateMachine));
+    const int outputId = graph->AddNode(VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
+    graph->AddLink(stateMachineId, 0, outputId, 0);
+
+    VansAnimationController controller;
+    controller.AddClip("Break", clip);
+    controller.SetGraph(std::move(graph));
+
+    Skeleton skeleton;
+    controller.Play();
+    controller.Update(0.0f, skeleton);
+    controller.Update(2.0f, skeleton);
+    const auto& endSample = controller.GetSampledNodeTransforms();
+    if (!Expect(!endSample.empty() && std::fabs(endSample[0].modelTransform[3].x - 10.0f) <= 0.0001f,
+        "State-machine clip did not reach its non-loop end pose"))
+        return false;
+
+    controller.Stop();
+    controller.Play();
+    controller.Update(0.0f, skeleton);
+    const auto& restartSample = controller.GetSampledNodeTransforms();
+    return Expect(!restartSample.empty() && std::fabs(restartSample[0].modelTransform[3].x) <= 0.0001f,
+        "State-machine clip restart did not resample the start pose");
+}
+
 bool TestAudioDistanceAttenuationContract()
 {
     using namespace VansEngine;
@@ -2534,6 +2586,8 @@ int main()
         return 31;
     if (!TestAnimationClipNodeTransformChannelConfigContract())
         return 32;
+    if (!TestAnimationStateMachineRestartSamplesStartPoseContract())
+        return 38;
     if (!TestAudioDistanceAttenuationContract())
         return 4;
     if (!TestAudioBusContract())

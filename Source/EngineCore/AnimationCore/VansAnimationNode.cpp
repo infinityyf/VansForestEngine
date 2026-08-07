@@ -357,17 +357,27 @@ void VansAnimationNode::SetController(VansAnimationController* controller)
 void VansAnimationNode::Play()
 {
 	if (m_Controller)
+	{
+		m_LastEventTime = 0.0f;
 		m_Controller->Play();
+	}
 	if (m_RetargetEnabled && m_SourceController)
 		m_SourceController->Play();
+	if (m_Controller)
+		Update(0.0f);
 }
 
 void VansAnimationNode::Play(const std::string& stateName)
 {
 	if (m_Controller)
+	{
+		m_LastEventTime = 0.0f;
 		m_Controller->Play(stateName);
+	}
 	if (m_RetargetEnabled && m_SourceController)
 		m_SourceController->Play(stateName);
+	if (m_Controller)
+		Update(0.0f);
 }
 
 void VansAnimationNode::Pause()
@@ -388,6 +398,7 @@ void VansAnimationNode::Resume()
 
 void VansAnimationNode::Stop()
 {
+	m_LastEventTime = 0.0f;
 	if (m_Controller)
 		m_Controller->Stop();
 	if (m_RetargetEnabled && m_SourceController)

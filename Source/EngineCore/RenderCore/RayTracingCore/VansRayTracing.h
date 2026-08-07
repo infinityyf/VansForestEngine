@@ -5,6 +5,7 @@
 #include "../../RenderCore/VulkanCore/VansVKBuffer.h"
 #include "../../RenderCore/VulkanCore/VansShader.h"
 #include "../../RenderCore/BRDFData/VansLight.h"
+#include "../../RenderCore/GICore/VansGISettings.h"
 #include "../../ScriptCore/VansCommonUtils.h"
 namespace VansGraphics 
 {
@@ -19,8 +20,6 @@ namespace VansGraphics
 	class VansMesh;
 	class VansRayTracingShader;
 	class VansTexture;
-	struct VansGISettings;
-
 	struct alignas(16) RayTracingPushConstant
 	{
 		glm::vec4 gridParams;
@@ -59,7 +58,7 @@ namespace VansGraphics
 
 		// 场景切换时清理与当前场景绑定的 RT 资源（descriptor set、buffer 等）
 		// BLAS 由 mesh 管理，不在此处释放。
-		void CleanupSceneResources(VkDevice device);
+		void CleanupSceneResources(VkDevice device, VansMaterialManager* materialManager = nullptr);
 
 		void UpdateGIProbe(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VansLightManager* lightManager, VansMaterialManager* materialManager);
 
@@ -69,10 +68,43 @@ namespace VansGraphics
 
 		void RequestGIRTPreview(uint32_t mode, uint32_t zSlice, uint32_t rayIndex, float exposure, float positionScale);
 		VansTexture* GetGIRTPreviewTexture() const { return m_GIRTPreviewTexture; }
+		uint32_t GetGIRegionCount() const { return static_cast<uint32_t>(m_GIRegions.size()); }
+		VansTexture* GetGIRegionSHR(uint32_t regionIndex) const;
+		VansTexture* GetGIRegionSHG(uint32_t regionIndex) const;
+		VansTexture* GetGIRegionSHB(uint32_t regionIndex) const;
+		VansTexture* GetGIRegionVisibilityAtlas(uint32_t regionIndex) const;
 		
 		RayTracingPushConstant m_RayTracingConstant;
 
 	private:
+		struct GIRegionRuntime
+		{
+			GIResolvedRegion resolved;
+			RayTracingPushConstant constants{};
+
+			VansTexture* rayTracingResult = nullptr;
+			VansTexture* shRResult = nullptr;
+			VansTexture* shGResult = nullptr;
+			VansTexture* shBResult = nullptr;
+			VansTexture* shFeedbackR = nullptr;
+			VansTexture* shFeedbackG = nullptr;
+			VansTexture* shFeedbackB = nullptr;
+			VansTexture* visibilityAtlas = nullptr;
+
+			VansVKBuffer hitPositionResult;
+			VansVKBuffer hitNormalResult;
+			VansVKBuffer hitAlbedoRoughnessResult;
+			VansVKBuffer hitRadianceBuffer;
+			VansVKBuffer hitDirectDiffuseBuffer;
+
+			bool rayTracingDescriptorSetIsDirty = true;
+			bool giPointLightDescriptorSetIsDirty = true;
+			bool giVisibilityDescriptorSetIsDirty = true;
+			bool hitPositionCalculateDone = false;
+			bool giVisibilityCalculateDone = false;
+			uint32_t giUpdateFrameIndex = 0;
+			uint32_t giLightingResponseFramesRemaining = 0;
+		};
 
 		void CreateRayTraceDescriptorSets(VansVKDevice* device, int blasMeshCount);
 
@@ -84,35 +116,30 @@ namespace VansGraphics
 
 
 		//绑定数据
-		void BindRayTracingData(VansVKDevice* device, VansScene* scene);
+		void BindRayTracingData(VansVKDevice* device, VansScene* scene, uint32_t regionIndex);
 
-		void BindGIPointLightData();
+		void BindGIPointLightData(uint32_t regionIndex);
 
-		void BindGIVisibilityData(VansMaterialManager* materialManager);
+		void BindGIVisibilityData(VansMaterialManager* materialManager, uint32_t regionIndex);
 
 		void BindGIRTPreviewData(VansMaterialManager* materialManager);
 
 		void DispatchGIRTPreview(VansVKCommandBuffer* commandBuffer, VansMaterialManager* materialManager);
 
-		void CopyCurrentSHToFeedback(VansVKCommandBuffer* commandBuffer, VansMaterialManager* materialManager);
+		void CopyCurrentSHToFeedback(VansVKCommandBuffer* commandBuffer, VansMaterialManager* materialManager, uint32_t regionIndex);
 
 		bool UpdateLightingResponseState(VansLightManager* lightManager);
 
+		void DestroyRegionRuntime(VkDevice device, GIRegionRuntime& region);
+		void RegisterPrimaryRegionRuntimeTextures(VansMaterialManager* materialManager);
+		void SyncPrimaryCompatibilityState();
+		GIRegionRuntime* GetPreviewRegion();
+		const GIRegionRuntime* GetPreviewRegion() const;
 
-		bool m_RayTracingDescriptorSetIsDirty = true;
-
-		bool m_GIPointLightDescriptorSetIsDirty = true;
-
-		bool m_GIVisibilityDescriptorSetIsDirty = true;
-
+		std::vector<GIRegionRuntime> m_GIRegions;
 
 	private:
 
-		VansTexture* m_RayTracingResult = nullptr;
-
-		VansTexture* m_SHFeedbackR = nullptr;
-		VansTexture* m_SHFeedbackG = nullptr;
-		VansTexture* m_SHFeedbackB = nullptr;
 		VansTexture* m_GIRTPreviewTexture = nullptr;
 
 		
@@ -132,18 +159,11 @@ namespace VansGraphics
 		VkDescriptorSetLayout m_GIRTPreviewSetLayout = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet> m_GIRTPreviewDescriptorSets;
 
-		//平面平铺的几个位置为中心，每个点向外发射32条光线，用斐波那契螺旋分布
-		//击中点的信息保存到0，1，保存到buffer中
-		//然后通过球谐积分，得到积分的结果存到result里
 		glm::uvec3 m_RayTracingGridDimensions = glm::uvec3(1u);
 
 		int m_RayCountPerSample;
 
 		glm::vec3 m_RayTracingProbeSpacing = glm::vec3(0.5f);
-
-		VansVKBuffer m_RayTracingHitPositionResult;
-		VansVKBuffer m_RayTracingHitNormalResult;
-		VansVKBuffer m_RayTracingHitAlbedoRoughnessResult;
 
 		VansVKBuffer m_BLASInstanceBuffer;
 		VansVKBuffer m_TLASInstanceTextureIndexBuffer;
@@ -160,16 +180,6 @@ namespace VansGraphics
 		VkDeviceSize m_GIRTPreviewStorageBufferAlignment = 1;
 
 		//GI 可见度计算
-
-		//记录命中点的光照信息
-		VansVKBuffer m_HitRadianceBuffer;
-		VansVKBuffer m_HitDirectDiffuseBuffer;
-
-		bool m_HitPositionCalculateDone = false;
-
-		bool m_GIVisibilityCalculateDone = false;
-
-		int m_GIUpdateFrameIndex;
 
 		glm::vec4 m_LastGIMainLightDirectionIntensity = glm::vec4(0.0f);
 		glm::vec4 m_LastGIMainLightColor = glm::vec4(0.0f);

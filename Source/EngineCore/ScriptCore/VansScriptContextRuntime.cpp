@@ -679,9 +679,47 @@ int LuaComponentIsValid(lua_State* L)
 
 int LuaComponentSetEnabled(lua_State* L)
 {
-	auto* component = CheckComponent(L, 1)->component;
-	if (component)
-		component->SetEnabled(lua_toboolean(L, 2) != 0);
+	auto* handle = CheckComponent(L, 1);
+	auto* component = handle ? handle->component : nullptr;
+	if (!component)
+		return 0;
+
+	const bool enabled = lua_toboolean(L, 2) != 0;
+	auto* scene = Scene();
+	auto* runtimeWorld = scene ? scene->GetRuntimeWorld() : nullptr;
+	bool projectedByRuntime = false;
+	bool runtimeEffectiveEnabled = enabled;
+	if (runtimeWorld && handle->runtimeComponent.IsValid())
+	{
+		runtimeWorld->Commands().SetComponentEnabled(handle->runtimeComponent, enabled);
+		runtimeWorld->FlushCommands();
+		runtimeEffectiveEnabled = runtimeWorld->IsComponentEffectivelyEnabled(handle->runtimeComponent);
+		projectedByRuntime = scene->ApplyRuntimeComponentEnabled(
+			handle->runtimeComponent,
+			runtimeEffectiveEnabled);
+	}
+
+	if (projectedByRuntime)
+	{
+		component->MirrorRuntimeEnabledState(enabled, runtimeEffectiveEnabled);
+		if (handle->runtimeComponent.typeId == Vans::VansRuntimeComponentType_UI)
+		{
+			std::vector<std::uint64_t> openScreens;
+			if (scene->CopyRuntimeUIOpenScreens(handle->runtimeComponent, openScreens))
+				component->MirrorRuntimeOpenScreens(openScreens);
+		}
+	}
+	else
+	{
+		component->SetEnabled(enabled);
+		if (scene &&
+			handle->runtimeComponent.IsValid() &&
+			handle->runtimeComponent.typeId == Vans::VansRuntimeComponentType_Script)
+		{
+			if (auto* luaComponent = dynamic_cast<VansLuaScriptComponent*>(component))
+				scene->SyncRuntimeScriptComponentFromFacade(component->m_ComponentGuid, *luaComponent);
+		}
+	}
 	return 0;
 }
 
@@ -781,6 +819,14 @@ int LuaComponentRestart(lua_State* L)
 	auto* component = CheckComponent(L, 1)->component;
 	if (auto* particle = dynamic_cast<VansScriptParticleComponent*>(component))
 		particle->Restart();
+	else if (auto* anim = dynamic_cast<VansScriptAnimationComponent*>(component))
+	{
+		if (anim->m_AnimNode)
+		{
+			anim->m_AnimNode->Stop();
+			anim->m_AnimNode->Play();
+		}
+	}
 	else
 		LuaComponentResume(L);
 	return 0;

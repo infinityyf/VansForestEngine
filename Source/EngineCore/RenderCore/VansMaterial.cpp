@@ -290,6 +290,7 @@ void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
 	m_GlobalPBRMaterial.clear();
 	m_GlobalPBRParamData.clear();
 	m_GlobalClothParamData.clear();
+	m_GlobalTreeLeafParamData.clear();
 	m_GlobalCustomMaterialParamData.clear();
 	m_GlobalPBRTextures.clear();
 	ClearRuntimeRenderTextures();
@@ -306,6 +307,7 @@ void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
 	// 销�?GPU buffer
 	m_GlobalPBRDataBuffer.DestroyVulkanBuffer(device);
 	m_GlobalClothDataBuffer.DestroyVulkanBuffer(device);
+	m_GlobalTreeLeafDataBuffer.DestroyVulkanBuffer(device);
 	m_GlobalCustomMaterialDataBuffer.DestroyVulkanBuffer(device);
 	m_ScreenSpaceShadowParamsCBBuffer.DestroyVulkanBuffer(device);
 	m_FogParamsCBBuffer.DestroyVulkanBuffer(device);
