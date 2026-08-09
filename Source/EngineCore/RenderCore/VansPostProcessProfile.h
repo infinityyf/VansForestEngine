@@ -40,10 +40,14 @@ namespace VansGraphics
 		float   m_Temperature = 0.0f;           // 色温偏移（-1.0 ~ 1.0）
 		float   m_Tint        = 0.0f;           // 色调偏移（-1.0 ~ 1.0）
 		float   _pad7 = 0.0f;
-		float   _pad8 = 0.0f;
+		float   m_DebugPassthrough = 0.0f;
+		float   m_TimelineFadeColorR = 0.0f;
+		float   m_TimelineFadeColorG = 0.0f;
+		float   m_TimelineFadeColorB = 0.0f;
+		float   m_TimelineFadeOpacity = 0.0f;
 
 	};
-	static_assert(sizeof(VansPostProcessParamsGPU) == 80,
+	static_assert(sizeof(VansPostProcessParamsGPU) == 96,
 		"Post-process CPU UBO layout must match PostProcess.frag");
 
 	struct alignas(16) VansExposureAdaptParamsGPU
@@ -109,6 +113,12 @@ namespace VansGraphics
 		float   m_HueShift           = 0.0f;
 		float   m_Temperature        = 0.0f;
 		float   m_Tint               = 0.0f;
+
+		// Runtime-only composition state. Profile serialization intentionally omits it.
+		float   m_TimelineFadeColorR   = 0.0f;
+		float   m_TimelineFadeColorG   = 0.0f;
+		float   m_TimelineFadeColorB   = 0.0f;
+		float   m_TimelineFadeOpacity  = 0.0f;
 
 		// ---------- Depth of Field ----------
 		bool    m_EnableDOF      = false;

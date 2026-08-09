@@ -188,7 +188,7 @@ bool VansSceneProjectResourceBuilder::LoadMeshes(VansScene& scene,
 			continue;
 		}
         std::string meshPath = resolved.sourcePath.string();
-        bool import_tangent = sceneMesh.needTangent;
+        bool import_tangent = sceneMesh.needTangent || sceneMesh.supportRayTracing;
         bool loadMultiMesh = sceneMesh.loadMultiMesh;
         float scaleFactor = sceneMesh.scaleFactor;
 

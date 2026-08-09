@@ -391,10 +391,13 @@ namespace VansGraphics
 		void TemporalFilterSSGI(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
 		void BilateralFilterSSGI(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
+		void AtrousFilterSSGI(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
 		void BilateralFilterSSAO(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
 	private:
+
+		void MaybeDumpGIDebugFrame(VansRenderPassManager* renderPassManager);
 
 		void UpdateGIDataDescriptorSets(VansRenderPassManager* renderPassManager);
 		void UploadSSGIParamsFromGISettings();

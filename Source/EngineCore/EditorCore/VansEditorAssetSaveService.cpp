@@ -1,5 +1,7 @@
 #include "VansEditorAssetSaveService.h"
+#include "VansAssetDocumentTypeRegistry.h"
 
+#include "../AssetCore/VansAssetDatabase.h"
 #include "../AssetCore/Storage/VansStagedFileTransaction.h"
 #include "../EngineAPILayer/Public/IEngineEditorAPI.h"
 
@@ -57,6 +59,19 @@ VansAssetSaveResult VansEditorAssetSaveService::SaveAsset(
     VansStagedFileTransaction transaction;
     if (sourceDirty)
     {
+		const VansAssetType type = VansAssetDatabase::Classify(document->sourcePath);
+		for (const VansAssetDocumentDiagnostic& diagnostic :
+			VansAssetDocumentTypeRegistry::Get().ValidateBeforeSave(
+				type, document->sourcePath, document->sourceDocument.SerializedRootSnapshot()))
+		{
+			if (diagnostic.severity != VansAssetDocumentDiagnosticSeverity::Error)
+				continue;
+			document->lastError = diagnostic.propertyPath.empty()
+				? diagnostic.message
+				: diagnostic.propertyPath + ": " + diagnostic.message;
+			AppendError(result, document->sourcePath, document->lastError);
+			return result;
+		}
         StagedAssetDocument item;
         item.document = &document->sourceDocument;
         if (!document->sourceDocument.StageSave(item.stage, document->lastError))

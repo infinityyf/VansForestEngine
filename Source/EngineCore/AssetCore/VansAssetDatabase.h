@@ -23,6 +23,8 @@ enum class VansAssetType
     Particle,
     AnimationClip,
     AnimatorController,
+	BoneMask,
+	Timeline,
     ClothProfile,
     PostProcessProfile,
     RagdollProfile,

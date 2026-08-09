@@ -1,6 +1,7 @@
 #include "VansGamePackageBuilder.h"
 #include "VansPackageResourcePrewarmer.h"
 
+#include "../AnimationCore/VansAnimationClip.h"
 #include "../AssetCore/VansAssetDatabase.h"
 #include "../AssetCore/VansBuiltInAssetCatalog.h"
 #include "../AssetCore/Importers/Shader/VansShaderArtifactCache.h"
@@ -601,6 +602,8 @@ namespace
 		case Vans::VansAssetType::Particle: return "particle";
 		case Vans::VansAssetType::AnimationClip: return "animationClip";
 		case Vans::VansAssetType::AnimatorController: return "animatorController";
+		case Vans::VansAssetType::BoneMask: return "boneMask";
+		case Vans::VansAssetType::Timeline: return "timeline";
 		case Vans::VansAssetType::ClothProfile: return "clothProfile";
 		case Vans::VansAssetType::PostProcessProfile: return "postProcessProfile";
 		case Vans::VansAssetType::RagdollProfile: return "ragdollProfile";
@@ -940,6 +943,62 @@ namespace
 		};
 
 		std::error_code ec;
+		for (const std::string& guidText : dependencyResult.requiredAssets)
+		{
+			Vans::VansAssetGuid guid;
+			std::optional<Vans::VansAssetRecord> sourceRecord;
+			if (Vans::VansAssetGuid::TryParse(guidText, guid))
+			{
+				sourceRecord = database.Find(guid);
+				if (!sourceRecord)
+					sourceRecord = builtInDatabase.Find(guid);
+			}
+			if (!sourceRecord || sourceRecord->state == Vans::VansAssetState::Missing)
+			{
+				cookedPlan.missingResources.push_back({ "asset dependency", guidText, {}, {} });
+				continue;
+			}
+			if (sourceRecord->type != Vans::VansAssetType::AnimatorController
+				&& sourceRecord->type != Vans::VansAssetType::AnimationClip
+				&& sourceRecord->type != Vans::VansAssetType::BoneMask
+				&& sourceRecord->type != Vans::VansAssetType::Timeline)
+				continue;
+			if (!fs::is_regular_file(sourceRecord->sourcePath, ec))
+			{
+				cookedPlan.missingResources.push_back({ "animation dependency", guidText,
+					sourceRecord->sourcePath.string(), {} });
+				ec.clear();
+				continue;
+			}
+			if (sourceRecord->type == Vans::VansAssetType::AnimationClip)
+			{
+				VansGraphics::VansAnimationClipInfo clipInfo;
+				if (!VansGraphics::VansAnimationClipIO::Peek(
+					sourceRecord->sourcePath.string(), clipInfo))
+				{
+					error = "Animation Clip is not self-contained canonical form: '"
+						+ NormalizeForLog(sourceRecord->sourcePath)
+						+ "'. Run ForestAssetTool rewrite-animation-assets --write before packaging.";
+					return false;
+				}
+			}
+			if (auto* record = indexedRecord(guidText))
+			{
+				const fs::path cachedPath = RegisterSourceFormatCache(
+					guidText, sourceRecord->sourcePath, false, cookedPlan).generic_string();
+				record->artifactPath = cachedPath.generic_string();
+				record->artifactFormat = "source";
+				RegisterCookedSourceAsset(projectRoot, sourceRecord->sourcePath.string(),
+					cookedPlan.cookedSourceAssets);
+			}
+			else
+			{
+				cookedPlan.missingResources.push_back({ "animation dependency index", guidText,
+					sourceRecord->sourcePath.string(), {} });
+			}
+			ec.clear();
+		}
+
 		for (auto& mesh : cookedPlan.packagePlan.resourcePlan.meshes)
 		{
 			const Vans::VansResolvedSceneResourcePath resolved = packageBuildContext.ResolveMesh(mesh);
@@ -1338,7 +1397,6 @@ namespace Vans
 			!CopyDirectoryToFiltered(projectRoot / "Assets", contentRoot / "Assets", shouldCopyProjectAsset, copiedFiles, error) ||
 			!CopyDirectoryTo(projectRoot / "Scenes", contentRoot / "Scenes", copiedFiles, error) ||
 			!CopyDirectoryTo(projectRoot / "ProjectSettings", contentRoot / "ProjectSettings", copiedFiles, error) ||
-			!CopyDirectoryTo(projectRoot / "MotionMatchDataBase", contentRoot / "MotionMatchDataBase", copiedFiles, error) ||
 			!CopyDirectoryTo(projectRoot / "Scripts", contentRoot / "Scripts", copiedFiles, error))
 		{
 			result.message = error;

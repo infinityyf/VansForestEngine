@@ -92,6 +92,8 @@ const char* AssetTypeName(Vans::EditorAPI::AssetType type)
     case Vans::EditorAPI::AssetType::Particle: return "Particle";
     case Vans::EditorAPI::AssetType::AnimationClip: return "Animation Clip";
     case Vans::EditorAPI::AssetType::AnimatorController: return "Animator Controller";
+    case Vans::EditorAPI::AssetType::BoneMask: return "Bone Mask";
+	case Vans::EditorAPI::AssetType::Timeline: return "Timeline";
     case Vans::EditorAPI::AssetType::ClothProfile: return "Cloth Profile";
     case Vans::EditorAPI::AssetType::PostProcessProfile: return "Post Process Profile";
     case Vans::EditorAPI::AssetType::RagdollProfile: return "Ragdoll Profile";
@@ -2039,6 +2041,23 @@ bool VansInspectorWindow::Impl::DrawComponent(Vans::EditorAPI::IEngineEditorAPI&
 
         if (data && data->kind == Vans::VansSerializedValue::Kind::Object)
         {
+			if (type == "Timeline")
+			{
+				const Vans::VansSerializedValue* timeline = Vans::FindObjectField(*data, "timeline");
+				const auto slot = Vans::VansEditorPropertyDescriptorRegistry::ProjectAssetReferenceSlot(
+					Vans::EditorAPI::AssetType::Timeline);
+				const Vans::EditorObjectHandle handle = timeline
+					? Vans::ReadObjectReferenceSlotHandle(*timeline, slot) : Vans::EditorObjectHandle{};
+				const auto resolution = handle.guid.empty()
+					? Vans::EditorAPI::AssetGuidResolution{} : api.ResolveAssetGuid(handle.guid);
+				ImGui::BeginDisabled(!resolution.found || resolution.sourcePath.empty());
+				if (ImGui::Button("Open Timeline Instance", ImVec2(-1.0f, 0.0f)))
+					VansEditorWindow::OpenTimelineInstance(
+						resolution.sourcePath, Vans::VansEditorSelection::EntityGuid());
+				ImGui::EndDisabled();
+				if (!handle.guid.empty() && !resolution.found)
+					ImGui::TextColored(ImVec4(1.0f, 0.38f, 0.32f, 1.0f), "Timeline asset GUID is missing");
+			}
             for (auto& [fieldName, fieldValue] : data->objectFields)
             {
                 if (type == "Script" &&
@@ -2383,6 +2402,9 @@ void VansInspectorWindow::Impl::DrawAudioAssetPreview(
 void VansInspectorWindow::Impl::DrawAsset(Vans::EditorAPI::IEngineEditorAPI& api)
 {
     const std::filesystem::path& selected = Vans::VansEditorSelection::AssetPath();
+	const std::string selectedExtension = Lower(selected.extension().string());
+	const bool structuredAuthoringAsset = selectedExtension == ".vanimator" ||
+		selectedExtension == ".vbonemask" || selectedExtension == ".vtimeline";
     if (selected != m_AssetPath) LoadAssetDocuments(selected);
     ImGui::TextUnformatted(selected.filename().string().c_str());
     ImGui::TextDisabled("%s", selected.parent_path().string().c_str());
@@ -2393,8 +2415,17 @@ void VansInspectorWindow::Impl::DrawAsset(Vans::EditorAPI::IEngineEditorAPI& api
             m_AssetDocuments->metaDocument.IsDirty() ? "Dirty" : "Clean");
     }
     ImGui::Separator();
+	if (structuredAuthoringAsset)
+	{
+		const char* buttonLabel = selectedExtension == ".vanimator" ? "Open Animation Graph Editor"
+			: selectedExtension == ".vbonemask" ? "Open Bone Mask Editor" : "Open Timeline Editor";
+		if (ImGui::Button(buttonLabel, ImVec2(-1.0f, 0.0f)))
+			VansEditorWindow::OpenAssetForAuthoring(selected.string());
+		ImGui::TextDisabled("This structured asset is edited through its validated authoring window.");
+		ImGui::Separator();
+	}
 
-    if (m_AssetDocuments && m_AssetDocuments->sourceDocument.IsLoaded())
+    if (!structuredAuthoringAsset && m_AssetDocuments && m_AssetDocuments->sourceDocument.IsLoaded())
     {
         Vans::VansSerializedValue displayRootValue =
             m_AssetDocuments->sourceDocument.SerializedRootSnapshot();
@@ -2444,7 +2475,7 @@ void VansInspectorWindow::Impl::DrawAsset(Vans::EditorAPI::IEngineEditorAPI& api
             }
         }
     }
-    else ImGui::TextDisabled("Binary asset");
+	else if (!structuredAuthoringAsset) ImGui::TextDisabled("Binary asset");
 
     if (m_AssetDocuments && m_AssetDocuments->metaDocument.IsLoaded())
     {

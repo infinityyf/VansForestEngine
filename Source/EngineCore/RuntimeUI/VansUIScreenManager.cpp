@@ -608,7 +608,7 @@ std::shared_ptr<VansUIScreen> VansUIScreenManager::GetScreenByName(const std::st
         return nullptr;
 
     for (const auto& screen : m_Screens)
-        if (screen && screen->GetName() == name)
+        if (screen && (screen->GetName() == name || screen->GetGuid() == name))
             return screen;
     return nullptr;
 }

@@ -91,6 +91,20 @@ target_link_libraries(ForestPackageTool
 
 forest_copy_runtime_dlls(ForestPackageTool)
 
+add_executable(ForestAssetTool
+    Source/Application/ForestAssetToolEntry.cpp
+)
+
+forest_apply_common_settings(ForestAssetTool)
+set_target_properties(ForestAssetTool PROPERTIES OUTPUT_NAME "ForestAssetTool")
+
+target_link_libraries(ForestAssetTool
+    PRIVATE
+        ForestRuntimeCore
+)
+
+forest_copy_runtime_dlls(ForestAssetTool)
+
 add_executable(ForestGameLauncher
     Source/Application/ForestGameLauncherEntry.cpp
 )
@@ -129,7 +143,11 @@ forest_apply_source_groups(ForestContractTests)
 target_link_libraries(ForestContractTests
     PRIVATE
         ForestRuntimeCore
+		ForestEditorCore
 )
+if(MSVC)
+    target_compile_options(ForestContractTests PRIVATE /bigobj)
+endif()
 add_test(NAME ForestContractTests COMMAND ForestContractTests)
 
 add_custom_target(ForestGamePackageBinaries
@@ -142,6 +160,7 @@ add_custom_target(ForestEngineComplete ALL
     DEPENDS
         ForestEditor
         ForestPackageTool
+        ForestAssetTool
         ForestGamePackageBinaries
         ForestContractTests
 )

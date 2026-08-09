@@ -651,7 +651,9 @@ void VansRagdollSystem::SyncAnimToPhysicsPose(RagdollInstance& inst)
 	}
 	PropagateDrivenDescendants(inst, skeleton, sourceLocalTransforms, modelTransforms);
 
-	controller->FeedExternalBoneWorldTransforms(modelTransforms, skeleton);
+	controller->SubmitExternalModelPose(
+		modelTransforms, skeleton, 0.0f,
+		VansGraphics::VansExternalPoseEvaluationMode::DirectFinalPose);
 }
 
 void VansRagdollSystem::BlendAndApplyPose(RagdollInstance& inst)
@@ -686,7 +688,9 @@ void VansRagdollSystem::BlendAndApplyPose(RagdollInstance& inst)
 
 	std::vector<glm::mat4> blended;
 	BlendModelTransforms(animTransforms, physTransforms, inst.blendWeight, blended);
-	controller->FeedExternalBoneWorldTransforms(blended, skeleton);
+	controller->SubmitExternalModelPose(
+		blended, skeleton, 0.0f,
+		VansGraphics::VansExternalPoseEvaluationMode::DirectFinalPose);
 }
 
 void VansRagdollSystem::WarmStartBodies(RagdollInstance& inst, const glm::vec3& initialVelocity)

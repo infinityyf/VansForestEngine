@@ -6,12 +6,13 @@
 //  以有向无环图（DAG）描述动画的求值流程：
 //    Entry → 各种逻辑/混合节点 → Output
 //
-//  Controller 每帧通过 Evaluate() 从 Output 节点向上游 pull 求值，
-//  各节点递归拉取输入，最终由 ClipNode 采样关键帧产生骨骼 Pose。
+//  Controller 每帧通过 Evaluate() 从 Output 节点向上游 pull 求值；
+//  图级缓存保证共享子图每帧只求值一次，并对异常递归进行防护。
 //  参数（float/bool/int/trigger）由 Controller 管理，作为 Context 传入。
 // ────────────────────────────────────────────────────────────────────
 
 #include "VansAnimationTypes.h"
+#include "VansPoseTypes.h"
 #include "VansAnimationController.h"
 #include "VansAnimGraphJson.h"
 #include "IK/VansIKTypes.h"
@@ -19,6 +20,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 #include <memory>
 
 namespace VansGraphics
@@ -26,6 +28,7 @@ namespace VansGraphics
 	// 前向声明
 	struct AnimatorParameter;
 	class VansAnimGraph;
+	class VansAnimGraphInstance;
 	class VansIKSolver;
 	class VansMotionMatchingRuntime;
 
@@ -42,10 +45,12 @@ namespace VansGraphics
 		Blend1D,         // 1D 混合空间（float 参数映射到多个 Clip 权重）
 		IfCondition,     // 条件选择：根据参数比较结果选择两路 Pose 之一
 		Switch,          // 多路选择：根据 int 参数选择 N 路 Pose 之一
-		AdditiveBlend,   // 叠加混合：base + additive * weight
+		AdditiveBlend,   // 叠加混合：将相对参考姿态的 local TRS delta 施加到 base
 		SpeedScale,      // 播放速度缩放（套在 Clip 输入上）
-		StateMachine,    // 嵌入式状态机节点（适配旧有 FSM 逻辑）
+		StateMachine,    // 嵌入式状态机节点
 		MotionMatching,  // Motion Matching pose source with fallback input
+		Slot,            // Gameplay one-shot source with optional fallback input
+		TargetPoseInput, // Composed/retargeted target-skeleton pose entering a post-process Graph
 		IK,              // 通用 IK 节点（CCD/FABRIK 求解人体或非关节链）
 		TwoBoneIK,       // 双骨骼 IK 节点（人体四肢快捷配置）
 		LookAt,          // 朝向/瞄准节点
@@ -99,25 +104,17 @@ namespace VansGraphics
 	{
 		float                                                      deltaTime  = 0.0f;
 		const Skeleton*                                            skeleton   = nullptr;
-		const std::unordered_map<std::string, AnimatorParameter>*  parameters = nullptr;
+		std::unordered_map<std::string, AnimatorParameter>*        parameters = nullptr;
 		const std::unordered_map<std::string, VansAnimationClip>*  clips      = nullptr;
 		VansMotionMatchingRuntime*                                 motionMatching = nullptr;
+		const std::unordered_map<std::string, VansPosePayload>*     slotPayloads = nullptr;
+		const VansPosePayload*                                     targetPoseInput = nullptr;
+		bool                                                       synchronizedStateFollower = false;
 		glm::mat4                                                  ownerWorldTransform = glm::mat4(1.0f);
 	};
 
-	// ─────────────────────────────────────────────────────────────
-	//  Pose 输出（节点的求值结果）
-	// ─────────────────────────────────────────────────────────────
-
-	struct AnimGraphPose
-	{
-		std::vector<glm::mat4> localTransforms;   // 每根骨骼的局部变换
-		std::vector<SampledNodeTransform> sampledNodeTransforms;
-		bool                   valid = false;
-		bool                   hasFootPlacement = false;
-		int                    footPlacementNodeId = -1;
-		FootPlacementSettings  footPlacementSettings;
-	};
+	// Graph、State Machine、Motion Matching 与后续 Layer 统一传递正式 Payload。
+	using AnimGraphPose = VansPosePayload;
 
 	// ─────────────────────────────────────────────────────────────
 	//  节点基类
@@ -143,17 +140,10 @@ namespace VansGraphics
 
 		// 求值：递归拉取输入，计算输出 Pose
 		virtual AnimGraphPose Evaluate(const AnimGraphContext& ctx,
-		                               VansAnimGraph& graph) = 0;
-
-		// 每帧推进内部时间（ClipNode 等需要 tick）
-		virtual void AdvanceTime(float dt) {}
-
-		// 重置内部状态（播放时间等）
-		virtual void Reset() {}
+		                               VansAnimGraphInstance& instance) const = 0;
 
 		// 获取节点类型名称字符串（序列化用）
 		static const char* TypeToString(AnimGraphNodeType type);
-		static AnimGraphNodeType StringToType(const std::string& str);
 
 	protected:
 		int               m_NodeId = -1;
@@ -177,7 +167,7 @@ namespace VansGraphics
 		AnimGraphEntryNode();
 		std::vector<AnimGraphPin> GetPins() const override;
 		AnimGraphPose Evaluate(const AnimGraphContext& ctx,
-		                       VansAnimGraph& graph) override;
+		                       VansAnimGraphInstance& instance) const override;
 	};
 
 	// ─── OutputNode ─────────────────────────────────────────────
@@ -190,7 +180,7 @@ namespace VansGraphics
 		AnimGraphOutputNode();
 		std::vector<AnimGraphPin> GetPins() const override;
 		AnimGraphPose Evaluate(const AnimGraphContext& ctx,
-		                       VansAnimGraph& graph) override;
+		                       VansAnimGraphInstance& instance) const override;
 	};
 
 	// ─── ClipNode ───────────────────────────────────────────────
@@ -203,22 +193,13 @@ namespace VansGraphics
 		AnimGraphClipNode();
 		std::vector<AnimGraphPin> GetPins() const override;
 		AnimGraphPose Evaluate(const AnimGraphContext& ctx,
-		                       VansAnimGraph& graph) override;
-		void AdvanceTime(float dt) override;
-		void Reset() override;
+		                       VansAnimGraphInstance& instance) const override;
 
 		// 配置
 		std::string m_ClipName;
 		float       m_Speed     = 1.0f;
 		bool        m_Loop      = true;
 
-		// 运行时状态（不序列化）
-		float       m_CurrentTime = 0.0f;
-
-	private:
-		void InterpolateKeyframes(const std::vector<BoneKeyframe>& keyframes,
-		                          float time,
-		                          glm::vec3& outPos, glm::quat& outRot, glm::vec3& outScale);
 	};
 
 	// ─── BlendNode ──────────────────────────────────────────────
@@ -234,7 +215,7 @@ namespace VansGraphics
 		AnimGraphBlendNode();
 		std::vector<AnimGraphPin> GetPins() const override;
 		AnimGraphPose Evaluate(const AnimGraphContext& ctx,
-		                       VansAnimGraph& graph) override;
+		                       VansAnimGraphInstance& instance) const override;
 
 		// 配置
 		std::string m_ParamName;       // 驱动 alpha 的参数名（Float 类型）
@@ -257,7 +238,7 @@ namespace VansGraphics
 		AnimGraphBlend1DNode();
 		std::vector<AnimGraphPin> GetPins() const override;
 		AnimGraphPose Evaluate(const AnimGraphContext& ctx,
-		                       VansAnimGraph& graph) override;
+		                       VansAnimGraphInstance& instance) const override;
 
 		// 配置
 		std::string        m_ParamName;    // 驱动混合的 Float 参数名
@@ -276,7 +257,7 @@ namespace VansGraphics
 		AnimGraphIfConditionNode();
 		std::vector<AnimGraphPin> GetPins() const override;
 		AnimGraphPose Evaluate(const AnimGraphContext& ctx,
-		                       VansAnimGraph& graph) override;
+		                       VansAnimGraphInstance& instance) const override;
 
 		// 条件配置
 		std::string m_ParamName;
@@ -298,7 +279,7 @@ namespace VansGraphics
 		AnimGraphSwitchNode();
 		std::vector<AnimGraphPin> GetPins() const override;
 		AnimGraphPose Evaluate(const AnimGraphContext& ctx,
-		                       VansAnimGraph& graph) override;
+		                       VansAnimGraphInstance& instance) const override;
 
 		// 配置
 		std::string m_ParamName;      // 驱动选择的 Int 参数名
@@ -317,7 +298,7 @@ namespace VansGraphics
 		AnimGraphAdditiveBlendNode();
 		std::vector<AnimGraphPin> GetPins() const override;
 		AnimGraphPose Evaluate(const AnimGraphContext& ctx,
-		                       VansAnimGraph& graph) override;
+		                       VansAnimGraphInstance& instance) const override;
 
 		// 配置
 		std::string m_ParamName;        // 驱动 weight 的参数名（Float 类型）
@@ -336,7 +317,7 @@ namespace VansGraphics
 		AnimGraphSpeedScaleNode();
 		std::vector<AnimGraphPin> GetPins() const override;
 		AnimGraphPose Evaluate(const AnimGraphContext& ctx,
-		                       VansAnimGraph& graph) override;
+		                       VansAnimGraphInstance& instance) const override;
 
 		// 配置
 		std::string m_ParamName;
@@ -348,7 +329,7 @@ namespace VansGraphics
 	//  嵌入式状态机节点：复用现有 FSM 逻辑（States + Transitions）。
 	//  每个 State 内部引用一个 Clip，状态之间按条件过渡。
 	//  Output 一个混合后的 Pose。
-	//  适配旧有 .vanimator 数据。
+	//  graph 节点是状态机配置的唯一事实源。
 
 	class AnimGraphStateMachineNode : public VansAnimGraphNode
 	{
@@ -356,34 +337,13 @@ namespace VansGraphics
 		AnimGraphStateMachineNode();
 		std::vector<AnimGraphPin> GetPins() const override;
 		AnimGraphPose Evaluate(const AnimGraphContext& ctx,
-		                       VansAnimGraph& graph) override;
-		void AdvanceTime(float dt) override;
-		void Reset() override;
+		                       VansAnimGraphInstance& instance) const override;
 
-		// State Machine 配置（从 .vanimator 中的 states/transitions 加载）
+		// State Machine 配置（从 graph 节点加载）
 		std::vector<AnimatorState>      m_States;
 		std::vector<AnimatorTransition> m_Transitions;
 		std::string                     m_DefaultStateName;
 
-		// 运行时状态
-		std::string          m_CurrentStateName;
-		std::string          m_PrevStateName;
-		float                m_BlendAlpha    = 0.0f;
-		float                m_BlendDuration = 0.0f;
-		ControllerBlendState m_BlendState    = ControllerBlendState::Idle;
-
-	private:
-		void EvaluateTransitions(const AnimGraphContext& ctx);
-		bool CheckConditions(const AnimatorTransition& trans,
-		                     const AnimGraphContext& ctx) const;
-		void StartTransition(const AnimatorTransition& trans);
-		AnimGraphPose ComputeStatePose(const AnimatorState& state,
-		                               const AnimGraphContext& ctx);
-		AnimatorState* GetState(const std::string& name);
-
-		void InterpolateKeyframes(const std::vector<BoneKeyframe>& keyframes,
-		                          float time,
-		                          glm::vec3& outPos, glm::quat& outRot, glm::vec3& outScale);
 	};
 
 	class AnimGraphMotionMatchingNode : public VansAnimGraphNode
@@ -392,10 +352,33 @@ namespace VansGraphics
 		AnimGraphMotionMatchingNode();
 		std::vector<AnimGraphPin> GetPins() const override;
 		AnimGraphPose Evaluate(const AnimGraphContext& ctx,
-		                       VansAnimGraph& graph) override;
-		void Reset() override;
+		                       VansAnimGraphInstance& instance) const override;
 
 		bool m_EnableFallbackInput = true;
+	};
+
+	class AnimGraphSlotNode : public VansAnimGraphNode
+	{
+	public:
+		AnimGraphSlotNode();
+		std::vector<AnimGraphPin> GetPins() const override;
+		AnimGraphPose Evaluate(const AnimGraphContext& ctx,
+		                       VansAnimGraphInstance& instance) const override;
+
+		std::string m_SlotId;
+		bool m_EnableFallbackInput = true;
+	};
+
+	// The only legal pose source for a Target Post Process Graph. It makes the
+	// execution boundary explicit: Layer composition or Retarget produces the
+	// input payload, and target-skeleton IK/LookAt/Foot Placement consume it.
+	class AnimGraphTargetPoseInputNode : public VansAnimGraphNode
+	{
+	public:
+		AnimGraphTargetPoseInputNode();
+		std::vector<AnimGraphPin> GetPins() const override;
+		AnimGraphPose Evaluate(const AnimGraphContext& ctx,
+		                       VansAnimGraphInstance& instance) const override;
 	};
 
 	// ─── IKNode ─────────────────────────────────────────────────
@@ -411,7 +394,7 @@ namespace VansGraphics
 		~AnimGraphIKNode() override;
 		std::vector<AnimGraphPin> GetPins() const override;
 		AnimGraphPose Evaluate(const AnimGraphContext& ctx,
-		                       VansAnimGraph& graph) override;
+		                       VansAnimGraphInstance& instance) const override;
 
 		// IK 链配置
 		IKChainDefinition m_Chain;
@@ -430,11 +413,6 @@ namespace VansGraphics
 		IKCoordinateSpace m_TargetRotationSpace = IKCoordinateSpace::Model;
 		std::string m_TargetReferenceBoneName;
 
-	private:
-		std::unique_ptr<VansIKSolver> m_Solver;
-		IKSolverType                  m_SolverKind = IKSolverType::CCD;
-
-		void EnsureSolver();
 	};
 
 	// ─── TwoBoneIKNode ──────────────────────────────────────────
@@ -448,7 +426,7 @@ namespace VansGraphics
 		~AnimGraphTwoBoneIKNode() override;
 		std::vector<AnimGraphPin> GetPins() const override;
 		AnimGraphPose Evaluate(const AnimGraphContext& ctx,
-		                       VansAnimGraph& graph) override;
+		                       VansAnimGraphInstance& instance) const override;
 
 		// 配置
 		std::string m_RootBoneName;     // 肩 / 髋
@@ -495,7 +473,7 @@ namespace VansGraphics
 		~AnimGraphLookAtNode() override;
 		std::vector<AnimGraphPin> GetPins() const override;
 		AnimGraphPose Evaluate(const AnimGraphContext& ctx,
-		                       VansAnimGraph& graph) override;
+		                       VansAnimGraphInstance& instance) const override;
 
 		// 配置
 		std::vector<std::string> m_BoneNames;     // 从根到末端
@@ -527,7 +505,7 @@ namespace VansGraphics
 		AnimGraphFootPlacementNode();
 		std::vector<AnimGraphPin> GetPins() const override;
 		AnimGraphPose Evaluate(const AnimGraphContext& ctx,
-		                       VansAnimGraph& graph) override;
+		                       VansAnimGraphInstance& instance) const override;
 
 		FootPlacementSettings m_Settings;
 	};
@@ -544,29 +522,28 @@ namespace VansGraphics
 
 		// ─── 构建 ────────────────────────────────────────────────
 		int  AddNode(std::unique_ptr<VansAnimGraphNode> node);
+		// Authoring/import boundary: preserves the stable node identity stored in
+		// the canonical document while keeping runtime construction encapsulated.
+		bool AddNodeWithId(std::unique_ptr<VansAnimGraphNode> node, int nodeId);
 		void RemoveNode(int nodeId);
-		VansAnimGraphNode* GetNode(int nodeId) const;
+		VansAnimGraphNode* GetNode(int nodeId);
+		const VansAnimGraphNode* GetNode(int nodeId) const;
 
 		int  AddLink(int fromNodeId, int fromPinIndex, int toNodeId, int toPinIndex);
+		bool AddLinkWithId(int linkId, int fromNodeId, int fromPinIndex,
+		                   int toNodeId, int toPinIndex);
 		void RemoveLink(int linkId);
 		const std::vector<AnimGraphLink>& GetLinks() const { return m_Links; }
-
-		// ─── 求值（每帧调用）───────────────────────────────────
-		//  从 OutputNode 开始 pull 求值，返回最终 Pose
-		AnimGraphPose Evaluate(const AnimGraphContext& ctx);
-
-		// 推进所有节点的内部时间
-		void AdvanceTime(float dt);
-
-		// 重置所有节点的运行时状态
-		void ResetAll();
 
 		// ─── 查询 ────────────────────────────────────────────────
 		int GetEntryNodeId()  const { return m_EntryNodeId; }
 		int GetOutputNodeId() const { return m_OutputNodeId; }
 
 		// 获取连接到某节点某个输入 Pin 的上游节点
-		VansAnimGraphNode* GetInputNode(int nodeId, int inputPinIndex) const;
+		const VansAnimGraphNode* GetInputNode(int nodeId, int inputPinIndex) const;
+
+		// 生成只包含 Output 可达节点的确定性拓扑执行计划。
+		bool BuildExecutionPlan(std::vector<int>& outPlan, std::string& outError) const;
 
 		// 获取所有节点
 		const std::unordered_map<int, std::unique_ptr<VansAnimGraphNode>>& GetNodes() const
@@ -575,7 +552,7 @@ namespace VansGraphics
 		}
 
 		// ─── 序列化 ─────────────────────────────────────────────
-		// Legacy JSON adapter used by VansAnimatorIO.
+		// Canonical JSON codec used by VansAnimatorIO.
 		void SerializeToJsonObject(AnimGraphJson& outJson) const;
 		static std::unique_ptr<VansAnimGraph> DeserializeFromJsonObject(const AnimGraphJson& j);
 
@@ -592,6 +569,91 @@ namespace VansGraphics
 		int m_OutputNodeId = -1;
 		int m_NextNodeId   = 1;
 		int m_NextLinkId   = 1;
+
+	};
+
+	struct VansAnimGraphClipRuntimeState
+	{
+		float previousTime = 0.0f;
+		float currentTime = 0.0f;
+	};
+
+	struct VansAnimGraphStateMachineRuntimeState
+	{
+		std::string currentStateName;
+		std::string previousStateName;
+		float blendAlpha = 0.0f;
+		float blendDuration = 0.0f;
+		ControllerBlendState blendState = ControllerBlendState::Idle;
+		std::unordered_map<std::string, float> stateTimes;
+		std::unordered_map<std::string, float> previousStateTimes;
+	};
+
+	struct VansAnimGraphRuntimeStateSnapshot
+	{
+		std::unordered_map<int, VansAnimGraphClipRuntimeState> clipStates;
+		std::unordered_map<int, VansAnimGraphStateMachineRuntimeState> stateMachineStates;
+	};
+
+	struct VansAnimGraphIKRuntimeState
+	{
+		const Skeleton* skeleton = nullptr;
+		IKChainDefinition chain;
+		int targetReferenceBoneIndex = -1;
+		std::vector<glm::mat4> localMatrices;
+		std::vector<glm::mat4> globalMatrices;
+	};
+
+	// 可变播放状态、活动节点和帧缓存只属于实例；VansAnimGraph 保持定义数据。
+	class VansAnimGraphInstance
+	{
+	public:
+		explicit VansAnimGraphInstance(const VansAnimGraph& definition);
+		~VansAnimGraphInstance();
+
+		const VansAnimGraph& GetDefinition() const { return m_Definition; }
+		bool IsCompiled() const { return m_CompileError.empty(); }
+		const std::string& GetCompileError() const { return m_CompileError; }
+		const std::vector<int>& GetExecutionPlan() const { return m_ExecutionPlan; }
+
+		AnimGraphPose Evaluate(const AnimGraphContext& ctx);
+		AnimGraphPose EvaluateNode(int nodeId, const AnimGraphContext& ctx);
+		AnimGraphPose EvaluateInput(int nodeId, int inputPinIndex, const AnimGraphContext& ctx);
+		void AdvanceTime(float deltaTime, const AnimGraphContext& ctx);
+		void Reset();
+		bool PlayState(const std::string& stateName);
+		std::string GetCurrentStateName() const;
+		float GetPrimaryPlaybackTime() const;
+		const std::string& GetPrimaryClipName() const;
+		bool SetPrimaryPlaybackTime(float time, const std::string& stateName = {});
+		bool SynchronizePrimaryStateMachineFrom(
+			const VansAnimGraphInstance& leader,
+			const std::unordered_map<std::string, VansAnimationClip>& clips);
+		VansAnimGraphRuntimeStateSnapshot CaptureRuntimeState() const;
+		bool RestoreRuntimeState(const VansAnimGraphRuntimeStateSnapshot& snapshot);
+
+		float GetClipTime(int nodeId) const;
+		VansAnimGraphClipRuntimeState& GetClipState(int nodeId);
+		VansAnimGraphStateMachineRuntimeState& GetStateMachineState(
+			int nodeId, const AnimGraphStateMachineNode& definition);
+		VansIKSolver* GetIKSolver(int nodeId, IKSolverType type);
+		VansAnimGraphIKRuntimeState& GetIKRuntimeState(int nodeId);
+
+	private:
+		const VansAnimGraph& m_Definition;
+		std::vector<int> m_ExecutionPlan;
+		std::string m_CompileError;
+		std::unordered_map<int, VansAnimGraphClipRuntimeState> m_ClipStates;
+		std::unordered_map<int, VansAnimGraphStateMachineRuntimeState> m_StateMachineStates;
+		std::unordered_map<int, std::unique_ptr<VansIKSolver>> m_IKSolverStates;
+		std::unordered_map<int, IKSolverType> m_IKSolverTypes;
+		std::unordered_map<int, VansAnimGraphIKRuntimeState> m_IKRuntimeStates;
+		std::unordered_map<int, AnimGraphPose> m_EvaluationCache;
+		std::unordered_map<int, bool> m_EvaluatedNodes;
+		std::unordered_map<int, bool> m_EvaluatingNodes;
+		std::unordered_map<int, bool> m_PreviousActiveNodes;
+		std::unordered_map<int, float> m_ActiveTimeScales;
+		std::unordered_map<int, bool> m_HasActiveTimeScale;
 	};
 
 }  // namespace VansGraphics

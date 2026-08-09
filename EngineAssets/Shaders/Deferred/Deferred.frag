@@ -70,9 +70,94 @@ layout(set = 1, binding = 8) uniform sampler2DArray cascadeShadowMap;
 layout(set = 1, binding = 9) uniform sampler2DArrayShadow punctualShadowMap;
 layout( set = 1, binding = 13 ) uniform sampler2D fogResult;
 layout( set = 1, binding = 14 ) uniform sampler2D screenSpaceShadow;
+struct GIRegionParams
+{
+    vec4 volumeMin;
+    vec4 volumeSizeAndBias;
+    vec4 traceParams;
+    vec4 gridDimensionsAndPriority;
+};
+layout(set = 1, binding = 19) uniform giProbeInfo
+{
+    vec4 screenSize;
+    vec4 regionInfo;
+    GIRegionParams regions[8];
+    vec4 deferredProbeDebug;
+};
+layout(set = 1, binding = 20) uniform sampler2D giVisibilityAtlas[8];
+layout(set = 1, binding = 21) uniform sampler2D giIrradianceAtlas[8];
+#include "../GI/GIProbeStateData.glsl"
+layout(set = 1, binding = 22, std430) readonly buffer DeferredGIProbeStateBuffer0 { GIProbeState states[]; } giProbeState0;
+layout(set = 1, binding = 23, std430) readonly buffer DeferredGIProbeStateBuffer1 { GIProbeState states[]; } giProbeState1;
+layout(set = 1, binding = 24, std430) readonly buffer DeferredGIProbeStateBuffer2 { GIProbeState states[]; } giProbeState2;
+layout(set = 1, binding = 25, std430) readonly buffer DeferredGIProbeStateBuffer3 { GIProbeState states[]; } giProbeState3;
+layout(set = 1, binding = 26, std430) readonly buffer DeferredGIProbeStateBuffer4 { GIProbeState states[]; } giProbeState4;
+layout(set = 1, binding = 27, std430) readonly buffer DeferredGIProbeStateBuffer5 { GIProbeState states[]; } giProbeState5;
+layout(set = 1, binding = 28, std430) readonly buffer DeferredGIProbeStateBuffer6 { GIProbeState states[]; } giProbeState6;
+layout(set = 1, binding = 29, std430) readonly buffer DeferredGIProbeStateBuffer7 { GIProbeState states[]; } giProbeState7;
+GIProbeState LoadDeferredGIProbeState(uint regionIndex, uint probeLinearIndex)
+{
+    switch (regionIndex)
+    {
+    case 0u: return giProbeState0.states[probeLinearIndex];
+    case 1u: return giProbeState1.states[probeLinearIndex];
+    case 2u: return giProbeState2.states[probeLinearIndex];
+    case 3u: return giProbeState3.states[probeLinearIndex];
+    case 4u: return giProbeState4.states[probeLinearIndex];
+    case 5u: return giProbeState5.states[probeLinearIndex];
+    case 6u: return giProbeState6.states[probeLinearIndex];
+    default: return giProbeState7.states[probeLinearIndex];
+    }
+}
+#define GI_LOAD_PROBE_STATE(regionIndex, probeLinearIndex) LoadDeferredGIProbeState(regionIndex, probeLinearIndex)
+#include "../GI/GIProbeCommon.glsl"
 
 layout(location = 0) in vec2 fragTexCoord;
 layout(location = 0) out vec4 outColor;
+layout(location = 1) out vec4 outDiffuseExitantRadiance;
+
+vec3 SampleDeferredProbeIrradianceForRegion(uint regionIndex, GIRegionParams region, vec3 worldPos, vec3 normal)
+{
+    ivec3 probeCounts = ivec3(region.gridDimensionsAndPriority.xyz);
+    vec3 volumeMin = region.volumeMin.xyz;
+    vec3 volumeSize = region.volumeSizeAndBias.xyz;
+
+    switch (regionIndex)
+    {
+    case 0u:
+        return GI_SampleProbeIrradianceAtlasScreenVisible(0u, probeCounts,
+            giIrradianceAtlas[0], giVisibilityAtlas[0], worldPos, normal,
+            volumeMin, volumeSize, region.volumeSizeAndBias.w, region.traceParams.z);
+    case 1u:
+        return GI_SampleProbeIrradianceAtlasScreenVisible(1u, probeCounts,
+            giIrradianceAtlas[1], giVisibilityAtlas[1], worldPos, normal,
+            volumeMin, volumeSize, region.volumeSizeAndBias.w, region.traceParams.z);
+    case 2u:
+        return GI_SampleProbeIrradianceAtlasScreenVisible(2u, probeCounts,
+            giIrradianceAtlas[2], giVisibilityAtlas[2], worldPos, normal,
+            volumeMin, volumeSize, region.volumeSizeAndBias.w, region.traceParams.z);
+    case 3u:
+        return GI_SampleProbeIrradianceAtlasScreenVisible(3u, probeCounts,
+            giIrradianceAtlas[3], giVisibilityAtlas[3], worldPos, normal,
+            volumeMin, volumeSize, region.volumeSizeAndBias.w, region.traceParams.z);
+    case 4u:
+        return GI_SampleProbeIrradianceAtlasScreenVisible(4u, probeCounts,
+            giIrradianceAtlas[4], giVisibilityAtlas[4], worldPos, normal,
+            volumeMin, volumeSize, region.volumeSizeAndBias.w, region.traceParams.z);
+    case 5u:
+        return GI_SampleProbeIrradianceAtlasScreenVisible(5u, probeCounts,
+            giIrradianceAtlas[5], giVisibilityAtlas[5], worldPos, normal,
+            volumeMin, volumeSize, region.volumeSizeAndBias.w, region.traceParams.z);
+    case 6u:
+        return GI_SampleProbeIrradianceAtlasScreenVisible(6u, probeCounts,
+            giIrradianceAtlas[6], giVisibilityAtlas[6], worldPos, normal,
+            volumeMin, volumeSize, region.volumeSizeAndBias.w, region.traceParams.z);
+    default:
+        return GI_SampleProbeIrradianceAtlasScreenVisible(7u, probeCounts,
+            giIrradianceAtlas[7], giVisibilityAtlas[7], worldPos, normal,
+            volumeMin, volumeSize, region.volumeSizeAndBias.w, region.traceParams.z);
+    }
+}
 
 float SampleScreenSpaceShadow(vec2 uv)
 {
@@ -83,6 +168,46 @@ float DielectricF0FromIOR(float ior)
 {
     float ratio = (ior - 1.0) / (ior + 1.0);
     return ratio * ratio;
+}
+
+vec3 SampleDeferredProbeIrradiance(vec3 worldPos, vec3 normal)
+{
+    vec3 probeIrradiance = vec3(0.0);
+    float probeWeight = 0.0;
+    float selectedPriority = -3.402823e38;
+    const uint regionCount = min(uint(regionInfo.x), 8u);
+    for (uint regionIndex = 0u; regionIndex < regionCount; ++regionIndex)
+    {
+        GIRegionParams region = regions[regionIndex];
+        const float weight = GI_IsInsideVolume(worldPos, region.volumeMin.xyz, region.volumeSizeAndBias.xyz)
+            ? GI_VolumeFade(worldPos, region.volumeMin.xyz, region.volumeSizeAndBias.xyz,
+                max(region.traceParams.z, 0.0))
+            : 0.0;
+        const float priority = region.gridDimensionsAndPriority.w;
+        if (weight > 0.0 && (priority > selectedPriority ||
+            (priority == selectedPriority && weight > probeWeight)))
+        {
+            probeIrradiance = SampleDeferredProbeIrradianceForRegion(
+                regionIndex, region, worldPos, normalize(normal));
+            probeWeight = weight;
+            selectedPriority = priority;
+        }
+    }
+    return max(probeIrradiance * probeWeight, vec3(0.0));
+}
+
+vec3 ComputeDeferredGINormal(vec3 worldPos, vec3 shadingNormal)
+{
+    vec3 fallback = dot(shadingNormal, shadingNormal) > 1e-6
+        ? normalize(shadingNormal)
+        : vec3(0.0, 1.0, 0.0);
+    vec3 dx = dFdx(worldPos);
+    vec3 dy = dFdy(worldPos);
+    vec3 geometric = cross(dx, dy);
+    if (dot(geometric, geometric) <= 1e-8)
+        return fallback;
+    geometric = normalize(geometric);
+    return dot(geometric, fallback) < 0.0 ? -geometric : geometric;
 }
 
 bool EvaluateSubsurfaceSourceAtUV(vec2 uv, int centerMaterialIndex,
@@ -238,6 +363,21 @@ void main()
     vec3 position_world = gbufferData2.xyz;
     float depth = depthData.x;
     float linearDepth = gbufferData2.w;
+
+    // Dedicated DDGI diagnostic: output only the current pixel's direct probe
+    // atlas sample. This intentionally bypasses SSGI, sky, direct lights and
+    // every material/BRDF path so the volume transport can be inspected alone.
+    if (deferredProbeDebug.x > 0.5)
+    {
+        vec3 probeIrradiance = SampleDeferredProbeIrradiance(
+            position_world, ComputeDeferredGINormal(position_world, normal));
+        vec3 debugColor = probeIrradiance * max(deferredProbeDebug.y, 0.001);
+        if (any(isnan(debugColor)) || any(isinf(debugColor)))
+            debugColor = vec3(1.0, 0.0, 1.0);
+        outColor = vec4(max(debugColor, vec3(0.0)), 1.0);
+        outDiffuseExitantRadiance = vec4(max(debugColor, vec3(0.0)), 1.0);
+        return;
+    }
 
 
     //获取ssao：这里先使用原始半分辨率结果的安全采样，避免深度加权上采样把 AO 错误压黑。
@@ -415,6 +555,12 @@ void main()
         CalculateDirectLight(brdfData, cascadeShadowMap, linearDepth, punctualShadowMap, sssShadow, lightResult);
         AmbientBRDF(brdfData, viewDirection, lightResult.ambientDiffuse, lightResult.ambientSpecular);
     }
+
+    // Keep the temporal SSGI source physically scoped: diffuse exitant
+    // radiance after direct + probe/ambient diffuse, but before specular,
+    // fog and every later composition pass.
+    outDiffuseExitantRadiance = vec4(
+        max(lightResult.directDiffuse + lightResult.ambientDiffuse, vec3(0.0)), 1.0);
 
     outColor.rgb = lightResult.directDiffuse + lightResult.directSpecular;
     outColor.rgb += lightResult.ambientDiffuse + lightResult.ambientSpecular;

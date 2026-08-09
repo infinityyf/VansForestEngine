@@ -1,0 +1,143 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "../Common/Common.glsl"
+#include "../GI/GIProbeUpdateCommon.glsl"
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer HitPositionBuffer { f16vec4 hitPosition[]; } hitPositions;
+layout(set = 0, binding = 1, std430) readonly buffer HitNormalBuffer { f16vec4 hitNormal[]; } hitNormals;
+
+struct GIProbeState
+{
+    vec4 relocationAndConfidence;
+    vec4 distanceStats;
+    uvec4 metadata;
+};
+layout(set = 0, binding = 2, std430) buffer ProbeStateBuffer { GIProbeState states[]; } probeStates;
+
+layout(push_constant) uniform PushConstants
+{
+    vec4 gridParams;
+    vec4 dispatchParams;
+    vec4 frameParams;
+    vec4 regionParams;
+    vec4 lightingParams;
+    vec4 temporalParams;
+} pushConstants;
+
+void main()
+{
+    ivec3 probeCounts = ivec3(pushConstants.dispatchParams.xyz);
+    uint spatialDivisor = max(uint(pushConstants.frameParams.y), 1u);
+    uint directionSlices = max(uint(pushConstants.frameParams.z), 1u);
+	uint directionSlice = GI_UpdateDirectionSlice(uint(pushConstants.frameParams.x),
+		uvec3(probeCounts), spatialDivisor, directionSlices);
+    uint raysPerSlice = uint((int(pushConstants.dispatchParams.w) + int(directionSlices) - 1) / int(directionSlices));
+    ivec3 activeProbe = ivec3(gl_GlobalInvocationID);
+    ivec3 probeIndex = activeProbe * ivec3(GI_UpdateSpatialDivisors(uvec3(probeCounts), spatialDivisor)) +
+        ivec3(GI_UpdateSpatialOffset(uint(pushConstants.frameParams.x), uvec3(probeCounts), spatialDivisor));
+    if (any(greaterThanEqual(probeIndex, probeCounts)))
+        return;
+
+    uvec3 activeDimensions = GI_UpdateDispatchDimensions(uvec3(probeCounts), spatialDivisor,
+        uint(pushConstants.frameParams.x));
+    uint activeLinear = uint(activeProbe.z) * activeDimensions.x * activeDimensions.y +
+        uint(activeProbe.y) * activeDimensions.x + uint(activeProbe.x);
+    uint probeLinear = GI_ProbeLinearIndex(probeIndex, probeCounts);
+    uint bufferOffset = activeLinear * raysPerSlice;
+    GIProbeState state = probeStates.states[probeLinear];
+
+    float minFrontDistance = pushConstants.gridParams.w;
+    float frontDistanceSum = 0.0;
+    float frontCount = 0.0;
+    float backfaceCount = 0.0;
+    float fixedCount = 0.0;
+    float fixedCloseBackfaceCount = 0.0;
+    vec3 relocationPush = vec3(0.0);
+    float cellSize = min(min(pushConstants.gridParams.x, pushConstants.gridParams.y), pushConstants.gridParams.z);
+    // Classify against geometry local to a probe cell.  A probe outside a
+    // surface sees front faces; a probe embedded in solid geometry sees
+    // nearby back faces over a substantial, stable set of directions.
+    float closeRange = max(cellSize * 0.75, 0.001);
+
+    for (uint localRay = 0u; localRay < raysPerSlice; ++localRay)
+    {
+        bool fixedRay;
+        vec3 rayDirection = GI_ProbeRayDirection(probeIndex, probeCounts,
+            uint(pushConstants.dispatchParams.w), localRay, raysPerSlice,
+            GI_UpdateDirectionSlice(uint(pushConstants.frameParams.x), uvec3(probeCounts), spatialDivisor, directionSlices),
+            directionSlices,
+            GI_UpdateCycleIndex(uint(pushConstants.frameParams.x), uvec3(probeCounts), spatialDivisor, directionSlices),
+            fixedRay);
+        vec4 hitPosition = vec4(hitPositions.hitPosition[bufferOffset + localRay]);
+        vec4 hitNormal = vec4(hitNormals.hitNormal[bufferOffset + localRay]);
+        if (fixedRay)
+            fixedCount += 1.0;
+        if (hitPosition.w <= 0.5)
+            continue;
+        float hitDistance = length(hitPosition.xyz - (pushConstants.regionParams.xyz +
+            (vec3(probeIndex) + 0.5) * pushConstants.gridParams.xyz -
+            vec3(probeCounts) * pushConstants.gridParams.xyz * 0.5 + state.relocationAndConfidence.xyz));
+        if (hitNormal.w < 0.0)
+        {
+            backfaceCount += 1.0;
+            if (fixedRay && hitDistance < closeRange)
+                fixedCloseBackfaceCount += 1.0;
+            relocationPush -= rayDirection * max(0.0, 1.0 - hitDistance / max(pushConstants.gridParams.w, 1e-4));
+            continue;
+        }
+        minFrontDistance = min(minFrontDistance, hitDistance);
+        frontDistanceSum += hitDistance;
+        frontCount += 1.0;
+        relocationPush -= rayDirection * max(0.0, 1.0 - hitDistance / closeRange);
+    }
+
+    float backfaceRatio = backfaceCount / max(frontCount + backfaceCount, 1.0);
+    float stableBackfaceRatio = mix(clamp(state.distanceStats.z, 0.0, 1.0),
+        backfaceRatio, 0.25);
+    vec3 targetOffset = state.relocationAndConfidence.xyz;
+    if (length(relocationPush) > 1e-4)
+        targetOffset += normalize(relocationPush) * min(cellSize * 0.20, length(relocationPush) * cellSize * 0.08);
+    vec3 maxOffset = pushConstants.gridParams.xyz * 0.45;
+    targetOffset = clamp(targetOffset, -maxOffset, maxOffset);
+    state.relocationAndConfidence.xyz = mix(state.relocationAndConfidence.xyz, targetOffset, 0.35);
+
+    // metadata.w is the accumulated number of close backface hits from the
+    // two stable classification rays in the current 16-slice direction cycle.
+    // It must be accumulated across the cycle: a wall can only occupy a subset
+    // of directions, so requiring both rays in every individual slice leaves
+    // wall-embedded probes incorrectly active and leaks light through walls.
+    uint cycleCloseBackfaceHits = directionSlice == 0u
+        ? uint(fixedCloseBackfaceCount)
+        : state.metadata.w + uint(fixedCloseBackfaceCount);
+    uint classification = state.metadata.x == 2u ? 2u : 1u;
+    const bool completedDirectionCycle = directionSlice + 1u == directionSlices &&
+        state.metadata.z + 1u >= directionSlices;
+    if (completedDirectionCycle)
+    {
+        const uint fixedRaysPerCycle = uint(fixedCount) * directionSlices;
+        // A quarter-sphere of close back faces is enough evidence that the
+        // probe lies in solid geometry.  Outside probes may see a back face
+        // through thin/open geometry, but not this persistent local coverage.
+        const uint insideEvidenceThreshold = max((fixedRaysPerCycle + 3u) / 4u, 1u);
+        classification = cycleCloseBackfaceHits >= insideEvidenceThreshold ||
+            stableBackfaceRatio > 0.35 ? 2u : 1u;
+    }
+    state.metadata.w = cycleCloseBackfaceHits;
+    state.metadata.x = classification;
+    state.metadata.y = uint(pushConstants.frameParams.x);
+    state.metadata.z = min(state.metadata.z + 1u, 128u);
+    state.distanceStats = vec4(minFrontDistance,
+        frontDistanceSum / max(frontCount, 1.0), stableBackfaceRatio,
+        abs(state.distanceStats.y - frontDistanceSum / max(frontCount, 1.0)));
+    // Each probe receives one update per direction slice.  Confidence must
+    // reach usable support over the documented 16-slice / 128-frame cycle,
+    // not over 128 *probe updates* (which was eight complete cycles here).
+    const float confidenceStep = 1.0 / float(max(directionSlices, 1u));
+    state.relocationAndConfidence.w = classification == 1u
+        ? min(state.relocationAndConfidence.w + confidenceStep, 1.0)
+        : max(state.relocationAndConfidence.w - confidenceStep, 0.0);
+    probeStates.states[probeLinear] = state;
+}

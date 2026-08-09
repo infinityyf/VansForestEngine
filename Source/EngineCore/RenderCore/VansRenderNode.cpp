@@ -1005,22 +1005,63 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescriptorSets(VansMaterialMana
 	VansTexture* ssaoFilterResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SSAO_FILTER_RESULT);
 	VansTexture* ssgiFilterResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SSGI_FILTER_RESULT);
 	VansTexture* ssrAaResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SSRAA_RESULT);
-	VansTexture* shRResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SH_R_RESULT);
-	VansTexture* shGResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SH_G_RESULT);
-	VansTexture* shBResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SH_B_RESULT);
 	VansTexture* volumetricFogResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_VOLUMETRIC_FOG_RESULT);
 	VansTexture* screenSpaceShadow = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SCREEN_SPACE_SHADOW_RESULT);
 	VansTexture* screenSpaceShadowHZB = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_HZB_RESULT);
 	VansTexture* rectLightEmissive = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_RECT_LIGHT_EMISSIVE);
+	VansVKDevice* runtimeDevice = m_Scene->GetRuntimeResourceDevice();
 
 	if (ssaoFilterResult == nullptr || ssgiFilterResult == nullptr || ssrAaResult == nullptr ||
-		shRResult == nullptr || shGResult == nullptr || shBResult == nullptr || volumetricFogResult == nullptr ||
+		volumetricFogResult == nullptr ||
 		screenSpaceShadow == nullptr || screenSpaceShadowHZB == nullptr || rectLightEmissive == nullptr ||
+		runtimeDevice == nullptr ||
+		materialManager.m_SSGICBBuffer.GetNativeBuffer() == VK_NULL_HANDLE ||
 		!m_Scene->GetIESProfileManager()->IsGPUResourcesCreated())
 	{
 		// 不清除 dirty 标记，下帧重试（运行时纹理尚未就绪）
 		m_DescriptorsetsDirty = true;
 		return;
+	}
+
+	std::vector<VkDescriptorImageInfo> giIrradianceInfos;
+	std::vector<VkDescriptorImageInfo> giVisibilityInfos;
+	std::vector<VkDescriptorBufferInfo> giProbeStateInfos;
+	giIrradianceInfos.reserve(VANS_SSGI_MAX_GI_REGIONS);
+	giVisibilityInfos.reserve(VANS_SSGI_MAX_GI_REGIONS);
+	giProbeStateInfos.reserve(VANS_SSGI_MAX_GI_REGIONS);
+	auto& rayTracing = runtimeDevice->GetRayTracingContext();
+	const uint32_t availableGIRegions = std::min(rayTracing.GetGIRegionCount(), VANS_SSGI_MAX_GI_REGIONS);
+	for (uint32_t regionIndex = 0u; regionIndex < availableGIRegions; ++regionIndex)
+	{
+		VansTexture* irradianceAtlas = rayTracing.GetGIRegionIrradianceAtlas(regionIndex);
+		VansTexture* visibilityAtlas = rayTracing.GetGIRegionVisibilityAtlas(regionIndex);
+		const VansVKBuffer* probeState = rayTracing.GetGIRegionProbeStateBuffer(regionIndex);
+		if (irradianceAtlas == nullptr || visibilityAtlas == nullptr ||
+			probeState == nullptr || probeState->GetNativeBuffer() == VK_NULL_HANDLE)
+			continue;
+		giIrradianceInfos.push_back({
+			irradianceAtlas->GetImage().GetSampler(),
+			irradianceAtlas->GetImage().GetImageView(),
+			VK_IMAGE_LAYOUT_GENERAL });
+		giVisibilityInfos.push_back({
+			visibilityAtlas->GetImage().GetSampler(),
+			visibilityAtlas->GetImage().GetImageView(),
+			VK_IMAGE_LAYOUT_GENERAL });
+		giProbeStateInfos.push_back({
+			probeState->GetNativeBuffer(),
+			0,
+			probeState->GetBufferSize() });
+	}
+	if (giIrradianceInfos.empty() || giVisibilityInfos.empty() || giProbeStateInfos.empty())
+	{
+		m_DescriptorsetsDirty = true;
+		return;
+	}
+	while (giIrradianceInfos.size() < VANS_SSGI_MAX_GI_REGIONS)
+	{
+		giIrradianceInfos.push_back(giIrradianceInfos.front());
+		giVisibilityInfos.push_back(giVisibilityInfos.front());
+		giProbeStateInfos.push_back(giProbeStateInfos.front());
 	}
 
 	auto* descMgr = VansVKDescriptorManager::GetInstance();
@@ -1047,12 +1088,6 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescriptorSets(VansMaterialMana
 		{ { rp->GetCascadeShadowSampler(), rp->GetCascadeShadowArrayView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
 	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{ { rp->GetPunctualShadowMap().GetSampler(), rp->GetPunctualShadowMap().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		{ { shRResult->GetImage().GetSampler(), shRResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		{ { shGResult->GetImage().GetSampler(), shGResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 12, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		{ { shBResult->GetImage().GetSampler(), shBResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
 	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 13, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{ { volumetricFogResult->GetImage().GetSampler(), volumetricFogResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
 	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], DEFERRED_BINDING_SCREEN_SPACE_SHADOW, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -1065,6 +1100,20 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescriptorSets(VansMaterialMana
 		{ { screenSpaceShadowHZB->GetImage().GetSampler(), screenSpaceShadowHZB->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
 	descMgr->WriteBufferDescriptor(frameBufferInputDescriptorSets[0], DEFERRED_BINDING_SCREEN_SPACE_SHADOW_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 		{ { materialManager.m_ScreenSpaceShadowParamsCBBuffer.GetNativeBuffer(), 0, materialManager.m_ScreenSpaceShadowParamsCBBuffer.GetBufferSize() } });
+	descMgr->WriteBufferDescriptor(frameBufferInputDescriptorSets[0], DEFERRED_BINDING_GI_INFO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+		{ { materialManager.m_SSGICBBuffer.GetNativeBuffer(), 0, materialManager.m_SSGICBBuffer.GetBufferSize() } });
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], DEFERRED_BINDING_GI_VISIBILITY, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		giVisibilityInfos);
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], DEFERRED_BINDING_GI_IRRADIANCE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		giIrradianceInfos);
+	for (size_t regionSlot = 0; regionSlot < giProbeStateInfos.size(); ++regionSlot)
+	{
+		descMgr->WriteBufferDescriptor(
+			frameBufferInputDescriptorSets[0],
+			DEFERRED_BINDING_GI_PROBE_STATE + static_cast<uint32_t>(regionSlot),
+			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			{ giProbeStateInfos[regionSlot] });
+	}
 	descMgr->CommitDescriptorUpdates();
 	m_DescriptorsetsDirty = false;
 }

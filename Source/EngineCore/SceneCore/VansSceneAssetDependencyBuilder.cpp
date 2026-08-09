@@ -11,12 +11,17 @@
 #include "../AssetCore/Storage/VansJsonFileStorage.h"
 #include "../AssetCore/Storage/VansShaderAuthoringAssetStorage.h"
 #include "../AudioCore/VansAudioBus.h"
+#include "../AnimationCore/VansAnimatorIO.h"
 #include "../SceneCore/VansSceneDocumentLoader.h"
 #include "../SceneCore/VansSceneSchema.h"
+#include "../TimelineCore/VansTimelineDependencyBuilder.h"
+#include "../TimelineCore/VansTimelineSerialization.h"
+#include "../TimelineCore/VansTimelineValidator.h"
 #include "../Util/VansLog.h"
 
 #include <algorithm>
 #include <cctype>
+#include <deque>
 #include <nlohmann/json.hpp>
 #include <unordered_map>
 #include <vector>
@@ -73,72 +78,6 @@ namespace
 	{
 		const VansSerializedValue* field = FindObjectField(object, key);
 		return field != nullptr && field->kind == VansSerializedValue::Kind::Array ? field : nullptr;
-	}
-
-	VansSkeletalMeshImportSettings ReadSkeletalImportSettings(const VansAssetMeta& meta)
-	{
-		VansSkeletalMeshImportSettings settings;
-		const VansSerializedValue snapshot = meta.SerializedSettingsSnapshot();
-		const VansSerializedValue* skeletal = FindObjectField(snapshot, "skeletalImport");
-		if (skeletal && skeletal->kind == VansSerializedValue::Kind::Object)
-		{
-			settings.bindPoseSource = ReadSerializedStringField(
-				*skeletal,
-				"bindPoseSource",
-				settings.bindPoseSource);
-			settings.meshNodeTransformPolicy = ReadSerializedStringField(
-				*skeletal,
-				"meshNodeTransformPolicy",
-				settings.meshNodeTransformPolicy);
-			settings.rigidAttachmentPolicy = ReadSerializedStringField(
-				*skeletal,
-				"rigidAttachmentPolicy",
-				settings.rigidAttachmentPolicy);
-			settings.diagnostics = ReadSerializedBoolField(
-				*skeletal,
-				"diagnostics",
-				settings.diagnostics);
-
-			const VansSerializedValue* legacy = FindObjectField(*skeletal, "legacyFixups");
-			if (legacy && legacy->kind == VansSerializedValue::Kind::Object)
-			{
-				settings.legacyFixups.repairInvalidIdentityBindPose = ReadSerializedBoolField(
-					*legacy,
-					"repairInvalidIdentityBindPose",
-					settings.legacyFixups.repairInvalidIdentityBindPose);
-				settings.legacyFixups.remapWeaponAttachmentsToHands = ReadSerializedBoolField(
-					*legacy,
-					"remapWeaponAttachmentsToHands",
-					settings.legacyFixups.remapWeaponAttachmentsToHands);
-				settings.legacyFixups.nearestBoneRigidBind = ReadSerializedBoolField(
-					*legacy,
-					"nearestBoneRigidBind",
-					settings.legacyFixups.nearestBoneRigidBind);
-			}
-			if (settings.rigidAttachmentPolicy == "legacyNearestBone")
-			{
-				settings.legacyFixups.nearestBoneRigidBind = true;
-				settings.rigidAttachmentPolicy = "preserveNodeOffset";
-			}
-			return settings;
-		}
-
-		// Compatibility input only. New asset metadata should use skeletalImport.
-		const bool hasLegacyBindFixup =
-			FindObjectField(snapshot, "rebuildIdentityBoneOffsetsFromHierarchy") != nullptr;
-		const bool hasLegacyWeaponFixup =
-			FindObjectField(snapshot, "remapWeaponAttachmentBonesToHands") != nullptr;
-		if (hasLegacyBindFixup || hasLegacyWeaponFixup)
-		{
-			settings.legacyFixups.nearestBoneRigidBind = true;
-			settings.legacyFixups.repairInvalidIdentityBindPose = meta.ReadBoolSetting(
-				"rebuildIdentityBoneOffsetsFromHierarchy",
-				settings.legacyFixups.repairInvalidIdentityBindPose);
-			settings.legacyFixups.remapWeaponAttachmentsToHands = meta.ReadBoolSetting(
-				"remapWeaponAttachmentBonesToHands",
-				settings.legacyFixups.remapWeaponAttachmentsToHands);
-		}
-		return settings;
 	}
 
 	std::string ReadAssetGuidReference(const VansSerializedValue& value)
@@ -512,6 +451,131 @@ namespace
 			}
 		}
 	}
+
+	struct TypedAssetDependency
+	{
+		std::string guid;
+		VansAssetType expectedType = VansAssetType::Unknown;
+		std::string chain;
+	};
+
+	void AppendDependencyError(
+		VansSceneAssetDependencyBuildResult& result,
+		const std::string& message)
+	{
+		result.errors.push_back(message);
+		VANS_LOG_ERROR("[AssetDatabase] " << message);
+	}
+
+	void CollectStrictAssetReference(
+		const VansSerializedValue* reference,
+		VansAssetType expectedType,
+		const std::string& chain,
+		std::vector<TypedAssetDependency>& dependencies,
+		VansSceneAssetDependencyBuildResult& result)
+	{
+		if (reference == nullptr)
+			return;
+		const std::string guidText = ReadAssetGuidReference(*reference);
+		if (guidText.empty() && reference->kind == VansSerializedValue::Kind::String)
+			return;
+		VansAssetGuid guid;
+		if (!VansAssetGuid::TryParse(guidText, guid))
+		{
+			AppendDependencyError(result, chain
+				+ " must reference a current-project or engine asset by GUID; paths and cross-project references are not allowed");
+			return;
+		}
+		dependencies.push_back({ guidText, expectedType, chain + " -> " + guidText });
+	}
+
+	void CollectSceneAnimationDependencies(
+		const VansSerializedValue& sceneDocument,
+		std::vector<TypedAssetDependency>& dependencies,
+		VansSceneAssetDependencyBuildResult& result)
+	{
+		const VansSerializedValue* entities = ReadSerializedArrayField(sceneDocument, "entities");
+		if (entities == nullptr)
+			return;
+		for (const VansSerializedValue& entity : entities->arrayItems)
+		{
+			const std::string entityName = ReadSerializedStringField(entity, "name", "<unnamed>");
+			const VansSerializedValue* components = ReadSerializedArrayField(entity, "components");
+			if (components == nullptr)
+				continue;
+			for (const VansSerializedValue& component : components->arrayItems)
+			{
+				if (ReadSerializedStringField(component, "type") != "Animation")
+					continue;
+				const VansSerializedValue* data = ReadSerializedObjectField(component, "data");
+				if (data == nullptr)
+					continue;
+				const std::string owner = "scene entity '" + entityName + "' Animation";
+				CollectStrictAssetReference(FindObjectField(*data, "animator"),
+					VansAssetType::AnimatorController, owner + ".animator", dependencies, result);
+
+				const VansSerializedValue* retarget = ReadSerializedObjectField(*data, "retarget");
+				if (retarget == nullptr)
+					continue;
+				const VansSerializedValue* sourceModel = FindObjectField(*retarget, "source_model");
+				if (sourceModel == nullptr)
+					sourceModel = FindObjectField(*retarget, "sourceModel");
+				const VansSerializedValue* sourceAnimator = FindObjectField(*retarget, "source_animator");
+				if (sourceAnimator == nullptr)
+					sourceAnimator = FindObjectField(*retarget, "sourceAnimator");
+				CollectStrictAssetReference(sourceModel, VansAssetType::Model,
+					owner + ".retarget.sourceModel", dependencies, result);
+				CollectStrictAssetReference(sourceAnimator, VansAssetType::AnimatorController,
+					owner + ".retarget.sourceAnimator", dependencies, result);
+			}
+		}
+	}
+
+	void CollectSceneTimelineDependencies(
+		const VansSerializedValue& sceneDocument,
+		std::vector<TypedAssetDependency>& dependencies,
+		VansSceneAssetDependencyBuildResult& result)
+	{
+		const VansSerializedValue* entities = ReadSerializedArrayField(sceneDocument, "entities");
+		if (entities == nullptr) return;
+		for (const VansSerializedValue& entity : entities->arrayItems)
+		{
+			const std::string entityName = ReadSerializedStringField(entity, "name", "<unnamed>");
+			const VansSerializedValue* components = ReadSerializedArrayField(entity, "components");
+			if (components == nullptr) continue;
+			for (const VansSerializedValue& component : components->arrayItems)
+			{
+				if (ReadSerializedStringField(component, "type") != "Timeline") continue;
+				const VansSerializedValue* data = ReadSerializedObjectField(component, "data");
+				const VansSerializedValue* timeline = data ? ReadSerializedObjectField(*data, "timeline") : nullptr;
+				CollectStrictAssetReference(timeline, VansAssetType::Timeline,
+					"scene entity '" + entityName + "' Timeline.timeline", dependencies, result);
+			}
+		}
+	}
+
+	VansAssetType TimelineReferenceType(
+		const VansTimelineAssetReference& reference,
+		const std::unordered_map<std::string, VansAssetRecord>& records)
+	{
+		switch (reference.kind)
+		{
+		case VansTimelineAssetReferenceKind::Timeline: return VansAssetType::Timeline;
+		case VansTimelineAssetReferenceKind::AnimationClip: return VansAssetType::AnimationClip;
+		case VansTimelineAssetReferenceKind::BoneMask: return VansAssetType::BoneMask;
+		case VansTimelineAssetReferenceKind::Audio: return VansAssetType::Audio;
+		case VansTimelineAssetReferenceKind::Video: return VansAssetType::Video;
+		case VansTimelineAssetReferenceKind::Material: return VansAssetType::Material;
+		case VansTimelineAssetReferenceKind::PostProcessProfile: return VansAssetType::PostProcessProfile;
+		case VansTimelineAssetReferenceKind::Scene: return VansAssetType::Scene;
+		case VansTimelineAssetReferenceKind::ObjectReference:
+		{
+			const auto found = records.find(reference.assetGuid);
+			return found == records.end() ? VansAssetType::Unknown : found->second.type;
+		}
+		default: return VansAssetType::Unknown;
+		}
+	}
 }
 
 VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResourcePlan(
@@ -552,10 +616,26 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 
 	const std::vector<VansAssetRecord> allRecords = database.All();
 	std::unordered_map<std::string, VansAssetType> assetTypesByGuid;
+	std::unordered_map<std::string, VansAssetRecord> assetRecordsByGuid;
 	for (const VansAssetRecord& record : allRecords)
+	{
 		assetTypesByGuid.emplace(record.guid.ToString(), record.type);
+		assetRecordsByGuid.emplace(record.guid.ToString(), record);
+	}
+	if (builtInAssetDatabase != nullptr)
+	{
+		for (const VansAssetRecord& record : builtInAssetDatabase->All())
+		{
+			assetTypesByGuid.emplace(record.guid.ToString(), record.type);
+			assetRecordsByGuid.emplace(record.guid.ToString(), record);
+		}
+	}
 
 	CollectSerializedAssetReferences(sceneDocument, assetTypesByGuid, result);
+	std::vector<TypedAssetDependency> animationDependencies;
+	CollectSceneAnimationDependencies(sceneDocument, animationDependencies, result);
+	std::vector<TypedAssetDependency> timelineDependencies;
+	CollectSceneTimelineDependencies(sceneDocument, timelineDependencies, result);
 	if (const VansSerializedValue* vegetationConfig = ReadVegetationField(sceneDocument))
 	{
 		VansSerializedValue externalVegetationConfig = LoadVegetationConfigFromReference(*vegetationConfig, projectRoot.string());
@@ -568,6 +648,133 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 				<< result.requiredTextures.size() << " textures");
 		}
 	}
+
+	result.requiredAssets.insert(result.requiredModels.begin(), result.requiredModels.end());
+	result.requiredAssets.insert(result.requiredMaterials.begin(), result.requiredMaterials.end());
+	result.requiredAssets.insert(result.requiredTextures.begin(), result.requiredTextures.end());
+	result.requiredAssets.insert(result.requiredShaders.begin(), result.requiredShaders.end());
+
+	std::deque<TypedAssetDependency> pendingDependencies(
+		animationDependencies.begin(), animationDependencies.end());
+	pendingDependencies.insert(pendingDependencies.end(),
+		timelineDependencies.begin(), timelineDependencies.end());
+	std::unordered_set<std::string> expandedAnimators;
+	std::unordered_set<std::string> expandedTimelines;
+	while (!pendingDependencies.empty())
+	{
+		TypedAssetDependency dependency = std::move(pendingDependencies.front());
+		pendingDependencies.pop_front();
+		result.requiredAssets.insert(dependency.guid);
+		switch (dependency.expectedType)
+		{
+		case VansAssetType::Model: result.requiredModels.insert(dependency.guid); break;
+		case VansAssetType::Material: result.requiredMaterials.insert(dependency.guid); break;
+		case VansAssetType::Texture: result.requiredTextures.insert(dependency.guid); break;
+		case VansAssetType::Shader: result.requiredShaders.insert(dependency.guid); break;
+		default: break;
+		}
+
+		const auto found = assetRecordsByGuid.find(dependency.guid);
+		if (found == assetRecordsByGuid.end())
+		{
+			AppendDependencyError(result, dependency.chain + " is missing from the asset database");
+			continue;
+		}
+		const VansAssetRecord& record = found->second;
+		if (record.state == VansAssetState::Missing)
+		{
+			AppendDependencyError(result, dependency.chain + " resolves to a missing asset");
+			continue;
+		}
+		if (record.type != dependency.expectedType)
+		{
+			AppendDependencyError(result, dependency.chain + " resolves to the wrong asset type");
+			continue;
+		}
+		if (record.type == VansAssetType::Timeline)
+		{
+			if (!expandedTimelines.insert(dependency.guid).second) continue;
+			VansTimelineAsset timeline;
+			std::string timelineError;
+			if (!VansTimelineSerialization::Load(record.sourcePath, timeline, timelineError))
+			{
+				AppendDependencyError(result, dependency.chain + " cannot load Timeline: " + timelineError);
+				continue;
+			}
+			VansTimelineDependencyClosure closure;
+			VansTimelineDiagnostics diagnostics;
+			const bool closureBuilt = VansTimelineDependencyBuilder::BuildClosure(
+				timeline,
+				[&](const VansTimelineAssetReference& reference, VansTimelineAsset& nested,
+					std::string& identity, std::string& error)
+				{
+					if (reference.assetGuid.empty())
+					{
+						error = "SubTimeline requires an indexed asset GUID";
+						return false;
+					}
+					const auto child = assetRecordsByGuid.find(reference.assetGuid);
+					if (child == assetRecordsByGuid.end() || child->second.type != VansAssetType::Timeline ||
+						child->second.state == VansAssetState::Missing)
+					{
+						error = "SubTimeline GUID is missing or has the wrong asset type";
+						return false;
+					}
+					identity = reference.assetGuid;
+					return VansTimelineSerialization::Load(child->second.sourcePath, nested, error);
+				}, closure, diagnostics);
+			if (!closureBuilt)
+			{
+				for (const VansTimelineDiagnostic& diagnostic : diagnostics)
+					if (diagnostic.severity == VansTimelineDiagnosticSeverity::Error)
+						AppendDependencyError(result, dependency.chain + " -> " + diagnostic.objectId +
+							"." + diagnostic.propertyPath + ": " + diagnostic.message);
+				continue;
+			}
+			for (const VansTimelineAssetReference& reference : closure.transitive)
+			{
+				if (reference.assetGuid.empty())
+				{
+					AppendDependencyError(result, dependency.chain + " -> Timeline object '" +
+						reference.sourceObjectId + "' requires an indexed dependency GUID");
+					continue;
+				}
+				const VansAssetType expected = TimelineReferenceType(reference, assetRecordsByGuid);
+				if (expected == VansAssetType::Unknown)
+				{
+					AppendDependencyError(result, dependency.chain + " -> Timeline dependency '" +
+						reference.sourceObjectId + "' has no executable asset type");
+					continue;
+				}
+				pendingDependencies.push_back({ reference.assetGuid, expected,
+					dependency.chain + " -> Timeline object '" + reference.sourceObjectId + "' -> " + reference.assetGuid });
+			}
+			continue;
+		}
+		if (record.type != VansAssetType::AnimatorController ||
+			!expandedAnimators.insert(dependency.guid).second) continue;
+
+		VansGraphics::AnimatorAssetData animator;
+		if (!VansGraphics::VansAnimatorIO::Load(record.sourcePath.string(), animator))
+		{
+			AppendDependencyError(result, dependency.chain + " cannot load Animator definition");
+			continue;
+		}
+		for (const VansGraphics::AnimatorClipRef& clip : animator.clipRefs)
+		{
+			pendingDependencies.push_back({ clip.assetGuid, VansAssetType::AnimationClip,
+				dependency.chain + " -> Clip '" + clip.name + "' -> " + clip.assetGuid });
+		}
+		for (const VansGraphics::VansAnimationLayerDefinition& layer : animator.layers)
+		{
+			if (layer.kind != VansGraphics::VansAnimationLayerKind::Overlay)
+				continue;
+			pendingDependencies.push_back({ layer.maskGuid, VansAssetType::BoneMask,
+				dependency.chain + " -> Layer '" + layer.name + "' Bone Mask -> " + layer.maskGuid });
+		}
+	}
+	if (!result.errors.empty())
+		return result;
 
 	for (const VansAssetRecord& record : database.All())
 	{
@@ -632,7 +839,7 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 				meshColliderModels.find(record.guid.ToString()) != meshColliderModels.end();
 			request.scaleFactor = meta.ReadFloatSetting("scaleFactor", "scale", 1.0f);
 			request.loadMultiMesh = meta.ReadBoolSetting("loadMultiMesh", isFbx);
-			request.skeletalImport = ReadSkeletalImportSettings(meta);
+			request.skeletalImport = ReadSkeletalMeshImportSettings(meta);
 			result.resourcePlan.meshes.push_back(std::move(request));
 		}
 		else if (record.type == VansAssetType::Texture)
@@ -761,6 +968,10 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 		}
 	}
 
+	result.requiredAssets.insert(result.requiredModels.begin(), result.requiredModels.end());
+	result.requiredAssets.insert(result.requiredMaterials.begin(), result.requiredMaterials.end());
+	result.requiredAssets.insert(result.requiredTextures.begin(), result.requiredTextures.end());
+	result.requiredAssets.insert(result.requiredShaders.begin(), result.requiredShaders.end());
 	result.success = true;
 	return result;
 }

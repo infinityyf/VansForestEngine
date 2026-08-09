@@ -227,6 +227,10 @@ namespace VansGraphics
 		DEFERRED_BINDING_IES_PROFILES        = 16, // IES profile 纹理数组 (sampler2DArray, R16F)
 		DEFERRED_BINDING_SCREEN_SPACE_SHADOW_HIZ = 17, // HZB depth for per-light screen-space contact shadows
 		DEFERRED_BINDING_SCREEN_SPACE_SHADOW_PARAMS = 18,
+		DEFERRED_BINDING_GI_INFO = 19,
+		DEFERRED_BINDING_GI_VISIBILITY = 20,
+		DEFERRED_BINDING_GI_IRRADIANCE = 21,
+		DEFERRED_BINDING_GI_PROBE_STATE = 22,
 	};
 
 	// --- SkyBox Pass ---
@@ -321,12 +325,11 @@ namespace VansGraphics
 		SSGI_BINDING_SKY_DIFFUSE  = 4,
 		SSGI_BINDING_RESULT       = 5,
 		SSGI_BINDING_INFO_UBO     = 6,
-		SSGI_BINDING_SH_R         = 7,
-		SSGI_BINDING_SH_G         = 8,
-		SSGI_BINDING_SH_B         = 9,
 		SSGI_BINDING_HIZ_DEPTH    = 10,
 		SSGI_BINDING_MATERIAL     = 11,
-		SSGI_BINDING_GI_VISIBILITY = 12,
+		SSGI_BINDING_GI_IRRADIANCE = 13,
+		SSGI_BINDING_GI_VISIBILITY = 14,
+		SSGI_BINDING_GI_PROBE_STATE = 15,
 	};
 
 	// --- Screen Space Shadow Compute Pass ---
@@ -348,6 +351,12 @@ namespace VansGraphics
 		SSGI_TEMPORAL_BINDING_CURRENT_GI     = 3,
 		SSGI_TEMPORAL_BINDING_ACCUMULATED_GI = 4,
 		SSGI_TEMPORAL_BINDING_INFO_UBO       = 5,
+		SSGI_TEMPORAL_BINDING_HISTORY_MOMENTS = 6,
+		SSGI_TEMPORAL_BINDING_OUTPUT_MOMENTS  = 7,
+		SSGI_TEMPORAL_BINDING_HISTORY_SURFACE = 8,
+		SSGI_TEMPORAL_BINDING_CURRENT_NORMAL  = 9,
+		SSGI_TEMPORAL_BINDING_CURRENT_MATERIAL = 10,
+		SSGI_TEMPORAL_BINDING_OUTPUT_SURFACE  = 11,
 	};
 
 	// --- SSR Trace Compute Pass ---
@@ -451,6 +460,15 @@ namespace VansGraphics
 		HIZ_SEED_BINDING_HIZ_MIP0 = 1,   // HIZ mip 0 输出 (STORAGE_IMAGE, r32f)
 	};
 
+	enum SSGIAtrousPassBinding : uint32_t
+	{
+		SSGI_ATROUS_BINDING_INPUT_GI = 0,
+		SSGI_ATROUS_BINDING_NORMAL = 1,
+		SSGI_ATROUS_BINDING_DEPTH = 2,
+		SSGI_ATROUS_BINDING_MATERIAL = 3,
+		SSGI_ATROUS_BINDING_OUTPUT_GI = 4,
+	};
+
 	enum MainCameraHiZCullPassBinding : uint32_t
 	{
 		MAIN_CAMERA_HIZ_CULL_BINDING_OBJECTS = 0,
@@ -492,18 +510,14 @@ namespace VansGraphics
 		GIPL_BINDING_HIT_POSITION     = 0,
 		GIPL_BINDING_HIT_NORMAL       = 1,
 		GIPL_BINDING_RADIANCE         = 2,
+		GIPL_BINDING_EMISSION         = 3,
 		GIPL_BINDING_ENVIRONMENT_MAP  = 4,
-		GIPL_BINDING_SH_R             = 5,
-		GIPL_BINDING_SH_G             = 6,
-		GIPL_BINDING_SH_B             = 7,
 		GIPL_BINDING_SHADOW_MAP       = 8,
 		GIPL_BINDING_PUNCTUAL_SHADOW  = 9,
 		GIPL_BINDING_PBR_DATA         = 10,
 		GIPL_BINDING_GI_VISIBILITY    = 11,
-		GIPL_BINDING_DIRECT_CACHE     = 13,
-		GIPL_BINDING_RESULT_R         = 14,
-		GIPL_BINDING_RESULT_G         = 15,
-		GIPL_BINDING_RESULT_B         = 16,
+		GIPL_BINDING_IRRADIANCE_ATLAS = 12,
+		GIPL_BINDING_PROBE_STATE      = 13,
 	};
 
 	// --- GI Visibility Atlas Update Compute Pass ---
@@ -511,6 +525,9 @@ namespace VansGraphics
 	{
 		GI_VISIBILITY_BINDING_HIT_POSITION = 0,
 		GI_VISIBILITY_BINDING_RESULT       = 1,
+		GI_VISIBILITY_BINDING_RADIANCE     = 2,
+		GI_VISIBILITY_BINDING_IRRADIANCE   = 3,
+		GI_VISIBILITY_BINDING_PROBE_STATE  = 4,
 	};
 
 	// --- Water GBuffer Pass（Set 1）---
@@ -817,6 +834,7 @@ namespace VansGraphics
 		static void CreateAndAllocate_SSGI(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_ScreenSpaceShadow(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_SSGITemporal(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 2);
+		static void CreateAndAllocate_SSGIAtrous(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 2);
 		static void CreateAndAllocate_SSR_Trace(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_SSR_Resolve(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_SSR_TemporalAA(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);

@@ -6,6 +6,7 @@
 #include "VansSceneParticleComponentConfig.h"
 #include "VansScenePhysicsComponentConfig.h"
 #include "VansSceneRenderNodeConfig.h"
+#include "VansSceneTimelineComponentConfig.h"
 #include "VansSceneVehicleComponentConfig.h"
 #include "../ScriptCore/VansScriptTypes.h"
 
@@ -38,6 +39,7 @@ struct VansSceneObjectBuildConfig
 	std::optional<VansSceneAudioReverbZoneConfig> audioReverbZone;
 	std::optional<VansSceneAnimationComponentConfig> animation;
 	std::optional<VansSceneParticleComponentConfig> particle;
+	std::optional<VansSceneTimelineComponentConfig> timeline;
 	VansScriptComponentDescriptors scriptComponents;
 	VansScriptUIComponentDescriptors uiComponents;
 	std::unordered_map<std::string, std::string> componentGuids;

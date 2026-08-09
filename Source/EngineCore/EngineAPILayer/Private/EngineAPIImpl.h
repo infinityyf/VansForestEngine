@@ -1,6 +1,7 @@
 #pragma once
 
 #include "EngineCommandContext.h"
+#include "VansTimelineDerivedMediaService.h"
 
 #include "../Public/IEngineEditorAPI.h"
 #include "../../RuntimeUI/Public/VansUIRuntimeHandles.h"
@@ -45,6 +46,9 @@ namespace Vans::EditorAPI
 		ProjectBrowserRootSnapshot GetProjectBrowserRoot() const override;
 		AssetDragPayload CreateAssetDragPayload(const std::string& assetPath) override;
 		AssetGuidResolution ResolveAssetGuid(const std::string& assetGuid) const override;
+		TimelineAudioWaveformHandle RequestTimelineAudioWaveform(const std::string& assetGuid) override;
+		TimelineVideoThumbnailHandle RequestTimelineVideoThumbnail(const std::string& assetGuid) override;
+		ProjectAssetCreateResult CreateProjectAsset(const ProjectAssetCreateRequest& request) override;
 		AssetRefreshResult RefreshProjectAsset(const std::string& assetPath, bool importIfMissing) override;
 		std::vector<RecentProjectEntry> GetRecentProjects() const override;
 		ProjectOpenResult OpenProject(const ProjectOpenRequest& request) override;
@@ -98,8 +102,7 @@ namespace Vans::EditorAPI
 		GIProbeDebugSnapshot CaptureGIProbeDebugSnapshot(std::uint32_t stride, float exposure) override;
 		GIProbeDebugSnapshot GetGIProbeDebugSnapshot() const override;
 		MainCameraHiZCullDebugSnapshot GetMainCameraHiZCullDebugSnapshot() const override;
-		RenderTexturePreview RequestGIRTPreview(
-			std::uint32_t mode,
+		std::vector<RenderTexturePreview> RequestGIRTPreviews(
 			std::uint32_t zSlice,
 			std::uint32_t rayIndex,
 			float exposure,
@@ -132,9 +135,42 @@ namespace Vans::EditorAPI
 		bool LoadRuntimeProjectAssetsForScene(const std::string& scenePath) override;
 		VehicleDebugSnapshot GetVehicleDebugSnapshot() const override;
 		bool HasAnimationDebugNodes() const override;
-		VansGraphics::VansAnimationNode* FindRuntimeAnimationNodeByEntityGuid(const std::string& entityGuid) const override;
+		AnimationAssetBindingSnapshot GetAnimationAssetBinding(const std::string& entityGuid) const override;
 		MotionMatchingDebugSnapshot GetMotionMatchingDebugSnapshot() const override;
 		SkeletonDebugSnapshot GetSkeletonDebugSnapshot(const std::string& entityGuidFilter) const override;
+		AssetSkeletonSnapshot GetAssetSkeletonSnapshot(const std::string& assetGuid) const override;
+		AnimatorDocumentDecodeResult DecodeAnimatorDocument(
+			const std::string& canonicalJson) const override;
+		AnimatorDocumentEncodeResult EncodeAnimatorDocument(
+			const AnimatorDocumentDTO& document) const override;
+		BoneMaskDocumentDecodeResult DecodeBoneMaskDocument(
+			const std::string& canonicalJson) const override;
+		BoneMaskDocumentEncodeResult EncodeBoneMaskDocument(
+			const BoneMaskDocumentDTO& document) const override;
+		BoneMaskCompileResult CompileBoneMaskDocument(
+			const BoneMaskDocumentDTO& document,
+			const AssetSkeletonSnapshot& skeleton) const override;
+		AnimationPreviewCreateResult CreateAnimationPreview(
+			const AnimationPreviewCreateRequest& request) override;
+		AnimationPreviewUpdateResult UpdateAnimationPreviewDefinition(
+			const AnimationPreviewDefinitionUpdate& update) override;
+		bool SetAnimationPreviewPlayback(const AnimationPreviewPlaybackRequest& request) override;
+		bool SetAnimationPreviewParameter(const AnimationPreviewParameterValue& value) override;
+		bool TriggerAnimationPreviewSlot(const AnimationPreviewSlotRequest& request) override;
+		bool SetAnimationPreviewViewport(const AnimationPreviewViewportRequest& request) override;
+		void TickAnimationPreview(AnimationPreviewSessionId sessionId, float deltaTime) override;
+		AnimationPreviewSnapshot GetAnimationPreviewSnapshot(
+			AnimationPreviewSessionId sessionId) const override;
+		void DestroyAnimationPreview(AnimationPreviewSessionId sessionId) override;
+		TimelinePreviewResult StartTimelinePreview(const TimelinePreviewStartRequest& request) override;
+		TimelinePreviewResult ConfigureTimelinePreviewPlayback(
+			const TimelinePreviewPlaybackRequest& request) override;
+		TimelinePreviewResult PlayTimelinePreview(const std::string& previewId) override;
+		TimelinePreviewResult PauseTimelinePreview(const std::string& previewId) override;
+		TimelinePreviewResult SeekTimelinePreview(
+			const std::string& previewId, std::int64_t tick, bool safeEdges) override;
+		TimelinePreviewResult StopTimelinePreview(const std::string& previewId) override;
+		TimelinePreviewResult GetTimelinePreview(const std::string& previewId) const override;
 		void SetFootIKDebugVisualization(bool enabled) override;
 		FootIKDebugSnapshot GetFootIKDebugSnapshot() const override;
 		TerrainSettingsSnapshot GetTerrainSettings() const override;
@@ -185,7 +221,11 @@ namespace Vans::EditorAPI
 		void SyncRuntimePhysicsTransforms() override;
 		void FlushRuntimeCharacterControllerTransforms() override;
 		void UpdateRuntimeNonCameraScripts() override;
+		void UpdateRuntimeTimelinesPostScript(double deltaSeconds) override;
 		void UpdateRuntimeCameraScripts() override;
+		void UpdateRuntimeTimelinesCamera(double deltaSeconds) override;
+		void UpdateTimelinePreviewsPostScript(double deltaSeconds) override;
+		void UpdateTimelinePreviewsCamera(double deltaSeconds) override;
 		void InitializeRuntimeScripts() override;
 		void SetupRuntimeScriptProjectVenv(const std::string& projectRootPath) override;
 		void ReloadRuntimeScripts() override;
@@ -204,6 +244,7 @@ namespace Vans::EditorAPI
 			const std::string& componentGuid,
 			const std::string& componentType,
 			bool enabled);
+		bool ReloadSceneAnimationDefinitions(std::string& error);
 
 		RuntimeSceneHandle m_Scene = nullptr;
 		RuntimeRenderDeviceHandle m_Device = nullptr;
@@ -213,6 +254,7 @@ namespace Vans::EditorAPI
 		std::vector<std::unique_ptr<IEngineCommand>> m_UndoStack;
 		std::vector<std::unique_ptr<IEngineCommand>> m_RedoStack;
 		std::vector<ScenePropertyEdit> m_PendingScenePropertyEdits;
+		VansTimelineDerivedMediaService m_TimelineDerivedMedia;
 		bool m_AllowNextCommandMerge = true;
 		GIProbeDebugSnapshot m_GIProbeDebugSnapshot;
 		UIDocumentId m_NextUIDocumentId = 1;

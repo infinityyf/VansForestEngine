@@ -35,6 +35,7 @@ namespace VansRuntime
         // 设置任意 XAML DependencyProperty（字符串表示）
         // 例如：SetProperty("Background", "#FF0000")
         void SetProperty(const std::string& property, const std::string& value);
+		bool TryGetProperty(const std::string& property, std::string& value) const;
 
     private:
         // 持有 Noesis::UIElement 的弱引用原始指针，由 VansNoesisDocument 填充

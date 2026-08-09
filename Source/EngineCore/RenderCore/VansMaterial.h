@@ -23,6 +23,7 @@
 #include "VansPostProcessProfile.h"
 
 #include <vector>
+#include <array>
 
 #include <unordered_map>
 
@@ -31,6 +32,8 @@
 #include <cstddef>
 
 #include <cstdint>
+
+#include <memory>
 
 #include <variant>
 
@@ -90,21 +93,32 @@ namespace VansGraphics
 
 
 
+	static constexpr uint32_t VANS_SSGI_MAX_GI_REGIONS = 8u;
+
+	struct alignas(16) SSGIRegionParamsGPU
+	{
+		glm::vec4 volumeMin;
+		glm::vec4 volumeSizeAndBias;
+		glm::vec4 traceParams;
+		glm::vec4 gridDimensionsAndPriority;
+	};
+	static_assert(sizeof(SSGIRegionParamsGPU) == 64, "SSGI region parameter layout must match GLSL");
+
 	struct alignas(16) SSGIParamsGPU
 
 	{
 
 		glm::vec4 screenSize;
 
-		glm::vec4 giVolumeMin;
-
-		glm::vec4 giVolumeSizeAndBias;
-
-		glm::vec4 traceParams; // x=max trace distance, y=fade start ratio, z=probe volume fade distance, w=reserved
+		glm::vec4 regionInfo; // x = active region count
+		std::array<SSGIRegionParamsGPU, VANS_SSGI_MAX_GI_REGIONS> regions{};
+		// x = output DDGI probe irradiance directly in Deferred, y = display exposure.
+		// This is shared GI consumer state, not an editor-side render override.
+		glm::vec4 deferredProbeDebug;
 
 	};
 
-	static_assert(sizeof(SSGIParamsGPU) == 64, "SSGI parameter layout must match GLSL");
+	static_assert(sizeof(SSGIParamsGPU) == 560, "SSGI parameter layout must match GLSL");
 
 	struct alignas(16) SSGITemporalParamsGPU
 
@@ -117,6 +131,15 @@ namespace VansGraphics
 	};
 
 	static_assert(sizeof(SSGITemporalParamsGPU) == 32, "SSGI temporal parameter layout must match GLSL");
+
+	struct alignas(16) SSGIAtrousPushConstants
+	{
+		uint32_t stepWidth = 1;
+		float depthSigma = 0.04f;
+		float normalPower = 32.0f;
+		float materialWeight = 0.0f;
+	};
+	static_assert(sizeof(SSGIAtrousPushConstants) == 16, "SSGI A-Trous push constant layout must match GLSL");
 
 
 
@@ -498,6 +521,16 @@ namespace VansGraphics
 
 
 	private:
+		struct RuntimeMaterialInstance
+		{
+			std::unique_ptr<VansMaterial> material;
+			int poolIndex = -1;
+			bool customPayload = false;
+		};
+
+		std::unordered_map<std::string, RuntimeMaterialInstance> m_RuntimeMaterialInstances;
+		std::vector<int> m_FreeRuntimePBRIndices;
+		std::vector<int> m_FreeRuntimeCustomIndices;
 
 
 
@@ -514,6 +547,15 @@ namespace VansGraphics
 		static constexpr const char* RT_SSGI_TEMPORAL_A = "Runtime.SSGI.TemporalA";
 
 		static constexpr const char* RT_SSGI_TEMPORAL_B = "Runtime.SSGI.TemporalB";
+
+		// Luminance first/second moments are ping-ponged with the temporal GI
+		// history. They provide an explicit variance estimate for rejection and
+		// clamping instead of deriving it only from the current 3x3 neighborhood.
+		static constexpr const char* RT_SSGI_MOMENTS_A = "Runtime.SSGI.MomentsA";
+		static constexpr const char* RT_SSGI_MOMENTS_B = "Runtime.SSGI.MomentsB";
+		static constexpr const char* RT_SSGI_SURFACE_HISTORY_A = "Runtime.SSGI.SurfaceHistoryA";
+		static constexpr const char* RT_SSGI_SURFACE_HISTORY_B = "Runtime.SSGI.SurfaceHistoryB";
+		static constexpr const char* RT_SSGI_ATROUS_A = "Runtime.SSGI.AtrousA";
 
 		static constexpr const char* RT_HZB_RESULT = "Runtime.HZB.Result";
 
@@ -538,14 +580,6 @@ namespace VansGraphics
 		static constexpr const char* RT_SSGI_FILTER_RESULT = "Runtime.SSGI.FilterResult";
 
 		static constexpr const char* RT_SSAO_FILTER_RESULT = "Runtime.SSAO.FilterResult";
-
-		static constexpr const char* RT_SH_R_RESULT = "Runtime.RayTracing.SH.R";
-
-		static constexpr const char* RT_SH_G_RESULT = "Runtime.RayTracing.SH.G";
-
-		static constexpr const char* RT_SH_B_RESULT = "Runtime.RayTracing.SH.B";
-
-		static constexpr const char* RT_GI_VISIBILITY_ATLAS = "Runtime.RayTracing.GI.VisibilityAtlas";
 
 		static constexpr const char* RT_VOLUMETRIC_FOG_RESULT = "Runtime.VolumetricFog.Result";
 
@@ -643,6 +677,18 @@ namespace VansGraphics
 
 			const VansMaterialParameterValue& value);
 
+		void InitializeRuntimeMaterialPools(
+			std::size_t pbrInstanceCount,
+			std::size_t customInstanceCount,
+			VansVKImage* fallbackTexture);
+		VansMaterial* AcquireRuntimeMaterialInstance(
+			const std::string& instanceKey,
+			const VansMaterial& source,
+			VkDescriptorSet sceneGlobalDescriptorSet = VK_NULL_HANDLE);
+		bool ReleaseRuntimeMaterialInstance(const std::string& instanceKey);
+		void ClearRuntimeMaterialInstances();
+		std::size_t RuntimeMaterialInstanceCount() const { return m_RuntimeMaterialInstances.size(); }
+
 		bool ReplaceGlobalBindlessTexture(
 			std::size_t textureIndex,
 			VansTexture* texture,
@@ -685,8 +731,6 @@ namespace VansGraphics
 		VkDescriptorSetLayout m_SSGITexSetLayout = VK_NULL_HANDLE;
 
 		std::vector<VkDescriptorSet> m_SSGIDescriptorSets;
-
-
 
 		//HIZ
 
@@ -819,6 +863,11 @@ namespace VansGraphics
 
 		VansTexture* m_PreConvDiffuse = nullptr;
 
+		// Unfiltered sky radiance used by ray-traced transport.  This must stay
+		// separate from m_PreConvDiffuse, which already stores hemispherical
+		// irradiance for raster IBL.
+		VansTexture* m_EnvironmentRadiance = nullptr;
+
 
 
 		VansTexture* m_PreConvSpecular = nullptr;
@@ -877,17 +926,20 @@ namespace VansGraphics
 
 
 
-		VansComputeShader* m_SSGIShader;
+		VansComputeShader* m_SSGIShader = nullptr;
 
 
 
 		// SSGI temporal accumulation shader & descriptors
 
 		VansComputeShader* m_SSGITemporalShader;
+		VansComputeShader* m_SSGIAtrousShader = nullptr;
 
 		VkDescriptorSetLayout m_SSGITemporalSetLayout = VK_NULL_HANDLE;
 
 		std::vector<VkDescriptorSet> m_SSGITemporalDescriptorSets; // [0]=frameA, [1]=frameB
+		VkDescriptorSetLayout m_SSGIAtrousSetLayout = VK_NULL_HANDLE;
+		std::vector<VkDescriptorSet> m_SSGIAtrousDescriptorSets;
 
 		VansVKBuffer m_SSGITemporalCBBuffer;
 

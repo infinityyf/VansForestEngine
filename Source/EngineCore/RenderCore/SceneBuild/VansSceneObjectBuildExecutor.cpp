@@ -485,7 +485,8 @@ void RegisterRuntimeComponents(
 	Vans::VansEntityHandle entity,
 	VansScriptObject& object,
 	const std::unordered_map<std::string, std::string>& componentGuids,
-	const RuntimeComponentBuildResults& buildResults)
+	const RuntimeComponentBuildResults& buildResults,
+	const std::optional<Vans::VansSceneTimelineComponentConfig>& timelineConfig)
 {
 	std::vector<std::pair<VansScriptComponent*, std::uint16_t>> registrationChecks;
 	const auto transformGuid = componentGuids.find("transform");
@@ -532,6 +533,32 @@ void RegisterRuntimeComponents(
 		entity,
 		buildResults.lights,
 		registrationChecks);
+	if (timelineConfig && timelineConfig->valid)
+	{
+		const std::string timelineComponentGuid = FindRuntimeComponentGuid(componentGuids, "timeline");
+		Vans::VansRuntimeTimelineComponent timeline;
+		timeline.assetGuid = timelineConfig->timelineAssetGuid;
+		timeline.assetPath = timelineConfig->timelineAssetPath;
+		timeline.instance = timelineConfig->instance;
+		runtimeWorld.Commands().AddTimelineComponent(
+			entity,
+			timelineComponentGuid,
+			std::move(timeline),
+			timelineConfig->enabled);
+		runtimeWorld.FlushCommands();
+		const Vans::VansComponentHandle timelineComponent = runtimeWorld.FindComponentByGuid(
+			timelineComponentGuid, Vans::VansRuntimeComponentType_Timeline);
+		if (!timelineComponent.IsValid())
+		{
+			VANS_LOG_ERROR("[SceneBuild] Runtime command buffer did not add Timeline component guid='"
+				<< timelineComponentGuid << "'");
+		}
+		else
+		{
+			VANS_LOG("[Timeline] Registered component='" << timelineComponentGuid
+				<< "' asset='" << timelineConfig->timelineAssetGuid << "'");
+		}
+	}
 	runtimeWorld.FlushCommands();
 	if (transformGuid != componentGuids.end() && !transformGuid->second.empty())
 	{
@@ -796,7 +823,8 @@ void VansGraphics::VansScene::LoadSceneObjects(
 			runtimeEntity,
 			*obj,
 			objectConfig.componentGuids,
-			runtimeComponentBuildResults);
+			runtimeComponentBuildResults,
+			objectConfig.timeline);
 	}
 
 	// === [VansSceneLoadPass::Pass2_VehicleReference] ===
@@ -951,6 +979,7 @@ void VansGraphics::VansScene::LoadSceneObjects(
 
 	// === [VansSceneLoadPass::Pass5_ClothAnimationBinding] ===
 	VansSceneClothAnimationBindingExecutor::Execute(*this);
+	ConfigureTimelineRuntime();
 
 	m_AudioManager.PlayAutoPlay();
 }

@@ -1,5 +1,8 @@
 ﻿#pragma once
 #include <vulkan/vulkan.h>
+#include <algorithm>
+#include <array>
+#include <cstdint>
 #include <vector>
 #include <cstddef>
 #include "../../RenderCore/VulkanCore/VansVKBuffer.h"
@@ -7,8 +10,10 @@
 #include "../../RenderCore/BRDFData/VansLight.h"
 #include "../../RenderCore/GICore/VansGISettings.h"
 #include "../../ScriptCore/VansCommonUtils.h"
-namespace VansGraphics 
+namespace VansGraphics
 {
+	inline constexpr uint32_t GIRTPreviewModeCount = 12u;
+
 	class VansLightManager;
 	class VansScene;
 	class VansMaterialManager;
@@ -27,20 +32,23 @@ namespace VansGraphics
 		glm::vec4 frameParams;
 		glm::vec4 regionParams;
 		glm::vec4 lightingParams;
+		glm::vec4 temporalParams;
 	};
-	static_assert(sizeof(RayTracingPushConstant) == 80, "GI push constant layout must match GLSL");
+	static_assert(sizeof(RayTracingPushConstant) == 96, "GI push constant layout must match GLSL");
 	static_assert(alignof(RayTracingPushConstant) == 16, "GI push constant alignment must match GLSL vec4");
 	static_assert(offsetof(RayTracingPushConstant, gridParams) == 0, "GI grid parameters must occupy GLSL slot 0");
 	static_assert(offsetof(RayTracingPushConstant, dispatchParams) == 16, "GI dispatch parameters must occupy GLSL slot 1");
 	static_assert(offsetof(RayTracingPushConstant, lightingParams) == 64, "GI lighting parameters must occupy GLSL slot 4");
+	static_assert(offsetof(RayTracingPushConstant, temporalParams) == 80, "GI temporal parameters must occupy GLSL slot 5");
 
 	struct alignas(16) GIRTPreviewPushConstant
 	{
 		glm::vec4 gridParams;       // xyz = grid dimensions, w = rays per probe
 		glm::vec4 selectionParams;  // x = mode, y = z slice, z = ray index, w = exposure
 		glm::vec4 displayParams;    // x = signed world-position scale
+		glm::vec4 updateParams;     // x = update frame, y = spatial divisor, z = direction slices, w = rays in active slice
 	};
-	static_assert(sizeof(GIRTPreviewPushConstant) == 48, "GI RT preview push constant layout must match GLSL");
+	static_assert(sizeof(GIRTPreviewPushConstant) == 64, "GI RT preview push constant layout must match GLSL");
 
 	class VansRayTracing
 	{
@@ -51,6 +59,8 @@ namespace VansGraphics
 		std::vector<VkPipelineShaderStageCreateInfo> m_RayTracingShaderStages;
 
 	public:
+
+		void PrepareGIProbeUpdate(VansLightManager* lightManager, VansMaterialManager* materialManager);
 
 		void DispatchRayTracing(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VansScene* scene);
 		
@@ -66,16 +76,16 @@ namespace VansGraphics
 
 		bool IsReady() const { return m_RTResourcesReady; }
 
-		void RequestGIRTPreview(uint32_t mode, uint32_t zSlice, uint32_t rayIndex, float exposure, float positionScale);
-		VansTexture* GetGIRTPreviewTexture() const { return m_GIRTPreviewTexture; }
+		void RequestGIRTPreviews(uint32_t zSlice, uint32_t rayIndex, float exposure, float positionScale);
+		VansTexture* GetGIRTPreviewTexture(uint32_t mode) const
+		{
+			return m_GIRTPreviewTextures[std::min(mode, GIRTPreviewModeCount - 1u)];
+		}
 		uint32_t GetGIRegionCount() const { return static_cast<uint32_t>(m_GIRegions.size()); }
-		VansTexture* GetGIRegionSHR(uint32_t regionIndex) const;
-		VansTexture* GetGIRegionSHG(uint32_t regionIndex) const;
-		VansTexture* GetGIRegionSHB(uint32_t regionIndex) const;
+		VansTexture* GetGIRegionIrradianceAtlas(uint32_t regionIndex) const;
 		VansTexture* GetGIRegionVisibilityAtlas(uint32_t regionIndex) const;
+		const VansVKBuffer* GetGIRegionProbeStateBuffer(uint32_t regionIndex) const;
 		
-		RayTracingPushConstant m_RayTracingConstant;
-
 	private:
 		struct GIRegionRuntime
 		{
@@ -83,27 +93,22 @@ namespace VansGraphics
 			RayTracingPushConstant constants{};
 
 			VansTexture* rayTracingResult = nullptr;
-			VansTexture* shRResult = nullptr;
-			VansTexture* shGResult = nullptr;
-			VansTexture* shBResult = nullptr;
-			VansTexture* shFeedbackR = nullptr;
-			VansTexture* shFeedbackG = nullptr;
-			VansTexture* shFeedbackB = nullptr;
+			VansTexture* irradianceAtlas = nullptr;
 			VansTexture* visibilityAtlas = nullptr;
 
 			VansVKBuffer hitPositionResult;
 			VansVKBuffer hitNormalResult;
 			VansVKBuffer hitAlbedoRoughnessResult;
+			VansVKBuffer hitEmissionResult;
 			VansVKBuffer hitRadianceBuffer;
-			VansVKBuffer hitDirectDiffuseBuffer;
+			VansVKBuffer probeStateBuffer;
 
 			bool rayTracingDescriptorSetIsDirty = true;
 			bool giPointLightDescriptorSetIsDirty = true;
 			bool giVisibilityDescriptorSetIsDirty = true;
-			bool hitPositionCalculateDone = false;
-			bool giVisibilityCalculateDone = false;
+			bool giProbeStateDescriptorSetIsDirty = true;
 			uint32_t giUpdateFrameIndex = 0;
-			uint32_t giLightingResponseFramesRemaining = 0;
+			uint32_t lightingResetFramesRemaining = 0;
 		};
 
 		void CreateRayTraceDescriptorSets(VansVKDevice* device, int blasMeshCount);
@@ -111,6 +116,7 @@ namespace VansGraphics
 		void CreateGIPointLightDescriptorSets(VansVKDevice* device);
 
 		void CreateGIVisibilityUpdateDescriptorSets(VansVKDevice* device);
+		void CreateGIProbeStateDescriptorSets(VansVKDevice* device);
 
 		void CreateGIRTPreviewDescriptorSets(VansVKDevice* device);
 
@@ -121,18 +127,15 @@ namespace VansGraphics
 		void BindGIPointLightData(uint32_t regionIndex);
 
 		void BindGIVisibilityData(VansMaterialManager* materialManager, uint32_t regionIndex);
+		void BindGIProbeStateData(uint32_t regionIndex);
 
 		void BindGIRTPreviewData(VansMaterialManager* materialManager);
 
 		void DispatchGIRTPreview(VansVKCommandBuffer* commandBuffer, VansMaterialManager* materialManager);
 
-		void CopyCurrentSHToFeedback(VansVKCommandBuffer* commandBuffer, VansMaterialManager* materialManager, uint32_t regionIndex);
-
 		bool UpdateLightingResponseState(VansLightManager* lightManager);
 
 		void DestroyRegionRuntime(VkDevice device, GIRegionRuntime& region);
-		void RegisterPrimaryRegionRuntimeTextures(VansMaterialManager* materialManager);
-		void SyncPrimaryCompatibilityState();
 		GIRegionRuntime* GetPreviewRegion();
 		const GIRegionRuntime* GetPreviewRegion() const;
 
@@ -140,7 +143,7 @@ namespace VansGraphics
 
 	private:
 
-		VansTexture* m_GIRTPreviewTexture = nullptr;
+		std::array<VansTexture*, GIRTPreviewModeCount> m_GIRTPreviewTextures{};
 
 		
 		VansRayTracingShader* m_VansRayTracingShader = nullptr;
@@ -156,24 +159,23 @@ namespace VansGraphics
 		VkDescriptorSetLayout m_GIVisibilityUpdateSetLayout;
 		std::vector<VkDescriptorSet> m_GIVisibilityUpdateDescriptorSets;
 
+		VkDescriptorSetLayout m_GIProbeStateSetLayout = VK_NULL_HANDLE;
+		std::vector<VkDescriptorSet> m_GIProbeStateDescriptorSets;
+
 		VkDescriptorSetLayout m_GIRTPreviewSetLayout = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet> m_GIRTPreviewDescriptorSets;
 
-		glm::uvec3 m_RayTracingGridDimensions = glm::uvec3(1u);
-
-		int m_RayCountPerSample;
-
-		glm::vec3 m_RayTracingProbeSpacing = glm::vec3(0.5f);
-
 		VansVKBuffer m_BLASInstanceBuffer;
 		VansVKBuffer m_TLASInstanceTextureIndexBuffer;
+		VansVKBuffer m_TLASInstanceGIEmissionBuffer;
 
 		VansComputeShader* m_RayTracingPointLighting = nullptr;
 
 		VansComputeShader* m_GIVisibilityUpdateShader = nullptr;
+		VansComputeShader* m_GIProbeStateShader = nullptr;
 
 		VansComputeShader* m_GIRTPreviewShader = nullptr;
-		GIRTPreviewPushConstant m_GIRTPreviewConstant{};
+		std::array<GIRTPreviewPushConstant, GIRTPreviewModeCount> m_GIRTPreviewConstants{};
 		uint32_t m_GIRTPreviewRequestFrames = 0;
 		bool m_GIRTPreviewDescriptorSetIsDirty = true;
 		uint32_t m_GIRTPreviewBoundZSlice = 0xffffffffu;
@@ -183,9 +185,10 @@ namespace VansGraphics
 
 		glm::vec4 m_LastGIMainLightDirectionIntensity = glm::vec4(0.0f);
 		glm::vec4 m_LastGIMainLightColor = glm::vec4(0.0f);
+		uint64_t m_LastGILightSignature = 0;
 		float m_BaseGIEnvironmentIntensity = 1.0f;
 		bool m_HasLastGIMainLight = false;
-		uint32_t m_GILightingResponseFramesRemaining = 0;
+		float m_CurrentGIEnvironmentIntensity = 1.0f;
 
 		// True after CreateRayTracingResource succeeds (scene has RT geometry).
 		bool m_RTResourcesReady = false;

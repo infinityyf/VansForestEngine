@@ -275,6 +275,7 @@ struct RayTracePayload
     vec4 positionHit;
     vec4 normalHit;
     vec4 albedoRoughness;
+    vec4 emissiveRadiance;
 };
 
 

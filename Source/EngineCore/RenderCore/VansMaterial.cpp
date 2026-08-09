@@ -190,7 +190,182 @@ void VansGraphics::VansMaterialManager::UploadCloudParamsToGPU()
 
 VansGraphics::VansMaterialManager::~VansMaterialManager()
 {
+	ClearRuntimeMaterialInstances();
 	ClearRuntimeRenderTextures();
+}
+
+namespace
+{
+std::unique_ptr<VansGraphics::VansMaterial> CloneRuntimeMaterial(
+	const VansGraphics::VansMaterial& source)
+{
+	using namespace VansGraphics;
+	std::unique_ptr<VansMaterial> result;
+	if (const auto* material = dynamic_cast<const VansPBRMaterial*>(&source))
+		result = std::make_unique<VansPBRMaterial>(*material);
+	else if (const auto* material = dynamic_cast<const VansEmissiveMaterial*>(&source))
+		result = std::make_unique<VansEmissiveMaterial>(*material);
+	else if (const auto* material = dynamic_cast<const VansDecalMaterial*>(&source))
+		result = std::make_unique<VansDecalMaterial>(*material);
+	else if (const auto* material = dynamic_cast<const VansSkinMaterial*>(&source))
+	{
+		auto clone = std::make_unique<VansSkinMaterial>(*material);
+		clone->m_SkinOwnedLayout = VK_NULL_HANDLE;
+		clone->m_SkinOwnedDescSets.clear();
+		result = std::move(clone);
+	}
+	else if (const auto* material = dynamic_cast<const VansClothMaterial*>(&source))
+	{
+		auto clone = std::make_unique<VansClothMaterial>(*material);
+		clone->m_ClothOwnedLayout = VK_NULL_HANDLE;
+		clone->m_ClothOwnedDescSets.clear();
+		result = std::move(clone);
+	}
+	else if (const auto* material = dynamic_cast<const VansSubsurfaceMaterial*>(&source))
+	{
+		auto clone = std::make_unique<VansSubsurfaceMaterial>(*material);
+		clone->m_SubsurfaceOwnedLayout = VK_NULL_HANDLE;
+		clone->m_SubsurfaceOwnedDescSets.clear();
+		result = std::move(clone);
+	}
+	else if (const auto* material = dynamic_cast<const VansTransmissionMaterial*>(&source))
+		result = std::make_unique<VansTransmissionMaterial>(*material);
+	else if (source.m_MaterialType == VansMaterialType::VAN_CUSTOM_SHADER)
+		result = std::make_unique<VansMaterial>(source);
+	return result;
+}
+
+int RuntimePBRIndex(VansGraphics::VansMaterial& material)
+{
+	using namespace VansGraphics;
+	if (auto* typed = dynamic_cast<VansPBRMaterial*>(&material)) return typed->m_MaterialIndex;
+	if (auto* typed = dynamic_cast<VansEmissiveMaterial*>(&material)) return typed->m_MaterialIndex;
+	if (auto* typed = dynamic_cast<VansDecalMaterial*>(&material)) return typed->m_MaterialIndex;
+	if (auto* typed = dynamic_cast<VansSubsurfaceMaterial*>(&material)) return typed->m_MaterialIndex;
+	return material.m_MaterialIndex;
+}
+
+void SetRuntimePBRIndex(VansGraphics::VansMaterial& material, int index)
+{
+	using namespace VansGraphics;
+	material.m_MaterialIndex = index;
+	if (auto* typed = dynamic_cast<VansPBRMaterial*>(&material)) typed->m_MaterialIndex = index;
+	else if (auto* typed = dynamic_cast<VansEmissiveMaterial*>(&material)) typed->m_MaterialIndex = index;
+	else if (auto* typed = dynamic_cast<VansDecalMaterial*>(&material)) typed->m_MaterialIndex = index;
+	else if (auto* typed = dynamic_cast<VansSubsurfaceMaterial*>(&material)) typed->m_MaterialIndex = index;
+}
+}
+
+void VansGraphics::VansMaterialManager::InitializeRuntimeMaterialPools(
+	std::size_t pbrInstanceCount,
+	std::size_t customInstanceCount,
+	VansVKImage* fallbackTexture)
+{
+	ClearRuntimeMaterialInstances();
+	m_FreeRuntimePBRIndices.clear();
+	m_FreeRuntimeCustomIndices.clear();
+	const VansClothGPUParam defaultCloth{};
+	const VansTreeLeafParamsGPU defaultTreeLeaf{};
+	for (std::size_t count = 0; count < pbrInstanceCount; ++count)
+	{
+		const int index = static_cast<int>(m_GlobalPBRParamData.size());
+		m_GlobalPBRParamData.emplace_back();
+		m_GlobalClothParamData.push_back(defaultCloth);
+		m_GlobalTreeLeafParamData.push_back(defaultTreeLeaf);
+		for (int texture = 0; texture < 5; ++texture)
+			m_GlobalPBRTextures.push_back(fallbackTexture);
+		m_FreeRuntimePBRIndices.push_back(index);
+	}
+	for (std::size_t count = 0; count < customInstanceCount; ++count)
+	{
+		const int index = static_cast<int>(m_GlobalCustomMaterialParamData.size());
+		m_GlobalCustomMaterialParamData.emplace_back();
+		m_FreeRuntimeCustomIndices.push_back(index);
+	}
+	std::reverse(m_FreeRuntimePBRIndices.begin(), m_FreeRuntimePBRIndices.end());
+	std::reverse(m_FreeRuntimeCustomIndices.begin(), m_FreeRuntimeCustomIndices.end());
+}
+
+VansGraphics::VansMaterial* VansGraphics::VansMaterialManager::AcquireRuntimeMaterialInstance(
+	const std::string& instanceKey,
+	const VansMaterial& source,
+	VkDescriptorSet sceneGlobalDescriptorSet)
+{
+	if (instanceKey.empty()) return nullptr;
+	if (const auto found = m_RuntimeMaterialInstances.find(instanceKey);
+		found != m_RuntimeMaterialInstances.end()) return found->second.material.get();
+
+	std::unique_ptr<VansMaterial> clone = CloneRuntimeMaterial(source);
+	if (!clone) return nullptr;
+	const bool customPayload = source.m_MaterialType == VansMaterialType::VAN_CUSTOM_SHADER ||
+		source.m_MaterialType == VansMaterialType::VAN_PBR_TRANSMISSION;
+	std::vector<int>& freeIndices = customPayload ? m_FreeRuntimeCustomIndices : m_FreeRuntimePBRIndices;
+	if (freeIndices.empty()) return nullptr;
+	const int poolIndex = freeIndices.back();
+	freeIndices.pop_back();
+	clone->m_AssetName = "RuntimeTimelineMaterial:" + instanceKey;
+
+	if (customPayload)
+	{
+		const int sourceIndex = source.m_MaterialIndex;
+		if (sourceIndex < 0 || sourceIndex >= static_cast<int>(m_GlobalCustomMaterialParamData.size()))
+		{
+			freeIndices.push_back(poolIndex);
+			return nullptr;
+		}
+		clone->m_MaterialIndex = poolIndex;
+		m_GlobalCustomMaterialParamData[poolIndex] = m_GlobalCustomMaterialParamData[sourceIndex];
+		if (m_GlobalCustomMaterialDataBuffer.GetNativeBuffer() != VK_NULL_HANDLE)
+			m_GlobalCustomMaterialDataBuffer.UpdateMapped(
+				&m_GlobalCustomMaterialParamData[poolIndex],
+				sizeof(VansCustomMaterialPayload) * poolIndex,
+				sizeof(VansCustomMaterialPayload));
+	}
+	else
+	{
+		const int sourceIndex = RuntimePBRIndex(const_cast<VansMaterial&>(source));
+		if (sourceIndex < 0 || sourceIndex >= static_cast<int>(m_GlobalPBRParamData.size()))
+		{
+			freeIndices.push_back(poolIndex);
+			return nullptr;
+		}
+		SetRuntimePBRIndex(*clone, poolIndex);
+		m_GlobalPBRParamData[poolIndex] = m_GlobalPBRParamData[sourceIndex];
+		m_GlobalClothParamData[poolIndex] = m_GlobalClothParamData[sourceIndex];
+		m_GlobalTreeLeafParamData[poolIndex] = m_GlobalTreeLeafParamData[sourceIndex];
+		for (int texture = 0; texture < 5; ++texture)
+			m_GlobalPBRTextures[poolIndex * 5 + texture] = m_GlobalPBRTextures[sourceIndex * 5 + texture];
+		if (m_GlobalPBRDataBuffer.GetNativeBuffer() != VK_NULL_HANDLE)
+		{
+			m_GlobalPBRDataBuffer.UpdateMapped(&m_GlobalPBRParamData[poolIndex],
+				sizeof(VansBasePBRParam) * poolIndex, sizeof(VansBasePBRParam));
+			m_GlobalClothDataBuffer.UpdateMapped(&m_GlobalClothParamData[poolIndex],
+				sizeof(VansClothGPUParam) * poolIndex, sizeof(VansClothGPUParam));
+			m_GlobalTreeLeafDataBuffer.UpdateMapped(&m_GlobalTreeLeafParamData[poolIndex],
+				sizeof(VansTreeLeafParamsGPU) * poolIndex, sizeof(VansTreeLeafParamsGPU));
+		}
+		RewriteGlobalBindlessTextureDescriptors(sceneGlobalDescriptorSet);
+	}
+
+	VansMaterial* result = clone.get();
+	m_RuntimeMaterialInstances.emplace(instanceKey,
+		RuntimeMaterialInstance{ std::move(clone), poolIndex, customPayload });
+	return result;
+}
+
+bool VansGraphics::VansMaterialManager::ReleaseRuntimeMaterialInstance(const std::string& instanceKey)
+{
+	const auto found = m_RuntimeMaterialInstances.find(instanceKey);
+	if (found == m_RuntimeMaterialInstances.end()) return false;
+	(found->second.customPayload ? m_FreeRuntimeCustomIndices : m_FreeRuntimePBRIndices)
+		.push_back(found->second.poolIndex);
+	m_RuntimeMaterialInstances.erase(found);
+	return true;
+}
+
+void VansGraphics::VansMaterialManager::ClearRuntimeMaterialInstances()
+{
+	m_RuntimeMaterialInstances.clear();
 }
 
 bool VansGraphics::VansMaterialManager::RegisterRuntimeRenderTexture(const std::string& name, VansTexture* texture, bool replaceExisting)
@@ -280,6 +455,9 @@ bool VansGraphics::VansMaterialManager::ReplaceGlobalBindlessTexture(
 
 void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
 {
+	ClearRuntimeMaterialInstances();
+	m_FreeRuntimePBRIndices.clear();
+	m_FreeRuntimeCustomIndices.clear();
 	auto deleteTexture = [](VansTexture*& texture)
 	{
 		delete texture;
@@ -296,6 +474,7 @@ void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
 	ClearRuntimeRenderTextures();
 	m_RectLightEmissiveArray = nullptr;
 	deleteTexture(m_PreConvDiffuse);
+	deleteTexture(m_EnvironmentRadiance);
 	deleteTexture(m_PreConvSpecular);
 	deleteTexture(m_BRDFIntegralLUT);
 	deleteTexture(m_SkinBSDFLUT);
@@ -364,6 +543,8 @@ void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
 	descMgr->DestroyDescriptorSetLayout(m_FogRayMarchSetLayout);
 	descMgr->DestroyDescriptorSet(m_SSGITemporalDescriptorSets);
 	descMgr->DestroyDescriptorSetLayout(m_SSGITemporalSetLayout);
+	descMgr->DestroyDescriptorSet(m_SSGIAtrousDescriptorSets);
+	descMgr->DestroyDescriptorSetLayout(m_SSGIAtrousSetLayout);
 	descMgr->DestroyDescriptorSet(m_HIZSeedDescriptorSets);
 	descMgr->DestroyDescriptorSetLayout(m_HIZSeedSetLayout);
 	descMgr->DestroyDescriptorSet(m_OcclusionHIZSeedDescriptorSets);
@@ -451,10 +632,14 @@ bool VansGraphics::VansMaterialManager::FlushMaterialPayload(VansMaterial& mater
 	if (m_GlobalCustomMaterialDataBuffer.GetNativeBuffer() == VK_NULL_HANDLE)
 		return false;
 	if (index < static_cast<int>(m_GlobalCustomMaterialParamData.size()))
-		m_GlobalCustomMaterialParamData[index] = material.m_CustomMaterialPayload;
+	{
+		for (int valueIndex = 0; valueIndex < VANS_CUSTOM_MATERIAL_VEC4_COUNT; ++valueIndex)
+			m_GlobalCustomMaterialParamData[index].values[valueIndex] =
+				material.m_CustomMaterialPayload.values[valueIndex];
+	}
 	const VkDeviceSize offset = sizeof(VansCustomMaterialPayload) * static_cast<VkDeviceSize>(index);
 	m_GlobalCustomMaterialDataBuffer.SetBufferData(
-		&material.m_CustomMaterialPayload,
+		&m_GlobalCustomMaterialParamData[index],
 		offset,
 		sizeof(VansCustomMaterialPayload));
 	return true;

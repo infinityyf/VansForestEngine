@@ -1,11 +1,67 @@
 #include "VansParticleRuntime.h"
 
+#include <algorithm>
+
 namespace VansGraphics
 {
+	void VansParticleRuntime::Stop()
+	{
+		m_IsPlaying = false;
+		m_PlayTime = 0.0f;
+		if (m_Asset)
+			for (auto& emitter : m_Asset->m_Emitters)
+				if (emitter) emitter->ResetSimulation();
+		m_AliveInstanceCount.store(0, std::memory_order_release);
+		for (auto& buffer : m_InstanceBuffers) buffer.clear();
+	}
+
+	void VansParticleRuntime::SetRandomSeed(uint32_t seed)
+	{
+		m_RandomSeed = seed != 0 ? seed : 0x9e3779b9u;
+		if (!m_Asset) return;
+		uint32_t emitterSeed = m_RandomSeed;
+		for (auto& emitter : m_Asset->m_Emitters)
+		{
+			if (emitter) emitter->SetRandomSeed(emitterSeed);
+			emitterSeed = emitterSeed * 1664525u + 1013904223u;
+		}
+	}
+
+	void VansParticleRuntime::Burst(uint32_t count)
+	{
+		if (!m_Asset || count == 0) return;
+		for (auto& emitter : m_Asset->m_Emitters)
+			if (emitter) emitter->EmitBurst(count, m_LocalToWorld);
+	}
+
+	void VansParticleRuntime::Restart()
+	{
+		Stop();
+		m_IsPlaying = true;
+	}
+
+	void VansParticleRuntime::Seek(float seconds, float fixedStep)
+	{
+		const bool wasPlaying = m_IsPlaying;
+		Stop();
+		m_IsPlaying = true;
+		float remaining = std::max(0.0f, seconds);
+		const float step = std::max(1.0f / 240.0f, fixedStep);
+		while (remaining > 0.0f)
+		{
+			const float delta = std::min(step, remaining);
+			Update(delta);
+			remaining -= delta;
+		}
+		m_IsPlaying = wasPlaying;
+	}
+
     void VansParticleRuntime::Update(float deltaTime)
     {
         if (!m_Asset || !m_IsPlaying) return;
 
+		deltaTime *= m_SimulationRate;
+		if (deltaTime <= 0.0f) return;
         m_PlayTime += deltaTime;
 
         // 获取后台缓冲索引

@@ -28,6 +28,7 @@ namespace VansGraphics { class VansTexture; }
 namespace Vans { struct VansSceneAudioResourceRequest; struct VansSceneVideoResourceRequest; }
 namespace Vans { struct VansSceneObjectBuildPlan; }
 namespace Vans { struct VansPackagedResourcePlan; }
+namespace Vans { class VansTimelineRuntimeSystem; class VansTimelinePropertyRegistry; }
 
 namespace VansGraphics { class VansCamera; }
 
@@ -187,6 +188,7 @@ namespace VansGraphics
 
 	public:
 
+		VansScene();
 		~VansScene();
 
 
@@ -371,6 +373,9 @@ namespace VansGraphics
 		std::vector<VansScriptObject*> m_SceneObjects;
 		std::vector<std::string> m_PendingEntityDestructionGuids;
 		std::unique_ptr<Vans::VansRuntimeWorld> m_RuntimeWorld;
+		std::unique_ptr<Vans::VansTimelineRuntimeSystem> m_TimelineRuntime;
+		std::shared_ptr<Vans::VansTimelinePropertyRegistry> m_TimelinePropertyRegistry;
+		void ConfigureTimelineRuntime();
 
 
 	public:
@@ -836,12 +841,40 @@ namespace VansGraphics
 		// Per-frame skeletal animation CPU update + GPU bone matrix upload.
 
 		void UpdateAnimations(float deltaTime);
+		void UpdateTimelinesPostScript(double deltaSeconds);
+		void UpdateTimelinesCamera(double deltaSeconds);
+		void UpdateTimelinePreviewsPostScript(double deltaSeconds);
+		void UpdateTimelinePreviewsCamera(double deltaSeconds);
+		bool PlayRuntimeTimeline(const std::string& componentGuid, bool restart);
+		bool PauseRuntimeTimeline(const std::string& componentGuid);
+		bool ResumeRuntimeTimeline(const std::string& componentGuid);
+		bool StopRuntimeTimeline(const std::string& componentGuid);
+		bool GetRuntimeTimelineState(
+			const std::string& componentGuid,
+			std::string& state,
+			std::int64_t& tick) const;
+		std::string FindTimelineInstanceOwnerGuid(const std::string& assetGuid) const;
+		bool StartTimelinePreview(
+			const std::string& previewId,
+			const std::string& canonicalJson,
+			const std::string& ownerEntityGuid,
+			bool safeEvents,
+			bool includeSubTimelines,
+			std::string& error);
+		bool PlayTimelinePreview(const std::string& previewId);
+		bool PauseTimelinePreview(const std::string& previewId);
+		bool ConfigureTimelinePreviewPlayback(const std::string& previewId, double playRate,
+			int direction, bool loopPlaybackRange);
+		bool SeekTimelinePreview(const std::string& previewId, std::int64_t tick, bool safeEdges);
+		bool StopTimelinePreview(const std::string& previewId);
+		bool GetTimelinePreviewState(const std::string& previewId, int& state, std::int64_t& tick) const;
 
 
 
 		// Update per-node GPU data once per frame before command buffer recording.
 
 		void UpdateRenderNodesDataBeforeRecord();
+		void MarkRenderNodeDescriptorSetsDirty();
 
 		void SetMainCameraHiZCullSettings(const VansMainCameraHiZCullSettings& settings);
 		const VansMainCameraHiZCullSettings& GetMainCameraHiZCullSettings() const { return m_MainCameraHiZCullSettings; }
@@ -1084,6 +1117,10 @@ namespace VansGraphics
 			m_GIParametersDirty = true;
 		}
 
+		bool ReplaceAnimationRuntimeController(
+			VansAnimationNode* animNode,
+			std::unique_ptr<VansAnimationController> controller);
+
 		bool AreGIProbeResourcesDirty() const { return m_GIProbeResourcesDirty; }
 		bool AreGIParametersDirty() const { return m_GIParametersDirty; }
 		void ClearGIProbeResourcesDirty() { m_GIProbeResourcesDirty = false; }
@@ -1155,6 +1192,11 @@ namespace VansGraphics
 
 		std::vector<uint32_t>& GetTLASInstanceTextureIndex() { return m_TlasInstanceTextureIndex; }
 
+		// Per-TLAS-instance multiplier for radiance emitted by opaque GI hit
+		// shading.  It stays instance-local because one mesh can be reused by
+		// materials with different emissive colors/intensities.
+		std::vector<glm::vec4>& GetTLASInstanceGIEmission() { return m_TlasInstanceGIEmission; }
+
 
 
 
@@ -1223,6 +1265,8 @@ namespace VansGraphics
 
 		std::vector<uint32_t> m_TlasInstanceTextureIndex;
 
+		std::vector<glm::vec4> m_TlasInstanceGIEmission;
+
 
 
 		std::vector<VansVKImage> m_TlasInstanceTextures;
@@ -1240,6 +1284,8 @@ namespace VansGraphics
 		VansSceneLoadMode m_LoadMode     = VansSceneLoadMode::Editor;
 
 		bool m_ResourcesLoaded = false;
+
+		bool m_UsingPackagedProjectAssets = false;
 
 		VansVKDevice* m_RuntimeResourceDevice = nullptr;
 

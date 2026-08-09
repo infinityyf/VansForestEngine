@@ -35,7 +35,12 @@ layout(set = 1, binding = 3) uniform PostProcessParams
     float  m_Temperature;
     float  m_Tint;
     float  _pad7;
-    float  _pad8;
+    float  m_DebugPassthrough;
+
+	float  m_TimelineFadeColorR;
+	float  m_TimelineFadeColorG;
+	float  m_TimelineFadeColorB;
+	float  m_TimelineFadeOpacity;
 } uPP;
 
 layout(location = 0) in vec2 fragTexCoord;
@@ -94,6 +99,16 @@ void main()
     uv.y = -fragTexCoord.y * 0.5 + 0.5;
 
     vec3 hdr = subpassLoad(colorInput).rgb;
+    if (uPP.m_DebugPassthrough > 0.5)
+    {
+        vec3 debugColor = hdr;
+        if (any(isnan(debugColor)) || any(isinf(debugColor)))
+            debugColor = vec3(1.0, 0.0, 1.0);
+        else
+            debugColor = debugColor / (vec3(1.0) + max(debugColor, vec3(0.0)));
+        outColor = vec4(clamp(debugColor, 0.0, 1.0), 1.0);
+        return;
+    }
     vec3 bloom = texture(bloomResult, uv).rgb;
     hdr += bloom * uPP.m_BloomIntensity;
 
@@ -127,5 +142,11 @@ void main()
         }
     }
 
-    outColor = vec4(clamp(ldr, 0.0, 1.0), 1.0);
+	vec3 fadeColor = vec3(
+		uPP.m_TimelineFadeColorR,
+		uPP.m_TimelineFadeColorG,
+		uPP.m_TimelineFadeColorB);
+	ldr = mix(ldr, fadeColor, clamp(uPP.m_TimelineFadeOpacity, 0.0, 1.0));
+
+	outColor = vec4(clamp(ldr, 0.0, 1.0), 1.0);
 }

@@ -109,12 +109,27 @@ void VansAudioSourceBinding::Play() { if (m_Instance) m_Instance->Play(); else i
 void VansAudioSourceBinding::Pause() { if (m_Instance) m_Instance->Pause(); else if (m_PrivateNode) m_PrivateNode->Pause(); else if (m_Node) m_Node->Pause(); }
 void VansAudioSourceBinding::Stop() { if (m_Instance) m_Instance->Stop(); else if (m_PrivateNode) m_PrivateNode->Stop(); else if (m_Node) m_Node->Stop(); }
 void VansAudioSourceBinding::Resume() { if (m_Instance) m_Instance->Resume(); else if (m_PrivateNode) m_PrivateNode->Resume(); else if (m_Node) m_Node->Resume(); }
+bool VansAudioSourceBinding::Seek(double seconds)
+{
+	const float offset = static_cast<float>(std::max(0.0, seconds));
+	return m_Instance ? m_Instance->SetPlaybackOffsetSeconds(offset) :
+		(m_PrivateNode ? m_PrivateNode->SetPlaybackOffsetSeconds(offset) :
+			(m_Node && m_Node->SetPlaybackOffsetSeconds(offset)));
+}
+double VansAudioSourceBinding::GetPlaybackOffsetSeconds() const
+{
+	return m_Instance ? m_Instance->GetPlaybackOffsetSeconds() :
+		(m_PrivateNode ? m_PrivateNode->GetPlaybackOffsetSeconds() :
+			(m_Node ? m_Node->GetPlaybackOffsetSeconds() : 0.0f));
+}
 bool VansAudioSourceBinding::IsPlaying() const { return m_Instance ? m_Instance->IsPlaying() : (m_PrivateNode ? m_PrivateNode->IsPlaying() : (m_Node && m_Node->IsPlaying())); }
 bool VansAudioSourceBinding::IsPaused() const { return m_Instance ? m_Instance->IsPaused() : (m_PrivateNode ? m_PrivateNode->IsPaused() : (m_Node && m_Node->IsPaused())); }
 void VansAudioSourceBinding::SetEnabled(bool enabled) { if (m_Instance) m_Instance->SetEnabled(enabled); else if (m_PrivateNode) m_PrivateNode->SetEnabled(enabled); else if (m_Node) m_Node->SetEnabled(enabled); }
 void VansAudioSourceBinding::SetPosition(float x, float y, float z) { if (m_Instance) m_Instance->SetPosition(x, y, z); else if (m_PrivateNode) m_PrivateNode->SetPosition(x, y, z); else if (m_Node) m_Node->SetPosition(x, y, z); }
 void VansAudioSourceBinding::SetSpatial(bool enabled) { if (m_Instance) m_Instance->SetSpatial(enabled); else if (m_PrivateNode) m_PrivateNode->SetSpatial(enabled); else if (m_Node) m_Node->SetSpatial(enabled); }
 bool VansAudioSourceBinding::GetSpatial() const { return m_Instance ? m_Instance->GetSpatial() : (m_PrivateNode ? m_PrivateNode->GetSpatial() : (m_Node && m_Node->GetSpatial())); }
+void VansAudioSourceBinding::SetStereoPan(float pan) { if (m_Instance) m_Instance->SetStereoPan(pan); else if (m_PrivateNode) m_PrivateNode->SetStereoPan(pan); else if (m_Node) m_Node->SetStereoPan(pan); }
+float VansAudioSourceBinding::GetStereoPan() const { return m_Instance ? m_Instance->GetStereoPan() : (m_PrivateNode ? m_PrivateNode->GetStereoPan() : (m_Node ? m_Node->GetStereoPan() : 0.0f)); }
 void VansAudioSourceBinding::UpdateDistanceGain(float listenerX, float listenerY, float listenerZ)
 {
     if (m_Instance)

@@ -10,6 +10,7 @@
 #include <../../GLM/glm.hpp>
 #include <../../GLM/gtc/quaternion.hpp>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace VansGraphics
@@ -152,7 +153,7 @@ namespace VansGraphics
 		IKCoordinateSpace positionSpace = IKCoordinateSpace::Model;
 		IKCoordinateSpace rotationSpace = IKCoordinateSpace::Model;
 		int         referenceBoneIndex = -1;
-		std::string referenceBoneName;
+		std::string_view referenceBoneName;
 	};
 
 	// ─── 求解结果 ────────────────────────────────────────────────

@@ -20,7 +20,9 @@ std::wstring HistoryKey(const VansAssetDocument& document)
 
 AssetDocumentEditResult ValidatePointer(const std::string& path)
 {
-    if (path.empty() || path.front() != '/')
+	if (path.empty())
+		return { true, {} };
+	if (path.front() != '/')
         return { false, "Asset property address must be a non-root JSON Pointer" };
     for (std::size_t index = 0; index < path.size(); ++index)
     {
@@ -190,6 +192,14 @@ AssetDocumentEditResult VansAssetDocumentEditService::Set(
         propertyPointer, std::move(value)));
 }
 
+AssetDocumentEditResult VansAssetDocumentEditService::ReplaceRoot(
+	VansAssetDocument& document,
+	VansSerializedValue value)
+{
+	return ExecuteCommand(document, std::make_unique<EditorInternal::SetAssetPropertyCommand>(
+		std::string{}, std::move(value)));
+}
+
 AssetDocumentEditResult VansAssetDocumentEditService::Set(
     VansAssetDocument& document,
     const DocumentPropertyPath& path,
@@ -292,6 +302,23 @@ AssetDocumentEditResult VansAssetDocumentEditService::Redo(VansAssetDocument& do
     else
         history.redo.push_back(std::move(command));
     return result;
+}
+
+AssetDocumentEditResult VansAssetDocumentEditService::RevertToSaved(VansAssetDocument& document)
+{
+    std::size_t guard = 0;
+    while (document.IsDirty())
+    {
+        if (!CanUndo(document))
+            return { false, "Cannot discard asset edits because the saved document state is not in history" };
+        AssetDocumentEditResult result = Undo(document);
+        if (!result)
+            return result;
+        if (++guard > 100000)
+            return { false, "Asset discard exceeded the edit-history safety limit" };
+    }
+    ClearHistory(document);
+    return { true, {} };
 }
 
 void VansAssetDocumentEditService::ClearHistory(const VansAssetDocument& document)

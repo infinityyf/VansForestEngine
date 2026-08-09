@@ -490,6 +490,23 @@ void VansAudioNode::Stop()
     }
 }
 
+bool VansAudioNode::SetPlaybackOffsetSeconds(float seconds)
+{
+	if (m_Properties.m_PlayMode != AudioPlayMode::Static || m_SourceId == 0)
+		return false;
+	alSourcef(m_SourceId, AL_SEC_OFFSET, std::max(0.0f, seconds));
+	return alGetError() == AL_NO_ERROR;
+}
+
+float VansAudioNode::GetPlaybackOffsetSeconds() const
+{
+	if (m_Properties.m_PlayMode != AudioPlayMode::Static || m_SourceId == 0)
+		return 0.0f;
+	float offset = 0.0f;
+	alGetSourcef(m_SourceId, AL_SEC_OFFSET, &offset);
+	return offset;
+}
+
 void VansAudioNode::Resume()
 {
     m_LogicalPaused = false;
@@ -624,6 +641,12 @@ void VansAudioNode::SetSpatial(bool enabled)
     CommitGain();
 }
 
+void VansAudioNode::SetStereoPan(float pan)
+{
+	m_Properties.m_StereoPan = std::clamp(pan, -1.0f, 1.0f);
+	if (!m_Properties.m_Spatial) ApplySpatialProperties();
+}
+
 void VansAudioNode::ApplySpatialProperties()
 {
     if (!m_SourceId) return;
@@ -639,7 +662,7 @@ void VansAudioNode::ApplySpatialProperties()
     else
     {
         alSourcei(m_SourceId, AL_SOURCE_RELATIVE, AL_TRUE);
-        alSource3f(m_SourceId, AL_POSITION, 0.0f, 0.0f, 0.0f);
+		alSource3f(m_SourceId, AL_POSITION, m_Properties.m_StereoPan, 0.0f, 0.0f);
         alSourcef(m_SourceId, AL_ROLLOFF_FACTOR, 0.0f);
     }
 }

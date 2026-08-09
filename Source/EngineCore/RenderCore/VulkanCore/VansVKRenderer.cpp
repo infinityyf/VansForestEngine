@@ -4,6 +4,7 @@
 #include "VansRenderGraphVulkanSync.h"
 #include "VansVKDescriptorManager.h"
 #include "VansDescriptorSetLayouts.h"
+#include "VansVKMemoryManager.h"
 #include "VansVKSecondaryCommandContext.h"
 #include "../VansScene.h"
 #include "../VansCamera.h"
@@ -18,8 +19,14 @@
 #include "../../ProjectSystem/VansProjectManager.h"
 #include "../../RuntimeUI/Public/VansUISystem.h"
 #include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <limits>
+#include <sstream>
 #include <thread>
 #include <utility>
 
@@ -29,6 +36,65 @@ namespace VansGraphics
 
 	namespace
 	{
+		bool IsDeferredProbeOnlyDebugOutput(const VansScene* scene)
+		{
+			return scene != nullptr && IsGIProbeOnlyDeferredOutputEnabled(scene->GetGISettings());
+		}
+
+		float HalfToFloat(uint16_t value)
+		{
+			const uint32_t sign = uint32_t(value & 0x8000u) << 16u;
+			int32_t exponent = int32_t((value >> 10u) & 0x1fu);
+			uint32_t mantissa = value & 0x03ffu;
+			uint32_t bits = 0u;
+			if (exponent == 0)
+			{
+				if (mantissa == 0u)
+				{
+					bits = sign;
+				}
+				else
+				{
+					exponent = 1;
+					while ((mantissa & 0x0400u) == 0u)
+					{
+						mantissa <<= 1u;
+						--exponent;
+					}
+					mantissa &= 0x03ffu;
+					bits = sign | (uint32_t(exponent + 112) << 23u) | (mantissa << 13u);
+				}
+			}
+			else if (exponent == 31)
+			{
+				bits = sign | 0x7f800000u | (mantissa << 13u);
+			}
+			else
+			{
+				bits = sign | (uint32_t(exponent + 112) << 23u) | (mantissa << 13u);
+			}
+			float result = 0.0f;
+			std::memcpy(&result, &bits, sizeof(result));
+			return result;
+		}
+
+		uint8_t DisplayByteFromLinearHalf(uint16_t value)
+		{
+			float linear = HalfToFloat(value);
+			if (!std::isfinite(linear) || linear <= 0.0f)
+				linear = 0.0f;
+			const float mapped = linear / (1.0f + linear);
+			return static_cast<uint8_t>(std::clamp(mapped, 0.0f, 1.0f) * 255.0f + 0.5f);
+		}
+
+		uint8_t DisplayByteFromLinearFloat(float linear)
+		{
+			if (!std::isfinite(linear) || linear <= 0.0f)
+				linear = 0.0f;
+			const float mapped = linear / (1.0f + linear);
+			return static_cast<uint8_t>(std::clamp(mapped, 0.0f, 1.0f) * 255.0f + 0.5f);
+		}
+
 		constexpr uint64_t kRenderGraphFnvOffsetBasis = 14695981039346656037ull;
 		constexpr uint64_t kRenderGraphFnvPrime = 1099511628211ull;
 
@@ -1179,7 +1245,7 @@ namespace VansGraphics
 				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::PunctualShadowDebug, [&]() { UpdatePunctualShadowDebugPreview(renderPassManager, frameGraphicsCommandBuffer); });
 				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::ScreenSpaceShadow, [&]() { UpdateScreenSpaceShadow(renderPassManager, frameGraphicsCommandBuffer); });
 				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::RayTracing, [&]() { UpdateRayTracing(frameGraphicsCommandBuffer); });
-				// GIPointLight writes the current probe SH before SSGI consumes it.
+				// DDGI atlas/state writes must be visible before SSGI samples them.
 				{
 					VkMemoryBarrier giProbeToSSGIBarrier = {};
 					giProbeToSSGIBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
@@ -1228,10 +1294,15 @@ namespace VansGraphics
 				renderPassManager->GetVansForwardOpaqueAfterDeferredPass(),
 				frameGraphicsCommandBuffer,
 				m_globalRenderStateData,
-				[&]() { m_Scene->DrawForwardOpaqueAfterDeferredNodes(); });
+				[&]()
+				{
+					if (!IsDeferredProbeOnlyDebugOutput(m_Scene))
+						m_Scene->DrawForwardOpaqueAfterDeferredNodes();
+				});
 
 			// Generate water coverage only after opaque custom materials have populated main depth.
-			if (IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::WaterGBuffer))
+			if (!IsDeferredProbeOnlyDebugOutput(m_Scene) &&
+				IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::WaterGBuffer))
 			{
 				auto* waterSys = m_Scene->GetWaterSystem();
 				if (waterSys != nullptr)
@@ -1273,7 +1344,8 @@ namespace VansGraphics
 				}
 			}
 			// Water effects consume the coverage generated against the updated main depth.
-			if (IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::WaterPreCompute))
+			if (!IsDeferredProbeOnlyDebugOutput(m_Scene) &&
+				IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::WaterPreCompute))
 			{
 				VANS_GPU_SCOPE(cmd, "Water Pre-Compute");
 				auto* waterSys = m_Scene->GetWaterSystem();
@@ -1293,7 +1365,8 @@ namespace VansGraphics
 				}
 			}
 
-			if (IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::HairVisibility))
+			if (!IsDeferredProbeOnlyDebugOutput(m_Scene) &&
+				IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::HairVisibility))
 			{
 				ClearHairOITResources(renderPassManager, frameGraphicsCommandBuffer);
 				RecordFrameGraphicsPass(
@@ -1308,15 +1381,18 @@ namespace VansGraphics
 				PrepareHairOITForResolve(renderPassManager, frameGraphicsCommandBuffer);
 			}
 
-			RecordFrameGraphicsPass(
-				m_CurrentFramePlan,
-				VansRenderPassNames::HairLighting,
-				"Hair Lighting Pass",
-				renderPassManager,
-				renderPassManager->GetVansHairLightingPass(),
-				frameGraphicsCommandBuffer,
-				m_globalRenderStateData,
-				[&]() { DrawHairLighting(renderPassManager, frameGraphicsCommandBuffer); });
+			if (!IsDeferredProbeOnlyDebugOutput(m_Scene))
+			{
+				RecordFrameGraphicsPass(
+					m_CurrentFramePlan,
+					VansRenderPassNames::HairLighting,
+					"Hair Lighting Pass",
+					renderPassManager,
+					renderPassManager->GetVansHairLightingPass(),
+					frameGraphicsCommandBuffer,
+					m_globalRenderStateData,
+					[&]() { DrawHairLighting(renderPassManager, frameGraphicsCommandBuffer); });
+			}
 
 			RecordFrameStep(
 				m_CurrentFramePlan,
@@ -1333,8 +1409,11 @@ namespace VansGraphics
 						{ sceneColorToPostProcess });
 
 					UploadPostProcessProfileIfDirty();
-					UpdateExposure(renderPassManager, frameGraphicsCommandBuffer);
-					UpdateBloom(renderPassManager, frameGraphicsCommandBuffer);
+					if (!IsDeferredProbeOnlyDebugOutput(m_Scene))
+					{
+						UpdateExposure(renderPassManager, frameGraphicsCommandBuffer);
+						UpdateBloom(renderPassManager, frameGraphicsCommandBuffer);
+					}
 
 					VkMemoryBarrier postProcessComputeToFragment{};
 					postProcessComputeToFragment.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
@@ -1347,7 +1426,8 @@ namespace VansGraphics
 				});
 
 			// 鈹€鈹€ 璁捐鏂囨。 Pass 10-12锛歍ransparent + PostProcess锛圠OAD SceneColor锛夆攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-			CopyOpaqueSceneColorForTransmission(renderPassManager, frameGraphicsCommandBuffer);
+			if (!IsDeferredProbeOnlyDebugOutput(m_Scene))
+				CopyOpaqueSceneColorForTransmission(renderPassManager, frameGraphicsCommandBuffer);
 			RecordFrameGraphicsPass(
 				m_CurrentFramePlan,
 				VansRenderPassNames::TransparentPostProcess,
@@ -1358,7 +1438,8 @@ namespace VansGraphics
 				m_globalRenderStateData,
 				[&]()
 				{
-					if (IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::WaterGBuffer))
+					if (!IsDeferredProbeOnlyDebugOutput(m_Scene) &&
+						IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::WaterGBuffer))
 					{
 						VANS_GPU_SCOPE(cmd, "Water Composite");
 						m_Scene->DrawWaterCompositeNode();
@@ -1680,7 +1761,7 @@ namespace VansGraphics
 				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::PunctualShadowDebug, [&]() { UpdatePunctualShadowDebugPreview(renderPassManager, m_VansVKCommandBuffer); });
 				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::ScreenSpaceShadow, [&]() { UpdateScreenSpaceShadow(renderPassManager, m_VansVKCommandBuffer); });
 				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::RayTracing, [&]() { UpdateRayTracing(m_VansVKCommandBuffer); });
-				// GIPointLight writes the current probe SH before SSGI consumes it.
+				// DDGI atlas/state writes must be visible before SSGI samples them.
 				{
 					VkMemoryBarrier giProbeToSSGIBarrier = {};
 					giProbeToSSGIBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
@@ -1722,9 +1803,14 @@ namespace VansGraphics
 				renderPassManager->GetVansForwardOpaqueAfterDeferredPass(),
 				m_VansVKCommandBuffer,
 				m_globalRenderStateData,
-				[&]() { m_Scene->DrawForwardOpaqueAfterDeferredNodes(); });
+				[&]()
+				{
+					if (!IsDeferredProbeOnlyDebugOutput(m_Scene))
+						m_Scene->DrawForwardOpaqueAfterDeferredNodes();
+				});
 
-			if (IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::WaterGBuffer))
+			if (!IsDeferredProbeOnlyDebugOutput(m_Scene) &&
+				IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::WaterGBuffer))
 			{
 				auto* waterSys = m_Scene->GetWaterSystem();
 				if (waterSys != nullptr)
@@ -1766,7 +1852,8 @@ namespace VansGraphics
 				}
 			}
 
-			if (IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::WaterPreCompute))
+			if (!IsDeferredProbeOnlyDebugOutput(m_Scene) &&
+				IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::WaterPreCompute))
 			{
 				VANS_GPU_SCOPE(cmd, "Water Pre-Compute");
 				auto* waterSys = m_Scene->GetWaterSystem();
@@ -1784,7 +1871,8 @@ namespace VansGraphics
 					waterSys->DispatchCausticsCS(m_VansVKCommandBuffer);
 				}
 			}
-			if (IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::HairVisibility))
+			if (!IsDeferredProbeOnlyDebugOutput(m_Scene) &&
+				IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::HairVisibility))
 			{
 				ClearHairOITResources(renderPassManager, m_VansVKCommandBuffer);
 				RecordFrameGraphicsPass(
@@ -1799,15 +1887,18 @@ namespace VansGraphics
 				PrepareHairOITForResolve(renderPassManager, m_VansVKCommandBuffer);
 			}
 
-			RecordFrameGraphicsPass(
-				m_CurrentFramePlan,
-				VansRenderPassNames::HairLighting,
-				"Hair Lighting Pass",
-				renderPassManager,
-				renderPassManager->GetVansHairLightingPass(),
-				m_VansVKCommandBuffer,
-				m_globalRenderStateData,
-				[&]() { DrawHairLighting(renderPassManager, m_VansVKCommandBuffer); });
+			if (!IsDeferredProbeOnlyDebugOutput(m_Scene))
+			{
+				RecordFrameGraphicsPass(
+					m_CurrentFramePlan,
+					VansRenderPassNames::HairLighting,
+					"Hair Lighting Pass",
+					renderPassManager,
+					renderPassManager->GetVansHairLightingPass(),
+					m_VansVKCommandBuffer,
+					m_globalRenderStateData,
+					[&]() { DrawHairLighting(renderPassManager, m_VansVKCommandBuffer); });
+			}
 
 			RecordFrameStep(
 				m_CurrentFramePlan,
@@ -1824,8 +1915,11 @@ namespace VansGraphics
 						{ sceneColorToPostProcess });
 
 					UploadPostProcessProfileIfDirty();
-					UpdateExposure(renderPassManager, m_VansVKCommandBuffer);
-					UpdateBloom(renderPassManager, m_VansVKCommandBuffer);
+					if (!IsDeferredProbeOnlyDebugOutput(m_Scene))
+					{
+						UpdateExposure(renderPassManager, m_VansVKCommandBuffer);
+						UpdateBloom(renderPassManager, m_VansVKCommandBuffer);
+					}
 
 					VkMemoryBarrier postProcessComputeToFragment{};
 					postProcessComputeToFragment.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
@@ -1837,7 +1931,8 @@ namespace VansGraphics
 						{ postProcessComputeToFragment });
 				});
 
-			CopyOpaqueSceneColorForTransmission(renderPassManager, m_VansVKCommandBuffer);
+			if (!IsDeferredProbeOnlyDebugOutput(m_Scene))
+				CopyOpaqueSceneColorForTransmission(renderPassManager, m_VansVKCommandBuffer);
 			RecordFrameGraphicsPass(
 				m_CurrentFramePlan,
 				VansRenderPassNames::TransparentPostProcess,
@@ -1848,7 +1943,8 @@ namespace VansGraphics
 				m_globalRenderStateData,
 				[&]()
 				{
-					if (IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::WaterGBuffer))
+					if (!IsDeferredProbeOnlyDebugOutput(m_Scene) &&
+						IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::WaterGBuffer))
 					{
 						VANS_GPU_SCOPE(cmd, "Water Composite");
 						m_Scene->DrawWaterCompositeNode();
@@ -1907,6 +2003,476 @@ namespace VansGraphics
 				RecordFSROutputToSwapchain();
 			// 此时 FSR 图像已处于 SHADER_READ_ONLY_OPTIMAL，ImGui 场景窗口可以直接采样。
 		});
+	}
+
+	void VansVKDevice::MaybeDumpGIDebugFrame(VansRenderPassManager* renderPassManager)
+	{
+		const char* dumpRootEnv = std::getenv("FORESTENGINE_GI_DEBUG_DUMP_DIR");
+		if (dumpRootEnv == nullptr || dumpRootEnv[0] == '\0' || renderPassManager == nullptr ||
+			m_Scene == nullptr || !m_Scene->IsSceneReady())
+		{
+			return;
+		}
+		static uint32_t readyFrameCount = 0u;
+		static bool dumped = false;
+		if (dumped)
+			return;
+		++readyFrameCount;
+		uint32_t targetFrame = 160u;
+		if (const char* frameEnv = std::getenv("FORESTENGINE_GI_DEBUG_DUMP_FRAME"))
+		{
+			char* endPtr = nullptr;
+			const unsigned long parsed = std::strtoul(frameEnv, &endPtr, 10);
+			if (endPtr != frameEnv && parsed > 0ul)
+				targetFrame = static_cast<uint32_t>(std::min<unsigned long>(parsed, 4096ul));
+		}
+		if (readyFrameCount < targetFrame)
+			return;
+
+		if (IsFrameContextRingActive())
+		{
+			VANS_LOG("[GIDebugDump] Frame-context ring active; waiting for GPU idle before one-shot readback.");
+			if (!WaitForDevice())
+			{
+				VANS_LOG_ERROR("[GIDebugDump] Failed to wait for GPU idle before readback.");
+				dumped = true;
+				return;
+			}
+		}
+
+		namespace fs = std::filesystem;
+		const fs::path dumpRoot(dumpRootEnv);
+		std::error_code createError;
+		fs::create_directories(dumpRoot, createError);
+		if (createError)
+		{
+			VANS_LOG_ERROR("[GIDebugDump] Failed to create dump directory '" << dumpRoot.string()
+				<< "': " << createError.message());
+			dumped = true;
+			return;
+		}
+
+		auto dumpImage = [&](const char* label, VansVKImage& image) -> bool
+		{
+			const VkExtent3D extent = image.GetImageDimension();
+			if (extent.width == 0u || extent.height == 0u || image.GetImage() == VK_NULL_HANDLE)
+				return false;
+			const VkFormat imageFormat = image.GetImageCreateInfo().format;
+			const bool isDepth = imageFormat == VK_FORMAT_D32_SFLOAT_S8_UINT ||
+				imageFormat == VK_FORMAT_D32_SFLOAT;
+			const bool isFloat32 = imageFormat == VK_FORMAT_R32G32B32A32_SFLOAT;
+			const bool isHalfFloat = imageFormat == VK_FORMAT_R16G16B16A16_SFLOAT ||
+				imageFormat == VK_FORMAT_R16G16_SFLOAT;
+			const uint32_t channelCount = isDepth ? 1u :
+				(imageFormat == VK_FORMAT_R16G16B16A16_SFLOAT ? 4u :
+				(imageFormat == VK_FORMAT_R16G16_SFLOAT ? 2u :
+					(imageFormat == VK_FORMAT_R32G32B32A32_SFLOAT ? 4u : 0u)));
+			if (channelCount == 0u)
+			{
+				VANS_LOG_ERROR("[GIDebugDump] Unsupported image format for '" << label << "'.");
+				return false;
+			}
+
+			const VkDeviceSize componentBytes = (isFloat32 || isDepth) ? sizeof(float) : sizeof(uint16_t);
+			const VkDeviceSize pixelBytes = channelCount * componentBytes;
+			const VkDeviceSize imageBytes = VkDeviceSize(extent.width) * extent.height * pixelBytes;
+			VansVKBuffer readback;
+			if (!readback.CreatVulkanBuffer(m_VansVKLogicDevice, imageBytes, VK_FORMAT_R16_UINT,
+				VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+			{
+				VANS_LOG_ERROR("[GIDebugDump] Failed to create readback buffer for '" << label << "'.");
+				return false;
+			}
+			if (!readback.PersistentMap())
+			{
+				readback.DestroyVulkanBuffer(m_VansVKLogicDevice);
+				VANS_LOG_ERROR("[GIDebugDump] Failed to map readback buffer for '" << label << "'.");
+				return false;
+			}
+
+			VkBufferImageCopy region{};
+			const VkImageAspectFlags imageAspect = isDepth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+			region.imageSubresource = { imageAspect, 0, 0, 1 };
+			region.imageExtent = { extent.width, extent.height, 1u };
+			VansVKCommandBuffer& cmd = m_ImmediateGraphicsCommandBuffer;
+			const VkImageLayout oldLayout = image.GetImageLayout();
+			cmd.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+			image.SetImageMemoryBarrier(cmd,
+				VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+				VK_PIPELINE_STAGE_TRANSFER_BIT,
+				{
+					image.GetImage(),
+					VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+					VK_ACCESS_TRANSFER_READ_BIT,
+					oldLayout,
+					VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+					VK_QUEUE_FAMILY_IGNORED,
+					VK_QUEUE_FAMILY_IGNORED,
+					imageAspect
+				});
+			VansVKMemoryManager::CopyImageToBuffer(cmd, image, readback,
+				VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, { region });
+			image.SetImageMemoryBarrier(cmd,
+				VK_PIPELINE_STAGE_TRANSFER_BIT,
+				VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+				{
+					image.GetImage(),
+					VK_ACCESS_TRANSFER_READ_BIT,
+					VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+					VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+					oldLayout,
+					VK_QUEUE_FAMILY_IGNORED,
+					VK_QUEUE_FAMILY_IGNORED,
+					imageAspect
+				});
+			cmd.EndCommandBufferRecord();
+			const bool submitted = VansVKCommandBuffer::SubmitCommands(
+				m_VansVKGraphicsQueue, m_VansVKLogicDevice,
+				{ cmd.GetVKCommandBuffer() }, {}, {}, cmd.m_CommandBufferFinishSubmitFence);
+			cmd.ResetCommandBuffer(false);
+			if (!submitted)
+			{
+				readback.Unmap();
+				readback.DestroyVulkanBuffer(m_VansVKLogicDevice);
+				VANS_LOG_ERROR("[GIDebugDump] Failed to submit readback for '" << label << "'.");
+				return false;
+			}
+			readback.InvalidateMappedRange(0, imageBytes);
+
+			const void* mapped = readback.GetMappedPtr();
+			const uint16_t* half = isHalfFloat ? static_cast<const uint16_t*>(mapped) : nullptr;
+			const float* float32 = (isFloat32 || isDepth) ? static_cast<const float*>(mapped) : nullptr;
+			bool success = mapped != nullptr;
+			std::vector<uint8_t> ppmPixels(size_t(extent.width) * extent.height * 3u);
+			double sum[3] = { 0.0, 0.0, 0.0 };
+			double alphaSum = 0.0;
+			float minValue[3] = {
+				std::numeric_limits<float>::max(),
+				std::numeric_limits<float>::max(),
+				std::numeric_limits<float>::max()
+			};
+			float maxValue[3] = { 0.0f, 0.0f, 0.0f };
+			float minAlpha = std::numeric_limits<float>::max();
+			float maxAlpha = 0.0f;
+			uint64_t invalidCount = 0u;
+			for (uint32_t y = 0u; success && y < extent.height; ++y)
+			{
+				for (uint32_t x = 0u; x < extent.width; ++x)
+				{
+					const size_t pixelIndex = size_t(y) * extent.width + x;
+					for (uint32_t c = 0u; c < 3u; ++c)
+					{
+						if (isDepth)
+						{
+							const float depth = float32[pixelIndex];
+							if (!std::isfinite(depth))
+							{
+								++invalidCount;
+							}
+							else if (c == 0u)
+							{
+								sum[0] += depth;
+								minValue[0] = std::min(minValue[0], depth);
+								maxValue[0] = std::max(maxValue[0], depth);
+							}
+							const float visibleDepth = std::isfinite(depth) ? std::clamp(depth, 0.0f, 1.0f) : 1.0f;
+							ppmPixels[pixelIndex * 3u + c] = static_cast<uint8_t>(
+								std::clamp(visibleDepth, 0.0f, 1.0f) * 255.0f + 0.5f);
+						}
+						else if (c < channelCount)
+						{
+							const float linear = isFloat32
+								? float32[pixelIndex * channelCount + c]
+								: HalfToFloat(half[pixelIndex * channelCount + c]);
+							if (!std::isfinite(linear))
+							{
+								++invalidCount;
+							}
+							else
+							{
+								sum[c] += linear;
+								minValue[c] = std::min(minValue[c], linear);
+								maxValue[c] = std::max(maxValue[c], linear);
+							}
+							ppmPixels[pixelIndex * 3u + c] =
+								isFloat32
+								? DisplayByteFromLinearFloat(linear)
+								: DisplayByteFromLinearHalf(half[pixelIndex * channelCount + c]);
+						}
+						else
+						{
+							ppmPixels[pixelIndex * 3u + c] = 0u;
+						}
+					}
+					if (!isDepth && channelCount >= 4u)
+					{
+						const float alpha = isFloat32
+							? float32[pixelIndex * channelCount + 3u]
+							: HalfToFloat(half[pixelIndex * channelCount + 3u]);
+						if (!std::isfinite(alpha))
+						{
+							++invalidCount;
+						}
+						else
+						{
+							alphaSum += alpha;
+							minAlpha = std::min(minAlpha, alpha);
+							maxAlpha = std::max(maxAlpha, alpha);
+						}
+					}
+				}
+			}
+
+			const fs::path ppmPath = dumpRoot / (std::string(label) + ".ppm");
+			const fs::path statsPath = dumpRoot / (std::string(label) + ".txt");
+			if (success)
+			{
+				std::ofstream ppm(ppmPath, std::ios::binary);
+				success = static_cast<bool>(ppm);
+				if (success)
+				{
+					ppm << "P6\n" << extent.width << ' ' << extent.height << "\n255\n";
+					ppm.write(reinterpret_cast<const char*>(ppmPixels.data()),
+						static_cast<std::streamsize>(ppmPixels.size()));
+					success = static_cast<bool>(ppm);
+				}
+			}
+			if (success)
+			{
+				const double denom = std::max<double>(double(extent.width) * double(extent.height), 1.0);
+				std::ofstream stats(statsPath);
+				stats << "label=" << label << '\n'
+					<< "size=" << extent.width << "x" << extent.height << '\n'
+					<< "channels=" << channelCount << '\n'
+					<< "mean_rgb=" << (sum[0] / denom) << ','
+					<< (sum[1] / denom) << ',' << (sum[2] / denom) << '\n'
+					<< "min_rgb=" << (minValue[0] == std::numeric_limits<float>::max() ? 0.0f : minValue[0]) << ','
+					<< (minValue[1] == std::numeric_limits<float>::max() ? 0.0f : minValue[1]) << ','
+					<< (minValue[2] == std::numeric_limits<float>::max() ? 0.0f : minValue[2]) << '\n'
+					<< "max_rgb=" << maxValue[0] << ',' << maxValue[1] << ',' << maxValue[2] << '\n'
+					<< "mean_alpha=" << (alphaSum / denom) << '\n'
+					<< "min_alpha=" << (minAlpha == std::numeric_limits<float>::max() ? 0.0f : minAlpha) << '\n'
+					<< "max_alpha=" << maxAlpha << '\n'
+					<< "invalid_channels=" << invalidCount << '\n'
+					<< "display_mapping=reinhard_per_channel\n";
+			}
+
+			readback.Unmap();
+			readback.DestroyVulkanBuffer(m_VansVKLogicDevice);
+			if (success)
+			{
+				VANS_LOG("[GIDebugDump] Wrote " << ppmPath.string());
+			}
+			else
+			{
+				VANS_LOG_ERROR("[GIDebugDump] Failed to write dump for '" << label << "'.");
+			}
+			return success;
+		};
+
+		auto dumpProbeState = [&](const char* label, const VansVKBuffer* stateBuffer) -> bool
+		{
+			if (stateBuffer == nullptr || stateBuffer->GetNativeBuffer() == VK_NULL_HANDLE ||
+				stateBuffer->GetBufferSize() < 48u)
+			{
+				return false;
+			}
+
+			const VkDeviceSize bufferBytes = stateBuffer->GetBufferSize();
+			VansVKBuffer readback;
+			if (!readback.CreatVulkanBuffer(m_VansVKLogicDevice, bufferBytes, VK_FORMAT_R32_UINT,
+				VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+			{
+				VANS_LOG_ERROR("[GIDebugDump] Failed to create probe-state readback buffer.");
+				return false;
+			}
+			if (!readback.PersistentMap())
+			{
+				readback.DestroyVulkanBuffer(m_VansVKLogicDevice);
+				VANS_LOG_ERROR("[GIDebugDump] Failed to map probe-state readback buffer.");
+				return false;
+			}
+
+			VansVKCommandBuffer& cmd = m_ImmediateGraphicsCommandBuffer;
+			cmd.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+			const_cast<VansVKBuffer*>(stateBuffer)->SetBufferMemoryBarrier(cmd,
+				VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+				VK_PIPELINE_STAGE_TRANSFER_BIT,
+				{
+					stateBuffer->GetNativeBuffer(),
+					VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+					VK_ACCESS_TRANSFER_READ_BIT,
+					VK_QUEUE_FAMILY_IGNORED,
+					VK_QUEUE_FAMILY_IGNORED
+				});
+			cmd.CopyBuffer(stateBuffer->GetNativeBuffer(), readback.GetNativeBuffer(), 0, 0, bufferBytes);
+			const_cast<VansVKBuffer*>(stateBuffer)->SetBufferMemoryBarrier(cmd,
+				VK_PIPELINE_STAGE_TRANSFER_BIT,
+				VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+				{
+					stateBuffer->GetNativeBuffer(),
+					VK_ACCESS_TRANSFER_READ_BIT,
+					VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+					VK_QUEUE_FAMILY_IGNORED,
+					VK_QUEUE_FAMILY_IGNORED
+				});
+			cmd.EndCommandBufferRecord();
+			const bool submitted = VansVKCommandBuffer::SubmitCommands(
+				m_VansVKGraphicsQueue, m_VansVKLogicDevice,
+				{ cmd.GetVKCommandBuffer() }, {}, {}, cmd.m_CommandBufferFinishSubmitFence);
+			cmd.ResetCommandBuffer(false);
+			if (!submitted)
+			{
+				readback.Unmap();
+				readback.DestroyVulkanBuffer(m_VansVKLogicDevice);
+				VANS_LOG_ERROR("[GIDebugDump] Failed to submit probe-state readback.");
+				return false;
+			}
+			readback.InvalidateMappedRange(0, bufferBytes);
+
+			struct ProbeStateDump
+			{
+				float relocationAndConfidence[4];
+				float distanceStats[4];
+				uint32_t metadata[4];
+			};
+			static_assert(sizeof(ProbeStateDump) == 48u);
+			const ProbeStateDump* states = static_cast<const ProbeStateDump*>(readback.GetMappedPtr());
+			const size_t stateCount = static_cast<size_t>(bufferBytes / sizeof(ProbeStateDump));
+			uint64_t zeroClassification = 0u;
+			uint64_t activeClassification = 0u;
+			uint64_t inactiveClassification = 0u;
+			uint64_t otherClassification = 0u;
+			double confidenceSum = 0.0;
+			float maxConfidence = 0.0f;
+			double updateCountSum = 0.0;
+			uint32_t maxUpdateCount = 0u;
+			double minFrontDistanceSum = 0.0;
+			double meanFrontDistanceSum = 0.0;
+			double backfaceRatioSum = 0.0;
+			double relocationLengthSum = 0.0;
+			float minFrontDistanceMin = std::numeric_limits<float>::max();
+			float minFrontDistanceMax = 0.0f;
+			float backfaceRatioMax = 0.0f;
+			float relocationLengthMax = 0.0f;
+			uint64_t nearSurfaceProbeCount = 0u;
+			uint64_t backfaceHeavyProbeCount = 0u;
+			for (size_t i = 0; states != nullptr && i < stateCount; ++i)
+			{
+				const uint32_t classification = states[i].metadata[0];
+				if (classification == 0u) ++zeroClassification;
+				else if (classification == 1u) ++activeClassification;
+				else if (classification == 2u) ++inactiveClassification;
+				else ++otherClassification;
+				const float confidence = states[i].relocationAndConfidence[3];
+				if (std::isfinite(confidence))
+				{
+					confidenceSum += confidence;
+					maxConfidence = std::max(maxConfidence, confidence);
+				}
+				const uint32_t updateCount = states[i].metadata[2];
+				updateCountSum += double(updateCount);
+				maxUpdateCount = std::max(maxUpdateCount, updateCount);
+
+				const float minFrontDistance = states[i].distanceStats[0];
+				const float meanFrontDistance = states[i].distanceStats[1];
+				const float backfaceRatio = states[i].distanceStats[2];
+				const float rx = states[i].relocationAndConfidence[0];
+				const float ry = states[i].relocationAndConfidence[1];
+				const float rz = states[i].relocationAndConfidence[2];
+				const float relocationLength = std::sqrt(rx * rx + ry * ry + rz * rz);
+				if (std::isfinite(minFrontDistance))
+				{
+					minFrontDistanceSum += minFrontDistance;
+					minFrontDistanceMin = std::min(minFrontDistanceMin, minFrontDistance);
+					minFrontDistanceMax = std::max(minFrontDistanceMax, minFrontDistance);
+					if (minFrontDistance < 0.15f)
+						++nearSurfaceProbeCount;
+				}
+				if (std::isfinite(meanFrontDistance))
+					meanFrontDistanceSum += meanFrontDistance;
+				if (std::isfinite(backfaceRatio))
+				{
+					backfaceRatioSum += backfaceRatio;
+					backfaceRatioMax = std::max(backfaceRatioMax, backfaceRatio);
+					if (backfaceRatio > 0.35f)
+						++backfaceHeavyProbeCount;
+				}
+				if (std::isfinite(relocationLength))
+				{
+					relocationLengthSum += relocationLength;
+					relocationLengthMax = std::max(relocationLengthMax, relocationLength);
+				}
+			}
+
+			const fs::path statsPath = dumpRoot / (std::string(label) + ".txt");
+			std::ofstream stats(statsPath);
+			stats << "label=" << label << '\n'
+				<< "states=" << stateCount << '\n'
+				<< "classification_zero=" << zeroClassification << '\n'
+				<< "classification_active=" << activeClassification << '\n'
+				<< "classification_inactive=" << inactiveClassification << '\n'
+				<< "classification_other=" << otherClassification << '\n'
+				<< "mean_confidence=" << (confidenceSum / std::max<double>(double(stateCount), 1.0)) << '\n'
+				<< "max_confidence=" << maxConfidence << '\n'
+				<< "mean_update_count=" << (updateCountSum / std::max<double>(double(stateCount), 1.0)) << '\n'
+				<< "max_update_count=" << maxUpdateCount << '\n'
+				<< "mean_min_front_distance=" << (minFrontDistanceSum / std::max<double>(double(stateCount), 1.0)) << '\n'
+				<< "min_front_distance_min=" << (minFrontDistanceMin == std::numeric_limits<float>::max() ? 0.0f : minFrontDistanceMin) << '\n'
+				<< "min_front_distance_max=" << minFrontDistanceMax << '\n'
+				<< "mean_front_distance=" << (meanFrontDistanceSum / std::max<double>(double(stateCount), 1.0)) << '\n'
+				<< "mean_backface_ratio=" << (backfaceRatioSum / std::max<double>(double(stateCount), 1.0)) << '\n'
+				<< "max_backface_ratio=" << backfaceRatioMax << '\n'
+				<< "near_surface_probe_count=" << nearSurfaceProbeCount << '\n'
+				<< "backface_heavy_probe_count=" << backfaceHeavyProbeCount << '\n'
+				<< "mean_relocation_length=" << (relocationLengthSum / std::max<double>(double(stateCount), 1.0)) << '\n'
+				<< "max_relocation_length=" << relocationLengthMax << '\n';
+			const bool success = static_cast<bool>(stats);
+			readback.Unmap();
+			readback.DestroyVulkanBuffer(m_VansVKLogicDevice);
+			if (success)
+				VANS_LOG("[GIDebugDump] Wrote " << statsPath.string());
+			else
+				VANS_LOG_ERROR("[GIDebugDump] Failed to write probe-state dump.");
+			return success;
+		};
+
+		bool wroteAny = false;
+		wroteAny = dumpImage("scene_color", renderPassManager->GetColor()) || wroteAny;
+		wroteAny = dumpImage("postprocess", renderPassManager->GetColorAfterPostProcess()) || wroteAny;
+		wroteAny = dumpImage("fsr", m_FSRController.GetTempFSRImage()) || wroteAny;
+		wroteAny = dumpImage("depth", renderPassManager->GetDepth()) || wroteAny;
+		wroteAny = dumpImage("gbuffer_normal", renderPassManager->GetNormal()) || wroteAny;
+		wroteAny = dumpImage("gbuffer0_albedo_roughness", renderPassManager->GetGbuffer0()) || wroteAny;
+		wroteAny = dumpImage("gbuffer1_material", renderPassManager->GetGbuffer1()) || wroteAny;
+		wroteAny = dumpImage("gbuffer2_world_position", renderPassManager->GetGbuffer2()) || wroteAny;
+		wroteAny = dumpImage("diffuse_exitant_radiance_history", renderPassManager->GetDiffuseExitantRadianceHistory()) || wroteAny;
+		if (VansMaterialManager* materialManager = m_Scene != nullptr ? m_Scene->GetMaterialManager() : nullptr)
+		{
+			if (VansTexture* screenSpaceShadow = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_SCREEN_SPACE_SHADOW_RESULT))
+				wroteAny = dumpImage("screen_space_shadow", screenSpaceShadow->GetImage()) || wroteAny;
+			if (VansTexture* ssgiResult = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_SSGI_RESULT))
+				wroteAny = dumpImage("ssgi_raw", ssgiResult->GetImage()) || wroteAny;
+			if (VansTexture* ssgiTemporalA = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_SSGI_TEMPORAL_A))
+				wroteAny = dumpImage("ssgi_temporal_a", ssgiTemporalA->GetImage()) || wroteAny;
+			if (VansTexture* ssgiTemporalB = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_SSGI_TEMPORAL_B))
+				wroteAny = dumpImage("ssgi_temporal_b", ssgiTemporalB->GetImage()) || wroteAny;
+			if (VansTexture* ssgiFilter = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_SSGI_FILTER_RESULT))
+				wroteAny = dumpImage("ssgi_filtered", ssgiFilter->GetImage()) || wroteAny;
+		}
+		if (VansTexture* irradianceAtlas = rayTracingContext.GetGIRegionIrradianceAtlas(0u))
+			wroteAny = dumpImage("gi_irradiance_region0", irradianceAtlas->GetImage()) || wroteAny;
+		if (VansTexture* visibilityAtlas = rayTracingContext.GetGIRegionVisibilityAtlas(0u))
+			wroteAny = dumpImage("gi_visibility_region0", visibilityAtlas->GetImage()) || wroteAny;
+		wroteAny = dumpProbeState("gi_probe_state_region0", rayTracingContext.GetGIRegionProbeStateBuffer(0u)) || wroteAny;
+		dumped = true;
+		if (wroteAny && std::getenv("FORESTENGINE_GI_DEBUG_DUMP_EXIT") != nullptr)
+		{
+			VANS_LOG("[GIDebugDump] Exit requested after dump.");
+			std::exit(0);
+		}
 	}
 
 	void VansVKDevice::Present()
@@ -2125,6 +2691,8 @@ namespace VansGraphics
 			for (uint32_t face = 0; face < faceBudget; ++face)
 				reflectionProbes->ProcessBakeQueue(*m_Scene, *this, m_ImmediateGraphicsCommandBuffer, probeFrame);
 		}
+
+		MaybeDumpGIDebugFrame(VansRenderPassManager::GetInstance());
 
 		{
 			VANS_PROFILE_SCOPE("Vulkan::PresentImage", Vans::ProfileCategory::VulkanSubmit);
@@ -2718,7 +3286,8 @@ namespace VansGraphics
 	void VansVKDevice::DrawSceneDeferredSkybox(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer)
 	{
 		m_Scene->DeferredShading();
-		m_Scene->DrawSkyBoxNode();
+		if (!IsDeferredProbeOnlyDebugOutput(m_Scene))
+			m_Scene->DrawSkyBoxNode();
 	}
 
 	// ============================================================
@@ -2728,9 +3297,15 @@ namespace VansGraphics
 	// ============================================================
 	void VansVKDevice::DrawSceneTransparentPost(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer)
 	{
-		DrawHairComposite(renderPassManager, commandBuffer);
-		m_Scene->DrawTransParentNodes();
+		if (!IsDeferredProbeOnlyDebugOutput(m_Scene))
+		{
+			DrawHairComposite(renderPassManager, commandBuffer);
+			m_Scene->DrawTransParentNodes();
+		}
 		renderPassManager->NextSubPass(commandBuffer, m_globalRenderStateData);
+		// This subpass resolves SceneColor into the presentation target in
+		// addition to applying display conversion.  Probe-only excludes every
+		// non-DDGI lighting producer above, but must still execute the resolve.
 		m_Scene->DrawPostProcessNodes();
 	}
 

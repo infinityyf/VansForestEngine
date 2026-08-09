@@ -288,6 +288,14 @@ void VansRuntimeWorld::FlushCommands()
 				command.componentStableGuid,
 				command.boolValue);
 			break;
+		case VansEntityCommandType::AddTimelineComponent:
+			AddComponent(
+				command.entity,
+				VansRuntimeComponentType_Timeline,
+				command.timelineComponent,
+				command.componentStableGuid,
+				command.boolValue);
+			break;
 		case VansEntityCommandType::SetEntityActive:
 			SetEntityActive(command.entity, command.boolValue);
 			break;

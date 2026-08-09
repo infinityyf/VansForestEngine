@@ -3,13 +3,16 @@
 
 #include "../Common/Common.glsl"
 #include "../Common/CameraData.glsl"
-#include "../GI/GIProbeCommon.glsl"
 #include "../Lights/LightsData.glsl"
 #include "../BRDF/ReflectionProbeData.glsl"
 
 // SSGI outputs diffuse lighting for the current surface, not albedo.
-// Screen-space trace misses fall back to GI probe SH and dynamic sky diffuse.
+// Screen-space trace misses fall back to DDGI atlases and dynamic sky diffuse.
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+const float SSGI_TRACE_MAX_DISTANCE = 32.0;
+const float SSGI_TRACE_BASE_PIXEL_STEP = 1.5;
+const int SSGI_TRACE_ITERATION_BUDGET = 128;
 
 layout(set = 1, binding = 0) uniform sampler2D inputNormal;
 layout(set = 1, binding = 1) uniform sampler2D inputDepth;
@@ -19,20 +22,52 @@ layout(set = 1, binding = 4) uniform samplerCube inputSkydiffuse;
 
 layout(set = 1, binding = 5, rgba32f) uniform image2D resultR;
 
-layout(set = 1, binding = 6) uniform ssgiInfo
+struct SSGIRegionParams
 {
-    vec4 screenSize;          // xy = resolution, zw = 1 / resolution
-    vec4 giVolumeMin;
-    vec4 giVolumeSizeAndBias; // xyz = volume size, w = normal bias
-    vec4 traceParams;         // x = max trace distance, y = fade start ratio, z = probe volume fade distance, w = reserved
+    vec4 volumeMin;
+    vec4 volumeSizeAndBias;
+    vec4 traceParams;
+    vec4 gridDimensionsAndPriority;
 };
 
-layout(set = 1, binding = 7) uniform sampler3D SHRCoeff;
-layout(set = 1, binding = 8) uniform sampler3D SHGCoeff;
-layout(set = 1, binding = 9) uniform sampler3D SHBCoeff;
+layout(set = 1, binding = 6) uniform ssgiInfo
+{
+    vec4 screenSize;
+    vec4 regionInfo;
+    SSGIRegionParams regions[8];
+    vec4 deferredProbeDebug;
+};
+
 layout(set = 1, binding = 10) uniform sampler2D hizDepth;
 layout(set = 1, binding = 11) uniform sampler2D inputMaterial;
-layout(set = 1, binding = 12) uniform sampler2D giVisibilityAtlas;
+layout(set = 1, binding = 13) uniform sampler2D giIrradianceAtlas[8];
+#include "../GI/GIProbeStateData.glsl"
+layout(set = 1, binding = 14) uniform sampler2D giVisibilityAtlas[8];
+layout(set = 1, binding = 15, std430) readonly buffer SSGIProbeStateBuffer0 { GIProbeState states[]; } giProbeState0;
+layout(set = 1, binding = 16, std430) readonly buffer SSGIProbeStateBuffer1 { GIProbeState states[]; } giProbeState1;
+layout(set = 1, binding = 17, std430) readonly buffer SSGIProbeStateBuffer2 { GIProbeState states[]; } giProbeState2;
+layout(set = 1, binding = 18, std430) readonly buffer SSGIProbeStateBuffer3 { GIProbeState states[]; } giProbeState3;
+layout(set = 1, binding = 19, std430) readonly buffer SSGIProbeStateBuffer4 { GIProbeState states[]; } giProbeState4;
+layout(set = 1, binding = 20, std430) readonly buffer SSGIProbeStateBuffer5 { GIProbeState states[]; } giProbeState5;
+layout(set = 1, binding = 21, std430) readonly buffer SSGIProbeStateBuffer6 { GIProbeState states[]; } giProbeState6;
+layout(set = 1, binding = 22, std430) readonly buffer SSGIProbeStateBuffer7 { GIProbeState states[]; } giProbeState7;
+GIProbeState LoadSSGIProbeState(uint regionIndex, uint probeLinearIndex)
+{
+    switch (regionIndex)
+    {
+    case 0u: return giProbeState0.states[probeLinearIndex];
+    case 1u: return giProbeState1.states[probeLinearIndex];
+    case 2u: return giProbeState2.states[probeLinearIndex];
+    case 3u: return giProbeState3.states[probeLinearIndex];
+    case 4u: return giProbeState4.states[probeLinearIndex];
+    case 5u: return giProbeState5.states[probeLinearIndex];
+    case 6u: return giProbeState6.states[probeLinearIndex];
+    default: return giProbeState7.states[probeLinearIndex];
+    }
+}
+#define GI_LOAD_PROBE_STATE(regionIndex, probeLinearIndex) LoadSSGIProbeState(regionIndex, probeLinearIndex)
+#define GI_SCREEN_FAST_RECONSTRUCTION 1
+#include "../GI/GIProbeCommon.glsl"
 
 float GetVegetationTranslucency(vec2 uv, float normalAlpha)
 {
@@ -41,9 +76,79 @@ float GetVegetationTranslucency(vec2 uv, float normalAlpha)
     return vegetationMaterial ? clamp(normalAlpha, 0.0, 1.0) : 0.0;
 }
 
+vec3 ComputeSSGIGINormal(ivec2 pixelCoord, ivec2 imgSize, vec3 centerPosition, vec3 shadingNormal)
+{
+    vec3 fallback = dot(shadingNormal, shadingNormal) > 1e-6
+        ? normalize(shadingNormal)
+        : vec3(0.0, 1.0, 0.0);
+
+    ivec2 leftCoord = ivec2(max(pixelCoord.x - 1, 0), pixelCoord.y);
+    ivec2 rightCoord = ivec2(min(pixelCoord.x + 1, imgSize.x - 1), pixelCoord.y);
+    ivec2 downCoord = ivec2(pixelCoord.x, max(pixelCoord.y - 1, 0));
+    ivec2 upCoord = ivec2(pixelCoord.x, min(pixelCoord.y + 1, imgSize.y - 1));
+
+    vec3 dxLeft = centerPosition - texelFetch(inputPosition, leftCoord, 0).xyz;
+    vec3 dxRight = texelFetch(inputPosition, rightCoord, 0).xyz - centerPosition;
+    vec3 dyDown = centerPosition - texelFetch(inputPosition, downCoord, 0).xyz;
+    vec3 dyUp = texelFetch(inputPosition, upCoord, 0).xyz - centerPosition;
+
+    vec3 dx = dot(dxRight, dxRight) < dot(dxLeft, dxLeft) ? dxRight : dxLeft;
+    vec3 dy = dot(dyUp, dyUp) < dot(dyDown, dyDown) ? dyUp : dyDown;
+    vec3 geometric = cross(dx, dy);
+    if (dot(geometric, geometric) <= 1e-8)
+        return fallback;
+
+    geometric = normalize(geometric);
+    return dot(geometric, fallback) < 0.0 ? -geometric : geometric;
+}
+
 vec3 EvaluateDynamicSkyDiffuse(vec3 direction)
 {
     return SampleSkyDiffuseCube(inputSkydiffuse, direction);
+}
+
+vec3 SampleSSGIProbeIrradianceForRegion(uint regionIndex, SSGIRegionParams region, vec3 worldPos, vec3 normal)
+{
+    ivec3 probeCounts = ivec3(region.gridDimensionsAndPriority.xyz);
+    vec3 volumeMin = region.volumeMin.xyz;
+    vec3 volumeSize = region.volumeSizeAndBias.xyz;
+    float normalBias = region.volumeSizeAndBias.w;
+
+    switch (regionIndex)
+    {
+    case 0u:
+        return GI_SampleProbeIrradianceAtlasScreenVisible(0u, probeCounts,
+            giIrradianceAtlas[0], giVisibilityAtlas[0], worldPos, normal,
+            volumeMin, volumeSize, normalBias, region.traceParams.z);
+    case 1u:
+        return GI_SampleProbeIrradianceAtlasScreenVisible(1u, probeCounts,
+            giIrradianceAtlas[1], giVisibilityAtlas[1], worldPos, normal,
+            volumeMin, volumeSize, normalBias, region.traceParams.z);
+    case 2u:
+        return GI_SampleProbeIrradianceAtlasScreenVisible(2u, probeCounts,
+            giIrradianceAtlas[2], giVisibilityAtlas[2], worldPos, normal,
+            volumeMin, volumeSize, normalBias, region.traceParams.z);
+    case 3u:
+        return GI_SampleProbeIrradianceAtlasScreenVisible(3u, probeCounts,
+            giIrradianceAtlas[3], giVisibilityAtlas[3], worldPos, normal,
+            volumeMin, volumeSize, normalBias, region.traceParams.z);
+    case 4u:
+        return GI_SampleProbeIrradianceAtlasScreenVisible(4u, probeCounts,
+            giIrradianceAtlas[4], giVisibilityAtlas[4], worldPos, normal,
+            volumeMin, volumeSize, normalBias, region.traceParams.z);
+    case 5u:
+        return GI_SampleProbeIrradianceAtlasScreenVisible(5u, probeCounts,
+            giIrradianceAtlas[5], giVisibilityAtlas[5], worldPos, normal,
+            volumeMin, volumeSize, normalBias, region.traceParams.z);
+    case 6u:
+        return GI_SampleProbeIrradianceAtlasScreenVisible(6u, probeCounts,
+            giIrradianceAtlas[6], giVisibilityAtlas[6], worldPos, normal,
+            volumeMin, volumeSize, normalBias, region.traceParams.z);
+    default:
+        return GI_SampleProbeIrradianceAtlasScreenVisible(7u, probeCounts,
+            giIrradianceAtlas[7], giVisibilityAtlas[7], worldPos, normal,
+            volumeMin, volumeSize, normalBias, region.traceParams.z);
+    }
 }
 
 vec3 EvaluateSSGIFallback(vec3 worldPos, vec3 normal, float vegetationTranslucency)
@@ -51,24 +156,28 @@ vec3 EvaluateSSGIFallback(vec3 worldPos, vec3 normal, float vegetationTranslucen
     vec3 N = normalize(normal);
     vec3 skyIrradiance = EvaluateDynamicSkyDiffuse(N);
 
-    float volumeFadeDistance = max(traceParams.z, 0.0);
-    float probeWeight = GI_IsInsideVolume(worldPos, giVolumeMin.xyz, giVolumeSizeAndBias.xyz)
-        ? GI_VolumeFade(worldPos, giVolumeMin.xyz, giVolumeSizeAndBias.xyz, volumeFadeDistance)
-        : 0.0;
-
-    // Probe SH stores incoming radiance; the receiver applies diffuse convolution here.
-    // Volume-edge fading is owned by this fallback blend, avoiding double fade.
-    vec3 probeIrradiance = GI_SampleProbeDiffuseLightingL1Visible(
-        SHRCoeff,
-        SHGCoeff,
-        SHBCoeff,
-        giVisibilityAtlas,
-        worldPos,
-        N,
-        giVolumeMin.xyz,
-        giVolumeSizeAndBias.xyz,
-        giVolumeSizeAndBias.w,
-        0.0);
+    vec3 probeIrradiance = vec3(0.0);
+    float probeWeight = 0.0;
+    float selectedPriority = -3.402823e38;
+    uint selectedRegion = 0u;
+    uint regionCount = min(uint(regionInfo.x), 8u);
+    for (uint regionIndex = 0u; regionIndex < regionCount; ++regionIndex)
+    {
+        SSGIRegionParams region = regions[regionIndex];
+        float weight = GI_IsInsideVolume(worldPos, region.volumeMin.xyz, region.volumeSizeAndBias.xyz)
+            ? GI_VolumeFade(worldPos, region.volumeMin.xyz, region.volumeSizeAndBias.xyz,
+                max(region.traceParams.z, 0.0))
+            : 0.0;
+        float priority = region.gridDimensionsAndPriority.w;
+        if (weight > 0.0 && (priority > selectedPriority ||
+            (priority == selectedPriority && weight > probeWeight)))
+        {
+            probeIrradiance = SampleSSGIProbeIrradianceForRegion(regionIndex, region, worldPos, N);
+            probeWeight = weight;
+            selectedPriority = priority;
+            selectedRegion = regionIndex;
+        }
+    }
 
     vec3 frontIrradiance = mix(skyIrradiance, probeIrradiance, probeWeight);
     if (vegetationTranslucency <= 0.001)
@@ -76,17 +185,10 @@ vec3 EvaluateSSGIFallback(vec3 worldPos, vec3 normal, float vegetationTranslucen
 
     vec3 backN = -N;
     vec3 backSkyIrradiance = EvaluateDynamicSkyDiffuse(backN);
-    vec3 backProbeIrradiance = GI_SampleProbeDiffuseLightingL1Visible(
-        SHRCoeff,
-        SHGCoeff,
-        SHBCoeff,
-        giVisibilityAtlas,
-        worldPos,
-        backN,
-        giVolumeMin.xyz,
-        giVolumeSizeAndBias.xyz,
-        giVolumeSizeAndBias.w,
-        0.0);
+    SSGIRegionParams backRegion = regions[selectedRegion];
+    vec3 backProbeIrradiance = probeWeight > 0.0
+        ? SampleSSGIProbeIrradianceForRegion(selectedRegion, backRegion, worldPos, backN)
+        : vec3(0.0);
     vec3 backIrradiance = mix(backSkyIrradiance, backProbeIrradiance, probeWeight);
 
     // Thin vegetation can receive some back-side GI without writing different probe data.
@@ -122,7 +224,9 @@ void main()
 
     vec4 normalData = texture(inputNormal, uv);
     vec3 normal = normalize(normalData.xyz);
-    vec3 startPosition = texture(inputPosition, uv).xyz + normal * 0.05;
+    vec3 surfacePosition = texture(inputPosition, uv).xyz;
+    vec3 giNormal = ComputeSSGIGINormal(pixelCoord, imgSize, surfacePosition, normal);
+    vec3 startPosition = surfacePosition + normal * 0.05;
 
     vec3 tangent;
     vec3 bitangent;
@@ -133,12 +237,20 @@ void main()
     vec2 noise = R2Sequence(int((rseed + uint(FrameIndex)) % 512u));
     vec3 dir = CosineWeightedDirection(noise, TBN);
 
-    float maxTraceDist = clamp(traceParams.x, 1.0, FarPlane);
-    float fadeStartRatio = clamp(traceParams.y, 0.05, 0.99);
-    const float basePixelStep = 1.0;
+    float maxTraceDist = 1.0;
+    float fadeStartRatio = 0.75;
+    uint traceRegionCount = min(uint(regionInfo.x), 8u);
+    for (uint regionIndex = 0u; regionIndex < traceRegionCount; ++regionIndex)
+    {
+        maxTraceDist = max(maxTraceDist, regions[regionIndex].traceParams.x);
+        fadeStartRatio = min(fadeStartRatio, regions[regionIndex].traceParams.y);
+    }
+    maxTraceDist = clamp(maxTraceDist, 1.0, min(FarPlane, SSGI_TRACE_MAX_DISTANCE));
+    fadeStartRatio = clamp(fadeStartRatio, 0.05, 0.99);
+    const float basePixelStep = SSGI_TRACE_BASE_PIXEL_STEP;
     const float depthBias = 0.02;
 
-    HiZTraceResult traceResult = TraceHiZ_UV(
+    HiZTraceResult traceResult = TraceHiZ_UV_Bounded(
         hizDepth,
         ViewMatrix,
         ProjectionMatrix,
@@ -146,11 +258,13 @@ void main()
         dir,
         maxTraceDist,
         basePixelStep,
-        depthBias);
+        depthBias,
+        SSGI_TRACE_ITERATION_BUDGET);
 
     float vegetationTranslucency = GetVegetationTranslucency(uv, normalData.w);
-    vec3 fallbackIrradiance = EvaluateSSGIFallback(startPosition, normal, vegetationTranslucency);
+    vec3 fallbackIrradiance = EvaluateSSGIFallback(surfacePosition, giNormal, vegetationTranslucency);
     vec3 irradiance = fallbackIrradiance;
+    float screenHitConfidence = 0.0;
 
     if (traceResult.hit)
     {
@@ -160,8 +274,10 @@ void main()
 
         if (facingRay)
         {
-            // The hit color comes from the previous scene color and may already include fog/specular/history.
-            // Keep screen-space hits confidence-limited so probe lighting remains a stable floor.
+            // The hit color is the previous frame's clean diffuse-exitant
+            // radiance history.  It intentionally excludes fog, specular and
+            // post processing, so temporal screen-space transport cannot feed
+            // the final composited scene back into GI.
             vec3 hitWorldPos = texture(inputPosition, hitUV).xyz;
             vec4 lastClip = LastProjectionMatrix * LastViewMatrix * vec4(hitWorldPos, 1.0);
             lastClip /= lastClip.w;
@@ -174,17 +290,25 @@ void main()
                 vec3 screenIrradiance = max(texture(inputColor, lastColorUV).rgb, vec3(0.0));
                 float hitDistance = length(hitWorldPos - startPosition);
                 float screenTraceWeight = 1.0 - smoothstep(maxTraceDist * fadeStartRatio, maxTraceDist, hitDistance);
-
-                // If fallback is bright but the screen hit is nearly black, trust the hit less.
-                float fallbackLum = Luminance(fallbackIrradiance);
                 float screenLum = Luminance(screenIrradiance);
-                float darkHitConfidence = smoothstep(0.12, 0.55, screenLum / max(fallbackLum, 1e-3));
+
+                // Screen-space transport is a refinement over the DDGI fallback.  A missing,
+                // newly-revealed or stale diffuse-history hit must not carve blocky black
+                // holes into otherwise valid probe lighting.
+                float fallbackLum = Luminance(fallbackIrradiance);
+                float screenToFallback = screenLum / max(fallbackLum, 1e-3);
+                float darkHitConfidence = smoothstep(0.45, 1.05, screenToFallback);
                 screenTraceWeight *= mix(1.0, darkHitConfidence, step(0.02, fallbackLum));
 
+                screenIrradiance = max(screenIrradiance, fallbackIrradiance * 0.75);
                 irradiance = mix(fallbackIrradiance, screenIrradiance, screenTraceWeight);
+                screenHitConfidence = screenTraceWeight;
             }
         }
     }
 
-    imageStore(resultR, pixelCoord, vec4(max(irradiance, vec3(0.0)), 1.0));
+    // Alpha carries the screen-hit confidence into temporal accumulation.
+    // Probe-only fallback remains valid lighting but starts with shorter
+    // history so newly revealed regions converge without stale persistence.
+    imageStore(resultR, pixelCoord, vec4(max(irradiance, vec3(0.0)), screenHitConfidence));
 }

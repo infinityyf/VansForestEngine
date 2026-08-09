@@ -3,11 +3,14 @@
 #include "../Util/VansLog.h"
 
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <cstring>
 #include <fstream>
 #include <limits>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
+#include <type_traits>
 
 using json = nlohmann::json;
 using namespace VansGraphics;
@@ -199,6 +202,70 @@ static glm::mat4 JsonToMat4(const json& arr)
 	return m;
 }
 
+static json EventValueToJson(const AnimationEventValue& value)
+{
+	json result = json::object();
+	std::visit([&result](const auto& typedValue)
+	{
+		using T = std::decay_t<decltype(typedValue)>;
+		if constexpr (std::is_same_v<T, std::monostate>)
+			result["type"] = "none";
+		else if constexpr (std::is_same_v<T, bool>)
+		{
+			result["type"] = "bool";
+			result["value"] = typedValue;
+		}
+		else if constexpr (std::is_same_v<T, std::int64_t>)
+		{
+			result["type"] = "int";
+			result["value"] = typedValue;
+		}
+		else if constexpr (std::is_same_v<T, double>)
+		{
+			result["type"] = "number";
+			result["value"] = typedValue;
+		}
+		else if constexpr (std::is_same_v<T, std::string>)
+		{
+			result["type"] = "string";
+			result["value"] = typedValue;
+		}
+		else if constexpr (std::is_same_v<T, glm::vec3>)
+		{
+			result["type"] = "vec3";
+			result["value"] = { typedValue.x, typedValue.y, typedValue.z };
+		}
+	}, value);
+	return result;
+}
+
+static bool EventValueFromJson(const json& source, AnimationEventValue& outValue)
+{
+	if (!source.is_object() || !source.contains("type") || !source["type"].is_string())
+		return false;
+	const std::string type = source["type"].get<std::string>();
+	if (type == "none")
+		outValue = std::monostate{};
+	else if (type == "bool" && source.contains("value") && source["value"].is_boolean())
+		outValue = source["value"].get<bool>();
+	else if (type == "int" && source.contains("value") && source["value"].is_number_integer())
+		outValue = source["value"].get<std::int64_t>();
+	else if (type == "number" && source.contains("value") && source["value"].is_number())
+		outValue = source["value"].get<double>();
+	else if (type == "string" && source.contains("value") && source["value"].is_string())
+		outValue = source["value"].get<std::string>();
+	else if (type == "vec3" && source.contains("value") && source["value"].is_array()
+	         && source["value"].size() == 3)
+	{
+		outValue = glm::vec3(source["value"][0].get<float>(),
+		                     source["value"][1].get<float>(),
+		                     source["value"][2].get<float>());
+	}
+	else
+		return false;
+	return true;
+}
+
 // ════════════════════════════════════════════════════════════════
 //  Save
 // ════════════════════════════════════════════════════════════════
@@ -210,6 +277,9 @@ bool VansGraphics::VansAnimationClipIO::Save(const std::string& filePath,
 	// ── Build JSON header ──
 	json header;
 	header["clipName"]       = clip.clipName;
+	header["clipId"]         = clip.stableId != 0
+		? clip.stableId
+		: VansAnimationStableId(clip.clipName);
 	header["duration"]       = clip.duration;
 	header["ticksPerSecond"] = clip.ticksPerSecond;
 	header["boneCount"]      = (uint32_t)skeleton.bones.size();
@@ -254,6 +324,52 @@ bool VansGraphics::VansAnimationClipIO::Save(const std::string& filePath,
 		nodeChannelsJson.push_back(channelJson);
 	}
 	header["nodeTransformChannels"] = nodeChannelsJson;
+
+	json curvesJson = json::array();
+	for (const AnimationCurveTrack& curve : clip.curves)
+	{
+		json curveJson;
+		curveJson["id"] = curve.id != 0 ? curve.id : VansAnimationStableId(curve.name);
+		curveJson["name"] = curve.name;
+		curveJson["keys"] = json::array();
+		for (const AnimationCurveKey& key : curve.keys)
+			curveJson["keys"].push_back({ { "time", key.time }, { "value", key.value } });
+		curvesJson.push_back(std::move(curveJson));
+	}
+	header["curves"] = std::move(curvesJson);
+
+	json eventsJson = json::array();
+	for (const AnimationClipEvent& event : clip.events)
+	{
+		eventsJson.push_back({
+			{ "id", event.id != 0 ? event.id : VansAnimationStableId(event.name) },
+			{ "time", event.time },
+			{ "name", event.name },
+			{ "payload", EventValueToJson(event.payload) }
+		});
+	}
+	header["events"] = std::move(eventsJson);
+
+	json markersJson = json::array();
+	for (const AnimationSyncMarker& marker : clip.syncMarkers)
+	{
+		markersJson.push_back({
+			{ "id", marker.id != 0 ? marker.id : VansAnimationStableId(marker.name) },
+			{ "time", marker.time },
+			{ "name", marker.name }
+		});
+	}
+	header["sync"] = {
+		{ "group", clip.syncGroupName },
+		{ "markers", std::move(markersJson) }
+	};
+	header["rootMotion"] = {
+		{ "enabled", clip.rootMotion.enabled },
+		{ "bone", clip.rootMotion.boneName },
+		{ "translation", clip.rootMotion.extractTranslation },
+		{ "rotation", clip.rootMotion.extractRotation },
+		{ "scale", clip.rootMotion.extractScale }
+	};
 
 	std::string headerStr = header.dump();
 	uint32_t headerSize   = (uint32_t)headerStr.size();
@@ -344,9 +460,15 @@ bool VansGraphics::VansAnimationClipIO::Load(const std::string& filePath,
 	}
 
 	outClip.clipName       = header.value("clipName", "");
+	outClip.stableId       = header.value("clipId", VansAnimationStableId(outClip.clipName));
 	outClip.duration       = header.value("duration", 0.0f);
 	outClip.ticksPerSecond = header.value("ticksPerSecond", 60.0f);
 	outClip.nodeTransformChannels.clear();
+	outClip.curves.clear();
+	outClip.events.clear();
+	outClip.syncMarkers.clear();
+	outClip.syncGroupName.clear();
+	outClip.rootMotion = {};
 
 	// ── Reconstruct skeleton ──
 	if (header.contains("globalInverseTransform"))
@@ -416,6 +538,94 @@ bool VansGraphics::VansAnimationClipIO::Load(const std::string& filePath,
 		}
 	}
 
+	try
+	{
+		if (header.contains("curves"))
+		{
+			if (!header["curves"].is_array())
+				throw std::runtime_error("curves must be an array");
+			for (const json& curveJson : header["curves"])
+			{
+				if (!curveJson.is_object() || !curveJson.contains("name") || !curveJson["name"].is_string()
+				    || !curveJson.contains("keys") || !curveJson["keys"].is_array())
+					throw std::runtime_error("invalid curve track");
+				AnimationCurveTrack curve;
+				curve.name = curveJson["name"].get<std::string>();
+				curve.id = curveJson.value("id", VansAnimationStableId(curve.name));
+				for (const json& keyJson : curveJson["keys"])
+				{
+					if (!keyJson.is_object() || !keyJson.contains("time") || !keyJson["time"].is_number()
+					    || !keyJson.contains("value") || !keyJson["value"].is_number())
+						throw std::runtime_error("invalid curve key");
+					curve.keys.push_back({ keyJson["time"].get<float>(), keyJson["value"].get<float>() });
+				}
+				std::stable_sort(curve.keys.begin(), curve.keys.end(),
+					[](const AnimationCurveKey& a, const AnimationCurveKey& b) { return a.time < b.time; });
+				outClip.curves.push_back(std::move(curve));
+			}
+		}
+
+		if (header.contains("events"))
+		{
+			if (!header["events"].is_array())
+				throw std::runtime_error("events must be an array");
+			for (const json& eventJson : header["events"])
+			{
+				if (!eventJson.is_object() || !eventJson.contains("time") || !eventJson["time"].is_number()
+				    || !eventJson.contains("name") || !eventJson["name"].is_string())
+					throw std::runtime_error("invalid animation event");
+				AnimationClipEvent event;
+				event.time = eventJson["time"].get<float>();
+				event.name = eventJson["name"].get<std::string>();
+				event.id = eventJson.value("id", VansAnimationStableId(event.name));
+				if (eventJson.contains("payload") && !EventValueFromJson(eventJson["payload"], event.payload))
+					throw std::runtime_error("invalid animation event payload");
+				outClip.events.push_back(std::move(event));
+			}
+			std::stable_sort(outClip.events.begin(), outClip.events.end(),
+				[](const AnimationClipEvent& a, const AnimationClipEvent& b) { return a.time < b.time; });
+		}
+
+		if (header.contains("sync"))
+		{
+			const json& syncJson = header["sync"];
+			if (!syncJson.is_object() || !syncJson.contains("markers") || !syncJson["markers"].is_array())
+				throw std::runtime_error("invalid sync marker block");
+			outClip.syncGroupName = syncJson.value("group", "");
+			for (const json& markerJson : syncJson["markers"])
+			{
+				if (!markerJson.is_object() || !markerJson.contains("time") || !markerJson["time"].is_number()
+				    || !markerJson.contains("name") || !markerJson["name"].is_string())
+					throw std::runtime_error("invalid sync marker");
+				AnimationSyncMarker marker;
+				marker.time = markerJson["time"].get<float>();
+				marker.name = markerJson["name"].get<std::string>();
+				marker.id = markerJson.value("id", VansAnimationStableId(marker.name));
+				outClip.syncMarkers.push_back(std::move(marker));
+			}
+			std::stable_sort(outClip.syncMarkers.begin(), outClip.syncMarkers.end(),
+				[](const AnimationSyncMarker& a, const AnimationSyncMarker& b) { return a.time < b.time; });
+		}
+
+		if (header.contains("rootMotion"))
+		{
+			const json& rootMotionJson = header["rootMotion"];
+			if (!rootMotionJson.is_object())
+				throw std::runtime_error("rootMotion must be an object");
+			outClip.rootMotion.enabled = rootMotionJson.value("enabled", true);
+			outClip.rootMotion.boneName = rootMotionJson.value("bone", "");
+			outClip.rootMotion.extractTranslation = rootMotionJson.value("translation", true);
+			outClip.rootMotion.extractRotation = rootMotionJson.value("rotation", true);
+			outClip.rootMotion.extractScale = rootMotionJson.value("scale", false);
+		}
+	}
+	catch (const std::exception& exception)
+	{
+		VANS_LOG_ERROR("[VansAnimationClipIO] Invalid animation payload metadata in "
+			<< filePath << ": " << exception.what());
+		return false;
+	}
+
 	// ── Read binary payload ──
 	for (uint32_t b = 0; b < boneCount; b++)
 	{
@@ -473,7 +683,14 @@ bool VansGraphics::VansAnimationClipIO::Peek(const std::string& filePath,
 		outInfo.clipName  = header.value("clipName", "");
 		outInfo.duration  = header.value("duration", 0.0f);
 		outInfo.boneCount = header.value("boneCount", (uint32_t)0);
-		outInfo.nodeTransformChannelCount = static_cast<uint32_t>(header["nodeTransformChannels"].size());
+			outInfo.nodeTransformChannelCount = static_cast<uint32_t>(header["nodeTransformChannels"].size());
+			outInfo.curveCount = header.contains("curves") && header["curves"].is_array()
+				? static_cast<uint32_t>(header["curves"].size()) : 0;
+			outInfo.eventCount = header.contains("events") && header["events"].is_array()
+				? static_cast<uint32_t>(header["events"].size()) : 0;
+			outInfo.syncMarkerCount = header.contains("sync") && header["sync"].is_object()
+				&& header["sync"].contains("markers") && header["sync"]["markers"].is_array()
+				? static_cast<uint32_t>(header["sync"]["markers"].size()) : 0;
 	}
 	catch (...)
 	{

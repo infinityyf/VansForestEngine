@@ -340,141 +340,67 @@ void VansSceneContentBuildExecutor::ApplyGISettings(
 	VansGISettings giSettings{};
 	if (config.has_value())
 	{
-		if (config->gridDimensions.has_value())
-		{
-			giSettings.gridDimensions = glm::uvec3(
-				std::clamp((*config->gridDimensions)[0], 1u, 256u),
-				std::clamp((*config->gridDimensions)[1], 1u, 256u),
-				std::clamp((*config->gridDimensions)[2], 1u, 256u));
-		}
-		else if (config->gridSize.has_value())
-		{
-			const uint32_t gridSize = std::clamp(*config->gridSize, 1u, 256u);
-			giSettings.gridDimensions = glm::uvec3(gridSize);
-		}
-		if (config->probeSpacingAxes.has_value())
-		{
-			giSettings.probeSpacingAxes = glm::vec3(
-				std::max((*config->probeSpacingAxes)[0], 0.001f),
-				std::max((*config->probeSpacingAxes)[1], 0.001f),
-				std::max((*config->probeSpacingAxes)[2], 0.001f));
-		}
-		else if (config->probeSpacing.has_value())
-		{
-			giSettings.probeSpacingAxes = glm::vec3(std::max(*config->probeSpacing, 0.001f));
-		}
-		if (config->raysPerProbe.has_value())
-		{
-			giSettings.raysPerProbe = std::clamp(*config->raysPerProbe, 1u, 4096u);
-		}
-		if (config->spatialUpdateDivisor.has_value())
-		{
-			giSettings.spatialUpdateDivisor = std::clamp(
-				*config->spatialUpdateDivisor, 1u,
-				std::min({ giSettings.gridDimensions.x, giSettings.gridDimensions.y, giSettings.gridDimensions.z }));
-		}
-		if (config->directionUpdateSlices.has_value())
-		{
-			giSettings.directionUpdateSlices = std::clamp(
-				*config->directionUpdateSlices, 1u, giSettings.raysPerProbe);
-		}
-		if (config->maxRayDistance.has_value())
-		{
-			giSettings.maxRayDistance = std::max(*config->maxRayDistance, 0.001f);
-		}
-		if (config->normalBias.has_value())
-		{
-			giSettings.normalBias = std::max(*config->normalBias, 0.0f);
-		}
-		if (config->environmentIntensity.has_value())
-		{
-			giSettings.environmentIntensity = std::max(*config->environmentIntensity, 0.0f);
-		}
-		if (config->maxIndirectRadiance.has_value())
-		{
-			giSettings.maxIndirectRadiance = std::max(*config->maxIndirectRadiance, 0.0f);
-		}
-		if (config->maxSHL0.has_value())
-		{
-			giSettings.maxSHL0 = std::max(*config->maxSHL0, 0.0f);
-		}
-		if (config->volumeFadeDistance.has_value())
-		{
-			giSettings.volumeFadeDistance = std::max(*config->volumeFadeDistance, 0.0f);
-		}
-		if (config->gizmoStride.has_value())
-		{
-			giSettings.gizmoStride = std::clamp(
-				*config->gizmoStride, 1u,
-				std::max({ giSettings.gridDimensions.x, giSettings.gridDimensions.y, giSettings.gridDimensions.z }));
-		}
-		ApplyOptionalValue(config->showProbeGizmos, giSettings.showProbeGizmos);
-		ApplyOptionalValue(config->showProbeVolume, giSettings.showProbeVolume);
-
-		if (config->regionCenter.has_value())
-		{
-			giSettings.regionCenter = glm::vec3(
-				(*config->regionCenter)[0],
-				(*config->regionCenter)[1],
-				(*config->regionCenter)[2]);
-		}
-
-		GIProbeRegionDesc baseRegion = BuildLegacyGIRegionDesc(giSettings);
 		if (!config->regions.empty())
 		{
 			giSettings.regions.clear();
 			giSettings.regions.reserve(config->regions.size());
 			for (size_t index = 0; index < config->regions.size(); ++index)
 			{
-				const Vans::VansSceneGIRegionSettingsConfig& regionConfig = config->regions[index];
-				GIProbeRegionDesc region = baseRegion;
-				region.stableId = regionConfig.stableId.value_or(static_cast<uint32_t>(index + 1u));
-				region.name = regionConfig.name.value_or(index == 0 ? std::string("Default") : ("GI Region " + std::to_string(index + 1u)));
-				ApplyOptionalValue(regionConfig.enabled, region.enabled);
-				if (regionConfig.center.has_value())
+				const Vans::VansSceneGIRegionSettingsConfig& sourceRegion = config->regions[index];
+				GIProbeRegionDesc region{};
+				region.stableId = sourceRegion.stableId.value_or(static_cast<uint32_t>(index + 1u));
+				region.name = sourceRegion.name.value_or(index == 0 ? std::string("Default") : ("GI Region " + std::to_string(index + 1u)));
+				ApplyOptionalValue(sourceRegion.enabled, region.enabled);
+				if (sourceRegion.center.has_value())
+					region.center = glm::vec3((*sourceRegion.center)[0], (*sourceRegion.center)[1], (*sourceRegion.center)[2]);
+				if (sourceRegion.size.has_value())
 				{
-					region.center = glm::vec3(
-						(*regionConfig.center)[0],
-						(*regionConfig.center)[1],
-						(*regionConfig.center)[2]);
-				}
-				if (regionConfig.size.has_value())
-				{
-					region.size = glm::vec3(
-						std::max((*regionConfig.size)[0], 0.001f),
-						std::max((*regionConfig.size)[1], 0.001f),
-						std::max((*regionConfig.size)[2], 0.001f));
+					region.size = glm::vec3(std::max((*sourceRegion.size)[0], 0.001f), std::max((*sourceRegion.size)[1], 0.001f), std::max((*sourceRegion.size)[2], 0.001f));
 					region.overrideGridDimensions = false;
 				}
-				if (regionConfig.probeSpacingAxes.has_value())
+				if (sourceRegion.probeSpacing.has_value())
 				{
-					region.probeSpacingAxes = glm::vec3(
-						std::max((*regionConfig.probeSpacingAxes)[0], 0.001f),
-						std::max((*regionConfig.probeSpacingAxes)[1], 0.001f),
-						std::max((*regionConfig.probeSpacingAxes)[2], 0.001f));
+					region.probeSpacing = std::max(*sourceRegion.probeSpacing, 0.001f);
 				}
-				if (regionConfig.gridDimensions.has_value())
+				else if (sourceRegion.probeSpacingAxes.has_value())
 				{
-					region.gridDimensions = glm::uvec3(
-						std::clamp((*regionConfig.gridDimensions)[0], 1u, 256u),
-						std::clamp((*regionConfig.gridDimensions)[1], 1u, 256u),
-						std::clamp((*regionConfig.gridDimensions)[2], 1u, 256u));
+					const auto& spacingAxes = *sourceRegion.probeSpacingAxes;
+					region.probeSpacing = std::max(std::max(spacingAxes[0], spacingAxes[1]), spacingAxes[2]);
+					region.probeSpacing = std::max(region.probeSpacing, 0.001f);
+				}
+				if (sourceRegion.gridDimensions.has_value())
+				{
+					region.gridDimensions = glm::uvec3(std::clamp((*sourceRegion.gridDimensions)[0], 1u, 256u), std::clamp((*sourceRegion.gridDimensions)[1], 1u, 256u), std::clamp((*sourceRegion.gridDimensions)[2], 1u, 256u));
 					region.overrideGridDimensions = true;
 				}
-				ApplyOptionalValue(regionConfig.raysPerProbe, region.raysPerProbe);
-				ApplyOptionalValue(regionConfig.spatialUpdateDivisor, region.spatialUpdateDivisor);
-				ApplyOptionalValue(regionConfig.directionUpdateSlices, region.directionUpdateSlices);
-				ApplyOptionalValue(regionConfig.maxRayDistance, region.maxRayDistance);
-				ApplyOptionalValue(regionConfig.normalBias, region.normalBias);
-				ApplyOptionalValue(regionConfig.volumeFadeDistance, region.volumeFadeDistance);
-				ApplyOptionalValue(regionConfig.priority, region.priority);
+				ApplyOptionalValue(sourceRegion.raysPerProbe, region.raysPerProbe);
+				ApplyOptionalValue(sourceRegion.spatialUpdateDivisor, region.spatialUpdateDivisor);
+				ApplyOptionalValue(sourceRegion.directionUpdateSlices, region.directionUpdateSlices);
+				ApplyOptionalValue(sourceRegion.maxRayDistance, region.maxRayDistance);
+				ApplyOptionalValue(sourceRegion.normalBias, region.normalBias);
+				ApplyOptionalValue(sourceRegion.volumeFadeDistance, region.volumeFadeDistance);
+				ApplyOptionalValue(sourceRegion.priority, region.priority);
 				giSettings.regions.push_back(region);
 			}
 		}
-		else
-		{
-			giSettings.regions = { baseRegion };
-		}
+		if (config->environmentIntensity.has_value())
+			giSettings.environmentIntensity = std::max(*config->environmentIntensity, 0.0f);
+		if (config->maxIndirectRadiance.has_value())
+			giSettings.maxIndirectRadiance = std::max(*config->maxIndirectRadiance, 0.0f);
+		if (config->maxProbeRadiance.has_value())
+			giSettings.maxProbeRadiance = std::max(*config->maxProbeRadiance, 0.0f);
+		if (config->irradianceHysteresis.has_value())
+			giSettings.irradianceHysteresis = *config->irradianceHysteresis;
+		if (config->distanceHysteresis.has_value())
+			giSettings.distanceHysteresis = *config->distanceHysteresis;
+		if (config->distanceSharpness.has_value())
+			giSettings.distanceSharpness = *config->distanceSharpness;
+		if (config->brightnessChangeThreshold.has_value())
+			giSettings.brightnessChangeThreshold = *config->brightnessChangeThreshold;
+		ApplyOptionalValue(config->showProbeGizmos, giSettings.showProbeGizmos);
+		ApplyOptionalValue(config->showProbeVolume, giSettings.showProbeVolume);
+		if (config->gizmoStride.has_value())
+			giSettings.gizmoStride = std::max(*config->gizmoStride, 1u);
 	}
 
 	NormalizeGISettings(giSettings);
@@ -482,40 +408,16 @@ void VansSceneContentBuildExecutor::ApplyGISettings(
 
 	uint64_t totalProbeCount = 0;
 	uint64_t totalRayCacheEntries = 0;
-	for (size_t index = 0; index < giSettings.regions.size(); ++index)
+	for (const GIProbeRegionDesc& desc : giSettings.regions)
 	{
-		const GIResolvedRegion region = ResolveGIRegion(giSettings.regions[index]);
+		const GIResolvedRegion region = ResolveGIRegion(desc);
+		const GIProbeUpdateBatch batch = BuildGIProbeUpdateBatch(region, 0u);
 		totalProbeCount += region.enabled ? region.probeCount : 0u;
-		totalRayCacheEntries += region.enabled ? region.probeCount * region.raysPerProbe : 0u;
-		VANS_LOG("[GISettings] region[" << index << "] name='" << region.name
-			<< "' enabled=" << (region.enabled ? 1 : 0)
-			<< " grid=" << region.gridDimensions.x << "x"
-			<< region.gridDimensions.y << "x"
-			<< region.gridDimensions.z
-			<< " spacing=(" << region.probeSpacingAxes.x << ","
-			<< region.probeSpacingAxes.y << ","
-			<< region.probeSpacingAxes.z << ")"
-			<< " center=(" << region.center.x << ","
-			<< region.center.y << ","
-			<< region.center.z << ")"
-			<< " volume=(" << region.volumeSize.x << ","
-			<< region.volumeSize.y << "," << region.volumeSize.z << ")"
-			<< " probes=" << region.probeCount
-			<< " rayCacheEntries=" << (region.probeCount * region.raysPerProbe));
+		totalRayCacheEntries += region.enabled ? batch.activeRayCount : 0u;
 	}
 	VANS_LOG("[GISettings] regions=" << giSettings.regions.size()
 		<< " activeProbes=" << totalProbeCount
-		<< " activeRayCacheEntries=" << totalRayCacheEntries);
-
-	const GIResolvedRegion primaryRegion = ResolveGIRegion(GetPrimaryGIRegionDesc(giSettings));
-	SSGIParamsGPU volumeData{};
-	volumeData.giVolumeMin = glm::vec4(primaryRegion.volumeMin, 0.0f);
-	volumeData.giVolumeSizeAndBias = glm::vec4(primaryRegion.volumeSize, primaryRegion.normalBias);
-	volumeData.traceParams = glm::vec4(primaryRegion.maxRayDistance, 0.75f, primaryRegion.volumeFadeDistance, 0.0f);
-	VansMaterialManager* materialManager = scene.GetMaterialManager();
-	if (materialManager->m_SSGICBBuffer.GetNativeBuffer() != VK_NULL_HANDLE)
-		materialManager->m_SSGICBBuffer.SetBufferData(
-			&volumeData.giVolumeMin, sizeof(glm::vec4), sizeof(glm::vec4) * 3);
+		<< " activeRayWorkingSet=" << totalRayCacheEntries);
 }
 
 void VansSceneContentBuildExecutor::ApplyMainCameraHiZCullSettings(

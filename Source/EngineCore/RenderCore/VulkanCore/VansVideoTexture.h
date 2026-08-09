@@ -70,6 +70,11 @@ namespace VansGraphics
         // Stop — 停止播放并将解码位置重置到视频起点
         // 下次调用 Play() 时将从第 0 帧开始播放
         void Stop();
+		bool Seek(double seconds);
+		void SetPlaybackRate(double rate) { m_PlaybackRate = rate > 0.0 ? rate : 0.0; }
+		double GetPlaybackRate() const { return m_PlaybackRate; }
+		double GetPlayTime() const { return m_PlayTime; }
+		double GetDuration() const { return m_VideoDuration; }
         bool IsPlaying() const { return m_Playing.load(); }
         bool IsReady()   const { return m_IsReady.load();  }
 
@@ -140,6 +145,7 @@ namespace VansGraphics
         std::atomic<bool> m_Playing  = { false };
         std::atomic<bool> m_IsReady  = { false };
         double            m_PlayTime = 0.0; // 当前播放时间（秒），仅主线程写
+		double            m_PlaybackRate = 1.0;
 
         // ── GPU 贴图 ─────────────────────────────────────────────────────────
         VansTexture   m_GpuTexture;
@@ -169,6 +175,7 @@ namespace VansGraphics
         std::atomic<bool> m_ShouldStop   = { false };
         // 由 Stop() 设置，通知解码线程执行 seek 回起点并重置 ptsOffset
         std::atomic<bool> m_NeedRestart  = { false };
+		std::atomic<double> m_SeekRequestSeconds{ -1.0 };
     };
 
 } // namespace VansGraphics

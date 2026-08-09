@@ -1,6 +1,10 @@
 #version 450
 #extension GL_EXT_shader_16bit_storage : require
 #extension GL_EXT_shader_explicit_arithmetic_types : require
+#extension GL_GOOGLE_include_directive : require
+
+#include "../GI/GIProbeCommon.glsl"
+#include "../GI/GIProbeUpdateCommon.glsl"
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -25,9 +29,18 @@ layout(set = 0, binding = 3, std430) readonly buffer DirectLightBuffer
 } directLightBuffer;
 
 layout(set = 0, binding = 4, rgba16f) readonly uniform image3D raySummaryImage;
-layout(set = 0, binding = 5, rgba32f) readonly uniform image3D shRImage;
-layout(set = 0, binding = 6, rgba32f) readonly uniform image3D shGImage;
-layout(set = 0, binding = 7, rgba32f) readonly uniform image3D shBImage;
+layout(set = 0, binding = 5) uniform sampler2D irradianceAtlas;
+layout(set = 0, binding = 6) uniform sampler2D visibilityAtlas;
+struct GIProbeState
+{
+    vec4 relocationAndConfidence;
+    vec4 distanceStats;
+    uvec4 metadata;
+};
+layout(set = 0, binding = 7, std430) readonly buffer ProbeStateBuffer
+{
+    GIProbeState states[];
+} probeStates;
 layout(set = 0, binding = 8, rgba32f) writeonly uniform image2D outputImage;
 
 layout(push_constant) uniform PreviewConstants
@@ -35,6 +48,7 @@ layout(push_constant) uniform PreviewConstants
     vec4 gridParams;       // xyz = grid dimensions, w = rays per probe
     vec4 selectionParams;  // x = mode, y = z slice, z = ray index, w = exposure
     vec4 displayParams;    // x = signed world-position scale
+	vec4 updateParams;     // x = update frame, y = spatial divisor, z = direction slices, w = rays in active slice
 } preview;
 
 vec3 TonemapPositive(vec3 value, float exposure)
@@ -57,26 +71,60 @@ void main()
 
     int raysPerProbe = max(int(preview.gridParams.w), 1);
     int zSlice = clamp(int(preview.selectionParams.y), 0, grid.z - 1);
-    int rayIndex = clamp(int(preview.selectionParams.z), 0, raysPerProbe - 1);
+    int raysPerActiveProbe = max(int(preview.updateParams.w), 1);
+    int rayIndex = clamp(int(preview.selectionParams.z), 0, raysPerActiveProbe - 1);
     int mode = int(preview.selectionParams.x);
     float exposure = max(preview.selectionParams.w, 0.001);
     ivec3 probeCoord = ivec3(pixel, zSlice);
     int probeIndex = zSlice * grid.x * grid.y + pixel.y * grid.x + pixel.x;
-    int sliceElementBase = max(int(preview.displayParams.y), 0);
-    int sampleIndex = sliceElementBase + (pixel.y * grid.x + pixel.x) * raysPerProbe + rayIndex;
+    uint updateFrame = uint(max(preview.updateParams.x, 0.0));
+    uint spatialDivisor = max(uint(preview.updateParams.y), 1u);
+    uvec3 divisors = GI_UpdateSpatialDivisors(uvec3(grid), spatialDivisor);
+    uvec3 offset = GI_UpdateSpatialOffset(updateFrame, uvec3(grid), spatialDivisor);
+    ivec3 probeOffset = probeCoord - ivec3(offset);
+    bool activeProbe = all(greaterThanEqual(probeOffset, ivec3(0))) &&
+        all(equal(uvec3(probeOffset) % divisors, uvec3(0u)));
+    uvec3 activeDimensions = GI_UpdateDispatchDimensions(uvec3(grid), spatialDivisor, updateFrame);
+    uvec3 activeProbeCoord = activeProbe ? uvec3(probeOffset) / divisors : uvec3(0u);
+    uint activeLinear = activeProbeCoord.z * activeDimensions.x * activeDimensions.y +
+        activeProbeCoord.y * activeDimensions.x + activeProbeCoord.x;
+    uint sampleIndex = activeLinear * uint(raysPerActiveProbe) + uint(rayIndex);
+
+    // Raw ray-tracing buffers exist only for the current spatial phase.  A
+    // black cell therefore means "not updated this frame", never a synthetic
+    // zero normal/position that could be mistaken for valid data.
+    if (!activeProbe && mode <= 6)
+    {
+        imageStore(outputImage, pixel, vec4(0.0, 0.0, 0.0, 1.0));
+        return;
+    }
 
     vec4 hitPosition = vec4(hitPositionBuffer.values[sampleIndex]);
     vec4 hitNormal = vec4(hitNormalBuffer.values[sampleIndex]);
     vec4 hitPBR = vec4(hitPBRBuffer.values[sampleIndex]);
     vec4 directLight = vec4(directLightBuffer.values[sampleIndex]);
-    vec4 shR = imageLoad(shRImage, probeCoord);
-    vec4 shG = imageLoad(shGImage, probeCoord);
-    vec4 shB = imageLoad(shBImage, probeCoord);
+    ivec2 irradianceSize = textureSize(irradianceAtlas, 0);
+    ivec2 visibilitySize = textureSize(visibilityAtlas, 0);
+    vec3 debugDirection = vec3(0.0, 1.0, 0.0);
+    vec4 probeIrradiance = textureLod(irradianceAtlas,
+        GI_IrradianceAtlasUV(probeCoord, debugDirection, grid, irradianceSize), 0.0);
+    vec2 probeDistanceMoments = textureLod(visibilityAtlas,
+        GI_VisibilityAtlasUV(probeCoord, debugDirection, grid, visibilitySize), 0.0).rg;
+    GIProbeState probeState = probeStates.states[probeIndex];
 
     vec3 color = vec3(0.0);
     if (mode == 0)
     {
-        color = vec3(clamp(imageLoad(raySummaryImage, probeCoord).x, 0.0, 1.0));
+        // 当前活动 Probe 的完整 16-ray batch 命中率。不能读取
+        // raySummaryImage 的最后写入值：那只代表某一条未定义顺序的射线，
+        // 会把单射线结果误标为 Probe 统计。
+        float hitCount = 0.0;
+        for (int localRay = 0; localRay < raysPerActiveProbe; ++localRay)
+        {
+            uint batchIndex = activeLinear * uint(raysPerActiveProbe) + uint(localRay);
+            hitCount += clamp(float(hitPositionBuffer.values[batchIndex].w), 0.0, 1.0);
+        }
+        color = vec3(1.0 - hitCount / float(raysPerActiveProbe));
     }
     else if (mode == 1)
     {
@@ -104,23 +152,27 @@ void main()
     }
     else if (mode == 7)
     {
-        color = TonemapPositive(vec3(shR.x, shG.x, shB.x) * 0.28209479, exposure);
+		color = TonemapPositive(probeIrradiance.rgb, exposure);
     }
     else if (mode == 8)
     {
-        color = TonemapPositive(vec3(length(shR.yzw), length(shG.yzw), length(shB.yzw)), exposure);
+		color = vec3(clamp(probeDistanceMoments.x / max(preview.displayParams.z, 1e-4), 0.0, 1.0));
     }
     else if (mode == 9)
     {
-        color = EncodeSigned(shR.yzw * exposure);
+		float variance = max(probeDistanceMoments.y - probeDistanceMoments.x * probeDistanceMoments.x, 0.0);
+		color = vec3(clamp(sqrt(variance) / max(preview.displayParams.z, 1e-4), 0.0, 1.0));
     }
     else if (mode == 10)
     {
-        color = EncodeSigned(shG.yzw * exposure);
+		color = vec3(clamp(probeState.relocationAndConfidence.w, 0.0, 1.0));
     }
     else
     {
-        color = EncodeSigned(shB.yzw * exposure);
+		uint classification = probeState.metadata.x;
+		color = classification == 1u ? vec3(0.15, 0.95, 0.2) :
+			classification == 2u ? vec3(0.95, 0.15, 0.1) :
+			classification == 3u ? vec3(0.2, 0.35, 0.95) : vec3(0.95, 0.75, 0.1);
     }
 
     imageStore(outputImage, pixel, vec4(color, 1.0));

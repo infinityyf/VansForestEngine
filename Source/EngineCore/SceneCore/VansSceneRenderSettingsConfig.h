@@ -124,6 +124,7 @@ struct VansSceneGIRegionSettingsConfig
 	std::optional<std::array<float, 3>> center;
 	std::optional<std::array<float, 3>> size;
 	std::optional<std::array<uint32_t, 3>> gridDimensions;
+	std::optional<float> probeSpacing;
 	std::optional<std::array<float, 3>> probeSpacingAxes;
 	std::optional<uint32_t> raysPerProbe;
 	std::optional<uint32_t> spatialUpdateDivisor;
@@ -137,20 +138,13 @@ struct VansSceneGIRegionSettingsConfig
 struct VansSceneGISettingsConfig
 {
 	std::vector<VansSceneGIRegionSettingsConfig> regions;
-	std::optional<std::array<uint32_t, 3>> gridDimensions;
-	std::optional<uint32_t> gridSize;
-	std::optional<float> probeSpacing;
-	std::optional<std::array<float, 3>> probeSpacingAxes;
-	std::optional<std::array<float, 3>> regionCenter;
-	std::optional<uint32_t> raysPerProbe;
-	std::optional<uint32_t> spatialUpdateDivisor;
-	std::optional<uint32_t> directionUpdateSlices;
-	std::optional<float> maxRayDistance;
-	std::optional<float> normalBias;
 	std::optional<float> environmentIntensity;
 	std::optional<float> maxIndirectRadiance;
-	std::optional<float> maxSHL0;
-	std::optional<float> volumeFadeDistance;
+	std::optional<float> maxProbeRadiance;
+	std::optional<float> irradianceHysteresis;
+	std::optional<float> distanceHysteresis;
+	std::optional<float> distanceSharpness;
+	std::optional<float> brightnessChangeThreshold;
 	std::optional<bool> showProbeGizmos;
 	std::optional<bool> showProbeVolume;
 	std::optional<uint32_t> gizmoStride;

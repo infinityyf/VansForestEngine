@@ -22,6 +22,7 @@
 #include "VansScenePhysicsComponentReader.h"
 #include "VansSceneReflectionProbeConfigReader.h"
 #include "VansSceneRenderSettingsConfigReader.h"
+#include "VansSceneTimelineComponentReader.h"
 #include "VansSceneRuntimeComponentKey.h"
 #include "VansSceneSchema.h"
 #include "VansSceneVehicleComponentReader.h"
@@ -485,7 +486,7 @@ std::string RuntimeComponentKey(const std::string& type)
 		{ "PointLight", "point_light" }, { "SpotLight", "spot_light" }, { "RectLight", "rect_light" },
 		{ "Audio", "audio" }, { "AudioVolume", "audio_volume" },
 		{ "AudioReverbZone", "audio_reverb_zone" }, { "Video", "video" }, { "Particle", "particle" },
-		{ "Cloth", "cloth" }, { "Vehicle", "vehicle" }
+		{ "Cloth", "cloth" }, { "Vehicle", "vehicle" }, { "Timeline", "timeline" }
 	};
 
 	const auto found = keys.find(type);
@@ -1091,6 +1092,19 @@ bool AppendAuthoringEntityToContentPlan(
 			VansAssetType::AnimatorController,
 			projectRoot,
 			true);
+		if (objectConfig.animation->retarget)
+		{
+			objectConfig.animation->retarget->sourceModel = ProjectRelativeAssetPathFromGuid(
+				objectConfig.animation->retarget->sourceModel,
+				VansAssetType::Model,
+				projectRoot,
+				false);
+			objectConfig.animation->retarget->sourceAnimator = ProjectRelativeAssetPathFromGuid(
+				objectConfig.animation->retarget->sourceAnimator,
+				VansAssetType::AnimatorController,
+				projectRoot,
+				false);
+		}
 		if (objectConfig.animation->ragdoll)
 		{
 			objectConfig.animation->ragdoll->profile = ProjectRelativeAssetPathFromGuid(
@@ -1108,6 +1122,16 @@ bool AppendAuthoringEntityToContentPlan(
 			VansAssetType::Particle,
 			projectRoot,
 			false);
+	}
+	objectConfig.timeline = VansSceneTimelineComponentReader::ReadFromAuthoringEntity(entity);
+	if (objectConfig.timeline)
+	{
+		const std::string resolvedPath = ProjectRelativeAssetPathFromGuid(
+			objectConfig.timeline->timelineAssetGuid,
+			VansAssetType::Timeline,
+			projectRoot,
+			true);
+		if (!resolvedPath.empty()) objectConfig.timeline->timelineAssetPath = resolvedPath;
 	}
 	objectConfig.scriptComponents = std::move(scriptComponents);
 

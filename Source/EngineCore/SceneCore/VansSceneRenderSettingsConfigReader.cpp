@@ -135,6 +135,7 @@ std::optional<VansSceneGIRegionSettingsConfig> DecodeGIRegionSettings(const Vans
 	config.center = ReadOptionalFloat3Field(regionNode, "center");
 	config.size = ReadOptionalFloat3Field(regionNode, "size");
 	config.gridDimensions = ReadOptionalUInt3Field(regionNode, "gridDimensions");
+	config.probeSpacing = ReadOptionalFloatField(regionNode, "probeSpacing");
 	config.probeSpacingAxes = ReadOptionalFloat3Field(regionNode, "probeSpacingAxes");
 	config.raysPerProbe = ReadOptionalUIntField(regionNode, "raysPerProbe");
 	config.spatialUpdateDivisor = ReadOptionalUIntField(regionNode, "spatialUpdateDivisor");
@@ -318,20 +319,13 @@ std::optional<VansSceneGISettingsConfig> DecodeGISettings(const VansSerializedVa
 			}
 		}
 	}
-	config.gridDimensions = ReadOptionalUInt3Field(*gi, "gridDimensions");
-	config.gridSize = ReadOptionalUIntField(*gi, "gridSize");
-	config.probeSpacing = ReadOptionalFloatField(*gi, "probeSpacing");
-	config.probeSpacingAxes = ReadOptionalFloat3Field(*gi, "probeSpacingAxes");
-	config.regionCenter = ReadOptionalFloat3Field(*gi, "regionCenter");
-	config.raysPerProbe = ReadOptionalUIntField(*gi, "raysPerProbe");
-	config.spatialUpdateDivisor = ReadOptionalUIntField(*gi, "spatialUpdateDivisor");
-	config.directionUpdateSlices = ReadOptionalUIntField(*gi, "directionUpdateSlices");
-	config.maxRayDistance = ReadOptionalFloatField(*gi, "maxRayDistance");
-	config.normalBias = ReadOptionalFloatField(*gi, "normalBias");
 	config.environmentIntensity = ReadOptionalFloatField(*gi, "environmentIntensity");
 	config.maxIndirectRadiance = ReadOptionalFloatField(*gi, "maxIndirectRadiance");
-	config.maxSHL0 = ReadOptionalFloatField(*gi, "maxSHL0");
-	config.volumeFadeDistance = ReadOptionalFloatField(*gi, "volumeFadeDistance");
+	config.maxProbeRadiance = ReadOptionalFloatField(*gi, "maxProbeRadiance");
+	config.irradianceHysteresis = ReadOptionalFloatField(*gi, "irradianceHysteresis");
+	config.distanceHysteresis = ReadOptionalFloatField(*gi, "distanceHysteresis");
+	config.distanceSharpness = ReadOptionalFloatField(*gi, "distanceSharpness");
+	config.brightnessChangeThreshold = ReadOptionalFloatField(*gi, "brightnessChangeThreshold");
 	config.showProbeGizmos = ReadOptionalBoolField(*gi, "showProbeGizmos");
 	config.showProbeVolume = ReadOptionalBoolField(*gi, "showProbeVolume");
 	config.gizmoStride = ReadOptionalUIntField(*gi, "gizmoStride");

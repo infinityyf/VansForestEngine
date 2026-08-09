@@ -17,6 +17,30 @@ layout(set = 1, binding = 5) uniform ssgiTemporalInfo
     vec4 screenSize;  // xy = resolution, zw = 1 / resolution
     vec4 frameParams; // x = temporal frame index, 0 means reset history
 };
+layout(set = 1, binding = 6) uniform sampler2D inputHistoryMoments;
+layout(set = 1, binding = 7, rgba32f) writeonly uniform image2D outputMoments;
+layout(set = 1, binding = 8) uniform sampler2D inputHistorySurface;
+layout(set = 1, binding = 9) uniform sampler2D inputNormal;
+layout(set = 1, binding = 10) uniform sampler2D inputMaterial;
+layout(set = 1, binding = 11, rgba32f) writeonly uniform image2D outputSurface;
+
+vec2 EncodeNormalOctahedron(vec3 n)
+{
+    n /= max(abs(n.x) + abs(n.y) + abs(n.z), 1e-6);
+    vec2 encoded = n.xz;
+    if (n.y < 0.0)
+        encoded = (1.0 - abs(encoded.yx)) * sign(encoded);
+    return encoded * 0.5 + 0.5;
+}
+
+vec3 DecodeNormalOctahedron(vec2 encoded)
+{
+    vec2 f = encoded * 2.0 - 1.0;
+    vec3 n = vec3(f.x, 1.0 - abs(f.x) - abs(f.y), f.y);
+    if (n.y < 0.0)
+        n.xz = (1.0 - abs(n.zx)) * sign(n.xz);
+    return normalize(n);
+}
 
 float FetchLinearDepth(ivec2 coord, ivec2 imgSize)
 {
@@ -102,9 +126,18 @@ void main()
 
     if (valid)
     {
-        float prevDepth = SampleLinearDepth(prevUV);
+        // True previous-frame surface data, rather than sampling the current
+        // depth buffer at prevUV. This rejects disocclusions and moving
+        // silhouette crossings that current-frame depth cannot represent.
+        vec4 previousSurface = texture(inputHistorySurface, prevUV);
+        float prevDepth = previousSurface.x;
         float depthDiff = abs(currentDepth - prevDepth);
         valid = depthDiff < max(currentDepth * 0.02, 0.12);
+        vec3 currentNormal = normalize(texture(inputNormal, uv).xyz);
+        vec3 previousNormal = DecodeNormalOctahedron(previousSurface.yz);
+        valid = valid && dot(currentNormal, previousNormal) >= 0.82;
+        float currentMaterialID = texture(inputMaterial, uv).z;
+        valid = valid && abs(currentMaterialID - previousSurface.w) < 0.25;
     }
 
     vec4 boundsMin;
@@ -112,6 +145,7 @@ void main()
     vec4 spatialFilteredGI;
     ComputeNeighborhoodBoundsAndFilter(id, imgSize, boundsMin, boundsMax, spatialFilteredGI);
 
+    vec4 currentGI = imageLoad(inputCurrentGI, id);
     vec4 historyGI = valid ? texture(inputHistoryGI, prevUV) : spatialFilteredGI;
     if (valid)
         historyGI = clamp(historyGI, boundsMin, boundsMax);
@@ -119,8 +153,40 @@ void main()
     // 主光或 GI 配置变化时 CPU 会把 frameParams.x 置为 0。
     // reset 帧直接采用当前 GI，避免旧亮度在 SSGI temporal history 里继续残留。
     bool resetHistory = frameParams.x < 0.5;
-    float motionBlend = mix(0.07, 0.35, clamp(velocityLen / 8.0, 0.0, 1.0));
-    float blendFactor = (valid && !resetHistory) ? motionBlend : 1.0;
+    float historyLength = clamp(historyGI.a * 255.0, 0.0, 255.0);
+    vec4 historyMoments = valid ? texture(inputHistoryMoments, prevUV) : vec4(0.0);
+    float historyMeanLum = max(historyMoments.x, 0.0);
+    float historyVariance = max(historyMoments.y - historyMeanLum * historyMeanLum, 0.0);
+    float neighborhoodVariance = Luminance(sqrt(max(boundsMax.rgb - boundsMin.rgb, vec3(0.0))));
+    float luminanceVariance = max(sqrt(historyVariance), neighborhoodVariance);
+    float screenConfidence = clamp(currentGI.a, 0.0, 1.0);
+    float motionPenalty = clamp(velocityLen / 8.0, 0.0, 1.0);
+    float variancePenalty = clamp(luminanceVariance / max(Luminance(spatialFilteredGI.rgb), 0.05), 0.0, 1.0);
+    float baseBlend = 1.0 / max(historyLength + 1.0, 1.0);
+    float blendFactor = clamp(max(baseBlend, 0.04 + motionPenalty * 0.35 + variancePenalty * 0.30 +
+        (1.0 - screenConfidence) * 0.12), 0.04, 1.0);
+    if (!valid || resetHistory)
+        blendFactor = 1.0;
 
-    imageStore(outputAccumulatedGI, id, mix(historyGI, spatialFilteredGI, blendFactor));
+    vec3 accumulated = mix(historyGI.rgb, spatialFilteredGI.rgb, blendFactor);
+    float newHistoryLength = (valid && !resetHistory)
+        ? min(historyLength + 1.0, 255.0)
+        : 1.0;
+    imageStore(outputAccumulatedGI, id, vec4(accumulated, newHistoryLength / 255.0));
+
+    float luminance = Luminance(accumulated);
+    float momentBlend = clamp(blendFactor, 0.04, 1.0);
+    float meanLum = (valid && !resetHistory)
+        ? mix(historyMeanLum, luminance, momentBlend)
+        : luminance;
+    float meanLumSq = (valid && !resetHistory)
+        ? mix(max(historyMoments.y, 0.0), luminance * luminance, momentBlend)
+        : luminance * luminance;
+    imageStore(outputMoments, id, vec4(meanLum, max(meanLumSq, meanLum * meanLum),
+        newHistoryLength / 255.0, screenConfidence));
+
+    vec3 currentNormal = normalize(texture(inputNormal, uv).xyz);
+    float currentMaterialID = texture(inputMaterial, uv).z;
+    imageStore(outputSurface, id, vec4(currentDepth,
+        EncodeNormalOctahedron(currentNormal), currentMaterialID));
 }

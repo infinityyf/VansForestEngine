@@ -135,6 +135,7 @@ bool VansGraphics::VansScene::LoadProjectAssets(Vans::VansAssetDatabase& databas
     }
     VANS_LOG("[VansScene] Loading project assets from AssetDatabase: " << database.AssetsRoot().string());
     m_RuntimeResourceDevice = device;
+	m_UsingPackagedProjectAssets = false;
 	m_AssetRegistry.ClearProjectMeshAliases();
 	try
 	{
@@ -238,6 +239,7 @@ bool VansGraphics::VansScene::LoadPackagedProjectAssets(
 	}
 
 	m_RuntimeResourceDevice = device;
+	m_UsingPackagedProjectAssets = true;
 	m_AssetRegistry.ClearProjectMeshAliases();
 
 	try
@@ -347,8 +349,9 @@ bool VansGraphics::VansScene::LoadSceneForRendering(const char* scenePath, VansV
         rebuildRenderingDataAfterUnload = true;
     }
 
-    m_SceneState = VansSceneState::Loading;
-    VANS_LOG("[VansScene] Loading scene: " << scenePath);
+	m_SceneState = VansSceneState::Loading;
+	m_LoadMode = mode;
+	VANS_LOG("[VansScene] Loading scene: " << scenePath);
 
     if (rebuildRenderingDataAfterUnload)
     {
@@ -368,8 +371,7 @@ bool VansGraphics::VansScene::LoadSceneForRendering(const char* scenePath, VansV
 
     VansSceneRenderPreparationExecutor::PrepareAfterSceneContentLoaded(*this, *device);
 
-    m_LoadMode = mode;
-    m_SceneState = VansSceneState::Ready;
+	m_SceneState = VansSceneState::Ready;
     VANS_LOG("[VansScene] Scene ready for rendering");
     return true;
 }

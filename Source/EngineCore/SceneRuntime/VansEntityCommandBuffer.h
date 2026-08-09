@@ -28,6 +28,7 @@ enum class VansEntityCommandType
 	AddParticleComponent,
 	AddCameraComponent,
 	AddLightComponent,
+	AddTimelineComponent,
 	SetEntityActive,
 	SetEntityName,
 	SetComponentEnabled,
@@ -58,6 +59,7 @@ struct VansEntityCommand
 	VansRuntimeParticleComponent particleComponent;
 	VansRuntimeCameraComponent cameraComponent;
 	VansRuntimeLightComponent lightComponent;
+	VansRuntimeTimelineComponent timelineComponent;
 	std::uint16_t componentTypeId = VansInvalidComponentTypeId;
 	std::string componentStableGuid;
 	std::string stringValue;
@@ -182,6 +184,11 @@ public:
 		VansGraphics::VansLightManager* lightManager,
 		int lightIndex,
 		VansRuntimeLightKind kind,
+		bool enabled);
+	void AddTimelineComponent(
+		VansEntityHandle entity,
+		std::string stableGuid,
+		VansRuntimeTimelineComponent timelineComponent,
 		bool enabled);
 	void SetEntityActive(VansEntityHandle entity, bool active);
 	void SetEntityName(VansEntityHandle entity, std::string name);

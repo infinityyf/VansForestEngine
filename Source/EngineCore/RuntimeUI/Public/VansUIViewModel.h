@@ -25,6 +25,7 @@ namespace VansRuntime
         void SetObject(const std::string& name, VansUIVariantMap value);
         void SetArray(const std::string& name, VansUIVariantArray value);
         void SetValue(const std::string& name, VansUIVariant value);
+		void RemoveValue(const std::string& name);
 
         bool HasValue(const std::string& name) const;
         const VansUIVariant* GetValue(const std::string& name) const;

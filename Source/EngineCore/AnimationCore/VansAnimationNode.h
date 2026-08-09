@@ -50,7 +50,10 @@ namespace VansGraphics
 		                             const VansRetargetRuntimeDesc& desc);
 		bool IsRetargetEnabled() const { return m_RetargetEnabled; }
 		const Skeleton& GetRetargetSourceSkeleton() const { return m_SourceSkeleton; }
+		VansAnimationController* GetRetargetSourceController() { return m_SourceController.get(); }
 		const VansAnimationController* GetRetargetSourceController() const { return m_SourceController.get(); }
+		const VansRetargetRuntimeDesc& GetRetargetRuntimeDesc() const { return m_RetargetDesc; }
+		bool ReplaceRetargetSourceController(std::unique_ptr<VansAnimationController> controller);
 
 		// Playback control, delegated to the active controller.
 		void Play();
@@ -67,8 +70,7 @@ namespace VansGraphics
 		std::string GetCurrentStateName() const;
 		float GetSpeed() const;
 
-		// Events
-		void AddEvent(const std::string& clipName, AnimationEvent event);
+		const VansAnimationFrameVector<VansAnimationEventSample>& GetSampledEvents() const;
 
 		// Root motion
 		void EnableRootMotion(bool enable);
@@ -81,6 +83,8 @@ namespace VansGraphics
 
 		// Bone overrides for IK/procedural animation.
 		void SetBoneLocalTransform(const std::string& boneName, const glm::mat4& transform);
+		bool TryGetBoneLocalTransform(const std::string& boneName, glm::mat4& transform) const;
+		bool TryGetCurrentBoneLocalTransform(const std::string& boneName, glm::mat4& transform) const;
 		void ClearBoneOverride(const std::string& boneName);
 
 		// Per-frame update, called by VansScene.
@@ -136,10 +140,6 @@ namespace VansGraphics
 		// Bone overrides
 		std::unordered_map<std::string, glm::mat4> m_BoneOverrides;
 
-		// Events
-		std::unordered_map<std::string, std::vector<AnimationEvent>> m_Events;
-		float m_LastEventTime = 0.0f;
-
 		struct NodeTransformBinding
 		{
 			std::string nodeName;
@@ -164,7 +164,6 @@ namespace VansGraphics
 		void ApplyRootMotionToTransform(const glm::vec3& deltaPos, const glm::quat& deltaRot);
 		void RebuildNodeTransformBindings();
 		void ApplySampledNodeTransforms();
-		void FireEvents();
 		void SyncRetargetParameters();
 	};
 

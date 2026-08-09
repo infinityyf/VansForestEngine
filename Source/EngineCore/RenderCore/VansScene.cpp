@@ -36,6 +36,7 @@
 #include "../AnimationCore/VansAnimationNode.h"
 #include "../AnimationCore/VansBoneAttachmentSystem.h"
 #include "../AnimationCore/VansSkinnedMeshLoader.h"
+#include "../TimelineRuntime/VansTimelineRuntimeSystem.h"
 #include "../ScriptCore/VansScriptContext.h"
 #include "../VansTimer.h"
 
@@ -330,6 +331,7 @@ namespace
 
 }
 
+VansGraphics::VansScene::VansScene() = default;
 
 VansGraphics::VansScene::~VansScene()
 {
@@ -337,6 +339,27 @@ VansGraphics::VansScene::~VansScene()
     {
         VANS_LOG_WARN("[VansScene] Scene is still loaded during destruction; call UnLoadScene() before delete");
     }
+}
+
+bool VansGraphics::VansScene::ReplaceAnimationRuntimeController(
+	VansAnimationNode* animNode,
+	std::unique_ptr<VansAnimationController> controller)
+{
+	if (!animNode || !controller)
+		return false;
+	VansAnimationController* previous = animNode->GetController();
+	auto registered = std::find(m_AnimationControllers.begin(), m_AnimationControllers.end(), previous);
+	if (previous && registered == m_AnimationControllers.end())
+		return false;
+
+	VansAnimationController* replacement = controller.release();
+	animNode->SetController(replacement);
+	if (registered != m_AnimationControllers.end())
+		*registered = replacement;
+	else
+		m_AnimationControllers.push_back(replacement);
+	delete previous;
+	return true;
 }
 
 VansAsset* VansGraphics::VansScene::GetMeshAsset(const std::string& name)
@@ -926,9 +949,10 @@ void VansGraphics::VansScene::BindMaterialVideoDescriptorSet()
 
 void VansGraphics::VansScene::DeferInitialReflectionProbeBake()
 {
+	const GIResolvedRegion primaryRegion = ResolveGIRegion(GetPrimaryGIRegionDesc(m_GISettings));
     m_ReflectionProbeSystem.DeferInitialBakeForGI(
-        m_GISettings.spatialUpdateDivisor,
-        m_GISettings.directionUpdateSlices);
+		primaryRegion.spatialUpdateDivisor,
+		primaryRegion.directionUpdateSlices);
 }
 
 void VansGraphics::VansScene::PlayAllSceneVideos()
@@ -1088,6 +1112,10 @@ void VansGraphics::VansScene::UnLoadScene()
     VANS_ASSERT_MAIN_THREAD();
 
 	VANS_LOG("[VansScene] UnLoadScene started");
+	if (m_TimelineRuntime)
+		m_TimelineRuntime->Clear();
+	if (m_RuntimeWorld)
+		m_RuntimeWorld->FlushCommands();
 	ReleaseAudioSourceBindings();
 	if (m_RuntimeWorld)
 		m_RuntimeWorld->Clear();
@@ -1106,20 +1134,14 @@ void VansGraphics::VansScene::UnLoadScene()
     VANS_UNLOAD_STEP(0, "Clear editor selection state");
 	VANS_LOG("[VansScene] Step 0: editor selection cleared");
 
-	// ── 1. 清理场景级运行时纹理（SH 系数 + GI Visibility），保留屏幕空间纹理 ──
+	// ── 1. 清理场景级运行时纹理，保留屏幕空间纹理 ──
 	//  SSGI / SSAO / HZB / SSR / Fog 等屏幕空间纹理在 PrepareRenderingData()
 	//  时创建，不依赖场景内容，无需在场景切换时销毁。
-	//  GI SH/visibility 对象由 RayTracingCore 的 region runtime 释放；
-	//  这里仅注销兼容 key，避免 MaterialManager 在 ClearScenePBRData() 中重复 delete。
-    VANS_UNLOAD_STEP(1, "娓呯悊鍦烘櫙绾ц繍琛屾椂绾圭悊");
-	m_MaterialManager.UnregisterRuntimeRenderTexture(VansMaterialManager::RT_SH_R_RESULT);
-	m_MaterialManager.UnregisterRuntimeRenderTexture(VansMaterialManager::RT_SH_G_RESULT);
-	m_MaterialManager.UnregisterRuntimeRenderTexture(VansMaterialManager::RT_SH_B_RESULT);
-	m_MaterialManager.UnregisterRuntimeRenderTexture(VansMaterialManager::RT_GI_VISIBILITY_ATLAS);
+	VANS_UNLOAD_STEP(1, "娓呯悊鍦烘櫙绾ц繍琛屾椂绾圭悊");
 	m_MaterialManager.m_SSGITemporalFrame = 0;
 	m_MaterialManager.m_FogTemporalFrame  = 0;
 	m_MaterialManager.m_FogHistoryValid   = false;
-	// SH 纹理已移除，标记渲染 Feature 的 descriptor set 需要重新写入
+	// DDGI region 资源重建后，标记渲染 Feature 的 descriptor set 需要重新写入
 	if (vkDevice)
 	{
 		vkDevice->ResetFeatureDescriptorSets();
@@ -1397,16 +1419,23 @@ void VansGraphics::VansScene::UnLoadScene()
 	m_BLASIndexData.clear();
 	m_TLASInstaneData.clear();
 	m_TlasInstanceTextureIndex.clear();
+	m_TlasInstanceGIEmission.clear();
 	m_TlasInstanceTextures.clear();
 	m_TlasInstanceMaterialToIndex.clear();
 
-	// 释放项目级 mesh 上残留的 BLAS 加速结构，防止二次 BuildBLAS 时资源泄漏
+	// 释放项目级 mesh 及其拥有的子网格 BLAS。multi-mesh 子网格与普通网格
+	// 一样可被 TLAS 实例化，因此生命周期必须在这里统一收口。
 	for (const auto& meshAsset : m_AssetRegistry.GetMeshes())
 	{
 		VansMesh* mesh = static_cast<VansMesh*>(meshAsset);
 		if (mesh->m_SupportRayTracing)
 		{
 			mesh->DestroyBLAS(*vkDevice);
+		}
+		for (VansMesh* subMesh : mesh->m_SubMeshes)
+		{
+			if (subMesh && subMesh->m_SupportRayTracing)
+				subMesh->DestroyBLAS(*vkDevice);
 		}
 	}
         VANS_LOG("[VansScene] Step 14: RT/TLAS resources cleared");
@@ -1511,6 +1540,7 @@ void VansGraphics::VansScene::UnloadProjectResources(VansVKDevice* device)
 	m_AssetRegistry.ClearProjectMeshAliases();
     RebuildAssetLookup();
     m_ResourcesLoaded = false;
+	m_UsingPackagedProjectAssets = false;
     VANS_LOG("[VansScene] Project resources unloaded");
 }
 
@@ -2324,6 +2354,36 @@ void VansGraphics::VansScene::UpdateRenderNodesDataBeforeRecord()
     for (auto* node : m_DecalRenderNodes)
         updateNode(node);
 }
+
+void VansGraphics::VansScene::MarkRenderNodeDescriptorSetsDirty()
+{
+	auto markNode = [](VansRenderNode* node)
+	{
+		if (node != nullptr)
+			node->MarkDescriptorSetsDirty();
+	};
+
+	markNode(m_SkyBoxNode);
+	markNode(m_DeferredNode);
+	markNode(m_TerrainRenderNode);
+	markNode(m_WaterRenderNode);
+	markNode(m_VegetationRenderNode);
+
+	for (auto* node : m_OpaqueRenderNodes)
+		markNode(node);
+	for (auto* node : m_HairRenderNodes)
+		markNode(node);
+	for (auto* node : m_ForwardOpaqueAfterDeferredRenderNodes)
+		markNode(node);
+	for (auto* node : m_TransParentRenderNodes)
+		markNode(node);
+	for (auto* node : m_PostProcessRenderNodes)
+		markNode(node);
+	for (auto* node : m_ScreenSpaceRenderNodes)
+		markNode(node);
+	for (auto* node : m_DecalRenderNodes)
+		markNode(node);
+}
 void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansVKCommandBuffer* vans_commandBuffer)
 {
     VkDevice device = vans_device->GetLogicDevice();
@@ -2332,7 +2392,8 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
 	// Only build a BLAS when at least one static, opaque, RT-enabled instance
 	// can actually enter the TLAS. This keeps glass and other transparent-only
 	// meshes out of both acceleration structures and GI hit generation.
-	std::unordered_set<VansMesh*> giEligibleMeshes;
+	std::unordered_set<VansMesh*> giEligibleMeshSet;
+	std::vector<VansMesh*> giEligibleMeshes;
 	for (VansRenderNode* node : m_OpaqueRenderNodes)
 	{
 		if (!node || !node->IsEnabled() || !node->m_RayTracingEnabled ||
@@ -2343,32 +2404,24 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
 			(node->m_Material->m_MaterialType == VAN_TRANSPARENT ||
 			 node->m_Material->m_MaterialType == VAN_PBR_TRANSMISSION))
 			continue;
-		giEligibleMeshes.insert(node->m_Mesh);
+		if (giEligibleMeshSet.insert(node->m_Mesh).second)
+			giEligibleMeshes.push_back(node->m_Mesh);
 	}
 
-	uint32_t skippedUnusedOrTransparentMeshes = 0;
-    for (const auto& meshAsset : m_AssetRegistry.GetMeshes())
-    {
-        VansMesh* mesh = static_cast<VansMesh*>(meshAsset);
+	for (VansMesh* mesh : giEligibleMeshes)
+	{
 		mesh->SetBLASIndex(-1);
-		if (!mesh->m_SupportRayTracing || giEligibleMeshes.find(mesh) == giEligibleMeshes.end())
-        {
-			++skippedUnusedOrTransparentMeshes;
-            continue;
-        }
+		mesh->BuildBLAS(*vans_device, *vans_commandBuffer);
 
-        mesh->BuildBLAS(*vans_device, *vans_commandBuffer);
-
-        int blasIndex = m_BLASVertexData.size();
-        mesh->SetBLASIndex(blasIndex);
-        m_BLASVertexData.push_back(mesh->GetBLASVertexBuffer());
-        m_BLASIndexData.push_back(mesh->GetIndexBuffer());
-
-    }
+		int blasIndex = m_BLASVertexData.size();
+		mesh->SetBLASIndex(blasIndex);
+		m_BLASVertexData.push_back(mesh->GetBLASVertexBuffer());
+		m_BLASIndexData.push_back(mesh->GetIndexBuffer());
+	}
 
 	VANS_LOG("[BuildRayTracingAS] BLAS build complete, collecting TLAS instances (opaqueNodes="
 		<< m_OpaqueRenderNodes.size() << ", eligibleMeshes=" << giEligibleMeshes.size()
-		<< ", skippedUnusedOrTransparentMeshes=" << skippedUnusedOrTransparentMeshes << ")");
+		<< ")");
 
     int nodeIdx = 0;
     uint32_t skippedAnimated = 0;
@@ -2453,32 +2506,82 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
 
         m_TLASInstaneData.push_back(node->m_Mesh->GetBLASIndex());
 
-        // 记录贴图索引 — 仅对 PBR 材质 (type 0) 收集贴图
-        int textureIndex = -1;
-        if (!node->m_Material || node->m_Material->m_MaterialType != VAN_PBR)
-        {
-            m_TlasInstanceTextureIndex.push_back(-1);
-            ++nodeIdx;
-            continue;
-        }
-        auto textureIndexIT = m_TlasInstanceMaterialToIndex.find(node->m_Material->m_AssetName);
-        if (textureIndexIT == m_TlasInstanceMaterialToIndex.end())
-        {
-            textureIndex = m_TlasInstanceTextures.size();
-			m_TlasInstanceMaterialToIndex.insert(std::make_pair(node->m_Material->m_AssetName, textureIndex));
-			VansPBRMaterial* pbrMat = static_cast<VansPBRMaterial*>(node->m_Material);
-			m_TlasInstanceTextures.push_back(pbrMat->m_BaseColorTexture->GetImage());
-			m_TlasInstanceTextures.push_back(pbrMat->m_NormalTexture->GetImage());
-			m_TlasInstanceTextures.push_back(pbrMat->m_MetalTexture->GetImage());
-			m_TlasInstanceTextures.push_back(pbrMat->m_RoughnessTexture->GetImage());
-			m_TlasInstanceTextures.push_back(pbrMat->m_AoTexture->GetImage());
-        }
-        else
-        {
-			textureIndex = textureIndexIT->second;
-        }
-        m_TlasInstanceTextureIndex.push_back(textureIndex);
-        ++nodeIdx;
+		// The texture table is indexed by TLAS instance, not BLAS index.  Keep
+		// material class flags in the high bits and the five-texture base index
+		// in the low bits; the closest-hit shader decodes the same contract.
+		constexpr uint32_t kInvalidGITextureIndex = 0xFFFFFFFFu;
+		constexpr uint32_t kGITextureIndexMask = 0x3FFFFFFFu;
+		constexpr uint32_t kGIPureEmissiveFlag = 0x40000000u;
+		constexpr uint32_t kGIPBREmissiveFlag = 0x80000000u;
+		uint32_t packedTextureIndex = kInvalidGITextureIndex;
+		glm::vec4 emissionScale(0.0f);
+		if (node->m_Material)
+		{
+			const VansMaterialType materialType = node->m_Material->m_MaterialType;
+			const bool isPBR = materialType == VAN_PBR;
+			const bool isPureEmissive = materialType == VAN_EMISSIVE;
+			const bool isPBREmissive = materialType == VAN_PBR_EMISSIVE;
+			if (isPBR || isPureEmissive || isPBREmissive)
+			{
+				const std::string materialKey = std::to_string(static_cast<uint32_t>(materialType)) + ":" +
+					node->m_Material->m_AssetName;
+				auto textureIndexIT = m_TlasInstanceMaterialToIndex.find(materialKey);
+				uint32_t textureIndex = 0u;
+				if (textureIndexIT == m_TlasInstanceMaterialToIndex.end())
+				{
+					textureIndex = static_cast<uint32_t>(m_TlasInstanceTextures.size());
+					m_TlasInstanceMaterialToIndex.emplace(materialKey, static_cast<int>(textureIndex));
+					if (isPBR)
+					{
+						auto* pbr = static_cast<VansPBRMaterial*>(node->m_Material);
+						m_TlasInstanceTextures.push_back(pbr->m_BaseColorTexture->GetImage());
+						m_TlasInstanceTextures.push_back(pbr->m_NormalTexture->GetImage());
+						m_TlasInstanceTextures.push_back(pbr->m_MetalTexture->GetImage());
+						m_TlasInstanceTextures.push_back(pbr->m_RoughnessTexture->GetImage());
+						m_TlasInstanceTextures.push_back(pbr->m_AoTexture->GetImage());
+					}
+					else
+					{
+						auto* emissive = static_cast<VansEmissiveMaterial*>(node->m_Material);
+						if (isPureEmissive)
+						{
+							for (uint32_t slot = 0u; slot < 5u; ++slot)
+								m_TlasInstanceTextures.push_back(emissive->m_EmissiveTexture->GetImage());
+						}
+						else
+						{
+							m_TlasInstanceTextures.push_back(emissive->m_BaseColorTexture->GetImage());
+							m_TlasInstanceTextures.push_back(emissive->m_NormalTexture->GetImage());
+							m_TlasInstanceTextures.push_back(emissive->m_MetalTexture->GetImage());
+							m_TlasInstanceTextures.push_back(emissive->m_RoughnessTexture->GetImage());
+							m_TlasInstanceTextures.push_back(emissive->m_EmissiveTexture->GetImage());
+						}
+					}
+				}
+				else
+				{
+					textureIndex = static_cast<uint32_t>(textureIndexIT->second);
+				}
+
+				packedTextureIndex = textureIndex & kGITextureIndexMask;
+				if (isPureEmissive)
+				{
+					auto* emissive = static_cast<VansEmissiveMaterial*>(node->m_Material);
+					packedTextureIndex |= kGIPureEmissiveFlag;
+					emissionScale = glm::vec4(emissive->m_BasePBRParam.m_albedo *
+						std::max(emissive->m_BasePBRParam.m_roughness, 0.0f), 1.0f);
+				}
+				else if (isPBREmissive)
+				{
+					auto* emissive = static_cast<VansEmissiveMaterial*>(node->m_Material);
+					packedTextureIndex |= kGIPBREmissiveFlag;
+					emissionScale = glm::vec4(std::max(emissive->m_BasePBRParam.padding, 0.0f));
+				}
+			}
+		}
+		m_TlasInstanceTextureIndex.push_back(packedTextureIndex);
+		m_TlasInstanceGIEmission.push_back(emissionScale);
+		++nodeIdx;
     }
 
     uint32_t countInstance = static_cast<uint32_t>(m_TlasInstancesInfos.size());
@@ -2635,15 +2738,17 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
 void VansGraphics::VansScene::ReleaseASTempBuffer(VansVKDevice* vans_device)
 {
     VkDevice device = vans_device->GetLogicDevice();
-    for (const auto& meshAsset : m_AssetRegistry.GetMeshes())
-    {
-        VansMesh* mesh = static_cast<VansMesh*>(meshAsset);
-        if (!mesh->m_SupportRayTracing)
-        {
-            continue;
-        }
-        mesh->ReleaseASTempData(device);
-    }
+	for (const auto& meshAsset : m_AssetRegistry.GetMeshes())
+	{
+		VansMesh* mesh = static_cast<VansMesh*>(meshAsset);
+		if (mesh->m_SupportRayTracing)
+			mesh->ReleaseASTempData(device);
+		for (VansMesh* subMesh : mesh->m_SubMeshes)
+		{
+			if (subMesh && subMesh->m_SupportRayTracing)
+				subMesh->ReleaseASTempData(device);
+		}
+	}
 
     m_TLASScratchBuffer.DestroyVulkanBuffer(device);
 }

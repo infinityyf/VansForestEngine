@@ -37,6 +37,7 @@ namespace VansEngine
         float          m_Volume     = 1.0f;  // [0, 1]
         float          m_Pitch      = 1.0f;  // > 0
         bool           m_Spatial    = false;
+		float          m_StereoPan  = 0.0f;
         float          m_RefDist    = 1.0f;  // Distance where attenuation starts.
         float          m_MaxDist    = 100.0f;// Distance where linear attenuation reaches zero.
         float          m_RollOff    = 1.0f;  // Spatial attenuation rolloff factor.
@@ -73,6 +74,8 @@ namespace VansEngine
     public:
         void Stop();
         void Resume();
+		bool SetPlaybackOffsetSeconds(float seconds);
+		float GetPlaybackOffsetSeconds() const;
 
         void  SetVolume(float gain);
         float GetVolume()  const { return m_Properties.m_Volume; }
@@ -86,6 +89,8 @@ namespace VansEngine
         void  SetPosition(float x, float y, float z);
         void  SetSpatial(bool enabled);
         bool  GetSpatial() const { return m_Properties.m_Spatial; }
+		void  SetStereoPan(float pan);
+		float GetStereoPan() const { return m_Properties.m_StereoPan; }
 
         void  SetRefDistance(float d);
         void  SetMaxDistance(float d);

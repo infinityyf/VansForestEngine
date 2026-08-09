@@ -6,6 +6,7 @@
 #include "../AudioCore/VansAudioDirectionality.h"
 #include "../AudioCore/VansAudioOcclusion.h"
 #include "../AudioCore/VansAudioReverbPreset.h"
+#include "../TimelineRuntime/VansTimelineComponent.h"
 
 #include <cstdint>
 #include <string>
@@ -58,6 +59,7 @@ enum VansRuntimeComponentTypeId : std::uint16_t
 	VansRuntimeComponentType_UI = 18,
 	VansRuntimeComponentType_Script = 19,
 	VansRuntimeComponentType_Transform = 20,
+	VansRuntimeComponentType_Timeline = 21,
 };
 
 struct VansRuntimeTransformComponent
@@ -250,6 +252,7 @@ inline std::uint16_t VansRuntimeComponentTypeIdForKey(const std::string& key)
 	if (key == "luascript") return VansRuntimeComponentType_Script;
 	if (key == "script") return VansRuntimeComponentType_Script;
 	if (key == "transform") return VansRuntimeComponentType_Transform;
+	if (key == "timeline") return VansRuntimeComponentType_Timeline;
 	return VansInvalidComponentTypeId;
 }
 }

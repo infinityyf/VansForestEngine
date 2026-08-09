@@ -1152,66 +1152,81 @@ bool VansGraphics::VansRayTracingShader::CreateRayTracingPipeline(VkDevice& logi
 	std::vector<VkRayTracingShaderGroupCreateInfoKHR> shaderGroupCreateInfo;
 	std::vector<VkPipelineShaderStageCreateInfo> rayTracingStages;
 
-	//创建着色器组
-	int shaderStageInfoIndex = 0;
-	for (auto mapIt = m_RayTracingShaderTypeMap.begin(); mapIt != m_RayTracingShaderTypeMap.end(); mapIt++)
+	// 一个 GI program 使用一个 raygen、一个 miss 和一个三角形 hit group。any-hit、
+	// closest-hit 必须进入同一个 hit group；把它们拆成两个 group 会令 any-hit 永远
+	// 不会在 SBT 选中的 closest-hit group 上执行。显式顺序也避免 unordered_map
+	// 迭代顺序改变 SBT group 索引。
+	const std::array<VkShaderStageFlagBits, 5> stageOrder =
 	{
-		auto stageBit = mapIt->second;
-		auto it = m_ShaderModuleDataMap.find(stageBit);
-		if (it != m_ShaderModuleDataMap.end())
-		{
-			VkPipelineShaderStageCreateInfo stage{};
-			stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-			stage.stage = stageBit;
-			stage.module = it->second.m_ShaderModule;
-			stage.pName = "main";
+		VK_SHADER_STAGE_RAYGEN_BIT_KHR,
+		VK_SHADER_STAGE_MISS_BIT_KHR,
+		VK_SHADER_STAGE_ANY_HIT_BIT_KHR,
+		VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
+		VK_SHADER_STAGE_INTERSECTION_BIT_KHR
+	};
+	std::unordered_map<VkShaderStageFlagBits, uint32_t> stageIndices;
+	for (const VkShaderStageFlagBits stageBit : stageOrder)
+	{
+		const auto it = m_ShaderModuleDataMap.find(stageBit);
+		if (it == m_ShaderModuleDataMap.end())
+			continue;
 
-			rayTracingStages.push_back(stage);
-
-			VkRayTracingShaderGroupCreateInfoKHR group{};
-			group.sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
-			group.pNext = nullptr;
-			group.generalShader = VK_SHADER_UNUSED_KHR;
-			group.closestHitShader = VK_SHADER_UNUSED_KHR;
-			group.anyHitShader = VK_SHADER_UNUSED_KHR;
-			group.intersectionShader = VK_SHADER_UNUSED_KHR;
-
-			switch (stageBit)
-			{
-			case VK_SHADER_STAGE_RAYGEN_BIT_KHR:
-				group.type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
-				group.generalShader = shaderStageInfoIndex;
-				break;
-			case VK_SHADER_STAGE_ANY_HIT_BIT_KHR:
-				group.type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
-				group.anyHitShader = shaderStageInfoIndex;
-				break;
-			case VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR:
-				group.type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
-				group.closestHitShader = shaderStageInfoIndex;
-				break;
-			case VK_SHADER_STAGE_MISS_BIT_KHR:
-				group.type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
-				group.generalShader = shaderStageInfoIndex;
-				break;
-			case VK_SHADER_STAGE_INTERSECTION_BIT_KHR:
-				group.type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
-				group.intersectionShader = shaderStageInfoIndex;
-				break;
-			}
-			group.pShaderGroupCaptureReplayHandle = nullptr;
-			shaderGroupCreateInfo.push_back(group);
-
-			shaderStageInfoIndex++;
-		}
+		VkPipelineShaderStageCreateInfo stage{};
+		stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+		stage.stage = stageBit;
+		stage.module = it->second.m_ShaderModule;
+		stage.pName = "main";
+		stageIndices.emplace(stageBit, static_cast<uint32_t>(rayTracingStages.size()));
+		rayTracingStages.push_back(stage);
 	}
+
+	const auto raygenIt = stageIndices.find(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+	const auto missIt = stageIndices.find(VK_SHADER_STAGE_MISS_BIT_KHR);
+	const auto closestHitIt = stageIndices.find(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR);
+	if (raygenIt == stageIndices.end() || missIt == stageIndices.end() || closestHitIt == stageIndices.end())
+	{
+		VANS_LOG_ERROR("Ray tracing program is missing required raygen, miss, or closest-hit stage");
+		return false;
+	}
+
+	VkRayTracingShaderGroupCreateInfoKHR raygenGroup{};
+	raygenGroup.sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
+	raygenGroup.type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+	raygenGroup.generalShader = raygenIt->second;
+	raygenGroup.closestHitShader = VK_SHADER_UNUSED_KHR;
+	raygenGroup.anyHitShader = VK_SHADER_UNUSED_KHR;
+	raygenGroup.intersectionShader = VK_SHADER_UNUSED_KHR;
+	shaderGroupCreateInfo.push_back(raygenGroup);
+
+	VkRayTracingShaderGroupCreateInfoKHR missGroup{};
+	missGroup.sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
+	missGroup.type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+	missGroup.generalShader = missIt->second;
+	missGroup.closestHitShader = VK_SHADER_UNUSED_KHR;
+	missGroup.anyHitShader = VK_SHADER_UNUSED_KHR;
+	missGroup.intersectionShader = VK_SHADER_UNUSED_KHR;
+	shaderGroupCreateInfo.push_back(missGroup);
+
+	VkRayTracingShaderGroupCreateInfoKHR hitGroup{};
+	hitGroup.sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
+	hitGroup.type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
+	hitGroup.generalShader = VK_SHADER_UNUSED_KHR;
+	hitGroup.closestHitShader = closestHitIt->second;
+	hitGroup.anyHitShader = VK_SHADER_UNUSED_KHR;
+	hitGroup.intersectionShader = VK_SHADER_UNUSED_KHR;
+	if (const auto anyHitIt = stageIndices.find(VK_SHADER_STAGE_ANY_HIT_BIT_KHR); anyHitIt != stageIndices.end())
+		hitGroup.anyHitShader = anyHitIt->second;
+	if (const auto intersectionIt = stageIndices.find(VK_SHADER_STAGE_INTERSECTION_BIT_KHR); intersectionIt != stageIndices.end())
+		hitGroup.intersectionShader = intersectionIt->second;
+	shaderGroupCreateInfo.push_back(hitGroup);
 
 	int pushConstRangeCount = 0;
 	VkPushConstantRange* pushConstRangePtr = nullptr;
 	VkPushConstantRange pushConstantRange = {};
 	if (m_PushConstantSize > 0)
 	{
-		pushConstantRange.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR;
+		pushConstantRange.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_ANY_HIT_BIT_KHR |
+			VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR;
 		pushConstantRange.offset = 0;
 		pushConstantRange.size = m_PushConstantSize;
 		pushConstRangePtr = &pushConstantRange;

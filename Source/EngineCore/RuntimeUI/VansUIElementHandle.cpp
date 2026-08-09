@@ -183,4 +183,60 @@ namespace VansRuntime
 			else translation->SetY(parsed);
 		}
     }
+
+	bool VansUIElementHandle::TryGetProperty(const std::string& property, std::string& value) const
+	{
+		value.clear();
+		if (!IsValid())
+			return false;
+
+		const std::string name = Lowercase(property);
+		if (name == "text" || name == "content")
+		{
+			value = GetText();
+			return true;
+		}
+
+		auto* element = GetElement(m_NativeElement);
+		if (name == "visible" || name == "visibility")
+		{
+			value = IsVisible() ? "true" : "false";
+			return true;
+		}
+		if (name == "opacity")
+		{
+			value = std::to_string(element->GetOpacity());
+			return true;
+		}
+		if (name == "canvas.left" || name == "left")
+		{
+			value = std::to_string(Noesis::Canvas::GetLeft(element));
+			return true;
+		}
+		if (name == "canvas.top" || name == "top")
+		{
+			value = std::to_string(Noesis::Canvas::GetTop(element));
+			return true;
+		}
+		if (name == "width" || name == "height")
+		{
+			if (auto* frameworkElement = Noesis::DynamicCast<Noesis::FrameworkElement*>(element))
+			{
+				value = std::to_string(name == "width" ? frameworkElement->GetWidth() : frameworkElement->GetHeight());
+				return true;
+			}
+			return false;
+		}
+		if (name == "translatex" || name == "translate.x" ||
+			name == "translatey" || name == "translate.y")
+		{
+			auto* translation = Noesis::DynamicCast<Noesis::TranslateTransform*>(element->GetRenderTransform());
+			const float coordinate = translation
+				? ((name == "translatex" || name == "translate.x") ? translation->GetX() : translation->GetY())
+				: 0.0f;
+			value = std::to_string(coordinate);
+			return true;
+		}
+		return false;
+	}
 }

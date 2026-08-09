@@ -16,22 +16,28 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <limits>
 
 namespace
 {
-    constexpr int kGIVisibilityOctaRes = 8;
+    constexpr int kGIVisibilityOctaRes = 16;
+    constexpr int kGIIrradianceOctaRes = 8;
 
     VansGraphics::RayTracingPushConstant BuildGIRegionPushConstant(
         const VansGraphics::GIResolvedRegion& region,
         float environmentIntensity,
         float maxIndirectRadiance,
-        float maxSHL0)
+        float maxProbeRadiance,
+        float irradianceHysteresis,
+        float distanceHysteresis,
+        float distanceSharpness,
+        float brightnessChangeThreshold)
     {
         VansGraphics::RayTracingPushConstant constants{};
         constants.dispatchParams = glm::vec4(
             glm::vec3(region.gridDimensions),
             static_cast<float>(region.raysPerProbe));
-        constants.gridParams = glm::vec4(region.probeSpacingAxes, region.maxRayDistance);
+        constants.gridParams = glm::vec4(glm::vec3(region.probeSpacing), region.maxRayDistance);
         constants.frameParams = glm::vec4(
             0.0f,
             static_cast<float>(region.spatialUpdateDivisor),
@@ -41,8 +47,13 @@ namespace
         constants.lightingParams = glm::vec4(
             std::max(environmentIntensity, 0.0f),
             std::max(maxIndirectRadiance, 0.0f),
-            std::max(maxSHL0, 0.0f),
+            std::max(maxProbeRadiance, 0.0f),
             0.0f);
+        constants.temporalParams = glm::vec4(
+            std::clamp(irradianceHysteresis, 0.0f, 0.999f),
+            std::clamp(distanceHysteresis, 0.0f, 0.999f),
+            std::clamp(distanceSharpness, 8.0f, 16.0f),
+            std::max(brightnessChangeThreshold, 0.001f));
         return constants;
     }
 
@@ -57,20 +68,88 @@ namespace
         delete texture;
         texture = nullptr;
     }
+
+    uint64_t MixGILightSignature(uint64_t seed, uint64_t value)
+    {
+        return seed ^ (value + 0x9e3779b97f4a7c15ull + (seed << 6u) + (seed >> 2u));
+    }
+
+    uint64_t QuantizeGILightFloat(float value, float scale = 1024.0f)
+    {
+        if (!std::isfinite(value))
+            value = 0.0f;
+        return static_cast<uint64_t>(static_cast<int64_t>(std::llround(value * scale)));
+    }
+
+    uint64_t MixGILightVec3(uint64_t seed, const glm::vec3& value, float scale = 1024.0f)
+    {
+        seed = MixGILightSignature(seed, QuantizeGILightFloat(value.x, scale));
+        seed = MixGILightSignature(seed, QuantizeGILightFloat(value.y, scale));
+        return MixGILightSignature(seed, QuantizeGILightFloat(value.z, scale));
+    }
+
+    uint64_t BuildGILightSignature(VansGraphics::VansLightManager* lightManager)
+    {
+        if (lightManager == nullptr)
+            return 0ull;
+
+        uint64_t signature = 1469598103934665603ull;
+        const auto& directionLights = lightManager->GetDirectionLights();
+        const auto& pointLights = lightManager->GetPointLights();
+        const auto& spotLights = lightManager->GetSpotLight();
+        const auto& rectLights = lightManager->GetRectLights();
+
+        signature = MixGILightSignature(signature, static_cast<uint64_t>(directionLights.size()));
+        signature = MixGILightSignature(signature, static_cast<uint64_t>(pointLights.size()));
+        signature = MixGILightSignature(signature, static_cast<uint64_t>(spotLights.size()));
+        signature = MixGILightSignature(signature, static_cast<uint64_t>(rectLights.size()));
+
+        for (const VansGraphics::VansDirectionalLight& light : directionLights)
+        {
+            const VansGraphics::VansCelestialLightingState celestialState =
+                VansGraphics::VansLightManager::ComputeCelestialLightingState(light);
+            signature = MixGILightVec3(signature, celestialState.direction);
+            signature = MixGILightVec3(signature, celestialState.color, 4096.0f);
+            signature = MixGILightSignature(signature, QuantizeGILightFloat(celestialState.intensity, 4096.0f));
+            signature = MixGILightSignature(signature, QuantizeGILightFloat(celestialState.skyDiffuseScale, 4096.0f));
+        }
+        for (const VansGraphics::VansPointLight& light : pointLights)
+        {
+            signature = MixGILightVec3(signature, light.m_Position);
+            signature = MixGILightVec3(signature, light.m_Color, 4096.0f);
+            signature = MixGILightSignature(signature, QuantizeGILightFloat(light.m_Intensity, 4096.0f));
+            signature = MixGILightSignature(signature, QuantizeGILightFloat(light.m_Radius, 1024.0f));
+        }
+        for (const VansGraphics::VansSpotLight& light : spotLights)
+        {
+            signature = MixGILightVec3(signature, light.m_Position);
+            signature = MixGILightVec3(signature, light.m_Direction);
+            signature = MixGILightVec3(signature, light.m_Color, 4096.0f);
+            signature = MixGILightSignature(signature, QuantizeGILightFloat(light.m_Intensity, 4096.0f));
+            signature = MixGILightSignature(signature, QuantizeGILightFloat(light.m_Radius, 1024.0f));
+            signature = MixGILightSignature(signature, QuantizeGILightFloat(light.m_InnerCutOff, 4096.0f));
+            signature = MixGILightSignature(signature, QuantizeGILightFloat(light.m_OuterCutOff, 4096.0f));
+        }
+        for (const VansGraphics::VansRectLight& light : rectLights)
+        {
+            signature = MixGILightVec3(signature, light.m_Position);
+            signature = MixGILightVec3(signature, light.m_Normal);
+            signature = MixGILightVec3(signature, light.m_Right);
+            signature = MixGILightVec3(signature, light.m_Up);
+            signature = MixGILightVec3(signature, light.m_Color, 4096.0f);
+            signature = MixGILightSignature(signature, QuantizeGILightFloat(light.m_Intensity, 4096.0f));
+            signature = MixGILightSignature(signature, QuantizeGILightFloat(light.m_Range, 1024.0f));
+            signature = MixGILightSignature(signature, QuantizeGILightFloat(light.m_HalfWidth, 1024.0f));
+            signature = MixGILightSignature(signature, QuantizeGILightFloat(light.m_HalfHeight, 1024.0f));
+        }
+        return signature;
+    }
 }
 
 void VansGraphics::VansRayTracing::CleanupSceneResources(VkDevice device, VansMaterialManager* materialManager)
 {
 	if (!m_RTResourcesReady)
 		return;
-
-	if (materialManager != nullptr)
-	{
-		materialManager->UnregisterRuntimeRenderTexture(VansMaterialManager::RT_SH_R_RESULT);
-		materialManager->UnregisterRuntimeRenderTexture(VansMaterialManager::RT_SH_G_RESULT);
-		materialManager->UnregisterRuntimeRenderTexture(VansMaterialManager::RT_SH_B_RESULT);
-		materialManager->UnregisterRuntimeRenderTexture(VansMaterialManager::RT_GI_VISIBILITY_ATLAS);
-	}
 
 	auto descMgr = VansVKDescriptorManager::GetInstance();
 
@@ -83,6 +162,8 @@ void VansGraphics::VansRayTracing::CleanupSceneResources(VkDevice device, VansMa
 
 	descMgr->DestroyDescriptorSet(m_GIVisibilityUpdateDescriptorSets);
 	descMgr->DestroyDescriptorSetLayout(m_GIVisibilityUpdateSetLayout);
+	descMgr->DestroyDescriptorSet(m_GIProbeStateDescriptorSets);
+	descMgr->DestroyDescriptorSetLayout(m_GIProbeStateSetLayout);
 
 	descMgr->DestroyDescriptorSet(m_GIRTPreviewDescriptorSets);
 	descMgr->DestroyDescriptorSetLayout(m_GIRTPreviewSetLayout);
@@ -90,15 +171,18 @@ void VansGraphics::VansRayTracing::CleanupSceneResources(VkDevice device, VansMa
 	// 释放 RT 相关 buffer
 	m_BLASInstanceBuffer.DestroyVulkanBuffer(device);
 	m_TLASInstanceTextureIndexBuffer.DestroyVulkanBuffer(device);
+	m_TLASInstanceGIEmissionBuffer.DestroyVulkanBuffer(device);
 
 	for (GIRegionRuntime& region : m_GIRegions)
 		DestroyRegionRuntime(device, region);
 	m_GIRegions.clear();
-	DeleteTexture(m_GIRTPreviewTexture);
+	for (VansTexture*& previewTexture : m_GIRTPreviewTextures)
+		DeleteTexture(previewTexture);
 
 	m_RayTracingPointLighting = nullptr;
 
 	m_GIVisibilityUpdateShader = nullptr;
+	m_GIProbeStateShader = nullptr;
 
 	m_GIRTPreviewShader = nullptr;
 
@@ -121,32 +205,18 @@ void VansGraphics::VansRayTracing::DestroyRegionRuntime(VkDevice device, GIRegio
 	region.hitPositionResult.DestroyVulkanBuffer(device);
 	region.hitNormalResult.DestroyVulkanBuffer(device);
 	region.hitAlbedoRoughnessResult.DestroyVulkanBuffer(device);
+	region.hitEmissionResult.DestroyVulkanBuffer(device);
 	region.hitRadianceBuffer.DestroyVulkanBuffer(device);
-	region.hitDirectDiffuseBuffer.DestroyVulkanBuffer(device);
+	region.probeStateBuffer.DestroyVulkanBuffer(device);
 	DeleteTexture(region.rayTracingResult);
-	DeleteTexture(region.shRResult);
-	DeleteTexture(region.shGResult);
-	DeleteTexture(region.shBResult);
-	DeleteTexture(region.shFeedbackR);
-	DeleteTexture(region.shFeedbackG);
-	DeleteTexture(region.shFeedbackB);
+	DeleteTexture(region.irradianceAtlas);
 	DeleteTexture(region.visibilityAtlas);
 	region = GIRegionRuntime{};
 }
 
-VansGraphics::VansTexture* VansGraphics::VansRayTracing::GetGIRegionSHR(uint32_t regionIndex) const
+VansGraphics::VansTexture* VansGraphics::VansRayTracing::GetGIRegionIrradianceAtlas(uint32_t regionIndex) const
 {
-	return regionIndex < m_GIRegions.size() ? m_GIRegions[regionIndex].shRResult : nullptr;
-}
-
-VansGraphics::VansTexture* VansGraphics::VansRayTracing::GetGIRegionSHG(uint32_t regionIndex) const
-{
-	return regionIndex < m_GIRegions.size() ? m_GIRegions[regionIndex].shGResult : nullptr;
-}
-
-VansGraphics::VansTexture* VansGraphics::VansRayTracing::GetGIRegionSHB(uint32_t regionIndex) const
-{
-	return regionIndex < m_GIRegions.size() ? m_GIRegions[regionIndex].shBResult : nullptr;
+	return regionIndex < m_GIRegions.size() ? m_GIRegions[regionIndex].irradianceAtlas : nullptr;
 }
 
 VansGraphics::VansTexture* VansGraphics::VansRayTracing::GetGIRegionVisibilityAtlas(uint32_t regionIndex) const
@@ -154,28 +224,9 @@ VansGraphics::VansTexture* VansGraphics::VansRayTracing::GetGIRegionVisibilityAt
 	return regionIndex < m_GIRegions.size() ? m_GIRegions[regionIndex].visibilityAtlas : nullptr;
 }
 
-void VansGraphics::VansRayTracing::RegisterPrimaryRegionRuntimeTextures(VansMaterialManager* materialManager)
+const VansGraphics::VansVKBuffer* VansGraphics::VansRayTracing::GetGIRegionProbeStateBuffer(uint32_t regionIndex) const
 {
-	if (materialManager == nullptr || m_GIRegions.empty())
-		return;
-
-	GIRegionRuntime& primary = m_GIRegions[0];
-	materialManager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SH_R_RESULT, primary.shRResult);
-	materialManager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SH_G_RESULT, primary.shGResult);
-	materialManager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SH_B_RESULT, primary.shBResult);
-	materialManager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_GI_VISIBILITY_ATLAS, primary.visibilityAtlas);
-}
-
-void VansGraphics::VansRayTracing::SyncPrimaryCompatibilityState()
-{
-	if (m_GIRegions.empty())
-		return;
-
-	const GIRegionRuntime& primary = m_GIRegions[0];
-	m_RayTracingGridDimensions = primary.resolved.gridDimensions;
-	m_RayTracingProbeSpacing = primary.resolved.probeSpacingAxes;
-	m_RayCountPerSample = static_cast<int>(primary.resolved.raysPerProbe);
-	m_RayTracingConstant = primary.constants;
+	return regionIndex < m_GIRegions.size() ? &m_GIRegions[regionIndex].probeStateBuffer : nullptr;
 }
 
 VansGraphics::VansRayTracing::GIRegionRuntime* VansGraphics::VansRayTracing::GetPreviewRegion()
@@ -193,6 +244,7 @@ void VansGraphics::VansRayTracing::CreateRayTracingResource(VansVKDevice* device
     int blasMeshCount = scene->GetBLASVertexBuffers().size();
     std::vector<uint32_t>& instanceData = scene->GetTLASInstanceData();
 	std::vector<uint32_t>& instanceTextureIndex = scene->GetTLASInstanceTextureIndex();
+	std::vector<glm::vec4>& instanceGIEmission = scene->GetTLASInstanceGIEmission();
 
     // No RT geometry in the scene – nothing to set up.
     if (blasMeshCount == 0 || instanceData.empty())
@@ -207,19 +259,7 @@ void VansGraphics::VansRayTracing::CreateRayTracingResource(VansVKDevice* device
     VansGISettings gi = scene->GetGISettings();
     NormalizeGISettings(gi);
 
-    std::vector<GIProbeRegionDesc> activeRegions;
-    activeRegions.reserve(gi.regions.size());
-    const uint32_t primaryIndex = std::min<uint32_t>(
-        gi.selectedRegionIndex,
-        static_cast<uint32_t>(gi.regions.size() - 1u));
-    if (gi.regions[primaryIndex].enabled)
-        activeRegions.push_back(gi.regions[primaryIndex]);
-    for (uint32_t regionIndex = 0; regionIndex < gi.regions.size(); ++regionIndex)
-    {
-        if (regionIndex == primaryIndex || !gi.regions[regionIndex].enabled)
-            continue;
-        activeRegions.push_back(gi.regions[regionIndex]);
-    }
+    const std::vector<const GIProbeRegionDesc*> activeRegions = BuildActiveGIRegionOrder(gi);
 
     if (activeRegions.empty())
     {
@@ -241,28 +281,35 @@ void VansGraphics::VansRayTracing::CreateRayTracingResource(VansVKDevice* device
         return;
     }
 
-    for (const GIProbeRegionDesc& regionDesc : activeRegions)
+    for (const GIProbeRegionDesc* regionDesc : activeRegions)
     {
         m_GIRegions.emplace_back();
         GIRegionRuntime& regionRuntime = m_GIRegions.back();
-        regionRuntime.resolved = ResolveGIRegion(regionDesc);
+        regionRuntime.resolved = ResolveGIRegion(*regionDesc);
         regionRuntime.constants = BuildGIRegionPushConstant(
             regionRuntime.resolved,
             m_BaseGIEnvironmentIntensity,
             gi.maxIndirectRadiance,
-            gi.maxSHL0);
+            gi.maxProbeRadiance,
+            gi.irradianceHysteresis,
+            gi.distanceHysteresis,
+            gi.distanceSharpness,
+            gi.brightnessChangeThreshold);
 
         const glm::uvec3& grid = regionRuntime.resolved.gridDimensions;
         const uint64_t probeCount64 = regionRuntime.resolved.probeCount;
-        const uint64_t rayCacheEntries64 = probeCount64 * regionRuntime.resolved.raysPerProbe;
+        // Working hit data is only the active spatial phase and direction
+        // slice.  Retaining one entry per probe/ray turns every later update
+        // into a read of stale geometry and is both incorrect and expensive.
+        const GIProbeUpdateBatch maxBatch = BuildGIProbeUpdateBatch(regionRuntime.resolved, 0u);
+        const uint64_t rayCacheEntries64 = std::max<uint64_t>(maxBatch.activeRayCount, 1u);
 
         VANS_LOG("[CreateRayTracingResource] GI region '" << regionRuntime.resolved.name
             << "' grid=" << grid.x << "x" << grid.y << "x" << grid.z
-            << " spacing=(" << regionRuntime.resolved.probeSpacingAxes.x << ","
-            << regionRuntime.resolved.probeSpacingAxes.y << ","
-            << regionRuntime.resolved.probeSpacingAxes.z << ")"
+            << " spacing=" << regionRuntime.resolved.probeSpacing
             << " probes=" << probeCount64
-            << " rayCacheEntries=" << rayCacheEntries64);
+            << " activeRayEntries=" << rayCacheEntries64
+            << " fullUpdateFrames=" << maxBatch.fullUpdateFrameCount);
 
         regionRuntime.rayTracingResult = new VansTexture();
         regionRuntime.rayTracingResult->InitTextureWithoutData(
@@ -275,29 +322,21 @@ void VansGraphics::VansRayTracing::CreateRayTracingResource(VansVKDevice* device
             false,
             true);
 
-        auto createSHTexture = [&](VansTexture*& texture)
-        {
-            texture = new VansTexture();
-            texture->InitTextureWithoutData(
-                *commandBuffer,
-                grid.x,
-                grid.y,
-                grid.z,
-                VK_FORMAT_R32G32B32A32_SFLOAT,
-                false,
-                false,
-                true);
-        };
-        createSHTexture(regionRuntime.shRResult);
-        createSHTexture(regionRuntime.shGResult);
-        createSHTexture(regionRuntime.shBResult);
-        createSHTexture(regionRuntime.shFeedbackR);
-        createSHTexture(regionRuntime.shFeedbackG);
-        createSHTexture(regionRuntime.shFeedbackB);
-
         const int totalProbeCount = static_cast<int>(std::max<uint64_t>(probeCount64, 1u));
         const int probesPerAtlasRow = std::max(1, static_cast<int>(std::ceil(std::sqrt(static_cast<float>(totalProbeCount)))));
         const int probesPerAtlasColumn = (totalProbeCount + probesPerAtlasRow - 1) / probesPerAtlasRow;
+
+        regionRuntime.irradianceAtlas = new VansTexture();
+        regionRuntime.irradianceAtlas->InitTextureWithoutData(
+            *commandBuffer,
+            probesPerAtlasRow * kGIIrradianceOctaRes,
+            probesPerAtlasColumn * kGIIrradianceOctaRes,
+            1,
+            VK_FORMAT_R16G16B16A16_SFLOAT,
+            false,
+            false,
+            true,
+            VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 
         regionRuntime.visibilityAtlas = new VansTexture();
         regionRuntime.visibilityAtlas->InitTextureWithoutData(
@@ -305,14 +344,13 @@ void VansGraphics::VansRayTracing::CreateRayTracingResource(VansVKDevice* device
             probesPerAtlasRow * kGIVisibilityOctaRes,
             probesPerAtlasColumn * kGIVisibilityOctaRes,
             1,
-            VK_FORMAT_R32G32B32A32_SFLOAT,
+            VK_FORMAT_R16G16_SFLOAT,
             false,
             false,
             true,
             VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 
         const VkDeviceSize giHitBufferSize = static_cast<VkDeviceSize>(rayCacheEntries64) * sizeof(uint16_t) * 4;
-        const VkDeviceSize giDirectCacheBufferSize = static_cast<VkDeviceSize>(rayCacheEntries64) * sizeof(uint32_t);
 
         regionRuntime.hitPositionResult.CreatVulkanBuffer(device->GetLogicDevice(),
             giHitBufferSize,
@@ -329,28 +367,40 @@ void VansGraphics::VansRayTracing::CreateRayTracingResource(VansVKDevice* device
             VK_FORMAT_R16G16B16A16_SFLOAT,
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		regionRuntime.hitEmissionResult.CreatVulkanBuffer(device->GetLogicDevice(),
+			giHitBufferSize,
+			VK_FORMAT_R16G16B16A16_SFLOAT,
+			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         regionRuntime.hitRadianceBuffer.CreatVulkanBuffer(device->GetLogicDevice(),
             giHitBufferSize,
             VK_FORMAT_R16G16B16A16_SFLOAT,
             VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        regionRuntime.hitDirectDiffuseBuffer.CreatVulkanBuffer(device->GetLogicDevice(),
-            giDirectCacheBufferSize,
-            VK_FORMAT_R32_UINT,
-            VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
+        regionRuntime.probeStateBuffer.CreatVulkanBuffer(device->GetLogicDevice(),
+            static_cast<VkDeviceSize>(std::max<uint64_t>(probeCount64, 1u)) * 48u,
+            VK_FORMAT_R32G32B32A32_SFLOAT,
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     }
 
-    SyncPrimaryCompatibilityState();
-    RegisterPrimaryRegionRuntimeTextures(scene->GetMaterialManager());
-
-	m_GIRTPreviewTexture = new VansTexture();
-	m_GIRTPreviewTexture->InitTextureWithoutData(
-		*commandBuffer,
-		static_cast<int>(m_RayTracingGridDimensions.x),
-		static_cast<int>(m_RayTracingGridDimensions.y),
-		1, VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true,
-		VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+	const GIRegionRuntime* previewRegion = GetPreviewRegion();
+	if (previewRegion == nullptr)
+	{
+		VANS_LOG_ERROR("[CreateRayTracingResource] No enabled GI region is available for the preview target.");
+		m_RTResourcesReady = false;
+		return;
+	}
+	for (VansTexture*& previewTexture : m_GIRTPreviewTextures)
+	{
+		previewTexture = new VansTexture();
+		previewTexture->InitTextureWithoutData(
+			*commandBuffer,
+			static_cast<int>(previewRegion->resolved.gridDimensions.x),
+			static_cast<int>(previewRegion->resolved.gridDimensions.y),
+			1, VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true,
+			VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+	}
 	m_GIRTPreviewStorageBufferAlignment = std::max<VkDeviceSize>(
 		device->GetDeviceProperties().limits.minStorageBufferOffsetAlignment,
 		1u);
@@ -377,6 +427,20 @@ void VansGraphics::VansRayTracing::CreateRayTracingResource(VansVKDevice* device
     );
     m_TLASInstanceTextureIndexBuffer.SetBufferData(instanceTextureIndex.data(), 0, instanceTextureIndex.size() * sizeof(uint32_t));
 
+	if (instanceGIEmission.size() != instanceData.size())
+	{
+		VANS_LOG_ERROR("[CreateRayTracingResource] TLAS GI emissive payload does not match TLAS instance count.");
+		m_RTResourcesReady = false;
+		return;
+	}
+	m_TLASInstanceGIEmissionBuffer.CreatVulkanBuffer(device->GetLogicDevice(),
+		instanceGIEmission.size() * sizeof(glm::vec4),
+		VK_FORMAT_R32G32B32A32_SFLOAT,
+		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+	m_TLASInstanceGIEmissionBuffer.SetBufferData(instanceGIEmission.data(), 0,
+		instanceGIEmission.size() * sizeof(glm::vec4));
+
     // GI 分帧更新会在冷启动阶段读取尚未轮到的方向 slice。
     // 显式清零所有反馈资源，保证未写入 slice 的 radiance 为 0，而不是未定义显存。
     if (commandBuffer->BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
@@ -385,17 +449,13 @@ void VansGraphics::VansRayTracing::CreateRayTracingResource(VansVKDevice* device
         for (GIRegionRuntime& regionRuntime : m_GIRegions)
         {
             commandBuffer->FillBuffer(regionRuntime.hitRadianceBuffer.GetNativeBuffer(), 0, regionRuntime.hitRadianceBuffer.GetBufferSize(), 0u);
-            commandBuffer->FillBuffer(regionRuntime.hitDirectDiffuseBuffer.GetNativeBuffer(), 0, regionRuntime.hitDirectDiffuseBuffer.GetBufferSize(), 0u);
-            commandBuffer->ClearColorImage(regionRuntime.shRResult->GetImage(), VK_IMAGE_LAYOUT_GENERAL, clearSH);
-            commandBuffer->ClearColorImage(regionRuntime.shGResult->GetImage(), VK_IMAGE_LAYOUT_GENERAL, clearSH);
-            commandBuffer->ClearColorImage(regionRuntime.shBResult->GetImage(), VK_IMAGE_LAYOUT_GENERAL, clearSH);
-            commandBuffer->ClearColorImage(regionRuntime.visibilityAtlas->GetImage(), VK_IMAGE_LAYOUT_GENERAL, clearSH);
-            commandBuffer->ClearColorImage(regionRuntime.shFeedbackR->GetImage(), VK_IMAGE_LAYOUT_GENERAL, clearSH);
-            commandBuffer->ClearColorImage(regionRuntime.shFeedbackG->GetImage(), VK_IMAGE_LAYOUT_GENERAL, clearSH);
-            commandBuffer->ClearColorImage(regionRuntime.shFeedbackB->GetImage(), VK_IMAGE_LAYOUT_GENERAL, clearSH);
+			commandBuffer->FillBuffer(regionRuntime.probeStateBuffer.GetNativeBuffer(), 0, regionRuntime.probeStateBuffer.GetBufferSize(), 0u);
+			commandBuffer->ClearColorImage(regionRuntime.visibilityAtlas->GetImage(), VK_IMAGE_LAYOUT_GENERAL, clearSH);
+			commandBuffer->ClearColorImage(regionRuntime.irradianceAtlas->GetImage(), VK_IMAGE_LAYOUT_GENERAL, clearSH);
             commandBuffer->ClearColorImage(regionRuntime.rayTracingResult->GetImage(), VK_IMAGE_LAYOUT_GENERAL, clearSH);
         }
-		commandBuffer->ClearColorImage(m_GIRTPreviewTexture->GetImage(), VK_IMAGE_LAYOUT_GENERAL, clearSH);
+		for (VansTexture* previewTexture : m_GIRTPreviewTextures)
+			commandBuffer->ClearColorImage(previewTexture->GetImage(), VK_IMAGE_LAYOUT_GENERAL, clearSH);
 
         VkMemoryBarrier transferToShader{};
         transferToShader.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
@@ -444,6 +504,14 @@ void VansGraphics::VansRayTracing::CreateRayTracingResource(VansVKDevice* device
 
     CreateGIVisibilityUpdateDescriptorSets(device);
 
+    m_GIProbeStateShader = shaderManager.FindComputeShader("GIProbeState");
+    if (!m_GIProbeStateShader)
+    {
+        VANS_LOG_ERROR("[CreateRayTracingResource] Managed GIProbeState shader is unavailable");
+        return;
+    }
+    CreateGIProbeStateDescriptorSets(device);
+
 	m_GIRTPreviewShader = shaderManager.FindComputeShader("GIRTPreview");
 	if (!m_GIRTPreviewShader)
 	{
@@ -453,7 +521,6 @@ void VansGraphics::VansRayTracing::CreateRayTracingResource(VansVKDevice* device
 	CreateGIRTPreviewDescriptorSets(device);
 
     m_HasLastGIMainLight = false;
-    m_GILightingResponseFramesRemaining = 0;
 	m_GIRTPreviewRequestFrames = 0;
 }
 
@@ -462,19 +529,7 @@ void VansGraphics::VansRayTracing::UpdateGISettings(const VansGISettings& settin
     VansGISettings gi = settings;
     NormalizeGISettings(gi);
 
-    std::vector<GIProbeRegionDesc> activeRegions;
-    activeRegions.reserve(gi.regions.size());
-    const uint32_t primaryIndex = std::min<uint32_t>(
-        gi.selectedRegionIndex,
-        static_cast<uint32_t>(gi.regions.size() - 1u));
-    if (gi.regions[primaryIndex].enabled)
-        activeRegions.push_back(gi.regions[primaryIndex]);
-    for (uint32_t regionIndex = 0; regionIndex < gi.regions.size(); ++regionIndex)
-    {
-        if (regionIndex == primaryIndex || !gi.regions[regionIndex].enabled)
-            continue;
-        activeRegions.push_back(gi.regions[regionIndex]);
-    }
+    const std::vector<const GIProbeRegionDesc*> activeRegions = BuildActiveGIRegionOrder(gi);
 
     m_BaseGIEnvironmentIntensity = std::max(gi.environmentIntensity, 0.0f);
     const size_t updateCount = std::min(m_GIRegions.size(), activeRegions.size());
@@ -482,21 +537,21 @@ void VansGraphics::VansRayTracing::UpdateGISettings(const VansGISettings& settin
     {
         GIRegionRuntime& region = m_GIRegions[regionIndex];
         const float previousFrameIndex = region.constants.frameParams.x;
-        const float previousRefresh = region.constants.lightingParams.w;
-        region.resolved = ResolveGIRegion(activeRegions[regionIndex]);
+        region.resolved = ResolveGIRegion(*activeRegions[regionIndex]);
         region.constants = BuildGIRegionPushConstant(
             region.resolved,
             m_BaseGIEnvironmentIntensity,
             gi.maxIndirectRadiance,
-            gi.maxSHL0);
+            gi.maxProbeRadiance,
+            gi.irradianceHysteresis,
+            gi.distanceHysteresis,
+            gi.distanceSharpness,
+            gi.brightnessChangeThreshold);
         region.constants.frameParams.x = previousFrameIndex;
-        region.constants.lightingParams.w = previousRefresh;
     }
-    SyncPrimaryCompatibilityState();
 }
 
-void VansGraphics::VansRayTracing::RequestGIRTPreview(
-    uint32_t mode,
+void VansGraphics::VansRayTracing::RequestGIRTPreviews(
     uint32_t zSlice,
     uint32_t rayIndex,
     float exposure,
@@ -508,19 +563,35 @@ void VansGraphics::VansRayTracing::RequestGIRTPreview(
 
     const uint32_t zCount = std::max(previewRegion->resolved.gridDimensions.z, 1u);
     const uint32_t rayCount = std::max(previewRegion->resolved.raysPerProbe, 1u);
-    m_GIRTPreviewConstant.gridParams = glm::vec4(
-        glm::vec3(previewRegion->resolved.gridDimensions),
-        static_cast<float>(rayCount));
-    const uint32_t safeZSlice = std::min(zSlice, zCount - 1u);
+    const uint32_t directionSlices = std::max(previewRegion->resolved.directionUpdateSlices, 1u);
+	const uint32_t raysPerActiveProbe = (rayCount + directionSlices - 1u) / directionSlices;
+    const uint32_t updateFrame = static_cast<uint32_t>(previewRegion->constants.frameParams.x);
+	const GIProbeUpdateBatch previewBatch = BuildGIProbeUpdateBatch(previewRegion->resolved, updateFrame);
+    const uint32_t safeZSlice = zSlice == std::numeric_limits<uint32_t>::max()
+        ? previewBatch.spatialOffset.z
+        : std::min(zSlice, zCount - 1u);
     if (m_GIRTPreviewBoundZSlice != safeZSlice)
         m_GIRTPreviewDescriptorSetIsDirty = true;
-    m_GIRTPreviewConstant.selectionParams = glm::vec4(
-        static_cast<float>(std::min(mode, 11u)),
-        static_cast<float>(safeZSlice),
-        static_cast<float>(std::min(rayIndex, rayCount - 1u)),
-        std::max(exposure, 0.001f));
-    m_GIRTPreviewConstant.displayParams = glm::vec4(
-        std::max(positionScale, 0.0001f), 0.0f, 0.0f, 0.0f);
+    for (uint32_t mode = 0u; mode < GIRTPreviewModeCount; ++mode)
+    {
+        GIRTPreviewPushConstant& constants = m_GIRTPreviewConstants[mode];
+        constants.gridParams = glm::vec4(
+            glm::vec3(previewRegion->resolved.gridDimensions),
+            static_cast<float>(rayCount));
+        constants.selectionParams = glm::vec4(
+            static_cast<float>(mode),
+            static_cast<float>(safeZSlice),
+            static_cast<float>(std::min(rayIndex, rayCount - 1u)),
+            std::max(exposure, 0.001f));
+        constants.displayParams = glm::vec4(
+			std::max(positionScale, 0.0001f), 0.0f,
+			std::max(previewRegion->resolved.maxRayDistance, 0.001f), 0.0f);
+		constants.updateParams = glm::vec4(
+			previewRegion->constants.frameParams.x,
+			previewRegion->constants.frameParams.y,
+			previewRegion->constants.frameParams.z,
+			static_cast<float>(raysPerActiveProbe));
+    }
 
     // The editor refreshes this lease while the preview is visible. It avoids
     // paying for the gather pass after the window is closed.
@@ -532,18 +603,18 @@ bool VansGraphics::VansRayTracing::UpdateLightingResponseState(VansLightManager*
     if (lightManager == nullptr)
         return false;
 
+    const uint64_t lightSignature = BuildGILightSignature(lightManager);
     glm::vec4 directionIntensity(0.0f);
     glm::vec4 lightColor(0.0f);
 
     auto& directionLights = lightManager->GetDirectionLights();
-    m_RayTracingConstant.lightingParams.x = m_BaseGIEnvironmentIntensity;
-    if (!directionLights.empty())
-    {
-        const VansCelestialLightingState celestialState =
-            VansLightManager::ComputeCelestialLightingState(directionLights[0]);
-        m_RayTracingConstant.lightingParams.x =
-            m_BaseGIEnvironmentIntensity * std::max(celestialState.skyDiffuseScale, 0.0f);
-        glm::vec3 direction = celestialState.direction;
+	float environmentIntensity = m_BaseGIEnvironmentIntensity;
+	if (!directionLights.empty())
+	{
+		const VansCelestialLightingState celestialState =
+			VansLightManager::ComputeCelestialLightingState(directionLights[0]);
+		environmentIntensity = m_BaseGIEnvironmentIntensity * std::max(celestialState.skyDiffuseScale, 0.0f);
+		glm::vec3 direction = celestialState.direction;
         if (glm::dot(direction, direction) > 1e-6f)
             direction = glm::normalize(direction);
         else
@@ -560,30 +631,19 @@ bool VansGraphics::VansRayTracing::UpdateLightingResponseState(VansLightManager*
         const float directionDelta = glm::length(glm::vec3(directionIntensity) - glm::vec3(m_LastGIMainLightDirectionIntensity));
         const float intensityDelta = std::abs(directionIntensity.w - m_LastGIMainLightDirectionIntensity.w);
         const float colorDelta = glm::length(glm::vec3(lightColor) - glm::vec3(m_LastGIMainLightColor));
-        changed = directionDelta > 0.0025f || intensityDelta > 0.01f || colorDelta > 0.01f;
+        changed = directionDelta > 0.0025f || intensityDelta > 0.01f ||
+            colorDelta > 0.01f || lightSignature != m_LastGILightSignature;
     }
 
-    if (changed)
-    {
-        const uint32_t configuredDivisor = std::max(1u, static_cast<uint32_t>(m_RayTracingConstant.frameParams.y));
-        const uint32_t responseDivisor = std::min(configuredDivisor, 2u);
-        const uint32_t spatialPhaseCount = responseDivisor * responseDivisor * responseDivisor;
-
-        // Cold start performs four full spatial sweeps so local static lights can
-        // seed several diffuse bounces. Later main-light changes need two sweeps.
-        const uint32_t sweepCount = initializing ? 4u : 2u;
-        m_GILightingResponseFramesRemaining = std::max(
-            m_GILightingResponseFramesRemaining,
-            spatialPhaseCount * sweepCount);
-    }
-
+	m_CurrentGIEnvironmentIntensity = environmentIntensity;
     m_LastGIMainLightDirectionIntensity = directionIntensity;
     m_LastGIMainLightColor = lightColor;
+    m_LastGILightSignature = lightSignature;
     m_HasLastGIMainLight = true;
     return changed;
 }
 
-void VansGraphics::VansRayTracing::UpdateGIProbe(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VansLightManager* lightManager, VansMaterialManager* materialManager)
+void VansGraphics::VansRayTracing::PrepareGIProbeUpdate(VansLightManager* lightManager, VansMaterialManager* materialManager)
 {
     if (!m_RTResourcesReady || m_GIRegions.empty())
         return;
@@ -593,16 +653,29 @@ void VansGraphics::VansRayTracing::UpdateGIProbe(VansVKDevice* device, VansVKCom
     {
         materialManager->m_SSGITemporalFrame = 0;
     }
-
     if (lightingChanged)
     {
         for (GIRegionRuntime& region : m_GIRegions)
         {
-            region.giLightingResponseFramesRemaining = std::max(
-                region.giLightingResponseFramesRemaining,
-                m_GILightingResponseFramesRemaining);
+            const GIProbeUpdateBatch resetBatch = BuildGIProbeUpdateBatch(region.resolved, 0u);
+            region.giUpdateFrameIndex = 0u;
+            region.lightingResetFramesRemaining =
+                static_cast<uint32_t>(std::max<uint64_t>(resetBatch.fullUpdateFrameCount, 1u));
         }
     }
+
+    for (GIRegionRuntime& region : m_GIRegions)
+    {
+        region.constants.frameParams.x = static_cast<float>(region.giUpdateFrameIndex);
+		region.constants.lightingParams.x = m_CurrentGIEnvironmentIntensity;
+    }
+}
+
+void VansGraphics::VansRayTracing::UpdateGIProbe(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VansLightManager* lightManager, VansMaterialManager* materialManager)
+{
+    (void)lightManager;
+    if (!m_RTResourcesReady || m_GIRegions.empty())
+        return;
 
     commandBuffer->EnsureComputeShader(
         *m_RayTracingPointLighting,
@@ -613,30 +686,27 @@ void VansGraphics::VansRayTracing::UpdateGIProbe(VansVKDevice* device, VansVKCom
         GIRegionRuntime& region = m_GIRegions[regionIndex];
         BindGIPointLightData(regionIndex);
 
-        region.constants.frameParams.x = static_cast<float>(region.giUpdateFrameIndex++);
-        region.constants.lightingParams.x = m_RayTracingConstant.lightingParams.x;
-
-        const float configuredUpdateDivisor = region.constants.frameParams.y;
-        const float configuredDirectionSlices = region.constants.frameParams.z;
-        region.constants.lightingParams.w = region.giLightingResponseFramesRemaining > 0 ? 1.0f : 0.0f;
-        if (region.giLightingResponseFramesRemaining > 0)
+        const uint32_t updateFrameIndex = region.giUpdateFrameIndex;
+        region.constants.frameParams.x = static_cast<float>(updateFrameIndex);
+		region.constants.lightingParams.x = m_CurrentGIEnvironmentIntensity;
+        const bool lightingResetActive = region.lightingResetFramesRemaining > 0u;
+        const glm::vec4 baseTemporalParams = region.constants.temporalParams;
+        if (lightingResetActive)
         {
-            region.constants.frameParams.y = static_cast<float>(std::min(
-                std::max(1u, static_cast<uint32_t>(configuredUpdateDivisor)),
-                2u));
-            region.constants.frameParams.z = 1.0f;
-            --region.giLightingResponseFramesRemaining;
+            // Negative irradiance hysteresis is an explicit shader-side reset
+            // signal.  A zero value still means "blend this sparse direction
+            // slice by 1 / directionSlices" once probe history is valid, which
+            // leaves old lighting in the atlas for too long after light edits.
+            region.constants.temporalParams.x = -1.0f;
         }
 
-        const uint32_t updateDivisor = std::max(1u, static_cast<uint32_t>(region.constants.frameParams.y));
-        const glm::uvec3 probesPerAxis(
-            CeilDivide(region.resolved.gridDimensions.x, updateDivisor),
-            CeilDivide(region.resolved.gridDimensions.y, updateDivisor),
-            CeilDivide(region.resolved.gridDimensions.z, updateDivisor));
+        const GIProbeUpdateBatch batch = BuildGIProbeUpdateBatch(
+            region.resolved,
+            updateFrameIndex);
         const glm::uvec3 groupCount(
-            CeilDivide(probesPerAxis.x, 4u),
-            CeilDivide(probesPerAxis.y, 4u),
-            CeilDivide(probesPerAxis.z, 4u));
+            CeilDivide(batch.activeGridDimensions.x, 4u),
+            CeilDivide(batch.activeGridDimensions.y, 4u),
+            CeilDivide(batch.activeGridDimensions.z, 4u));
 
         commandBuffer->DispatchCompute(
             *m_RayTracingPointLighting,
@@ -647,108 +717,96 @@ void VansGraphics::VansRayTracing::UpdateGIProbe(VansVKDevice* device, VansVKCom
             &region.constants,
             sizeof(region.constants));
 
-        CopyCurrentSHToFeedback(commandBuffer, materialManager, regionIndex);
+        // Shade writes the active-ray radiance first.  The atlas pass then
+        // integrates exactly that same transient batch into irradiance and
+        // distance moments; it must not observe a previous frame's buffer.
+        VkMemoryBarrier shadeToAtlasBarrier{};
+        shadeToAtlasBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        shadeToAtlasBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        shadeToAtlasBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        commandBuffer->PipelineBarrier(
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            { shadeToAtlasBarrier });
 
-        region.constants.frameParams.y = configuredUpdateDivisor;
-        region.constants.frameParams.z = configuredDirectionSlices;
+        if (m_GIVisibilityUpdateShader != nullptr)
+        {
+            BindGIVisibilityData(materialManager, regionIndex);
+            commandBuffer->EnsureComputeShader(*m_GIVisibilityUpdateShader, { m_GIVisibilityUpdateSetLayout });
+            commandBuffer->DispatchCompute(
+                *m_GIVisibilityUpdateShader,
+                batch.activeGridDimensions.x,
+                batch.activeGridDimensions.y,
+                batch.activeGridDimensions.z,
+                { m_GIVisibilityUpdateDescriptorSets[regionIndex] },
+                &region.constants,
+                sizeof(region.constants));
+
+            // The next scheduled batch shades hits by sampling the previous
+            // DDGI atlas.  This explicit dependency is required even when a
+            // probe is updated only once per spatial phase; otherwise a
+            // compute read may observe a partially written irradiance or
+            // distance tile and manifests as grid-aligned light patches.
+            VkMemoryBarrier atlasToNextBatchBarrier{};
+            atlasToNextBatchBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+            atlasToNextBatchBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            atlasToNextBatchBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+            commandBuffer->PipelineBarrier(
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                { atlasToNextBatchBarrier });
+        }
+
+        if (m_GIProbeStateShader != nullptr)
+        {
+            BindGIProbeStateData(regionIndex);
+            commandBuffer->EnsureComputeShader(*m_GIProbeStateShader, { m_GIProbeStateSetLayout });
+            commandBuffer->DispatchCompute(
+                *m_GIProbeStateShader,
+                batch.activeGridDimensions.x,
+                batch.activeGridDimensions.y,
+                batch.activeGridDimensions.z,
+                { m_GIProbeStateDescriptorSets[regionIndex] },
+                &region.constants,
+                sizeof(region.constants));
+
+            // Relocation and classification are consumed by the following
+            // ray-tracing dispatch.  Do not rely on submission ordering for a
+            // shader-write -> ray-tracing-read hazard.
+            VkMemoryBarrier stateToTraceBarrier{};
+            stateToTraceBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+            stateToTraceBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            stateToTraceBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            commandBuffer->PipelineBarrier(
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+                { stateToTraceBarrier });
+        }
+
+        if (lightingResetActive)
+        {
+            --region.lightingResetFramesRemaining;
+            region.constants.temporalParams = baseTemporalParams;
+        }
+        ++region.giUpdateFrameIndex;
+
     }
 
 	DispatchGIRTPreview(commandBuffer, materialManager);
-    SyncPrimaryCompatibilityState();
-}
 
-void VansGraphics::VansRayTracing::CopyCurrentSHToFeedback(VansVKCommandBuffer* commandBuffer, VansMaterialManager* materialManager, uint32_t regionIndex)
-{
-    if (commandBuffer == nullptr || materialManager == nullptr || regionIndex >= m_GIRegions.size())
-    {
-        return;
-    }
-
-    GIRegionRuntime& region = m_GIRegions[regionIndex];
-    if (region.shRResult == nullptr || region.shGResult == nullptr || region.shBResult == nullptr ||
-        region.shFeedbackR == nullptr || region.shFeedbackG == nullptr || region.shFeedbackB == nullptr)
-    {
-        return;
-    }
-
-    auto transition = [commandBuffer](VansTexture* texture,
-        VkAccessFlags srcAccess,
-        VkAccessFlags dstAccess,
-        VkImageLayout oldLayout,
-        VkImageLayout newLayout,
-        VkPipelineStageFlags srcStage,
-        VkPipelineStageFlags dstStage)
-    {
-        VkImageMemoryBarrier barrier{};
-        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        barrier.srcAccessMask = srcAccess;
-        barrier.dstAccessMask = dstAccess;
-        barrier.oldLayout = oldLayout;
-        barrier.newLayout = newLayout;
-        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.image = texture->GetImage().GetImage();
-        barrier.subresourceRange = { texture->GetImage().GetImageAspect(), 0, 1, 0, 1 };
-        commandBuffer->PipelineBarrier(srcStage, dstStage, {}, {}, { barrier });
-        texture->GetImage().SetTrackedImageLayout(newLayout);
-    };
-
-    auto copySH = [&](VansTexture* source, VansTexture* target)
-    {
-        transition(
-            source,
-            VK_ACCESS_SHADER_WRITE_BIT,
-            VK_ACCESS_TRANSFER_READ_BIT,
-            VK_IMAGE_LAYOUT_GENERAL,
-            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            VK_PIPELINE_STAGE_TRANSFER_BIT);
-        transition(
-            target,
-            VK_ACCESS_SHADER_READ_BIT,
-            VK_ACCESS_TRANSFER_WRITE_BIT,
-            VK_IMAGE_LAYOUT_GENERAL,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            VK_PIPELINE_STAGE_TRANSFER_BIT);
-
-        VkImageCopy copyRegion{};
-        copyRegion.srcSubresource = { source->GetImage().GetImageAspect(), 0, 0, 1 };
-        copyRegion.dstSubresource = { target->GetImage().GetImageAspect(), 0, 0, 1 };
-        copyRegion.extent = {
-            static_cast<uint32_t>(source->GetWidth()),
-            static_cast<uint32_t>(source->GetHeight()),
-            static_cast<uint32_t>(source->GetSlice())
-        };
-        commandBuffer->CopyImageRegions(
-            source->GetImage(),
-            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            target->GetImage(),
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            { copyRegion });
-
-        transition(
-            source,
-            VK_ACCESS_TRANSFER_READ_BIT,
-            VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
-            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            VK_IMAGE_LAYOUT_GENERAL,
-            VK_PIPELINE_STAGE_TRANSFER_BIT,
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
-        transition(
-            target,
-            VK_ACCESS_TRANSFER_WRITE_BIT,
-            VK_ACCESS_SHADER_READ_BIT,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_IMAGE_LAYOUT_GENERAL,
-            VK_PIPELINE_STAGE_TRANSFER_BIT,
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-    };
-
-    // 多次反弹反馈只读取上一帧完整 SH 快照，避免本帧刚写入的 probe 立即影响同一轮扩散。
-    copySH(region.shRResult, region.shFeedbackR);
-    copySH(region.shGResult, region.shFeedbackG);
-    copySH(region.shBResult, region.shFeedbackB);
+    // GI atlases are storage-image outputs during the probe update, then
+    // sampled by SSGI and Deferred later in the frame.  The intra-update
+    // barriers above only protect compute consumers inside the GI scheduler;
+    // publish the final atlas contents to downstream screen-space and
+    // fragment passes before the render graph samples them.
+    VkMemoryBarrier atlasPublishBarrier{};
+    atlasPublishBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    atlasPublishBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    atlasPublishBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    commandBuffer->PipelineBarrier(
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        { atlasPublishBarrier });
 }
 
 void VansGraphics::VansRayTracing::BindGIPointLightData(uint32_t regionIndex)
@@ -766,9 +824,8 @@ void VansGraphics::VansRayTracing::BindGIPointLightData(uint32_t regionIndex)
     }
 
     VansMaterialManager* manager = m_Scene->GetMaterialManager();
-    if (region.shFeedbackR == nullptr || region.shFeedbackG == nullptr || region.shFeedbackB == nullptr ||
-        region.visibilityAtlas == nullptr || region.shRResult == nullptr ||
-        region.shGResult == nullptr || region.shBResult == nullptr)
+	if (region.visibilityAtlas == nullptr || region.irradianceAtlas == nullptr ||
+		manager == nullptr || manager->m_EnvironmentRadiance == nullptr)
     {
         return;
     }
@@ -804,6 +861,15 @@ void VansGraphics::VansRayTracing::BindGIPointLightData(uint32_t regionIndex)
             0,
             region.hitRadianceBuffer.GetBufferSize()
         }});
+		descManager->WriteBufferDescriptor(
+			descriptorSet,
+			GIPL_BINDING_EMISSION,
+			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			{{
+				region.hitEmissionResult.GetNativeBuffer(),
+				0,
+				region.hitEmissionResult.GetBufferSize()
+			}});
 
     descManager->WriteBufferDescriptor(
         descriptorSet,
@@ -815,8 +881,10 @@ void VansGraphics::VansRayTracing::BindGIPointLightData(uint32_t regionIndex)
             region.hitAlbedoRoughnessResult.GetBufferSize()
         }});
 
-    auto& skyImage = manager->m_PreConvDiffuse->GetImage();
-    //设置天空盒
+	auto& skyImage = manager->m_EnvironmentRadiance->GetImage();
+	// Probe miss shading needs raw environment radiance.  The diffuse
+	// preconvolution is already an irradiance integral and must not be injected
+	// into the Monte-Carlo ray integral a second time.
     descManager->WriteImageDescriptor(
         descriptorSet,
         GIPL_BINDING_ENVIRONMENT_MAP,
@@ -827,44 +895,6 @@ void VansGraphics::VansRayTracing::BindGIPointLightData(uint32_t regionIndex)
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
         }});
 
-    //设置球谐积分贴图
-    descManager->WriteImageDescriptor(
-            descriptorSet,
-        GIPL_BINDING_SH_R,
-        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        {{
-            region.shFeedbackR->GetImage().GetSampler(),
-            region.shFeedbackR->GetImage().GetImageView(),
-            VK_IMAGE_LAYOUT_GENERAL
-        }});
-
-    descManager->WriteBufferDescriptor(
-        descriptorSet,
-        GIPL_BINDING_DIRECT_CACHE,
-        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-        {{
-            region.hitDirectDiffuseBuffer.GetNativeBuffer(),
-            0,
-            region.hitDirectDiffuseBuffer.GetBufferSize()
-        }});
-    descManager->WriteImageDescriptor(
-        descriptorSet,
-            GIPL_BINDING_SH_G,
-            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            {{
-            region.shFeedbackG->GetImage().GetSampler(),
-            region.shFeedbackG->GetImage().GetImageView(),
-            VK_IMAGE_LAYOUT_GENERAL
-        }});
-    descManager->WriteImageDescriptor(
-        descriptorSet,
-            GIPL_BINDING_SH_B,
-            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            {{
-            region.shFeedbackB->GetImage().GetSampler(),
-            region.shFeedbackB->GetImage().GetImageView(),
-            VK_IMAGE_LAYOUT_GENERAL
-        }});
     descManager->WriteImageDescriptor(
         descriptorSet,
         GIPL_BINDING_SHADOW_MAP,
@@ -894,20 +924,22 @@ void VansGraphics::VansRayTracing::BindGIPointLightData(uint32_t regionIndex)
         }});
     descManager->WriteImageDescriptor(
         descriptorSet,
-        GIPL_BINDING_RESULT_R,
-        VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-        {{ region.shRResult->GetImage().GetSampler(), region.shRResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-    descManager->WriteImageDescriptor(
+        GIPL_BINDING_IRRADIANCE_ATLAS,
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        {{
+            region.irradianceAtlas->GetImage().GetSampler(),
+            region.irradianceAtlas->GetImage().GetImageView(),
+            VK_IMAGE_LAYOUT_GENERAL
+        }});
+    descManager->WriteBufferDescriptor(
         descriptorSet,
-        GIPL_BINDING_RESULT_G,
-        VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-        {{ region.shGResult->GetImage().GetSampler(), region.shGResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-    descManager->WriteImageDescriptor(
-        descriptorSet,
-        GIPL_BINDING_RESULT_B,
-        VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-        {{ region.shBResult->GetImage().GetSampler(), region.shBResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-
+        GIPL_BINDING_PROBE_STATE,
+        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        {{
+            region.probeStateBuffer.GetNativeBuffer(),
+            0,
+            region.probeStateBuffer.GetBufferSize()
+        }});
     descManager->CommitDescriptorUpdates();
     region.giPointLightDescriptorSetIsDirty = false;
 }
@@ -926,7 +958,7 @@ void VansGraphics::VansRayTracing::BindGIVisibilityData(VansMaterialManager* mat
         return;
     }
 
-    if (materialManager == nullptr || region.visibilityAtlas == nullptr)
+    if (materialManager == nullptr || region.visibilityAtlas == nullptr || region.irradianceAtlas == nullptr)
     {
         return;
     }
@@ -951,66 +983,111 @@ void VansGraphics::VansRayTracing::BindGIVisibilityData(VansMaterialManager* mat
             region.visibilityAtlas->GetImage().GetImageView(),
             VK_IMAGE_LAYOUT_GENERAL
         }});
+    descManager->WriteBufferDescriptor(
+        m_GIVisibilityUpdateDescriptorSets[regionIndex],
+        GI_VISIBILITY_BINDING_RADIANCE,
+        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        {{
+            region.hitRadianceBuffer.GetNativeBuffer(),
+            0,
+            region.hitRadianceBuffer.GetBufferSize()
+        }});
+    descManager->WriteImageDescriptor(
+        m_GIVisibilityUpdateDescriptorSets[regionIndex],
+        GI_VISIBILITY_BINDING_IRRADIANCE,
+        VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+        {{
+            region.irradianceAtlas->GetImage().GetSampler(),
+            region.irradianceAtlas->GetImage().GetImageView(),
+            VK_IMAGE_LAYOUT_GENERAL
+        }});
+    descManager->WriteBufferDescriptor(
+        m_GIVisibilityUpdateDescriptorSets[regionIndex],
+        GI_VISIBILITY_BINDING_PROBE_STATE,
+        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        {{ region.probeStateBuffer.GetNativeBuffer(), 0, region.probeStateBuffer.GetBufferSize() }});
     descManager->CommitDescriptorUpdates();
     region.giVisibilityDescriptorSetIsDirty = false;
+}
+
+void VansGraphics::VansRayTracing::BindGIProbeStateData(uint32_t regionIndex)
+{
+    if (regionIndex >= m_GIRegions.size() || regionIndex >= m_GIProbeStateDescriptorSets.size())
+        return;
+    GIRegionRuntime& region = m_GIRegions[regionIndex];
+    if (!region.giProbeStateDescriptorSetIsDirty)
+        return;
+
+    auto* descManager = VansVKDescriptorManager::GetInstance();
+    const VkDescriptorSet descriptorSet = m_GIProbeStateDescriptorSets[regionIndex];
+    descManager->BeginDescriptorUpdate();
+    const auto writeBuffer = [descManager, descriptorSet](uint32_t binding, VansVKBuffer& buffer)
+    {
+        descManager->WriteBufferDescriptor(descriptorSet, binding, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            {{ buffer.GetNativeBuffer(), 0, buffer.GetBufferSize() }});
+    };
+    writeBuffer(0u, region.hitPositionResult);
+    writeBuffer(1u, region.hitNormalResult);
+    writeBuffer(2u, region.probeStateBuffer);
+    descManager->CommitDescriptorUpdates();
+    region.giProbeStateDescriptorSetIsDirty = false;
 }
 
 void VansGraphics::VansRayTracing::BindGIRTPreviewData(VansMaterialManager* materialManager)
 {
     GIRegionRuntime* previewRegion = GetPreviewRegion();
     if (!m_GIRTPreviewDescriptorSetIsDirty || materialManager == nullptr ||
-        m_GIRTPreviewTexture == nullptr || previewRegion == nullptr ||
+        m_GIRTPreviewTextures[0] == nullptr || previewRegion == nullptr ||
         previewRegion->rayTracingResult == nullptr)
     {
         return;
     }
 
-    auto* shR = previewRegion->shRResult;
-    auto* shG = previewRegion->shGResult;
-    auto* shB = previewRegion->shBResult;
-    if (shR == nullptr || shG == nullptr || shB == nullptr || m_GIRTPreviewDescriptorSets.empty())
+	auto* irradianceAtlas = previewRegion->irradianceAtlas;
+	auto* visibilityAtlas = previewRegion->visibilityAtlas;
+	if (irradianceAtlas == nullptr || visibilityAtlas == nullptr || m_GIRTPreviewDescriptorSets.empty())
         return;
 
     auto* descManager = VansVKDescriptorManager::GetInstance();
     descManager->BeginDescriptorUpdate();
-    const VkDeviceSize elementBytes = sizeof(uint16_t) * 4u;
     const glm::uvec3& grid = previewRegion->resolved.gridDimensions;
-    const VkDeviceSize sliceBytes = static_cast<VkDeviceSize>(grid.x) *
-        grid.y * std::max(static_cast<int>(previewRegion->resolved.raysPerProbe), 1) * elementBytes;
     const uint32_t zSlice = std::min(
-        static_cast<uint32_t>(m_GIRTPreviewConstant.selectionParams.y),
+        static_cast<uint32_t>(m_GIRTPreviewConstants[0].selectionParams.y),
         std::max(grid.z, 1u) - 1u);
-    const VkDeviceSize sliceOffset = static_cast<VkDeviceSize>(zSlice) * sliceBytes;
-    const VkDeviceSize alignedOffset = sliceOffset - (sliceOffset % m_GIRTPreviewStorageBufferAlignment);
-    const VkDeviceSize prefixBytes = sliceOffset - alignedOffset;
-    m_GIRTPreviewConstant.displayParams.y = static_cast<float>(prefixBytes / elementBytes);
-
-    auto writeBuffer = [&](uint32_t binding, VansVKBuffer& buffer)
+    for (uint32_t mode = 0u; mode < GIRTPreviewModeCount; ++mode)
     {
-		const VkDeviceSize availableBytes = buffer.GetBufferSize() > alignedOffset
-			? buffer.GetBufferSize() - alignedOffset
-			: 0;
-		const VkDeviceSize range = std::min(prefixBytes + sliceBytes, availableBytes);
-        descManager->WriteBufferDescriptor(
-            m_GIRTPreviewDescriptorSets[0], binding, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            {{ buffer.GetNativeBuffer(), alignedOffset, range }});
-    };
-    auto writeImage = [&](uint32_t binding, VansTexture* texture)
-    {
-        descManager->WriteImageDescriptor(
-            m_GIRTPreviewDescriptorSets[0], binding, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-            {{ texture->GetImage().GetSampler(), texture->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-    };
+        m_GIRTPreviewConstants[mode].displayParams.y = 0.0f;
+        const VkDescriptorSet descriptorSet = m_GIRTPreviewDescriptorSets[mode];
 
-    writeBuffer(GI_RT_PREVIEW_BINDING_HIT_POSITION, previewRegion->hitPositionResult);
-    writeBuffer(GI_RT_PREVIEW_BINDING_HIT_NORMAL, previewRegion->hitNormalResult);
-    writeBuffer(GI_RT_PREVIEW_BINDING_HIT_PBR, previewRegion->hitAlbedoRoughnessResult);
-    writeBuffer(GI_RT_PREVIEW_BINDING_DIRECT_LIGHT, previewRegion->hitRadianceBuffer);
-    writeImage(GI_RT_PREVIEW_BINDING_RAY_SUMMARY, previewRegion->rayTracingResult);
-    writeImage(GI_RT_PREVIEW_BINDING_SH_R, shR);
-    writeImage(GI_RT_PREVIEW_BINDING_SH_G, shG);
-    writeImage(GI_RT_PREVIEW_BINDING_SH_B, shB);
-    writeImage(GI_RT_PREVIEW_BINDING_OUTPUT, m_GIRTPreviewTexture);
+	auto writeWholeBuffer = [&](uint32_t binding, VansVKBuffer& buffer)
+	{
+		descManager->WriteBufferDescriptor(
+			descriptorSet, binding, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			{{ buffer.GetNativeBuffer(), 0, buffer.GetBufferSize() }});
+	};
+	auto writeStorageImage = [&](uint32_t binding, VansTexture* texture)
+	{
+		descManager->WriteImageDescriptor(
+			descriptorSet, binding, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			{{ texture->GetImage().GetSampler(), texture->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
+	};
+	auto writeSampledImage = [&](uint32_t binding, VansTexture* texture)
+	{
+		descManager->WriteImageDescriptor(
+			descriptorSet, binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{ texture->GetImage().GetSampler(), texture->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
+	};
+
+    writeWholeBuffer(GI_RT_PREVIEW_BINDING_HIT_POSITION, previewRegion->hitPositionResult);
+    writeWholeBuffer(GI_RT_PREVIEW_BINDING_HIT_NORMAL, previewRegion->hitNormalResult);
+    writeWholeBuffer(GI_RT_PREVIEW_BINDING_HIT_PBR, previewRegion->hitAlbedoRoughnessResult);
+    writeWholeBuffer(GI_RT_PREVIEW_BINDING_DIRECT_LIGHT, previewRegion->hitRadianceBuffer);
+	writeStorageImage(GI_RT_PREVIEW_BINDING_RAY_SUMMARY, previewRegion->rayTracingResult);
+	writeSampledImage(GI_RT_PREVIEW_BINDING_SH_R, irradianceAtlas);
+	writeSampledImage(GI_RT_PREVIEW_BINDING_SH_G, visibilityAtlas);
+	writeWholeBuffer(GI_RT_PREVIEW_BINDING_SH_B, previewRegion->probeStateBuffer);
+	writeStorageImage(GI_RT_PREVIEW_BINDING_OUTPUT, m_GIRTPreviewTextures[mode]);
+    }
     descManager->CommitDescriptorUpdates();
     m_GIRTPreviewDescriptorSetIsDirty = false;
 	m_GIRTPreviewBoundZSlice = zSlice;
@@ -1021,7 +1098,7 @@ void VansGraphics::VansRayTracing::DispatchGIRTPreview(
     VansMaterialManager* materialManager)
 {
     if (m_GIRTPreviewRequestFrames == 0 || commandBuffer == nullptr ||
-        m_GIRTPreviewShader == nullptr || m_GIRTPreviewTexture == nullptr)
+        m_GIRTPreviewShader == nullptr || m_GIRTPreviewTextures[0] == nullptr)
     {
         return;
     }
@@ -1046,13 +1123,16 @@ void VansGraphics::VansRayTracing::DispatchGIRTPreview(
     if (previewRegion == nullptr)
         return;
 
-    commandBuffer->DispatchCompute(
-        *m_GIRTPreviewShader,
-        (previewRegion->resolved.gridDimensions.x + 7u) / 8u,
-        (previewRegion->resolved.gridDimensions.y + 7u) / 8u,
-        1u,
-        { m_GIRTPreviewDescriptorSets[0] },
-        &m_GIRTPreviewConstant, sizeof(m_GIRTPreviewConstant));
+    for (uint32_t mode = 0u; mode < GIRTPreviewModeCount; ++mode)
+    {
+        commandBuffer->DispatchCompute(
+            *m_GIRTPreviewShader,
+            (previewRegion->resolved.gridDimensions.x + 7u) / 8u,
+            (previewRegion->resolved.gridDimensions.y + 7u) / 8u,
+            1u,
+            { m_GIRTPreviewDescriptorSets[mode] },
+            &m_GIRTPreviewConstants[mode], sizeof(GIRTPreviewPushConstant));
+    }
 
     VkMemoryBarrier previewBarrier{};
     previewBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
@@ -1076,11 +1156,27 @@ void VansGraphics::VansRayTracing::CreateGIVisibilityUpdateDescriptorSets(VansVK
         region.giVisibilityDescriptorSetIsDirty = true;
 }
 
+void VansGraphics::VansRayTracing::CreateGIProbeStateDescriptorSets(VansVKDevice* device)
+{
+    VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom(
+        {
+            { 0u, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1u, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
+            { 1u, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1u, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
+            { 2u, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1u, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
+        },
+        m_GIProbeStateSetLayout,
+        m_GIProbeStateDescriptorSets,
+        static_cast<uint32_t>(std::max<size_t>(m_GIRegions.size(), 1u)));
+    for (GIRegionRuntime& region : m_GIRegions)
+        region.giProbeStateDescriptorSetIsDirty = true;
+}
+
 void VansGraphics::VansRayTracing::CreateGIRTPreviewDescriptorSets(VansVKDevice* device)
 {
     VansDescriptorSetLayoutFactory::CreateAndAllocate_GIRTPreview(
         m_GIRTPreviewSetLayout,
-        m_GIRTPreviewDescriptorSets);
+        m_GIRTPreviewDescriptorSets,
+        GIRTPreviewModeCount);
     m_GIRTPreviewDescriptorSetIsDirty = true;
 }
 
@@ -1110,10 +1206,11 @@ void VansGraphics::VansRayTracing::DispatchRayTracing(VansVKDevice* device, Vans
     for (uint32_t regionIndex = 0; regionIndex < m_GIRegions.size(); ++regionIndex)
     {
         GIRegionRuntime& region = m_GIRegions[regionIndex];
-        if (region.hitPositionCalculateDone)
+        const GIProbeUpdateBatch batch = BuildGIProbeUpdateBatch(
+            region.resolved,
+            region.giUpdateFrameIndex);
+        if (batch.activeProbeCount == 0 || batch.raysPerActiveProbe == 0)
             continue;
-
-        region.hitPositionCalculateDone = true;
         BindRayTracingData(device, scene, regionIndex);
 
         commandBuffer->BindRayTracingDescriptorSets(
@@ -1122,16 +1219,17 @@ void VansGraphics::VansRayTracing::DispatchRayTracing(VansVKDevice* device, Vans
             { m_RayTracingDescriptorSets[regionIndex] });
         commandBuffer->UpdateRayTracingPushConstants(
             *vansPipeline,
-            VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR,
+            VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_ANY_HIT_BIT_KHR |
+                VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR,
             0,
             m_VansRayTracingShader->GetPushConstantSize(),
             &region.constants);
 
         commandBuffer->TraceRays(
             *vansPipeline,
-            region.resolved.gridDimensions.x,
-            region.resolved.gridDimensions.y,
-            region.resolved.gridDimensions.z);
+            batch.activeGridDimensions.x * batch.raysPerActiveProbe,
+            batch.activeGridDimensions.y,
+            batch.activeGridDimensions.z);
 
         // Barrier: RT shader writes hit buffers before GI point-light compute reads them.
         {
@@ -1145,37 +1243,6 @@ void VansGraphics::VansRayTracing::DispatchRayTracing(VansVKDevice* device, Vans
                 { rtToComputeBarrier });
         }
 
-        if (!region.giVisibilityCalculateDone && m_GIVisibilityUpdateShader != nullptr)
-        {
-            BindGIVisibilityData(scene->GetMaterialManager(), regionIndex);
-
-            const int totalProbeCount = static_cast<int>(std::max<uint64_t>(region.resolved.probeCount, 1u));
-            const int probesPerAtlasRow = std::max(1, static_cast<int>(std::ceil(std::sqrt(static_cast<float>(totalProbeCount)))));
-            const int probesPerAtlasColumn = (totalProbeCount + probesPerAtlasRow - 1) / probesPerAtlasRow;
-            const uint32_t atlasWidth = static_cast<uint32_t>(probesPerAtlasRow * kGIVisibilityOctaRes);
-            const uint32_t atlasHeight = static_cast<uint32_t>(probesPerAtlasColumn * kGIVisibilityOctaRes);
-
-            commandBuffer->EnsureComputeShader(*m_GIVisibilityUpdateShader, { m_GIVisibilityUpdateSetLayout });
-            commandBuffer->DispatchCompute(
-                *m_GIVisibilityUpdateShader,
-                (atlasWidth + 7u) / 8u,
-                (atlasHeight + 7u) / 8u,
-                1,
-                { m_GIVisibilityUpdateDescriptorSets[regionIndex] },
-                &region.constants,
-                sizeof(region.constants));
-
-            region.giVisibilityCalculateDone = true;
-        }
-
-        VkMemoryBarrier visibilityToGIBarrier{};
-        visibilityToGIBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-        visibilityToGIBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-        visibilityToGIBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        commandBuffer->PipelineBarrier(
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-            { visibilityToGIBarrier });
     }
 }
 
@@ -1264,6 +1331,33 @@ void VansGraphics::VansRayTracing::CreateRayTraceDescriptorSets(VansVKDevice* de
         nullptr
     };
 
+    VkDescriptorSetLayoutBinding probeStateDataBuffer =
+    {
+        9u,
+        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        1,
+        VK_SHADER_STAGE_RAYGEN_BIT_KHR,
+        nullptr
+    };
+
+	VkDescriptorSetLayoutBinding instanceGIEmissionDataBuffer =
+	{
+		10u,
+		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+		1,
+		VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
+		nullptr
+	};
+
+	VkDescriptorSetLayoutBinding hitEmissionDataBuffer =
+	{
+		11u,
+		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+		1,
+		VK_SHADER_STAGE_RAYGEN_BIT_KHR,
+		nullptr
+	};
+
 
 	//bindless texture array
     VkDescriptorSetLayoutBinding bindlessTextureArrayBinding =
@@ -1290,7 +1384,10 @@ void VansGraphics::VansRayTracing::CreateRayTraceDescriptorSets(VansVKDevice* de
             hitNormalResultBinding,
             instanceTextureIndexDataBuffer,
             bindlessTextureArrayBinding,
-            hitPBRAlbedoRoughnessDataBuffer
+            hitPBRAlbedoRoughnessDataBuffer,
+			probeStateDataBuffer,
+			instanceGIEmissionDataBuffer,
+			hitEmissionDataBuffer
         },
         m_RayTracingSetLayout,
         m_RayTracingDescriptorSets,
@@ -1414,6 +1511,33 @@ void VansGraphics::VansRayTracing::BindRayTracingData(VansVKDevice* device, Vans
             0,
             region.hitAlbedoRoughnessResult.GetBufferSize()
         }});
+    descManager->WriteBufferDescriptor(
+        m_RayTracingDescriptorSets[regionIndex],
+        9u,
+        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        {{
+            region.probeStateBuffer.GetNativeBuffer(),
+            0,
+            region.probeStateBuffer.GetBufferSize()
+        }});
+	descManager->WriteBufferDescriptor(
+		m_RayTracingDescriptorSets[regionIndex],
+		10u,
+		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+		{{
+			m_TLASInstanceGIEmissionBuffer.GetNativeBuffer(),
+			0,
+			m_TLASInstanceGIEmissionBuffer.GetBufferSize()
+		}});
+	descManager->WriteBufferDescriptor(
+		m_RayTracingDescriptorSets[regionIndex],
+		11u,
+		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+		{{
+			region.hitEmissionResult.GetNativeBuffer(),
+			0,
+			region.hitEmissionResult.GetBufferSize()
+		}});
     descManager->WriteAccelerationStructureDescriptor(
         m_RayTracingDescriptorSets[regionIndex],
         RT_BINDING_TLAS,

@@ -958,6 +958,38 @@ void CalculateDirectDiffuse(vec3 positionWS, vec3 normalWS, sampler2D shadowMap,
         float noL = max(dot(normalWS, lightDirection), 0.0);
         diffuseResult += noL * spotLight.color.rgb * spotLight.intensity * attenuation * coneAttenuation * albedo * INV_PI;
     }
+
+    // Probe-hit shading has no camera direction, so it uses a diffuse-only
+    // solid-angle approximation for rectangular emitters instead of the
+    // view-dependent LTC BRDF path.  This keeps area lights in the DDGI
+    // transport graph and uses the same punctual shadow atlas as raster.
+    for (uint lightIndex = 0u; lightIndex < GetRectLightCount(); ++lightIndex)
+    {
+        RectLightData rectLight = GetRectLight(int(lightIndex));
+        vec3 toLight = rectLight.position_halfW.xyz - samplePos;
+        float distanceSquared = dot(toLight, toLight);
+        float range = rectLight.right_range.w;
+        if (distanceSquared >= range * range || distanceSquared <= 1e-6)
+            continue;
+
+        float distance = sqrt(distanceSquared);
+        vec3 lightDirection = toLight / distance;
+        float lightFacing = dot(rectLight.normal_halfH.xyz, -lightDirection);
+        if (rectLight.color_twoSided.w > 0.5)
+            lightFacing = abs(lightFacing);
+        if (lightFacing <= 0.0)
+            continue;
+
+        float area = 4.0 * rectLight.position_halfW.w * rectLight.normal_halfH.w;
+        float rangeFade = 1.0 - distance / max(range, 1e-4);
+        rangeFade *= rangeFade;
+        float solidAngle = area * lightFacing / max(distanceSquared, 1e-4);
+        float shadow = SampleRectShadowMapBRDF(samplePos, normalWS, lightDirection,
+            punctualShadowMap, int(lightIndex));
+        diffuseResult += max(dot(normalWS, lightDirection), 0.0) *
+            rectLight.color_twoSided.rgb * rectLight.up_intensity.w * solidAngle *
+            rangeFade * shadow * albedo * INV_PI;
+    }
 }
 // Cascade shadow map version of CalculateDirectLight
 // Forward declaration: EvaluateRectLightLTC is defined in Lighting/RectLightLTC.glsl,

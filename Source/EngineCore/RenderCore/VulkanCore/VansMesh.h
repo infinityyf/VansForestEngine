@@ -242,7 +242,8 @@ namespace VansGraphics
 			bool supportRayTracing = false, bool needCPUData = false, float scaleFactor = 1.0f,
 			const Vans::VansSkeletalMeshImportSettings& skeletalImport = Vans::VansSkeletalMeshImportSettings{},
 			const std::string& cachePath = {},
-			bool trustCacheWithoutSource = false);
+			bool trustCacheWithoutSource = false,
+			bool extractEmbeddedAnimationClips = true);
 
 		// Static helper: extract FBXSubmeshMaterialInfo for each submesh from a file without GPU upload.
 		static std::vector<FBXSubmeshMaterialInfo> GetSubmeshMaterialInfos(const std::string& file_name);

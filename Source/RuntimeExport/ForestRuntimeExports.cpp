@@ -88,6 +88,8 @@ namespace
 		if (value == "particle") return Vans::VansAssetType::Particle;
 		if (value == "animationClip") return Vans::VansAssetType::AnimationClip;
 		if (value == "animatorController") return Vans::VansAssetType::AnimatorController;
+		if (value == "boneMask") return Vans::VansAssetType::BoneMask;
+		if (value == "timeline") return Vans::VansAssetType::Timeline;
 		if (value == "clothProfile") return Vans::VansAssetType::ClothProfile;
 		if (value == "postProcessProfile") return Vans::VansAssetType::PostProcessProfile;
 		if (value == "ragdollProfile") return Vans::VansAssetType::RagdollProfile;
@@ -514,6 +516,7 @@ FOREST_RUNTIME_API int ForestRuntime_Tick(ForestRuntimeHandle* runtime, float)
 		frame.sceneReady = true;
 		frame.simulationRunning = VansEngine::VansPhysicsSystem::GetInstance().IsSimulationRunning();
 		frame.gameplayActive = true;
+		frame.deltaSeconds = VansGraphics::VansTimer::GetDeltaTime();
 		frame.syncPhysicsTransforms = [&] { runtime->scene->UpdatePhysicsTransforms(); };
 		frame.updateNonCameraScripts = [&]
 		{
@@ -524,11 +527,13 @@ FOREST_RUNTIME_API int ForestRuntime_Tick(ForestRuntimeHandle* runtime, float)
 			}
 		};
 		frame.flushCharacterControllerTransforms = [&] { runtime->scene->UpdateCharControllerTransforms(); };
+		frame.updateTimelinesPostScript = [&](double deltaSeconds) { runtime->scene->UpdateTimelinesPostScript(deltaSeconds); };
 		frame.updateCameraScripts = [&]
 		{
 			if (runtime->scriptContext)
 				runtime->scriptContext->VansScriptUpdateCameraScripts();
 		};
+		frame.updateTimelinesCamera = [&](double deltaSeconds) { runtime->scene->UpdateTimelinesCamera(deltaSeconds); };
 		Vans::VansRuntimeFrameScheduler::RunGameplay(frame);
 	}
 	return 1;

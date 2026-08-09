@@ -2,7 +2,7 @@
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_GOOGLE_include_directive : enable
 
-#include "../GI/GIProbeCommon.glsl"
+#include "../GI/GIProbeStateData.glsl"
 
 layout(location = 0) in vec3 worldPosition;
 layout(location = 1) in vec3 worldNormal;
@@ -79,9 +79,15 @@ layout(set = 0, binding = 50) uniform sampler2D globalPBRTextures[];
 
 layout(set = 1, binding = 1) uniform sampler2DArray cascadeShadowMap;
 layout(set = 1, binding = 3) uniform samplerCube skyDiffuseEnvironment;
-layout(set = 1, binding = 4) uniform sampler3D giSHR;
-layout(set = 1, binding = 5) uniform sampler3D giSHG;
-layout(set = 1, binding = 6) uniform sampler3D giSHB;
+layout(set = 1, binding = 4) uniform sampler2D giIrradianceAtlas;
+layout(set = 1, binding = 5) uniform sampler2D giVisibilityAtlas;
+layout(set = 1, binding = 6, std430) readonly buffer ProbeStateBuffer
+{
+    GIProbeState states[];
+} giProbeStates;
+
+#define GI_LOAD_PROBE_STATE(regionIndex, probeLinearIndex) giProbeStates.states[probeLinearIndex]
+#include "../GI/GIProbeCommon.glsl"
 
 layout(set = 1, binding = 0) uniform CaptureCamera
 {
@@ -90,6 +96,7 @@ layout(set = 1, binding = 0) uniform CaptureCamera
     vec4 position;
     vec4 giVolumeMin;
     vec4 giVolumeSizeAndBias;
+	vec4 giGridDimensions;
 } captureCamera;
 
 layout(push_constant) uniform CaptureDraw
@@ -108,16 +115,10 @@ vec3 SampleIndirectDiffuseRadiance(vec3 worldPosition, vec3 normal)
         captureCamera.giVolumeMin.xyz,
         captureCamera.giVolumeSizeAndBias.xyz);
 
-    vec3 probeLighting = GI_SampleProbeDiffuseLightingL1(
-        giSHR,
-        giSHG,
-        giSHB,
-        worldPosition,
-        normal,
-        captureCamera.giVolumeMin.xyz,
-        captureCamera.giVolumeSizeAndBias.xyz,
-        captureCamera.giVolumeSizeAndBias.w,
-        0.0);
+	vec3 probeLighting = GI_SampleProbeIrradianceAtlasVisible(
+		0u, ivec3(captureCamera.giGridDimensions.xyz), giIrradianceAtlas, giVisibilityAtlas,
+		worldPosition, normal, captureCamera.giVolumeMin.xyz,
+		captureCamera.giVolumeSizeAndBias.xyz, captureCamera.giVolumeSizeAndBias.w, 0.0);
 
     if (insideGIVolume)
         return probeLighting;

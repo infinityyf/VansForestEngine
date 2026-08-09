@@ -1,8 +1,11 @@
 #pragma once
 
+#include "AnimationAuthoringDTOs.h"
+
 #include "EngineIds.h"
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <utility>
 #include <variant>
@@ -458,6 +461,8 @@ namespace Vans::EditorAPI
 		Particle,
 		AnimationClip,
 		AnimatorController,
+		BoneMask,
+		Timeline,
 		ClothProfile,
 		PostProcessProfile,
 		RagdollProfile,
@@ -497,6 +502,30 @@ namespace Vans::EditorAPI
 		std::string rootLabel;
 	};
 
+	enum class ProjectAssetCreationKind
+	{
+		Timeline,
+		AnimatorController,
+		BoneMask,
+		AudioReverbPreset,
+		AudioBusSnapshot,
+		AudioDuckingRules
+	};
+
+	struct ProjectAssetCreateRequest
+	{
+		std::string directoryPath;
+		ProjectAssetCreationKind kind = ProjectAssetCreationKind::Timeline;
+		std::string name;
+	};
+
+	struct ProjectAssetCreateResult
+	{
+		bool success = false;
+		std::string message;
+		std::string assetPath;
+	};
+
 	struct AssetDragPayload
 	{
 		bool available = false;
@@ -513,6 +542,25 @@ namespace Vans::EditorAPI
 		AssetEntry asset;
 		std::string sourcePath;
 	};
+
+	struct TimelineAudioWaveformSnapshot
+	{
+		double durationSeconds = 0.0;
+		std::vector<float> minima;
+		std::vector<float> maxima;
+	};
+
+	using TimelineAudioWaveformHandle = std::shared_ptr<const TimelineAudioWaveformSnapshot>;
+
+	struct TimelineVideoThumbnailSnapshot
+	{
+		int width = 0;
+		int height = 0;
+		double durationSeconds = 0.0;
+		std::vector<std::uint8_t> rgba;
+	};
+
+	using TimelineVideoThumbnailHandle = std::shared_ptr<const TimelineVideoThumbnailSnapshot>;
 
 	struct AssetRefreshResult
 	{
@@ -871,7 +919,7 @@ namespace Vans::EditorAPI
 		Vec3 volumeMin;
 		Vec3 volumeMax;
 		Vec3 gridDimensions;
-		Vec3 probeSpacingAxes;
+		float probeSpacing = 0.5f;
 		float normalBias = 0.0f;
 		float maxRayDistance = 0.0f;
 		float volumeFadeDistance = 0.0f;
@@ -887,24 +935,19 @@ namespace Vans::EditorAPI
 	struct GIInspectorSettingsSnapshot
 	{
 		bool available = false;
-		Vec3 regionCenter = { 0.0f, 6.0f, 0.0f };
-		Vec3 volumeMin;
-		Vec3 volumeMax;
-		Vec3 gridDimensions;
-		Vec3 probeSpacingAxes;
-		float normalBias = 0.0f;
-		float maxRayDistance = 0.0f;
-		float volumeFadeDistance = 0.0f;
-		std::uint32_t raysPerProbe = 0;
-		std::uint32_t spatialUpdateDivisor = 1;
-		std::uint32_t directionUpdateSlices = 1;
 		float environmentIntensity = 0.0f;
 		float maxIndirectRadiance = 0.0f;
-		float maxSHL0 = 0.0f;
+		float maxProbeRadiance = 0.0f;
+		float irradianceHysteresis = 0.97f;
+		float distanceHysteresis = 0.95f;
+		float distanceSharpness = 12.0f;
+		float brightnessChangeThreshold = 2.0f;
 		bool showProbeGizmos = false;
 		bool showProbeVolume = false;
 		int debugView = 0;
 		float debugExposure = 1.0f;
+		bool probeOnlyDeferredOutput = false;
+		float probeOnlyDeferredExposure = 1.0f;
 		std::uint32_t gizmoStride = 8;
 		std::uint32_t totalProbeCount = 0;
 		std::uint64_t totalRayCacheEntries = 0;
@@ -1246,6 +1289,13 @@ namespace Vans::EditorAPI
 		std::vector<MotionMatchingDebugVisual> visuals;
 	};
 
+	struct AnimationAssetBindingSnapshot
+	{
+		bool available = false;
+		std::string animatorAssetPath;
+		std::string runtimeNodeName;
+	};
+
 	struct SkeletonDebugBoneSnapshot
 	{
 		std::string name;
@@ -1272,6 +1322,226 @@ namespace Vans::EditorAPI
 	{
 		bool available = false;
 		std::vector<SkeletonDebugRigSnapshot> rigs;
+	};
+
+	// Read-only bind-pose data for isolated animation authoring previews.  The
+	// editor never receives a RenderCore or runtime Skeleton pointer.
+	struct AssetSkeletonBoneSnapshot
+	{
+		std::string name;
+		int parentIndex = -1;
+		Vec3 bindPosition;
+	};
+
+	struct AssetSkeletonSnapshot
+	{
+		bool available = false;
+		std::string assetGuid;
+		std::string sourcePath;
+		std::string error;
+		std::vector<AssetSkeletonBoneSnapshot> bones;
+	};
+
+	using AnimationPreviewSessionId = std::uint64_t;
+
+	struct AnimationPreviewCreateRequest
+	{
+		std::string previewModelGuid;
+	};
+
+	struct AnimationPreviewCreateResult
+	{
+		bool success = false;
+		AnimationPreviewSessionId sessionId = 0;
+		std::string message;
+	};
+
+	// Immutable current authoring snapshot. canonicalJson is produced by the
+	// strict VansAnimatorIO codec; the API never rereads the source file.
+	struct AnimationPreviewDefinitionUpdate
+	{
+		AnimationPreviewSessionId sessionId = 0;
+		std::uint64_t revision = 0;
+		std::string canonicalJson;
+	};
+
+	struct AnimationPreviewUpdateResult
+	{
+		bool success = false;
+		std::uint64_t acceptedRevision = 0;
+		std::uint64_t displayedRevision = 0;
+		bool usingLastGoodDefinition = false;
+		std::string message;
+	};
+
+	enum class TimelinePreviewState { Detached, Stopped, Playing, Paused, Completed, Error };
+
+	struct TimelinePreviewStartRequest
+	{
+		std::string previewId;
+		std::string canonicalJson;
+		std::string sourceAssetPath;
+		std::string ownerEntityGuid;
+		bool safeEvents = false;
+		bool includeSubTimelines = false;
+	};
+
+	struct TimelinePreviewPlaybackRequest
+	{
+		std::string previewId;
+		double playRate = 1.0;
+		int direction = 1;
+		bool loopPlaybackRange = false;
+	};
+
+	struct TimelinePreviewResult
+	{
+		bool success = false;
+		TimelinePreviewState state = TimelinePreviewState::Detached;
+		std::int64_t currentTick = 0;
+		std::string message;
+		std::string ownerEntityGuid;
+	};
+
+	struct AnimationPreviewPlaybackRequest
+	{
+		AnimationPreviewSessionId sessionId = 0;
+		bool playing = true;
+		float speed = 1.0f;
+		bool seek = false;
+		float normalizedTime = 0.0f;
+		enum class RootMotionMode { InPlace, ApplyToActor, TrailOnly };
+		RootMotionMode rootMotionMode = RootMotionMode::InPlace;
+	};
+
+	enum class AnimationPreviewParameterType { Float, Bool, Int, Trigger, Vector3, Quaternion };
+	struct AnimationPreviewParameterValue
+	{
+		AnimationPreviewSessionId sessionId = 0;
+		std::string name;
+		AnimationPreviewParameterType type = AnimationPreviewParameterType::Float;
+		float floatValue = 0.0f;
+		bool boolValue = false;
+		int intValue = 0;
+		Vec3 vectorValue;
+		Vec4 quaternionValue = { 0.0f, 0.0f, 0.0f, 1.0f };
+	};
+
+	struct AnimationPreviewSlotRequest
+	{
+		AnimationPreviewSessionId sessionId = 0;
+		std::string slotId;
+		std::string clipName;
+		float playRate = 1.0f;
+		int loopCount = 1;
+		int priority = 0;
+	};
+
+	struct AnimationPreviewViewportRequest
+	{
+		AnimationPreviewSessionId sessionId = 0;
+		float yaw = 0.0f;
+		float pitch = 0.0f;
+		float zoom = 1.0f;
+		// -1 visualizes the final dominant layer source. A non-negative value
+		// visualizes the selected layer's effective per-bone mask/weight.
+		int visualizedLayerIndex = -1;
+	};
+
+	struct AnimationPreviewLayerSnapshot
+	{
+		std::string id;
+		std::string name;
+		std::string state;
+		std::string clip;
+		float weight = 0.0f;
+		float normalizedTime = 0.0f;
+		bool enabled = false;
+		bool overlay = false;
+		bool additive = false;
+		float evaluationMilliseconds = 0.0f;
+		std::vector<float> boneWeights;
+	};
+
+	struct AnimationPreviewBoneSnapshot
+	{
+		std::string name;
+		int parentIndex = -1;
+		Vec3 position;
+		int dominantLayerIndex = 0;
+		float dominantLayerWeight = 0.0f;
+	};
+
+	struct AnimationPreviewEventSnapshot
+	{
+		std::string name;
+		float time = 0.0f;
+		std::string payload;
+	};
+
+	struct AnimationPreviewCurveSnapshot
+	{
+		std::string name;
+		float value = 0.0f;
+	};
+
+	struct AnimationPreviewSlotSnapshot
+	{
+		std::uint64_t handle = 0;
+		std::string slotId;
+		std::string clipName;
+		std::string tag;
+		std::string state;
+		float playbackTime = 0.0f;
+		float weight = 0.0f;
+	};
+
+	struct AnimationPreviewSlotEventSnapshot
+	{
+		std::uint64_t handle = 0;
+		std::string slotId;
+		std::string clipName;
+		std::string type;
+	};
+
+	struct AnimationPreviewSnapshot
+	{
+		bool available = false;
+		bool compiled = false;
+		bool playing = false;
+		bool usingLastGoodDefinition = false;
+		std::uint64_t requestedRevision = 0;
+		std::uint64_t displayedRevision = 0;
+		float currentTime = 0.0f;
+		float duration = 0.0f;
+		float normalizedTime = 0.0f;
+		float speed = 1.0f;
+		float lastUpdateMilliseconds = 0.0f;
+		std::uint64_t frameScratchAllocations = 0;
+		std::uint64_t frameScratchAllocatedBytes = 0;
+		EditorTextureHandle modelTexture = nullptr;
+		bool modelRendered = false;
+		std::uint32_t modelTextureWidth = 0;
+		std::uint32_t modelTextureHeight = 0;
+		Vec3 modelCenter;
+		float modelRadius = 1.0f;
+		std::uint64_t modelVertexCount = 0;
+		std::uint64_t modelTriangleCount = 0;
+		float modelRenderMilliseconds = 0.0f;
+		Vec3 rootMotionDelta;
+		Vec3 rootMotionPosition;
+		bool syncValid = false;
+		std::uint64_t syncMarkerId = 0;
+		std::uint64_t syncNextMarkerId = 0;
+		float syncPhase = 0.0f;
+		std::string diagnostic;
+		std::vector<Vec3> rootMotionTrail;
+		std::vector<AnimationPreviewBoneSnapshot> bones;
+		std::vector<AnimationPreviewLayerSnapshot> layers;
+		std::vector<AnimationPreviewEventSnapshot> events;
+		std::vector<AnimationPreviewCurveSnapshot> curves;
+		std::vector<AnimationPreviewSlotSnapshot> slots;
+		std::vector<AnimationPreviewSlotEventSnapshot> slotEvents;
 	};
 
 	struct FootIKDebugSampleSnapshot

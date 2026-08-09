@@ -22,6 +22,10 @@ namespace VansGraphics
 		p.m_HueShift             = m_HueShift;
 		p.m_Temperature          = m_Temperature;
 		p.m_Tint                 = m_Tint;
+		p.m_TimelineFadeColorR   = m_TimelineFadeColorR;
+		p.m_TimelineFadeColorG   = m_TimelineFadeColorG;
+		p.m_TimelineFadeColorB   = m_TimelineFadeColorB;
+		p.m_TimelineFadeOpacity  = m_TimelineFadeOpacity;
 		return p;
 	}
 

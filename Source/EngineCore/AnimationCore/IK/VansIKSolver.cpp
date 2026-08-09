@@ -1,4 +1,5 @@
 #include "VansIKSolver.h"
+#include "../VansAnimationFrameMemory.h"
 
 #define GLM_ENABLE_EXPERIMENTAL
 #include <../../GLM/gtx/quaternion.hpp>
@@ -107,13 +108,14 @@ namespace VansGraphics
 		return result;
 	}
 
-	static int ResolveReferenceBone(int index, const std::string& name, const Skeleton& skeleton)
+	static int ResolveReferenceBone(int index, std::string_view name, const Skeleton& skeleton)
 	{
 		if (index >= 0 && index < static_cast<int>(skeleton.bones.size())) return index;
 		if (!name.empty())
 		{
-			auto it = skeleton.boneNameToIndex.find(name);
-			if (it != skeleton.boneNameToIndex.end()) return it->second;
+			for (std::size_t boneIndex = 0; boneIndex < skeleton.bones.size(); ++boneIndex)
+				if (skeleton.bones[boneIndex].name == name)
+					return static_cast<int>(boneIndex);
 		}
 		return -1;
 	}
@@ -122,7 +124,7 @@ namespace VansGraphics
 		const glm::vec3& point,
 		IKCoordinateSpace space,
 		int referenceBoneIndex,
-		const std::string& referenceBoneName,
+		std::string_view referenceBoneName,
 		const IKSolveContext& context,
 		const std::vector<glm::mat4>& modelTransforms,
 		const Skeleton& skeleton)
@@ -168,7 +170,7 @@ namespace VansGraphics
 		result.positionSpace = IKCoordinateSpace::Model;
 		result.rotationSpace = IKCoordinateSpace::Model;
 		result.referenceBoneIndex = -1;
-		result.referenceBoneName.clear();
+		result.referenceBoneName = {};
 		return result;
 	}
 
@@ -261,15 +263,21 @@ namespace VansGraphics
 			return;
 		if (skeleton.topologicalOrder.empty())
 		{
-			auto rebuilt = IK_BuildModelSpaceTransforms(skeleton, localTransforms);
-			if (!rebuilt.empty()) globalTransforms = std::move(rebuilt);
+			for (std::size_t boneIndex = 0; boneIndex < skeleton.bones.size(); ++boneIndex)
+			{
+				const int parentIndex = skeleton.bones[boneIndex].parentIndex;
+				globalTransforms[boneIndex] = parentIndex >= 0
+					&& parentIndex < static_cast<int>(globalTransforms.size())
+					? globalTransforms[static_cast<std::size_t>(parentIndex)] * localTransforms[boneIndex]
+					: localTransforms[boneIndex];
+			}
 			return;
 		}
 
 		// 按拓扑序遍历所有骨骼，仅更新 root 子树
 		// 用一个标记数组避免反复检查父链
 		const size_t N = skeleton.bones.size();
-		std::vector<char> dirty(N, 0);
+		VansAnimationFrameVector<char> dirty(N, 0);
 		dirty[rootBoneIdx] = 1;
 
 		for (int bi : skeleton.topologicalOrder)

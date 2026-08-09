@@ -102,6 +102,8 @@ VansSceneCameraMediaBuildResult VansSceneCameraMediaComponentBuilder::BuildCamer
 
 		VansVideoManager* videoManager = scene.GetVideoManager();
 		VansVideoTexture* videoTex = videoManager ? videoManager->Get(videoName) : nullptr;
+		if (!videoTex && videoManager)
+			videoTex = videoManager->GetByAssetGuid(videoName);
 		if (videoTex)
 		{
 			auto* videoComp = new VansScriptVideoComponent();

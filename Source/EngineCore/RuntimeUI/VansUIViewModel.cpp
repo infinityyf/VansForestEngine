@@ -43,6 +43,12 @@ namespace VansRuntime
         NotifyPropertyChanged(name);
     }
 
+	void VansUIViewModel::RemoveValue(const std::string& name)
+	{
+		if (m_Values.erase(name) != 0)
+			NotifyPropertyChanged(name);
+	}
+
     bool VansUIViewModel::HasValue(const std::string& name) const
     {
         return m_Values.find(name) != m_Values.end();

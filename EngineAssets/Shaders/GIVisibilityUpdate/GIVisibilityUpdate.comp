@@ -3,100 +3,213 @@
 
 #include "../Common/Common.glsl"
 #include "../GI/GIProbeCommon.glsl"
+#include "../GI/GIProbeUpdateCommon.glsl"
 
-layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
-
-layout(set = 0, binding = 0, std430) buffer hitPositionBuffer
+// One workgroup owns one active probe tile.  Distance uses a 14x14 interior
+// plus 1 texel octahedral border (16x16); irradiance remains 6+border (8x8).
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+layout(set = 0, binding = 0, std430) buffer hitPositionBuffer { f16vec4 hitPosition[]; } hitPositionInfoBuffer;
+layout(set = 0, binding = 1, rg16f) uniform image2D visibilityAtlas;
+layout(set = 0, binding = 2, std430) buffer rayRadianceBuffer { f16vec4 radiance[]; } rayRadiance;
+layout(set = 0, binding = 3, rgba16f) uniform image2D irradianceAtlas;
+struct GIProbeState
 {
-    f16vec4 hitPosition[];
-} hitPositionInfoBuffer;
-
-layout(set = 0, binding = 1, rgba32f) uniform image2D visibilityAtlas;
+    vec4 relocationAndConfidence;
+    vec4 distanceStats;
+    uvec4 metadata;
+};
+layout(set = 0, binding = 4, std430) readonly buffer ProbeStateBuffer { GIProbeState states[]; } probeStates;
 
 layout(push_constant) uniform PushConstants
 {
-    vec4 gridParams;     // xyz = probe spacing, w = max ray distance
-    vec4 dispatchParams; // xyz = probe counts, w = rays per probe
-    vec4 frameParams;    // x = frame index, y = spatial update divisor, z = direction update slices
-    vec4 regionParams;   // xyz = volume center, w = normal bias
-    vec4 lightingParams; // x = sky intensity, y = max indirect radiance, z = max SH L0
+    vec4 gridParams;
+    vec4 dispatchParams;
+    vec4 frameParams;
+    vec4 regionParams;
+    vec4 lightingParams;
+    vec4 temporalParams;
 } pushConstants;
 
 void main()
 {
-    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec3 probeCounts = ivec3(pushConstants.dispatchParams.xyz);
+    uint spatialDivisor = max(uint(pushConstants.frameParams.y), 1u);
+    uint directionSlices = max(uint(pushConstants.frameParams.z), 1u);
+	uint directionSlice = GI_UpdateDirectionSlice(uint(pushConstants.frameParams.x),
+		uvec3(probeCounts), spatialDivisor, directionSlices);
+    uint raysPerSlice = uint((int(pushConstants.dispatchParams.w) + int(directionSlices) - 1) / int(directionSlices));
+    ivec3 activeProbe = ivec3(gl_WorkGroupID);
+    ivec3 probeIndex = activeProbe * ivec3(GI_UpdateSpatialDivisors(uvec3(probeCounts), spatialDivisor)) +
+        ivec3(GI_UpdateSpatialOffset(uint(pushConstants.frameParams.x), uvec3(probeCounts), spatialDivisor));
+    if (any(greaterThanEqual(probeIndex, probeCounts)))
+        return;
+
     ivec2 atlasSize = imageSize(visibilityAtlas);
-    if (pixel.x >= atlasSize.x || pixel.y >= atlasSize.y)
-        return;
-
-    ivec3 probeCount = ivec3(pushConstants.dispatchParams.xyz);
-    int sampleCount = max(int(pushConstants.dispatchParams.w), 1);
-    vec3 probeSpacing = pushConstants.gridParams.xyz;
-    float maxRayDistance = pushConstants.gridParams.w;
-    vec3 volumeSize = vec3(probeCount) * probeSpacing;
-    vec3 volumeMin = pushConstants.regionParams.xyz - volumeSize * 0.5;
-
-    ivec2 tileCoord = ivec2(
-        pixel.x % GI_VISIBILITY_OCTA_RES,
-        pixel.y % GI_VISIBILITY_OCTA_RES);
-    ivec2 tileIndex = ivec2(
-        pixel.x / GI_VISIBILITY_OCTA_RES,
-        pixel.y / GI_VISIBILITY_OCTA_RES);
-
-    int totalProbeCount = probeCount.x * probeCount.y * probeCount.z;
     int probesPerRow = max(atlasSize.x / GI_VISIBILITY_OCTA_RES, 1);
-    int probeLinearIndex = tileIndex.y * probesPerRow + tileIndex.x;
-    if (probeLinearIndex >= totalProbeCount)
-    {
-        imageStore(visibilityAtlas, pixel, vec4(maxRayDistance, maxRayDistance * maxRayDistance, 0.0, 0.0));
-        return;
-    }
+    uint probeLinear = GI_ProbeLinearIndex(probeIndex, probeCounts);
+    GIProbeState probeState = probeStates.states[probeLinear];
+    ivec2 tileBase = ivec2(int(probeLinear % uint(probesPerRow)), int(probeLinear / uint(probesPerRow))) * GI_VISIBILITY_OCTA_RES;
+    ivec2 localDistanceTexel = ivec2(gl_LocalInvocationID.xy);
+    ivec2 pixel = tileBase + localDistanceTexel;
+    ivec2 distanceInteriorTexel = clamp(localDistanceTexel - ivec2(GI_ATLAS_BORDER),
+        ivec2(0), ivec2(GI_VISIBILITY_INTERIOR_RES - 1));
+    vec2 distanceOctaUV = (vec2(distanceInteriorTexel) + 0.5) /
+        float(GI_VISIBILITY_INTERIOR_RES);
+    vec3 atlasDirection = GI_OctahedralDecode(distanceOctaUV);
+	const bool writesIrradiance = all(lessThan(localDistanceTexel, ivec2(GI_IRRADIANCE_OCTA_RES)));
+	// The irradiance tile has a different resolution from the distance tile.
+	// Its octahedral direction must therefore be evaluated independently;
+	// reusing atlasDirection here aliases only the first 8x8 distance directions
+	// into the complete irradiance map and shows up as stationary wall blocks.
+	vec3 irradianceDirection = vec3(0.0, 1.0, 0.0);
+	if (writesIrradiance)
+	{
+		ivec2 irradianceInteriorTexel = clamp(localDistanceTexel - ivec2(GI_ATLAS_BORDER),
+			ivec2(0), ivec2(GI_IRRADIANCE_INTERIOR_RES - 1));
+		vec2 irradianceOctaUV = (vec2(irradianceInteriorTexel) + 0.5) /
+			float(GI_IRRADIANCE_INTERIOR_RES);
+		irradianceDirection = GI_OctahedralDecode(irradianceOctaUV);
+	}
 
-    ivec3 probeIndex = ivec3(
-        probeLinearIndex % probeCount.x,
-        (probeLinearIndex / probeCount.x) % probeCount.y,
-        probeLinearIndex / (probeCount.x * probeCount.y));
-
-    vec2 octUV = (vec2(tileCoord) + 0.5) / float(GI_VISIBILITY_OCTA_RES);
-    vec3 atlasDirection = GI_OctahedralDecode(octUV);
-    vec3 probeWorld = volumeMin + (vec3(probeIndex) + 0.5) * probeSpacing;
-
-    int bufferOffset = probeLinearIndex * sampleCount;
-
+    uvec3 activeDimensions = GI_UpdateDispatchDimensions(uvec3(probeCounts), spatialDivisor,
+        uint(pushConstants.frameParams.x));
+    uint activeLinear = uint(activeProbe.z) * activeDimensions.x * activeDimensions.y +
+        uint(activeProbe.y) * activeDimensions.x + uint(activeProbe.x);
+    uint bufferOffset = activeLinear * raysPerSlice;
+    vec3 volumeMin = pushConstants.regionParams.xyz - vec3(probeCounts) * pushConstants.gridParams.xyz * 0.5;
+    vec3 probeWorld = volumeMin + (vec3(probeIndex) + 0.5) * pushConstants.gridParams.xyz +
+        probeState.relocationAndConfidence.xyz;
+    float maxRayDistance = pushConstants.gridParams.w;
     float weightSum = 0.0;
     float moment1 = 0.0;
     float moment2 = 0.0;
     float hitWeight = 0.0;
-
-    for (int rayIndex = 0; rayIndex < sampleCount; ++rayIndex)
+    vec3 irradianceSum = vec3(0.0);
+    float irradianceWeight = 0.0;
+	uint dynamicSamplesThisUpdate = 0u;
+    for (uint localRay = 0u; localRay < raysPerSlice; ++localRay)
     {
-        vec3 rayDirection = SampleSphere(rayIndex, sampleCount);
-        float angularWeight = pow(max(dot(atlasDirection, rayDirection), 0.0), 24.0);
-        if (angularWeight <= 1e-5)
-            continue;
+        bool fixedClassificationRay;
+        vec3 rayDirection = GI_ProbeRayDirection(
+            probeIndex, probeCounts, uint(pushConstants.dispatchParams.w), localRay, raysPerSlice,
+			directionSlice,
+            directionSlices,
+            GI_UpdateCycleIndex(uint(pushConstants.frameParams.x), uvec3(probeCounts), spatialDivisor, directionSlices),
+            fixedClassificationRay);
+        vec4 hitPosition = vec4(hitPositionInfoBuffer.hitPosition[bufferOffset + localRay]);
 
-        vec4 hitPos = vec4(hitPositionInfoBuffer.hitPosition[bufferOffset + rayIndex]);
-        float distance = maxRayDistance;
-        if (hitPos.w > 0.5)
+        // Irradiance and distance atlas texels represent different octahedral
+        // directions.  The distance lobe filter below must never cull samples
+        // from the irradiance estimator: doing so made every 8x8 irradiance
+        // texel inherit the unrelated 16x16 distance direction and caused the
+        // broad, phase-dependent light bands visible on walls.
+        if (!fixedClassificationRay)
         {
-            distance = clamp(length(hitPos.xyz - probeWorld), 0.0, maxRayDistance);
-            hitWeight += angularWeight;
+            dynamicSamplesThisUpdate += 1u;
+            if (writesIrradiance)
+            {
+                float cosineWeight = max(dot(irradianceDirection, rayDirection), 0.0);
+                irradianceSum += vec3(rayRadiance.radiance[bufferOffset + localRay]) * cosineWeight;
+                irradianceWeight += cosineWeight;
+            }
         }
 
+        float angularWeight = pow(max(dot(atlasDirection, rayDirection), 0.0),
+            clamp(pushConstants.temporalParams.z, 8.0, 16.0));
+        if (angularWeight <= 1e-5)
+            continue;
+        float distance = hitPosition.w > 0.5 ?
+            clamp(length(hitPosition.xyz - probeWorld), 0.0, maxRayDistance) : maxRayDistance;
         weightSum += angularWeight;
         moment1 += distance * angularWeight;
         moment2 += distance * distance * angularWeight;
+        hitWeight += (hitPosition.w > 0.5 ? angularWeight : 0.0);
     }
 
-    if (weightSum <= 1e-5)
-    {
-        imageStore(visibilityAtlas, pixel, vec4(maxRayDistance, maxRayDistance * maxRayDistance, 0.0, 0.0));
+    vec2 target = weightSum > 1e-5 ? vec2(moment1 / weightSum, moment2 / weightSum) :
+        vec2(maxRayDistance, maxRayDistance * maxRayDistance);
+    vec4 previous = imageLoad(visibilityAtlas, pixel);
+    const uint priorUpdateCount = probeState.metadata.z;
+    const bool historyValid = priorUpdateCount >= directionSlices;
+    const uint warmupUpdateLimit = directionSlices * 4u;
+    const bool warmupHistory = historyValid && priorUpdateCount < warmupUpdateLimit;
+    // During the first complete direction cycle, build an unbiased running
+    // mean across its sixteen sparse direction slices.  Full replacement
+    // before historyValid made the atlas contain only the most recent slice,
+    // so a probe visibly flashed every time its scheduled phase advanced.
+    const float initializationBlend = 1.0 / float(min(priorUpdateCount + 1u, directionSlices));
+    // After the first cycle, each dispatch still contains only one direction
+    // slice.  Scale the EMA alpha by the slice count so a single phase cannot
+    // imprint visible bands into the published atlas.
+    const float distanceBlend = historyValid
+        ? (warmupHistory
+            ? 1.0 / float(priorUpdateCount + 1u)
+            : (1.0 - clamp(pushConstants.temporalParams.y, 0.0, 0.999)) /
+            float(max(directionSlices, 1u))
+        )
+        : initializationBlend;
+    imageStore(visibilityAtlas, pixel, vec4(mix(previous.rg, target, distanceBlend), 0.0, 0.0));
+
+    // Only the upper-left 8x8 threads write the smaller irradiance tiles.
+    if (!writesIrradiance)
         return;
-    }
-
-    moment1 /= weightSum;
-    moment2 /= weightSum;
-
-    // b 记录 hit confidence，debug 时可判断该方向是否主要由 miss ray 支撑。
-    imageStore(visibilityAtlas, pixel, vec4(moment1, moment2, hitWeight / weightSum, 1.0));
+    ivec2 irradianceAtlasSize = imageSize(irradianceAtlas);
+    int irradianceProbesPerRow = max(irradianceAtlasSize.x / GI_IRRADIANCE_OCTA_RES, 1);
+    ivec2 irradianceTileBase = ivec2(int(probeLinear % uint(irradianceProbesPerRow)),
+        int(probeLinear / uint(irradianceProbesPerRow))) * GI_IRRADIANCE_OCTA_RES;
+    ivec2 irradiancePixel = irradianceTileBase + localDistanceTexel;
+    vec4 previousIrradiance = imageLoad(irradianceAtlas, irradiancePixel);
+    // Dynamic directions are uniform over the sphere.  This dispatch owns a
+    // single direction slice (14 dynamic rays with the default 256/16
+    // schedule), so its estimator must divide by this slice's sample count.
+    // Dividing by all 224 dynamic rays reduced every target by 16x before the
+    // temporal accumulation could converge.
+    const bool hasIrradianceSupport = irradianceWeight > 1e-5;
+    vec3 targetIrradiance = hasIrradianceSupport
+        ? irradianceSum * (4.0 * PI / float(max(dynamicSamplesThisUpdate, 1u)))
+        : previousIrradiance.rgb;
+    // A direction slice is only a stratified fraction of the probe estimator.
+    // During initialization, each irradiance texel also has its own support:
+    // some octa directions receive no cosine-weighted rays in a given slice.
+    // Averaging by the probe's global update count made a texel's first real
+    // sample land with a tiny 1/N weight, leaving trusted black bands in the
+    // atlas.  Before history is valid, alpha temporarily stores per-texel
+    // support count / directionSlices; after one full cycle it becomes the
+    // published probe confidence again.
+    const bool lightingReset = pushConstants.temporalParams.x < 0.0;
+    const bool hasCompleteDirectionalEstimate = lightingReset
+        ? directionSlice + 1u >= directionSlices
+        : priorUpdateCount + 1u >= directionSlices;
+    float probeConfidence = probeState.metadata.x == 1u && hasCompleteDirectionalEstimate ? 1.0 : 0.0;
+    float previousSupportCount = lightingReset && directionSlice == 0u
+        ? 0.0
+        : clamp(round(previousIrradiance.a * float(directionSlices)),
+            0.0, float(directionSlices));
+    float nextSupportCount = (historyValid && !lightingReset)
+        ? float(directionSlices)
+        : previousSupportCount + (hasIrradianceSupport ? 1.0 : 0.0);
+    nextSupportCount = clamp(nextSupportCount, 0.0, float(directionSlices));
+    float irradianceInitializationBlend = hasIrradianceSupport
+        ? 1.0 / max(nextSupportCount, 1.0)
+        : 0.0;
+    float irradianceBlend = historyValid && !lightingReset
+        ? (warmupHistory
+            ? 1.0 / float(priorUpdateCount + 1u)
+            : (1.0 - clamp(pushConstants.temporalParams.x, 0.0, 0.999)) /
+            float(max(directionSlices, 1u))
+        )
+        : irradianceInitializationBlend;
+    vec3 brightLimitedTarget = historyValid && !lightingReset
+        ? (warmupHistory
+            ? targetIrradiance
+            : min(targetIrradiance,
+            previousIrradiance.rgb + vec3(max(pushConstants.temporalParams.w, 0.001) * PI))
+        )
+        : targetIrradiance;
+    float initializationConfidence = nextSupportCount / float(max(directionSlices, 1u));
+    float publishedConfidence = hasCompleteDirectionalEstimate
+        ? probeConfidence
+        : initializationConfidence;
+	imageStore(irradianceAtlas, irradiancePixel, vec4(mix(previousIrradiance.rgb,
+        brightLimitedTarget, hasIrradianceSupport ? irradianceBlend : 0.0), publishedConfidence));
 }

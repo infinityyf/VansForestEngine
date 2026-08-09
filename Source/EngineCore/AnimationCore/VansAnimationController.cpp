@@ -1,5 +1,7 @@
 #include "VansAnimationController.h"
 #include "VansAnimGraph.h"
+#include "VansAnimationSampler.h"
+#include "VansPoseMath.h"
 #include "MotionMatching/VansMotionMatching.h"
 #include "FootPlacement/VansFootPlacementSolver.h"
 #include "../Util/VansLog.h"
@@ -12,10 +14,67 @@
 #include <../../GLM/gtx/matrix_decompose.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <cmath>
+#include <unordered_set>
 
 using namespace VansGraphics;
+
+namespace
+{
+	std::uint64_t ResolveMarkerId(const AnimationSyncMarker& marker)
+	{
+		return marker.id != 0 ? marker.id : VansAnimationStableId(marker.name);
+	}
+
+	bool ResolveMarkerSyncedTime(const VansAnimationSyncState& leaderSync,
+	                           float leaderRawTime,
+	                           float leaderDuration,
+	                           const VansAnimationClip& followerClip,
+	                           float& outTime)
+	{
+		if (!leaderSync.valid || leaderSync.markerId == 0 || leaderSync.nextMarkerId == 0
+			|| leaderDuration <= 0.0f || followerClip.duration <= 0.0f)
+			return false;
+		const AnimationSyncMarker* previous = nullptr;
+		const AnimationSyncMarker* next = nullptr;
+		for (const AnimationSyncMarker& marker : followerClip.syncMarkers)
+		{
+			const std::uint64_t id = ResolveMarkerId(marker);
+			if (id == leaderSync.markerId) previous = &marker;
+			if (id == leaderSync.nextMarkerId) next = &marker;
+		}
+		if (!previous || !next)
+			return false;
+		float previousTime = previous->time;
+		float nextTime = next->time;
+		if (nextTime <= previousTime)
+			nextTime += followerClip.duration;
+		float localTime = previousTime + std::clamp(leaderSync.phase, 0.0f, 1.0f)
+			* (nextTime - previousTime);
+		const float cycle = std::floor(leaderRawTime / leaderDuration);
+		if (localTime >= followerClip.duration)
+			localTime -= followerClip.duration;
+		outTime = cycle * followerClip.duration + localTime;
+		return true;
+	}
+
+	const AnimGraphStateMachineNode* FindPrimaryStateMachine(const VansAnimGraph& graph)
+	{
+		std::vector<int> executionPlan;
+		std::string error;
+		if (!graph.BuildExecutionPlan(executionPlan, error))
+			return nullptr;
+		for (int nodeId : executionPlan)
+		{
+			const VansAnimGraphNode* node = graph.GetNode(nodeId);
+			if (node && node->GetType() == AnimGraphNodeType::StateMachine)
+				return static_cast<const AnimGraphStateMachineNode*>(node);
+		}
+		return nullptr;
+	}
+}
 
 // ---------------------------------------------------------------------------
 //  Construction & Destruction
@@ -32,10 +91,353 @@ VansAnimationController::~VansAnimationController()
 {
 }
 
-void VansAnimationController::SetGraph(std::unique_ptr<VansAnimGraph> graph)
+bool VansAnimationController::SetLayerStack(
+	std::vector<VansAnimationLayerGraphSetup> layers,
+	std::string& error)
 {
-	m_Graph = std::move(graph);
-	EnsureMotionMatchingGraphNode();
+	error.clear();
+	if (layers.empty())
+	{
+		error = "Animator requires one Base layer";
+		return false;
+	}
+	std::unordered_set<std::string> layerIds;
+	int baseCount = 0;
+	for (size_t index = 0; index < layers.size(); ++index)
+	{
+		const VansAnimationLayerGraphSetup& layer = layers[index];
+		if (layer.definition.id.empty() || layer.definition.name.empty()
+		    || layer.definition.graphId.empty() || !layer.graph)
+		{
+			error = "Animation layers require non-empty IDs, names and graph bindings";
+			return false;
+		}
+		if (!layerIds.insert(layer.definition.id).second)
+		{
+			error = "Animation layer IDs must be unique";
+			return false;
+		}
+		if (layer.definition.kind == VansAnimationLayerKind::Base)
+		{
+			++baseCount;
+			if (index != 0)
+			{
+				error = "The Base animation layer must be at index zero";
+				return false;
+			}
+		}
+		else if (!layer.mask)
+		{
+			error = "Overlay animation layer '" + layer.definition.name + "' is missing its Bone Mask asset";
+			return false;
+		}
+		VansAnimGraphInstance validation(*layer.graph);
+		if (!validation.IsCompiled())
+		{
+			error = "Animation layer graph '" + layer.definition.graphId
+				+ "' failed compilation: " + validation.GetCompileError();
+			return false;
+		}
+	}
+	if (baseCount != 1)
+	{
+		error = "Animator must contain exactly one Base layer";
+		return false;
+	}
+	for (size_t index = 0; index < layers.size(); ++index)
+	{
+		const VansAnimationLayerDefinition& definition = layers[index].definition;
+		if (definition.sync == VansLayerSyncMode::Independent)
+			continue;
+		bool foundEarlierLeader = false;
+		size_t leaderIndex = 0;
+		for (size_t leader = 0; leader < index; ++leader)
+			if (layers[leader].definition.id == definition.syncLeaderLayerId)
+			{
+				foundEarlierLeader = true;
+				leaderIndex = leader;
+				break;
+			}
+		if (!foundEarlierLeader)
+		{
+			error = "Synced Layer '" + definition.name + "' requires an earlier leader Layer";
+			return false;
+		}
+		if (definition.sync == VansLayerSyncMode::SyncedGraph)
+		{
+			const AnimGraphStateMachineNode* leaderStateMachine =
+				FindPrimaryStateMachine(*layers[leaderIndex].graph);
+			const AnimGraphStateMachineNode* followerStateMachine =
+				FindPrimaryStateMachine(*layers[index].graph);
+			if (!leaderStateMachine || !followerStateMachine)
+			{
+				error = "Synced Graph Layer '" + definition.name
+					+ "' requires primary State Machine nodes on both Layers";
+				return false;
+			}
+			std::unordered_set<std::string> leaderStates;
+			std::unordered_set<std::string> followerStates;
+			for (const AnimatorState& state : leaderStateMachine->m_States)
+				leaderStates.insert(state.name);
+			for (const AnimatorState& state : followerStateMachine->m_States)
+				followerStates.insert(state.name);
+			if (leaderStates != followerStates)
+			{
+				error = "Synced Graph Layer '" + definition.name
+					+ "' must expose the same logical State names as its leader";
+				return false;
+			}
+		}
+	}
+
+	std::vector<LayerRuntime> runtimes;
+	runtimes.reserve(layers.size());
+	for (VansAnimationLayerGraphSetup& setup : layers)
+	{
+		LayerRuntime runtime;
+		runtime.definition = std::move(setup.definition);
+		runtime.graph = std::move(setup.graph);
+		runtime.instance = std::make_unique<VansAnimGraphInstance>(*runtime.graph);
+		runtime.maskAsset = std::move(setup.mask);
+		runtime.parameterScratch = m_Parameters;
+		runtimes.push_back(std::move(runtime));
+	}
+	for (size_t index = 0; index < runtimes.size(); ++index)
+	{
+		if (runtimes[index].definition.sync == VansLayerSyncMode::Independent)
+			continue;
+		for (size_t leader = 0; leader < index; ++leader)
+		{
+			if (runtimes[leader].definition.id == runtimes[index].definition.syncLeaderLayerId)
+			{
+				runtimes[index].syncLeaderIndex = static_cast<int>(leader);
+				break;
+			}
+		}
+	}
+	m_LayerRuntimes = std::move(runtimes);
+	std::string slotResetError;
+	m_SlotRuntime.Configure({}, slotResetError);
+	m_SlotPayloads.clear();
+	if (m_MotionMatching)
+	{
+		EnsureMotionMatchingGraphNode();
+		RebuildLayerInstances();
+	}
+	return true;
+}
+
+bool VansAnimationController::SetTargetPostProcessGraph(
+	std::unique_ptr<VansAnimGraph> graph,
+	std::string& error)
+{
+	error.clear();
+	if (!graph)
+	{
+		error = "Target Post Process Graph definition is missing";
+		return false;
+	}
+
+	VansAnimGraphInstance validation(*graph);
+	if (!validation.IsCompiled())
+	{
+		error = "Target Post Process Graph failed compilation: " + validation.GetCompileError();
+		return false;
+	}
+
+	std::size_t targetInputCount = 0;
+	bool targetInputReachable = false;
+	for (const auto& [nodeId, node] : graph->GetNodes())
+	{
+		if (!node)
+			continue;
+		if (node->GetType() == AnimGraphNodeType::TargetPoseInput)
+		{
+			++targetInputCount;
+			targetInputReachable = std::find(validation.GetExecutionPlan().begin(),
+				validation.GetExecutionPlan().end(), nodeId) != validation.GetExecutionPlan().end();
+		}
+		switch (node->GetType())
+		{
+		case AnimGraphNodeType::Entry:
+		case AnimGraphNodeType::Clip:
+		case AnimGraphNodeType::SpeedScale:
+		case AnimGraphNodeType::StateMachine:
+		case AnimGraphNodeType::MotionMatching:
+		case AnimGraphNodeType::Slot:
+			error = "Target Post Process Graph cannot contain pose-source or playback nodes";
+			return false;
+		default:
+			break;
+		}
+	}
+	if (targetInputCount != 1 || !targetInputReachable)
+	{
+		error = "Target Post Process Graph requires exactly one reachable Target Pose Input";
+		return false;
+	}
+
+	m_TargetPostProcessGraph = std::move(graph);
+	m_TargetPostProcessInstance = std::make_unique<VansAnimGraphInstance>(*m_TargetPostProcessGraph);
+	return true;
+}
+
+void VansAnimationController::ClearTargetPostProcessGraph()
+{
+	m_TargetPostProcessInstance.reset();
+	m_TargetPostProcessGraph.reset();
+}
+
+bool VansAnimationController::SetSlots(
+	std::vector<VansAnimationSlotDefinition> slots,
+	std::string& error)
+{
+	std::vector<std::string> slotIds;
+	slotIds.reserve(slots.size());
+	std::unordered_set<std::string> layerIds;
+	for (const LayerRuntime& layer : m_LayerRuntimes)
+		layerIds.insert(layer.definition.id);
+	for (const VansAnimationSlotDefinition& slot : slots)
+	{
+		if (layerIds.find(slot.layerId) == layerIds.end())
+		{
+			error = "Slot '" + slot.name + "' references an unknown Layer";
+			return false;
+		}
+		const LayerRuntime* owner = nullptr;
+		for (const LayerRuntime& layer : m_LayerRuntimes)
+			if (layer.definition.id == slot.layerId) { owner = &layer; break; }
+		const VansAnimGraphNode* node = owner ? owner->graph->GetNode(slot.slotNodeId) : nullptr;
+		if (!node || node->GetType() != AnimGraphNodeType::Slot)
+		{
+			error = "Slot '" + slot.name + "' does not bind a Slot node in its Layer Graph";
+			return false;
+		}
+		const auto* slotNode = static_cast<const AnimGraphSlotNode*>(node);
+		if (slotNode->m_SlotId != slot.id)
+		{
+			error = "Slot '" + slot.name + "' ID does not match its bound Graph node";
+			return false;
+		}
+		slotIds.push_back(slot.id);
+	}
+	if (!m_SlotRuntime.Configure(std::move(slots), error))
+		return false;
+	// Slot IDs are definition data. Allocate the lookup nodes at configuration
+	// time so a stable frame only refreshes the existing payload storage.
+	m_SlotPayloads.clear();
+	m_SlotPayloads.reserve(slotIds.size());
+	for (const std::string& slotId : slotIds)
+		m_SlotPayloads.try_emplace(slotId);
+	return true;
+}
+
+bool VansAnimationController::TransferRuntimeStateFrom(
+	const VansAnimationController& previous,
+	const Skeleton& skeleton,
+	std::string& diagnostic)
+{
+	diagnostic.clear();
+	bool fullyCompatible = true;
+
+	// Reapply scene-owned runtime configuration before restoring graph state,
+	// because Motion Matching installation may rebuild Layer instances.
+	if (previous.m_MotionMatching)
+		ConfigureMotionMatching(previous.m_MotionMatching->GetSettings());
+	if (previous.m_HasExternalFootPlacementSettings)
+	{
+		ConfigureFootPlacement(previous.m_ExternalFootPlacementSettings, skeleton);
+		SetFootPlacementRuntimeState(previous.m_FootPlacementState);
+	}
+
+	for (auto& [name, parameter] : m_Parameters)
+	{
+		const auto source = previous.m_Parameters.find(name);
+		if (source != previous.m_Parameters.end() && source->second.type == parameter.type)
+			parameter = source->second;
+	}
+
+	std::unordered_set<std::string> restoredLayerIds;
+	for (LayerRuntime& layer : m_LayerRuntimes)
+	{
+		const auto source = std::find_if(previous.m_LayerRuntimes.begin(), previous.m_LayerRuntimes.end(),
+			[&](const LayerRuntime& candidate) { return candidate.definition.id == layer.definition.id; });
+		if (source == previous.m_LayerRuntimes.end())
+		{
+			fullyCompatible = false;
+			continue;
+		}
+		restoredLayerIds.insert(layer.definition.id);
+		if (source->definition.kind == layer.definition.kind
+			&& source->definition.blendMode == layer.definition.blendMode)
+			layer.state = source->state;
+		else
+			fullyCompatible = false;
+		if (!layer.instance->RestoreRuntimeState(source->instance->CaptureRuntimeState()))
+			fullyCompatible = false;
+	}
+	for (const LayerRuntime& previousLayer : previous.m_LayerRuntimes)
+		if (restoredLayerIds.find(previousLayer.definition.id) == restoredLayerIds.end())
+			fullyCompatible = false;
+
+	m_SlotRuntime.TransferRuntimeStateFrom(previous.m_SlotRuntime, m_Clips);
+	m_PlaybackState = previous.m_PlaybackState;
+	m_GlobalSpeed = previous.m_GlobalSpeed;
+	m_RootMotionEnabled = previous.m_RootMotionEnabled;
+	m_RootMotionApplyToOwner = previous.m_RootMotionApplyToOwner;
+	m_RootBoneIndex = previous.m_RootBoneIndex;
+	m_OwnerWorldTransform = previous.m_OwnerWorldTransform;
+	m_LastRootMotionDelta = glm::vec3(0.0f);
+	m_LastRootRotationDelta = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+	m_SampledEvents.clear();
+	m_SampledCurves.clear();
+	m_SyncState = {};
+	if (!fullyCompatible)
+		diagnostic = "Some Layer or Graph runtime state was reset because stable IDs or structure changed";
+	return fullyCompatible;
+}
+
+VansSlotPlaybackHandle VansAnimationController::PlaySlot(
+	const std::string& slotId,
+	const VansSlotPlayRequest& request)
+{
+	return m_SlotRuntime.Play(slotId, request);
+}
+
+bool VansAnimationController::StopSlot(VansSlotPlaybackHandle handle, float blendOut, bool force)
+{
+	return m_SlotRuntime.Stop(handle, blendOut, force);
+}
+
+bool VansAnimationController::DriveSlot(
+	VansSlotPlaybackHandle handle,
+	float playbackTime,
+	float weight)
+{
+	return m_SlotRuntime.Drive(handle, playbackTime, weight);
+}
+
+VansSlotPlaybackStatus VansAnimationController::GetSlotStatus(VansSlotPlaybackHandle handle) const
+{
+	return m_SlotRuntime.GetStatus(handle);
+}
+
+bool VansAnimationController::IsSlotActive(const std::string& slotId) const
+{
+	return m_SlotRuntime.IsSlotActive(slotId);
+}
+
+const VansAnimationSlotDefinition* VansAnimationController::FindSlotDefinition(const std::string& slotId) const
+{
+	const auto& definitions = m_SlotRuntime.GetDefinitions();
+	const auto found = std::find_if(definitions.begin(), definitions.end(),
+		[&](const VansAnimationSlotDefinition& definition) { return definition.id == slotId; });
+	return found == definitions.end() ? nullptr : &*found;
+}
+
+const std::vector<VansSlotLifecycleEvent>& VansAnimationController::GetSlotLifecycleEvents() const
+{
+	return m_SlotRuntime.GetLifecycleEvents();
 }
 
 void VansAnimationController::ConfigureMotionMatching(const MotionMatchingSettings& settings)
@@ -44,6 +446,18 @@ void VansAnimationController::ConfigureMotionMatching(const MotionMatchingSettin
 		m_MotionMatching = std::make_unique<VansMotionMatchingRuntime>();
 	m_MotionMatching->Configure(settings);
 	EnsureMotionMatchingGraphNode();
+	RebuildLayerInstances();
+}
+
+void VansAnimationController::RebuildLayerInstances()
+{
+	for (LayerRuntime& layer : m_LayerRuntimes)
+	{
+		layer.instance = std::make_unique<VansAnimGraphInstance>(*layer.graph);
+		if (!layer.instance->IsCompiled())
+			VANS_LOG_ERROR("[AnimController] Layer Graph compile failed for '" << layer.definition.name
+			               << "': " << layer.instance->GetCompileError());
+	}
 }
 
 const MotionMatchingDebugData* VansAnimationController::GetMotionMatchingDebugData() const
@@ -53,23 +467,26 @@ const MotionMatchingDebugData* VansAnimationController::GetMotionMatchingDebugDa
 
 void VansAnimationController::EnsureMotionMatchingGraphNode()
 {
-	if (!m_Graph || !m_MotionMatching)
+	if (!m_MotionMatching)
+		return;
+	VansAnimGraph* graph = !m_LayerRuntimes.empty() ? m_LayerRuntimes.front().graph.get() : nullptr;
+	if (!graph)
 		return;
 
-	for (const auto& [id, node] : m_Graph->GetNodes())
+	for (const auto& [id, node] : graph->GetNodes())
 	{
 		if (node && node->GetType() == AnimGraphNodeType::MotionMatching)
 			return;
 	}
 
-	const int outputId = m_Graph->GetOutputNodeId();
+	const int outputId = graph->GetOutputNodeId();
 	if (outputId < 0)
 		return;
 
 	int sourceNodeId = -1;
 	int sourcePinIndex = 0;
 	int outputLinkId = -1;
-	for (const AnimGraphLink& link : m_Graph->GetLinks())
+	for (const AnimGraphLink& link : graph->GetLinks())
 	{
 		if (link.toNodeId == outputId && link.toPinIndex == 0)
 		{
@@ -83,13 +500,13 @@ void VansAnimationController::EnsureMotionMatchingGraphNode()
 		return;
 
 	auto mmNode = std::make_unique<AnimGraphMotionMatchingNode>();
-	const int mmNodeId = m_Graph->AddNode(std::move(mmNode));
+	const int mmNodeId = graph->AddNode(std::move(mmNode));
 	if (mmNodeId < 0)
 		return;
 
-	m_Graph->RemoveLink(outputLinkId);
-	m_Graph->AddLink(sourceNodeId, sourcePinIndex, mmNodeId, 0);
-	m_Graph->AddLink(mmNodeId, 0, outputId, 0);
+	graph->RemoveLink(outputLinkId);
+	graph->AddLink(sourceNodeId, sourcePinIndex, mmNodeId, 0);
+	graph->AddLink(mmNodeId, 0, outputId, 0);
 }
 
 const FootPlacementDebugData* VansAnimationController::GetFootPlacementDebugData() const
@@ -265,83 +682,40 @@ const glm::mat4& VansAnimationController::GetCachedGlobalTransform(int boneIndex
 	return m_CachedGlobalTransforms[boneIndex];
 }
 
-void VansAnimationController::FeedExternalBoneWorldTransforms(
+bool VansAnimationController::SubmitExternalModelPose(
 	const std::vector<glm::mat4>& modelSpaceTransforms,
-	const Skeleton& skeleton)
+	const Skeleton& skeleton,
+	float deltaTime,
+	VansExternalPoseEvaluationMode mode)
 {
+	m_FramePool.BeginFrame();
+	VansAnimationFrameMemory::Scope frameMemoryScope(m_FramePool.Resource());
+	struct FramePoolCompletion
+	{
+		VansAnimationFramePool& pool;
+		~FramePoolCompletion() { pool.EndFrame(); }
+	} framePoolCompletion{ m_FramePool };
+
 	if (modelSpaceTransforms.size() != skeleton.bones.size())
 	{
-		VANS_LOG_WARN("[AnimController] FeedExternalBoneWorldTransforms bone count mismatch: input="
+		VANS_LOG_WARN("[AnimController] SubmitExternalModelPose bone count mismatch: input="
 			<< modelSpaceTransforms.size() << " skeleton=" << skeleton.bones.size());
-		return;
+		return false;
 	}
 
-	BuildFinalMatrices(modelSpaceTransforms, skeleton);
-}
+	if (mode == VansExternalPoseEvaluationMode::DirectFinalPose)
+	{
+		BuildFinalMatrices(modelSpaceTransforms, skeleton);
+		return true;
+	}
 
-// ---------------------------------------------------------------------------
-// State management.
-// ---------------------------------------------------------------------------
-
-void VansAnimationController::AddState(const AnimatorState& state)
-{
-	m_States[state.name] = state;
-}
-
-void VansAnimationController::RemoveState(const std::string& stateName)
-{
-	m_States.erase(stateName);
-}
-
-AnimatorState* VansAnimationController::GetState(const std::string& stateName)
-{
-	auto it = m_States.find(stateName);
-	return (it != m_States.end()) ? &it->second : nullptr;
-}
-
-const AnimatorState* VansAnimationController::GetState(const std::string& stateName) const
-{
-	auto it = m_States.find(stateName);
-	return (it != m_States.end()) ? &it->second : nullptr;
-}
-
-std::vector<std::string> VansAnimationController::GetStateNames() const
-{
-	std::vector<std::string> names;
-	names.reserve(m_States.size());
-	for (const auto& [name, state] : m_States)
-		names.push_back(name);
-	return names;
-}
-
-void VansAnimationController::SetDefaultState(const std::string& stateName)
-{
-	m_DefaultStateName = stateName;
-}
-
-// ---------------------------------------------------------------------------
-// Transition management.
-// ---------------------------------------------------------------------------
-
-void VansAnimationController::AddTransition(const AnimatorTransition& transition)
-{
-	m_Transitions.push_back(transition);
-}
-
-void VansAnimationController::RemoveTransition(const std::string& fromState, const std::string& toState)
-{
-	m_Transitions.erase(
-		std::remove_if(m_Transitions.begin(), m_Transitions.end(),
-			[&](const AnimatorTransition& t)
-			{
-				return t.fromState == fromState && t.toState == toState;
-			}),
-		m_Transitions.end());
-}
-
-const std::vector<AnimatorTransition>& VansAnimationController::GetTransitions() const
-{
-	return m_Transitions;
+	VansPosePayload pose;
+	if (!ConvertModelPoseToLocalPayload(modelSpaceTransforms, skeleton, pose))
+		return false;
+	VansPosePayload processed;
+	if (!EvaluateTargetPostProcess(deltaTime, skeleton, pose, processed))
+		return false;
+	return FinalizeLocalPose(deltaTime, skeleton, std::move(processed), false, false);
 }
 
 // ---------------------------------------------------------------------------
@@ -395,18 +769,6 @@ std::vector<std::string> VansAnimationController::GetClipNames() const
 	return names;
 }
 
-void VansAnimationController::BindStateClips()
-{
-	for (auto& [stateName, state] : m_States)
-	{
-		auto it = m_Clips.find(state.clipName);
-		if (it != m_Clips.end())
-			state.clip = &it->second;
-		else
-			state.clip = nullptr;
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Playback control.
 // ---------------------------------------------------------------------------
@@ -414,46 +776,29 @@ void VansAnimationController::BindStateClips()
 void VansAnimationController::Play()
 {
 	m_PlaybackState = AnimationState::Playing;
-	m_BlendState    = ControllerBlendState::Idle;
-	m_BlendAlpha    = 0.0f;
-	m_PrevStateName.clear();
-
-	if (m_Graph)
+	m_SlotRuntime.Reset();
+	for (auto& [slotId, payload] : m_SlotPayloads)
+		payload = {};
+	for (LayerRuntime& layer : m_LayerRuntimes)
 	{
-		m_Graph->ResetAll();
-		return;
+		layer.instance->Reset();
+		layer.state = {};
 	}
-
-	const std::string stateName = !m_DefaultStateName.empty()
-		? m_DefaultStateName
-		: m_CurrentStateName;
-	if (!stateName.empty())
-	{
-		m_CurrentStateName = stateName;
-		if (AnimatorState* state = GetState(m_CurrentStateName))
-			state->currentTime = state->startTime;
-	}
-	BindStateClips();
+	if (m_TargetPostProcessInstance)
+		m_TargetPostProcessInstance->Reset();
 }
 
 void VansAnimationController::Play(const std::string& stateName)
 {
-	auto it = m_States.find(stateName);
-	if (it == m_States.end())
+	bool found = false;
+	for (LayerRuntime& layer : m_LayerRuntimes)
+		found = layer.instance->PlayState(stateName) || found;
+	if (!found)
 	{
 		VANS_LOG_WARN("[AnimController] " << m_Name << ": state '" << stateName << "' not found");
 		return;
 	}
-
-	m_CurrentStateName = stateName;
-	it->second.currentTime = it->second.startTime;
-
 	m_PlaybackState = AnimationState::Playing;
-	m_BlendState    = ControllerBlendState::Idle;
-	m_BlendAlpha    = 0.0f;
-	m_PrevStateName.clear();
-
-	BindStateClips();
 }
 
 void VansAnimationController::Pause()
@@ -465,39 +810,33 @@ void VansAnimationController::Pause()
 void VansAnimationController::Resume()
 {
 	if (m_PlaybackState == AnimationState::Paused)
-		m_PlaybackState = (m_BlendState == ControllerBlendState::Blending)
-			? AnimationState::Blending
-			: AnimationState::Playing;
+		m_PlaybackState = AnimationState::Playing;
 }
 
 void VansAnimationController::Stop()
 {
 	m_PlaybackState = AnimationState::Stopped;
-	m_BlendState    = ControllerBlendState::Idle;
-	m_BlendAlpha    = 0.0f;
-	m_PrevStateName.clear();
+	m_SlotRuntime.Reset();
+	for (auto& [slotId, payload] : m_SlotPayloads)
+		payload = {};
+	for (LayerRuntime& layer : m_LayerRuntimes)
+	{
+		layer.instance->Reset();
+		layer.state = {};
+	}
+	if (m_TargetPostProcessInstance)
+		m_TargetPostProcessInstance->Reset();
 
-	if (m_Graph)
-		m_Graph->ResetAll();
-
-	for (auto& [name, state] : m_States)
-		state.currentTime = state.startTime;
-
-	m_RootMotionInitialized = false;
 	m_LastRootMotionDelta   = glm::vec3(0.0f);
 	m_LastRootRotationDelta = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+	m_SampledEvents.clear();
+	m_SampledCurves.clear();
+	m_SyncState = {};
 }
 
 void VansAnimationController::Reset()
 {
 	Stop();
-	for (auto& [name, state] : m_States)
-		state.currentTime = state.startTime;
-
-	m_RootMotionInitialized = false;
-	m_LastRootMotionDelta   = glm::vec3(0.0f);
-	m_LastRootRotationDelta = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
-
 	Play();
 }
 
@@ -517,7 +856,9 @@ float VansAnimationController::GetSpeed() const
 
 std::string VansAnimationController::GetCurrentStateName() const
 {
-	return m_CurrentStateName;
+	if (!m_LayerRuntimes.empty())
+		return m_LayerRuntimes.front().instance->GetCurrentStateName();
+	return {};
 }
 
 AnimationState VansAnimationController::GetPlaybackState() const
@@ -527,31 +868,17 @@ AnimationState VansAnimationController::GetPlaybackState() const
 
 float VansAnimationController::GetCurrentPlayTime() const
 {
-	if (!m_Graph) return 0.0f;
-	for (const auto& [id, node] : m_Graph->GetNodes())
-	{
-		if (node->GetType() == AnimGraphNodeType::Clip)
-		{
-			return static_cast<const AnimGraphClipNode*>(node.get())->m_CurrentTime;
-		}
-	}
+	if (!m_LayerRuntimes.empty())
+		return m_LayerRuntimes.front().instance->GetPrimaryPlaybackTime();
 	return 0.0f;
 }
 
 float VansAnimationController::GetCurrentDuration() const
 {
-	if (!m_Graph) return 0.0f;
-	for (const auto& [id, node] : m_Graph->GetNodes())
-	{
-		if (node->GetType() == AnimGraphNodeType::Clip)
-		{
-			const std::string& clipName =
-				static_cast<const AnimGraphClipNode*>(node.get())->m_ClipName;
-			auto it = m_Clips.find(clipName);
-			if (it != m_Clips.end()) return it->second.duration;
-		}
-	}
-	return 0.0f;
+	if (m_LayerRuntimes.empty())
+		return 0.0f;
+	auto it = m_Clips.find(m_LayerRuntimes.front().instance->GetPrimaryClipName());
+	return it == m_Clips.end() ? 0.0f : it->second.duration;
 }
 
 float VansAnimationController::GetNormalizedTime() const
@@ -568,7 +895,8 @@ float VansAnimationController::GetNormalizedTime() const
 void VansAnimationController::EnableRootMotion(bool enable)
 {
 	m_RootMotionEnabled = enable;
-	m_RootMotionInitialized = false;
+	m_LastRootMotionDelta = glm::vec3(0.0f);
+	m_LastRootRotationDelta = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
 }
 
 bool VansAnimationController::IsRootMotionEnabled() const
@@ -591,370 +919,427 @@ void VansAnimationController::SetBoneOverrides(const std::unordered_map<std::str
 	m_BoneOverrides = overrides;
 }
 
+bool VansAnimationController::SeekNormalizedTime(float normalizedTime)
+{
+	normalizedTime = glm::clamp(normalizedTime, 0.0f, 1.0f);
+	bool changed = false;
+	for (LayerRuntime& layer : m_LayerRuntimes)
+	{
+		if (!layer.instance)
+			continue;
+		const std::string clipName = layer.instance->GetPrimaryClipName();
+		const VansAnimationClip* clip = GetClip(clipName);
+		if (!clip || clip->duration <= 0.0f)
+			continue;
+		changed = layer.instance->SetPrimaryPlaybackTime(normalizedTime * clip->duration) || changed;
+	}
+	return changed;
+}
+
+std::vector<VansAnimationController::LayerRuntimeDebugInfo>
+VansAnimationController::GetLayerRuntimeDebugInfo() const
+{
+	std::vector<LayerRuntimeDebugInfo> result;
+	result.reserve(m_LayerRuntimes.size());
+	for (const LayerRuntime& layer : m_LayerRuntimes)
+	{
+		LayerRuntimeDebugInfo info;
+		info.id = layer.definition.id;
+		info.name = layer.definition.name;
+		info.weight = layer.definition.kind == VansAnimationLayerKind::Base
+			? 1.0f : layer.state.currentWeight;
+		info.enabled = layer.definition.enabled;
+		info.kind = layer.definition.kind;
+		info.blendMode = layer.definition.blendMode;
+		info.evaluationMilliseconds = layer.lastEvaluationMilliseconds;
+		if (layer.definition.kind == VansAnimationLayerKind::Base)
+			info.boneWeights.assign(layer.compiledMask.weights.size(), 1.0f);
+		else
+		{
+			info.boneWeights.reserve(layer.compiledMask.weights.size());
+			for (float maskWeight : layer.compiledMask.weights)
+				info.boneWeights.push_back(glm::clamp(maskWeight * info.weight, 0.0f, 1.0f));
+		}
+		if (layer.instance)
+		{
+			info.state = layer.instance->GetCurrentStateName();
+			info.clip = layer.instance->GetPrimaryClipName();
+			info.playbackTime = layer.instance->GetPrimaryPlaybackTime();
+			if (const VansAnimationClip* clip = GetClip(info.clip); clip && clip->duration > 0.0f)
+				info.normalizedTime = glm::clamp(info.playbackTime / clip->duration, 0.0f, 1.0f);
+		}
+		result.push_back(std::move(info));
+	}
+	return result;
+}
+
+void VansAnimationController::ResolveLayerReferencePose(
+	const LayerRuntime& layer,
+	const Skeleton& skeleton,
+	VansAnimationFrameVector<VansBoneTransform>& outPose) const
+{
+	VansAnimationLayerMixer::BuildBindPose(skeleton, outPose);
+	if (layer.definition.additiveReference == VansAdditiveReferenceMode::BindPose)
+		return;
+
+	const std::string* clipName = &layer.definition.referenceClipName;
+	if (layer.definition.additiveReference != VansAdditiveReferenceMode::ReferenceClip)
+		clipName = layer.instance ? &layer.instance->GetPrimaryClipName() : nullptr;
+	if (!clipName)
+		return;
+	auto clip = m_Clips.find(*clipName);
+	if (clip == m_Clips.end())
+		return;
+
+	VansAnimationSampleRequest request;
+	request.loop = false;
+	request.currentTime = layer.definition.additiveReference == VansAdditiveReferenceMode::FirstFrame
+		? 0.0f : layer.definition.referenceTime;
+	request.previousTime = request.currentTime;
+	VansPosePayload sampled;
+	if (VansAnimationSampler::Sample(clip->second, skeleton, request, sampled)
+	    && sampled.localPose.size() == outPose.size())
+		outPose = std::move(sampled.localPose);
+}
+
+bool VansAnimationController::EvaluateLayerStack(
+	float deltaTime,
+	const Skeleton& skeleton,
+	VansPosePayload& outPayload)
+{
+	outPayload = {};
+	if (m_LayerRuntimes.empty())
+		return false;
+
+	const std::uint64_t skeletonSignature = VansBoneMaskCompiler::ComputeSkeletonSignature(skeleton);
+	VansAnimationFrameVector<VansBoneTransform> bindPose;
+	VansAnimationLayerMixer::BuildBindPose(skeleton, bindPose);
+	m_EvaluatedSyncScratch.clear();
+	m_EvaluatedSyncScratch.resize(m_LayerRuntimes.size());
+	auto& evaluatedSync = m_EvaluatedSyncScratch;
+
+	for (size_t layerIndex = 0; layerIndex < m_LayerRuntimes.size(); ++layerIndex)
+	{
+		LayerRuntime& layer = m_LayerRuntimes[layerIndex];
+		if (layer.compiledMask.skeletonSignature != skeletonSignature)
+		{
+			if (layer.definition.kind == VansAnimationLayerKind::Base)
+			{
+				layer.compiledMask = {};
+				layer.compiledMask.assetId = "__full_body__";
+				layer.compiledMask.skeletonSignature = skeletonSignature;
+				layer.compiledMask.weights.assign(skeleton.bones.size(), 1.0f);
+				layer.compiledMask.activeBones.reserve(skeleton.bones.size());
+				for (size_t bone = 0; bone < skeleton.bones.size(); ++bone)
+					layer.compiledMask.activeBones.push_back(static_cast<std::uint32_t>(bone));
+				layer.compiledMask.rootWeight = skeleton.bones.empty() ? 0.0f : 1.0f;
+				layer.compiledMask.allZero = skeleton.bones.empty();
+				layer.compiledMask.allOne = !skeleton.bones.empty();
+				layer.compiledMask.valid = true;
+			}
+			else if (layer.maskAsset)
+				layer.compiledMask = VansBoneMaskCompiler::Compile(*layer.maskAsset, skeleton);
+		}
+		if (!layer.compiledMask.valid)
+		{
+			if (layerIndex == 0)
+				return false;
+			continue;
+		}
+
+		float targetWeight = layer.definition.fixedWeight;
+		if (layer.definition.kind == VansAnimationLayerKind::Base)
+			targetWeight = 1.0f;
+		else if (layer.definition.useWeightParameter)
+		{
+			auto parameter = m_Parameters.find(layer.definition.weightParameter);
+			targetWeight = parameter != m_Parameters.end()
+			    && parameter->second.type == AnimatorParamType::Float
+				? parameter->second.floatVal : 0.0f;
+		}
+		if (!layer.definition.enabled)
+			targetWeight = 0.0f;
+		targetWeight = std::clamp(targetWeight, 0.0f, 1.0f);
+		if (!layer.state.initialized)
+		{
+			layer.state.currentWeight = targetWeight;
+			layer.state.initialized = true;
+		}
+		else if (layer.definition.weightSmoothingTime > 0.0f)
+		{
+			const float alpha = 1.0f - std::exp(-std::max(0.0f, deltaTime)
+				/ layer.definition.weightSmoothingTime);
+			layer.state.currentWeight = glm::mix(layer.state.currentWeight, targetWeight, alpha);
+		}
+		else
+			layer.state.currentWeight = targetWeight;
+
+		const bool shouldUpdate = layer.definition.updateWhenWeightIsZero
+			|| layer.state.currentWeight > 1.0e-6f
+			|| layer.definition.kind == VansAnimationLayerKind::Base;
+		if (!shouldUpdate)
+		{
+			layer.lastEvaluationMilliseconds = 0.0f;
+			continue;
+		}
+
+		if (layer.parameterScratch.size() != m_Parameters.size())
+			layer.parameterScratch = m_Parameters;
+		else
+			for (const auto& [name, parameter] : m_Parameters)
+			{
+				auto target = layer.parameterScratch.find(name);
+				if (target == layer.parameterScratch.end())
+				{
+					layer.parameterScratch = m_Parameters;
+					break;
+				}
+				target->second = parameter;
+			}
+		AnimGraphContext context;
+		context.deltaTime = deltaTime * m_GlobalSpeed;
+		context.skeleton = &skeleton;
+		context.parameters = &layer.parameterScratch;
+		context.clips = &m_Clips;
+		context.motionMatching = m_MotionMatching.get();
+		context.slotPayloads = &m_SlotPayloads;
+		context.ownerWorldTransform = m_OwnerWorldTransform;
+		if (layer.definition.sync == VansLayerSyncMode::Independent)
+		{
+			layer.instance->AdvanceTime(context.deltaTime, context);
+		}
+		else if (layer.definition.sync == VansLayerSyncMode::SyncedGraph)
+		{
+			const LayerRuntime& leader = m_LayerRuntimes[static_cast<size_t>(layer.syncLeaderIndex)];
+			if (!layer.instance->SynchronizePrimaryStateMachineFrom(*leader.instance, m_Clips))
+				return false;
+			context.synchronizedStateFollower = true;
+		}
+		else
+		{
+			const LayerRuntime& leader = m_LayerRuntimes[static_cast<size_t>(layer.syncLeaderIndex)];
+			if (layer.instance->GetPrimaryClipName().empty())
+				layer.instance->SetPrimaryPlaybackTime(0.0f);
+
+			const std::string& leaderClipName = leader.instance->GetPrimaryClipName();
+			const std::string& followerClipName = layer.instance->GetPrimaryClipName();
+			auto leaderClip = m_Clips.find(leaderClipName);
+			auto followerClip = m_Clips.find(followerClipName);
+			if (leaderClip != m_Clips.end() && followerClip != m_Clips.end()
+				&& leaderClip->second.duration > 0.0f && followerClip->second.duration > 0.0f)
+			{
+				const float leaderRawTime = leader.instance->GetPrimaryPlaybackTime();
+				float followerTime = leaderRawTime / leaderClip->second.duration
+					* followerClip->second.duration;
+				if (layer.definition.sync == VansLayerSyncMode::MarkerSync)
+					ResolveMarkerSyncedTime(evaluatedSync[static_cast<size_t>(layer.syncLeaderIndex)],
+						leaderRawTime, leaderClip->second.duration, followerClip->second, followerTime);
+				layer.instance->SetPrimaryPlaybackTime(followerTime);
+			}
+		}
+		const auto evaluationBegin = m_DebugMetricsEnabled
+			? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+		VansPosePayload sampled = layer.instance->Evaluate(context);
+		if (m_DebugMetricsEnabled)
+			layer.lastEvaluationMilliseconds = std::chrono::duration<float, std::milli>(
+				std::chrono::steady_clock::now() - evaluationBegin).count();
+		if (!sampled.valid)
+		{
+			if (layerIndex == 0)
+				return false;
+			continue;
+		}
+
+		const std::uint64_t stableLayerId = VansAnimationStableId(layer.definition.id);
+		for (VansAnimationEventSample& event : sampled.events)
+			event.sourceLayerId = stableLayerId;
+		if (sampled.rootMotion.valid)
+			sampled.rootMotion.sourceLayerId = stableLayerId;
+		evaluatedSync[layerIndex] = sampled.sync;
+
+		if (layerIndex == 0)
+		{
+			outPayload = std::move(sampled);
+			continue;
+		}
+		VansAnimationFrameVector<VansBoneTransform> referencePose = bindPose;
+		ResolveLayerReferencePose(layer, skeleton, referencePose);
+		outPayload = VansAnimationLayerMixer::ApplyLayer(
+			outPayload, sampled, layer.definition, layer.compiledMask,
+			skeleton, referencePose, layer.state.currentWeight);
+	}
+
+	for (auto& [name, parameter] : m_Parameters)
+		if (parameter.type == AnimatorParamType::Trigger)
+			parameter.boolVal = false;
+	return outPayload.valid;
+}
+
+bool VansAnimationController::EvaluateTargetPostProcess(
+	float deltaTime,
+	const Skeleton& skeleton,
+	const VansPosePayload& input,
+	VansPosePayload& output)
+{
+	if (!input.valid || input.localPose.size() != skeleton.bones.size())
+		return false;
+	if (!m_TargetPostProcessInstance)
+	{
+		output = input;
+		return true;
+	}
+
+	AnimGraphContext context;
+	context.deltaTime = deltaTime * m_GlobalSpeed;
+	context.skeleton = &skeleton;
+	context.parameters = &m_Parameters;
+	context.clips = &m_Clips;
+	context.motionMatching = nullptr;
+	context.slotPayloads = nullptr;
+	context.targetPoseInput = &input;
+	context.ownerWorldTransform = m_OwnerWorldTransform;
+	output = m_TargetPostProcessInstance->Evaluate(context);
+	return output.valid && output.localPose.size() == skeleton.bones.size();
+}
+
+bool VansAnimationController::ConvertModelPoseToLocalPayload(
+	const std::vector<glm::mat4>& modelSpaceTransforms,
+	const Skeleton& skeleton,
+	VansPosePayload& outPayload) const
+{
+	outPayload = {};
+	if (modelSpaceTransforms.size() != skeleton.bones.size())
+		return false;
+
+	auto& localTransforms = m_LocalTransformScratch;
+	localTransforms.assign(modelSpaceTransforms.size(), glm::mat4(1.0f));
+	for (std::size_t boneIndex = 0; boneIndex < skeleton.bones.size(); ++boneIndex)
+	{
+		const int parentIndex = skeleton.bones[boneIndex].parentIndex;
+		if (parentIndex >= 0 && parentIndex < static_cast<int>(modelSpaceTransforms.size()))
+			localTransforms[boneIndex] = glm::inverse(modelSpaceTransforms[static_cast<std::size_t>(parentIndex)])
+				* modelSpaceTransforms[boneIndex];
+		else
+			localTransforms[boneIndex] = modelSpaceTransforms[boneIndex];
+	}
+	if (!VansPoseMath::FromMatrices(localTransforms, outPayload.localPose))
+		return false;
+	outPayload.valid = outPayload.localPose.size() == skeleton.bones.size();
+	return outPayload.valid;
+}
+
+bool VansAnimationController::FinalizeLocalPose(
+	float deltaTime,
+	const Skeleton& skeleton,
+	VansPosePayload pose,
+	bool normalizeRoot,
+	bool publishAnimationOutputs)
+{
+	const std::uint32_t boneCount = static_cast<std::uint32_t>(skeleton.bones.size());
+	if (!pose.valid)
+		return false;
+
+	if (publishAnimationOutputs)
+	{
+		m_SampledNodeTransforms = std::move(pose.nodeTransforms);
+		m_SampledEvents = std::move(pose.events);
+		m_SampledCurves = std::move(pose.curves);
+		m_SyncState = pose.sync;
+		if (m_RootBoneIndex < 0)
+			m_RootBoneIndex = DetectRootBoneIndex(skeleton);
+		if (m_RootMotionEnabled && pose.rootMotion.valid)
+		{
+			m_LastRootMotionDelta = pose.rootMotion.translation;
+			m_LastRootRotationDelta = pose.rootMotion.rotation;
+		}
+	}
+	// Node Transform Animation is a first-class output even for clips without a
+	// skeleton. Preserve it independently from skinning-pose finalization.
+	if (boneCount == 0)
+		return true;
+	if (pose.localPose.size() != boneCount)
+		return false;
+
+	auto& localTransforms = m_LocalTransformScratch;
+	VansPoseMath::ToMatrices(pose.localPose, localTransforms);
+	ApplyBoneOverrides(localTransforms, skeleton);
+	if (normalizeRoot)
+	{
+		if (m_RootBoneIndex < 0)
+			m_RootBoneIndex = DetectRootBoneIndex(skeleton);
+		NormalizeRootTransform(localTransforms, skeleton);
+	}
+
+	if (pose.footPlacement.valid && pose.footPlacement.settings)
+	{
+		if (m_FootPlacementSourceNodeId != pose.footPlacement.sourceNodeId)
+		{
+			m_FootPlacementSettings = *pose.footPlacement.settings;
+			if (!m_FootPlacement)
+				m_FootPlacement = std::make_unique<VansFootPlacementSolver>();
+			if (!m_FootPlacement->Configure(m_FootPlacementSettings, skeleton))
+				m_FootPlacement.reset();
+			m_FootPlacementSourceNodeId = pose.footPlacement.sourceNodeId;
+		}
+	}
+	else if (m_FootPlacementSourceNodeId >= 0)
+	{
+		m_FootPlacementSourceNodeId = -1;
+		if (m_HasExternalFootPlacementSettings)
+		{
+			m_FootPlacementSettings = m_ExternalFootPlacementSettings;
+			if (!m_FootPlacement)
+				m_FootPlacement = std::make_unique<VansFootPlacementSolver>();
+			if (!m_FootPlacement->Configure(m_FootPlacementSettings, skeleton))
+				m_FootPlacement.reset();
+		}
+		else
+			m_FootPlacement.reset();
+	}
+
+	ApplyFootPlacement(deltaTime, skeleton, localTransforms);
+	UpdateHierarchy(localTransforms, skeleton);
+	BuildFinalMatrices(localTransforms, skeleton);
+	return true;
+}
+
 // ---------------------------------------------------------------------------
 // Core per-frame update.
 // ---------------------------------------------------------------------------
 
 void VansAnimationController::Update(float deltaTime, const Skeleton& skeleton)
 {
+	m_FramePool.BeginFrame();
+	VansAnimationFrameMemory::Scope frameMemoryScope(m_FramePool.Resource());
+	struct FramePoolCompletion
+	{
+		VansAnimationFramePool& pool;
+		~FramePoolCompletion() { pool.EndFrame(); }
+	} framePoolCompletion{ m_FramePool };
+
 	m_SampledNodeTransforms.clear();
+	m_SampledEvents.clear();
+	m_SampledCurves.clear();
+	m_SyncState = {};
+	m_LastRootMotionDelta = glm::vec3(0.0f);
+	m_LastRootRotationDelta = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
 
 	if (m_PlaybackState == AnimationState::Stopped || m_PlaybackState == AnimationState::Paused)
 		return;
+	m_SlotRuntime.Update(deltaTime * m_GlobalSpeed, m_Clips, skeleton, m_SlotPayloads);
 
-	uint32_t boneCount = static_cast<uint32_t>(skeleton.bones.size());
-
-// ---------------------------------------------------------------------------
-	// AnimGraph evaluation path.
-// ---------------------------------------------------------------------------
-	if (m_Graph)
+	if (!m_LayerRuntimes.empty())
 	{
-		// Advance node-local time, scaled by GlobalSpeed.
-		m_Graph->AdvanceTime(deltaTime * m_GlobalSpeed);
-
-		// Build evaluation context.
-		AnimGraphContext ctx;
-		ctx.deltaTime  = deltaTime;
-		ctx.skeleton   = &skeleton;
-		ctx.parameters = &m_Parameters;
-		ctx.clips      = &m_Clips;
-		ctx.motionMatching = m_MotionMatching.get();
-		ctx.ownerWorldTransform = m_OwnerWorldTransform;
-
-		// Pull the Output node, recursively sampling upstream graph nodes.
-		AnimGraphPose pose = m_Graph->Evaluate(ctx);
-		if (!pose.valid)
+		VansPosePayload pose;
+		if (!EvaluateLayerStack(deltaTime, skeleton, pose))
 			return;
-
-		m_SampledNodeTransforms = std::move(pose.sampledNodeTransforms);
-		if (boneCount == 0)
+		VansPosePayload processed;
+		if (!EvaluateTargetPostProcess(deltaTime, skeleton, pose, processed))
 			return;
-		if (pose.localTransforms.size() != boneCount)
-			return;
-
-		std::vector<glm::mat4> localTransforms = std::move(pose.localTransforms);
-
-		// Bone overrides, root motion, layers, and final matrices share the skeletal path.
-		ApplyBoneOverrides(localTransforms, skeleton);
-
-		if (m_RootBoneIndex < 0)
-			m_RootBoneIndex = DetectRootBoneIndex(skeleton);
-
-		if (m_RootMotionEnabled)
-		{
-			ExtractRootMotion(localTransforms, skeleton);
-		}
-		else
-		{
-			m_LoopJustWrapped = false;
-			NormalizeRootTransform(localTransforms, skeleton);
-		}
-
-		if (pose.hasFootPlacement)
-		{
-			if (m_FootPlacementSourceNodeId != pose.footPlacementNodeId)
-			{
-				m_FootPlacementSettings = pose.footPlacementSettings;
-				if (!m_FootPlacement)
-					m_FootPlacement = std::make_unique<VansFootPlacementSolver>();
-				if (!m_FootPlacement->Configure(m_FootPlacementSettings, skeleton))
-				{
-					VANS_LOG_WARN("FootPlacement node configure failed for controller '" << m_Name << "': missing configured bones");
-					m_FootPlacement.reset();
-				}
-				m_FootPlacementSourceNodeId = pose.footPlacementNodeId;
-			}
-		}
-		else if (m_FootPlacementSourceNodeId >= 0)
-		{
-			m_FootPlacementSourceNodeId = -1;
-			if (m_HasExternalFootPlacementSettings)
-			{
-				m_FootPlacementSettings = m_ExternalFootPlacementSettings;
-				if (!m_FootPlacement)
-					m_FootPlacement = std::make_unique<VansFootPlacementSolver>();
-				if (!m_FootPlacement->Configure(m_FootPlacementSettings, skeleton))
-					m_FootPlacement.reset();
-			}
-			else
-			{
-				m_FootPlacement.reset();
-			}
-		}
-
-		ApplyFootPlacement(deltaTime, skeleton, localTransforms);
-		UpdateHierarchy(localTransforms, skeleton);
-		BuildFinalMatrices(localTransforms, skeleton);
+		FinalizeLocalPose(deltaTime, skeleton, std::move(processed), true, true);
 		return;
 	}
 
-	if (m_MotionMatching)
-	{
-		std::vector<glm::mat4> localTransforms;
-		if (m_MotionMatching->Update(deltaTime, skeleton, m_Clips, m_Parameters,
-		                             m_OwnerWorldTransform, localTransforms))
-		{
-			ApplyBoneOverrides(localTransforms, skeleton);
-
-			if (m_RootBoneIndex < 0)
-				m_RootBoneIndex = DetectRootBoneIndex(skeleton);
-
-			if (m_RootMotionEnabled)
-			{
-				ExtractRootMotion(localTransforms, skeleton);
-			}
-			else
-			{
-				m_LoopJustWrapped = false;
-				NormalizeRootTransform(localTransforms, skeleton);
-			}
-
-			ApplyFootPlacement(deltaTime, skeleton, localTransforms);
-			UpdateHierarchy(localTransforms, skeleton);
-			BuildFinalMatrices(localTransforms, skeleton);
-			return;
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Internal method: AdvanceStateTime
-// ---------------------------------------------------------------------------
-
-void VansAnimationController::AdvanceStateTime(AnimatorState& state, float dt)
-{
-	if (!state.clip) return;
-
-	float effectiveDuration = (state.endTime < 0.0f) ? state.clip->duration : state.endTime;
-	float start = state.startTime;
-	float delta = dt * state.speed;
-
-	state.currentTime += delta;
-
-	if (state.currentTime >= effectiveDuration)
-	{
-		if (state.loop)
-		{
-			float range = effectiveDuration - start;
-			if (range > 0.0f)
-				state.currentTime = start + std::fmod(state.currentTime - start, range);
-			else
-				state.currentTime = start;
-
-			m_LoopJustWrapped = true;
-		}
-		else
-		{
-			state.currentTime = effectiveDuration;
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Internal method: EvaluateTransitions
-// ---------------------------------------------------------------------------
-
-void VansAnimationController::EvaluateTransitions()
-{
-	// During blending, only Any State ('*') transitions may interrupt.
-	bool currentlyBlending = (m_BlendState == ControllerBlendState::Blending);
-
-	for (const auto& transition : m_Transitions)
-	{
-		bool isAnyState = (transition.fromState == "*");
-		bool isFromCurrent = (transition.fromState == m_CurrentStateName);
-
-		if (!isAnyState && !isFromCurrent)
-			continue;
-
-		// An Any State target cannot be the current state; prevents infinite loops.
-		if (isAnyState && transition.toState == m_CurrentStateName)
-			continue;
-
-		// Non-Any-State transitions do not interrupt an active blend.
-		if (currentlyBlending && !isAnyState)
-			continue;
-
-		// Check whether the target state exists.
-		if (m_States.find(transition.toState) == m_States.end())
-			continue;
-
-		// Check exitTime conditions.
-		if (transition.hasExitTime)
-		{
-			AnimatorState* fromState = GetState(isAnyState ? m_CurrentStateName : transition.fromState);
-			if (fromState)
-			{
-				float normalizedTime = GetStateNormalizedTime(*fromState);
-				if (normalizedTime < transition.exitTime)
-					continue;
-			}
-		}
-
-		// Check parameter conditions.
-		if (!CheckConditions(transition))
-			continue;
-
-		// All conditions passed; trigger the transition.
-		StartTransition(transition);
-		return;
-	}
-}
-
-bool VansAnimationController::CheckConditions(const AnimatorTransition& t) const
-{
-	for (const auto& cond : t.conditions)
-	{
-		auto it = m_Parameters.find(cond.paramName);
-		if (it == m_Parameters.end()) return false;
-
-		if (!CompareParam(it->second, cond))
-			return false;
-	}
-	return true;
-}
-
-bool VansAnimationController::CompareParam(const AnimatorParameter& param, const TransitionCondition& cond) const
-{
-	switch (param.type)
-	{
-	case AnimatorParamType::Float:
-		return CompareValue(param.floatVal, cond.op, cond.floatVal);
-	case AnimatorParamType::Int:
-		return CompareValue(param.intVal, cond.op, cond.intVal);
-	case AnimatorParamType::Bool:
-		return (cond.op == CompareOp::Equal)
-			? (param.boolVal == cond.boolVal)
-			: (param.boolVal != cond.boolVal);
-	case AnimatorParamType::Trigger:
-		return (cond.op == CompareOp::Equal)
-			? (param.boolVal == cond.boolVal)
-			: (param.boolVal != cond.boolVal);
-	}
-	return false;
-}
-
-template<typename T>
-bool VansAnimationController::CompareValue(T a, CompareOp op, T b)
-{
-	switch (op)
-	{
-	case CompareOp::Greater:      return a > b;
-	case CompareOp::Less:         return a < b;
-	case CompareOp::Equal:        return a == b;
-	case CompareOp::NotEqual:     return a != b;
-	case CompareOp::GreaterEqual: return a >= b;
-	case CompareOp::LessEqual:    return a <= b;
-	}
-	return false;
-}
-
-// Explicit template instantiations.
-template bool VansAnimationController::CompareValue<float>(float, CompareOp, float);
-template bool VansAnimationController::CompareValue<int>(int, CompareOp, int);
-
-void VansAnimationController::ConsumeTriggers(const AnimatorTransition& t)
-{
-	for (const auto& cond : t.conditions)
-	{
-		auto it = m_Parameters.find(cond.paramName);
-		if (it != m_Parameters.end() && it->second.type == AnimatorParamType::Trigger)
-			it->second.boolVal = false;
-	}
-}
-
-void VansAnimationController::StartTransition(const AnimatorTransition& transition)
-{
-	m_PrevStateName    = m_CurrentStateName;
-	m_CurrentStateName = transition.toState;
-	m_BlendAlpha       = 0.0f;
-	m_BlendDuration    = transition.blendDuration;
-	m_BlendState       = ControllerBlendState::Blending;
-	m_PlaybackState    = AnimationState::Blending;
-
-	// Reset the target state's playback time.
-	AnimatorState* targetState = GetState(transition.toState);
-	if (targetState)
-		targetState->currentTime = targetState->startTime;
-
-	ConsumeTriggers(transition);
-}
-
-float VansAnimationController::GetStateNormalizedTime(const AnimatorState& state) const
-{
-	if (!state.clip) return 0.0f;
-	float end = (state.endTime < 0.0f) ? state.clip->duration : state.endTime;
-	float range = end - state.startTime;
-	if (range <= 0.0f) return 0.0f;
-	return (state.currentTime - state.startTime) / range;
-}
-
-// ---------------------------------------------------------------------------
-// Internal method: ComputeBoneTransforms
-// ---------------------------------------------------------------------------
-
-void VansAnimationController::ComputeBoneTransforms(const AnimatorState& state,
-                                                     const Skeleton& skeleton,
-                                                     std::vector<glm::mat4>& outLocalTransforms)
-{
-	if (!state.clip) return;
-
-	uint32_t boneCount = static_cast<uint32_t>(skeleton.bones.size());
-	const VansAnimationClip* clip = state.clip;
-
-	for (uint32_t b = 0; b < boneCount; b++)
-	{
-		if (b >= clip->boneKeyframes.size() || clip->boneKeyframes[b].empty())
-		{
-			outLocalTransforms[b] = skeleton.bones[b].localTransform;
-			continue;
-		}
-
-		glm::vec3 pos;
-		glm::quat rot;
-		glm::vec3 scl;
-		InterpolateKeyframes(clip->boneKeyframes[b], state.currentTime, pos, rot, scl);
-
-		glm::mat4 T = glm::translate(glm::mat4(1.0f), pos);
-		glm::mat4 R = glm::toMat4(rot);
-		glm::mat4 S = glm::scale(glm::mat4(1.0f), scl);
-		outLocalTransforms[b] = T * R * S;
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Internal method: BlendTransforms
-// ---------------------------------------------------------------------------
-
-void VansAnimationController::BlendTransforms(const std::vector<glm::mat4>& a,
-                                               const std::vector<glm::mat4>& b,
-                                               float alpha,
-                                               std::vector<glm::mat4>& outBlended)
-{
-	uint32_t count = static_cast<uint32_t>((std::min)(a.size(), b.size()));
-	outBlended.resize(count);
-
-	for (uint32_t i = 0; i < count; i++)
-	{
-		glm::vec3 scaleA, posA, skewA;
-		glm::quat rotA;
-		glm::vec4 perspA;
-		glm::decompose(a[i], scaleA, rotA, posA, skewA, perspA);
-
-		glm::vec3 scaleB, posB, skewB;
-		glm::quat rotB;
-		glm::vec4 perspB;
-		glm::decompose(b[i], scaleB, rotB, posB, skewB, perspB);
-
-		glm::vec3 blendedPos   = glm::mix(posA, posB, alpha);
-		glm::quat blendedRot   = glm::slerp(rotA, rotB, alpha);
-		glm::vec3 blendedScale = glm::mix(scaleA, scaleB, alpha);
-
-		glm::mat4 T = glm::translate(glm::mat4(1.0f), blendedPos);
-		glm::mat4 R = glm::toMat4(blendedRot);
-		glm::mat4 S = glm::scale(glm::mat4(1.0f), blendedScale);
-		outBlended[i] = T * R * S;
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1039,69 +1424,6 @@ void VansAnimationController::NormalizeRootTransform(std::vector<glm::mat4>& loc
 	localTransforms[m_RootBoneIndex] = T * R * S;
 }
 
-void VansAnimationController::ExtractRootMotion(std::vector<glm::mat4>& localTransforms,
-                                                 const Skeleton& skeleton)
-{
-	if (m_RootBoneIndex < 0 || m_RootBoneIndex >= static_cast<int>(localTransforms.size()))
-		return;
-
-	glm::vec3 rootPos, rootScale, skew;
-	glm::quat rootRot;
-	glm::vec4 perspective;
-	glm::decompose(localTransforms[m_RootBoneIndex], rootScale, rootRot, rootPos, skew, perspective);
-
-	m_LastRootMotionDelta   = glm::vec3(0.0f);
-	m_LastRootRotationDelta = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
-
-	if (!m_RootMotionInitialized)
-	{
-		m_PrevRootPosition      = rootPos;
-		m_PrevRootRotation      = rootRot;
-		m_RootMotionInitialized = true;
-		m_LoopJustWrapped       = false;
-
-		VANS_LOG("[RootMotion] Init: boneIdx=" << m_RootBoneIndex
-		         << " name=\"" << skeleton.bones[m_RootBoneIndex].name
-		         << "\" rootPos=(" << rootPos.x << ", " << rootPos.y << ", " << rootPos.z << ")");
-	}
-	else if (m_LoopJustWrapped)
-	{
-		m_PrevRootPosition = rootPos;
-		m_PrevRootRotation = rootRot;
-		m_LoopJustWrapped  = false;
-
-		VANS_LOG("[RootMotion] LoopWrap: reset prevPos=(" << rootPos.x << ", " << rootPos.y << ", " << rootPos.z << ")");
-	}
-	else
-	{
-		glm::vec3 deltaPos = rootPos - m_PrevRootPosition;
-		glm::quat deltaRot = rootRot * glm::inverse(m_PrevRootRotation);
-
-		m_PrevRootPosition = rootPos;
-		m_PrevRootRotation = rootRot;
-
-		m_LastRootMotionDelta   = deltaPos;
-		m_LastRootRotationDelta = deltaRot;
-
-		// Diagnostics: print delta for the first 20 frames.
-		static int s_DbgFrameCount = 0;
-		if (s_DbgFrameCount < 20)
-		{
-			VANS_LOG("[RootMotion] Frame " << s_DbgFrameCount
-			         << " rootPos=(" << rootPos.x << ", " << rootPos.y << ", " << rootPos.z
-			         << ") delta=(" << deltaPos.x << ", " << deltaPos.y << ", " << deltaPos.z << ")");
-			s_DbgFrameCount++;
-		}
-	}
-
-	// 将 root bone 的水平位移归零，保留垂直分量。
-	glm::vec3 skeletonPos = glm::vec3(0.0f, rootPos.y, 0.0f);
-	glm::mat4 T = glm::translate(glm::mat4(1.0f), skeletonPos);
-	glm::mat4 R = glm::toMat4(rootRot);
-	glm::mat4 S = glm::scale(glm::mat4(1.0f), rootScale);
-	localTransforms[m_RootBoneIndex] = T * R * S;
-}
-
 // ---------------------------------------------------------------------------
 // Internal method: UpdateHierarchy
 // ---------------------------------------------------------------------------
@@ -1161,69 +1483,6 @@ void VansAnimationController::BuildFinalMatrices(const std::vector<glm::mat4>& g
 		m_BoneMatricesSSBO.boneMatrices[i] = glm::mat4(1.0f);
 }
 
-// ---------------------------------------------------------------------------
-// Internal method: InterpolateKeyframes
-// ---------------------------------------------------------------------------
-
-void VansAnimationController::InterpolateKeyframes(const std::vector<BoneKeyframe>& keyframes,
-                                                    float time,
-                                                    glm::vec3& outPos, glm::quat& outRot, glm::vec3& outScale)
-{
-	if (keyframes.empty())
-	{
-		outPos   = glm::vec3(0.0f);
-		outRot   = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
-		outScale = glm::vec3(1.0f);
-		return;
-	}
-
-	if (time <= keyframes.front().time || keyframes.size() == 1)
-	{
-		outPos   = keyframes.front().position;
-		outRot   = keyframes.front().rotation;
-		outScale = keyframes.front().scale;
-		return;
-	}
-
-	if (time >= keyframes.back().time)
-	{
-		outPos   = keyframes.back().position;
-		outRot   = keyframes.back().rotation;
-		outScale = keyframes.back().scale;
-		return;
-	}
-
-	int lo = 0;
-	int hi = static_cast<int>(keyframes.size()) - 1;
-	int nextIdx = hi;
-
-	while (lo <= hi)
-	{
-		int mid = (lo + hi) / 2;
-		if (keyframes[mid].time <= time)
-			lo = mid + 1;
-		else
-		{
-			nextIdx = mid;
-			hi = mid - 1;
-		}
-	}
-
-	int prevIdx = nextIdx - 1;
-	if (prevIdx < 0) prevIdx = 0;
-
-	const BoneKeyframe& kfA = keyframes[prevIdx];
-	const BoneKeyframe& kfB = keyframes[nextIdx];
-
-	float segmentDuration = kfB.time - kfA.time;
-	float alpha = (segmentDuration > 0.0001f) ? (time - kfA.time) / segmentDuration : 0.0f;
-	alpha = glm::clamp(alpha, 0.0f, 1.0f);
-
-	outPos   = glm::mix(kfA.position, kfB.position, alpha);
-	outRot   = glm::slerp(kfA.rotation, kfB.rotation, alpha);
-	outScale = glm::mix(kfA.scale, kfB.scale, alpha);
-}
-
 int VansAnimationController::DetectRootBoneIndex(const Skeleton& skeleton) const
 {
 	auto rootIt = skeleton.boneNameToIndex.find("root");
@@ -1243,8 +1502,13 @@ int VansAnimationController::DetectRootBoneIndex(const Skeleton& skeleton) const
 		return -1;
 
 	// Inspect the current clip to find bones that have animation keyframes.
-	const AnimatorState* current = GetState(m_CurrentStateName);
-	const VansAnimationClip* clip = current ? current->clip : nullptr;
+	const VansAnimationClip* clip = nullptr;
+	if (!m_LayerRuntimes.empty() && m_LayerRuntimes.front().instance)
+	{
+		auto clipIt = m_Clips.find(m_LayerRuntimes.front().instance->GetPrimaryClipName());
+		if (clipIt != m_Clips.end())
+			clip = &clipIt->second;
+	}
 
 	// If the skeleton root itself has keyed translation data, use it directly.
 	if (clip && skeletonRoot < static_cast<int>(clip->boneKeyframes.size())

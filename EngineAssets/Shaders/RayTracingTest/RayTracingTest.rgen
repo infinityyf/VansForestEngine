@@ -3,76 +3,77 @@
 #extension GL_GOOGLE_include_directive : enable
 
 #include "../Common/Common.glsl"
+#include "../GI/GIProbeUpdateCommon.glsl"
 
 layout(location = 0) rayPayloadEXT RayTracePayload hitResult;
 
 layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
-
 layout(set = 0, binding = 1, rgba16f) uniform image3D resultImage;
-layout(set = 0, binding = 2, std430) buffer hitPositionBuffer
+layout(set = 0, binding = 2, std430) buffer hitPositionBuffer { f16vec4 hitPosition[]; } hitPositionInfoBuffer;
+layout(set = 0, binding = 6, std430) buffer hitNormalBuffer { f16vec4 hitNormal[]; } hitNormalInfoBuffer;
+layout(set = 0, binding = 8, std430) buffer hitAlbedoRoughnessBuffer { f16vec4 albedoRoughness[]; } hitAlbedoRoughnessInfoBuffer;
+layout(set = 0, binding = 11, std430) buffer hitEmissionBuffer { f16vec4 emission[]; } hitEmissionInfoBuffer;
+struct GIProbeState
 {
-    f16vec4 hitPosition[];
-} hitPositionInfoBuffer;
-
-layout(set = 0, binding = 6, std430) buffer hitNormalBuffer
-{
-    f16vec4 hitNormal[];
-} hitNormalInfoBuffer;
-
-layout(set = 0, binding = 8, std430) buffer hitAlbedoRoughnessBuffer
-{
-    f16vec4 albedoRoughness[];
-} hitAlbedoRoughnessInfoBuffer;
+    vec4 relocationAndConfidence;
+    vec4 distanceStats;
+    uvec4 metadata;
+};
+layout(set = 0, binding = 9, std430) readonly buffer ProbeStateBuffer { GIProbeState states[]; } probeStates;
 
 layout(push_constant) uniform PushConstants
 {
-    vec4 gridParams;     // xyz = probe spacing, w = max ray distance
-    vec4 dispatchParams; // xyz = probe counts, w = rays per probe
+    vec4 gridParams;
+    vec4 dispatchParams;
     vec4 frameParams;
     vec4 regionParams;
     vec4 lightingParams;
+    vec4 temporalParams;
 } pushConstants;
 
 void main()
 {
-    ivec3 originCount = ivec3(pushConstants.dispatchParams.xyz);
-    vec3 originStride = pushConstants.gridParams.xyz;
-    int sampleCount = int(pushConstants.dispatchParams.w);
+    ivec3 probeCounts = ivec3(pushConstants.dispatchParams.xyz);
+    uint spatialDivisor = max(uint(pushConstants.frameParams.y), 1u);
+    uint directionSlices = max(uint(pushConstants.frameParams.z), 1u);
+    uint raysPerSlice = uint((int(pushConstants.dispatchParams.w) + int(directionSlices) - 1) / int(directionSlices));
 
-    vec3 originSize = vec3(originCount) * originStride;
-    vec3 volumeMin = pushConstants.regionParams.xyz - originSize * 0.5;
+    // TraceRays X packs the active probe and its current direction-slice ray.
+    ivec3 activeProbe = ivec3(int(gl_LaunchIDEXT.x / raysPerSlice), int(gl_LaunchIDEXT.y), int(gl_LaunchIDEXT.z));
+    uint localRay = gl_LaunchIDEXT.x % raysPerSlice;
+    ivec3 probeIndex = activeProbe * ivec3(GI_UpdateSpatialDivisors(uvec3(probeCounts), spatialDivisor)) +
+        ivec3(GI_UpdateSpatialOffset(uint(pushConstants.frameParams.x), uvec3(probeCounts), spatialDivisor));
+    if (any(greaterThanEqual(probeIndex, probeCounts)))
+        return;
 
-    ivec3 probeIndex = ivec3(gl_LaunchIDEXT);
-    vec3 probeWorld = volumeMin + (vec3(probeIndex) + 0.5) * originStride;
+    vec3 volumeMin = pushConstants.regionParams.xyz - vec3(probeCounts) * pushConstants.gridParams.xyz * 0.5;
+    uint probeLinear = GI_ProbeLinearIndex(probeIndex, probeCounts);
+    vec3 probeWorld = volumeMin + (vec3(probeIndex) + 0.5) * pushConstants.gridParams.xyz +
+        probeStates.states[probeLinear].relocationAndConfidence.xyz;
+    bool fixedClassificationRay;
+    vec3 rayDirection = GI_ProbeRayDirection(
+        probeIndex, probeCounts, uint(pushConstants.dispatchParams.w), localRay, raysPerSlice,
+        GI_UpdateDirectionSlice(uint(pushConstants.frameParams.x), uvec3(probeCounts), spatialDivisor, directionSlices),
+        directionSlices,
+        GI_UpdateCycleIndex(uint(pushConstants.frameParams.x), uvec3(probeCounts), spatialDivisor, directionSlices),
+        fixedClassificationRay);
 
-    float hitCount = 0.0;
-    int bufferIndex = probeIndex.z * (originCount.x * originCount.y) + probeIndex.y * originCount.x + probeIndex.x;
-    int bufferOffset = bufferIndex * sampleCount;
+    // Alpha-tested surfaces use the program's any-hit stage.  Fully transparent
+    // materials are excluded from the GI TLAS during scene construction.
+    traceRayEXT(tlas, gl_RayFlagsNoneEXT, 0xFF, 0, 0, 0, probeWorld, 0.001,
+        rayDirection, pushConstants.gridParams.w, 0);
 
-    for (int rayIndex = 0; rayIndex < sampleCount; ++rayIndex)
-    {
-        vec3 rayDirection = SampleSphere(rayIndex, sampleCount);
+    uvec3 activeDimensions = GI_UpdateDispatchDimensions(uvec3(probeCounts), spatialDivisor,
+        uint(pushConstants.frameParams.x));
+    uint activeProbeLinear = uint(activeProbe.z) * activeDimensions.x * activeDimensions.y +
+        uint(activeProbe.y) * activeDimensions.x + uint(activeProbe.x);
+    uint bufferIndex = activeProbeLinear * raysPerSlice + localRay;
+    hitPositionInfoBuffer.hitPosition[bufferIndex] = f16vec4(hitResult.positionHit);
+    hitNormalInfoBuffer.hitNormal[bufferIndex] = f16vec4(hitResult.normalHit);
+    hitAlbedoRoughnessInfoBuffer.albedoRoughness[bufferIndex] = f16vec4(hitResult.albedoRoughness);
+    hitEmissionInfoBuffer.emission[bufferIndex] = f16vec4(hitResult.emissiveRadiance);
 
-        traceRayEXT(
-            tlas,
-            gl_RayFlagsOpaqueEXT,
-            0xFF,
-            0, 0, 0,
-            probeWorld,
-            0.001,
-            rayDirection,
-            pushConstants.gridParams.w,
-            0);
-
-        hitCount += hitResult.positionHit.w;
-
-        // 缓存每个 probe、每个方向的首次命中信息。
-        // 后续 GIPointLight 在这些静态命中点上重新计算光照与 shadow。
-        hitPositionInfoBuffer.hitPosition[bufferOffset + rayIndex] = f16vec4(hitResult.positionHit);
-        hitNormalInfoBuffer.hitNormal[bufferOffset + rayIndex] = f16vec4(hitResult.normalHit);
-        hitAlbedoRoughnessInfoBuffer.albedoRoughness[bufferOffset + rayIndex] = f16vec4(hitResult.albedoRoughness);
-    }
-
-    // resultImage.x 记录 miss ratio，可用于检查 probe 是否被几何包围。
-    imageStore(resultImage, probeIndex, vec4(1.0 - hitCount / float(sampleCount), 0.0, 0.0, 0.0));
+    // Per-probe debug summary is intentionally written by every active ray;
+    // its data is diagnostic only and never feeds lighting.
+    imageStore(resultImage, probeIndex, vec4(1.0 - hitResult.positionHit.w, float(fixedClassificationRay), 0.0, 1.0));
 }

@@ -74,6 +74,7 @@ namespace VansGraphics
 			glm::vec4 position;
 			glm::vec4 giVolumeMin;
 			glm::vec4 giVolumeSizeAndBias;
+			glm::vec4 giGridDimensions;
 		};
 
 		struct CaptureDrawData
@@ -882,12 +883,14 @@ namespace VansGraphics
 		m_CaptureCameraBufferCreated = true;
 
 		auto* descriptors = VansVKDescriptorManager::GetInstance();
-		auto* shR = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_SH_R_RESULT);
-		auto* shG = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_SH_G_RESULT);
-		auto* shB = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_SH_B_RESULT);
-		if (!materialManager->m_PreConvDiffuse || !shR || !shG || !shB)
+		auto& rayTracing = device.GetRayTracingContext();
+		auto* irradianceAtlas = rayTracing.GetGIRegionIrradianceAtlas(0u);
+		auto* visibilityAtlas = rayTracing.GetGIRegionVisibilityAtlas(0u);
+		const VansVKBuffer* probeState = rayTracing.GetGIRegionProbeStateBuffer(0u);
+		if (!materialManager->m_PreConvDiffuse || !irradianceAtlas || !visibilityAtlas ||
+			!probeState || probeState->GetNativeBuffer() == VK_NULL_HANDLE)
 		{
-			VANS_LOG_ERROR("Reflection probe capture requires sky diffuse and GI SH volume textures.");
+			VANS_LOG_ERROR("Reflection probe capture requires sky diffuse and DDGI atlas/state resources.");
 			return fail();
 		}
 
@@ -898,7 +901,7 @@ namespace VansGraphics
 			{ 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
 			{ 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
 			{ 5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
-			{ 6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr }
+			{ 6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr }
 		};
 		std::vector<VkDescriptorSet> captureSets;
 		if (!VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom(
@@ -918,11 +921,11 @@ namespace VansGraphics
 		descriptors->WriteImageDescriptor(m_CaptureDescriptorSet, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{ materialManager->m_PreConvDiffuse->GetImage().GetSampler(), materialManager->m_PreConvDiffuse->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
 		descriptors->WriteImageDescriptor(m_CaptureDescriptorSet, 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{{ shR->GetImage().GetSampler(), shR->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
+			{{ irradianceAtlas->GetImage().GetSampler(), irradianceAtlas->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
 		descriptors->WriteImageDescriptor(m_CaptureDescriptorSet, 5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{{ shG->GetImage().GetSampler(), shG->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-		descriptors->WriteImageDescriptor(m_CaptureDescriptorSet, 6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{{ shB->GetImage().GetSampler(), shB->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
+			{{ visibilityAtlas->GetImage().GetSampler(), visibilityAtlas->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
+		descriptors->WriteBufferDescriptor(m_CaptureDescriptorSet, 6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			{{ probeState->GetNativeBuffer(), 0, probeState->GetBufferSize() }});
 		descriptors->CommitDescriptorUpdates();
 
 		const VkExtent3D extent{ m_ArrayResolution, m_ArrayResolution, 1u };
@@ -1022,15 +1025,16 @@ namespace VansGraphics
 		const float captureFar = std::max(probe.farPlane, std::max(glm::length(placementSize) * 2.0f, 1000.0f));
 		glm::mat4 view = glm::lookAt(probe.capturePosition, probe.capturePosition + directions[face], up[face]);
 		glm::mat4 projection = glm::perspective(glm::radians(90.0f), 1.0f, captureNear, captureFar);
-		const VansGISettings& gi = scene.GetGISettings();
-		const glm::vec3 giVolumeSize = glm::vec3(gi.gridDimensions) * gi.probeSpacingAxes;
-		const glm::vec3 giVolumeMin = gi.regionCenter - giVolumeSize * 0.5f;
+		VansGISettings gi = scene.GetGISettings();
+		NormalizeGISettings(gi);
+		const GIResolvedRegion primaryRegion = ResolveGIRegion(GetPrimaryGIRegionDesc(gi));
 		CaptureCameraData cameraData{};
 		cameraData.viewProjection = projection * view;
 		cameraData.inverseViewProjection = glm::inverse(cameraData.viewProjection);
 		cameraData.position = glm::vec4(probe.capturePosition, 1.0f);
-		cameraData.giVolumeMin = glm::vec4(giVolumeMin, 0.0f);
-		cameraData.giVolumeSizeAndBias = glm::vec4(giVolumeSize, gi.normalBias);
+		cameraData.giVolumeMin = glm::vec4(primaryRegion.volumeMin, 0.0f);
+		cameraData.giVolumeSizeAndBias = glm::vec4(primaryRegion.volumeSize, primaryRegion.normalBias);
+		cameraData.giGridDimensions = glm::vec4(glm::vec3(primaryRegion.gridDimensions), 0.0f);
 		m_CaptureCameraBuffer.SetBufferData(&cameraData, 0, sizeof(cameraData));
 
 		commandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);

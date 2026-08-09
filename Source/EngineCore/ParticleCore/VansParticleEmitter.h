@@ -117,6 +117,9 @@ namespace VansGraphics
 
         // 初始化粒子池（Resize）
         void Initialize();
+		void ResetSimulation();
+		void SetRandomSeed(uint32_t seed);
+		void EmitBurst(uint32_t count, const glm::mat4& localToWorld);
 
         // 每帧更新：Spawn + Init + Update + Age
         void Update(float deltaTime, const glm::mat4& localToWorld);
@@ -127,6 +130,10 @@ namespace VansGraphics
     private:
         // 发射新粒子并执行 Init 模块
         void SpawnParticles(uint32_t count, const glm::mat4& localToWorld);
+		uint32_t NextRandomSeed();
+
+		uint32_t m_RandomSeed = 0x9e3779b9u;
+		uint32_t m_RandomState = 0x9e3779b9u;
     };
 
 } // namespace VansGraphics

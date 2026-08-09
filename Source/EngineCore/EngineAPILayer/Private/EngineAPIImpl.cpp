@@ -1,5 +1,6 @@
 ﻿#include "EngineAPIImpl.h"
 
+#include "AnimationAuthoringBridge.h"
 #include "EngineCommandContext.h"
 #include "../Public/EngineEvents.h"
 #include "ModelAssetPlacementPreparationService.h"
@@ -9,10 +10,20 @@
 #include "VansEditorTextureBridge.h"
 #include "../../AssetCore/VansAssetDatabase.h"
 #include "../../AssetCore/VansAssetGuid.h"
+#include "../../AssetCore/VansAssetMeta.h"
 #include "../../AssetCore/Serialization/VansSerializedValueAccess.h"
+#include "../../AssetCore/Storage/VansAssetMetaStorage.h"
+#include "../../AudioCore/Storage/VansAudioBusSnapshotAssetStorage.h"
+#include "../../AudioCore/Storage/VansAudioDuckingRulesAssetStorage.h"
+#include "../../AudioCore/Storage/VansAudioReverbPresetAssetStorage.h"
+#include "../../AudioCore/VansAudioBusSnapshotAsset.h"
+#include "../../AudioCore/VansAudioDuckingRulesAsset.h"
+#include "../../AudioCore/VansAudioReverbPresetAsset.h"
+#include "../../AudioCore/VansAudioReverbPreset.h"
 #include "../../Configration/VansConfigration.h"
 #include "../../ProjectSystem/VansProjectManager.h"
 #include "../../RenderCore/VansCamera.h"
+#include "../../RenderCore/VansAnimationPreviewRenderer.h"
 #include "../../RenderCore/VansMaterial.h"
 #include "../../RenderCore/ReflectionProbeCore/VansReflectionProbeSystem.h"
 #include "../../RenderCore/VansScene.h"
@@ -39,6 +50,8 @@
 #include "../../SceneCore/VansSceneSchema.h"
 #include "../../SceneCore/VansSceneRuntimeComponentKey.h"
 #include "../../SceneCore/VansSceneContentBuildPlan.h"
+#include "../../TimelineCore/VansTimelineTypes.h"
+#include "../../TimelineCore/VansTimelineSerialization.h"
 #include "../../SceneRuntime/VansRuntimeComponentTypes.h"
 #include "../../RuntimeUI/Public/VansUIDocument.h"
 #include "../../RuntimeUI/Public/VansUIScreen.h"
@@ -49,6 +62,9 @@
 #include "../../RuntimeUI/Serialization/VansUIScreenConfigReader.h"
 #include "../../AnimationCore/VansAnimationNode.h"
 #include "../../AnimationCore/VansAnimationController.h"
+#include "../../AnimationCore/VansSkinnedMeshLoader.h"
+#include "../../AnimationCore/VansAnimatorIO.h"
+#include "../../AnimationCore/VansAnimatorRuntimeCompiler.h"
 #include "../../EventCore/VansEventBus.h"
 #include "../../AnimationCore/MotionMatching/VansMotionMatching.h"
 #include "../../AudioCore/VansAudioReverbEnvironment.h"
@@ -65,14 +81,23 @@
 #include <../../GLM/gtx/quaternion.hpp>
 
 #include <algorithm>
+#include <chrono>
+#include <cctype>
 #include <cfloat>
 #include <cmath>
 #include <filesystem>
 #include <limits>
 #include <mutex>
+#include <stdexcept>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+#include <assimp/Importer.hpp>
+#include <assimp/postprocess.h>
+#include <assimp/scene.h>
+#include <nlohmann/json.hpp>
 
 namespace Vans::EditorAPI
 {
@@ -557,6 +582,8 @@ namespace Vans::EditorAPI
 			case Vans::VansAssetType::Particle: return AssetType::Particle;
 			case Vans::VansAssetType::AnimationClip: return AssetType::AnimationClip;
 			case Vans::VansAssetType::AnimatorController: return AssetType::AnimatorController;
+			case Vans::VansAssetType::BoneMask: return AssetType::BoneMask;
+			case Vans::VansAssetType::Timeline: return AssetType::Timeline;
 			case Vans::VansAssetType::ClothProfile: return AssetType::ClothProfile;
 			case Vans::VansAssetType::PostProcessProfile: return AssetType::PostProcessProfile;
 			case Vans::VansAssetType::RagdollProfile: return AssetType::RagdollProfile;
@@ -567,6 +594,154 @@ namespace Vans::EditorAPI
 			}
 		}
 
+		bool ResolveProjectAnimationAsset(
+			const std::string& guidText,
+			Vans::VansAssetType expectedType,
+			const std::string& pathHint,
+			std::filesystem::path& path,
+			std::string& error)
+		{
+			path.clear();
+			Vans::VansAssetGuid guid;
+			if (!Vans::VansAssetGuid::TryParse(guidText, guid))
+			{
+				error = "Invalid animation dependency GUID '" + guidText + "'";
+				return false;
+			}
+			const auto record = Vans::VansProjectManager::Get().FindAssetRecord(guid);
+			if (!record || record->state == Vans::VansAssetState::Missing)
+			{
+				error = "Animation dependency cannot resolve GUID '" + guidText
+					+ "' in the current project (hint: '" + pathHint + "')";
+				return false;
+			}
+			if (record->type != expectedType)
+			{
+				error = "Animation dependency GUID '" + guidText + "' has the wrong asset type";
+				return false;
+			}
+			path = expectedType == Vans::VansAssetType::Model
+				? record->sourcePath
+				: (!record->artifactPath.empty() ? record->artifactPath : record->sourcePath);
+			if (path.is_relative() && Vans::VansProjectManager::Get().IsProjectLoaded())
+				path = std::filesystem::path(Vans::VansProjectManager::Get().GetProjectRootPath()) / path;
+			path = path.lexically_normal();
+			if (path.empty() || !std::filesystem::exists(path))
+			{
+				error = "Animation dependency has no readable project/engine asset";
+				return false;
+			}
+			return true;
+		}
+
+		bool LoadAnimationPreviewSkeleton(
+			const std::string& modelGuid,
+			VansGraphics::Skeleton& skeleton,
+			std::string& sourcePath,
+			std::string& error)
+		{
+			std::filesystem::path path;
+			if (!ResolveProjectAnimationAsset(modelGuid, Vans::VansAssetType::Model, {}, path, error))
+				return false;
+			sourcePath = path.string();
+			Assimp::Importer importer;
+			const aiScene* imported = importer.ReadFile(sourcePath,
+				aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_GenNormals);
+			if (!imported)
+			{
+				error = "Failed to read animation preview model: " + std::string(importer.GetErrorString());
+				return false;
+			}
+			VansGraphics::VansSkinnedMeshLoader::ExtractSkeleton(imported, skeleton);
+			if (skeleton.bones.empty())
+			{
+				error = "Animation preview model contains no skeletal hierarchy";
+				return false;
+			}
+			return true;
+		}
+
+		bool ResolveAnimationPreviewModel(
+			const std::string& modelGuid,
+			std::filesystem::path& path,
+			float& scaleFactor,
+			Vans::VansSkeletalMeshImportSettings& importSettings,
+			std::string& error)
+		{
+			if (!ResolveProjectAnimationAsset(
+				modelGuid, Vans::VansAssetType::Model, {}, path, error))
+				return false;
+			Vans::VansAssetGuid guid;
+			if (!Vans::VansAssetGuid::TryParse(modelGuid, guid))
+			{
+				error = "Invalid animation preview model GUID";
+				return false;
+			}
+			const auto record = Vans::VansProjectManager::Get().FindAssetRecord(guid);
+			if (!record)
+			{
+				error = "Animation preview model metadata record does not exist";
+				return false;
+			}
+			Vans::VansAssetMeta meta;
+			if (!Vans::VansAssetMetaStorage::Load(record->metaPath, meta, error))
+			{
+				error = "Cannot load animation preview model metadata: " + error;
+				return false;
+			}
+			scaleFactor = meta.ReadFloatSetting("scaleFactor", 1.0f);
+			if (!std::isfinite(scaleFactor) || scaleFactor <= 0.0f)
+			{
+				error = "Animation preview model has an invalid scaleFactor";
+				return false;
+			}
+			importSettings = Vans::ReadSkeletalMeshImportSettings(meta);
+			return true;
+		}
+
+		std::unique_ptr<VansGraphics::VansAnimationController> CompileProjectAnimator(
+			const std::filesystem::path& animatorPath,
+			const VansGraphics::Skeleton& skeleton,
+			bool enableTargetPostProcess,
+			bool enableRootMotion,
+			bool externalPoseTarget,
+			std::string& error)
+		{
+			VansGraphics::AnimatorAssetData asset;
+			if (!VansGraphics::VansAnimatorIO::Load(animatorPath.string(), asset))
+			{
+				error = "Failed to load Animator '" + animatorPath.string() + "'";
+				return nullptr;
+			}
+			VansGraphics::VansAnimatorRuntimeCompileOptions options;
+			options.mode = externalPoseTarget
+				? VansGraphics::VansAnimatorRuntimeCompileMode::ExternalPoseTarget
+				: VansGraphics::VansAnimatorRuntimeCompileMode::FullGraph;
+			options.enableTargetPostProcess = enableTargetPostProcess;
+			options.enableRootMotion = enableRootMotion && !externalPoseTarget;
+			return VansGraphics::VansAnimatorRuntimeCompiler::Compile(
+				asset,
+				skeleton,
+				[](const VansGraphics::AnimatorClipRef& reference,
+				   std::filesystem::path& path,
+				   std::string& resolveError)
+				{
+					return ResolveProjectAnimationAsset(
+						reference.assetGuid, Vans::VansAssetType::AnimationClip,
+						reference.pathHint, path, resolveError);
+				},
+				[](const VansGraphics::VansAnimationLayerDefinition& layer,
+				   std::filesystem::path& path,
+				   std::string& resolveError)
+				{
+					return ResolveProjectAnimationAsset(
+						layer.maskGuid, Vans::VansAssetType::BoneMask,
+						layer.maskPathHint, path, resolveError);
+				},
+				options,
+				error);
+		}
+
 		using RuntimeLightPatch = RuntimeLightEdit;
 		using RuntimeLightPatchType = RuntimePreviewLightType;
 
@@ -575,6 +750,91 @@ namespace Vans::EditorAPI
 			VansGraphics::VansLightManager* manager = nullptr;
 			int index = -1;
 		};
+
+		struct AnimationPreviewSessionState
+		{
+			AnimationPreviewSessionId id = 0;
+			std::string modelGuid;
+			std::string modelPath;
+			VansGraphics::Skeleton skeleton;
+			std::unique_ptr<VansGraphics::VansAnimationPreviewRenderer> renderer;
+			EditorTextureHandle texture = nullptr;
+			std::unique_ptr<VansGraphics::VansAnimationController> controller;
+			std::uint64_t requestedRevision = 0;
+			std::uint64_t displayedRevision = 0;
+			bool playing = true;
+			float speed = 1.0f;
+			AnimationPreviewPlaybackRequest::RootMotionMode rootMotionMode =
+				AnimationPreviewPlaybackRequest::RootMotionMode::InPlace;
+			glm::vec3 rootMotionPosition = glm::vec3(0.0f);
+			std::vector<glm::vec3> rootMotionTrail = { glm::vec3(0.0f) };
+			std::vector<VansGraphics::VansSlotPlaybackHandle> slotHandles;
+			VansGraphics::VansAnimationPreviewView view;
+			int visualizedLayerIndex = -1;
+			std::vector<glm::vec4> visualizationColors;
+			float renderAccumulator = 0.0f;
+			bool renderDirty = true;
+			bool renderLogged = false;
+			float lastUpdateMilliseconds = 0.0f;
+			std::string diagnostic;
+		};
+
+		const char* AnimationPreviewSlotStateName(VansGraphics::VansSlotPlaybackState state)
+		{
+			switch (state)
+			{
+			case VansGraphics::VansSlotPlaybackState::Queued: return "Queued";
+			case VansGraphics::VansSlotPlaybackState::BlendingIn: return "Blending In";
+			case VansGraphics::VansSlotPlaybackState::Playing: return "Playing";
+			case VansGraphics::VansSlotPlaybackState::BlendingOut: return "Blending Out";
+			case VansGraphics::VansSlotPlaybackState::Completed: return "Completed";
+			case VansGraphics::VansSlotPlaybackState::Interrupted: return "Interrupted";
+			case VansGraphics::VansSlotPlaybackState::Rejected: return "Rejected";
+			case VansGraphics::VansSlotPlaybackState::Invalid: break;
+			}
+			return "Invalid";
+		}
+
+		const char* AnimationPreviewSlotEventName(VansGraphics::VansSlotLifecycleEventType type)
+		{
+			switch (type)
+			{
+			case VansGraphics::VansSlotLifecycleEventType::Started: return "Started";
+			case VansGraphics::VansSlotLifecycleEventType::BlendingOut: return "Blending Out";
+			case VansGraphics::VansSlotLifecycleEventType::Completed: return "Completed";
+			case VansGraphics::VansSlotLifecycleEventType::Interrupted: return "Interrupted";
+			case VansGraphics::VansSlotLifecycleEventType::InterruptedByReload: return "Interrupted By Reload";
+			case VansGraphics::VansSlotLifecycleEventType::Rejected: return "Rejected";
+			}
+			return "Unknown";
+		}
+
+		std::unordered_map<AnimationPreviewSessionId, std::unique_ptr<AnimationPreviewSessionState>>&
+		GetAnimationPreviewSessions()
+		{
+			static std::unordered_map<AnimationPreviewSessionId,
+				std::unique_ptr<AnimationPreviewSessionState>> sessions;
+			return sessions;
+		}
+
+		AnimationPreviewSessionId NextAnimationPreviewSessionId()
+		{
+			static AnimationPreviewSessionId nextId = 1;
+			return nextId++;
+		}
+
+		void ClearAnimationPreviewSessions(VansGraphics::VansVKDevice* device)
+		{
+			for (auto& [id, session] : GetAnimationPreviewSessions())
+			{
+				(void)id;
+				if (!session) continue;
+				RetireEditorTexture(device, session->texture);
+				session->texture = nullptr;
+				session->renderer.reset();
+			}
+			GetAnimationPreviewSessions().clear();
+		}
 
 		std::uint16_t RuntimeLightComponentTypeForPatch(RuntimeLightPatchType type)
 		{
@@ -2484,6 +2744,166 @@ namespace Vans::EditorAPI
 		return resolution;
 	}
 
+	TimelineAudioWaveformHandle EngineAPIImpl::RequestTimelineAudioWaveform(
+		const std::string& assetGuid)
+	{
+		const AssetGuidResolution resolved = ResolveAssetGuid(assetGuid);
+		if (!resolved.found || resolved.asset.type != AssetType::Audio || resolved.sourcePath.empty())
+			return {};
+		return m_TimelineDerivedMedia.RequestWaveform(assetGuid, resolved.sourcePath);
+	}
+
+	TimelineVideoThumbnailHandle EngineAPIImpl::RequestTimelineVideoThumbnail(
+		const std::string& assetGuid)
+	{
+		const AssetGuidResolution resolved = ResolveAssetGuid(assetGuid);
+		if (!resolved.found || resolved.asset.type != AssetType::Video || resolved.sourcePath.empty())
+			return {};
+		return m_TimelineDerivedMedia.RequestThumbnail(assetGuid, resolved.sourcePath);
+	}
+
+	ProjectAssetCreateResult EngineAPIImpl::CreateProjectAsset(
+		const ProjectAssetCreateRequest& request)
+	{
+		ProjectAssetCreateResult result;
+		auto& projectManager = Vans::VansProjectManager::Get();
+		if (!projectManager.IsProjectLoaded())
+		{
+			result.message = "Open a project before creating an asset";
+			return result;
+		}
+
+		if (request.directoryPath.empty())
+		{
+			result.message = "Choose a valid project folder before creating an asset";
+			return result;
+		}
+
+		std::error_code directoryError;
+		std::error_code rootError;
+		const std::filesystem::path directory =
+			std::filesystem::weakly_canonical(request.directoryPath, directoryError);
+		const std::filesystem::path projectRoot = std::filesystem::weakly_canonical(
+			projectManager.GetProjectRootPath(), rootError);
+		if (directoryError || rootError || !std::filesystem::is_directory(directory))
+		{
+			result.message = "Choose a valid project folder before creating an asset";
+			return result;
+		}
+
+		const std::filesystem::path relative = directory.lexically_relative(projectRoot);
+		bool insideProject = directory == projectRoot || (!relative.empty() && !relative.is_absolute());
+		for (const std::filesystem::path& part : relative)
+			if (part == "..")
+				insideProject = false;
+		if (!insideProject)
+		{
+			result.message = "Asset creation folder is outside the current project";
+			return result;
+		}
+
+		if (request.kind == ProjectAssetCreationKind::AnimatorController ||
+			request.kind == ProjectAssetCreationKind::BoneMask)
+		{
+			AnimationAuthoringAssetCreateRequest animationRequest;
+			animationRequest.directoryPath = directory.string();
+			animationRequest.kind = request.kind == ProjectAssetCreationKind::AnimatorController
+				? AnimationAuthoringAssetKind::Animator
+				: AnimationAuthoringAssetKind::BoneMask;
+			const AnimationAuthoringAssetCreateResult animationResult =
+				AnimationAuthoringBridge::CreateAsset(animationRequest);
+			result.success = animationResult.success;
+			result.message = animationResult.message;
+			result.assetPath = animationResult.assetPath;
+			return result;
+		}
+
+		auto makeUniquePath = [&](const std::string& baseName, const std::string& extension)
+		{
+			std::filesystem::path candidate = directory / (baseName + extension);
+			if (!std::filesystem::exists(candidate))
+				return candidate;
+			for (int index = 1; index < 1000; ++index)
+			{
+				candidate = directory / (baseName + " " + std::to_string(index) + extension);
+				if (!std::filesystem::exists(candidate))
+					return candidate;
+			}
+			return std::filesystem::path{};
+		};
+
+		std::string error;
+		std::filesystem::path createdPath;
+		switch (request.kind)
+		{
+		case ProjectAssetCreationKind::Timeline:
+		{
+			const std::filesystem::path namePath(request.name);
+			if (request.name.empty() || namePath.is_absolute() || namePath.has_parent_path() ||
+				namePath.filename() != namePath || request.name == "." || request.name == "..")
+			{
+				result.message = "Timeline name must be a non-empty file name";
+				return result;
+			}
+			createdPath = directory / (request.name + ".vtimeline");
+			if (std::filesystem::exists(createdPath))
+			{
+				result.message = "Timeline already exists";
+				return result;
+			}
+			Vans::VansTimelineAsset asset;
+			asset.metadata.displayName = request.name;
+			result.success = Vans::VansTimelineSerialization::SaveAtomic(createdPath, asset, error);
+			break;
+		}
+		case ProjectAssetCreationKind::AudioReverbPreset:
+		{
+			createdPath = makeUniquePath("Room Reverb", ".vreverb");
+			Vans::VansAudioReverbPresetAsset asset;
+			asset.displayName = "Room Reverb";
+			asset.parameters = VansEngine::GetAudioReverbPresetParameters(
+				VansEngine::AudioReverbPreset::Room);
+			result.success = !createdPath.empty() &&
+				Vans::VansAudioReverbPresetAssetStorage::SaveAtomic(createdPath, asset, error);
+			break;
+		}
+		case ProjectAssetCreationKind::AudioBusSnapshot:
+		{
+			createdPath = makeUniquePath("Gameplay Mix", ".vaudiosnapshot");
+			Vans::VansAudioBusSnapshotAsset asset;
+			asset.displayName = "Gameplay Mix";
+			asset.snapshot.fadeSeconds = 0.25f;
+			asset.snapshot.buses = {
+				VansEngine::AudioBusSnapshotEntry{ "Music", 0.8f },
+				VansEngine::AudioBusSnapshotEntry{ "SFX", 1.0f },
+				VansEngine::AudioBusSnapshotEntry{ "Voice", 1.0f }
+			};
+			result.success = !createdPath.empty() &&
+				Vans::VansAudioBusSnapshotAssetStorage::SaveAtomic(createdPath, asset, error);
+			break;
+		}
+		case ProjectAssetCreationKind::AudioDuckingRules:
+		{
+			createdPath = makeUniquePath("Voice Ducking", ".vducking");
+			Vans::VansAudioDuckingRulesAsset asset;
+			asset.displayName = "Voice Ducking";
+			asset.rules = { VansEngine::AudioDuckingRule{} };
+			result.success = !createdPath.empty() &&
+				Vans::VansAudioDuckingRulesAssetStorage::SaveAtomic(createdPath, asset, error);
+			break;
+		}
+		default:
+			result.message = "Unsupported project asset creation kind";
+			return result;
+		}
+
+		result.assetPath = result.success ? createdPath.string() : std::string{};
+		result.message = result.success
+			? "Project asset created"
+			: (error.empty() ? "Project asset creation failed" : error);
+		return result;
+	}
+
 	AssetRefreshResult EngineAPIImpl::RefreshProjectAsset(const std::string& assetPath, bool importIfMissing)
 	{
 		AssetRefreshResult result;
@@ -2502,7 +2922,114 @@ namespace Vans::EditorAPI
 				: VansAssetOperationPolicy::ReadOnly(),
 			refreshError);
 		result.message = refreshError;
+		if (result.success)
+		{
+			std::string extension = std::filesystem::path(assetPath).extension().string();
+			std::transform(extension.begin(), extension.end(), extension.begin(),
+				[](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+			if (extension == ".vanimator" || extension == ".vclip" || extension == ".vbonemask")
+			{
+				std::string reloadError;
+				if (!ReloadSceneAnimationDefinitions(reloadError))
+				{
+					result.success = false;
+					result.message = reloadError;
+				}
+			}
+		}
 		return result;
+	}
+
+	bool EngineAPIImpl::ReloadSceneAnimationDefinitions(std::string& error)
+	{
+		error.clear();
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		if (!scene)
+			return true;
+
+		struct PendingReload
+		{
+			VansGraphics::VansAnimationNode* node = nullptr;
+			bool retargetSource = false;
+			std::unique_ptr<VansGraphics::VansAnimationController> controller;
+			std::string stateDiagnostic;
+		};
+		std::vector<PendingReload> pending;
+		for (VansGraphics::VansAnimationNode* node : scene->GetAnimationNodes())
+		{
+			if (!node)
+				continue;
+			if (VansGraphics::VansAnimationController* previous = node->GetController())
+			{
+				const std::filesystem::path animatorPath =
+					std::filesystem::path(node->GetAnimatorFilePath()).lexically_normal();
+				if (!animatorPath.empty())
+				{
+					std::string compileError;
+					const bool externalPoseTarget = node->IsRetargetEnabled();
+					auto compiled = CompileProjectAnimator(animatorPath, node->GetSkeleton(), true,
+						previous->IsRootMotionEnabled(), externalPoseTarget, compileError);
+					if (!compiled)
+					{
+						error = "Animator hot reload kept the last-good target definition for '"
+							+ node->GetName() + "': " + compileError;
+						return false;
+					}
+					PendingReload reload;
+					reload.node = node;
+					reload.controller = std::move(compiled);
+					reload.controller->TransferRuntimeStateFrom(
+						*previous, node->GetSkeleton(), reload.stateDiagnostic);
+					reload.controller->Update(0.0f, node->GetSkeleton());
+					pending.push_back(std::move(reload));
+				}
+			}
+
+			if (node->IsRetargetEnabled() && node->GetRetargetSourceController())
+			{
+				const std::filesystem::path animatorPath = std::filesystem::path(
+					node->GetRetargetRuntimeDesc().sourceAnimatorPath).lexically_normal();
+				if (!animatorPath.empty())
+				{
+					VansGraphics::VansAnimationController* previous = node->GetRetargetSourceController();
+					std::string compileError;
+					auto compiled = CompileProjectAnimator(animatorPath,
+						node->GetRetargetSourceSkeleton(), false,
+						previous->IsRootMotionEnabled(), false, compileError);
+					if (!compiled)
+					{
+						error = "Animator hot reload kept the last-good retarget source definition for '"
+							+ node->GetName() + "': " + compileError;
+						return false;
+					}
+					PendingReload reload;
+					reload.node = node;
+					reload.retargetSource = true;
+					reload.controller = std::move(compiled);
+					reload.controller->TransferRuntimeStateFrom(
+						*previous, node->GetRetargetSourceSkeleton(), reload.stateDiagnostic);
+					reload.controller->Update(0.0f, node->GetRetargetSourceSkeleton());
+					pending.push_back(std::move(reload));
+				}
+			}
+		}
+
+		for (PendingReload& reload : pending)
+		{
+			if (!reload.stateDiagnostic.empty())
+				VANS_LOG_WARN("[AnimationHotReload] " << reload.node->GetName()
+					<< ": " << reload.stateDiagnostic);
+			const bool replaced = reload.retargetSource
+				? reload.node->ReplaceRetargetSourceController(std::move(reload.controller))
+				: scene->ReplaceAnimationRuntimeController(reload.node, std::move(reload.controller));
+			if (!replaced)
+			{
+				error = "Animator hot reload could not replace the runtime controller for '"
+					+ reload.node->GetName() + "'";
+				return false;
+			}
+		}
+		return true;
 	}
 
 	std::vector<RecentProjectEntry> EngineAPIImpl::GetRecentProjects() const
@@ -2587,6 +3114,7 @@ namespace Vans::EditorAPI
 	{
 		ProjectOpenResult result;
 		CloseAllUIDocuments();
+		m_TimelineDerivedMedia.Clear();
 
 		auto& projectManager = Vans::VansProjectManager::Get();
 		result.success = request.createNew
@@ -2631,6 +3159,8 @@ namespace Vans::EditorAPI
 	void EngineAPIImpl::CloseProject()
 	{
 		CloseAllUIDocuments();
+		ClearAnimationPreviewSessions(static_cast<VansGraphics::VansVKDevice*>(m_Device));
+		m_TimelineDerivedMedia.Clear();
 
 		auto& projectManager = Vans::VansProjectManager::Get();
 		if (projectManager.IsProjectLoaded())
@@ -3853,40 +4383,29 @@ namespace Vans::EditorAPI
 			return {};
 
 		const VansGraphics::VansGISettings& gi = scene->GetGISettings();
-		const VansGraphics::GIResolvedRegion primaryRegion =
-			VansGraphics::ResolveGIRegion(VansGraphics::GetPrimaryGIRegionDesc(gi));
-		const glm::vec3 volumeMax = primaryRegion.volumeMin + primaryRegion.volumeSize;
 		auto estimateMemoryMB = [](const VansGraphics::GIResolvedRegion& region) {
-			const std::uint64_t bytesPerProbe =
-				48ull + 48ull + 8ull + 1024ull +
-				static_cast<std::uint64_t>(region.raysPerProbe) * (8ull + 8ull + 8ull + 8ull + 4ull);
+			const VansGraphics::GIProbeUpdateBatch batch = VansGraphics::BuildGIProbeUpdateBatch(region, 0u);
+			const std::uint64_t atlasAndStateBytes = 512ull + 1024ull + 48ull;
+			const std::uint64_t activeRayWorkingBytes = batch.activeRayCount * (8ull + 8ull + 8ull + 8ull + 4ull);
 			return static_cast<float>(
-				static_cast<double>(region.probeCount * bytesPerProbe) / (1024.0 * 1024.0));
+				static_cast<double>(region.probeCount * atlasAndStateBytes + activeRayWorkingBytes) / (1024.0 * 1024.0));
 		};
 
 		GIInspectorSettingsSnapshot settings;
 		settings.available = true;
-		settings.regionCenter = ToEditorVec3(primaryRegion.center);
-		settings.volumeMin = ToEditorVec3(primaryRegion.volumeMin);
-		settings.volumeMax = ToEditorVec3(volumeMax);
-		settings.gridDimensions = {
-			static_cast<float>(primaryRegion.gridDimensions.x),
-			static_cast<float>(primaryRegion.gridDimensions.y),
-			static_cast<float>(primaryRegion.gridDimensions.z) };
-		settings.probeSpacingAxes = ToEditorVec3(primaryRegion.probeSpacingAxes);
-		settings.normalBias = primaryRegion.normalBias;
-		settings.maxRayDistance = primaryRegion.maxRayDistance;
-		settings.volumeFadeDistance = primaryRegion.volumeFadeDistance;
-		settings.raysPerProbe = primaryRegion.raysPerProbe;
-		settings.spatialUpdateDivisor = primaryRegion.spatialUpdateDivisor;
-		settings.directionUpdateSlices = primaryRegion.directionUpdateSlices;
 		settings.environmentIntensity = gi.environmentIntensity;
 		settings.maxIndirectRadiance = gi.maxIndirectRadiance;
-		settings.maxSHL0 = gi.maxSHL0;
+		settings.maxProbeRadiance = gi.maxProbeRadiance;
+		settings.irradianceHysteresis = gi.irradianceHysteresis;
+		settings.distanceHysteresis = gi.distanceHysteresis;
+		settings.distanceSharpness = gi.distanceSharpness;
+		settings.brightnessChangeThreshold = gi.brightnessChangeThreshold;
 		settings.showProbeGizmos = gi.showProbeGizmos;
 		settings.showProbeVolume = gi.showProbeVolume;
 		settings.debugView = static_cast<int>(gi.debugView);
 		settings.debugExposure = gi.debugExposure;
+		settings.probeOnlyDeferredOutput = gi.probeOnlyDeferredOutput;
+		settings.probeOnlyDeferredExposure = gi.probeOnlyDeferredExposure;
 		settings.gizmoStride = gi.gizmoStride;
 		settings.selectedRegionIndex = gi.selectedRegionIndex;
 		settings.totalProbeCount = 0;
@@ -3908,7 +4427,7 @@ namespace Vans::EditorAPI
 				static_cast<float>(region.gridDimensions.x),
 				static_cast<float>(region.gridDimensions.y),
 				static_cast<float>(region.gridDimensions.z) };
-			regionSnapshot.probeSpacingAxes = ToEditorVec3(region.probeSpacingAxes);
+			regionSnapshot.probeSpacing = region.probeSpacing;
 			regionSnapshot.normalBias = region.normalBias;
 			regionSnapshot.maxRayDistance = region.maxRayDistance;
 			regionSnapshot.volumeFadeDistance = region.volumeFadeDistance;
@@ -3919,7 +4438,7 @@ namespace Vans::EditorAPI
 			regionSnapshot.totalProbeCount = static_cast<std::uint32_t>(std::min<std::uint64_t>(
 				region.probeCount,
 				std::numeric_limits<std::uint32_t>::max()));
-			regionSnapshot.rayCacheEntries = region.probeCount * region.raysPerProbe;
+			regionSnapshot.rayCacheEntries = VansGraphics::BuildGIProbeUpdateBatch(region, 0u).activeRayCount;
 			regionSnapshot.estimatedMemoryMB = estimateMemoryMB(region);
 			if (region.enabled)
 			{
@@ -3960,10 +4479,7 @@ namespace Vans::EditorAPI
 				clampSpacing(snapshot.size.x, fallback.size.x),
 				clampSpacing(snapshot.size.y, fallback.size.y),
 				clampSpacing(snapshot.size.z, fallback.size.z));
-			region.probeSpacingAxes = glm::vec3(
-				clampSpacing(snapshot.probeSpacingAxes.x, fallback.probeSpacingAxes.x),
-				clampSpacing(snapshot.probeSpacingAxes.y, fallback.probeSpacingAxes.y),
-				clampSpacing(snapshot.probeSpacingAxes.z, fallback.probeSpacingAxes.z));
+			region.probeSpacing = clampSpacing(snapshot.probeSpacing, fallback.probeSpacing);
 			region.gridDimensions = glm::uvec3(
 				clampDimension(snapshot.gridDimensions.x, fallback.gridDimensions.x),
 				clampDimension(snapshot.gridDimensions.y, fallback.gridDimensions.y),
@@ -3987,70 +4503,28 @@ namespace Vans::EditorAPI
 			for (size_t index = 0; index < settings.regions.size(); ++index)
 			{
 				const VansGraphics::GIProbeRegionDesc fallback =
-					index < oldRegions.size() ? oldRegions[index] : VansGraphics::BuildLegacyGIRegionDesc(gi);
+					index < oldRegions.size() ? oldRegions[index] : VansGraphics::GIProbeRegionDesc{};
 				gi.regions.push_back(buildRegion(settings.regions[index], fallback));
 			}
 			gi.selectedRegionIndex = std::min<std::uint32_t>(
 				settings.selectedRegionIndex,
 				static_cast<std::uint32_t>(gi.regions.size() - 1u));
 		}
-		else
-		{
-			VansGraphics::GIProbeRegionDesc region = VansGraphics::BuildLegacyGIRegionDesc(gi);
-			region.center = glm::vec3(settings.regionCenter.x, settings.regionCenter.y, settings.regionCenter.z);
-			region.gridDimensions = glm::uvec3(
-				clampDimension(settings.gridDimensions.x, region.gridDimensions.x),
-				clampDimension(settings.gridDimensions.y, region.gridDimensions.y),
-				clampDimension(settings.gridDimensions.z, region.gridDimensions.z));
-			region.probeSpacingAxes = glm::vec3(
-				clampSpacing(settings.probeSpacingAxes.x, region.probeSpacingAxes.x),
-				clampSpacing(settings.probeSpacingAxes.y, region.probeSpacingAxes.y),
-				clampSpacing(settings.probeSpacingAxes.z, region.probeSpacingAxes.z));
-			region.size = glm::vec3(region.gridDimensions) * region.probeSpacingAxes;
-			region.raysPerProbe = std::clamp(settings.raysPerProbe, 1u, 4096u);
-			region.spatialUpdateDivisor = settings.spatialUpdateDivisor;
-			region.directionUpdateSlices = settings.directionUpdateSlices;
-			region.maxRayDistance = settings.maxRayDistance;
-			region.normalBias = settings.normalBias;
-			region.volumeFadeDistance = settings.volumeFadeDistance;
-			region.overrideGridDimensions = true;
-			gi.regions = { region };
-			gi.selectedRegionIndex = 0;
-		}
 
-		if (!gi.regions.empty())
-		{
-			const std::uint32_t selected = std::min<std::uint32_t>(
-				settings.selectedRegionIndex,
-				static_cast<std::uint32_t>(gi.regions.size() - 1u));
-			VansGraphics::GIProbeRegionDesc& selectedRegion = gi.regions[selected];
-			selectedRegion.center = glm::vec3(settings.regionCenter.x, settings.regionCenter.y, settings.regionCenter.z);
-			selectedRegion.gridDimensions = glm::uvec3(
-				clampDimension(settings.gridDimensions.x, selectedRegion.gridDimensions.x),
-				clampDimension(settings.gridDimensions.y, selectedRegion.gridDimensions.y),
-				clampDimension(settings.gridDimensions.z, selectedRegion.gridDimensions.z));
-			selectedRegion.probeSpacingAxes = glm::vec3(
-				clampSpacing(settings.probeSpacingAxes.x, selectedRegion.probeSpacingAxes.x),
-				clampSpacing(settings.probeSpacingAxes.y, selectedRegion.probeSpacingAxes.y),
-				clampSpacing(settings.probeSpacingAxes.z, selectedRegion.probeSpacingAxes.z));
-			selectedRegion.size = glm::vec3(selectedRegion.gridDimensions) * selectedRegion.probeSpacingAxes;
-			selectedRegion.raysPerProbe = std::clamp(settings.raysPerProbe, 1u, 4096u);
-			selectedRegion.spatialUpdateDivisor = settings.spatialUpdateDivisor;
-			selectedRegion.directionUpdateSlices = settings.directionUpdateSlices;
-			selectedRegion.maxRayDistance = settings.maxRayDistance;
-			selectedRegion.normalBias = settings.normalBias;
-			selectedRegion.volumeFadeDistance = settings.volumeFadeDistance;
-			selectedRegion.overrideGridDimensions = true;
-			gi.selectedRegionIndex = selected;
-		}
 
 		gi.environmentIntensity = std::max(settings.environmentIntensity, 0.0f);
 		gi.maxIndirectRadiance = std::max(settings.maxIndirectRadiance, 0.0f);
-		gi.maxSHL0 = std::max(settings.maxSHL0, 0.0f);
+		gi.maxProbeRadiance = std::max(settings.maxProbeRadiance, 0.0f);
+		gi.irradianceHysteresis = settings.irradianceHysteresis;
+		gi.distanceHysteresis = settings.distanceHysteresis;
+		gi.distanceSharpness = settings.distanceSharpness;
+		gi.brightnessChangeThreshold = settings.brightnessChangeThreshold;
 		gi.showProbeGizmos = settings.showProbeGizmos;
 		gi.showProbeVolume = settings.showProbeVolume;
 		gi.debugView = static_cast<std::uint32_t>(std::max(settings.debugView, 0));
 		gi.debugExposure = std::max(settings.debugExposure, 0.001f);
+		gi.probeOnlyDeferredOutput = settings.probeOnlyDeferredOutput;
+		gi.probeOnlyDeferredExposure = std::max(settings.probeOnlyDeferredExposure, 0.001f);
 		VansGraphics::NormalizeGISettings(gi);
 		const VansGraphics::GIResolvedRegion primaryRegion =
 			VansGraphics::ResolveGIRegion(VansGraphics::GetPrimaryGIRegionDesc(gi));
@@ -4068,9 +4542,24 @@ namespace Vans::EditorAPI
 			static_cast<float>(device->GetRenderHeight()),
 			1.0f / std::max(1u, device->GetRenderWidth()),
 			1.0f / std::max(1u, device->GetRenderHeight()));
-		data.giVolumeMin = glm::vec4(primaryRegion.volumeMin, 0.0f);
-		data.giVolumeSizeAndBias = glm::vec4(primaryRegion.volumeSize, primaryRegion.normalBias);
-		data.traceParams = glm::vec4(primaryRegion.maxRayDistance, 0.75f, primaryRegion.volumeFadeDistance, 0.0f);
+		uint32_t regionCount = 0u;
+		for (const VansGraphics::GIProbeRegionDesc* desc : VansGraphics::BuildActiveGIRegionOrder(gi))
+		{
+			if (regionCount >= VansGraphics::VANS_SSGI_MAX_GI_REGIONS)
+				continue;
+			const VansGraphics::GIResolvedRegion region = VansGraphics::ResolveGIRegion(*desc);
+			VansGraphics::SSGIRegionParamsGPU& destination = data.regions[regionCount++];
+			destination.volumeMin = glm::vec4(region.volumeMin, 0.0f);
+			destination.volumeSizeAndBias = glm::vec4(region.volumeSize, region.normalBias);
+			destination.traceParams = glm::vec4(region.maxRayDistance, 0.75f, region.volumeFadeDistance, 0.0f);
+			destination.gridDimensionsAndPriority = glm::vec4(glm::vec3(region.gridDimensions), region.priority);
+		}
+		data.regionInfo.x = static_cast<float>(regionCount);
+		data.deferredProbeDebug = glm::vec4(
+			gi.probeOnlyDeferredOutput ? 1.0f : 0.0f,
+			gi.probeOnlyDeferredExposure,
+			0.0f,
+			0.0f);
 		materialManager->m_SSGICBBuffer.SetBufferData(&data, 0, sizeof(data));
 	}
 
@@ -4085,26 +4574,12 @@ namespace Vans::EditorAPI
 			return m_GIProbeDebugSnapshot;
 		}
 
-		auto* materialManager = scene->GetMaterialManager();
-		if (!materialManager)
-		{
-			m_GIProbeDebugSnapshot.status = "Material manager is not available.";
-			return m_GIProbeDebugSnapshot;
-		}
-
 		auto& rayTracing = device->GetRayTracingContext();
-		VansGraphics::VansTexture* shR = rayTracing.GetGIRegionSHR(0);
-		VansGraphics::VansTexture* shG = rayTracing.GetGIRegionSHG(0);
-		VansGraphics::VansTexture* shB = rayTracing.GetGIRegionSHB(0);
-		if (!shR)
-			shR = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_SH_R_RESULT);
-		if (!shG)
-			shG = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_SH_G_RESULT);
-		if (!shB)
-			shB = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_SH_B_RESULT);
-		if (!shR || !shG || !shB)
+		VansGraphics::VansTexture* irradianceAtlas = rayTracing.GetGIRegionIrradianceAtlas(0);
+		VansGraphics::VansTexture* visibilityAtlas = rayTracing.GetGIRegionVisibilityAtlas(0);
+		if (!irradianceAtlas || !visibilityAtlas)
 		{
-			m_GIProbeDebugSnapshot.status = "GI SH textures are not created yet.";
+			m_GIProbeDebugSnapshot.status = "DDGI atlases are not created yet.";
 			return m_GIProbeDebugSnapshot;
 		}
 
@@ -4115,148 +4590,6 @@ namespace Vans::EditorAPI
 		const std::uint32_t maxGridDimension = std::max({ gridDimensions.x, gridDimensions.y, gridDimensions.z });
 		stride = std::clamp(stride, 1u, maxGridDimension);
 		exposure = std::max(exposure, 0.001f);
-
-		struct GISampleCoord
-		{
-			std::uint32_t x = 0;
-			std::uint32_t y = 0;
-			std::uint32_t z = 0;
-		};
-		std::vector<GISampleCoord> sampleCoords;
-		for (std::uint32_t z = 0; z < gridDimensions.z; z += stride)
-		for (std::uint32_t y = 0; y < gridDimensions.y; y += stride)
-		for (std::uint32_t x = 0; x < gridDimensions.x; x += stride)
-			sampleCoords.push_back({ x, y, z });
-
-		const VkDeviceSize sampleBytes = 4u * sizeof(float);
-		const VkDeviceSize readbackBytes = std::max<VkDeviceSize>(
-			1,
-			static_cast<VkDeviceSize>(sampleCoords.size()) * sampleBytes);
-		VansGraphics::VansVKBuffer readR;
-		VansGraphics::VansVKBuffer readG;
-		VansGraphics::VansVKBuffer readB;
-		auto destroyReadbacks = [&]()
-		{
-			if (readR.IsMapped()) readR.Unmap();
-			if (readG.IsMapped()) readG.Unmap();
-			if (readB.IsMapped()) readB.Unmap();
-			readR.DestroyVulkanBuffer(device->GetLogicDevice());
-			readG.DestroyVulkanBuffer(device->GetLogicDevice());
-			readB.DestroyVulkanBuffer(device->GetLogicDevice());
-		};
-
-		const VkBufferUsageFlags readUsage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-		const VkMemoryPropertyFlags readMemory = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-		if (!readR.CreatVulkanBuffer(device->GetLogicDevice(), readbackBytes, VK_FORMAT_R32_SFLOAT, readUsage, readMemory) ||
-			!readG.CreatVulkanBuffer(device->GetLogicDevice(), readbackBytes, VK_FORMAT_R32_SFLOAT, readUsage, readMemory) ||
-			!readB.CreatVulkanBuffer(device->GetLogicDevice(), readbackBytes, VK_FORMAT_R32_SFLOAT, readUsage, readMemory) ||
-			!readR.PersistentMap() || !readG.PersistentMap() || !readB.PersistentMap())
-		{
-			m_GIProbeDebugSnapshot.status = "Failed to allocate GI SH readback buffers.";
-			destroyReadbacks();
-			return m_GIProbeDebugSnapshot;
-		}
-
-		std::vector<VkBufferImageCopy> regions;
-		regions.reserve(sampleCoords.size());
-		for (std::size_t i = 0; i < sampleCoords.size(); ++i)
-		{
-			const GISampleCoord& sample = sampleCoords[i];
-			VkBufferImageCopy region{};
-			region.bufferOffset = static_cast<VkDeviceSize>(i) * sampleBytes;
-			region.bufferRowLength = 0;
-			region.bufferImageHeight = 0;
-			region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
-			region.imageOffset = {
-				static_cast<int32_t>(sample.x),
-				static_cast<int32_t>(sample.y),
-				static_cast<int32_t>(sample.z) };
-			region.imageExtent = { 1, 1, 1 };
-			regions.push_back(region);
-		}
-
-		VansGraphics::VansVKCommandBuffer& commandBuffer = device->GetImmediateGraphicsCommandBuffer();
-		if (!commandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
-		{
-			m_GIProbeDebugSnapshot.status = "Failed to begin GI SH readback command buffer.";
-			destroyReadbacks();
-			return m_GIProbeDebugSnapshot;
-		}
-
-		auto transition = [&](VansGraphics::VansTexture* texture, VkAccessFlags srcAccess, VkAccessFlags dstAccess,
-			VkImageLayout oldLayout, VkImageLayout newLayout, VkPipelineStageFlags srcStage, VkPipelineStageFlags dstStage)
-		{
-			VkImageMemoryBarrier barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-			barrier.srcAccessMask = srcAccess;
-			barrier.dstAccessMask = dstAccess;
-			barrier.oldLayout = oldLayout;
-			barrier.newLayout = newLayout;
-			barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			barrier.image = texture->GetImage().GetImage();
-			barrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-			commandBuffer.PipelineBarrier(srcStage, dstStage, {}, {}, { barrier });
-			texture->GetImage().SetTrackedImageLayout(newLayout);
-		};
-
-		const VkAccessFlags readbackSourceAccess = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-		const VkPipelineStageFlags readbackSourceStage =
-			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-
-		transition(shR, readbackSourceAccess, VK_ACCESS_TRANSFER_READ_BIT,
-			VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-			readbackSourceStage, VK_PIPELINE_STAGE_TRANSFER_BIT);
-		transition(shG, readbackSourceAccess, VK_ACCESS_TRANSFER_READ_BIT,
-			VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-			readbackSourceStage, VK_PIPELINE_STAGE_TRANSFER_BIT);
-		transition(shB, readbackSourceAccess, VK_ACCESS_TRANSFER_READ_BIT,
-			VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-			readbackSourceStage, VK_PIPELINE_STAGE_TRANSFER_BIT);
-
-		VansGraphics::VansVKMemoryManager::CopyImageToBuffer(commandBuffer, shR->GetImage(), readR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, regions);
-		VansGraphics::VansVKMemoryManager::CopyImageToBuffer(commandBuffer, shG->GetImage(), readG, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, regions);
-		VansGraphics::VansVKMemoryManager::CopyImageToBuffer(commandBuffer, shB->GetImage(), readB, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, regions);
-
-		transition(shR, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
-			VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
-			VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
-		transition(shG, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
-			VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
-			VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
-		transition(shB, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
-			VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
-			VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
-
-		commandBuffer.EndCommandBufferRecord();
-		const bool submitted = VansGraphics::VansVKCommandBuffer::SubmitCommands(
-			device->GetGraphicsQueue(),
-			device->GetLogicDevice(),
-			{ commandBuffer.GetVKCommandBuffer() },
-			{}, {},
-			commandBuffer.m_CommandBufferFinishSubmitFence);
-		commandBuffer.ResetCommandBuffer(false);
-		if (!submitted)
-		{
-			m_GIProbeDebugSnapshot.status = "Failed to submit GI SH readback command buffer.";
-			destroyReadbacks();
-			return m_GIProbeDebugSnapshot;
-		}
-
-		readR.InvalidateMappedRange(0, readbackBytes);
-		readG.InvalidateMappedRange(0, readbackBytes);
-		readB.InvalidateMappedRange(0, readbackBytes);
-
-		const float* rData = static_cast<const float*>(readR.GetMappedPtr());
-		const float* gData = static_cast<const float*>(readG.GetMappedPtr());
-		const float* bData = static_cast<const float*>(readB.GetMappedPtr());
-		if (!rData || !gData || !bData)
-		{
-			m_GIProbeDebugSnapshot.status = "GI SH readback buffers are not mapped.";
-			destroyReadbacks();
-			return m_GIProbeDebugSnapshot;
-		}
-
-		const glm::vec3 volumeMin = primaryRegion.volumeMin;
 		m_GIProbeDebugSnapshot.available = true;
 		m_GIProbeDebugSnapshot.gridDimensions = {
 			static_cast<float>(gridDimensions.x),
@@ -4264,31 +4597,9 @@ namespace Vans::EditorAPI
 			static_cast<float>(gridDimensions.z) };
 		m_GIProbeDebugSnapshot.stride = stride;
 		m_GIProbeDebugSnapshot.exposure = exposure;
-		m_GIProbeDebugSnapshot.status = "Captured GI probe SH.";
-		m_GIProbeDebugSnapshot.probes.clear();
-
-		m_GIProbeDebugSnapshot.probes.reserve(sampleCoords.size());
-		for (std::size_t i = 0; i < sampleCoords.size(); ++i)
-		{
-			const GISampleCoord& sample = sampleCoords[i];
-			const std::size_t texel = i * 4u;
-			const glm::vec3 l0(std::max(rData[texel + 0], 0.0f), std::max(gData[texel + 0], 0.0f), std::max(bData[texel + 0], 0.0f));
-			const glm::vec3 l1(
-				std::abs(rData[texel + 1]) + std::abs(rData[texel + 2]) + std::abs(rData[texel + 3]),
-				std::abs(gData[texel + 1]) + std::abs(gData[texel + 2]) + std::abs(gData[texel + 3]),
-				std::abs(bData[texel + 1]) + std::abs(bData[texel + 2]) + std::abs(bData[texel + 3]));
-			const float l0Energy = std::max({ l0.r, l0.g, l0.b, 1e-4f });
-			const float l1Energy = std::max({ l1.r, l1.g, l1.b });
-			GIProbeDebugEntrySnapshot entry;
-			entry.position = ToEditorVec3(
-				volumeMin + (glm::vec3(sample.x, sample.y, sample.z) + glm::vec3(0.5f)) * primaryRegion.probeSpacingAxes);
-			entry.l0Diffuse = ToEditorVec3(l0 * 0.28209479f * exposure);
-			entry.l1Ratio = std::clamp(l1Energy / l0Energy, 0.0f, 1.0f);
-			m_GIProbeDebugSnapshot.probes.push_back(entry);
-		}
-
-		destroyReadbacks();
+		m_GIProbeDebugSnapshot.status = "DDGI atlas and probe-state views are available in GI Ray Tracing Preview.";
 		return m_GIProbeDebugSnapshot;
+
 	}
 
 	GIProbeDebugSnapshot EngineAPIImpl::GetGIProbeDebugSnapshot() const
@@ -4335,8 +4646,7 @@ namespace Vans::EditorAPI
 		return snapshot;
 	}
 
-	RenderTexturePreview EngineAPIImpl::RequestGIRTPreview(
-		std::uint32_t mode,
+	std::vector<RenderTexturePreview> EngineAPIImpl::RequestGIRTPreviews(
 		std::uint32_t zSlice,
 		std::uint32_t rayIndex,
 		float exposure,
@@ -4347,10 +4657,7 @@ namespace Vans::EditorAPI
 			return {};
 
 		auto& rayTracing = device->GetRayTracingContext();
-		rayTracing.RequestGIRTPreview(mode, zSlice, rayIndex, exposure, positionScale);
-		auto* texture = rayTracing.GetGIRTPreviewTexture();
-		if (texture == nullptr)
-			return {};
+		rayTracing.RequestGIRTPreviews(zSlice, rayIndex, exposure, positionScale);
 
 		static constexpr const char* kPreviewNames[] = {
 			"RT Miss Ratio",
@@ -4359,20 +4666,28 @@ namespace Vans::EditorAPI
 			"RT Hit Normal",
 			"RT Hit Albedo",
 			"RT Hit Roughness",
-			"GI Direct Radiance",
-			"GI SH L0",
-			"GI SH L1 Magnitude",
-			"GI SH R L1 (Signed)",
-			"GI SH G L1 (Signed)",
-			"GI SH B L1 (Signed)"
+			"GI Ray Radiance",
+			"DDGI Irradiance (Up)",
+			"DDGI Distance Mean (Up)",
+			"DDGI Distance StdDev (Up)",
+			"DDGI Probe Confidence",
+			"DDGI Probe Classification"
 		};
-		const std::uint32_t safeMode = std::min<std::uint32_t>(mode, 11u);
-		return BuildImagePreview(
-			device,
-			180,
-			kPreviewNames[safeMode],
-			texture->GetImage(),
-			VK_IMAGE_LAYOUT_GENERAL);
+		std::vector<RenderTexturePreview> previews;
+		previews.reserve(VansGraphics::GIRTPreviewModeCount);
+		for (std::uint32_t mode = 0u; mode < VansGraphics::GIRTPreviewModeCount; ++mode)
+		{
+			auto* texture = rayTracing.GetGIRTPreviewTexture(mode);
+			if (texture == nullptr)
+				continue;
+			previews.push_back(BuildImagePreview(
+				device,
+				static_cast<RenderTextureId>(180u + mode),
+				kPreviewNames[mode],
+				texture->GetImage(),
+				VK_IMAGE_LAYOUT_GENERAL));
+		}
+		return previews;
 	}
 
 	void EngineAPIImpl::GenerateAutoReflectionProbes()
@@ -4968,12 +5283,13 @@ namespace Vans::EditorAPI
 		return scene && !scene->GetAnimationNodes().empty();
 	}
 
-	VansGraphics::VansAnimationNode* EngineAPIImpl::FindRuntimeAnimationNodeByEntityGuid(
+	AnimationAssetBindingSnapshot EngineAPIImpl::GetAnimationAssetBinding(
 		const std::string& entityGuid) const
 	{
+		AnimationAssetBindingSnapshot snapshot;
 		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
 		if (!scene || entityGuid.empty())
-			return nullptr;
+			return snapshot;
 
 		for (auto* animNode : scene->GetAnimationNodes())
 		{
@@ -4987,12 +5303,15 @@ namespace Vans::EditorAPI
 				if (renderNode->m_EntityGuid == entityGuid ||
 				    renderNode->m_ParentEntityGuid == entityGuid)
 				{
-					return animNode;
+					snapshot.available = true;
+					snapshot.animatorAssetPath = animNode->GetAnimatorFilePath();
+					snapshot.runtimeNodeName = animNode->GetName();
+					return snapshot;
 				}
 			}
 		}
 
-		return nullptr;
+		return snapshot;
 	}
 
 	MotionMatchingDebugSnapshot EngineAPIImpl::GetMotionMatchingDebugSnapshot() const
@@ -5004,7 +5323,11 @@ namespace Vans::EditorAPI
 
 		for (auto* animNode : scene->GetAnimationNodes())
 		{
-			auto* controller = animNode ? animNode->GetController() : nullptr;
+			auto* controller = animNode
+				? (animNode->IsRetargetEnabled()
+					? animNode->GetRetargetSourceController()
+					: animNode->GetController())
+				: nullptr;
 			if (!controller || !controller->IsMotionMatchingConfigured())
 				continue;
 
@@ -5167,7 +5490,9 @@ namespace Vans::EditorAPI
 			if (!animNode || !matchesFilter(animNode))
 				continue;
 
-			const VansGraphics::Skeleton& skeleton = animNode->GetSkeleton();
+			const VansGraphics::Skeleton& skeleton = animNode->IsRetargetEnabled()
+				? animNode->GetRetargetSourceSkeleton()
+				: animNode->GetSkeleton();
 			if (skeleton.bones.empty())
 				continue;
 
@@ -5190,6 +5515,607 @@ namespace Vans::EditorAPI
 
 		snapshot.available = !snapshot.rigs.empty();
 		return snapshot;
+	}
+
+	AssetSkeletonSnapshot EngineAPIImpl::GetAssetSkeletonSnapshot(const std::string& assetGuid) const
+	{
+		AssetSkeletonSnapshot snapshot;
+		snapshot.assetGuid = assetGuid;
+		VansGraphics::Skeleton skeleton;
+		if (!LoadAnimationPreviewSkeleton(
+			assetGuid, skeleton, snapshot.sourcePath, snapshot.error))
+			return snapshot;
+
+		std::vector<glm::mat4> bindGlobals(skeleton.bones.size(), glm::mat4(1.0f));
+		auto accumulate = [&](int index)
+		{
+			if (index < 0 || index >= static_cast<int>(skeleton.bones.size()))
+				return;
+			const auto& bone = skeleton.bones[index];
+			if (bone.parentIndex >= 0 && bone.parentIndex < static_cast<int>(skeleton.bones.size()))
+				bindGlobals[index] = bindGlobals[bone.parentIndex] * bone.localTransform;
+			else
+				bindGlobals[index] = bone.localTransform;
+		};
+		if (!skeleton.topologicalOrder.empty())
+			for (int index : skeleton.topologicalOrder) accumulate(index);
+		else
+			for (int index = 0; index < static_cast<int>(skeleton.bones.size()); ++index) accumulate(index);
+
+		snapshot.bones.reserve(skeleton.bones.size());
+		for (std::size_t index = 0; index < skeleton.bones.size(); ++index)
+		{
+			AssetSkeletonBoneSnapshot bone;
+			bone.name = skeleton.bones[index].name;
+			bone.parentIndex = skeleton.bones[index].parentIndex;
+			bone.bindPosition = ToEditorVec3(glm::vec3(bindGlobals[index][3]));
+			snapshot.bones.push_back(std::move(bone));
+		}
+		snapshot.available = true;
+		return snapshot;
+	}
+
+	AnimatorDocumentDecodeResult EngineAPIImpl::DecodeAnimatorDocument(
+		const std::string& canonicalJson) const
+	{
+		return AnimationAuthoringBridge::DecodeAnimator(canonicalJson);
+	}
+
+	AnimatorDocumentEncodeResult EngineAPIImpl::EncodeAnimatorDocument(
+		const AnimatorDocumentDTO& document) const
+	{
+		return AnimationAuthoringBridge::EncodeAnimator(document);
+	}
+
+	BoneMaskDocumentDecodeResult EngineAPIImpl::DecodeBoneMaskDocument(
+		const std::string& canonicalJson) const
+	{
+		return AnimationAuthoringBridge::DecodeBoneMask(canonicalJson);
+	}
+
+	BoneMaskDocumentEncodeResult EngineAPIImpl::EncodeBoneMaskDocument(
+		const BoneMaskDocumentDTO& document) const
+	{
+		return AnimationAuthoringBridge::EncodeBoneMask(document);
+	}
+
+	BoneMaskCompileResult EngineAPIImpl::CompileBoneMaskDocument(
+		const BoneMaskDocumentDTO& document, const AssetSkeletonSnapshot& skeleton) const
+	{
+		return AnimationAuthoringBridge::CompileBoneMask(document, skeleton);
+	}
+
+	AnimationPreviewCreateResult EngineAPIImpl::CreateAnimationPreview(
+		const AnimationPreviewCreateRequest& request)
+	{
+		AnimationPreviewCreateResult result;
+		auto* device = static_cast<VansGraphics::VansVKDevice*>(m_Device);
+		if (!device)
+		{
+			result.message = "Runtime render device is not available for animation preview";
+			return result;
+		}
+		auto session = std::make_unique<AnimationPreviewSessionState>();
+		session->id = NextAnimationPreviewSessionId();
+		session->modelGuid = request.previewModelGuid;
+		std::filesystem::path modelPath;
+		float scaleFactor = 1.0f;
+		Vans::VansSkeletalMeshImportSettings importSettings;
+		if (!ResolveAnimationPreviewModel(
+			request.previewModelGuid, modelPath, scaleFactor,
+			importSettings, result.message))
+			return result;
+		session->modelPath = modelPath.string();
+		session->renderer = std::make_unique<VansGraphics::VansAnimationPreviewRenderer>();
+		if (!session->renderer->Initialize(
+			*device, modelPath, scaleFactor, importSettings, result.message))
+			return result;
+		session->skeleton = session->renderer->GetSkeleton();
+		session->visualizationColors.resize(session->skeleton.bones.size(), glm::vec4(0.0f));
+		session->texture = Vans::Editor::VansEditorTextureBridge::RegisterTexture(
+			session->renderer->GetColorImage().GetSampler(),
+			session->renderer->GetColorImage().GetImageView(),
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		if (!session->texture)
+		{
+			result.message = "Failed to register isolated animation preview texture";
+			session->renderer.reset();
+			return result;
+		}
+		result.success = true;
+		result.sessionId = session->id;
+		GetAnimationPreviewSessions().emplace(session->id, std::move(session));
+		return result;
+	}
+
+	AnimationPreviewUpdateResult EngineAPIImpl::UpdateAnimationPreviewDefinition(
+		const AnimationPreviewDefinitionUpdate& update)
+	{
+		AnimationPreviewUpdateResult result;
+		auto found = GetAnimationPreviewSessions().find(update.sessionId);
+		if (found == GetAnimationPreviewSessions().end() || !found->second)
+		{
+			result.message = "Animation preview session does not exist";
+			return result;
+		}
+		AnimationPreviewSessionState& session = *found->second;
+		if (update.revision < session.requestedRevision)
+		{
+			result.message = "Stale animation preview revision was ignored";
+			result.acceptedRevision = session.requestedRevision;
+			result.displayedRevision = session.displayedRevision;
+			result.usingLastGoodDefinition = session.controller != nullptr;
+			return result;
+		}
+		session.requestedRevision = update.revision;
+		result.acceptedRevision = update.revision;
+
+		VansGraphics::AnimatorAssetData asset;
+		std::string compileError;
+		try
+		{
+			const nlohmann::json root = nlohmann::json::parse(update.canonicalJson);
+			if (!VansGraphics::VansAnimatorIO::DeserializeFromJsonObject(root, asset, compileError))
+				throw std::runtime_error(compileError.empty() ? "Animator snapshot decode failed" : compileError);
+		}
+		catch (const std::exception& exception)
+		{
+			session.diagnostic = exception.what();
+			result.message = session.diagnostic;
+			result.displayedRevision = session.displayedRevision;
+			result.usingLastGoodDefinition = session.controller != nullptr;
+			return result;
+		}
+
+		VansGraphics::VansAnimatorRuntimeCompileOptions options;
+		options.enableTargetPostProcess = true;
+		options.enableRootMotion = true;
+		options.enableDebugMetrics = true;
+		auto compiled = VansGraphics::VansAnimatorRuntimeCompiler::Compile(
+			asset,
+			session.skeleton,
+			[](const VansGraphics::AnimatorClipRef& reference,
+			   std::filesystem::path& path,
+			   std::string& error)
+			{
+				return ResolveProjectAnimationAsset(
+					reference.assetGuid, Vans::VansAssetType::AnimationClip,
+					reference.pathHint, path, error);
+			},
+			[](const VansGraphics::VansAnimationLayerDefinition& layer,
+			   std::filesystem::path& path,
+			   std::string& error)
+			{
+				return ResolveProjectAnimationAsset(
+					layer.maskGuid, Vans::VansAssetType::BoneMask,
+					layer.maskPathHint, path, error);
+			},
+			options,
+			compileError);
+		if (!compiled)
+		{
+			session.diagnostic = compileError;
+			result.message = compileError;
+			result.displayedRevision = session.displayedRevision;
+			result.usingLastGoodDefinition = session.controller != nullptr;
+			return result;
+		}
+
+		if (update.revision != session.requestedRevision)
+		{
+			result.message = "Animation preview compile result became stale";
+			result.displayedRevision = session.displayedRevision;
+			result.usingLastGoodDefinition = session.controller != nullptr;
+			return result;
+		}
+		compiled->SetSpeed(session.speed);
+		if (session.playing) compiled->Play();
+		else compiled->Pause();
+		session.controller = std::move(compiled);
+		session.displayedRevision = update.revision;
+		session.rootMotionPosition = glm::vec3(0.0f);
+		session.rootMotionTrail.assign(1, glm::vec3(0.0f));
+		session.slotHandles.clear();
+		session.renderDirty = true;
+		session.diagnostic.clear();
+		result.success = true;
+		result.displayedRevision = update.revision;
+		return result;
+	}
+
+	bool EngineAPIImpl::SetAnimationPreviewPlayback(const AnimationPreviewPlaybackRequest& request)
+	{
+		auto found = GetAnimationPreviewSessions().find(request.sessionId);
+		if (found == GetAnimationPreviewSessions().end() || !found->second)
+			return false;
+		AnimationPreviewSessionState& session = *found->second;
+		session.playing = request.playing;
+		session.speed = std::clamp(request.speed, 0.0f, 8.0f);
+		if (session.rootMotionMode != request.rootMotionMode)
+		{
+			session.rootMotionMode = request.rootMotionMode;
+			session.rootMotionPosition = glm::vec3(0.0f);
+			session.rootMotionTrail.assign(1, glm::vec3(0.0f));
+			session.renderDirty = true;
+		}
+		if (!session.controller)
+			return true;
+		session.controller->SetSpeed(session.speed);
+		if (request.seek)
+		{
+			session.rootMotionPosition = glm::vec3(0.0f);
+			session.rootMotionTrail.assign(1, glm::vec3(0.0f));
+			session.controller->SeekNormalizedTime(request.normalizedTime);
+			session.controller->Update(0.0f, session.skeleton);
+			session.renderDirty = true;
+		}
+		if (request.playing)
+		{
+			if (session.controller->GetPlaybackState() == VansGraphics::AnimationState::Paused)
+				session.controller->Resume();
+			else if (session.controller->GetPlaybackState() == VansGraphics::AnimationState::Stopped)
+				session.controller->Play();
+		}
+		else
+			session.controller->Pause();
+		return true;
+	}
+
+	bool EngineAPIImpl::SetAnimationPreviewParameter(const AnimationPreviewParameterValue& value)
+	{
+		auto found = GetAnimationPreviewSessions().find(value.sessionId);
+		if (found == GetAnimationPreviewSessions().end() || !found->second
+			|| !found->second->controller || value.name.empty())
+			return false;
+		auto& controller = *found->second->controller;
+		if (!controller.HasParameter(value.name))
+			return false;
+		switch (value.type)
+		{
+		case AnimationPreviewParameterType::Float: controller.SetFloat(value.name, value.floatValue); break;
+		case AnimationPreviewParameterType::Bool: controller.SetBool(value.name, value.boolValue); break;
+		case AnimationPreviewParameterType::Int: controller.SetInt(value.name, value.intValue); break;
+		case AnimationPreviewParameterType::Trigger: controller.SetTrigger(value.name); break;
+		case AnimationPreviewParameterType::Vector3:
+			controller.SetVector3(value.name, glm::vec3(value.vectorValue.x, value.vectorValue.y, value.vectorValue.z)); break;
+		case AnimationPreviewParameterType::Quaternion:
+			controller.SetQuaternion(value.name, glm::quat(
+				value.quaternionValue.w, value.quaternionValue.x,
+				value.quaternionValue.y, value.quaternionValue.z)); break;
+		}
+		controller.Update(0.0f, found->second->skeleton);
+		found->second->renderDirty = true;
+		return true;
+	}
+
+	bool EngineAPIImpl::TriggerAnimationPreviewSlot(const AnimationPreviewSlotRequest& request)
+	{
+		auto found = GetAnimationPreviewSessions().find(request.sessionId);
+		if (found == GetAnimationPreviewSessions().end() || !found->second
+			|| !found->second->controller)
+			return false;
+		VansGraphics::VansSlotPlayRequest play;
+		play.clipName = request.clipName;
+		play.playRate = request.playRate;
+		play.loopCount = request.loopCount;
+		play.priority = request.priority;
+		const VansGraphics::VansSlotPlaybackHandle handle =
+			found->second->controller->PlaySlot(request.slotId, play);
+		if (!handle)
+			return false;
+		found->second->slotHandles.push_back(handle);
+		if (found->second->slotHandles.size() > 64)
+			found->second->slotHandles.erase(found->second->slotHandles.begin(),
+				found->second->slotHandles.begin() + 16);
+		found->second->renderDirty = true;
+		return true;
+	}
+
+	bool EngineAPIImpl::SetAnimationPreviewViewport(
+		const AnimationPreviewViewportRequest& request)
+	{
+		auto found = GetAnimationPreviewSessions().find(request.sessionId);
+		if (found == GetAnimationPreviewSessions().end() || !found->second)
+			return false;
+		AnimationPreviewSessionState& session = *found->second;
+		const float yaw = std::isfinite(request.yaw) ? request.yaw : 0.0f;
+		const float pitch = std::clamp(
+			std::isfinite(request.pitch) ? request.pitch : 0.0f, -1.45f, 1.45f);
+		const float zoom = std::clamp(
+			std::isfinite(request.zoom) ? request.zoom : 1.0f, 0.2f, 3.0f);
+		if (session.view.yaw != yaw || session.view.pitch != pitch
+			|| session.view.zoom != zoom
+			|| session.visualizedLayerIndex != request.visualizedLayerIndex)
+		{
+			session.view.yaw = yaw;
+			session.view.pitch = pitch;
+			session.view.zoom = zoom;
+			session.visualizedLayerIndex = request.visualizedLayerIndex;
+			session.renderDirty = true;
+		}
+		return true;
+	}
+
+	void EngineAPIImpl::TickAnimationPreview(AnimationPreviewSessionId sessionId, float deltaTime)
+	{
+		auto found = GetAnimationPreviewSessions().find(sessionId);
+		if (found == GetAnimationPreviewSessions().end() || !found->second
+			|| !found->second->controller)
+			return;
+		AnimationPreviewSessionState& session = *found->second;
+		const auto begin = std::chrono::steady_clock::now();
+		session.controller->Update(
+			session.playing ? std::max(deltaTime, 0.0f) : 0.0f,
+			session.skeleton);
+		if (session.playing
+			&& session.rootMotionMode != AnimationPreviewPlaybackRequest::RootMotionMode::InPlace)
+		{
+			session.rootMotionPosition += session.controller->GetRootMotionDelta();
+			const glm::vec3 trailDelta = session.rootMotionTrail.empty()
+				? session.rootMotionPosition : session.rootMotionPosition - session.rootMotionTrail.back();
+			if (session.rootMotionTrail.empty() || glm::dot(trailDelta, trailDelta) > 1.0e-8f)
+			{
+				session.rootMotionTrail.push_back(session.rootMotionPosition);
+				if (session.rootMotionTrail.size() > 512)
+					session.rootMotionTrail.erase(session.rootMotionTrail.begin(),
+						session.rootMotionTrail.begin() + 128);
+			}
+		}
+		const auto end = std::chrono::steady_clock::now();
+		session.lastUpdateMilliseconds =
+			std::chrono::duration<float, std::milli>(end - begin).count();
+
+		session.renderAccumulator += std::max(deltaTime, 0.0f);
+		if (session.renderer && (session.renderDirty || session.renderAccumulator >= (1.0f / 30.0f)))
+		{
+			const auto& layerInfo = session.controller->GetLayerRuntimeDebugInfo();
+			if (session.visualizationColors.size() != session.skeleton.bones.size())
+				session.visualizationColors.resize(session.skeleton.bones.size());
+			std::fill(session.visualizationColors.begin(), session.visualizationColors.end(), glm::vec4(0.0f));
+			if (session.visualizedLayerIndex >= 0
+				&& session.visualizedLayerIndex < static_cast<int>(layerInfo.size()))
+			{
+				const auto& weights = layerInfo[session.visualizedLayerIndex].boneWeights;
+				for (std::size_t bone = 0; bone < session.visualizationColors.size(); ++bone)
+				{
+					const float weight = bone < weights.size()
+						? std::clamp(weights[bone], 0.0f, 1.0f) : 0.0f;
+					session.visualizationColors[bone] = glm::vec4(
+						0.25f + 0.75f * weight,
+						0.25f + 0.35f * (1.0f - weight),
+						0.95f - 0.80f * weight,
+						0.88f);
+				}
+			}
+			else
+			{
+				static const glm::vec3 palette[] = {
+					{ 0.35f, 0.80f, 0.96f }, { 0.96f, 0.58f, 0.24f },
+					{ 0.70f, 0.40f, 0.94f }, { 0.30f, 0.86f, 0.52f },
+					{ 0.96f, 0.34f, 0.48f }
+				};
+				for (std::size_t bone = 0; bone < session.visualizationColors.size(); ++bone)
+				{
+					std::size_t dominantLayer = 0;
+					float dominantWeight = 0.0f;
+					for (std::size_t layer = 1; layer < layerInfo.size(); ++layer)
+					{
+						const auto& weights = layerInfo[layer].boneWeights;
+						const float weight = bone < weights.size() ? weights[bone] : 0.0f;
+						if (weight >= dominantWeight && weight > 0.0001f)
+						{
+							dominantLayer = layer;
+							dominantWeight = weight;
+						}
+					}
+					if (dominantLayer > 0)
+						session.visualizationColors[bone] = glm::vec4(
+							palette[dominantLayer % (sizeof(palette) / sizeof(palette[0]))],
+							std::clamp(0.35f + dominantWeight * 0.60f, 0.0f, 0.95f));
+				}
+			}
+
+			const glm::vec3 modelOffset =
+				session.rootMotionMode == AnimationPreviewPlaybackRequest::RootMotionMode::ApplyToActor
+					? session.rootMotionPosition : glm::vec3(0.0f);
+			std::string renderError;
+			if (!session.renderer->Render(
+				session.controller->GetBoneMatricesSSBO(),
+				session.visualizationColors,
+				modelOffset,
+				session.view,
+				renderError))
+			{
+				session.diagnostic = renderError;
+			}
+			else if (!session.renderLogged)
+			{
+				const auto& stats = session.renderer->GetStats();
+				VANS_LOG("[AnimationPreview] Isolated skinned model rendered: vertices="
+					<< stats.vertexCount << " sampledTriangles=" << stats.renderedTriangleCount
+					<< " texture=" << stats.width << "x" << stats.height
+					<< " renderMs=" << stats.renderMilliseconds);
+				session.renderLogged = true;
+			}
+			session.renderAccumulator = 0.0f;
+			session.renderDirty = false;
+		}
+	}
+
+	AnimationPreviewSnapshot EngineAPIImpl::GetAnimationPreviewSnapshot(
+		AnimationPreviewSessionId sessionId) const
+	{
+		AnimationPreviewSnapshot snapshot;
+		auto found = GetAnimationPreviewSessions().find(sessionId);
+		if (found == GetAnimationPreviewSessions().end() || !found->second)
+			return snapshot;
+		const AnimationPreviewSessionState& session = *found->second;
+		snapshot.available = true;
+		snapshot.compiled = session.controller != nullptr;
+		snapshot.playing = session.playing;
+		snapshot.speed = session.speed;
+		snapshot.requestedRevision = session.requestedRevision;
+		snapshot.displayedRevision = session.displayedRevision;
+		snapshot.usingLastGoodDefinition = session.controller
+			&& session.displayedRevision != session.requestedRevision;
+		snapshot.diagnostic = session.diagnostic;
+		snapshot.lastUpdateMilliseconds = session.lastUpdateMilliseconds;
+		snapshot.modelTexture = session.texture;
+		if (session.renderer && session.renderer->IsReady())
+		{
+			const auto& stats = session.renderer->GetStats();
+			snapshot.modelRendered = session.texture != nullptr;
+			snapshot.modelTextureWidth = stats.width;
+			snapshot.modelTextureHeight = stats.height;
+			snapshot.modelCenter = ToEditorVec3(session.renderer->GetModelCenter());
+			snapshot.modelRadius = session.renderer->GetModelRadius();
+			snapshot.modelVertexCount = static_cast<std::uint64_t>(stats.vertexCount);
+			snapshot.modelTriangleCount = static_cast<std::uint64_t>(stats.renderedTriangleCount);
+			snapshot.modelRenderMilliseconds = stats.renderMilliseconds;
+		}
+		if (session.controller)
+		{
+			snapshot.frameScratchAllocations = static_cast<std::uint64_t>(
+				session.controller->GetLastFrameScratchAllocations());
+			snapshot.frameScratchAllocatedBytes = static_cast<std::uint64_t>(
+				session.controller->GetLastFrameScratchAllocatedBytes());
+		}
+
+		std::vector<glm::mat4> globals(session.skeleton.bones.size(), glm::mat4(1.0f));
+		if (session.controller
+			&& session.controller->GetCachedGlobalTransforms().size() == session.skeleton.bones.size())
+			globals = session.controller->GetCachedGlobalTransforms();
+		else
+		{
+			auto accumulate = [&](int index)
+			{
+				if (index < 0 || index >= static_cast<int>(session.skeleton.bones.size())) return;
+				const auto& bone = session.skeleton.bones[index];
+				globals[index] = bone.parentIndex >= 0
+					&& bone.parentIndex < static_cast<int>(globals.size())
+					? globals[bone.parentIndex] * bone.localTransform : bone.localTransform;
+			};
+			if (!session.skeleton.topologicalOrder.empty())
+				for (int index : session.skeleton.topologicalOrder) accumulate(index);
+			else
+				for (int index = 0; index < static_cast<int>(session.skeleton.bones.size()); ++index) accumulate(index);
+		}
+		snapshot.bones.reserve(session.skeleton.bones.size());
+		for (std::size_t index = 0; index < session.skeleton.bones.size(); ++index)
+		{
+			AnimationPreviewBoneSnapshot bone;
+			bone.name = session.skeleton.bones[index].name;
+			bone.parentIndex = session.skeleton.bones[index].parentIndex;
+			glm::vec3 position = glm::vec3(globals[index][3]);
+			if (session.rootMotionMode == AnimationPreviewPlaybackRequest::RootMotionMode::ApplyToActor)
+				position += session.rootMotionPosition;
+			bone.position = ToEditorVec3(position);
+			snapshot.bones.push_back(std::move(bone));
+		}
+		if (!session.controller)
+			return snapshot;
+
+		snapshot.currentTime = session.controller->GetCurrentPlayTime();
+		snapshot.duration = session.controller->GetCurrentDuration();
+		snapshot.normalizedTime = session.controller->GetNormalizedTime();
+		snapshot.rootMotionDelta = ToEditorVec3(session.controller->GetRootMotionDelta());
+		snapshot.rootMotionPosition = ToEditorVec3(session.rootMotionPosition);
+		snapshot.rootMotionTrail.reserve(session.rootMotionTrail.size());
+		for (const glm::vec3& point : session.rootMotionTrail)
+			snapshot.rootMotionTrail.push_back(ToEditorVec3(point));
+		for (const auto& source : session.controller->GetLayerRuntimeDebugInfo())
+		{
+			AnimationPreviewLayerSnapshot layer;
+			layer.id = source.id;
+			layer.name = source.name;
+			layer.state = source.state;
+			layer.clip = source.clip;
+			layer.weight = source.weight;
+			layer.normalizedTime = source.normalizedTime;
+			layer.enabled = source.enabled;
+			layer.overlay = source.kind == VansGraphics::VansAnimationLayerKind::Overlay;
+			layer.additive = source.blendMode == VansGraphics::VansLayerBlendMode::Additive;
+			layer.evaluationMilliseconds = source.evaluationMilliseconds;
+			layer.boneWeights = source.boneWeights;
+			snapshot.layers.push_back(std::move(layer));
+		}
+		for (std::size_t boneIndex = 0; boneIndex < snapshot.bones.size(); ++boneIndex)
+		{
+			for (std::size_t layerIndex = 1; layerIndex < snapshot.layers.size(); ++layerIndex)
+			{
+				const auto& weights = snapshot.layers[layerIndex].boneWeights;
+				const float weight = boneIndex < weights.size() ? weights[boneIndex] : 0.0f;
+				if (weight >= snapshot.bones[boneIndex].dominantLayerWeight && weight > 0.0001f)
+				{
+					snapshot.bones[boneIndex].dominantLayerIndex = static_cast<int>(layerIndex);
+					snapshot.bones[boneIndex].dominantLayerWeight = weight;
+				}
+			}
+		}
+		for (const auto& source : session.controller->GetSampledEvents())
+		{
+			AnimationPreviewEventSnapshot event;
+			event.name = std::string(source.name);
+			event.time = source.sourceTime;
+			std::visit([&](const auto& payload)
+			{
+				using T = std::decay_t<decltype(payload)>;
+				if constexpr (std::is_same_v<T, bool>) event.payload = payload ? "true" : "false";
+				else if constexpr (std::is_same_v<T, std::int64_t>) event.payload = std::to_string(payload);
+				else if constexpr (std::is_same_v<T, double>) event.payload = std::to_string(payload);
+				else if constexpr (std::is_same_v<T, std::string>) event.payload = payload;
+				else if constexpr (std::is_same_v<T, glm::vec3>)
+					event.payload = std::to_string(payload.x) + ", " + std::to_string(payload.y) + ", " + std::to_string(payload.z);
+			}, source.payload);
+			snapshot.events.push_back(std::move(event));
+		}
+		for (const auto& source : session.controller->GetSampledCurves())
+			if (source.present)
+				snapshot.curves.push_back({ std::string(source.name), source.value });
+		const VansGraphics::VansAnimationSyncState& sync = session.controller->GetSyncState();
+		snapshot.syncValid = sync.valid;
+		snapshot.syncMarkerId = sync.markerId;
+		snapshot.syncNextMarkerId = sync.nextMarkerId;
+		snapshot.syncPhase = sync.phase;
+		for (const VansGraphics::VansSlotPlaybackHandle handle : session.slotHandles)
+		{
+			const VansGraphics::VansSlotPlaybackStatus status = session.controller->GetSlotStatus(handle);
+			if (status.state == VansGraphics::VansSlotPlaybackState::Invalid)
+				continue;
+			AnimationPreviewSlotSnapshot slot;
+			slot.handle = handle.value;
+			slot.slotId = status.slotId;
+			slot.clipName = status.clipName;
+			slot.tag = status.tag;
+			slot.state = AnimationPreviewSlotStateName(status.state);
+			slot.playbackTime = status.playbackTime;
+			slot.weight = status.weight;
+			snapshot.slots.push_back(std::move(slot));
+		}
+		for (const VansGraphics::VansSlotLifecycleEvent& event : session.controller->GetSlotLifecycleEvents())
+		{
+			AnimationPreviewSlotEventSnapshot output;
+			output.handle = event.handle.value;
+			output.slotId = event.slotId;
+			output.clipName = event.clipName;
+			output.type = AnimationPreviewSlotEventName(event.type);
+			snapshot.slotEvents.push_back(std::move(output));
+		}
+		return snapshot;
+	}
+
+	void EngineAPIImpl::DestroyAnimationPreview(AnimationPreviewSessionId sessionId)
+	{
+		auto found = GetAnimationPreviewSessions().find(sessionId);
+		if (found == GetAnimationPreviewSessions().end()) return;
+		if (found->second)
+		{
+			RetireEditorTexture(
+				static_cast<VansGraphics::VansVKDevice*>(m_Device), found->second->texture);
+			found->second->texture = nullptr;
+			found->second->renderer.reset();
+		}
+		GetAnimationPreviewSessions().erase(found);
 	}
 
 	void EngineAPIImpl::SetFootIKDebugVisualization(bool enabled)
@@ -6202,6 +7128,13 @@ namespace Vans::EditorAPI
 		m_ScriptContext->VansScriptUpdateNonCameraScripts();
 	}
 
+	void EngineAPIImpl::UpdateRuntimeTimelinesPostScript(double deltaSeconds)
+	{
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		if (scene && scene->IsSceneReady())
+			scene->UpdateTimelinesPostScript(deltaSeconds);
+	}
+
 	void EngineAPIImpl::UpdateRuntimeCameraScripts()
 	{
 		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
@@ -6210,6 +7143,125 @@ namespace Vans::EditorAPI
 
 		m_ScriptContext->SetScene(scene);
 		m_ScriptContext->VansScriptUpdateCameraScripts();
+	}
+
+	void EngineAPIImpl::UpdateRuntimeTimelinesCamera(double deltaSeconds)
+	{
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		if (scene && scene->IsSceneReady())
+			scene->UpdateTimelinesCamera(deltaSeconds);
+	}
+
+	void EngineAPIImpl::UpdateTimelinePreviewsPostScript(double deltaSeconds)
+	{
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		if (scene && scene->IsSceneReady())
+			scene->UpdateTimelinePreviewsPostScript(deltaSeconds);
+	}
+
+	void EngineAPIImpl::UpdateTimelinePreviewsCamera(double deltaSeconds)
+	{
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		if (scene && scene->IsSceneReady())
+			scene->UpdateTimelinePreviewsCamera(deltaSeconds);
+	}
+
+	TimelinePreviewResult EngineAPIImpl::GetTimelinePreview(const std::string& previewId) const
+	{
+		TimelinePreviewResult result;
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		int state = 0;
+		std::int64_t tick = 0;
+		if (!scene || !scene->GetTimelinePreviewState(previewId, state, tick))
+		{
+			result.message = "Timeline preview is detached";
+			return result;
+		}
+		result.success = true;
+		result.currentTick = tick;
+		switch (static_cast<Vans::VansTimelinePlayerState>(state))
+		{
+		case Vans::VansTimelinePlayerState::Playing: result.state = TimelinePreviewState::Playing; break;
+		case Vans::VansTimelinePlayerState::Paused: result.state = TimelinePreviewState::Paused; break;
+		case Vans::VansTimelinePlayerState::Completed: result.state = TimelinePreviewState::Completed; break;
+		case Vans::VansTimelinePlayerState::Error: result.state = TimelinePreviewState::Error; break;
+		default: result.state = TimelinePreviewState::Stopped; break;
+		}
+		return result;
+	}
+
+	TimelinePreviewResult EngineAPIImpl::StartTimelinePreview(const TimelinePreviewStartRequest& request)
+	{
+		TimelinePreviewResult result;
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		if (!scene || !scene->IsSceneReady())
+		{
+			result.message = "Runtime scene is not ready";
+			return result;
+		}
+		std::string ownerEntityGuid = request.ownerEntityGuid;
+		if (ownerEntityGuid.empty() && !request.sourceAssetPath.empty())
+		{
+			const Vans::VansAssetDatabase* database =
+				Vans::VansProjectManager::Get().GetAssetDatabase();
+			const auto record = database
+				? database->Find(std::filesystem::path(request.sourceAssetPath)) : std::nullopt;
+			if (record && record->type == Vans::VansAssetType::Timeline)
+				ownerEntityGuid = scene->FindTimelineInstanceOwnerGuid(record->guid.ToString());
+		}
+		if (!scene->StartTimelinePreview(request.previewId, request.canonicalJson,
+			ownerEntityGuid, request.safeEvents, request.includeSubTimelines, result.message))
+			return result;
+		result = GetTimelinePreview(request.previewId);
+		result.ownerEntityGuid = std::move(ownerEntityGuid);
+		return result;
+	}
+
+	TimelinePreviewResult EngineAPIImpl::ConfigureTimelinePreviewPlayback(
+		const TimelinePreviewPlaybackRequest& request)
+	{
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		if (!scene || !scene->ConfigureTimelinePreviewPlayback(request.previewId,
+			request.playRate, request.direction, request.loopPlaybackRange))
+			return { false, TimelinePreviewState::Detached, 0, "Timeline preview is unavailable" };
+		return GetTimelinePreview(request.previewId);
+	}
+
+	TimelinePreviewResult EngineAPIImpl::PlayTimelinePreview(const std::string& previewId)
+	{
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		if (!scene || !scene->PlayTimelinePreview(previewId))
+			return { false, TimelinePreviewState::Detached, 0, "Timeline preview is unavailable" };
+		return GetTimelinePreview(previewId);
+	}
+
+	TimelinePreviewResult EngineAPIImpl::PauseTimelinePreview(const std::string& previewId)
+	{
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		if (!scene || !scene->PauseTimelinePreview(previewId))
+			return { false, TimelinePreviewState::Detached, 0, "Timeline preview is unavailable" };
+		return GetTimelinePreview(previewId);
+	}
+
+	TimelinePreviewResult EngineAPIImpl::SeekTimelinePreview(
+		const std::string& previewId,
+		std::int64_t tick,
+		bool safeEdges)
+	{
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		if (!scene || !scene->SeekTimelinePreview(previewId, tick, safeEdges))
+			return { false, TimelinePreviewState::Detached, 0, "Timeline preview is unavailable" };
+		return GetTimelinePreview(previewId);
+	}
+
+	TimelinePreviewResult EngineAPIImpl::StopTimelinePreview(const std::string& previewId)
+	{
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		TimelinePreviewResult result;
+		result.success = scene && scene->StopTimelinePreview(previewId);
+		result.state = TimelinePreviewState::Detached;
+		if (!result.success) result.message = "Timeline preview is unavailable";
+		return result;
 	}
 
 	void EngineAPIImpl::InitializeRuntimeScripts()

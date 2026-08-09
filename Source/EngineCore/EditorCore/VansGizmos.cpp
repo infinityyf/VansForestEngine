@@ -182,8 +182,12 @@ void VansGizmos::Draw(Vans::EditorAPI::IEngineEditorAPI& api,
     if (VansEditorWindow::m_GIWindowOpen)
     {
         const auto giSettings = api.GetGISettings();
-        if (giSettings.available && (giSettings.showProbeGizmos || giSettings.showProbeVolume))
-        {
+		if (giSettings.available && !giSettings.regions.empty() &&
+			(giSettings.showProbeGizmos || giSettings.showProbeVolume))
+		{
+			const auto& selectedRegion = giSettings.regions[std::min<std::uint32_t>(
+				giSettings.selectedRegionIndex,
+				static_cast<std::uint32_t>(giSettings.regions.size() - 1u))];
             const glm::mat4 viewProjection = camera->GetProjectiveMatrix() * camera->GetViewMatrix();
             ImDrawList* drawList = ImGui::GetWindowDrawList();
             auto project = [&](const glm::vec3& world, ImVec2& screen) -> bool
@@ -209,8 +213,8 @@ void VansGizmos::Draw(Vans::EditorAPI::IEngineEditorAPI& api,
                 }
             };
 
-            const glm::vec3 volumeMin = ToGlm(giSettings.volumeMin);
-            const glm::vec3 volumeMax = ToGlm(giSettings.volumeMax);
+			const glm::vec3 volumeMin = ToGlm(selectedRegion.volumeMin);
+			const glm::vec3 volumeMax = ToGlm(selectedRegion.volumeMax);
             if (giSettings.showProbeVolume)
                 drawBox(volumeMin, volumeMax, IM_COL32(255, 180, 40, 220), 1.5f);
 
@@ -237,20 +241,17 @@ void VansGizmos::Draw(Vans::EditorAPI::IEngineEditorAPI& api,
                     drawList->AddCircleFilled(screen, radius, fillColor, 12);
                     drawList->AddCircle(screen, radius + 1.0f, IM_COL32(255, 255, 255, 120), 12, 1.0f);
                 }
-            }
-            else if (giSettings.showProbeGizmos &&
-                     giSettings.gridDimensions.x > 0.0f && giSettings.gridDimensions.y > 0.0f && giSettings.gridDimensions.z > 0.0f &&
-                     giSettings.probeSpacingAxes.x > 0.0f && giSettings.probeSpacingAxes.y > 0.0f && giSettings.probeSpacingAxes.z > 0.0f)
+			}
+			else if (giSettings.showProbeGizmos &&
+					 selectedRegion.gridDimensions.x > 0.0f && selectedRegion.gridDimensions.y > 0.0f && selectedRegion.gridDimensions.z > 0.0f &&
+					 selectedRegion.probeSpacing > 0.0f)
             {
                 const uint32_t stride = std::max(1u, giSettings.gizmoStride);
                 const glm::uvec3 gridDimensions(
-                    static_cast<uint32_t>(giSettings.gridDimensions.x),
-                    static_cast<uint32_t>(giSettings.gridDimensions.y),
-                    static_cast<uint32_t>(giSettings.gridDimensions.z));
-                const glm::vec3 spacing(
-                    giSettings.probeSpacingAxes.x,
-                    giSettings.probeSpacingAxes.y,
-                    giSettings.probeSpacingAxes.z);
+					static_cast<uint32_t>(selectedRegion.gridDimensions.x),
+					static_cast<uint32_t>(selectedRegion.gridDimensions.y),
+					static_cast<uint32_t>(selectedRegion.gridDimensions.z));
+                const glm::vec3 spacing(selectedRegion.probeSpacing);
                 const ImU32 baseColor = IM_COL32(255, 210, 80, 220);
                 const ImU32 axisColor = IM_COL32(80, 220, 255, 240);
 

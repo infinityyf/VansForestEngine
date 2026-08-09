@@ -11,4 +11,5 @@ void main()
     prd.positionHit = vec4(gl_WorldRayDirectionEXT, 0.0);
     prd.normalHit = vec4(-gl_WorldRayDirectionEXT, 0.0);
     prd.albedoRoughness = vec4(0.0);
+    prd.emissiveRadiance = vec4(0.0);
 }

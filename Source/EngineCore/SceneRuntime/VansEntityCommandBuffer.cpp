@@ -323,6 +323,21 @@ void VansEntityCommandBuffer::AddLightComponent(
 	m_Commands.push_back(std::move(command));
 }
 
+void VansEntityCommandBuffer::AddTimelineComponent(
+	VansEntityHandle entity,
+	std::string stableGuid,
+	VansRuntimeTimelineComponent timelineComponent,
+	bool enabled)
+{
+	VansEntityCommand command;
+	command.type = VansEntityCommandType::AddTimelineComponent;
+	command.entity = entity;
+	command.timelineComponent = std::move(timelineComponent);
+	command.componentStableGuid = std::move(stableGuid);
+	command.boolValue = enabled;
+	m_Commands.push_back(std::move(command));
+}
+
 void VansEntityCommandBuffer::SetEntityActive(VansEntityHandle entity, bool active)
 {
 	VansEntityCommand command;

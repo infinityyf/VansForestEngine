@@ -22,7 +22,8 @@ namespace VansGraphics
 		if (globalTransformsIn.size() != skeleton.bones.size()) return result;
 		if (localTransforms.size() != skeleton.bones.size()) return result;
 
-		std::vector<glm::mat4> globals = globalTransformsIn;
+		m_GlobalScratch.assign(globalTransformsIn.begin(), globalTransformsIn.end());
+		auto& globals = m_GlobalScratch;
 		const IKTarget modelTarget = IK_ResolveTargetToModelSpace(target, context, globals, skeleton);
 
 		// 计算所有 link 的累计权重（用于权重归一化）

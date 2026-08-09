@@ -5,10 +5,13 @@
 #include "../../AnimationCore/VansAnimationNode.h"
 #include "../../AnimationCore/VansAnimationController.h"
 #include "../../AnimationCore/VansAnimatorIO.h"
+#include "../../AnimationCore/VansAnimatorRuntimeCompiler.h"
 #include "../../AnimationCore/VansAnimGraph.h"
 #include "../../AnimationCore/VansAnimationClipLoader.h"
 #include "../../AnimationCore/VansSkinnedMeshLoader.h"
 #include "../../AnimationCore/VansBoneAttachmentSystem.h"
+#include "../../AnimationCore/Storage/VansBoneMaskStorage.h"
+#include "../../ProjectSystem/VansProjectManager.h"
 #include "../../PhysicsCore/VansCharacterControllerNode.h"
 #include "../../PhysicsCore/Storage/VansRagdollProfileStorage.h"
 #include "../../PhysicsCore/VansRagdollSystem.h"
@@ -28,18 +31,6 @@ namespace VansGraphics
 {
 	namespace
 	{
-		std::string EnsureDirectoryPrefix(const std::filesystem::path& directory)
-		{
-			std::string value = directory.lexically_normal().string();
-			if (!value.empty() &&
-			    value.back() != '\\' &&
-			    value.back() != '/')
-			{
-				value.push_back(static_cast<char>(std::filesystem::path::preferred_separator));
-			}
-			return value;
-		}
-
 		std::string ResolveProjectAssetPath(const std::string& projectRoot, const std::string& assetPath)
 		{
 			if (assetPath.empty())
@@ -137,32 +128,53 @@ namespace VansGraphics
 				desc.targetModelSpaceAlignmentMode = targetAlignmentIt->get<std::string>();
 		}
 
-		std::string ResolveClipPrefixForAnimator(
-			const std::string& fullAnimatorPath,
-			const std::vector<AnimatorClipRef>& clipRefs,
-			const std::string& fallbackPrefix)
+		bool ResolveAnimationAssetPath(
+			const std::string& guidText,
+			Vans::VansAssetType expectedType,
+			const std::string& label,
+			const std::string& pathHint,
+			std::filesystem::path& outPath,
+			std::string& error)
 		{
-			if (clipRefs.empty())
-				return fallbackPrefix;
-
-			const std::filesystem::path firstClipRef(clipRefs.front().path);
-			if (firstClipRef.is_absolute())
-				return "";
-
-			std::filesystem::path candidate = std::filesystem::path(fullAnimatorPath).parent_path();
-			while (!candidate.empty())
+			outPath.clear();
+			error.clear();
+			Vans::VansAssetGuid guid;
+			if (!Vans::VansAssetGuid::TryParse(guidText, guid))
 			{
-				const std::filesystem::path resolved = candidate / firstClipRef;
-				if (std::filesystem::exists(resolved))
-					return EnsureDirectoryPrefix(candidate);
-
-				const std::filesystem::path parent = candidate.parent_path();
-				if (parent == candidate)
-					break;
-				candidate = parent;
+				error = label + " has an invalid asset GUID '" + guidText + "'";
+				return false;
 			}
-
-			return fallbackPrefix;
+			const auto record = Vans::VansProjectManager::Get().FindAssetRecord(guid);
+			if (!record)
+			{
+				error = label + " cannot resolve asset GUID '" + guidText + "' (hint: '" + pathHint + "')";
+				return false;
+			}
+			if (record->type != expectedType)
+			{
+				error = label + " GUID '" + guidText + "' resolves to the wrong asset type";
+				return false;
+			}
+			if (record->state == Vans::VansAssetState::Missing)
+			{
+				error = label + " GUID '" + guidText + "' is marked missing";
+				return false;
+			}
+			outPath = !record->artifactPath.empty() ? record->artifactPath : record->sourcePath;
+			if (outPath.is_relative() && Vans::VansProjectManager::Get().IsProjectLoaded())
+			{
+				const std::filesystem::path projectRelative =
+					std::filesystem::path(Vans::VansProjectManager::Get().GetProjectRootPath()) / outPath;
+				if (std::filesystem::exists(projectRelative))
+					outPath = projectRelative.lexically_normal();
+			}
+			if (outPath.empty() || !std::filesystem::exists(outPath))
+			{
+				error = label + " GUID '" + guidText + "' has no readable runtime asset (hint: '" + pathHint + "')";
+				outPath.clear();
+				return false;
+			}
+			return true;
 		}
 
 		bool LoadSkeletonFromModel(const std::string& fullModelPath, Skeleton& outSkeleton)
@@ -193,7 +205,6 @@ namespace VansGraphics
 
 		std::unique_ptr<VansAnimationController> LoadAnimatorController(
 			const std::string& fullAnimatorPath,
-			const std::string& fallbackClipPrefix,
 			const Skeleton& skeleton,
 			const MotionMatchingSettings* motionMatchingSettings,
 			bool enableRootMotion,
@@ -207,45 +218,34 @@ namespace VansGraphics
 				return nullptr;
 			}
 
-			const std::string clipPrefix = ResolveClipPrefixForAnimator(
-				fullAnimatorPath,
-				assetData.clipRefs,
-				fallbackClipPrefix);
-			auto clipsMap = VansAnimationClipLoader::LoadClipsFromRefs(
-				assetData.clipRefs,
-				clipPrefix,
-				&skeleton);
-
-			auto controller = std::make_unique<VansAnimationController>();
-			controller->SetName(assetData.name);
-
-			for (const auto& param : assetData.parameters)
-			{
-				controller->AddParameter(param.name, param.type);
-				switch (param.type)
+			std::string compileError;
+			VansAnimatorRuntimeCompileOptions options;
+			options.enableTargetPostProcess = false;
+			options.enableRootMotion = enableRootMotion;
+			auto controller = VansAnimatorRuntimeCompiler::Compile(
+				assetData,
+				skeleton,
+				[](const AnimatorClipRef& ref, std::filesystem::path& path, std::string& error)
 				{
-				case AnimatorParamType::Float: controller->SetFloat(param.name, param.floatVal); break;
-				case AnimatorParamType::Bool: controller->SetBool(param.name, param.boolVal); break;
-				case AnimatorParamType::Int: controller->SetInt(param.name, param.intVal); break;
-				case AnimatorParamType::Trigger: break;
-				case AnimatorParamType::Vector3: controller->SetVector3(param.name, param.vec3Val); break;
-				case AnimatorParamType::Quaternion: controller->SetQuaternion(param.name, param.quatVal); break;
-				}
+					return ResolveAnimationAssetPath(ref.assetGuid, Vans::VansAssetType::AnimationClip,
+						"Animation Clip '" + ref.name + "'", ref.pathHint, path, error);
+				},
+				[](const VansAnimationLayerDefinition& layer, std::filesystem::path& path, std::string& error)
+				{
+					return ResolveAnimationAssetPath(layer.maskGuid, Vans::VansAssetType::BoneMask,
+						"Bone Mask for Layer '" + layer.name + "'", layer.maskPathHint, path, error);
+				},
+				options,
+				compileError);
+			if (!controller)
+			{
+				VANS_LOG_WARN("[Retarget] source Layer Stack failed for '" << logOwner
+					<< "': " << compileError);
+				return nullptr;
 			}
-
-			for (auto& [name, clip] : clipsMap)
-				controller->AddClip(name, std::move(clip));
-
-			if (assetData.animGraph)
-				controller->SetGraph(std::move(assetData.animGraph));
-			else
-				VANS_LOG_WARN("[Retarget] source .vanimator has no graph node: " << fullAnimatorPath);
 
 			if (motionMatchingSettings)
 				controller->ConfigureMotionMatching(*motionMatchingSettings);
-
-			if (enableRootMotion)
-				controller->EnableRootMotion(true);
 
 			VANS_LOG("[Retarget] loaded source controller for '" << logOwner
 				<< "': " << fullAnimatorPath
@@ -303,6 +303,7 @@ namespace VansGraphics
 		const bool enableRootMotion = animConfig.rootMotion;
 		const std::string& rootBone = animConfig.rootBone;
 		const std::string nodeName = animConfig.name.empty() ? objectName : animConfig.name;
+		const bool retargetRequested = animConfig.retarget && animConfig.retarget->enabled;
 
 		if (meshGroupName.empty())
 		{
@@ -368,35 +369,34 @@ namespace VansGraphics
 				return nullptr;
 			}
 
-			auto clipsMap = VansAnimationClipLoader::LoadClipsFromRefs(
-				assetData.clipRefs,
-				projectRoot,
-				&meshAsset->m_AnimImportResult.skeleton);
-
-			controller = new VansAnimationController();
-			controller->SetName(assetData.name);
-
-			for (const auto& param : assetData.parameters)
-			{
-				controller->AddParameter(param.name, param.type);
-				switch (param.type)
+			std::string compileError;
+			VansAnimatorRuntimeCompileOptions options;
+			options.mode = retargetRequested
+				? VansAnimatorRuntimeCompileMode::ExternalPoseTarget
+				: VansAnimatorRuntimeCompileMode::FullGraph;
+			options.enableTargetPostProcess = true;
+			options.enableRootMotion = enableRootMotion && !retargetRequested;
+			auto compiledController = VansAnimatorRuntimeCompiler::Compile(
+				assetData,
+				meshAsset->m_AnimImportResult.skeleton,
+				[](const AnimatorClipRef& ref, std::filesystem::path& path, std::string& error)
 				{
-				case AnimatorParamType::Float: controller->SetFloat(param.name, param.floatVal); break;
-				case AnimatorParamType::Bool: controller->SetBool(param.name, param.boolVal); break;
-				case AnimatorParamType::Int: controller->SetInt(param.name, param.intVal); break;
-				case AnimatorParamType::Trigger: break;
-				case AnimatorParamType::Vector3: controller->SetVector3(param.name, param.vec3Val); break;
-				case AnimatorParamType::Quaternion: controller->SetQuaternion(param.name, param.quatVal); break;
-				}
+					return ResolveAnimationAssetPath(ref.assetGuid, Vans::VansAssetType::AnimationClip,
+						"Animation Clip '" + ref.name + "'", ref.pathHint, path, error);
+				},
+				[](const VansAnimationLayerDefinition& layer, std::filesystem::path& path, std::string& error)
+				{
+					return ResolveAnimationAssetPath(layer.maskGuid, Vans::VansAssetType::BoneMask,
+						"Bone Mask for Layer '" + layer.name + "'", layer.maskPathHint, path, error);
+				},
+				options,
+				compileError);
+			if (!compiledController)
+			{
+				VANS_LOG_WARN("[LoadAnimComp] Failed to compile Animator runtime definition: " << compileError);
+				return nullptr;
 			}
-
-			for (auto& [name, clip] : clipsMap)
-				controller->AddClip(name, std::move(clip));
-
-			if (assetData.animGraph)
-				controller->SetGraph(std::move(assetData.animGraph));
-			else
-				VANS_LOG_WARN("[LoadAnimComp] .vanimator file has no graph node: " << fullAnimatorPath);
+			controller = compiledController.release();
 
 			VANS_LOG("[LoadAnimComp] Loaded controller from .vanimator: " << fullAnimatorPath);
 		}
@@ -405,64 +405,87 @@ namespace VansGraphics
 			controller = new VansAnimationController();
 			controller->SetName(meshGroupName + "_Controller");
 
-			bool usedExternClips = false;
-			if (!externClips.empty())
+			if (!retargetRequested)
 			{
-				const std::string fullExternPath = projectRoot + externClips;
-				std::vector<VansAnimationClip> extClips;
-				if (VansAnimationClipLoader::ExtractClipsFromFBX(
-					fullExternPath,
-					meshAsset->m_AnimImportResult.skeleton,
-					extClips))
+				bool usedExternClips = false;
+				if (!externClips.empty())
 				{
-					for (auto& extClip : extClips)
-						controller->AddClip(extClip.clipName, std::move(extClip));
+					const std::string fullExternPath = projectRoot + externClips;
+					std::vector<VansAnimationClip> extClips;
+					if (VansAnimationClipLoader::ExtractClipsFromFBX(
+						fullExternPath,
+						meshAsset->m_AnimImportResult.skeleton,
+						extClips))
+					{
+						for (auto& extClip : extClips)
+							controller->AddClip(extClip.clipName, std::move(extClip));
 
-					usedExternClips = true;
-					VANS_LOG("[LoadAnimComp] Loaded " << extClips.size()
-						<< " extern clip(s) from: " << fullExternPath);
+						usedExternClips = true;
+						VANS_LOG("[LoadAnimComp] Loaded " << extClips.size()
+							<< " extern clip(s) from: " << fullExternPath);
+					}
+					else
+					{
+						VANS_LOG_WARN("[LoadAnimComp] Failed to extract clips from: " << fullExternPath);
+					}
 				}
-				else
+
+				if (!usedExternClips)
 				{
-					VANS_LOG_WARN("[LoadAnimComp] Failed to extract clips from: " << fullExternPath);
+					for (auto& clip : meshAsset->m_AnimImportResult.clips)
+						controller->AddClip(clip.clipName, clip);
 				}
-			}
 
-			if (!usedExternClips)
+				auto clipNames = controller->GetClipNames();
+				auto smNode = std::make_unique<AnimGraphStateMachineNode>();
+				smNode->m_DefaultStateName = clipNames.empty() ? "" : clipNames.front();
+				for (const auto& clipName : clipNames)
+				{
+					AnimatorState state;
+					state.name = clipName;
+					state.clipName = clipName;
+					state.speed = 1.0f;
+					state.loop = animConfig.loop;
+					state.rootMotion = enableRootMotion;
+					smNode->m_States.push_back(state);
+				}
+
+				auto graph = std::make_unique<VansAnimGraph>();
+				const int smId = graph->AddNode(std::move(smNode));
+				const int outId = graph->AddNode(VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
+				graph->AddLink(smId, 0, outId, 0);
+				VansAnimationLayerGraphSetup baseLayer;
+				baseLayer.definition.id = "layer-base";
+				baseLayer.definition.name = "Base";
+				baseLayer.definition.graphId = "graph-base";
+				baseLayer.definition.kind = VansAnimationLayerKind::Base;
+				baseLayer.definition.rootMotion = VansLayerRootMotionMode::Base;
+				baseLayer.definition.nodeTracks = VansLayerNodeTrackMode::Override;
+				baseLayer.graph = std::move(graph);
+				std::vector<VansAnimationLayerGraphSetup> generatedLayers;
+				generatedLayers.push_back(std::move(baseLayer));
+				std::string layerError;
+				if (!controller->SetLayerStack(std::move(generatedLayers), layerError))
+				{
+					VANS_LOG_WARN("[LoadAnimComp] Failed to create generated Base Layer: " << layerError);
+					delete controller;
+					return nullptr;
+				}
+
+				VANS_LOG("[LoadAnimComp] Auto-generated graph controller for '" << meshGroupName
+					<< "' with " << clipNames.size() << " clip(s)");
+			}
+			else
 			{
-				for (auto& clip : meshAsset->m_AnimImportResult.clips)
-					controller->AddClip(clip.clipName, clip);
+				VANS_LOG("[LoadAnimComp] Created external-pose target controller for '"
+					<< meshGroupName << "'");
 			}
-
-			auto clipNames = controller->GetClipNames();
-			auto smNode = std::make_unique<AnimGraphStateMachineNode>();
-			smNode->m_DefaultStateName = clipNames.empty() ? "" : clipNames.front();
-			smNode->m_CurrentStateName = smNode->m_DefaultStateName;
-			for (const auto& clipName : clipNames)
-			{
-				AnimatorState state;
-				state.name = clipName;
-				state.clipName = clipName;
-				state.speed = 1.0f;
-				state.loop = animConfig.loop;
-				state.rootMotion = enableRootMotion;
-				smNode->m_States.push_back(state);
-			}
-
-			auto graph = std::make_unique<VansAnimGraph>();
-			const int smId = graph->AddNode(std::move(smNode));
-			const int outId = graph->AddNode(VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
-			graph->AddLink(smId, 0, outId, 0);
-			controller->SetGraph(std::move(graph));
-
-			VANS_LOG("[LoadAnimComp] Auto-generated graph controller for '" << meshGroupName
-				<< "' with " << clipNames.size() << " clip(s)");
 		}
 
-		if (enableRootMotion)
+		if (enableRootMotion && !retargetRequested)
 			controller->EnableRootMotion(true);
 
-		if (animConfig.motionMatching)
+		if (animConfig.motionMatching && !retargetRequested)
 		{
 			MotionMatchingSettings mmSettings = *animConfig.motionMatching;
 			controller->ConfigureMotionMatching(mmSettings);
@@ -498,50 +521,67 @@ namespace VansGraphics
 		animNode->SetTransformID(group.sharedTransformID);
 		animNode->SetController(controller);
 
-		if (animConfig.retarget && animConfig.retarget->enabled)
+		if (retargetRequested)
 		{
 			const Vans::VansSceneAnimationRetargetConfig& retargetConfig = *animConfig.retarget;
+			auto failRetarget = [&]() -> VansAnimationNode*
+			{
+				delete animNode;
+				delete controller;
+				return nullptr;
+			};
 			if (retargetConfig.sourceModel.empty() || retargetConfig.sourceAnimator.empty())
 			{
 				VANS_LOG_WARN("[Retarget] '" << objectName
 					<< "' retarget is enabled but source_model/source_animator is missing");
+				return failRetarget();
 			}
-			else
+
+			const std::string fullSourceModelPath = ResolveProjectAssetPath(projectRoot, retargetConfig.sourceModel);
+			const std::string fullSourceAnimatorPath = ResolveProjectAssetPath(projectRoot, retargetConfig.sourceAnimator);
+			const std::string fullProfilePath = ResolveProjectAssetPath(projectRoot, retargetConfig.profile);
+
+			Skeleton sourceSkeleton;
+			if (!LoadSkeletonFromModel(fullSourceModelPath, sourceSkeleton))
 			{
-				const std::string fullSourceModelPath = ResolveProjectAssetPath(projectRoot, retargetConfig.sourceModel);
-				const std::string fullSourceAnimatorPath = ResolveProjectAssetPath(projectRoot, retargetConfig.sourceAnimator);
-				const std::string fullProfilePath = ResolveProjectAssetPath(projectRoot, retargetConfig.profile);
+				VANS_LOG_WARN("[Retarget] '" << objectName << "' failed to load source skeleton: "
+					<< fullSourceModelPath);
+				return failRetarget();
+			}
 
-				Skeleton sourceSkeleton;
-				if (LoadSkeletonFromModel(fullSourceModelPath, sourceSkeleton))
-				{
-					const MotionMatchingSettings* mmSettings =
-						animConfig.motionMatching ? &(*animConfig.motionMatching) : nullptr;
-					std::unique_ptr<VansAnimationController> sourceController =
-						LoadAnimatorController(
-							fullSourceAnimatorPath,
-							projectRoot,
-							sourceSkeleton,
-							mmSettings,
-							enableRootMotion,
-							objectName);
+			const MotionMatchingSettings* mmSettings =
+				animConfig.motionMatching ? &(*animConfig.motionMatching) : nullptr;
+			std::unique_ptr<VansAnimationController> sourceController =
+				LoadAnimatorController(
+					fullSourceAnimatorPath,
+					sourceSkeleton,
+					mmSettings,
+					enableRootMotion,
+					objectName);
+			if (!sourceController)
+			{
+				VANS_LOG_WARN("[Retarget] '" << objectName << "' failed to compile source Animator: "
+					<< fullSourceAnimatorPath);
+				return failRetarget();
+			}
 
-					if (sourceController)
-					{
-						VansRetargetRuntimeDesc retargetDesc;
-						retargetDesc.profilePath = fullProfilePath;
-						retargetDesc.sourceModelPath = fullSourceModelPath;
-						retargetDesc.sourceAnimatorPath = fullSourceAnimatorPath;
-						retargetDesc.runtimeMode = retargetConfig.runtimeMode;
-						retargetDesc.cachePolicy = retargetConfig.cachePolicy;
-						retargetDesc.debugDraw = retargetConfig.debugDraw;
-						ApplyRetargetProfileOptions(fullProfilePath, retargetDesc);
-						animNode->ConfigureRetargetSource(
-							sourceSkeleton,
-							std::move(sourceController),
-							retargetDesc);
-					}
-				}
+			VansRetargetRuntimeDesc retargetDesc;
+			retargetDesc.profilePath = fullProfilePath;
+			retargetDesc.sourceModelPath = fullSourceModelPath;
+			retargetDesc.sourceAnimatorPath = fullSourceAnimatorPath;
+			retargetDesc.runtimeMode = retargetConfig.runtimeMode;
+			retargetDesc.cachePolicy = retargetConfig.cachePolicy;
+			retargetDesc.debugDraw = retargetConfig.debugDraw;
+			ApplyRetargetProfileOptions(fullProfilePath, retargetDesc);
+			animNode->ConfigureRetargetSource(
+				sourceSkeleton,
+				std::move(sourceController),
+				retargetDesc);
+			if (!animNode->IsRetargetEnabled())
+			{
+				VANS_LOG_WARN("[Retarget] '" << objectName
+					<< "' could not establish the required Source -> Target runtime");
+				return failRetarget();
 			}
 		}
 

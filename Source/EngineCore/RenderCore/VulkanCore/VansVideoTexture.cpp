@@ -292,6 +292,30 @@ void VansVideoTexture::Stop()
     m_HasPendingUpload = false;
 }
 
+bool VansVideoTexture::Seek(double seconds)
+{
+	if (!m_IsReady.load()) return false;
+	const double target = std::clamp(seconds, 0.0, std::max(0.0, m_VideoDuration));
+	{
+		std::lock_guard<std::mutex> lock(m_QueueMutex);
+		while (!m_FrameQueue.empty())
+		{
+			VideoFrameData frame = std::move(m_FrameQueue.front());
+			m_FrameQueue.pop();
+			RecycleFramePixelsLocked(frame.pixels);
+			RecycleUploadSlotLocked(frame.uploadSlot);
+		}
+		RecycleFramePixelsLocked(m_LastFramePixels);
+		RecycleUploadSlotLocked(m_LastFrameUploadSlot);
+	}
+	m_PlayTime = target;
+	m_HasNewFrame = false;
+	m_HasPendingUpload = false;
+	m_SeekRequestSeconds.store(target);
+	m_ProducerCv.notify_all();
+	return true;
+}
+
 // ===========================================================================
 // Tick — 推进播放时间，挑选队列中 pts <= m_PlayTime 的最新帧
 // ===========================================================================
@@ -300,7 +324,7 @@ bool VansVideoTexture::Tick(double deltaTime)
     if (!m_IsReady.load() || !m_Playing.load())
         return false;
 
-    m_PlayTime += deltaTime;
+    m_PlayTime += deltaTime * m_PlaybackRate;
 
     // 从队列中取出所有已到期帧，仅保留最新一帧用于渲染（追帧）
     VideoFrameData frameToUpload;
@@ -616,6 +640,16 @@ void VansVideoTexture::DecodeThreadFunc()
 
     while (!m_ShouldStop.load())
     {
+		const double seekSeconds = m_SeekRequestSeconds.exchange(-1.0);
+		if (seekSeconds >= 0.0)
+		{
+			const int64_t timestamp = m_TimeBase > 0.0
+				? static_cast<int64_t>(seekSeconds / m_TimeBase)
+				: 0;
+			ptsOffset = 0.0;
+			av_seek_frame(m_FmtCtx, m_VideoStream, timestamp, AVSEEK_FLAG_BACKWARD);
+			avcodec_flush_buffers(m_CodecCtx);
+		}
         // Stop() 请求：清空队列、seek 回起点、重置 ptsOffset
         if (m_NeedRestart.exchange(false))
         {
@@ -686,7 +720,8 @@ void VansVideoTexture::DecodeThreadFunc()
                     return (static_cast<int>(m_FrameQueue.size()) < MAX_QUEUE_SIZE
                             && m_Playing.load())
                         || m_ShouldStop.load()
-                        || m_NeedRestart.load();
+                        || m_NeedRestart.load()
+						|| m_SeekRequestSeconds.load() >= 0.0;
                 });
                 if (m_ShouldStop.load())
                 {
@@ -699,6 +734,11 @@ void VansVideoTexture::DecodeThreadFunc()
                     av_frame_unref(frame);
                     break;
                 }
+				if (m_SeekRequestSeconds.load() >= 0.0)
+				{
+					av_frame_unref(frame);
+					break;
+				}
             }
 
             // 格式转换并推入队列

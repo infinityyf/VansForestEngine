@@ -208,6 +208,8 @@ const char* ToString(EditorAPI::AssetType assetType)
     case EditorAPI::AssetType::Particle: return "Particle";
     case EditorAPI::AssetType::AnimationClip: return "AnimationClip";
     case EditorAPI::AssetType::AnimatorController: return "AnimatorController";
+    case EditorAPI::AssetType::BoneMask: return "BoneMask";
+	case EditorAPI::AssetType::Timeline: return "Timeline";
     case EditorAPI::AssetType::ClothProfile: return "ClothProfile";
     case EditorAPI::AssetType::PostProcessProfile: return "PostProcessProfile";
     case EditorAPI::AssetType::RagdollProfile: return "RagdollProfile";
@@ -232,6 +234,8 @@ EditorAPI::AssetType EditorAssetTypeFromString(const std::string& value)
     if (type == "particle") return EditorAPI::AssetType::Particle;
     if (type == "animationclip") return EditorAPI::AssetType::AnimationClip;
     if (type == "animatorcontroller") return EditorAPI::AssetType::AnimatorController;
+    if (type == "bonemask") return EditorAPI::AssetType::BoneMask;
+	if (type == "timeline") return EditorAPI::AssetType::Timeline;
     if (type == "clothprofile") return EditorAPI::AssetType::ClothProfile;
     if (type == "postprocessprofile") return EditorAPI::AssetType::PostProcessProfile;
     if (type == "ragdollprofile") return EditorAPI::AssetType::RagdollProfile;

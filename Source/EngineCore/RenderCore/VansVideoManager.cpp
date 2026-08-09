@@ -2,6 +2,7 @@
 #include "../SceneCore/VansSceneResourcePlan.h"
 #include "../Util/VansLog.h"
 #include <filesystem>
+#include <iterator>
 
 namespace VansGraphics
 {
@@ -40,6 +41,9 @@ void VansVideoManager::Load(const std::vector<Vans::VansSceneVideoResourceReques
         if (m_Videos.count(name) > 0)
         {
             VANS_LOG_WARN("[VansVideoManager] Duplicate video name, replacing: " << name);
+            VansVideoTexture* replaced = m_Videos[name].get();
+            for (auto it = m_VideosByAssetGuid.begin(); it != m_VideosByAssetGuid.end();)
+                it = it->second == replaced ? m_VideosByAssetGuid.erase(it) : std::next(it);
             m_Videos[name]->Close();
             m_Videos.erase(name);
         }
@@ -52,7 +56,10 @@ void VansVideoManager::Load(const std::vector<Vans::VansSceneVideoResourceReques
         }
 
         VANS_LOG("[VansVideoManager] Loaded video texture: name=" << name << " path=" << absPath);
+        VansVideoTexture* loaded = videoTex.get();
         m_Videos.emplace(name, std::move(videoTex));
+        if (!entry.assetGuid.empty())
+            m_VideosByAssetGuid[entry.assetGuid] = loaded;
     }
 }
 
@@ -65,6 +72,12 @@ VansVideoTexture* VansVideoManager::Get(const std::string& name) const
     if (it != m_Videos.end())
         return it->second.get();
     return nullptr;
+}
+
+VansVideoTexture* VansVideoManager::GetByAssetGuid(const std::string& assetGuid) const
+{
+    const auto it = m_VideosByAssetGuid.find(assetGuid);
+    return it == m_VideosByAssetGuid.end() ? nullptr : it->second;
 }
 
 // ===========================================================================
@@ -127,6 +140,7 @@ void VansVideoManager::Clear()
 {
     // unique_ptr 析构时会自动调用 ~VansVideoTexture() → Close()，
     // 无需在此处显式调用 Close()，避免双重关闭。
+    m_VideosByAssetGuid.clear();
     m_Videos.clear();
     VANS_LOG("[VansVideoManager] 所有视频纹理已清理");
 }

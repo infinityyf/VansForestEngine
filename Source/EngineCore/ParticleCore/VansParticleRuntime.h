@@ -45,6 +45,18 @@ namespace VansGraphics
 
         // 由更新线程调用：推进所有 Emitter，填写 BackBuffer
         void Update(float deltaTime);
+		void Play() { m_IsPlaying = true; }
+		void Pause() { m_IsPlaying = false; }
+		void Stop();
+		void Restart();
+		void Seek(float seconds, float fixedStep = 1.0f / 60.0f);
+		void SetRandomSeed(uint32_t seed);
+		uint32_t GetRandomSeed() const { return m_RandomSeed; }
+		void SetSimulationRate(float rate) { m_SimulationRate = rate > 0.0f ? rate : 0.0f; }
+		float GetSimulationRate() const { return m_SimulationRate; }
+		void Burst(uint32_t count = 1);
+		bool IsPlaying() const { return m_IsPlaying; }
+		float GetPlayTime() const { return m_PlayTime; }
 
         // 在更新完成 + 主线程空闲时调用：交换前后缓冲
         void SwapBuffers();
@@ -54,6 +66,10 @@ namespace VansGraphics
         {
             return m_InstanceBuffers[m_FrontBufferIdx.load(std::memory_order_acquire)];
         }
+
+	private:
+		uint32_t m_RandomSeed = 0x9e3779b9u;
+		float m_SimulationRate = 1.0f;
     };
 
 } // namespace VansGraphics

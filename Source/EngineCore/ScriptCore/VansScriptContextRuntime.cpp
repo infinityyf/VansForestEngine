@@ -2394,6 +2394,56 @@ int LuaTimeSeconds(lua_State* L)
 	return 1;
 }
 
+int LuaTimelinePlay(lua_State* L)
+{
+	const char* componentGuid = luaL_checkstring(L, 1);
+	const bool restart = lua_gettop(L) < 2 || lua_toboolean(L, 2) != 0;
+	auto* scene = Scene();
+	lua_pushboolean(L, scene && scene->PlayRuntimeTimeline(componentGuid, restart));
+	return 1;
+}
+
+int LuaTimelinePause(lua_State* L)
+{
+	const char* componentGuid = luaL_checkstring(L, 1);
+	auto* scene = Scene();
+	lua_pushboolean(L, scene && scene->PauseRuntimeTimeline(componentGuid));
+	return 1;
+}
+
+int LuaTimelineResume(lua_State* L)
+{
+	const char* componentGuid = luaL_checkstring(L, 1);
+	auto* scene = Scene();
+	lua_pushboolean(L, scene && scene->ResumeRuntimeTimeline(componentGuid));
+	return 1;
+}
+
+int LuaTimelineStop(lua_State* L)
+{
+	const char* componentGuid = luaL_checkstring(L, 1);
+	auto* scene = Scene();
+	lua_pushboolean(L, scene && scene->StopRuntimeTimeline(componentGuid));
+	return 1;
+}
+
+int LuaTimelineState(lua_State* L)
+{
+	const char* componentGuid = luaL_checkstring(L, 1);
+	std::string state;
+	std::int64_t tick = 0;
+	auto* scene = Scene();
+	if (!scene || !scene->GetRuntimeTimelineState(componentGuid, state, tick))
+	{
+		lua_pushnil(L);
+		lua_pushinteger(L, 0);
+		return 2;
+	}
+	lua_pushstring(L, state.c_str());
+	lua_pushinteger(L, static_cast<lua_Integer>(tick));
+	return 2;
+}
+
 int KeyFromLua(lua_State* L, int index)
 {
 	if (lua_isinteger(L, index))
@@ -3835,6 +3885,14 @@ void VansScriptContext::RegisterLuaBindings()
 	lua_pushcfunction(L, LuaLog); lua_setfield(L, -2, "log");
 	lua_pushcfunction(L, LuaFindObject); lua_setfield(L, -2, "find_object");
 	lua_pushcfunction(L, LuaTimeSeconds); lua_setfield(L, -2, "time_seconds");
+
+	lua_newtable(L);
+	lua_pushcfunction(L, LuaTimelinePlay); lua_setfield(L, -2, "play");
+	lua_pushcfunction(L, LuaTimelinePause); lua_setfield(L, -2, "pause");
+	lua_pushcfunction(L, LuaTimelineResume); lua_setfield(L, -2, "resume");
+	lua_pushcfunction(L, LuaTimelineStop); lua_setfield(L, -2, "stop");
+	lua_pushcfunction(L, LuaTimelineState); lua_setfield(L, -2, "state");
+	lua_setfield(L, -2, "timeline");
 
 	lua_newtable(L);
 	lua_pushcfunction(L, LuaAudioSetBusGain); lua_setfield(L, -2, "set_bus_gain");

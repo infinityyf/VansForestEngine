@@ -7,6 +7,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 namespace Vans
 {
@@ -18,6 +19,8 @@ namespace Vans
 		std::unordered_set<std::string> requiredMaterials;
 		std::unordered_set<std::string> requiredTextures;
 		std::unordered_set<std::string> requiredShaders;
+		std::unordered_set<std::string> requiredAssets;
+		std::vector<std::string> errors;
 	};
 
 	class VansSceneAssetDependencyBuilder

@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <filesystem>
+#include <functional>
 
 namespace VansGraphics
 {
@@ -19,6 +21,9 @@ namespace VansGraphics
 	class VansAnimationClipLoader
 	{
 	public:
+		using AnimatorClipPathResolver = std::function<bool(
+			const AnimatorClipRef&, std::filesystem::path&, std::string&)>;
+
 		// 从 .vclip 文件加载单个 clip（不含骨骼信息，仅关键帧数据）
 		// originSkeleton: mesh 的原始骨骼，当 .vclip 不存在需回退到 FBX 时使用，确保骨骼索引一致
 		static bool LoadClip(const std::string& filePath,
@@ -30,13 +35,13 @@ namespace VansGraphics
 		                                  VansAnimationClip& outClip,
 		                                  Skeleton& outSkeleton);
 
-		// 根据 AnimatorClipRef 列表批量加载 clips
-		// pathPrefix: 项目根路径，用于将相对路径拼接为绝对路径
-		// originSkeleton: mesh 的原始骨骼，用于回退到 FBX 提取时保证骨骼索引一致（为 nullptr 时自动提取，可能不正确）
-		// 返回值: name → clip 映射表
-		static std::unordered_map<std::string, VansAnimationClip>
-		LoadClipsFromRefs(const std::vector<AnimatorClipRef>& clipRefs, const std::string& pathPrefix = "",
-		                  const Skeleton* originSkeleton = nullptr);
+		// 批量加载 Animator Clip。路径解析由资产数据库边界提供；任一依赖失败则整体失败。
+		static bool LoadClipsFromRefs(
+			const std::vector<AnimatorClipRef>& clipRefs,
+			const AnimatorClipPathResolver& pathResolver,
+			const Skeleton* originSkeleton,
+			std::unordered_map<std::string, VansAnimationClip>& outClips,
+			std::string& error);
 
 		// 扫描指定目录下所有 .vclip 文件并加载
 		static std::vector<VansAnimationClip>

@@ -3,13 +3,10 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/quaternion.hpp>
 #include <cmath>
-#include <ctime>
 
 namespace VansGraphics
 {
     // ── 全局随机种子序列（线程不安全，仅用于粒子初始化）─────────────────
-    static uint32_t s_GlobalSeed = static_cast<uint32_t>(std::time(nullptr));
-
     // ──────────────────────────────────────────────────────────────────────
     // VansInitLifetimeModule
     // ──────────────────────────────────────────────────────────────────────
@@ -21,7 +18,8 @@ namespace VansGraphics
     {
         for (uint32_t i = startIndex; i < endIndex; ++i)
         {
-            float r         = RandFloat(s_GlobalSeed);
+			uint32_t& seed = pool.m_SeedRandom[i];
+            float r         = RandFloat(seed);
             float lifetime  = m_Lifetime.Evaluate(0.f, r);
             if (lifetime < 0.01f) lifetime = 0.01f;  // 防止生命周期为零
             pool.m_LifeTime[i]   = lifetime;
@@ -45,6 +43,7 @@ namespace VansGraphics
 
         for (uint32_t i = startIndex; i < endIndex; ++i)
         {
+			uint32_t& seed = pool.m_SeedRandom[i];
             glm::vec3 velocity;
             if (m_VelocityMode == VansInitVelocityMode::Cone)
             {
@@ -52,9 +51,9 @@ namespace VansGraphics
                 float angleRad    = glm::radians(m_ConeAngle);
                 float cosMaxAngle = std::cos(angleRad);
 
-                float cosTheta = cosMaxAngle + RandFloat(s_GlobalSeed) * (1.f - cosMaxAngle);
+                float cosTheta = cosMaxAngle + RandFloat(seed) * (1.f - cosMaxAngle);
                 float sinTheta = std::sqrt(1.f - cosTheta * cosTheta);
-                float phi      = RandFloat(s_GlobalSeed) * 2.f * glm::pi<float>();
+                float phi      = RandFloat(seed) * 2.f * glm::pi<float>();
 
                 // 构建局部圆锥方向向量（以 worldUp 为轴）
                 glm::vec3 localDir(sinTheta * std::cos(phi),
@@ -76,8 +75,8 @@ namespace VansGraphics
             }
             else // Random 全向
             {
-                float theta = RandFloat(s_GlobalSeed) * 2.f * glm::pi<float>();
-                float phi   = std::acos(2.f * RandFloat(s_GlobalSeed) - 1.f);
+                float theta = RandFloat(seed) * 2.f * glm::pi<float>();
+                float phi   = std::acos(2.f * RandFloat(seed) - 1.f);
                 velocity = glm::vec3(
                     std::sin(phi) * std::cos(theta),
                     std::cos(phi),
@@ -103,7 +102,8 @@ namespace VansGraphics
     {
         for (uint32_t i = startIndex; i < endIndex; ++i)
         {
-            float r         = RandFloat(s_GlobalSeed);
+			uint32_t& seed = pool.m_SeedRandom[i];
+            float r         = RandFloat(seed);
             pool.m_Size[i]  = m_Size.Evaluate(0.f, r);
         }
     }
@@ -132,7 +132,8 @@ namespace VansGraphics
     {
         for (uint32_t i = startIndex; i < endIndex; ++i)
         {
-            float r              = RandFloat(s_GlobalSeed);
+			uint32_t& seed = pool.m_SeedRandom[i];
+            float r              = RandFloat(seed);
             pool.m_Rotation[i]   = m_Angle.Evaluate(0.f, r);
         }
     }
@@ -150,6 +151,7 @@ namespace VansGraphics
 
         for (uint32_t i = startIndex; i < endIndex; ++i)
         {
+			uint32_t& seed = pool.m_SeedRandom[i];
             glm::vec3 localPos(0.f);
 
             switch (m_Shape)
@@ -157,8 +159,8 @@ namespace VansGraphics
             case VansEmitterShape::Sphere:
             {
                 // 球壳表面均匀随机点
-                float theta = RandFloat(s_GlobalSeed) * 2.f * glm::pi<float>();
-                float phi   = std::acos(2.f * RandFloat(s_GlobalSeed) - 1.f);
+                float theta = RandFloat(seed) * 2.f * glm::pi<float>();
+                float phi   = std::acos(2.f * RandFloat(seed) - 1.f);
                 float r     = m_Radius;
                 localPos = glm::vec3(
                     r * std::sin(phi) * std::cos(theta),
@@ -169,9 +171,9 @@ namespace VansGraphics
             case VansEmitterShape::Box:
             {
                 localPos = glm::vec3(
-                    RandRange(s_GlobalSeed, -m_Radius, m_Radius),
-                    RandRange(s_GlobalSeed, -m_Radius, m_Radius),
-                    RandRange(s_GlobalSeed, -m_Radius, m_Radius));
+                    RandRange(seed, -m_Radius, m_Radius),
+                    RandRange(seed, -m_Radius, m_Radius),
+                    RandRange(seed, -m_Radius, m_Radius));
                 break;
             }
             case VansEmitterShape::Cone:
@@ -179,15 +181,15 @@ namespace VansGraphics
             {
                 // 在圆盘范围内均匀随机
                 float arcRad = glm::radians(m_Arc);
-                float angle  = RandFloat(s_GlobalSeed) * arcRad;
-                float dist   = m_Radius * std::sqrt(RandFloat(s_GlobalSeed));
+                float angle  = RandFloat(seed) * arcRad;
+                float dist   = m_Radius * std::sqrt(RandFloat(seed));
                 localPos = glm::vec3(dist * std::cos(angle), 0.f, dist * std::sin(angle));
                 break;
             }
             case VansEmitterShape::Edge:
             {
                 // 沿 X 轴线段均匀随机
-                float t  = RandRange(s_GlobalSeed, -m_Radius, m_Radius);
+                float t  = RandRange(seed, -m_Radius, m_Radius);
                 localPos = glm::vec3(t, 0.f, 0.f);
                 break;
             }

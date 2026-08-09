@@ -1,13 +1,6 @@
 ﻿#include "VansProjectWindow.h"
 #include "../VansEditorWindow.h"
 #include "../VansEditorObjectReference.h"
-#include "../../AudioCore/Storage/VansAudioBusSnapshotAssetStorage.h"
-#include "../../AudioCore/Storage/VansAudioDuckingRulesAssetStorage.h"
-#include "../../AudioCore/Storage/VansAudioReverbPresetAssetStorage.h"
-#include "../../AudioCore/VansAudioBusSnapshotAsset.h"
-#include "../../AudioCore/VansAudioDuckingRulesAsset.h"
-#include "../../AudioCore/VansAudioReverbPresetAsset.h"
-#include "../../AudioCore/VansAudioReverbPreset.h"
 #include "../../SceneCore/VansSceneDocumentLoader.h"
 #include "../../Util/VansLog.h"
 #include "../VansEditorSelection.h"
@@ -18,102 +11,165 @@
 
 namespace
 {
-enum class AudioControlAssetTemplate
+bool IsDirectoryInsideRoot(const std::filesystem::path& directory,
+                           const std::filesystem::path& root)
 {
-    ReverbPreset,
-    BusSnapshot,
-    DuckingRules
-};
+    std::error_code directoryError;
+    std::error_code rootError;
+    const std::filesystem::path canonicalDirectory =
+        std::filesystem::weakly_canonical(directory, directoryError);
+    const std::filesystem::path canonicalRoot =
+        std::filesystem::weakly_canonical(root, rootError);
+    if (directoryError || rootError || !std::filesystem::is_directory(canonicalDirectory))
+        return false;
+    if (canonicalDirectory == canonicalRoot)
+        return true;
 
-std::filesystem::path MakeUniqueAssetPath(
-    const std::filesystem::path& directory,
-    const std::string& baseName,
-    const std::string& extension)
-{
-    std::filesystem::path candidate = directory / (baseName + extension);
-    if (!std::filesystem::exists(candidate))
-        return candidate;
-
-    for (int index = 1; index < 1000; ++index)
-    {
-        candidate = directory / (baseName + " " + std::to_string(index) + extension);
-        if (!std::filesystem::exists(candidate))
-            return candidate;
-    }
-    return {};
+    const std::filesystem::path relative = canonicalDirectory.lexically_relative(canonicalRoot);
+    if (relative.empty() || relative.is_absolute())
+        return false;
+    for (const std::filesystem::path& part : relative)
+        if (part == "..")
+            return false;
+    return true;
 }
 
-std::filesystem::path CreateAudioControlAsset(
-    const std::filesystem::path& directory,
-    AudioControlAssetTemplate assetTemplate,
-    std::string& error)
-{
-    error.clear();
-    if (directory.empty())
-    {
-        error = "No target folder selected";
-        return {};
-    }
-
-    switch (assetTemplate)
-    {
-    case AudioControlAssetTemplate::ReverbPreset:
-    {
-        const std::filesystem::path path = MakeUniqueAssetPath(directory, "Room Reverb", ".vreverb");
-        if (path.empty())
-        {
-            error = "Cannot allocate a unique reverb preset name";
-            return {};
-        }
-
-        Vans::VansAudioReverbPresetAsset asset;
-        asset.displayName = "Room Reverb";
-        asset.parameters = VansEngine::GetAudioReverbPresetParameters(VansEngine::AudioReverbPreset::Room);
-        return Vans::VansAudioReverbPresetAssetStorage::SaveAtomic(path, asset, error) ? path : std::filesystem::path{};
-    }
-    case AudioControlAssetTemplate::BusSnapshot:
-    {
-        const std::filesystem::path path = MakeUniqueAssetPath(directory, "Gameplay Mix", ".vaudiosnapshot");
-        if (path.empty())
-        {
-            error = "Cannot allocate a unique bus snapshot name";
-            return {};
-        }
-
-        Vans::VansAudioBusSnapshotAsset asset;
-        asset.displayName = "Gameplay Mix";
-        asset.snapshot.fadeSeconds = 0.25f;
-        asset.snapshot.buses = {
-            VansEngine::AudioBusSnapshotEntry{ "Music", 0.8f },
-            VansEngine::AudioBusSnapshotEntry{ "SFX", 1.0f },
-            VansEngine::AudioBusSnapshotEntry{ "Voice", 1.0f }
-        };
-        return Vans::VansAudioBusSnapshotAssetStorage::SaveAtomic(path, asset, error) ? path : std::filesystem::path{};
-    }
-    case AudioControlAssetTemplate::DuckingRules:
-    {
-        const std::filesystem::path path = MakeUniqueAssetPath(directory, "Voice Ducking", ".vducking");
-        if (path.empty())
-        {
-            error = "Cannot allocate a unique ducking rules name";
-            return {};
-        }
-
-        Vans::VansAudioDuckingRulesAsset asset;
-        asset.displayName = "Voice Ducking";
-        asset.rules = { VansEngine::AudioDuckingRule{} };
-        return Vans::VansAudioDuckingRulesAssetStorage::SaveAtomic(path, asset, error) ? path : std::filesystem::path{};
-    }
-    default:
-        error = "Unsupported audio control asset template";
-        return {};
-    }
 }
+
+void VansGraphics::VansProjectWindow::RequestAssetCreation(
+    Vans::EditorAPI::ProjectAssetCreationKind kind)
+{
+    m_PendingAssetCreation = kind;
+    m_HasPendingAssetCreation = true;
 }
 
 void VansGraphics::VansProjectWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
     DrawProjectContents(editorAPI);
+}
+
+std::filesystem::path VansGraphics::VansProjectWindow::ResolveAssetCreationDirectory(
+    const Vans::EditorAPI::ProjectBrowserRootSnapshot& root) const
+{
+    if (!root.projectLoaded || root.rootPath.empty())
+        return {};
+
+    const std::filesystem::path projectRoot(root.rootPath);
+    if (IsDirectoryInsideRoot(m_CurrentDirectory, projectRoot))
+        return m_CurrentDirectory;
+    if (IsDirectoryInsideRoot(projectRoot, projectRoot))
+        return projectRoot;
+    return {};
+}
+
+void VansGraphics::VansProjectWindow::ProcessAssetCreation(
+    Vans::EditorAPI::IEngineEditorAPI& editorAPI,
+    const Vans::EditorAPI::ProjectBrowserRootSnapshot& root)
+{
+    if (!m_HasPendingAssetCreation)
+        return;
+    const Vans::EditorAPI::ProjectAssetCreationKind request = m_PendingAssetCreation;
+    m_HasPendingAssetCreation = false;
+
+    const std::filesystem::path targetDirectory = ResolveAssetCreationDirectory(root);
+    if (targetDirectory.empty())
+    {
+        VANS_LOG_ERROR("[Asset] Open a project and select a valid asset folder before creating an asset");
+        return;
+    }
+
+    if (request == Vans::EditorAPI::ProjectAssetCreationKind::Timeline)
+    {
+        m_TimelineCreationDirectory = targetDirectory;
+        m_TimelineAssetCreateStatus.clear();
+        m_OpenTimelineCreationPopup = true;
+        return;
+    }
+
+    Vans::EditorAPI::ProjectAssetCreateRequest createRequest;
+    createRequest.directoryPath = targetDirectory.string();
+    createRequest.kind = request;
+    const Vans::EditorAPI::ProjectAssetCreateResult creation =
+        editorAPI.CreateProjectAsset(createRequest);
+    if (!creation.success)
+    {
+        VANS_LOG_ERROR("[Asset] " << (creation.message.empty()
+            ? "Project asset creation failed" : creation.message));
+        return;
+    }
+
+    const std::filesystem::path createdPath(creation.assetPath);
+    const Vans::EditorAPI::AssetRefreshResult refresh =
+        editorAPI.RefreshProjectAsset(createdPath.string(), true);
+    if (!refresh.success)
+    {
+        VANS_LOG_ERROR("[Asset] Created " << createdPath.string()
+            << ", but project refresh failed: " << refresh.message);
+        return;
+    }
+
+    Vans::VansEditorSelection::SelectAsset(createdPath);
+    if (request == Vans::EditorAPI::ProjectAssetCreationKind::AnimatorController ||
+        request == Vans::EditorAPI::ProjectAssetCreationKind::BoneMask)
+        VansEditorWindow::OpenAnimationAsset(createdPath.string());
+    VANS_LOG("[Asset] Created " << createdPath.string());
+}
+
+void VansGraphics::VansProjectWindow::DrawTimelineCreationPopup(
+    Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+{
+    if (m_OpenTimelineCreationPopup)
+    {
+        ImGui::OpenPopup("Create Timeline");
+        m_OpenTimelineCreationPopup = false;
+    }
+
+    if (!ImGui::BeginPopupModal("Create Timeline", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+
+    ImGui::InputText("Name", m_TimelineName, sizeof(m_TimelineName));
+    if (!m_TimelineAssetCreateStatus.empty())
+        ImGui::TextUnformatted(m_TimelineAssetCreateStatus.c_str());
+
+    if (ImGui::Button("Create"))
+    {
+        const std::string timelineName(m_TimelineName);
+        if (timelineName.empty())
+        {
+            m_TimelineAssetCreateStatus = "Timeline name is required";
+        }
+        else
+        {
+            Vans::EditorAPI::ProjectAssetCreateRequest createRequest;
+            createRequest.directoryPath = m_TimelineCreationDirectory.string();
+            createRequest.kind = Vans::EditorAPI::ProjectAssetCreationKind::Timeline;
+            createRequest.name = timelineName;
+            const Vans::EditorAPI::ProjectAssetCreateResult creation =
+                editorAPI.CreateProjectAsset(createRequest);
+            if (!creation.success)
+                m_TimelineAssetCreateStatus = creation.message.empty()
+                    ? "Timeline creation failed" : creation.message;
+            else
+            {
+                const std::filesystem::path createdPath(creation.assetPath);
+                const Vans::EditorAPI::AssetRefreshResult refresh =
+                    editorAPI.RefreshProjectAsset(createdPath.string(), true);
+                if (!refresh.success)
+                    m_TimelineAssetCreateStatus = refresh.message;
+                else
+                {
+                    Vans::VansEditorSelection::SelectAsset(createdPath);
+                    VansEditorWindow::OpenAssetForAuthoring(createdPath.string());
+                    VANS_LOG("[Asset] Created " << createdPath.string());
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel"))
+        ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
 }
 
 void VansGraphics::VansProjectWindow::DrawProjectContents(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
@@ -130,13 +186,11 @@ void VansGraphics::VansProjectWindow::DrawProjectContents(Vans::EditorAPI::IEngi
         const std::string& rootPath = root.rootPath;
         const std::string& rootLabel = root.rootLabel;
 
-        static std::filesystem::path currentPath = "";
-        // Reset currentPath when the root changes (e.g. project just opened)
-        static std::string cachedRoot;
-        if (cachedRoot != rootPath)
+        // 项目切换后立即丢弃旧目录，避免全局 Asset 菜单在旧项目中创建资产。
+        if (m_CachedRootPath != rootPath)
         {
-            cachedRoot  = rootPath;
-            currentPath = rootPath;
+            m_CachedRootPath = rootPath;
+            m_CurrentDirectory = rootPath;
         }
 
         // Left Panel: Directory Tree
@@ -148,7 +202,7 @@ void VansGraphics::VansProjectWindow::DrawProjectContents(Vans::EditorAPI::IEngi
                 if (entry.is_directory()) {
                     bool open = ImGui::TreeNode(entry.path().filename().string().c_str());
                     if (ImGui::IsItemClicked()) {
-                        currentPath = entry.path();
+                        m_CurrentDirectory = entry.path();
                     }
                     if (open) {
                         renderTree(entry.path());
@@ -161,7 +215,7 @@ void VansGraphics::VansProjectWindow::DrawProjectContents(Vans::EditorAPI::IEngi
         if (std::filesystem::exists(rootPath)) {
             if (ImGui::TreeNode(rootLabel.c_str())) {
                 if (ImGui::IsItemClicked()) {
-                    currentPath = rootPath;
+                    m_CurrentDirectory = rootPath;
                 }
                 renderTree(rootPath);
                 ImGui::TreePop();
@@ -174,52 +228,8 @@ void VansGraphics::VansProjectWindow::DrawProjectContents(Vans::EditorAPI::IEngi
         // Right Panel: File List
         ImGui::BeginChild("RightPanel", ImVec2(0, 0), true);
 
-        static std::string s_AudioAssetCreateStatus;
-        auto createAndSelectAudioAsset = [&](AudioControlAssetTemplate assetTemplate)
-        {
-            std::string error;
-            const std::filesystem::path createdPath = CreateAudioControlAsset(currentPath, assetTemplate, error);
-            if (createdPath.empty())
-            {
-                s_AudioAssetCreateStatus = error.empty() ? "Audio asset creation failed" : error;
-                VANS_LOG_ERROR("[Project] " << s_AudioAssetCreateStatus);
-                return;
-            }
-
-            const Vans::EditorAPI::AssetRefreshResult refresh =
-                editorAPI.RefreshProjectAsset(createdPath.string(), true);
-            if (!refresh.success)
-            {
-                s_AudioAssetCreateStatus = "Created, but asset refresh failed: " + refresh.message;
-                VANS_LOG_ERROR("[Project] " << s_AudioAssetCreateStatus);
-                return;
-            }
-
-            Vans::VansEditorSelection::SelectAsset(createdPath);
-            s_AudioAssetCreateStatus = "Created " + createdPath.filename().string();
-            VANS_LOG("[Project] " << s_AudioAssetCreateStatus);
-        };
-
-        if (root.projectLoaded)
-        {
-            if (ImGui::Button("Create Audio"))
-                ImGui::OpenPopup("CreateAudioAssetPopup");
-            if (ImGui::BeginPopup("CreateAudioAssetPopup"))
-            {
-                if (ImGui::MenuItem("Reverb Preset"))
-                    createAndSelectAudioAsset(AudioControlAssetTemplate::ReverbPreset);
-                if (ImGui::MenuItem("Bus Snapshot"))
-                    createAndSelectAudioAsset(AudioControlAssetTemplate::BusSnapshot);
-                if (ImGui::MenuItem("Ducking Rules"))
-                    createAndSelectAudioAsset(AudioControlAssetTemplate::DuckingRules);
-                ImGui::EndPopup();
-            }
-            if (!s_AudioAssetCreateStatus.empty())
-            {
-                ImGui::SameLine();
-                ImGui::TextDisabled("%s", s_AudioAssetCreateStatus.c_str());
-            }
-        }
+        ProcessAssetCreation(editorAPI, root);
+        DrawTimelineCreationPopup(editorAPI);
 
         static float padding = 10.0f;
         static float thumbnailSize = 64.0f;
@@ -230,8 +240,8 @@ void VansGraphics::VansProjectWindow::DrawProjectContents(Vans::EditorAPI::IEngi
 
         if (ImGui::BeginTable("ProjectAssets", columnCount))
         {
-            if (std::filesystem::exists(currentPath)) {
-                for (const auto& entry : std::filesystem::directory_iterator(currentPath)) {
+            if (std::filesystem::exists(m_CurrentDirectory)) {
+                for (const auto& entry : std::filesystem::directory_iterator(m_CurrentDirectory)) {
                     if (!entry.is_directory()) {
                         if (entry.path().extension() == ".meta")
                             continue;
@@ -272,12 +282,20 @@ void VansGraphics::VansProjectWindow::DrawProjectContents(Vans::EditorAPI::IEngi
 
                         if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
                         {
+							const std::string extension = entry.path().extension().string();
+							if (extension == ".vanimator" || extension == ".vbonemask" || extension == ".vtimeline")
+							{
+								VansEditorWindow::OpenAssetForAuthoring(entry.path().string());
+							}
+							else
+							{
 							std::string readError;
 							if (Vans::VansSceneDocumentLoader::IsSceneDocumentFile(entry.path(), &readError))
 							{
 								std::string scenePath = entry.path().string();
 								VANS_LOG("[Project] Deferring Scene load: " << scenePath);
 								VansEditorWindow::m_PendingScenePath = scenePath;
+							}
 							}
                         }
 

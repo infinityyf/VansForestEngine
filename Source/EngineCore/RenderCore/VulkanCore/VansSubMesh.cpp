@@ -331,7 +331,8 @@ void VansGraphics::VansMesh::LoadMultiMesh(VkDevice& logic_device, VkQueue& queu
 	bool supportRayTracing, bool needCPUData, float scaleFactor,
 	const Vans::VansSkeletalMeshImportSettings& skeletalImport,
 	const std::string& cachePath,
-	bool trustCacheWithoutSource)
+	bool trustCacheWithoutSource,
+	bool extractEmbeddedAnimationClips)
 {
 	m_IsMultiMesh = true;
 	m_SupportRayTracing = false;
@@ -393,8 +394,23 @@ void VansGraphics::VansMesh::LoadMultiMesh(VkDevice& logic_device, VkQueue& queu
 		for (uint32_t m = 0; m < scene->mNumMeshes; m++)
 			totalVertices += scene->mMeshes[m]->mNumVertices;
 
-		VansSkinnedMeshLoader::ProcessAnimatedMesh(scene, file_name, totalVertices, scaleFactor, m_AnimImportResult,
-			skeletalImport);
+		if (extractEmbeddedAnimationClips)
+		{
+			VansSkinnedMeshLoader::ProcessAnimatedMesh(scene, file_name, totalVertices,
+				scaleFactor, m_AnimImportResult, skeletalImport);
+		}
+		else
+		{
+			// Isolated previews need the exact runtime skeleton and skin weights, but
+			// must never create or refresh .vclip caches beside the source model.
+			VansSkinnedMeshLoader::ExtractSkeleton(
+				scene, m_AnimImportResult.skeleton, scaleFactor, skeletalImport);
+			VansSkinnedMeshLoader::ExtractVertexBoneData(
+				scene, m_AnimImportResult.skeleton, totalVertices,
+				m_AnimImportResult.vertexBoneData, skeletalImport);
+			m_AnimImportResult.clips.clear();
+			m_AnimImportResult.hasAnimation = !m_AnimImportResult.skeleton.bones.empty();
+		}
 
 		if (m_AnimImportResult.hasAnimation)
 		{

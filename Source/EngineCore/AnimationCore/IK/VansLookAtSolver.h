@@ -40,6 +40,9 @@ namespace VansGraphics
 
 		// 单骨骼最大旋转角度（度）。<=0 表示无限制。
 		float     m_MaxAnglePerBoneDeg = 80.0f;
+
+	private:
+		std::vector<glm::mat4> m_GlobalScratch;
 	};
 
 }  // namespace VansGraphics

@@ -30,6 +30,8 @@ namespace Vans::EditorAPI
 namespace VansGraphics
 {
 	class VansAnimGraphEditorWindow;
+	class VansBoneMaskEditorWindow;
+	class VansTimelineEditorWindow;
 	class VansUIEditorWindow;
 	class VansHierachuWindow;
 	class VansLightWindow;
@@ -168,6 +170,14 @@ namespace VansGraphics
 		static VansProfilerWindow* m_ProfilerWindow;
 
 		static VansAnimGraphEditorWindow* m_AnimGraphEditorWindow;
+		static VansBoneMaskEditorWindow* m_BoneMaskEditorWindow;
+		static VansTimelineEditorWindow* m_TimelineEditorWindow;
+
+		// Asset-document based animation authoring entry used by Project and
+		// Inspector windows. Dispatch is by current canonical extension.
+		static void OpenAnimationAsset(const std::string& sourcePath);
+		static void OpenAssetForAuthoring(const std::string& sourcePath);
+		static void OpenTimelineInstance(const std::string& sourcePath, const std::string& ownerEntityGuid);
 
 		static VansUIEditorWindow* m_UIEditorWindow;
 

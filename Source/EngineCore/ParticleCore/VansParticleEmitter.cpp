@@ -8,6 +8,40 @@ namespace VansGraphics
 void VansParticleEmitter::Initialize()
 {
     m_ParticlePool.Resize(m_MaxParticles);
+	m_ParticlePool.AllocSeedRandom();
+	ResetSimulation();
+}
+
+void VansParticleEmitter::ResetSimulation()
+{
+	m_SpawnAccum = 0.0f;
+	m_ParticlePool.m_AliveCount = 0;
+	std::fill(m_ParticlePool.m_Flags.begin(), m_ParticlePool.m_Flags.end(), 0u);
+	for (BurstConfig& burst : m_SpawnConfig.m_Bursts)
+	{
+		burst.cyclesDone = 0;
+		burst.nextTime = -1.0f;
+	}
+	m_RandomState = m_RandomSeed != 0 ? m_RandomSeed : 0x9e3779b9u;
+}
+
+void VansParticleEmitter::SetRandomSeed(uint32_t seed)
+{
+	m_RandomSeed = seed != 0 ? seed : 0x9e3779b9u;
+	m_RandomState = m_RandomSeed;
+}
+
+uint32_t VansParticleEmitter::NextRandomSeed()
+{
+	m_RandomState ^= m_RandomState << 13;
+	m_RandomState ^= m_RandomState >> 17;
+	m_RandomState ^= m_RandomState << 5;
+	return m_RandomState != 0 ? m_RandomState : 0x9e3779b9u;
+}
+
+void VansParticleEmitter::EmitBurst(uint32_t count, const glm::mat4& localToWorld)
+{
+	SpawnParticles(count, localToWorld);
 }
 
 void VansParticleEmitter::SpawnParticles(uint32_t count, const glm::mat4& localToWorld)
@@ -24,7 +58,10 @@ void VansParticleEmitter::SpawnParticles(uint32_t count, const glm::mat4& localT
     const uint32_t endIndex = startIndex + count;
 
     for (uint32_t i = startIndex; i < endIndex; ++i)
+	{
         m_ParticlePool.m_Flags[i] = VansParticlePool::FLAG_ALIVE;
+		m_ParticlePool.m_SeedRandom[i] = NextRandomSeed();
+	}
 
     m_ParticlePool.m_AliveCount = endIndex;
 

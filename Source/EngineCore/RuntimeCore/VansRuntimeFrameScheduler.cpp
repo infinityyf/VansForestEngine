@@ -28,7 +28,13 @@ void VansRuntimeFrameScheduler::RunGameplay(const VansRuntimeGameplayFrame& fram
     if (frame.simulationRunning && frame.flushCharacterControllerTransforms)
         frame.flushCharacterControllerTransforms();
 
+	if (frame.gameplayActive && frame.updateTimelinesPostScript)
+		frame.updateTimelinesPostScript(frame.deltaSeconds);
+
     if (frame.gameplayActive && frame.updateCameraScripts)
         frame.updateCameraScripts();
+
+	if (frame.gameplayActive && frame.updateTimelinesCamera)
+		frame.updateTimelinesCamera(frame.deltaSeconds);
 }
 }

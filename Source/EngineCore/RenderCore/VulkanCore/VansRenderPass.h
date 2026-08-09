@@ -97,6 +97,11 @@ namespace VansGraphics
 	private:
 		VansVKImage m_ColorImage;
 
+		// Previous frame's diffuse exitant radiance.  This deliberately excludes
+		// specular, fog and all later composition so SSGI never feeds the final
+		// scene color back into the indirect-light estimate.
+		VansVKImage m_DiffuseExitantRadianceHistoryImage;
+
 		// Deferred / forward-opaque scene color snapshot used by transmission
 		// glass during the later transparent pass.
 		VansVKImage m_OpaqueSceneColorImage;
@@ -308,6 +313,8 @@ namespace VansGraphics
 		VansVKImage& GetPunctualShadowMap() { return m_PunctualShadowMapImage; }
 
 		VansVKImage& GetColor() { return m_ColorImage; }
+
+		VansVKImage& GetDiffuseExitantRadianceHistory() { return m_DiffuseExitantRadianceHistoryImage; }
 
 		VansVKImage& GetOpaqueSceneColor() { return m_OpaqueSceneColorImage; }
 

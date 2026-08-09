@@ -5,6 +5,7 @@
 
  layout( location = 0 ) in vec3 direction;
  layout( location = 0 ) out vec4 frag_color;
+ layout( location = 1 ) out vec4 diffuseExitantRadiance;
  layout( set = 1, binding = 1 ) uniform sampler2D fogResult;
 // 1/4 分辨率体积云结果（由 CloudRayMarch.comp 计算，RGB=内散射，A=透射率）
 layout(set = 1, binding = 2) uniform sampler2D cloudBuffer;
@@ -84,4 +85,7 @@ float EvaluateCelestialOcclusion(float cloudTransmittance, float fogOpacity, flo
     color += moonDiskColor * EvaluateCelestialOcclusion(cloudData.a, fogOpacity, moonDiskParams.z);
 
     frag_color = vec4(color, 1);
+    // Sky / fog are not a surface diffuse exitant source for SSGI.  The
+    // dedicated history must remain clean even though SkyBox shares the MRT.
+    diffuseExitantRadiance = vec4(0.0);
  }

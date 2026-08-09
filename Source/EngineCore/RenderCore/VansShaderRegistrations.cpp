@@ -125,7 +125,7 @@ void RegisterEngineShaders()
         "Deferred",
         "EngineAssets/Shaders/Deferred",
         VK_FALSE, VK_FALSE, VK_COMPARE_OP_NEVER, VK_CULL_MODE_NONE,
-        0, false
+        0, false, false, 2
     });
 
     reg.RegisterGraphicsShader("Postprocess", {
@@ -139,7 +139,7 @@ void RegisterEngineShaders()
         "SkyBox",
         "EngineAssets/Shaders/SkyBox",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
-        0, false
+        0, false, false, 2
     });
 
     reg.RegisterGraphicsShader("SSAO", {
@@ -303,6 +303,7 @@ void RegisterEngineShaders()
     reg.RegisterComputeShader("PreConSpecularEnvironment", "EngineAssets/Shaders/PreConSpecularEnvironment");
     reg.RegisterComputeShader("SSGI", "EngineAssets/Shaders/SSGI");
     reg.RegisterComputeShader("SSGITemporal", "EngineAssets/Shaders/SSGITemporal");
+    reg.RegisterComputeShader("SSGIAtrous", "EngineAssets/Shaders/SSGIAtrous", sizeof(VansGraphics::SSGIAtrousPushConstants));
     reg.RegisterComputeShader("HIZ", "EngineAssets/Shaders/HIZ");
     reg.RegisterComputeShader("HIZSeed", "EngineAssets/Shaders/HIZ_SEED");
     reg.RegisterComputeShader("OcclusionHIZ", "EngineAssets/Shaders/HIZ_OCCLUSION");
@@ -326,6 +327,7 @@ void RegisterEngineShaders()
     reg.RegisterComputeShader("BloomUpsample", "EngineAssets/Shaders/PostProcess/BloomUpsample");
     reg.RegisterComputeShader("GIPointLight", "EngineAssets/Shaders/GIPointLight", sizeof(VansGraphics::RayTracingPushConstant));
     reg.RegisterComputeShader("GIVisibilityUpdate", "EngineAssets/Shaders/GIVisibilityUpdate", sizeof(VansGraphics::RayTracingPushConstant));
+    reg.RegisterComputeShader("GIProbeState", "EngineAssets/Shaders/GIProbeState", sizeof(VansGraphics::RayTracingPushConstant));
     reg.RegisterComputeShader("GIRTPreview", "EngineAssets/Shaders/GIRTPreview", sizeof(VansGraphics::GIRTPreviewPushConstant));
     reg.RegisterComputeShader("ReflectionProbePrefilter", "EngineAssets/Shaders/ReflectionProbePrefilter", sizeof(VansGraphics::VansReflectionProbeSystem::PrefilterPushConstants));
     reg.RegisterComputeShader("GrassBoneSim", "EngineAssets/Shaders/GrassBoneSim", sizeof(VansGraphics::GrassSimPushConstants));

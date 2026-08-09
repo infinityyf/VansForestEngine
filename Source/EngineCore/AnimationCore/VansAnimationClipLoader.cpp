@@ -180,32 +180,49 @@ bool VansAnimationClipLoader::LoadClipWithSkeleton(const std::string& filePath,
 //  LoadClipsFromRefs (批量加载)
 // ════════════════════════════════════════════════════════════════
 
-std::unordered_map<std::string, VansAnimationClip>
-VansAnimationClipLoader::LoadClipsFromRefs(const std::vector<AnimatorClipRef>& clipRefs, const std::string& pathPrefix,
-                                           const Skeleton* originSkeleton)
+bool VansAnimationClipLoader::LoadClipsFromRefs(
+	const std::vector<AnimatorClipRef>& clipRefs,
+	const AnimatorClipPathResolver& pathResolver,
+	const Skeleton* originSkeleton,
+	std::unordered_map<std::string, VansAnimationClip>& outClips,
+	std::string& error)
 {
-	std::unordered_map<std::string, VansAnimationClip> result;
+	outClips.clear();
+	error.clear();
+	if (!pathResolver)
+	{
+		error = "Animator Clip path resolver is not configured";
+		return false;
+	}
 
 	for (const auto& ref : clipRefs)
 	{
-		// 将相对路径拼接为完整路径
-		std::string fullPath = pathPrefix + ref.path;
+		std::filesystem::path fullPath;
+		if (!pathResolver(ref, fullPath, error) || fullPath.empty())
+		{
+			if (error.empty())
+				error = "Cannot resolve Animation Clip '" + ref.name + "' (" + ref.assetGuid + ")";
+			outClips.clear();
+			return false;
+		}
 		VansAnimationClip clip;
-		if (LoadClip(fullPath, clip, originSkeleton))
+		if (LoadClip(fullPath.string(), clip, originSkeleton))
 		{
 			// 优先用 ref.name 作为 key；如果为空用 clip 自身的名称
 			std::string key = ref.name.empty() ? clip.clipName : ref.name;
-			result[key] = std::move(clip);
+			outClips[key] = std::move(clip);
 		}
 		else
 		{
-			VANS_LOG_WARN("[ClipLoader] Skipping clip ref: name='" << ref.name
-			             << "' path='" << ref.path << "'");
+			error = "Failed to load Animation Clip '" + ref.name + "' (" + ref.assetGuid
+				+ ") at '" + fullPath.string() + "'";
+			outClips.clear();
+			return false;
 		}
 	}
 
-	VANS_LOG("[ClipLoader] Loaded " << result.size() << "/" << clipRefs.size() << " clips from refs");
-	return result;
+	VANS_LOG("[ClipLoader] Loaded " << outClips.size() << "/" << clipRefs.size() << " clips from refs");
+	return true;
 }
 
 // ════════════════════════════════════════════════════════════════

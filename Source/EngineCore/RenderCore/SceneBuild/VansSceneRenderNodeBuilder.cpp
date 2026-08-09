@@ -252,10 +252,10 @@ VansRenderNode* VansSceneRenderNodeBuilder::LoadSingleRenderNode(
             return nullptr;
         }
 
+        // 每个子网格都拥有独立的顶点/索引 GPU buffer；它和普通网格一样是
+        // TLAS 的完整几何单元。不得因为来源是 multi-mesh 而关闭 RT，否则
+        // 场景可见墙体会从 DDGI 相交中消失。
         mesh = sourceMesh->m_SubMeshes[submeshIndex];
-        // Multi-mesh sub-meshes are borrowed slices from the source mesh. Their buffers are
-        // not created with the required RT flags and no BLAS is built for them in BuildRayTracingAS.
-        mesh->m_SupportRayTracing = false;
 
         const FBXSubmeshMaterialInfo& fbxInfo = sourceMesh->m_SubmeshMaterialInfos.empty()
             ? FBXSubmeshMaterialInfo{}
@@ -668,9 +668,6 @@ void VansSceneRenderNodeBuilder::ExpandMultiMeshToRenderNodes(VansScene& scene,
 		nodeType = ResolveMaterialRenderNodeType(material, nodeType);
 
         VansRenderNode* renderNode = nullptr;
-        // Multi-mesh sub-meshes do not support ray tracing; their buffers
-        // are not created with the required RT flags.  Force RT off.
-        subMesh->m_SupportRayTracing = false;
 
 		if (nodeType == RenderNodeType::OPAQUE_NODE ||
 			nodeType == RenderNodeType::HAIR_NODE ||
@@ -696,6 +693,9 @@ void VansSceneRenderNodeBuilder::ExpandMultiMeshToRenderNodes(VansScene& scene,
         renderNode->m_Material = material;
         renderNode->m_ParentGroupName = resolvedParentName;
         renderNode->m_ParentEntityGuid = parentEntityGuid;
+		renderNode->m_RayTracingEnabled =
+			matType != VansMaterialType::VAN_TRANSPARENT &&
+			matType != VansMaterialType::VAN_PBR_TRANSMISSION;
 
         if (hasNodeTransformAnimation)
         {

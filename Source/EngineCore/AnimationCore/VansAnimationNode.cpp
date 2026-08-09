@@ -304,6 +304,18 @@ void VansAnimationNode::ConfigureRetargetSource(
 		<< "' sourceAnimator='" << desc.sourceAnimatorPath << "'");
 }
 
+bool VansAnimationNode::ReplaceRetargetSourceController(
+	std::unique_ptr<VansAnimationController> controller)
+{
+	if (!m_RetargetEnabled || !controller)
+		return false;
+	m_SourceController = std::move(controller);
+	m_LastRetargetSourceMMSwitchCount = -1;
+	m_LastRetargetSourceMMActiveClip.clear();
+	m_LastRetargetSourceMMSelectedClip.clear();
+	return true;
+}
+
 // ════════════════════════════════════════════════════════════════
 //  关联 RenderNode
 // ════════════════════════════════════════════════════════════════
@@ -358,7 +370,6 @@ void VansAnimationNode::Play()
 {
 	if (m_Controller)
 	{
-		m_LastEventTime = 0.0f;
 		m_Controller->Play();
 	}
 	if (m_RetargetEnabled && m_SourceController)
@@ -371,7 +382,6 @@ void VansAnimationNode::Play(const std::string& stateName)
 {
 	if (m_Controller)
 	{
-		m_LastEventTime = 0.0f;
 		m_Controller->Play(stateName);
 	}
 	if (m_RetargetEnabled && m_SourceController)
@@ -398,7 +408,6 @@ void VansAnimationNode::Resume()
 
 void VansAnimationNode::Stop()
 {
-	m_LastEventTime = 0.0f;
 	if (m_Controller)
 		m_Controller->Stop();
 	if (m_RetargetEnabled && m_SourceController)
@@ -461,21 +470,6 @@ float VansAnimationNode::GetSpeed() const
 	if (m_Controller)
 		return m_Controller->GetSpeed();
 	return 1.0f;
-}
-
-// ════════════════════════════════════════════════════════════════
-//  Events
-// ════════════════════════════════════════════════════════════════
-
-void VansAnimationNode::AddEvent(const std::string& clipName, AnimationEvent event)
-{
-	m_Events[clipName].push_back(std::move(event));
-
-	auto& events = m_Events[clipName];
-	std::sort(events.begin(), events.end(),
-		[](const AnimationEvent& a, const AnimationEvent& b) {
-			return a.triggerTime < b.triggerTime;
-		});
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -549,6 +543,48 @@ void VansAnimationNode::SetBoneLocalTransform(const std::string& boneName, const
 	m_BoneOverrides[boneName] = transform;
 }
 
+bool VansAnimationNode::TryGetBoneLocalTransform(const std::string& boneName, glm::mat4& transform) const
+{
+	const auto found = m_BoneOverrides.find(boneName);
+	if (found == m_BoneOverrides.end())
+		return false;
+	transform = found->second;
+	return true;
+}
+
+bool VansAnimationNode::TryGetCurrentBoneLocalTransform(const std::string& boneName, glm::mat4& transform) const
+{
+	if (TryGetBoneLocalTransform(boneName, transform)) return true;
+	int boneIndex = -1;
+	if (const auto found = m_Skeleton.boneNameToIndex.find(boneName); found != m_Skeleton.boneNameToIndex.end())
+		boneIndex = found->second;
+	else
+	{
+		try
+		{
+			const int stableId = std::stoi(boneName);
+			const auto found = std::find_if(m_Skeleton.bones.begin(), m_Skeleton.bones.end(),
+				[&](const BoneInfo& bone) { return bone.id == stableId; });
+			if (found != m_Skeleton.bones.end()) boneIndex = static_cast<int>(found - m_Skeleton.bones.begin());
+		}
+		catch (...) {}
+	}
+	if (boneIndex < 0 || boneIndex >= static_cast<int>(m_Skeleton.bones.size())) return false;
+	if (m_Controller)
+	{
+		const auto& globals = m_Controller->GetCachedGlobalTransforms();
+		if (boneIndex < static_cast<int>(globals.size()))
+		{
+			const int parent = m_Skeleton.bones[boneIndex].parentIndex;
+			transform = parent >= 0 && parent < static_cast<int>(globals.size())
+				? glm::inverse(globals[parent]) * globals[boneIndex] : globals[boneIndex];
+			return true;
+		}
+	}
+	transform = m_Skeleton.bones[boneIndex].localTransform;
+	return true;
+}
+
 void VansAnimationNode::ClearBoneOverride(const std::string& boneName)
 {
 	m_BoneOverrides.erase(boneName);
@@ -620,19 +656,11 @@ void VansAnimationNode::ApplySampledNodeTransforms()
 	if (!m_Controller || m_NodeTransformBindings.empty())
 		return;
 
-	const auto& sampledTransforms = m_Controller->GetSampledNodeTransforms();
+	const VansAnimationController* animationSource =
+		m_RetargetEnabled && m_SourceController ? m_SourceController.get() : m_Controller;
+	const auto& sampledTransforms = animationSource->GetSampledNodeTransforms();
 	if (sampledTransforms.empty())
 		return;
-
-	std::unordered_map<std::string, const SampledNodeTransform*> byPath;
-	std::unordered_map<std::string, const SampledNodeTransform*> byName;
-	for (const SampledNodeTransform& sampled : sampledTransforms)
-	{
-		if (!sampled.nodePath.empty())
-			byPath[sampled.nodePath] = &sampled;
-		if (!sampled.nodeName.empty())
-			byName[sampled.nodeName] = &sampled;
-	}
 
 	const glm::mat4 ownerWorld = m_HasTransformID
 		? VansTransformStore::GetTransform(m_TransformID).GetModelMatrix()
@@ -641,17 +669,15 @@ void VansAnimationNode::ApplySampledNodeTransforms()
 	for (const NodeTransformBinding& binding : m_NodeTransformBindings)
 	{
 		const SampledNodeTransform* sampled = nullptr;
-		if (!binding.nodePath.empty())
+		for (const SampledNodeTransform& candidate : sampledTransforms)
 		{
-			auto it = byPath.find(binding.nodePath);
-			if (it != byPath.end())
-				sampled = it->second;
-		}
-		if (!sampled && !binding.nodeName.empty())
-		{
-			auto it = byName.find(binding.nodeName);
-			if (it != byName.end())
-				sampled = it->second;
+			if ((!binding.nodePath.empty() && candidate.nodePath == binding.nodePath)
+				|| (binding.nodePath.empty() && !binding.nodeName.empty()
+					&& candidate.nodeName == binding.nodeName))
+			{
+				sampled = &candidate;
+				break;
+			}
 		}
 		if (!sampled || binding.transformID == UINT32_MAX)
 			continue;
@@ -758,7 +784,16 @@ void VansAnimationNode::Update(float deltaTime)
 					enabledRenderNodes);
 				m_RetargetPoseAuditLogged = true;
 			}
-			m_Controller->FeedExternalBoneWorldTransforms(targetModelTransforms, m_Skeleton);
+			if (!m_Controller->SubmitExternalModelPose(
+				targetModelTransforms,
+				m_Skeleton,
+				deltaTime,
+				VansExternalPoseEvaluationMode::TargetPostProcess))
+			{
+				VANS_LOG_WARN("[Retarget] " << m_Name
+					<< ": target pose submission failed; using target fallback update");
+				m_Controller->Update(deltaTime, m_Skeleton);
+			}
 		}
 		else
 		{
@@ -766,7 +801,8 @@ void VansAnimationNode::Update(float deltaTime)
 			m_Controller->Update(deltaTime, m_Skeleton);
 		}
 
-		if (m_SourceController->IsRootMotionEnabled() && m_HasTransformID)
+		if (m_SourceController->IsRootMotionEnabled() &&
+			m_SourceController->ShouldApplyRootMotionToOwner() && m_HasTransformID)
 		{
 			ApplyRootMotionToTransform(
 				m_SourceController->GetRootMotionDelta(),
@@ -774,7 +810,6 @@ void VansAnimationNode::Update(float deltaTime)
 		}
 
 		ApplySampledNodeTransforms();
-		FireEvents();
 		return;
 	}
 
@@ -785,7 +820,8 @@ void VansAnimationNode::Update(float deltaTime)
 	m_Controller->Update(deltaTime, m_Skeleton);
 
 	// 2. 如果有 root motion，将 delta 应用到 Transform
-	if (m_Controller->IsRootMotionEnabled() && m_HasTransformID)
+	if (m_Controller->IsRootMotionEnabled() &&
+		m_Controller->ShouldApplyRootMotionToOwner() && m_HasTransformID)
 	{
 		glm::vec3 deltaPos = m_Controller->GetRootMotionDelta();
 		glm::quat deltaRot = m_Controller->GetRootRotationDelta();
@@ -803,9 +839,7 @@ void VansAnimationNode::Update(float deltaTime)
 		}
 	}
 
-	// 3. Fire events; the node still owns event dispatch.
 	ApplySampledNodeTransforms();
-	FireEvents();
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -817,6 +851,15 @@ const BoneMatricesSSBO& VansAnimationNode::GetBoneSSBO() const
 	if (m_Controller)
 		return m_Controller->GetBoneMatricesSSBO();
 	return m_BoneMatricesSSBO;
+}
+
+const VansAnimationFrameVector<VansAnimationEventSample>& VansAnimationNode::GetSampledEvents() const
+{
+	static const VansAnimationFrameVector<VansAnimationEventSample> empty(
+		std::pmr::new_delete_resource());
+	if (m_RetargetEnabled && m_SourceController)
+		return m_SourceController->GetSampledEvents();
+	return m_Controller ? m_Controller->GetSampledEvents() : empty;
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -1004,33 +1047,6 @@ void VansAnimationNode::ApplyRootMotionToTransform(const glm::vec3& deltaPos, co
 }
 
 // ════════════════════════════════════════════════════════════════
-// Fire animation notify events for the current frame.
-// ════════════════════════════════════════════════════════════════
-
-void VansAnimationNode::FireEvents()
-{
-	if (!m_Controller)
-		return;
-
-	std::string currentClipName = GetCurrentStateName();
-	float currentTime = GetCurrentPlayTime();
-
-	auto it = m_Events.find(currentClipName);
-	if (it == m_Events.end())
-		return;
-
-	for (const auto& event : it->second)
-	{
-		if (event.triggerTime > m_LastEventTime && event.triggerTime <= currentTime)
-		{
-			if (event.callback)
-				event.callback();
-		}
-	}
-
-	m_LastEventTime = currentTime;
-}
-
 void VansAnimationNode::SyncRetargetParameters()
 {
 	if (!m_Controller || !m_SourceController)

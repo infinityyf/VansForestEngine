@@ -206,7 +206,8 @@ bool VansAssetDatabase::RegisterOrRefresh(
     record.type = type;
     record.sourcePath = normalized;
     record.metaPath = metaPath;
-	record.authoringPath = type == VansAssetType::Material || type == VansAssetType::Shader
+	record.authoringPath = type == VansAssetType::Material || type == VansAssetType::Shader ||
+		type == VansAssetType::Timeline
 		? normalized
 		: std::filesystem::path{};
     record.artifactPath = cookedArtifactPath;
@@ -289,6 +290,8 @@ VansAssetType VansAssetDatabase::Classify(const std::filesystem::path& sourcePat
     if (extension == L".particle") return VansAssetType::Particle;
     if (extension == L".vclip") return VansAssetType::AnimationClip;
     if (extension == L".vanimator") return VansAssetType::AnimatorController;
+	if (extension == L".vbonemask") return VansAssetType::BoneMask;
+	if (extension == L".vtimeline") return VansAssetType::Timeline;
     if (extension == L".clothprofile") return VansAssetType::ClothProfile;
     if (extension == L".pprofile") return VansAssetType::PostProcessProfile;
     if (extension == L".ragdoll") return VansAssetType::RagdollProfile;
@@ -312,6 +315,8 @@ std::string VansAssetDatabase::ImporterFor(VansAssetType type)
     case VansAssetType::Particle: return "ParticleImporter";
     case VansAssetType::AnimationClip: return "AnimationClipImporter";
     case VansAssetType::AnimatorController: return "AnimatorControllerImporter";
+	case VansAssetType::BoneMask: return "BoneMaskImporter";
+	case VansAssetType::Timeline: return "TimelineImporter";
     case VansAssetType::ClothProfile: return "ClothProfileImporter";
     case VansAssetType::PostProcessProfile: return "PostProcessProfileImporter";
     case VansAssetType::RagdollProfile: return "RagdollProfileImporter";

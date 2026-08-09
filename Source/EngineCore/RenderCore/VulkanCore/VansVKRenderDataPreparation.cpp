@@ -228,6 +228,19 @@ namespace VansGraphics
 			}
 		}
 
+		const std::size_t runtimeInstanceCapacity = m_Scene->CollectSSBOManagedRenderNodes().size();
+		const std::size_t occupiedTextureDescriptors =
+			materialManager->m_GlobalPBRTextures.size() + pendingCustomTextures.size();
+		const std::size_t availableTextureDescriptors = occupiedTextureDescriptors < MAX_BINDLESS_TEXTURES
+			? MAX_BINDLESS_TEXTURES - occupiedTextureDescriptors : 0;
+		VansTexture* runtimeFallback = findFallbackTexture("defaultAlbedo");
+		const std::size_t runtimePBRCapacity = runtimeFallback
+			? std::min(runtimeInstanceCapacity, availableTextureDescriptors / 5u) : 0u;
+		materialManager->InitializeRuntimeMaterialPools(
+			runtimePBRCapacity,
+			runtimeInstanceCapacity,
+			runtimeFallback ? &runtimeFallback->GetImage() : nullptr);
+
 		for (const PendingCustomTexture& pendingTexture : pendingCustomTextures)
 		{
 			if (!pendingTexture.texture ||
@@ -445,10 +458,11 @@ namespace VansGraphics
 	{
 		auto vansConfigration = VansConfigration::GetInstance();
 		std::string projectRoot = vansConfigration->GetProjectRootPath();
-		VansTexture* texture = new VansTexture();
-		texture->LoadCubeTexture(m_VansVKCommandBuffer, (projectRoot + "EngineAssets/Textures/SkyBox").c_str());
-
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+		manager->m_EnvironmentRadiance = new VansTexture();
+		manager->m_EnvironmentRadiance->LoadCubeTexture(
+			m_VansVKCommandBuffer, (projectRoot + "EngineAssets/Textures/SkyBox").c_str());
+		VansTexture* texture = manager->m_EnvironmentRadiance;
 		manager->m_PreConvDiffuse = new VansTexture();
 		manager->m_PreConvDiffuse->InitTextureWithoutData(
 			m_VansVKCommandBuffer, 512, 512, 1,
@@ -789,7 +803,6 @@ namespace VansGraphics
 
 		WaitForDevice();
 		prefilterCBBuffer.DestroyVulkanBuffer(m_VansVKLogicDevice);
-		delete texture;
 	}
 
 	void VansVKDevice::PrepareSSAORenderData()
@@ -828,6 +841,36 @@ namespace VansGraphics
 			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
 			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSGI_TEMPORAL_B, ssgiTemporalB);
+
+		VansTexture* ssgiMomentsA = new VansTexture();
+		ssgiMomentsA->InitTextureWithoutData(
+			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
+			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
+		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSGI_MOMENTS_A, ssgiMomentsA);
+
+		VansTexture* ssgiMomentsB = new VansTexture();
+		ssgiMomentsB->InitTextureWithoutData(
+			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
+			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
+		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSGI_MOMENTS_B, ssgiMomentsB);
+
+		VansTexture* ssgiSurfaceHistoryA = new VansTexture();
+		ssgiSurfaceHistoryA->InitTextureWithoutData(
+			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
+			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
+		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSGI_SURFACE_HISTORY_A, ssgiSurfaceHistoryA);
+
+		VansTexture* ssgiSurfaceHistoryB = new VansTexture();
+		ssgiSurfaceHistoryB->InitTextureWithoutData(
+			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
+			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
+		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSGI_SURFACE_HISTORY_B, ssgiSurfaceHistoryB);
+
+		VansTexture* ssgiAtrousA = new VansTexture();
+		ssgiAtrousA->InitTextureWithoutData(
+			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
+			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
+		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSGI_ATROUS_A, ssgiAtrousA);
 		manager->m_SSGITemporalFrame = 0;
 
 		auto vansConfigration = VansConfigration::GetInstance();
@@ -835,15 +878,30 @@ namespace VansGraphics
 		manager->m_SSGIShader = VansGraphics::VansShaderManager::Get().FindComputeShader("SSGI");
 
 		manager->m_SSGITemporalShader = VansGraphics::VansShaderManager::Get().FindComputeShader("SSGITemporal");
+		manager->m_SSGIAtrousShader = VansGraphics::VansShaderManager::Get().FindComputeShader("SSGIAtrous");
 
 		const VansGISettings& gi = m_Scene->GetGISettings();
-		const GIResolvedRegion primaryRegion = ResolveGIRegion(GetPrimaryGIRegionDesc(gi));
 		SSGIParamsGPU data{};
 		data.screenSize = glm::vec4(
 			(float)m_RenderWidth, (float)m_RenderHeight, 1.0f / m_RenderWidth, 1.0f / m_RenderHeight);
-		data.giVolumeMin = glm::vec4(primaryRegion.volumeMin, 0.0f);
-		data.giVolumeSizeAndBias = glm::vec4(primaryRegion.volumeSize, primaryRegion.normalBias);
-		data.traceParams = glm::vec4(primaryRegion.maxRayDistance, 0.75f, primaryRegion.volumeFadeDistance, 0.0f);
+		uint32_t regionCount = 0u;
+		for (const GIProbeRegionDesc* desc : BuildActiveGIRegionOrder(gi))
+		{
+			if (regionCount >= VANS_SSGI_MAX_GI_REGIONS)
+				continue;
+			const GIResolvedRegion region = ResolveGIRegion(*desc);
+			SSGIRegionParamsGPU& destination = data.regions[regionCount++];
+			destination.volumeMin = glm::vec4(region.volumeMin, 0.0f);
+			destination.volumeSizeAndBias = glm::vec4(region.volumeSize, region.normalBias);
+			destination.traceParams = glm::vec4(region.maxRayDistance, 0.75f, region.volumeFadeDistance, 0.0f);
+			destination.gridDimensionsAndPriority = glm::vec4(glm::vec3(region.gridDimensions), region.priority);
+		}
+		data.regionInfo.x = static_cast<float>(regionCount);
+		data.deferredProbeDebug = glm::vec4(
+			IsGIProbeOnlyDeferredOutputEnabled(gi) ? 1.0f : 0.0f,
+			gi.probeOnlyDeferredExposure,
+			0.0f,
+			0.0f);
 		manager->m_SSGICBBuffer.CreatVulkanBuffer(
 			m_VansVKLogicDevice, sizeof(data), VK_FORMAT_R32_SFLOAT,
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
@@ -861,6 +919,7 @@ namespace VansGraphics
 
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_SSGI(manager->m_SSGITexSetLayout, manager->m_SSGIDescriptorSets);
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_SSGITemporal(manager->m_SSGITemporalSetLayout, manager->m_SSGITemporalDescriptorSets, 2);
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_SSGIAtrous(manager->m_SSGIAtrousSetLayout, manager->m_SSGIAtrousDescriptorSets, 2);
 	}
 
 	void VansVKDevice::PrepareHZBRenderData()
@@ -1377,6 +1436,7 @@ namespace VansGraphics
 		// ---- UBO 创建与初始化 ----
 		VansPostProcessProfile& defaultProfile = manager->m_PostProcessProfile;
 		VansPostProcessParamsGPU ppParams  = defaultProfile.ToGPUParams();
+		ppParams.m_DebugPassthrough = IsGIProbeOnlyDeferredOutputEnabled(m_Scene->GetGISettings()) ? 1.0f : 0.0f;
 		VansExposureAdaptParamsGPU exposureParams = defaultProfile.ToExposureAdaptParams(0.0f);
 		VansBloomParamsGPU bloomParams     = defaultProfile.ToBloomParams();
 
@@ -1419,6 +1479,9 @@ namespace VansGraphics
 		m_Scene->ReleaseASTempBuffer(this);
 		rayTracingContext.CreateRayTracingResource(this, &m_VansVKCommandBuffer, m_Scene);
 		rayTracingContext.UpdateGISettings(m_Scene->GetGISettings());
+		UploadSSGIParamsFromGISettings();
+		ResetFeatureDescriptorSets();
+		m_Scene->MarkRenderNodeDescriptorSetsDirty();
 		m_Scene->ClearGIProbeResourcesDirty();
 		m_Scene->ClearGIParametersDirty();
 	}

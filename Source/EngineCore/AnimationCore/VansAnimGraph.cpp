@@ -1,5 +1,9 @@
 #include "VansAnimGraph.h"
 #include "VansAnimationController.h"
+#include "VansAnimationSampler.h"
+#include "VansAnimationLayer.h"
+#include "VansPoseMath.h"
+#include "VansPosePayloadMixer.h"
 #include "IK/VansIKSolver.h"
 #include "IK/VansCCDSolver.h"
 #include "IK/VansFABRIKSolver.h"
@@ -20,248 +24,13 @@
 #include <functional>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace VansGraphics
 {
 	// ═════════════════════════════════════════════════════════════
 	//  工具函数
 	// ═════════════════════════════════════════════════════════════
-
-	// Pose 线性混合辅助（对每根骨骼的 4x4 矩阵做分量 lerp）
-	static glm::mat4 ComposeTRS(const glm::vec3& position,
-	                            const glm::quat& rotation,
-	                            const glm::vec3& scale)
-	{
-		return glm::translate(glm::mat4(1.0f), position) *
-			glm::toMat4(glm::normalize(rotation)) *
-			glm::scale(glm::mat4(1.0f), scale);
-	}
-
-	static void InterpolateTransformKeyframes(const std::vector<TransformKeyframe>& keyframes,
-	                                          float time,
-	                                          const glm::mat4& fallbackLocalTransform,
-	                                          glm::vec3& outPos,
-	                                          glm::quat& outRot,
-	                                          glm::vec3& outScale)
-	{
-		if (keyframes.empty())
-		{
-			glm::vec3 skew;
-			glm::vec4 perspective;
-			outRot = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
-			outPos = glm::vec3(0.0f);
-			outScale = glm::vec3(1.0f);
-			glm::decompose(fallbackLocalTransform, outScale, outRot, outPos, skew, perspective);
-			outRot = glm::normalize(outRot);
-			return;
-		}
-
-		if (keyframes.size() == 1)
-		{
-			outPos = keyframes[0].position;
-			outRot = glm::normalize(keyframes[0].rotation);
-			outScale = keyframes[0].scale;
-			return;
-		}
-
-		size_t idx = 0;
-		for (size_t i = 0; i < keyframes.size() - 1; ++i)
-		{
-			if (time < keyframes[i + 1].time)
-			{
-				idx = i;
-				break;
-			}
-			idx = i;
-		}
-
-		const size_t next = std::min(idx + 1, keyframes.size() - 1);
-		if (idx == next)
-		{
-			outPos = keyframes[idx].position;
-			outRot = glm::normalize(keyframes[idx].rotation);
-			outScale = keyframes[idx].scale;
-			return;
-		}
-
-		const float dt = keyframes[next].time - keyframes[idx].time;
-		const float t = (dt > 0.0f)
-			? std::clamp((time - keyframes[idx].time) / dt, 0.0f, 1.0f)
-			: 0.0f;
-		outPos = glm::mix(keyframes[idx].position, keyframes[next].position, t);
-		outRot = glm::normalize(glm::slerp(keyframes[idx].rotation, keyframes[next].rotation, t));
-		outScale = glm::mix(keyframes[idx].scale, keyframes[next].scale, t);
-	}
-
-	static void SampleNodeTransformChannels(const VansAnimationClip& clip,
-	                                        float sampleTime,
-	                                        std::vector<SampledNodeTransform>& outTransforms)
-	{
-		outTransforms.clear();
-		const size_t channelCount = clip.nodeTransformChannels.size();
-		if (channelCount == 0)
-			return;
-
-		std::vector<glm::mat4> localTransforms(channelCount, glm::mat4(1.0f));
-		std::vector<glm::mat4> modelTransforms(channelCount, glm::mat4(1.0f));
-		std::vector<bool> resolved(channelCount, false);
-
-		for (size_t i = 0; i < channelCount; ++i)
-		{
-			const NodeTransformChannel& channel = clip.nodeTransformChannels[i];
-			glm::vec3 position(0.0f);
-			glm::quat rotation(1.0f, 0.0f, 0.0f, 0.0f);
-			glm::vec3 scale(1.0f);
-			InterpolateTransformKeyframes(channel.keyframes, sampleTime,
-			                              channel.bindLocalTransform,
-			                              position, rotation, scale);
-			localTransforms[i] = ComposeTRS(position, rotation, scale);
-		}
-
-		std::function<glm::mat4(size_t)> resolveModelTransform = [&](size_t index) -> glm::mat4
-		{
-			if (resolved[index])
-				return modelTransforms[index];
-
-			const NodeTransformChannel& channel = clip.nodeTransformChannels[index];
-			glm::mat4 parentModel(1.0f);
-			if (channel.parentChannelIndex >= 0 &&
-				static_cast<size_t>(channel.parentChannelIndex) < channelCount)
-			{
-				parentModel = resolveModelTransform(static_cast<size_t>(channel.parentChannelIndex));
-			}
-			else
-			{
-				parentModel = channel.bindModelTransform * glm::inverse(channel.bindLocalTransform);
-			}
-
-			modelTransforms[index] = parentModel * localTransforms[index];
-			resolved[index] = true;
-			return modelTransforms[index];
-		};
-
-		outTransforms.reserve(channelCount);
-		for (size_t i = 0; i < channelCount; ++i)
-		{
-			SampledNodeTransform sampled;
-			sampled.channelIndex = static_cast<uint32_t>(i);
-			sampled.nodeName = clip.nodeTransformChannels[i].nodeName;
-			sampled.nodePath = clip.nodeTransformChannels[i].nodePath;
-			sampled.modelTransform = resolveModelTransform(i);
-			outTransforms.push_back(std::move(sampled));
-		}
-	}
-
-	static std::string MakeNodeTransformKey(const SampledNodeTransform& transform)
-	{
-		return !transform.nodePath.empty() ? transform.nodePath : transform.nodeName;
-	}
-
-	static glm::mat4 BlendMatricesAsTRS(const glm::mat4& a, const glm::mat4& b, float alpha)
-	{
-		glm::vec3 scaleA(1.0f), scaleB(1.0f), skew;
-		glm::quat rotA(1.0f, 0.0f, 0.0f, 0.0f), rotB(1.0f, 0.0f, 0.0f, 0.0f);
-		glm::vec3 posA(0.0f), posB(0.0f);
-		glm::vec4 perspective;
-		glm::decompose(a, scaleA, rotA, posA, skew, perspective);
-		glm::decompose(b, scaleB, rotB, posB, skew, perspective);
-		return ComposeTRS(glm::mix(posA, posB, alpha),
-		                  glm::slerp(glm::normalize(rotA), glm::normalize(rotB), alpha),
-		                  glm::mix(scaleA, scaleB, alpha));
-	}
-
-	static std::vector<SampledNodeTransform> BlendNodeTransforms(
-		const std::vector<SampledNodeTransform>& a,
-		const std::vector<SampledNodeTransform>& b,
-		float alpha)
-	{
-		if (a.empty()) return b;
-		if (b.empty()) return a;
-
-		std::unordered_map<std::string, const SampledNodeTransform*> bByKey;
-		bByKey.reserve(b.size());
-		for (const auto& transform : b)
-			bByKey[MakeNodeTransformKey(transform)] = &transform;
-
-		std::vector<SampledNodeTransform> result;
-		result.reserve(std::max(a.size(), b.size()));
-		for (const auto& transformA : a)
-		{
-			const std::string key = MakeNodeTransformKey(transformA);
-			auto it = bByKey.find(key);
-			if (it == bByKey.end())
-			{
-				result.push_back(transformA);
-				continue;
-			}
-
-			SampledNodeTransform blended = transformA;
-			blended.modelTransform = BlendMatricesAsTRS(transformA.modelTransform,
-			                                            it->second->modelTransform,
-			                                            alpha);
-			result.push_back(std::move(blended));
-			bByKey.erase(it);
-		}
-
-		for (const auto& [key, transform] : bByKey)
-			result.push_back(*transform);
-		return result;
-	}
-
-	static AnimGraphPose BlendPoses(const AnimGraphPose& a, const AnimGraphPose& b, float alpha)
-	{
-		AnimGraphPose result;
-		if (!a.valid || !b.valid) return a.valid ? a : b;
-
-		size_t count = std::min(a.localTransforms.size(), b.localTransforms.size());
-		result.localTransforms.resize(count);
-
-		float clampedAlpha = std::clamp(alpha, 0.0f, 1.0f);
-		for (size_t i = 0; i < count; ++i)
-		{
-			// 对每个分量做线性插值
-			for (int col = 0; col < 4; ++col)
-				for (int row = 0; row < 4; ++row)
-					result.localTransforms[i][col][row] =
-						a.localTransforms[i][col][row] * (1.0f - clampedAlpha) +
-						b.localTransforms[i][col][row] * clampedAlpha;
-		}
-		result.sampledNodeTransforms = BlendNodeTransforms(a.sampledNodeTransforms,
-		                                                   b.sampledNodeTransforms,
-		                                                   clampedAlpha);
-		result.valid = true;
-		return result;
-	}
-
-	// Pose 叠加混合辅助：result = base + (additive - identity) * weight
-	static AnimGraphPose AdditivePoses(const AnimGraphPose& base, const AnimGraphPose& additive, float weight)
-	{
-		AnimGraphPose result;
-		if (!base.valid) return base;
-		if (!additive.valid) return base;
-
-		size_t count = std::min(base.localTransforms.size(), additive.localTransforms.size());
-		result.localTransforms.resize(count);
-
-		glm::mat4 identity(1.0f);
-		float w = std::clamp(weight, 0.0f, 1.0f);
-
-		for (size_t i = 0; i < count; ++i)
-		{
-			// additiveDelta = additive - identity
-			// result = base + additiveDelta * weight
-			for (int col = 0; col < 4; ++col)
-				for (int row = 0; row < 4; ++row)
-				{
-					float addDelta = additive.localTransforms[i][col][row] - identity[col][row];
-					result.localTransforms[i][col][row] =
-						base.localTransforms[i][col][row] + addDelta * w;
-				}
-		}
-		result.sampledNodeTransforms = base.sampledNodeTransforms;
-		result.valid = true;
-		return result;
-	}
 
 	static const char* IKSolverTypeToString(IKSolverType type)
 	{
@@ -322,32 +91,14 @@ namespace VansGraphics
 		case AnimGraphNodeType::SpeedScale:     return "SpeedScale";
 		case AnimGraphNodeType::StateMachine:   return "StateMachine";
 		case AnimGraphNodeType::MotionMatching: return "MotionMatching";
+		case AnimGraphNodeType::Slot:           return "Slot";
+		case AnimGraphNodeType::TargetPoseInput:return "TargetPoseInput";
 		case AnimGraphNodeType::IK:             return "IK";
 		case AnimGraphNodeType::TwoBoneIK:      return "TwoBoneIK";
 		case AnimGraphNodeType::LookAt:         return "LookAt";
 		case AnimGraphNodeType::FootPlacement:  return "FootPlacement";
 		}
 		return "Unknown";
-	}
-
-	AnimGraphNodeType VansAnimGraphNode::StringToType(const std::string& str)
-	{
-		if (str == "Entry")          return AnimGraphNodeType::Entry;
-		if (str == "Output")         return AnimGraphNodeType::Output;
-		if (str == "Clip")           return AnimGraphNodeType::Clip;
-		if (str == "Blend")          return AnimGraphNodeType::Blend;
-		if (str == "Blend1D")        return AnimGraphNodeType::Blend1D;
-		if (str == "IfCondition")    return AnimGraphNodeType::IfCondition;
-		if (str == "Switch")         return AnimGraphNodeType::Switch;
-		if (str == "AdditiveBlend")  return AnimGraphNodeType::AdditiveBlend;
-		if (str == "SpeedScale")     return AnimGraphNodeType::SpeedScale;
-		if (str == "StateMachine")   return AnimGraphNodeType::StateMachine;
-		if (str == "MotionMatching") return AnimGraphNodeType::MotionMatching;
-		if (str == "IK")             return AnimGraphNodeType::IK;
-		if (str == "TwoBoneIK")      return AnimGraphNodeType::TwoBoneIK;
-		if (str == "LookAt")         return AnimGraphNodeType::LookAt;
-		if (str == "FootPlacement")  return AnimGraphNodeType::FootPlacement;
-		return AnimGraphNodeType::Entry;  // fallback
 	}
 
 	// ═════════════════════════════════════════════════════════════
@@ -367,7 +118,7 @@ namespace VansGraphics
 	}
 
 	AnimGraphPose AnimGraphEntryNode::Evaluate(const AnimGraphContext& ctx,
-	                                           VansAnimGraph& graph)
+	                                           VansAnimGraphInstance& instance) const
 	{
 		// Entry 不产生数据，返回空 Pose
 		return {};
@@ -390,13 +141,9 @@ namespace VansGraphics
 	}
 
 	AnimGraphPose AnimGraphOutputNode::Evaluate(const AnimGraphContext& ctx,
-	                                            VansAnimGraph& graph)
+	                                            VansAnimGraphInstance& instance) const
 	{
-		// 拉取输入连接的 Pose
-		VansAnimGraphNode* inputNode = graph.GetInputNode(m_NodeId, 0);
-		if (inputNode)
-			return inputNode->Evaluate(ctx, graph);
-		return {};
+		return instance.EvaluateInput(m_NodeId, 0, ctx);
 	}
 
 	// ═════════════════════════════════════════════════════════════
@@ -415,113 +162,21 @@ namespace VansGraphics
 		return { { 0, "Pose", AnimGraphPinType::Pose, AnimGraphPinKind::Output } };
 	}
 
-	void AnimGraphClipNode::AdvanceTime(float dt)
-	{
-		m_CurrentTime += dt * m_Speed;
-	}
-
-	void AnimGraphClipNode::Reset()
-	{
-		m_CurrentTime = 0.0f;
-	}
-
 	AnimGraphPose AnimGraphClipNode::Evaluate(const AnimGraphContext& ctx,
-	                                          VansAnimGraph& graph)
+	                                          VansAnimGraphInstance& instance) const
 	{
 		AnimGraphPose pose;
 		if (!ctx.clips || !ctx.skeleton) return pose;
-
-		// 查找 Clip
 		auto it = ctx.clips->find(m_ClipName);
 		if (it == ctx.clips->end()) return pose;
-
-		const VansAnimationClip& clip = it->second;
-		const Skeleton& skel = *ctx.skeleton;
-
-		// 处理 loop / clamp
-		float duration = clip.duration;
-		if (duration <= 0.0f) return pose;
-
-		float sampleTime = m_CurrentTime;
-		if (m_Loop)
-		{
-			sampleTime = std::fmod(sampleTime, duration);
-			if (sampleTime < 0.0f) sampleTime += duration;
-		}
-		else
-		{
-			sampleTime = std::clamp(sampleTime, 0.0f, duration);
-		}
-
-		// 采样每根骨骼的关键帧
-		size_t boneCount = skel.bones.size();
-		pose.localTransforms.resize(boneCount, glm::mat4(1.0f));
-		for (size_t bi = 0; bi < boneCount; ++bi)
-			pose.localTransforms[bi] = skel.bones[bi].localTransform;
-
-		for (size_t bi = 0; bi < boneCount && bi < clip.boneKeyframes.size(); ++bi)
-		{
-			const auto& keyframes = clip.boneKeyframes[bi];
-			if (keyframes.empty())
-			{
-				continue;
-			}
-
-			glm::vec3 pos, scl;
-			glm::quat rot;
-			InterpolateKeyframes(keyframes, sampleTime, pos, rot, scl);
-
-			glm::mat4 T = glm::translate(glm::mat4(1.0f), pos);
-			glm::mat4 R = glm::toMat4(rot);
-			glm::mat4 S = glm::scale(glm::mat4(1.0f), scl);
-			pose.localTransforms[bi] = T * R * S;
-		}
-
-		SampleNodeTransformChannels(clip, sampleTime, pose.sampledNodeTransforms);
-		pose.valid = !pose.localTransforms.empty() || !pose.sampledNodeTransforms.empty();
+		const VansAnimGraphClipRuntimeState& runtime = instance.GetClipState(m_NodeId);
+		VansAnimationSampleRequest request;
+		request.previousTime = runtime.previousTime;
+		request.currentTime = runtime.currentTime;
+		request.loop = m_Loop;
+		request.sourceNodeId = static_cast<std::uint64_t>(m_NodeId);
+		VansAnimationSampler::Sample(it->second, *ctx.skeleton, request, pose);
 		return pose;
-	}
-
-	void AnimGraphClipNode::InterpolateKeyframes(const std::vector<BoneKeyframe>& keyframes,
-	                                             float time,
-	                                             glm::vec3& outPos, glm::quat& outRot, glm::vec3& outScale)
-	{
-		if (keyframes.size() == 1)
-		{
-			outPos   = keyframes[0].position;
-			outRot   = keyframes[0].rotation;
-			outScale = keyframes[0].scale;
-			return;
-		}
-
-		// 查找 time 所在的两个关键帧之间
-		size_t idx = 0;
-		for (size_t i = 0; i < keyframes.size() - 1; ++i)
-		{
-			if (time < keyframes[i + 1].time)
-			{
-				idx = i;
-				break;
-			}
-			idx = i;
-		}
-
-		size_t next = std::min(idx + 1, keyframes.size() - 1);
-		if (idx == next)
-		{
-			outPos   = keyframes[idx].position;
-			outRot   = keyframes[idx].rotation;
-			outScale = keyframes[idx].scale;
-			return;
-		}
-
-		float dt = keyframes[next].time - keyframes[idx].time;
-		float factor = (dt > 0.0001f) ? (time - keyframes[idx].time) / dt : 0.0f;
-		factor = std::clamp(factor, 0.0f, 1.0f);
-
-		outPos   = glm::mix(keyframes[idx].position, keyframes[next].position, factor);
-		outRot   = glm::slerp(keyframes[idx].rotation, keyframes[next].rotation, factor);
-		outScale = glm::mix(keyframes[idx].scale, keyframes[next].scale, factor);
 	}
 
 	// ═════════════════════════════════════════════════════════════
@@ -544,15 +199,10 @@ namespace VansGraphics
 	}
 
 	AnimGraphPose AnimGraphBlendNode::Evaluate(const AnimGraphContext& ctx,
-	                                           VansAnimGraph& graph)
+	                                           VansAnimGraphInstance& instance) const
 	{
-		// 拉取两路输入
-		VansAnimGraphNode* nodeA = graph.GetInputNode(m_NodeId, 0);
-		VansAnimGraphNode* nodeB = graph.GetInputNode(m_NodeId, 1);
-
-		AnimGraphPose poseA, poseB;
-		if (nodeA) poseA = nodeA->Evaluate(ctx, graph);
-		if (nodeB) poseB = nodeB->Evaluate(ctx, graph);
+		AnimGraphPose poseA = instance.EvaluateInput(m_NodeId, 0, ctx);
+		AnimGraphPose poseB = instance.EvaluateInput(m_NodeId, 1, ctx);
 
 		if (!poseA.valid) return poseB;
 		if (!poseB.valid) return poseA;
@@ -566,7 +216,7 @@ namespace VansGraphics
 				alpha = it->second.floatVal;
 		}
 
-		return BlendPoses(poseA, poseB, alpha);
+		return VansPosePayloadMixer::BlendOverride(poseA, poseB, alpha);
 	}
 
 	// ═════════════════════════════════════════════════════════════
@@ -598,7 +248,7 @@ namespace VansGraphics
 	}
 
 	AnimGraphPose AnimGraphBlend1DNode::Evaluate(const AnimGraphContext& ctx,
-	                                             VansAnimGraph& graph)
+	                                             VansAnimGraphInstance& instance) const
 	{
 		if (m_Thresholds.empty()) return {};
 
@@ -615,20 +265,17 @@ namespace VansGraphics
 		if (count == 1)
 		{
 			// 只有一个入口，直接输出
-			VansAnimGraphNode* node = graph.GetInputNode(m_NodeId, 0);
-			return node ? node->Evaluate(ctx, graph) : AnimGraphPose{};
+			return instance.EvaluateInput(m_NodeId, 0, ctx);
 		}
 
 		// 找到 paramValue 落在哪两个阈值之间
 		if (paramValue <= m_Thresholds.front())
 		{
-			VansAnimGraphNode* node = graph.GetInputNode(m_NodeId, 0);
-			return node ? node->Evaluate(ctx, graph) : AnimGraphPose{};
+			return instance.EvaluateInput(m_NodeId, 0, ctx);
 		}
 		if (paramValue >= m_Thresholds.back())
 		{
-			VansAnimGraphNode* node = graph.GetInputNode(m_NodeId, count - 1);
-			return node ? node->Evaluate(ctx, graph) : AnimGraphPose{};
+			return instance.EvaluateInput(m_NodeId, count - 1, ctx);
 		}
 
 		for (int i = 0; i < count - 1; ++i)
@@ -640,16 +287,13 @@ namespace VansGraphics
 					? (paramValue - m_Thresholds[i]) / range
 					: 0.0f;
 
-				VansAnimGraphNode* nodeA = graph.GetInputNode(m_NodeId, i);
-				VansAnimGraphNode* nodeB = graph.GetInputNode(m_NodeId, i + 1);
-
-				AnimGraphPose poseA = nodeA ? nodeA->Evaluate(ctx, graph) : AnimGraphPose{};
-				AnimGraphPose poseB = nodeB ? nodeB->Evaluate(ctx, graph) : AnimGraphPose{};
+				AnimGraphPose poseA = instance.EvaluateInput(m_NodeId, i, ctx);
+				AnimGraphPose poseB = instance.EvaluateInput(m_NodeId, i + 1, ctx);
 
 				if (!poseA.valid) return poseB;
 				if (!poseB.valid) return poseA;
 
-				return BlendPoses(poseA, poseB, alpha);
+				return VansPosePayloadMixer::BlendOverride(poseA, poseB, alpha);
 			}
 		}
 
@@ -676,7 +320,7 @@ namespace VansGraphics
 	}
 
 	AnimGraphPose AnimGraphIfConditionNode::Evaluate(const AnimGraphContext& ctx,
-	                                                 VansAnimGraph& graph)
+	                                                 VansAnimGraphInstance& instance) const
 	{
 		bool condResult = false;
 
@@ -729,8 +373,7 @@ namespace VansGraphics
 		}
 
 		int pinIndex = condResult ? 0 : 1;
-		VansAnimGraphNode* inputNode = graph.GetInputNode(m_NodeId, pinIndex);
-		return inputNode ? inputNode->Evaluate(ctx, graph) : AnimGraphPose{};
+		return instance.EvaluateInput(m_NodeId, pinIndex, ctx);
 	}
 
 	// ═════════════════════════════════════════════════════════════
@@ -760,7 +403,7 @@ namespace VansGraphics
 	}
 
 	AnimGraphPose AnimGraphSwitchNode::Evaluate(const AnimGraphContext& ctx,
-	                                            VansAnimGraph& graph)
+	                                            VansAnimGraphInstance& instance) const
 	{
 		int selectedCase = 0;
 		if (ctx.parameters)
@@ -773,8 +416,7 @@ namespace VansGraphics
 		// clamp 到有效范围
 		selectedCase = std::clamp(selectedCase, 0, m_CaseCount - 1);
 
-		VansAnimGraphNode* inputNode = graph.GetInputNode(m_NodeId, selectedCase);
-		return inputNode ? inputNode->Evaluate(ctx, graph) : AnimGraphPose{};
+		return instance.EvaluateInput(m_NodeId, selectedCase, ctx);
 	}
 
 	// ═════════════════════════════════════════════════════════════
@@ -797,13 +439,10 @@ namespace VansGraphics
 	}
 
 	AnimGraphPose AnimGraphAdditiveBlendNode::Evaluate(const AnimGraphContext& ctx,
-	                                                   VansAnimGraph& graph)
+	                                                   VansAnimGraphInstance& instance) const
 	{
-		VansAnimGraphNode* baseNode     = graph.GetInputNode(m_NodeId, 0);
-		VansAnimGraphNode* additiveNode = graph.GetInputNode(m_NodeId, 1);
-
-		AnimGraphPose basePose     = baseNode     ? baseNode->Evaluate(ctx, graph)     : AnimGraphPose{};
-		AnimGraphPose additivePose = additiveNode ? additiveNode->Evaluate(ctx, graph) : AnimGraphPose{};
+		AnimGraphPose basePose = instance.EvaluateInput(m_NodeId, 0, ctx);
+		AnimGraphPose additivePose = instance.EvaluateInput(m_NodeId, 1, ctx);
 
 		if (!basePose.valid) return basePose;
 		if (!additivePose.valid) return basePose;
@@ -816,7 +455,7 @@ namespace VansGraphics
 				weight = it->second.floatVal;
 		}
 
-		return AdditivePoses(basePose, additivePose, weight);
+		return VansPosePayloadMixer::ApplyAdditive(basePose, additivePose, weight);
 	}
 
 	// ═════════════════════════════════════════════════════════════
@@ -838,12 +477,19 @@ namespace VansGraphics
 	}
 
 	AnimGraphPose AnimGraphSpeedScaleNode::Evaluate(const AnimGraphContext& ctx,
-	                                                VansAnimGraph& graph)
+	                                                VansAnimGraphInstance& instance) const
 	{
-		// SpeedScale 节点的效果在 AdvanceTime 阶段已经作用于下游 ClipNode。
-		// Evaluate 阶段直接透传输入 Pose。
-		VansAnimGraphNode* inputNode = graph.GetInputNode(m_NodeId, 0);
-		return inputNode ? inputNode->Evaluate(ctx, graph) : AnimGraphPose{};
+		float speed = m_FixedSpeed;
+		if (m_UseParam && ctx.parameters)
+		{
+			auto parameter = ctx.parameters->find(m_ParamName);
+			if (parameter != ctx.parameters->end()
+			    && parameter->second.type == AnimatorParamType::Float)
+				speed = parameter->second.floatVal;
+		}
+		AnimGraphContext scaledContext = ctx;
+		scaledContext.deltaTime *= speed;
+		return instance.EvaluateInput(m_NodeId, 0, scaledContext);
 	}
 
 	// ═════════════════════════════════════════════════════════════
@@ -861,310 +507,170 @@ namespace VansGraphics
 		return { { 0, "Pose", AnimGraphPinType::Pose, AnimGraphPinKind::Output } };
 	}
 
-	void AnimGraphStateMachineNode::AdvanceTime(float dt)
+	AnimGraphPose AnimGraphStateMachineNode::Evaluate(const AnimGraphContext& ctx,
+	                                                  VansAnimGraphInstance& instance) const
 	{
-		// 推进当前状态的播放时间
-		auto advanceState = [](AnimatorState& state, float deltaTime)
+		if (!ctx.clips || !ctx.skeleton)
+			return {};
+
+		VansAnimGraphStateMachineRuntimeState& runtime =
+			instance.GetStateMachineState(m_NodeId, *this);
+		auto findState = [this](const std::string& name) -> const AnimatorState*
 		{
-			if (!state.clip)
-				return;
-
-			const float start = state.startTime;
-			const float end = (state.endTime < 0.0f) ? state.clip->duration : state.endTime;
-			const float range = end - start;
-			if (range <= 0.0f)
+			for (const AnimatorState& state : m_States)
+				if (state.name == name)
+					return &state;
+			return nullptr;
+		};
+		auto conditionsPass = [&ctx](const AnimatorTransition& transition)
+		{
+			if (!ctx.parameters)
+				return transition.conditions.empty();
+			for (const TransitionCondition& condition : transition.conditions)
 			{
-				state.currentTime = start;
-				return;
+				auto parameterIt = ctx.parameters->find(condition.paramName);
+				if (parameterIt == ctx.parameters->end())
+					return false;
+				const AnimatorParameter& parameter = parameterIt->second;
+				bool satisfied = false;
+				switch (parameter.type)
+				{
+				case AnimatorParamType::Float:
+					switch (condition.op)
+					{
+					case CompareOp::Greater: satisfied = parameter.floatVal > condition.floatVal; break;
+					case CompareOp::Less: satisfied = parameter.floatVal < condition.floatVal; break;
+					case CompareOp::Equal: satisfied = std::abs(parameter.floatVal - condition.floatVal) < 0.0001f; break;
+					case CompareOp::NotEqual: satisfied = std::abs(parameter.floatVal - condition.floatVal) >= 0.0001f; break;
+					case CompareOp::GreaterEqual: satisfied = parameter.floatVal >= condition.floatVal; break;
+					case CompareOp::LessEqual: satisfied = parameter.floatVal <= condition.floatVal; break;
+					}
+					break;
+				case AnimatorParamType::Bool:
+				case AnimatorParamType::Trigger:
+					satisfied = condition.op == CompareOp::Equal
+						? parameter.boolVal == condition.boolVal
+						: parameter.boolVal != condition.boolVal;
+					break;
+				case AnimatorParamType::Int:
+					switch (condition.op)
+					{
+					case CompareOp::Greater: satisfied = parameter.intVal > condition.intVal; break;
+					case CompareOp::Less: satisfied = parameter.intVal < condition.intVal; break;
+					case CompareOp::Equal: satisfied = parameter.intVal == condition.intVal; break;
+					case CompareOp::NotEqual: satisfied = parameter.intVal != condition.intVal; break;
+					case CompareOp::GreaterEqual: satisfied = parameter.intVal >= condition.intVal; break;
+					case CompareOp::LessEqual: satisfied = parameter.intVal <= condition.intVal; break;
+					}
+					break;
+				case AnimatorParamType::Vector3:
+				case AnimatorParamType::Quaternion:
+					return false;
+				}
+				if (!satisfied)
+					return false;
 			}
-
-			state.currentTime += deltaTime * state.speed;
-			if (state.loop)
+			return true;
+		};
+		auto startTransition = [&](const AnimatorTransition& transition)
+		{
+			runtime.previousStateName = runtime.currentStateName;
+			runtime.currentStateName = transition.toState;
+			runtime.blendAlpha = 0.0f;
+			runtime.blendDuration = std::max(0.0f, transition.blendDuration);
+			runtime.blendState = runtime.blendDuration > 0.0f
+				? ControllerBlendState::Blending
+				: ControllerBlendState::Idle;
+			if (const AnimatorState* target = findState(runtime.currentStateName))
 			{
-				state.currentTime = start + std::fmod(state.currentTime - start, range);
-				if (state.currentTime < start)
-					state.currentTime += range;
+				runtime.stateTimes[target->name] = target->startTime;
+				runtime.previousStateTimes[target->name] = target->startTime;
 			}
-			else
+			if (ctx.parameters)
 			{
-				state.currentTime = std::clamp(state.currentTime, start, end);
+				for (const TransitionCondition& condition : transition.conditions)
+				{
+					auto parameterIt = ctx.parameters->find(condition.paramName);
+					if (parameterIt != ctx.parameters->end()
+					    && parameterIt->second.type == AnimatorParamType::Trigger)
+						parameterIt->second.boolVal = false;
+				}
 			}
 		};
 
-		AnimatorState* current = GetState(m_CurrentStateName);
-		if (current)
-			advanceState(*current, dt);
-
-		// 如果正在混合，也推进前一个状态
-		if (m_BlendState == ControllerBlendState::Blending)
+		if (!ctx.synchronizedStateFollower)
 		{
-			AnimatorState* prev = GetState(m_PrevStateName);
-			if (prev)
-				advanceState(*prev, dt);
-		}
-	}
-
-	void AnimGraphStateMachineNode::Reset()
-	{
-		m_CurrentStateName = m_DefaultStateName;
-		m_PrevStateName.clear();
-		m_BlendAlpha = 0.0f;
-		m_BlendState = ControllerBlendState::Idle;
-
-		for (auto& state : m_States)
-			state.currentTime = state.startTime;
-	}
-
-	AnimGraphPose AnimGraphStateMachineNode::Evaluate(const AnimGraphContext& ctx,
-	                                                  VansAnimGraph& graph)
-	{
-		// 绑定 clip 指针（延迟绑定）
-		if (ctx.clips)
-		{
-			for (auto& state : m_States)
+			for (const AnimatorTransition& transition : m_Transitions)
 			{
-				if (!state.clip)
+				const bool fromAny = transition.fromState == "*"
+					&& transition.toState != runtime.currentStateName;
+				const bool fromCurrent = transition.fromState == runtime.currentStateName;
+				if (!fromAny && !fromCurrent)
+					continue;
+				if (fromCurrent && transition.hasExitTime)
 				{
-					auto it = ctx.clips->find(state.clipName);
-					if (it != ctx.clips->end())
-						state.clip = const_cast<VansAnimationClip*>(&it->second);
-				}
-			}
-		}
-
-		// 初始化
-		if (m_CurrentStateName.empty())
-		{
-			m_CurrentStateName = m_DefaultStateName;
-			AnimatorState* s = GetState(m_CurrentStateName);
-			if (s) s->currentTime = s->startTime;
-		}
-
-		// 求值 Transition
-		EvaluateTransitions(ctx);
-
-		// 采样当前状态的 Pose
-		AnimatorState* current = GetState(m_CurrentStateName);
-		if (!current) return {};
-
-		AnimGraphPose currentPose = ComputeStatePose(*current, ctx);
-
-		// 如果正在混合
-		if (m_BlendState == ControllerBlendState::Blending)
-		{
-			AnimatorState* prev = GetState(m_PrevStateName);
-			if (prev)
-			{
-				AnimGraphPose prevPose = ComputeStatePose(*prev, ctx);
-				m_BlendAlpha += ctx.deltaTime / m_BlendDuration;
-				if (m_BlendAlpha >= 1.0f)
-				{
-					m_BlendAlpha = 1.0f;
-					m_BlendState = ControllerBlendState::Idle;
-				}
-				return BlendPoses(prevPose, currentPose, m_BlendAlpha);
-			}
-		}
-
-		return currentPose;
-	}
-
-	void AnimGraphStateMachineNode::EvaluateTransitions(const AnimGraphContext& ctx)
-	{
-		// 检查 AnyState 过渡
-		for (const auto& trans : m_Transitions)
-		{
-			if (trans.fromState == "*" && trans.toState != m_CurrentStateName)
-			{
-				if (CheckConditions(trans, ctx))
-				{
-				StartTransition(trans);
-				return;
-				}
-			}
-		}
-
-		// 检查当前状态的出边
-		for (const auto& trans : m_Transitions)
-		{
-			if (trans.fromState == m_CurrentStateName)
-			{
-				// exitTime 检查
-				if (trans.hasExitTime)
-				{
-					AnimatorState* current = GetState(m_CurrentStateName);
-					if (current && current->clip && current->clip->duration > 0.0f)
+					const AnimatorState* current = findState(runtime.currentStateName);
+					if (!current)
+						continue;
+					auto clipIt = ctx.clips->find(current->clipName);
+					if (clipIt != ctx.clips->end() && clipIt->second.duration > 0.0f)
 					{
-						float normalizedTime = current->currentTime / current->clip->duration;
-						if (normalizedTime < trans.exitTime)
+						const float normalizedTime = runtime.stateTimes[current->name] / clipIt->second.duration;
+						if (normalizedTime < transition.exitTime)
 							continue;
 					}
 				}
-
-				if (CheckConditions(trans, ctx))
+				if (conditionsPass(transition))
 				{
-					StartTransition(trans);
-					return;
+					startTransition(transition);
+					break;
 				}
 			}
 		}
-	}
 
-	bool AnimGraphStateMachineNode::CheckConditions(const AnimatorTransition& trans,
-	                                                const AnimGraphContext& ctx) const
-	{
-		if (!ctx.parameters) return trans.conditions.empty();
-
-		for (const auto& cond : trans.conditions)
-		{
-			auto it = ctx.parameters->find(cond.paramName);
-			if (it == ctx.parameters->end()) return false;
-
-			const AnimatorParameter& param = it->second;
-			bool satisfied = false;
-
-			switch (param.type)
+			auto sampleState = [&](const AnimatorState& state) -> AnimGraphPose
 			{
-			case AnimatorParamType::Float:
-				switch (cond.op)
-				{
-				case CompareOp::Greater:      satisfied = param.floatVal >  cond.floatVal; break;
-				case CompareOp::Less:         satisfied = param.floatVal <  cond.floatVal; break;
-				case CompareOp::Equal:        satisfied = std::abs(param.floatVal - cond.floatVal) < 0.0001f; break;
-				case CompareOp::NotEqual:     satisfied = std::abs(param.floatVal - cond.floatVal) >= 0.0001f; break;
-				case CompareOp::GreaterEqual: satisfied = param.floatVal >= cond.floatVal; break;
-				case CompareOp::LessEqual:    satisfied = param.floatVal <= cond.floatVal; break;
-				}
-				break;
-			case AnimatorParamType::Bool:
-			case AnimatorParamType::Trigger:
-				satisfied = (cond.op == CompareOp::Equal)
-					? (param.boolVal == cond.boolVal)
-					: (param.boolVal != cond.boolVal);
-				break;
-			case AnimatorParamType::Int:
-				switch (cond.op)
-				{
-				case CompareOp::Greater:      satisfied = param.intVal >  cond.intVal; break;
-				case CompareOp::Less:         satisfied = param.intVal <  cond.intVal; break;
-				case CompareOp::Equal:        satisfied = param.intVal == cond.intVal; break;
-				case CompareOp::NotEqual:     satisfied = param.intVal != cond.intVal; break;
-				case CompareOp::GreaterEqual: satisfied = param.intVal >= cond.intVal; break;
-				case CompareOp::LessEqual:    satisfied = param.intVal <= cond.intVal; break;
-				}
-				break;
-			}
+				AnimGraphPose pose;
+				auto clipIt = ctx.clips->find(state.clipName);
+				if (clipIt == ctx.clips->end())
+					return pose;
+				const VansAnimationClip& clip = clipIt->second;
+				const float start = state.startTime;
+				const float end = state.endTime < 0.0f ? clip.duration : state.endTime;
+				VansAnimationSampleRequest request;
+				request.previousTime = runtime.previousStateTimes[state.name];
+				request.currentTime = runtime.stateTimes[state.name];
+				request.startTime = start;
+				request.endTime = end;
+				request.loop = state.loop;
+				request.sourceNodeId = static_cast<std::uint64_t>(m_NodeId);
+				VansAnimationSampler::Sample(clip, *ctx.skeleton, request, pose);
+				return pose;
+			};
 
-			if (!satisfied) return false;
-		}
-		return true;
-	}
+		const AnimatorState* current = findState(runtime.currentStateName);
+		if (!current)
+			return {};
+		AnimGraphPose currentPose = sampleState(*current);
+		if (runtime.blendState != ControllerBlendState::Blending)
+			return currentPose;
 
-	void AnimGraphStateMachineNode::StartTransition(const AnimatorTransition& trans)
-	{
-		m_PrevStateName    = m_CurrentStateName;
-		m_CurrentStateName = trans.toState;
-		m_BlendAlpha       = 0.0f;
-		m_BlendDuration    = trans.blendDuration;
-		m_BlendState       = ControllerBlendState::Blending;
-
-		AnimatorState* newState = GetState(m_CurrentStateName);
-			if (newState) newState->currentTime = newState->startTime;
-	}
-
-	AnimGraphPose AnimGraphStateMachineNode::ComputeStatePose(const AnimatorState& state,
-	                                                          const AnimGraphContext& ctx)
-	{
-		AnimGraphPose pose;
-		if (!state.clip || !ctx.skeleton) return pose;
-
-		const VansAnimationClip& clip = *state.clip;
-		const Skeleton& skel = *ctx.skeleton;
-
-		const float start = state.startTime;
-		const float end = (state.endTime < 0.0f) ? clip.duration : state.endTime;
-		const float range = end - start;
-		if (range <= 0.0f) return pose;
-
-		float sampleTime = state.currentTime;
-		if (state.loop)
+		const AnimatorState* previous = findState(runtime.previousStateName);
+		if (!previous)
 		{
-			sampleTime = start + std::fmod(sampleTime - start, range);
-			if (sampleTime < start) sampleTime += range;
+			runtime.blendState = ControllerBlendState::Idle;
+			return currentPose;
 		}
-		else
+		if (!ctx.synchronizedStateFollower)
 		{
-			sampleTime = std::clamp(sampleTime, start, end);
+			runtime.blendAlpha = runtime.blendDuration <= 0.0f
+				? 1.0f
+				: std::min(1.0f, runtime.blendAlpha + ctx.deltaTime / runtime.blendDuration);
+			if (runtime.blendAlpha >= 1.0f)
+				runtime.blendState = ControllerBlendState::Idle;
 		}
-
-		size_t boneCount = skel.bones.size();
-		pose.localTransforms.resize(boneCount, glm::mat4(1.0f));
-		for (size_t bi = 0; bi < boneCount; ++bi)
-			pose.localTransforms[bi] = skel.bones[bi].localTransform;
-
-		for (size_t bi = 0; bi < boneCount && bi < clip.boneKeyframes.size(); ++bi)
-		{
-			const auto& keyframes = clip.boneKeyframes[bi];
-			if (keyframes.empty()) continue;
-
-			glm::vec3 pos, scl;
-			glm::quat rot;
-			InterpolateKeyframes(keyframes, sampleTime, pos, rot, scl);
-
-			glm::mat4 T = glm::translate(glm::mat4(1.0f), pos);
-			glm::mat4 R = glm::toMat4(rot);
-			glm::mat4 S = glm::scale(glm::mat4(1.0f), scl);
-			pose.localTransforms[bi] = T * R * S;
-		}
-
-		SampleNodeTransformChannels(clip, sampleTime, pose.sampledNodeTransforms);
-		pose.valid = !pose.localTransforms.empty() || !pose.sampledNodeTransforms.empty();
-		return pose;
-	}
-
-	AnimatorState* AnimGraphStateMachineNode::GetState(const std::string& name)
-	{
-		for (auto& s : m_States)
-			if (s.name == name)
-				return &s;
-		return nullptr;
-	}
-
-	void AnimGraphStateMachineNode::InterpolateKeyframes(const std::vector<BoneKeyframe>& keyframes,
-	                                                     float time,
-	                                                     glm::vec3& outPos, glm::quat& outRot, glm::vec3& outScale)
-	{
-		if (keyframes.size() == 1)
-		{
-			outPos   = keyframes[0].position;
-			outRot   = keyframes[0].rotation;
-			outScale = keyframes[0].scale;
-			return;
-		}
-
-		size_t idx = 0;
-		for (size_t i = 0; i < keyframes.size() - 1; ++i)
-		{
-			if (time < keyframes[i + 1].time) { idx = i; break; }
-			idx = i;
-		}
-
-		size_t next = std::min(idx + 1, keyframes.size() - 1);
-		if (idx == next)
-		{
-			outPos   = keyframes[idx].position;
-			outRot   = keyframes[idx].rotation;
-			outScale = keyframes[idx].scale;
-			return;
-		}
-
-		float dt = keyframes[next].time - keyframes[idx].time;
-		float factor = (dt > 0.0001f) ? (time - keyframes[idx].time) / dt : 0.0f;
-		factor = std::clamp(factor, 0.0f, 1.0f);
-
-		outPos   = glm::mix(keyframes[idx].position, keyframes[next].position, factor);
-		outRot   = glm::slerp(keyframes[idx].rotation, keyframes[next].rotation, factor);
-		outScale = glm::mix(keyframes[idx].scale, keyframes[next].scale, factor);
+		return VansPosePayloadMixer::BlendOverride(
+			sampleState(*previous), currentPose, runtime.blendAlpha);
 	}
 
 	// ═════════════════════════════════════════════════════════════
@@ -1176,6 +682,13 @@ namespace VansGraphics
 
 	int VansAnimGraph::AddNode(std::unique_ptr<VansAnimGraphNode> node)
 	{
+		if (!node)
+			return -1;
+		if (node->GetType() == AnimGraphNodeType::Entry && m_EntryNodeId >= 0)
+			return -1;
+		if (node->GetType() == AnimGraphNodeType::Output && m_OutputNodeId >= 0)
+			return -1;
+
 		int id = m_NextNodeId++;
 		node->m_NodeId = id;
 
@@ -1187,6 +700,25 @@ namespace VansGraphics
 
 		m_Nodes[id] = std::move(node);
 		return id;
+	}
+
+	bool VansAnimGraph::AddNodeWithId(std::unique_ptr<VansAnimGraphNode> node, int nodeId)
+	{
+		if (!node || nodeId <= 0 || m_Nodes.find(nodeId) != m_Nodes.end())
+			return false;
+		if (node->GetType() == AnimGraphNodeType::Entry && m_EntryNodeId >= 0)
+			return false;
+		if (node->GetType() == AnimGraphNodeType::Output && m_OutputNodeId >= 0)
+			return false;
+
+		node->m_NodeId = nodeId;
+		if (node->GetType() == AnimGraphNodeType::Entry)
+			m_EntryNodeId = nodeId;
+		else if (node->GetType() == AnimGraphNodeType::Output)
+			m_OutputNodeId = nodeId;
+		m_Nodes.emplace(nodeId, std::move(node));
+		m_NextNodeId = std::max(m_NextNodeId, nodeId + 1);
+		return true;
 	}
 
 	void VansAnimGraph::RemoveNode(int nodeId)
@@ -1205,7 +737,13 @@ namespace VansGraphics
 		m_Nodes.erase(nodeId);
 	}
 
-	VansAnimGraphNode* VansAnimGraph::GetNode(int nodeId) const
+	VansAnimGraphNode* VansAnimGraph::GetNode(int nodeId)
+	{
+		auto it = m_Nodes.find(nodeId);
+		return (it != m_Nodes.end()) ? it->second.get() : nullptr;
+	}
+
+	const VansAnimGraphNode* VansAnimGraph::GetNode(int nodeId) const
 	{
 		auto it = m_Nodes.find(nodeId);
 		return (it != m_Nodes.end()) ? it->second.get() : nullptr;
@@ -1213,11 +751,57 @@ namespace VansGraphics
 
 	int VansAnimGraph::AddLink(int fromNodeId, int fromPinIndex, int toNodeId, int toPinIndex)
 	{
+		VansAnimGraphNode* fromNode = GetNode(fromNodeId);
+		VansAnimGraphNode* toNode = GetNode(toNodeId);
+		if (!fromNode || !toNode || fromNodeId == toNodeId)
+			return -1;
+
+		const std::vector<AnimGraphPin> fromPins = fromNode->GetPins();
+		const std::vector<AnimGraphPin> toPins = toNode->GetPins();
+		const AnimGraphPin* outputPin = nullptr;
+		const AnimGraphPin* inputPin = nullptr;
+		for (const AnimGraphPin& pin : fromPins)
+		{
+			if (pin.kind == AnimGraphPinKind::Output && pin.pinIndex == fromPinIndex)
+			{
+				outputPin = &pin;
+				break;
+			}
+		}
+		for (const AnimGraphPin& pin : toPins)
+		{
+			if (pin.kind == AnimGraphPinKind::Input && pin.pinIndex == toPinIndex)
+			{
+				inputPin = &pin;
+				break;
+			}
+		}
+		if (!outputPin || !inputPin || outputPin->type != inputPin->type)
+			return -1;
+
 		// 检查目标输入 Pin 是否已有连线（一个输入只能有一条连线）
 		for (const auto& link : m_Links)
 		{
 			if (link.toNodeId == toNodeId && link.toPinIndex == toPinIndex)
 				return -1;  // 已有连线，拒绝
+		}
+
+		// 新边 from -> to；若已有 to -> ... -> from 路径则会形成环。
+		std::vector<int> pending{ toNodeId };
+		std::unordered_set<int> visited;
+		while (!pending.empty())
+		{
+			const int current = pending.back();
+			pending.pop_back();
+			if (current == fromNodeId)
+				return -1;
+			if (!visited.insert(current).second)
+				continue;
+			for (const AnimGraphLink& existing : m_Links)
+			{
+				if (existing.fromNodeId == current)
+					pending.push_back(existing.toNodeId);
+			}
 		}
 
 		AnimGraphLink link;
@@ -1230,6 +814,20 @@ namespace VansGraphics
 		return link.linkId;
 	}
 
+	bool VansAnimGraph::AddLinkWithId(int linkId, int fromNodeId, int fromPinIndex,
+	                                  int toNodeId, int toPinIndex)
+	{
+		if (linkId <= 0 || std::any_of(m_Links.begin(), m_Links.end(),
+			[linkId](const AnimGraphLink& link) { return link.linkId == linkId; }))
+			return false;
+		const int generatedId = AddLink(fromNodeId, fromPinIndex, toNodeId, toPinIndex);
+		if (generatedId < 0)
+			return false;
+		m_Links.back().linkId = linkId;
+		m_NextLinkId = std::max(m_NextLinkId, linkId + 1);
+		return true;
+	}
+
 	void VansAnimGraph::RemoveLink(int linkId)
 	{
 		m_Links.erase(
@@ -1238,7 +836,7 @@ namespace VansGraphics
 			m_Links.end());
 	}
 
-	VansAnimGraphNode* VansAnimGraph::GetInputNode(int nodeId, int inputPinIndex) const
+	const VansAnimGraphNode* VansAnimGraph::GetInputNode(int nodeId, int inputPinIndex) const
 	{
 		for (const auto& link : m_Links)
 		{
@@ -1252,26 +850,657 @@ namespace VansGraphics
 		return nullptr;
 	}
 
-	AnimGraphPose VansAnimGraph::Evaluate(const AnimGraphContext& ctx)
+	bool VansAnimGraph::BuildExecutionPlan(std::vector<int>& outPlan, std::string& outError) const
 	{
-		if (m_OutputNodeId < 0) return {};
+		outPlan.clear();
+		outError.clear();
+		if (m_OutputNodeId < 0 || !GetNode(m_OutputNodeId))
+		{
+			outError = "Animation graph requires exactly one Output node";
+			return false;
+		}
 
-		VansAnimGraphNode* outputNode = GetNode(m_OutputNodeId);
-		if (!outputNode) return {};
+		std::unordered_map<int, int> visitState;
+		std::function<bool(int)> visit = [&](int nodeId)
+		{
+			int& state = visitState[nodeId];
+			if (state == 2)
+				return true;
+			if (state == 1)
+			{
+				outError = "Animation graph contains a directed cycle at node " + std::to_string(nodeId);
+				return false;
+			}
+			if (!GetNode(nodeId))
+			{
+				outError = "Animation graph execution plan references missing node " + std::to_string(nodeId);
+				return false;
+			}
 
-		return outputNode->Evaluate(ctx, *this);
+			state = 1;
+			std::vector<const AnimGraphLink*> inputs;
+			for (const AnimGraphLink& link : m_Links)
+				if (link.toNodeId == nodeId)
+					inputs.push_back(&link);
+			std::sort(inputs.begin(), inputs.end(), [](const AnimGraphLink* first, const AnimGraphLink* second)
+			{
+				if (first->toPinIndex != second->toPinIndex)
+					return first->toPinIndex < second->toPinIndex;
+				return first->fromNodeId < second->fromNodeId;
+			});
+			for (const AnimGraphLink* link : inputs)
+				if (!visit(link->fromNodeId))
+					return false;
+			state = 2;
+			outPlan.push_back(nodeId);
+			return true;
+		};
+
+		if (!visit(m_OutputNodeId))
+			return false;
+		for (const auto& [nodeId, node] : m_Nodes)
+		{
+			if (node && node->GetType() != AnimGraphNodeType::Entry
+			    && visitState[nodeId] != 2)
+			{
+				outError = "Animation graph contains unreachable node " + std::to_string(nodeId);
+				outPlan.clear();
+				return false;
+			}
+		}
+
+		// A stateful source may be shared, but every path to it must cross the same
+		// SpeedScale nodes. Otherwise a single playback clock would have two speeds.
+		std::unordered_map<int, std::vector<int>> sourceSpeedPaths;
+		std::function<bool(int, std::vector<int>)> validateSpeedPath =
+			[&](int nodeId, std::vector<int> speedPath)
+		{
+			const VansAnimGraphNode* node = GetNode(nodeId);
+			if (!node)
+				return false;
+			if (node->GetType() == AnimGraphNodeType::SpeedScale)
+				speedPath.push_back(nodeId);
+			const bool statefulSource = node->GetType() == AnimGraphNodeType::Clip
+				|| node->GetType() == AnimGraphNodeType::StateMachine
+				|| node->GetType() == AnimGraphNodeType::MotionMatching;
+			if (statefulSource)
+			{
+				auto [found, inserted] = sourceSpeedPaths.emplace(nodeId, speedPath);
+				if (!inserted && found->second != speedPath)
+				{
+					outError = "Animation graph routes stateful node " + std::to_string(nodeId)
+						+ " through conflicting SpeedScale paths";
+					return false;
+				}
+			}
+			for (const AnimGraphLink& link : m_Links)
+				if (link.toNodeId == nodeId && !validateSpeedPath(link.fromNodeId, speedPath))
+					return false;
+			return true;
+		};
+		if (!validateSpeedPath(m_OutputNodeId, {}))
+		{
+			outPlan.clear();
+			return false;
+		}
+		return true;
 	}
 
-	void VansAnimGraph::AdvanceTime(float dt)
+	VansAnimGraphInstance::VansAnimGraphInstance(const VansAnimGraph& definition)
+		: m_Definition(definition)
 	{
-		for (auto& [id, node] : m_Nodes)
-			node->AdvanceTime(dt);
+		m_Definition.BuildExecutionPlan(m_ExecutionPlan, m_CompileError);
+		m_EvaluationCache.reserve(m_ExecutionPlan.size());
+		m_EvaluatedNodes.reserve(m_ExecutionPlan.size());
+		m_EvaluatingNodes.reserve(m_ExecutionPlan.size());
+		m_PreviousActiveNodes.reserve(m_ExecutionPlan.size());
+		m_ActiveTimeScales.reserve(m_ExecutionPlan.size());
+		m_HasActiveTimeScale.reserve(m_ExecutionPlan.size());
+		for (int nodeId : m_ExecutionPlan)
+		{
+			m_EvaluationCache.try_emplace(nodeId);
+			m_EvaluatedNodes.emplace(nodeId, false);
+			m_EvaluatingNodes.emplace(nodeId, false);
+			m_PreviousActiveNodes.emplace(nodeId, false);
+			m_ActiveTimeScales.emplace(nodeId, 1.0f);
+			m_HasActiveTimeScale.emplace(nodeId, false);
+		}
+		Reset();
 	}
 
-	void VansAnimGraph::ResetAll()
+	VansAnimGraphInstance::~VansAnimGraphInstance() = default;
+
+	AnimGraphPose VansAnimGraphInstance::Evaluate(const AnimGraphContext& ctx)
 	{
-		for (auto& [id, node] : m_Nodes)
-			node->Reset();
+		if (!IsCompiled())
+			return {};
+		for (int nodeId : m_ExecutionPlan)
+		{
+			m_EvaluatedNodes[nodeId] = false;
+			m_EvaluatingNodes[nodeId] = false;
+		}
+		AnimGraphPose result = EvaluateNode(m_Definition.GetOutputNodeId(), ctx);
+		for (int nodeId : m_ExecutionPlan)
+			m_PreviousActiveNodes[nodeId] = m_EvaluatedNodes[nodeId];
+		return result;
+	}
+
+	AnimGraphPose VansAnimGraphInstance::EvaluateNode(int nodeId, const AnimGraphContext& ctx)
+	{
+		auto evaluated = m_EvaluatedNodes.find(nodeId);
+		if (evaluated == m_EvaluatedNodes.end())
+			return {};
+		if (evaluated->second)
+			return m_EvaluationCache.at(nodeId);
+		if (m_EvaluatingNodes[nodeId])
+			return {};
+		m_EvaluatingNodes[nodeId] = true;
+
+		const VansAnimGraphNode* node = m_Definition.GetNode(nodeId);
+		AnimGraphPose result = node ? node->Evaluate(ctx, *this) : AnimGraphPose{};
+		m_EvaluatingNodes[nodeId] = false;
+		m_EvaluationCache.at(nodeId) = result;
+		m_EvaluatedNodes[nodeId] = true;
+		return m_EvaluationCache.at(nodeId);
+	}
+
+	AnimGraphPose VansAnimGraphInstance::EvaluateInput(
+		int nodeId, int inputPinIndex, const AnimGraphContext& ctx)
+	{
+		const VansAnimGraphNode* input = m_Definition.GetInputNode(nodeId, inputPinIndex);
+		return input ? EvaluateNode(input->GetNodeId(), ctx) : AnimGraphPose{};
+	}
+
+	void VansAnimGraphInstance::AdvanceTime(float deltaTime, const AnimGraphContext& ctx)
+	{
+		if (!IsCompiled())
+			return;
+
+		for (int nodeId : m_ExecutionPlan)
+			m_HasActiveTimeScale[nodeId] = false;
+		auto resolveTimeScale = [&](auto&& self, int nodeId, float scale) -> void
+		{
+			auto active = m_PreviousActiveNodes.find(nodeId);
+			if (active == m_PreviousActiveNodes.end() || !active->second)
+				return;
+			if (m_HasActiveTimeScale[nodeId])
+				return; // Conflicting structural paths are rejected by BuildExecutionPlan.
+			m_HasActiveTimeScale[nodeId] = true;
+			m_ActiveTimeScales[nodeId] = scale;
+			const VansAnimGraphNode* node = m_Definition.GetNode(nodeId);
+			if (!node)
+				return;
+			float inputScale = scale;
+			if (node->GetType() == AnimGraphNodeType::SpeedScale)
+			{
+				const auto* speedNode = static_cast<const AnimGraphSpeedScaleNode*>(node);
+				float speed = speedNode->m_FixedSpeed;
+				if (speedNode->m_UseParam && ctx.parameters)
+				{
+					auto parameter = ctx.parameters->find(speedNode->m_ParamName);
+					if (parameter != ctx.parameters->end()
+					    && parameter->second.type == AnimatorParamType::Float)
+						speed = parameter->second.floatVal;
+				}
+				inputScale *= speed;
+			}
+			for (const AnimGraphLink& link : m_Definition.GetLinks())
+				if (link.toNodeId == nodeId)
+					self(self, link.fromNodeId, inputScale);
+		};
+		resolveTimeScale(resolveTimeScale, m_Definition.GetOutputNodeId(), 1.0f);
+
+		for (int nodeId : m_ExecutionPlan)
+		{
+			if (!m_PreviousActiveNodes[nodeId])
+				continue;
+			const VansAnimGraphNode* node = m_Definition.GetNode(nodeId);
+			if (!node)
+				continue;
+			if (node->GetType() == AnimGraphNodeType::Clip)
+			{
+				const auto* clipNode = static_cast<const AnimGraphClipNode*>(node);
+				VansAnimGraphClipRuntimeState& state = GetClipState(nodeId);
+				state.previousTime = state.currentTime;
+				const float timeScale = m_HasActiveTimeScale[nodeId]
+					? m_ActiveTimeScales[nodeId] : 1.0f;
+				state.currentTime += deltaTime * timeScale * clipNode->m_Speed;
+				continue;
+			}
+			if (node->GetType() != AnimGraphNodeType::StateMachine || !ctx.clips)
+				continue;
+
+			const auto* stateMachine = static_cast<const AnimGraphStateMachineNode*>(node);
+			VansAnimGraphStateMachineRuntimeState& runtime =
+				GetStateMachineState(nodeId, *stateMachine);
+			auto findState = [&](const std::string& name) -> const AnimatorState*
+			{
+				for (const AnimatorState& state : stateMachine->m_States)
+					if (state.name == name)
+						return &state;
+				return nullptr;
+			};
+				auto advanceState = [&](const AnimatorState* state)
+				{
+				if (!state)
+					return;
+				auto clipIt = ctx.clips->find(state->clipName);
+				if (clipIt == ctx.clips->end())
+					return;
+				const float start = state->startTime;
+					const float end = state->endTime < 0.0f ? clipIt->second.duration : state->endTime;
+					const float range = end - start;
+					float& time = runtime.stateTimes[state->name];
+					float& previousTime = runtime.previousStateTimes[state->name];
+					previousTime = time;
+					if (range <= 0.0f)
+					{
+						time = start;
+						previousTime = start;
+						return;
+					}
+					const float timeScale = m_HasActiveTimeScale[nodeId]
+						? m_ActiveTimeScales[nodeId] : 1.0f;
+					time += deltaTime * timeScale * state->speed;
+					if (!state->loop)
+						time = std::clamp(time, start, end);
+				};
+			advanceState(findState(runtime.currentStateName));
+			if (runtime.blendState == ControllerBlendState::Blending)
+				advanceState(findState(runtime.previousStateName));
+		}
+	}
+
+	void VansAnimGraphInstance::Reset()
+	{
+		m_ClipStates.clear();
+		m_StateMachineStates.clear();
+		m_IKSolverStates.clear();
+		m_IKSolverTypes.clear();
+		for (int nodeId : m_ExecutionPlan)
+		{
+			m_EvaluationCache[nodeId] = {};
+			m_EvaluatedNodes[nodeId] = false;
+			m_EvaluatingNodes[nodeId] = false;
+			m_PreviousActiveNodes[nodeId] = false;
+		}
+	}
+
+	bool VansAnimGraphInstance::PlayState(const std::string& stateName)
+	{
+		for (int nodeId : m_ExecutionPlan)
+		{
+			const VansAnimGraphNode* node = m_Definition.GetNode(nodeId);
+			if (!node || node->GetType() != AnimGraphNodeType::StateMachine)
+				continue;
+			const auto* stateMachine = static_cast<const AnimGraphStateMachineNode*>(node);
+			for (const AnimatorState& state : stateMachine->m_States)
+			{
+				if (state.name != stateName)
+					continue;
+				VansAnimGraphStateMachineRuntimeState& runtime =
+					GetStateMachineState(nodeId, *stateMachine);
+				runtime.currentStateName = stateName;
+				runtime.previousStateName.clear();
+				runtime.blendAlpha = 0.0f;
+				runtime.blendDuration = 0.0f;
+					runtime.blendState = ControllerBlendState::Idle;
+					runtime.stateTimes[stateName] = state.startTime;
+					runtime.previousStateTimes[stateName] = state.startTime;
+					return true;
+			}
+		}
+		return false;
+	}
+
+	std::string VansAnimGraphInstance::GetCurrentStateName() const
+	{
+		for (int nodeId : m_ExecutionPlan)
+		{
+			auto it = m_StateMachineStates.find(nodeId);
+			if (it != m_StateMachineStates.end() && !it->second.currentStateName.empty())
+				return it->second.currentStateName;
+		}
+		return {};
+	}
+
+	float VansAnimGraphInstance::GetPrimaryPlaybackTime() const
+	{
+		for (int nodeId : m_ExecutionPlan)
+		{
+			auto stateMachineIt = m_StateMachineStates.find(nodeId);
+			if (stateMachineIt != m_StateMachineStates.end())
+			{
+				auto timeIt = stateMachineIt->second.stateTimes.find(
+					stateMachineIt->second.currentStateName);
+				if (timeIt != stateMachineIt->second.stateTimes.end())
+					return timeIt->second;
+			}
+			auto clipIt = m_ClipStates.find(nodeId);
+			if (clipIt != m_ClipStates.end())
+				return clipIt->second.currentTime;
+		}
+		return 0.0f;
+	}
+
+	const std::string& VansAnimGraphInstance::GetPrimaryClipName() const
+	{
+		for (int nodeId : m_ExecutionPlan)
+		{
+			const VansAnimGraphNode* node = m_Definition.GetNode(nodeId);
+			if (!node)
+				continue;
+			if (node->GetType() == AnimGraphNodeType::StateMachine)
+			{
+				auto runtimeIt = m_StateMachineStates.find(nodeId);
+				if (runtimeIt == m_StateMachineStates.end())
+					continue;
+				const auto* stateMachine = static_cast<const AnimGraphStateMachineNode*>(node);
+				for (const AnimatorState& state : stateMachine->m_States)
+					if (state.name == runtimeIt->second.currentStateName)
+						return state.clipName;
+			}
+			if (node->GetType() == AnimGraphNodeType::Clip
+			    && m_ClipStates.find(nodeId) != m_ClipStates.end())
+				return static_cast<const AnimGraphClipNode*>(node)->m_ClipName;
+		}
+		static const std::string empty;
+		return empty;
+	}
+
+	bool VansAnimGraphInstance::SetPrimaryPlaybackTime(float time, const std::string& stateName)
+	{
+		if (!std::isfinite(time))
+			return false;
+		for (int nodeId : m_ExecutionPlan)
+		{
+			const VansAnimGraphNode* node = m_Definition.GetNode(nodeId);
+			if (!node)
+				continue;
+			if (node->GetType() == AnimGraphNodeType::StateMachine)
+			{
+				const auto* definition = static_cast<const AnimGraphStateMachineNode*>(node);
+				VansAnimGraphStateMachineRuntimeState& runtime = GetStateMachineState(nodeId, *definition);
+				if (!stateName.empty() && stateName != runtime.currentStateName)
+				{
+					bool found = false;
+					for (const AnimatorState& state : definition->m_States)
+						if (state.name == stateName) { found = true; break; }
+					if (!found)
+						return false;
+					runtime.currentStateName = stateName;
+					runtime.previousStateName.clear();
+					runtime.blendAlpha = 0.0f;
+					runtime.blendDuration = 0.0f;
+					runtime.blendState = ControllerBlendState::Idle;
+				}
+				float& current = runtime.stateTimes[runtime.currentStateName];
+				runtime.previousStateTimes[runtime.currentStateName] = current;
+				current = time;
+				return true;
+			}
+			if (node->GetType() == AnimGraphNodeType::Clip)
+			{
+				VansAnimGraphClipRuntimeState& runtime = GetClipState(nodeId);
+				runtime.previousTime = runtime.currentTime;
+				runtime.currentTime = time;
+				return true;
+			}
+		}
+		return false;
+	}
+
+	bool VansAnimGraphInstance::SynchronizePrimaryStateMachineFrom(
+		const VansAnimGraphInstance& leader,
+		const std::unordered_map<std::string, VansAnimationClip>& clips)
+	{
+		int leaderNodeId = -1;
+		const AnimGraphStateMachineNode* leaderDefinition = nullptr;
+		const VansAnimGraphStateMachineRuntimeState* leaderRuntime = nullptr;
+		for (int nodeId : leader.m_ExecutionPlan)
+		{
+			const VansAnimGraphNode* node = leader.m_Definition.GetNode(nodeId);
+			auto runtime = leader.m_StateMachineStates.find(nodeId);
+			if (node && node->GetType() == AnimGraphNodeType::StateMachine
+				&& runtime != leader.m_StateMachineStates.end())
+			{
+				leaderNodeId = nodeId;
+				leaderDefinition = static_cast<const AnimGraphStateMachineNode*>(node);
+				leaderRuntime = &runtime->second;
+				break;
+			}
+		}
+		if (leaderNodeId < 0 || !leaderDefinition || !leaderRuntime
+			|| leaderRuntime->currentStateName.empty())
+			return false;
+
+		int followerNodeId = -1;
+		const AnimGraphStateMachineNode* followerDefinition = nullptr;
+		for (int nodeId : m_ExecutionPlan)
+		{
+			const VansAnimGraphNode* node = m_Definition.GetNode(nodeId);
+			if (node && node->GetType() == AnimGraphNodeType::StateMachine)
+			{
+				followerNodeId = nodeId;
+				followerDefinition = static_cast<const AnimGraphStateMachineNode*>(node);
+				break;
+			}
+		}
+		if (followerNodeId < 0 || !followerDefinition)
+			return false;
+
+		auto findState = [](const AnimGraphStateMachineNode& definition,
+		                    const std::string& stateName) -> const AnimatorState*
+		{
+			for (const AnimatorState& state : definition.m_States)
+				if (state.name == stateName)
+					return &state;
+			return nullptr;
+		};
+		const AnimatorState* leaderCurrent = findState(*leaderDefinition, leaderRuntime->currentStateName);
+		const AnimatorState* followerCurrent = findState(*followerDefinition, leaderRuntime->currentStateName);
+		if (!leaderCurrent || !followerCurrent)
+			return false;
+		const AnimatorState* leaderPrevious = nullptr;
+		const AnimatorState* followerPrevious = nullptr;
+		if (leaderRuntime->blendState == ControllerBlendState::Blending)
+		{
+			leaderPrevious = findState(*leaderDefinition, leaderRuntime->previousStateName);
+			followerPrevious = findState(*followerDefinition, leaderRuntime->previousStateName);
+			if (!leaderPrevious || !followerPrevious)
+				return false;
+		}
+
+		auto mapTime = [&clips](const AnimatorState& sourceState,
+		                       const AnimatorState& targetState,
+		                       float sourceTime) -> float
+		{
+			auto sourceClip = clips.find(sourceState.clipName);
+			auto targetClip = clips.find(targetState.clipName);
+			if (sourceClip == clips.end() || targetClip == clips.end())
+				return targetState.startTime;
+			const float sourceEnd = sourceState.endTime < 0.0f
+				? sourceClip->second.duration : sourceState.endTime;
+			const float targetEnd = targetState.endTime < 0.0f
+				? targetClip->second.duration : targetState.endTime;
+			const float sourceSpan = sourceEnd - sourceState.startTime;
+			const float targetSpan = targetEnd - targetState.startTime;
+			if (sourceSpan <= 0.0f || targetSpan <= 0.0f)
+				return targetState.startTime;
+			const float rawProgress = (sourceTime - sourceState.startTime) / sourceSpan;
+			return targetState.startTime + rawProgress * targetSpan;
+		};
+
+		VansAnimGraphStateMachineRuntimeState& followerRuntime =
+			GetStateMachineState(followerNodeId, *followerDefinition);
+		followerRuntime.currentStateName = leaderRuntime->currentStateName;
+		followerRuntime.previousStateName = leaderRuntime->previousStateName;
+		followerRuntime.blendAlpha = leaderRuntime->blendAlpha;
+		followerRuntime.blendDuration = leaderRuntime->blendDuration;
+		followerRuntime.blendState = leaderRuntime->blendState;
+		followerRuntime.stateTimes.clear();
+		followerRuntime.previousStateTimes.clear();
+
+		auto synchronizeTimes = [&](const AnimatorState& sourceState, const AnimatorState& targetState)
+		{
+			auto current = leaderRuntime->stateTimes.find(sourceState.name);
+			auto previous = leaderRuntime->previousStateTimes.find(sourceState.name);
+			const float currentTime = current != leaderRuntime->stateTimes.end()
+				? current->second : sourceState.startTime;
+			const float previousTime = previous != leaderRuntime->previousStateTimes.end()
+				? previous->second : currentTime;
+			followerRuntime.stateTimes[targetState.name] = mapTime(sourceState, targetState, currentTime);
+			followerRuntime.previousStateTimes[targetState.name] = mapTime(sourceState, targetState, previousTime);
+		};
+		synchronizeTimes(*leaderCurrent, *followerCurrent);
+		if (leaderPrevious && followerPrevious)
+			synchronizeTimes(*leaderPrevious, *followerPrevious);
+		return true;
+	}
+
+	VansAnimGraphRuntimeStateSnapshot VansAnimGraphInstance::CaptureRuntimeState() const
+	{
+		VansAnimGraphRuntimeStateSnapshot snapshot;
+		snapshot.clipStates = m_ClipStates;
+		snapshot.stateMachineStates = m_StateMachineStates;
+		return snapshot;
+	}
+
+	bool VansAnimGraphInstance::RestoreRuntimeState(
+		const VansAnimGraphRuntimeStateSnapshot& snapshot)
+	{
+		bool fullyCompatible = true;
+		m_ClipStates.clear();
+		m_StateMachineStates.clear();
+		for (int nodeId : m_ExecutionPlan)
+		{
+			m_EvaluationCache[nodeId] = {};
+			m_EvaluatedNodes[nodeId] = false;
+			m_EvaluatingNodes[nodeId] = false;
+			m_PreviousActiveNodes[nodeId] = false;
+		}
+
+		for (const auto& [nodeId, state] : snapshot.clipStates)
+		{
+			const VansAnimGraphNode* node = m_Definition.GetNode(nodeId);
+			if (!node || node->GetType() != AnimGraphNodeType::Clip
+				|| !std::isfinite(state.previousTime) || !std::isfinite(state.currentTime))
+			{
+				fullyCompatible = false;
+				continue;
+			}
+			m_ClipStates.emplace(nodeId, state);
+		}
+
+		for (const auto& [nodeId, source] : snapshot.stateMachineStates)
+		{
+			const VansAnimGraphNode* node = m_Definition.GetNode(nodeId);
+			if (!node || node->GetType() != AnimGraphNodeType::StateMachine)
+			{
+				fullyCompatible = false;
+				continue;
+			}
+			const auto* definition = static_cast<const AnimGraphStateMachineNode*>(node);
+			std::unordered_set<std::string> stateNames;
+			for (const AnimatorState& state : definition->m_States)
+				stateNames.insert(state.name);
+			if (stateNames.find(source.currentStateName) == stateNames.end())
+			{
+				fullyCompatible = false;
+				continue;
+			}
+
+			VansAnimGraphStateMachineRuntimeState restored = source;
+			auto retainValidTimes = [&](std::unordered_map<std::string, float>& times)
+			{
+				for (auto it = times.begin(); it != times.end();)
+				{
+					if (stateNames.find(it->first) == stateNames.end() || !std::isfinite(it->second))
+					{
+						fullyCompatible = false;
+						it = times.erase(it);
+					}
+					else ++it;
+				}
+			};
+			retainValidTimes(restored.stateTimes);
+			retainValidTimes(restored.previousStateTimes);
+			for (const AnimatorState& state : definition->m_States)
+			{
+				restored.stateTimes.try_emplace(state.name, state.startTime);
+				restored.previousStateTimes.try_emplace(state.name, state.startTime);
+			}
+			if (restored.blendState == ControllerBlendState::Blending
+				&& stateNames.find(restored.previousStateName) == stateNames.end())
+			{
+				restored.previousStateName.clear();
+				restored.blendState = ControllerBlendState::Idle;
+				restored.blendAlpha = 0.0f;
+				restored.blendDuration = 0.0f;
+				fullyCompatible = false;
+			}
+			if (!std::isfinite(restored.blendAlpha) || !std::isfinite(restored.blendDuration))
+			{
+				restored.previousStateName.clear();
+				restored.blendState = ControllerBlendState::Idle;
+				restored.blendAlpha = 0.0f;
+				restored.blendDuration = 0.0f;
+				fullyCompatible = false;
+			}
+			m_StateMachineStates.emplace(nodeId, std::move(restored));
+		}
+		return fullyCompatible;
+	}
+
+	float VansAnimGraphInstance::GetClipTime(int nodeId) const
+	{
+		auto it = m_ClipStates.find(nodeId);
+		return it == m_ClipStates.end() ? 0.0f : it->second.currentTime;
+	}
+
+	VansAnimGraphClipRuntimeState& VansAnimGraphInstance::GetClipState(int nodeId)
+	{
+		return m_ClipStates[nodeId];
+	}
+
+	VansAnimGraphStateMachineRuntimeState& VansAnimGraphInstance::GetStateMachineState(
+		int nodeId, const AnimGraphStateMachineNode& definition)
+	{
+		auto [it, inserted] = m_StateMachineStates.try_emplace(nodeId);
+		if (inserted)
+		{
+			it->second.currentStateName = definition.m_DefaultStateName;
+			for (const AnimatorState& state : definition.m_States)
+			{
+				it->second.stateTimes[state.name] = state.startTime;
+				it->second.previousStateTimes[state.name] = state.startTime;
+			}
+		}
+		return it->second;
+	}
+
+	VansIKSolver* VansAnimGraphInstance::GetIKSolver(int nodeId, IKSolverType type)
+	{
+		auto typeIt = m_IKSolverTypes.find(nodeId);
+		if (typeIt != m_IKSolverTypes.end() && typeIt->second == type)
+			return m_IKSolverStates[nodeId].get();
+
+		std::unique_ptr<VansIKSolver> solver;
+		switch (type)
+		{
+		case IKSolverType::TwoBone: solver = std::make_unique<VansTwoBoneIKSolver>(); break;
+		case IKSolverType::CCD: solver = std::make_unique<VansCCDSolver>(); break;
+		case IKSolverType::FABRIK: solver = std::make_unique<VansFABRIKSolver>(); break;
+		case IKSolverType::LookAt: solver = std::make_unique<VansLookAtSolver>(); break;
+		}
+		m_IKSolverTypes[nodeId] = type;
+		m_IKSolverStates[nodeId] = std::move(solver);
+		return m_IKSolverStates[nodeId].get();
+	}
+
+	VansAnimGraphIKRuntimeState& VansAnimGraphInstance::GetIKRuntimeState(int nodeId)
+	{
+		return m_IKRuntimeStates[nodeId];
 	}
 
 	// ─── 节点工厂 ──────────────────────────────────────────────
@@ -1291,6 +1520,8 @@ namespace VansGraphics
 		case AnimGraphNodeType::SpeedScale:    return std::make_unique<AnimGraphSpeedScaleNode>();
 		case AnimGraphNodeType::StateMachine:  return std::make_unique<AnimGraphStateMachineNode>();
 		case AnimGraphNodeType::MotionMatching:return std::make_unique<AnimGraphMotionMatchingNode>();
+		case AnimGraphNodeType::Slot:          return std::make_unique<AnimGraphSlotNode>();
+		case AnimGraphNodeType::TargetPoseInput:return std::make_unique<AnimGraphTargetPoseInputNode>();
 		case AnimGraphNodeType::IK:            return std::make_unique<AnimGraphIKNode>();
 		case AnimGraphNodeType::TwoBoneIK:     return std::make_unique<AnimGraphTwoBoneIKNode>();
 		case AnimGraphNodeType::LookAt:        return std::make_unique<AnimGraphLookAtNode>();
@@ -1301,7 +1532,24 @@ namespace VansGraphics
 
 	std::unique_ptr<VansAnimGraphNode> VansAnimGraph::CreateNodeByTypeName(const std::string& typeName)
 	{
-		return CreateNodeByType(VansAnimGraphNode::StringToType(typeName));
+		if (typeName == "Entry")          return CreateNodeByType(AnimGraphNodeType::Entry);
+		if (typeName == "Output")         return CreateNodeByType(AnimGraphNodeType::Output);
+		if (typeName == "Clip")           return CreateNodeByType(AnimGraphNodeType::Clip);
+		if (typeName == "Blend")          return CreateNodeByType(AnimGraphNodeType::Blend);
+		if (typeName == "Blend1D")        return CreateNodeByType(AnimGraphNodeType::Blend1D);
+		if (typeName == "IfCondition")    return CreateNodeByType(AnimGraphNodeType::IfCondition);
+		if (typeName == "Switch")         return CreateNodeByType(AnimGraphNodeType::Switch);
+		if (typeName == "AdditiveBlend")  return CreateNodeByType(AnimGraphNodeType::AdditiveBlend);
+		if (typeName == "SpeedScale")     return CreateNodeByType(AnimGraphNodeType::SpeedScale);
+		if (typeName == "StateMachine")   return CreateNodeByType(AnimGraphNodeType::StateMachine);
+		if (typeName == "MotionMatching") return CreateNodeByType(AnimGraphNodeType::MotionMatching);
+		if (typeName == "Slot")           return CreateNodeByType(AnimGraphNodeType::Slot);
+		if (typeName == "TargetPoseInput")return CreateNodeByType(AnimGraphNodeType::TargetPoseInput);
+		if (typeName == "IK")             return CreateNodeByType(AnimGraphNodeType::IK);
+		if (typeName == "TwoBoneIK")      return CreateNodeByType(AnimGraphNodeType::TwoBoneIK);
+		if (typeName == "LookAt")         return CreateNodeByType(AnimGraphNodeType::LookAt);
+		if (typeName == "FootPlacement")  return CreateNodeByType(AnimGraphNodeType::FootPlacement);
+		return nullptr;
 	}
 
 	// ═════════════════════════════════════════════════════════════
@@ -1337,7 +1585,7 @@ namespace VansGraphics
 	// 序列化单个节点的特有属性
 	static nlohmann::json SerializeNodeProperties(const VansAnimGraphNode* node)
 	{
-		nlohmann::json props;
+		nlohmann::json props = nlohmann::json::object();
 		switch (node->GetType())
 		{
 		case AnimGraphNodeType::Clip:
@@ -1444,6 +1692,13 @@ namespace VansGraphics
 		case AnimGraphNodeType::MotionMatching:
 		{
 			auto* n = static_cast<const AnimGraphMotionMatchingNode*>(node);
+			props["enableFallbackInput"] = n->m_EnableFallbackInput;
+			break;
+		}
+		case AnimGraphNodeType::Slot:
+		{
+			auto* n = static_cast<const AnimGraphSlotNode*>(node);
+			props["slotId"] = n->m_SlotId;
 			props["enableFallbackInput"] = n->m_EnableFallbackInput;
 			break;
 		}
@@ -1705,6 +1960,14 @@ namespace VansGraphics
 				n->m_EnableFallbackInput = props["enableFallbackInput"].get<bool>();
 			break;
 		}
+		case AnimGraphNodeType::Slot:
+		{
+			auto* n = static_cast<AnimGraphSlotNode*>(node);
+			if (props.contains("slotId")) n->m_SlotId = props["slotId"].get<std::string>();
+			if (props.contains("enableFallbackInput"))
+				n->m_EnableFallbackInput = props["enableFallbackInput"].get<bool>();
+			break;
+		}
 		case AnimGraphNodeType::IK:
 		{
 			auto* n = static_cast<AnimGraphIKNode*>(node);
@@ -1917,9 +2180,20 @@ namespace VansGraphics
 
 	void VansAnimGraph::SerializeToJsonObject(AnimGraphJson& outJson) const
 	{
+		outJson = nlohmann::json::object();
+
 		// 节点数组
 		nlohmann::json nodesJson = nlohmann::json::array();
+		std::vector<const VansAnimGraphNode*> sortedNodes;
+		sortedNodes.reserve(m_Nodes.size());
 		for (const auto& [id, node] : m_Nodes)
+			sortedNodes.push_back(node.get());
+		std::sort(sortedNodes.begin(), sortedNodes.end(),
+			[](const VansAnimGraphNode* lhs, const VansAnimGraphNode* rhs)
+			{
+				return lhs->GetNodeId() < rhs->GetNodeId();
+			});
+		for (const VansAnimGraphNode* node : sortedNodes)
 		{
 			nlohmann::json nj;
 			nj["id"]       = node->GetNodeId();
@@ -1927,14 +2201,24 @@ namespace VansGraphics
 			nj["name"]     = node->GetName();
 			nj["posX"]     = node->m_EditorPosX;
 			nj["posY"]     = node->m_EditorPosY;
-			nj["properties"] = SerializeNodeProperties(node.get());
+			nj["properties"] = SerializeNodeProperties(node);
 			nodesJson.push_back(nj);
 		}
 		outJson["nodes"] = nodesJson;
 
 		// 连线数组
 		nlohmann::json linksJson = nlohmann::json::array();
-		for (const auto& link : m_Links)
+		std::vector<AnimGraphLink> sortedLinks = m_Links;
+		std::sort(sortedLinks.begin(), sortedLinks.end(),
+			[](const AnimGraphLink& lhs, const AnimGraphLink& rhs)
+			{
+				if (lhs.toNodeId != rhs.toNodeId) return lhs.toNodeId < rhs.toNodeId;
+				if (lhs.toPinIndex != rhs.toPinIndex) return lhs.toPinIndex < rhs.toPinIndex;
+				if (lhs.fromNodeId != rhs.fromNodeId) return lhs.fromNodeId < rhs.fromNodeId;
+				if (lhs.fromPinIndex != rhs.fromPinIndex) return lhs.fromPinIndex < rhs.fromPinIndex;
+				return lhs.linkId < rhs.linkId;
+			});
+		for (const auto& link : sortedLinks)
 		{
 			linksJson.push_back({
 				{ "id",       link.linkId },
@@ -1949,53 +2233,90 @@ namespace VansGraphics
 
 	std::unique_ptr<VansAnimGraph> VansAnimGraph::DeserializeFromJsonObject(const AnimGraphJson& j)
 	{
-		auto graph = std::make_unique<VansAnimGraph>();
-
-		if (!j.contains("nodes") || !j.contains("links"))
-			return graph;
-
-		// 先确定最大 ID 以初始化计数器
-		int maxNodeId = 0;
-		int maxLinkId = 0;
-
-		// 反序列化节点
-		for (const auto& nj : j["nodes"])
+		if (!j.is_object() || !j.contains("nodes") || !j["nodes"].is_array()
+		    || !j.contains("links") || !j["links"].is_array())
+			return nullptr;
+		for (const auto& item : j.items())
 		{
-			std::string typeName = nj["type"].get<std::string>();
-			auto node = CreateNodeByTypeName(typeName);
-			if (!node) continue;
-
-			int nodeId = nj["id"].get<int>();
-			node->m_NodeId = nodeId;
-			if (nj.contains("name")) node->SetName(nj["name"].get<std::string>());
-			if (nj.contains("posX")) node->m_EditorPosX = nj["posX"].get<float>();
-			if (nj.contains("posY")) node->m_EditorPosY = nj["posY"].get<float>();
-
-			if (nj.contains("properties"))
-				DeserializeNodeProperties(node.get(), nj["properties"]);
-
-			// 记录 Entry/Output
-			if (node->GetType() == AnimGraphNodeType::Entry)
-				graph->m_EntryNodeId = nodeId;
-			else if (node->GetType() == AnimGraphNodeType::Output)
-				graph->m_OutputNodeId = nodeId;
-
-			if (nodeId > maxNodeId) maxNodeId = nodeId;
-			graph->m_Nodes[nodeId] = std::move(node);
+			if (item.key() != "nodes" && item.key() != "links")
+				return nullptr;
 		}
 
-		// 反序列化连线
-		for (const auto& lj : j["links"])
-		{
-			AnimGraphLink link;
-			link.linkId       = lj["id"].get<int>();
-			link.fromNodeId   = lj["fromNode"].get<int>();
-			link.fromPinIndex = lj["fromPin"].get<int>();
-			link.toNodeId     = lj["toNode"].get<int>();
-			link.toPinIndex   = lj["toPin"].get<int>();
-			graph->m_Links.push_back(link);
+		auto graph = std::make_unique<VansAnimGraph>();
+		int maxNodeId = 0;
+		int maxLinkId = 0;
+		int outputCount = 0;
+		int entryCount = 0;
+		std::unordered_set<int> nodeIds;
+		std::unordered_set<int> linkIds;
 
-			if (link.linkId > maxLinkId) maxLinkId = link.linkId;
+		try
+		{
+			for (const auto& nj : j["nodes"])
+			{
+				if (!nj.is_object() || !nj.contains("id") || !nj["id"].is_number_integer()
+				    || !nj.contains("type") || !nj["type"].is_string()
+				    || !nj.contains("properties") || !nj["properties"].is_object())
+					return nullptr;
+
+				const int nodeId = nj["id"].get<int>();
+				if (nodeId <= 0 || !nodeIds.insert(nodeId).second)
+					return nullptr;
+
+				auto node = CreateNodeByTypeName(nj["type"].get<std::string>());
+				if (!node)
+					return nullptr;
+				node->m_NodeId = nodeId;
+				if (nj.contains("name")) node->SetName(nj["name"].get<std::string>());
+				if (nj.contains("posX")) node->m_EditorPosX = nj["posX"].get<float>();
+				if (nj.contains("posY")) node->m_EditorPosY = nj["posY"].get<float>();
+				DeserializeNodeProperties(node.get(), nj["properties"]);
+
+				if (node->GetType() == AnimGraphNodeType::Entry)
+				{
+					++entryCount;
+					graph->m_EntryNodeId = nodeId;
+				}
+				else if (node->GetType() == AnimGraphNodeType::Output)
+				{
+					++outputCount;
+					graph->m_OutputNodeId = nodeId;
+				}
+
+				maxNodeId = (std::max)(maxNodeId, nodeId);
+				graph->m_Nodes.emplace(nodeId, std::move(node));
+			}
+			if (outputCount != 1 || entryCount > 1)
+				return nullptr;
+
+			for (const auto& lj : j["links"])
+			{
+				if (!lj.is_object()
+				    || !lj.contains("id") || !lj["id"].is_number_integer()
+				    || !lj.contains("fromNode") || !lj["fromNode"].is_number_integer()
+				    || !lj.contains("fromPin") || !lj["fromPin"].is_number_integer()
+				    || !lj.contains("toNode") || !lj["toNode"].is_number_integer()
+				    || !lj.contains("toPin") || !lj["toPin"].is_number_integer())
+					return nullptr;
+
+				const int linkId = lj["id"].get<int>();
+				if (linkId <= 0 || !linkIds.insert(linkId).second)
+					return nullptr;
+				const int addedLinkId = graph->AddLink(
+					lj["fromNode"].get<int>(), lj["fromPin"].get<int>(),
+					lj["toNode"].get<int>(), lj["toPin"].get<int>());
+				if (addedLinkId < 0)
+					return nullptr;
+				graph->m_Links.back().linkId = linkId;
+				maxLinkId = (std::max)(maxLinkId, linkId);
+			}
+
+			if (!graph->GetInputNode(graph->m_OutputNodeId, 0))
+				return nullptr;
+		}
+		catch (const nlohmann::json::exception&)
+		{
+			return nullptr;
 		}
 
 		graph->m_NextNodeId = maxNodeId + 1;
@@ -2010,11 +2331,34 @@ namespace VansGraphics
 
 	// 在输入 Pose 上构建临时全局变换（拓扑顺序）
 	static void BuildTempGlobals(
-		const AnimGraphPose& pose,
+		const std::vector<glm::mat4>& localMatrices,
 		const Skeleton&      skeleton,
 		std::vector<glm::mat4>& outGlobals)
 	{
-		outGlobals = IK_BuildModelSpaceTransforms(skeleton, pose.localTransforms);
+		outGlobals.resize(localMatrices.size(), glm::mat4(1.0f));
+		auto updateBone = [&](int boneIndex)
+		{
+			if (boneIndex < 0 || boneIndex >= static_cast<int>(localMatrices.size()))
+				return;
+			const int parentIndex = skeleton.bones[static_cast<std::size_t>(boneIndex)].parentIndex;
+			outGlobals[static_cast<std::size_t>(boneIndex)] = parentIndex >= 0
+				&& parentIndex < static_cast<int>(outGlobals.size())
+				? outGlobals[static_cast<std::size_t>(parentIndex)]
+					* localMatrices[static_cast<std::size_t>(boneIndex)]
+				: localMatrices[static_cast<std::size_t>(boneIndex)];
+		};
+		if (!skeleton.topologicalOrder.empty())
+			for (int boneIndex : skeleton.topologicalOrder) updateBone(boneIndex);
+		else
+			for (std::size_t boneIndex = 0; boneIndex < localMatrices.size(); ++boneIndex)
+				updateBone(static_cast<int>(boneIndex));
+	}
+
+	static int ResolveGraphBoneIndex(const Skeleton& skeleton, const std::string& boneName)
+	{
+		if (boneName.empty()) return -1;
+		const auto found = skeleton.boneNameToIndex.find(boneName);
+		return found == skeleton.boneNameToIndex.end() ? -1 : found->second;
 	}
 
 	// 从 ctx.parameters 读取 Vector3 参数
@@ -2033,19 +2377,21 @@ namespace VansGraphics
 	}
 
 	AnimGraphPose AnimGraphMotionMatchingNode::Evaluate(const AnimGraphContext& ctx,
-	                                                   VansAnimGraph& graph)
+	                                                   VansAnimGraphInstance& instance) const
 	{
 		if (ctx.motionMatching && ctx.skeleton && ctx.clips && ctx.parameters)
 		{
 			AnimGraphPose pose;
+			std::vector<glm::mat4> sampledMatrices;
 			if (ctx.motionMatching->Update(ctx.deltaTime,
 			                               *ctx.skeleton,
 			                               *ctx.clips,
 			                               *ctx.parameters,
 			                               ctx.ownerWorldTransform,
-			                               pose.localTransforms))
+			                               sampledMatrices)
+			    && VansPoseMath::FromMatrices(sampledMatrices, pose.localPose))
 			{
-				pose.valid = pose.localTransforms.size() == ctx.skeleton->bones.size();
+				pose.valid = pose.localPose.size() == ctx.skeleton->bones.size();
 				if (pose.valid)
 					return pose;
 			}
@@ -2054,12 +2400,85 @@ namespace VansGraphics
 		if (!m_EnableFallbackInput)
 			return {};
 
-		VansAnimGraphNode* in = graph.GetInputNode(m_NodeId, 0);
-		return in ? in->Evaluate(ctx, graph) : AnimGraphPose{};
+		return instance.EvaluateInput(m_NodeId, 0, ctx);
 	}
 
-	void AnimGraphMotionMatchingNode::Reset()
+	AnimGraphSlotNode::AnimGraphSlotNode()
 	{
+		m_Type = AnimGraphNodeType::Slot;
+		m_Name = "Slot";
+	}
+
+	std::vector<AnimGraphPin> AnimGraphSlotNode::GetPins() const
+	{
+		return {
+			{ 0, "FallbackPose", AnimGraphPinType::Pose, AnimGraphPinKind::Input },
+			{ 0, "OutPose", AnimGraphPinType::Pose, AnimGraphPinKind::Output }
+		};
+	}
+
+	AnimGraphPose AnimGraphSlotNode::Evaluate(
+		const AnimGraphContext& ctx,
+		VansAnimGraphInstance& instance) const
+	{
+		AnimGraphPose fallback;
+		if (m_EnableFallbackInput)
+			fallback = instance.EvaluateInput(m_NodeId, 0, ctx);
+		if (!ctx.slotPayloads)
+			return fallback;
+		auto slot = ctx.slotPayloads->find(m_SlotId);
+		if (slot == ctx.slotPayloads->end() || !slot->second.valid)
+			return fallback;
+		if (!fallback.valid)
+			return slot->second;
+
+		const float sourceWeight = std::clamp(slot->second.sourceWeight, 0.0f, 1.0f);
+		if (ctx.skeleton && (slot->second.sourceAdditive || !slot->second.sourceBoneMask.empty()))
+		{
+			VansCompiledBoneMask mask;
+			mask.weights.assign(ctx.skeleton->bones.size(), 1.0f);
+			if (slot->second.sourceBoneMask.size() == ctx.skeleton->bones.size())
+				mask.weights.assign(slot->second.sourceBoneMask.begin(), slot->second.sourceBoneMask.end());
+			mask.activeBones.reserve(mask.weights.size());
+			for (std::size_t index = 0; index < mask.weights.size(); ++index)
+				if (mask.weights[index] > 0.0f) mask.activeBones.push_back(static_cast<std::uint32_t>(index));
+			mask.allZero = mask.activeBones.empty();
+			mask.allOne = std::all_of(mask.weights.begin(), mask.weights.end(), [](float value) { return value >= 0.9999f; });
+			mask.rootWeight = mask.weights.empty() ? 0.0f : mask.weights.front();
+			mask.valid = true;
+			VansAnimationLayerDefinition definition;
+			definition.id = "TimelineSlot";
+			definition.blendMode = slot->second.sourceAdditive ? VansLayerBlendMode::Additive : VansLayerBlendMode::Override;
+			definition.rootMotion = VansLayerRootMotionMode::Override;
+			definition.nodeTracks = VansLayerNodeTrackMode::Override;
+			VansAnimationFrameVector<VansBoneTransform> referencePose;
+			VansAnimationLayerMixer::BuildBindPose(*ctx.skeleton, referencePose);
+			AnimGraphPose result = VansAnimationLayerMixer::ApplyLayer(
+				fallback, slot->second, definition, mask, *ctx.skeleton, referencePose, 1.0f);
+			result.sourceWeight = fallback.sourceWeight;
+			return result;
+		}
+		AnimGraphPose result = VansPosePayloadMixer::BlendOverride(fallback, slot->second, sourceWeight);
+		result.sourceWeight = fallback.sourceWeight;
+		return result;
+	}
+
+	AnimGraphTargetPoseInputNode::AnimGraphTargetPoseInputNode()
+	{
+		m_Type = AnimGraphNodeType::TargetPoseInput;
+		m_Name = "Target Pose Input";
+	}
+
+	std::vector<AnimGraphPin> AnimGraphTargetPoseInputNode::GetPins() const
+	{
+		return { { 0, "TargetPose", AnimGraphPinType::Pose, AnimGraphPinKind::Output } };
+	}
+
+	AnimGraphPose AnimGraphTargetPoseInputNode::Evaluate(
+		const AnimGraphContext& ctx,
+		VansAnimGraphInstance&) const
+	{
+		return ctx.targetPoseInput ? *ctx.targetPoseInput : AnimGraphPose{};
 	}
 
 	static void ResolveIKChainBoneIndices(IKChainDefinition& chain, const Skeleton& skeleton)
@@ -2126,29 +2545,23 @@ namespace VansGraphics
 		};
 	}
 
-	void AnimGraphIKNode::EnsureSolver()
-	{
-		if (m_Solver && m_SolverKind == m_Chain.solverType) return;
-		m_SolverKind = m_Chain.solverType;
-		switch (m_Chain.solverType)
-		{
-		case IKSolverType::TwoBone: m_Solver = std::make_unique<VansTwoBoneIKSolver>(); break;
-		case IKSolverType::CCD:    m_Solver = std::make_unique<VansCCDSolver>();    break;
-		case IKSolverType::FABRIK: m_Solver = std::make_unique<VansFABRIKSolver>(); break;
-		case IKSolverType::LookAt: m_Solver = std::make_unique<VansLookAtSolver>(); break;
-		}
-	}
-
 	AnimGraphPose AnimGraphIKNode::Evaluate(const AnimGraphContext& ctx,
-	                                       VansAnimGraph& graph)
+	                                       VansAnimGraphInstance& instance) const
 	{
 		// 1. 拉取上游 Pose
-		VansAnimGraphNode* in = graph.GetInputNode(m_NodeId, 0);
-		AnimGraphPose pose = in ? in->Evaluate(ctx, graph) : AnimGraphPose{};
+		AnimGraphPose pose = instance.EvaluateInput(m_NodeId, 0, ctx);
 		if (!pose.valid || !ctx.skeleton) return pose;
 		if (m_Chain.bones.size() < 2) return pose;
-		IKChainDefinition resolvedChain = m_Chain;
-		ResolveIKChainBoneIndices(resolvedChain, *ctx.skeleton);
+		auto& runtime = instance.GetIKRuntimeState(m_NodeId);
+		if (runtime.skeleton != ctx.skeleton)
+		{
+			runtime.chain = m_Chain;
+			ResolveIKChainBoneIndices(runtime.chain, *ctx.skeleton);
+			runtime.targetReferenceBoneIndex = ResolveGraphBoneIndex(
+				*ctx.skeleton, m_TargetReferenceBoneName);
+			runtime.skeleton = ctx.skeleton;
+		}
+		const IKChainDefinition& resolvedChain = runtime.chain;
 
 		// 2. 读取目标
 		float weight = m_UseFixedTarget
@@ -2167,21 +2580,22 @@ namespace VansGraphics
 		target.rotationWeight = m_Chain.enableRotationTarget ? weight * m_Chain.rotationWeight : 0.0f;
 		target.positionSpace = m_TargetPositionSpace;
 		target.rotationSpace = m_TargetRotationSpace;
-		target.referenceBoneName = m_TargetReferenceBoneName;
+		target.referenceBoneIndex = runtime.targetReferenceBoneIndex;
 
 		// 3. 构建 tempGlobals
-		std::vector<glm::mat4> tempGlobals;
-		BuildTempGlobals(pose, *ctx.skeleton, tempGlobals);
+		VansPoseMath::ToMatrices(pose.localPose, runtime.localMatrices);
+		BuildTempGlobals(runtime.localMatrices, *ctx.skeleton, runtime.globalMatrices);
 
 		// 4. 求解
-		EnsureSolver();
-		if (m_Solver)
+		if (VansIKSolver* solver = instance.GetIKSolver(m_NodeId, m_Chain.solverType))
 		{
 			IKSolveContext solveContext;
 			solveContext.deltaTime = ctx.deltaTime;
 			solveContext.ownerWorldTransform = ctx.ownerWorldTransform;
-			m_Solver->Solve(pose.localTransforms, tempGlobals,
-			                *ctx.skeleton, resolvedChain, target, solveContext);
+			solver->Solve(runtime.localMatrices, runtime.globalMatrices,
+			              *ctx.skeleton, resolvedChain, target, solveContext);
+			if (!VansPoseMath::FromMatrices(runtime.localMatrices, pose.localPose))
+				return {};
 		}
 
 		return pose;
@@ -2206,35 +2620,45 @@ namespace VansGraphics
 	}
 
 	AnimGraphPose AnimGraphTwoBoneIKNode::Evaluate(const AnimGraphContext& ctx,
-	                                              VansAnimGraph& graph)
+	                                              VansAnimGraphInstance& instance) const
 	{
-		VansAnimGraphNode* in = graph.GetInputNode(m_NodeId, 0);
-		AnimGraphPose pose = in ? in->Evaluate(ctx, graph) : AnimGraphPose{};
+		AnimGraphPose pose = instance.EvaluateInput(m_NodeId, 0, ctx);
 		if (!pose.valid || !ctx.skeleton) return pose;
 
-		IKChainDefinition chain = m_UseLegProfile
-			? VansIKChainBuilder::BuildHumanoidLeg(
-				*ctx.skeleton, m_RootBoneName, m_MidBoneName, m_TipBoneName, m_IsRightSide)
-			: VansIKChainBuilder::BuildHumanoidArm(
-				*ctx.skeleton, m_RootBoneName, m_MidBoneName, m_TipBoneName, m_IsRightSide);
-		if (chain.bones.size() != 3 || !IK_ValidateChain(*ctx.skeleton, chain, true)) return pose;
-		chain.solverType = IKSolverType::TwoBone;
-		chain.bones[0].constraint.coneAngleDeg = m_ConeAngle;
-		chain.bones[1].constraint.minAngleY = m_HingeMinAngle;
-		chain.bones[1].constraint.maxAngleY = m_HingeMaxAngle;
-		if (m_UsePoleVector)
+		auto& runtime = instance.GetIKRuntimeState(m_NodeId);
+		if (runtime.skeleton != ctx.skeleton)
 		{
-			chain.poleVector = m_PoleVector;
-			chain.poleWeight = m_PoleWeight;
+			runtime.chain = m_UseLegProfile
+				? VansIKChainBuilder::BuildHumanoidLeg(
+					*ctx.skeleton, m_RootBoneName, m_MidBoneName, m_TipBoneName, m_IsRightSide)
+				: VansIKChainBuilder::BuildHumanoidArm(
+					*ctx.skeleton, m_RootBoneName, m_MidBoneName, m_TipBoneName, m_IsRightSide);
+			runtime.chain.solverType = IKSolverType::TwoBone;
+			if (runtime.chain.bones.size() >= 2)
+			{
+				runtime.chain.bones[0].constraint.coneAngleDeg = m_ConeAngle;
+				runtime.chain.bones[1].constraint.minAngleY = m_HingeMinAngle;
+				runtime.chain.bones[1].constraint.maxAngleY = m_HingeMaxAngle;
+			}
+			if (m_UsePoleVector)
+			{
+				runtime.chain.poleVector = m_PoleVector;
+				runtime.chain.poleWeight = m_PoleWeight;
+			}
+			runtime.chain.poleSpace = m_PoleSpace;
+			runtime.chain.poleReferenceBoneName = m_PoleReferenceBoneName;
+			runtime.chain.enableRotationTarget = m_EnableRotationTarget;
+			runtime.chain.rotationWeight = m_RotationWeight;
+			runtime.chain.maintainEffectorGlobalRotation = m_MaintainEffectorGlobalRotation;
+			runtime.chain.allowStretch = m_AllowStretch;
+			runtime.chain.startStretchRatio = m_StartStretchRatio;
+			runtime.chain.maxStretchScale = m_MaxStretchScale;
+			runtime.targetReferenceBoneIndex = ResolveGraphBoneIndex(
+				*ctx.skeleton, m_TargetReferenceBoneName);
+			runtime.skeleton = ctx.skeleton;
 		}
-		chain.poleSpace = m_PoleSpace;
-		chain.poleReferenceBoneName = m_PoleReferenceBoneName;
-		chain.enableRotationTarget = m_EnableRotationTarget;
-		chain.rotationWeight = m_RotationWeight;
-		chain.maintainEffectorGlobalRotation = m_MaintainEffectorGlobalRotation;
-		chain.allowStretch = m_AllowStretch;
-		chain.startStretchRatio = m_StartStretchRatio;
-		chain.maxStretchScale = m_MaxStretchScale;
+		IKChainDefinition& chain = runtime.chain;
+		if (chain.bones.size() != 3 || !IK_ValidateChain(*ctx.skeleton, chain, true)) return pose;
 
 		float weight = m_UseFixedTarget
 			? m_FixedWeight
@@ -2252,17 +2676,19 @@ namespace VansGraphics
 		target.rotationWeight = m_EnableRotationTarget ? weight * m_RotationWeight : 0.0f;
 		target.positionSpace = m_TargetPositionSpace;
 		target.rotationSpace = m_TargetRotationSpace;
-		target.referenceBoneName = m_TargetReferenceBoneName;
+		target.referenceBoneIndex = runtime.targetReferenceBoneIndex;
 
-		std::vector<glm::mat4> tempGlobals;
-		BuildTempGlobals(pose, *ctx.skeleton, tempGlobals);
+		VansPoseMath::ToMatrices(pose.localPose, runtime.localMatrices);
+		BuildTempGlobals(runtime.localMatrices, *ctx.skeleton, runtime.globalMatrices);
 
 		IKSolveContext solveContext;
 		solveContext.deltaTime = ctx.deltaTime;
 		solveContext.ownerWorldTransform = ctx.ownerWorldTransform;
-		VansTwoBoneIKSolver solver;
-		solver.Solve(pose.localTransforms, tempGlobals, *ctx.skeleton,
-		             chain, target, solveContext);
+		if (VansIKSolver* solver = instance.GetIKSolver(m_NodeId, IKSolverType::TwoBone))
+			solver->Solve(runtime.localMatrices, runtime.globalMatrices, *ctx.skeleton,
+				chain, target, solveContext);
+		if (!VansPoseMath::FromMatrices(runtime.localMatrices, pose.localPose))
+			return {};
 		return pose;
 	}
 
@@ -2285,15 +2711,22 @@ namespace VansGraphics
 	}
 
 	AnimGraphPose AnimGraphLookAtNode::Evaluate(const AnimGraphContext& ctx,
-	                                           VansAnimGraph& graph)
+	                                           VansAnimGraphInstance& instance) const
 	{
-		VansAnimGraphNode* in = graph.GetInputNode(m_NodeId, 0);
-		AnimGraphPose pose = in ? in->Evaluate(ctx, graph) : AnimGraphPose{};
+		AnimGraphPose pose = instance.EvaluateInput(m_NodeId, 0, ctx);
 		if (!pose.valid || !ctx.skeleton) return pose;
 		if (m_BoneNames.empty()) return pose;
 
-		IKChainDefinition chain = VansIKChainBuilder::BuildLookAt(
-			*ctx.skeleton, m_BoneNames, m_BoneWeights);
+		auto& runtime = instance.GetIKRuntimeState(m_NodeId);
+		if (runtime.skeleton != ctx.skeleton)
+		{
+			runtime.chain = VansIKChainBuilder::BuildLookAt(
+				*ctx.skeleton, m_BoneNames, m_BoneWeights);
+			runtime.targetReferenceBoneIndex = ResolveGraphBoneIndex(
+				*ctx.skeleton, m_TargetReferenceBoneName);
+			runtime.skeleton = ctx.skeleton;
+		}
+		const IKChainDefinition& chain = runtime.chain;
 		if (chain.bones.empty()) return pose;
 
 		float weight = m_UseFixedTarget
@@ -2307,22 +2740,26 @@ namespace VansGraphics
 			: ReadVec3Param(ctx, m_TargetPosParamName, m_FixedTargetPos);
 		target.positionWeight = weight;
 		target.positionSpace = m_TargetPositionSpace;
-		target.referenceBoneName = m_TargetReferenceBoneName;
+		target.referenceBoneIndex = runtime.targetReferenceBoneIndex;
 
-		std::vector<glm::mat4> tempGlobals;
-		BuildTempGlobals(pose, *ctx.skeleton, tempGlobals);
+		VansPoseMath::ToMatrices(pose.localPose, runtime.localMatrices);
+		BuildTempGlobals(runtime.localMatrices, *ctx.skeleton, runtime.globalMatrices);
 
-		VansLookAtSolver solver;
-		solver.m_ForwardAxis = m_ForwardAxis;
-		solver.m_WorldForward = m_WorldForward;
-		solver.m_ModelUp = m_ModelUp;
-		solver.m_UpWeight = m_UpWeight;
-		solver.m_MaxAnglePerBoneDeg = m_MaxAnglePerBoneDeg;
+		auto* solver = static_cast<VansLookAtSolver*>(
+			instance.GetIKSolver(m_NodeId, IKSolverType::LookAt));
+		if (!solver) return pose;
+		solver->m_ForwardAxis = m_ForwardAxis;
+		solver->m_WorldForward = m_WorldForward;
+		solver->m_ModelUp = m_ModelUp;
+		solver->m_UpWeight = m_UpWeight;
+		solver->m_MaxAnglePerBoneDeg = m_MaxAnglePerBoneDeg;
 		IKSolveContext solveContext;
 		solveContext.deltaTime = ctx.deltaTime;
 		solveContext.ownerWorldTransform = ctx.ownerWorldTransform;
-		solver.Solve(pose.localTransforms, tempGlobals,
+		solver->Solve(runtime.localMatrices, runtime.globalMatrices,
 		             *ctx.skeleton, chain, target, solveContext);
+		if (!VansPoseMath::FromMatrices(runtime.localMatrices, pose.localPose))
+			return {};
 		return pose;
 	}
 
@@ -2343,15 +2780,14 @@ namespace VansGraphics
 	}
 
 	AnimGraphPose AnimGraphFootPlacementNode::Evaluate(const AnimGraphContext& ctx,
-	                                                  VansAnimGraph& graph)
+	                                                  VansAnimGraphInstance& instance) const
 	{
-		VansAnimGraphNode* input = graph.GetInputNode(m_NodeId, 0);
-		AnimGraphPose pose = input ? input->Evaluate(ctx, graph) : AnimGraphPose{};
+		AnimGraphPose pose = instance.EvaluateInput(m_NodeId, 0, ctx);
 		if (!pose.valid)
 			return pose;
-		pose.hasFootPlacement = true;
-		pose.footPlacementNodeId = m_NodeId;
-		pose.footPlacementSettings = m_Settings;
+		pose.footPlacement.valid = true;
+		pose.footPlacement.sourceNodeId = m_NodeId;
+		pose.footPlacement.settings = &m_Settings;
 		return pose;
 	}
 

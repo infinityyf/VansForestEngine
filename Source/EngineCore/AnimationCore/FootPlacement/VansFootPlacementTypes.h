@@ -55,7 +55,7 @@ namespace VansGraphics
 		std::string rightFoot = "foot_r";
 	};
 
-	// Version 3 settings. There is intentionally no foot-lock or animation-contact
+	// Current settings. There is intentionally no foot-lock or animation-contact
 	// compatibility layer: terrain placement is derived from the current pose.
 	struct FootPlacementSettings
 	{

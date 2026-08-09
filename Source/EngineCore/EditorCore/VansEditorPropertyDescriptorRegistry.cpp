@@ -1,6 +1,7 @@
 #include "VansEditorPropertyDescriptorRegistry.h"
 
 #include "../ScriptCore/VansLuaScriptInspectorService.h"
+#include "../SceneRuntime/VansRuntimeComponentTypes.h"
 
 #include <algorithm>
 #include <cctype>
@@ -127,5 +128,45 @@ EditorPropertyDescriptor VansEditorPropertyDescriptorRegistry::Resolve(
         descriptor.objectReferenceSlot = ProjectAssetReferenceSlot(rule->assetType, rule->storagePolicy);
     }
     return descriptor;
+}
+
+const std::vector<EditorAnimatablePropertyDescriptor>& VansEditorPropertyDescriptorRegistry::AllAnimatable()
+{
+	static const std::vector<EditorAnimatablePropertyDescriptor> descriptors{
+		{ "Transform.Position", "Position", VansRuntimeComponentType_Transform, VansTimelineChannelType::Vec3, "m", -100000.0, 100000.0, 0.01 },
+		{ "Transform.Rotation", "Rotation", VansRuntimeComponentType_Transform, VansTimelineChannelType::Quaternion, "", -1.0, 1.0, 0.001 },
+		{ "Transform.Scale", "Scale", VansRuntimeComponentType_Transform, VansTimelineChannelType::Vec3, "", 0.0, 1000.0, 0.01 },
+		{ "Camera.FieldOfView", "Field of View", VansRuntimeComponentType_Camera, VansTimelineChannelType::Float, "deg", 1.0, 179.0, 0.1 },
+		{ "Camera.NearClip", "Near Clip", VansRuntimeComponentType_Camera, VansTimelineChannelType::Float, "m", 0.001, 1000.0, 0.001 },
+		{ "Camera.FarClip", "Far Clip", VansRuntimeComponentType_Camera, VansTimelineChannelType::Float, "m", 0.01, 1000000.0, 0.1 },
+		{ "Audio.Volume", "Volume", VansRuntimeComponentType_Audio, VansTimelineChannelType::Float, "", 0.0, 4.0, 0.01 },
+		{ "Audio.Pitch", "Pitch", VansRuntimeComponentType_Audio, VansTimelineChannelType::Float, "", 0.01, 4.0, 0.01 },
+		{ "Audio.ReferenceDistance", "Reference Distance", VansRuntimeComponentType_Audio, VansTimelineChannelType::Float, "m", 0.0, 100000.0, 0.01 },
+		{ "Audio.MaxDistance", "Max Distance", VansRuntimeComponentType_Audio, VansTimelineChannelType::Float, "m", 0.0, 1000000.0, 0.1 },
+		{ "Audio.Rolloff", "Rolloff", VansRuntimeComponentType_Audio, VansTimelineChannelType::Float, "", 0.0, 16.0, 0.01 },
+		{ "Audio.ReverbSend", "Reverb Send", VansRuntimeComponentType_Audio, VansTimelineChannelType::Float, "", 0.0, 1.0, 0.01 },
+		{ "Audio.Loop", "Loop", VansRuntimeComponentType_Audio, VansTimelineChannelType::Bool },
+		{ "Audio.Spatial", "Spatial", VansRuntimeComponentType_Audio, VansTimelineChannelType::Bool },
+		{ "Audio.Bus", "Bus", VansRuntimeComponentType_Audio, VansTimelineChannelType::String }
+	};
+	return descriptors;
+}
+
+const EditorAnimatablePropertyDescriptor* VansEditorPropertyDescriptorRegistry::FindAnimatable(
+	const std::string& stableId)
+{
+	const auto& descriptors = AllAnimatable();
+	const auto found = std::find_if(descriptors.begin(), descriptors.end(),
+		[&](const auto& descriptor) { return descriptor.stableId == stableId; });
+	return found == descriptors.end() ? nullptr : &*found;
+}
+
+std::vector<EditorAnimatablePropertyDescriptor>
+VansEditorPropertyDescriptorRegistry::AnimatableForComponent(std::uint16_t componentTypeId)
+{
+	std::vector<EditorAnimatablePropertyDescriptor> result;
+	for (const auto& descriptor : AllAnimatable())
+		if (descriptor.componentTypeId == componentTypeId) result.push_back(descriptor);
+	return result;
 }
 }

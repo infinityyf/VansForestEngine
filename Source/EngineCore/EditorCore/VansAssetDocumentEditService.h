@@ -20,6 +20,12 @@ struct AssetDocumentEditResult
 class VansAssetDocumentEditService
 {
 public:
+	// Replaces one complete authoring document as a single undoable command.
+	// Structured editors use this after validating their typed working copy.
+	static AssetDocumentEditResult ReplaceRoot(
+		VansAssetDocument& document,
+		VansSerializedValue value);
+
     static AssetDocumentEditResult Set(
         VansAssetDocument& document,
         const DocumentPropertyPath& path,
@@ -39,6 +45,9 @@ public:
     static bool CanRedo(const VansAssetDocument& document);
     static AssetDocumentEditResult Undo(VansAssetDocument& document);
     static AssetDocumentEditResult Redo(VansAssetDocument& document);
+	// Undo all edits after the last adopted save and drop their history. This is
+	// the shared-document implementation of an explicit editor Discard action.
+	static AssetDocumentEditResult RevertToSaved(VansAssetDocument& document);
     static void ClearHistory(const VansAssetDocument& document);
     static void ClearAllHistories();
 

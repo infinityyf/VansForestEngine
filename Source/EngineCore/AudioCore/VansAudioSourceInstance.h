@@ -29,6 +29,8 @@ namespace VansEngine
         void Pause();
         void Stop();
         void Resume();
+		bool SetPlaybackOffsetSeconds(float seconds);
+		float GetPlaybackOffsetSeconds() const;
         bool IsPlaying() const;
         bool IsPaused() const;
         void SetEnabled(bool enabled);
@@ -36,6 +38,8 @@ namespace VansEngine
         void SetPosition(float x, float y, float z);
         void SetSpatial(bool enabled);
         bool GetSpatial() const { return m_Properties.m_Spatial; }
+		void SetStereoPan(float pan);
+		float GetStereoPan() const { return m_Properties.m_StereoPan; }
         void UpdateDistanceGain(float listenerX, float listenerY, float listenerZ);
 
         void SetVolume(float gain);

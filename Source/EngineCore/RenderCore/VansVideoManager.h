@@ -50,6 +50,7 @@ namespace VansGraphics
         // ── 单条查找 ──────────────────────────────────────────────────────────
         // 按名称查找视频纹理，找不到返回 nullptr。
         VansVideoTexture* Get(const std::string& name) const;
+        VansVideoTexture* GetByAssetGuid(const std::string& assetGuid) const;
 
         // ── 每帧驱动 ─────────────────────────────────────────────────────────
         // 推进所有处于播放状态的视频，挑选本帧应显示的新帧。
@@ -79,6 +80,7 @@ namespace VansGraphics
     private:
         // name → VansVideoTexture（unique_ptr 持有所有权）
         std::unordered_map<std::string, std::unique_ptr<VansVideoTexture>> m_Videos;
+        std::unordered_map<std::string, VansVideoTexture*> m_VideosByAssetGuid;
     };
 
 } // namespace VansGraphics

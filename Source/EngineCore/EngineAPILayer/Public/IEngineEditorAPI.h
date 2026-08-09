@@ -7,11 +7,6 @@
 #include <string>
 #include <vector>
 
-namespace VansGraphics
-{
-	class VansAnimationNode;
-}
-
 namespace Vans::EditorAPI
 {
 	class IEngineEditorAPI
@@ -31,6 +26,9 @@ namespace Vans::EditorAPI
 		virtual ProjectBrowserRootSnapshot GetProjectBrowserRoot() const = 0;
 		virtual AssetDragPayload CreateAssetDragPayload(const std::string& assetPath) = 0;
 		virtual AssetGuidResolution ResolveAssetGuid(const std::string& assetGuid) const = 0;
+		virtual TimelineAudioWaveformHandle RequestTimelineAudioWaveform(const std::string& assetGuid) = 0;
+		virtual TimelineVideoThumbnailHandle RequestTimelineVideoThumbnail(const std::string& assetGuid) = 0;
+		virtual ProjectAssetCreateResult CreateProjectAsset(const ProjectAssetCreateRequest& request) = 0;
 		virtual AssetRefreshResult RefreshProjectAsset(const std::string& assetPath, bool importIfMissing) = 0;
 		virtual std::vector<RecentProjectEntry> GetRecentProjects() const = 0;
 		virtual ProjectOpenResult OpenProject(const ProjectOpenRequest& request) = 0;
@@ -84,8 +82,7 @@ namespace Vans::EditorAPI
 		virtual GIProbeDebugSnapshot CaptureGIProbeDebugSnapshot(std::uint32_t stride, float exposure) = 0;
 		virtual GIProbeDebugSnapshot GetGIProbeDebugSnapshot() const = 0;
 		virtual MainCameraHiZCullDebugSnapshot GetMainCameraHiZCullDebugSnapshot() const = 0;
-		virtual RenderTexturePreview RequestGIRTPreview(
-			std::uint32_t mode,
+		virtual std::vector<RenderTexturePreview> RequestGIRTPreviews(
 			std::uint32_t zSlice,
 			std::uint32_t rayIndex,
 			float exposure,
@@ -118,9 +115,42 @@ namespace Vans::EditorAPI
 		virtual bool LoadRuntimeProjectAssetsForScene(const std::string& scenePath) = 0;
 		virtual VehicleDebugSnapshot GetVehicleDebugSnapshot() const = 0;
 		virtual bool HasAnimationDebugNodes() const = 0;
-		virtual VansGraphics::VansAnimationNode* FindRuntimeAnimationNodeByEntityGuid(const std::string& entityGuid) const = 0;
+		virtual AnimationAssetBindingSnapshot GetAnimationAssetBinding(const std::string& entityGuid) const = 0;
 		virtual MotionMatchingDebugSnapshot GetMotionMatchingDebugSnapshot() const = 0;
 		virtual SkeletonDebugSnapshot GetSkeletonDebugSnapshot(const std::string& entityGuidFilter) const = 0;
+		virtual AssetSkeletonSnapshot GetAssetSkeletonSnapshot(const std::string& assetGuid) const = 0;
+		virtual AnimatorDocumentDecodeResult DecodeAnimatorDocument(
+			const std::string& canonicalJson) const = 0;
+		virtual AnimatorDocumentEncodeResult EncodeAnimatorDocument(
+			const AnimatorDocumentDTO& document) const = 0;
+		virtual BoneMaskDocumentDecodeResult DecodeBoneMaskDocument(
+			const std::string& canonicalJson) const = 0;
+		virtual BoneMaskDocumentEncodeResult EncodeBoneMaskDocument(
+			const BoneMaskDocumentDTO& document) const = 0;
+		virtual BoneMaskCompileResult CompileBoneMaskDocument(
+			const BoneMaskDocumentDTO& document,
+			const AssetSkeletonSnapshot& skeleton) const = 0;
+		virtual AnimationPreviewCreateResult CreateAnimationPreview(
+			const AnimationPreviewCreateRequest& request) = 0;
+		virtual AnimationPreviewUpdateResult UpdateAnimationPreviewDefinition(
+			const AnimationPreviewDefinitionUpdate& update) = 0;
+		virtual bool SetAnimationPreviewPlayback(const AnimationPreviewPlaybackRequest& request) = 0;
+		virtual bool SetAnimationPreviewParameter(const AnimationPreviewParameterValue& value) = 0;
+		virtual bool TriggerAnimationPreviewSlot(const AnimationPreviewSlotRequest& request) = 0;
+		virtual bool SetAnimationPreviewViewport(const AnimationPreviewViewportRequest& request) = 0;
+		virtual void TickAnimationPreview(AnimationPreviewSessionId sessionId, float deltaTime) = 0;
+		virtual AnimationPreviewSnapshot GetAnimationPreviewSnapshot(
+			AnimationPreviewSessionId sessionId) const = 0;
+		virtual void DestroyAnimationPreview(AnimationPreviewSessionId sessionId) = 0;
+		virtual TimelinePreviewResult StartTimelinePreview(const TimelinePreviewStartRequest& request) = 0;
+		virtual TimelinePreviewResult ConfigureTimelinePreviewPlayback(
+			const TimelinePreviewPlaybackRequest& request) = 0;
+		virtual TimelinePreviewResult PlayTimelinePreview(const std::string& previewId) = 0;
+		virtual TimelinePreviewResult PauseTimelinePreview(const std::string& previewId) = 0;
+		virtual TimelinePreviewResult SeekTimelinePreview(
+			const std::string& previewId, std::int64_t tick, bool safeEdges) = 0;
+		virtual TimelinePreviewResult StopTimelinePreview(const std::string& previewId) = 0;
+		virtual TimelinePreviewResult GetTimelinePreview(const std::string& previewId) const = 0;
 		virtual void SetFootIKDebugVisualization(bool enabled) = 0;
 		virtual FootIKDebugSnapshot GetFootIKDebugSnapshot() const = 0;
 		virtual TerrainSettingsSnapshot GetTerrainSettings() const = 0;
@@ -171,7 +201,11 @@ namespace Vans::EditorAPI
 		virtual void SyncRuntimePhysicsTransforms() = 0;
 		virtual void FlushRuntimeCharacterControllerTransforms() = 0;
 		virtual void UpdateRuntimeNonCameraScripts() = 0;
+		virtual void UpdateRuntimeTimelinesPostScript(double deltaSeconds) = 0;
 		virtual void UpdateRuntimeCameraScripts() = 0;
+		virtual void UpdateRuntimeTimelinesCamera(double deltaSeconds) = 0;
+		virtual void UpdateTimelinePreviewsPostScript(double deltaSeconds) = 0;
+		virtual void UpdateTimelinePreviewsCamera(double deltaSeconds) = 0;
 		virtual void InitializeRuntimeScripts() = 0;
 		virtual void SetupRuntimeScriptProjectVenv(const std::string& projectRootPath) = 0;
 		virtual void ReloadRuntimeScripts() = 0;

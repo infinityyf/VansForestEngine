@@ -4,6 +4,8 @@
 
 namespace Vans
 {
+struct VansAssetMeta;
+
 struct VansLegacySkeletalImportFixups
 {
 	bool repairInvalidIdentityBindPose = false;
@@ -39,4 +41,9 @@ struct VansSkeletalMeshImportSettings
 	bool diagnostics = false;
 	VansLegacySkeletalImportFixups legacyFixups;
 };
+
+// Single metadata projection used by scene loading, packaging and isolated
+// editor previews. Keeping this translation in AssetCore prevents each
+// consumer from growing subtly different import behavior.
+VansSkeletalMeshImportSettings ReadSkeletalMeshImportSettings(const VansAssetMeta& meta);
 }

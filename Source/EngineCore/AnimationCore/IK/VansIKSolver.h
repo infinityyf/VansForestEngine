@@ -78,7 +78,7 @@ namespace VansGraphics
 		const glm::vec3& point,
 		IKCoordinateSpace space,
 		int referenceBoneIndex,
-		const std::string& referenceBoneName,
+		std::string_view referenceBoneName,
 		const IKSolveContext& context,
 		const std::vector<glm::mat4>& modelTransforms,
 		const Skeleton& skeleton);

@@ -6,10 +6,13 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include <../../GLM/gtx/quaternion.hpp>
 #include <string>
+#include <string_view>
+#include <string_view>
 #include <vector>
 #include <queue>
 #include <unordered_map>
-#include <functional>
+#include <variant>
+#include <cstdint>
 
 namespace VansGraphics
 {
@@ -61,11 +64,63 @@ namespace VansGraphics
 		std::vector<TransformKeyframe> keyframes;
 	};
 
+	inline std::uint64_t VansAnimationStableId(std::string_view value)
+	{
+		// 64-bit FNV-1a. IDs are deterministic across editor, cook and runtime.
+		std::uint64_t hash = 14695981039346656037ull;
+		for (const unsigned char character : value)
+		{
+			hash ^= character;
+			hash *= 1099511628211ull;
+		}
+		return hash;
+	}
+
+	struct AnimationCurveKey
+	{
+		float time = 0.0f;
+		float value = 0.0f;
+	};
+
+	struct AnimationCurveTrack
+	{
+		std::uint64_t id = 0;
+		std::string name;
+		std::vector<AnimationCurveKey> keys;
+	};
+
+	using AnimationEventValue = std::variant<std::monostate, bool, std::int64_t,
+	                                         double, std::string, glm::vec3>;
+
+	struct AnimationClipEvent
+	{
+		std::uint64_t id = 0;
+		float time = 0.0f;
+		std::string name;
+		AnimationEventValue payload;
+	};
+
+	struct AnimationSyncMarker
+	{
+		std::uint64_t id = 0;
+		float time = 0.0f;
+		std::string name;
+	};
+
+	struct AnimationRootMotionTrack
+	{
+		bool enabled = true;
+		std::string boneName;
+		bool extractTranslation = true;
+		bool extractRotation = true;
+		bool extractScale = false;
+	};
+
 	struct SampledNodeTransform
 	{
 		uint32_t    channelIndex = 0;
-		std::string nodeName;
-		std::string nodePath;
+		std::string_view nodeName;
+		std::string_view nodePath;
 		glm::mat4   modelTransform = glm::mat4(1.0f);
 	};
 
@@ -152,12 +207,18 @@ namespace VansGraphics
 
 	struct VansAnimationClip
 	{
+		std::uint64_t                            stableId       = 0;
 		std::string                                clipName;
 		float                                      duration       = 0.0f;   // seconds
 		float                                      ticksPerSecond = 60.0f;  // sample rate
 		// Per-bone keyframe channels: [boneIndex][keyframeIndex]
 		std::vector<std::vector<BoneKeyframe>>     boneKeyframes;
 		std::vector<NodeTransformChannel>          nodeTransformChannels;
+		std::vector<AnimationCurveTrack>           curves;
+		std::vector<AnimationClipEvent>            events;
+		std::vector<AnimationSyncMarker>           syncMarkers;
+		std::string                                syncGroupName;
+		AnimationRootMotionTrack                   rootMotion;
 	};
 
 	// Clip Info (lightweight, from Peek)
@@ -168,6 +229,9 @@ namespace VansGraphics
 		float       duration   = 0.0f;
 		uint32_t    boneCount  = 0;
 		uint32_t    nodeTransformChannelCount = 0;
+		uint32_t    curveCount = 0;
+		uint32_t    eventCount = 0;
+		uint32_t    syncMarkerCount = 0;
 		uint32_t    version    = 0;
 	};
 
@@ -182,15 +246,6 @@ namespace VansGraphics
 		float startTime     = 0.0f;
 		float endTime       = -1.0f;   // -1 = full clip
 		bool  pingPong      = false;
-	};
-
-	// Animation Event
-
-	struct AnimationEvent
-	{
-		float                   triggerTime;   // seconds into clip
-		std::string             eventName;
-		std::function<void()>   callback;
 	};
 
 	// Bone Matrices SSBO (uploaded to GPU)
