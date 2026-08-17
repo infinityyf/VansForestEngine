@@ -1,53 +1,54 @@
 #pragma once
 
 #include <cstdint>
-#include <string>
 
 namespace VansGraphics
 {
-	// ============================================================
-	// GPU 对齐 UBO 结构体
-	// ============================================================
+	enum class VansBloomShapeMode : int32_t
+	{
+		Standard = 0,
+		Anamorphic = 1,
+		Star = 2,
+	};
 
-	// Final Composite Fragment Shader 使用的 UBO（Set 1, Binding 3）
-	// 对应 PostProcess.frag 中读取的所有单像素操作参数。
 	struct alignas(16) VansPostProcessParamsGPU
 	{
-		// ---------- Exposure ----------
-		float  m_ExposureCompensation = 0.0f;   // EV 偏移量（手动曝光补偿）
-		float  _pad0 = 0.0f;
-		float  _pad1 = 0.0f;
-		float  _pad2 = 0.0f;
+		float   m_ExposureCompensation = 0.0f;
+		float   _pad0 = 0.0f;
+		float   _pad1 = 0.0f;
+		float   _pad2 = 0.0f;
 
-		// ---------- Bloom ----------
-		float  m_BloomIntensity = 0.12f;        // Bloom 混合强度
-		float  m_BloomScatter   = 0.7f;         // Upsample scatter 权重
-		float  _pad3 = 0.0f;
-		float  _pad4 = 0.0f;
+		float   m_BloomIntensity = 0.12f;
+		float   m_BloomScatter = 0.7f;
+		float   _pad3 = 0.0f;
+		float   _pad4 = 0.0f;
 
-		// ---------- Tone Mapping ----------
-		int32_t m_ToneMapperType  = 1;           // 0=Linear, 1=ACES, 2=Reinhard
-		float   m_WhitePoint      = 11.2f;       // 白点（Filmic/Reinhard 等）
+		int32_t m_ToneMapperType = 1;
+		float   m_WhitePoint = 11.2f;
 		float   _pad5 = 0.0f;
 		float   _pad6 = 0.0f;
 
-		// ---------- Color Grading ----------
-		int32_t m_EnableColorGrading = 1;        // 1=开启
-		float   m_Contrast    = 1.0f;
-		float   m_Saturation  = 1.0f;
-		float   m_HueShift    = 0.0f;
+		int32_t m_EnableColorGrading = 1;
+		float   m_Contrast = 1.0f;
+		float   m_Saturation = 1.0f;
+		float   m_HueShift = 0.0f;
 
-		float   m_Temperature = 0.0f;           // 色温偏移（-1.0 ~ 1.0）
-		float   m_Tint        = 0.0f;           // 色调偏移（-1.0 ~ 1.0）
+		float   m_Temperature = 0.0f;
+		float   m_Tint = 0.0f;
 		float   _pad7 = 0.0f;
 		float   m_DebugPassthrough = 0.0f;
+
 		float   m_TimelineFadeColorR = 0.0f;
 		float   m_TimelineFadeColorG = 0.0f;
 		float   m_TimelineFadeColorB = 0.0f;
 		float   m_TimelineFadeOpacity = 0.0f;
 
+		int32_t m_EnableDOF = 0;
+		int32_t m_EnableAutoExposure = 0;
+		float   _pad9 = 0.0f;
+		float   _pad10 = 0.0f;
 	};
-	static_assert(sizeof(VansPostProcessParamsGPU) == 96,
+	static_assert(sizeof(VansPostProcessParamsGPU) == 112,
 		"Post-process CPU UBO layout must match PostProcess.frag");
 
 	struct alignas(16) VansExposureAdaptParamsGPU
@@ -58,98 +59,129 @@ namespace VansGraphics
 		float   m_AdaptationSpeedDown = 1.0f;
 
 		float   m_DeltaTime = 0.016f;
-		float   _pad0 = 0.0f;
-		int32_t m_EnableAutoExposure = 1;
+		float   m_ExposureCompensation = 0.0f;
+		int32_t m_EnableAutoExposure = 0;
 		float   _pad1 = 0.0f;
 	};
 	static_assert(sizeof(VansExposureAdaptParamsGPU) == 32,
 		"Exposure adaptation CPU UBO layout must match ExposureAdapt.comp");
 
-	// Bloom（Prefilter + Upsample）共用 UBO
 	struct alignas(16) VansBloomParamsGPU
 	{
-		float   m_Threshold  = 1.0f;    // 亮度阈值（超过此值才参与 Bloom）
-		float   m_Knee       = 0.5f;    // Knee 软化范围（0=硬裁剪）
-		float   m_Intensity  = 0.12f;   // 最终 Bloom 强度（Prefilter 时用于幅度控制）
-		float   m_Scatter    = 0.7f;    // Upsample 加法权重（scatter 扩散程度）
-	};
+		float   m_Threshold = 1.0f;
+		float   m_Knee = 0.5f;
+		float   m_Scatter = 0.7f;
+		float   _pad0 = 0.0f;
 
-	// ============================================================
-	// CPU 侧后处理参数权威来源
-	// Inspector / Serialize / Deserialize 操作的唯一对象
-	// ============================================================
+		float   m_Clamp = 64.0f;
+		float   m_TintR = 1.0f;
+		float   m_TintG = 1.0f;
+		float   m_TintB = 1.0f;
+	};
+	static_assert(sizeof(VansBloomParamsGPU) == 32,
+		"Bloom CPU UBO layout must match BloomPrefilter.comp and BloomUpsample.comp");
+
+	struct alignas(16) VansBloomShapeParamsGPU
+	{
+		int32_t m_Mode = static_cast<int32_t>(VansBloomShapeMode::Standard);
+		float   m_ShapeIntensity = 0.35f;
+		float   m_ShapeBlend = 1.0f;
+		float   m_ShapeAngleRadians = 0.0f;
+
+		float   m_AnamorphicStretch = 4.0f;
+		float   m_StreakLength = 24.0f;
+		float   m_StreakAttenuation = 0.72f;
+		int32_t m_StreakCount = 4;
+	};
+	static_assert(sizeof(VansBloomShapeParamsGPU) == 32,
+		"Bloom shape CPU UBO layout must match BloomShape.comp");
+
+	struct alignas(16) VansDepthOfFieldParamsGPU
+	{
+		int32_t m_EnableDOF = 0;
+		float   m_FocusDistance = 5.0f;
+		float   m_FocalLengthMm = 50.0f;
+		float   m_FStop = 2.8f;
+
+		float   m_SensorHeightMm = 24.0f;
+		float   m_MaxCoC = 16.0f;
+		float   m_InvRenderWidth = 0.0f;
+		float   m_InvRenderHeight = 0.0f;
+	};
+	static_assert(sizeof(VansDepthOfFieldParamsGPU) == 32,
+		"Depth-of-field CPU UBO layout must match DepthOfField.comp");
+
 	class VansPostProcessProfile
 	{
 	public:
-		// 版本号，用于未来字段迁移
-		// ---------- General ----------
-		bool    m_EnablePostProcess    = true;
-		bool    m_EnableHDR            = true;
+		bool    m_EnablePostProcess = true;
+		bool    m_EnableHDR = true;
 
-		// ---------- Exposure ----------
-		bool    m_EnableAutoExposure     = true;
-		float   m_ExposureCompensation   = 0.0f;
-		float   m_MinEV100               = -6.0f;
-		float   m_MaxEV100               = 16.0f;
-		float   m_AdaptationSpeedUp      = 3.0f;
-		float   m_AdaptationSpeedDown    = 1.0f;
+		bool    m_EnableAutoExposure = false;
+		float   m_ExposureCompensation = 0.0f;
+		float   m_MinEV100 = -6.0f;
+		float   m_MaxEV100 = 16.0f;
+		float   m_AdaptationSpeedUp = 3.0f;
+		float   m_AdaptationSpeedDown = 1.0f;
 
-		// ---------- Bloom ----------
-		bool    m_EnableBloom      = true;
-		float   m_BloomThreshold   = 1.0f;
-		float   m_BloomKnee        = 0.5f;
-		float   m_BloomIntensity   = 0.12f;
-		float   m_BloomScatter     = 0.7f;
-		float   m_BloomClamp       = 64.0f;
+		bool    m_EnableBloom = true;
+		float   m_BloomThreshold = 1.0f;
+		float   m_BloomKnee = 0.5f;
+		float   m_BloomIntensity = 0.12f;
+		float   m_BloomScatter = 0.7f;
+		float   m_BloomClamp = 64.0f;
+		float   m_BloomTintR = 1.0f;
+		float   m_BloomTintG = 1.0f;
+		float   m_BloomTintB = 1.0f;
+		int32_t m_BloomShapeMode = static_cast<int32_t>(VansBloomShapeMode::Standard);
+		float   m_BloomShapeIntensity = 0.35f;
+		float   m_BloomShapeBlend = 1.0f;
+		float   m_BloomShapeAngleDeg = 0.0f;
+		float   m_BloomAnamorphicStretch = 4.0f;
+		int32_t m_BloomStreakCount = 4;
+		float   m_BloomStreakLength = 24.0f;
+		float   m_BloomStreakAttenuation = 0.72f;
 
-		// ---------- Tone Mapping ----------
-		int32_t m_ToneMapperType   = 1;      // 0=Linear, 1=ACES, 2=Reinhard
-		float   m_WhitePoint       = 11.2f;
+		int32_t m_ToneMapperType = 1;
+		float   m_WhitePoint = 11.2f;
 
-		// ---------- Color Grading ----------
 		bool    m_EnableColorGrading = true;
-		float   m_Contrast           = 1.0f;
-		float   m_Saturation         = 1.0f;
-		float   m_HueShift           = 0.0f;
-		float   m_Temperature        = 0.0f;
-		float   m_Tint               = 0.0f;
+		float   m_Contrast = 1.0f;
+		float   m_Saturation = 1.0f;
+		float   m_HueShift = 0.0f;
+		float   m_Temperature = 0.0f;
+		float   m_Tint = 0.0f;
 
-		// Runtime-only composition state. Profile serialization intentionally omits it.
-		float   m_TimelineFadeColorR   = 0.0f;
-		float   m_TimelineFadeColorG   = 0.0f;
-		float   m_TimelineFadeColorB   = 0.0f;
-		float   m_TimelineFadeOpacity  = 0.0f;
+		float   m_TimelineFadeColorR = 0.0f;
+		float   m_TimelineFadeColorG = 0.0f;
+		float   m_TimelineFadeColorB = 0.0f;
+		float   m_TimelineFadeOpacity = 0.0f;
 
-		// ---------- Depth of Field ----------
-		bool    m_EnableDOF      = false;
-		float   m_FocusDistance  = 5.0f;
-		float   m_FocusRange     = 2.0f;
-		float   m_Aperture       = 2.8f;
-		float   m_MaxCoC         = 12.0f;
+		bool    m_EnableDOF = false;
+		float   m_FocusDistance = 5.0f;
+		float   m_FocalLengthMm = 50.0f;
+		float   m_FStop = 2.8f;
+		float   m_SensorHeightMm = 24.0f;
+		float   m_MaxCoC = 16.0f;
+		bool    m_DOFBlurTransmissionBackground = true;
 
-		// ---------- Motion Blur ----------
-		bool    m_EnableMotionBlur   = false;
-		float   m_ShutterScale       = 0.5f;
-		int32_t m_MotionBlurSamples  = 12;
+		bool    m_EnableMotionBlur = false;
+		float   m_ShutterScale = 0.5f;
+		int32_t m_MotionBlurSamples = 12;
 
-		// ---------- Chromatic Aberration ----------
-		bool    m_EnableChromaticAberration    = false;
+		bool    m_EnableChromaticAberration = false;
 		float   m_ChromaticAberrationIntensity = 0.02f;
 
-		// ---------- AA / Sharpen ----------
-		bool    m_EnableSharpen       = true;
-		float   m_SharpenIntensity    = 0.15f;
+		bool    m_EnableSharpen = true;
+		float   m_SharpenIntensity = 0.15f;
 
-	public:
-		// 将当前参数打包为 GPU UBO 结构
 		VansPostProcessParamsGPU ToGPUParams() const;
 		VansExposureAdaptParamsGPU ToExposureAdaptParams(float deltaTime) const;
 		VansBloomParamsGPU ToBloomParams() const;
-
-		// 重置为出厂默认值
+		VansBloomShapeParamsGPU ToBloomShapeParams() const;
+		VansDepthOfFieldParamsGPU ToDepthOfFieldParams(uint32_t renderWidth, uint32_t renderHeight) const;
 		void ResetToDefaults();
 
-		// 覆盖标记：Inspector 修改后设置，由渲染器检测并上传 UBO
 		bool m_IsDirty = true;
 	};
 }

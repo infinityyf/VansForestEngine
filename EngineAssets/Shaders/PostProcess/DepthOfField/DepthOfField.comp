@@ -1,0 +1,114 @@
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 1, binding = 0) uniform sampler2D srcColor;
+layout(set = 1, binding = 1) uniform sampler2D gbuffer2;
+layout(set = 1, binding = 2, rgba16f) uniform image2D dstColor;
+layout(set = 1, binding = 3) uniform DepthOfFieldParams
+{
+    int   enableDOF;
+    float focusDistance;
+    float focalLengthMm;
+    float fStop;
+
+    float sensorHeightMm;
+    float maxCoC;
+    float invRenderWidth;
+    float invRenderHeight;
+} uDOF;
+
+const vec2 kSampleOffsets[16] = vec2[](
+    vec2( 1.000,  0.000),
+    vec2( 0.707,  0.707),
+    vec2( 0.000,  1.000),
+    vec2(-0.707,  0.707),
+    vec2(-1.000,  0.000),
+    vec2(-0.707, -0.707),
+    vec2( 0.000, -1.000),
+    vec2( 0.707, -0.707),
+    vec2( 0.500,  0.250),
+    vec2(-0.250,  0.500),
+    vec2(-0.500, -0.250),
+    vec2( 0.250, -0.500),
+    vec2( 0.866,  0.500),
+    vec2(-0.500,  0.866),
+    vec2(-0.866, -0.500),
+    vec2( 0.500, -0.866)
+);
+
+float ComputeCoC(float linearDepth)
+{
+    float focalLengthMm = clamp(uDOF.focalLengthMm, 8.0, 300.0);
+    float focusDistanceMm = max(uDOF.focusDistance * 1000.0, focalLengthMm + 1.0);
+    float objectDistanceMm = max(linearDepth * 1000.0, focalLengthMm + 1.0);
+    float apertureDiameterMm = focalLengthMm / max(uDOF.fStop, 0.7);
+    float focusDenominatorMm = max(abs(focusDistanceMm - focalLengthMm), 1.0);
+    float cocMm = abs(
+        apertureDiameterMm * focalLengthMm *
+        (focusDistanceMm - objectDistanceMm) /
+        (objectDistanceMm * focusDenominatorMm));
+    float viewportHeight = uDOF.invRenderHeight > 0.0 ? 1.0 / uDOF.invRenderHeight : 0.0;
+    float cocPixels = cocMm / max(uDOF.sensorHeightMm, 1.0) * viewportHeight;
+    return clamp(cocPixels, 0.0, uDOF.maxCoC);
+}
+
+void main()
+{
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 outSize = imageSize(dstColor);
+    if (coord.x >= outSize.x || coord.y >= outSize.y)
+        return;
+
+    vec2 uv = (vec2(coord) + 0.5) / vec2(outSize);
+    vec3 centerColor = texture(srcColor, uv).rgb;
+
+    if (uDOF.enableDOF == 0 || uDOF.maxCoC <= 0.001)
+    {
+        imageStore(dstColor, coord, vec4(centerColor, 1.0));
+        return;
+    }
+
+    float centerDepth = max(texture(gbuffer2, uv).w, 0.0);
+    if (centerDepth <= 0.0001)
+    {
+        imageStore(dstColor, coord, vec4(centerColor, 1.0));
+        return;
+    }
+
+    float centerCoC = ComputeCoC(centerDepth);
+    if (centerCoC <= 0.25)
+    {
+        imageStore(dstColor, coord, vec4(centerColor, 1.0));
+        return;
+    }
+
+    vec2 texel = vec2(uDOF.invRenderWidth, uDOF.invRenderHeight);
+    vec3 accum = centerColor;
+    float weightSum = 1.0;
+
+    for (int i = 0; i < 16; ++i)
+    {
+        vec2 sampleUv = uv + kSampleOffsets[i] * texel * centerCoC;
+        vec3 sampleColor = texture(srcColor, sampleUv).rgb;
+        float sampleDepth = max(texture(gbuffer2, sampleUv).w, 0.0);
+        if (sampleDepth <= 0.0001)
+            continue;
+
+        float sampleCoC = ComputeCoC(sampleDepth);
+        float sampleWeight = clamp(max(sampleCoC, centerCoC) / max(uDOF.maxCoC, 0.001), 0.0, 1.0);
+
+        float foregroundThreshold = max(centerDepth * 0.01, 0.05);
+        if (sampleDepth < centerDepth - foregroundThreshold)
+            sampleWeight *= 0.35;
+
+        accum += sampleColor * sampleWeight;
+        weightSum += sampleWeight;
+    }
+
+    vec3 result = accum / max(weightSum, 0.001);
+    if (any(isnan(result)) || any(isinf(result)))
+        result = centerColor;
+
+    imageStore(dstColor, coord, vec4(max(result, vec3(0.0)), 1.0));
+}

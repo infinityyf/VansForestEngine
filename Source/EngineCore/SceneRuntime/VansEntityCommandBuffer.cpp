@@ -338,6 +338,21 @@ void VansEntityCommandBuffer::AddTimelineComponent(
 	m_Commands.push_back(std::move(command));
 }
 
+void VansEntityCommandBuffer::AddActionHostComponent(
+	VansEntityHandle entity,
+	std::string stableGuid,
+	std::shared_ptr<VansActionHost> host,
+	bool enabled)
+{
+	VansEntityCommand command;
+	command.type = VansEntityCommandType::AddActionHostComponent;
+	command.entity = entity;
+	command.actionHostComponent.host = std::move(host);
+	command.componentStableGuid = std::move(stableGuid);
+	command.boolValue = enabled;
+	m_Commands.push_back(std::move(command));
+}
+
 void VansEntityCommandBuffer::SetEntityActive(VansEntityHandle entity, bool active)
 {
 	VansEntityCommand command;

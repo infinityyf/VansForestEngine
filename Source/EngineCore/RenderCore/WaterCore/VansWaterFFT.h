@@ -19,7 +19,8 @@ namespace VansGraphics
     public:
         static constexpr uint32_t FFT_RESOLUTION = 256;
         static constexpr uint32_t MAX_CASCADE_COUNT = VansWaterConfig::MAX_SPECTRUM_CASCADES;
-        static constexpr uint32_t FIELD_COUNT    = 3;
+        // height、horizontal X/Z，以及解析 height slope X/Z。
+        static constexpr uint32_t FIELD_COUNT    = 5;
 
         enum class OutputMode : uint32_t
         {
@@ -56,7 +57,7 @@ namespace VansGraphics
             uint32_t randomSeed = 1337;
             float capillaryCoefficient = 0.000074f; // surface tension / water density (m^3/s^2)
             std::array<float, MAX_CASCADE_COUNT> domainCoverage = { 64.0f, 256.0f, 1024.0f, 4096.0f };
-            std::array<float, MAX_CASCADE_COUNT> minWavelength = { 0.5f, 64.0f, 256.0f, 1024.0f };
+            std::array<float, MAX_CASCADE_COUNT> minWavelength = { 1.0f, 64.0f, 256.0f, 1024.0f };
             std::array<float, MAX_CASCADE_COUNT> maxWavelength = { 64.0f, 256.0f, 1024.0f, 4096.0f };
         };
 

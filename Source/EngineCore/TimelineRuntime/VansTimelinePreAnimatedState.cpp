@@ -4,61 +4,78 @@
 
 namespace Vans
 {
-VansTimelinePreAnimatedState::~VansTimelinePreAnimatedState()
+bool VansTimelinePreAnimatedState::Store(VansTimelineRestoreToken token)
 {
-	RestoreAll();
-}
-
-void VansTimelinePreAnimatedState::Capture(
-	const std::string& writerId,
-	const std::string& propertyIdentity,
-	VansTimelineRestoreCallback restore)
-{
-	if (writerId.empty() || propertyIdentity.empty() || !restore) return;
-	auto& stack = m_Stacks[propertyIdentity];
-	const auto existing = std::find_if(stack.begin(), stack.end(), [&](const Token& token)
+	if (!token.handle.IsValid() || !token.writer.IsValid() ||
+		token.applier == VansInvalidTimelineApplierSlot) return false;
+	const auto existing = std::find_if(m_Tokens.begin(), m_Tokens.end(), [&](const auto& current)
 	{
-		return token.writerId == writerId;
+		return current.token.handle == token.handle && current.token.applier == token.applier;
 	});
-	if (existing == stack.end())
-		stack.push_back({ writerId, std::move(restore), true });
+	if (existing == m_Tokens.end())
+	{
+		m_Tokens.push_back({ token });
+		if (token.resource) m_ResourceStacks[token.resource].push_back({ token.handle, token.applier });
+	}
+	return true;
 }
 
-void VansTimelinePreAnimatedState::RestoreInactiveTop(std::vector<Token>& stack)
+bool VansTimelinePreAnimatedState::ReleaseWriter(
+	VansTimelineWriterHandle writer,
+	bool restore)
 {
-	while (!stack.empty() && !stack.back().active)
+	std::vector<TokenKey> released;
+	for (const StoredToken& stored : m_Tokens)
+		if (stored.token.writer == writer) released.push_back({ stored.token.handle, stored.token.applier });
+	bool deferred = false;
+	for (TokenKey key : released)
 	{
-		VansTimelineRestoreCallback restore = std::move(stack.back().restore);
-		stack.pop_back();
-		if (restore) restore();
+		auto found = std::find_if(m_Tokens.begin(), m_Tokens.end(), [&](const auto& stored)
+		{ return stored.token.handle == key.handle && stored.token.applier == key.applier; });
+		if (found == m_Tokens.end()) continue;
+		if (!found->token.resource)
+		{
+			if (restore && m_Appliers)
+				if (IVansTimelineOutputApplier* applier = m_Appliers->At(found->token.applier)) applier->Restore(found->token);
+			if (!restore && m_Appliers)
+				if (IVansTimelineOutputApplier* applier = m_Appliers->At(found->token.applier)) applier->ReleaseWriter(found->token.writer);
+			m_Tokens.erase(found);
+			continue;
+		}
+		found->pending = true;
+		found->restore = restore;
+		if (restore && m_Appliers)
+			if (IVansTimelineOutputApplier* applier = m_Appliers->At(found->token.applier))
+				applier->DeactivateWriter(found->token.writer);
+		auto stack = m_ResourceStacks.find(found->token.resource);
+		if (stack == m_ResourceStacks.end()) continue;
+		bool suppressLowerRestores = false;
+		while (!stack->second.empty())
+		{
+			const TokenKey top = stack->second.back();
+			auto token = std::find_if(m_Tokens.begin(), m_Tokens.end(), [&](const auto& current)
+			{ return current.token.handle == top.handle && current.token.applier == top.applier; });
+			if (token == m_Tokens.end()) { stack->second.pop_back(); continue; }
+			if (!token->pending) { deferred = true; break; }
+			if (token->restore && !suppressLowerRestores && m_Appliers)
+				if (IVansTimelineOutputApplier* applier = m_Appliers->At(token->token.applier)) applier->Restore(token->token);
+			if ((!token->restore || suppressLowerRestores) && m_Appliers)
+				if (IVansTimelineOutputApplier* applier = m_Appliers->At(token->token.applier)) applier->ReleaseWriter(token->token.writer);
+			if (!token->restore) suppressLowerRestores = true;
+			m_Tokens.erase(token);
+			stack->second.pop_back();
+		}
+		if (stack->second.empty()) m_ResourceStacks.erase(stack);
 	}
-}
-
-void VansTimelinePreAnimatedState::ReleaseWriter(const std::string& writerId)
-{
-	for (auto iterator = m_Stacks.begin(); iterator != m_Stacks.end();)
-	{
-		auto& stack = iterator->second;
-		for (Token& token : stack)
-			if (token.writerId == writerId) token.active = false;
-		RestoreInactiveTop(stack);
-		if (stack.empty()) iterator = m_Stacks.erase(iterator);
-		else ++iterator;
-	}
+	return !deferred;
 }
 
 void VansTimelinePreAnimatedState::RestoreAll()
 {
-	for (auto& [identity, stack] : m_Stacks)
-	{
-		(void)identity;
-		while (!stack.empty())
-		{
-			VansTimelineRestoreCallback restore = std::move(stack.back().restore);
-			stack.pop_back();
-			if (restore) restore();
-		}
-	}
-	m_Stacks.clear();
+	if (m_Appliers)
+		for (auto iterator = m_Tokens.rbegin(); iterator != m_Tokens.rend(); ++iterator)
+			if (IVansTimelineOutputApplier* applier = m_Appliers->At(iterator->token.applier)) applier->Restore(iterator->token);
+	m_Tokens.clear();
+	m_ResourceStacks.clear();
 }
 }

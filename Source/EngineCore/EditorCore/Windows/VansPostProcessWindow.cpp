@@ -7,6 +7,7 @@
 namespace
 {
 	bool g_CommandMergeBoundaryReached = false;
+	bool g_PendingSceneCommit = false;
 
 	void TrackCommandMergeBoundary()
 	{
@@ -34,9 +35,32 @@ namespace
 		return changed;
 	}
 
+	bool DragIntTracked(
+		const char* label,
+		int* value,
+		float speed,
+		int minValue,
+		int maxValue,
+		const char* format)
+	{
+		const bool changed = ImGui::DragInt(label, value, speed, minValue, maxValue, format);
+		TrackCommandMergeBoundary();
+		return changed;
+	}
+
 	bool ComboTracked(const char* label, int* value, const char* const items[], int itemCount)
 	{
 		const bool changed = ImGui::Combo(label, value, items, itemCount);
+		TrackCommandMergeBoundary();
+		return changed;
+	}
+
+	bool ColorEdit3Tracked(const char* label, float* value)
+	{
+		const bool changed = ImGui::ColorEdit3(
+			label,
+			value,
+			ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
 		TrackCommandMergeBoundary();
 		return changed;
 	}
@@ -52,17 +76,40 @@ namespace
 		if (!enabled)
 			ImGui::EndDisabled();
 	}
+
+	void FlushPendingSceneCommit(
+		Vans::EditorAPI::IEngineEditorAPI& editorAPI,
+		bool canPersist)
+	{
+		if (!g_PendingSceneCommit)
+			return;
+
+		if (!canPersist)
+		{
+			g_PendingSceneCommit = false;
+			return;
+		}
+
+		editorAPI.CommitPostProcessSettings();
+		editorAPI.BreakCommandMergeGroup();
+		g_PendingSceneCommit = false;
+	}
 }
 
 void VansGraphics::VansPostProcessWindow::ShowWindow(
 	Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
+	const bool canPersist = editorAPI.GetPlayState() == Vans::EditorAPI::EnginePlayState::Edit;
 	if (!VansEditorWindow::m_PostProcessWindowOpen)
+	{
+		FlushPendingSceneCommit(editorAPI, canPersist);
 		return;
+	}
 
 	g_CommandMergeBoundaryReached = false;
 	if (!ImGui::Begin("Post Process", &VansEditorWindow::m_PostProcessWindowOpen))
 	{
+		FlushPendingSceneCommit(editorAPI, canPersist);
 		ImGui::End();
 		return;
 	}
@@ -70,6 +117,7 @@ void VansGraphics::VansPostProcessWindow::ShowWindow(
 	Vans::EditorAPI::PostProcessSettingsSnapshot settings = editorAPI.GetPostProcessSettings();
 	if (!settings.available)
 	{
+		FlushPendingSceneCommit(editorAPI, canPersist);
 		ImGui::TextDisabled("Post-process runtime is not available. Load a scene first.");
 		ImGui::End();
 		return;
@@ -77,7 +125,6 @@ void VansGraphics::VansPostProcessWindow::ShowWindow(
 
 	ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.45f, 1.0f), "LIVE");
 	ImGui::SameLine();
-	const bool canPersist = editorAPI.GetPlayState() == Vans::EditorAPI::EnginePlayState::Edit;
 	ImGui::TextDisabled(canPersist
 		? "Changes are applied immediately and stored in the scene document. Use Ctrl+S to save."
 		: "Play mode changes affect the active runtime only and are not saved.");
@@ -105,7 +152,47 @@ void VansGraphics::VansPostProcessWindow::ShowWindow(
 		changed |= DragFloatTracked("Soft Knee", &settings.bloomKnee, 0.01f, 0.0f, 1.0f, "%.2f");
 		changed |= DragFloatTracked("Intensity", &settings.bloomIntensity, 0.01f, 0.0f, 10.0f, "%.3f");
 		changed |= DragFloatTracked("Scatter", &settings.bloomScatter, 0.01f, 0.0f, 1.0f, "%.2f");
+		changed |= DragFloatTracked("Clamp", &settings.bloomClamp, 0.1f, 0.0f, 1024.0f, "%.1f");
+		float bloomTint[3] = { settings.bloomTintR, settings.bloomTintG, settings.bloomTintB };
+		if (ColorEdit3Tracked("Tint", bloomTint))
+		{
+			settings.bloomTintR = bloomTint[0];
+			settings.bloomTintG = bloomTint[1];
+			settings.bloomTintB = bloomTint[2];
+			changed = true;
+		}
+		const char* bloomShapeNames[] = { "Standard", "Anamorphic", "Star" };
+		changed |= ComboTracked("Shape", &settings.bloomShapeMode, bloomShapeNames, 3);
+		const bool shapeEnabled = settings.enableBloom && settings.bloomShapeMode != 0;
+		BeginOptionalSection(shapeEnabled);
+		changed |= DragFloatTracked("Shape Intensity", &settings.bloomShapeIntensity, 0.01f, 0.0f, 4.0f, "%.2f");
+		changed |= DragFloatTracked("Shape Blend", &settings.bloomShapeBlend, 0.01f, 0.0f, 1.0f, "%.2f");
+		changed |= DragFloatTracked("Shape Angle", &settings.bloomShapeAngleDeg, 0.25f, -360.0f, 360.0f, "%.1f deg");
+		changed |= DragFloatTracked("Streak Length", &settings.bloomStreakLength, 0.25f, 0.0f, 128.0f, "%.1f px");
+		changed |= DragFloatTracked("Streak Attenuation", &settings.bloomStreakAttenuation, 0.005f, 0.0f, 0.98f, "%.3f");
+		if (settings.bloomShapeMode == 1)
+		{
+			changed |= DragFloatTracked("Anamorphic Stretch", &settings.bloomAnamorphicStretch, 0.05f, 0.0f, 16.0f, "%.2f");
+		}
+		else if (settings.bloomShapeMode == 2)
+		{
+			changed |= DragIntTracked("Star Arms", &settings.bloomStreakCount, 0.05f, 2, 8, "%d");
+		}
+		EndOptionalSection(shapeEnabled);
 		EndOptionalSection(settings.enableBloom);
+	}
+
+	if (ImGui::CollapsingHeader("Depth of Field", ImGuiTreeNodeFlags_DefaultOpen))
+	{
+		changed |= CheckboxTracked("Enable DOF", &settings.enableDOF);
+		BeginOptionalSection(settings.enableDOF);
+		changed |= DragFloatTracked("Focus Distance", &settings.focusDistance, 0.05f, 0.01f, 100000.0f, "%.2f m");
+		changed |= DragFloatTracked("Focal Length", &settings.focalLengthMm, 0.25f, 8.0f, 300.0f, "%.1f mm");
+		changed |= DragFloatTracked("F-Stop", &settings.fStop, 0.05f, 0.7f, 32.0f, "f/%.1f");
+		changed |= DragFloatTracked("Sensor Height", &settings.sensorHeightMm, 0.1f, 1.0f, 80.0f, "%.1f mm");
+		changed |= DragFloatTracked("Max CoC", &settings.maxCoC, 0.25f, 0.0f, 64.0f, "%.1f px");
+		changed |= CheckboxTracked("Blur Transmission Background", &settings.dofBlurTransmissionBackground);
+		EndOptionalSection(settings.enableDOF);
 	}
 
 	if (ImGui::CollapsingHeader("Tone Mapping", ImGuiTreeNodeFlags_DefaultOpen))
@@ -129,9 +216,15 @@ void VansGraphics::VansPostProcessWindow::ShowWindow(
 	}
 
 	if (changed)
+	{
 		editorAPI.ApplyPostProcessSettings(settings);
-	if (g_CommandMergeBoundaryReached && canPersist)
-		editorAPI.CommitPostProcessSettings();
+		if (canPersist)
+			g_PendingSceneCommit = true;
+		else
+			g_PendingSceneCommit = false;
+	}
+	if (g_CommandMergeBoundaryReached || !ImGui::IsAnyItemActive())
+		FlushPendingSceneCommit(editorAPI, canPersist);
 
 	ImGui::Separator();
 	if (ImGui::Button("Reset to Defaults"))
@@ -140,6 +233,7 @@ void VansGraphics::VansPostProcessWindow::ShowWindow(
 		defaults.available = true;
 		editorAPI.BreakCommandMergeGroup();
 		editorAPI.ApplyPostProcessSettings(defaults);
+		g_PendingSceneCommit = false;
 		if (canPersist)
 			editorAPI.CommitPostProcessSettings();
 		editorAPI.BreakCommandMergeGroup();

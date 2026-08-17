@@ -80,6 +80,7 @@ namespace VansGraphics
 		void SetRootBone(const std::string& boneName);
 		glm::vec3 GetRootMotionDelta() const;
 		glm::quat GetRootRotationDelta() const;
+		bool HasRootMotionDelta() const;
 
 		// Bone overrides for IK/procedural animation.
 		void SetBoneLocalTransform(const std::string& boneName, const glm::mat4& transform);
@@ -89,6 +90,7 @@ namespace VansGraphics
 
 		// Per-frame update, called by VansScene.
 		void Update(float deltaTime);
+		void PrepareLocomotionFrame(float deltaTime, const Vans::VansCharacterTrajectory& trajectory);
 
 		// GPU resources
 		bool InitGPUResources(VkDevice device, uint32_t framesInFlight);
@@ -97,6 +99,7 @@ namespace VansGraphics
 		void UploadPerSubmeshBoneBuffers(const std::vector<std::vector<VertexBoneData>>& perSubmeshBoneData);
 
 		VansVKBuffer& GetBoneBuffer(uint32_t frameIndex) { return m_BoneBuffers[frameIndex]; }
+		VansVKBuffer& GetPreviousBoneBuffer(uint32_t frameIndex) { return m_PreviousBoneBuffers[frameIndex]; }
 		VansVKBuffer& GetBoneIDBuffer(uint32_t submeshIndex) { return m_PerSubmeshBoneIDBuffers[submeshIndex]; }
 		VansVKBuffer& GetBoneWeightBuffer(uint32_t submeshIndex) { return m_PerSubmeshBoneWeightBuffers[submeshIndex]; }
 		uint32_t GetSubmeshBufferCount() const { return static_cast<uint32_t>(m_PerSubmeshBoneIDBuffers.size()); }
@@ -136,6 +139,7 @@ namespace VansGraphics
 		// Root motion application
 		uint32_t m_TransformID           = 0;
 		bool     m_HasTransformID        = false;
+		bool     m_LocomotionFramePrepared = false;
 
 		// Bone overrides
 		std::unordered_map<std::string, glm::mat4> m_BoneOverrides;
@@ -155,6 +159,9 @@ namespace VansGraphics
 		// GPU buffers
 		VkDevice m_Device = VK_NULL_HANDLE;
 		std::vector<VansVKBuffer> m_BoneBuffers;
+		std::vector<VansVKBuffer> m_PreviousBoneBuffers;
+		BoneMatricesSSBO m_PreviousBoneMatricesSSBO{};
+		bool m_HasUploadedBoneMatrices = false;
 		uint32_t m_FramesInFlight = 0;
 		std::vector<VansVKBuffer> m_PerSubmeshBoneIDBuffers;
 		std::vector<VansVKBuffer> m_PerSubmeshBoneWeightBuffers;

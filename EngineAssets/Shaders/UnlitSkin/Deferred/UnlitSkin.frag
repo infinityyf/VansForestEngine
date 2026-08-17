@@ -3,7 +3,7 @@
 layout(early_fragment_tests) in;
 #include "../../Common/CameraData.glsl"
 #include "../../Common/Common.glsl"
-#include "../../BRDF/BRDFData.glsl"
+#include "../../BRDF/SkinData.glsl"
 
 layout( location = 0 ) in vec2 frag_uv;
 layout( location = 1 ) in vec3 normal_ws;
@@ -14,6 +14,10 @@ layout( location = 4 ) in vec3 position_world;
 // Skin-specific textures (dedicated per-node descriptor set)
 layout( set = 4, binding = 0 ) uniform sampler2D skinAlbedoTexture;
 layout( set = 4, binding = 1 ) uniform sampler2D skinNormalTexture;
+layout( set = 4, binding = 2 ) uniform sampler2D skinRoughnessTexture;
+layout( set = 4, binding = 3 ) uniform sampler2D skinCavityTexture;
+layout( set = 4, binding = 4 ) uniform sampler2D skinScatterMaskTexture;
+layout( set = 4, binding = 5 ) uniform sampler2D skinThicknessTexture;
 
 layout( push_constant ) uniform MaterialPushConsts
 {
@@ -33,23 +37,27 @@ void main()
     float roughness = 0.62;
     float normalStrength = 0.35;
     float ao = 1.0;
-    if (materialConst.materialIndex >= 0)
-    {
-        MaterialPayload skinMaterial = materialDataBuffer.materials[materialConst.materialIndex];
-        roughness = clamp(skinMaterial.roughness, 0.045, 1.0);
-        normalStrength = clamp(skinMaterial.metallic, 0.0, 2.0);
-    }
+    SkinMaterialPayload skinMaterial = GetSkinMaterialPayload(materialConst.materialIndex);
+    roughness = clamp(skinMaterial.roughnessNormalSpecular.x, 0.045, 1.0);
+    normalStrength = clamp(skinMaterial.roughnessNormalSpecular.y, 0.0, 2.0);
 
     // Sample dedicated skin textures
     vec3 albedo        = texture(skinAlbedoTexture, frag_uv).rgb;
     vec3 normal_sample = textureLod(skinNormalTexture, frag_uv, 0.0).rgb;
+    float roughnessMap = texture(skinRoughnessTexture, frag_uv, MaterialMipBias).r;
+    float cavity       = clamp(texture(skinCavityTexture, frag_uv, MaterialMipBias).r, 0.0, 1.0);
+    float textureScatterMask = clamp(texture(skinScatterMaskTexture, frag_uv, MaterialMipBias).r, 0.0, 1.0);
+    float thinnessMask = clamp(texture(skinThicknessTexture, frag_uv, MaterialMipBias).r, 0.0, 1.0);
+    float scatterMask  = textureScatterMask * thinnessMask;
+    float thinnessWeight = clamp(skinMaterial.profileLUT.y, 0.0, 1.0);
+    roughness = clamp(roughness * roughnessMap, 0.045, 1.0);
 
     normal_sample = normal_sample * 2.0 - 1.0;
     normal_sample.rg *= normalStrength;
     mat3 TBN = mat3(normalize(tangent_ws), normalize(bitangent_ws), normalize(normal_ws));
     vec3 normal = normalize(TBN * normal_sample);
 
-    // Curvature for pre-integrated subsurface scattering lookup.
+    // Curvature for pre-integrated skin diffusion lookup.
     // Blend geometric + normal-mapped normal derivatives so the result
     // varies per-pixel (texture sampling) instead of being constant per-triangle
     // (which is all dFdx of linearly interpolated varyings can give).
@@ -74,7 +82,11 @@ void main()
     // Store curvature in normal.w for the deferred skin BRDF
     outNormal = vec4(normal, curvature);
     outGBuffer0 = vec4(albedo, roughness);
-    outGBuffer1 = vec4(0.0, ao, float(MATERIAL_ID_SKIN), float(materialConst.materialIndex));
+    outGBuffer1 = vec4(
+        scatterMask,
+        cavity * ao,
+        PackSkinMaterialIDWithThinness(float(MATERIAL_ID_SKIN), thinnessMask, thinnessWeight),
+        float(materialConst.materialIndex));
 
     float linearDepth = (ViewMatrix * vec4(position_world, 1.0)).z;
     outGBuffer2 = vec4(position_world, -linearDepth);

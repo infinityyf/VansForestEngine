@@ -48,7 +48,7 @@ void VansGraphics::VansGraphicsGUIBackEnd::InitBackEnd(VansGraphicsDevice& devic
 	VkInstance imguiInstance = vkDevice->GetInstance();
 	VkPhysicalDevice imguiPhysicalDevice = vkDevice->GetPhysicalDevice();
 	VkQueue imguiGraphicsQueue = vkDevice->GetGraphicsQueue();
-	VkRenderPass imguiRenderPass = VansRenderPassManager::GetInstance()->GetVansRenderPass().GetRenderPass();
+	VkRenderPass imguiRenderPass = VansRenderPassManager::GetInstance()->GetVansUIRenderPass().GetRenderPass();
 	
 	VansGraphics::vkCreateDescriptorPool(m_Device, &pool_info, nullptr, &m_ImGUIPool);
 
@@ -74,7 +74,7 @@ void VansGraphics::VansGraphicsGUIBackEnd::InitBackEnd(VansGraphicsDevice& devic
 	init_info.ImageCount = 3;
 	init_info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
 	init_info.RenderPass = imguiRenderPass;
-	init_info.Subpass = 1;
+	init_info.Subpass = 0;
 
 	ImGui_ImplVulkan_Init(&init_info);
 

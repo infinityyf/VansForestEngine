@@ -325,6 +325,8 @@ void RegisterEngineShaders()
     reg.RegisterComputeShader("BloomPrefilter", "EngineAssets/Shaders/PostProcess/BloomPrefilter");
     reg.RegisterComputeShader("BloomDownsample", "EngineAssets/Shaders/PostProcess/BloomDownsample");
     reg.RegisterComputeShader("BloomUpsample", "EngineAssets/Shaders/PostProcess/BloomUpsample");
+    reg.RegisterComputeShader("BloomShape", "EngineAssets/Shaders/PostProcess/BloomShape");
+    reg.RegisterComputeShader("DepthOfField", "EngineAssets/Shaders/PostProcess/DepthOfField");
     reg.RegisterComputeShader("GIPointLight", "EngineAssets/Shaders/GIPointLight", sizeof(VansGraphics::RayTracingPushConstant));
     reg.RegisterComputeShader("GIVisibilityUpdate", "EngineAssets/Shaders/GIVisibilityUpdate", sizeof(VansGraphics::RayTracingPushConstant));
     reg.RegisterComputeShader("GIProbeState", "EngineAssets/Shaders/GIProbeState", sizeof(VansGraphics::RayTracingPushConstant));

@@ -302,6 +302,7 @@ namespace
 			case VansAssetType::Texture: result.requiredTextures.insert(found->first); break;
 			case VansAssetType::Material: result.requiredMaterials.insert(found->first); break;
 			case VansAssetType::Shader: result.requiredShaders.insert(found->first); break;
+			case VansAssetType::SkinProfile: result.requiredSkinProfiles.insert(found->first); break;
 			default: break;
 			}
 			return;
@@ -555,26 +556,12 @@ namespace
 	}
 
 	VansAssetType TimelineReferenceType(
-		const VansTimelineAssetReference& reference,
+		const VansTimelineDependency& dependency,
 		const std::unordered_map<std::string, VansAssetRecord>& records)
 	{
-		switch (reference.kind)
-		{
-		case VansTimelineAssetReferenceKind::Timeline: return VansAssetType::Timeline;
-		case VansTimelineAssetReferenceKind::AnimationClip: return VansAssetType::AnimationClip;
-		case VansTimelineAssetReferenceKind::BoneMask: return VansAssetType::BoneMask;
-		case VansTimelineAssetReferenceKind::Audio: return VansAssetType::Audio;
-		case VansTimelineAssetReferenceKind::Video: return VansAssetType::Video;
-		case VansTimelineAssetReferenceKind::Material: return VansAssetType::Material;
-		case VansTimelineAssetReferenceKind::PostProcessProfile: return VansAssetType::PostProcessProfile;
-		case VansTimelineAssetReferenceKind::Scene: return VansAssetType::Scene;
-		case VansTimelineAssetReferenceKind::ObjectReference:
-		{
-			const auto found = records.find(reference.assetGuid);
-			return found == records.end() ? VansAssetType::Unknown : found->second.type;
-		}
-		default: return VansAssetType::Unknown;
-		}
+		if (dependency.stableType == "Timeline") return VansAssetType::Timeline;
+		const auto found = records.find(dependency.guid);
+		return found == records.end() ? VansAssetType::Unknown : found->second.type;
 	}
 }
 
@@ -653,6 +640,7 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 	result.requiredAssets.insert(result.requiredMaterials.begin(), result.requiredMaterials.end());
 	result.requiredAssets.insert(result.requiredTextures.begin(), result.requiredTextures.end());
 	result.requiredAssets.insert(result.requiredShaders.begin(), result.requiredShaders.end());
+	result.requiredAssets.insert(result.requiredSkinProfiles.begin(), result.requiredSkinProfiles.end());
 
 	std::deque<TypedAssetDependency> pendingDependencies(
 		animationDependencies.begin(), animationDependencies.end());
@@ -705,22 +693,23 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 			VansTimelineDiagnostics diagnostics;
 			const bool closureBuilt = VansTimelineDependencyBuilder::BuildClosure(
 				timeline,
-				[&](const VansTimelineAssetReference& reference, VansTimelineAsset& nested,
+				VansTimelineTrackExtensionRegistry::BuiltIns(),
+				[&](const VansTimelineDependency& reference, VansTimelineAsset& nested,
 					std::string& identity, std::string& error)
 				{
-					if (reference.assetGuid.empty())
+					if (reference.guid.empty())
 					{
 						error = "SubTimeline requires an indexed asset GUID";
 						return false;
 					}
-					const auto child = assetRecordsByGuid.find(reference.assetGuid);
+					const auto child = assetRecordsByGuid.find(reference.guid);
 					if (child == assetRecordsByGuid.end() || child->second.type != VansAssetType::Timeline ||
 						child->second.state == VansAssetState::Missing)
 					{
 						error = "SubTimeline GUID is missing or has the wrong asset type";
 						return false;
 					}
-					identity = reference.assetGuid;
+					identity = reference.guid;
 					return VansTimelineSerialization::Load(child->second.sourcePath, nested, error);
 				}, closure, diagnostics);
 			if (!closureBuilt)
@@ -731,9 +720,13 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 							"." + diagnostic.propertyPath + ": " + diagnostic.message);
 				continue;
 			}
-			for (const VansTimelineAssetReference& reference : closure.transitive)
+			std::vector<VansTimelineDependency> timelineReferences = closure.direct;
+			timelineReferences.insert(timelineReferences.end(),
+				closure.transitive.begin(), closure.transitive.end());
+			for (const VansTimelineDependency& reference : timelineReferences)
 			{
-				if (reference.assetGuid.empty())
+				if (reference.kind != VansTimelineDependencyKind::Asset) continue;
+				if (reference.guid.empty())
 				{
 					AppendDependencyError(result, dependency.chain + " -> Timeline object '" +
 						reference.sourceObjectId + "' requires an indexed dependency GUID");
@@ -746,8 +739,8 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 						reference.sourceObjectId + "' has no executable asset type");
 					continue;
 				}
-				pendingDependencies.push_back({ reference.assetGuid, expected,
-					dependency.chain + " -> Timeline object '" + reference.sourceObjectId + "' -> " + reference.assetGuid });
+				pendingDependencies.push_back({ reference.guid, expected,
+					dependency.chain + " -> Timeline object '" + reference.sourceObjectId + "' -> " + reference.guid });
 			}
 			continue;
 		}
@@ -972,6 +965,7 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 	result.requiredAssets.insert(result.requiredMaterials.begin(), result.requiredMaterials.end());
 	result.requiredAssets.insert(result.requiredTextures.begin(), result.requiredTextures.end());
 	result.requiredAssets.insert(result.requiredShaders.begin(), result.requiredShaders.end());
+	result.requiredAssets.insert(result.requiredSkinProfiles.begin(), result.requiredSkinProfiles.end());
 	result.success = true;
 	return result;
 }

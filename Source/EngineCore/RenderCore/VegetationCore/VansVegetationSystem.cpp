@@ -112,15 +112,15 @@ void VansVegetationSystem::CreateTemplateMesh(VkDevice device)
 
 		GrassVertex left = {};
 		left.position = glm::vec3(-halfW, y, 0.0f);
-		left.normal   = glm::vec3(0.0f, 0.0f, 1.0f);
 		left.uv       = glm::vec2(0.0f, t);
+		left.normal   = glm::vec3(0.0f, 0.0f, 1.0f);
 		vertices.push_back(left);
 		rawPositions.push_back(-halfW); rawPositions.push_back(y); rawPositions.push_back(0.0f);
 
 		GrassVertex right = {};
 		right.position = glm::vec3(halfW, y, 0.0f);
-		right.normal   = glm::vec3(0.0f, 0.0f, 1.0f);
 		right.uv       = glm::vec2(1.0f, t);
+		right.normal   = glm::vec3(0.0f, 0.0f, 1.0f);
 		vertices.push_back(right);
 		rawPositions.push_back(halfW); rawPositions.push_back(y); rawPositions.push_back(0.0f);
 	}
@@ -128,8 +128,8 @@ void VansVegetationSystem::CreateTemplateMesh(VkDevice device)
 	// Tip vertex
 	GrassVertex tip = {};
 	tip.position = glm::vec3(0.0f, h, 0.0f);
-	tip.normal   = glm::vec3(0.0f, 0.0f, 1.0f);
 	tip.uv       = glm::vec2(0.5f, 1.0f);
+	tip.normal   = glm::vec3(0.0f, 0.0f, 1.0f);
 	vertices.push_back(tip);
 	rawPositions.push_back(0.0f); rawPositions.push_back(h); rawPositions.push_back(0.0f);
 
@@ -157,17 +157,17 @@ void VansVegetationSystem::CreateTemplateMesh(VkDevice device)
 
 	m_IndexCount = static_cast<uint32_t>(indices.size());
 
-	// Vertex input descriptions matching GrassVertex and Grass.vert:
-	//   loc 0: vec3 position  (offset 0)
-	//   loc 1: vec3 normal    (offset 12)
-	//   loc 2: vec2 uv        (offset 24)
+	// GrassVertex、Grass.vert 与标准导入 Mesh 使用相同的顶点语义顺序。
+	//   loc 0: vec3 position
+	//   loc 1: vec2 uv
+	//   loc 2: vec3 normal
 	std::vector<VkVertexInputBindingDescription> bindings = {
 		{ 0, static_cast<uint32_t>(sizeof(GrassVertex)), VK_VERTEX_INPUT_RATE_VERTEX }
 	};
 	std::vector<VkVertexInputAttributeDescription> attribs = {
 		{ 0, 0, VK_FORMAT_R32G32B32_SFLOAT, static_cast<uint32_t>(offsetof(GrassVertex, position)) },
-		{ 1, 0, VK_FORMAT_R32G32B32_SFLOAT, static_cast<uint32_t>(offsetof(GrassVertex, normal)) },
-		{ 2, 0, VK_FORMAT_R32G32_SFLOAT,    static_cast<uint32_t>(offsetof(GrassVertex, uv)) },
+		{ 1, 0, VK_FORMAT_R32G32_SFLOAT,    static_cast<uint32_t>(offsetof(GrassVertex, uv)) },
+		{ 2, 0, VK_FORMAT_R32G32B32_SFLOAT, static_cast<uint32_t>(offsetof(GrassVertex, normal)) },
 	};
 
 	// Build a real VansMesh from the generated data
@@ -935,10 +935,10 @@ void VansVegetationSystem::Draw(VansVKCommandBuffer& graphicsCmd, VansGraphicsSh
 		sets.push_back(cfg.drawDescSet);
 
 		// If material provides texture descriptor (Set 4), append it
-		if (cfg.material)
+		auto* grassMat = dynamic_cast<VansGrassMaterial*>(cfg.material);
+		if (grassMat)
 		{
-			auto* grassMat = dynamic_cast<VansGrassMaterial*>(cfg.material);
-			if (grassMat && grassMat->m_GrassOwnedLayout != VK_NULL_HANDLE && !grassMat->m_GrassOwnedDescSets.empty())
+			if (grassMat->m_GrassOwnedLayout != VK_NULL_HANDLE && !grassMat->m_GrassOwnedDescSets.empty())
 			{
 				layouts.push_back(grassMat->m_GrassOwnedLayout);
 				sets.push_back(grassMat->m_GrassOwnedDescSets[0]);
@@ -972,6 +972,9 @@ void VansVegetationSystem::Draw(VansVKCommandBuffer& graphicsCmd, VansGraphicsSh
 			// P1: 子叶片距 - LOD 阈 - 
 			pc.lodMidDist           = m_SubBladeLodMidDist;
 			pc.lodFarDist           = m_SubBladeLodFarDist;
+			pc.aoStrength           = grassMat ? grassMat->m_GrassParams.aoStrength : 1.0f;
+			pc.rootAOIntensity      = grassMat ? grassMat->m_GrassParams.rootAOIntensity : 0.35f;
+			pc.rootAOHeight         = grassMat ? grassMat->m_GrassParams.rootAOHeight : 0.35f;
 			graphicsCmd.UpdatePushConstants(*shader.GetGraphicsPipeline(),
 				VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 				0, shader.GetPushConstantSize(), &pc);
@@ -1603,9 +1606,24 @@ void VansVegetationSystem::BuildTreeResources(
 // ============================================================================
 void VansVegetationSystem::GenerateBoneWeights(GrassRenderConfigGPU& cfg, VansMesh* mesh)
 {
-	const auto& rawPos = mesh->GetMeshRawPositionData(); // flat float array: x,y,z,x,y,z,...
+	const auto& rawPos = mesh->GetMeshRawPositionData();
 	uint32_t vertCount = mesh->GetMeshVertexCount();
-	if (rawPos.empty() || vertCount == 0)
+
+	// 程序化草叶保存紧密排列的 xyz（步长 3）；导入 Mesh 将 position 和 normal
+	// 保存为两个对齐的 vec4（步长 8），同时兼容旧的 vec4 position 表示（步长 4）。
+	size_t positionStride = 0;
+	if (vertCount > 0)
+	{
+		const size_t vertexCount = static_cast<size_t>(vertCount);
+		if (rawPos.size() >= vertexCount * 8)
+			positionStride = 8;
+		else if (rawPos.size() >= vertexCount * 4)
+			positionStride = 4;
+		else if (rawPos.size() >= vertexCount * 3)
+			positionStride = 3;
+	}
+
+	if (positionStride == 0)
 	{
 		// Fallback: generate identity weights (root bone only)
 		std::vector<glm::vec4> weights(std::max(vertCount, 1u), glm::vec4(0.0f, 0.0f, 1.0f, 0.0f));
@@ -1619,9 +1637,9 @@ void VansVegetationSystem::GenerateBoneWeights(GrassRenderConfigGPU& cfg, VansMe
 
 	// Find Y min/max
 	float yMin = FLT_MAX, yMax = -FLT_MAX;
-	for (uint32_t i = 0; i < vertCount && (i * 3 + 1) < rawPos.size(); ++i)
+	for (uint32_t i = 0; i < vertCount; ++i)
 	{
-		float y = rawPos[i * 3 + 1];
+		float y = rawPos[static_cast<size_t>(i) * positionStride + 1];
 		yMin = std::min(yMin, y);
 		yMax = std::max(yMax, y);
 	}
@@ -1631,9 +1649,9 @@ void VansVegetationSystem::GenerateBoneWeights(GrassRenderConfigGPU& cfg, VansMe
 	uint32_t segments = m_BoneCountPerInstance - 1;
 	std::vector<glm::vec4> weights(vertCount);
 
-	for (uint32_t i = 0; i < vertCount && (i * 3 + 1) < rawPos.size(); ++i)
+	for (uint32_t i = 0; i < vertCount; ++i)
 	{
-		float y = rawPos[i * 3 + 1];
+		float y = rawPos[static_cast<size_t>(i) * positionStride + 1];
 		float t = (y - yMin) / yRange; // normalised [0,1]
 		t = glm::clamp(t, 0.0f, 1.0f);
 

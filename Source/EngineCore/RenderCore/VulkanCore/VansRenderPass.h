@@ -114,8 +114,9 @@ namespace VansGraphics
 		// m_DepthImage is preserved for compute passes (HZB / GI / SSR).
 		VansVKImage m_MotionVectorDepthImage;
 
-		//后处理之后需要一张新的图，用于给FSR处理
-		VansVKImage m_ColorAfterPostProcessImage;
+		// Display-resolution result after post-processing the HDR FSR output.
+		VansVKImage m_FinalDisplayColorImage;
+		VansVKImage* m_DisplayPostProcessInput = nullptr;
 
 		VansVKImage m_ShadowMapImage;
 
@@ -161,7 +162,8 @@ namespace VansGraphics
 
 		VansVKRenderPass m_VansGBufferPass;
 
-		VansVKRenderPass m_VansRenderPass;
+		VansVKRenderPass m_VansTransparentPass;
+		VansVKRenderPass m_VansDisplayPostProcessPass;
 
 		VansVKRenderPass m_VansShadowPass;
 
@@ -171,7 +173,7 @@ namespace VansGraphics
 
 		VansVKRenderPass m_VansUIPass;
 
-		// 场景 UI pass：Noesis 运行时 UI 合成到 FSR 输出图像上
+		// Scene UI pass composites Noesis onto FinalDisplayColor.
 		// 最终布局为 SHADER_READ_ONLY_OPTIMAL，供 ImGui 场景窗口采样
 		VansVKRenderPass m_VansSceneUIPass;
 
@@ -188,9 +190,7 @@ namespace VansGraphics
 		VansVKImage m_WaterGBufAbsorptionImage;
 		VansVKImage m_WaterGBufLinearDepthImage;
 
-		// ── Deferred + SkyBox 专用 pass（从 m_VansRenderPass 中拆出）──────
-		// m_VansRenderPass 拆分后仅保留 Transparent + PostProcess；
-		// 此 pass 执行 DeferredLighting + SkyBox
+		// Deferred + SkyBox pass, separate from the transparent-only pass.
 		VansVKRenderPass m_VansDeferredSkyboxPass;
 
 		// Screen-space raw feature pass. Currently runs SSAO at half resolution
@@ -229,10 +229,16 @@ namespace VansGraphics
 		//uipass（ImGui 编辑器面板 → swapchain）
 		void SetupVansUIRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, VansVKSurface& surface, const VkExtent2D& renderResolution);
 
-		// scene ui pass（Noesis 运行时 UI → FSR 输出图像，格式 R16G16B16A16_SFLOAT）
-		// fsrImageView：FSR 输出图像的 ImageView；displayExtent：显示分辨率
-		void SetupVansSceneUIRenderPass(VkDevice& logic_device, VkImageView fsrImageView, const VkExtent2D& displayExtent);
+		void SetupVansSceneUIRenderPass(
+			VkDevice& logicDevice,
+			VkImageView finalDisplayImageView,
+			const VkExtent2D& displayExtent);
 		void DestroySceneUIRenderPass();
+		void SetupVansDisplayPostProcessPass(
+			VkDevice& logic_device,
+			VansVKImage& hdrInput,
+			const VkExtent2D& displayExtent);
+		void DestroyDisplayPostProcessPass();
 
 		// 贴花 pass：引用现有 GBuffer 图像（Normal/GBuffer0/GBuffer1），LOAD 内容并 alpha blend 叠写
 		void SetupVansDecalRenderPass(VkDevice& logic_device, const VkExtent2D& renderResolution);
@@ -287,20 +293,14 @@ namespace VansGraphics
 		void BeginRenderPass(VansVKRenderPass& renderPass, VansVKCommandBuffer& command_buffer, GlobalStateData& global_state_data, int swap_chain_index = 0);
 		void BeginRenderPass(VansVKRenderPass& renderPass, VansVKCommandBuffer& command_buffer, GlobalStateData& global_state_data, int swap_chain_index, VkSubpassContents contents);
 
-		void NextSubPass(VansVKCommandBuffer& command_buffer, GlobalStateData& global_state_data);
-		void NextSubPass(VansVKCommandBuffer& command_buffer, GlobalStateData& global_state_data, VkSubpassContents contents);
-
 		void EndRenderPass(VansVKCommandBuffer& command_buffer, GlobalStateData& global_state_data);
-
-		void BlitToSwapChainImage(VansVKCommandBuffer& command_buffer, VansVKSurface& surface, int swapChainIndex, const VkExtent2D& renderResolution);
 
 		void DestroyRenderPass();
 
 		void RecordFrameBufferImageLayoutReset(VansVKCommandBuffer& command_buffer);
 
-		VansVKRenderPass& GetVansRenderPass() { return m_VansRenderPass; }
-
 		VansVKRenderPass& GetVansGBufferPass() { return m_VansGBufferPass; }
+		VansVKRenderPass& GetVansUIRenderPass() { return m_VansUIPass; }
 
 		VansVKImage& GetShadowMap() { return m_CascadeShadowMapImage; }
 
@@ -322,7 +322,8 @@ namespace VansGraphics
 
 		VansVKImage& GetMotionVector() { return m_MotionVectorImage; }
 
-		VansVKImage& GetColorAfterPostProcess() { return m_ColorAfterPostProcessImage; }
+		VansVKImage& GetFinalDisplayColor() { return m_FinalDisplayColorImage; }
+		VansVKImage* GetDisplayPostProcessInput() const { return m_DisplayPostProcessInput; }
 
 		VansVKImage& GetNormal() { return m_NormalImage; }
 

@@ -2,6 +2,9 @@
 
 #include "../VansAnimationTypes.h"
 #include "../VansAnimationController.h"
+#include "VansRootMotionSteering.h"
+#include "VansRootMotionReconciler.h"
+#include "../../RuntimeCore/VansCharacterMotion.h"
 
 #include <array>
 #include <cstdint>
@@ -45,10 +48,9 @@ namespace VansGraphics
 		}
 	};
 
-	// 12 trajectory channels, 16 pose channels and two continuous foot-contact
-	// channels.  Contacts are part of the searchable feature vector so a switch
-	// cannot silently exchange a planted foot for a swinging foot.
-	static constexpr int MotionFeatureDim = 30;
+	// 18 个轨迹通道（未来位置、速度、朝向）、16 个姿态通道和两个连续
+	// 足部接触通道。速度通道让制动和反向在未来位置越过角色之前就能参与搜索。
+	static constexpr int MotionFeatureDim = 36;
 	using MotionFeatureVector = std::array<float, MotionFeatureDim>;
 
 	struct MotionFeatureSchema
@@ -81,10 +83,10 @@ namespace VansGraphics
 	{
 		std::string name;
 		bool loop = false;
-		bool disableReselection = false;
 		std::string phase = "Move";
 		int sourceMoveState = 0;
 		int targetMoveState = 0;
+		int sourceDirectionBucket = -1;
 		int directionBucket = -1;
 		int turnDirectionSign = 0;
 		int turnBucketDelta = 0;
@@ -119,11 +121,9 @@ namespace VansGraphics
 	{
 		bool enabled = false;
 		bool autoBuild = true;
-		// The owner is moved by gameplay/CCT rather than by animation root motion.
-		// Such locomotion must match loop poses directly; authored transition
-		// displacement is not consumed and would otherwise create severe foot lag.
-		bool externallyDriven = false;
+		Vans::VansCharacterMotionSettings motionModel;
 		float sampleRate = 30.0f;
+		float nonLoopSamplingEndMargin = 0.30f;
 		float searchThrottle = 0.15f;
 		float minSwitchCostImprovement = 0.02f;
 		float minSwitchCostRatio = 0.10f;
@@ -142,11 +142,27 @@ namespace VansGraphics
 		float maxPlaybackRate = 1.25f;
 		float playbackRateSmoothing = 12.0f;
 		float trajectoryResponsiveness = 8.0f;
+		RootMotionSteeringSettings steering;
+		RootMotionReconciliationSettings rootMotionReconciliation;
+		float facingTurnEnterThresholdDegrees = 12.0f;
+		float facingTurnExitThresholdDegrees = 4.0f;
+		float facingTurnExitYawRateDegreesPerSecond = 8.0f;
 		float inertializationHalfLife = 0.10f;
 		float inertializationMaxDuration = 0.45f;
 		float trajectoryWeight = 1.0f;
+		float trajectoryPositionWeight = 1.0f;
+		float trajectoryVelocityWeight = 1.5f;
+		float trajectoryFacingWeight = 1.0f;
 		float poseWeight = 0.7f;
 		float contactWeight = 2.0f;
+		float pivotEnterAngleDegrees = 60.0f;
+		float pivotExitAngleDegrees = 30.0f;
+		float pivotMinSpeed = 0.5f;
+		float pivotPredictionLeadTime = 0.65f;
+		float pivotUrgentPredictionTime = 0.22f;
+		float pivotMinimumPlaybackTime = 0.18f;
+		float urgentDirectionChangeDegrees = 100.0f;
+		int directionBucketTolerance = 1;
 		// Contact phase is authored automatically per clip from normalized foot
 		// height.  Velocity remains a confidence term instead of deciding contact
 		// on its own, because a root-moving clip can have large model-space ankle
@@ -194,10 +210,53 @@ namespace VansGraphics
 		float biasCost = 0.0f;
 		float querySpeed = 0.0f;
 		float queryDirection = 0.0f;
+		float queryFacingDeltaDegrees = 0.0f;
+		glm::vec3 trajectoryOriginWorld{ 0.0f };
+		glm::vec3 actualVelocityWorld{ 0.0f };
+		glm::vec3 plannedVelocityWorld{ 0.0f };
+		glm::vec3 desiredVelocityWorld{ 0.0f };
+		glm::vec3 activeClipVelocityWorld{ 0.0f };
+		glm::vec3 selectedCandidateVelocityWorld{ 0.0f };
+		glm::vec3 appliedRootMotionVelocityWorld{ 0.0f };
+		glm::vec2 moveInputLocal{ 0.0f };
+		float movementReferenceYaw = 0.0f;
+		float movementReferenceYawRate = 0.0f;
+		float plannedFacingYaw = 0.0f;
+		float steeringTargetFacingDeltaDegrees = 0.0f;
+		float steeringAuthoredFacingDeltaDegrees = 0.0f;
+		float steeringRequestedCorrectionDegrees = 0.0f;
+		float steeringAppliedCorrectionDegrees = 0.0f;
+		float steeringAppliedYawRateDegreesPerSecond = 0.0f;
+		bool steeringActive = false;
+		bool steeringLimited = false;
+		bool rootMotionReconciliationActive = false;
+		glm::vec3 rootMotionTargetVelocityWorld{ 0.0f };
+		glm::vec3 rootMotionReconciledVelocityWorld{ 0.0f };
+		float rootMotionTargetYawRateDegreesPerSecond = 0.0f;
+		float rootMotionReconciledYawRateDegreesPerSecond = 0.0f;
+		std::array<Vans::VansCharacterTrajectorySample, 2> trajectoryHistory{};
+		std::array<Vans::VansCharacterTrajectorySample, 3> trajectoryFuture{};
+		float directionChangeDegrees = 0.0f;
+		float inputDirectionChangeDegrees = 0.0f;
+		glm::vec3 predictedPivotPositionWorld{ 0.0f };
+		float predictedPivotTime = 0.0f;
+		float motionConsumptionRatio = 1.0f;
+		bool movementBlocked = false;
+		bool hasPredictedPivot = false;
+		bool pivotRequested = false;
+		bool pivotDatabaseAvailable = false;
+		bool urgentDirectionChange = false;
+		int requestedMoveState = 0;
+		int effectiveMoveState = 0;
+		bool directionalStateFallback = false;
+		bool facingTurnRequested = false;
+		int facingTurnDirectionSign = 0;
+		int facingTurnBucketDelta = 0;
 		float playbackRate = 1.0f;
 		int sampleCount = 0;
 		int clipCount = 0;
 		int switches = 0;
+		std::vector<std::string> activeDatabases;
 		std::vector<MotionMatchingCandidateDebug> topCandidates;
 	};
 
@@ -216,22 +275,27 @@ namespace VansGraphics
 		            const Skeleton& skeleton,
 		            const std::unordered_map<std::string, VansAnimationClip>& clips,
 		            const std::unordered_map<std::string, AnimatorParameter>& parameters,
-		            const glm::mat4& ownerWorldTransform,
-		            std::vector<glm::mat4>& outLocalTransforms);
+		            const Vans::VansCharacterTrajectory* trajectory,
+		            VansPosePayload& outPayload);
 
 		const MotionMatchingDebugData& GetDebugData() const { return m_DebugData; }
 		bool WasUsedThisFrame() const { return m_DebugData.usedThisFrame; }
 		bool IsTransitioning() const { return m_Blending; }
 		float GetLeftFootPlantWeight() const { return m_LeftFootPlantWeight; }
 		float GetRightFootPlantWeight() const { return m_RightFootPlantWeight; }
+		bool PrefersRootMotionThisFrame() const { return m_PrefersRootMotionThisFrame; }
 
 	private:
 		static constexpr int FeatureDim = MotionFeatureDim;
 		static constexpr int kTrajectoryBegin = 0;
-		static constexpr int kTrajectoryEnd = 12;
-		static constexpr int kPoseBegin = 12;
-		static constexpr int kPoseEnd = 28;
-		static constexpr int kContactBegin = 28;
+		static constexpr int kTrajectoryPositionEnd = 6;
+		static constexpr int kTrajectoryVelocityBegin = kTrajectoryPositionEnd;
+		static constexpr int kTrajectoryVelocityEnd = 12;
+		static constexpr int kTrajectoryFacingBegin = kTrajectoryVelocityEnd;
+		static constexpr int kTrajectoryEnd = 18;
+		static constexpr int kPoseBegin = 18;
+		static constexpr int kPoseEnd = 34;
+		static constexpr int kContactBegin = 34;
 		static constexpr int kContactEnd = FeatureDim;
 		using FeatureVector = MotionFeatureVector;
 
@@ -246,16 +310,17 @@ namespace VansGraphics
 			bool transitionLike = false;
 			bool startLike = false;
 			bool stopLike = false;
+			bool pivotLike = false;
 			bool turnLike = false;
 			bool paceTransitionLike = false;
 			int sourceMoveState = -1;
 			int targetMoveState = 0;
+			int sourceDirectionBucket = -1;
 			int directionBucketFromName = -1;
 			int turnDirectionSign = 0;
 			int turnBucketDelta = 0;
 			float trajectorySpeed = 0.0f;
 			int databaseIndex = -1;
-			bool disableReselection = false;
 		};
 
 		struct MatchResult
@@ -270,6 +335,8 @@ namespace VansGraphics
 
 		MotionMatchingSettings m_Settings;
 		MotionMatchingDebugData m_DebugData;
+		VansRootMotionSteering m_RootMotionSteering;
+		VansRootMotionReconciler m_RootMotionReconciler;
 		std::vector<Sample> m_Samples;
 		std::unordered_map<std::string, std::vector<int>> m_ClipSampleIndices;
 		FeatureVector m_Mean{};
@@ -287,11 +354,13 @@ namespace VansGraphics
 		bool m_HasLastSearchContext = false;
 		int m_LastMoveState = -1;
 		int m_LastDirectionBucket = -1;
-		int m_SourceDirectionBucketForSearch = -1;
-		bool m_DirectionChangedForSearch = false;
 		bool m_LastCrouching = false;
 		bool m_LastAirborne = false;
 		bool m_LastMoving = false;
+		bool m_LastPivotRequested = false;
+		bool m_LastFacingTurnRequested = false;
+		int m_LastFacingTurnDirectionSign = 0;
+		int m_LastFacingTurnBucketDelta = 0;
 		std::vector<int> m_ActiveDatabaseIndices;
 
 		bool m_Blending = false;
@@ -313,28 +382,44 @@ namespace VansGraphics
 		bool m_HasQueryVelocity = false;
 		float m_CurrentPlaybackRate = 1.0f;
 		glm::vec3 m_CurrentTrajectoryVelocityRoot = glm::vec3(0.0f);
+		bool m_PrefersRootMotionThisFrame = false;
+		float m_QueryIntentSpeed01 = 0.0f;
+		float m_QueryIntentDirection = 0.0f;
+		glm::vec3 m_QueryDesiredVelocityRoot = glm::vec3(0.0f);
+		float m_QueryFacingDeltaDegrees = 0.0f;
+		bool m_PivotRequested = false;
+		bool m_PivotDatabaseAvailable = false;
+		bool m_UrgentDirectionChange = false;
+		int m_RequestedMoveState = 0;
+		int m_EffectiveMoveState = 0;
+		bool m_DirectionalStateFallback = false;
+		bool m_FacingTurnRequested = false;
+		int m_FacingTurnDirectionSign = 0;
+		int m_FacingTurnBucketDelta = 0;
 		float m_LeftFootPlantWeight = 0.0f;
 		float m_RightFootPlantWeight = 0.0f;
 		float m_LeftContactOffset = 0.0f;
 		float m_RightContactOffset = 0.0f;
 		bool m_ContactTransitionActive = false;
-		bool m_OwnerTransformInitialized = false;
-		glm::vec3 m_PreviousOwnerWorldPosition = glm::vec3(0.0f);
-		glm::vec3 m_ActualOwnerVelocityRoot = glm::vec3(0.0f);
-		bool m_HasActualOwnerVelocity = false;
 
 		void BuildFootContactPhases(const std::vector<int>& clipSampleIndices);
-		void ResolveActiveDatabases(const std::unordered_map<std::string, AnimatorParameter>& parameters);
+		void ResolveActiveDatabases(
+			const std::unordered_map<std::string, AnimatorParameter>& parameters,
+			bool forceFinishedTransitionExit);
 		float ReadSpeedParam(const std::unordered_map<std::string, AnimatorParameter>& parameters) const;
 		float ReadDirectionParam(const std::unordered_map<std::string, AnimatorParameter>& parameters) const;
 		bool ReadCrouchingParam(const std::unordered_map<std::string, AnimatorParameter>& parameters) const;
 		bool ReadAirborneParam(const std::unordered_map<std::string, AnimatorParameter>& parameters) const;
 		int ReadMoveStateParam(const std::unordered_map<std::string, AnimatorParameter>& parameters) const;
 		int ResolveDesiredMoveState(const std::unordered_map<std::string, AnimatorParameter>& parameters) const;
+		int ResolveDirectionalFallbackMoveState(int requestedMoveState) const;
 		bool IsMovingState(int state) const;
 		bool IsMovingPlaybackSample(const Sample& sample) const;
 		bool IsPaceTransitionState(int state) const;
 		bool IsStanceState(int state) const;
+		int ResolveFacingTurnBucket(int moveState, int directionSign,
+		                            float absoluteAngleDegrees) const;
+		bool HasPivotDatabaseForState(int moveState) const;
 		int ResolveBoneIndex(const Skeleton& skeleton, const std::string& name) const;
 		MotionMatchingResolvedRig ResolveRig(const Skeleton& skeleton);
 		bool ValidateRig(const MotionMatchingResolvedRig& rig, std::string& outReason) const;
@@ -346,7 +431,8 @@ namespace VansGraphics
 		FeatureVector BuildQueryFeature(const std::unordered_map<std::string, AnimatorParameter>& parameters,
 		                                const std::vector<glm::mat4>& currentLocalPose,
 		                                const Skeleton& skeleton,
-		                                const MotionMatchingResolvedRig& rig) const;
+		                                const MotionMatchingResolvedRig& rig,
+		                                const Vans::VansCharacterTrajectory* trajectory) const;
 		void NormalizeFeature(FeatureVector& feature) const;
 		float ComputeCost(const FeatureVector& query,
 		                  const FeatureVector& candidate,
@@ -354,9 +440,11 @@ namespace VansGraphics
 		                  float& outPose,
 		                  float& outContact) const;
 		MatchResult FindBestMatch(const FeatureVector& query,
-		                          const std::unordered_map<std::string, AnimatorParameter>& parameters);
+		                          const std::unordered_map<std::string, AnimatorParameter>& parameters,
+		                          bool forceFinishedTransitionExit);
 		bool ShouldConsiderSampleForParameters(const Sample& sample,
-		                                       const std::unordered_map<std::string, AnimatorParameter>& parameters) const;
+		                                       const std::unordered_map<std::string, AnimatorParameter>& parameters,
+		                                       bool forceFinishedTransitionExit) const;
 		void SamplePose(const VansAnimationClip& clip,
 		                float time,
 		                const Skeleton& skeleton,
@@ -367,6 +455,7 @@ namespace VansGraphics
 		glm::vec3 TransformPointToRootSpace(const glm::mat4& rootModel, const glm::vec3& point) const;
 		glm::vec3 TransformVectorToRootSpace(const glm::mat4& rootModel, const glm::vec3& vector) const;
 		glm::vec3 ExtractRootForward(const glm::mat4& rootModel, const MotionMatchingResolvedRig& rig) const;
+		glm::vec3 BuildIntentDirectionRoot(const MotionMatchingResolvedRig& rig) const;
 		glm::vec3 BuildDesiredVelocityRoot(const std::unordered_map<std::string, AnimatorParameter>& parameters,
 		                                   const MotionMatchingResolvedRig& rig) const;
 		float WrapClipTime(const VansAnimationClip& clip, float time) const;
@@ -375,7 +464,6 @@ namespace VansGraphics
 		bool SampleContactWeights(int sampleIndex, float time, float& outLeft, float& outRight) const;
 		void AdvanceContactWeights(float deltaTime, float targetLeft, float targetRight);
 		void BeginContactTransition(float sourceLeft, float sourceRight, float targetLeft, float targetRight);
-		void UpdateActualOwnerVelocity(float deltaTime, const glm::mat4& ownerWorldTransform);
 		void BeginInertialTransition(const std::vector<glm::mat4>& target,
 		                             const std::vector<glm::mat4>& targetFuture,
 		                             float velocityDeltaTime);

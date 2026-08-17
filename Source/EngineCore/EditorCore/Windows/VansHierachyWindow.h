@@ -7,10 +7,6 @@ namespace VansGraphics
 class VansHierachuWindow final : public VansBaseWindowComponent
 {
 public:
-    // Consumed by the optional Scene view motion-matching overlay.
-    inline static bool m_ShowMMViz = false;
-
-private:
     void ShowWindow(Vans::EditorAPI::IEngineEditorAPI&) override;
 };
 }

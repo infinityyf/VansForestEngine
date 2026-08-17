@@ -103,10 +103,13 @@ void main()
         screenUV, refractionData.xy, p.refractionParams.z);
     vec3 volumeDiffuse = textureLod(waterVolumeColor, screenUV, 0.0).rgb;
     vec3 volumeT = textureLod(waterVolumeTransmittance, screenUV, 0.0).rgb;
-    vec3 caustics = p.effectFlags.z != 0 ? texelFetch(waterCaustics, pixel, 0).rgb : vec3(0.0);
+    vec3 causticRadiance = p.effectFlags.z != 0
+        ? texelFetch(waterCaustics, pixel, 0).rgb : vec3(0.0);
 
     vec3 atmosphere = max(p.mainLightColor.rgb, vec3(0.0)) * 0.015;
-    vec3 transmitted = refractedScene * volumeT * (vec3(1.0) + caustics);
+    // The caustics pass outputs receiver-reflected radiance. Apply the return
+    // water path once; do not multiply already-lit scene radiance by a gain.
+    vec3 transmitted = (refractedScene + causticRadiance) * volumeT;
     vec3 color = volumeDiffuse * transmissionWeight
         + reflected
         + directSpec

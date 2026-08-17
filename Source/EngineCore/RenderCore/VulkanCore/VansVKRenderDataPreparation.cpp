@@ -31,8 +31,10 @@ namespace VansGraphics
 			VansTexture* texture = nullptr;
 		};
 		std::vector<PendingCustomTexture> pendingCustomTextures;
+		std::vector<std::pair<int, VansSkinMaterial*>> skinMaterialPayloads;
 		const VansClothGPUParam defaultClothPayload{};
 		const VansTreeLeafParamsGPU defaultTreeLeafPayload{};
+		const VansSkinGPUParam defaultSkinPayload{};
 		std::unordered_set<VansTexture*> sceneTextures;
 		sceneTextures.reserve(m_Scene->GetTextureAssets().size());
 		for (auto* textureAsset : m_Scene->GetTextureAssets())
@@ -123,6 +125,7 @@ namespace VansGraphics
 				materialManager->m_GlobalPBRParamData.push_back(pbr->m_BasePBRParam);
 				materialManager->m_GlobalClothParamData.push_back(defaultClothPayload);
 				materialManager->m_GlobalTreeLeafParamData.push_back(pbr->m_TreeLeafParams);
+				materialManager->m_GlobalSkinParamData.push_back(defaultSkinPayload);
 				appendTextureSlot(material, "baseColor", pbr->m_BaseColorTexture, "defaultAlbedo");
 				appendTextureSlot(material, "normal", pbr->m_NormalTexture, "defaultNormal");
 				appendTextureSlot(material, "metal", pbr->m_MetalTexture, "defaultMetal");
@@ -136,6 +139,7 @@ namespace VansGraphics
 				materialManager->m_GlobalPBRParamData.push_back(emissive->m_BasePBRParam);
 				materialManager->m_GlobalClothParamData.push_back(defaultClothPayload);
 				materialManager->m_GlobalTreeLeafParamData.push_back(defaultTreeLeafPayload);
+				materialManager->m_GlobalSkinParamData.push_back(defaultSkinPayload);
 
 				// Slots 1-4: not used by Emissive.frag but must be present to keep the 5-slot stride intact
 				appendTextureSlot(material, "emissive", emissive->m_EmissiveTexture, "defaultAlbedo");
@@ -151,6 +155,7 @@ namespace VansGraphics
 				materialManager->m_GlobalPBRParamData.push_back(emissive->m_BasePBRParam);
 				materialManager->m_GlobalClothParamData.push_back(defaultClothPayload);
 				materialManager->m_GlobalTreeLeafParamData.push_back(defaultTreeLeafPayload);
+				materialManager->m_GlobalSkinParamData.push_back(defaultSkinPayload);
 				appendTextureSlot(material, "baseColor", emissive->m_BaseColorTexture, "defaultAlbedo");
 				appendTextureSlot(material, "normal", emissive->m_NormalTexture, "defaultNormal");
 				appendTextureSlot(material, "metal", emissive->m_MetalTexture, "defaultMetal");
@@ -164,6 +169,7 @@ namespace VansGraphics
 				materialManager->m_GlobalPBRParamData.push_back(decal->m_BasePBRParam);
 				materialManager->m_GlobalClothParamData.push_back(defaultClothPayload);
 				materialManager->m_GlobalTreeLeafParamData.push_back(defaultTreeLeafPayload);
+				materialManager->m_GlobalSkinParamData.push_back(defaultSkinPayload);
 				appendTextureSlot(material, "baseColor", decal->m_BaseColorTexture, "defaultAlbedo");
 				appendTextureSlot(material, "normal", decal->m_NormalTexture, "defaultNormal");
 				appendTextureSlot(material, "metal", decal->m_MetalTexture, "defaultMetal");
@@ -183,6 +189,7 @@ namespace VansGraphics
 				materialManager->m_GlobalPBRParamData.push_back(sss->m_BasePBRParam);
 				materialManager->m_GlobalClothParamData.push_back(defaultClothPayload);
 				materialManager->m_GlobalTreeLeafParamData.push_back(defaultTreeLeafPayload);
+				materialManager->m_GlobalSkinParamData.push_back(defaultSkinPayload);
 				appendTextureSlot(material, "baseColor", sss->m_BaseColorTexture, "defaultAlbedo");
 				appendTextureSlot(material, "normal", sss->m_NormalTexture, "defaultNormal");
 				appendTextureSlot(material, "thickness", sss->m_ThicknessTexture, "defaultAo");
@@ -196,6 +203,7 @@ namespace VansGraphics
 				materialManager->m_GlobalPBRParamData.push_back(cloth->m_BasePBRParam);
 				materialManager->m_GlobalClothParamData.push_back(cloth->BuildGPUParam());
 				materialManager->m_GlobalTreeLeafParamData.push_back(defaultTreeLeafPayload);
+				materialManager->m_GlobalSkinParamData.push_back(defaultSkinPayload);
 				appendTextureSlot(material, "baseColor", cloth->m_BaseColorTexture, "defaultAlbedo");
 				appendTextureSlot(material, "normal", cloth->m_NormalTexture, "defaultNormal");
 				appendTextureSlot(material, "baseColor", cloth->m_BaseColorTexture, "defaultAlbedo");
@@ -209,14 +217,16 @@ namespace VansGraphics
 				materialManager->m_GlobalPBRParamData.push_back(skin->m_BasePBRParam);
 				materialManager->m_GlobalClothParamData.push_back(defaultClothPayload);
 				materialManager->m_GlobalTreeLeafParamData.push_back(defaultTreeLeafPayload);
+				materialManager->m_GlobalSkinParamData.push_back(skin->BuildGPUParam());
+				skinMaterialPayloads.push_back({ skin->m_MaterialIndex, skin });
 
 				// Skin samples its dedicated Set 4 textures, but still reserves the
 				// standard 5 bindless slots so later materialIndex * 5 lookups stay aligned.
 				appendTextureSlot(material, "baseColor", skin->m_BaseColorTexture, "defaultAlbedo");
 				appendTextureSlot(material, "normal", skin->m_NormalTexture, "defaultNormal");
-				appendTextureSlot(material, "baseColor", skin->m_BaseColorTexture, "defaultAlbedo");
-				appendTextureSlot(material, "baseColor", skin->m_BaseColorTexture, "defaultAlbedo");
-				appendTextureSlot(material, "baseColor", skin->m_BaseColorTexture, "defaultAlbedo");
+				appendTextureSlot(material, "cavity", skin->m_CavityTexture, "defaultAo");
+				appendTextureSlot(material, "roughness", skin->m_RoughnessTexture, "defaultRoughness");
+				appendTextureSlot(material, "scatterMask", skin->m_ScatterMaskTexture, "defaultAo");
 			}
 			else if (material->m_MaterialType == VansMaterialType::VAN_CUSTOM_SHADER)
 			{
@@ -273,6 +283,28 @@ namespace VansGraphics
 				<< materialManager->m_GlobalTreeLeafParamData.size() << ", pbrPayloads="
 				<< materialManager->m_GlobalPBRParamData.size());
 		}
+		if (materialManager->m_GlobalSkinParamData.size() != materialManager->m_GlobalPBRParamData.size())
+		{
+			VANS_LOG_ERROR("[PreparePBRMaterialData] GlobalSkinData index alignment is broken: skinPayloads="
+				<< materialManager->m_GlobalSkinParamData.size() << ", pbrPayloads="
+				<< materialManager->m_GlobalPBRParamData.size());
+		}
+		materialManager->ResetSkinProfileLUTCache();
+		if (materialManager->m_SkinProfileLUTArray)
+		{
+			for (const auto& [payloadIndex, skin] : skinMaterialPayloads)
+			{
+				if (payloadIndex < 0 ||
+					payloadIndex >= static_cast<int>(materialManager->m_GlobalSkinParamData.size()) ||
+					skin == nullptr)
+				{
+					continue;
+				}
+
+				VansSkinGPUParam& payload = materialManager->m_GlobalSkinParamData[payloadIndex];
+				materialManager->ResolveSkinProfileLUTForMaterial(*skin, payload, &m_VansVKCommandBuffer);
+			}
+		}
 		if (pbrMaterialIndex > 2048)
 		{
 			VANS_LOG_ERROR("[PreparePBRMaterialData] " << pbrMaterialIndex
@@ -280,6 +312,7 @@ namespace VansGraphics
 		}
 		VANS_LOG("[PreparePBRMaterialData] assets=" << materialCount
 			<< ", pbrPayloads=" << materialManager->m_GlobalPBRParamData.size()
+			<< ", skinPayloads=" << materialManager->m_GlobalSkinParamData.size()
 			<< ", bindlessTextures=" << materialManager->m_GlobalPBRTextures.size()
 			<< ", customPayloads=" << materialManager->m_GlobalCustomMaterialParamData.size());
 
@@ -288,6 +321,8 @@ namespace VansGraphics
 			sizeof(VansClothGPUParam) * materialManager->m_GlobalClothParamData.size();
 		const VkDeviceSize treeLeafMaterialDataSize =
 			sizeof(VansTreeLeafParamsGPU) * materialManager->m_GlobalTreeLeafParamData.size();
+		const VkDeviceSize skinMaterialDataSize =
+			sizeof(VansSkinGPUParam) * materialManager->m_GlobalSkinParamData.size();
 		const VkDeviceSize customMaterialDataSize =
 			sizeof(VansCustomMaterialPayload) * materialManager->m_GlobalCustomMaterialParamData.size();
 		materialManager->m_GlobalPBRDataBuffer.CreatVulkanBuffer(
@@ -305,6 +340,12 @@ namespace VansGraphics
 		materialManager->m_GlobalTreeLeafDataBuffer.CreatVulkanBuffer(
 			m_VansVKLogicDevice,
 			std::max<VkDeviceSize>(treeLeafMaterialDataSize, sizeof(VansTreeLeafParamsGPU)),
+			VK_FORMAT_R32_SFLOAT,
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+		materialManager->m_GlobalSkinDataBuffer.CreatVulkanBuffer(
+			m_VansVKLogicDevice,
+			std::max<VkDeviceSize>(skinMaterialDataSize, sizeof(VansSkinGPUParam)),
 			VK_FORMAT_R32_SFLOAT,
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
@@ -330,6 +371,11 @@ namespace VansGraphics
 			materialManager->m_GlobalTreeLeafDataBuffer.SetBufferData(
 				materialManager->m_GlobalTreeLeafParamData.data(), 0, static_cast<int>(treeLeafMaterialDataSize));
 		}
+		if (skinMaterialDataSize > 0)
+		{
+			materialManager->m_GlobalSkinDataBuffer.SetBufferData(
+				materialManager->m_GlobalSkinParamData.data(), 0, static_cast<int>(skinMaterialDataSize));
+		}
 		if (customMaterialDataSize > 0)
 		{
 			materialManager->m_GlobalCustomMaterialDataBuffer.SetBufferData(
@@ -340,6 +386,7 @@ namespace VansGraphics
 		materialManager->m_GlobalPBRDataBuffer.PersistentMap();
 		materialManager->m_GlobalClothDataBuffer.PersistentMap();
 		materialManager->m_GlobalTreeLeafDataBuffer.PersistentMap();
+		materialManager->m_GlobalSkinDataBuffer.PersistentMap();
 		materialManager->m_GlobalCustomMaterialDataBuffer.PersistentMap();
 
 		VkDescriptorSetLayoutBinding globalPBRMaterialBufferBinding =
@@ -496,8 +543,45 @@ namespace VansGraphics
 		manager->m_BRDFIntegralLUT = new VansTexture();
 		loadEngineTexture(manager->m_BRDFIntegralLUT, projectRoot + "EngineAssets/Textures/BRDFIntegralLUT.png", false, false, false);
 
+		const std::string skinLutPath = projectRoot + "EngineAssets/Textures/SkinBSDFLUT.png";
 		manager->m_SkinBSDFLUT = new VansTexture();
-		loadEngineTexture(manager->m_SkinBSDFLUT, projectRoot + "EngineAssets/Textures/SkinBSDFLUT.png", false, false, false, LOW_PRES_8, 4, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+		loadEngineTexture(manager->m_SkinBSDFLUT, skinLutPath, false, false, false, LOW_PRES_8, 4, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+
+		manager->m_SkinProfileLUTArray = new VansTexture();
+		manager->m_SkinProfileLUTArray->InitTextureArray(
+			m_VansVKCommandBuffer,
+			VANS_SKIN_PROFILE_LUT_SIZE,
+			VANS_SKIN_PROFILE_LUT_SIZE,
+			VANS_SKIN_PROFILE_LUT_LAYER_COUNT,
+			4,
+			false,
+			LOW_PRES_8,
+			VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+		std::vector<uint8_t> generatedSkinProfileLUT;
+		for (int layer = 0; layer < VANS_SKIN_PROFILE_LUT_LAYER_COUNT; ++layer)
+		{
+			const bool generated = GenerateBuiltInSkinProfileLUTLayer(
+				layer,
+				VANS_SKIN_PROFILE_LUT_SIZE,
+				VANS_SKIN_PROFILE_LUT_SIZE,
+				generatedSkinProfileLUT);
+			const bool uploaded = generated && manager->m_SkinProfileLUTArray->UpdateArrayLayerFromPixels(
+				m_VansVKCommandBuffer,
+				generatedSkinProfileLUT.data(),
+				VANS_SKIN_PROFILE_LUT_SIZE,
+				VANS_SKIN_PROFILE_LUT_SIZE,
+				layer);
+			if (!uploaded && !manager->m_SkinProfileLUTArray->LoadTextureLayer(
+				m_VansVKCommandBuffer,
+				skinLutPath,
+				layer,
+				false,
+				VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE))
+			{
+				VANS_LOG_WARN("[PreparePBRMaterialData] Skin profile LUT layer upload failed: layer="
+					<< layer << " path=" << skinLutPath);
+			}
+		}
 
 		manager->m_ClothBRDFLUT = new VansTexture();
 		loadEngineTexture(manager->m_ClothBRDFLUT, projectRoot + "EngineAssets/Textures/ClothBRDFLUT.png", false, false, false, LOW_PRES_8, 4, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
@@ -1348,11 +1432,21 @@ namespace VansGraphics
 			VK_FORMAT_R16_SFLOAT, false, false, true,
 			VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_EXPOSURE_CURRENT, exposureCurrent);
+		VansTexture* fsrExposure = new VansTexture();
+		fsrExposure->InitTextureWithoutData(
+			m_VansVKCommandBuffer, 1, 1, 1,
+			VK_FORMAT_R32_SFLOAT, false, false, true,
+			VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_FSR_EXPOSURE, fsrExposure);
 		if (m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
 		{
 			VkClearColorValue initialExposure{};
 			m_VansVKCommandBuffer.ClearColorImage(
 				exposureCurrent->GetImage(), VK_IMAGE_LAYOUT_GENERAL, initialExposure);
+			VkClearColorValue initialFSRExposure{};
+			initialFSRExposure.float32[0] = 1.0f;
+			m_VansVKCommandBuffer.ClearColorImage(
+				fsrExposure->GetImage(), VK_IMAGE_LAYOUT_GENERAL, initialFSRExposure);
 			VkMemoryBarrier clearToExposure{};
 			clearToExposure.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
 			clearToExposure.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -1376,41 +1470,57 @@ namespace VansGraphics
 			VANS_LOG_ERROR("[PostProcess] Failed to record auto-exposure state initialization.");
 		}
 
-		VansTexture* bloomPrefilter = new VansTexture();
-		bloomPrefilter->InitTextureWithoutData(
-			m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1,
-			VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true);
-		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_PREFILTER, bloomPrefilter);
+		auto scaledExtent = [](uint32_t value, uint32_t divisor)
+		{
+			return std::max(value / divisor, 1u);
+		};
 
-		VansTexture* bloomMip0 = new VansTexture();
-		bloomMip0->InitTextureWithoutData(
-			m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1,
-			VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true);
-		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_MIP0, bloomMip0);
+		auto createPostProcessTexture =
+			[&](const char* name, uint32_t width, uint32_t height) -> VansTexture*
+		{
+			VansTexture* texture = new VansTexture();
+			texture->InitTextureWithoutData(
+				m_VansVKCommandBuffer, width, height, 1,
+				VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true,
+				VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+			manager->RegisterRuntimeRenderTexture(name, texture);
+			return texture;
+		};
 
-		VansTexture* bloomMip1 = new VansTexture();
-		bloomMip1->InitTextureWithoutData(
-			m_VansVKCommandBuffer, m_RenderWidth / 4, m_RenderHeight / 4, 1,
-			VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true);
-		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_MIP1, bloomMip1);
+		createPostProcessTexture(
+			VansMaterialManager::RT_DOF_RESULT,
+			scaledExtent(m_RenderWidth, 1), scaledExtent(m_RenderHeight, 1));
 
-		VansTexture* bloomMip2 = new VansTexture();
-		bloomMip2->InitTextureWithoutData(
-			m_VansVKCommandBuffer, m_RenderWidth / 8, m_RenderHeight / 8, 1,
-			VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true);
-		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_MIP2, bloomMip2);
-
-		VansTexture* bloomMip3 = new VansTexture();
-		bloomMip3->InitTextureWithoutData(
-			m_VansVKCommandBuffer, m_RenderWidth / 16, m_RenderHeight / 16, 1,
-			VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true);
-		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_MIP3, bloomMip3);
-
-		VansTexture* bloomResult = new VansTexture();
-		bloomResult->InitTextureWithoutData(
-			m_VansVKCommandBuffer, m_RenderWidth / 2, m_RenderHeight / 2, 1,
-			VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true);
-		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_RESULT, bloomResult);
+		createPostProcessTexture(
+			VansMaterialManager::RT_BLOOM_PREFILTER,
+			scaledExtent(m_RenderWidth, 2), scaledExtent(m_RenderHeight, 2));
+		createPostProcessTexture(
+			VansMaterialManager::RT_BLOOM_MIP0,
+			scaledExtent(m_RenderWidth, 2), scaledExtent(m_RenderHeight, 2));
+		createPostProcessTexture(
+			VansMaterialManager::RT_BLOOM_MIP1,
+			scaledExtent(m_RenderWidth, 4), scaledExtent(m_RenderHeight, 4));
+		createPostProcessTexture(
+			VansMaterialManager::RT_BLOOM_MIP2,
+			scaledExtent(m_RenderWidth, 8), scaledExtent(m_RenderHeight, 8));
+		createPostProcessTexture(
+			VansMaterialManager::RT_BLOOM_MIP3,
+			scaledExtent(m_RenderWidth, 16), scaledExtent(m_RenderHeight, 16));
+		createPostProcessTexture(
+			VansMaterialManager::RT_BLOOM_UP_MIP2,
+			scaledExtent(m_RenderWidth, 8), scaledExtent(m_RenderHeight, 8));
+		createPostProcessTexture(
+			VansMaterialManager::RT_BLOOM_UP_MIP1,
+			scaledExtent(m_RenderWidth, 4), scaledExtent(m_RenderHeight, 4));
+		createPostProcessTexture(
+			VansMaterialManager::RT_BLOOM_UP_MIP0,
+			scaledExtent(m_RenderWidth, 2), scaledExtent(m_RenderHeight, 2));
+		createPostProcessTexture(
+			VansMaterialManager::RT_BLOOM_BASE,
+			scaledExtent(m_RenderWidth, 2), scaledExtent(m_RenderHeight, 2));
+		createPostProcessTexture(
+			VansMaterialManager::RT_BLOOM_RESULT,
+			scaledExtent(m_RenderWidth, 2), scaledExtent(m_RenderHeight, 2));
 
 		// ---- Shader 创建 ----
 		manager->m_ExposureLuminanceShader = VansGraphics::VansShaderManager::Get().FindComputeShader("ExposureLuminance");
@@ -1420,6 +1530,8 @@ namespace VansGraphics
 		manager->m_BloomDownsampleShader = VansGraphics::VansShaderManager::Get().FindComputeShader("BloomDownsample");
 
 		manager->m_BloomUpsampleShader = VansGraphics::VansShaderManager::Get().FindComputeShader("BloomUpsample");
+		manager->m_BloomShapeShader = VansGraphics::VansShaderManager::Get().FindComputeShader("BloomShape");
+		manager->m_DepthOfFieldShader = VansGraphics::VansShaderManager::Get().FindComputeShader("DepthOfField");
 
 		// ---- Descriptor Set Layouts + Allocation ----
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_ExposureLuminance(
@@ -1432,6 +1544,10 @@ namespace VansGraphics
 			manager->m_BloomDownsampleSetLayout, manager->m_BloomDownsampleDescriptorSets, 4);
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_BloomUpsample(
 			manager->m_BloomUpsampleSetLayout, manager->m_BloomUpsampleDescriptorSets, 4);
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_BloomShape(
+			manager->m_BloomShapeSetLayout, manager->m_BloomShapeDescriptorSets);
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_DepthOfField(
+			manager->m_DepthOfFieldSetLayout, manager->m_DepthOfFieldDescriptorSets);
 
 		// ---- UBO 创建与初始化 ----
 		VansPostProcessProfile& defaultProfile = manager->m_PostProcessProfile;
@@ -1439,6 +1555,8 @@ namespace VansGraphics
 		ppParams.m_DebugPassthrough = IsGIProbeOnlyDeferredOutputEnabled(m_Scene->GetGISettings()) ? 1.0f : 0.0f;
 		VansExposureAdaptParamsGPU exposureParams = defaultProfile.ToExposureAdaptParams(0.0f);
 		VansBloomParamsGPU bloomParams     = defaultProfile.ToBloomParams();
+		VansBloomShapeParamsGPU bloomShapeParams = defaultProfile.ToBloomShapeParams();
+		VansDepthOfFieldParamsGPU dofParams = defaultProfile.ToDepthOfFieldParams(m_RenderWidth, m_RenderHeight);
 
 		manager->m_PostProcessParamsCBBuffer.CreatVulkanBuffer(
 			m_VansVKLogicDevice, sizeof(VansPostProcessParamsGPU), VK_FORMAT_R32_SFLOAT,
@@ -1458,6 +1576,18 @@ namespace VansGraphics
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
 		manager->m_BloomParamsCBBuffer.SetBufferData(&bloomParams, 0, sizeof(VansBloomParamsGPU));
+
+		manager->m_BloomShapeParamsCBBuffer.CreatVulkanBuffer(
+			m_VansVKLogicDevice, sizeof(VansBloomShapeParamsGPU), VK_FORMAT_R32_SFLOAT,
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+		manager->m_BloomShapeParamsCBBuffer.SetBufferData(&bloomShapeParams, 0, sizeof(VansBloomShapeParamsGPU));
+
+		manager->m_DepthOfFieldParamsCBBuffer.CreatVulkanBuffer(
+			m_VansVKLogicDevice, sizeof(VansDepthOfFieldParamsGPU), VK_FORMAT_R32_SFLOAT,
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+		manager->m_DepthOfFieldParamsCBBuffer.SetBufferData(&dofParams, 0, sizeof(VansDepthOfFieldParamsGPU));
 	}
 
 	void VansVKDevice::PrepareRayTracingData()

@@ -25,7 +25,20 @@ enum class VansAssetType
     AnimatorController,
 	BoneMask,
 	Timeline,
+	ActionDefinition,
+	ActionSet,
+	GameplayEffect,
+	GameplayCue,
+	AttributeSet,
+	TargetingPolicy,
+	GameplayTagTree,
+	PayloadSchema,
+	ActionGraph,
+	CameraRigProfile,
+	CameraShakeProfile,
+	GAFEditorLayout,
     ClothProfile,
+    SkinProfile,
     PostProcessProfile,
     RagdollProfile,
     AudioReverbPreset,
@@ -47,7 +60,8 @@ enum class VansAssetArtifactFormat
 {
     None,
     Imported,
-    Source
+    Source,
+	Cooked
 };
 
 struct VansAssetRecord

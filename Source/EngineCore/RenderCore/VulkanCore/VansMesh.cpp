@@ -127,7 +127,7 @@ namespace
 	}
 
 	constexpr std::array<char, 8> kMeshCacheMagic = { 'V', 'A', 'N', 'S', 'M', 'S', 'H', '\0' };
-	constexpr uint32_t kMeshCacheVersion = 4;
+	constexpr uint32_t kMeshCacheVersion = 5;
 	constexpr uint32_t kMeshCacheFlagMultiMesh = 1u << 0;
 	constexpr uint64_t kMeshCacheMaxVectorItems = 256ull * 1024ull * 1024ull;
 
@@ -831,7 +831,8 @@ VansGraphics::VansMeshCacheBuildStatus VansGraphics::VansMesh::BuildMeshCache(
 			file_name,
 			import_tangent,
 			cachePath,
-			/*trustCacheWithoutSource=*/false);
+			/*trustCacheWithoutSource=*/false,
+			scaleFactor);
 	}
 
 	// Skeletal meshes retain their rig and skinning payload in the indexed package
@@ -943,17 +944,28 @@ uint16_t FloatToHalf(float f)
 	return glm::packHalf1x16(f);
 }
 
-void ProcessNode(aiNode* node, const aiScene* scene, std::vector<uint16_t>& meshRawData, std::vector<float>& meshRawPositionData, std::vector<float>& meshRawTexCoordData, std::vector<int>& meshIndex, int& vertexCount, bool import_tangent)
+void ProcessNode(aiNode* node, const aiScene* scene, const aiMatrix4x4& parentTransform,
+	std::vector<uint16_t>& meshRawData, std::vector<float>& meshRawPositionData,
+	std::vector<float>& meshRawTexCoordData, std::vector<int>& meshIndex,
+	int& vertexCount, bool import_tangent, float scaleFactor)
 {
+	const aiMatrix4x4 nodeTransform = parentTransform * node->mTransformation;
+	aiMatrix3x3 normalTransform(nodeTransform);
+	normalTransform.Inverse().Transpose();
+	const aiMatrix3x3 directionTransform(nodeTransform);
+
 	for (uint32_t i = 0; i < node->mNumMeshes; i++)
 	{
 		aiMesh* mesh = scene->mMeshes[node->mMeshes[i]];
 		int baseVertex = vertexCount;
 		for (uint32_t i = 0; i < mesh->mNumVertices; i++)
 		{
-			aiVector3D vertex = mesh->mVertices[i];
+			aiVector3D vertex = nodeTransform * mesh->mVertices[i];
+			vertex *= scaleFactor;
 			aiVector3D normal = (mesh->mNormals && mesh->mNormals[i].SquareLength() > 1e-6f)
 				? mesh->mNormals[i] : aiVector3D(0, 1, 0);
+			normal = normalTransform * normal;
+			normal.NormalizeSafe();
 			aiVector3D tangent(0, 0, 0);
 			aiVector3D bitangent(0, 0, 0);
 			aiVector3D texCoord(0,0,0);
@@ -988,11 +1000,13 @@ void ProcessNode(aiNode* node, const aiScene* scene, std::vector<uint16_t>& mesh
 			{
 				if (mesh->mTangents != nullptr)
 				{
-					tangent = mesh->mTangents[i];
+					tangent = directionTransform * mesh->mTangents[i];
+					tangent.NormalizeSafe();
 				}
 				if (mesh->mBitangents != nullptr)
 				{
-					bitangent = mesh->mBitangents[i];
+					bitangent = directionTransform * mesh->mBitangents[i];
+					bitangent.NormalizeSafe();
 				}
 				meshRawData.emplace_back(FloatToHalf(tangent.x));
 				meshRawData.emplace_back(FloatToHalf(tangent.y));
@@ -1014,7 +1028,9 @@ void ProcessNode(aiNode* node, const aiScene* scene, std::vector<uint16_t>& mesh
 
 	for (uint32_t i = 0; i < node->mNumChildren; i++)
 	{
-		ProcessNode(node->mChildren[i], scene, meshRawData, meshRawPositionData, meshRawTexCoordData, meshIndex, vertexCount, import_tangent);
+		ProcessNode(node->mChildren[i], scene, nodeTransform, meshRawData,
+			meshRawPositionData, meshRawTexCoordData, meshIndex, vertexCount,
+			import_tangent, scaleFactor);
 	}
 }
 
@@ -1026,7 +1042,7 @@ VansGraphics::VansMesh::VansMesh(bool needCPUData, bool supportRayTracing)
 	m_SupportRayTracing = supportRayTracing;
 }
 
-void VansGraphics::VansMesh::LoadMesh(VkDevice& logic_device, VkQueue& queue, VansVKCommandBuffer* commandbuffer, const std::string& file_name, bool import_tangent, const std::string& cachePath, bool trustCacheWithoutSource)
+void VansGraphics::VansMesh::LoadMesh(VkDevice& logic_device, VkQueue& queue, VansVKCommandBuffer* commandbuffer, const std::string& file_name, bool import_tangent, const std::string& cachePath, bool trustCacheWithoutSource, float scaleFactor)
 {
 	VANS_LOG("Load Mesh : " << file_name);
 	m_LogicalDevice = logic_device;
@@ -1035,7 +1051,7 @@ void VansGraphics::VansMesh::LoadMesh(VkDevice& logic_device, VkQueue& queue, Va
 	ResetLocalBounds();
 	if (TryLoadMeshCache(logic_device, queue, commandbuffer,
 		cachePath, file_name, import_tangent, m_SupportRayTracing,
-		m_MeshRawPositionDataEnableCPURead, false, 1.0f, trustCacheWithoutSource))
+		m_MeshRawPositionDataEnableCPURead, false, scaleFactor, trustCacheWithoutSource))
 	{
 		return;
 	}
@@ -1052,14 +1068,16 @@ void VansGraphics::VansMesh::LoadMesh(VkDevice& logic_device, VkQueue& queue, Va
 		VANS_LOG_ERROR("ERROR::ASSIMP::" << importer.GetErrorString());
 		return;
 	}
-	ProcessNode(scene->mRootNode, scene, m_MeshRawData, m_MeshRawPositionData, m_MeshRawTexCoordData, m_MeshTriangleIndex, m_VertexCount, import_tangent);
+	ProcessNode(scene->mRootNode, scene, aiMatrix4x4(), m_MeshRawData,
+		m_MeshRawPositionData, m_MeshRawTexCoordData, m_MeshTriangleIndex,
+		m_VertexCount, import_tangent, scaleFactor);
 	RebuildLocalBoundsFromRawPositions();
 	m_MeshRawDataCPULoaded = true;
 
 	m_IndexCount = m_MeshTriangleIndex.size();
 
 	ConfigureVertexInputLayout(import_tangent);
-	SaveMeshCache(cachePath, file_name, import_tangent, false, 1.0f);
+	SaveMeshCache(cachePath, file_name, import_tangent, false, scaleFactor);
 	if (!HasMeshGpuUploadTarget(logic_device, queue, commandbuffer))
 		return;
 	UploadRawMeshToGpu(logic_device, queue, commandbuffer, "VansMesh", false);

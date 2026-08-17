@@ -19,7 +19,9 @@ layout(set = 0, binding = 3, rgba16f) uniform writeonly image2DArray outDerivati
 const int FIELD_HEIGHT = 0;
 const int FIELD_DISP_X = 1;
 const int FIELD_DISP_Z = 2;
-const int FIELD_COUNT = 3;
+const int FIELD_SLOPE_X = 3;
+const int FIELD_SLOPE_Z = 4;
+const int FIELD_COUNT = 5;
 
 float Spatial(ivec2 pixel, int cascade, int field, int N)
 {
@@ -51,6 +53,10 @@ void main()
                       - DisplacementAt(pixel - ivec2(1, 0), cascade, N)) / (2.0 * texelWorld);
     vec3 derivativeZ = (DisplacementAt(pixel + ivec2(0, 1), cascade, N)
                       - DisplacementAt(pixel - ivec2(0, 1), cascade, N)) / (2.0 * texelWorld);
+    // 高度斜率直接来自频域 i*k*h。水平位移仍使用周期中心差分，
+    // 避免为 Jacobian 再增加四个完整 FFT 字段。
+    derivativeX.y = Spatial(pixel, cascade, FIELD_SLOPE_X, N);
+    derivativeZ.y = Spatial(pixel, cascade, FIELD_SLOPE_Z, N);
     vec3 dPdx = vec3(1.0, 0.0, 0.0) + derivativeX;
     vec3 dPdz = vec3(0.0, 0.0, 1.0) + derivativeZ;
     float jacobian = dPdx.x * dPdz.z - dPdx.z * dPdz.x;

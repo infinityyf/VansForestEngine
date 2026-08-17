@@ -334,6 +334,7 @@ bool VansGraphics::VansScene::LoadSceneForRendering(const char* scenePath, VansV
 
     VANS_LOG("[VansScene] LoadSceneForRendering: " << scenePath);
     m_RuntimeResourceDevice = device;
+	device->RequestFSRHistoryReset(VansFSRResetReason::SceneChange);
 
     bool rebuildRenderingDataAfterUnload = false;
     if (m_SceneState == VansSceneState::Ready)

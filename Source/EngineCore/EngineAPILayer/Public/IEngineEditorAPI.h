@@ -26,10 +26,29 @@ namespace Vans::EditorAPI
 		virtual ProjectBrowserRootSnapshot GetProjectBrowserRoot() const = 0;
 		virtual AssetDragPayload CreateAssetDragPayload(const std::string& assetPath) = 0;
 		virtual AssetGuidResolution ResolveAssetGuid(const std::string& assetGuid) const = 0;
-		virtual TimelineAudioWaveformHandle RequestTimelineAudioWaveform(const std::string& assetGuid) = 0;
-		virtual TimelineVideoThumbnailHandle RequestTimelineVideoThumbnail(const std::string& assetGuid) = 0;
 		virtual ProjectAssetCreateResult CreateProjectAsset(const ProjectAssetCreateRequest& request) = 0;
 		virtual AssetRefreshResult RefreshProjectAsset(const std::string& assetPath, bool importIfMissing) = 0;
+		virtual GAFEditorDocumentSnapshot OpenGAFAsset(const std::string& sourcePath) = 0;
+		virtual GAFEditorOperationResult SetGAFAssetField(const GAFEditorFieldEditRequest& request) = 0;
+		virtual GAFEditorOperationResult ResetGAFAssetField(
+			const std::string& sourcePath, const std::string& fieldPath) = 0;
+		virtual GAFEditorOperationResult EditGAFAssetArray(const GAFEditorArrayEditRequest& request) = 0;
+		virtual std::vector<GAFGraphNodeTypeSnapshot> GetGAFGraphNodeCatalog() const = 0;
+		virtual GAFEditorOperationResult EditGAFGraph(const GAFGraphEditRequest& request) = 0;
+		virtual GAFEditorOperationResult UndoGAFAsset(const std::string& sourcePath) = 0;
+		virtual GAFEditorOperationResult RedoGAFAsset(const std::string& sourcePath) = 0;
+		virtual GAFEditorOperationResult RevertGAFAsset(const std::string& sourcePath) = 0;
+		virtual GAFEditorOperationResult SaveGAFAsset(const std::string& sourcePath) = 0;
+		virtual GAFSemanticDiffResult DiffGAFAsset(
+			const std::string& sourcePath, const std::string& baselineCanonicalJson) = 0;
+		virtual GAFProjectConfigurationSnapshot GetGAFProjectConfiguration() const = 0;
+		virtual std::vector<std::string> GetGAFTagCatalog() const = 0;
+		virtual GAFProjectConfigurationResult ApplyGAFProjectConfiguration(
+			const GAFProjectConfigurationSnapshot& configuration) = 0;
+		virtual GAFRuntimeDebugSnapshot GetGAFRuntimeDebugSnapshot() = 0;
+		virtual GAFDebugCommandResult ControlGAFDebugger(const GAFDebugCommand& command) = 0;
+		virtual GAFTraceCommandResult ControlGAFTrace(const GAFTraceCommand& command) = 0;
+		virtual GAFSimulationResult SimulateGAFAction(const GAFSimulationRequest& request) = 0;
 		virtual std::vector<RecentProjectEntry> GetRecentProjects() const = 0;
 		virtual ProjectOpenResult OpenProject(const ProjectOpenRequest& request) = 0;
 		virtual void CloseProject() = 0;
@@ -48,6 +67,7 @@ namespace Vans::EditorAPI
 		virtual RenderTexturePreview GetViewportPreview(ViewportId id) const = 0;
 		virtual FSRSettingsSnapshot GetFSRSettings() const = 0;
 		virtual void SetFSRSettings(FSRUpscaleMode mode, float sharpness) = 0;
+		virtual void SetFSRDebugViewEnabled(bool enabled) = 0;
 		virtual CommandRecordingSettingsSnapshot GetCommandRecordingSettings() const = 0;
 		virtual void SetCommandRecordingSettings(const CommandRecordingSettingsSnapshot& settings) = 0;
 		virtual void SetSceneViewportExtent(std::uint32_t width, std::uint32_t height) = 0;
@@ -199,13 +219,19 @@ namespace Vans::EditorAPI
 		virtual void StepRuntimeVehicle(float deltaTimeSeconds) = 0;
 		virtual void SetRuntimeVehicleInput(float throttle, float brake, float steer, float handbrake) = 0;
 		virtual void SyncRuntimePhysicsTransforms() = 0;
+		virtual void PrepareRuntimeCharacterLocomotion(double deltaSeconds) = 0;
 		virtual void FlushRuntimeCharacterControllerTransforms() = 0;
 		virtual void UpdateRuntimeNonCameraScripts() = 0;
+		virtual void UpdateRuntimeActionsEarly(double deltaSeconds) = 0;
+		virtual void RunRuntimeActionLateContinuation() = 0;
 		virtual void UpdateRuntimeTimelinesPostScript(double deltaSeconds) = 0;
+		virtual void BeginRuntimeCameraControlFrame() = 0;
 		virtual void UpdateRuntimeCameraScripts() = 0;
+		virtual void CaptureRuntimeCameraControlBase() = 0;
 		virtual void UpdateRuntimeTimelinesCamera(double deltaSeconds) = 0;
 		virtual void UpdateTimelinePreviewsPostScript(double deltaSeconds) = 0;
 		virtual void UpdateTimelinePreviewsCamera(double deltaSeconds) = 0;
+		virtual void ResolveRuntimeCameraControlFrame() = 0;
 		virtual void InitializeRuntimeScripts() = 0;
 		virtual void SetupRuntimeScriptProjectVenv(const std::string& projectRootPath) = 0;
 		virtual void ReloadRuntimeScripts() = 0;

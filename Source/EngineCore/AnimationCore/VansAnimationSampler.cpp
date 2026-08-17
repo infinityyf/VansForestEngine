@@ -81,8 +81,12 @@ namespace VansGraphics
 			return glm::mix(left.value, right.value, alpha);
 		}
 
-		int ResolveRootBoneIndex(const VansAnimationClip& clip, const Skeleton& skeleton)
+		int ResolveRootBoneIndex(
+			const VansAnimationClip& clip, const Skeleton& skeleton, int requestedBoneIndex)
 		{
+			if (requestedBoneIndex >= 0 &&
+			    requestedBoneIndex < static_cast<int>(skeleton.bones.size()))
+				return requestedBoneIndex;
 			if (!clip.rootMotion.boneName.empty())
 			{
 				auto found = skeleton.boneNameToIndex.find(clip.rootMotion.boneName);
@@ -162,8 +166,12 @@ namespace VansGraphics
 			outDelta = {};
 			if (!clip.rootMotion.enabled || end <= start)
 				return;
-			const int rootBoneIndex = ResolveRootBoneIndex(clip, skeleton);
+			const int rootBoneIndex = ResolveRootBoneIndex(
+				clip, skeleton, request.rootMotionBoneIndex);
 			if (rootBoneIndex < 0)
+				return;
+			if (rootBoneIndex >= static_cast<int>(clip.boneKeyframes.size()) ||
+			    clip.boneKeyframes[static_cast<std::size_t>(rootBoneIndex)].empty())
 				return;
 
 			double previous = request.previousTime;

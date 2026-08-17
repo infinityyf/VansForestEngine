@@ -193,9 +193,6 @@ void VansSceneEnvironmentNodeBuilder::AddWaterNode(
     };
 
     VansWaterConfig config;
-    if (waterData.schemaVersion.value_or(0u) != VansWaterConfig::SCHEMA_VERSION)
-        VANS_LOG_WARN("[AddWaterNode] Water data is not schema V4; deprecated fields are read through compatibility paths.");
-
     if (waterData.level) config.m_WaterLevel = *waterData.level;
     if (waterData.specularIntensity) config.m_SpecularIntensity = *waterData.specularIntensity;
 
@@ -225,23 +222,14 @@ void VansSceneEnvironmentNodeBuilder::AddWaterNode(
     if (spectrum.randomSeed) config.m_Spectrum.m_RandomSeed = *spectrum.randomSeed;
 
     const Vans::VansSceneWaterWaveParticleConfig& waveParticle = waterData.waveParticle;
-    if (waveParticle.particleCount) config.m_WaveParticle.m_ParticleCount = *waveParticle.particleCount;
-    if (waveParticle.octaveCount) config.m_WaveParticle.m_OctaveCount = *waveParticle.octaveCount;
-    if (waveParticle.profile) config.m_WaveParticle.m_Profile = *waveParticle.profile;
-    if (waveParticle.domainSize) config.m_WaveParticle.m_DomainSize = *waveParticle.domainSize;
-    if (waveParticle.amplitude) config.m_WaveParticle.m_Amplitude = *waveParticle.amplitude;
-    if (waveParticle.minRadius) config.m_WaveParticle.m_MinRadius = *waveParticle.minRadius;
-    if (waveParticle.maxRadius) config.m_WaveParticle.m_MaxRadius = *waveParticle.maxRadius;
-    if (waveParticle.phaseVelocity) config.m_WaveParticle.m_PhaseVelocity = *waveParticle.phaseVelocity;
-    if (waveParticle.damping) config.m_WaveParticle.m_Damping = *waveParticle.damping;
+    if (waveParticle.particlesPerCascade) config.m_WaveParticle.m_ParticlesPerCascade = *waveParticle.particlesPerCascade;
+    if (waveParticle.rmsAmplitude) config.m_WaveParticle.m_RmsAmplitude = *waveParticle.rmsAmplitude;
+    if (waveParticle.packetWidth) config.m_WaveParticle.m_PacketWidth = *waveParticle.packetWidth;
+    if (waveParticle.dispersionScale) config.m_WaveParticle.m_DispersionScale = *waveParticle.dispersionScale;
     if (waveParticle.directionSpread) config.m_WaveParticle.m_DirectionSpread = *waveParticle.directionSpread;
-    if (waveParticle.lacunarity) config.m_WaveParticle.m_Lacunarity = *waveParticle.lacunarity;
-    if (waveParticle.persistence) config.m_WaveParticle.m_Persistence = *waveParticle.persistence;
-    if (waveParticle.radiusFalloff) config.m_WaveParticle.m_RadiusFalloff = *waveParticle.radiusFalloff;
-    if (waveParticle.profileSharpness) config.m_WaveParticle.m_ProfileSharpness = *waveParticle.profileSharpness;
+    if (waveParticle.cascadeAmplitudeFalloff) config.m_WaveParticle.m_CascadeAmplitudeFalloff = *waveParticle.cascadeAmplitudeFalloff;
     if (waveParticle.foamThreshold) config.m_WaveParticle.m_FoamThreshold = *waveParticle.foamThreshold;
     if (waveParticle.foamSoftness) config.m_WaveParticle.m_FoamSoftness = *waveParticle.foamSoftness;
-    if (waveParticle.lifetime) config.m_WaveParticle.m_Lifetime = *waveParticle.lifetime;
     if (waveParticle.randomSeed) config.m_WaveParticle.m_RandomSeed = *waveParticle.randomSeed;
 
     const Vans::VansSceneWaterFlowMapConfig& flowMap = waterData.flowMap;
@@ -257,7 +245,9 @@ void VansSceneEnvironmentNodeBuilder::AddWaterNode(
     const Vans::VansSceneWaterCausticsConfig& caustics = waterData.caustics;
     if (caustics.enabled) config.m_Caustics.m_Enabled = *caustics.enabled;
     if (caustics.intensity) config.m_Caustics.m_Intensity = *caustics.intensity;
-    if (caustics.scale) config.m_Caustics.m_Scale = *caustics.scale;
+    if (caustics.maxDistance) config.m_Caustics.m_MaxDistance = *caustics.maxDistance;
+    if (caustics.maxGain) config.m_Caustics.m_MaxGain = *caustics.maxGain;
+    if (caustics.filterRadius) config.m_Caustics.m_FilterRadius = *caustics.filterRadius;
 
     const Vans::VansSceneWaterRefractionConfig& refraction = waterData.refraction;
     if (refraction.enabled) config.m_Refraction.m_Enabled = *refraction.enabled;

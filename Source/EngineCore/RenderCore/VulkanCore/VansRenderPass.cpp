@@ -282,25 +282,11 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 	m_MotionVectorImage.CreateVulkanImage(
 		logic_device,
 		{ resolution.width,resolution.height,1 },
-		VK_FORMAT_R16G16B16A16_SFLOAT,
+		VK_FORMAT_R16G16_SFLOAT,
 		1,
 		1,
 		VK_IMAGE_TYPE_2D,
 		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-		VK_SAMPLE_COUNT_1_BIT,
-		false,
-		false,
-		true
-	);
-
-	m_ColorAfterPostProcessImage.CreateVulkanImage(
-		logic_device,
-		{ resolution.width,resolution.height,1 },
-		VK_FORMAT_R16G16B16A16_SFLOAT,
-		1,
-		1,
-		VK_IMAGE_TYPE_2D,
-		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
 		VK_SAMPLE_COUNT_1_BIT,
 		false,
 		false,
@@ -456,10 +442,7 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 	};
 	m_VansGBufferPass.m_FrameBuffers[0].CreateFrameBuffer(logic_device, m_VansGBufferPass.m_RenderPass, gbufferViews, { resolution.width, resolution.height, 1 });
 
-	// ── m_VansDeferredSkyboxPass：仅 Deferred + SkyBox ─────────────────────────
-	// 从原 m_VansRenderPass 的 Subpass 0 中拆出；SceneColor 与 clean
-	// diffuse-exitant history 均由 MRT 清除并写入。
-	// 原始 m_VansRenderPass 继续存在，但改为 Transparent + PostProcess（LOAD SceneColor）。
+	// Deferred + SkyBox clears and writes SceneColor plus diffuse-exitant history.
 	std::vector<VkAttachmentDescription> deferredSkyboxAttachmentDescs =
 	{
 		// 附件 0：SceneColor（CLEAR，UNDEFINED initialLayout — Deferred 从黑色开始写入）
@@ -531,11 +514,8 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 		m_VansDeferredSkyboxPass.m_FrameBuffers[0].CreateFrameBuffer(logic_device, m_VansDeferredSkyboxPass.m_RenderPass, deferredSkyboxViews, { resolution.width, resolution.height, 1 });
 	}
 
-	// ── m_VansRenderPass（修改后）：Transparent + PostProcess ────────────────
-	// 原 Subpass 0（Deferred+SkyBox）已移至 m_VansDeferredSkyboxPass。
-	// 此 pass 仅保留透明物体绘制（Subpass 0）和后处理（Subpass 1）。
-	// SceneColor 使用 LOAD：加载水面合成后的结果继续绘制透明物体。
-	// Deferred/PostProcess pass：Subpass 0 写 lighting color，Subpass 1 做后处理。
+	// The main forward pass only composites transparent content into HDR SceneColor.
+	// Display conversion is a dedicated display-resolution pass after FSR.
 	// ForwardOpaqueAfterDeferred pass: load SceneColor after deferred and draw opaque forward objects before transparent/post.
 	std::vector<VkAttachmentDescription> forwardOpaqueAttachmentDescs =
 	{
@@ -605,51 +585,32 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 		m_VansForwardOpaqueAfterDeferredPass.m_FrameBuffers[0].CreateFrameBuffer(logic_device, m_VansForwardOpaqueAfterDeferredPass.m_RenderPass, forwardOpaqueViews, { resolution.width, resolution.height, 1 });
 	}
 
-	std::vector<VkAttachmentDescription> deferredPostAttachmentDescs =
+	std::vector<VkAttachmentDescription> transparentAttachmentDescs =
 	{
-		// SceneColor：LOAD 已有内容（来自水面合成或 Deferred pass 输出），透明物体叠加绘制
 		{ 0, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT,
 		  VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE,
 		  VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
 		  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
-		{ 0, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
-		// loadOp=LOAD: depth 从 GBuffer pass finalLayout (SHADER_READ_ONLY_OPTIMAL) 加载
 		{ 0, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
 	};
-	// DEPTH_STENCIL_READ_ONLY_OPTIMAL: 允许 depth 在同一 subpass 中同时用于只读深度测试和 shader 采样，
-	// 避免 DEPTH_STENCIL_ATTACHMENT_OPTIMAL 与 SHADER_READ_ONLY_OPTIMAL 运行期 layout 冲突
-	VkAttachmentReference deferredDepthAttachment = { 2, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
-	std::vector<SubpassParameters> deferredPostSubpassParams =
+	VkAttachmentReference transparentDepthAttachment = { 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
+	std::vector<SubpassParameters> transparentSubpassParams =
 	{
-		// Subpass 0：Transparent + Particles（SceneColor LOAD，继承水面合成结果）
 		{
 			VK_PIPELINE_BIND_POINT_GRAPHICS,
 			{},
 			{ { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL } },
 			{},
-			&deferredDepthAttachment,
-			{}
-		},
-		// Subpass 1：PostProcess（读 SceneColor 为 input attachment，写 ColorAfterPostProcess）
-		{
-			VK_PIPELINE_BIND_POINT_GRAPHICS,
-			{ { 0, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } },
-			{ { 1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL } },
-			{},
-			nullptr,
+			&transparentDepthAttachment,
 			{}
 		}
 	};
-	std::vector<VkSubpassDependency> deferredPostDependencies =
+	std::vector<VkSubpassDependency> transparentDependencies =
 	{
-		// 外部 → Subpass 0（Transparent）：
-		// 等待 Water Composite render pass 对 SceneColor 的颜色写入完成（或 Deferred Skybox 如无水面）
 		{
 			VK_SUBPASS_EXTERNAL,
 			0,
-			// 来源：Deferred Skybox / Water Composite 的颜色写入 + Compute 写入 + GBuffer 深度写入
 			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-			// 目标：Transparent fragment 读取 SceneColor + 深度测试
 			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
 			VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
 			VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
@@ -657,15 +618,6 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 		},
 		{
 			0,
-			1,
-			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-			VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-			VK_ACCESS_INPUT_ATTACHMENT_READ_BIT,
-			VK_DEPENDENCY_BY_REGION_BIT
-		},
-		{
-			1,
 			VK_SUBPASS_EXTERNAL,
 			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
 			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
@@ -674,21 +626,15 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 			VK_DEPENDENCY_BY_REGION_BIT
 		}
 	};
-	m_VansRenderPass.m_ClearValues =
-	{
-		{ 0.0f, 0.0f, 0.0f, 1.0f },  // SceneColor：LOAD 时忽略此值，但数组索引须保留
-		{ 0.0f, 0.0f, 0.0f, 1.0f },
-		{ 1.0f, 0 },
-	};
-	m_VansRenderPass.CreateRenderPass(logic_device, deferredPostAttachmentDescs, deferredPostSubpassParams, deferredPostDependencies, resolution);
-	m_VansRenderPass.m_FrameBuffers.resize(1);
-	std::vector<VkImageView> deferredPostViews =
+	m_VansTransparentPass.m_ClearValues = {};
+	m_VansTransparentPass.CreateRenderPass(logic_device, transparentAttachmentDescs, transparentSubpassParams, transparentDependencies, resolution);
+	m_VansTransparentPass.m_FrameBuffers.resize(1);
+	std::vector<VkImageView> transparentViews =
 	{
 		m_ColorImage.GetImageView(),
-		m_ColorAfterPostProcessImage.GetImageView(),
-		m_DepthImage.GetDepthStencilView()	// depth+stencil combined view
+		m_DepthImage.GetDepthStencilView()
 	};
-	m_VansRenderPass.m_FrameBuffers[0].CreateFrameBuffer(logic_device, m_VansRenderPass.m_RenderPass, deferredPostViews, { resolution.width, resolution.height, 1 });
+	m_VansTransparentPass.m_FrameBuffers[0].CreateFrameBuffer(logic_device, m_VansTransparentPass.m_RenderPass, transparentViews, { resolution.width, resolution.height, 1 });
 
 	m_LogicDevice = logic_device;
 
@@ -760,18 +706,6 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 			VK_QUEUE_FAMILY_IGNORED,
 			VK_QUEUE_FAMILY_IGNORED,
 			m_MotionVectorImage.m_ImageAspect
-		});
-
-	m_ColorAfterPostProcessImage.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-		{
-			m_ColorAfterPostProcessImage.m_VansVKImage,
-			VK_ACCESS_NONE,
-			VK_ACCESS_NONE,
-			m_ColorAfterPostProcessImage.m_ImageLayout,
-			VK_IMAGE_LAYOUT_GENERAL,
-			VK_QUEUE_FAMILY_IGNORED,
-			VK_QUEUE_FAMILY_IGNORED,
-			m_ColorAfterPostProcessImage.m_ImageAspect
 		});
 
 	m_GBufferImage0.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
@@ -1192,7 +1126,7 @@ void VansGraphics::VansRenderPassManager::SetupVansPunctualShadowRenderPass(VkDe
 // Motion-Vector render pass
 //
 // Attachments:
-//   0 — m_MotionVectorImage  (R16G16B16A16_SFLOAT) — color output
+//   0 — m_MotionVectorImage  (R16G16_SFLOAT) — XY velocity
 //   1 — m_MotionVectorDepthImage (D16_UNORM) — dedicated depth
 //
 // Draws all opaque geometry using the MotionVector shader to produce
@@ -1206,7 +1140,7 @@ void VansGraphics::VansRenderPassManager::SetupVansMotionVectorRenderPass(VkDevi
 		// Attachment 0: motion-vector color (CLEAR → STORE)
 		{
 			0,
-			VK_FORMAT_R16G16B16A16_SFLOAT,
+			VK_FORMAT_R16G16_SFLOAT,
 			VK_SAMPLE_COUNT_1_BIT,
 			VK_ATTACHMENT_LOAD_OP_CLEAR,
 			VK_ATTACHMENT_STORE_OP_STORE,
@@ -1373,9 +1307,9 @@ void VansGraphics::VansRenderPassManager::SetupVansUIRenderPass(VkDevice& logic_
 }
 
 void VansGraphics::VansRenderPassManager::SetupVansSceneUIRenderPass(
-	VkDevice& logic_device, VkImageView fsrImageView, const VkExtent2D& displayExtent)
+	VkDevice& logicDevice, VkImageView finalDisplayImageView, const VkExtent2D& displayExtent)
 {
-	// 颜色附件：FSR 输出图像（R16G16B16A16_SFLOAT）
+	// FinalDisplayColor is loaded so Noesis can composite over the scene.
 	// - LOAD_OP_LOAD：保留场景内容，Noesis 叠加渲染
 	// - initialLayout = COLOR_ATTACHMENT_OPTIMAL（调用前已由 barrier 转换）
 	// - finalLayout   = SHADER_READ_ONLY_OPTIMAL（供 ImGui 场景窗口采样）
@@ -1411,7 +1345,7 @@ void VansGraphics::VansRenderPassManager::SetupVansSceneUIRenderPass(
 
 	std::vector<VkSubpassDependency> subpass_dependencies;
 	m_VansSceneUIPass.CreateRenderPass(
-		logic_device, attachments_descriptions, subpass_parameters, subpass_dependencies, displayExtent);
+		logicDevice, attachments_descriptions, subpass_parameters, subpass_dependencies, displayExtent);
 
 	// Noesis VK render device 使用 clipSpaceYInverted=true（Vulkan 原生 Y-down NDC），
 	// 不需要负高度 viewport 翻转，覆盖 CreateRenderPass 写入的负高度 viewport，
@@ -1426,12 +1360,71 @@ void VansGraphics::VansRenderPassManager::SetupVansSceneUIRenderPass(
 		1.0f
 	};
 
-	// 单个 framebuffer（FSR 图像只有一张，无 swapchain 多帧）
+	// FinalDisplayColor is one offscreen image, not a swapchain image array.
 	m_VansSceneUIPass.m_FrameBuffers.resize(1);
-	std::vector<VkImageView> image_views = { fsrImageView };
+	std::vector<VkImageView> image_views = { finalDisplayImageView };
 	m_VansSceneUIPass.m_FrameBuffers[0].CreateFrameBuffer(
-		logic_device, m_VansSceneUIPass.m_RenderPass, image_views,
+		logicDevice, m_VansSceneUIPass.m_RenderPass, image_views,
 		{ displayExtent.width, displayExtent.height, 1 });
+}
+
+void VansGraphics::VansRenderPassManager::SetupVansDisplayPostProcessPass(
+	VkDevice& logic_device,
+	VansVKImage& hdrInput,
+	const VkExtent2D& displayExtent)
+{
+	m_DisplayPostProcessInput = &hdrInput;
+	m_FinalDisplayColorImage.CreateVulkanImage(
+		logic_device,
+		{ displayExtent.width, displayExtent.height, 1 },
+		VK_FORMAT_R16G16B16A16_SFLOAT,
+		1,
+		1,
+		VK_IMAGE_TYPE_2D,
+		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+			VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		VK_SAMPLE_COUNT_1_BIT,
+		false,
+		false,
+		true);
+
+	std::vector<VkAttachmentDescription> attachments =
+	{
+		{ 0, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT,
+		  VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE,
+		  VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+		  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL }
+	};
+	std::vector<SubpassParameters> subpasses =
+	{
+		{ VK_PIPELINE_BIND_POINT_GRAPHICS, {},
+		  { { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL } }, {}, nullptr, {} }
+	};
+	std::vector<VkSubpassDependency> dependencies =
+	{
+		{ VK_SUBPASS_EXTERNAL, 0,
+		  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+		  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+		  VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+		  VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+		  VK_DEPENDENCY_BY_REGION_BIT },
+		{ 0, VK_SUBPASS_EXTERNAL,
+		  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+		  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+		  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+		  VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_SHADER_READ_BIT,
+		  VK_DEPENDENCY_BY_REGION_BIT }
+	};
+	m_VansDisplayPostProcessPass.m_ClearValues = { { 0.0f, 0.0f, 0.0f, 1.0f } };
+	m_VansDisplayPostProcessPass.CreateRenderPass(
+		logic_device, attachments, subpasses, dependencies, displayExtent);
+	m_VansDisplayPostProcessPass.m_FrameBuffers.resize(1);
+	m_VansDisplayPostProcessPass.m_FrameBuffers[0].CreateFrameBuffer(
+		logic_device,
+		m_VansDisplayPostProcessPass.m_RenderPass,
+		{ m_FinalDisplayColorImage.GetImageView() },
+		{ displayExtent.width, displayExtent.height, 1 });
+	m_FinalDisplayColorImage.SetTrackedImageLayout(VK_IMAGE_LAYOUT_UNDEFINED);
 }
 
 void VansGraphics::VansRenderPassManager::SetupVansDecalRenderPass(
@@ -1998,17 +1991,6 @@ void VansGraphics::VansRenderPassManager::BeginRenderPass(VansVKRenderPass& rend
 	}
 }
 
-void VansGraphics::VansRenderPassManager::NextSubPass(VansVKCommandBuffer& command_buffer, GlobalStateData& global_state_data)
-{
-	NextSubPass(command_buffer, global_state_data, VK_SUBPASS_CONTENTS_INLINE);
-}
-
-void VansGraphics::VansRenderPassManager::NextSubPass(VansVKCommandBuffer& command_buffer, GlobalStateData& global_state_data, VkSubpassContents contents)
-{
-	global_state_data.currentSubpass++;
-	command_buffer.NextSubpass(contents);
-}
-
 void VansGraphics::VansRenderPassManager::EndRenderPass(VansVKCommandBuffer& command_buffer, GlobalStateData& global_state_data)
 {
 	global_state_data.currentRenderPass = VK_NULL_HANDLE;
@@ -2016,88 +1998,19 @@ void VansGraphics::VansRenderPassManager::EndRenderPass(VansVKCommandBuffer& com
 	command_buffer.EndRenderPass();
 }
 
-void VansGraphics::VansRenderPassManager::BlitToSwapChainImage(VansVKCommandBuffer& command_buffer, VansVKSurface& surface, int swapChainIndex, const VkExtent2D& renderResolution)
-{
-    // Blit m_ColorAfterPostProcessImage (attachment index 6 in deferred pass framebuffer)
-    // into the real swapchain image for presentation.
-    // Steps:
-    // 1. Transition source to TRANSFER_SRC_OPTIMAL.
-    // 2. Transition destination (swapchain) to TRANSFER_DST_OPTIMAL.
-    // 3. Blit via command buffer wrapper.
-    // 4. Transition destination to PRESENT_SRC_KHR again (source back to PRESENT optional).
-
-    VkExtent2D swapchainExtent = surface.m_VansVKSwapChainImageExtent;
-
-    command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-
-    // Destination: swapchain image (assumed GENERAL or PRESENT). Force to TRANSFER_DST_OPTIMAL.
-    surface.RecordSwapChainImageBarrier(
-        command_buffer,
-        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-        VK_PIPELINE_STAGE_TRANSFER_BIT,
-        {
-            surface.GetSwapChainImage(swapChainIndex),
-            VK_ACCESS_NONE,
-            VK_ACCESS_TRANSFER_WRITE_BIT,
-            VK_IMAGE_LAYOUT_UNDEFINED, // treat as unknown, transition regardless
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_QUEUE_FAMILY_IGNORED,
-            VK_QUEUE_FAMILY_IGNORED,
-            VK_IMAGE_ASPECT_COLOR_BIT
-        });
-
-    // Blit region (entire image)
-    VkImageBlit blitRegion{};
-    blitRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    blitRegion.srcSubresource.mipLevel = 0;
-    blitRegion.srcSubresource.baseArrayLayer = 0;
-    blitRegion.srcSubresource.layerCount = 1;
-    blitRegion.srcOffsets[0] = { 0, 0, 0 };
-    blitRegion.srcOffsets[1] = { (int32_t)renderResolution.width, (int32_t)renderResolution.height, 1 };
-
-    blitRegion.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    blitRegion.dstSubresource.mipLevel = 0;
-    blitRegion.dstSubresource.baseArrayLayer = 0;
-    blitRegion.dstSubresource.layerCount = 1;
-    blitRegion.dstOffsets[0] = { 0, 0, 0 };
-    blitRegion.dstOffsets[1] = { (int32_t)swapchainExtent.width, (int32_t)swapchainExtent.height, 1 };
-
-    command_buffer.BlitImageRegions(
-        m_ColorAfterPostProcessImage.GetImage(),
-        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-        surface.GetSwapChainImage(swapChainIndex),
-        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        { blitRegion },
-        VK_FILTER_LINEAR);
-
-    // Transition swapchain image to PRESENT_SRC_KHR for presentation
-    surface.RecordSwapChainImageBarrier(
-        command_buffer,
-        VK_PIPELINE_STAGE_TRANSFER_BIT,
-        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-        {
-            surface.GetSwapChainImage(swapChainIndex),
-            VK_ACCESS_TRANSFER_WRITE_BIT,
-            VK_ACCESS_NONE,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-            VK_QUEUE_FAMILY_IGNORED,
-            VK_QUEUE_FAMILY_IGNORED,
-            VK_IMAGE_ASPECT_COLOR_BIT
-        });
-
-    command_buffer.EndCommandBufferRecord();
-}
-
 void VansGraphics::VansRenderPassManager::DestroyRenderPass()
 {
+	// Framebuffers must release their attachment views before the backing images.
+	m_VansDisplayPostProcessPass.DestroyRenderPass(m_LogicDevice);
+	m_VansSceneUIPass.DestroyRenderPass(m_LogicDevice);
+
 	m_ColorImage.DestroyVulkanImage(m_LogicDevice);
 	m_DiffuseExitantRadianceHistoryImage.DestroyVulkanImage(m_LogicDevice);
 	m_OpaqueSceneColorImage.DestroyVulkanImage(m_LogicDevice);
 	m_DepthImage.DestroyVulkanImage(m_LogicDevice);
 	m_MotionVectorImage.DestroyVulkanImage(m_LogicDevice);
 	m_MotionVectorDepthImage.DestroyVulkanImage(m_LogicDevice);
-	m_ColorAfterPostProcessImage.DestroyVulkanImage(m_LogicDevice);
+	m_FinalDisplayColorImage.DestroyVulkanImage(m_LogicDevice);
 
 	m_ShadowMapImage.DestroyVulkanImage(m_LogicDevice);
 	m_ShadowMapDepthImage.DestroyVulkanImage(m_LogicDevice);
@@ -2141,7 +2054,7 @@ void VansGraphics::VansRenderPassManager::DestroyRenderPass()
 	m_WaterGBufLinearDepthImage.DestroyVulkanImage(m_LogicDevice);
 
 	m_VansGBufferPass.DestroyRenderPass(m_LogicDevice);
-	m_VansRenderPass.DestroyRenderPass(m_LogicDevice);
+	m_VansTransparentPass.DestroyRenderPass(m_LogicDevice);
 	m_VansDeferredSkyboxPass.DestroyRenderPass(m_LogicDevice);
 	m_VansScreenSpaceEffectsPass.DestroyRenderPass(m_LogicDevice);
 	m_VansForwardOpaqueAfterDeferredPass.DestroyRenderPass(m_LogicDevice);
@@ -2152,7 +2065,6 @@ void VansGraphics::VansRenderPassManager::DestroyRenderPass()
 	m_VansShadowPass.DestroyRenderPass(m_LogicDevice);
 	m_VansMotionVectorPass.DestroyRenderPass(m_LogicDevice);
 	m_VansUIPass.DestroyRenderPass(m_LogicDevice);
-	m_VansSceneUIPass.DestroyRenderPass(m_LogicDevice);
 }
 
 void VansGraphics::VansRenderPassManager::DestroyUIRenderPass()
@@ -2163,6 +2075,13 @@ void VansGraphics::VansRenderPassManager::DestroyUIRenderPass()
 void VansGraphics::VansRenderPassManager::DestroySceneUIRenderPass()
 {
 	m_VansSceneUIPass.DestroyRenderPass(m_LogicDevice);
+}
+
+void VansGraphics::VansRenderPassManager::DestroyDisplayPostProcessPass()
+{
+	m_VansDisplayPostProcessPass.DestroyRenderPass(m_LogicDevice);
+	m_FinalDisplayColorImage.DestroyVulkanImage(m_LogicDevice);
+	m_DisplayPostProcessInput = nullptr;
 }
 
 void VansGraphics::VansRenderPassManager::RecreateUIRenderPass(VansVKCommandBuffer& command_buffer, VkQueue& queue, VansVKSurface& surface, const VkExtent2D& renderResolution)

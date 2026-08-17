@@ -1,10 +1,12 @@
 #include "VansGamePackageBuilder.h"
 #include "VansPackageResourcePrewarmer.h"
+#include "VansGameplayAssetPackageCooker.h"
 
 #include "../AnimationCore/VansAnimationClip.h"
 #include "../AssetCore/VansAssetDatabase.h"
 #include "../AssetCore/VansBuiltInAssetCatalog.h"
 #include "../AssetCore/Importers/Shader/VansShaderArtifactCache.h"
+#include "../GameplayActionSchema/VansGAFProjectConfiguration.h"
 #include "../ProjectSystem/VansProjectConfig.h"
 #include "../RenderCore/VansShaderManager.h"
 #include "../RenderCore/VulkanCore/VansPipelineDescriptor.h"
@@ -604,7 +606,20 @@ namespace
 		case Vans::VansAssetType::AnimatorController: return "animatorController";
 		case Vans::VansAssetType::BoneMask: return "boneMask";
 		case Vans::VansAssetType::Timeline: return "timeline";
+		case Vans::VansAssetType::ActionDefinition: return "actionDefinition";
+		case Vans::VansAssetType::ActionSet: return "actionSet";
+		case Vans::VansAssetType::GameplayEffect: return "gameplayEffect";
+		case Vans::VansAssetType::GameplayCue: return "gameplayCue";
+		case Vans::VansAssetType::AttributeSet: return "attributeSet";
+		case Vans::VansAssetType::TargetingPolicy: return "targetingPolicy";
+		case Vans::VansAssetType::GameplayTagTree: return "gameplayTagTree";
+		case Vans::VansAssetType::PayloadSchema: return "payloadSchema";
+		case Vans::VansAssetType::ActionGraph: return "actionGraph";
+		case Vans::VansAssetType::CameraRigProfile: return "cameraRigProfile";
+		case Vans::VansAssetType::CameraShakeProfile: return "cameraShakeProfile";
+		case Vans::VansAssetType::GAFEditorLayout: return "gafEditorLayout";
 		case Vans::VansAssetType::ClothProfile: return "clothProfile";
+		case Vans::VansAssetType::SkinProfile: return "skinProfile";
 		case Vans::VansAssetType::PostProcessProfile: return "postProcessProfile";
 		case Vans::VansAssetType::RagdollProfile: return "ragdollProfile";
 		case Vans::VansAssetType::AudioReverbPreset: return "audioReverbPreset";
@@ -620,6 +635,7 @@ namespace
 		{
 		case Vans::VansAssetArtifactFormat::Imported: return "imported";
 		case Vans::VansAssetArtifactFormat::Source: return "source";
+		case Vans::VansAssetArtifactFormat::Cooked: return "cooked";
 		default: return "none";
 		}
 	}
@@ -905,6 +921,27 @@ namespace
 				}
 			}
 		}
+		std::vector<std::string> gafSeeds(
+			dependencyResult.requiredAssets.begin(), dependencyResult.requiredAssets.end());
+		Vans::VansGAFProjectConfiguration gafConfiguration;
+		if (!Vans::VansGAFProjectConfiguration::LoadForProject(
+			projectRoot, engineRoot, gafConfiguration, error))
+		{
+			error = "Cannot load GAF project configuration for package Cook: " + error;
+			return false;
+		}
+		const Vans::VansGameplayPackageCookResult gameplayCook =
+			Vans::VansGameplayAssetPackageCooker::CookClosure(
+				projectRoot, database, &builtInDatabase, gafSeeds, &gafConfiguration);
+		if (!gameplayCook)
+		{
+			for (const std::string& cookError : gameplayCook.errors)
+				VANS_LOG_ERROR("[PackageGAF] " << cookError);
+			error = "Cannot build cooked GAF asset closure";
+			return false;
+		}
+		for (const std::string& guid : gameplayCook.requiredAssetGuids)
+			dependencyResult.requiredAssets.insert(guid);
 
 		cookedPlan.enabled = true;
 		cookedPlan.packagePlan.resourcePlan = dependencyResult.resourcePlan;
@@ -941,6 +978,31 @@ namespace
 				? nullptr
 				: &cookedPlan.packagePlan.assetIndex[found->second];
 		};
+		for (const Vans::VansGameplayPackagedAssetRecord& gameplayAsset : gameplayCook.assets)
+		{
+			Vans::VansPackagedAssetIndexRecord* record = indexedRecord(gameplayAsset.guid);
+			if (!record)
+			{
+				cookedPlan.missingResources.push_back({ "GAF dependency index",
+					gameplayAsset.guid, gameplayAsset.sourcePath.string(),
+					gameplayAsset.artifactPath.string() });
+				continue;
+			}
+			std::error_code relativeError;
+			const fs::path relativeArtifact = fs::relative(
+				gameplayAsset.artifactPath, projectRoot, relativeError);
+			if (relativeError)
+			{
+				error = "Cooked GAF artifact is outside the project root";
+				return false;
+			}
+			record->artifactPath = relativeArtifact.generic_string();
+			record->artifactFormat = "gaf-cooked";
+			record->authoringPath.clear();
+			cookedPlan.artifactPaths.push_back(gameplayAsset.artifactPath);
+			RegisterCookedSourceAsset(projectRoot, gameplayAsset.sourcePath.string(),
+				cookedPlan.cookedSourceAssets);
+		}
 
 		std::error_code ec;
 		for (const std::string& guidText : dependencyResult.requiredAssets)
@@ -1120,6 +1182,7 @@ namespace
 		{
 			if (sourceRecord.type != Vans::VansAssetType::Material &&
 				sourceRecord.type != Vans::VansAssetType::Shader &&
+				sourceRecord.type != Vans::VansAssetType::SkinProfile &&
 				sourceRecord.type != Vans::VansAssetType::AudioReverbPreset &&
 				sourceRecord.type != Vans::VansAssetType::AudioBusSnapshot &&
 				sourceRecord.type != Vans::VansAssetType::AudioDuckingRules)
@@ -1136,6 +1199,11 @@ namespace
 					guid, sourceRecord.sourcePath, false, cookedPlan);
 				record->authoringPath = cachedPath.generic_string();
 				if (sourceRecord.type == Vans::VansAssetType::Material)
+				{
+					record->artifactPath = cachedPath.generic_string();
+					record->artifactFormat = "source";
+				}
+				if (sourceRecord.type == Vans::VansAssetType::SkinProfile)
 				{
 					record->artifactPath = cachedPath.generic_string();
 					record->artifactFormat = "source";

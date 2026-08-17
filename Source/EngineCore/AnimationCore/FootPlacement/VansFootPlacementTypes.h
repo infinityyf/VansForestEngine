@@ -55,8 +55,8 @@ namespace VansGraphics
 		std::string rightFoot = "foot_r";
 	};
 
-	// Current settings. There is intentionally no foot-lock or animation-contact
-	// compatibility layer: terrain placement is derived from the current pose.
+	// 地形贴合与动画接触相位共用同一套 Foot Placement。动画相位存在时，
+	// 已种下的脚在世界空间锁定；其他动画控制器仍保持纯姿态相对贴地。
 	struct FootPlacementSettings
 	{
 		bool enabled = false;
@@ -80,6 +80,11 @@ namespace VansGraphics
 		float rotationWeight = 0.70f;
 		float maxLegExtensionRatio = 0.98f;
 		float poleSmoothTime = 0.05f;
+		bool footLockEnabled = false;
+		float footLockEnterPlantWeight = 0.70f;
+		float footLockExitPlantWeight = 0.25f;
+		float footLockMaxDistance = 0.35f;
+		float footLockSmoothTime = 0.035f;
 		glm::vec3 kneePoleModelDir = glm::vec3(0.0f, 0.0f, 1.0f);
 		float kneePoleModelWeight = 0.0f;
 		bool debugVisualization = false;
@@ -93,6 +98,9 @@ namespace VansGraphics
 		bool airborne = false;
 		bool forceDisabled = false;
 		float externalWeight = 1.0f;
+		bool hasAnimationPlantWeights = false;
+		float leftPlantWeight = 0.0f;
+		float rightPlantWeight = 0.0f;
 	};
 
 	struct FootPlacementContact
@@ -105,6 +113,8 @@ namespace VansGraphics
 		float slopeDeg = 0.0f;
 		uint32_t layer = 0;
 		uintptr_t actorId = 0;
+		glm::mat4 actorWorldTransform = glm::mat4(1.0f);
+		bool hasActorWorldTransform = false;
 		std::string actorName;
 	};
 
@@ -118,6 +128,13 @@ namespace VansGraphics
 		glm::vec3 groundNormalWorld = glm::vec3(0.0f, 1.0f, 0.0f);
 		bool poleInitialized = false;
 		glm::vec3 poleModelDir = glm::vec3(0.0f, 0.0f, 1.0f);
+		bool planted = false;
+		glm::vec3 lockedWorldPosition = glm::vec3(0.0f);
+		uintptr_t lockedActorId = 0;
+		glm::vec3 lockedActorLocalPosition = glm::vec3(0.0f);
+		bool hasLockedActorLocalPosition = false;
+		float lockWeight = 0.0f;
+		float lockWeightVelocity = 0.0f;
 	};
 
 	struct FootPlacementDebugSample
@@ -147,6 +164,9 @@ namespace VansGraphics
 		bool hasTarget = false;
 		float targetWeight = 0.0f;
 		float verticalOffset = 0.0f;
+		bool planted = false;
+		float plantWeight = 0.0f;
+		float horizontalLockError = 0.0f;
 	};
 
 	struct FootPlacementDebugData

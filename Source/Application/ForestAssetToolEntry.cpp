@@ -1,9 +1,13 @@
 #include "../EngineCore/AnimationCore/VansAnimatorIO.h"
 #include "../EngineCore/AnimationCore/VansAnimationClip.h"
+#include "../EngineCore/AnimationCore/VansSkinnedMeshLoader.h"
 #include "../EngineCore/AnimationCore/Storage/VansBoneMaskStorage.h"
+#include "../EngineCore/AssetCore/VansAssetDatabase.h"
 #include "../EngineCore/AssetCore/Storage/VansJsonFileStorage.h"
+#include "../EngineCore/ScriptCore/VansLuaScriptInspectorService.h"
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <iostream>
 #include <nlohmann/json.hpp>
@@ -18,13 +22,19 @@ namespace
 	{
 		Invalid,
 		Rewrite,
-		Validate
+		Validate,
+		ImportAnimationFbx,
+		ValidateLuaScript
 	};
 
 	struct Options
 	{
 		Command command = Command::Invalid;
 		fs::path projectRoot;
+		fs::path sourcePath;
+		fs::path skeletonClipPath;
+		fs::path scriptPath;
+		std::string entryName;
 		bool write = false;
 		bool showHelp = false;
 	};
@@ -36,7 +46,11 @@ namespace
 			<< "Usage:\n"
 			<< "  ForestAssetTool rewrite-animation-assets --project <path> --dry-run\n"
 			<< "  ForestAssetTool rewrite-animation-assets --project <path> --write\n"
-			<< "  ForestAssetTool validate-animation-assets --project <path>\n";
+			<< "  ForestAssetTool validate-animation-assets --project <path>\n"
+			<< "  ForestAssetTool import-animation-fbx --project <path> --source <asset-relative-fbx>"
+				" --skeleton <asset-relative-vclip>\n"
+			<< "  ForestAssetTool validate-lua-script --project <path> --script <project-relative-lua>"
+				" --entry <table-name>\n";
 	}
 
 	bool ParseOptions(int argc, char** argv, Options& options, std::string& error)
@@ -49,6 +63,8 @@ namespace
 		const std::string command = argv[1];
 		if (command == "rewrite-animation-assets") options.command = Command::Rewrite;
 		else if (command == "validate-animation-assets") options.command = Command::Validate;
+		else if (command == "import-animation-fbx") options.command = Command::ImportAnimationFbx;
+		else if (command == "validate-lua-script") options.command = Command::ValidateLuaScript;
 		else if (command == "--help" || command == "-h") options.showHelp = true;
 		else
 		{
@@ -68,6 +84,42 @@ namespace
 					return false;
 				}
 				options.projectRoot = argv[index];
+			}
+			else if (argument == "--source")
+			{
+				if (++index >= argc)
+				{
+					error = "Missing value for --source.";
+					return false;
+				}
+				options.sourcePath = argv[index];
+			}
+			else if (argument == "--skeleton")
+			{
+				if (++index >= argc)
+				{
+					error = "Missing value for --skeleton.";
+					return false;
+				}
+				options.skeletonClipPath = argv[index];
+			}
+			else if (argument == "--script")
+			{
+				if (++index >= argc)
+				{
+					error = "Missing value for --script.";
+					return false;
+				}
+				options.scriptPath = argv[index];
+			}
+			else if (argument == "--entry")
+			{
+				if (++index >= argc)
+				{
+					error = "Missing value for --entry.";
+					return false;
+				}
+				options.entryName = argv[index];
 			}
 			else if (argument == "--dry-run")
 			{
@@ -103,7 +155,143 @@ namespace
 			error = "Validate does not accept --dry-run or --write.";
 			return false;
 		}
+		if (options.command == Command::ImportAnimationFbx
+			&& (modeCount != 0 || options.sourcePath.empty() || options.skeletonClipPath.empty()))
+		{
+			error = "Import requires --source and --skeleton and does not accept a rewrite mode.";
+			return false;
+		}
+		if (options.command == Command::ValidateLuaScript
+			&& (modeCount != 0 || options.scriptPath.empty() || options.entryName.empty()))
+		{
+			error = "Lua validation requires --script and --entry and does not accept a rewrite mode.";
+			return false;
+		}
 		return true;
+	}
+
+	bool IsWithin(const fs::path& path, const fs::path& root)
+	{
+		auto pathIt = path.begin();
+		auto rootIt = root.begin();
+		for (; rootIt != root.end(); ++rootIt, ++pathIt)
+			if (pathIt == path.end() || *pathIt != *rootIt)
+				return false;
+		return true;
+	}
+
+	int ImportAnimationFbx(const fs::path& projectRoot, const fs::path& assetsRoot,
+		const Options& options)
+	{
+		std::error_code fileError;
+		const fs::path sourcePath = fs::weakly_canonical(projectRoot / options.sourcePath, fileError);
+		if (fileError || !fs::is_regular_file(sourcePath) || sourcePath.extension() != ".fbx"
+			|| !IsWithin(sourcePath, assetsRoot))
+		{
+			std::cerr << "Invalid project FBX source: " << options.sourcePath << '\n';
+			return 2;
+		}
+
+		const fs::path skeletonPath = fs::weakly_canonical(projectRoot / options.skeletonClipPath, fileError);
+		if (fileError || !fs::is_regular_file(skeletonPath) || skeletonPath.extension() != ".vclip"
+			|| !IsWithin(skeletonPath, assetsRoot))
+		{
+			std::cerr << "Invalid project skeleton clip: " << options.skeletonClipPath << '\n';
+			return 2;
+		}
+
+		VansGraphics::VansAnimationClip referenceClip;
+		VansGraphics::Skeleton skeleton;
+		if (!VansGraphics::VansAnimationClipIO::Load(skeletonPath.string(), referenceClip, skeleton)
+			|| skeleton.bones.empty())
+		{
+			std::cerr << "Failed to load reference skeleton from: " << skeletonPath << '\n';
+			return 1;
+		}
+
+		std::vector<VansGraphics::VansAnimationClip> clips;
+		if (!VansGraphics::VansSkinnedMeshLoader::ExtractExternAnimationClips(
+			sourcePath.string(), skeleton, clips) || clips.empty())
+		{
+			std::cerr << "Failed to extract animation clips from: " << sourcePath << '\n';
+			return 1;
+		}
+
+		Vans::VansAssetDatabase database(assetsRoot);
+		std::string error;
+		if (!database.RegisterOrRefresh(sourcePath, Vans::VansAssetOperationPolicy::Authoring(), error))
+		{
+			std::cerr << error << '\n';
+			return 1;
+		}
+
+		const std::string baseName = sourcePath.stem().string();
+		for (auto& clip : clips)
+		{
+			std::string clipName = clip.clipName;
+			for (char& character : clipName)
+				if (character == ' ' || character == '/' || character == '\\' || character == ':')
+					character = '_';
+			const fs::path clipPath = sourcePath.parent_path() / (baseName + "_" + clipName + ".vclip");
+
+			int rootIndex = -1;
+			for (std::size_t index = 0; index < skeleton.bones.size(); ++index)
+				if (skeleton.bones[index].name == "root")
+				{
+					rootIndex = static_cast<int>(index);
+					break;
+				}
+			if (rootIndex < 0)
+				for (std::size_t index = 0; index < skeleton.bones.size(); ++index)
+					if (skeleton.bones[index].parentIndex < 0)
+					{
+						rootIndex = static_cast<int>(index);
+						break;
+					}
+			clip.rootMotion.enabled = true;
+			clip.rootMotion.boneName = rootIndex >= 0 ? skeleton.bones[rootIndex].name : "";
+			clip.rootMotion.extractTranslation = true;
+			clip.rootMotion.extractRotation = true;
+			clip.rootMotion.extractScale = false;
+			if (!VansGraphics::VansAnimationClipIO::Save(clipPath.string(), clip, skeleton))
+			{
+				std::cerr << "Failed to publish root-motion clip: " << clipPath << '\n';
+				return 1;
+			}
+
+			if (!fs::is_regular_file(clipPath)
+				|| !database.RegisterOrRefresh(clipPath, Vans::VansAssetOperationPolicy::Authoring(), error))
+			{
+				std::cerr << (error.empty() ? "Animation clip was not created: " + clipPath.string() : error) << '\n';
+				return 1;
+			}
+
+			std::cout << "Imported " << fs::relative(clipPath, projectRoot).generic_string()
+				<< " clip=\"" << clip.clipName << "\" duration=" << clip.duration
+				<< " bones=" << skeleton.bones.size();
+			if (rootIndex >= 0 && rootIndex < static_cast<int>(clip.boneKeyframes.size())
+				&& !clip.boneKeyframes[rootIndex].empty())
+			{
+				const auto& keys = clip.boneKeyframes[rootIndex];
+				const auto delta = keys.back().position - keys.front().position;
+				float maxRootTravel = 0.0f;
+				float maxRootRotation = 0.0f;
+				for (const auto& key : keys)
+				{
+					maxRootTravel = std::max(maxRootTravel, glm::length(key.position - keys.front().position));
+					const float quaternionDot = std::clamp(
+						std::abs(glm::dot(key.rotation, keys.front().rotation)), 0.0f, 1.0f);
+					maxRootRotation = std::max(maxRootRotation, 2.0f * std::acos(quaternionDot));
+				}
+				std::cout << " root=\"" << skeleton.bones[rootIndex].name << "\""
+					<< " rootKeys=" << keys.size()
+					<< " rootDelta=(" << delta.x << ',' << delta.y << ',' << delta.z << ')'
+					<< " maxRootTravel=" << maxRootTravel
+					<< " maxRootRotationDegrees=" << maxRootRotation * 57.2957795f;
+			}
+			std::cout << '\n';
+		}
+		return 0;
 	}
 
 	bool ContainsForbiddenGenerationField(const nlohmann::json& value, std::string& field)
@@ -222,6 +410,21 @@ namespace
 		{
 			std::cerr << "Project has no Assets directory: " << assetsRoot << '\n';
 			return 2;
+		}
+		if (options.command == Command::ImportAnimationFbx)
+			return ImportAnimationFbx(projectRoot, fs::weakly_canonical(assetsRoot), options);
+		if (options.command == Command::ValidateLuaScript)
+		{
+			const auto result = Vans::VansLuaScriptInspectorService::BuildDefaultFieldData(
+				projectRoot, options.scriptPath.generic_string(), options.entryName);
+			if (!result)
+			{
+				std::cerr << result.message << '\n';
+				return 1;
+			}
+			std::cout << "Lua script valid: " << options.scriptPath.generic_string()
+				<< " entry=\"" << options.entryName << "\" fields=" << result.fields.size() << '\n';
+			return 0;
 		}
 
 		std::vector<fs::path> assets;

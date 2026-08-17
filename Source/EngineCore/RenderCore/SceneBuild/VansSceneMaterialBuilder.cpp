@@ -6,6 +6,7 @@
 #include "../../Util/VansLog.h"
 
 #include <algorithm>
+#include <vector>
 
 namespace VansGraphics
 {
@@ -67,6 +68,28 @@ namespace VansGraphics
 				return fallback;
 			const Vans::VansSerializedValue& raw = UnwrapMaterialValue(*found);
 			return Vans::ReadSerializedString(raw, fallback);
+		}
+
+		std::vector<std::string> ReadMaterialStringArrayField(
+			const Vans::VansSceneMaterialConfig& material,
+			const char* key)
+		{
+			const Vans::VansSerializedValue* found = FindMaterialField(material, key);
+			if (!found)
+				return {};
+			const Vans::VansSerializedValue& raw = UnwrapMaterialValue(*found);
+			if (raw.kind != Vans::VansSerializedValue::Kind::Array)
+				return {};
+
+			std::vector<std::string> result;
+			result.reserve(raw.arrayItems.size());
+			for (const Vans::VansSerializedValue& item : raw.arrayItems)
+			{
+				const std::string value = Vans::ReadSerializedString(item);
+				if (!value.empty())
+					result.push_back(value);
+			}
+			return result;
 		}
 
 		std::string ReadDirectStringField(const Vans::VansSceneMaterialConfig& material, const char* key, const std::string& fallback = {})
@@ -582,20 +605,129 @@ void VansSceneMaterialBuilder::PopulateMaterial(
     case VansMaterialType::VAN_SKIN:
     {
         auto* skin = static_cast<VansSkinMaterial*>(material);
+        skin->m_SkinProfileAssetGuid = ReadMaterialStringField(sceneMaterial, "skinProfileAssetGuid", "");
+        skin->m_SkinProfileInheritedFields =
+            ReadMaterialStringArrayField(sceneMaterial, "skinProfileInheritedFields");
+        std::string skinProfile = ReadMaterialStringField(sceneMaterial, "skinProfile", "");
+        if (skinProfile.empty())
+            skinProfile = ReadMaterialStringField(sceneMaterial, "skinProfileName", "");
+        if (skinProfile.empty())
+            skinProfile = ReadMaterialStringField(sceneMaterial, "profile", "");
+        if (!skinProfile.empty() && !skin->ApplySkinProfilePreset(skinProfile))
+        {
+            VANS_LOG_WARN("[LoadMaterials] Skin material '" << material->m_AssetName
+                << "': unknown skinProfile '" << skinProfile << "', keeping neutral profile.");
+        }
+
         skin->m_BaseColorTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "basecolor_texture", "defaultAlbedo");
         skin->m_NormalTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "normal_texture", "defaultNormal");
-        glm::vec3 sssColor = ReadMaterialVec3Field(sceneMaterial, "subsurfaceColor", glm::vec3(1.0f, 0.34f, 0.22f));
-        sssColor = ReadMaterialVec3Field(sceneMaterial, "sssColor", sssColor);
-        skin->m_BasePBRParam.m_albedo = glm::max(sssColor, glm::vec3(0.0f));
+        skin->m_RoughnessTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "roughness_texture", "defaultRoughness");
+        skin->m_CavityTexture = ResolveMaterialTexture(scene, sceneMaterial, "cavity_texture");
+        if (!skin->m_CavityTexture)
+            skin->m_CavityTexture = ResolveMaterialTexture(scene, sceneMaterial, "specular_texture");
+        if (!skin->m_CavityTexture)
+            skin->m_CavityTexture = ResolveMaterialTexture(scene, sceneMaterial, "ao_texture");
+        skin->m_CavityTexture = scene.ResolveTextureAssetOrDefault(skin->m_CavityTexture, "defaultAo");
+        skin->m_ScatterMaskTexture = ResolveMaterialTexture(scene, sceneMaterial, "scatter_mask_texture");
+        if (!skin->m_ScatterMaskTexture)
+            skin->m_ScatterMaskTexture = ResolveMaterialTexture(scene, sceneMaterial, "sss_mask_texture");
+        if (!skin->m_ScatterMaskTexture)
+            skin->m_ScatterMaskTexture = ResolveMaterialTexture(scene, sceneMaterial, "subsurface_mask_texture");
+        skin->m_ScatterMaskTexture = scene.ResolveTextureAssetOrDefault(skin->m_ScatterMaskTexture, "defaultAo");
+        const bool hasExplicitThinnessTexture =
+            FindDirectMaterialField(sceneMaterial, "thickness_texture") != nullptr ||
+            FindDirectMaterialField(sceneMaterial, "transmission_texture") != nullptr ||
+            FindDirectMaterialField(sceneMaterial, "thinness_texture") != nullptr;
+        skin->m_ThicknessTexture = ResolveMaterialTexture(scene, sceneMaterial, "thickness_texture");
+        if (!skin->m_ThicknessTexture)
+            skin->m_ThicknessTexture = ResolveMaterialTexture(scene, sceneMaterial, "transmission_texture");
+        if (!skin->m_ThicknessTexture)
+            skin->m_ThicknessTexture = ResolveMaterialTexture(scene, sceneMaterial, "thinness_texture");
+        skin->m_ThicknessTexture = scene.ResolveTextureAssetOrDefault(skin->m_ThicknessTexture, "defaultAo");
+        skin->m_SkinParams.profileLUT.y = hasExplicitThinnessTexture ? 1.0f : 0.0f;
+        glm::vec3 scatterColor = ReadMaterialVec3Field(sceneMaterial, "subsurfaceColor", skin->m_BasePBRParam.m_albedo);
+        scatterColor = ReadMaterialVec3Field(sceneMaterial, "sssColor", scatterColor);
+        scatterColor = ReadMaterialVec3Field(sceneMaterial, "scatterColor", scatterColor);
+        skin->m_BasePBRParam.m_albedo = glm::max(scatterColor, glm::vec3(0.0f));
         skin->m_BasePBRParam.m_roughness = std::clamp(
-            ReadMaterialFloatField(sceneMaterial, "roughness", 0.62f), 0.045f, 1.0f);
+            ReadMaterialFloatField(sceneMaterial, "roughness", skin->m_BasePBRParam.m_roughness), 0.045f, 1.0f);
         skin->m_BasePBRParam.m_metallic = std::clamp(
-            ReadMaterialFloatField(sceneMaterial, "normalStrength", 0.35f), 0.0f, 2.0f);
+            ReadMaterialFloatField(sceneMaterial, "normalStrength", skin->m_BasePBRParam.m_metallic), 0.0f, 2.0f);
         skin->m_BasePBRParam.m_ao = std::clamp(
-            ReadMaterialFloatField(sceneMaterial, "subsurfaceAmount",
-                ReadMaterialFloatField(sceneMaterial, "sssAmount", 0.65f)), 0.0f, 1.0f);
+            ReadMaterialFloatField(sceneMaterial, "scatterAmount",
+                ReadMaterialFloatField(sceneMaterial, "subsurfaceAmount",
+                    ReadMaterialFloatField(sceneMaterial, "sssAmount", skin->m_BasePBRParam.m_ao))), 0.0f, 1.0f);
         skin->m_BasePBRParam.padding = std::clamp(
-            ReadMaterialFloatField(sceneMaterial, "specularScale", 1.0f), 0.0f, 4.0f);
+            ReadMaterialFloatField(sceneMaterial, "specularScale", skin->m_BasePBRParam.padding), 0.0f, 4.0f);
+        skin->m_SkinParams.roughnessNormalSpecular.w = std::clamp(
+            ReadMaterialFloatField(sceneMaterial, "transmissionScale",
+                ReadMaterialFloatField(sceneMaterial, "backTransmissionScale", skin->m_SkinParams.roughnessNormalSpecular.w)), 0.0f, 4.0f);
+        skin->m_SkinParams.lobeIOR.x = std::clamp(
+            ReadMaterialFloatField(sceneMaterial, "primaryRoughnessScale", skin->m_SkinParams.lobeIOR.x), 0.1f, 4.0f);
+        skin->m_SkinParams.lobeIOR.y = std::clamp(
+            ReadMaterialFloatField(sceneMaterial, "secondaryRoughnessScale", skin->m_SkinParams.lobeIOR.y), 0.1f, 4.0f);
+        skin->m_SkinParams.lobeIOR.z = std::clamp(
+            ReadMaterialFloatField(sceneMaterial, "skinIor",
+                ReadMaterialFloatField(sceneMaterial, "ior", skin->m_SkinParams.lobeIOR.z)), 1.0f, 2.5f);
+        skin->m_SkinParams.lobeIOR.w = std::clamp(
+            ReadMaterialFloatField(sceneMaterial, "specularLobeMix",
+                ReadMaterialFloatField(sceneMaterial, "primaryLobeWeight", skin->m_SkinParams.lobeIOR.w)), 0.0f, 1.0f);
+        skin->m_SkinParams.profileControls.x = std::clamp(
+            ReadMaterialFloatField(sceneMaterial, "diffusionRadiusScale",
+                ReadMaterialFloatField(sceneMaterial, "scatterRadiusScale",
+                    ReadMaterialFloatField(sceneMaterial, "skinScatterRadius", skin->m_SkinParams.profileControls.x))), 0.05f, 4.0f);
+        skin->m_SkinParams.profileControls.y = std::clamp(
+            ReadMaterialFloatField(sceneMaterial, "thinnessScale",
+                ReadMaterialFloatField(sceneMaterial, "skinThinnessScale", skin->m_SkinParams.profileControls.y)), 0.10f, 4.0f);
+        skin->m_SkinParams.profileControls.z = std::clamp(
+            ReadMaterialFloatField(sceneMaterial, "transmissionDepthScale",
+                ReadMaterialFloatField(sceneMaterial, "opticalDepthScale",
+                    ReadMaterialFloatField(sceneMaterial, "skinOpticalDepthScale", skin->m_SkinParams.profileControls.z))), 0.05f, 4.0f);
+        skin->m_SkinParams.profileControls.w = std::clamp(
+            ReadMaterialFloatField(sceneMaterial, "ambientScatterScale",
+                ReadMaterialFloatField(sceneMaterial, "skinAmbientScatterScale", skin->m_SkinParams.profileControls.w)), 0.0f, 1.0f);
+        glm::vec3 scatterRadiusScale = ReadMaterialVec3Field(sceneMaterial, "profileScatterRadius", glm::vec3(skin->m_SkinParams.profileShape));
+        scatterRadiusScale = ReadMaterialVec3Field(sceneMaterial, "scatterRadiusRGB", scatterRadiusScale);
+        skin->m_SkinParams.profileShape.x = std::clamp(scatterRadiusScale.x, 0.05f, 4.0f);
+        skin->m_SkinParams.profileShape.y = std::clamp(scatterRadiusScale.y, 0.05f, 4.0f);
+        skin->m_SkinParams.profileShape.z = std::clamp(scatterRadiusScale.z, 0.05f, 4.0f);
+        skin->m_SkinParams.profileShape.w = std::clamp(
+            ReadMaterialFloatField(sceneMaterial, "boundaryColorBleed",
+                ReadMaterialFloatField(sceneMaterial, "skinBoundaryBleed", skin->m_SkinParams.profileShape.w)), 0.0f, 2.0f);
+        const bool hasSkinProfileLUTLayer =
+            HasMaterialField(sceneMaterial, "skinProfileLutLayer") ||
+            HasMaterialField(sceneMaterial, "profileLutLayer") ||
+            HasMaterialField(sceneMaterial, "skinLutLayer");
+        skin->m_SkinParams.profileLUT.x = std::clamp(
+            ReadMaterialFloatField(sceneMaterial, "skinProfileLutLayer",
+                ReadMaterialFloatField(sceneMaterial, "profileLutLayer",
+                    ReadMaterialFloatField(sceneMaterial, "skinLutLayer", skin->m_SkinParams.profileLUT.x))),
+            -1.0f,
+            static_cast<float>(VANS_SKIN_PROFILE_LUT_LAYER_COUNT - 1));
+        skin->m_UseExplicitSkinProfileLUTLayer =
+            hasSkinProfileLUTLayer && skin->m_SkinParams.profileLUT.x >= 0.0f;
+        const bool hasDynamicSkinLUTOverride =
+            HasMaterialField(sceneMaterial, "scatterColor") ||
+            HasMaterialField(sceneMaterial, "subsurfaceColor") ||
+            HasMaterialField(sceneMaterial, "sssColor") ||
+            HasMaterialField(sceneMaterial, "scatterAmount") ||
+            HasMaterialField(sceneMaterial, "subsurfaceAmount") ||
+            HasMaterialField(sceneMaterial, "sssAmount") ||
+            HasMaterialField(sceneMaterial, "diffusionRadiusScale") ||
+            HasMaterialField(sceneMaterial, "scatterRadiusScale") ||
+            HasMaterialField(sceneMaterial, "skinScatterRadius") ||
+            HasMaterialField(sceneMaterial, "transmissionDepthScale") ||
+            HasMaterialField(sceneMaterial, "opticalDepthScale") ||
+            HasMaterialField(sceneMaterial, "skinOpticalDepthScale") ||
+            HasMaterialField(sceneMaterial, "profileScatterRadius") ||
+            HasMaterialField(sceneMaterial, "scatterRadiusRGB") ||
+            HasMaterialField(sceneMaterial, "boundaryColorBleed") ||
+            HasMaterialField(sceneMaterial, "skinBoundaryBleed");
+        if (hasDynamicSkinLUTOverride && !skin->m_UseExplicitSkinProfileLUTLayer)
+            skin->m_SkinParams.profileLUT.x = -1.0f;
+        skin->m_SkinParams.debugControls.x = std::clamp(
+            ReadMaterialFloatField(sceneMaterial, "skinDebugView",
+                ReadMaterialFloatField(sceneMaterial, "debugView", skin->m_SkinParams.debugControls.x)), 0.0f, 16.0f);
         break;
     }
     case VansMaterialType::VAN_HAIR:
@@ -760,6 +892,12 @@ void VansSceneMaterialBuilder::PopulateMaterial(
         grass->m_RoughnessTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "roughness_texture", "defaultRoughness");
         grass->m_TranslucencyTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "translucency_texture", "defaultAo");
         grass->m_AOTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "ao_texture", "defaultAo");
+        grass->m_GrassParams.aoStrength = std::clamp(
+            ReadMaterialFloatField(sceneMaterial, "aoStrength", grass->m_GrassParams.aoStrength), 0.0f, 1.0f);
+        grass->m_GrassParams.rootAOIntensity = std::clamp(
+            ReadMaterialFloatField(sceneMaterial, "rootAOIntensity", grass->m_GrassParams.rootAOIntensity), 0.0f, 0.85f);
+        grass->m_GrassParams.rootAOHeight = std::clamp(
+            ReadMaterialFloatField(sceneMaterial, "rootAOHeight", grass->m_GrassParams.rootAOHeight), 0.01f, 1.0f);
         break;
     }
     case VansMaterialType::VAN_EMISSIVE:

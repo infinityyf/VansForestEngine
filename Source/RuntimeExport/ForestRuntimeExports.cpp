@@ -90,7 +90,20 @@ namespace
 		if (value == "animatorController") return Vans::VansAssetType::AnimatorController;
 		if (value == "boneMask") return Vans::VansAssetType::BoneMask;
 		if (value == "timeline") return Vans::VansAssetType::Timeline;
+		if (value == "actionDefinition") return Vans::VansAssetType::ActionDefinition;
+		if (value == "actionSet") return Vans::VansAssetType::ActionSet;
+		if (value == "gameplayEffect") return Vans::VansAssetType::GameplayEffect;
+		if (value == "gameplayCue") return Vans::VansAssetType::GameplayCue;
+		if (value == "attributeSet") return Vans::VansAssetType::AttributeSet;
+		if (value == "targetingPolicy") return Vans::VansAssetType::TargetingPolicy;
+		if (value == "gameplayTagTree") return Vans::VansAssetType::GameplayTagTree;
+		if (value == "payloadSchema") return Vans::VansAssetType::PayloadSchema;
+		if (value == "actionGraph") return Vans::VansAssetType::ActionGraph;
+		if (value == "cameraRigProfile") return Vans::VansAssetType::CameraRigProfile;
+		if (value == "cameraShakeProfile") return Vans::VansAssetType::CameraShakeProfile;
+		if (value == "gafEditorLayout") return Vans::VansAssetType::GAFEditorLayout;
 		if (value == "clothProfile") return Vans::VansAssetType::ClothProfile;
+		if (value == "skinProfile") return Vans::VansAssetType::SkinProfile;
 		if (value == "postProcessProfile") return Vans::VansAssetType::PostProcessProfile;
 		if (value == "ragdollProfile") return Vans::VansAssetType::RagdollProfile;
 		if (value == "audioReverbPreset") return Vans::VansAssetType::AudioReverbPreset;
@@ -103,6 +116,8 @@ namespace
 	{
 		if (value == "imported") return Vans::VansAssetArtifactFormat::Imported;
 		if (value == "source") return Vans::VansAssetArtifactFormat::Source;
+		if (value == "cooked" || value == "gaf-cooked")
+			return Vans::VansAssetArtifactFormat::Cooked;
 		return Vans::VansAssetArtifactFormat::None;
 	}
 
@@ -516,6 +531,7 @@ FOREST_RUNTIME_API int ForestRuntime_Tick(ForestRuntimeHandle* runtime, float)
 		frame.sceneReady = true;
 		frame.simulationRunning = VansEngine::VansPhysicsSystem::GetInstance().IsSimulationRunning();
 		frame.gameplayActive = true;
+		frame.cameraControlActive = true;
 		frame.deltaSeconds = VansGraphics::VansTimer::GetDeltaTime();
 		frame.syncPhysicsTransforms = [&] { runtime->scene->UpdatePhysicsTransforms(); };
 		frame.updateNonCameraScripts = [&]
@@ -526,14 +542,26 @@ FOREST_RUNTIME_API int ForestRuntime_Tick(ForestRuntimeHandle* runtime, float)
 				runtime->scriptContext->VansScriptUpdateNonCameraScripts();
 			}
 		};
+		frame.updateActionsEarly = [&](double deltaSeconds)
+		{
+			runtime->scene->UpdateActionsEarly(deltaSeconds);
+		};
+		frame.prepareCharacterLocomotion = [&](double deltaSeconds)
+		{
+			runtime->scene->PrepareCharacterLocomotion(static_cast<float>(deltaSeconds));
+		};
 		frame.flushCharacterControllerTransforms = [&] { runtime->scene->UpdateCharControllerTransforms(); };
 		frame.updateTimelinesPostScript = [&](double deltaSeconds) { runtime->scene->UpdateTimelinesPostScript(deltaSeconds); };
+		frame.runActionLateContinuation = [&] { runtime->scene->RunActionLateContinuation(); };
+		frame.beginCameraControlFrame = [&] { runtime->scene->BeginCameraControlFrame(); };
 		frame.updateCameraScripts = [&]
 		{
 			if (runtime->scriptContext)
 				runtime->scriptContext->VansScriptUpdateCameraScripts();
 		};
+		frame.captureCameraControlBase = [&] { runtime->scene->CaptureCameraControlBase(); };
 		frame.updateTimelinesCamera = [&](double deltaSeconds) { runtime->scene->UpdateTimelinesCamera(deltaSeconds); };
+		frame.resolveCameraControlFrame = [&] { runtime->scene->ResolveCameraControlFrame(); };
 		Vans::VansRuntimeFrameScheduler::RunGameplay(frame);
 	}
 	return 1;

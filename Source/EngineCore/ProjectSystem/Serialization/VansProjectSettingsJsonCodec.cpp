@@ -16,6 +16,7 @@ const char* ToString(VansProjectFSRMode mode)
 	{
 	case VansProjectFSRMode::NativeAA: return "NativeAA";
 	case VansProjectFSRMode::Quality: return "Quality";
+	case VansProjectFSRMode::Balanced: return "Balanced";
 	case VansProjectFSRMode::Performance: return "Performance";
 	case VansProjectFSRMode::MatchViewport:
 	default: return "MatchViewport";
@@ -26,10 +27,16 @@ VansProjectFSRMode ParseFSRMode(const std::string& value, std::vector<std::strin
 {
 	if (value == "NativeAA") return VansProjectFSRMode::NativeAA;
 	if (value == "Quality") return VansProjectFSRMode::Quality;
+	if (value == "Balanced") return VansProjectFSRMode::Balanced;
 	if (value == "Performance") return VansProjectFSRMode::Performance;
 	if (value != "MatchViewport")
 		warnings.push_back("Unknown FSR mode '" + value + "', fallback to MatchViewport");
 	return VansProjectFSRMode::MatchViewport;
+}
+
+bool ParseLegacyAsyncComputeEnabled(const std::string& value)
+{
+	return value == "Auto" || value == "ForceOnForValidation";
 }
 }
 
@@ -59,7 +66,7 @@ bool VansProjectSettingsJsonCodec::DecodeRenderSettings(
 				fsr.value("mode", std::string("MatchViewport")),
 				warnings);
 			settings.fsrSettings.sharpness = std::clamp(
-				fsr.value("sharpness", 0.35f),
+				fsr.value("sharpness", 0.2f),
 				0.0f,
 				1.0f);
 		}
@@ -76,6 +83,17 @@ bool VansProjectSettingsJsonCodec::DecodeRenderSettings(
 					commandRecording.value("framesInFlight", 2u),
 					1u,
 					2u);
+			if (commandRecording.contains("asyncComputeEnabled"))
+			{
+				settings.commandRecordingSettings.asyncComputeEnabled =
+					commandRecording.value("asyncComputeEnabled", false);
+			}
+			else if (commandRecording.contains("asyncComputeMode"))
+			{
+				settings.commandRecordingSettings.asyncComputeEnabled = ParseLegacyAsyncComputeEnabled(
+					commandRecording.value("asyncComputeMode", std::string("Disabled")));
+				warnings.push_back("Deprecated commandRecording.asyncComputeMode migrated to asyncComputeEnabled");
+			}
 		}
 
 		if (root.contains("mainCameraHiZCulling") && root["mainCameraHiZCulling"].is_object())
@@ -122,7 +140,8 @@ nlohmann::json VansProjectSettingsJsonCodec::EncodeRenderSettings(
 	root["commandRecording"] = {
 		{ "parallelEnabled", settings.commandRecordingSettings.parallelEnabled },
 		{ "frameContextRingEnabled", settings.commandRecordingSettings.frameContextRingEnabled },
-		{ "framesInFlight", settings.commandRecordingSettings.framesInFlight }
+		{ "framesInFlight", settings.commandRecordingSettings.framesInFlight },
+		{ "asyncComputeEnabled", settings.commandRecordingSettings.asyncComputeEnabled }
 	};
 	root["mainCameraHiZCulling"] = {
 		{ "enabled", settings.mainCameraHiZCullSettings.enabled },

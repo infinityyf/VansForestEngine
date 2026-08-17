@@ -14,144 +14,202 @@ layout(set = 0, binding = 0) uniform WaterSurfaceParams
     ivec4 simulationParams;
     vec4 waveParticleParams0;
     vec4 waveParticleParams1;
-    vec4 waveParticleParams2;
-    vec4 waveParticleParams3;
     vec4 flowMapWorld;
     vec4 flowMapParams;
     vec4 flowMapFallback;
 } params;
 
-layout(set = 0, binding = 1, rgba16f) uniform image2DArray outDisplacement;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2DArray outDisplacement;
 
 struct WaveParticle
 {
     vec4 positionRadius;
-    vec4 directionPhase;
-    vec4 lifetimeSeed;
+    vec4 directionWave;
+    vec4 meanCompensation;
 };
-layout(set = 0, binding = 2, std430) readonly buffer ParticleBuffer { WaveParticle particles[]; } particleSSBO;
-layout(set = 0, binding = 3, rgba16f) uniform image2DArray outDerivative;
+layout(set = 0, binding = 2, std430) readonly buffer ParticleBuffer
+{
+    WaveParticle particles[];
+} particleSSBO;
+layout(set = 0, binding = 3, rgba16f) uniform writeonly image2DArray outDerivative;
 
 const float PI = 3.14159265358979323846;
+const float G = 9.81;
+const int PARTICLE_BATCH_SIZE = 32;
 
-vec2 EnvelopeAndDerivative(float x, float sharpness, float profile)
+shared vec4 batchPositionRadius[PARTICLE_BATCH_SIZE];
+shared vec4 batchDirectionPhase[PARTICLE_BATCH_SIZE];
+shared float batchMeanCompensation[PARTICLE_BATCH_SIZE];
+shared int batchActive[PARTICLE_BATCH_SIZE];
+
+void GravityDispersion(float waveNumber, float depth,
+                       out float angularFrequency, out float groupVelocity)
 {
-    if (profile < 0.5)
+    float kh = min(waveNumber * max(depth, 0.1), 20.0);
+    float depthFactor = tanh(kh);
+    angularFrequency = sqrt(max(G * waveNumber * depthFactor, 0.0));
+    if (angularFrequency < 1e-6)
     {
-        float e = exp(-x * x * sharpness);
-        return vec2(e, -2.0 * sharpness * x * e);
+        groupVelocity = 0.0;
+        return;
     }
 
-    if (profile < 1.5)
-    {
-        if (x >= 1.0)
-            return vec2(0.0);
-        float e = 0.5 + 0.5 * cos(PI * x);
-        float de = -0.5 * PI * sin(PI * x);
-        return vec2(e, de);
-    }
+    float sechSquared = max(1.0 - depthFactor * depthFactor, 0.0);
+    groupVelocity = G * (depthFactor + kh * sechSquared)
+        / (2.0 * angularFrequency);
+}
 
-    if (x >= 1.0)
-        return vec2(0.0);
-    float y = max(1.0 - x, 0.0);
-    float e = pow(y, sharpness);
-    float de = -sharpness * pow(max(y, 1e-4), sharpness - 1.0);
-    return vec2(e, de);
+vec2 PeriodicDelta(vec2 from, vec2 to, float coverage)
+{
+    vec2 delta = from - to;
+    return delta - coverage * round(delta / coverage);
 }
 
 void main()
 {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
     int cascade = int(gl_WorkGroupID.z);
-    ivec3 size = imageSize(outDisplacement);
+    ivec3 imageExtent = imageSize(outDisplacement);
     int cascadeCount = params.geometryParams.z;
-    if (any(greaterThanEqual(pixel, size.xy)) || cascade >= cascadeCount)
+    if (any(greaterThanEqual(pixel, imageExtent.xy)) || cascade >= cascadeCount)
         return;
 
-    float coverage = params.spectrumScale.x * pow(params.spectrumScale.y, float(cascade));
-    float lowerWavelength = cascade == 0 ? 2.0 * coverage / float(size.x) : coverage / params.spectrumScale.y;
-    float upperWavelength = coverage;
-    vec2 uv = (vec2(pixel) + 0.5) / vec2(size.xy);
-    vec2 worldXZ = uv * coverage;
+    float coverage = params.spectrumScale.x
+        * pow(params.spectrumScale.y, float(cascade));
+    vec2 texelSize = vec2(coverage) / vec2(imageExtent.xy);
+    vec2 worldXZ = (vec2(pixel) + 0.5) * texelSize;
+    vec2 tileCenter = (vec2(gl_WorkGroupID.xy * gl_WorkGroupSize.xy)
+        + vec2(gl_WorkGroupSize.xy) * 0.5) * texelSize;
+    float tileHalfDiagonal = length(vec2(gl_WorkGroupSize.xy) * texelSize * 0.5);
 
     vec3 displacement = vec3(0.0);
     vec3 dPdx = vec3(1.0, 0.0, 0.0);
     vec3 dPdz = vec3(0.0, 0.0, 1.0);
-    float maxSlope = 0.0;
 
-    int particleCount = clamp(params.simulationParams.y, 0, particleSSBO.particles.length());
-    int octaveCount = clamp(params.simulationParams.z, 1, 8);
-    float globalAmplitude = params.waveParticleParams0.y;
-    float phaseVelocity = params.waveParticleParams1.x;
-    float damping = params.waveParticleParams1.y;
-    float profile = params.waveParticleParams1.w;
-    float lacunarity = max(params.waveParticleParams2.x, 1.01);
-    float persistence = clamp(params.waveParticleParams2.y, 0.0, 1.0);
-    float radiusFalloff = clamp(params.waveParticleParams2.z, 0.1, 1.0);
-    float sharpness = max(params.waveParticleParams2.w, 0.25);
+    int particlesPerCascade = clamp(params.simulationParams.y, 0, params.simulationParams.z);
+    int particleStride = max(params.simulationParams.z, 1);
+    int cascadeOffset = cascade * particleStride;
+    int availableParticles = max(particleSSBO.particles.length() - cascadeOffset, 0);
+    particlesPerCascade = min(particlesPerCascade, availableParticles);
 
-    for (int i = 0; i < particleCount; ++i)
+    float targetRms = params.waveParticleParams0.x
+        * pow(clamp(params.waveParticleParams0.z, 0.0, 1.0), float(cascade));
+    float dispersionScale = max(params.waveParticleParams0.y, 0.0);
+    float waterDepth = max(params.waveParticleParams0.w, 0.1);
+    float time = params.spectrumScale.z;
+    float choppiness = params.windAndChop.w;
+    int localIndex = int(gl_LocalInvocationIndex);
+
+    for (int batchStart = 0; batchStart < particlesPerCascade;
+         batchStart += PARTICLE_BATCH_SIZE)
     {
-        WaveParticle particle = particleSSBO.particles[i];
-        vec2 direction = particle.directionPhase.xy;
-        if (dot(direction, direction) < 1e-5)
-            continue;
-        direction = normalize(direction);
-
-        vec2 particleCenter = fract(particle.positionRadius.xy) * coverage;
-        vec2 rel = worldXZ - particleCenter;
-        rel -= coverage * round(rel / coverage);
-        float dist = length(rel);
-        vec2 radialDir = dist > 1e-5 ? rel / dist : vec2(0.0);
-
-        float octaveRadius = particle.positionRadius.z;
-        float octaveAmplitude = particle.positionRadius.w * globalAmplitude;
-        float octaveFrequencyScale = 1.0;
-        for (int octave = 0; octave < octaveCount; ++octave)
+        if (localIndex < PARTICLE_BATCH_SIZE)
         {
-            float radius = max(octaveRadius, 0.05);
-            float frequency = PI * octaveFrequencyScale / radius;
-            float wavelength = 2.0 * PI / max(frequency, 1e-4);
-            if (wavelength >= lowerWavelength && wavelength < upperWavelength)
+            int particleIndex = batchStart + localIndex;
+            batchActive[localIndex] = 0;
+            batchPositionRadius[localIndex] = vec4(0.0);
+            batchDirectionPhase[localIndex] = vec4(0.0);
+            batchMeanCompensation[localIndex] = 0.0;
+            if (particleIndex < particlesPerCascade)
             {
-                float x = dist / radius;
-                vec2 env = EnvelopeAndDerivative(x, sharpness, profile);
-                if (env.x > 0.0)
+                WaveParticle particle = particleSSBO.particles[cascadeOffset + particleIndex];
+                vec2 direction = particle.directionWave.xy;
+                float normalizedRadius = particle.positionRadius.z;
+                float normalizedWavelength = particle.directionWave.z;
+                if (dot(direction, direction) > 1e-6
+                    && normalizedRadius > 0.0 && normalizedWavelength > 0.0)
                 {
-                    float phase = dot(rel, direction) * frequency
-                        - params.spectrumScale.z * particle.directionPhase.w * phaseVelocity * frequency
-                        + particle.directionPhase.z + float(octave) * 1.61803398875;
-                    float s = sin(phase);
-                    float c = cos(phase);
-                    float dampedAmplitude = octaveAmplitude * exp(-damping * x);
-                    float height = dampedAmplitude * env.x * s;
-                    vec2 gradient = dampedAmplitude * (
-                        env.y * s * radialDir / radius
-                        + env.x * c * frequency * direction);
-                    vec2 horizontal = direction * height * params.windAndChop.w;
+                    direction = normalize(direction);
+                    float radius = min(normalizedRadius * coverage, coverage * 0.45);
+                    float wavelength = normalizedWavelength * coverage;
+                    float waveNumber = 2.0 * PI / max(wavelength, 1e-4);
+                    float angularFrequency;
+                    float groupVelocity;
+                    GravityDispersion(waveNumber, waterDepth,
+                        angularFrequency, groupVelocity);
 
-                    displacement += vec3(horizontal.x, height, horizontal.y);
-                    dPdx += vec3(direction.x * params.windAndChop.w * gradient.x,
-                                  gradient.x,
-                                  direction.y * params.windAndChop.w * gradient.x);
-                    dPdz += vec3(direction.x * params.windAndChop.w * gradient.y,
-                                  gradient.y,
-                                  direction.y * params.windAndChop.w * gradient.y);
-                    maxSlope = max(maxSlope, length(gradient));
+                    vec2 center = fract(particle.positionRadius.xy
+                        + direction * (groupVelocity * time * dispersionScale / coverage))
+                        * coverage;
+                    float centerPhase = particle.directionWave.w
+                        - (angularFrequency - waveNumber * groupVelocity)
+                            * time * dispersionScale;
+                    float tileDistance = length(PeriodicDelta(tileCenter, center, coverage));
+                    if (tileDistance <= radius + tileHalfDiagonal)
+                    {
+                        batchPositionRadius[localIndex] = vec4(
+                            center, radius, particle.positionRadius.w * targetRms);
+                        batchDirectionPhase[localIndex] = vec4(
+                            direction, waveNumber, centerPhase);
+                        batchMeanCompensation[localIndex] = particle.meanCompensation.x;
+                        batchActive[localIndex] = 1;
+                    }
                 }
             }
-
-            octaveRadius *= radiusFalloff;
-            octaveAmplitude *= persistence;
-            octaveFrequencyScale *= lacunarity;
         }
+        barrier();
+
+        int batchCount = min(PARTICLE_BATCH_SIZE, particlesPerCascade - batchStart);
+        for (int i = 0; i < batchCount; ++i)
+        {
+            if (batchActive[i] == 0)
+                continue;
+
+            vec4 positionRadius = batchPositionRadius[i];
+            vec4 directionPhase = batchDirectionPhase[i];
+            vec2 relative = PeriodicDelta(worldXZ, positionRadius.xy, coverage);
+            float distanceToCenter = length(relative);
+            float radius = positionRadius.z;
+            if (distanceToCenter >= radius)
+                continue;
+
+            vec2 radialDirection = distanceToCenter > 1e-5
+                ? relative / distanceToCenter : vec2(0.0);
+            float normalizedDistance = distanceToCenter / radius;
+            float envelope = 0.5 + 0.5 * cos(PI * normalizedDistance);
+            float envelopeDerivative = -0.5 * PI
+                * sin(PI * normalizedDistance) / radius;
+            vec2 direction = directionPhase.xy;
+            float waveNumber = directionPhase.z;
+            float phase = dot(relative, direction) * waveNumber + directionPhase.w;
+            float sinePhase = sin(phase);
+            float cosinePhase = cos(phase);
+            float meanCompensation = batchMeanCompensation[i];
+            float compensatedSine = sinePhase
+                - meanCompensation * sin(directionPhase.w);
+            float compensatedCosine = cosinePhase
+                - meanCompensation * cos(directionPhase.w);
+            float amplitude = positionRadius.w;
+
+            float height = amplitude * envelope * compensatedSine;
+            vec2 heightGradient = amplitude * (
+                envelopeDerivative * compensatedSine * radialDirection
+                + envelope * cosinePhase * waveNumber * direction);
+
+            // 纵向水平位移与高度相差四分之一周期，恢复水粒子的椭圆轨迹。
+            float horizontalScalar = amplitude * envelope * compensatedCosine * choppiness;
+            vec2 horizontalGradient = amplitude * choppiness * (
+                envelopeDerivative * compensatedCosine * radialDirection
+                - envelope * sinePhase * waveNumber * direction);
+            vec2 horizontal = direction * horizontalScalar;
+
+            displacement += vec3(horizontal.x, height, horizontal.y);
+            dPdx += vec3(direction.x * horizontalGradient.x,
+                          heightGradient.x,
+                          direction.y * horizontalGradient.x);
+            dPdz += vec3(direction.x * horizontalGradient.y,
+                          heightGradient.y,
+                          direction.y * horizontalGradient.y);
+        }
+        barrier();
     }
 
     float jacobian = dPdx.x * dPdz.z - dPdx.z * dPdz.x;
+    float totalSlope = length(vec2(dPdx.y, dPdz.y));
     float foamSlope = smoothstep(
-        params.waveParticleParams3.x,
-        params.waveParticleParams3.x + params.waveParticleParams3.y,
-        maxSlope);
+        params.waveParticleParams1.x,
+        params.waveParticleParams1.x + params.waveParticleParams1.y,
+        totalSlope);
     float foldDiagnostic = max(foamSlope, clamp(1.0 - jacobian, 0.0, 1.0));
     imageStore(outDisplacement, ivec3(pixel, cascade), vec4(displacement, foldDiagnostic));
     imageStore(outDerivative, ivec3(pixel, cascade * 2), vec4(dPdx, foldDiagnostic));

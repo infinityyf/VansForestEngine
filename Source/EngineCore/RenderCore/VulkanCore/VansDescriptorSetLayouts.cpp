@@ -107,6 +107,12 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_Global(
 		// binding 17: tree leaf extension payload SSBO (same materialIndex as binding 2)
 		{GLOBAL_BINDING_TREE_LEAF_MATERIAL_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
 		 MATERIAL_STAGES, nullptr},
+		// binding 18: skin extension payload SSBO (same materialIndex as binding 2)
+		{GLOBAL_BINDING_SKIN_MATERIAL_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 MATERIAL_STAGES, nullptr},
+		// binding 19: skin profile pre-integrated LUT array
+		{GLOBAL_BINDING_SKIN_PROFILE_LUT_ARRAY, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 IBL_STAGES, nullptr},
 		// binding 50: Bindless PBR textures (fixed max count, no variable descriptor)
 		{GLOBAL_BINDING_BINDLESS_TEXTURES, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		 maxBindlessTextures, BINDLESS_TEX_STAGES, nullptr},
@@ -162,6 +168,9 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_VertexDeformation(
 		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
 		// binding 2: Per-vertex Bone Weights SSBO (vec4 per vertex, per-submesh)
 		{VERTEX_DEFORMATION_BINDING_BONEWEIGHT_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
+		// binding 3: Previous-frame Bone Matrices SSBO (mat4[MAX_BONES])
+		{VERTEX_DEFORMATION_BINDING_PREVIOUS_BONE_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
 		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount, VansDescriptorLifetimeRole::ScenePersistent);
@@ -222,8 +231,8 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_PostProcess(
 	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
 {
 	std::vector<VkDescriptorSetLayoutBinding> bindings = {
-		// binding 0：SceneColorHDR 输入（subpassLoad，tile-local）
-		{POSTPROCESS_BINDING_COLOR_INPUT,  VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,      1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		// binding 0: Display-resolution HDR FSR output.
+		{POSTPROCESS_BINDING_COLOR_INPUT,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 		// binding 1：Bloom 合成结果（Compute 前序输出）
 		{POSTPROCESS_BINDING_BLOOM_RESULT, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 		{POSTPROCESS_BINDING_EXPOSURE_VAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
@@ -275,6 +284,20 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_BloomUpsample(
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }
 
+// ============================================================
+// Bloom Shape Compute：标准 Bloom → 形状化 Bloom 输出
+// ============================================================
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_BloomShape(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{BLOOM_SHAPE_BINDING_SRC,    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{BLOOM_SHAPE_BINDING_DST,    VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{BLOOM_SHAPE_BINDING_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
 
 void VansDescriptorSetLayoutFactory::CreateAndAllocate_DeferredLighting(
 	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
@@ -317,6 +340,18 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_DeferredLighting(
 		{27, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 		{28, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 		{29, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_DepthOfField(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{DOF_BINDING_SRC_COLOR, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{DOF_BINDING_GBUFFER2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{DOF_BINDING_DST_COLOR, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{DOF_BINDING_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }
@@ -666,7 +701,7 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_RayTracing(
 }
 
 // ============================================================
-// Set 4: Per-Node Skin Texture Layout (2 bindings: albedo + normal)
+// Set 4: Per-Node Skin Texture Layout
 // Each skin render node owns its own descriptor set with dedicated textures.
 // ============================================================
 void VansDescriptorSetLayoutFactory::CreateAndAllocate_SkinTexture(
@@ -678,6 +713,18 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_SkinTexture(
 		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 		// binding 1: Skin normal texture
 		{SKIN_TEXTURE_BINDING_NORMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		// binding 2: Skin roughness texture
+		{SKIN_TEXTURE_BINDING_ROUGHNESS, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		// binding 3: Skin cavity/specular occlusion texture
+		{SKIN_TEXTURE_BINDING_CAVITY, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		// binding 4: Skin local scatter mask texture
+		{SKIN_TEXTURE_BINDING_SCATTER_MASK, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		// binding 5: Skin thinness/transmission mask texture
+		{SKIN_TEXTURE_BINDING_THICKNESS, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
 		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
@@ -1012,6 +1059,7 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_ExposureAdapt(
 		{EXPOSURE_ADAPT_BINDING_LUM_IN, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{EXPOSURE_ADAPT_BINDING_EXP_OUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{EXPOSURE_ADAPT_BINDING_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{EXPOSURE_ADAPT_BINDING_FSR_EXP_OUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }
@@ -1166,16 +1214,22 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterRefractionCompute(
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }
 
-// W-14: Water Caustics Compute (sun-direction driven)
+// W-14: Receiver-space water caustics compute.
 void VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterCausticsCompute(
 	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
 {
 	std::vector<VkDescriptorSetLayoutBinding> bindings = {
-		{WATER_CAUSTICS_BINDING_GBUF_NORMAL,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{WATER_CAUSTICS_BINDING_GBUF_DEPTH,   VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{WATER_CAUSTICS_BINDING_THICKNESS,    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{WATER_CAUSTICS_BINDING_PARAMS,       VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{WATER_CAUSTICS_BINDING_CAUSTICS_OUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_CAUSTICS_BINDING_WATER_SURFACE,   VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_CAUSTICS_BINDING_SCENE_NORMAL,    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_CAUSTICS_BINDING_SCENE_GBUF0,     VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_CAUSTICS_BINDING_SCENE_GBUF2,     VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_CAUSTICS_BINDING_REFRACTION_DATA, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_CAUSTICS_BINDING_DISPLACEMENT,    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_CAUSTICS_BINDING_DERIVATIVE,      VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_CAUSTICS_BINDING_FLOW_MAP,        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_CAUSTICS_BINDING_SURFACE_PARAMS,  VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_CAUSTICS_BINDING_PARAMS,          VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{WATER_CAUSTICS_BINDING_CAUSTICS_OUT,    VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }

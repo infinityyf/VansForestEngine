@@ -222,7 +222,9 @@ bool VansSceneProjectResourceBuilder::LoadMeshes(VansScene& scene,
             bool generate_as = sceneMesh.supportRayTracing;
             bool needCpuData = sceneMesh.needCpuData;
             VansMesh* mesh   = new VansMesh(needCpuData, generate_as);
-            mesh->LoadMesh(device, vkDevice->GetGraphicsQueue(), &(vkDevice->GetCommandBuffer()), meshPath.c_str(), import_tangent, resolved.artifactPath.string(), resolved.cookedOnly);
+            mesh->LoadMesh(device, vkDevice->GetGraphicsQueue(), &(vkDevice->GetCommandBuffer()),
+                meshPath.c_str(), import_tangent, resolved.artifactPath.string(), resolved.cookedOnly,
+                scaleFactor);
 			if (mesh->GetMeshVertexCount() == 0 || mesh->GetIndexCount() == 0)
 			{
 				VANS_LOG_ERROR("[SceneResource] Mesh load produced empty geometry: "

@@ -10,7 +10,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <optional>
 #include <system_error>
 #include <type_traits>
 #include <unordered_map>
@@ -77,7 +76,11 @@ const char* DefaultTextureForSlot(const std::string& slot)
 		return "defaultMetal";
 	if (slot == "roughness")
 		return "defaultRoughness";
-	if (slot == "ao" || slot == "occlusion")
+	if (slot == "ao" || slot == "occlusion" ||
+		slot == "cavity" || slot == "specular" ||
+		slot == "sss_mask" || slot == "sssmask" ||
+		slot == "subsurface_mask" || slot == "scatter_mask" ||
+		slot == "thickness" || slot == "transmission" || slot == "thinness")
 		return "defaultAo";
 	return "defaultAlbedo";
 }
@@ -143,6 +146,21 @@ int MaterialGlobalTextureBaseIndex(VansMaterial& material)
 
 int StandardBindlessSlotIndexForMaterial(VansMaterial& material, const std::string& slot)
 {
+	if (material.m_MaterialType == VansMaterialType::VAN_SKIN)
+	{
+		if (slot == "basecolor" || slot == "base_color" || slot == "albedo" ||
+			slot == "diffuse" || slot == "color")
+			return 0;
+		if (slot == "normal")
+			return 1;
+		if (slot == "cavity" || slot == "specular" || slot == "ao" || slot == "occlusion")
+			return 2;
+		if (slot == "roughness")
+			return 3;
+		if (slot == "sss_mask" || slot == "sssmask" || slot == "subsurface_mask" || slot == "scatter_mask")
+			return 4;
+		return -1;
+	}
 	if (slot == "basecolor" || slot == "base_color" || slot == "albedo" ||
 		slot == "diffuse" || slot == "color")
 		return 0;
@@ -225,6 +243,14 @@ bool SetMaterialTexturePointer(VansMaterial& material, const std::string& slot, 
 			skin->m_BaseColorTexture = texture;
 		else if (slot == "normal")
 			skin->m_NormalTexture = texture;
+		else if (slot == "roughness")
+			skin->m_RoughnessTexture = texture;
+		else if (slot == "cavity" || slot == "specular" || slot == "ao" || slot == "occlusion")
+			skin->m_CavityTexture = texture;
+		else if (slot == "scatter_mask" || slot == "scattermask" || slot == "sss_mask" || slot == "sssmask" || slot == "subsurface_mask")
+			skin->m_ScatterMaskTexture = texture;
+		else if (slot == "thickness" || slot == "transmission" || slot == "thinness")
+			skin->m_ThicknessTexture = texture;
 		else
 			return false;
 		return true;
@@ -463,6 +489,7 @@ bool CompatibleNodeClass(const VansRenderNode& node, RenderNodeType targetType)
 		return false;
 	return (node.GetNodeType() == TRANSPARENT_NODE) == (targetType == TRANSPARENT_NODE);
 }
+
 }
 
 bool VansMaterialLiveEditService::ApplyMaterialPreviewChange(

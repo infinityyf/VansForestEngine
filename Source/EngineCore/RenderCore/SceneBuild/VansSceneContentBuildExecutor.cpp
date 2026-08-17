@@ -119,7 +119,8 @@ bool VansSceneContentBuildExecutor::BuildFromPlan(
 	if (!buildPlan.materials.empty())
 		VansSceneMaterialBuilder::LoadMaterials(scene, buildPlan.materials);
 
-	scene.LoadSceneObjects(nativeDevice, buildPlan.objects, projectRoot);
+	if (!scene.LoadSceneObjects(nativeDevice, buildPlan.objects, projectRoot))
+		return false;
 
 	if (!buildPlan.renderNodes.empty())
 		VansSceneRenderNodeBuilder::LoadRenderNodes(scene, nativeDevice, buildPlan.renderNodes);
@@ -305,6 +306,25 @@ void VansSceneContentBuildExecutor::ApplyPostProcessSettings(
 	ApplyOptionalValue(config->bloomKnee, profile.m_BloomKnee);
 	ApplyOptionalValue(config->bloomIntensity, profile.m_BloomIntensity);
 	ApplyOptionalValue(config->bloomScatter, profile.m_BloomScatter);
+	ApplyOptionalValue(config->bloomClamp, profile.m_BloomClamp);
+	ApplyOptionalValue(config->bloomTintR, profile.m_BloomTintR);
+	ApplyOptionalValue(config->bloomTintG, profile.m_BloomTintG);
+	ApplyOptionalValue(config->bloomTintB, profile.m_BloomTintB);
+	ApplyOptionalValue(config->bloomShapeMode, profile.m_BloomShapeMode);
+	ApplyOptionalValue(config->bloomShapeIntensity, profile.m_BloomShapeIntensity);
+	ApplyOptionalValue(config->bloomShapeBlend, profile.m_BloomShapeBlend);
+	ApplyOptionalValue(config->bloomShapeAngleDeg, profile.m_BloomShapeAngleDeg);
+	ApplyOptionalValue(config->bloomAnamorphicStretch, profile.m_BloomAnamorphicStretch);
+	ApplyOptionalValue(config->bloomStreakCount, profile.m_BloomStreakCount);
+	ApplyOptionalValue(config->bloomStreakLength, profile.m_BloomStreakLength);
+	ApplyOptionalValue(config->bloomStreakAttenuation, profile.m_BloomStreakAttenuation);
+	ApplyOptionalValue(config->enableDOF, profile.m_EnableDOF);
+	ApplyOptionalValue(config->focusDistance, profile.m_FocusDistance);
+	ApplyOptionalValue(config->focalLengthMm, profile.m_FocalLengthMm);
+	ApplyOptionalValue(config->fStop, profile.m_FStop);
+	ApplyOptionalValue(config->sensorHeightMm, profile.m_SensorHeightMm);
+	ApplyOptionalValue(config->maxCoC, profile.m_MaxCoC);
+	ApplyOptionalValue(config->dofBlurTransmissionBackground, profile.m_DOFBlurTransmissionBackground);
 	ApplyOptionalValue(config->toneMapperType, profile.m_ToneMapperType);
 	ApplyOptionalValue(config->whitePoint, profile.m_WhitePoint);
 	ApplyOptionalValue(config->enableColorGrading, profile.m_EnableColorGrading);
@@ -323,6 +343,23 @@ void VansSceneContentBuildExecutor::ApplyPostProcessSettings(
 	profile.m_BloomKnee = std::clamp(profile.m_BloomKnee, 0.0f, 1.0f);
 	profile.m_BloomIntensity = std::clamp(profile.m_BloomIntensity, 0.0f, 10.0f);
 	profile.m_BloomScatter = std::clamp(profile.m_BloomScatter, 0.0f, 1.0f);
+	profile.m_BloomClamp = std::clamp(profile.m_BloomClamp, 0.0f, 1024.0f);
+	profile.m_BloomTintR = std::clamp(profile.m_BloomTintR, 0.0f, 8.0f);
+	profile.m_BloomTintG = std::clamp(profile.m_BloomTintG, 0.0f, 8.0f);
+	profile.m_BloomTintB = std::clamp(profile.m_BloomTintB, 0.0f, 8.0f);
+	profile.m_BloomShapeMode = std::clamp(profile.m_BloomShapeMode, 0, 2);
+	profile.m_BloomShapeIntensity = std::clamp(profile.m_BloomShapeIntensity, 0.0f, 4.0f);
+	profile.m_BloomShapeBlend = std::clamp(profile.m_BloomShapeBlend, 0.0f, 1.0f);
+	profile.m_BloomShapeAngleDeg = std::clamp(profile.m_BloomShapeAngleDeg, -360.0f, 360.0f);
+	profile.m_BloomAnamorphicStretch = std::clamp(profile.m_BloomAnamorphicStretch, 0.0f, 16.0f);
+	profile.m_BloomStreakCount = std::clamp(profile.m_BloomStreakCount, 2, 8);
+	profile.m_BloomStreakLength = std::clamp(profile.m_BloomStreakLength, 0.0f, 128.0f);
+	profile.m_BloomStreakAttenuation = std::clamp(profile.m_BloomStreakAttenuation, 0.0f, 0.98f);
+	profile.m_FocusDistance = std::clamp(profile.m_FocusDistance, 0.01f, 100000.0f);
+	profile.m_FocalLengthMm = std::clamp(profile.m_FocalLengthMm, 8.0f, 300.0f);
+	profile.m_FStop = std::clamp(profile.m_FStop, 0.7f, 32.0f);
+	profile.m_SensorHeightMm = std::clamp(profile.m_SensorHeightMm, 1.0f, 80.0f);
+	profile.m_MaxCoC = std::clamp(profile.m_MaxCoC, 0.0f, 64.0f);
 	profile.m_ToneMapperType = std::clamp(profile.m_ToneMapperType, 0, 2);
 	profile.m_WhitePoint = std::clamp(profile.m_WhitePoint, 0.1f, 64.0f);
 	profile.m_Contrast = std::clamp(profile.m_Contrast, 0.0f, 4.0f);

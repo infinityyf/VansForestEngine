@@ -13,9 +13,19 @@
 #include "../../SceneCore/VansSceneRuntimeComponentKey.h"
 #include "../../SceneRuntime/VansRuntimeComponentTypes.h"
 #include "../../SceneRuntime/VansRuntimeWorld.h"
+#include "../../GameplayActionCore/VansGameplayRuntime.h"
+#include "../../GameplayActionAdapters/Camera/VansCameraActionService.h"
+#include "../../CameraGameplayAction/VansCameraActionGraphNodes.h"
+#include "../../GameplayActionSchema/VansGAFProjectConfiguration.h"
+#include "../../PhysicsCore/VansCollisionLayerManager.h"
+#include "../../PhysicsCore/VansPhysics.h"
+#include "../../PhysicsCore/VansPhysicsNode.h"
+#include "../../ProjectSystem/VansProjectManager.h"
 #include "../../ScriptCore/VansScriptContext.h"
+#include "../../ScriptCore/VansTransform.h"
 #include "../../Util/VansLog.h"
 #include "../VulkanCore/VansMesh.h"
+#include "../VansCameraControlArbiter.h"
 
 #include <algorithm>
 #include <array>
@@ -25,6 +35,51 @@
 
 namespace
 {
+class CameraCollisionQueryFilter final : public physx::PxQueryFilterCallback
+{
+public:
+	CameraCollisionQueryFilter(std::unordered_set<physx::PxU32> layers,
+		std::uint32_t ignoredTransform)
+		: m_Layers(std::move(layers)), m_FilterByLayer(!m_Layers.empty()),
+		  m_IgnoredTransform(ignoredTransform) {}
+
+	physx::PxQueryHitType::Enum preFilter(const physx::PxFilterData&,
+		const physx::PxShape* shape, const physx::PxRigidActor* actor,
+		physx::PxHitFlags&) override
+	{
+		return Filter(shape, actor);
+	}
+
+	physx::PxQueryHitType::Enum postFilter(const physx::PxFilterData&,
+		const physx::PxQueryHit&, const physx::PxShape* shape,
+		const physx::PxRigidActor* actor) override
+	{
+		return Filter(shape, actor);
+	}
+
+private:
+	physx::PxQueryHitType::Enum Filter(const physx::PxShape* shape,
+		const physx::PxRigidActor* actor) const
+	{
+		if (!shape) return physx::PxQueryHitType::eNONE;
+		const physx::PxFilterData target = shape->getQueryFilterData();
+		if ((target.word2 & 0x1u) != 0u ||
+			(m_FilterByLayer && m_Layers.find(target.word0) == m_Layers.end()))
+			return physx::PxQueryHitType::eNONE;
+		if (m_IgnoredTransform != UINT32_MAX && actor && actor->userData)
+		{
+			auto* node = static_cast<VansEngine::VansPhysicsNode*>(actor->userData);
+			if (node && node->GetTransformID() == m_IgnoredTransform)
+				return physx::PxQueryHitType::eNONE;
+		}
+		return physx::PxQueryHitType::eBLOCK;
+	}
+
+	std::unordered_set<physx::PxU32> m_Layers;
+	bool m_FilterByLayer = false;
+	std::uint32_t m_IgnoredTransform = UINT32_MAX;
+};
+
 struct RuntimeComponentBuildResults
 {
 	VansScriptRenderComponent* render = nullptr;
@@ -480,13 +535,16 @@ void QueueLightRuntimeComponents(
 	}
 }
 
-void RegisterRuntimeComponents(
+bool RegisterRuntimeComponents(
 	Vans::VansRuntimeWorld& runtimeWorld,
 	Vans::VansEntityHandle entity,
 	VansScriptObject& object,
 	const std::unordered_map<std::string, std::string>& componentGuids,
 	const RuntimeComponentBuildResults& buildResults,
-	const std::optional<Vans::VansSceneTimelineComponentConfig>& timelineConfig)
+	const std::optional<Vans::VansSceneTimelineComponentConfig>& timelineConfig,
+	const std::optional<Vans::VansGameplayActionHostSetup>& actionHostConfig,
+	Vans::VansGameplayRuntime* gameplayRuntime,
+	std::string& error)
 {
 	std::vector<std::pair<VansScriptComponent*, std::uint16_t>> registrationChecks;
 	const auto transformGuid = componentGuids.find("transform");
@@ -559,6 +617,39 @@ void RegisterRuntimeComponents(
 				<< "' asset='" << timelineConfig->timelineAssetGuid << "'");
 		}
 	}
+	if (actionHostConfig)
+	{
+		if (!gameplayRuntime || !gameplayRuntime->IsInitialized())
+		{
+			error = "ActionHost requires an initialized Gameplay Runtime";
+			return false;
+		}
+		const std::string actionHostComponentGuid =
+			FindRuntimeComponentGuid(componentGuids, "action_host");
+		if (actionHostComponentGuid.empty())
+		{
+			error = "ActionHost component is missing its stable component GUID";
+			return false;
+		}
+		std::shared_ptr<Vans::VansActionHost> host =
+			gameplayRuntime->CreateHost(entity, *actionHostConfig, error);
+		if (!host)
+			return false;
+		runtimeWorld.Commands().AddActionHostComponent(
+			entity,
+			actionHostComponentGuid,
+			std::move(host),
+			actionHostConfig->enabled);
+		runtimeWorld.FlushCommands();
+		const Vans::VansComponentHandle actionHostComponent = runtimeWorld.FindComponentByGuid(
+			actionHostComponentGuid, Vans::VansRuntimeComponentType_ActionHost);
+		if (!actionHostComponent.IsValid())
+		{
+			error = "Runtime command buffer did not add ActionHost component '" +
+				actionHostComponentGuid + "'";
+			return false;
+		}
+	}
 	runtimeWorld.FlushCommands();
 	if (transformGuid != componentGuids.end() && !transformGuid->second.empty())
 	{
@@ -581,10 +672,11 @@ void RegisterRuntimeComponents(
 				<< component->m_ComponentName << "' guid='" << component->m_ComponentGuid << "'");
 		}
 	}
+	return true;
 }
 }
 
-void VansGraphics::VansScene::LoadSceneObjects(
+bool VansGraphics::VansScene::LoadSceneObjects(
 	VkDevice& device,
 	const Vans::VansSceneObjectBuildPlan& objectBuildPlan,
 	const std::string& projectRoot)
@@ -616,6 +708,135 @@ void VansGraphics::VansScene::LoadSceneObjects(
 	vehicleComponents.reserve(objectBuildPlan.objects.size());
 	if (!m_RuntimeWorld)
 		m_RuntimeWorld = std::make_unique<Vans::VansRuntimeWorld>();
+	if (!m_CameraControlArbiter)
+		m_CameraControlArbiter = std::make_unique<VansCameraControlArbiter>();
+	m_CameraControlArbiter->CoreRuntime().SetBindingResolver(
+		[this](Vans::VansGenerationHandle context, std::string_view,
+			Vans::VansCameraBindingSnapshot& binding)
+		{
+			const Vans::VansEntityHandle entity{ context.index, context.generation };
+			if (!m_RuntimeWorld || !m_RuntimeWorld->IsAlive(entity)) return false;
+			auto* storage = static_cast<Vans::VansComponentStorage<
+				Vans::VansRuntimeTransformComponent>*>(m_RuntimeWorld->FindStorage(
+					Vans::VansRuntimeComponentType_Transform));
+			if (!storage) return false;
+			for (Vans::VansComponentHandle component :
+				m_RuntimeWorld->CollectComponentsOwnedBy(entity))
+			{
+				if (component.typeId != Vans::VansRuntimeComponentType_Transform) continue;
+				const Vans::VansRuntimeTransformComponent* runtimeTransform = storage->Get(component);
+				if (!runtimeTransform || runtimeTransform->transformStoreId == UINT32_MAX) return false;
+				const VansTransform& transform = VansTransformStore::GetTransform(
+					runtimeTransform->transformStoreId);
+				binding.pose.position = transform.m_Position;
+				binding.pose.rotationDegrees = transform.m_Rotation;
+				return true;
+			}
+			return false;
+		});
+	m_CameraControlArbiter->CoreRuntime().SetCollisionResolver(
+		[this](const Vans::VansCameraCollisionQuery& query,
+			Vans::VansCameraCollisionResult& result)
+		{
+			const glm::vec3 delta = query.desiredPosition - query.origin;
+			const float distance = glm::length(delta);
+			if (distance <= 0.0001f) return false;
+			auto& physics = VansEngine::VansPhysicsSystem::GetInstance();
+			physx::PxScene* scene = physics.GetScene();
+			if (!scene) return false;
+			std::unordered_set<physx::PxU32> layers;
+			auto& layerManager = VansEngine::VansCollisionLayerManager::Get();
+			for (const std::string& name : query.layers)
+			{
+				const int index = layerManager.GetLayerIndex(name);
+				if (index >= 0) layers.insert(static_cast<physx::PxU32>(index));
+			}
+			std::uint32_t ignoredTransform = UINT32_MAX;
+			const Vans::VansEntityHandle entity{
+				query.bindingContext.index, query.bindingContext.generation };
+			if (m_RuntimeWorld && m_RuntimeWorld->IsAlive(entity))
+			{
+				auto* storage = static_cast<Vans::VansComponentStorage<
+					Vans::VansRuntimeTransformComponent>*>(m_RuntimeWorld->FindStorage(
+						Vans::VansRuntimeComponentType_Transform));
+				if (storage)
+					for (Vans::VansComponentHandle component :
+						m_RuntimeWorld->CollectComponentsOwnedBy(entity))
+						if (component.typeId == Vans::VansRuntimeComponentType_Transform)
+						{
+							if (const auto* transform = storage->Get(component))
+								ignoredTransform = transform->transformStoreId;
+							break;
+						}
+			}
+			CameraCollisionQueryFilter filter(std::move(layers), ignoredTransform);
+			physx::PxQueryFilterData filterData;
+			filterData.flags = physx::PxQueryFlag::eSTATIC |
+				physx::PxQueryFlag::eDYNAMIC | physx::PxQueryFlag::ePREFILTER;
+			physx::PxSweepBuffer hit;
+			std::lock_guard<std::mutex> lock(physics.GetSimulationMutex());
+			physx::PxSceneReadLock readLock(*scene);
+			result.blocked = scene->sweep(
+				physx::PxSphereGeometry((std::max)(query.radius, 0.001f)),
+				physx::PxTransform(physx::PxVec3(query.origin.x, query.origin.y, query.origin.z)),
+				physx::PxVec3(delta.x / distance, delta.y / distance, delta.z / distance),
+				distance, hit, physx::PxHitFlag::eDEFAULT, filterData, &filter) && hit.hasBlock;
+			result.distance = result.blocked ? hit.block.distance : distance;
+			return true;
+		});
+	if (!m_GameplayRuntime)
+		m_GameplayRuntime = std::make_unique<Vans::VansGameplayRuntime>();
+	if (!m_GameplayRuntime->IsInitialized())
+	{
+		std::string gameplayError;
+		Vans::VansProjectManager& projectManager = Vans::VansProjectManager::Get();
+		Vans::VansGAFProjectConfiguration gameplayConfiguration;
+		if (!Vans::VansGAFProjectConfiguration::LoadForProject(
+			projectManager.GetProjectRootPath(),
+			projectManager.GetPathResolver().GetEngineRoot(),
+			gameplayConfiguration,
+			gameplayError))
+		{
+			VANS_LOG_ERROR("[SceneBuild] Could not load GAF project configuration: " << gameplayError);
+			return false;
+		}
+		Vans::VansGameplayRuntimeDependencies gameplayDependencies;
+		gameplayDependencies.graphNodeRegistrars.push_back(
+			Vans::VansRegisterCameraActionGraphNodes);
+		gameplayDependencies.serviceFactories.push_back(
+			[this](const Vans::VansGameplayAssetLibrary& assets, std::string& error)
+				-> std::shared_ptr<Vans::IVansActionService>
+			{
+				auto resolvePosition = [this](Vans::VansEntityHandle entity, glm::vec3& position)
+				{
+					if (!m_RuntimeWorld || !m_RuntimeWorld->IsAlive(entity)) return false;
+					auto* storage = static_cast<Vans::VansComponentStorage<
+						Vans::VansRuntimeTransformComponent>*>(m_RuntimeWorld->FindStorage(
+							Vans::VansRuntimeComponentType_Transform));
+					if (!storage) return false;
+					for (Vans::VansComponentHandle component :
+						m_RuntimeWorld->CollectComponentsOwnedBy(entity))
+					{
+						if (component.typeId != Vans::VansRuntimeComponentType_Transform) continue;
+						const Vans::VansRuntimeTransformComponent* transform = storage->Get(component);
+						if (!transform || transform->transformStoreId == UINT32_MAX) return false;
+						position = VansTransformStore::GetTransform(
+							transform->transformStoreId).m_Position;
+						return true;
+					}
+					return false;
+				};
+				return Vans::VansCameraActionService::Create(
+					m_CameraControlArbiter->CoreRuntime(), assets, error,
+					std::move(resolvePosition));
+			});
+		if (!m_GameplayRuntime->Initialize(projectManager.EnumerateAssetRecords(),
+			gameplayConfiguration.settings, gameplayDependencies, gameplayError))
+		{
+			VANS_LOG_ERROR("[SceneBuild] Could not initialize Gameplay Runtime: " << gameplayError);
+			return false;
+		}
+	}
 
 	// === [VansSceneLoadPass::Pass1_ComponentInstantiation] ===
 	for (const Vans::VansSceneObjectBuildConfig& objectConfig : objectBuildPlan.objects)
@@ -705,6 +926,12 @@ void VansGraphics::VansScene::LoadSceneObjects(
 
 			}
 		}
+		// A scene Transform is a runtime component even when the object has no
+		// render, physics, camera, or other component that would otherwise force
+		// allocation. This is required for pure Transform targets such as
+		// virtual cameras and camera focus markers.
+		if (hasObjTransform)
+			ensureObjectTransform();
 
 		runtimeComponentBuildResults.physics =
 			VansScenePhysicsComponentBuilder::BuildPhysicsClothAndCharacter(
@@ -818,13 +1045,22 @@ void VansGraphics::VansScene::LoadSceneObjects(
 			VANS_LOG_ERROR("[SceneBuild] Runtime command buffer did not create entity '"
 				<< objectConfig.name << "' guid='" << objectConfig.entityGuid << "'");
 		}
-		RegisterRuntimeComponents(
+		std::string runtimeComponentError;
+		if (!RegisterRuntimeComponents(
 			*m_RuntimeWorld,
 			runtimeEntity,
 			*obj,
 			objectConfig.componentGuids,
 			runtimeComponentBuildResults,
-			objectConfig.timeline);
+			objectConfig.timeline,
+			objectConfig.actionHost,
+			m_GameplayRuntime.get(),
+			runtimeComponentError))
+		{
+			VANS_LOG_ERROR("[SceneBuild] Could not register runtime components for entity '"
+				<< objectConfig.name << "': " << runtimeComponentError);
+			return false;
+		}
 	}
 
 	// === [VansSceneLoadPass::Pass2_VehicleReference] ===
@@ -982,4 +1218,5 @@ void VansGraphics::VansScene::LoadSceneObjects(
 	ConfigureTimelineRuntime();
 
 	m_AudioManager.PlayAutoPlay();
+	return true;
 }

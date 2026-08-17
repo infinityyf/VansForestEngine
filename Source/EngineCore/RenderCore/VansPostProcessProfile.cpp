@@ -26,6 +26,8 @@ namespace VansGraphics
 		p.m_TimelineFadeColorG   = m_TimelineFadeColorG;
 		p.m_TimelineFadeColorB   = m_TimelineFadeColorB;
 		p.m_TimelineFadeOpacity  = m_TimelineFadeOpacity;
+		p.m_EnableDOF            = m_EnableDOF ? 1 : 0;
+		p.m_EnableAutoExposure   = m_EnableAutoExposure ? 1 : 0;
 		return p;
 	}
 
@@ -37,6 +39,7 @@ namespace VansGraphics
 		p.m_AdaptationSpeedUp = (std::max)(m_AdaptationSpeedUp, 0.0f);
 		p.m_AdaptationSpeedDown = (std::max)(m_AdaptationSpeedDown, 0.0f);
 		p.m_DeltaTime = std::clamp(deltaTime, 0.0f, 0.25f);
+		p.m_ExposureCompensation = std::clamp(m_ExposureCompensation, -24.0f, 24.0f);
 		p.m_EnableAutoExposure = m_EnableAutoExposure ? 1 : 0;
 		return p;
 	}
@@ -44,10 +47,42 @@ namespace VansGraphics
 	VansBloomParamsGPU VansPostProcessProfile::ToBloomParams() const
 	{
 		VansBloomParamsGPU p;
-		p.m_Threshold = m_BloomThreshold;
-		p.m_Knee      = m_BloomKnee;
-		p.m_Intensity = m_BloomIntensity;
-		p.m_Scatter   = m_BloomScatter;
+		p.m_Threshold = std::clamp(m_BloomThreshold, 0.0f, 64.0f);
+		p.m_Knee      = std::clamp(m_BloomKnee, 0.0f, 1.0f);
+		p.m_Scatter   = std::clamp(m_BloomScatter, 0.0f, 1.0f);
+		p.m_Clamp     = std::max(m_BloomClamp, 0.0f);
+		p.m_TintR     = std::clamp(m_BloomTintR, 0.0f, 8.0f);
+		p.m_TintG     = std::clamp(m_BloomTintG, 0.0f, 8.0f);
+		p.m_TintB     = std::clamp(m_BloomTintB, 0.0f, 8.0f);
+		return p;
+	}
+
+	VansBloomShapeParamsGPU VansPostProcessProfile::ToBloomShapeParams() const
+	{
+		constexpr float kPi = 3.14159265358979323846f;
+		VansBloomShapeParamsGPU p;
+		p.m_Mode = std::clamp(m_BloomShapeMode, 0, static_cast<int32_t>(VansBloomShapeMode::Star));
+		p.m_ShapeIntensity = std::clamp(m_BloomShapeIntensity, 0.0f, 4.0f);
+		p.m_ShapeBlend = std::clamp(m_BloomShapeBlend, 0.0f, 1.0f);
+		p.m_ShapeAngleRadians = m_BloomShapeAngleDeg * (kPi / 180.0f);
+		p.m_AnamorphicStretch = std::clamp(m_BloomAnamorphicStretch, 0.0f, 16.0f);
+		p.m_StreakLength = std::clamp(m_BloomStreakLength, 0.0f, 128.0f);
+		p.m_StreakAttenuation = std::clamp(m_BloomStreakAttenuation, 0.0f, 0.98f);
+		p.m_StreakCount = std::clamp(m_BloomStreakCount, 2, 8);
+		return p;
+	}
+
+	VansDepthOfFieldParamsGPU VansPostProcessProfile::ToDepthOfFieldParams(uint32_t renderWidth, uint32_t renderHeight) const
+	{
+		VansDepthOfFieldParamsGPU p;
+		p.m_EnableDOF = m_EnableDOF ? 1 : 0;
+		p.m_FocusDistance = std::clamp(m_FocusDistance, 0.01f, 100000.0f);
+		p.m_FocalLengthMm = std::clamp(m_FocalLengthMm, 8.0f, 300.0f);
+		p.m_FStop = std::clamp(m_FStop, 0.7f, 32.0f);
+		p.m_SensorHeightMm = std::clamp(m_SensorHeightMm, 1.0f, 80.0f);
+		p.m_MaxCoC = std::clamp(m_MaxCoC, 0.0f, 64.0f);
+		p.m_InvRenderWidth = renderWidth > 0 ? 1.0f / static_cast<float>(renderWidth) : 0.0f;
+		p.m_InvRenderHeight = renderHeight > 0 ? 1.0f / static_cast<float>(renderHeight) : 0.0f;
 		return p;
 	}
 

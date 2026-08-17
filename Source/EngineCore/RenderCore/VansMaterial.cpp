@@ -1,5 +1,7 @@
 #include "VansMaterial.h"
+#include "../Util/VansLog.h"
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <type_traits>
 using namespace VansGraphics;
@@ -7,6 +9,146 @@ using namespace VansGraphics;
 namespace
 {
 constexpr float kLegacyMoonDiskRadianceScale = 0.00008f;
+
+std::string NormalizeSkinProfileName(std::string value)
+{
+	std::string normalized;
+	normalized.reserve(value.size());
+	for (char c : value)
+	{
+		const unsigned char uc = static_cast<unsigned char>(c);
+		if (std::isalnum(uc))
+			normalized.push_back(static_cast<char>(std::tolower(uc)));
+	}
+
+	if (normalized.empty() || normalized == "default" || normalized == "standard")
+		return "neutral";
+	if (normalized == "light" || normalized == "pale")
+		return "fair";
+	if (normalized == "brown" || normalized == "deep")
+		return "dark";
+	if (normalized == "ear" || normalized == "lip" || normalized == "thinarea")
+		return "thin";
+	if (normalized == "closeup" || normalized == "hero")
+		return "cinematic";
+	return normalized;
+}
+
+void AssignSkinProfile(
+	VansBasePBRParam& legacy,
+	VansSkinGPUParam& params,
+	const glm::vec3& scatterColor,
+	float scatterAmount,
+	float roughness,
+	float normalStrength,
+	float specularScale,
+	float transmissionScale,
+	const glm::vec4& lobeIOR,
+	const glm::vec4& profileControls,
+	const glm::vec4& profileShape,
+	const glm::vec4& profileLUT)
+{
+	legacy.m_albedo = scatterColor;
+	legacy.m_roughness = roughness;
+	legacy.m_metallic = normalStrength;
+	legacy.m_ao = scatterAmount;
+	legacy.padding = specularScale;
+	params.scatterColorAmount = glm::vec4(scatterColor, scatterAmount);
+	params.roughnessNormalSpecular = glm::vec4(roughness, normalStrength, specularScale, transmissionScale);
+	params.lobeIOR = lobeIOR;
+	params.profileControls = profileControls;
+	params.profileShape = profileShape;
+	params.profileLUT = profileLUT;
+}
+
+bool BuildSkinProfilePresetPayload(
+	const std::string& normalizedProfile,
+	VansBasePBRParam& legacy,
+	VansSkinGPUParam& params)
+{
+	if (normalizedProfile == "custom")
+		return true;
+
+	if (normalizedProfile == "neutral")
+	{
+		AssignSkinProfile(
+			legacy, params,
+			glm::vec3(1.0f, 0.34f, 0.22f), 0.65f,
+			0.62f, 0.35f, 1.0f, 1.0f,
+			glm::vec4(0.75f, 1.75f, 1.4f, 0.72f),
+			glm::vec4(1.0f, 1.0f, 1.0f, 0.35f),
+			glm::vec4(1.0f, 1.0f, 1.0f, 1.0f),
+			glm::vec4(0.0f, 0.0f, 0.0f, 0.0f));
+		return true;
+	}
+
+	if (normalizedProfile == "fair")
+	{
+		AssignSkinProfile(
+			legacy, params,
+			glm::vec3(1.0f, 0.42f, 0.30f), 0.72f,
+			0.58f, 0.38f, 1.05f, 1.15f,
+			glm::vec4(0.70f, 1.85f, 1.4f, 0.74f),
+			glm::vec4(1.20f, 1.12f, 0.90f, 0.42f),
+			glm::vec4(1.15f, 1.05f, 0.90f, 1.10f),
+			glm::vec4(1.0f, 0.0f, 0.0f, 0.0f));
+		return true;
+	}
+
+	if (normalizedProfile == "medium")
+	{
+		AssignSkinProfile(
+			legacy, params,
+			glm::vec3(0.92f, 0.30f, 0.20f), 0.62f,
+			0.64f, 0.35f, 0.95f, 0.95f,
+			glm::vec4(0.78f, 1.75f, 1.4f, 0.70f),
+			glm::vec4(1.00f, 0.95f, 1.05f, 0.32f),
+			glm::vec4(1.00f, 0.90f, 0.75f, 1.00f),
+			glm::vec4(2.0f, 0.0f, 0.0f, 0.0f));
+		return true;
+	}
+
+	if (normalizedProfile == "dark")
+	{
+		AssignSkinProfile(
+			legacy, params,
+			glm::vec3(0.72f, 0.24f, 0.18f), 0.52f,
+			0.68f, 0.32f, 0.90f, 0.75f,
+			glm::vec4(0.82f, 1.90f, 1.4f, 0.68f),
+			glm::vec4(0.85f, 0.85f, 1.20f, 0.24f),
+			glm::vec4(0.85f, 0.75f, 0.62f, 0.80f),
+			glm::vec4(3.0f, 0.0f, 0.0f, 0.0f));
+		return true;
+	}
+
+	if (normalizedProfile == "thin")
+	{
+		AssignSkinProfile(
+			legacy, params,
+			glm::vec3(1.0f, 0.30f, 0.18f), 0.85f,
+			0.54f, 0.42f, 1.10f, 1.60f,
+			glm::vec4(0.66f, 1.65f, 1.4f, 0.76f),
+			glm::vec4(1.45f, 1.65f, 0.65f, 0.50f),
+			glm::vec4(1.35f, 1.15f, 0.90f, 1.25f),
+			glm::vec4(1.0f, 0.0f, 0.0f, 0.0f));
+		return true;
+	}
+
+	if (normalizedProfile == "cinematic")
+	{
+		AssignSkinProfile(
+			legacy, params,
+			glm::vec3(1.0f, 0.36f, 0.24f), 0.72f,
+			0.58f, 0.45f, 1.15f, 1.20f,
+			glm::vec4(0.68f, 1.95f, 1.42f, 0.78f),
+			glm::vec4(1.30f, 1.15f, 0.90f, 0.45f),
+			glm::vec4(1.20f, 1.00f, 0.82f, 1.20f),
+			glm::vec4(1.0f, 0.0f, 0.0f, 0.0f));
+		return true;
+	}
+
+	return false;
+}
 
 glm::vec3 NormalizeMaterialDirectionSafe(const glm::vec3& direction, const glm::vec3& fallbackDirection)
 {
@@ -91,11 +233,174 @@ glm::vec4 ReadMaterialVec4Value(const VansMaterialParameterValue& value)
 				return glm::vec4(0.0f);
 		}, value);
 }
+
+float Saturate(float value)
+{
+	return std::clamp(value, 0.0f, 1.0f);
+}
+
+uint8_t FloatToUNorm8(float value)
+{
+	return static_cast<uint8_t>(std::lround(Saturate(value) * 255.0f));
+}
+
+float LerpFloat(float a, float b, float t)
+{
+	return a + (b - a) * t;
+}
+
+float SkinLUTChannelResponse(
+	float ndotl,
+	float curvature,
+	float scatterAmount,
+	float scatterTint,
+	float scatterRadius,
+	float boundaryColorBleed,
+	float transmissionDepthScale)
+{
+	const float profileCurvature = Saturate(curvature);
+	const float channelRadius = std::clamp(scatterRadius, 0.05f, 4.0f);
+	const float radiusResponse = 1.0f - std::exp(-channelRadius * 0.65f);
+	const float thinness = profileCurvature * profileCurvature;
+	const float wrap = std::clamp(0.08f + radiusResponse * (0.22f + 0.48f * thinness), 0.05f, 0.92f);
+	const float wrappedDiffuse = Saturate((ndotl + wrap) / (1.0f + wrap));
+	const float lambert = Saturate(ndotl);
+	const float terminator = std::exp(-std::max(ndotl, 0.0f) * (2.0f + channelRadius)) *
+		Saturate(-ndotl + wrap) * thinness;
+	const float backScatter = terminator *
+		std::exp(-std::max(-ndotl, 0.0f) * std::clamp(transmissionDepthScale, 0.05f, 4.0f) /
+			(0.20f + channelRadius * 0.18f));
+	const float scatterWeight = Saturate(scatterAmount) * Saturate(0.35f + 0.65f * profileCurvature);
+	const float boundaryTint = std::clamp(boundaryColorBleed, 0.0f, 2.0f) * scatterWeight * thinness;
+	const float tinted = wrappedDiffuse * LerpFloat(1.0f, std::max(scatterTint, 0.0f), Saturate(boundaryTint));
+	const float scattered = Saturate(tinted + backScatter * std::max(scatterTint, 0.0f) * 0.42f);
+	return LerpFloat(lambert, scattered, scatterWeight);
+}
 }
 
 // ============================================================
-// VansMaterial �?pass shader accessors
+// VansMaterial pass shader accessors.
 // ============================================================
+bool VansGraphics::IsDynamicSkinProfileLUTLayer(int layer)
+{
+	return layer >= VANS_FIRST_DYNAMIC_SKIN_PROFILE_LUT_LAYER &&
+		layer < VANS_SKIN_PROFILE_LUT_LAYER_COUNT;
+}
+
+VansGraphics::VansSkinProfileLUTFingerprint VansGraphics::BuildSkinProfileLUTFingerprint(
+	const VansSkinGPUParam& profile)
+{
+	auto quantize = [](float value)
+	{
+		if (!std::isfinite(value))
+			value = 0.0f;
+		return static_cast<int32_t>(std::lround(std::clamp(value, -8.0f, 8.0f) * 2048.0f));
+	};
+
+	return {
+		quantize(profile.scatterColorAmount.r),
+		quantize(profile.scatterColorAmount.g),
+		quantize(profile.scatterColorAmount.b),
+		quantize(profile.scatterColorAmount.w),
+		quantize(profile.profileControls.x),
+		quantize(profile.profileControls.z),
+		quantize(profile.profileShape.r),
+		quantize(profile.profileShape.g),
+		quantize(profile.profileShape.b),
+		quantize(profile.profileShape.w)
+	};
+}
+
+std::string VansGraphics::NormalizeSkinProfilePresetName(std::string profileName)
+{
+	return NormalizeSkinProfileName(std::move(profileName));
+}
+
+bool VansGraphics::ResolveSkinProfilePresetPayload(
+	const std::string& profileName,
+	VansBasePBRParam& legacy,
+	VansSkinGPUParam& params)
+{
+	return BuildSkinProfilePresetPayload(NormalizeSkinProfileName(profileName), legacy, params);
+}
+
+const char* VansGraphics::GetBuiltInSkinProfileLUTLayerName(int layer)
+{
+	switch (layer)
+	{
+	case 0: return "neutral";
+	case 1: return "fair";
+	case 2: return "medium";
+	case 3: return "dark";
+	default: return nullptr;
+	}
+}
+
+bool VansGraphics::GenerateSkinProfileLUTPixels(
+	const VansSkinGPUParam& profile,
+	int width,
+	int height,
+	std::vector<uint8_t>& outPixels)
+{
+	if (width <= 0 || height <= 0)
+		return false;
+
+	outPixels.assign(static_cast<size_t>(width) * static_cast<size_t>(height) * 4u, 255u);
+
+	const glm::vec3 scatterTint = glm::max(glm::vec3(profile.scatterColorAmount), glm::vec3(0.0f));
+	const float scatterAmount = std::clamp(profile.scatterColorAmount.w, 0.0f, 1.0f);
+	const float diffusionRadius = std::clamp(profile.profileControls.x, 0.05f, 4.0f);
+	const float transmissionDepthScale = std::clamp(profile.profileControls.z, 0.05f, 4.0f);
+	const glm::vec3 scatterRadius = glm::clamp(
+		glm::vec3(profile.profileShape) * diffusionRadius,
+		glm::vec3(0.05f),
+		glm::vec3(4.0f));
+	const float boundaryColorBleed = std::clamp(profile.profileShape.w, 0.0f, 2.0f);
+
+	for (int y = 0; y < height; ++y)
+	{
+		const float curvature = (static_cast<float>(y) + 0.5f) / static_cast<float>(height);
+		for (int x = 0; x < width; ++x)
+		{
+			const float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(width);
+			const float ndotl = u * 2.0f - 1.0f;
+			const size_t offset = (static_cast<size_t>(y) * static_cast<size_t>(width) +
+				static_cast<size_t>(x)) * 4u;
+
+			outPixels[offset + 0u] = FloatToUNorm8(SkinLUTChannelResponse(
+				ndotl, curvature, scatterAmount, scatterTint.r, scatterRadius.r,
+				boundaryColorBleed, transmissionDepthScale));
+			outPixels[offset + 1u] = FloatToUNorm8(SkinLUTChannelResponse(
+				ndotl, curvature, scatterAmount, scatterTint.g, scatterRadius.g,
+				boundaryColorBleed, transmissionDepthScale));
+			outPixels[offset + 2u] = FloatToUNorm8(SkinLUTChannelResponse(
+				ndotl, curvature, scatterAmount, scatterTint.b, scatterRadius.b,
+				boundaryColorBleed, transmissionDepthScale));
+			outPixels[offset + 3u] = 255u;
+		}
+	}
+
+	return true;
+}
+
+bool VansGraphics::GenerateBuiltInSkinProfileLUTLayer(
+	int layer,
+	int width,
+	int height,
+	std::vector<uint8_t>& outPixels)
+{
+	const char* profileName = GetBuiltInSkinProfileLUTLayerName(layer);
+	if (!profileName)
+		return false;
+
+	VansBasePBRParam legacy;
+	VansSkinGPUParam params;
+	if (!ResolveSkinProfilePresetPayload(profileName, legacy, params))
+		return false;
+
+	return GenerateSkinProfileLUTPixels(params, width, height, outPixels);
+}
+
 VansGraphicsShader* VansGraphics::VansMaterial::GetPassShader(const std::string& passName) const
 {
 	auto it = m_PassShaders.find(passName);
@@ -108,7 +413,7 @@ bool VansGraphics::VansMaterial::HasPass(const std::string& passName) const
 }
 
 // ============================================================
-// Material subclass destructors �?release owned Vulkan resources
+// Material subclass destructors release owned Vulkan resources.
 // ============================================================
 
 VansGraphics::VansTransparentMaterial::~VansTransparentMaterial()
@@ -123,6 +428,63 @@ VansGraphics::VansSkinMaterial::~VansSkinMaterial()
 	auto* descMgr = VansVKDescriptorManager::GetInstance();
 	descMgr->DestroyDescriptorSet(m_SkinOwnedDescSets);
 	descMgr->DestroyDescriptorSetLayout(m_SkinOwnedLayout);
+}
+
+bool VansGraphics::VansSkinMaterial::ApplySkinProfilePreset(const std::string& profileName)
+{
+	const std::string normalizedProfile = NormalizeSkinProfileName(profileName);
+	VansBasePBRParam legacy = m_BasePBRParam;
+	VansSkinGPUParam params = m_SkinParams;
+	if (!BuildSkinProfilePresetPayload(normalizedProfile, legacy, params))
+		return false;
+
+	m_SkinProfileName = normalizedProfile;
+	m_BasePBRParam = legacy;
+	m_SkinParams = params;
+	m_UseExplicitSkinProfileLUTLayer = false;
+	return true;
+}
+
+VansGraphics::VansSkinGPUParam VansGraphics::VansSkinMaterial::BuildGPUParam() const
+{
+	VansSkinGPUParam payload = m_SkinParams;
+	payload.scatterColorAmount = glm::vec4(
+		glm::max(m_BasePBRParam.m_albedo, glm::vec3(0.0f)),
+		std::clamp(m_BasePBRParam.m_ao, 0.0f, 1.0f));
+	payload.roughnessNormalSpecular = glm::vec4(
+		std::clamp(m_BasePBRParam.m_roughness, 0.045f, 1.0f),
+		std::clamp(m_BasePBRParam.m_metallic, 0.0f, 2.0f),
+		std::clamp(m_BasePBRParam.padding, 0.0f, 4.0f),
+		std::clamp(m_SkinParams.roughnessNormalSpecular.w, 0.0f, 4.0f));
+	payload.lobeIOR = glm::vec4(
+		std::clamp(m_SkinParams.lobeIOR.x, 0.1f, 4.0f),
+		std::clamp(m_SkinParams.lobeIOR.y, 0.1f, 4.0f),
+		std::clamp(m_SkinParams.lobeIOR.z, 1.0f, 2.5f),
+		std::clamp(m_SkinParams.lobeIOR.w, 0.0f, 1.0f));
+	payload.profileControls = glm::vec4(
+		std::clamp(m_SkinParams.profileControls.x, 0.05f, 4.0f),
+		std::clamp(m_SkinParams.profileControls.y, 0.10f, 4.0f),
+		std::clamp(m_SkinParams.profileControls.z, 0.05f, 4.0f),
+		std::clamp(m_SkinParams.profileControls.w, 0.0f, 1.0f));
+	payload.profileShape = glm::vec4(
+		std::clamp(m_SkinParams.profileShape.x, 0.05f, 4.0f),
+		std::clamp(m_SkinParams.profileShape.y, 0.05f, 4.0f),
+		std::clamp(m_SkinParams.profileShape.z, 0.05f, 4.0f),
+		std::clamp(m_SkinParams.profileShape.w, 0.0f, 2.0f));
+	payload.profileLUT = glm::vec4(
+		std::clamp(
+			m_SkinParams.profileLUT.x,
+			-1.0f,
+			static_cast<float>(VANS_SKIN_PROFILE_LUT_LAYER_COUNT - 1)),
+		std::clamp(m_SkinParams.profileLUT.y, 0.0f, 1.0f),
+		0.0f,
+		0.0f);
+	payload.debugControls = glm::vec4(
+		std::clamp(m_SkinParams.debugControls.x, 0.0f, 16.0f),
+		0.0f,
+		0.0f,
+		0.0f);
+	return payload;
 }
 
 VansGraphics::VansClothMaterial::~VansClothMaterial()
@@ -242,6 +604,8 @@ int RuntimePBRIndex(VansGraphics::VansMaterial& material)
 	if (auto* typed = dynamic_cast<VansEmissiveMaterial*>(&material)) return typed->m_MaterialIndex;
 	if (auto* typed = dynamic_cast<VansDecalMaterial*>(&material)) return typed->m_MaterialIndex;
 	if (auto* typed = dynamic_cast<VansSubsurfaceMaterial*>(&material)) return typed->m_MaterialIndex;
+	if (auto* typed = dynamic_cast<VansSkinMaterial*>(&material)) return typed->m_MaterialIndex;
+	if (auto* typed = dynamic_cast<VansClothMaterial*>(&material)) return typed->m_MaterialIndex;
 	return material.m_MaterialIndex;
 }
 
@@ -253,6 +617,8 @@ void SetRuntimePBRIndex(VansGraphics::VansMaterial& material, int index)
 	else if (auto* typed = dynamic_cast<VansEmissiveMaterial*>(&material)) typed->m_MaterialIndex = index;
 	else if (auto* typed = dynamic_cast<VansDecalMaterial*>(&material)) typed->m_MaterialIndex = index;
 	else if (auto* typed = dynamic_cast<VansSubsurfaceMaterial*>(&material)) typed->m_MaterialIndex = index;
+	else if (auto* typed = dynamic_cast<VansSkinMaterial*>(&material)) typed->m_MaterialIndex = index;
+	else if (auto* typed = dynamic_cast<VansClothMaterial*>(&material)) typed->m_MaterialIndex = index;
 }
 }
 
@@ -266,12 +632,14 @@ void VansGraphics::VansMaterialManager::InitializeRuntimeMaterialPools(
 	m_FreeRuntimeCustomIndices.clear();
 	const VansClothGPUParam defaultCloth{};
 	const VansTreeLeafParamsGPU defaultTreeLeaf{};
+	const VansSkinGPUParam defaultSkin{};
 	for (std::size_t count = 0; count < pbrInstanceCount; ++count)
 	{
 		const int index = static_cast<int>(m_GlobalPBRParamData.size());
 		m_GlobalPBRParamData.emplace_back();
 		m_GlobalClothParamData.push_back(defaultCloth);
 		m_GlobalTreeLeafParamData.push_back(defaultTreeLeaf);
+		m_GlobalSkinParamData.push_back(defaultSkin);
 		for (int texture = 0; texture < 5; ++texture)
 			m_GlobalPBRTextures.push_back(fallbackTexture);
 		m_FreeRuntimePBRIndices.push_back(index);
@@ -333,6 +701,9 @@ VansGraphics::VansMaterial* VansGraphics::VansMaterialManager::AcquireRuntimeMat
 		m_GlobalPBRParamData[poolIndex] = m_GlobalPBRParamData[sourceIndex];
 		m_GlobalClothParamData[poolIndex] = m_GlobalClothParamData[sourceIndex];
 		m_GlobalTreeLeafParamData[poolIndex] = m_GlobalTreeLeafParamData[sourceIndex];
+		m_GlobalSkinParamData[poolIndex] = m_GlobalSkinParamData[sourceIndex];
+		if (auto* skinClone = dynamic_cast<VansSkinMaterial*>(clone.get()))
+			ResolveSkinProfileLUTForMaterial(*skinClone, m_GlobalSkinParamData[poolIndex], nullptr);
 		for (int texture = 0; texture < 5; ++texture)
 			m_GlobalPBRTextures[poolIndex * 5 + texture] = m_GlobalPBRTextures[sourceIndex * 5 + texture];
 		if (m_GlobalPBRDataBuffer.GetNativeBuffer() != VK_NULL_HANDLE)
@@ -343,6 +714,8 @@ VansGraphics::VansMaterial* VansGraphics::VansMaterialManager::AcquireRuntimeMat
 				sizeof(VansClothGPUParam) * poolIndex, sizeof(VansClothGPUParam));
 			m_GlobalTreeLeafDataBuffer.UpdateMapped(&m_GlobalTreeLeafParamData[poolIndex],
 				sizeof(VansTreeLeafParamsGPU) * poolIndex, sizeof(VansTreeLeafParamsGPU));
+			m_GlobalSkinDataBuffer.UpdateMapped(&m_GlobalSkinParamData[poolIndex],
+				sizeof(VansSkinGPUParam) * poolIndex, sizeof(VansSkinGPUParam));
 		}
 		RewriteGlobalBindlessTextureDescriptors(sceneGlobalDescriptorSet);
 	}
@@ -357,6 +730,8 @@ bool VansGraphics::VansMaterialManager::ReleaseRuntimeMaterialInstance(const std
 {
 	const auto found = m_RuntimeMaterialInstances.find(instanceKey);
 	if (found == m_RuntimeMaterialInstances.end()) return false;
+	if (!found->second.customPayload)
+		ReleaseSkinProfileLUTLayerForMaterial(found->second.poolIndex);
 	(found->second.customPayload ? m_FreeRuntimeCustomIndices : m_FreeRuntimePBRIndices)
 		.push_back(found->second.poolIndex);
 	m_RuntimeMaterialInstances.erase(found);
@@ -365,6 +740,11 @@ bool VansGraphics::VansMaterialManager::ReleaseRuntimeMaterialInstance(const std
 
 void VansGraphics::VansMaterialManager::ClearRuntimeMaterialInstances()
 {
+	for (const auto& [_, instance] : m_RuntimeMaterialInstances)
+	{
+		if (!instance.customPayload)
+			ReleaseSkinProfileLUTLayerForMaterial(instance.poolIndex);
+	}
 	m_RuntimeMaterialInstances.clear();
 }
 
@@ -397,6 +777,256 @@ void VansGraphics::VansMaterialManager::ClearRuntimeRenderTextures()
 {
 	m_RuntimeRenderTextureManager.Clear();
 	m_SSGITemporalFrame = 0;
+}
+
+void VansGraphics::VansMaterialManager::ReleaseSkinProfileLUTLayerForMaterial(int materialIndex)
+{
+	const auto found = m_SkinMaterialDynamicLUTLayers.find(materialIndex);
+	if (found == m_SkinMaterialDynamicLUTLayers.end())
+		return;
+
+	const int layer = found->second;
+	m_SkinMaterialDynamicLUTLayers.erase(found);
+	for (auto& entry : m_SkinProfileDynamicLUTCache)
+	{
+		if (entry.layer == layer && entry.refCount > 0)
+		{
+			--entry.refCount;
+			break;
+		}
+	}
+}
+
+void VansGraphics::VansMaterialManager::ResetSkinProfileLUTCache()
+{
+	m_SkinProfileDynamicLUTCache.clear();
+	m_PendingSkinProfileLUTUploads.clear();
+	m_SkinMaterialDynamicLUTLayers.clear();
+}
+
+bool VansGraphics::VansMaterialManager::ResolveSkinProfileLUTForMaterial(
+	VansSkinMaterial& skin,
+	VansSkinGPUParam& payload,
+	VansVKCommandBuffer* immediateCommandBuffer)
+{
+	const int materialIndex = skin.m_MaterialIndex;
+	if (materialIndex < 0)
+		return false;
+
+	const int requestedLayer = static_cast<int>(std::lround(payload.profileLUT.x));
+	if (skin.m_UseExplicitSkinProfileLUTLayer && requestedLayer >= 0)
+	{
+		ReleaseSkinProfileLUTLayerForMaterial(materialIndex);
+		payload.profileLUT.x = static_cast<float>(std::clamp(requestedLayer, 0, VANS_SKIN_PROFILE_LUT_LAYER_COUNT - 1));
+		skin.m_SkinParams.profileLUT.x = payload.profileLUT.x;
+		return true;
+	}
+
+	if (requestedLayer >= 0 && !IsDynamicSkinProfileLUTLayer(requestedLayer))
+	{
+		ReleaseSkinProfileLUTLayerForMaterial(materialIndex);
+		payload.profileLUT.x = static_cast<float>(std::clamp(requestedLayer, 0, VANS_SKIN_PROFILE_LUT_LAYER_COUNT - 1));
+		skin.m_SkinParams.profileLUT.x = payload.profileLUT.x;
+		return true;
+	}
+
+	if (!m_SkinProfileLUTArray)
+	{
+		ReleaseSkinProfileLUTLayerForMaterial(materialIndex);
+		payload.profileLUT.x = -1.0f;
+		skin.m_SkinParams.profileLUT.x = -1.0f;
+		return false;
+	}
+
+	auto findEntryByLayer = [&](int layer) -> SkinProfileLUTCacheEntry*
+	{
+		for (auto& entry : m_SkinProfileDynamicLUTCache)
+		{
+			if (entry.layer == layer)
+				return &entry;
+		}
+		return nullptr;
+	};
+	auto findEntryByFingerprint = [&](const VansSkinProfileLUTFingerprint& fingerprint) -> SkinProfileLUTCacheEntry*
+	{
+		for (auto& entry : m_SkinProfileDynamicLUTCache)
+		{
+			if (entry.layer >= 0 && entry.fingerprint == fingerprint)
+				return &entry;
+		}
+		return nullptr;
+	};
+	auto allocateEntry = [&](const VansSkinProfileLUTFingerprint& fingerprint) -> SkinProfileLUTCacheEntry*
+	{
+		for (auto& entry : m_SkinProfileDynamicLUTCache)
+		{
+			if (entry.refCount <= 0)
+			{
+				entry.fingerprint = fingerprint;
+				entry.refCount = 0;
+				return &entry;
+			}
+		}
+
+		for (int layer = VANS_FIRST_DYNAMIC_SKIN_PROFILE_LUT_LAYER;
+			layer < VANS_SKIN_PROFILE_LUT_LAYER_COUNT;
+			++layer)
+		{
+			if (!findEntryByLayer(layer))
+			{
+				m_SkinProfileDynamicLUTCache.push_back({ fingerprint, layer, 0 });
+				return &m_SkinProfileDynamicLUTCache.back();
+			}
+		}
+		return nullptr;
+	};
+	auto uploadLayer = [&](int layer) -> bool
+	{
+		std::vector<uint8_t> pixels;
+		if (!GenerateSkinProfileLUTPixels(
+				payload,
+				VANS_SKIN_PROFILE_LUT_SIZE,
+				VANS_SKIN_PROFILE_LUT_SIZE,
+				pixels))
+		{
+			return false;
+		}
+
+		if (immediateCommandBuffer)
+		{
+			return m_SkinProfileLUTArray->UpdateArrayLayerFromPixels(
+				*immediateCommandBuffer,
+				pixels.data(),
+				VANS_SKIN_PROFILE_LUT_SIZE,
+				VANS_SKIN_PROFILE_LUT_SIZE,
+				layer);
+		}
+
+		for (auto& pending : m_PendingSkinProfileLUTUploads)
+		{
+			if (pending.layer == layer)
+			{
+				pending.fingerprint = BuildSkinProfileLUTFingerprint(payload);
+				pending.pixels = std::move(pixels);
+				return true;
+			}
+		}
+		m_PendingSkinProfileLUTUploads.push_back({
+			BuildSkinProfileLUTFingerprint(payload),
+			layer,
+			std::move(pixels)
+		});
+		return true;
+	};
+	auto assignLayer = [&](SkinProfileLUTCacheEntry& entry)
+	{
+		++entry.refCount;
+		m_SkinMaterialDynamicLUTLayers[materialIndex] = entry.layer;
+		payload.profileLUT.x = static_cast<float>(entry.layer);
+		skin.m_SkinParams.profileLUT.x = payload.profileLUT.x;
+		return true;
+	};
+	auto fallbackToLegacyLUT = [&]()
+	{
+		ReleaseSkinProfileLUTLayerForMaterial(materialIndex);
+		payload.profileLUT.x = -1.0f;
+		skin.m_SkinParams.profileLUT.x = -1.0f;
+		return false;
+	};
+
+	const VansSkinProfileLUTFingerprint fingerprint = BuildSkinProfileLUTFingerprint(payload);
+	if (const auto current = m_SkinMaterialDynamicLUTLayers.find(materialIndex);
+		current != m_SkinMaterialDynamicLUTLayers.end())
+	{
+		if (SkinProfileLUTCacheEntry* entry = findEntryByLayer(current->second))
+		{
+			if (entry->fingerprint == fingerprint)
+			{
+				payload.profileLUT.x = static_cast<float>(entry->layer);
+				skin.m_SkinParams.profileLUT.x = payload.profileLUT.x;
+				return true;
+			}
+
+			if (entry->refCount <= 1)
+			{
+				if (!uploadLayer(entry->layer))
+					return fallbackToLegacyLUT();
+				entry->fingerprint = fingerprint;
+				entry->refCount = 1;
+				payload.profileLUT.x = static_cast<float>(entry->layer);
+				skin.m_SkinParams.profileLUT.x = payload.profileLUT.x;
+				return true;
+			}
+		}
+
+		ReleaseSkinProfileLUTLayerForMaterial(materialIndex);
+	}
+
+	if (requestedLayer >= 0 && IsDynamicSkinProfileLUTLayer(requestedLayer))
+	{
+		SkinProfileLUTCacheEntry* inheritedEntry = findEntryByLayer(requestedLayer);
+		if (!inheritedEntry)
+		{
+			m_SkinProfileDynamicLUTCache.push_back({ fingerprint, requestedLayer, 0 });
+			inheritedEntry = &m_SkinProfileDynamicLUTCache.back();
+		}
+		else if (inheritedEntry->refCount <= 0)
+		{
+			inheritedEntry->fingerprint = fingerprint;
+		}
+		return assignLayer(*inheritedEntry);
+	}
+
+	if (SkinProfileLUTCacheEntry* entry = findEntryByFingerprint(fingerprint))
+		return assignLayer(*entry);
+
+	SkinProfileLUTCacheEntry* entry = allocateEntry(fingerprint);
+	if (!entry)
+	{
+		if (immediateCommandBuffer)
+		{
+			VANS_LOG_WARN("[SkinProfileLUT] Dynamic Skin profile LUT cache is full; material '"
+				<< skin.m_AssetName << "' keeps legacy 2D LUT fallback.");
+		}
+		return fallbackToLegacyLUT();
+	}
+
+	if (!uploadLayer(entry->layer))
+	{
+		if (immediateCommandBuffer)
+		{
+			VANS_LOG_WARN("[SkinProfileLUT] Dynamic Skin profile LUT generation failed; material '"
+				<< skin.m_AssetName << "' keeps legacy 2D LUT fallback.");
+		}
+		return fallbackToLegacyLUT();
+	}
+
+	return assignLayer(*entry);
+}
+
+bool VansGraphics::VansMaterialManager::RecordPendingSkinProfileLUTUploads(
+	VansVKCommandBuffer& commandBuffer)
+{
+	if (m_PendingSkinProfileLUTUploads.empty())
+		return true;
+	if (!m_SkinProfileLUTArray)
+	{
+		m_PendingSkinProfileLUTUploads.clear();
+		return false;
+	}
+
+	bool uploadedAll = true;
+	for (const auto& pending : m_PendingSkinProfileLUTUploads)
+	{
+		uploadedAll &= m_SkinProfileLUTArray->RecordArrayLayerUploadFromPixels(
+			commandBuffer,
+			pending.pixels.data(),
+			VANS_SKIN_PROFILE_LUT_SIZE,
+			VANS_SKIN_PROFILE_LUT_SIZE,
+			pending.layer);
+	}
+	m_PendingSkinProfileLUTUploads.clear();
+	return uploadedAll;
 }
 
 bool VansGraphics::VansMaterialManager::RewriteGlobalBindlessTextureDescriptors(
@@ -456,6 +1086,7 @@ bool VansGraphics::VansMaterialManager::ReplaceGlobalBindlessTexture(
 void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
 {
 	ClearRuntimeMaterialInstances();
+	ResetSkinProfileLUTCache();
 	m_FreeRuntimePBRIndices.clear();
 	m_FreeRuntimeCustomIndices.clear();
 	auto deleteTexture = [](VansTexture*& texture)
@@ -464,11 +1095,12 @@ void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
 		texture = nullptr;
 	};
 
-	// 清空 CPU �?PBR 数组（指针不拥有所有权，material �?VansScene 管理�?
+	// Clear CPU PBR arrays. Material objects are owned by VansScene.
 	m_GlobalPBRMaterial.clear();
 	m_GlobalPBRParamData.clear();
 	m_GlobalClothParamData.clear();
 	m_GlobalTreeLeafParamData.clear();
+	m_GlobalSkinParamData.clear();
 	m_GlobalCustomMaterialParamData.clear();
 	m_GlobalPBRTextures.clear();
 	ClearRuntimeRenderTextures();
@@ -478,15 +1110,17 @@ void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
 	deleteTexture(m_PreConvSpecular);
 	deleteTexture(m_BRDFIntegralLUT);
 	deleteTexture(m_SkinBSDFLUT);
+	deleteTexture(m_SkinProfileLUTArray);
 	deleteTexture(m_ClothBRDFLUT);
 	deleteTexture(m_MoonAlbedoTexture);
 	deleteTexture(m_LTC1);
 	deleteTexture(m_LTC2);
 
-	// 销�?GPU buffer
+	// Destroy GPU buffers.
 	m_GlobalPBRDataBuffer.DestroyVulkanBuffer(device);
 	m_GlobalClothDataBuffer.DestroyVulkanBuffer(device);
 	m_GlobalTreeLeafDataBuffer.DestroyVulkanBuffer(device);
+	m_GlobalSkinDataBuffer.DestroyVulkanBuffer(device);
 	m_GlobalCustomMaterialDataBuffer.DestroyVulkanBuffer(device);
 	m_ScreenSpaceShadowParamsCBBuffer.DestroyVulkanBuffer(device);
 	m_FogParamsCBBuffer.DestroyVulkanBuffer(device);
@@ -501,9 +1135,11 @@ void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
 	m_PostProcessParamsCBBuffer.DestroyVulkanBuffer(device);
 	m_ExposureAdaptParamsCBBuffer.DestroyVulkanBuffer(device);
 	m_BloomParamsCBBuffer.DestroyVulkanBuffer(device);
+	m_BloomShapeParamsCBBuffer.DestroyVulkanBuffer(device);
+	m_DepthOfFieldParamsCBBuffer.DestroyVulkanBuffer(device);
 	m_AtmospherePBRDataBuffer.DestroyVulkanBuffer(device);
 
-	// 释放 descriptor set �?layout
+	// Release descriptor sets and layouts.
 	auto descMgr = VansVKDescriptorManager::GetInstance();
 	descMgr->DestroyDescriptorSet(m_GlobalPBRDataDescriptorSets);
 	descMgr->DestroyDescriptorSetLayout(m_GlobalPBRDataSetLayout);
@@ -565,6 +1201,10 @@ void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
 	descMgr->DestroyDescriptorSetLayout(m_BloomDownsampleSetLayout);
 	descMgr->DestroyDescriptorSet(m_BloomUpsampleDescriptorSets);
 	descMgr->DestroyDescriptorSetLayout(m_BloomUpsampleSetLayout);
+	descMgr->DestroyDescriptorSet(m_BloomShapeDescriptorSets);
+	descMgr->DestroyDescriptorSetLayout(m_BloomShapeSetLayout);
+	descMgr->DestroyDescriptorSet(m_DepthOfFieldDescriptorSets);
+	descMgr->DestroyDescriptorSetLayout(m_DepthOfFieldSetLayout);
 }
 
 bool VansGraphics::VansMaterialManager::FlushMaterialPayload(VansMaterial& material)
@@ -615,7 +1255,18 @@ bool VansGraphics::VansMaterialManager::FlushMaterialPayload(VansMaterial& mater
 	if (auto* sss = dynamic_cast<VansSubsurfaceMaterial*>(&material))
 		return flushPbrPayload(sss->m_BasePBRParam);
 	if (auto* skin = dynamic_cast<VansSkinMaterial*>(&material))
-		return flushPbrPayload(skin->m_BasePBRParam);
+	{
+		const bool pbrUpdated = flushPbrPayload(skin->m_BasePBRParam);
+		if (m_GlobalSkinDataBuffer.GetNativeBuffer() == VK_NULL_HANDLE)
+			return pbrUpdated;
+		VansSkinGPUParam skinPayload = skin->BuildGPUParam();
+		ResolveSkinProfileLUTForMaterial(*skin, skinPayload, nullptr);
+		if (index < static_cast<int>(m_GlobalSkinParamData.size()))
+			m_GlobalSkinParamData[index] = skinPayload;
+		const VkDeviceSize skinOffset = sizeof(VansSkinGPUParam) * static_cast<VkDeviceSize>(index);
+		m_GlobalSkinDataBuffer.SetBufferData(&skinPayload, skinOffset, sizeof(VansSkinGPUParam));
+		return pbrUpdated;
+	}
 	if (auto* cloth = dynamic_cast<VansClothMaterial*>(&material))
 	{
 		const bool pbrUpdated = flushPbrPayload(cloth->m_BasePBRParam);
@@ -794,10 +1445,26 @@ bool VansGraphics::VansMaterialManager::ApplyMaterialParameter(
 	}
 	else if (auto* skin = dynamic_cast<VansSkinMaterial*>(&material))
 	{
+		std::string profileName;
+		if ((key == "skinProfile" || key == "skinProfileName" || key == "profile") &&
+			ReadMaterialString(value, profileName))
+		{
+			if (!skin->ApplySkinProfilePreset(profileName))
+				return false;
+			skin->m_UseExplicitSkinProfileLUTLayer = false;
+			FlushMaterialPayload(material);
+			return true;
+		}
 		glm::vec3 color;
-		if ((key == "subsurfaceColor" || key == "sssColor") && ReadMaterialVec3(value, color))
+		auto markSkinProfileLUTDirty = [&]()
+		{
+			if (!skin->m_UseExplicitSkinProfileLUTLayer)
+				skin->m_SkinParams.profileLUT.x = -1.0f;
+		};
+		if ((key == "scatterColor" || key == "subsurfaceColor" || key == "sssColor") && ReadMaterialVec3(value, color))
 		{
 			skin->m_BasePBRParam.m_albedo = glm::max(color, glm::vec3(0.0f));
+			markSkinProfileLUTDirty();
 			FlushMaterialPayload(material);
 			return true;
 		}
@@ -814,15 +1481,108 @@ bool VansGraphics::VansMaterialManager::ApplyMaterialParameter(
 			FlushMaterialPayload(material);
 			return true;
 		}
-		if ((key == "subsurfaceAmount" || key == "sssAmount") && ReadMaterialFloat(value, scalar))
+		if ((key == "scatterAmount" || key == "subsurfaceAmount" || key == "sssAmount") && ReadMaterialFloat(value, scalar))
 		{
 			skin->m_BasePBRParam.m_ao = std::clamp(scalar, 0.0f, 1.0f);
+			markSkinProfileLUTDirty();
 			FlushMaterialPayload(material);
 			return true;
 		}
 		if (key == "specularScale" && ReadMaterialFloat(value, scalar))
 		{
 			skin->m_BasePBRParam.padding = std::clamp(scalar, 0.0f, 4.0f);
+			FlushMaterialPayload(material);
+			return true;
+		}
+		if ((key == "transmissionScale" || key == "backTransmissionScale") && ReadMaterialFloat(value, scalar))
+		{
+			skin->m_SkinParams.roughnessNormalSpecular.w = std::clamp(scalar, 0.0f, 4.0f);
+			FlushMaterialPayload(material);
+			return true;
+		}
+		if (key == "primaryRoughnessScale" && ReadMaterialFloat(value, scalar))
+		{
+			skin->m_SkinParams.lobeIOR.x = std::clamp(scalar, 0.1f, 4.0f);
+			FlushMaterialPayload(material);
+			return true;
+		}
+		if (key == "secondaryRoughnessScale" && ReadMaterialFloat(value, scalar))
+		{
+			skin->m_SkinParams.lobeIOR.y = std::clamp(scalar, 0.1f, 4.0f);
+			FlushMaterialPayload(material);
+			return true;
+		}
+		if ((key == "ior" || key == "skinIor") && ReadMaterialFloat(value, scalar))
+		{
+			skin->m_SkinParams.lobeIOR.z = std::clamp(scalar, 1.0f, 2.5f);
+			FlushMaterialPayload(material);
+			return true;
+		}
+		if ((key == "specularLobeMix" || key == "primaryLobeWeight") && ReadMaterialFloat(value, scalar))
+		{
+			skin->m_SkinParams.lobeIOR.w = std::clamp(scalar, 0.0f, 1.0f);
+			FlushMaterialPayload(material);
+			return true;
+		}
+		if ((key == "diffusionRadiusScale" || key == "scatterRadiusScale" || key == "skinScatterRadius") &&
+			ReadMaterialFloat(value, scalar))
+		{
+			skin->m_SkinParams.profileControls.x = std::clamp(scalar, 0.05f, 4.0f);
+			markSkinProfileLUTDirty();
+			FlushMaterialPayload(material);
+			return true;
+		}
+		if ((key == "thinnessScale" || key == "skinThinnessScale") && ReadMaterialFloat(value, scalar))
+		{
+			skin->m_SkinParams.profileControls.y = std::clamp(scalar, 0.10f, 4.0f);
+			FlushMaterialPayload(material);
+			return true;
+		}
+		if ((key == "transmissionDepthScale" || key == "opticalDepthScale" || key == "skinOpticalDepthScale") &&
+			ReadMaterialFloat(value, scalar))
+		{
+			skin->m_SkinParams.profileControls.z = std::clamp(scalar, 0.05f, 4.0f);
+			markSkinProfileLUTDirty();
+			FlushMaterialPayload(material);
+			return true;
+		}
+		if ((key == "ambientScatterScale" || key == "skinAmbientScatterScale") && ReadMaterialFloat(value, scalar))
+		{
+			skin->m_SkinParams.profileControls.w = std::clamp(scalar, 0.0f, 1.0f);
+			FlushMaterialPayload(material);
+			return true;
+		}
+		if ((key == "scatterRadiusRGB" || key == "profileScatterRadius") &&
+			ReadMaterialVec3(value, color))
+		{
+			skin->m_SkinParams.profileShape.x = std::clamp(color.x, 0.05f, 4.0f);
+			skin->m_SkinParams.profileShape.y = std::clamp(color.y, 0.05f, 4.0f);
+			skin->m_SkinParams.profileShape.z = std::clamp(color.z, 0.05f, 4.0f);
+			markSkinProfileLUTDirty();
+			FlushMaterialPayload(material);
+			return true;
+		}
+		if ((key == "boundaryColorBleed" || key == "skinBoundaryBleed") && ReadMaterialFloat(value, scalar))
+		{
+			skin->m_SkinParams.profileShape.w = std::clamp(scalar, 0.0f, 2.0f);
+			markSkinProfileLUTDirty();
+			FlushMaterialPayload(material);
+			return true;
+		}
+		if ((key == "skinProfileLutLayer" || key == "profileLutLayer" || key == "skinLutLayer") &&
+			ReadMaterialFloat(value, scalar))
+		{
+			skin->m_SkinParams.profileLUT.x = std::clamp(
+				scalar,
+				-1.0f,
+				static_cast<float>(VANS_SKIN_PROFILE_LUT_LAYER_COUNT - 1));
+			skin->m_UseExplicitSkinProfileLUTLayer = skin->m_SkinParams.profileLUT.x >= 0.0f;
+			FlushMaterialPayload(material);
+			return true;
+		}
+		if ((key == "skinDebugView" || key == "debugView") && ReadMaterialFloat(value, scalar))
+		{
+			skin->m_SkinParams.debugControls.x = std::clamp(scalar, 0.0f, 16.0f);
 			FlushMaterialPayload(material);
 			return true;
 		}
@@ -1029,6 +1789,26 @@ bool VansGraphics::VansMaterialManager::ApplyMaterialParameter(
 		}
 	}
 
+	if (auto* grass = dynamic_cast<VansGrassMaterial*>(&material))
+	{
+		float scalar = 0.0f;
+		if (key == "aoStrength" && ReadMaterialFloat(value, scalar))
+		{
+			grass->m_GrassParams.aoStrength = std::clamp(scalar, 0.0f, 1.0f);
+			return true;
+		}
+		if (key == "rootAOIntensity" && ReadMaterialFloat(value, scalar))
+		{
+			grass->m_GrassParams.rootAOIntensity = std::clamp(scalar, 0.0f, 0.85f);
+			return true;
+		}
+		if (key == "rootAOHeight" && ReadMaterialFloat(value, scalar))
+		{
+			grass->m_GrassParams.rootAOHeight = std::clamp(scalar, 0.01f, 1.0f);
+			return true;
+		}
+	}
+
 	return false;
 }
 
@@ -1138,7 +1918,7 @@ void VansGraphics::VansMaterialManager::UpdatePBRLutDescriptorSets()
 		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{ { m_SkinBSDFLUT->GetImage().GetSampler(), m_SkinBSDFLUT->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
 
-	// binding 8 �?Cloth BRDF LUT (split-sum .rg + sheen tint .b)
+	// Binding 8: cloth BRDF LUT (split-sum .rg and sheen tint .b).
 	if (m_ClothBRDFLUT)
 	{
 		descMgr->WriteImageDescriptor(
@@ -1234,7 +2014,7 @@ void VansGraphics::VansMaterialManager::UpdateAtmosphereDescriptorSets()
 			{ { volumetricFogResult->GetImage().GetSampler(), volumetricFogResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
 	}
 
-	// 绑定 1/4 分辨率体积云结果�?SkyBox set �?binding=2（SKYBOX_BINDING_CLOUD�?
+	// Bind the quarter-resolution volumetric-cloud result to the skybox set.
 	VansTexture* cloudBuffer = GetRuntimeRenderTexture(RT_CLOUD_BUFFER);
 	if (cloudBuffer != nullptr)
 	{
@@ -1274,7 +2054,7 @@ void VansGraphics::VansMaterialManager::UpdateAtmosphereDescriptorSets()
 
 void VansGraphics::VansSkyBoxMaterial::UpdateAtmosphereMaterialData(VansMaterialManager& materialManager, VansLightManager& lightManager)
 {
-	// 场景没有方向光时，保�?m_SunDirection 不变，避免空向量访问越界
+	// Preserve m_SunDirection when the scene has no directional light.
 	if (lightManager.GetDirectionLights().empty())
 		return;
 
@@ -1290,7 +2070,7 @@ void VansGraphics::VansSkyBoxMaterial::UpdateAtmosphereMaterialData(VansMaterial
 	const float moonDiskVisibility = m_MoonDiskEnabled ? moonBlend : 0.0f;
 	m_AtmospherePBRParam.m_SunDirection = sunDirection;
 	// CPU 预计算大气衰减后的太阳颜色，写入 AtmosphereUBO
-	// 供无法直接读 LightsData.glsl �?shader（如 VolumeCloud.frag）使�?
+	// Used by shaders such as VolumeCloud.frag that cannot include LightsData.glsl.
 	m_AtmospherePBRParam.m_EffectiveSunColor = celestialState.color;
 	const float moonPhase = 1.0f;
 	const glm::vec3 sunRadiance = glm::max(
@@ -1326,7 +2106,7 @@ void VansGraphics::VansTransparentMaterial::BuildTransparentTextureDescriptors()
 	const uint32_t slotCount = static_cast<uint32_t>(m_TransparentTextures.size());
 	if (slotCount == 0)
 	{
-		// No textures �?create an empty layout so the pipeline still has Set 1.
+		// Create an empty layout when there are no textures so Set 1 remains valid.
 		CreateTransparentDescriptorLayout();
 		return;
 	}
@@ -1366,37 +2146,33 @@ void VansGraphics::VansTransparentMaterial::BuildTransparentTextureDescriptors()
 
 void VansGraphics::VansSkinMaterial::BuildSkinTextureDescriptors()
 {
-	// Allocate the skin texture descriptor set (Set 4: albedo + normal).
+	// Allocate the skin texture descriptor set.
 	VansDescriptorSetLayoutFactory::CreateAndAllocate_SkinTexture(m_SkinOwnedLayout, m_SkinOwnedDescSets);
 
 	auto* descManager = VansVKDescriptorManager::GetInstance();
 	descManager->BeginDescriptorUpdate();
 
-	if (m_BaseColorTexture)
+	auto writeTexture = [&](uint32_t binding, VansTexture* texture)
 	{
+		if (!texture)
+			return;
 		descManager->WriteImageDescriptor(
 			m_SkinOwnedDescSets[0],
-			SKIN_TEXTURE_BINDING_ALBEDO,
+			binding,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{
-				m_BaseColorTexture->GetImage().GetSampler(),
-				m_BaseColorTexture->GetImage().GetImageView(),
+				texture->GetImage().GetSampler(),
+				texture->GetImage().GetImageView(),
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 			}});
-	}
+	};
 
-	if (m_NormalTexture)
-	{
-		descManager->WriteImageDescriptor(
-			m_SkinOwnedDescSets[0],
-			SKIN_TEXTURE_BINDING_NORMAL,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{{
-				m_NormalTexture->GetImage().GetSampler(),
-				m_NormalTexture->GetImage().GetImageView(),
-				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-			}});
-	}
+	writeTexture(SKIN_TEXTURE_BINDING_ALBEDO,    m_BaseColorTexture);
+	writeTexture(SKIN_TEXTURE_BINDING_NORMAL,    m_NormalTexture);
+	writeTexture(SKIN_TEXTURE_BINDING_ROUGHNESS, m_RoughnessTexture);
+	writeTexture(SKIN_TEXTURE_BINDING_CAVITY,    m_CavityTexture);
+	writeTexture(SKIN_TEXTURE_BINDING_SCATTER_MASK, m_ScatterMaskTexture);
+	writeTexture(SKIN_TEXTURE_BINDING_THICKNESS, m_ThicknessTexture);
 
 	descManager->CommitDescriptorUpdates();
 }

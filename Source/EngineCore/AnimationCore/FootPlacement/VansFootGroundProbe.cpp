@@ -2,6 +2,8 @@
 #include "../../PhysicsCore/VansPhysics.h"
 
 #include <PxPhysicsAPI.h>
+#include <../../GLM/gtc/matrix_transform.hpp>
+#include <../../GLM/gtc/quaternion.hpp>
 
 #include <mutex>
 
@@ -95,6 +97,14 @@ namespace VansGraphics
 			if (hit.block.actor)
 			{
 				result.actorId = reinterpret_cast<uintptr_t>(hit.block.actor);
+				const physx::PxTransform actorPose = hit.block.actor->getGlobalPose();
+				const glm::quat actorRotation(
+					actorPose.q.w, actorPose.q.x, actorPose.q.y, actorPose.q.z);
+				result.actorWorldTransform = glm::translate(
+					glm::mat4(1.0f),
+					glm::vec3(actorPose.p.x, actorPose.p.y, actorPose.p.z)) *
+					glm::mat4_cast(actorRotation);
+				result.hasActorWorldTransform = true;
 				if (hit.block.actor->getName())
 					result.actorName = hit.block.actor->getName();
 			}

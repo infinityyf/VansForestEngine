@@ -17,6 +17,8 @@ namespace VansGraphics
 		uint32_t layerIndex = 0;
 		std::string actorName;
 		uintptr_t actorId = 0;
+		glm::mat4 actorWorldTransform = glm::mat4(1.0f);
+		bool hasActorWorldTransform = false;
 	};
 
 	struct FootGroundRayRequest

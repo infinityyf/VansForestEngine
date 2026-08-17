@@ -39,14 +39,18 @@ namespace VansGraphics
 		constexpr const char* RayTracing = "Ray Tracing";
 		constexpr const char* VolumetricFog = "Volumetric Fog";
 		constexpr const char* CloudRayMarch = "Cloud Ray March";
+		constexpr const char* DepthOfFieldPrepare = "Depth Of Field Prepare";
 		constexpr const char* ExposureBloom = "Exposure Bloom";
 		constexpr const char* DeferredSkybox = "Deferred Skybox";
 		constexpr const char* WaterPreCompute = "Water Pre Compute";
 		constexpr const char* ForwardOpaqueAfterDeferred = "Forward Opaque After Deferred";
 		constexpr const char* HairVisibility = "Hair Visibility";
 		constexpr const char* HairLighting = "Hair Lighting";
+		constexpr const char* TransparentSceneColorPrepare = "Transparent SceneColor Prepare";
 		constexpr const char* TransparentPostProcess = "Transparent PostProcess";
-		constexpr const char* FSRRuntimeUI = "FSR Runtime UI";
+		constexpr const char* FSRUpscale = "FSR Upscale";
+		constexpr const char* DisplayPostProcess = "Display PostProcess";
+		constexpr const char* RuntimeUI = "Runtime UI";
 		constexpr const char* ReflectionProbeBakeQueue = "Reflection Probe Bake Queue";
 	}
 
@@ -56,13 +60,15 @@ namespace VansGraphics
 		static void BuildCompatibilityFramePlan(
 			VansRenderFramePlan& outPlan,
 			VansScene& scene,
-			uint64_t frameNumber);
+			uint64_t frameNumber,
+			bool asyncComputeEnabled = false);
 
 		static bool IsPassEnabled(
 			VansRenderPassCondition condition,
 			const VansScene& scene);
 
 		static bool IsKnownPassName(const char* passName);
+		static bool AuditAsyncMigrationContracts(std::vector<std::string>& outErrors);
 
 		static void GetPreservedFeatureAuditList(
 			const VansScene& scene,

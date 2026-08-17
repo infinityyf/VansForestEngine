@@ -120,23 +120,14 @@ struct VansSceneWaterSpectrumConfig
 
 struct VansSceneWaterWaveParticleConfig
 {
-	std::optional<int> particleCount;
-	std::optional<int> octaveCount;
-	std::optional<int> profile;
-	std::optional<float> domainSize;
-	std::optional<float> amplitude;
-	std::optional<float> minRadius;
-	std::optional<float> maxRadius;
-	std::optional<float> phaseVelocity;
-	std::optional<float> damping;
+	std::optional<int> particlesPerCascade;
+	std::optional<float> rmsAmplitude;
+	std::optional<float> packetWidth;
+	std::optional<float> dispersionScale;
 	std::optional<float> directionSpread;
-	std::optional<float> lacunarity;
-	std::optional<float> persistence;
-	std::optional<float> radiusFalloff;
-	std::optional<float> profileSharpness;
+	std::optional<float> cascadeAmplitudeFalloff;
 	std::optional<float> foamThreshold;
 	std::optional<float> foamSoftness;
-	std::optional<float> lifetime;
 	std::optional<std::uint32_t> randomSeed;
 };
 
@@ -156,7 +147,9 @@ struct VansSceneWaterCausticsConfig
 {
 	std::optional<bool> enabled;
 	std::optional<float> intensity;
-	std::optional<float> scale;
+	std::optional<float> maxDistance;
+	std::optional<float> maxGain;
+	std::optional<float> filterRadius;
 };
 
 struct VansSceneWaterRefractionConfig
@@ -210,7 +203,6 @@ struct VansSceneWaterGeometryConfig
 
 struct VansSceneWaterNodeConfig
 {
-	std::optional<std::uint32_t> schemaVersion;
 	std::optional<float> level;
 	std::optional<float> specularIntensity;
 	std::optional<std::string> name;

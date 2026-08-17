@@ -91,7 +91,12 @@ namespace VansGraphics
 		// P1: 子叶片距离 LOD — 远距离减少子叶片数以降低 VS/FS 开销
 		float    lodMidDist;       // 中距离阈值，超过后子叶片数减半
 		float    lodFarDist;       // 远距离阈值，超过后子叶片数降至最少
+		// 材质 AO 与基于骨骼高度的根部微遮蔽参数（FS 使用）
+		float    aoStrength;
+		float    rootAOIntensity;
+		float    rootAOHeight;
 	};
+	static_assert(sizeof(GrassDrawPushConstants) == 60, "Grass draw push constants must match GLSL");
 
 	// P0: Push constants for GPU cull compute pass
 	struct GrassCullPushConstants
@@ -111,13 +116,13 @@ namespace VansGraphics
 		int      hizEnabled;           // 是否启用 Hi-Z 剪除
 	};
 
-	// Lightweight vertex used by the procedural grass blade template mesh.
-	// Matches the shader attribute layout: vec3 pos (loc 0), vec3 nrm (loc 1), vec2 uv (loc 2).
+	// 程序化草叶模板使用的轻量顶点，语义顺序与标准导入 Mesh 保持一致：
+	// vec3 position (loc 0)、vec2 uv (loc 1)、vec3 normal (loc 2)。
 	struct GrassVertex
 	{
 		glm::vec3 position;
-		glm::vec3 normal;
 		glm::vec2 uv;
+		glm::vec3 normal;
 	};
 
 	// ========================================================================

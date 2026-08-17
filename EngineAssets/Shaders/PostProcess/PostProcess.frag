@@ -3,7 +3,7 @@
 // Final composite order:
 // Bloom -> Exposure -> White Balance -> Tone Mapping -> Color Grading.
 
-layout(set = 1, binding = 0, input_attachment_index = 0) uniform subpassInput colorInput;
+layout(set = 1, binding = 0) uniform sampler2D colorInput;
 layout(set = 1, binding = 1) uniform sampler2D bloomResult;
 layout(set = 1, binding = 2) uniform sampler2D exposureEV;
 layout(set = 1, binding = 3) uniform PostProcessParams
@@ -41,6 +41,11 @@ layout(set = 1, binding = 3) uniform PostProcessParams
 	float  m_TimelineFadeColorG;
 	float  m_TimelineFadeColorB;
 	float  m_TimelineFadeOpacity;
+
+    int    m_EnableDOF;
+    int    m_EnableAutoExposure;
+    float  _pad9;
+    float  _pad10;
 } uPP;
 
 layout(location = 0) in vec2 fragTexCoord;
@@ -98,7 +103,9 @@ void main()
     uv.x = fragTexCoord.x * 0.5 + 0.5;
     uv.y = -fragTexCoord.y * 0.5 + 0.5;
 
-    vec3 hdr = subpassLoad(colorInput).rgb;
+    vec2 colorTexel = 1.0 / vec2(textureSize(colorInput, 0));
+    vec2 colorUV = clamp(uv, colorTexel * 0.5, vec2(1.0) - colorTexel * 0.5);
+    vec3 hdr = texture(colorInput, colorUV).rgb;
     if (uPP.m_DebugPassthrough > 0.5)
     {
         vec3 debugColor = hdr;
@@ -109,10 +116,14 @@ void main()
         outColor = vec4(clamp(debugColor, 0.0, 1.0), 1.0);
         return;
     }
-    vec3 bloom = texture(bloomResult, uv).rgb;
+    vec2 bloomTexel = 1.0 / vec2(textureSize(bloomResult, 0));
+    vec2 bloomUV = clamp(uv, bloomTexel * 0.5, vec2(1.0) - bloomTexel * 0.5);
+    vec3 bloom = texture(bloomResult, bloomUV).rgb;
     hdr += bloom * uPP.m_BloomIntensity;
 
-	float currentEV = texelFetch(exposureEV, ivec2(0, 0), 0).r;
+	float currentEV = uPP.m_EnableAutoExposure != 0
+        ? texelFetch(exposureEV, ivec2(0, 0), 0).r
+        : 0.0;
 	if (isnan(currentEV) || isinf(currentEV))
 		currentEV = 0.0;
 	hdr *= exp2(currentEV + uPP.m_ExposureCompensation);

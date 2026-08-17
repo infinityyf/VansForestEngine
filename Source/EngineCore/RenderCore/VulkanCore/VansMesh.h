@@ -179,7 +179,8 @@ namespace VansGraphics
 		void LoadMesh(VkDevice& logic_device, VkQueue& queue, VansVKCommandBuffer* commandbuffer,
 			const std::string& file_name, bool import_tangent = false,
 			const std::string& cachePath = {},
-			bool trustCacheWithoutSource = false);
+			bool trustCacheWithoutSource = false,
+			float scaleFactor = 1.0f);
 
 		// Loads only the specified aiMesh index from a file (used for submesh splitting).
 		// Returns false if the index is out of range.

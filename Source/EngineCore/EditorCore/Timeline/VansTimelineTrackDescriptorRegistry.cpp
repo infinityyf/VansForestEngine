@@ -1,53 +1,57 @@
 #include "VansTimelineTrackDescriptorRegistry.h"
 
-#include <algorithm>
-
 namespace Vans
 {
+namespace
+{
+EditorAPI::AssetType AssetPicker(std::string_view kind)
+{
+	if (kind == "Audio") return EditorAPI::AssetType::Audio;
+	if (kind == "Video") return EditorAPI::AssetType::Video;
+	if (kind == "AnimationClip") return EditorAPI::AssetType::AnimationClip;
+	if (kind == "Timeline") return EditorAPI::AssetType::Timeline;
+	if (kind == "PostProcessProfile") return EditorAPI::AssetType::PostProcessProfile;
+	return EditorAPI::AssetType::Unknown;
+}
+}
+
 const std::vector<VansTimelineTrackDescriptor>& VansTimelineTrackDescriptorRegistry::All()
 {
-	static const std::vector<VansTimelineTrackDescriptor> descriptors{
-		{ VansTimelineTrackType::Transform, "Transform", "Transform", "Object", true, true, true },
-		{ VansTimelineTrackType::Property, "Property", "Property", "Object", true, true, true },
-		{ VansTimelineTrackType::Activation, "Activation", "Activation / Visibility", "Object", true, true, false },
-		{ VansTimelineTrackType::Constraint, "Constraint", "Constraint", "Object", true, true, true },
-		{ VansTimelineTrackType::AnimationClip, "AnimationClip", "Animation Clip", "Animation", true, true, true,
-			EditorAPI::AssetType::AnimationClip },
-		{ VansTimelineTrackType::AnimatorParameter, "AnimatorParameter", "Animator Parameter", "Animation", true, true, true },
-		{ VansTimelineTrackType::BoneOverride, "BoneOverride", "Bone Override / IK", "Animation", true, true, true },
-		{ VansTimelineTrackType::Audio, "Audio", "Audio", "Media", true, true, true, EditorAPI::AssetType::Audio },
-		{ VansTimelineTrackType::Media, "Media", "Video / Media", "Media", true, true, true, EditorAPI::AssetType::Video },
-		{ VansTimelineTrackType::Particle, "Particle", "Particle / VFX", "Media", true, true, true,
-			EditorAPI::AssetType::Particle },
-		{ VansTimelineTrackType::CameraCut, "CameraCut", "Camera Cut", "Cinematic", true, true, false },
-		{ VansTimelineTrackType::CameraProperty, "CameraProperty", "Camera Property", "Cinematic", true, true, true },
-		{ VansTimelineTrackType::CameraShake, "CameraShake", "Camera Shake", "Cinematic", true, true, true },
-		{ VansTimelineTrackType::FadePostProcess, "FadePostProcess", "Fade / Post Process", "Cinematic", false, true, true,
-			EditorAPI::AssetType::PostProcessProfile },
-		{ VansTimelineTrackType::Light, "Light", "Light", "Rendering", true, true, true },
-		{ VansTimelineTrackType::MaterialParameter, "MaterialParameter", "Material Parameter", "Rendering", true, true, true },
-		{ VansTimelineTrackType::MaterialSwitch, "MaterialSwitch", "Material Switch", "Rendering", true, true, false,
-			EditorAPI::AssetType::Material },
-		{ VansTimelineTrackType::UIState, "UIState", "UI State", "UI", true, true, true },
-		{ VansTimelineTrackType::EventSignal, "EventSignal", "Event / Signal", "Logic", false, true, true },
-		{ VansTimelineTrackType::SubTimeline, "SubTimeline", "SubTimeline / Shot", "Cinematic", false, true, false,
-			EditorAPI::AssetType::Timeline },
-		{ VansTimelineTrackType::Spawnable, "Spawnable", "Spawnable / Lifetime", "World", false, true, false,
-			EditorAPI::AssetType::Unknown, VansTimelineEditorCapabilityLevel::DataAndEditor, VansTimelineCapability::SpawnTemplate },
-		{ VansTimelineTrackType::TimeScale, "TimeScale", "Time Scale", "Logic", false, true, true },
-		{ VansTimelineTrackType::SceneState, "SceneState", "Scene State", "World", false, true, false,
-			EditorAPI::AssetType::Scene, VansTimelineEditorCapabilityLevel::DataAndEditor, VansTimelineCapability::AdditiveScene },
-		{ VansTimelineTrackType::Custom, "Custom", "Custom", "Extension", false, true, true,
-			EditorAPI::AssetType::Unknown, VansTimelineEditorCapabilityLevel::RegisteredOnly }
-	};
+	static const std::vector<VansTimelineTrackDescriptor> descriptors =
+		Build(VansTimelineTrackExtensionRegistry::BuiltIns());
 	return descriptors;
 }
 
-const VansTimelineTrackDescriptor* VansTimelineTrackDescriptorRegistry::Find(VansTimelineTrackType type)
+std::vector<VansTimelineTrackDescriptor> VansTimelineTrackDescriptorRegistry::Build(
+	const VansTimelineTrackExtensionRegistry& extensions)
 {
-	const auto& descriptors = All();
-	const auto found = std::find_if(descriptors.begin(), descriptors.end(),
-		[&](const auto& descriptor) { return descriptor.type == type; });
-	return found == descriptors.end() ? nullptr : &*found;
+	std::vector<VansTimelineTrackDescriptor> descriptors;
+	for (const VansTimelineTrackExtensionDescriptor& extension : extensions.All())
+	{
+		VansTimelineTrackDescriptor descriptor;
+		descriptor.typeId = extension.typeId;
+		descriptor.stableName = extension.stableName;
+		descriptor.displayName = extension.displayName;
+		descriptor.category = extension.category;
+		descriptor.bindingRequired = extension.binding == VansTimelineBindingRequirement::Required;
+		descriptor.supportsSections = VansHasTimelineFlag(extension.flags, VansTimelineTrackFlags::SupportsSections);
+		descriptor.supportsChannels = VansHasTimelineFlag(extension.flags, VansTimelineTrackFlags::SupportsChannels);
+		descriptor.supportsRanges = VansHasTimelineFlag(extension.flags, VansTimelineTrackFlags::RangeEdge);
+		descriptor.sectionAssetType = AssetPicker(extension.sectionAssetKind);
+		descriptor.schema = &extension.sourceSchema;
+		descriptors.push_back(std::move(descriptor));
+	}
+	return descriptors;
+}
+
+const VansTimelineTrackDescriptor* VansTimelineTrackDescriptorRegistry::Find(VansTimelineTrackTypeId typeId)
+{
+	for (const auto& descriptor : All()) if (descriptor.typeId == typeId) return &descriptor;
+	return nullptr;
+}
+
+const VansTimelineTrackDescriptor* VansTimelineTrackDescriptorRegistry::Find(const VansTimelineTrackTypeRef& type)
+{
+	return Find(type.typeId);
 }
 }

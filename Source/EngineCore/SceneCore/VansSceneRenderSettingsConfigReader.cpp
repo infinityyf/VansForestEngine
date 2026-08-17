@@ -282,6 +282,30 @@ std::optional<VansScenePostProcessSettingsConfig> DecodePostProcess(
 		config.bloomKnee = ReadOptionalFloatField(*bloom, "knee");
 		config.bloomIntensity = ReadOptionalFloatField(*bloom, "intensity");
 		config.bloomScatter = ReadOptionalFloatField(*bloom, "scatter");
+		config.bloomClamp = ReadOptionalFloatField(*bloom, "clamp");
+		config.bloomTintR = ReadOptionalFloatField(*bloom, "tintR");
+		config.bloomTintG = ReadOptionalFloatField(*bloom, "tintG");
+		config.bloomTintB = ReadOptionalFloatField(*bloom, "tintB");
+		config.bloomShapeMode = ReadOptionalIntField(*bloom, "shapeMode");
+		config.bloomShapeIntensity = ReadOptionalFloatField(*bloom, "shapeIntensity");
+		config.bloomShapeBlend = ReadOptionalFloatField(*bloom, "shapeBlend");
+		config.bloomShapeAngleDeg = ReadOptionalFloatField(*bloom, "shapeAngleDeg");
+		config.bloomAnamorphicStretch = ReadOptionalFloatField(*bloom, "anamorphicStretch");
+		config.bloomStreakCount = ReadOptionalIntField(*bloom, "streakCount");
+		config.bloomStreakLength = ReadOptionalFloatField(*bloom, "streakLength");
+		config.bloomStreakAttenuation = ReadOptionalFloatField(*bloom, "streakAttenuation");
+	}
+	if (const VansSerializedValue* dof = ReadObjectField(*postProcess, "dof"))
+	{
+		config.enableDOF = ReadOptionalBoolField(*dof, "enable");
+		config.focusDistance = ReadOptionalFloatField(*dof, "focusDistance");
+		config.focalLengthMm = ReadOptionalFloatField(*dof, "focalLengthMm");
+		config.fStop = ReadOptionalFloatField(*dof, "fStop");
+		if (!config.fStop.has_value())
+			config.fStop = ReadOptionalFloatField(*dof, "aperture");
+		config.sensorHeightMm = ReadOptionalFloatField(*dof, "sensorHeightMm");
+		config.maxCoC = ReadOptionalFloatField(*dof, "maxCoC");
+		config.dofBlurTransmissionBackground = ReadOptionalBoolField(*dof, "blurTransmissionBackground");
 	}
 	if (const VansSerializedValue* toneMapping = ReadObjectField(*postProcess, "toneMapping"))
 	{

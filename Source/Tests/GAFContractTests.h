@@ -1,0 +1,17 @@
+#pragma once
+
+bool TestGAFGameplayTagsContract();
+bool TestGAFAttributesContract();
+bool TestGAFCuesAndEffectsContract();
+bool TestGAFTargetingContract();
+bool TestGAFDefinitionAndServiceContract();
+bool TestGAFResourceLedgerAndTaskContract();
+bool TestGAFExecutionGraphContract();
+bool TestGAFActionHostLifecycleContract();
+bool TestGAFAssetSchemaAndCookContract();
+bool TestGAFPackagingContract();
+bool TestGAFNetworkContract();
+bool TestGAFDebugAndReplayContract();
+bool TestGAFSampleLibraryContract();
+bool TestGAFDemoHallWindowBreakContract();
+bool TestGAFLuaBridgeContract();

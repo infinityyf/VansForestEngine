@@ -170,13 +170,13 @@ MotionMatchingDatabaseClip DecodeMotionDatabaseClip(const VansSerializedValue& c
 		return clip;
 	clip.name = ReadSerializedStringField(clipJson, "name", "");
 	clip.loop = ReadBoolField(clipJson, "loop", clip.loop);
-	clip.disableReselection = ReadBoolField(clipJson, "disable_reselection", clip.disableReselection);
-	clip.disableReselection = ReadBoolField(clipJson, "disableReselection", clip.disableReselection);
 	clip.phase = ReadSerializedStringField(clipJson, "phase", clip.phase);
 	clip.sourceMoveState = ReadIntField(clipJson, "source_move_state", clip.sourceMoveState);
 	clip.sourceMoveState = ReadIntField(clipJson, "sourceMoveState", clip.sourceMoveState);
 	clip.targetMoveState = ReadIntField(clipJson, "target_move_state", clip.targetMoveState);
 	clip.targetMoveState = ReadIntField(clipJson, "targetMoveState", clip.targetMoveState);
+	clip.sourceDirectionBucket = ReadIntField(
+		clipJson, "source_direction_bucket", clip.sourceDirectionBucket);
 	clip.directionBucket = ReadIntField(clipJson, "direction_bucket", clip.directionBucket);
 	clip.directionBucket = ReadIntField(clipJson, "directionBucket", clip.directionBucket);
 	clip.turnDirectionSign = ReadIntField(clipJson, "turn_direction_sign", clip.turnDirectionSign);
@@ -289,8 +289,49 @@ MotionMatchingSettings DecodeMotionMatching(const VansSerializedValue& mmJson)
 	MotionMatchingSettings settings;
 	settings.enabled = ReadBoolField(mmJson, "enabled", false);
 	settings.autoBuild = ReadBoolField(mmJson, "auto_build", true);
-	settings.externallyDriven = ReadBoolField(mmJson, "externally_driven", false);
+	if (const VansSerializedValue* motionModel = ReadObjectField(mmJson, "motion_model"))
+	{
+		const std::string driveMode = ReadSerializedStringField(*motionModel, "drive_mode", "hybrid");
+		if (driveMode == "capsule")
+			settings.motionModel.driveMode = VansLocomotionDriveMode::Capsule;
+		else if (driveMode == "root_motion")
+			settings.motionModel.driveMode = VansLocomotionDriveMode::RootMotion;
+		else
+			settings.motionModel.driveMode = VansLocomotionDriveMode::Hybrid;
+		settings.motionModel.velocityHalfLife = ReadFloatField(
+			*motionModel, "velocity_half_life", settings.motionModel.velocityHalfLife);
+		settings.motionModel.facingHalfLife = ReadFloatField(
+			*motionModel, "facing_half_life", settings.motionModel.facingHalfLife);
+		settings.motionModel.facingVelocityHalfLife = ReadFloatField(
+			*motionModel, "facing_velocity_half_life", settings.motionModel.facingVelocityHalfLife);
+		settings.motionModel.movementReferenceYawRateHalfLife = ReadFloatField(
+			*motionModel,
+			"movement_reference_yaw_rate_half_life",
+			settings.motionModel.movementReferenceYawRateHalfLife);
+		settings.motionModel.maxFacingYawRate = ReadFloatField(
+			*motionModel, "max_facing_yaw_rate", settings.motionModel.maxFacingYawRate);
+		settings.motionModel.maxAcceleration = ReadFloatField(
+			*motionModel, "max_acceleration", settings.motionModel.maxAcceleration);
+		settings.motionModel.maxDeceleration = ReadFloatField(
+			*motionModel, "max_deceleration", settings.motionModel.maxDeceleration);
+		settings.motionModel.actualVelocityFeedbackHalfLife = ReadFloatField(
+			*motionModel,
+			"actual_velocity_feedback_half_life",
+			settings.motionModel.actualVelocityFeedbackHalfLife);
+		settings.motionModel.predictionStep = ReadFloatField(
+			*motionModel, "prediction_step", settings.motionModel.predictionStep);
+		settings.motionModel.rootMotionToWorldScale = ReadFloatField(
+			*motionModel, "root_motion_to_world_scale", settings.motionModel.rootMotionToWorldScale);
+		settings.motionModel.loopRootMotionWeight = ReadFloatField(
+			*motionModel, "loop_root_motion_weight", settings.motionModel.loopRootMotionWeight);
+		settings.motionModel.transitionRootMotionWeight = ReadFloatField(
+			*motionModel, "transition_root_motion_weight", settings.motionModel.transitionRootMotionWeight);
+		settings.motionModel.rootRotationWeight = ReadFloatField(
+			*motionModel, "root_rotation_weight", settings.motionModel.rootRotationWeight);
+	}
 	settings.sampleRate = ReadFloatField(mmJson, "sample_rate", 30.0f);
+	settings.nonLoopSamplingEndMargin = ReadFloatField(
+		mmJson, "non_loop_sampling_end_margin", settings.nonLoopSamplingEndMargin);
 	settings.searchThrottle = ReadFloatField(mmJson, "search_throttle", 0.15f);
 	settings.minSwitchCostImprovement = ReadFloatField(mmJson, "min_switch_cost_improvement", 0.02f);
 	settings.minSwitchCostRatio = ReadFloatField(mmJson, "min_switch_cost_ratio", settings.minSwitchCostRatio);
@@ -306,6 +347,52 @@ MotionMatchingSettings DecodeMotionMatching(const VansSerializedValue& mmJson)
 	settings.maxPlaybackRate = ReadFloatField(mmJson, "max_playback_rate", 1.25f);
 	settings.playbackRateSmoothing = ReadFloatField(mmJson, "playback_rate_smoothing", 12.0f);
 	settings.trajectoryResponsiveness = ReadFloatField(mmJson, "trajectory_responsiveness", settings.trajectoryResponsiveness);
+	if (const VansSerializedValue* steering = ReadObjectField(mmJson, "root_motion_steering"))
+	{
+		settings.steering.enabled = ReadBoolField(
+			*steering, "enabled", settings.steering.enabled);
+		settings.steering.predictionTime = ReadFloatField(
+			*steering, "prediction_time", settings.steering.predictionTime);
+		settings.steering.correctionHalfLife = ReadFloatField(
+			*steering, "correction_half_life", settings.steering.correctionHalfLife);
+		settings.steering.maxCorrectionAngleDegrees = ReadFloatField(
+			*steering,
+			"max_correction_angle_degrees",
+			settings.steering.maxCorrectionAngleDegrees);
+		settings.steering.maxCorrectionYawRateDegreesPerSecond = ReadFloatField(
+			*steering,
+			"max_correction_yaw_rate_degrees_per_second",
+			settings.steering.maxCorrectionYawRateDegreesPerSecond);
+		settings.steering.minMovementSpeed = ReadFloatField(
+			*steering, "min_movement_speed", settings.steering.minMovementSpeed);
+	}
+	if (const VansSerializedValue* reconciliation = ReadObjectField(mmJson, "root_motion_reconciliation"))
+	{
+		settings.rootMotionReconciliation.enabled = ReadBoolField(
+			*reconciliation, "enabled", settings.rootMotionReconciliation.enabled);
+		settings.rootMotionReconciliation.linearVelocityHalfLife = ReadFloatField(
+			*reconciliation, "linear_velocity_half_life",
+			settings.rootMotionReconciliation.linearVelocityHalfLife);
+		settings.rootMotionReconciliation.angularVelocityHalfLife = ReadFloatField(
+			*reconciliation, "angular_velocity_half_life",
+			settings.rootMotionReconciliation.angularVelocityHalfLife);
+		settings.rootMotionReconciliation.maxDuration = ReadFloatField(
+			*reconciliation, "max_duration", settings.rootMotionReconciliation.maxDuration);
+		settings.rootMotionReconciliation.maxLinearVelocityCorrection = ReadFloatField(
+			*reconciliation, "max_linear_velocity_correction",
+			settings.rootMotionReconciliation.maxLinearVelocityCorrection);
+		settings.rootMotionReconciliation.maxAngularVelocityCorrectionDegreesPerSecond = ReadFloatField(
+			*reconciliation, "max_angular_velocity_correction_degrees_per_second",
+			settings.rootMotionReconciliation.maxAngularVelocityCorrectionDegreesPerSecond);
+	}
+	settings.facingTurnEnterThresholdDegrees = ReadFloatField(
+		mmJson, "facing_turn_enter_threshold_degrees", settings.facingTurnEnterThresholdDegrees);
+	settings.facingTurnExitThresholdDegrees = ReadFloatField(
+		mmJson, "facing_turn_exit_threshold_degrees", settings.facingTurnExitThresholdDegrees);
+	settings.facingTurnExitYawRateDegreesPerSecond = ReadFloatField(
+		mmJson,
+		"facing_turn_exit_yaw_rate_degrees_per_second",
+		settings.facingTurnExitYawRateDegreesPerSecond);
 	settings.inertializationHalfLife = ReadFloatField(
 		mmJson,
 		"inertialization_half_life",
@@ -315,8 +402,30 @@ MotionMatchingSettings DecodeMotionMatching(const VansSerializedValue& mmJson)
 		"inertialization_max_duration",
 		settings.inertializationMaxDuration);
 	settings.trajectoryWeight = ReadFloatField(mmJson, "trajectory_weight", 1.0f);
+	settings.trajectoryPositionWeight = ReadFloatField(
+		mmJson, "trajectory_position_weight", settings.trajectoryPositionWeight);
+	settings.trajectoryVelocityWeight = ReadFloatField(
+		mmJson, "trajectory_velocity_weight", settings.trajectoryVelocityWeight);
+	settings.trajectoryFacingWeight = ReadFloatField(
+		mmJson, "trajectory_facing_weight", settings.trajectoryFacingWeight);
 	settings.poseWeight = ReadFloatField(mmJson, "pose_weight", 0.7f);
 	settings.contactWeight = ReadFloatField(mmJson, "contact_weight", settings.contactWeight);
+	settings.pivotEnterAngleDegrees = ReadFloatField(
+		mmJson, "pivot_enter_angle_degrees", settings.pivotEnterAngleDegrees);
+	settings.pivotExitAngleDegrees = ReadFloatField(
+		mmJson, "pivot_exit_angle_degrees", settings.pivotExitAngleDegrees);
+	settings.pivotMinSpeed = ReadFloatField(
+		mmJson, "pivot_min_speed", settings.pivotMinSpeed);
+	settings.pivotPredictionLeadTime = ReadFloatField(
+		mmJson, "pivot_prediction_lead_time", settings.pivotPredictionLeadTime);
+	settings.pivotUrgentPredictionTime = ReadFloatField(
+		mmJson, "pivot_urgent_prediction_time", settings.pivotUrgentPredictionTime);
+	settings.pivotMinimumPlaybackTime = ReadFloatField(
+		mmJson, "pivot_minimum_playback_time", settings.pivotMinimumPlaybackTime);
+	settings.urgentDirectionChangeDegrees = ReadFloatField(
+		mmJson, "urgent_direction_change_degrees", settings.urgentDirectionChangeDegrees);
+	settings.directionBucketTolerance = ReadIntField(
+		mmJson, "direction_bucket_tolerance", settings.directionBucketTolerance);
 	settings.contactHeightFullFraction = ReadFloatField(
 		mmJson,
 		"contact_height_full_fraction",
@@ -356,6 +465,12 @@ MotionMatchingSettings DecodeMotionMatching(const VansSerializedValue& mmJson)
 	if (const VansSerializedValue* schemaJson = ReadObjectField(mmJson, "schema"))
 	{
 		settings.trajectoryWeight = ReadFloatField(*schemaJson, "trajectory_weight", settings.trajectoryWeight);
+		settings.trajectoryPositionWeight = ReadFloatField(
+			*schemaJson, "position_weight", settings.trajectoryPositionWeight);
+		settings.trajectoryVelocityWeight = ReadFloatField(
+			*schemaJson, "velocity_weight", settings.trajectoryVelocityWeight);
+		settings.trajectoryFacingWeight = ReadFloatField(
+			*schemaJson, "facing_weight", settings.trajectoryFacingWeight);
 		settings.poseWeight = ReadFloatField(*schemaJson, "pose_weight", settings.poseWeight);
 		if (const VansSerializedValue* futureTimes = ReadArrayField(*schemaJson, "future_times"))
 		{
@@ -474,6 +589,15 @@ FootPlacementSettings DecodeFootPlacement(const VansSerializedValue& fpJson)
 	settings.rotationWeight = ReadFloatField(fpJson, "rotation_weight", settings.rotationWeight);
 	settings.maxLegExtensionRatio = ReadFloatField(fpJson, "max_leg_extension_ratio", settings.maxLegExtensionRatio);
 	settings.poleSmoothTime = ReadFloatField(fpJson, "pole_smooth_time", settings.poleSmoothTime);
+	settings.footLockEnabled = ReadBoolField(fpJson, "foot_lock_enabled", settings.footLockEnabled);
+	settings.footLockEnterPlantWeight = ReadFloatField(
+		fpJson, "foot_lock_enter_plant_weight", settings.footLockEnterPlantWeight);
+	settings.footLockExitPlantWeight = ReadFloatField(
+		fpJson, "foot_lock_exit_plant_weight", settings.footLockExitPlantWeight);
+	settings.footLockMaxDistance = ReadFloatField(
+		fpJson, "foot_lock_max_distance", settings.footLockMaxDistance);
+	settings.footLockSmoothTime = ReadFloatField(
+		fpJson, "foot_lock_smooth_time", settings.footLockSmoothTime);
 	settings.kneePoleModelWeight = ReadFloatField(fpJson, "knee_pole_model_weight", settings.kneePoleModelWeight);
 	settings.kneePoleModelDir = ReadVec3Field(fpJson, "knee_pole_model_dir", settings.kneePoleModelDir);
 	settings.airborneParameter = ReadSerializedStringField(fpJson, "airborne_parameter", settings.airborneParameter);

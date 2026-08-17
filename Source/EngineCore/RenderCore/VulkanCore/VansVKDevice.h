@@ -8,6 +8,7 @@
 #include "VansVKSecondaryCommandContext.h"
 #include "VansRenderGraph.h"
 #include "VansRenderGraphVulkanSync.h"
+#include "VansFrameSubmitOrchestrator.h"
 #include "VansPipelineCacheService.h"
 #include "VansShader.h"
 #include "../RayTracingCore/VansRayTracing.h"
@@ -15,6 +16,7 @@
 
 #include "../../ScriptCore/VansCommonUtils.h"
 #include "../FidelityFXCore/VansFSR.h"
+#include "../FidelityFXCore/VansFSRHistoryState.h"
 #include <array>
 #include <cstdint>
 #include <functional>
@@ -97,20 +99,20 @@ namespace VansGraphics
 	private:
 
 		VansFSR m_FSRController;
-
-		//用于dispatch的信息
-		FSRInput m_FSRInput;
+		VansFSRHistoryState m_FSRHistory;
 		VansFSRMode m_FSRMode = VansFSRMode::MatchViewport;
 		VkExtent2D m_RequestedSceneViewportExtent{ 0, 0 };
 		bool m_FSRConfigDirty = false;
-		bool m_PresentFSROutputToSwapchain = false;
+		bool m_FSREnabled = false;
+		bool m_PresentFinalDisplayToSwapchain = false;
 
-		void PrepareFSRDispatchInputData(float fovy, float nearPlane, float farPlane);
+		bool BuildFSRFrameInput(VansFSRFrameInput& output);
+		void RecordFSRMasks(VansVKCommandBuffer& commandBuffer, VansFSRFrameInput& input);
+		bool RecordFSRFallbackUpscale(VansVKCommandBuffer& commandBuffer);
+		void RecordDisplayPostProcess(VansVKCommandBuffer& commandBuffer);
+		void RecordFinalDisplayToSwapchain();
 
-		void DispatchFSRUpscale();
-		void RecordFSROutputToSwapchain();
-
-		void InitializeFSR();
+		bool InitializeFSR();
 
 		void CleanupFSR();
 
@@ -132,22 +134,36 @@ namespace VansGraphics
 		/// 返回 Scene UI pass 的 VkRenderPass 句柄，供 Noesis RenderDevice 懒编译 PSO 使用
 		VkRenderPass GetSceneUIRenderPassHandle();
 
-		/// Return the FSR-upscaled output image (display resolution) for editor sampling.
-		VansVKImage& GetFSROutputImage() { return m_FSRController.GetTempFSRImage(); }
+		/// Return the final display-processed image for editor sampling.
+		VansVKImage& GetFinalDisplayImage();
+		VansVKImage& GetFSRReactiveMaskImage() { return m_FSRController.GetReactiveMaskImage(); }
+		VansVKImage& GetFSRTransparencyAndCompositionImage()
+		{
+			return m_FSRController.GetTransparencyAndCompositionImage();
+		}
 
 		// 查询 FSR 内置抖动偏移（像素空间 [-0.5, 0.5]），供 VansCamera 替代 Halton 序列
 		bool GetFSRJitterOffset(uint32_t frameIndex, float& outPixelX, float& outPixelY) override;
 		float GetUpscaleMipBias() const override;
 
 		void RequestFSRConfig(VansFSRMode mode, uint32_t viewportWidth, uint32_t viewportHeight, float sharpness);
-		void SetRuntimeSwapchainPresentationEnabled(bool enabled) { m_PresentFSROutputToSwapchain = enabled; }
+		void RequestFSRHistoryReset(VansFSRResetReason reason) { m_FSRHistory.RequestReset(reason); }
+		void SetRuntimeSwapchainPresentationEnabled(bool enabled) { m_PresentFinalDisplayToSwapchain = enabled; }
 		VansFSRMode GetFSRMode() const { return m_FSRMode; }
 		float GetFSRSharpness() const { return m_FSRController.GetSharpness(); }
+		const VansFSRDiagnostics& GetFSRDiagnostics() const { return m_FSRController.GetDiagnostics(); }
+		void SetFSRDebugViewEnabled(bool enabled) { m_FSRController.SetDebugViewEnabled(enabled); }
+		bool IsFSRDebugViewEnabled() const { return m_FSRController.IsDebugViewEnabled(); }
+		VansFSRResetReason GetPendingFSRResetReasons() const { return m_FSRHistory.GetPendingReasons(); }
 		bool IsParallelCommandRecordingEnabled() const { return m_EnableParallelCommandRecording; }
 		void SetParallelCommandRecordingEnabled(bool enabled) { m_EnableParallelCommandRecording = enabled; }
 		bool IsFrameContextRingEnabled() const { return m_EnableFrameContextRing; }
 		uint32_t GetConfiguredFramesInFlight() const { return m_ConfiguredFramesInFlight; }
 		void SetFrameContextRingEnabled(bool enabled, uint32_t framesInFlight);
+		bool IsAsyncComputeRequested() const { return m_AsyncComputeRequested; }
+		bool IsAsyncComputeEnabled() const { return m_AsyncComputeEnabled; }
+		const VansQueueCapabilities& GetQueueCapabilities() const { return m_QueueCapabilities; }
+		void SetAsyncComputeEnabled(bool enabled);
 		VkExtent2D GetRequestedSceneViewportExtent() const { return m_RequestedSceneViewportExtent; }
 
 		// 窗口大小改变时重建交换链和UI渲染pass
@@ -251,8 +267,6 @@ namespace VansGraphics
 		void DrawPunctualShadowMap(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd, uint32_t atlasIndex);
 		bool RecordShadowMapParallel(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer, int framebufferIndex);
 
-		void DrawSceneForward(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
-
 		void DrawSceneGBuffer(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
 		bool RecordSceneGBufferParallel(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer, int framebufferIndex = 0);
 		bool RecordMotionVectorPassParallel(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer, int framebufferIndex = 0);
@@ -269,6 +283,8 @@ namespace VansGraphics
 		void ClearHairOITResources(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
 		void PrepareHairOITForResolve(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
 		void CopyOpaqueSceneColorForTransmission(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
+		void ResolveDepthOfFieldIntoSceneColor(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
+		void PrepareSceneColorForTransparentPass(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
 		VkDescriptorSetLayout GetHairOITPassLayout() const { return m_HairLightingPassLayout; }
 		VkDescriptorSet GetHairOITPassDescriptorSet() const
 		{
@@ -335,8 +351,9 @@ namespace VansGraphics
 
 		// 后处理 Compute Pass：自动曝光与 Bloom
 		void UpdateExposure(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
+		void UpdateDepthOfField(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 		void UpdateBloom(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
-		// 上传逐帧曝光参数，并在配置变化时更新 Bloom 参数。
+		// 上传逐帧曝光参数，并在配置变化时更新 Bloom / DOF 参数。
 		void UploadPostProcessProfileIfDirty();
 		void ProcessPendingGISettings();
 
@@ -355,7 +372,9 @@ namespace VansGraphics
 		uint64_t m_FogRayMarchDescSetGeneration = 0;
 		uint64_t m_TileLightBuildDescSetGeneration = 0;
 		uint64_t m_PPExposureDescSetGeneration = 0;
+		uint64_t m_PPDepthOfFieldDescSetGeneration = 0;
 		uint64_t m_PPBloomDescSetGeneration = 0;
+		uint64_t m_PPBloomShapeDescSetGeneration = 0;
 		uint64_t m_CloudRayMarchDescSetGeneration = 0;
 		uint64_t m_ScreenSpaceShadowDescSetGeneration = 0;
 
@@ -429,7 +448,9 @@ namespace VansGraphics
 
 		// 后处理 Compute Pass descriptor set 写入（一次性）
 		void UpdateExposureDescriptorSets(VansRenderPassManager* renderPassManager);
+		void UpdateDepthOfFieldDescriptorSets(VansRenderPassManager* renderPassManager);
 		void UpdateBloomDescriptorSets(VansRenderPassManager* renderPassManager);
+		void UpdateBloomShapeDescriptorSets();
 
 	private:
 
@@ -516,15 +537,10 @@ namespace VansGraphics
 
 		VkSemaphore m_CommandBufferReadyToPresentSemaphore;
 
-		// Semaphores for shadow-parallel async path
-		VkSemaphore m_ShadowDoneSemaphore        = VK_NULL_HANDLE;
-		VkSemaphore m_GBufferDoneSemaphore       = VK_NULL_HANDLE;
-		// BuildTileLightLists runs on compute queue (different family) in parallel with
-		// Shadow + GBuffer. CB2 waits on this before starting the Deferred pass.
-		VkSemaphore m_AsyncComputeDoneSemaphore  = VK_NULL_HANDLE;
-
-		// Set to true to enable shadow-parallel async path.
-		bool m_UseAsyncCompute = false;
+		bool m_AsyncComputeRequested = false;
+		bool m_AsyncComputeEnabled = false;
+		VansQueueCapabilities m_QueueCapabilities;
+		VansFrameSubmitOrchestrator m_FrameSubmitOrchestrator;
 		bool m_EnableParallelCommandRecording = true;
 		bool m_EnableFrameContextRing = false;
 		bool m_FrameContextRingResourcesReady = false;
@@ -589,8 +605,12 @@ namespace VansGraphics
 		// CB1 异步路径专用：录制 MotionVector + GBuffer，与 Shadow CB 并行提交，
 		// 避免 CB1 结束后 CPU stall 等 fence 才能让 m_VansVKCommandBuffer 录制 CB2。
 		VansVKCommandBuffer m_VansVKGBufferCommandBuffer;
+		VansVKCommandBuffer m_VansVKGraphicsPreCommandBuffer;
+		VansVKCommandBuffer m_VansVKGraphicsScreenCommandBuffer;
 
 		VansVKCommandBuffer m_VansVKRayTracingCommandBuffer;
+		VansVKCommandBuffer m_VansVKAsyncCloudCommandBuffer;
+		VansVKCommandBuffer m_VansVKAsyncGICommandBuffer;
 
 		// Points to the command buffer scene draw calls should record into.
 		// Defaults to m_VansVKCommandBuffer; switched temporarily to
@@ -692,6 +712,8 @@ namespace VansGraphics
 		bool InitializeParallelCommandRecording();
 		void DestroyParallelCommandRecording();
 		bool ResetGBufferSecondaryCommandBuffersIfNeeded();
+		void ResetAsyncFrameCommandBuffersAfterFailure();
+		void RefreshAsyncComputeState();
 	public:
 		VansVKDevice(VkExtent2D resolution, INativeWindowProvider* nativeWindowProvider = nullptr)
 		{

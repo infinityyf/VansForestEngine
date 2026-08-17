@@ -8,6 +8,7 @@
 #include "VansSceneRenderNodeConfig.h"
 #include "VansSceneTimelineComponentConfig.h"
 #include "VansSceneVehicleComponentConfig.h"
+#include "../GameplayActionCore/VansGameplayRuntime.h"
 #include "../ScriptCore/VansScriptTypes.h"
 
 #include <optional>
@@ -40,6 +41,7 @@ struct VansSceneObjectBuildConfig
 	std::optional<VansSceneAnimationComponentConfig> animation;
 	std::optional<VansSceneParticleComponentConfig> particle;
 	std::optional<VansSceneTimelineComponentConfig> timeline;
+	std::optional<VansGameplayActionHostSetup> actionHost;
 	VansScriptComponentDescriptors scriptComponents;
 	VansScriptUIComponentDescriptors uiComponents;
 	std::unordered_map<std::string, std::string> componentGuids;

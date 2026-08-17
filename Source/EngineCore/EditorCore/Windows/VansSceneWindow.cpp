@@ -18,7 +18,7 @@
 #include "../../RuntimeUI/Public/VansUISystem.h"
 #include "../../VansTimer.h"
 #include "../../Util/VansLog.h"
-#include "VansHierachyWindow.h"
+#include "VansMotionMatchingDebugWindow.h"
 
 void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
@@ -64,7 +64,7 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
 			ImGui::SameLine();
 			ImGui::Text("|");
 			ImGui::SameLine();
-			const char* fsrModeNames[] = { "Viewport", "Native AA", "Quality 1.5x", "Performance 2x" };
+			const char* fsrModeNames[] = { "Viewport", "Native AA", "Quality 1.5x", "Balanced 1.7x", "Performance 2x" };
 			int fsrMode = static_cast<int>(fsrSettings.mode);
 			ImGui::SetNextItemWidth(125.0f);
 			if (ImGui::Combo("##fsrMode", &fsrMode, fsrModeNames, IM_ARRAYSIZE(fsrModeNames)))
@@ -77,6 +77,10 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
 			ImGui::SetNextItemWidth(90.0f);
 			if (ImGui::SliderFloat("RCAS##fsr", &fsrSettings.sharpness, 0.0f, 1.0f, "%.2f"))
 				editorAPI.SetFSRSettings(fsrSettings.mode, fsrSettings.sharpness);
+			ImGui::SameLine();
+			bool debugView = fsrSettings.debugViewEnabled;
+			if (ImGui::Checkbox("FSR Debug##fsr", &debugView))
+				editorAPI.SetFSRDebugViewEnabled(debugView);
 
 			ImGui::SameLine();
 			ImGui::TextDisabled("%ux%u -> %ux%u  bias %.2f",
@@ -85,6 +89,10 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
 				fsrSettings.outputWidth,
 				fsrSettings.outputHeight,
 				fsrSettings.mipBias);
+			if (!fsrSettings.contextReady || !fsrSettings.lastError.empty())
+				ImGui::TextDisabled("FSR status: %s (code %u)",
+					fsrSettings.lastError.empty() ? "context not ready" : fsrSettings.lastError.c_str(),
+					fsrSettings.lastDispatchReturnCode);
 
             ImGui::Unindent(4.0f);
             ImGui::Spacing();
@@ -410,106 +418,127 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
                 }
             }
 
-            // ── Motion Matching 轨迹可视化 ────────────────────────────────
-			if (editorAPI.HasAnimationDebugNodes())
-				ImGui::Checkbox("Motion Matching Debug", &VansHierachuWindow::m_ShowMMViz);
-            if (VansHierachuWindow::m_ShowMMViz)
-            {
-                const glm::mat4& view = m_Camera->GetViewMatrix();
-                const glm::mat4& proj = m_Camera->GetProjectiveMatrix();
-                ImDrawList* dl = ImGui::GetWindowDrawList();
-                const Vans::EditorAPI::MotionMatchingDebugSnapshot motionMatchingDebug =
-                    editorAPI.GetMotionMatchingDebugSnapshot();
+            // Motion Matching 的所有开关都由 Window > Animation > Motion Matching Debug
+            // 统一拥有；Scene 只消费稳定 DTO 并负责绘制。
+			if (VansMotionMatchingDebugWindow::SceneOverlayEnabled() && m_Camera)
+			{
+				const glm::mat4 viewProj = m_Camera->GetProjectiveMatrix() * m_Camera->GetViewMatrix();
+				ImDrawList* drawList = ImGui::GetWindowDrawList();
+				const auto motionMatchingDebug = editorAPI.GetMotionMatchingDebugSnapshot();
+				auto toGlm = [](const Vans::EditorAPI::Vec3& value)
+				{
+					return glm::vec3(value.x, value.y, value.z);
+				};
+				auto projectWorld = [&](const glm::vec3& world, ImVec2& screen) -> bool
+				{
+					const glm::vec4 clip = viewProj * glm::vec4(world, 1.0f);
+					if (clip.w <= 1e-5f)
+						return false;
+					const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+					screen = ImVec2(
+						imageScreenPos.x + (ndc.x * 0.5f + 0.5f) * drawSize.x,
+						imageScreenPos.y + (-ndc.y * 0.5f + 0.5f) * drawSize.y);
+					return ndc.z >= 0.0f && ndc.z <= 1.0f;
+				};
+				auto drawLine = [&](const glm::vec3& from, const glm::vec3& to,
+				                    ImU32 color, float thickness)
+				{
+					ImVec2 a, b;
+					if (projectWorld(from, a) && projectWorld(to, b))
+						drawList->AddLine(a, b, color, thickness);
+				};
+				auto drawPoint = [&](const glm::vec3& world, ImU32 color, float radius)
+				{
+					ImVec2 point;
+					if (projectWorld(world, point))
+						drawList->AddCircleFilled(point, radius, color);
+				};
+				auto drawVelocity = [&](const glm::vec3& root, const Vans::EditorAPI::Vec3& velocity,
+				                        ImU32 color)
+				{
+					const glm::vec3 value = toGlm(velocity);
+					drawLine(root, root + value * 0.35f, color, 2.5f);
+				};
 
-                for (const auto& visual : motionMatchingDebug.visuals)
-                {
-                    const glm::vec3 rootWS(visual.rootPosition.x, visual.rootPosition.y, visual.rootPosition.z);
-                    const glm::vec3 velWS(visual.velocity.x, visual.velocity.y, visual.velocity.z);
-                    const int numSteps = 4;
-                    const float stepT = 0.25f;
-
-                    // 收集轨迹点世界矩阵
-                    std::vector<glm::mat4> trajMats;
-                    trajMats.reserve(numSteps + 1);
-                    trajMats.push_back(glm::translate(glm::mat4(1.0f), rootWS));
-                    for (int i = 1; i <= numSteps; ++i)
-                    {
-                        glm::vec3 pt = rootWS + velWS * (stepT * (float)i);
-                        trajMats.push_back(glm::translate(glm::mat4(1.0f), pt));
-                    }
-
-                    // ImGuizmo: 在轨迹点绘制小方块
-                    std::vector<float> matFloats;
-                    matFloats.reserve(trajMats.size() * 16);
-                    for (auto& m : trajMats)
-                    {
-                        // 缩放到小尺寸
-                        glm::mat4 cubeM = glm::scale(m, glm::vec3(0.02f));
-                        for (int c = 0; c < 4; ++c)
-                            for (int r = 0; r < 4; ++r)
-                                matFloats.push_back(cubeM[c][r]);
-                    }
-                    ImGuizmo::DrawCubes(
-                        glm::value_ptr(view), glm::value_ptr(proj),
-                        matFloats.data(), (int)trajMats.size());
-
-                    // ImDrawList: 连线 + 速度箭头
-                    glm::vec4 vp(0, 0, drawSize.x, drawSize.y);
-                    auto projPt = [&](const glm::vec3& w) -> ImVec2 {
-                        glm::vec3 s = glm::project(w, view, proj, vp);
-                        return ImVec2(imageScreenPos.x + s.x,
-                                      imageScreenPos.y + (drawSize.y - s.y));
-                    };
-
-                    ImVec2 prev = projPt(rootWS);
-                    // 根位置圆
-                    dl->AddCircleFilled(prev, 4.0f, IM_COL32(0, 255, 128, 220));
-                    dl->AddCircle(prev, 5.0f, IM_COL32(0, 255, 128, 255), 0, 2.5f);
-
-                    // 轨迹线
-                    for (int i = 1; i <= numSteps; ++i)
-                    {
-                        glm::vec3 pt = rootWS + velWS * (stepT * (float)i);
-                        ImVec2 cur = projPt(pt);
-                        dl->AddLine(prev, cur, IM_COL32(255, 160, 32, 200), 1.5f);
-                        dl->AddCircleFilled(cur, 2.5f, IM_COL32(255, 160, 32, 220));
-                        prev = cur;
-                    }
-
-                    // 速度箭头（从根位置出发）
-                    ImVec2 rootScr = projPt(rootWS);
-                    glm::vec3 velEnd = rootWS + velWS * 0.5f;
-                    ImVec2 ve = projPt(velEnd);
-                    dl->AddLine(rootScr, ve, IM_COL32(0, 200, 255, 220), 2.5f);
-                    float dx = ve.x - rootScr.x, dy = ve.y - rootScr.y;
-                    float len = std::sqrt(dx*dx + dy*dy);
-                    if (len > 1.0f)
-                    {
-                        dx /= len; dy /= len;
-                        float al = 8.0f;
-                        ImVec2 tip(ve.x + dx*3, ve.y + dy*3);
-                        ImVec2 L(ve.x - dx*al + dy*al*0.5f, ve.y - dy*al - dx*al*0.5f);
-                        ImVec2 R(ve.x - dx*al - dy*al*0.5f, ve.y - dy*al + dx*al*0.5f);
-                        dl->AddTriangleFilled(tip, L, R, IM_COL32(0, 200, 255, 220));
-                    }
-
-                    // clip 名标签
-                    char lbl[96];
-                    snprintf(lbl, sizeof(lbl), "%s  x%.2f", visual.activeClip.c_str(), visual.playbackRate);
-                    dl->AddText(ImVec2(rootScr.x + 8, rootScr.y - 16),
-                                IM_COL32(255, 255, 180, 230), lbl);
-                }
-            }
+				for (const auto& visual : motionMatchingDebug.visuals)
+				{
+					const glm::vec3 root = toGlm(visual.rootPosition);
+					drawPoint(root, IM_COL32(255, 255, 255, 245), 4.5f);
+					if (VansMotionMatchingDebugWindow::ShowHistory())
+					{
+						glm::vec3 previous = root;
+						for (auto it = visual.historyPositions.rbegin(); it != visual.historyPositions.rend(); ++it)
+						{
+							const glm::vec3 point = toGlm(*it);
+							drawLine(previous, point, IM_COL32(120, 120, 120, 190), 1.5f);
+							drawPoint(point, IM_COL32(150, 150, 150, 210), 2.5f);
+							previous = point;
+						}
+					}
+					if (VansMotionMatchingDebugWindow::ShowFutureTrajectory())
+					{
+						glm::vec3 previous = root;
+						for (const auto& future : visual.futurePositions)
+						{
+							const glm::vec3 point = toGlm(future);
+							drawLine(previous, point, IM_COL32(255, 160, 32, 230), 2.0f);
+							drawPoint(point, IM_COL32(255, 185, 70, 245), 3.0f);
+							previous = point;
+						}
+					}
+					if (VansMotionMatchingDebugWindow::ShowFutureVelocities())
+					{
+						const std::size_t sampleCount = (std::min)(
+							visual.futurePositions.size(), visual.futureVelocities.size());
+						for (std::size_t sampleIndex = 0; sampleIndex < sampleCount; ++sampleIndex)
+						{
+							const glm::vec3 point = toGlm(visual.futurePositions[sampleIndex]);
+							const glm::vec3 velocity = toGlm(visual.futureVelocities[sampleIndex]);
+							drawLine(point, point + velocity * 0.20f,
+								IM_COL32(255, 210, 80, 220), 1.5f);
+						}
+					}
+					if (VansMotionMatchingDebugWindow::ShowActualVelocity())
+						drawVelocity(root, visual.actualVelocity, IM_COL32(0, 220, 255, 245));
+					if (VansMotionMatchingDebugWindow::ShowPlannedVelocity())
+						drawVelocity(root, visual.plannedVelocity, IM_COL32(120, 180, 255, 220));
+					if (VansMotionMatchingDebugWindow::ShowDesiredVelocity())
+						drawVelocity(root, visual.desiredVelocity, IM_COL32(80, 255, 100, 245));
+					if (VansMotionMatchingDebugWindow::ShowActiveClipVelocity())
+						drawVelocity(root, visual.activeClipVelocity, IM_COL32(255, 80, 220, 245));
+					if (VansMotionMatchingDebugWindow::ShowSelectedCandidateVelocity())
+						drawVelocity(root, visual.selectedCandidateVelocity, IM_COL32(255, 184, 52, 235));
+					if (VansMotionMatchingDebugWindow::ShowAppliedRootMotionVelocity())
+						drawVelocity(root, visual.appliedRootMotionVelocity, IM_COL32(196, 110, 255, 245));
+					if (VansMotionMatchingDebugWindow::ShowPivot() && visual.hasPredictedPivot)
+					{
+						const glm::vec3 pivot = toGlm(visual.predictedPivotPosition);
+						drawPoint(pivot,
+							visual.pivotDatabaseAvailable ? IM_COL32(255, 80, 40, 255) : IM_COL32(255, 210, 40, 255),
+							6.0f);
+					}
+					if (VansMotionMatchingDebugWindow::ShowLabels())
+					{
+						ImVec2 screen;
+						if (projectWorld(root, screen))
+						{
+							char label[320];
+							snprintf(label, sizeof(label),
+								"%s -> %s  motion %.1f  input %.1f  ref %.1f/s  %s",
+								visual.activeClip.c_str(), visual.selectedClip.c_str(),
+								visual.directionChangeDegrees,
+								visual.inputDirectionChangeDegrees,
+								visual.movementReferenceYawRate,
+								visual.pivotRequested ? "PIVOT" : "MOVE");
+							drawList->AddText(ImVec2(screen.x + 8.0f, screen.y - 18.0f),
+								IM_COL32(255, 255, 210, 245), label);
+						}
+					}
+				}
+			}
 
             // ── Foot IK debug visualization ───────────────────────────────
-            static bool s_ShowFootIKViz = false;
-            if (editorAPI.HasAnimationDebugNodes())
-            {
-                ImGui::SameLine();
-                if (ImGui::Checkbox("Foot IK Debug", &s_ShowFootIKViz))
-                    editorAPI.SetFootIKDebugVisualization(s_ShowFootIKViz);
-            }
-            if (s_ShowFootIKViz)
+            if (VansMotionMatchingDebugWindow::FootPlacementOverlayEnabled())
             {
                 const glm::mat4& view = m_Camera->GetViewMatrix();
                 const glm::mat4& proj = m_Camera->GetProjectiveMatrix();
@@ -618,13 +647,16 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
                     }
                     else
                     {
-						snprintf(statusLabel, sizeof(statusLabel), "%s TARGET hit:%d accepted:%d weight:%.2f dy:%.3f dxz:%.3f",
+						snprintf(statusLabel, sizeof(statusLabel), "%s TARGET hit:%d accepted:%d weight:%.2f dy:%.3f dxz:%.3f plant:%.2f lock:%s err:%.3f",
                                  label,
 							 hits,
                                  acceptedHits,
 							 leg.targetWeight,
 							 leg.verticalOffset,
-							 horizontalCorrectionLength);
+							 horizontalCorrectionLength,
+							 leg.plantWeight,
+							 leg.planted ? "yes" : "no",
+							 leg.horizontalLockError);
                     }
                     dl->AddText(ImVec2(foot.x + 8, foot.y + 8),
                                 leg.hasTarget ? IM_COL32(210, 255, 210, 240) : IM_COL32(255, 110, 110, 240),

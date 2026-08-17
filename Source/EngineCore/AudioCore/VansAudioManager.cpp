@@ -113,6 +113,35 @@ VansAudioNode* VansAudioManager::Get(const std::string& name) const
     return (it != m_Nodes.end()) ? it->second.get() : nullptr;
 }
 
+VansAudioOneShotHandle VansAudioManager::PlayOneShot(const VansAudioOneShotRequest& request)
+{
+    if (request.sourceName.empty() || !Get(request.sourceName)) return {};
+    auto binding = std::make_unique<VansAudioSourceBinding>();
+    if (!binding->Bind(this, request.sourceName) || !binding->IsBound()) return {};
+    binding->SetVolume(request.volume);
+    binding->SetPitch(request.pitch);
+    binding->SetStereoPan(request.stereoPan);
+    binding->SetBusName(request.bus);
+    binding->SetSpatial(request.spatial);
+    binding->SetLoop(request.loop);
+    binding->SetRefDistance(request.referenceDistance);
+    binding->SetMaxDistance(request.maxDistance);
+    binding->SetRolloff(request.rolloff);
+    binding->SetReverbSend(request.reverbSend);
+    binding->SetPosition(request.positionX, request.positionY, request.positionZ);
+    if (request.startSeconds > 0.0) binding->Seek(request.startSeconds);
+    binding->Play();
+    return m_OneShots.Emplace(OneShot{ std::move(binding), true });
+}
+
+bool VansAudioManager::StopOneShot(VansAudioOneShotHandle handle)
+{
+    OneShot* oneShot = m_OneShots.Resolve(handle);
+    if (!oneShot) return false;
+    if (oneShot->binding) oneShot->binding->Stop();
+    return m_OneShots.Release(handle);
+}
+
 void VansAudioManager::TickAll(
     double deltaTime,
     float camPosX,
@@ -141,6 +170,17 @@ void VansAudioManager::TickAll(
         camVelX,
         camVelY,
         camVelZ);
+
+    std::vector<VansAudioOneShotHandle> completedOneShots;
+    m_OneShots.ForEach([&](VansAudioOneShotHandle handle, OneShot& oneShot)
+    {
+        if (!oneShot.binding) { completedOneShots.push_back(handle); return; }
+        oneShot.binding->Tick();
+        oneShot.observedPlaying = oneShot.observedPlaying || oneShot.binding->IsPlaying();
+        if (oneShot.observedPlaying && !oneShot.binding->IsPlaying() && !oneShot.binding->IsPaused())
+            completedOneShots.push_back(handle);
+    });
+    for (VansAudioOneShotHandle handle : completedOneShots) m_OneShots.Release(handle);
 
     TickBusFades(static_cast<float>(deltaTime));
     ApplyBusGains();
@@ -447,6 +487,13 @@ void VansAudioManager::PlayAutoPlay()
 
 void VansAudioManager::StopAll()
 {
+	std::vector<VansAudioOneShotHandle> oneShots;
+	m_OneShots.ForEach([&](VansAudioOneShotHandle handle, OneShot& oneShot)
+	{
+		if (oneShot.binding) oneShot.binding->Stop();
+		oneShots.push_back(handle);
+	});
+	for (VansAudioOneShotHandle handle : oneShots) m_OneShots.Release(handle);
     for (auto& [name, node] : m_Nodes)
     {
         if (node)
@@ -458,6 +505,7 @@ void VansAudioManager::StopAll()
 
 void VansAudioManager::Clear()
 {
+	m_OneShots.Clear();
     for (auto& [name, node] : m_Nodes)
     {
         if (node)

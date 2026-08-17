@@ -5,6 +5,7 @@
 #include "VansPoseTypes.h"
 #include "FootPlacement/VansFootPlacementTypes.h"
 #include "Runtime/VansAnimationSlotRuntime.h"
+#include "../RuntimeCore/VansCharacterMotion.h"
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -208,6 +209,7 @@ namespace VansGraphics
 		bool ShouldApplyRootMotionToOwner() const { return m_RootMotionApplyToOwner; }
 		glm::vec3 GetRootMotionDelta() const;
 		glm::quat GetRootRotationDelta() const;
+		bool HasRootMotionDelta() const { return m_LastRootMotionValid; }
 		const VansAnimationFrameVector<VansAnimationEventSample>& GetSampledEvents() const { return m_SampledEvents; }
 		const VansAnimationFrameVector<VansAnimationCurveSample>& GetSampledCurves() const { return m_SampledCurves; }
 		const VansAnimationSyncState& GetSyncState() const { return m_SyncState; }
@@ -218,6 +220,8 @@ namespace VansGraphics
 
 		// ─── 核心更新（每帧调用）──────────────────────────────────────
 		void Update(float deltaTime, const Skeleton& skeleton);
+		void UpdateForMovement(float deltaTime, const Skeleton& skeleton);
+		bool FinalizePreparedFrame(const Skeleton& skeleton);
 
 		// ─── 输出 ─────────────────────────────────────────────────────
 		const BoneMatricesSSBO& GetBoneMatricesSSBO() const { return m_BoneMatricesSSBO; }
@@ -260,6 +264,9 @@ namespace VansGraphics
 		void ConfigureMotionMatching(const MotionMatchingSettings& settings);
 		bool IsMotionMatchingConfigured() const { return m_MotionMatching != nullptr; }
 		const MotionMatchingDebugData* GetMotionMatchingDebugData() const;
+		const MotionMatchingSettings* GetMotionMatchingSettings() const;
+		void SetCharacterTrajectory(const Vans::VansCharacterTrajectory* trajectory) { m_CharacterTrajectory = trajectory; }
+		bool MotionMatchingPrefersRootMotion() const;
 
 		void ConfigureFootPlacement(const FootPlacementSettings& settings, const Skeleton& skeleton);
 		void SetFootPlacementEnabled(bool enabled);
@@ -288,6 +295,7 @@ namespace VansGraphics
 		int       m_RootBoneIndex         = -1;
 		glm::vec3 m_LastRootMotionDelta   = glm::vec3(0.0f);
 		glm::quat m_LastRootRotationDelta = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+		bool      m_LastRootMotionValid = false;
 		VansAnimationFrameVector<VansAnimationEventSample> m_SampledEvents;
 		VansAnimationFrameVector<VansAnimationCurveSample> m_SampledCurves;
 		VansAnimationSyncState m_SyncState;
@@ -322,6 +330,7 @@ namespace VansGraphics
 		VansAnimationSlotRuntime m_SlotRuntime;
 		std::unordered_map<std::string, VansPosePayload> m_SlotPayloads;
 		std::unique_ptr<VansMotionMatchingRuntime> m_MotionMatching;
+		const Vans::VansCharacterTrajectory* m_CharacterTrajectory = nullptr;
 		std::unique_ptr<VansFootPlacementSolver> m_FootPlacement;
 		FootPlacementSettings m_FootPlacementSettings;
 		FootPlacementSettings m_ExternalFootPlacementSettings;
@@ -330,6 +339,9 @@ namespace VansGraphics
 		FootPlacementRuntimeState m_FootPlacementState;
 		glm::mat4 m_OwnerWorldTransform = glm::mat4(1.0f);
 		bool m_DebugMetricsEnabled = false;
+		std::vector<glm::mat4> m_PreparedLocalTransforms;
+		float m_PreparedDeltaTime = 0.0f;
+		bool m_HasPreparedFrame = false;
 
 		// ─── 内部方法 ───
 		void ApplyBoneOverrides(std::vector<glm::mat4>& localTransforms,
@@ -353,7 +365,10 @@ namespace VansGraphics
 		bool FinalizeLocalPose(float deltaTime, const Skeleton& skeleton,
 		                       VansPosePayload pose,
 		                       bool normalizeRoot,
-		                       bool publishAnimationOutputs);
+		                       bool publishAnimationOutputs,
+		                       bool deferWorldSpacePostProcess);
+		void UpdateInternal(float deltaTime, const Skeleton& skeleton,
+		                    bool deferWorldSpacePostProcess);
 		bool ConvertModelPoseToLocalPayload(const std::vector<glm::mat4>& modelSpaceTransforms,
 		                                    const Skeleton& skeleton,
 		                                    VansPosePayload& outPayload) const;

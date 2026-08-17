@@ -1,4 +1,5 @@
 ﻿#include "VansCamera.h"
+#include "VansCameraControlArbiter.h"
 #include "../ScriptCore/VansTransform.h"
 #include "VulkanCore/VansDescriptorSetLayouts.h"
 #include "../VansTimer.h"
@@ -11,6 +12,9 @@ namespace
 {
     constexpr float kEditorCameraMoveSpeed = 12.0f;
     constexpr float kEditorCameraMaxMoveDeltaTime = 1.0f / 30.0f;
+    constexpr float kDefaultCameraNearClip = 0.1f;
+    constexpr float kCameraNearClipMinimum = 0.1f;
+    constexpr float kCameraFarClipMinimumSeparation = 0.001f;
 }
 
 VansGraphics::VansCamera::VansCamera(VansGraphicsDevice* device)
@@ -20,7 +24,7 @@ VansGraphics::VansCamera::VansCamera(VansGraphicsDevice* device)
     m_Position    = glm::vec3(0.0f, 1.0f, 5.0f);
     m_Rotation    = glm::vec3(0.0f, -90.0f, 0.0f);
     m_Fov         = 45.0f;
-    m_NearClip    = 0.01f;
+    m_NearClip    = kDefaultCameraNearClip;
     m_FarClip     = 10000.0f;
     m_AspectRatio = m_RenderDevice->GetAspectRatio();
 
@@ -62,8 +66,8 @@ void VansGraphics::VansCamera::ApplyCameraSettings(
     }
 
     if (cameraSettings.fov) m_Fov = *cameraSettings.fov;
-    if (cameraSettings.nearClip) m_NearClip = *cameraSettings.nearClip;
-    if (cameraSettings.farClip) m_FarClip = *cameraSettings.farClip;
+    if (cameraSettings.nearClip) SetNearClip(*cameraSettings.nearClip);
+    if (cameraSettings.farClip) SetFarClip(*cameraSettings.farClip);
 
     VANS_LOG("[VansCamera] Camera settings applied: pos=("
         << m_Position.x << ", " << m_Position.y << ", " << m_Position.z
@@ -71,15 +75,71 @@ void VansGraphics::VansCamera::ApplyCameraSettings(
         << ") fov=" << m_Fov);
 }
 
+VansGraphics::VansCameraControlPose VansGraphics::VansCamera::CaptureControlPose() const
+{
+	VansCameraControlPose pose;
+	pose.position = m_Position;
+	pose.rotationDegrees = m_Rotation;
+	pose.fieldOfView = m_Fov;
+	pose.nearClip = m_NearClip;
+	pose.farClip = m_FarClip;
+	return pose;
+}
+
+void VansGraphics::VansCamera::ApplyControlPose(const VansCameraControlPose& pose)
+{
+	m_Position = pose.position;
+	m_Rotation = pose.rotationDegrees;
+	m_Fov = pose.fieldOfView;
+	SetNearClip(pose.nearClip);
+	SetFarClip(pose.farClip);
+	if (m_TransformID != UINT32_MAX)
+	{
+		VansTransform& transform = VansTransformStore::GetTransform(m_TransformID);
+		transform.m_Position = pose.position;
+		transform.m_Rotation = pose.rotationDegrees;
+		VansTransformStore::TransformIDToTransformDirty[m_TransformID] = true;
+	}
+}
+
+void VansGraphics::VansCamera::ApplyControlPoseChannels(
+	const VansCameraControlPose& pose,
+	std::uint32_t channels)
+{
+	if (channels & 0x01u) m_Position = pose.position;
+	if (channels & 0x02u) m_Rotation = pose.rotationDegrees;
+	if (channels & 0x04u) m_Fov = pose.fieldOfView;
+	if (channels & 0x08u) SetNearClip(pose.nearClip);
+	if (channels & 0x10u) SetFarClip(pose.farClip);
+	if (m_TransformID != UINT32_MAX && (channels & 0x03u))
+	{
+		VansTransform& transform = VansTransformStore::GetTransform(m_TransformID);
+		if (channels & 0x01u) transform.m_Position = pose.position;
+		if (channels & 0x02u) transform.m_Rotation = pose.rotationDegrees;
+		VansTransformStore::TransformIDToTransformDirty[m_TransformID] = true;
+	}
+}
+
 void VansGraphics::VansCamera::ResetToDefaults()
 {
     m_Position    = glm::vec3(0.0f, 1.0f, 5.0f);
     m_Rotation    = glm::vec3(0.0f, -90.0f, 0.0f);
     m_Fov         = 45.0f;
-    m_NearClip    = 0.01f;
+    m_NearClip    = kDefaultCameraNearClip;
     m_FarClip     = 10000.0f;
 
     VANS_LOG("[VansCamera] No camera node in scene JSON, using default parameters");
+}
+
+void VansGraphics::VansCamera::SetNearClip(float val)
+{
+    m_NearClip = std::max(val, kCameraNearClipMinimum);
+    m_FarClip = std::max(m_FarClip, m_NearClip + kCameraFarClipMinimumSeparation);
+}
+
+void VansGraphics::VansCamera::SetFarClip(float val)
+{
+    m_FarClip = std::max(val, m_NearClip + kCameraFarClipMinimumSeparation);
 }
 void VansGraphics::VansCamera::SetRightMouseDown(bool down) 
 { 

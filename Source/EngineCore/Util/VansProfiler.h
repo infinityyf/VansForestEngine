@@ -145,6 +145,13 @@ namespace Vans
         bool m_Active = false;
     };
 
+    enum class VansGpuQueueLane : uint8_t
+    {
+        Graphics = 0,
+        Compute = 1,
+        Shadow = 2
+    };
+
     class VansGpuProfiler
     {
     public:
@@ -152,18 +159,21 @@ namespace Vans
 
         void Init(void* device, void* physDevice, uint32_t queueFamily);
         void Destroy();
+        void PrepareFrame();
         void BeginFrame(void* cmd);
-        void Push(void* cmd, const char* name);
-        void Pop(void* cmd);
+        void BeginQueue(void* cmd, VansGpuQueueLane lane);
+        void Push(void* cmd, const char* name, VansGpuQueueLane lane = VansGpuQueueLane::Graphics);
+        void Pop(void* cmd, VansGpuQueueLane lane = VansGpuQueueLane::Graphics);
         void EndFrame();
         void Resolve(void* device);
         void CollectInto(ProfileFrame& frame) const;
 
-        bool IsInitialized() const { return m_Pools[0] != nullptr; }
+        bool IsInitialized() const { return m_Pools[0][0] != nullptr; }
 
     private:
         static constexpr int MAX_GPU_QUERIES = 64;
         static constexpr int POOL_COUNT      = 2;
+        static constexpr int LANE_COUNT      = 3;
 
         struct Slot
         {
@@ -176,25 +186,29 @@ namespace Vans
         void CopyText(char* dst, uint32_t dstSize, const char* src) const;
 
     private:
-        void*        m_Pools[POOL_COUNT] = {};
+        void*        m_Pools[LANE_COUNT][POOL_COUNT] = {};
         void*        m_Device = nullptr;
         double       m_TimestampPeriodMs = 0.0;
         uint32_t     m_WriteIdx = 0;
         bool         m_HasPreviousFrame = false;
-        Slot         m_Slots[POOL_COUNT][MAX_GPU_QUERIES] = {};
-        int          m_SlotCount[POOL_COUNT] = {};
-        uint32_t     m_NextQuery[POOL_COUNT] = {};
-        int          m_StackDepth = 0;
-        uint64_t     m_RawResults[MAX_GPU_QUERIES * 2] = {};
-        ProfileEvent m_Events[MAX_GPU_QUERIES] = {};
-        int          m_EventCount = 0;
+        Slot         m_Slots[LANE_COUNT][POOL_COUNT][MAX_GPU_QUERIES] = {};
+        int          m_SlotCount[LANE_COUNT][POOL_COUNT] = {};
+        uint32_t     m_NextQuery[LANE_COUNT][POOL_COUNT] = {};
+        int          m_StackDepth[LANE_COUNT] = {};
+        uint64_t     m_RawResults[LANE_COUNT][MAX_GPU_QUERIES * 2] = {};
+        ProfileEvent m_Events[LANE_COUNT][MAX_GPU_QUERIES] = {};
+        int          m_EventCount[LANE_COUNT] = {};
     };
 
     struct VansGpuScopeQuery
     {
         void* m_Cmd = nullptr;
         bool  m_Active = false;
-        explicit VansGpuScopeQuery(void* cmd, const char* name);
+        VansGpuQueueLane m_Lane = VansGpuQueueLane::Graphics;
+        explicit VansGpuScopeQuery(
+            void* cmd,
+            const char* name,
+            VansGpuQueueLane lane = VansGpuQueueLane::Graphics);
         ~VansGpuScopeQuery();
     };
 
@@ -228,6 +242,7 @@ namespace Vans
   #define VANS_PROFILE_WAIT(name)         Vans::VansCpuScopeTimer VANS_PROFILE_CONCAT(_vans_cpu_wait_, __LINE__)(name, Vans::ProfileCategory::Wait, Vans::ProfileEventFlagWait)
   #define VANS_CPU_SCOPE(name)            Vans::VansCpuScopeTimer VANS_PROFILE_CONCAT(_vans_cpu_scope_, __LINE__)(name, Vans::ProfileCategory::Other)
   #define VANS_GPU_SCOPE(cmd, name)       Vans::VansGpuScopeQuery VANS_PROFILE_CONCAT(_vans_gpu_scope_, __LINE__)((void*)(cmd), name)
+  #define VANS_GPU_SCOPE_LANE(cmd, name, lane) Vans::VansGpuScopeQuery VANS_PROFILE_CONCAT(_vans_gpu_scope_, __LINE__)((void*)(cmd), name, lane)
   #define VANS_PROFILER_BEGIN_FRAME()     Vans::VansProfiler::Get().BeginFrame()
   #define VANS_PROFILER_END_FRAME(dev)    Vans::VansProfiler::Get().EndFrame((void*)(dev))
   #define VANS_PROFILER_PRINT()           Vans::VansProfiler::Get().PrintTimeline()
@@ -238,6 +253,7 @@ namespace Vans
   #define VANS_PROFILE_WAIT(name)         /* no-op */
   #define VANS_CPU_SCOPE(name)            /* no-op */
   #define VANS_GPU_SCOPE(cmd, name)       /* no-op */
+  #define VANS_GPU_SCOPE_LANE(cmd, name, lane) /* no-op */
   #define VANS_PROFILER_BEGIN_FRAME()     /* no-op */
   #define VANS_PROFILER_END_FRAME(dev)    /* no-op */
   #define VANS_PROFILER_PRINT()           /* no-op */

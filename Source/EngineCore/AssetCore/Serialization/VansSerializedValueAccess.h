@@ -11,6 +11,52 @@
 
 namespace Vans
 {
+namespace SerializedValueDetail
+{
+inline bool FitsBudget(
+	const VansSerializedValue& value,
+	std::size_t& remaining,
+	std::size_t depth,
+	std::size_t maximumDepth)
+{
+	if (depth > maximumDepth || remaining == 0) return false;
+	--remaining;
+	const auto consume = [&](std::size_t amount)
+	{
+		if (amount > remaining) return false;
+		remaining -= amount;
+		return true;
+	};
+	switch (value.kind)
+	{
+	case VansSerializedValue::Kind::Null: return true;
+	case VansSerializedValue::Kind::Bool: return consume(1);
+	case VansSerializedValue::Kind::Int:
+	case VansSerializedValue::Kind::Float: return consume(8);
+	case VansSerializedValue::Kind::String: return consume(value.stringValue.size());
+	case VansSerializedValue::Kind::Array:
+		for (const VansSerializedValue& item : value.arrayItems)
+			if (!FitsBudget(item, remaining, depth + 1, maximumDepth)) return false;
+		return true;
+	case VansSerializedValue::Kind::Object:
+		for (const auto& [name, item] : value.objectFields)
+			if (!consume(name.size()) ||
+				!FitsBudget(item, remaining, depth + 1, maximumDepth)) return false;
+		return true;
+	}
+	return false;
+}
+}
+
+inline bool SerializedValueFitsBudget(
+	const VansSerializedValue& value,
+	std::size_t maximumBytes,
+	std::size_t maximumDepth = 64)
+{
+	std::size_t remaining = maximumBytes;
+	return SerializedValueDetail::FitsBudget(value, remaining, 0, maximumDepth);
+}
+
 inline const VansSerializedValue* FindObjectField(
     const VansSerializedValue& value,
     const std::string& name)
@@ -232,6 +278,41 @@ inline const VansSerializedValue* FindSerializedPointer(
             if (!TryParseSerializedArrayIndex(token, index))
                 return nullptr;
             current = FindArrayItem(*current, index);
+            continue;
+        }
+
+        return nullptr;
+    }
+    return current;
+}
+
+inline VansSerializedValue* FindSerializedPointer(
+    VansSerializedValue& root,
+    const std::string& pointer)
+{
+    if (pointer.empty())
+        return &root;
+    if (pointer[0] != '/')
+        return nullptr;
+
+    VansSerializedValue* current = &root;
+    for (const std::string& token : SplitSerializedPointer(pointer))
+    {
+        if (!current)
+            return nullptr;
+
+        if (current->kind == VansSerializedValue::Kind::Object)
+        {
+            current = FindObjectField(*current, token);
+            continue;
+        }
+
+        if (current->kind == VansSerializedValue::Kind::Array)
+        {
+            std::size_t index = 0;
+            if (!TryParseSerializedArrayIndex(token, index) || index >= current->arrayItems.size())
+                return nullptr;
+            current = &current->arrayItems[index];
             continue;
         }
 

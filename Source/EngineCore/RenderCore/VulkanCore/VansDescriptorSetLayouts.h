@@ -40,6 +40,8 @@ namespace VansGraphics
 		GLOBAL_BINDING_CUSTOM_MATERIAL_SSBO      = 15, // Custom shader material vec4s + texture indices
 		GLOBAL_BINDING_CLOTH_MATERIAL_SSBO       = 16, // Cloth model/color/anisotropy/transmission payloads
 		GLOBAL_BINDING_TREE_LEAF_MATERIAL_SSBO   = 17, // Tree leaf subsurface/transmission payloads
+		GLOBAL_BINDING_SKIN_MATERIAL_SSBO        = 18, // Skin roughness/scatter/specular extension payloads
+		GLOBAL_BINDING_SKIN_PROFILE_LUT_ARRAY    = 19, // Skin profile pre-integrated LUT array
 		GLOBAL_BINDING_BINDLESS_TEXTURES        = 50,  // Variable count
 	};
 
@@ -60,17 +62,22 @@ namespace VansGraphics
 		VERTEX_DEFORMATION_BINDING_BONEID_SSBO = 0,
 		VERTEX_DEFORMATION_BINDING_BONE_SSBO = 1,
 		VERTEX_DEFORMATION_BINDING_BONEWEIGHT_SSBO = 2,
+		VERTEX_DEFORMATION_BINDING_PREVIOUS_BONE_SSBO = 3,
 	};
 
 	// ====================================================================
 	// Set 4 (Per-Node Skin Texture) Binding Indices
 	// Only used by VansCommonRenderNode when the material type is VAN_SKIN.
-	// Each skin node owns its descriptor set with dedicated albedo + normal textures.
+	// Each skin node owns its descriptor set with dedicated skin textures.
 	// ====================================================================
 	enum SkinTextureBinding : uint32_t
 	{
-		SKIN_TEXTURE_BINDING_ALBEDO  = 0,   // Skin albedo texture (COMBINED_IMAGE_SAMPLER)
-		SKIN_TEXTURE_BINDING_NORMAL  = 1,   // Skin normal texture (COMBINED_IMAGE_SAMPLER)
+		SKIN_TEXTURE_BINDING_ALBEDO     = 0,   // Skin albedo texture (COMBINED_IMAGE_SAMPLER)
+		SKIN_TEXTURE_BINDING_NORMAL     = 1,   // Skin normal texture (COMBINED_IMAGE_SAMPLER)
+		SKIN_TEXTURE_BINDING_ROUGHNESS  = 2,   // Skin perceptual roughness texture
+		SKIN_TEXTURE_BINDING_CAVITY     = 3,   // Skin cavity/specular occlusion texture
+		SKIN_TEXTURE_BINDING_SCATTER_MASK = 4, // Skin local scatter amount mask
+		SKIN_TEXTURE_BINDING_THICKNESS  = 5,   // Skin thinness/transmission mask for the fast path
 	};
 
 	// ====================================================================
@@ -256,7 +263,7 @@ namespace VansGraphics
 	// --- Post-Process Pass（Final Composite，Subpass 1）---
 	enum PostProcessPassBinding : uint32_t
 	{
-		POSTPROCESS_BINDING_COLOR_INPUT  = 0,   // INPUT_ATTACHMENT：SceneColorHDR（subpassLoad）
+		POSTPROCESS_BINDING_COLOR_INPUT  = 0,   // COMBINED_IMAGE_SAMPLER: display-resolution HDR FSR output
 		POSTPROCESS_BINDING_BLOOM_RESULT = 1,   // COMBINED_IMAGE_SAMPLER：Bloom 合成结果
 		POSTPROCESS_BINDING_EXPOSURE_VAL = 2,   // COMBINED_IMAGE_SAMPLER：1x1 当前曝光值
 		POSTPROCESS_BINDING_PP_PARAMS    = 3,   // UNIFORM_BUFFER：VansPostProcessParamsGPU UBO
@@ -273,6 +280,7 @@ namespace VansGraphics
 		EXPOSURE_ADAPT_BINDING_LUM_IN = 0,
 		EXPOSURE_ADAPT_BINDING_EXP_OUT = 1,
 		EXPOSURE_ADAPT_BINDING_PARAMS = 2,
+		EXPOSURE_ADAPT_BINDING_FSR_EXP_OUT = 3,
 	};
 
 	// --- Bloom Prefilter Compute Pass ---
@@ -297,6 +305,21 @@ namespace VansGraphics
 		BLOOM_UPSAMPLE_BINDING_SRC_HI   = 1,   // COMBINED_IMAGE_SAMPLER：较高分辨率输入（加法混合）
 		BLOOM_UPSAMPLE_BINDING_DST      = 2,   // STORAGE_IMAGE：输出（RGBA16F）
 		BLOOM_UPSAMPLE_BINDING_PARAMS   = 3,   // UNIFORM_BUFFER：Bloom scatter 权重 UBO
+	};
+
+	enum BloomShapePassBinding : uint32_t
+	{
+		BLOOM_SHAPE_BINDING_SRC = 0,
+		BLOOM_SHAPE_BINDING_DST = 1,
+		BLOOM_SHAPE_BINDING_PARAMS = 2,
+	};
+
+	enum DepthOfFieldPassBinding : uint32_t
+	{
+		DOF_BINDING_SRC_COLOR = 0,
+		DOF_BINDING_GBUFFER2 = 1,
+		DOF_BINDING_DST_COLOR = 2,
+		DOF_BINDING_PARAMS = 3,
 	};
 
 	// --- Terrain Pass ---
@@ -627,11 +650,17 @@ namespace VansGraphics
 	// --- Water Caustics Compute（Set 0）- W-14 ---
 	enum WaterCausticsComputeBinding : uint32_t
 	{
-		WATER_CAUSTICS_BINDING_GBUF_NORMAL  = 0,
-		WATER_CAUSTICS_BINDING_GBUF_DEPTH   = 1,
-		WATER_CAUSTICS_BINDING_THICKNESS    = 2,
-		WATER_CAUSTICS_BINDING_PARAMS       = 3,
-		WATER_CAUSTICS_BINDING_CAUSTICS_OUT = 4,
+		WATER_CAUSTICS_BINDING_WATER_SURFACE   = 0,
+		WATER_CAUSTICS_BINDING_SCENE_NORMAL    = 1,
+		WATER_CAUSTICS_BINDING_SCENE_GBUF0     = 2,
+		WATER_CAUSTICS_BINDING_SCENE_GBUF2     = 3,
+		WATER_CAUSTICS_BINDING_REFRACTION_DATA = 4,
+		WATER_CAUSTICS_BINDING_DISPLACEMENT    = 5,
+		WATER_CAUSTICS_BINDING_DERIVATIVE      = 6,
+		WATER_CAUSTICS_BINDING_FLOW_MAP        = 7,
+		WATER_CAUSTICS_BINDING_SURFACE_PARAMS  = 8,
+		WATER_CAUSTICS_BINDING_PARAMS          = 9,
+		WATER_CAUSTICS_BINDING_CAUSTICS_OUT    = 10,
 	};
 
 	// --- Water Thickness Compute（Set 0）- W-16 ---
@@ -893,5 +922,7 @@ namespace VansGraphics
 		static void CreateAndAllocate_BloomPrefilter(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_BloomDownsample(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_BloomUpsample(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_BloomShape(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_DepthOfField(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 	};
 }

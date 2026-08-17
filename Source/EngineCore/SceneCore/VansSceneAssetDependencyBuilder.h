@@ -19,6 +19,7 @@ namespace Vans
 		std::unordered_set<std::string> requiredMaterials;
 		std::unordered_set<std::string> requiredTextures;
 		std::unordered_set<std::string> requiredShaders;
+		std::unordered_set<std::string> requiredSkinProfiles;
 		std::unordered_set<std::string> requiredAssets;
 		std::vector<std::string> errors;
 	};

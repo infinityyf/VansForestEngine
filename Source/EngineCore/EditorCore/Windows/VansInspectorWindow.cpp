@@ -14,7 +14,10 @@
 #include "../VansScenePropertyValueAdapter.h"
 #include "../../AudioCore/VansAudioPreviewPlayer.h"
 #include "../../AssetCore/VansAssetGuid.h"
+#include "../../AssetCore/VansAssetDatabase.h"
 #include "../../AssetCore/Serialization/VansSerializedValueAccess.h"
+#include "../../GameplayActionSchema/VansGameplayAssetSchema.h"
+#include "../../GameplayActionSchema/VansGameplayActionHostAuthoring.h"
 #include "../../SceneCore/VansSceneDocument.h"
 #include "../../ScriptCore/VansLuaScriptInspectorService.h"
 #include "../../Util/VansLog.h"
@@ -94,7 +97,20 @@ const char* AssetTypeName(Vans::EditorAPI::AssetType type)
     case Vans::EditorAPI::AssetType::AnimatorController: return "Animator Controller";
     case Vans::EditorAPI::AssetType::BoneMask: return "Bone Mask";
 	case Vans::EditorAPI::AssetType::Timeline: return "Timeline";
+	case Vans::EditorAPI::AssetType::ActionDefinition: return "Action Definition";
+	case Vans::EditorAPI::AssetType::ActionSet: return "Action Set";
+	case Vans::EditorAPI::AssetType::GameplayEffect: return "Gameplay Effect";
+	case Vans::EditorAPI::AssetType::GameplayCue: return "Gameplay Cue";
+	case Vans::EditorAPI::AssetType::AttributeSet: return "Attribute Set";
+	case Vans::EditorAPI::AssetType::TargetingPolicy: return "Targeting Policy";
+	case Vans::EditorAPI::AssetType::GameplayTagTree: return "Gameplay Tag Tree";
+	case Vans::EditorAPI::AssetType::PayloadSchema: return "Payload Schema";
+	case Vans::EditorAPI::AssetType::ActionGraph: return "Action Graph";
+	case Vans::EditorAPI::AssetType::CameraRigProfile: return "Camera Rig Profile";
+	case Vans::EditorAPI::AssetType::CameraShakeProfile: return "Camera Shake Profile";
+	case Vans::EditorAPI::AssetType::GAFEditorLayout: return "GAF Editor Layout";
     case Vans::EditorAPI::AssetType::ClothProfile: return "Cloth Profile";
+    case Vans::EditorAPI::AssetType::SkinProfile: return "Skin Profile";
     case Vans::EditorAPI::AssetType::PostProcessProfile: return "Post Process Profile";
     case Vans::EditorAPI::AssetType::RagdollProfile: return "Ragdoll Profile";
     case Vans::EditorAPI::AssetType::AudioReverbPreset: return "Audio Reverb Preset";
@@ -130,6 +146,9 @@ const std::vector<const char*>* EnumOptions(const std::string& key)
     static const std::vector<const char*> collision{ "none", "mesh", "convex" };
     static const std::vector<const char*> climbing{ "easy", "constrained" };
     static const std::vector<const char*> driveMode{ "animation", "physics", "blend" };
+	static const std::vector<const char*> actionGrantPersistence{
+		"Transient", "OwnerLifetime", "Persistent"
+	};
     const std::string field = Lower(key);
     if (field == "bodytype") return &bodyType;
     if (field == "collidertype") return &colliderType;
@@ -150,6 +169,7 @@ const std::vector<const char*>* EnumOptions(const std::string& key)
     if (field == "collision") return &collision;
     if (field == "climbingmode") return &climbing;
     if (field == "drive_mode") return &driveMode;
+	if (field == "persistence") return &actionGrantPersistence;
     return nullptr;
 }
 
@@ -352,6 +372,8 @@ Vans::VansSerializedValue DefaultSerializedComponentData(const std::string& type
             { "bodyObject", Value::String("") },
             { "tireObjects", Value::Array({}) }
         });
+	if (type == "ActionHost")
+		return Vans::VansGameplayActionHostAuthoring::CreateDefaultData();
     return Value::Object({});
 }
 
@@ -671,13 +693,17 @@ bool AudioControlAssetScalarLimits(const std::string& label, const std::string& 
     return false;
 }
 
-std::optional<Vans::VansSerializedValue> DefaultAudioControlArrayElement(
+std::optional<Vans::VansSerializedValue> DefaultSerializedArrayElement(
     const std::string& label,
-    const std::string& pointer)
+	const std::string& pointer,
+	const std::string& componentType)
 {
     using Value = Vans::VansSerializedValue;
     const std::string field = Lower(label);
     const std::string path = Lower(pointer);
+	if (Lower(componentType) == "actionhost")
+		if (auto item = Vans::VansGameplayActionHostAuthoring::CreateDefaultArrayElement(label))
+			return item;
     if (field == "rules" || path.find("/rules") != std::string::npos)
     {
         return Value::Object({
@@ -1723,11 +1749,12 @@ bool VansInspectorWindow::Impl::DrawSerializedValue(
             }
             if (!readOnly)
             {
-                if (std::optional<Vans::VansSerializedValue> defaultElement =
-                    DefaultAudioControlArrayElement(label, pointer))
+				if (std::optional<Vans::VansSerializedValue> defaultElement =
+					DefaultSerializedArrayElement(label, pointer, componentType))
                 {
-                    const std::string buttonLabel =
-                        Lower(label) == "rules" ? "Add Rule" : "Add Bus";
+					const std::string loweredLabel = Lower(label);
+					const std::string buttonLabel = loweredLabel == "rules" ? "Add Rule" :
+						(loweredLabel == "buses" ? "Add Bus" : "Add Item");
                     if (ImGui::SmallButton(buttonLabel.c_str()))
                     {
                         value.arrayItems.push_back(std::move(*defaultElement));
@@ -2127,6 +2154,19 @@ bool VansInspectorWindow::Impl::DrawComponent(Vans::EditorAPI::IEngineEditorAPI&
                     "data");
             }
             if (data->objectFields.empty()) ImGui::TextDisabled("No properties");
+			if (type == "ActionHost")
+			{
+				const Vans::VansGameplayDiagnostics diagnostics =
+					Vans::VansGameplayActionHostAuthoring::Validate(*data);
+				for (const Vans::VansGameplayDiagnostic& diagnostic : diagnostics)
+				{
+					ImGui::TextColored(ImVec4(0.95f, 0.30f, 0.28f, 1.0f),
+						"%s", diagnostic.code.c_str());
+					ImGui::SameLine();
+					ImGui::TextWrapped("%s (%s)", diagnostic.message.c_str(),
+						diagnostic.fieldPath.c_str());
+				}
+			}
         }
         ImGui::Unindent(8.0f);
     }
@@ -2200,10 +2240,12 @@ void VansInspectorWindow::Impl::DrawSceneEntity(Vans::EditorAPI::IEngineEditorAP
         {
             static const char* types[] = { "ModelRenderer", "Physics", "Camera", "Animation",
                 "CharacterController", "DirectionalLight", "PointLight", "SpotLight", "RectLight",
-                "Audio", "AudioVolume", "AudioReverbZone", "Video", "Particle", "Cloth", "Vehicle", "Script" };
+				"Audio", "AudioVolume", "AudioReverbZone", "Video", "Particle", "Cloth", "Vehicle",
+				"ActionHost", "Script" };
             for (const char* type : types)
             {
-                const bool singleton = std::strcmp(type, "ModelRenderer") == 0 || std::strcmp(type, "Physics") == 0;
+				const bool singleton = std::strcmp(type, "ModelRenderer") == 0 ||
+					std::strcmp(type, "Physics") == 0 || std::strcmp(type, "ActionHost") == 0;
                 bool alreadyPresent = false;
                 if (singleton)
                 {
@@ -2403,8 +2445,11 @@ void VansInspectorWindow::Impl::DrawAsset(Vans::EditorAPI::IEngineEditorAPI& api
 {
     const std::filesystem::path& selected = Vans::VansEditorSelection::AssetPath();
 	const std::string selectedExtension = Lower(selected.extension().string());
+	const bool gameplayAuthoringAsset = Vans::VansGameplayAssetSchemaRegistry::IsGameplayAssetType(
+		Vans::VansAssetDatabase::Classify(selected));
 	const bool structuredAuthoringAsset = selectedExtension == ".vanimator" ||
-		selectedExtension == ".vbonemask" || selectedExtension == ".vtimeline";
+		selectedExtension == ".vbonemask" || selectedExtension == ".vtimeline" ||
+		gameplayAuthoringAsset;
     if (selected != m_AssetPath) LoadAssetDocuments(selected);
     ImGui::TextUnformatted(selected.filename().string().c_str());
     ImGui::TextDisabled("%s", selected.parent_path().string().c_str());
@@ -2418,7 +2463,8 @@ void VansInspectorWindow::Impl::DrawAsset(Vans::EditorAPI::IEngineEditorAPI& api
 	if (structuredAuthoringAsset)
 	{
 		const char* buttonLabel = selectedExtension == ".vanimator" ? "Open Animation Graph Editor"
-			: selectedExtension == ".vbonemask" ? "Open Bone Mask Editor" : "Open Timeline Editor";
+			: selectedExtension == ".vbonemask" ? "Open Bone Mask Editor"
+			: selectedExtension == ".vtimeline" ? "Open Timeline Editor" : "Open GAF Editor";
 		if (ImGui::Button(buttonLabel, ImVec2(-1.0f, 0.0f)))
 			VansEditorWindow::OpenAssetForAuthoring(selected.string());
 		ImGui::TextDisabled("This structured asset is edited through its validated authoring window.");

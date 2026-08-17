@@ -423,11 +423,25 @@ void main()
         float curvature = normalData.w;
         int skinMaterialIndex = int(round(gbufferData1.w));
         SkinMaterialParams skin = DecodeSkinMaterialParams(skinMaterialIndex);
-        brdfData.fresnel0 = ComputeSkinF0(brdfData.albedo);
+        skin.scatterMask = clamp(gbufferData1.x, 0.0, 1.0);
+        skin.cavity = clamp(gbufferData1.y, 0.0, 1.0);
+        skin.authoredThinness = UnpackSkinThinnessFromMaterialID(
+            materialID,
+            float(MATERIAL_ID_SKIN));
+        brdfData.fresnel0 = ComputeSkinF0(brdfData.albedo, skin.ior);
         brdfData.metallic = 0.0;
         brdfData.roughness = clamp(brdfData.roughness, 0.045, 1.0);
         CalculateDirectLight_Skin(brdfData, curvature, skin, cascadeShadowMap, linearDepth, punctualShadowMap, sssShadow, lightResult);
         AmbientBRDF_Skin(brdfData, skin, viewDirection, lightResult.ambientDiffuse, lightResult.ambientSpecular);
+
+        vec3 skinDebugColor = vec3(0.0);
+        if (TrySkinDebugView(brdfData, skin, curvature, lightResult, skinDebugColor))
+        {
+            outDiffuseExitantRadiance = vec4(
+                max(lightResult.directDiffuse + lightResult.ambientDiffuse, vec3(0.0)), 1.0);
+            outColor = vec4(skinDebugColor, 1.0);
+            return;
+        }
     }
     else if (matID == MATERIAL_ID_CLOTH)
     {

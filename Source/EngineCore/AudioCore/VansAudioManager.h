@@ -1,6 +1,8 @@
 #pragma once
 #include "VansAudioBus.h"
 #include "VansAudioNode.h"
+#include "VansAudioSourceBinding.h"
+#include "../RuntimeCore/VansGenerationPool.h"
 #include <unordered_map>
 #include <unordered_set>
 #include <memory>
@@ -35,6 +37,27 @@ namespace VansEngine
     {
         int suspendedThisFrame = 0;
         int resumedThisFrame = 0;
+    };
+
+    using VansAudioOneShotHandle = Vans::VansGenerationHandle;
+
+    struct VansAudioOneShotRequest
+    {
+        std::string sourceName;
+        float volume = 1.0f;
+        float pitch = 1.0f;
+        float stereoPan = 0.0f;
+        std::string bus = "SFX";
+        bool spatial = false;
+        bool loop = false;
+        float referenceDistance = 1.0f;
+        float maxDistance = 100.0f;
+        float rolloff = 1.0f;
+        float reverbSend = 0.0f;
+        float positionX = 0.0f;
+        float positionY = 0.0f;
+        float positionZ = 0.0f;
+        double startSeconds = 0.0;
     };
 
     // ===========================================================================
@@ -78,6 +101,8 @@ namespace VansEngine
 
         // ── 按名称查找，未找到返回 nullptr ───────────────────────────────────
         VansAudioNode* Get(const std::string& name) const;
+        VansAudioOneShotHandle PlayOneShot(const VansAudioOneShotRequest& request);
+        bool StopOneShot(VansAudioOneShotHandle handle);
 
         // ── 每帧驱动（VansScene::Tick 中调用） ──────────────────────────────
         // deltaTime : 本帧耗时（秒），当前未使用，为将来拓展保留
@@ -138,6 +163,12 @@ namespace VansEngine
         std::unordered_map<std::string, int> m_ActiveBusVoiceCounts;
         std::unordered_set<std::string> m_SuppressedResourceAutoPlay;
         AudioVoiceLeaseFrameStats m_VoiceLeaseFrameStats;
+        struct OneShot
+        {
+            std::unique_ptr<VansAudioSourceBinding> binding;
+            bool observedPlaying = false;
+        };
+        Vans::VansGenerationPool<OneShot> m_OneShots;
     };
 
 } // namespace VansEngine

@@ -491,7 +491,7 @@ namespace VansGraphics
 			controller->ConfigureMotionMatching(mmSettings);
 			VANS_LOG("[LoadAnimComp] Motion Matching configured for '" << objectName
 				<< "' enabled=" << mmSettings.enabled
-				<< " externallyDriven=" << mmSettings.externallyDriven
+				<< " driveMode=" << static_cast<int>(mmSettings.motionModel.driveMode)
 				<< " sampleRate=" << mmSettings.sampleRate
 				<< " searchThrottle=" << mmSettings.searchThrottle
 				<< " speedScale=" << mmSettings.desiredSpeedScale

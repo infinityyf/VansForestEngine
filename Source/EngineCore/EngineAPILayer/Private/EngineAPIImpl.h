@@ -1,13 +1,14 @@
 #pragma once
 
 #include "EngineCommandContext.h"
-#include "VansTimelineDerivedMediaService.h"
 
 #include "../Public/IEngineEditorAPI.h"
+#include "../../GameplayActionDebug/VansGameplayActionDebug.h"
 #include "../../RuntimeUI/Public/VansUIRuntimeHandles.h"
 #include "../../RenderCore/VulkanCore/VansVKImage.h"
 
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -20,6 +21,12 @@ class VansScriptContext;
 namespace VansRuntime
 {
 	class VansUIDocument;
+}
+
+namespace Vans
+{
+	class VansGameplayTraceRecorder;
+	class VansGameplayReplaySession;
 }
 
 namespace Vans::EditorAPI
@@ -46,10 +53,29 @@ namespace Vans::EditorAPI
 		ProjectBrowserRootSnapshot GetProjectBrowserRoot() const override;
 		AssetDragPayload CreateAssetDragPayload(const std::string& assetPath) override;
 		AssetGuidResolution ResolveAssetGuid(const std::string& assetGuid) const override;
-		TimelineAudioWaveformHandle RequestTimelineAudioWaveform(const std::string& assetGuid) override;
-		TimelineVideoThumbnailHandle RequestTimelineVideoThumbnail(const std::string& assetGuid) override;
 		ProjectAssetCreateResult CreateProjectAsset(const ProjectAssetCreateRequest& request) override;
 		AssetRefreshResult RefreshProjectAsset(const std::string& assetPath, bool importIfMissing) override;
+		GAFEditorDocumentSnapshot OpenGAFAsset(const std::string& sourcePath) override;
+		GAFEditorOperationResult SetGAFAssetField(const GAFEditorFieldEditRequest& request) override;
+		GAFEditorOperationResult ResetGAFAssetField(
+			const std::string& sourcePath, const std::string& fieldPath) override;
+		GAFEditorOperationResult EditGAFAssetArray(const GAFEditorArrayEditRequest& request) override;
+		std::vector<GAFGraphNodeTypeSnapshot> GetGAFGraphNodeCatalog() const override;
+		GAFEditorOperationResult EditGAFGraph(const GAFGraphEditRequest& request) override;
+		GAFEditorOperationResult UndoGAFAsset(const std::string& sourcePath) override;
+		GAFEditorOperationResult RedoGAFAsset(const std::string& sourcePath) override;
+		GAFEditorOperationResult RevertGAFAsset(const std::string& sourcePath) override;
+		GAFEditorOperationResult SaveGAFAsset(const std::string& sourcePath) override;
+		GAFSemanticDiffResult DiffGAFAsset(
+			const std::string& sourcePath, const std::string& baselineCanonicalJson) override;
+		GAFProjectConfigurationSnapshot GetGAFProjectConfiguration() const override;
+		std::vector<std::string> GetGAFTagCatalog() const override;
+		GAFProjectConfigurationResult ApplyGAFProjectConfiguration(
+			const GAFProjectConfigurationSnapshot& configuration) override;
+		GAFRuntimeDebugSnapshot GetGAFRuntimeDebugSnapshot() override;
+		GAFDebugCommandResult ControlGAFDebugger(const GAFDebugCommand& command) override;
+		GAFTraceCommandResult ControlGAFTrace(const GAFTraceCommand& command) override;
+		GAFSimulationResult SimulateGAFAction(const GAFSimulationRequest& request) override;
 		std::vector<RecentProjectEntry> GetRecentProjects() const override;
 		ProjectOpenResult OpenProject(const ProjectOpenRequest& request) override;
 		void CloseProject() override;
@@ -68,6 +94,7 @@ namespace Vans::EditorAPI
 		RenderTexturePreview GetViewportPreview(ViewportId id) const override;
 		FSRSettingsSnapshot GetFSRSettings() const override;
 		void SetFSRSettings(FSRUpscaleMode mode, float sharpness) override;
+		void SetFSRDebugViewEnabled(bool enabled) override;
 		CommandRecordingSettingsSnapshot GetCommandRecordingSettings() const override;
 		void SetCommandRecordingSettings(const CommandRecordingSettingsSnapshot& settings) override;
 		void SetSceneViewportExtent(std::uint32_t width, std::uint32_t height) override;
@@ -219,13 +246,19 @@ namespace Vans::EditorAPI
 		void StepRuntimeVehicle(float deltaTimeSeconds) override;
 		void SetRuntimeVehicleInput(float throttle, float brake, float steer, float handbrake) override;
 		void SyncRuntimePhysicsTransforms() override;
+		void PrepareRuntimeCharacterLocomotion(double deltaSeconds) override;
 		void FlushRuntimeCharacterControllerTransforms() override;
 		void UpdateRuntimeNonCameraScripts() override;
+		void UpdateRuntimeActionsEarly(double deltaSeconds) override;
+		void RunRuntimeActionLateContinuation() override;
 		void UpdateRuntimeTimelinesPostScript(double deltaSeconds) override;
+		void BeginRuntimeCameraControlFrame() override;
 		void UpdateRuntimeCameraScripts() override;
+		void CaptureRuntimeCameraControlBase() override;
 		void UpdateRuntimeTimelinesCamera(double deltaSeconds) override;
 		void UpdateTimelinePreviewsPostScript(double deltaSeconds) override;
 		void UpdateTimelinePreviewsCamera(double deltaSeconds) override;
+		void ResolveRuntimeCameraControlFrame() override;
 		void InitializeRuntimeScripts() override;
 		void SetupRuntimeScriptProjectVenv(const std::string& projectRootPath) override;
 		void ReloadRuntimeScripts() override;
@@ -254,7 +287,13 @@ namespace Vans::EditorAPI
 		std::vector<std::unique_ptr<IEngineCommand>> m_UndoStack;
 		std::vector<std::unique_ptr<IEngineCommand>> m_RedoStack;
 		std::vector<ScenePropertyEdit> m_PendingScenePropertyEdits;
-		VansTimelineDerivedMediaService m_TimelineDerivedMedia;
+		std::shared_ptr<Vans::VansGameplayTraceRecorder> m_GAFTraceRecorder;
+		std::shared_ptr<Vans::VansGameplayReplaySession> m_GAFReplaySession;
+		Vans::VansGameplayActionBreakpointSet m_GAFBreakpoints;
+		std::optional<Vans::VansGameplayDebugSnapshot> m_GAFPreviousDebugSnapshot;
+		std::vector<Vans::VansActionBreakpointHit> m_GAFBreakpointHits;
+		std::string m_GAFTracePath;
+		std::uint64_t m_GAFDebugFrame = 0;
 		bool m_AllowNextCommandMerge = true;
 		GIProbeDebugSnapshot m_GIProbeDebugSnapshot;
 		UIDocumentId m_NextUIDocumentId = 1;

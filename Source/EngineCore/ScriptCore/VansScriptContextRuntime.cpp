@@ -11,6 +11,7 @@
 #include "VansScriptContext.h"
 
 #include "VansLuaUIBridge.h"
+#include "VansLuaGameplayActionBridge.h"
 #include "VansTransform.h"
 #include "../AnimationCore/VansAnimationController.h"
 #include "../AnimationCore/VansAnimationNode.h"
@@ -943,6 +944,28 @@ int LuaComponentQueueMove(lua_State* L)
 	return 0;
 }
 
+int LuaComponentSetMotionIntent(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* cct = dynamic_cast<VansScriptCharacterControllerComponent*>(component);
+	if (!cct || !cct->m_ControllerNode)
+		return 0;
+
+	Vans::VansCharacterMotionIntent intent;
+	const glm::vec3 moveInputLocal = ReadVec3(L, 2);
+	intent.moveInputLocal = glm::vec2(moveInputLocal.x, moveInputLocal.z);
+	intent.desiredSpeed = static_cast<float>(luaL_optnumber(L, 3, 0.0));
+	intent.movementReferenceYaw = static_cast<float>(luaL_optnumber(L, 4, 0.0));
+	intent.desiredFacingYaw = static_cast<float>(luaL_optnumber(L, 5, 0.0));
+	intent.hasFacing = lua_gettop(L) >= 5 && !lua_isnil(L, 5);
+	intent.jumpRequested = lua_toboolean(L, 6) != 0;
+	intent.jumpSpeed = static_cast<float>(luaL_optnumber(L, 7, 5.5));
+	intent.gravity = static_cast<float>(luaL_optnumber(L, 8, 16.0));
+	intent.valid = true;
+	cct->m_ControllerNode->SetMotionIntent(intent);
+	return 0;
+}
+
 int LuaComponentVehicleSetInputs(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
@@ -989,6 +1012,19 @@ int LuaComponentSetPosition(lua_State* L)
 	else if (auto* audio = dynamic_cast<VansScriptAudioComponent*>(component))
 	{
 		audio->m_Source.SetPosition(position.x, position.y, position.z);
+	}
+	return 0;
+}
+
+int LuaComponentSyncControllerFromTransform(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* cct = dynamic_cast<VansScriptCharacterControllerComponent*>(component);
+	if (cct && cct->m_ControllerNode)
+	{
+		auto& physics = VansEngine::VansPhysicsSystem::GetInstance();
+		std::lock_guard<std::mutex> simLock(physics.GetSimulationMutex());
+		cct->m_ControllerNode->SyncControllerFromTransform();
 	}
 	return 0;
 }
@@ -1062,6 +1098,16 @@ int LuaComponentAnimSetBool(lua_State* L)
 	auto* anim = dynamic_cast<VansScriptAnimationComponent*>(component);
 	if (anim && anim->m_AnimNode && anim->m_AnimNode->GetController())
 		anim->m_AnimNode->GetController()->SetBool(name, value);
+	return 0;
+}
+
+int LuaComponentAnimSetRootMotionEnabled(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	const bool enabled = lua_toboolean(L, 2) != 0;
+	auto* anim = dynamic_cast<VansScriptAnimationComponent*>(component);
+	if (anim && anim->m_AnimNode)
+		anim->m_AnimNode->EnableRootMotion(enabled);
 	return 0;
 }
 
@@ -1797,6 +1843,17 @@ int LuaComponentGetFarClip(lua_State* L)
 	auto* component = CheckComponent(L, 1)->component;
 	auto* camera = dynamic_cast<VansScriptCameraComponent*>(component);
 	lua_pushnumber(L, camera && camera->m_Camera ? camera->m_Camera->GetFarClip() : 0.0f);
+	return 1;
+}
+
+int LuaComponentIsUserLookSuppressed(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* camera = dynamic_cast<VansScriptCameraComponent*>(component);
+	auto* scene = Scene();
+	const bool suppressed = camera && camera->m_Camera && scene &&
+		scene->GetCamera() == camera->m_Camera && scene->IsUserCameraLookSuppressed();
+	lua_pushboolean(L, suppressed);
 	return 1;
 }
 
@@ -3821,6 +3878,7 @@ void VansScriptContext::RegisterLuaBindings()
 		{ "get_file_path", LuaComponentGetFilePath },
 		{ "move", LuaComponentQueueMove },
 		{ "queue_move", LuaComponentQueueMove },
+		{ "set_motion_intent", LuaComponentSetMotionIntent },
 		{ "set_inputs", LuaComponentVehicleSetInputs },
 		{ "setInputs", LuaComponentVehicleSetInputs },
 		{ "set_gear", LuaComponentVehicleSetGear },
@@ -3829,12 +3887,14 @@ void VansScriptContext::RegisterLuaBindings()
 		{ "setAutomaticGear", LuaComponentVehicleSetAutomaticGear },
 		{ "get_position", LuaComponentGetPosition },
 		{ "set_position", LuaComponentSetPosition },
+		{ "sync_from_transform", LuaComponentSyncControllerFromTransform },
 		{ "is_grounded", LuaComponentIsGrounded },
 		{ "bind_follow_ragdoll", LuaComponentBindFollowRagdoll },
 		{ "clear_follow_ragdoll", LuaComponentClearFollowRagdoll },
 		{ "is_follow_ragdoll_enabled", LuaComponentIsFollowRagdollEnabled },
 		{ "play_state", LuaComponentAnimPlayState },
 		{ "set_bool", LuaComponentAnimSetBool },
+		{ "set_root_motion_enabled", LuaComponentAnimSetRootMotionEnabled },
 		{ "set_float", LuaComponentAnimSetFloat },
 		{ "set_int", LuaComponentAnimSetInt },
 		{ "set_vector3", LuaComponentAnimSetVector3 },
@@ -3864,6 +3924,7 @@ void VansScriptContext::RegisterLuaBindings()
 		{ "set_near_clip", LuaComponentSetNearClip },
 		{ "get_far_clip", LuaComponentGetFarClip },
 		{ "set_far_clip", LuaComponentSetFarClip },
+		{ "is_user_look_suppressed", LuaComponentIsUserLookSuppressed },
 		{ "world_to_viewport", LuaComponentWorldToViewport },
 		{ "load_asset", LuaComponentLoadParticle },
 		{ "set_asset_path", LuaComponentSetAssetPath },
@@ -3947,6 +4008,7 @@ void VansScriptContext::RegisterLuaBindings()
 	lua_setfield(L, -2, "input");
 
 	VansRuntime::VansLuaUIBridge::Register(L);
+	VansRuntime::VansLuaGameplayActionBridge::Register(L);
 	lua_setglobal(L, "vans");
 
 	lua_newtable(L);
@@ -3989,6 +4051,7 @@ void VansScriptContext::ShutdownLua()
 	AssertLuaThread();
 	m_EventConnections.DisconnectAll();
 	VansRuntime::VansLuaUIBridge::Shutdown(m_LuaState);
+	VansRuntime::VansLuaGameplayActionBridge::Shutdown(m_LuaState);
 	ClearTrackedModules();
 	s_Instance = nullptr;
 	lua_close(m_LuaState);

@@ -13,6 +13,7 @@ namespace VansGraphics
 		float startTime = 0.0f;
 		float endTime = -1.0f;
 		bool loop = true;
+		int rootMotionBoneIndex = -1;
 		std::uint64_t sourceNodeId = 0;
 		std::uint64_t sourceLayerId = 0;
 	};

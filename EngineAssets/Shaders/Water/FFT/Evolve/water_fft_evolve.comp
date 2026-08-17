@@ -20,7 +20,9 @@ const float G = 9.81;
 const int FIELD_HEIGHT = 0;
 const int FIELD_DISP_X = 1;
 const int FIELD_DISP_Z = 2;
-const int FIELD_COUNT = 3;
+const int FIELD_SLOPE_X = 3;
+const int FIELD_SLOPE_Z = 4;
+const int FIELD_COUNT = 5;
 
 vec2 Multiply(vec2 a, vec2 b) { return vec2(a.x*b.x-a.y*b.y, a.x*b.y+a.y*b.x); }
 vec2 UnitComplex(float phase) { return vec2(cos(phase), sin(phase)); }
@@ -59,7 +61,6 @@ void main()
     }
     vec2 height = Multiply(h0, UnitComplex(omega * params.windDirection_Time.z))
                 + Multiply(h0Negative, UnitComplex(-omega * params.windDirection_Time.z));
-    vec2 minusIHeight = vec2(height.y, -height.x);
     vec2 iHeight = vec2(-height.y, height.x);
     if (kLength > 1e-6)
     {
@@ -73,8 +74,12 @@ void main()
         else
         {
             Store(pixel, cascade, FIELD_HEIGHT, height);
-            Store(pixel, cascade, FIELD_DISP_X, minusIHeight * (k.x / kLength) * params.spectrumParams.y);
-            Store(pixel, cascade, FIELD_DISP_Z, minusIHeight * (k.y / kLength) * params.spectrumParams.y);
+            // 当前逆 DFT 使用正指数，正 choppiness 需要 +i*k/|k|*h，
+            // 才会压缩波峰并拓宽波谷，与 Gerstner/Wave Particle 的语义一致。
+            Store(pixel, cascade, FIELD_DISP_X, iHeight * (k.x / kLength) * params.spectrumParams.y);
+            Store(pixel, cascade, FIELD_DISP_Z, iHeight * (k.y / kLength) * params.spectrumParams.y);
+            Store(pixel, cascade, FIELD_SLOPE_X, iHeight * k.x);
+            Store(pixel, cascade, FIELD_SLOPE_Z, iHeight * k.y);
         }
     }
     else
@@ -89,6 +94,8 @@ void main()
             Store(pixel, cascade, FIELD_HEIGHT, height);
             Store(pixel, cascade, FIELD_DISP_X, vec2(0.0));
             Store(pixel, cascade, FIELD_DISP_Z, vec2(0.0));
+            Store(pixel, cascade, FIELD_SLOPE_X, vec2(0.0));
+            Store(pixel, cascade, FIELD_SLOPE_Z, vec2(0.0));
         }
     }
 }

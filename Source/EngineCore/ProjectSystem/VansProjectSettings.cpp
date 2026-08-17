@@ -17,6 +17,7 @@ namespace Vans
 			{
 			case VansProjectFSRMode::NativeAA: return "NativeAA";
 			case VansProjectFSRMode::Quality: return "Quality";
+			case VansProjectFSRMode::Balanced: return "Balanced";
 			case VansProjectFSRMode::Performance: return "Performance";
 			case VansProjectFSRMode::MatchViewport:
 			default: return "MatchViewport";
@@ -52,6 +53,7 @@ namespace Vans
 		case VansProjectFSRMode::MatchViewport:
 		case VansProjectFSRMode::NativeAA:
 		case VansProjectFSRMode::Quality:
+		case VansProjectFSRMode::Balanced:
 		case VansProjectFSRMode::Performance:
 			m_FSRSettings.mode = mode;
 			break;
@@ -65,12 +67,14 @@ namespace Vans
 	void VansProjectSettings::SetCommandRecordingSettings(
 		bool parallelEnabled,
 		bool frameContextRingEnabled,
-		std::uint32_t framesInFlight)
+		std::uint32_t framesInFlight,
+		bool asyncComputeEnabled)
 	{
 		m_CommandRecordingSettings.parallelEnabled = parallelEnabled;
 		m_CommandRecordingSettings.frameContextRingEnabled = frameContextRingEnabled;
 		// 当前只为非 async 主路径启用双帧 ring，配置读取时统一夹取，避免非法项目配置扩大资源生命周期复杂度。
 		m_CommandRecordingSettings.framesInFlight = std::clamp<std::uint32_t>(framesInFlight, 1u, 2u);
+		m_CommandRecordingSettings.asyncComputeEnabled = asyncComputeEnabled;
 	}
 
 	void VansProjectSettings::SetMainCameraHiZCullSettings(const VansProjectMainCameraHiZCullSettings& settings)
@@ -107,7 +111,8 @@ namespace Vans
 				SetCommandRecordingSettings(
 					renderSettings.commandRecordingSettings.parallelEnabled,
 					renderSettings.commandRecordingSettings.frameContextRingEnabled,
-					renderSettings.commandRecordingSettings.framesInFlight);
+					renderSettings.commandRecordingSettings.framesInFlight,
+					renderSettings.commandRecordingSettings.asyncComputeEnabled);
 				SetMainCameraHiZCullSettings(renderSettings.mainCameraHiZCullSettings);
 				VANS_LOG("[ProjectSettings] Loaded render settings: " << renderSettingsPath
 					<< ", fsr.mode=" << ToString(m_FSRSettings.mode)
@@ -115,6 +120,7 @@ namespace Vans
 					<< ", commandRecording.parallelEnabled=" << m_CommandRecordingSettings.parallelEnabled
 					<< ", commandRecording.frameContextRingEnabled=" << m_CommandRecordingSettings.frameContextRingEnabled
 					<< ", commandRecording.framesInFlight=" << m_CommandRecordingSettings.framesInFlight
+					<< ", commandRecording.asyncComputeEnabled=" << m_CommandRecordingSettings.asyncComputeEnabled
 					<< ", mainCameraHiZCulling.enabled=" << m_MainCameraHiZCullSettings.enabled);
 				loadedAnySettings = true;
 			}

@@ -50,6 +50,8 @@ layout(set=PBRLutSetBind, binding=6) buffer shCoefficientsBuffer
 // Pre-integrated skin scattering LUT
 // U = NdotL * 0.5 + 0.5,  V = curvature [0..1]
 layout(set = PBRLutSetBind, binding = 7) uniform sampler2D SkinPreIntegratedLUT;
+// Profile-indexed skin scattering LUT array. Layer contents initially mirror binding 7.
+layout(set = PBRLutSetBind, binding = 19) uniform sampler2DArray SkinProfilePreIntegratedLUTArray;
 
 // Cloth pre-integrated DFG LUT  (EngineAssets/Textures/ClothBRDFLUT.png)
 // U = NoV [0..1],  V = perceptualRoughness [0..1]

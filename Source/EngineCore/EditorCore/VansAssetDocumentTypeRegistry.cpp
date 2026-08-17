@@ -2,8 +2,13 @@
 
 #include "VansEditorPropertyDescriptorRegistry.h"
 
+#include "../GameplayActionSchema/VansGameplayAssetSchema.h"
+#include "../GameplayActionSchema/VansGameplayAssetStorage.h"
+#include "../GameplayActionSchema/VansGAFProjectConfiguration.h"
+#include "../ProjectSystem/VansProjectManager.h"
 #include "../TimelineCore/VansTimelineSerialization.h"
 #include "../TimelineCore/VansTimelineValidator.h"
+#include "../TimelineCore/VansTimelineTrackExtensionRegistry.h"
 
 namespace Vans
 {
@@ -22,16 +27,7 @@ VansAssetDocumentTypeRegistry::VansAssetDocumentTypeRegistry()
 		}
 		VansTimelineValidationContext context;
 		context.runtimeValidation = false;
-		context.supportsPropertyDescriptor = [](
-			std::uint16_t componentTypeId,
-			const std::string& descriptorId,
-			VansTimelineChannelType valueType)
-		{
-			const EditorAnimatablePropertyDescriptor* descriptor =
-				VansEditorPropertyDescriptorRegistry::FindAnimatable(descriptorId);
-			return descriptor && descriptor->componentTypeId == componentTypeId &&
-				descriptor->valueType == valueType;
-		};
+		context.extensions = &VansTimelineTrackExtensionRegistry::BuiltIns();
 		for (const VansTimelineDiagnostic& diagnostic : VansTimelineValidator::Validate(asset, context))
 		{
 			VansAssetDocumentDiagnosticSeverity severity = VansAssetDocumentDiagnosticSeverity::Info;
@@ -45,6 +41,68 @@ VansAssetDocumentTypeRegistry::VansAssetDocumentTypeRegistry()
 	};
 	std::string ignored;
 	Register(VansAssetType::Timeline, std::move(timeline), ignored);
+
+	const VansGameplayAssetSchemaRegistry& gameplaySchemas = VansGameplayAssetSchemaRegistry::BuiltIns();
+	const VansAssetType gameplayAssetTypes[] = {
+		VansAssetType::ActionDefinition,
+		VansAssetType::ActionSet,
+		VansAssetType::GameplayEffect,
+		VansAssetType::GameplayCue,
+		VansAssetType::AttributeSet,
+		VansAssetType::TargetingPolicy,
+		VansAssetType::GameplayTagTree,
+		VansAssetType::PayloadSchema,
+		VansAssetType::ActionGraph,
+		VansAssetType::CameraRigProfile,
+		VansAssetType::CameraShakeProfile,
+		VansAssetType::GAFEditorLayout
+	};
+	for (const VansAssetType assetType : gameplayAssetTypes)
+	{
+		VansAssetDocumentTypeDescriptor descriptor;
+		descriptor.validateBeforeSave = [assetType, &gameplaySchemas](
+			const std::filesystem::path&, const VansSerializedValue& root)
+		{
+			std::vector<VansAssetDocumentDiagnostic> result;
+			VansGameplayDiagnostics diagnostics = gameplaySchemas.Validate(assetType, root);
+			VansGAFProjectConfiguration configuration;
+			bool hasConfiguration = false;
+			auto& projectManager = VansProjectManager::Get();
+			if (projectManager.IsProjectLoaded())
+			{
+				std::string ignored;
+				hasConfiguration = VansGAFProjectConfiguration::LoadForProject(
+					projectManager.GetProjectRootPath(),
+					projectManager.GetPathResolver().GetEngineRoot(), configuration, ignored);
+				if (hasConfiguration)
+				{
+					VansGameplayAssetStorage::AppendProjectDiagnostics(
+						assetType, root, configuration, diagnostics);
+					configuration.ApplyValidationPolicy(diagnostics);
+				}
+			}
+			for (const VansGameplayDiagnostic& diagnostic : diagnostics)
+			{
+				VansAssetDocumentDiagnosticSeverity severity = VansAssetDocumentDiagnosticSeverity::Info;
+				if (diagnostic.severity == VansGameplayDiagnosticSeverity::Warning)
+					severity = VansAssetDocumentDiagnosticSeverity::Warning;
+				else if ((hasConfiguration && configuration.IsBlockingDiagnostic(
+					diagnostic, VansGAFValidationStage::Save)) ||
+					diagnostic.severity == VansGameplayDiagnosticSeverity::Error ||
+					diagnostic.severity == VansGameplayDiagnosticSeverity::Fatal)
+					severity = VansAssetDocumentDiagnosticSeverity::Error;
+				result.push_back({ severity, diagnostic.fieldPath,
+					diagnostic.code + ": " + diagnostic.message });
+			}
+			return result;
+		};
+		descriptor.collectDependencies = [assetType, &gameplaySchemas](
+			const std::filesystem::path&, const VansSerializedValue& root)
+		{
+			return gameplaySchemas.CollectDependencies(assetType, root);
+		};
+		Register(assetType, std::move(descriptor), ignored);
+	}
 }
 
 VansAssetDocumentTypeRegistry& VansAssetDocumentTypeRegistry::Get()

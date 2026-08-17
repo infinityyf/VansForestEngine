@@ -12,13 +12,14 @@ namespace Vans
 		MatchViewport = 0,
 		NativeAA = 1,
 		Quality = 2,
-		Performance = 3
+		Balanced = 3,
+		Performance = 4
 	};
 
 	struct VansProjectFSRSettings
 	{
 		VansProjectFSRMode mode = VansProjectFSRMode::MatchViewport;
-		float sharpness = 0.35f;
+		float sharpness = 0.2f;
 	};
 
 	struct VansProjectCommandRecordingSettings
@@ -26,6 +27,7 @@ namespace Vans
 		bool parallelEnabled = true;
 		bool frameContextRingEnabled = false;
 		std::uint32_t framesInFlight = 2;
+		bool asyncComputeEnabled = false;
 	};
 
 	struct VansProjectMainCameraHiZCullSettings
@@ -56,7 +58,11 @@ namespace Vans
 		const VansProjectFSRSettings& GetFSRSettings() const { return m_FSRSettings; }
 		void SetFSRSettings(VansProjectFSRMode mode, float sharpness);
 		const VansProjectCommandRecordingSettings& GetCommandRecordingSettings() const { return m_CommandRecordingSettings; }
-		void SetCommandRecordingSettings(bool parallelEnabled, bool frameContextRingEnabled, std::uint32_t framesInFlight);
+		void SetCommandRecordingSettings(
+			bool parallelEnabled,
+			bool frameContextRingEnabled,
+			std::uint32_t framesInFlight,
+			bool asyncComputeEnabled);
 		const VansProjectMainCameraHiZCullSettings& GetMainCameraHiZCullSettings() const { return m_MainCameraHiZCullSettings; }
 		void SetMainCameraHiZCullSettings(const VansProjectMainCameraHiZCullSettings& settings);
 

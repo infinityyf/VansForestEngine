@@ -336,61 +336,20 @@ void DecodeWaterSpectrumFields(const VansSerializedValue& spectrumNode, VansScen
 	AssignIfPresent(config.randomSeed, ReadOptionalUIntField(spectrumNode, "randomSeed"));
 }
 
-void DecodeWaterLegacyWaveFields(
-	const VansSerializedValue& wavesNode,
-	VansSceneWaterSpectrumConfig& spectrumConfig,
-	VansSceneWaterWaveParticleConfig& particleConfig)
+VansSceneWaterWaveParticleConfig DecodeWaterWaveParticles(
+	const VansSerializedValue& waveParticleNode)
 {
-	if (std::optional<VansSceneWaterWaveMode> mode = ReadOptionalWaterWaveMode(wavesNode, "mode"))
-		spectrumConfig.mode = *mode;
-	AssignIfPresent(spectrumConfig.cascadeCount, ReadOptionalIntField(wavesNode, "cascadeCount"));
-	AssignIfPresent(spectrumConfig.baseCoverage, ReadOptionalFloatField(wavesNode, "baseCoverage"));
-	AssignIfPresent(spectrumConfig.cascadeScale, ReadOptionalFloatField(wavesNode, "cascadeScale"));
-	AssignIfPresent(spectrumConfig.windDirection, ReadOptionalFloat2Field(wavesNode, "windDirection"));
-	AssignIfPresent(spectrumConfig.windSpeed, ReadOptionalFloatField(wavesNode, "windSpeed"));
-	AssignIfPresent(spectrumConfig.choppiness, ReadOptionalFloatField(wavesNode, "choppiness"));
-
-	if (const VansSerializedValue* gerstner = ReadObjectField(wavesNode, "gerstner"))
-	{
-		AssignIfPresent(spectrumConfig.swellAmplitude, ReadOptionalFloatField(*gerstner, "swellAmplitude"));
-		if (std::optional<int> waveCount = ReadOptionalIntField(*gerstner, "waveCount"))
-			spectrumConfig.gerstnerWaveCount = *waveCount;
-		if (std::optional<int> gerstnerWaveCount = ReadOptionalIntField(*gerstner, "gerstnerWaveCount"))
-			spectrumConfig.gerstnerWaveCount = *gerstnerWaveCount;
-	}
-
-	if (const VansSerializedValue* fft = ReadObjectField(wavesNode, "fft"))
-	{
-		AssignIfPresent(spectrumConfig.spectrumAmplitude, ReadOptionalFloatField(*fft, "spectrumAmplitude"));
-		AssignIfPresent(spectrumConfig.minWavelength, ReadOptionalFloatField(*fft, "minWavelength"));
-		AssignIfPresent(spectrumConfig.smallWaveDamping, ReadOptionalFloatField(*fft, "smallWaveDamping"));
-		AssignIfPresent(spectrumConfig.windDependency, ReadOptionalFloatField(*fft, "windDependency"));
-		AssignIfPresent(spectrumConfig.depth, ReadOptionalFloatField(*fft, "depth"));
-		AssignIfPresent(spectrumConfig.repeatPeriod, ReadOptionalFloatField(*fft, "repeatPeriod"));
-		AssignIfPresent(spectrumConfig.randomSeed, ReadOptionalUIntField(*fft, "randomSeed"));
-	}
-
-	if (const VansSerializedValue* waveParticle = ReadObjectField(wavesNode, "waveParticle"))
-	{
-		AssignIfPresent(particleConfig.particleCount, ReadOptionalIntField(*waveParticle, "particleCount"));
-		AssignIfPresent(particleConfig.octaveCount, ReadOptionalIntField(*waveParticle, "octaveCount"));
-		AssignIfPresent(particleConfig.profile, ReadOptionalIntField(*waveParticle, "profile"));
-		AssignIfPresent(particleConfig.domainSize, ReadOptionalFloatField(*waveParticle, "domainSize"));
-		AssignIfPresent(particleConfig.amplitude, ReadOptionalFloatField(*waveParticle, "amplitude"));
-		AssignIfPresent(particleConfig.minRadius, ReadOptionalFloatField(*waveParticle, "minRadius"));
-		AssignIfPresent(particleConfig.maxRadius, ReadOptionalFloatField(*waveParticle, "maxRadius"));
-		AssignIfPresent(particleConfig.phaseVelocity, ReadOptionalFloatField(*waveParticle, "phaseVelocity"));
-		AssignIfPresent(particleConfig.damping, ReadOptionalFloatField(*waveParticle, "damping"));
-		AssignIfPresent(particleConfig.directionSpread, ReadOptionalFloatField(*waveParticle, "directionSpread"));
-		AssignIfPresent(particleConfig.lacunarity, ReadOptionalFloatField(*waveParticle, "lacunarity"));
-		AssignIfPresent(particleConfig.persistence, ReadOptionalFloatField(*waveParticle, "persistence"));
-		AssignIfPresent(particleConfig.radiusFalloff, ReadOptionalFloatField(*waveParticle, "radiusFalloff"));
-		AssignIfPresent(particleConfig.profileSharpness, ReadOptionalFloatField(*waveParticle, "profileSharpness"));
-		AssignIfPresent(particleConfig.foamThreshold, ReadOptionalFloatField(*waveParticle, "foamThreshold"));
-		AssignIfPresent(particleConfig.foamSoftness, ReadOptionalFloatField(*waveParticle, "foamSoftness"));
-		AssignIfPresent(particleConfig.lifetime, ReadOptionalFloatField(*waveParticle, "lifetime"));
-		AssignIfPresent(particleConfig.randomSeed, ReadOptionalUIntField(*waveParticle, "randomSeed"));
-	}
+	VansSceneWaterWaveParticleConfig config;
+	config.particlesPerCascade = ReadOptionalIntField(waveParticleNode, "particlesPerCascade");
+	config.rmsAmplitude = ReadOptionalFloatField(waveParticleNode, "rmsAmplitude");
+	config.packetWidth = ReadOptionalFloatField(waveParticleNode, "packetWidth");
+	config.dispersionScale = ReadOptionalFloatField(waveParticleNode, "dispersionScale");
+	config.directionSpread = ReadOptionalFloatField(waveParticleNode, "directionSpread");
+	config.cascadeAmplitudeFalloff = ReadOptionalFloatField(waveParticleNode, "cascadeAmplitudeFalloff");
+	config.foamThreshold = ReadOptionalFloatField(waveParticleNode, "foamThreshold");
+	config.foamSoftness = ReadOptionalFloatField(waveParticleNode, "foamSoftness");
+	config.randomSeed = ReadOptionalUIntField(waveParticleNode, "randomSeed");
+	return config;
 }
 
 VansSceneWaterFlowMapConfig DecodeWaterFlowMap(const VansSerializedValue& flowMapNode)
@@ -412,7 +371,9 @@ VansSceneWaterCausticsConfig DecodeWaterCaustics(const VansSerializedValue& caus
 	VansSceneWaterCausticsConfig config;
 	config.enabled = ReadOptionalBoolField(causticsNode, "enabled");
 	config.intensity = ReadOptionalFloatField(causticsNode, "intensity");
-	config.scale = ReadOptionalFloatField(causticsNode, "scale");
+	config.maxDistance = ReadOptionalFloatField(causticsNode, "maxDistance");
+	config.maxGain = ReadOptionalFloatField(causticsNode, "maxGain");
+	config.filterRadius = ReadOptionalFloatField(causticsNode, "filterRadius");
 	return config;
 }
 
@@ -858,7 +819,6 @@ VansSceneWaterNodeConfig VansSceneEnvironmentNodeConfigReader::ReadWater(
 	if (waterNode.kind != VansSerializedValue::Kind::Object)
 		return config;
 
-	config.schemaVersion = ReadOptionalUIntField(waterNode, "schemaVersion");
 	config.level = ReadOptionalFloatField(waterNode, "level");
 	config.specularIntensity = ReadOptionalFloatField(waterNode, "specularIntensity");
 	config.name = ReadOptionalStringField(waterNode, "name");
@@ -867,8 +827,8 @@ VansSceneWaterNodeConfig VansSceneEnvironmentNodeConfigReader::ReadWater(
 		config.medium = DecodeWaterMedium(*medium);
 	if (const VansSerializedValue* spectrum = ReadObjectField(waterNode, "spectrum"))
 		DecodeWaterSpectrumFields(*spectrum, config.spectrum);
-	if (const VansSerializedValue* waves = ReadObjectField(waterNode, "waves"))
-		DecodeWaterLegacyWaveFields(*waves, config.spectrum, config.waveParticle);
+	if (const VansSerializedValue* waveParticle = ReadObjectField(waterNode, "waveParticle"))
+		config.waveParticle = DecodeWaterWaveParticles(*waveParticle);
 	if (const VansSerializedValue* flowMap = ReadObjectField(waterNode, "flowMap"))
 		config.flowMap = DecodeWaterFlowMap(*flowMap);
 	if (const VansSerializedValue* caustics = ReadObjectField(waterNode, "caustics"))

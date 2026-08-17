@@ -463,7 +463,20 @@ namespace Vans::EditorAPI
 		AnimatorController,
 		BoneMask,
 		Timeline,
+		ActionDefinition,
+		ActionSet,
+		GameplayEffect,
+		GameplayCue,
+		AttributeSet,
+		TargetingPolicy,
+		GameplayTagTree,
+		PayloadSchema,
+		ActionGraph,
+		CameraRigProfile,
+		CameraShakeProfile,
+		GAFEditorLayout,
 		ClothProfile,
+		SkinProfile,
 		PostProcessProfile,
 		RagdollProfile,
 		AudioReverbPreset,
@@ -507,6 +520,18 @@ namespace Vans::EditorAPI
 		Timeline,
 		AnimatorController,
 		BoneMask,
+		ActionDefinition,
+		ActionSet,
+		GameplayEffect,
+		GameplayCue,
+		AttributeSet,
+		TargetingPolicy,
+		GameplayTagTree,
+		PayloadSchema,
+		ActionGraph,
+		CameraRigProfile,
+		CameraShakeProfile,
+		SkinProfile,
 		AudioReverbPreset,
 		AudioBusSnapshot,
 		AudioDuckingRules
@@ -543,25 +568,6 @@ namespace Vans::EditorAPI
 		std::string sourcePath;
 	};
 
-	struct TimelineAudioWaveformSnapshot
-	{
-		double durationSeconds = 0.0;
-		std::vector<float> minima;
-		std::vector<float> maxima;
-	};
-
-	using TimelineAudioWaveformHandle = std::shared_ptr<const TimelineAudioWaveformSnapshot>;
-
-	struct TimelineVideoThumbnailSnapshot
-	{
-		int width = 0;
-		int height = 0;
-		double durationSeconds = 0.0;
-		std::vector<std::uint8_t> rgba;
-	};
-
-	using TimelineVideoThumbnailHandle = std::shared_ptr<const TimelineVideoThumbnailSnapshot>;
-
 	struct AssetRefreshResult
 	{
 		bool success = false;
@@ -582,6 +588,544 @@ namespace Vans::EditorAPI
 		std::string defaultSceneRelativePath;
 		std::string defaultScenePath;
 		std::string message;
+	};
+
+	enum class GAFEditorValueKind
+	{
+		Null,
+		Bool,
+		Int,
+		Float,
+		String,
+		Array,
+		Object,
+		Json
+	};
+
+	struct GAFEditorValue
+	{
+		GAFEditorValueKind kind = GAFEditorValueKind::Null;
+		bool boolValue = false;
+		std::int64_t intValue = 0;
+		double floatValue = 0.0;
+		std::string stringValue;
+		std::string canonicalJson;
+	};
+
+	enum class GAFEditorPropertyKind
+	{
+		Bool,
+		Int,
+		Float,
+		String,
+		Enum,
+		Object,
+		Array,
+		Tag,
+		TagQuery,
+		AssetReference,
+		Payload,
+		Graph,
+		Vec2,
+		Vec3,
+		Vec4,
+		Quaternion,
+		Color,
+		Map,
+		EntityBinding,
+		ComponentBinding
+	};
+
+	enum class GAFEditorDiagnosticSeverity { Info, Warning, Error, Fatal };
+
+	struct GAFEditorDiagnostic
+	{
+		GAFEditorDiagnosticSeverity severity = GAFEditorDiagnosticSeverity::Info;
+		std::string code;
+		std::string message;
+		std::string fieldPath;
+	};
+
+	struct GAFEditorFieldSnapshot
+	{
+		std::uint64_t fieldId = 0;
+		std::string path;
+		std::string displayName;
+		std::string group;
+		std::string description;
+		std::string unit;
+		GAFEditorPropertyKind kind = GAFEditorPropertyKind::String;
+		GAFEditorValue value;
+		bool exists = false;
+		bool visible = true;
+		bool enabled = true;
+		bool required = false;
+		bool deprecated = false;
+		bool readOnly = false;
+		std::size_t arraySize = 0;
+		bool hasMinimum = false;
+		bool hasMaximum = false;
+		double minimum = 0.0;
+		double maximum = 0.0;
+		double step = 0.0;
+		bool hasStep = false;
+		std::vector<std::string> enumValues;
+		std::vector<AssetType> allowedAssetTypes;
+		bool hasArrayElement = false;
+		GAFEditorPropertyKind arrayElementKind = GAFEditorPropertyKind::Object;
+		GAFEditorValue arrayElementDefault;
+		bool isArrayElement = false;
+		std::size_t arrayIndex = 0;
+		std::vector<GAFEditorFieldSnapshot> children;
+		std::vector<GAFEditorDiagnostic> diagnostics;
+	};
+
+	struct GAFGraphPinSnapshot
+	{
+		std::string name;
+		std::string dataType;
+		bool input = false;
+		bool multiple = false;
+	};
+
+	struct GAFGraphPropertySnapshot
+	{
+		std::string name;
+		std::string displayName;
+		GAFEditorPropertyKind kind = GAFEditorPropertyKind::String;
+		GAFEditorValue defaultValue;
+		bool required = false;
+		bool hasMinimum = false;
+		bool hasMaximum = false;
+		double minimum = 0.0;
+		double maximum = 0.0;
+		std::vector<AssetType> allowedAssetTypes;
+	};
+
+	struct GAFGraphNodeTypeSnapshot
+	{
+		std::string type;
+		std::string displayName;
+		std::string category;
+		std::string nodeKind;
+		bool predictable = false;
+		bool authorityOnly = false;
+		bool allowed = true;
+		std::vector<GAFGraphPinSnapshot> pins;
+		std::vector<GAFGraphPropertySnapshot> properties;
+	};
+
+	struct GAFGraphNodePropertyValueSnapshot
+	{
+		std::string name;
+		GAFEditorValue value;
+	};
+
+	struct GAFGraphNodeSnapshot
+	{
+		std::size_t index = 0;
+		std::string guid;
+		std::string type;
+		std::string nodeKind;
+		bool predictable = false;
+		double x = 0.0;
+		double y = 0.0;
+		GAFEditorValue properties;
+		std::vector<GAFGraphNodePropertyValueSnapshot> propertyValues;
+	};
+
+	struct GAFGraphEdgeSnapshot
+	{
+		std::size_t index = 0;
+		std::string from;
+		std::string output;
+		std::string to;
+		std::int32_t order = 0;
+	};
+
+	struct GAFGraphSnapshot
+	{
+		bool available = false;
+		std::string entryNode;
+		std::vector<GAFGraphNodeSnapshot> nodes;
+		std::vector<GAFGraphEdgeSnapshot> edges;
+	};
+
+	struct GAFEditorDocumentSnapshot
+	{
+		bool success = false;
+		std::string sourcePath;
+		AssetType assetType = AssetType::Unknown;
+		std::string assetKind;
+		std::uint32_t schemaVersion = 0;
+		std::uint64_t contentHash = 0;
+		bool dirty = false;
+		bool canUndo = false;
+		bool canRedo = false;
+		bool cookable = false;
+		std::vector<std::string> dependencies;
+		std::vector<GAFEditorFieldSnapshot> fields;
+		std::vector<GAFEditorDiagnostic> diagnostics;
+		GAFGraphSnapshot graph;
+		std::string canonicalJson;
+		std::string message;
+	};
+
+	struct GAFEditorFieldEditRequest
+	{
+		std::string sourcePath;
+		std::string fieldPath;
+		GAFEditorValue value;
+	};
+
+	enum class GAFEditorArrayOperation { Append, Insert, Duplicate, Remove, Move };
+
+	struct GAFEditorArrayEditRequest
+	{
+		std::string sourcePath;
+		std::string fieldPath;
+		GAFEditorArrayOperation operation = GAFEditorArrayOperation::Append;
+		std::size_t index = 0;
+		std::size_t destinationIndex = 0;
+		GAFEditorValue value;
+	};
+
+	struct GAFEditorOperationResult
+	{
+		bool success = false;
+		std::string message;
+		GAFEditorDocumentSnapshot document;
+	};
+
+	enum class GAFGraphEditOperation
+	{
+		AddNode,
+		RemoveNode,
+		MoveNode,
+		Connect,
+		Disconnect,
+		SetEntryNode,
+		SetNodeProperty
+	};
+
+	struct GAFGraphEditRequest
+	{
+		std::string sourcePath;
+		GAFGraphEditOperation operation = GAFGraphEditOperation::AddNode;
+		std::string nodeGuid;
+		std::string nodeType;
+		double x = 0.0;
+		double y = 0.0;
+		std::string fromNode;
+		std::string outputPin;
+		std::string toNode;
+		std::int32_t order = 0;
+		std::string propertyName;
+		GAFEditorValue value;
+	};
+
+	enum class GAFSemanticChangeKind { Added, Removed, Modified };
+
+	struct GAFSemanticDiffEntry
+	{
+		std::string fieldPath;
+		GAFSemanticChangeKind kind = GAFSemanticChangeKind::Modified;
+		GAFEditorValue before;
+		GAFEditorValue after;
+	};
+
+	struct GAFSemanticDiffResult
+	{
+		bool success = false;
+		std::vector<GAFSemanticDiffEntry> entries;
+		std::string message;
+	};
+
+	struct GAFNamedString
+	{
+		std::string name;
+		std::string value;
+	};
+
+	struct GAFProjectTemplateSnapshot
+	{
+		std::string assetKind;
+		GAFEditorValue document;
+	};
+
+	struct GAFProjectConfigurationSnapshot
+	{
+		bool available = false;
+		std::string settingsDirectory;
+		std::uint32_t schemaVersion = 1;
+		std::vector<std::string> defaultTagRoots;
+		std::string networkMode = "Disabled";
+		bool predictionEnabled = false;
+		bool requireRollbackPlan = true;
+		bool failWithoutTransport = true;
+		bool deterministicCook = true;
+		bool stripEditorMetadata = true;
+		bool treatCookWarningsAsErrors = false;
+		std::string templateDirectory;
+		std::uint32_t maximumActiveActionsPerHost = 64;
+		std::uint32_t maximumTasksPerAction = 64;
+		std::uint32_t maximumGraphTransitionsPerTick = 1024;
+		std::uint32_t maximumEffectsPerHost = 256;
+		std::uint32_t maximumPayloadBytes = 4096;
+		std::vector<std::string> allowedNodeTypes;
+		std::vector<std::string> allowedServices;
+		std::vector<std::string> allowedHandlers;
+		std::vector<std::string> bridgeAllowlist;
+		std::vector<GAFNamedString> severityOverrides;
+		std::vector<std::string> saveBlockingCodes;
+		std::vector<std::string> cookBlockingCodes;
+		std::vector<std::string> ciBlockingCodes;
+		std::vector<GAFProjectTemplateSnapshot> templates;
+		std::string message;
+	};
+
+	struct GAFProjectConfigurationResult
+	{
+		bool success = false;
+		std::string message;
+		GAFProjectConfigurationSnapshot configuration;
+	};
+
+	struct GAFDebugNamedValue
+	{
+		std::string name;
+		std::string value;
+	};
+
+	struct GAFDebugTaskSnapshot
+	{
+		std::string handle;
+		std::string type;
+		std::string name;
+		std::string state;
+		double elapsedSeconds = 0.0;
+		double timeoutSeconds = 0.0;
+	};
+
+	struct GAFDebugResourceSnapshot
+	{
+		std::string handle;
+		std::string type;
+		std::string name;
+		std::string dependency;
+		std::string predictionPolicy;
+		bool undone = false;
+	};
+
+	struct GAFDebugActionSnapshot
+	{
+		std::string handle;
+		std::string actionId;
+		std::string state;
+		std::string endReason;
+		std::string error;
+		double elapsedSeconds = 0.0;
+		std::string predictionKey;
+		std::string executor;
+		std::vector<std::string> activeNodes;
+		std::vector<std::string> waitingNodes;
+		std::vector<std::string> targets;
+		std::vector<GAFDebugNamedValue> variables;
+		std::vector<GAFDebugTaskSnapshot> tasks;
+		std::vector<GAFDebugResourceSnapshot> resources;
+		std::vector<std::string> recentEvents;
+		std::vector<std::string> trace;
+	};
+
+	struct GAFDebugHostSnapshot
+	{
+		std::string owner;
+		bool enabled = false;
+		bool commitFrozen = false;
+		std::size_t activeCueCount = 0;
+		std::vector<GAFDebugNamedValue> tags;
+		std::vector<GAFDebugNamedValue> attributes;
+		std::vector<GAFDebugNamedValue> effects;
+		std::vector<GAFDebugNamedValue> grants;
+		std::vector<GAFDebugActionSnapshot> actions;
+	};
+
+	struct GAFRuntimeDebugSnapshot
+	{
+		bool available = false;
+		bool replay = false;
+		bool recording = false;
+		std::uint64_t frame = 0;
+		double timeSeconds = 0.0;
+		std::uint64_t contentManifestHash = 0;
+		std::size_t replayFrame = 0;
+		std::size_t replayFrameCount = 0;
+		std::vector<GAFDebugHostSnapshot> hosts;
+		std::vector<std::string> breakpointHits;
+		std::string message;
+	};
+
+	enum class GAFDebugBreakpointKind
+	{
+		Action,
+		State,
+		Node,
+		Event,
+		Error,
+		Prediction,
+		Attribute,
+		Window
+	};
+
+	enum class GAFDebugBreakpointComparison
+	{
+		Changed,
+		Equal,
+		Less,
+		LessOrEqual,
+		Greater,
+		GreaterOrEqual
+	};
+
+	struct GAFDebugBreakpointSnapshot
+	{
+		std::uint64_t id = 0;
+		GAFDebugBreakpointKind kind = GAFDebugBreakpointKind::Action;
+		std::string expression;
+		GAFDebugBreakpointComparison comparison = GAFDebugBreakpointComparison::Changed;
+		double value = 0.0;
+		double epsilon = 1e-6;
+		bool enabled = true;
+	};
+
+	enum class GAFDebugCommandKind
+	{
+		Query,
+		AddBreakpoint,
+		RemoveBreakpoint,
+		SetBreakpointEnabled,
+		ClearBreakpoints,
+		Pause,
+		Resume,
+		Step
+	};
+
+	struct GAFDebugCommand
+	{
+		GAFDebugCommandKind kind = GAFDebugCommandKind::AddBreakpoint;
+		GAFDebugBreakpointSnapshot breakpoint;
+		std::uint64_t breakpointId = 0;
+		bool enabled = true;
+		double stepSeconds = 1.0 / 60.0;
+	};
+
+	struct GAFDebugCommandResult
+	{
+		bool success = false;
+		std::string message;
+		std::vector<GAFDebugBreakpointSnapshot> breakpoints;
+	};
+
+	enum class GAFTraceCommandKind
+	{
+		StartRecording,
+		StopAndSave,
+		CancelRecording,
+		OpenReplay,
+		CloseReplay,
+		SeekReplay,
+		StepReplay
+	};
+
+	struct GAFTraceCommand
+	{
+		GAFTraceCommandKind kind = GAFTraceCommandKind::StartRecording;
+		std::string path;
+		std::size_t maximumFrames = 3600;
+		std::size_t maximumBytes = 64 * 1024 * 1024;
+		std::size_t frame = 0;
+		std::int32_t step = 0;
+	};
+
+	struct GAFTraceCommandResult
+	{
+		bool success = false;
+		std::string message;
+		GAFRuntimeDebugSnapshot snapshot;
+	};
+
+	enum class GAFSimulationMode
+	{
+		CanActivate,
+		Execute
+	};
+
+	enum class GAFSimulationTargetKind
+	{
+		None,
+		Entity,
+		Location,
+		Ray,
+		EntitySet
+	};
+
+	struct GAFSimulationEntity
+	{
+		std::uint32_t index = 0;
+		std::uint32_t generation = 0;
+	};
+
+	struct GAFSimulationTag
+	{
+		std::string name;
+		std::uint32_t count = 1;
+	};
+
+	struct GAFSimulationAttribute
+	{
+		std::string name;
+		double value = 0.0;
+	};
+
+	struct GAFSimulationRequest
+	{
+		std::string sourcePath;
+		std::string actionReference;
+		GAFSimulationMode mode = GAFSimulationMode::CanActivate;
+		GAFSimulationEntity owner{ 1, 1 };
+		GAFSimulationEntity instigator{ 1, 1 };
+		GAFSimulationTargetKind targetKind = GAFSimulationTargetKind::Entity;
+		GAFSimulationEntity primaryTarget{ 2, 1 };
+		std::vector<GAFSimulationEntity> targetEntities;
+		double targetX = 0.0;
+		double targetY = 0.0;
+		double targetZ = 0.0;
+		double rayDirectionX = 0.0;
+		double rayDirectionY = 0.0;
+		double rayDirectionZ = 1.0;
+		double rayLength = 100.0;
+		std::vector<GAFSimulationTag> initialTags;
+		std::vector<GAFSimulationAttribute> initialAttributes;
+		std::string payloadJson = "{}";
+		bool hasAuthority = true;
+		bool locallyControlled = true;
+		bool predicted = false;
+		std::uint64_t randomSeed = 1;
+		std::uint32_t tickCount = 1;
+		double deltaSeconds = 1.0 / 60.0;
+	};
+
+	struct GAFSimulationResult
+	{
+		bool success = false;
+		bool canActivate = false;
+		bool activated = false;
+		std::string actionReference;
+		std::string disposition;
+		std::string error;
+		std::string message;
+		std::vector<GAFNamedString> serviceActivity;
+		std::vector<GAFRuntimeDebugSnapshot> steps;
 	};
 
 	struct KeyValueString
@@ -888,18 +1432,36 @@ namespace Vans::EditorAPI
 		MatchViewport = 0,
 		NativeAA = 1,
 		Quality = 2,
-		Performance = 3
+		Balanced = 3,
+		Performance = 4
 	};
 
 	struct FSRSettingsSnapshot
 	{
 		FSRUpscaleMode mode = FSRUpscaleMode::MatchViewport;
-		float sharpness = 0.35f;
+		float sharpness = 0.2f;
 		float mipBias = 0.0f;
 		std::uint32_t renderWidth = 0;
 		std::uint32_t renderHeight = 0;
 		std::uint32_t outputWidth = 0;
 		std::uint32_t outputHeight = 0;
+		bool contextReady = false;
+		bool lastDispatchSucceeded = false;
+		bool lastDispatchReset = false;
+		bool debugCheckerEnabled = false;
+		bool debugViewEnabled = false;
+		std::uint32_t pendingResetReasons = 0;
+		std::uint32_t lastCreateReturnCode = 0;
+		std::uint32_t lastQueryReturnCode = 0;
+		std::uint32_t lastDispatchReturnCode = 0;
+		std::uint32_t lastReactiveReturnCode = 0;
+		std::uint64_t successfulDispatchCount = 0;
+		std::uint64_t failedDispatchCount = 0;
+		std::uint64_t generatedReactiveMaskCount = 0;
+		std::uint64_t gpuMemoryUsageBytes = 0;
+		std::uint64_t gpuMemoryAliasableBytes = 0;
+		std::int32_t jitterPhaseCount = 0;
+		std::string lastError;
 	};
 
 	struct CommandRecordingSettingsSnapshot
@@ -907,6 +1469,9 @@ namespace Vans::EditorAPI
 		bool parallelEnabled = true;
 		bool frameContextRingEnabled = false;
 		std::uint32_t framesInFlight = 2;
+		bool asyncComputeRequested = false;
+		bool asyncComputeEnabled = false;
+		bool hasDedicatedAsyncComputeQueue = false;
 	};
 
 	struct GIRegionSettingsSnapshot
@@ -1019,7 +1584,7 @@ namespace Vans::EditorAPI
 		float choppiness = 1.65f;
 		int gerstnerWaveCount = 32;
 		float spectrumAmplitude = 0.001f;
-		float minWavelength = 0.5f;
+		float minWavelength = 1.0f;
 		float smallWaveDamping = 0.003f;
 		float windDependency = 0.07f;
 		float depth = 10000.0f;
@@ -1029,23 +1594,14 @@ namespace Vans::EditorAPI
 
 	struct WaterWaveParticleSettings
 	{
-		int particleCount = 192;
-		int octaveCount = 5;
-		int profile = 1;
-		float domainSize = 1024.0f;
-		float amplitude = 2.75f;
-		float minRadius = 6.0f;
-		float maxRadius = 384.0f;
-		float phaseVelocity = 0.45f;
-		float damping = 0.018f;
+		int particlesPerCascade = 128;
+		float rmsAmplitude = 0.32f;
+		float packetWidth = 1.5f;
+		float dispersionScale = 1.0f;
 		float directionSpread = 0.7f;
-		float lacunarity = 2.0f;
-		float persistence = 0.6f;
-		float radiusFalloff = 0.58f;
-		float profileSharpness = 1.45f;
+		float cascadeAmplitudeFalloff = 0.62f;
 		float foamThreshold = 0.28f;
 		float foamSoftness = 0.25f;
-		float lifetime = 24.0f;
 		std::uint32_t randomSeed = 20260724u;
 	};
 
@@ -1106,7 +1662,9 @@ namespace Vans::EditorAPI
 		float deepWaterThicknessFallback = 0.8f;
 		bool causticsEnabled = false;
 		float causticsIntensity = 1.0f;
-		float causticsScale = 0.5f;
+		float causticsMaxDistance = 20.0f;
+		float causticsMaxGain = 3.0f;
+		float causticsFilterRadius = 0.5f;
 		bool refractionEnabled = true;
 		float refractionDistortionStrength = 0.025f;
 		bool ssrEnabled = true;
@@ -1278,9 +1836,68 @@ namespace Vans::EditorAPI
 	struct MotionMatchingDebugVisual
 	{
 		Vec3 rootPosition;
-		Vec3 velocity;
+		Vec3 actualVelocity;
+		Vec3 plannedVelocity;
+		Vec3 desiredVelocity;
+		Vec3 activeClipVelocity;
+		Vec3 selectedCandidateVelocity;
+		Vec3 appliedRootMotionVelocity;
+		Vec3 rootMotionTargetVelocity;
+		Vec3 rootMotionReconciledVelocity;
+		Vec3 moveInputLocal;
+		Vec3 predictedPivotPosition;
+		std::vector<Vec3> historyPositions;
+		std::vector<Vec3> futurePositions;
+		std::vector<Vec3> futureVelocities;
 		std::string activeClip;
+		std::string selectedClip;
 		float playbackRate = 1.0f;
+		float querySpeed = 0.0f;
+		float queryDirectionDegrees = 0.0f;
+		float directionChangeDegrees = 0.0f;
+		float inputDirectionChangeDegrees = 0.0f;
+		float facingDeltaDegrees = 0.0f;
+		float movementReferenceYaw = 0.0f;
+		float movementReferenceYawRate = 0.0f;
+		float plannedFacingYaw = 0.0f;
+		float steeringTargetFacingDeltaDegrees = 0.0f;
+		float steeringAuthoredFacingDeltaDegrees = 0.0f;
+		float steeringRequestedCorrectionDegrees = 0.0f;
+		float steeringAppliedCorrectionDegrees = 0.0f;
+		float steeringAppliedYawRateDegreesPerSecond = 0.0f;
+		float rootMotionTargetYawRateDegreesPerSecond = 0.0f;
+		float rootMotionReconciledYawRateDegreesPerSecond = 0.0f;
+		bool steeringActive = false;
+		bool steeringLimited = false;
+		bool rootMotionReconciliationActive = false;
+		float currentCost = 0.0f;
+		float trajectoryCost = 0.0f;
+		float poseCost = 0.0f;
+		float contactCost = 0.0f;
+		bool pivotRequested = false;
+		bool pivotDatabaseAvailable = false;
+		bool hasPredictedPivot = false;
+		float predictedPivotTime = 0.0f;
+		float motionConsumptionRatio = 1.0f;
+		bool movementBlocked = false;
+		bool urgentDirectionChange = false;
+		int requestedMoveState = 0;
+		int effectiveMoveState = 0;
+		bool directionalStateFallback = false;
+		bool facingTurnRequested = false;
+		int switches = 0;
+		std::vector<std::string> activeDatabases;
+		struct Candidate
+		{
+			std::string clipName;
+			float time = 0.0f;
+			float totalCost = 0.0f;
+			float trajectoryCost = 0.0f;
+			float poseCost = 0.0f;
+			float contactCost = 0.0f;
+			float biasCost = 0.0f;
+		};
+		std::vector<Candidate> topCandidates;
 	};
 
 	struct MotionMatchingDebugSnapshot
@@ -1571,6 +2188,9 @@ namespace Vans::EditorAPI
 		bool hasTarget = false;
 		float targetWeight = 0.0f;
 		float verticalOffset = 0.0f;
+		bool planted = false;
+		float plantWeight = 0.0f;
+		float horizontalLockError = 0.0f;
 	};
 
 	struct FootIKDebugSnapshot
@@ -1706,7 +2326,7 @@ namespace Vans::EditorAPI
 	{
 		bool available = false;
 
-		bool enableAutoExposure = true;
+		bool enableAutoExposure = false;
 		float exposureCompensation = 0.0f;
 		float minEV100 = -6.0f;
 		float maxEV100 = 16.0f;
@@ -1718,6 +2338,26 @@ namespace Vans::EditorAPI
 		float bloomKnee = 0.5f;
 		float bloomIntensity = 0.12f;
 		float bloomScatter = 0.7f;
+		float bloomClamp = 64.0f;
+		float bloomTintR = 1.0f;
+		float bloomTintG = 1.0f;
+		float bloomTintB = 1.0f;
+		int bloomShapeMode = 0;
+		float bloomShapeIntensity = 0.35f;
+		float bloomShapeBlend = 1.0f;
+		float bloomShapeAngleDeg = 0.0f;
+		float bloomAnamorphicStretch = 4.0f;
+		int bloomStreakCount = 4;
+		float bloomStreakLength = 24.0f;
+		float bloomStreakAttenuation = 0.72f;
+
+		bool enableDOF = false;
+		float focusDistance = 5.0f;
+		float focalLengthMm = 50.0f;
+		float fStop = 2.8f;
+		float sensorHeightMm = 24.0f;
+		float maxCoC = 16.0f;
+		bool dofBlurTransmissionBackground = true;
 
 		int toneMapperType = 1;
 		float whitePoint = 11.2f;

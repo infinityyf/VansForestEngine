@@ -1,5 +1,4 @@
 #include "VansTimelineDependencyBuilder.h"
-
 #include "VansTimelineValidator.h"
 
 #include <algorithm>
@@ -9,177 +8,102 @@ namespace Vans
 {
 namespace
 {
-std::string ReferenceIdentity(const VansTimelineAssetReference& reference)
+std::string DependencyKey(const VansTimelineDependency& dependency)
 {
-	if (!reference.assetGuid.empty()) return "guid:" + reference.assetGuid;
-	return "path:" + reference.assetPath;
+	return std::to_string(static_cast<int>(dependency.kind)) + "|" + dependency.stableType + "|" +
+		dependency.guid + "|" + dependency.path;
 }
 
-void AddReference(
-	std::vector<VansTimelineAssetReference>& references,
-	std::unordered_set<std::string>& identities,
-	const std::string& guid,
-	const std::string& path,
-	VansTimelineAssetReferenceKind kind,
-	const VansTimelineId& sourceObjectId)
+void SortUnique(std::vector<VansTimelineDependency>& dependencies)
 {
-	if (guid.empty() && path.empty()) return;
-	VansTimelineAssetReference reference{ guid, path, kind, sourceObjectId };
-	const std::string identity = ReferenceIdentity(reference);
-	if (identities.insert(identity).second)
-		references.push_back(std::move(reference));
-}
-
-VansTimelineAssetReferenceKind SectionReferenceKind(VansTimelineTrackType type)
-{
-	switch (type)
+	std::stable_sort(dependencies.begin(), dependencies.end(), [](const auto& left, const auto& right)
 	{
-	case VansTimelineTrackType::AnimationClip: return VansTimelineAssetReferenceKind::AnimationClip;
-	case VansTimelineTrackType::Audio: return VansTimelineAssetReferenceKind::Audio;
-	case VansTimelineTrackType::Media: return VansTimelineAssetReferenceKind::Video;
-	case VansTimelineTrackType::MaterialSwitch: return VansTimelineAssetReferenceKind::Material;
-	case VansTimelineTrackType::SubTimeline: return VansTimelineAssetReferenceKind::Timeline;
-	default: return VansTimelineAssetReferenceKind::Unknown;
-	}
-}
-
-void CollectKeyReferences(
-	const VansTimelineSection& section,
-	std::vector<VansTimelineAssetReference>& references,
-	std::unordered_set<std::string>& identities)
-{
-	for (const auto& channel : section.channels)
+		return DependencyKey(left) < DependencyKey(right);
+	});
+	dependencies.erase(std::unique(dependencies.begin(), dependencies.end(), [](const auto& left, const auto& right)
 	{
-		for (const auto& key : channel.keys)
-		{
-			if (const auto* object = std::get_if<VansTimelineObjectReference>(&key.value))
-				AddReference(references, identities, object->guid, object->path,
-					VansTimelineAssetReferenceKind::ObjectReference, key.id);
-		}
-	}
+		return DependencyKey(left) == DependencyKey(right);
+	}), dependencies.end());
+}
 }
 
-void CollectConfigReferences(
-	const VansTimelineTrackConfig& config,
-	const VansTimelineId& sourceObjectId,
-	std::vector<VansTimelineAssetReference>& references,
-	std::unordered_set<std::string>& identities)
-{
-	if (const auto* animation = std::get_if<VansTimelineAnimationTrackConfig>(&config))
-		AddReference(references, identities, animation->avatarMaskGuid, animation->avatarMaskPath,
-			VansTimelineAssetReferenceKind::BoneMask, sourceObjectId);
-	else if (const auto* postProcess = std::get_if<VansTimelineFadePostProcessTrackConfig>(&config))
-		AddReference(references, identities, postProcess->profileGuid, postProcess->profilePath,
-			VansTimelineAssetReferenceKind::PostProcessProfile, sourceObjectId);
-	else if (const auto* spawnable = std::get_if<VansTimelineSpawnableTrackConfig>(&config))
-		AddReference(references, identities, spawnable->spawnTemplateGuid, spawnable->spawnTemplatePath,
-			VansTimelineAssetReferenceKind::SpawnTemplate, sourceObjectId);
-	else if (const auto* sceneState = std::get_if<VansTimelineSceneStateTrackConfig>(&config))
-		AddReference(references, identities, sceneState->sceneGuid, sceneState->scenePath,
-			VansTimelineAssetReferenceKind::Scene, sourceObjectId);
-}
-
-bool ExpandTimeline(
-	const VansTimelineAsset& timeline,
-	const VansTimelineDependencyAssetLoader& loader,
-	std::unordered_set<std::string>& visited,
-	std::unordered_set<std::string>& active,
-	VansTimelineDependencyClosure& closure,
+std::vector<VansTimelineDependency> VansTimelineDependencyBuilder::CollectDirect(
+	const VansTimelineAsset& asset,
+	const VansTimelineTrackExtensionRegistry& extensions,
 	VansTimelineDiagnostics& diagnostics)
 {
-	const auto direct = VansTimelineDependencyBuilder::CollectDirect(timeline);
-	for (const auto& reference : direct)
+	std::vector<VansTimelineDependency> dependencies;
+	for (const VansTimelineTrack& track : asset.tracks)
 	{
-		const std::string referenceKey = ReferenceIdentity(reference);
-		if (std::none_of(closure.transitive.begin(), closure.transitive.end(), [&](const auto& existing)
-			{ return ReferenceIdentity(existing) == referenceKey; }))
-			closure.transitive.push_back(reference);
-		if (reference.kind != VansTimelineAssetReferenceKind::Timeline)
+		const VansTimelineTrackExtensionDescriptor* descriptor = extensions.Resolve(track.type.typeId);
+		if (!descriptor)
+		{
+			diagnostics.push_back({ VansTimelineDiagnosticSeverity::Error,
+				"Timeline.TrackExtensionMissing", {}, track.id, "type",
+				"Timeline dependency collection requires a registered extension" });
 			continue;
-		if (!loader)
-		{
-			diagnostics.push_back({ VansTimelineDiagnosticSeverity::Error, reference.sourceObjectId,
-				"assetGuid", "SubTimeline dependency resolution requires a Timeline asset loader" });
-			return false;
 		}
-		VansTimelineAsset child;
-		std::string identity;
-		std::string error;
-		if (!loader(reference, child, identity, error))
-		{
-			diagnostics.push_back({ VansTimelineDiagnosticSeverity::Error, reference.sourceObjectId,
-				"assetGuid", "Failed to load SubTimeline: " + error });
-			return false;
-		}
-		if (identity.empty()) identity = referenceKey;
-		if (active.find(identity) != active.end())
-		{
-			diagnostics.push_back({ VansTimelineDiagnosticSeverity::Error, reference.sourceObjectId,
-				"assetGuid", "SubTimeline dependency cycle detected at " + identity });
-			return false;
-		}
-		if (!visited.insert(identity).second)
-			continue;
-		const auto childDiagnostics = VansTimelineValidator::Validate(child);
-		diagnostics.insert(diagnostics.end(), childDiagnostics.begin(), childDiagnostics.end());
-		if (VansTimelineValidator::HasErrors(childDiagnostics))
-			return false;
-		active.insert(identity);
-		if (!ExpandTimeline(child, loader, visited, active, closure, diagnostics))
-			return false;
-		active.erase(identity);
+		if (!descriptor->sectionAssetKind.empty())
+			for (const VansTimelineSection& section : track.sections)
+				if (!section.assetGuid.empty() || !section.assetPath.empty())
+					dependencies.push_back({ VansTimelineDependencyKind::Asset,
+						descriptor->sectionAssetKind, section.assetGuid,
+						section.assetPath, section.id });
+		if (descriptor->collectDependencies) descriptor->collectDependencies(track, dependencies);
 	}
-	return true;
-}
-}
-
-std::vector<VansTimelineAssetReference> VansTimelineDependencyBuilder::CollectDirect(const VansTimelineAsset& asset)
-{
-	std::vector<VansTimelineAssetReference> references;
-	std::unordered_set<std::string> identities;
-	for (const auto& binding : asset.bindings)
-	{
-		if (binding.kind == VansTimelineBindingKind::Asset)
-			AddReference(references, identities, binding.assetGuid, binding.assetPath,
-				VansTimelineAssetReferenceKind::ObjectReference, binding.id);
-	}
-	for (const auto& track : asset.tracks)
-	{
-		CollectConfigReferences(track.config, track.id, references, identities);
-		for (const auto& section : track.sections)
-		{
-			AddReference(references, identities, section.assetGuid, section.assetPath,
-				SectionReferenceKind(track.type), section.id);
-			CollectConfigReferences(section.config, section.id, references, identities);
-			CollectKeyReferences(section, references, identities);
-		}
-	}
-	std::stable_sort(references.begin(), references.end(), [](const auto& left, const auto& right)
-	{
-		const std::string leftKey = ReferenceIdentity(left);
-		const std::string rightKey = ReferenceIdentity(right);
-		if (leftKey != rightKey) return leftKey < rightKey;
-		return static_cast<int>(left.kind) < static_cast<int>(right.kind);
-	});
-	return references;
+	SortUnique(dependencies);
+	return dependencies;
 }
 
 bool VansTimelineDependencyBuilder::BuildClosure(
 	const VansTimelineAsset& root,
+	const VansTimelineTrackExtensionRegistry& extensions,
 	const VansTimelineDependencyAssetLoader& loader,
 	VansTimelineDependencyClosure& closure,
 	VansTimelineDiagnostics& diagnostics)
 {
 	closure = {};
-	diagnostics.clear();
-	closure.direct = CollectDirect(root);
+	closure.direct = CollectDirect(root, extensions, diagnostics);
+	if (VansTimelineValidator::HasErrors(diagnostics)) return false;
+	std::vector<VansTimelineDependency> pending;
+	for (const auto& dependency : closure.direct)
+		if (dependency.kind == VansTimelineDependencyKind::Asset && dependency.stableType == "Timeline")
+			pending.push_back(dependency);
 	std::unordered_set<std::string> visited;
-	std::unordered_set<std::string> active{ "root" };
-	const bool result = ExpandTimeline(root, loader, visited, active, closure, diagnostics);
-	std::stable_sort(closure.transitive.begin(), closure.transitive.end(), [](const auto& left, const auto& right)
+	while (!pending.empty())
 	{
-		return ReferenceIdentity(left) < ReferenceIdentity(right);
-	});
-	return result && !VansTimelineValidator::HasErrors(diagnostics);
+		VansTimelineDependency dependency = std::move(pending.back());
+		pending.pop_back();
+		const std::string fallbackIdentity = !dependency.guid.empty() ? dependency.guid : dependency.path;
+		if (fallbackIdentity.empty() || !visited.insert(fallbackIdentity).second) continue;
+		if (!loader)
+		{
+			diagnostics.push_back({ VansTimelineDiagnosticSeverity::Error,
+				"Timeline.DependencyLoaderMissing", {}, dependency.sourceObjectId, "dependency",
+				"Nested Timeline dependency loader is not configured" });
+			return false;
+		}
+		VansTimelineAsset nested; std::string identity; std::string error;
+		if (!loader(dependency, nested, identity, error))
+		{
+			diagnostics.push_back({ VansTimelineDiagnosticSeverity::Error,
+				"Timeline.DependencyLoadFailed", {}, dependency.sourceObjectId, "dependency",
+				error.empty() ? "Timeline dependency failed to load" : error });
+			return false;
+		}
+		if (!identity.empty() && identity != fallbackIdentity)
+		{
+			if (!visited.insert(identity).second) continue;
+		}
+		auto nestedDependencies = CollectDirect(nested, extensions, diagnostics);
+		for (auto& child : nestedDependencies)
+		{
+			closure.transitive.push_back(child);
+			if (child.kind == VansTimelineDependencyKind::Asset && child.stableType == "Timeline")
+				pending.push_back(child);
+		}
+	}
+	SortUnique(closure.transitive);
+	return !VansTimelineValidator::HasErrors(diagnostics);
 }
 }

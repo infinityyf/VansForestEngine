@@ -9,6 +9,7 @@
 #include "../TimelineRuntime/VansTimelineComponent.h"
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -37,6 +38,8 @@ class VansPhysicsVehicle;
 
 namespace Vans
 {
+class VansActionHost;
+
 enum VansRuntimeComponentTypeId : std::uint16_t
 {
 	VansRuntimeComponentType_Render = 1,
@@ -60,6 +63,7 @@ enum VansRuntimeComponentTypeId : std::uint16_t
 	VansRuntimeComponentType_Script = 19,
 	VansRuntimeComponentType_Transform = 20,
 	VansRuntimeComponentType_Timeline = 21,
+	VansRuntimeComponentType_ActionHost = 22,
 };
 
 struct VansRuntimeTransformComponent
@@ -213,6 +217,11 @@ struct VansRuntimeCameraComponent
 	VansGraphics::VansCamera* camera = nullptr;
 };
 
+struct VansRuntimeActionHostComponent
+{
+	std::shared_ptr<VansActionHost> host;
+};
+
 enum class VansRuntimeLightKind : std::uint8_t
 {
 	Directional,
@@ -253,6 +262,7 @@ inline std::uint16_t VansRuntimeComponentTypeIdForKey(const std::string& key)
 	if (key == "script") return VansRuntimeComponentType_Script;
 	if (key == "transform") return VansRuntimeComponentType_Transform;
 	if (key == "timeline") return VansRuntimeComponentType_Timeline;
+	if (key == "action_host" || key == "gaf") return VansRuntimeComponentType_ActionHost;
 	return VansInvalidComponentTypeId;
 }
 }

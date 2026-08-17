@@ -3,6 +3,7 @@
 #include "../Configration/VansConfigration.h"
 #include "../AssetCore/VansAssetDatabase.h"
 #include "../AssetCore/VansBuiltInAssetCatalog.h"
+#include "../GameplayActionSchema/VansGAFProjectConfiguration.h"
 #include "Storage/VansProjectScaffoldStorage.h"
 
 #include <filesystem>
@@ -72,6 +73,16 @@ bool VansProjectManager::CreateProject(const std::string& folderPath,
 	if (!m_ProjectSettings.SaveToProjectFiles(root, m_Config))
 	{
 		VANS_LOG_ERROR("[ProjectManager] Failed to write project settings files");
+		return false;
+	}
+	std::string gafConfigurationError;
+	if (!VansGAFProjectConfiguration::EnsureProjectFiles(
+		fs::path(root) / "ProjectSettings",
+		fs::path(m_PathResolver.GetEngineRoot()) / "EngineAssets/GAF/ProjectSettings",
+		gafConfigurationError))
+	{
+		VANS_LOG_ERROR("[ProjectManager] Failed to initialize GAF project settings: "
+			<< gafConfigurationError);
 		return false;
 	}
 

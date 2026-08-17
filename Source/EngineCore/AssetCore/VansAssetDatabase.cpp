@@ -207,7 +207,13 @@ bool VansAssetDatabase::RegisterOrRefresh(
     record.sourcePath = normalized;
     record.metaPath = metaPath;
 	record.authoringPath = type == VansAssetType::Material || type == VansAssetType::Shader ||
-		type == VansAssetType::Timeline
+		type == VansAssetType::Timeline || type == VansAssetType::ActionDefinition ||
+		type == VansAssetType::ActionSet || type == VansAssetType::GameplayEffect ||
+		type == VansAssetType::GameplayCue || type == VansAssetType::AttributeSet ||
+		type == VansAssetType::TargetingPolicy || type == VansAssetType::GameplayTagTree ||
+		type == VansAssetType::PayloadSchema || type == VansAssetType::ActionGraph ||
+		type == VansAssetType::CameraRigProfile || type == VansAssetType::CameraShakeProfile ||
+		type == VansAssetType::GAFEditorLayout
 		? normalized
 		: std::filesystem::path{};
     record.artifactPath = cookedArtifactPath;
@@ -291,8 +297,21 @@ VansAssetType VansAssetDatabase::Classify(const std::filesystem::path& sourcePat
     if (extension == L".vclip") return VansAssetType::AnimationClip;
     if (extension == L".vanimator") return VansAssetType::AnimatorController;
 	if (extension == L".vbonemask") return VansAssetType::BoneMask;
-	if (extension == L".vtimeline") return VansAssetType::Timeline;
+    if (extension == L".vtimeline") return VansAssetType::Timeline;
+	if (extension == L".vaction") return VansAssetType::ActionDefinition;
+	if (extension == L".vactionset") return VansAssetType::ActionSet;
+	if (extension == L".veffect") return VansAssetType::GameplayEffect;
+	if (extension == L".vcue") return VansAssetType::GameplayCue;
+	if (extension == L".vattributeset") return VansAssetType::AttributeSet;
+	if (extension == L".vtargeting") return VansAssetType::TargetingPolicy;
+	if (extension == L".vtagtree") return VansAssetType::GameplayTagTree;
+	if (extension == L".vpayloadschema") return VansAssetType::PayloadSchema;
+	if (extension == L".vactiongraph") return VansAssetType::ActionGraph;
+	if (extension == L".vcamerarig") return VansAssetType::CameraRigProfile;
+	if (extension == L".vcamerashake") return VansAssetType::CameraShakeProfile;
+	if (extension == L".gafeditorlayout") return VansAssetType::GAFEditorLayout;
     if (extension == L".clothprofile") return VansAssetType::ClothProfile;
+    if (extension == L".skinprofile") return VansAssetType::SkinProfile;
     if (extension == L".pprofile") return VansAssetType::PostProcessProfile;
     if (extension == L".ragdoll") return VansAssetType::RagdollProfile;
     if (extension == L".vreverb") return VansAssetType::AudioReverbPreset;
@@ -316,8 +335,21 @@ std::string VansAssetDatabase::ImporterFor(VansAssetType type)
     case VansAssetType::AnimationClip: return "AnimationClipImporter";
     case VansAssetType::AnimatorController: return "AnimatorControllerImporter";
 	case VansAssetType::BoneMask: return "BoneMaskImporter";
-	case VansAssetType::Timeline: return "TimelineImporter";
+    case VansAssetType::Timeline: return "TimelineImporter";
+	case VansAssetType::ActionDefinition: return "GameplayActionImporter";
+	case VansAssetType::ActionSet: return "GameplayActionSetImporter";
+	case VansAssetType::GameplayEffect: return "GameplayEffectImporter";
+	case VansAssetType::GameplayCue: return "GameplayCueImporter";
+	case VansAssetType::AttributeSet: return "GameplayAttributeSetImporter";
+	case VansAssetType::TargetingPolicy: return "GameplayTargetingImporter";
+	case VansAssetType::GameplayTagTree: return "GameplayTagTreeImporter";
+	case VansAssetType::PayloadSchema: return "GameplayPayloadSchemaImporter";
+	case VansAssetType::ActionGraph: return "GameplayActionGraphImporter";
+	case VansAssetType::CameraRigProfile: return "CameraRigProfileImporter";
+	case VansAssetType::CameraShakeProfile: return "CameraShakeProfileImporter";
+	case VansAssetType::GAFEditorLayout: return "GAFEditorLayoutImporter";
     case VansAssetType::ClothProfile: return "ClothProfileImporter";
+    case VansAssetType::SkinProfile: return "SkinProfileImporter";
     case VansAssetType::PostProcessProfile: return "PostProcessProfileImporter";
     case VansAssetType::RagdollProfile: return "RagdollProfileImporter";
     case VansAssetType::AudioReverbPreset: return "AudioReverbPresetImporter";

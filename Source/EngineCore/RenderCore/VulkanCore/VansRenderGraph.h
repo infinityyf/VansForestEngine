@@ -797,25 +797,41 @@ namespace VansGraphics
 		uint32_t swapchainImageIndex = 0;
 
 		VansVKCommandBuffer* graphicsCmd = nullptr;
+		VansVKCommandBuffer* graphicsPreCmd = nullptr;
+		VansVKCommandBuffer* graphicsScreenCmd = nullptr;
 		VansVKCommandBuffer* shadowCmd = nullptr;
 		VansVKCommandBuffer* gbufferCmd = nullptr;
 		VansVKCommandBuffer* asyncComputeCmd = nullptr;
+		VansVKCommandBuffer* asyncCloudCmd = nullptr;
+		VansVKCommandBuffer* asyncGICmd = nullptr;
 
 		VkSemaphore imageAcquiredSemaphore = VK_NULL_HANDLE;
 		VkSemaphore renderFinishedSemaphore = VK_NULL_HANDLE;
-		VkSemaphore shadowFinishedSemaphore = VK_NULL_HANDLE;
-		VkSemaphore gbufferFinishedSemaphore = VK_NULL_HANDLE;
-		VkSemaphore asyncComputeFinishedSemaphore = VK_NULL_HANDLE;
 
 		VkFence graphicsFence = VK_NULL_HANDLE;
+		VkFence graphicsPreFence = VK_NULL_HANDLE;
+		VkFence graphicsScreenFence = VK_NULL_HANDLE;
 		VkFence shadowFence = VK_NULL_HANDLE;
 		VkFence gbufferFence = VK_NULL_HANDLE;
 		VkFence asyncComputeFence = VK_NULL_HANDLE;
+		VkFence asyncCloudFence = VK_NULL_HANDLE;
+		VkFence asyncGIFence = VK_NULL_HANDLE;
 
 		bool frameSubmitSucceeded = true;
+		bool graphicsPreRecorded = false;
+		bool graphicsScreenRecorded = false;
+		bool shadowRecorded = false;
+		bool gbufferRecorded = false;
+		bool asyncComputeRecorded = false;
+		bool asyncCloudRecorded = false;
+		bool asyncGIRecorded = false;
+		bool graphicsPreSubmitted = false;
+		bool graphicsScreenSubmitted = false;
 		bool shadowSubmitted = false;
 		bool gbufferSubmitted = false;
 		bool asyncComputeSubmitted = false;
+		bool asyncCloudSubmitted = false;
+		bool asyncGISubmitted = false;
 		uint64_t lastDeferredDeleteFlushCount = 0;
 		uint64_t pendingDeferredDeleteCount = 0;
 

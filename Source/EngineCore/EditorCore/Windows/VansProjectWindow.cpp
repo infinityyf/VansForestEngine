@@ -2,6 +2,8 @@
 #include "../VansEditorWindow.h"
 #include "../VansEditorObjectReference.h"
 #include "../../SceneCore/VansSceneDocumentLoader.h"
+#include "../../AssetCore/VansAssetDatabase.h"
+#include "../../GameplayActionSchema/VansGameplayAssetSchema.h"
 #include "../../Util/VansLog.h"
 #include "../VansEditorSelection.h"
 #include "imgui.h"
@@ -112,6 +114,9 @@ void VansGraphics::VansProjectWindow::ProcessAssetCreation(
     if (request == Vans::EditorAPI::ProjectAssetCreationKind::AnimatorController ||
         request == Vans::EditorAPI::ProjectAssetCreationKind::BoneMask)
         VansEditorWindow::OpenAnimationAsset(createdPath.string());
+	else if (Vans::VansGameplayAssetSchemaRegistry::IsGameplayAssetType(
+		Vans::VansAssetDatabase::Classify(createdPath)))
+		VansEditorWindow::OpenAssetForAuthoring(createdPath.string());
     VANS_LOG("[Asset] Created " << createdPath.string());
 }
 
@@ -283,7 +288,10 @@ void VansGraphics::VansProjectWindow::DrawProjectContents(Vans::EditorAPI::IEngi
                         if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
                         {
 							const std::string extension = entry.path().extension().string();
-							if (extension == ".vanimator" || extension == ".vbonemask" || extension == ".vtimeline")
+							const bool gameplayAsset = Vans::VansGameplayAssetSchemaRegistry::IsGameplayAssetType(
+								Vans::VansAssetDatabase::Classify(entry.path()));
+							if (extension == ".vanimator" || extension == ".vbonemask" ||
+								extension == ".vtimeline" || gameplayAsset)
 							{
 								VansEditorWindow::OpenAssetForAuthoring(entry.path().string());
 							}

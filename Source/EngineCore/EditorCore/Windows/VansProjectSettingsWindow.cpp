@@ -4,6 +4,7 @@
 
 #include "imgui.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstdint>
@@ -46,6 +47,230 @@ namespace
 		else
 			ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.40f, 1.0f), "%s", result.message.c_str());
 	}
+
+	bool DrawStringList(const char* id, std::vector<std::string>& values, const char* newValue)
+	{
+		bool changed = false;
+		ImGui::PushID(id);
+		for (std::size_t index = 0; index < values.size();)
+		{
+			ImGui::PushID(static_cast<int>(index));
+			char buffer[512]{};
+			std::snprintf(buffer, sizeof(buffer), "%s", values[index].c_str());
+			ImGui::SetNextItemWidth(-96.0f);
+			if (ImGui::InputText("##value", buffer, sizeof(buffer)))
+			{
+				values[index] = buffer;
+				changed = true;
+			}
+			ImGui::SameLine();
+			if (ImGui::SmallButton("Up") && index > 0)
+			{
+				std::swap(values[index], values[index - 1]);
+				changed = true;
+			}
+			ImGui::SameLine();
+			if (ImGui::SmallButton("X"))
+			{
+				values.erase(values.begin() + static_cast<std::ptrdiff_t>(index));
+				changed = true;
+				ImGui::PopID();
+				continue;
+			}
+			ImGui::PopID();
+			++index;
+		}
+		if (ImGui::SmallButton("+"))
+		{
+			values.emplace_back(newValue);
+			changed = true;
+		}
+		ImGui::PopID();
+		return changed;
+	}
+}
+
+void VansProjectSettingsWindow::SyncTemplateBuffer()
+{
+	if (m_GAFConfiguration.templates.empty() ||
+		m_GAFTemplateIndex >= m_GAFConfiguration.templates.size() ||
+		m_GAFTemplateBuffer.empty()) return;
+	auto& document = m_GAFConfiguration.templates[m_GAFTemplateIndex].document;
+	document.kind = Vans::EditorAPI::GAFEditorValueKind::Json;
+	document.canonicalJson = m_GAFTemplateBuffer.data();
+}
+
+void VansProjectSettingsWindow::SelectTemplate(std::size_t index)
+{
+	SyncTemplateBuffer();
+	if (m_GAFConfiguration.templates.empty())
+	{
+		m_GAFTemplateIndex = 0;
+		m_GAFTemplateBuffer.clear();
+		return;
+	}
+	m_GAFTemplateIndex = (std::min)(index, m_GAFConfiguration.templates.size() - 1);
+	const std::string& json = m_GAFConfiguration.templates[m_GAFTemplateIndex].document.canonicalJson;
+	const std::size_t capacity = (std::max<std::size_t>)(262144, json.size() + 4096);
+	m_GAFTemplateBuffer.assign(capacity, '\0');
+	std::memcpy(m_GAFTemplateBuffer.data(), json.data(), (std::min)(json.size(), capacity - 1));
+}
+
+void VansProjectSettingsWindow::ReloadGAF(
+	Vans::EditorAPI::IEngineEditorAPI& editorAPI,
+	const std::string& projectRoot)
+{
+	m_GAFProjectRoot = projectRoot;
+	m_GAFConfiguration = editorAPI.GetGAFProjectConfiguration();
+	m_GAFResult = {};
+	m_GAFTemplateIndex = 0;
+	m_GAFTemplateBuffer.clear();
+	SelectTemplate(0);
+}
+
+void VansProjectSettingsWindow::DrawGAFSettings(
+	Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+{
+	if (!m_GAFConfiguration.available)
+	{
+		ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.40f, 1.0f), "%s",
+			m_GAFConfiguration.message.c_str());
+		if (ImGui::Button("Reload")) ReloadGAF(editorAPI, m_GAFProjectRoot);
+		return;
+	}
+	if (ImGui::Button("Save GAF Configuration"))
+	{
+		SyncTemplateBuffer();
+		m_GAFResult = editorAPI.ApplyGAFProjectConfiguration(m_GAFConfiguration);
+		if (m_GAFResult.success)
+		{
+			m_GAFConfiguration = m_GAFResult.configuration;
+			m_GAFTemplateBuffer.clear();
+			SelectTemplate((std::min)(m_GAFTemplateIndex,
+				m_GAFConfiguration.templates.empty() ? std::size_t{ 0 } :
+				m_GAFConfiguration.templates.size() - 1));
+		}
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Reload GAF Configuration")) ReloadGAF(editorAPI, m_GAFProjectRoot);
+	if (!m_GAFResult.message.empty())
+		ImGui::TextColored(m_GAFResult.success
+			? ImVec4(0.45f, 0.85f, 0.55f, 1.0f)
+			: ImVec4(0.95f, 0.45f, 0.40f, 1.0f), "%s", m_GAFResult.message.c_str());
+	ImGui::TextDisabled("%s", m_GAFConfiguration.settingsDirectory.c_str());
+	ImGui::Separator();
+
+	if (!ImGui::BeginTabBar("GAFProjectConfigurationTabs")) return;
+	if (ImGui::BeginTabItem("Runtime"))
+	{
+		if (ImGui::BeginCombo("Network Mode", m_GAFConfiguration.networkMode.c_str()))
+		{
+			for (const char* mode : { "Disabled", "Loopback", "ExternalTransport" })
+				if (ImGui::Selectable(mode, m_GAFConfiguration.networkMode == mode))
+					m_GAFConfiguration.networkMode = mode;
+			ImGui::EndCombo();
+		}
+		ImGui::BeginDisabled(m_GAFConfiguration.networkMode == "Disabled");
+		ImGui::Checkbox("Prediction Enabled", &m_GAFConfiguration.predictionEnabled);
+		ImGui::Checkbox("Require Rollback Plan", &m_GAFConfiguration.requireRollbackPlan);
+		ImGui::EndDisabled();
+		ImGui::BeginDisabled(m_GAFConfiguration.networkMode != "ExternalTransport");
+		ImGui::Checkbox("Fail Without External Transport", &m_GAFConfiguration.failWithoutTransport);
+		ImGui::EndDisabled();
+		ImGui::Checkbox("Deterministic Cook", &m_GAFConfiguration.deterministicCook);
+		ImGui::Checkbox("Strip Editor Metadata", &m_GAFConfiguration.stripEditorMetadata);
+		ImGui::Checkbox("Treat Cook Warnings As Errors", &m_GAFConfiguration.treatCookWarningsAsErrors);
+		char directory[512]{};
+		std::snprintf(directory, sizeof(directory), "%s", m_GAFConfiguration.templateDirectory.c_str());
+		ImGui::SetNextItemWidth(-1.0f);
+		if (ImGui::InputText("Template Directory", directory, sizeof(directory)))
+			m_GAFConfiguration.templateDirectory = directory;
+		ImGui::SeparatorText("Performance Budgets");
+		const auto budget = [](const char* label, std::uint32_t& value)
+		{
+			const std::uint32_t step = 1;
+			ImGui::SetNextItemWidth(180.0f);
+			if (ImGui::InputScalar(label, ImGuiDataType_U32, &value, &step) && value == 0) value = 1;
+		};
+		budget("Active Actions Per Host", m_GAFConfiguration.maximumActiveActionsPerHost);
+		budget("Tasks Per Action", m_GAFConfiguration.maximumTasksPerAction);
+		budget("Graph Transitions Per Tick", m_GAFConfiguration.maximumGraphTransitionsPerTick);
+		budget("Effects Per Host", m_GAFConfiguration.maximumEffectsPerHost);
+		budget("Payload Bytes", m_GAFConfiguration.maximumPayloadBytes);
+		ImGui::SeparatorText("Default Tag Roots");
+		DrawStringList("TagRoots", m_GAFConfiguration.defaultTagRoots, "Gameplay");
+		ImGui::EndTabItem();
+	}
+	if (ImGui::BeginTabItem("Registries"))
+	{
+		ImGui::SeparatorText("Node Types");
+		DrawStringList("NodeTypes", m_GAFConfiguration.allowedNodeTypes, "Action.Graph.NewNode");
+		ImGui::SeparatorText("Services");
+		DrawStringList("Services", m_GAFConfiguration.allowedServices, "Service.NewService");
+		ImGui::SeparatorText("Handlers");
+		DrawStringList("Handlers", m_GAFConfiguration.allowedHandlers, "Handler.NewHandler");
+		ImGui::SeparatorText("Bridges");
+		DrawStringList("Bridges", m_GAFConfiguration.bridgeAllowlist, "Bridge.NewBridge");
+		ImGui::EndTabItem();
+	}
+	if (ImGui::BeginTabItem("Validation"))
+	{
+		ImGui::SeparatorText("Severity Overrides");
+		for (std::size_t index = 0; index < m_GAFConfiguration.severityOverrides.size();)
+		{
+			auto& entry = m_GAFConfiguration.severityOverrides[index];
+			ImGui::PushID(static_cast<int>(index));
+			char code[256]{};
+			std::snprintf(code, sizeof(code), "%s", entry.name.c_str());
+			ImGui::SetNextItemWidth(260.0f);
+			if (ImGui::InputText("##code", code, sizeof(code))) entry.name = code;
+			ImGui::SameLine();
+			if (ImGui::BeginCombo("##severity", entry.value.c_str()))
+			{
+				for (const char* severity : { "Info", "Warning", "Error", "Fatal" })
+					if (ImGui::Selectable(severity, entry.value == severity)) entry.value = severity;
+				ImGui::EndCombo();
+			}
+			ImGui::SameLine();
+			if (ImGui::SmallButton("X"))
+			{
+				m_GAFConfiguration.severityOverrides.erase(
+					m_GAFConfiguration.severityOverrides.begin() + static_cast<std::ptrdiff_t>(index));
+				ImGui::PopID();
+				continue;
+			}
+			ImGui::PopID();
+			++index;
+		}
+		if (ImGui::SmallButton("+##Severity"))
+			m_GAFConfiguration.severityOverrides.push_back({ "GAF-NEW-RULE", "Warning" });
+		ImGui::SeparatorText("Save Blocking Codes");
+		DrawStringList("SaveCodes", m_GAFConfiguration.saveBlockingCodes, "GAF-NEW-SAVE-RULE");
+		ImGui::SeparatorText("Cook Blocking Codes");
+		DrawStringList("CookCodes", m_GAFConfiguration.cookBlockingCodes, "GAF-NEW-COOK-RULE");
+		ImGui::SeparatorText("CI Blocking Codes");
+		DrawStringList("CICodes", m_GAFConfiguration.ciBlockingCodes, "GAF-NEW-CI-RULE");
+		ImGui::EndTabItem();
+	}
+	if (ImGui::BeginTabItem("Templates"))
+	{
+		if (m_GAFConfiguration.templates.empty()) ImGui::TextDisabled("No templates");
+		else
+		{
+			const char* preview = m_GAFConfiguration.templates[m_GAFTemplateIndex].assetKind.c_str();
+			if (ImGui::BeginCombo("Template", preview))
+			{
+				for (std::size_t index = 0; index < m_GAFConfiguration.templates.size(); ++index)
+					if (ImGui::Selectable(m_GAFConfiguration.templates[index].assetKind.c_str(),
+						index == m_GAFTemplateIndex)) SelectTemplate(index);
+				ImGui::EndCombo();
+			}
+			ImGui::InputTextMultiline("##GAFTemplateJson", m_GAFTemplateBuffer.data(),
+				m_GAFTemplateBuffer.size(), ImVec2(-1.0f, 420.0f), ImGuiInputTextFlags_AllowTabInput);
+		}
+		ImGui::EndTabItem();
+	}
+	ImGui::EndTabBar();
 }
 
 void VansProjectSettingsWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
@@ -91,6 +316,7 @@ void VansProjectSettingsWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 		if (s_FixedTimeStep <= 0.0f)
 			s_FixedTimeStep = 1.0f / 60.0f;
 		s_LastEditResult = {};
+		ReloadGAF(editorAPI, snapshot.projectRootPath);
 	}
 
 	if (ImGui::BeginTabBar("ProjectSettingsTabs"))
@@ -158,7 +384,7 @@ void VansProjectSettingsWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 		if (ImGui::BeginTabItem("Rendering"))
 		{
 			Vans::EditorAPI::FSRSettingsSnapshot fsr = editorAPI.GetFSRSettings();
-			const char* fsrModeNames[] = { "Viewport", "Native AA", "Quality 1.5x", "Performance 2x" };
+			const char* fsrModeNames[] = { "Viewport", "Native AA", "Quality 1.5x", "Balanced 1.7x", "Performance 2x" };
 			int fsrMode = static_cast<int>(fsr.mode);
 			ImGui::SetNextItemWidth(180.0f);
 			if (ImGui::Combo("FSR Mode", &fsrMode, fsrModeNames, IM_ARRAYSIZE(fsrModeNames)))
@@ -169,12 +395,33 @@ void VansProjectSettingsWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 			ImGui::SetNextItemWidth(180.0f);
 			if (ImGui::SliderFloat("Sharpness", &fsr.sharpness, 0.0f, 1.0f, "%.2f"))
 				editorAPI.SetFSRSettings(fsr.mode, fsr.sharpness);
+			bool debugView = fsr.debugViewEnabled;
+			if (ImGui::Checkbox("FSR SDK Debug View", &debugView))
+				editorAPI.SetFSRDebugViewEnabled(debugView);
 			ImGui::TextDisabled("%ux%u -> %ux%u  bias %.2f",
 				fsr.renderWidth,
 				fsr.renderHeight,
 				fsr.outputWidth,
 				fsr.outputHeight,
 				fsr.mipBias);
+			ImGui::TextDisabled("SDK: %s, jitter phases %d, dispatch ok/fail %llu/%llu, pending reset 0x%X",
+				fsr.contextReady ? "ready" : "not ready",
+				fsr.jitterPhaseCount,
+				static_cast<unsigned long long>(fsr.successfulDispatchCount),
+				static_cast<unsigned long long>(fsr.failedDispatchCount),
+				fsr.pendingResetReasons);
+			ImGui::TextDisabled("Masks %llu, GPU %.2f MiB (aliasable %.2f MiB)",
+				static_cast<unsigned long long>(fsr.generatedReactiveMaskCount),
+				static_cast<double>(fsr.gpuMemoryUsageBytes) / (1024.0 * 1024.0),
+				static_cast<double>(fsr.gpuMemoryAliasableBytes) / (1024.0 * 1024.0));
+			ImGui::TextDisabled("Codes: create %u, query %u, dispatch %u, reactive %u",
+				fsr.lastCreateReturnCode,
+				fsr.lastQueryReturnCode,
+				fsr.lastDispatchReturnCode,
+				fsr.lastReactiveReturnCode);
+			if (!fsr.lastError.empty())
+				ImGui::TextWrapped("Last FSR error: %s (code %u)",
+					fsr.lastError.c_str(), fsr.lastDispatchReturnCode);
 
 			ImGui::Separator();
 			Vans::EditorAPI::CommandRecordingSettingsSnapshot commandRecording =
@@ -202,6 +449,20 @@ void VansProjectSettingsWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 				editorAPI.SetCommandRecordingSettings(commandRecording);
 			}
 			ImGui::EndDisabled();
+			bool asyncCompute = commandRecording.asyncComputeRequested;
+			if (ImGui::Checkbox("Async Compute", &asyncCompute))
+			{
+				commandRecording.asyncComputeRequested = asyncCompute;
+				editorAPI.SetCommandRecordingSettings(commandRecording);
+			}
+			ImGui::TextDisabled(
+				commandRecording.asyncComputeEnabled
+					? "独立 Compute Queue 已启用，GI 等计算任务将自动并行。"
+					: (commandRecording.hasDedicatedAsyncComputeQueue
+						? "设备支持独立 Compute Queue，当前未启用。"
+						: (commandRecording.asyncComputeRequested
+							? "设备没有独立 Compute Queue，已自动使用兼容渲染路径。"
+							: "设备没有独立 Compute Queue。")));
 			ImGui::TextDisabled("关闭 Frame Context Ring 时会回到旧的 CPU 等待提交路径。");
 			ImGui::EndTabItem();
 		}
@@ -237,6 +498,12 @@ void VansProjectSettingsWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 				}
 				ImGui::EndTable();
 			}
+			ImGui::EndTabItem();
+		}
+
+		if (ImGui::BeginTabItem("GAF"))
+		{
+			DrawGAFSettings(editorAPI);
 			ImGui::EndTabItem();
 		}
 

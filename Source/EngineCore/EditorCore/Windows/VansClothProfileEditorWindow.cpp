@@ -239,7 +239,7 @@ namespace VansGraphics
 
 
 
-            title += " 鈥?" + fs::path(m_CurrentProfilePath).filename().string();
+            title += " - " + fs::path(m_CurrentProfilePath).filename().string();
 
         }
 
@@ -287,7 +287,7 @@ namespace VansGraphics
 
 
 
-            if (ImGui::Button("鍒涘缓", ImVec2(100, 0)))
+            if (ImGui::Button("创建", ImVec2(100, 0)))
 
             {
 
@@ -317,7 +317,7 @@ namespace VansGraphics
 
             ImGui::SameLine();
 
-            if (ImGui::Button("鍙栨秷", ImVec2(100, 0)))
+            if (ImGui::Button("取消", ImVec2(100, 0)))
 
                 ImGui::CloseCurrentPopup();
 
@@ -480,7 +480,7 @@ namespace VansGraphics
 
         {
 
-            VANS_LOG_WARN("[VansClothProfileEditor] ?? Profile ??: " << profilePath << " (" << loadError << ")");
+            VANS_LOG_WARN("[VansClothProfileEditor] Profile load failed: " << profilePath << " (" << loadError << ")");
 
         }
 
@@ -814,7 +814,7 @@ namespace VansGraphics
 
     // =========================================================================
 
-    // DrawParametersPanel 鈥?鍙充晶鐗╃悊鍙傛暟 Inspector
+    // Draw the physical-parameter inspector on the right.
 
     // =========================================================================
 
@@ -824,19 +824,19 @@ namespace VansGraphics
 
     {
 
-        if (!ImGui::CollapsingHeader("鐗╃悊鍙傛暟", ImGuiTreeNodeFlags_DefaultOpen))
+        if (!ImGui::CollapsingHeader("物理参数", ImGuiTreeNodeFlags_DefaultOpen))
 
             return;
 
 
 
-        if (ImGui::SliderFloat("鍒氬害 (Stiffness)", &m_Profile->m_Stiffness, 0.0f, 1.0f))
+        if (ImGui::SliderFloat("刚度 (Stiffness)", &m_Profile->m_Stiffness, 0.0f, 1.0f))
 
             m_IsDirty = true;
 
 
 
-        if (ImGui::SliderFloat("?? (Damping)", &m_Profile->m_Damping, 0.0f, 1.0f))
+        if (ImGui::SliderFloat("阻尼 (Damping)", &m_Profile->m_Damping, 0.0f, 1.0f))
 
             m_IsDirty = true;
 
@@ -882,7 +882,7 @@ namespace VansGraphics
 
         int pinnedCount = static_cast<int>(m_Profile->m_PinnedLocalPositions.size());
 
-        std::string header = "鍥哄畾椤剁偣 (" + std::to_string(pinnedCount) + ")";
+        std::string header = "固定顶点 (" + std::to_string(pinnedCount) + ")";
 
 
 
@@ -1016,7 +1016,7 @@ namespace VansGraphics
 
     // =========================================================================
 
-    // HandleOrbitalCamera 鈥?杞ㄩ亾鐩告満鎺у埗
+    // Handle orbital-camera controls.
 
     // =========================================================================
 
@@ -1273,7 +1273,7 @@ namespace VansGraphics
 
             m_IsDirty = false;
 
-            VANS_LOG("[VansClothProfileEditor] Profile ???: " << m_CurrentProfilePath);
+            VANS_LOG("[VansClothProfileEditor] Profile saved: " << m_CurrentProfilePath);
 
         }
 
@@ -1281,7 +1281,7 @@ namespace VansGraphics
 
         {
 
-            VANS_LOG_ERROR("[VansClothProfileEditor] Profile ????: " << m_CurrentProfilePath << " (" << saveError << ")");
+            VANS_LOG_ERROR("[VansClothProfileEditor] Profile save failed: " << m_CurrentProfilePath << " (" << saveError << ")");
 
         }
 
@@ -1411,7 +1411,7 @@ namespace VansGraphics
 
             ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f),
 
-                "閿欒: %s", m_SkeletonLoadError.c_str());
+                "错误: %s", m_SkeletonLoadError.c_str());
 
         }
 

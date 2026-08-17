@@ -296,6 +296,14 @@ void VansRuntimeWorld::FlushCommands()
 				command.componentStableGuid,
 				command.boolValue);
 			break;
+		case VansEntityCommandType::AddActionHostComponent:
+			AddComponent(
+				command.entity,
+				VansRuntimeComponentType_ActionHost,
+				command.actionHostComponent,
+				command.componentStableGuid,
+				command.boolValue);
+			break;
 		case VansEntityCommandType::SetEntityActive:
 			SetEntityActive(command.entity, command.boolValue);
 			break;

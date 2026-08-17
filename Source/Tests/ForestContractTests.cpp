@@ -1,5 +1,9 @@
 #include "../EngineCore/AssetCore/VansAssetDatabase.h"
 #include "../EngineCore/AssetCore/VansAssetResolver.h"
+#include "../EngineCore/AssetCore/VansMaterialAuthoringAsset.h"
+#include "../EngineCore/AssetCore/VansSkinProfile.h"
+#include "../EngineCore/AssetCore/Serialization/VansSerializedValueAccess.h"
+#include "../EngineCore/AssetCore/Serialization/VansSkinProfileJsonCodec.h"
 #include "../EngineCore/AudioCore/VansAudioAttenuation.h"
 #include "../EngineCore/AudioCore/VansAudioBus.h"
 #include "../EngineCore/AudioCore/VansAudioBusSnapshotAsset.h"
@@ -17,11 +21,20 @@
 #include "../EngineCore/AudioCore/VansAudioPreviewPlayer.h"
 #include "../EngineCore/AudioCore/VansAudioVirtualization.h"
 #include "../EngineCore/AudioCore/VansAudioWaveform.h"
+#include "../EngineCore/CameraCore/VansCameraCore.h"
 #include "../EngineCore/RenderCore/VansPostProcessProfile.h"
+#include "../EngineCore/RenderCore/VansMaterial.h"
+#include "../EngineCore/RenderCore/VansCameraControlArbiter.h"
+#include "../EngineCore/RenderCore/Timeline/VansVirtualCameraParameterStore.h"
 #include "../EngineCore/RenderCore/GICore/VansGISettings.h"
 #include "../EngineCore/RenderCore/VulkanCore/VansVideoThumbnail.h"
+#include "../EngineCore/RenderCore/VulkanCore/VansFrameSubmitOrchestrator.h"
+#include "../EngineCore/RenderCore/VulkanCore/VansRenderPassCatalog.h"
+#include "../EngineCore/RenderCore/FidelityFXCore/VansFSRHistoryState.h"
 #include "../EngineCore/RenderCore/ShadowCore/VansPunctualShadowManager.h"
 #include "../EngineCore/RuntimeCore/VansPackageManifest.h"
+#include "../EngineCore/RuntimeCore/VansCharacterMotion.h"
+#include "../EngineCore/RuntimeCore/VansCharacterTrajectoryGenerator.h"
 #include "../EngineCore/RuntimeCore/VansRuntimeFrameScheduler.h"
 #include "../EngineCore/SceneRuntime/VansRuntimeComponentTypes.h"
 #include "../EngineCore/SceneRuntime/VansRuntimeWorld.h"
@@ -33,20 +46,25 @@
 #include "../EngineCore/SceneCore/VansSceneSchema.h"
 #include "../EngineCore/SceneCore/VansSceneRuntimeComponentKey.h"
 #include "../EngineCore/SceneCore/VansSceneRenderSettingsConfigReader.h"
-#include "../EngineCore/TimelineRuntime/VansTimelinePropertyRegistry.h"
-#include "../EngineCore/TimelineRuntime/VansTimelinePlayer.h"
+#include "../EngineCore/TimelineRuntime/VansTimelineApplierRegistry.h"
+#include "../EngineCore/TimelineRuntime/VansTimelineClockRegistry.h"
+#include "../EngineCore/TimelineRuntime/VansTimelineEvaluator.h"
 #include "../EngineCore/TimelineRuntime/VansTimelinePreAnimatedState.h"
 #include "../EngineCore/TimelineRuntime/VansTimelineRuntimeSystem.h"
 #include "../EngineCore/TimelineCore/VansTimelineDependencyBuilder.h"
 #include "../EngineCore/TimelineCore/VansTimelineCompiler.h"
 #include "../EngineCore/TimelineCore/VansTimelineSerialization.h"
+#include "../EngineCore/TimelineCore/VansTimelineTrackExtensionRegistry.h"
 #include "../EngineCore/TimelineCore/VansTimelineValidator.h"
 #include "../EngineCore/EditorCore/Timeline/VansTimelineEditService.h"
 #include "../EngineCore/EditorCore/Timeline/VansTimelineCommandMap.h"
-#include "../EngineCore/EditorCore/Timeline/VansTimelineEditorStateStore.h"
 #include "../EngineCore/EditorCore/VansAssetDocumentRegistry.h"
 #include "../EngineCore/AssetCore/Serialization/VansSerializedValue.h"
 #include "../EngineCore/AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
+#include "../EngineCore/AssetCore/Storage/VansMaterialAuthoringAssetStorage.h"
+#include "../EngineCore/AssetCore/Storage/VansJsonFileStorage.h"
+#include "../EngineCore/AssetCore/Storage/VansSkinProfileStorage.h"
+#include "../EngineCore/AssetCore/Storage/VansStagedFileTransaction.h"
 #include "../EngineCore/AnimationCore/VansAnimationClip.h"
 #include "../EngineCore/AnimationCore/VansAnimationController.h"
 #include "../EngineCore/AnimationCore/VansAnimGraph.h"
@@ -60,11 +78,17 @@
 #include "../EngineCore/AnimationCore/MotionMatching/VansMotionMatching.h"
 #include "../EngineCore/EngineAPILayer/Private/AnimationAuthoringBridge.h"
 #include "../EngineCore/ParticleCore/VansParticleRuntime.h"
+#include "TimelineRefactorContractTests.h"
+#include "GAFContractTests.h"
+#include "../EngineCore/ProjectSystem/VansProjectManager.h"
+#include "../EngineCore/ProjectSystem/VansProjectSettingsData.h"
+#include "../EngineCore/ProjectSystem/Serialization/VansProjectSettingsJsonCodec.h"
 #include "../EngineCore/ScriptCore/VansScriptContext.h"
 #include "../EngineCore/ScriptCore/VansTransform.h"
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cmath>
@@ -207,6 +231,87 @@ bool ExpectNear(float actual, float expected, float tolerance, const char* messa
     return Expect(std::fabs(actual - expected) <= tolerance, message);
 }
 
+bool ExpectSerializedFloatField(
+	const Vans::VansSerializedValue& object,
+	const char* key,
+	float expected,
+	const char* message)
+{
+	const Vans::VansSerializedValue* field = Vans::FindObjectField(object, key);
+	if (!Expect(field != nullptr, message))
+		return false;
+	return ExpectNear(
+		static_cast<float>(Vans::ReadSerializedNumber(*field, std::numeric_limits<double>::quiet_NaN())),
+		expected,
+		0.0001f,
+		message);
+}
+
+bool ExpectSerializedIntField(
+	const Vans::VansSerializedValue& object,
+	const char* key,
+	std::int64_t expected,
+	const char* message)
+{
+	const Vans::VansSerializedValue* field = Vans::FindObjectField(object, key);
+	if (!Expect(field != nullptr, message))
+		return false;
+	if (!Expect(field->kind == Vans::VansSerializedValue::Kind::Int ||
+		field->kind == Vans::VansSerializedValue::Kind::Float, message))
+		return false;
+	const std::int64_t actual = field->kind == Vans::VansSerializedValue::Kind::Int
+		? field->intValue
+		: static_cast<std::int64_t>(std::llround(field->floatValue));
+	return Expect(actual == expected, message);
+}
+
+bool ExpectSerializedStringField(
+	const Vans::VansSerializedValue& object,
+	const char* key,
+	const std::string& expected,
+	const char* message)
+{
+	const Vans::VansSerializedValue* field = Vans::FindObjectField(object, key);
+	if (!Expect(field && field->kind == Vans::VansSerializedValue::Kind::String, message))
+		return false;
+	return Expect(field->stringValue == expected, message);
+}
+
+bool SerializedStringArrayContains(
+	const Vans::VansSerializedValue& object,
+	const char* key,
+	const std::string& expected)
+{
+	const Vans::VansSerializedValue* field = Vans::FindObjectField(object, key);
+	if (!field || field->kind != Vans::VansSerializedValue::Kind::Array)
+		return false;
+	for (const Vans::VansSerializedValue& item : field->arrayItems)
+	{
+		if (item.kind == Vans::VansSerializedValue::Kind::String && item.stringValue == expected)
+			return true;
+	}
+	return false;
+}
+
+bool ExpectSerializedVec3Field(
+	const Vans::VansSerializedValue& object,
+	const char* key,
+	const glm::vec3& expected,
+	const char* message)
+{
+	const Vans::VansSerializedValue* field = Vans::FindObjectField(object, key);
+	if (!Expect(field && field->kind == Vans::VansSerializedValue::Kind::Array &&
+		field->arrayItems.size() >= 3, message))
+		return false;
+	const glm::vec3 actual(
+		static_cast<float>(Vans::ReadSerializedNumber(field->arrayItems[0], std::numeric_limits<double>::quiet_NaN())),
+		static_cast<float>(Vans::ReadSerializedNumber(field->arrayItems[1], std::numeric_limits<double>::quiet_NaN())),
+		static_cast<float>(Vans::ReadSerializedNumber(field->arrayItems[2], std::numeric_limits<double>::quiet_NaN())));
+	return ExpectNear(actual.r, expected.r, 0.0001f, message) &&
+		ExpectNear(actual.g, expected.g, 0.0001f, message) &&
+		ExpectNear(actual.b, expected.b, 0.0001f, message);
+}
+
 bool InstallTestBaseLayer(VansGraphics::VansAnimationController& controller,
                           std::unique_ptr<VansGraphics::VansAnimGraph> graph,
                           std::string& error)
@@ -269,6 +374,330 @@ bool TestPackageManifestRoundTrip()
     return Expect(!Vans::VansPackageManifestIO::Validate(invalid, error), "Manifest accepted a parent traversal path");
 }
 
+bool TestSkinProfileJsonRoundTrip()
+{
+	TemporaryDirectory temporary;
+	Vans::VansSkinProfile expected;
+	expected.name = "Cinematic Skin";
+	expected.description = "Contract fixture";
+	expected.basePreset = "cinematic";
+	expected.scatterColor = glm::vec3(1.0f, 0.42f, 0.28f);
+	expected.scatterAmount = 0.72f;
+	expected.roughness = 0.58f;
+	expected.normalStrength = 0.31f;
+	expected.specularScale = 0.91f;
+	expected.transmissionScale = 1.12f;
+	expected.primaryRoughnessScale = 0.68f;
+	expected.secondaryRoughnessScale = 1.82f;
+	expected.skinIor = 1.43f;
+	expected.specularLobeMix = 0.77f;
+	expected.diffusionRadiusScale = 1.2f;
+	expected.thinnessScale = 0.84f;
+	expected.transmissionDepthScale = 1.35f;
+	expected.ambientScatterScale = 0.46f;
+	expected.scatterRadiusScale = glm::vec3(1.25f, 0.95f, 0.7f);
+	expected.boundaryColorBleed = 1.2f;
+	expected.profileLutLayer = 2;
+
+	std::string error;
+	const fs::path profilePath = temporary.path / "Cinematic.skinprofile";
+	if (!Expect(Vans::VansSkinProfileStorage::SaveAtomic(profilePath, expected, error), error.c_str()))
+		return false;
+
+	Vans::VansSkinProfile loaded;
+	if (!Expect(Vans::VansSkinProfileStorage::Load(profilePath, loaded, error), error.c_str()))
+		return false;
+	if (!Expect(loaded.name == expected.name && loaded.description == expected.description &&
+		loaded.basePreset == expected.basePreset, "Skin profile identity fields did not round-trip"))
+		return false;
+	if (!ExpectNear(loaded.scatterColor.r, expected.scatterColor.r, 0.0001f,
+		"Skin profile scatter color R did not round-trip") ||
+		!ExpectNear(loaded.scatterColor.g, expected.scatterColor.g, 0.0001f,
+			"Skin profile scatter color G did not round-trip") ||
+		!ExpectNear(loaded.scatterColor.b, expected.scatterColor.b, 0.0001f,
+			"Skin profile scatter color B did not round-trip"))
+		return false;
+	if (!ExpectNear(loaded.scatterAmount, expected.scatterAmount, 0.0001f,
+		"Skin profile scatter amount did not round-trip") ||
+		!ExpectNear(loaded.roughness, expected.roughness, 0.0001f,
+			"Skin profile roughness did not round-trip") ||
+		!ExpectNear(loaded.normalStrength, expected.normalStrength, 0.0001f,
+			"Skin profile normal strength did not round-trip") ||
+		!ExpectNear(loaded.specularScale, expected.specularScale, 0.0001f,
+			"Skin profile specular scale did not round-trip") ||
+		!ExpectNear(loaded.transmissionScale, expected.transmissionScale, 0.0001f,
+			"Skin profile transmission scale did not round-trip"))
+		return false;
+	if (!ExpectNear(loaded.primaryRoughnessScale, expected.primaryRoughnessScale, 0.0001f,
+		"Skin profile primary roughness scale did not round-trip") ||
+		!ExpectNear(loaded.secondaryRoughnessScale, expected.secondaryRoughnessScale, 0.0001f,
+			"Skin profile secondary roughness scale did not round-trip") ||
+		!ExpectNear(loaded.skinIor, expected.skinIor, 0.0001f,
+			"Skin profile IOR did not round-trip") ||
+		!ExpectNear(loaded.specularLobeMix, expected.specularLobeMix, 0.0001f,
+			"Skin profile lobe mix did not round-trip"))
+		return false;
+	if (!ExpectNear(loaded.diffusionRadiusScale, expected.diffusionRadiusScale, 0.0001f,
+		"Skin profile diffusion radius scale did not round-trip") ||
+		!ExpectNear(loaded.thinnessScale, expected.thinnessScale, 0.0001f,
+			"Skin profile thinness scale did not round-trip") ||
+		!ExpectNear(loaded.transmissionDepthScale, expected.transmissionDepthScale, 0.0001f,
+			"Skin profile transmission depth scale did not round-trip") ||
+		!ExpectNear(loaded.ambientScatterScale, expected.ambientScatterScale, 0.0001f,
+			"Skin profile ambient scatter scale did not round-trip"))
+		return false;
+	return ExpectNear(loaded.scatterRadiusScale.r, expected.scatterRadiusScale.r, 0.0001f,
+		"Skin profile scatter radius R did not round-trip") &&
+		ExpectNear(loaded.scatterRadiusScale.g, expected.scatterRadiusScale.g, 0.0001f,
+			"Skin profile scatter radius G did not round-trip") &&
+		ExpectNear(loaded.scatterRadiusScale.b, expected.scatterRadiusScale.b, 0.0001f,
+			"Skin profile scatter radius B did not round-trip") &&
+		ExpectNear(loaded.boundaryColorBleed, expected.boundaryColorBleed, 0.0001f,
+			"Skin profile boundary color bleed did not round-trip") &&
+		Expect(loaded.profileLutLayer == expected.profileLutLayer,
+			"Skin profile LUT layer did not round-trip");
+}
+
+bool TestSkinProfileJsonAliasDecode()
+{
+	Vans::SkinProfileJson root;
+	root["name"] = "Alias Skin";
+	root["scatterRadiusRGB"] = Vans::SkinProfileJson::array({ 0.9f, 0.8f, 0.7f });
+	root["skinBoundaryBleed"] = 0.85f;
+	root["skinProfileLutLayer"] = 2;
+	root["scattering"]["profileScatterRadius"] = Vans::SkinProfileJson::array({ 1.4f, 1.1f, 0.8f });
+	root["scattering"]["skinBoundaryBleed"] = 1.35f;
+	root["scattering"]["skinLutLayer"] = 3;
+
+	Vans::VansSkinProfile decoded;
+	std::string error;
+	if (!Expect(Vans::VansSkinProfileJsonCodec::Decode(root, "Alias.skinprofile", decoded, error), error.c_str()))
+		return false;
+	return ExpectNear(decoded.scatterRadiusScale.r, 1.4f, 0.0001f,
+		"Skin profile alias decode did not prefer nested profile scatter radius R") &&
+		ExpectNear(decoded.scatterRadiusScale.g, 1.1f, 0.0001f,
+			"Skin profile alias decode did not prefer nested profile scatter radius G") &&
+		ExpectNear(decoded.scatterRadiusScale.b, 0.8f, 0.0001f,
+			"Skin profile alias decode did not prefer nested profile scatter radius B") &&
+		ExpectNear(decoded.boundaryColorBleed, 1.35f, 0.0001f,
+			"Skin profile alias decode did not prefer nested boundary bleed") &&
+		Expect(decoded.profileLutLayer == 3,
+			"Skin profile alias decode did not prefer nested LUT layer");
+}
+
+bool TestSkinProfileMaterialProjectionContract()
+{
+	using Value = Vans::VansSerializedValue;
+
+	TemporaryDirectory temporary;
+	const fs::path profilePath = temporary.path / "Hero.skinprofile";
+	const fs::path materialPath = temporary.path / "HeroSkin.mat";
+
+	Vans::VansAssetGuid profileGuid;
+	if (!Expect(Vans::VansAssetGuid::TryParse(
+		"14141414-1414-4414-8414-141414141414",
+		profileGuid), "Skin profile projection test GUID is invalid"))
+		return false;
+	Vans::VansAssetGuid materialGuid;
+	if (!Expect(Vans::VansAssetGuid::TryParse(
+		"24242424-2424-4424-8424-242424242424",
+		materialGuid), "Skin material projection test GUID is invalid"))
+		return false;
+
+	Vans::VansSkinProfile profile;
+	profile.name = "Hero Skin Profile";
+	profile.basePreset = "fair";
+	profile.scatterColor = glm::vec3(0.92f, 0.38f, 0.27f);
+	profile.scatterAmount = 0.73f;
+	profile.roughness = 0.71f;
+	profile.normalStrength = 0.29f;
+	profile.specularScale = 1.17f;
+	profile.transmissionScale = 1.26f;
+	profile.primaryRoughnessScale = 0.64f;
+	profile.secondaryRoughnessScale = 1.86f;
+	profile.skinIor = 1.46f;
+	profile.specularLobeMix = 0.81f;
+	profile.diffusionRadiusScale = 1.33f;
+	profile.thinnessScale = 0.77f;
+	profile.transmissionDepthScale = 1.41f;
+	profile.ambientScatterScale = 0.52f;
+	profile.scatterRadiusScale = glm::vec3(1.31f, 1.08f, 0.82f);
+	profile.boundaryColorBleed = 1.22f;
+	profile.profileLutLayer = 3;
+
+	std::string error;
+	if (!Expect(Vans::VansSkinProfileStorage::SaveAtomic(profilePath, profile, error), error.c_str()))
+		return false;
+
+	Vans::VansMaterialAuthoringAsset material;
+	material.guid = materialGuid.ToString();
+	material.materialType = "skin";
+	material.parameters = Value::Object({
+		{ "skinProfile", Value::String(profileGuid.ToString()) },
+		{ "scatterColor", Value::Array({
+			Value::Float(0.21), Value::Float(0.19), Value::Float(0.17) }) },
+		{ "roughness", Value::Float(0.44) }
+	});
+
+	Vans::VansStagedFile materialStage;
+	if (!Expect(Vans::VansMaterialAuthoringAssetStorage::StageWrite(
+		materialPath, material, materialStage, error), error.c_str()))
+		return false;
+	Vans::VansStagedFileTransaction transaction;
+	transaction.Add(std::move(materialStage));
+	if (!Expect(transaction.Publish(error), error.c_str()))
+		return false;
+
+	Vans::VansAssetRecord profileRecord;
+	profileRecord.guid = profileGuid;
+	profileRecord.type = Vans::VansAssetType::SkinProfile;
+	profileRecord.state = Vans::VansAssetState::CpuReady;
+	profileRecord.sourcePath = profilePath;
+	profileRecord.authoringPath = profilePath;
+
+	Vans::VansAssetRecord materialRecord;
+	materialRecord.guid = materialGuid;
+	materialRecord.type = Vans::VansAssetType::Material;
+	materialRecord.state = Vans::VansAssetState::CpuReady;
+	materialRecord.sourcePath = materialPath;
+	materialRecord.authoringPath = materialPath;
+
+	struct ScopedPackagedAssets
+	{
+		~ScopedPackagedAssets()
+		{
+			Vans::VansProjectManager::Get().SetPackagedAssetRecords({});
+		}
+	};
+	Vans::VansProjectManager::Get().CloseProject();
+	Vans::VansProjectManager::Get().SetPackagedAssetRecords({ materialRecord, profileRecord });
+	ScopedPackagedAssets scopedAssets;
+
+	const Value sceneRoot = Value::Object({
+		{ "schemaVersion", Value::Int(Vans::VansSceneSchemaVersion) },
+		{ "settings", Value::Object({}) },
+		{ "entities", Value::Array({}) }
+	});
+
+	Vans::VansSceneContentBuildPlan plan;
+	if (!Expect(Vans::VansSceneRuntimeProjection::BuildRuntimeSceneContentPlan(
+		sceneRoot,
+		temporary.path.string(),
+		plan,
+		error), error.c_str()))
+		return false;
+	if (!Expect(plan.materials.size() == 1u,
+		"Skin profile material projection did not emit exactly one runtime material"))
+		return false;
+
+	const Value& runtimeMaterial = plan.materials.front().root;
+	const Value* runtimeType = Vans::FindObjectField(runtimeMaterial, "type");
+	if (!Expect(runtimeType && runtimeType->kind == Value::Kind::String &&
+		runtimeType->stringValue == "skin", "Skin profile material projection changed material type"))
+		return false;
+	const Value* runtimeProfile = Vans::FindObjectField(runtimeMaterial, "skinProfile");
+	if (!Expect(runtimeProfile && runtimeProfile->kind == Value::Kind::String &&
+		runtimeProfile->stringValue == "fair", "Skin profile GUID reference did not collapse to base preset"))
+		return false;
+	if (!ExpectSerializedStringField(
+		runtimeMaterial,
+		"skinProfileAssetGuid",
+		profileGuid.ToString(),
+		"Skin profile asset GUID was not preserved for runtime profile updates"))
+		return false;
+	if (!Expect(SerializedStringArrayContains(runtimeMaterial, "skinProfileInheritedFields", "specularScale") &&
+		SerializedStringArrayContains(runtimeMaterial, "skinProfileInheritedFields", "skinProfileLutLayer"),
+		"Skin profile inherited fields did not record profile-owned parameters"))
+		return false;
+	if (!Expect(!SerializedStringArrayContains(runtimeMaterial, "skinProfileInheritedFields", "scatterColor") &&
+		!SerializedStringArrayContains(runtimeMaterial, "skinProfileInheritedFields", "roughness") &&
+		!SerializedStringArrayContains(runtimeMaterial, "skinProfileInheritedFields", "skinProfile"),
+		"Skin profile inherited fields captured explicit material overrides"))
+		return false;
+	if (!ExpectSerializedVec3Field(runtimeMaterial, "scatterColor", glm::vec3(0.21f, 0.19f, 0.17f),
+		"Explicit Skin material scatter color override was replaced by profile"))
+		return false;
+	if (!ExpectSerializedFloatField(runtimeMaterial, "roughness", 0.44f,
+		"Explicit Skin material roughness override was replaced by profile"))
+		return false;
+	if (!ExpectSerializedFloatField(runtimeMaterial, "specularScale", 1.17f,
+		"Skin profile specular scale was not projected into runtime material"))
+		return false;
+	if (!ExpectSerializedFloatField(runtimeMaterial, "skinIor", 1.46f,
+		"Skin profile IOR was not projected into runtime material"))
+		return false;
+	if (!ExpectSerializedFloatField(runtimeMaterial, "boundaryColorBleed", 1.22f,
+		"Skin profile boundary bleed was not projected into runtime material"))
+		return false;
+	if (!ExpectSerializedIntField(runtimeMaterial, "skinProfileLutLayer", 3,
+		"Skin profile LUT layer was not projected into runtime material"))
+		return false;
+	return ExpectSerializedVec3Field(runtimeMaterial, "profileScatterRadius", glm::vec3(1.31f, 1.08f, 0.82f),
+		"Skin profile RGB scatter radius was not projected into runtime material");
+}
+
+bool TestSkinProfileLUTGenerationContract()
+{
+	VansGraphics::VansBasePBRParam legacy;
+	VansGraphics::VansSkinGPUParam palePayload;
+	if (!Expect(VansGraphics::ResolveSkinProfilePresetPayload("pale", legacy, palePayload),
+		"Skin profile preset alias did not resolve for LUT generation"))
+		return false;
+	if (!ExpectNear(palePayload.profileLUT.x, 1.0f, 0.0001f,
+		"Skin profile preset alias did not map to the expected LUT layer"))
+		return false;
+	const auto paleFingerprint = VansGraphics::BuildSkinProfileLUTFingerprint(palePayload);
+	VansGraphics::VansSkinGPUParam editedPalePayload = palePayload;
+	editedPalePayload.profileControls.x += 0.125f;
+	if (!Expect(VansGraphics::BuildSkinProfileLUTFingerprint(palePayload) == paleFingerprint,
+		"Skin profile LUT fingerprint is not stable for identical payloads"))
+		return false;
+	if (!Expect(VansGraphics::BuildSkinProfileLUTFingerprint(editedPalePayload) != paleFingerprint,
+		"Skin profile LUT fingerprint ignores diffusion radius changes"))
+		return false;
+	if (!Expect(VansGraphics::IsDynamicSkinProfileLUTLayer(VansGraphics::VANS_FIRST_DYNAMIC_SKIN_PROFILE_LUT_LAYER) &&
+		!VansGraphics::IsDynamicSkinProfileLUTLayer(1),
+		"Skin profile dynamic LUT layer range is unstable"))
+		return false;
+
+	constexpr int kTestLUTSize = 16;
+	std::vector<uint8_t> neutralPixels;
+	std::vector<uint8_t> darkPixels;
+	if (!Expect(VansGraphics::GenerateBuiltInSkinProfileLUTLayer(
+		0, kTestLUTSize, kTestLUTSize, neutralPixels),
+		"Neutral skin profile LUT layer did not generate"))
+		return false;
+	if (!Expect(VansGraphics::GenerateBuiltInSkinProfileLUTLayer(
+		3, kTestLUTSize, kTestLUTSize, darkPixels),
+		"Dark skin profile LUT layer did not generate"))
+		return false;
+	if (!Expect(neutralPixels.size() == static_cast<size_t>(kTestLUTSize * kTestLUTSize * 4) &&
+		darkPixels.size() == neutralPixels.size(), "Generated skin LUT size is unstable"))
+		return false;
+	if (!Expect(!VansGraphics::GenerateBuiltInSkinProfileLUTLayer(
+		99, kTestLUTSize, kTestLUTSize, darkPixels),
+		"Skin LUT generation accepted an invalid built-in layer"))
+		return false;
+
+	uint64_t neutralChecksum = 0;
+	uint64_t darkChecksum = 0;
+	for (size_t i = 0; i < neutralPixels.size(); ++i)
+	{
+		neutralChecksum += static_cast<uint64_t>(neutralPixels[i]) * static_cast<uint64_t>(i + 1u);
+		darkChecksum += static_cast<uint64_t>(darkPixels[i]) * static_cast<uint64_t>(i + 1u);
+		if ((i % 4u) == 3u && !Expect(neutralPixels[i] == 255u, "Generated skin LUT alpha is not opaque"))
+			return false;
+	}
+	if (!Expect(neutralChecksum != darkChecksum, "Generated built-in skin LUT layers are identical"))
+		return false;
+
+	const size_t terminatorOffset =
+		(static_cast<size_t>(kTestLUTSize - 1) * static_cast<size_t>(kTestLUTSize) +
+			static_cast<size_t>((kTestLUTSize / 2) - 1)) * 4u;
+	return Expect(neutralPixels[terminatorOffset] > neutralPixels[terminatorOffset + 2u],
+		"Generated skin LUT did not preserve stronger red scatter near the terminator");
+}
+
 bool TestAssetPolicies()
 {
     TemporaryDirectory temporary;
@@ -301,6 +730,12 @@ bool TestAssetPolicies()
     if (!Expect(Vans::VansAssetDatabase::Classify("Probe.vtimeline") == Vans::VansAssetType::Timeline,
         "Timeline asset extension is not classified canonically"))
         return false;
+	if (!Expect(Vans::VansAssetDatabase::Classify("Hero.skinprofile") == Vans::VansAssetType::SkinProfile,
+		"Skin profile asset extension is not classified canonically"))
+		return false;
+	if (!Expect(Vans::VansAssetDatabase::ImporterFor(Vans::VansAssetType::SkinProfile) == "SkinProfileImporter",
+		"Skin profile assets are not owned by the canonical SkinProfile importer"))
+		return false;
     return Expect(Vans::VansAssetDatabase::ImporterFor(Vans::VansAssetType::Timeline) == "TimelineImporter",
         "Timeline assets are not owned by the canonical Timeline importer");
 }
@@ -312,15 +747,27 @@ bool TestGameplayFrameOrder()
     frame.sceneReady = true;
     frame.simulationRunning = true;
     frame.gameplayActive = true;
+	frame.cameraControlActive = true;
     frame.syncPhysicsTransforms = [&] { trace.push_back("physics"); };
 	frame.updateNonCameraScripts = [&] { trace.push_back("scripts"); };
+	frame.updateActionsEarly = [&](double) { trace.push_back("actions-early"); };
+	frame.prepareCharacterLocomotion = [&](double) { trace.push_back("locomotion"); };
 	frame.flushCharacterControllerTransforms = [&] { trace.push_back("cct"); };
 	frame.updateTimelinesPostScript = [&](double) { trace.push_back("timeline-post"); };
+	frame.updateAdditionalPostScriptControllers = [&](double) { trace.push_back("post-extra"); };
+	frame.runTimelineLateContinuation = [&] { trace.push_back("timeline-late"); };
+	frame.runActionLateContinuation = [&] { trace.push_back("actions-late"); };
+	frame.beginCameraControlFrame = [&] { trace.push_back("camera-begin"); };
 	frame.updateCameraScripts = [&] { trace.push_back("camera"); };
+	frame.captureCameraControlBase = [&] { trace.push_back("camera-base"); };
 	frame.updateTimelinesCamera = [&](double) { trace.push_back("timeline-camera"); };
+	frame.updateAdditionalCameraControllers = [&](double) { trace.push_back("camera-extra"); };
+	frame.resolveCameraControlFrame = [&] { trace.push_back("camera-resolve"); };
 	Vans::VansRuntimeFrameScheduler::RunGameplay(frame);
 
-	const std::vector<std::string> expected{ "physics", "scripts", "cct", "timeline-post", "camera", "timeline-camera" };
+	const std::vector<std::string> expected{ "camera-begin", "physics", "scripts", "actions-early", "locomotion", "cct",
+		"timeline-post", "post-extra", "timeline-late", "actions-late", "camera", "camera-base", "timeline-camera",
+		"camera-extra", "camera-resolve" };
     if (!Expect(trace == expected, "Gameplay frame callback order changed"))
         return false;
 
@@ -330,1659 +777,195 @@ bool TestGameplayFrameOrder()
     return Expect(trace.empty(), "Gameplay callbacks ran without a ready scene");
 }
 
-bool TestTimelinePropertyRegistryContract()
+bool TestCameraControlArbiterContract()
 {
-	Vans::VansTimelinePropertyRegistry registry;
-	Vans::VansTimelineKeyValue stored = 2.0f;
+	using namespace VansGraphics;
+	VansCameraControlArbiter arbiter;
+	VansCameraControlPose base;
+	base.position = { 10.0f, 0.0f, 0.0f };
+	base.rotationDegrees = { 0.0f, 90.0f, 0.0f };
+	base.fieldOfView = 60.0f;
+	arbiter.CaptureBase(base);
+	const auto timelineDomain = VansCameraControlArbiter::TimelineDomain();
+	const auto gameplayDomain = Vans::VansMakeStableId<VansCameraControlDomainTag>(
+		"CameraControl.ContractGameplay");
+	const Vans::VansGenerationHandle sameHandle{ 7, 3 };
+	VansCameraControlPose gameplayPose = base;
+	gameplayPose.fieldOfView = 50.0f;
+	if (!arbiter.Submit({ { gameplayDomain, sameHandle }, gameplayPose,
+		VansCameraControlMode::Exclusive, VansCameraControlSpace::World,
+		10, 0, 1.0f, 0x04u })) return false;
+	if (!Expect(!arbiter.IsUserLookSuppressed(),
+		"camera contributions changed gameplay look behavior without opting in")) return false;
+	VansCameraControlPose timelinePose = base;
+	timelinePose.fieldOfView = 40.0f;
+	if (!arbiter.Submit({ { timelineDomain, sameHandle }, timelinePose,
+		VansCameraControlMode::Weighted, VansCameraControlSpace::World,
+		1000, 0, 0.5f, 0x04u, true })) return false;
+	if (!Expect(arbiter.IsUserLookSuppressed(),
+		"Timeline camera contribution did not suppress gameplay look input")) return false;
+	VansCameraControlPose shake;
+	shake.position = { 0.0f, 0.0f, 1.0f };
+	if (!arbiter.Submit({ { timelineDomain, { 8, 3 } }, shake,
+		VansCameraControlMode::Additive, VansCameraControlSpace::CameraLocal,
+		1100, 0, 1.0f, 0x01u })) return false;
+	if (!Expect(!arbiter.Submit({ { gameplayDomain, { 9, 3 } }, gameplayPose,
+		VansCameraControlMode::Exclusive, VansCameraControlSpace::World,
+		VansCameraControlArbiter::TimelinePriority, 0, 1.0f, 0x04u }),
+		"non-Timeline controller entered the reserved Timeline priority range")) return false;
+	const VansCameraControlPose resolved = arbiter.ResolvePose();
+	if (!Expect(arbiter.ContributionCount() == 3,
+		"camera control owner domains collided on equal generation handles")) return false;
+	if (!Expect(std::abs(resolved.fieldOfView - 45.0f) < 0.001f &&
+		glm::length(resolved.position - glm::vec3(11.0f, 0.0f, 0.0f)) < 0.001f,
+		"camera priority, weighting, or camera-local additive resolution is wrong")) return false;
+	arbiter.ReleaseDomain(timelineDomain);
+	if (!Expect(!arbiter.IsUserLookSuppressed(),
+		"Timeline camera domain release did not restore gameplay look input")) return false;
+	const VansCameraControlPose gameplayOnly = arbiter.ResolvePose();
+	if (!Expect(arbiter.ContributionCount() == 1 &&
+		std::abs(gameplayOnly.fieldOfView - 50.0f) < 0.001f,
+		"camera control domain release removed another controller domain")) return false;
+
+	VansVirtualCameraParameterStore virtualCameras;
+	const Vans::VansEntityHandle virtualCamera{ 12, 4 };
+	if (!Expect(virtualCameras.Set(virtualCamera, { 72.0f, 0.03f, 2000.0f }),
+		"virtual camera parameter store rejected a valid Transform entity")) return false;
+	const VansVirtualCameraParameters* parameters = virtualCameras.Find(virtualCamera);
+	if (!Expect(parameters && parameters->fieldOfView == 72.0f &&
+		parameters->nearClip == 0.03f && parameters->farClip == 2000.0f,
+		"virtual camera parameters were not recorded without a Camera component")) return false;
+	if (!Expect(virtualCameras.Remove(virtualCamera) && virtualCameras.Size() == 0,
+		"virtual camera parameter lifetime did not restore cleanly")) return false;
+
+	Vans::VansCameraRuntime cameraRuntime;
+	Vans::VansCameraViewSnapshot coreBase;
+	coreBase.pose.position = { 1.0f, 2.0f, 3.0f };
+	coreBase.pose.rotationDegrees = { 0.0f, 90.0f, 0.0f };
+	coreBase.lens.fieldOfView = 60.0f;
 	std::string error;
-	Vans::VansTimelineRuntimePropertyDescriptor descriptor;
-	descriptor.descriptorId = "Test.Float";
-	descriptor.componentTypeId = 77;
-	descriptor.valueType = Vans::VansTimelineChannelType::Float;
-	descriptor.read = [&](const Vans::VansResolvedTimelineTarget&, Vans::VansTimelineKeyValue& value, std::string&)
+	if (!cameraRuntime.SetBaseView(Vans::VansCameraRuntime::MainView(), coreBase, error))
+		return Expect(false, error.c_str());
+	const auto actionDomain =
+		Vans::VansMakeStableId<Vans::VansCameraContributionDomainIdTag>("Camera.GAF.Contract");
+	Vans::VansCameraContribution firstContribution;
+	firstContribution.view = Vans::VansCameraRuntime::MainView();
+	firstContribution.owner = { actionDomain, { 1, 1 } };
+	firstContribution.kind = Vans::VansCameraContributionKind::Lens;
+	firstContribution.value = coreBase;
+	firstContribution.value.lens.fieldOfView = 50.0f;
+	firstContribution.channels = Vans::VansCameraChannel_FieldOfView;
+	firstContribution.order.layer = 2;
+	firstContribution.order.hierarchicalBias = 3;
+	firstContribution.order.priority = 4;
+	const Vans::VansCameraContributionHandle firstContributionHandle =
+		cameraRuntime.AddContribution(firstContribution, error);
+	Vans::VansCameraContribution secondContribution = firstContribution;
+	secondContribution.owner.writer = { 2, 1 };
+	secondContribution.value.lens.fieldOfView = 40.0f;
+	secondContribution.blendMode = Vans::VansCameraBlendMode::Weighted;
+	secondContribution.weight = 0.5f;
+	secondContribution.order.priority = 5;
+	const Vans::VansCameraContributionHandle secondContributionHandle =
+		cameraRuntime.AddContribution(secondContribution, error);
+	const Vans::VansResolvedCameraView coreResolved =
+		cameraRuntime.ResolveView(Vans::VansCameraRuntime::MainView());
+	if (!Expect(firstContributionHandle && secondContributionHandle &&
+		std::abs(coreResolved.snapshot.lens.fieldOfView - 45.0f) < 0.001f &&
+		coreResolved.appliedContributions.size() == 2 &&
+		coreResolved.appliedContributions.front() == firstContributionHandle,
+		"CameraCore did not apply its stable layer/bias/priority/sequence order")) return false;
+	if (!cameraRuntime.ReleaseContribution(firstContributionHandle) ||
+		cameraRuntime.ReleaseContribution(firstContributionHandle) ||
+		cameraRuntime.UpdateContribution(firstContributionHandle, firstContribution, error))
+		return Expect(false, "CameraCore accepted a stale contribution handle");
+	firstContribution.owner.writer = { 3, 1 };
+	const Vans::VansCameraContributionHandle reused =
+		cameraRuntime.AddContribution(firstContribution, error);
+	if (!Expect(reused && reused.value.index == firstContributionHandle.value.index &&
+		reused.value.generation != firstContributionHandle.value.generation,
+		"CameraCore did not advance generation when reusing a contribution slot")) return false;
+
+	Vans::VansCameraRigDefinition rig;
+	rig.stableName = "Camera.Rig.Contract";
+	rig.id = Vans::VansMakeStableId<Vans::VansCameraRigIdTag>(rig.stableName);
+	rig.initialView = coreBase;
+	rig.initialView.lens.fieldOfView = 75.0f;
+	const Vans::VansCameraRigHandle rigHandle = cameraRuntime.RegisterRig(rig, error);
+	const Vans::VansCameraViewId secondaryView =
+		Vans::VansMakeStableId<Vans::VansCameraViewIdTag>("Camera.View.Secondary");
+	if (!rigHandle || !cameraRuntime.BindViewRig(secondaryView, rigHandle, error))
+		return Expect(false, error.c_str());
+	if (!Expect(std::abs(cameraRuntime.ResolveView(secondaryView).snapshot.lens.fieldOfView - 75.0f) < 0.001f,
+		"CameraCore view did not resolve its logical rig independently")) return false;
+
+	Vans::VansCameraRigDefinition solvedRig;
+	solvedRig.stableName = "Camera.Rig.SolverContract";
+	solvedRig.id = Vans::VansMakeStableId<Vans::VansCameraRigIdTag>(solvedRig.stableName);
+	solvedRig.follow.enabled = true;
+	solvedRig.follow.mode = "SpringArm";
+	solvedRig.follow.targetBinding = "Avatar";
+	solvedRig.follow.localOffset = { 0.0f, 0.0f, -4.0f };
+	solvedRig.lookAt.enabled = true;
+	solvedRig.lookAt.targetBinding = "Avatar";
+	solvedRig.collision.enabled = true;
+	solvedRig.collision.radius = 0.25f;
+	solvedRig.collision.minimumDistance = 0.5f;
+	solvedRig.collision.padding = 0.25f;
+	solvedRig.collision.recoverySeconds = 0.5f;
+	const Vans::VansCameraRigHandle solvedRigHandle =
+		cameraRuntime.RegisterRig(solvedRig, error);
+	bool cameraBlocked = true;
+	cameraRuntime.SetBindingResolver([](Vans::VansGenerationHandle context,
+		std::string_view binding, Vans::VansCameraBindingSnapshot& target)
 	{
-		value = stored;
-		return true;
-	};
-	descriptor.write = [&](const Vans::VansResolvedTimelineTarget&, const Vans::VansTimelineKeyValue& value, std::string&)
-	{
-		stored = value;
-		return true;
-	};
-	if (!Expect(registry.Register(descriptor, error), error.c_str()))
-		return false;
-	if (!Expect(!registry.Register(descriptor, error),
-		"Timeline Property registry accepted a duplicate descriptor ID"))
-		return false;
-
-	Vans::VansTimelinePropertyOutput output;
-	output.componentTypeId = 77;
-	output.descriptorId = "Test.Float";
-	output.valueType = Vans::VansTimelineChannelType::Float;
-	output.value = 3.0f;
-	Vans::VansTimelineRestoreCallback restore;
-	if (!Expect(registry.Apply(Vans::VansTimelineBlendMode::Additive, {}, output, restore, error), error.c_str()))
-		return false;
-	if (!ExpectNear(std::get<float>(stored), 5.0f, 0.0001f,
-		"Timeline Property additive blend produced the wrong value"))
-		return false;
-	if (!Expect(static_cast<bool>(restore), "Timeline Property adapter did not provide restore state"))
-		return false;
-	restore();
-	if (!ExpectNear(std::get<float>(stored), 2.0f, 0.0001f,
-		"Timeline Property restore did not reinstate the pre-animated value"))
-		return false;
-
-	output.valueType = Vans::VansTimelineChannelType::Double;
-	if (!Expect(!registry.Apply(Vans::VansTimelineBlendMode::Override, {}, output, restore, error),
-		"Timeline Property registry accepted an authored descriptor value type mismatch"))
-		return false;
-	output.valueType = Vans::VansTimelineChannelType::Float;
-	output.componentTypeId = 78;
-	return Expect(!registry.Apply(Vans::VansTimelineBlendMode::Override, {}, output, restore, error),
-		"Timeline Property registry accepted an authored component type mismatch");
-}
-
-std::shared_ptr<const Vans::VansCompiledTimeline> CompileTimelineEventProbe(
-	const Vans::VansTimelineEventTrackConfig& eventConfig,
-	std::string& error)
-{
-	Vans::VansTimelineAsset asset;
-	asset.durationTicks = 100;
-	asset.playbackRange = { 0, 100 };
-	asset.workRange = { 0, 100 };
-	Vans::VansTimelineTrack track;
-	track.id = "event-track";
-	track.type = Vans::VansTimelineTrackType::EventSignal;
-	track.name = "Events";
-	track.config = eventConfig;
-	Vans::VansTimelineSection section;
-	section.id = "event-section";
-	section.startTick = 0;
-	section.durationTicks = 100;
-	Vans::VansTimelineChannel channel;
-	channel.id = "event-channel";
-	channel.name = "Signals";
-	channel.type = Vans::VansTimelineChannelType::EventPayload;
-	channel.keys.push_back({ "event-start", 0, Vans::VansTimelineEventPayload{ "Probe", {} },
-		Vans::VansTimelineInterpolation::Constant });
-	channel.keys.push_back({ "event-middle", 50, Vans::VansTimelineEventPayload{ "Probe", {} },
-		Vans::VansTimelineInterpolation::Constant });
-	section.channels.push_back(std::move(channel));
-	track.sections.push_back(std::move(section));
-	asset.tracks.push_back(std::move(track));
-	const auto compiled = Vans::VansTimelineCompiler::Compile(asset);
-	if (!compiled)
-	{
-		error = compiled.diagnostics.empty() ? "Timeline Event probe compilation failed" : compiled.diagnostics.front().message;
-		return {};
-	}
-	return compiled.timeline;
-}
-
-bool TestTimelineEventPolicyContract()
-{
-	Vans::VansTimelineEventTrackConfig config;
-	config.signalId = "probe.signal";
-	config.firePolicy = "Both";
-	config.seekPolicy = "Crossed";
-	config.loopPolicy = "EveryLoop";
-	std::string error;
-	const auto timeline = CompileTimelineEventProbe(config, error);
-	if (!Expect(static_cast<bool>(timeline), error.c_str()))
-		return false;
-
-	Vans::VansTimelineBindingResolver bindings;
-	std::vector<Vans::VansTimelineEvaluationOutput> outputs;
-	Vans::VansTimelineDiagnostics diagnostics;
-	Vans::VansTimelineEvaluator::Evaluate(*timeline, Vans::VansTimelineEvaluationPhase::PostScript,
-		{ { 100, 0, Vans::VansTimelineEvaluationReason::LoopWrap,
-			Vans::VansTimelineSeekPolicy::AllEdges, 1, 1 } }, {}, bindings, "probe", outputs, diagnostics);
-	if (!Expect(outputs.size() == 1 && std::get<Vans::VansTimelineEventOutput>(outputs.front().value).tick == 0,
-		"Timeline loop wrap traversed and re-fired interior Event keys"))
-		return false;
-
-	Vans::VansTimelineEventTrackConfig onceConfig = config;
-	onceConfig.seekPolicy = "ExactTick";
-	onceConfig.oncePerPlayback = true;
-	const auto onceTimeline = CompileTimelineEventProbe(onceConfig, error);
-	if (!Expect(static_cast<bool>(onceTimeline), error.c_str()))
-		return false;
-	Vans::VansRuntimeWorld world;
-	const Vans::VansEntityHandle owner = world.CreateEntity({ "timeline-owner", "Timeline Owner" });
-	Vans::VansRuntimeTimelineComponent component;
-	component.instance.updateMode = Vans::VansTimelineUpdateMode::Manual;
-	Vans::VansTimelinePlayer player;
-	if (!Expect(player.Load(onceTimeline, component, &world, owner, "event-player", error), error.c_str()))
-		return false;
-	player.Play();
-	player.SeekTicks(50, Vans::VansTimelineSeekPolicy::ExactTick, Vans::VansTimelineEvaluationReason::Scrub);
-	player.UpdatePostScript(0.0, outputs);
-	if (!Expect(outputs.size() == 1, "Timeline once-per-playback Event did not fire on its first exact seek"))
-		return false;
-	player.SeekTicks(50, Vans::VansTimelineSeekPolicy::ExactTick, Vans::VansTimelineEvaluationReason::Scrub);
-	player.UpdatePostScript(0.0, outputs);
-	if (!Expect(outputs.empty(), "Timeline once-per-playback Event fired more than once"))
-		return false;
-	player.Stop();
-	player.Play();
-	player.SeekTicks(50, Vans::VansTimelineSeekPolicy::ExactTick, Vans::VansTimelineEvaluationReason::Scrub);
-	player.UpdatePostScript(0.0, outputs);
-	return Expect(outputs.size() == 1, "Timeline once-per-playback Event did not reset for a new playback");
-}
-
-bool TestTimelineManualRuntimeControlContract()
-{
-	Vans::VansTimelineAsset asset;
-	asset.durationTicks = 60000;
-	asset.playbackRange = { 0, 60000 };
-	asset.workRange = { 0, 60000 };
-	const Vans::VansTimelineCompileResult compiled = Vans::VansTimelineCompiler::Compile(asset);
-	if (!Expect(static_cast<bool>(compiled), "Timeline manual-control probe did not compile"))
-		return false;
-
-	Vans::VansRuntimeWorld world;
-	const Vans::VansEntityHandle owner = world.CreateEntity({ "manual-timeline-owner", "Manual Timeline Owner" });
-	Vans::VansRuntimeTimelineComponent component;
-	component.assetGuid = "manual-timeline-asset";
-	component.instance.playOn = Vans::VansTimelinePlayOn::Manual;
-	const Vans::VansComponentHandle handle = world.AddComponent(
-		owner,
-		Vans::VansRuntimeComponentType_Timeline,
-		component,
-		"manual-timeline-component");
-
-	Vans::VansTimelineRuntimeSystem runtime;
-	runtime.RegisterWorld(&world);
-	runtime.SetAssetLoader([timeline = compiled.timeline](
-		const Vans::VansRuntimeTimelineComponent&,
-		std::shared_ptr<const Vans::VansCompiledTimeline>& loaded,
-		std::string& error)
-	{
-		error.clear();
-		loaded = timeline;
+		if (context != Vans::VansGenerationHandle{ 5, 2 } || binding != "Avatar")
+			return false;
+		target.pose.position = { 10.0f, 0.0f, 0.0f };
+		target.pose.rotationDegrees = { 0.0f, 0.0f, 0.0f };
 		return true;
 	});
-	runtime.SyncTimelineComponents();
-
-	Vans::VansTimelinePlayerState state{};
-	Vans::VansTimelineTick tick = -1;
-	if (!Expect(runtime.GetComponentState(handle, state, tick) &&
-		state == Vans::VansTimelinePlayerState::Stopped && tick == 0,
-		"Manual Timeline component did not initialize in Stopped state"))
-		return false;
-	if (!Expect(runtime.PlayComponent(handle, true), "Manual Timeline play command failed"))
-		return false;
-	runtime.UpdatePostScript(0.25);
-	if (!Expect(runtime.GetComponentState(handle, state, tick) &&
-		state == Vans::VansTimelinePlayerState::Playing && tick > 0,
-		"Manual Timeline did not advance after play"))
-		return false;
-	if (!Expect(runtime.PauseComponent(handle) &&
-		runtime.GetComponentState(handle, state, tick) && state == Vans::VansTimelinePlayerState::Paused,
-		"Manual Timeline pause command failed"))
-		return false;
-	if (!Expect(runtime.ResumeComponent(handle) &&
-		runtime.GetComponentState(handle, state, tick) && state == Vans::VansTimelinePlayerState::Playing,
-		"Manual Timeline resume command failed"))
-		return false;
-	if (!Expect(runtime.PlayComponent(handle, true) &&
-		runtime.GetComponentState(handle, state, tick) && tick == 0,
-		"Manual Timeline restart did not return to the playback start"))
-		return false;
-	if (!Expect(runtime.StopComponent(handle) &&
-		runtime.GetComponentState(handle, state, tick) &&
-		state == Vans::VansTimelinePlayerState::Stopped && tick == 0,
-		"Manual Timeline stop command failed"))
-		return false;
-	return Expect(!runtime.PlayComponent({}, true),
-		"Manual Timeline accepted an invalid component handle");
-}
-
-bool TestTimelineNestedPlayerLifetimeContract()
-{
-	Vans::VansTimelineAsset childAsset;
-	childAsset.durationTicks = 60000;
-	childAsset.playbackRange = { 0, 60000 };
-	childAsset.workRange = { 0, 60000 };
-	const Vans::VansTimelineCompileResult childCompiled = Vans::VansTimelineCompiler::Compile(childAsset);
-	if (!Expect(static_cast<bool>(childCompiled), "Nested Timeline child probe did not compile"))
-		return false;
-
-	Vans::VansTimelineAsset rootAsset;
-	rootAsset.durationTicks = 60000;
-	rootAsset.playbackRange = { 0, 60000 };
-	rootAsset.workRange = { 0, 60000 };
-	Vans::VansTimelineTrack childTrack;
-	childTrack.id = "nested-player-track";
-	childTrack.name = "Nested Player";
-	childTrack.type = Vans::VansTimelineTrackType::SubTimeline;
-	childTrack.config = Vans::VansTimelineSubTimelineTrackConfig{};
-	Vans::VansTimelineSection childSection;
-	childSection.id = "nested-player-section";
-	childSection.durationTicks = 60000;
-	childSection.assetGuid = "nested-player-child";
-	childSection.config = childTrack.config;
-	childTrack.sections.push_back(std::move(childSection));
-	rootAsset.tracks.push_back(std::move(childTrack));
-
-	Vans::VansTimelineCompileOptions compileOptions;
-	compileOptions.dependencyLoader = [childAsset](
-		const Vans::VansTimelineAssetReference& reference,
-		Vans::VansTimelineAsset& loaded,
-		std::string& identity,
-		std::string& error)
+	cameraRuntime.SetCollisionResolver([&](const Vans::VansCameraCollisionQuery& query,
+		Vans::VansCameraCollisionResult& hit)
 	{
-		if (reference.assetGuid != "nested-player-child")
-		{
-			error = "Unexpected nested Timeline dependency";
-			return false;
-		}
-		loaded = childAsset;
-		identity = reference.assetGuid;
-		return true;
-	};
-	const Vans::VansTimelineCompileResult rootCompiled =
-		Vans::VansTimelineCompiler::Compile(rootAsset, compileOptions);
-	if (!Expect(static_cast<bool>(rootCompiled), "Nested Timeline root probe did not compile"))
-		return false;
-
-	Vans::VansRuntimeWorld world;
-	const Vans::VansEntityHandle owner = world.CreateEntity({ "nested-player-owner", "Nested Player Owner" });
-	Vans::VansRuntimeTimelineComponent component;
-	component.assetGuid = "nested-player-root";
-	component.instance.playOn = Vans::VansTimelinePlayOn::Manual;
-	const Vans::VansComponentHandle handle = world.AddComponent(
-		owner,
-		Vans::VansRuntimeComponentType_Timeline,
-		component,
-		"nested-player-component");
-
-	int rootLoads = 0;
-	int childLoads = 0;
-	Vans::VansTimelineRuntimeSystem runtime;
-	runtime.RegisterWorld(&world);
-	runtime.SetAssetLoader([&](
-		const Vans::VansRuntimeTimelineComponent& requested,
-		std::shared_ptr<const Vans::VansCompiledTimeline>& loaded,
-		std::string& error)
-	{
-		error.clear();
-		if (requested.assetGuid == "nested-player-root")
-		{
-			++rootLoads;
-			loaded = rootCompiled.timeline;
-			return true;
-		}
-		if (requested.assetGuid == "nested-player-child")
-		{
-			++childLoads;
-			loaded = childCompiled.timeline;
-			return true;
-		}
-		error = "Unknown nested Timeline runtime asset";
-		return false;
-	});
-	runtime.SyncTimelineComponents();
-	if (!Expect(runtime.PlayComponent(handle, true), "Nested Timeline root probe could not play"))
-		return false;
-	for (int frame = 0; frame < 5; ++frame)
-		runtime.UpdatePostScript(1.0 / 60.0);
-	if (rootLoads != 1 || childLoads != 1)
-		std::cerr << "[TimelineNestedLifetime] rootLoads=" << rootLoads
-			<< " childLoads=" << childLoads << '\n';
-	return Expect(rootLoads == 1 && childLoads == 1,
-		"Nested Timeline player was destroyed and reloaded between active frames");
-}
-
-Vans::VansTimelineKeyValue TimelineProbeValue(Vans::VansTimelineChannelType type)
-{
-	switch (type)
-	{
-	case Vans::VansTimelineChannelType::Bool: return true;
-	case Vans::VansTimelineChannelType::Int32: return std::int32_t{ 7 };
-	case Vans::VansTimelineChannelType::Int64: return std::int64_t{ 9 };
-	case Vans::VansTimelineChannelType::Float: return 1.25f;
-	case Vans::VansTimelineChannelType::Double: return 2.5;
-	case Vans::VansTimelineChannelType::Enum: return std::string{ "Open" };
-	case Vans::VansTimelineChannelType::String: return std::string{ "Timeline" };
-	case Vans::VansTimelineChannelType::Vec2: return Vans::VansTimelineVec2{ { 1.0, 2.0 } };
-	case Vans::VansTimelineChannelType::Vec3: return Vans::VansTimelineVec3{ { 1.0, 2.0, 3.0 } };
-	case Vans::VansTimelineChannelType::Vec4: return Vans::VansTimelineVec4{ { 1.0, 2.0, 3.0, 4.0 } };
-	case Vans::VansTimelineChannelType::Quaternion: return Vans::VansTimelineQuaternion{ { 0.0, 0.0, 0.0, 1.0 } };
-	case Vans::VansTimelineChannelType::ColorLinear: return Vans::VansTimelineColorLinear{ { 0.1, 0.2, 0.3, 1.0 } };
-	case Vans::VansTimelineChannelType::ColorSrgb: return Vans::VansTimelineColorSrgb{ { 0.4, 0.5, 0.6, 1.0 } };
-	case Vans::VansTimelineChannelType::ObjectReference:
-		return Vans::VansTimelineObjectReference{ "object-guid", "Assets/Object.asset", "Probe" };
-	case Vans::VansTimelineChannelType::EventPayload:
-		return Vans::VansTimelineEventPayload{ "Probe.Payload", Vans::VansSerializedValue::Object({
-			{ "enabled", Vans::VansSerializedValue::Bool(true) } }) };
-	}
-	return {};
-}
-
-bool TestTimelineCanonicalRoundTripContract()
-{
-	Vans::VansTimelineAsset asset;
-	asset.durationTicks = 120000;
-	asset.playbackRange = { 100, 110000 };
-	asset.workRange = { -6000, 120000 };
-	asset.metadata.displayName = "All Timeline Tracks";
-	asset.metadata.tags = { "contract", "canonical" };
-	Vans::VansTimelineBinding primary;
-	primary.id = "binding-primary";
-	primary.displayName = "Primary";
-	primary.targetGuid = "entity-primary";
-	asset.bindings.push_back(primary);
-	Vans::VansTimelineBinding secondary = primary;
-	secondary.id = "binding-secondary";
-	secondary.displayName = "Secondary";
-	secondary.targetGuid = "entity-secondary";
-	asset.bindings.push_back(secondary);
-	asset.groups.push_back({ "group-main", {}, "Main" });
-	asset.markers.push_back({ "marker-fence", 60000, "Fence", { 1.0f, 0.5f, 0.2f, 1.0f }, "Contract", true });
-
-	constexpr int trackCount = static_cast<int>(Vans::VansTimelineTrackType::Custom) + 1;
-	for (int index = 0; index < trackCount; ++index)
-	{
-		const auto type = static_cast<Vans::VansTimelineTrackType>(index);
-		Vans::VansTimelineTrack track;
-		track.id = "track-" + std::to_string(index);
-		track.type = type;
-		track.name = Vans::VansTimelineSerialization::TrackTypeName(type);
-		track.bindingId = "binding-primary";
-		track.groupId = "group-main";
-		track.order = index;
-		track.priority = index - 4;
-		track.config = Vans::VansTimelineEditService::DefaultTrackConfig(type);
-		if (auto* constraint = std::get_if<Vans::VansTimelineConstraintTrackConfig>(&track.config))
-		{
-			constraint->sourceBindingId = "binding-primary";
-			constraint->targetBindingId = "binding-secondary";
-		}
-		if (auto* camera = std::get_if<Vans::VansTimelineCameraCutTrackConfig>(&track.config))
-		{
-			camera->cameraBindingId = "binding-primary";
-			camera->targetCameraBindingId = "binding-secondary";
-			camera->priority = 17;
-		}
-		if (auto* custom = std::get_if<Vans::VansTimelineCustomTrackConfig>(&track.config))
-			custom->customTypeId = "contract.custom";
-
-		Vans::VansTimelineSection section;
-		section.id = "section-" + std::to_string(index);
-		section.name = track.name;
-		section.startTick = index * 100;
-		section.durationTicks = 1000;
-		section.sourceInTick = 10;
-		section.sourceOutTick = 1010;
-		section.playRate = 1.25;
-		section.loopMode = Vans::VansTimelineLoopMode::PingPong;
-		section.loopCount = 2;
-		section.config = track.config;
-		if (index == 0)
-		{
-			constexpr int channelCount = static_cast<int>(Vans::VansTimelineChannelType::EventPayload) + 1;
-			for (int channelIndex = 0; channelIndex < channelCount; ++channelIndex)
-			{
-				const auto channelType = static_cast<Vans::VansTimelineChannelType>(channelIndex);
-				Vans::VansTimelineChannel channel;
-				channel.id = "channel-" + std::to_string(channelIndex);
-				channel.name = "Channel " + std::to_string(channelIndex);
-				channel.type = channelType;
-				channel.preExtrapolation = Vans::VansTimelineExtrapolation::Hold;
-				Vans::VansTimelineKey key;
-				key.id = "key-" + std::to_string(channelIndex);
-				key.tick = 42;
-				key.value = TimelineProbeValue(channelType);
-				key.interpolation = channelType == Vans::VansTimelineChannelType::Quaternion
-					? Vans::VansTimelineInterpolation::Slerp : Vans::VansTimelineInterpolation::Constant;
-				channel.keys.push_back(std::move(key));
-				section.channels.push_back(std::move(channel));
-			}
-		}
-		track.sections.push_back(std::move(section));
-		asset.tracks.push_back(std::move(track));
-	}
-
-	const auto encoded = Vans::VansTimelineSerialization::Encode(asset);
-	std::string forbiddenPath;
-	if (!Expect(!Vans::VansTimelineSerialization::ContainsForbiddenFormatField(encoded, forbiddenPath),
-		"Canonical Timeline serialization emitted a forbidden format-version field"))
-		return false;
-	Vans::VansTimelineAsset decoded;
-	std::string error;
-	if (!Expect(Vans::VansTimelineSerialization::Decode(encoded, decoded, error), error.c_str()))
-		return false;
-	if (!Expect(Vans::VansTimelineSerialization::Encode(decoded) == encoded,
-		"Timeline all-track/all-channel JSON roundtrip changed canonical author data"))
-		return false;
-	for (int index = 0; index < trackCount; ++index)
-	{
-		const auto type = static_cast<Vans::VansTimelineTrackType>(index);
-		Vans::VansTimelineTrackType parsed{};
-		if (!Expect(Vans::VansTimelineSerialization::TryParseTrackType(
-			Vans::VansTimelineSerialization::TrackTypeName(type), parsed) && parsed == type,
-			"Timeline built-in track type name did not roundtrip"))
-			return false;
-	}
-	auto forbidden = encoded;
-	forbidden["tracks"][0]["config"]["schemaVersion"] = 1;
-	return Expect(!Vans::VansTimelineSerialization::Decode(forbidden, decoded, error),
-		"Timeline decoder accepted a forbidden schemaVersion field");
-}
-
-bool TestTimelineCameraShakeEvaluationContract()
-{
-	Vans::VansTimelineAsset asset;
-	asset.durationTicks = 60000;
-	asset.playbackRange = { 0, 60000 };
-	asset.workRange = { 0, 60000 };
-
-	Vans::VansTimelineBinding cameraBinding;
-	cameraBinding.id = "binding-camera";
-	cameraBinding.displayName = "Camera";
-	cameraBinding.targetGuid = "camera-entity";
-	asset.bindings.push_back(cameraBinding);
-
-	Vans::VansTimelineTrack cutTrack;
-	cutTrack.id = "camera-cut";
-	cutTrack.type = Vans::VansTimelineTrackType::CameraCut;
-	cutTrack.name = "Camera Cut";
-	cutTrack.priority = 100;
-	Vans::VansTimelineCameraCutTrackConfig cutConfig;
-	cutConfig.cameraBindingId = cameraBinding.id;
-	cutConfig.targetCameraBindingId = cameraBinding.id;
-	cutConfig.priority = 100;
-	cutTrack.config = cutConfig;
-	Vans::VansTimelineSection cutSection;
-	cutSection.id = "camera-cut-section";
-	cutSection.durationTicks = 30000;
-	cutTrack.sections.push_back(cutSection);
-	asset.tracks.push_back(cutTrack);
-
-	Vans::VansTimelineTrack shakeTrack;
-	shakeTrack.id = "camera-shake";
-	shakeTrack.type = Vans::VansTimelineTrackType::CameraShake;
-	shakeTrack.name = "Camera Shake";
-	shakeTrack.bindingId = cameraBinding.id;
-	shakeTrack.priority = 230;
-	Vans::VansTimelineCameraShakeTrackConfig shakeConfig;
-	shakeConfig.space = "CameraLocal";
-	shakeConfig.amplitudeScale = 1.0;
-	shakeConfig.priority = 80;
-	shakeTrack.config = shakeConfig;
-	Vans::VansTimelineSection shakeSection;
-	shakeSection.id = "camera-shake-section";
-	shakeSection.durationTicks = 30000;
-	Vans::VansTimelineChannel positionChannel;
-	positionChannel.id = "camera-shake-position";
-	positionChannel.name = "positionOffset";
-	positionChannel.type = Vans::VansTimelineChannelType::Vec3;
-	positionChannel.keys.push_back({ "camera-shake-position-key", 0,
-		Vans::VansTimelineVec3{ { 0.12, -0.03, 0.02 } }, Vans::VansTimelineInterpolation::Constant });
-	Vans::VansTimelineChannel rotationChannel;
-	rotationChannel.id = "camera-shake-rotation";
-	rotationChannel.name = "rotationOffset";
-	rotationChannel.type = Vans::VansTimelineChannelType::Vec3;
-	rotationChannel.keys.push_back({ "camera-shake-rotation-key", 0,
-		Vans::VansTimelineVec3{ { 1.0, -2.0, 0.5 } }, Vans::VansTimelineInterpolation::Constant });
-	shakeSection.channels.push_back(std::move(positionChannel));
-	shakeSection.channels.push_back(std::move(rotationChannel));
-	shakeTrack.sections.push_back(std::move(shakeSection));
-	asset.tracks.push_back(std::move(shakeTrack));
-
-	const Vans::VansTimelineCompileResult compiled = Vans::VansTimelineCompiler::Compile(asset);
-	if (!Expect(static_cast<bool>(compiled), "Camera Shake Timeline probe did not compile"))
-		return false;
-
-	Vans::VansRuntimeWorld world;
-	const Vans::VansEntityHandle cameraEntity = world.CreateEntity({ "camera-entity", "Camera" });
-	Vans::VansTimelineBindingResolver bindings;
-	bindings.BindWorld(&world, cameraEntity);
-	std::vector<Vans::VansTimelineEvaluationOutput> outputs;
-	Vans::VansTimelineDiagnostics diagnostics;
-	Vans::VansTimelineEvaluator::Evaluate(*compiled.timeline, Vans::VansTimelineEvaluationPhase::Camera,
-		{ { 0, 5000, Vans::VansTimelineEvaluationReason::Playback,
-			Vans::VansTimelineSeekPolicy::ContinuousOnly, 1, 0 } }, {}, bindings, "camera-shake-probe",
-		outputs, diagnostics);
-	if (!Expect(!Vans::VansTimelineValidator::HasErrors(diagnostics),
-		"Camera Shake Timeline probe produced binding diagnostics"))
-		return false;
-	if (!Expect(outputs.size() == 2, "Camera phase did not output CameraCut and CameraShake"))
-		return false;
-
-	const Vans::VansTimelineEvaluationOutput* cutOutput = nullptr;
-	const Vans::VansTimelineEvaluationOutput* shakeOutput = nullptr;
-	for (const auto& output : outputs)
-	{
-		if (output.trackType == Vans::VansTimelineTrackType::CameraCut)
-			cutOutput = &output;
-		else if (output.trackType == Vans::VansTimelineTrackType::CameraShake)
-			shakeOutput = &output;
-	}
-	if (!Expect(cutOutput && shakeOutput, "Camera phase omitted cut or shake outputs"))
-		return false;
-	if (!Expect(shakeOutput->priority > cutOutput->priority,
-		"Camera Shake priority should apply after CameraCut"))
-		return false;
-	const auto* shake = std::get_if<Vans::VansTimelineCameraShakeOutput>(&shakeOutput->value);
-	if (!Expect(shake && shake->active, "Camera Shake output payload was not active"))
-		return false;
-	if (!ExpectNear(static_cast<float>(shake->positionOffset.value[0]), 0.12f, 0.0001f,
-		"Camera Shake position offset did not sample"))
-		return false;
-	return ExpectNear(static_cast<float>(shake->rotationOffset.value[1]), -2.0f, 0.0001f,
-		"Camera Shake rotation offset did not sample");
-}
-
-bool TestTimelineCapabilityAndGuidContract()
-{
-	Vans::VansTimelineAsset asset;
-	asset.durationTicks = 1000;
-	asset.playbackRange = { 0, 1000 };
-	asset.workRange = { 0, 1000 };
-	Vans::VansTimelineBinding binding;
-	binding.id = "binding";
-	binding.displayName = "Target";
-	binding.targetGuid = "entity";
-	asset.bindings.push_back(binding);
-
-	Vans::VansTimelineTrack media;
-	media.id = "media";
-	media.type = Vans::VansTimelineTrackType::Media;
-	media.name = "Media";
-	media.bindingId = binding.id;
-	Vans::VansTimelineMediaTrackConfig mediaConfig;
-	mediaConfig.targetKind = "MaterialSlot";
-	mediaConfig.materialSlot = "0";
-	mediaConfig.outputAudio = true;
-	media.config = mediaConfig;
-	asset.tracks.push_back(media);
-
-	Vans::VansTimelineTrack camera;
-	camera.id = "camera";
-	camera.type = Vans::VansTimelineTrackType::CameraCut;
-	camera.name = "Camera";
-	camera.bindingId = binding.id;
-	Vans::VansTimelineCameraCutTrackConfig cameraConfig;
-	cameraConfig.cameraBindingId = binding.id;
-	cameraConfig.aspectPolicy = "Letterbox";
-	camera.config = cameraConfig;
-	asset.tracks.push_back(camera);
-
-	Vans::VansTimelineTrack spawn;
-	spawn.id = "spawn";
-	spawn.type = Vans::VansTimelineTrackType::Spawnable;
-	spawn.name = "Spawn";
-	Vans::VansTimelineSpawnableTrackConfig spawnConfig;
-	spawnConfig.spawnTemplateGuid = "spawn-guid";
-	spawnConfig.spawnTemplatePath = "Assets/Spawn.template";
-	spawn.config = spawnConfig;
-	asset.tracks.push_back(spawn);
-
-	Vans::VansTimelineValidationContext editorContext;
-	editorContext.runtimeValidation = false;
-	const auto editorDiagnostics = Vans::VansTimelineValidator::Validate(asset, editorContext);
-	if (!Expect(!Vans::VansTimelineValidator::HasErrors(editorDiagnostics),
-		"Data-and-Editor Timeline capabilities could not be authored and saved"))
-		return false;
-	const auto runtimeDiagnostics = Vans::VansTimelineValidator::Validate(asset);
-	if (!Expect(Vans::VansTimelineValidator::HasErrors(runtimeDiagnostics),
-		"Runtime validation enabled unsupported Timeline capabilities"))
-		return false;
-
-	Vans::VansTimelineAsset pathOnly;
-	pathOnly.durationTicks = 1000;
-	pathOnly.playbackRange = { 0, 1000 };
-	pathOnly.workRange = { 0, 1000 };
-	pathOnly.bindings.push_back(binding);
-	Vans::VansTimelineTrack animation;
-	animation.id = "animation";
-	animation.type = Vans::VansTimelineTrackType::AnimationClip;
-	animation.name = "Animation";
-	animation.bindingId = binding.id;
-	animation.config = Vans::VansTimelineAnimationTrackConfig{};
-	Vans::VansTimelineSection section;
-	section.id = "clip";
-	section.durationTicks = 100;
-	section.assetPath = "Assets/PathOnly.vclip";
-	animation.sections.push_back(section);
-	pathOnly.tracks.push_back(animation);
-	return Expect(Vans::VansTimelineValidator::HasErrors(Vans::VansTimelineValidator::Validate(pathOnly)),
-		"Runtime Timeline validation accepted an asset path fallback without an indexed GUID");
-}
-
-bool TestTimelineDependencyClosureContract()
-{
-	auto makeAsset = []
-	{
-		Vans::VansTimelineAsset value;
-		value.durationTicks = 1000;
-		value.playbackRange = { 0, 1000 };
-		value.workRange = { 0, 1000 };
-		return value;
-	};
-	Vans::VansTimelineAsset root = makeAsset();
-	Vans::VansTimelineTrack nested;
-	nested.id = "nested-track";
-	nested.type = Vans::VansTimelineTrackType::SubTimeline;
-	nested.name = "Nested";
-	nested.config = Vans::VansTimelineSubTimelineTrackConfig{};
-	Vans::VansTimelineSection nestedSection;
-	nestedSection.id = "nested-section";
-	nestedSection.durationTicks = 500;
-	nestedSection.assetGuid = "child-guid";
-	nested.sections.push_back(nestedSection);
-	root.tracks.push_back(nested);
-
-	Vans::VansTimelineAsset child = makeAsset();
-	Vans::VansTimelineBinding audioBinding;
-	audioBinding.id = "audio-binding";
-	audioBinding.displayName = "Audio";
-	audioBinding.targetGuid = "audio-entity";
-	child.bindings.push_back(audioBinding);
-	Vans::VansTimelineTrack audio;
-	audio.id = "audio-track";
-	audio.type = Vans::VansTimelineTrackType::Audio;
-	audio.name = "Audio";
-	audio.bindingId = audioBinding.id;
-	audio.config = Vans::VansTimelineAudioTrackConfig{};
-	Vans::VansTimelineSection audioSection;
-	audioSection.id = "audio-section";
-	audioSection.durationTicks = 500;
-	audioSection.assetGuid = "audio-guid";
-	audio.sections.push_back(audioSection);
-	child.tracks.push_back(audio);
-
-	auto loader = [&](const Vans::VansTimelineAssetReference& reference, Vans::VansTimelineAsset& loaded,
-		std::string& identity, std::string& error)
-	{
-		if (reference.assetGuid == "child-guid") { loaded = child; identity = "child"; return true; }
-		if (reference.assetGuid == "root-guid") { loaded = root; identity = "root"; return true; }
-		error = "Unknown Timeline dependency";
-		return false;
-	};
-	Vans::VansTimelineDependencyClosure closure;
-	Vans::VansTimelineDiagnostics diagnostics;
-	if (!Expect(Vans::VansTimelineDependencyBuilder::BuildClosure(root, loader, closure, diagnostics),
-		"Timeline recursive dependency closure failed"))
-		return false;
-	const bool hasChild = std::any_of(closure.transitive.begin(), closure.transitive.end(), [](const auto& reference)
-	{
-		return reference.kind == Vans::VansTimelineAssetReferenceKind::Timeline && reference.assetGuid == "child-guid";
-	});
-	const bool hasAudio = std::any_of(closure.transitive.begin(), closure.transitive.end(), [](const auto& reference)
-	{
-		return reference.kind == Vans::VansTimelineAssetReferenceKind::Audio && reference.assetGuid == "audio-guid";
-	});
-	if (!Expect(hasChild && hasAudio, "Timeline dependency closure omitted nested Timeline assets"))
-		return false;
-
-	Vans::VansTimelineTrack cycle = nested;
-	cycle.id = "cycle-track";
-	cycle.sections.front().id = "cycle-section";
-	cycle.sections.front().assetGuid = "root-guid";
-	child.tracks.push_back(cycle);
-	return Expect(!Vans::VansTimelineDependencyBuilder::BuildClosure(root, loader, closure, diagnostics),
-		"Timeline dependency builder accepted a direct recursive cycle");
-}
-
-bool TestTimelineScenePackageDependencyContract()
-{
-	TemporaryDirectory temporary;
-	const fs::path assetsRoot = temporary.path / "Assets";
-	const fs::path audioRoot = assetsRoot / "Audio";
-	const fs::path timelineRoot = assetsRoot / "Timelines";
-	const fs::path scenesRoot = temporary.path / "Scenes";
-	fs::create_directories(audioRoot);
-	fs::create_directories(timelineRoot);
-	fs::create_directories(scenesRoot);
-
-	const fs::path audioPath = audioRoot / "TimelineProbe.wav";
-	{
-		std::ofstream audioFile(audioPath, std::ios::binary);
-		audioFile << "timeline-audio-dependency-probe";
-	}
-
-	Vans::VansAssetDatabase database(assetsRoot, temporary.path / "Library" / "Artifacts");
-	const auto firstScan = database.Scan(Vans::VansAssetOperationPolicy::Authoring());
-	if (!Expect(static_cast<bool>(firstScan), "Timeline package probe could not index its Audio asset"))
-		return false;
-	const auto audioRecord = database.Find(audioPath);
-	if (!Expect(audioRecord && audioRecord->type == Vans::VansAssetType::Audio,
-		"Timeline package probe Audio GUID was not indexed"))
-		return false;
-
-	auto makeTimeline = []
-	{
-		Vans::VansTimelineAsset value;
-		value.durationTicks = 60000;
-		value.playbackRange = { 0, 60000 };
-		value.workRange = { 0, 60000 };
-		return value;
-	};
-
-	Vans::VansTimelineAsset child = makeTimeline();
-	Vans::VansTimelineBinding audioBinding;
-	audioBinding.id = "audio-binding";
-	audioBinding.displayName = "Audio Target";
-	audioBinding.targetGuid = "timeline-audio-owner";
-	child.bindings.push_back(audioBinding);
-	Vans::VansTimelineTrack audioTrack;
-	audioTrack.id = "audio-track";
-	audioTrack.type = Vans::VansTimelineTrackType::Audio;
-	audioTrack.name = "Audio";
-	audioTrack.bindingId = audioBinding.id;
-	audioTrack.config = Vans::VansTimelineAudioTrackConfig{};
-	Vans::VansTimelineSection audioSection;
-	audioSection.id = "audio-section";
-	audioSection.durationTicks = 30000;
-	audioSection.assetGuid = audioRecord->guid.ToString();
-	audioSection.config = audioTrack.config;
-	audioTrack.sections.push_back(std::move(audioSection));
-	child.tracks.push_back(std::move(audioTrack));
-
-	std::string error;
-	const fs::path childPath = timelineRoot / "Child.vtimeline";
-	if (!Expect(Vans::VansTimelineSerialization::SaveAtomic(childPath, child, error), error.c_str()))
-		return false;
-	if (!Expect(database.RegisterOrRefresh(childPath, Vans::VansAssetOperationPolicy::Authoring(), error),
-		error.c_str()))
-		return false;
-	const auto childRecord = database.Find(childPath);
-	if (!Expect(childRecord && childRecord->type == Vans::VansAssetType::Timeline,
-		"Child Timeline was not indexed"))
-		return false;
-
-	Vans::VansTimelineAsset root = makeTimeline();
-	Vans::VansTimelineTrack subTimelineTrack;
-	subTimelineTrack.id = "subtimeline-track";
-	subTimelineTrack.type = Vans::VansTimelineTrackType::SubTimeline;
-	subTimelineTrack.name = "Nested Timeline";
-	subTimelineTrack.config = Vans::VansTimelineSubTimelineTrackConfig{};
-	Vans::VansTimelineSection subTimelineSection;
-	subTimelineSection.id = "subtimeline-section";
-	subTimelineSection.durationTicks = 60000;
-	subTimelineSection.assetGuid = childRecord->guid.ToString();
-	subTimelineSection.config = subTimelineTrack.config;
-	subTimelineTrack.sections.push_back(std::move(subTimelineSection));
-	root.tracks.push_back(std::move(subTimelineTrack));
-
-	const fs::path rootPath = timelineRoot / "Root.vtimeline";
-	if (!Expect(Vans::VansTimelineSerialization::SaveAtomic(rootPath, root, error), error.c_str()))
-		return false;
-	if (!Expect(database.RegisterOrRefresh(rootPath, Vans::VansAssetOperationPolicy::Authoring(), error),
-		error.c_str()))
-		return false;
-	const auto rootRecord = database.Find(rootPath);
-	if (!Expect(rootRecord && rootRecord->type == Vans::VansAssetType::Timeline,
-		"Root Timeline was not indexed"))
-		return false;
-
-	const fs::path scenePath = scenesRoot / "TimelinePackageProbe.json";
-	const nlohmann::json scene = {
-		{ "schemaVersion", Vans::VansSceneSchemaVersion },
-		{ "sceneGuid", "bb930f1e-1760-45f6-ab71-a2eaad20f799" },
-		{ "settings", nlohmann::json::object() },
-		{ "entities", nlohmann::json::array({ {
-			{ "id", "673cc9db-c17f-4af6-ab11-87db9e6f923c" },
-			{ "name", "Timeline Owner" },
-			{ "parent", nullptr },
-			{ "components", nlohmann::json::array({ {
-				{ "id", "28e5060b-5630-458e-ac0b-786069ace2dd" },
-				{ "type", "Transform" },
-				{ "version", 1 },
-				{ "enabled", true },
-				{ "data", {
-					{ "position", { 0.0, 0.0, 0.0 } },
-					{ "rotation", { 0.0, 0.0, 0.0, 1.0 } },
-					{ "scale", { 1.0, 1.0, 1.0 } }
-				} }
-			}, {
-				{ "id", "bd5c2cf4-8119-4425-a6cd-c42eaf754e41" },
-				{ "type", "Timeline" },
-				{ "version", 1 },
-				{ "enabled", true },
-				{ "data", {
-					{ "timeline", { { "guid", rootRecord->guid.ToString() } } }
-				} }
-			} }) }
-		} }) }
-	};
-	{
-		std::ofstream sceneFile(scenePath, std::ios::binary);
-		sceneFile << scene.dump(2);
-	}
-
-	const Vans::VansSceneAssetDependencyBuildResult dependencies =
-		Vans::VansSceneAssetDependencyBuilder::BuildResourcePlan(database, scenePath, {});
-	if (!Expect(dependencies.success,
-		dependencies.errors.empty() ? "Timeline scene package dependency closure failed"
-			: dependencies.errors.front().c_str()))
-		return false;
-	if (!Expect(dependencies.requiredAssets.find(rootRecord->guid.ToString()) != dependencies.requiredAssets.end()
-		&& dependencies.requiredAssets.find(childRecord->guid.ToString()) != dependencies.requiredAssets.end()
-		&& dependencies.requiredAssets.find(audioRecord->guid.ToString()) != dependencies.requiredAssets.end(),
-		"Timeline scene package dependency closure omitted a transitive asset"))
-		return false;
-	return Expect(std::any_of(dependencies.resourcePlan.audios.begin(), dependencies.resourcePlan.audios.end(),
-		[&](const Vans::VansSceneAudioResourceRequest& request)
-		{
-			return request.assetGuid == audioRecord->guid.ToString();
-		}), "Timeline Audio dependency was not projected into the packaged resource plan");
-}
-
-bool TestTimelinePreAnimatedStackContract()
-{
-	int value = 0;
-	Vans::VansTimelinePreAnimatedState state;
-	state.Capture("writer-a", "entity:property", [&] { value = 0; });
-	value = 10;
-	state.Capture("writer-b", "entity:property", [&] { value = 10; });
-	value = 20;
-	state.ReleaseWriter("writer-a");
-	if (!Expect(value == 20, "Timeline released a covered pre-animated writer too early"))
-		return false;
-	state.ReleaseWriter("writer-b");
-	if (!Expect(value == 0 && state.PropertyCount() == 0,
-		"Timeline pre-animated writer stack did not restore the original value"))
-		return false;
-
-	state.Capture("writer-a", "entity:property", [&] { value = 0; });
-	value = 10;
-	state.Capture("writer-b", "entity:property", [&] { value = 10; });
-	value = 20;
-	state.ReleaseWriter("writer-b");
-	if (!Expect(value == 10, "Timeline pre-animated stack did not reveal the previous writer"))
-		return false;
-	state.ReleaseWriter("writer-a");
-	return Expect(value == 0, "Timeline pre-animated stack did not restore after the final writer");
-}
-
-bool TestTimelineIsolatedPreviewOwnerContract()
-{
-	Vans::VansTimelineAsset asset;
-	asset.durationTicks = 1000;
-	asset.playbackRange = { 0, 1000 };
-	asset.workRange = { 0, 1000 };
-	const auto compiled = Vans::VansTimelineCompiler::Compile(asset);
-	if (!Expect(static_cast<bool>(compiled), "Timeline isolated preview probe did not compile"))
-		return false;
-
-	Vans::VansRuntimeWorld world;
-	Vans::VansTimelineRuntimeSystem runtime;
-	runtime.RegisterWorld(&world);
-	std::string error;
-	if (!Expect(runtime.StartPreview("offline-preview-owner", compiled.timeline, {}, false, false, error), error.c_str()))
-		return false;
-	if (!Expect(world.Entities().CollectAliveEntities().size() == 1,
-		"Timeline offline preview did not create exactly one isolated owner"))
-		return false;
-	if (!Expect(runtime.ConfigurePreview("offline-preview-owner", 1.0, -1, true),
-		"Timeline preview rejected reverse loop playback settings"))
-		return false;
-	if (!Expect(runtime.SeekPreview("offline-preview-owner", 100,
-		Vans::VansTimelineSeekPolicy::ContinuousOnly) && runtime.PlayPreview("offline-preview-owner"),
-		"Timeline reverse preview could not seek and play"))
-		return false;
-	runtime.UpdateRuntimePostScript(0.005);
-	Vans::VansTimelinePlayer* reversePreview = runtime.FindPreview("offline-preview-owner");
-	if (!Expect(reversePreview && reversePreview->CurrentTick() == 100,
-		"Runtime Timeline update advanced an editor-only preview"))
-		return false;
-	runtime.UpdatePreviewsPostScript(0.005);
-	runtime.UpdatePreviewsPostScript(0.005);
-	if (!Expect(reversePreview && reversePreview->State() == Vans::VansTimelinePlayerState::Playing &&
-		reversePreview->CurrentTick() > 100,
-		"Timeline reverse preview did not loop across the playback range"))
-		return false;
-	if (!Expect(runtime.StopPreview("offline-preview-owner") && world.Entities().CollectAliveEntities().empty(),
-		"Timeline offline preview owner was not cleaned up on stop"))
-		return false;
-
-	const Vans::VansEntityHandle explicitOwner = world.CreateEntity({ "explicit-preview-owner", "Explicit Preview Owner" });
-	if (!Expect(runtime.StartPreview("instance-preview", compiled.timeline, explicitOwner, false, false, error), error.c_str()))
-		return false;
-	if (!Expect(runtime.StopPreview("instance-preview") && world.IsAlive(explicitOwner),
-		"Timeline instance preview destroyed its explicit scene owner"))
-		return false;
-	Vans::VansRuntimeTimelineComponent component;
-	component.instance.updateMode = Vans::VansTimelineUpdateMode::Manual;
-	Vans::VansTimelinePlayer reloadPlayer;
-	if (!Expect(reloadPlayer.Load(compiled.timeline, component, &world, explicitOwner,
-		"timeline-reload-contract", error), error.c_str()))
-		return false;
-	reloadPlayer.SeekTicks(500, Vans::VansTimelineSeekPolicy::ContinuousOnly,
-		Vans::VansTimelineEvaluationReason::Jump);
-	reloadPlayer.Play();
-	Vans::VansTimelineAsset replacementAsset = asset;
-	replacementAsset.durationTicks = 300;
-	replacementAsset.playbackRange = { 100, 300 };
-	replacementAsset.workRange = { 100, 300 };
-	const auto replacement = Vans::VansTimelineCompiler::Compile(replacementAsset);
-	if (!Expect(static_cast<bool>(replacement) &&
-		reloadPlayer.Reload(replacement.timeline, error) && reloadPlayer.CurrentTick() == 200 &&
-		reloadPlayer.State() == Vans::VansTimelinePlayerState::Playing,
-		"Timeline hot reload did not preserve normalized time and playback state"))
-		return false;
-	if (!Expect(!reloadPlayer.Reload({}, error) && reloadPlayer.CurrentTick() == 200,
-		"Timeline hot reload failure did not keep the last valid compiled asset"))
-		return false;
-	world.DestroyEntity(explicitOwner);
-	return true;
-}
-
-bool TestAnimationV2TimelineShowcaseContract()
-{
-	fs::path workspace = fs::current_path();
-	for (int depth = 0; depth < 5 && !fs::exists(workspace / "AnimationV2Project"); ++depth)
-	{
-		if (!workspace.has_parent_path() || workspace.parent_path() == workspace) break;
-		workspace = workspace.parent_path();
-	}
-	const fs::path projectRoot = workspace / "AnimationV2Project";
-	if (!fs::exists(projectRoot)) return true;
-
-	const fs::path timelinePath = projectRoot / "Assets" / "Cinematics" / "AnimationV2Showcase.vtimeline";
-	const fs::path scenePath = projectRoot / "Scenes" / "MainScene.json";
-	Vans::VansTimelineAsset timeline;
-	std::string error;
-	if (!Expect(Vans::VansTimelineSerialization::Load(timelinePath, timeline, error), error.c_str()))
-		return false;
-	const auto cameraCutTrack = std::find_if(timeline.tracks.begin(), timeline.tracks.end(), [](const auto& track)
-	{
-		return track.id == "track-camera-cut";
-	});
-	if (!Expect(cameraCutTrack != timeline.tracks.end(), "AnimationV2 Timeline fixture is missing its CameraCut track"))
-		return false;
-	const auto* cameraCutConfig = std::get_if<Vans::VansTimelineCameraCutTrackConfig>(&cameraCutTrack->config);
-	if (!Expect(cameraCutConfig && cameraCutConfig->cameraBindingId == "binding-cinematic-camera" &&
-		cameraCutConfig->targetCameraBindingId == "binding-main-camera",
-		"AnimationV2 CameraCut must transfer a virtual camera into MainCamera"))
-		return false;
-	for (const auto& section : cameraCutTrack->sections)
-	{
-		const auto* sectionConfig = std::get_if<Vans::VansTimelineCameraCutTrackConfig>(
-			std::holds_alternative<std::monostate>(section.config) ? &cameraCutTrack->config : &section.config);
-		if (!Expect(sectionConfig && sectionConfig->cameraBindingId == "binding-cinematic-camera" &&
-			sectionConfig->targetCameraBindingId == "binding-main-camera",
-			"AnimationV2 CameraCut section is not sourced from the virtual camera and targeted at MainCamera"))
-			return false;
-	}
-
-	Vans::VansAssetGuid timelineGuid;
-	if (!Expect(Vans::VansAssetGuid::TryParse(
-		"ec3c5abd-8482-4906-b82b-8111922abb18", timelineGuid),
-		"AnimationV2 Timeline fixture GUID is invalid"))
-		return false;
-	Vans::VansAssetRecord editorTimelineRecord;
-	editorTimelineRecord.guid = timelineGuid;
-	editorTimelineRecord.type = Vans::VansAssetType::Timeline;
-	editorTimelineRecord.sourcePath = timelinePath;
-	const std::vector<Vans::VansAssetRecord> editorTimelineRecords{ editorTimelineRecord };
-	const Vans::VansResolvedAsset editorTimeline = Vans::VansAssetResolver(
-		Vans::VansAssetAccessMode::Editor, editorTimelineRecords).Resolve(
-			timelineGuid.ToString(), Vans::VansAssetType::Timeline);
-	if (!Expect(editorTimeline.valid && editorTimeline.readPath == timelinePath,
-		"AnimationV2 Editor Play Timeline incorrectly required a packaged cache artifact"))
-		return false;
-	if (!Expect(!Vans::VansAssetResolver(
-		Vans::VansAssetAccessMode::Package, editorTimelineRecords).Resolve(
-			timelineGuid.ToString(), Vans::VansAssetType::Timeline).valid,
-		"AnimationV2 packaged Timeline accepted a source-only asset record"))
-		return false;
-
-	std::unordered_map<std::string, fs::path> timelinePaths;
-	std::error_code iteratorError;
-	for (fs::recursive_directory_iterator iterator(projectRoot / "Assets", iteratorError), end;
-		!iteratorError && iterator != end; iterator.increment(iteratorError))
-	{
-		if (!iterator->is_regular_file() || iterator->path().extension() != ".meta") continue;
-		const std::string filename = iterator->path().filename().string();
-		if (filename.size() <= 15 || filename.substr(filename.size() - 15) != ".vtimeline.meta") continue;
-		std::ifstream metaFile(iterator->path());
-		nlohmann::json meta;
-		try { metaFile >> meta; }
-		catch (...) { continue; }
-		const std::string guid = meta.value("guid", "");
-		if (guid.empty()) continue;
-		fs::path source = iterator->path();
-		source.replace_extension();
-		timelinePaths.emplace(guid, std::move(source));
-	}
-
-	Vans::VansTimelineCompileOptions options;
-	options.validation.supportsPropertyDescriptor = [](std::uint16_t, const std::string&,
-		Vans::VansTimelineChannelType) { return true; };
-	options.dependencyLoader = [&](const Vans::VansTimelineAssetReference& reference,
-		Vans::VansTimelineAsset& nested, std::string& identity, std::string& nestedError)
-	{
-		const auto found = timelinePaths.find(reference.assetGuid);
-		if (found == timelinePaths.end())
-		{
-			nestedError = "AnimationV2 SubTimeline GUID is not indexed";
-			return false;
-		}
-		identity = reference.assetGuid;
-		return Vans::VansTimelineSerialization::Load(found->second, nested, nestedError);
-	};
-	const Vans::VansTimelineCompileResult compiled = Vans::VansTimelineCompiler::Compile(timeline, options);
-	if (!compiled)
-	{
-		std::string diagnostics;
-		for (const auto& diagnostic : compiled.diagnostics)
-		{
-			if (!diagnostics.empty()) diagnostics += " | ";
-			diagnostics += diagnostic.objectId + ":" + diagnostic.propertyPath + ":" + diagnostic.message;
-		}
-		return Expect(false, diagnostics.c_str());
-	}
-
-	std::ifstream sceneFile(scenePath);
-	nlohmann::json sceneJson;
-	try { sceneFile >> sceneJson; }
-	catch (const std::exception& exception) { return Expect(false, exception.what()); }
-	std::vector<std::string> realCameraEntities;
-	bool virtualCameraFound = false;
-	bool virtualCameraHasTransform = false;
-	bool virtualCameraHasCamera = false;
-	std::function<void(const nlohmann::json&)> inspectSceneNode = [&](const nlohmann::json& node)
-	{
-		if (node.is_array())
-		{
-			for (const auto& item : node) inspectSceneNode(item);
-			return;
-		}
-		if (!node.is_object()) return;
-		const std::string name = node.value("name", "");
-		const auto components = node.find("components");
-		if (!name.empty() && components != node.end() && components->is_array())
-		{
-			bool hasCamera = false;
-			bool hasTransform = false;
-			for (const auto& component : *components)
-			{
-				const std::string type = component.value("type", "");
-				hasCamera = hasCamera || type == "Camera";
-				hasTransform = hasTransform || type == "Transform";
-			}
-			if (hasCamera) realCameraEntities.push_back(name);
-			if (name == "TimelineVirtualCamera")
-			{
-				virtualCameraFound = true;
-				virtualCameraHasTransform = hasTransform;
-				virtualCameraHasCamera = hasCamera;
-			}
-		}
-		for (const auto& item : node.items())
-			inspectSceneNode(item.value());
-	};
-	inspectSceneNode(sceneJson);
-	if (!Expect(realCameraEntities.size() == 1 && realCameraEntities.front() == "MainCamera",
-		"AnimationV2 Timeline fixture must keep MainCamera as the only real Camera"))
-		return false;
-	if (!Expect(virtualCameraFound && virtualCameraHasTransform && !virtualCameraHasCamera,
-		"AnimationV2 Timeline virtual camera must be a Transform-only proxy"))
-		return false;
-	Vans::VansSceneContentBuildPlan plan;
-	if (!Expect(Vans::VansSceneRuntimeProjection::BuildRuntimeSceneContentPlan(
-		Vans::DecodeSerializedValueJson(sceneJson), projectRoot.string(), plan, error), error.c_str()))
-		return false;
-	const auto object = std::find_if(plan.objects.objects.begin(), plan.objects.objects.end(),
-		[](const auto& candidate) { return candidate.entityGuid == "328c9fc0-940b-42df-b5fb-0f2e910b348e"; });
-	if (!Expect(object != plan.objects.objects.end() && object->timeline && object->timeline->valid,
-		"AnimationV2 MainCamera Timeline component was not projected"))
-		return false;
-	const auto componentGuid = object->componentGuids.find("timeline");
-	if (!Expect(componentGuid != object->componentGuids.end() &&
-		componentGuid->second == "422a3285-d3c8-4c55-9313-67787ea9b4c0" &&
-		object->timeline->timelineAssetGuid == "ec3c5abd-8482-4906-b82b-8111922abb18",
-		"AnimationV2 Timeline stable component or asset GUID was not projected canonically"))
-		return false;
-
-	Vans::VansRuntimeWorld world;
-	const Vans::VansEntityHandle owner = world.CreateEntity(
-		{ object->entityGuid, object->name, {}, true });
-	Vans::VansRuntimeTimelineComponent component;
-	component.assetGuid = object->timeline->timelineAssetGuid;
-	component.instance = object->timeline->instance;
-	const Vans::VansComponentHandle handle = world.AddComponent(owner,
-		Vans::VansRuntimeComponentType_Timeline, component, componentGuid->second, true);
-	Vans::VansTimelineRuntimeSystem runtime;
-	runtime.RegisterWorld(&world);
-	runtime.SetAssetLoader([&](const Vans::VansRuntimeTimelineComponent& requested,
-		std::shared_ptr<const Vans::VansCompiledTimeline>& loaded, std::string& loadError)
-	{
-		if (requested.assetGuid != component.assetGuid)
-		{
-			loadError = "Unexpected AnimationV2 Timeline asset GUID";
-			return false;
-		}
-		loaded = compiled.timeline;
+		if (query.bindingContext != Vans::VansGenerationHandle{ 5, 2 } ||
+			std::abs(query.radius - 0.25f) > 0.001f) return false;
+		hit.blocked = cameraBlocked;
+		hit.distance = cameraBlocked ? 2.0f : glm::length(
+			query.desiredPosition - query.origin);
 		return true;
 	});
-	return Expect(world.FindComponentByGuid(componentGuid->second,
-		Vans::VansRuntimeComponentType_Timeline) == handle && runtime.PlayComponent(handle, true),
-		"AnimationV2 Timeline could not be resolved and started by stable component GUID");
+	const Vans::VansCameraViewId solvedView =
+		Vans::VansMakeStableId<Vans::VansCameraViewIdTag>("Camera.View.SolverContract");
+	if (!solvedRigHandle || !cameraRuntime.BindViewRig(
+		solvedView, solvedRigHandle, error, { 5, 2 })) return Expect(false, error.c_str());
+	cameraRuntime.Advance(0.016);
+	const Vans::VansResolvedCameraView obstructed = cameraRuntime.ResolveView(solvedView);
+	if (!Expect(std::abs(glm::length(obstructed.snapshot.pose.position -
+			glm::vec3(10.0f, 0.0f, 0.0f)) - 1.75f) < 0.001f &&
+		std::abs(obstructed.snapshot.pose.rotationDegrees.y - 90.0f) < 0.001f,
+		"CameraCore rig solver did not apply follow, look-at, and collision retraction"))
+		return false;
+	cameraBlocked = false;
+	cameraRuntime.Advance(0.1);
+	const float recoveringDistance = glm::length(
+		cameraRuntime.ResolveView(solvedView).snapshot.pose.position -
+		glm::vec3(10.0f, 0.0f, 0.0f));
+	if (!Expect(recoveringDistance > 1.75f && recoveringDistance < 4.0f,
+		"CameraCore collision recovery snapped instead of damping outward")) return false;
+	for (int index = 0; index < 100; ++index) cameraRuntime.Advance(0.1);
+	if (!Expect(std::abs(glm::length(cameraRuntime.ResolveView(solvedView).snapshot.pose.position -
+			glm::vec3(10.0f, 0.0f, 0.0f)) - 4.0f) < 0.01f,
+		"CameraCore collision recovery did not converge to the desired arm length")) return false;
+	if (!Expect(cameraRuntime.ReleaseDomain(actionDomain) == 2 &&
+		cameraRuntime.ContributionCount() == 0,
+		"CameraCore domain cleanup did not release all persistent contributions")) return false;
+	return Expect(cameraRuntime.UnregisterRig(solvedRigHandle) &&
+		cameraRuntime.UnregisterRig(rigHandle) &&
+		!cameraRuntime.ResolveRig(rigHandle),
+		"CameraCore rig generation lifetime is invalid");
 }
 
-bool TestTimelineEditorTransactionContract()
-{
-	TemporaryDirectory temporary;
-	const fs::path path = temporary.path / "Transaction.vtimeline";
-	Vans::VansTimelineAsset initial;
-	initial.durationTicks = 1000;
-	initial.playbackRange = { 0, 1000 };
-	initial.workRange = { 0, 1000 };
-	std::string error;
-	if (!Expect(Vans::VansTimelineSerialization::SaveAtomic(path, initial, error), error.c_str()))
-		return false;
-	Vans::VansAssetDocumentRegistry::Get().Clear();
-	Vans::VansTimelineEditService edit;
-	if (!Expect(static_cast<bool>(edit.Open(path)), "Timeline edit service could not open a canonical asset"))
-		return false;
-	Vans::VansTimelineBinding binding;
-	binding.id = "edit-binding";
-	binding.displayName = "Edit Binding";
-	binding.targetGuid = "edit-entity";
-	if (!Expect(static_cast<bool>(edit.AddBinding(binding)), "Timeline edit service could not add a binding"))
-		return false;
-	const auto trackResult = edit.AddTrack(Vans::VansTimelineTrackType::Transform, binding.id);
-	if (!Expect(static_cast<bool>(trackResult), "Timeline edit service could not add a Transform track"))
-		return false;
-	Vans::VansTimelineSection section;
-	section.id = "edit-section";
-	section.startTick = 100;
-	section.durationTicks = 400;
-	if (!Expect(static_cast<bool>(edit.AddSection(trackResult.objectId, section)), "Timeline edit service could not add a section"))
-		return false;
-	Vans::VansTimelineKey key;
-	key.id = "edit-key";
-	key.tick = 10;
-	key.value = Vans::VansTimelineVec3{ { 1.0, 2.0, 3.0 } };
-	if (!Expect(static_cast<bool>(edit.AddKey(trackResult.objectId, section.id, 0, key)), "Timeline edit service could not add a key"))
-		return false;
-
-	const auto beforeInteraction = edit.Document()->sourceDocument.CurrentStateId();
-	if (!Expect(static_cast<bool>(edit.BeginInteraction()), "Timeline interaction did not begin"))
-		return false;
-	if (!Expect(edit.MoveSection(trackResult.objectId, section.id, 200) &&
-		edit.MoveSection(trackResult.objectId, section.id, 300), "Timeline drag mutation failed"))
-		return false;
-	if (!Expect(edit.Document()->sourceDocument.CurrentStateId() == beforeInteraction,
-		"Timeline drag added undo history before pointer release"))
-		return false;
-	if (!Expect(static_cast<bool>(edit.CommitInteraction()), "Timeline interaction did not commit"))
-		return false;
-	const auto afterInteraction = edit.Document()->sourceDocument.CurrentStateId();
-	if (!Expect(afterInteraction == beforeInteraction + 1,
-		"Timeline drag did not commit as exactly one undoable transaction"))
-		return false;
-	if (!Expect(edit.Undo() && edit.Asset().tracks.front().sections.front().startTick == 100,
-		"Timeline Undo did not restore the pre-drag section"))
-		return false;
-	if (!Expect(edit.Redo() && edit.Asset().tracks.front().sections.front().startTick == 300,
-		"Timeline Redo did not restore the committed drag"))
-		return false;
-
-	if (!Expect(edit.BeginInteraction() && edit.MoveKey(trackResult.objectId, section.id, 0, key.id, 99) &&
-		edit.CancelInteraction(), "Timeline cancelled interaction failed"))
-		return false;
-	if (!Expect(edit.Asset().tracks.front().sections.front().channels.front().keys.front().tick == 10,
-		"Timeline cancelled interaction changed author data"))
-		return false;
-	if (!Expect(static_cast<bool>(edit.SetKeyValue(trackResult.objectId, section.id, 0, key.id,
-		Vans::VansTimelineVec3{ { 9.0, 8.0, 7.0 } })), "Timeline Auto Key value edit failed"))
-		return false;
-	const auto* editedValue = std::get_if<Vans::VansTimelineVec3>(
-		&edit.Asset().tracks.front().sections.front().channels.front().keys.front().value);
-	if (!Expect(editedValue && editedValue->value[0] == 9.0,
-		"Timeline Auto Key value edit did not update the selected key"))
-		return false;
-	if (!Expect(static_cast<bool>(edit.Undo()), "Timeline Auto Key value edit was not undoable"))
-		return false;
-	if (!Expect(static_cast<bool>(edit.SetKeyCurve(trackResult.objectId, section.id, 0, key.id,
-		Vans::VansTimelineInterpolation::Cubic, Vans::VansTimelineTangentMode::Weighted,
-		0.25, 0.5, 1.5, 2.0)), "Timeline curve tangent edit failed"))
-		return false;
-	const auto& curvedKey = edit.Asset().tracks.front().sections.front().channels.front().keys.front();
-	if (!Expect(curvedKey.interpolation == Vans::VansTimelineInterpolation::Cubic &&
-		curvedKey.tangentMode == Vans::VansTimelineTangentMode::Weighted &&
-		std::abs(curvedKey.leaveTangent - 0.5) < 0.0001,
-		"Timeline curve tangent edit did not persist typed curve data"))
-		return false;
-	if (!Expect(static_cast<bool>(edit.Undo()), "Timeline curve tangent edit was not undoable"))
-		return false;
-	Vans::VansTimelineKey duplicate = key;
-	duplicate.id = "duplicate-key";
-	if (!Expect(!edit.AddKey(trackResult.objectId, section.id, 0, duplicate),
-		"Timeline edit service accepted two keys at the same tick"))
-		return false;
-	if (!Expect(edit.Asset().tracks.front().sections.front().channels.front().keys.size() == 1,
-		"Timeline failed mutation was not rolled back"))
-		return false;
-	Vans::VansTimelineKey secondKey = key;
-	secondKey.id = "edit-key-second";
-	secondKey.tick = 20;
-	if (!Expect(static_cast<bool>(edit.AddKey(trackResult.objectId, section.id, 0, secondKey)),
-		"Timeline edit service could not add a second selected key"))
-		return false;
-	const std::unordered_set<Vans::VansTimelineId> selectedKeys{ key.id, secondKey.id };
-	if (!Expect(static_cast<bool>(edit.MoveKeysBy(selectedKeys, 5)),
-		"Timeline multi-key time move failed"))
-		return false;
-	const auto& movedKeys = edit.Asset().tracks.front().sections.front().channels.front().keys;
-	if (!Expect(movedKeys.size() == 2 && movedKeys[0].tick == 15 && movedKeys[1].tick == 25,
-		"Timeline multi-key move did not preserve relative timing"))
-		return false;
-	if (!Expect(static_cast<bool>(edit.Undo()), "Timeline multi-key move was not undoable"))
-		return false;
-	if (!Expect(static_cast<bool>(edit.DuplicateKeys(selectedKeys, 30)) &&
-		edit.Asset().tracks.front().sections.front().channels.front().keys.size() == 4,
-		"Timeline multi-key duplicate did not create canonical key copies"))
-		return false;
-	if (!Expect(static_cast<bool>(edit.Undo()), "Timeline multi-key duplicate was not undoable"))
-		return false;
-	if (!Expect(static_cast<bool>(edit.ScaleKeys(selectedKeys, 2.0, 1.0)),
-		"Timeline multi-key scale failed"))
-		return false;
-	const auto& scaledKeys = edit.Asset().tracks.front().sections.front().channels.front().keys;
-	if (!Expect(scaledKeys.size() == 2 && scaledKeys[0].tick == 5 && scaledKeys[1].tick == 25,
-		"Timeline multi-key scale did not preserve its selection-center pivot"))
-		return false;
-	if (!Expect(static_cast<bool>(edit.Undo()), "Timeline multi-key scale was not undoable"))
-		return false;
-	if (!Expect(static_cast<bool>(edit.SetKeysCurveMode(selectedKeys,
-		Vans::VansTimelineInterpolation::Bezier, Vans::VansTimelineTangentMode::Weighted)),
-		"Timeline batch interpolation/tangent edit failed"))
-		return false;
-	const auto& batchCurveKeys = edit.Asset().tracks.front().sections.front().channels.front().keys;
-	if (!Expect(std::all_of(batchCurveKeys.begin(), batchCurveKeys.end(), [](const auto& item)
-	{
-		return item.interpolation == Vans::VansTimelineInterpolation::Bezier &&
-			item.tangentMode == Vans::VansTimelineTangentMode::Weighted;
-	}), "Timeline batch interpolation/tangent edit did not update every selected key"))
-		return false;
-	if (!Expect(static_cast<bool>(edit.Undo()), "Timeline batch interpolation/tangent edit was not undoable"))
-		return false;
-	auto bufferedKeys = edit.Asset().tracks.front().sections.front().channels.front().keys;
-	bufferedKeys.front().tick = 30;
-	if (!Expect(static_cast<bool>(edit.ReplaceChannelKeys(
-		trackResult.objectId, section.id, 0, bufferedKeys)),
-		"Timeline buffered curve restore failed"))
-		return false;
-	if (!Expect(edit.Asset().tracks.front().sections.front().channels.front().keys.front().tick == 20,
-		"Timeline buffered curve restore was not normalized by time"))
-		return false;
-	if (!Expect(static_cast<bool>(edit.Undo()) &&
-		edit.Asset().tracks.front().sections.front().channels.front().keys.front().tick == 10,
-		"Timeline buffered curve restore was not undoable"))
-		return false;
-	if (!Expect(static_cast<bool>(edit.SlipSection(trackResult.objectId, section.id, 25)) &&
-		edit.Asset().tracks.front().sections.front().sourceInTick == 25,
-		"Timeline Slip edit did not offset source time"))
-		return false;
-	if (!Expect(static_cast<bool>(edit.Undo()), "Timeline Slip edit was not undoable"))
-		return false;
-	Vans::VansTimelineSection trailing;
-	trailing.id = "edit-section-trailing";
-	trailing.startTick = 800;
-	trailing.durationTicks = 100;
-	if (!Expect(static_cast<bool>(edit.AddSection(trackResult.objectId, trailing)),
-		"Timeline edit service could not add a trailing section"))
-		return false;
-	if (!Expect(static_cast<bool>(edit.BeginInteraction()) &&
-		edit.ScaleSection(trackResult.objectId, section.id, 600) && edit.CommitInteraction(),
-		"Timeline Scale interaction failed"))
-		return false;
-	const auto& scaled = edit.Asset().tracks.front().sections.front();
-	if (!Expect(scaled.durationTicks == 600 && scaled.channels.front().keys.front().tick == 15,
-		"Timeline Scale did not scale section keys from the interaction baseline"))
-		return false;
-	if (!Expect(static_cast<bool>(edit.Undo()), "Timeline Scale was not undoable"))
-		return false;
-	if (!Expect(static_cast<bool>(edit.LoopExtendSection(trackResult.objectId, section.id, 600)) &&
-		edit.Asset().tracks.front().sections.front().loopMode == Vans::VansTimelineLoopMode::Loop &&
-		edit.Asset().tracks.front().sections.front().loopCount == 2,
-		"Timeline Loop Extend did not author a finite loop range"))
-		return false;
-	if (!Expect(static_cast<bool>(edit.Undo()), "Timeline Loop Extend was not undoable"))
-		return false;
-	const std::unordered_set<Vans::VansTimelineId> multiSections{ section.id, trailing.id };
-	if (!Expect(static_cast<bool>(edit.MoveSectionsBy(multiSections, -50)),
-		"Timeline multi-section move failed"))
-		return false;
-	if (!Expect(edit.Asset().tracks.front().sections[0].startTick == 250 &&
-		edit.Asset().tracks.front().sections[1].startTick == 750,
-		"Timeline multi-section move did not preserve relative offsets"))
-		return false;
-	if (!Expect(static_cast<bool>(edit.Undo()), "Timeline multi-section move was not undoable"))
-		return false;
-	Vans::VansTimelineGroup group;
-	group.name = "Contract Group";
-	const auto groupResult = edit.AddGroup(group);
-	if (!Expect(static_cast<bool>(groupResult) &&
-		static_cast<bool>(edit.MoveTrack(trackResult.objectId, groupResult.objectId)) &&
-		edit.Asset().tracks.front().groupId == groupResult.objectId,
-		"Timeline Outliner group move failed"))
-		return false;
-	if (!Expect(static_cast<bool>(edit.Undo()), "Timeline Outliner group move was not undoable"))
-		return false;
-	if (!Expect(static_cast<bool>(edit.RippleMoveSection(trackResult.objectId, section.id, 200)),
-		"Timeline Ripple Move failed"))
-		return false;
-	const auto& rippleSections = edit.Asset().tracks.front().sections;
-	const auto movedTrailing = std::find_if(rippleSections.begin(), rippleSections.end(), [](const auto& item)
-	{
-		return item.id == "edit-section-trailing";
-	});
-	if (!Expect(movedTrailing != rippleSections.end() && movedTrailing->startTick == 700,
-		"Timeline Ripple Move did not shift following sections"))
-		return false;
-	if (!Expect(static_cast<bool>(edit.Undo()), "Timeline Ripple Move was not undoable"))
-		return false;
-	if (!Expect(static_cast<bool>(edit.SplitSection(trackResult.objectId, section.id, 500)) &&
-		edit.Asset().tracks.front().sections.size() == 3,
-		"Timeline Split did not create a second canonical section"))
-		return false;
-	if (!Expect(static_cast<bool>(edit.Undo()), "Timeline Split was not undoable"))
-		return false;
-	if (!Expect(static_cast<bool>(edit.DuplicateSection(trackResult.objectId, section.id, 50)) &&
-		edit.Asset().tracks.front().sections.size() == 3,
-		"Timeline Duplicate did not regenerate section identities"))
-		return false;
-	if (!Expect(static_cast<bool>(edit.Undo()), "Timeline Duplicate was not undoable"))
-		return false;
-	Vans::VansTimelineMarker marker;
-	marker.id = "edit-marker";
-	marker.tick = 250;
-	marker.label = "Contract Marker";
-	if (!Expect(static_cast<bool>(edit.AddMarker(marker)) &&
-		static_cast<bool>(edit.MoveMarker(marker.id, 375)) &&
-		edit.Asset().markers.size() == 1 && edit.Asset().markers.front().tick == 375,
-		"Timeline Marker create and move transaction failed"))
-		return false;
-	if (!Expect(static_cast<bool>(edit.Undo()) && edit.Asset().markers.front().tick == 250,
-		"Timeline Marker move was not undoable"))
-		return false;
-	if (!Expect(static_cast<bool>(edit.RemoveObject(marker.id)) && edit.Asset().markers.empty(),
-		"Timeline Marker delete failed"))
-		return false;
-	if (!Expect(static_cast<bool>(edit.Undo()) && edit.Asset().markers.size() == 1,
-		"Timeline Marker delete was not undoable"))
-		return false;
-	if (!Expect(static_cast<bool>(edit.SetPlaybackRange(50, 900)) &&
-		edit.Asset().playbackRange.startTick == 50 && edit.Asset().playbackRange.endTick == 900,
-		"Timeline playback range command did not commit canonical author data"))
-		return false;
-	if (!Expect(static_cast<bool>(edit.Undo()) && edit.Asset().playbackRange.startTick == 0 &&
-		edit.Asset().playbackRange.endTick == 1000,
-		"Timeline playback range command was not undoable"))
-		return false;
-	if (!Expect(static_cast<bool>(edit.RenameObject(trackResult.objectId, "Renamed Transform")) &&
-		edit.Asset().tracks.front().name == "Renamed Transform",
-		"Timeline rename command did not update the selected object"))
-		return false;
-	if (!Expect(static_cast<bool>(edit.Undo()), "Timeline rename command was not undoable"))
-		return false;
-	Vans::VansTimelineCommandMap commandMap;
-	if (!Expect(commandMap.GetBinding(Vans::VansTimelineCommand::Rename).chord.key == ImGuiKey_F2 &&
-		commandMap.GetBinding(Vans::VansTimelineCommand::SetPlaybackStart).chord.key == ImGuiKey_LeftBracket &&
-		commandMap.GetBinding(Vans::VansTimelineCommand::SetSelectionEnd).chord.key == ImGuiKey_O,
-		"Timeline Editor command map does not expose the documented default commands"))
-		return false;
-	if (!Expect(edit.RevertToSaved() && edit.Asset().tracks.empty() && edit.Asset().bindings.empty(),
-		"Timeline Discard did not restore the last saved asset state"))
-		return false;
-	Vans::VansAssetDocumentRegistry::Get().Clear();
-	return true;
-}
-
-bool TestTimelineEditorStateAndRecoveryContract()
-{
-	TemporaryDirectory temporary;
-	const fs::path sourcePath = temporary.path / "Recovery.vtimeline";
-	Vans::VansTimelineAsset source;
-	source.durationTicks = 1000;
-	source.playbackRange = { 0, 1000 };
-	source.workRange = { 0, 1000 };
-	std::string error;
-	if (!Expect(Vans::VansTimelineSerialization::SaveAtomic(sourcePath, source, error), error.c_str()))
-		return false;
-	Vans::VansTimelineEditorUserState saved;
-	saved.playhead = 321;
-	saved.viewStart = -200;
-	saved.pixelsPerTick = 0.75;
-	saved.snapKeys = false;
-	saved.snapRanges = false;
-	saved.autoKeyMode = 2;
-	saved.timeDisplayMode = 2;
-	saved.reversePlayback = true;
-	saved.loopPlaybackRange = true;
-	saved.rowHeight = 38.0f;
-	saved.curveValueZoom = 2.5;
-	saved.curveValuePan = -3.0;
-	saved.showWaveforms = false;
-	saved.showThumbnails = false;
-	saved.search = "camera";
-	saved.mutedTracks.insert("muted-track");
-	saved.pinnedTracks.insert("pinned-track");
-	if (!Expect(Vans::VansTimelineEditorStateStore::SaveUserState(sourcePath, saved, error), error.c_str()))
-		return false;
-	Vans::VansTimelineEditorUserState loaded;
-	if (!Expect(Vans::VansTimelineEditorStateStore::LoadUserState(sourcePath, loaded, error), error.c_str()))
-		return false;
-	if (!Expect(loaded.playhead == 321 && loaded.viewStart == -200 &&
-		std::abs(loaded.pixelsPerTick - 0.75) < 0.0001 && !loaded.snapKeys && !loaded.snapRanges &&
-		loaded.autoKeyMode == 2 && loaded.timeDisplayMode == 2 && loaded.search == "camera" &&
-		loaded.reversePlayback && loaded.loopPlaybackRange && !loaded.showWaveforms && !loaded.showThumbnails &&
-		std::abs(loaded.rowHeight - 38.0f) < 0.001f &&
-		std::abs(loaded.curveValueZoom - 2.5) < 0.0001 && std::abs(loaded.curveValuePan + 3.0) < 0.0001 &&
-		loaded.mutedTracks.find("muted-track") != loaded.mutedTracks.end() &&
-		loaded.pinnedTracks.find("pinned-track") != loaded.pinnedTracks.end(),
-		"Timeline Editor user state did not roundtrip outside the author asset"))
-		return false;
-
-	fs::last_write_time(sourcePath,
-		fs::file_time_type::clock::now() - std::chrono::seconds(2));
-	Vans::VansTimelineAsset recovery = source;
-	recovery.metadata.displayName = "Recovered";
-	if (!Expect(Vans::VansTimelineEditorStateStore::SaveRecovery(sourcePath, recovery, error), error.c_str()))
-		return false;
-	Vans::VansTimelineAsset recovered;
-	bool available = false;
-	if (!Expect(Vans::VansTimelineEditorStateStore::LoadRecoveryIfNewer(
-		sourcePath, recovered, available, error), error.c_str()))
-		return false;
-	const bool valid = available && recovered.metadata.displayName == "Recovered";
-	Vans::VansTimelineEditorStateStore::RemoveRecovery(sourcePath);
-	Vans::VansTimelineEditorStateStore::RemoveUserState(sourcePath);
-	return Expect(valid, "Timeline Editor did not expose a newer recovery snapshot");
-}
-
-bool TestTimelineTimeContract()
-{
-	const Vans::VansTimelineTimebase ntsc{ 60000, 30000, 1001 };
-	const auto oneMinute = Vans::VansTimelineTime::FrameToTick(1798, ntsc);
-	if (!Expect(Vans::VansTimelineTime::FormatTimecode(oneMinute, ntsc, true) == "00:00:59;28",
-		"Timeline 29.97 drop-frame timecode conversion changed"))
-		return false;
-	const auto pingPong = Vans::VansTimelineSectionTimeMapper::Map(
-		150, 0, 400, 10, 110, 1.0, false, Vans::VansTimelineLoopMode::PingPong, 4);
-	if (!Expect(pingPong.active && pingPong.loopIndex == 1 && pingPong.reversed && pingPong.localTick == 59,
-		"Timeline ping-pong section mapping produced the wrong local tick"))
-		return false;
-	const auto reverse = Vans::VansTimelineSectionTimeMapper::Map(
-		0, 0, 100, 10, 110, 1.0, true, Vans::VansTimelineLoopMode::None, 1);
-	return Expect(reverse.active && reverse.reversed && reverse.localTick == 109,
-		"Timeline reverse section mapping did not start at the source-out boundary");
-}
-
-bool TestTimelineWaveformContract()
-{
-	TemporaryDirectory temporary;
-	const fs::path path = temporary.path / "TimelineWaveform.wav";
-	constexpr std::uint32_t sampleRate = 8000;
-	constexpr std::uint32_t sampleCount = 800;
-	constexpr std::uint32_t dataBytes = sampleCount * 2;
-	std::ofstream stream(path, std::ios::binary | std::ios::trunc);
-	if (!Expect(static_cast<bool>(stream), "Timeline waveform fixture could not be created")) return false;
-	const auto writeU16 = [&](std::uint16_t value)
-	{
-		const char bytes[2]{ static_cast<char>(value & 0xffu), static_cast<char>((value >> 8u) & 0xffu) };
-		stream.write(bytes, sizeof(bytes));
-	};
-	const auto writeU32 = [&](std::uint32_t value)
-	{
-		const char bytes[4]{ static_cast<char>(value & 0xffu), static_cast<char>((value >> 8u) & 0xffu),
-			static_cast<char>((value >> 16u) & 0xffu), static_cast<char>((value >> 24u) & 0xffu) };
-		stream.write(bytes, sizeof(bytes));
-	};
-	stream.write("RIFF", 4); writeU32(36 + dataBytes); stream.write("WAVE", 4);
-	stream.write("fmt ", 4); writeU32(16); writeU16(1); writeU16(1); writeU32(sampleRate);
-	writeU32(sampleRate * 2); writeU16(2); writeU16(16);
-	stream.write("data", 4); writeU32(dataBytes);
-	for (std::uint32_t index = 0; index < sampleCount; ++index)
-	{
-		const double phase = static_cast<double>(index) * 440.0 * 6.283185307179586 / sampleRate;
-		const auto sample = static_cast<std::int16_t>(std::sin(phase) * 28000.0);
-		writeU16(static_cast<std::uint16_t>(sample));
-	}
-	stream.close();
-
-	VansEngine::VansAudioWaveform waveform;
-	std::string error;
-	if (!Expect(VansEngine::VansAudioWaveformBuilder::Build(path, 64, waveform, error), error.c_str()))
-		return false;
-	const float minimum = *std::min_element(waveform.minima.begin(), waveform.minima.end());
-	const float maximum = *std::max_element(waveform.maxima.begin(), waveform.maxima.end());
-	return Expect(waveform.minima.size() == 64 && waveform.maxima.size() == 64 &&
-		waveform.durationSeconds > 0.09 && minimum < -0.7f && maximum > 0.7f,
-		"Timeline Audio waveform analysis did not preserve duration and signed peaks");
-}
-
-bool TestTimelineVideoThumbnailContract()
-{
-	TemporaryDirectory temporary;
-	const fs::path path = temporary.path / "TimelineThumbnail.ppm";
-	std::ofstream stream(path, std::ios::binary | std::ios::trunc);
-	if (!Expect(static_cast<bool>(stream), "Timeline thumbnail fixture could not be created"))
-		return false;
-	stream << "P6\n16 9\n255\n";
-	for (int y = 0; y < 9; ++y)
-		for (int x = 0; x < 16; ++x)
-		{
-			const unsigned char pixel[3]{
-				static_cast<unsigned char>(x < 8 ? 240 : 20),
-				static_cast<unsigned char>(y < 5 ? 40 : 220),
-				static_cast<unsigned char>(30)
-			};
-			stream.write(reinterpret_cast<const char*>(pixel), sizeof(pixel));
-		}
-	stream.close();
-
-	VansGraphics::VansVideoThumbnail thumbnail;
-	std::string error;
-	if (!Expect(VansGraphics::VansVideoThumbnailBuilder::Build(
-		path, 64, 36, thumbnail, error), error.c_str()))
-		return false;
-	if (!Expect(thumbnail.width == 64 && thumbnail.height == 36 &&
-		thumbnail.rgba.size() == 64u * 36u * 4u,
-		"Timeline video thumbnail did not preserve the requested aspect and RGBA payload"))
-		return false;
-	const std::size_t leftTop = 0;
-	const std::size_t rightBottom = (static_cast<std::size_t>(35) * 64 + 63) * 4;
-	return Expect(thumbnail.rgba[leftTop] > thumbnail.rgba[leftTop + 1] &&
-		thumbnail.rgba[rightBottom + 1] > thumbnail.rgba[rightBottom],
-		"Timeline video thumbnail did not decode source frame colors");
-}
-
-bool TestTimelineScaleContract()
-{
-	Vans::VansTimelineAsset asset;
-	asset.durationTicks = 100;
-	asset.playbackRange = { 0, 100 };
-	asset.workRange = { 0, 100 };
-	asset.bindings.push_back({ "perf-binding", "Performance Target",
-		Vans::VansTimelineBindingKind::SceneEntity, "timeline-perf-entity" });
-	asset.tracks.reserve(1000);
-	for (int trackIndex = 0; trackIndex < 1000; ++trackIndex)
-	{
-		Vans::VansTimelineTrack track;
-		track.id = "perf-track-" + std::to_string(trackIndex);
-		track.type = Vans::VansTimelineTrackType::Transform;
-		track.name = "Transform " + std::to_string(trackIndex);
-		track.bindingId = "perf-binding";
-		track.order = trackIndex;
-		track.config = Vans::VansTimelineTransformTrackConfig{};
-		Vans::VansTimelineSection section;
-		section.id = "perf-section-" + std::to_string(trackIndex);
-		section.name = track.name;
-		section.durationTicks = 100;
-		section.config = track.config;
-		Vans::VansTimelineChannel channel;
-		channel.id = "perf-channel-" + std::to_string(trackIndex);
-		channel.name = "Position";
-		channel.type = Vans::VansTimelineChannelType::Vec3;
-		channel.keys.reserve(100);
-		for (int keyIndex = 0; keyIndex < 100; ++keyIndex)
-		{
-			Vans::VansTimelineKey key;
-			key.id = "perf-key-" + std::to_string(trackIndex) + "-" + std::to_string(keyIndex);
-			key.tick = keyIndex;
-			key.value = Vans::VansTimelineVec3{ { static_cast<double>(keyIndex),
-				static_cast<double>(trackIndex), 0.0 } };
-			key.interpolation = Vans::VansTimelineInterpolation::Linear;
-			channel.keys.push_back(std::move(key));
-		}
-		section.channels.push_back(std::move(channel));
-		track.sections.push_back(std::move(section));
-		asset.tracks.push_back(std::move(track));
-	}
-
-	const auto compileStart = std::chrono::steady_clock::now();
-	Vans::VansTimelineCompileResult compiled = Vans::VansTimelineCompiler::Compile(asset, {});
-	const double compileMilliseconds = std::chrono::duration<double, std::milli>(
-		std::chrono::steady_clock::now() - compileStart).count();
-	if (!Expect(static_cast<bool>(compiled), compiled.diagnostics.empty()
-		? "Timeline 100000-Key asset did not compile" : compiled.diagnostics.front().message.c_str()))
-		return false;
-
-	Vans::VansRuntimeWorld world;
-	const Vans::VansEntityHandle owner = world.CreateEntity({ "timeline-perf-entity", "Timeline Performance" });
-	Vans::VansRuntimeTimelineComponent component;
-	component.instance.updateMode = Vans::VansTimelineUpdateMode::Manual;
-	Vans::VansTimelinePlayer player;
-	std::string error;
-	if (!Expect(player.Load(compiled.timeline, component, &world, owner, "timeline-performance", error), error.c_str()))
-		return false;
-	player.Play();
-	std::vector<Vans::VansTimelineEvaluationOutput> outputs;
-	outputs.reserve(1000);
-	const auto evaluateStart = std::chrono::steady_clock::now();
-	for (int iteration = 0; iteration < 20; ++iteration)
-	{
-		outputs.clear();
-		player.SeekTicks(iteration * 4 + 1, Vans::VansTimelineSeekPolicy::ContinuousOnly,
-			Vans::VansTimelineEvaluationReason::Scrub);
-		player.UpdatePostScript(0.0, outputs);
-		if (!Expect(outputs.size() == 1000,
-			"Timeline scale evaluation did not produce every active continuous track"))
-			return false;
-	}
-	const double averageEvaluationMilliseconds = std::chrono::duration<double, std::milli>(
-		std::chrono::steady_clock::now() - evaluateStart).count() / 20.0;
-#ifdef NDEBUG
-	constexpr double evaluationBudgetMilliseconds = 25.0;
-#else
-	constexpr double evaluationBudgetMilliseconds = 250.0;
-#endif
-	std::cout << "[TimelineScale] tracks=1000 keys=100000 compileMs=" << compileMilliseconds
-		<< " averageEvaluateMs=" << averageEvaluationMilliseconds << '\n';
-	return Expect(averageEvaluationMilliseconds <= evaluationBudgetMilliseconds,
-		"Timeline 1000-track/100000-Key evaluation exceeded the configuration budget");
-}
 
 struct RuntimeWorldTestComponent
 {
@@ -3013,6 +1996,199 @@ VansGraphics::VansAnimationClip BuildContractClip(const std::string& name,
     return clip;
 }
 
+VansGraphics::VansAnimationClip BuildContractTurnClip(const std::string& name,
+                                                      float rootYawDegrees)
+{
+    VansGraphics::VansAnimationClip clip = BuildContractClip(name, 0.0f, 0.0f);
+    clip.boneKeyframes[0][1].rotation = glm::angleAxis(
+        glm::radians(rootYawDegrees), glm::vec3(0.0f, 0.0f, 1.0f));
+    return clip;
+}
+
+bool TestCharacterTrajectoryGeneratorContract()
+{
+	Vans::VansCharacterMotionSettings settings;
+	Vans::VansCharacterTrajectoryGenerator generator;
+	Vans::VansCharacterMotionIntent intent;
+	intent.moveInputLocal = glm::vec2(0.0f, 1.0f);
+	intent.desiredSpeed = 4.0f;
+	intent.movementReferenceYaw = 0.0f;
+	intent.desiredFacingYaw = 0.0f;
+	intent.hasFacing = true;
+	intent.valid = true;
+
+	constexpr float dt = 1.0f / 60.0f;
+	glm::vec3 position(0.0f);
+	generator.Reset(position, 0.0f);
+	for (int frame = 0; frame < 45; ++frame)
+	{
+		generator.Update(dt, intent, settings, position, 0.0f);
+		const glm::vec3 velocity = generator.GetPlannedVelocityWorld();
+		position += velocity * dt;
+		generator.RecordResolvedMotion(dt, position, velocity, velocity);
+	}
+
+	// Holding Forward while the camera rotates must bend the world trajectory,
+	// but it is not a player-requested change from Forward to another input bucket.
+	glm::vec3 previousRelativeFuture =
+		generator.GetTrajectory().future.back().positionWorld - position;
+	for (int frame = 1; frame <= 20; ++frame)
+	{
+		intent.movementReferenceYaw = static_cast<float>(frame) * 3.0f;
+		intent.desiredFacingYaw = intent.movementReferenceYaw;
+		generator.Update(dt, intent, settings, position, intent.desiredFacingYaw);
+		const Vans::VansCharacterTrajectory& trajectory = generator.GetTrajectory();
+		if (!Expect(trajectory.inputDirectionChangeDegrees <= 0.001f,
+			"Camera rotation was reported as a local input direction change"))
+			return false;
+		const glm::vec3 relativeFuture = trajectory.future.back().positionWorld - position;
+		const float futureJump = glm::length(relativeFuture - previousRelativeFuture);
+		if (futureJump >= 0.45f)
+		{
+			std::cerr << "[ForestContractTests] future trajectory jump=" << futureJump
+				<< " at frame=" << frame << '\n';
+			return Expect(false, "Camera rotation produced a discontinuous future trajectory");
+		}
+		previousRelativeFuture = relativeFuture;
+		const glm::vec3 velocity = generator.GetPlannedVelocityWorld();
+		position += velocity * dt;
+		generator.RecordResolvedMotion(dt, position, velocity, velocity);
+	}
+
+	intent.moveInputLocal = glm::vec2(0.0f, -1.0f);
+	generator.Update(dt, intent, settings, position, intent.desiredFacingYaw);
+	if (!Expect(generator.GetTrajectory().inputDirectionChangeDegrees >= 179.0f,
+		"Forward-to-backward input did not produce an immediate pivot intent"))
+		return false;
+	if (!Expect(generator.GetTrajectory().hasPredictedPivot &&
+		generator.GetTrajectory().predictedPivotTime > 0.0f,
+		"Direction reversal did not predict a future velocity zero crossing"))
+		return false;
+
+	// A root-motion/collision result feeds the planner gradually. A single
+	// anomalous resolved velocity must not replace the complete future plan.
+	Vans::VansCharacterTrajectoryGenerator feedbackGenerator;
+	position = glm::vec3(0.0f);
+	intent.moveInputLocal = glm::vec2(0.0f, 1.0f);
+	intent.movementReferenceYaw = 0.0f;
+	intent.desiredFacingYaw = 0.0f;
+	feedbackGenerator.Reset(position, 0.0f);
+	for (int frame = 0; frame < 45; ++frame)
+	{
+		feedbackGenerator.Update(dt, intent, settings, position, 0.0f);
+		const glm::vec3 velocity = feedbackGenerator.GetPlannedVelocityWorld();
+		position += velocity * dt;
+		feedbackGenerator.RecordResolvedMotion(dt, position, velocity, velocity);
+	}
+	const glm::vec3 plannedBefore = feedbackGenerator.GetPlannedVelocityWorld();
+	feedbackGenerator.RecordResolvedMotion(
+		dt, position, glm::vec3(0.0f, 0.0f, -20.0f), plannedBefore);
+	feedbackGenerator.Update(dt, intent, settings, position, 0.0f);
+	const float maximumExpectedCorrection =
+		settings.maxDeceleration * dt + settings.maxAcceleration * dt * 0.5f + 0.01f;
+	if (!Expect(glm::length(feedbackGenerator.GetPlannedVelocityWorld() - plannedBefore) <=
+		maximumExpectedCorrection,
+		"Resolved Root Motion replaced the planned velocity instead of correcting it"))
+		return false;
+
+	return true;
+}
+
+bool TestMotionMatchingRootMotionRigContract()
+{
+    using namespace VansGraphics;
+
+    Skeleton skeleton;
+    skeleton.bones.resize(2);
+    skeleton.bones[0].id = 0;
+    skeleton.bones[0].name = "SKM_UEFN_Mannequin";
+    skeleton.bones[0].parentIndex = -1;
+    skeleton.bones[0].localTransform = glm::mat4(1.0f);
+    skeleton.bones[0].children.push_back(1);
+    skeleton.bones[1].id = 1;
+    skeleton.bones[1].name = "root";
+    skeleton.bones[1].parentIndex = 0;
+    skeleton.bones[1].localTransform = glm::mat4(1.0f);
+    skeleton.boneNameToIndex["SKM_UEFN_Mannequin"] = 0;
+    skeleton.boneNameToIndex["root"] = 1;
+    skeleton.BuildTopologicalOrder();
+
+    VansAnimationClip clip;
+    clip.clipName = "Walk_F";
+    clip.duration = 1.0f;
+    clip.boneKeyframes.resize(2);
+    clip.boneKeyframes[1] = {
+        { 0.0f, glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), glm::vec3(1.0f) },
+        { 1.0f, glm::vec3(0.0f, -100.0f, 0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), glm::vec3(1.0f) }
+    };
+
+    VansAnimationSampleRequest request;
+    request.previousTime = 0.0f;
+    request.currentTime = 0.5f;
+    request.loop = false;
+    VansPosePayload payload;
+    if (!Expect(VansAnimationSampler::Sample(clip, skeleton, request, payload),
+        "Animation sampler rejected the wrapper-root fixture"))
+        return false;
+    if (!Expect(!payload.rootMotion.valid,
+        "An unanimated skeleton wrapper root was reported as valid root motion"))
+        return false;
+
+    request.rootMotionBoneIndex = 1;
+    if (!Expect(VansAnimationSampler::Sample(clip, skeleton, request, payload)
+        && payload.rootMotion.valid
+        && std::fabs(payload.rootMotion.translation.y + 50.0f) <= 0.0001f,
+        "Motion matching rig root did not override the unanimated skeleton wrapper root"))
+        return false;
+
+    const glm::vec3 animationForward = Vans::EngineLocalToAnimationPlanar(
+        glm::vec3(0.0f, 0.0f, 1.0f));
+    const glm::vec3 engineForward = Vans::AnimationToEngineLocalPlanar(
+        glm::vec3(0.0f, -1.0f, 0.0f));
+    if (!Expect(
+        glm::length(animationForward - glm::vec3(0.0f, -1.0f, 0.0f)) <= 0.0001f &&
+        glm::length(engineForward - glm::vec3(0.0f, 0.0f, 1.0f)) <= 0.0001f,
+        "Animation/engine planar conversion reversed locomotion forward"))
+        return false;
+
+    // A character may carry arbitrary pitch/roll as model-import correction.
+    // Locomotion direction is defined only by its explicit yaw, so validate all
+    // eight authored buckets at a non-axis-aligned world facing.
+    constexpr float facingYaw = 37.0f;
+    const glm::quat worldFromLocomotion = glm::angleAxis(
+        glm::radians(facingYaw), glm::vec3(0.0f, 1.0f, 0.0f));
+    const float diagonal = std::sqrt(0.5f);
+    const std::array<glm::vec3, 8> engineLocalDirections{
+        glm::vec3(0.0f, 0.0f, 1.0f),
+        glm::vec3(diagonal, 0.0f, diagonal),
+        glm::vec3(1.0f, 0.0f, 0.0f),
+        glm::vec3(diagonal, 0.0f, -diagonal),
+        glm::vec3(0.0f, 0.0f, -1.0f),
+        glm::vec3(-diagonal, 0.0f, -diagonal),
+        glm::vec3(-1.0f, 0.0f, 0.0f),
+        glm::vec3(-diagonal, 0.0f, diagonal)
+    };
+    const std::array<glm::vec3, 8> animationDirections{
+        glm::vec3(0.0f, -1.0f, 0.0f),
+        glm::vec3(diagonal, -diagonal, 0.0f),
+        glm::vec3(1.0f, 0.0f, 0.0f),
+        glm::vec3(diagonal, diagonal, 0.0f),
+        glm::vec3(0.0f, 1.0f, 0.0f),
+        glm::vec3(-diagonal, diagonal, 0.0f),
+        glm::vec3(-1.0f, 0.0f, 0.0f),
+        glm::vec3(-diagonal, -diagonal, 0.0f)
+    };
+    for (std::size_t bucket = 0; bucket < engineLocalDirections.size(); ++bucket)
+    {
+        const glm::vec3 worldDirection = worldFromLocomotion * engineLocalDirections[bucket];
+        const glm::vec3 resolved = Vans::WorldToAnimationPlanar(worldDirection, facingYaw);
+        if (!Expect(glm::length(resolved - animationDirections[bucket]) <= 0.0001f,
+            "Locomotion yaw did not preserve an authored direction bucket"))
+            return false;
+    }
+    return true;
+}
+
 bool TestMotionMatchingAutoBuildLocomotionMetadataContract()
 {
     using namespace VansGraphics;
@@ -3033,7 +2209,6 @@ bool TestMotionMatchingAutoBuildLocomotionMetadataContract()
     MotionMatchingSettings settings;
     settings.enabled = true;
     settings.autoBuild = true;
-    settings.externallyDriven = false;
     settings.searchThrottle = 0.01f;
     settings.minSwitchInterval = 0.0f;
     settings.desiredSpeedScale = 1.0f;
@@ -3048,9 +2223,18 @@ bool TestMotionMatchingAutoBuildLocomotionMetadataContract()
 
     VansMotionMatchingRuntime runtime;
     runtime.Configure(settings);
-    std::vector<glm::mat4> localTransforms;
+	VansPosePayload payload;
+	Vans::VansCharacterTrajectory trajectory;
+	trajectory.valid = true;
+	trajectory.currentFacingYaw = 37.0f;
+	trajectory.originWorld = glm::vec3(0.0f);
+	for (std::size_t index = 0; index < trajectory.future.size(); ++index)
+	{
+		trajectory.future[index].time = settings.schema.futureTimes[index];
+		trajectory.future[index].facingYaw = trajectory.currentFacingYaw;
+	}
 
-    runtime.Update(0.033f, skeleton, clips, parameters, glm::mat4(1.0f), localTransforms);
+	runtime.Update(0.033f, skeleton, clips, parameters, &trajectory, payload);
     const MotionMatchingDebugData& idleDebug = runtime.GetDebugData();
     if (!Expect(idleDebug.databaseReady, "Motion matching auto database did not build"))
         return false;
@@ -3060,8 +2244,20 @@ bool TestMotionMatchingAutoBuildLocomotionMetadataContract()
     parameters["Speed"].floatVal = 0.6f;
     parameters["Direction"].floatVal = 0.0f;
     parameters["MoveState"].intVal = 1;
+	const glm::quat worldFromLocomotion = glm::angleAxis(
+		glm::radians(trajectory.currentFacingYaw), glm::vec3(0.0f, 1.0f, 0.0f));
+	trajectory.currentVelocityWorld = worldFromLocomotion * glm::vec3(0.0f, 0.0f, 0.6f);
+	trajectory.desiredVelocityWorld = trajectory.currentVelocityWorld;
+	for (std::size_t index = 0; index < trajectory.future.size(); ++index)
+	{
+		auto& future = trajectory.future[index];
+		future.time = settings.schema.futureTimes[index];
+		future.positionWorld = trajectory.originWorld +
+			trajectory.currentVelocityWorld * future.time;
+		future.velocityWorld = trajectory.currentVelocityWorld;
+	}
     for (int i = 0; i < 8; ++i)
-        runtime.Update(0.033f, skeleton, clips, parameters, glm::mat4(1.0f), localTransforms);
+		runtime.Update(0.033f, skeleton, clips, parameters, &trajectory, payload);
 
     const MotionMatchingDebugData& walkDebug = runtime.GetDebugData();
     if (!Expect(walkDebug.usedThisFrame, "Motion matching did not run for walk query"))
@@ -3071,7 +2267,563 @@ bool TestMotionMatchingAutoBuildLocomotionMetadataContract()
         walkDebug.selectedClip.find("Walk") != std::string::npos;
     if (!Expect(selectedWalk, "Walk query did not select a Walk clip from auto-built metadata"))
         return false;
-    return Expect(walkDebug.switches > 0, "Walk query did not switch away from idle");
+	if (!Expect(walkDebug.switches > 0, "Walk query did not switch away from idle"))
+		return false;
+	if (!ExpectNear(walkDebug.queryDirection, 0.0f, 0.0001f,
+		"Yaw-relative world forward did not produce a forward Motion Matching query"))
+		return false;
+	if (!Expect(payload.rootMotion.valid,
+		"Motion matching did not publish the selected clip root-motion interval"))
+		return false;
+	if (!Expect(glm::length(payload.rootMotion.translation) > 0.0001f,
+		"Motion matching published an empty root-motion interval for moving playback"))
+		return false;
+	for (int frame = 0; frame < 40; ++frame)
+	{
+		if (!runtime.Update(0.033f, skeleton, clips, parameters, &trajectory, payload))
+			return Expect(false, "Motion matching stopped while traversing a locomotion loop");
+		if (payload.rootMotion.valid && payload.rootMotion.translation.y > 0.0001f)
+			return Expect(false, "Motion matching reversed Root Motion at a loop or clip switch seam");
+	}
+	return true;
+}
+
+bool TestMotionMatchingCameraFacingTurnContract()
+{
+    using namespace VansGraphics;
+
+    const float predictedMovingCameraYaw = Vans::PredictFacingYaw(
+        0.0f, 0.0f, 90.0f, 1.0f, 0.10f);
+    if (!Expect(predictedMovingCameraYaw > 70.0f && predictedMovingCameraYaw < 90.0f,
+        "Future facing did not account for camera angular velocity"))
+        return false;
+
+    const Skeleton skeleton = BuildContractHumanoidSkeleton();
+    std::unordered_map<std::string, VansAnimationClip> clips;
+    clips.emplace("Idle_Stand", BuildContractClip("Idle_Stand", 0.0f, 0.0f));
+    clips.emplace("IdleTurn_L_090", BuildContractTurnClip("IdleTurn_L_090", 90.0f));
+    clips.emplace("IdleTurn_R_090", BuildContractTurnClip("IdleTurn_R_090", -90.0f));
+    clips.emplace("WalkStart_F", BuildContractClip("WalkStart_F", -0.30f, 0.10f));
+    clips.emplace("Walk_F", BuildContractClip("Walk_F", -0.70f, 0.20f));
+    clips.emplace("WalkStart_L", BuildContractClip("WalkStart_L", 0.30f, 0.10f));
+    clips.emplace("Walk_L", BuildContractClip("Walk_L", 0.70f, 0.20f));
+    clips.emplace("WalkTurn_L_090", BuildContractTurnClip("WalkTurn_L_090", 90.0f));
+
+    std::unordered_map<std::string, AnimatorParameter> parameters;
+    parameters["Speed"] = { "Speed", AnimatorParamType::Float };
+    parameters["Direction"] = { "Direction", AnimatorParamType::Float };
+    parameters["MoveState"] = { "MoveState", AnimatorParamType::Int };
+    parameters["UseMotionMatching"] = { "UseMotionMatching", AnimatorParamType::Bool };
+    parameters["UseMotionMatching"].boolVal = true;
+
+    MotionMatchingSettings settings;
+    settings.enabled = true;
+    settings.autoBuild = true;
+    settings.searchThrottle = 0.01f;
+    settings.minSwitchInterval = 0.0f;
+    settings.minSwitchCostImprovement = 0.0f;
+    settings.desiredSpeedScale = 1.0f;
+    settings.facingTurnEnterThresholdDegrees = 10.0f;
+    settings.facingTurnExitThresholdDegrees = 3.0f;
+    settings.facingTurnExitYawRateDegreesPerSecond = 8.0f;
+    settings.includeClipTokens = { "Idle", "Walk" };
+    settings.rig.root = "root";
+    settings.rig.trajectoryRoot = "root";
+    settings.rig.pelvis = "pelvis";
+    settings.rig.leftFoot = "foot_l";
+    settings.rig.rightFoot = "foot_r";
+    settings.rig.head = "head";
+    settings.rig.forwardAxis = glm::vec3(0.0f, -1.0f, 0.0f);
+
+    auto buildTrajectory = [&](float desiredFacingYaw)
+    {
+        Vans::VansCharacterTrajectory trajectory;
+        trajectory.valid = true;
+        trajectory.hasFacing = true;
+        trajectory.currentFacingYaw = 37.0f;
+        trajectory.desiredFacingYaw = desiredFacingYaw;
+        trajectory.originWorld = glm::vec3(0.0f);
+        for (std::size_t index = 0; index < trajectory.future.size(); ++index)
+        {
+            trajectory.future[index].time = settings.schema.futureTimes[index];
+            trajectory.future[index].facingYaw = desiredFacingYaw;
+        }
+        return trajectory;
+    };
+
+    for (const int turnSign : { 1, -1 })
+    {
+        VansMotionMatchingRuntime runtime;
+        runtime.Configure(settings);
+        VansPosePayload payload;
+        Vans::VansCharacterTrajectory trajectory = buildTrajectory(37.0f);
+        if (!runtime.Update(0.033f, skeleton, clips, parameters, &trajectory, payload))
+            return Expect(false, "Motion matching rejected the camera-facing idle fixture");
+
+        // A 60-degree request must choose the 90-degree authored arc and enter
+        // it at the matching Pose Search sample. Choosing the nearest 45-degree
+        // clip would leave an unresolved 15-degree error at the clip end.
+        trajectory.desiredFacingYaw = 37.0f + static_cast<float>(turnSign) * 60.0f;
+        for (auto& future : trajectory.future)
+            future.facingYaw = trajectory.desiredFacingYaw;
+
+        bool selectedExpectedTurn = false;
+        bool emittedTurnRootRotation = false;
+        for (int frame = 0; frame < 20; ++frame)
+        {
+            if (!runtime.Update(0.033f, skeleton, clips, parameters, &trajectory, payload))
+                return Expect(false, "Motion matching stopped during a camera-facing turn");
+            const MotionMatchingDebugData& debug = runtime.GetDebugData();
+            const std::string expectedToken = turnSign > 0 ? "Turn_L_090" : "Turn_R_090";
+            selectedExpectedTurn = selectedExpectedTurn ||
+                debug.activeClip.find(expectedToken) != std::string::npos;
+            emittedTurnRootRotation = emittedTurnRootRotation ||
+                (payload.rootMotion.valid &&
+                 std::abs(glm::degrees(glm::eulerAngles(payload.rootMotion.rotation)).z) > 0.01f);
+            if (!Expect(debug.facingTurnRequested &&
+                        debug.facingTurnDirectionSign == turnSign &&
+                        debug.facingTurnBucketDelta == 2,
+                "Camera facing error did not produce the expected turn request"))
+                return false;
+        }
+        if (!Expect(selectedExpectedTurn,
+            "Camera facing error did not select the matching left/right turn clip"))
+            return false;
+        if (!Expect(emittedTurnRootRotation,
+            "Selected camera-facing turn did not emit Root Motion rotation"))
+            return false;
+
+        // A non-loop Turn must finish through the stable Idle loop. It may then
+        // start another Turn if the facing request is still unresolved, but it
+        // must never time-teleport to a sample in the exhausted active clip.
+        bool observedIdleExit = false;
+        bool observedTurnAfterIdleExit = false;
+        std::string previousClip = runtime.GetDebugData().activeClip;
+        float previousTime = runtime.GetDebugData().activeTime;
+        int frozenTurnFrames = 0;
+        for (int frame = 0; frame < 70; ++frame)
+        {
+            if (!runtime.Update(0.033f, skeleton, clips, parameters, &trajectory, payload))
+                return Expect(false, "Motion matching stopped while completing an idle turn");
+            const MotionMatchingDebugData& debug = runtime.GetDebugData();
+            const bool activeTurn = debug.activeClip.find("Turn") != std::string::npos;
+            if (activeTurn && debug.activeClip == previousClip &&
+                std::abs(debug.activeTime - previousTime) <= 0.00001f)
+                ++frozenTurnFrames;
+            else
+                frozenTurnFrames = 0;
+            if (!Expect(frozenTurnFrames < 2,
+                "Turn-in-place remained frozen on a non-loop clip frame"))
+                return false;
+            if (debug.activeClip == "Idle_Stand")
+                observedIdleExit = true;
+            else if (observedIdleExit && activeTurn)
+                observedTurnAfterIdleExit = true;
+            previousClip = debug.activeClip;
+            previousTime = debug.activeTime;
+        }
+        if (!Expect(observedIdleExit,
+            "Completed turn-in-place did not return to its stable Idle loop"))
+            return false;
+        if (!Expect(observedTurnAfterIdleExit,
+            "Persistent facing intent could not begin a new turn from Idle"))
+            return false;
+
+        // Idle camera rate may keep the currently playing Turn coherent, but it
+        // must not authorize replay once the actual facing error is resolved.
+        trajectory.desiredFacingYaw = trajectory.currentFacingYaw +
+            static_cast<float>(turnSign) * 2.0f;
+        trajectory.desiredFacingYawRate = static_cast<float>(turnSign) * 30.0f;
+        for (auto& future : trajectory.future)
+            future.facingYaw = trajectory.desiredFacingYaw;
+        bool resolvedIdleTurn = false;
+        for (int frame = 0; frame < 40; ++frame)
+        {
+            if (!runtime.Update(0.033f, skeleton, clips, parameters, &trajectory, payload))
+                return Expect(false, "Motion matching stopped while resolving turn-in-place");
+            if (!runtime.GetDebugData().facingTurnRequested)
+            {
+                resolvedIdleTurn = true;
+                break;
+            }
+        }
+        if (!Expect(resolvedIdleTurn,
+            "Idle camera angular velocity replayed a resolved non-loop turn"))
+            return false;
+    }
+
+    // 移动中转相机不得把 one-shot Turn 当成连续转向控制器。未来轨迹继续
+    // 参与 Pose Search，剩余朝向误差由 Root Motion Steering 平滑施加。
+    VansMotionMatchingRuntime movingTurnRuntime;
+    movingTurnRuntime.Configure(settings);
+    VansPosePayload movingTurnPayload;
+    Vans::VansCharacterTrajectory movingTurnTrajectory = buildTrajectory(37.0f);
+    parameters["Speed"].floatVal = 0.6f;
+    parameters["Direction"].floatVal = 0.0f;
+    parameters["MoveState"].intVal = 1;
+    const glm::quat initialWorldFromFacing = glm::angleAxis(
+        glm::radians(movingTurnTrajectory.currentFacingYaw), glm::vec3(0.0f, 1.0f, 0.0f));
+    movingTurnTrajectory.currentVelocityWorld =
+        initialWorldFromFacing * glm::vec3(0.0f, 0.0f, 0.6f);
+    movingTurnTrajectory.desiredVelocityWorld = movingTurnTrajectory.currentVelocityWorld;
+    for (auto& future : movingTurnTrajectory.future)
+    {
+        future.positionWorld = movingTurnTrajectory.originWorld +
+            movingTurnTrajectory.desiredVelocityWorld * future.time;
+        future.velocityWorld = movingTurnTrajectory.desiredVelocityWorld;
+    }
+    for (int frame = 0; frame < 16; ++frame)
+        if (!movingTurnRuntime.Update(
+            0.033f, skeleton, clips, parameters, &movingTurnTrajectory, movingTurnPayload))
+            return Expect(false, "Motion matching stopped before the moving-turn fixture stabilized");
+
+    movingTurnTrajectory.desiredFacingYaw = movingTurnTrajectory.currentFacingYaw + 20.0f;
+    movingTurnTrajectory.desiredFacingYawRate = 45.0f;
+    const glm::quat desiredWorldFromFacing = glm::angleAxis(
+        glm::radians(movingTurnTrajectory.desiredFacingYaw), glm::vec3(0.0f, 1.0f, 0.0f));
+    movingTurnTrajectory.desiredVelocityWorld =
+        desiredWorldFromFacing * glm::vec3(0.0f, 0.0f, 0.6f);
+    for (auto& future : movingTurnTrajectory.future)
+    {
+        future.positionWorld = movingTurnTrajectory.originWorld +
+            movingTurnTrajectory.desiredVelocityWorld * future.time;
+        future.velocityWorld = movingTurnTrajectory.desiredVelocityWorld;
+        future.facingYaw = Vans::PredictFacingYaw(
+            movingTurnTrajectory.currentFacingYaw,
+            movingTurnTrajectory.desiredFacingYaw,
+            movingTurnTrajectory.desiredFacingYawRate,
+            future.time,
+            0.10f);
+    }
+    bool observedSteering = false;
+    bool emittedSteeredRootRotation = false;
+    bool remainedInMovingLoop = true;
+    for (int frame = 0; frame < 80; ++frame)
+    {
+        if (!movingTurnRuntime.Update(
+            0.033f, skeleton, clips, parameters, &movingTurnTrajectory, movingTurnPayload))
+            return Expect(false, "Motion matching stopped during continuous moving-camera turn");
+        const auto& debug = movingTurnRuntime.GetDebugData();
+        remainedInMovingLoop = remainedInMovingLoop &&
+            debug.activeClip.find("Turn") == std::string::npos &&
+            !debug.facingTurnRequested;
+        observedSteering = observedSteering || debug.steeringActive;
+        emittedSteeredRootRotation = emittedSteeredRootRotation ||
+            (movingTurnPayload.rootMotion.valid &&
+             std::abs(glm::degrees(glm::eulerAngles(
+                 movingTurnPayload.rootMotion.rotation)).z) > 0.01f);
+    }
+    if (!Expect(remainedInMovingLoop,
+        "Moving camera intent re-entered a discrete Turn clip"))
+        return false;
+    if (!Expect(observedSteering,
+        "Moving camera intent did not activate Root Motion Steering"))
+        return false;
+    if (!Expect(emittedSteeredRootRotation,
+        "Root Motion Steering did not publish a continuous yaw correction"))
+        return false;
+
+	// Camera-relative world travel may already be curving while the held input is
+	// still Forward. Directional database filtering must follow the local input
+	// semantic; the world trajectory remains available to the numeric cost.
+	VansMotionMatchingRuntime referenceFrameRuntime;
+	referenceFrameRuntime.Configure(settings);
+	VansPosePayload referenceFramePayload;
+	Vans::VansCharacterTrajectory referenceFrameTrajectory = buildTrajectory(0.0f);
+	referenceFrameTrajectory.hasFacing = false;
+	referenceFrameTrajectory.currentFacingYaw = 0.0f;
+	referenceFrameTrajectory.moveInputLocal = glm::vec2(0.0f, 1.0f);
+	referenceFrameTrajectory.currentVelocityWorld = glm::vec3(0.0f, 0.0f, 0.6f);
+	referenceFrameTrajectory.desiredVelocityWorld = glm::vec3(0.6f, 0.0f, 0.0f);
+	for (auto& future : referenceFrameTrajectory.future)
+	{
+		future.positionWorld = referenceFrameTrajectory.originWorld +
+			referenceFrameTrajectory.desiredVelocityWorld * future.time;
+		future.velocityWorld = referenceFrameTrajectory.desiredVelocityWorld;
+		future.facingYaw = 0.0f;
+	}
+	parameters["Speed"].floatVal = 0.6f;
+	parameters["Direction"].floatVal = 1.57079632679f;
+	parameters["MoveState"].intVal = 1;
+	for (int frame = 0; frame < 16; ++frame)
+	{
+		if (!referenceFrameRuntime.Update(
+			0.033f, skeleton, clips, parameters,
+			&referenceFrameTrajectory, referenceFramePayload))
+		{
+			return Expect(false,
+				"Motion matching stopped during movement-reference trajectory testing");
+		}
+	}
+	const MotionMatchingDebugData& referenceFrameDebug =
+		referenceFrameRuntime.GetDebugData();
+	if (!ExpectNear(referenceFrameDebug.queryDirection, 0.0f, 0.0001f,
+		"Camera-relative world trajectory replaced the held local Forward direction"))
+		return false;
+	if (!Expect(referenceFrameDebug.activeClip.find("_L") == std::string::npos,
+		"Camera-relative world trajectory selected a lateral direction database"))
+		return false;
+
+	referenceFrameTrajectory.hasDirectionChange = true;
+	referenceFrameTrajectory.directionChangeDegrees = 180.0f;
+	referenceFrameTrajectory.inputDirectionChangeDegrees = 180.0f;
+	if (!referenceFrameRuntime.Update(
+		0.033f, skeleton, clips, parameters,
+		&referenceFrameTrajectory, referenceFramePayload))
+	{
+		return Expect(false, "Motion matching stopped while checking pivot availability");
+	}
+	const MotionMatchingDebugData& noPivotDebug = referenceFrameRuntime.GetDebugData();
+	if (!Expect(!noPivotDebug.pivotDatabaseAvailable && !noPivotDebug.pivotRequested,
+		"Missing pivot data still suppressed normal locomotion/facing matching"))
+		return false;
+
+    // Changing travel direction while keeping camera-facing yaw fixed must
+    // select a strafe/start clip, never a root-rotating turn clip.
+    VansMotionMatchingRuntime strafeRuntime;
+    strafeRuntime.Configure(settings);
+    VansPosePayload strafePayload;
+    Vans::VansCharacterTrajectory strafeTrajectory = buildTrajectory(37.0f);
+    parameters["Speed"].floatVal = 0.0f;
+    parameters["Direction"].floatVal = 0.0f;
+    parameters["MoveState"].intVal = 0;
+    if (!strafeRuntime.Update(0.033f, skeleton, clips, parameters, &strafeTrajectory, strafePayload))
+        return Expect(false, "Motion matching rejected the strafe fixture");
+    parameters["Speed"].floatVal = 0.6f;
+    parameters["Direction"].floatVal = 1.57079632679f;
+    parameters["MoveState"].intVal = 1;
+    const glm::quat worldFromFacing = glm::angleAxis(
+        glm::radians(strafeTrajectory.currentFacingYaw), glm::vec3(0.0f, 1.0f, 0.0f));
+    strafeTrajectory.currentVelocityWorld = worldFromFacing * glm::vec3(0.6f, 0.0f, 0.0f);
+    strafeTrajectory.desiredVelocityWorld = strafeTrajectory.currentVelocityWorld;
+    for (auto& future : strafeTrajectory.future)
+    {
+        future.positionWorld = strafeTrajectory.originWorld +
+            strafeTrajectory.currentVelocityWorld * future.time;
+        future.velocityWorld = strafeTrajectory.currentVelocityWorld;
+        future.facingYaw = strafeTrajectory.currentFacingYaw;
+    }
+    for (int frame = 0; frame < 12; ++frame)
+    {
+        if (!strafeRuntime.Update(0.033f, skeleton, clips, parameters, &strafeTrajectory, strafePayload))
+            return Expect(false, "Motion matching stopped while selecting a strafe clip");
+        const MotionMatchingDebugData& debug = strafeRuntime.GetDebugData();
+        if (!Expect(!debug.facingTurnRequested &&
+                    debug.activeClip.find("Turn") == std::string::npos,
+            "Travel direction change incorrectly triggered a facing turn"))
+            return false;
+    }
+    return true;
+}
+
+bool TestRootMotionSteeringContract()
+{
+	using namespace VansGraphics;
+	RootMotionSteeringSettings settings;
+	settings.predictionTime = 0.5f;
+	settings.correctionHalfLife = 0.01f;
+	settings.maxCorrectionAngleDegrees = 70.0f;
+	settings.maxCorrectionYawRateDegreesPerSecond = 300.0f;
+	settings.minMovementSpeed = 0.1f;
+	VansRootMotionSteering steering;
+	steering.Configure(settings);
+	glm::quat rootRotation(1.0f, 0.0f, 0.0f, 0.0f);
+	const RootMotionSteeringResult result = steering.Apply(
+		0.1f, 1.0f, 0.0f, 90.0f, 0.0f, rootRotation);
+	if (!Expect(result.active && result.limited,
+		"Root Motion Steering did not activate or clamp an oversized correction"))
+		return false;
+	if (!Expect(result.appliedCorrectionDegrees > 0.0f &&
+		result.appliedCorrectionDegrees <= 30.001f,
+		"Root Motion Steering exceeded its configured yaw-rate limit"))
+		return false;
+	if (!ExpectNear(
+		glm::degrees(glm::eulerAngles(rootRotation)).z,
+		result.appliedCorrectionDegrees,
+		0.01f,
+		"Root Motion Steering debug result did not match the emitted rotation"))
+		return false;
+	const RootMotionSteeringResult stopped = steering.Apply(
+		0.1f, 0.0f, 0.0f, 90.0f, 0.0f, rootRotation);
+	return Expect(!stopped.active,
+		"Root Motion Steering remained active after locomotion stopped");
+}
+
+bool TestMotionMatchingPivotDirectionContract()
+{
+	using namespace VansGraphics;
+	const Skeleton skeleton = BuildContractHumanoidSkeleton();
+	std::unordered_map<std::string, VansAnimationClip> clips;
+	clips.emplace("Walk_F", BuildContractClip("Walk_F", -0.70f, 0.20f));
+	clips.emplace("Walk_B", BuildContractClip("Walk_B", 0.70f, 0.20f));
+	clips.emplace("WalkPivot_F_B_Lfoot",
+		BuildContractClip("WalkPivot_F_B_Lfoot", 0.20f, 0.15f));
+	clips.emplace("WalkPivot_B_F_Rfoot",
+		BuildContractClip("WalkPivot_B_F_Rfoot", -0.20f, 0.15f));
+
+	std::unordered_map<std::string, AnimatorParameter> parameters;
+	parameters["Speed"] = { "Speed", AnimatorParamType::Float };
+	parameters["Direction"] = { "Direction", AnimatorParamType::Float };
+	parameters["MoveState"] = { "MoveState", AnimatorParamType::Int };
+	parameters["UseMotionMatching"] = { "UseMotionMatching", AnimatorParamType::Bool };
+	parameters["Speed"].floatVal = 0.7f;
+	parameters["MoveState"].intVal = 1;
+	parameters["UseMotionMatching"].boolVal = true;
+
+	MotionMatchingSettings settings;
+	settings.enabled = true;
+	settings.autoBuild = true;
+	settings.searchThrottle = 0.01f;
+	settings.minSwitchInterval = 0.0f;
+	settings.minSwitchCostImprovement = 0.0f;
+	settings.desiredSpeedScale = 1.0f;
+	settings.pivotEnterAngleDegrees = 55.0f;
+	settings.pivotExitAngleDegrees = 25.0f;
+	settings.pivotMinSpeed = 0.1f;
+	settings.directionBucketTolerance = 0;
+	settings.rig.root = "root";
+	settings.rig.trajectoryRoot = "root";
+	settings.rig.pelvis = "pelvis";
+	settings.rig.leftFoot = "foot_l";
+	settings.rig.rightFoot = "foot_r";
+	settings.rig.head = "head";
+	settings.rig.forwardAxis = glm::vec3(0.0f, -1.0f, 0.0f);
+	MotionMatchingDatabase moveDatabase;
+	moveDatabase.name = "WalkMove";
+	moveDatabase.phase = "Move";
+	moveDatabase.moveStates = { 1 };
+	moveDatabase.includeTokens = { "Walk_" };
+	settings.databases.push_back(moveDatabase);
+	MotionMatchingDatabase pivotDatabase;
+	pivotDatabase.name = "WalkPivot";
+	pivotDatabase.phase = "Pivot";
+	pivotDatabase.moveStates = { 1 };
+	pivotDatabase.includeTokens = { "WalkPivot_" };
+	settings.databases.push_back(pivotDatabase);
+	MotionMatchingSelectorRow moveRow;
+	moveRow.name = "Move";
+	moveRow.phase = "Move";
+	moveRow.moveStates = { 1 };
+	moveRow.databases = { "WalkMove" };
+	settings.selectorRows.push_back(moveRow);
+	MotionMatchingSelectorRow pivotRow;
+	pivotRow.name = "Pivot";
+	pivotRow.phase = "Pivot";
+	pivotRow.moveStates = { 1 };
+	pivotRow.databases = { "WalkPivot" };
+	settings.selectorRows.push_back(pivotRow);
+
+	Vans::VansCharacterTrajectory trajectory;
+	trajectory.valid = true;
+	trajectory.moveInputLocal = glm::vec2(0.0f, 1.0f);
+	trajectory.currentVelocityWorld = glm::vec3(0.0f, 0.0f, 0.7f);
+	trajectory.plannedVelocityWorld = trajectory.currentVelocityWorld;
+	trajectory.desiredVelocityWorld = trajectory.currentVelocityWorld;
+	for (std::size_t index = 0; index < trajectory.future.size(); ++index)
+	{
+		auto& future = trajectory.future[index];
+		future.time = settings.schema.futureTimes[index];
+		future.positionWorld = trajectory.originWorld +
+			trajectory.desiredVelocityWorld * future.time;
+		future.velocityWorld = trajectory.desiredVelocityWorld;
+	}
+
+	VansMotionMatchingRuntime runtime;
+	runtime.Configure(settings);
+	VansPosePayload payload;
+	for (int frame = 0; frame < 16; ++frame)
+		if (!runtime.Update(0.033f, skeleton, clips, parameters, &trajectory, payload))
+			return Expect(false, "Motion matching rejected the Pivot fixture");
+	if (!Expect(runtime.GetDebugData().activeClip == "Walk_F",
+		"Pivot fixture did not stabilize in the Forward loop"))
+		return false;
+
+	trajectory.moveInputLocal = glm::vec2(0.0f, -1.0f);
+	trajectory.desiredVelocityWorld = glm::vec3(0.0f, 0.0f, -0.7f);
+	trajectory.hasDirectionChange = true;
+	trajectory.directionChangeDegrees = 180.0f;
+	trajectory.inputDirectionChangeDegrees = 180.0f;
+	trajectory.hasPredictedPivot = true;
+	trajectory.predictedPivotTime = 0.20f;
+	for (auto& future : trajectory.future)
+	{
+		future.positionWorld = trajectory.originWorld +
+			trajectory.desiredVelocityWorld * future.time;
+		future.velocityWorld = trajectory.desiredVelocityWorld;
+	}
+	bool selectedForwardToBackPivot = false;
+	for (int frame = 0; frame < 12; ++frame)
+	{
+		if (!runtime.Update(0.033f, skeleton, clips, parameters, &trajectory, payload))
+			return Expect(false, "Motion matching stopped during a Pivot request");
+		const MotionMatchingDebugData& debug = runtime.GetDebugData();
+		if (!Expect(debug.pivotDatabaseAvailable && debug.pivotRequested,
+			"Authored Pivot database was not selected for a direction reversal"))
+			return false;
+		selectedForwardToBackPivot = selectedForwardToBackPivot ||
+			debug.activeClip == "WalkPivot_F_B_Lfoot";
+	}
+	if (!selectedForwardToBackPivot)
+	{
+		const MotionMatchingDebugData& debug = runtime.GetDebugData();
+		std::cerr << "[ForestContractTests] active=" << debug.activeClip
+			<< " selected=" << debug.selectedClip << " databases:";
+		for (const auto& database : debug.activeDatabases)
+			std::cerr << ' ' << database;
+		std::cerr << " candidates:";
+		for (const auto& candidate : debug.topCandidates)
+			std::cerr << ' ' << candidate.clipName << '=' << candidate.totalCost;
+		std::cerr << '\n';
+	}
+	if (!Expect(selectedForwardToBackPivot,
+		"Pivot source/target direction metadata selected the wrong transition"))
+		return false;
+	trajectory.hasPredictedPivot = false;
+	trajectory.directionChangeDegrees = 0.0f;
+	for (int frame = 0; frame < 8; ++frame)
+	{
+		if (!runtime.Update(0.033f, skeleton, clips, parameters, &trajectory, payload))
+			return Expect(false, "Motion matching stopped while exiting Pivot");
+	}
+	return Expect(!runtime.GetDebugData().pivotRequested,
+		"Pivot request remained locked after the predicted zero crossing disappeared");
+}
+
+bool TestRootMotionReconciliationContract()
+{
+	using namespace VansGraphics;
+	RootMotionReconciliationSettings settings;
+	settings.enabled = true;
+	settings.linearVelocityHalfLife = 0.10f;
+	settings.angularVelocityHalfLife = 0.10f;
+	settings.maxDuration = 1.0f;
+	settings.maxLinearVelocityCorrection = 100.0f;
+	settings.maxAngularVelocityCorrectionDegreesPerSecond = 1000.0f;
+	VansRootMotionReconciler reconciler;
+	reconciler.Configure(settings);
+	reconciler.RequestTransition(glm::vec3(0.0f, 4.0f, 0.0f), 90.0f);
+
+	constexpr float dt = 0.10f;
+	glm::vec3 translation(0.0f, 0.10f, 0.0f);
+	glm::quat rotation = glm::angleAxis(
+		glm::radians(1.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+	const RootMotionReconciliationResult first = reconciler.Apply(
+		dt, translation, rotation);
+	if (!Expect(first.active &&
+		std::abs(first.appliedVelocityAnimation.y - 4.0f) < 0.001f &&
+		std::abs(first.appliedYawRateDegreesPerSecond - 90.0f) < 0.01f,
+		"Root transition did not preserve outgoing linear/angular velocity"))
+		return false;
+
+	translation = glm::vec3(0.0f, 0.10f, 0.0f);
+	rotation = glm::angleAxis(
+		glm::radians(1.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+	const RootMotionReconciliationResult second = reconciler.Apply(
+		dt, translation, rotation);
+	return Expect(second.active &&
+		second.appliedVelocityAnimation.y < first.appliedVelocityAnimation.y &&
+		second.appliedVelocityAnimation.y > second.targetVelocityAnimation.y,
+		"Root transition velocity did not decay toward the destination clip");
 }
 
 std::string BuildMinimalVClipHeader(bool includeNodeTransformChannels)
@@ -3615,14 +3367,21 @@ bool TestAnimationProjectAnimatorAssetsCanonicalContract()
 			}
             if (record.type == Vans::VansAssetType::Timeline)
             {
+				if (projectName != "DemoHallProject")
+					continue;
                 Vans::VansTimelineAsset timeline;
                 std::string timelineError;
                 if (!Expect(Vans::VansTimelineSerialization::Load(
                     record.sourcePath, timeline, timelineError),
                     "Project Timeline failed canonical loading"))
+                {
+                    std::cerr << "[ProjectTimeline] " << record.sourcePath.string()
+                        << " :: " << timelineError << std::endl;
                     return false;
+                }
                 Vans::VansTimelineValidationContext validation;
                 validation.runtimeValidation = false;
+				validation.extensions = &Vans::VansTimelineTrackExtensionRegistry::BuiltIns();
                 const Vans::VansTimelineDiagnostics diagnostics =
                     Vans::VansTimelineValidator::Validate(timeline, validation);
                 for (const Vans::VansTimelineDiagnostic& diagnostic : diagnostics)
@@ -3669,6 +3428,8 @@ bool TestAnimationProjectAnimatorAssetsCanonicalContract()
         const fs::path scenesRoot = projectRoot / "Scenes";
         if (!fs::exists(scenesRoot))
             continue;
+		if (projectName != "DemoHallProject")
+			continue;
         error.clear();
         for (fs::recursive_directory_iterator iterator(scenesRoot, error), end;
              !error && iterator != end; iterator.increment(error))
@@ -6207,6 +5968,34 @@ bool TestAudioReverbZoneRuntimeProjection()
 
 bool TestExposureParameterContract()
 {
+	if (!Expect(sizeof(VansGraphics::VansPostProcessParamsGPU) == 112,
+		"Post-process UBO size changed unexpectedly"))
+		return false;
+	if (!Expect(offsetof(VansGraphics::VansPostProcessParamsGPU, m_BloomIntensity) == 16,
+		"Post-process bloom params are not vec4-aligned after exposure"))
+		return false;
+	if (!Expect(offsetof(VansGraphics::VansPostProcessParamsGPU, m_EnableDOF) == 96,
+		"Post-process DOF enable flag is not aligned with the shader UBO"))
+		return false;
+	if (!Expect(offsetof(VansGraphics::VansPostProcessParamsGPU, m_EnableAutoExposure) == 100,
+		"Post-process auto exposure flag is not aligned with the shader UBO"))
+		return false;
+	if (!Expect(sizeof(VansGraphics::VansBloomShapeParamsGPU) == 32,
+		"Bloom shape UBO size changed unexpectedly"))
+		return false;
+
+	const VansGraphics::VansPostProcessProfile defaultProfile;
+	if (!Expect(defaultProfile.ToExposureAdaptParams(0.016f).m_EnableAutoExposure == 0,
+		"Auto exposure should default to disabled"))
+		return false;
+	if (!Expect(defaultProfile.m_DOFBlurTransmissionBackground,
+		"DOF should default to a transparent-safe transmission background"))
+		return false;
+	const VansGraphics::VansPostProcessParamsGPU defaultPostProcess = defaultProfile.ToGPUParams();
+	if (!Expect(defaultPostProcess.m_EnableAutoExposure == 0,
+		"Auto exposure should default to disabled in final post-process params"))
+		return false;
+
 	VansGraphics::VansPostProcessProfile profile;
 	profile.m_MinEV100 = 8.0f;
 	profile.m_MaxEV100 = -4.0f;
@@ -6225,8 +6014,110 @@ bool TestExposureParameterContract()
 	if (!Expect(params.m_DeltaTime == 0.25f,
 		"Exposure delta time was not bounded after a long frame"))
 		return false;
-	return Expect(params.m_EnableAutoExposure == 1,
-		"Exposure enable state was not uploaded");
+	if (!Expect(params.m_ExposureCompensation == profile.m_ExposureCompensation,
+		"FSR exposure compensation was not uploaded"))
+		return false;
+	if (!Expect(params.m_EnableAutoExposure == 1,
+		"Exposure enable state was not uploaded"))
+		return false;
+	if (!Expect(profile.ToGPUParams().m_EnableAutoExposure == 1,
+		"Auto exposure enable state was not uploaded to final post-process params"))
+		return false;
+
+	profile.m_EnableBloom = true;
+	profile.m_BloomThreshold = 2.0f;
+	profile.m_BloomKnee = 0.35f;
+	profile.m_BloomScatter = 0.65f;
+	profile.m_BloomIntensity = 0.9f;
+	profile.m_BloomClamp = 32.0f;
+	profile.m_BloomTintR = 1.2f;
+	profile.m_BloomTintG = 0.8f;
+	profile.m_BloomTintB = 0.6f;
+	const VansGraphics::VansBloomParamsGPU bloom = profile.ToBloomParams();
+	if (!ExpectNear(bloom.m_Threshold, 2.0f, 0.0001f,
+		"Bloom threshold was not uploaded"))
+		return false;
+	if (!ExpectNear(bloom.m_Knee, 0.35f, 0.0001f,
+		"Bloom knee was not uploaded"))
+		return false;
+	if (!ExpectNear(bloom.m_Scatter, 0.65f, 0.0001f,
+		"Bloom scatter was not uploaded in shader order"))
+		return false;
+	if (!ExpectNear(bloom.m_Clamp, 32.0f, 0.0001f,
+		"Bloom clamp was not uploaded"))
+		return false;
+	if (!ExpectNear(bloom.m_TintR, 1.2f, 0.0001f,
+		"Bloom tint R was not uploaded"))
+		return false;
+	if (!ExpectNear(bloom.m_TintG, 0.8f, 0.0001f,
+		"Bloom tint G was not uploaded"))
+		return false;
+	if (!ExpectNear(bloom.m_TintB, 0.6f, 0.0001f,
+		"Bloom tint B was not uploaded"))
+		return false;
+
+	profile.m_BloomShapeMode = 2;
+	profile.m_BloomShapeIntensity = 0.85f;
+	profile.m_BloomShapeBlend = 0.7f;
+	profile.m_BloomShapeAngleDeg = 90.0f;
+	profile.m_BloomAnamorphicStretch = 6.0f;
+	profile.m_BloomStreakCount = 6;
+	profile.m_BloomStreakLength = 42.0f;
+	profile.m_BloomStreakAttenuation = 0.8f;
+	const VansGraphics::VansBloomShapeParamsGPU shape = profile.ToBloomShapeParams();
+	if (!Expect(shape.m_Mode == 2 && shape.m_StreakCount == 6,
+		"Bloom shape mode or arm count was not uploaded"))
+		return false;
+	if (!ExpectNear(shape.m_ShapeIntensity, 0.85f, 0.0001f,
+		"Bloom shape intensity was not uploaded"))
+		return false;
+	if (!ExpectNear(shape.m_ShapeBlend, 0.7f, 0.0001f,
+		"Bloom shape blend was not uploaded"))
+		return false;
+	if (!ExpectNear(shape.m_ShapeAngleRadians, 1.5707964f, 0.0001f,
+		"Bloom shape angle was not converted to radians"))
+		return false;
+	if (!ExpectNear(shape.m_AnamorphicStretch, 6.0f, 0.0001f,
+		"Bloom anamorphic stretch was not uploaded"))
+		return false;
+	if (!ExpectNear(shape.m_StreakLength, 42.0f, 0.0001f,
+		"Bloom streak length was not uploaded"))
+		return false;
+	if (!ExpectNear(shape.m_StreakAttenuation, 0.8f, 0.0001f,
+		"Bloom streak attenuation was not uploaded"))
+		return false;
+
+	profile.m_EnableDOF = true;
+	profile.m_FocusDistance = 7.5f;
+	profile.m_FocalLengthMm = 85.0f;
+	profile.m_FStop = 1.4f;
+	profile.m_SensorHeightMm = 24.0f;
+	profile.m_MaxCoC = 18.0f;
+	const VansGraphics::VansDepthOfFieldParamsGPU dof =
+		profile.ToDepthOfFieldParams(1920, 1080);
+	if (!Expect(dof.m_EnableDOF == 1,
+		"DOF enable state was not uploaded"))
+		return false;
+	if (!ExpectNear(dof.m_FocusDistance, 7.5f, 0.0001f,
+		"DOF focus distance was not uploaded"))
+		return false;
+	if (!ExpectNear(dof.m_FocalLengthMm, 85.0f, 0.0001f,
+		"DOF focal length was not uploaded"))
+		return false;
+	if (!ExpectNear(dof.m_FStop, 1.4f, 0.0001f,
+		"DOF f-stop was not uploaded"))
+		return false;
+	if (!ExpectNear(dof.m_SensorHeightMm, 24.0f, 0.0001f,
+		"DOF sensor height was not uploaded"))
+		return false;
+	if (!ExpectNear(dof.m_MaxCoC, 18.0f, 0.0001f,
+		"DOF max CoC was not uploaded"))
+		return false;
+	if (!ExpectNear(dof.m_InvRenderWidth, 1.0f / 1920.0f, 0.000001f,
+		"DOF inverse render width was not uploaded"))
+		return false;
+	return ExpectNear(dof.m_InvRenderHeight, 1.0f / 1080.0f, 0.000001f,
+		"DOF inverse render height was not uploaded");
 }
 
 bool TestPostProcessSceneSettingsProjection()
@@ -6242,7 +6133,28 @@ bool TestPostProcessSceneSettingsProjection()
 			}) },
 			{ "bloom", Value::Object({
 				{ "enable", Value::Bool(true) },
-				{ "intensity", Value::Float(0.75) }
+				{ "intensity", Value::Float(0.75) },
+				{ "clamp", Value::Float(48.0) },
+				{ "tintR", Value::Float(1.1) },
+				{ "tintG", Value::Float(0.9) },
+				{ "tintB", Value::Float(0.7) },
+				{ "shapeMode", Value::Int(2) },
+				{ "shapeIntensity", Value::Float(0.6) },
+				{ "shapeBlend", Value::Float(0.8) },
+				{ "shapeAngleDeg", Value::Float(30.0) },
+				{ "anamorphicStretch", Value::Float(5.0) },
+				{ "streakCount", Value::Int(6) },
+				{ "streakLength", Value::Float(36.0) },
+				{ "streakAttenuation", Value::Float(0.75) }
+			}) },
+			{ "dof", Value::Object({
+				{ "enable", Value::Bool(true) },
+				{ "focusDistance", Value::Float(6.0) },
+				{ "focalLengthMm", Value::Float(70.0) },
+				{ "fStop", Value::Float(2.0) },
+				{ "sensorHeightMm", Value::Float(24.0) },
+				{ "maxCoC", Value::Float(16.0) },
+				{ "blurTransmissionBackground", Value::Bool(false) }
 			}) },
 			{ "toneMapping", Value::Object({
 				{ "type", Value::Int(2) },
@@ -6265,8 +6177,25 @@ bool TestPostProcessSceneSettingsProjection()
 		postProcess.minEV100 == -4.0f && postProcess.maxEV100 == 12.0f,
 		"Exposure scene settings were not projected"))
 		return false;
-	if (!Expect(postProcess.enableBloom == true && postProcess.bloomIntensity == 0.75f,
+	if (!Expect(postProcess.enableBloom == true && postProcess.bloomIntensity == 0.75f &&
+		postProcess.bloomClamp == 48.0f &&
+		postProcess.bloomTintR == 1.1f && postProcess.bloomTintG == 0.9f &&
+		postProcess.bloomTintB == 0.7f &&
+		postProcess.bloomShapeMode == 2 &&
+		postProcess.bloomShapeIntensity == 0.6f &&
+		postProcess.bloomShapeBlend == 0.8f &&
+		postProcess.bloomShapeAngleDeg == 30.0f &&
+		postProcess.bloomAnamorphicStretch == 5.0f &&
+		postProcess.bloomStreakCount == 6 &&
+		postProcess.bloomStreakLength == 36.0f &&
+		postProcess.bloomStreakAttenuation == 0.75f,
 		"Bloom scene settings were not projected"))
+		return false;
+	if (!Expect(postProcess.enableDOF == true &&
+		postProcess.focusDistance == 6.0f && postProcess.focalLengthMm == 70.0f &&
+		postProcess.fStop == 2.0f && postProcess.sensorHeightMm == 24.0f &&
+		postProcess.maxCoC == 16.0f && postProcess.dofBlurTransmissionBackground == false,
+		"DOF scene settings were not projected"))
 		return false;
 	if (!Expect(postProcess.toneMapperType == 2 && postProcess.whitePoint == 8.0f,
 		"Tone-mapping scene settings were not projected"))
@@ -6457,50 +6386,271 @@ bool TestGIProbeUpdateScheduleContract()
 }
 }
 
+bool TestAsyncComputeSubmitGraphContract()
+{
+	using namespace VansGraphics;
+	std::vector<std::string> asyncCatalogErrors;
+	if (!VansRenderPassCatalog::AuditAsyncMigrationContracts(asyncCatalogErrors))
+		return false;
+
+	VansQueueCapabilities capabilities;
+	capabilities.graphicsFamily = 0u;
+	capabilities.computeFamily = 0u;
+	if (capabilities.SupportsAsyncCompute())
+		return false;
+	capabilities.computeFamily = 1u;
+	capabilities.hasDedicatedAsyncComputeQueue = true;
+	if (!capabilities.SupportsAsyncCompute())
+		return false;
+
+	Vans::VansProjectRenderSettingsData persistedSettings;
+	persistedSettings.commandRecordingSettings.asyncComputeEnabled = true;
+	const nlohmann::json encodedSettings =
+		Vans::VansProjectSettingsJsonCodec::EncodeRenderSettings(persistedSettings);
+	if (!encodedSettings["commandRecording"].value("asyncComputeEnabled", false)
+		|| encodedSettings["commandRecording"].contains("asyncComputeMode")
+		|| encodedSettings["commandRecording"].contains("asyncGIEnabled"))
+	{
+		return false;
+	}
+	Vans::VansProjectRenderSettingsData decodedSettings;
+	std::vector<std::string> warnings;
+	std::string codecError;
+	if (!Vans::VansProjectSettingsJsonCodec::DecodeRenderSettings(
+		encodedSettings, decodedSettings, warnings, codecError))
+	{
+		return false;
+	}
+	if (!decodedSettings.commandRecordingSettings.asyncComputeEnabled)
+		return false;
+
+	nlohmann::json legacySettings = encodedSettings;
+	legacySettings["commandRecording"].erase("asyncComputeEnabled");
+	legacySettings["commandRecording"]["asyncComputeMode"] = "Auto";
+	Vans::VansProjectRenderSettingsData migratedSettings;
+	warnings.clear();
+	if (!Vans::VansProjectSettingsJsonCodec::DecodeRenderSettings(
+		legacySettings, migratedSettings, warnings, codecError)
+		|| !migratedSettings.commandRecordingSettings.asyncComputeEnabled
+		|| warnings.empty())
+	{
+		return false;
+	}
+
+	const VkDevice fakeDevice = reinterpret_cast<VkDevice>(uintptr_t(1));
+	const VkQueue fakeGraphicsQueue = reinterpret_cast<VkQueue>(uintptr_t(2));
+	const VkQueue fakeComputeQueue = reinterpret_cast<VkQueue>(uintptr_t(3));
+	const VkCommandBuffer fakeComputeCmd = reinterpret_cast<VkCommandBuffer>(uintptr_t(4));
+	const VkCommandBuffer fakeGraphicsCmd = reinterpret_cast<VkCommandBuffer>(uintptr_t(5));
+
+	VansFrameSubmitOrchestrator graph;
+	graph.Bind(fakeDevice, fakeGraphicsQueue, fakeComputeQueue, fakeGraphicsQueue);
+	VansFrameSubmitNode producer;
+	producer.name = "TileLight";
+	producer.queue = VansQueueRole::Compute;
+	producer.commandBuffers = { fakeComputeCmd };
+	producer.signals = { VansSyncPoint::TileLightDone };
+	producer.resources = {
+		{ "TileLightLists", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+			VK_IMAGE_LAYOUT_UNDEFINED, false, true, false, false }
+	};
+	graph.AddNode(std::move(producer));
+
+	VansFrameSubmitNode consumer;
+	consumer.name = "Deferred";
+	consumer.queue = VansQueueRole::Graphics;
+	consumer.commandBuffers = { fakeGraphicsCmd };
+	consumer.waits = {
+		{ VansSyncPoint::TileLightDone, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT }
+	};
+	consumer.resources = {
+		{ "TileLightLists", VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
+			VK_IMAGE_LAYOUT_UNDEFINED, false, false, false, false }
+	};
+	consumer.waitForCompletion = true;
+	graph.AddNode(std::move(consumer));
+	std::string validationError;
+	if (!graph.Validate(&validationError))
+		return false;
+	const std::string debugSummary = graph.BuildDebugSummary();
+	if (debugSummary.find("TileLightDone") == std::string::npos
+		|| debugSummary.find("TileLightLists") == std::string::npos)
+	{
+		return false;
+	}
+
+	graph.Reset();
+	VansFrameSubmitNode unsafeProducer;
+	unsafeProducer.name = "UnsafeProducer";
+	unsafeProducer.queue = VansQueueRole::Compute;
+	unsafeProducer.commandBuffers = { fakeComputeCmd };
+	unsafeProducer.signals = { VansSyncPoint::TileLightDone };
+	unsafeProducer.resources = {
+		{ "SharedBuffer", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+			VK_IMAGE_LAYOUT_UNDEFINED, false, true, true, false }
+	};
+	graph.AddNode(std::move(unsafeProducer));
+	VansFrameSubmitNode unsafeConsumer;
+	unsafeConsumer.name = "UnsafeConsumer";
+	unsafeConsumer.queue = VansQueueRole::Graphics;
+	unsafeConsumer.commandBuffers = { fakeGraphicsCmd };
+	unsafeConsumer.resources = {
+		{ "SharedBuffer", VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
+			VK_IMAGE_LAYOUT_UNDEFINED, false, false, true, false }
+	};
+	unsafeConsumer.waitForCompletion = true;
+	graph.AddNode(std::move(unsafeConsumer));
+	if (graph.Validate(&validationError)
+		|| validationError.find("cross-queue resource hazard") == std::string::npos)
+	{
+		return false;
+	}
+
+	graph.Reset();
+	VansFrameSubmitNode invalidConsumer;
+	invalidConsumer.name = "InvalidConsumer";
+	invalidConsumer.queue = VansQueueRole::Graphics;
+	invalidConsumer.commandBuffers = { fakeGraphicsCmd };
+	invalidConsumer.waits = {
+		{ VansSyncPoint::GBufferDone, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT }
+	};
+	graph.AddNode(std::move(invalidConsumer));
+	if (graph.Validate(&validationError))
+		return false;
+
+	graph.Shutdown();
+	return true;
+}
+
+bool TestFSRHistoryResetContract()
+{
+	using namespace VansGraphics;
+	VansFSRHistoryState history;
+	const auto bits = [](VansFSRResetReason value)
+	{
+		return static_cast<std::uint32_t>(value);
+	};
+	const auto contains = [&](VansFSRResetReason value, VansFSRResetReason flag)
+	{
+		return (bits(value) & bits(flag)) != 0u;
+	};
+
+	if (!contains(history.GetPendingReasons(), VansFSRResetReason::FirstFrame))
+		return false;
+	history.ObserveFrame(10, reinterpret_cast<const void*>(1), 1280, 720, 1920, 1080, VansFSRMode::Quality);
+	// Merely observing a frame must not consume a reset after a failed dispatch.
+	if (!contains(history.GetPendingReasons(), VansFSRResetReason::FirstFrame))
+		return false;
+	history.OnDispatchSucceeded();
+	if (history.IsResetPending() ||
+		!contains(history.GetLastConsumedReasons(), VansFSRResetReason::FirstFrame))
+		return false;
+
+	history.ObserveFrame(12, reinterpret_cast<const void*>(2), 960, 540, 1600, 900, VansFSRMode::Balanced);
+	const VansFSRResetReason changed = history.GetPendingReasons();
+	return contains(changed, VansFSRResetReason::FrameDiscontinuity) &&
+		contains(changed, VansFSRResetReason::CameraCut) &&
+		contains(changed, VansFSRResetReason::RenderSizeChange) &&
+		contains(changed, VansFSRResetReason::DisplaySizeChange) &&
+		contains(changed, VansFSRResetReason::ModeChange);
+}
+
 int main()
 {
+	if (!TestCharacterTrajectoryGeneratorContract())
+		return 111;
+	if (!TestMotionMatchingRootMotionRigContract())
+		return 109;
+	if (!TestMotionMatchingAutoBuildLocomotionMetadataContract())
+		return 31;
+	if (!TestMotionMatchingCameraFacingTurnContract())
+		return 110;
+	if (!TestRootMotionSteeringContract())
+		return 112;
+	if (!TestRootMotionReconciliationContract())
+		return 114;
+	if (!TestMotionMatchingPivotDirectionContract())
+		return 113;
+	if (!TestGAFGameplayTagsContract())
+		return 94;
+	if (!TestGAFAttributesContract())
+		return 95;
+	if (!TestGAFCuesAndEffectsContract())
+		return 96;
+	if (!TestGAFTargetingContract())
+		return 97;
+	if (!TestGAFDefinitionAndServiceContract())
+		return 98;
+	if (!TestGAFResourceLedgerAndTaskContract())
+		return 99;
+	if (!TestGAFExecutionGraphContract())
+		return 100;
+	if (!TestGAFActionHostLifecycleContract())
+		return 101;
+	if (!TestGAFAssetSchemaAndCookContract())
+		return 102;
+	if (!TestGAFDemoHallWindowBreakContract())
+		return 108;
+	if (!TestGAFPackagingContract())
+		return 103;
+	if (!TestGAFNetworkContract())
+		return 104;
+	if (!TestGAFDebugAndReplayContract())
+		return 105;
+	if (!TestGAFSampleLibraryContract())
+		return 106;
+	if (!TestGAFLuaBridgeContract())
+		return 107;
+	if (!TestFSRHistoryResetContract())
+		return 94;
+	if (!TestAsyncComputeSubmitGraphContract())
+		return 93;
     if (!TestPackageManifestRoundTrip())
         return 1;
+	if (!TestSkinProfileJsonRoundTrip())
+		return 76;
+	if (!TestSkinProfileJsonAliasDecode())
+		return 77;
+	if (!TestSkinProfileMaterialProjectionContract())
+		return 78;
+	if (!TestSkinProfileLUTGenerationContract())
+		return 79;
     if (!TestAssetPolicies())
         return 2;
     if (!TestGameplayFrameOrder())
         return 3;
-	if (!TestTimelinePropertyRegistryContract())
+	if (!TestCameraControlArbiterContract())
+		return 82;
+	if (!TestTimelineRegistryContract())
 		return 58;
-	if (!TestTimelineEventPolicyContract())
+	if (!TestTimelineSerializationContract())
 		return 59;
-	if (!TestTimelineManualRuntimeControlContract())
+	if (!TestTimelineEditorInteractionContract())
+		return 76;
+	if (!TestTimelineDemoHallAssetContract())
+		return 84;
+	if (!TestTimelineCompileEvaluateContract())
 		return 72;
-	if (!TestTimelineNestedPlayerLifetimeContract())
+	if (!TestTimelineGenericExtensionContract())
+		return 80;
+	if (!TestTimelinePointAndRangeContract())
+		return 81;
+	if (!TestTimelineExternalClockContract())
+		return 83;
+	if (!TestTimelineSessionContract())
 		return 73;
-	if (!TestTimelineCanonicalRoundTripContract())
-		return 60;
-	if (!TestTimelineCameraShakeEvaluationContract())
-		return 92;
-	if (!TestTimelineCapabilityAndGuidContract())
-		return 61;
-	if (!TestTimelineDependencyClosureContract())
-		return 62;
-	if (!TestTimelineScenePackageDependencyContract())
-		return 67;
+	if (!TestTimelineSessionFailureTransactionContract())
+		return 85;
+	if (!TestTimelineStationaryContinuousContract())
+		return 86;
 	if (!TestTimelinePreAnimatedStackContract())
 		return 63;
-	if (!TestTimelineIsolatedPreviewOwnerContract())
-		return 68;
-	if (!TestAnimationV2TimelineShowcaseContract())
-		return 74;
-	if (!TestTimelineEditorTransactionContract())
-		return 64;
-	if (!TestTimelineEditorStateAndRecoveryContract())
-		return 66;
 	if (!TestTimelineTimeContract())
 		return 65;
-	if (!TestTimelineWaveformContract())
-		return 69;
-	if (!TestTimelineVideoThumbnailContract())
-		return 71;
-	if (!TestTimelineScaleContract())
-		return 70;
+	if (!TestTimelineEventContract())
+		return 66;
+	if (!TestTimelineSubTimelineContract())
+		return 67;
 	if (!TestRuntimeWorldEntityLifetimeContract())
         return 23;
     if (!TestRuntimeWorldParentEditContract())
@@ -6527,8 +6677,6 @@ int main()
         return 33;
     if (!TestScriptLightIndexRebindFacadeContract())
         return 34;
-    if (!TestMotionMatchingAutoBuildLocomotionMetadataContract())
-        return 31;
     if (!TestAnimationClipNodeTransformChannelConfigContract())
         return 32;
     if (!TestAnimationStateMachineRestartSamplesStartPoseContract())

@@ -14,8 +14,6 @@ layout(set = 0, binding = 0) uniform WaterSurfaceParams
     ivec4 simulationParams;
     vec4 waveParticleParams0;
     vec4 waveParticleParams1;
-    vec4 waveParticleParams2;
-    vec4 waveParticleParams3;
     vec4 flowMapWorld;
     vec4 flowMapParams;
     vec4 flowMapFallback;

@@ -1,4 +1,6 @@
 #include "VansMotionMatching.h"
+#include "../VansAnimationSampler.h"
+#include "../VansPoseMath.h"
 #include "../../Util/VansLog.h"
 
 #include <../../GLM/gtc/matrix_transform.hpp>
@@ -134,6 +136,8 @@ namespace
 			return "Start";
 		if (name.find("stop") != std::string::npos)
 			return "Stop";
+		if (name.find("pivot") != std::string::npos)
+			return "Pivot";
 		if (name.find("turn") != std::string::npos)
 			return "Turn";
 		if (name.find("transition") != std::string::npos)
@@ -152,6 +156,7 @@ namespace
 		const std::string loweredPhase = ToLower(phase);
 		if (loweredPhase == "start" ||
 		    loweredPhase == "stop" ||
+		    loweredPhase == "pivot" ||
 		    loweredPhase == "turn" ||
 		    loweredPhase == "transition")
 		{
@@ -234,6 +239,45 @@ namespace
 		return -1;
 	}
 
+	int DirectionTokenToBucket(const std::string& token)
+	{
+		if (token == "f") return 0;
+		if (token == "fl") return 1;
+		if (token == "l" || token == "ll") return 2;
+		if (token == "bl") return 3;
+		if (token == "b") return 4;
+		if (token == "br") return 5;
+		if (token == "r" || token == "rr") return 6;
+		if (token == "fr") return 7;
+		// UE 的 strafing 命名区分领先脚：LR/RL 仍分别代表左/右方向。
+		if (token == "lr") return 2;
+		if (token == "rl") return 6;
+		return -1;
+	}
+
+	void InferAutoPivotDirectionBuckets(
+		const std::string& clipName, MotionMatchingDatabaseClip& clip)
+	{
+		const std::string name = ToLower(clipName);
+		const size_t pivot = name.find("pivot_");
+		if (pivot == std::string::npos)
+			return;
+		const size_t sourceBegin = pivot + 6;
+		const size_t sourceEnd = name.find('_', sourceBegin);
+		if (sourceEnd == std::string::npos)
+			return;
+		const size_t targetEnd = name.find('_', sourceEnd + 1);
+		const std::string source = name.substr(
+			sourceBegin, sourceEnd - sourceBegin);
+		const std::string target = name.substr(
+			sourceEnd + 1,
+			(targetEnd == std::string::npos ? name.size() : targetEnd) - sourceEnd - 1);
+		if (clip.sourceDirectionBucket < 0)
+			clip.sourceDirectionBucket = DirectionTokenToBucket(source);
+		if (clip.directionBucket < 0)
+			clip.directionBucket = DirectionTokenToBucket(target);
+	}
+
 	void InferAutoTurnMetadata(const std::string& clipName, MotionMatchingDatabaseClip& clip)
 	{
 		const std::string name = ToLower(clipName);
@@ -268,7 +312,9 @@ namespace
 			settings.states,
 			databaseClip.sourceMoveState,
 			databaseClip.targetMoveState);
-		if (databaseClip.directionBucket < 0)
+		if (ToLower(effectivePhase) == "pivot")
+			InferAutoPivotDirectionBuckets(databaseClip.name, databaseClip);
+		else if (databaseClip.directionBucket < 0)
 			databaseClip.directionBucket = InferAutoDirectionBucket(databaseClip.name);
 		InferAutoTurnMetadata(databaseClip.name, databaseClip);
 	}
@@ -371,6 +417,20 @@ namespace
 		if (angle < 0.0f)
 			angle += kTwoPi;
 		return angle - kPi;
+	}
+
+	float SignedPlanarAngleFromForward(const glm::vec3& direction,
+	                                  const glm::vec3& configuredForward)
+	{
+		glm::vec3 forward(configuredForward.x, configuredForward.y, 0.0f);
+		glm::vec3 planar(direction.x, direction.y, 0.0f);
+		if (glm::length(glm::vec2(forward.x, forward.y)) <= kEpsilon ||
+		    glm::length(glm::vec2(planar.x, planar.y)) <= kEpsilon)
+			return 0.0f;
+		forward = glm::normalize(forward);
+		planar = glm::normalize(planar);
+		const glm::vec3 left(-forward.y, forward.x, 0.0f);
+		return std::atan2(glm::dot(planar, left), glm::dot(planar, forward));
 	}
 
 	float LerpAngle(float from, float to, float t)
@@ -512,6 +572,8 @@ namespace
 void VansMotionMatchingRuntime::Configure(const MotionMatchingSettings& settings)
 {
 	m_Settings = settings;
+	m_RootMotionSteering.Configure(settings.steering);
+	m_RootMotionReconciler.Configure(settings.rootMotionReconciliation);
 	MarkDatabaseDirty();
 	m_DebugData.enabled = settings.enabled;
 }
@@ -531,7 +593,10 @@ void VansMotionMatchingRuntime::MarkDatabaseDirty()
 	m_CurrentPelvisVelocity = glm::vec3(0.0f);
 	m_HasQueryVelocity = false;
 	m_HasLastSearchContext = false;
-	m_DirectionChangedForSearch = false;
+	m_LastPivotRequested = false;
+	m_LastFacingTurnRequested = false;
+	m_LastFacingTurnDirectionSign = 0;
+	m_LastFacingTurnBucketDelta = 0;
 	m_CurrentPlaybackRate = 1.0f;
 	m_CurrentTrajectoryVelocityRoot = glm::vec3(0.0f);
 	m_LeftFootPlantWeight = 0.0f;
@@ -539,9 +604,22 @@ void VansMotionMatchingRuntime::MarkDatabaseDirty()
 	m_LeftContactOffset = 0.0f;
 	m_RightContactOffset = 0.0f;
 	m_ContactTransitionActive = false;
-	m_OwnerTransformInitialized = false;
-	m_ActualOwnerVelocityRoot = glm::vec3(0.0f);
-	m_HasActualOwnerVelocity = false;
+	m_PrefersRootMotionThisFrame = false;
+	m_QueryIntentSpeed01 = 0.0f;
+	m_QueryIntentDirection = 0.0f;
+	m_QueryDesiredVelocityRoot = glm::vec3(0.0f);
+	m_QueryFacingDeltaDegrees = 0.0f;
+	m_PivotRequested = false;
+	m_PivotDatabaseAvailable = false;
+	m_UrgentDirectionChange = false;
+	m_RequestedMoveState = 0;
+	m_EffectiveMoveState = 0;
+	m_DirectionalStateFallback = false;
+	m_FacingTurnRequested = false;
+	m_FacingTurnDirectionSign = 0;
+	m_FacingTurnBucketDelta = 0;
+	m_RootMotionSteering.Reset();
+	m_RootMotionReconciler.Reset();
 	m_ActiveDatabaseIndices.clear();
 }
 
@@ -601,20 +679,111 @@ bool VansMotionMatchingRuntime::IsStanceState(int state) const
 int VansMotionMatchingRuntime::ResolveDesiredMoveState(const std::unordered_map<std::string, AnimatorParameter>& parameters) const
 {
 	const int moveState = ReadMoveStateParam(parameters);
-	const bool wantsIdle = ReadSpeedParam(parameters) < m_Settings.states.idleSpeedThreshold ||
+	const bool wantsIdle = m_QueryIntentSpeed01 < m_Settings.states.idleSpeedThreshold ||
 	                       moveState == m_Settings.states.idleState;
 	if (ReadCrouchingParam(parameters) || moveState == m_Settings.states.crouchState)
 		return m_Settings.states.crouchState;
 	return wantsIdle ? m_Settings.states.idleState : moveState;
 }
 
+int VansMotionMatchingRuntime::ResolveDirectionalFallbackMoveState(int requestedMoveState) const
+{
+	if (!IsMovingState(requestedMoveState) ||
+	    requestedMoveState == m_Settings.states.idleState ||
+	    glm::length(glm::vec2(m_QueryDesiredVelocityRoot.x, m_QueryDesiredVelocityRoot.y)) <= kEpsilon)
+	{
+		return requestedMoveState;
+	}
+
+	const bool requestedCrouch = requestedMoveState == m_Settings.states.crouchState;
+	const int tolerance = glm::clamp(m_Settings.directionBucketTolerance, 0, 4);
+	auto directionBucket = [&](const glm::vec2& direction)
+	{
+		constexpr float pi = 3.14159265358979323846f;
+		glm::vec3 forward3(m_Rig.forwardAxis.x, m_Rig.forwardAxis.y, 0.0f);
+		if (glm::length(glm::vec2(forward3.x, forward3.y)) <= kEpsilon)
+			forward3 = glm::vec3(0.0f, -1.0f, 0.0f);
+		else
+			forward3 = glm::normalize(forward3);
+		const glm::vec2 forwardAxis(forward3.x, forward3.y);
+		const glm::vec2 leftAxis(-forwardAxis.y, forwardAxis.x);
+		float angle = std::atan2(glm::dot(direction, leftAxis), glm::dot(direction, forwardAxis));
+		constexpr float twoPi = pi * 2.0f;
+		angle = std::fmod(angle, twoPi);
+		if (angle < 0.0f)
+			angle += twoPi;
+		return static_cast<int>((angle + pi * 0.125f) / (pi * 0.25f)) & 7;
+	};
+	const glm::vec3 intentDirectionRoot = BuildIntentDirectionRoot(m_Rig);
+	const int desiredBucket = directionBucket(
+		glm::vec2(intentDirectionRoot.x, intentDirectionRoot.y));
+	auto sampleDirectionBucket = [&](const Sample& sample)
+	{
+		if (sample.directionBucketFromName >= 0)
+			return sample.directionBucketFromName;
+		const glm::vec2 direction(sample.rawFeature[4], sample.rawFeature[5]);
+		return glm::length(direction) > kEpsilon ? directionBucket(direction) : -1;
+	};
+	auto databaseMatchesStance = [&](const Sample& sample)
+	{
+		if (sample.databaseIndex < 0 ||
+		    sample.databaseIndex >= static_cast<int>(m_Settings.databases.size()))
+			return false;
+		const std::string stance = ToLower(m_Settings.databases[sample.databaseIndex].stance);
+		const bool databaseCrouch = stance == "crouch";
+		if (requestedCrouch)
+			return (databaseCrouch || stance.empty() || stance == "any" || stance == "*") &&
+			       sample.targetMoveState == m_Settings.states.crouchState;
+		return !databaseCrouch && sample.targetMoveState != m_Settings.states.crouchState;
+	};
+	auto sampleMatchesDirection = [&](const Sample& sample)
+	{
+		const int bucket = sampleDirectionBucket(sample);
+		return bucket < 0 ||
+			std::abs(SignedBucketDelta(desiredBucket, bucket)) <= tolerance;
+	};
+
+	for (const Sample& sample : m_Samples)
+	{
+		if (sample.loopLike && sample.targetMoveState == requestedMoveState &&
+		    databaseMatchesStance(sample) && sampleMatchesDirection(sample))
+		{
+			return requestedMoveState;
+		}
+	}
+
+	// 素材库某个速度档缺少目标方向时，不应停在旧动作末帧。保持同一站姿和
+	// 目标方向，从其余移动档中选根速度最接近的循环；CCT 仍只消费该动画的
+	// Root Motion，因此不会用错误方向的胶囊位移掩盖素材缺口。
+	const float desiredSpeed = glm::length(
+		glm::vec2(m_QueryDesiredVelocityRoot.x, m_QueryDesiredVelocityRoot.y));
+	int bestState = requestedMoveState;
+	float bestSpeedError = std::numeric_limits<float>::max();
+	for (const Sample& sample : m_Samples)
+	{
+		if (!sample.loopLike || !IsMovingState(sample.targetMoveState) ||
+		    !databaseMatchesStance(sample) || !sampleMatchesDirection(sample))
+		{
+			continue;
+		}
+		const float speedError = std::abs(sample.trajectorySpeed - desiredSpeed);
+		if (speedError < bestSpeedError)
+		{
+			bestSpeedError = speedError;
+			bestState = sample.targetMoveState;
+		}
+	}
+	return bestState;
+}
+
 void VansMotionMatchingRuntime::ResolveActiveDatabases(
-	const std::unordered_map<std::string, AnimatorParameter>& parameters)
+	const std::unordered_map<std::string, AnimatorParameter>& parameters,
+	bool forceFinishedTransitionExit)
 {
 	const int moveState = ReadMoveStateParam(parameters);
-	const float speed01 = ReadSpeedParam(parameters);
+	const float speed01 = m_QueryIntentSpeed01;
 	const bool wantsIdle = speed01 < m_Settings.states.idleSpeedThreshold || moveState == m_Settings.states.idleState;
-	const int desiredMoveState = ResolveDesiredMoveState(parameters);
+	const int desiredMoveState = m_EffectiveMoveState;
 	const bool desiredMoving = !wantsIdle;
 
 	const bool currentValid = m_CurrentSample >= 0 && m_CurrentSample < static_cast<int>(m_Samples.size());
@@ -640,19 +809,40 @@ void VansMotionMatchingRuntime::ResolveActiveDatabases(
 		desiredPhase = "Stop";
 	else if (changingPace || changingStance)
 		desiredPhase = "Transition";
-	else if (m_DirectionChangedForSearch && currentMoveState == desiredMoveState)
+	else if (m_PivotRequested && m_PivotDatabaseAvailable && currentMoveState == desiredMoveState)
+		desiredPhase = "Pivot";
+	else if (m_FacingTurnRequested && currentMoveState == desiredMoveState)
 		desiredPhase = "Turn";
 	else if (!desiredMoving)
 		desiredPhase = "Idle";
+	if (forceFinishedTransitionExit)
+		desiredPhase = desiredMoving ? "Move" : "Idle";
 
 	m_ActiveDatabaseIndices.clear();
+	const std::string desiredPhaseLower = ToLower(desiredPhase);
+	auto phaseMatches = [&](const std::string& phase)
+	{
+		const std::string lowered = ToLower(phase);
+		// Pivot 是对连续 Move 搜索的语义提示，不是互斥状态。让 Pivot 与
+		// Move 同时竞争，轨迹不再需要等一个长 one-shot 播放完才能恢复。
+		return lowered.empty() || lowered == "any" || lowered == "*" ||
+			lowered == desiredPhaseLower ||
+			(desiredPhaseLower == "pivot" && lowered == "move");
+	};
+	auto addDatabase = [&](int index)
+	{
+		if (std::find(m_ActiveDatabaseIndices.begin(), m_ActiveDatabaseIndices.end(), index) ==
+			m_ActiveDatabaseIndices.end())
+		{
+			m_ActiveDatabaseIndices.push_back(index);
+		}
+	};
 	for (const MotionMatchingSelectorRow& row : m_Settings.selectorRows)
 	{
 		const std::string stance = ToLower(row.stance);
 		if (!stance.empty() && stance != "any" && stance != "*" && stance != desiredStance)
 			continue;
-		const std::string phase = ToLower(row.phase);
-		if (!phase.empty() && phase != "any" && phase != "*" && phase != ToLower(desiredPhase))
+		if (!phaseMatches(row.phase))
 			continue;
 		if (!row.moveStates.empty() &&
 		    std::find(row.moveStates.begin(), row.moveStates.end(), desiredMoveState) == row.moveStates.end())
@@ -665,7 +855,7 @@ void VansMotionMatchingRuntime::ResolveActiveDatabases(
 			{
 				const MotionMatchingDatabase& database = m_Settings.databases[i];
 				if (database.enabled && ToLower(database.name) == loweredDatabaseName)
-					m_ActiveDatabaseIndices.push_back(i);
+					addDatabase(i);
 			}
 		}
 	}
@@ -679,14 +869,65 @@ void VansMotionMatchingRuntime::ResolveActiveDatabases(
 				continue;
 			if (ToLower(database.stance) != desiredStance)
 				continue;
-			if (ToLower(database.phase) != ToLower(desiredPhase))
+			if (!phaseMatches(database.phase))
 				continue;
 			if (!database.moveStates.empty() &&
 			    std::find(database.moveStates.begin(), database.moveStates.end(), desiredMoveState) == database.moveStates.end())
 				continue;
-			m_ActiveDatabaseIndices.push_back(i);
+			addDatabase(i);
 		}
 	}
+}
+
+int VansMotionMatchingRuntime::ResolveFacingTurnBucket(
+	int moveState, int directionSign, float absoluteAngleDegrees) const
+{
+	int smallestCoveringBucket = 0;
+	int largestBucket = 0;
+	for (const MotionMatchingDatabase& database : m_Settings.databases)
+	{
+		if (!database.enabled)
+			continue;
+		for (const MotionMatchingDatabaseClip& clip : database.clips)
+		{
+			const std::string phase = ToLower(clip.phase.empty() ? database.phase : clip.phase);
+			if (phase != "turn" || clip.turnBucketDelta <= 0 ||
+			    clip.sourceMoveState != moveState || clip.targetMoveState != moveState)
+				continue;
+			if (clip.turnDirectionSign != 0 && clip.turnDirectionSign != directionSign)
+				continue;
+			const float authoredAngle = static_cast<float>(clip.turnBucketDelta) * 45.0f;
+			largestBucket = (std::max)(largestBucket, clip.turnBucketDelta);
+			if (authoredAngle + kEpsilon >= absoluteAngleDegrees &&
+			    (smallestCoveringBucket == 0 || clip.turnBucketDelta < smallestCoveringBucket))
+				smallestCoveringBucket = clip.turnBucketDelta;
+		}
+	}
+	// Pose Search may enter a turn clip after its first frame. Select the
+	// smallest authored arc that can cover the remaining error, then let facing
+	// features choose the correct entry time inside that arc. Choosing the
+	// numerically nearest clip can under-rotate and strand a non-looping turn at
+	// its end while the error is still above threshold.
+	return smallestCoveringBucket > 0 ? smallestCoveringBucket : largestBucket;
+}
+
+bool VansMotionMatchingRuntime::HasPivotDatabaseForState(int moveState) const
+{
+	for (const MotionMatchingDatabase& database : m_Settings.databases)
+	{
+		if (!database.enabled)
+			continue;
+		for (const MotionMatchingDatabaseClip& clip : database.clips)
+		{
+			const std::string phase = ToLower(clip.phase.empty() ? database.phase : clip.phase);
+			if (phase == "pivot" && clip.sourceMoveState == moveState &&
+			    clip.targetMoveState == moveState)
+			{
+				return true;
+			}
+		}
+	}
+	return false;
 }
 
 int VansMotionMatchingRuntime::ResolveBoneIndex(const Skeleton& skeleton, const std::string& name) const
@@ -820,6 +1061,20 @@ glm::vec3 VansMotionMatchingRuntime::BuildDesiredVelocityRoot(
 	return (leftAxis * std::sin(direction) + forwardAxis * std::cos(direction)) * desiredSpeed;
 }
 
+glm::vec3 VansMotionMatchingRuntime::BuildIntentDirectionRoot(
+	const MotionMatchingResolvedRig& rig) const
+{
+	glm::vec3 forwardAxis = rig.forwardAxis;
+	forwardAxis.z = 0.0f;
+	if (glm::length(glm::vec2(forwardAxis.x, forwardAxis.y)) <= kEpsilon)
+		forwardAxis = glm::vec3(0.0f, -1.0f, 0.0f);
+	else
+		forwardAxis = glm::normalize(forwardAxis);
+	const glm::vec3 leftAxis(-forwardAxis.y, forwardAxis.x, 0.0f);
+	return leftAxis * std::sin(m_QueryIntentDirection) +
+		forwardAxis * std::cos(m_QueryIntentDirection);
+}
+
 float VansMotionMatchingRuntime::WrapClipTime(const VansAnimationClip& clip, float time) const
 {
 	if (clip.duration <= kEpsilon)
@@ -909,37 +1164,6 @@ void VansMotionMatchingRuntime::BeginContactTransition(float sourceLeft,
 	m_RightFootPlantWeight = glm::clamp(targetRight + m_RightContactOffset, 0.0f, 1.0f);
 }
 
-void VansMotionMatchingRuntime::UpdateActualOwnerVelocity(float deltaTime,
-	                                                       const glm::mat4& ownerWorldTransform)
-{
-	const glm::vec3 ownerWorldPosition = ExtractTranslation(ownerWorldTransform);
-	m_HasActualOwnerVelocity = false;
-	if (m_OwnerTransformInitialized && deltaTime > kEpsilon)
-	{
-		const glm::vec3 worldVelocity = (ownerWorldPosition - m_PreviousOwnerWorldPosition) / deltaTime;
-		// A direction must not be transformed by the owner's inverse scale.  The
-		// character objects are scaled to 0.01 to render centimetre-authored rigs in
-		// a metre world; using the full inverse matrix here made that render scale an
-		// accidental unit conversion.  Rotate into owner space, then convert units
-		// explicitly so speed matching remains correct for any render scale.
-		glm::vec3 ownerPosition, ownerScale;
-		glm::quat ownerRotation;
-		DecomposeTransform(ownerWorldTransform, ownerPosition, ownerRotation, ownerScale);
-		const glm::vec3 rootVelocity = glm::conjugate(ownerRotation) * worldVelocity;
-		const glm::vec3 animationVelocity = rootVelocity *
-			(std::max)(m_Settings.worldToAnimationScale, kEpsilon);
-		const float sanityLimit = (std::max)(m_Settings.desiredSpeedScale * 4.0f, 100.0f);
-		if (std::isfinite(animationVelocity.x) && std::isfinite(animationVelocity.y) &&
-		    std::isfinite(animationVelocity.z) && glm::length(animationVelocity) <= sanityLimit)
-		{
-			m_ActualOwnerVelocityRoot = animationVelocity;
-			m_HasActualOwnerVelocity = true;
-		}
-	}
-	m_PreviousOwnerWorldPosition = ownerWorldPosition;
-	m_OwnerTransformInitialized = true;
-}
-
 VansMotionMatchingRuntime::FeatureVector VansMotionMatchingRuntime::ExtractDatabaseFeature(
 	const VansAnimationClip& clip,
 	float time,
@@ -1014,21 +1238,31 @@ VansMotionMatchingRuntime::FeatureVector VansMotionMatchingRuntime::ExtractDatab
 
 	for (float futureTime : m_Settings.schema.futureTimes)
 	{
+		constexpr float velocityWindow = 1.0f / 30.0f;
+		std::vector<glm::mat4> localBefore, modelBefore;
+		std::vector<glm::mat4> localAfter, modelAfter;
+		sampleUnwrappedModel(time + futureTime - velocityWindow, localBefore, modelBefore);
+		sampleUnwrappedModel(time + futureTime + velocityWindow, localAfter, modelAfter);
+		const glm::vec3 beforeRoot = ExtractTranslation(modelBefore[rig.trajectoryRoot]);
+		const glm::vec3 afterRoot = ExtractTranslation(modelAfter[rig.trajectoryRoot]);
+		const glm::vec3 velocityRoot = TransformVectorToRootSpace(
+			rootModel0, (afterRoot - beforeRoot) / (2.0f * velocityWindow));
+		f[offset++] = velocityRoot.x;
+		f[offset++] = velocityRoot.y;
+	}
+
+	for (float futureTime : m_Settings.schema.futureTimes)
+	{
 		std::vector<glm::mat4> localFuture;
 		std::vector<glm::mat4> modelFuture;
 		sampleUnwrappedModel(time + futureTime, localFuture, modelFuture);
 
-		const glm::vec3 futureRoot = ExtractTranslation(modelFuture[rig.trajectoryRoot]);
-		const glm::vec3 deltaRoot = TransformVectorToRootSpace(rootModel0, futureRoot - trajectoryRoot0);
-		const glm::vec2 deltaXY(deltaRoot.x, deltaRoot.y);
-		float facing = 0.0f;
-		if (glm::length(deltaXY) > kEpsilon)
-			facing = std::atan2(deltaRoot.x, deltaRoot.y);
-		else
-		{
-			const glm::vec3 forward = ExtractRootForward(rootModel0, rig);
-			facing = std::atan2(forward.x, forward.y);
-		}
+		// Facing and travel direction are independent PoseSearch channels. A
+		// strafe clip can move left while continuing to face forward, while a
+		// turn-in-place clip has no translation but changes facing substantially.
+		const glm::vec3 futureForward = ExtractRootForward(modelFuture[rig.root], rig);
+		const glm::vec3 relativeForward = TransformVectorToRootSpace(rootModel0, futureForward);
+		const float facing = SignedPlanarAngleFromForward(relativeForward, rig.forwardAxis);
 		f[offset++] = std::sin(facing);
 		f[offset++] = std::cos(facing);
 	}
@@ -1133,7 +1367,8 @@ VansMotionMatchingRuntime::FeatureVector VansMotionMatchingRuntime::BuildQueryFe
 	const std::unordered_map<std::string, AnimatorParameter>& parameters,
 	const std::vector<glm::mat4>& currentLocalPose,
 	const Skeleton& skeleton,
-	const MotionMatchingResolvedRig& rig) const
+	const MotionMatchingResolvedRig& rig,
+	const Vans::VansCharacterTrajectory* trajectory) const
 {
 	FeatureVector f{};
 	std::vector<glm::mat4> currentModel;
@@ -1146,31 +1381,93 @@ VansMotionMatchingRuntime::FeatureVector VansMotionMatchingRuntime::BuildQueryFe
 	const int moveState = ReadMoveStateParam(parameters);
 	const glm::vec3 desiredVelRoot = BuildDesiredVelocityRoot(parameters, rig);
 	const glm::vec2 desiredVelXY(desiredVelRoot.x, desiredVelRoot.y);
-	const glm::vec3 currentForward = ExtractRootForward(rootModel, rig);
-	const float currentFacing = std::atan2(currentForward.x, currentForward.y);
+	const float currentFacing = 0.0f;
 	const float desiredFacing = glm::length(desiredVelXY) > kEpsilon
-		? std::atan2(desiredVelRoot.x, desiredVelRoot.y)
+		? SignedPlanarAngleFromForward(desiredVelRoot, rig.forwardAxis)
 		: currentFacing;
 	const float blendHorizon = (std::max)(m_Settings.schema.futureTimes.back(), kEpsilon);
 	const float response = (std::max)(m_Settings.trajectoryResponsiveness, kEpsilon);
 	const glm::vec3 currentTrajectoryVelocity = m_CurrentTrajectoryVelocityRoot;
 
+	auto trajectoryAt = [trajectory](float time)
+	{
+		Vans::VansCharacterTrajectorySample result;
+		if (!trajectory || !trajectory->valid)
+			return result;
+		Vans::VansCharacterTrajectorySample previous;
+		previous.positionWorld = trajectory->originWorld;
+		previous.velocityWorld = trajectory->currentVelocityWorld;
+		previous.facingYaw = trajectory->currentFacingYaw;
+		for (const auto& next : trajectory->future)
+		{
+			if (time <= next.time)
+			{
+				const float span = (std::max)(next.time - previous.time, kEpsilon);
+				const float alpha = glm::clamp((time - previous.time) / span, 0.0f, 1.0f);
+				result.time = time;
+				result.positionWorld = glm::mix(previous.positionWorld, next.positionWorld, alpha);
+				result.velocityWorld = glm::mix(previous.velocityWorld, next.velocityWorld, alpha);
+				result.facingYaw = LerpAngle(previous.facingYaw, next.facingYaw, alpha);
+				return result;
+			}
+			previous = next;
+		}
+		return previous;
+	};
+
 	int offset = 0;
 	for (float futureTime : m_Settings.schema.futureTimes)
 	{
-		// Integrate a velocity that exponentially converges from the currently
-		// playing motion to the desired controller velocity.  Linear extrapolation
-		// produces impossible starts/stops and is a common source of MM jitter.
-		const float responseIntegral = (1.0f - std::exp(-response * futureTime)) / response;
-		const glm::vec3 deltaRoot = desiredVelRoot * futureTime +
-			(currentTrajectoryVelocity - desiredVelRoot) * responseIntegral;
+		glm::vec3 deltaRoot;
+		if (trajectory && trajectory->valid)
+		{
+			const auto sample = trajectoryAt(futureTime);
+			deltaRoot = Vans::WorldToAnimationPlanar(
+				sample.positionWorld - trajectory->originWorld,
+				trajectory->currentFacingYaw) *
+				(std::max)(m_Settings.worldToAnimationScale, kEpsilon);
+		}
+		else
+		{
+			const float responseIntegral = (1.0f - std::exp(-response * futureTime)) / response;
+			deltaRoot = desiredVelRoot * futureTime +
+				(currentTrajectoryVelocity - desiredVelRoot) * responseIntegral;
+		}
 		f[offset++] = deltaRoot.x;
 		f[offset++] = deltaRoot.y;
 	}
 	for (float futureTime : m_Settings.schema.futureTimes)
 	{
-		const float t = futureTime / blendHorizon;
-		const float facing = LerpAngle(currentFacing, desiredFacing, t);
+		glm::vec3 velocityRoot;
+		if (trajectory && trajectory->valid)
+		{
+			const auto sample = trajectoryAt(futureTime);
+			velocityRoot = Vans::WorldToAnimationPlanar(
+				sample.velocityWorld, trajectory->currentFacingYaw) *
+				(std::max)(m_Settings.worldToAnimationScale, kEpsilon);
+		}
+		else
+		{
+			velocityRoot = desiredVelRoot +
+				(currentTrajectoryVelocity - desiredVelRoot) * std::exp(-response * futureTime);
+		}
+		f[offset++] = velocityRoot.x;
+		f[offset++] = velocityRoot.y;
+	}
+	for (float futureTime : m_Settings.schema.futureTimes)
+	{
+		float facing = 0.0f;
+		if (trajectory && trajectory->valid)
+		{
+			const auto sample = trajectoryAt(futureTime);
+			facing = glm::radians(std::remainder(
+				sample.facingYaw - trajectory->currentFacingYaw, 360.0f));
+		}
+		else
+		{
+			const float t = futureTime / blendHorizon;
+			facing = LerpAngle(currentFacing, desiredFacing, t);
+		}
 		f[offset++] = std::sin(facing);
 		f[offset++] = std::cos(facing);
 	}
@@ -1246,9 +1543,17 @@ bool VansMotionMatchingRuntime::BuildDatabase(const std::unordered_map<std::stri
 
 			const VansAnimationClip& clip = clipIt->second;
 			const float samplingStart = glm::clamp(databaseClip.samplingStart, 0.0f, clip.duration);
+			const float minimumSamplingEnd = (std::min)(
+				clip.duration, samplingStart + sampleStep);
+			const float defaultSamplingEnd = databaseClip.loop
+				? clip.duration
+				: glm::clamp(
+					clip.duration - (std::max)(0.0f, m_Settings.nonLoopSamplingEndMargin),
+					minimumSamplingEnd,
+					clip.duration);
 			const float samplingEnd = databaseClip.samplingEnd > samplingStart
 				? glm::clamp(databaseClip.samplingEnd, samplingStart, clip.duration)
-				: clip.duration;
+				: defaultSamplingEnd;
 			bool contributedSamples = false;
 			for (float t = samplingStart; t < samplingEnd; t += sampleStep)
 			{
@@ -1265,17 +1570,18 @@ bool VansMotionMatchingRuntime::BuildDatabase(const std::unordered_map<std::stri
 				sample.idleLike = phase == "idle";
 				sample.startLike = phase == "start";
 				sample.stopLike = phase == "stop";
+				sample.pivotLike = phase == "pivot";
 				sample.turnLike = phase == "turn";
 				sample.paceTransitionLike = phase == "transition";
 				sample.transitionLike = sample.startLike || sample.stopLike ||
-				                        sample.turnLike || sample.paceTransitionLike;
+				                        sample.pivotLike || sample.turnLike || sample.paceTransitionLike;
 				sample.sourceMoveState = databaseClip.sourceMoveState;
 				sample.targetMoveState = databaseClip.targetMoveState;
+				sample.sourceDirectionBucket = databaseClip.sourceDirectionBucket;
 				sample.directionBucketFromName = databaseClip.directionBucket;
 				sample.turnDirectionSign = databaseClip.turnDirectionSign;
 				sample.turnBucketDelta = databaseClip.turnBucketDelta;
 				sample.databaseIndex = databaseIndex;
-				sample.disableReselection = databaseClip.disableReselection;
 				const int sampleIndex = static_cast<int>(m_Samples.size());
 				m_Samples.push_back(sample);
 				m_ClipSampleIndices[databaseClip.name].push_back(sampleIndex);
@@ -1373,10 +1679,20 @@ float VansMotionMatchingRuntime::ComputeCost(const FeatureVector& query,
 {
 	outTrajectory = 0.0f;
 	outPose = 0.0f;
-	for (int d = kTrajectoryBegin; d < kTrajectoryEnd; ++d)
+	for (int d = kTrajectoryBegin; d < kTrajectoryPositionEnd; ++d)
 	{
 		const float diff = query[d] - candidate[d];
-		outTrajectory += diff * diff;
+		outTrajectory += diff * diff * m_Settings.trajectoryPositionWeight;
+	}
+	for (int d = kTrajectoryVelocityBegin; d < kTrajectoryVelocityEnd; ++d)
+	{
+		const float diff = query[d] - candidate[d];
+		outTrajectory += diff * diff * m_Settings.trajectoryVelocityWeight;
+	}
+	for (int d = kTrajectoryFacingBegin; d < kTrajectoryEnd; ++d)
+	{
+		const float diff = query[d] - candidate[d];
+		outTrajectory += diff * diff * m_Settings.trajectoryFacingWeight;
 	}
 	for (int d = kPoseBegin; d < kPoseEnd; ++d)
 	{
@@ -1397,7 +1713,8 @@ float VansMotionMatchingRuntime::ComputeCost(const FeatureVector& query,
 
 bool VansMotionMatchingRuntime::ShouldConsiderSampleForParameters(
 	const Sample& sample,
-	const std::unordered_map<std::string, AnimatorParameter>& parameters) const
+	const std::unordered_map<std::string, AnimatorParameter>& parameters,
+	bool forceFinishedTransitionExit) const
 {
 	if (!m_ActiveDatabaseIndices.empty() &&
 	    std::find(m_ActiveDatabaseIndices.begin(), m_ActiveDatabaseIndices.end(), sample.databaseIndex) ==
@@ -1405,12 +1722,12 @@ bool VansMotionMatchingRuntime::ShouldConsiderSampleForParameters(
 		return false;
 
 	const int moveState = ReadMoveStateParam(parameters);
-	const float speed01 = ReadSpeedParam(parameters);
+	const float speed01 = m_QueryIntentSpeed01;
 	const bool wantsIdle = speed01 < m_Settings.states.idleSpeedThreshold || moveState == m_Settings.states.idleState;
 	const bool currentValid = m_CurrentSample >= 0 && m_CurrentSample < static_cast<int>(m_Samples.size());
 	const Sample* currentSample = currentValid ? &m_Samples[m_CurrentSample] : nullptr;
 	const int currentMoveState = currentSample ? currentSample->targetMoveState : 0;
-	const int desiredMoveState = ResolveDesiredMoveState(parameters);
+	const int desiredMoveState = m_EffectiveMoveState;
 	const bool currentMoving = currentSample && IsMovingPlaybackSample(*currentSample);
 	const bool desiredMoving = !wantsIdle;
 	const bool startingFromIdle = !currentMoving && desiredMoving;
@@ -1423,8 +1740,12 @@ bool VansMotionMatchingRuntime::ShouldConsiderSampleForParameters(
 		IsStanceState(currentMoveState) &&
 		IsStanceState(desiredMoveState) &&
 		currentMoveState != desiredMoveState;
-	const glm::vec3 desiredVelRoot = BuildDesiredVelocityRoot(parameters, m_Rig);
-	const glm::vec2 desiredDir(desiredVelRoot.x, desiredVelRoot.y);
+	const glm::vec3 desiredVelRoot = m_QueryDesiredVelocityRoot;
+	const glm::vec3 intentDirectionRoot = BuildIntentDirectionRoot(m_Rig);
+	const glm::vec2 desiredDir = glm::length(glm::vec2(
+		desiredVelRoot.x, desiredVelRoot.y)) > kEpsilon
+		? glm::vec2(intentDirectionRoot.x, intentDirectionRoot.y)
+		: glm::vec2(0.0f);
 	const float desiredDirLen = glm::length(desiredDir);
 	glm::vec3 forwardAxis = m_Rig.forwardAxis;
 	forwardAxis.z = 0.0f;
@@ -1453,13 +1774,14 @@ bool VansMotionMatchingRuntime::ShouldConsiderSampleForParameters(
 		if (sampleDirLen <= kEpsilon)
 			return true;
 		const int delta = std::abs(SignedBucketDelta(directionBucket(desiredDir), directionBucket(sampleDir)));
-		return delta <= 1;
+		return delta <= glm::clamp(m_Settings.directionBucketTolerance, 0, 4);
 	};
 	auto sampleNameMatchesDesiredDirection = [&]() -> bool
 	{
 		if (sample.directionBucketFromName < 0 || desiredDirLen <= kEpsilon)
 			return sampleMatchesDesiredDirection();
-		return std::abs(SignedBucketDelta(directionBucket(desiredDir), sample.directionBucketFromName)) <= 1;
+		return std::abs(SignedBucketDelta(directionBucket(desiredDir), sample.directionBucketFromName)) <=
+			glm::clamp(m_Settings.directionBucketTolerance, 0, 4);
 	};
 	auto sampleNameMatchesCurrentDirection = [&]() -> bool
 	{
@@ -1472,12 +1794,13 @@ bool VansMotionMatchingRuntime::ShouldConsiderSampleForParameters(
 			return true;
 		return sample.directionBucketFromName == directionBucket(currentDir);
 	};
-	auto sampleExactlyMatchesDesiredDirection = [&]() -> bool
-	{
-		if (sample.directionBucketFromName < 0 || desiredDirLen <= kEpsilon)
-			return sampleMatchesDesiredDirection();
-		return sample.directionBucketFromName == directionBucket(desiredDir);
-	};
+	// A completed one-shot must hand control back to a stable loop before any
+	// further transition is considered. This guarantees forward playback and
+	// prevents Pose Search from repeatedly selecting the final frame of the same
+	// non-loop clip.
+	if (forceFinishedTransitionExit)
+		return sample.loopLike &&
+		       sample.targetMoveState == desiredMoveState;
 
 	if (sample.transitionLike)
 	{
@@ -1488,26 +1811,28 @@ bool VansMotionMatchingRuntime::ShouldConsiderSampleForParameters(
 			       sample.sourceMoveState == currentMoveState &&
 			       sample.targetMoveState == desiredMoveState &&
 			       sampleNameMatchesCurrentDirection();
+		if (sample.pivotLike)
+			return (!currentSample || !currentSample->pivotLike) &&
+			       m_PivotRequested &&
+			       sample.sourceMoveState == currentMoveState &&
+			       sample.targetMoveState == desiredMoveState &&
+			       currentMoveState == desiredMoveState;
 		if (sample.paceTransitionLike)
 			return (changingPace || changingStance) &&
 			       sample.sourceMoveState == currentMoveState &&
 			       sample.targetMoveState == desiredMoveState;
 		if (sample.turnLike)
 		{
-			if (!m_DirectionChangedForSearch)
-				return false;
-			if (m_SourceDirectionBucketForSearch < 0)
+			if (!m_FacingTurnRequested)
 				return false;
 			if (sample.sourceMoveState != currentMoveState || sample.targetMoveState != desiredMoveState)
 				return false;
 			if (currentMoveState != desiredMoveState)
 				return false;
-			const int signedDelta = SignedBucketDelta(m_SourceDirectionBucketForSearch, m_LastDirectionBucket);
-			const int absDelta = std::abs(signedDelta);
-			if (absDelta == 0 || sample.turnBucketDelta != absDelta)
+			if (sample.turnBucketDelta != m_FacingTurnBucketDelta)
 				return false;
-			if (absDelta != 4 && sample.turnDirectionSign != 0 &&
-			    sample.turnDirectionSign != (signedDelta > 0 ? 1 : -1))
+			if (sample.turnDirectionSign != 0 &&
+			    sample.turnDirectionSign != m_FacingTurnDirectionSign)
 				return false;
 			return true;
 		}
@@ -1516,15 +1841,23 @@ bool VansMotionMatchingRuntime::ShouldConsiderSampleForParameters(
 
 	if (!sample.loopLike)
 		return false;
+	// A resolved facing request guarantees that an authored turn exists for the
+	// current locomotion state. Keeping ordinary loops in the candidate set can
+	// let their lower pose cost suppress the requested root-rotating animation.
+	if (m_FacingTurnRequested)
+		return false;
 
 	if (startingFromIdle || stoppingToIdle || changingPace || changingStance)
 		return false;
-	return sample.targetMoveState == desiredMoveState && sampleMatchesDesiredDirection();
+	// 普通移动方向由连续轨迹特征决定。方向桶只用于 Pivot 的起点/目标语义，
+	// 不能再作为循环动作的硬门槛，否则镜头驱动的轨迹跨桶时会整组候选跳变。
+	return sample.targetMoveState == desiredMoveState;
 }
 
 VansMotionMatchingRuntime::MatchResult VansMotionMatchingRuntime::FindBestMatch(
 	const FeatureVector& query,
-	const std::unordered_map<std::string, AnimatorParameter>& parameters)
+	const std::unordered_map<std::string, AnimatorParameter>& parameters,
+	bool forceFinishedTransitionExit)
 {
 	MatchResult best;
 	best.totalCost = std::numeric_limits<float>::max();
@@ -1533,7 +1866,8 @@ VansMotionMatchingRuntime::MatchResult VansMotionMatchingRuntime::FindBestMatch(
 	for (int i = 0; i < static_cast<int>(m_Samples.size()); ++i)
 	{
 		const Sample& sample = m_Samples[i];
-		if (!ShouldConsiderSampleForParameters(sample, parameters))
+		if (!ShouldConsiderSampleForParameters(
+			sample, parameters, forceFinishedTransitionExit))
 			continue;
 
 		// Continuing the active slice is evaluated explicitly from m_CurrentTime in
@@ -1542,7 +1876,9 @@ VansMotionMatchingRuntime::MatchResult VansMotionMatchingRuntime::FindBestMatch(
 		// when that frame wins again at the next search tick.
 		if (m_CurrentSample >= 0 && m_CurrentSample < static_cast<int>(m_Samples.size()) &&
 		    sample.clipName == m_Samples[m_CurrentSample].clipName)
+		{
 			continue;
+		}
 
 		float trajectory = 0.0f;
 		float pose = 0.0f;
@@ -1697,22 +2033,45 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
                                        const Skeleton& skeleton,
                                        const std::unordered_map<std::string, VansAnimationClip>& clips,
                                        const std::unordered_map<std::string, AnimatorParameter>& parameters,
-	                                   const glm::mat4& ownerWorldTransform,
-                                       std::vector<glm::mat4>& outLocalTransforms)
+	                                   const Vans::VansCharacterTrajectory* trajectory,
+	                                   VansPosePayload& outPayload)
 {
 	m_DebugData.enabled = m_Settings.enabled;
 	m_DebugData.usedThisFrame = false;
-	if (m_Settings.externallyDriven)
-		UpdateActualOwnerVelocity(deltaTime, ownerWorldTransform);
+	m_DebugData.queryFacingDeltaDegrees = 0.0f;
+	m_DebugData.facingTurnRequested = false;
+	m_DebugData.facingTurnDirectionSign = 0;
+	m_DebugData.facingTurnBucketDelta = 0;
+	m_DebugData.steeringTargetFacingDeltaDegrees = 0.0f;
+	m_DebugData.steeringAuthoredFacingDeltaDegrees = 0.0f;
+	m_DebugData.steeringRequestedCorrectionDegrees = 0.0f;
+	m_DebugData.steeringAppliedCorrectionDegrees = 0.0f;
+	m_DebugData.steeringAppliedYawRateDegreesPerSecond = 0.0f;
+	m_DebugData.steeringActive = false;
+	m_DebugData.steeringLimited = false;
+	m_DebugData.rootMotionReconciliationActive = false;
+	m_DebugData.rootMotionTargetVelocityWorld = glm::vec3(0.0f);
+	m_DebugData.rootMotionReconciledVelocityWorld = glm::vec3(0.0f);
+	m_DebugData.rootMotionTargetYawRateDegreesPerSecond = 0.0f;
+	m_DebugData.rootMotionReconciledYawRateDegreesPerSecond = 0.0f;
+	m_DebugData.appliedRootMotionVelocityWorld = glm::vec3(0.0f);
+	m_PrefersRootMotionThisFrame = false;
 	if (!m_Settings.enabled)
 		return false;
 
-	m_DebugData.querySpeed = ReadSpeedParam(parameters) * m_Settings.desiredSpeedScale;
+	m_DebugData.querySpeed = trajectory && trajectory->valid
+		? glm::length(glm::vec2(trajectory->currentVelocityWorld.x,
+			trajectory->currentVelocityWorld.z)) *
+			(std::max)(m_Settings.worldToAnimationScale, kEpsilon)
+		: ReadSpeedParam(parameters) * m_Settings.desiredSpeedScale;
 	m_DebugData.queryDirection = ReadDirectionParam(parameters);
 	const bool parameterWantsMotionMatching = ReadBoolParam(parameters, m_Settings.parameters.enabled, true);
 	if (!parameterWantsMotionMatching)
 	{
 		m_HasLastSearchContext = false;
+		m_FacingTurnRequested = false;
+		m_FacingTurnDirectionSign = 0;
+		m_FacingTurnBucketDelta = 0;
 		return false;
 	}
 
@@ -1731,13 +2090,32 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 		MarkDatabaseDirty();
 		return false;
 	}
+	const std::string playbackClipName = activeSample->clipName;
+	const bool playbackLoopLike = activeSample->loopLike;
 
 	float wantedPlaybackRate = 1.0f;
 	if (m_Settings.enableSpeedMatching)
 	{
-		const float desiredSpeed = m_Settings.externallyDriven && m_HasActualOwnerVelocity
-			? glm::length(glm::vec2(m_ActualOwnerVelocityRoot))
-			: glm::length(glm::vec2(BuildDesiredVelocityRoot(parameters, m_Rig)));
+		float desiredSpeed = glm::length(glm::vec2(
+			BuildDesiredVelocityRoot(parameters, m_Rig)));
+		if (trajectory && trajectory->valid)
+		{
+			// 播放率跟随运动计划；碰撞时再按 CCT 实际消费比例回落到真实速度。
+			// 直接使用上一帧实际速度会形成“动画慢 -> Root Motion 慢 -> 动画更慢”
+			// 的闭环，表现为持续滑步和方向改变后的响应滞后。
+			const glm::vec2 actualVelocity(
+				trajectory->currentVelocityWorld.x,
+				trajectory->currentVelocityWorld.z);
+			const glm::vec2 plannedVelocity(
+				trajectory->plannedVelocityWorld.x,
+				trajectory->plannedVelocityWorld.z);
+			const float consumption = glm::clamp(
+				trajectory->motionConsumptionRatio, 0.0f, 1.0f);
+			const glm::vec2 consumedPlan = glm::mix(
+				actualVelocity, plannedVelocity, consumption);
+			desiredSpeed = glm::length(consumedPlan) *
+				(std::max)(m_Settings.worldToAnimationScale, kEpsilon);
+		}
 		if (desiredSpeed > kEpsilon && activeSample->trajectorySpeed > kEpsilon)
 		{
 			const float minRate = std::max(0.01f, std::min(m_Settings.minPlaybackRate, m_Settings.maxPlaybackRate));
@@ -1761,6 +2139,12 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 	}
 	else
 		m_CurrentTime = glm::clamp(m_CurrentTime + playbackDelta, 0.0f, (std::max)(0.0f, activeClipIt->second.duration));
+	// Keep the interval end unwrapped for payload sampling.  Pose time is
+	// wrapped, but Root Motion/events need the monotonic time to integrate the
+	// authored loop seam in the forward direction.
+	const float outgoingPlaybackTime = activeSample->loopLike
+		? previousPlaybackTime + playbackDelta : m_CurrentTime;
+	bool switchedThisFrame = false;
 	const float outgoingLeftContact = m_LeftFootPlantWeight;
 	const float outgoingRightContact = m_RightFootPlantWeight;
 	// Keep the logical current sample synchronized with playback.  Holding the
@@ -1796,9 +2180,15 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 		0.0f);
 	const float trajectoryAlpha = 1.0f - std::exp(
 		-(std::max)(m_Settings.trajectoryResponsiveness, 0.0f) * (std::max)(deltaTime, 0.0f));
-	m_CurrentTrajectoryVelocityRoot = m_Settings.externallyDriven && m_HasActualOwnerVelocity
-		? m_ActualOwnerVelocityRoot
-		: glm::mix(m_CurrentTrajectoryVelocityRoot, sampledTrajectoryVelocity, trajectoryAlpha);
+	if (trajectory && trajectory->valid)
+	{
+		m_CurrentTrajectoryVelocityRoot = Vans::WorldToAnimationPlanar(
+			trajectory->currentVelocityWorld, trajectory->currentFacingYaw) *
+			(std::max)(m_Settings.worldToAnimationScale, kEpsilon);
+	}
+	else
+		m_CurrentTrajectoryVelocityRoot = glm::mix(
+			m_CurrentTrajectoryVelocityRoot, sampledTrajectoryVelocity, trajectoryAlpha);
 	std::vector<glm::mat4> currentLocal;
 	SamplePose(activeClipIt->second, m_CurrentTime, skeleton, currentLocal);
 	if (loopWrapped)
@@ -1814,6 +2204,16 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 		           seamFuture);
 		BeginInertialTransition(currentLocal, seamFuture, velocityDt);
 	}
+	const float transitionCompletionWindow =
+		2.0f / (std::max)(1.0f, m_Settings.sampleRate);
+	const bool activeTransitionComplete =
+		!activeSample->loopLike &&
+		m_CurrentTime >= (std::max)(
+			0.0f, activeClipIt->second.duration - transitionCompletionWindow);
+	const bool activeFacingTurnInProgress =
+		activeSample->turnLike && !activeTransitionComplete;
+	const bool activePivotInProgress =
+		activeSample->pivotLike && !activeTransitionComplete;
 
 	const std::vector<glm::mat4>& queryLocal =
 		(m_LastOutputLocalPose.size() == skeleton.bones.size()) ? m_LastOutputLocalPose : currentLocal;
@@ -1846,13 +2246,169 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 	}
 	m_PreviousQueryModelPose = currentModel;
 
-	FeatureVector query = BuildQueryFeature(parameters, queryLocal, skeleton, m_Rig);
-	const float speed01 = ReadSpeedParam(parameters);
-	const float direction = ReadDirectionParam(parameters);
+	FeatureVector query = BuildQueryFeature(
+		parameters, queryLocal, skeleton, m_Rig, trajectory);
+	m_QueryIntentSpeed01 = ReadSpeedParam(parameters);
+	m_QueryIntentDirection = ReadDirectionParam(parameters);
+	m_QueryDesiredVelocityRoot = BuildDesiredVelocityRoot(parameters, m_Rig);
+	if (trajectory && trajectory->valid)
+	{
+		const glm::vec3 desiredLocalVelocity = Vans::WorldToLocomotionLocalPlanar(
+			trajectory->desiredVelocityWorld, trajectory->currentFacingYaw);
+		m_QueryDesiredVelocityRoot = Vans::EngineLocalToAnimationPlanar(desiredLocalVelocity) *
+			(std::max)(m_Settings.worldToAnimationScale, kEpsilon);
+		const float desiredAnimationSpeed = glm::length(glm::vec2(
+			m_QueryDesiredVelocityRoot.x, m_QueryDesiredVelocityRoot.y));
+		m_QueryIntentSpeed01 = glm::clamp(desiredAnimationSpeed /
+			(std::max)(m_Settings.desiredSpeedScale, kEpsilon), 0.0f, 1.0f);
+		// 方向语义来自玩家在移动参考系中的输入，而不是已经被相机旋转后的
+		// 世界速度。持续按 W 转动相机应改变未来世界轨迹，但仍属于 Forward
+		// 数据库方向；否则每个相机采样都会触发一次方向桶切换。
+		if (glm::length(trajectory->moveInputLocal) > kEpsilon)
+			m_QueryIntentDirection = std::atan2(
+				trajectory->moveInputLocal.x, trajectory->moveInputLocal.y);
+	}
+	const float speed01 = m_QueryIntentSpeed01;
+	const float direction = m_QueryIntentDirection;
 	const int moveState = ReadMoveStateParam(parameters);
 	const bool isCrouching = ReadCrouchingParam(parameters);
 	const bool isAirborne = ReadAirborneParam(parameters);
 	const bool isMoving = speed01 >= m_Settings.states.idleSpeedThreshold;
+	m_RequestedMoveState = ResolveDesiredMoveState(parameters);
+	m_EffectiveMoveState = ResolveDirectionalFallbackMoveState(m_RequestedMoveState);
+	m_DirectionalStateFallback = m_EffectiveMoveState != m_RequestedMoveState;
+	const int desiredMoveState = m_EffectiveMoveState;
+	m_PivotDatabaseAvailable = HasPivotDatabaseForState(desiredMoveState);
+	m_UrgentDirectionChange = false;
+	// Pivot 来自预测轨迹的速度过零点，而不是单帧输入边沿。相机连续转动会
+	// 改变未来轨迹，但只有真实换向需要 Pivot；同时请求可在片段中途退出，
+	// 避免 3~6 秒的 Pivot 素材变成互斥状态锁。
+	if (m_PivotDatabaseAvailable && trajectory && trajectory->valid &&
+	    trajectory->hasDirectionChange && !isAirborne && isMoving)
+	{
+		const float actualSpeed = glm::length(glm::vec2(
+			trajectory->currentVelocityWorld.x, trajectory->currentVelocityWorld.z));
+		const float enterAngle = glm::clamp(m_Settings.pivotEnterAngleDegrees, 0.0f, 180.0f);
+		const float exitAngle = glm::clamp(m_Settings.pivotExitAngleDegrees, 0.0f, enterAngle);
+		const bool predictedPivotIsRelevant =
+			trajectory->hasPredictedPivot &&
+			trajectory->predictedPivotTime <=
+				(std::max)(0.0f, m_Settings.pivotPredictionLeadTime);
+		if (!m_PivotRequested)
+			m_PivotRequested = actualSpeed >= m_Settings.pivotMinSpeed &&
+				predictedPivotIsRelevant &&
+				trajectory->directionChangeDegrees >= enterAngle;
+		const bool pivotMinimumPlaybackSatisfied =
+			!activeSample->pivotLike ||
+			m_CurrentTime >= (std::max)(0.0f, m_Settings.pivotMinimumPlaybackTime);
+		if (m_PivotRequested && pivotMinimumPlaybackSatisfied &&
+			(actualSpeed < m_Settings.pivotMinSpeed ||
+			 !predictedPivotIsRelevant ||
+			 trajectory->directionChangeDegrees <= exitAngle))
+			m_PivotRequested = false;
+		m_UrgentDirectionChange = m_PivotRequested &&
+			trajectory->predictedPivotTime <=
+				(std::max)(0.0f, m_Settings.pivotUrgentPredictionTime) &&
+			trajectory->directionChangeDegrees >=
+				m_Settings.urgentDirectionChangeDegrees;
+	}
+	else if (!activeSample->pivotLike ||
+		m_CurrentTime >= (std::max)(0.0f, m_Settings.pivotMinimumPlaybackTime))
+	{
+		m_PivotRequested = false;
+	}
+	m_QueryFacingDeltaDegrees = 0.0f;
+	if (trajectory && trajectory->valid && trajectory->hasFacing && !isAirborne)
+	{
+		m_QueryFacingDeltaDegrees = std::remainder(
+			trajectory->desiredFacingYaw - trajectory->currentFacingYaw, 360.0f);
+		const float enterThreshold = (std::max)(
+			0.0f, m_Settings.facingTurnEnterThresholdDegrees);
+		const float exitThreshold = glm::clamp(
+			m_Settings.facingTurnExitThresholdDegrees, 0.0f, enterThreshold);
+		const float exitYawRate = (std::max)(
+			0.0f, m_Settings.facingTurnExitYawRateDegreesPerSecond);
+		const float absoluteFacingError = std::abs(m_QueryFacingDeltaDegrees);
+		const float farFutureError = std::remainder(
+			trajectory->future.back().facingYaw - trajectory->currentFacingYaw, 360.0f);
+		// Moving turns use angular-velocity look-ahead. Turn-in-place selects its arc
+		// from the instantaneous error, but may finish an already playing one-shot
+		// while the camera continues in the same direction. The completed clip still
+		// exits through a loop; angular velocity never authorizes a time teleport.
+		const bool useMovingFacingPolicy = isMoving;
+		const bool cameraFacingStillMoving =
+			std::abs(trajectory->desiredFacingYawRate) > exitYawRate;
+		const int cameraFacingDirectionSign = trajectory->desiredFacingYawRate >= 0.0f ? 1 : -1;
+		const bool cameraContinuesActiveIdleTurn =
+			!useMovingFacingPolicy &&
+			activeFacingTurnInProgress &&
+			cameraFacingStillMoving &&
+			activeSample->turnDirectionSign == cameraFacingDirectionSign;
+		// 移动中由未来轨迹搜索负责选择步态，再由 Root Motion Steering 连续
+		// 修正剩余朝向误差。离散 Turn 只用于停步状态，否则镜头每次采样都会
+		// 使 Turn one-shot 与 Move loop 互相争抢。
+		const bool shouldEnterFacingTurn =
+			!useMovingFacingPolicy && absoluteFacingError >= enterThreshold;
+		if (useMovingFacingPolicy)
+			m_FacingTurnRequested = false;
+
+		if (!m_FacingTurnRequested)
+			m_FacingTurnRequested = shouldEnterFacingTurn;
+		else if (useMovingFacingPolicy &&
+			absoluteFacingError <= exitThreshold && !cameraFacingStillMoving)
+			m_FacingTurnRequested = false;
+		else if (!useMovingFacingPolicy && activeFacingTurnInProgress &&
+			absoluteFacingError <= exitThreshold && !cameraContinuesActiveIdleTurn)
+			m_FacingTurnRequested = false;
+		else if (!useMovingFacingPolicy && !activeFacingTurnInProgress &&
+			absoluteFacingError < enterThreshold)
+			m_FacingTurnRequested = false;
+
+		if (m_FacingTurnRequested)
+		{
+			const int desiredMoveState = m_EffectiveMoveState;
+			float directionSignal = useMovingFacingPolicy
+				? farFutureError : m_QueryFacingDeltaDegrees;
+			if (std::abs(directionSignal) <= exitThreshold && cameraFacingStillMoving)
+				directionSignal = trajectory->desiredFacingYawRate;
+			if (std::abs(directionSignal) <= kEpsilon)
+				directionSignal = m_QueryFacingDeltaDegrees;
+			int directionSign = directionSignal >= 0.0f ? 1 : -1;
+			const bool keepActiveTurnSelection =
+				activeFacingTurnInProgress &&
+				(activeSample->turnDirectionSign == directionSign ||
+				 absoluteFacingError < enterThreshold);
+			if (keepActiveTurnSelection)
+				directionSign = activeSample->turnDirectionSign;
+			const float requestedTurnArc = glm::clamp(
+				useMovingFacingPolicy
+					? (std::max)(absoluteFacingError, std::abs(farFutureError))
+					: absoluteFacingError,
+				0.0f,
+				180.0f);
+			const int turnBucket = keepActiveTurnSelection
+				? activeSample->turnBucketDelta
+				: ResolveFacingTurnBucket(desiredMoveState, directionSign, requestedTurnArc);
+			if (turnBucket > 0)
+			{
+				m_FacingTurnDirectionSign = directionSign;
+				m_FacingTurnBucketDelta = turnBucket;
+			}
+			else
+				m_FacingTurnRequested = false;
+		}
+	}
+	else
+		m_FacingTurnRequested = false;
+	// 大角度速度换向优先保证行进方向；相机朝向仍保留在轨迹中，待 Pivot/换向
+	// 稳定后继续由 Facing Turn 匹配，避免 Turn 数据库排除所有目标方向循环动作。
+	if (m_UrgentDirectionChange)
+		m_FacingTurnRequested = false;
+	if (!m_FacingTurnRequested)
+	{
+		m_FacingTurnDirectionSign = 0;
+		m_FacingTurnBucketDelta = 0;
+	}
 	constexpr float kPi = 3.14159265358979323846f;
 	constexpr float kTwoPi = kPi * 2.0f;
 	float wrappedDirection = std::fmod(direction, kTwoPi);
@@ -1862,11 +2418,22 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 	const bool directionChanged =
 		m_HasLastSearchContext &&
 		m_LastDirectionBucket != directionBucket;
-	m_SourceDirectionBucketForSearch = directionChanged ? m_LastDirectionBucket : directionBucket;
+	const bool locomotionDirectionContextChanged =
+		directionChanged && !m_FacingTurnRequested;
+	const bool facingTurnContextChanged =
+		!m_HasLastSearchContext ||
+		m_LastFacingTurnRequested != m_FacingTurnRequested ||
+		(m_FacingTurnRequested &&
+		 (m_LastFacingTurnDirectionSign != m_FacingTurnDirectionSign ||
+		  m_LastFacingTurnBucketDelta != m_FacingTurnBucketDelta));
+	const bool pivotContextChanged =
+		!m_HasLastSearchContext || m_LastPivotRequested != m_PivotRequested;
 	const bool searchContextChanged =
 		!m_HasLastSearchContext ||
 		m_LastMoveState != moveState ||
-		directionChanged ||
+		locomotionDirectionContextChanged ||
+		pivotContextChanged ||
+		facingTurnContextChanged ||
 		m_LastCrouching != isCrouching ||
 		m_LastAirborne != isAirborne ||
 		m_LastMoving != isMoving;
@@ -1878,10 +2445,66 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 	m_LastCrouching = isCrouching;
 	m_LastAirborne = isAirborne;
 	m_LastMoving = isMoving;
-	m_DirectionChangedForSearch = directionChanged;
-	ResolveActiveDatabases(parameters);
+	m_LastPivotRequested = m_PivotRequested;
+	m_LastFacingTurnRequested = m_FacingTurnRequested;
+	m_LastFacingTurnDirectionSign = m_FacingTurnDirectionSign;
+	m_LastFacingTurnBucketDelta = m_FacingTurnBucketDelta;
+	ResolveActiveDatabases(parameters, activeTransitionComplete);
+	m_DebugData.activeDatabases.clear();
+	for (const int databaseIndex : m_ActiveDatabaseIndices)
+	{
+		if (databaseIndex >= 0 && databaseIndex < static_cast<int>(m_Settings.databases.size()))
+			m_DebugData.activeDatabases.push_back(m_Settings.databases[databaseIndex].name);
+	}
 	m_DebugData.querySpeed = speed01 * m_Settings.desiredSpeedScale;
 	m_DebugData.queryDirection = direction;
+	m_DebugData.queryFacingDeltaDegrees = m_QueryFacingDeltaDegrees;
+	m_DebugData.pivotRequested = m_PivotRequested;
+	m_DebugData.pivotDatabaseAvailable = m_PivotDatabaseAvailable;
+	m_DebugData.urgentDirectionChange = m_UrgentDirectionChange;
+	m_DebugData.requestedMoveState = m_RequestedMoveState;
+	m_DebugData.effectiveMoveState = m_EffectiveMoveState;
+	m_DebugData.directionalStateFallback = m_DirectionalStateFallback;
+	if (trajectory && trajectory->valid)
+	{
+		m_DebugData.trajectoryOriginWorld = trajectory->originWorld;
+		m_DebugData.actualVelocityWorld = trajectory->currentVelocityWorld;
+		m_DebugData.plannedVelocityWorld = trajectory->plannedVelocityWorld;
+		m_DebugData.desiredVelocityWorld = trajectory->desiredVelocityWorld;
+		m_DebugData.moveInputLocal = trajectory->moveInputLocal;
+		m_DebugData.movementReferenceYaw = trajectory->movementReferenceYaw;
+		m_DebugData.movementReferenceYawRate = trajectory->movementReferenceYawRate;
+		m_DebugData.plannedFacingYaw = trajectory->plannedFacingYaw;
+		m_DebugData.trajectoryHistory = trajectory->history;
+		m_DebugData.trajectoryFuture = trajectory->future;
+		m_DebugData.directionChangeDegrees = trajectory->directionChangeDegrees;
+		m_DebugData.inputDirectionChangeDegrees = trajectory->inputDirectionChangeDegrees;
+		m_DebugData.predictedPivotPositionWorld = trajectory->predictedPivotPositionWorld;
+		m_DebugData.predictedPivotTime = trajectory->predictedPivotTime;
+		m_DebugData.hasPredictedPivot = trajectory->hasPredictedPivot;
+		m_DebugData.motionConsumptionRatio = trajectory->motionConsumptionRatio;
+		m_DebugData.movementBlocked = trajectory->movementBlocked;
+	}
+	else
+	{
+		m_DebugData.trajectoryOriginWorld = glm::vec3(0.0f);
+		m_DebugData.actualVelocityWorld = glm::vec3(0.0f);
+		m_DebugData.plannedVelocityWorld = glm::vec3(0.0f);
+		m_DebugData.desiredVelocityWorld = glm::vec3(0.0f);
+		m_DebugData.moveInputLocal = glm::vec2(0.0f);
+		m_DebugData.movementReferenceYaw = 0.0f;
+		m_DebugData.movementReferenceYawRate = 0.0f;
+		m_DebugData.plannedFacingYaw = 0.0f;
+		m_DebugData.directionChangeDegrees = 0.0f;
+		m_DebugData.inputDirectionChangeDegrees = 0.0f;
+		m_DebugData.predictedPivotTime = 0.0f;
+		m_DebugData.hasPredictedPivot = false;
+		m_DebugData.motionConsumptionRatio = 1.0f;
+		m_DebugData.movementBlocked = false;
+	}
+	m_DebugData.facingTurnRequested = m_FacingTurnRequested;
+	m_DebugData.facingTurnDirectionSign = m_FacingTurnDirectionSign;
+	m_DebugData.facingTurnBucketDelta = m_FacingTurnBucketDelta;
 	NormalizeFeature(query);
 
 	m_TimeSinceSearch += deltaTime;
@@ -1900,18 +2523,10 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 		float currentPose = 0.0f;
 		float currentContact = 0.0f;
 		const float currentCost = ComputeCost(query, currentFeature, currentTrajectory, currentPose, currentContact);
-		const float transitionCompletionWindow = 2.0f / (std::max)(1.0f, m_Settings.sampleRate);
-		const bool activeTransitionComplete =
-			!activeSample->loopLike &&
-			m_CurrentTime >= (std::max)(0.0f, activeClipIt->second.duration - transitionCompletionWindow);
-
-		MatchResult best = FindBestMatch(query, parameters);
+		MatchResult best = FindBestMatch(query, parameters, activeTransitionComplete);
 		const bool bestIsTargetLoop =
 			best.sampleIndex >= 0 &&
-			m_CurrentSample >= 0 &&
-			m_CurrentSample < static_cast<int>(m_Samples.size()) &&
-			m_Samples[best.sampleIndex].loopLike &&
-			m_Samples[best.sampleIndex].targetMoveState == m_Samples[m_CurrentSample].targetMoveState;
+			m_Samples[best.sampleIndex].loopLike;
 		const bool shouldExitFinishedTransition = activeTransitionComplete && bestIsTargetLoop;
 		const bool activeMovingSample = activeSample && IsMovingPlaybackSample(*activeSample);
 		const bool shouldEnterStartTransition =
@@ -1920,11 +2535,29 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 			m_Samples[best.sampleIndex].startLike &&
 			isMoving &&
 			!activeMovingSample;
+		const bool bestIsFacingTurn =
+			best.sampleIndex >= 0 &&
+			m_Samples[best.sampleIndex].turnLike &&
+			m_FacingTurnRequested;
+		const bool activeMatchesFacingTurn =
+			activeSample->turnLike &&
+			activeSample->turnDirectionSign == m_FacingTurnDirectionSign &&
+			activeSample->turnBucketDelta == m_FacingTurnBucketDelta;
+		const bool shouldEnterFacingTurn =
+			bestIsFacingTurn &&
+			!activeMatchesFacingTurn &&
+			(facingTurnContextChanged || activeSample->loopLike);
+		const bool shouldEnterPivot =
+			best.sampleIndex >= 0 &&
+			m_Samples[best.sampleIndex].pivotLike &&
+			m_PivotRequested &&
+			!activePivotInProgress;
 		const bool bestIsContextTransition =
 			best.sampleIndex >= 0 &&
 			m_Samples[best.sampleIndex].transitionLike &&
 			(m_Samples[best.sampleIndex].startLike ||
 			 m_Samples[best.sampleIndex].stopLike ||
+			 m_Samples[best.sampleIndex].pivotLike ||
 			 m_Samples[best.sampleIndex].paceTransitionLike);
 		const bool contextTransitionHasValidSource =
 			bestIsContextTransition &&
@@ -1938,6 +2571,7 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 			m_CurrentSample < static_cast<int>(m_Samples.size()) &&
 			(m_Samples[best.sampleIndex].startLike != m_Samples[m_CurrentSample].startLike ||
 			 m_Samples[best.sampleIndex].stopLike != m_Samples[m_CurrentSample].stopLike ||
+			 m_Samples[best.sampleIndex].pivotLike != m_Samples[m_CurrentSample].pivotLike ||
 			 m_Samples[best.sampleIndex].idleLike != m_Samples[m_CurrentSample].idleLike ||
 			 m_Samples[best.sampleIndex].loopLike != m_Samples[m_CurrentSample].loopLike);
 		const bool shouldEnterSelectedContextTransition =
@@ -1946,7 +2580,19 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 			 contextTransitionHasValidSource &&
 			 (m_Samples[best.sampleIndex].targetMoveState != m_Samples[m_CurrentSample].targetMoveState ||
 			  contextTransitionChangesRole));
-		const bool shouldEnterContextTransition = shouldEnterSelectedContextTransition;
+		const bool shouldEnterContextTransition =
+			shouldEnterSelectedContextTransition ||
+			shouldEnterPivot ||
+			shouldEnterFacingTurn;
+		// Search context changes may request a new search immediately, but they do
+		// not all authorize an immediate clip switch. Only true state transitions
+		// and the first entry into a facing turn can bypass the dwell interval.
+		const bool shouldBypassSwitchInterval =
+			shouldExitFinishedTransition ||
+			shouldEnterStartTransition ||
+			shouldEnterPivot ||
+			(shouldEnterFacingTurn && !activeSample->turnLike) ||
+			m_CurrentSample < 0;
 		float requiredImprovement = searchContextChanged
 			? m_Settings.minSwitchCostImprovement * 0.5f
 			: m_Settings.minSwitchCostImprovement;
@@ -1961,19 +2607,19 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 		const bool improvesEnough =
 			best.sampleIndex >= 0 &&
 			(best.totalCost + requiredImprovement < continuationCost ||
+			 (m_UrgentDirectionChange && !activePivotInProgress) ||
 			 shouldEnterContextTransition ||
 			 shouldExitFinishedTransition ||
 			 m_CurrentSample < 0);
 		const bool canInterruptBlend =
 			!m_Blending ||
+			(m_UrgentDirectionChange && !activePivotInProgress) ||
 			shouldEnterContextTransition ||
 			shouldExitFinishedTransition ||
 			m_BlendElapsed >= m_Settings.inertializationMaxDuration *
 				glm::clamp(m_Settings.blendInterruptFraction, 0.0f, 1.0f);
 		const bool switchIntervalReady =
-			searchContextChanged ||
-			shouldEnterContextTransition ||
-			shouldExitFinishedTransition ||
+			shouldBypassSwitchInterval ||
 			m_TimeSinceSwitch >= m_Settings.minSwitchInterval;
 		const bool canSwitchNow =
 			best.sampleIndex >= 0 &&
@@ -1983,12 +2629,15 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 		if (best.sampleIndex >= 0 &&
 		    canSwitchNow)
 		{
+			switchedThisFrame = true;
 			const float sourceLeftContact = m_LeftFootPlantWeight;
 			const float sourceRightContact = m_RightFootPlantWeight;
 			m_CurrentSample = best.sampleIndex;
 			m_CurrentTime = m_Samples[m_CurrentSample].time;
 			m_CurrentCost = best.totalCost;
 			m_TimeSinceSwitch = 0.0f;
+			if (shouldExitFinishedTransition && m_FacingTurnRequested)
+				m_TimeSinceSearch = m_Settings.searchThrottle;
 			m_PreviousQueryModelPose.clear();
 			m_CurrentLeftFootVelocity = glm::vec3(0.0f);
 			m_CurrentRightFootVelocity = glm::vec3(0.0f);
@@ -2029,13 +2678,23 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 		m_DebugData.biasCost = 0.0f;
 		if (best.sampleIndex >= 0)
 		{
-			m_DebugData.selectedClip = m_Samples[best.sampleIndex].clipName;
-			m_DebugData.selectedTime = m_Samples[best.sampleIndex].time;
+			const Sample& selectedSample = m_Samples[best.sampleIndex];
+			m_DebugData.selectedClip = selectedSample.clipName;
+			m_DebugData.selectedTime = selectedSample.time;
+			const glm::vec3 selectedCandidateVelocityAnimation(
+				selectedSample.rawFeature[kTrajectoryVelocityBegin],
+				selectedSample.rawFeature[kTrajectoryVelocityBegin + 1],
+				0.0f);
+			m_DebugData.selectedCandidateVelocityWorld = Vans::AnimationToWorldPlanar(
+				selectedCandidateVelocityAnimation /
+					(std::max)(m_Settings.worldToAnimationScale, kEpsilon),
+				trajectory && trajectory->valid ? trajectory->currentFacingYaw : 0.0f);
 		}
 		else
 		{
 			m_DebugData.selectedClip = activeSample->clipName;
 			m_DebugData.selectedTime = m_CurrentTime;
+			m_DebugData.selectedCandidateVelocityWorld = glm::vec3(0.0f);
 		}
 	}
 
@@ -2049,9 +2708,160 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 
 	std::vector<glm::mat4> target;
 	SamplePose(activeClipIt->second, m_CurrentTime, skeleton, target);
-	ApplyInertialization(deltaTime, target, outLocalTransforms);
+	std::vector<glm::mat4> outputLocalTransforms;
+	ApplyInertialization(deltaTime, target, outputLocalTransforms);
+
+	VansAnimationSampleRequest request;
+	// The pose switch happens after this frame's source clip was advanced.  A
+	// destination interval would either be zero or run backwards when matching
+	// an earlier point in the same clip, so movement for the switch frame must
+	// come from the outgoing playback interval.
+	request.previousTime = switchedThisFrame ? m_CurrentTime : previousPlaybackTime;
+	request.currentTime = switchedThisFrame ? m_CurrentTime : outgoingPlaybackTime;
+	request.startTime = 0.0f;
+	request.endTime = activeClipIt->second.duration;
+	request.loop = activeSample->loopLike;
+	request.rootMotionBoneIndex = m_Rig.trajectoryRoot;
+	request.sourceNodeId = VansAnimationStableId("MotionMatching");
+	if (!VansAnimationSampler::Sample(activeClipIt->second, skeleton, request, outPayload) ||
+	    !VansPoseMath::FromMatrices(outputLocalTransforms, outPayload.localPose))
+		return false;
+	if (switchedThisFrame)
+	{
+		const auto outgoingClipIt = clips.find(playbackClipName);
+		if (outgoingClipIt != clips.end())
+		{
+			VansAnimationSampleRequest outgoingRequest;
+			outgoingRequest.previousTime = previousPlaybackTime;
+			outgoingRequest.currentTime = outgoingPlaybackTime;
+			outgoingRequest.startTime = 0.0f;
+			outgoingRequest.endTime = outgoingClipIt->second.duration;
+			outgoingRequest.loop = playbackLoopLike;
+			outgoingRequest.rootMotionBoneIndex = m_Rig.trajectoryRoot;
+			outgoingRequest.sourceNodeId = request.sourceNodeId;
+			VansPosePayload outgoingPayload;
+			if (VansAnimationSampler::Sample(
+				outgoingClipIt->second, skeleton, outgoingRequest, outgoingPayload) &&
+			    outgoingPayload.rootMotion.valid)
+			{
+				outPayload.rootMotion = outgoingPayload.rootMotion;
+			}
+		}
+	}
+	if (outPayload.rootMotion.valid && deltaTime > kEpsilon)
+	{
+		const float outgoingYawRate = glm::degrees(
+			glm::eulerAngles(outPayload.rootMotion.rotation)).z / deltaTime;
+		if (switchedThisFrame)
+		{
+			// 切换帧仍消费源片段的完整 Root Motion 区间；从下一帧开始把
+			// 该线/角速度连续地收敛到目标片段，而不是修改 CCT Transform。
+			m_RootMotionReconciler.RequestTransition(
+				outPayload.rootMotion.translation / deltaTime,
+				outgoingYawRate);
+		}
+		else
+		{
+			const RootMotionReconciliationResult reconciliation =
+				m_RootMotionReconciler.Apply(
+					deltaTime,
+					outPayload.rootMotion.translation,
+					outPayload.rootMotion.rotation);
+			m_DebugData.rootMotionReconciliationActive = reconciliation.active;
+			m_DebugData.rootMotionTargetYawRateDegreesPerSecond =
+				reconciliation.targetYawRateDegreesPerSecond;
+			m_DebugData.rootMotionReconciledYawRateDegreesPerSecond =
+				reconciliation.appliedYawRateDegreesPerSecond;
+			const float rootVelocityToWorld =
+				m_Settings.motionModel.rootMotionToWorldScale;
+			const float facingYaw = trajectory && trajectory->valid
+				? trajectory->currentFacingYaw : 0.0f;
+			m_DebugData.rootMotionTargetVelocityWorld = Vans::AnimationToWorldPlanar(
+				reconciliation.targetVelocityAnimation * rootVelocityToWorld,
+				facingYaw);
+			m_DebugData.rootMotionReconciledVelocityWorld = Vans::AnimationToWorldPlanar(
+				reconciliation.appliedVelocityAnimation * rootVelocityToWorld,
+				facingYaw);
+		}
+	}
+	if (outPayload.rootMotion.valid && trajectory && trajectory->valid &&
+		isMoving && !switchedThisFrame)
+	{
+		const float predictionTime = (std::max)(
+			m_Settings.steering.predictionTime, 0.0001f);
+		float targetFacingYaw = trajectory->currentFacingYaw;
+		float previousFacingYaw = trajectory->currentFacingYaw;
+		float previousTime = 0.0f;
+		for (const auto& future : trajectory->future)
+		{
+			if (predictionTime <= future.time)
+			{
+				const float span = (std::max)(future.time - previousTime, 0.0001f);
+				const float alpha = glm::clamp(
+					(predictionTime - previousTime) / span, 0.0f, 1.0f);
+				targetFacingYaw = previousFacingYaw + std::remainder(
+					future.facingYaw - previousFacingYaw, 360.0f) * alpha;
+				break;
+			}
+			targetFacingYaw = future.facingYaw;
+			previousFacingYaw = future.facingYaw;
+			previousTime = future.time;
+		}
+
+		float authoredFutureYaw = 0.0f;
+		VansAnimationSampleRequest steeringRequest;
+		steeringRequest.previousTime = m_CurrentTime;
+		steeringRequest.currentTime = m_CurrentTime +
+			predictionTime * m_CurrentPlaybackRate;
+		steeringRequest.startTime = 0.0f;
+		steeringRequest.endTime = activeClipIt->second.duration;
+		steeringRequest.loop = activeSample->loopLike;
+		steeringRequest.rootMotionBoneIndex = m_Rig.trajectoryRoot;
+		steeringRequest.sourceNodeId = request.sourceNodeId;
+		VansPosePayload steeringPayload;
+		if (VansAnimationSampler::Sample(
+			activeClipIt->second, skeleton, steeringRequest, steeringPayload) &&
+			steeringPayload.rootMotion.valid)
+		{
+			authoredFutureYaw = glm::degrees(
+				glm::eulerAngles(steeringPayload.rootMotion.rotation)).z;
+		}
+		const float plannedMovementSpeed = glm::length(glm::vec2(
+			trajectory->plannedVelocityWorld.x,
+			trajectory->plannedVelocityWorld.z));
+		const float desiredMovementSpeed = glm::length(glm::vec2(
+			trajectory->desiredVelocityWorld.x,
+			trajectory->desiredVelocityWorld.z));
+		const float movementSpeed = (std::max)(
+			plannedMovementSpeed, desiredMovementSpeed);
+		const RootMotionSteeringResult steering = m_RootMotionSteering.Apply(
+			deltaTime,
+			movementSpeed,
+			trajectory->currentFacingYaw,
+			targetFacingYaw,
+			authoredFutureYaw,
+			outPayload.rootMotion.rotation);
+		m_DebugData.steeringTargetFacingDeltaDegrees =
+			steering.targetFacingDeltaDegrees;
+		m_DebugData.steeringAuthoredFacingDeltaDegrees =
+			steering.authoredFacingDeltaDegrees;
+		m_DebugData.steeringRequestedCorrectionDegrees =
+			steering.requestedCorrectionDegrees;
+		m_DebugData.steeringAppliedCorrectionDegrees =
+			steering.appliedCorrectionDegrees;
+		m_DebugData.steeringAppliedYawRateDegreesPerSecond =
+			steering.appliedYawRateDegreesPerSecond;
+		m_DebugData.steeringActive = steering.active;
+		m_DebugData.steeringLimited = steering.limited;
+	}
+	else if (!isMoving)
+	{
+		m_RootMotionSteering.Reset();
+	}
+	outPayload.valid = outPayload.localPose.size() == skeleton.bones.size();
+	m_PrefersRootMotionThisFrame = activeSample->transitionLike || activeSample->turnLike;
 	m_PreviousOutputLocalPose = m_LastOutputLocalPose;
-	m_LastOutputLocalPose = outLocalTransforms;
+	m_LastOutputLocalPose = outputLocalTransforms;
 
 	m_DebugData.usedThisFrame = true;
 	m_DebugData.databaseReady = true;
@@ -2060,5 +2870,21 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 	m_DebugData.switches = m_SwitchCount;
 	m_DebugData.activeClip = activeSample->clipName;
 	m_DebugData.activeTime = m_CurrentTime;
+	const glm::vec3 selectedVelocityAnimation(
+		activeSample->rawFeature[kTrajectoryVelocityBegin],
+		activeSample->rawFeature[kTrajectoryVelocityBegin + 1],
+		0.0f);
+	const float animationToWorldScale = 1.0f /
+		(std::max)(m_Settings.worldToAnimationScale, kEpsilon);
+	m_DebugData.activeClipVelocityWorld = Vans::AnimationToWorldPlanar(
+		selectedVelocityAnimation * animationToWorldScale,
+		trajectory && trajectory->valid ? trajectory->currentFacingYaw : 0.0f);
+	if (outPayload.rootMotion.valid && deltaTime > kEpsilon)
+	{
+		m_DebugData.appliedRootMotionVelocityWorld = Vans::AnimationToWorldPlanar(
+			outPayload.rootMotion.translation *
+				(m_Settings.motionModel.rootMotionToWorldScale / deltaTime),
+			trajectory && trajectory->valid ? trajectory->currentFacingYaw : 0.0f);
+	}
 	return true;
 }

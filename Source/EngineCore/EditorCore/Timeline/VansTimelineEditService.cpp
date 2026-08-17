@@ -3,6 +3,7 @@
 #include "../../AssetCore/VansAssetGuid.h"
 #include "../../SceneRuntime/VansRuntimeComponentTypes.h"
 #include "../../TimelineCore/VansTimelineSerialization.h"
+#include "../../TimelineCore/VansTimelineTrackExtensionRegistry.h"
 #include "../../TimelineCore/VansTimelineValidator.h"
 #include "../VansAssetDocumentEditService.h"
 #include "../VansAssetDocumentRegistry.h"
@@ -23,15 +24,6 @@ TimelineEditResult Failure(std::string message)
 	return { false, std::move(message), {} };
 }
 
-VansTimelineChannel DefaultPropertyChannel(const VansTimelinePropertyTrackConfig& property)
-{
-	VansTimelineChannel channel;
-	channel.id = VansTimelineEditService::NewStableId();
-	channel.name = property.descriptorId.empty() ? "Value" : property.descriptorId;
-	channel.type = property.valueType;
-	return channel;
-}
-
 void RegenerateSectionIds(VansTimelineSection& section)
 {
 	section.id = VansTimelineEditService::NewStableId();
@@ -43,72 +35,6 @@ void RegenerateSectionIds(VansTimelineSection& section)
 	}
 }
 
-bool OffsetNumericKeyValue(VansTimelineKeyValue& value, double delta)
-{
-	if (auto* typed = std::get_if<float>(&value)) { *typed += static_cast<float>(delta); return true; }
-	if (auto* typed = std::get_if<double>(&value)) { *typed += delta; return true; }
-	if (auto* typed = std::get_if<std::int32_t>(&value))
-	{
-		const double next = std::clamp(static_cast<double>(*typed) + delta,
-			static_cast<double>(std::numeric_limits<std::int32_t>::min()),
-			static_cast<double>(std::numeric_limits<std::int32_t>::max()));
-		*typed = static_cast<std::int32_t>(std::llround(next));
-		return true;
-	}
-	if (auto* typed = std::get_if<std::int64_t>(&value))
-	{
-		const long double next = std::clamp(static_cast<long double>(*typed) + delta,
-			static_cast<long double>(std::numeric_limits<std::int64_t>::min()),
-			static_cast<long double>(std::numeric_limits<std::int64_t>::max()));
-		*typed = static_cast<std::int64_t>(std::llround(next));
-		return true;
-	}
-	return false;
-}
-
-bool NumericKeyValue(const VansTimelineKeyValue& value, double& number)
-{
-	if (const auto* typed = std::get_if<float>(&value)) { number = *typed; return true; }
-	if (const auto* typed = std::get_if<double>(&value)) { number = *typed; return true; }
-	if (const auto* typed = std::get_if<std::int32_t>(&value)) { number = *typed; return true; }
-	if (const auto* typed = std::get_if<std::int64_t>(&value))
-	{
-		number = static_cast<double>(*typed);
-		return true;
-	}
-	return false;
-}
-
-bool ScaleNumericKeyValue(VansTimelineKeyValue& value, double pivot, double scale)
-{
-	if (auto* typed = std::get_if<float>(&value))
-	{
-		*typed = static_cast<float>(pivot + (static_cast<double>(*typed) - pivot) * scale);
-		return true;
-	}
-	if (auto* typed = std::get_if<double>(&value))
-	{
-		*typed = pivot + (*typed - pivot) * scale;
-		return true;
-	}
-	if (auto* typed = std::get_if<std::int32_t>(&value))
-	{
-		const double scaled = pivot + (static_cast<double>(*typed) - pivot) * scale;
-		*typed = static_cast<std::int32_t>(std::llround(std::clamp(scaled,
-			static_cast<double>(std::numeric_limits<std::int32_t>::min()),
-			static_cast<double>(std::numeric_limits<std::int32_t>::max()))));
-		return true;
-	}
-	if (auto* typed = std::get_if<std::int64_t>(&value))
-	{
-		const long double scaled = pivot + (static_cast<long double>(*typed) - pivot) * scale;
-		*typed = static_cast<std::int64_t>(std::llround(std::clamp(scaled,
-			static_cast<long double>(std::numeric_limits<std::int64_t>::min()),
-			static_cast<long double>(std::numeric_limits<std::int64_t>::max()))));
-		return true;
-	}
-	return false;
-}
 }
 
 VansTimelineId VansTimelineEditService::NewStableId()
@@ -116,73 +42,16 @@ VansTimelineId VansTimelineEditService::NewStableId()
 	return VansAssetGuid::New().ToString();
 }
 
-VansTimelineTrackConfig VansTimelineEditService::DefaultTrackConfig(VansTimelineTrackType type)
+VansSerializedValue VansTimelineEditService::DefaultExtensionData(VansTimelineTrackTypeId type)
 {
-	switch (type)
-	{
-	case VansTimelineTrackType::Transform: return VansTimelineTransformTrackConfig{};
-	case VansTimelineTrackType::Property:
-	{
-		VansTimelinePropertyTrackConfig config;
-		config.componentTypeId = VansRuntimeComponentType_Transform;
-		config.descriptorId = "Transform.Position";
-		config.propertyPath = "position";
-		config.valueType = VansTimelineChannelType::Vec3;
-		config.unit = "m";
-		config.minimum = -100000.0;
-		config.maximum = 100000.0;
-		return config;
-	}
-	case VansTimelineTrackType::Activation: return VansTimelineActivationTrackConfig{};
-	case VansTimelineTrackType::Constraint: return VansTimelineConstraintTrackConfig{};
-	case VansTimelineTrackType::AnimationClip:
-	{
-		VansTimelineAnimationTrackConfig config; config.slot = "Timeline"; return config;
-	}
-	case VansTimelineTrackType::AnimatorParameter:
-	{
-		VansTimelineAnimatorParameterTrackConfig config; config.parameterName = "TimelineParameter"; return config;
-	}
-	case VansTimelineTrackType::BoneOverride:
-	{
-		VansTimelineBoneOverrideTrackConfig config; config.bone = "Root"; return config;
-	}
-	case VansTimelineTrackType::Audio: return VansTimelineAudioTrackConfig{};
-	case VansTimelineTrackType::Media: return VansTimelineMediaTrackConfig{};
-	case VansTimelineTrackType::Particle: return VansTimelineParticleTrackConfig{};
-	case VansTimelineTrackType::CameraCut: return VansTimelineCameraCutTrackConfig{};
-	case VansTimelineTrackType::CameraProperty: return VansTimelineCameraPropertyTrackConfig{};
-	case VansTimelineTrackType::CameraShake: return VansTimelineCameraShakeTrackConfig{};
-	case VansTimelineTrackType::FadePostProcess: return VansTimelineFadePostProcessTrackConfig{};
-	case VansTimelineTrackType::Light: return VansTimelineLightTrackConfig{};
-	case VansTimelineTrackType::MaterialParameter:
-	{
-		VansTimelineMaterialParameterTrackConfig config; config.materialSlotId = "0"; config.parameterName = "Value"; return config;
-	}
-	case VansTimelineTrackType::MaterialSwitch:
-	{
-		VansTimelineMaterialSwitchTrackConfig config; config.materialSlotId = "0"; return config;
-	}
-	case VansTimelineTrackType::UIState:
-	{
-		VansTimelineUIStateTrackConfig config;
-		config.screen = "Main";
-		config.targetKind = "Screen";
-		config.descriptorId = "Screen.Visible";
-		config.setterId = 300;
-		return config;
-	}
-	case VansTimelineTrackType::EventSignal:
-	{
-		VansTimelineEventTrackConfig config; config.signalId = NewStableId(); config.displayName = "Timeline Signal"; return config;
-	}
-	case VansTimelineTrackType::SubTimeline: return VansTimelineSubTimelineTrackConfig{};
-	case VansTimelineTrackType::Spawnable: return VansTimelineSpawnableTrackConfig{};
-	case VansTimelineTrackType::TimeScale: return VansTimelineTimeScaleTrackConfig{};
-	case VansTimelineTrackType::SceneState: return VansTimelineSceneStateTrackConfig{};
-	case VansTimelineTrackType::Custom: return VansTimelineCustomTrackConfig{};
-	}
-	return std::monostate{};
+	const VansTimelineTrackExtensionDescriptor* descriptor =
+		VansTimelineTrackExtensionRegistry::BuiltIns().Resolve(type);
+	if (!descriptor) return VansSerializedValue::Object({});
+	std::vector<std::pair<std::string, VansSerializedValue>> fields;
+	fields.reserve(descriptor->sourceSchema.fields.size());
+	for (const VansTimelineSourceField& field : descriptor->sourceSchema.fields)
+		fields.emplace_back(field.name, VansTimelineEncodeSourceValue(field.defaultValue));
+	return VansSerializedValue::Object(std::move(fields));
 }
 
 TimelineEditResult VansTimelineEditService::Open(const std::filesystem::path& sourcePath)
@@ -209,13 +78,8 @@ TimelineEditResult VansTimelineEditService::Reload()
 TimelineEditResult VansTimelineEditService::ValidateWorkingCopy()
 {
 	VansTimelineValidationContext context;
+	context.extensions = &VansTimelineTrackExtensionRegistry::BuiltIns();
 	context.runtimeValidation = false;
-	context.supportsPropertyDescriptor = [](std::uint16_t componentTypeId,
-		const std::string& descriptorId, VansTimelineChannelType valueType)
-	{
-		const auto* descriptor = VansEditorPropertyDescriptorRegistry::FindAnimatable(descriptorId);
-		return descriptor && descriptor->componentTypeId == componentTypeId && descriptor->valueType == valueType;
-	};
 	m_Diagnostics = VansTimelineValidator::Validate(m_Asset, context);
 	if (VansTimelineValidator::HasErrors(m_Diagnostics))
 	{
@@ -401,34 +265,23 @@ TimelineEditResult VansTimelineEditService::MoveMarker(VansTimelineId markerId, 
 }
 
 TimelineEditResult VansTimelineEditService::AddTrack(
-	VansTimelineTrackType type,
+	VansTimelineTrackTypeId type,
 	VansTimelineId bindingId,
 	VansTimelineId groupId,
-	VansTimelineTrackConfig config)
+	VansSerializedValue extensionData)
 {
+	const VansTimelineTrackExtensionDescriptor* descriptor =
+		VansTimelineTrackExtensionRegistry::BuiltIns().Resolve(type);
+	if (!descriptor) return Failure("Timeline track extension is not registered");
 	VansTimelineTrack track;
 	track.id = NewStableId();
-	track.type = type;
-	track.name = VansTimelineSerialization::TrackTypeName(type);
+	track.type = VansTimelineTrackTypeRef::FromName(descriptor->stableName);
+	track.name = descriptor->displayName;
 	track.bindingId = std::move(bindingId);
 	track.groupId = std::move(groupId);
 	track.order = static_cast<std::int32_t>(m_Asset.tracks.size());
-	track.config = std::holds_alternative<std::monostate>(config)
-		? DefaultTrackConfig(type) : std::move(config);
-	if (auto* constraint = std::get_if<VansTimelineConstraintTrackConfig>(&track.config))
-	{
-		constraint->sourceBindingId = track.bindingId;
-		const auto target = std::find_if(m_Asset.bindings.begin(), m_Asset.bindings.end(), [&](const auto& binding)
-		{
-			return binding.id != track.bindingId &&
-				(binding.kind == VansTimelineBindingKind::SceneEntity || binding.kind == VansTimelineBindingKind::SceneComponent);
-		});
-		if (target == m_Asset.bindings.end())
-			return Failure("Constraint tracks require a second compatible binding target");
-		constraint->targetBindingId = target->id;
-	}
-	if (auto* cameraCut = std::get_if<VansTimelineCameraCutTrackConfig>(&track.config))
-		cameraCut->cameraBindingId = track.bindingId;
+	track.extensionData = extensionData.kind == VansSerializedValue::Kind::Object && extensionData.objectFields.empty()
+		? DefaultExtensionData(type) : std::move(extensionData);
 	const VansTimelineId id = track.id;
 	m_Asset.tracks.push_back(std::move(track));
 	return FinishMutation(id);
@@ -455,60 +308,19 @@ TimelineEditResult VansTimelineEditService::AddSection(VansTimelineId trackId, V
 	if (section.id.empty()) section.id = NewStableId();
 	if (section.name.empty()) section.name = track->name;
 	if (section.durationTicks <= 0) section.durationTicks = std::max<VansTimelineTick>(1, m_Asset.durationTicks / 10);
-	if (track->type == VansTimelineTrackType::Property && section.channels.empty())
-		section.channels.push_back(DefaultPropertyChannel(std::get<VansTimelinePropertyTrackConfig>(track->config)));
 	if (section.channels.empty())
 	{
-		auto addChannel = [&](const char* name, VansTimelineChannelType type)
+		const VansTimelineTrackExtensionDescriptor* descriptor =
+			VansTimelineTrackExtensionRegistry::BuiltIns().Resolve(track->type.typeId);
+		if (!descriptor) return Failure("Timeline track extension is not registered");
+		for (const VansTimelineChannelSchema& expected : descriptor->sourceSchema.channels)
 		{
 			VansTimelineChannel channel;
 			channel.id = NewStableId();
-			channel.name = name;
-			channel.type = type;
+			channel.name = expected.name;
+			channel.type = VansTimelineResolveChannelType(expected,
+				section.extensionData ? *section.extensionData : track->extensionData);
 			section.channels.push_back(std::move(channel));
-		};
-		switch (track->type)
-		{
-		case VansTimelineTrackType::Transform:
-			addChannel("Position", VansTimelineChannelType::Vec3);
-			addChannel("Rotation", VansTimelineChannelType::Quaternion);
-			addChannel("Scale", VansTimelineChannelType::Vec3);
-			break;
-		case VansTimelineTrackType::Constraint: addChannel("Weight", VansTimelineChannelType::Float); break;
-		case VansTimelineTrackType::AnimatorParameter: addChannel("Value", VansTimelineChannelType::Float); break;
-		case VansTimelineTrackType::BoneOverride:
-			addChannel("Position", VansTimelineChannelType::Vec3);
-			addChannel("Rotation", VansTimelineChannelType::Quaternion);
-			break;
-		case VansTimelineTrackType::CameraProperty:
-		{
-			const auto& camera = std::get<VansTimelineCameraPropertyTrackConfig>(track->config);
-			if (camera.fieldOfView) addChannel("FieldOfView", VansTimelineChannelType::Float);
-			if (camera.nearClip) addChannel("NearClip", VansTimelineChannelType::Float);
-			if (camera.farClip) addChannel("FarClip", VansTimelineChannelType::Float);
-			if (camera.transform)
-			{
-				addChannel("Position", VansTimelineChannelType::Vec3);
-				addChannel("Rotation", VansTimelineChannelType::Quaternion);
-				addChannel("Scale", VansTimelineChannelType::Vec3);
-			}
-			break;
-		}
-		case VansTimelineTrackType::CameraShake:
-		{
-			const auto& shake = std::get<VansTimelineCameraShakeTrackConfig>(track->config);
-			if (shake.position) addChannel("PositionOffset", VansTimelineChannelType::Vec3);
-			if (shake.rotation) addChannel("RotationOffset", VansTimelineChannelType::Vec3);
-			break;
-		}
-		case VansTimelineTrackType::FadePostProcess: addChannel("Opacity", VansTimelineChannelType::Float); break;
-		case VansTimelineTrackType::Light: addChannel("Intensity", VansTimelineChannelType::Float); break;
-		case VansTimelineTrackType::MaterialParameter:
-			addChannel("Value", std::get<VansTimelineMaterialParameterTrackConfig>(track->config).parameterType); break;
-		case VansTimelineTrackType::UIState: addChannel("Value", VansTimelineChannelType::Bool); break;
-		case VansTimelineTrackType::EventSignal: addChannel("Event", VansTimelineChannelType::EventPayload); break;
-		case VansTimelineTrackType::TimeScale: addChannel("Scale", VansTimelineChannelType::Float); break;
-		default: break;
 		}
 	}
 	const VansTimelineId id = section.id;
@@ -628,112 +440,6 @@ TimelineEditResult VansTimelineEditService::DuplicateKeys(
 	return FinishMutation(lastId);
 }
 
-TimelineEditResult VansTimelineEditService::ScaleKeys(
-	const std::unordered_set<VansTimelineId>& keyIds,
-	double timeScale,
-	double valueScale)
-{
-	if (keyIds.empty() || !std::isfinite(timeScale) || timeScale <= 0.0 ||
-		!std::isfinite(valueScale))
-		return Failure("Timeline key scale factors are invalid");
-	VansTimelineTick minimumTick = std::numeric_limits<VansTimelineTick>::max();
-	VansTimelineTick maximumTick = std::numeric_limits<VansTimelineTick>::min();
-	double minimumValue = std::numeric_limits<double>::max();
-	double maximumValue = std::numeric_limits<double>::lowest();
-	bool found = false;
-	for (const auto& track : m_Asset.tracks)
-		for (const auto& section : track.sections)
-			for (const auto& channel : section.channels)
-				for (const auto& key : channel.keys)
-					if (keyIds.find(key.id) != keyIds.end())
-					{
-						const VansTimelineTick globalTick = section.startTick + key.tick;
-						minimumTick = std::min(minimumTick, globalTick);
-						maximumTick = std::max(maximumTick, globalTick);
-						double value = 0.0;
-						if (NumericKeyValue(key.value, value))
-						{
-							minimumValue = std::min(minimumValue, value);
-							maximumValue = std::max(maximumValue, value);
-						}
-						found = true;
-					}
-	if (!found) return Failure("Timeline key selection no longer exists");
-	const VansTimelineAsset original = m_Asset;
-	const double pivotTick = (static_cast<double>(minimumTick) + maximumTick) * 0.5;
-	const double pivotValue = minimumValue == std::numeric_limits<double>::max()
-		? 0.0 : (minimumValue + maximumValue) * 0.5;
-	for (auto& track : m_Asset.tracks)
-		for (auto& section : track.sections)
-			for (auto& channel : section.channels)
-			{
-				for (auto& key : channel.keys)
-					if (keyIds.find(key.id) != keyIds.end())
-					{
-						const double globalTick = section.startTick + key.tick;
-						const auto scaledGlobal = static_cast<VansTimelineTick>(std::llround(
-							pivotTick + (globalTick - pivotTick) * timeScale));
-						key.tick = scaledGlobal - section.startTick;
-						if (key.tick < 0 || key.tick >= section.durationTicks)
-						{
-							m_Asset = original;
-							return Failure("Scaled Timeline keys would leave their section range");
-						}
-						ScaleNumericKeyValue(key.value, pivotValue, valueScale);
-					}
-				std::unordered_set<VansTimelineTick> ticks;
-				for (const auto& key : channel.keys)
-					if (!ticks.insert(key.tick).second)
-					{
-						m_Asset = original;
-						return Failure("Scaled Timeline keys would collide at the same tick");
-					}
-				std::stable_sort(channel.keys.begin(), channel.keys.end(), [](const auto& left, const auto& right)
-				{
-					return left.tick < right.tick;
-				});
-			}
-	return FinishMutation(*keyIds.begin());
-}
-
-TimelineEditResult VansTimelineEditService::SetKeysCurveMode(
-	const std::unordered_set<VansTimelineId>& keyIds,
-	VansTimelineInterpolation interpolation,
-	VansTimelineTangentMode tangentMode)
-{
-	if (keyIds.empty()) return Failure("Timeline key selection is empty");
-	bool found = false;
-	for (auto& track : m_Asset.tracks)
-		for (auto& section : track.sections)
-			for (auto& channel : section.channels)
-				for (auto& key : channel.keys)
-					if (keyIds.find(key.id) != keyIds.end())
-					{
-						key.interpolation = interpolation;
-						key.tangentMode = tangentMode;
-						found = true;
-					}
-	return found ? FinishMutation(*keyIds.begin())
-		: Failure("Timeline key selection no longer exists");
-}
-
-TimelineEditResult VansTimelineEditService::OffsetKeyValuesBy(
-	const std::unordered_set<VansTimelineId>& keyIds,
-	double deltaValue)
-{
-	if (keyIds.empty() || !std::isfinite(deltaValue))
-		return Failure("Timeline numeric key selection is invalid");
-	bool changed = false;
-	for (auto& track : m_Asset.tracks)
-		for (auto& section : track.sections)
-			for (auto& channel : section.channels)
-				for (auto& key : channel.keys)
-					if (keyIds.find(key.id) != keyIds.end())
-						changed |= OffsetNumericKeyValue(key.value, deltaValue);
-	return changed ? FinishMutation(*keyIds.begin())
-		: Failure("Timeline key selection has no numeric values");
-}
-
 TimelineEditResult VansTimelineEditService::SetKeyValue(
 	VansTimelineId trackId,
 	VansTimelineId sectionId,
@@ -748,33 +454,6 @@ TimelineEditResult VansTimelineEditService::SetKeyValue(
 	const auto key = std::find_if(keys.begin(), keys.end(), [&](const auto& item) { return item.id == keyId; });
 	if (key == keys.end()) return Failure("Timeline key does not exist");
 	key->value = std::move(value);
-	return FinishMutation(std::move(keyId));
-}
-
-TimelineEditResult VansTimelineEditService::SetKeyCurve(
-	VansTimelineId trackId,
-	VansTimelineId sectionId,
-	std::size_t channelIndex,
-	VansTimelineId keyId,
-	VansTimelineInterpolation interpolation,
-	VansTimelineTangentMode tangentMode,
-	double arriveTangent,
-	double leaveTangent,
-	double arriveWeight,
-	double leaveWeight)
-{
-	VansTimelineTrack* track = FindTrack(trackId);
-	VansTimelineSection* section = track ? FindSection(*track, sectionId) : nullptr;
-	if (!section || channelIndex >= section->channels.size()) return Failure("Timeline channel does not exist");
-	auto& keys = section->channels[channelIndex].keys;
-	const auto key = std::find_if(keys.begin(), keys.end(), [&](const auto& item) { return item.id == keyId; });
-	if (key == keys.end()) return Failure("Timeline key does not exist");
-	key->interpolation = interpolation;
-	key->tangentMode = tangentMode;
-	key->arriveTangent = arriveTangent;
-	key->leaveTangent = leaveTangent;
-	key->arriveWeight = std::max(0.0, arriveWeight);
-	key->leaveWeight = std::max(0.0, leaveWeight);
 	return FinishMutation(std::move(keyId));
 }
 

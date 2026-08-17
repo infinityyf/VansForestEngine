@@ -38,14 +38,27 @@ namespace VansGraphics
 			std::vector<VansPreservedRenderFeatureDesc> preservedFeatures;
 		};
 
+		bool IsMigratedAsyncPass(const char* passName)
+		{
+			return std::strcmp(passName, VansRenderPassNames::VegetationCompute) == 0
+				|| std::strcmp(passName, VansRenderPassNames::MainCameraHiZCull) == 0
+				|| std::strcmp(passName, VansRenderPassNames::TileLightBuild) == 0
+				|| std::strcmp(passName, VansRenderPassNames::CloudRayMarch) == 0
+				|| std::strcmp(passName, VansRenderPassNames::RayTracing) == 0
+				|| std::strcmp(passName, VansRenderPassNames::GIData) == 0;
+		}
+
 		VansRenderPassNodeDesc MakeNodeDesc(
 			const VansRenderPassCatalogEntry& entry,
-			const VansScene& scene)
+			const VansScene& scene,
+			bool asyncComputeEnabled)
 		{
 			VansRenderPassNodeDesc desc{};
 			desc.name = entry.name;
 			desc.passId = VansRenderGraphIntern::InternName(entry.name);
-			desc.queue = entry.queue;
+			desc.queue = asyncComputeEnabled && IsMigratedAsyncPass(entry.name)
+				? VansRenderQueueClass::AsyncCompute
+				: VansRenderQueueClass::Graphics;
 			desc.resizeDependent = entry.resizeDependent;
 			desc.allowAsyncCompute = entry.allowAsyncCompute;
 			desc.enabled = VansRenderPassCatalog::IsPassEnabled(entry.condition, scene);
@@ -82,15 +95,21 @@ namespace VansGraphics
 					{ { "ClothVertexBuffers", VansRenderResourceUsage::TransferDst } },
 					{ "Cloth render vertex update" } },
 				{ VansRenderPassNames::VegetationCompute, VansRenderQueueClass::Compute, false, true, VansRenderPassCondition::Always,
-					{ { "VegetationInputs", VansRenderResourceUsage::StorageRead } },
-					{ { "VegetationIndirectArgs", VansRenderResourceUsage::StorageWrite } },
+					{ { "VegetationInputs", VansRenderResourceUsage::StorageRead },
+					  { "OcclusionHZB", VansRenderResourceUsage::SampledRead } },
+					{ { "VegetationDrawData", VansRenderResourceUsage::StorageWrite },
+					  { "VegetationIndirectArgs", VansRenderResourceUsage::StorageWrite },
+					  { "VegetationVisibleIndices", VansRenderResourceUsage::StorageWrite },
+					  { "VegetationBoneMatrices", VansRenderResourceUsage::StorageWrite } },
 					{ "GPU vegetation wind/cull/indirect" } },
 				{ VansRenderPassNames::CascadeShadow, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::Always,
-					{ { "SceneGeometry", VansRenderResourceUsage::SampledRead } },
+					{ { "SceneGeometry", VansRenderResourceUsage::SampledRead },
+					  { "VegetationDrawData", VansRenderResourceUsage::IndirectArgumentRead } },
 					{ { "CascadeShadowDepth", VansRenderResourceUsage::DepthStencilAttachmentWrite } },
 					{ "Cascaded directional shadows" } },
 				{ VansRenderPassNames::PunctualShadow, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::HasPunctualShadowJobs,
-					{ { "SceneGeometry", VansRenderResourceUsage::SampledRead } },
+					{ { "SceneGeometry", VansRenderResourceUsage::SampledRead },
+					  { "VegetationDrawData", VansRenderResourceUsage::IndirectArgumentRead } },
 					{ { "PunctualShadowAtlas", VansRenderResourceUsage::DepthStencilAttachmentWrite } },
 					{ "Point and spot shadows" } },
 				{ VansRenderPassNames::HairDeepOpacity, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::Always,
@@ -99,16 +118,18 @@ namespace VansGraphics
 					{ "Hair deep opacity" } },
 				{ VansRenderPassNames::MainCameraHiZCull, VansRenderQueueClass::Compute, true, true, VansRenderPassCondition::Always,
 					{ { "OcclusionHZB", VansRenderResourceUsage::SampledRead },
-					  { "SceneGeometry", VansRenderResourceUsage::StorageRead } },
-					{ { "MainCameraVisibility", VansRenderResourceUsage::StorageWrite } },
+					  { "MainCameraCullObjects", VansRenderResourceUsage::StorageRead } },
+					{ { "MainCameraVisibilityReadback", VansRenderResourceUsage::StorageWrite } },
 					{ "Main camera HiZ occlusion culling" } },
 				{ VansRenderPassNames::MotionVector, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::Always,
 					{ { "SceneGeometry", VansRenderResourceUsage::SampledRead } },
 					{ { "MotionVectors", VansRenderResourceUsage::ColorAttachmentWrite } },
 					{ "Motion vectors" } },
 				{ VansRenderPassNames::GBuffer, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::Always,
-					{ { "SceneGeometry", VansRenderResourceUsage::SampledRead } },
+					{ { "SceneGeometry", VansRenderResourceUsage::SampledRead },
+					  { "VegetationDrawData", VansRenderResourceUsage::IndirectArgumentRead } },
 					{ { "Normal", VansRenderResourceUsage::ColorAttachmentWrite },
+					  { "GBuffer", VansRenderResourceUsage::ColorAttachmentWrite },
 					  { "MaterialBuffers", VansRenderResourceUsage::ColorAttachmentWrite },
 					  { "Depth", VansRenderResourceUsage::DepthStencilAttachmentWrite } },
 					{ "Deferred GBuffer", "GBuffer normal", "GBuffer material buffers", "GBuffer depth",
@@ -143,14 +164,16 @@ namespace VansGraphics
 					  { "Depth", VansRenderResourceUsage::SampledRead } },
 					{ { "SSAO", VansRenderResourceUsage::StorageWrite } },
 					{ "SSAO raw" } },
-				{ VansRenderPassNames::RayTracing, VansRenderQueueClass::Compute, false, false, VansRenderPassCondition::Always,
+				{ VansRenderPassNames::RayTracing, VansRenderQueueClass::Compute, false, true, VansRenderPassCondition::Always,
 					{ { "TLAS", VansRenderResourceUsage::AccelerationStructureBuildRead },
 					  { "GBuffer", VansRenderResourceUsage::SampledRead } },
 					{ { "RayTracingGI", VansRenderResourceUsage::StorageWrite } },
 					{ "BLAS/TLAS", "Ray tracing dispatch", "GI/probe integration" } },
 				{ VansRenderPassNames::GIData, VansRenderQueueClass::Compute, true, true, VansRenderPassCondition::Always,
 					{ { "GBuffer", VansRenderResourceUsage::SampledRead },
+					  { "HZB", VansRenderResourceUsage::SampledRead },
 					  { "RayTracingGI", VansRenderResourceUsage::SampledRead },
+					  { "CascadeShadowDepth", VansRenderResourceUsage::SampledRead },
 					  { "PunctualShadowAtlas", VansRenderResourceUsage::SampledRead },
 					  { "PunctualShadowMeta", VansRenderResourceUsage::StorageRead } },
 					{ { "GIData", VansRenderResourceUsage::StorageWrite } },
@@ -163,6 +186,7 @@ namespace VansGraphics
 				{ VansRenderPassNames::VolumetricFog, VansRenderQueueClass::Compute, true, true, VansRenderPassCondition::Always,
 					{ { "Depth", VansRenderResourceUsage::SampledRead },
 					  { "LightBuffers", VansRenderResourceUsage::StorageRead },
+					  { "TileLightLists", VansRenderResourceUsage::StorageRead },
 					  { "PunctualShadowAtlas", VansRenderResourceUsage::SampledRead },
 					  { "PunctualShadowMeta", VansRenderResourceUsage::StorageRead } },
 					{ { "VolumetricFog", VansRenderResourceUsage::StorageWrite } },
@@ -171,15 +195,16 @@ namespace VansGraphics
 					{ { "Atmosphere", VansRenderResourceUsage::StorageRead } },
 					{ { "CloudRayMarch", VansRenderResourceUsage::StorageWrite } },
 					{ "Cloud ray marching" } },
-				{ VansRenderPassNames::ExposureBloom, VansRenderQueueClass::Compute, true, true, VansRenderPassCondition::Always,
-					{ { "SceneColor", VansRenderResourceUsage::SampledRead } },
-					{ { "Exposure", VansRenderResourceUsage::StorageWrite },
-					  { "Bloom", VansRenderResourceUsage::StorageWrite } },
-					{ "Exposure", "Bloom" } },
 				{ VansRenderPassNames::DeferredSkybox, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::Always,
 					{ { "GBuffer", VansRenderResourceUsage::SampledRead },
 					  { "HZB", VansRenderResourceUsage::SampledRead },
-					  { "ScreenSpaceEffects", VansRenderResourceUsage::SampledRead },
+					  { "SSAO", VansRenderResourceUsage::SampledRead },
+					  { "ScreenSpaceShadow", VansRenderResourceUsage::SampledRead },
+					  { "GIData", VansRenderResourceUsage::SampledRead },
+					  { "SSR", VansRenderResourceUsage::SampledRead },
+					  { "VolumetricFog", VansRenderResourceUsage::SampledRead },
+					  { "CloudRayMarch", VansRenderResourceUsage::SampledRead },
+					  { "TileLightLists", VansRenderResourceUsage::StorageRead },
 					  { "PunctualShadowAtlas", VansRenderResourceUsage::SampledRead },
 					  { "PunctualShadowMeta", VansRenderResourceUsage::StorageRead } },
 					{ { "SceneColor", VansRenderResourceUsage::ColorAttachmentWrite } },
@@ -224,20 +249,52 @@ namespace VansGraphics
 					  { "GBuffer", VansRenderResourceUsage::SampledRead } },
 					{ { "HairLighting", VansRenderResourceUsage::ColorAttachmentWrite } },
 					{ "Hair lighting" } },
+				{ VansRenderPassNames::DepthOfFieldPrepare, VansRenderQueueClass::Compute, true, true, VansRenderPassCondition::Always,
+					{ { "SceneColor", VansRenderResourceUsage::SampledRead } },
+					{ { "DepthOfField", VansRenderResourceUsage::StorageWrite } },
+					{ "Depth of field" } },
+				{ VansRenderPassNames::TransparentSceneColorPrepare, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::Always,
+					{ { "SceneColor", VansRenderResourceUsage::TransferSrc },
+					  { "DepthOfField", VansRenderResourceUsage::TransferSrc } },
+					{ { "SceneColor", VansRenderResourceUsage::TransferDst },
+					  { "OpaqueSceneColor", VansRenderResourceUsage::TransferDst } },
+					{ "Resolve opaque DOF into SceneColor", "Refresh transmission/refraction snapshot" } },
 				{ VansRenderPassNames::TransparentPostProcess, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::Always,
 					{ { "SceneColor", VansRenderResourceUsage::SampledRead },
 					  { "OpaqueSceneColor", VansRenderResourceUsage::SampledRead },
+					  { "TileLightLists", VansRenderResourceUsage::StorageRead },
 					  { "Depth", VansRenderResourceUsage::DepthStencilAttachmentRead },
 					  { "PunctualShadowAtlas", VansRenderResourceUsage::SampledRead },
 					  { "PunctualShadowMeta", VansRenderResourceUsage::StorageRead } },
-					{ { "PostProcessOutput", VansRenderResourceUsage::ColorAttachmentWrite } },
+					{ { "SceneColor", VansRenderResourceUsage::ColorAttachmentWrite } },
 					{ "Hair composite", "Transparent rendering", "Particle rendering", "Transmission/refraction",
-					  { "Water composite", VansRenderPassCondition::HasWater }, "Post-process chain" } },
-				{ VansRenderPassNames::FSRRuntimeUI, VansRenderQueueClass::Compute, true, false, VansRenderPassCondition::Always,
-					{ { "PostProcessOutput", VansRenderResourceUsage::SampledRead } },
-					{ { "FSROutput", VansRenderResourceUsage::StorageWrite },
-					  { "SceneUI", VansRenderResourceUsage::ColorAttachmentWrite } },
-					{ "FSR", "Scene UI rendering" } },
+					  { "Water composite", VansRenderPassCondition::HasWater } } },
+				{ VansRenderPassNames::ExposureBloom, VansRenderQueueClass::Compute, true, true, VansRenderPassCondition::Always,
+					{ { "SceneColor", VansRenderResourceUsage::SampledRead } },
+					{ { "Exposure", VansRenderResourceUsage::StorageWrite },
+					  { "FSRExposure", VansRenderResourceUsage::StorageWrite },
+					  { "Bloom", VansRenderResourceUsage::StorageWrite } },
+					{ "Exposure", "Bloom" } },
+				{ VansRenderPassNames::FSRUpscale, VansRenderQueueClass::Compute, true, false, VansRenderPassCondition::Always,
+					{ { "SceneColor", VansRenderResourceUsage::SampledRead },
+					  { "OpaqueSceneColor", VansRenderResourceUsage::SampledRead },
+					  { "Depth", VansRenderResourceUsage::SampledRead },
+					  { "MotionVector", VansRenderResourceUsage::SampledRead },
+					  { "FSRExposure", VansRenderResourceUsage::SampledRead } },
+					{ { "FSRReactiveMask", VansRenderResourceUsage::StorageWrite },
+					  { "FSRTransparencyCompositionMask", VansRenderResourceUsage::StorageWrite },
+					  { "FSRHDRColor", VansRenderResourceUsage::StorageWrite } },
+					{ "FSR mask generation", "FSR upscale" } },
+				{ VansRenderPassNames::DisplayPostProcess, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::Always,
+					{ { "FSRHDRColor", VansRenderResourceUsage::SampledRead },
+					  { "Exposure", VansRenderResourceUsage::SampledRead },
+					  { "Bloom", VansRenderResourceUsage::SampledRead } },
+					{ { "FinalDisplayColor", VansRenderResourceUsage::ColorAttachmentWrite } },
+					{ "Exposure", "Bloom composite", "Tone mapping", "Color grading" } },
+				{ VansRenderPassNames::RuntimeUI, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::Always,
+					{ { "FinalDisplayColor", VansRenderResourceUsage::SampledRead } },
+					{ { "FinalDisplayColor", VansRenderResourceUsage::ColorAttachmentWrite } },
+					{ "Scene UI rendering" } },
 				{ VansRenderPassNames::ReflectionProbeBakeQueue, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::Always,
 					{ { "SceneColor", VansRenderResourceUsage::SampledRead },
 					  { "ShadowMaps", VansRenderResourceUsage::SampledRead } },
@@ -288,6 +345,66 @@ namespace VansGraphics
 		return false;
 	}
 
+	bool VansRenderPassCatalog::AuditAsyncMigrationContracts(std::vector<std::string>& outErrors)
+	{
+		outErrors.clear();
+		const auto& catalog = GetCompatibilityCatalog();
+		auto findPass = [&](const char* passName) -> const VansRenderPassCatalogEntry*
+		{
+			for (const auto& entry : catalog)
+			{
+				if (std::strcmp(entry.name, passName) == 0)
+					return &entry;
+			}
+			return nullptr;
+		};
+		auto requireAccess = [&](const char* passName, const char* resourceName, bool write)
+		{
+			const VansRenderPassCatalogEntry* pass = findPass(passName);
+			if (pass == nullptr)
+			{
+				outErrors.emplace_back(std::string("missing pass: ") + passName);
+				return;
+			}
+			const auto& accesses = write ? pass->writes : pass->reads;
+			for (const auto& access : accesses)
+			{
+				if (access.name == resourceName)
+					return;
+			}
+			outErrors.emplace_back(std::string(passName) + (write ? " missing write: " : " missing read: ") + resourceName);
+		};
+
+		for (const char* passName : {
+			VansRenderPassNames::VegetationCompute,
+			VansRenderPassNames::MainCameraHiZCull,
+			VansRenderPassNames::TileLightBuild,
+			VansRenderPassNames::CloudRayMarch,
+			VansRenderPassNames::RayTracing,
+			VansRenderPassNames::GIData })
+		{
+			const VansRenderPassCatalogEntry* pass = findPass(passName);
+			if (pass == nullptr || !pass->allowAsyncCompute)
+				outErrors.emplace_back(std::string("async pass is not marked allowAsyncCompute: ") + passName);
+		}
+
+		requireAccess(VansRenderPassNames::VegetationCompute, "VegetationDrawData", true);
+		requireAccess(VansRenderPassNames::CascadeShadow, "VegetationDrawData", false);
+		requireAccess(VansRenderPassNames::GBuffer, "VegetationDrawData", false);
+		requireAccess(VansRenderPassNames::MainCameraHiZCull, "OcclusionHZB", false);
+		requireAccess(VansRenderPassNames::MainCameraHiZCull, "MainCameraVisibilityReadback", true);
+		requireAccess(VansRenderPassNames::TileLightBuild, "TileLightLists", true);
+		requireAccess(VansRenderPassNames::VolumetricFog, "TileLightLists", false);
+		requireAccess(VansRenderPassNames::DeferredSkybox, "TileLightLists", false);
+		requireAccess(VansRenderPassNames::TransparentPostProcess, "TileLightLists", false);
+		requireAccess(VansRenderPassNames::CloudRayMarch, "CloudRayMarch", true);
+		requireAccess(VansRenderPassNames::DeferredSkybox, "CloudRayMarch", false);
+		requireAccess(VansRenderPassNames::GIData, "HZB", false);
+		requireAccess(VansRenderPassNames::GIData, "GIData", true);
+		requireAccess(VansRenderPassNames::DeferredSkybox, "GIData", false);
+		return outErrors.empty();
+	}
+
 	void VansRenderPassCatalog::GetPreservedFeatureAuditList(
 		const VansScene& scene,
 		std::vector<std::string>& outRequiredFeatures,
@@ -317,7 +434,8 @@ namespace VansGraphics
 	void VansRenderPassCatalog::BuildCompatibilityFramePlan(
 		VansRenderFramePlan& outPlan,
 		VansScene& scene,
-		uint64_t frameNumber)
+		uint64_t frameNumber,
+		bool asyncComputeEnabled)
 	{
 		outPlan.Begin(frameNumber);
 
@@ -325,7 +443,7 @@ namespace VansGraphics
 
 		for (const auto& entry : catalog)
 		{
-			outPlan.AddPass(MakeNodeDesc(entry, scene));
+			outPlan.AddPass(MakeNodeDesc(entry, scene, asyncComputeEnabled));
 		}
 	}
 }

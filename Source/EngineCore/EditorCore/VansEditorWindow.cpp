@@ -17,6 +17,7 @@
 #include "Windows/VansAnimGraphEditorWindow.h"
 #include "Windows/VansBoneMaskEditorWindow.h"
 #include "Windows/VansTimelineEditorWindow.h"
+#include "Windows/VansGameplayActionEditorWindow.h"
 #include "Windows/VansClothProfileEditorWindow.h"
 #include "Windows/VansWaterWindow.h"
 #include "Windows/VansTerrainWindow.h"
@@ -29,6 +30,7 @@
 #include "Windows/VansHiZCullWindow.h"
 #include "Windows/VansAudioDebugWindow.h"
 #include "Windows/VansSkeletonDebugWindow.h"
+#include "Windows/VansMotionMatchingDebugWindow.h"
 
 #include "../Util/VansProfiler.h"
 #include "../Util/VansJobSystem.h"
@@ -40,6 +42,8 @@
 #include "../Configration/VansConfigration.h"
 
 #include "../AssetCore/VansAssetGuid.h"
+#include "../AssetCore/VansAssetDatabase.h"
+#include "../GameplayActionSchema/VansGameplayAssetSchema.h"
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../PackagingCore/VansGamePackageBuilder.h"
 #include "Windows/VansProjectSelector.h"
@@ -461,6 +465,7 @@ bool VansGraphics::VansEditorWindow::m_HiZCullWindowOpen = false;
 bool VansGraphics::VansEditorWindow::m_ProjectSettingsWindowOpen = false;
 bool VansGraphics::VansEditorWindow::m_AudioDebugWindowOpen = false;
 bool VansGraphics::VansEditorWindow::m_SkeletonDebugWindowOpen = false;
+bool VansGraphics::VansEditorWindow::m_MotionMatchingDebugWindowOpen = false;
 
 bool VansGraphics::VansEditorWindow::m_WireframeMode = false;
 bool VansGraphics::VansEditorWindow::m_VehicleDebugGizmos = false;
@@ -502,6 +507,7 @@ VansGraphics::VansProfilerWindow* VansGraphics::VansEditorWindow::m_ProfilerWind
 VansGraphics::VansAnimGraphEditorWindow* VansGraphics::VansEditorWindow::m_AnimGraphEditorWindow;
 VansGraphics::VansBoneMaskEditorWindow* VansGraphics::VansEditorWindow::m_BoneMaskEditorWindow;
 VansGraphics::VansTimelineEditorWindow* VansGraphics::VansEditorWindow::m_TimelineEditorWindow;
+VansGraphics::VansGameplayActionEditorWindow* VansGraphics::VansEditorWindow::m_GameplayActionEditorWindow;
 
 VansGraphics::VansUIEditorWindow* VansGraphics::VansEditorWindow::m_UIEditorWindow;
 
@@ -518,6 +524,7 @@ VansGraphics::VansPcgWindow* VansGraphics::VansEditorWindow::m_PcgWindow;
 VansGraphics::VansHiZCullWindow* VansGraphics::VansEditorWindow::m_HiZCullWindow;
 VansGraphics::VansAudioDebugWindow* VansGraphics::VansEditorWindow::m_AudioDebugWindow;
 VansGraphics::VansSkeletonDebugWindow* VansGraphics::VansEditorWindow::m_SkeletonDebugWindow;
+VansGraphics::VansMotionMatchingDebugWindow* VansGraphics::VansEditorWindow::m_MotionMatchingDebugWindow;
 
 // Project selector overlay
 std::unique_ptr<Vans::VansProjectSelector> VansGraphics::VansEditorWindow::m_ProjectSelector;
@@ -908,6 +915,13 @@ void VansGraphics::VansEditorWindow::OpenAssetForAuthoring(const std::string& so
 		else VANS_LOG_WARN("[TimelineEditor] Timeline Editor is not initialized");
 		return;
 	}
+	const Vans::VansAssetType assetType = Vans::VansAssetDatabase::Classify(sourcePath);
+	if (Vans::VansGameplayAssetSchemaRegistry::IsGameplayAssetType(assetType))
+	{
+		if (m_GameplayActionEditorWindow) m_GameplayActionEditorWindow->Open(sourcePath);
+		else VANS_LOG_WARN("[GAFEditor] Gameplay Action Editor is not initialized");
+		return;
+	}
 	VANS_LOG_WARN("[Editor] Unsupported authoring asset: " << sourcePath);
 }
 
@@ -1105,6 +1119,7 @@ void VansGraphics::VansEditorWindow::CreateWindowComponents()
     m_AnimGraphEditorWindow = AddEditorWindowComponent<VansAnimGraphEditorWindow>(m_Windows);
     m_BoneMaskEditorWindow = AddEditorWindowComponent<VansBoneMaskEditorWindow>(m_Windows);
 	m_TimelineEditorWindow = AddEditorWindowComponent<VansTimelineEditorWindow>(m_Windows);
+	m_GameplayActionEditorWindow = AddEditorWindowComponent<VansGameplayActionEditorWindow>(m_Windows);
 
     m_UIEditorWindow = AddEditorWindowComponent<VansUIEditorWindow>(m_Windows);
 
@@ -1128,7 +1143,8 @@ void VansGraphics::VansEditorWindow::CreateWindowComponents()
 
     m_AudioDebugWindow = AddEditorWindowComponent<VansAudioDebugWindow>(m_Windows);
 
-    m_SkeletonDebugWindow = AddEditorWindowComponent<VansSkeletonDebugWindow>(m_Windows);
+	m_SkeletonDebugWindow = AddEditorWindowComponent<VansSkeletonDebugWindow>(m_Windows);
+	m_MotionMatchingDebugWindow = AddEditorWindowComponent<VansMotionMatchingDebugWindow>(m_Windows);
 
 }
 
@@ -1643,6 +1659,39 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& devic
 					if (ImGui::MenuItem("Timeline"))
 						m_ProjectWindow->RequestAssetCreation(
 							Vans::EditorAPI::ProjectAssetCreationKind::Timeline);
+					if (ImGui::BeginMenu("Gameplay Action"))
+					{
+						if (ImGui::MenuItem("Action")) m_ProjectWindow->RequestAssetCreation(
+							Vans::EditorAPI::ProjectAssetCreationKind::ActionDefinition);
+						if (ImGui::MenuItem("Action Set")) m_ProjectWindow->RequestAssetCreation(
+							Vans::EditorAPI::ProjectAssetCreationKind::ActionSet);
+						if (ImGui::MenuItem("Effect")) m_ProjectWindow->RequestAssetCreation(
+							Vans::EditorAPI::ProjectAssetCreationKind::GameplayEffect);
+						if (ImGui::MenuItem("Cue")) m_ProjectWindow->RequestAssetCreation(
+							Vans::EditorAPI::ProjectAssetCreationKind::GameplayCue);
+						if (ImGui::MenuItem("Attribute Set")) m_ProjectWindow->RequestAssetCreation(
+							Vans::EditorAPI::ProjectAssetCreationKind::AttributeSet);
+						if (ImGui::MenuItem("Targeting Policy")) m_ProjectWindow->RequestAssetCreation(
+							Vans::EditorAPI::ProjectAssetCreationKind::TargetingPolicy);
+						if (ImGui::MenuItem("Tag Tree")) m_ProjectWindow->RequestAssetCreation(
+							Vans::EditorAPI::ProjectAssetCreationKind::GameplayTagTree);
+						if (ImGui::MenuItem("Payload Schema")) m_ProjectWindow->RequestAssetCreation(
+							Vans::EditorAPI::ProjectAssetCreationKind::PayloadSchema);
+						if (ImGui::MenuItem("Action Graph")) m_ProjectWindow->RequestAssetCreation(
+							Vans::EditorAPI::ProjectAssetCreationKind::ActionGraph);
+						if (ImGui::MenuItem("Camera Rig")) m_ProjectWindow->RequestAssetCreation(
+							Vans::EditorAPI::ProjectAssetCreationKind::CameraRigProfile);
+						if (ImGui::MenuItem("Camera Shake")) m_ProjectWindow->RequestAssetCreation(
+							Vans::EditorAPI::ProjectAssetCreationKind::CameraShakeProfile);
+						ImGui::EndMenu();
+					}
+					if (ImGui::BeginMenu("Rendering"))
+					{
+						if (ImGui::MenuItem("Skin Profile"))
+							m_ProjectWindow->RequestAssetCreation(
+								Vans::EditorAPI::ProjectAssetCreationKind::SkinProfile);
+						ImGui::EndMenu();
+					}
 					if (ImGui::BeginMenu("Animation"))
 					{
 						if (ImGui::MenuItem("Animator Controller"))
@@ -1702,6 +1751,7 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& devic
                         OpenSelectedAnimationGraph();
                     }
                     ImGui::MenuItem("Skeleton Debug", nullptr, &m_SkeletonDebugWindowOpen);
+					ImGui::MenuItem("Motion Matching Debug", nullptr, &m_MotionMatchingDebugWindowOpen);
                     if (!canOpenSelectedAnimationGraph)
                     {
                         ImGui::TextDisabled("Select an entity with Animation");
@@ -2084,7 +2134,8 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
             gameplayFrame.sceneReady && editorAPI.IsRuntimePhysicsRunning();
 		gameplayFrame.gameplayActive =
 			gameplayFrame.sceneReady &&
-			editorAPI.GetPlayState() == Vans::EditorAPI::EnginePlayState::Play;
+			 editorAPI.GetPlayState() == Vans::EditorAPI::EnginePlayState::Play;
+		gameplayFrame.cameraControlActive = gameplayFrame.sceneReady;
 		gameplayFrame.deltaSeconds = VansGraphics::VansTimer::GetDeltaTime();
         gameplayFrame.syncPhysicsTransforms = [&editorAPI]
         {
@@ -2097,6 +2148,15 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
             VANS_PROFILE_SCOPE("Script::Update", Vans::ProfileCategory::Script);
             editorAPI.UpdateRuntimeNonCameraScripts();
         };
+		gameplayFrame.updateActionsEarly = [&editorAPI](double deltaSeconds)
+		{
+			VANS_PROFILE_SCOPE("GameplayAction::TickEarly", Vans::ProfileCategory::Script);
+			editorAPI.UpdateRuntimeActionsEarly(deltaSeconds);
+		};
+		gameplayFrame.prepareCharacterLocomotion = [&editorAPI](double deltaSeconds)
+		{
+			editorAPI.PrepareRuntimeCharacterLocomotion(deltaSeconds);
+		};
 		gameplayFrame.flushCharacterControllerTransforms = [&editorAPI]
         {
             VANS_PROFILE_SCOPE("Physics::FlushCharacterController", Vans::ProfileCategory::Physics);
@@ -2107,19 +2167,41 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
 			VANS_PROFILE_SCOPE("Timeline::PostScript", Vans::ProfileCategory::Script);
 			editorAPI.UpdateRuntimeTimelinesPostScript(deltaSeconds);
 		};
+		gameplayFrame.updateAdditionalPostScriptControllers = [&editorAPI](double deltaSeconds)
+		{
+			editorAPI.UpdateTimelinePreviewsPostScript(deltaSeconds);
+		};
+		gameplayFrame.runActionLateContinuation = [&editorAPI]
+		{
+			editorAPI.RunRuntimeActionLateContinuation();
+		};
+		gameplayFrame.beginCameraControlFrame = [&editorAPI]
+		{
+			editorAPI.BeginRuntimeCameraControlFrame();
+		};
 		gameplayFrame.updateCameraScripts = [&editorAPI]
         {
             VANS_PROFILE_SCOPE("Script::UpdateCameraScripts", Vans::ProfileCategory::Script);
-			editorAPI.UpdateRuntimeCameraScripts();
+			 editorAPI.UpdateRuntimeCameraScripts();
+		};
+		gameplayFrame.captureCameraControlBase = [&editorAPI]
+		{
+			editorAPI.CaptureRuntimeCameraControlBase();
 		};
 		gameplayFrame.updateTimelinesCamera = [&editorAPI](double deltaSeconds)
 		{
 			VANS_PROFILE_SCOPE("Timeline::Camera", Vans::ProfileCategory::Script);
-			editorAPI.UpdateRuntimeTimelinesCamera(deltaSeconds);
+			 editorAPI.UpdateRuntimeTimelinesCamera(deltaSeconds);
         };
+		gameplayFrame.updateAdditionalCameraControllers = [&editorAPI](double deltaSeconds)
+		{
+			editorAPI.UpdateTimelinePreviewsCamera(deltaSeconds);
+		};
+		gameplayFrame.resolveCameraControlFrame = [&editorAPI]
+		{
+			editorAPI.ResolveRuntimeCameraControlFrame();
+		};
         Vans::VansRuntimeFrameScheduler::RunGameplay(gameplayFrame);
-		editorAPI.UpdateTimelinePreviewsPostScript(gameplayFrame.deltaSeconds);
-		editorAPI.UpdateTimelinePreviewsCamera(gameplayFrame.deltaSeconds);
 
         // ── Deferred resource & scene loading ───────────────────────────
         // Process pending loads BEFORE command buffer recording.

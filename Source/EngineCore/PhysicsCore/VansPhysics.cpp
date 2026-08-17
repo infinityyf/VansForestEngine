@@ -11,14 +11,14 @@
 namespace VansEngine
 {
 	// ============================================================================
-	// VansCollisionFilterShader 鈥?鏇夸唬 PxDefaultSimulationFilterShader
+	// VansCollisionFilterShader replaces PxDefaultSimulationFilterShader.
 	// ============================================================================
 	PxFilterFlags VansCollisionFilterShader(
 		PxFilterObjectAttributes attributes0, PxFilterData filterData0,
 		PxFilterObjectAttributes attributes1, PxFilterData filterData1,
 		PxPairFlags& pairFlags, const void* constantBlock, PxU32 constantBlockSize)
 	{
-		// PhysX 鍐呭缓 Trigger 妫€娴嬶紙PxShapeFlag::eTRIGGER_SHAPE锛?
+		// Handle the PhysX built-in trigger flag first.
 		if (PxFilterObjectIsTrigger(attributes0) || PxFilterObjectIsTrigger(attributes1))
 		{
 			pairFlags = PxPairFlag::eTRIGGER_DEFAULT
@@ -27,7 +27,7 @@ namespace VansEngine
 			return PxFilterFlag::eDEFAULT;
 		}
 
-		// Layer 纰版挒鐭╅樀妫€鏌?
+		// Check the layer collision matrix.
 		uint32_t layerA = filterData0.word0;
 		uint32_t layerB = filterData1.word0;
 		uint32_t maskA  = filterData0.word1;
@@ -35,7 +35,7 @@ namespace VansEngine
 		uint32_t groupA = filterData0.word3;
 		uint32_t groupB = filterData1.word3;
 
-		// Ragdoll 鍚屼竴瀹炰緥鍐呴儴榛樿涓嶅仛鎺ヨЕ姹傝В锛岄伩鍏嶈韩浣撻儴浠朵簰鐩稿崱浣忓鑷存棤娉曡嚜鐒朵笅钀姐€?
+		// Suppress contacts within one ragdoll group to avoid self-locking body parts.
 		if (groupA != 0 && groupA == groupB)
 		{
 			return PxFilterFlag::eSUPPRESS;
@@ -46,7 +46,7 @@ namespace VansEngine
 			return PxFilterFlag::eSUPPRESS;
 		}
 
-		// 鑷畾涔?Trigger 鏍囧織妫€鏌ワ紙word2 bit0锛?
+		// Check the custom trigger flag stored in word2 bit 0.
 		bool isTriggerA = (filterData0.word2 & 0x1) != 0;
 		bool isTriggerB = (filterData1.word2 & 0x1) != 0;
 
@@ -58,7 +58,7 @@ namespace VansEngine
 			return PxFilterFlag::eDEFAULT;
 		}
 
-		// 姝ｅ父纰版挒
+		// Normal collision pair.
 		pairFlags = PxPairFlag::eCONTACT_DEFAULT
 		          | PxPairFlag::eNOTIFY_TOUCH_FOUND
 		          | PxPairFlag::eNOTIFY_TOUCH_LOST
@@ -94,8 +94,8 @@ namespace VansEngine
 	// ============================================================================
 	void* VansPhysicsAllocator::allocate(size_t size, const char* typeName, const char* filename, int line)
 	{
-		// PhysX 鍐呴儴閮ㄥ垎璺緞鍙兘璇锋眰 0 瀛楄妭涓存椂缂撳啿锛學indows _aligned_malloc(0, 16) 浼氳繑鍥?nullptr銆?
-		// PhysX 瑕佹眰 allocator 涓嶈兘杩斿洖 nullptr锛屽惁鍒欎細瑙﹀彂 eABORT銆?
+		// Some PhysX paths request a zero-byte temporary buffer. Allocate at least
+		// one aligned block because PhysX treats a null allocator result as eABORT.
 		size_t allocSize = (std::max)(size, static_cast<size_t>(16));
 		return _aligned_malloc(allocSize, 16);
 	}
@@ -190,7 +190,7 @@ namespace VansEngine
 
 		VANS_LOG("[PhysX] Scene pair filtering enabled: kineKine=eKEEP, staticKine=eKEEP");
 
-		// 娉ㄥ唽纰版挒 / 瑙﹀彂浜嬩欢鍥炶皟
+		// Register collision and trigger event callbacks.
 		m_EventCallback = new VansPhysicsEventCallback();
 		sceneDesc.simulationEventCallback = m_EventCallback;
 		
@@ -222,11 +222,11 @@ namespace VansEngine
 		// Initialize NvCloth CPU simulation
 		VansClothSystem::GetInstance().Initialize();
 
-		// 鍒涘缓 CCT Manager锛堟瘡涓?PxScene 鍙兘鍒涘缓涓€涓級
+		// Create the single CCT manager owned by this PxScene.
 		m_ControllerManager = PxCreateControllerManager(*m_Scene);
 		if (!m_ControllerManager)
 		{
-			VANS_LOG_ERROR("[VansPhysics] PxCreateControllerManager 澶辫触");
+			VANS_LOG_ERROR("[VansPhysics] PxCreateControllerManager failed");
 			return false;
 		}
 
@@ -346,11 +346,11 @@ namespace VansEngine
 		{
 			VANS_PROFILE_SCOPE("PhysicsThread::Loop", Vans::ProfileCategory::Physics);
 
-			// 鐗╃悊妯℃嫙琚殏鍋滄椂锛屼笉姝ヨ繘浠呯瓑寰?
+			// Do not advance simulation while the physics system is paused.
 			if (m_IsPaused.load())
 			{
 				VANS_PROFILE_SCOPE("PhysicsThread::SleepPaused", Vans::ProfileCategory::Wait);
-				lastTime = Clock::now(); // 闃叉鎭㈠鍚庣Н绱ぇ閲忔湭鎵ц鐨勬杩?
+				lastTime = Clock::now(); // Prevent a large accumulated step after resume.
 				std::this_thread::sleep_for(std::chrono::milliseconds(5));
 				continue;
 			}

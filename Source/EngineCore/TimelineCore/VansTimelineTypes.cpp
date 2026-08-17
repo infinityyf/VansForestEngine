@@ -5,6 +5,7 @@
 #include <iomanip>
 #include <limits>
 #include <sstream>
+#include <type_traits>
 
 namespace Vans
 {
@@ -23,6 +24,49 @@ VansTimelineTick ApplyRounding(long double value, VansTimelineRoundingMode round
 	const long double maximum = static_cast<long double>(std::numeric_limits<VansTimelineTick>::max());
 	return static_cast<VansTimelineTick>(std::clamp(rounded, minimum, maximum));
 }
+}
+
+VansTimelineValueType VansTimelineTypeOf(const VansTimelineValue& value)
+{
+	return std::visit([](const auto& item)
+	{
+		using Type = std::decay_t<decltype(item)>;
+		if constexpr (std::is_same_v<Type, std::monostate>) return VansTimelineValueType::Null;
+		else if constexpr (std::is_same_v<Type, bool>) return VansTimelineValueType::Bool;
+		else if constexpr (std::is_same_v<Type, std::int32_t>) return VansTimelineValueType::Int32;
+		else if constexpr (std::is_same_v<Type, std::int64_t>) return VansTimelineValueType::Int64;
+		else if constexpr (std::is_same_v<Type, float>) return VansTimelineValueType::Float;
+		else if constexpr (std::is_same_v<Type, double>) return VansTimelineValueType::Double;
+		else if constexpr (std::is_same_v<Type, std::string>) return VansTimelineValueType::String;
+		else if constexpr (std::is_same_v<Type, VansTimelineVec2>) return VansTimelineValueType::Vec2;
+		else if constexpr (std::is_same_v<Type, VansTimelineVec3>) return VansTimelineValueType::Vec3;
+		else if constexpr (std::is_same_v<Type, VansTimelineVec4>) return VansTimelineValueType::Vec4;
+		else if constexpr (std::is_same_v<Type, VansTimelineQuaternion>) return VansTimelineValueType::Quaternion;
+		else if constexpr (std::is_same_v<Type, VansTimelineColorLinear>) return VansTimelineValueType::ColorLinear;
+		else if constexpr (std::is_same_v<Type, VansTimelineColorSrgb>) return VansTimelineValueType::ColorSrgb;
+		else if constexpr (std::is_same_v<Type, VansTimelineObjectReference>) return VansTimelineValueType::ObjectReference;
+		else return VansTimelineValueType::Struct;
+	}, value);
+}
+
+bool VansTimelineValuesEqual(const VansTimelineValue& left, const VansTimelineValue& right)
+{
+	if (left.index() != right.index()) return false;
+	return std::visit([&](const auto& leftValue)
+	{
+		using Type = std::decay_t<decltype(leftValue)>;
+		const Type* rightValue = std::get_if<Type>(&right);
+		if (!rightValue) return false;
+		if constexpr (std::is_same_v<Type, std::monostate>) return true;
+		else if constexpr (std::is_same_v<Type, bool> || std::is_integral_v<Type> ||
+			std::is_floating_point_v<Type> || std::is_same_v<Type, std::string>) return leftValue == *rightValue;
+		else if constexpr (std::is_same_v<Type, VansTimelineObjectReference>)
+			return leftValue.guid == rightValue->guid && leftValue.path == rightValue->path &&
+				leftValue.objectKind == rightValue->objectKind;
+		else if constexpr (std::is_same_v<Type, VansTimelineStructValue>)
+			return leftValue.type == rightValue->type;
+		else return leftValue.value == rightValue->value;
+	}, left);
 }
 
 double VansTimelineTime::TickToSeconds(VansTimelineTick tick, const VansTimelineTimebase& timebase)

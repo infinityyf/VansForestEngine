@@ -213,29 +213,14 @@ void VansWaterWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
                 if (settings.spectrum.mode == 2)
                 {
                     ImGui::SeparatorText("Wave Particle");
-                    const char* profileNames[] = { "Gaussian", "Compact Ripple", "Sharp Crest" };
-                    int profileIndex = std::clamp(settings.waveParticle.profile, 0, 2);
-                    if (ImGui::Combo("Wave Profile", &profileIndex, profileNames, 3))
-                    {
-                        settings.waveParticle.profile = profileIndex;
-                        changed = true;
-                    }
-                    changed |= ImGui::SliderInt("Particle Count", &settings.waveParticle.particleCount, 0, 1024);
-                    changed |= ImGui::SliderInt("Octave Layers", &settings.waveParticle.octaveCount, 1, 8);
-                    changed |= ImGui::DragFloat("Particle Domain (m)", &settings.waveParticle.domainSize, 1.0f, 16.0f, 4096.0f, "%.1f");
-                    changed |= ImGui::DragFloat("Particle Amplitude", &settings.waveParticle.amplitude, 0.05f, 0.0f, 10.0f, "%.3f");
-                    changed |= ImGui::DragFloat("Min Radius (m)", &settings.waveParticle.minRadius, 0.25f, 0.05f, 512.0f, "%.2f");
-                    changed |= ImGui::DragFloat("Max Radius (m)", &settings.waveParticle.maxRadius, 0.5f, 0.05f, 4096.0f, "%.2f");
-                    changed |= ImGui::DragFloat("Phase Velocity", &settings.waveParticle.phaseVelocity, 0.01f, 0.0f, 10.0f, "%.3f");
-                    changed |= ImGui::DragFloat("Damping", &settings.waveParticle.damping, 0.001f, 0.0f, 2.0f, "%.4f");
+                    changed |= ImGui::SliderInt("Particles / Cascade", &settings.waveParticle.particlesPerCascade, 0, 256);
+                    changed |= ImGui::DragFloat("Height RMS", &settings.waveParticle.rmsAmplitude, 0.01f, 0.0f, 4.0f, "%.3f m");
+                    changed |= ImGui::DragFloat("Packet Radius / Wavelength", &settings.waveParticle.packetWidth, 0.01f, 0.5f, 4.0f, "%.3f");
+                    changed |= ImGui::DragFloat("Dispersion Scale", &settings.waveParticle.dispersionScale, 0.01f, 0.0f, 4.0f, "%.3f");
                     changed |= ImGui::DragFloat("Direction Spread", &settings.waveParticle.directionSpread, 0.01f, 0.0f, 3.1416f, "%.3f rad");
-                    changed |= ImGui::DragFloat("Lacunarity", &settings.waveParticle.lacunarity, 0.01f, 1.01f, 4.0f, "%.3f");
-                    changed |= ImGui::DragFloat("Persistence", &settings.waveParticle.persistence, 0.01f, 0.0f, 1.0f, "%.3f");
-                    changed |= ImGui::DragFloat("Radius Falloff", &settings.waveParticle.radiusFalloff, 0.01f, 0.1f, 1.0f, "%.3f");
-                    changed |= ImGui::DragFloat("Profile Sharpness", &settings.waveParticle.profileSharpness, 0.01f, 0.25f, 8.0f, "%.3f");
+                    changed |= ImGui::DragFloat("Cascade Amplitude Falloff", &settings.waveParticle.cascadeAmplitudeFalloff, 0.01f, 0.0f, 1.0f, "%.3f");
                     changed |= ImGui::DragFloat("Foam Threshold", &settings.waveParticle.foamThreshold, 0.01f, 0.0f, 2.0f, "%.3f");
                     changed |= ImGui::DragFloat("Foam Softness", &settings.waveParticle.foamSoftness, 0.01f, 0.01f, 2.0f, "%.3f");
-                    changed |= ImGui::DragFloat("Particle Lifetime", &settings.waveParticle.lifetime, 0.1f, 0.1f, 600.0f, "%.1f s");
                     int particleSeed = static_cast<int>(settings.waveParticle.randomSeed);
                     if (ImGui::DragInt("Particle Seed", &particleSeed, 1.0f, 0, 0x7fffffff))
                     {
@@ -295,8 +280,10 @@ void VansWaterWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
             if (ImGui::CollapsingHeader("Caustics"))
             {
                 changed |= ImGui::Checkbox("Enable##Caustics", &settings.causticsEnabled);
-                changed |= ImGui::DragFloat("Intensity##Caustics", &settings.causticsIntensity, 0.01f, 0.0f, 3.0f, "%.3f");
-                changed |= ImGui::DragFloat("Scale##Caustics", &settings.causticsScale, 0.01f, 0.01f, 2.0f, "%.3f");
+                changed |= ImGui::DragFloat("Intensity##Caustics", &settings.causticsIntensity, 0.01f, 0.0f, 10.0f, "%.3f");
+                changed |= ImGui::DragFloat("Max Distance##Caustics", &settings.causticsMaxDistance, 0.25f, 1.0f, 200.0f, "%.2f m");
+                changed |= ImGui::DragFloat("Max Gain##Caustics", &settings.causticsMaxGain, 0.05f, 0.0f, 16.0f, "%.2f");
+                changed |= ImGui::DragFloat("Filter Radius##Caustics", &settings.causticsFilterRadius, 0.02f, 0.1f, 4.0f, "%.2f m");
             }
 
             if (ImGui::CollapsingHeader("Refraction"))

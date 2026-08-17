@@ -9,5 +9,6 @@ x64
 /EngineAssets/Models/*
 !/EngineAssets/Models/fullscreen.obj.meta
 !/EngineAssets/Models/plane.obj.meta
+!/EngineAssets/Models/sphere.obj.meta
 /EngineAssets/Textures
 /openspec

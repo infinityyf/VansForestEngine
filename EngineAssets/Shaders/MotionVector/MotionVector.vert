@@ -26,10 +26,12 @@ void main()
     mat4 previousModel = ModelBuffer.transforms[materialConst.objectIndex].PrevModelMatrix;
 
     vec4 localPosition = vec4(position);
+    vec4 previousLocalPosition = localPosition;
     VansApplyVertexPositionDeformation(localPosition, materialConst.vertexFeatureMask);
+    VansApplyPreviousVertexPositionDeformation(previousLocalPosition, materialConst.vertexFeatureMask);
 
     vec4 worldPos = currentModel * localPosition;
-    vec4 prevWorldPos = previousModel * localPosition;
+    vec4 prevWorldPos = previousModel * previousLocalPosition;
 
     vCurrentClipPos = UnjitteredVPMatrix * worldPos;
     vPreviousClipPos = LastUnjitteredVPMatrix * prevWorldPos;

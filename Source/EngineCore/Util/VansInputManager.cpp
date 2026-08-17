@@ -138,7 +138,13 @@ namespace Vans
         m_KeysUpdatedThisFrame.clear();
         m_MouseButtonsUpdatedThisFrame.clear();
 
-        RefreshPolledState();
+		// Update 只开启新输入帧；窗口事件由调用方随后 PollEvents，再统一调用
+		// RefreshPolledState。若在 PollEvents 前先读取一次光标位置，普通可见光标
+		// 的位移会在第二次刷新时被覆盖为 0，导致编辑器 Play 无法驱动相机。
+		m_MouseDeltaX = 0.0;
+		m_MouseDeltaY = 0.0;
+		m_ScrollDeltaX = 0.0;
+		m_ScrollDeltaY = 0.0;
     }
 
     void VansInputManager::RefreshPolledState()

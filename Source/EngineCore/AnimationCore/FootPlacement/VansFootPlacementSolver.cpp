@@ -186,9 +186,11 @@ namespace VansGraphics
 		}
 
 		LegTarget left = UpdateLegTarget(deltaTime, ownerWorldTransform, modelTransforms,
-			m_LeftFootIndex, m_LeftFootLocalUp, m_LeftState, leftContact);
+			m_LeftFootIndex, m_LeftFootLocalUp, m_LeftState, leftContact,
+			m_RuntimeState.leftPlantWeight);
 		LegTarget right = UpdateLegTarget(deltaTime, ownerWorldTransform, modelTransforms,
-			m_RightFootIndex, m_RightFootLocalUp, m_RightState, rightContact);
+			m_RightFootIndex, m_RightFootLocalUp, m_RightState, rightContact,
+			m_RuntimeState.rightPlantWeight);
 
 		ApplyPelvisOffset(deltaTime, skeleton, ownerWorldTransform, left, right, localTransforms);
 		modelTransforms = IK_BuildModelSpaceTransforms(skeleton, localTransforms);
@@ -198,9 +200,11 @@ namespace VansGraphics
 		if (m_DebugData.enabled)
 		{
 			PopulateLegDebug(m_DebugData.left, ownerWorldTransform, modelTransforms,
-				m_LeftHipIndex, m_LeftKneeIndex, m_LeftFootIndex, left);
+				m_LeftHipIndex, m_LeftKneeIndex, m_LeftFootIndex, left,
+				m_LeftState, m_RuntimeState.leftPlantWeight);
 			PopulateLegDebug(m_DebugData.right, ownerWorldTransform, modelTransforms,
-				m_RightHipIndex, m_RightKneeIndex, m_RightFootIndex, right);
+				m_RightHipIndex, m_RightKneeIndex, m_RightFootIndex, right,
+				m_RightState, m_RuntimeState.rightPlantWeight);
 			m_DebugData.pelvisOffset = m_PelvisOffsetWorld;
 		}
 	}
@@ -341,6 +345,8 @@ namespace VansGraphics
 		contact.layer = representative->layerIndex;
 		contact.actorId = representative->actorId;
 		contact.actorName = representative->actorName;
+		contact.actorWorldTransform = representative->actorWorldTransform;
+		contact.hasActorWorldTransform = representative->hasActorWorldTransform;
 		return contact;
 	}
 
@@ -351,7 +357,8 @@ namespace VansGraphics
 		int footIndex,
 		const glm::vec3& footLocalUp,
 		FootPlacementFootState& state,
-		const FootPlacementContact& contact) const
+		const FootPlacementContact& contact,
+		float animationPlantWeight) const
 	{
 		LegTarget result;
 		result.contact = contact;
@@ -361,10 +368,70 @@ namespace VansGraphics
 		result.animatedFootWorld = glm::vec3(ownerWorldTransform *
 			glm::vec4(IK_ExtractTranslation(modelTransforms[footIndex]), 1.0f));
 		const float wantedOffset = contact.valid ? contact.verticalOffset : 0.0f;
-		const float wantedWeight = contact.valid
+		const float terrainWeight = contact.valid
 			? FootPlacementClearanceWeight(contact.soleClearance,
 				m_Settings.fullContactHeight, m_Settings.contactFadeHeight) : 0.0f;
 		const glm::vec3 wantedNormal = contact.valid ? contact.groundNormalWorld : kWorldUp;
+		const glm::vec3 poseRelativeTarget = result.animatedFootWorld +
+			kWorldUp * wantedOffset;
+		const float plantWeight = glm::clamp(animationPlantWeight, 0.0f, 1.0f);
+		const bool useFootLock = m_Settings.footLockEnabled &&
+			m_RuntimeState.hasAnimationPlantWeights;
+		const float enterWeight = glm::clamp(
+			m_Settings.footLockEnterPlantWeight, 0.0f, 1.0f);
+		const float exitWeight = glm::clamp(
+			m_Settings.footLockExitPlantWeight, 0.0f, enterWeight);
+		if (!useFootLock)
+			state.planted = false;
+		else if (!state.planted && contact.valid && plantWeight >= enterWeight)
+		{
+			state.planted = true;
+			state.lockedWorldPosition = poseRelativeTarget;
+			state.lockedActorId = contact.actorId;
+			state.hasLockedActorLocalPosition = contact.hasActorWorldTransform;
+			if (state.hasLockedActorLocalPosition)
+			{
+				state.lockedActorLocalPosition = glm::vec3(
+					glm::inverse(contact.actorWorldTransform) *
+					glm::vec4(state.lockedWorldPosition, 1.0f));
+			}
+		}
+		if (state.planted)
+		{
+			if (contact.valid && contact.actorId == state.lockedActorId &&
+				state.hasLockedActorLocalPosition && contact.hasActorWorldTransform)
+			{
+				state.lockedWorldPosition = glm::vec3(
+					contact.actorWorldTransform *
+					glm::vec4(state.lockedActorLocalPosition, 1.0f));
+			}
+			const glm::vec3 horizontalDelta = (poseRelativeTarget - state.lockedWorldPosition) -
+				kWorldUp * glm::dot(poseRelativeTarget - state.lockedWorldPosition, kWorldUp);
+			const bool lockOutOfReach = glm::length(horizontalDelta) >
+				(std::max)(0.0f, m_Settings.footLockMaxDistance);
+			if (!contact.valid || contact.actorId != state.lockedActorId ||
+				plantWeight <= exitWeight || lockOutOfReach)
+			{
+				state.planted = false;
+			}
+			else
+			{
+				if (!state.hasLockedActorLocalPosition || !contact.hasActorWorldTransform)
+				{
+					// 静态地面保持种脚瞬间的水平坐标，垂直位置跟随当前接触面。
+					state.lockedWorldPosition += kWorldUp * glm::dot(
+						poseRelativeTarget - state.lockedWorldPosition, kWorldUp);
+				}
+			}
+		}
+		const float wantedLockWeight = state.planted ? plantWeight : 0.0f;
+		state.lockWeight = glm::clamp(SmoothDamp(
+			state.lockWeight,
+			wantedLockWeight,
+			state.lockWeightVelocity,
+			m_Settings.footLockSmoothTime,
+			deltaTime), 0.0f, 1.0f);
+		const float wantedWeight = (std::max)(terrainWeight, state.lockWeight);
 
 		if (!state.initialized)
 		{
@@ -379,8 +446,10 @@ namespace VansGraphics
 		state.groundNormalWorld = SafeNormalize(glm::mix(state.groundNormalWorld,
 			wantedNormal, DecayAlpha(m_Settings.normalSmoothTime, deltaTime)), wantedNormal);
 
-		// This is the core invariant: XZ always comes from this frame's animation.
-		result.targetWorld = result.animatedFootWorld + kWorldUp * state.verticalOffset;
+		const glm::vec3 smoothedPoseRelativeTarget = result.animatedFootWorld +
+			kWorldUp * state.verticalOffset;
+		result.targetWorld = glm::mix(
+			smoothedPoseRelativeTarget, state.lockedWorldPosition, state.lockWeight);
 		result.ikTarget.position = glm::vec3(glm::inverse(ownerWorldTransform) * glm::vec4(result.targetWorld, 1.0f));
 		result.ikTarget.rotation = BuildFootRotation(ownerWorldTransform,
 			modelTransforms[footIndex], state.groundNormalWorld, footLocalUp);
@@ -524,7 +593,9 @@ namespace VansGraphics
 		int hipIndex,
 		int kneeIndex,
 		int footIndex,
-		const LegTarget& target)
+		const LegTarget& target,
+		const FootPlacementFootState& state,
+		float animationPlantWeight)
 	{
 		auto worldPosition = [&](int index)
 		{
@@ -543,5 +614,10 @@ namespace VansGraphics
 		debugLeg.hasTarget = target.valid;
 		debugLeg.targetWeight = target.ikTarget.positionWeight;
 		debugLeg.verticalOffset = glm::dot(target.targetWorld - target.animatedFootWorld, kWorldUp);
+		debugLeg.planted = state.planted || state.lockWeight > 0.001f;
+		debugLeg.plantWeight = glm::clamp(animationPlantWeight, 0.0f, 1.0f);
+		const glm::vec3 lockDelta = target.animatedFootWorld - state.lockedWorldPosition;
+		debugLeg.horizontalLockError = glm::length(
+			lockDelta - kWorldUp * glm::dot(lockDelta, kWorldUp));
 	}
 }

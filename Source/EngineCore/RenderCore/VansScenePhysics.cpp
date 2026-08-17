@@ -15,6 +15,7 @@
 #include "../ScriptCore/VansScriptContext.h"
 #include "../AnimationCore/VansBoneAttachmentSystem.h"
 #include "../AnimationCore/VansAnimationNode.h"
+#include "../AnimationCore/MotionMatching/VansMotionMatching.h"
 #include "../RuntimeCore/VansFramePhase.h"
 
 #include "VulkanCore/VansMesh.h"
@@ -530,6 +531,49 @@ void VansGraphics::VansScene::UpdatePhysicsTransforms()
 // ===========================================================================
 // Character Controller transform update
 // ===========================================================================
+
+void VansGraphics::VansScene::PrepareCharacterLocomotion(float deltaTime)
+{
+	VANS_ASSERT_FRAME_PHASE(VansFramePhase::GameLogic);
+	for (VansEngine::VansCharacterControllerNode* cct : m_CharControllerNodes)
+	{
+		if (!cct || !cct->IsEnabled() || !cct->HasMotionIntent())
+			continue;
+
+		VansAnimationNode* animation = nullptr;
+		for (VansAnimationNode* candidate : m_AnimationNodes)
+		{
+			if (candidate && candidate->IsEnabled() &&
+			    candidate->GetTransformID() == cct->GetTransformID())
+			{
+				animation = candidate;
+				break;
+			}
+		}
+
+		Vans::VansCharacterMotionSettings motionSettings;
+		VansAnimationController* controller = animation ? animation->GetController() : nullptr;
+		if (controller)
+			if (const MotionMatchingSettings* mm = controller->GetMotionMatchingSettings())
+				motionSettings = mm->motionModel;
+
+		cct->PrepareLocomotion(deltaTime, motionSettings);
+		bool rootMotionValid = false;
+		bool rootMotionPreferred = false;
+		glm::vec3 rootDelta(0.0f);
+		glm::quat rootRotation(1.0f, 0.0f, 0.0f, 0.0f);
+		if (animation && controller && controller->IsMotionMatchingConfigured())
+		{
+			animation->PrepareLocomotionFrame(deltaTime, cct->GetTrajectory());
+			rootDelta = animation->GetRootMotionDelta();
+			rootRotation = animation->GetRootRotationDelta();
+			rootMotionValid = animation->IsRootMotionEnabled() && animation->HasRootMotionDelta();
+			rootMotionPreferred = controller->MotionMatchingPrefersRootMotion();
+		}
+		cct->ResolveLocomotion(
+			rootDelta, rootRotation, rootMotionValid, rootMotionPreferred, motionSettings);
+	}
+}
 
 void VansGraphics::VansScene::UpdateCharControllerTransforms()
 {

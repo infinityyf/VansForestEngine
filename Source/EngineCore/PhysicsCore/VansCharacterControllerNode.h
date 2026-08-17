@@ -9,6 +9,8 @@
 #include <glm/glm.hpp>
 #include <string>
 #include "../VansNode.h"
+#include "../RuntimeCore/VansCharacterMotion.h"
+#include "../RuntimeCore/VansCharacterTrajectoryGenerator.h"
 
 // 前向声明 VansAnimationNode，避免包含整个动画系统头文件
 namespace VansGraphics { class VansAnimationNode; }
@@ -78,6 +80,22 @@ namespace VansEngine
         // dt           : 本帧时间步长（秒）
         void QueueMove(const glm::vec3& displacement, float dt);
 
+		// Locomotion is intent-driven: gameplay publishes intent, the CCT owns the
+		// smoothed trajectory, and animation root motion is resolved into one
+		// collision-tested move request.
+		void SetMotionIntent(const Vans::VansCharacterMotionIntent& intent);
+		void PrepareLocomotion(float dt, const Vans::VansCharacterMotionSettings& settings);
+		void ResolveLocomotion(const glm::vec3& animationRootDelta,
+		                       const glm::quat& animationRootRotation,
+		                       bool rootMotionValid,
+		                       bool prefersRootMotion,
+		                       const Vans::VansCharacterMotionSettings& settings);
+		const Vans::VansCharacterTrajectory& GetTrajectory() const
+		{
+			return m_TrajectoryGenerator.GetTrajectory();
+		}
+		bool HasMotionIntent() const { return m_MotionIntent.valid; }
+
         // ── 内部：提交 move() + 同步 Transform（由 UpdateCharControllerTransforms 调用）──
         // 调用方需已持有 SimulationMutex。
         void FlushMoveAndSync();
@@ -131,7 +149,11 @@ namespace VansEngine
         // ── 待执行位移缓冲 ────────────────────────────────────────────────
         glm::vec3                         m_PendingDisplacement = { 0.0f, 0.0f, 0.0f };
         float                             m_PendingDt           = 0.0f;
-        bool                              m_HasPendingMove      = false;
+		bool                              m_HasPendingMove      = false;
+		Vans::VansCharacterMotionIntent     m_MotionIntent;
+		Vans::VansCharacterTrajectoryGenerator m_TrajectoryGenerator;
+		float                               m_VerticalVelocity = 0.0f;
+		float                               m_LocomotionDt = 0.0f;
         // ── Ragdoll 接管（非拥有指针，生命周期由场景保证）────────────────
         VansGraphics::VansAnimationNode*  m_FollowRagdollAnimNode    = nullptr;
         std::string                       m_FollowRagdollBone        = "pelvis";

@@ -255,7 +255,7 @@ void VansGraphics::VansVKCommandBuffer::SetLineWidth(float line_width)
 void VansGraphics::VansVKCommandBuffer::SetDepthBias(float constant_factor, float clamp, float slope_factor)
 {
 	//clamp:specify the maximal or minimal value of the depth bias
-	//slope_factor is a scalar factor applied to a fragment鈥檚 slope in depth bias calculations.
+	// slope_factor scales a fragment's slope in depth-bias calculations.
 	VansGraphics::vkCmdSetDepthBias(m_VansVKCommandBuffer, constant_factor, clamp, slope_factor);
 }
 

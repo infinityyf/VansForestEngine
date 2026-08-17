@@ -46,9 +46,12 @@ namespace VansGraphics
 
     struct alignas(16) WaveParticleGPU
     {
-        glm::vec4 positionRadius; // xy=normalized solve-tile position, z=world radius, w=amplitude
-        glm::vec4 directionPhase; // xy=direction, z=phase, w=phase speed
-        glm::vec4 lifetimeSeed;   // x=lifetime, y=reserved, z=random seed, w=reserved
+        // xy=周期域归一化初始位置，z=归一化包络半径，w=单位 RMS 振幅权重。
+        glm::vec4 positionRadius;
+        // xy=传播方向，z=归一化载波波长，w=初始相位。
+        glm::vec4 directionWave;
+        // x=紧支撑波包的解析零均值补偿系数；其余分量为 std430 对齐填充。
+        glm::vec4 meanCompensation;
     };
 
     // WaterGBufferParams GPU struct. Matches water_prepass.vert set=1 binding=0.
@@ -65,8 +68,6 @@ namespace VansGraphics
         glm::ivec4 simulationParams;
         glm::vec4 waveParticleParams0;
         glm::vec4 waveParticleParams1;
-        glm::vec4 waveParticleParams2;
-        glm::vec4 waveParticleParams3;
         glm::vec4 flowMapWorld;
         glm::vec4 flowMapParams;
         glm::vec4 flowMapFallback;
@@ -95,17 +96,14 @@ namespace VansGraphics
         glm::mat4 projMatrix;
     };
 
-    // WaterCausticsParams GPU struct. Matches water_caustics.comp set=0 binding=3.
+    // WaterCausticsParams GPU struct. Matches water_caustics.comp set=0 binding=9.
     struct alignas(16) WaterCausticsParamsGPU
     {
         glm::vec4 sunDirection;
         glm::vec4 mainLightColor;     // rgb = color, a = intensity multiplier
         glm::vec4 extinctionCoeff;
-        float     causticsIntensity;
-        float     causticsScale;
-        float     shoreFadeStart;
-        float     maxDepth;
-        glm::vec4 opticalParams;      // offset 64: x=water IOR
+        glm::vec4 mediumParams;       // x=IOR, y=water level, z=intensity, w=max path distance
+        glm::vec4 shapingParams;      // x=max gain, y=filter radius, z=use refraction data
     };
 
     class VansWaterSystem

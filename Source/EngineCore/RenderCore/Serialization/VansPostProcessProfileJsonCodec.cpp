@@ -37,6 +37,17 @@ PostProcessProfileJson VansPostProcessProfileJsonCodec::Encode(const VansPostPro
 	root["bloom"]["intensity"] = p.m_BloomIntensity;
 	root["bloom"]["scatter"] = p.m_BloomScatter;
 	root["bloom"]["clamp"] = p.m_BloomClamp;
+	root["bloom"]["tintR"] = p.m_BloomTintR;
+	root["bloom"]["tintG"] = p.m_BloomTintG;
+	root["bloom"]["tintB"] = p.m_BloomTintB;
+	root["bloom"]["shapeMode"] = p.m_BloomShapeMode;
+	root["bloom"]["shapeIntensity"] = p.m_BloomShapeIntensity;
+	root["bloom"]["shapeBlend"] = p.m_BloomShapeBlend;
+	root["bloom"]["shapeAngleDeg"] = p.m_BloomShapeAngleDeg;
+	root["bloom"]["anamorphicStretch"] = p.m_BloomAnamorphicStretch;
+	root["bloom"]["streakCount"] = p.m_BloomStreakCount;
+	root["bloom"]["streakLength"] = p.m_BloomStreakLength;
+	root["bloom"]["streakAttenuation"] = p.m_BloomStreakAttenuation;
 
 	root["toneMapping"]["type"] = p.m_ToneMapperType;
 	root["toneMapping"]["whitePoint"] = p.m_WhitePoint;
@@ -50,9 +61,11 @@ PostProcessProfileJson VansPostProcessProfileJsonCodec::Encode(const VansPostPro
 
 	root["dof"]["enable"] = p.m_EnableDOF;
 	root["dof"]["focusDistance"] = p.m_FocusDistance;
-	root["dof"]["focusRange"] = p.m_FocusRange;
-	root["dof"]["aperture"] = p.m_Aperture;
+	root["dof"]["focalLengthMm"] = p.m_FocalLengthMm;
+	root["dof"]["fStop"] = p.m_FStop;
+	root["dof"]["sensorHeightMm"] = p.m_SensorHeightMm;
 	root["dof"]["maxCoC"] = p.m_MaxCoC;
+	root["dof"]["blurTransmissionBackground"] = p.m_DOFBlurTransmissionBackground;
 
 	root["motionBlur"]["enable"] = p.m_EnableMotionBlur;
 	root["motionBlur"]["shutter"] = p.m_ShutterScale;
@@ -89,7 +102,7 @@ bool VansPostProcessProfileJsonCodec::Decode(
 		decoded.m_EnablePostProcess = general.value("enablePostProcess", true);
 		decoded.m_EnableHDR = general.value("enableHDR", true);
 
-		decoded.m_EnableAutoExposure = exposure.value("enableAutoExposure", true);
+		decoded.m_EnableAutoExposure = exposure.value("enableAutoExposure", false);
 		decoded.m_ExposureCompensation = exposure.value("exposureCompensation", 0.0f);
 		decoded.m_MinEV100 = exposure.value("minEV100", -6.0f);
 		decoded.m_MaxEV100 = exposure.value("maxEV100", 16.0f);
@@ -102,6 +115,17 @@ bool VansPostProcessProfileJsonCodec::Decode(
 		decoded.m_BloomIntensity = bloom.value("intensity", 0.12f);
 		decoded.m_BloomScatter = bloom.value("scatter", 0.7f);
 		decoded.m_BloomClamp = bloom.value("clamp", 64.0f);
+		decoded.m_BloomTintR = bloom.value("tintR", 1.0f);
+		decoded.m_BloomTintG = bloom.value("tintG", 1.0f);
+		decoded.m_BloomTintB = bloom.value("tintB", 1.0f);
+		decoded.m_BloomShapeMode = bloom.value("shapeMode", 0);
+		decoded.m_BloomShapeIntensity = bloom.value("shapeIntensity", 0.35f);
+		decoded.m_BloomShapeBlend = bloom.value("shapeBlend", 1.0f);
+		decoded.m_BloomShapeAngleDeg = bloom.value("shapeAngleDeg", 0.0f);
+		decoded.m_BloomAnamorphicStretch = bloom.value("anamorphicStretch", 4.0f);
+		decoded.m_BloomStreakCount = bloom.value("streakCount", 4);
+		decoded.m_BloomStreakLength = bloom.value("streakLength", 24.0f);
+		decoded.m_BloomStreakAttenuation = bloom.value("streakAttenuation", 0.72f);
 
 		decoded.m_ToneMapperType = toneMapping.value("type", 1);
 		decoded.m_WhitePoint = toneMapping.value("whitePoint", 11.2f);
@@ -115,9 +139,11 @@ bool VansPostProcessProfileJsonCodec::Decode(
 
 		decoded.m_EnableDOF = dof.value("enable", false);
 		decoded.m_FocusDistance = dof.value("focusDistance", 5.0f);
-		decoded.m_FocusRange = dof.value("focusRange", 2.0f);
-		decoded.m_Aperture = dof.value("aperture", 2.8f);
-		decoded.m_MaxCoC = dof.value("maxCoC", 12.0f);
+		decoded.m_FocalLengthMm = dof.value("focalLengthMm", 50.0f);
+		decoded.m_FStop = dof.value("fStop", dof.value("aperture", 2.8f));
+		decoded.m_SensorHeightMm = dof.value("sensorHeightMm", 24.0f);
+		decoded.m_MaxCoC = dof.value("maxCoC", 16.0f);
+		decoded.m_DOFBlurTransmissionBackground = dof.value("blurTransmissionBackground", true);
 
 		decoded.m_EnableMotionBlur = motionBlur.value("enable", false);
 		decoded.m_ShutterScale = motionBlur.value("shutter", 0.5f);

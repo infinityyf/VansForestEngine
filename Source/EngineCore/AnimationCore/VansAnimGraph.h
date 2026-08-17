@@ -17,6 +17,7 @@
 #include "VansAnimGraphJson.h"
 #include "IK/VansIKTypes.h"
 #include "FootPlacement/VansFootPlacementTypes.h"
+#include "../RuntimeCore/VansCharacterMotion.h"
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -107,6 +108,7 @@ namespace VansGraphics
 		std::unordered_map<std::string, AnimatorParameter>*        parameters = nullptr;
 		const std::unordered_map<std::string, VansAnimationClip>*  clips      = nullptr;
 		VansMotionMatchingRuntime*                                 motionMatching = nullptr;
+		const Vans::VansCharacterTrajectory*                       characterTrajectory = nullptr;
 		const std::unordered_map<std::string, VansPosePayload>*     slotPayloads = nullptr;
 		const VansPosePayload*                                     targetPoseInput = nullptr;
 		bool                                                       synchronizedStateFollower = false;

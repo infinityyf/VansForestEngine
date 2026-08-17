@@ -28,7 +28,10 @@ namespace VansGraphics { class VansTexture; }
 namespace Vans { struct VansSceneAudioResourceRequest; struct VansSceneVideoResourceRequest; }
 namespace Vans { struct VansSceneObjectBuildPlan; }
 namespace Vans { struct VansPackagedResourcePlan; }
-namespace Vans { class VansTimelineRuntimeSystem; class VansTimelinePropertyRegistry; }
+namespace Vans { class VansTimelineRuntimeSystem; }
+namespace Vans { class VansGameplayRuntime; }
+namespace VansGraphics { class VansCameraControlArbiter; }
+namespace VansGraphics { class VansVirtualCameraParameterStore; }
 
 namespace VansGraphics { class VansCamera; }
 
@@ -114,9 +117,9 @@ namespace VansGraphics
 
 	{
 
-        Empty,       // 鏃犲満鏅?
+        Empty,       // No scene is loaded.
 
-        Unloading,   // 姝ｅ湪鍗歌浇鏃у満鏅?
+        Unloading,   // The previous scene is unloading.
 
 		Loading,
 
@@ -138,7 +141,7 @@ namespace VansGraphics
 
 		Editor,
 
-        Runtime   // 杩愯鏃舵ā寮?
+        Runtime   // Runtime mode.
 
 	};
 
@@ -373,8 +376,10 @@ namespace VansGraphics
 		std::vector<VansScriptObject*> m_SceneObjects;
 		std::vector<std::string> m_PendingEntityDestructionGuids;
 		std::unique_ptr<Vans::VansRuntimeWorld> m_RuntimeWorld;
+		std::unique_ptr<Vans::VansGameplayRuntime> m_GameplayRuntime;
 		std::unique_ptr<Vans::VansTimelineRuntimeSystem> m_TimelineRuntime;
-		std::shared_ptr<Vans::VansTimelinePropertyRegistry> m_TimelinePropertyRegistry;
+		std::unique_ptr<VansCameraControlArbiter> m_CameraControlArbiter;
+		std::unique_ptr<VansVirtualCameraParameterStore> m_VirtualCameraParameters;
 		void ConfigureTimelineRuntime();
 
 
@@ -425,6 +430,8 @@ namespace VansGraphics
 		const std::vector<VansScriptObject*>& GetSceneObjects() const { return m_SceneObjects; }
 		Vans::VansRuntimeWorld* GetRuntimeWorld() { return m_RuntimeWorld.get(); }
 		const Vans::VansRuntimeWorld* GetRuntimeWorld() const { return m_RuntimeWorld.get(); }
+		Vans::VansGameplayRuntime* GetGameplayRuntime() { return m_GameplayRuntime.get(); }
+		const Vans::VansGameplayRuntime* GetGameplayRuntime() const { return m_GameplayRuntime.get(); }
 		bool ApplyRuntimeComponentEnabled(
 			Vans::VansComponentHandle component,
 			bool effectiveEnabled);
@@ -447,6 +454,7 @@ namespace VansGraphics
 		MultiMeshGroup* FindAnimationMultiMeshGroup(const std::string& meshGroupName, const std::string& objectName);
 
 		uint32_t GetParentTransformID(uint32_t childTransformID) const { return m_TransformParentSystem.GetParent(childTransformID); }
+		void MarkTransformOffsetDirty(uint32_t childTransformID) { m_TransformParentSystem.MarkOffsetDirty(childTransformID); }
 
 		void SetTransformParentID(uint32_t childTransformID, uint32_t parentTransformID) { m_TransformParentSystem.SetParent(childTransformID, parentTransformID); }
 
@@ -534,7 +542,7 @@ namespace VansGraphics
 
 
 
-		// Object descriptor set (Set 2): Transform SSBO 閳?shared by all geometry nodes
+		// Object descriptor set (Set 2): transform SSBO shared by all geometry nodes.
 	private:
 
 		VkDescriptorSetLayout m_ObjectDescriptorSetLayout = VK_NULL_HANDLE;
@@ -742,7 +750,7 @@ namespace VansGraphics
 
 
 		// Creates VansScriptObjects from a typed scene object build plan.
-		void LoadSceneObjects(VkDevice& device, const Vans::VansSceneObjectBuildPlan& objectBuildPlan, const std::string& projectRoot);
+		bool LoadSceneObjects(VkDevice& device, const Vans::VansSceneObjectBuildPlan& objectBuildPlan, const std::string& projectRoot);
 
 
 
@@ -841,7 +849,14 @@ namespace VansGraphics
 		// Per-frame skeletal animation CPU update + GPU bone matrix upload.
 
 		void UpdateAnimations(float deltaTime);
+		void UpdateActionsEarly(double deltaSeconds);
+		bool RunActionLateContinuation();
 		void UpdateTimelinesPostScript(double deltaSeconds);
+		void BeginCameraControlFrame();
+		void CaptureCameraControlBase();
+		void ResolveCameraControlFrame();
+		VansCameraControlArbiter& CameraControlArbiter();
+		bool IsUserCameraLookSuppressed() const;
 		void UpdateTimelinesCamera(double deltaSeconds);
 		void UpdateTimelinePreviewsPostScript(double deltaSeconds);
 		void UpdateTimelinePreviewsCamera(double deltaSeconds);
@@ -918,6 +933,7 @@ namespace VansGraphics
 
 
 		void UpdateCharControllerTransforms();
+		void PrepareCharacterLocomotion(float deltaTime);
 
 
 
@@ -1088,7 +1104,7 @@ namespace VansGraphics
 
 
 
-		void InjectCamera(VansCamera* camera) { m_Camera = camera; }
+		void InjectCamera(VansCamera* camera);
 
 
 

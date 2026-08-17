@@ -650,6 +650,24 @@ void VansGraphics::VansCommonRenderNode::SyncMaterialToGPU(VansMaterial* mat, Va
 			sizeof(VansBasePBRParam) * idx,
 			sizeof(VansBasePBRParam));
 	}
+	else if (mat->m_MaterialType == VansMaterialType::VAN_SKIN)
+	{
+		VansSkinMaterial* skin = static_cast<VansSkinMaterial*>(mat);
+		int idx = skin->m_MaterialIndex;
+		if (idx < 0) return;
+		materialManager.m_GlobalPBRDataBuffer.UpdateMapped(
+			&skin->m_BasePBRParam,
+			sizeof(VansBasePBRParam) * idx,
+			sizeof(VansBasePBRParam));
+		VansSkinGPUParam skinPayload = skin->BuildGPUParam();
+		materialManager.ResolveSkinProfileLUTForMaterial(*skin, skinPayload, nullptr);
+		materialManager.m_GlobalSkinDataBuffer.UpdateMapped(
+			&skinPayload,
+			sizeof(VansSkinGPUParam) * idx,
+			sizeof(VansSkinGPUParam));
+		if (idx < static_cast<int>(materialManager.m_GlobalSkinParamData.size()))
+			materialManager.m_GlobalSkinParamData[idx] = skinPayload;
+	}
 	else if (mat->m_MaterialType == VansMaterialType::VAN_CLOTH)
 	{
 		VansClothMaterial* cloth = static_cast<VansClothMaterial*>(mat);
@@ -725,6 +743,10 @@ void VansGraphics::VansCommonRenderNode::UpdateDescriptorSets(VansMaterialManage
 			modelBufferDescriptorSets[0], VERTEX_DEFORMATION_BINDING_BONEWEIGHT_SSBO,
 			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 			{{ (m_VertexDeformationState.boneWeightBuffer ? m_VertexDeformationState.boneWeightBuffer : m_AnimBoneWeightBuffer)->GetNativeBuffer(), 0, VK_WHOLE_SIZE }});
+		descManager->WriteBufferDescriptor(
+			modelBufferDescriptorSets[0], VERTEX_DEFORMATION_BINDING_PREVIOUS_BONE_SSBO,
+			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			{{ (m_VertexDeformationState.skinningOwner ? m_VertexDeformationState.skinningOwner : m_AnimOwner)->GetPreviousBoneBuffer(0).GetNativeBuffer(), 0, VK_WHOLE_SIZE }});
 		descManager->CommitDescriptorUpdates();
 	}
 
@@ -837,6 +859,10 @@ void VansGraphics::VansTransparentRenderNode::UpdateDescriptorSets(VansMaterialM
 			modelBufferDescriptorSets[0], VERTEX_DEFORMATION_BINDING_BONEWEIGHT_SSBO,
 			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 			{{ (m_VertexDeformationState.boneWeightBuffer ? m_VertexDeformationState.boneWeightBuffer : m_AnimBoneWeightBuffer)->GetNativeBuffer(), 0, VK_WHOLE_SIZE }});
+		descManager->WriteBufferDescriptor(
+			modelBufferDescriptorSets[0], VERTEX_DEFORMATION_BINDING_PREVIOUS_BONE_SSBO,
+			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			{{ (m_VertexDeformationState.skinningOwner ? m_VertexDeformationState.skinningOwner : m_AnimOwner)->GetPreviousBoneBuffer(0).GetNativeBuffer(), 0, VK_WHOLE_SIZE }});
 		descManager->CommitDescriptorUpdates();
 	}
 }
@@ -903,7 +929,7 @@ void VansGraphics::VansPostProcessRenderNode::CreateDescriptorSets(VansCamera* c
 	m_UsedDescSetLayouts.push_back(m_Scene->GetGlobalDescriptorSetLayout());
 	m_UsedDescSets.push_back(m_Scene->GetGlobalDescriptorSet());
 
-	// Set 1: Per-Pass (post-process input attachment)
+	// Set 1: Per-Pass display conversion resources.
 	VansDescriptorSetLayoutFactory::CreateAndAllocate_PostProcess(frameBufferInputLayout, frameBufferInputDescriptorSets);
 
 	m_UsedDescSetLayouts.push_back(frameBufferInputLayout);
@@ -921,17 +947,19 @@ void VansGraphics::VansPostProcessRenderNode::UpdateDescriptorSets(VansMaterialM
 	{
 		return;
 	}
-	m_DescriptorsetsDirty = false;
-
 	auto* descMgr = VansVKDescriptorManager::GetInstance();
+	VansVKImage* colorInput = VansRenderPassManager::GetInstance()->GetDisplayPostProcessInput();
+	if (colorInput == nullptr)
+		return;
+	m_DescriptorsetsDirty = false;
 	descMgr->BeginDescriptorUpdate();
 	descMgr->WriteImageDescriptor(
 		frameBufferInputDescriptorSets[0],
 		POSTPROCESS_BINDING_COLOR_INPUT,
-		VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
+		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{ {
-			VK_NULL_HANDLE,
-			VansRenderPassManager::GetInstance()->GetColor().GetImageView(),
+			colorInput->GetSampler(),
+			colorInput->GetImageView(),
 			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 		} });
 

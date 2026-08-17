@@ -3,152 +3,382 @@
 
 #include "../water_screen_common.glsl"
 
-// Stable forward screen-space caustics.  The local water-surface ray bundle
-// is refracted along the sun direction and projected by the current thickness.
-// It does not search a view-refracted receiver, so camera motion cannot switch
-// between discrete receiver candidates.
+// Receiver-space, single-refraction water caustics.
+//
+// For each receiver visible through the water surface, solve the water-domain
+// point whose refracted sun ray reaches that receiver. The local ray mapping
+// Jacobian converts incident flux into focused irradiance. This deliberately
+// uses the simulation displacement/derivative fields instead of screen-space
+// water-triangle neighbours, so geometry tessellation and camera projection do
+// not become visible in the caustic pattern.
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
-layout(set = 0, binding = 0) uniform sampler2D waterGBufNormal;
-layout(set = 0, binding = 1) uniform sampler2D waterGBufPosDepth;
-layout(set = 0, binding = 2) uniform sampler2D thicknessMap;
+layout(set = 0, binding = 0) uniform sampler2D waterSurfaceData;
+layout(set = 0, binding = 1) uniform sampler2D sceneNormal;
+layout(set = 0, binding = 2) uniform sampler2D sceneGBuf0;
+layout(set = 0, binding = 3) uniform sampler2D sceneGBuf2;
+layout(set = 0, binding = 4) uniform sampler2D refractionData;
+layout(set = 0, binding = 5) uniform sampler2DArray displacementMap;
+layout(set = 0, binding = 6) uniform sampler2DArray derivativeMap;
+layout(set = 0, binding = 7) uniform sampler2D flowMap;
 
-layout(set = 0, binding = 3) uniform WaterCausticsParams
+layout(set = 0, binding = 8) uniform WaterSurfaceParams
 {
-    vec4  sunDirection;
-    vec4  mainLightColor;
-    vec4  extinctionCoeff;
-    float causticsIntensity;
-    float causticsScale;
-    float shoreFadeStart;
-    float maxDepth;
-    vec4  opticalParams;
-} params;
+    mat4 VPMatrix;
+    mat4 ViewMatrix;
+    vec4 cameraPosition;
+    ivec4 geometryParams;
+    vec4 geometryScale;
+    vec4 spectrumScale;
+    vec4 windAndChop;
+    ivec4 simulationParams;
+    vec4 waveParticleParams0;
+    vec4 waveParticleParams1;
+    vec4 flowMapWorld;
+    vec4 flowMapParams;
+    vec4 flowMapFallback;
+} surfaceParams;
 
-layout(set = 0, binding = 4, rgba16f) uniform writeonly image2D causticsOut;
-
-bool LoadPosition(ivec2 pixel, ivec2 size, out vec3 position)
+layout(set = 0, binding = 9) uniform WaterCausticsParams
 {
-    if (any(lessThan(pixel, ivec2(0))) || any(greaterThanEqual(pixel, size)))
-        return false;
-    vec4 nc = texelFetch(waterGBufNormal, pixel, 0);
-    vec4 pd = texelFetch(waterGBufPosDepth, pixel, 0);
-    if (!WaterSurfaceValid(nc, pd))
-        return false;
-    position = pd.xyz;
-    return true;
-}
+    vec4 sunDirection;
+    vec4 mainLightColor;
+    vec4 extinctionCoeff;
+    vec4 mediumParams;   // x=IOR, y=water level, z=intensity, w=max path distance
+    vec4 shapingParams;  // x=max gain, y=filter radius, z=use refraction data
+} causticsParams;
 
-bool LoadSurface(ivec2 pixel, ivec2 size,
-                 out vec3 position, out vec3 normal,
-                 out float normalizedThickness)
+layout(set = 0, binding = 10, rgba16f) uniform writeonly image2D causticsOut;
+
+const float INV_PI = 0.31830988618379067154;
+const int MAX_CASCADES = 4;
+const int SOURCE_SOLVE_ITERATIONS = 4;
+
+struct CascadeSample
 {
-    if (any(lessThan(pixel, ivec2(0))) || any(greaterThanEqual(pixel, size)))
-        return false;
-    vec4 nc = texelFetch(waterGBufNormal, pixel, 0);
-    vec4 pd = texelFetch(waterGBufPosDepth, pixel, 0);
-    if (!WaterSurfaceValid(nc, pd))
-        return false;
+    vec3 displacement;
+    vec3 dPdu;
+    vec3 dPdv;
+};
 
-    position = pd.xyz;
-    normalizedThickness = clamp(texelFetch(thicknessMap, pixel, 0).r, 0.0, 1.0);
-
-    // Ray-bundle differentials use a geometric normal reconstructed from the
-    // water positions, excluding high-frequency BRDF/refraction micro slopes.
-    vec3 leftP, rightP, upP, downP;
-    if (LoadPosition(pixel + ivec2(-1, 0), size, leftP) &&
-        LoadPosition(pixel + ivec2( 1, 0), size, rightP) &&
-        LoadPosition(pixel + ivec2( 0,-1), size, upP) &&
-        LoadPosition(pixel + ivec2( 0, 1), size, downP))
-    {
-        vec3 geometric = cross(downP - upP, rightP - leftP);
-        if (dot(geometric, geometric) > 1e-10)
-        {
-            normal = normalize(geometric);
-            if (normal.y < 0.0)
-                normal = -normal;
-            return true;
-        }
-    }
-
-    normal = normalize(nc.xyz);
-    return true;
-}
-
-vec3 SunRayInWater(vec3 normal)
+struct SurfaceSample
 {
-    vec3 ray = refract(-normalize(params.sunDirection.xyz), normal,
-                       1.0 / max(params.opticalParams.x, 1.0001));
-    if (dot(ray, ray) < 1e-8)
-        ray = -normalize(params.sunDirection.xyz);
-    return normalize(ray);
-}
-
-vec2 ReceiverXZ(vec3 waterPosition, vec3 normal, float opticalDepth)
-{
-    vec3 ray = SunRayInWater(normal);
-    float travel = opticalDepth / max(-ray.y, 0.08);
-    return waterPosition.xz + ray.xz * travel;
-}
+    vec3 position;
+    vec3 dPdu;
+    vec3 dPdv;
+    vec3 normal;
+};
 
 float Cross2D(vec2 a, vec2 b)
 {
     return a.x * b.y - a.y * b.x;
 }
 
+vec2 ClampLength(vec2 value, float maximumLength)
+{
+    float valueLength = length(value);
+    return valueLength > maximumLength
+        ? value * (maximumLength / valueLength) : value;
+}
+
+vec2 SampleFlowVector(vec2 worldXZ)
+{
+    if (surfaceParams.flowMapParams.x <= 0.0 ||
+        surfaceParams.flowMapParams.y <= 0.0)
+        return vec2(0.0);
+
+    vec2 flowSize = max(surfaceParams.flowMapWorld.zw, vec2(0.001));
+    vec2 flowUV = (worldXZ - surfaceParams.flowMapWorld.xy) / flowSize;
+    vec2 flow = textureLod(flowMap, flowUV, 0.0).xy * 2.0 - 1.0;
+    if (dot(flow, flow) < 1e-5)
+    {
+        flow = surfaceParams.flowMapFallback.xy;
+        flow = dot(flow, flow) < 1e-5 ? vec2(1.0, 0.0) : normalize(flow);
+    }
+    return flow * surfaceParams.flowMapParams.y;
+}
+
+CascadeSample SampleCascade(vec2 domainXZ, float coverage, int cascade)
+{
+    vec2 uv0 = fract(domainXZ / coverage);
+    vec2 uv1 = uv0;
+    float blend = 0.0;
+
+    if (surfaceParams.flowMapParams.x > 0.0 &&
+        surfaceParams.flowMapParams.y > 0.0)
+    {
+        vec2 flow = SampleFlowVector(domainXZ);
+        float cycleLength = max(surfaceParams.flowMapParams.w, 0.05);
+        float phase0 = fract(surfaceParams.spectrumScale.z
+            * surfaceParams.flowMapParams.z / cycleLength);
+        float phase1 = fract(phase0 + 0.5);
+        blend = abs(phase0 * 2.0 - 1.0);
+        uv0 = fract((domainXZ - flow * phase0 * cycleLength) / coverage);
+        uv1 = fract((domainXZ - flow * phase1 * cycleLength) / coverage);
+    }
+
+    CascadeSample result;
+    vec3 displacement0 = textureLod(
+        displacementMap, vec3(uv0, float(cascade)), 0.0).xyz;
+    vec3 derivativeU0 = textureLod(
+        derivativeMap, vec3(uv0, float(cascade * 2)), 0.0).xyz;
+    vec3 derivativeV0 = textureLod(
+        derivativeMap, vec3(uv0, float(cascade * 2 + 1)), 0.0).xyz;
+    if (blend <= 0.0)
+    {
+        result.displacement = displacement0;
+        result.dPdu = derivativeU0;
+        result.dPdv = derivativeV0;
+        return result;
+    }
+
+    vec3 displacement1 = textureLod(
+        displacementMap, vec3(uv1, float(cascade)), 0.0).xyz;
+    vec3 derivativeU1 = textureLod(
+        derivativeMap, vec3(uv1, float(cascade * 2)), 0.0).xyz;
+    vec3 derivativeV1 = textureLod(
+        derivativeMap, vec3(uv1, float(cascade * 2 + 1)), 0.0).xyz;
+    result.displacement = mix(displacement0, displacement1, blend);
+    result.dPdu = mix(derivativeU0, derivativeU1, blend);
+    result.dPdv = mix(derivativeV0, derivativeV1, blend);
+    return result;
+}
+
+SurfaceSample EvaluateSurface(vec2 domainXZ)
+{
+    vec3 displacement = vec3(0.0);
+    vec3 dPdu = vec3(1.0, 0.0, 0.0);
+    vec3 dPdv = vec3(0.0, 0.0, 1.0);
+    int cascadeCount = clamp(surfaceParams.geometryParams.z, 1, MAX_CASCADES);
+    for (int cascade = 0; cascade < MAX_CASCADES; ++cascade)
+    {
+        if (cascade >= cascadeCount)
+            break;
+        float coverage = surfaceParams.spectrumScale.x
+            * pow(surfaceParams.spectrumScale.y, float(cascade));
+        CascadeSample sampleData = SampleCascade(domainXZ, coverage, cascade);
+        displacement += sampleData.displacement;
+        dPdu += sampleData.dPdu - vec3(1.0, 0.0, 0.0);
+        dPdv += sampleData.dPdv - vec3(0.0, 0.0, 1.0);
+    }
+
+    SurfaceSample result;
+    result.position = vec3(domainXZ.x, causticsParams.mediumParams.y, domainXZ.y)
+        + displacement;
+    result.dPdu = dPdu;
+    result.dPdv = dPdv;
+    result.normal = normalize(cross(dPdv, dPdu));
+    return result;
+}
+
+bool ProjectSurfaceRay(vec2 domainXZ, float receiverY,
+                       out vec2 mappedXZ, out vec3 waterRay,
+                       out SurfaceSample surface)
+{
+    surface = EvaluateSurface(domainXZ);
+    vec3 lightToSun = normalize(causticsParams.sunDirection.xyz);
+    if (lightToSun.y <= 0.001 || dot(surface.normal, lightToSun) <= 0.001)
+        return false;
+
+    float eta = 1.0 / max(causticsParams.mediumParams.x, 1.0001);
+    waterRay = refract(-lightToSun, surface.normal, eta);
+    if (dot(waterRay, waterRay) < 1e-8 || waterRay.y >= -1e-4)
+        return false;
+    waterRay = normalize(waterRay);
+
+    float travel = (receiverY - surface.position.y) / waterRay.y;
+    if (travel <= 0.0 || travel > causticsParams.mediumParams.w * 1.25)
+        return false;
+    mappedXZ = surface.position.xz + waterRay.xz * travel;
+    return true;
+}
+
+bool SolveSourceForReceiver(vec3 receiver,
+                            out vec2 sourceDomain,
+                            out vec2 mappedXZ,
+                            out vec3 waterRay,
+                            out SurfaceSample surface)
+{
+    vec3 lightToSun = normalize(causticsParams.sunDirection.xyz);
+    if (lightToSun.y <= 0.001 ||
+        receiver.y >= causticsParams.mediumParams.y - 0.01)
+        return false;
+
+    vec3 flatRay = refract(-lightToSun, vec3(0.0, 1.0, 0.0),
+        1.0 / max(causticsParams.mediumParams.x, 1.0001));
+    if (flatRay.y >= -1e-4)
+        return false;
+
+    float flatTravel = (receiver.y - causticsParams.mediumParams.y) / flatRay.y;
+    sourceDomain = receiver.xz - flatRay.xz * flatTravel;
+    float filterRadius = max(causticsParams.shapingParams.y, 0.1);
+    float maximumStep = max(filterRadius * 4.0,
+        causticsParams.mediumParams.w * 0.25);
+
+    for (int iteration = 0; iteration < SOURCE_SOLVE_ITERATIONS; ++iteration)
+    {
+        if (!ProjectSurfaceRay(sourceDomain, receiver.y,
+                               mappedXZ, waterRay, surface))
+            return false;
+        vec2 error = receiver.xz - mappedXZ;
+        if (dot(error, error) <= 0.0001)
+            break;
+        // The flat-water mapping has identity dQ/d(sourceXZ). A damped fixed
+        // point step remains stable for the non-folded wave fields used here.
+        sourceDomain += ClampLength(error * 0.85, maximumStep);
+    }
+
+    if (!ProjectSurfaceRay(sourceDomain, receiver.y,
+                           mappedXZ, waterRay, surface))
+        return false;
+    float allowedError = max(filterRadius, 0.35);
+    return length(receiver.xz - mappedXZ) <= allowedError;
+}
+
+float FresnelSchlick(float cosine, float ior)
+{
+    float f = (ior - 1.0) / max(ior + 1.0, 1e-4);
+    float f0 = f * f;
+    float grazing = 1.0 - clamp(cosine, 0.0, 1.0);
+    return f0 + (1.0 - f0) * grazing * grazing * grazing * grazing * grazing;
+}
+
+void StoreZero(ivec2 pixel)
+{
+    imageStore(causticsOut, pixel, vec4(0.0));
+}
+
 void main()
 {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 size = imageSize(causticsOut);
-    if (any(greaterThanEqual(pixel, size)))
+    ivec2 outputSize = imageSize(causticsOut);
+    if (any(greaterThanEqual(pixel, outputSize)))
         return;
 
-    vec3 W, N;
-    float thickness;
-    if (params.causticsIntensity <= 0.0 ||
-        !LoadSurface(pixel, size, W, N, thickness))
+    if (causticsParams.mediumParams.z <= 0.0 ||
+        causticsParams.shapingParams.x <= 0.0)
     {
-        imageStore(causticsOut, pixel, vec4(0.0));
+        StoreZero(pixel);
         return;
     }
 
-    vec3 Wx, Nx, Wy, Ny;
-    float thicknessX, thicknessY;
-    if (!LoadSurface(pixel + ivec2(1, 0), size, Wx, Nx, thicknessX) ||
-        !LoadSurface(pixel + ivec2(0, 1), size, Wy, Ny, thicknessY))
+    vec4 waterSurface = texelFetch(waterSurfaceData, pixel, 0);
+    if (waterSurface.a <= 0.0 || waterSurface.a >= WATER_INVALID_DEPTH)
     {
-        imageStore(causticsOut, pixel, vec4(0.0));
+        StoreZero(pixel);
         return;
     }
 
-    float depth = thickness * params.maxDepth;
-    float depthX = thicknessX * params.maxDepth;
-    float depthY = thicknessY * params.maxDepth;
-    vec2 Q = ReceiverXZ(W, N, depth);
-    vec2 Qx = ReceiverXZ(Wx, Nx, depthX);
-    vec2 Qy = ReceiverXZ(Wy, Ny, depthY);
-
-    vec2 sourceX = Wx.xz - W.xz;
-    vec2 sourceY = Wy.xz - W.xz;
-    float sourceArea = abs(Cross2D(sourceX, sourceY));
-    float receiverArea = abs(Cross2D(Qx - Q, Qy - Q));
-    if (sourceArea < 1e-8)
+    vec2 receiverUV = WaterPixelUV(pixel, outputSize);
+    if (causticsParams.shapingParams.z > 0.5)
     {
-        imageStore(causticsOut, pixel, vec4(0.0));
+        vec4 refraction = texelFetch(refractionData, pixel, 0);
+        if (refraction.a <= 0.0)
+        {
+            StoreZero(pixel);
+            return;
+        }
+        receiverUV += refraction.xy;
+    }
+    if (any(lessThanEqual(receiverUV, vec2(0.0))) ||
+        any(greaterThanEqual(receiverUV, vec2(1.0))))
+    {
+        StoreZero(pixel);
         return;
     }
 
-    float concentration = sourceArea / max(receiverArea, sourceArea * 0.15);
-    float focusing = clamp((concentration - 1.0) * params.causticsScale, 0.0, 1.5);
-    float shoreFade = smoothstep(params.shoreFadeStart,
-                                 params.shoreFadeStart * 8.0, thickness);
-    float deepFade = 1.0 - smoothstep(0.65, 1.0, thickness);
-    float incidence = max(dot(N, normalize(params.sunDirection.xyz)), 0.0);
-    vec3 attenuation = exp(-max(params.extinctionCoeff.rgb, vec3(0.0)) * depth);
+    ivec2 sceneSize = textureSize(sceneGBuf2, 0);
+    ivec2 receiverPixel = WaterUVToPixel(receiverUV, sceneSize);
+    vec4 receiverData = texelFetch(sceneGBuf2, receiverPixel, 0);
+    if (!SceneDepthValid(receiverData.w) ||
+        receiverData.w <= waterSurface.w + WaterDepthEpsilon(waterSurface.w))
+    {
+        StoreZero(pixel);
+        return;
+    }
 
-    float gain = clamp(focusing * shoreFade * deepFade * incidence
-        * params.causticsIntensity, 0.0, 1.0);
-    vec3 coloredGain = params.mainLightColor.rgb * params.mainLightColor.a
-        * attenuation * gain;
-    imageStore(causticsOut, pixel, vec4(coloredGain, gain));
+    vec3 receiverNormal = texelFetch(sceneNormal, receiverPixel, 0).xyz;
+    if (dot(receiverNormal, receiverNormal) <= 0.25)
+    {
+        StoreZero(pixel);
+        return;
+    }
+    receiverNormal = normalize(receiverNormal);
+    vec3 receiverAlbedo = max(texelFetch(sceneGBuf0, receiverPixel, 0).rgb,
+                              vec3(0.0));
+
+    vec2 sourceDomain;
+    vec2 mappedXZ;
+    vec3 waterRay;
+    SurfaceSample sourceSurface;
+    if (!SolveSourceForReceiver(receiverData.xyz, sourceDomain, mappedXZ,
+                                waterRay, sourceSurface))
+    {
+        StoreZero(pixel);
+        return;
+    }
+
+    float filterRadius = max(causticsParams.shapingParams.y, 0.1);
+    vec2 mappedU, mappedV;
+    vec3 rayU, rayV;
+    SurfaceSample surfaceU, surfaceV;
+    if (!ProjectSurfaceRay(sourceDomain + vec2(filterRadius, 0.0), receiverData.y,
+                           mappedU, rayU, surfaceU) ||
+        !ProjectSurfaceRay(sourceDomain + vec2(0.0, filterRadius), receiverData.y,
+                           mappedV, rayV, surfaceV))
+    {
+        StoreZero(pixel);
+        return;
+    }
+
+    vec2 dQdu = (mappedU - mappedXZ) / filterRadius;
+    vec2 dQdv = (mappedV - mappedXZ) / filterRadius;
+    float receiverArea = abs(Cross2D(dQdu, dQdv));
+
+    vec3 lightToSun = normalize(causticsParams.sunDirection.xyz);
+    vec3 sourceAreaVector = cross(sourceSurface.dPdv, sourceSurface.dPdu);
+    float sourceFlux = max(dot(sourceAreaVector, lightToSun), 0.0)
+        / max(lightToSun.y, 0.05);
+    if (sourceFlux <= 1e-5)
+    {
+        StoreZero(pixel);
+        return;
+    }
+
+    float maxGain = causticsParams.shapingParams.x;
+    float minimumArea = sourceFlux / (1.0 + maxGain);
+    float concentration = sourceFlux / max(receiverArea, minimumArea);
+    float focusedExcess = clamp(concentration - 1.0, 0.0, maxGain);
+    if (focusedExcess <= 1e-4)
+    {
+        StoreZero(pixel);
+        return;
+    }
+
+    float pathLength = length(receiverData.xyz - sourceSurface.position);
+    float maxDistance = max(causticsParams.mediumParams.w, 1.0);
+    if (pathLength >= maxDistance)
+    {
+        StoreZero(pixel);
+        return;
+    }
+
+    float verticalDepth = sourceSurface.position.y - receiverData.y;
+    float shoreFade = smoothstep(0.05, max(filterRadius * 2.0, 0.25),
+                                 verticalDepth);
+    float rangeFade = 1.0 - smoothstep(maxDistance * 0.75, maxDistance,
+                                      pathLength);
+    float receiverFacing = max(dot(receiverNormal, -waterRay), 0.0);
+    float surfaceCosine = max(dot(sourceSurface.normal, lightToSun), 0.0);
+    float transmission = 1.0 - FresnelSchlick(
+        surfaceCosine, causticsParams.mediumParams.x);
+    vec3 attenuation = exp(-max(causticsParams.extinctionCoeff.rgb, vec3(0.0))
+        * pathLength);
+
+    float irradianceScale = focusedExcess * causticsParams.mediumParams.z
+        * shoreFade * rangeFade * receiverFacing * transmission;
+    vec3 causticIrradiance = max(causticsParams.mainLightColor.rgb, vec3(0.0))
+        * attenuation * irradianceScale;
+    vec3 receiverRadiance = receiverAlbedo * INV_PI * causticIrradiance;
+    imageStore(causticsOut, pixel, vec4(receiverRadiance, irradianceScale));
 }

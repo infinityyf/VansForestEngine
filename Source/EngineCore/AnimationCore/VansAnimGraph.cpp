@@ -2382,14 +2382,12 @@ namespace VansGraphics
 		if (ctx.motionMatching && ctx.skeleton && ctx.clips && ctx.parameters)
 		{
 			AnimGraphPose pose;
-			std::vector<glm::mat4> sampledMatrices;
 			if (ctx.motionMatching->Update(ctx.deltaTime,
 			                               *ctx.skeleton,
 			                               *ctx.clips,
 			                               *ctx.parameters,
-			                               ctx.ownerWorldTransform,
-			                               sampledMatrices)
-			    && VansPoseMath::FromMatrices(sampledMatrices, pose.localPose))
+			                               ctx.characterTrajectory,
+			                               pose))
 			{
 				pose.valid = pose.localPose.size() == ctx.skeleton->bones.size();
 				if (pose.valid)

@@ -74,7 +74,8 @@ namespace VansGraphics
 		                          int footIndex,
 		                          const glm::vec3& footLocalUp,
 		                          FootPlacementFootState& state,
-		                          const FootPlacementContact& contact) const;
+		                          const FootPlacementContact& contact,
+		                          float animationPlantWeight) const;
 
 		void ApplyPelvisOffset(float deltaTime,
 		                       const Skeleton& skeleton,
@@ -97,6 +98,8 @@ namespace VansGraphics
 		                             int hipIndex,
 		                             int kneeIndex,
 		                             int footIndex,
-		                             const LegTarget& target);
+		                             const LegTarget& target,
+		                             const FootPlacementFootState& state,
+		                             float animationPlantWeight);
 	};
 }

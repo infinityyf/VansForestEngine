@@ -48,7 +48,11 @@ const AssetReferenceRule* ResolveDeclaredAssetReferenceRule(
         { "animation", "data", "animator", EditorAPI::AssetType::AnimatorController, ObjectReferenceStoragePolicy::GuidString },
         { "animation", "ragdoll", "profile", EditorAPI::AssetType::RagdollProfile, ObjectReferenceStoragePolicy::GuidString },
         { "cloth", "data", "profilepath", EditorAPI::AssetType::ClothProfile, ObjectReferenceStoragePolicy::GuidString },
+		{ "actionhost", "actionsets", "", EditorAPI::AssetType::ActionSet, ObjectReferenceStoragePolicy::GuidObject },
+		{ "actionhost", "autoactivate", "", EditorAPI::AssetType::ActionDefinition, ObjectReferenceStoragePolicy::GuidObject },
+		{ "actionhost", "", "action", EditorAPI::AssetType::ActionDefinition, ObjectReferenceStoragePolicy::GuidObject },
         { "", "", "shader", EditorAPI::AssetType::Shader, ObjectReferenceStoragePolicy::GuidObject },
+        { "", "parameters", "skinprofile", EditorAPI::AssetType::SkinProfile, ObjectReferenceStoragePolicy::GuidObject },
         { "", "textures", "", EditorAPI::AssetType::Texture, ObjectReferenceStoragePolicy::GuidObject },
         { "", "customTextures", "", EditorAPI::AssetType::Texture, ObjectReferenceStoragePolicy::GuidObject },
     };

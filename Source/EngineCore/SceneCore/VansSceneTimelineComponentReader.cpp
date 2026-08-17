@@ -113,20 +113,22 @@ VansSceneTimelineComponentConfig VansSceneTimelineComponentReader::ReadAuthoring
 		{
 			if (source.kind != VansSerializedValue::Kind::Object) continue;
 			VansTimelineBindingOverride overrideValue;
-			overrideValue.bindingId = ReadSerializedStringField(source, "bindingId");
+			const std::string bindingName = ReadSerializedStringField(source, "bindingId");
+			overrideValue.bindingId = VansMakeStableId<VansTimelineBindingTag>(bindingName);
 			const std::string entity = ReadSerializedStringField(source, "targetEntity");
 			overrideValue.useOwner = entity == "owner";
 			if (!overrideValue.useOwner) overrideValue.targetEntityGuid = entity;
 			overrideValue.targetComponentGuid = ReadSerializedStringField(source, "targetComponent");
 			overrideValue.targetComponentTypeId = static_cast<std::uint16_t>(
 				ReadSerializedIntField(source, "targetComponentTypeId", 0));
-			if (!overrideValue.bindingId.empty()) config.instance.bindingOverrides.push_back(std::move(overrideValue));
+			if (overrideValue.bindingId) config.instance.bindingOverrides.push_back(std::move(overrideValue));
 		}
 	}
 	if (const VansSerializedValue* parameters = ObjectField(*data, "parameters"))
 	{
 		for (const auto& [name, value] : parameters->objectFields)
-			config.instance.parameters[name] = DecodeParameterValue(value);
+			config.instance.parameterOverrides.push_back({
+				VansMakeStableId<VansTimelineParameterTag>(name), DecodeParameterValue(value) });
 	}
 	config.valid = !config.timelineAssetGuid.empty();
 	return config;

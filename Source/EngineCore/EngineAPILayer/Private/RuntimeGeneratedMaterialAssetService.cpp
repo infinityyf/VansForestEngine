@@ -243,6 +243,41 @@ Vans::VansMaterialAuthoringAsset BuildRuntimeMaterialAsset(
 		return asset;
 	}
 
+	if (auto* skin = dynamic_cast<VansGraphics::VansSkinMaterial*>(material))
+	{
+		const VansGraphics::VansSkinGPUParam payload = skin->BuildGPUParam();
+		asset.materialType = "skin";
+		asset.parameters = Vans::VansSerializedValue::Object({
+			{ "skinProfile", Vans::VansSerializedValue::String(skin->m_SkinProfileName) },
+			{ "scatterColor", Vec3Value(glm::vec3(payload.scatterColorAmount)) },
+			{ "roughness", Vans::VansSerializedValue::Float(payload.roughnessNormalSpecular.x) },
+			{ "normalStrength", Vans::VansSerializedValue::Float(payload.roughnessNormalSpecular.y) },
+			{ "scatterAmount", Vans::VansSerializedValue::Float(payload.scatterColorAmount.w) },
+			{ "specularScale", Vans::VansSerializedValue::Float(payload.roughnessNormalSpecular.z) },
+			{ "transmissionScale", Vans::VansSerializedValue::Float(payload.roughnessNormalSpecular.w) },
+			{ "primaryRoughnessScale", Vans::VansSerializedValue::Float(payload.lobeIOR.x) },
+			{ "secondaryRoughnessScale", Vans::VansSerializedValue::Float(payload.lobeIOR.y) },
+			{ "skinIor", Vans::VansSerializedValue::Float(payload.lobeIOR.z) },
+			{ "specularLobeMix", Vans::VansSerializedValue::Float(payload.lobeIOR.w) },
+			{ "diffusionRadiusScale", Vans::VansSerializedValue::Float(payload.profileControls.x) },
+			{ "thinnessScale", Vans::VansSerializedValue::Float(payload.profileControls.y) },
+			{ "transmissionDepthScale", Vans::VansSerializedValue::Float(payload.profileControls.z) },
+			{ "ambientScatterScale", Vans::VansSerializedValue::Float(payload.profileControls.w) },
+			{ "profileScatterRadius", Vec3Value(glm::vec3(payload.profileShape)) },
+			{ "boundaryColorBleed", Vans::VansSerializedValue::Float(payload.profileShape.w) },
+			{ "skinProfileLutLayer", Vans::VansSerializedValue::Float(payload.profileLUT.x) },
+			{ "skinDebugView", Vans::VansSerializedValue::Float(payload.debugControls.x) }
+		});
+		asset.textures = Vans::VansSerializedValue::Object({});
+		AddTextureRefIfResolvable(asset.textures, "basecolor", skin->m_BaseColorTexture, database, rootName);
+		AddTextureRefIfResolvable(asset.textures, "normal", skin->m_NormalTexture, database, rootName);
+		AddTextureRefIfResolvable(asset.textures, "roughness", skin->m_RoughnessTexture, database, rootName);
+		AddTextureRefIfResolvable(asset.textures, "cavity", skin->m_CavityTexture, database, rootName);
+		AddTextureRefIfResolvable(asset.textures, "scatter_mask", skin->m_ScatterMaskTexture, database, rootName);
+		AddTextureRefIfResolvable(asset.textures, "thickness", skin->m_ThicknessTexture, database, rootName);
+		return asset;
+	}
+
 	if (auto* cloth = dynamic_cast<VansGraphics::VansClothMaterial*>(material))
 	{
 		const char* clothModel = "fuzz";

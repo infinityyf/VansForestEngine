@@ -38,4 +38,10 @@ void VansApplyVertexPositionDeformation(inout vec4 position, uint featureMask)
         position = VansBuildCurrentSkinMatrix() * position;
 }
 
+void VansApplyPreviousVertexPositionDeformation(inout vec4 position, uint featureMask)
+{
+    if (VansHasVertexFeature(featureMask, VANS_VERTEX_FEATURE_SKELETAL_SKINNING))
+        position = VansBuildPreviousSkinMatrix() * position;
+}
+
 #endif

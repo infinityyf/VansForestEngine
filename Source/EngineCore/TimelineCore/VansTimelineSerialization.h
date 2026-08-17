@@ -21,10 +21,12 @@ public:
 	static bool DecodeSerialized(const VansSerializedValue& root, VansTimelineAsset& asset, std::string& error);
 	static void Normalize(VansTimelineAsset& asset);
 
-	static const char* TrackTypeName(VansTimelineTrackType type);
-	static bool TryParseTrackType(const std::string& value, VansTimelineTrackType& type);
-	static const char* ChannelTypeName(VansTimelineChannelType type);
-	static bool TryParseChannelType(const std::string& value, VansTimelineChannelType& type);
-	static bool ContainsForbiddenFormatField(const Json& root, std::string& propertyPath);
+	static const char* ValueTypeName(VansTimelineValueType type);
+	static bool TryParseValueType(const std::string& value, VansTimelineValueType& type);
+	static const char* ChannelTypeName(VansTimelineChannelType type) { return ValueTypeName(type); }
+	static bool TryParseChannelType(const std::string& value, VansTimelineChannelType& type)
+	{
+		return TryParseValueType(value, type);
+	}
 };
 }

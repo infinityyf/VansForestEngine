@@ -1,6 +1,11 @@
 ﻿#include "EngineAPIImpl.h"
 
 #include "AnimationAuthoringBridge.h"
+#include "GameplayActionAuthoringBridge.h"
+#include "GameplayActionSimulationBridge.h"
+#include "../../GameplayActionSchema/VansGAFProjectConfiguration.h"
+#include "../../GameplayActionSchema/VansGameplayAssetStorage.h"
+#include "../../GameplayActionDebug/VansGameplayActionDebug.h"
 #include "EngineCommandContext.h"
 #include "../Public/EngineEvents.h"
 #include "ModelAssetPlacementPreparationService.h"
@@ -11,11 +16,14 @@
 #include "../../AssetCore/VansAssetDatabase.h"
 #include "../../AssetCore/VansAssetGuid.h"
 #include "../../AssetCore/VansAssetMeta.h"
+#include "../../AssetCore/VansSkinProfile.h"
 #include "../../AssetCore/Serialization/VansSerializedValueAccess.h"
+#include "../../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 #include "../../AssetCore/Storage/VansAssetMetaStorage.h"
 #include "../../AudioCore/Storage/VansAudioBusSnapshotAssetStorage.h"
 #include "../../AudioCore/Storage/VansAudioDuckingRulesAssetStorage.h"
 #include "../../AudioCore/Storage/VansAudioReverbPresetAssetStorage.h"
+#include "../../AssetCore/Storage/VansSkinProfileStorage.h"
 #include "../../AudioCore/VansAudioBusSnapshotAsset.h"
 #include "../../AudioCore/VansAudioDuckingRulesAsset.h"
 #include "../../AudioCore/VansAudioReverbPresetAsset.h"
@@ -85,6 +93,7 @@
 #include <cctype>
 #include <cfloat>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <limits>
 #include <mutex>
@@ -98,6 +107,8 @@
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
 #include <nlohmann/json.hpp>
+#include <chrono>
+#include <sstream>
 
 namespace Vans::EditorAPI
 {
@@ -584,13 +595,61 @@ namespace Vans::EditorAPI
 			case Vans::VansAssetType::AnimatorController: return AssetType::AnimatorController;
 			case Vans::VansAssetType::BoneMask: return AssetType::BoneMask;
 			case Vans::VansAssetType::Timeline: return AssetType::Timeline;
+			case Vans::VansAssetType::ActionDefinition: return AssetType::ActionDefinition;
+			case Vans::VansAssetType::ActionSet: return AssetType::ActionSet;
+			case Vans::VansAssetType::GameplayEffect: return AssetType::GameplayEffect;
+			case Vans::VansAssetType::GameplayCue: return AssetType::GameplayCue;
+			case Vans::VansAssetType::AttributeSet: return AssetType::AttributeSet;
+			case Vans::VansAssetType::TargetingPolicy: return AssetType::TargetingPolicy;
+			case Vans::VansAssetType::GameplayTagTree: return AssetType::GameplayTagTree;
+			case Vans::VansAssetType::PayloadSchema: return AssetType::PayloadSchema;
+			case Vans::VansAssetType::ActionGraph: return AssetType::ActionGraph;
+			case Vans::VansAssetType::CameraRigProfile: return AssetType::CameraRigProfile;
+			case Vans::VansAssetType::CameraShakeProfile: return AssetType::CameraShakeProfile;
+			case Vans::VansAssetType::GAFEditorLayout: return AssetType::GAFEditorLayout;
 			case Vans::VansAssetType::ClothProfile: return AssetType::ClothProfile;
+			case Vans::VansAssetType::SkinProfile: return AssetType::SkinProfile;
 			case Vans::VansAssetType::PostProcessProfile: return AssetType::PostProcessProfile;
 			case Vans::VansAssetType::RagdollProfile: return AssetType::RagdollProfile;
 			case Vans::VansAssetType::AudioReverbPreset: return AssetType::AudioReverbPreset;
 			case Vans::VansAssetType::AudioBusSnapshot: return AssetType::AudioBusSnapshot;
 			case Vans::VansAssetType::AudioDuckingRules: return AssetType::AudioDuckingRules;
 			default: return AssetType::Unknown;
+			}
+		}
+
+		bool ResolveGAFCreation(
+			ProjectAssetCreationKind kind,
+			Vans::VansAssetType& assetType,
+			const char*& baseName,
+			const char*& extension)
+		{
+			switch (kind)
+			{
+			case ProjectAssetCreationKind::ActionDefinition:
+				assetType = Vans::VansAssetType::ActionDefinition; baseName = "New Action"; extension = ".vaction"; return true;
+			case ProjectAssetCreationKind::ActionSet:
+				assetType = Vans::VansAssetType::ActionSet; baseName = "New Action Set"; extension = ".vactionset"; return true;
+			case ProjectAssetCreationKind::GameplayEffect:
+				assetType = Vans::VansAssetType::GameplayEffect; baseName = "New Effect"; extension = ".veffect"; return true;
+			case ProjectAssetCreationKind::GameplayCue:
+				assetType = Vans::VansAssetType::GameplayCue; baseName = "New Cue"; extension = ".vcue"; return true;
+			case ProjectAssetCreationKind::AttributeSet:
+				assetType = Vans::VansAssetType::AttributeSet; baseName = "New Attribute Set"; extension = ".vattributeset"; return true;
+			case ProjectAssetCreationKind::TargetingPolicy:
+				assetType = Vans::VansAssetType::TargetingPolicy; baseName = "New Targeting"; extension = ".vtargeting"; return true;
+			case ProjectAssetCreationKind::GameplayTagTree:
+				assetType = Vans::VansAssetType::GameplayTagTree; baseName = "Gameplay Tags"; extension = ".vtagtree"; return true;
+			case ProjectAssetCreationKind::PayloadSchema:
+				assetType = Vans::VansAssetType::PayloadSchema; baseName = "New Payload"; extension = ".vpayloadschema"; return true;
+			case ProjectAssetCreationKind::ActionGraph:
+				assetType = Vans::VansAssetType::ActionGraph; baseName = "New Action Graph"; extension = ".vactiongraph"; return true;
+			case ProjectAssetCreationKind::CameraRigProfile:
+				assetType = Vans::VansAssetType::CameraRigProfile; baseName = "New Camera Rig"; extension = ".vcamerarig"; return true;
+			case ProjectAssetCreationKind::CameraShakeProfile:
+				assetType = Vans::VansAssetType::CameraShakeProfile; baseName = "New Camera Shake"; extension = ".vcamerashake"; return true;
+			default:
+				return false;
 			}
 		}
 
@@ -1609,6 +1668,9 @@ namespace Vans::EditorAPI
 			leg.hasTarget = source.hasTarget;
 			leg.targetWeight = source.targetWeight;
 			leg.verticalOffset = source.verticalOffset;
+			leg.planted = source.planted;
+			leg.plantWeight = source.plantWeight;
+			leg.horizontalLockError = source.horizontalLockError;
 			leg.samples.reserve(source.samples.size());
 			for (const auto& sample : source.samples)
 				leg.samples.push_back(ToFootIKDebugSample(sample));
@@ -1649,23 +1711,14 @@ namespace Vans::EditorAPI
 			settings.spectrum.repeatPeriod = source.m_Spectrum.m_RepeatPeriod;
 			settings.spectrum.randomSeed = source.m_Spectrum.m_RandomSeed;
 
-			settings.waveParticle.particleCount = source.m_WaveParticle.m_ParticleCount;
-			settings.waveParticle.octaveCount = source.m_WaveParticle.m_OctaveCount;
-			settings.waveParticle.profile = source.m_WaveParticle.m_Profile;
-			settings.waveParticle.domainSize = source.m_WaveParticle.m_DomainSize;
-			settings.waveParticle.amplitude = source.m_WaveParticle.m_Amplitude;
-			settings.waveParticle.minRadius = source.m_WaveParticle.m_MinRadius;
-			settings.waveParticle.maxRadius = source.m_WaveParticle.m_MaxRadius;
-			settings.waveParticle.phaseVelocity = source.m_WaveParticle.m_PhaseVelocity;
-			settings.waveParticle.damping = source.m_WaveParticle.m_Damping;
+			settings.waveParticle.particlesPerCascade = source.m_WaveParticle.m_ParticlesPerCascade;
+			settings.waveParticle.rmsAmplitude = source.m_WaveParticle.m_RmsAmplitude;
+			settings.waveParticle.packetWidth = source.m_WaveParticle.m_PacketWidth;
+			settings.waveParticle.dispersionScale = source.m_WaveParticle.m_DispersionScale;
 			settings.waveParticle.directionSpread = source.m_WaveParticle.m_DirectionSpread;
-			settings.waveParticle.lacunarity = source.m_WaveParticle.m_Lacunarity;
-			settings.waveParticle.persistence = source.m_WaveParticle.m_Persistence;
-			settings.waveParticle.radiusFalloff = source.m_WaveParticle.m_RadiusFalloff;
-			settings.waveParticle.profileSharpness = source.m_WaveParticle.m_ProfileSharpness;
+			settings.waveParticle.cascadeAmplitudeFalloff = source.m_WaveParticle.m_CascadeAmplitudeFalloff;
 			settings.waveParticle.foamThreshold = source.m_WaveParticle.m_FoamThreshold;
 			settings.waveParticle.foamSoftness = source.m_WaveParticle.m_FoamSoftness;
-			settings.waveParticle.lifetime = source.m_WaveParticle.m_Lifetime;
 			settings.waveParticle.randomSeed = source.m_WaveParticle.m_RandomSeed;
 
 			settings.flowMap.enabled = source.m_FlowMap.m_Enabled;
@@ -1697,7 +1750,9 @@ namespace Vans::EditorAPI
 			settings.deepWaterThicknessFallback = source.m_SSS.m_DeepWaterThicknessFallback;
 			settings.causticsEnabled = source.m_Caustics.m_Enabled;
 			settings.causticsIntensity = source.m_Caustics.m_Intensity;
-			settings.causticsScale = source.m_Caustics.m_Scale;
+			settings.causticsMaxDistance = source.m_Caustics.m_MaxDistance;
+			settings.causticsMaxGain = source.m_Caustics.m_MaxGain;
+			settings.causticsFilterRadius = source.m_Caustics.m_FilterRadius;
 			settings.refractionEnabled = source.m_Refraction.m_Enabled;
 			settings.refractionDistortionStrength = source.m_Refraction.m_DistortionStrength;
 			settings.ssrEnabled = source.m_SSR.m_Enabled;
@@ -1738,23 +1793,14 @@ namespace Vans::EditorAPI
 			destination.m_Spectrum.m_RepeatPeriod = settings.spectrum.repeatPeriod;
 			destination.m_Spectrum.m_RandomSeed = settings.spectrum.randomSeed;
 
-			destination.m_WaveParticle.m_ParticleCount = settings.waveParticle.particleCount;
-			destination.m_WaveParticle.m_OctaveCount = settings.waveParticle.octaveCount;
-			destination.m_WaveParticle.m_Profile = settings.waveParticle.profile;
-			destination.m_WaveParticle.m_DomainSize = settings.waveParticle.domainSize;
-			destination.m_WaveParticle.m_Amplitude = settings.waveParticle.amplitude;
-			destination.m_WaveParticle.m_MinRadius = settings.waveParticle.minRadius;
-			destination.m_WaveParticle.m_MaxRadius = settings.waveParticle.maxRadius;
-			destination.m_WaveParticle.m_PhaseVelocity = settings.waveParticle.phaseVelocity;
-			destination.m_WaveParticle.m_Damping = settings.waveParticle.damping;
+			destination.m_WaveParticle.m_ParticlesPerCascade = settings.waveParticle.particlesPerCascade;
+			destination.m_WaveParticle.m_RmsAmplitude = settings.waveParticle.rmsAmplitude;
+			destination.m_WaveParticle.m_PacketWidth = settings.waveParticle.packetWidth;
+			destination.m_WaveParticle.m_DispersionScale = settings.waveParticle.dispersionScale;
 			destination.m_WaveParticle.m_DirectionSpread = settings.waveParticle.directionSpread;
-			destination.m_WaveParticle.m_Lacunarity = settings.waveParticle.lacunarity;
-			destination.m_WaveParticle.m_Persistence = settings.waveParticle.persistence;
-			destination.m_WaveParticle.m_RadiusFalloff = settings.waveParticle.radiusFalloff;
-			destination.m_WaveParticle.m_ProfileSharpness = settings.waveParticle.profileSharpness;
+			destination.m_WaveParticle.m_CascadeAmplitudeFalloff = settings.waveParticle.cascadeAmplitudeFalloff;
 			destination.m_WaveParticle.m_FoamThreshold = settings.waveParticle.foamThreshold;
 			destination.m_WaveParticle.m_FoamSoftness = settings.waveParticle.foamSoftness;
-			destination.m_WaveParticle.m_Lifetime = settings.waveParticle.lifetime;
 			destination.m_WaveParticle.m_RandomSeed = settings.waveParticle.randomSeed;
 
 			destination.m_FlowMap.m_Enabled = settings.flowMap.enabled;
@@ -1786,7 +1832,9 @@ namespace Vans::EditorAPI
 			destination.m_SSS.m_DeepWaterThicknessFallback = settings.deepWaterThicknessFallback;
 			destination.m_Caustics.m_Enabled = settings.causticsEnabled;
 			destination.m_Caustics.m_Intensity = settings.causticsIntensity;
-			destination.m_Caustics.m_Scale = settings.causticsScale;
+			destination.m_Caustics.m_MaxDistance = settings.causticsMaxDistance;
+			destination.m_Caustics.m_MaxGain = settings.causticsMaxGain;
+			destination.m_Caustics.m_FilterRadius = settings.causticsFilterRadius;
 			destination.m_Refraction.m_Enabled = settings.refractionEnabled;
 			destination.m_Refraction.m_DistortionStrength = settings.refractionDistortionStrength;
 			destination.m_SSR.m_Enabled = settings.ssrEnabled;
@@ -1827,23 +1875,13 @@ namespace Vans::EditorAPI
 			const VansGraphics::VansWaterConfig& current)
 		{
 			return previous.m_Spectrum.m_WindDirection != current.m_Spectrum.m_WindDirection
-				|| previous.m_WaveParticle.m_ParticleCount != current.m_WaveParticle.m_ParticleCount
-				|| previous.m_WaveParticle.m_OctaveCount != current.m_WaveParticle.m_OctaveCount
-				|| previous.m_WaveParticle.m_Profile != current.m_WaveParticle.m_Profile
-				|| previous.m_WaveParticle.m_DomainSize != current.m_WaveParticle.m_DomainSize
-				|| previous.m_WaveParticle.m_Amplitude != current.m_WaveParticle.m_Amplitude
-				|| previous.m_WaveParticle.m_MinRadius != current.m_WaveParticle.m_MinRadius
-				|| previous.m_WaveParticle.m_MaxRadius != current.m_WaveParticle.m_MaxRadius
-				|| previous.m_WaveParticle.m_PhaseVelocity != current.m_WaveParticle.m_PhaseVelocity
-				|| previous.m_WaveParticle.m_Damping != current.m_WaveParticle.m_Damping
+				|| previous.m_Spectrum.m_CascadeCount != current.m_Spectrum.m_CascadeCount
+				|| previous.m_Spectrum.m_BaseCoverage != current.m_Spectrum.m_BaseCoverage
+				|| previous.m_Spectrum.m_CascadeScale != current.m_Spectrum.m_CascadeScale
+				|| previous.m_Spectrum.m_MinWavelength != current.m_Spectrum.m_MinWavelength
+				|| previous.m_WaveParticle.m_ParticlesPerCascade != current.m_WaveParticle.m_ParticlesPerCascade
+				|| previous.m_WaveParticle.m_PacketWidth != current.m_WaveParticle.m_PacketWidth
 				|| previous.m_WaveParticle.m_DirectionSpread != current.m_WaveParticle.m_DirectionSpread
-				|| previous.m_WaveParticle.m_Lacunarity != current.m_WaveParticle.m_Lacunarity
-				|| previous.m_WaveParticle.m_Persistence != current.m_WaveParticle.m_Persistence
-				|| previous.m_WaveParticle.m_RadiusFalloff != current.m_WaveParticle.m_RadiusFalloff
-				|| previous.m_WaveParticle.m_ProfileSharpness != current.m_WaveParticle.m_ProfileSharpness
-				|| previous.m_WaveParticle.m_FoamThreshold != current.m_WaveParticle.m_FoamThreshold
-				|| previous.m_WaveParticle.m_FoamSoftness != current.m_WaveParticle.m_FoamSoftness
-				|| previous.m_WaveParticle.m_Lifetime != current.m_WaveParticle.m_Lifetime
 				|| previous.m_WaveParticle.m_RandomSeed != current.m_WaveParticle.m_RandomSeed;
 		}
 
@@ -2204,6 +2242,25 @@ namespace Vans::EditorAPI
 			settings.bloomKnee = source.m_BloomKnee;
 			settings.bloomIntensity = source.m_BloomIntensity;
 			settings.bloomScatter = source.m_BloomScatter;
+			settings.bloomClamp = source.m_BloomClamp;
+			settings.bloomTintR = source.m_BloomTintR;
+			settings.bloomTintG = source.m_BloomTintG;
+			settings.bloomTintB = source.m_BloomTintB;
+			settings.bloomShapeMode = source.m_BloomShapeMode;
+			settings.bloomShapeIntensity = source.m_BloomShapeIntensity;
+			settings.bloomShapeBlend = source.m_BloomShapeBlend;
+			settings.bloomShapeAngleDeg = source.m_BloomShapeAngleDeg;
+			settings.bloomAnamorphicStretch = source.m_BloomAnamorphicStretch;
+			settings.bloomStreakCount = source.m_BloomStreakCount;
+			settings.bloomStreakLength = source.m_BloomStreakLength;
+			settings.bloomStreakAttenuation = source.m_BloomStreakAttenuation;
+			settings.enableDOF = source.m_EnableDOF;
+			settings.focusDistance = source.m_FocusDistance;
+			settings.focalLengthMm = source.m_FocalLengthMm;
+			settings.fStop = source.m_FStop;
+			settings.sensorHeightMm = source.m_SensorHeightMm;
+			settings.maxCoC = source.m_MaxCoC;
+			settings.dofBlurTransmissionBackground = source.m_DOFBlurTransmissionBackground;
 			settings.toneMapperType = source.m_ToneMapperType;
 			settings.whitePoint = source.m_WhitePoint;
 			settings.enableColorGrading = source.m_EnableColorGrading;
@@ -2230,6 +2287,25 @@ namespace Vans::EditorAPI
 			destination.m_BloomKnee = std::clamp(settings.bloomKnee, 0.0f, 1.0f);
 			destination.m_BloomIntensity = std::clamp(settings.bloomIntensity, 0.0f, 10.0f);
 			destination.m_BloomScatter = std::clamp(settings.bloomScatter, 0.0f, 1.0f);
+			destination.m_BloomClamp = std::clamp(settings.bloomClamp, 0.0f, 1024.0f);
+			destination.m_BloomTintR = std::clamp(settings.bloomTintR, 0.0f, 8.0f);
+			destination.m_BloomTintG = std::clamp(settings.bloomTintG, 0.0f, 8.0f);
+			destination.m_BloomTintB = std::clamp(settings.bloomTintB, 0.0f, 8.0f);
+			destination.m_BloomShapeMode = std::clamp(settings.bloomShapeMode, 0, 2);
+			destination.m_BloomShapeIntensity = std::clamp(settings.bloomShapeIntensity, 0.0f, 4.0f);
+			destination.m_BloomShapeBlend = std::clamp(settings.bloomShapeBlend, 0.0f, 1.0f);
+			destination.m_BloomShapeAngleDeg = std::clamp(settings.bloomShapeAngleDeg, -360.0f, 360.0f);
+			destination.m_BloomAnamorphicStretch = std::clamp(settings.bloomAnamorphicStretch, 0.0f, 16.0f);
+			destination.m_BloomStreakCount = std::clamp(settings.bloomStreakCount, 2, 8);
+			destination.m_BloomStreakLength = std::clamp(settings.bloomStreakLength, 0.0f, 128.0f);
+			destination.m_BloomStreakAttenuation = std::clamp(settings.bloomStreakAttenuation, 0.0f, 0.98f);
+			destination.m_EnableDOF = settings.enableDOF;
+			destination.m_FocusDistance = std::clamp(settings.focusDistance, 0.01f, 100000.0f);
+			destination.m_FocalLengthMm = std::clamp(settings.focalLengthMm, 8.0f, 300.0f);
+			destination.m_FStop = std::clamp(settings.fStop, 0.7f, 32.0f);
+			destination.m_SensorHeightMm = std::clamp(settings.sensorHeightMm, 1.0f, 80.0f);
+			destination.m_MaxCoC = std::clamp(settings.maxCoC, 0.0f, 64.0f);
+			destination.m_DOFBlurTransmissionBackground = settings.dofBlurTransmissionBackground;
 			destination.m_ToneMapperType = std::clamp(settings.toneMapperType, 0, 2);
 			destination.m_WhitePoint = std::clamp(settings.whitePoint, 0.1f, 64.0f);
 			destination.m_EnableColorGrading = settings.enableColorGrading;
@@ -2744,24 +2820,6 @@ namespace Vans::EditorAPI
 		return resolution;
 	}
 
-	TimelineAudioWaveformHandle EngineAPIImpl::RequestTimelineAudioWaveform(
-		const std::string& assetGuid)
-	{
-		const AssetGuidResolution resolved = ResolveAssetGuid(assetGuid);
-		if (!resolved.found || resolved.asset.type != AssetType::Audio || resolved.sourcePath.empty())
-			return {};
-		return m_TimelineDerivedMedia.RequestWaveform(assetGuid, resolved.sourcePath);
-	}
-
-	TimelineVideoThumbnailHandle EngineAPIImpl::RequestTimelineVideoThumbnail(
-		const std::string& assetGuid)
-	{
-		const AssetGuidResolution resolved = ResolveAssetGuid(assetGuid);
-		if (!resolved.found || resolved.asset.type != AssetType::Video || resolved.sourcePath.empty())
-			return {};
-		return m_TimelineDerivedMedia.RequestThumbnail(assetGuid, resolved.sourcePath);
-	}
-
 	ProjectAssetCreateResult EngineAPIImpl::CreateProjectAsset(
 		const ProjectAssetCreateRequest& request)
 	{
@@ -2834,6 +2892,37 @@ namespace Vans::EditorAPI
 
 		std::string error;
 		std::filesystem::path createdPath;
+		Vans::VansAssetType gafAssetType = Vans::VansAssetType::Unknown;
+		const char* gafBaseName = nullptr;
+		const char* gafExtension = nullptr;
+		if (ResolveGAFCreation(request.kind, gafAssetType, gafBaseName, gafExtension))
+		{
+			createdPath = makeUniquePath(request.name.empty() ? gafBaseName : request.name, gafExtension);
+			const auto* schema = Vans::VansGameplayAssetSchemaRegistry::BuiltIns().Resolve(gafAssetType);
+			Vans::VansGAFProjectConfiguration configuration;
+			const std::filesystem::path engineRoot = projectManager.GetPathResolver().GetEngineRoot();
+			const std::filesystem::path settingsDirectory = projectRoot / "ProjectSettings";
+			if (!schema || createdPath.empty() ||
+				!Vans::VansGAFProjectConfiguration::EnsureProjectFiles(settingsDirectory,
+					engineRoot / "EngineAssets/GAF/ProjectSettings", error) ||
+				!Vans::VansGAFProjectConfiguration::LoadForProject(
+					projectRoot, engineRoot, configuration, error))
+			{
+				result.message = error.empty() ? "GAF project configuration is unavailable" : error;
+				return result;
+			}
+			const auto templateFound = configuration.templates.find(schema->assetKind);
+			if (templateFound == configuration.templates.end())
+			{
+				result.message = "GAF template is missing for " + schema->assetKind;
+				return result;
+			}
+			result.success = Vans::VansGameplayAssetStorage::SaveSourceAtomic(
+				createdPath, templateFound->second, error);
+			result.assetPath = result.success ? createdPath.string() : std::string{};
+			result.message = result.success ? "Project GAF asset created" : error;
+			return result;
+		}
 		switch (request.kind)
 		{
 		case ProjectAssetCreationKind::Timeline:
@@ -2854,6 +2943,17 @@ namespace Vans::EditorAPI
 			Vans::VansTimelineAsset asset;
 			asset.metadata.displayName = request.name;
 			result.success = Vans::VansTimelineSerialization::SaveAtomic(createdPath, asset, error);
+			break;
+		}
+		case ProjectAssetCreationKind::SkinProfile:
+		{
+			createdPath = makeUniquePath("Neutral Skin", ".skinprofile");
+			Vans::VansSkinProfile profile;
+			profile.name = "Neutral Skin";
+			profile.description = "Neutral skin material profile";
+			profile.basePreset = "neutral";
+			result.success = !createdPath.empty() &&
+				Vans::VansSkinProfileStorage::SaveAtomic(createdPath, profile, error);
 			break;
 		}
 		case ProjectAssetCreationKind::AudioReverbPreset:
@@ -2904,6 +3004,586 @@ namespace Vans::EditorAPI
 		return result;
 	}
 
+	GAFEditorDocumentSnapshot EngineAPIImpl::OpenGAFAsset(const std::string& sourcePath)
+	{
+		return GameplayActionAuthoringBridge::Open(sourcePath);
+	}
+
+	GAFEditorOperationResult EngineAPIImpl::SetGAFAssetField(const GAFEditorFieldEditRequest& request)
+	{
+		return GameplayActionAuthoringBridge::SetField(request);
+	}
+
+	GAFEditorOperationResult EngineAPIImpl::ResetGAFAssetField(
+		const std::string& sourcePath,
+		const std::string& fieldPath)
+	{
+		return GameplayActionAuthoringBridge::ResetField(sourcePath, fieldPath);
+	}
+
+	GAFEditorOperationResult EngineAPIImpl::EditGAFAssetArray(
+		const GAFEditorArrayEditRequest& request)
+	{
+		return GameplayActionAuthoringBridge::EditArray(request);
+	}
+
+	std::vector<GAFGraphNodeTypeSnapshot> EngineAPIImpl::GetGAFGraphNodeCatalog() const
+	{
+		return GameplayActionAuthoringBridge::GetGraphNodeCatalog();
+	}
+
+	GAFEditorOperationResult EngineAPIImpl::EditGAFGraph(const GAFGraphEditRequest& request)
+	{
+		return GameplayActionAuthoringBridge::EditGraph(request);
+	}
+
+	GAFEditorOperationResult EngineAPIImpl::UndoGAFAsset(const std::string& sourcePath)
+	{
+		return GameplayActionAuthoringBridge::Undo(sourcePath);
+	}
+
+	GAFEditorOperationResult EngineAPIImpl::RedoGAFAsset(const std::string& sourcePath)
+	{
+		return GameplayActionAuthoringBridge::Redo(sourcePath);
+	}
+
+	GAFEditorOperationResult EngineAPIImpl::RevertGAFAsset(const std::string& sourcePath)
+	{
+		return GameplayActionAuthoringBridge::Revert(sourcePath);
+	}
+
+	GAFEditorOperationResult EngineAPIImpl::SaveGAFAsset(const std::string& sourcePath)
+	{
+		return GameplayActionAuthoringBridge::Save(*this, sourcePath);
+	}
+
+	GAFSemanticDiffResult EngineAPIImpl::DiffGAFAsset(
+		const std::string& sourcePath,
+		const std::string& baselineCanonicalJson)
+	{
+		return GameplayActionAuthoringBridge::Diff(sourcePath, baselineCanonicalJson);
+	}
+
+	GAFProjectConfigurationSnapshot EngineAPIImpl::GetGAFProjectConfiguration() const
+	{
+		return GameplayActionAuthoringBridge::GetProjectConfiguration();
+	}
+
+	std::vector<std::string> EngineAPIImpl::GetGAFTagCatalog() const
+	{
+		return GameplayActionAuthoringBridge::GetTagCatalog();
+	}
+
+	GAFProjectConfigurationResult EngineAPIImpl::ApplyGAFProjectConfiguration(
+		const GAFProjectConfigurationSnapshot& configuration)
+	{
+		return GameplayActionAuthoringBridge::ApplyProjectConfiguration(configuration);
+	}
+
+	namespace
+	{
+		std::string GAFHandle(Vans::VansGenerationHandle handle)
+		{
+			if (!handle.IsValid()) return "None";
+			return std::to_string(handle.index) + ":" + std::to_string(handle.generation);
+		}
+
+		const char* GAFActionState(Vans::VansActionInstanceState state)
+		{
+			switch (state)
+			{
+			case Vans::VansActionInstanceState::Created: return "Created";
+			case Vans::VansActionInstanceState::Queued: return "Queued";
+			case Vans::VansActionInstanceState::Resolving: return "Resolving";
+			case Vans::VansActionInstanceState::BuildingContext: return "BuildingContext";
+			case Vans::VansActionInstanceState::Validating: return "Validating";
+			case Vans::VansActionInstanceState::Preparing: return "Preparing";
+			case Vans::VansActionInstanceState::Committing: return "Committing";
+			case Vans::VansActionInstanceState::Committed: return "Committed";
+			case Vans::VansActionInstanceState::Running: return "Running";
+			case Vans::VansActionInstanceState::Waiting: return "Waiting";
+			case Vans::VansActionInstanceState::Transitioning: return "Transitioning";
+			case Vans::VansActionInstanceState::Ending: return "Ending";
+			case Vans::VansActionInstanceState::Ended: return "Ended";
+			}
+			return "Unknown";
+		}
+
+		const char* GAFTaskState(Vans::VansActionTaskState state)
+		{
+			switch (state)
+			{
+			case Vans::VansActionTaskState::Waiting: return "Waiting";
+			case Vans::VansActionTaskState::Completed: return "Completed";
+			case Vans::VansActionTaskState::Cancelled: return "Cancelled";
+			case Vans::VansActionTaskState::Failed: return "Failed";
+			case Vans::VansActionTaskState::TimedOut: return "TimedOut";
+			}
+			return "Unknown";
+		}
+
+		const char* GAFEndReason(Vans::VansActionEndReason reason)
+		{
+			switch (reason)
+			{
+			case Vans::VansActionEndReason::Completed: return "Completed";
+			case Vans::VansActionEndReason::Failed: return "Failed";
+			case Vans::VansActionEndReason::Cancelled: return "Cancelled";
+			case Vans::VansActionEndReason::Interrupted: return "Interrupted";
+			case Vans::VansActionEndReason::TimedOut: return "TimedOut";
+			case Vans::VansActionEndReason::CommitFailed: return "CommitFailed";
+			case Vans::VansActionEndReason::OwnerDestroyed: return "OwnerDestroyed";
+			}
+			return "Unknown";
+		}
+
+		const char* GAFActionError(Vans::VansActionError error)
+		{
+			switch (error)
+			{
+			case Vans::VansActionError::None: return "None";
+			case Vans::VansActionError::InvalidHandle: return "InvalidHandle";
+			case Vans::VansActionError::DefinitionMissing: return "DefinitionMissing";
+			case Vans::VansActionError::DefinitionInvalid: return "DefinitionInvalid";
+			case Vans::VansActionError::NotGranted: return "NotGranted";
+			case Vans::VansActionError::RequirementsFailed: return "RequirementsFailed";
+			case Vans::VansActionError::TargetInvalid: return "TargetInvalid";
+			case Vans::VansActionError::CostUnavailable: return "CostUnavailable";
+			case Vans::VansActionError::CooldownActive: return "CooldownActive";
+			case Vans::VansActionError::ConcurrencyBlocked: return "ConcurrencyBlocked";
+			case Vans::VansActionError::AuthorityDenied: return "AuthorityDenied";
+			case Vans::VansActionError::ServiceMissing: return "ServiceMissing";
+			case Vans::VansActionError::CommitFailed: return "CommitFailed";
+			case Vans::VansActionError::ExecutionFailed: return "ExecutionFailed";
+			case Vans::VansActionError::Cancelled: return "Cancelled";
+			case Vans::VansActionError::TimedOut: return "TimedOut";
+			case Vans::VansActionError::InternalInvariant: return "InternalInvariant";
+			case Vans::VansActionError::InvalidState: return "InvalidState";
+			case Vans::VansActionError::ConcurrencyRejected: return "ConcurrencyRejected";
+			case Vans::VansActionError::ConcurrencyQueueExpired: return "ConcurrencyQueueExpired";
+			case Vans::VansActionError::BudgetExceeded: return "BudgetExceeded";
+			}
+			return "Unknown";
+		}
+
+		bool ParseGAFActionState(std::string_view name, Vans::VansActionInstanceState& state)
+		{
+			static constexpr std::pair<std::string_view, Vans::VansActionInstanceState> values[]{
+				{ "Created", Vans::VansActionInstanceState::Created },
+				{ "Queued", Vans::VansActionInstanceState::Queued },
+				{ "Resolving", Vans::VansActionInstanceState::Resolving },
+				{ "BuildingContext", Vans::VansActionInstanceState::BuildingContext },
+				{ "Validating", Vans::VansActionInstanceState::Validating },
+				{ "Preparing", Vans::VansActionInstanceState::Preparing },
+				{ "Committing", Vans::VansActionInstanceState::Committing },
+				{ "Committed", Vans::VansActionInstanceState::Committed },
+				{ "Running", Vans::VansActionInstanceState::Running },
+				{ "Waiting", Vans::VansActionInstanceState::Waiting },
+				{ "Transitioning", Vans::VansActionInstanceState::Transitioning },
+				{ "Ending", Vans::VansActionInstanceState::Ending },
+				{ "Ended", Vans::VansActionInstanceState::Ended }
+			};
+			for (const auto& [candidate, value] : values)
+				if (candidate == name) { state = value; return true; }
+			return false;
+		}
+
+		bool ParseGAFActionError(std::string_view name, Vans::VansActionError& error)
+		{
+			for (int value = static_cast<int>(Vans::VansActionError::None);
+				value <= static_cast<int>(Vans::VansActionError::BudgetExceeded); ++value)
+			{
+				const auto candidate = static_cast<Vans::VansActionError>(value);
+				if (name == GAFActionError(candidate)) { error = candidate; return true; }
+			}
+			return false;
+		}
+
+		GAFDebugBreakpointSnapshot BuildGAFBreakpointDTO(const Vans::VansActionBreakpoint& source)
+		{
+			GAFDebugBreakpointSnapshot result;
+			result.id = source.id;
+			result.kind = static_cast<GAFDebugBreakpointKind>(source.kind);
+			result.expression = source.expression;
+			result.comparison = static_cast<GAFDebugBreakpointComparison>(source.comparison);
+			result.value = source.value;
+			result.epsilon = source.epsilon;
+			result.enabled = source.enabled;
+			return result;
+		}
+
+		std::string GAFValue(const Vans::VansSerializedValue& value)
+		{
+			return Vans::EncodeSerializedValueJson<nlohmann::ordered_json>(value).dump();
+		}
+
+		std::string GAFTargetValue(const Vans::VansTargetDataValue& value)
+		{
+			std::ostringstream stream;
+			if (const auto* entity = std::get_if<Vans::VansEntityHandle>(&value))
+				stream << "Entity " << entity->index << ':' << entity->generation;
+			else if (const auto* location = std::get_if<Vans::VansTargetLocation>(&value))
+				stream << "Location " << location->value[0] << ", " << location->value[1]
+					<< ", " << location->value[2];
+			else if (const auto* direction = std::get_if<Vans::VansTargetDirection>(&value))
+				stream << "Direction " << direction->value[0] << ", " << direction->value[1]
+					<< ", " << direction->value[2];
+			else if (const auto* transform = std::get_if<Vans::VansTargetTransform>(&value))
+				stream << "Transform " << transform->position[0] << ", " << transform->position[1]
+					<< ", " << transform->position[2];
+			else if (const auto* ray = std::get_if<Vans::VansTargetRay>(&value))
+				stream << "Ray origin " << ray->origin[0] << ", " << ray->origin[1] << ", "
+					<< ray->origin[2] << " direction " << ray->direction[0] << ", "
+					<< ray->direction[1] << ", " << ray->direction[2] << " length " << ray->length;
+			else if (const auto* hit = std::get_if<Vans::VansTargetHitResult>(&value))
+				stream << "Hit Entity " << hit->entity.index << ':' << hit->entity.generation
+					<< " distance " << hit->distance;
+			else if (const auto* deferred = std::get_if<Vans::VansDeferredTargetQuery>(&value))
+				stream << "Deferred Query Service " << deferred->service.value;
+			return stream.str();
+		}
+
+		GAFRuntimeDebugSnapshot BuildGAFDebugDTO(
+			const Vans::VansGameplayDebugSnapshot& source,
+			const Vans::VansGameplayAssetLibrary* assets,
+			bool recording,
+			bool replay,
+			std::size_t replayFrame,
+			std::size_t replayFrameCount)
+		{
+			GAFRuntimeDebugSnapshot result;
+			result.available = true;
+			result.recording = recording;
+			result.replay = replay;
+			result.frame = source.frame;
+			result.timeSeconds = source.timeSeconds;
+			result.contentManifestHash = source.contentManifestHash;
+			result.replayFrame = replayFrame;
+			result.replayFrameCount = replayFrameCount;
+			for (const auto& sourceHost : source.hosts)
+			{
+				GAFDebugHostSnapshot host;
+				host.owner = GAFHandle({ sourceHost.owner.index, sourceHost.owner.generation });
+				host.enabled = sourceHost.enabled;
+				host.commitFrozen = sourceHost.commitFrozen;
+				host.activeCueCount = sourceHost.activeCueCount;
+				for (const auto& [tag, count] : sourceHost.tags)
+				{
+					const auto* definition = assets ? assets->Tags().Resolve(tag) : nullptr;
+					host.tags.push_back({ definition ? definition->name : std::to_string(tag.value),
+						std::to_string(count) });
+				}
+				for (const auto& attribute : sourceHost.attributes)
+				{
+					const auto* definition = assets ? assets->Attributes().Resolve(attribute.attribute) : nullptr;
+					std::ostringstream value;
+					value << attribute.currentValue << " (base " << attribute.baseValue << ")";
+					host.attributes.push_back({ definition ? definition->name :
+						std::to_string(attribute.attribute.value), value.str() });
+				}
+				for (const auto& effect : sourceHost.effects)
+					host.effects.push_back({ std::to_string(effect.effect.value),
+						"stacks=" + std::to_string(effect.stacks) +
+						" remaining=" + std::to_string(effect.remainingSeconds) });
+				for (const auto& grant : sourceHost.grants)
+				{
+					const auto definition = assets ? assets->Actions().ResolveLatest(grant.action) : nullptr;
+					host.grants.push_back({ definition ? definition->name : std::to_string(grant.action.value),
+						"level=" + std::to_string(grant.level) + " charges=" +
+						std::to_string(grant.charges) + (grant.pendingRemoval ? " pending-removal" : "") });
+				}
+				for (const auto& sourceAction : sourceHost.actions)
+				{
+					GAFDebugActionSnapshot action;
+					action.handle = GAFHandle(sourceAction.handle.value);
+					const auto definition = assets ? assets->Actions().ResolveLatest(sourceAction.action) : nullptr;
+					action.actionId = definition ? definition->name : std::to_string(sourceAction.action.value);
+					action.state = GAFActionState(sourceAction.state);
+					action.endReason = GAFEndReason(sourceAction.endReason);
+					action.error = GAFActionError(sourceAction.error);
+					action.elapsedSeconds = sourceAction.elapsedSeconds;
+					action.predictionKey = std::to_string(sourceAction.prediction.connection) + ":" +
+						std::to_string(sourceAction.prediction.sequence);
+					action.executor = sourceAction.executor.executor;
+					action.activeNodes = sourceAction.executor.activeNodes;
+					action.waitingNodes = sourceAction.executor.waitingNodes;
+					if (sourceAction.hasTargetData)
+						for (const auto& target : sourceAction.targetData.values)
+							action.targets.push_back(GAFTargetValue(target));
+					for (const auto& variable : sourceAction.variables)
+					{
+						std::string name = std::to_string(variable.field.value);
+						if (definition)
+							for (const auto& field : definition->variables)
+								if (field.id == variable.field) { name = field.name; break; }
+						action.variables.push_back({ std::move(name), GAFValue(variable.value) });
+					}
+					for (const auto& sourceTask : sourceAction.tasks)
+						action.tasks.push_back({ GAFHandle(sourceTask.handle.value),
+							std::to_string(sourceTask.type.value), sourceTask.debugName,
+							GAFTaskState(sourceTask.state), sourceTask.elapsedSeconds,
+							sourceTask.timeoutSeconds });
+					for (const auto& sourceResource : sourceAction.resources)
+					{
+						const char* prediction = sourceResource.prediction ==
+							Vans::VansActionPredictionResourcePolicy::UndoRedo ? "UndoRedo" :
+							sourceResource.prediction == Vans::VansActionPredictionResourcePolicy::UndoOnly
+							? "UndoOnly" : "NotPredictable";
+						action.resources.push_back({ GAFHandle(sourceResource.handle.value),
+							sourceResource.type, sourceResource.debugName,
+							GAFHandle(sourceResource.dependsOn.value), prediction, sourceResource.undone });
+					}
+					for (const auto& event : sourceAction.recentEvents)
+						action.recentEvents.push_back(std::to_string(event.sequence) + " " + event.stableName);
+					for (const auto& entry : sourceAction.trace)
+						action.trace.push_back(std::to_string(entry.elapsedSeconds) + " " +
+							GAFActionState(entry.state) + " " + entry.message);
+					host.actions.push_back(std::move(action));
+				}
+				result.hosts.push_back(std::move(host));
+			}
+			return result;
+		}
+	}
+
+	GAFRuntimeDebugSnapshot EngineAPIImpl::GetGAFRuntimeDebugSnapshot()
+	{
+		if (m_GAFReplaySession && m_GAFReplaySession->Current())
+		{
+			GAFRuntimeDebugSnapshot result = BuildGAFDebugDTO(*m_GAFReplaySession->Current(), nullptr,
+				m_GAFTraceRecorder && m_GAFTraceRecorder->IsRecording(), true,
+				m_GAFReplaySession->FrameIndex(), m_GAFReplaySession->FrameCount());
+			return result;
+		}
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		auto* runtime = scene ? scene->GetGameplayRuntime() : nullptr;
+		if (!runtime || !runtime->IsInitialized())
+		{
+			m_GAFPreviousDebugSnapshot.reset();
+			m_GAFBreakpointHits.clear();
+			GAFRuntimeDebugSnapshot result;
+			result.message = "Gameplay Runtime is not available in the current scene";
+			return result;
+		}
+		const double time = std::chrono::duration<double>(
+			std::chrono::steady_clock::now().time_since_epoch()).count();
+		Vans::VansGameplayDebugSnapshot snapshot = Vans::VansGameplayActionDebugService::Capture(
+			*runtime, ++m_GAFDebugFrame, time, runtime->Assets().ContentManifestHash());
+		const Vans::VansGameplayDebugSnapshot empty;
+		m_GAFBreakpointHits = m_GAFBreakpoints.Evaluate(
+			m_GAFPreviousDebugSnapshot ? *m_GAFPreviousDebugSnapshot : empty, snapshot);
+		m_GAFPreviousDebugSnapshot = snapshot;
+		if (!m_GAFBreakpointHits.empty() &&
+			runtime->Settings().networkMode != Vans::VansGAFNetworkMode::ExternalTransport)
+			SetPlayState(EnginePlayState::Pause);
+		std::string recordError;
+		if (m_GAFTraceRecorder && m_GAFTraceRecorder->IsRecording() &&
+			!m_GAFTraceRecorder->Record(snapshot, recordError))
+		{
+			m_GAFTraceRecorder->End();
+			m_GAFTraceRecorder.reset();
+		}
+		GAFRuntimeDebugSnapshot result = BuildGAFDebugDTO(snapshot, &runtime->Assets(),
+			m_GAFTraceRecorder && m_GAFTraceRecorder->IsRecording(), false, 0, 0);
+		for (const Vans::VansActionBreakpointHit& hit : m_GAFBreakpointHits)
+			result.breakpointHits.push_back("#" + std::to_string(hit.breakpoint) + " owner " +
+				GAFHandle({ hit.owner.index, hit.owner.generation }) + " action " +
+				GAFHandle(hit.action.value) + ": " + hit.reason);
+		if (!recordError.empty()) result.message = std::move(recordError);
+		return result;
+	}
+
+	GAFDebugCommandResult EngineAPIImpl::ControlGAFDebugger(const GAFDebugCommand& command)
+	{
+		GAFDebugCommandResult result;
+		const auto finish = [&]()
+		{
+			for (const auto& breakpoint : m_GAFBreakpoints.All())
+				result.breakpoints.push_back(BuildGAFBreakpointDTO(breakpoint));
+			return result;
+		};
+		switch (command.kind)
+		{
+		case GAFDebugCommandKind::Query:
+			result.success = true;
+			break;
+		case GAFDebugCommandKind::AddBreakpoint:
+		{
+			const auto& source = command.breakpoint;
+			if (source.expression.empty() || !std::isfinite(source.value) ||
+				!std::isfinite(source.epsilon) || source.epsilon < 0.0)
+			{
+				result.message = "Gameplay breakpoint expression or numeric condition is invalid";
+				return finish();
+			}
+			Vans::VansActionBreakpoint breakpoint;
+			breakpoint.kind = static_cast<Vans::VansActionBreakpointKind>(source.kind);
+			breakpoint.expression = source.expression;
+			breakpoint.comparison =
+				static_cast<Vans::VansActionBreakpointComparison>(source.comparison);
+			breakpoint.value = source.value;
+			breakpoint.epsilon = source.epsilon;
+			breakpoint.enabled = source.enabled;
+			switch (source.kind)
+			{
+			case GAFDebugBreakpointKind::Action:
+				breakpoint.action = Vans::VansMakeStableId<Vans::VansActionIdTag>(source.expression); break;
+			case GAFDebugBreakpointKind::State:
+				if (!ParseGAFActionState(source.expression, breakpoint.state))
+					{ result.message = "Gameplay breakpoint state is invalid"; return finish(); }
+				break;
+			case GAFDebugBreakpointKind::Node: breakpoint.node = source.expression; break;
+			case GAFDebugBreakpointKind::Event: breakpoint.event = source.expression; break;
+			case GAFDebugBreakpointKind::Error:
+				if (!ParseGAFActionError(source.expression, breakpoint.error))
+					{ result.message = "Gameplay breakpoint ErrorCode is invalid"; return finish(); }
+				break;
+			case GAFDebugBreakpointKind::Prediction:
+				if (std::sscanf(source.expression.c_str(), "%u:%u",
+					&breakpoint.prediction.connection, &breakpoint.prediction.sequence) != 2 ||
+					!breakpoint.prediction.IsValid())
+					{ result.message = "Prediction breakpoint must use connection:sequence"; return finish(); }
+				break;
+			case GAFDebugBreakpointKind::Attribute:
+				breakpoint.attribute =
+					Vans::VansMakeStableId<Vans::VansAttributeIdTag>(source.expression); break;
+			case GAFDebugBreakpointKind::Window: breakpoint.window = source.expression; break;
+			}
+			m_GAFBreakpoints.Add(std::move(breakpoint));
+			result.success = true;
+			break;
+		}
+		case GAFDebugCommandKind::RemoveBreakpoint:
+			result.success = m_GAFBreakpoints.Remove(command.breakpointId);
+			if (!result.success) result.message = "Gameplay breakpoint was not found";
+			break;
+		case GAFDebugCommandKind::SetBreakpointEnabled:
+			result.success = m_GAFBreakpoints.SetEnabled(command.breakpointId, command.enabled);
+			if (!result.success) result.message = "Gameplay breakpoint was not found";
+			break;
+		case GAFDebugCommandKind::ClearBreakpoints:
+			m_GAFBreakpoints.Clear();
+			m_GAFBreakpointHits.clear();
+			result.success = true;
+			break;
+		case GAFDebugCommandKind::Pause:
+			SetPlayState(EnginePlayState::Pause);
+			result.success = true;
+			break;
+		case GAFDebugCommandKind::Resume:
+			SetPlayState(EnginePlayState::Play);
+			result.success = true;
+			break;
+		case GAFDebugCommandKind::Step:
+		{
+			auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+			auto* runtime = scene ? scene->GetGameplayRuntime() : nullptr;
+			if (!runtime || !runtime->IsInitialized() || GetPlayState() != EnginePlayState::Pause ||
+				runtime->Settings().networkMode == Vans::VansGAFNetworkMode::ExternalTransport ||
+				!std::isfinite(command.stepSeconds) || command.stepSeconds < 0.0)
+			{
+				result.message = "GAF single-step requires a paused offline/Loopback runtime and valid delta";
+				return finish();
+			}
+			runtime->TickEarly(command.stepSeconds);
+			runtime->RunLateContinuation();
+			result.success = true;
+			break;
+		}
+		}
+		return finish();
+	}
+
+	GAFTraceCommandResult EngineAPIImpl::ControlGAFTrace(const GAFTraceCommand& command)
+	{
+		GAFTraceCommandResult result;
+		std::string error;
+		switch (command.kind)
+		{
+		case GAFTraceCommandKind::StartRecording:
+		{
+			auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+			auto* runtime = scene ? scene->GetGameplayRuntime() : nullptr;
+			if (!runtime || !runtime->IsInitialized() || command.path.empty())
+			{
+				result.message = "Trace recording requires a running Gameplay Runtime and output path";
+				return result;
+			}
+			if (m_GAFTraceRecorder && m_GAFTraceRecorder->IsRecording())
+			{
+				result.message = "A Gameplay Trace recording is already active";
+				return result;
+			}
+			m_GAFReplaySession.reset();
+			m_GAFTraceRecorder = std::make_shared<Vans::VansGameplayTraceRecorder>();
+			if (!m_GAFTraceRecorder->Begin(runtime->Assets().ContentManifestHash(),
+				command.maximumFrames, command.maximumBytes, error))
+			{
+				m_GAFTraceRecorder.reset();
+				result.message = std::move(error);
+				return result;
+			}
+			m_GAFTracePath = command.path;
+			result.success = true;
+			break;
+		}
+		case GAFTraceCommandKind::StopAndSave:
+			if (!m_GAFTraceRecorder || !m_GAFTraceRecorder->IsRecording())
+			{
+				result.message = "No Gameplay Trace recording is active";
+				return result;
+			}
+			result.success = Vans::VansGameplayTraceRecorder::Save(
+				command.path.empty() ? std::filesystem::path(m_GAFTracePath) :
+					std::filesystem::path(command.path), m_GAFTraceRecorder->End(), error);
+			m_GAFTraceRecorder.reset();
+			result.message = std::move(error);
+			break;
+		case GAFTraceCommandKind::CancelRecording:
+			if (m_GAFTraceRecorder) m_GAFTraceRecorder->End();
+			m_GAFTraceRecorder.reset();
+			result.success = true;
+			break;
+		case GAFTraceCommandKind::OpenReplay:
+		{
+			Vans::VansGameplayTraceArchive archive;
+			if (command.path.empty() || !Vans::VansGameplayTraceRecorder::Load(
+				command.path, archive, error))
+			{
+				result.message = command.path.empty() ? "Gameplay Trace path is empty" : std::move(error);
+				return result;
+			}
+			auto replay = std::make_shared<Vans::VansGameplayReplaySession>();
+			if (!replay->Load(std::move(archive), error))
+			{
+				result.message = std::move(error);
+				return result;
+			}
+			m_GAFReplaySession = std::move(replay);
+			result.success = true;
+			break;
+		}
+		case GAFTraceCommandKind::CloseReplay:
+			m_GAFReplaySession.reset();
+			result.success = true;
+			break;
+		case GAFTraceCommandKind::SeekReplay:
+			result.success = m_GAFReplaySession && m_GAFReplaySession->SeekFrame(command.frame);
+			if (!result.success) result.message = "Gameplay replay frame is outside the archive";
+			break;
+		case GAFTraceCommandKind::StepReplay:
+			result.success = m_GAFReplaySession && m_GAFReplaySession->Step(command.step);
+			if (!result.success) result.message = "Gameplay replay cannot step beyond the archive";
+			break;
+		}
+		result.snapshot = GetGAFRuntimeDebugSnapshot();
+		return result;
+	}
+
+	GAFSimulationResult EngineAPIImpl::SimulateGAFAction(const GAFSimulationRequest& request)
+	{
+		return GameplayActionSimulationBridge::Simulate(request);
+	}
 	AssetRefreshResult EngineAPIImpl::RefreshProjectAsset(const std::string& assetPath, bool importIfMissing)
 	{
 		AssetRefreshResult result;
@@ -3114,7 +3794,6 @@ namespace Vans::EditorAPI
 	{
 		ProjectOpenResult result;
 		CloseAllUIDocuments();
-		m_TimelineDerivedMedia.Clear();
 
 		auto& projectManager = Vans::VansProjectManager::Get();
 		result.success = request.createNew
@@ -3152,6 +3831,7 @@ namespace Vans::EditorAPI
 			device->SetFrameContextRingEnabled(
 				commandRecordingSettings.frameContextRingEnabled,
 				commandRecordingSettings.framesInFlight);
+			device->SetAsyncComputeEnabled(commandRecordingSettings.asyncComputeEnabled);
 		}
 		return result;
 	}
@@ -3160,7 +3840,6 @@ namespace Vans::EditorAPI
 	{
 		CloseAllUIDocuments();
 		ClearAnimationPreviewSessions(static_cast<VansGraphics::VansVKDevice*>(m_Device));
-		m_TimelineDerivedMedia.Clear();
 
 		auto& projectManager = Vans::VansProjectManager::Get();
 		if (projectManager.IsProjectLoaded())
@@ -3314,7 +3993,7 @@ namespace Vans::EditorAPI
 		if (!device)
 			return preview;
 
-		VansGraphics::VansVKImage& image = device->GetFSROutputImage();
+		VansGraphics::VansVKImage& image = device->GetFinalDisplayImage();
 		const VkImageView imageView = image.GetImageView();
 		const VkSampler sampler = image.GetSampler();
 		if (imageView == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE)
@@ -3352,9 +4031,27 @@ namespace Vans::EditorAPI
 		settings.mipBias = device->GetUpscaleMipBias();
 		settings.renderWidth = device->GetRenderWidth();
 		settings.renderHeight = device->GetRenderHeight();
-		const VkExtent3D outputExtent = device->GetFSROutputImage().GetImageDimension();
+		const VkExtent3D outputExtent = device->GetFinalDisplayImage().GetImageDimension();
 		settings.outputWidth = outputExtent.width;
 		settings.outputHeight = outputExtent.height;
+		const VansGraphics::VansFSRDiagnostics& diagnostics = device->GetFSRDiagnostics();
+		settings.contextReady = diagnostics.contextReady;
+		settings.lastDispatchSucceeded = diagnostics.lastDispatchSucceeded;
+		settings.lastDispatchReset = diagnostics.lastDispatchReset;
+		settings.debugCheckerEnabled = diagnostics.debugCheckerEnabled;
+		settings.debugViewEnabled = device->IsFSRDebugViewEnabled();
+		settings.pendingResetReasons = static_cast<std::uint32_t>(device->GetPendingFSRResetReasons());
+		settings.lastCreateReturnCode = diagnostics.lastCreateReturnCode;
+		settings.lastQueryReturnCode = diagnostics.lastQueryReturnCode;
+		settings.lastDispatchReturnCode = diagnostics.lastDispatchReturnCode;
+		settings.lastReactiveReturnCode = diagnostics.lastReactiveReturnCode;
+		settings.successfulDispatchCount = diagnostics.successfulDispatchCount;
+		settings.failedDispatchCount = diagnostics.failedDispatchCount;
+		settings.generatedReactiveMaskCount = diagnostics.generatedReactiveMaskCount;
+		settings.gpuMemoryUsageBytes = diagnostics.gpuMemoryUsageBytes;
+		settings.gpuMemoryAliasableBytes = diagnostics.gpuMemoryAliasableBytes;
+		settings.jitterPhaseCount = diagnostics.jitterPhaseCount;
+		settings.lastError = diagnostics.lastError;
 		return settings;
 	}
 
@@ -3382,6 +4079,13 @@ namespace Vans::EditorAPI
 		}
 	}
 
+	void EngineAPIImpl::SetFSRDebugViewEnabled(bool enabled)
+	{
+		auto* device = static_cast<VansGraphics::VansVKDevice*>(m_Device);
+		if (device)
+			device->SetFSRDebugViewEnabled(enabled);
+	}
+
 	CommandRecordingSettingsSnapshot EngineAPIImpl::GetCommandRecordingSettings() const
 	{
 		CommandRecordingSettingsSnapshot settings;
@@ -3392,6 +4096,10 @@ namespace Vans::EditorAPI
 		settings.parallelEnabled = device->IsParallelCommandRecordingEnabled();
 		settings.frameContextRingEnabled = device->IsFrameContextRingEnabled();
 		settings.framesInFlight = device->GetConfiguredFramesInFlight();
+		settings.asyncComputeRequested = device->IsAsyncComputeRequested();
+		settings.asyncComputeEnabled = device->IsAsyncComputeEnabled();
+		settings.hasDedicatedAsyncComputeQueue =
+			device->GetQueueCapabilities().hasDedicatedAsyncComputeQueue;
 		return settings;
 	}
 
@@ -3404,6 +4112,7 @@ namespace Vans::EditorAPI
 			device->SetFrameContextRingEnabled(
 				settings.frameContextRingEnabled,
 				settings.framesInFlight);
+			device->SetAsyncComputeEnabled(settings.asyncComputeRequested);
 		}
 
 		auto& projectManager = Vans::VansProjectManager::Get();
@@ -3412,7 +4121,8 @@ namespace Vans::EditorAPI
 			projectManager.GetProjectSettings().SetCommandRecordingSettings(
 				settings.parallelEnabled,
 				settings.frameContextRingEnabled,
-				settings.framesInFlight);
+				settings.framesInFlight,
+				settings.asyncComputeRequested);
 			if (!projectManager.SaveProjectSettings())
 			{
 				VANS_LOG_WARN("[EngineAPI] Failed to persist command recording project settings");
@@ -3475,6 +4185,11 @@ namespace Vans::EditorAPI
 		if (filter.category == "render_debug")
 		{
 			previews.push_back(BuildImagePreview(device, 140, "Motion Vector", renderPassManager->GetMotionVector(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
+			if (device->GetFSRDiagnostics().contextReady)
+			{
+				previews.push_back(BuildImagePreview(device, 158, "FSR Reactive Mask", device->GetFSRReactiveMaskImage(), VK_IMAGE_LAYOUT_GENERAL));
+				previews.push_back(BuildImagePreview(device, 159, "FSR Transparency + Composition", device->GetFSRTransparencyAndCompositionImage(), VK_IMAGE_LAYOUT_GENERAL));
+			}
 
 			auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
 			auto* materialManager = scene ? scene->GetMaterialManager() : nullptr;
@@ -3488,6 +4203,34 @@ namespace Vans::EditorAPI
 					previews.push_back(BuildImagePreview(device, 143, "Fog Blend Result", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
 				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_SCREEN_SPACE_SHADOW_RESULT))
 					previews.push_back(BuildImagePreview(device, 144, "Screen Space Shadow", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
+				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_EXPOSURE_LUMINANCE))
+					previews.push_back(BuildImagePreview(device, 145, "Exposure Luminance", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
+				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_EXPOSURE_CURRENT))
+					previews.push_back(BuildImagePreview(device, 146, "Exposure Current EV", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
+				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_FSR_EXPOSURE))
+					previews.push_back(BuildImagePreview(device, 166, "FSR Exposure Multiplier", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
+				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_BLOOM_PREFILTER))
+					previews.push_back(BuildImagePreview(device, 147, "Bloom Prefilter", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
+				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_BLOOM_MIP0))
+					previews.push_back(BuildImagePreview(device, 148, "Bloom Mip 0", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
+				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_BLOOM_MIP1))
+					previews.push_back(BuildImagePreview(device, 149, "Bloom Mip 1", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
+				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_BLOOM_MIP2))
+					previews.push_back(BuildImagePreview(device, 150, "Bloom Mip 2", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
+				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_BLOOM_MIP3))
+					previews.push_back(BuildImagePreview(device, 151, "Bloom Mip 3", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
+				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_BLOOM_UP_MIP2))
+					previews.push_back(BuildImagePreview(device, 155, "Bloom Upsample Mip 2", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
+				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_BLOOM_UP_MIP1))
+					previews.push_back(BuildImagePreview(device, 156, "Bloom Upsample Mip 1", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
+				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_BLOOM_UP_MIP0))
+					previews.push_back(BuildImagePreview(device, 157, "Bloom Upsample Mip 0", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
+				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_BLOOM_BASE))
+					previews.push_back(BuildImagePreview(device, 154, "Bloom Base", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
+				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_BLOOM_RESULT))
+					previews.push_back(BuildImagePreview(device, 152, "Bloom Result", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
+				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_DOF_RESULT))
+					previews.push_back(BuildImagePreview(device, 153, "Depth of Field Result", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
 			}
 			return previews;
 		}
@@ -5034,7 +5777,14 @@ namespace Vans::EditorAPI
 		}
 
 		VkDevice logicalDevice = device->GetLogicDevice();
-		scene->LoadSceneObjects(logicalDevice, buildPlan.objects, projectRoot);
+		if (!scene->LoadSceneObjects(logicalDevice, buildPlan.objects, projectRoot))
+		{
+			for (auto it = result.entityGuids.rbegin(); it != result.entityGuids.rend(); ++it)
+				if (VansScriptObject* object = scene->FindObjectByGuid(*it))
+					scene->DestroyEntity(object);
+			result.message = "Runtime scene entity batch could not initialize its components";
+			return result;
+		}
 		scene->GetLightManager()->CreateLightUniformData(logicalDevice);
 		for (const std::string& entityGuid : result.entityGuids)
 		{
@@ -5335,42 +6085,88 @@ namespace Vans::EditorAPI
 			if (!motionMatching || !motionMatching->enabled)
 				continue;
 
-			const uint32_t transformId = animNode->GetTransformID();
-			glm::mat4 worldMatrix = VansTransformStore::GetTransform(transformId).GetModelMatrix();
-			const auto& globals = controller->GetCachedGlobalTransforms();
-			glm::vec3 rootWorld = glm::vec3(worldMatrix[3]);
-
-			const VansGraphics::Skeleton& skeleton = animNode->GetSkeleton();
-			int rootBoneIndex = -1;
-			auto rootIt = skeleton.boneNameToIndex.find("root");
-			if (rootIt != skeleton.boneNameToIndex.end())
-				rootBoneIndex = rootIt->second;
-			else
-			{
-				rootIt = skeleton.boneNameToIndex.find("Root");
-				if (rootIt != skeleton.boneNameToIndex.end())
-					rootBoneIndex = rootIt->second;
-			}
-
-			if (rootBoneIndex >= 0 && rootBoneIndex < static_cast<int>(globals.size()))
-			{
-				const glm::mat4 boneWorld = worldMatrix * globals[rootBoneIndex];
-				rootWorld = glm::vec3(boneWorld[3]);
-			}
-
-			const float direction = motionMatching->queryDirection;
-			const float speed = motionMatching->querySpeed * 0.01f;
-			glm::vec3 localVelocity(std::sin(direction) * speed, -std::cos(direction) * speed, 0.0f);
-			glm::vec3 worldVelocity = glm::vec3(worldMatrix * glm::vec4(localVelocity, 0.0f));
-			worldVelocity.y = 0.0f;
-			if (glm::length(worldVelocity) > 0.0001f)
-				worldVelocity = glm::normalize(worldVelocity) * speed;
-
 			MotionMatchingDebugVisual visual;
-			visual.rootPosition = ToEditorVec3(rootWorld);
-			visual.velocity = ToEditorVec3(worldVelocity);
+			visual.rootPosition = ToEditorVec3(motionMatching->trajectoryOriginWorld);
+			visual.actualVelocity = ToEditorVec3(motionMatching->actualVelocityWorld);
+			visual.plannedVelocity = ToEditorVec3(motionMatching->plannedVelocityWorld);
+			visual.desiredVelocity = ToEditorVec3(motionMatching->desiredVelocityWorld);
+			visual.activeClipVelocity = ToEditorVec3(motionMatching->activeClipVelocityWorld);
+			visual.selectedCandidateVelocity = ToEditorVec3(
+				motionMatching->selectedCandidateVelocityWorld);
+			visual.appliedRootMotionVelocity = ToEditorVec3(
+				motionMatching->appliedRootMotionVelocityWorld);
+			visual.rootMotionTargetVelocity = ToEditorVec3(
+				motionMatching->rootMotionTargetVelocityWorld);
+			visual.rootMotionReconciledVelocity = ToEditorVec3(
+				motionMatching->rootMotionReconciledVelocityWorld);
+			visual.moveInputLocal = ToEditorVec3(glm::vec3(
+				motionMatching->moveInputLocal.x, 0.0f, motionMatching->moveInputLocal.y));
+			visual.predictedPivotPosition = ToEditorVec3(motionMatching->predictedPivotPositionWorld);
+			for (const auto& sample : motionMatching->trajectoryHistory)
+				visual.historyPositions.push_back(ToEditorVec3(sample.positionWorld));
+			for (const auto& sample : motionMatching->trajectoryFuture)
+			{
+				visual.futurePositions.push_back(ToEditorVec3(sample.positionWorld));
+				visual.futureVelocities.push_back(ToEditorVec3(sample.velocityWorld));
+			}
 			visual.activeClip = motionMatching->activeClip;
+			visual.selectedClip = motionMatching->selectedClip;
 			visual.playbackRate = motionMatching->playbackRate;
+			visual.querySpeed = motionMatching->querySpeed * 0.01f;
+			visual.queryDirectionDegrees = glm::degrees(motionMatching->queryDirection);
+			visual.directionChangeDegrees = motionMatching->directionChangeDegrees;
+			visual.inputDirectionChangeDegrees = motionMatching->inputDirectionChangeDegrees;
+			visual.facingDeltaDegrees = motionMatching->queryFacingDeltaDegrees;
+			visual.movementReferenceYaw = motionMatching->movementReferenceYaw;
+			visual.movementReferenceYawRate = motionMatching->movementReferenceYawRate;
+			visual.plannedFacingYaw = motionMatching->plannedFacingYaw;
+			visual.steeringTargetFacingDeltaDegrees =
+				motionMatching->steeringTargetFacingDeltaDegrees;
+			visual.steeringAuthoredFacingDeltaDegrees =
+				motionMatching->steeringAuthoredFacingDeltaDegrees;
+			visual.steeringRequestedCorrectionDegrees =
+				motionMatching->steeringRequestedCorrectionDegrees;
+			visual.steeringAppliedCorrectionDegrees =
+				motionMatching->steeringAppliedCorrectionDegrees;
+			visual.steeringAppliedYawRateDegreesPerSecond =
+				motionMatching->steeringAppliedYawRateDegreesPerSecond;
+			visual.rootMotionTargetYawRateDegreesPerSecond =
+				motionMatching->rootMotionTargetYawRateDegreesPerSecond;
+			visual.rootMotionReconciledYawRateDegreesPerSecond =
+				motionMatching->rootMotionReconciledYawRateDegreesPerSecond;
+			visual.steeringActive = motionMatching->steeringActive;
+			visual.steeringLimited = motionMatching->steeringLimited;
+			visual.rootMotionReconciliationActive =
+				motionMatching->rootMotionReconciliationActive;
+			visual.currentCost = motionMatching->currentCost;
+			visual.trajectoryCost = motionMatching->trajectoryCost;
+			visual.poseCost = motionMatching->poseCost;
+			visual.contactCost = motionMatching->contactCost;
+			visual.pivotRequested = motionMatching->pivotRequested;
+			visual.pivotDatabaseAvailable = motionMatching->pivotDatabaseAvailable;
+			visual.hasPredictedPivot = motionMatching->hasPredictedPivot;
+			visual.predictedPivotTime = motionMatching->predictedPivotTime;
+			visual.motionConsumptionRatio = motionMatching->motionConsumptionRatio;
+			visual.movementBlocked = motionMatching->movementBlocked;
+			visual.urgentDirectionChange = motionMatching->urgentDirectionChange;
+			visual.requestedMoveState = motionMatching->requestedMoveState;
+			visual.effectiveMoveState = motionMatching->effectiveMoveState;
+			visual.directionalStateFallback = motionMatching->directionalStateFallback;
+			visual.facingTurnRequested = motionMatching->facingTurnRequested;
+			visual.switches = motionMatching->switches;
+			visual.activeDatabases = motionMatching->activeDatabases;
+			for (const auto& candidate : motionMatching->topCandidates)
+			{
+				MotionMatchingDebugVisual::Candidate candidateDto;
+				candidateDto.clipName = candidate.clipName;
+				candidateDto.time = candidate.time;
+				candidateDto.totalCost = candidate.totalCost;
+				candidateDto.trajectoryCost = candidate.trajectoryCost;
+				candidateDto.poseCost = candidate.poseCost;
+				candidateDto.contactCost = candidate.contactCost;
+				candidateDto.biasCost = candidate.biasCost;
+				visual.topCandidates.push_back(std::move(candidateDto));
+			}
 			snapshot.visuals.push_back(visual);
 		}
 
@@ -6419,7 +7215,28 @@ namespace Vans::EditorAPI
 				{ "threshold", ScenePropertyValues::Float(settings.bloomThreshold) },
 				{ "knee", ScenePropertyValues::Float(settings.bloomKnee) },
 				{ "intensity", ScenePropertyValues::Float(settings.bloomIntensity) },
-				{ "scatter", ScenePropertyValues::Float(settings.bloomScatter) }
+				{ "scatter", ScenePropertyValues::Float(settings.bloomScatter) },
+				{ "clamp", ScenePropertyValues::Float(settings.bloomClamp) },
+				{ "tintR", ScenePropertyValues::Float(settings.bloomTintR) },
+				{ "tintG", ScenePropertyValues::Float(settings.bloomTintG) },
+				{ "tintB", ScenePropertyValues::Float(settings.bloomTintB) },
+				{ "shapeMode", ScenePropertyValues::Int(settings.bloomShapeMode) },
+				{ "shapeIntensity", ScenePropertyValues::Float(settings.bloomShapeIntensity) },
+				{ "shapeBlend", ScenePropertyValues::Float(settings.bloomShapeBlend) },
+				{ "shapeAngleDeg", ScenePropertyValues::Float(settings.bloomShapeAngleDeg) },
+				{ "anamorphicStretch", ScenePropertyValues::Float(settings.bloomAnamorphicStretch) },
+				{ "streakCount", ScenePropertyValues::Int(settings.bloomStreakCount) },
+				{ "streakLength", ScenePropertyValues::Float(settings.bloomStreakLength) },
+				{ "streakAttenuation", ScenePropertyValues::Float(settings.bloomStreakAttenuation) }
+			}) },
+			{ "dof", ScenePropertyValues::Object({
+				{ "enable", ScenePropertyValues::Bool(settings.enableDOF) },
+				{ "focusDistance", ScenePropertyValues::Float(settings.focusDistance) },
+				{ "focalLengthMm", ScenePropertyValues::Float(settings.focalLengthMm) },
+				{ "fStop", ScenePropertyValues::Float(settings.fStop) },
+				{ "sensorHeightMm", ScenePropertyValues::Float(settings.sensorHeightMm) },
+				{ "maxCoC", ScenePropertyValues::Float(settings.maxCoC) },
+				{ "blurTransmissionBackground", ScenePropertyValues::Bool(settings.dofBlurTransmissionBackground) }
 			}) },
 			{ "toneMapping", ScenePropertyValues::Object({
 				{ "type", ScenePropertyValues::Int(settings.toneMapperType) },
@@ -6612,7 +7429,10 @@ namespace Vans::EditorAPI
 
 		const EnginePlayState previousState = m_PlayState;
 		m_PlayState = state;
-		Vans::VansInputManager::Get().SetCursorCaptureAllowed(state == EnginePlayState::Play);
+		// 编辑器 Play 仍与完整编辑器 UI 共用一个原生窗口。GLFW 的捕获模式会
+		// 同时锁定并隐藏系统光标，因此编辑器内始终禁止脚本开启捕获；独立运行时
+		// 继续由 ForestRuntimeExports 显式开放该能力。
+		Vans::VansInputManager::Get().SetCursorCaptureAllowed(false);
 		Vans::VansEventBus::Get().PublishNow(
 			VansEditorPlayStateChangedEvent{ previousState, state });
 	}
@@ -7118,6 +7938,14 @@ namespace Vans::EditorAPI
 		scene->UpdateCharControllerTransforms();
 	}
 
+	void EngineAPIImpl::PrepareRuntimeCharacterLocomotion(double deltaSeconds)
+	{
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		if (!scene || !scene->IsSceneReady())
+			return;
+		scene->PrepareCharacterLocomotion(static_cast<float>(deltaSeconds));
+	}
+
 	void EngineAPIImpl::UpdateRuntimeNonCameraScripts()
 	{
 		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
@@ -7126,6 +7954,20 @@ namespace Vans::EditorAPI
 
 		m_ScriptContext->SetScene(scene);
 		m_ScriptContext->VansScriptUpdateNonCameraScripts();
+	}
+
+	void EngineAPIImpl::UpdateRuntimeActionsEarly(double deltaSeconds)
+	{
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		if (scene && scene->IsSceneReady())
+			scene->UpdateActionsEarly(deltaSeconds);
+	}
+
+	void EngineAPIImpl::RunRuntimeActionLateContinuation()
+	{
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		if (scene && scene->IsSceneReady())
+			scene->RunActionLateContinuation();
 	}
 
 	void EngineAPIImpl::UpdateRuntimeTimelinesPostScript(double deltaSeconds)
@@ -7143,6 +7985,18 @@ namespace Vans::EditorAPI
 
 		m_ScriptContext->SetScene(scene);
 		m_ScriptContext->VansScriptUpdateCameraScripts();
+	}
+
+	void EngineAPIImpl::BeginRuntimeCameraControlFrame()
+	{
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		if (scene && scene->IsSceneReady()) scene->BeginCameraControlFrame();
+	}
+
+	void EngineAPIImpl::CaptureRuntimeCameraControlBase()
+	{
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		if (scene && scene->IsSceneReady()) scene->CaptureCameraControlBase();
 	}
 
 	void EngineAPIImpl::UpdateRuntimeTimelinesCamera(double deltaSeconds)
@@ -7164,6 +8018,12 @@ namespace Vans::EditorAPI
 		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
 		if (scene && scene->IsSceneReady())
 			scene->UpdateTimelinePreviewsCamera(deltaSeconds);
+	}
+
+	void EngineAPIImpl::ResolveRuntimeCameraControlFrame()
+	{
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		if (scene && scene->IsSceneReady()) scene->ResolveCameraControlFrame();
 	}
 
 	TimelinePreviewResult EngineAPIImpl::GetTimelinePreview(const std::string& previewId) const

@@ -30,6 +30,7 @@ inline std::string CanonicalRuntimeComponentKeyForName(std::string componentName
 	if (componentName == "animation") return "animation";
 	if (componentName == "animator") return "animation";
 	if (componentName == "timeline") return "timeline";
+	if (componentName == "actionhost" || componentName == "gameplayactionhost") return "action_host";
 	if (componentName == "ragdoll") return "ragdoll";
 	if (componentName == "vehicle") return "vehicle";
 	if (componentName == "uicontroller") return "ui";

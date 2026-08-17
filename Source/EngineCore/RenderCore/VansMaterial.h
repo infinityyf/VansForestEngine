@@ -357,6 +357,49 @@ namespace VansGraphics
 
 	static_assert(sizeof(VansTreeLeafParamsGPU) == 48, "Tree leaf parameter layout must match GLSL");
 
+	struct alignas(16) VansSkinGPUParam
+	{
+		glm::vec4 scatterColorAmount = glm::vec4(1.0f, 0.34f, 0.22f, 0.65f);
+		glm::vec4 roughnessNormalSpecular = glm::vec4(0.62f, 0.35f, 1.0f, 1.0f);
+		glm::vec4 lobeIOR = glm::vec4(0.75f, 1.75f, 1.4f, 0.72f);
+		// x = diffusion radius, y = thinness, z = optical depth, w = ambient scatter.
+		glm::vec4 profileControls = glm::vec4(1.0f, 1.0f, 1.0f, 0.35f);
+		// rgb = per-channel diffusion radius scale, w = boundary color bleed.
+		glm::vec4 profileShape = glm::vec4(1.0f);
+		// x = profile LUT layer, -1 = legacy 2D LUT fallback; y = authored thinness map weight.
+		glm::vec4 profileLUT = glm::vec4(-1.0f, 0.0f, 0.0f, 0.0f);
+		// x = debug view mode, yzw reserved.
+		glm::vec4 debugControls = glm::vec4(0.0f);
+	};
+
+	static_assert(sizeof(VansSkinGPUParam) == 112, "Skin parameter layout must match GLSL");
+
+	constexpr int VANS_SKIN_PROFILE_LUT_SIZE = 256;
+	constexpr int VANS_BUILTIN_SKIN_PROFILE_LUT_LAYER_COUNT = 4;
+	constexpr int VANS_FIRST_DYNAMIC_SKIN_PROFILE_LUT_LAYER = VANS_BUILTIN_SKIN_PROFILE_LUT_LAYER_COUNT;
+	constexpr int VANS_SKIN_PROFILE_LUT_LAYER_COUNT = 16;
+
+	using VansSkinProfileLUTFingerprint = std::array<int32_t, 10>;
+
+	bool IsDynamicSkinProfileLUTLayer(int layer);
+	VansSkinProfileLUTFingerprint BuildSkinProfileLUTFingerprint(const VansSkinGPUParam& profile);
+	std::string NormalizeSkinProfilePresetName(std::string profileName);
+	bool ResolveSkinProfilePresetPayload(
+		const std::string& profileName,
+		VansBasePBRParam& legacy,
+		VansSkinGPUParam& params);
+	const char* GetBuiltInSkinProfileLUTLayerName(int layer);
+	bool GenerateSkinProfileLUTPixels(
+		const VansSkinGPUParam& profile,
+		int width,
+		int height,
+		std::vector<uint8_t>& outPixels);
+	bool GenerateBuiltInSkinProfileLUTLayer(
+		int layer,
+		int width,
+		int height,
+		std::vector<uint8_t>& outPixels);
+
 
 
 
@@ -532,9 +575,28 @@ namespace VansGraphics
 		std::vector<int> m_FreeRuntimePBRIndices;
 		std::vector<int> m_FreeRuntimeCustomIndices;
 
+		struct SkinProfileLUTCacheEntry
+		{
+			VansSkinProfileLUTFingerprint fingerprint{};
+			int layer = -1;
+			int refCount = 0;
+		};
+
+		struct PendingSkinProfileLUTUpload
+		{
+			VansSkinProfileLUTFingerprint fingerprint{};
+			int layer = -1;
+			std::vector<uint8_t> pixels;
+		};
+
+		std::vector<SkinProfileLUTCacheEntry> m_SkinProfileDynamicLUTCache;
+		std::vector<PendingSkinProfileLUTUpload> m_PendingSkinProfileLUTUploads;
+		std::unordered_map<int, int> m_SkinMaterialDynamicLUTLayers;
+
 
 
 		void InitMaterialDataDescriptors();
+		void ReleaseSkinProfileLUTLayerForMaterial(int materialIndex);
 
 
 
@@ -616,6 +678,7 @@ namespace VansGraphics
 		static constexpr const char* RT_CLOUD_DETAIL_NOISE   = "Runtime.Cloud.DetailNoise3D";
 		static constexpr const char* RT_EXPOSURE_LUMINANCE   = "Runtime.PostProcess.Exposure.Luminance";
 		static constexpr const char* RT_EXPOSURE_CURRENT     = "Runtime.PostProcess.Exposure.Current";
+		static constexpr const char* RT_FSR_EXPOSURE         = "Runtime.FSR.ExposureMultiplier";
 
 
 
@@ -630,7 +693,13 @@ namespace VansGraphics
 
 		static constexpr const char* RT_BLOOM_MIP3          = "Runtime.PostProcess.Bloom.Mip3";         // 1/16 鍒嗚鲸鐜?
 
+		static constexpr const char* RT_BLOOM_UP_MIP0       = "Runtime.PostProcess.Bloom.Upsample.Mip0"; // 1/2 resolved bloom
+		static constexpr const char* RT_BLOOM_UP_MIP1       = "Runtime.PostProcess.Bloom.Upsample.Mip1"; // 1/4 resolved bloom
+		static constexpr const char* RT_BLOOM_UP_MIP2       = "Runtime.PostProcess.Bloom.Upsample.Mip2"; // 1/8 resolved bloom
+
+		static constexpr const char* RT_BLOOM_BASE          = "Runtime.PostProcess.Bloom.Base";
 		static constexpr const char* RT_BLOOM_RESULT        = "Runtime.PostProcess.Bloom.Result";
+		static constexpr const char* RT_DOF_RESULT          = "Runtime.PostProcess.DOF.Result";
 
 
 
@@ -668,6 +737,13 @@ namespace VansGraphics
 		void ClearScenePBRData(VkDevice device);
 
 		bool FlushMaterialPayload(VansMaterial& material);
+
+		void ResetSkinProfileLUTCache();
+		bool ResolveSkinProfileLUTForMaterial(
+			VansSkinMaterial& skin,
+			VansSkinGPUParam& payload,
+			VansVKCommandBuffer* immediateCommandBuffer = nullptr);
+		bool RecordPendingSkinProfileLUTUploads(VansVKCommandBuffer& commandBuffer);
 
 		bool ApplyMaterialParameter(
 
@@ -825,6 +901,7 @@ namespace VansGraphics
 		VansVKBuffer m_GlobalPBRDataBuffer;
 		VansVKBuffer m_GlobalClothDataBuffer;
 		VansVKBuffer m_GlobalTreeLeafDataBuffer;
+		VansVKBuffer m_GlobalSkinDataBuffer;
 
 		VansVKBuffer m_GlobalCustomMaterialDataBuffer;
 
@@ -833,6 +910,7 @@ namespace VansGraphics
 		std::vector<VansBasePBRParam> m_GlobalPBRParamData;
 		std::vector<VansClothGPUParam> m_GlobalClothParamData;
 		std::vector<VansTreeLeafParamsGPU> m_GlobalTreeLeafParamData;
+		std::vector<VansSkinGPUParam> m_GlobalSkinParamData;
 
 		std::vector<VansCustomMaterialPayload> m_GlobalCustomMaterialParamData;
 
@@ -879,6 +957,10 @@ namespace VansGraphics
 
 
 		VansTexture* m_SkinBSDFLUT = nullptr;
+
+
+
+		VansTexture* m_SkinProfileLUTArray = nullptr;
 
 
 
@@ -1103,12 +1185,26 @@ namespace VansGraphics
 
 		std::vector<VkDescriptorSet>   m_BloomUpsampleDescriptorSets;
 
+		VansComputeShader* m_BloomShapeShader = nullptr;
+
+		VkDescriptorSetLayout          m_BloomShapeSetLayout = VK_NULL_HANDLE;
+
+		std::vector<VkDescriptorSet>   m_BloomShapeDescriptorSets;
+
+		VansComputeShader* m_DepthOfFieldShader = nullptr;
+
+		VkDescriptorSetLayout          m_DepthOfFieldSetLayout = VK_NULL_HANDLE;
+
+		std::vector<VkDescriptorSet>   m_DepthOfFieldDescriptorSets;
+
 
 
 		VansVKBuffer m_PostProcessParamsCBBuffer;
 		VansVKBuffer m_ExposureAdaptParamsCBBuffer;
 
 		VansVKBuffer m_BloomParamsCBBuffer;
+		VansVKBuffer m_BloomShapeParamsCBBuffer;
+		VansVKBuffer m_DepthOfFieldParamsCBBuffer;
 
 
 
@@ -1458,7 +1554,7 @@ namespace VansGraphics
 
 	// ============================================================
 
-	// VansSkinMaterial - subsurface skin shading (type 9)
+	// VansSkinMaterial - dedicated Skin shading (type 9)
 
 	// ============================================================
 
@@ -1475,11 +1571,19 @@ namespace VansGraphics
 		VansTexture* m_BaseColorTexture = nullptr;
 
 		VansTexture* m_NormalTexture    = nullptr;
+		VansTexture* m_RoughnessTexture = nullptr;
+		VansTexture* m_CavityTexture    = nullptr;
+		VansTexture* m_ScatterMaskTexture = nullptr;
+		VansTexture* m_ThicknessTexture = nullptr;
 
-		// Skin reuses the global MaterialPayload:
-		// albedo = subsurface tint, roughness = specular roughness,
-		// metallic = normal strength, ao = SSS amount, padding = specular scale.
+		// Legacy fields are still filled for compatibility with existing assets.
+		// BuildGPUParam translates them into the typed Skin payload consumed by shaders.
 		VansBasePBRParam m_BasePBRParam;
+		VansSkinGPUParam m_SkinParams;
+		std::string m_SkinProfileName = "neutral";
+		std::string m_SkinProfileAssetGuid;
+		std::vector<std::string> m_SkinProfileInheritedFields;
+		bool m_UseExplicitSkinProfileLUTLayer = false;
 
 
 
@@ -1490,6 +1594,8 @@ namespace VansGraphics
 
 
 		void BuildSkinTextureDescriptors();
+		bool ApplySkinProfilePreset(const std::string& profileName);
+		VansSkinGPUParam BuildGPUParam() const;
 
 	};
 
@@ -1745,6 +1851,12 @@ namespace VansGraphics
 		float     sssPower        = 3.0f;   // exponent for view-dependent scatter
 
 		float     aoStrength      = 1.0f;   // AO contribution
+
+		// 草根微遮蔽。高度范围使用骨骼权重生成时的同一 0..1 坐标，
+		// 因此程序化草和外部 FBX 使用完全一致的映射。
+		float     rootAOIntensity = 0.35f;
+
+		float     rootAOHeight    = 0.35f;
 
 	};
 

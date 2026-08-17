@@ -50,7 +50,7 @@ namespace VansGraphics
         float m_SpectrumAmplitude = 0.001f;
         // The low wavelength clamp is a spectral quality control, not a
         // geometry LOD knob.
-        float m_MinWavelength = 0.5f;
+        float m_MinWavelength = 1.0f;
         float m_SmallWaveDamping = 0.003f;
         float m_WindDependency = 0.07f;
         float m_Depth = 10000.0f;
@@ -60,23 +60,19 @@ namespace VansGraphics
 
     struct VansWaterWaveParticleConfig
     {
-        int m_ParticleCount = 192;
-        int m_OctaveCount = 5;
-        int m_Profile = 1; // 0=Gaussian, 1=Compact ripple, 2=Sharp crest.
-        float m_DomainSize = 1024.0f;
-        float m_Amplitude = 2.75f;
-        float m_MinRadius = 6.0f;
-        float m_MaxRadius = 384.0f;
-        float m_PhaseVelocity = 0.45f;
-        float m_Damping = 0.018f;
+        // 每个频谱 cascade 使用独立的波包集合。固定上限使 SSBO 可以按
+        // cascade 直接寻址，也避免运行时维护第二套索引表。
+        int m_ParticlesPerCascade = 128;
+        // 每个 cascade 的目标高度 RMS；后续 cascade 按能量衰减系数递减。
+        float m_RmsAmplitude = 0.32f;
+        // 紧支撑包络半径相对载波波长的倍数。半径始终额外限制在周期域的一半内。
+        float m_PacketWidth = 1.5f;
+        // 同时缩放物理相速度和群速度；1 为标准重力波色散，0 为暂停。
+        float m_DispersionScale = 1.0f;
         float m_DirectionSpread = 0.7f;
-        float m_Lacunarity = 2.0f;
-        float m_Persistence = 0.6f;
-        float m_RadiusFalloff = 0.58f;
-        float m_ProfileSharpness = 1.45f;
+        float m_CascadeAmplitudeFalloff = 0.62f;
         float m_FoamThreshold = 0.28f;
         float m_FoamSoftness = 0.25f;
-        float m_Lifetime = 24.0f;
         std::uint32_t m_RandomSeed = 20260724u;
     };
 
@@ -96,7 +92,9 @@ namespace VansGraphics
     {
         bool m_Enabled = false;
         float m_Intensity = 1.0f;
-        float m_Scale = 0.5f;
+        float m_MaxDistance = 20.0f;
+        float m_MaxGain = 3.0f;
+        float m_FilterRadius = 0.5f;
     };
 
     struct VansWaterRefractionConfig
@@ -143,16 +141,15 @@ namespace VansGraphics
 
     struct VansWaterConfig
     {
-        static constexpr std::uint32_t SCHEMA_VERSION = 4;
         static constexpr int SPECTRUM_RESOLUTION = 256;
         static constexpr int MAX_GEOMETRY_LODS = 10;
         static constexpr int MAX_SPECTRUM_CASCADES = 4;
         static constexpr int FLOW_MAP_TEXTURE_SIZE = 256;
-        static constexpr int MAX_WAVE_PARTICLE_COUNT = 1024;
-        static constexpr int MAX_WAVE_PARTICLE_OCTAVES = 8;
+        static constexpr int MAX_WAVE_PARTICLES_PER_CASCADE = 256;
+        static constexpr int MAX_WAVE_PARTICLE_COUNT =
+            MAX_SPECTRUM_CASCADES * MAX_WAVE_PARTICLES_PER_CASCADE;
         static constexpr float GEOMETRY_LOD_RATIO = 2.0f;
 
-        std::uint32_t m_SchemaVersion = SCHEMA_VERSION;
         float m_WaterLevel = 3.4f;
         float m_SpecularIntensity = 1.0f;
 
@@ -170,7 +167,6 @@ namespace VansGraphics
 
         void Validate()
         {
-            m_SchemaVersion = SCHEMA_VERSION;
             m_Geometry.m_LodCount = std::clamp(m_Geometry.m_LodCount, 1, MAX_GEOMETRY_LODS);
             m_Geometry.m_BasePatchSize = (std::max)(m_Geometry.m_BasePatchSize, 0.25f);
             m_Geometry.m_MeshDim = std::clamp(m_Geometry.m_MeshDim, 17, 257);
@@ -186,7 +182,9 @@ namespace VansGraphics
             m_Spectrum.m_Choppiness = std::clamp(m_Spectrum.m_Choppiness, 0.0f, 3.0f);
             m_Spectrum.m_GerstnerWaveCount = std::clamp(m_Spectrum.m_GerstnerWaveCount, 0, 64);
             m_Spectrum.m_SpectrumAmplitude = std::clamp(m_Spectrum.m_SpectrumAmplitude, 0.0f, 0.02f);
-            const float macroNyquist = 2.0f * m_Spectrum.m_BaseCoverage / float(SPECTRUM_RESOLUTION);
+            // 双线性顶点采样至少保留每个最短波长四个 texel，避免把 Nyquist
+            // 极限处的交替样本误当作可稳定重建的几何波形。
+            const float macroNyquist = 4.0f * m_Spectrum.m_BaseCoverage / float(SPECTRUM_RESOLUTION);
             m_Spectrum.m_MinWavelength = std::clamp(
                 m_Spectrum.m_MinWavelength, macroNyquist, m_Spectrum.m_BaseCoverage);
             m_Spectrum.m_SmallWaveDamping = std::clamp(m_Spectrum.m_SmallWaveDamping, 0.0f, 0.1f);
@@ -198,26 +196,19 @@ namespace VansGraphics
             else
                 m_Spectrum.m_WindDirection = glm::normalize(m_Spectrum.m_WindDirection);
 
-            m_WaveParticle.m_ParticleCount = std::clamp(
-                m_WaveParticle.m_ParticleCount, 0, MAX_WAVE_PARTICLE_COUNT);
-            m_WaveParticle.m_OctaveCount = std::clamp(
-                m_WaveParticle.m_OctaveCount, 1, MAX_WAVE_PARTICLE_OCTAVES);
-            m_WaveParticle.m_Profile = std::clamp(m_WaveParticle.m_Profile, 0, 2);
-            m_WaveParticle.m_DomainSize = (std::max)(m_WaveParticle.m_DomainSize, 16.0f);
-            m_WaveParticle.m_Amplitude = std::clamp(m_WaveParticle.m_Amplitude, 0.0f, 10.0f);
-            m_WaveParticle.m_MinRadius = std::clamp(m_WaveParticle.m_MinRadius, 0.05f, m_WaveParticle.m_DomainSize);
-            m_WaveParticle.m_MaxRadius = std::clamp(
-                m_WaveParticle.m_MaxRadius, m_WaveParticle.m_MinRadius, m_WaveParticle.m_DomainSize);
-            m_WaveParticle.m_PhaseVelocity = std::clamp(m_WaveParticle.m_PhaseVelocity, 0.0f, 10.0f);
-            m_WaveParticle.m_Damping = std::clamp(m_WaveParticle.m_Damping, 0.0f, 2.0f);
+            m_WaveParticle.m_ParticlesPerCascade = std::clamp(
+                m_WaveParticle.m_ParticlesPerCascade, 0, MAX_WAVE_PARTICLES_PER_CASCADE);
+            m_WaveParticle.m_RmsAmplitude = std::clamp(
+                m_WaveParticle.m_RmsAmplitude, 0.0f, 4.0f);
+            m_WaveParticle.m_PacketWidth = std::clamp(
+                m_WaveParticle.m_PacketWidth, 0.5f, 4.0f);
+            m_WaveParticle.m_DispersionScale = std::clamp(
+                m_WaveParticle.m_DispersionScale, 0.0f, 4.0f);
             m_WaveParticle.m_DirectionSpread = std::clamp(m_WaveParticle.m_DirectionSpread, 0.0f, 3.14159265f);
-            m_WaveParticle.m_Lacunarity = std::clamp(m_WaveParticle.m_Lacunarity, 1.01f, 4.0f);
-            m_WaveParticle.m_Persistence = std::clamp(m_WaveParticle.m_Persistence, 0.0f, 1.0f);
-            m_WaveParticle.m_RadiusFalloff = std::clamp(m_WaveParticle.m_RadiusFalloff, 0.1f, 1.0f);
-            m_WaveParticle.m_ProfileSharpness = std::clamp(m_WaveParticle.m_ProfileSharpness, 0.25f, 8.0f);
+            m_WaveParticle.m_CascadeAmplitudeFalloff = std::clamp(
+                m_WaveParticle.m_CascadeAmplitudeFalloff, 0.0f, 1.0f);
             m_WaveParticle.m_FoamThreshold = std::clamp(m_WaveParticle.m_FoamThreshold, 0.0f, 2.0f);
             m_WaveParticle.m_FoamSoftness = std::clamp(m_WaveParticle.m_FoamSoftness, 0.01f, 2.0f);
-            m_WaveParticle.m_Lifetime = std::clamp(m_WaveParticle.m_Lifetime, 0.1f, 600.0f);
 
             m_FlowMap.m_Strength = std::clamp(m_FlowMap.m_Strength, 0.0f, 256.0f);
             m_FlowMap.m_Speed = std::clamp(m_FlowMap.m_Speed, 0.0f, 16.0f);
@@ -229,6 +220,11 @@ namespace VansGraphics
                 m_FlowMap.m_FallbackDirection = { 1.0f, 0.0f };
             else
                 m_FlowMap.m_FallbackDirection = glm::normalize(m_FlowMap.m_FallbackDirection);
+
+            m_Caustics.m_Intensity = std::clamp(m_Caustics.m_Intensity, 0.0f, 10.0f);
+            m_Caustics.m_MaxDistance = std::clamp(m_Caustics.m_MaxDistance, 1.0f, 200.0f);
+            m_Caustics.m_MaxGain = std::clamp(m_Caustics.m_MaxGain, 0.0f, 16.0f);
+            m_Caustics.m_FilterRadius = std::clamp(m_Caustics.m_FilterRadius, 0.1f, 4.0f);
 
             m_Refraction.m_DistortionStrength = std::clamp(
                 m_Refraction.m_DistortionStrength, 0.0f, 0.1f);

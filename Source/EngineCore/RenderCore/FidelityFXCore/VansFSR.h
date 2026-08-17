@@ -1,86 +1,68 @@
-﻿#pragma once
+#pragma once
+
+#include "VansFSRTypes.h"
+
 #include <ffx_api/ffx_api.hpp>
 #include <ffx_api/ffx_upscale.hpp>
 #include <ffx_api/vk/ffx_api_vk.hpp>
 
+#include <memory>
+
 namespace VansGraphics
 {
-	enum class VansFSRMode : uint32_t
-	{
-		MatchViewport = 0,
-		NativeAA = 1,
-		Quality = 2,
-		Performance = 3
-	};
-
-	struct FSRInput
-	{
-		VkImage color = VK_NULL_HANDLE;
-		VkImageCreateInfo colorCreateInfo;
-		VkImage depth = VK_NULL_HANDLE;
-		VkImageCreateInfo depthCreateInfo;
-		VkImage motionVectors = VK_NULL_HANDLE;
-		VkImageCreateInfo motionVectorsCreateInfo;
-
-		VkImage reactive = VK_NULL_HANDLE;
-		VkImage transparencyAndComposition = VK_NULL_HANDLE;
-		float fovy;
-		float nearPlane;
-		float farPlane;
-
-		// 像素空间抖动偏移（[-0.5, 0.5] 范围），FSR API 期望的单位
-		float jitterPixelX = 0.0f;
-		float jitterPixelY = 0.0f;
-		float frameTimeDeltaMs = 16.6667f;
-		
-		bool reset = false;
-	};
-
 	class VansVKImage;
+
 	class VansFSR
 	{
-	private:
-
-		ffx::Context m_UpscalingContext = nullptr;
-
-		uint32_t m_RenderWidth;
-		uint32_t m_RenderHeight;
-		uint32_t m_DisplayWidth;
-		uint32_t m_DisplayHeight;
-
-		VkDevice m_Device;
-		VkPhysicalDevice m_PhysicalDevice;
-
-		// FSR 内置抖动序列相位数量（InitializeContext 后查询得到）
-		int32_t m_JitterPhaseCount = 0;
-
-		//用于保存中间结果
-		VansVKImage* m_TempFSRImage = nullptr;
-
 	public:
-		// RCAS sharpening strength in the FSR API's normalized range.
-		float m_Sharpness = 0.35f;
+		VansFSR() = default;
+		~VansFSR();
+		VansFSR(const VansFSR&) = delete;
+		VansFSR& operator=(const VansFSR&) = delete;
 
-		void InitializeContext(VkDevice device, VkPhysicalDevice physicalDevice, uint32_t renderWidth, uint32_t renderHeight, uint32_t displayWidth, uint32_t displayHeight);
-	
-		void DispatchUpscale(VkCommandBuffer& commandBuffer, FSRInput& input);
-
+		bool InitializeContext(
+			VkDevice device,
+			VkPhysicalDevice physicalDevice,
+			std::uint32_t renderWidth,
+			std::uint32_t renderHeight,
+			std::uint32_t displayWidth,
+			std::uint32_t displayHeight);
+		bool DispatchUpscale(VkCommandBuffer commandBuffer, const VansFSRFrameInput& input);
+		bool GenerateReactiveMask(
+			VkCommandBuffer commandBuffer,
+			VkImage opaqueOnly,
+			const VkImageCreateInfo& opaqueOnlyCreateInfo,
+			VkImage colorPreUpscale,
+			const VkImageCreateInfo& colorPreUpscaleCreateInfo);
 		void Cleanup();
 
-		VansVKImage& GetTempFSRImage() { return *m_TempFSRImage; }
-
-		VkExtent2D GetDisplayExtent()
-		{
-			return { m_DisplayWidth, m_DisplayHeight };
-		}
+		VansVKImage& GetOutputImage() { return *m_OutputImage; }
+		VansVKImage& GetReactiveMaskImage() { return *m_ReactiveMaskImage; }
+		VansVKImage& GetTransparencyAndCompositionImage() { return *m_TransparencyAndCompositionImage; }
+		VkExtent2D GetDisplayExtent() const { return { m_DisplayWidth, m_DisplayHeight }; }
 
 		void SetSharpness(float sharpness);
 		float GetSharpness() const { return m_Sharpness; }
-
-		// 返回 FSR 内置抖动序列相位数量
 		int32_t GetJitterPhaseCount() const { return m_JitterPhaseCount; }
+		bool GetJitterOffset(int32_t index, float& outX, float& outY);
+		void SetDebugViewEnabled(bool enabled) { m_DebugViewEnabled = enabled; }
+		bool IsDebugViewEnabled() const { return m_DebugViewEnabled; }
+		const VansFSRDiagnostics& GetDiagnostics() const { return m_Diagnostics; }
 
-		// 查询 FSR 内置抖动偏移，outX/outY 为像素空间 [-0.5, 0.5]
-		void GetJitterOffset(int32_t index, float& outX, float& outY);
+	private:
+		ffx::Context m_UpscalingContext = nullptr;
+		std::uint32_t m_RenderWidth = 0;
+		std::uint32_t m_RenderHeight = 0;
+		std::uint32_t m_DisplayWidth = 0;
+		std::uint32_t m_DisplayHeight = 0;
+		VkDevice m_Device = VK_NULL_HANDLE;
+		VkPhysicalDevice m_PhysicalDevice = VK_NULL_HANDLE;
+		int32_t m_JitterPhaseCount = 0;
+		std::unique_ptr<VansVKImage> m_OutputImage;
+		std::unique_ptr<VansVKImage> m_ReactiveMaskImage;
+		std::unique_ptr<VansVKImage> m_TransparencyAndCompositionImage;
+		VansFSRDiagnostics m_Diagnostics;
+		bool m_DebugViewEnabled = false;
+		float m_Sharpness = 0.2f;
 	};
 }

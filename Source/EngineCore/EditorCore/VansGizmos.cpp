@@ -398,7 +398,7 @@ void VansGizmos::Draw(Vans::EditorAPI::IEngineEditorAPI& api,
 
     // ImGuizmo renders through ImGui's screen-space draw list; pass the
     // projection matrix exactly as the engine stores it (Vulkan Y-flip included).
-    // Do NOT negate proj[1][1] here 鈥?ImGuizmo's screen-space math already
+    // Do not negate proj[1][1] here; ImGuizmo's screen-space math already
     // compensates, and negating it causes the visible Y-axis flip.
 
 
@@ -490,7 +490,7 @@ void VansGizmos::TryPickObject(Vans::EditorAPI::IEngineEditorAPI& api,
     if (!camera) return;
     if (windowSize.x <= 0.0f || windowSize.y <= 0.0f) return;
 
-    // Mouse 鈫?NDC in [-1, 1]
+    // Convert the mouse position to NDC in [-1, 1].
     float ndcX = 2.0f * (mousePos.x - windowPos.x) / windowSize.x - 1.0f;
     float ndcY = 1.0f - 2.0f * (mousePos.y - windowPos.y) / windowSize.y;
 

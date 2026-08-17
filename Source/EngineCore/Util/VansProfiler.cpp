@@ -312,8 +312,8 @@ void Vans::VansGpuProfiler::CopyText(char* dst, uint32_t dstSize, const char* sr
 
 void Vans::VansGpuProfiler::Init(void* device, void* physDevice, uint32_t /*queueFamily*/)
 {
-    if (m_Pools[0] != nullptr)
-        return;
+	if (m_Pools[0][0] != nullptr)
+		return;
 
     VkDevice vkDev = static_cast<VkDevice>(device);
     VkPhysicalDevice vkPhys = static_cast<VkPhysicalDevice>(physDevice);
@@ -326,18 +326,17 @@ void Vans::VansGpuProfiler::Init(void* device, void* physDevice, uint32_t /*queu
     ci.queryType = VK_QUERY_TYPE_TIMESTAMP;
     ci.queryCount = MAX_GPU_QUERIES * 2;
 
-    for (int i = 0; i < POOL_COUNT; ++i)
-    {
-        VkQueryPool pool = VK_NULL_HANDLE;
-        if (!VansGraphics::VansVKDevice::CreateQueryPool(vkDev, ci, pool))
-        {
-            m_Pools[i] = nullptr;
-        }
-        else
-        {
-            m_Pools[i] = pool;
-        }
-    }
+	for (int lane = 0; lane < LANE_COUNT; ++lane)
+	{
+		for (int poolIndex = 0; poolIndex < POOL_COUNT; ++poolIndex)
+		{
+			VkQueryPool pool = VK_NULL_HANDLE;
+			if (!VansGraphics::VansVKDevice::CreateQueryPool(vkDev, ci, pool))
+				m_Pools[lane][poolIndex] = nullptr;
+			else
+				m_Pools[lane][poolIndex] = pool;
+		}
+	}
 
     m_WriteIdx = 0;
     m_HasPreviousFrame = false;
@@ -349,57 +348,83 @@ void Vans::VansGpuProfiler::Destroy()
         return;
 
     VkDevice vkDev = static_cast<VkDevice>(m_Device);
-    for (int i = 0; i < POOL_COUNT; ++i)
-    {
-        if (m_Pools[i] != nullptr)
-        {
-            VkQueryPool pool = static_cast<VkQueryPool>(m_Pools[i]);
-            VansGraphics::VansVKDevice::DestroyQueryPool(vkDev, pool);
-            m_Pools[i] = nullptr;
-        }
-    }
+	for (int lane = 0; lane < LANE_COUNT; ++lane)
+	{
+		for (int poolIndex = 0; poolIndex < POOL_COUNT; ++poolIndex)
+		{
+			if (m_Pools[lane][poolIndex] != nullptr)
+			{
+				VkQueryPool pool = static_cast<VkQueryPool>(m_Pools[lane][poolIndex]);
+				VansGraphics::VansVKDevice::DestroyQueryPool(vkDev, pool);
+				m_Pools[lane][poolIndex] = nullptr;
+			}
+		}
+	}
+	m_Device = nullptr;
+}
+
+void Vans::VansGpuProfiler::PrepareFrame()
+{
+	if (!VansProfiler::Get().IsCaptureEnabled())
+		return;
+
+	const uint32_t cur = m_WriteIdx;
+	for (int lane = 0; lane < LANE_COUNT; ++lane)
+	{
+		m_SlotCount[lane][cur] = 0;
+		m_NextQuery[lane][cur] = 0;
+		m_StackDepth[lane] = 0;
+	}
 }
 
 void Vans::VansGpuProfiler::BeginFrame(void* cmd)
 {
-    if (!VansProfiler::Get().IsCaptureEnabled())
-        return;
-
-    if (cmd == nullptr || m_Pools[0] == nullptr || m_Pools[1] == nullptr)
-        return;
-
-    uint32_t cur = m_WriteIdx;
-    m_SlotCount[cur] = 0;
-    m_NextQuery[cur] = 0;
-    m_StackDepth = 0;
-
-    if (m_Pools[cur] != nullptr)
-    {
-        VansGraphics::VansVKDevice::CmdResetQueryPool(static_cast<VkCommandBuffer>(cmd), static_cast<VkQueryPool>(m_Pools[cur]), 0, MAX_GPU_QUERIES * 2);
-    }
+	PrepareFrame();
+	BeginQueue(cmd, VansGpuQueueLane::Graphics);
 }
 
-void Vans::VansGpuProfiler::Push(void* cmd, const char* name)
+void Vans::VansGpuProfiler::BeginQueue(void* cmd, VansGpuQueueLane lane)
+{
+	if (!VansProfiler::Get().IsCaptureEnabled() || cmd == nullptr)
+		return;
+	const int laneIndex = static_cast<int>(lane);
+	if (laneIndex < 0 || laneIndex >= LANE_COUNT)
+		return;
+	const uint32_t cur = m_WriteIdx;
+	if (m_Pools[laneIndex][cur] != nullptr)
+	{
+		VansGraphics::VansVKDevice::CmdResetQueryPool(
+			static_cast<VkCommandBuffer>(cmd),
+			static_cast<VkQueryPool>(m_Pools[laneIndex][cur]),
+			0,
+			MAX_GPU_QUERIES * 2);
+	}
+}
+
+void Vans::VansGpuProfiler::Push(void* cmd, const char* name, VansGpuQueueLane lane)
 {
     if (!VansProfiler::Get().IsCaptureEnabled())
         return;
 
-    if (cmd == nullptr || m_Pools[0] == nullptr || m_Pools[1] == nullptr)
-        return;
+	const int laneIndex = static_cast<int>(lane);
+	if (cmd == nullptr || laneIndex < 0 || laneIndex >= LANE_COUNT)
+		return;
 
-    uint32_t cur = m_WriteIdx;
-    if (m_Pools[cur] == nullptr || m_SlotCount[cur] >= MAX_GPU_QUERIES || m_NextQuery[cur] + 1 >= MAX_GPU_QUERIES * 2)
-        return;
+	uint32_t cur = m_WriteIdx;
+	if (m_Pools[laneIndex][cur] == nullptr ||
+		m_SlotCount[laneIndex][cur] >= MAX_GPU_QUERIES ||
+		m_NextQuery[laneIndex][cur] + 1 >= MAX_GPU_QUERIES * 2)
+		return;
 
-    uint32_t beginIdx = m_NextQuery[cur]++;
-    uint32_t endIdx = m_NextQuery[cur]++;
+	uint32_t beginIdx = m_NextQuery[laneIndex][cur]++;
+	uint32_t endIdx = m_NextQuery[laneIndex][cur]++;
 
-    Slot& slot = m_Slots[cur][m_SlotCount[cur]++];
+	Slot& slot = m_Slots[laneIndex][cur][m_SlotCount[laneIndex][cur]++];
     CopyText(slot.name, sizeof(slot.name), name);
     slot.beginSlot = beginIdx;
     slot.endSlot = endIdx;
-    slot.depth = static_cast<uint16_t>(m_StackDepth);
-    ++m_StackDepth;
+	slot.depth = static_cast<uint16_t>(m_StackDepth[laneIndex]);
+	++m_StackDepth[laneIndex];
 
 #ifdef _DEBUG
     VkDebugUtilsLabelEXT labelInfo = {};
@@ -412,27 +437,36 @@ void Vans::VansGpuProfiler::Push(void* cmd, const char* name)
     VansGraphics::VansVKDevice::CmdBeginDebugLabel(static_cast<VkCommandBuffer>(cmd), labelInfo);
 #endif
 
-    VansGraphics::VansVKDevice::CmdWriteTimestamp(static_cast<VkCommandBuffer>(cmd), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, static_cast<VkQueryPool>(m_Pools[cur]), beginIdx);
+	VansGraphics::VansVKDevice::CmdWriteTimestamp(
+		static_cast<VkCommandBuffer>(cmd),
+		VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+		static_cast<VkQueryPool>(m_Pools[laneIndex][cur]),
+		beginIdx);
 }
 
-void Vans::VansGpuProfiler::Pop(void* cmd)
+void Vans::VansGpuProfiler::Pop(void* cmd, VansGpuQueueLane lane)
 {
     if (!VansProfiler::Get().IsCaptureEnabled())
         return;
 
-    if (cmd == nullptr || m_Pools[0] == nullptr || m_Pools[1] == nullptr)
-        return;
+	const int laneIndex = static_cast<int>(lane);
+	if (cmd == nullptr || laneIndex < 0 || laneIndex >= LANE_COUNT)
+		return;
 
-    uint32_t cur = m_WriteIdx;
-    if (m_Pools[cur] == nullptr || m_StackDepth <= 0)
-        return;
+	uint32_t cur = m_WriteIdx;
+	if (m_Pools[laneIndex][cur] == nullptr || m_StackDepth[laneIndex] <= 0)
+		return;
 
-    --m_StackDepth;
-    for (int i = m_SlotCount[cur] - 1; i >= 0; --i)
-    {
-        if (m_Slots[cur][i].depth == static_cast<uint16_t>(m_StackDepth))
-        {
-            VansGraphics::VansVKDevice::CmdWriteTimestamp(static_cast<VkCommandBuffer>(cmd), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, static_cast<VkQueryPool>(m_Pools[cur]), m_Slots[cur][i].endSlot);
+	--m_StackDepth[laneIndex];
+	for (int i = m_SlotCount[laneIndex][cur] - 1; i >= 0; --i)
+	{
+		if (m_Slots[laneIndex][cur][i].depth == static_cast<uint16_t>(m_StackDepth[laneIndex]))
+		{
+			VansGraphics::VansVKDevice::CmdWriteTimestamp(
+				static_cast<VkCommandBuffer>(cmd),
+				VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+				static_cast<VkQueryPool>(m_Pools[laneIndex][cur]),
+				m_Slots[laneIndex][cur][i].endSlot);
 #ifdef _DEBUG
             VansGraphics::VansVKDevice::CmdEndDebugLabel(static_cast<VkCommandBuffer>(cmd));
 #endif
@@ -447,118 +481,132 @@ void Vans::VansGpuProfiler::EndFrame()
 
 void Vans::VansGpuProfiler::Resolve(void* device)
 {
-    uint32_t prev = m_WriteIdx ^ 1;
-    m_EventCount = 0;
+	const uint32_t prev = m_WriteIdx ^ 1;
+	for (int lane = 0; lane < LANE_COUNT; ++lane)
+		m_EventCount[lane] = 0;
 
-    if (!VansProfiler::Get().IsCaptureEnabled())
-    {
-        m_HasPreviousFrame = false;
-        m_WriteIdx = 0;
-        m_SlotCount[0] = 0;
-        m_SlotCount[1] = 0;
-        m_NextQuery[0] = 0;
-        m_NextQuery[1] = 0;
-        m_StackDepth = 0;
-        return;
-    }
+	if (!VansProfiler::Get().IsCaptureEnabled())
+	{
+		m_HasPreviousFrame = false;
+		m_WriteIdx = 0;
+		for (int lane = 0; lane < LANE_COUNT; ++lane)
+		{
+			for (int poolIndex = 0; poolIndex < POOL_COUNT; ++poolIndex)
+			{
+				m_SlotCount[lane][poolIndex] = 0;
+				m_NextQuery[lane][poolIndex] = 0;
+			}
+			m_StackDepth[lane] = 0;
+		}
+		return;
+	}
 
-    if (!m_HasPreviousFrame || m_Pools[prev] == nullptr || m_SlotCount[prev] == 0)
-    {
-        m_HasPreviousFrame = true;
-        m_WriteIdx ^= 1;
-        return;
-    }
+	if (!m_HasPreviousFrame)
+	{
+		m_HasPreviousFrame = true;
+		m_WriteIdx ^= 1;
+		return;
+	}
 
-    VkDevice vkDev = static_cast<VkDevice>(device);
-    VkQueryPool vkPool = static_cast<VkQueryPool>(m_Pools[prev]);
-    uint32_t queryCount = m_NextQuery[prev];
-    if (queryCount == 0)
-    {
-        m_WriteIdx ^= 1;
-        return;
-    }
+	VkDevice vkDev = static_cast<VkDevice>(device);
+	for (int lane = 0; lane < LANE_COUNT; ++lane)
+	{
+		if (m_Pools[lane][prev] == nullptr || m_SlotCount[lane][prev] == 0)
+			continue;
 
-    VkResult res = VansGraphics::VansVKDevice::GetQueryPoolResults(
-        vkDev, vkPool, 0, queryCount,
-        queryCount * sizeof(uint64_t), m_RawResults, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
+		const uint32_t queryCount = m_NextQuery[lane][prev];
+		if (queryCount == 0)
+			continue;
+		VkResult result = VansGraphics::VansVKDevice::GetQueryPoolResults(
+			vkDev,
+			static_cast<VkQueryPool>(m_Pools[lane][prev]),
+			0,
+			queryCount,
+			queryCount * sizeof(uint64_t),
+			m_RawResults[lane],
+			sizeof(uint64_t),
+			VK_QUERY_RESULT_64_BIT);
+		if (result != VK_SUCCESS)
+			continue;
 
-    if (res != VK_SUCCESS)
-    {
-        m_WriteIdx ^= 1;
-        return;
-    }
+		uint64_t gpuOrigin = UINT64_MAX;
+		for (int i = 0; i < m_SlotCount[lane][prev]; ++i)
+		{
+			gpuOrigin = std::min<uint64_t>(
+				gpuOrigin,
+				m_RawResults[lane][m_Slots[lane][prev][i].beginSlot]);
+		}
 
-    uint64_t gpuOrigin = UINT64_MAX;
-    for (int i = 0; i < m_SlotCount[prev]; ++i)
-        gpuOrigin = std::min<uint64_t>(gpuOrigin, m_RawResults[m_Slots[prev][i].beginSlot]);
+		for (int i = 0; i < m_SlotCount[lane][prev] && m_EventCount[lane] < MAX_GPU_QUERIES; ++i)
+		{
+			const Slot& slot = m_Slots[lane][prev][i];
+			const uint64_t rawBegin = m_RawResults[lane][slot.beginSlot];
+			const uint64_t rawEnd = m_RawResults[lane][slot.endSlot];
+			ProfileEvent& event = m_Events[lane][m_EventCount[lane]++];
+			event.eventId = static_cast<uint32_t>(lane * MAX_GPU_QUERIES + i + 1);
+			event.parentEventId = 0;
+			event.trackId = 0;
+			event.category = ProfileCategory::GPU;
+			CopyText(event.name, sizeof(event.name), slot.name);
+			event.startUs = static_cast<double>(rawBegin - gpuOrigin) * m_TimestampPeriodMs * 1000.0;
+			event.endUs = static_cast<double>(rawEnd - gpuOrigin) * m_TimestampPeriodMs * 1000.0;
+			event.depth = slot.depth;
+			event.flags = ProfileEventFlagGpu;
+		}
+	}
 
-    for (int i = 0; i < m_SlotCount[prev] && m_EventCount < MAX_GPU_QUERIES; ++i)
-    {
-        const Slot& slot = m_Slots[prev][i];
-        uint64_t rawBegin = m_RawResults[slot.beginSlot];
-        uint64_t rawEnd = m_RawResults[slot.endSlot];
-
-        ProfileEvent& event = m_Events[m_EventCount++];
-        event.eventId = static_cast<uint32_t>(i + 1);
-        event.parentEventId = 0;
-        event.trackId = 0;
-        event.category = ProfileCategory::GPU;
-        CopyText(event.name, sizeof(event.name), slot.name);
-        event.startUs = static_cast<double>(rawBegin - gpuOrigin) * m_TimestampPeriodMs * 1000.0;
-        event.endUs = static_cast<double>(rawEnd - gpuOrigin) * m_TimestampPeriodMs * 1000.0;
-        event.depth = slot.depth;
-        event.flags = ProfileEventFlagGpu;
-    }
-
-    m_WriteIdx ^= 1;
+	m_WriteIdx ^= 1;
 }
 
 void Vans::VansGpuProfiler::CollectInto(ProfileFrame& frame) const
 {
-    uint32_t gpuTrackId = 0;
-    for (uint32_t i = 0; i < frame.trackCount; ++i)
-    {
-        if (frame.tracks[i].type == ProfileTrackType::GpuQueue)
-        {
-            gpuTrackId = frame.tracks[i].trackId;
-            break;
-        }
-    }
+	static constexpr const char* laneNames[LANE_COUNT] = {
+		"GPU Graphics Queue",
+		"GPU Compute Queue",
+		"GPU Shadow Queue"
+	};
+	static constexpr uint32_t laneColors[LANE_COUNT] = {
+		0xff7a8cffu,
+		0xff62c96bu,
+		0xffffb454u
+	};
 
-    if (gpuTrackId == 0 && frame.trackCount < ProfileFrame::MAX_TRACKS)
-    {
-        ProfileTrack& track = frame.tracks[frame.trackCount];
-        track.trackId = frame.trackCount + 1;
-        track.type = ProfileTrackType::GpuQueue;
-        track.threadId = 1;
-        track.color = 0xff7a8cffu;
-        std::snprintf(track.name, sizeof(track.name), "%s", "GPU Graphics Queue");
-        gpuTrackId = track.trackId;
-        ++frame.trackCount;
-    }
+	for (int lane = 0; lane < LANE_COUNT; ++lane)
+	{
+		if (m_EventCount[lane] == 0 || frame.trackCount >= ProfileFrame::MAX_TRACKS)
+			continue;
+		ProfileTrack& track = frame.tracks[frame.trackCount];
+		track.trackId = frame.trackCount + 1;
+		track.type = ProfileTrackType::GpuQueue;
+		track.threadId = static_cast<uint64_t>(lane + 1);
+		track.color = laneColors[lane];
+		std::snprintf(track.name, sizeof(track.name), "%s", laneNames[lane]);
+		const uint32_t trackId = track.trackId;
+		++frame.trackCount;
 
-    for (int i = 0; i < m_EventCount && frame.eventCount < ProfileFrame::MAX_EVENTS; ++i)
-    {
-        ProfileEvent event = m_Events[i];
-        event.trackId = gpuTrackId;
-        frame.events[frame.eventCount++] = event;
-    }
+		for (int i = 0; i < m_EventCount[lane] && frame.eventCount < ProfileFrame::MAX_EVENTS; ++i)
+		{
+			ProfileEvent event = m_Events[lane][i];
+			event.trackId = trackId;
+			frame.events[frame.eventCount++] = event;
+		}
+	}
 }
 
-Vans::VansGpuScopeQuery::VansGpuScopeQuery(void* cmd, const char* name)
-    : m_Cmd(cmd)
+Vans::VansGpuScopeQuery::VansGpuScopeQuery(void* cmd, const char* name, VansGpuQueueLane lane)
+	: m_Cmd(cmd), m_Lane(lane)
 {
     if (VansProfiler::Get().IsCaptureEnabled() && cmd != nullptr && VansGpuProfiler::Get().IsInitialized())
     {
-        VansGpuProfiler::Get().Push(cmd, name);
+		VansGpuProfiler::Get().Push(cmd, name, lane);
         m_Active = true;
     }
 }
 
 Vans::VansGpuScopeQuery::~VansGpuScopeQuery()
 {
-    if (m_Active)
-        VansGpuProfiler::Get().Pop(m_Cmd);
+	if (m_Active)
+		VansGpuProfiler::Get().Pop(m_Cmd, m_Lane);
 }
 
 Vans::VansProfiler& Vans::VansProfiler::Get()

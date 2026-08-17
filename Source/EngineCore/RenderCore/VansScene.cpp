@@ -1,10 +1,13 @@
 ﻿#include "VansScene.h"
 
 #include "../RuntimeCore/VansFramePhase.h"
+#include "../GameplayActionCore/VansGameplayRuntime.h"
+#include "Timeline/VansVirtualCameraParameterStore.h"
 
 #include "../RuntimeCore/VansThreadContract.h"
 #include "VansShaderManager.h"
 #include "VansCamera.h"
+#include "VansCameraControlArbiter.h"
 #include "BRDFData/VansLight.h"
 #include "../Configration/VansConfigration.h"
 #include "../AudioCore/VansAudioReverbEnvironment.h"
@@ -339,6 +342,16 @@ VansGraphics::VansScene::~VansScene()
     {
         VANS_LOG_WARN("[VansScene] Scene is still loaded during destruction; call UnLoadScene() before delete");
     }
+}
+
+void VansGraphics::VansScene::InjectCamera(VansCamera* camera)
+{
+	if (m_Camera != camera)
+	{
+		if (m_RuntimeResourceDevice != nullptr)
+			m_RuntimeResourceDevice->RequestFSRHistoryReset(VansFSRResetReason::CameraCut);
+		m_Camera = camera;
+	}
 }
 
 bool VansGraphics::VansScene::ReplaceAnimationRuntimeController(
@@ -693,6 +706,12 @@ void VansGraphics::VansScene::CreateGlobalDescriptorSet(VkDevice device)
         VERTEX_DEFORMATION_BINDING_BONEWEIGHT_SSBO,
         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
         {{ m_DummyWeightBuffer.GetNativeBuffer(), 0, 64 }});
+    // binding 3: Dummy previous Bone Matrices SSBO
+    descManager->WriteBufferDescriptor(
+        m_VertexDeformationDescriptorSet,
+        VERTEX_DEFORMATION_BINDING_PREVIOUS_BONE_SSBO,
+        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        {{ m_DummyBoneBuffer.GetNativeBuffer(), 0, 64 }});
     descManager->CommitDescriptorUpdates();
 
     // Create empty pass layout (Set 1) for passes with no per-pass resources
@@ -775,6 +794,17 @@ void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
             m_MaterialManager.m_GlobalTreeLeafDataBuffer.GetBufferSize()
         }});
 
+    // Binding 18: Skin extension payloads; indices match Binding 2 exactly.
+    descManager->WriteBufferDescriptor(
+        m_GlobalDescriptorSet,
+        GLOBAL_BINDING_SKIN_MATERIAL_SSBO,
+        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        {{
+            m_MaterialManager.m_GlobalSkinDataBuffer.GetNativeBuffer(),
+            0,
+            m_MaterialManager.m_GlobalSkinDataBuffer.GetBufferSize()
+        }});
+
     // Binding 3: BRDF LUT
     descManager->WriteImageDescriptor(
         m_GlobalDescriptorSet,
@@ -827,6 +857,17 @@ void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
         {{
             m_MaterialManager.m_SkinBSDFLUT->GetImage().GetSampler(),
             m_MaterialManager.m_SkinBSDFLUT->GetImage().GetImageView(),
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+        }});
+
+    // Binding 19: Skin profile pre-integrated LUT array.
+    descManager->WriteImageDescriptor(
+        m_GlobalDescriptorSet,
+        GLOBAL_BINDING_SKIN_PROFILE_LUT_ARRAY,
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        {{
+            m_MaterialManager.m_SkinProfileLUTArray->GetImage().GetSampler(),
+            m_MaterialManager.m_SkinProfileLUTArray->GetImage().GetImageView(),
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
         }});
 
@@ -1107,18 +1148,44 @@ VansGraphics::VansRenderNode* VansGraphics::VansScene::FindRenderNodeByName(cons
     return nullptr;
 }
 
+void VansGraphics::VansScene::UpdateActionsEarly(double deltaSeconds)
+{
+	if (m_CameraControlArbiter)
+		m_CameraControlArbiter->CoreRuntime().Advance(deltaSeconds);
+	if (!m_GameplayRuntime || !m_RuntimeWorld || !m_GameplayRuntime->IsInitialized())
+		return;
+	m_GameplayRuntime->SynchronizeHostEnablement(*m_RuntimeWorld);
+	m_GameplayRuntime->TickEarly(deltaSeconds);
+}
+
+bool VansGraphics::VansScene::RunActionLateContinuation()
+{
+	return m_GameplayRuntime && m_GameplayRuntime->IsInitialized() &&
+		m_GameplayRuntime->RunLateContinuation();
+}
+
 void VansGraphics::VansScene::UnLoadScene()
 {
     VANS_ASSERT_MAIN_THREAD();
 
 	VANS_LOG("[VansScene] UnLoadScene started");
+	if (m_GameplayRuntime)
+		m_GameplayRuntime->Shutdown();
 	if (m_TimelineRuntime)
 		m_TimelineRuntime->Clear();
+	if (m_VirtualCameraParameters)
+		m_VirtualCameraParameters->Clear();
 	if (m_RuntimeWorld)
 		m_RuntimeWorld->FlushCommands();
 	ReleaseAudioSourceBindings();
 	if (m_RuntimeWorld)
 		m_RuntimeWorld->Clear();
+	m_GameplayRuntime.reset();
+	if (m_CameraControlArbiter)
+	{
+		m_CameraControlArbiter->Clear(m_Camera);
+		m_CameraControlArbiter->CoreRuntime().Clear();
+	}
 
 	VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
 	VkDevice nativeDevice = vkDevice ? vkDevice->GetLogicDevice() : VK_NULL_HANDLE;
@@ -1347,7 +1414,7 @@ void VansGraphics::VansScene::UnLoadScene()
     VANS_LOG("[VansScene] Step 9c: 楠ㄩ纰版挒浣撻檮鐫€鐐圭郴缁熷凡娓呯悊");
 
 	// ── 10. 清理 Multi-mesh 分组 ────────────────────────────────────────
-    VANS_UNLOAD_STEP(10, "娓呯悊 Multi-mesh 鍒嗙粍鍜屽瓙缃戞牸鏌ユ壘鏉＄洰");
+	VANS_UNLOAD_STEP(10, "Clear multi-mesh groups and submesh lookup entries");
 	VANS_LOG("[VansScene] Step 10: clearing multi-mesh groups (count=" << m_MultiMeshGroups.size() << ")");
 	for (auto& [groupName, group] : m_MultiMeshGroups)
 	{
@@ -1441,7 +1508,7 @@ void VansGraphics::VansScene::UnLoadScene()
         VANS_LOG("[VansScene] Step 14: RT/TLAS resources cleared");
 
 	// ── 15. 清理 Instance Transform Buffer ──────────────────────────────
-    VANS_UNLOAD_STEP(15, "娓呯悊 Instance Transform Buffer 涓?descriptor");
+	VANS_UNLOAD_STEP(15, "Clear instance-transform buffers and descriptors");
 	m_InstanceTransformDataBuffer.DestroyVulkanBuffer(nativeDevice);
 	m_InstanceTransformData.clear();
 
@@ -1762,6 +1829,7 @@ void VansGraphics::VansScene::RecordVideoUploads(VansVKCommandBuffer& cmd)
 {
     VANS_PROFILE_SCOPE("Video::Upload.RecordCommands", Vans::ProfileCategory::Video);
     m_VideoManager.RecordPendingUploads(cmd);
+    m_MaterialManager.RecordPendingSkinProfileLUTUploads(cmd);
 
     // 面光源视频发光：写入 emissive 贴图数组层，合并进当前帧命令缓冲。
     {

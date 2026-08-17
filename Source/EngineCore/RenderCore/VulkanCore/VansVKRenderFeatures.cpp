@@ -2008,6 +2008,13 @@ namespace VansGraphics
 		{
 			VansBloomParamsGPU bloomParams = profile.ToBloomParams();
 			manager->m_BloomParamsCBBuffer.SetBufferData(&bloomParams, 0, sizeof(VansBloomParamsGPU));
+			VansBloomShapeParamsGPU bloomShapeParams = profile.ToBloomShapeParams();
+			manager->m_BloomShapeParamsCBBuffer.SetBufferData(
+				&bloomShapeParams, 0, sizeof(VansBloomShapeParamsGPU));
+			VansDepthOfFieldParamsGPU dofParams = profile.ToDepthOfFieldParams(m_RenderWidth, m_RenderHeight);
+			manager->m_DepthOfFieldParamsCBBuffer.SetBufferData(
+				&dofParams, 0, sizeof(VansDepthOfFieldParamsGPU));
+			m_PPBloomDescSetGeneration = 0;
 			profile.m_IsDirty = false;
 		}
 	}
@@ -2021,7 +2028,8 @@ namespace VansGraphics
 
 		VansTexture* luminance = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_EXPOSURE_LUMINANCE);
 		VansTexture* exposure = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_EXPOSURE_CURRENT);
-		if (luminance == nullptr || exposure == nullptr) return;
+		VansTexture* fsrExposure = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_FSR_EXPOSURE);
+		if (luminance == nullptr || exposure == nullptr || fsrExposure == nullptr) return;
 
 		auto& sceneColor = renderPassManager->GetColor();
 		auto* desc = VansVKDescriptorManager::GetInstance();
@@ -2055,6 +2063,11 @@ namespace VansGraphics
 			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 			{{ manager->m_ExposureAdaptParamsCBBuffer.GetNativeBuffer(), 0,
 			   manager->m_ExposureAdaptParamsCBBuffer.GetBufferSize() }});
+		desc->WriteImageDescriptor(
+			manager->m_ExposureAdaptDescriptorSets[0],
+			EXPOSURE_ADAPT_BINDING_FSR_EXP_OUT,
+			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			{{ fsrExposure->GetImage().GetSampler(), fsrExposure->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
 		desc->CommitDescriptorUpdates();
 		MarkFeatureDescriptorCurrent(m_PPExposureDescSetGeneration);
 	}
@@ -2063,24 +2076,27 @@ namespace VansGraphics
 		VansRenderPassManager* renderPassManager,
 		VansVKCommandBuffer& computeCmd)
 	{
-		UpdateExposureDescriptorSets(renderPassManager);
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
-		if (manager->m_ExposureLuminanceShader == nullptr
-			|| manager->m_ExposureAdaptShader == nullptr
+		UpdateExposureDescriptorSets(renderPassManager);
+		if (manager->m_ExposureAdaptShader == nullptr
 			|| manager->m_ExposureLuminanceDescriptorSets.empty()
 			|| manager->m_ExposureAdaptDescriptorSets.empty()) return;
 
-		computeCmd.EnsureComputeShader(
-			*manager->m_ExposureLuminanceShader,
-			{ m_Scene->GetGlobalDescriptorSetLayout(), manager->m_ExposureLuminanceSetLayout });
-		computeCmd.DispatchCompute(
-			*manager->m_ExposureLuminanceShader,
-			8, 8, 1,
-			{ m_Scene->GetGlobalDescriptorSet(), manager->m_ExposureLuminanceDescriptorSets[0] });
-		RecordShaderWriteToReadMemoryDependency(
-			computeCmd,
-			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+		if (manager->m_PostProcessProfile.m_EnableAutoExposure)
+		{
+			if (manager->m_ExposureLuminanceShader == nullptr) return;
+			computeCmd.EnsureComputeShader(
+				*manager->m_ExposureLuminanceShader,
+				{ m_Scene->GetGlobalDescriptorSetLayout(), manager->m_ExposureLuminanceSetLayout });
+			computeCmd.DispatchCompute(
+				*manager->m_ExposureLuminanceShader,
+				8, 8, 1,
+				{ m_Scene->GetGlobalDescriptorSet(), manager->m_ExposureLuminanceDescriptorSets[0] });
+			RecordShaderWriteToReadMemoryDependency(
+				computeCmd,
+				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+		}
 
 		computeCmd.EnsureComputeShader(
 			*manager->m_ExposureAdaptShader,
@@ -2089,6 +2105,69 @@ namespace VansGraphics
 			*manager->m_ExposureAdaptShader,
 			1, 1, 1,
 			{ m_Scene->GetGlobalDescriptorSet(), manager->m_ExposureAdaptDescriptorSets[0] });
+	}
+
+	void VansVKDevice::UpdateDepthOfFieldDescriptorSets(VansRenderPassManager* renderPassManager)
+	{
+		if (IsFeatureDescriptorCurrent(m_PPDepthOfFieldDescSetGeneration)) return;
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+		if (manager->m_DepthOfFieldDescriptorSets.empty()) return;
+
+		VansTexture* dofResult = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_DOF_RESULT);
+		if (dofResult == nullptr) return;
+
+		auto& sceneColor = renderPassManager->GetColor();
+		auto& gbuffer2 = renderPassManager->GetGbuffer2();
+		auto* desc = VansVKDescriptorManager::GetInstance();
+		desc->BeginDescriptorUpdate();
+		desc->WriteImageDescriptor(
+			manager->m_DepthOfFieldDescriptorSets[0],
+			DOF_BINDING_SRC_COLOR,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{ sceneColor.GetSampler(), sceneColor.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
+		desc->WriteImageDescriptor(
+			manager->m_DepthOfFieldDescriptorSets[0],
+			DOF_BINDING_GBUFFER2,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{ gbuffer2.GetSampler(), gbuffer2.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
+		desc->WriteImageDescriptor(
+			manager->m_DepthOfFieldDescriptorSets[0],
+			DOF_BINDING_DST_COLOR,
+			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			{{ dofResult->GetImage().GetSampler(), dofResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
+		desc->WriteBufferDescriptor(
+			manager->m_DepthOfFieldDescriptorSets[0],
+			DOF_BINDING_PARAMS,
+			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			{{ manager->m_DepthOfFieldParamsCBBuffer.GetNativeBuffer(), 0,
+			   manager->m_DepthOfFieldParamsCBBuffer.GetBufferSize() }});
+		desc->CommitDescriptorUpdates();
+		MarkFeatureDescriptorCurrent(m_PPDepthOfFieldDescSetGeneration);
+	}
+
+	void VansVKDevice::UpdateDepthOfField(
+		VansRenderPassManager* renderPassManager,
+		VansVKCommandBuffer& computeCmd)
+	{
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+		if (!manager->m_PostProcessProfile.m_EnableDOF) return;
+		UpdateDepthOfFieldDescriptorSets(renderPassManager);
+		if (manager->m_DepthOfFieldShader == nullptr
+			|| manager->m_DepthOfFieldDescriptorSets.empty()) return;
+
+		const uint32_t groupsX = (std::max)(m_RenderWidth + 7, 8u) / 8u;
+		const uint32_t groupsY = (std::max)(m_RenderHeight + 7, 8u) / 8u;
+		computeCmd.EnsureComputeShader(
+			*manager->m_DepthOfFieldShader,
+			{ m_Scene->GetGlobalDescriptorSetLayout(), manager->m_DepthOfFieldSetLayout });
+		computeCmd.DispatchCompute(
+			*manager->m_DepthOfFieldShader,
+			groupsX, groupsY, 1,
+			{ m_Scene->GetGlobalDescriptorSet(), manager->m_DepthOfFieldDescriptorSets[0] });
+		RecordShaderWriteToReadMemoryDependency(
+			computeCmd,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
 	}
 
 	void VansVKDevice::UpdateBloomDescriptorSets(VansRenderPassManager* renderPassManager)
@@ -2101,12 +2180,37 @@ namespace VansGraphics
 		VansTexture* mip1 = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_MIP1);
 		VansTexture* mip2 = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_MIP2);
 		VansTexture* mip3 = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_MIP3);
+		VansTexture* upMip0 = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_UP_MIP0);
+		VansTexture* upMip1 = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_UP_MIP1);
+		VansTexture* upMip2 = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_UP_MIP2);
+		VansTexture* base = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_BASE);
 		VansTexture* result = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_RESULT);
-		if (!prefilter || !mip0 || !mip1 || !mip2 || !mip3 || !result) return;
+		VansTexture* dofResult = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_DOF_RESULT);
+		if (!prefilter || !mip0 || !mip1 || !mip2 || !mip3 || !upMip0 || !upMip1 || !upMip2 || !result) return;
+		const bool hasShapeFinalize =
+			manager->m_BloomShapeShader != nullptr &&
+			!manager->m_BloomShapeDescriptorSets.empty() &&
+			base != nullptr;
 		auto& sceneColor = renderPassManager->GetColor();
+		const bool useDOFSource = manager->m_PostProcessProfile.m_EnableDOF && dofResult != nullptr;
 		auto* desc = VansVKDescriptorManager::GetInstance();
 		desc->BeginDescriptorUpdate();
-		desc->WriteImageDescriptor(manager->m_BloomPrefilterDescriptorSets[0], BLOOM_PREFILTER_BINDING_SRC, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {{ sceneColor.GetSampler(), sceneColor.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
+		if (useDOFSource)
+		{
+			desc->WriteImageDescriptor(
+				manager->m_BloomPrefilterDescriptorSets[0],
+				BLOOM_PREFILTER_BINDING_SRC,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{{ dofResult->GetImage().GetSampler(), dofResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
+		}
+		else
+		{
+			desc->WriteImageDescriptor(
+				manager->m_BloomPrefilterDescriptorSets[0],
+				BLOOM_PREFILTER_BINDING_SRC,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{{ sceneColor.GetSampler(), sceneColor.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
+		}
 		desc->WriteImageDescriptor(manager->m_BloomPrefilterDescriptorSets[0], BLOOM_PREFILTER_BINDING_DST, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, {{ prefilter->GetImage().GetSampler(), prefilter->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
 		desc->WriteBufferDescriptor(manager->m_BloomPrefilterDescriptorSets[0], BLOOM_PREFILTER_BINDING_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, {{ manager->m_BloomParamsCBBuffer.GetNativeBuffer(), 0, manager->m_BloomParamsCBBuffer.GetBufferSize() }});
 		desc->CommitDescriptorUpdates();
@@ -2119,9 +2223,9 @@ namespace VansGraphics
 			desc->WriteImageDescriptor(manager->m_BloomDownsampleDescriptorSets[i], BLOOM_DOWNSAMPLE_BINDING_DST, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, {{ dsOutputs[i]->GetImage().GetSampler(), dsOutputs[i]->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
 			desc->CommitDescriptorUpdates();
 		}
-		VansTexture* usLo[4] = { mip3, mip2, mip1, mip0 };
+		VansTexture* usLo[4] = { mip3, upMip2, upMip1, upMip0 };
 		VansTexture* usHi[4] = { mip2, mip1, mip0, prefilter };
-		VansTexture* usDst[4] = { mip2, mip1, mip0, result };
+		VansTexture* usDst[4] = { upMip2, upMip1, upMip0, hasShapeFinalize ? base : result };
 		for (int i = 0; i < 4; ++i)
 		{
 			desc->BeginDescriptorUpdate();
@@ -2134,10 +2238,43 @@ namespace VansGraphics
 		MarkFeatureDescriptorCurrent(m_PPBloomDescSetGeneration);
 	}
 
+	void VansVKDevice::UpdateBloomShapeDescriptorSets()
+	{
+		if (IsFeatureDescriptorCurrent(m_PPBloomShapeDescSetGeneration)) return;
+		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+		if (manager->m_BloomShapeDescriptorSets.empty()) return;
+
+		VansTexture* base = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_BASE);
+		VansTexture* result = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_RESULT);
+		if (base == nullptr || result == nullptr) return;
+
+		auto* desc = VansVKDescriptorManager::GetInstance();
+		desc->BeginDescriptorUpdate();
+		desc->WriteImageDescriptor(
+			manager->m_BloomShapeDescriptorSets[0],
+			BLOOM_SHAPE_BINDING_SRC,
+			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{ base->GetImage().GetSampler(), base->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
+		desc->WriteImageDescriptor(
+			manager->m_BloomShapeDescriptorSets[0],
+			BLOOM_SHAPE_BINDING_DST,
+			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			{{ result->GetImage().GetSampler(), result->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
+		desc->WriteBufferDescriptor(
+			manager->m_BloomShapeDescriptorSets[0],
+			BLOOM_SHAPE_BINDING_PARAMS,
+			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			{{ manager->m_BloomShapeParamsCBBuffer.GetNativeBuffer(), 0,
+			   manager->m_BloomShapeParamsCBBuffer.GetBufferSize() }});
+		desc->CommitDescriptorUpdates();
+		MarkFeatureDescriptorCurrent(m_PPBloomShapeDescSetGeneration);
+	}
+
 	void VansVKDevice::UpdateBloom(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)
 	{
-		UpdateBloomDescriptorSets(renderPassManager);
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
+		if (!manager->m_PostProcessProfile.m_EnableBloom) return;
+		UpdateBloomDescriptorSets(renderPassManager);
 		if (manager->m_BloomPrefilterShader == nullptr || manager->m_BloomDownsampleShader == nullptr || manager->m_BloomUpsampleShader == nullptr) return;
 		const uint32_t w2 = (std::max)(m_RenderWidth / 2, 1u), h2 = (std::max)(m_RenderHeight / 2, 1u);
 		const uint32_t w4 = (std::max)(m_RenderWidth / 4, 1u), h4 = (std::max)(m_RenderHeight / 4, 1u);
@@ -2157,12 +2294,30 @@ namespace VansGraphics
 			barrier();
 		}
 		computeCmd.EnsureComputeShader(*manager->m_BloomUpsampleShader, { m_Scene->GetGlobalDescriptorSetLayout(), manager->m_BloomUpsampleSetLayout });
-		uint32_t usW[4] = { w16, w8, w4, w2 };
-		uint32_t usH[4] = { h16, h8, h4, h2 };
+		uint32_t usW[4] = { w8, w4, w2, w2 };
+		uint32_t usH[4] = { h8, h4, h2, h2 };
 		for (int i = 0; i < 4; ++i)
 		{
 			computeCmd.DispatchCompute(*manager->m_BloomUpsampleShader, groups(usW[i]), groups(usH[i]), 1, { m_Scene->GetGlobalDescriptorSet(), manager->m_BloomUpsampleDescriptorSets[i] });
 			barrier();
+		}
+
+		if (manager->m_BloomShapeShader != nullptr && !manager->m_BloomShapeDescriptorSets.empty())
+		{
+			VansTexture* base = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_BASE);
+			VansTexture* result = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_BLOOM_RESULT);
+			if (base != nullptr && result != nullptr)
+			{
+				UpdateBloomShapeDescriptorSets();
+				computeCmd.EnsureComputeShader(
+					*manager->m_BloomShapeShader,
+					{ m_Scene->GetGlobalDescriptorSetLayout(), manager->m_BloomShapeSetLayout });
+				computeCmd.DispatchCompute(
+					*manager->m_BloomShapeShader,
+					groups(w2), groups(h2), 1,
+					{ m_Scene->GetGlobalDescriptorSet(), manager->m_BloomShapeDescriptorSets[0] });
+				barrier();
+			}
 		}
 	}
 

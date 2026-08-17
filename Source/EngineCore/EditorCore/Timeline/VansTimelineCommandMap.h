@@ -15,23 +15,7 @@ enum class VansTimelineCommand : std::size_t
 	Copy,
 	Paste,
 	Duplicate,
-	SplitSection,
 	DeleteSelection,
-	PlayPause,
-	Stop,
-	PreviousKey,
-	NextKey,
-	FrameSelection,
-	FrameAll,
-	AddKey,
-	Rename,
-	SetPlaybackStart,
-	SetPlaybackEnd,
-	SetSelectionStart,
-	SetSelectionEnd,
-	AddMarker,
-	ToggleAutoKey,
-	CancelInteraction,
 	Count
 };
 

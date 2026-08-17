@@ -7,6 +7,7 @@ layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 1, binding = 0) uniform sampler2D lumIn;
 layout(set = 1, binding = 1, r16f) uniform image2D exposureState;
+layout(set = 1, binding = 3, r32f) uniform image2D fsrExposureMultiplier;
 layout(set = 1, binding = 2) uniform ExposureAdaptParams
 {
     float minEV;
@@ -14,7 +15,7 @@ layout(set = 1, binding = 2) uniform ExposureAdaptParams
     float adaptSpeedUp;
     float adaptSpeedDown;
     float deltaTime;
-    float _pad0;
+    float exposureCompensation;
     int   enableAutoExposure;
     float _pad1;
 } uAdapt;
@@ -24,6 +25,8 @@ void main()
     if (uAdapt.enableAutoExposure == 0)
     {
         imageStore(exposureState, ivec2(0), vec4(0.0, 0.0, 0.0, 1.0));
+		imageStore(fsrExposureMultiplier, ivec2(0),
+			vec4(exp2(uAdapt.exposureCompensation), 0.0, 0.0, 1.0));
         return;
     }
 
@@ -63,4 +66,6 @@ void main()
     float blend = 1.0 - exp(-max(speed, 0.0) * clamp(uAdapt.deltaTime, 0.0, 0.25));
     float nextEV = mix(currentEV, targetEV, clamp(blend, 0.0, 1.0));
     imageStore(exposureState, ivec2(0), vec4(nextEV, 0.0, 0.0, 1.0));
+	imageStore(fsrExposureMultiplier, ivec2(0),
+		vec4(exp2(nextEV + uAdapt.exposureCompensation), 0.0, 0.0, 1.0));
 }

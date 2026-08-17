@@ -6,8 +6,8 @@
 
 // ── Vertex attributes ──────────────────────────────────────────────────────
 layout( location = 0 ) in vec3 inPosition;
-layout( location = 1 ) in vec3 inNormal;
-layout( location = 2 ) in vec2 inUV;
+layout( location = 1 ) in vec2 inUV;
+layout( location = 2 ) in vec3 inNormal;
 
 // ── Varyings to fragment shader ────────────────────────────────────────────
 layout( location = 0 ) out vec2 frag_uv;
@@ -15,6 +15,7 @@ layout( location = 1 ) out vec3 normal_ws;
 layout( location = 2 ) out vec3 tangent_ws;
 layout( location = 3 ) out vec3 bitangent_ws;
 layout( location = 4 ) out vec3 position_world;
+layout( location = 5 ) out float blade_height01;
 
 // ── Push constants ─────────────────────────────────────────────────────────
 layout( push_constant ) uniform GrassDrawPC
@@ -33,6 +34,9 @@ layout( push_constant ) uniform GrassDrawPC
     // P1: 子叶片距离 LOD 参数
     float lodMidDist;       // 中距离阈值，超过后子叶片数减半
     float lodFarDist;       // 远距离阈值，超过后子叶片降至最少
+    float aoStrength;
+    float rootAOIntensity;
+    float rootAOHeight;
 } pc;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -213,6 +217,11 @@ void main()
     // ── Dual-bone skinning ──────────────────────────────────────────
     uint globalBoneBase = globalInstIdx * pc.boneCount;
     vec4 bw = boneWeights[gl_VertexIndex]; // per-template-vertex weights
+
+    // 骨骼权重由 mesh AABB 的高度归一化生成。反解该坐标可让根部 AO
+    // 与风动画严格使用同一高度映射，同时兼容程序化草和外部 FBX。
+    float segmentCount = max(float(pc.boneCount - 1u), 1.0);
+    blade_height01 = clamp((bw.x + bw.w) / segmentCount, 0.0, 1.0);
 
     vec3 skinnedPos = skinPosition(rotatedPos, globalBoneBase, bw);
     vec3 skinnedNrm = skinNormal(rotatedNrm, globalBoneBase, bw);

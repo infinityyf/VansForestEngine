@@ -23,8 +23,6 @@ layout(set = 1, binding = 0) uniform WaterSurfaceParams
     ivec4 simulationParams;
     vec4 waveParticleParams0;
     vec4 waveParticleParams1;
-    vec4 waveParticleParams2;
-    vec4 waveParticleParams3;
     vec4 flowMapWorld;
     vec4 flowMapParams;
     vec4 flowMapFallback;
@@ -81,7 +79,7 @@ vec2 SampleFlowVector(vec2 worldXZ)
     return flow * params.flowMapParams.y;
 }
 
-CascadeSample SampleCascadeMaps(vec2 worldXZ, float coverage, int cascade)
+CascadeSample SampleCascadePoint(vec2 worldXZ, float coverage, int cascade)
 {
     CascadeSample result;
     vec2 baseUV = fract(worldXZ / coverage);
@@ -114,6 +112,29 @@ CascadeSample SampleCascadeMaps(vec2 worldXZ, float coverage, int cascade)
     return result;
 }
 
+CascadeSample SampleCascadeMaps(vec2 worldXZ, float coverage, int cascade,
+                                float geometryFootprint)
+{
+    float texelWorld = coverage / float(textureSize(displacementMap, 0).x);
+    if (geometryFootprint <= 2.0 * texelWorld)
+        return SampleCascadePoint(worldXZ, coverage, cascade);
+
+    // 远处顶点以几何 footprint 对周期场做显式低通。它保留 cascade 中仍可解析
+    // 的长波，同时抑制同一层里的短波走样，避免按最短波长整层截断。
+    float offset = geometryFootprint * 0.35;
+    CascadeSample s00 = SampleCascadePoint(worldXZ + vec2(-offset, -offset), coverage, cascade);
+    CascadeSample s10 = SampleCascadePoint(worldXZ + vec2( offset, -offset), coverage, cascade);
+    CascadeSample s01 = SampleCascadePoint(worldXZ + vec2(-offset,  offset), coverage, cascade);
+    CascadeSample s11 = SampleCascadePoint(worldXZ + vec2( offset,  offset), coverage, cascade);
+
+    CascadeSample result;
+    result.displacement = (s00.displacement + s10.displacement
+        + s01.displacement + s11.displacement) * 0.25;
+    result.dPdx = (s00.dPdx + s10.dPdx + s01.dPdx + s11.dPdx) * 0.25;
+    result.dPdz = (s00.dPdz + s10.dPdz + s01.dPdz + s11.dPdz) * 0.25;
+    return result;
+}
+
 SurfaceData SampleSurface(vec2 worldXZ, float geometryPatchSize)
 {
     SurfaceData result;
@@ -126,11 +147,11 @@ SurfaceData SampleSurface(vec2 worldXZ, float geometryPatchSize)
     for (int cascade = 0; cascade < cascadeCount; ++cascade)
     {
         float coverage = params.spectrumScale.x * pow(params.spectrumScale.y, float(cascade));
-        float lowerWavelength = cascade == 0
-            ? 2.0 * coverage / float(textureSize(displacementMap, 0).x)
-            : coverage / params.spectrumScale.y;
-        float frequencyWeight = smoothstep(0.5, 1.0, lowerWavelength / max(2.0 * geometryFootprint, 1e-4));
-        CascadeSample cascadeSample = SampleCascadeMaps(worldXZ, coverage, cascade);
+        float upperWavelength = coverage;
+        float frequencyWeight = smoothstep(
+            0.5, 1.0, upperWavelength / max(2.0 * geometryFootprint, 1e-4));
+        CascadeSample cascadeSample = SampleCascadeMaps(
+            worldXZ, coverage, cascade, geometryFootprint);
         result.displacement += cascadeSample.displacement.xyz * frequencyWeight;
         result.dPdx += (cascadeSample.dPdx - vec3(1.0, 0.0, 0.0)) * frequencyWeight;
         result.dPdz += (cascadeSample.dPdz - vec3(0.0, 0.0, 1.0)) * frequencyWeight;

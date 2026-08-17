@@ -14,8 +14,6 @@ layout(set = 0, binding = 0) uniform WaterSurfaceParams
     ivec4 simulationParams;
     vec4 waveParticleParams0;
     vec4 waveParticleParams1;
-    vec4 waveParticleParams2;
-    vec4 waveParticleParams3;
     vec4 flowMapWorld;
     vec4 flowMapParams;
     vec4 flowMapFallback;
@@ -65,7 +63,7 @@ void main()
         : normalize(vec2(-centered.y, centered.x));
 
     float noiseAmount = params.flowMapFallback.z;
-    float n0 = ValueNoise(uv * 6.0 + params.waveParticleParams3.w * 0.013);
+    float n0 = ValueNoise(uv * 6.0 + params.waveParticleParams1.w * 0.013);
     float n1 = ValueNoise(uv * 13.0 + vec2(19.1, 7.3));
     float angle = (n0 * 2.0 - 1.0) * noiseAmount * PI * 0.35;
     float c = cos(angle);

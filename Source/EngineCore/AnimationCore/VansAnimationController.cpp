@@ -465,6 +465,16 @@ const MotionMatchingDebugData* VansAnimationController::GetMotionMatchingDebugDa
 	return m_MotionMatching ? &m_MotionMatching->GetDebugData() : nullptr;
 }
 
+const MotionMatchingSettings* VansAnimationController::GetMotionMatchingSettings() const
+{
+	return m_MotionMatching ? &m_MotionMatching->GetSettings() : nullptr;
+}
+
+bool VansAnimationController::MotionMatchingPrefersRootMotion() const
+{
+	return m_MotionMatching && m_MotionMatching->PrefersRootMotionThisFrame();
+}
+
 void VansAnimationController::EnsureMotionMatchingGraphNode()
 {
 	if (!m_MotionMatching)
@@ -715,7 +725,7 @@ bool VansAnimationController::SubmitExternalModelPose(
 	VansPosePayload processed;
 	if (!EvaluateTargetPostProcess(deltaTime, skeleton, pose, processed))
 		return false;
-	return FinalizeLocalPose(deltaTime, skeleton, std::move(processed), false, false);
+	return FinalizeLocalPose(deltaTime, skeleton, std::move(processed), false, false, false);
 }
 
 // ---------------------------------------------------------------------------
@@ -1102,6 +1112,7 @@ bool VansAnimationController::EvaluateLayerStack(
 		context.parameters = &layer.parameterScratch;
 		context.clips = &m_Clips;
 		context.motionMatching = m_MotionMatching.get();
+		context.characterTrajectory = m_CharacterTrajectory;
 		context.slotPayloads = &m_SlotPayloads;
 		context.ownerWorldTransform = m_OwnerWorldTransform;
 		if (layer.definition.sync == VansLayerSyncMode::Independent)
@@ -1195,6 +1206,7 @@ bool VansAnimationController::EvaluateTargetPostProcess(
 	context.parameters = &m_Parameters;
 	context.clips = &m_Clips;
 	context.motionMatching = nullptr;
+	context.characterTrajectory = m_CharacterTrajectory;
 	context.slotPayloads = nullptr;
 	context.targetPoseInput = &input;
 	context.ownerWorldTransform = m_OwnerWorldTransform;
@@ -1233,7 +1245,8 @@ bool VansAnimationController::FinalizeLocalPose(
 	const Skeleton& skeleton,
 	VansPosePayload pose,
 	bool normalizeRoot,
-	bool publishAnimationOutputs)
+	bool publishAnimationOutputs,
+	bool deferWorldSpacePostProcess)
 {
 	const std::uint32_t boneCount = static_cast<std::uint32_t>(skeleton.bones.size());
 	if (!pose.valid)
@@ -1251,6 +1264,7 @@ bool VansAnimationController::FinalizeLocalPose(
 		{
 			m_LastRootMotionDelta = pose.rootMotion.translation;
 			m_LastRootRotationDelta = pose.rootMotion.rotation;
+			m_LastRootMotionValid = true;
 		}
 	}
 	// Node Transform Animation is a first-class output even for clips without a
@@ -1297,6 +1311,13 @@ bool VansAnimationController::FinalizeLocalPose(
 			m_FootPlacement.reset();
 	}
 
+	if (deferWorldSpacePostProcess)
+	{
+		m_PreparedLocalTransforms = localTransforms;
+		m_PreparedDeltaTime = deltaTime;
+		m_HasPreparedFrame = true;
+		return true;
+	}
 	ApplyFootPlacement(deltaTime, skeleton, localTransforms);
 	UpdateHierarchy(localTransforms, skeleton);
 	BuildFinalMatrices(localTransforms, skeleton);
@@ -1308,6 +1329,33 @@ bool VansAnimationController::FinalizeLocalPose(
 // ---------------------------------------------------------------------------
 
 void VansAnimationController::Update(float deltaTime, const Skeleton& skeleton)
+
+{
+	UpdateInternal(deltaTime, skeleton, false);
+}
+
+void VansAnimationController::UpdateForMovement(float deltaTime, const Skeleton& skeleton)
+
+{
+	UpdateInternal(deltaTime, skeleton, true);
+}
+
+bool VansAnimationController::FinalizePreparedFrame(const Skeleton& skeleton)
+
+{
+	if (!m_HasPreparedFrame)
+		return false;
+	m_LocalTransformScratch = m_PreparedLocalTransforms;
+	ApplyFootPlacement(m_PreparedDeltaTime, skeleton, m_LocalTransformScratch);
+	UpdateHierarchy(m_LocalTransformScratch, skeleton);
+	BuildFinalMatrices(m_LocalTransformScratch, skeleton);
+	m_PreparedLocalTransforms.clear();
+	m_HasPreparedFrame = false;
+	return true;
+}
+
+void VansAnimationController::UpdateInternal(
+	float deltaTime, const Skeleton& skeleton, bool deferWorldSpacePostProcess)
 {
 	m_FramePool.BeginFrame();
 	VansAnimationFrameMemory::Scope frameMemoryScope(m_FramePool.Resource());
@@ -1323,6 +1371,7 @@ void VansAnimationController::Update(float deltaTime, const Skeleton& skeleton)
 	m_SyncState = {};
 	m_LastRootMotionDelta = glm::vec3(0.0f);
 	m_LastRootRotationDelta = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+	m_LastRootMotionValid = false;
 
 	if (m_PlaybackState == AnimationState::Stopped || m_PlaybackState == AnimationState::Paused)
 		return;
@@ -1336,7 +1385,9 @@ void VansAnimationController::Update(float deltaTime, const Skeleton& skeleton)
 		VansPosePayload processed;
 		if (!EvaluateTargetPostProcess(deltaTime, skeleton, pose, processed))
 			return;
-		FinalizeLocalPose(deltaTime, skeleton, std::move(processed), true, true);
+		FinalizeLocalPose(
+			deltaTime, skeleton, std::move(processed), true, true,
+			deferWorldSpacePostProcess);
 		return;
 	}
 
@@ -1393,6 +1444,18 @@ void VansAnimationController::ApplyFootPlacement(float deltaTime,
 			state.airborne = param.floatVal > 0.5f;
 		else if (param.type == AnimatorParamType::Int)
 			state.airborne = param.intVal != 0;
+	}
+	if (m_MotionMatching && m_MotionMatching->WasUsedThisFrame())
+	{
+		state.hasAnimationPlantWeights = true;
+		state.leftPlantWeight = m_MotionMatching->GetLeftFootPlantWeight();
+		state.rightPlantWeight = m_MotionMatching->GetRightFootPlantWeight();
+	}
+	else
+	{
+		state.hasAnimationPlantWeights = false;
+		state.leftPlantWeight = 0.0f;
+		state.rightPlantWeight = 0.0f;
 	}
 	m_FootPlacement->SetRuntimeState(state);
 	m_FootPlacement->Solve(deltaTime, skeleton, m_OwnerWorldTransform, localTransforms);
@@ -1509,7 +1572,6 @@ int VansAnimationController::DetectRootBoneIndex(const Skeleton& skeleton) const
 		if (clipIt != m_Clips.end())
 			clip = &clipIt->second;
 	}
-
 	// If the skeleton root itself has keyed translation data, use it directly.
 	if (clip && skeletonRoot < static_cast<int>(clip->boneKeyframes.size())
 	    && !clip->boneKeyframes[skeletonRoot].empty())

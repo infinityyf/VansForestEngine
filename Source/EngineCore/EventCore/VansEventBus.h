@@ -64,6 +64,20 @@ namespace Vans
 			}
 		}
 
+		template <typename EventT>
+		void EnqueueNextFrame(EventT event, VansEventLane lane)
+		{
+			const VansEventTypeId typeId = GetVansEventTypeId<EventT>();
+			const char* debugName = GetDebugName<EventT>();
+			RecordEnqueue(typeId, debugName, lane);
+
+			auto queued = std::make_unique<QueuedEvent<EventT>>(std::move(event), lane);
+			LaneQueue& queue = m_NextFrameQueues[ToEventLaneIndex(lane)];
+			std::lock_guard<std::mutex> lock(queue.mutex);
+			queue.events.push_back(std::move(queued));
+		}
+
+		void BeginFrame();
 		void Flush(VansEventLane lane);
 		void FlushMainThreadLanes();
 		VansEventStatsSnapshot GetStatsSnapshot() const;
@@ -307,5 +321,6 @@ namespace Vans
 		mutable std::mutex m_StatsMutex;
 		std::unordered_map<VansEventTypeId, TypeStats> m_TypeStats;
 		std::array<LaneQueue, ToEventLaneIndex(VansEventLane::Count)> m_LaneQueues;
+		std::array<LaneQueue, ToEventLaneIndex(VansEventLane::Count)> m_NextFrameQueues;
 	};
 }

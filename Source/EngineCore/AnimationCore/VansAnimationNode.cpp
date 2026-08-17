@@ -543,6 +543,13 @@ void VansAnimationNode::SetBoneLocalTransform(const std::string& boneName, const
 	m_BoneOverrides[boneName] = transform;
 }
 
+bool VansAnimationNode::HasRootMotionDelta() const
+{
+	if (m_RetargetEnabled && m_SourceController)
+		return m_SourceController->HasRootMotionDelta();
+	return m_Controller && m_Controller->HasRootMotionDelta();
+}
+
 bool VansAnimationNode::TryGetBoneLocalTransform(const std::string& boneName, glm::mat4& transform) const
 {
 	const auto found = m_BoneOverrides.find(boneName);
@@ -701,6 +708,18 @@ void VansAnimationNode::ApplySampledNodeTransforms()
 
 void VansAnimationNode::Update(float deltaTime)
 {
+	if (m_LocomotionFramePrepared)
+	{
+		if (m_Controller && m_HasTransformID)
+		{
+			m_Controller->SetOwnerWorldTransform(
+				VansTransformStore::GetTransform(m_TransformID).GetModelMatrix());
+			m_Controller->FinalizePreparedFrame(m_Skeleton);
+			ApplySampledNodeTransforms();
+		}
+		m_LocomotionFramePrepared = false;
+		return;
+	}
 	if (!m_Controller)
 		return;
 
@@ -842,6 +861,21 @@ void VansAnimationNode::Update(float deltaTime)
 	ApplySampledNodeTransforms();
 }
 
+void VansAnimationNode::PrepareLocomotionFrame(
+	float deltaTime, const Vans::VansCharacterTrajectory& trajectory)
+{
+	if (!m_Controller)
+		return;
+	m_Controller->SetCharacterTrajectory(&trajectory);
+	if (m_SourceController)
+		m_SourceController->SetCharacterTrajectory(&trajectory);
+	if (m_HasTransformID)
+		m_Controller->SetOwnerWorldTransform(
+			VansTransformStore::GetTransform(m_TransformID).GetModelMatrix());
+	m_Controller->UpdateForMovement(deltaTime, m_Skeleton);
+	m_LocomotionFramePrepared = true;
+}
+
 // ════════════════════════════════════════════════════════════════
 // Result access
 // ════════════════════════════════════════════════════════════════
@@ -873,6 +907,7 @@ bool VansAnimationNode::InitGPUResources(VkDevice device, uint32_t framesInFligh
 
 	VkDeviceSize bufferSize = sizeof(BoneMatricesSSBO);
 	m_BoneBuffers.resize(framesInFlight);
+	m_PreviousBoneBuffers.resize(framesInFlight);
 
 	for (uint32_t i = 0; i < framesInFlight; i++)
 	{
@@ -888,7 +923,20 @@ bool VansAnimationNode::InitGPUResources(VkDevice device, uint32_t framesInFligh
 			VANS_LOG_ERROR("[VansAnimationNode] " << m_Name << ": failed to create bone buffer " << i);
 			return false;
 		}
+
+		ok = m_PreviousBoneBuffers[i].CreatVulkanBuffer(
+			device,
+			bufferSize,
+			VK_FORMAT_R32_SFLOAT,
+			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		if (!ok)
+		{
+			VANS_LOG_ERROR("[VansAnimationNode] " << m_Name << ": failed to create previous bone buffer " << i);
+			return false;
+		}
 	}
+	m_HasUploadedBoneMatrices = false;
 
 	VANS_LOG("[VansAnimationNode] " << m_Name << ": GPU resources initialized ("
 	         << framesInFlight << " frames, " << bufferSize << " bytes each)");
@@ -902,6 +950,8 @@ void VansAnimationNode::DestroyGPUResources()
 
 	for (auto& buffer : m_BoneBuffers)
 		buffer.DestroyVulkanBuffer(m_Device);
+	for (auto& buffer : m_PreviousBoneBuffers)
+		buffer.DestroyVulkanBuffer(m_Device);
 
 	for (auto& buffer : m_PerSubmeshBoneIDBuffers)
 		buffer.DestroyVulkanBuffer(m_Device);
@@ -910,6 +960,8 @@ void VansAnimationNode::DestroyGPUResources()
 		buffer.DestroyVulkanBuffer(m_Device);
 
 	m_BoneBuffers.clear();
+	m_PreviousBoneBuffers.clear();
+	m_HasUploadedBoneMatrices = false;
 	m_PerSubmeshBoneIDBuffers.clear();
 	m_PerSubmeshBoneWeightBuffers.clear();
 	m_Device = VK_NULL_HANDLE;
@@ -989,14 +1041,23 @@ void VansAnimationNode::UploadPerSubmeshBoneBuffers(const std::vector<std::vecto
 
 void VansAnimationNode::UploadBoneMatrices(uint32_t frameIndex)
 {
-	if (frameIndex >= m_BoneBuffers.size())
+	if (frameIndex >= m_BoneBuffers.size() || frameIndex >= m_PreviousBoneBuffers.size())
 		return;
 
 	const BoneMatricesSSBO& ssbo = GetBoneSSBO();
+	const BoneMatricesSSBO& previous = m_HasUploadedBoneMatrices
+		? m_PreviousBoneMatricesSSBO
+		: ssbo;
+	m_PreviousBoneBuffers[frameIndex].SetBufferData(
+		&previous,
+		0,
+		sizeof(BoneMatricesSSBO));
 	m_BoneBuffers[frameIndex].SetBufferData(
 		&ssbo,
 		0,
 		sizeof(BoneMatricesSSBO));
+	m_PreviousBoneMatricesSSBO = ssbo;
+	m_HasUploadedBoneMatrices = true;
 }
 
 // ════════════════════════════════════════════════════════════════

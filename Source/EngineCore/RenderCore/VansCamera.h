@@ -11,6 +11,7 @@
 using namespace VansGraphics;
 namespace VansGraphics
 {
+	struct VansCameraControlPose;
     struct alignas(16) CameraDataStruct
     {
         glm::vec4   CameraPosition;
@@ -75,6 +76,9 @@ namespace VansGraphics
         void HandleKeyboardMovement(float forwardAxis, float rightAxis, float upAxis, float deltaTime);
 
         glm::vec4 GetPosition() { return glm::vec4(m_Position,1); }
+		VansCameraControlPose CaptureControlPose() const;
+		void ApplyControlPose(const VansCameraControlPose& pose);
+		void ApplyControlPoseChannels(const VansCameraControlPose& pose, std::uint32_t channels);
 
         glm::vec4 GetForward();
 
@@ -96,8 +100,8 @@ namespace VansGraphics
         float GetAspectRatio() const { return m_AspectRatio; }
 
         void SetFov(float fov)       { m_Fov      = fov; }
-        void SetNearClip(float val)  { m_NearClip = val; }
-        void SetFarClip(float val)   { m_FarClip  = val; }
+        void SetNearClip(float val);
+        void SetFarClip(float val);
 
         // ── Transform 绑定与同步 ─────────────────────────────────────────────
         // 绑定 camera object 的 transformID，之后 input 与渲染均通过 Transform 驱动
@@ -133,7 +137,7 @@ namespace VansGraphics
         //support perspective projection
         float m_Fov = 45.0f;
         float m_AspectRatio = 1.0f;
-        float m_NearClip = 0.01f;
+        float m_NearClip = 0.1f;
         float m_FarClip = 10000.0f;
     public:
 

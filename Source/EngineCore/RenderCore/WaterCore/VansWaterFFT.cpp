@@ -20,7 +20,9 @@ namespace
         FIELD_HEIGHT = 0,
         FIELD_DISP_X = 1,
         FIELD_DISP_Z = 2,
-        FIELD_COUNT_LOCAL = 3
+        FIELD_SLOPE_X = 3,
+        FIELD_SLOPE_Z = 4,
+        FIELD_COUNT_LOCAL = 5
     };
 
     struct alignas(16) FFTParamsGPU
@@ -242,7 +244,7 @@ void VansWaterFFT::SetParams(const Params& params)
     {
         next.domainCoverage[i] = (std::max)(next.domainCoverage[i], 1.0f);
         next.minWavelength[i] = (std::max)(next.minWavelength[i],
-            2.0f * next.domainCoverage[i] / float(FFT_RESOLUTION));
+            4.0f * next.domainCoverage[i] / float(FFT_RESOLUTION));
         next.maxWavelength[i] = (std::max)(next.maxWavelength[i], next.minWavelength[i]);
     }
 

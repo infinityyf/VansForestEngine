@@ -41,8 +41,8 @@ public:
 	TimelineEditResult AddGroup(VansTimelineGroup group);
 	TimelineEditResult AddMarker(VansTimelineMarker marker);
 	TimelineEditResult MoveMarker(VansTimelineId markerId, VansTimelineTick tick);
-	TimelineEditResult AddTrack(VansTimelineTrackType type, VansTimelineId bindingId,
-		VansTimelineId groupId = {}, VansTimelineTrackConfig config = std::monostate{});
+	TimelineEditResult AddTrack(VansTimelineTrackTypeId type, VansTimelineId bindingId,
+		VansTimelineId groupId = {}, VansSerializedValue extensionData = VansSerializedValue::Object({}));
 	TimelineEditResult AddSection(VansTimelineId trackId, VansTimelineSection section);
 	TimelineEditResult AddKey(VansTimelineId trackId, VansTimelineId sectionId,
 		std::size_t channelIndex, VansTimelineKey key);
@@ -52,18 +52,8 @@ public:
 		VansTimelineTick deltaTicks);
 	TimelineEditResult DuplicateKeys(const std::unordered_set<VansTimelineId>& keyIds,
 		VansTimelineTick offsetTicks);
-	TimelineEditResult ScaleKeys(const std::unordered_set<VansTimelineId>& keyIds,
-		double timeScale, double valueScale);
-	TimelineEditResult SetKeysCurveMode(const std::unordered_set<VansTimelineId>& keyIds,
-		VansTimelineInterpolation interpolation, VansTimelineTangentMode tangentMode);
-	TimelineEditResult OffsetKeyValuesBy(const std::unordered_set<VansTimelineId>& keyIds,
-		double deltaValue);
 	TimelineEditResult SetKeyValue(VansTimelineId trackId, VansTimelineId sectionId,
 		std::size_t channelIndex, VansTimelineId keyId, VansTimelineKeyValue value);
-	TimelineEditResult SetKeyCurve(VansTimelineId trackId, VansTimelineId sectionId,
-		std::size_t channelIndex, VansTimelineId keyId,
-		VansTimelineInterpolation interpolation, VansTimelineTangentMode tangentMode,
-		double arriveTangent, double leaveTangent, double arriveWeight, double leaveWeight);
 	TimelineEditResult ReplaceChannelKeys(VansTimelineId trackId, VansTimelineId sectionId,
 		std::size_t channelIndex, std::vector<VansTimelineKey> keys);
 	TimelineEditResult MoveSection(VansTimelineId trackId, VansTimelineId sectionId, VansTimelineTick startTick);
@@ -94,7 +84,7 @@ public:
 	bool CanUndo() const;
 	bool CanRedo() const;
 
-	static VansTimelineTrackConfig DefaultTrackConfig(VansTimelineTrackType type);
+	static VansSerializedValue DefaultExtensionData(VansTimelineTrackTypeId type);
 	static VansTimelineId NewStableId();
 
 private:

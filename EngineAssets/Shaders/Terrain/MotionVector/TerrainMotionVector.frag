@@ -3,7 +3,7 @@
 layout(location = 0) in vec4 vCurrentClipPos;
 layout(location = 1) in vec4 vPreviousClipPos;
 
-layout(location = 0) out vec4 outMotionVector;
+layout(location = 0) out vec2 outMotionVector;
 
 void main()
 {
@@ -17,5 +17,5 @@ void main()
     vec2 currentUV = currentNDC * 0.5 + 0.5;
     vec2 previousUV = previousNDC * 0.5 + 0.5;
 
-    outMotionVector = vec4(currentUV - previousUV, 0.0, 1.0);
+	outMotionVector = currentUV - previousUV;
 }
