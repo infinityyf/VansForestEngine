@@ -9,8 +9,8 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 layout(set = 1, binding = 0) uniform sampler2D inputDepth;
 layout(set = 1, binding = 1) uniform sampler2D inputMotionVector;
 layout(set = 1, binding = 2) uniform sampler2D inputHistoryGI;
-layout(set = 1, binding = 3, rgba32f) readonly uniform image2D inputCurrentGI;
-layout(set = 1, binding = 4, rgba32f) writeonly uniform image2D outputAccumulatedGI;
+layout(set = 1, binding = 3, rgba16f) readonly uniform image2D inputCurrentGI;
+layout(set = 1, binding = 4, rgba16f) writeonly uniform image2D outputAccumulatedGI;
 
 layout(set = 1, binding = 5) uniform ssgiTemporalInfo
 {
@@ -18,11 +18,28 @@ layout(set = 1, binding = 5) uniform ssgiTemporalInfo
     vec4 frameParams; // x = temporal frame index, 0 means reset history
 };
 layout(set = 1, binding = 6) uniform sampler2D inputHistoryMoments;
-layout(set = 1, binding = 7, rgba32f) writeonly uniform image2D outputMoments;
+// Only the luminance mean and second moment are consumed on the next frame.
+// Their range is bounded by the GI radiance limits, so RG16F retains enough
+// temporal precision while halving this full-resolution history's bandwidth
+// once more relative to RG32F.
+layout(set = 1, binding = 7, rg16f) writeonly uniform image2D outputMoments;
 layout(set = 1, binding = 8) uniform sampler2D inputHistorySurface;
 layout(set = 1, binding = 9) uniform sampler2D inputNormal;
 layout(set = 1, binding = 10) uniform sampler2D inputMaterial;
 layout(set = 1, binding = 11, rgba32f) writeonly uniform image2D outputSurface;
+
+const int SSGI_TEMPORAL_GROUP_SIZE = 8;
+const int SSGI_TEMPORAL_TILE_BORDER = 1;
+const int SSGI_TEMPORAL_TILE_SIZE = SSGI_TEMPORAL_GROUP_SIZE + SSGI_TEMPORAL_TILE_BORDER * 2;
+const int SSGI_TEMPORAL_TILE_TEXELS = SSGI_TEMPORAL_TILE_SIZE * SSGI_TEMPORAL_TILE_SIZE;
+// Keep the squared moment finite in RG16F.  This only caps the variance
+// estimator for extreme HDR outliers; accumulated GI is stored independently.
+const float SSGI_MOMENT_LUMINANCE_MAX = 255.0;
+
+// 一个 8x8 workgroup 的 3x3 邻域只有 10x10 个唯一 texel。
+// 先放入共享内存，避免 64 个线程分别重复读取同一批 raw GI 与 depth。
+shared vec4 temporalTileGI[SSGI_TEMPORAL_TILE_TEXELS];
+shared float temporalTileDepth[SSGI_TEMPORAL_TILE_TEXELS];
 
 vec2 EncodeNormalOctahedron(vec3 n)
 {
@@ -55,31 +72,30 @@ float SampleLinearDepth(vec2 uv)
 }
 
 void ComputeNeighborhoodBoundsAndFilter(
-    ivec2 coord,
-    ivec2 imgSize,
+    ivec2 localCoord,
+    vec4 centerGI,
+    float centerDepth,
     out vec4 boundsMin,
     out vec4 boundsMax,
     out vec4 filteredColor)
 {
-    float centerDepth = FetchLinearDepth(coord, imgSize);
     float edgeThreshold = max(centerDepth * 0.015, 0.08);
 
     vec4 m1 = vec4(0.0);
     vec4 m2 = vec4(0.0);
-    vec4 weightedSum = vec4(0.0);
     float totalWeight = 0.0;
-    float statWeight = 0.0;
 
     for (int y = -1; y <= 1; ++y)
     {
         for (int x = -1; x <= 1; ++x)
         {
-            ivec2 tap = clamp(coord + ivec2(x, y), ivec2(0), imgSize - 1);
-            vec4 sampleGI = imageLoad(inputCurrentGI, tap);
+            ivec2 tileCoord = localCoord + ivec2(x, y) + ivec2(SSGI_TEMPORAL_TILE_BORDER);
+            int tileIndex = tileCoord.y * SSGI_TEMPORAL_TILE_SIZE + tileCoord.x;
+            vec4 sampleGI = temporalTileGI[tileIndex];
 
             // 深度先线性化到视空间米制距离，再做边界过滤。
             // 这样可避免 raw depth 的非线性分布让远处和斜边跨表面混色。
-            float tapDepth = FetchLinearDepth(tap, imgSize);
+            float tapDepth = temporalTileDepth[tileIndex];
             float depthDiff = abs(centerDepth - tapDepth);
             if (depthDiff > edgeThreshold)
                 continue;
@@ -87,34 +103,57 @@ void ComputeNeighborhoodBoundsAndFilter(
             float w = exp(-depthDiff / max(centerDepth * 0.008, 0.04));
             m1 += sampleGI * w;
             m2 += sampleGI * sampleGI * w;
-            weightedSum += sampleGI * w;
             totalWeight += w;
-            statWeight += w;
         }
     }
 
-    m1 = (statWeight > 1e-5) ? (m1 / statWeight) : imageLoad(inputCurrentGI, coord);
-    m2 = (statWeight > 1e-5) ? (m2 / statWeight) : (m1 * m1);
+    m1 = (totalWeight > 1e-5) ? (m1 / totalWeight) : centerGI;
+    m2 = (totalWeight > 1e-5) ? (m2 / totalWeight) : (m1 * m1);
     vec4 sigma = sqrt(max(m2 - m1 * m1, vec4(0.0)));
 
     // 只用同一深度面的样本生成 AABB，避免门框、墙角另一侧颜色进入 history clamp 范围。
     boundsMin = m1 - sigma * 1.25;
     boundsMax = m1 + sigma * 1.25;
-    filteredColor = (totalWeight > 1e-5) ? (weightedSum / totalWeight) : m1;
+    filteredColor = m1;
 }
 
 void main()
 {
     ivec2 id = ivec2(gl_GlobalInvocationID.xy);
     ivec2 imgSize = imageSize(outputAccumulatedGI);
-    if (id.x >= imgSize.x || id.y >= imgSize.y)
+    ivec2 localCoord = ivec2(gl_LocalInvocationID.xy);
+    ivec2 groupBase = ivec2(gl_WorkGroupID.xy) * SSGI_TEMPORAL_GROUP_SIZE;
+
+    // barrier 前所有 invocation 都必须参与 tile 填充，边缘 workgroup 的越界
+    // invocation 也不能提前 return。
+    int localLinear = int(gl_LocalInvocationIndex);
+    for (int tileIndex = localLinear; tileIndex < SSGI_TEMPORAL_TILE_TEXELS;
+        tileIndex += SSGI_TEMPORAL_GROUP_SIZE * SSGI_TEMPORAL_GROUP_SIZE)
+    {
+        ivec2 tileCoord = ivec2(
+            tileIndex % SSGI_TEMPORAL_TILE_SIZE,
+            tileIndex / SSGI_TEMPORAL_TILE_SIZE);
+        ivec2 sourceCoord = clamp(
+            groupBase + tileCoord - ivec2(SSGI_TEMPORAL_TILE_BORDER),
+            ivec2(0), imgSize - 1);
+        temporalTileGI[tileIndex] = imageLoad(inputCurrentGI, sourceCoord);
+        temporalTileDepth[tileIndex] = FetchLinearDepth(sourceCoord, imgSize);
+    }
+    barrier();
+
+    if (any(greaterThanEqual(id, imgSize)))
         return;
 
     vec2 invImgSize = 1.0 / vec2(imgSize);
     vec2 uv = (vec2(id) + 0.5) * invImgSize;
 
     float currentRawDepth = texture(inputDepth, uv).r;
-    float currentDepth = (currentRawDepth >= 0.9999) ? FarPlane : LinearizeDepth(currentRawDepth, NearPlane, FarPlane);
+    int centerTileIndex = (localCoord.y + SSGI_TEMPORAL_TILE_BORDER) * SSGI_TEMPORAL_TILE_SIZE +
+        localCoord.x + SSGI_TEMPORAL_TILE_BORDER;
+    float currentDepth = temporalTileDepth[centerTileIndex];
+    vec4 currentGI = temporalTileGI[centerTileIndex];
+    vec3 currentNormal = normalize(texture(inputNormal, uv).xyz);
+    float currentMaterialID = texture(inputMaterial, uv).z;
 
     vec2 motionVector = texture(inputMotionVector, uv).xy;
     vec2 prevUV = uv - motionVector;
@@ -133,19 +172,17 @@ void main()
         float prevDepth = previousSurface.x;
         float depthDiff = abs(currentDepth - prevDepth);
         valid = depthDiff < max(currentDepth * 0.02, 0.12);
-        vec3 currentNormal = normalize(texture(inputNormal, uv).xyz);
         vec3 previousNormal = DecodeNormalOctahedron(previousSurface.yz);
         valid = valid && dot(currentNormal, previousNormal) >= 0.82;
-        float currentMaterialID = texture(inputMaterial, uv).z;
         valid = valid && abs(currentMaterialID - previousSurface.w) < 0.25;
     }
 
     vec4 boundsMin;
     vec4 boundsMax;
     vec4 spatialFilteredGI;
-    ComputeNeighborhoodBoundsAndFilter(id, imgSize, boundsMin, boundsMax, spatialFilteredGI);
+    ComputeNeighborhoodBoundsAndFilter(
+        localCoord, currentGI, currentDepth, boundsMin, boundsMax, spatialFilteredGI);
 
-    vec4 currentGI = imageLoad(inputCurrentGI, id);
     vec4 historyGI = valid ? texture(inputHistoryGI, prevUV) : spatialFilteredGI;
     if (valid)
         historyGI = clamp(historyGI, boundsMin, boundsMax);
@@ -157,14 +194,24 @@ void main()
     vec4 historyMoments = valid ? texture(inputHistoryMoments, prevUV) : vec4(0.0);
     float historyMeanLum = max(historyMoments.x, 0.0);
     float historyVariance = max(historyMoments.y - historyMeanLum * historyMeanLum, 0.0);
-    float neighborhoodVariance = Luminance(sqrt(max(boundsMax.rgb - boundsMin.rgb, vec3(0.0))));
-    float luminanceVariance = max(sqrt(historyVariance), neighborhoodVariance);
+    // boundsMax - boundsMin 已经等于 2.5 * sigma。旧逻辑再次开平方，
+    // 会把平滑区域的微小色差严重放大，导致 Temporal 错把稳定像素当成
+    // 高方差样本并过量采用当前帧，镜头运动时表现为残余闪烁。
+    vec3 neighborhoodSigma =
+        max(boundsMax.rgb - boundsMin.rgb, vec3(0.0)) * 0.4;
+    float neighborhoodStdDev = Luminance(neighborhoodSigma);
+    float luminanceVariance = max(sqrt(historyVariance), neighborhoodStdDev);
     float screenConfidence = clamp(currentGI.a, 0.0, 1.0);
     float motionPenalty = clamp(velocityLen / 8.0, 0.0, 1.0);
+    // Probe Cache 的离群值已经在 trace 阶段处理。所有通过表面重投影
+    // 验证的样本都可以保留更多历史，可信 screen hit 再适度加强稳定；
+    // 深度/法线/材质不匹配时 valid 会直接失效，因此不会跨遮挡拖出旧 GI。
+    float stabilizedMotionPenalty = motionPenalty *
+        mix(0.55, 0.35, screenConfidence);
     float variancePenalty = clamp(luminanceVariance / max(Luminance(spatialFilteredGI.rgb), 0.05), 0.0, 1.0);
     float baseBlend = 1.0 / max(historyLength + 1.0, 1.0);
-    float blendFactor = clamp(max(baseBlend, 0.04 + motionPenalty * 0.35 + variancePenalty * 0.30 +
-        (1.0 - screenConfidence) * 0.12), 0.04, 1.0);
+    float blendFactor = clamp(max(baseBlend, 0.04 + stabilizedMotionPenalty * 0.35 + variancePenalty * 0.30 +
+        (1.0 - screenConfidence) * 0.05), 0.04, 1.0);
     if (!valid || resetHistory)
         blendFactor = 1.0;
 
@@ -174,7 +221,9 @@ void main()
         : 1.0;
     imageStore(outputAccumulatedGI, id, vec4(accumulated, newHistoryLength / 255.0));
 
-    float luminance = Luminance(accumulated);
+    float luminance = min(
+        Luminance(max(accumulated, vec3(0.0))),
+        SSGI_MOMENT_LUMINANCE_MAX);
     float momentBlend = clamp(blendFactor, 0.04, 1.0);
     float meanLum = (valid && !resetHistory)
         ? mix(historyMeanLum, luminance, momentBlend)
@@ -182,11 +231,9 @@ void main()
     float meanLumSq = (valid && !resetHistory)
         ? mix(max(historyMoments.y, 0.0), luminance * luminance, momentBlend)
         : luminance * luminance;
-    imageStore(outputMoments, id, vec4(meanLum, max(meanLumSq, meanLum * meanLum),
-        newHistoryLength / 255.0, screenConfidence));
+    imageStore(outputMoments, id,
+        vec4(meanLum, max(meanLumSq, meanLum * meanLum), 0.0, 0.0));
 
-    vec3 currentNormal = normalize(texture(inputNormal, uv).xyz);
-    float currentMaterialID = texture(inputMaterial, uv).z;
     imageStore(outputSurface, id, vec4(currentDepth,
         EncodeNormalOctahedron(currentNormal), currentMaterialID));
 }

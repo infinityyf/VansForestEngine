@@ -280,7 +280,8 @@ namespace VansEngine
 			VansGraphics::VansTransformStore::GetTransform(m_TransformID);
 		m_TrajectoryGenerator.Update(
 			m_LocomotionDt, m_MotionIntent, settings,
-			transform.m_Position, transform.m_Rotation.y);
+			transform.m_Position, transform.m_Rotation.y,
+			IsGrounded() && !m_MotionIntent.jumpRequested);
 
 		if (IsGrounded() && m_VerticalVelocity < 0.0f)
 			m_VerticalVelocity = -0.5f;

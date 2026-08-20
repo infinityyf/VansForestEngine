@@ -403,6 +403,10 @@ FOREST_RUNTIME_API int ForestRuntime_CreateWindow(ForestRuntimeHandle* runtime, 
 		ShutdownGraphics(runtime);
 		return 0;
 	}
+	device->ApplyRenderRuntimeConfig(
+		Vans::VansProjectManager::Get().GetProjectSettings().GetRenderRuntimeConfig(),
+		static_cast<std::uint32_t>(width > 0 ? width : 1280),
+		static_cast<std::uint32_t>(height > 0 ? height : 720));
 
 	runtime->device = std::move(device);
 	runtime->device->SetRuntimeSwapchainPresentationEnabled(true);

@@ -61,15 +61,20 @@ void main()
     // surface sees front faces; a probe embedded in solid geometry sees
     // nearby back faces over a substantial, stable set of directions.
     float closeRange = max(cellSize * 0.75, 0.001);
+    GIProbeRayDirectionContext rayContext =
+        GI_BuildProbeRayDirectionContext(
+            probeIndex, probeCounts, uint(pushConstants.dispatchParams.w),
+            directionSlices,
+            GI_UpdateCycleIndex(
+                uint(pushConstants.frameParams.x), uvec3(probeCounts),
+                spatialDivisor, directionSlices));
 
     for (uint localRay = 0u; localRay < raysPerSlice; ++localRay)
     {
         bool fixedRay;
-        vec3 rayDirection = GI_ProbeRayDirection(probeIndex, probeCounts,
-            uint(pushConstants.dispatchParams.w), localRay, raysPerSlice,
-            GI_UpdateDirectionSlice(uint(pushConstants.frameParams.x), uvec3(probeCounts), spatialDivisor, directionSlices),
+        vec3 rayDirection = GI_ProbeRayDirectionPrepared(
+            rayContext, localRay, raysPerSlice, directionSlice,
             directionSlices,
-            GI_UpdateCycleIndex(uint(pushConstants.frameParams.x), uvec3(probeCounts), spatialDivisor, directionSlices),
             fixedRay);
         vec4 hitPosition = vec4(hitPositions.hitPosition[bufferOffset + localRay]);
         vec4 hitNormal = vec4(hitNormals.hitNormal[bufferOffset + localRay]);

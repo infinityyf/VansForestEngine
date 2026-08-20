@@ -211,6 +211,11 @@ namespace VansGraphics
 		float querySpeed = 0.0f;
 		float queryDirection = 0.0f;
 		float queryFacingDeltaDegrees = 0.0f;
+		float currentFacingYawDegrees = 0.0f;
+		float desiredFacingYawDegrees = 0.0f;
+		float desiredFacingYawRateDegreesPerSecond = 0.0f;
+		std::string facingTurnState;
+		std::string facingTurnGateReason;
 		glm::vec3 trajectoryOriginWorld{ 0.0f };
 		glm::vec3 actualVelocityWorld{ 0.0f };
 		glm::vec3 plannedVelocityWorld{ 0.0f };
@@ -234,6 +239,8 @@ namespace VansGraphics
 		glm::vec3 rootMotionReconciledVelocityWorld{ 0.0f };
 		float rootMotionTargetYawRateDegreesPerSecond = 0.0f;
 		float rootMotionReconciledYawRateDegreesPerSecond = 0.0f;
+		float authoredRootYawDeltaDegrees = 0.0f;
+		float appliedRootYawDeltaDegrees = 0.0f;
 		std::array<Vans::VansCharacterTrajectorySample, 2> trajectoryHistory{};
 		std::array<Vans::VansCharacterTrajectorySample, 3> trajectoryFuture{};
 		float directionChangeDegrees = 0.0f;
@@ -441,7 +448,8 @@ namespace VansGraphics
 		                  float& outContact) const;
 		MatchResult FindBestMatch(const FeatureVector& query,
 		                          const std::unordered_map<std::string, AnimatorParameter>& parameters,
-		                          bool forceFinishedTransitionExit);
+		                          bool forceFinishedTransitionExit,
+		                          bool allowReplayCurrentClip = false);
 		bool ShouldConsiderSampleForParameters(const Sample& sample,
 		                                       const std::unordered_map<std::string, AnimatorParameter>& parameters,
 		                                       bool forceFinishedTransitionExit) const;

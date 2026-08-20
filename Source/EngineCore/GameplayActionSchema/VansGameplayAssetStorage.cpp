@@ -16,8 +16,8 @@ namespace Vans
 {
 namespace
 {
-constexpr std::array<char, 8> kCookedMagic{ 'V', 'G', 'A', 'F', 'C', 'B', '0', '1' };
-constexpr std::uint32_t kCookedContainerVersion = 1;
+constexpr std::array<char, 8> kCookedMagic{ 'V', 'G', 'A', 'F', 'C', 'B', '0', '2' };
+constexpr std::uint32_t kCookedContainerVersion = 2;
 constexpr std::size_t kCookedHeaderSize = 8 + 4 + 8 + 8;
 
 bool HasErrors(const VansGameplayDiagnostics& diagnostics)
@@ -171,6 +171,18 @@ std::string CookPolicyFingerprint(const VansGAFProjectConfiguration& configurati
 	appendSet("handlers", configuration.allowlist.handlers);
 	appendSet("bridges", configuration.allowlist.bridges);
 	return result;
+}
+
+std::uint64_t CalculateCookedContentHash(
+	const VansSerializedValue& runtimeDocument,
+	const std::string& cookPolicyFingerprint)
+{
+	const nlohmann::ordered_json canonical =
+		EncodeSerializedValueJson<nlohmann::ordered_json>(runtimeDocument);
+	std::string hashInput = canonical.dump();
+	hashInput += cookPolicyFingerprint;
+	std::uint64_t contentHash = VansStableHash64(hashInput);
+	return contentHash == 0 ? 1 : contentHash;
 }
 
 void Normalize(VansSerializedValue& value)
@@ -394,12 +406,10 @@ VansGameplayCookResult VansGameplayAssetStorage::Cook(
 		StripEditorMetadata(result.asset.runtimeDocument);
 	if (!configuration || configuration->settings.deterministicCook)
 		Normalize(result.asset.runtimeDocument);
-	const nlohmann::ordered_json canonical =
-		EncodeSerializedValueJson<nlohmann::ordered_json>(result.asset.runtimeDocument);
-	std::string hashInput = canonical.dump();
-	if (configuration) hashInput += CookPolicyFingerprint(*configuration);
-	result.asset.contentHash = VansStableHash64(hashInput);
-	if (result.asset.contentHash == 0) result.asset.contentHash = 1;
+	result.asset.cookPolicyFingerprint = configuration
+		? CookPolicyFingerprint(*configuration) : std::string{};
+	result.asset.contentHash = CalculateCookedContentHash(
+		result.asset.runtimeDocument, result.asset.cookPolicyFingerprint);
 	return result;
 }
 
@@ -424,6 +434,7 @@ bool VansGameplayAssetStorage::SaveCookedAtomic(
 	root.push_back(asset.contentHash);
 	root.push_back(std::move(dependencies));
 	root.push_back(EncodeSerializedValueJson<nlohmann::ordered_json>(asset.runtimeDocument));
+	root.push_back(asset.cookPolicyFingerprint);
 	const std::vector<std::uint8_t> payloadBytes = nlohmann::ordered_json::to_cbor(root);
 	if (payloadBytes.size() > static_cast<std::size_t>((std::numeric_limits<std::uint64_t>::max)()))
 	{
@@ -482,9 +493,9 @@ bool VansGameplayAssetStorage::LoadCooked(
 		error = std::string("cooked GAF asset CBOR is invalid: ") + exception.what();
 		return false;
 	}
-	if (!root.is_array() || root.size() != 5 || !root[0].is_string() ||
+	if (!root.is_array() || root.size() != 6 || !root[0].is_string() ||
 		!root[1].is_number_unsigned() || !root[2].is_number_unsigned() ||
-		!root[3].is_array())
+		!root[3].is_array() || !root[5].is_string())
 	{
 		error = "cooked GAF asset envelope is invalid";
 		return false;
@@ -502,13 +513,14 @@ bool VansGameplayAssetStorage::LoadCooked(
 	asset.contentHash = root[2].get<std::uint64_t>();
 	asset.dependencies = root[3].get<std::vector<std::string>>();
 	asset.runtimeDocument = DecodeSerializedValueJson(root[4]);
+	asset.cookPolicyFingerprint = root[5].get<std::string>();
 	if (asset.schemaVersion != descriptor->schemaVersion || asset.contentHash == 0)
 	{
 		error = "cooked GAF asset version or ContentHash is invalid";
 		return false;
 	}
-	VansGameplayCookResult verification = Cook(asset.assetType, asset.runtimeDocument);
-	if (!verification || verification.asset.contentHash != asset.contentHash)
+	if (CalculateCookedContentHash(asset.runtimeDocument, asset.cookPolicyFingerprint) !=
+		asset.contentHash)
 	{
 		error = "cooked GAF asset ContentHash verification failed";
 		return false;

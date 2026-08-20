@@ -213,6 +213,9 @@ namespace VansGraphics
 		VansPunctualShadowLightType lightType = VansPunctualShadowLightType::Point;
 		uint8_t faceIndex = 0;
 		uint16_t resolution = 0;
+		// Pending allocation 的视图只用于本帧写入，不能在提交成功前作为
+		// resident handle 发布给光照消费者。
+		bool rendersPendingAllocation = false;
 		uint32_t shadowCasterMask = 0xffffffffu;
 		VansShadowRect atlasRect;
 		glm::mat4 worldToShadow = glm::mat4(1.0f);

@@ -12,6 +12,7 @@
 #include "../AssetCore/Storage/VansShaderAuthoringAssetStorage.h"
 #include "../AudioCore/VansAudioBus.h"
 #include "../AnimationCore/VansAnimatorIO.h"
+#include "../GameplayActionSchema/VansGameplayAssetSchema.h"
 #include "../SceneCore/VansSceneDocumentLoader.h"
 #include "../SceneCore/VansSceneSchema.h"
 #include "../TimelineCore/VansTimelineDependencyBuilder.h"
@@ -303,7 +304,10 @@ namespace
 			case VansAssetType::Material: result.requiredMaterials.insert(found->first); break;
 			case VansAssetType::Shader: result.requiredShaders.insert(found->first); break;
 			case VansAssetType::SkinProfile: result.requiredSkinProfiles.insert(found->first); break;
-			default: break;
+			default:
+				if (VansGameplayAssetSchemaRegistry::IsGameplayAssetType(found->second))
+					result.requiredAssets.insert(found->first);
+				break;
 			}
 			return;
 		}

@@ -5,6 +5,7 @@
 #include "VansGraphicsDevice.h"
 #include "VulkanCore/VansVKDevice.h"
 #include "VulkanCore/VansVKDescriptorManager.h"
+#include "VansTemporalProjection.h"
 #include "../SceneCore/VansSceneCameraSettingsConfig.h"
 #include <vector>
 #include <climits>
@@ -12,6 +13,22 @@ using namespace VansGraphics;
 namespace VansGraphics
 {
 	struct VansCameraControlPose;
+	struct VansTemporalCameraSnapshot
+	{
+		glm::mat4 view{ 1.0f };
+		glm::mat4 projection{ 1.0f };
+		glm::mat4 previousViewProjection{ 1.0f };
+		glm::vec3 position{ 0.0f };
+		glm::vec3 up{ 0.0f, 1.0f, 0.0f };
+		glm::vec3 right{ 1.0f, 0.0f, 0.0f };
+		glm::vec3 forward{ 0.0f, 0.0f, -1.0f };
+		VansTemporalJitter jitter{};
+		std::uint32_t frameIndex = 0;
+		float nearClip = 0.1f;
+		float farClip = 1000.0f;
+		float fovRadians = 1.0f;
+	};
+
     struct alignas(16) CameraDataStruct
     {
         glm::vec4   CameraPosition;
@@ -47,7 +64,8 @@ namespace VansGraphics
         //render backend引用
         VansGraphicsDevice* m_RenderDevice;
 
-        CameraDataStruct m_CameraData;
+        CameraDataStruct m_CameraData{};
+		glm::mat4 m_UnjitteredProjectionMatrix{ 1.0f };
 
         uint32_t m_RenderFrameIndex;
 
@@ -56,6 +74,8 @@ namespace VansGraphics
         // ── Transform 绑定 ──────────────────────────────────────────────────
         // UINT32_MAX 表示未绑定 Transform（降级路径，直接修改 m_Position/m_Rotation）
         uint32_t m_TransformID = UINT32_MAX;
+
+		VansTemporalJitter m_TemporalJitter{};
 
     public:
 
@@ -118,6 +138,10 @@ namespace VansGraphics
 
         glm::mat4 GetProjectiveMatrix();
 
+		const VansTemporalJitter& GetTemporalJitter() const { return m_TemporalJitter; }
+		const CameraDataStruct& GetCameraData() const { return m_CameraData; }
+		VansTemporalCameraSnapshot CaptureTemporalSnapshot() const;
+
         // 将世界坐标投影到左上角为原点的归一化视口坐标。
         // 返回 false 表示点位于相机后方或视锥之外。
         bool ProjectWorldToViewport(const glm::vec3& worldPosition, glm::vec3& viewportPosition);
@@ -151,10 +175,5 @@ namespace VansGraphics
 
         void* GetGraphicsDevice() {return m_RenderDevice;}
 
-        float m_JitterX;
-        float m_JitterY;
-        // 像素空间抖动偏移（[-0.5, 0.5]），直接传给 FSR DispatchUpscale
-        float m_JitterPixelX = 0.0f;
-        float m_JitterPixelY = 0.0f;
 	};
 }

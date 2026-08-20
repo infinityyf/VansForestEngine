@@ -138,8 +138,15 @@ void RegisterEngineShaders()
     reg.RegisterGraphicsShader("SkyBox", {
         "SkyBox",
         "EngineAssets/Shaders/SkyBox",
-        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
+        VK_TRUE, VK_FALSE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
         0, false, false, 2
+    });
+
+    reg.RegisterGraphicsShader("SkyMotionVector", {
+        "SkyMotionVector",
+        "EngineAssets/Shaders/SkyMotionVector",
+        VK_TRUE, VK_FALSE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
+        0, false, false, 1
     });
 
     reg.RegisterGraphicsShader("SSAO", {
@@ -302,6 +309,7 @@ void RegisterEngineShaders()
     reg.RegisterComputeShader("PreConDiffuseEnvironment", "EngineAssets/Shaders/PreConDiffuseEnvironment");
     reg.RegisterComputeShader("PreConSpecularEnvironment", "EngineAssets/Shaders/PreConSpecularEnvironment");
     reg.RegisterComputeShader("SSGI", "EngineAssets/Shaders/SSGI");
+    reg.RegisterComputeShader("SSGIProbeCache", "EngineAssets/Shaders/SSGIProbeCache");
     reg.RegisterComputeShader("SSGITemporal", "EngineAssets/Shaders/SSGITemporal");
     reg.RegisterComputeShader("SSGIAtrous", "EngineAssets/Shaders/SSGIAtrous", sizeof(VansGraphics::SSGIAtrousPushConstants));
     reg.RegisterComputeShader("HIZ", "EngineAssets/Shaders/HIZ");
@@ -417,6 +425,7 @@ void RegisterEngineShaders()
 
     reg.RegisterMaterialPasses(VansGraphics::VAN_SKY_BOX, {
         { VansGraphics::VansPass::SKY_BOX,          "SkyBox"         },
+		{ VansGraphics::VansPass::VELOCITY,         "SkyMotionVector"},
     });
 
     reg.RegisterMaterialPasses(VansGraphics::VAN_SCREEN_SPACE_AO, {

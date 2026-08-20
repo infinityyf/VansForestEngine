@@ -3,6 +3,7 @@
 #include "../VansCamera.h"
 #include "../VansMaterial.h"
 #include "VansVKCommandBuffer.h"
+#include "../../Util/VansProfiler.h"
 
 namespace VansGraphics
 {
@@ -44,7 +45,17 @@ namespace VansGraphics
 		VansLightManager* lightManager = m_Scene->GetLightManager();
 		VansMaterialManager* materialManager = m_Scene->GetMaterialManager();
 		rayTracingContext.PrepareGIProbeUpdate(lightManager, materialManager);
-		rayTracingContext.DispatchRayTracing(this, &computeCmd, m_Scene);
-		rayTracingContext.UpdateGIProbe(this, &computeCmd, lightManager, materialManager);
+		const VkCommandBuffer commandBuffer = computeCmd.GetVKCommandBuffer();
+		const Vans::VansGpuQueueLane queueLane = m_AsyncComputeEnabled
+			? Vans::VansGpuQueueLane::Compute
+			: Vans::VansGpuQueueLane::Graphics;
+		{
+			VANS_GPU_SCOPE_LANE(commandBuffer, "DDGI.RayTrace", queueLane);
+			rayTracingContext.DispatchRayTracing(this, &computeCmd, m_Scene);
+		}
+		{
+			VANS_GPU_SCOPE_LANE(commandBuffer, "DDGI.Update", queueLane);
+			rayTracingContext.UpdateGIProbe(this, &computeCmd, lightManager, materialManager);
+		}
 	}
 }

@@ -349,7 +349,8 @@ void VansGraphics::VansScene::InjectCamera(VansCamera* camera)
 	if (m_Camera != camera)
 	{
 		if (m_RuntimeResourceDevice != nullptr)
-			m_RuntimeResourceDevice->RequestFSRHistoryReset(VansFSRResetReason::CameraCut);
+			m_RuntimeResourceDevice->RequestUpscalerHistoryReset(
+				VansUpscalerResetReason::CameraCut);
 		m_Camera = camera;
 	}
 }
@@ -986,14 +987,6 @@ void VansGraphics::VansScene::BindWaterSystemGlobalDescriptors()
 void VansGraphics::VansScene::BindMaterialVideoDescriptorSet()
 {
     m_MaterialManager.m_VideoBindlessDescriptorSet = m_GlobalDescriptorSet;
-}
-
-void VansGraphics::VansScene::DeferInitialReflectionProbeBake()
-{
-	const GIResolvedRegion primaryRegion = ResolveGIRegion(GetPrimaryGIRegionDesc(m_GISettings));
-    m_ReflectionProbeSystem.DeferInitialBakeForGI(
-		primaryRegion.spatialUpdateDivisor,
-		primaryRegion.directionUpdateSlices);
 }
 
 void VansGraphics::VansScene::PlayAllSceneVideos()
@@ -1660,6 +1653,8 @@ void VansGraphics::VansScene::UpdateSceneData()
         shadowCamera.aspectRatio = m_Camera->GetAspectRatio();
         shadowCamera.nearPlane = m_Camera->GetNearClip();
         shadowCamera.farPlane = m_Camera->GetFarClip();
+		shadowCamera.viewportWidth = vkDevice ? vkDevice->GetRenderWidth() : 1920u;
+		shadowCamera.viewportHeight = vkDevice ? vkDevice->GetRenderHeight() : 1080u;
         m_LightManager.UpdateLightShadowMatrixData(shadowCamera);
         BuildPunctualShadowCasterLists();
     }

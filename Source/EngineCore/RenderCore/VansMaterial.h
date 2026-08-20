@@ -44,6 +44,7 @@ using namespace VansGraphics;
 namespace VansGraphics
 
 {
+	struct VansGISettings;
 
 	struct VansFogSettings
 
@@ -94,11 +95,14 @@ namespace VansGraphics
 
 
 	static constexpr uint32_t VANS_SSGI_MAX_GI_REGIONS = 8u;
+	static constexpr uint32_t VANS_SSGI_PROBE_CACHE_TILE_SIZE = 4u;
 
 	struct alignas(16) SSGIRegionParamsGPU
 	{
+		// volumeMin.w = immutable DDGI atlas probe tiles per row.
 		glm::vec4 volumeMin;
 		glm::vec4 volumeSizeAndBias;
+		// traceParams.w = immutable DDGI atlas probe tile row count.
 		glm::vec4 traceParams;
 		glm::vec4 gridDimensionsAndPriority;
 	};
@@ -110,7 +114,9 @@ namespace VansGraphics
 
 		glm::vec4 screenSize;
 
-		glm::vec4 regionInfo; // x = active region count
+		// x = active region count, y = reduced maximum SSGI trace distance,
+		// z = reduced minimum SSGI fade-start ratio, w = reserved.
+		glm::vec4 regionInfo;
 		std::array<SSGIRegionParamsGPU, VANS_SSGI_MAX_GI_REGIONS> regions{};
 		// x = output DDGI probe irradiance directly in Deferred, y = display exposure.
 		// This is shared GI consumer state, not an editor-side render override.
@@ -119,6 +125,14 @@ namespace VansGraphics
 	};
 
 	static_assert(sizeof(SSGIParamsGPU) == 560, "SSGI parameter layout must match GLSL");
+
+	// Single construction path for scene creation and later GI setting updates.
+	// Keeping the immutable DDGI atlas tile dimensions here prevents either path
+	// from silently falling back to per-cache-texel texture queries/divisions.
+	SSGIParamsGPU BuildSSGIParamsFromGISettings(
+		const VansGISettings& gi,
+		uint32_t renderWidth,
+		uint32_t renderHeight);
 
 	struct alignas(16) SSGITemporalParamsGPU
 
@@ -605,6 +619,8 @@ namespace VansGraphics
 		static constexpr const char* RT_SSAO_RESULT = "Runtime.SSAO.Result";
 
 		static constexpr const char* RT_SSGI_RESULT = "Runtime.SSGI.Result";
+		static constexpr const char* RT_SSGI_PROBE_CACHE_RADIANCE = "Runtime.SSGI.ProbeCacheRadiance";
+		static constexpr const char* RT_SSGI_PROBE_CACHE_SURFACE = "Runtime.SSGI.ProbeCacheSurface";
 
 		static constexpr const char* RT_SSGI_TEMPORAL_A = "Runtime.SSGI.TemporalA";
 
@@ -678,7 +694,7 @@ namespace VansGraphics
 		static constexpr const char* RT_CLOUD_DETAIL_NOISE   = "Runtime.Cloud.DetailNoise3D";
 		static constexpr const char* RT_EXPOSURE_LUMINANCE   = "Runtime.PostProcess.Exposure.Luminance";
 		static constexpr const char* RT_EXPOSURE_CURRENT     = "Runtime.PostProcess.Exposure.Current";
-		static constexpr const char* RT_FSR_EXPOSURE         = "Runtime.FSR.ExposureMultiplier";
+		static constexpr const char* RT_UPSCALER_EXPOSURE    = "Runtime.Upscaler.ExposureMultiplier";
 
 
 
@@ -726,6 +742,10 @@ namespace VansGraphics
 
 
 		void ClearRuntimeRenderTextures();
+
+		// Releases only render-size-dependent transient resources. Scene materials,
+		// fixed lookup textures, and global bindless state remain valid.
+		void ClearResolutionDependentRenderData(VkDevice device);
 
 
 
@@ -807,6 +827,8 @@ namespace VansGraphics
 		VkDescriptorSetLayout m_SSGITexSetLayout = VK_NULL_HANDLE;
 
 		std::vector<VkDescriptorSet> m_SSGIDescriptorSets;
+		VkDescriptorSetLayout m_SSGIProbeCacheSetLayout = VK_NULL_HANDLE;
+		std::vector<VkDescriptorSet> m_SSGIProbeCacheDescriptorSets;
 
 		//HIZ
 
@@ -1009,6 +1031,7 @@ namespace VansGraphics
 
 
 		VansComputeShader* m_SSGIShader = nullptr;
+		VansComputeShader* m_SSGIProbeCacheShader = nullptr;
 
 
 

@@ -686,7 +686,10 @@ void VansVegetationSystem::WriteTreeDrawDescriptors(TreeDrawConfigGPU& cfg)
 // 4. CopyBuffer: visibleCount  - 每个 config  - indirect draw buffer instanceCount 字段
 // 5. Barrier: transfer  - draw indirect + vertex shader read
 // ============================================================================
-bool VansVegetationSystem::DispatchCullPass(VansVKCommandBuffer& computeCmd, float cullDistance)
+bool VansVegetationSystem::DispatchCullPass(
+	VansVKCommandBuffer& computeCmd,
+	float cullDistance,
+	bool sameQueueGraphicsConsumer)
 {
 	if (!m_CullShader || m_CullDescSets.empty())
 	{
@@ -744,7 +747,8 @@ bool VansVegetationSystem::DispatchCullPass(VansVKCommandBuffer& computeCmd, flo
 		computeToTransfer.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
 		computeCmd.PipelineBarrier(
 			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-			VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+			VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+				(sameQueueGraphicsConsumer ? VK_PIPELINE_STAGE_VERTEX_SHADER_BIT : 0u),
 			{ computeToTransfer });
 
 		// ── CopyBuffer: visibleCount  - indirect buffer instanceCount (offset 4) ─
@@ -778,13 +782,16 @@ bool VansVegetationSystem::DispatchCullPass(VansVKCommandBuffer& computeCmd, flo
 		cullBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 		computeCmd.PipelineBarrier(
 			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+				(sameQueueGraphicsConsumer ? VK_PIPELINE_STAGE_VERTEX_SHADER_BIT : 0u),
 			{ cullBarrier });
 	}
 	return true;
 }
 
-void VansVegetationSystem::DispatchTreeCullPass(VansVKCommandBuffer& computeCmd)
+void VansVegetationSystem::DispatchTreeCullPass(
+	VansVKCommandBuffer& computeCmd,
+	bool sameQueueGraphicsConsumer)
 {
 	if (!m_TreeEnabled || !m_TreeCullShader || m_TreeCullDescSets.empty())
 		return;
@@ -822,7 +829,8 @@ void VansVegetationSystem::DispatchTreeCullPass(VansVKCommandBuffer& computeCmd)
 	computeToTransfer.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
 	computeCmd.PipelineBarrier(
 		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-		VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+		VK_PIPELINE_STAGE_TRANSFER_BIT |
+			(sameQueueGraphicsConsumer ? VK_PIPELINE_STAGE_VERTEX_SHADER_BIT : 0u),
 		{ computeToTransfer });
 
 	for (auto& cfg : m_TreeDrawConfigsGPU)
@@ -853,7 +861,8 @@ void VansVegetationSystem::Update(VansVKCommandBuffer& computeCmd, float deltaTi
                                    float windFrequency, float windSpeed, float windBendMult,
                                    float stiffness, float damping,
                                    float softness, float lodFullDist, float lodFadeDist,
-                                   bool useCullVisibilityMask)
+								   bool useCullVisibilityMask,
+								   bool sameQueueGraphicsConsumer)
 {
 	if (!m_BoneSimShader || m_BoneSimDescSets.empty())
 	{
@@ -893,15 +902,18 @@ void VansVegetationSystem::Update(VansVKCommandBuffer& computeCmd, float deltaTi
 	computeCmd.DispatchCompute(*m_BoneSimShader, simGroupsX, 1, 1,
 		{ m_GlobalDescSet, m_BoneSimDescSets[0] }, &simPC, sizeof(simPC));
 
-	// ── Barrier: bone sim compute write  - vertex shader read ────────
-	VkMemoryBarrier simToDrawBarrier = {};
-	simToDrawBarrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-	simToDrawBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-	simToDrawBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-	computeCmd.PipelineBarrier(
-		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-		VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-		{ simToDrawBarrier });
+	if (sameQueueGraphicsConsumer)
+	{
+		// 单队列路径在同一个 command buffer 内直接衔接 vertex consumer。
+		VkMemoryBarrier simToDrawBarrier = {};
+		simToDrawBarrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+		simToDrawBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+		simToDrawBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		computeCmd.PipelineBarrier(
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+			{ simToDrawBarrier });
+	}
 }
 
 // ============================================================================

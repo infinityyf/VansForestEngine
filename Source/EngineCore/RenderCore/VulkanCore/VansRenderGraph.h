@@ -799,9 +799,10 @@ namespace VansGraphics
 		VansVKCommandBuffer* graphicsCmd = nullptr;
 		VansVKCommandBuffer* graphicsPreCmd = nullptr;
 		VansVKCommandBuffer* graphicsScreenCmd = nullptr;
+		VansVKCommandBuffer* asyncSSAOCmd = nullptr;
 		VansVKCommandBuffer* shadowCmd = nullptr;
 		VansVKCommandBuffer* gbufferCmd = nullptr;
-		VansVKCommandBuffer* asyncComputeCmd = nullptr;
+		VansVKCommandBuffer* asyncEarlyCmd = nullptr;
 		VansVKCommandBuffer* asyncCloudCmd = nullptr;
 		VansVKCommandBuffer* asyncGICmd = nullptr;
 
@@ -811,25 +812,28 @@ namespace VansGraphics
 		VkFence graphicsFence = VK_NULL_HANDLE;
 		VkFence graphicsPreFence = VK_NULL_HANDLE;
 		VkFence graphicsScreenFence = VK_NULL_HANDLE;
+		VkFence asyncSSAOFence = VK_NULL_HANDLE;
 		VkFence shadowFence = VK_NULL_HANDLE;
 		VkFence gbufferFence = VK_NULL_HANDLE;
-		VkFence asyncComputeFence = VK_NULL_HANDLE;
+		VkFence asyncEarlyFence = VK_NULL_HANDLE;
 		VkFence asyncCloudFence = VK_NULL_HANDLE;
 		VkFence asyncGIFence = VK_NULL_HANDLE;
 
 		bool frameSubmitSucceeded = true;
 		bool graphicsPreRecorded = false;
 		bool graphicsScreenRecorded = false;
+		bool asyncSSAORecorded = false;
 		bool shadowRecorded = false;
 		bool gbufferRecorded = false;
-		bool asyncComputeRecorded = false;
+		bool asyncEarlyRecorded = false;
 		bool asyncCloudRecorded = false;
 		bool asyncGIRecorded = false;
 		bool graphicsPreSubmitted = false;
 		bool graphicsScreenSubmitted = false;
+		bool asyncSSAOSubmitted = false;
 		bool shadowSubmitted = false;
 		bool gbufferSubmitted = false;
-		bool asyncComputeSubmitted = false;
+		bool asyncEarlySubmitted = false;
 		bool asyncCloudSubmitted = false;
 		bool asyncGISubmitted = false;
 		uint64_t lastDeferredDeleteFlushCount = 0;

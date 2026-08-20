@@ -277,63 +277,47 @@ glm::vec4 VansGraphics::VansCamera::GetUp()
 
 void VansGraphics::VansCamera::SetCameraData(const glm::mat4& view_matrix, const glm::mat4& projective_matrix)
 {
-// Sub-pixel jitter (Halton 2,3) for TAA / upscale
-    auto halton = [](uint32_t i, uint32_t b)->float {
-        float f = 1.0f;
-        float r = 0.0f;
-        uint32_t x = i;
-        while (x > 0) {
-            f /= float(b);
-            r += f * float(x % b);
-            x /= b;
-        }
-        return r;
-    };
-
     float width  = m_RenderDevice->GetNativeRenderWidth();
     float height = m_RenderDevice->GetNativeRenderHeight();
 
     uint32_t seqIndex = m_RenderFrameIndex & 1023u; // wrap to avoid precision drift
-    float h2 = halton(seqIndex, 2);
-    float h3 = halton(seqIndex, 3);
+    float jitterPixelX = 0.0f;
+    float jitterPixelY = 0.0f;
+    m_RenderDevice->GetTemporalUpscaleJitterOffset(
+        seqIndex,
+        jitterPixelX,
+        jitterPixelY);
 
-    // Centered jitter in [-0.5,0.5]
-    float jitterPixelX = (h2 - 0.5f);
-    float jitterPixelY = (h3 - 0.5f);
-
-    // 优先使用 FSR 内置抖动序列（针对当前缩放比例优化），否则回退到 Halton(2,3)
-    float fsrJx = 0.0f, fsrJy = 0.0f;
-    if (m_RenderDevice->GetFSRJitterOffset(seqIndex, fsrJx, fsrJy))
-    {
-        jitterPixelX = fsrJx;
-        jitterPixelY = fsrJy;
-    }
-
-    // 保存像素空间抖动值，供 FSR DispatchUpscale 直接使用（无需再除以分辨率）
-    m_JitterPixelX = jitterPixelX;
-    m_JitterPixelY = jitterPixelY;
-
-    // Convert to clip space offsets (NDC) — multiply by 2 because clip x,y span [-1,1]
-    m_JitterX =  (jitterPixelX / width) * 2.0f;
-    m_JitterY =  (jitterPixelY / height) * 2.0f;
-
-    glm::mat4 jitteredProj = projective_matrix;
-    // GLM uses column-major; modify row 2 (Z) columns 0/1 to shift X/Y
-    jitteredProj[2][0] += m_JitterX;
-    jitteredProj[2][1] += m_JitterY;
+    m_TemporalJitter = BuildVulkanTemporalJitter(
+        glm::vec2(jitterPixelX, jitterPixelY),
+        glm::vec2(width, height));
+    const glm::mat4 jitteredProj = m_TemporalJitter.valid
+        ? ApplyClipSpaceJitter(projective_matrix, m_TemporalJitter.ndcOffset)
+        : projective_matrix;
 
     const glm::mat4 inverseView = glm::inverse(view_matrix);
 
     // Store camera data
     m_CameraData.CameraPosition   = glm::vec4(m_Position, 1.0f);
     m_CameraData.CameraDirection  = glm::vec4(-glm::vec3(inverseView[2]), 0.0f);
-    m_CameraData.LastPrevViewMatrix = m_CameraData.LastViewMatrix;
-    m_CameraData.LastPrevProjectionMatrix = m_CameraData.LastProjectionMatrix;
-    m_CameraData.LastPrevVPMatrix = m_CameraData.LastVPMatrix;
-
-    m_CameraData.LastViewMatrix = m_CameraData.ViewMatrix;
-    m_CameraData.LastProjectionMatrix = m_CameraData.ProjectionMatrix;
-    m_CameraData.LastVPMatrix = m_CameraData.VPMatrix;
+    if (m_RenderFrameIndex == 0)
+    {
+        m_CameraData.LastPrevViewMatrix = view_matrix;
+        m_CameraData.LastPrevProjectionMatrix = jitteredProj;
+        m_CameraData.LastPrevVPMatrix = jitteredProj * view_matrix;
+        m_CameraData.LastViewMatrix = view_matrix;
+        m_CameraData.LastProjectionMatrix = jitteredProj;
+        m_CameraData.LastVPMatrix = jitteredProj * view_matrix;
+    }
+    else
+    {
+        m_CameraData.LastPrevViewMatrix = m_CameraData.LastViewMatrix;
+        m_CameraData.LastPrevProjectionMatrix = m_CameraData.LastProjectionMatrix;
+        m_CameraData.LastPrevVPMatrix = m_CameraData.LastVPMatrix;
+        m_CameraData.LastViewMatrix = m_CameraData.ViewMatrix;
+        m_CameraData.LastProjectionMatrix = m_CameraData.ProjectionMatrix;
+        m_CameraData.LastVPMatrix = m_CameraData.VPMatrix;
+    }
 
     m_CameraData.ViewMatrix       = view_matrix;
     m_CameraData.ProjectionMatrix = jitteredProj;
@@ -343,6 +327,7 @@ void VansGraphics::VansCamera::SetCameraData(const glm::mat4& view_matrix, const
     glm::mat4 unjitteredVP = projective_matrix * view_matrix;
     m_CameraData.LastUnjitteredVPMatrix = (m_RenderFrameIndex == 0) ? unjitteredVP : m_CameraData.UnjitteredVPMatrix;
     m_CameraData.UnjitteredVPMatrix     = unjitteredVP;
+	m_UnjitteredProjectionMatrix          = projective_matrix;
 
     m_CameraData.InverseViewMatrix       = inverseView;
     m_CameraData.InverseProjectionMatrix = glm::inverse(jitteredProj);
@@ -352,7 +337,7 @@ void VansGraphics::VansCamera::SetCameraData(const glm::mat4& view_matrix, const
     m_CameraData.FrameParams  = glm::vec4(
         m_RenderFrameIndex,
         time,
-        m_RenderDevice->GetUpscaleMipBias(),
+        m_RenderDevice->GetTemporalUpscaleMipBias(),
         0.0f);
     m_CameraData.CameraParams = glm::vec4(m_NearClip, m_FarClip, m_Fov, m_AspectRatio);
 
@@ -387,6 +372,25 @@ glm::mat4 VansGraphics::VansCamera::GetProjectiveMatrix()
 {
     //calculate projective matrix
     return glm::perspective(glm::radians(m_Fov), m_AspectRatio, m_NearClip, m_FarClip);
+}
+
+VansGraphics::VansTemporalCameraSnapshot
+VansGraphics::VansCamera::CaptureTemporalSnapshot() const
+{
+	VansTemporalCameraSnapshot snapshot;
+	snapshot.view = m_CameraData.ViewMatrix;
+	snapshot.projection = m_UnjitteredProjectionMatrix;
+	snapshot.previousViewProjection = m_CameraData.LastUnjitteredVPMatrix;
+	snapshot.position = glm::vec3(m_CameraData.CameraPosition);
+	snapshot.up = glm::normalize(glm::vec3(m_CameraData.InverseViewMatrix[1]));
+	snapshot.right = glm::normalize(glm::vec3(m_CameraData.InverseViewMatrix[0]));
+	snapshot.forward = glm::normalize(glm::vec3(m_CameraData.CameraDirection));
+	snapshot.jitter = m_TemporalJitter;
+	snapshot.frameIndex = m_RenderFrameIndex;
+	snapshot.nearClip = m_NearClip;
+	snapshot.farClip = m_FarClip;
+	snapshot.fovRadians = glm::radians(m_Fov);
+	return snapshot;
 }
 
 bool VansGraphics::VansCamera::ProjectWorldToViewport(

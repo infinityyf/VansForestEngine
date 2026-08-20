@@ -85,6 +85,8 @@ namespace Vans
 		bool hasPredictedPivot = false;
 		bool movementBlocked = false;
 		bool hasFacing = false;
+		bool grounded = true;
+		bool hasGrounding = false;
 		bool valid = false;
 	};
 

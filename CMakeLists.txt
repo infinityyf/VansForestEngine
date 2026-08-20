@@ -2,6 +2,12 @@ cmake_minimum_required(VERSION 3.24)
 
 project(ForestEngine LANGUAGES CXX)
 
+option(
+    FOREST_ENABLE_STREAMLINE_DLSS
+    "Build and package the NVIDIA Streamline DLSS backend"
+    ON
+)
+
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 include(ForestBuildOptions)

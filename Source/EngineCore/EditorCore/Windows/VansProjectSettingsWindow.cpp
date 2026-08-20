@@ -383,45 +383,119 @@ void VansProjectSettingsWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 
 		if (ImGui::BeginTabItem("Rendering"))
 		{
-			Vans::EditorAPI::FSRSettingsSnapshot fsr = editorAPI.GetFSRSettings();
-			const char* fsrModeNames[] = { "Viewport", "Native AA", "Quality 1.5x", "Balanced 1.7x", "Performance 2x" };
-			int fsrMode = static_cast<int>(fsr.mode);
-			ImGui::SetNextItemWidth(180.0f);
-			if (ImGui::Combo("FSR Mode", &fsrMode, fsrModeNames, IM_ARRAYSIZE(fsrModeNames)))
+			const Vans::EditorAPI::UpscalerSettingsSnapshot liveUpscaler =
+				editorAPI.GetUpscalerSettings();
+			if (!m_UpscalerEditInitialized || !m_UpscalerEditDirty)
 			{
-				fsr.mode = static_cast<Vans::EditorAPI::FSRUpscaleMode>(fsrMode);
-				editorAPI.SetFSRSettings(fsr.mode, fsr.sharpness);
+				m_UpscalerEdit = liveUpscaler;
+				m_UpscalerEditInitialized = true;
 			}
+			const std::vector<Vans::EditorAPI::UpscalerCapabilitiesSnapshot> capabilities =
+				editorAPI.GetUpscalerCapabilities();
+			const char* backendNames[] = { "Off", "FSR", "DLSS" };
+			const char* qualityNames[] = {
+				"Native AA", "Quality", "Balanced", "Performance", "Ultra Performance" };
+
+			int backend = static_cast<int>(m_UpscalerEdit.desiredBackend);
 			ImGui::SetNextItemWidth(180.0f);
-			if (ImGui::SliderFloat("Sharpness", &fsr.sharpness, 0.0f, 1.0f, "%.2f"))
-				editorAPI.SetFSRSettings(fsr.mode, fsr.sharpness);
-			bool debugView = fsr.debugViewEnabled;
-			if (ImGui::Checkbox("FSR SDK Debug View", &debugView))
-				editorAPI.SetFSRDebugViewEnabled(debugView);
+			if (ImGui::Combo("Upscaler Backend", &backend, backendNames, IM_ARRAYSIZE(backendNames)))
+			{
+				m_UpscalerEdit.desiredBackend =
+					static_cast<Vans::EditorAPI::UpscalerBackend>(backend);
+				if (m_UpscalerEdit.desiredBackend == Vans::EditorAPI::UpscalerBackend::Off)
+					m_UpscalerEdit.desiredQuality =
+						Vans::EditorAPI::UpscaleQualityMode::NativeAA;
+				m_UpscalerEditDirty = true;
+			}
+			int quality = static_cast<int>(m_UpscalerEdit.desiredQuality);
+			ImGui::SetNextItemWidth(180.0f);
+			ImGui::BeginDisabled(
+				m_UpscalerEdit.desiredBackend == Vans::EditorAPI::UpscalerBackend::Off);
+			if (ImGui::Combo("Quality", &quality, qualityNames, IM_ARRAYSIZE(qualityNames)))
+			{
+				m_UpscalerEdit.desiredQuality =
+					static_cast<Vans::EditorAPI::UpscaleQualityMode>(quality);
+				m_UpscalerEditDirty = true;
+			}
+			ImGui::EndDisabled();
+
+			const bool fsrSelected =
+				m_UpscalerEdit.desiredBackend == Vans::EditorAPI::UpscalerBackend::FSR;
+			ImGui::BeginDisabled(!fsrSelected);
+			ImGui::SetNextItemWidth(180.0f);
+			if (ImGui::SliderFloat(
+				"FSR RCAS Sharpness",
+				&m_UpscalerEdit.fsrSharpness,
+				0.0f,
+				1.0f,
+				"%.2f"))
+			{
+				m_UpscalerEditDirty = true;
+			}
+			if (ImGui::Checkbox("FSR SDK Debug View", &m_UpscalerEdit.fsrDebugView))
+				m_UpscalerEditDirty = true;
+			ImGui::EndDisabled();
+
+			if (ImGui::Button("Apply Upscaler Settings"))
+			{
+				const Vans::EditorAPI::ApplyUpscalerSettingsResult apply =
+					editorAPI.ApplyUpscalerSettings(m_UpscalerEdit);
+				m_UpscalerApplySucceeded = apply.accepted;
+				m_UpscalerApplyMessage = apply.message;
+				if (apply.accepted)
+					m_UpscalerEditDirty = false;
+			}
+			if (!m_UpscalerApplyMessage.empty())
+			{
+				ImGui::TextColored(
+					m_UpscalerApplySucceeded
+						? ImVec4(0.45f, 0.85f, 0.55f, 1.0f)
+						: ImVec4(0.95f, 0.45f, 0.40f, 1.0f),
+					"%s",
+					m_UpscalerApplyMessage.c_str());
+			}
+
+			ImGui::TextDisabled(
+				"Desired: %s / %s",
+				backendNames[static_cast<int>(liveUpscaler.desiredBackend)],
+				qualityNames[static_cast<int>(liveUpscaler.desiredQuality)]);
+			ImGui::TextDisabled(
+				"Effective: %s / %s",
+				backendNames[static_cast<int>(liveUpscaler.effectiveBackend)],
+				qualityNames[static_cast<int>(liveUpscaler.effectiveQuality)]);
+			if (!liveUpscaler.fallbackMessage.empty())
+				ImGui::TextWrapped("Fallback: %s", liveUpscaler.fallbackMessage.c_str());
 			ImGui::TextDisabled("%ux%u -> %ux%u  bias %.2f",
-				fsr.renderWidth,
-				fsr.renderHeight,
-				fsr.outputWidth,
-				fsr.outputHeight,
-				fsr.mipBias);
-			ImGui::TextDisabled("SDK: %s, jitter phases %d, dispatch ok/fail %llu/%llu, pending reset 0x%X",
-				fsr.contextReady ? "ready" : "not ready",
-				fsr.jitterPhaseCount,
-				static_cast<unsigned long long>(fsr.successfulDispatchCount),
-				static_cast<unsigned long long>(fsr.failedDispatchCount),
-				fsr.pendingResetReasons);
-			ImGui::TextDisabled("Masks %llu, GPU %.2f MiB (aliasable %.2f MiB)",
-				static_cast<unsigned long long>(fsr.generatedReactiveMaskCount),
-				static_cast<double>(fsr.gpuMemoryUsageBytes) / (1024.0 * 1024.0),
-				static_cast<double>(fsr.gpuMemoryAliasableBytes) / (1024.0 * 1024.0));
+				liveUpscaler.renderWidth,
+				liveUpscaler.renderHeight,
+				liveUpscaler.outputWidth,
+				liveUpscaler.outputHeight,
+				liveUpscaler.mipBias);
+			ImGui::TextDisabled("Context: %s, jitter phases %d, dispatch ok/fail %llu/%llu, pending reset 0x%X",
+				liveUpscaler.contextReady ? "ready" : "not ready",
+				liveUpscaler.jitterPhaseCount,
+				static_cast<unsigned long long>(liveUpscaler.successfulDispatchCount),
+				static_cast<unsigned long long>(liveUpscaler.failedDispatchCount),
+				liveUpscaler.pendingResetReasons);
+			ImGui::TextDisabled("Auxiliary %llu, GPU %.2f MiB (aliasable %.2f MiB)",
+				static_cast<unsigned long long>(liveUpscaler.auxiliaryDispatchCount),
+				static_cast<double>(liveUpscaler.gpuMemoryUsageBytes) / (1024.0 * 1024.0),
+				static_cast<double>(liveUpscaler.gpuMemoryAliasableBytes) / (1024.0 * 1024.0));
 			ImGui::TextDisabled("Codes: create %u, query %u, dispatch %u, reactive %u",
-				fsr.lastCreateReturnCode,
-				fsr.lastQueryReturnCode,
-				fsr.lastDispatchReturnCode,
-				fsr.lastReactiveReturnCode);
-			if (!fsr.lastError.empty())
-				ImGui::TextWrapped("Last FSR error: %s (code %u)",
-					fsr.lastError.c_str(), fsr.lastDispatchReturnCode);
+				liveUpscaler.backendCreateCode,
+				liveUpscaler.backendQueryCode,
+				liveUpscaler.backendDispatchCode,
+				liveUpscaler.backendAuxiliaryCode);
+			if (!liveUpscaler.lastError.empty())
+				ImGui::TextWrapped("Last upscaler error: %s (code %u)",
+					liveUpscaler.lastError.c_str(), liveUpscaler.backendDispatchCode);
+
+			for (const auto& capability : capabilities)
+			{
+				if (capability.backend == m_UpscalerEdit.desiredBackend &&
+					!capability.unavailableReason.empty())
+				ImGui::TextWrapped("Availability: %s", capability.unavailableReason.c_str());
+			}
 
 			ImGui::Separator();
 			Vans::EditorAPI::CommandRecordingSettingsSnapshot commandRecording =

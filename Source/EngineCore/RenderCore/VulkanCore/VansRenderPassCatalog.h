@@ -34,6 +34,7 @@ namespace VansGraphics
 		constexpr const char* PunctualShadowDebug = "Punctual Shadow Debug Preview";
 		constexpr const char* ScreenSpaceShadow = "Screen Space Shadow";
 		constexpr const char* ScreenSpaceEffects = "Screen Space Effects";
+		constexpr const char* SSAOFilter = "SSAO Filter";
 		constexpr const char* GIData = "GI Data";
 		constexpr const char* SSR = "SSR";
 		constexpr const char* RayTracing = "Ray Tracing";
@@ -48,7 +49,7 @@ namespace VansGraphics
 		constexpr const char* HairLighting = "Hair Lighting";
 		constexpr const char* TransparentSceneColorPrepare = "Transparent SceneColor Prepare";
 		constexpr const char* TransparentPostProcess = "Transparent PostProcess";
-		constexpr const char* FSRUpscale = "FSR Upscale";
+		constexpr const char* TemporalUpscale = "Temporal Upscale";
 		constexpr const char* DisplayPostProcess = "Display PostProcess";
 		constexpr const char* RuntimeUI = "Runtime UI";
 		constexpr const char* ReflectionProbeBakeQueue = "Reflection Probe Bake Queue";

@@ -24,5 +24,10 @@ namespace VansGraphics
 		Vans::EditorAPI::GAFProjectConfigurationResult m_GAFResult;
 		std::size_t m_GAFTemplateIndex = 0;
 		std::vector<char> m_GAFTemplateBuffer;
+		bool m_UpscalerEditInitialized = false;
+		bool m_UpscalerEditDirty = false;
+		Vans::EditorAPI::UpscalerSettingsSnapshot m_UpscalerEdit;
+		std::string m_UpscalerApplyMessage;
+		bool m_UpscalerApplySucceeded = false;
 	};
 }

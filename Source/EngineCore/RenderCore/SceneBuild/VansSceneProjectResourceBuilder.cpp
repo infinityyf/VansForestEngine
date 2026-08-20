@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -57,6 +58,34 @@ VansTexture::TextureLoadDesc BuildTextureLoadDesc(
     desc.importChannel = importChannel;
     desc.addressMode = ParseSamplerAddressMode(addressMode, VK_SAMPLER_ADDRESS_MODE_REPEAT);
     return desc;
+}
+
+Vans::VansAssetDatabase* FindAuthoringDatabase(Vans::VansAssetGuid guid)
+{
+    Vans::VansProjectManager& projectManager = Vans::VansProjectManager::Get();
+    if (Vans::VansAssetDatabase* projectDatabase = projectManager.GetAssetDatabase())
+    {
+        if (projectDatabase->Find(guid))
+            return projectDatabase;
+    }
+    if (Vans::VansAssetDatabase* builtInDatabase = projectManager.GetBuiltInAssetDatabase())
+    {
+        if (builtInDatabase->Find(guid))
+            return builtInDatabase;
+    }
+    return nullptr;
+}
+
+std::optional<Vans::VansTextureArtifactEnsureResult> EnsureEditorTextureArtifact(
+    const std::string& assetGuid)
+{
+    Vans::VansAssetGuid guid;
+    if (!Vans::VansAssetGuid::TryParse(assetGuid, guid))
+        return std::nullopt;
+    Vans::VansAssetDatabase* database = FindAuthoringDatabase(guid);
+    if (!database)
+        return std::nullopt;
+    return database->EnsureTextureArtifact(guid);
 }
 
 void LoadTexture2DFromDesc(VansTexture& texture, VansVKDevice& device, const VansTexture::TextureLoadDesc& desc)
@@ -188,7 +217,7 @@ bool VansSceneProjectResourceBuilder::LoadMeshes(VansScene& scene,
 			continue;
 		}
         std::string meshPath = resolved.sourcePath.string();
-        bool import_tangent = sceneMesh.needTangent || sceneMesh.supportRayTracing;
+		const bool import_tangent = Vans::RequiresMeshTangentImport(sceneMesh);
         bool loadMultiMesh = sceneMesh.loadMultiMesh;
         float scaleFactor = sceneMesh.scaleFactor;
 
@@ -349,7 +378,7 @@ bool VansSceneProjectResourceBuilder::LoadTextures(VansScene& scene,
 
 	for (const auto& sceneTexture : textures)
 	{
-		const Vans::VansResolvedSceneResourcePath resolved = loadContext.ResolveTexture(sceneTexture);
+        Vans::VansResolvedSceneResourcePath resolved = loadContext.ResolveTexture(sceneTexture);
 		if (!resolved.valid)
 		{
 			VANS_LOG_ERROR("[SceneResource] Texture '" << sceneTexture.name
@@ -494,7 +523,15 @@ VansTexture* VansSceneProjectResourceBuilder::LoadOrGetTexture(VansScene& scene,
 	std::string sourcePath = absPath;
 	if (const auto record = Vans::VansProjectManager::Get().FindAssetRecordByPath(std::filesystem::path(absPath)))
 	{
-		cookedPath = record->artifactPath.string();
+		if (const auto cacheResult = EnsureEditorTextureArtifact(record->guid.ToString()))
+		{
+			if (cacheResult->HasArtifact())
+				cookedPath = cacheResult->artifactPath.string();
+		}
+		else
+		{
+			cookedPath = record->artifactPath.string();
+		}
 		if (!record->sourcePath.empty())
 			sourcePath = record->sourcePath.string();
 	}

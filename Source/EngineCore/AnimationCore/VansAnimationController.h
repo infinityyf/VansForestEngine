@@ -272,6 +272,8 @@ namespace VansGraphics
 		void SetFootPlacementEnabled(bool enabled);
 		void SetFootPlacementDebugVisualization(bool enabled);
 		void SetFootPlacementRuntimeState(const FootPlacementRuntimeState& state);
+		void SetFootPlacementAnimationPlantWeights(bool valid, float left, float right);
+		bool GetMotionMatchingFootPlantWeights(float& left, float& right) const;
 		bool IsFootPlacementConfigured() const { return m_FootPlacement != nullptr; }
 		const FootPlacementSettings& GetFootPlacementSettings() const { return m_FootPlacementSettings; }
 		const FootPlacementDebugData* GetFootPlacementDebugData() const;

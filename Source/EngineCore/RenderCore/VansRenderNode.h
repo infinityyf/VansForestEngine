@@ -306,6 +306,10 @@ namespace VansGraphics
 
 	class VansSkyBoxRenderNode : public VansRenderNode
 	{
+	private:
+		std::vector<VkDescriptorSetLayout> m_MotionVectorDescSetLayouts;
+		std::vector<VkDescriptorSet> m_MotionVectorDescSets;
+
 	public:
 
 		VansSkyBoxRenderNode(VkDevice& device, RenderNodeType type) : VansRenderNode(device, type) {}
@@ -315,6 +319,8 @@ namespace VansGraphics
 		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
 
 		void UpdateDescriptorSets(VansMaterialManager& materialManager) override;
+
+		void DrawMotionVector(VansVKCommandBuffer& cmd, GlobalStateData& globalState);
 	};
 
 	class VansPostProcessRenderNode : public VansRenderNode

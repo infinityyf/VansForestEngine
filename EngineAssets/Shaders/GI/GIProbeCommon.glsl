@@ -37,6 +37,34 @@ uint GI_ProbeAtlasLinearIndex(ivec3 probeIndex, ivec3 probeCounts)
         probeIndex.y * probeCounts.x + probeIndex.x);
 }
 
+ivec2 GI_AtlasTileIndex(uint probeLinearIndex, int probesPerRow)
+{
+    uint safeProbesPerRow = uint(max(probesPerRow, 1));
+    return ivec2(
+        int(probeLinearIndex % safeProbesPerRow),
+        int(probeLinearIndex / safeProbesPerRow));
+}
+
+vec2 GI_AtlasUVFromTileTexel(
+    uint probeLinearIndex,
+    vec2 tileTexel,
+    int probesPerRow,
+    int tileResolution,
+    vec2 inverseAtlasSize)
+{
+    ivec2 tileIndex = GI_AtlasTileIndex(probeLinearIndex, probesPerRow);
+    return (vec2(tileIndex * tileResolution) + tileTexel) * inverseAtlasSize;
+}
+
+vec2 GI_AtlasUVFromTileIndex(
+    ivec2 tileIndex,
+    vec2 tileTexel,
+    int tileResolution,
+    vec2 inverseAtlasSize)
+{
+    return (vec2(tileIndex * tileResolution) + tileTexel) * inverseAtlasSize;
+}
+
 vec2 GI_SignNotZero(vec2 v)
 {
     return vec2(v.x >= 0.0 ? 1.0 : -1.0,
@@ -64,23 +92,64 @@ vec3 GI_OctahedralDecode(vec2 e)
 vec2 GI_VisibilityAtlasUV(ivec3 probeIndex, vec3 direction, ivec3 probeCounts, ivec2 atlasSize)
 {
     int probesPerRow = max(atlasSize.x / GI_VISIBILITY_OCTA_RES, 1);
-    int probeLinearIndex = probeIndex.z * (probeCounts.x * probeCounts.y) +
-        probeIndex.y * probeCounts.x + probeIndex.x;
-    ivec2 tileIndex = ivec2(probeLinearIndex % probesPerRow, probeLinearIndex / probesPerRow);
+    uint probeLinearIndex = GI_ProbeAtlasLinearIndex(probeIndex, probeCounts);
     vec2 tile = GI_OctahedralEncode(normalize(direction)) * float(GI_VISIBILITY_INTERIOR_RES - 1) +
         float(GI_ATLAS_BORDER) + 0.5;
-    return (vec2(tileIndex * GI_VISIBILITY_OCTA_RES) + tile) / vec2(atlasSize);
+    return GI_AtlasUVFromTileTexel(probeLinearIndex, tile, probesPerRow,
+        GI_VISIBILITY_OCTA_RES, 1.0 / vec2(atlasSize));
 }
 
 vec2 GI_IrradianceAtlasUV(ivec3 probeIndex, vec3 direction, ivec3 probeCounts, ivec2 atlasSize)
 {
     int probesPerRow = max(atlasSize.x / GI_IRRADIANCE_OCTA_RES, 1);
-    int probeLinearIndex = probeIndex.z * (probeCounts.x * probeCounts.y) +
-        probeIndex.y * probeCounts.x + probeIndex.x;
-    ivec2 tileIndex = ivec2(probeLinearIndex % probesPerRow, probeLinearIndex / probesPerRow);
+    uint probeLinearIndex = GI_ProbeAtlasLinearIndex(probeIndex, probeCounts);
     vec2 tile = GI_OctahedralEncode(normalize(direction)) * float(GI_IRRADIANCE_INTERIOR_RES - 1) +
         float(GI_ATLAS_BORDER) + 0.5;
-    return (vec2(tileIndex * GI_IRRADIANCE_OCTA_RES) + tile) / vec2(atlasSize);
+    return GI_AtlasUVFromTileTexel(probeLinearIndex, tile, probesPerRow,
+        GI_IRRADIANCE_OCTA_RES, 1.0 / vec2(atlasSize));
+}
+
+float GI_EvaluateProbeVisibilityMoments(
+    vec2 moments,
+    float receiverDistance,
+    float normalBias,
+    float cellSize)
+{
+    float meanDistance = moments.x;
+    if (meanDistance <= 1e-4)
+        return 1.0;
+
+    float distanceToReceiver = max(receiverDistance - normalBias, 0.0);
+    float softBias = max(cellSize * 0.12, normalBias * 2.0);
+    if (distanceToReceiver <= meanDistance + softBias)
+        return 1.0;
+
+    float variance = max(moments.y - meanDistance * meanDistance,
+        cellSize * cellSize * 0.02);
+    float distanceDelta = distanceToReceiver - meanDistance;
+    float chebyshev = variance / (variance + distanceDelta * distanceDelta);
+    return clamp(chebyshev * chebyshev, 0.0, 1.0);
+}
+
+float GI_EvaluateProbeVisibilityTile(
+    sampler2D visibilityAtlas,
+    ivec2 probeTileIndex,
+    vec3 normalizedProbeToReceiver,
+    float receiverDistance,
+    float normalBias,
+    float cellSize,
+    vec2 inverseAtlasSize)
+{
+    vec2 tile = GI_OctahedralEncode(normalizedProbeToReceiver) *
+        float(GI_VISIBILITY_INTERIOR_RES - 1) +
+        float(GI_ATLAS_BORDER) + 0.5;
+    vec2 moments = textureLod(
+        visibilityAtlas,
+        GI_AtlasUVFromTileIndex(probeTileIndex, tile,
+            GI_VISIBILITY_OCTA_RES, inverseAtlasSize),
+        0.0).rg;
+    return GI_EvaluateProbeVisibilityMoments(
+        moments, receiverDistance, normalBias, cellSize);
 }
 
 float GI_EvaluateProbeVisibility(
@@ -103,19 +172,8 @@ float GI_EvaluateProbeVisibility(
         visibilityAtlas,
         GI_VisibilityAtlasUV(probeIndex, probeToReceiver, probeCounts, atlasSize),
         0.0).rg;
-    float meanDistance = moments.x;
-    if (meanDistance <= 1e-4)
-        return 1.0;
-
-    float distanceToReceiver = max(receiverDistance - normalBias, 0.0);
-    float softBias = max(cellSize * 0.12, normalBias * 2.0);
-    if (distanceToReceiver <= meanDistance + softBias)
-        return 1.0;
-
-    float variance = max(moments.y - meanDistance * meanDistance, cellSize * cellSize * 0.02);
-    float distanceDelta = distanceToReceiver - meanDistance;
-    float chebyshev = variance / (variance + distanceDelta * distanceDelta);
-    return clamp(chebyshev * chebyshev, 0.0, 1.0);
+    return GI_EvaluateProbeVisibilityMoments(
+        moments, receiverDistance, normalBias, cellSize);
 }
 
 vec3 GI_SampleProbeIrradianceAtlasMeanNoState(
@@ -802,6 +860,167 @@ vec3 GI_SampleProbeIrradianceAtlasScreenVisible(
     }
     return max(irradiance *
         GI_VolumeFade(worldPos, volumeMin, volumeSize, volumeFadeDistance) * INV_PI,
+        vec3(0.0));
+}
+
+// Screen-probe cache build path. The supplied irradiance atlas already contains
+// axial compensation produced by GIVisibilityUpdate, so every trilinear probe
+// tap performs exactly one irradiance and one visibility fetch.
+vec3 GI_SampleProbeIrradianceAtlasScreenVisiblePrefiltered(
+    uint regionIndex,
+    ivec3 probeCounts,
+    sampler2D screenIrradianceAtlas,
+    sampler2D visibilityAtlas,
+    vec3 worldPos,
+    vec3 normal,
+    vec3 volumeMin,
+    vec3 volumeSize,
+    float normalBias,
+    float volumeWeight,
+    int cachedProbesPerRow,
+    int cachedProbeRows,
+    out float probeSupport)
+{
+    probeSupport = 0.0;
+    // This entry point is private to SSGIProbeCache.  Region selection has
+    // already proved that worldPos is inside the winning volume and computed
+    // its fade weight, while ComputeCacheGeometricNormal supplies a unit
+    // normal.  Reusing both values removes duplicate bounds/fade work and two
+    // normalizations without changing the cache sampling formula.
+    vec3 N = normal;
+    vec3 texelWorldSize = volumeSize / vec3(probeCounts);
+    float cellSize = min(min(texelWorldSize.x, texelWorldSize.y), texelWorldSize.z);
+    vec3 samplePos = clamp(worldPos + N * max(normalBias, cellSize * 0.35),
+        volumeMin + texelWorldSize * 0.5,
+        volumeMin + volumeSize - texelWorldSize * 0.5);
+    vec3 texPos = (samplePos - volumeMin) / volumeSize * vec3(probeCounts) - 0.5;
+    vec3 flooredTexPos = floor(texPos);
+    ivec3 base = ivec3(flooredTexPos);
+    vec3 frac = clamp(texPos - flooredTexPos, vec3(0.0), vec3(1.0));
+    ivec2 atlasSize;
+    ivec2 visibilityAtlasSize;
+    int irradianceProbesPerRow;
+    int visibilityProbesPerRow;
+    bool visibilityAtlasValid;
+    if (cachedProbesPerRow > 0 && cachedProbeRows > 0)
+    {
+        // Normal path: the CPU publishes the immutable tile grid used by all
+        // three DDGI atlases.  No per-cache-texel image query or integer
+        // division is required.
+        irradianceProbesPerRow = cachedProbesPerRow;
+        visibilityProbesPerRow = cachedProbesPerRow;
+        atlasSize = ivec2(cachedProbesPerRow, cachedProbeRows) *
+            GI_IRRADIANCE_OCTA_RES;
+        visibilityAtlasSize = ivec2(cachedProbesPerRow, cachedProbeRows) *
+            GI_VISIBILITY_OCTA_RES;
+        visibilityAtlasValid = true;
+    }
+    else
+    {
+        // Compatibility path for shader hot reload against an older CPU UBO.
+        // This also prevents an include/binary mismatch from silently turning
+        // the GI result black.
+        atlasSize = textureSize(screenIrradianceAtlas, 0);
+        visibilityAtlasSize = textureSize(visibilityAtlas, 0);
+        irradianceProbesPerRow = max(
+            atlasSize.x / GI_IRRADIANCE_OCTA_RES, 1);
+        visibilityProbesPerRow = max(
+            visibilityAtlasSize.x / GI_VISIBILITY_OCTA_RES, 1);
+        int totalProbeCount = probeCounts.x * probeCounts.y * probeCounts.z;
+        int visibilityProbeRows =
+            (totalProbeCount + visibilityProbesPerRow - 1) /
+            visibilityProbesPerRow;
+        visibilityAtlasValid =
+            visibilityAtlasSize.x >= GI_VISIBILITY_OCTA_RES &&
+            visibilityAtlasSize.y >= visibilityProbeRows * GI_VISIBILITY_OCTA_RES;
+    }
+    vec2 inverseIrradianceAtlasSize = 1.0 / vec2(atlasSize);
+    vec2 inverseVisibilityAtlasSize = 1.0 / vec2(visibilityAtlasSize);
+    vec2 irradianceTileTexel = GI_OctahedralEncode(N) *
+        float(GI_IRRADIANCE_INTERIOR_RES - 1) +
+        float(GI_ATLAS_BORDER) + 0.5;
+
+    vec3 visibleSum = vec3(0.0);
+    float visibleWeightSum = 0.0;
+    vec3 relocatedSum = vec3(0.0);
+    float relocatedWeightSum = 0.0;
+    for (int z = 0; z <= 1; ++z)
+    for (int y = 0; y <= 1; ++y)
+    for (int x = 0; x <= 1; ++x)
+    {
+        ivec3 tap = clamp(base + ivec3(x, y, z), ivec3(0), probeCounts - 1);
+        vec3 blend = mix(1.0 - frac, frac, vec3(x, y, z));
+        float triWeight = blend.x * blend.y * blend.z;
+        if (triWeight <= 0.0)
+            continue;
+
+        uint probeLinearIndex = GI_ProbeAtlasLinearIndex(tap, probeCounts);
+        GIProbeState probeState = GI_LOAD_PROBE_STATE(regionIndex, probeLinearIndex);
+        if (probeState.metadata.x != 1u)
+            continue;
+
+        // Both DDGI atlases are created from the same probe tile grid.  Reuse
+        // the quotient/remainder result so the steady-state screen-cache path
+        // does not repeat integer atlas addressing for irradiance and
+        // visibility.  Keep the uncommon mismatched-layout case compatible.
+        ivec2 irradianceTileIndex = GI_AtlasTileIndex(
+            probeLinearIndex, irradianceProbesPerRow);
+        ivec2 visibilityTileIndex =
+            visibilityProbesPerRow == irradianceProbesPerRow
+            ? irradianceTileIndex
+            : GI_AtlasTileIndex(probeLinearIndex, visibilityProbesPerRow);
+        vec4 atlasSample = textureLod(screenIrradianceAtlas,
+            GI_AtlasUVFromTileIndex(
+                irradianceTileIndex, irradianceTileTexel,
+                GI_IRRADIANCE_OCTA_RES, inverseIrradianceAtlasSize),
+            0.0);
+        float confidenceWeight = clamp(atlasSample.a, 0.0, 1.0) *
+            clamp(probeState.relocationAndConfidence.w, 0.0, 1.0);
+        if (confidenceWeight <= 1e-4)
+            continue;
+
+        vec3 probeWorld = (vec3(tap) + 0.5) * texelWorldSize +
+            volumeMin + probeState.relocationAndConfidence.xyz;
+        vec3 probeToReceiver = samplePos - probeWorld;
+        float receiverDistance = length(probeToReceiver);
+        vec3 direction = receiverDistance > 1e-5 ? probeToReceiver / receiverDistance : N;
+        float normalWeight = clamp(dot(-direction, N) * 0.5 + 0.5, 0.0, 1.0);
+        normalWeight *= normalWeight;
+        float relocatedWeight = triWeight * normalWeight * confidenceWeight;
+        if (relocatedWeight <= 0.0)
+            continue;
+
+        relocatedSum += atlasSample.rgb * relocatedWeight;
+        relocatedWeightSum += relocatedWeight;
+        float visibilityWeight = visibilityAtlasValid
+            ? GI_EvaluateProbeVisibilityTile(
+                visibilityAtlas, visibilityTileIndex, direction,
+                receiverDistance, normalBias, cellSize,
+                inverseVisibilityAtlasSize)
+            : 1.0;
+        float visibleWeight = relocatedWeight * visibilityWeight;
+        visibleSum += atlasSample.rgb * visibleWeight;
+        visibleWeightSum += visibleWeight;
+    }
+
+    if (relocatedWeightSum <= 1e-4)
+    {
+        // 屏幕查询缓存负责用 probeSupport 与天空光平滑混合。这里不能再进入
+        // 无状态方向/均值扫描，否则探针预热时会重新触发数十次 atlas fetch，
+        // 破坏该路径“每探针最多一次 irradiance + visibility”的采样上限。
+        probeSupport = 0.0;
+        return vec3(0.0);
+    }
+
+    vec3 relocatedIrradiance = relocatedSum / relocatedWeightSum;
+    vec3 visibleIrradiance = visibleWeightSum > 1e-4
+        ? visibleSum / visibleWeightSum
+        : relocatedIrradiance;
+    float visibilitySupport = smoothstep(0.005, 0.08, visibleWeightSum);
+    probeSupport = smoothstep(0.01, 0.10, relocatedWeightSum);
+    vec3 irradiance = mix(relocatedIrradiance, visibleIrradiance, visibilitySupport);
+    return max(irradiance *
+        volumeWeight * INV_PI,
         vec3(0.0));
 }
 #endif

@@ -1,4 +1,5 @@
 #include "VansLuaScriptInspectorService.h"
+#include "VansScriptContext.h"
 
 #include "lua.h"
 #include "lauxlib.h"
@@ -280,6 +281,7 @@ LuaScriptFieldDefaultsResult VansLuaScriptInspectorService::BuildDefaultFieldDat
     }
     luaL_openlibs(state.get());
     InstallEditorLuaStubs(state.get());
+    VansInstallLuaProjectSearchPath(state.get(), projectRoot);
 
     if (luaL_loadfile(state.get(), absolutePath.string().c_str()) != LUA_OK ||
         lua_pcall(state.get(), 0, 1, 0) != LUA_OK)

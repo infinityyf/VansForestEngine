@@ -1055,6 +1055,11 @@ void VansGraphics::VansMesh::LoadMesh(VkDevice& logic_device, VkQueue& queue, Va
 	{
 		return;
 	}
+	if (trustCacheWithoutSource)
+	{
+		VANS_LOG_ERROR("[MeshCache] Required cooked mesh cache was rejected: " << cachePath);
+		return;
+	}
 	//鐢╝ssimp
 	Assimp::Importer importer;
 	auto processFlag = aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_GenNormals;

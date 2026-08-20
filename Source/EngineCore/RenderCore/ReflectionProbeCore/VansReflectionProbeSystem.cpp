@@ -258,7 +258,6 @@ namespace VansGraphics
 		m_Device = VK_NULL_HANDLE;
 		m_GPUProbes.clear(); m_BakeQueue.clear();
 		m_ActiveBakeIndex = size_t(-1); m_ActiveBakeFace = 0;
-		m_GIWarmupFramesRemaining = 0; m_LastGIWarmupFrame = 0xffffffffu;
 		VANS_LOG("[ReflectionProbe] Scene GPU resources released");
 	}
 
@@ -817,18 +816,6 @@ namespace VansGraphics
 	}
 
 	void VansReflectionProbeSystem::RequestBakeAll() { for (size_t i = 0; i < m_Probes.size(); ++i) RequestBake(i); }
-	void VansReflectionProbeSystem::DeferInitialBakeForGI(uint32_t spatialUpdateDivisor, uint32_t directionUpdateSlices)
-	{
-		if (m_BakeQueue.empty())
-		{
-			m_GIWarmupFramesRemaining = 0;
-			return;
-		}
-		const uint32_t divisor = std::max(spatialUpdateDivisor, 1u);
-		const uint32_t directionSlices = std::max(directionUpdateSlices, 1u);
-		m_GIWarmupFramesRemaining = divisor * divisor * divisor * directionSlices;
-		m_LastGIWarmupFrame = 0xffffffffu;
-	}
 	bool VansReflectionProbeSystem::ConsumeBakeRequest(size_t& outIndex)
 	{
 		if (m_BakeQueue.empty()) return false; outIndex = m_BakeQueue.front(); m_BakeQueue.erase(m_BakeQueue.begin()); return true;
@@ -1162,17 +1149,6 @@ namespace VansGraphics
 	{
 		if (updateRealtime) UpdateRealtimeProbes(frameIndex);
 		if (!m_SpecularArray || m_BakeQueue.empty()) return;
-		if (m_GIWarmupFramesRemaining > 0)
-		{
-			// Consume at most one warmup step per frame so every spatial GI phase
-			// has completed once before the first capture.
-			if (m_LastGIWarmupFrame != frameIndex)
-			{
-				m_LastGIWarmupFrame = frameIndex;
-				--m_GIWarmupFramesRemaining;
-			}
-			return;
-		}
 		if (m_ActiveBakeIndex == size_t(-1)) { m_ActiveBakeIndex = m_BakeQueue.front(); m_ActiveBakeFace = 0; }
 		if (m_ActiveBakeIndex >= m_Probes.size()) { m_BakeQueue.erase(m_BakeQueue.begin()); m_ActiveBakeIndex = size_t(-1); return; }
 		auto& probe = m_Probes[m_ActiveBakeIndex]; auto& result = m_BakeResults[m_ActiveBakeIndex];
@@ -1197,7 +1173,6 @@ namespace VansGraphics
 		VansVKCommandBuffer& commandBuffer)
 	{
 		if (!m_SpecularArray) return;
-		if (m_GIWarmupFramesRemaining > 0) return;
 		while (!m_BakeQueue.empty())
 			ProcessBakeQueue(scene, device, commandBuffer, 0u, false);
 	}

@@ -1304,7 +1304,7 @@ namespace Vans::EditorAPI
 		bool frameSubmitSucceeded = false;
 		bool shadowSubmitted = false;
 		bool gbufferSubmitted = false;
-		bool asyncComputeSubmitted = false;
+		bool asyncEarlySubmitted = false;
 		std::uint32_t framePlanPassCount = 0;
 		std::uint32_t compiledResourceCount = 0;
 		std::uint32_t barrierDependencyCount = 0;
@@ -1427,19 +1427,43 @@ namespace Vans::EditorAPI
 		std::vector<std::string> validationErrors;
 	};
 
-	enum class FSRUpscaleMode : std::uint32_t
+	enum class UpscalerBackend : std::uint32_t
 	{
-		MatchViewport = 0,
-		NativeAA = 1,
-		Quality = 2,
-		Balanced = 3,
-		Performance = 4
+		Off = 0,
+		FSR = 1,
+		DLSS = 2
 	};
 
-	struct FSRSettingsSnapshot
+	enum class UpscaleQualityMode : std::uint32_t
 	{
-		FSRUpscaleMode mode = FSRUpscaleMode::MatchViewport;
-		float sharpness = 0.2f;
+		NativeAA = 0,
+		Quality = 1,
+		Balanced = 2,
+		Performance = 3,
+		UltraPerformance = 4
+	};
+
+	struct UpscalerCapabilitiesSnapshot
+	{
+		UpscalerBackend backend = UpscalerBackend::Off;
+		bool compiledIn = false;
+		bool runtimeAvailable = false;
+		bool deviceSupported = false;
+		std::uint32_t supportedQualityMask = 0;
+		std::string featureVersion;
+		std::string unavailableReason;
+	};
+
+	struct UpscalerSettingsSnapshot
+	{
+		UpscalerBackend desiredBackend = UpscalerBackend::FSR;
+		UpscaleQualityMode desiredQuality = UpscaleQualityMode::Quality;
+		UpscalerBackend effectiveBackend = UpscalerBackend::FSR;
+		UpscaleQualityMode effectiveQuality = UpscaleQualityMode::Quality;
+		float fsrSharpness = 0.35f;
+		bool fsrDebugView = false;
+		std::string fallbackReason;
+		std::string fallbackMessage;
 		float mipBias = 0.0f;
 		std::uint32_t renderWidth = 0;
 		std::uint32_t renderHeight = 0;
@@ -1448,20 +1472,25 @@ namespace Vans::EditorAPI
 		bool contextReady = false;
 		bool lastDispatchSucceeded = false;
 		bool lastDispatchReset = false;
-		bool debugCheckerEnabled = false;
-		bool debugViewEnabled = false;
 		std::uint32_t pendingResetReasons = 0;
-		std::uint32_t lastCreateReturnCode = 0;
-		std::uint32_t lastQueryReturnCode = 0;
-		std::uint32_t lastDispatchReturnCode = 0;
-		std::uint32_t lastReactiveReturnCode = 0;
+		std::uint32_t backendCreateCode = 0;
+		std::uint32_t backendQueryCode = 0;
+		std::uint32_t backendDispatchCode = 0;
+		std::uint32_t backendAuxiliaryCode = 0;
 		std::uint64_t successfulDispatchCount = 0;
 		std::uint64_t failedDispatchCount = 0;
-		std::uint64_t generatedReactiveMaskCount = 0;
+		std::uint64_t auxiliaryDispatchCount = 0;
 		std::uint64_t gpuMemoryUsageBytes = 0;
 		std::uint64_t gpuMemoryAliasableBytes = 0;
 		std::int32_t jitterPhaseCount = 0;
 		std::string lastError;
+	};
+
+	struct ApplyUpscalerSettingsResult
+	{
+		bool accepted = false;
+		bool runtimeFallbackExpected = false;
+		std::string message;
 	};
 
 	struct CommandRecordingSettingsSnapshot
@@ -1835,6 +1864,9 @@ namespace Vans::EditorAPI
 
 	struct MotionMatchingDebugVisual
 	{
+		std::string runtimeNodeName;
+		std::string entityGuid;
+		bool retargetSource = false;
 		Vec3 rootPosition;
 		Vec3 actualVelocity;
 		Vec3 plannedVelocity;
@@ -1857,6 +1889,11 @@ namespace Vans::EditorAPI
 		float directionChangeDegrees = 0.0f;
 		float inputDirectionChangeDegrees = 0.0f;
 		float facingDeltaDegrees = 0.0f;
+		float currentFacingYawDegrees = 0.0f;
+		float desiredFacingYawDegrees = 0.0f;
+		float desiredFacingYawRateDegreesPerSecond = 0.0f;
+		std::string facingTurnState;
+		std::string facingTurnGateReason;
 		float movementReferenceYaw = 0.0f;
 		float movementReferenceYawRate = 0.0f;
 		float plannedFacingYaw = 0.0f;
@@ -1867,6 +1904,8 @@ namespace Vans::EditorAPI
 		float steeringAppliedYawRateDegreesPerSecond = 0.0f;
 		float rootMotionTargetYawRateDegreesPerSecond = 0.0f;
 		float rootMotionReconciledYawRateDegreesPerSecond = 0.0f;
+		float authoredRootYawDeltaDegrees = 0.0f;
+		float appliedRootYawDeltaDegrees = 0.0f;
 		bool steeringActive = false;
 		bool steeringLimited = false;
 		bool rootMotionReconciliationActive = false;

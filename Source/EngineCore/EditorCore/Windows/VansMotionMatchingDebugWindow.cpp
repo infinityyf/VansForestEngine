@@ -72,12 +72,19 @@ namespace VansGraphics
 		for (std::size_t visualIndex = 0; visualIndex < snapshot.visuals.size(); ++visualIndex)
 		{
 			const auto& visual = snapshot.visuals[visualIndex];
-			const std::string title = visual.activeClip.empty()
+			const std::string displayName = visual.runtimeNodeName.empty()
 				? "Motion Matching"
-				: visual.activeClip + "##MM" + std::to_string(visualIndex);
+				: visual.runtimeNodeName;
+			const std::string title = displayName +
+				(visual.activeClip.empty() ? "" : " / " + visual.activeClip) +
+				"##MM" + std::to_string(visualIndex);
 			if (!ImGui::TreeNodeEx(title.c_str(), ImGuiTreeNodeFlags_DefaultOpen))
 				continue;
 
+			ImGui::Text("Runtime: %s%s", displayName.c_str(),
+				visual.retargetSource ? " (Retarget Source)" : "");
+			if (!visual.entityGuid.empty())
+				ImGui::Text("Entity: %s", visual.entityGuid.c_str());
 			ImGui::Text("Active: %s", visual.activeClip.c_str());
 			ImGui::Text("Selected: %s", visual.selectedClip.c_str());
 			std::string databaseLabel;
@@ -96,6 +103,10 @@ namespace VansGraphics
 				visual.inputDirectionChangeDegrees);
 			ImGui::Text("Motion change: %.1f deg  Facing error: %.1f deg",
 				visual.directionChangeDegrees, visual.facingDeltaDegrees);
+			ImGui::Text("Facing current: %.1f  desired: %.1f  view rate: %.1f deg/s",
+				visual.currentFacingYawDegrees,
+				visual.desiredFacingYawDegrees,
+				visual.desiredFacingYawRateDegreesPerSecond);
 			ImGui::Text("Reference yaw: %.1f  rate: %.1f deg/s  planned facing: %.1f",
 				visual.movementReferenceYaw,
 				visual.movementReferenceYawRate,
@@ -112,7 +123,10 @@ namespace VansGraphics
 				visual.requestedMoveState,
 				visual.effectiveMoveState,
 				visual.directionalStateFallback ? "  (directional fallback)" : "");
-			ImGui::Text("Facing turn: %s", visual.facingTurnRequested ? "yes" : "no");
+			ImGui::Text("Facing turn: %s  state: %s  gate: %s",
+				visual.facingTurnRequested ? "yes" : "no",
+				visual.facingTurnState.empty() ? "unknown" : visual.facingTurnState.c_str(),
+				visual.facingTurnGateReason.empty() ? "unknown" : visual.facingTurnGateReason.c_str());
 			ImGui::Text("Steering: %s%s  target %.1f  authored %.1f",
 				visual.steeringActive ? "active" : "idle",
 				visual.steeringLimited ? " (limited)" : "",
@@ -126,6 +140,9 @@ namespace VansGraphics
 				visual.rootMotionReconciliationActive ? "active" : "idle",
 				visual.rootMotionTargetYawRateDegreesPerSecond,
 				visual.rootMotionReconciledYawRateDegreesPerSecond);
+			ImGui::Text("Root yaw frame: authored %.2f  applied %.2f deg",
+				visual.authoredRootYawDeltaDegrees,
+				visual.appliedRootYawDeltaDegrees);
 
 			auto vectorRow = [](const char* label, const Vans::EditorAPI::Vec3& value)
 			{

@@ -90,6 +90,28 @@ struct VansAssetScanResult
     explicit operator bool() const { return errors.empty(); }
 };
 
+enum class VansTextureArtifactEnsureStatus
+{
+    NotEligible,
+    UpToDate,
+    Cooked,
+    Failed
+};
+
+struct VansTextureArtifactEnsureResult
+{
+    VansTextureArtifactEnsureStatus status = VansTextureArtifactEnsureStatus::Failed;
+    std::filesystem::path artifactPath;
+    std::string error;
+
+    bool HasArtifact() const
+    {
+        return (status == VansTextureArtifactEnsureStatus::UpToDate ||
+            status == VansTextureArtifactEnsureStatus::Cooked) &&
+            !artifactPath.empty();
+    }
+};
+
 enum class VansAssetMetaPolicy
 {
     RequireExisting,
@@ -125,6 +147,11 @@ public:
         const VansAssetOperationPolicy& policy,
         std::string& error,
         bool* artifactCooked = nullptr);
+    VansTextureArtifactEnsureResult EnsureTextureArtifact(VansAssetGuid guid);
+    bool UpdateImportedArtifact(
+        VansAssetGuid guid,
+        const std::filesystem::path& artifactPath,
+        std::string error = {});
     bool RemovePath(const std::filesystem::path& sourcePath);
     std::optional<VansAssetRecord> Find(VansAssetGuid guid) const;
     std::optional<VansAssetRecord> Find(const std::filesystem::path& sourcePath) const;

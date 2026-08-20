@@ -296,6 +296,7 @@ void VansAnimationNode::ConfigureRetargetSource(
 		<< " targetBones=" << stats.targetBoneCount
 		<< " mapped=" << stats.mappedBoneCount
 		<< " unmappedTarget=" << stats.unmappedTargetBoneCount
+		<< " twoBoneChains=" << stats.twoBoneChainCount
 		<< " translationScale=" << stats.translationScale
 		<< " translationScaleMode='" << desc.translationScaleMode << "'"
 		<< " rootAlignment='" << desc.rootAlignmentMode << "'"
@@ -708,9 +709,15 @@ void VansAnimationNode::ApplySampledNodeTransforms()
 
 void VansAnimationNode::Update(float deltaTime)
 {
+	bool retargetSourceFramePrepared = false;
 	if (m_LocomotionFramePrepared)
 	{
-		if (m_Controller && m_HasTransformID)
+		if (m_RetargetEnabled && m_SourceController && m_RetargetProcessor.IsValid())
+		{
+			m_SourceController->FinalizePreparedFrame(m_SourceSkeleton);
+			retargetSourceFramePrepared = true;
+		}
+		else if (m_Controller && m_HasTransformID)
 		{
 			m_Controller->SetOwnerWorldTransform(
 				VansTransformStore::GetTransform(m_TransformID).GetModelMatrix());
@@ -718,7 +725,8 @@ void VansAnimationNode::Update(float deltaTime)
 			ApplySampledNodeTransforms();
 		}
 		m_LocomotionFramePrepared = false;
-		return;
+		if (!retargetSourceFramePrepared)
+			return;
 	}
 	if (!m_Controller)
 		return;
@@ -732,8 +740,11 @@ void VansAnimationNode::Update(float deltaTime)
 			m_SourceController->SetOwnerWorldTransform(ownerWorld);
 		}
 
-		SyncRetargetParameters();
-		m_SourceController->Update(deltaTime, m_SourceSkeleton);
+		if (!retargetSourceFramePrepared)
+		{
+			SyncRetargetParameters();
+			m_SourceController->Update(deltaTime, m_SourceSkeleton);
+		}
 		if (const MotionMatchingDebugData* sourceMM = m_SourceController->GetMotionMatchingDebugData())
 		{
 			const bool shouldLog =
@@ -758,6 +769,12 @@ void VansAnimationNode::Update(float deltaTime)
 				m_LastRetargetSourceMMSelectedClip = sourceMM->selectedClip;
 			}
 		}
+		float leftPlantWeight = 0.0f;
+		float rightPlantWeight = 0.0f;
+		const bool hasPlantWeights = m_SourceController->GetMotionMatchingFootPlantWeights(
+			leftPlantWeight, rightPlantWeight);
+		m_Controller->SetFootPlacementAnimationPlantWeights(
+			hasPlantWeights, leftPlantWeight, rightPlantWeight);
 
 		std::vector<glm::mat4> targetModelTransforms;
 		if (m_RetargetProcessor.Process(
@@ -820,7 +837,8 @@ void VansAnimationNode::Update(float deltaTime)
 			m_Controller->Update(deltaTime, m_Skeleton);
 		}
 
-		if (m_SourceController->IsRootMotionEnabled() &&
+		if (!retargetSourceFramePrepared &&
+			m_SourceController->IsRootMotionEnabled() &&
 			m_SourceController->ShouldApplyRootMotionToOwner() && m_HasTransformID)
 		{
 			ApplyRootMotionToTransform(
@@ -864,15 +882,26 @@ void VansAnimationNode::Update(float deltaTime)
 void VansAnimationNode::PrepareLocomotionFrame(
 	float deltaTime, const Vans::VansCharacterTrajectory& trajectory)
 {
-	if (!m_Controller)
+	VansAnimationController* locomotionController = GetLocomotionController();
+	if (!locomotionController)
 		return;
-	m_Controller->SetCharacterTrajectory(&trajectory);
-	if (m_SourceController)
-		m_SourceController->SetCharacterTrajectory(&trajectory);
+	locomotionController->SetCharacterTrajectory(&trajectory);
 	if (m_HasTransformID)
-		m_Controller->SetOwnerWorldTransform(
-			VansTransformStore::GetTransform(m_TransformID).GetModelMatrix());
-	m_Controller->UpdateForMovement(deltaTime, m_Skeleton);
+	{
+		const glm::mat4 ownerWorld =
+			VansTransformStore::GetTransform(m_TransformID).GetModelMatrix();
+		m_Controller->SetOwnerWorldTransform(ownerWorld);
+		locomotionController->SetOwnerWorldTransform(ownerWorld);
+	}
+	if (m_RetargetEnabled && m_SourceController)
+	{
+		SyncRetargetParameters();
+		m_SourceController->UpdateForMovement(deltaTime, m_SourceSkeleton);
+	}
+	else
+	{
+		m_Controller->UpdateForMovement(deltaTime, m_Skeleton);
+	}
 	m_LocomotionFramePrepared = true;
 }
 

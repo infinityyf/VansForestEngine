@@ -83,6 +83,7 @@ namespace VansGraphics
 		}
 		uint32_t GetGIRegionCount() const { return static_cast<uint32_t>(m_GIRegions.size()); }
 		VansTexture* GetGIRegionIrradianceAtlas(uint32_t regionIndex) const;
+		VansTexture* GetGIRegionScreenIrradianceAtlas(uint32_t regionIndex) const;
 		VansTexture* GetGIRegionVisibilityAtlas(uint32_t regionIndex) const;
 		const VansVKBuffer* GetGIRegionProbeStateBuffer(uint32_t regionIndex) const;
 		
@@ -94,6 +95,7 @@ namespace VansGraphics
 
 			VansTexture* rayTracingResult = nullptr;
 			VansTexture* irradianceAtlas = nullptr;
+			VansTexture* screenIrradianceAtlas = nullptr;
 			VansTexture* visibilityAtlas = nullptr;
 
 			VansVKBuffer hitPositionResult;

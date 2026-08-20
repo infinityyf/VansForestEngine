@@ -72,6 +72,32 @@ target_include_directories(ForestThirdParty
         "${FOREST_EXTERNAL_DIR}/openal/include"
 )
 
+if(FOREST_ENABLE_STREAMLINE_DLSS)
+    set(FOREST_STREAMLINE_REQUIRED_FILES
+        "${FOREST_EXTERNAL_DIR}/Streamline/include/sl.h"
+        "${FOREST_EXTERNAL_DIR}/Streamline/include/sl_dlss.h"
+        "${FOREST_EXTERNAL_DIR}/Streamline/include/sl_security.h"
+        "${FOREST_EXTERNAL_DIR}/Streamline/bin/x64/sl.interposer.dll"
+        "${FOREST_EXTERNAL_DIR}/Streamline/bin/x64/sl.common.dll"
+        "${FOREST_EXTERNAL_DIR}/Streamline/bin/x64/sl.dlss.dll"
+        "${FOREST_EXTERNAL_DIR}/Streamline/bin/x64/nvngx_dlss.dll"
+        "${FOREST_EXTERNAL_DIR}/Streamline/license.txt"
+        "${FOREST_EXTERNAL_DIR}/Streamline/3rd-party-licenses.md"
+        "${FOREST_EXTERNAL_DIR}/Streamline/bin/x64/nvngx_dlss.license.txt"
+    )
+    foreach(streamline_file IN LISTS FOREST_STREAMLINE_REQUIRED_FILES)
+        if(NOT EXISTS "${streamline_file}")
+            message(FATAL_ERROR
+                "FOREST_ENABLE_STREAMLINE_DLSS=ON requires the fixed Streamline SDK file: ${streamline_file}"
+            )
+        endif()
+    endforeach()
+    target_include_directories(ForestThirdParty INTERFACE
+        "${FOREST_EXTERNAL_DIR}/Streamline/include"
+    )
+    target_compile_definitions(ForestThirdParty INTERFACE VANS_HAS_STREAMLINE=1)
+endif()
+
 target_link_directories(ForestThirdParty
     INTERFACE
         "$<$<CONFIG:Debug>:${FOREST_EXTERNAL_DIR}/PhysX/lib/debug>"
@@ -147,33 +173,7 @@ target_include_directories(ForestExternalImGui
 )
 target_link_libraries(ForestExternalImGui PUBLIC ForestThirdParty)
 
-function(forest_copy_runtime_dlls target_name)
-    add_custom_command(TARGET ${target_name} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${FOREST_EXTERNAL_DIR}/PhysX/bin/$<IF:$<CONFIG:Debug>,debug,release>"
-            "$<TARGET_FILE_DIR:${target_name}>"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${FOREST_EXTERNAL_DIR}/NoesisGUI/Bin/windows_x86_64/Noesis.dll"
-            "$<TARGET_FILE_DIR:${target_name}>"
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${FOREST_EXTERNAL_DIR}/ffmpeg/bin"
-            "$<TARGET_FILE_DIR:${target_name}>"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${FOREST_EXTERNAL_DIR}/openal/bin/OpenAL32.dll"
-            "$<TARGET_FILE_DIR:${target_name}>"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${FOREST_EXTERNAL_DIR}/NvCloth/bin/$<IF:$<CONFIG:Debug>,NvClothDEBUG_x64.dll,NvCloth_x64.dll>"
-            "$<TARGET_FILE_DIR:${target_name}>"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${FOREST_EXTERNAL_DIR}/FidelityFX/PrebuiltSignedDLL/$<IF:$<CONFIG:Debug>,amd_fidelityfx_vkd.dll,amd_fidelityfx_vk.dll>"
-            "$<TARGET_FILE_DIR:${target_name}>"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${FOREST_EXTERNAL_DIR}/assimp/build/bin/Release/assimp-vc143-mt.dll"
-            "$<TARGET_FILE_DIR:${target_name}>"
-        COMMENT "Copying ForestEngine runtime DLL dependencies"
-        VERBATIM
-    )
-endfunction()
+include("${CMAKE_CURRENT_LIST_DIR}/ForestRuntimeDependencies.cmake")
 
 function(forest_copy_engine_assets target_name)
     add_custom_command(TARGET ${target_name} POST_BUILD

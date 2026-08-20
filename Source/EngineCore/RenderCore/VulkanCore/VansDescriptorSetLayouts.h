@@ -263,7 +263,7 @@ namespace VansGraphics
 	// --- Post-Process Pass（Final Composite，Subpass 1）---
 	enum PostProcessPassBinding : uint32_t
 	{
-		POSTPROCESS_BINDING_COLOR_INPUT  = 0,   // COMBINED_IMAGE_SAMPLER: display-resolution HDR FSR output
+		POSTPROCESS_BINDING_COLOR_INPUT  = 0,   // COMBINED_IMAGE_SAMPLER: display-resolution HDR upscaler output
 		POSTPROCESS_BINDING_BLOOM_RESULT = 1,   // COMBINED_IMAGE_SAMPLER：Bloom 合成结果
 		POSTPROCESS_BINDING_EXPOSURE_VAL = 2,   // COMBINED_IMAGE_SAMPLER：1x1 当前曝光值
 		POSTPROCESS_BINDING_PP_PARAMS    = 3,   // UNIFORM_BUFFER：VansPostProcessParamsGPU UBO
@@ -350,9 +350,26 @@ namespace VansGraphics
 		SSGI_BINDING_INFO_UBO     = 6,
 		SSGI_BINDING_HIZ_DEPTH    = 10,
 		SSGI_BINDING_MATERIAL     = 11,
-		SSGI_BINDING_GI_IRRADIANCE = 13,
-		SSGI_BINDING_GI_VISIBILITY = 14,
-		SSGI_BINDING_GI_PROBE_STATE = 15,
+		SSGI_BINDING_PROBE_CACHE_RADIANCE = 23,
+		SSGI_BINDING_PROBE_CACHE_SURFACE = 24,
+	};
+
+	// --- Quarter-resolution SSGI DDGI query cache ---
+	enum SSGIProbeCachePassBinding : uint32_t
+	{
+		SSGI_PROBE_CACHE_BINDING_NORMAL = 0,
+		SSGI_PROBE_CACHE_BINDING_DEPTH = 1,
+		SSGI_PROBE_CACHE_BINDING_POSITION = 2,
+		SSGI_PROBE_CACHE_BINDING_MATERIAL = 3,
+		SSGI_PROBE_CACHE_BINDING_SKY_DIFFUSE = 4,
+		SSGI_PROBE_CACHE_BINDING_OUTPUT_RADIANCE = 5,
+		SSGI_PROBE_CACHE_BINDING_OUTPUT_SURFACE = 6,
+		SSGI_PROBE_CACHE_BINDING_INFO_UBO = 7,
+		SSGI_PROBE_CACHE_BINDING_SCREEN_IRRADIANCE = 8,
+		SSGI_PROBE_CACHE_BINDING_GI_VISIBILITY = 9,
+		SSGI_PROBE_CACHE_BINDING_GI_PROBE_STATE = 10,
+		SSGI_PROBE_CACHE_BINDING_COLOR = 18,
+		SSGI_PROBE_CACHE_BINDING_HIZ_DEPTH = 19,
 	};
 
 	// --- Screen Space Shadow Compute Pass ---
@@ -551,6 +568,7 @@ namespace VansGraphics
 		GI_VISIBILITY_BINDING_RADIANCE     = 2,
 		GI_VISIBILITY_BINDING_IRRADIANCE   = 3,
 		GI_VISIBILITY_BINDING_PROBE_STATE  = 4,
+		GI_VISIBILITY_BINDING_SCREEN_IRRADIANCE = 5,
 	};
 
 	// --- Water GBuffer Pass（Set 1）---
@@ -861,6 +879,7 @@ namespace VansGraphics
 		static void CreateAndAllocate_Empty(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_Terrain(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_SSGI(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_SSGIProbeCache(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_ScreenSpaceShadow(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_SSGITemporal(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 2);
 		static void CreateAndAllocate_SSGIAtrous(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 2);

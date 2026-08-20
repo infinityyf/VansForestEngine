@@ -9,7 +9,7 @@ layout(set = 1, binding = 0) uniform sampler2D inputGI;
 layout(set = 1, binding = 1) uniform sampler2D inputNormal;
 layout(set = 1, binding = 2) uniform sampler2D inputDepth;
 layout(set = 1, binding = 3) uniform sampler2D inputMaterial;
-layout(set = 1, binding = 4, rgba32f) uniform writeonly image2D outputGI;
+layout(set = 1, binding = 4, rgba16f) uniform writeonly image2D outputGI;
 
 layout(push_constant) uniform AtrousParams
 {
@@ -18,6 +18,16 @@ layout(push_constant) uniform AtrousParams
     float normalPower;
     float materialWeight;
 } params;
+
+const int SSGI_ATROUS_GROUP_SIZE = 8;
+const int SSGI_ATROUS_MAX_STEP = 2;
+const int SSGI_ATROUS_MAX_TILE_SIZE = SSGI_ATROUS_GROUP_SIZE + SSGI_ATROUS_MAX_STEP * 2;
+const int SSGI_ATROUS_MAX_TILE_TEXELS = SSGI_ATROUS_MAX_TILE_SIZE * SSGI_ATROUS_MAX_TILE_SIZE;
+
+shared vec4 atrousTileGI[SSGI_ATROUS_MAX_TILE_TEXELS];
+shared vec4 atrousTileNormal[SSGI_ATROUS_MAX_TILE_TEXELS];
+shared float atrousTileDepth[SSGI_ATROUS_MAX_TILE_TEXELS];
+shared float atrousTileMaterialID[SSGI_ATROUS_MAX_TILE_TEXELS];
 
 float LinearDepthAt(ivec2 coord, ivec2 size)
 {
@@ -29,32 +39,57 @@ void main()
 {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
     ivec2 size = imageSize(outputGI);
+    ivec2 localCoord = ivec2(gl_LocalInvocationID.xy);
+    ivec2 groupBase = ivec2(gl_WorkGroupID.xy) * SSGI_ATROUS_GROUP_SIZE;
+    int stepWidth = int(clamp(params.stepWidth, 1u, uint(SSGI_ATROUS_MAX_STEP)));
+    int tileSize = SSGI_ATROUS_GROUP_SIZE + stepWidth * 2;
+    int tileTexelCount = tileSize * tileSize;
+
+    // 两轮 A-Trous 的 64 个线程会大量读取相同邻居。按当前最大 step=2，
+    // 每个 workgroup 只需读取一个 12x12 tile，随后从共享内存完成卷积。
+    int localLinear = int(gl_LocalInvocationIndex);
+    for (int tileIndex = localLinear; tileIndex < tileTexelCount;
+        tileIndex += SSGI_ATROUS_GROUP_SIZE * SSGI_ATROUS_GROUP_SIZE)
+    {
+        ivec2 tileCoord = ivec2(tileIndex % tileSize, tileIndex / tileSize);
+        ivec2 sourceCoord = clamp(
+            groupBase + tileCoord - ivec2(stepWidth),
+            ivec2(0), size - 1);
+        atrousTileGI[tileIndex] = texelFetch(inputGI, sourceCoord, 0);
+        atrousTileNormal[tileIndex] = vec4(
+            normalize(texelFetch(inputNormal, sourceCoord, 0).xyz), 0.0);
+        atrousTileDepth[tileIndex] = LinearDepthAt(sourceCoord, size);
+        atrousTileMaterialID[tileIndex] = texelFetch(inputMaterial, sourceCoord, 0).z;
+    }
+    barrier();
+
     if (any(greaterThanEqual(pixel, size)))
         return;
 
-    vec4 center = texelFetch(inputGI, pixel, 0);
-    vec3 centerNormal = normalize(texelFetch(inputNormal, pixel, 0).xyz);
-    float centerDepth = LinearDepthAt(pixel, size);
-    vec4 centerMaterial = texelFetch(inputMaterial, pixel, 0);
+    int centerIndex = (localCoord.y + stepWidth) * tileSize + localCoord.x + stepWidth;
+    vec4 center = atrousTileGI[centerIndex];
+    vec3 centerNormal = atrousTileNormal[centerIndex].xyz;
+    float centerDepth = atrousTileDepth[centerIndex];
+    float centerMaterialID = atrousTileMaterialID[centerIndex];
     vec3 sum = center.rgb;
     float weightSum = 1.0;
     const float kernel[3] = float[](1.0, 2.0, 1.0);
-    int stepWidth = int(max(params.stepWidth, 1u));
     for (int y = -1; y <= 1; ++y)
     for (int x = -1; x <= 1; ++x)
     {
         if (x == 0 && y == 0)
             continue;
-        ivec2 tap = clamp(pixel + ivec2(x, y) * stepWidth, ivec2(0), size - 1);
-        vec4 sampleGI = texelFetch(inputGI, tap, 0);
-        vec3 sampleNormal = normalize(texelFetch(inputNormal, tap, 0).xyz);
-        float sampleDepth = LinearDepthAt(tap, size);
-        vec4 sampleMaterial = texelFetch(inputMaterial, tap, 0);
+        ivec2 tapCoord = localCoord + ivec2(stepWidth) + ivec2(x, y) * stepWidth;
+        int tapIndex = tapCoord.y * tileSize + tapCoord.x;
+        vec4 sampleGI = atrousTileGI[tapIndex];
+        vec3 sampleNormal = atrousTileNormal[tapIndex].xyz;
+        float sampleDepth = atrousTileDepth[tapIndex];
+        float sampleMaterialID = atrousTileMaterialID[tapIndex];
         float spatialWeight = kernel[x + 1] * kernel[y + 1];
         float depthWeight = exp(-abs(sampleDepth - centerDepth) /
             max(centerDepth * params.depthSigma, 0.02));
         float normalWeight = pow(max(dot(centerNormal, sampleNormal), 0.0), params.normalPower);
-        float materialMatch = abs(sampleMaterial.z - centerMaterial.z) < 0.25 ? 1.0 : params.materialWeight;
+        float materialMatch = abs(sampleMaterialID - centerMaterialID) < 0.25 ? 1.0 : params.materialWeight;
         float weight = spatialWeight * depthWeight * normalWeight * materialMatch;
         sum += sampleGI.rgb * weight;
         weightSum += weight;

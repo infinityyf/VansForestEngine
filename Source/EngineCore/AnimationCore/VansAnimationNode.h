@@ -45,6 +45,16 @@ namespace VansGraphics
 		// Controller binding
 		void SetController(VansAnimationController* controller);
 		VansAnimationController* GetController() const { return m_Controller; }
+		// Locomotion is evaluated on the source controller for source-proxy
+		// retargeting, while the target controller only post-processes the
+		// retargeted pose. Character motion must query the same controller that
+		// owns Motion Matching and Root Motion.
+		VansAnimationController* GetLocomotionController() const
+		{
+			return m_RetargetEnabled && m_SourceController
+				? m_SourceController.get()
+				: m_Controller;
+		}
 		void ConfigureRetargetSource(const Skeleton& sourceSkeleton,
 		                             std::unique_ptr<VansAnimationController> sourceController,
 		                             const VansRetargetRuntimeDesc& desc);

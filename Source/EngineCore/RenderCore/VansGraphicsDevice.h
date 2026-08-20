@@ -61,11 +61,15 @@ namespace VansGraphics
 
 		float GetNativeRenderHeight() { return static_cast<float>(m_RenderHeight); }
 
-		// 查询 FSR 内置抖动偏移（像素空间），子类实现后返回 true；默认返回 false 表示使用 Halton 回退
-		virtual bool GetFSRJitterOffset(uint32_t frameIndex, float& outPixelX, float& outPixelY) { return false; }
+		// Active temporal-upscale backend jitter in pixel space. Off returns false
+		// and the camera must use zero jitter rather than a hidden fallback sequence.
+		virtual bool GetTemporalUpscaleJitterOffset(
+			uint32_t frameIndex,
+			float& outPixelX,
+			float& outPixelY) { return false; }
 
 		// Material texture LOD bias selected by the active temporal-upscale mode.
-		virtual float GetUpscaleMipBias() const { return 0.0f; }
+		virtual float GetTemporalUpscaleMipBias() const { return 0.0f; }
 	};
 
 	class VansGUIBackEnd

@@ -63,7 +63,8 @@ namespace VansGraphics
 		std::uint32_t renderWidth,
 		std::uint32_t renderHeight,
 		std::uint32_t displayWidth,
-		std::uint32_t displayHeight)
+		std::uint32_t displayHeight,
+		VansVKImage& outputImage)
 	{
 		Cleanup();
 		m_Diagnostics = {};
@@ -84,6 +85,19 @@ namespace VansGraphics
 		m_DisplayHeight = displayHeight;
 		m_Device = device;
 		m_PhysicalDevice = physicalDevice;
+		const VkImageCreateInfo& outputCreateInfo = outputImage.GetImageCreateInfo();
+		if (!IsValidImageInput(
+			outputImage.GetImage(), outputCreateInfo, displayWidth, displayHeight) ||
+			outputCreateInfo.extent.width != displayWidth ||
+			outputCreateInfo.extent.height != displayHeight ||
+			outputCreateInfo.format != VK_FORMAT_R16G16B16A16_SFLOAT ||
+			(outputCreateInfo.usage & VK_IMAGE_USAGE_STORAGE_BIT) == 0)
+		{
+			m_Diagnostics.lastError = "invalid unified upscaler output image";
+			VANS_LOG_ERROR("[FSR] Context creation rejected: " << m_Diagnostics.lastError);
+			return false;
+		}
+		m_OutputImage = &outputImage;
 
 		ffx::CreateBackendVKDesc backendDesc{};
 		backendDesc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK;
@@ -128,28 +142,6 @@ namespace VansGraphics
 			m_Diagnostics.lastError = "FSR jitter phase query failed";
 			VANS_LOG_ERROR("[FSR] Jitter phase query failed, code="
 				<< m_Diagnostics.lastQueryReturnCode);
-			Cleanup();
-			return false;
-		}
-
-		m_OutputImage = std::make_unique<VansVKImage>();
-		if (!m_OutputImage->CreateVulkanImage(
-			device,
-			{ displayWidth, displayHeight, 1 },
-			VK_FORMAT_R16G16B16A16_SFLOAT,
-			1,
-			1,
-			VK_IMAGE_TYPE_2D,
-			VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-				VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-				VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-			VK_SAMPLE_COUNT_1_BIT,
-			false,
-			false,
-			true))
-		{
-			m_Diagnostics.lastError = "FSR output image creation failed";
-			VANS_LOG_ERROR("[FSR] " << m_Diagnostics.lastError);
 			Cleanup();
 			return false;
 		}
@@ -285,8 +277,11 @@ namespace VansGraphics
 		dispatch.exposure = makeOptionalResource(input.exposure, input.exposureCreateInfo);
 
 		// Engine MV 保存 currentUV - previousUV，FSR API 边界统一反向并换算为像素。
-		dispatch.jitterOffset.x = -input.jitterPixelX;
-		dispatch.jitterOffset.y = -input.jitterPixelY;
+		const VansFSRDispatchJitter dispatchJitter = BuildFSRDispatchJitter(
+			input.jitterSamplePixelX,
+			input.jitterSamplePixelY);
+		dispatch.jitterOffset.x = dispatchJitter.x;
+		dispatch.jitterOffset.y = dispatchJitter.y;
 		dispatch.motionVectorScale.x = -static_cast<float>(m_RenderWidth);
 		dispatch.motionVectorScale.y = -static_cast<float>(m_RenderHeight);
 		dispatch.reset = input.reset;
@@ -378,12 +373,7 @@ namespace VansGraphics
 	void VansFSR::Cleanup()
 	{
 		m_Diagnostics.contextReady = false;
-		if (m_OutputImage)
-		{
-			if (m_Device != VK_NULL_HANDLE)
-				m_OutputImage->DestroyVulkanImage(m_Device);
-			m_OutputImage.reset();
-		}
+		m_OutputImage = nullptr;
 		if (m_ReactiveMaskImage)
 		{
 			if (m_Device != VK_NULL_HANDLE)

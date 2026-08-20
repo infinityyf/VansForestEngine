@@ -905,37 +905,61 @@ namespace VansGraphics
 		VansTexture* ssgiResult = new VansTexture();
 		ssgiResult->InitTextureWithoutData(
 			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
-			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
+			VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSGI_RESULT, ssgiResult);
+
+		const uint32_t probeCacheWidth =
+			(m_RenderWidth + VANS_SSGI_PROBE_CACHE_TILE_SIZE - 1u) /
+			VANS_SSGI_PROBE_CACHE_TILE_SIZE;
+		const uint32_t probeCacheHeight =
+			(m_RenderHeight + VANS_SSGI_PROBE_CACHE_TILE_SIZE - 1u) /
+			VANS_SSGI_PROBE_CACHE_TILE_SIZE;
+		VansTexture* ssgiProbeCacheRadiance = new VansTexture();
+		ssgiProbeCacheRadiance->InitTextureWithoutData(
+			m_VansVKCommandBuffer, probeCacheWidth, probeCacheHeight, 1,
+			VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true,
+			VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+		manager->RegisterRuntimeRenderTexture(
+			VansMaterialManager::RT_SSGI_PROBE_CACHE_RADIANCE,
+			ssgiProbeCacheRadiance);
+
+		VansTexture* ssgiProbeCacheSurface = new VansTexture();
+		ssgiProbeCacheSurface->InitTextureWithoutData(
+			m_VansVKCommandBuffer, probeCacheWidth, probeCacheHeight, 1,
+			VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true,
+			VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+		manager->RegisterRuntimeRenderTexture(
+			VansMaterialManager::RT_SSGI_PROBE_CACHE_SURFACE,
+			ssgiProbeCacheSurface);
 
 		VansTexture* ssgiFilterResult = new VansTexture();
 		ssgiFilterResult->InitTextureWithoutData(
 			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
-			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
+			VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSGI_FILTER_RESULT, ssgiFilterResult);
 
 		VansTexture* ssgiTemporalA = new VansTexture();
 		ssgiTemporalA->InitTextureWithoutData(
 			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
-			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
+			VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSGI_TEMPORAL_A, ssgiTemporalA);
 
 		VansTexture* ssgiTemporalB = new VansTexture();
 		ssgiTemporalB->InitTextureWithoutData(
 			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
-			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
+			VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSGI_TEMPORAL_B, ssgiTemporalB);
 
 		VansTexture* ssgiMomentsA = new VansTexture();
 		ssgiMomentsA->InitTextureWithoutData(
 			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
-			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
+			VK_FORMAT_R16G16_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSGI_MOMENTS_A, ssgiMomentsA);
 
 		VansTexture* ssgiMomentsB = new VansTexture();
 		ssgiMomentsB->InitTextureWithoutData(
 			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
-			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
+			VK_FORMAT_R16G16_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSGI_MOMENTS_B, ssgiMomentsB);
 
 		VansTexture* ssgiSurfaceHistoryA = new VansTexture();
@@ -953,39 +977,22 @@ namespace VansGraphics
 		VansTexture* ssgiAtrousA = new VansTexture();
 		ssgiAtrousA->InitTextureWithoutData(
 			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
-			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
+			VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSGI_ATROUS_A, ssgiAtrousA);
 		manager->m_SSGITemporalFrame = 0;
 
 		auto vansConfigration = VansConfigration::GetInstance();
 		std::string projectRoot = vansConfigration->GetProjectRootPath();
 		manager->m_SSGIShader = VansGraphics::VansShaderManager::Get().FindComputeShader("SSGI");
+		manager->m_SSGIProbeCacheShader =
+			VansGraphics::VansShaderManager::Get().FindComputeShader("SSGIProbeCache");
 
 		manager->m_SSGITemporalShader = VansGraphics::VansShaderManager::Get().FindComputeShader("SSGITemporal");
 		manager->m_SSGIAtrousShader = VansGraphics::VansShaderManager::Get().FindComputeShader("SSGIAtrous");
 
 		const VansGISettings& gi = m_Scene->GetGISettings();
-		SSGIParamsGPU data{};
-		data.screenSize = glm::vec4(
-			(float)m_RenderWidth, (float)m_RenderHeight, 1.0f / m_RenderWidth, 1.0f / m_RenderHeight);
-		uint32_t regionCount = 0u;
-		for (const GIProbeRegionDesc* desc : BuildActiveGIRegionOrder(gi))
-		{
-			if (regionCount >= VANS_SSGI_MAX_GI_REGIONS)
-				continue;
-			const GIResolvedRegion region = ResolveGIRegion(*desc);
-			SSGIRegionParamsGPU& destination = data.regions[regionCount++];
-			destination.volumeMin = glm::vec4(region.volumeMin, 0.0f);
-			destination.volumeSizeAndBias = glm::vec4(region.volumeSize, region.normalBias);
-			destination.traceParams = glm::vec4(region.maxRayDistance, 0.75f, region.volumeFadeDistance, 0.0f);
-			destination.gridDimensionsAndPriority = glm::vec4(glm::vec3(region.gridDimensions), region.priority);
-		}
-		data.regionInfo.x = static_cast<float>(regionCount);
-		data.deferredProbeDebug = glm::vec4(
-			IsGIProbeOnlyDeferredOutputEnabled(gi) ? 1.0f : 0.0f,
-			gi.probeOnlyDeferredExposure,
-			0.0f,
-			0.0f);
+		const SSGIParamsGPU data = BuildSSGIParamsFromGISettings(
+			gi, m_RenderWidth, m_RenderHeight);
 		manager->m_SSGICBBuffer.CreatVulkanBuffer(
 			m_VansVKLogicDevice, sizeof(data), VK_FORMAT_R32_SFLOAT,
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
@@ -1002,6 +1009,9 @@ namespace VansGraphics
 		manager->m_SSGITemporalCBBuffer.SetBufferData(&temporalData, 0, sizeof(temporalData));
 
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_SSGI(manager->m_SSGITexSetLayout, manager->m_SSGIDescriptorSets);
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_SSGIProbeCache(
+			manager->m_SSGIProbeCacheSetLayout,
+			manager->m_SSGIProbeCacheDescriptorSets);
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_SSGITemporal(manager->m_SSGITemporalSetLayout, manager->m_SSGITemporalDescriptorSets, 2);
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_SSGIAtrous(manager->m_SSGIAtrousSetLayout, manager->m_SSGIAtrousDescriptorSets, 2);
 	}
@@ -1329,23 +1339,28 @@ namespace VansGraphics
 		manager->m_BilateralFilterShader->SetPushConstantData(&(manager->m_BilateralFilterPushConstant));
 	}
 
+	void VansVKDevice::PrepareResolutionDependentRenderingData()
+	{
+		PrepareSSAORenderData();
+		PrepareSSGIRenderData();
+		PrepareBilaterFilterData();
+		PrepareHZBRenderData();
+		PrepareScreenSpaceShadowRenderData();
+		PrepareSSRRenderData();
+		PrepareVolumetricData();
+		PrepareCloudRenderData();
+		PrepareTileLightData();
+		PreparePostProcessRenderData();
+	}
+
 	void VansVKDevice::PrepareRenderingData()
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		manager->ClearRuntimeRenderTextures();
 
 		PrepareSkyRenderData();
-		PrepareSSAORenderData();
-		PrepareSSGIRenderData();
-		PrepareBilaterFilterData();
-		PrepareHZBRenderData();
-		PrepareScreenSpaceShadowRenderData();
+		PrepareResolutionDependentRenderingData();
 		PreparePunctualShadowDebugRenderData();
-		PrepareSSRRenderData();
-		PrepareVolumetricData();
-		PrepareCloudRenderData();
-		PrepareTileLightData();
-		PreparePostProcessRenderData();
 #ifdef _DEBUG
 		VkDebugUtilsObjectNameInfoEXT nameInfo = {};
 		nameInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
@@ -1432,21 +1447,23 @@ namespace VansGraphics
 			VK_FORMAT_R16_SFLOAT, false, false, true,
 			VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_EXPOSURE_CURRENT, exposureCurrent);
-		VansTexture* fsrExposure = new VansTexture();
-		fsrExposure->InitTextureWithoutData(
+		VansTexture* upscalerExposure = new VansTexture();
+		upscalerExposure->InitTextureWithoutData(
 			m_VansVKCommandBuffer, 1, 1, 1,
 			VK_FORMAT_R32_SFLOAT, false, false, true,
 			VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
-		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_FSR_EXPOSURE, fsrExposure);
+		manager->RegisterRuntimeRenderTexture(
+			VansMaterialManager::RT_UPSCALER_EXPOSURE,
+			upscalerExposure);
 		if (m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
 		{
 			VkClearColorValue initialExposure{};
 			m_VansVKCommandBuffer.ClearColorImage(
 				exposureCurrent->GetImage(), VK_IMAGE_LAYOUT_GENERAL, initialExposure);
-			VkClearColorValue initialFSRExposure{};
-			initialFSRExposure.float32[0] = 1.0f;
+			VkClearColorValue initialUpscalerExposure{};
+			initialUpscalerExposure.float32[0] = 1.0f;
 			m_VansVKCommandBuffer.ClearColorImage(
-				fsrExposure->GetImage(), VK_IMAGE_LAYOUT_GENERAL, initialFSRExposure);
+				upscalerExposure->GetImage(), VK_IMAGE_LAYOUT_GENERAL, initialUpscalerExposure);
 			VkMemoryBarrier clearToExposure{};
 			clearToExposure.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
 			clearToExposure.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;

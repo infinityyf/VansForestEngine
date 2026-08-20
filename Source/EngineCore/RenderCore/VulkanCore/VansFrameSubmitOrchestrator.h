@@ -24,6 +24,7 @@ namespace VansGraphics
 		TileLightDone,
 		VegetationDone,
 		PreDeferredDone,
+		AsyncSSAODone,
 		HZBReady,
 		CloudDone,
 		AsyncGIDone,

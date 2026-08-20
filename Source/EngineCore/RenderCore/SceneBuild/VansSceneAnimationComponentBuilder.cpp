@@ -23,6 +23,7 @@
 #include <assimp/scene.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -126,6 +127,38 @@ namespace VansGraphics
 			const auto targetAlignmentIt = optionsIt->find("target_model_space_alignment");
 			if (targetAlignmentIt != optionsIt->end() && targetAlignmentIt->is_string())
 				desc.targetModelSpaceAlignmentMode = targetAlignmentIt->get<std::string>();
+
+			const auto chainsIt = optionsIt->find("two_bone_chains");
+			if (chainsIt != optionsIt->end() && chainsIt->is_array())
+			{
+				desc.twoBoneChains.clear();
+				for (const auto& chainJson : *chainsIt)
+				{
+					if (!chainJson.is_object())
+						continue;
+					const auto sourceIt = chainJson.find("source");
+					const auto targetIt = chainJson.find("target");
+					if (sourceIt == chainJson.end() || !sourceIt->is_array() || sourceIt->size() != 3 ||
+					    targetIt == chainJson.end() || !targetIt->is_array() || targetIt->size() != 3 ||
+					    !(*sourceIt)[0].is_string() || !(*sourceIt)[1].is_string() || !(*sourceIt)[2].is_string() ||
+					    !(*targetIt)[0].is_string() || !(*targetIt)[1].is_string() || !(*targetIt)[2].is_string())
+					{
+						continue;
+					}
+
+					VansRetargetTwoBoneChainDesc chain;
+					chain.name = chainJson.value("name", std::string{});
+					chain.sourceRoot = (*sourceIt)[0].get<std::string>();
+					chain.sourceMid = (*sourceIt)[1].get<std::string>();
+					chain.sourceTip = (*sourceIt)[2].get<std::string>();
+					chain.targetRoot = (*targetIt)[0].get<std::string>();
+					chain.targetMid = (*targetIt)[1].get<std::string>();
+					chain.targetTip = (*targetIt)[2].get<std::string>();
+					chain.positionWeight = glm::clamp(
+						chainJson.value("position_weight", 1.0f), 0.0f, 1.0f);
+					desc.twoBoneChains.push_back(std::move(chain));
+				}
+			}
 		}
 
 		bool ResolveAnimationAssetPath(

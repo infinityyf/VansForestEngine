@@ -40,6 +40,8 @@ namespace VansGraphics
 		float aspectRatio;
 		float nearPlane;
 		float farPlane;
+		uint32_t viewportWidth = 1920;
+		uint32_t viewportHeight = 1080;
 	};
 
 	struct VansCelestialLightingState

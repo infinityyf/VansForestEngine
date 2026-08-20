@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cwctype>
 #include <mutex>
+#include <utility>
 
 namespace Vans
 {
@@ -228,6 +229,127 @@ bool VansAssetDatabase::RegisterOrRefresh(
     ++record.generation;
     record.error = textureCookError;
     m_ByPath[key] = meta.guid;
+    return true;
+}
+
+VansTextureArtifactEnsureResult VansAssetDatabase::EnsureTextureArtifact(VansAssetGuid guid)
+{
+    VansTextureArtifactEnsureResult result;
+    const std::optional<VansAssetRecord> indexedRecord = Find(guid);
+    if (!indexedRecord || indexedRecord->state == VansAssetState::Missing)
+    {
+        result.error = "Texture asset is not present in the authoring index: " + guid.ToString();
+        return result;
+    }
+    if (indexedRecord->type != VansAssetType::Texture)
+    {
+        result.error = "Asset is not a texture: " + guid.ToString();
+        return result;
+    }
+
+    VansAssetMeta meta;
+    if (!VansAssetMetaStorage::Load(indexedRecord->metaPath, meta, result.error))
+        return result;
+
+    const VansTextureCookResult cook = VansTextureCooker::CookIfNeeded(
+        indexedRecord->sourcePath,
+        indexedRecord->metaPath,
+        meta,
+        m_ArtifactRoot);
+    result.artifactPath = cook.artifactPath;
+    result.error = cook.error;
+    switch (cook.status)
+    {
+    case VansTextureCookStatus::NotEligible:
+        result.status = VansTextureArtifactEnsureStatus::NotEligible;
+        break;
+    case VansTextureCookStatus::UpToDate:
+        result.status = VansTextureArtifactEnsureStatus::UpToDate;
+        break;
+    case VansTextureCookStatus::Cooked:
+        result.status = VansTextureArtifactEnsureStatus::Cooked;
+        break;
+    case VansTextureCookStatus::Failed:
+    default:
+        result.status = VansTextureArtifactEnsureStatus::Failed;
+        break;
+    }
+
+    std::unique_lock lock(m_Mutex);
+    const auto found = m_ByGuid.find(guid);
+    if (found == m_ByGuid.end() || found->second.state == VansAssetState::Missing ||
+        PathKey(found->second.sourcePath) != PathKey(indexedRecord->sourcePath))
+    {
+        result.status = VansTextureArtifactEnsureStatus::Failed;
+        result.artifactPath.clear();
+        result.error = "Texture asset changed while its cache was being prepared: " + guid.ToString();
+        return result;
+    }
+
+    VansAssetRecord& record = found->second;
+    const std::filesystem::path previousArtifactPath = record.artifactPath;
+    const VansAssetState previousState = record.state;
+    const std::string previousError = record.error;
+    if (result.HasArtifact())
+    {
+        record.artifactPath = result.artifactPath;
+        record.artifactFormat = VansAssetArtifactFormat::Imported;
+        record.state = VansAssetState::CpuReady;
+        record.error.clear();
+    }
+    else
+    {
+        // A stale cache must not remain readable after the source becomes
+        // ineligible or a recook fails. Keep the file for diagnostics, but
+        // remove it from the active authoring index so source fallback is used.
+        record.artifactPath.clear();
+        record.artifactFormat = VansAssetArtifactFormat::None;
+        record.state = VansAssetState::Discovered;
+        record.error = result.error;
+    }
+    if (record.artifactPath != previousArtifactPath || record.state != previousState ||
+        record.error != previousError || result.status == VansTextureArtifactEnsureStatus::Cooked)
+    {
+        ++record.generation;
+    }
+    return result;
+}
+
+bool VansAssetDatabase::UpdateImportedArtifact(
+    VansAssetGuid guid,
+    const std::filesystem::path& artifactPath,
+    std::string error)
+{
+    std::error_code ec;
+    const bool artifactAvailable = !artifactPath.empty() &&
+        std::filesystem::is_regular_file(artifactPath, ec);
+    if (!artifactPath.empty() && !artifactAvailable)
+        return false;
+
+    std::unique_lock lock(m_Mutex);
+    const auto found = m_ByGuid.find(guid);
+    if (found == m_ByGuid.end() || found->second.state == VansAssetState::Missing)
+        return false;
+
+    VansAssetRecord& record = found->second;
+    const std::filesystem::path normalizedArtifact = artifactAvailable
+        ? std::filesystem::absolute(artifactPath).lexically_normal()
+        : std::filesystem::path{};
+    const VansAssetState nextState = artifactAvailable
+        ? VansAssetState::CpuReady
+        : VansAssetState::Discovered;
+    const VansAssetArtifactFormat nextFormat = artifactAvailable
+        ? VansAssetArtifactFormat::Imported
+        : VansAssetArtifactFormat::None;
+    if (record.artifactPath != normalizedArtifact || record.state != nextState ||
+        record.artifactFormat != nextFormat || record.error != error)
+    {
+        record.artifactPath = normalizedArtifact;
+        record.artifactFormat = nextFormat;
+        record.state = nextState;
+        record.error = std::move(error);
+        ++record.generation;
+    }
     return true;
 }
 

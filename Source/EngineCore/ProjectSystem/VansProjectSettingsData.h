@@ -6,7 +6,7 @@ namespace Vans
 {
 	struct VansProjectRenderSettingsData
 	{
-		VansProjectFSRSettings fsrSettings;
+		VansProjectUpscalerSettings upscalerSettings;
 		VansProjectCommandRecordingSettings commandRecordingSettings;
 		VansProjectMainCameraHiZCullSettings mainCameraHiZCullSettings;
 	};

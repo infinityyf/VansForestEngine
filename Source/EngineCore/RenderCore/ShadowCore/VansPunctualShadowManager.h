@@ -21,6 +21,9 @@ namespace VansGraphics
 			const VansPunctualShadowCameraData& camera,
 			const std::vector<VansPunctualShadowLightInput>& lights,
 			uint64_t frameIndex);
+		// 仅在包含本帧 shadow jobs 的 GPU 提交成功后调用。新 allocation
+		// 会从下一帧开始发布，提交失败时 dirty/pending 状态保持并重试。
+		void NotifyRenderJobsSubmitted();
 
 		void InvalidateAllCasters(uint32_t dirtyReason = VansShadowDirty_CasterTransform);
 		void InvalidateCastersInBounds(
@@ -62,6 +65,8 @@ namespace VansGraphics
 			uint8_t dirtyFaceMask = 0;
 			uint8_t pendingFaceMask = 0;
 			uint8_t validFaceMask = 0;
+			uint8_t queuedActiveFaceMask = 0;
+			uint8_t queuedPendingFaceMask = 0;
 			uint32_t dirtyReasons = VansShadowDirty_None;
 			float importance = 0.0f;
 			float coverage = 0.0f;
@@ -104,6 +109,7 @@ namespace VansGraphics
 		bool AllocateGroup(uint16_t resolution, uint32_t viewCount, std::array<VansShadowAtlasBlock, 6>& outBlocks);
 		bool ValidateBlock(const VansShadowAtlasBlock& block) const;
 		void ReleaseBlocks(std::array<VansShadowAtlasBlock, 6>& blocks, uint32_t viewCount);
+		void ReleasePending(Runtime& runtime);
 		void ReleaseRuntime(Runtime& runtime);
 		void PromotePending(Runtime& runtime);
 		void BuildRenderJobs(std::vector<Runtime*>& orderedRuntimes);

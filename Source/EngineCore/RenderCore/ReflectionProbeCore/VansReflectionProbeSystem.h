@@ -47,7 +47,6 @@ namespace VansGraphics
 		void ProcessBakeQueue(VansScene& scene, VansVKDevice& device, VansVKCommandBuffer& commandBuffer,
 			uint32_t frameIndex, bool updateRealtime = true);
 		void BakeQueuedProbesNow(VansScene& scene, VansVKDevice& device, VansVKCommandBuffer& commandBuffer);
-		void DeferInitialBakeForGI(uint32_t spatialUpdateDivisor, uint32_t directionUpdateSlices);
 		uint32_t GetBakeFaceBudget() const;
 
 		void RequestBake(size_t index);
@@ -133,7 +132,5 @@ namespace VansGraphics
 		uint64_t m_BakeRevision = 0;
 		size_t m_ActiveBakeIndex = size_t(-1);
 		uint32_t m_ActiveBakeFace = 0;
-		uint32_t m_GIWarmupFramesRemaining = 0;
-		uint32_t m_LastGIWarmupFrame = 0xffffffffu;
 	};
 }

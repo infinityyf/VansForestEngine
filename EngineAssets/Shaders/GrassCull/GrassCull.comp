@@ -54,8 +54,8 @@ layout(std430, set = 1, binding = 3) writeonly buffer VisibleIndexBuffer
 // ── Terrain heightmap — 用于采样实例的实际地面高度 ─────────────────────────
 layout(set = 1, binding = 4) uniform sampler2D terrainHeightmap;
 
-// ── Hi-Z depth pyramid — 用于保守遮挡剔除 (min-depth 降采样) ───────────────
-// HZB 存储每 cell 的最近深度；球前沿深度 > hizSample + bias 时判定为遮挡
+// ── Hi-Z depth pyramid — 上一帧的保守遮挡 HZB (max-depth 降采样) ───────────
+// HZB 存储每个 cell 的最远深度；实例只有在其覆盖的全部 cell 前方都有遮挡时才剔除。
 layout(set = 1, binding = 5) uniform sampler2D hizDepth;
 
 // ── Push constants ─────────────────────────────────────────────────────────
@@ -109,37 +109,134 @@ bool sphereInsideFrustum(vec3 center, float radius)
     return true;
 }
 
-float sampleHiZ(vec2 uv, int mipLevel, int mipMaxIndex)
+float sampleHiZCell(ivec2 cell, int mipLevel, int mipMaxIndex)
 {
     int   lod      = clamp(mipLevel, 0, mipMaxIndex);
     ivec2 mipSize  = textureSize(hizDepth, lod);
-    ivec2 cell     = clamp(ivec2(uv * vec2(mipSize)), ivec2(0), mipSize - 1);
-    return texelFetch(hizDepth, cell, lod).r;
+    return texelFetch(hizDepth, clamp(cell, ivec2(0), mipSize - 1), lod).r;
 }
 
-bool isHiZOccludedSample(vec2 uv, int mipLevel, int mipMaxIndex, float sphereNearZ, float bias)
+bool occlusionCellFullyInFront(
+    ivec2 cell,
+    int mipLevel,
+    int mipMaxIndex,
+    float sphereNearDepth,
+    float bias)
 {
-    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)
+    float sceneMaxDepth = sampleHiZCell(cell, mipLevel, mipMaxIndex);
+    if (sceneMaxDepth >= 1e4)
         return false;
 
-    float sceneMinZ = sampleHiZ(uv, mipLevel, mipMaxIndex);
-    if (sceneMinZ >= 1e4)
+    return sphereNearDepth > sceneMaxDepth + bias;
+}
+
+bool projectSphereToPreviousFrame(
+    vec3 sphereCenter,
+    float sphereRadius,
+    out vec2 uvMin,
+    out vec2 uvMax,
+    out float sphereNearDepth)
+{
+    vec3 previousViewCenter = (LastViewMatrix * vec4(sphereCenter, 1.0)).xyz;
+    sphereNearDepth = -previousViewCenter.z - sphereRadius;
+
+    // 球与上一帧近平面相交时，历史投影不完整，必须保留。
+    if (sphereNearDepth <= 0.001)
         return false;
 
-    return sphereNearZ > sceneMinZ + bias;
+    // 用包含球体的 view-space AABB 八角点求屏幕矩形。相比中心点半径近似，
+    // 该矩形在宽视角和屏幕边缘也不会低估 footprint。
+    uvMin = vec2(1e20);
+    uvMax = vec2(-1e20);
+    for (uint corner = 0u; corner < 8u; ++corner)
+    {
+        vec3 cornerSign = vec3(
+            (corner & 1u) != 0u ? 1.0 : -1.0,
+            (corner & 2u) != 0u ? 1.0 : -1.0,
+            (corner & 4u) != 0u ? 1.0 : -1.0);
+        vec3 viewCorner = previousViewCenter + cornerSign * sphereRadius;
+        vec4 clipCorner = LastProjectionMatrix * vec4(viewCorner, 1.0);
+        if (clipCorner.w <= 0.0001)
+            return false;
+
+        vec2 ndc = clipCorner.xy / clipCorner.w;
+        vec2 uv = vec2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+        uvMin = min(uvMin, uv);
+        uvMax = max(uvMax, uv);
+    }
+
+    // footprint 只要有一部分在上一帧屏幕外，就没有完整的历史遮挡证据。
+    return uvMin.x >= 0.0 && uvMax.x <= 1.0 &&
+           uvMin.y >= 0.0 && uvMax.y <= 1.0;
+}
+
+bool conservativePreviousFrameHiZOccluded(vec3 sphereCenter, float sphereRadius)
+{
+    vec2 uvMin;
+    vec2 uvMax;
+    float sphereNearDepth;
+    if (!projectSphereToPreviousFrame(
+            sphereCenter, sphereRadius, uvMin, uvMax, sphereNearDepth))
+        return false;
+
+    int mipMaxIndex = pc.hizMipCount - 1;
+    if (mipMaxIndex < 0)
+        return false;
+
+    ivec2 baseSize = textureSize(hizDepth, 0);
+    vec2 rectPixels = max((uvMax - uvMin) * vec2(baseSize), vec2(0.0));
+    float maxRectPixels = max(rectPixels.x, rectPixels.y);
+    if (maxRectPixels <= 0.5)
+        return false;
+
+    // ceil(log2) 使 footprint 在该 mip 的每个轴上不超过一个 texel 宽，
+    // 因而最多与 2x2 个 cell 相交。必须逐个 cell 通过 max-depth 测试。
+    int mipLevel = clamp(
+        int(ceil(log2(max(maxRectPixels, 1.0)))),
+        0,
+        mipMaxIndex);
+    ivec2 mipSize = textureSize(hizDepth, mipLevel);
+    ivec2 minCell = clamp(
+        ivec2(floor(uvMin * vec2(mipSize))),
+        ivec2(0),
+        mipSize - 1);
+    ivec2 maxCell = clamp(
+        ivec2(ceil(uvMax * vec2(mipSize))) - ivec2(1),
+        ivec2(0),
+        mipSize - 1);
+
+    ivec2 cellCount = maxCell - minCell + ivec2(1);
+    if (cellCount.x <= 0 || cellCount.y <= 0 ||
+        cellCount.x > 2 || cellCount.y > 2)
+        return false;
+
+    for (int y = minCell.y; y <= maxCell.y; ++y)
+    {
+        for (int x = minCell.x; x <= maxCell.x; ++x)
+        {
+            if (!occlusionCellFullyInFront(
+                    ivec2(x, y),
+                    mipLevel,
+                    mipMaxIndex,
+                    sphereNearDepth,
+                    pc.hizSampleBias))
+                return false;
+        }
+    }
+    return true;
 }
 
 void main()
 {
-    // VPMatrix 在同一 workgroup 内相同，6 个视锥面只需提取一次。
+    // 当前帧无 jitter VP 在同一 workgroup 内相同，6 个视锥面只需提取一次。
     if (gl_LocalInvocationIndex < 6u)
     {
-        if (gl_LocalInvocationIndex == 0u) sharedFrustum[0] = extractPlane(VPMatrix, 0,  1.0);
-        if (gl_LocalInvocationIndex == 1u) sharedFrustum[1] = extractPlane(VPMatrix, 0, -1.0);
-        if (gl_LocalInvocationIndex == 2u) sharedFrustum[2] = extractPlane(VPMatrix, 1,  1.0);
-        if (gl_LocalInvocationIndex == 3u) sharedFrustum[3] = extractPlane(VPMatrix, 1, -1.0);
-        if (gl_LocalInvocationIndex == 4u) sharedFrustum[4] = extractPlane(VPMatrix, 2,  1.0);
-        if (gl_LocalInvocationIndex == 5u) sharedFrustum[5] = extractPlane(VPMatrix, 2, -1.0);
+        if (gl_LocalInvocationIndex == 0u) sharedFrustum[0] = extractPlane(UnjitteredVPMatrix, 0,  1.0);
+        if (gl_LocalInvocationIndex == 1u) sharedFrustum[1] = extractPlane(UnjitteredVPMatrix, 0, -1.0);
+        if (gl_LocalInvocationIndex == 2u) sharedFrustum[2] = extractPlane(UnjitteredVPMatrix, 1,  1.0);
+        if (gl_LocalInvocationIndex == 3u) sharedFrustum[3] = extractPlane(UnjitteredVPMatrix, 1, -1.0);
+        if (gl_LocalInvocationIndex == 4u) sharedFrustum[4] = extractPlane(UnjitteredVPMatrix, 2,  1.0);
+        if (gl_LocalInvocationIndex == 5u) sharedFrustum[5] = extractPlane(UnjitteredVPMatrix, 2, -1.0);
     }
     barrier();
 
@@ -184,73 +281,15 @@ void main()
     }
 
     // ── Hi-Z 遮挡剔除 ────────────────────────────────────────────────
-    // HIZ 存 min 正线性视空间深度（米），由 GBuffer position.w 生成。
-    //
-    // 测试逻辑：
-    //   球前沿（最靠近相机的一点）线性深度 = -viewCenter.z - sphereRadius
-    //   若该值 > HIZ footprint 内 min 深度 + bias → 球完全在所有近端遮挡物之后 → 剪除
-    //
-    // bias 单位为米（推荐 0.1–0.5），用于补偿 HIZ 量化误差和草叶散布裕量。
-    if (pc.hizEnabled != 0)
+    // 当前 compute 发生在本帧 GBuffer/HZB 更新之前，因此 HZB 属于上一帧。
+    // 使用上一帧 View/Projection 重投影当前世界包围球，使投影与深度处于同一时域。
+    // 首帧没有有效历史；max-depth HZB 的全部覆盖 cell 都确认遮挡后才允许剔除。
+    if (pc.hizEnabled != 0 && FrameIndex >= 1.0)
     {
-        vec4 viewCenter = ViewMatrix * vec4(sphereCenter, 1.0);
-
-        // 球前沿到相机的线性深度（正值，米）。viewCenter.z 为负（RH，相机看向 -Z）
-        // 加 sphereRadius 让 z 更大（更靠近 0/相机），转正后即球最前沿距离
-        float sphereNearZ = -viewCenter.z - sphereRadius;
-
-        // 球若跨越/紧贴近平面，无法可靠投影，跳过遮挡测试（保守不剪）
-        if (sphereNearZ > 0.001)
+        if (conservativePreviousFrameHiZOccluded(sphereCenter, sphereRadius))
         {
-            vec4 clipCenter = ProjectionMatrix * viewCenter;
-            if (clipCenter.w > 0.0001)
-            {
-                vec3 ndcCenter = clipCenter.xyz / clipCenter.w;
-
-                // 引擎使用负高度 viewport：NDC Y=+1 → UV.y=0
-                vec2 hizUV = vec2(ndcCenter.x * 0.5 + 0.5,
-                                  0.5 - ndcCenter.y * 0.5);
-
-                // 屏幕投影半径（像素）—— 透视下 r_screen ≈ r_world * f / |z|
-                // 用 NDC 半径 * 屏幕半高近似（保守，足够选 mip）
-                float ndcRadius      = sphereRadius / clipCenter.w;
-                float screenRadiusPx = ndcRadius * 0.5 * max(ScreenParams.x, ScreenParams.y);
-
-                vec2 uvRadius = vec2(screenRadiusPx * ScreenParams.z,
-                                     screenRadiusPx * ScreenParams.w);
-                vec2 uvMin = hizUV - uvRadius;
-                vec2 uvMax = hizUV + uvRadius;
-
-                // footprint 出屏时保守保留，避免屏幕边缘的草被错误剪掉。
-                if (uvMin.x >= 0.0 && uvMax.x <= 1.0 &&
-                    uvMin.y >= 0.0 && uvMax.y <= 1.0 &&
-                    screenRadiusPx > 0.5)
-                {
-                    // 当前 HIZ 是 min-depth 金字塔，不是 occlusion culling 最理想的 max-depth 金字塔。
-                    // 因此不能用"覆盖整个球 footprint 的单个大 cell"直接剪，否则只要 cell 内
-                    // 有一个近景 texel 就会误剪。这里使用较细 mip + 5 点全遮挡测试：只有中心和
-                    // 四个边缘采样点都被更近深度遮挡时才剪除。
-                    int mipLevel = min(int(floor(log2(max(screenRadiusPx * 0.25, 1.0)))), 2);
-                    int mipMaxIndex = pc.hizMipCount - 1;
-
-                    bool occluded = true;
-                    occluded = occluded && isHiZOccludedSample(hizUV,                          mipLevel, mipMaxIndex, sphereNearZ, pc.hizSampleBias);
-                    occluded = occluded && isHiZOccludedSample(hizUV + vec2( uvRadius.x, 0.0), mipLevel, mipMaxIndex, sphereNearZ, pc.hizSampleBias);
-                    occluded = occluded && isHiZOccludedSample(hizUV + vec2(-uvRadius.x, 0.0), mipLevel, mipMaxIndex, sphereNearZ, pc.hizSampleBias);
-                    occluded = occluded && isHiZOccludedSample(hizUV + vec2(0.0,  uvRadius.y), mipLevel, mipMaxIndex, sphereNearZ, pc.hizSampleBias);
-                    occluded = occluded && isHiZOccludedSample(hizUV + vec2(0.0, -uvRadius.y), mipLevel, mipMaxIndex, sphereNearZ, pc.hizSampleBias);
-                    occluded = occluded && isHiZOccludedSample(hizUV + vec2( uvRadius.x,  uvRadius.y), mipLevel, mipMaxIndex, sphereNearZ, pc.hizSampleBias);
-                    occluded = occluded && isHiZOccludedSample(hizUV + vec2(-uvRadius.x,  uvRadius.y), mipLevel, mipMaxIndex, sphereNearZ, pc.hizSampleBias);
-                    occluded = occluded && isHiZOccludedSample(hizUV + vec2( uvRadius.x, -uvRadius.y), mipLevel, mipMaxIndex, sphereNearZ, pc.hizSampleBias);
-                    occluded = occluded && isHiZOccludedSample(hizUV + vec2(-uvRadius.x, -uvRadius.y), mipLevel, mipMaxIndex, sphereNearZ, pc.hizSampleBias);
-
-                    if (occluded)
-                    {
-                        visibilityFlags[instanceID] = 0;
-                        return;
-                    }
-                }
-            }
+            visibilityFlags[instanceID] = 0;
+            return;
         }
     }
 

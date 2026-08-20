@@ -4,42 +4,23 @@
 #include <string>
 
 #include <vulkan/vulkan.h>
+#include "../UpscalingCore/VansUpscalerTypes.h"
 
 namespace VansGraphics
 {
-	enum class VansFSRMode : std::uint32_t
+	struct VansFSRDispatchJitter
 	{
-		MatchViewport = 0,
-		NativeAA = 1,
-		Quality = 2,
-		Balanced = 3,
-		Performance = 4
+		float x = 0.0f;
+		float y = 0.0f;
 	};
 
-	enum class VansFSRResetReason : std::uint32_t
+	constexpr VansFSRDispatchJitter BuildFSRDispatchJitter(
+		const float samplePixelX,
+		const float samplePixelY)
 	{
-		None = 0,
-		FirstFrame = 1u << 0,
-		SceneChange = 1u << 1,
-		CameraCut = 1u << 2,
-		ContextRecreated = 1u << 3,
-		RenderSizeChange = 1u << 4,
-		DisplaySizeChange = 1u << 5,
-		ModeChange = 1u << 6,
-		FrameDiscontinuity = 1u << 7,
-		Manual = 1u << 8
-	};
-
-	constexpr VansFSRResetReason operator|(VansFSRResetReason lhs, VansFSRResetReason rhs)
-	{
-		return static_cast<VansFSRResetReason>(
-			static_cast<std::uint32_t>(lhs) | static_cast<std::uint32_t>(rhs));
-	}
-
-	inline VansFSRResetReason& operator|=(VansFSRResetReason& lhs, VansFSRResetReason rhs)
-	{
-		lhs = lhs | rhs;
-		return lhs;
+		// FidelityFX 官方示例在把查询样本应用到相机后，以相反符号提交
+		// dispatch jitterOffset。集中在 API 边界转换，避免相机侧混入 SDK 约定。
+		return { -samplePixelX, -samplePixelY };
 	}
 
 	struct VansFSRFrameInput
@@ -68,8 +49,8 @@ namespace VansGraphics
 		float cameraFar = 0.0f;
 		float viewSpaceToMetersFactor = 1.0f;
 
-		float jitterPixelX = 0.0f;
-		float jitterPixelY = 0.0f;
+		float jitterSamplePixelX = 0.0f;
+		float jitterSamplePixelY = 0.0f;
 		float frameTimeDeltaMs = 16.6667f;
 		float preExposure = 1.0f;
 

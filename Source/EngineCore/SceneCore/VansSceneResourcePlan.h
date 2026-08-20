@@ -24,6 +24,12 @@ struct VansSceneMeshResourceRequest
 	bool cookedOnly = false;
 };
 
+inline bool RequiresMeshTangentImport(const VansSceneMeshResourceRequest& request)
+{
+	// 光追网格当前使用带切线的顶点布局；烘焙、打包校验和运行时必须共享同一判定。
+	return request.needTangent || request.supportRayTracing;
+}
+
 struct VansSceneTextureResourceRequest
 {
 	std::string name;

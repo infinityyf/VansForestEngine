@@ -30,7 +30,14 @@
 #include "../EngineCore/RenderCore/VulkanCore/VansVideoThumbnail.h"
 #include "../EngineCore/RenderCore/VulkanCore/VansFrameSubmitOrchestrator.h"
 #include "../EngineCore/RenderCore/VulkanCore/VansRenderPassCatalog.h"
-#include "../EngineCore/RenderCore/FidelityFXCore/VansFSRHistoryState.h"
+#include "../EngineCore/RenderCore/FidelityFXCore/VansFSRTypes.h"
+#include "../EngineCore/RenderCore/UpscalingCore/VansUpscalerHistoryState.h"
+#include "../EngineCore/RenderCore/UpscalingCore/VansUpscalerManager.h"
+#include "../EngineCore/RenderCore/UpscalingCore/VansUpscaleResolutionPolicy.h"
+#include "../EngineCore/RenderCore/UpscalingCore/VansTemporalJitterSequence.h"
+#include "../EngineCore/RenderCore/VansShaderManager.h"
+#include "../EngineCore/RenderCore/SceneBuild/VansSceneResourceArtifactPrewarmer.h"
+#include "../EngineCore/RenderCore/VansTemporalProjection.h"
 #include "../EngineCore/RenderCore/ShadowCore/VansPunctualShadowManager.h"
 #include "../EngineCore/RuntimeCore/VansPackageManifest.h"
 #include "../EngineCore/RuntimeCore/VansCharacterMotion.h"
@@ -74,6 +81,7 @@
 #include "../EngineCore/AnimationCore/VansPoseMath.h"
 #include "../EngineCore/AnimationCore/VansPosePayloadMixer.h"
 #include "../EngineCore/AnimationCore/VansAnimationLayer.h"
+#include "../EngineCore/AnimationCore/Retargeting/VansRetargetProcessor.h"
 #include "../EngineCore/AnimationCore/Storage/VansBoneMaskStorage.h"
 #include "../EngineCore/AnimationCore/MotionMatching/VansMotionMatching.h"
 #include "../EngineCore/EngineAPILayer/Private/AnimationAuthoringBridge.h"
@@ -84,6 +92,7 @@
 #include "../EngineCore/ProjectSystem/VansProjectSettingsData.h"
 #include "../EngineCore/ProjectSystem/Serialization/VansProjectSettingsJsonCodec.h"
 #include "../EngineCore/ScriptCore/VansScriptContext.h"
+#include "../EngineCore/ScriptCore/VansLuaScriptInspectorService.h"
 #include "../EngineCore/ScriptCore/VansTransform.h"
 
 #include <algorithm>
@@ -704,11 +713,21 @@ bool TestAssetPolicies()
     const fs::path assetsRoot = temporary.path / "Assets";
     const fs::path artifactRoot = temporary.path / "Library" / "Artifacts";
     fs::create_directories(assetsRoot);
-    const fs::path texturePath = assetsRoot / "PolicyProbe.png";
+    const fs::path texturePath = assetsRoot / "PolicyProbe.tga";
+    const auto writeProbeTexture = [&](std::uint8_t red)
     {
-        std::ofstream file(texturePath, std::ios::binary);
-        file << "policy-probe";
-    }
+        const std::uint8_t tga[] = {
+            0, 0, 2, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 1, 0, 1, 0,
+            32, 0x28,
+            0, 0, red, 255
+        };
+        std::ofstream file(texturePath, std::ios::binary | std::ios::trunc);
+        file.write(reinterpret_cast<const char*>(tga), sizeof(tga));
+        return static_cast<bool>(file);
+    };
+    if (!Expect(writeProbeTexture(255), "Could not write the texture cache policy probe"))
+        return false;
 
     Vans::VansAssetDatabase database(assetsRoot, artifactRoot);
     const Vans::VansAssetScanResult readOnly = database.Scan(Vans::VansAssetOperationPolicy::ReadOnly());
@@ -727,6 +746,54 @@ bool TestAssetPolicies()
         return false;
     if (!Expect(authoring.cookedArtifacts == 0, "Authoring scan implicitly cooked an artifact"))
         return false;
+    const auto indexedTexture = database.Find(texturePath);
+    if (!Expect(indexedTexture.has_value(), "Authoring scan did not index the texture cache probe"))
+        return false;
+    if (!Expect(indexedTexture->artifactPath.empty(), "Authoring scan unexpectedly resolved a texture artifact"))
+        return false;
+
+    const Vans::VansTextureArtifactEnsureResult firstEnsure =
+        database.EnsureTextureArtifact(indexedTexture->guid);
+    if (!Expect(firstEnsure.status == Vans::VansTextureArtifactEnsureStatus::Cooked,
+        "First editor texture cache ensure did not cook the missing artifact"))
+        return false;
+    if (!Expect(firstEnsure.HasArtifact() && fs::is_regular_file(firstEnsure.artifactPath),
+        "First editor texture cache ensure did not publish a readable artifact"))
+        return false;
+    const auto cookedRecord = database.Find(indexedTexture->guid);
+    if (!Expect(cookedRecord && cookedRecord->artifactPath == firstEnsure.artifactPath,
+        "Editor texture cache ensure did not refresh the live asset index"))
+        return false;
+
+    const Vans::VansTextureArtifactEnsureResult secondEnsure =
+        database.EnsureTextureArtifact(indexedTexture->guid);
+    if (!Expect(secondEnsure.status == Vans::VansTextureArtifactEnsureStatus::UpToDate &&
+        secondEnsure.artifactPath == firstEnsure.artifactPath,
+        "Second editor texture cache ensure did not reuse the current artifact"))
+        return false;
+
+    if (!Expect(writeProbeTexture(128), "Could not update the texture cache policy probe"))
+        return false;
+    std::error_code timestampError;
+    const auto updatedTimestamp = fs::last_write_time(texturePath, timestampError) + std::chrono::seconds(2);
+    if (!timestampError)
+        fs::last_write_time(texturePath, updatedTimestamp, timestampError);
+    if (!Expect(!timestampError, "Could not advance the texture cache policy probe timestamp"))
+        return false;
+    const Vans::VansTextureArtifactEnsureResult staleEnsure =
+        database.EnsureTextureArtifact(indexedTexture->guid);
+    if (!Expect(staleEnsure.status == Vans::VansTextureArtifactEnsureStatus::Cooked &&
+        staleEnsure.artifactPath == firstEnsure.artifactPath,
+        "Editor texture cache ensure did not rebuild the stale artifact"))
+        return false;
+
+    Vans::VansAssetDatabase reopenedDatabase(assetsRoot, artifactRoot);
+    const Vans::VansAssetScanResult reopened =
+        reopenedDatabase.Scan(Vans::VansAssetOperationPolicy::ReadOnly());
+    const auto reopenedRecord = reopenedDatabase.Find(indexedTexture->guid);
+    if (!Expect(reopened && reopenedRecord && reopenedRecord->artifactPath == firstEnsure.artifactPath,
+        "Subsequent editor scan did not prefer the generated texture artifact"))
+        return false;
     if (!Expect(Vans::VansAssetDatabase::Classify("Probe.vtimeline") == Vans::VansAssetType::Timeline,
         "Timeline asset extension is not classified canonically"))
         return false;
@@ -738,6 +805,113 @@ bool TestAssetPolicies()
 		return false;
     return Expect(Vans::VansAssetDatabase::ImporterFor(Vans::VansAssetType::Timeline) == "TimelineImporter",
         "Timeline assets are not owned by the canonical Timeline importer");
+}
+
+bool TestSceneResourceArtifactPrewarmContract()
+{
+    TemporaryDirectory temporary;
+    const fs::path assetsRoot = temporary.path / "Assets";
+    const fs::path engineAssetsRoot = temporary.path / "EngineAssets";
+    const fs::path artifactRoot = temporary.path / "Library" / "Artifacts";
+    fs::create_directories(assetsRoot);
+    fs::create_directories(engineAssetsRoot);
+
+    const fs::path texturePath = assetsRoot / "PrewarmProbe.tga";
+    const fs::path meshPath = assetsRoot / "PrewarmProbe.obj";
+    const auto writeTexture = [&](std::uint8_t red)
+    {
+        const std::uint8_t tga[] = {
+            0, 0, 2, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 1, 0, 1, 0,
+            32, 0x28,
+            0, 0, red, 255
+        };
+        std::ofstream file(texturePath, std::ios::binary | std::ios::trunc);
+        file.write(reinterpret_cast<const char*>(tga), sizeof(tga));
+        return static_cast<bool>(file);
+    };
+    const auto writeMesh = [&](float extent)
+    {
+        std::ofstream file(meshPath, std::ios::binary | std::ios::trunc);
+        file << "o PrewarmProbe\n"
+            << "v 0 0 0\n"
+            << "v " << extent << " 0 0\n"
+            << "v 0 " << extent << " 0\n"
+            << "vt 0 0\nvt 1 0\nvt 0 1\n"
+            << "vn 0 0 1\n"
+            << "f 1/1/1 2/2/1 3/3/1\n";
+        return static_cast<bool>(file);
+    };
+    if (!Expect(writeTexture(255) && writeMesh(1.0f),
+        "Could not write scene resource artifact prewarm probes"))
+        return false;
+
+    Vans::VansAssetDatabase database(assetsRoot, artifactRoot);
+    Vans::VansAssetDatabase builtInDatabase(engineAssetsRoot, artifactRoot / "Engine");
+    if (!Expect(database.Scan(Vans::VansAssetOperationPolicy::Authoring()) &&
+        builtInDatabase.Scan(Vans::VansAssetOperationPolicy::ReadOnly()),
+        "Could not index scene resource artifact prewarm probes"))
+        return false;
+    const auto textureRecord = database.Find(texturePath);
+    const auto meshRecord = database.Find(meshPath);
+    if (!Expect(textureRecord && meshRecord,
+        "Scene resource artifact prewarm probes were not indexed"))
+        return false;
+
+    Vans::VansSceneResourceBuildPlan plan;
+    plan.includeDefaultTextureSet = false;
+    plan.loadRegisteredShaders = false;
+    Vans::VansSceneTextureResourceRequest textureRequest;
+    textureRequest.name = "PrewarmProbeTexture";
+    textureRequest.assetGuid = textureRecord->guid.ToString();
+    textureRequest.path = "Assets/PrewarmProbe.tga";
+    plan.textures.push_back(textureRequest);
+    Vans::VansSceneMeshResourceRequest meshRequest;
+    meshRequest.name = "PrewarmProbeMesh";
+    meshRequest.assetGuid = meshRecord->guid.ToString();
+    meshRequest.path = "Assets/PrewarmProbe.obj";
+    meshRequest.needTangent = false;
+    meshRequest.supportRayTracing = false;
+    plan.meshes.push_back(meshRequest);
+
+    const auto first = VansGraphics::VansSceneResourceArtifactPrewarmer::Prewarm(
+        temporary.path, database, builtInDatabase, plan);
+    if (!Expect(first.meshCooked == 1 && first.textureCooked == 1 && first.Succeeded(),
+        "First Editor resource prewarm did not cook mesh and texture artifacts"))
+        return false;
+    const auto firstTextureRecord = database.Find(textureRecord->guid);
+    const auto firstMeshRecord = database.Find(meshRecord->guid);
+    if (!Expect(firstTextureRecord && firstMeshRecord &&
+        fs::is_regular_file(firstTextureRecord->artifactPath) &&
+        fs::is_regular_file(firstMeshRecord->artifactPath),
+        "Editor resource prewarm did not publish artifacts into the live index"))
+        return false;
+
+    const auto second = VansGraphics::VansSceneResourceArtifactPrewarmer::Prewarm(
+        temporary.path, database, builtInDatabase, plan);
+    if (!Expect(second.meshUpToDate == 1 && second.textureUpToDate == 1 &&
+        second.meshCooked == 0 && second.textureCooked == 0,
+        "Second Editor resource prewarm did not reuse current artifacts"))
+        return false;
+
+    if (!Expect(writeTexture(128) && writeMesh(2.0f),
+        "Could not update scene resource artifact prewarm probes"))
+        return false;
+    std::error_code timestampError;
+    for (const fs::path& path : { texturePath, meshPath })
+    {
+        const auto timestamp = fs::last_write_time(path, timestampError);
+        if (timestampError) break;
+        fs::last_write_time(path, timestamp + std::chrono::seconds(2), timestampError);
+        if (timestampError) break;
+    }
+    if (!Expect(!timestampError, "Could not advance scene resource prewarm probe timestamps"))
+        return false;
+
+    const auto stale = VansGraphics::VansSceneResourceArtifactPrewarmer::Prewarm(
+        temporary.path, database, builtInDatabase, plan);
+    return Expect(stale.meshCooked == 1 && stale.textureCooked == 1 && stale.Succeeded(),
+        "Editor resource prewarm did not rebuild stale mesh and texture artifacts");
 }
 
 bool TestGameplayFrameOrder()
@@ -819,6 +993,11 @@ bool TestCameraControlArbiterContract()
 	if (!Expect(std::abs(resolved.fieldOfView - 45.0f) < 0.001f &&
 		glm::length(resolved.position - glm::vec3(11.0f, 0.0f, 0.0f)) < 0.001f,
 		"camera priority, weighting, or camera-local additive resolution is wrong")) return false;
+	VansCameraControlPose lastResolved;
+	if (!Expect(arbiter.GetLastResolvedPose(lastResolved) &&
+		glm::length(lastResolved.position - resolved.position) < 0.001f &&
+		std::abs(lastResolved.rotationDegrees.y - resolved.rotationDegrees.y) < 0.001f,
+		"camera arbiter did not retain the authoritative resolved gameplay view")) return false;
 	arbiter.ReleaseDomain(timelineDomain);
 	if (!Expect(!arbiter.IsUserLookSuppressed(),
 		"Timeline camera domain release did not restore gameplay look input")) return false;
@@ -2393,11 +2572,12 @@ bool TestMotionMatchingCameraFacingTurnContract()
             "Selected camera-facing turn did not emit Root Motion rotation"))
             return false;
 
-        // A non-loop Turn must finish through the stable Idle loop. It may then
-        // start another Turn if the facing request is still unresolved, but it
-        // must never time-teleport to a sample in the exhausted active clip.
-        bool observedIdleExit = false;
-        bool observedTurnAfterIdleExit = false;
+        // A non-loop Turn with unresolved facing must replan directly into a
+        // covering Turn arc. An intermediate Idle frame exposes the character's
+        // front while the camera keeps moving and is not part of the locomotion
+        // contract. Replaying the same authored arc is valid only after the
+        // previous one-shot has completed.
+        bool observedDirectTurnReplan = false;
         std::string previousClip = runtime.GetDebugData().activeClip;
         float previousTime = runtime.GetDebugData().activeTime;
         int frozenTurnFrames = 0;
@@ -2415,18 +2595,19 @@ bool TestMotionMatchingCameraFacingTurnContract()
             if (!Expect(frozenTurnFrames < 2,
                 "Turn-in-place remained frozen on a non-loop clip frame"))
                 return false;
-            if (debug.activeClip == "Idle_Stand")
-                observedIdleExit = true;
-            else if (observedIdleExit && activeTurn)
-                observedTurnAfterIdleExit = true;
+            if (activeTurn && debug.activeClip == previousClip &&
+                debug.activeTime + 0.01f < previousTime)
+                observedDirectTurnReplan = true;
+            if (activeTurn && payload.rootMotion.valid &&
+                !ExpectNear(debug.appliedRootYawDeltaDegrees,
+                    debug.authoredRootYawDeltaDegrees, 0.001f,
+                    "Turn Root Motion reconciliation changed the authored yaw integral"))
+                return false;
             previousClip = debug.activeClip;
             previousTime = debug.activeTime;
         }
-        if (!Expect(observedIdleExit,
-            "Completed turn-in-place did not return to its stable Idle loop"))
-            return false;
-        if (!Expect(observedTurnAfterIdleExit,
-            "Persistent facing intent could not begin a new turn from Idle"))
+        if (!Expect(observedDirectTurnReplan,
+            "Persistent facing intent did not directly replan a completed Turn"))
             return false;
 
         // Idle camera rate may keep the currently playing Turn coherent, but it
@@ -3471,6 +3652,422 @@ bool TestAnimationProjectAnimatorAssetsCanonicalContract()
         "AnimationV2 layered fixture Bone Mask is not canonical or skeleton-bound"))
         return false;
     return true;
+}
+
+bool TestAnimationV2RetargetMotionMatchingSceneContract()
+{
+	fs::path workspace = fs::current_path();
+	for (int depth = 0; depth < 5 && !fs::exists(workspace / "AnimationV2Project"); ++depth)
+	{
+		if (!workspace.has_parent_path() || workspace.parent_path() == workspace)
+			break;
+		workspace = workspace.parent_path();
+	}
+	const fs::path scenePath =
+		workspace / "AnimationV2Project" / "Scenes" / "MainScene.json";
+	if (!fs::exists(scenePath))
+		return true;
+
+	nlohmann::json scene;
+	std::ifstream input(scenePath);
+	if (!Expect(input.good(), "AnimationV2 MainScene could not be opened"))
+		return false;
+	try
+	{
+		input >> scene;
+	}
+	catch (...)
+	{
+		return Expect(false, "AnimationV2 MainScene is not valid JSON");
+	}
+
+	std::unordered_set<std::string> validatedCharacters;
+	for (const nlohmann::json& entity : scene.value("entities", nlohmann::json::array()))
+	{
+		for (const nlohmann::json& component :
+			 entity.value("components", nlohmann::json::array()))
+		{
+			if (component.value("type", "") != "Animation" ||
+				!component.contains("data") || !component["data"].is_object())
+			{
+				continue;
+			}
+			const nlohmann::json& animation = component["data"];
+			const std::string name = animation.value("name", "");
+			if (name != "TwinBlast" && name != "SWAT" && name != "Survival")
+				continue;
+			if (!Expect(animation.contains("retarget")
+				&& animation.contains("motion_matching")
+				&& animation["motion_matching"].contains("motion_model")
+				&& animation["motion_matching"].contains("root_motion_steering")
+				&& animation["motion_matching"].contains("root_motion_reconciliation")
+				&& animation["motion_matching"].contains("search_groups")
+				&& animation.contains("foot_placement"),
+				"AnimationV2 retargeted character is missing Motion Matching configuration blocks"))
+			{
+				return false;
+			}
+
+			const nlohmann::json& retarget = animation.at("retarget");
+			const nlohmann::json& motionMatching = animation.at("motion_matching");
+			const nlohmann::json& motionModel = motionMatching.at("motion_model");
+			const nlohmann::json& footPlacement = animation.at("foot_placement");
+			std::unordered_set<std::string> searchGroupNames;
+			for (const nlohmann::json& group : motionMatching.at("search_groups"))
+				searchGroupNames.insert(group.value("name", ""));
+			if (!Expect(animation.value("root_motion", false)
+				&& retarget.value("enabled", false)
+				&& retarget.value("runtime_mode", "") == "source_proxy"
+				&& motionMatching.value("enabled", false)
+				&& motionModel.value("drive_mode", "") == "root_motion"
+				&& motionMatching.value("non_loop_sampling_end_margin", 0.0f) > 0.0f
+				&& motionMatching.at("root_motion_steering").value("enabled", false)
+				&& motionMatching.at("root_motion_reconciliation").value("enabled", false)
+				&& motionMatching.at("search_groups").size() >= 15
+				&& searchGroupNames.count("StandWalkPivot") > 0
+				&& searchGroupNames.count("StandRunPivot") > 0
+				&& searchGroupNames.count("CrouchPivot") > 0
+				&& footPlacement.value("enabled", false)
+				&& footPlacement.value("foot_lock_enabled", false),
+				"AnimationV2 retargeted character is missing the Root Motion Motion Matching contract"))
+			{
+				return false;
+			}
+			validatedCharacters.insert(name);
+		}
+	}
+	if (!Expect(validatedCharacters.size() == 3,
+		"AnimationV2 must configure TwinBlast, SWAT, and Survival for retargeted Motion Matching"))
+	{
+		return false;
+	}
+
+	struct RetargetProfileExpectation
+	{
+		const char* fileName;
+		const char* profileName;
+		const char* targetModel;
+		int targetBoneCount;
+	};
+	const RetargetProfileExpectation profileExpectations[] = {
+		{"RTG_UEFN_To_Survival.vretarget", "RTG_UEFN_To_Survival",
+			"Assets/Characters/Survival/Models/survival_character.fbx", 161},
+		{"RTG_UEFN_To_SWAT.vretarget", "RTG_UEFN_To_SWAT",
+			"Assets/Characters/SWAT/Models/swat.fbx", 87}
+	};
+	for (const RetargetProfileExpectation& expectation : profileExpectations)
+	{
+		const fs::path profilePath = workspace / "AnimationV2Project" / "Assets"
+			/ "Retarget" / expectation.fileName;
+		std::ifstream profileInput(profilePath);
+		if (!Expect(profileInput.good(),
+			"AnimationV2 retarget profile could not be opened"))
+		{
+			return false;
+		}
+
+		nlohmann::json profile;
+		try
+		{
+			profileInput >> profile;
+		}
+		catch (...)
+		{
+			return Expect(false, "AnimationV2 retarget profile is not valid JSON");
+		}
+
+		const nlohmann::json& mapping = profile.at("mapping_strategy");
+		const nlohmann::json& source = profile.at("source");
+		const nlohmann::json& target = profile.at("target");
+		const nlohmann::json& options = profile.at("retarget_options");
+		const nlohmann::json& chains = options.at("two_bone_chains");
+		auto validArmChain = [&chains](std::size_t index, const char* name,
+			const char* upper, const char* lower, const char* hand)
+		{
+			if (index >= chains.size() || !chains[index].is_object())
+				return false;
+			const nlohmann::json& chain = chains[index];
+			const nlohmann::json expectedBones = {upper, lower, hand};
+			return chain.value("name", "") == name
+				&& chain.value("source", nlohmann::json::array()) == expectedBones
+				&& chain.value("target", nlohmann::json::array()) == expectedBones
+				&& chain.value("position_weight", 0.0f) == 1.0f;
+		};
+		if (!Expect(profile.value("name", "") == expectation.profileName
+			&& profile.value("runtime_mode", "") == "source_proxy"
+			&& mapping.value("primary", "") == "same_name"
+			&& !mapping.value("supports_manual_overrides", true)
+			&& source.value("model", "") == "Assets/Models/SKM_UEFN_Mannequin.fbx"
+			&& source.value("animator", "") == "Assets/MotionMatchDataBase/UEFN_Mannequin.vanimator"
+			&& source.value("expected_bones", 0) == 89
+			&& target.value("model", "") == expectation.targetModel
+			&& target.value("expected_bones", 0) == expectation.targetBoneCount
+			&& options.value("translation_scale", "") == "compatible_skeleton"
+			&& options.value("target_model_space_alignment", "") == "source_bind_pose"
+			&& options.value("root_alignment", "") == "feet_to_owner"
+			&& chains.size() == 2
+			&& validArmChain(0, "LeftArm", "upperarm_l", "lowerarm_l", "hand_l")
+			&& validArmChain(1, "RightArm", "upperarm_r", "lowerarm_r", "hand_r"),
+			"AnimationV2 Survival/SWAT retarget profile is incomplete or inconsistent"))
+		{
+			return false;
+		}
+	}
+
+	AnimatorAssetData sourceAnimator;
+	const fs::path sourceAnimatorPath = workspace / "AnimationV2Project" / "Assets"
+		/ "MotionMatchDataBase" / "UEFN_Mannequin.vanimator";
+	if (!Expect(VansAnimatorIO::Load(sourceAnimatorPath.string(), sourceAnimator),
+		"AnimationV2 UEFN Motion Matching source Animator could not be loaded"))
+	{
+		return false;
+	}
+	const std::size_t pivotClipCount = static_cast<std::size_t>(std::count_if(
+		sourceAnimator.clipRefs.begin(), sourceAnimator.clipRefs.end(),
+		[](const AnimatorClipRef& clip)
+		{
+			return clip.name.find("Pivot") != std::string::npos;
+		}));
+	return Expect(sourceAnimator.clipRefs.size() >= 195 && pivotClipCount == 60,
+		"AnimationV2 UEFN source Animator is missing the canonical Pivot clip set");
+}
+
+bool TestRetargetUnmappedTargetBoneInheritanceContract()
+{
+	using namespace VansGraphics;
+
+	auto buildSkeleton = [](bool includeTargetOnlyWrist)
+	{
+		Skeleton skeleton;
+		auto addBone = [&](const char* name, int parentIndex,
+			const glm::vec3& translation, float rotationRadians)
+		{
+			BoneInfo bone;
+			bone.id = static_cast<int>(skeleton.bones.size());
+			bone.name = name;
+			bone.parentIndex = parentIndex;
+			bone.localTransform = glm::translate(glm::mat4(1.0f), translation) *
+				glm::rotate(glm::mat4(1.0f), rotationRadians, glm::vec3(0.0f, 0.0f, 1.0f));
+			bone.offsetMatrix = glm::mat4(1.0f);
+			skeleton.bones.push_back(std::move(bone));
+			const int boneIndex = static_cast<int>(skeleton.bones.size()) - 1;
+			skeleton.boneNameToIndex[name] = boneIndex;
+			if (parentIndex >= 0)
+				skeleton.bones[parentIndex].children.push_back(boneIndex);
+			return boneIndex;
+		};
+
+		const int root = addBone("root", -1, glm::vec3(0.0f), 0.0f);
+		const int pelvis = addBone("pelvis", root, glm::vec3(0.0f, 1.0f, 0.0f), 0.0f);
+		addBone("head", pelvis, glm::vec3(0.0f, 1.0f, 0.0f), 0.0f);
+		const int handL = addBone("hand_l", pelvis, glm::vec3(-1.0f, 0.25f, 0.0f), 0.0f);
+		int fingerParent = handL;
+		glm::vec3 fingerTranslation(-0.35f, 0.0f, 0.0f);
+		if (includeTargetOnlyWrist)
+		{
+			fingerParent = addBone(
+				"wrist_bridge_l", handL, glm::vec3(-0.1f, 0.0f, 0.0f), 0.0f);
+			fingerTranslation = glm::vec3(-0.25f, 0.0f, 0.0f);
+		}
+		addBone("index_01_l", fingerParent, fingerTranslation, 0.0f);
+		addBone("hand_r", pelvis, glm::vec3(1.0f, 0.25f, 0.0f), 0.0f);
+		addBone("foot_l", pelvis, glm::vec3(-0.4f, -1.0f, 0.0f), 0.0f);
+		addBone("foot_r", pelvis, glm::vec3(0.4f, -1.0f, 0.0f), 0.0f);
+		if (includeTargetOnlyWrist)
+			addBone("wrist_outer_l", handL, glm::vec3(-0.15f, 0.0f, 0.0f), 0.2f);
+		skeleton.BuildTopologicalOrder();
+		return skeleton;
+	};
+
+	auto buildModelTransforms = [](const Skeleton& skeleton,
+		const std::vector<glm::mat4>& localTransforms)
+	{
+		std::vector<glm::mat4> modelTransforms = localTransforms;
+		for (int boneIndex : skeleton.topologicalOrder)
+		{
+			const int parentIndex = skeleton.bones[boneIndex].parentIndex;
+			if (parentIndex >= 0)
+				modelTransforms[boneIndex] = modelTransforms[parentIndex] * modelTransforms[boneIndex];
+		}
+		return modelTransforms;
+	};
+
+	auto maxMatrixDifference = [](const glm::mat4& lhs, const glm::mat4& rhs)
+	{
+		float difference = 0.0f;
+		for (int column = 0; column < 4; ++column)
+			for (int row = 0; row < 4; ++row)
+				difference = std::max(difference, std::fabs(lhs[column][row] - rhs[column][row]));
+		return difference;
+	};
+
+	const Skeleton sourceSkeleton = buildSkeleton(false);
+	const Skeleton targetWithoutAuxiliary = buildSkeleton(false);
+	const Skeleton targetWithAuxiliary = buildSkeleton(true);
+	std::vector<glm::mat4> sourceLocalTransforms;
+	sourceLocalTransforms.reserve(sourceSkeleton.bones.size());
+	for (const BoneInfo& bone : sourceSkeleton.bones)
+		sourceLocalTransforms.push_back(bone.localTransform);
+	const int sourceHandL = sourceSkeleton.boneNameToIndex.at("hand_l");
+	const glm::vec3 handBindTranslation(sourceLocalTransforms[sourceHandL][3]);
+	sourceLocalTransforms[sourceHandL] =
+		glm::translate(glm::mat4(1.0f), handBindTranslation) *
+		glm::rotate(glm::mat4(1.0f), glm::radians(65.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+	const std::vector<glm::mat4> sourceModelTransforms =
+		buildModelTransforms(sourceSkeleton, sourceLocalTransforms);
+
+	VansRetargetRuntimeDesc desc;
+	desc.translationScaleMode = "identity";
+	desc.targetModelSpaceAlignmentMode = "source_bind_pose";
+	VansRetargetProcessor baselineProcessor;
+	VansRetargetProcessor auxiliaryProcessor;
+	if (!Expect(baselineProcessor.Build(sourceSkeleton, targetWithoutAuxiliary, desc) &&
+		auxiliaryProcessor.Build(sourceSkeleton, targetWithAuxiliary, desc),
+		"Retarget inheritance fixture failed to build"))
+	{
+		return false;
+	}
+	if (!Expect(auxiliaryProcessor.GetStats().unmappedTargetBoneCount == 2,
+		"Retarget inheritance fixture did not isolate its target-only auxiliary bones"))
+	{
+		return false;
+	}
+
+	std::vector<glm::mat4> baselinePose;
+	std::vector<glm::mat4> auxiliaryPose;
+	if (!Expect(baselineProcessor.Process(sourceModelTransforms, sourceSkeleton,
+		targetWithoutAuxiliary, baselinePose) &&
+		auxiliaryProcessor.Process(sourceModelTransforms, sourceSkeleton,
+		targetWithAuxiliary, auxiliaryPose),
+		"Retarget inheritance fixture failed to evaluate"))
+	{
+		return false;
+	}
+
+	for (const BoneInfo& sourceBone : sourceSkeleton.bones)
+	{
+		const int baselineIndex = targetWithoutAuxiliary.boneNameToIndex.at(sourceBone.name);
+		const int auxiliaryIndex = targetWithAuxiliary.boneNameToIndex.at(sourceBone.name);
+		if (!Expect(maxMatrixDifference(
+			baselinePose[baselineIndex], auxiliaryPose[auxiliaryIndex]) <= 0.0001f,
+			"A target-only auxiliary bone changed an existing mapped-bone result"))
+		{
+			return false;
+		}
+	}
+
+	auto expectPreservedTargetLocal = [&](const char* boneName)
+	{
+		const int boneIndex = targetWithAuxiliary.boneNameToIndex.at(boneName);
+		const int parentIndex = targetWithAuxiliary.bones[boneIndex].parentIndex;
+		const glm::mat4 evaluatedLocal =
+			glm::inverse(auxiliaryPose[parentIndex]) * auxiliaryPose[boneIndex];
+		return Expect(maxMatrixDifference(
+			evaluatedLocal, targetWithAuxiliary.bones[boneIndex].localTransform) <= 0.0001f,
+			"An unmapped target auxiliary bone did not preserve its target bind local transform");
+	};
+	return expectPreservedTargetLocal("wrist_bridge_l") &&
+		expectPreservedTargetLocal("wrist_outer_l");
+}
+
+bool TestRetargetConfiguredTwoBoneChainContract()
+{
+	using namespace VansGraphics;
+
+	auto buildSkeleton = [](bool sourceArm)
+	{
+		Skeleton skeleton;
+		auto addBone = [&](const char* name, int parentIndex, const glm::vec3& translation)
+		{
+			BoneInfo bone;
+			bone.id = static_cast<int>(skeleton.bones.size());
+			bone.name = name;
+			bone.parentIndex = parentIndex;
+			bone.localTransform = glm::translate(glm::mat4(1.0f), translation);
+			bone.offsetMatrix = glm::mat4(1.0f);
+			skeleton.bones.push_back(std::move(bone));
+			const int boneIndex = static_cast<int>(skeleton.bones.size()) - 1;
+			skeleton.boneNameToIndex[name] = boneIndex;
+			if (parentIndex >= 0)
+				skeleton.bones[parentIndex].children.push_back(boneIndex);
+			return boneIndex;
+		};
+
+		const int root = addBone("root", -1, glm::vec3(0.0f));
+		const int pelvis = addBone("pelvis", root, glm::vec3(0.0f, 1.0f, 0.0f));
+		const int upperArm = addBone("upperarm_l", pelvis, glm::vec3(-0.5f, 0.5f, 0.0f));
+		const glm::vec3 segment = sourceArm
+			? glm::vec3(-1.0f, 0.0f, 0.0f)
+			: glm::vec3(0.0f, -1.0f, 0.0f);
+		const int lowerArm = addBone("lowerarm_l", upperArm, segment);
+		addBone("hand_l", lowerArm, segment);
+		skeleton.BuildTopologicalOrder();
+		return skeleton;
+	};
+
+	auto buildBindModelTransforms = [](const Skeleton& skeleton)
+	{
+		std::vector<glm::mat4> transforms(skeleton.bones.size(), glm::mat4(1.0f));
+		for (int boneIndex : skeleton.topologicalOrder)
+		{
+			transforms[boneIndex] = skeleton.bones[boneIndex].localTransform;
+			const int parentIndex = skeleton.bones[boneIndex].parentIndex;
+			if (parentIndex >= 0)
+				transforms[boneIndex] = transforms[parentIndex] * transforms[boneIndex];
+		}
+		return transforms;
+	};
+
+	const Skeleton sourceSkeleton = buildSkeleton(true);
+	const Skeleton targetSkeleton = buildSkeleton(false);
+	const std::vector<glm::mat4> sourcePose = buildBindModelTransforms(sourceSkeleton);
+	VansRetargetRuntimeDesc baselineDesc;
+	baselineDesc.translationScaleMode = "identity";
+	VansRetargetRuntimeDesc chainDesc = baselineDesc;
+	VansRetargetTwoBoneChainDesc leftArm;
+	leftArm.name = "LeftArm";
+	leftArm.sourceRoot = "upperarm_l";
+	leftArm.sourceMid = "lowerarm_l";
+	leftArm.sourceTip = "hand_l";
+	leftArm.targetRoot = "upperarm_l";
+	leftArm.targetMid = "lowerarm_l";
+	leftArm.targetTip = "hand_l";
+	chainDesc.twoBoneChains.push_back(leftArm);
+
+	VansRetargetProcessor baselineProcessor;
+	VansRetargetProcessor chainProcessor;
+	if (!Expect(baselineProcessor.Build(sourceSkeleton, targetSkeleton, baselineDesc) &&
+		chainProcessor.Build(sourceSkeleton, targetSkeleton, chainDesc) &&
+		baselineProcessor.GetStats().twoBoneChainCount == 0 &&
+		chainProcessor.GetStats().twoBoneChainCount == 1,
+		"Configured retarget Two-Bone chain did not compile as an opt-in feature"))
+	{
+		return false;
+	}
+
+	std::vector<glm::mat4> baselinePose;
+	std::vector<glm::mat4> correctedPose;
+	if (!Expect(baselineProcessor.Process(sourcePose, sourceSkeleton, targetSkeleton, baselinePose) &&
+		chainProcessor.Process(sourcePose, sourceSkeleton, targetSkeleton, correctedPose),
+		"Configured retarget Two-Bone chain fixture failed to evaluate"))
+	{
+		return false;
+	}
+
+	const int sourceRoot = sourceSkeleton.boneNameToIndex.at("upperarm_l");
+	const int sourceTip = sourceSkeleton.boneNameToIndex.at("hand_l");
+	const int targetRoot = targetSkeleton.boneNameToIndex.at("upperarm_l");
+	const int targetTip = targetSkeleton.boneNameToIndex.at("hand_l");
+	const glm::vec3 sourceDirection = glm::normalize(
+		glm::vec3(sourcePose[sourceTip][3]) - glm::vec3(sourcePose[sourceRoot][3]));
+	const glm::vec3 baselineDirection = glm::normalize(
+		glm::vec3(baselinePose[targetTip][3]) - glm::vec3(baselinePose[targetRoot][3]));
+	const glm::vec3 correctedDirection = glm::normalize(
+		glm::vec3(correctedPose[targetTip][3]) - glm::vec3(correctedPose[targetRoot][3]));
+	return Expect(glm::dot(sourceDirection, baselineDirection) < 0.1f,
+		"Unconfigured retarget unexpectedly changed the target arm bind direction") &&
+		Expect(glm::dot(sourceDirection, correctedDirection) > 0.999f,
+			"Configured retarget Two-Bone chain did not match the source end-effector direction");
 }
 
 bool TestAnimationAuthoringBoundaryContract()
@@ -6230,8 +6827,8 @@ bool TestDualPunctualShadowAtlasOwnership()
 	}
 
 	manager.PrepareFrame(camera, lights, 1);
-	if (!Expect(manager.GetStatistics().residentLights == lights.size(),
-		"Dual punctual Atlas did not make all eight 128px spot lights resident"))
+	if (!Expect(manager.GetStatistics().residentLights == 0,
+		"Pending punctual allocations were published before GPU submission"))
 		return false;
 	if (!Expect(manager.HasRenderJobs(0) && manager.HasRenderJobs(1),
 		"Dual punctual Atlas did not schedule work on both layers"))
@@ -6242,12 +6839,12 @@ bool TestDualPunctualShadowAtlasOwnership()
 			job.shadowViewIndex < manager.GetGPUShadowViews().size(),
 			"Punctual render job was published with an invalid metadata/view index"))
 			return false;
-		const uint32_t ownerAtlas =
-			(manager.GetGPUShadowData()[job.shadowMetaIndex].ownerKey >> 16u) & 0x3u;
-		if (!Expect(ownerAtlas == job.atlasIndex,
-			"Punctual render job Atlas does not match its sampling metadata"))
-			return false;
 	}
+	manager.NotifyRenderJobsSubmitted();
+	manager.PrepareFrame(camera, lights, 2);
+	if (!Expect(manager.GetStatistics().residentLights == lights.size(),
+		"Submitted punctual allocations were not published on the next frame"))
+		return false;
 
 	const auto firstSnapshot = manager.CaptureDebugSnapshot();
 	std::vector<uint32_t> atlasByStableId(lights.size() + 1u, VANS_INVALID_SHADOW_INDEX);
@@ -6261,7 +6858,7 @@ bool TestDualPunctualShadowAtlasOwnership()
 	std::reverse(lights.begin(), lights.end());
 	for (uint32_t index = 0; index < lights.size(); ++index)
 		lights[index].gpuLightIndex = index;
-	manager.PrepareFrame(camera, lights, 2);
+	manager.PrepareFrame(camera, lights, 3);
 
 	const auto& metadata = manager.GetGPUShadowData();
 	for (const auto& light : lights)
@@ -6282,9 +6879,67 @@ bool TestDualPunctualShadowAtlasOwnership()
 
 	const uint32_t duplicatedStableId = lights[0].stableLightId;
 	lights[1].stableLightId = duplicatedStableId;
-	manager.PrepareFrame(camera, lights, 3);
+	manager.PrepareFrame(camera, lights, 4);
 	return Expect(manager.GetShadowMetaIndex(duplicatedStableId) == VANS_INVALID_SHADOW_INDEX,
 		"Duplicate stable light IDs were allowed to alias one shadow metadata entry");
+}
+
+bool TestPunctualShadowResolutionAndPendingLifecycle()
+{
+	using namespace VansGraphics;
+	VansPunctualShadowCameraData camera;
+	camera.position = glm::vec3(0.0f);
+	camera.viewportWidth = 3840;
+	camera.viewportHeight = 2160;
+
+	VansPunctualShadowLightInput highResolutionLight;
+	highResolutionLight.stableLightId = 1;
+	highResolutionLight.type = VansPunctualShadowLightType::Point;
+	highResolutionLight.intensity = 10.0f;
+	highResolutionLight.radius = 20.0f;
+	highResolutionLight.settings.castShadows = true;
+	highResolutionLight.settings.resolution = VansShadowResolution::R1024;
+	highResolutionLight.settings.maxShadowDistance = 100.0f;
+
+	VansPunctualShadowManager resolutionManager(2048, 128, 2);
+	resolutionManager.PrepareFrame(camera, { highResolutionLight }, 1);
+	if (!Expect(resolutionManager.GetRenderJobs().size() == 6,
+		"Capped point shadow did not schedule an atomic six-face update"))
+		return false;
+	for (const VansPunctualShadowRenderJob& job : resolutionManager.GetRenderJobs())
+	{
+		if (!Expect(job.resolution == 512,
+			"Punctual shadow resolution exceeded the temporary 512px cap"))
+			return false;
+	}
+
+	VansPunctualShadowManager pendingManager(512, 128, 2);
+	VansPunctualShadowBudget budget = pendingManager.GetBudget();
+	budget.atlasPageBudget = 6;
+	budget.maxDirtyTexelsPerFrame = 0;
+	pendingManager.SetBudget(budget);
+
+	std::vector<VansPunctualShadowLightInput> lights(2, highResolutionLight);
+	for (uint32_t index = 0; index < lights.size(); ++index)
+	{
+		lights[index].stableLightId = index + 10u;
+		lights[index].gpuLightIndex = index;
+		lights[index].position = glm::vec3(index == 0 ? 0.0f : 100.0f, 0.0f, 0.0f);
+		lights[index].radius = 1.0f;
+		lights[index].settings.policy = VansShadowPolicy::DistanceDynamic;
+		lights[index].settings.resolution = VansShadowResolution::R128;
+		lights[index].settings.maxShadowDistance = 200.0f;
+	}
+
+	pendingManager.PrepareFrame(camera, lights, 1);
+	if (!Expect(pendingManager.GetStatistics().usedAtlasPages == 6,
+		"Initial pending point allocation did not consume exactly six pages"))
+		return false;
+	camera.position.x = 100.0f;
+	pendingManager.PrepareFrame(camera, lights, 2);
+	return Expect(pendingManager.GetStatistics().usedAtlasPages == 6 &&
+		pendingManager.GetStatistics().allocationFailures == 0,
+		"Unselected pending point allocation leaked Atlas pages");
 }
 
 bool TestGIProbeUpdateScheduleContract()
@@ -6303,7 +6958,7 @@ bool TestGIProbeUpdateScheduleContract()
 		return false;
 	if (!Expect(first.raysPerActiveProbe == 16u, "GI scheduler changed the 256/16 ray batch size"))
 		return false;
-	if (!Expect(first.fullUpdateFrameCount == 128u, "GI scheduler changed the 128-frame complete update period"))
+	if (!Expect(first.fullUpdateCycleFrameCount == 128u, "GI scheduler changed the 128-frame complete update period"))
 		return false;
 
 	std::array<uint32_t, 8> spatialPhaseVisits{};
@@ -6407,7 +7062,11 @@ bool TestAsyncComputeSubmitGraphContract()
 	persistedSettings.commandRecordingSettings.asyncComputeEnabled = true;
 	const nlohmann::json encodedSettings =
 		Vans::VansProjectSettingsJsonCodec::EncodeRenderSettings(persistedSettings);
-	if (!encodedSettings["commandRecording"].value("asyncComputeEnabled", false)
+	if (encodedSettings.value("schemaVersion", 0u) != 2u
+		|| encodedSettings.contains("fsr")
+		|| encodedSettings["upscaler"].value("backend", "") != "FSR"
+		|| encodedSettings["upscaler"].value("quality", "") != "Quality"
+		|| !encodedSettings["commandRecording"].value("asyncComputeEnabled", false)
 		|| encodedSettings["commandRecording"].contains("asyncComputeMode")
 		|| encodedSettings["commandRecording"].contains("asyncGIEnabled"))
 	{
@@ -6431,8 +7090,23 @@ bool TestAsyncComputeSubmitGraphContract()
 	warnings.clear();
 	if (!Vans::VansProjectSettingsJsonCodec::DecodeRenderSettings(
 		legacySettings, migratedSettings, warnings, codecError)
-		|| !migratedSettings.commandRecordingSettings.asyncComputeEnabled
-		|| warnings.empty())
+		|| migratedSettings.commandRecordingSettings.asyncComputeEnabled
+		|| !warnings.empty())
+	{
+		return false;
+	}
+
+	nlohmann::json schemaOneSettings = encodedSettings;
+	schemaOneSettings["schemaVersion"] = 1;
+	if (Vans::VansProjectSettingsJsonCodec::DecodeRenderSettings(
+		schemaOneSettings, migratedSettings, warnings, codecError))
+	{
+		return false;
+	}
+	nlohmann::json invalidUpscalerSettings = encodedSettings;
+	invalidUpscalerSettings["upscaler"]["backend"] = "UnknownBackend";
+	if (Vans::VansProjectSettingsJsonCodec::DecodeRenderSettings(
+		invalidUpscalerSettings, migratedSettings, warnings, codecError))
 	{
 		return false;
 	}
@@ -6442,9 +7116,11 @@ bool TestAsyncComputeSubmitGraphContract()
 	const VkQueue fakeComputeQueue = reinterpret_cast<VkQueue>(uintptr_t(3));
 	const VkCommandBuffer fakeComputeCmd = reinterpret_cast<VkCommandBuffer>(uintptr_t(4));
 	const VkCommandBuffer fakeGraphicsCmd = reinterpret_cast<VkCommandBuffer>(uintptr_t(5));
+	const VkQueue fakeShadowQueue = reinterpret_cast<VkQueue>(uintptr_t(6));
+	const VkCommandBuffer fakeSSAOCommandBuffer = reinterpret_cast<VkCommandBuffer>(uintptr_t(7));
 
 	VansFrameSubmitOrchestrator graph;
-	graph.Bind(fakeDevice, fakeGraphicsQueue, fakeComputeQueue, fakeGraphicsQueue);
+	graph.Bind(fakeDevice, fakeGraphicsQueue, fakeComputeQueue, fakeShadowQueue);
 	VansFrameSubmitNode producer;
 	producer.name = "TileLight";
 	producer.queue = VansQueueRole::Compute;
@@ -6475,6 +7151,57 @@ bool TestAsyncComputeSubmitGraphContract()
 	const std::string debugSummary = graph.BuildDebugSummary();
 	if (debugSummary.find("TileLightDone") == std::string::npos
 		|| debugSummary.find("TileLightLists") == std::string::npos)
+	{
+		return false;
+	}
+
+	graph.Reset();
+	VansFrameSubmitNode ssaoRawProducer;
+	ssaoRawProducer.name = "GraphicsPreHZB";
+	ssaoRawProducer.queue = VansQueueRole::Graphics;
+	ssaoRawProducer.commandBuffers = { fakeGraphicsCmd };
+	ssaoRawProducer.signals = { VansSyncPoint::HZBReady };
+	ssaoRawProducer.resources = {
+		{ "SSAORaw", VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+			VK_IMAGE_LAYOUT_GENERAL, true, true, false, false }
+	};
+	graph.AddNode(std::move(ssaoRawProducer));
+
+	VansFrameSubmitNode asyncSSAO;
+	asyncSSAO.name = "AsyncSSAO";
+	asyncSSAO.queue = VansQueueRole::Shadow;
+	asyncSSAO.commandBuffers = { fakeSSAOCommandBuffer };
+	asyncSSAO.waits = {
+		{ VansSyncPoint::HZBReady, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT }
+	};
+	asyncSSAO.signals = { VansSyncPoint::AsyncSSAODone };
+	asyncSSAO.resources = {
+		{ "SSAORaw", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
+			VK_IMAGE_LAYOUT_GENERAL, true, false, false, false },
+		{ "SSAO", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+			VK_IMAGE_LAYOUT_GENERAL, true, true, false, false }
+	};
+	graph.AddNode(std::move(asyncSSAO));
+
+	VansFrameSubmitNode ssaoConsumer;
+	ssaoConsumer.name = "DeferredSSAOConsumer";
+	ssaoConsumer.queue = VansQueueRole::Graphics;
+	ssaoConsumer.commandBuffers = { fakeGraphicsCmd };
+	ssaoConsumer.waits = {
+		{ VansSyncPoint::AsyncSSAODone, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT }
+	};
+	ssaoConsumer.resources = {
+		{ "SSAO", VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
+			VK_IMAGE_LAYOUT_GENERAL, true, false, false, false }
+	};
+	ssaoConsumer.waitForCompletion = true;
+	graph.AddNode(std::move(ssaoConsumer));
+	if (!graph.Validate(&validationError))
+		return false;
+	const std::string ssaoDebugSummary = graph.BuildDebugSummary();
+	if (ssaoDebugSummary.find("AsyncSSAO") == std::string::npos
+		|| ssaoDebugSummary.find("AsyncSSAODone") == std::string::npos
+		|| ssaoDebugSummary.find("queue=Shadow") == std::string::npos)
 	{
 		return false;
 	}
@@ -6522,41 +7249,486 @@ bool TestAsyncComputeSubmitGraphContract()
 	return true;
 }
 
-bool TestFSRHistoryResetContract()
+bool TestUnifiedUpscalerHistoryContract()
 {
 	using namespace VansGraphics;
-	VansFSRHistoryState history;
-	const auto bits = [](VansFSRResetReason value)
+	VansUpscalerHistoryState history;
+	const auto contains = [](VansUpscalerResetReason value, VansUpscalerResetReason flag)
 	{
-		return static_cast<std::uint32_t>(value);
-	};
-	const auto contains = [&](VansFSRResetReason value, VansFSRResetReason flag)
-	{
-		return (bits(value) & bits(flag)) != 0u;
+		return (value & flag) != VansUpscalerResetReason::None;
 	};
 
-	if (!contains(history.GetPendingReasons(), VansFSRResetReason::FirstFrame))
+	if (!Expect(
+		contains(history.GetPendingReasons(), VansUpscalerResetReason::FirstFrame),
+		"Unified upscaler history must begin with FirstFrame reset"))
+	{
 		return false;
-	history.ObserveFrame(10, reinterpret_cast<const void*>(1), 1280, 720, 1920, 1080, VansFSRMode::Quality);
-	// Merely observing a frame must not consume a reset after a failed dispatch.
-	if (!contains(history.GetPendingReasons(), VansFSRResetReason::FirstFrame))
-		return false;
-	history.OnDispatchSucceeded();
-	if (history.IsResetPending() ||
-		!contains(history.GetLastConsumedReasons(), VansFSRResetReason::FirstFrame))
-		return false;
+	}
 
-	history.ObserveFrame(12, reinterpret_cast<const void*>(2), 960, 540, 1600, 900, VansFSRMode::Balanced);
-	const VansFSRResetReason changed = history.GetPendingReasons();
-	return contains(changed, VansFSRResetReason::FrameDiscontinuity) &&
-		contains(changed, VansFSRResetReason::CameraCut) &&
-		contains(changed, VansFSRResetReason::RenderSizeChange) &&
-		contains(changed, VansFSRResetReason::DisplaySizeChange) &&
-		contains(changed, VansFSRResetReason::ModeChange);
+	history.ObserveFrame(
+		7,
+		reinterpret_cast<const void*>(1),
+		{ 1280, 720 },
+		{ 1920, 1080 },
+		VansUpscalerBackend::FSR,
+		VansUpscaleQualityMode::Quality);
+	history.OnTemporalDispatchSucceeded();
+	if (!Expect(!history.IsResetPending(),
+		"Successful temporal dispatch must consume pending reset"))
+	{
+		return false;
+	}
+
+	history.ObserveFrame(
+		9,
+		reinterpret_cast<const void*>(2),
+		{ 960, 540 },
+		{ 1600, 900 },
+		VansUpscalerBackend::DLSS,
+		VansUpscaleQualityMode::Balanced);
+	const VansUpscalerResetReason changed = history.GetPendingReasons();
+	if (!Expect(
+		contains(changed, VansUpscalerResetReason::FrameDiscontinuity) &&
+		contains(changed, VansUpscalerResetReason::CameraCut) &&
+		contains(changed, VansUpscalerResetReason::RenderSizeChange) &&
+		contains(changed, VansUpscalerResetReason::OutputSizeChange) &&
+		contains(changed, VansUpscalerResetReason::BackendChange) &&
+		contains(changed, VansUpscalerResetReason::QualityChange),
+		"Unified upscaler history did not retain all discontinuity reasons"))
+	{
+		return false;
+	}
+
+	history.ClearForOffBackend();
+	return Expect(
+		contains(history.GetPendingReasons(), VansUpscalerResetReason::FirstFrame),
+		"Off backend must preserve FirstFrame reset for the next temporal backend");
+}
+
+bool TestUnifiedUpscalerResolutionContract()
+{
+	using namespace VansGraphics;
+	VansUpscalerConfig config;
+	config.backend = VansUpscalerBackend::FSR;
+	config.quality = VansUpscaleQualityMode::Quality;
+	const VansUpscaleResolution fsrQuality =
+		VansUpscaleResolutionPolicy::Resolve(config, { 1920, 1080 });
+	if (!Expect(
+		fsrQuality.valid &&
+		fsrQuality.renderExtent == VansExtent2D{ 1280, 720 } &&
+		fsrQuality.outputExtent == VansExtent2D{ 1920, 1080 },
+		"FSR Quality must derive render extent from the fixed output extent"))
+	{
+		return false;
+	}
+
+	config.backend = VansUpscalerBackend::Off;
+	config.quality = VansUpscaleQualityMode::NativeAA;
+	const VansUpscaleResolution off =
+		VansUpscaleResolutionPolicy::Resolve(config, { 1600, 900 });
+	if (!Expect(
+		off.valid &&
+		off.renderExtent == off.outputExtent &&
+		std::abs(off.mipBias + 1.0f) < 0.0001f,
+		"Off NativeAA must keep render and output extents identical"))
+	{
+		return false;
+	}
+
+	config.quality = VansUpscaleQualityMode::Performance;
+	if (!Expect(
+		!VansUpscaleResolutionPolicy::Resolve(config, { 1600, 900 }).valid,
+		"Off backend must reject non-NativeAA quality"))
+	{
+		return false;
+	}
+
+	config.backend = VansUpscalerBackend::DLSS;
+	config.quality = VansUpscaleQualityMode::Balanced;
+	const VansUpscaleResolution dlss =
+		VansUpscaleResolutionPolicy::Resolve(
+			config,
+			{ 2560, 1440 },
+			{ 1485, 835 });
+	return Expect(
+		dlss.valid &&
+		dlss.renderExtent == VansExtent2D{ 1485, 835 } &&
+		!VansUpscaleResolutionPolicy::Resolve(config, { 2560, 1440 }).valid,
+		"DLSS resolution must use a validated backend recommendation");
+}
+
+bool TestUnifiedUpscalerManagerContract()
+{
+	using namespace VansGraphics;
+	VansUpscalerManager manager;
+	if (!Expect(
+		manager.GetDesiredConfig().backend == VansUpscalerBackend::Off &&
+		manager.GetDesiredConfig().quality == VansUpscaleQualityMode::NativeAA &&
+		manager.GetEffectiveConfig() == manager.GetDesiredConfig(),
+		"Upscaler runtime must start neutral before project settings are applied"))
+	{
+		return false;
+	}
+
+	const auto qualityBit = [](VansUpscaleQualityMode quality)
+	{
+		return 1u << static_cast<std::uint32_t>(quality);
+	};
+	VansUpscalerCapabilitySet capabilities;
+	capabilities.off.backend = VansUpscalerBackend::Off;
+	capabilities.off.compiledIn = true;
+	capabilities.off.runtimeAvailable = true;
+	capabilities.off.deviceSupported = true;
+	capabilities.off.supportedQualityMask = qualityBit(VansUpscaleQualityMode::NativeAA);
+	capabilities.fsr.backend = VansUpscalerBackend::FSR;
+	capabilities.fsr.compiledIn = true;
+	capabilities.fsr.runtimeAvailable = true;
+	capabilities.fsr.deviceSupported = true;
+	capabilities.fsr.supportedQualityMask =
+		qualityBit(VansUpscaleQualityMode::NativeAA) |
+		qualityBit(VansUpscaleQualityMode::Quality) |
+		qualityBit(VansUpscaleQualityMode::Balanced) |
+		qualityBit(VansUpscaleQualityMode::Performance) |
+		qualityBit(VansUpscaleQualityMode::UltraPerformance);
+	capabilities.dlss.backend = VansUpscalerBackend::DLSS;
+	capabilities.dlss.unavailableReason = "DLSS test runtime unavailable";
+
+	VansUpscalerConfig requested;
+	requested.backend = VansUpscalerBackend::DLSS;
+	requested.quality = VansUpscaleQualityMode::Balanced;
+	const VansUpscalerSelectionChange fallback =
+		manager.RequestConfig(requested, capabilities);
+	if (!Expect(
+		fallback.accepted && fallback.fallbackActive &&
+		manager.GetDesiredConfig().backend == VansUpscalerBackend::DLSS &&
+		manager.GetEffectiveConfig().backend == VansUpscalerBackend::FSR &&
+		manager.GetEffectiveConfig().quality == VansUpscaleQualityMode::Balanced &&
+		manager.GetFallbackReason() == VansUpscalerFallbackReason::NotCompiled,
+		"DLSS unavailable fallback must preserve desired state and select FSR deterministically"))
+	{
+		return false;
+	}
+
+	capabilities.dlss.compiledIn = true;
+	const VansUpscalerSelectionChange runtimeUnavailable =
+		manager.RequestConfig(manager.GetDesiredConfig(), capabilities);
+	if (!Expect(
+		runtimeUnavailable.accepted && runtimeUnavailable.fallbackActive &&
+		manager.GetFallbackReason() == VansUpscalerFallbackReason::RuntimeUnavailable,
+		"Compiled DLSS without an initialized runtime must report RuntimeUnavailable"))
+	{
+		return false;
+	}
+
+	capabilities.dlss.runtimeAvailable = true;
+	const VansUpscalerSelectionChange unsupportedDevice =
+		manager.RequestConfig(manager.GetDesiredConfig(), capabilities);
+	if (!Expect(
+		unsupportedDevice.accepted && unsupportedDevice.fallbackActive &&
+		manager.GetFallbackReason() == VansUpscalerFallbackReason::UnsupportedDevice,
+		"Initialized DLSS on an unsupported device must report UnsupportedDevice"))
+	{
+		return false;
+	}
+
+	capabilities.dlss.deviceSupported = true;
+	capabilities.dlss.supportedQualityMask = capabilities.fsr.supportedQualityMask;
+	capabilities.dlss.unavailableReason.clear();
+	VansUpscalerManager directManager;
+	const VansUpscalerSelectionChange directDLSS =
+		directManager.RequestConfig(requested, capabilities);
+	if (!Expect(
+		directDLSS.accepted && directDLSS.effectiveBackendChanged &&
+		!directDLSS.fallbackActive &&
+		directManager.GetDesiredConfig().backend == VansUpscalerBackend::DLSS &&
+		directManager.GetEffectiveConfig().backend == VansUpscalerBackend::DLSS,
+		"Available project DLSS configuration must activate DLSS directly from neutral startup"))
+	{
+		return false;
+	}
+
+	const VansUpscalerConfig desiredAfterDiscovery = manager.GetDesiredConfig();
+	const VansUpscalerSelectionChange discovered =
+		manager.RequestConfig(desiredAfterDiscovery, capabilities);
+	if (!Expect(
+		discovered.accepted && !discovered.fallbackActive &&
+		manager.GetDesiredConfig().backend == VansUpscalerBackend::DLSS &&
+		manager.GetEffectiveConfig().backend == VansUpscalerBackend::DLSS &&
+		manager.GetFallbackReason() == VansUpscalerFallbackReason::None,
+		"Late DLSS capability discovery must restore the preserved desired backend"))
+	{
+		return false;
+	}
+
+	const VansUpscalerConfig beforeInvalid = manager.GetDesiredConfig();
+	VansUpscalerConfig invalid = requested;
+	invalid.backend = VansUpscalerBackend::Off;
+	invalid.quality = VansUpscaleQualityMode::Performance;
+	if (!Expect(
+		!manager.RequestConfig(invalid, capabilities).accepted &&
+		manager.GetDesiredConfig() == beforeInvalid,
+		"Rejected upscaler configuration must not mutate manager state"))
+	{
+		return false;
+	}
+
+	manager.ActivateRuntimeFallback(
+		VansUpscalerBackend::Off,
+		VansUpscaleQualityMode::NativeAA,
+		VansUpscalerFallbackReason::DispatchFailed,
+		"test dispatch failure");
+	if (!Expect(
+		manager.GetDesiredConfig().backend == VansUpscalerBackend::DLSS &&
+		manager.GetEffectiveConfig().backend == VansUpscalerBackend::Off &&
+		manager.GetFallbackReason() == VansUpscalerFallbackReason::DispatchFailed,
+		"Runtime fallback must not overwrite the persisted desired backend"))
+	{
+		return false;
+	}
+
+	requested.backend = VansUpscalerBackend::FSR;
+	const VansUpscalerSelectionChange recovered =
+		manager.RequestConfig(requested, capabilities);
+	return Expect(
+		recovered.accepted && !recovered.fallbackActive &&
+		manager.GetFallbackReason() == VansUpscalerFallbackReason::None &&
+		manager.GetEffectiveConfig().backend == VansUpscalerBackend::FSR,
+		"Accepted supported selection must clear a previous runtime fallback");
+}
+
+bool TestUnifiedUpscalerJitterContract()
+{
+	using namespace VansGraphics;
+	if (!Expect(
+		VansTemporalJitterSequence::CalculatePhaseCount(1280, 1920) == 18 &&
+		VansTemporalJitterSequence::CalculatePhaseCount(1920, 1920) == 8 &&
+		VansTemporalJitterSequence::CalculatePhaseCount(0, 1920) == 0,
+		"Temporal jitter phase count must be derived from the render-to-output ratio"))
+	{
+		return false;
+	}
+
+	float firstX = 0.0f;
+	float firstY = 0.0f;
+	float repeatedX = 0.0f;
+	float repeatedY = 0.0f;
+	if (!Expect(
+		VansTemporalJitterSequence::Sample(0, 18, firstX, firstY) &&
+		VansTemporalJitterSequence::Sample(18, 18, repeatedX, repeatedY) &&
+		std::abs(firstX - repeatedX) < 0.000001f &&
+		std::abs(firstY - repeatedY) < 0.000001f &&
+		firstX >= -0.5f && firstX < 0.5f &&
+		firstY >= -0.5f && firstY < 0.5f,
+		"Temporal jitter must be deterministic, bounded, and repeat at the phase boundary"))
+	{
+		return false;
+	}
+
+	float invalidX = 1.0f;
+	float invalidY = 1.0f;
+	return Expect(
+		!VansTemporalJitterSequence::Sample(0, 0, invalidX, invalidY) &&
+		invalidX == 0.0f && invalidY == 0.0f,
+		"Invalid temporal jitter configuration must fail closed with a zero offset");
+}
+
+bool TestFSRTemporalProjectionContract()
+{
+	using namespace VansGraphics;
+	constexpr float width = 1920.0f;
+	constexpr float height = 1080.0f;
+	const glm::vec2 renderSize(width, height);
+	const glm::mat4 projection = glm::perspectiveRH_NO(
+		glm::radians(60.0f),
+		width / height,
+		0.1f,
+		1000.0f);
+	const glm::vec4 viewPoint(0.25f, -0.1f, -5.0f, 1.0f);
+
+	const auto projectToFramebuffer = [&](const glm::mat4& matrix)
+	{
+		const glm::vec4 clip = matrix * viewPoint;
+		const glm::vec2 ndc = glm::vec2(clip) / clip.w;
+		return glm::vec2(
+			(ndc.x * 0.5f + 0.5f) * width,
+			(0.5f - ndc.y * 0.5f) * height);
+	};
+
+	const glm::vec2 basePixel = projectToFramebuffer(projection);
+	const glm::vec2 samples[] = {
+		{ 0.25f, 0.0f },
+		{ -0.25f, 0.0f },
+		{ 0.0f, 0.25f },
+		{ 0.0f, -0.25f },
+		{ 0.25f, 0.25f },
+		{ -0.25f, -0.25f },
+	};
+	for (const glm::vec2 sample : samples)
+	{
+		const VansTemporalJitter jitter = BuildVulkanTemporalJitter(sample, renderSize);
+		if (!jitter.valid ||
+			!ExpectNear(jitter.framebufferPixels.x, sample.x, 1.0e-6f,
+				"Vulkan jitter framebuffer X must match the SDK sample") ||
+			!ExpectNear(jitter.framebufferPixels.y, sample.y, 1.0e-6f,
+				"Vulkan jitter framebuffer Y must match the SDK sample"))
+		{
+			return false;
+		}
+
+		const glm::vec2 jitteredPixel = projectToFramebuffer(
+			ApplyClipSpaceJitter(projection, jitter.ndcOffset));
+		const glm::vec2 measuredOffset = jitteredPixel - basePixel;
+		if (!ExpectNear(measuredOffset.x, sample.x, 1.0e-4f,
+				"Clip-space jitter must move framebuffer X by the SDK sample") ||
+			!ExpectNear(measuredOffset.y, sample.y, 1.0e-4f,
+				"Clip-space jitter must move framebuffer Y by the SDK sample"))
+		{
+			return false;
+		}
+
+		const VansFSRDispatchJitter dispatch =
+			BuildFSRDispatchJitter(sample.x, sample.y);
+		if (!ExpectNear(dispatch.x, -sample.x, 0.0f,
+				"FSR dispatch jitter X must use the API-boundary sign") ||
+			!ExpectNear(dispatch.y, -sample.y, 0.0f,
+				"FSR dispatch jitter Y must use the API-boundary sign"))
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+
+bool TestVulkanDeviceDepthRangeContract()
+{
+	using namespace VansGraphics;
+	const auto projectDepth = [](const glm::mat4& projection, const float distance)
+	{
+		const glm::vec4 clip = projection * glm::vec4(0.0f, 0.0f, -distance, 1.0f);
+		return clip.z / clip.w;
+	};
+
+	struct RangeCase
+	{
+		float nearClip;
+		float farClip;
+	};
+	const RangeCase cases[] = {
+		{ 0.1f, 10000.0f },
+		{ 0.5f, 1000.0f },
+		{ 1.0f, 10.0f },
+	};
+
+	for (const RangeCase rangeCase : cases)
+	{
+		const glm::mat4 projection = glm::perspectiveRH_NO(
+			glm::radians(60.0f),
+			16.0f / 9.0f,
+			rangeCase.nearClip,
+			rangeCase.farClip);
+		const VansDeviceDepthRange range = ExtractVulkanDeviceDepthRange(projection);
+		const float expectedNear =
+			2.0f * rangeCase.nearClip * rangeCase.farClip /
+			(rangeCase.farClip + rangeCase.nearClip);
+		if (!range.valid || !range.finiteFar ||
+			!ExpectNear(range.nearDistance, expectedNear, expectedNear * 1.0e-5f,
+				"RH_NO projection must expose its effective Vulkan device near") ||
+			!ExpectNear(projectDepth(projection, range.nearDistance), 0.0f, 1.0e-5f,
+				"Extracted Vulkan near must project to device depth zero") ||
+			!ExpectNear(projectDepth(projection, range.farDistance), 1.0f, 1.0e-5f,
+				"Extracted Vulkan far must project to device depth one"))
+		{
+			return false;
+		}
+	}
+
+	const glm::mat4 zeroToOneProjection = glm::perspectiveRH_ZO(
+		glm::radians(60.0f), 16.0f / 9.0f, 0.25f, 500.0f);
+	const VansDeviceDepthRange zeroToOneRange =
+		ExtractVulkanDeviceDepthRange(zeroToOneProjection);
+	return zeroToOneRange.valid && zeroToOneRange.finiteFar &&
+		ExpectNear(zeroToOneRange.nearDistance, 0.25f, 2.5e-6f,
+			"RH_ZO projection must preserve the logical near distance") &&
+		ExpectNear(projectDepth(zeroToOneProjection, zeroToOneRange.nearDistance),
+			0.0f, 1.0e-5f,
+			"RH_ZO near must project to device depth zero") &&
+		ExpectNear(projectDepth(zeroToOneProjection, zeroToOneRange.farDistance),
+			1.0f, 1.0e-5f,
+			"RH_ZO far must project to device depth one");
+}
+
+bool TestSkyFSRPipelineContract()
+{
+	using namespace VansGraphics;
+	auto& shaderManager = VansShaderManager::Get();
+	RegisterEngineShaders();
+
+	const VansShaderEntry* sky = shaderManager.FindShaderEntry("SkyBox");
+	const VansShaderEntry* skyMotion = shaderManager.FindShaderEntry("SkyMotionVector");
+	const auto& skyPasses = shaderManager.GetMaterialPassMap(VAN_SKY_BOX);
+	const auto velocity = skyPasses.find(VansPass::VELOCITY);
+	const bool valid =
+		sky != nullptr && sky->depthTest == VK_TRUE && sky->depthWrite == VK_FALSE &&
+		sky->depthCompareOp == VK_COMPARE_OP_LESS_OR_EQUAL &&
+		skyMotion != nullptr && skyMotion->depthTest == VK_TRUE &&
+		skyMotion->depthWrite == VK_FALSE &&
+		skyMotion->depthCompareOp == VK_COMPARE_OP_LESS_OR_EQUAL &&
+		skyMotion->cullMode == VK_CULL_MODE_NONE &&
+		velocity != skyPasses.end() && velocity->second == "SkyMotionVector";
+
+	return Expect(valid,
+		"Sky color and velocity pipelines must remain depth-read-only and velocity-mapped");
+}
+
+bool TestLuaInspectorProjectModuleSearchPathContract()
+{
+	namespace fs = std::filesystem;
+	const fs::path root = fs::temp_directory_path() / "ForestLuaInspectorModuleSearchPath";
+	std::error_code cleanupError;
+	fs::remove_all(root, cleanupError);
+	fs::create_directories(root / "Scripts");
+	{
+		std::ofstream module(root / "Scripts" / "inspector_dependency.lua", std::ios::binary);
+		module << "return { defaultSpeed = 3.5 }\n";
+		std::ofstream script(root / "Scripts" / "inspector_behavior.lua", std::ios::binary);
+		script <<
+			"local dependency = require('inspector_dependency')\n"
+			"return { Probe = { __fields = { speed = { type = 'float', default = dependency.defaultSpeed } } } }\n";
+	}
+	const Vans::LuaScriptFieldDefaultsResult result =
+		Vans::VansLuaScriptInspectorService::BuildDefaultFieldData(
+			root, "Scripts/inspector_behavior.lua", "Probe");
+	fs::remove_all(root, cleanupError);
+	return Expect(result && result.fields.size() == 1 &&
+		result.fields.front().first == "speed" &&
+		result.fields.front().second.kind == Vans::VansSerializedValue::Kind::Float &&
+		std::abs(result.fields.front().second.floatValue - 3.5) < 1.0e-6,
+		"Lua Inspector did not resolve modules from the active project's Scripts directory");
 }
 
 int main()
 {
+	if (!TestLuaInspectorProjectModuleSearchPathContract())
+		return 125;
+	if (!TestSceneResourceArtifactPrewarmContract())
+		return 126;
+	if (!TestUnifiedUpscalerHistoryContract())
+		return 121;
+	if (!TestUnifiedUpscalerResolutionContract())
+		return 122;
+	if (!TestUnifiedUpscalerManagerContract())
+		return 123;
+	if (!TestUnifiedUpscalerJitterContract())
+		return 124;
+	if (!TestAsyncComputeSubmitGraphContract())
+		return 93;
+	if (!TestFSRTemporalProjectionContract())
+		return 116;
+	if (!TestVulkanDeviceDepthRangeContract())
+		return 117;
+	if (!TestSkyFSRPipelineContract())
+		return 118;
 	if (!TestCharacterTrajectoryGeneratorContract())
 		return 111;
 	if (!TestMotionMatchingRootMotionRigContract())
@@ -6565,12 +7737,20 @@ int main()
 		return 31;
 	if (!TestMotionMatchingCameraFacingTurnContract())
 		return 110;
+	if (!TestCameraControlArbiterContract())
+		return 82;
 	if (!TestRootMotionSteeringContract())
 		return 112;
 	if (!TestRootMotionReconciliationContract())
 		return 114;
 	if (!TestMotionMatchingPivotDirectionContract())
 		return 113;
+	if (!TestAnimationV2RetargetMotionMatchingSceneContract())
+		return 115;
+	if (!TestRetargetUnmappedTargetBoneInheritanceContract())
+		return 119;
+	if (!TestRetargetConfiguredTwoBoneChainContract())
+		return 120;
 	if (!TestGAFGameplayTagsContract())
 		return 94;
 	if (!TestGAFAttributesContract())
@@ -6601,10 +7781,6 @@ int main()
 		return 106;
 	if (!TestGAFLuaBridgeContract())
 		return 107;
-	if (!TestFSRHistoryResetContract())
-		return 94;
-	if (!TestAsyncComputeSubmitGraphContract())
-		return 93;
     if (!TestPackageManifestRoundTrip())
         return 1;
 	if (!TestSkinProfileJsonRoundTrip())
@@ -6619,8 +7795,6 @@ int main()
         return 2;
     if (!TestGameplayFrameOrder())
         return 3;
-	if (!TestCameraControlArbiterContract())
-		return 82;
 	if (!TestTimelineRegistryContract())
 		return 58;
 	if (!TestTimelineSerializationContract())
@@ -6757,6 +7931,8 @@ int main()
 		return 21;
 	if (!TestDualPunctualShadowAtlasOwnership())
 		return 22;
+	if (!TestPunctualShadowResolutionAndPendingLifecycle())
+		return 76;
 	if (!TestGIProbeUpdateScheduleContract())
 		return 75;
     std::cout << "Forest contract tests passed\n";

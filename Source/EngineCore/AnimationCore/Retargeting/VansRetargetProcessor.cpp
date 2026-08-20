@@ -1,4 +1,5 @@
 #include "VansRetargetProcessor.h"
+#include "../IK/VansTwoBoneIKSolver.h"
 
 #define GLM_ENABLE_EXPERIMENTAL
 #include <../../GLM/gtc/matrix_transform.hpp>
@@ -78,6 +79,7 @@ bool VansRetargetProcessor::Build(
 	const VansRetargetRuntimeDesc& desc)
 {
 	m_BoneMap.clear();
+	m_TwoBoneChains.clear();
 	m_Stats = {};
 	m_Stats.sourceBoneCount = static_cast<uint32_t>(sourceSkeleton.bones.size());
 	m_Stats.targetBoneCount = static_cast<uint32_t>(targetSkeleton.bones.size());
@@ -137,6 +139,30 @@ bool VansRetargetProcessor::Build(
 			? m_Stats.targetBoneCount - m_Stats.mappedBoneCount
 			: 0;
 
+	for (const VansRetargetTwoBoneChainDesc& chainDesc : desc.twoBoneChains)
+	{
+		CompiledTwoBoneChain chain;
+		chain.name = chainDesc.name;
+		chain.sourceRoot = FindBone(sourceSkeleton, chainDesc.sourceRoot.c_str());
+		chain.sourceMid = FindBone(sourceSkeleton, chainDesc.sourceMid.c_str());
+		chain.sourceTip = FindBone(sourceSkeleton, chainDesc.sourceTip.c_str());
+		chain.targetRoot = FindBone(targetSkeleton, chainDesc.targetRoot.c_str());
+		chain.targetMid = FindBone(targetSkeleton, chainDesc.targetMid.c_str());
+		chain.targetTip = FindBone(targetSkeleton, chainDesc.targetTip.c_str());
+		chain.positionWeight = glm::clamp(chainDesc.positionWeight, 0.0f, 1.0f);
+		const bool sourceChainValid =
+			chain.sourceRoot >= 0 && chain.sourceMid >= 0 && chain.sourceTip >= 0 &&
+			sourceSkeleton.bones[chain.sourceMid].parentIndex == chain.sourceRoot &&
+			sourceSkeleton.bones[chain.sourceTip].parentIndex == chain.sourceMid;
+		const bool targetChainValid =
+			chain.targetRoot >= 0 && chain.targetMid >= 0 && chain.targetTip >= 0 &&
+			targetSkeleton.bones[chain.targetMid].parentIndex == chain.targetRoot &&
+			targetSkeleton.bones[chain.targetTip].parentIndex == chain.targetMid;
+		if (sourceChainValid && targetChainValid && chain.positionWeight > 0.0f)
+			m_TwoBoneChains.push_back(std::move(chain));
+	}
+	m_Stats.twoBoneChainCount = static_cast<uint32_t>(m_TwoBoneChains.size());
+
 	m_Valid = !m_BoneMap.empty();
 	if (m_Valid)
 	{
@@ -178,6 +204,76 @@ bool VansRetargetProcessor::Process(
 	for (size_t targetIndex = 0; targetIndex < targetSkeleton.bones.size(); ++targetIndex)
 		targetLocalTransforms[targetIndex] = targetSkeleton.bones[targetIndex].localTransform;
 
+	auto applyConfiguredTwoBoneChains = [&](const glm::quat& sourceToTargetRotation)
+	{
+		if (m_TwoBoneChains.empty())
+			return;
+
+		std::vector<glm::mat4> targetModelTransforms;
+		BuildModelFromLocal(targetLocalTransforms, targetSkeleton, targetModelTransforms);
+		for (const CompiledTwoBoneChain& compiled : m_TwoBoneChains)
+		{
+			const glm::vec3 sourceRoot = ExtractTranslation(sourceModelTransforms[compiled.sourceRoot]);
+			const glm::vec3 sourceMid = ExtractTranslation(sourceModelTransforms[compiled.sourceMid]);
+			const glm::vec3 sourceTip = ExtractTranslation(sourceModelTransforms[compiled.sourceTip]);
+			const float sourceUpperLength = glm::distance(sourceRoot, sourceMid);
+			const float sourceLowerLength = glm::distance(sourceMid, sourceTip);
+			const float sourceReach = sourceUpperLength + sourceLowerLength;
+
+			const glm::vec3 targetRoot = ExtractTranslation(targetModelTransforms[compiled.targetRoot]);
+			const glm::vec3 targetMid = ExtractTranslation(targetModelTransforms[compiled.targetMid]);
+			const glm::vec3 targetTip = ExtractTranslation(targetModelTransforms[compiled.targetTip]);
+			const float targetUpperLength = glm::distance(targetRoot, targetMid);
+			const float targetLowerLength = glm::distance(targetMid, targetTip);
+			const float targetReach = targetUpperLength + targetLowerLength;
+			if (sourceReach <= 0.0001f || targetReach <= 0.0001f)
+				continue;
+
+			const glm::vec3 sourceRootToTip = sourceTip - sourceRoot;
+			const glm::vec3 currentTargetDirection = NormalizeOrFallback(
+				targetTip - targetRoot, glm::vec3(1.0f, 0.0f, 0.0f));
+			const glm::vec3 targetDirection = NormalizeOrFallback(
+				sourceToTargetRotation * sourceRootToTip, currentTargetDirection);
+			const float bendRatio = glm::clamp(
+				glm::length(sourceRootToTip) / sourceReach, 0.0f, 1.0f);
+
+			IKChainDefinition chain;
+			chain.chainName = compiled.name;
+			chain.solverType = IKSolverType::TwoBone;
+			chain.profileType = IKProfileType::HumanoidArm;
+			chain.positionTolerance = 0.001f;
+			chain.maintainEffectorGlobalRotation = true;
+			chain.bones.resize(3);
+			chain.bones[0].boneIndex = compiled.targetRoot;
+			chain.bones[1].boneIndex = compiled.targetMid;
+			chain.bones[2].boneIndex = compiled.targetTip;
+			chain.bones[2].isEffector = true;
+
+			glm::vec3 sourcePole = sourceMid - sourceRoot;
+			sourcePole -= sourceRootToTip *
+				(glm::dot(sourcePole, sourceRootToTip) /
+				 std::max(glm::dot(sourceRootToTip, sourceRootToTip), 0.0001f));
+			if (glm::length(sourcePole) > 0.0001f)
+			{
+				chain.poleVector = targetRoot +
+					NormalizeOrFallback(sourceToTargetRotation * sourcePole,
+						glm::vec3(0.0f, 0.0f, 1.0f)) * targetReach;
+				chain.poleWeight = 1.0f;
+				chain.poleSpace = IKCoordinateSpace::Model;
+			}
+
+			IKTarget target;
+			target.position = targetRoot + targetDirection * targetReach * bendRatio;
+			target.positionWeight = compiled.positionWeight;
+			target.positionSpace = IKCoordinateSpace::Model;
+			IKSolveContext context;
+			VansTwoBoneIKSolver solver;
+			solver.Solve(targetLocalTransforms, targetModelTransforms,
+				targetSkeleton, chain, target, context);
+			BuildModelFromLocal(targetLocalTransforms, targetSkeleton, targetModelTransforms);
+		}
+	};
+
 	if (m_HasTargetModelSpaceCorrection &&
 	    m_SourceBindModelTransforms.size() == sourceSkeleton.bones.size() &&
 	    m_TargetBindModelTransforms.size() == targetSkeleton.bones.size())
@@ -190,6 +286,7 @@ bool VansRetargetProcessor::Process(
 
 		std::vector<glm::quat> desiredModelRotations(targetSkeleton.bones.size(),
 			glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+		std::vector<bool> mappedTargetBones(targetSkeleton.bones.size(), false);
 		for (size_t targetIndex = 0; targetIndex < targetSkeleton.bones.size(); ++targetIndex)
 		{
 			glm::vec3 translation;
@@ -235,31 +332,50 @@ bool VansRetargetProcessor::Process(
 				glm::inverse(targetToSourceRotation) * sourceDeltaRotation * targetToSourceRotation;
 			desiredModelRotations[entry.targetIndex] =
 				glm::normalize(targetSpaceDeltaRotation * targetBindModelRotation);
+			mappedTargetBones[entry.targetIndex] = true;
 		}
 
+		std::vector<glm::mat4> resolvedModelTransforms(
+			targetSkeleton.bones.size(), glm::mat4(1.0f));
 		const auto applyModelSpaceRotation = [&](int targetIndex)
 		{
 			if (targetIndex < 0 || targetIndex >= static_cast<int>(targetSkeleton.bones.size()))
 				return;
 
 			const BoneInfo& targetBone = targetSkeleton.bones[targetIndex];
-			glm::vec3 targetBindTranslation;
-			glm::quat targetBindRotation;
-			glm::vec3 targetBindScale;
-			DecomposeTransform(targetBone.localTransform,
-				targetBindTranslation, targetBindRotation, targetBindScale);
-
-			glm::quat targetLocalRotation = desiredModelRotations[targetIndex];
 			const int parentIndex = targetBone.parentIndex;
-			if (parentIndex >= 0 && parentIndex < static_cast<int>(desiredModelRotations.size()))
+			if (mappedTargetBones[targetIndex])
 			{
-				targetLocalRotation =
-					glm::inverse(desiredModelRotations[parentIndex]) *
-					desiredModelRotations[targetIndex];
+				glm::vec3 targetBindTranslation;
+				glm::quat targetBindRotation;
+				glm::vec3 targetBindScale;
+				DecomposeTransform(targetBone.localTransform,
+					targetBindTranslation, targetBindRotation, targetBindScale);
+
+				glm::quat targetLocalRotation = desiredModelRotations[targetIndex];
+				if (parentIndex >= 0 &&
+				    parentIndex < static_cast<int>(resolvedModelTransforms.size()))
+				{
+					glm::vec3 parentTranslation;
+					glm::quat parentModelRotation;
+					glm::vec3 parentScale;
+					DecomposeTransform(resolvedModelTransforms[parentIndex],
+						parentTranslation, parentModelRotation, parentScale);
+					targetLocalRotation =
+						glm::inverse(parentModelRotation) * desiredModelRotations[targetIndex];
+				}
+
+				targetLocalTransforms[targetIndex] =
+					ComposeTransform(targetBindTranslation, targetLocalRotation, targetBindScale);
 			}
 
-			targetLocalTransforms[targetIndex] =
-				ComposeTransform(targetBindTranslation, targetLocalRotation, targetBindScale);
+			resolvedModelTransforms[targetIndex] = targetLocalTransforms[targetIndex];
+			if (parentIndex >= 0 &&
+			    parentIndex < static_cast<int>(resolvedModelTransforms.size()))
+			{
+				resolvedModelTransforms[targetIndex] =
+					resolvedModelTransforms[parentIndex] * targetLocalTransforms[targetIndex];
+			}
 		};
 
 		if (!targetSkeleton.topologicalOrder.empty())
@@ -310,6 +426,8 @@ bool VansRetargetProcessor::Process(
 				ComposeTransform(targetTranslation, targetRotation, targetScale);
 		}
 
+		applyConfiguredTwoBoneChains(glm::inverse(targetToSourceRotation));
+
 		BuildModelFromLocal(targetLocalTransforms, targetSkeleton, outTargetModelTransforms);
 		if (m_HasTargetModelSpaceCorrection)
 		{
@@ -359,6 +477,8 @@ bool VansRetargetProcessor::Process(
 		targetLocalTransforms[entry.targetIndex] =
 			ComposeTransform(targetTranslation, targetRotation, targetBindScale);
 	}
+
+	applyConfiguredTwoBoneChains(glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
 
 	BuildModelFromLocal(targetLocalTransforms, targetSkeleton, outTargetModelTransforms);
 	if (m_HasTargetModelSpaceCorrection)

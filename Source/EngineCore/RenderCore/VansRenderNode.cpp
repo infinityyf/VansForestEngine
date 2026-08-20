@@ -1115,7 +1115,7 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescriptorSets(VansMaterialMana
 	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{ { rp->GetCascadeShadowSampler(), rp->GetCascadeShadowArrayView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
 	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		{ { rp->GetPunctualShadowMap().GetSampler(), rp->GetPunctualShadowMap().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+		{ { rp->GetPunctualShadowMap().GetSampler(), rp->GetPunctualShadowMap().GetImageView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL } });
 	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 13, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{ { volumetricFogResult->GetImage().GetSampler(), volumetricFogResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
 	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], DEFERRED_BINDING_SCREEN_SPACE_SHADOW, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -1210,9 +1210,14 @@ void VansGraphics::VansScreenSpaceRenderNode::UpdateDescriptorSets(VansMaterialM
 
 void VansGraphics::VansSkyBoxRenderNode::CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager)
 {
+	m_MotionVectorDescSetLayouts.clear();
+	m_MotionVectorDescSets.clear();
+
 	// Set 0: Global
 	m_UsedDescSetLayouts.push_back(m_Scene->GetGlobalDescriptorSetLayout());
 	m_UsedDescSets.push_back(m_Scene->GetGlobalDescriptorSet());
+	m_MotionVectorDescSetLayouts.push_back(m_Scene->GetGlobalDescriptorSetLayout());
+	m_MotionVectorDescSets.push_back(m_Scene->GetGlobalDescriptorSet());
 
 	// Set 1: Per-Pass (Atmosphere UBO)
 	m_UsedDescSetLayouts.push_back(materialManager.m_MaterialAtmosphereDataLayout);
@@ -1233,6 +1238,35 @@ void VansGraphics::VansSkyBoxRenderNode::UpdateDescriptorSets(VansMaterialManage
 		return;
 	}
 	m_DescriptorsetsDirty = false;
+}
+
+void VansGraphics::VansSkyBoxRenderNode::DrawMotionVector(
+	VansVKCommandBuffer& cmd,
+	GlobalStateData& globalState)
+{
+	if (!CheckRenderNodeState())
+		return;
+
+	VansGraphicsShader* shader = m_Material->GetPassShader(VansPass::VELOCITY);
+	if (shader == nullptr ||
+		!ValidateDescriptorBindings("SkyMotionVector", m_MotionVectorDescSetLayouts, m_MotionVectorDescSets))
+	{
+		return;
+	}
+
+	cmd.BindMesh(*m_Mesh, 0, globalState);
+	VansVKGraphicsPipeline* pipeline =
+		cmd.EnsureGraphicsShader(*shader, globalState, m_MotionVectorDescSetLayouts);
+	if (pipeline == nullptr)
+		return;
+
+	cmd.BindDescriptorSets(
+		VK_PIPELINE_BIND_POINT_GRAPHICS,
+		*pipeline,
+		0,
+		m_MotionVectorDescSets,
+		{});
+	cmd.DrawMesh(*m_Mesh, *pipeline, 1);
 }
 
 // VansShadowRenderNode removed – shadow pass now uses DrawWithPassShader() on opaque nodes

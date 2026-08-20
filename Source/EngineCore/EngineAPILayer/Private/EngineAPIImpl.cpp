@@ -114,6 +114,96 @@ namespace Vans::EditorAPI
 {
 	namespace
 	{
+		bool TryToRenderBackend(
+			UpscalerBackend backend,
+			VansGraphics::VansUpscalerBackend& output)
+		{
+			switch (backend)
+			{
+			case UpscalerBackend::Off:
+				output = VansGraphics::VansUpscalerBackend::Off;
+				return true;
+			case UpscalerBackend::FSR:
+				output = VansGraphics::VansUpscalerBackend::FSR;
+				return true;
+			case UpscalerBackend::DLSS:
+				output = VansGraphics::VansUpscalerBackend::DLSS;
+				return true;
+			default:
+				return false;
+			}
+		}
+
+		UpscalerBackend ToEditorBackend(VansGraphics::VansUpscalerBackend backend)
+		{
+			switch (backend)
+			{
+			case VansGraphics::VansUpscalerBackend::Off: return UpscalerBackend::Off;
+			case VansGraphics::VansUpscalerBackend::FSR: return UpscalerBackend::FSR;
+			case VansGraphics::VansUpscalerBackend::DLSS: return UpscalerBackend::DLSS;
+			default: return UpscalerBackend::Off;
+			}
+		}
+
+		bool TryToRenderQuality(
+			UpscaleQualityMode quality,
+			VansGraphics::VansUpscaleQualityMode& output)
+		{
+			switch (quality)
+			{
+			case UpscaleQualityMode::NativeAA:
+				output = VansGraphics::VansUpscaleQualityMode::NativeAA;
+				return true;
+			case UpscaleQualityMode::Quality:
+				output = VansGraphics::VansUpscaleQualityMode::Quality;
+				return true;
+			case UpscaleQualityMode::Balanced:
+				output = VansGraphics::VansUpscaleQualityMode::Balanced;
+				return true;
+			case UpscaleQualityMode::Performance:
+				output = VansGraphics::VansUpscaleQualityMode::Performance;
+				return true;
+			case UpscaleQualityMode::UltraPerformance:
+				output = VansGraphics::VansUpscaleQualityMode::UltraPerformance;
+				return true;
+			default:
+				return false;
+			}
+		}
+
+		UpscaleQualityMode ToEditorQuality(VansGraphics::VansUpscaleQualityMode quality)
+		{
+			switch (quality)
+			{
+			case VansGraphics::VansUpscaleQualityMode::NativeAA:
+				return UpscaleQualityMode::NativeAA;
+			case VansGraphics::VansUpscaleQualityMode::Quality:
+				return UpscaleQualityMode::Quality;
+			case VansGraphics::VansUpscaleQualityMode::Balanced:
+				return UpscaleQualityMode::Balanced;
+			case VansGraphics::VansUpscaleQualityMode::Performance:
+				return UpscaleQualityMode::Performance;
+			case VansGraphics::VansUpscaleQualityMode::UltraPerformance:
+				return UpscaleQualityMode::UltraPerformance;
+			default:
+				return UpscaleQualityMode::NativeAA;
+			}
+		}
+
+		UpscalerCapabilitiesSnapshot ToEditorCapabilities(
+			const VansGraphics::VansUpscalerCapabilities& capabilities)
+		{
+			UpscalerCapabilitiesSnapshot output;
+			output.backend = ToEditorBackend(capabilities.backend);
+			output.compiledIn = capabilities.compiledIn;
+			output.runtimeAvailable = capabilities.runtimeAvailable;
+			output.deviceSupported = capabilities.deviceSupported;
+			output.supportedQualityMask = capabilities.supportedQualityMask;
+			output.featureVersion = capabilities.featureVersion;
+			output.unavailableReason = capabilities.unavailableReason;
+			return output;
+		}
+
 		struct PreviewTextureCache
 		{
 			RenderTextureId id = 0;
@@ -3816,22 +3906,15 @@ namespace Vans::EditorAPI
 		{
 			device->GetPipelineCacheService().RefreshPersistencePath();
 
-			const Vans::VansProjectFSRSettings& fsrSettings =
-				projectManager.GetProjectSettings().GetFSRSettings();
-			const VkExtent2D viewportExtent = device->GetRequestedSceneViewportExtent();
-			device->RequestFSRConfig(
-				static_cast<VansGraphics::VansFSRMode>(fsrSettings.mode),
-				viewportExtent.width,
-				viewportExtent.height,
-				fsrSettings.sharpness);
-
-			const Vans::VansProjectCommandRecordingSettings& commandRecordingSettings =
-				projectManager.GetProjectSettings().GetCommandRecordingSettings();
-			device->SetParallelCommandRecordingEnabled(commandRecordingSettings.parallelEnabled);
-			device->SetFrameContextRingEnabled(
-				commandRecordingSettings.frameContextRingEnabled,
-				commandRecordingSettings.framesInFlight);
-			device->SetAsyncComputeEnabled(commandRecordingSettings.asyncComputeEnabled);
+			const VkExtent2D outputExtent = device->GetUpscalerOutputExtent();
+			device->ApplyRenderRuntimeConfig(
+				projectManager.GetProjectSettings().GetRenderRuntimeConfig(),
+				outputExtent.width,
+				outputExtent.height);
+			// OpenProject runs before project assets and the default scene are loaded.
+			// Resolve the requested upscaler and rebuild resolution-owned renderer data
+			// here so scene subsystems never observe the previous backend's dimensions.
+			device->CommitRenderRuntimeConfigAtSafePoint();
 		}
 		return result;
 	}
@@ -4019,35 +4102,40 @@ namespace Vans::EditorAPI
 		return preview;
 	}
 
-	FSRSettingsSnapshot EngineAPIImpl::GetFSRSettings() const
+	UpscalerSettingsSnapshot EngineAPIImpl::GetUpscalerSettings() const
 	{
-		FSRSettingsSnapshot settings;
+		UpscalerSettingsSnapshot settings;
 		auto* device = static_cast<VansGraphics::VansVKDevice*>(m_Device);
 		if (!device)
 			return settings;
 
-		settings.mode = static_cast<FSRUpscaleMode>(device->GetFSRMode());
-		settings.sharpness = device->GetFSRSharpness();
-		settings.mipBias = device->GetUpscaleMipBias();
-		settings.renderWidth = device->GetRenderWidth();
-		settings.renderHeight = device->GetRenderHeight();
-		const VkExtent3D outputExtent = device->GetFinalDisplayImage().GetImageDimension();
-		settings.outputWidth = outputExtent.width;
-		settings.outputHeight = outputExtent.height;
-		const VansGraphics::VansFSRDiagnostics& diagnostics = device->GetFSRDiagnostics();
+		const VansGraphics::VansUpscalerRuntimeDiagnostics diagnostics =
+			device->GetUpscalerDiagnostics();
+		settings.desiredBackend = ToEditorBackend(diagnostics.desired.backend);
+		settings.desiredQuality = ToEditorQuality(diagnostics.desired.quality);
+		settings.effectiveBackend = ToEditorBackend(diagnostics.effective.backend);
+		settings.effectiveQuality = ToEditorQuality(diagnostics.effective.quality);
+		settings.fsrSharpness = diagnostics.desired.fsrSharpness;
+		settings.fsrDebugView = diagnostics.desired.fsrDebugView;
+		settings.fallbackReason = VansGraphics::ToString(diagnostics.fallbackReason);
+		settings.fallbackMessage = diagnostics.fallbackMessage;
+		settings.mipBias = diagnostics.mipBias;
+		settings.renderWidth = diagnostics.renderExtent.width;
+		settings.renderHeight = diagnostics.renderExtent.height;
+		settings.outputWidth = diagnostics.outputExtent.width;
+		settings.outputHeight = diagnostics.outputExtent.height;
 		settings.contextReady = diagnostics.contextReady;
 		settings.lastDispatchSucceeded = diagnostics.lastDispatchSucceeded;
 		settings.lastDispatchReset = diagnostics.lastDispatchReset;
-		settings.debugCheckerEnabled = diagnostics.debugCheckerEnabled;
-		settings.debugViewEnabled = device->IsFSRDebugViewEnabled();
-		settings.pendingResetReasons = static_cast<std::uint32_t>(device->GetPendingFSRResetReasons());
-		settings.lastCreateReturnCode = diagnostics.lastCreateReturnCode;
-		settings.lastQueryReturnCode = diagnostics.lastQueryReturnCode;
-		settings.lastDispatchReturnCode = diagnostics.lastDispatchReturnCode;
-		settings.lastReactiveReturnCode = diagnostics.lastReactiveReturnCode;
+		settings.pendingResetReasons =
+			static_cast<std::uint32_t>(diagnostics.pendingResetReasons);
+		settings.backendCreateCode = diagnostics.backendCreateCode;
+		settings.backendQueryCode = diagnostics.backendQueryCode;
+		settings.backendDispatchCode = diagnostics.backendDispatchCode;
+		settings.backendAuxiliaryCode = diagnostics.backendAuxiliaryCode;
 		settings.successfulDispatchCount = diagnostics.successfulDispatchCount;
 		settings.failedDispatchCount = diagnostics.failedDispatchCount;
-		settings.generatedReactiveMaskCount = diagnostics.generatedReactiveMaskCount;
+		settings.auxiliaryDispatchCount = diagnostics.auxiliaryDispatchCount;
 		settings.gpuMemoryUsageBytes = diagnostics.gpuMemoryUsageBytes;
 		settings.gpuMemoryAliasableBytes = diagnostics.gpuMemoryAliasableBytes;
 		settings.jitterPhaseCount = diagnostics.jitterPhaseCount;
@@ -4055,35 +4143,122 @@ namespace Vans::EditorAPI
 		return settings;
 	}
 
-	void EngineAPIImpl::SetFSRSettings(FSRUpscaleMode mode, float sharpness)
+	std::vector<UpscalerCapabilitiesSnapshot> EngineAPIImpl::GetUpscalerCapabilities() const
 	{
+		std::vector<UpscalerCapabilitiesSnapshot> capabilities;
 		auto* device = static_cast<VansGraphics::VansVKDevice*>(m_Device);
 		if (!device)
-			return;
-		const VkExtent2D viewportExtent = device->GetRequestedSceneViewportExtent();
-		device->RequestFSRConfig(
-			static_cast<VansGraphics::VansFSRMode>(mode),
-			viewportExtent.width,
-			viewportExtent.height,
-			sharpness);
+			return capabilities;
 
-		auto& projectManager = Vans::VansProjectManager::Get();
-		if (projectManager.IsProjectLoaded())
-		{
-			projectManager.GetProjectSettings().SetFSRSettings(
-				static_cast<Vans::VansProjectFSRMode>(mode), sharpness);
-			if (!projectManager.SaveProjectSettings())
-			{
-				VANS_LOG_WARN("[EngineAPI] Failed to persist FSR project settings");
-			}
-		}
+		capabilities.reserve(3);
+		capabilities.push_back(ToEditorCapabilities(
+			device->GetUpscalerCapabilities(VansGraphics::VansUpscalerBackend::Off)));
+		capabilities.push_back(ToEditorCapabilities(
+			device->GetUpscalerCapabilities(VansGraphics::VansUpscalerBackend::FSR)));
+		capabilities.push_back(ToEditorCapabilities(
+			device->GetUpscalerCapabilities(VansGraphics::VansUpscalerBackend::DLSS)));
+		return capabilities;
 	}
 
-	void EngineAPIImpl::SetFSRDebugViewEnabled(bool enabled)
+	ApplyUpscalerSettingsResult EngineAPIImpl::ApplyUpscalerSettings(
+		const UpscalerSettingsSnapshot& settings)
 	{
+		ApplyUpscalerSettingsResult result;
+		VansGraphics::VansUpscalerConfig config;
+		if (!TryToRenderBackend(settings.desiredBackend, config.backend) ||
+			!TryToRenderQuality(settings.desiredQuality, config.quality))
+		{
+			result.message = "Unknown upscaler backend or quality";
+			return result;
+		}
+		if (!std::isfinite(settings.fsrSharpness) ||
+			settings.fsrSharpness < 0.0f || settings.fsrSharpness > 1.0f)
+		{
+			result.message = "FSR sharpness must be in [0, 1]";
+			return result;
+		}
+		if (config.backend == VansGraphics::VansUpscalerBackend::Off &&
+			config.quality != VansGraphics::VansUpscaleQualityMode::NativeAA)
+		{
+			result.message = "Off backend requires NativeAA quality";
+			return result;
+		}
+		config.fsrSharpness = settings.fsrSharpness;
+		config.fsrDebugView = settings.fsrDebugView;
+
 		auto* device = static_cast<VansGraphics::VansVKDevice*>(m_Device);
-		if (device)
-			device->SetFSRDebugViewEnabled(enabled);
+		if (!device)
+		{
+			result.message = "Render device is unavailable";
+			return result;
+		}
+		const VansGraphics::VansUpscalerCapabilities capabilities =
+			device->GetUpscalerCapabilities(config.backend);
+		if (config.backend != VansGraphics::VansUpscalerBackend::DLSS &&
+			(!capabilities.compiledIn ||
+			 !capabilities.runtimeAvailable ||
+			 !capabilities.deviceSupported ||
+			 !capabilities.Supports(config.quality)))
+		{
+			result.message = capabilities.unavailableReason.empty()
+				? "Selected upscaler configuration is unavailable"
+				: capabilities.unavailableReason;
+			return result;
+		}
+
+		auto& projectManager = Vans::VansProjectManager::Get();
+		Vans::VansProjectUpscalerSettings previousProjectSettings;
+		bool projectSettingsChanged = false;
+		if (projectManager.IsProjectLoaded())
+		{
+			Vans::VansProjectSettings& projectSettings =
+				projectManager.GetProjectSettings();
+			previousProjectSettings = projectSettings.GetUpscalerSettings();
+			std::string validationError;
+			if (!projectSettings.SetUpscalerSettings(config, &validationError))
+			{
+				result.message = validationError;
+				return result;
+			}
+			projectSettingsChanged = true;
+			if (!projectManager.SaveProjectSettings())
+			{
+				projectSettings.SetUpscalerSettings(previousProjectSettings);
+				result.message = "Failed to persist upscaler project settings";
+				return result;
+			}
+		}
+
+		const VkExtent2D outputExtent = device->GetUpscalerOutputExtent();
+		const VansGraphics::VansUpscalerSelectionChange selection =
+			device->RequestUpscalerConfig(
+				config,
+				outputExtent.width,
+				outputExtent.height);
+		if (!selection.accepted)
+		{
+			if (projectSettingsChanged)
+			{
+				projectManager.GetProjectSettings().SetUpscalerSettings(
+					previousProjectSettings);
+				if (!projectManager.SaveProjectSettings())
+				{
+					VANS_LOG_ERROR(
+						"[EngineAPI] Failed to roll back persisted upscaler settings");
+				}
+			}
+			result.message = selection.error.empty()
+				? "Render backend rejected the upscaler settings"
+				: selection.error;
+			return result;
+		}
+
+		result.accepted = true;
+		result.runtimeFallbackExpected = selection.fallbackActive;
+		result.message = result.runtimeFallbackExpected
+			? "Settings saved; runtime will use a supported fallback"
+			: "Upscaler settings accepted";
+		return result;
 	}
 
 	CommandRecordingSettingsSnapshot EngineAPIImpl::GetCommandRecordingSettings() const
@@ -4130,18 +4305,6 @@ namespace Vans::EditorAPI
 		}
 	}
 
-	void EngineAPIImpl::SetSceneViewportExtent(std::uint32_t width, std::uint32_t height)
-	{
-		auto* device = static_cast<VansGraphics::VansVKDevice*>(m_Device);
-		if (!device || width == 0 || height == 0)
-			return;
-		device->RequestFSRConfig(
-			device->GetFSRMode(),
-			width,
-			height,
-			device->GetFSRSharpness());
-	}
-
 	std::vector<RenderTexturePreview> EngineAPIImpl::QueryRenderTexturePreviews(RenderTextureFilter filter) const
 	{
 		std::vector<RenderTexturePreview> previews;
@@ -4185,7 +4348,11 @@ namespace Vans::EditorAPI
 		if (filter.category == "render_debug")
 		{
 			previews.push_back(BuildImagePreview(device, 140, "Motion Vector", renderPassManager->GetMotionVector(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
-			if (device->GetFSRDiagnostics().contextReady)
+			const VansGraphics::VansUpscalerRuntimeDiagnostics upscalerDiagnostics =
+				device->GetUpscalerDiagnostics();
+			if (upscalerDiagnostics.contextReady &&
+				upscalerDiagnostics.effective.backend ==
+					VansGraphics::VansUpscalerBackend::FSR)
 			{
 				previews.push_back(BuildImagePreview(device, 158, "FSR Reactive Mask", device->GetFSRReactiveMaskImage(), VK_IMAGE_LAYOUT_GENERAL));
 				previews.push_back(BuildImagePreview(device, 159, "FSR Transparency + Composition", device->GetFSRTransparencyAndCompositionImage(), VK_IMAGE_LAYOUT_GENERAL));
@@ -4207,7 +4374,8 @@ namespace Vans::EditorAPI
 					previews.push_back(BuildImagePreview(device, 145, "Exposure Luminance", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
 				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_EXPOSURE_CURRENT))
 					previews.push_back(BuildImagePreview(device, 146, "Exposure Current EV", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
-				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_FSR_EXPOSURE))
+				if (auto* texture = materialManager->GetRuntimeRenderTexture(
+					VansGraphics::VansMaterialManager::RT_UPSCALER_EXPOSURE))
 					previews.push_back(BuildImagePreview(device, 166, "FSR Exposure Multiplier", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
 				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_BLOOM_PREFILTER))
 					previews.push_back(BuildImagePreview(device, 147, "Bloom Prefilter", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
@@ -4528,7 +4696,7 @@ namespace Vans::EditorAPI
 		diagnostics.frameSubmitSucceeded = frameContext.frameSubmitSucceeded;
 		diagnostics.shadowSubmitted = frameContext.shadowSubmitted;
 		diagnostics.gbufferSubmitted = frameContext.gbufferSubmitted;
-		diagnostics.asyncComputeSubmitted = frameContext.asyncComputeSubmitted;
+		diagnostics.asyncEarlySubmitted = frameContext.asyncEarlySubmitted;
 		diagnostics.frameNumber = frameContext.frameNumber;
 		diagnostics.swapchainImageIndex = frameContext.swapchainImageIndex;
 		diagnostics.deferredDeleteLastFlushCount = frameContext.lastDeferredDeleteFlushCount;
@@ -5197,7 +5365,6 @@ namespace Vans::EditorAPI
 	void EngineAPIImpl::ApplyGISettings(const GIInspectorSettingsSnapshot& settings)
 	{
 		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
-		auto* device = static_cast<VansGraphics::VansVKDevice*>(m_Device);
 		if (!scene || !settings.available)
 			return;
 
@@ -5274,36 +5441,11 @@ namespace Vans::EditorAPI
 		gi.gizmoStride = std::clamp(settings.gizmoStride, 1u,
 			std::max({ 1u, primaryRegion.gridDimensions.x, primaryRegion.gridDimensions.y, primaryRegion.gridDimensions.z }));
 		scene->SetGISettings(gi);
-
-		auto* materialManager = scene->GetMaterialManager();
-		if (!device || !materialManager || materialManager->m_SSGICBBuffer.GetNativeBuffer() == VK_NULL_HANDLE)
-			return;
-
-		VansGraphics::SSGIParamsGPU data{};
-		data.screenSize = glm::vec4(
-			static_cast<float>(device->GetRenderWidth()),
-			static_cast<float>(device->GetRenderHeight()),
-			1.0f / std::max(1u, device->GetRenderWidth()),
-			1.0f / std::max(1u, device->GetRenderHeight()));
-		uint32_t regionCount = 0u;
-		for (const VansGraphics::GIProbeRegionDesc* desc : VansGraphics::BuildActiveGIRegionOrder(gi))
-		{
-			if (regionCount >= VansGraphics::VANS_SSGI_MAX_GI_REGIONS)
-				continue;
-			const VansGraphics::GIResolvedRegion region = VansGraphics::ResolveGIRegion(*desc);
-			VansGraphics::SSGIRegionParamsGPU& destination = data.regions[regionCount++];
-			destination.volumeMin = glm::vec4(region.volumeMin, 0.0f);
-			destination.volumeSizeAndBias = glm::vec4(region.volumeSize, region.normalBias);
-			destination.traceParams = glm::vec4(region.maxRayDistance, 0.75f, region.volumeFadeDistance, 0.0f);
-			destination.gridDimensionsAndPriority = glm::vec4(glm::vec3(region.gridDimensions), region.priority);
-		}
-		data.regionInfo.x = static_cast<float>(regionCount);
-		data.deferredProbeDebug = glm::vec4(
-			gi.probeOnlyDeferredOutput ? 1.0f : 0.0f,
-			gi.probeOnlyDeferredExposure,
-			0.0f,
-			0.0f);
-		materialManager->m_SSGICBBuffer.SetBufferData(&data, 0, sizeof(data));
+		// ProcessPendingGISettings consumes the scene dirty flags at the safe
+		// pre-render point and uses the renderer's single SSGI UBO upload path.
+		// Do not mirror that upload here: the old copy zeroed the immutable DDGI
+		// atlas tile dimensions and silently re-enabled the Probe Cache shader's
+		// textureSize/integer-division compatibility path after Inspector edits.
 	}
 
 	GIProbeDebugSnapshot EngineAPIImpl::CaptureGIProbeDebugSnapshot(std::uint32_t stride, float exposure)
@@ -5417,7 +5559,7 @@ namespace Vans::EditorAPI
 			"DDGI Probe Classification"
 		};
 		std::vector<RenderTexturePreview> previews;
-		previews.reserve(VansGraphics::GIRTPreviewModeCount);
+		previews.reserve(VansGraphics::GIRTPreviewModeCount + 2u);
 		for (std::uint32_t mode = 0u; mode < VansGraphics::GIRTPreviewModeCount; ++mode)
 		{
 			auto* texture = rayTracing.GetGIRTPreviewTexture(mode);
@@ -5429,6 +5571,35 @@ namespace Vans::EditorAPI
 				kPreviewNames[mode],
 				texture->GetImage(),
 				VK_IMAGE_LAYOUT_GENERAL));
+		}
+
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		VansGraphics::VansMaterialManager* materialManager =
+			scene != nullptr ? scene->GetMaterialManager() : nullptr;
+		if (materialManager != nullptr)
+		{
+			if (VansGraphics::VansTexture* cacheRadiance =
+				materialManager->GetRuntimeRenderTexture(
+					VansGraphics::VansMaterialManager::RT_SSGI_PROBE_CACHE_RADIANCE))
+			{
+				previews.push_back(BuildImagePreview(
+					device,
+					static_cast<RenderTextureId>(198u),
+					"SSGI Screen Probe Cache Radiance (1/4)",
+					cacheRadiance->GetImage(),
+					VK_IMAGE_LAYOUT_GENERAL));
+			}
+			if (VansGraphics::VansTexture* cacheSurface =
+				materialManager->GetRuntimeRenderTexture(
+					VansGraphics::VansMaterialManager::RT_SSGI_PROBE_CACHE_SURFACE))
+			{
+				previews.push_back(BuildImagePreview(
+					device,
+					static_cast<RenderTextureId>(199u),
+					"SSGI Probe Cache Surface (Normal.xyz + LinearDepth.a)",
+					cacheSurface->GetImage(),
+					VK_IMAGE_LAYOUT_GENERAL));
+			}
 		}
 		return previews;
 	}
@@ -6073,11 +6244,15 @@ namespace Vans::EditorAPI
 
 		for (auto* animNode : scene->GetAnimationNodes())
 		{
-			auto* controller = animNode
-				? (animNode->IsRetargetEnabled()
-					? animNode->GetRetargetSourceController()
-					: animNode->GetController())
-				: nullptr;
+			// 停用角色不会继续更新 Motion Matching，但其 Controller 仍保留最后一帧
+			// 调试缓存。调试快照必须遵循 AnimationNode 的有效启用状态，否则角色
+			// 切换后会继续在旧角色最后的位置绘制冻结的轨迹。
+			if (!animNode || !animNode->IsEnabled())
+				continue;
+
+			auto* controller = animNode->IsRetargetEnabled()
+				? animNode->GetRetargetSourceController()
+				: animNode->GetController();
 			if (!controller || !controller->IsMotionMatchingConfigured())
 				continue;
 
@@ -6086,6 +6261,14 @@ namespace Vans::EditorAPI
 				continue;
 
 			MotionMatchingDebugVisual visual;
+			visual.runtimeNodeName = animNode->GetName();
+			visual.retargetSource = animNode->IsRetargetEnabled();
+			if (const auto* renderNode = animNode->GetRenderNode())
+			{
+				visual.entityGuid = renderNode->m_ParentEntityGuid.empty()
+					? renderNode->m_EntityGuid
+					: renderNode->m_ParentEntityGuid;
+			}
 			visual.rootPosition = ToEditorVec3(motionMatching->trajectoryOriginWorld);
 			visual.actualVelocity = ToEditorVec3(motionMatching->actualVelocityWorld);
 			visual.plannedVelocity = ToEditorVec3(motionMatching->plannedVelocityWorld);
@@ -6117,6 +6300,12 @@ namespace Vans::EditorAPI
 			visual.directionChangeDegrees = motionMatching->directionChangeDegrees;
 			visual.inputDirectionChangeDegrees = motionMatching->inputDirectionChangeDegrees;
 			visual.facingDeltaDegrees = motionMatching->queryFacingDeltaDegrees;
+			visual.currentFacingYawDegrees = motionMatching->currentFacingYawDegrees;
+			visual.desiredFacingYawDegrees = motionMatching->desiredFacingYawDegrees;
+			visual.desiredFacingYawRateDegreesPerSecond =
+				motionMatching->desiredFacingYawRateDegreesPerSecond;
+			visual.facingTurnState = motionMatching->facingTurnState;
+			visual.facingTurnGateReason = motionMatching->facingTurnGateReason;
 			visual.movementReferenceYaw = motionMatching->movementReferenceYaw;
 			visual.movementReferenceYawRate = motionMatching->movementReferenceYawRate;
 			visual.plannedFacingYaw = motionMatching->plannedFacingYaw;
@@ -6134,6 +6323,8 @@ namespace Vans::EditorAPI
 				motionMatching->rootMotionTargetYawRateDegreesPerSecond;
 			visual.rootMotionReconciledYawRateDegreesPerSecond =
 				motionMatching->rootMotionReconciledYawRateDegreesPerSecond;
+			visual.authoredRootYawDeltaDegrees = motionMatching->authoredRootYawDeltaDegrees;
+			visual.appliedRootYawDeltaDegrees = motionMatching->appliedRootYawDeltaDegrees;
 			visual.steeringActive = motionMatching->steeringActive;
 			visual.steeringLimited = motionMatching->steeringLimited;
 			visual.rootMotionReconciliationActive =
@@ -6286,10 +6477,8 @@ namespace Vans::EditorAPI
 			if (!animNode || !matchesFilter(animNode))
 				continue;
 
-			const VansGraphics::Skeleton& skeleton = animNode->IsRetargetEnabled()
-				? animNode->GetRetargetSourceSkeleton()
-				: animNode->GetSkeleton();
-			if (skeleton.bones.empty())
+			const VansGraphics::Skeleton& targetSkeleton = animNode->GetSkeleton();
+			if (targetSkeleton.bones.empty())
 				continue;
 
 			glm::mat4 ownerWorld(1.0f);
@@ -6297,7 +6486,7 @@ namespace Vans::EditorAPI
 			if (transformId < VansGraphics::VansTransformStore::GlobalTransforms.size())
 				ownerWorld = VansGraphics::VansTransformStore::GetTransform(transformId).GetModelMatrix();
 
-			appendRig(animNode, skeleton, animNode->GetController(), ownerWorld, "Target", false);
+			appendRig(animNode, targetSkeleton, animNode->GetController(), ownerWorld, "Target", false);
 			if (animNode->IsRetargetEnabled() && animNode->GetRetargetSourceController())
 			{
 				appendRig(animNode,

@@ -20,7 +20,8 @@ namespace Vans
 		            const VansCharacterMotionIntent& intent,
 		            const VansCharacterMotionSettings& settings,
 		            const glm::vec3& positionWorld,
-		            float currentFacingYaw);
+		            float currentFacingYaw,
+		            bool grounded = true);
 
 		const VansCharacterTrajectory& GetTrajectory() const { return m_Trajectory; }
 		const glm::vec3& GetPlannedVelocityWorld() const { return m_PlannedVelocityWorld; }

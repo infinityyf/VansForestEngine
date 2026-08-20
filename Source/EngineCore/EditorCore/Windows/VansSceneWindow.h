@@ -4,7 +4,6 @@
 #include "../VansEditorCameraController.h"
 #include <string>
 #include <vector>
-#include <cstdint>
 namespace VansGraphics
 {
 	class VansCamera;
@@ -21,11 +20,6 @@ namespace VansGraphics
 	private:
 
 		VansGraphics::VansCamera* m_Camera = nullptr;
-		std::uint32_t m_ViewportCandidateWidth = 0;
-		std::uint32_t m_ViewportCandidateHeight = 0;
-		std::uint32_t m_LastRequestedViewportWidth = 0;
-		std::uint32_t m_LastRequestedViewportHeight = 0;
-		std::uint32_t m_ViewportStableFrames = 0;
 		VansEditorCameraController m_CameraController;
 
 		VansGizmos m_Gizmos;

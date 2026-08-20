@@ -26,7 +26,8 @@ namespace VansGraphics
 			std::uint32_t renderWidth,
 			std::uint32_t renderHeight,
 			std::uint32_t displayWidth,
-			std::uint32_t displayHeight);
+			std::uint32_t displayHeight,
+			VansVKImage& outputImage);
 		bool DispatchUpscale(VkCommandBuffer commandBuffer, const VansFSRFrameInput& input);
 		bool GenerateReactiveMask(
 			VkCommandBuffer commandBuffer,
@@ -36,7 +37,6 @@ namespace VansGraphics
 			const VkImageCreateInfo& colorPreUpscaleCreateInfo);
 		void Cleanup();
 
-		VansVKImage& GetOutputImage() { return *m_OutputImage; }
 		VansVKImage& GetReactiveMaskImage() { return *m_ReactiveMaskImage; }
 		VansVKImage& GetTransparencyAndCompositionImage() { return *m_TransparencyAndCompositionImage; }
 		VkExtent2D GetDisplayExtent() const { return { m_DisplayWidth, m_DisplayHeight }; }
@@ -58,7 +58,8 @@ namespace VansGraphics
 		VkDevice m_Device = VK_NULL_HANDLE;
 		VkPhysicalDevice m_PhysicalDevice = VK_NULL_HANDLE;
 		int32_t m_JitterPhaseCount = 0;
-		std::unique_ptr<VansVKImage> m_OutputImage;
+		// The unified upscaler layer owns the stable output image. FSR only writes it.
+		VansVKImage* m_OutputImage = nullptr;
 		std::unique_ptr<VansVKImage> m_ReactiveMaskImage;
 		std::unique_ptr<VansVKImage> m_TransparencyAndCompositionImage;
 		VansFSRDiagnostics m_Diagnostics;

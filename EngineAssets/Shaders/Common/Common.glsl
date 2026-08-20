@@ -441,13 +441,11 @@ struct HiZTraceResult {
     float depth;
 };
 
-// Project world position to screen space: returns (uv.x, uv.y, linearDepth)
-//   linearDepth = -viewPos.z (正米)，与 HIZ 存储格式一致
-//   uv 已应用引擎使用的负高度 viewport Y 翻转（NDC Y=+1 → UV.y=0）
-//   注意：uv 允许在 [0,1] 外，表示投影有效但在屏幕外；只有 clip.w <= 0 才非法。
-bool HiZ_ProjectToScreenChecked(mat4 viewMat, mat4 projMat, vec3 ws, out vec3 screenPos)
+// Project an already transformed view-space position to screen space.  Hi-Z
+// traversal computes its start view position for near-plane clipping, so this
+// entry point prevents an identical world-to-view matrix multiply.
+bool HiZ_ProjectViewToScreenChecked(mat4 projMat, vec4 viewPos, out vec3 screenPos)
 {
-    vec4 viewPos = viewMat * vec4(ws, 1.0);
     float linearDepth = -viewPos.z;
     vec4 clip = projMat * viewPos;
     if (clip.w <= 1e-6 || linearDepth <= 1e-6)
@@ -460,6 +458,16 @@ bool HiZ_ProjectToScreenChecked(mat4 viewMat, mat4 projMat, vec3 ws, out vec3 sc
     uv.y = 1.0 - uv.y;
     screenPos = vec3(uv, linearDepth);
     return true;
+}
+
+// Project world position to screen space: returns (uv.x, uv.y, linearDepth)
+//   linearDepth = -viewPos.z (正米)，与 HIZ 存储格式一致
+//   uv 已应用引擎使用的负高度 viewport Y 翻转（NDC Y=+1 → UV.y=0）
+//   注意：uv 允许在 [0,1] 外，表示投影有效但在屏幕外；只有 clip.w <= 0 才非法。
+bool HiZ_ProjectToScreenChecked(mat4 viewMat, mat4 projMat, vec3 ws, out vec3 screenPos)
+{
+    vec4 viewPos = viewMat * vec4(ws, 1.0);
+    return HiZ_ProjectViewToScreenChecked(projMat, viewPos, screenPos);
 }
 
 vec3 HiZ_ProjectToScreen(mat4 viewMat, mat4 projMat, vec3 ws)
@@ -508,7 +516,7 @@ HiZTraceResult TraceHiZ_UV_Bounded(
 
     vec3 startSS;
     vec3 endSS;
-    if (!HiZ_ProjectToScreenChecked(lastView, lastProj, startWS, startSS))
+    if (!HiZ_ProjectViewToScreenChecked(lastProj, startVS4, startSS))
         return HiZTraceResult(false, vec2(0.0), 0.0);
     if (traceDistWorld <= 1e-5)
         return HiZTraceResult(false, vec2(0.0), 0.0);
@@ -520,6 +528,16 @@ HiZTraceResult TraceHiZ_UV_Bounded(
     vec2 rayUV = uv1 - uv0;
     if (length(rayUV) < 1e-7)
         return HiZTraceResult(false, vec2(0.0), 0.0); // 几乎垂直于屏幕，退化
+
+    // rayUV 在整个 traversal 中不变。预先计算有效轴的倒数，避免每个 cell
+    // 都为退出边界执行两次浮点除法。
+    bvec2 activeRayAxis = greaterThan(abs(rayUV), vec2(1e-8));
+    vec2 invRayUV = vec2(
+        activeRayAxis.x ? 1.0 / rayUV.x : 0.0,
+        activeRayAxis.y ? 1.0 / rayUV.y : 0.0);
+    vec2 rayCellExitOffset = vec2(
+        rayUV.x >= 0.0 ? 1.0 : 0.0,
+        rayUV.y >= 0.0 ? 1.0 : 0.0);
 
     // 计算从 uv0 沿 rayUV 到屏幕边缘的参数。trace 不应该因为 uv1 在屏幕外而提前失败，
     // 而应一直走到屏幕边缘、世界最大距离或最大迭代次数。
@@ -537,8 +555,9 @@ HiZTraceResult TraceHiZ_UV_Bounded(
     float tEnd = clamp(tScreenExit, 0.0, 1.0);
 
     ivec2 size0 = textureSize(hiz, 0);
-    // 与 CPU 端 HIZMipCount = 1+floor(log2(min(w,h))) 对齐，最高 mip 索引
-    int maxMip = int(floor(log2(float(min(size0.x, size0.y)))));
+    // 与 CPU 端 HIZMipCount = 1+floor(log2(min(w,h))) 对齐。findMSB 对
+    // 正整数给出完全相同的 floor(log2)，且避免浮点转换和 transcendental。
+    int maxMip = findMSB(min(size0.x, size0.y));
     // SSR 在平面低角度反射时，过粗的 mip 会把一大片屏幕区域压成同一个 min-depth，
     // 容易沿扫描方向形成稳定的横向断层。限制最高 mip，牺牲少量性能换取更连续的命中。
     maxMip = min(maxMip, 5);
@@ -558,12 +577,11 @@ HiZTraceResult TraceHiZ_UV_Bounded(
 
     int mipLevel = 0;
     const int kMaxIterations = 512;
+    int iterationLimit = clamp(iterationBudget, 1, kMaxIterations);
+    float rayInvZAtT = max(invZ0 + invZDelta * t, 1e-8);
 
-    for (int iter = 0; iter < kMaxIterations; iter++)
+    for (int iter = 0; iter < iterationLimit; iter++)
     {
-        if (iter >= max(iterationBudget, 1))
-            break;
-
         if (t >= tEnd)
             return HiZTraceResult(false, vec2(0.0), 0.0);
 
@@ -571,7 +589,10 @@ HiZTraceResult TraceHiZ_UV_Bounded(
         if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)
             return HiZTraceResult(false, vec2(0.0), 0.0);
 
-        ivec2 mipSize  = textureSize(hiz, mipLevel);
+        // Vulkan standard mip dimensions are max(base >> level, 1).  Deriving
+        // them from the already queried base extent removes a dynamic
+        // textureSize operation from every traversal iteration.
+        ivec2 mipSize = max(size0 >> mipLevel, ivec2(1));
         vec2  cellSize = 1.0 / vec2(mipSize);
         ivec2 cellIdx  = clamp(ivec2(uv * vec2(mipSize)), ivec2(0), mipSize - 1);
 
@@ -579,27 +600,23 @@ HiZTraceResult TraceHiZ_UV_Bounded(
         float sceneMinZ = texelFetch(hiz, cellIdx, mipLevel).r;
 
         // 计算当前 mip cell 的退出边界对应的 ray 参数 tExit。
-        vec2 cellMin = vec2(cellIdx) * cellSize;
-        vec2 cellMax = cellMin + cellSize;
-        vec2 boundary = vec2(rayUV.x >= 0.0 ? cellMax.x : cellMin.x,
-                             rayUV.y >= 0.0 ? cellMax.y : cellMin.y);
+        vec2 boundary = (vec2(cellIdx) + rayCellExitOffset) * cellSize;
+        float tx = activeRayAxis.x ? (boundary.x - uv0.x) * invRayUV.x : 1e9;
+        float ty = activeRayAxis.y ? (boundary.y - uv0.y) * invRayUV.y : 1e9;
+        float tExit = min(max(t, min(tx, ty)), tEnd);
 
-        float tx = (abs(rayUV.x) > 1e-8) ? (boundary.x - uv.x) / rayUV.x : 1e9;
-        float ty = (abs(rayUV.y) > 1e-8) ? (boundary.y - uv.y) / rayUV.y : 1e9;
-        float dt = max(0.0, min(tx, ty));
-        float tExit = min(t + dt, tEnd);
-
-        // 透视正确线性深度：在屏幕空间应线性插值 1/z，而不是 z。
-        float zEnter = 1.0 / max(invZ0 + invZDelta * t, 1e-8);
-        float zExit  = 1.0 / max(invZ0 + invZDelta * tExit, 1e-8);
-        float zNear = min(zEnter, zExit);
-        float zFar  = max(zEnter, zExit);
+        // 透视正确线性深度在屏幕空间插值 1/z。coarse mip 只需判断整段
+        // ray 是否位于 sceneMinZ 前方，可直接在 inverse-depth 域完成。
+        float rayInvZAtExit = max(invZ0 + invZDelta * tExit, 1e-8);
+        float rayInvZNear = max(rayInvZAtT, rayInvZAtExit);
+        float rayInvZFar = min(rayInvZAtT, rayInvZAtExit);
 
         // min-depth HiZ：cell 内最近几何体在 sceneMinZ 处
-        // 若 ray 整段都比该值更近（zFar < sceneMinZ）→ 不可能撞到任何几何体 → 安全跨过
-        if (sceneMinZ >= 1e4 || zFar < sceneMinZ)
+        // zFar < sceneMinZ 等价于 sceneMinZ * invZFar > 1。
+        if (sceneMinZ >= 1e4 || sceneMinZ * rayInvZFar > 1.0)
         {
             t = tExit + tEpsilon;
+            rayInvZAtT = max(invZ0 + invZDelta * t, 1e-8);
             mipLevel = min(mipLevel + 1, maxMip);
         }
         else
@@ -608,6 +625,8 @@ HiZTraceResult TraceHiZ_UV_Bounded(
             if (mipLevel <= 0)
             {
                 // 已在最细 mip：解 1/z 方程得到 ray 与当前像素线性深度的交点。
+                float zNear = 1.0 / rayInvZNear;
+                float zFar = 1.0 / rayInvZFar;
                 if (zNear <= sceneMinZ + thicknessThreshold && sceneMinZ <= zFar + thicknessThreshold)
                 {
                     float tHit = t;
@@ -626,6 +645,7 @@ HiZTraceResult TraceHiZ_UV_Bounded(
 
                 // 当前像素内没有有效前向交点，跳过该 cell。
                 t = tExit + tEpsilon;
+                rayInvZAtT = max(invZ0 + invZDelta * t, 1e-8);
                 mipLevel = min(mipLevel + 1, maxMip);
             }
             else

@@ -31,6 +31,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -1017,6 +1018,8 @@ bool MergeLuaScriptFieldDefaults(
     };
 
     static std::unordered_map<std::string, LuaFieldSchemaCacheEntry> fieldDefaultsCache;
+    static std::unordered_map<std::string, std::chrono::steady_clock::time_point>
+        fieldDefaultsRetryAfter;
     const Vans::EditorAPI::ProjectBrowserRootSnapshot projectRoot = api.GetProjectBrowserRoot();
     std::filesystem::path absoluteScriptPath(scriptPath);
     if (!absoluteScriptPath.is_absolute())
@@ -1034,21 +1037,32 @@ bool MergeLuaScriptFieldDefaults(
     auto found = fieldDefaultsCache.find(key);
     if (found == fieldDefaultsCache.end())
     {
+        const auto now = std::chrono::steady_clock::now();
+        const auto retry = fieldDefaultsRetryAfter.find(key);
+        if (retry != fieldDefaultsRetryAfter.end() && now < retry->second)
+        {
+            if (descriptors) descriptors->clear();
+            return false;
+        }
         const Vans::LuaScriptFieldDefaultsResult result =
             Vans::VansLuaScriptInspectorService::BuildDefaultFieldData(
                 projectRoot.rootPath, scriptPath, entryName);
-        LuaFieldSchemaCacheEntry entry;
-        if (result)
+        if (!result)
         {
-            entry.fields = Vans::VansSerializedValue::Object({});
-            for (const auto& [name, value] : result.fields)
-                if (!name.empty() && !value.IsNull())
-                    Vans::SetSerializedObjectField(entry.fields, name, value);
-            entry.descriptors = result.descriptors;
+            fieldDefaultsRetryAfter[key] = now + std::chrono::seconds(1);
+            if (descriptors) descriptors->clear();
+            if (!result.message.empty())
+                VANS_LOG_WARN("[Inspector] Lua script field discovery failed: " << result.message);
+            return false;
         }
+        fieldDefaultsRetryAfter.erase(key);
+        LuaFieldSchemaCacheEntry entry;
+        entry.fields = Vans::VansSerializedValue::Object({});
+        for (const auto& [name, value] : result.fields)
+            if (!name.empty() && !value.IsNull())
+                Vans::SetSerializedObjectField(entry.fields, name, value);
+        entry.descriptors = result.descriptors;
         found = fieldDefaultsCache.emplace(key, std::move(entry)).first;
-        if (!result && !result.message.empty())
-            VANS_LOG_WARN("[Inspector] Lua script field discovery failed: " << result.message);
     }
 
     if (descriptors)

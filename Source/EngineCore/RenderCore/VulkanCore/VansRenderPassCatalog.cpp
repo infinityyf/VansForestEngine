@@ -162,8 +162,13 @@ namespace VansGraphics
 					{ { "Normal", VansRenderResourceUsage::SampledRead },
 					  { "GBuffer", VansRenderResourceUsage::SampledRead },
 					  { "Depth", VansRenderResourceUsage::SampledRead } },
-					{ { "SSAO", VansRenderResourceUsage::StorageWrite } },
+					{ { "SSAORaw", VansRenderResourceUsage::StorageWrite } },
 					{ "SSAO raw" } },
+				{ VansRenderPassNames::SSAOFilter, VansRenderQueueClass::Compute, true, true, VansRenderPassCondition::Always,
+					{ { "SSAORaw", VansRenderResourceUsage::SampledRead },
+					  { "Depth", VansRenderResourceUsage::SampledRead } },
+					{ { "SSAO", VansRenderResourceUsage::StorageWrite } },
+					{ "SSAO bilateral filter" } },
 				{ VansRenderPassNames::RayTracing, VansRenderQueueClass::Compute, false, true, VansRenderPassCondition::Always,
 					{ { "TLAS", VansRenderResourceUsage::AccelerationStructureBuildRead },
 					  { "GBuffer", VansRenderResourceUsage::SampledRead } },
@@ -272,21 +277,21 @@ namespace VansGraphics
 				{ VansRenderPassNames::ExposureBloom, VansRenderQueueClass::Compute, true, true, VansRenderPassCondition::Always,
 					{ { "SceneColor", VansRenderResourceUsage::SampledRead } },
 					{ { "Exposure", VansRenderResourceUsage::StorageWrite },
-					  { "FSRExposure", VansRenderResourceUsage::StorageWrite },
+					  { "UpscalerExposure", VansRenderResourceUsage::StorageWrite },
 					  { "Bloom", VansRenderResourceUsage::StorageWrite } },
 					{ "Exposure", "Bloom" } },
-				{ VansRenderPassNames::FSRUpscale, VansRenderQueueClass::Compute, true, false, VansRenderPassCondition::Always,
+				{ VansRenderPassNames::TemporalUpscale, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::Always,
 					{ { "SceneColor", VansRenderResourceUsage::SampledRead },
 					  { "OpaqueSceneColor", VansRenderResourceUsage::SampledRead },
 					  { "Depth", VansRenderResourceUsage::SampledRead },
 					  { "MotionVector", VansRenderResourceUsage::SampledRead },
-					  { "FSRExposure", VansRenderResourceUsage::SampledRead } },
+					  { "UpscalerExposure", VansRenderResourceUsage::SampledRead } },
 					{ { "FSRReactiveMask", VansRenderResourceUsage::StorageWrite },
 					  { "FSRTransparencyCompositionMask", VansRenderResourceUsage::StorageWrite },
-					  { "FSRHDRColor", VansRenderResourceUsage::StorageWrite } },
-					{ "FSR mask generation", "FSR upscale" } },
+					  { "UpscalerHDRColor", VansRenderResourceUsage::StorageWrite } },
+					{ "Temporal upscaler auxiliary masks", "Temporal upscale dispatch" } },
 				{ VansRenderPassNames::DisplayPostProcess, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::Always,
-					{ { "FSRHDRColor", VansRenderResourceUsage::SampledRead },
+					{ { "UpscalerHDRColor", VansRenderResourceUsage::SampledRead },
 					  { "Exposure", VansRenderResourceUsage::SampledRead },
 					  { "Bloom", VansRenderResourceUsage::SampledRead } },
 					{ { "FinalDisplayColor", VansRenderResourceUsage::ColorAttachmentWrite } },
@@ -388,7 +393,43 @@ namespace VansGraphics
 				outErrors.emplace_back(std::string("async pass is not marked allowAsyncCompute: ") + passName);
 		}
 
+		const VansRenderPassCatalogEntry* temporalUpscale =
+			findPass(VansRenderPassNames::TemporalUpscale);
+		if (temporalUpscale == nullptr)
+		{
+			outErrors.emplace_back("missing pass: Temporal Upscale");
+		}
+		else
+		{
+			if (temporalUpscale->queue != VansRenderQueueClass::Graphics)
+				outErrors.emplace_back("Temporal Upscale must remain on the graphics queue");
+			if (temporalUpscale->allowAsyncCompute)
+				outErrors.emplace_back("Temporal Upscale must not be migrated to async compute");
+		}
+
+		auto findPassIndex = [&](const char* passName)
+		{
+			for (std::size_t index = 0; index < catalog.size(); ++index)
+			{
+				if (std::strcmp(catalog[index].name, passName) == 0)
+					return index;
+			}
+			return catalog.size();
+		};
+		const std::size_t transparentIndex =
+			findPassIndex(VansRenderPassNames::TransparentPostProcess);
+		const std::size_t exposureIndex = findPassIndex(VansRenderPassNames::ExposureBloom);
+		const std::size_t temporalIndex = findPassIndex(VansRenderPassNames::TemporalUpscale);
+		const std::size_t displayIndex = findPassIndex(VansRenderPassNames::DisplayPostProcess);
+		if (!(transparentIndex < exposureIndex && exposureIndex < temporalIndex &&
+			temporalIndex < displayIndex))
+		{
+			outErrors.emplace_back(
+				"Temporal Upscale must execute after transparent/exposure work and before display post-process");
+		}
+
 		requireAccess(VansRenderPassNames::VegetationCompute, "VegetationDrawData", true);
+		requireAccess(VansRenderPassNames::VegetationCompute, "OcclusionHZB", false);
 		requireAccess(VansRenderPassNames::CascadeShadow, "VegetationDrawData", false);
 		requireAccess(VansRenderPassNames::GBuffer, "VegetationDrawData", false);
 		requireAccess(VansRenderPassNames::MainCameraHiZCull, "OcclusionHZB", false);
@@ -399,9 +440,19 @@ namespace VansGraphics
 		requireAccess(VansRenderPassNames::TransparentPostProcess, "TileLightLists", false);
 		requireAccess(VansRenderPassNames::CloudRayMarch, "CloudRayMarch", true);
 		requireAccess(VansRenderPassNames::DeferredSkybox, "CloudRayMarch", false);
+		requireAccess(VansRenderPassNames::ScreenSpaceEffects, "SSAORaw", true);
+		requireAccess(VansRenderPassNames::SSAOFilter, "SSAORaw", false);
+		requireAccess(VansRenderPassNames::SSAOFilter, "SSAO", true);
+		requireAccess(VansRenderPassNames::DeferredSkybox, "SSAO", false);
 		requireAccess(VansRenderPassNames::GIData, "HZB", false);
 		requireAccess(VansRenderPassNames::GIData, "GIData", true);
 		requireAccess(VansRenderPassNames::DeferredSkybox, "GIData", false);
+		requireAccess(VansRenderPassNames::TemporalUpscale, "SceneColor", false);
+		requireAccess(VansRenderPassNames::TemporalUpscale, "Depth", false);
+		requireAccess(VansRenderPassNames::TemporalUpscale, "MotionVector", false);
+		requireAccess(VansRenderPassNames::TemporalUpscale, "UpscalerExposure", false);
+		requireAccess(VansRenderPassNames::TemporalUpscale, "UpscalerHDRColor", true);
+		requireAccess(VansRenderPassNames::DisplayPostProcess, "UpscalerHDRColor", false);
 		return outErrors.empty();
 	}
 

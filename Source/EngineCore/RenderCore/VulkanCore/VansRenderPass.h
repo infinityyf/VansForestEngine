@@ -114,7 +114,7 @@ namespace VansGraphics
 		// m_DepthImage is preserved for compute passes (HZB / GI / SSR).
 		VansVKImage m_MotionVectorDepthImage;
 
-		// Display-resolution result after post-processing the HDR FSR output.
+		// Display-resolution result after post-processing the unified HDR upscaler output.
 		VansVKImage m_FinalDisplayColorImage;
 		VansVKImage* m_DisplayPostProcessInput = nullptr;
 
@@ -296,6 +296,7 @@ namespace VansGraphics
 		void EndRenderPass(VansVKCommandBuffer& command_buffer, GlobalStateData& global_state_data);
 
 		void DestroyRenderPass();
+		void DestroySceneResolutionRenderPasses();
 
 		void RecordFrameBufferImageLayoutReset(VansVKCommandBuffer& command_buffer);
 

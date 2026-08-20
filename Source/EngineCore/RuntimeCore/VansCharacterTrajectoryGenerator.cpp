@@ -149,7 +149,8 @@ namespace Vans
 		const VansCharacterMotionIntent& intent,
 		const VansCharacterMotionSettings& settings,
 		const glm::vec3& positionWorld,
-		float currentFacingYaw)
+		float currentFacingYaw,
+		bool grounded)
 	{
 		const float dt = (std::max)(0.0f, deltaTime);
 		if (!m_Initialized)
@@ -229,6 +230,8 @@ namespace Vans
 			? intent.desiredFacingYaw : currentFacingYaw;
 		m_Trajectory.desiredFacingYawRate = intent.hasFacing ? m_DesiredFacingYawRate : 0.0f;
 		m_Trajectory.hasFacing = intent.hasFacing;
+		m_Trajectory.grounded = grounded;
+		m_Trajectory.hasGrounding = true;
 		m_Trajectory.motionConsumptionRatio = m_HasActualVelocity
 			? m_MotionConsumptionRatio : 1.0f;
 		m_Trajectory.movementBlocked = m_HasActualVelocity &&

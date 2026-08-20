@@ -2746,6 +2746,17 @@ bool TestGAFAssetSchemaAndCookContract()
 	Vans::VansGameplayCookedAsset loaded;
 	if (!Vans::VansGameplayAssetStorage::LoadCooked(cookedPath, loaded, error))
 		return ExpectGAF(false, error.c_str());
+	const std::filesystem::path configuredCookedPath =
+		tempDirectory / "configured-probe.gafcooked";
+	Vans::VansGameplayCookedAsset configuredLoaded;
+	if (!Vans::VansGameplayAssetStorage::SaveCookedAtomic(
+		configuredCookedPath, configuredCook.asset, error) ||
+		!Vans::VansGameplayAssetStorage::LoadCooked(
+			configuredCookedPath, configuredLoaded, error) ||
+		!ExpectGAF(configuredLoaded.contentHash == configuredCook.asset.contentHash &&
+			configuredLoaded.cookPolicyFingerprint == configuredCook.asset.cookPolicyFingerprint,
+			"Configured GAF cooked asset did not preserve its policy fingerprint"))
+		return false;
 	std::string cookedBytes;
 	if (!Vans::VansFileStorage::ReadAllBytes(cookedPath, cookedBytes, error) ||
 		!ExpectGAF(cookedBytes.size() > 28 && cookedBytes.front() != '{',
@@ -2760,6 +2771,7 @@ bool TestGAFAssetSchemaAndCookContract()
 		corruptedPath, corrupted, corruptionError) && !corruptionError.empty(),
 		"GAF cooked corruption was not rejected")) return false;
 	std::filesystem::remove(corruptedPath);
+	std::filesystem::remove(configuredCookedPath);
 	std::filesystem::remove(cookedPath);
 	std::filesystem::remove(tempDirectory);
 	if (!ExpectGAF(loaded.assetType == Vans::VansAssetType::ActionDefinition &&

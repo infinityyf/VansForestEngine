@@ -10,6 +10,8 @@ namespace
 	constexpr uint32_t kMinimumResidencyFrames = 30;
 	constexpr uint32_t kUpgradeConfirmationFrames = 8;
 	constexpr uint32_t kDowngradeConfirmationFrames = 30;
+	constexpr uint16_t kMaximumShadowResolution = 512;
+	constexpr uint32_t kMaxStaleBoostFrames = 16;
 	constexpr float kAtlasFadeInStep = 1.0f / 6.0f;
 	constexpr float kAtlasFadeOutStep = 1.0f / 8.0f;
 	constexpr uint32_t kShadowOwnerSignature = 0xA5000000u;
@@ -133,6 +135,9 @@ namespace VansGraphics
 		{
 			pair.second.seenThisFrame = false;
 			pair.second.selected = false;
+			// 上一帧若没有收到提交成功通知，这些 job 必须重新排队。
+			pair.second.queuedActiveFaceMask = 0;
+			pair.second.queuedPendingFaceMask = 0;
 		}
 
 		std::vector<Candidate> candidates;
@@ -209,8 +214,33 @@ namespace VansGraphics
 		uint32_t virtualPagesRemaining = (std::min)(m_Budget.atlasPageBudget, GetTotalAtlasPages());
 		std::vector<Runtime*> orderedRuntimes;
 		orderedRuntimes.reserve(candidates.size());
+
+		// 最小驻留期是硬保护层，必须先计入 residency budget。旧实现先把
+		// 全部预算分给 challenger，随后再追加 protected resident，导致 CPU
+		// 选择结果超出 Atlas 容量并在真实分配阶段反复失败。
 		for (Candidate& candidate : candidates)
 		{
+			Runtime& runtime = *candidate.runtime;
+			if (runtime.activeResolution == 0 || runtime.residencyFrames >= kMinimumResidencyFrames)
+				continue;
+
+			runtime.selected = true;
+			runtime.targetResolution = runtime.activeResolution;
+			const uint32_t residentCost = PageCost(
+				runtime.activeResolution,
+				ViewCount(runtime.input.type),
+				m_AtlasAllocators[0].GetBasePageSize());
+			virtualPagesRemaining = residentCost < virtualPagesRemaining
+				? virtualPagesRemaining - residentCost
+				: 0u;
+			orderedRuntimes.push_back(&runtime);
+		}
+
+		for (Candidate& candidate : candidates)
+		{
+			if (candidate.runtime->selected)
+				continue;
+
 			uint16_t resolution = candidate.resolution;
 			uint32_t cost = candidate.pageCost;
 			while (cost > virtualPagesRemaining && resolution > m_AtlasAllocators[0].GetBasePageSize())
@@ -240,13 +270,10 @@ namespace VansGraphics
 
 			if (!runtime.selected)
 			{
-				if (runtime.activeResolution != 0 && runtime.residencyFrames < kMinimumResidencyFrames)
-				{
-					runtime.selected = true;
-					runtime.targetResolution = runtime.activeResolution;
-					orderedRuntimes.push_back(&runtime);
-				}
-				else if (runtime.activeResolution != 0)
+				// Pending allocation 不属于可采样缓存。灯光失去 residency 后必须
+				// 立即回收，否则相机移动会持续留下 pending-only Atlas 泄漏。
+				ReleasePending(runtime);
+				if (runtime.activeResolution != 0)
 				{
 					runtime.state = VansShadowRuntimeState::Evicting;
 					runtime.atlasWeight = (std::max)(0.0f, runtime.atlasWeight - kAtlasFadeOutStep);
@@ -292,7 +319,28 @@ namespace VansGraphics
 		for (Runtime* runtime : orderedRuntimes)
 		{
 			if (runtime->activeResolution == 0 || runtime->activeResolution != runtime->targetResolution)
-				EnsurePendingAllocation(*runtime, runtime->targetResolution);
+			{
+				uint16_t allocationResolution = runtime->targetResolution;
+				for (;;)
+				{
+					// 降级已经回到当前 resident 分辨率时直接取消迁移，避免为
+					// 同规格缓存再申请一套 Pending block。
+					if (runtime->activeResolution != 0 && allocationResolution == runtime->activeResolution)
+					{
+						ReleasePending(*runtime);
+						runtime->targetResolution = runtime->activeResolution;
+						break;
+					}
+					if (EnsurePendingAllocation(*runtime, allocationResolution))
+					{
+						runtime->targetResolution = runtime->pendingResolution;
+						break;
+					}
+					if (allocationResolution <= m_AtlasAllocators[0].GetBasePageSize())
+						break;
+					allocationResolution = DownshiftResolution(allocationResolution);
+				}
+			}
 		}
 
 		BuildRenderJobs(orderedRuntimes);
@@ -300,6 +348,38 @@ namespace VansGraphics
 		m_Statistics.usedAtlasPages = 0;
 		for (const VansShadowAtlasAllocator& allocator : m_AtlasAllocators)
 			m_Statistics.usedAtlasPages += allocator.GetUsedPages();
+	}
+
+	void VansPunctualShadowManager::NotifyRenderJobsSubmitted()
+	{
+		for (auto& [stableLightId, runtime] : m_Runtimes)
+		{
+			(void)stableLightId;
+			if (runtime.pendingResolution != 0 &&
+				runtime.queuedPendingFaceMask == runtime.requiredFaceMask)
+			{
+				runtime.lastRenderedFrame = m_FrameIndex;
+				runtime.staleFrames = 0;
+				runtime.dirtyReasons = VansShadowDirty_None;
+				PromotePending(runtime);
+			}
+			else if (runtime.queuedActiveFaceMask != 0)
+			{
+				runtime.dirtyFaceMask &= static_cast<uint8_t>(~runtime.queuedActiveFaceMask);
+				runtime.lastRenderedFrame = m_FrameIndex;
+				if (runtime.dirtyFaceMask == 0)
+				{
+					runtime.projectionValid = true;
+					runtime.validFaceMask = runtime.requiredFaceMask;
+					runtime.dirtyReasons = VansShadowDirty_None;
+					runtime.staleFrames = 0;
+					runtime.state = VansShadowRuntimeState::ResidentClean;
+				}
+			}
+
+			runtime.queuedActiveFaceMask = 0;
+			runtime.queuedPendingFaceMask = 0;
+		}
 	}
 
 	void VansPunctualShadowManager::InvalidateAllCasters(uint32_t dirtyReason)
@@ -536,13 +616,13 @@ namespace VansGraphics
 		float coverage) const
 	{
 		if (input.settings.resolution != VansShadowResolution::Auto)
-			return static_cast<uint16_t>(input.settings.resolution);
+			return (std::min)(static_cast<uint16_t>(input.settings.resolution), kMaximumShadowResolution);
 
 		const float viewportPixels = static_cast<float>((std::max)(camera.viewportWidth, 1u)) *
 			static_cast<float>((std::max)(camera.viewportHeight, 1u));
 		const float raw = std::sqrt(coverage * viewportPixels) * 0.5f;
 		uint16_t resolution = 128;
-		while (resolution < 1024 && static_cast<float>(resolution) < raw)
+		while (resolution < kMaximumShadowResolution && static_cast<float>(resolution) < raw)
 			resolution = static_cast<uint16_t>(resolution * 2u);
 		if (input.settings.policy == VansShadowPolicy::Hero)
 			resolution = (std::max)(resolution, static_cast<uint16_t>(512));
@@ -690,6 +770,16 @@ namespace VansGraphics
 		}
 	}
 
+	void VansPunctualShadowManager::ReleasePending(Runtime& runtime)
+	{
+		if (runtime.pendingResolution == 0)
+			return;
+		ReleaseBlocks(runtime.pendingBlocks, ViewCount(runtime.input.type));
+		runtime.pendingResolution = 0;
+		runtime.pendingFaceMask = 0;
+		runtime.queuedPendingFaceMask = 0;
+	}
+
 	void VansPunctualShadowManager::ReleaseRuntime(Runtime& runtime)
 	{
 		ReleaseBlocks(runtime.activeBlocks, ViewCount(runtime.input.type));
@@ -700,6 +790,8 @@ namespace VansGraphics
 		runtime.validFaceMask = 0;
 		runtime.dirtyFaceMask = 0;
 		runtime.pendingFaceMask = 0;
+		runtime.queuedActiveFaceMask = 0;
+		runtime.queuedPendingFaceMask = 0;
 		runtime.projectionValid = false;
 		runtime.atlasWeight = 0.0f;
 		runtime.residencyFrames = 0;
@@ -728,6 +820,43 @@ namespace VansGraphics
 
 	void VansPunctualShadowManager::BuildRenderJobs(std::vector<Runtime*>& orderedRuntimes)
 	{
+		// Residency 排序与更新排序是两个问题。更新阶段优先保证新 allocation
+		// 和失效投影的原子正确性，再用 stale boost 防止普通 dirty light 饥饿。
+		std::stable_sort(orderedRuntimes.begin(), orderedRuntimes.end(), [](const Runtime* a, const Runtime* b)
+		{
+			const auto tier = [](const Runtime* runtime)
+			{
+				const bool hero = runtime->input.settings.policy == VansShadowPolicy::Hero;
+				const bool pendingOnly = runtime->pendingResolution != 0 && runtime->activeResolution == 0;
+				const bool projectionInvalid = runtime->activeResolution != 0 &&
+					runtime->dirtyFaceMask != 0 && !runtime->projectionValid;
+				const bool pendingMigration = runtime->pendingResolution != 0 && runtime->activeResolution != 0;
+				if (hero && (pendingOnly || projectionInvalid)) return 0u;
+				if (pendingOnly || projectionInvalid) return 1u;
+				if (hero && runtime->dirtyFaceMask != 0) return 2u;
+				if (runtime->dirtyFaceMask != 0) return 3u;
+				if (pendingMigration) return 4u;
+				return 5u;
+			};
+
+			const uint32_t aTier = tier(a);
+			const uint32_t bTier = tier(b);
+			if (aTier != bTier)
+				return aTier < bTier;
+
+			const float aStaleFactor = 1.0f + 0.25f * static_cast<float>((std::min)(a->staleFrames, kMaxStaleBoostFrames));
+			const float bStaleFactor = 1.0f + 0.25f * static_cast<float>((std::min)(b->staleFrames, kMaxStaleBoostFrames));
+			const uint32_t aResolution = a->pendingResolution != 0 ? a->pendingResolution : a->activeResolution;
+			const uint32_t bResolution = b->pendingResolution != 0 ? b->pendingResolution : b->activeResolution;
+			const float aCost = static_cast<float>((std::max)(aResolution * aResolution * ViewCount(a->input.type), 1u));
+			const float bCost = static_cast<float>((std::max)(bResolution * bResolution * ViewCount(b->input.type), 1u));
+			const float aScore = a->importance * aStaleFactor / aCost;
+			const float bScore = b->importance * bStaleFactor / bCost;
+			if (!NearlyEqual(aScore, bScore))
+				return aScore > bScore;
+			return a->input.stableLightId < b->input.stableLightId;
+		});
+
 		uint64_t remainingTexels = m_Budget.maxDirtyTexelsPerFrame;
 		for (Runtime* runtime : orderedRuntimes)
 		{
@@ -749,6 +878,7 @@ namespace VansGraphics
 						job.lightType = runtime->input.type;
 						job.faceIndex = static_cast<uint8_t>(face);
 						job.resolution = runtime->pendingResolution;
+						job.rendersPendingAllocation = true;
 						job.shadowCasterMask = runtime->input.settings.shadowCasterMask;
 						job.atlasIndex = block.atlasIndex;
 						job.atlasRect = { block.x, block.y, block.resolution, block.resolution };
@@ -758,10 +888,15 @@ namespace VansGraphics
 					remainingTexels -= groupTexels;
 					m_Statistics.dirtyTexels += groupTexels;
 					m_Statistics.renderedViews += viewCount;
-					runtime->lastRenderedFrame = m_FrameIndex;
-					PromotePending(*runtime);
-					runtime->dirtyReasons = VansShadowDirty_None;
+					// 保持 PendingRender；只有 GPU 提交成功通知才能原子发布。
+					runtime->state = VansShadowRuntimeState::PendingRender;
+					continue;
 				}
+
+				++runtime->staleFrames;
+				runtime->state = VansShadowRuntimeState::PendingRender;
+				if (runtime->activeResolution == 0)
+					continue;
 			}
 
 			if (runtime->activeResolution == 0 || runtime->dirtyFaceMask == 0)
@@ -772,9 +907,14 @@ namespace VansGraphics
 			const uint64_t faceTexels = static_cast<uint64_t>(runtime->activeResolution) * runtime->activeResolution;
 			const uint64_t requestedTexels = faceTexels * CountBits(scheduledMask);
 			if (requiresAtomicUpdate && requestedTexels > remainingTexels)
+			{
+				++runtime->staleFrames;
+				runtime->state = VansShadowRuntimeState::ResidentDirty;
 				continue;
+			}
 
 			const uint32_t atomicGroup = requiresAtomicUpdate ? m_NextAtomicGroupId++ : 0;
+			uint8_t queuedMask = 0;
 			for (uint32_t face = 0; face < viewCount; ++face)
 			{
 				const uint8_t bit = static_cast<uint8_t>(1u << face);
@@ -800,17 +940,14 @@ namespace VansGraphics
 				remainingTexels -= faceTexels;
 				m_Statistics.dirtyTexels += faceTexels;
 				++m_Statistics.renderedViews;
-				runtime->dirtyFaceMask &= static_cast<uint8_t>(~bit);
+				queuedMask |= bit;
 			}
 
-			if (runtime->dirtyFaceMask == 0)
+			const uint8_t unscheduledMask = runtime->dirtyFaceMask & static_cast<uint8_t>(~queuedMask);
+			if (unscheduledMask == 0)
 			{
-				runtime->projectionValid = true;
-				runtime->validFaceMask = runtime->requiredFaceMask;
-				runtime->dirtyReasons = VansShadowDirty_None;
-				runtime->staleFrames = 0;
-				runtime->lastRenderedFrame = m_FrameIndex;
-				runtime->state = VansShadowRuntimeState::ResidentClean;
+				// 提交成功前仍保持 dirty，避免录制/提交失败后丢失更新。
+				runtime->state = VansShadowRuntimeState::ResidentDirty;
 			}
 			else
 			{
@@ -891,11 +1028,45 @@ namespace VansGraphics
 		{
 			const uint32_t metaIndex = GetShadowMetaIndex(job.stableLightId);
 			job.shadowMetaIndex = metaIndex;
-			if (metaIndex < m_GPUShadowData.size() && m_GPUShadowData[metaIndex].firstView != VANS_INVALID_SHADOW_INDEX)
+			const auto runtimeIt = m_Runtimes.find(job.stableLightId);
+			if (runtimeIt == m_Runtimes.end())
+				continue;
+			Runtime& runtime = runtimeIt->second;
+			const uint8_t faceBit = static_cast<uint8_t>(1u << job.faceIndex);
+
+			if (job.rendersPendingAllocation)
+			{
+				if (job.faceIndex >= ViewCount(runtime.input.type) ||
+					m_GPUShadowViews.size() >= VANS_MAX_PUNCTUAL_SHADOW_VIEWS)
+					continue;
+				const VansShadowAtlasBlock& block = runtime.pendingBlocks[job.faceIndex];
+				if (!ValidateBlock(block) || block.atlasIndex != job.atlasIndex)
+					continue;
+				job.shadowViewIndex = static_cast<uint32_t>(m_GPUShadowViews.size());
+				m_GPUShadowViews.push_back(BuildGPUView(runtime, job.faceIndex, block));
+				runtime.queuedPendingFaceMask |= faceBit;
+			}
+			else if (metaIndex < m_GPUShadowData.size() &&
+				m_GPUShadowData[metaIndex].firstView != VANS_INVALID_SHADOW_INDEX)
 			{
 				const uint32_t viewIndex = m_GPUShadowData[metaIndex].firstView + job.faceIndex;
 				if (viewIndex < m_GPUShadowViews.size())
+				{
 					job.shadowViewIndex = viewIndex;
+					runtime.queuedActiveFaceMask |= faceBit;
+				}
+			}
+			else if (job.faceIndex < ViewCount(runtime.input.type) &&
+				m_GPUShadowViews.size() < VANS_MAX_PUNCTUAL_SHADOW_VIEWS)
+			{
+				// 投影变化时旧 handle 不可采样，但写入 pass 仍需要本次更新矩阵。
+				const VansShadowAtlasBlock& block = runtime.activeBlocks[job.faceIndex];
+				if (ValidateBlock(block) && block.atlasIndex == job.atlasIndex)
+				{
+					job.shadowViewIndex = static_cast<uint32_t>(m_GPUShadowViews.size());
+					m_GPUShadowViews.push_back(BuildGPUView(runtime, job.faceIndex, block));
+					runtime.queuedActiveFaceMask |= faceBit;
+				}
 			}
 		}
 	}

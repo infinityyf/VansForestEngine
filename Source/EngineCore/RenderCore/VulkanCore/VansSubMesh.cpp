@@ -339,11 +339,15 @@ void VansGraphics::VansMesh::LoadMultiMesh(VkDevice& logic_device, VkQueue& queu
 	m_LogicalDevice = logic_device;
 	m_MeshRawPositionDataEnableCPURead = needCPUData;
 
-	if (trustCacheWithoutSource &&
-		TryLoadMeshCache(logic_device, queue, commandbuffer,
+	if (trustCacheWithoutSource)
+	{
+		if (TryLoadMeshCache(logic_device, queue, commandbuffer,
 			cachePath, file_name, import_tangent, supportRayTracing,
 			needCPUData, true, scaleFactor, trustCacheWithoutSource))
-	{
+		{
+			return;
+		}
+		VANS_LOG_ERROR("[MeshCache] Required cooked multi-mesh cache was rejected: " << cachePath);
 		return;
 	}
 

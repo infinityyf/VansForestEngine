@@ -1,5 +1,6 @@
 ﻿#pragma once
 #include "../VansGraphicsDevice.h"
+#include "../VansRenderRuntimeConfig.h"
 #include "vulkan/vulkan.h"
 #include "VansVKSurface.h"
 #include "VansVKBuffer.h"
@@ -16,7 +17,9 @@
 
 #include "../../ScriptCore/VansCommonUtils.h"
 #include "../FidelityFXCore/VansFSR.h"
-#include "../FidelityFXCore/VansFSRHistoryState.h"
+#include "../DLSSCore/VansDLSS.h"
+#include "../UpscalingCore/VansUpscalerManager.h"
+#include "../UpscalingCore/VansUpscaleResolutionPolicy.h"
 #include <array>
 #include <cstdint>
 #include <functional>
@@ -99,25 +102,38 @@ namespace VansGraphics
 	private:
 
 		VansFSR m_FSRController;
-		VansFSRHistoryState m_FSRHistory;
-		VansFSRMode m_FSRMode = VansFSRMode::MatchViewport;
-		VkExtent2D m_RequestedSceneViewportExtent{ 0, 0 };
-		bool m_FSRConfigDirty = false;
+		VansDLSS m_DLSSController;
+		VansUpscalerManager m_UpscalerManager;
+		VansVKImage m_UpscalerOutputImage;
+		VkExtent2D m_UpscalerOutputExtent{ 0, 0 };
+		// Renderer-owned target resolution. Editor Scene panels only scale the
+		// produced image and must never feed their panel dimensions back here.
+		VkExtent2D m_RequestedUpscalerOutputExtent{ 0, 0 };
+		bool m_UpscalerConfigDirty = false;
 		bool m_FSREnabled = false;
+		bool m_DLSSEnabled = false;
 		bool m_PresentFinalDisplayToSwapchain = false;
 
 		bool BuildFSRFrameInput(VansFSRFrameInput& output);
+		bool BuildDLSSDispatch(VansStreamlineDLSSDispatch& output);
+		bool PrepareDLSSDispatchResources(VansVKCommandBuffer& commandBuffer);
 		void RecordFSRMasks(VansVKCommandBuffer& commandBuffer, VansFSRFrameInput& input);
 		bool RecordFSRFallbackUpscale(VansVKCommandBuffer& commandBuffer);
 		void RecordDisplayPostProcess(VansVKCommandBuffer& commandBuffer);
 		void RecordFinalDisplayToSwapchain();
 
 		bool InitializeFSR();
+		bool InitializeDLSS();
+		bool EnsureUpscalerOutputImage(const VkExtent2D& outputExtent);
+		void CleanupUpscalerOutputImage();
 
 		void CleanupFSR();
+		void CleanupDLSS();
 
-		VkExtent2D CalculateFSROutputExtent() const;
-		void ProcessPendingFSRConfig();
+		VkExtent2D CalculateUpscalerOutputExtent() const;
+		VkExtent2D CalculateUpscalerRenderExtent() const;
+		void RecreateSceneResolutionResources(const VkExtent2D& renderExtent);
+		void ProcessPendingUpscalerConfig();
 
 	public:
 
@@ -142,19 +158,49 @@ namespace VansGraphics
 			return m_FSRController.GetTransparencyAndCompositionImage();
 		}
 
-		// 查询 FSR 内置抖动偏移（像素空间 [-0.5, 0.5]），供 VansCamera 替代 Halton 序列
-		bool GetFSRJitterOffset(uint32_t frameIndex, float& outPixelX, float& outPixelY) override;
-		float GetUpscaleMipBias() const override;
+		bool GetTemporalUpscaleJitterOffset(
+			uint32_t frameIndex,
+			float& outPixelX,
+			float& outPixelY) override;
+		float GetTemporalUpscaleMipBias() const override;
 
-		void RequestFSRConfig(VansFSRMode mode, uint32_t viewportWidth, uint32_t viewportHeight, float sharpness);
-		void RequestFSRHistoryReset(VansFSRResetReason reason) { m_FSRHistory.RequestReset(reason); }
+		VansUpscalerSelectionChange RequestUpscalerConfig(
+			const VansUpscalerConfig& config,
+			uint32_t outputWidth,
+			uint32_t outputHeight);
+		void ApplyRenderRuntimeConfig(
+			const VansRenderRuntimeConfig& config,
+			uint32_t outputWidth,
+			uint32_t outputHeight);
+		// Project opening is a renderer safe point. Commit the requested backend
+		// and resolution before any scene-owned resources are created at that size.
+		void CommitRenderRuntimeConfigAtSafePoint()
+		{
+			ProcessPendingUpscalerConfig();
+		}
+		void RequestUpscalerHistoryReset(VansUpscalerResetReason reason)
+		{
+			m_UpscalerManager.GetHistory().RequestReset(reason);
+		}
 		void SetRuntimeSwapchainPresentationEnabled(bool enabled) { m_PresentFinalDisplayToSwapchain = enabled; }
-		VansFSRMode GetFSRMode() const { return m_FSRMode; }
-		float GetFSRSharpness() const { return m_FSRController.GetSharpness(); }
-		const VansFSRDiagnostics& GetFSRDiagnostics() const { return m_FSRController.GetDiagnostics(); }
-		void SetFSRDebugViewEnabled(bool enabled) { m_FSRController.SetDebugViewEnabled(enabled); }
-		bool IsFSRDebugViewEnabled() const { return m_FSRController.IsDebugViewEnabled(); }
-		VansFSRResetReason GetPendingFSRResetReasons() const { return m_FSRHistory.GetPendingReasons(); }
+		const VansUpscalerConfig& GetDesiredUpscalerConfig() const
+		{
+			return m_UpscalerManager.GetDesiredConfig();
+		}
+		const VansUpscalerConfig& GetEffectiveUpscalerConfig() const
+		{
+			return m_UpscalerManager.GetEffectiveConfig();
+		}
+		VansUpscalerFallbackReason GetUpscalerFallbackReason() const
+		{
+			return m_UpscalerManager.GetFallbackReason();
+		}
+		const std::string& GetUpscalerFallbackMessage() const
+		{
+			return m_UpscalerManager.GetFallbackMessage();
+		}
+		VansUpscalerRuntimeDiagnostics GetUpscalerDiagnostics() const;
+		VansUpscalerCapabilities GetUpscalerCapabilities(VansUpscalerBackend backend) const;
 		bool IsParallelCommandRecordingEnabled() const { return m_EnableParallelCommandRecording; }
 		void SetParallelCommandRecordingEnabled(bool enabled) { m_EnableParallelCommandRecording = enabled; }
 		bool IsFrameContextRingEnabled() const { return m_EnableFrameContextRing; }
@@ -164,7 +210,7 @@ namespace VansGraphics
 		bool IsAsyncComputeEnabled() const { return m_AsyncComputeEnabled; }
 		const VansQueueCapabilities& GetQueueCapabilities() const { return m_QueueCapabilities; }
 		void SetAsyncComputeEnabled(bool enabled);
-		VkExtent2D GetRequestedSceneViewportExtent() const { return m_RequestedSceneViewportExtent; }
+		VkExtent2D GetUpscalerOutputExtent() const { return CalculateUpscalerOutputExtent(); }
 
 		// 窗口大小改变时重建交换链和UI渲染pass
 		void OnWindowResize(uint32_t width, uint32_t height) override;
@@ -175,7 +221,7 @@ namespace VansGraphics
 		void BeforeRendering() override;
 		void PrepareRenderingFrame() override
 		{
-			ProcessPendingFSRConfig();
+			ProcessPendingUpscalerConfig();
 			m_PipelineCacheService.TickPersistence();
 		}
 
@@ -255,6 +301,7 @@ namespace VansGraphics
 		const std::vector<uint32_t>& GetSharingQueueFamilyIndices() const { return m_SharingQueueFamilyIndices; }
 
 		void PrepareRenderingData();
+		void PrepareResolutionDependentRenderingData();
 
 		// IES profile 纹理数组：在场景加载完成后调用，创建 GPU 资源并上传所有已解析的 IES profile
 		void PrepareIESProfileData();
@@ -361,6 +408,7 @@ namespace VansGraphics
 
 		uint64_t m_FeatureDescriptorGeneration = 1;
 		uint64_t m_GIDataDescSetGeneration = 0;
+		uint64_t m_SSAOFilterDescSetGeneration = 0;
 		uint64_t m_HZBDescSetGeneration = 0;
 		uint64_t m_HIZSeedDescSetGeneration = 0;
 		uint64_t m_OcclusionHZBDescSetGeneration = 0;
@@ -406,6 +454,7 @@ namespace VansGraphics
 		}
 
 		void UpdateSSGI(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
+		void UpdateSSGIProbeCache(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
 		void TemporalFilterSSGI(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
@@ -419,6 +468,7 @@ namespace VansGraphics
 		void MaybeDumpGIDebugFrame(VansRenderPassManager* renderPassManager);
 
 		void UpdateGIDataDescriptorSets(VansRenderPassManager* renderPassManager);
+		void UpdateSSAOFilterDescriptorSet(VansRenderPassManager* renderPassManager);
 		void UploadSSGIParamsFromGISettings();
 
 		void UpdateHIZSeedDescriptorSet(VansRenderPassManager* renderPassManager);
@@ -607,8 +657,11 @@ namespace VansGraphics
 		VansVKCommandBuffer m_VansVKGBufferCommandBuffer;
 		VansVKCommandBuffer m_VansVKGraphicsPreCommandBuffer;
 		VansVKCommandBuffer m_VansVKGraphicsScreenCommandBuffer;
+		// 第二条 Graphics queue 上的 SSAO compute pass；仅在该 queue 独立时提交。
+		VansVKCommandBuffer m_VansVKAsyncSSAOCommandBuffer;
 
-		VansVKCommandBuffer m_VansVKRayTracingCommandBuffer;
+		// Early Compute：Vegetation、TileLight 与 MainCameraHiZ，不承载 RayTracing。
+		VansVKCommandBuffer m_VansVKAsyncEarlyCommandBuffer;
 		VansVKCommandBuffer m_VansVKAsyncCloudCommandBuffer;
 		VansVKCommandBuffer m_VansVKAsyncGICommandBuffer;
 
@@ -714,6 +767,7 @@ namespace VansGraphics
 		bool ResetGBufferSecondaryCommandBuffersIfNeeded();
 		void ResetAsyncFrameCommandBuffersAfterFailure();
 		void RefreshAsyncComputeState();
+		void NotifyPunctualShadowJobsSubmitted();
 	public:
 		VansVKDevice(VkExtent2D resolution, INativeWindowProvider* nativeWindowProvider = nullptr)
 		{

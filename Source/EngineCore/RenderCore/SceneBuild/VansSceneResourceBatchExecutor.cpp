@@ -2,6 +2,7 @@
 
 #include "../VansScene.h"
 #include "VansSceneProjectResourceBuilder.h"
+#include "VansSceneResourceArtifactPrewarmer.h"
 #include "../VulkanCore/VansVKDevice.h"
 #include "../../Configration/VansConfigration.h"
 #include "../../ProjectSystem/VansProjectManager.h"
@@ -45,6 +46,25 @@ bool VansSceneResourceBatchExecutor::Execute(VansScene& scene, const Vans::VansS
 	std::string assetPrefix = projectMgr.IsProjectLoaded()
 		? projectMgr.GetProjectRootPath()
 		: enginePrefix;
+	if (Vans::VansAssetDatabase* projectDatabase = projectMgr.GetAssetDatabase())
+	{
+		if (Vans::VansAssetDatabase* builtInDatabase = projectMgr.GetBuiltInAssetDatabase())
+		{
+			const auto prewarmStart = SceneLoadClock::now();
+			const VansSceneResourceArtifactPrewarmResult prewarm =
+				VansSceneResourceArtifactPrewarmer::Prewarm(
+					assetPrefix,
+					*projectDatabase,
+					*builtInDatabase,
+					resourcePlan);
+			LogSceneLoadPhase("resource.artifactPrewarm", prewarmStart);
+			if (!prewarm.Succeeded())
+			{
+				VANS_LOG_WARN("[ResourceArtifactPrewarm] Some resources could not be cached; "
+					"Editor source fallback remains enabled");
+			}
+		}
+	}
 	const Vans::VansSceneResourceLoadContext loadContext =
 		Vans::VansSceneResourceLoadContext::ForEditor(
 			assetPrefix,

@@ -114,6 +114,11 @@ bool CompileShaderModuleData(
 			std::string shader_type = GetFileExtensionWithoutDot(shader_file);
 			if (shader_type == "spv")
 				continue;
+			// .glsl files are include-only modules shared by one or more real shader
+			// stages. Build asset copies may retain a removed include until the output
+			// tree is cleaned, so directory discovery must never treat it as a stage.
+			if (shader_type == "glsl")
+				continue;
 
 			VkShaderStageFlagBits shader_stage = {};
 			if (shaderType == VansGraphics::ShaderType::Normal)

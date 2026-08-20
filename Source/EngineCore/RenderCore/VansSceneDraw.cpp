@@ -150,6 +150,23 @@ void VansGraphics::VansScene::DrawMotionVectorNodeRange(VansVKCommandBuffer& cmd
     }
 }
 
+void VansGraphics::VansScene::DrawSkyMotionVectorNode()
+{
+	VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+	if (vkDevice == nullptr)
+		return;
+	DrawSkyMotionVectorNode(vkDevice->GetCommandBuffer(), vkDevice->GetGlobalRenderStateData());
+}
+
+void VansGraphics::VansScene::DrawSkyMotionVectorNode(
+	VansVKCommandBuffer& cmd,
+	GlobalStateData globalStateData)
+{
+	if (m_SkyBoxNode == nullptr || !m_SkyBoxNode->IsEnabled())
+		return;
+	static_cast<VansSkyBoxRenderNode*>(m_SkyBoxNode)->DrawMotionVector(cmd, globalStateData);
+}
+
 void VansGraphics::VansScene::DrawPunctualShadowJob(const VansPunctualShadowRenderJob& job)
 {
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
@@ -376,12 +393,15 @@ void VansGraphics::VansScene::RecordVegetationCompute(VansVKCommandBuffer& cmd)
         return;
     }
 
-    float deltaTime = static_cast<float>(VansTimer::GetLastFrameDelta());
-    float time      = static_cast<float>(VansTimer::GetFrameTime());
+	float deltaTime = static_cast<float>(VansTimer::GetLastFrameDelta());
+	float time      = static_cast<float>(VansTimer::GetFrameTime());
+	const VansVKDevice* vkDevice = dynamic_cast<const VansVKDevice*>(m_GraphicsDevice);
+	const bool sameQueueGraphicsConsumer = vkDevice == nullptr || !vkDevice->IsAsyncComputeEnabled();
 
-    // 先生成本帧可见性，再让 Grass 模拟跳过不可见实例，避免 cull 前模拟全量草实例。
-    const bool grassCullReady = m_VegetationSystem->DispatchCullPass(cmd, m_VegetationSystem->GetCullDistance());
-    m_VegetationSystem->DispatchTreeCullPass(cmd);
+	// 先生成本帧可见性，再让 Grass 模拟跳过不可见实例，避免 cull 前模拟全量草实例。
+	const bool grassCullReady = m_VegetationSystem->DispatchCullPass(
+		cmd, m_VegetationSystem->GetCullDistance(), sameQueueGraphicsConsumer);
+	m_VegetationSystem->DispatchTreeCullPass(cmd, sameQueueGraphicsConsumer);
 
     // Camera position is read directly in the shader via the global CameraData UBO (set=0)
     // All simulation params are stored on the system (loaded from scene JSON via SetSimParams).
@@ -393,10 +413,11 @@ void VansGraphics::VansScene::RecordVegetationCompute(VansVKCommandBuffer& cmd)
         m_VegetationSystem->GetWindBendMult(),
         m_VegetationSystem->GetStiffness(),
         m_VegetationSystem->GetDamping(),
-        m_VegetationSystem->GetSoftness(),
-        m_VegetationSystem->GetLodFullDist(),
-        m_VegetationSystem->GetLodFadeDist(),
-        grassCullReady);
+		m_VegetationSystem->GetSoftness(),
+		m_VegetationSystem->GetLodFullDist(),
+		m_VegetationSystem->GetLodFadeDist(),
+		grassCullReady,
+		sameQueueGraphicsConsumer);
 
     }
 

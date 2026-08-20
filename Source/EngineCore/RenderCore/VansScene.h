@@ -606,8 +606,6 @@ namespace VansGraphics
 
 		void CreateSceneNodeDescriptorSets() { CreateNodeDescriptorSets(); }
 
-		void DeferInitialReflectionProbeBake();
-
 		void PlayAllSceneVideos();
 
 
@@ -1020,6 +1018,8 @@ namespace VansGraphics
 		void DrawMotionVectorNodes();
 		void DrawMotionVectorNodes(VansVKCommandBuffer& cmd, GlobalStateData globalStateData);
 		void DrawMotionVectorNodeRange(VansVKCommandBuffer& cmd, GlobalStateData globalStateData, size_t begin, size_t end);
+		void DrawSkyMotionVectorNode();
+		void DrawSkyMotionVectorNode(VansVKCommandBuffer& cmd, GlobalStateData globalStateData);
 
 
 

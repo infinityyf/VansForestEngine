@@ -34,6 +34,10 @@ extern "C"
 class VansScriptObject;
 class VansLuaScriptComponent;
 
+void VansInstallLuaProjectSearchPath(
+	lua_State* luaState,
+	const std::filesystem::path& projectRoot);
+
 namespace VansGraphics
 {
 class VansAnimationNode;

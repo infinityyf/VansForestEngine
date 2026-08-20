@@ -175,6 +175,7 @@ vec3 SampleDeferredProbeIrradiance(vec3 worldPos, vec3 normal)
     vec3 probeIrradiance = vec3(0.0);
     float probeWeight = 0.0;
     float selectedPriority = -3.402823e38;
+    uint selectedRegion = 0u;
     const uint regionCount = min(uint(regionInfo.x), 8u);
     for (uint regionIndex = 0u; regionIndex < regionCount; ++regionIndex)
     {
@@ -187,11 +188,16 @@ vec3 SampleDeferredProbeIrradiance(vec3 worldPos, vec3 normal)
         if (weight > 0.0 && (priority > selectedPriority ||
             (priority == selectedPriority && weight > probeWeight)))
         {
-            probeIrradiance = SampleDeferredProbeIrradianceForRegion(
-                regionIndex, region, worldPos, normalize(normal));
             probeWeight = weight;
             selectedPriority = priority;
+            selectedRegion = regionIndex;
         }
+    }
+    if (probeWeight > 0.0)
+    {
+        probeIrradiance = SampleDeferredProbeIrradianceForRegion(
+            selectedRegion, regions[selectedRegion], worldPos,
+            normalize(normal));
     }
     return max(probeIrradiance * probeWeight, vec3(0.0));
 }

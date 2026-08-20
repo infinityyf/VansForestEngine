@@ -92,12 +92,12 @@ namespace Vans::EditorAPI
 
 		EditorTextureHandle GetViewportTexture(ViewportId id) const override;
 		RenderTexturePreview GetViewportPreview(ViewportId id) const override;
-		FSRSettingsSnapshot GetFSRSettings() const override;
-		void SetFSRSettings(FSRUpscaleMode mode, float sharpness) override;
-		void SetFSRDebugViewEnabled(bool enabled) override;
+		UpscalerSettingsSnapshot GetUpscalerSettings() const override;
+		std::vector<UpscalerCapabilitiesSnapshot> GetUpscalerCapabilities() const override;
+		ApplyUpscalerSettingsResult ApplyUpscalerSettings(
+			const UpscalerSettingsSnapshot& settings) override;
 		CommandRecordingSettingsSnapshot GetCommandRecordingSettings() const override;
 		void SetCommandRecordingSettings(const CommandRecordingSettingsSnapshot& settings) override;
-		void SetSceneViewportExtent(std::uint32_t width, std::uint32_t height) override;
 		std::vector<RenderTexturePreview> QueryRenderTexturePreviews(RenderTextureFilter filter) const override;
 		void RequestPunctualShadowDebugPreview() override;
 		PunctualShadowDebugSnapshot GetPunctualShadowDebugSnapshot() const override;

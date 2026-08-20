@@ -2,33 +2,14 @@
 
 #include <cstdint>
 #include <string>
+#include "../RenderCore/VansRenderRuntimeConfig.h"
 
 namespace Vans
 {
 	struct VansProjectConfig;
 
-	enum class VansProjectFSRMode : std::uint32_t
-	{
-		MatchViewport = 0,
-		NativeAA = 1,
-		Quality = 2,
-		Balanced = 3,
-		Performance = 4
-	};
-
-	struct VansProjectFSRSettings
-	{
-		VansProjectFSRMode mode = VansProjectFSRMode::MatchViewport;
-		float sharpness = 0.2f;
-	};
-
-	struct VansProjectCommandRecordingSettings
-	{
-		bool parallelEnabled = true;
-		bool frameContextRingEnabled = false;
-		std::uint32_t framesInFlight = 2;
-		bool asyncComputeEnabled = false;
-	};
+	using VansProjectUpscalerSettings = VansGraphics::VansUpscalerConfig;
+	using VansProjectCommandRecordingSettings = VansGraphics::VansCommandRecordingConfig;
 
 	struct VansProjectMainCameraHiZCullSettings
 	{
@@ -55,9 +36,18 @@ namespace Vans
 
 		float GetFixedTimeStep() const { return m_FixedTimeStep; }
 		void SetFixedTimeStep(float fixedTimeStep);
-		const VansProjectFSRSettings& GetFSRSettings() const { return m_FSRSettings; }
-		void SetFSRSettings(VansProjectFSRMode mode, float sharpness);
+		const VansProjectUpscalerSettings& GetUpscalerSettings() const
+		{
+			return m_UpscalerSettings;
+		}
+		bool SetUpscalerSettings(
+			const VansProjectUpscalerSettings& settings,
+			std::string* error = nullptr);
 		const VansProjectCommandRecordingSettings& GetCommandRecordingSettings() const { return m_CommandRecordingSettings; }
+		VansGraphics::VansRenderRuntimeConfig GetRenderRuntimeConfig() const
+		{
+			return { m_UpscalerSettings, m_CommandRecordingSettings };
+		}
 		void SetCommandRecordingSettings(
 			bool parallelEnabled,
 			bool frameContextRingEnabled,
@@ -70,7 +60,7 @@ private:
 		bool LoadCollisionLayerSettingsFromFile(const std::string& filePath);
 
 		float m_FixedTimeStep = 1.0f / 60.0f;
-		VansProjectFSRSettings m_FSRSettings;
+		VansProjectUpscalerSettings m_UpscalerSettings;
 		VansProjectCommandRecordingSettings m_CommandRecordingSettings;
 		VansProjectMainCameraHiZCullSettings m_MainCameraHiZCullSettings;
 	};

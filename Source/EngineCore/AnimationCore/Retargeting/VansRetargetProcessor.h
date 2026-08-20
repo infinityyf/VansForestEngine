@@ -7,6 +7,18 @@
 
 namespace VansGraphics
 {
+	struct VansRetargetTwoBoneChainDesc
+	{
+		std::string name;
+		std::string sourceRoot;
+		std::string sourceMid;
+		std::string sourceTip;
+		std::string targetRoot;
+		std::string targetMid;
+		std::string targetTip;
+		float positionWeight = 1.0f;
+	};
+
 	struct VansRetargetRuntimeDesc
 	{
 		std::string profilePath;
@@ -20,6 +32,7 @@ namespace VansGraphics
 		float translationScale = 1.0f;
 		bool hasExplicitTranslationScale = false;
 		bool debugDraw = false;
+		std::vector<VansRetargetTwoBoneChainDesc> twoBoneChains;
 	};
 
 	struct VansRetargetBuildStats
@@ -28,6 +41,7 @@ namespace VansGraphics
 		uint32_t targetBoneCount = 0;
 		uint32_t mappedBoneCount = 0;
 		uint32_t unmappedTargetBoneCount = 0;
+		uint32_t twoBoneChainCount = 0;
 		float translationScale = 1.0f;
 	};
 
@@ -53,7 +67,20 @@ namespace VansGraphics
 			bool copyTranslationDelta = false;
 		};
 
+		struct CompiledTwoBoneChain
+		{
+			std::string name;
+			int sourceRoot = -1;
+			int sourceMid = -1;
+			int sourceTip = -1;
+			int targetRoot = -1;
+			int targetMid = -1;
+			int targetTip = -1;
+			float positionWeight = 1.0f;
+		};
+
 		std::vector<BoneMapEntry> m_BoneMap;
+		std::vector<CompiledTwoBoneChain> m_TwoBoneChains;
 		std::vector<glm::mat4> m_SourceBindModelTransforms;
 		std::vector<glm::mat4> m_TargetBindModelTransforms;
 		VansRetargetBuildStats m_Stats;

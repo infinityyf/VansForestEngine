@@ -16,6 +16,7 @@ struct VansGameplayCookedAsset
 	VansAssetType assetType = VansAssetType::Unknown;
 	std::uint32_t schemaVersion = 1;
 	std::uint64_t contentHash = 0;
+	std::string cookPolicyFingerprint;
 	std::vector<std::string> dependencies;
 	VansSerializedValue runtimeDocument = VansSerializedValue::Object({});
 };

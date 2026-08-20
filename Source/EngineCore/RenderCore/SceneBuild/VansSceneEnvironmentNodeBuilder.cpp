@@ -615,7 +615,7 @@ void VansSceneEnvironmentNodeBuilder::AddVegetationNode(
     {
         VansMaterialManager* materialManager = scene.GetMaterialManager();
         VansTexture* hzbTexture = materialManager->GetRuntimeRenderTexture(
-            VansMaterialManager::RT_HZB_RESULT);
+            VansMaterialManager::RT_HZB_OCCLUSION_RESULT);
         if (hzbTexture != nullptr)
         {
             float hizSampleBias = vegetationData.hizSampleBias.value_or(0.2f);

@@ -1,5 +1,6 @@
 ﻿#include "VansVKFunctions.h"
 #include "../../Source/EngineCore/Util/VansLog.h"
+#include "VansStreamlineRuntime.h"
 #include <iostream>
 
 #if defined _WIN32
@@ -28,7 +29,10 @@ namespace VansGraphics
 	bool LoadVulkanLibrary()
 	{
 #if defined _WIN32
-		vulkan_library = LoadLibrary(TEXT("vulkan-1.dll"));
+		vulkan_library = VansStreamlineRuntime::Get().TryInitializeVulkanLoader();
+		if (vulkan_library == nullptr)
+			vulkan_library = LoadLibraryExW(
+				L"vulkan-1.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
 #elif defined __linux
 		vulkan_library = dlopen("libvulkan.so.1", RTLD_NOW);
 #endif

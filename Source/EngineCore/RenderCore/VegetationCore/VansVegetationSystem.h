@@ -110,7 +110,7 @@ namespace VansGraphics
 		float    terrainHeightOffset;  // 地形高度偏移
 		int      terrainEnabled;       // 是否启用地形
 		uint32_t subBladeCount;        // 子叶片数，用于 atomicAdd 直接计算 indirect instanceCount
-		// Hi-Z 遮挡剔除参数。当前 HZB 使用 min-depth 降采样，因此判断必须保守，避免边界误剔除。
+		// Hi-Z 遮挡剔除参数。输入为上一帧 max-depth occlusion HZB，shader 使用历史相机矩阵重投影。
 		float    hizSampleBias;        // 线性深度偏差，单位为米；只有超过该偏差才判为遮挡
 		int      hizMipCount;          // Hi-Z mip 层数
 		int      hizEnabled;           // 是否启用 Hi-Z 剪除
@@ -309,11 +309,14 @@ namespace VansGraphics
 		            float stiffness = 15.0f, float damping = 0.92f,
 		            float softness = 0.2f,
 		            float lodFullDist = 15.0f, float lodFadeDist = 20.0f,
-		            bool useCullVisibilityMask = false);
+		            bool useCullVisibilityMask = false,
+		            bool sameQueueGraphicsConsumer = true);
 
 		// ── P0: GPU frustum + distance cull — dispatch before Draw() ────
-		bool DispatchCullPass(VansVKCommandBuffer& computeCmd, float cullDistance);
-		void DispatchTreeCullPass(VansVKCommandBuffer& computeCmd);
+		bool DispatchCullPass(VansVKCommandBuffer& computeCmd, float cullDistance,
+			bool sameQueueGraphicsConsumer = true);
+		void DispatchTreeCullPass(VansVKCommandBuffer& computeCmd,
+			bool sameQueueGraphicsConsumer = true);
 
 		// ── Draw: issues one indirect indexed draw per render config ───
 		void Draw(VansVKCommandBuffer& graphicsCmd, VansGraphicsShader& shader,
@@ -569,7 +572,7 @@ namespace VansGraphics
 		float       m_TerrainMaxHeight        = 500.0f;
 		float       m_TerrainHeightOffset     = -23.0f;
 		bool        m_TerrainEnabled          = false;
-		// ── Hi-Z depth pyramid (optional, 通常为上一帧深度) ───────────────
+		// ── Hi-Z depth pyramid (optional, 上一帧 max-depth occlusion HZB) ──
 		VkImageView m_HiZView        = VK_NULL_HANDLE;
 		VkSampler   m_HiZSampler     = VK_NULL_HANDLE;
 		uint32_t    m_HiZMipCount    = 0;

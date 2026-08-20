@@ -1,5 +1,6 @@
 ﻿#include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansVKDevice.h"
+#include "../../../Graphics/Vulkan/VansStreamlineRuntime.h"
 #include "VansVKMemoryManager.h"
 #include "VansVKMemoryAllocator.h"
 #include "VansVKDescriptorManager.h"
@@ -289,7 +290,8 @@ namespace VansGraphics
 		resetIfValid(m_VansVKGBufferCommandBuffer.m_CommandBufferFinishSubmitFence);
 		resetIfValid(m_VansVKGraphicsPreCommandBuffer.m_CommandBufferFinishSubmitFence);
 		resetIfValid(m_VansVKGraphicsScreenCommandBuffer.m_CommandBufferFinishSubmitFence);
-		resetIfValid(m_VansVKRayTracingCommandBuffer.m_CommandBufferFinishSubmitFence);
+		resetIfValid(m_VansVKAsyncSSAOCommandBuffer.m_CommandBufferFinishSubmitFence);
+		resetIfValid(m_VansVKAsyncEarlyCommandBuffer.m_CommandBufferFinishSubmitFence);
 		resetIfValid(m_VansVKAsyncCloudCommandBuffer.m_CommandBufferFinishSubmitFence);
 		resetIfValid(m_VansVKAsyncGICommandBuffer.m_CommandBufferFinishSubmitFence);
 
@@ -317,7 +319,11 @@ namespace VansGraphics
 			<< " enabled=" << (m_AsyncComputeEnabled ? "true" : "false")
 			<< " graphicsFamily=" << m_QueueCapabilities.graphicsFamily
 			<< " computeFamily=" << m_QueueCapabilities.computeFamily
-			<< " dedicatedCompute=" << (m_QueueCapabilities.hasDedicatedAsyncComputeQueue ? "true" : "false"));
+			<< " dedicatedCompute=" << (m_QueueCapabilities.hasDedicatedAsyncComputeQueue ? "true" : "false")
+			<< " dedicatedShadow=" << (m_QueueCapabilities.hasDedicatedShadowQueue ? "true" : "false")
+			<< " asyncSSAO=" << ((m_AsyncComputeEnabled && m_QueueCapabilities.hasDedicatedShadowQueue)
+				? "ShadowQueue"
+				: "GraphicsScreen"));
 	}
 
 	VkDeviceAddress VansVKDevice::GetAccelerationAddress(VkAccelerationStructureDeviceAddressInfoKHR* addressInfo)
@@ -812,13 +818,13 @@ namespace VansGraphics
 		}
 		CreateVKFence(false, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
 
-		result = m_VansVKRayTracingCommandBuffer.CreateVulkanCommandBuffer(*this, m_ComputeQueueFamilyIndex, params);
+		result = m_VansVKAsyncEarlyCommandBuffer.CreateVulkanCommandBuffer(*this, m_ComputeQueueFamilyIndex, params);
 		if (!result)
 		{
-			VANS_LOG_ERROR("create m_VansVKRayTracingCommandBuffer failed");
+			VANS_LOG_ERROR("create m_VansVKAsyncEarlyCommandBuffer failed");
 			return false;
 		}
-		CreateVKFence(false, m_VansVKRayTracingCommandBuffer.m_CommandBufferFinishSubmitFence);
+		CreateVKFence(false, m_VansVKAsyncEarlyCommandBuffer.m_CommandBufferFinishSubmitFence);
 
 		result = m_VansVKAsyncCloudCommandBuffer.CreateVulkanCommandBuffer(*this, m_ComputeQueueFamilyIndex, params);
 		if (!result)
@@ -859,6 +865,14 @@ namespace VansGraphics
 			return false;
 		}
 		CreateVKFence(false, m_VansVKGraphicsScreenCommandBuffer.m_CommandBufferFinishSubmitFence);
+
+		result = m_VansVKAsyncSSAOCommandBuffer.CreateVulkanCommandBuffer(*this, m_GraphicsQueueFamilyIndex, params);
+		if (!result)
+		{
+			VANS_LOG_ERROR("create m_VansVKAsyncSSAOCommandBuffer failed");
+			return false;
+		}
+		CreateVKFence(false, m_VansVKAsyncSSAOCommandBuffer.m_CommandBufferFinishSubmitFence);
 
 		result = m_VansVKAsyncGICommandBuffer.CreateVulkanCommandBuffer(*this, m_ComputeQueueFamilyIndex, params);
 		if (!result)
@@ -917,21 +931,23 @@ namespace VansGraphics
 		DestroyFrameContextRingResources();
 
 		DestroyVKFence(m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
-		DestroyVKFence(m_VansVKRayTracingCommandBuffer.m_CommandBufferFinishSubmitFence);
+		DestroyVKFence(m_VansVKAsyncEarlyCommandBuffer.m_CommandBufferFinishSubmitFence);
 		DestroyVKFence(m_VansVKAsyncCloudCommandBuffer.m_CommandBufferFinishSubmitFence);
 		DestroyVKFence(m_VansVKShadowCommandBuffer.m_CommandBufferFinishSubmitFence);
 		DestroyVKFence(m_VansVKGBufferCommandBuffer.m_CommandBufferFinishSubmitFence);
 		DestroyVKFence(m_VansVKGraphicsPreCommandBuffer.m_CommandBufferFinishSubmitFence);
 		DestroyVKFence(m_VansVKGraphicsScreenCommandBuffer.m_CommandBufferFinishSubmitFence);
+		DestroyVKFence(m_VansVKAsyncSSAOCommandBuffer.m_CommandBufferFinishSubmitFence);
 		DestroyVKFence(m_VansVKAsyncGICommandBuffer.m_CommandBufferFinishSubmitFence);
 		DestroyVKFence(m_ImmediateGraphicsCommandBuffer.m_CommandBufferFinishSubmitFence);
 		m_VansVKCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
-		m_VansVKRayTracingCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
+		m_VansVKAsyncEarlyCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 		m_VansVKAsyncCloudCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 		m_VansVKShadowCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 		m_VansVKGBufferCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 		m_VansVKGraphicsPreCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 		m_VansVKGraphicsScreenCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
+		m_VansVKAsyncSSAOCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 		m_VansVKAsyncGICommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 		m_ImmediateGraphicsCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 
@@ -1060,6 +1076,7 @@ namespace VansGraphics
 		{
 			return false;
 		}
+		VansStreamlineRuntime::Get().RefreshDeviceCapabilities();
 
 		// Pipeline cache persistence is an optional optimization. Failure must not
 		// prevent the editor or a packaged build from starting.
@@ -1146,6 +1163,9 @@ namespace VansGraphics
 		WaitForDevice();
 		FlushCurrentFrameDeferredDeletes();
 		CleanupFSR();
+		CleanupDLSS();
+		CleanupUpscalerOutputImage();
+		VansStreamlineRuntime::Get().ShutdownBeforeVulkan();
 		{
 			m_VansVKSurface.DestroyVulkanSwapChain(m_VansVKLogicDevice);
 			m_VansVKSurface.DestroyVulkanPresentSurface(m_VansVKInstance);

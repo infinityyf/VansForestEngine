@@ -1857,7 +1857,8 @@ bool VansMotionMatchingRuntime::ShouldConsiderSampleForParameters(
 VansMotionMatchingRuntime::MatchResult VansMotionMatchingRuntime::FindBestMatch(
 	const FeatureVector& query,
 	const std::unordered_map<std::string, AnimatorParameter>& parameters,
-	bool forceFinishedTransitionExit)
+	bool forceFinishedTransitionExit,
+	bool allowReplayCurrentClip)
 {
 	MatchResult best;
 	best.totalCost = std::numeric_limits<float>::max();
@@ -1874,7 +1875,8 @@ VansMotionMatchingRuntime::MatchResult VansMotionMatchingRuntime::FindBestMatch(
 		// Update().  Searching another frame of the same clip would be a time
 		// teleport, not continuation, and produces the characteristic loop jitter
 		// when that frame wins again at the next search tick.
-		if (m_CurrentSample >= 0 && m_CurrentSample < static_cast<int>(m_Samples.size()) &&
+		if (!allowReplayCurrentClip &&
+		    m_CurrentSample >= 0 && m_CurrentSample < static_cast<int>(m_Samples.size()) &&
 		    sample.clipName == m_Samples[m_CurrentSample].clipName)
 		{
 			continue;
@@ -2039,6 +2041,11 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 	m_DebugData.enabled = m_Settings.enabled;
 	m_DebugData.usedThisFrame = false;
 	m_DebugData.queryFacingDeltaDegrees = 0.0f;
+	m_DebugData.currentFacingYawDegrees = 0.0f;
+	m_DebugData.desiredFacingYawDegrees = 0.0f;
+	m_DebugData.desiredFacingYawRateDegreesPerSecond = 0.0f;
+	m_DebugData.facingTurnState = "Unavailable";
+	m_DebugData.facingTurnGateReason = "MissingTrajectory";
 	m_DebugData.facingTurnRequested = false;
 	m_DebugData.facingTurnDirectionSign = 0;
 	m_DebugData.facingTurnBucketDelta = 0;
@@ -2054,6 +2061,8 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 	m_DebugData.rootMotionReconciledVelocityWorld = glm::vec3(0.0f);
 	m_DebugData.rootMotionTargetYawRateDegreesPerSecond = 0.0f;
 	m_DebugData.rootMotionReconciledYawRateDegreesPerSecond = 0.0f;
+	m_DebugData.authoredRootYawDeltaDegrees = 0.0f;
+	m_DebugData.appliedRootYawDeltaDegrees = 0.0f;
 	m_DebugData.appliedRootMotionVelocityWorld = glm::vec3(0.0f);
 	m_PrefersRootMotionThisFrame = false;
 	if (!m_Settings.enabled)
@@ -2092,6 +2101,7 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 	}
 	const std::string playbackClipName = activeSample->clipName;
 	const bool playbackLoopLike = activeSample->loopLike;
+	const bool playbackWasTurnLike = activeSample->turnLike;
 
 	float wantedPlaybackRate = 1.0f;
 	if (m_Settings.enableSpeedMatching)
@@ -2272,7 +2282,9 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 	const float direction = m_QueryIntentDirection;
 	const int moveState = ReadMoveStateParam(parameters);
 	const bool isCrouching = ReadCrouchingParam(parameters);
-	const bool isAirborne = ReadAirborneParam(parameters);
+	const bool isAirborne = trajectory && trajectory->valid && trajectory->hasGrounding
+		? !trajectory->grounded
+		: ReadAirborneParam(parameters);
 	const bool isMoving = speed01 >= m_Settings.states.idleSpeedThreshold;
 	m_RequestedMoveState = ResolveDesiredMoveState(parameters);
 	m_EffectiveMoveState = ResolveDirectionalFallbackMoveState(m_RequestedMoveState);
@@ -2369,6 +2381,14 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 			const int desiredMoveState = m_EffectiveMoveState;
 			float directionSignal = useMovingFacingPolicy
 				? farFutureError : m_QueryFacingDeltaDegrees;
+			// At the +/-180 degree wrap boundary the shortest signed error changes
+			// sign even though the camera is still rotating continuously. Prefer the
+			// measured view yaw rate there so left/right Turn clips do not ping-pong.
+			if (!useMovingFacingPolicy && absoluteFacingError >= 170.0f &&
+				cameraFacingStillMoving)
+			{
+				directionSignal = trajectory->desiredFacingYawRate;
+			}
 			if (std::abs(directionSignal) <= exitThreshold && cameraFacingStillMoving)
 				directionSignal = trajectory->desiredFacingYawRate;
 			if (std::abs(directionSignal) <= kEpsilon)
@@ -2449,7 +2469,11 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 	m_LastFacingTurnRequested = m_FacingTurnRequested;
 	m_LastFacingTurnDirectionSign = m_FacingTurnDirectionSign;
 	m_LastFacingTurnBucketDelta = m_FacingTurnBucketDelta;
-	ResolveActiveDatabases(parameters, activeTransitionComplete);
+	const bool continueCompletedFacingTurn =
+		activeTransitionComplete && activeSample->turnLike && m_FacingTurnRequested;
+	const bool forceFinishedTransitionExit =
+		activeTransitionComplete && !continueCompletedFacingTurn;
+	ResolveActiveDatabases(parameters, forceFinishedTransitionExit);
 	m_DebugData.activeDatabases.clear();
 	for (const int databaseIndex : m_ActiveDatabaseIndices)
 	{
@@ -2459,6 +2483,37 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 	m_DebugData.querySpeed = speed01 * m_Settings.desiredSpeedScale;
 	m_DebugData.queryDirection = direction;
 	m_DebugData.queryFacingDeltaDegrees = m_QueryFacingDeltaDegrees;
+	if (trajectory && trajectory->valid)
+	{
+		m_DebugData.currentFacingYawDegrees = trajectory->currentFacingYaw;
+		m_DebugData.desiredFacingYawDegrees = trajectory->desiredFacingYaw;
+		m_DebugData.desiredFacingYawRateDegreesPerSecond = trajectory->desiredFacingYawRate;
+		if (!trajectory->hasFacing)
+		{
+			m_DebugData.facingTurnState = "Unavailable";
+			m_DebugData.facingTurnGateReason = "MissingFacingIntent";
+		}
+		else if (isAirborne)
+		{
+			m_DebugData.facingTurnState = "Unavailable";
+			m_DebugData.facingTurnGateReason = "Airborne";
+		}
+		else if (isMoving)
+		{
+			m_DebugData.facingTurnState = "MovingSteering";
+			m_DebugData.facingTurnGateReason = "Moving";
+		}
+		else if (m_FacingTurnRequested)
+		{
+			m_DebugData.facingTurnState = continueCompletedFacingTurn ? "Replanning" : "Turning";
+			m_DebugData.facingTurnGateReason = "None";
+		}
+		else
+		{
+			m_DebugData.facingTurnState = "Aligned";
+			m_DebugData.facingTurnGateReason = "BelowThreshold";
+		}
+	}
 	m_DebugData.pivotRequested = m_PivotRequested;
 	m_DebugData.pivotDatabaseAvailable = m_PivotDatabaseAvailable;
 	m_DebugData.urgentDirectionChange = m_UrgentDirectionChange;
@@ -2523,7 +2578,8 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 		float currentPose = 0.0f;
 		float currentContact = 0.0f;
 		const float currentCost = ComputeCost(query, currentFeature, currentTrajectory, currentPose, currentContact);
-		MatchResult best = FindBestMatch(query, parameters, activeTransitionComplete);
+		MatchResult best = FindBestMatch(
+			query, parameters, forceFinishedTransitionExit, continueCompletedFacingTurn);
 		const bool bestIsTargetLoop =
 			best.sampleIndex >= 0 &&
 			m_Samples[best.sampleIndex].loopLike;
@@ -2540,13 +2596,13 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 			m_Samples[best.sampleIndex].turnLike &&
 			m_FacingTurnRequested;
 		const bool activeMatchesFacingTurn =
-			activeSample->turnLike &&
+			activeSample->turnLike && !activeTransitionComplete &&
 			activeSample->turnDirectionSign == m_FacingTurnDirectionSign &&
 			activeSample->turnBucketDelta == m_FacingTurnBucketDelta;
 		const bool shouldEnterFacingTurn =
 			bestIsFacingTurn &&
 			!activeMatchesFacingTurn &&
-			(facingTurnContextChanged || activeSample->loopLike);
+			(facingTurnContextChanged || activeSample->loopLike || activeTransitionComplete);
 		const bool shouldEnterPivot =
 			best.sampleIndex >= 0 &&
 			m_Samples[best.sampleIndex].pivotLike &&
@@ -2591,7 +2647,7 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 			shouldExitFinishedTransition ||
 			shouldEnterStartTransition ||
 			shouldEnterPivot ||
-			(shouldEnterFacingTurn && !activeSample->turnLike) ||
+			(shouldEnterFacingTurn && (!activeSample->turnLike || activeTransitionComplete)) ||
 			m_CurrentSample < 0;
 		float requiredImprovement = searchContextChanged
 			? m_Settings.minSwitchCostImprovement * 0.5f
@@ -2752,13 +2808,20 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 	{
 		const float outgoingYawRate = glm::degrees(
 			glm::eulerAngles(outPayload.rootMotion.rotation)).z / deltaTime;
+		m_DebugData.authoredRootYawDeltaDegrees = outgoingYawRate * deltaTime;
 		if (switchedThisFrame)
 		{
 			// 切换帧仍消费源片段的完整 Root Motion 区间；从下一帧开始把
 			// 该线/角速度连续地收敛到目标片段，而不是修改 CCT Transform。
-			m_RootMotionReconciler.RequestTransition(
-				outPayload.rootMotion.translation / deltaTime,
-				outgoingYawRate);
+			// Turn-in-place Root Rotation is the authoritative CCT rotation. Angular
+			// velocity reconciliation changes its integral and leaves a residual
+			// facing error, so turn boundaries rely on pose inertialization instead.
+			if (playbackWasTurnLike || activeSample->turnLike)
+				m_RootMotionReconciler.Reset();
+			else
+				m_RootMotionReconciler.RequestTransition(
+					outPayload.rootMotion.translation / deltaTime,
+					outgoingYawRate);
 		}
 		else
 		{
@@ -2857,6 +2920,11 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 	else if (!isMoving)
 	{
 		m_RootMotionSteering.Reset();
+	}
+	if (outPayload.rootMotion.valid)
+	{
+		m_DebugData.appliedRootYawDeltaDegrees = glm::degrees(
+			glm::eulerAngles(outPayload.rootMotion.rotation)).z;
 	}
 	outPayload.valid = outPayload.localPose.size() == skeleton.bones.size();
 	m_PrefersRootMotionThisFrame = activeSample->transitionLike || activeSample->turnLike;

@@ -74,15 +74,23 @@ void main()
     uint bufferOffset = activeLinear * raysPerSlice;
     vec3 volumeSize = vec3(probeCounts) * pushConstants.gridParams.xyz;
     vec3 volumeMin = pushConstants.regionParams.xyz - volumeSize * 0.5;
+    uint directionSlice = GI_UpdateDirectionSlice(
+        uint(pushConstants.frameParams.x), uvec3(probeCounts),
+        spatialDivisor, directionSlices);
+    GIProbeRayDirectionContext rayContext =
+        GI_BuildProbeRayDirectionContext(
+            probeIndex, probeCounts, uint(pushConstants.dispatchParams.w),
+            directionSlices,
+            GI_UpdateCycleIndex(
+                uint(pushConstants.frameParams.x), uvec3(probeCounts),
+                spatialDivisor, directionSlices));
 
     for (uint localRay = 0u; localRay < raysPerSlice; ++localRay)
     {
         bool fixedClassificationRay;
-        vec3 rayDirection = GI_ProbeRayDirection(
-            probeIndex, probeCounts, uint(pushConstants.dispatchParams.w), localRay, raysPerSlice,
-            GI_UpdateDirectionSlice(uint(pushConstants.frameParams.x), uvec3(probeCounts), spatialDivisor, directionSlices),
+        vec3 rayDirection = GI_ProbeRayDirectionPrepared(
+            rayContext, localRay, raysPerSlice, directionSlice,
             directionSlices,
-            GI_UpdateCycleIndex(uint(pushConstants.frameParams.x), uvec3(probeCounts), spatialDivisor, directionSlices),
             fixedClassificationRay);
         uint resultIndex = bufferOffset + localRay;
         vec4 hitPos = vec4(hitPositionInfoBuffer.hitPosition[resultIndex]);

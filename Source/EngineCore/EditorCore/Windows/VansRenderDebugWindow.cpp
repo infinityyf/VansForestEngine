@@ -194,7 +194,7 @@ namespace
 			drawBoolRow("Frame Submit Succeeded", diagnostics.frameSubmitSucceeded);
 			drawBoolRow("Shadow Submitted", diagnostics.shadowSubmitted);
 			drawBoolRow("GBuffer Submitted", diagnostics.gbufferSubmitted);
-			drawBoolRow("Async Compute Submitted", diagnostics.asyncComputeSubmitted);
+			drawBoolRow("Async Early Submitted", diagnostics.asyncEarlySubmitted);
 			drawCount64Row("Frame Number", diagnostics.frameNumber);
 			drawCountRow("Swapchain Image", diagnostics.swapchainImageIndex);
 			drawCountRow("Descriptor Standard Pools", diagnostics.descriptorStandardPoolCount);

@@ -30,6 +30,7 @@
 #include "../PhysicsCore/VansPhysicsVehicle.h"
 #include "../ProjectSystem/VansProjectManager.h"
 #include "../RenderCore/VansCamera.h"
+#include "../RenderCore/VansCameraControlArbiter.h"
 #include "../RenderCore/BRDFData/VansLight.h"
 #include "../RenderCore/VansRenderNode.h"
 #include "../RenderCore/VansScene.h"
@@ -46,6 +47,8 @@
 #include "../Util/VansLog.h"
 #include "../Util/VansProfiler.h"
 #include "../VansTimer.h"
+
+#include <array>
 
 #include <GLFW/glfw3.h>
 #include <algorithm>
@@ -1855,6 +1858,28 @@ int LuaComponentIsUserLookSuppressed(lua_State* L)
 		scene->GetCamera() == camera->m_Camera && scene->IsUserCameraLookSuppressed();
 	lua_pushboolean(L, suppressed);
 	return 1;
+}
+
+int LuaComponentGetResolvedForward(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* camera = dynamic_cast<VansScriptCameraComponent*>(component);
+	auto* scene = Scene();
+	if (!camera || !camera->m_Camera)
+	{
+		PushVec3(L, glm::vec3(0.0f, 0.0f, 1.0f));
+		lua_pushboolean(L, false);
+		return 2;
+	}
+
+	VansGraphics::VansCameraControlPose pose = camera->m_Camera->CaptureControlPose();
+	bool resolved = false;
+	if (scene && scene->GetCamera() == camera->m_Camera)
+		resolved = scene->CameraControlArbiter().GetLastResolvedPose(pose);
+	const float yaw = glm::radians(pose.rotationDegrees.y);
+	PushVec3(L, glm::vec3(std::cos(yaw), 0.0f, std::sin(yaw)));
+	lua_pushboolean(L, resolved);
+	return 2;
 }
 
 int LuaComponentWorldToViewport(lua_State* L)
@@ -3743,23 +3768,38 @@ void VansScriptContext::SetActiveProjectRoot(const std::string& projectRoot)
 		InstallLuaSearchPath();
 }
 
+void VansInstallLuaProjectSearchPath(
+	lua_State* luaState,
+	const std::filesystem::path& projectRoot)
+{
+	if (!luaState || projectRoot.empty()) return;
+	lua_getglobal(luaState, "package");
+	if (!lua_istable(luaState, -1))
+	{
+		lua_pop(luaState, 1);
+		return;
+	}
+	lua_getfield(luaState, -1, "path");
+	std::string current = lua_tostring(luaState, -1) ? lua_tostring(luaState, -1) : "";
+	lua_pop(luaState, 1);
+	const std::filesystem::path root = projectRoot.lexically_normal();
+	const std::array<std::string, 4> projectPatterns{
+		(root / "Scripts" / "?.lua").generic_string(),
+		(root / "Scripts" / "?" / "init.lua").generic_string(),
+		(root / "?.lua").generic_string(),
+		(root / "?" / "init.lua").generic_string()
+	};
+	for (auto pattern = projectPatterns.rbegin(); pattern != projectPatterns.rend(); ++pattern)
+		if (current.find(*pattern) == std::string::npos)
+			current = *pattern + ";" + current;
+	lua_pushstring(luaState, current.c_str());
+	lua_setfield(luaState, -2, "path");
+	lua_pop(luaState, 1);
+}
+
 void VansScriptContext::InstallLuaSearchPath()
 {
-	if (!m_LuaState || m_ActiveProjectRoot.empty()) return;
-	lua_getglobal(m_LuaState, "package");
-	lua_getfield(m_LuaState, -1, "path");
-	std::string current = lua_tostring(m_LuaState, -1) ? lua_tostring(m_LuaState, -1) : "";
-	lua_pop(m_LuaState, 1);
-	std::filesystem::path root(m_ActiveProjectRoot);
-	std::string scriptPattern = (root / "Scripts" / "?.lua").generic_string();
-	std::string rootPattern = (root / "?.lua").generic_string();
-	if (current.find(scriptPattern) == std::string::npos)
-		current = scriptPattern + ";" + current;
-	if (current.find(rootPattern) == std::string::npos)
-		current = rootPattern + ";" + current;
-	lua_pushstring(m_LuaState, current.c_str());
-	lua_setfield(m_LuaState, -2, "path");
-	lua_pop(m_LuaState, 1);
+	VansInstallLuaProjectSearchPath(m_LuaState, m_ActiveProjectRoot);
 }
 
 void VansScriptContext::RegisterLuaBindings()
@@ -3925,6 +3965,7 @@ void VansScriptContext::RegisterLuaBindings()
 		{ "get_far_clip", LuaComponentGetFarClip },
 		{ "set_far_clip", LuaComponentSetFarClip },
 		{ "is_user_look_suppressed", LuaComponentIsUserLookSuppressed },
+		{ "get_resolved_forward", LuaComponentGetResolvedForward },
 		{ "world_to_viewport", LuaComponentWorldToViewport },
 		{ "load_asset", LuaComponentLoadParticle },
 		{ "set_asset_path", LuaComponentSetAssetPath },

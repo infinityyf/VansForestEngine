@@ -1998,11 +1998,20 @@ void VansGraphics::VansRenderPassManager::EndRenderPass(VansVKCommandBuffer& com
 	command_buffer.EndRenderPass();
 }
 
-void VansGraphics::VansRenderPassManager::DestroyRenderPass()
+void VansGraphics::VansRenderPassManager::DestroySceneResolutionRenderPasses()
 {
-	// Framebuffers must release their attachment views before the backing images.
-	m_VansDisplayPostProcessPass.DestroyRenderPass(m_LogicDevice);
-	m_VansSceneUIPass.DestroyRenderPass(m_LogicDevice);
+	// Framebuffers must release attachment views before their backing images.
+	m_VansGBufferPass.DestroyRenderPass(m_LogicDevice);
+	m_VansTransparentPass.DestroyRenderPass(m_LogicDevice);
+	m_VansDeferredSkyboxPass.DestroyRenderPass(m_LogicDevice);
+	m_VansScreenSpaceEffectsPass.DestroyRenderPass(m_LogicDevice);
+	m_VansForwardOpaqueAfterDeferredPass.DestroyRenderPass(m_LogicDevice);
+	m_VansHairVisibilityPass.DestroyRenderPass(m_LogicDevice);
+	m_VansHairLightingPass.DestroyRenderPass(m_LogicDevice);
+	m_VansHairDeepOpacityPass.DestroyRenderPass(m_LogicDevice);
+	m_VansWaterGBufferPass.DestroyRenderPass(m_LogicDevice);
+	m_VansMotionVectorPass.DestroyRenderPass(m_LogicDevice);
+	m_VansDecalPass.DestroyRenderPass(m_LogicDevice);
 
 	m_ColorImage.DestroyVulkanImage(m_LogicDevice);
 	m_DiffuseExitantRadianceHistoryImage.DestroyVulkanImage(m_LogicDevice);
@@ -2010,7 +2019,27 @@ void VansGraphics::VansRenderPassManager::DestroyRenderPass()
 	m_DepthImage.DestroyVulkanImage(m_LogicDevice);
 	m_MotionVectorImage.DestroyVulkanImage(m_LogicDevice);
 	m_MotionVectorDepthImage.DestroyVulkanImage(m_LogicDevice);
+	m_NormalImage.DestroyVulkanImage(m_LogicDevice);
+	m_GBufferImage0.DestroyVulkanImage(m_LogicDevice);
+	m_GBufferImage1.DestroyVulkanImage(m_LogicDevice);
+	m_GBufferImage2.DestroyVulkanImage(m_LogicDevice);
+	m_HairColorImage.DestroyVulkanImage(m_LogicDevice);
+	m_HairDeepOpacityImage.DestroyVulkanImage(m_LogicDevice);
+	m_HairOITHeadImage.DestroyVulkanImage(m_LogicDevice);
+	m_HairOITNodeBuffer.DestroyVulkanBuffer(m_LogicDevice);
+	m_HairOITCounterBuffer.DestroyVulkanBuffer(m_LogicDevice);
+	m_WaterGBufNormalImage.DestroyVulkanImage(m_LogicDevice);
+	m_WaterGBufScatterImage.DestroyVulkanImage(m_LogicDevice);
+	m_WaterGBufAbsorptionImage.DestroyVulkanImage(m_LogicDevice);
+	m_WaterGBufLinearDepthImage.DestroyVulkanImage(m_LogicDevice);
+}
+
+void VansGraphics::VansRenderPassManager::DestroyRenderPass()
+{
+	m_VansDisplayPostProcessPass.DestroyRenderPass(m_LogicDevice);
+	m_VansSceneUIPass.DestroyRenderPass(m_LogicDevice);
 	m_FinalDisplayColorImage.DestroyVulkanImage(m_LogicDevice);
+	DestroySceneResolutionRenderPasses();
 
 	m_ShadowMapImage.DestroyVulkanImage(m_LogicDevice);
 	m_ShadowMapDepthImage.DestroyVulkanImage(m_LogicDevice);
@@ -2037,33 +2066,7 @@ void VansGraphics::VansRenderPassManager::DestroyRenderPass()
 		VansVKImage::DestroyImageView(m_LogicDevice, layerView);
 	m_PunctualShadowMapImage.DestroyVulkanImage(m_LogicDevice);
 
-	m_NormalImage.DestroyVulkanImage(m_LogicDevice);
-	m_GBufferImage0.DestroyVulkanImage(m_LogicDevice);
-	m_GBufferImage1.DestroyVulkanImage(m_LogicDevice);
-	m_GBufferImage2.DestroyVulkanImage(m_LogicDevice);
-	m_HairColorImage.DestroyVulkanImage(m_LogicDevice);
-	m_HairDeepOpacityImage.DestroyVulkanImage(m_LogicDevice);
-	m_HairOITHeadImage.DestroyVulkanImage(m_LogicDevice);
-	m_HairOITNodeBuffer.DestroyVulkanBuffer(m_LogicDevice);
-	m_HairOITCounterBuffer.DestroyVulkanBuffer(m_LogicDevice);
-
-	// 销毁水面 GBuffer 纹理
-	m_WaterGBufNormalImage.DestroyVulkanImage(m_LogicDevice);
-	m_WaterGBufScatterImage.DestroyVulkanImage(m_LogicDevice);
-	m_WaterGBufAbsorptionImage.DestroyVulkanImage(m_LogicDevice);
-	m_WaterGBufLinearDepthImage.DestroyVulkanImage(m_LogicDevice);
-
-	m_VansGBufferPass.DestroyRenderPass(m_LogicDevice);
-	m_VansTransparentPass.DestroyRenderPass(m_LogicDevice);
-	m_VansDeferredSkyboxPass.DestroyRenderPass(m_LogicDevice);
-	m_VansScreenSpaceEffectsPass.DestroyRenderPass(m_LogicDevice);
-	m_VansForwardOpaqueAfterDeferredPass.DestroyRenderPass(m_LogicDevice);
-	m_VansHairVisibilityPass.DestroyRenderPass(m_LogicDevice);
-	m_VansHairLightingPass.DestroyRenderPass(m_LogicDevice);
-	m_VansHairDeepOpacityPass.DestroyRenderPass(m_LogicDevice);
-	m_VansWaterGBufferPass.DestroyRenderPass(m_LogicDevice);
 	m_VansShadowPass.DestroyRenderPass(m_LogicDevice);
-	m_VansMotionVectorPass.DestroyRenderPass(m_LogicDevice);
 	m_VansUIPass.DestroyRenderPass(m_LogicDevice);
 }
 

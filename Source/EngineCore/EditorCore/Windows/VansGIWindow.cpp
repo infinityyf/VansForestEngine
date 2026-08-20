@@ -55,7 +55,7 @@ void VansGIWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 
 	const auto drawGIRTPreview = [&]()
 	{
-		if (ImGui::CollapsingHeader("GI Ray Tracing Preview", ImGuiTreeNodeFlags_DefaultOpen))
+		if (ImGui::CollapsingHeader("GI / SSGI Probe Cache Preview", ImGuiTreeNodeFlags_DefaultOpen))
 		{
 			static int zSlice = 0;
 			static int rayIndex = -1;
@@ -122,7 +122,8 @@ void VansGIWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 				static_cast<unsigned>(selectedRuntimeRegion.gridDimensions.x),
 				static_cast<unsigned>(selectedRuntimeRegion.gridDimensions.y),
 				sliceLabel.c_str());
-			ImGui::TextDisabled("All RT and DDGI diagnostic targets refresh together. Active Slice Ray addresses the current 16-ray update slice.");
+			ImGui::TextDisabled("All RT, DDGI and SSGI Probe Cache diagnostic targets refresh together. Active Slice Ray addresses the current 16-ray update slice.");
+			ImGui::TextDisabled("Screen Probe Cache Radiance is the 1/4-resolution Hi-Z screen query blended with DDGI/sky fallback; Surface stores geometric normal.xyz and linear depth.a for reconstruction validation.");
 			if (previews.empty())
 			{
 				ImGui::TextDisabled("RT preview is unavailable until the scene has ray-tracing geometry and GI resources are ready.");

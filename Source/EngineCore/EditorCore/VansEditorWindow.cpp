@@ -2043,6 +2043,63 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
 			automationCloseSeconds = 0.0;
 	}
 
+#if VANS_PROFILER_ENABLED
+    // 默认关闭。自动化测试可以在场景稳定后连续采集 GPU timestamp，并在真正
+    // 回读到 GPU 队列事件时导出一次 JSON，避免双缓冲查询池首帧尚无结果。
+    std::string automationGpuProfileOutputDir;
+    if (const char* value = std::getenv("FORESTENGINE_GPU_PROFILE_DUMP_DIR"))
+        automationGpuProfileOutputDir = value;
+
+    std::uint64_t automationGpuProfileWarmupFrames = 32u;
+    if (const char* value = std::getenv("FORESTENGINE_GPU_PROFILE_WARMUP_FRAMES"))
+    {
+        char* end = nullptr;
+        const unsigned long long parsed = std::strtoull(value, &end, 10);
+        if (end != value)
+            automationGpuProfileWarmupFrames = parsed;
+    }
+
+    std::uint64_t automationGpuProfileReadyFrames = 0u;
+    std::uint32_t automationGpuProfileCaptureFrames = 0u;
+    bool automationGpuProfileDumped = false;
+    const bool automationGpuProfileExitAfterDump =
+        ReadAutomationBoolEnv("FORESTENGINE_GPU_PROFILE_EXIT_AFTER_DUMP");
+    const auto finishAutomationGpuProfileFrame = [&](bool capturedThisFrame)
+    {
+        if (!capturedThisFrame || automationGpuProfileDumped)
+            return;
+
+        ++automationGpuProfileCaptureFrames;
+        if (automationGpuProfileCaptureFrames < 2u)
+            return;
+
+        const Vans::ProfileFrame& frame = Vans::VansProfiler::Get().GetTimeline();
+        bool hasGpuEvents = false;
+        for (std::uint32_t eventIndex = 0u; eventIndex < frame.eventCount; ++eventIndex)
+        {
+            if ((frame.events[eventIndex].flags & Vans::ProfileEventFlagGpu) != 0u)
+            {
+                hasGpuEvents = true;
+                break;
+            }
+        }
+        if (!hasGpuEvents)
+            return;
+
+        Vans::VansProfiler::Get().DumpFrameJson(automationGpuProfileOutputDir.c_str());
+        automationGpuProfileDumped = true;
+        VANS_LOG("[Profiler] Automation dumped GPU frame " << frame.frameIndex
+            << " to " << automationGpuProfileOutputDir);
+        if (automationGpuProfileExitAfterDump)
+        {
+            // 与 GI debug dump 的自动化退出保持一致。正常窗口关闭会进入
+            // 编辑器完整卸载流程；一次性采样不应把已知的卸载问题误报为
+            // Profiler/渲染回归，也不需要继续保留 GPU/编辑器状态。
+            std::_Exit(0);
+        }
+    };
+#endif
+
     // Main loop
     while (!glfwWindowShouldClose(m_VansEditorWindow.m_VansGraphicsHandle))
     { 
@@ -2059,7 +2116,28 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         // 项目选择界面阶段没有完整场景帧；Profiler 窗口关闭时只保留轻量帧计数，不采集 scope/GPU timestamp。
         const bool profilerFrameActive = m_ProjectLoaded;
 #if VANS_PROFILER_ENABLED
-        Vans::VansProfiler::Get().SetCaptureEnabled(profilerFrameActive && VansEditorWindow::m_ProfilerWindowOpen);
+        bool automationGpuProfileCapture = false;
+        if (!automationGpuProfileOutputDir.empty() && !automationGpuProfileDumped && profilerFrameActive)
+        {
+            auto& profilerEditorAPI = GetMutableEditorAPI();
+            const bool sceneStable = profilerEditorAPI.IsRuntimeSceneReady()
+                && !profilerEditorAPI.IsRuntimeSceneSwitching();
+            if (sceneStable)
+            {
+                if (automationGpuProfileReadyFrames < automationGpuProfileWarmupFrames)
+                    ++automationGpuProfileReadyFrames;
+                else
+                    automationGpuProfileCapture = true;
+            }
+            else
+            {
+                automationGpuProfileReadyFrames = 0u;
+                automationGpuProfileCaptureFrames = 0u;
+            }
+        }
+        Vans::VansProfiler::Get().SetCaptureEnabled(
+            profilerFrameActive
+            && (VansEditorWindow::m_ProfilerWindowOpen || automationGpuProfileCapture));
 #endif
         if (profilerFrameActive)
             VANS_PROFILER_BEGIN_FRAME();
@@ -2098,6 +2176,9 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
                 // Window minimized — skip rendering this frame
                 if (profilerFrameActive)
                     m_GraphicsDevice->EndGpuProfilerFrame();
+#if VANS_PROFILER_ENABLED
+                finishAutomationGpuProfileFrame(automationGpuProfileCapture);
+#endif
                 continue;
             }
         }
@@ -2258,6 +2339,9 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         {
             if (profilerFrameActive)
                 m_GraphicsDevice->EndGpuProfilerFrame();
+#if VANS_PROFILER_ENABLED
+            finishAutomationGpuProfileFrame(automationGpuProfileCapture);
+#endif
         }
 
     }

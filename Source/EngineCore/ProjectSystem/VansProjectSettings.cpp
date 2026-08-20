@@ -6,30 +6,14 @@
 #include "../Util/VansLog.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace Vans
 {
-	namespace
-	{
-		const char* ToString(VansProjectFSRMode mode)
-		{
-			switch (mode)
-			{
-			case VansProjectFSRMode::NativeAA: return "NativeAA";
-			case VansProjectFSRMode::Quality: return "Quality";
-			case VansProjectFSRMode::Balanced: return "Balanced";
-			case VansProjectFSRMode::Performance: return "Performance";
-			case VansProjectFSRMode::MatchViewport:
-			default: return "MatchViewport";
-			}
-		}
-
-	}
-
 	void VansProjectSettings::SetDefaults()
 	{
 		m_FixedTimeStep = 1.0f / 60.0f;
-		m_FSRSettings = {};
+		m_UpscalerSettings = {};
 		m_CommandRecordingSettings = {};
 		m_MainCameraHiZCullSettings = {};
 	}
@@ -46,22 +30,28 @@ namespace Vans
 		m_FixedTimeStep = fixedTimeStep;
 	}
 
-	void VansProjectSettings::SetFSRSettings(VansProjectFSRMode mode, float sharpness)
+	bool VansProjectSettings::SetUpscalerSettings(
+		const VansProjectUpscalerSettings& settings,
+		std::string* error)
 	{
-		switch (mode)
+		if (!std::isfinite(settings.fsrSharpness) ||
+			settings.fsrSharpness < 0.0f || settings.fsrSharpness > 1.0f)
 		{
-		case VansProjectFSRMode::MatchViewport:
-		case VansProjectFSRMode::NativeAA:
-		case VansProjectFSRMode::Quality:
-		case VansProjectFSRMode::Balanced:
-		case VansProjectFSRMode::Performance:
-			m_FSRSettings.mode = mode;
-			break;
-		default:
-			m_FSRSettings.mode = VansProjectFSRMode::MatchViewport;
-			break;
+			if (error)
+				*error = "upscaler.fsrSharpness must be in [0, 1]";
+			return false;
 		}
-		m_FSRSettings.sharpness = std::clamp(sharpness, 0.0f, 1.0f);
+		if (settings.backend == VansGraphics::VansUpscalerBackend::Off &&
+			settings.quality != VansGraphics::VansUpscaleQualityMode::NativeAA)
+		{
+			if (error)
+				*error = "Off upscaler backend requires NativeAA quality";
+			return false;
+		}
+		m_UpscalerSettings = settings;
+		if (error)
+			error->clear();
+		return true;
 	}
 
 	void VansProjectSettings::SetCommandRecordingSettings(
@@ -107,7 +97,12 @@ namespace Vans
 			{
 				for (const std::string& warning : warnings)
 					VANS_LOG_WARN("[ProjectSettings] " << warning);
-				SetFSRSettings(renderSettings.fsrSettings.mode, renderSettings.fsrSettings.sharpness);
+				std::string upscalerError;
+				if (!SetUpscalerSettings(renderSettings.upscalerSettings, &upscalerError))
+				{
+					VANS_LOG_ERROR("[ProjectSettings] Invalid upscaler settings: " << upscalerError);
+					return false;
+				}
 				SetCommandRecordingSettings(
 					renderSettings.commandRecordingSettings.parallelEnabled,
 					renderSettings.commandRecordingSettings.frameContextRingEnabled,
@@ -115,8 +110,9 @@ namespace Vans
 					renderSettings.commandRecordingSettings.asyncComputeEnabled);
 				SetMainCameraHiZCullSettings(renderSettings.mainCameraHiZCullSettings);
 				VANS_LOG("[ProjectSettings] Loaded render settings: " << renderSettingsPath
-					<< ", fsr.mode=" << ToString(m_FSRSettings.mode)
-					<< ", fsr.sharpness=" << m_FSRSettings.sharpness
+					<< ", upscaler.backend=" << VansGraphics::ToString(m_UpscalerSettings.backend)
+					<< ", upscaler.quality=" << VansGraphics::ToString(m_UpscalerSettings.quality)
+					<< ", upscaler.fsrSharpness=" << m_UpscalerSettings.fsrSharpness
 					<< ", commandRecording.parallelEnabled=" << m_CommandRecordingSettings.parallelEnabled
 					<< ", commandRecording.frameContextRingEnabled=" << m_CommandRecordingSettings.frameContextRingEnabled
 					<< ", commandRecording.framesInFlight=" << m_CommandRecordingSettings.framesInFlight
@@ -164,7 +160,7 @@ namespace Vans
 		{
 			const std::string renderSettingsPath = projectRootPath + projectConfig.renderSettings;
 			VansProjectRenderSettingsData renderSettings;
-			renderSettings.fsrSettings = m_FSRSettings;
+			renderSettings.upscalerSettings = m_UpscalerSettings;
 			renderSettings.commandRecordingSettings = m_CommandRecordingSettings;
 			renderSettings.mainCameraHiZCullSettings = m_MainCameraHiZCullSettings;
 			std::string error;

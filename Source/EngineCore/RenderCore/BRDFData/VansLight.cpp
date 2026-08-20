@@ -509,6 +509,8 @@ void VansGraphics::VansLightManager::UpdateLightShadowMatrixData(const VansCasca
 	punctualCamera.aspectRatio = cameraData.aspectRatio;
 	punctualCamera.nearPlane = cameraData.nearPlane;
 	punctualCamera.farPlane = cameraData.farPlane;
+	punctualCamera.viewportWidth = cameraData.viewportWidth;
+	punctualCamera.viewportHeight = cameraData.viewportHeight;
 	m_PunctualShadowManager.PrepareFrame(punctualCamera, punctualInputs, ++m_ShadowFrameIndex);
 
 	for (uint32_t lightIndex = 0; lightIndex < pointLightCount && lightIndex < m_PointShadowRegistrations.size(); ++lightIndex)

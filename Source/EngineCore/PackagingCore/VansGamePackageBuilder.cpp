@@ -7,8 +7,10 @@
 #include "../AssetCore/VansBuiltInAssetCatalog.h"
 #include "../AssetCore/Importers/Shader/VansShaderArtifactCache.h"
 #include "../GameplayActionSchema/VansGAFProjectConfiguration.h"
+#include "../GameplayActionSchema/VansGameplayAssetSchema.h"
 #include "../ProjectSystem/VansProjectConfig.h"
 #include "../RenderCore/VansShaderManager.h"
+#include "../RenderCore/VulkanCore/VansMesh.h"
 #include "../RenderCore/VulkanCore/VansPipelineDescriptor.h"
 #include "../RuntimeCore/VansPackageManifest.h"
 #include "../SceneCore/VansPackagedResourcePlan.h"
@@ -923,6 +925,18 @@ namespace
 		}
 		std::vector<std::string> gafSeeds(
 			dependencyResult.requiredAssets.begin(), dependencyResult.requiredAssets.end());
+		const auto appendRuntimeGameplaySeeds = [&](const std::vector<Vans::VansAssetRecord>& records)
+		{
+			for (const Vans::VansAssetRecord& record : records)
+				if (Vans::VansGameplayAssetSchemaRegistry::IsGameplayAssetType(record.type) &&
+					record.type != Vans::VansAssetType::GAFEditorLayout &&
+					record.state != Vans::VansAssetState::Missing)
+					gafSeeds.push_back(record.guid.ToString());
+		};
+		// GAF 中的 Tag、Attribute、Payload 等运行时注册项允许按稳定名称引用，
+		// 不能只依赖场景里的 GUID 字段推导闭包；打包时必须保留全部运行时 GAF 资产。
+		appendRuntimeGameplaySeeds(database.All());
+		appendRuntimeGameplaySeeds(builtInDatabase.All());
 		Vans::VansGAFProjectConfiguration gafConfiguration;
 		if (!Vans::VansGAFProjectConfiguration::LoadForProject(
 			projectRoot, engineRoot, gafConfiguration, error))
@@ -951,6 +965,14 @@ namespace
 		std::vector<Vans::VansAssetRecord> indexedAssets = database.All();
 		const std::vector<Vans::VansAssetRecord> builtInAssets = builtInDatabase.All();
 		indexedAssets.insert(indexedAssets.end(), builtInAssets.begin(), builtInAssets.end());
+		const std::unordered_set<std::string> packagedGameplayGuids(
+			gameplayCook.requiredAssetGuids.begin(), gameplayCook.requiredAssetGuids.end());
+		indexedAssets.erase(std::remove_if(indexedAssets.begin(), indexedAssets.end(),
+			[&](const Vans::VansAssetRecord& record)
+			{
+				return Vans::VansGameplayAssetSchemaRegistry::IsGameplayAssetType(record.type) &&
+					packagedGameplayGuids.find(record.guid.ToString()) == packagedGameplayGuids.end();
+			}), indexedAssets.end());
 		const Vans::VansSceneResourceLoadContext packageBuildContext =
 			Vans::VansSceneResourceLoadContext::ForEditor(projectRoot, engineRoot, indexedAssets);
 
@@ -1064,9 +1086,24 @@ namespace
 		for (auto& mesh : cookedPlan.packagePlan.resourcePlan.meshes)
 		{
 			const Vans::VansResolvedSceneResourcePath resolved = packageBuildContext.ResolveMesh(mesh);
-			const bool hasArtifact = resolved.artifactAvailable;
-			mesh.cookedOnly = hasArtifact;
-			if (hasArtifact)
+			Vans::VansAssetGuid guid;
+			std::optional<Vans::VansAssetRecord> sourceRecord;
+			if (Vans::VansAssetGuid::TryParse(mesh.assetGuid, guid))
+			{
+				sourceRecord = database.Find(guid);
+				if (!sourceRecord)
+					sourceRecord = builtInDatabase.Find(guid);
+			}
+
+			const bool hasCompatibleArtifact = resolved.artifactAvailable && sourceRecord &&
+				VansGraphics::VansMesh::IsMeshCacheCurrent(
+					resolved.artifactPath.string(),
+					sourceRecord->sourcePath.string(),
+					Vans::RequiresMeshTangentImport(mesh),
+					mesh.loadMultiMesh,
+					mesh.scaleFactor);
+			mesh.cookedOnly = hasCompatibleArtifact;
+			if (hasCompatibleArtifact)
 			{
 				cookedPlan.artifactPaths.push_back(resolved.artifactPath);
 				if (auto* record = indexedRecord(mesh.assetGuid))
@@ -1078,14 +1115,6 @@ namespace
 			}
 			else
 			{
-				Vans::VansAssetGuid guid;
-				std::optional<Vans::VansAssetRecord> sourceRecord;
-				if (Vans::VansAssetGuid::TryParse(mesh.assetGuid, guid))
-				{
-					sourceRecord = database.Find(guid);
-					if (!sourceRecord)
-						sourceRecord = builtInDatabase.Find(guid);
-				}
 				if (!sourceRecord || !fs::is_regular_file(sourceRecord->sourcePath, ec))
 				{
 					cookedPlan.missingResources.push_back({ "mesh", mesh.name, mesh.path, mesh.artifactPath });
@@ -1290,48 +1319,92 @@ namespace
 			return false;
 		}
 
-		const auto isRuntimeDependencyFile = [](const fs::path& sourcePath)
+		const fs::path dependencyManifestPath = sourceDir / "ForestRuntimeDependencies.txt";
+		std::ifstream dependencyManifest(dependencyManifestPath);
+		if (!dependencyManifest)
 		{
-			const fs::path extension = sourcePath.extension();
-			std::string filename = sourcePath.filename().string();
-			std::transform(filename.begin(), filename.end(), filename.begin(),
+			error = "Runtime dependency manifest is missing: " +
+				NormalizeForLog(dependencyManifestPath);
+			return false;
+		}
+
+		std::unordered_set<std::string> declaredEntries;
+		std::uint32_t declaredDllCount = 0;
+		std::string manifestLine;
+		std::uint32_t manifestLineNumber = 0;
+		while (std::getline(dependencyManifest, manifestLine))
+		{
+			++manifestLineNumber;
+			if (!manifestLine.empty() && manifestLine.back() == '\r')
+				manifestLine.pop_back();
+			const std::size_t first = manifestLine.find_first_not_of(" \t");
+			if (first == std::string::npos || manifestLine[first] == '#')
+				continue;
+			const std::size_t last = manifestLine.find_last_not_of(" \t");
+			const std::string entry = manifestLine.substr(first, last - first + 1);
+			const std::size_t separator = entry.find('|');
+			if (separator == std::string::npos || separator == 0 || separator + 1 >= entry.size())
+			{
+				error = "Invalid runtime dependency manifest entry at line " +
+					std::to_string(manifestLineNumber) + ": " + entry;
+				return false;
+			}
+			const std::string kind = entry.substr(0, separator);
+			const fs::path declaredPath(entry.substr(separator + 1));
+			const fs::path normalizedPath = declaredPath.lexically_normal();
+			if (declaredPath.is_absolute() || normalizedPath.empty() ||
+				normalizedPath == "." || normalizedPath == ".." ||
+				(!normalizedPath.empty() && *normalizedPath.begin() == ".."))
+			{
+				error = "Unsafe runtime dependency manifest path at line " +
+					std::to_string(manifestLineNumber) + ": " + declaredPath.generic_string();
+				return false;
+			}
+			if (kind == "dll")
+			{
+				std::string extension = normalizedPath.extension().string();
+				std::transform(extension.begin(), extension.end(), extension.begin(),
+					[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+				if (normalizedPath.filename() != normalizedPath || extension != ".dll")
+				{
+					error = "Invalid DLL dependency manifest entry at line " +
+						std::to_string(manifestLineNumber) + ": " + normalizedPath.generic_string();
+					return false;
+				}
+				++declaredDllCount;
+			}
+			else if (kind != "notice")
+			{
+				error = "Unknown runtime dependency manifest entry kind at line " +
+					std::to_string(manifestLineNumber) + ": " + kind;
+				return false;
+			}
+
+			std::string normalizedName = kind + "|" + normalizedPath.generic_string();
+			std::transform(normalizedName.begin(), normalizedName.end(), normalizedName.begin(),
 				[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-
-			const bool isDebugRuntimeArtifact =
-				filename.size() > 6 && filename.compare(filename.size() - 6, 6, "_d.dll") == 0;
-			if (filename.rfind("py", 0) == 0 ||
-				filename.rfind("tcl", 0) == 0 ||
-				filename.rfind("tk", 0) == 0 ||
-				filename.rfind("libffi", 0) == 0 ||
-				filename.rfind("sqlite3", 0) == 0 ||
-				filename.rfind("_", 0) == 0 ||
-				isDebugRuntimeArtifact)
+			if (!declaredEntries.insert(normalizedName).second)
 			{
+				error = "Duplicate runtime dependency manifest entry: " + entry;
 				return false;
 			}
 
-			return extension == ".dll";
-		};
+			const fs::path sourcePath = sourceDir / normalizedPath;
+			if (!fs::exists(sourcePath, ec) || !fs::is_regular_file(sourcePath, ec))
+			{
+				error = "Declared runtime dependency is missing: " + NormalizeForLog(sourcePath);
+				return false;
+			}
+			ec.clear();
+			if (!CopyFileTo(sourcePath, binaryRoot / normalizedPath, copiedFiles, error))
+				return false;
+		}
 
-		for (const fs::directory_entry& entry : fs::directory_iterator(sourceDir, ec))
+		if (declaredDllCount == 0)
 		{
-			if (ec)
-			{
-				error = "Cannot enumerate binary source directory: " + NormalizeForLog(sourceDir);
-				return false;
-			}
-
-			if (!entry.is_regular_file(ec))
-				continue;
-
-			const fs::path sourcePath = entry.path();
-			if (!isRuntimeDependencyFile(sourcePath))
-				continue;
-			if (sourcePath.filename() == "ForestRuntime.dll")
-				continue;
-
-			if (!CopyFileTo(sourcePath, binaryRoot / sourcePath.filename(), copiedFiles, error))
-				return false;
+			error = "Runtime dependency manifest contains no DLL entries: " +
+				NormalizeForLog(dependencyManifestPath);
+			return false;
 		}
 
 		return true;
@@ -1562,6 +1635,34 @@ namespace Vans
 			{
 				result.message = error;
 				return result;
+			}
+			// The runtime always registers the built-in catalog, even when the active
+			// scene does not reference those meshes directly. Keep this minimal set
+			// explicit instead of copying the entire authoring Models directory.
+			for (const Vans::VansBuiltInAssetEntry& builtIn :
+				Vans::VansBuiltInAssetCatalog::Entries())
+			{
+				const fs::path relativeSource = builtIn.sourcePath;
+				const fs::path sourcePath = engineRoot / relativeSource;
+				if (!CopyFileTo(
+					sourcePath, contentRoot / relativeSource, copiedFiles, error))
+				{
+					result.message = error;
+					return result;
+				}
+				const fs::path sourceMeta = fs::path(sourcePath.string() + ".meta");
+				if (fs::is_regular_file(sourceMeta, ec))
+				{
+					const fs::path relativeMeta =
+						fs::path(relativeSource.string() + ".meta");
+					if (!CopyFileTo(
+						sourceMeta, contentRoot / relativeMeta, copiedFiles, error))
+					{
+						result.message = error;
+						return result;
+					}
+				}
+				ec.clear();
 			}
 		}
 

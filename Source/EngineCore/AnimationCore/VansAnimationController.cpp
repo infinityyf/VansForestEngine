@@ -560,6 +560,24 @@ void VansAnimationController::SetFootPlacementRuntimeState(const FootPlacementRu
 	m_FootPlacementState = state;
 }
 
+void VansAnimationController::SetFootPlacementAnimationPlantWeights(
+	bool valid, float left, float right)
+{
+	m_FootPlacementState.hasAnimationPlantWeights = valid;
+	m_FootPlacementState.leftPlantWeight = valid ? glm::clamp(left, 0.0f, 1.0f) : 0.0f;
+	m_FootPlacementState.rightPlantWeight = valid ? glm::clamp(right, 0.0f, 1.0f) : 0.0f;
+}
+
+bool VansAnimationController::GetMotionMatchingFootPlantWeights(
+	float& left, float& right) const
+{
+	if (!m_MotionMatching || !m_MotionMatching->WasUsedThisFrame())
+		return false;
+	left = m_MotionMatching->GetLeftFootPlantWeight();
+	right = m_MotionMatching->GetRightFootPlantWeight();
+	return true;
+}
+
 // ---------------------------------------------------------------------------
 // Parameter management.
 // ---------------------------------------------------------------------------
@@ -1453,9 +1471,14 @@ void VansAnimationController::ApplyFootPlacement(float deltaTime,
 	}
 	else
 	{
-		state.hasAnimationPlantWeights = false;
-		state.leftPlantWeight = 0.0f;
-		state.rightPlantWeight = 0.0f;
+		// Source-proxy retargeting supplies Motion Matching contact weights from
+		// the source controller. Preserve them on the target post-process
+		// controller, which intentionally has no Motion Matching runtime itself.
+		if (!state.hasAnimationPlantWeights)
+		{
+			state.leftPlantWeight = 0.0f;
+			state.rightPlantWeight = 0.0f;
+		}
 	}
 	m_FootPlacement->SetRuntimeState(state);
 	m_FootPlacement->Solve(deltaTime, skeleton, m_OwnerWorldTransform, localTransforms);

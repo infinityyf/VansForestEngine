@@ -90,6 +90,67 @@ vec3 GI_RotateByQuaternion(vec3 direction, vec4 rotation)
     return normalize(direction + rotation.w * t + cross(q, t));
 }
 
+uint GI_ProbeLinearIndex(ivec3 probeIndex, ivec3 probeCounts);
+bool GI_IsFixedClassificationRay(uint localRayIndex, uint raysPerSlice);
+
+struct GIProbeRayDirectionContext
+{
+    uint fixedRayCount;
+    uint dynamicRayCount;
+    vec4 stableRotation;
+    vec4 cycleRotation;
+};
+
+GIProbeRayDirectionContext GI_BuildProbeRayDirectionContext(
+    ivec3 probeIndex,
+    ivec3 probeCounts,
+    uint raysPerProbe,
+    uint directionSlices,
+    uint cycleIndex)
+{
+    GIProbeRayDirectionContext context;
+    context.fixedRayCount = min(
+        raysPerProbe, min(32u, max(directionSlices * 2u, 2u)));
+    context.dynamicRayCount = max(raysPerProbe - context.fixedRayCount, 1u);
+    uint probeSeed = GI_HashCombine(
+        GI_ProbeLinearIndex(probeIndex, probeCounts),
+        uint(probeCounts.x * 73856093 ^ probeCounts.y * 19349663 ^
+            probeCounts.z * 83492791));
+    context.stableRotation = GI_UniformRotationQuaternion(probeSeed);
+    context.cycleRotation = GI_UniformRotationQuaternion(
+        GI_HashCombine(probeSeed, cycleIndex));
+    return context;
+}
+
+vec3 GI_ProbeRayDirectionPrepared(
+    GIProbeRayDirectionContext context,
+    uint localRayIndex,
+    uint raysPerSlice,
+    uint directionSlice,
+    uint directionSlices,
+    out bool fixedClassificationRay)
+{
+    fixedClassificationRay = GI_IsFixedClassificationRay(
+        localRayIndex, raysPerSlice);
+    if (fixedClassificationRay)
+    {
+        uint fixedIndex = localRayIndex * directionSlices + directionSlice;
+        vec3 fixedDirection = SampleSphere(
+            int(fixedIndex % context.fixedRayCount),
+            int(context.fixedRayCount));
+        return GI_RotateByQuaternion(fixedDirection, context.stableRotation);
+    }
+
+    uint dynamicLocalIndex = localRayIndex - min(2u, raysPerSlice);
+    uint dynamicIndex = dynamicLocalIndex * directionSlices + directionSlice;
+    vec3 dynamicDirection = SampleSphere(
+        int(dynamicIndex % context.dynamicRayCount),
+        int(context.dynamicRayCount));
+    return GI_RotateByQuaternion(
+        GI_RotateByQuaternion(dynamicDirection, context.stableRotation),
+        context.cycleRotation);
+}
+
 uint GI_ProbeLinearIndex(ivec3 probeIndex, ivec3 probeCounts)
 {
     return uint(probeIndex.z * probeCounts.x * probeCounts.y +
@@ -113,29 +174,11 @@ vec3 GI_ProbeRayDirection(
     uint cycleIndex,
     out bool fixedClassificationRay)
 {
-    const uint fixedRayCount = min(raysPerProbe, min(32u, max(directionSlices * 2u, 2u)));
-    const uint dynamicRayCount = max(raysPerProbe - fixedRayCount, 1u);
-    fixedClassificationRay = GI_IsFixedClassificationRay(localRayIndex, raysPerSlice);
-
-    uint probeSeed = GI_HashCombine(
-        GI_ProbeLinearIndex(probeIndex, probeCounts),
-        uint(probeCounts.x * 73856093 ^ probeCounts.y * 19349663 ^ probeCounts.z * 83492791));
-    vec4 stableRotation = GI_UniformRotationQuaternion(probeSeed);
-
-    if (fixedClassificationRay)
-    {
-        uint fixedIndex = localRayIndex * directionSlices + directionSlice;
-        vec3 fixedDirection = SampleSphere(int(fixedIndex % fixedRayCount), int(fixedRayCount));
-        return GI_RotateByQuaternion(fixedDirection, stableRotation);
-    }
-
-    uint dynamicLocalIndex = localRayIndex - min(2u, raysPerSlice);
-    uint dynamicIndex = dynamicLocalIndex * directionSlices + directionSlice;
-    vec3 dynamicDirection = SampleSphere(int(dynamicIndex % dynamicRayCount), int(dynamicRayCount));
-    vec4 cycleRotation = GI_UniformRotationQuaternion(GI_HashCombine(probeSeed, cycleIndex));
-    return GI_RotateByQuaternion(
-        GI_RotateByQuaternion(dynamicDirection, stableRotation),
-        cycleRotation);
+    GIProbeRayDirectionContext context = GI_BuildProbeRayDirectionContext(
+        probeIndex, probeCounts, raysPerProbe, directionSlices, cycleIndex);
+    return GI_ProbeRayDirectionPrepared(
+        context, localRayIndex, raysPerSlice, directionSlice,
+        directionSlices, fixedClassificationRay);
 }
 
 #endif

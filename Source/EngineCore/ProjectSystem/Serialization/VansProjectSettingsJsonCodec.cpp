@@ -3,6 +3,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <string>
 
@@ -10,33 +11,29 @@ namespace Vans
 {
 namespace
 {
-const char* ToString(VansProjectFSRMode mode)
+bool ParseUpscalerBackend(
+	const std::string& value,
+	VansGraphics::VansUpscalerBackend& backend)
 {
-	switch (mode)
-	{
-	case VansProjectFSRMode::NativeAA: return "NativeAA";
-	case VansProjectFSRMode::Quality: return "Quality";
-	case VansProjectFSRMode::Balanced: return "Balanced";
-	case VansProjectFSRMode::Performance: return "Performance";
-	case VansProjectFSRMode::MatchViewport:
-	default: return "MatchViewport";
-	}
+	if (value == "Off") backend = VansGraphics::VansUpscalerBackend::Off;
+	else if (value == "FSR") backend = VansGraphics::VansUpscalerBackend::FSR;
+	else if (value == "DLSS") backend = VansGraphics::VansUpscalerBackend::DLSS;
+	else return false;
+	return true;
 }
 
-VansProjectFSRMode ParseFSRMode(const std::string& value, std::vector<std::string>& warnings)
+bool ParseUpscaleQuality(
+	const std::string& value,
+	VansGraphics::VansUpscaleQualityMode& quality)
 {
-	if (value == "NativeAA") return VansProjectFSRMode::NativeAA;
-	if (value == "Quality") return VansProjectFSRMode::Quality;
-	if (value == "Balanced") return VansProjectFSRMode::Balanced;
-	if (value == "Performance") return VansProjectFSRMode::Performance;
-	if (value != "MatchViewport")
-		warnings.push_back("Unknown FSR mode '" + value + "', fallback to MatchViewport");
-	return VansProjectFSRMode::MatchViewport;
-}
-
-bool ParseLegacyAsyncComputeEnabled(const std::string& value)
-{
-	return value == "Auto" || value == "ForceOnForValidation";
+	if (value == "NativeAA") quality = VansGraphics::VansUpscaleQualityMode::NativeAA;
+	else if (value == "Quality") quality = VansGraphics::VansUpscaleQualityMode::Quality;
+	else if (value == "Balanced") quality = VansGraphics::VansUpscaleQualityMode::Balanced;
+	else if (value == "Performance") quality = VansGraphics::VansUpscaleQualityMode::Performance;
+	else if (value == "UltraPerformance")
+		quality = VansGraphics::VansUpscaleQualityMode::UltraPerformance;
+	else return false;
+	return true;
 }
 }
 
@@ -50,25 +47,55 @@ bool VansProjectSettingsJsonCodec::DecodeRenderSettings(
 	error.clear();
 	try
 	{
-		const std::uint32_t schemaVersion = root.value("schemaVersion", 1u);
-		if (schemaVersion != 1u)
+		if (!root.is_object())
 		{
-			warnings.push_back(
-				"Unsupported render settings schemaVersion=" +
-				std::to_string(schemaVersion) +
-				", reading known fields only");
+			error = "Render settings root must be an object";
+			return false;
 		}
-
-		if (root.contains("fsr") && root["fsr"].is_object())
+		const std::uint32_t schemaVersion = root.at("schemaVersion").get<std::uint32_t>();
+		if (schemaVersion != 2u)
 		{
-			const nlohmann::json& fsr = root["fsr"];
-			settings.fsrSettings.mode = ParseFSRMode(
-				fsr.value("mode", std::string("MatchViewport")),
-				warnings);
-			settings.fsrSettings.sharpness = std::clamp(
-				fsr.value("sharpness", 0.2f),
-				0.0f,
-				1.0f);
+			error = "Unsupported render settings schemaVersion=" +
+				std::to_string(schemaVersion) + "; expected 2";
+			return false;
+		}
+		if (!root.contains("upscaler") || !root["upscaler"].is_object())
+		{
+			error = "Missing required object: upscaler";
+			return false;
+		}
+		const nlohmann::json& upscaler = root["upscaler"];
+		const std::string backendValue = upscaler.at("backend").get<std::string>();
+		const std::string qualityValue = upscaler.at("quality").get<std::string>();
+		if (!ParseUpscalerBackend(backendValue, settings.upscalerSettings.backend))
+		{
+			error = "Invalid upscaler.backend '" + backendValue +
+				"'; expected Off, FSR, or DLSS";
+			return false;
+		}
+		if (!ParseUpscaleQuality(qualityValue, settings.upscalerSettings.quality))
+		{
+			error = "Invalid upscaler.quality '" + qualityValue +
+				"'; expected NativeAA, Quality, Balanced, Performance, or UltraPerformance";
+			return false;
+		}
+		settings.upscalerSettings.fsrSharpness =
+			upscaler.at("fsrSharpness").get<float>();
+		settings.upscalerSettings.fsrDebugView =
+			upscaler.at("fsrDebugView").get<bool>();
+		if (!std::isfinite(settings.upscalerSettings.fsrSharpness) ||
+			settings.upscalerSettings.fsrSharpness < 0.0f ||
+			settings.upscalerSettings.fsrSharpness > 1.0f)
+		{
+			error = "upscaler.fsrSharpness must be in [0, 1]";
+			return false;
+		}
+		if (settings.upscalerSettings.backend == VansGraphics::VansUpscalerBackend::Off &&
+			settings.upscalerSettings.quality !=
+				VansGraphics::VansUpscaleQualityMode::NativeAA)
+		{
+			error = "Off upscaler backend requires NativeAA quality";
+			return false;
 		}
 
 		if (root.contains("commandRecording") && root["commandRecording"].is_object())
@@ -83,17 +110,8 @@ bool VansProjectSettingsJsonCodec::DecodeRenderSettings(
 					commandRecording.value("framesInFlight", 2u),
 					1u,
 					2u);
-			if (commandRecording.contains("asyncComputeEnabled"))
-			{
-				settings.commandRecordingSettings.asyncComputeEnabled =
-					commandRecording.value("asyncComputeEnabled", false);
-			}
-			else if (commandRecording.contains("asyncComputeMode"))
-			{
-				settings.commandRecordingSettings.asyncComputeEnabled = ParseLegacyAsyncComputeEnabled(
-					commandRecording.value("asyncComputeMode", std::string("Disabled")));
-				warnings.push_back("Deprecated commandRecording.asyncComputeMode migrated to asyncComputeEnabled");
-			}
+			settings.commandRecordingSettings.asyncComputeEnabled =
+				commandRecording.value("asyncComputeEnabled", false);
 		}
 
 		if (root.contains("mainCameraHiZCulling") && root["mainCameraHiZCulling"].is_object())
@@ -132,10 +150,12 @@ nlohmann::json VansProjectSettingsJsonCodec::EncodeRenderSettings(
 	const VansProjectRenderSettingsData& settings)
 {
 	nlohmann::json root;
-	root["schemaVersion"] = 1;
-	root["fsr"] = {
-		{ "mode", ToString(settings.fsrSettings.mode) },
-		{ "sharpness", settings.fsrSettings.sharpness }
+	root["schemaVersion"] = 2;
+	root["upscaler"] = {
+		{ "backend", VansGraphics::ToString(settings.upscalerSettings.backend) },
+		{ "quality", VansGraphics::ToString(settings.upscalerSettings.quality) },
+		{ "fsrSharpness", settings.upscalerSettings.fsrSharpness },
+		{ "fsrDebugView", settings.upscalerSettings.fsrDebugView }
 	};
 	root["commandRecording"] = {
 		{ "parallelEnabled", settings.commandRecordingSettings.parallelEnabled },

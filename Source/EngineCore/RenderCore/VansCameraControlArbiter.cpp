@@ -121,17 +121,30 @@ void VansCameraControlArbiter::ReleaseDomain(VansCameraControlDomainId domain)
 		m_TransientOwners.end());
 }
 
-VansCameraControlPose VansCameraControlArbiter::ResolvePose() const
+VansCameraControlPose VansCameraControlArbiter::ResolvePose()
 {
-	return GraphicsPose(m_Runtime.ResolveView(Vans::VansCameraRuntime::MainView()).snapshot);
+	m_LastResolvedPose = GraphicsPose(
+		m_Runtime.ResolveView(Vans::VansCameraRuntime::MainView()).snapshot);
+	m_HasLastResolvedPose = true;
+	return m_LastResolvedPose;
+}
+
+bool VansCameraControlArbiter::GetLastResolvedPose(VansCameraControlPose& outPose) const
+{
+	if (!m_HasLastResolvedPose) return false;
+	outPose = m_LastResolvedPose;
+	return true;
 }
 
 void VansCameraControlArbiter::Resolve(VansCamera& camera)
 {
 	m_UserLookSuppressed = m_Runtime.IsUserLookSuppressed();
-	if (m_Runtime.ContributionCount() == 0) return;
-	camera.ApplyControlPose(GraphicsPose(m_Runtime.ResolveAndConsumeView(
-		Vans::VansCameraRuntime::MainView()).snapshot));
+	const bool hadContributions = m_Runtime.ContributionCount() != 0;
+	m_LastResolvedPose = GraphicsPose(m_Runtime.ResolveAndConsumeView(
+		Vans::VansCameraRuntime::MainView()).snapshot);
+	m_HasLastResolvedPose = true;
+	if (!hadContributions) return;
+	camera.ApplyControlPose(m_LastResolvedPose);
 	m_AppliedControl = true;
 }
 void VansCameraControlArbiter::Clear(VansCamera* camera)
@@ -140,6 +153,7 @@ void VansCameraControlArbiter::Clear(VansCamera* camera)
 	m_Runtime.ClearContributions();
 	m_TransientOwners.clear();
 	m_AppliedControl = false;
+	m_HasLastResolvedPose = false;
 	m_UserLookSuppressed = false;
 }
 }

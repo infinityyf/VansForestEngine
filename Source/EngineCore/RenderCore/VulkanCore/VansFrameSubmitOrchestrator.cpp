@@ -365,6 +365,7 @@ const char* VansGraphics::ToString(VansSyncPoint point)
 	case VansSyncPoint::TileLightDone: return "TileLightDone";
 	case VansSyncPoint::VegetationDone: return "VegetationDone";
 	case VansSyncPoint::PreDeferredDone: return "PreDeferredDone";
+	case VansSyncPoint::AsyncSSAODone: return "AsyncSSAODone";
 	case VansSyncPoint::HZBReady: return "HZBReady";
 	case VansSyncPoint::CloudDone: return "CloudDone";
 	case VansSyncPoint::AsyncGIDone: return "AsyncGIDone";

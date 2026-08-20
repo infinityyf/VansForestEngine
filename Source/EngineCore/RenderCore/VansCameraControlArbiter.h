@@ -51,7 +51,8 @@ public:
 	bool Submit(VansCameraControlContribution contribution);
 	void Release(VansCameraControlOwner owner);
 	void ReleaseDomain(VansCameraControlDomainId domain);
-	VansCameraControlPose ResolvePose() const;
+	VansCameraControlPose ResolvePose();
+	bool GetLastResolvedPose(VansCameraControlPose& outPose) const;
 	void Resolve(VansCamera& camera);
 	void Clear(VansCamera* camera = nullptr);
 	bool IsUserLookSuppressed() const { return m_UserLookSuppressed; }
@@ -60,9 +61,11 @@ public:
 	const Vans::VansCameraRuntime& CoreRuntime() const { return m_Runtime; }
 private:
 	VansCameraControlPose m_BasePose;
+	VansCameraControlPose m_LastResolvedPose;
 	Vans::VansCameraRuntime m_Runtime;
 	std::vector<VansCameraControlOwner> m_TransientOwners;
 	bool m_AppliedControl = false;
+	bool m_HasLastResolvedPose = false;
 	bool m_UserLookSuppressed = false;
 };
 }

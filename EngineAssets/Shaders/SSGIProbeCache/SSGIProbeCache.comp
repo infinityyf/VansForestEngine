@@ -1,0 +1,410 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_nonuniform_qualifier : require
+
+#include "../Common/Common.glsl"
+#include "../Common/CameraData.glsl"
+#include "../BRDF/ReflectionProbeData.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 1, binding = 0) uniform sampler2D inputNormal;
+layout(set = 1, binding = 1) uniform sampler2D inputDepth;
+layout(set = 1, binding = 2) uniform sampler2D inputPosition;
+layout(set = 1, binding = 3) uniform sampler2D inputMaterial;
+layout(set = 1, binding = 4) uniform samplerCube inputSkyDiffuse;
+layout(set = 1, binding = 5, rgba16f) writeonly uniform image2D outputRadiance;
+layout(set = 1, binding = 6, rgba16f) writeonly uniform image2D outputSurface;
+
+struct SSGIRegionParams
+{
+    vec4 volumeMin;
+    vec4 volumeSizeAndBias;
+    vec4 traceParams;
+    vec4 gridDimensionsAndPriority;
+};
+
+layout(set = 1, binding = 7) uniform SSGIProbeCacheInfo
+{
+    vec4 screenSize;
+    vec4 regionInfo;
+    SSGIRegionParams regions[8];
+    vec4 deferredProbeDebug;
+};
+
+layout(set = 1, binding = 8) uniform sampler2D screenIrradianceAtlas[8];
+layout(set = 1, binding = 9) uniform sampler2D visibilityAtlas[8];
+
+struct GIProbeState
+{
+    vec4 relocationAndConfidence;
+    vec4 distanceStats;
+    uvec4 metadata;
+};
+layout(set = 1, binding = 10, std430) readonly buffer ProbeStateBuffer
+{
+    GIProbeState states[];
+} probeStateBuffers[8];
+
+// 11-17 are reserved by the runtime for compatibility with the previous
+// per-region probe-state bindings.  Keep the screen-query inputs outside that
+// range so cached SPIR-V cannot reinterpret an image as a storage buffer.
+layout(set = 1, binding = 18) uniform sampler2D inputColor;
+layout(set = 1, binding = 19) uniform sampler2D hizDepth;
+
+GIProbeState LoadScreenCacheProbeState(uint regionIndex, uint probeLinearIndex)
+{
+    return probeStateBuffers[nonuniformEXT(regionIndex)].states[probeLinearIndex];
+}
+
+#define GI_LOAD_PROBE_STATE(regionIndex, probeLinearIndex) \
+    LoadScreenCacheProbeState(regionIndex, probeLinearIndex)
+#include "../GI/GIProbeCommon.glsl"
+
+const int SSGI_PROBE_CACHE_TILE_SIZE = 4;
+const int SSGI_PROBE_CACHE_TILE_SHIFT = 2;
+const float SSGI_TRACE_MAX_DISTANCE = 32.0;
+const float SSGI_TRACE_BASE_PIXEL_STEP = 1.5;
+const int SSGI_TRACE_ITERATION_BUDGET = 128;
+const float SSGI_STABLE_WORLD_SEED_SCALE = 16.0;
+
+vec3 CosineWeightedDirection(vec2 u, mat3 TBN)
+{
+    float phi = TWO_PI * u.x;
+    float r = sqrt(u.y);
+    float x = r * cos(phi);
+    float z = r * sin(phi);
+    float y = sqrt(max(0.0, 1.0 - x * x - z * z));
+    return TBN * vec3(x, y, z);
+}
+
+uint StableScreenProbeSeed(vec3 worldPosition, vec3 normal)
+{
+    // Screen Probe 只有一条射线，不能像高 spp 路径一样每帧完全换一组方向，
+    // 否则一个高亮命中会被放大成随镜头移动闪烁的 4x4 亮块。按世界空间
+    // 量化位置和几何法线生成固定种子，让采样图案附着在场景表面。
+    ivec3 positionCell = ivec3(floor(
+        worldPosition * SSGI_STABLE_WORLD_SEED_SCALE));
+    ivec3 normalCell = ivec3(round(clamp(normal, vec3(-1.0), vec3(1.0)) * 31.0));
+    uvec3 p = uvec3(positionCell);
+    uvec3 n = uvec3(normalCell + ivec3(32));
+    uint seed = p.x * 0x8da6b343u;
+    seed ^= p.y * 0xd8163841u;
+    seed ^= p.z * 0xcb1ab31fu;
+    seed ^= n.x * 0x165667b1u;
+    seed ^= n.y * 0xa24baed5u;
+    seed ^= n.z * 0x9fb21c65u;
+    seed ^= seed >> 16u;
+    seed *= 0x7feb352du;
+    seed ^= seed >> 15u;
+    return seed;
+}
+
+void SortPair(inout float a, inout float b)
+{
+    float lower = min(a, b);
+    float upper = max(a, b);
+    a = lower;
+    b = upper;
+}
+
+float Median5(float a, float b, float c, float d, float e)
+{
+    // 五元素排序网络；仅在四分之一分辨率且 Hi-Z 命中时执行。
+    SortPair(a, b);
+    SortPair(d, e);
+    SortPair(a, c);
+    SortPair(b, c);
+    SortPair(a, d);
+    SortPair(c, d);
+    SortPair(b, e);
+    SortPair(b, c);
+    SortPair(d, e);
+    return c;
+}
+
+vec3 SampleStableScreenIrradiance(
+    vec2 uv,
+    vec3 fallbackIrradiance,
+    out float stability)
+{
+    // 单点采到亚像素高亮时，四分之一分辨率缓存会把它扩散到一整个
+    // screen-probe。用命中点十字邻域的中值识别这种离群值；连续的真实
+    // 发光区域会在多数 tap 中保持高亮，因此不会被当作 firefly 删除。
+    vec2 texelSize = screenSize.zw;
+    vec2 minUV = texelSize * 0.5;
+    vec2 maxUV = vec2(1.0) - minUV;
+    vec3 center = max(texture(inputColor, clamp(uv, minUV, maxUV)).rgb, vec3(0.0));
+    vec3 left = max(texture(inputColor,
+        clamp(uv - vec2(texelSize.x, 0.0), minUV, maxUV)).rgb, vec3(0.0));
+    vec3 right = max(texture(inputColor,
+        clamp(uv + vec2(texelSize.x, 0.0), minUV, maxUV)).rgb, vec3(0.0));
+    vec3 down = max(texture(inputColor,
+        clamp(uv - vec2(0.0, texelSize.y), minUV, maxUV)).rgb, vec3(0.0));
+    vec3 up = max(texture(inputColor,
+        clamp(uv + vec2(0.0, texelSize.y), minUV, maxUV)).rgb, vec3(0.0));
+
+    float centerLuminance = Luminance(center);
+    float neighborhoodMedian = Median5(
+        centerLuminance,
+        Luminance(left),
+        Luminance(right),
+        Luminance(down),
+        Luminance(up));
+    float fallbackLuminance = Luminance(max(fallbackIrradiance, vec3(0.0)));
+
+    // 局部上限抑制孤立亮点，相对 fallback 上限则防止单条射线让低频
+    // DDGI 基线发生数量级跳变。常量只影响离群值，不压低连续高亮区域。
+    float localLimit = neighborhoodMedian * 3.0 + 0.10;
+    float fallbackLimit = fallbackLuminance * 4.0 + 0.50;
+    float luminanceLimit = min(localLimit, fallbackLimit);
+    stability = centerLuminance > 1e-5
+        ? clamp(luminanceLimit / centerLuminance, 0.0, 1.0)
+        : 1.0;
+    return center * stability;
+}
+
+vec3 ComputeCacheGeometricNormal(
+    ivec2 pixelCoord,
+    ivec2 imageSize,
+    vec3 centerPosition,
+    vec3 shadingNormal)
+{
+    vec3 fallback = dot(shadingNormal, shadingNormal) > 1e-6
+        ? normalize(shadingNormal)
+        : vec3(0.0, 1.0, 0.0);
+    ivec2 leftCoord = ivec2(max(pixelCoord.x - 1, 0), pixelCoord.y);
+    ivec2 rightCoord = ivec2(min(pixelCoord.x + 1, imageSize.x - 1), pixelCoord.y);
+    ivec2 downCoord = ivec2(pixelCoord.x, max(pixelCoord.y - 1, 0));
+    ivec2 upCoord = ivec2(pixelCoord.x, min(pixelCoord.y + 1, imageSize.y - 1));
+    vec3 dxLeft = centerPosition - texelFetch(inputPosition, leftCoord, 0).xyz;
+    vec3 dxRight = texelFetch(inputPosition, rightCoord, 0).xyz - centerPosition;
+    vec3 dyDown = centerPosition - texelFetch(inputPosition, downCoord, 0).xyz;
+    vec3 dyUp = texelFetch(inputPosition, upCoord, 0).xyz - centerPosition;
+    vec3 dx = dot(dxRight, dxRight) < dot(dxLeft, dxLeft) ? dxRight : dxLeft;
+    vec3 dy = dot(dyUp, dyUp) < dot(dyDown, dyDown) ? dyUp : dyDown;
+    vec3 geometric = cross(dx, dy);
+    if (dot(geometric, geometric) <= 1e-8)
+        return fallback;
+    geometric = normalize(geometric);
+    return dot(geometric, fallback) < 0.0 ? -geometric : geometric;
+}
+
+vec3 SampleRegionPrefiltered(
+    uint regionIndex,
+    SSGIRegionParams region,
+    vec3 worldPosition,
+    vec3 normal,
+    float volumeWeight,
+    out float probeSupport)
+{
+    ivec3 probeCounts = ivec3(region.gridDimensionsAndPriority.xyz);
+    vec3 volumeMin = region.volumeMin.xyz;
+    vec3 volumeSize = region.volumeSizeAndBias.xyz;
+    float normalBias = region.volumeSizeAndBias.w;
+    int probesPerAtlasRow = max(int(round(region.volumeMin.w)), 0);
+    int probesPerAtlasColumn = max(int(round(region.traceParams.w)), 0);
+    return GI_SampleProbeIrradianceAtlasScreenVisiblePrefiltered(
+        regionIndex, probeCounts,
+        screenIrradianceAtlas[nonuniformEXT(regionIndex)],
+        visibilityAtlas[nonuniformEXT(regionIndex)],
+        worldPosition, normal, volumeMin, volumeSize, normalBias, volumeWeight,
+        probesPerAtlasRow, probesPerAtlasColumn, probeSupport);
+}
+
+vec3 EvaluateCachedFallback(
+    vec3 worldPosition,
+    vec3 normal,
+    float vegetationTranslucency)
+{
+    // ComputeCacheGeometricNormal always returns a unit vector.  Preserve that
+    // contract through the cache-only fallback instead of normalizing it again
+    // before this function and once more inside the DDGI query.
+    vec3 N = normal;
+    vec3 probeIrradiance = vec3(0.0);
+    float selectedProbeSupport = 0.0;
+    float probeWeight = 0.0;
+    float selectedPriority = -3.402823e38;
+    uint selectedRegion = 0u;
+    uint regionCount = min(uint(regionInfo.x), 8u);
+    for (uint regionIndex = 0u; regionIndex < regionCount; ++regionIndex)
+    {
+        SSGIRegionParams region = regions[regionIndex];
+        float weight = GI_IsInsideVolume(worldPosition, region.volumeMin.xyz,
+            region.volumeSizeAndBias.xyz)
+            ? GI_VolumeFade(worldPosition, region.volumeMin.xyz,
+                region.volumeSizeAndBias.xyz, max(region.traceParams.z, 0.0))
+            : 0.0;
+        float priority = region.gridDimensionsAndPriority.w;
+        if (weight > 0.0 && (priority > selectedPriority ||
+            (priority == selectedPriority && weight > probeWeight)))
+        {
+            probeWeight = weight;
+            selectedPriority = priority;
+            selectedRegion = regionIndex;
+        }
+    }
+
+    // 重叠 volume 只查询最终胜出的区域，避免优先级递增时重复执行完整 DDGI 查询。
+    if (probeWeight > 0.0)
+    {
+        probeIrradiance = SampleRegionPrefiltered(
+            selectedRegion, regions[selectedRegion], worldPosition, N,
+            probeWeight,
+            selectedProbeSupport);
+    }
+
+    float supportedProbeWeight = probeWeight * selectedProbeSupport;
+    // A fully supported interior probe sample makes the sky term's mix weight
+    // exactly zero.  Avoid paying for that cubemap lookup on the steady-state
+    // cache path; volume fades and warming/invalid probes still evaluate the
+    // identical sky fallback below.
+    vec3 frontIrradiance = probeIrradiance;
+    if (supportedProbeWeight < 1.0)
+    {
+        vec3 skyIrradiance = SampleSkyDiffuseCube(inputSkyDiffuse, N);
+        frontIrradiance = mix(
+            skyIrradiance, probeIrradiance, supportedProbeWeight);
+    }
+    if (vegetationTranslucency <= 0.001)
+        return frontIrradiance;
+    vec3 backN = -N;
+    float backProbeSupport = 0.0;
+    vec3 backProbeIrradiance = probeWeight > 0.0
+        ? SampleRegionPrefiltered(
+            selectedRegion, regions[selectedRegion], worldPosition, backN,
+            probeWeight,
+            backProbeSupport)
+        : vec3(0.0);
+    float supportedBackProbeWeight = probeWeight * backProbeSupport;
+    vec3 backIrradiance = backProbeIrradiance;
+    if (supportedBackProbeWeight < 1.0)
+    {
+        vec3 backSkyIrradiance = SampleSkyDiffuseCube(inputSkyDiffuse, backN);
+        backIrradiance = mix(backSkyIrradiance, backProbeIrradiance,
+            supportedBackProbeWeight);
+    }
+    float backWeight = clamp(vegetationTranslucency * 0.7, 0.0, 0.7);
+    return mix(frontIrradiance, max(frontIrradiance, backIrradiance), backWeight);
+}
+
+void main()
+{
+    ivec2 cacheCoord = ivec2(gl_GlobalInvocationID.xy);
+    // The CPU allocates the cache from this same immutable render extent.
+    // Reconstructing both extents removes imageSize/textureSize from every
+    // cache invocation while preserving the exact ceil(fullSize / 4) rule.
+    ivec2 fullSize = max(ivec2(screenSize.xy), ivec2(1));
+    ivec2 cacheSize =
+        (fullSize + ivec2(SSGI_PROBE_CACHE_TILE_SIZE - 1)) >>
+        ivec2(SSGI_PROBE_CACHE_TILE_SHIFT);
+    if (any(greaterThanEqual(cacheCoord, cacheSize)))
+        return;
+
+    ivec2 anchorCoord = min(
+        cacheCoord * SSGI_PROBE_CACHE_TILE_SIZE +
+            ivec2(SSGI_PROBE_CACHE_TILE_SIZE / 2),
+        fullSize - 1);
+    float rawDepth = texelFetch(inputDepth, anchorCoord, 0).r;
+    if (rawDepth >= 0.9999)
+    {
+        imageStore(outputRadiance, cacheCoord, vec4(0.0));
+        imageStore(outputSurface, cacheCoord, vec4(0.0, 1.0, 0.0, FarPlane));
+        return;
+    }
+
+    vec4 normalData = texelFetch(inputNormal, anchorCoord, 0);
+    vec4 positionData = texelFetch(inputPosition, anchorCoord, 0);
+    vec3 worldPosition = positionData.xyz;
+    vec3 geometricNormal = ComputeCacheGeometricNormal(
+        anchorCoord, fullSize, worldPosition, normalData.xyz);
+    int materialId = int(round(texelFetch(inputMaterial, anchorCoord, 0).z));
+    bool vegetationMaterial = materialId == MATERIAL_ID_GRASS ||
+        materialId == MATERIAL_ID_TREE;
+    float vegetationTranslucency = vegetationMaterial
+        ? clamp(normalData.w, 0.0, 1.0)
+        : 0.0;
+    vec3 irradiance = EvaluateCachedFallback(
+        worldPosition, geometricNormal, vegetationTranslucency);
+    float screenHitConfidence = 0.0;
+
+    // Lumen 风格的屏幕查询缓存：昂贵的 Hi-Z trace 只在每个 4x4 screen
+    // probe 的代表像素执行一次；全分辨率阶段仅做法线/深度引导重建。
+    vec3 shadingNormal = normalize(normalData.xyz);
+    vec3 startPosition = worldPosition + shadingNormal * 0.05;
+    vec3 tangent;
+    vec3 bitangent;
+    BuildTBN(shadingNormal, tangent, bitangent);
+    mat3 TBN = mat3(tangent, bitangent, shadingNormal);
+    uint rseed = StableScreenProbeSeed(worldPosition, geometricNormal);
+    vec2 noise = R2Sequence(int(rseed & 511u));
+    vec3 direction = CosineWeightedDirection(noise, TBN);
+    float maxTraceDistance = clamp(
+        regionInfo.y, 1.0, min(FarPlane, SSGI_TRACE_MAX_DISTANCE));
+    float fadeStartRatio = clamp(regionInfo.z, 0.05, 0.99);
+    HiZTraceResult traceResult = TraceHiZ_UV_Bounded(
+        hizDepth,
+        ViewMatrix,
+        ProjectionMatrix,
+        startPosition,
+        direction,
+        maxTraceDistance,
+        SSGI_TRACE_BASE_PIXEL_STEP,
+        0.02,
+        SSGI_TRACE_ITERATION_BUDGET);
+
+    if (traceResult.hit)
+    {
+        vec2 hitUV = traceResult.uv;
+        vec3 hitNormal = normalize(texture(inputNormal, hitUV).xyz);
+        if (dot(hitNormal, -direction) > 0.0)
+        {
+            vec3 hitWorldPosition = texture(inputPosition, hitUV).xyz;
+            vec4 lastClip = LastProjectionMatrix * LastViewMatrix *
+                vec4(hitWorldPosition, 1.0);
+            lastClip /= lastClip.w;
+            lastClip.y = -lastClip.y;
+            vec2 lastColorUV = lastClip.xy * 0.5 + 0.5;
+            bool colorValid = all(greaterThanEqual(lastColorUV, vec2(0.0))) &&
+                all(lessThanEqual(lastColorUV, vec2(1.0)));
+            if (colorValid)
+            {
+                float sampleStability = 1.0;
+                vec3 screenIrradiance = SampleStableScreenIrradiance(
+                    lastColorUV, irradiance, sampleStability);
+                float hitDistance = length(hitWorldPosition - startPosition);
+                float screenTraceWeight = 1.0 - smoothstep(
+                    maxTraceDistance * fadeStartRatio,
+                    maxTraceDistance,
+                    hitDistance);
+                float fallbackLuminance = Luminance(irradiance);
+                float screenToFallback = Luminance(screenIrradiance) /
+                    max(fallbackLuminance, 1e-3);
+                float darkHitConfidence = smoothstep(
+                    0.45, 1.05, screenToFallback);
+                screenTraceWeight *= mix(
+                    1.0,
+                    darkHitConfidence,
+                    step(0.02, fallbackLuminance));
+                // 被判为离群值的样本同时降低混合置信度，避免已经压低的
+                // firefly 仍以满权重覆盖稳定的 DDGI fallback。
+                screenTraceWeight *= sampleStability;
+                screenIrradiance = max(screenIrradiance, irradiance * 0.75);
+                irradiance = mix(
+                    irradiance, screenIrradiance, screenTraceWeight);
+                screenHitConfidence = screenTraceWeight;
+            }
+        }
+    }
+
+    // Keep the cache surface depth identical to the full-resolution consumer:
+    // all deferred GBuffer writers already publish positive linear depth in w.
+    float linearDepth = max(positionData.w, NearPlane);
+    // 0 means invalid cache texel.  Valid entries encode 1 + screen confidence
+    // so reconstruction can preserve both validity and temporal confidence in
+    // the existing RGBA16F resource without allocating another texture.
+    imageStore(outputRadiance, cacheCoord,
+        vec4(max(irradiance, vec3(0.0)), 1.0 + screenHitConfidence));
+    imageStore(outputSurface, cacheCoord,
+        vec4(geometricNormal, linearDepth));
+}

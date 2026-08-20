@@ -552,7 +552,8 @@ void VansGraphics::VansScene::PrepareCharacterLocomotion(float deltaTime)
 		}
 
 		Vans::VansCharacterMotionSettings motionSettings;
-		VansAnimationController* controller = animation ? animation->GetController() : nullptr;
+		VansAnimationController* controller =
+			animation ? animation->GetLocomotionController() : nullptr;
 		if (controller)
 			if (const MotionMatchingSettings* mm = controller->GetMotionMatchingSettings())
 				motionSettings = mm->motionModel;

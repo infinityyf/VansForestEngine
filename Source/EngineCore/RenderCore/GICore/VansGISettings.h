@@ -79,7 +79,7 @@ namespace VansGraphics
 		uint32_t raysPerActiveProbe = 1;
 		uint64_t activeProbeCount = 1;
 		uint64_t activeRayCount = 1;
-		uint64_t fullUpdateFrameCount = 1;
+		uint64_t fullUpdateCycleFrameCount = 1;
 	};
 
 	struct VansGISettings
@@ -187,7 +187,7 @@ namespace VansGraphics
 		batch.activeProbeCount = static_cast<uint64_t>(batch.activeGridDimensions.x) *
 			batch.activeGridDimensions.y * batch.activeGridDimensions.z;
 		batch.activeRayCount = batch.activeProbeCount * batch.raysPerActiveProbe;
-		batch.fullUpdateFrameCount = static_cast<uint64_t>(batch.spatialPhaseCount) * directionSlices;
+		batch.fullUpdateCycleFrameCount = static_cast<uint64_t>(batch.spatialPhaseCount) * directionSlices;
 		return batch;
 	}
 
