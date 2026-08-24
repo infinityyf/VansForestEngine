@@ -4,6 +4,7 @@
 #include "VansPoseTypes.h"
 
 #include <string>
+#include <vector>
 
 namespace VansGraphics
 {
@@ -16,12 +17,16 @@ namespace VansGraphics
 	enum class VansLayerEventMode { Ignore, ActiveOnly, Always };
 	enum class VansLayerNodeTrackMode { Ignore, Override };
 	enum class VansLayerSyncMode { Independent, NormalizedTime, MarkerSync, SyncedGraph };
+	enum class VansGraphSetBlendCurve { Linear, SmoothStep };
+	enum class VansGraphSetPhasePolicy { Restart, MatchNormalizedTime, MatchMarker };
+	enum class VansGraphSetEventPolicy { DominantSource, WeightedBoth };
+	enum class VansGraphSetRootMotionPolicy { Blend, DominantSource, IncomingOnly };
+	enum class VansGraphSetInterruptionPolicy { QueueLatest, Reject, Force };
 
 	struct VansAnimationLayerDefinition
 	{
 		std::string id;
 		std::string name;
-		std::string graphId;
 		VansAnimationLayerKind kind = VansAnimationLayerKind::Overlay;
 		std::string maskGuid;
 		std::string maskPathHint;
@@ -41,8 +46,40 @@ namespace VansGraphics
 		VansLayerSyncMode sync = VansLayerSyncMode::Independent;
 		std::string syncLeaderLayerId;
 		float eventWeightThreshold = 0.01f;
-		bool enabled = true;
 		bool updateWhenWeightIsZero = true;
+	};
+
+	// Layer Stack 只定义稳定的组合策略；具体 Pose Graph 由 Graph Set 绑定。
+	struct VansAnimationGraphBindingDefinition
+	{
+		std::string layerId;
+		std::string graphId;
+		bool enabled = true;
+	};
+
+	struct VansAnimationGraphSetDefinition
+	{
+		std::string id;
+		std::string name;
+		std::vector<VansAnimationGraphBindingDefinition> bindings;
+	};
+
+	struct VansGraphSetTransitionPolicy
+	{
+		float duration = 0.2f;
+		VansGraphSetBlendCurve curve = VansGraphSetBlendCurve::SmoothStep;
+		VansGraphSetPhasePolicy phase = VansGraphSetPhasePolicy::MatchNormalizedTime;
+		VansGraphSetEventPolicy events = VansGraphSetEventPolicy::DominantSource;
+		VansGraphSetRootMotionPolicy rootMotion = VansGraphSetRootMotionPolicy::Blend;
+		VansGraphSetInterruptionPolicy interruption = VansGraphSetInterruptionPolicy::QueueLatest;
+		bool requireStateMatch = false;
+	};
+
+	struct VansGraphSetTransitionRule
+	{
+		std::string fromGraphSetId;
+		std::string toGraphSetId;
+		VansGraphSetTransitionPolicy policy;
 	};
 
 	struct VansAnimationLayerRuntimeState

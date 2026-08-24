@@ -328,11 +328,7 @@ bool VansGraphics::VansVKComputePipeline::CreateComputePipeline(VkDevice& logic_
 			pushConstantSize);
 		m_DescriptorKey = VansPipelineDescriptorBuilder::BuildPipelineKey(*programDesc, runtimeDesc);
 	}
-#if defined(_DEBUG)
-	VkPipelineCreateFlags additional_options = static_cast<VkPipelineCreateFlags>(VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT);
-#else
-	VkPipelineCreateFlags additional_options = 0u;
-#endif
+	const VkPipelineCreateFlags additional_options = 0u;
 	VkPipelineLayoutCreateInfo pipeline_layout_create_info =
 	{
 		 VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,

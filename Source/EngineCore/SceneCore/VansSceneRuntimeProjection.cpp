@@ -1199,10 +1199,18 @@ bool AppendAuthoringEntityToContentPlan(
 	const VansSerializedValue* rendererComponent = FindComponent(entity, "ModelRenderer");
 	const VansSerializedValue* animationComponent = FindComponent(entity, "Animation");
 	const std::string entityGuid = ReadSerializedStringField(entity, "id");
-	const VansSerializedValue* parent = FindObjectField(entity, "parent");
-	const std::string parentEntityGuid = parent && parent->kind == VansSerializedValue::Kind::String
-		? parent->stringValue
-		: std::string{};
+	std::optional<VansSceneParentReference> parentReference;
+	if (const VansSerializedValue* parent = FindObjectField(entity, "parent");
+		parent && parent->kind != VansSerializedValue::Kind::Null)
+	{
+		VansSceneParentReference parsed;
+		std::string error;
+		if (!TryReadSceneParentReference(*parent, parsed, error))
+			return false;
+		parentReference = std::move(parsed);
+	}
+	const std::string parentEntityGuid = parentReference
+		? parentReference->entityGuid.ToString() : std::string{};
 
 	VansSceneRenderNodeConfig render;
 	bool specialRenderNode = false;
@@ -1226,7 +1234,7 @@ bool AppendAuthoringEntityToContentPlan(
 	VansSceneObjectBuildConfig objectConfig;
 	objectConfig.entityGuid = entityGuid;
 	objectConfig.name = ReadSerializedStringField(entity, "name");
-	objectConfig.parentEntityGuid = parentEntityGuid;
+	objectConfig.parent = std::move(parentReference);
 	objectConfig.active = ReadSerializedBoolField(entity, "active", true);
 	objectConfig.transform = BuildAuthoringObjectTransform(transformComponent);
 	if (transformComponent)

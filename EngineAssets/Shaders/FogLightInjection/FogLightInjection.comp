@@ -44,7 +44,7 @@ layout(set = 1, binding = 2) uniform FogVolumeParams
 } uVolume;
 
 layout(set = 1, binding = 3) uniform sampler3D s_History;
-layout(set = 1, binding = 4) uniform sampler2DArrayShadow punctualShadowMap;
+layout(set = 1, binding = 4) uniform sampler2DShadow punctualShadowMap[PUNCTUAL_SHADOW_ATLAS_COUNT];
 
 // ---------------------------------------------------------------------------
 // Smooth edge fade for shadow map — avoids hard clamp line at UV boundaries

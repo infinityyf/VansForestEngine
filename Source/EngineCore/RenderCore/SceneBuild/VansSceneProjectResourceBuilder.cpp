@@ -320,7 +320,7 @@ void VansSceneProjectResourceBuilder::RegisterShaders(VansScene& scene,
                 : VansManagedShaderKind::Graphics);
         entry.pushConstantSize = std::max(shaderRequest.pushConstantSize, 0);
         if (entry.kind == VansManagedShaderKind::Graphics && shaderRequest.pushConstantSize < 0)
-            entry.pushConstantSize = sizeof(VansDrawPushConstant);
+            entry.pushConstantSize = 0;
         entry.depthTest = shaderRequest.depthTest ? VK_TRUE : VK_FALSE;
         entry.depthWrite = shaderRequest.depthWrite ? VK_TRUE : VK_FALSE;
         entry.depthCompareOp = ParseCompareOp(shaderRequest.depthCompare, VK_COMPARE_OP_LESS_OR_EQUAL);
@@ -332,7 +332,7 @@ void VansSceneProjectResourceBuilder::RegisterShaders(VansScene& scene,
         entry.enablePremultipliedAlphaBlend = shaderRequest.premultipliedAlphaBlend;
         entry.colorAttachmentCount = shaderRequest.colorAttachmentCount;
         if (entry.colorAttachmentCount < 0 && shaderRequest.renderPath == "deferredSurface")
-            entry.colorAttachmentCount = 4;
+            entry.colorAttachmentCount = 5;
         entry.polygonMode = ParsePolygonMode(shaderRequest.polygonMode, VK_POLYGON_MODE_FILL);
         entry.frontFace = ParseFrontFace(shaderRequest.frontFace, VK_FRONT_FACE_COUNTER_CLOCKWISE);
         entry.primitiveTopology = ParsePrimitiveTopology(shaderRequest.primitiveTopology, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);

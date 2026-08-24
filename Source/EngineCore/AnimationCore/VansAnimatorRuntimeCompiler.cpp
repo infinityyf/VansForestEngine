@@ -1,6 +1,7 @@
 #include "VansAnimatorRuntimeCompiler.h"
 
 #include "Storage/VansBoneMaskStorage.h"
+#include "Storage/VansAnimationRigStorage.h"
 #include "VansAnimationClipLoader.h"
 
 #include <nlohmann/json.hpp>
@@ -20,6 +21,28 @@ namespace VansGraphics
 		AnimGraphJson validationRoot;
 		if (!VansAnimatorIO::SerializeToJsonObject(asset, validationRoot, error))
 			return nullptr;
+		const std::string rigGuid = options.animationRigGuidOverride.empty()
+			? asset.animationRigGuid : options.animationRigGuidOverride;
+		if (!options.rigResolver)
+		{
+			error = "Animator compilation requires an Animation Rig asset resolver";
+			return nullptr;
+		}
+		std::filesystem::path rigPath;
+		if (!options.rigResolver(rigGuid, rigPath, error))
+			return nullptr;
+		VansAnimationRigAsset rigAsset;
+		if (!VansAnimationRigStorage::Load(rigPath, rigAsset, error))
+		{
+			error = "Failed to load Animation Rig '" + rigGuid + "': " + error;
+			return nullptr;
+		}
+		VansCompiledAnimationRig compiledRig;
+		if (!VansAnimationRigCompiler::Compile(rigAsset, skeleton, compiledRig, error))
+		{
+			error = "Animation Rig '" + rigGuid + "' failed compilation: " + error;
+			return nullptr;
+		}
 		std::unordered_map<std::string, VansAnimationClip> clips;
 		const bool compileFullGraph = options.mode == VansAnimatorRuntimeCompileMode::FullGraph;
 		if (compileFullGraph)
@@ -36,6 +59,9 @@ namespace VansGraphics
 
 		auto controller = std::make_unique<VansAnimationController>();
 		controller->SetName(asset.name);
+		if (!controller->SetAnimationRig(
+			std::move(compiledRig), options.queryProfileResolver, error))
+			return nullptr;
 		for (const AnimatorParameter& parameter : asset.parameters)
 		{
 			controller->AddParameter(parameter.name, parameter.type);
@@ -54,28 +80,12 @@ namespace VansGraphics
 
 		if (compileFullGraph)
 		{
-			std::vector<VansAnimationLayerGraphSetup> layers;
+			std::vector<VansAnimationLayerSetup> layers;
 			layers.reserve(asset.layers.size());
 			for (const VansAnimationLayerDefinition& definition : asset.layers)
 			{
-				const VansAnimGraph* sourceGraph = asset.FindGraph(definition.graphId);
-				if (!sourceGraph)
-				{
-					error = "Layer '" + definition.name + "' references a missing Graph";
-					return nullptr;
-				}
-				AnimGraphJson graphJson;
-				sourceGraph->SerializeToJsonObject(graphJson);
-				auto graph = VansAnimGraph::DeserializeFromJsonObject(graphJson);
-				if (!graph)
-				{
-					error = "Failed to instantiate Graph for Layer '" + definition.name + "'";
-					return nullptr;
-				}
-
-				VansAnimationLayerGraphSetup setup;
+				VansAnimationLayerSetup setup;
 				setup.definition = definition;
-				setup.graph = std::move(graph);
 				if (definition.kind == VansAnimationLayerKind::Overlay)
 				{
 					if (!maskResolver)
@@ -97,7 +107,44 @@ namespace VansGraphics
 				layers.push_back(std::move(setup));
 			}
 
-			if (!controller->SetLayerStack(std::move(layers), error)
+			std::vector<VansAnimationGraphSetSetup> graphSets;
+			graphSets.reserve(asset.graphSets.size());
+			for (const VansAnimationGraphSetDefinition& definition : asset.graphSets)
+			{
+				VansAnimationGraphSetSetup graphSet;
+				graphSet.definition = definition;
+				graphSet.bindings.reserve(definition.bindings.size());
+				for (const VansAnimationGraphBindingDefinition& bindingDefinition : definition.bindings)
+				{
+					VansAnimationGraphBindingSetup binding;
+					binding.definition = bindingDefinition;
+					if (bindingDefinition.enabled)
+					{
+						const VansAnimGraph* sourceGraph = asset.FindGraph(bindingDefinition.graphId);
+						if (!sourceGraph)
+						{
+							error = "Graph Set '" + definition.name
+								+ "' references a missing Graph";
+							return nullptr;
+						}
+						AnimGraphJson graphJson;
+						sourceGraph->SerializeToJsonObject(graphJson);
+						binding.graph = VansAnimGraph::DeserializeFromJsonObject(graphJson);
+						if (!binding.graph)
+						{
+							error = "Failed to instantiate Graph '" + bindingDefinition.graphId
+								+ "' for Graph Set '" + definition.name + "'";
+							return nullptr;
+						}
+					}
+					graphSet.bindings.push_back(std::move(binding));
+				}
+				graphSets.push_back(std::move(graphSet));
+			}
+
+			if (!controller->SetAnimationGraphSets(
+					std::move(layers), std::move(graphSets), asset.defaultGraphSetId,
+					asset.defaultGraphSetTransition, asset.graphSetTransitionRules, error)
 				|| !controller->SetSlots(asset.slots, error))
 				return nullptr;
 		}

@@ -106,7 +106,7 @@ set_target_properties(ForestAssetTool PROPERTIES OUTPUT_NAME "ForestAssetTool")
 
 target_link_libraries(ForestAssetTool
     PRIVATE
-        ForestRuntimeCore
+		ForestEditorCore
 )
 
 forest_copy_runtime_dlls(ForestAssetTool)

@@ -20,6 +20,8 @@ layout(location = 6) in float instanceStitchFlags;
 layout(location = 0) out vec2 outUV;
 layout(location = 1) out vec3 outWorldPos;
 layout(location = 2) out float outHeight;
+layout(location = 3) out vec4 motionCurrentClip;
+layout(location = 4) out vec4 motionPreviousClip;
 
 void main()
 {
@@ -30,6 +32,8 @@ void main()
     worldPos = TerrainApplyGeometryNoise(worldPos);
 
     gl_Position = VPMatrix * vec4(worldPos, 1.0);
+    motionCurrentClip = UnjitteredVPMatrix * vec4(worldPos, 1.0);
+    motionPreviousClip = LastUnjitteredVPMatrix * vec4(worldPos, 1.0);
 
     outUV = heightUV;
     outWorldPos = worldPos;

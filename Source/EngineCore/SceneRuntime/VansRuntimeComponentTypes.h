@@ -101,6 +101,8 @@ struct VansRuntimeVehicleComponent
 struct VansRuntimeAnimationComponent
 {
 	VansGraphics::VansAnimationNode* animationNode = nullptr;
+	std::uint64_t skeletonInstanceId = 0;
+	std::uint32_t skeletonInstanceGeneration = 0;
 };
 
 struct VansRuntimeRagdollComponent

@@ -203,10 +203,14 @@ public:
 		const VansAnimationSlotDefinition* slotDefinition = controller->FindSlotDefinition(slot);
 		if (!slotDefinition || (!layer.empty() && layer != slotDefinition->layerId))
 			return { VansTimelineApplyStatus::Failed, {}, "Animation slot or layer is unavailable" };
+		const std::string controllerClip = String(reader, context.section->extensionData, 7);
+		if (!controllerClip.empty() && !controller->GetClip(controllerClip))
+			return { VansTimelineApplyStatus::Failed, {},
+				"Animation controller Clip is unavailable: " + controllerClip };
 		auto [restore, state] = m_State.Acquire(context.writer, [&]
 		{
-			std::string clipName;
-			if (!context.section->assetGuid.empty())
+			std::string clipName = controllerClip;
+			if (clipName.empty() && !context.section->assetGuid.empty())
 			{
 				const VansResolvedAsset clipAsset = m_Resolver->Resolve(
 					context.section->assetGuid, VansAssetType::AnimationClip);
@@ -512,7 +516,9 @@ bool VansRegisterAnimationTimelineExtensions(VansTimelineTrackExtensionRegistry&
 			VansMakeTimelineSourceField("additive", F::Bool, false),
 			VansMakeTimelineSourceField("avatarMaskGuid", F::String, std::string()),
 			VansMakeTimelineSourceField("syncGroup", F::String, std::string()),
-			VansMakeTimelineSourceField("markerSync", F::Bool, false) },
+			VansMakeTimelineSourceField("markerSync", F::Bool, false),
+			// Animator 预编译的 Clip 名称；填写后 Timeline 只驱动 Slot，运行时不再动态 AddClip。
+			VansMakeTimelineSourceField("controllerClip", F::String, std::string()) },
 			{ VansMakeTimelineChannelSchema("weight", F::Float) }, false, false },
 		CollectAnimationDependencies);
 	animationClip.sectionAssetKind = "AnimationClip";

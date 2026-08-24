@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../VansRenderProxyHandle.h"
 #include "../../ScriptCore/VansCommonUtils.h"
 
 #include <array>
@@ -11,6 +12,8 @@ namespace VansGraphics
 {
 	constexpr uint32_t VANS_INVALID_SHADOW_INDEX = (std::numeric_limits<uint32_t>::max)();
 	constexpr uint32_t VANS_PUNCTUAL_SHADOW_ATLAS_COUNT = 2;
+	constexpr uint32_t VANS_PUNCTUAL_SHADOW_PRIMARY_ATLAS_INDEX = 0;
+	constexpr uint32_t VANS_PUNCTUAL_SHADOW_SECONDARY_ATLAS_INDEX = 1;
 	constexpr uint32_t VANS_MAX_PUNCTUAL_LIGHTS = 160;
 	constexpr uint32_t VANS_MAX_PUNCTUAL_SHADOW_VIEWS = 480;
 
@@ -93,6 +96,8 @@ namespace VansGraphics
 		VansShadowPolicy policy = VansShadowPolicy::Auto;
 		uint8_t priority = 128;
 		VansShadowResolution resolution = VansShadowResolution::Auto;
+		// 点光更新频率由 Atlas 归属决定：主 Atlas 每帧更新完整六面，
+		// 次 Atlas 仅在入驻时更新一次；此选项只控制聚光灯和矩形灯。
 		VansShadowUpdateMode updateMode = VansShadowUpdateMode::OnChange;
 		VansShadowFallback fallback = VansShadowFallback::ScreenSpace;
 
@@ -219,7 +224,7 @@ namespace VansGraphics
 		uint32_t shadowCasterMask = 0xffffffffu;
 		VansShadowRect atlasRect;
 		glm::mat4 worldToShadow = glm::mat4(1.0f);
-		std::vector<uint64_t> casterIds;
+		std::vector<VansRenderProxyHandle> casterHandles;
 	};
 
 	struct VansPunctualShadowBudget

@@ -1,5 +1,7 @@
 ﻿#include "VansEditorWindow.h"
 #include "../RenderCore/VansCamera.h"
+#include "../RenderCore/VansRenderSystem.h"
+#include "../RuntimeUI/Public/VansUISystem.h"
 #include "../VansTimer.h"
 #include "../EngineAPILayer/Private/EngineAPIImpl.h"
 #include "VansAssetDocumentEditService.h"
@@ -49,6 +51,7 @@
 #include "Windows/VansProjectSelector.h"
 #include "../SceneCore/VansSceneDocumentLoader.h"
 #include "../SceneCore/VansSceneSaveService.h"
+#include "../SceneCore/VansSceneParentReference.h"
 #include "VansAssetDocumentRegistry.h"
 #include "VansEditorAssetSaveService.h"
 #include "VansEditorRuntimePreviewProjector.h"
@@ -250,7 +253,9 @@ namespace
         parentIds.reserve(entities.arrayItems.size());
         for (const Vans::VansSerializedValue& entity : entities.arrayItems)
         {
-            const std::string parentId = Vans::ReadSerializedStringField(entity, "parent");
+			const Vans::VansSerializedValue* parentValue = Vans::FindObjectField(entity, "parent");
+			const std::string parentId = parentValue
+				? Vans::ReadSceneParentEntityGuid(*parentValue) : std::string{};
             if (!parentId.empty())
                 parentIds.insert(parentId);
         }
@@ -1375,7 +1380,8 @@ void VansGraphics::VansEditorWindow::QueueProjectOpenForAutomation(const std::st
     VANS_LOG("[Editor] Automation queued project open: " << projectPath);
 }
 
-void VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& device)
+std::unique_ptr<VansGraphics::IVansRenderFrameOverlay>
+VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& device)
 {
     // Start the Dear ImGui frame
     m_GUIBackEnd->BeginFrame();
@@ -1421,14 +1427,7 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& devic
 
         // Render the ImGui frame (project selector only)
         ImGui::Render();
-        ImDrawData* draw_data = ImGui::GetDrawData();
-		if (device.CanRecordCurrentFrame())
-		{
-			device.BeginUIRenderPass();
-			m_GUIBackEnd->RenderDrawData(device, draw_data);
-			device.EndUIRenderPass();
-		}
-        return;
+        return m_GUIBackEnd->CaptureDrawData(ImGui::GetDrawData());
     }
 
     // ── Normal Editor Windows ─────────────────────────────────────────────
@@ -1512,10 +1511,15 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& devic
 				return;
 			if (result.runtimeParentPreviewSupported)
 			{
-				Vans::EditorAPI::RuntimeEntityPreviewChange previewChange;
+				Vans::EditorAPI::RuntimeEntityPreviewChange previewChange = m_SceneDocument
+					? Vans::BuildRuntimeEntityPreviewChangeFromSceneRoot(
+						m_SceneDocument->SerializedRootSnapshot(),
+						result.changedEntityGuid)
+					: Vans::EditorAPI::RuntimeEntityPreviewChange{};
 				previewChange.parentEdits.push_back({
 					result.changedEntityGuid,
-					result.changedParentEntityGuid });
+					result.changedParent,
+					Vans::EditorAPI::RuntimeReparentTransformPolicy::KeepLocal });
 				if (editorAPI.ApplyRuntimeEntityPreviewChange(previewChange))
 					return;
 			}
@@ -1831,15 +1835,7 @@ void VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& devic
     //GUI handle rendeing
     ImGui::Render();
 
-    ImDrawData* draw_data = ImGui::GetDrawData();
-
-    // ImGui 编辑器覆盖层渲染到 swapchain
-	if (device.CanRecordCurrentFrame())
-	{
-		device.BeginUIRenderPass();
-		m_GUIBackEnd->RenderDrawData(device, draw_data);
-		device.EndUIRenderPass();
-	}
+    return m_GUIBackEnd->CaptureDrawData(ImGui::GetDrawData());
 }
 
 void VansGraphics::VansEditorWindow::SetupImGuiStyle()
@@ -2000,7 +1996,9 @@ void VansGraphics::VansEditorWindow::SetupImGuiStyle()
     c[ImGuiCol_TableRowBgAlt]     = ImVec4(1.00f, 1.00f, 1.00f, 0.02f);
 }
 
-void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& camera)
+void VansGraphics::VansEditorWindow::StartEditorLoop(
+    VansGraphics::VansCamera& camera,
+    VansGraphics::VansRenderSystem& renderSystem)
 {
     m_Cameras.clear();
     m_Cameras.push_back(&camera);
@@ -2012,7 +2010,10 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;         // Enable Docking
-    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;       // Enable Multi-Viewport / Platform Windowss
+	// Platform viewport renderer callbacks submit Vulkan work directly from Main.
+	// Keep docking, but leave multi-viewport disabled until viewport packets use
+	// the render-system work stream as well.
+	io.ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
 
     SetupImGuiStyle();
 
@@ -2020,14 +2021,23 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
 
     //初始化GUI的graphics back end
     m_GUIBackEnd->InitBackEnd(*m_GraphicsDevice, m_VansEditorWindow.m_VansGraphicsHandle);
+	if (!renderSystem.ExecuteRenderThreadTransaction(
+		m_GUIBackEnd->CreateRenderThreadInitialization()))
+	{
+		VANS_LOG_ERROR("[Editor] Render-thread GUI backend initialization failed.");
+		m_GUIBackEnd->ShutdownBackEnd();
+		m_Cameras.clear();
+		return;
+	}
 
     // Initialize GPU profiler
 #if VANS_PROFILER_ENABLED
-    m_GraphicsDevice->InitializeGpuProfiler();
+    renderSystem.InitializeGpuProfiler();
 #endif
 
     //初始化脚本环境
     auto& startupEditorAPI = GetMutableEditorAPI();
+	startupEditorAPI.BindRenderSystem(&renderSystem);
 	startupEditorAPI.BindGlobalRuntime(m_GraphicsDevice);
 	startupEditorAPI.InitializeRuntimeScripts();
 	Vans::VansEditorShaderHotReloadController shaderHotReloadController;
@@ -2164,7 +2174,9 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
             glfwGetFramebufferSize(m_VansEditorWindow.m_VansGraphicsHandle, &width, &height);
             if (width > 0 && height > 0)
             {
-                m_GraphicsDevice->OnWindowResize(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+                renderSystem.RequestSurfaceResize(
+                    static_cast<uint32_t>(width),
+                    static_cast<uint32_t>(height));
 
                 // NOTE: internal render resolution is unchanged, so camera aspect ratio
                 // and all SSGI/SSR/GBuffer render targets are unaffected.
@@ -2174,9 +2186,9 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
             else
             {
                 // Window minimized — skip rendering this frame
-                if (profilerFrameActive)
-                    m_GraphicsDevice->EndGpuProfilerFrame();
 #if VANS_PROFILER_ENABLED
+                if (profilerFrameActive && Vans::VansProfiler::Get().IsCaptureEnabled())
+                    renderSystem.EndGpuProfilerFrame();
                 finishAutomationGpuProfileFrame(automationGpuProfileCapture);
 #endif
                 continue;
@@ -2208,7 +2220,7 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         //                                      sees the result of THIS frame's input
         //                                      (zero-frame lag)
         //   ④ VansScriptUpdateCameraScripts — camera follows refreshed CCT transform
-        //   ⑤ camera.Rendering         — render with up-to-date positions
+        //   ⑤ RenderSystem frame build — snapshot and render with up-to-date positions
         Vans::VansRuntimeGameplayFrame gameplayFrame;
         gameplayFrame.sceneReady = editorAPI.IsRuntimeSceneReady();
         gameplayFrame.simulationRunning =
@@ -2283,9 +2295,24 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
 			editorAPI.ResolveRuntimeCameraControlFrame();
 		};
         Vans::VansRuntimeFrameScheduler::RunGameplay(gameplayFrame);
+		// Noesis IView is Main-affine. Update publishes an immutable render-tree
+		// snapshot that the RT consumes later in this frame.
+		VansRuntime::VansUISystem::Get().Update(
+			static_cast<float>(VansGraphics::VansTimer::GetDeltaTime()));
 
         // ── Deferred resource & scene loading ───────────────────────────
         // Process pending loads BEFORE command buffer recording.
+		// Project/scene replacement changes the stable scene-list slots referenced
+		// by immutable frame snapshots.  It is rare structural maintenance, so
+		// drain the ordered RT stream before touching those objects; steady-state
+		// gameplay keeps the one-frame overlap and never takes this barrier.
+		if ((m_PendingProjectLoad.m_Requested || !m_PendingScenePath.empty()) &&
+			!renderSystem.WaitForIdle())
+		{
+			VANS_LOG_ERROR("[Editor] Failed to drain render work before structural scene maintenance.");
+			glfwSetWindowShouldClose(m_VansEditorWindow.m_VansGraphicsHandle, true);
+			continue;
+		}
 
         // 0) Project load/reload orchestration.  This must run before resource/scene load.
         {
@@ -2309,37 +2336,39 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(VansGraphics::VansCamera& c
         }
         Vans::VansEventBus::Get().Flush(Vans::VansEventLane::Diagnostics);
         Vans::VansEventBus::Get().Flush(Vans::VansEventLane::RenderPrep);
-        // Rendering, 这里会结束renderpass
-        {
-            VANS_PROFILE_SCOPE("Render::CameraRendering", Vans::ProfileCategory::CommandRecord);
-            camera.Rendering();
-        }
-        //UI Pass
+        // Build the editor overlay before publishing the immutable render frame.
+        // Editor actions can therefore complete rare ordered RT maintenance
+        // while no frame packet is open, and the following extraction captures
+        // every Main-owned change into one coherent frame.
         m_SceneWindow->RegistCamera(&camera);
+		std::unique_ptr<IVansRenderFrameOverlay> editorOverlay;
         {
             VANS_PROFILE_SCOPE("Editor::DrawWindows", Vans::ProfileCategory::Editor);
-            DrawEditorWindows(*m_GraphicsDevice);
-        }
-
-        //结束录制
-        {
-            VANS_PROFILE_SCOPE("Vulkan::Present", Vans::ProfileCategory::VulkanSubmit);
-            camera.Present();
-        }
-
-        // Update and Render additional Platform Windows
-        if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
-        {
-            VANS_PROFILE_SCOPE("ImGui::PlatformWindows", Vans::ProfileCategory::Editor);
-            ImGui::UpdatePlatformWindows();
-            ImGui::RenderPlatformWindowsDefault();
+			editorOverlay = DrawEditorWindows(*m_GraphicsDevice);
+		}
+		{
+			VANS_PROFILE_SCOPE("Render::BuildFrame", Vans::ProfileCategory::RenderPrepare);
+			if (!renderSystem.BeginFrame(camera))
+			{
+				VANS_LOG_ERROR("[Editor] Render-system frame preparation failed.");
+				continue;
+			}
+		}
+		{
+			VANS_PROFILE_SCOPE("Render::PublishFrame", Vans::ProfileCategory::CommandRecord);
+			const auto submitResult = renderSystem.SubmitFrame(std::move(editorOverlay));
+			if (!submitResult)
+				VANS_LOG_ERROR("[Editor] Render-system frame submission failed.");
         }
 
         // Profiler 在 Present 之后结束，确保 Submit / Present CPU 耗时被纳入同一帧。
         {
-            if (profilerFrameActive)
-                m_GraphicsDevice->EndGpuProfilerFrame();
 #if VANS_PROFILER_ENABLED
+            // A capture is an explicit diagnostic synchronization point.  With
+            // capture disabled, do not enqueue a synchronous RT control after
+            // every frame; that would collapse the N/N-1 pipeline.
+            if (profilerFrameActive && Vans::VansProfiler::Get().IsCaptureEnabled())
+                renderSystem.EndGpuProfilerFrame();
             finishAutomationGpuProfileFrame(automationGpuProfileCapture);
 #endif
         }

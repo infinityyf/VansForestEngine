@@ -359,6 +359,10 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 	nameInfo.pObjectName = "NormalImage";
 	VansGraphics::vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
 
+	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_MotionVectorImage.GetImage());
+	nameInfo.pObjectName = "MotionVectorImage";
+	VansGraphics::vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
+
 	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_GBufferImage0.GetImage());
 	nameInfo.pObjectName = "GBuffer0Image";
 	VansGraphics::vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
@@ -380,11 +384,12 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 		{ 0, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
 		{ 0, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
 		{ 0, VK_FORMAT_R32G32B32A32_SFLOAT, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+		{ 0, VK_FORMAT_R16G16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
 		// D32_SFLOAT_S8_UINT: 32位浮点深度+8位 stencil；同样用 UNDEFINED 作为 initialLayout
 		{ 0, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
 	};
 
-	VkAttachmentReference gbufferDepthAttachment = { 4, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
+	VkAttachmentReference gbufferDepthAttachment = { 5, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
 	std::vector<SubpassParameters> gbufferSubpassParams =
 	{
 		{
@@ -394,7 +399,8 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 				{ 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL },
 				{ 1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL },
 				{ 2, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL },
-				{ 3, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL }
+				{ 3, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL },
+				{ 4, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL }
 			},
 			{},
 			&gbufferDepthAttachment,
@@ -428,6 +434,7 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 		{ 0.0f, 0.0f, 0.0f, 0.0f },
 		{ 0.0f, 0.0f, 0.0f, 0.0f },
 		{ 0.0f, 0.0f, 0.0f, 0.0f },
+		{ 0.0f, 0.0f, 0.0f, 0.0f },
 		{ 1.0f, 0 },
 	};
 	m_VansGBufferPass.CreateRenderPass(logic_device, gbufferAttachmentDescs, gbufferSubpassParams, gbufferDependencies, resolution);
@@ -438,6 +445,7 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 		m_GBufferImage0.GetImageView(),
 		m_GBufferImage1.GetImageView(),
 		m_GBufferImage2.GetImageView(),
+		m_MotionVectorImage.GetImageView(),
 		m_DepthImage.GetDepthStencilView()	// depth+stencil combined view：支持后续开启 stencil ops
 	};
 	m_VansGBufferPass.m_FrameBuffers[0].CreateFrameBuffer(logic_device, m_VansGBufferPass.m_RenderPass, gbufferViews, { resolution.width, resolution.height, 1 });
@@ -764,31 +772,20 @@ void VansGraphics::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& lo
 	{
 		{
 			0,
-			VK_FORMAT_R32_SFLOAT,
+			VK_FORMAT_D32_SFLOAT,
 			VK_SAMPLE_COUNT_1_BIT,
 			VK_ATTACHMENT_LOAD_OP_CLEAR,
 			VK_ATTACHMENT_STORE_OP_STORE,
 			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
 			VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			VK_IMAGE_LAYOUT_GENERAL,
-			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-		},
-		{
-			0,
-			VK_FORMAT_D32_SFLOAT,
-			VK_SAMPLE_COUNT_1_BIT,
-			VK_ATTACHMENT_LOAD_OP_CLEAR,
-			VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-			VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-			VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+			VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+			VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
 		},
 	};
 
 	VkAttachmentReference depth_stencil_attachment =
 	{
-		 1,
+		 0,
 		 VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
 	};
 
@@ -797,12 +794,7 @@ void VansGraphics::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& lo
 		{
 			VK_PIPELINE_BIND_POINT_GRAPHICS,
 			{},
-			{
-				{
-					0,
-					VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-				}
-			},
+			{},
 			{},
 			&depth_stencil_attachment,
 			{}
@@ -811,11 +803,28 @@ void VansGraphics::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& lo
 
 	m_VansShadowPass.m_ClearValues =
 	{
-		{ 1.0f, 1.0f, 1.0f, 1.0f },
 		{ 1.0f, 0 },
 	};
 
-	std::vector<VkSubpassDependency> subpass_dependencies;
+	std::vector<VkSubpassDependency> subpass_dependencies =
+	{
+		{
+			VK_SUBPASS_EXTERNAL, 0,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+			VK_ACCESS_SHADER_READ_BIT,
+			VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+			VK_DEPENDENCY_BY_REGION_BIT
+		},
+		{
+			0, VK_SUBPASS_EXTERNAL,
+			VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+			VK_ACCESS_SHADER_READ_BIT,
+			VK_DEPENDENCY_BY_REGION_BIT
+		}
+	};
 
 	auto vansConfigration = VansConfigration::GetInstance();
 	int cascadeCount = vansConfigration->GetCascadeCount();
@@ -824,22 +833,8 @@ void VansGraphics::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& lo
 
 	m_VansShadowPass.CreateRenderPass(logic_device, attachments_descriptions, subpass_parameters, subpass_dependencies, resolution);
 
-	// Create cascade shadow color image (4 array layers)
-	m_CascadeShadowMapImage.CreateVulkanImage(
-		logic_device,
-		{ cascadeSize, cascadeSize, 1 },
-		VK_FORMAT_R32_SFLOAT,
-		1,
-		(uint32_t)cascadeCount,
-		VK_IMAGE_TYPE_2D,
-		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-		VK_SAMPLE_COUNT_1_BIT,
-		false,
-		false,
-		true
-	);
-
-	// Create cascade shadow depth image (4 array layers)
+	// One D32 array now serves the depth test, PCSS blocker search and comparison
+	// PCF. This removes the duplicate full-resolution R32 color write/read path.
 	m_CascadeShadowMapDepthImage.CreateVulkanImage(
 		logic_device,
 		{ cascadeSize, cascadeSize, 1 },
@@ -847,28 +842,14 @@ void VansGraphics::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& lo
 		1,
 		(uint32_t)cascadeCount,
 		VK_IMAGE_TYPE_2D,
-		VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
 		VK_SAMPLE_COUNT_1_BIT
 	);
 
-	// Create per-layer image views for framebuffer attachments
+	// Create per-layer image views for framebuffer attachments and the raw
+	// single-layer GI/ray-tracing readers.
 	for (int i = 0; i < cascadeCount; ++i)
 	{
-		// Color layer view
-		{
-			VkImageViewCreateInfo viewInfo = {};
-			viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-			viewInfo.image = m_CascadeShadowMapImage.GetImage();
-			viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-			viewInfo.format = VK_FORMAT_R32_SFLOAT;
-			viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-			viewInfo.subresourceRange.baseMipLevel = 0;
-			viewInfo.subresourceRange.levelCount = 1;
-			viewInfo.subresourceRange.baseArrayLayer = (uint32_t)i;
-			viewInfo.subresourceRange.layerCount = 1;
-			VansGraphics::vkCreateImageView(logic_device, &viewInfo, nullptr, &m_CascadeColorLayerViews[i]);
-		}
-		// Depth layer view
 		{
 			VkImageViewCreateInfo viewInfo = {};
 			viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -884,14 +865,14 @@ void VansGraphics::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& lo
 		}
 	}
 
-	// Create full-array view (2D_ARRAY) for sampling in deferred pass
+	// Create full-array D32 view for raw and comparison sampling.
 	{
 		VkImageViewCreateInfo viewInfo = {};
 		viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-		viewInfo.image = m_CascadeShadowMapImage.GetImage();
+		viewInfo.image = m_CascadeShadowMapDepthImage.GetImage();
 		viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
-		viewInfo.format = VK_FORMAT_R32_SFLOAT;
-		viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		viewInfo.format = VK_FORMAT_D32_SFLOAT;
+		viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
 		viewInfo.subresourceRange.baseMipLevel = 0;
 		viewInfo.subresourceRange.levelCount = 1;
 		viewInfo.subresourceRange.baseArrayLayer = 0;
@@ -899,12 +880,12 @@ void VansGraphics::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& lo
 		VansGraphics::vkCreateImageView(logic_device, &viewInfo, nullptr, &m_CascadeShadowArrayView);
 	}
 
-	// Create sampler for cascade shadow array
+	// Raw nearest sampler is used by blocker search/min-max construction.
 	{
 		VkSamplerCreateInfo samplerInfo = {};
 		samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-		// PCSS performs depth comparisons before bilinear interpolation.  Keep
-		// the stored R32 depth unfiltered; filtering depth first produces the
+		// PCSS blocker search needs unfiltered raw D32 values; filtering depth
+		// before the blocker comparison produces the
 		// broad contour bands visible on large penumbrae.
 		samplerInfo.magFilter = VK_FILTER_NEAREST;
 		samplerInfo.minFilter = VK_FILTER_NEAREST;
@@ -922,14 +903,32 @@ void VansGraphics::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& lo
 		VansGraphics::vkCreateSampler(logic_device, &samplerInfo, nullptr, &m_CascadeShadowSampler);
 	}
 
+	// Hardware comparison filtering replaces four explicit depth fetches and
+	// comparisons per PCF tap.
+	{
+		VkSamplerCreateInfo samplerInfo = {};
+		samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+		samplerInfo.magFilter = VK_FILTER_LINEAR;
+		samplerInfo.minFilter = VK_FILTER_LINEAR;
+		samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+		samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+		samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+		samplerInfo.anisotropyEnable = VK_FALSE;
+		samplerInfo.maxAnisotropy = 1.0f;
+		samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+		samplerInfo.unnormalizedCoordinates = VK_FALSE;
+		samplerInfo.compareEnable = VK_TRUE;
+		samplerInfo.compareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+		samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+		samplerInfo.minLod = 0.0f;
+		samplerInfo.maxLod = 0.0f;
+		VansGraphics::vkCreateSampler(logic_device, &samplerInfo, nullptr, &m_CascadeShadowCompareSampler);
+	}
+
 #ifdef _DEBUG
 	VkDebugUtilsObjectNameInfoEXT nameInfo = {};
 	nameInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
 	nameInfo.objectType = VK_OBJECT_TYPE_IMAGE;
-	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_CascadeShadowMapImage.GetImage());
-	nameInfo.pObjectName = "CascadeShadowMap";
-	VansGraphics::vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
-
 	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_CascadeShadowMapDepthImage.GetImage());
 	nameInfo.pObjectName = "CascadeShadowMapDepth";
 	VansGraphics::vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
@@ -940,7 +939,6 @@ void VansGraphics::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& lo
 	for (int i = 0; i < cascadeCount; ++i)
 	{
 		std::vector<VkImageView> image_views = {
-			m_CascadeColorLayerViews[i],
 			m_CascadeDepthLayerViews[i]
 		};
 		m_VansShadowPass.m_FrameBuffers[i].CreateFrameBuffer(
@@ -950,26 +948,15 @@ void VansGraphics::VansRenderPassManager::SetupVansShadowRenderPass(VkDevice& lo
 
 	m_LogicDevice = logic_device;
 
-	// Transition cascade images to initial layouts
+	// Match the render-pass initial/final layout before the first cascade draw.
 	command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-	m_CascadeShadowMapImage.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-		{
-			m_CascadeShadowMapImage.m_VansVKImage,
-			VK_ACCESS_NONE,
-			VK_ACCESS_NONE,
-			m_CascadeShadowMapImage.m_ImageLayout,
-			VK_IMAGE_LAYOUT_GENERAL,
-			VK_QUEUE_FAMILY_IGNORED,
-			VK_QUEUE_FAMILY_IGNORED,
-			m_CascadeShadowMapImage.m_ImageAspect
-		});
 	m_CascadeShadowMapDepthImage.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 		{
 			m_CascadeShadowMapDepthImage.m_VansVKImage,
 			VK_ACCESS_NONE,
 			VK_ACCESS_NONE,
 			m_CascadeShadowMapDepthImage.m_ImageLayout,
-			VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+			VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
 			VK_QUEUE_FAMILY_IGNORED,
 			VK_QUEUE_FAMILY_IGNORED,
 			m_CascadeShadowMapDepthImage.m_ImageAspect
@@ -1043,44 +1030,46 @@ void VansGraphics::VansRenderPassManager::SetupVansPunctualShadowRenderPass(VkDe
 	};
 
 	auto vansConfigration = VansConfigration::GetInstance();
-	VkExtent2D resolution = { vansConfigration->GetPunctualShadowMapWidth(), vansConfigration->GetPunctualShadowMapHeight() };
+	VkExtent2D resolution = {
+		static_cast<uint32_t>((std::max)(vansConfigration->GetPunctualShadowMapWidth(), 1)),
+		static_cast<uint32_t>((std::max)(vansConfigration->GetPunctualShadowMapHeight(), 1))
+	};
 
 	m_VansPunctualShadowPass.CreateRenderPass(logic_device, attachments_descriptions, subpass_parameters, subpass_dependencies, resolution);
 
 	// Persistent sampled depth atlas. Dirty blocks are cleared explicitly inside
 	// the render pass; LOAD/STORE preserves every clean cached block.
-	m_PunctualShadowMapImage.CreateVulkanImage(
-		logic_device,
-		{ resolution.width,resolution.height,1 },
-		VK_FORMAT_D32_SFLOAT,
-		1,
-		VANS_PUNCTUAL_SHADOW_ATLAS_COUNT,
-		VK_IMAGE_TYPE_2D,
-		VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-		VK_SAMPLE_COUNT_1_BIT,
-		false,
-		false,
-		true,
-		VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-		true,
-		VK_COMPARE_OP_LESS_OR_EQUAL
-	);
-
-#ifdef _DEBUG
-	VkDebugUtilsObjectNameInfoEXT nameInfo = {};
-	nameInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
-	nameInfo.objectType = VK_OBJECT_TYPE_IMAGE;
-	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_PunctualShadowMapImage.GetImage());
-	nameInfo.pObjectName = "PunctualShadowDepthAtlas";
-	VansGraphics::vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
-#endif
-
 	m_VansPunctualShadowPass.m_FrameBuffers.resize(VANS_PUNCTUAL_SHADOW_ATLAS_COUNT);
 	for (uint32_t atlasIndex = 0; atlasIndex < VANS_PUNCTUAL_SHADOW_ATLAS_COUNT; ++atlasIndex)
 	{
-		m_PunctualShadowLayerViews[atlasIndex] =
-			m_PunctualShadowMapImage.CreateLayerMipView(logic_device, atlasIndex, 0);
-		std::vector<VkImageView> imageViews = { m_PunctualShadowLayerViews[atlasIndex] };
+		VansVKImage& atlas = m_PunctualShadowMapImages[atlasIndex];
+		atlas.CreateVulkanImage(
+			logic_device,
+			{ resolution.width, resolution.height, 1 },
+			VK_FORMAT_D32_SFLOAT,
+			1,
+			1,
+			VK_IMAGE_TYPE_2D,
+			VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+			VK_SAMPLE_COUNT_1_BIT,
+			false,
+			false,
+			true,
+			VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+			true,
+			VK_COMPARE_OP_LESS_OR_EQUAL);
+
+#ifdef _DEBUG
+		const std::string atlasName = "PunctualShadowDepthAtlas" + std::to_string(atlasIndex);
+		VkDebugUtilsObjectNameInfoEXT nameInfo = {};
+		nameInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
+		nameInfo.objectType = VK_OBJECT_TYPE_IMAGE;
+		nameInfo.objectHandle = reinterpret_cast<uint64_t>(atlas.GetImage());
+		nameInfo.pObjectName = atlasName.c_str();
+		VansGraphics::vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
+#endif
+
+		std::vector<VkImageView> imageViews = { atlas.GetImageView() };
 		m_VansPunctualShadowPass.m_FrameBuffers[atlasIndex].CreateFrameBuffer(
 			logic_device,
 			m_VansPunctualShadowPass.m_RenderPass,
@@ -1093,161 +1082,131 @@ void VansGraphics::VansRenderPassManager::SetupVansPunctualShadowRenderPass(VkDe
 	// Initialize the persistent atlas exactly once. A LOAD render pass may not
 	// consume undefined contents on its first frame.
 	command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-	m_PunctualShadowMapImage.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-		{
-			m_PunctualShadowMapImage.m_VansVKImage,
-			VK_ACCESS_NONE,
-			VK_ACCESS_TRANSFER_WRITE_BIT,
-			m_PunctualShadowMapImage.m_ImageLayout,
-			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-			VK_QUEUE_FAMILY_IGNORED,
-			VK_QUEUE_FAMILY_IGNORED,
-			m_PunctualShadowMapImage.m_ImageAspect
-		});
-	command_buffer.ClearDepthStencil(m_PunctualShadowMapImage, { 1.0f, 0 });
-	m_PunctualShadowMapImage.SetImageMemoryBarrier(command_buffer,
-		VK_PIPELINE_STAGE_TRANSFER_BIT,
-		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-		{
-			m_PunctualShadowMapImage.m_VansVKImage,
-			VK_ACCESS_TRANSFER_WRITE_BIT,
-			VK_ACCESS_SHADER_READ_BIT,
-			m_PunctualShadowMapImage.m_ImageLayout,
-			VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
-			VK_QUEUE_FAMILY_IGNORED,
-			VK_QUEUE_FAMILY_IGNORED,
-			m_PunctualShadowMapImage.m_ImageAspect
-		});
+	for (VansVKImage& atlas : m_PunctualShadowMapImages)
+	{
+		atlas.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+			{
+				atlas.m_VansVKImage,
+				VK_ACCESS_NONE,
+				VK_ACCESS_TRANSFER_WRITE_BIT,
+				atlas.m_ImageLayout,
+				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+				VK_QUEUE_FAMILY_IGNORED,
+				VK_QUEUE_FAMILY_IGNORED,
+				atlas.m_ImageAspect
+			});
+		command_buffer.ClearDepthStencil(atlas, { 1.0f, 0 });
+		atlas.SetImageMemoryBarrier(command_buffer,
+			VK_PIPELINE_STAGE_TRANSFER_BIT,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			{
+				atlas.m_VansVKImage,
+				VK_ACCESS_TRANSFER_WRITE_BIT,
+				VK_ACCESS_SHADER_READ_BIT,
+				atlas.m_ImageLayout,
+				VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+				VK_QUEUE_FAMILY_IGNORED,
+				VK_QUEUE_FAMILY_IGNORED,
+				atlas.m_ImageAspect
+			});
+	}
 
 	EndSubmitAndResetOneTimeCommand(command_buffer, queue, logic_device, "SetupVansPunctualShadowRenderPass");
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Motion-Vector render pass
-//
-// Attachments:
-//   0 — m_MotionVectorImage  (R16G16_SFLOAT) — XY velocity
-//   1 — m_MotionVectorDepthImage (D16_UNORM) — dedicated depth
-//
-// Draws all opaque geometry using the MotionVector shader to produce
-// per-pixel screen-space velocity.  Placed after shadow, before compute
-// (HZB / GI / SSR) so temporal-reprojection compute shaders can sample it.
-// ═══════════════════════════════════════════════════════════════════════════
-void VansGraphics::VansRenderPassManager::SetupVansMotionVectorRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, const VkExtent2D& renderResolution)
+// Sky motion is an overlay on the GBuffer velocity target. Geometry and terrain
+// have already written their motion in the GBuffer pass; the loaded scene depth
+// limits this pass to untouched far-plane pixels without changing depth.
+void VansGraphics::VansRenderPassManager::SetupVansSkyMotionVectorRenderPass(
+	VkDevice& logicDevice,
+	const VkExtent2D& renderResolution)
 {
-	std::vector<VkAttachmentDescription> attachments_descriptions =
+	std::vector<VkAttachmentDescription> attachmentDescriptions =
 	{
-		// Attachment 0: motion-vector color (CLEAR → STORE)
-		{
-			0,
-			VK_FORMAT_R16G16_SFLOAT,
-			VK_SAMPLE_COUNT_1_BIT,
-			VK_ATTACHMENT_LOAD_OP_CLEAR,
-			VK_ATTACHMENT_STORE_OP_STORE,
-			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-			VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			VK_IMAGE_LAYOUT_GENERAL,
-			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-		},
-		// Attachment 1: dedicated depth (CLEAR → DONT_CARE)
-		{
-			0,
-			VK_FORMAT_D16_UNORM,
-			VK_SAMPLE_COUNT_1_BIT,
-			VK_ATTACHMENT_LOAD_OP_CLEAR,
-			VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-			VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-			VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-		},
+		{ 0, VK_FORMAT_R16G16_SFLOAT, VK_SAMPLE_COUNT_1_BIT,
+		  VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE,
+		  VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+		  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+		{ 0, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_SAMPLE_COUNT_1_BIT,
+		  VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE,
+		  VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+		  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
 	};
 
-	VkAttachmentReference depth_stencil_attachment =
-	{
-		 1,
-		 VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-	};
-
-	std::vector<SubpassParameters> subpass_parameters =
+	VkAttachmentReference depthAttachment = { 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
+	std::vector<SubpassParameters> subpassParameters =
 	{
 		{
 			VK_PIPELINE_BIND_POINT_GRAPHICS,
 			{},
-			{
-				{
-					0,
-					VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-				}
-			},
+			{ { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL } },
 			{},
-			&depth_stencil_attachment,
+			&depthAttachment,
 			{}
 		},
 	};
-
-	m_VansMotionVectorPass.m_ClearValues =
+	std::vector<VkSubpassDependency> subpassDependencies =
 	{
-		{ 0.0f, 0.0f, 0.0f, 0.0f },  // zero motion for pixels without geometry
-		{ 1.0f, 0 },
-	};
-
-	std::vector<VkSubpassDependency> subpass_dependencies;
-
-	VkExtent2D resolution = renderResolution;
-	m_VansMotionVectorPass.CreateRenderPass(logic_device, attachments_descriptions, subpass_parameters, subpass_dependencies, resolution);
-
-	// Dedicated depth image for the motion-vector pass
-	m_MotionVectorDepthImage.CreateVulkanImage(
-		logic_device,
-		{ resolution.width, resolution.height, 1 },
-		VK_FORMAT_D16_UNORM,
-		1,
-		1,
-		VK_IMAGE_TYPE_2D,
-		VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-		VK_SAMPLE_COUNT_1_BIT
-	);
-
-#ifdef _DEBUG
-	VkDebugUtilsObjectNameInfoEXT nameInfo = {};
-	nameInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
-	nameInfo.objectType = VK_OBJECT_TYPE_IMAGE;
-	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_MotionVectorImage.GetImage());
-	nameInfo.pObjectName = "MotionVectorImage";
-	VansGraphics::vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
-
-	nameInfo.objectHandle = reinterpret_cast<uint64_t>(m_MotionVectorDepthImage.GetImage());
-	nameInfo.pObjectName = "MotionVectorDepthImage";
-	VansGraphics::vkSetDebugUtilsObjectNameEXT(logic_device, &nameInfo);
-#endif
-
-	// Single framebuffer at render resolution
-	m_VansMotionVectorPass.m_FrameBuffers.resize(1);
-	std::vector<VkImageView> image_views = {
-		m_MotionVectorImage.GetImageView(),
-		m_MotionVectorDepthImage.GetImageView()
-	};
-	m_VansMotionVectorPass.m_FrameBuffers[0].CreateFrameBuffer(
-		logic_device, m_VansMotionVectorPass.m_RenderPass, image_views,
-		{ resolution.width, resolution.height, 1 });
-
-	m_LogicDevice = logic_device;
-
-	// Transition the dedicated depth image to its initial layout
-	command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-	m_MotionVectorDepthImage.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 		{
-			m_MotionVectorDepthImage.m_VansVKImage,
-			VK_ACCESS_NONE,
-			VK_ACCESS_NONE,
-			m_MotionVectorDepthImage.m_ImageLayout,
-			VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-			VK_QUEUE_FAMILY_IGNORED,
-			VK_QUEUE_FAMILY_IGNORED,
-			m_MotionVectorDepthImage.m_ImageAspect
-		});
-	EndSubmitAndResetOneTimeCommand(command_buffer, queue, logic_device, "SetupVansMotionVectorRenderPass");
+			VK_SUBPASS_EXTERNAL,
+			0,
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+			VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+			VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+			VK_DEPENDENCY_BY_REGION_BIT
+		},
+		{
+			0,
+			VK_SUBPASS_EXTERNAL,
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+			VK_ACCESS_SHADER_READ_BIT,
+			VK_DEPENDENCY_BY_REGION_BIT
+		},
+	};
+
+	m_VansSkyMotionVectorPass.CreateRenderPass(
+		logicDevice,
+		attachmentDescriptions,
+		subpassParameters,
+		subpassDependencies,
+		renderResolution);
+	m_VansSkyMotionVectorPass.m_FrameBuffers.resize(1);
+	std::vector<VkImageView> imageViews =
+	{
+		m_MotionVectorImage.GetImageView(),
+		m_DepthImage.GetDepthStencilView()
+	};
+	m_VansSkyMotionVectorPass.m_FrameBuffers[0].CreateFrameBuffer(
+		logicDevice,
+		m_VansSkyMotionVectorPass.m_RenderPass,
+		imageViews,
+		{ renderResolution.width, renderResolution.height, 1 });
+}
+
+std::vector<VkDescriptorImageInfo> VansGraphics::VansRenderPassManager::GetPunctualShadowDescriptorInfos(
+	VkImageLayout layout)
+{
+	std::vector<VkDescriptorImageInfo> descriptors;
+	descriptors.reserve(VANS_PUNCTUAL_SHADOW_ATLAS_COUNT);
+	for (VansVKImage& atlas : m_PunctualShadowMapImages)
+		descriptors.push_back({ atlas.GetSampler(), atlas.GetImageView(), layout });
+	return descriptors;
+}
+
+std::vector<VkDescriptorImageInfo> VansGraphics::VansRenderPassManager::GetPunctualShadowRawDescriptorInfos(
+	VkSampler rawSampler,
+	VkImageLayout layout)
+{
+	std::vector<VkDescriptorImageInfo> descriptors;
+	descriptors.reserve(VANS_PUNCTUAL_SHADOW_ATLAS_COUNT);
+	for (auto& shadowAtlas : m_PunctualShadowMapImages)
+	{
+		descriptors.push_back({ rawSampler, shadowAtlas.GetImageView(), layout });
+	}
+	return descriptors;
 }
 
 void VansGraphics::VansRenderPassManager::SetupVansUIRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, VansVKSurface& surface, const VkExtent2D& renderResolution)
@@ -1887,7 +1846,8 @@ void VansGraphics::VansRenderPassManager::SetupVansWaterGBufferPass(
 				{ 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL },
 				{ 1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL },
 				{ 2, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL },
-				{ 3, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL }
+				{ 3, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL },
+				{ 4, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL }
 			},
 			{},
 			&depthRef,
@@ -2010,7 +1970,7 @@ void VansGraphics::VansRenderPassManager::DestroySceneResolutionRenderPasses()
 	m_VansHairLightingPass.DestroyRenderPass(m_LogicDevice);
 	m_VansHairDeepOpacityPass.DestroyRenderPass(m_LogicDevice);
 	m_VansWaterGBufferPass.DestroyRenderPass(m_LogicDevice);
-	m_VansMotionVectorPass.DestroyRenderPass(m_LogicDevice);
+	m_VansSkyMotionVectorPass.DestroyRenderPass(m_LogicDevice);
 	m_VansDecalPass.DestroyRenderPass(m_LogicDevice);
 
 	m_ColorImage.DestroyVulkanImage(m_LogicDevice);
@@ -2018,7 +1978,6 @@ void VansGraphics::VansRenderPassManager::DestroySceneResolutionRenderPasses()
 	m_OpaqueSceneColorImage.DestroyVulkanImage(m_LogicDevice);
 	m_DepthImage.DestroyVulkanImage(m_LogicDevice);
 	m_MotionVectorImage.DestroyVulkanImage(m_LogicDevice);
-	m_MotionVectorDepthImage.DestroyVulkanImage(m_LogicDevice);
 	m_NormalImage.DestroyVulkanImage(m_LogicDevice);
 	m_GBufferImage0.DestroyVulkanImage(m_LogicDevice);
 	m_GBufferImage1.DestroyVulkanImage(m_LogicDevice);
@@ -2044,11 +2003,10 @@ void VansGraphics::VansRenderPassManager::DestroyRenderPass()
 	m_ShadowMapImage.DestroyVulkanImage(m_LogicDevice);
 	m_ShadowMapDepthImage.DestroyVulkanImage(m_LogicDevice);
 
-	// Destroy cascade shadow resources
+	// Destroy cascade shadow resources.
+	m_VansShadowPass.DestroyRenderPass(m_LogicDevice);
 	for (int i = 0; i < 4; ++i)
 	{
-		if (m_CascadeColorLayerViews[i] != VK_NULL_HANDLE)
-			VansGraphics::vkDestroyImageView(m_LogicDevice, m_CascadeColorLayerViews[i], nullptr);
 		if (m_CascadeDepthLayerViews[i] != VK_NULL_HANDLE)
 			VansGraphics::vkDestroyImageView(m_LogicDevice, m_CascadeDepthLayerViews[i], nullptr);
 	}
@@ -2056,17 +2014,16 @@ void VansGraphics::VansRenderPassManager::DestroyRenderPass()
 		VansGraphics::vkDestroyImageView(m_LogicDevice, m_CascadeShadowArrayView, nullptr);
 	if (m_CascadeShadowSampler != VK_NULL_HANDLE)
 		VansGraphics::vkDestroySampler(m_LogicDevice, m_CascadeShadowSampler, nullptr);
-	m_CascadeShadowMapImage.DestroyVulkanImage(m_LogicDevice);
+	if (m_CascadeShadowCompareSampler != VK_NULL_HANDLE)
+		VansGraphics::vkDestroySampler(m_LogicDevice, m_CascadeShadowCompareSampler, nullptr);
 	m_CascadeShadowMapDepthImage.DestroyVulkanImage(m_LogicDevice);
 
-	// Framebuffers own the per-layer views, so destroy them before releasing the
-	// views and the shared two-layer depth image.
+	// 每个 framebuffer 引用一个独立 Atlas 的默认 2D view；先销毁 framebuffer，
+	// 再释放图像及其 view/sampler。
 	m_VansPunctualShadowPass.DestroyRenderPass(m_LogicDevice);
-	for (VkImageView& layerView : m_PunctualShadowLayerViews)
-		VansVKImage::DestroyImageView(m_LogicDevice, layerView);
-	m_PunctualShadowMapImage.DestroyVulkanImage(m_LogicDevice);
+	for (VansVKImage& atlas : m_PunctualShadowMapImages)
+		atlas.DestroyVulkanImage(m_LogicDevice);
 
-	m_VansShadowPass.DestroyRenderPass(m_LogicDevice);
 	m_VansUIPass.DestroyRenderPass(m_LogicDevice);
 }
 
@@ -2174,8 +2131,8 @@ void VansGraphics::VansRenderPassManager::RecordFrameBufferImageLayoutReset(Vans
 			m_DepthImage.m_ImageAspect
 		});
 
-	// Reset motion-vector color image from SHADER_READ_ONLY back to GENERAL
-	// so the next frame's motion-vector pass can begin with LOAD_OP_CLEAR.
+	// GBuffer starts from UNDEFINED next frame, so restore the tracked image state
+	// to the engine's idle GENERAL layout after all temporal consumers finish.
 	m_MotionVectorImage.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 		{
 			m_MotionVectorImage.m_VansVKImage,
@@ -2186,18 +2143,6 @@ void VansGraphics::VansRenderPassManager::RecordFrameBufferImageLayoutReset(Vans
 			VK_QUEUE_FAMILY_IGNORED,
 			VK_QUEUE_FAMILY_IGNORED,
 			m_MotionVectorImage.m_ImageAspect
-		});
-
-	m_CascadeShadowMapImage.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-		{
-			m_CascadeShadowMapImage.m_VansVKImage,
-			VK_ACCESS_NONE,
-			VK_ACCESS_NONE,
-			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-			VK_IMAGE_LAYOUT_GENERAL,
-			VK_QUEUE_FAMILY_IGNORED,
-			VK_QUEUE_FAMILY_IGNORED,
-			m_CascadeShadowMapImage.m_ImageAspect
 		});
 
 }

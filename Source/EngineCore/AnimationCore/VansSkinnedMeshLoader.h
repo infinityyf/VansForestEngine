@@ -28,6 +28,15 @@ namespace VansGraphics
 	class VansSkinnedMeshLoader
 	{
 	public:
+		// Load a Skeleton from a model asset and project its adjacent .meta file into
+		// the import settings. This is the canonical file boundary for stable
+		// Skeleton and bone identities; callers must not import a model Skeleton
+		// with default settings.
+		static bool LoadSkeletonFromModelAsset(
+			const std::string& modelPath,
+			Skeleton& outSkeleton,
+			std::string& error);
+
 		// Main entry point: process an already-loaded aiScene for animation data.
 		// If the model has animations, fills outResult with skeleton + clips + bone weights.
 		// If cached .vclip files exist, loads from those instead of extracting.
@@ -71,11 +80,6 @@ namespace VansGraphics
 		    std::vector<VansAnimationClip>& outClips);
 
 	private:
-		// Recursively walk aiNode tree to resolve bone parent-child hierarchy.
-		static void BuildHierarchyFromNodeTree(const aiNode* node,
-		                                       Skeleton& skeleton,
-		                                       int parentIndex = -1);
-
 		// Utility: get parent directory from a file path.
 		static std::string GetParentDirectory(const std::string& filePath);
 

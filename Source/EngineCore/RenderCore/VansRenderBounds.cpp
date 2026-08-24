@@ -126,6 +126,40 @@ bool VansGraphics::RenderBoundsIntersectsClipFrustum(
 	return true;
 }
 
+bool VansGraphics::RenderAABBIntersectsClipFrustum(
+	const glm::vec3& boundsMin,
+	const glm::vec3& boundsMax,
+	const glm::mat4& worldToClip)
+{
+	if (glm::any(glm::greaterThan(boundsMin, boundsMax)))
+		return true;
+
+	const glm::vec3 center = (boundsMin + boundsMax) * 0.5f;
+	const glm::vec3 halfExtent = (boundsMax - boundsMin) * 0.5f;
+	const glm::vec4 row0 = ClipRow(worldToClip, 0);
+	const glm::vec4 row1 = ClipRow(worldToClip, 1);
+	const glm::vec4 row2 = ClipRow(worldToClip, 2);
+	const glm::vec4 row3 = ClipRow(worldToClip, 3);
+	const glm::vec4 planes[6] = {
+		row3 + row0,
+		row3 - row0,
+		row3 + row1,
+		row3 - row1,
+		row3 + row2,
+		row3 - row2
+	};
+
+	for (const glm::vec4& plane : planes)
+	{
+		const glm::vec3 normal(plane);
+		const float distance = glm::dot(normal, center) + plane.w;
+		const float projectedExtent = glm::dot(glm::abs(normal), halfExtent);
+		if (distance + projectedExtent < 0.0f)
+			return false;
+	}
+	return true;
+}
+
 bool VansGraphics::ProjectRenderBoundsToScreen(
 	const VansRenderBounds& bounds,
 	const glm::mat4& view,

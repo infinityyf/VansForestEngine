@@ -26,6 +26,7 @@ layout(location = 0) out vec4 outNormal;
 layout(location = 1) out vec4 outGBuffer0;
 layout(location = 2) out vec4 outGBuffer1;
 layout(location = 3) out vec4 outGBuffer2;
+layout(location = 4) out vec2 outMotionVector;
 
 void main()
 {
@@ -70,4 +71,5 @@ void main()
     outGBuffer0 = vec4(albedo, roughness);
     outGBuffer1 = vec4(isLeaf ? 0.0 : metallic, ao, float(MATERIAL_ID_TREE), float(materialIndex));
     outGBuffer2 = vec4(position_world, -linearDepth);
+    outMotionVector = vec2(0.0);
 }

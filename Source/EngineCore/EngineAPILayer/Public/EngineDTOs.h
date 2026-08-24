@@ -203,10 +203,18 @@ namespace Vans::EditorAPI
 		std::vector<AudioReverbZoneDebugState> reverbZones;
 	};
 
+	enum class RuntimeTransformSpace : std::uint8_t
+	{
+		World,
+		Local,
+		Model
+	};
+
 	struct RuntimeTransformSnapshot
 	{
 		bool available = false;
 		std::string entityGuid;
+		RuntimeTransformSpace space = RuntimeTransformSpace::World;
 		Vec3 position;
 		Vec3 rotationDegrees;
 		Vec3 scale = { 1.0f, 1.0f, 1.0f };
@@ -215,6 +223,7 @@ namespace Vans::EditorAPI
 	struct RuntimeTransformEdit
 	{
 		std::string entityGuid;
+		RuntimeTransformSpace space = RuntimeTransformSpace::World;
 		Vec3 position;
 		Vec3 rotationDegrees;
 		Vec3 scale = { 1.0f, 1.0f, 1.0f };
@@ -272,10 +281,35 @@ namespace Vans::EditorAPI
 		std::string materialGuid;
 	};
 
+	enum class RuntimeParentKind : std::uint8_t
+	{
+		None,
+		Entity,
+		Bone,
+		Socket
+	};
+
+	struct RuntimeParentReference
+	{
+		RuntimeParentKind kind = RuntimeParentKind::None;
+		std::string entityGuid;
+		std::string animationComponentGuid;
+		std::string anchorGuid;
+	};
+
+	enum class RuntimeReparentTransformPolicy : std::uint8_t
+	{
+		KeepWorld,
+		KeepLocal,
+		Snap
+	};
+
 	struct RuntimeEntityParentEdit
 	{
 		std::string entityGuid;
-		std::string parentEntityGuid;
+		RuntimeParentReference parent;
+		RuntimeReparentTransformPolicy transformPolicy =
+			RuntimeReparentTransformPolicy::KeepWorld;
 	};
 
 	struct RuntimeEntityNameEdit
@@ -461,6 +495,7 @@ namespace Vans::EditorAPI
 		Particle,
 		AnimationClip,
 		AnimatorController,
+		AnimationRig,
 		BoneMask,
 		Timeline,
 		ActionDefinition,
@@ -519,6 +554,7 @@ namespace Vans::EditorAPI
 	{
 		Timeline,
 		AnimatorController,
+		AnimationRig,
 		BoneMask,
 		ActionDefinition,
 		ActionSet,
@@ -1302,9 +1338,9 @@ namespace Vans::EditorAPI
 		bool compiledGraphValid = false;
 		bool featureAuditPassed = false;
 		bool frameSubmitSucceeded = false;
-		bool shadowSubmitted = false;
+		bool shadowMapsSubmitted = false;
 		bool gbufferSubmitted = false;
-		bool asyncEarlySubmitted = false;
+		bool vegetationSubmitted = false;
 		std::uint32_t framePlanPassCount = 0;
 		std::uint32_t compiledResourceCount = 0;
 		std::uint32_t barrierDependencyCount = 0;
@@ -1954,15 +1990,33 @@ namespace Vans::EditorAPI
 
 	struct SkeletonDebugBoneSnapshot
 	{
+		std::string guid;
 		std::string name;
+		std::string canonicalPath;
 		int parentIndex = -1;
+		RuntimeTransformSnapshot localTransform;
+		RuntimeTransformSnapshot worldTransform;
 		Vec3 worldPosition;
+	};
+
+	struct SkeletonDebugSocketSnapshot
+	{
+		std::string guid;
+		std::string name;
+		std::string boneGuid;
+		int parentBoneIndex = -1;
+		RuntimeTransformSnapshot localTransform;
+		RuntimeTransformSnapshot worldTransform;
 	};
 
 	struct SkeletonDebugRigSnapshot
 	{
 		std::string nodeName;
 		std::string entityGuid;
+		std::string animationComponentGuid;
+		std::string skeletonGuid;
+		std::uint64_t skeletonSignature = 0;
+		std::uint64_t poseRevision = 0;
 		std::string role;
 		std::string currentState;
 		std::string activeClip;
@@ -1972,12 +2026,81 @@ namespace Vans::EditorAPI
 		bool playing = false;
 		bool retargetSource = false;
 		std::vector<SkeletonDebugBoneSnapshot> bones;
+		std::vector<SkeletonDebugSocketSnapshot> sockets;
 	};
 
 	struct SkeletonDebugSnapshot
 	{
 		bool available = false;
 		std::vector<SkeletonDebugRigSnapshot> rigs;
+	};
+
+	// Formal editor projection of runtime-owned target skeleton topology.  This
+	// intentionally excludes animated transforms so a collapsed Hierarchy never
+	// requests or copies a full pose.
+	struct SceneSkeletonHierarchyBone
+	{
+		std::string guid;
+		std::string name;
+		std::string canonicalPath;
+		int parentIndex = -1;
+	};
+
+	struct SceneSkeletonHierarchySocket
+	{
+		std::string guid;
+		std::string name;
+		std::string boneGuid;
+		int parentBoneIndex = -1;
+	};
+
+	struct SceneSkeletonHierarchyRig
+	{
+		std::string entityGuid;
+		std::string animationComponentGuid;
+		std::string skeletonGuid;
+		std::uint64_t skeletonSignature = 0;
+		std::vector<SceneSkeletonHierarchyBone> bones;
+		std::vector<SceneSkeletonHierarchySocket> sockets;
+	};
+
+	struct SceneSkeletonHierarchySnapshot
+	{
+		bool available = false;
+		std::vector<SceneSkeletonHierarchyRig> rigs;
+	};
+
+	enum class SceneSkeletonNodeKind
+	{
+		Bone,
+		Socket
+	};
+
+	struct SceneSkeletonNodePoseRequest
+	{
+		std::string entityGuid;
+		std::string animationComponentGuid;
+		SceneSkeletonNodeKind kind = SceneSkeletonNodeKind::Bone;
+		std::string anchorGuid;
+	};
+
+	// A targeted pose read for the one Bone/Socket selected in Inspector.
+	struct SceneSkeletonNodePoseSnapshot
+	{
+		bool available = false;
+		SceneSkeletonNodeKind kind = SceneSkeletonNodeKind::Bone;
+		std::string entityGuid;
+		std::string animationComponentGuid;
+		std::string skeletonGuid;
+		std::uint64_t skeletonSignature = 0;
+		std::uint64_t poseRevision = 0;
+		std::string anchorGuid;
+		std::string name;
+		std::string canonicalPath;
+		std::string boneGuid;
+		RuntimeTransformSnapshot localTransform;
+		RuntimeTransformSnapshot modelTransform;
+		RuntimeTransformSnapshot worldTransform;
 	};
 
 	// Read-only bind-pose data for isolated animation authoring previews.  The
@@ -2093,6 +2216,12 @@ namespace Vans::EditorAPI
 		int priority = 0;
 	};
 
+	struct AnimationPreviewGraphSetRequest
+	{
+		AnimationPreviewSessionId sessionId = 0;
+		std::string graphSetId;
+	};
+
 	struct AnimationPreviewViewportRequest
 	{
 		AnimationPreviewSessionId sessionId = 0;
@@ -2171,6 +2300,9 @@ namespace Vans::EditorAPI
 		float currentTime = 0.0f;
 		float duration = 0.0f;
 		float normalizedTime = 0.0f;
+		std::string activeGraphSetId;
+		std::string incomingGraphSetId;
+		float graphSetTransitionProgress = 1.0f;
 		float speed = 1.0f;
 		float lastUpdateMilliseconds = 0.0f;
 		std::uint64_t frameScratchAllocations = 0;
@@ -2200,45 +2332,6 @@ namespace Vans::EditorAPI
 		std::vector<AnimationPreviewSlotEventSnapshot> slotEvents;
 	};
 
-	struct FootIKDebugSampleSnapshot
-	{
-		Vec3 rayStart;
-		Vec3 rayEnd;
-		Vec3 hitPosition;
-		Vec3 hitNormal = { 0.0f, 1.0f, 0.0f };
-		bool hasHit = false;
-		bool accepted = false;
-		std::uint32_t hitLayer = 0;
-		std::string hitActorName;
-		std::string status;
-	};
-
-	struct FootIKDebugLegSnapshot
-	{
-		Vec3 hip;
-		Vec3 knee;
-		Vec3 animatedFoot;
-		Vec3 solvedFoot;
-		Vec3 target;
-		Vec3 contact;
-		Vec3 normal = { 0.0f, 1.0f, 0.0f };
-		std::vector<FootIKDebugSampleSnapshot> samples;
-		bool hasContact = false;
-		bool hasTarget = false;
-		float targetWeight = 0.0f;
-		float verticalOffset = 0.0f;
-		bool planted = false;
-		float plantWeight = 0.0f;
-		float horizontalLockError = 0.0f;
-	};
-
-	struct FootIKDebugSnapshot
-	{
-		bool available = false;
-		std::vector<FootIKDebugLegSnapshot> leftLegs;
-		std::vector<FootIKDebugLegSnapshot> rightLegs;
-	};
-
 	struct RuntimeSceneEntitiesCreateRequest
 	{
 		std::vector<ScenePropertyValue> sceneEntities;
@@ -2264,13 +2357,16 @@ namespace Vans::EditorAPI
 	struct RuntimeEntityReparentRequest
 	{
 		std::string childEntityGuid;
-		std::string newParentEntityGuid;
+		RuntimeParentReference newParent;
+		RuntimeReparentTransformPolicy transformPolicy =
+			RuntimeReparentTransformPolicy::KeepWorld;
 	};
 
 	struct RuntimeEntityReparentResult
 	{
 		bool applied = false;
 		std::string message;
+		RuntimeTransformSnapshot localTransform;
 	};
 
 	struct TerrainSettingsSnapshot

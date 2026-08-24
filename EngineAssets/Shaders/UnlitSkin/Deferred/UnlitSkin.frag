@@ -2,6 +2,8 @@
 #extension GL_GOOGLE_include_directive : require
 layout(early_fragment_tests) in;
 #include "../../Common/CameraData.glsl"
+#include "../../Common/VansDrawSubmission.glsl"
+#include "../../Common/MotionVector.glsl"
 #include "../../Common/Common.glsl"
 #include "../../BRDF/SkinData.glsl"
 
@@ -10,6 +12,8 @@ layout( location = 1 ) in vec3 normal_ws;
 layout( location = 2 ) in vec3 tangent_ws;
 layout( location = 3 ) in vec3 bitangent_ws;
 layout( location = 4 ) in vec3 position_world;
+layout( location = 5 ) in vec4 motion_current_clip;
+layout( location = 6 ) in vec4 motion_previous_clip;
 
 // Skin-specific textures (dedicated per-node descriptor set)
 layout( set = 4, binding = 0 ) uniform sampler2D skinAlbedoTexture;
@@ -19,25 +23,20 @@ layout( set = 4, binding = 3 ) uniform sampler2D skinCavityTexture;
 layout( set = 4, binding = 4 ) uniform sampler2D skinScatterMaskTexture;
 layout( set = 4, binding = 5 ) uniform sampler2D skinThicknessTexture;
 
-layout( push_constant ) uniform MaterialPushConsts
-{
-    int materialIndex;
-    int objectIndex;
-    uint vertexFeatureMask;
-} materialConst;
-
 //输出到MRT
 layout (location = 0) out vec4 outNormal;
 layout (location = 1) out vec4 outGBuffer0;
 layout (location = 2) out vec4 outGBuffer1;
 layout (location = 3) out vec4 outGBuffer2;
+layout (location = 4) out vec2 outMotionVector;
 
 void main() 
 { 
+    VansDrawData drawData = VansGetDrawData();
     float roughness = 0.62;
     float normalStrength = 0.35;
     float ao = 1.0;
-    SkinMaterialPayload skinMaterial = GetSkinMaterialPayload(materialConst.materialIndex);
+    SkinMaterialPayload skinMaterial = GetSkinMaterialPayload(drawData.materialIndex);
     roughness = clamp(skinMaterial.roughnessNormalSpecular.x, 0.045, 1.0);
     normalStrength = clamp(skinMaterial.roughnessNormalSpecular.y, 0.0, 2.0);
 
@@ -86,8 +85,9 @@ void main()
         scatterMask,
         cavity * ao,
         PackSkinMaterialIDWithThinness(float(MATERIAL_ID_SKIN), thinnessMask, thinnessWeight),
-        float(materialConst.materialIndex));
+        float(drawData.materialIndex));
 
     float linearDepth = (ViewMatrix * vec4(position_world, 1.0)).z;
     outGBuffer2 = vec4(position_world, -linearDepth);
+    outMotionVector = VansMotionVectorFromClip(motion_current_clip, motion_previous_clip);
 }

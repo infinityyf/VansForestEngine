@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_map>
+#include <vector>
 #include "../RenderCore/VansRenderRuntimeConfig.h"
 
 namespace Vans
@@ -10,6 +12,7 @@ namespace Vans
 
 	using VansProjectUpscalerSettings = VansGraphics::VansUpscalerConfig;
 	using VansProjectCommandRecordingSettings = VansGraphics::VansCommandRecordingConfig;
+	using VansProjectRenderOutputSettings = VansGraphics::VansRenderOutputConfig;
 
 	struct VansProjectMainCameraHiZCullSettings
 	{
@@ -36,6 +39,10 @@ namespace Vans
 
 		float GetFixedTimeStep() const { return m_FixedTimeStep; }
 		void SetFixedTimeStep(float fixedTimeStep);
+		bool ResolvePhysicsQueryProfile(
+			const std::string& profile,
+			std::uint32_t& collisionMask,
+			std::string& error) const;
 		const VansProjectUpscalerSettings& GetUpscalerSettings() const
 		{
 			return m_UpscalerSettings;
@@ -44,9 +51,13 @@ namespace Vans
 			const VansProjectUpscalerSettings& settings,
 			std::string* error = nullptr);
 		const VansProjectCommandRecordingSettings& GetCommandRecordingSettings() const { return m_CommandRecordingSettings; }
+		const VansProjectRenderOutputSettings& GetRenderOutputSettings() const { return m_RenderOutputSettings; }
+		bool SetRenderOutputSettings(
+			const VansProjectRenderOutputSettings& settings,
+			std::string* error = nullptr);
 		VansGraphics::VansRenderRuntimeConfig GetRenderRuntimeConfig() const
 		{
-			return { m_UpscalerSettings, m_CommandRecordingSettings };
+			return { m_UpscalerSettings, m_CommandRecordingSettings, m_RenderOutputSettings };
 		}
 		void SetCommandRecordingSettings(
 			bool parallelEnabled,
@@ -60,8 +71,10 @@ private:
 		bool LoadCollisionLayerSettingsFromFile(const std::string& filePath);
 
 		float m_FixedTimeStep = 1.0f / 60.0f;
+		std::unordered_map<std::string, std::vector<std::string>> m_PhysicsQueryProfiles;
 		VansProjectUpscalerSettings m_UpscalerSettings;
 		VansProjectCommandRecordingSettings m_CommandRecordingSettings;
+		VansProjectRenderOutputSettings m_RenderOutputSettings;
 		VansProjectMainCameraHiZCullSettings m_MainCameraHiZCullSettings;
 	};
 }

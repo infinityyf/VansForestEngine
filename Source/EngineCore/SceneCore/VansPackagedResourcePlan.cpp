@@ -66,6 +66,8 @@ namespace
 		json["meshNodeTransformPolicy"] = settings.meshNodeTransformPolicy;
 		json["rigidAttachmentPolicy"] = settings.rigidAttachmentPolicy;
 		json["diagnostics"] = settings.diagnostics;
+		json["sourceSkeletonGuid"] = settings.sourceSkeletonGuid;
+		json["boneGuidByCanonicalPath"] = settings.boneGuidByCanonicalPath;
 		json["legacyFixups"] = Json::object();
 		json["legacyFixups"]["repairInvalidIdentityBindPose"] =
 			settings.legacyFixups.repairInvalidIdentityBindPose;
@@ -88,6 +90,10 @@ namespace
 		settings.rigidAttachmentPolicy =
 			json.value("rigidAttachmentPolicy", settings.rigidAttachmentPolicy);
 		settings.diagnostics = json.value("diagnostics", settings.diagnostics);
+		settings.sourceSkeletonGuid = json.at("sourceSkeletonGuid").get<std::string>();
+		settings.boneGuidByCanonicalPath =
+			json.at("boneGuidByCanonicalPath")
+				.get<std::unordered_map<std::string, std::string>>();
 
 		if (const auto legacyIt = json.find("legacyFixups");
 			legacyIt != json.end() && legacyIt->is_object())
@@ -104,11 +110,6 @@ namespace
 				legacyIt->value(
 					"nearestBoneRigidBind",
 					settings.legacyFixups.nearestBoneRigidBind);
-		}
-		if (settings.rigidAttachmentPolicy == "legacyNearestBone")
-		{
-			settings.legacyFixups.nearestBoneRigidBind = true;
-			settings.rigidAttachmentPolicy = "preserveNodeOffset";
 		}
 		return settings;
 	}
@@ -142,29 +143,7 @@ namespace
 		request.needCpuData = json.value("needCpuData", request.needCpuData);
 		request.scaleFactor = json.value("scaleFactor", request.scaleFactor);
 		request.loadMultiMesh = json.value("loadMultiMesh", request.loadMultiMesh);
-		if (const auto skeletalIt = json.find("skeletalImport");
-			skeletalIt != json.end())
-		{
-			request.skeletalImport = DecodeSkeletalImport(*skeletalIt);
-		}
-		else
-		{
-			// Backward compatibility for already-packaged plans. New plans should
-			// write these under skeletalImport.legacyFixups instead.
-			request.skeletalImport.legacyFixups.repairInvalidIdentityBindPose =
-				json.value(
-					"rebuildIdentityBoneOffsetsFromHierarchy",
-					request.skeletalImport.legacyFixups.repairInvalidIdentityBindPose);
-			request.skeletalImport.legacyFixups.remapWeaponAttachmentsToHands =
-				json.value(
-					"remapWeaponAttachmentBonesToHands",
-					request.skeletalImport.legacyFixups.remapWeaponAttachmentsToHands);
-			if (json.contains("rebuildIdentityBoneOffsetsFromHierarchy") ||
-				json.contains("remapWeaponAttachmentBonesToHands"))
-			{
-				request.skeletalImport.legacyFixups.nearestBoneRigidBind = true;
-			}
-		}
+		request.skeletalImport = DecodeSkeletalImport(json.at("skeletalImport"));
 		request.cookedOnly = json.value("cookedOnly", request.cookedOnly);
 		return request;
 	}

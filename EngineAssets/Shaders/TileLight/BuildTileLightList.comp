@@ -64,13 +64,10 @@ layout(set = 1, binding = 2) uniform TileLightBuildParams
 #define TILE_LIGHT_MAX_RECT_PER_TILE 16
 
 // ---------------------------------------------------------------------------
-// 球体与屏幕 Tile NDC AABB 相交测试（保守测试）
-//
-// 步骤：
-//   1. 将光源世界坐标变换到视图空间
-//   2. 检查 Z 深度范围是否与相机视锥重叠
-//   3. 将球心投影到 NDC，计算投影半径
-//   4. 检查 NDC AABB 是否与 tile 的 NDC 范围重叠
+// 球体与屏幕 Tile NDC AABB 的保守相交测试。
+// 使用 view-space 包围盒在正深度区间上的透视投影区间，而不是
+// radius / centerDepth 近似。后者会低估贴近相机或偏离光轴的大球，造成
+// Tile 边缘漏光。球穿过 near plane 时覆盖全屏是刻意的保守处理。
 // ---------------------------------------------------------------------------
 bool SphereTileIntersects(vec3 worldPos, float radius, uint tx, uint ty)
 {
@@ -86,17 +83,30 @@ bool SphereTileIntersects(vec3 worldPos, float radius, uint tx, uint ty)
     if ((vp.z + radius) < farZ)   return false;  // 完全在 far plane 之外
     if ((vp.z - radius) > nearZ)  return false;  // 完全在相机后方
 
-    // 投影深度：避免除零
-    float projDepth = max(-vp.z, NearPlane * 0.5);
+    float centerDepth = -vp.z;
+    if (centerDepth - radius <= NearPlane)
+        return true;
 
-    // 球心投影至 NDC（GL 约定：Y+ = 上，Vulkan 引擎在 FGScopeCommon.glsl 对 Y 翻转）
-    // ProjectionMatrix[0][0] = f/aspect, ProjectionMatrix[1][1] = f
-    float ndcX  = ProjectionMatrix[0][0] * vp.x / projDepth;
-    float ndcY  = ProjectionMatrix[1][1] * vp.y / projDepth;  // 未翻转，与 tile NDC 约定一致
+    float minDepth = centerDepth - radius;
+    float maxDepth = centerDepth + radius;
+    vec4 centerClip = ProjectionMatrix * vec4(vp, 1.0);
+    vec2 centerNdc = centerClip.xy / max(centerClip.w, 1e-6);
+    vec2 projectionScale = vec2(ProjectionMatrix[0][0], ProjectionMatrix[1][1]);
+    vec2 projectionOffset = centerNdc - projectionScale * vp.xy / centerDepth;
 
-    // 球在 NDC 中的投影半径
-    float halfX = ProjectionMatrix[0][0] * radius / projDepth;
-    float halfY = ProjectionMatrix[1][1] * radius / projDepth;
+    float x0 = projectionScale.x * (vp.x - radius) / minDepth + projectionOffset.x;
+    float x1 = projectionScale.x * (vp.x - radius) / maxDepth + projectionOffset.x;
+    float x2 = projectionScale.x * (vp.x + radius) / minDepth + projectionOffset.x;
+    float x3 = projectionScale.x * (vp.x + radius) / maxDepth + projectionOffset.x;
+    float sphereMinX = min(min(x0, x1), min(x2, x3));
+    float sphereMaxX = max(max(x0, x1), max(x2, x3));
+
+    float y0 = projectionScale.y * (vp.y - radius) / minDepth + projectionOffset.y;
+    float y1 = projectionScale.y * (vp.y - radius) / maxDepth + projectionOffset.y;
+    float y2 = projectionScale.y * (vp.y + radius) / minDepth + projectionOffset.y;
+    float y3 = projectionScale.y * (vp.y + radius) / maxDepth + projectionOffset.y;
+    float sphereMinY = min(min(y0, y1), min(y2, y3));
+    float sphereMaxY = max(max(y0, y1), max(y2, y3));
 
     // tile NDC 范围（NDC X：-1 ~ +1 对应 0 ~ screenWidth；NDC Y：-1 ~ +1 对应底部 ~ 顶部）
     // 引擎中 gl_FragCoord.y 从顶部递增（0=top），对应 NDC Y+ = top（GL 约定）
@@ -109,8 +119,8 @@ bool SphereTileIntersects(vec3 worldPos, float radius, uint tx, uint ty)
     float tileMaxY = 1.0 - float(ty)       * tileSzY;
     float tileMinY = 1.0 - float(ty + 1u)  * tileSzY;
 
-    return (ndcX + halfX >= tileMinX) && (ndcX - halfX <= tileMaxX) &&
-           (ndcY + halfY >= tileMinY) && (ndcY - halfY <= tileMaxY);
+    return sphereMaxX >= tileMinX && sphereMinX <= tileMaxX &&
+           sphereMaxY >= tileMinY && sphereMinY <= tileMaxY;
 }
 
 bool IsFallbackCandidate(uint metaIndex)

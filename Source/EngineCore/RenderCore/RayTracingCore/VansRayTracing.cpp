@@ -89,16 +89,14 @@ namespace
         return MixGILightSignature(seed, QuantizeGILightFloat(value.z, scale));
     }
 
-    uint64_t BuildGILightSignature(VansGraphics::VansLightManager* lightManager)
+    uint64_t BuildGILightSignature(
+		const VansGraphics::VansRenderLightFrameData& lightFrame)
     {
-        if (lightManager == nullptr)
-            return 0ull;
-
         uint64_t signature = 1469598103934665603ull;
-        const auto& directionLights = lightManager->GetDirectionLights();
-        const auto& pointLights = lightManager->GetPointLights();
-        const auto& spotLights = lightManager->GetSpotLight();
-        const auto& rectLights = lightManager->GetRectLights();
+		const auto& directionLights = lightFrame.directionalLights;
+		const auto& pointLights = lightFrame.pointLights;
+		const auto& spotLights = lightFrame.spotLights;
+		const auto& rectLights = lightFrame.rectLights;
 
         signature = MixGILightSignature(signature, static_cast<uint64_t>(directionLights.size()));
         signature = MixGILightSignature(signature, static_cast<uint64_t>(pointLights.size()));
@@ -622,16 +620,14 @@ void VansGraphics::VansRayTracing::RequestGIRTPreviews(
     m_GIRTPreviewRequestFrames = 3;
 }
 
-bool VansGraphics::VansRayTracing::UpdateLightingResponseState(VansLightManager* lightManager)
+bool VansGraphics::VansRayTracing::UpdateLightingResponseState(
+	const VansRenderLightFrameData& lightFrame)
 {
-    if (lightManager == nullptr)
-        return false;
-
-    const uint64_t lightSignature = BuildGILightSignature(lightManager);
+	const uint64_t lightSignature = BuildGILightSignature(lightFrame);
     glm::vec4 directionIntensity(0.0f);
     glm::vec4 lightColor(0.0f);
 
-    auto& directionLights = lightManager->GetDirectionLights();
+	const auto& directionLights = lightFrame.directionalLights;
 	float environmentIntensity = m_BaseGIEnvironmentIntensity;
 	if (!directionLights.empty())
 	{
@@ -667,12 +663,14 @@ bool VansGraphics::VansRayTracing::UpdateLightingResponseState(VansLightManager*
     return changed;
 }
 
-void VansGraphics::VansRayTracing::PrepareGIProbeUpdate(VansLightManager* lightManager, VansMaterialManager* materialManager)
+void VansGraphics::VansRayTracing::PrepareGIProbeUpdate(
+	const VansRenderLightFrameData& lightFrame,
+	VansMaterialManager* materialManager)
 {
     if (!m_RTResourcesReady || m_GIRegions.empty())
         return;
 
-    const bool lightingChanged = UpdateLightingResponseState(lightManager);
+	const bool lightingChanged = UpdateLightingResponseState(lightFrame);
     if (lightingChanged && materialManager != nullptr)
     {
         materialManager->m_SSGITemporalFrame = 0;
@@ -695,9 +693,11 @@ void VansGraphics::VansRayTracing::PrepareGIProbeUpdate(VansLightManager* lightM
     }
 }
 
-void VansGraphics::VansRayTracing::UpdateGIProbe(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VansLightManager* lightManager, VansMaterialManager* materialManager)
+void VansGraphics::VansRayTracing::UpdateGIProbe(
+	VansVKDevice* device,
+	VansVKCommandBuffer* commandBuffer,
+	VansMaterialManager* materialManager)
 {
-    (void)lightManager;
     if (!m_RTResourcesReady || m_GIRegions.empty())
         return;
 
@@ -929,7 +929,7 @@ void VansGraphics::VansRayTracing::BindGIPointLightData(uint32_t regionIndex)
         {{
             skyImage.GetSampler(),
             skyImage.GetImageView(),
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
         }});
 
     descManager->WriteImageDescriptor(
@@ -945,11 +945,7 @@ void VansGraphics::VansRayTracing::BindGIPointLightData(uint32_t regionIndex)
         descriptorSet,
         GIPL_BINDING_PUNCTUAL_SHADOW,
         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        {{
-            VansRenderPassManager::GetInstance()->GetPunctualShadowMap().GetSampler(),
-            VansRenderPassManager::GetInstance()->GetPunctualShadowMap().GetImageView(),
-            VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
-        }});
+		VansRenderPassManager::GetInstance()->GetPunctualShadowDescriptorInfos());
     descManager->WriteImageDescriptor(
         descriptorSet,
         GIPL_BINDING_GI_VISIBILITY,

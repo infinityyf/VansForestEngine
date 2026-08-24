@@ -21,7 +21,6 @@ namespace VansGraphics
 	bool VansMotionMatchingDebugWindow::s_ShowAppliedRootMotionVelocity = true;
 	bool VansMotionMatchingDebugWindow::s_ShowPivot = true;
 	bool VansMotionMatchingDebugWindow::s_ShowLabels = true;
-	bool VansMotionMatchingDebugWindow::s_FootPlacementOverlayEnabled = false;
 
 	void VansMotionMatchingDebugWindow::ShowWindow(
 		Vans::EditorAPI::IEngineEditorAPI& editorAPI)
@@ -56,9 +55,6 @@ namespace VansGraphics
 		ImGui::Checkbox("Pivot Marker", &s_ShowPivot);
 		ImGui::Checkbox("Labels", &s_ShowLabels);
 		ImGui::EndDisabled();
-
-		if (ImGui::Checkbox("Foot Placement Overlay", &s_FootPlacementOverlayEnabled))
-			editorAPI.SetFootIKDebugVisualization(s_FootPlacementOverlayEnabled);
 
 		ImGui::Separator();
 		const auto snapshot = editorAPI.GetMotionMatchingDebugSnapshot();

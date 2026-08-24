@@ -21,7 +21,6 @@ namespace VansGraphics
 		static bool ShowAppliedRootMotionVelocity() { return s_ShowAppliedRootMotionVelocity; }
 		static bool ShowPivot() { return s_ShowPivot; }
 		static bool ShowLabels() { return s_ShowLabels; }
-		static bool FootPlacementOverlayEnabled() { return s_FootPlacementOverlayEnabled; }
 
 	private:
 		static bool s_SceneOverlayEnabled;
@@ -36,6 +35,5 @@ namespace VansGraphics
 		static bool s_ShowAppliedRootMotionVelocity;
 		static bool s_ShowPivot;
 		static bool s_ShowLabels;
-		static bool s_FootPlacementOverlayEnabled;
 	};
 }

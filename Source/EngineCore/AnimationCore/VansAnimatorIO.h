@@ -42,12 +42,17 @@ namespace VansGraphics
 		};
 
 		std::string                    name;
+		std::string                    animationRigGuid;
 		std::vector<AnimatorParameter> parameters;
 		std::vector<AnimatorClipRef>   clipRefs;
 
 		// 逻辑图数据
 		std::vector<AnimatorGraphAsset> graphs;
 		std::vector<VansAnimationLayerDefinition> layers;
+		std::vector<VansAnimationGraphSetDefinition> graphSets;
+		std::string defaultGraphSetId;
+		VansGraphSetTransitionPolicy defaultGraphSetTransition;
+		std::vector<VansGraphSetTransitionRule> graphSetTransitionRules;
 		std::vector<VansAnimationSlotDefinition> slots;
 		EditorSettings editor;
 

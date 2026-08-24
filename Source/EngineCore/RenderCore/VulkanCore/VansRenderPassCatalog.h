@@ -1,11 +1,10 @@
 #pragma once
 
 #include "VansRenderGraph.h"
+#include "../VansRenderSceneSnapshot.h"
 
 namespace VansGraphics
 {
-	class VansScene;
-
 	enum class VansRenderPassCondition
 	{
 		Always,
@@ -24,7 +23,7 @@ namespace VansGraphics
 		constexpr const char* PunctualShadow = "Punctual Shadow";
 		constexpr const char* HairDeepOpacity = "Hair Deep Opacity";
 		constexpr const char* MainCameraHiZCull = "Main Camera HiZ Cull";
-		constexpr const char* MotionVector = "Motion Vector";
+		constexpr const char* SkyMotionVector = "Sky Motion Vector";
 		constexpr const char* GBuffer = "GBuffer";
 		constexpr const char* WaterWaveCompute = "Water Wave Compute";
 		constexpr const char* WaterGBuffer = "Water GBuffer";
@@ -60,19 +59,19 @@ namespace VansGraphics
 	public:
 		static void BuildCompatibilityFramePlan(
 			VansRenderFramePlan& outPlan,
-			VansScene& scene,
+			const VansRenderFeatureFrameFlags& features,
 			uint64_t frameNumber,
 			bool asyncComputeEnabled = false);
 
 		static bool IsPassEnabled(
 			VansRenderPassCondition condition,
-			const VansScene& scene);
+			const VansRenderFeatureFrameFlags& features);
 
 		static bool IsKnownPassName(const char* passName);
 		static bool AuditAsyncMigrationContracts(std::vector<std::string>& outErrors);
 
 		static void GetPreservedFeatureAuditList(
-			const VansScene& scene,
+			const VansRenderFeatureFrameFlags& features,
 			std::vector<std::string>& outRequiredFeatures,
 			std::vector<std::string>& outConditionallyDisabledFeatures);
 	};

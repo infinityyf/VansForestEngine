@@ -125,8 +125,6 @@ bool VansSceneContentBuildExecutor::BuildFromPlan(
 	if (!buildPlan.renderNodes.empty())
 		VansSceneRenderNodeBuilder::LoadRenderNodes(scene, nativeDevice, buildPlan.renderNodes);
 
-	scene.GetLightManager()->CreateLightUniformData(nativeDevice);
-
 	if (buildPlan.terrain)
 		VansSceneEnvironmentNodeBuilder::AddTerrainNode(scene, vkDevice, *buildPlan.terrain);
 

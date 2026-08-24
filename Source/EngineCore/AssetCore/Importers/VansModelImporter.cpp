@@ -1,4 +1,5 @@
 #include "VansModelImporter.h"
+#include "VansAssimpSkeletonTopology.h"
 
 #include "VansModelImportReport.h"
 #include "../Storage/VansAssetMetaStorage.h"
@@ -15,6 +16,7 @@
 #include <functional>
 #include <limits>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace Vans
 {
@@ -27,6 +29,41 @@ VansSubAssetId StableId(VansAssetMeta& meta, const std::string& fingerprint)
     const VansSubAssetId created = VansSubAssetId::New();
     meta.subAssets.emplace(fingerprint, created);
     return created;
+}
+
+VansSubAssetId StableBoneId(VansAssetMeta& meta, const std::string& canonicalPath)
+{
+    const std::string fingerprint = "bone:" + canonicalPath;
+    if (const auto existing = meta.subAssets.find(fingerprint); existing != meta.subAssets.end())
+        return existing->second;
+    const VansSubAssetId created = VansAssetGuid::FromStableName(
+        meta.guid.ToString(), fingerprint);
+    meta.subAssets.emplace(fingerprint, created);
+    return created;
+}
+
+void CollectSkeletonSubAssets(const aiScene* scene, VansAssetMeta& meta)
+{
+    if (!scene || !scene->mRootNode)
+        return;
+
+    const VansAssimpSkeletonTopology topology = BuildAssimpSkeletonTopology(scene);
+    std::function<void(const aiNode*, const std::string&)> visit =
+        [&](const aiNode* node, const std::string& parentPath)
+        {
+            if (!node)
+                return;
+            const std::string name = node->mName.C_Str();
+            const std::string path = parentPath.empty() ? name : parentPath + "/" + name;
+            if (topology.requiredNodes.find(node) != topology.requiredNodes.end())
+                StableBoneId(meta, path);
+            for (unsigned child = 0; child < node->mNumChildren; ++child)
+                visit(node->mChildren[child], path);
+        };
+    visit(scene->mRootNode, {});
+
+    for (const std::string& name : topology.unresolvedWeightedNames)
+        StableBoneId(meta, name);
 }
 
 std::array<float, 16> Matrix(const aiMatrix4x4& value)
@@ -173,6 +210,58 @@ bool VansModelImportResult::Succeeded() const
     });
 }
 
+VansSkeletonSubAssetRefreshResult VansModelImporter::RefreshSkeletonSubAssets(
+    const std::filesystem::path& sourcePath,
+    VansAssetMeta& meta) const
+{
+    VansSkeletonSubAssetRefreshResult result;
+    Assimp::Importer importer;
+    // This pass reads static node/bone topology only. Animation-key validation
+    // is deliberately not requested because malformed animation timing must not
+    // prevent deterministic skeleton identity extraction from an otherwise
+    // readable model source.
+    const aiScene* scene = importer.ReadFile(sourcePath.string(), 0);
+    if (!scene || !scene->mRootNode)
+    {
+        result.error = importer.GetErrorString();
+        return result;
+    }
+
+    const VansAssimpSkeletonTopology topology = BuildAssimpSkeletonTopology(scene);
+    if (!topology.ambiguousWeightedNames.empty())
+    {
+        result.error = "Weighted bone name resolves to multiple source nodes: "
+            + topology.ambiguousWeightedNames.front();
+        return result;
+    }
+
+    for (auto subAsset = meta.subAssets.begin(); subAsset != meta.subAssets.end();)
+    {
+        if (subAsset->first.rfind("bone:", 0) == 0)
+            subAsset = meta.subAssets.erase(subAsset);
+        else
+            ++subAsset;
+    }
+
+    for (unsigned meshIndex = 0; meshIndex < scene->mNumMeshes; ++meshIndex)
+    {
+        const aiMesh* mesh = scene->mMeshes[meshIndex];
+        if (mesh && mesh->HasBones())
+        {
+            result.hasSkeleton = true;
+            break;
+        }
+    }
+    if (result.hasSkeleton)
+        CollectSkeletonSubAssets(scene, meta);
+    result.boneSubAssetCount = static_cast<std::size_t>(std::count_if(
+        meta.subAssets.begin(), meta.subAssets.end(), [](const auto& subAsset) {
+            return subAsset.first.rfind("bone:", 0) == 0;
+        }));
+    result.succeeded = true;
+    return result;
+}
+
 VansModelImportResult VansModelImporter::Import(const std::filesystem::path& sourcePath,
     VansAssetMeta& meta, const VansModelImportSettings& settings) const
 {
@@ -192,6 +281,15 @@ VansModelImportResult VansModelImporter::Import(const std::filesystem::path& sou
     if (!scene || !scene->mRootNode)
     {
         result.messages.push_back({ VansImportMessageSeverity::Error, sourcePath.string(), importer.GetErrorString() });
+        return result;
+    }
+
+    const VansAssimpSkeletonTopology topology = BuildAssimpSkeletonTopology(scene);
+    if (!topology.ambiguousWeightedNames.empty())
+    {
+        result.messages.push_back({ VansImportMessageSeverity::Error, sourcePath.string(),
+            "Weighted bone name resolves to multiple source nodes: "
+                + topology.ambiguousWeightedNames.front() });
         return result;
     }
 
@@ -306,6 +404,8 @@ VansModelImportResult VansModelImporter::Import(const std::filesystem::path& sou
     }
 
     CollectNodes(scene->mRootNode, -1, {}, meta, result.asset);
+    if (result.asset.hasSkeleton)
+        CollectSkeletonSubAssets(scene, meta);
     result.asset.animationClipCount = settings.importAnimations ? scene->mNumAnimations : 0;
     if (scene->mNumTextures > 0)
         result.messages.push_back({ VansImportMessageSeverity::Warning, sourcePath.string(), "Embedded textures were skipped; use TextureAsset references" });

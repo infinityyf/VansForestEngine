@@ -65,43 +65,6 @@ static bool IsSkeletonHierarchyValid(const Skeleton& skeleton, std::string* reas
 	return true;
 }
 
-static bool MatchesOriginSkeleton(const Skeleton& cached, const Skeleton& origin, std::string* reason = nullptr)
-{
-	if (cached.bones.size() != origin.bones.size())
-	{
-		if (reason) *reason = "bone count mismatch";
-		return false;
-	}
-
-	for (size_t i = 0; i < origin.bones.size(); ++i)
-	{
-		if (cached.bones[i].name != origin.bones[i].name)
-		{
-			if (reason) *reason = "bone name mismatch at index " + std::to_string(i);
-			return false;
-		}
-
-		if (cached.bones[i].parentIndex != origin.bones[i].parentIndex)
-		{
-			if (reason) *reason = "parent mismatch for bone: " + origin.bones[i].name;
-			return false;
-		}
-
-		const float* cachedLocal = &cached.bones[i].localTransform[0][0];
-		const float* originLocal = &origin.bones[i].localTransform[0][0];
-		for (int e = 0; e < 16; ++e)
-		{
-			if (std::abs(cachedLocal[e] - originLocal[e]) > 0.0001f)
-			{
-				if (reason) *reason = "bind-pose local transform mismatch for bone: " + origin.bones[i].name;
-				return false;
-			}
-		}
-	}
-
-	return true;
-}
-
 // ════════════════════════════════════════════════════════════════
 //  LoadClip (不含骨骼)
 // ════════════════════════════════════════════════════════════════
@@ -117,7 +80,7 @@ bool VansAnimationClipLoader::LoadClip(const std::string& filePath,
 		std::string reason;
 		bool cacheValid = IsSkeletonHierarchyValid(tempSkeleton, &reason);
 		if (cacheValid && originSkeleton)
-			cacheValid = MatchesOriginSkeleton(tempSkeleton, *originSkeleton, &reason);
+			cacheValid = tempSkeleton.MatchesAnimationLayout(*originSkeleton, &reason);
 
 		if (!cacheValid)
 		{
@@ -366,11 +329,12 @@ bool VansAnimationClipLoader::TryCreateFromFBX(const std::string& vclipPath,
 	const Skeleton* skeletonToUse = originSkeleton;
 	if (skeletonToUse == nullptr)
 	{
-		VANS_LOG_WARN("[ClipLoader] No originSkeleton provided, extracting from FBX (bone indices may mismatch): " << matchedFbxPath);
-		VansSkinnedMeshLoader::ExtractSkeleton(scene, extractedSkeleton);
-		if (extractedSkeleton.bones.empty())
+		std::string skeletonError;
+		if (!VansSkinnedMeshLoader::LoadSkeletonFromModelAsset(
+			matchedFbxPath, extractedSkeleton, skeletonError))
 		{
-			VANS_LOG_WARN("[ClipLoader] No skeleton in FBX: " << matchedFbxPath);
+			VANS_LOG_WARN("[ClipLoader] Cannot establish canonical Skeleton identity for FBX: "
+				<< matchedFbxPath << " (" << skeletonError << ")");
 			return false;
 		}
 		skeletonToUse = &extractedSkeleton;

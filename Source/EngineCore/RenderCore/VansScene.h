@@ -1,6 +1,10 @@
 ﻿#pragma once
 
 #include "VansRenderNode.h"
+#include "VansDrawSubmission.h"
+#include "VansRenderFrame.h"
+#include "VansRenderFrameSource.h"
+#include "VansRenderThreadTransaction.h"
 
 #include "VansShaderManager.h"
 
@@ -8,6 +12,10 @@
 
 #include "VansMainCameraVisibility.h"
 #include "../SceneRuntime/VansRuntimeWorld.h"
+#include "../SceneRuntime/Transform/VansTransformGraph.h"
+#include "../SceneCore/VansSceneParentReference.h"
+#include "../AnimationCore/Procedural/VansProceduralTypes.h"
+#include "../AnimationCore/Runtime/VansSkeletonAnchorRegistry.h"
 
 #include "WaterCore/VansWaterConfig.h"
 
@@ -185,14 +193,33 @@ namespace VansGraphics
 
 
 
-	class VansScene
+	class VansScene : public IVansRenderFrameSource
 
 	{
+
+	private:
+		bool FinalizeDrawSubmission(
+			VansDrawSortPolicy sortPolicy,
+			VansDrawSubmissionList& submission);
 
 	public:
 
 		VansScene();
 		~VansScene();
+
+		void BindRenderThreadTransactionExecutor(
+			IVansRenderThreadTransactionExecutor* executor)
+		{
+			m_RenderThreadTransactionExecutor = executor;
+		}
+
+		bool ExecuteRenderThreadTransaction(
+			std::unique_ptr<IVansRenderThreadTransaction> transaction)
+		{
+			return m_RenderThreadTransactionExecutor != nullptr &&
+				m_RenderThreadTransactionExecutor->ExecuteRenderThreadTransaction(
+					std::move(transaction));
+		}
 
 
 
@@ -207,19 +234,6 @@ namespace VansGraphics
 
 
 	VansLightManager m_LightManager;
-
-	struct PunctualShadowCasterRecord
-	{
-		VansRenderBounds bounds;
-		uint32_t shadowCasterMask = 0xffffffffu;
-		bool dynamic = false;
-		bool hasBounds = false;
-	};
-	std::unordered_map<uint64_t, PunctualShadowCasterRecord> m_PunctualShadowCasters;
-	void UpdatePunctualShadowCasterCache();
-	void BuildPunctualShadowCasterLists();
-
-
 
 		VansMaterialManager m_MaterialManager;
 
@@ -328,6 +342,8 @@ namespace VansGraphics
 		VansRenderNode* m_SkyBoxNode = nullptr;
 		VansRenderNode* m_DeferredNode = nullptr;
 		std::vector<VansRenderNode*> m_OpaqueRenderNodes;
+		// GBuffer 提交列表跨帧复用容量，避免大量模型场景每帧重复分配 packet/batch/instance 数组。
+		VansDrawSubmissionList m_OpaqueDrawSubmissionScratch;
 		std::vector<VansRenderNode*> m_HairRenderNodes;
 		VansRenderNode* m_TerrainRenderNode = nullptr;
 		VansRenderNode* m_VegetationRenderNode = nullptr;
@@ -343,27 +359,27 @@ namespace VansGraphics
 		std::vector<VansRenderNode*> m_DecalRenderNodes;
 		std::vector<VansParticleRenderNode*> m_ParticleRenderNodes;
 		std::unordered_map<std::string, MultiMeshGroup> m_MultiMeshGroups;
+		struct MainRenderProxyBinding final
+		{
+			VansRenderProxyHandle handle;
+			VansRenderProxyStaticData staticData;
+		};
+		MainRenderProxyBinding* EnsureMainRenderProxyBinding(
+			VansRenderNode* node,
+			VansRenderMutationBatch& mutations);
+		VansRenderProxyHandle FindMainRenderProxyHandle(const VansRenderNode* node) const;
+		void ReleaseMainRenderProxyBinding(
+			VansRenderNode* node,
+			VansRenderMutationBatch& mutations);
+		VansRenderProxyHandleAllocator m_RenderProxyHandleAllocator;
+		std::unordered_map<const VansRenderNode*, MainRenderProxyBinding> m_MainRenderProxyBindings;
+		VansRenderMutationBatch m_PendingRenderMutations;
 		std::vector<VansAnimationNode*> m_AnimationNodes;
 		std::vector<VansAnimationController*> m_AnimationControllers;
+		// 场景级查询批次跨帧复用容量，避免每帧为 Grounding 临时分配。
+		std::vector<VansWorldQueryRequest> m_AnimationWorldQueryRequests;
+		std::vector<VansWorldQueryResult> m_AnimationWorldQueryResults;
 		VansMainCameraHiZCullSettings m_MainCameraHiZCullSettings;
-		VansMainCameraHiZHistoryState m_MainCameraHiZHistory;
-		VansMainCameraVisibilityStats m_MainCameraVisibilityStats;
-		// low 32 bits: HiZ 门控前 DC；high 32 bits: 被 HiZ 门控剔除的 DC。
-		// 打包为一次原子更新，保证并行命令录制时快照中的三项 DC 统计相互一致。
-		std::atomic<uint64_t> m_MainCameraHiZDrawCallStatsPacked{ 0 };
-		std::vector<VansMainCameraCullCandidate> m_MainCameraCullCandidates;
-		std::vector<VansMainCameraHiZCulledNodeDebug> m_MainCameraHiZCulledDebugNodes;
-		std::vector<VansMainCameraCullObjectGPU> m_MainCameraCullObjectsGPU;
-		std::vector<uint64_t> m_MainCameraLastDispatchedNodeIds;
-		std::unordered_map<uint64_t, uint32_t> m_MainCameraCullIndexByNodeId;
-		std::unordered_map<uint64_t, bool> m_MainCameraDrawVisibilityByNodeId;
-		std::unordered_map<uint64_t, VansRenderBounds> m_MainCameraPreviousCullBounds;
-		std::unordered_map<uint64_t, uint32_t> m_MainCameraForceVisibleFramesByNodeId;
-		VansVKBuffer m_MainCameraCullObjectBuffer;
-		VansVKBuffer m_MainCameraVisibilityBuffer;
-		uint32_t m_MainCameraCullBufferCapacity = 0;
-		uint32_t m_MainCameraFrameIndex = 0;
-		bool m_MainCameraHasPendingVisibilityReadback = false;
 		VansVKBuffer m_DummyBoneIDBuffer;
 		VansVKBuffer m_DummyBoneBuffer;
 		VansVKBuffer m_DummyWeightBuffer;
@@ -410,6 +426,7 @@ namespace VansGraphics
 		VansVegetationSystem* GetVegetationSystem() const { return m_VegetationSystem; }
 
 		const std::vector<VansRenderNode*>& GetOpaqueRenderNodes() const { return m_OpaqueRenderNodes; }
+		VansDrawSubmissionList& GetOpaqueDrawSubmissionScratch() { return m_OpaqueDrawSubmissionScratch; }
 
 		const std::vector<VansRenderNode*>& GetHairRenderNodes() const { return m_HairRenderNodes; }
 
@@ -432,6 +449,10 @@ namespace VansGraphics
 		const Vans::VansRuntimeWorld* GetRuntimeWorld() const { return m_RuntimeWorld.get(); }
 		Vans::VansGameplayRuntime* GetGameplayRuntime() { return m_GameplayRuntime.get(); }
 		const Vans::VansGameplayRuntime* GetGameplayRuntime() const { return m_GameplayRuntime.get(); }
+		VansSkeletonInstanceHandle RegisterSkeletonInstance(VansAnimationNode& animationNode)
+		{
+			return m_SkeletonAnchorRegistry.RegisterInstance(animationNode);
+		}
 		bool ApplyRuntimeComponentEnabled(
 			Vans::VansComponentHandle component,
 			bool effectiveEnabled);
@@ -453,14 +474,28 @@ namespace VansGraphics
 
 		MultiMeshGroup* FindAnimationMultiMeshGroup(const std::string& meshGroupName, const std::string& objectName);
 
-		uint32_t GetParentTransformID(uint32_t childTransformID) const { return m_TransformParentSystem.GetParent(childTransformID); }
-		void MarkTransformOffsetDirty(uint32_t childTransformID) { m_TransformParentSystem.MarkOffsetDirty(childTransformID); }
+		uint32_t GetParentTransformID(uint32_t childTransformID) const { return m_TransformGraph.GetParent(childTransformID); }
+		void MarkTransformOffsetDirty(uint32_t childTransformID) { m_TransformGraph.MarkWorldDirty(childTransformID); }
 
-		void SetTransformParentID(uint32_t childTransformID, uint32_t parentTransformID) { m_TransformParentSystem.SetParent(childTransformID, parentTransformID); }
+		void SetTransformParentID(uint32_t childTransformID, uint32_t parentTransformID) { m_TransformGraph.SetParent(childTransformID, parentTransformID, Vans::VansTransformReparentMode::KeepLocal); }
 
-		void ClearTransformParentID(uint32_t childTransformID) { m_TransformParentSystem.ClearParent(childTransformID); }
+		void ClearTransformParentID(uint32_t childTransformID) { m_TransformGraph.ClearParent(childTransformID); }
+		bool SetTransformAnchorReference(
+			uint32_t childTransformID,
+			uint32_t ownerTransformID,
+			const Vans::VansSceneParentReference& parent,
+			Vans::VansTransformReparentMode mode = Vans::VansTransformReparentMode::KeepLocal);
 
-		bool SetEntityParentByGuid(const std::string& childEntityGuid, const std::string& parentEntityGuid);
+		bool SetEntityParentReferenceByGuid(
+			const std::string& childEntityGuid,
+			const Vans::VansSceneParentReference* parent,
+			Vans::VansTransformReparentMode mode);
+		bool TryGetEntityLocalTransformByGuid(
+			const std::string& entityGuid,
+			Vans::VansLocalTransform& transform) const;
+		bool SetEntityLocalTransformByGuid(
+			const std::string& entityGuid,
+			const Vans::VansLocalTransform& transform);
 		bool SetEntityNameByGuid(const std::string& entityGuid, const std::string& name);
 		bool SetEntityActiveByGuid(const std::string& entityGuid, bool active);
 
@@ -507,11 +542,11 @@ namespace VansGraphics
 			VkBufferUsageFlags usage,
 			VkMemoryPropertyFlags memoryProperties);
 		bool SetInstanceTransformData(const ModelDataStruct& data, uint32_t slot);
-		void UpdateMappedInstanceTransformData(const ModelDataStruct& data, uint32_t slot);
 		bool PersistentlyMapInstanceTransformBuffer();
 		void CreateGlobalTransformDescriptorSet(VkDescriptorSetLayoutBinding binding);
 
 	private:
+		void UpdateMappedInstanceTransformData(const ModelDataStruct& data, uint32_t slot);
 
 		VansVKBuffer m_InstanceTransformDataBuffer;
 
@@ -611,7 +646,8 @@ namespace VansGraphics
 
 	private:
 
-		VansTransformParentSystem m_TransformParentSystem;
+		VansSkeletonAnchorRegistry m_SkeletonAnchorRegistry;
+		Vans::VansTransformGraph m_TransformGraph;
 
 
 
@@ -790,6 +826,7 @@ namespace VansGraphics
 
 
 		void UpdateTransformDescriptorSet();
+		void UpdateObjectDescriptorSet();
 
 
 
@@ -822,7 +859,15 @@ namespace VansGraphics
 
 
 
-		void UpdateSceneData();
+		std::optional<VansRenderFrameSourceOutput> PrepareMainThreadRenderFrame(
+			const VansRenderFramePreparationContext& context) override;
+
+		// Synchronous migration boundary for backend-owned buffer preparation.
+		// This remains on Main until RenderWorld owns the copied dynamic data.
+		void PrepareRenderBackendData(
+			const VansRenderViewSnapshot& view,
+			const VansRenderSceneFrameSnapshot& sceneSnapshot,
+			const VansRenderWorld& renderWorld);
 
 
 
@@ -846,7 +891,8 @@ namespace VansGraphics
 
 		// Per-frame skeletal animation CPU update + GPU bone matrix upload.
 
-		void UpdateAnimations(float deltaTime);
+		void EvaluateAnimations(float deltaTime);
+		void UploadAnimationRenderData(const VansRenderSceneFrameSnapshot& snapshot);
 		void UpdateActionsEarly(double deltaSeconds);
 		bool RunActionLateContinuation();
 		void UpdateTimelinesPostScript(double deltaSeconds);
@@ -886,31 +932,19 @@ namespace VansGraphics
 
 		// Update per-node GPU data once per frame before command buffer recording.
 
-		void UpdateRenderNodesDataBeforeRecord();
+		void UpdateRenderNodesDataBeforeRecord(
+			const VansRenderViewSnapshot& view,
+			const VansRenderSceneFrameSnapshot& sceneSnapshot);
 		void MarkRenderNodeDescriptorSetsDirty();
 
 		void SetMainCameraHiZCullSettings(const VansMainCameraHiZCullSettings& settings);
 		const VansMainCameraHiZCullSettings& GetMainCameraHiZCullSettings() const { return m_MainCameraHiZCullSettings; }
-		VansMainCameraVisibilityStats GetMainCameraVisibilityStats() const;
-		const std::vector<VansMainCameraHiZCulledNodeDebug>& GetMainCameraHiZCulledDebugNodes() const { return m_MainCameraHiZCulledDebugNodes; }
-		void BuildMainCameraCullCandidates(VkExtent2D extent);
-		bool UploadMainCameraCullCandidates(VansVKDevice& device);
-		bool IsMainCameraNodeVisible(VansRenderNode* node) const;
-		bool HasMainCameraHiZCullCandidates() const { return !m_MainCameraCullCandidates.empty(); }
-		uint32_t GetMainCameraHiZCullCandidateCount() const { return static_cast<uint32_t>(m_MainCameraCullCandidates.size()); }
-		VansVKBuffer& GetMainCameraCullObjectBuffer() { return m_MainCameraCullObjectBuffer; }
-		VansVKBuffer& GetMainCameraVisibilityBuffer() { return m_MainCameraVisibilityBuffer; }
-		void MarkMainCameraHiZCullDispatched();
-		void ResetMainCameraHiZVisibility();
-		void ReleaseMainCameraHiZGpuResources(VkDevice device);
 
 	private:
-		bool EnsureMainCameraHiZGpuResources(VansVKDevice& device, uint32_t candidateCount);
-		void ConsumeMainCameraHiZReadback();
-		void UpdateMainCameraHiZHistory(VkExtent2D extent);
-		bool ShouldMainCameraCullClassRunHiZ(VansMainCameraCullClass cullClass) const;
 		bool ShouldDrawMainCameraNode(VansRenderNode* node);
-		void AppendMainCameraCullCandidate(VansRenderNode* node, VansMainCameraCullClass cullClass, const glm::mat4& viewProjection);
+		bool IsRenderNodeEnabledForCurrentFrame(const VansRenderNode* node) const;
+		const VansRenderTransformFrameData* FindRenderNodeTransformForCurrentFrame(
+			const VansRenderNode* node) const;
 
 	public:
 
@@ -918,7 +952,9 @@ namespace VansGraphics
 
 
 
-		void RecordVideoUploads(VansVKCommandBuffer& cmd);
+		void RecordVideoUploads(
+			VansVKCommandBuffer& cmd,
+			const VansRenderSceneFrameSnapshot& sceneSnapshot);
 
 
 
@@ -939,25 +975,23 @@ namespace VansGraphics
 
 		void UpdateClothSimulation(float dt);
 
-		void WriteClothResultsToStagingBuffers();
+		void WriteClothResultsToStagingBuffers(const VansRenderSceneFrameSnapshot& snapshot);
 
-		void RecordClothVertexUploads(VansVKCommandBuffer& cmd);
+		void RecordClothVertexUploads(
+			VansVKCommandBuffer& cmd,
+			const VansRenderSceneFrameSnapshot& snapshot);
 
 
 
 		// Vegetation: dispatch bone-sim + skinning compute passes on the given command buffer.
 
-		// Must be called after UpdateSceneData() and before the deferred render pass begins.
+		// Must be called after PrepareRenderBackendData() and before the deferred render pass begins.
 
 		void RecordVegetationCompute(VansVKCommandBuffer& cmd);
 
 
 
 	private:
-
-
-
-		void UpdateTransformRenderData();
 
 
 
@@ -1009,16 +1043,11 @@ namespace VansGraphics
 
 		void DrawShadowNodes();
 		void DrawShadowNodes(VansVKCommandBuffer& cmd, GlobalStateData globalStateData);
-		void DrawShadowNodeRange(VansVKCommandBuffer& cmd, GlobalStateData globalStateData, size_t begin, size_t end);
-		void DrawHairShadowNodes(VansVKCommandBuffer& cmd, GlobalStateData globalStateData);
+		bool BuildShadowDrawSubmission(GlobalStateData globalStateData, VansDrawSubmissionList& submission);
 		void DrawVegetationShadowNode(VansVKCommandBuffer& cmd, GlobalStateData globalStateData);
 
 
 
-		void DrawMotionVectorNodes();
-		void DrawMotionVectorNodes(VansVKCommandBuffer& cmd, GlobalStateData globalStateData);
-		void DrawMotionVectorNodeRange(VansVKCommandBuffer& cmd, GlobalStateData globalStateData, size_t begin, size_t end);
-		void DrawSkyMotionVectorNode();
 		void DrawSkyMotionVectorNode(VansVKCommandBuffer& cmd, GlobalStateData globalStateData);
 
 
@@ -1033,7 +1062,7 @@ namespace VansGraphics
 
 		void DrawOpaqueNodes();
 		void DrawOpaqueNodes(VansVKCommandBuffer& cmd, GlobalStateData globalStateData);
-		void DrawOpaqueNodeRange(VansVKCommandBuffer& cmd, GlobalStateData globalStateData, size_t begin, size_t end);
+		bool BuildOpaqueDrawSubmission(GlobalStateData globalStateData, VansDrawSubmissionList& submission);
 
 		void DrawHairVisibilityNodes();
 
@@ -1041,8 +1070,8 @@ namespace VansGraphics
 
 
 
-		void DrawTerrainNode(bool shadowPass = false, bool motionVectorPass = false);
-		void DrawTerrainNode(VansVKCommandBuffer& cmd, GlobalStateData globalStateData, bool shadowPass = false, bool motionVectorPass = false);
+		void DrawTerrainNode(bool shadowPass = false);
+		void DrawTerrainNode(VansVKCommandBuffer& cmd, GlobalStateData globalStateData, bool shadowPass = false);
 
 
 
@@ -1092,7 +1121,7 @@ namespace VansGraphics
 
 		void DrawDecalNodes();
 		void DrawDecalNodes(VansVKCommandBuffer& cmd, GlobalStateData globalStateData);
-		void DrawDecalNodeRange(VansVKCommandBuffer& cmd, GlobalStateData globalStateData, size_t begin, size_t end);
+		bool BuildDecalDrawSubmission(GlobalStateData globalStateData, VansDrawSubmissionList& submission);
 
 
 
@@ -1146,10 +1175,6 @@ namespace VansGraphics
 
 		VansLightManager* GetLightManager() { return &m_LightManager; }
 		const VansLightManager* GetLightManager() const { return &m_LightManager; }
-		bool HasPunctualShadowJobs() const
-		{
-			return !m_LightManager.GetPunctualShadowManager().GetRenderJobs().empty();
-		}
 
 
 
@@ -1296,6 +1321,7 @@ namespace VansGraphics
 
 
 		VansSceneState   m_SceneState    = VansSceneState::Empty;
+		std::uint64_t m_RenderSceneEpoch = 1;
 
 		VansSceneLoadMode m_LoadMode     = VansSceneLoadMode::Editor;
 
@@ -1304,6 +1330,7 @@ namespace VansGraphics
 		bool m_UsingPackagedProjectAssets = false;
 
 		VansVKDevice* m_RuntimeResourceDevice = nullptr;
+		IVansRenderThreadTransactionExecutor* m_RenderThreadTransactionExecutor = nullptr;
 
 
 

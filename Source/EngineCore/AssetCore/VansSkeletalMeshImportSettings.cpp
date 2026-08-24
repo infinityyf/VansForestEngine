@@ -8,6 +8,13 @@ namespace Vans
 VansSkeletalMeshImportSettings ReadSkeletalMeshImportSettings(const VansAssetMeta& meta)
 {
 	VansSkeletalMeshImportSettings settings;
+	settings.sourceSkeletonGuid = meta.guid.ToString();
+	for (const auto& [fingerprint, guid] : meta.subAssets)
+	{
+		constexpr const char* prefix = "bone:";
+		if (fingerprint.rfind(prefix, 0) == 0)
+			settings.boneGuidByCanonicalPath.emplace(fingerprint.substr(5), guid.ToString());
+	}
 	const VansSerializedValue snapshot = meta.SerializedSettingsSnapshot();
 	const VansSerializedValue* skeletal = FindObjectField(snapshot, "skeletalImport");
 	if (skeletal && skeletal->kind == VansSerializedValue::Kind::Object)
@@ -34,29 +41,7 @@ VansSkeletalMeshImportSettings ReadSkeletalMeshImportSettings(const VansAssetMet
 				*legacy, "nearestBoneRigidBind",
 				settings.legacyFixups.nearestBoneRigidBind);
 		}
-		if (settings.rigidAttachmentPolicy == "legacyNearestBone")
-		{
-			settings.legacyFixups.nearestBoneRigidBind = true;
-			settings.rigidAttachmentPolicy = "preserveNodeOffset";
-		}
 		return settings;
-	}
-
-	// Read-only compatibility for existing model metadata. Newly written model
-	// metadata uses the structured skeletalImport object above.
-	const bool hasLegacyBindFixup =
-		FindObjectField(snapshot, "rebuildIdentityBoneOffsetsFromHierarchy") != nullptr;
-	const bool hasLegacyWeaponFixup =
-		FindObjectField(snapshot, "remapWeaponAttachmentBonesToHands") != nullptr;
-	if (hasLegacyBindFixup || hasLegacyWeaponFixup)
-	{
-		settings.legacyFixups.nearestBoneRigidBind = true;
-		settings.legacyFixups.repairInvalidIdentityBindPose = meta.ReadBoolSetting(
-			"rebuildIdentityBoneOffsetsFromHierarchy",
-			settings.legacyFixups.repairInvalidIdentityBindPose);
-		settings.legacyFixups.remapWeaponAttachmentsToHands = meta.ReadBoolSetting(
-			"remapWeaponAttachmentBonesToHands",
-			settings.legacyFixups.remapWeaponAttachmentsToHands);
 	}
 	return settings;
 }

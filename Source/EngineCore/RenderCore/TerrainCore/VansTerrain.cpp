@@ -1,4 +1,5 @@
 #include "VansTerrain.h"
+#include "../VansRenderBounds.h"
 #include "../VansShaderManager.h"
 #include "../VulkanCore/VansVKDescriptorManager.h"
 #include "../../Configration/VansConfigration.h"
@@ -30,7 +31,6 @@ namespace VansGraphics
 		// Shader programs are owned by VansShaderManager.
 		m_TerrainShader = nullptr;
 		m_TerrainShadowShader = nullptr;
-		m_TerrainMotionVectorShader = nullptr;
 		m_TerrainTessShader = nullptr;
         m_ParamsUBO.DestroyVulkanBuffer(m_Device->GetLogicDevice());
         m_InstanceBuffer.DestroyVulkanBuffer(m_Device->GetLogicDevice());
@@ -200,14 +200,12 @@ namespace VansGraphics
         auto& shaderManager = VansShaderManager::Get();
         m_TerrainShader = shaderManager.FindGraphicsShader("Terrain");
         m_TerrainShadowShader = shaderManager.FindGraphicsShader("TerrainShadow");
-        m_TerrainMotionVectorShader = shaderManager.FindGraphicsShader("TerrainMotionVector");
 
         // -------------------------------------------------------
         // 7b. 创建细分地形着色器
         // -------------------------------------------------------
         m_TerrainTessShader = shaderManager.FindGraphicsShader("TerrainTess");
-        if (!m_TerrainShader || !m_TerrainShadowShader ||
-            !m_TerrainMotionVectorShader || !m_TerrainTessShader)
+        if (!m_TerrainShader || !m_TerrainShadowShader || !m_TerrainTessShader)
         {
             VANS_LOG_ERROR("[Terrain] One or more managed terrain shaders are unavailable");
             return;
@@ -505,10 +503,10 @@ namespace VansGraphics
         void TerrainSplitNode(const TerrainNode& node, std::vector<TerrainNode>& outNodes)
         {
             float halfSize = node.size * 0.5f;
-            outNodes.push_back({ node.x, node.z, halfSize, node.lodLevel + 1 });
-            outNodes.push_back({ node.x + halfSize, node.z, halfSize, node.lodLevel + 1 });
-            outNodes.push_back({ node.x, node.z + halfSize, halfSize, node.lodLevel + 1 });
-            outNodes.push_back({ node.x + halfSize, node.z + halfSize, halfSize, node.lodLevel + 1 });
+            outNodes.push_back({ node.x, node.z, halfSize, node.lodLevel + 1, node.minHeight, node.maxHeight });
+            outNodes.push_back({ node.x + halfSize, node.z, halfSize, node.lodLevel + 1, node.minHeight, node.maxHeight });
+            outNodes.push_back({ node.x, node.z + halfSize, halfSize, node.lodLevel + 1, node.minHeight, node.maxHeight });
+            outNodes.push_back({ node.x + halfSize, node.z + halfSize, halfSize, node.lodLevel + 1, node.minHeight, node.maxHeight });
         }
     }
 
@@ -521,10 +519,10 @@ namespace VansGraphics
         }
 
         float halfSize = node.size * 0.5f;
-        CollectLeafNodes({ node.x, node.z, halfSize, node.lodLevel + 1 }, camPos, outNodes);
-        CollectLeafNodes({ node.x + halfSize, node.z, halfSize, node.lodLevel + 1 }, camPos, outNodes);
-        CollectLeafNodes({ node.x, node.z + halfSize, halfSize, node.lodLevel + 1 }, camPos, outNodes);
-        CollectLeafNodes({ node.x + halfSize, node.z + halfSize, halfSize, node.lodLevel + 1 }, camPos, outNodes);
+        CollectLeafNodes({ node.x, node.z, halfSize, node.lodLevel + 1, node.minHeight, node.maxHeight }, camPos, outNodes);
+        CollectLeafNodes({ node.x + halfSize, node.z, halfSize, node.lodLevel + 1, node.minHeight, node.maxHeight }, camPos, outNodes);
+        CollectLeafNodes({ node.x, node.z + halfSize, halfSize, node.lodLevel + 1, node.minHeight, node.maxHeight }, camPos, outNodes);
+        CollectLeafNodes({ node.x + halfSize, node.z + halfSize, halfSize, node.lodLevel + 1, node.minHeight, node.maxHeight }, camPos, outNodes);
     }
 
     void VansTerrain::BalanceLeafNodes(std::vector<TerrainNode>& nodes)
@@ -698,66 +696,95 @@ namespace VansGraphics
             signature.tessLodBias == m_LastLodSignature.tessLodBias;
     }
 
-    void VansTerrain::Update(VansCamera* camera)
+    void VansTerrain::Update(
+		const glm::vec3& cameraPosition,
+		const glm::mat4& viewProjection)
     {
-        if (!camera)
-            return;
+        const TerrainLodBuildSignature signature = BuildLodSignature(cameraPosition);
+        if (!CanReuseLodResult(signature))
+        {
+            const float terrainY0 = m_HeightOffset;
+            const float terrainY1 = m_HeightOffset + m_MaxHeight;
+            TerrainNode root = {
+                -m_TerrainSize * 0.5f,
+                -m_TerrainSize * 0.5f,
+                m_TerrainSize,
+                0,
+                std::min(terrainY0, terrainY1),
+                std::max(terrainY0, terrainY1)
+            };
 
-        const TerrainLodBuildSignature signature = BuildLodSignature(camera->GetPosition());
-        if (CanReuseLodResult(signature))
-            return;
+            m_CachedLeafNodes.clear();
+            CollectLeafNodes(root, cameraPosition, m_CachedLeafNodes);
+            BalanceLeafNodes(m_CachedLeafNodes);
+            m_CachedLodGrid = BuildLodGrid(m_CachedLeafNodes);
+            m_LastLodSignature = signature;
+            m_LodCacheValid = true;
+        }
 
         m_InstanceDataCPU.clear();
         m_FarInstanceCount = 0;
         m_NearInstanceCount = 0;
 
-        TerrainNode root = { -m_TerrainSize * 0.5f, -m_TerrainSize * 0.5f, m_TerrainSize, 0 };
-        std::vector<TerrainNode> leafNodes;
-        CollectLeafNodes(root, camera->GetPosition(), leafNodes);
-        BalanceLeafNodes(leafNodes);
-        const TerrainLodGrid lodGrid = BuildLodGrid(leafNodes);
-
-        const glm::vec3& camPos = camera->GetPosition();
-        std::vector<TerrainInstanceData> farInstances;
-        std::vector<TerrainInstanceData> nearInstances;
-        farInstances.reserve(leafNodes.size());
-        nearInstances.reserve(leafNodes.size());
-        for (const TerrainNode& node : leafNodes)
+        // 高度图位移范围加上程序化几何噪声的保守余量，避免视锥边缘误剔除。
+        float noiseHeightPadding = 1.0f;
+        if (m_EnableNoiseDetail && m_NoiseOctaves > 0)
         {
+            float amplitude = 1.0f;
+            float amplitudeSum = 0.0f;
+            const int geometryOctaves = std::min(m_NoiseOctaves, 2);
+            for (int octave = 0; octave < geometryOctaves; ++octave)
+            {
+                amplitudeSum += std::abs(amplitude);
+                amplitude *= m_NoiseGain;
+            }
+            noiseHeightPadding += std::abs(m_NoiseStrength) * amplitudeSum;
+        }
+		const glm::mat4& worldToClip = viewProjection;
+
+        m_FarInstanceScratch.clear();
+        m_NearInstanceScratch.clear();
+        m_FarInstanceScratch.reserve(m_CachedLeafNodes.size());
+        m_NearInstanceScratch.reserve(m_CachedLeafNodes.size());
+        for (const TerrainNode& node : m_CachedLeafNodes)
+        {
+            const glm::vec3 boundsMin(node.x, node.minHeight - noiseHeightPadding, node.z);
+            const glm::vec3 boundsMax(node.x + node.size, node.maxHeight + noiseHeightPadding, node.z + node.size);
+            if (!RenderAABBIntersectsClipFrustum(boundsMin, boundsMax, worldToClip))
+                continue;
+
             float centerX = node.x + node.size * 0.5f;
             float centerZ = node.z + node.size * 0.5f;
-            float dist = std::max(std::abs(centerX - camPos.x), std::abs(centerZ - camPos.z));
+            float dist = std::max(std::abs(centerX - cameraPosition.x), std::abs(centerZ - cameraPosition.z));
 
             TerrainInstanceData data;
             data.Offset      = glm::vec2(node.x, node.z);
             data.Scale       = node.size / static_cast<float>(m_PatchGridSize);
             data.Lod         = static_cast<float>(node.lodLevel);
-            data.StitchFlags = static_cast<float>(ComputeStitchFlags(node, lodGrid));
+            data.StitchFlags = static_cast<float>(ComputeStitchFlags(node, m_CachedLodGrid));
             data.padding0    = glm::vec3(0.0);
 
             if (m_EnableTessellation && dist < m_TessellationDistance)
             {
-                nearInstances.push_back(data);
+                m_NearInstanceScratch.push_back(data);
             }
             else
             {
-                farInstances.push_back(data);
+                m_FarInstanceScratch.push_back(data);
             }
         }
 
-        m_FarInstanceCount = static_cast<uint32_t>(farInstances.size());
-        m_NearInstanceCount = static_cast<uint32_t>(nearInstances.size());
-        m_InstanceDataCPU.reserve(farInstances.size() + nearInstances.size());
-        m_InstanceDataCPU.insert(m_InstanceDataCPU.end(), farInstances.begin(), farInstances.end());
-        m_InstanceDataCPU.insert(m_InstanceDataCPU.end(), nearInstances.begin(), nearInstances.end());
+        m_FarInstanceCount = static_cast<uint32_t>(m_FarInstanceScratch.size());
+        m_NearInstanceCount = static_cast<uint32_t>(m_NearInstanceScratch.size());
+        m_InstanceDataCPU.reserve(m_FarInstanceScratch.size() + m_NearInstanceScratch.size());
+        m_InstanceDataCPU.insert(m_InstanceDataCPU.end(), m_FarInstanceScratch.begin(), m_FarInstanceScratch.end());
+        m_InstanceDataCPU.insert(m_InstanceDataCPU.end(), m_NearInstanceScratch.begin(), m_NearInstanceScratch.end());
 
         EnsureInstanceBufferCapacity(static_cast<uint32_t>(m_InstanceDataCPU.size()));
         if (!m_InstanceDataCPU.empty())
             m_InstanceBuffer.SetBufferData(m_InstanceDataCPU.data(), 0,
                 sizeof(TerrainInstanceData) * m_InstanceDataCPU.size());
 
-        m_LastLodSignature = signature;
-        m_LodCacheValid = true;
     }
 
     void VansTerrain::Draw(VansVKCommandBuffer& cmd, GlobalStateData& globalState, std::vector<VkDescriptorSetLayout>& layouts, std::vector<VkDescriptorSet>& sets)
@@ -845,36 +872,6 @@ namespace VansGraphics
         }
 
         // 7. 执行实例化索引绘制。
-        cmd.DrawIndexed(m_BasePatchMesh->GetIndexCount(), static_cast<uint32_t>(m_InstanceDataCPU.size()), 0, 0, 0);
-    }
-
-    void VansTerrain::DrawMotionVector(VansVKCommandBuffer& cmd, GlobalStateData& globalState, std::vector<VkDescriptorSetLayout>& layouts, std::vector<VkDescriptorSet>& sets)
-    {
-        if (m_InstanceDataCPU.empty()) return;
-
-        // 绑定基础 patch 顶点缓冲。
-        VkBuffer vertexBuffers[] = { m_BasePatchMesh->GetVertexBufferParameter().Buffer };
-        VkDeviceSize offsets[] = { 0 };
-        cmd.BindVertexBuffers(0, 1, vertexBuffers, offsets);
-
-        // 绑定实例缓冲。
-        VkBuffer instanceBuffers[] = { m_InstanceBuffer.GetNativeBuffer() };
-        VkDeviceSize instanceOffsets[] = { 0 };
-        cmd.BindVertexBuffers(1, 1, instanceBuffers, instanceOffsets);
-
-        // 绑定索引缓冲。
-        cmd.BindIndexBuffer(m_BasePatchMesh->GetIndexBufferParameter().Buffer, 0, VK_INDEX_TYPE_UINT32);
-
-        // 设置顶点输入描述。
-        globalState.vertexInputAttributeDescriptions = &m_BasePatchMesh->m_VertexInputAttributeDescriptions;
-        globalState.vertexInputBindingDescriptions = &m_BasePatchMesh->m_VertexInputBindingDescriptions;
-
-        // 应用 motion vector shader。
-        cmd.EnsureGraphicsShader(*m_TerrainMotionVectorShader, globalState, layouts);
-        cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *m_TerrainMotionVectorShader, 0, sets, {});
-        cmd.BindGraphicsPipeline(*m_TerrainMotionVectorShader->GetGraphicsPipeline());
-
-        // 执行实例化绘制。
         cmd.DrawIndexed(m_BasePatchMesh->GetIndexCount(), static_cast<uint32_t>(m_InstanceDataCPU.size()), 0, 0, 0);
     }
 

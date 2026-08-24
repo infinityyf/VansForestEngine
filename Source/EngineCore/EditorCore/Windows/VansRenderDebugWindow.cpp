@@ -192,9 +192,9 @@ namespace
 
 			drawBoolRow("Graph Diagnostics Available", diagnostics.available);
 			drawBoolRow("Frame Submit Succeeded", diagnostics.frameSubmitSucceeded);
-			drawBoolRow("Shadow Submitted", diagnostics.shadowSubmitted);
-			drawBoolRow("GBuffer Submitted", diagnostics.gbufferSubmitted);
-			drawBoolRow("Async Early Submitted", diagnostics.asyncEarlySubmitted);
+			drawBoolRow("Async Shadow Maps Submitted", diagnostics.shadowMapsSubmitted);
+			drawBoolRow("Async GBuffer Submitted", diagnostics.gbufferSubmitted);
+			drawBoolRow("Async Vegetation Submitted", diagnostics.vegetationSubmitted);
 			drawCount64Row("Frame Number", diagnostics.frameNumber);
 			drawCountRow("Swapchain Image", diagnostics.swapchainImageIndex);
 			drawCountRow("Descriptor Standard Pools", diagnostics.descriptorStandardPoolCount);

@@ -19,19 +19,15 @@ namespace Vans::EditorAPI
 	enum class AnimGraphNodeType
 	{
 		Entry, Output, Clip, Blend, Blend1D, IfCondition, Switch, AdditiveBlend,
-		SpeedScale, StateMachine, MotionMatching, Slot, TargetPoseInput, IK,
-		TwoBoneIK, LookAt, FootPlacement
+		SpeedScale, StateMachine, MotionMatching, Slot, TargetPoseInput, Goal,
+		AimConstraint, Grounding, LimbIK, ChainIK
 	};
 	enum class AnimGraphPinType { Pose, Float, Bool, Int };
 	enum class AnimGraphPinKind { Input, Output };
 	enum class AnimatorGraphRole { Pose, TargetPostProcess };
-	enum class IKSolverType { TwoBone, CCD, FABRIK, LookAt };
-	enum class IKProfileType
-	{
-		Custom, HumanoidArm, HumanoidLeg, HumanoidSpine, HumanoidHead, Tail, Tentacle, Rope
-	};
-	enum class IKCoordinateSpace { Model, World, Bone, ParentBone };
-	enum class JointConstraintType { None, BallSocket, Hinge, AngleLimit, TwistLimit, Locked };
+	enum class AnimationGoalSource { Binding, Parameters, Fixed };
+	enum class AnimationPlantPivot { Heel, Ball, Ankle };
+	enum class AnimationLimbTipRotationMode { PreserveInput, MatchGoal, FollowChain };
 	enum class VansAnimationLayerKind { Base, Overlay };
 	enum class VansLayerBlendMode { Override, Additive };
 	enum class VansRotationBlendSpace { Local, Mesh };
@@ -42,6 +38,11 @@ namespace Vans::EditorAPI
 	enum class VansLayerNodeTrackMode { Ignore, Override };
 	enum class VansLayerSyncMode { Independent, NormalizedTime, MarkerSync, SyncedGraph };
 	enum class VansSlotConcurrency { Replace, Queue, Reject };
+	enum class VansGraphSetBlendCurve { Linear, SmoothStep };
+	enum class VansGraphSetPhasePolicy { Restart, MatchNormalizedTime, MatchMarker };
+	enum class VansGraphSetEventPolicy { DominantSource, WeightedBoth };
+	enum class VansGraphSetRootMotionPolicy { Blend, DominantSource, IncomingOnly };
+	enum class VansGraphSetInterruptionPolicy { QueueLatest, Reject, Force };
 
 	struct AnimatorParameterDTO
 	{
@@ -91,92 +92,96 @@ namespace Vans::EditorAPI
 		std::vector<TransitionConditionDTO> conditions;
 	};
 
-	struct JointConstraintDTO
+	struct AnimationGoalDefinitionDTO
 	{
-		JointConstraintType type = JointConstraintType::None;
-		AnimationVector3DTO localXAxis{ 1.0f, 0.0f, 0.0f };
-		AnimationVector3DTO localYAxis{ 0.0f, 1.0f, 0.0f };
-		AnimationVector3DTO localZAxis{ 0.0f, 0.0f, 1.0f };
-		float minAngleX = -180.0f, maxAngleX = 180.0f;
-		float minAngleY = -180.0f, maxAngleY = 180.0f;
-		float minAngleZ = -180.0f, maxAngleZ = 180.0f;
-		float coneAngleDeg = 60.0f;
-		float stiffness = 1.0f;
-		AnimationQuaternionDTO restRotation;
+		std::string goalId;
+		AnimationGoalSource source = AnimationGoalSource::Binding;
+		std::string binding;
+		std::string positionParameter;
+		std::string rotationParameter;
+		std::string weightParameter;
+		AnimationVector3DTO fixedPositionModel;
+		AnimationQuaternionDTO fixedRotationModel;
+		float fixedPositionWeight = 1.0f;
+		float fixedRotationWeight = 0.0f;
 	};
 
-	struct IKBoneLinkDTO
+	struct AnimationAimConstraintSettingsDTO
 	{
-		int boneIndex = -1;
-		std::string boneName;
-		JointConstraintDTO constraint;
-		float stiffnessWeight = 1.0f;
-		bool isEffector = false;
+		float minYawDegrees = -85.0f;
+		float maxYawDegrees = 85.0f;
+		float minPitchDegrees = -45.0f;
+		float maxPitchDegrees = 60.0f;
+		float maxAngularSpeedDegrees = 540.0f;
+		float weight = 1.0f;
 	};
 
-	struct IKChainDefinitionDTO
+	struct AnimationGroundingQuerySettingsDTO
 	{
-		std::string chainName;
-		IKSolverType solverType = IKSolverType::CCD;
-		IKProfileType profileType = IKProfileType::Custom;
-		std::vector<IKBoneLinkDTO> bones;
-		int maxIterations = 15;
-		float positionTolerance = 0.0005f;
-		float rotationTolerance = 0.01f;
-		AnimationVector3DTO poleVector{ 0.0f, 0.0f, -1.0f };
-		float poleWeight = 0.0f;
-		IKCoordinateSpace poleSpace = IKCoordinateSpace::Model;
-		int poleReferenceBoneIndex = -1;
-		std::string poleReferenceBoneName;
-		bool enableRotationTarget = false;
-		float rotationWeight = 0.0f;
-		bool maintainEffectorGlobalRotation = false;
-		bool allowStretch = false;
-		float startStretchRatio = 1.0f;
-		float maxStretchScale = 1.2f;
-		int solvePriority = 0;
-	};
-
-	struct FootPlacementBoneNamesDTO
-	{
-		std::string pelvis = "pelvis";
-		std::string leftHip = "thigh_l";
-		std::string leftKnee = "calf_l";
-		std::string leftFoot = "foot_l";
-		std::string rightHip = "thigh_r";
-		std::string rightKnee = "calf_r";
-		std::string rightFoot = "foot_r";
-	};
-
-	struct FootPlacementSettingsDTO
-	{
-		bool enabled = false;
-		float probeOriginHeight = 0.45f;
-		float probeLength = 1.10f;
-		float footHalfLength = 0.18f;
-		float footHalfWidth = 0.08f;
-		float ankleHeight = 0.08f;
-		float fullContactHeight = 0.08f;
-		float contactFadeHeight = 0.28f;
+		std::string profile;
+		float startDistanceAgainstApproach = 0.45f;
+		float endDistanceAlongApproach = 0.65f;
 		float maxStepUp = 0.35f;
 		float maxStepDown = 0.55f;
-		float maxSlopeDeg = 55.0f;
-		float pelvisMaxDrop = 0.30f;
-		float pelvisSmoothTime = 0.08f;
-		float offsetSmoothTime = 0.04f;
-		float normalSmoothTime = 0.06f;
-		float weightSmoothTime = 0.04f;
-		float globalWeightSmoothTime = 0.08f;
-		float ikWeight = 1.0f;
+		float maxSlopeDegrees = 55.0f;
+		float maxPlaneResidual = 0.015f;
+		float maxNormalDeviationDegrees = 20.0f;
+	};
+
+	struct AnimationGroundingPlantSettingsDTO
+	{
+		bool lockEnabled = true;
+		float enterPhase = 0.70f;
+		float exitPhase = 0.25f;
+		float unplantDistance = 0.30f;
+		float replantDistance = 0.18f;
+		float unplantAngleDegrees = 35.0f;
+		float replantAngleDegrees = 18.0f;
+		AnimationPlantPivot pivot = AnimationPlantPivot::Ball;
+		float weightHalfLife = 0.04f;
+	};
+
+	struct AnimationGroundingPelvisSettingsDTO
+	{
+		float maxUpOffset = 0.15f;
+		float maxDownOffset = 0.32f;
+		float maxHorizontalOffset = 0.10f;
+		float halfLife = 0.07f;
+	};
+
+	struct AnimationGroundingAlignmentSettingsDTO
+	{
+		float fullContactHeight = 0.08f;
+		float contactFadeHeight = 0.28f;
+		float normalHalfLife = 0.06f;
 		float rotationWeight = 0.70f;
-		float maxLegExtensionRatio = 0.98f;
-		float poleSmoothTime = 0.05f;
-		AnimationVector3DTO kneePoleModelDir{ 0.0f, 0.0f, 1.0f };
-		float kneePoleModelWeight = 0.0f;
-		bool debugVisualization = false;
-		std::uint32_t collisionMask = 0xffffffffu;
-		std::string airborneParameter = "IsAirborne";
-		FootPlacementBoneNamesDTO bones;
+	};
+
+	struct AnimationGroundingSettingsDTO
+	{
+		std::vector<std::string> contacts;
+		AnimationGroundingQuerySettingsDTO query;
+		std::string plantSignal;
+		AnimationGroundingPlantSettingsDTO plant;
+		AnimationGroundingAlignmentSettingsDTO alignment;
+		AnimationGroundingPelvisSettingsDTO pelvis;
+		float weight = 1.0f;
+	};
+
+	struct AnimationLimbIKSettingsDTO
+	{
+		AnimationLimbTipRotationMode tipRotationMode = AnimationLimbTipRotationMode::MatchGoal;
+		float positionTolerance = 0.001f;
+		float weight = 1.0f;
+		bool commitClampedPose = true;
+	};
+
+	struct AnimationChainIKSettingsDTO
+	{
+		int maxIterations = 16;
+		float positionTolerance = 0.001f;
+		float weight = 1.0f;
+		bool commitClampedPose = true;
 	};
 
 	struct AnimGraphPinDTO
@@ -215,45 +220,15 @@ namespace Vans::EditorAPI
 		bool m_EnableFallbackInput = true;
 		std::string m_SlotId;
 
-		IKChainDefinitionDTO m_Chain;
-		std::string m_TargetPosParamName;
-		std::string m_TargetRotParamName;
-		std::string m_WeightParamName;
-		bool m_UseFixedTarget = false;
-		AnimationVector3DTO m_FixedTargetPos;
-		AnimationQuaternionDTO m_FixedTargetRot;
-		IKCoordinateSpace m_TargetPositionSpace = IKCoordinateSpace::Model;
-		IKCoordinateSpace m_TargetRotationSpace = IKCoordinateSpace::Model;
-		std::string m_TargetReferenceBoneName;
-
-		std::string m_RootBoneName;
-		std::string m_MidBoneName;
-		std::string m_TipBoneName;
-		bool m_UseLegProfile = false;
-		bool m_IsRightSide = true;
-		float m_HingeMinAngle = 0.0f;
-		float m_HingeMaxAngle = 150.0f;
-		float m_ConeAngle = 60.0f;
-		bool m_UsePoleVector = false;
-		AnimationVector3DTO m_PoleVector{ 0.0f, 0.0f, -1.0f };
-		float m_PoleWeight = 1.0f;
-		bool m_EnableRotationTarget = false;
-		float m_RotationWeight = 1.0f;
-		IKCoordinateSpace m_PoleSpace = IKCoordinateSpace::Model;
-		std::string m_PoleReferenceBoneName;
-		bool m_MaintainEffectorGlobalRotation = false;
-		bool m_AllowStretch = false;
-		float m_StartStretchRatio = 1.0f;
-		float m_MaxStretchScale = 1.2f;
-
-		std::vector<std::string> m_BoneNames;
-		std::vector<float> m_BoneWeights;
-		float m_MaxAnglePerBoneDeg = 80.0f;
-		AnimationVector3DTO m_ForwardAxis{ 0.0f, 0.0f, -1.0f };
-		AnimationVector3DTO m_WorldForward;
-		AnimationVector3DTO m_ModelUp{ 0.0f, 1.0f, 0.0f };
-		float m_UpWeight = 1.0f;
-		FootPlacementSettingsDTO m_Settings;
+		AnimationGoalDefinitionDTO m_Goal;
+		AnimationGoalDefinitionDTO m_Target;
+		std::string m_ChainId;
+		std::vector<std::string> m_ChainIds;
+		AnimationAimConstraintSettingsDTO m_AimSettings;
+		float m_TargetHalfLife = 0.08f;
+		AnimationGroundingSettingsDTO m_GroundingSettings;
+		AnimationLimbIKSettingsDTO m_LimbSettings;
+		AnimationChainIKSettingsDTO m_ChainSettings;
 
 		int GetNodeId() const { return m_NodeId; }
 		AnimGraphNodeType GetType() const { return m_Type; }
@@ -307,7 +282,7 @@ namespace Vans::EditorAPI
 
 	struct AnimationLayerDTO
 	{
-		std::string id, name, graphId, maskGuid, maskPathHint;
+		std::string id, name, maskGuid, maskPathHint;
 		VansAnimationLayerKind kind = VansAnimationLayerKind::Overlay;
 		VansLayerBlendMode blendMode = VansLayerBlendMode::Override;
 		VansRotationBlendSpace rotationSpace = VansRotationBlendSpace::Local;
@@ -325,14 +300,44 @@ namespace Vans::EditorAPI
 		VansLayerSyncMode sync = VansLayerSyncMode::Independent;
 		std::string syncLeaderLayerId;
 		float eventWeightThreshold = 0.01f;
-		bool enabled = true;
 		bool updateWhenWeightIsZero = true;
+	};
+
+	struct AnimationGraphBindingDTO
+	{
+		std::string layerId;
+		std::string graphId;
+		bool enabled = true;
+	};
+
+	struct AnimationGraphSetDTO
+	{
+		std::string id;
+		std::string name;
+		std::vector<AnimationGraphBindingDTO> bindings;
+	};
+
+	struct GraphSetTransitionPolicyDTO
+	{
+		float duration = 0.2f;
+		VansGraphSetBlendCurve curve = VansGraphSetBlendCurve::SmoothStep;
+		VansGraphSetPhasePolicy phase = VansGraphSetPhasePolicy::MatchNormalizedTime;
+		VansGraphSetEventPolicy events = VansGraphSetEventPolicy::DominantSource;
+		VansGraphSetRootMotionPolicy rootMotion = VansGraphSetRootMotionPolicy::Blend;
+		VansGraphSetInterruptionPolicy interruption = VansGraphSetInterruptionPolicy::QueueLatest;
+		bool requireStateMatch = false;
+	};
+
+	struct GraphSetTransitionRuleDTO
+	{
+		std::string fromGraphSetId;
+		std::string toGraphSetId;
+		GraphSetTransitionPolicyDTO policy;
 	};
 
 	struct AnimationSlotDTO
 	{
 		std::string id, name, layerId;
-		int slotNodeId = -1;
 		VansSlotConcurrency concurrency = VansSlotConcurrency::Replace;
 		std::uint32_t maxQueueDepth = 4;
 		float defaultBlendIn = 0.08f;
@@ -349,10 +354,15 @@ namespace Vans::EditorAPI
 	struct AnimatorDocumentDTO
 	{
 		std::string name;
+		std::string animationRigGuid;
 		std::vector<AnimatorParameterDTO> parameters;
 		std::vector<AnimatorClipRefDTO> clipRefs;
 		std::vector<AnimatorGraphDTO> graphs;
 		std::vector<AnimationLayerDTO> layers;
+		std::vector<AnimationGraphSetDTO> graphSets;
+		std::string defaultGraphSetId;
+		GraphSetTransitionPolicyDTO defaultGraphSetTransition;
+		std::vector<GraphSetTransitionRuleDTO> graphSetTransitionRules;
 		std::vector<AnimationSlotDTO> slots;
 		AnimatorEditorSettingsDTO editor;
 		AnimationGraphDTO* FindGraph(const std::string& id);
@@ -438,10 +448,11 @@ namespace Vans::EditorAPI
 		case AnimGraphNodeType::MotionMatching: return "MotionMatching";
 		case AnimGraphNodeType::Slot: return "Slot";
 		case AnimGraphNodeType::TargetPoseInput: return "TargetPoseInput";
-		case AnimGraphNodeType::IK: return "IK";
-		case AnimGraphNodeType::TwoBoneIK: return "TwoBoneIK";
-		case AnimGraphNodeType::LookAt: return "LookAt";
-		case AnimGraphNodeType::FootPlacement: return "FootPlacement";
+		case AnimGraphNodeType::Goal: return "Goal";
+		case AnimGraphNodeType::AimConstraint: return "AimConstraint";
+		case AnimGraphNodeType::Grounding: return "Grounding";
+		case AnimGraphNodeType::LimbIK: return "LimbIK";
+		case AnimGraphNodeType::ChainIK: return "ChainIK";
 		}
 		return "Unknown";
 	}
@@ -477,10 +488,11 @@ namespace Vans::EditorAPI
 		}
 		case AnimGraphNodeType::AdditiveBlend: return { input(0, "Base"), input(1, "Additive"), output(0, "Pose") };
 		case AnimGraphNodeType::SpeedScale:
-		case AnimGraphNodeType::IK:
-		case AnimGraphNodeType::TwoBoneIK:
-		case AnimGraphNodeType::LookAt:
-		case AnimGraphNodeType::FootPlacement: return { input(0, "Pose"), output(0, "Pose") };
+		case AnimGraphNodeType::Goal:
+		case AnimGraphNodeType::AimConstraint:
+		case AnimGraphNodeType::Grounding:
+		case AnimGraphNodeType::LimbIK:
+		case AnimGraphNodeType::ChainIK: return { input(0, "Pose"), output(0, "Pose") };
 		case AnimGraphNodeType::StateMachine: return { output(0, "Pose") };
 		case AnimGraphNodeType::MotionMatching:
 		case AnimGraphNodeType::Slot: return { input(0, "Fallback Pose"), output(0, "Pose") };

@@ -12,6 +12,12 @@ struct VansVertexSurface
     vec3 bitangent;
 };
 
+vec3 VansBuildBitangent(vec3 normal, vec3 tangent, float handedness)
+{
+    float signValue = handedness < 0.0 ? -1.0 : 1.0;
+    return cross(normal, tangent) * signValue;
+}
+
 void VansApplyVertexDeformation(inout VansVertexSurface surface, uint featureMask)
 {
     if (!VansHasVertexFeature(featureMask, VANS_VERTEX_FEATURE_SKELETAL_SKINNING))

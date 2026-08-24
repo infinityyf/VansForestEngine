@@ -10,7 +10,7 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 layout(set = 1, binding = 0) uniform sampler2D normalInput;
 layout(set = 1, binding = 1) uniform sampler2D gbuffer2Input;
 layout(set = 1, binding = 2) uniform sampler2D hizDepth;
-layout(set = 1, binding = 3, rgba16f) uniform image2D outShadow;
+layout(set = 1, binding = 3, r16f) uniform image2D outShadow;
 
 layout(std140, set = 1, binding = 4) uniform ScreenSpaceShadowParamsUBO
 {
@@ -19,6 +19,164 @@ layout(std140, set = 1, binding = 4) uniform ScreenSpaceShadowParamsUBO
     vec4 directionalRayParams;
     vec4 fadeParams;
 } uSSS;
+
+layout(set = 1, binding = 5) uniform sampler2DArray cascadeDepth;
+layout(set = 1, binding = 6) uniform sampler2DArrayShadow cascadeCompare;
+// Four cascades are packed horizontally. Mip zero stores min/max for each
+// 4x4 D32 block; every following mip conservatively reduces another 2x2.
+layout(set = 1, binding = 7) uniform sampler2D cascadeMinMax;
+
+vec2 QueryCascadeMinMax(vec2 uv, int cascadeIdx, float radiusTexels, ivec2 shadowSize)
+{
+	int generatedLodCount = 1 + int(floor(log2(float(max(min(shadowSize.x, shadowSize.y) / 4, 1)))));
+	int maxLod = min(max(textureQueryLevels(cascadeMinMax) - 1, 0), generatedLodCount - 1);
+    float footprintDiameter = max(radiusTexels * 2.0, 2.0);
+	int lod = clamp(int(ceil(log2(footprintDiameter * 0.25))), 0, maxLod);
+    ivec2 atlasSize = textureSize(cascadeMinMax, lod);
+    ivec2 tileSize = ivec2(atlasSize.x / CASCADE_COUNT, atlasSize.y);
+
+    vec2 uvRadius = vec2(radiusTexels) / vec2(shadowSize);
+    ivec2 rangeMin = clamp(ivec2(floor(clamp(uv - uvRadius, vec2(0.0), vec2(1.0)) * vec2(tileSize))),
+                               ivec2(0), tileSize - ivec2(1));
+    ivec2 rangeMax = clamp(ivec2(floor(clamp(uv + uvRadius, vec2(0.0), vec2(1.0)) * vec2(tileSize))),
+                               ivec2(0), tileSize - ivec2(1));
+
+    vec2 depthRange = vec2(1.0, 0.0);
+    for (int y = 0; y < 3; ++y)
+    for (int x = 0; x < 3; ++x)
+    {
+        ivec2 local = rangeMin + ivec2(x, y);
+        if (any(greaterThan(local, rangeMax)))
+            continue;
+        ivec2 atlasPixel = local + ivec2(cascadeIdx * tileSize.x, 0);
+        vec2 sampleRange = texelFetch(cascadeMinMax, atlasPixel, lod).rg;
+        depthRange.x = min(depthRange.x, sampleRange.x);
+        depthRange.y = max(depthRange.y, sampleRange.y);
+    }
+    return depthRange;
+}
+
+float SampleResolvedCascadeMap(
+    vec3 positionWS, vec3 normalWS, int cascadeIdx, out float projectionValid)
+{
+    CascadeProjection p = ProjectCascade(positionWS, cascadeIdx);
+    projectionValid = p.valid;
+    if (p.valid <= 0.0)
+        return 1.0;
+
+    ivec2 size = textureSize(cascadeDepth, 0).xy;
+    float receiverDepth = p.depth - ComputeCascadeReceiverBias(normalWS, cascadeIdx);
+    float maxRadiusTexels = max(uDirectionLight.cascadeFilterRadius[cascadeIdx], 2.0);
+    float depthRange = 1.0 / max(uDirectionLight.cascadeDepthScale[cascadeIdx], 1e-6);
+    float worldUnitsPerTexel = max(uDirectionLight.cascadeTexelSize[cascadeIdx], 1e-6);
+    float tanAngularRadius = tan(CascadeSunAngularRadius());
+    float receiverDistanceFromNear = max(p.depth, 0.0) * depthRange;
+    float searchRadiusTexels = clamp(
+        receiverDistanceFromNear * tanAngularRadius / worldUnitsPerTexel,
+        2.0, maxRadiusTexels);
+
+    projectionValid *= CascadeFootprintConfidence(p.uv, size, searchRadiusTexels);
+    if (projectionValid <= 0.0)
+        return 1.0;
+
+    // The queried footprint includes the maximum possible PCSS kernel plus a
+    // comparison-filter texel. Uniform min/max means no blocker/PCF samples are
+    // required and the classification is conservative.
+    vec2 classifiedRange = QueryCascadeMinMax(
+        p.uv, cascadeIdx, maxRadiusTexels + 1.0, size);
+    if (receiverDepth <= classifiedRange.x)
+        return 1.0;
+    if (receiverDepth > classifiedRange.y)
+        return 0.0;
+
+    float blockerCount = 0.0;
+    float averageBlockerDepth = FindCascadeAverageBlockerDepth(
+        cascadeDepth, p, cascadeIdx, receiverDepth, searchRadiusTexels, blockerCount);
+    if (blockerCount <= 0.0)
+        return 1.0;
+
+    float blockerSeparationWorld = max(p.depth - averageBlockerDepth, 0.0) * depthRange;
+    float filterRadiusTexels = clamp(
+        blockerSeparationWorld * tanAngularRadius / worldUnitsPerTexel,
+        0.75, maxRadiusTexels);
+    projectionValid *= CascadeFootprintConfidence(p.uv, size, filterRadiusTexels);
+    return FilterCascadePCFComparison(
+        cascadeCompare, p, cascadeIdx, receiverDepth, filterRadiusTexels, size);
+}
+
+float ResolveCascadeShadow(vec3 positionWS, vec3 normalWS, float viewDepth)
+{
+    int cascadeIdx = SelectCascade(viewDepth);
+    float currentValid = 0.0;
+    float shadow = SampleResolvedCascadeMap(positionWS, normalWS, cascadeIdx, currentValid);
+    float lastSplit = uDirectionLight.cascadeSplits[CASCADE_COUNT - 1];
+    float lastCascadeFade = 1.0 - smoothstep(lastSplit * 0.85, lastSplit, viewDepth);
+
+    if (currentValid <= 0.0)
+    {
+        int farCascade = cascadeIdx + 1;
+        if (farCascade < CASCADE_COUNT)
+        {
+            float valid = 0.0;
+            float fallbackShadow = SampleResolvedCascadeMap(positionWS, normalWS, farCascade, valid);
+            if (valid > 0.0)
+                return mix(1.0, fallbackShadow, lastCascadeFade);
+        }
+        int nearCascade = cascadeIdx - 1;
+        if (nearCascade >= 0)
+        {
+            float valid = 0.0;
+            float fallbackShadow = SampleResolvedCascadeMap(positionWS, normalWS, nearCascade, valid);
+            if (valid > 0.0)
+                return mix(1.0, fallbackShadow, lastCascadeFade);
+        }
+        return 1.0;
+    }
+
+    if (currentValid < 0.95)
+    {
+        int fallbackCascade = cascadeIdx < CASCADE_COUNT - 1 ? cascadeIdx + 1 : cascadeIdx - 1;
+        if (fallbackCascade >= 0 && fallbackCascade < CASCADE_COUNT)
+        {
+            float valid = 0.0;
+            float fallbackShadow = SampleResolvedCascadeMap(positionWS, normalWS, fallbackCascade, valid);
+            if (valid > currentValid)
+            {
+                shadow = mix(fallbackShadow, shadow, currentValid);
+                currentValid = valid;
+            }
+        }
+    }
+
+    if (cascadeIdx > 0)
+    {
+        float prevSplit = uDirectionLight.cascadeSplits[cascadeIdx - 1];
+        float currentSplit = uDirectionLight.cascadeSplits[cascadeIdx];
+        float prevPrevSplit = cascadeIdx > 1 ? uDirectionLight.cascadeSplits[cascadeIdx - 2] : 0.0;
+        float cascadeSpan = max(currentSplit - prevPrevSplit, 1.0);
+        float band = clamp(cascadeSpan * 0.08, 1.0, 25.0);
+        float blendFromPrev = 1.0 - smoothstep(prevSplit - band, prevSplit + band, viewDepth);
+        if (blendFromPrev > 0.0)
+        {
+            float prevValid = 0.0;
+            float prevShadow = SampleResolvedCascadeMap(positionWS, normalWS, cascadeIdx - 1, prevValid);
+            if (prevValid > 0.0)
+                shadow = mix(shadow, prevShadow, blendFromPrev);
+        }
+    }
+    if (cascadeIdx < CASCADE_COUNT - 1)
+    {
+        float blendFactor = ComputeCascadeBlendFactor(viewDepth, cascadeIdx);
+        if (blendFactor > 0.0)
+        {
+            float nextValid = 0.0;
+            float nextShadow = SampleResolvedCascadeMap(positionWS, normalWS, cascadeIdx + 1, nextValid);
+            if (nextValid > 0.0)
+                shadow = mix(shadow, nextShadow, blendFactor);
+        }
+    }
+    return mix(1.0, shadow, lastCascadeFade);
+}
 
 float EdgeFade(vec2 uv)
 {
@@ -130,6 +288,7 @@ void main()
     }
     normalWS = normalize(normalWS);
 
-    float sss = TraceDirectionalScreenShadow(posData.xyz, normalWS, receiverDepth);
-    imageStore(outShadow, pix, vec4(sss, sss, sss, 1.0));
+	float cascadeVisibility = ResolveCascadeShadow(posData.xyz, normalWS, receiverDepth);
+    float screenVisibility = TraceDirectionalScreenShadow(posData.xyz, normalWS, receiverDepth);
+	imageStore(outShadow, pix, vec4(min(cascadeVisibility, screenVisibility), 0.0, 0.0, 0.0));
 }

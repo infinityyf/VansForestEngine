@@ -72,8 +72,9 @@ SceneDiagnostics VansSceneSchema::ValidateSceneJson(const Json& root)
 
     std::unordered_set<VansEntityGuid> entityIds;
     std::unordered_set<VansComponentGuid> componentIds;
-    std::vector<std::pair<std::string, VansEntityGuid>> parents;
+	std::vector<std::pair<std::string, VansSceneParentReference>> parents;
     std::unordered_map<VansEntityGuid, VansEntityGuid> parentByEntity;
+	std::unordered_map<VansComponentGuid, std::pair<VansEntityGuid, std::string>> componentOwners;
     for (std::size_t entityIndex = 0; entityIndex < root["entities"].size(); ++entityIndex)
     {
         const Json& entity = root["entities"][entityIndex];
@@ -95,15 +96,19 @@ SceneDiagnostics VansSceneSchema::ValidateSceneJson(const Json& root)
             Error(diagnostics, pointer + "/parent", "Entity requires a parent field");
         else if (!entity["parent"].is_null())
         {
-            VansEntityGuid parent;
-            if (!ReadGuid(entity["parent"], parent))
-                Error(diagnostics, pointer + "/parent", "Entity parent must be null or a valid id");
-            else
-            {
-                parents.emplace_back(pointer + "/parent", parent);
-                if (entityId.IsValid())
-                    parentByEntity[entityId] = parent;
-            }
+			VansSceneParentReference parent;
+			std::string parentError;
+			if (!entity["parent"].is_object()
+				|| !TryReadSceneParentReference(
+					DecodeSerializedValueJson(entity["parent"]), parent, parentError))
+				Error(diagnostics, pointer + "/parent", parentError.empty()
+					? "Entity parent must be null or a canonical parent object" : parentError);
+			else
+			{
+				parents.emplace_back(pointer + "/parent", parent);
+				if (entityId.IsValid())
+					parentByEntity[entityId] = parent.entityGuid;
+			}
         }
         if (!entity.contains("components") || !entity["components"].is_array())
         {
@@ -127,6 +132,8 @@ SceneDiagnostics VansSceneSchema::ValidateSceneJson(const Json& root)
             else if (!componentIds.insert(componentId).second)
                 Error(diagnostics, componentPointer + "/id", "Component id must be unique across the scene");
             const std::string type = component.value("type", "");
+			if (componentId.IsValid() && entityId.IsValid() && !type.empty())
+				componentOwners.emplace(componentId, std::make_pair(entityId, type));
             if (type.empty())
                 Error(diagnostics, componentPointer + "/type", "Component requires a type");
             if (!component.contains("version") || !IsNonNegativeInteger(component["version"]))
@@ -178,9 +185,20 @@ SceneDiagnostics VansSceneSchema::ValidateSceneJson(const Json& root)
         if (singletonTypes.find("Transform") == singletonTypes.end())
             Error(diagnostics, pointer + "/components", "Every entity requires a Transform component");
     }
-    for (const auto& [pointer, parent] : parents)
-        if (entityIds.find(parent) == entityIds.end())
+	for (const auto& [pointer, parent] : parents)
+	{
+		if (entityIds.find(parent.entityGuid) == entityIds.end())
             Error(diagnostics, pointer, "Entity parent does not exist");
+		if (parent.IsAnchor())
+		{
+			const auto component = componentOwners.find(parent.animationComponentGuid);
+			if (component == componentOwners.end()
+				|| component->second.first != parent.entityGuid
+				|| component->second.second != "Animation")
+				Error(diagnostics, pointer,
+					"Bone/socket parent must reference an Animation component owned by entityGuid");
+		}
+	}
     for (const VansEntityGuid& entity : entityIds)
     {
         std::unordered_set<VansEntityGuid> chain;
@@ -217,9 +235,11 @@ bool VansSceneSchema::DeserializeSceneJson(const Json& root, VansSceneData& scen
         entity.name = entityJson["name"].get<std::string>();
         if (!entityJson["parent"].is_null())
         {
-            VansEntityGuid parent;
-            ReadGuid(entityJson["parent"], parent);
-            entity.parent = parent;
+			VansSceneParentReference parent;
+			std::string error;
+			TryReadSceneParentReference(
+				DecodeSerializedValueJson(entityJson["parent"]), parent, error);
+			entity.parent = parent;
         }
         for (const Json& componentJson : entityJson["components"])
         {
@@ -249,7 +269,9 @@ Json VansSceneSchema::SerializeSceneJson(const VansSceneData& scene)
         Json entityJson = {
             { "id", GuidJson(entity.id) },
             { "name", entity.name },
-            { "parent", entity.parent ? GuidJson(*entity.parent) : Json(nullptr) },
+			{ "parent", entity.parent
+				? EncodeSerializedValueJson<Json>(WriteSceneParentReference(*entity.parent))
+				: Json(nullptr) },
             { "components", Json::array() }
         };
         for (const VansSceneComponentData& component : entity.components)

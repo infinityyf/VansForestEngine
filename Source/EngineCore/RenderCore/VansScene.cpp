@@ -1,5 +1,6 @@
 ﻿#include "VansScene.h"
 
+#include "Animation/VansAnimationWorldQueryBatch.h"
 #include "../RuntimeCore/VansFramePhase.h"
 #include "../GameplayActionCore/VansGameplayRuntime.h"
 #include "Timeline/VansVirtualCameraParameterStore.h"
@@ -37,7 +38,6 @@
 #include "../SceneRuntime/VansRuntimeComponentTypes.h"
 #include "../SceneRuntime/VansRuntimeWorld.h"
 #include "../AnimationCore/VansAnimationNode.h"
-#include "../AnimationCore/VansBoneAttachmentSystem.h"
 #include "../AnimationCore/VansSkinnedMeshLoader.h"
 #include "../TimelineRuntime/VansTimelineRuntimeSystem.h"
 #include "../ScriptCore/VansScriptContext.h"
@@ -62,6 +62,17 @@
 
 namespace
 {
+	class SceneEntityDestructionBarrier final
+		: public VansGraphics::IVansRenderThreadTransaction
+	{
+	public:
+		bool Execute(VansGraphics::VansGraphicsDevice& backend) override
+		{
+			VANS_ASSERT_RENDER_THREAD();
+			return backend.WaitForIdle();
+		}
+	};
+
 	struct AudioOcclusionQueryTarget
 	{
 		Vans::VansComponentHandle component;
@@ -170,14 +181,6 @@ namespace
 			lookup[asset->m_AssetName] = asset;
 	}
 
-	VansGraphics::VansShadowAABB ToShadowAABB(const VansGraphics::VansRenderAABB& bounds)
-	{
-		VansGraphics::VansShadowAABB shadowBounds;
-		shadowBounds.min = bounds.min;
-		shadowBounds.max = bounds.max;
-		return shadowBounds;
-	}
-
 	template <typename T>
 	const T* GetRuntimeComponentPayload(
 		const Vans::VansRuntimeWorld& runtimeWorld,
@@ -213,6 +216,7 @@ namespace
 		VansGraphics::VansRenderNode* renderNode = nullptr;
 		VansGraphics::VansParticleRenderNode* particleRenderNode = nullptr;
 		VansGraphics::VansAnimationNode* animationNode = nullptr;
+		VansGraphics::VansSkeletonInstanceHandle skeletonInstance;
 		VansEngine::VansPhysicsNode* physicsNode = nullptr;
 		VansEngine::VansClothNode* clothNode = nullptr;
 		VansEngine::VansCharacterControllerNode* characterControllerNode = nullptr;
@@ -277,7 +281,12 @@ namespace
 					runtimeWorld,
 					component,
 					Vans::VansRuntimeComponentType_Animation))
+				{
 					references.animationNode = animation->animationNode;
+					references.skeletonInstance = {
+						animation->skeletonInstanceId,
+						animation->skeletonInstanceGeneration };
+				}
 				break;
 			case Vans::VansRuntimeComponentType_Ragdoll:
 				if (const auto* ragdoll = GetRuntimeComponentPayload<Vans::VansRuntimeRagdollComponent>(
@@ -334,7 +343,10 @@ namespace
 
 }
 
-VansGraphics::VansScene::VansScene() = default;
+VansGraphics::VansScene::VansScene()
+{
+	m_TransformGraph.SetAnchorProvider(&m_SkeletonAnchorRegistry);
+}
 
 VansGraphics::VansScene::~VansScene()
 {
@@ -366,8 +378,10 @@ bool VansGraphics::VansScene::ReplaceAnimationRuntimeController(
 	if (previous && registered == m_AnimationControllers.end())
 		return false;
 
-	VansAnimationController* replacement = controller.release();
-	animNode->SetController(replacement);
+	VansAnimationController* replacement = controller.get();
+	if (!animNode->SetController(replacement))
+		return false;
+	controller.release();
 	if (registered != m_AnimationControllers.end())
 		*registered = replacement;
 	else
@@ -654,7 +668,7 @@ void VansGraphics::VansScene::CreateGlobalDescriptorSet(VkDevice device)
     VansDescriptorSetLayoutFactory::CreateAndAllocate_Global(m_GlobalDescriptorSetLayout, sets);
     m_GlobalDescriptorSet = sets[0];
 
-    // Create object layout + set (Set 2: Transform SSBO only — shared by all geometry nodes)
+    // Create object layout + set (Set 2: scene transforms + draw-instance records)
     std::vector<VkDescriptorSet> objSets;
     VansDescriptorSetLayoutFactory::CreateAndAllocate_Object(m_ObjectDescriptorSetLayout, objSets);
     m_ObjectDescriptorSet = objSets[0];
@@ -726,6 +740,13 @@ void VansGraphics::VansScene::CreateGlobalDescriptorSet(VkDevice device)
 
 void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
 {
+	auto* vkDevice = static_cast<VansVKDevice*>(m_GraphicsDevice);
+	if (vkDevice == nullptr || !vkDevice->GetDrawInstanceArena().IsReady())
+	{
+		VANS_LOG_ERROR("[VansScene] Cannot update global descriptors before backend draw-instance resources are ready.");
+		return;
+	}
+	const VansVKBuffer& drawInstanceBuffer = vkDevice->GetDrawInstanceArena().GetBuffer();
     auto descManager = VansVKDescriptorManager::GetInstance();
     descManager->BeginDescriptorUpdate();
 
@@ -735,9 +756,9 @@ void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
         GLOBAL_BINDING_CAMERA_UBO,
         VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
         {{
-            m_Camera->m_CameraDataBuffer.GetNativeBuffer(),
+			vkDevice->GetCameraDataBuffer().GetNativeBuffer(),
             0,
-            m_Camera->m_CameraDataBuffer.GetBufferSize()
+			vkDevice->GetCameraDataBuffer().GetBufferSize()
         }});
 
     // Binding 1: Lights SSBO
@@ -745,11 +766,11 @@ void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
         m_GlobalDescriptorSet,
         GLOBAL_BINDING_LIGHTS_UBO,
         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-        {{
-            m_LightManager.GetLightBuffer().GetNativeBuffer(),
-            0,
-            m_LightManager.GetLightBuffer().GetBufferSize()
-        }});
+		{{
+			vkDevice->GetLightDataBuffer().GetNativeBuffer(),
+			0,
+			vkDevice->GetLightDataBuffer().GetBufferSize()
+		}});
 
     // Binding 2: Material SSBO
     descManager->WriteBufferDescriptor(
@@ -771,6 +792,15 @@ void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
             m_MaterialManager.m_GlobalCustomMaterialDataBuffer.GetNativeBuffer(),
             0,
             m_MaterialManager.m_GlobalCustomMaterialDataBuffer.GetBufferSize()
+        }});
+    descManager->WriteBufferDescriptor(
+        m_ObjectDescriptorSet,
+        OBJECT_BINDING_DRAW_INSTANCE_SSBO,
+        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        {{
+            drawInstanceBuffer.GetNativeBuffer(),
+            0,
+            drawInstanceBuffer.GetBufferSize()
         }});
 
     // Binding 16: Cloth extension payloads; indices match Binding 2 exactly.
@@ -1002,91 +1032,6 @@ void VansGraphics::VansScene::SetWaterRuntimeConfig(const VansWaterConfig& confi
     m_HasWater = material != nullptr;
 }
 
-void VansGraphics::VansScene::UpdatePunctualShadowCasterCache()
-{
-	auto& shadowManager = m_LightManager.GetPunctualShadowManager();
-	std::unordered_map<uint64_t, PunctualShadowCasterRecord> current;
-	current.reserve(m_OpaqueRenderNodes.size() + m_HairRenderNodes.size());
-	bool requiresGlobalInvalidation = false;
-
-	auto visitNode = [&](VansRenderNode* node)
-	{
-		if (node == nullptr || !node->IsEnabled())
-			return;
-		auto* common = static_cast<VansCommonRenderNode*>(node);
-		if (!common->m_SupportShadow)
-			return;
-
-		const uint64_t casterId = reinterpret_cast<uint64_t>(node);
-		PunctualShadowCasterRecord record;
-		record.shadowCasterMask = common->m_ShadowCasterMask;
-		record.dynamic = node->m_AnimationEnabled || node->m_HasSkeletonBone;
-		node->UpdateWorldBoundsFromTransform();
-		record.hasBounds = node->HasWorldBounds();
-		if (record.hasBounds)
-			record.bounds = node->GetWorldBounds();
-
-		const auto previous = m_PunctualShadowCasters.find(casterId);
-		if (!record.hasBounds)
-		{
-			requiresGlobalInvalidation = true;
-		}
-		else if (previous == m_PunctualShadowCasters.end())
-		{
-			shadowManager.InvalidateCastersInBounds({}, ToShadowAABB(record.bounds.aabb), VansShadowDirty_CasterGeometry);
-		}
-		else if (record.dynamic || RenderBoundsChanged(previous->second.bounds, record.bounds))
-		{
-			shadowManager.InvalidateCastersInBounds(
-				ToShadowAABB(previous->second.bounds.aabb),
-				ToShadowAABB(record.bounds.aabb),
-				record.dynamic ? VansShadowDirty_DynamicCaster : VansShadowDirty_CasterTransform);
-		}
-		else if (previous->second.shadowCasterMask != record.shadowCasterMask)
-		{
-			const VansGraphics::VansShadowAABB shadowBounds = ToShadowAABB(record.bounds.aabb);
-			shadowManager.InvalidateCastersInBounds(shadowBounds, shadowBounds, VansShadowDirty_CasterMaterial);
-		}
-		current.emplace(casterId, record);
-	};
-
-	for (VansRenderNode* node : m_OpaqueRenderNodes)
-		visitNode(node);
-	for (VansRenderNode* node : m_HairRenderNodes)
-		visitNode(node);
-
-	for (const auto& previous : m_PunctualShadowCasters)
-	{
-		if (current.find(previous.first) == current.end())
-		{
-			if (previous.second.hasBounds)
-				shadowManager.InvalidateCastersInBounds(ToShadowAABB(previous.second.bounds.aabb), {}, VansShadowDirty_CasterGeometry);
-			else
-				requiresGlobalInvalidation = true;
-		}
-	}
-	if (requiresGlobalInvalidation)
-		shadowManager.InvalidateAllCasters(VansShadowDirty_CasterGeometry);
-	m_PunctualShadowCasters.swap(current);
-}
-
-void VansGraphics::VansScene::BuildPunctualShadowCasterLists()
-{
-	auto& jobs = m_LightManager.GetPunctualShadowManager().GetMutableRenderJobs();
-	for (VansPunctualShadowRenderJob& job : jobs)
-	{
-		job.casterIds.clear();
-		job.casterIds.reserve(m_PunctualShadowCasters.size());
-		for (const auto& caster : m_PunctualShadowCasters)
-		{
-			if ((caster.second.shadowCasterMask & job.shadowCasterMask) == 0u)
-				continue;
-			if (!caster.second.hasBounds || RenderBoundsIntersectsClipFrustum(caster.second.bounds, job.worldToShadow))
-				job.casterIds.push_back(caster.first);
-		}
-	}
-}
-
 const VansGraphics::VansWaterConfig& VansGraphics::VansScene::GetWaterConfig() const
 {
     static const VansWaterConfig defaultConfig;
@@ -1160,8 +1105,18 @@ bool VansGraphics::VansScene::RunActionLateContinuation()
 void VansGraphics::VansScene::UnLoadScene()
 {
     VANS_ASSERT_MAIN_THREAD();
+	++m_RenderSceneEpoch;
 
 	VANS_LOG("[VansScene] UnLoadScene started");
+	// Scene CPU 对象销毁前只发布稳定句柄 destroy；RT 不得接收即将悬空的 node 指针。
+	for (const auto& [node, binding] : m_MainRenderProxyBindings)
+	{
+		(void)node;
+		m_PendingRenderMutations.AddDestroy(binding.handle);
+		if (!m_RenderProxyHandleAllocator.Release(binding.handle))
+			VANS_LOG_ERROR("[VansScene] Failed to release render proxy handle during scene unload.");
+	}
+	m_MainRenderProxyBindings.clear();
 	if (m_GameplayRuntime)
 		m_GameplayRuntime->Shutdown();
 	if (m_TimelineRuntime)
@@ -1184,9 +1139,6 @@ void VansGraphics::VansScene::UnLoadScene()
 	VkDevice nativeDevice = vkDevice ? vkDevice->GetLogicDevice() : VK_NULL_HANDLE;
 	m_AudioEnvironmentReverbWetGain = 1.0f;
 	VansEngine::VansAudioSystem::GetInstance().SetDefaultReverbWetGain(m_AudioEnvironmentReverbWetGain);
-	ResetMainCameraHiZVisibility();
-	if (nativeDevice != VK_NULL_HANDLE)
-		ReleaseMainCameraHiZGpuResources(nativeDevice);
 	if (nativeDevice != VK_NULL_HANDLE)
 		m_ReflectionProbeSystem.Clear(nativeDevice);
 
@@ -1209,7 +1161,7 @@ void VansGraphics::VansScene::UnLoadScene()
 	VANS_LOG("[VansScene] Step 1: scene runtime textures cleared; screen-space textures retained");
 
 	// ── 2. 清理脚本对象（组件 Destroy 负责自身生命周期收尾）─────────────────
-    VANS_UNLOAD_STEP(2, "Clear script objects and script modules");
+	VANS_UNLOAD_STEP(2, "Clear script objects and script modules");
 	for (auto* obj : m_SceneObjects)
 	{
 		delete obj;
@@ -1300,7 +1252,8 @@ void VansGraphics::VansScene::UnLoadScene()
 
 	// ── 6. 清理 transform 父子系统 ───────────────────────────────────────
     VANS_UNLOAD_STEP(6, "娓呯悊 transform 鐖跺瓙绯荤粺");
-	m_TransformParentSystem.Clear();
+	m_TransformGraph.Clear();
+	m_SkeletonAnchorRegistry.Clear();
         VANS_LOG("[VansScene] Step 6: transform parent system cleared");
 
 	// ── 7. 清理植被系统 ─────────────────────────────────────────────────
@@ -1381,30 +1334,24 @@ void VansGraphics::VansScene::UnLoadScene()
 	m_VegetationRenderNode = nullptr;
         VANS_LOG("[VansScene] Step 8: render nodes cleared");
 
-	// ── 9. 清理动画节点（析构函数会销毁 GPU bone buffer）─────────────────
-    VANS_UNLOAD_STEP(9, "娓呯悊鍔ㄧ敾鑺傜偣");
-	for (auto* animNode : m_AnimationNodes)
-	{
-		if (animNode)
-		{
-			delete animNode;
-		}
-	}
-	m_AnimationNodes.clear();
-        VANS_LOG("[VansScene] Step 9: animation nodes cleared");
-
-	// ── 9b. 清理动画控制器（Controller 由 Scene 持有，Node 只存裸指针） ───
-    VANS_UNLOAD_STEP("9b", "Clear animation controllers");
+	// ── 9. 先清理目标动画控制器。Rig 非拥有地绑定 Node Skeleton，
+	// 因此 Controller 必须在拥有 Skeleton 的 AnimationNode 之前析构。
+	VANS_UNLOAD_STEP(9, "Clear animation controllers");
 	for (auto* ctrl : m_AnimationControllers)
 	{
 		delete ctrl;
 	}
 	m_AnimationControllers.clear();
-	VANS_LOG("[VansScene] Step 9b: 鍔ㄧ敾鎺у埗鍣ㄥ凡娓呯悊");
+	VANS_LOG("[VansScene] Step 9: animation controllers cleared");
 
-    // ── 9c. 清理骨骼碰撞体附着点系统 ────────────────────────────────
-    VansEngine::VansBoneAttachmentSystem::GetInstance().Shutdown();
-    VANS_LOG("[VansScene] Step 9c: 楠ㄩ纰版挒浣撻檮鐫€鐐圭郴缁熷凡娓呯悊");
+	// ── 9b. 清理动画节点（析构函数会销毁 GPU bone buffer）──────────────
+	VANS_UNLOAD_STEP("9b", "Clear animation nodes");
+	for (auto* animNode : m_AnimationNodes)
+	{
+		delete animNode;
+	}
+	m_AnimationNodes.clear();
+	VANS_LOG("[VansScene] Step 9b: animation nodes cleared");
 
 	// ── 10. 清理 Multi-mesh 分组 ────────────────────────────────────────
 	VANS_UNLOAD_STEP(10, "Clear multi-mesh groups and submesh lookup entries");
@@ -1443,11 +1390,9 @@ void VansGraphics::VansScene::UnLoadScene()
     VANS_UNLOAD_STEP(12, "娓呯悊鍏ㄥ眬 PBR 鏁版嵁鍜?descriptor");
 	m_MaterialManager.ClearScenePBRData(nativeDevice);
 
-	// ── 13. 清理灯光 CPU 数据和 GPU 资源 ────────────────────────────────
-    VANS_UNLOAD_STEP(13, "娓呯悊鐏厜 CPU 鏁版嵁鍜?GPU 璧勬簮");
+	// ── 13. 清理 Main-owned 灯光输入；backend 通过 scene epoch 重置阴影状态 ──
+	VANS_UNLOAD_STEP(13, "娓呯悊鐏厜 CPU 鏁版嵁");
 	m_LightManager.ClearLights();
-	m_PunctualShadowCasters.clear();
-	m_LightManager.DestroyGPUResources(nativeDevice);
 
 	// IES profile GPU 纹理数组（sampler2DArray，binding=16）
 	m_IESProfileManager.DestroyGPUResources(nativeDevice);
@@ -1604,115 +1549,343 @@ void VansGraphics::VansScene::UnloadProjectResources(VansVKDevice* device)
     VANS_LOG("[VansScene] Project resources unloaded");
 }
 
-void VansGraphics::VansScene::UpdateSceneData()
+VansGraphics::VansScene::MainRenderProxyBinding*
+VansGraphics::VansScene::EnsureMainRenderProxyBinding(
+	VansRenderNode* node,
+	VansRenderMutationBatch& mutations)
 {
+	VANS_ASSERT_MAIN_THREAD();
+	if (node == nullptr)
+		return nullptr;
+
+	const VansRenderProxyStaticData staticData{
+		node->m_TransfromIndex >= 0
+			? static_cast<std::uint32_t>(node->m_TransfromIndex)
+			: VANS_INVALID_RENDER_TRANSFORM_SLOT,
+		node->IsEnabled()
+	};
+	auto bindingIt = m_MainRenderProxyBindings.find(node);
+	if (bindingIt == m_MainRenderProxyBindings.end())
+	{
+		MainRenderProxyBinding binding;
+		binding.handle = m_RenderProxyHandleAllocator.Allocate();
+		binding.staticData = staticData;
+		bindingIt = m_MainRenderProxyBindings.emplace(node, binding).first;
+		mutations.AddCreate(binding.handle, staticData);
+	}
+	else if (bindingIt->second.staticData != staticData)
+	{
+		bindingIt->second.staticData = staticData;
+		mutations.AddUpdate(bindingIt->second.handle, staticData);
+	}
+	return &bindingIt->second;
+}
+
+VansGraphics::VansRenderProxyHandle
+VansGraphics::VansScene::FindMainRenderProxyHandle(const VansRenderNode* node) const
+{
+	const auto bindingIt = m_MainRenderProxyBindings.find(node);
+	return bindingIt != m_MainRenderProxyBindings.end()
+		? bindingIt->second.handle
+		: VansRenderProxyHandle{};
+}
+
+void VansGraphics::VansScene::ReleaseMainRenderProxyBinding(
+	VansRenderNode* node,
+	VansRenderMutationBatch& mutations)
+{
+	VANS_ASSERT_MAIN_THREAD();
+	const auto bindingIt = m_MainRenderProxyBindings.find(node);
+	if (bindingIt == m_MainRenderProxyBindings.end())
+		return;
+	mutations.AddDestroy(bindingIt->second.handle);
+	if (!m_RenderProxyHandleAllocator.Release(bindingIt->second.handle))
+		VANS_LOG_ERROR("[VansScene] Failed to release render proxy handle.");
+	m_MainRenderProxyBindings.erase(bindingIt);
+}
+
+std::optional<VansGraphics::VansRenderFrameSourceOutput>
+VansGraphics::VansScene::PrepareMainThreadRenderFrame(
+    const VansRenderFramePreparationContext& context)
+{
+    VANS_ASSERT_MAIN_THREAD();
     VANS_ASSERT_FRAME_PHASE(VansFramePhase::RenderPrep);
+	VansRenderFrameSourceOutput output;
+	output.mutationsBeforeFrame.Append(std::move(m_PendingRenderMutations));
+	output.scene.sceneEpoch = m_RenderSceneEpoch;
+    if (!IsSceneReady())
+		return output;
 
-    VANS_PROFILE_SCOPE("Scene::UpdateSceneData", Vans::ProfileCategory::RenderPrepare);
+    VANS_PROFILE_SCOPE("Scene::PrepareMainThreadRenderFrame", Vans::ProfileCategory::RenderPrepare);
+    const VansRenderViewSnapshot& view = context.view;
+    const float deltaTime = static_cast<float>(context.timing.deltaSeconds);
+	VansRenderSceneFrameSnapshot& snapshot = output.scene;
+	snapshot.sceneReady = true;
+	snapshot.mainCameraHiZCullSettings = m_MainCameraHiZCullSettings;
+	snapshot.gi.settings = m_GISettings;
+	snapshot.gi.rebuildProbeResources = m_GIProbeResourcesDirty;
+	snapshot.gi.updateParameters = m_GIParametersDirty;
+	snapshot.gi.prepared = true;
+	m_GIProbeResourcesDirty = false;
+	m_GIParametersDirty = false;
+	{
+		VansPostProcessProfile& profile = m_MaterialManager.m_PostProcessProfile;
+		snapshot.postProcess.params = profile.ToGPUParams();
+		snapshot.postProcess.params.m_DebugPassthrough =
+			IsGIProbeOnlyDeferredOutputEnabled(snapshot.gi.settings) ? 1.0f : 0.0f;
+		snapshot.postProcess.exposure = profile.ToExposureAdaptParams(
+			static_cast<float>(context.timing.renderDeltaSeconds));
+		snapshot.postProcess.bloom = profile.ToBloomParams();
+		snapshot.postProcess.bloomShape = profile.ToBloomShapeParams();
+		snapshot.postProcess.depthOfField = profile.ToDepthOfFieldParams(
+			view.viewportWidth, view.viewportHeight);
+		snapshot.postProcess.enableAutoExposure = profile.m_EnableAutoExposure;
+		snapshot.postProcess.enableDepthOfField = profile.m_EnableDOF;
+		snapshot.postProcess.enableBloom = profile.m_EnableBloom;
+		snapshot.postProcess.blurTransmissionBackground =
+			profile.m_DOFBlurTransmissionBackground;
+		snapshot.postProcess.staticParametersDirty = profile.m_IsDirty;
+		snapshot.postProcess.prepared = true;
+		profile.m_IsDirty = false;
+	}
+	std::vector<VansRenderNode*> activeProxyNodes;
 
-    VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
-    VkDevice nativeDevice = vkDevice ? vkDevice->GetLogicDevice() : VK_NULL_HANDLE;
-
-    // Per-frame skeletal animation update + GPU bone matrix upload
-    // Use the cached frame delta so all per-frame systems observe the same timestep.
     {
         VANS_PROFILE_SCOPE("Animation::UpdateAll", Vans::ProfileCategory::Animation);
-        UpdateAnimations(static_cast<float>(VansTimer::GetLastFrameDelta()));
+        EvaluateAnimations(deltaTime);
+		snapshot.animations.reserve(m_AnimationNodes.size());
+		for (std::uint32_t animationIndex = 0;
+			animationIndex < static_cast<std::uint32_t>(m_AnimationNodes.size());
+			++animationIndex)
+		{
+			VansAnimationNode* animation = m_AnimationNodes[animationIndex];
+			if (!animation || !animation->IsEnabled())
+				continue;
+			VansRenderAnimationFrameData frameData;
+			frameData.animationNodeIndex = animationIndex;
+			frameData.boneMatrices = animation->GetBoneSSBO();
+			snapshot.animations.emplace_back(std::move(frameData));
+		}
     }
-
-    // 骨骼碰撞体附着点必须紧跟动画更新，确保 TransformStore 读取当前帧骨骼姿态。
-    {
-        VANS_PROFILE_SCOPE("BoneAttachment::SyncAll", Vans::ProfileCategory::Physics);
-        VansEngine::VansBoneAttachmentSystem::GetInstance().Update();
-    }
-
-    // Cloth 依赖 render node 的当前世界变换来同步固定点。
-    // 必须在布料模拟之前解析父子关系，否则挂在角色骨骼/父节点下的布料会用上一帧或未解析的变换模拟。
-    // 随后又以新变换渲染，导致位置明显错位。
     {
         VANS_PROFILE_SCOPE("Transform::ResolveParentChild", Vans::ProfileCategory::RenderPrepare);
-        m_TransformParentSystem.ResolveParentChildTransforms();
+        m_TransformGraph.Resolve();
     }
+	{
+		VANS_PROFILE_SCOPE("RenderWorld::ExtractProxyMutations", Vans::ProfileCategory::RenderPrepare);
+		const std::vector<VansRenderNode*> transformNodes = CollectSSBOManagedRenderNodes();
+		activeProxyNodes.reserve(transformNodes.size());
+		std::unordered_set<const VansRenderNode*> currentProxyNodes;
+		currentProxyNodes.reserve(transformNodes.size());
+		for (VansRenderNode* node : transformNodes)
+		{
+			if (node == nullptr || !currentProxyNodes.insert(node).second)
+			{
+				continue;
+			}
 
-    // Sync light components after transform parenting is resolved, then rebuild shadow matrices.
+			if (EnsureMainRenderProxyBinding(node, output.mutationsBeforeFrame) != nullptr)
+				activeProxyNodes.push_back(node);
+		}
+		for (auto bindingIt = m_MainRenderProxyBindings.begin();
+			bindingIt != m_MainRenderProxyBindings.end();)
+		{
+			if (currentProxyNodes.find(bindingIt->first) != currentProxyNodes.end())
+			{
+				++bindingIt;
+				continue;
+			}
+			output.mutationsBeforeFrame.AddDestroy(bindingIt->second.handle);
+			if (!m_RenderProxyHandleAllocator.Release(bindingIt->second.handle))
+				VANS_LOG_ERROR("[VansScene] Failed to release stale render proxy handle.");
+			bindingIt = m_MainRenderProxyBindings.erase(bindingIt);
+		}
+	}
+	{
+		VANS_PROFILE_SCOPE("Visibility::ExtractMainCameraCandidates", Vans::ProfileCategory::RenderPrepare);
+		snapshot.mainCameraCullInputs.reserve(
+			m_OpaqueRenderNodes.size() +
+			m_HairRenderNodes.size() +
+			m_ForwardOpaqueAfterDeferredRenderNodes.size() +
+			m_TransParentRenderNodes.size() +
+			m_DecalRenderNodes.size());
+		const auto appendCullInput = [&](VansRenderNode* node, VansMainCameraCullClass cullClass)
+		{
+			if (node == nullptr || !node->IsEnabled())
+				return;
+			const VansRenderProxyHandle proxy = FindMainRenderProxyHandle(node);
+			if (!proxy.IsValid())
+				return;
+
+			VansRenderMainCameraCullInput input;
+			input.proxy = proxy;
+			input.nodeName = node->m_NodeName;
+			input.cullClass = cullClass;
+			input.hasBounds = TryGetStaticNodeWorldBounds(node, input.bounds);
+			snapshot.mainCameraCullInputs.emplace_back(std::move(input));
+		};
+		for (VansRenderNode* node : m_OpaqueRenderNodes)
+			appendCullInput(node, VansMainCameraCullClass::Opaque);
+		for (VansRenderNode* node : m_HairRenderNodes)
+			appendCullInput(node, VansMainCameraCullClass::Hair);
+		for (VansRenderNode* node : m_ForwardOpaqueAfterDeferredRenderNodes)
+			appendCullInput(node, VansMainCameraCullClass::ForwardOpaqueAfterDeferred);
+		for (VansRenderNode* node : m_TransParentRenderNodes)
+			appendCullInput(node, VansMainCameraCullClass::Transparent);
+		for (VansRenderNode* node : m_DecalRenderNodes)
+			appendCullInput(node, VansMainCameraCullClass::Decal);
+	}
     {
         VANS_PROFILE_SCOPE("Light::SyncTransforms", Vans::ProfileCategory::RenderPrepare);
         SyncLightTransforms();
     }
     {
-        VANS_PROFILE_SCOPE("PunctualShadow::UpdateCasters", Vans::ProfileCategory::RenderPrepare);
-        UpdatePunctualShadowCasterCache();
-    }
-    {
         VANS_PROFILE_SCOPE("Light::UpdateShadowMatrices", Vans::ProfileCategory::RenderPrepare);
         VansCascadeCameraData shadowCamera = {};
-        shadowCamera.position = glm::vec3(m_Camera->GetPosition());
-        shadowCamera.forward = glm::normalize(glm::vec3(m_Camera->GetForward()));
-        shadowCamera.up = glm::normalize(glm::vec3(m_Camera->GetUp()));
-        shadowCamera.verticalFovRadians = glm::radians(m_Camera->GetFov());
-        shadowCamera.aspectRatio = m_Camera->GetAspectRatio();
-        shadowCamera.nearPlane = m_Camera->GetNearClip();
-        shadowCamera.farPlane = m_Camera->GetFarClip();
-		shadowCamera.viewportWidth = vkDevice ? vkDevice->GetRenderWidth() : 1920u;
-		shadowCamera.viewportHeight = vkDevice ? vkDevice->GetRenderHeight() : 1080u;
+        shadowCamera.position = view.position;
+        shadowCamera.forward = view.forward;
+        shadowCamera.up = view.up;
+        shadowCamera.verticalFovRadians = view.fieldOfViewRadians;
+        shadowCamera.aspectRatio = view.aspectRatio;
+        shadowCamera.nearPlane = view.nearClip;
+        shadowCamera.farPlane = view.farClip;
+        shadowCamera.viewportWidth = view.viewportWidth;
+        shadowCamera.viewportHeight = view.viewportHeight;
         m_LightManager.UpdateLightShadowMatrixData(shadowCamera);
-        BuildPunctualShadowCasterLists();
+		snapshot.punctualShadow =
+			m_LightManager.BuildPunctualShadowFrameInput(shadowCamera);
+
+		auto appendShadowCaster = [&](VansRenderNode* node)
+		{
+			if (node == nullptr || !node->IsEnabled())
+				return;
+			auto* common = static_cast<VansCommonRenderNode*>(node);
+			if (!common->m_SupportShadow)
+				return;
+			const VansRenderProxyHandle proxy = FindMainRenderProxyHandle(node);
+			if (!proxy.IsValid())
+				return;
+
+			VansRenderPunctualShadowCasterInput caster;
+			caster.proxy = proxy;
+			caster.shadowCasterMask = common->m_ShadowCasterMask;
+			caster.dynamic = node->m_AnimationEnabled || node->m_HasSkeletonBone;
+			node->UpdateWorldBoundsFromTransform();
+			caster.hasBounds = node->HasWorldBounds();
+			if (caster.hasBounds)
+				caster.bounds = node->GetWorldBounds();
+			snapshot.punctualShadow.casters.emplace_back(std::move(caster));
+		};
+		snapshot.punctualShadow.casters.reserve(
+			m_OpaqueRenderNodes.size() + m_HairRenderNodes.size());
+		for (VansRenderNode* node : m_OpaqueRenderNodes)
+			appendShadowCaster(node);
+		for (VansRenderNode* node : m_HairRenderNodes)
+			appendShadowCaster(node);
     }
     {
-        VANS_PROFILE_SCOPE("Light::UpdateCPUData", Vans::ProfileCategory::RenderPrepare);
-        m_LightManager.UpdateLightCPUData();
+        VANS_PROFILE_SCOPE("Light::BuildFrameData", Vans::ProfileCategory::RenderPrepare);
+		snapshot.light = m_LightManager.BuildRenderLightFrameData();
+		if (m_SkyBoxNode)
+		{
+			if (auto* skyMaterial = dynamic_cast<VansSkyBoxMaterial*>(
+				m_SkyBoxNode->m_Material))
+			{
+				const VansDirectionalLight* directionalLight =
+					snapshot.light.directionalLights.empty()
+						? nullptr
+						: &snapshot.light.directionalLights.front();
+				snapshot.atmosphere.payload =
+					skyMaterial->BuildAtmosphereFrameData(directionalLight);
+				snapshot.atmosphere.prepared = true;
+			}
+		}
         m_ReflectionProbeSystem.SetRuntimeSkyCubeScales(
             m_LightManager.GetSkyDiffuseScale(),
             m_LightManager.GetSkySpecularScale());
     }
-
-    // Advance cloth simulation and write results to staging buffers
     {
         VANS_PROFILE_SCOPE("Cloth::Simulate", Vans::ProfileCategory::Physics);
         UpdateClothSimulation(0.03f);
+		snapshot.cloth.reserve(m_ClothNodes.size());
+		for (std::uint32_t clothIndex = 0;
+			clothIndex < static_cast<std::uint32_t>(m_ClothNodes.size());
+			++clothIndex)
+		{
+			VansEngine::VansClothNode* clothNode = m_ClothNodes[clothIndex];
+			if (!clothNode || !clothNode->IsEnabled())
+				continue;
+			clothNode->WriteSimResults();
+			VansRenderClothFrameData frameData;
+			frameData.clothNodeIndex = clothIndex;
+			frameData.simulatedVertices = clothNode->GetSimulatedVertexData();
+			snapshot.cloth.emplace_back(std::move(frameData));
+		}
     }
-    {
-        VANS_PROFILE_SCOPE("Cloth::WriteResultsToStaging", Vans::ProfileCategory::Physics);
-        WriteClothResultsToStagingBuffers();
-    }
-
-    // 推进所有视频纹理的播放，上传就绪帧到 GPU（在 Vulkan 命令录制之前执行）
     {
         VANS_PROFILE_SCOPE("Video::TickAll", Vans::ProfileCategory::Video);
-        m_VideoManager.TickAll(VansTimer::GetLastFrameDelta());
+        m_VideoManager.TickAll(context.timing.deltaSeconds);
+		if (m_RuntimeWorld)
+		{
+			auto* rectLightStorage = static_cast<
+				Vans::VansComponentStorage<Vans::VansRuntimeLightComponent>*>(
+					m_RuntimeWorld->FindStorage(Vans::VansRuntimeComponentType_RectLight));
+			auto* videoStorage = static_cast<
+				Vans::VansComponentStorage<Vans::VansRuntimeVideoComponent>*>(
+					m_RuntimeWorld->FindStorage(Vans::VansRuntimeComponentType_Video));
+			if (rectLightStorage && videoStorage)
+			{
+				for (Vans::VansEntityHandle entity :
+					m_RuntimeWorld->Entities().CollectAliveEntities())
+				{
+					Vans::VansRuntimeLightComponent* rectLight = nullptr;
+					Vans::VansRuntimeVideoComponent* video = nullptr;
+					for (Vans::VansComponentHandle component :
+						m_RuntimeWorld->CollectComponentsOwnedBy(entity))
+					{
+						if (component.typeId == Vans::VansRuntimeComponentType_RectLight)
+							rectLight = rectLightStorage->Get(component);
+						else if (component.typeId == Vans::VansRuntimeComponentType_Video)
+							video = videoStorage->Get(component);
+					}
+					if (!rectLight || !video || !video->videoTexture ||
+						rectLight->lightIndex < 0)
+					{
+						continue;
+					}
+					const std::uint32_t videoIndex =
+						m_VideoManager.FindRuntimeIndex(video->videoTexture);
+					if (videoIndex == VansVideoManager::InvalidRuntimeIndex)
+						continue;
+					snapshot.rectLightVideos.push_back({
+						videoIndex,
+						static_cast<std::int32_t>(rectLight->lightIndex) });
+				}
+			}
+		}
     }
-
-    // 同步空间音频 source 位置（在 ResolveParentChildTransforms 之后，确保世界坐标已最终确定）
     {
         VANS_PROFILE_SCOPE("Audio::SyncSourcePositions", Vans::ProfileCategory::Audio);
-        SyncAudioSourcePositions(static_cast<float>(VansTimer::GetLastFrameDelta()));
+        SyncAudioSourcePositions(deltaTime);
     }
-
     {
         VANS_PROFILE_SCOPE("Audio::ReverbEnvironment", Vans::ProfileCategory::Audio);
-        UpdateAudioReverbEnvironment(static_cast<float>(VansTimer::GetLastFrameDelta()));
+        UpdateAudioReverbEnvironment(deltaTime);
     }
-
-    // 推进所有音频节点：更新 Listener 位置、驱动 Streaming 节点补充 Buffer
     {
         VANS_PROFILE_SCOPE("Audio::TickAll", Vans::ProfileCategory::Audio);
-        glm::vec4 camPos = m_Camera->GetPosition();
-        glm::vec4 camFwd = m_Camera->GetForward();
-        glm::vec4 camUp  = m_Camera->GetUp();
         m_AudioManager.TickAll(
-            VansTimer::GetLastFrameDelta(),
-            camPos.x, camPos.y, camPos.z,
-            camFwd.x, camFwd.y, camFwd.z,
-            camUp.x,  camUp.y,  camUp.z,
+            context.timing.deltaSeconds,
+            view.position.x, view.position.y, view.position.z,
+            view.forward.x, view.forward.y, view.forward.z,
+            view.up.x, view.up.y, view.up.z,
             m_AudioListenerVelocityX,
             m_AudioListenerVelocityY,
             m_AudioListenerVelocityZ);
     }
 
-    // 粒子系统：同步对象 Transform，推进后台运行时，并上传本帧实例数据。
     if (!m_ParticleRenderNodes.empty())
     {
-        const float deltaTime = static_cast<float>(VansTimer::GetLastFrameDelta());
         {
             VANS_PROFILE_SCOPE("Particle::PrepareLocalToWorld", Vans::ProfileCategory::Particles);
             if (m_RuntimeWorld)
@@ -1747,15 +1920,14 @@ void VansGraphics::VansScene::UpdateSceneData()
                             }
                             else
                             {
-                                auto& t = VansTransformStore::GetTransform(transformId);
-                                particle->runtime->m_LocalToWorld = t.GetModelMatrix();
+                                auto& transform = VansTransformStore::GetTransform(transformId);
+                                particle->runtime->m_LocalToWorld = transform.GetModelMatrix();
                             }
                         }
                     }
                 }
             }
         }
-
         {
             VANS_PROFILE_SCOPE("Particle::SignalUpdate", Vans::ProfileCategory::Particles);
             VansParticleManager::Instance().TickMainThread(deltaTime);
@@ -1764,63 +1936,150 @@ void VansGraphics::VansScene::UpdateSceneData()
             VANS_PROFILE_WAIT("Particle::WaitForUpdate");
             VansParticleManager::Instance().WaitForUpdateAndSwap();
         }
+		if (m_RuntimeWorld)
+		{
+			auto* storage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeParticleComponent>*>(
+				m_RuntimeWorld->FindStorage(Vans::VansRuntimeComponentType_Particle));
+			if (storage)
+			{
+				for (Vans::VansEntityHandle entity : m_RuntimeWorld->Entities().CollectAliveEntities())
+				{
+					for (Vans::VansComponentHandle component : m_RuntimeWorld->CollectComponentsOwnedBy(entity))
+					{
+						if (component.typeId != Vans::VansRuntimeComponentType_Particle)
+							continue;
+						auto* particle = storage->Get(component);
+						if (!particle || !particle->runtime || !particle->renderNode)
+							continue;
 
-        if (nativeDevice != VK_NULL_HANDLE)
+						particle->playTime = particle->runtime->m_PlayTime;
+						particle->isPlaying = particle->runtime->m_IsPlaying;
+						const auto renderNodeIt = std::find(
+							m_ParticleRenderNodes.begin(),
+							m_ParticleRenderNodes.end(),
+							particle->renderNode);
+						if (renderNodeIt == m_ParticleRenderNodes.end())
+							continue;
+
+						VansRenderParticleFrameData frameData;
+						frameData.particleRenderNodeIndex = static_cast<std::uint32_t>(
+							std::distance(m_ParticleRenderNodes.begin(), renderNodeIt));
+						frameData.instances = particle->runtime->GetRenderBuffer();
+						snapshot.particles.emplace_back(std::move(frameData));
+					}
+				}
+			}
+		}
+    }
+
+	{
+		VANS_PROFILE_SCOPE("Material::CaptureFrameData", Vans::ProfileCategory::RenderPrepare);
+		std::vector<VansMaterial*> activeMaterials;
+		activeMaterials.reserve(activeProxyNodes.size());
+		for (VansRenderNode* node : activeProxyNodes)
+		{
+			if (node && node->m_Material)
+				activeMaterials.push_back(node->m_Material);
+		}
+		snapshot.materials =
+			m_MaterialManager.CaptureRenderMaterialFrameData(activeMaterials);
+	}
+
+	snapshot.transforms.reserve(activeProxyNodes.size());
+	for (VansRenderNode* node : activeProxyNodes)
+	{
+		auto bindingIt = m_MainRenderProxyBindings.find(node);
+		if (bindingIt == m_MainRenderProxyBindings.end() ||
+			!bindingIt->second.staticData.enabled ||
+			bindingIt->second.staticData.transformSlot == VANS_INVALID_RENDER_TRANSFORM_SLOT)
+			continue;
+
+		node->PrepareModelDataForRenderFrame();
+		const ModelDataStruct& model = node->GetPreparedModelData();
+		VansRenderTransformFrameData transform;
+		transform.proxy = bindingIt->second.handle;
+		transform.modelMatrix = model.ModelMatrix;
+		transform.normalMatrix = model.NormalMatrix;
+		transform.position = model.Postion;
+		transform.scale = model.Scale;
+		transform.previousModelMatrix = model.PrevModelMatrix;
+		snapshot.transforms.emplace_back(std::move(transform));
+	}
+	snapshot.features.hasWater = HasWaterNodes();
+	snapshot.features.hasDecal = HasDecalNodes();
+	snapshot.features.hasForwardOpaqueAfterDeferred =
+		HasForwardOpaqueAfterDeferredNodes();
+	VansTransformStore::TransformIDToTransformDirty.clear();
+    return output;
+}
+
+void VansGraphics::VansScene::PrepareRenderBackendData(
+    const VansRenderViewSnapshot& view,
+    const VansRenderSceneFrameSnapshot& sceneSnapshot,
+	const VansRenderWorld& renderWorld)
+{
+    VANS_ASSERT_FRAME_PHASE(VansFramePhase::RenderThreadConsume);
+    VANS_PROFILE_SCOPE("Scene::PrepareRenderBackendData", Vans::ProfileCategory::RenderPrepare);
+	if (!sceneSnapshot.sceneReady)
+		return;
+
+    VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+    VkDevice nativeDevice = vkDevice ? vkDevice->GetLogicDevice() : VK_NULL_HANDLE;
+
+    {
+        VANS_PROFILE_SCOPE("Cloth::WriteResultsToStaging", Vans::ProfileCategory::Physics);
+        WriteClothResultsToStagingBuffers(sceneSnapshot);
+    }
+
+	if (!sceneSnapshot.particles.empty() && nativeDevice != VK_NULL_HANDLE)
+    {
+        VANS_PROFILE_SCOPE("Particle::UploadInstanceBuffers", Vans::ProfileCategory::Particles);
+		for (const VansRenderParticleFrameData& particle : sceneSnapshot.particles)
         {
-            VANS_PROFILE_SCOPE("Particle::UploadInstanceBuffers", Vans::ProfileCategory::Particles);
-            const glm::mat4 particleViewMatrix = m_Camera ? m_Camera->GetViewMatrix() : glm::mat4(1.0f);
-            if (m_RuntimeWorld)
-            {
-                auto* storage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeParticleComponent>*>(
-                    m_RuntimeWorld->FindStorage(Vans::VansRuntimeComponentType_Particle));
-                if (storage)
-                {
-                    for (Vans::VansEntityHandle entity : m_RuntimeWorld->Entities().CollectAliveEntities())
-                    {
-                        for (Vans::VansComponentHandle component : m_RuntimeWorld->CollectComponentsOwnedBy(entity))
-                        {
-                            if (component.typeId != Vans::VansRuntimeComponentType_Particle)
-                                continue;
-                            auto* particle = storage->Get(component);
-                            if (!particle || !particle->runtime || !particle->renderNode)
-                                continue;
-
-                            particle->playTime = particle->runtime->m_PlayTime;
-                            particle->isPlaying = particle->runtime->m_IsPlaying;
-                            particle->renderNode->UpdateInstanceBuffer(
-                                nativeDevice,
-                                particle->runtime->GetRenderBuffer(),
-                                particleViewMatrix);
-                        }
-                    }
-                }
-            }
+			if (particle.particleRenderNodeIndex >= m_ParticleRenderNodes.size())
+				continue;
+			VansParticleRenderNode* renderNode =
+				m_ParticleRenderNodes[particle.particleRenderNodeIndex];
+			if (renderNode)
+				renderNode->UpdateInstanceBuffer(
+					nativeDevice, particle.instances, view.view);
         }
     }
 
-    // Update dirty physics transforms to GPU
     {
-        VANS_PROFILE_SCOPE("RenderData::UpdateTransforms", Vans::ProfileCategory::RenderPrepare);
-        UpdateTransformRenderData();
+        VANS_PROFILE_SCOPE("Animation::UploadRenderData", Vans::ProfileCategory::Animation);
+        UploadAnimationRenderData(sceneSnapshot);
     }
-
-    //update material data
+	{
+        VANS_PROFILE_SCOPE("RenderData::UploadTransformSnapshot", Vans::ProfileCategory::RenderPrepare);
+		for (const VansRenderTransformFrameData& transform : sceneSnapshot.transforms)
+		{
+			const VansRenderProxyStaticData* proxy = renderWorld.Resolve(transform.proxy);
+			if (proxy == nullptr || !proxy->enabled)
+			{
+				VANS_LOG_ERROR("[VansScene] Render transform references a stale or disabled proxy handle.");
+				continue;
+			}
+			ModelDataStruct model;
+			model.ModelMatrix = transform.modelMatrix;
+			model.NormalMatrix = transform.normalMatrix;
+			model.Postion = transform.position;
+			model.Scale = transform.scale;
+			model.PrevModelMatrix = transform.previousModelMatrix;
+			UpdateMappedInstanceTransformData(model, proxy->transformSlot);
+		}
+    }
     {
         VANS_PROFILE_SCOPE("RenderData::UpdateNodesBeforeRecord", Vans::ProfileCategory::RenderPrepare);
-        UpdateRenderNodesDataBeforeRecord();
-    }
-
-    {
-        VANS_PROFILE_SCOPE("MainCameraHiZ::BuildCandidates", Vans::ProfileCategory::RenderPrepare);
-        VkExtent2D extent{
-            vkDevice ? vkDevice->GetRenderWidth() : 0u,
-            vkDevice ? vkDevice->GetRenderHeight() : 0u
-        };
-        BuildMainCameraCullCandidates(extent);
+		if (!m_MaterialManager.UploadRenderMaterialFrameData(sceneSnapshot.materials))
+			VANS_LOG_ERROR("[VansScene] Render-thread material frame upload was rejected.");
+		UpdateRenderNodesDataBeforeRecord(view, sceneSnapshot);
     }
 }
 
-void VansGraphics::VansScene::RecordVideoUploads(VansVKCommandBuffer& cmd)
+void VansGraphics::VansScene::RecordVideoUploads(
+	VansVKCommandBuffer& cmd,
+	const VansRenderSceneFrameSnapshot& sceneSnapshot)
 {
     VANS_PROFILE_SCOPE("Video::Upload.RecordCommands", Vans::ProfileCategory::Video);
     m_VideoManager.RecordPendingUploads(cmd);
@@ -1834,36 +2093,15 @@ void VansGraphics::VansScene::RecordVideoUploads(VansVKCommandBuffer& cmd)
         if (!emissiveArray)
             return;
 
-        if (!m_RuntimeWorld)
-            return;
-
-        auto* rectLightStorage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeLightComponent>*>(
-            m_RuntimeWorld->FindStorage(Vans::VansRuntimeComponentType_RectLight));
-        auto* videoStorage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeVideoComponent>*>(
-            m_RuntimeWorld->FindStorage(Vans::VansRuntimeComponentType_Video));
-        if (!rectLightStorage || !videoStorage)
-            return;
-
-        for (Vans::VansEntityHandle entity : m_RuntimeWorld->Entities().CollectAliveEntities())
+		for (const VansRenderRectLightVideoFrameData& binding :
+			sceneSnapshot.rectLightVideos)
         {
-            Vans::VansRuntimeLightComponent* rectLight = nullptr;
-            Vans::VansRuntimeVideoComponent* video = nullptr;
-            for (Vans::VansComponentHandle component : m_RuntimeWorld->CollectComponentsOwnedBy(entity))
-            {
-                if (component.typeId == Vans::VansRuntimeComponentType_RectLight)
-                    rectLight = rectLightStorage->Get(component);
-                else if (component.typeId == Vans::VansRuntimeComponentType_Video)
-                    video = videoStorage->Get(component);
-            }
-
-            if (!rectLight || !video)
-                continue;
-
-            VansVideoTexture* vid = video->videoTexture;
+			VansVideoTexture* vid =
+				m_VideoManager.GetByRuntimeIndex(binding.videoRuntimeIndex);
             if (!vid || !vid->IsReady()) continue;
 
             vid->RecordNewFrameToArrayLayer(
-                emissiveArray, cmd, rectLight->lightIndex);
+				emissiveArray, cmd, binding.rectLightLayer);
         }
     }
 }
@@ -2366,19 +2604,51 @@ void VansGraphics::VansScene::UpdateAudioReverbEnvironment(float deltaTime)
     audioSystem.SetDefaultReverbWetGain(m_AudioEnvironmentReverbWetGain);
 }
 
-void VansGraphics::VansScene::UpdateAnimations(float deltaTime){
-    for (VansAnimationNode* animNode : m_AnimationNodes)
-    {
-        if (animNode && animNode->IsEnabled())
-        {
-            animNode->Update(deltaTime);
-            VansEngine::VansRagdollSystem::GetInstance().PostAnimationUpdate(animNode);
-            animNode->UploadBoneMatrices(0); // single frame buffer, always index 0
-        }
-    }
+void VansGraphics::VansScene::EvaluateAnimations(float deltaTime){
+	m_AnimationWorldQueryRequests.clear();
+	m_AnimationWorldQueryResults.clear();
+	for (VansAnimationNode* animNode : m_AnimationNodes)
+		if (animNode && animNode->IsEnabled())
+			animNode->PrepareAnimationFrame(deltaTime);
+
+	for (VansAnimationNode* animNode : m_AnimationNodes)
+	{
+		if (!animNode || !animNode->IsEnabled()) continue;
+		animNode->GatherAnimationWorldQueries();
+		const auto& nodeRequests = animNode->GetAnimationWorldQueries();
+		m_AnimationWorldQueryRequests.insert(
+			m_AnimationWorldQueryRequests.end(), nodeRequests.begin(), nodeRequests.end());
+	}
+	VansAnimationWorldQueryBatch::Execute(
+		m_AnimationWorldQueryRequests, m_AnimationWorldQueryResults);
+
+	for (VansAnimationNode* animNode : m_AnimationNodes)
+	{
+		if (animNode && animNode->IsEnabled())
+		{
+			animNode->ResolveAnimationWorldQueries(m_AnimationWorldQueryResults);
+			VansEngine::VansRagdollSystem::GetInstance().PostAnimationUpdate(animNode);
+		}
+	}
 }
 
-void VansGraphics::VansScene::UpdateRenderNodesDataBeforeRecord()
+void VansGraphics::VansScene::UploadAnimationRenderData(
+	const VansRenderSceneFrameSnapshot& snapshot)
+{
+	for (const VansRenderAnimationFrameData& animation : snapshot.animations)
+	{
+		if (animation.animationNodeIndex >= m_AnimationNodes.size())
+			continue;
+		VansAnimationNode* animationNode =
+			m_AnimationNodes[animation.animationNodeIndex];
+		if (animationNode)
+			animationNode->UploadBoneMatrices(0, animation.boneMatrices);
+	}
+}
+
+void VansGraphics::VansScene::UpdateRenderNodesDataBeforeRecord(
+	const VansRenderViewSnapshot& view,
+	const VansRenderSceneFrameSnapshot& sceneSnapshot)
 {
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
     if (vkDevice == nullptr)
@@ -2388,16 +2658,29 @@ void VansGraphics::VansScene::UpdateRenderNodesDataBeforeRecord()
 
     auto updateNode = [&](VansRenderNode* node)
     {
-        if (node && node->IsEnabled())
+        if (IsRenderNodeEnabledForCurrentFrame(node))
         {
             node->UpdateRenderData(vkDevice, m_MaterialManager, m_LightManager, m_Camera);
             node->UpdateDescriptorSets(m_MaterialManager);
         }
     };
 
-    updateNode(m_SkyBoxNode);
+	if (IsRenderNodeEnabledForCurrentFrame(m_SkyBoxNode))
+	{
+		if (sceneSnapshot.atmosphere.prepared &&
+			!m_MaterialManager.UploadAtmosphereFrameData(
+				sceneSnapshot.atmosphere.payload))
+			VANS_LOG_ERROR("[VansScene] Atmosphere frame upload was rejected.");
+		m_SkyBoxNode->UpdateDescriptorSets(m_MaterialManager);
+	}
     updateNode(m_DeferredNode);
-    updateNode(m_TerrainRenderNode);
+	if (IsRenderNodeEnabledForCurrentFrame(m_TerrainRenderNode))
+	{
+		m_TerrainRenderNode->UpdateDescriptorSets(m_MaterialManager);
+		auto* terrainNode = static_cast<VansTerrainRenderNode*>(m_TerrainRenderNode);
+		if (VansTerrain* terrain = terrainNode->GetTerrain())
+			terrain->Update(view.position, view.projection * view.view);
+	}
     updateNode(m_WaterRenderNode);
     updateNode(m_VegetationRenderNode);
 
@@ -2815,40 +3098,6 @@ void VansGraphics::VansScene::ReleaseASTempBuffer(VansVKDevice* vans_device)
 
     m_TLASScratchBuffer.DestroyVulkanBuffer(device);
 }
-void VansGraphics::VansScene::UpdateTransformRenderData()
-{
-    for (auto node : m_OpaqueRenderNodes)
-    {
-        if (!node->IsEnabled()) continue;
-        node->UpdateModelData();
-    }
-	// Hair nodes own independent SSBO transform slots even when they share the
-	// character TransformID. Keep those slots synchronized with the animated
-	// character; otherwise hair remains at the transform from scene creation.
-	for (auto node : m_HairRenderNodes)
-	{
-		if (!node->IsEnabled()) continue;
-		node->UpdateModelData();
-	}
-	for (auto node : m_ForwardOpaqueAfterDeferredRenderNodes)
-	{
-		if (!node->IsEnabled()) continue;
-		node->UpdateModelData();
-	}
-    for (auto node : m_TransParentRenderNodes)
-    {
-        if (!node->IsEnabled()) continue;
-        node->UpdateModelData();
-    }
-    // 贴花节点：每帧上传变换矩阵（OBB 越界测试依赖正确的 ModelMatrix）
-    for (auto node : m_DecalRenderNodes)
-    {
-        if (!node->IsEnabled()) continue;
-        node->UpdateModelData();
-    }
-    VansGraphics::VansTransformStore::TransformIDToTransformDirty.clear();
-}
-
 VansGraphics::VansScene* m_Scene = nullptr;
 
 
@@ -2936,16 +3185,57 @@ void VansGraphics::VansScene::UpdateTransformDescriptorSet()
 {
     auto* descManager = VansVKDescriptorManager::GetInstance();
     descManager->BeginDescriptorUpdate();
-    descManager->WriteBufferDescriptor(
-        m_GlobalTransformDataDescriptorSets[0],
-        PassBinding::BUFFER_0,
-        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-        {{
-            m_InstanceTransformDataBuffer.GetNativeBuffer(),
-            0,
-            m_InstanceTransformDataBuffer.GetBufferSize()
-        }});
+	if (!m_GlobalTransformDataDescriptorSets.empty())
+	{
+		descManager->WriteBufferDescriptor(
+			m_GlobalTransformDataDescriptorSets[0],
+			PassBinding::BUFFER_0,
+			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			{{
+				m_InstanceTransformDataBuffer.GetNativeBuffer(),
+				0,
+				m_InstanceTransformDataBuffer.GetBufferSize()
+			}});
+	}
+	if (m_ObjectDescriptorSet != VK_NULL_HANDLE)
+	{
+		descManager->WriteBufferDescriptor(
+			m_ObjectDescriptorSet,
+			OBJECT_BINDING_TRANSFORM_SSBO,
+			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			{{
+				m_InstanceTransformDataBuffer.GetNativeBuffer(),
+				0,
+				m_InstanceTransformDataBuffer.GetBufferSize()
+			}});
+	}
     descManager->CommitDescriptorUpdates();
+}
+
+void VansGraphics::VansScene::UpdateObjectDescriptorSet()
+{
+	if (m_ObjectDescriptorSet == VK_NULL_HANDLE)
+		return;
+	auto* vkDevice = static_cast<VansVKDevice*>(m_GraphicsDevice);
+	if (vkDevice == nullptr || !vkDevice->GetDrawInstanceArena().IsReady())
+	{
+		VANS_LOG_ERROR("[VansScene] Cannot update object descriptors before backend draw-instance resources are ready.");
+		return;
+	}
+	const VansVKBuffer& drawInstanceBuffer = vkDevice->GetDrawInstanceArena().GetBuffer();
+	auto* descManager = VansVKDescriptorManager::GetInstance();
+	descManager->BeginDescriptorUpdate();
+	descManager->WriteBufferDescriptor(
+		m_ObjectDescriptorSet,
+		OBJECT_BINDING_TRANSFORM_SSBO,
+		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+		{{m_InstanceTransformDataBuffer.GetNativeBuffer(), 0, m_InstanceTransformDataBuffer.GetBufferSize()}});
+	descManager->WriteBufferDescriptor(
+		m_ObjectDescriptorSet,
+		OBJECT_BINDING_DRAW_INSTANCE_SSBO,
+		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+		{{drawInstanceBuffer.GetNativeBuffer(), 0, drawInstanceBuffer.GetBufferSize()}});
+	descManager->CommitDescriptorUpdates();
 }
 
 bool VansGraphics::VansScene::GrowTransformBuffer(VkDevice& device, uint32_t newCapacity)
@@ -3397,6 +3687,17 @@ void VansGraphics::VansScene::FlushPendingEntityDestructions()
     if (m_PendingEntityDestructionGuids.empty())
         return;
 
+	// Frame N-1 may still reference render nodes and GPU allocations owned by
+	// these entities.  Keep the pending list intact unless the ordered render
+	// stream and the GPU have both reached a safe structural-mutation point.
+	if (m_RenderThreadTransactionExecutor != nullptr &&
+		!ExecuteRenderThreadTransaction(
+			std::make_unique<SceneEntityDestructionBarrier>()))
+	{
+		VANS_LOG_ERROR("[VansScene] Could not synchronize deferred entity destruction with RenderThread.");
+		return;
+	}
+
     auto pending = std::move(m_PendingEntityDestructionGuids);
     m_PendingEntityDestructionGuids.clear();
     for (const std::string& guid : pending)
@@ -3417,19 +3718,19 @@ bool VansGraphics::VansScene::DestroyEntity(VansScriptObject* obj)
     // ══════════════════════════════════════════════════════════════════════════════
 
     // ══════════════════════════════════════════════════════════════════════════════
-    //  1. 解除 TransformParentSystem 关联
+    //  1. 解除 Transform Graph 关联
     // ══════════════════════════════════════════════════════════════════════════════
-    if (m_TransformParentSystem.HasParent(obj->m_TransformID))
-        m_TransformParentSystem.ClearParent(obj->m_TransformID);
+    if (m_TransformGraph.HasParent(obj->m_TransformID))
+        m_TransformGraph.ClearParent(obj->m_TransformID);
 
     // 将以本实体为 parent 的子节点提升为根节点
     {
         std::vector<uint32_t> childrenToReparent;
-        for (const auto& link : m_TransformParentSystem.GetAllLinks())
-            if (link.parentTransformID == obj->m_TransformID)
-                childrenToReparent.push_back(link.childTransformID);
+        for (const auto& link : m_TransformGraph.GetAllLinks())
+            if (link.parentTransformId == obj->m_TransformID)
+                childrenToReparent.push_back(link.childTransformId);
         for (uint32_t childID : childrenToReparent)
-            m_TransformParentSystem.ClearParent(childID);
+            m_TransformGraph.ClearParent(childID);
     }
 
 	Vans::VansEntityHandle runtimeEntity;
@@ -3453,6 +3754,8 @@ bool VansGraphics::VansScene::DestroyEntity(VansScriptObject* obj)
     uint32_t                                 transformID   = ownsTransform ? releasedOwnedTransformID : obj->m_TransformID;
 
 	destroyRefs = CollectRuntimeSceneDestroyReferences(*m_RuntimeWorld, runtimeEntity);
+	if (destroyRefs.skeletonInstance.IsValid())
+		m_SkeletonAnchorRegistry.UnregisterInstance(destroyRefs.skeletonInstance);
 
     VansGraphics::VansRenderNode*            renderNode   = destroyRefs.renderNode;
     VansGraphics::VansParticleRenderNode*    particleRN   = destroyRefs.particleRenderNode;
@@ -3563,6 +3866,7 @@ bool VansGraphics::VansScene::DestroyEntity(VansScriptObject* obj)
             {
                 if (childNode && childNode != renderNode)
                 {
+					ReleaseMainRenderProxyBinding(childNode, m_PendingRenderMutations);
                     if (childNode->m_TransfromIndex >= 0)
                     {
                         m_TransformSlotAllocator.FreeSlot(
@@ -3597,6 +3901,7 @@ bool VansGraphics::VansScene::DestroyEntity(VansScriptObject* obj)
     // ══════════════════════════════════════════════════════════════════════════════
     if (renderNode)
     {
+		ReleaseMainRenderProxyBinding(renderNode, m_PendingRenderMutations);
         // 5a. 回收 SSBO 槽位，置 -1 防止下一帧 UpdateModelData 悬垂写入
         if (renderNode->m_TransfromIndex >= 0)
         {

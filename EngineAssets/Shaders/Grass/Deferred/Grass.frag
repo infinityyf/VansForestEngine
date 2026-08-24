@@ -44,6 +44,7 @@ layout (location = 0) out vec4 outNormal;    // .xyz = world normal,  .w = trans
 layout (location = 1) out vec4 outGBuffer0;  // .rgb = albedo,        .w = roughness
 layout (location = 2) out vec4 outGBuffer1;  // .x = reserved,        .y = ao, .z = MATERIAL_ID_GRASS, .w = 1.0
 layout (location = 3) out vec4 outGBuffer2;  // .xyz = world pos,     .w = -linearDepth
+layout (location = 4) out vec2 outMotionVector;
 
 void main() 
 {
@@ -98,4 +99,5 @@ void main()
     outGBuffer0 = vec4(albedo, roughness);
     outGBuffer1 = vec4(0.0, ao, float(MATERIAL_ID_GRASS), 1.0);
     outGBuffer2 = vec4(position_world, -linearDepth);
+    outMotionVector = vec2(0.0);
 }

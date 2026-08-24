@@ -7,11 +7,16 @@ enum class VansFramePhase
 {
     GameLogic,
     RenderPrep,
-    GPURecord
+    RenderPacketBuild,
+    RenderThreadConsume,
+    GPURecord,
+    ParallelGPURecord,
+    QueueSubmit,
+    Present
 };
 
 #ifdef _DEBUG
-extern VansFramePhase g_CurrentFramePhase;
+extern thread_local VansFramePhase g_CurrentFramePhase;
 
 #define VANS_SET_FRAME_PHASE(phase) (::g_CurrentFramePhase = (phase))
 #define VANS_ASSERT_FRAME_PHASE(expected) assert(::g_CurrentFramePhase == (expected))

@@ -1680,6 +1680,18 @@ bool TestGAFActionHostLifecycleContract()
 
 bool TestGAFPackagingContract()
 {
+	const char* failureStage = "load engine GAF configuration";
+	bool completed = false;
+	struct FailureStageReporter
+	{
+		const char*& stage;
+		bool& completed;
+		~FailureStageReporter()
+		{
+			if (!completed)
+				std::cerr << "[GAF] Packaging contract failed during: " << stage << '\n';
+		}
+	} failureStageReporter{ failureStage, completed };
 	const std::filesystem::path sourceRoot =
 		std::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
 	Vans::VansGAFProjectConfiguration configuration;
@@ -1687,6 +1699,7 @@ bool TestGAFPackagingContract()
 	if (!Vans::VansGAFProjectConfiguration::Load(
 		sourceRoot / "EngineAssets/GAF/ProjectSettings", configuration, error))
 		return ExpectGAF(false, error.c_str());
+	failureStage = "initialize editable project configuration";
 
 	const std::filesystem::path projectRoot =
 		std::filesystem::temp_directory_path() / "ForestGAFPackagingContract";
@@ -1709,13 +1722,17 @@ bool TestGAFPackagingContract()
 		return ExpectGAF(false, error.c_str());
 	Vans::VansGAFProjectConfiguration projectConfiguration;
 	if (!Vans::VansGAFProjectConfiguration::LoadForProject(
-		projectRoot, sourceRoot, projectConfiguration, error) ||
-		!ExpectGAF(projectConfiguration.templates.size() == configuration.templates.size() &&
+		projectRoot, sourceRoot, projectConfiguration, error))
+	{
+		return ExpectGAF(false, error.c_str());
+	}
+	if (!ExpectGAF(projectConfiguration.templates.size() == configuration.templates.size() &&
 			std::filesystem::is_regular_file(projectRoot / "ProjectSettings/GAFSettings.json") &&
 			std::filesystem::is_regular_file(projectRoot / "ProjectSettings/GAFSchemaRegistry.json") &&
 			std::filesystem::is_regular_file(projectRoot / "ProjectSettings/GAFValidationRules.json") &&
 			std::filesystem::is_regular_file(projectRoot / "ProjectSettings/GAFTemplates.json"),
 			"GAF project settings were not initialized as a complete editable set")) return false;
+	failureStage = "round-trip project configuration";
 	projectConfiguration.settings.performance.maximumActiveActionsPerHost = 65;
 	if (!Vans::VansGAFProjectConfiguration::Save(
 		projectRoot / "ProjectSettings", projectConfiguration, error))
@@ -1734,6 +1751,7 @@ bool TestGAFPackagingContract()
 		projectRoot / "ProjectSettings", invalidConfiguration, invalidConfigurationError) &&
 		!invalidConfigurationError.empty(),
 		"GAF project configuration accepted a zero runtime budget")) return false;
+	failureStage = "index and author gameplay assets";
 	Vans::VansAssetDatabase database(assetsRoot, projectRoot / "Library/Artifacts");
 	const std::filesystem::path graphPath = assetsRoot / "RootActionGraph.vactiongraph";
 	Vans::VansSerializedValue graph = configuration.templates.at("ActionGraph");
@@ -1790,6 +1808,7 @@ bool TestGAFPackagingContract()
 	const auto actionRecord = database.Find(actionPath);
 	if (!ExpectGAF(actionScan && actionRecord.has_value(),
 		"GAF package contract could not register root action")) return false;
+	failureStage = "cook recursive gameplay asset closure";
 
 	const Vans::VansGameplayPackageCookResult packaged =
 		Vans::VansGameplayAssetPackageCooker::CookClosure(
@@ -1811,6 +1830,7 @@ bool TestGAFPackagingContract()
 			sourceLibrary.ResolveAction(actionRecord->guid.ToString()) != nullptr &&
 			sourceLibrary.ResolveAction(actionRecord->guid.ToString())->executionGraph != nullptr,
 			"GAF source asset library did not compile the indexed Action")) return false;
+	failureStage = "initialize gameplay runtime and host";
 	Vans::VansGAFSettings runtimeSettings = projectConfiguration.settings;
 	runtimeSettings.performance.maximumActiveActionsPerHost = 2;
 	runtimeSettings.performance.maximumTasksPerAction = 3;
@@ -1868,6 +1888,7 @@ bool TestGAFPackagingContract()
 	if (!ExpectGAF(apiReport.allowed && apiViews.size() == 1 && apiInspection &&
 		apiInspection->instance.handle == activationResult.action,
 		"Public ActionSystem API did not validate, query, and inspect the live Host")) return false;
+	failureStage = "compile and execute gameplay Timeline";
 
 	const std::array<const char*, 6> gafTimelineTracks{
 		"Action.Event", "Action.Window", "Action.Cue", "Action.Parameter",
@@ -2027,7 +2048,8 @@ bool TestGAFPackagingContract()
 		runtimeHost->ReadVariable(activationResult.action, timelineVariable, timelineValue, error) &&
 		std::abs(timelineValue.floatValue - 0.25) < 0.0001,
 		"GAF Timeline appliers executed destructive gameplay behavior in Preview")) return false;
-	if (!timelineSessions.Release(previewTimeline)) return false;
+	if (!timelineSessions.Release(previewTimeline))
+		return ExpectGAF(false, "GAF preview Timeline session could not be released");
 	world.SetComponentEnabled(hostComponent, false);
 	gameplayRuntime.SynchronizeHostEnablement(world);
 	if (!ExpectGAF(!runtimeHost->IsEnabled(),
@@ -2043,11 +2065,13 @@ bool TestGAFPackagingContract()
 	gameplayRuntime.RunLateContinuation();
 	if (!ExpectGAF(runtimeHost->IsEnabled(),
 		"ActionHost did not recover after owner hierarchy reactivation")) return false;
+	failureStage = "load cooked gameplay asset library";
 	std::vector<Vans::VansAssetRecord> packagedRecords;
 	for (const Vans::VansGameplayPackagedAssetRecord& packagedAsset : packaged.assets)
 	{
 		Vans::VansAssetGuid guid;
-		if (!Vans::VansAssetGuid::TryParse(packagedAsset.guid, guid)) return false;
+		if (!Vans::VansAssetGuid::TryParse(packagedAsset.guid, guid))
+			return ExpectGAF(false, "GAF package cooker emitted an invalid asset guid");
 		Vans::VansAssetRecord record;
 		record.guid = guid;
 		record.type = packagedAsset.assetType;
@@ -2064,6 +2088,7 @@ bool TestGAFPackagingContract()
 			"GAF cooked asset library does not match source-mode resolution")) return false;
 	gameplayRuntime.Shutdown();
 	world.Clear();
+	failureStage = "reject editor-only assets during cooking";
 
 	const std::filesystem::path layoutPath = assetsRoot / "EditorOnly.gafeditorlayout";
 	if (!Vans::VansGameplayAssetStorage::SaveSourceAtomic(layoutPath,
@@ -2077,8 +2102,9 @@ bool TestGAFPackagingContract()
 	const Vans::VansGameplayPackageCookResult editorOnly =
 		Vans::VansGameplayAssetPackageCooker::CookClosure(
 			projectRoot, database, nullptr, { layoutRecord->guid.ToString() });
-	return ExpectGAF(!editorOnly && !editorOnly.errors.empty() && editorOnly.assets.empty(),
+	completed = ExpectGAF(!editorOnly && !editorOnly.errors.empty() && editorOnly.assets.empty(),
 		"GAF package cooker accepted an editor-only asset");
+	return completed;
 }
 
 bool TestGAFNetworkContract()
@@ -3325,7 +3351,10 @@ bool TestGAFDemoHallWindowBreakContract()
 		return ExpectGAF(false, error.c_str());
 	return ExpectGAF(foundHost && foundScriptBinding &&
 		script.find("vans.action.try_activate") != std::string::npos &&
-		script.find("play_break_presentation") != std::string::npos,
+		script.find("play_break_presentation") != std::string::npos &&
+		script.find("GlassBreakInteractable:update_interaction_session") != std::string::npos &&
+		script.find("timeline.state(timelineGuid)") != std::string::npos &&
+		script.find("timelineStallSeconds >= 0.35") != std::string::npos,
 		"DemoHall scene or Lua Script.Action bridge is not wired to the window ActionHost");
 }
 

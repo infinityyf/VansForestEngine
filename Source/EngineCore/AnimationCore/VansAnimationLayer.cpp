@@ -187,7 +187,7 @@ namespace VansGraphics
 		const VansAnimationFrameVector<VansBoneTransform>& referencePose,
 		float layerWeight)
 	{
-		if (!base.valid || !layer.valid || !definition.enabled)
+		if (!base.valid || !layer.valid)
 			return base;
 		const float weight = std::clamp(layerWeight * layer.sourceWeight, 0.0f, 1.0f);
 		if (base.localPose.size() != layer.localPose.size()

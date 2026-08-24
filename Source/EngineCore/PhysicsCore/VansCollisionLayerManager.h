@@ -32,6 +32,7 @@ namespace VansEngine
 		// ── 查询接口 ──────────────────────────────────────────────────
 		// 根据名称获取 layer 索引，找不到返回 0 (Default)
 		int GetLayerIndex(const std::string& name) const;
+		bool TryGetLayerIndex(const std::string& name, int& index) const;
 
 		// 获取 layer 名称
 		const std::string& GetLayerName(int index) const;

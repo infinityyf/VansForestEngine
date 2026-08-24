@@ -117,6 +117,18 @@ namespace VansGraphics
 		std::vector<std::string> databases;
 	};
 
+	enum class MotionMatchingContactSource
+	{
+		LeftFoot,
+		RightFoot
+	};
+
+	struct MotionMatchingContactChannel
+	{
+		std::string id;
+		MotionMatchingContactSource source = MotionMatchingContactSource::LeftFoot;
+	};
+
 	struct MotionMatchingSettings
 	{
 		bool enabled = false;
@@ -175,6 +187,10 @@ namespace VansGraphics
 		MotionFeatureSchema schema;
 		MotionMatchingParameterMap parameters;
 		MotionMatchingStateSemantics states;
+		// Motion Matching 只发布语义化接触信号，不知道 Grounding 的骨骼或链。
+		// provider 与 id 由项目显式配置，目标 Rig 再把 id 映射到具体脚链。
+		std::string contactProvider;
+		std::vector<MotionMatchingContactChannel> contactChannels;
 		std::vector<std::string> includeClipTokens;
 		std::vector<std::string> excludeClipTokens;
 		std::vector<MotionMatchingDatabase> databases;

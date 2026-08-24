@@ -29,7 +29,6 @@ namespace VansGraphics
 		std::string id;
 		std::string name;
 		std::string layerId;
-		int slotNodeId = -1;
 		VansSlotConcurrency concurrency = VansSlotConcurrency::Replace;
 		std::uint32_t maxQueueDepth = 4;
 		float defaultBlendIn = 0.08f;

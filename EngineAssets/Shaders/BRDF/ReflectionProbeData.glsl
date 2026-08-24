@@ -87,9 +87,8 @@ float ReflectionProbeInfluence(vec3 P, ReflectionProbeGPU probe)
     return 1.0 - smoothstep(max(radius - blend, 0.0), radius, distanceToCenter);
 }
 
-float ReflectionProbeWeight(vec3 P, ReflectionProbeGPU probe)
+float ReflectionProbeWeightFromInfluence(float influence, ReflectionProbeGPU probe)
 {
-    float influence = ReflectionProbeInfluence(P, probe);
     float priority = exp2(clamp(probe.boxMaxAndPriority.w, -8.0, 8.0));
     return max(influence, 0.0) * priority * max(probe.fadeAndIntensity.y, 0.0);
 }
@@ -130,14 +129,25 @@ ReflectionProbeSample SampleReflectionProbes(vec3 P, vec3 N, vec3 R, float rough
     float coverageSum = 0.0;
     if (reflectionProbeUniformGridDimensionsAndFlags.w != 0u)
     {
-        ivec3 cell = ivec3(floor((P - reflectionProbeUniformGridOrigin.xyz) *
-            reflectionProbeUniformGridInvCellSize.xyz));
+		vec3 gridPosition = (P - reflectionProbeUniformGridOrigin.xyz) *
+			reflectionProbeUniformGridInvCellSize.xyz;
         ivec3 dimensions = ivec3(reflectionProbeUniformGridDimensionsAndFlags.xyz);
-        for (int z = -1; z <= 1; ++z)
-        for (int y = -1; y <= 1; ++y)
-        for (int x = -1; x <= 1; ++x)
+		ivec3 primaryCell = clamp(ivec3(floor(gridPosition)), ivec3(0), dimensions - ivec3(1));
+		vec3 primaryCenter = vec3(primaryCell) + vec3(0.5);
+		ivec3 neighborCell = primaryCell + ivec3(mix(
+			vec3(-1.0), vec3(1.0), greaterThanEqual(gridPosition, primaryCenter)));
+
+		// A validated uniform grid has boxes contained by their cell and fades no
+		// wider than half a cell. Consequently only one neighbour per axis can
+		// influence P: 2 x 2 x 2 = at most eight probes instead of 27.
+		for (int z = 0; z < 2; ++z)
+		for (int y = 0; y < 2; ++y)
+		for (int x = 0; x < 2; ++x)
         {
-            ivec3 candidateCell = cell + ivec3(x, y, z);
+			ivec3 candidateCell = ivec3(
+				x == 0 ? primaryCell.x : neighborCell.x,
+				y == 0 ? primaryCell.y : neighborCell.y,
+				z == 0 ? primaryCell.z : neighborCell.z);
             if (any(lessThan(candidateCell, ivec3(0))) || any(greaterThanEqual(candidateCell, dimensions)))
                 continue;
             uint i = uint(candidateCell.x + dimensions.x *
@@ -146,7 +156,9 @@ ReflectionProbeSample SampleReflectionProbes(vec3 P, vec3 N, vec3 R, float rough
             {
                 float influence = ReflectionProbeInfluence(P, reflectionProbes[i]);
                 coverageSum += influence;
-                ReflectionProbeInsertCandidate(ReflectionProbeWeight(P, reflectionProbes[i]), int(i), weights, indices);
+				ReflectionProbeInsertCandidate(
+					ReflectionProbeWeightFromInfluence(influence, reflectionProbes[i]),
+					int(i), weights, indices);
             }
         }
     }
@@ -156,7 +168,9 @@ ReflectionProbeSample SampleReflectionProbes(vec3 P, vec3 N, vec3 R, float rough
         {
             float influence = ReflectionProbeInfluence(P, reflectionProbes[i]);
             coverageSum += influence;
-            ReflectionProbeInsertCandidate(ReflectionProbeWeight(P, reflectionProbes[i]), int(i), weights, indices);
+			ReflectionProbeInsertCandidate(
+				ReflectionProbeWeightFromInfluence(influence, reflectionProbes[i]),
+				int(i), weights, indices);
         }
     }
 

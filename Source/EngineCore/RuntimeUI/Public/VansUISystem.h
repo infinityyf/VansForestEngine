@@ -49,6 +49,10 @@ namespace VansRuntime
         // 在场景卸载完成后、VansVKDevice 销毁前调用
         void Shutdown();
 
+        // 仅由 Vulkan backend 的 RT teardown 调用。销毁所有 Noesis
+        // IRenderer/Vulkan RenderDevice；Main 仍负责随后销毁 View/UI 对象。
+        void ShutdownRendering();
+
         // ── 每帧接口 ──────────────────────────────────────────────
 
         // 在 VansInputManager::Update() 之后、场景渲染之前调用

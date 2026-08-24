@@ -9,8 +9,8 @@
 #include "../../AnimationCore/VansAnimGraph.h"
 #include "../../AnimationCore/VansAnimationClipLoader.h"
 #include "../../AnimationCore/VansSkinnedMeshLoader.h"
-#include "../../AnimationCore/VansBoneAttachmentSystem.h"
 #include "../../AnimationCore/Storage/VansBoneMaskStorage.h"
+#include "../../AnimationCore/Storage/VansRetargetProfileStorage.h"
 #include "../../ProjectSystem/VansProjectManager.h"
 #include "../../PhysicsCore/VansCharacterControllerNode.h"
 #include "../../PhysicsCore/Storage/VansRagdollProfileStorage.h"
@@ -18,14 +18,8 @@
 #include "../../ScriptCore/VansScriptContext.h"
 #include "../../Util/VansLog.h"
 
-#include <assimp/Importer.hpp>
-#include <assimp/postprocess.h>
-#include <assimp/scene.h>
-#include <nlohmann/json.hpp>
-
 #include <algorithm>
 #include <filesystem>
-#include <fstream>
 #include <memory>
 
 namespace VansGraphics
@@ -79,86 +73,20 @@ namespace VansGraphics
 			return count;
 		}
 
-		void ApplyRetargetProfileOptions(const std::string& profilePath, VansRetargetRuntimeDesc& desc)
+		bool LoadRetargetProfile(
+			const std::string& profilePath,
+			VansRetargetRuntimeDesc& desc,
+			std::string& error)
 		{
-			if (profilePath.empty() || !std::filesystem::exists(profilePath))
-				return;
-
-			std::ifstream input(profilePath);
-			if (!input)
-			{
-				VANS_LOG_WARN("[Retarget] Could not open profile: " << profilePath);
-				return;
-			}
-
-			nlohmann::json root;
-			try
-			{
-				input >> root;
-			}
-			catch (const std::exception& e)
-			{
-				VANS_LOG_WARN("[Retarget] Could not parse profile: " << profilePath
-					<< " (" << e.what() << ")");
-				return;
-			}
-
-			const auto optionsIt = root.find("retarget_options");
-			if (optionsIt == root.end() || !optionsIt->is_object())
-				return;
-
-			const auto scaleIt = optionsIt->find("translation_scale");
-			if (scaleIt != optionsIt->end() && scaleIt->is_number())
-			{
-				desc.translationScale = scaleIt->get<float>();
-				desc.hasExplicitTranslationScale = true;
-				desc.translationScaleMode = "explicit";
-			}
-			else if (scaleIt != optionsIt->end() && scaleIt->is_string())
-			{
-				desc.translationScaleMode = scaleIt->get<std::string>();
-				desc.hasExplicitTranslationScale = false;
-			}
-
-			const auto alignmentIt = optionsIt->find("root_alignment");
-			if (alignmentIt != optionsIt->end() && alignmentIt->is_string())
-				desc.rootAlignmentMode = alignmentIt->get<std::string>();
-
-			const auto targetAlignmentIt = optionsIt->find("target_model_space_alignment");
-			if (targetAlignmentIt != optionsIt->end() && targetAlignmentIt->is_string())
-				desc.targetModelSpaceAlignmentMode = targetAlignmentIt->get<std::string>();
-
-			const auto chainsIt = optionsIt->find("two_bone_chains");
-			if (chainsIt != optionsIt->end() && chainsIt->is_array())
-			{
-				desc.twoBoneChains.clear();
-				for (const auto& chainJson : *chainsIt)
-				{
-					if (!chainJson.is_object())
-						continue;
-					const auto sourceIt = chainJson.find("source");
-					const auto targetIt = chainJson.find("target");
-					if (sourceIt == chainJson.end() || !sourceIt->is_array() || sourceIt->size() != 3 ||
-					    targetIt == chainJson.end() || !targetIt->is_array() || targetIt->size() != 3 ||
-					    !(*sourceIt)[0].is_string() || !(*sourceIt)[1].is_string() || !(*sourceIt)[2].is_string() ||
-					    !(*targetIt)[0].is_string() || !(*targetIt)[1].is_string() || !(*targetIt)[2].is_string())
-					{
-						continue;
-					}
-
-					VansRetargetTwoBoneChainDesc chain;
-					chain.name = chainJson.value("name", std::string{});
-					chain.sourceRoot = (*sourceIt)[0].get<std::string>();
-					chain.sourceMid = (*sourceIt)[1].get<std::string>();
-					chain.sourceTip = (*sourceIt)[2].get<std::string>();
-					chain.targetRoot = (*targetIt)[0].get<std::string>();
-					chain.targetMid = (*targetIt)[1].get<std::string>();
-					chain.targetTip = (*targetIt)[2].get<std::string>();
-					chain.positionWeight = glm::clamp(
-						chainJson.value("position_weight", 1.0f), 0.0f, 1.0f);
-					desc.twoBoneChains.push_back(std::move(chain));
-				}
-			}
+			VansRetargetProfileAsset profile;
+			if (!VansRetargetProfileStorage::Load(profilePath, profile, error))
+				return false;
+			desc.translationScaleMode = profile.translationScaleMode;
+			desc.translationScale = profile.explicitTranslationScale;
+			desc.rootAlignment = profile.rootAlignment;
+			desc.targetModelSpaceAlignment = profile.targetModelSpaceAlignment;
+			desc.limbChains = std::move(profile.limbChains);
+			return true;
 		}
 
 		bool ResolveAnimationAssetPath(
@@ -212,27 +140,14 @@ namespace VansGraphics
 
 		bool LoadSkeletonFromModel(const std::string& fullModelPath, Skeleton& outSkeleton)
 		{
-			Assimp::Importer importer;
-			const aiScene* scene = importer.ReadFile(
-				fullModelPath,
-				aiProcess_Triangulate |
-				aiProcess_FlipUVs |
-				aiProcess_GenNormals);
-
-			if (!scene)
+			std::string error;
+			if (!VansSkinnedMeshLoader::LoadSkeletonFromModelAsset(
+				fullModelPath, outSkeleton, error))
 			{
-				VANS_LOG_WARN("[Retarget] failed to import source model: "
-					<< fullModelPath << " (" << importer.GetErrorString() << ")");
+				VANS_LOG_WARN("[Retarget] failed to load source Skeleton asset: "
+					<< fullModelPath << " (" << error << ")");
 				return false;
 			}
-
-			VansSkinnedMeshLoader::ExtractSkeleton(scene, outSkeleton);
-			if (outSkeleton.bones.empty())
-			{
-				VANS_LOG_WARN("[Retarget] source model has no skeleton: " << fullModelPath);
-				return false;
-			}
-
 			return true;
 		}
 
@@ -255,6 +170,16 @@ namespace VansGraphics
 			VansAnimatorRuntimeCompileOptions options;
 			options.enableTargetPostProcess = false;
 			options.enableRootMotion = enableRootMotion;
+			options.rigResolver = [](const std::string& guid, std::filesystem::path& path, std::string& error)
+			{
+				return ResolveAnimationAssetPath(guid, Vans::VansAssetType::AnimationRig,
+					"Animation Rig", "", path, error);
+			};
+			options.queryProfileResolver = [](const std::string& profile, std::uint32_t& mask, std::string& error)
+			{
+				return Vans::VansProjectManager::Get().GetProjectSettings()
+					.ResolvePhysicsQueryProfile(profile, mask, error);
+			};
 			auto controller = VansAnimatorRuntimeCompiler::Compile(
 				assetData,
 				skeleton,
@@ -278,22 +203,20 @@ namespace VansGraphics
 			}
 
 			if (motionMatchingSettings)
-				controller->ConfigureMotionMatching(*motionMatchingSettings);
+			{
+				std::string motionMatchingError;
+				if (!controller->ConfigureMotionMatching(*motionMatchingSettings, motionMatchingError))
+				{
+					VANS_LOG_WARN("[Retarget] invalid Motion Matching configuration for '"
+						<< logOwner << "': " << motionMatchingError);
+					return nullptr;
+				}
+			}
 
 			VANS_LOG("[Retarget] loaded source controller for '" << logOwner
 				<< "': " << fullAnimatorPath
 				<< " clips=" << controller->GetClipNames().size());
 			return controller;
-		}
-
-		VansEngine::PhysicsColliderType ParseShapeType(const std::string& value)
-		{
-			if (value == "box") return VansEngine::PhysicsColliderType::Box;
-			if (value == "sphere") return VansEngine::PhysicsColliderType::Sphere;
-			if (value == "capsule") return VansEngine::PhysicsColliderType::Capsule;
-			if (value == "mesh") return VansEngine::PhysicsColliderType::Mesh;
-			if (value == "convex") return VansEngine::PhysicsColliderType::ConvexMesh;
-			return VansEngine::PhysicsColliderType::Capsule;
 		}
 
 		VansEngine::RagdollDriveMode ParseRagdollDriveMode(const std::string& value)
@@ -409,6 +332,17 @@ namespace VansGraphics
 				: VansAnimatorRuntimeCompileMode::FullGraph;
 			options.enableTargetPostProcess = true;
 			options.enableRootMotion = enableRootMotion && !retargetRequested;
+			options.animationRigGuidOverride = animConfig.rig;
+			options.rigResolver = [](const std::string& guid, std::filesystem::path& path, std::string& error)
+			{
+				return ResolveAnimationAssetPath(guid, Vans::VansAssetType::AnimationRig,
+					"Animation Rig", "", path, error);
+			};
+			options.queryProfileResolver = [](const std::string& profile, std::uint32_t& mask, std::string& error)
+			{
+				return Vans::VansProjectManager::Get().GetProjectSettings()
+					.ResolvePhysicsQueryProfile(profile, mask, error);
+			};
 			auto compiledController = VansAnimatorRuntimeCompiler::Compile(
 				assetData,
 				meshAsset->m_AnimImportResult.skeleton,
@@ -487,18 +421,28 @@ namespace VansGraphics
 				const int smId = graph->AddNode(std::move(smNode));
 				const int outId = graph->AddNode(VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
 				graph->AddLink(smId, 0, outId, 0);
-				VansAnimationLayerGraphSetup baseLayer;
+				VansAnimationLayerSetup baseLayer;
 				baseLayer.definition.id = "layer-base";
 				baseLayer.definition.name = "Base";
-				baseLayer.definition.graphId = "graph-base";
 				baseLayer.definition.kind = VansAnimationLayerKind::Base;
 				baseLayer.definition.rootMotion = VansLayerRootMotionMode::Base;
 				baseLayer.definition.nodeTracks = VansLayerNodeTrackMode::Override;
-				baseLayer.graph = std::move(graph);
-				std::vector<VansAnimationLayerGraphSetup> generatedLayers;
+				std::vector<VansAnimationLayerSetup> generatedLayers;
 				generatedLayers.push_back(std::move(baseLayer));
+				VansAnimationGraphSetSetup graphSet;
+				graphSet.definition.id = "graph-set-default";
+				graphSet.definition.name = "Default";
+				graphSet.definition.bindings.push_back({ "layer-base", "graph-base", true });
+				VansAnimationGraphBindingSetup binding;
+				binding.definition = graphSet.definition.bindings.front();
+				binding.graph = std::move(graph);
+				graphSet.bindings.push_back(std::move(binding));
+				std::vector<VansAnimationGraphSetSetup> generatedGraphSets;
+				generatedGraphSets.push_back(std::move(graphSet));
 				std::string layerError;
-				if (!controller->SetLayerStack(std::move(generatedLayers), layerError))
+				if (!controller->SetAnimationGraphSets(
+					std::move(generatedLayers), std::move(generatedGraphSets),
+					"graph-set-default", {}, {}, layerError))
 				{
 					VANS_LOG_WARN("[LoadAnimComp] Failed to create generated Base Layer: " << layerError);
 					delete controller;
@@ -521,7 +465,14 @@ namespace VansGraphics
 		if (animConfig.motionMatching && !retargetRequested)
 		{
 			MotionMatchingSettings mmSettings = *animConfig.motionMatching;
-			controller->ConfigureMotionMatching(mmSettings);
+			std::string motionMatchingError;
+			if (!controller->ConfigureMotionMatching(mmSettings, motionMatchingError))
+			{
+				VANS_LOG_WARN("[LoadAnimComp] Invalid Motion Matching configuration for '"
+					<< objectName << "': " << motionMatchingError);
+				delete controller;
+				return nullptr;
+			}
 			VANS_LOG("[LoadAnimComp] Motion Matching configured for '" << objectName
 				<< "' enabled=" << mmSettings.enabled
 				<< " driveMode=" << static_cast<int>(mmSettings.motionModel.driveMode)
@@ -534,33 +485,28 @@ namespace VansGraphics
 				<< " selectorRows=" << mmSettings.selectorRows.size());
 		}
 
-		if (animConfig.footPlacement && hasSkeleton)
-		{
-			FootPlacementSettings fpSettings = *animConfig.footPlacement;
-			controller->ConfigureFootPlacement(fpSettings, meshAsset->m_AnimImportResult.skeleton);
-			controller->SetFootPlacementEnabled(fpSettings.enabled);
-			VANS_LOG("[LoadAnimComp] FootPlacement configured for '" << objectName
-				<< "' enabled=" << fpSettings.enabled
-				<< " poseRelative=true"
-				<< " probeHeight=" << fpSettings.probeOriginHeight
-				<< " probeLength=" << fpSettings.probeLength);
-		}
-
 		VansAnimationNode* animNode = new VansAnimationNode(nodeName);
 		animNode->SetSkeleton(meshAsset->m_AnimImportResult.skeleton);
 		animNode->SetRenderNodes(group.childNodes);
 		animNode->InitGPUResources(device, 1);
 		animNode->UploadPerSubmeshBoneBuffers(meshAsset->m_SubMeshBoneData);
 		animNode->SetTransformID(group.sharedTransformID);
-		animNode->SetController(controller);
+		if (!animNode->SetController(controller))
+		{
+			VANS_LOG_WARN("[LoadAnimComp] '" << objectName
+				<< "' controller Rig is incompatible with the target model Skeleton");
+			delete controller;
+			delete animNode;
+			return nullptr;
+		}
 
 		if (retargetRequested)
 		{
 			const Vans::VansSceneAnimationRetargetConfig& retargetConfig = *animConfig.retarget;
 			auto failRetarget = [&]() -> VansAnimationNode*
 			{
-				delete animNode;
 				delete controller;
+				delete animNode;
 				return nullptr;
 			};
 			if (retargetConfig.sourceModel.empty() || retargetConfig.sourceAnimator.empty())
@@ -602,18 +548,24 @@ namespace VansGraphics
 			retargetDesc.profilePath = fullProfilePath;
 			retargetDesc.sourceModelPath = fullSourceModelPath;
 			retargetDesc.sourceAnimatorPath = fullSourceAnimatorPath;
-			retargetDesc.runtimeMode = retargetConfig.runtimeMode;
-			retargetDesc.cachePolicy = retargetConfig.cachePolicy;
 			retargetDesc.debugDraw = retargetConfig.debugDraw;
-			ApplyRetargetProfileOptions(fullProfilePath, retargetDesc);
-			animNode->ConfigureRetargetSource(
+			std::string retargetProfileError;
+			if (!LoadRetargetProfile(fullProfilePath, retargetDesc, retargetProfileError))
+			{
+				VANS_LOG_WARN("[Retarget] '" << objectName << "' has an invalid profile: "
+					<< retargetProfileError);
+				return failRetarget();
+			}
+			std::string retargetBuildError;
+			if (!animNode->ConfigureRetargetSource(
 				sourceSkeleton,
 				std::move(sourceController),
-				retargetDesc);
-			if (!animNode->IsRetargetEnabled())
+				retargetDesc,
+				retargetBuildError))
 			{
 				VANS_LOG_WARN("[Retarget] '" << objectName
-					<< "' could not establish the required Source -> Target runtime");
+					<< "' could not establish the required Source -> Target runtime: "
+					<< retargetBuildError);
 				return failRetarget();
 			}
 		}
@@ -684,86 +636,6 @@ namespace VansGraphics
 		if (animConfig.autoPlay)
 			animNode->Play();
 
-		if (!animConfig.boneBindings.empty())
-		{
-			VansEngine::BoneColliderBindingSet bindingSet;
-			bindingSet.animNode = animNode;
-
-			const Skeleton& skeleton = meshAsset->m_AnimImportResult.skeleton;
-			for (const Vans::VansSceneAnimationBoneBindingConfig& bindingConfig : animConfig.boneBindings)
-			{
-				VansEngine::BoneColliderBinding binding;
-				binding.boneName = bindingConfig.boneName;
-				binding.physicsObjectName = bindingConfig.physicsObjectName;
-				binding.offsetPosition = bindingConfig.offsetPosition;
-				binding.offsetRotation = bindingConfig.offsetRotation;
-				binding.offsetScale = bindingConfig.offsetScale;
-				binding.syncRotation = bindingConfig.syncRotation;
-				binding.syncScale = bindingConfig.syncScale;
-				binding.layerName = bindingConfig.layerName;
-				binding.isTrigger = bindingConfig.isTrigger;
-				binding.enabled = bindingConfig.enabled;
-				binding.autoCreateNode = bindingConfig.autoCreateNode;
-				binding.shapeExtents = bindingConfig.shapeExtents;
-				binding.shapeType = ParseShapeType(bindingConfig.shapeType);
-
-				auto boneIt = skeleton.boneNameToIndex.find(binding.boneName);
-				if (boneIt != skeleton.boneNameToIndex.end())
-					binding.boneIndex = boneIt->second;
-				else
-					VANS_LOG_WARN("[LoadAnimComp] bone binding references missing bone '" << binding.boneName << "'");
-
-				if (!binding.physicsObjectName.empty())
-				{
-					for (auto* physicsNode : scene.GetPhysicsNodes())
-					{
-						if (physicsNode && physicsNode->GetName() == binding.physicsObjectName)
-						{
-							binding.physicsNode = physicsNode;
-							binding.attachmentTransformID = physicsNode->GetTransformID();
-							binding.ownsAttachmentTransform = false;
-							break;
-						}
-					}
-
-					if (binding.physicsNode == nullptr)
-					{
-						VansScriptObject* physicsObject = scene.FindSceneObjectByName(binding.physicsObjectName);
-						auto* physicsComp = physicsObject ? physicsObject->GetComponent<VansScriptPhysicsComponent>() : nullptr;
-						if (physicsComp && physicsComp->m_PhysicsNode)
-						{
-							binding.physicsNode = physicsComp->m_PhysicsNode;
-							binding.attachmentTransformID = binding.physicsNode->GetTransformID();
-							binding.ownsAttachmentTransform = false;
-						}
-					}
-
-					if (binding.physicsNode == nullptr)
-					{
-						VANS_LOG_WARN("[LoadAnimComp] bone binding physics object not found: " << binding.physicsObjectName);
-					}
-					else if (binding.physicsNode->GetProperties().bodyType != VansEngine::PhysicsBodyType::Kinematic &&
-						!binding.physicsNode->GetProperties().isTrigger)
-					{
-						VANS_LOG_WARN("[LoadAnimComp] bone binding physics object '" << binding.physicsObjectName
-							<< "' is not kinematic/trigger; PhysX may override its transform");
-					}
-				}
-
-				if (binding.attachmentTransformID == UINT32_MAX)
-				{
-					binding.attachmentTransformID = VansTransformStore::AllocateTransform();
-					binding.ownsAttachmentTransform = true;
-				}
-
-				bindingSet.bindings.push_back(std::move(binding));
-			}
-
-			VansEngine::VansBoneAttachmentSystem::GetInstance().RegisterBindingSet(std::move(bindingSet));
-			VANS_LOG("[LoadAnimComp] Registered " << animConfig.boneBindings.size()
-				<< " bone collider binding(s) for '" << nodeName << "'");
-		}
-
 		VANS_LOG("[LoadAnimComp] Created animation component '" << nodeName
 			<< "' with " << controller->GetClipNames().size() << " clip(s), "
 			<< meshAsset->m_AnimImportResult.skeleton.bones.size() << " bones, "
@@ -809,12 +681,6 @@ namespace VansGraphics
 		{
 			VANS_LOG_WARN("[LoadRagdollComp] controller did not produce bind pose for '" << obj->m_ObjectName << "'");
 			return false;
-		}
-
-		if (VansEngine::VansBoneAttachmentSystem::GetInstance().FindBindingSet(animNode) != nullptr)
-		{
-			VANS_LOG_WARN("[LoadRagdollComp] object '" << obj->m_ObjectName
-				<< "' has both bone_bindings and ragdoll configured; avoid binding the same bone in Physics/Blend mode");
 		}
 
 		if (!VansEngine::VansRagdollSystem::GetInstance().CreateRagdoll(animNode, profile))

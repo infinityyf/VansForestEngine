@@ -47,6 +47,25 @@ namespace
 		return NormalizeOrFallback(glm::cross(axis, ref), glm::vec3(0.0f, 1.0f, 0.0f));
 	}
 
+	void BuildPackedTangentFrame(
+		const aiVector3D& normalValue,
+		aiVector3D& tangentValue,
+		const aiVector3D& bitangentValue,
+		float& handedness)
+	{
+		const glm::vec3 normal = NormalizeOrFallback(
+			glm::vec3(normalValue.x, normalValue.y, normalValue.z),
+			glm::vec3(0.0f, 1.0f, 0.0f));
+		glm::vec3 tangent(tangentValue.x, tangentValue.y, tangentValue.z);
+		tangent -= normal * glm::dot(normal, tangent);
+		tangent = NormalizeOrFallback(tangent, OrthogonalFallback(normal));
+
+		const glm::vec3 bitangent(bitangentValue.x, bitangentValue.y, bitangentValue.z);
+		handedness = glm::dot(bitangent, bitangent) > 1.0e-8f &&
+			glm::dot(glm::cross(normal, tangent), bitangent) < 0.0f ? -1.0f : 1.0f;
+		tangentValue = aiVector3D(tangent.x, tangent.y, tangent.z);
+	}
+
 	glm::vec3 PowerIterateSymmetric(const glm::mat3& matrix, const glm::vec3& seed)
 	{
 		glm::vec3 axis = NormalizeOrFallback(seed, glm::vec3(1.0f, 0.0f, 0.0f));
@@ -127,7 +146,8 @@ namespace
 	}
 
 	constexpr std::array<char, 8> kMeshCacheMagic = { 'V', 'A', 'N', 'S', 'M', 'S', 'H', '\0' };
-	constexpr uint32_t kMeshCacheVersion = 5;
+	// v7: 导入时合并完全相同顶点，并按后变换顶点缓存重排三角形索引。
+	constexpr uint32_t kMeshCacheVersion = 7;
 	constexpr uint32_t kMeshCacheFlagMultiMesh = 1u << 0;
 	constexpr uint64_t kMeshCacheMaxVectorItems = 256ull * 1024ull * 1024ull;
 
@@ -329,7 +349,7 @@ VansGraphics::IndexBufferParameters VansGraphics::VansMesh::GetIndexBufferParame
 	{
 		m_IndexBuffer.m_VansVKBuffer,
 		0,
-		VK_INDEX_TYPE_UINT32,
+		m_IndexType,
 	};
 	return p;
 }
@@ -456,7 +476,7 @@ void VansGraphics::VansMesh::ConfigureVertexInputLayout(bool import_tangent)
 {
 	m_VertexDataSize = 8 * sizeof(uint16_t);
 	if (import_tangent)
-		m_VertexDataSize += 6 * sizeof(uint16_t);
+		m_VertexDataSize += 4 * sizeof(uint16_t);
 
 	m_VertexInputBindingDescriptions =
 	{
@@ -494,16 +514,8 @@ void VansGraphics::VansMesh::ConfigureVertexInputLayout(bool import_tangent)
 			{
 				3,
 				0,
-				VK_FORMAT_R16G16B16_SFLOAT,
+				VK_FORMAT_R16G16B16A16_SFLOAT,
 				8 * sizeof(uint16_t)
-			}
-		);
-		m_VertexInputAttributeDescriptions.push_back(
-			{
-				4,
-				0,
-				VK_FORMAT_R16G16B16_SFLOAT,
-				11 * sizeof(uint16_t)
 			}
 		);
 	}
@@ -535,7 +547,35 @@ bool VansGraphics::VansMesh::UploadRawMeshToGpu(
 	}
 
 	VkDeviceSize vertexBufferSize = m_MeshRawData.size() * sizeof(uint16_t);
-	VkDeviceSize indexBufferSize = m_MeshTriangleIndex.size() * sizeof(uint32_t);
+
+	// 源数据和缓存仍保持 32 位，只压缩 GPU 上传，避免影响 CPU 物理数据。
+	// 光追命中着色器把索引缓冲声明为 uint[]，所以光追网格不参与压缩。
+	std::vector<uint16_t> compactIndexData;
+	const bool vertexCountFitsUint16 =
+		m_VertexCount > 0 && static_cast<uint32_t>(m_VertexCount) <= 65536u;
+	bool canUseUint16 = !m_SupportRayTracing && vertexCountFitsUint16;
+	if (canUseUint16)
+	{
+		compactIndexData.reserve(m_MeshTriangleIndex.size());
+		for (const int index : m_MeshTriangleIndex)
+		{
+			if (index < 0 || index >= m_VertexCount || static_cast<uint32_t>(index) > UINT16_MAX)
+			{
+				canUseUint16 = false;
+				compactIndexData.clear();
+				break;
+			}
+			compactIndexData.push_back(static_cast<uint16_t>(index));
+		}
+	}
+
+	const VkIndexType uploadIndexType = canUseUint16 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
+	const VkFormat uploadIndexFormat = canUseUint16 ? VK_FORMAT_R16_UINT : VK_FORMAT_R32_UINT;
+	const VkDeviceSize indexElementSize = canUseUint16 ? sizeof(uint16_t) : sizeof(uint32_t);
+	const VkDeviceSize indexBufferSize = m_MeshTriangleIndex.size() * indexElementSize;
+	const void* indexUploadData = canUseUint16
+		? static_cast<const void*>(compactIndexData.data())
+		: static_cast<const void*>(m_MeshTriangleIndex.data());
 
 	VansVKBuffer stagingVertexBuffer;
 	if (!stagingVertexBuffer.CreatVulkanBuffer(logic_device,
@@ -561,7 +601,7 @@ bool VansGraphics::VansMesh::UploadRawMeshToGpu(
 	}
 
 	if (!stagingVertexBuffer.SetBufferData(m_MeshRawData.data(), 0, vertexBufferSize) ||
-		!stagingIndexBuffer.SetBufferData(m_MeshTriangleIndex.data(), 0, indexBufferSize))
+		!stagingIndexBuffer.SetBufferData(indexUploadData, 0, indexBufferSize))
 	{
 		VANS_LOG_ERROR("[" << label << "] Failed to upload staging mesh data");
 		stagingVertexBuffer.DestroyVulkanBuffer(logic_device);
@@ -595,7 +635,7 @@ bool VansGraphics::VansMesh::UploadRawMeshToGpu(
 
 	if (!m_IndexBuffer.CreatVulkanBuffer(logic_device,
 		indexBufferSize,
-		VK_FORMAT_R32_UINT,
+		uploadIndexFormat,
 		indexUsage,
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
 	{
@@ -628,6 +668,7 @@ bool VansGraphics::VansMesh::UploadRawMeshToGpu(
 
 	stagingVertexBuffer.DestroyVulkanBuffer(logic_device);
 	stagingIndexBuffer.DestroyVulkanBuffer(logic_device);
+	m_IndexType = uploadIndexType;
 
 	if (!keepImportDataAfterUpload)
 		ReleaseCpuImportDataAfterUpload();
@@ -835,9 +876,11 @@ VansGraphics::VansMeshCacheBuildStatus VansGraphics::VansMesh::BuildMeshCache(
 			scaleFactor);
 	}
 
-	// Skeletal meshes retain their rig and skinning payload in the indexed package
-	// resource artifact. The static .vmesh representation is deliberately not used.
-	if (expectMultiMesh && !mesh.m_AnimImportResult.skeleton.bones.empty())
+	// Animated multi-mesh assets retain their skeleton/skin or node-transform
+	// channels in the indexed package resource artifact. The static .vmesh format
+	// deliberately contains geometry only, so neither form may be reported as a
+	// failed cache build.
+	if (expectMultiMesh && mesh.m_AnimImportResult.hasAnimation)
 		return VansMeshCacheBuildStatus::NotEligible;
 
 	if (!IsMeshCacheCurrent(cachePath, file_name, import_tangent, expectMultiMesh, scaleFactor))
@@ -1008,12 +1051,12 @@ void ProcessNode(aiNode* node, const aiScene* scene, const aiMatrix4x4& parentTr
 					bitangent = directionTransform * mesh->mBitangents[i];
 					bitangent.NormalizeSafe();
 				}
+				float tangentHandedness = 1.0f;
+				BuildPackedTangentFrame(normal, tangent, bitangent, tangentHandedness);
 				meshRawData.emplace_back(FloatToHalf(tangent.x));
 				meshRawData.emplace_back(FloatToHalf(tangent.y));
 				meshRawData.emplace_back(FloatToHalf(tangent.z));
-				meshRawData.emplace_back(FloatToHalf(bitangent.x));
-				meshRawData.emplace_back(FloatToHalf(bitangent.y));
-				meshRawData.emplace_back(FloatToHalf(bitangent.z));
+				meshRawData.emplace_back(FloatToHalf(tangentHandedness));
 			}
 		}
 		vertexCount += mesh->mNumVertices;
@@ -1062,7 +1105,13 @@ void VansGraphics::VansMesh::LoadMesh(VkDevice& logic_device, VkQueue& queue, Va
 	}
 	//鐢╝ssimp
 	Assimp::Importer importer;
-	auto processFlag = aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_GenNormals;
+	auto processFlag = aiProcess_Triangulate
+		| aiProcess_FlipUVs
+		| aiProcess_GenNormals
+		| aiProcess_JoinIdenticalVertices
+		| aiProcess_ImproveCacheLocality
+		| aiProcess_SortByPType
+		| aiProcess_ValidateDataStructure;
 	if (import_tangent)
 	{
 		processFlag |= aiProcess_CalcTangentSpace;
@@ -1102,7 +1151,7 @@ void VansGraphics::VansMesh::BuildBLAS(VansVKDevice& device, VansVKCommandBuffer
 	triangles.vertexData.deviceAddress = vertexBufferAddress;
 	triangles.vertexStride = m_VertexDataSize;
 	triangles.maxVertex = GetMeshVertexCount() - 1;
-	triangles.indexType = VK_INDEX_TYPE_UINT32;
+	triangles.indexType = m_IndexType;
 	triangles.indexData.deviceAddress = indexBufferAddress;
 	triangles.transformData.deviceAddress = 0;
 
@@ -1203,6 +1252,7 @@ void VansGraphics::VansMesh::InitFromRawData(
 	m_VertexCount   = static_cast<int>(vertexCount);
 	m_IndexCount    = static_cast<int>(indexCount);
 	m_VertexDataSize = vertexStride;
+	m_IndexType = VK_INDEX_TYPE_UINT32;
 
 	m_VertexInputBindingDescriptions   = bindings;
 	m_VertexInputAttributeDescriptions = attribs;

@@ -4,6 +4,7 @@
 #include "../AssetCore/VansAssetGuid.h"
 #include "VansSceneDiagnostics.h"
 #include "VansSceneJson.h"
+#include "VansSceneParentReference.h"
 
 #include <array>
 #include <cstdint>
@@ -35,7 +36,7 @@ struct VansSceneEntityData
 {
     VansEntityGuid id;
     std::string name;
-    std::optional<VansEntityGuid> parent;
+	std::optional<VansSceneParentReference> parent;
     std::vector<VansSceneComponentData> components;
 };
 

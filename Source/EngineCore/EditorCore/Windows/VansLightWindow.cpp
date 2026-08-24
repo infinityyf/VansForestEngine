@@ -164,7 +164,9 @@ namespace
         return degrees * DEG_TO_RAD;
     }
 
-    bool EditPunctualShadow(Vans::EditorAPI::PointLightSettings::PunctualShadowSettings& shadow)
+    bool EditPunctualShadow(
+        Vans::EditorAPI::PointLightSettings::PunctualShadowSettings& shadow,
+        bool forceEveryFrame = false)
     {
         bool changed = false;
         changed |= ImGui::Checkbox("Cast Shadows", &shadow.castShadows);
@@ -184,7 +186,18 @@ namespace
             changed = true;
         }
         const char* updateModes[] = { "Every Frame", "On Change", "Budgeted" };
-        changed |= ImGui::Combo("Shadow Update", &shadow.updateMode, updateModes, 3);
+        if (forceEveryFrame)
+        {
+            shadow.updateMode = 0;
+            ImGui::BeginDisabled();
+            ImGui::Combo("Shadow Update", &shadow.updateMode, updateModes, 3);
+            ImGui::EndDisabled();
+            ImGui::TextDisabled("Point shadows render all six faces every frame.");
+        }
+        else
+        {
+            changed |= ImGui::Combo("Shadow Update", &shadow.updateMode, updateModes, 3);
+        }
         const char* fallbacks[] = { "None", "Screen Space" };
         changed |= ImGui::Combo("Shadow Fallback", &shadow.fallback, fallbacks, 2);
         changed |= DragFloatTracked("Shadow Max Distance", &shadow.maxDistance, 0.25f, 0.01f, 10000.0f, "%.2f");
@@ -280,7 +293,7 @@ bool VansGraphics::VansLightWindow::DrawPointLights(std::vector<Vans::EditorAPI:
             changed |= DragFloatTracked("Intensity", &pointLights[lightIndex].intensity, 0.1f, 0.0f, 1000.0f, "%.2f");
             changed |= DragFloatTracked("Radius", &pointLights[lightIndex].radius, 0.1f, 0.01f, 10000.0f, "%.2f");
             pointLights[lightIndex].radius = std::max(pointLights[lightIndex].radius, 0.01f);
-            changed |= EditPunctualShadow(pointLights[lightIndex].shadow);
+            changed |= EditPunctualShadow(pointLights[lightIndex].shadow, true);
             ImGui::TreePop();
         }
         ImGui::PopID();

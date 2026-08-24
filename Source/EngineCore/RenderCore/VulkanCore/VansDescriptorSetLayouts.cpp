@@ -1,6 +1,7 @@
 ﻿#include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansDescriptorSetLayouts.h"
 #include "VansVKDescriptorManager.h"
+#include "../ShadowCore/VansPunctualShadowTypes.h"
 #include <cassert>
 
 namespace VansGraphics
@@ -136,7 +137,7 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_Global(
 }
 
 // ============================================================
-// Set 2: Per-Object Layout (1 binding: Transform SSBO only)
+// Set 2: Per-Object Layout (scene transforms + sorted draw-instance records)
 // Shared by all geometry nodes (opaque, transparent, shadow, terrain).
 // ============================================================
 void VansDescriptorSetLayoutFactory::CreateAndAllocate_Object(
@@ -147,6 +148,9 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_Object(
 		// Fragment stage 也需要访问（贴花 pass 在 fragment shader 中读取 ModelMatrix 做 OBB 测试）
 		{OBJECT_BINDING_TRANSFORM_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
 		 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		// binding 1: Draw submission records. Fragment data is forwarded through a flat varying.
+		{OBJECT_BINDING_DRAW_INSTANCE_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+		 VK_SHADER_STAGE_VERTEX_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount, VansDescriptorLifetimeRole::ScenePersistent);
 }
@@ -314,7 +318,7 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_DeferredLighting(
 		{6,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 		{7,  VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 		{8,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-		{9,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{9,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VANS_PUNCTUAL_SHADOW_ATLAS_COUNT, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 		{10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 		{11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 		{12, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
@@ -446,6 +450,19 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_ScreenSpaceShadow(
 		{SSS_BINDING_HIZ,      VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{SSS_BINDING_RESULT,   VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{SSS_BINDING_PARAMS,   VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSS_BINDING_CASCADE_DEPTH,   VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSS_BINDING_CASCADE_COMPARE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSS_BINDING_CASCADE_MIN_MAX, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_CascadeShadowMinMax(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{CASCADE_MIN_MAX_BINDING_INPUT,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{CASCADE_MIN_MAX_BINDING_OUTPUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }
@@ -480,6 +497,8 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_SSR_Trace(
 		{SSR_TRACE_BINDING_HIZ,       VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{SSR_TRACE_BINDING_HIT,       VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{SSR_TRACE_BINDING_PDF,       VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSR_TRACE_BINDING_RAY_LIST,  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{SSR_TRACE_BINDING_CONTROL,   VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }
@@ -534,7 +553,7 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_FogLightInjection(
 		{FOG_INJECT_BINDING_SHADOW_MAP,       VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{FOG_INJECT_BINDING_PARAMS,           VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{FOG_INJECT_BINDING_HISTORY,          VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{FOG_INJECT_BINDING_PUNCTUAL_SHADOW,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{FOG_INJECT_BINDING_PUNCTUAL_SHADOW,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VANS_PUNCTUAL_SHADOW_ATLAS_COUNT, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }
@@ -654,7 +673,7 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_GIPointLight(
 		{GIPL_BINDING_EMISSION,        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{GIPL_BINDING_ENVIRONMENT_MAP, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{GIPL_BINDING_SHADOW_MAP,      VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{GIPL_BINDING_PUNCTUAL_SHADOW, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{GIPL_BINDING_PUNCTUAL_SHADOW, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VANS_PUNCTUAL_SHADOW_ATLAS_COUNT, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{GIPL_BINDING_PBR_DATA,        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{GIPL_BINDING_GI_VISIBILITY,   VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{GIPL_BINDING_IRRADIANCE_ATLAS,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
@@ -1000,7 +1019,7 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_PunctualShadowDebug(
 	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
 {
 	std::vector<VkDescriptorSetLayoutBinding> bindings = {
-		{PUNCTUAL_SHADOW_DEBUG_BINDING_ATLAS, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{PUNCTUAL_SHADOW_DEBUG_BINDING_ATLAS, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VANS_PUNCTUAL_SHADOW_ATLAS_COUNT, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{PUNCTUAL_SHADOW_DEBUG_BINDING_RESULT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(
@@ -1197,7 +1216,7 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_TransmissionGlass(
 		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 		{TRANSMISSION_GLASS_BINDING_CASCADE_SHADOW, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
 		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-		{TRANSMISSION_GLASS_BINDING_PUNCTUAL_SHADOW, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+		{TRANSMISSION_GLASS_BINDING_PUNCTUAL_SHADOW, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VANS_PUNCTUAL_SHADOW_ATLAS_COUNT,
 		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);

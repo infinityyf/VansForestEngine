@@ -214,14 +214,21 @@ void AmbientBRDF_Cloth(BRDFData brdf, ClothMaterialPayload cloth,
     vec3 sheenEnergy = sheenColor * ClothDirectionalAlbedo(NoV, roughness);
 
     vec3 R = reflect(-V, N);
-    float lod = GetMipLevelFromRoughness(roughness);
-    ReflectionProbeSample probeSample = SampleReflectionProbes(brdf.positionWS, N, R, roughness);
-    vec3 skySpec = SampleSkySpecularCube(PreConvSpecularEnvironment, R, lod);
-    vec3 iblSpec = mix(skySpec, probeSample.specular, probeSample.coverage);
-
     float ssrFade = 1.0 - smoothstep(reflectionProbeLightingParams.x, reflectionProbeLightingParams.y, roughness);
     float ssrMask = clamp(brdf.indirectSpecular.a * ssrFade, 0.0, 1.0);
-    vec3 specLighting = mix(iblSpec, brdf.indirectSpecular.rgb, ssrMask);
+	vec3 specLighting = brdf.indirectSpecular.rgb;
+	if (ssrMask < 1.0)
+	{
+		ReflectionProbeSample probeSample = SampleReflectionProbes(brdf.positionWS, N, R, roughness);
+		vec3 iblSpec = probeSample.specular;
+		if (probeSample.coverage < 1.0)
+		{
+			float lod = GetMipLevelFromRoughness(roughness);
+			vec3 skySpec = SampleSkySpecularCube(PreConvSpecularEnvironment, R, lod);
+			iblSpec = mix(skySpec, probeSample.specular, probeSample.coverage);
+		}
+		specLighting = mix(iblSpec, brdf.indirectSpecular.rgb, ssrMask);
+	}
 
     float baseScale = clamp(1.0 - Max3Cloth(sheenEnergy), 0.0, 1.0);
     if (ClothModel(cloth) == CLOTH_MODEL_SILK)
@@ -242,9 +249,8 @@ void AmbientBRDF_Cloth(BRDFData brdf, ClothMaterialPayload cloth,
 
 void CalculateDirectLight_Cloth(BRDFData brdf, ClothMaterialPayload cloth,
                                 vec3 clothTangent,
-                                sampler2DArray cascadeShadowMap, float viewDepth,
-                                sampler2DArrayShadow punctualShadowMap,
-                                float screenSpaceShadow,
+                                sampler2DShadow punctualShadowMap[PUNCTUAL_SHADOW_ATLAS_COUNT],
+								float directionalShadow,
                                 inout LightResult lightResult)
 {
     lightResult.directDiffuse = vec3(0.0);
@@ -255,7 +261,7 @@ void CalculateDirectLight_Cloth(BRDFData brdf, ClothMaterialPayload cloth,
         vec3 sR = vec3(0.0);
         DirectBRDF_Cloth(brdf, cloth, clothTangent, uDirectionLight.direction.rgb, dR, sR);
 
-        float shadow = min(SampleCascadeShadow(brdf.positionWS, brdf.normal, cascadeShadowMap, viewDepth), screenSpaceShadow);
+		float shadow = directionalShadow;
         lightResult.directDiffuse += dR * uDirectionLight.color.rgb * uDirectionLight.intensity * shadow;
         lightResult.directSpecular += sR * uDirectionLight.color.rgb * uDirectionLight.intensity * shadow;
     }

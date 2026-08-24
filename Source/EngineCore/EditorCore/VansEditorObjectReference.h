@@ -14,8 +14,16 @@ enum class EditorObjectDomain
     ProjectAsset,
     SceneEntity,
     SceneComponent,
+	SceneSubObject,
     SubAsset,
     ScriptClass
+};
+
+enum class SceneSubObjectKind
+{
+	None,
+	Bone,
+	Socket
 };
 
 enum class DocumentPropertySpace
@@ -49,6 +57,8 @@ struct EditorObjectHandle
     std::string entityGuid;
     std::string componentGuid;
     std::string componentType;
+	SceneSubObjectKind subObjectKind = SceneSubObjectKind::None;
+	std::string subObjectGuid;
     std::string subObjectName;
 };
 

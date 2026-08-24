@@ -76,6 +76,10 @@ namespace VansGraphics
 
 		VansVKBuffer m_IndexBuffer;
 
+		// GPU 上传时确定实际索引格式。可表示为 16 位的普通网格使用 UINT16；
+		// 光追命中着色器仍按 uint[] 读取，因此光追网格继续使用 UINT32。
+		VkIndexType m_IndexType = VK_INDEX_TYPE_UINT32;
+
 	public :
 
 		VansMesh(bool needCPUData = false, bool supportRayTracing = false);

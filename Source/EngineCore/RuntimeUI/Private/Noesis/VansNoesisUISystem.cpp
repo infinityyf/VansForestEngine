@@ -6,6 +6,7 @@
 
 #include "../../../ProjectSystem/VansProjectManager.h"
 #include "../../../Util/VansLog.h"
+#include "../../../RuntimeCore/VansThreadContract.h"
 
 #include <NsCore/Log.h>
 #include <NsCore/Error.h>
@@ -14,6 +15,7 @@
 #include <NsGui/ResourceDictionary.h>
 #include <NsGui/FontProperties.h>
 
+#include <algorithm>
 #include <cassert>
 
 namespace VansRuntime
@@ -127,13 +129,20 @@ bool VansNoesisUISystem::GetViewSize(double& outW, double& outH) const
 
 void VansNoesisUISystem::Shutdown()
 {
+    VANS_ASSERT_MAIN_THREAD();
     if (!m_Initialized)
     {
         return;
     }
 
-    // 首先销毁所有 Document，确保 Noesis View/Renderer 先释放
-    m_Documents.clear();
+    // RT has already shut down every IRenderer. Main now destroys the Views,
+    // dependency objects, providers and process-global Noesis state.
+    {
+        std::lock_guard<std::mutex> lock(m_DocumentsMutex);
+        m_Documents.clear();
+        m_RetiredDocuments.clear();
+    }
+    m_RenderFrameDocuments.clear();
 
     // 关闭输入适配器
     if (m_InputAdapter)
@@ -156,8 +165,35 @@ void VansNoesisUISystem::Shutdown()
     m_Initialized = false;
 }
 
+void VansNoesisUISystem::ShutdownRendering()
+{
+    VANS_ASSERT_RENDER_THREAD();
+    if (!m_Initialized)
+        return;
+
+    std::vector<std::shared_ptr<VansNoesisDocument>> documents;
+    {
+        std::lock_guard<std::mutex> lock(m_DocumentsMutex);
+        documents.reserve(m_Documents.size() + m_RetiredDocuments.size());
+        documents.insert(documents.end(), m_Documents.begin(), m_Documents.end());
+        documents.insert(
+            documents.end(), m_RetiredDocuments.begin(), m_RetiredDocuments.end());
+    }
+    documents.insert(
+        documents.end(), m_RenderFrameDocuments.begin(), m_RenderFrameDocuments.end());
+    std::sort(documents.begin(), documents.end());
+    documents.erase(std::unique(documents.begin(), documents.end()), documents.end());
+    for (const auto& document : documents)
+    {
+        if (document)
+            document->ShutdownRenderer();
+    }
+    m_RenderFrameDocuments.clear();
+}
+
 void VansNoesisUISystem::Update(float deltaTime)
 {
+    VANS_ASSERT_MAIN_THREAD();
     if (!m_Initialized)
     {
         return;
@@ -182,7 +218,9 @@ void VansNoesisUISystem::Update(float deltaTime)
 
 void VansNoesisUISystem::RenderOffscreenPass(VkCommandBuffer cmd)
 {
-    if (!m_Initialized || m_Documents.empty())
+    VANS_ASSERT_RENDER_THREAD();
+    m_RenderFrameDocuments = SnapshotActiveDocuments();
+    if (!m_Initialized || m_RenderFrameDocuments.empty())
     {
         return;
     }
@@ -195,9 +233,10 @@ void VansNoesisUISystem::RenderOffscreenPass(VkCommandBuffer cmd)
     m_RenderDevice->SetActiveCommandBuffer(cmd, m_FrameNumber, safeFrame);
 
     // 离屏渲染（渐变、效果等）必须在 BeginRenderPass 之前完成
-    for (auto& doc : m_Documents)
+    for (const auto& doc : m_RenderFrameDocuments)
     {
-        if (doc && doc->IsVisible())
+        if (doc && doc->IsVisible() &&
+            doc->InitializeRenderer(m_RenderDevice->GetNoesisDevice()))
         {
             doc->RenderOffscreen();
         }
@@ -206,7 +245,8 @@ void VansNoesisUISystem::RenderOffscreenPass(VkCommandBuffer cmd)
 
 void VansNoesisUISystem::RenderDocumentsPass(VkRenderPass renderPass, uint32_t sampleCount)
 {
-    if (!m_Initialized || m_Documents.empty())
+    VANS_ASSERT_RENDER_THREAD();
+    if (!m_Initialized || m_RenderFrameDocuments.empty())
     {
         return;
     }
@@ -215,13 +255,14 @@ void VansNoesisUISystem::RenderDocumentsPass(VkRenderPass renderPass, uint32_t s
     m_RenderDevice->SetActiveRenderPass(renderPass, sampleCount);
 
     // 正式上屏渲染，必须在 vkCmdBeginRenderPass 之后调用
-    for (auto& doc : m_Documents)
+    for (const auto& doc : m_RenderFrameDocuments)
     {
         if (doc && doc->IsVisible())
         {
             doc->Render();
         }
     }
+    m_RenderFrameDocuments.clear();
 }
 
 bool VansNoesisUISystem::PrepareDocumentPreview(
@@ -229,6 +270,7 @@ bool VansNoesisUISystem::PrepareDocumentPreview(
     VkCommandBuffer cmd,
     double totalTimeSeconds)
 {
+    VANS_ASSERT_RENDER_THREAD();
     if (!m_Initialized || !document || cmd == VK_NULL_HANDLE)
         return false;
 
@@ -238,8 +280,14 @@ bool VansNoesisUISystem::PrepareDocumentPreview(
         : 0;
     m_RenderDevice->SetActiveCommandBuffer(cmd, m_FrameNumber, safeFrame);
 
-    document->Update(totalTimeSeconds);
-    document->RenderOffscreen();
+    auto noesisDocument = std::dynamic_pointer_cast<VansNoesisDocument>(document);
+    if (!noesisDocument ||
+        !noesisDocument->InitializeRenderer(m_RenderDevice->GetNoesisDevice()))
+        return false;
+    // IView::Update belongs to Main. The render request only consumes the
+    // latest snapshot published by that update.
+    (void)totalTimeSeconds;
+    noesisDocument->RenderOffscreen();
     return true;
 }
 
@@ -248,6 +296,7 @@ bool VansNoesisUISystem::RenderDocumentPreviewPass(
     VkRenderPass renderPass,
     uint32_t sampleCount)
 {
+    VANS_ASSERT_RENDER_THREAD();
     if (!m_Initialized || !document || renderPass == VK_NULL_HANDLE)
         return false;
 
@@ -258,6 +307,7 @@ bool VansNoesisUISystem::RenderDocumentPreviewPass(
 
 void VansNoesisUISystem::SetScreenSize(uint32_t width, uint32_t height)
 {
+    VANS_ASSERT_MAIN_THREAD();
     m_ScreenWidth  = width;
     m_ScreenHeight = height;
     if (m_InputAdapter)
@@ -271,7 +321,7 @@ void VansNoesisUISystem::SetScreenSize(uint32_t width, uint32_t height)
             static_cast<float>(m_ScreenHeight));
     }
 
-    for (auto& doc : m_Documents)
+    for (const auto& doc : SnapshotActiveDocuments())
     {
         if (doc)
         {
@@ -282,6 +332,7 @@ void VansNoesisUISystem::SetScreenSize(uint32_t width, uint32_t height)
 
 std::shared_ptr<VansNoesisDocument> VansNoesisUISystem::LoadDocument(const std::string& xamlPath)
 {
+    VANS_ASSERT_MAIN_THREAD();
     assert(m_Initialized && "VansNoesisUISystem: 调用 LoadDocument 前必须先 Initialize");
 
     // Load XAML root element
@@ -301,9 +352,9 @@ std::shared_ptr<VansNoesisDocument> VansNoesisUISystem::LoadDocument(const std::
         return nullptr;
     }
 
-    // Configure view size and renderer
+    // Configure Main-owned view. IRenderer::Init is deferred until RT first
+    // consumes the document.
     view->SetSize(m_ScreenWidth, m_ScreenHeight);
-    view->GetRenderer()->Init(m_RenderDevice->GetNoesisDevice());
 
     // Construct the document (which registers the view with the input adapter)
     auto doc = std::make_shared<VansNoesisDocument>(
@@ -312,17 +363,32 @@ std::shared_ptr<VansNoesisDocument> VansNoesisUISystem::LoadDocument(const std::
         xamlPath,
         m_InputAdapter.get());
 
-    m_Documents.push_back(doc);
+    {
+        std::lock_guard<std::mutex> lock(m_DocumentsMutex);
+        m_Documents.push_back(doc);
+    }
     return doc;
 }
 
 void VansNoesisUISystem::UnloadDocument(const std::shared_ptr<VansNoesisDocument>& doc)
 {
+    VANS_ASSERT_MAIN_THREAD();
+    std::lock_guard<std::mutex> lock(m_DocumentsMutex);
     auto it = std::find(m_Documents.begin(), m_Documents.end(), doc);
     if (it != m_Documents.end())
     {
+        // Keep the View alive until RT has called IRenderer::Shutdown. This
+        // protects an N-1 render snapshot while Main unloads frame N.
+        m_RetiredDocuments.push_back(*it);
         m_Documents.erase(it);
     }
+}
+
+std::vector<std::shared_ptr<VansNoesisDocument>>
+VansNoesisUISystem::SnapshotActiveDocuments() const
+{
+    std::lock_guard<std::mutex> lock(m_DocumentsMutex);
+    return m_Documents;
 }
 
 bool VansNoesisUISystem::WantsMouse() const

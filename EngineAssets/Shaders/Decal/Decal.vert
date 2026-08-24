@@ -3,12 +3,12 @@
 
 #include "../Common/CameraData.glsl"
 #include "../Common/ModelData.glsl"
+#include "../Common/VansDrawSubmission.glsl"
 
 layout( location = 0 ) in vec4 position;
 layout( location = 1 ) in vec2 uv;
 layout( location = 2 ) in vec3 normal;
-layout( location = 3 ) in vec3 tangent;
-layout( location = 4 ) in vec3 bitangent;
+layout( location = 3 ) in vec4 tangentFrame;
 
 // 插值到 fragment shader 的世界空间数据
 layout( location = 0 ) out vec2  frag_uv;
@@ -19,16 +19,10 @@ layout( location = 4 ) out vec3  position_world;
 // 贴花专用：OBB 局部坐标（用于 fragment shader 中的越界测试和 UV 推导）
 layout( location = 5 ) out vec3  position_local;
 
-layout( push_constant ) uniform MaterialPushConsts
-{
-    int materialIndex;
-    int objectIndex;
-    uint vertexFeatureMask;
-} materialConst;
-
 void main()
 {
-    int objectIndex = materialConst.objectIndex;
+    VansDrawData drawData = VansGetDrawData();
+    int objectIndex = drawData.transformIndex;
     mat4 ModelMatrix  = ModelBuffer.transforms[objectIndex].ModelMatrix;
     mat4 NormalMatrix = ModelBuffer.transforms[objectIndex].NormalMatrix;
 
@@ -40,6 +34,8 @@ void main()
 
     // 安全 normalize：防止零向量产生 NaN
     vec3 n_ws  = normalMatrix * normal;
+    vec3 tangent = tangentFrame.xyz;
+    vec3 bitangent = cross(normal, tangent) * (tangentFrame.w < 0.0 ? -1.0 : 1.0);
     vec3 t_ws  = normalMatrix * tangent;
     vec3 bt_ws = normalMatrix * bitangent;
 

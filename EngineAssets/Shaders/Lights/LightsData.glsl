@@ -351,7 +351,7 @@ float SamplePunctualShadowAtlas(
     vec3 positionWS,
     vec3 normalWS,
     vec3 lightDirectionWS,
-    sampler2DArrayShadow shadowMap,
+    sampler2DShadow shadowMap[PUNCTUAL_SHADOW_ATLAS_COUNT],
     uint lightType,
     int lightIndex,
     int qualityProfile)
@@ -451,7 +451,9 @@ float SamplePunctualShadowAtlas(
             atlasUV + kernel * penumbraTexels * atlasTexel,
             shadowView.atlasClamp.xy,
             shadowView.atlasClamp.zw);
-        visibility += texture(shadowMap, vec4(sampleUV, float(atlasIndex), depthReference));
+        visibility += atlasIndex == 0u
+            ? texture(shadowMap[0], vec3(sampleUV, depthReference))
+            : texture(shadowMap[1], vec3(sampleUV, depthReference));
     }
     visibility /= float(tapCount);
     return mix(1.0, visibility, clamp(shadow.atlasWeight, 0.0, 1.0));
@@ -460,14 +462,14 @@ float SamplePunctualShadowAtlas(
 
 
 
-float SamplePointShadowMap(vec3 position_world, sampler2DArrayShadow shadowMap, int lightIndex)
+float SamplePointShadowMap(vec3 position_world, sampler2DShadow shadowMap[PUNCTUAL_SHADOW_ATLAS_COUNT], int lightIndex)
 {
     return SamplePunctualShadowAtlas(position_world, normalize(uPointLights[lightIndex].position.xyz - position_world),
         normalize(uPointLights[lightIndex].position.xyz - position_world),
         shadowMap, 0u, lightIndex, 0);
 }
 
-float SampleSpotShadowMap(vec3 position_world, sampler2DArrayShadow shadowMap, int lightIndex)
+float SampleSpotShadowMap(vec3 position_world, sampler2DShadow shadowMap[PUNCTUAL_SHADOW_ATLAS_COUNT], int lightIndex)
 {
     return SamplePunctualShadowAtlas(position_world, normalize(uSpotLights[lightIndex].position.xyz - position_world),
         normalize(uSpotLights[lightIndex].position.xyz - position_world),
@@ -475,7 +477,7 @@ float SampleSpotShadowMap(vec3 position_world, sampler2DArrayShadow shadowMap, i
 }
 
 // Hard rect-shadow sampling for volumetric fog (Phase 4).
-float SampleRectShadowMap(vec3 position_world, sampler2DArrayShadow shadowMap, int lightIndex)
+float SampleRectShadowMap(vec3 position_world, sampler2DShadow shadowMap[PUNCTUAL_SHADOW_ATLAS_COUNT], int lightIndex)
 {
     return SamplePunctualShadowAtlas(position_world, normalize(uRectLights[lightIndex].position_halfW.xyz - position_world),
         normalize(uRectLights[lightIndex].position_halfW.xyz - position_world),
@@ -487,14 +489,14 @@ float SampleRectShadowMap(vec3 position_world, sampler2DArrayShadow shadowMap, i
 //   tan(θ) 在 grazing 时正确趋向无穷（被 max 限制），在正向光照时为 0。
 // 调用方在投影前将 position_world += normalWS * normalOffset 然后投影，
 // 避免 NDC 空间固定偏置因透视压缩在中等距离（2–5m）产生数十厘米的 peter-panning。
-float SamplePointShadowMapBRDF(vec3 position_world, vec3 normalWS, vec3 lightDirectionWS, sampler2DArrayShadow shadowMap, int lightIndex)
+float SamplePointShadowMapBRDF(vec3 position_world, vec3 normalWS, vec3 lightDirectionWS, sampler2DShadow shadowMap[PUNCTUAL_SHADOW_ATLAS_COUNT], int lightIndex)
 {
     uint metaIndex = uPointLights[lightIndex].shadowMetaIndex;
     int quality = GetPunctualShadowQuality(metaIndex);
     return SamplePunctualShadowAtlas(position_world, normalWS, lightDirectionWS, shadowMap, 0u, lightIndex, quality);
 }
 
-float SampleSpotShadowMapBRDF(vec3 position_world, vec3 normalWS, vec3 lightDirectionWS, sampler2DArrayShadow shadowMap, int lightIndex)
+float SampleSpotShadowMapBRDF(vec3 position_world, vec3 normalWS, vec3 lightDirectionWS, sampler2DShadow shadowMap[PUNCTUAL_SHADOW_ATLAS_COUNT], int lightIndex)
 {
     uint metaIndex = uSpotLights[lightIndex].shadowMetaIndex;
     int quality = GetPunctualShadowQuality(metaIndex);
@@ -502,7 +504,7 @@ float SampleSpotShadowMapBRDF(vec3 position_world, vec3 normalWS, vec3 lightDire
 }
 
 // RectLight uses the same metadata/view indirection as point and spot lights.
-float SampleRectShadowMapBRDF(vec3 position_world, vec3 normalWS, vec3 lightDirectionWS, sampler2DArrayShadow shadowMap, int lightIndex)
+float SampleRectShadowMapBRDF(vec3 position_world, vec3 normalWS, vec3 lightDirectionWS, sampler2DShadow shadowMap[PUNCTUAL_SHADOW_ATLAS_COUNT], int lightIndex)
 {
     uint metaIndex = uRectLights[lightIndex].shadowMetaIndex;
     int quality = GetPunctualShadowQuality(metaIndex);
@@ -623,13 +625,45 @@ vec2 CascadeDiskSample(int sampleIndex, int sampleCount, bool clumped)
     return fibonacciSpiralDirection[sampleIndex] * radius;
 }
 
+// Fixed PCSS kernels. Keeping the radius distribution in shader constants
+// removes the per-pixel divide/sqrt work from every blocker and filter tap.
+const vec2 CASCADE_BLOCKER_KERNEL[16] = vec2[](
+    vec2(0.031250000, 0.000000000), vec2(-0.069128332, 0.063327215),
+    vec2(0.013660269, -0.155651725), vec2(0.133096001, 0.173600164),
+    vec2(-0.276950668, -0.048988674), vec2(0.290040883, -0.184500268),
+    vec2(-0.105464249, 0.392321749), vec2(-0.216050168, -0.415991451),
+    vec2(0.499014439, 0.182239273), vec2(-0.548830174, 0.226549118),
+    vec2(0.278148934, -0.594388116), vec2(0.215110278, 0.685805461),
+    vec2(-0.675946258, -0.391724673), vec2(0.824070184, -0.181169518),
+    vec2(-0.521211045, 0.741369077), vec2(-0.124494731, -0.960717245));
+
+const vec2 CASCADE_FILTER_KERNEL[24] = vec2[](
+    vec2(0.144337567, 0.000000000), vec2(-0.184342220, 0.168872574),
+    vec2(0.028216531, -0.321512821), vec2(0.232351428, 0.303061293),
+    vec2(-0.426393447, -0.075422997), vec2(0.403917096, -0.256938994),
+    vec2(-0.135102364, 0.502574059), vec2(-0.257654860, -0.496098754),
+    vec2(0.559007984, 0.204148819), vec2(-0.581554659, 0.240057309),
+    vec2(0.280347774, -0.599086910), vec2(0.207169874, 0.660490204),
+    vec2(-0.624412406, -0.361859752), vec2(0.732506830, -0.161039572),
+    vec2(-0.447037516, 0.635864865), vec2(-0.103276018, -0.796973900),
+    vec2(0.634013454, 0.534347210), vec2(-0.853183369, 0.035281811),
+    vec2(0.622331773, -0.619303235), vec2(-0.041636407, 0.900425682),
+    vec2(-0.592150680, -0.709594418), vec2(0.938032060, 0.126210887),
+    vec2(-0.794792667, 0.552996036), vec2(0.217183072, -0.965400528));
+
+const vec2 CASCADE_ROTATION_CS[CASCADE_COUNT] = vec2[](
+    vec2(1.000000000, 0.000000000),
+    vec2(-0.047220096, 0.998884509),
+    vec2(-0.995540525, -0.094334845),
+    vec2(0.141239135, -0.989975508));
+
 vec2 RotateCascadeDiskSample(vec2 sampleOffset, int cascadeIdx)
 {
     // One stable rotation per cascade.  A circular low-discrepancy kernel does
     // not need per-pixel/frame noise, which would trade contouring for shimmer.
-    float angle = float(cascadeIdx) * 1.61803398875;
-    float c = cos(angle);
-    float s = sin(angle);
+	vec2 cs = CASCADE_ROTATION_CS[clamp(cascadeIdx, 0, CASCADE_COUNT - 1)];
+	float c = cs.x;
+	float s = cs.y;
     return vec2(c * sampleOffset.x - s * sampleOffset.y,
                 s * sampleOffset.x + c * sampleOffset.y);
 }
@@ -666,8 +700,7 @@ float FindCascadeAverageBlockerDepth(
 
     for (int i = 0; i < blockerSampleCount; ++i)
     {
-        vec2 disk = RotateCascadeDiskSample(
-            CascadeDiskSample(i, blockerSampleCount, true), cascadeIdx);
+		vec2 disk = RotateCascadeDiskSample(CASCADE_BLOCKER_KERNEL[i], cascadeIdx);
         vec2 sampleUV = p.uv + disk * texelSize * searchRadiusTexels;
         if (any(lessThanEqual(sampleUV, vec2(0.0))) || any(greaterThanEqual(sampleUV, vec2(1.0))))
             continue;
@@ -698,11 +731,32 @@ float FilterCascadePCF(
 
     for (int i = 0; i < filterSampleCount; ++i)
     {
-        vec2 disk = RotateCascadeDiskSample(
-            CascadeDiskSample(i, filterSampleCount, false), cascadeIdx);
+		vec2 disk = RotateCascadeDiskSample(CASCADE_FILTER_KERNEL[i], cascadeIdx);
         vec2 sampleUV = p.uv + disk * texelSize * filterRadiusTexels;
         visibility += CompareCascadeDepthBilinear(
             shadowMap, sampleUV, cascadeIdx, receiverDepth);
+    }
+
+    return visibility / float(filterSampleCount);
+}
+
+float FilterCascadePCFComparison(
+    sampler2DArrayShadow shadowMap,
+    CascadeProjection p,
+    int cascadeIdx,
+    float receiverDepth,
+    float filterRadiusTexels,
+    ivec2 shadowSize)
+{
+    const int filterSampleCount = 24;
+    vec2 texelSize = 1.0 / vec2(shadowSize);
+    float visibility = 0.0;
+
+    for (int i = 0; i < filterSampleCount; ++i)
+    {
+        vec2 disk = RotateCascadeDiskSample(CASCADE_FILTER_KERNEL[i], cascadeIdx);
+        vec2 sampleUV = p.uv + disk * texelSize * filterRadiusTexels;
+        visibility += texture(shadowMap, vec4(sampleUV, float(cascadeIdx), receiverDepth));
     }
 
     return visibility / float(filterSampleCount);
@@ -903,7 +957,7 @@ float SampleGICascadeShadow(vec3 positionWS, vec3 normalWS, sampler2D shadowMap)
     return mix(1.0, visibility / float(sampleCount), confidence);
 }
 
-void CalculateDirectDiffuse(vec3 positionWS, vec3 normalWS, sampler2D shadowMap, sampler2DArrayShadow punctualShadowMap, vec4 surfaceAlbedoRoughness, inout vec3 diffuseResult)
+void CalculateDirectDiffuse(vec3 positionWS, vec3 normalWS, sampler2D shadowMap, sampler2DShadow punctualShadowMap[PUNCTUAL_SHADOW_ATLAS_COUNT], vec4 surfaceAlbedoRoughness, inout vec3 diffuseResult)
 {
     diffuseResult = vec3(0.0);
     vec3 albedo = clamp(surfaceAlbedoRoughness.rgb, vec3(0.0), vec3(1.0));
@@ -1007,7 +1061,9 @@ void EvaluateRectLightLTC(
 // profileIndex = -1 means "no IES", in which case callers should skip the call.
 float SampleIESProfile(int profileIndex, vec3 lightDir, vec3 nadirDir);
 
-void CalculateDirectLight(BRDFData brdfData, sampler2DArray cascadeShadowMap, float viewDepth, sampler2DArrayShadow punctualShadowMap, float screenSpaceShadow, inout LightResult lightResult)
+void CalculateDirectLight(BRDFData brdfData, float directionalShadow,
+                          sampler2DShadow punctualShadowMap[PUNCTUAL_SHADOW_ATLAS_COUNT],
+                          inout LightResult lightResult)
 {
     lightResult.directDiffuse = vec3(0);
     lightResult.directSpecular = vec3(0);
@@ -1017,7 +1073,7 @@ void CalculateDirectLight(BRDFData brdfData, sampler2DArray cascadeShadowMap, fl
     DirectBRDF(brdfData, uDirectionLight.direction.rgb, diffuseResult, specularResult);
     diffuseResult *= uDirectionLight.color.rgb * uDirectionLight.intensity;
 
-    float shadowValue = min(SampleCascadeShadow(brdfData.positionWS, brdfData.normal, cascadeShadowMap, viewDepth), screenSpaceShadow);
+	float shadowValue = directionalShadow;
     diffuseResult *= shadowValue;
     specularResult *= shadowValue;
 

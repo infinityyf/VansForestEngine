@@ -796,46 +796,38 @@ namespace VansGraphics
 		uint64_t frameNumber = 0;
 		uint32_t swapchainImageIndex = 0;
 
-		VansVKCommandBuffer* graphicsCmd = nullptr;
-		VansVKCommandBuffer* graphicsPreCmd = nullptr;
-		VansVKCommandBuffer* graphicsScreenCmd = nullptr;
-		VansVKCommandBuffer* asyncSSAOCmd = nullptr;
-		VansVKCommandBuffer* shadowCmd = nullptr;
-		VansVKCommandBuffer* gbufferCmd = nullptr;
-		VansVKCommandBuffer* asyncEarlyCmd = nullptr;
-		VansVKCommandBuffer* asyncCloudCmd = nullptr;
-		VansVKCommandBuffer* asyncGICmd = nullptr;
-
 		VkSemaphore imageAcquiredSemaphore = VK_NULL_HANDLE;
 		VkSemaphore renderFinishedSemaphore = VK_NULL_HANDLE;
 
 		VkFence graphicsFence = VK_NULL_HANDLE;
-		VkFence graphicsPreFence = VK_NULL_HANDLE;
+		VkFence ssaoRawFence = VK_NULL_HANDLE;
 		VkFence graphicsScreenFence = VK_NULL_HANDLE;
 		VkFence asyncSSAOFence = VK_NULL_HANDLE;
-		VkFence shadowFence = VK_NULL_HANDLE;
+		VkFence shadowMapsFence = VK_NULL_HANDLE;
+		VkFence hairShadowFence = VK_NULL_HANDLE;
 		VkFence gbufferFence = VK_NULL_HANDLE;
-		VkFence asyncEarlyFence = VK_NULL_HANDLE;
+		VkFence gbufferMaterialFence = VK_NULL_HANDLE;
+		VkFence vegetationFence = VK_NULL_HANDLE;
+		VkFence earlyAuxFence = VK_NULL_HANDLE;
 		VkFence asyncCloudFence = VK_NULL_HANDLE;
-		VkFence asyncGIFence = VK_NULL_HANDLE;
+		VkFence asyncHZBFence = VK_NULL_HANDLE;
+		VkFence rayTracingFence = VK_NULL_HANDLE;
+		VkFence giDataFence = VK_NULL_HANDLE;
 
 		bool frameSubmitSucceeded = true;
-		bool graphicsPreRecorded = false;
+		bool ssaoRawRecorded = false;
 		bool graphicsScreenRecorded = false;
 		bool asyncSSAORecorded = false;
-		bool shadowRecorded = false;
+		bool shadowMapsRecorded = false;
+		bool hairShadowRecorded = false;
 		bool gbufferRecorded = false;
-		bool asyncEarlyRecorded = false;
+		bool gbufferMaterialRecorded = false;
+		bool vegetationRecorded = false;
+		bool earlyAuxRecorded = false;
 		bool asyncCloudRecorded = false;
-		bool asyncGIRecorded = false;
-		bool graphicsPreSubmitted = false;
-		bool graphicsScreenSubmitted = false;
-		bool asyncSSAOSubmitted = false;
-		bool shadowSubmitted = false;
-		bool gbufferSubmitted = false;
-		bool asyncEarlySubmitted = false;
-		bool asyncCloudSubmitted = false;
-		bool asyncGISubmitted = false;
+		bool asyncHZBRecorded = false;
+		bool rayTracingRecorded = false;
+		bool giDataRecorded = false;
 		uint64_t lastDeferredDeleteFlushCount = 0;
 		uint64_t pendingDeferredDeleteCount = 0;
 

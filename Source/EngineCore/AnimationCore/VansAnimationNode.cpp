@@ -13,7 +13,6 @@
 #include <../../GLM/gtx/matrix_decompose.hpp>
 
 #include <algorithm>
-#include <cctype>
 #include <cstring>
 #include <cmath>
 #include <unordered_map>
@@ -87,60 +86,26 @@ namespace
 		return value.z;
 	}
 
-	std::string ToLowerAscii(std::string value)
+	const char* RetargetTranslationScaleModeName(VansRetargetTranslationScaleMode mode)
 	{
-		std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
-			return static_cast<char>(std::tolower(c));
-		});
-		return value;
-	}
-
-	bool IsOwnerFeetAlignmentMode(const std::string& mode)
-	{
-		const std::string normalized = ToLowerAscii(mode);
-		return normalized == "feet_to_owner" ||
-		       normalized == "feettoowner" ||
-		       normalized == "feet_to_owner_ground" ||
-		       normalized == "owner_ground";
-	}
-
-	bool ApplyOwnerFeetAlignment(
-		const Skeleton& skeleton,
-		const glm::mat4& ownerWorld,
-		std::vector<glm::mat4>& modelTransforms)
-	{
-		const int footL = FindPoseAuditBone(skeleton, "foot_l");
-		const int footR = FindPoseAuditBone(skeleton, "foot_r");
-		if (footL < 0 || footR < 0 ||
-		    footL >= static_cast<int>(modelTransforms.size()) ||
-		    footR >= static_cast<int>(modelTransforms.size()))
+		switch (mode)
 		{
-			return false;
+		case VansRetargetTranslationScaleMode::AutoPelvis: return "autoPelvis";
+		case VansRetargetTranslationScaleMode::CompatibleSkeleton: return "compatibleSkeleton";
+		case VansRetargetTranslationScaleMode::Explicit: return "explicit";
 		}
+		return "invalid";
+	}
 
-		const glm::vec3 footLModel = ExtractPoseAuditTranslation(modelTransforms[footL]);
-		const glm::vec3 footRModel = ExtractPoseAuditTranslation(modelTransforms[footR]);
-		const glm::vec3 footLWorld = glm::vec3(ownerWorld * glm::vec4(footLModel, 1.0f));
-		const glm::vec3 footRWorld = glm::vec3(ownerWorld * glm::vec4(footRModel, 1.0f));
-		if (!IsFinitePoseAuditVec3(footLWorld) || !IsFinitePoseAuditVec3(footRWorld))
-			return false;
+	const char* RetargetRootAlignmentName(VansRetargetRootAlignment alignment)
+	{
+		return alignment == VansRetargetRootAlignment::FeetToOwner ? "feetToOwner" : "none";
+	}
 
-		const glm::vec3 ownerWorldPosition = glm::vec3(ownerWorld[3]);
-		const glm::vec3 footCenterWorld = (footLWorld + footRWorld) * 0.5f;
-		const float footGroundWorldY = std::min(footLWorld.y, footRWorld.y);
-		const glm::vec3 deltaWorld(
-			ownerWorldPosition.x - footCenterWorld.x,
-			ownerWorldPosition.y - footGroundWorldY,
-			ownerWorldPosition.z - footCenterWorld.z);
-
-		if (glm::length(deltaWorld) <= 1.0e-5f)
-			return true;
-
-		const glm::mat4 worldCorrection = glm::translate(glm::mat4(1.0f), deltaWorld);
-		const glm::mat4 modelCorrection = glm::inverse(ownerWorld) * worldCorrection * ownerWorld;
-		for (glm::mat4& transform : modelTransforms)
-			transform = modelCorrection * transform;
-		return true;
+	const char* RetargetModelAlignmentName(VansRetargetModelSpaceAlignment alignment)
+	{
+		return alignment == VansRetargetModelSpaceAlignment::SourceBindPose
+			? "sourceBindPose" : "none";
 	}
 
 	void LogPoseAuditBone(
@@ -263,11 +228,13 @@ VansAnimationNode::~VansAnimationNode()
 	DestroyGPUResources();
 }
 
-void VansAnimationNode::ConfigureRetargetSource(
+bool VansAnimationNode::ConfigureRetargetSource(
 	const Skeleton& sourceSkeleton,
 	std::unique_ptr<VansAnimationController> sourceController,
-	const VansRetargetRuntimeDesc& desc)
+	const VansRetargetRuntimeDesc& desc,
+	std::string& error)
 {
+	error.clear();
 	m_RetargetEnabled = false;
 	m_SourceSkeleton = sourceSkeleton;
 	m_SourceController = std::move(sourceController);
@@ -278,15 +245,28 @@ void VansAnimationNode::ConfigureRetargetSource(
 
 	if (!m_SourceController)
 	{
-		VANS_LOG_WARN("[Retarget] " << m_Name << ": missing source controller");
-		return;
+		error = "missing source controller";
+		VANS_LOG_WARN("[Retarget] " << m_Name << ": " << error);
+		return false;
+	}
+	if (!m_SourceController->BindAnimationRigSkeleton(m_SourceSkeleton, error))
+	{
+		error = "source Animation Rig bind failed: " + error;
+		VANS_LOG_WARN("[Retarget] " << m_Name << ": " << error);
+		m_SourceController.reset();
+		return false;
 	}
 
-	if (!m_RetargetProcessor.Build(m_SourceSkeleton, m_Skeleton, m_RetargetDesc))
+	const VansCompiledAnimationRig* targetRig = m_Controller ? m_Controller->GetAnimationRig() : nullptr;
+	if (!targetRig || !m_RetargetProcessor.Build(
+		m_SourceSkeleton, m_Skeleton, *targetRig, m_RetargetDesc))
 	{
-		VANS_LOG_WARN("[Retarget] " << m_Name << ": failed to build Source -> Target map");
+		error = targetRig
+			? "failed to build Source -> Target map"
+			: "target controller has no compiled Animation Rig";
+		VANS_LOG_WARN("[Retarget] " << m_Name << ": " << error);
 		m_SourceController.reset();
-		return;
+		return false;
 	}
 
 	const VansRetargetBuildStats& stats = m_RetargetProcessor.GetStats();
@@ -296,13 +276,14 @@ void VansAnimationNode::ConfigureRetargetSource(
 		<< " targetBones=" << stats.targetBoneCount
 		<< " mapped=" << stats.mappedBoneCount
 		<< " unmappedTarget=" << stats.unmappedTargetBoneCount
-		<< " twoBoneChains=" << stats.twoBoneChainCount
+		<< " limbChains=" << stats.limbChainCount
 		<< " translationScale=" << stats.translationScale
-		<< " translationScaleMode='" << desc.translationScaleMode << "'"
-		<< " rootAlignment='" << desc.rootAlignmentMode << "'"
-		<< " targetModelSpaceAlignment='" << desc.targetModelSpaceAlignmentMode << "'"
+		<< " translationScaleMode='" << RetargetTranslationScaleModeName(desc.translationScaleMode) << "'"
+		<< " rootAlignment='" << RetargetRootAlignmentName(desc.rootAlignment) << "'"
+		<< " targetModelSpaceAlignment='" << RetargetModelAlignmentName(desc.targetModelSpaceAlignment) << "'"
 		<< " sourceModel='" << desc.sourceModelPath
 		<< "' sourceAnimator='" << desc.sourceAnimatorPath << "'");
+	return true;
 }
 
 bool VansAnimationNode::ReplaceRetargetSourceController(
@@ -310,6 +291,13 @@ bool VansAnimationNode::ReplaceRetargetSourceController(
 {
 	if (!m_RetargetEnabled || !controller)
 		return false;
+	std::string error;
+	if (!controller->BindAnimationRigSkeleton(m_SourceSkeleton, error))
+	{
+		VANS_LOG_WARN("[Retarget] " << m_Name
+			<< ": replacement source Rig bind rejected: " << error);
+		return false;
+	}
 	m_SourceController = std::move(controller);
 	m_LastRetargetSourceMMSwitchCount = -1;
 	m_LastRetargetSourceMMActiveClip.clear();
@@ -348,8 +336,18 @@ void VansAnimationNode::SetSkeleton(const Skeleton& skeleton)
 //  Controller 绑定
 // ════════════════════════════════════════════════════════════════
 
-void VansAnimationNode::SetController(VansAnimationController* controller)
+bool VansAnimationNode::SetController(VansAnimationController* controller)
 {
+	if (controller)
+	{
+		std::string error;
+		if (!controller->BindAnimationRigSkeleton(m_Skeleton, error))
+		{
+			VANS_LOG_WARN("[VansAnimationNode] " << m_Name
+				<< ": controller Rig bind rejected: " << error);
+			return false;
+		}
+	}
 	m_Controller = controller;
 
 	if (m_Controller)
@@ -361,6 +359,7 @@ void VansAnimationNode::SetController(VansAnimationController* controller)
 		         << m_Controller->GetName() << "' bound");
 	}
 	RebuildNodeTransformBindings();
+	return true;
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -413,6 +412,43 @@ void VansAnimationNode::Stop()
 		m_Controller->Stop();
 	if (m_RetargetEnabled && m_SourceController)
 		m_SourceController->Stop();
+}
+
+VansGraphSetSwitchResult VansAnimationNode::SwitchGraphSet(const std::string& graphSetId)
+{
+	VansAnimationController* controller = GetLocomotionController();
+	return controller ? controller->SwitchGraphSet(graphSetId)
+		: VansGraphSetSwitchResult::UnknownGraphSet;
+}
+
+const std::string& VansAnimationNode::GetActiveGraphSetId() const
+{
+	const VansAnimationController* controller = m_RetargetEnabled && m_SourceController
+		? m_SourceController.get() : m_Controller;
+	static const std::string empty;
+	return controller ? controller->GetActiveGraphSetId() : empty;
+}
+
+const std::string& VansAnimationNode::GetIncomingGraphSetId() const
+{
+	const VansAnimationController* controller = m_RetargetEnabled && m_SourceController
+		? m_SourceController.get() : m_Controller;
+	static const std::string empty;
+	return controller ? controller->GetIncomingGraphSetId() : empty;
+}
+
+bool VansAnimationNode::IsGraphSetTransitioning() const
+{
+	const VansAnimationController* controller = m_RetargetEnabled && m_SourceController
+		? m_SourceController.get() : m_Controller;
+	return controller && controller->IsGraphSetTransitioning();
+}
+
+float VansAnimationNode::GetGraphSetTransitionProgress() const
+{
+	const VansAnimationController* controller = m_RetargetEnabled && m_SourceController
+		? m_SourceController.get() : m_Controller;
+	return controller ? controller->GetGraphSetTransitionProgress() : 0.0f;
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -707,22 +743,19 @@ void VansAnimationNode::ApplySampledNodeTransforms()
 	}
 }
 
-void VansAnimationNode::Update(float deltaTime)
+void VansAnimationNode::PrepareAnimationFrame(float deltaTime)
 {
 	bool retargetSourceFramePrepared = false;
 	if (m_LocomotionFramePrepared)
 	{
 		if (m_RetargetEnabled && m_SourceController && m_RetargetProcessor.IsValid())
 		{
-			m_SourceController->FinalizePreparedFrame(m_SourceSkeleton);
 			retargetSourceFramePrepared = true;
 		}
 		else if (m_Controller && m_HasTransformID)
 		{
 			m_Controller->SetOwnerWorldTransform(
 				VansTransformStore::GetTransform(m_TransformID).GetModelMatrix());
-			m_Controller->FinalizePreparedFrame(m_Skeleton);
-			ApplySampledNodeTransforms();
 		}
 		m_LocomotionFramePrepared = false;
 		if (!retargetSourceFramePrepared)
@@ -769,13 +802,6 @@ void VansAnimationNode::Update(float deltaTime)
 				m_LastRetargetSourceMMSelectedClip = sourceMM->selectedClip;
 			}
 		}
-		float leftPlantWeight = 0.0f;
-		float rightPlantWeight = 0.0f;
-		const bool hasPlantWeights = m_SourceController->GetMotionMatchingFootPlantWeights(
-			leftPlantWeight, rightPlantWeight);
-		m_Controller->SetFootPlacementAnimationPlantWeights(
-			hasPlantWeights, leftPlantWeight, rightPlantWeight);
-
 		std::vector<glm::mat4> targetModelTransforms;
 		if (m_RetargetProcessor.Process(
 			m_SourceController->GetCachedGlobalTransforms(),
@@ -783,17 +809,15 @@ void VansAnimationNode::Update(float deltaTime)
 			m_Skeleton,
 			targetModelTransforms))
 		{
-			if (m_HasTransformID && IsOwnerFeetAlignmentMode(m_RetargetDesc.rootAlignmentMode))
-			{
-				const glm::mat4 ownerWorld = VansTransformStore::GetTransform(m_TransformID).GetModelMatrix();
-				if (!ApplyOwnerFeetAlignment(m_Skeleton, ownerWorld, targetModelTransforms))
-				{
-					VANS_LOG_WARN("[Retarget] " << m_Name
-						<< ": root_alignment='" << m_RetargetDesc.rootAlignmentMode
-						<< "' could not be applied");
-				}
-			}
-
+			VansAnimationExternalInputSnapshot targetInput =
+				m_Controller->GetAnimationExternalInput();
+			const VansAnimationExternalInputSnapshot& sourceInput =
+				m_SourceController->GetAnimationExternalInput();
+			targetInput.grounded = sourceInput.grounded;
+			targetInput.airborne = sourceInput.airborne;
+			targetInput.approachDirectionWorld = sourceInput.approachDirectionWorld;
+			targetInput.contacts = sourceInput.contacts;
+			m_Controller->SetAnimationExternalInput(std::move(targetInput));
 			if (m_RetargetDesc.debugDraw && !m_RetargetPoseAuditLogged)
 			{
 				const glm::mat4* auditOwnerWorld = nullptr;
@@ -824,17 +848,18 @@ void VansAnimationNode::Update(float deltaTime)
 				targetModelTransforms,
 				m_Skeleton,
 				deltaTime,
-				VansExternalPoseEvaluationMode::TargetPostProcess))
+				VansExternalPoseEvaluationMode::TargetPostProcess,
+				true))
 			{
 				VANS_LOG_WARN("[Retarget] " << m_Name
 					<< ": target pose submission failed; using target fallback update");
-				m_Controller->Update(deltaTime, m_Skeleton);
+				m_Controller->PrepareFrame(deltaTime, m_Skeleton);
 			}
 		}
 		else
 		{
 			VANS_LOG_WARN("[Retarget] " << m_Name << ": runtime process failed; using target fallback update");
-			m_Controller->Update(deltaTime, m_Skeleton);
+			m_Controller->PrepareFrame(deltaTime, m_Skeleton);
 		}
 
 		if (!retargetSourceFramePrepared &&
@@ -854,7 +879,7 @@ void VansAnimationNode::Update(float deltaTime)
 	if (m_HasTransformID)
 		m_Controller->SetOwnerWorldTransform(VansTransformStore::GetTransform(m_TransformID).GetModelMatrix());
 
-	m_Controller->Update(deltaTime, m_Skeleton);
+	m_Controller->PrepareFrame(deltaTime, m_Skeleton);
 
 	// 2. 如果有 root motion，将 delta 应用到 Transform
 	if (m_Controller->IsRootMotionEnabled() &&
@@ -879,6 +904,45 @@ void VansAnimationNode::Update(float deltaTime)
 	ApplySampledNodeTransforms();
 }
 
+void VansAnimationNode::GatherAnimationWorldQueries()
+{
+	if (!m_Controller)
+		return;
+	if (m_HasTransformID)
+	{
+		m_Controller->SetOwnerWorldTransform(
+			VansTransformStore::GetTransform(m_TransformID).GetModelMatrix());
+		m_Controller->SetOwnerStableId(static_cast<std::uint64_t>(m_TransformID) + 1u);
+	}
+	m_Controller->GatherPreparedWorldQueries(m_Skeleton);
+}
+
+void VansAnimationNode::ResolveAnimationWorldQueries(
+	const std::vector<VansWorldQueryResult>& results)
+{
+	if (m_Controller && m_Controller->HasPreparedWorldQueries())
+		m_Controller->ResolvePreparedWorldQueries(results, m_Skeleton);
+	ApplySampledNodeTransforms();
+}
+
+bool VansAnimationNode::HasAnimationWorldQueries() const
+{
+	return m_Controller && m_Controller->HasPreparedWorldQueries();
+}
+
+const std::vector<VansWorldQueryRequest>& VansAnimationNode::GetAnimationWorldQueries() const
+{
+	static const std::vector<VansWorldQueryRequest> empty;
+	return m_Controller ? m_Controller->GetPreparedWorldQueries() : empty;
+}
+
+void VansAnimationNode::Update(float deltaTime)
+{
+	PrepareAnimationFrame(deltaTime);
+	GatherAnimationWorldQueries();
+	ResolveAnimationWorldQueries({});
+}
+
 void VansAnimationNode::PrepareLocomotionFrame(
 	float deltaTime, const Vans::VansCharacterTrajectory& trajectory)
 {
@@ -896,11 +960,11 @@ void VansAnimationNode::PrepareLocomotionFrame(
 	if (m_RetargetEnabled && m_SourceController)
 	{
 		SyncRetargetParameters();
-		m_SourceController->UpdateForMovement(deltaTime, m_SourceSkeleton);
+		m_SourceController->PrepareFrame(deltaTime, m_SourceSkeleton);
 	}
 	else
 	{
-		m_Controller->UpdateForMovement(deltaTime, m_Skeleton);
+		m_Controller->PrepareFrame(deltaTime, m_Skeleton);
 	}
 	m_LocomotionFramePrepared = true;
 }
@@ -1070,10 +1134,16 @@ void VansAnimationNode::UploadPerSubmeshBoneBuffers(const std::vector<std::vecto
 
 void VansAnimationNode::UploadBoneMatrices(uint32_t frameIndex)
 {
+	UploadBoneMatrices(frameIndex, GetBoneSSBO());
+}
+
+void VansAnimationNode::UploadBoneMatrices(
+	uint32_t frameIndex,
+	const BoneMatricesSSBO& ssbo)
+{
 	if (frameIndex >= m_BoneBuffers.size() || frameIndex >= m_PreviousBoneBuffers.size())
 		return;
 
-	const BoneMatricesSSBO& ssbo = GetBoneSSBO();
 	const BoneMatricesSSBO& previous = m_HasUploadedBoneMatrices
 		? m_PreviousBoneMatricesSSBO
 		: ssbo;

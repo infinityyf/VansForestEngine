@@ -3,12 +3,14 @@
 #include "../BRDFData/VansLight.h"
 #include "../VansRenderNode.h"
 #include "../VansScene.h"
+#include "../VansGraphicsDevice.h"
 #include "../../SceneRuntime/VansRuntimeComponentTypes.h"
 #include "../../SceneRuntime/VansRuntimeWorld.h"
 #include "../../TimelineCore/VansTimelineTrackExtensionRegistry.h"
 #include "../../TimelineRuntime/VansTimelineEvaluator.h"
 #include "../../TimelineRuntime/VansTimelineModuleApplierState.h"
 #include "../../TimelineRuntime/VansTimelinePropertyAccessRegistry.h"
+#include "../../RuntimeCore/VansThreadContract.h"
 #include "../VansCamera.h"
 #include "../../TimelineRuntime/VansTimelineSampleExtension.h"
 
@@ -216,7 +218,7 @@ void RestoreLight(const LightSnapshot& snapshot)
 		auto& shadows = snapshot.manager->GetRectShadowRegistrations();
 		if (snapshot.hasShadow && index < shadows.size()) shadows[index].settings = snapshot.shadow;
 	}
-	snapshot.manager->UpdateLightCPUData();
+	snapshot.manager->RefreshDerivedLightingState();
 }
 
 class LightTimelineApplier final : public IVansTimelineOutputApplier
@@ -306,7 +308,7 @@ public:
 				else return { VansTimelineApplyStatus::Failed, {}, "Rect Light property is unavailable: " + property };
 			}
 		}
-		manager.UpdateLightCPUData();
+		manager.RefreshDerivedLightingState();
 		const std::uint64_t instance = (static_cast<std::uint64_t>(component.generation) << 32) |
 			(static_cast<std::uint64_t>(component.typeId) << 16) | (component.index + 1ull);
 		return { VansTimelineApplyStatus::Applied,
@@ -414,6 +416,71 @@ VansTimelineResourceId MaterialResource(VansRenderNode* node)
 		static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(node)) };
 }
 
+class MaterialNodeMutationTransaction final : public IVansRenderThreadTransaction
+{
+public:
+	MaterialNodeMutationTransaction(
+		VansScene& scene,
+		VansRenderNode& node,
+		VansMaterial* material,
+		RenderNodeType nodeType,
+		bool rayTracingEnabled)
+		: m_Scene(scene),
+		  m_Node(node),
+		  m_Material(material),
+		  m_NodeType(nodeType),
+		  m_RayTracingEnabled(rayTracingEnabled)
+	{
+	}
+
+	bool Execute(VansGraphicsDevice& backend) override
+	{
+		VANS_ASSERT_RENDER_THREAD();
+		if (m_Material == nullptr || !backend.WaitForIdle())
+			return false;
+		if (m_Node.GetNodeType() != m_NodeType)
+		{
+			m_Scene.RemoveRenderNodeFromVector(&m_Node);
+			m_Node.SetNodeType(m_NodeType);
+			m_Scene.RegistRenderNode(&m_Node, m_NodeType);
+		}
+		m_Node.m_Material = m_Material;
+		m_Node.m_RayTracingEnabled = m_RayTracingEnabled;
+		m_Node.RecreateDescriptorSets(
+			m_Scene.GetCamera(),
+			*m_Scene.GetLightManager(),
+			*m_Scene.GetMaterialManager());
+		return true;
+	}
+
+private:
+	VansScene& m_Scene;
+	VansRenderNode& m_Node;
+	VansMaterial* m_Material = nullptr;
+	RenderNodeType m_NodeType = NONE_NODE;
+	bool m_RayTracingEnabled = false;
+};
+
+bool ApplyMaterialNodeMutation(
+	VansScene& scene,
+	VansRenderNode* node,
+	VansMaterial* material,
+	RenderNodeType nodeType,
+	bool rayTracingEnabled)
+{
+	if (node == nullptr || material == nullptr)
+		return false;
+	if (node->m_Material == material &&
+		node->GetNodeType() == nodeType &&
+		node->m_RayTracingEnabled == rayTracingEnabled)
+	{
+		return true;
+	}
+	return scene.ExecuteRenderThreadTransaction(
+		std::make_unique<MaterialNodeMutationTransaction>(
+			scene, *node, material, nodeType, rayTracingEnabled));
+}
+
 struct MaterialParameterState
 {
 	VansTimelineWriterHandle writer;
@@ -470,14 +537,28 @@ public:
 		}
 		if (state->node->m_Material != state->instance)
 		{
-			state->node->m_Material = state->instance;
-			state->node->RecreateDescriptorSets(m_Scene.GetCamera(), *m_Scene.GetLightManager(), *m_Scene.GetMaterialManager());
+			if (!ApplyMaterialNodeMutation(
+				m_Scene,
+				state->node,
+				state->instance,
+				state->node->GetNodeType(),
+				state->node->m_RayTracingEnabled))
+			{
+				m_Scene.GetMaterialManager()->ReleaseRuntimeMaterialInstance(state->instanceKey);
+				m_State.Release(restore);
+				return { VansTimelineApplyStatus::Failed, {},
+					"Render-thread material instance activation failed" };
+			}
 		}
 		if (!m_Scene.GetMaterialManager()->ApplyMaterialParameter(*state->instance, parameter, MaterialValue(*value)))
 		{
 			DeactivateWriter(context.writer);
-			m_Scene.GetMaterialManager()->ReleaseRuntimeMaterialInstance(state->instanceKey);
-			m_State.Release(restore);
+			if (!state->node || state->node->m_Material != state->instance)
+			{
+				m_Scene.GetMaterialManager()->ReleaseRuntimeMaterialInstance(
+					state->instanceKey);
+				m_State.Release(restore);
+			}
 			return { VansTimelineApplyStatus::Failed, {}, "Material parameter is unavailable for the runtime material: " + parameter };
 		}
 		return { VansTimelineApplyStatus::Applied, { restore, {}, {}, MaterialResource(node) } };
@@ -486,17 +567,22 @@ public:
 	{
 		if (MaterialParameterState* state = m_State.ResolveWriter(writer))
 			if (state->node && state->node->m_Material == state->instance)
-			{
-				state->node->m_Material = state->previous;
-				state->node->RecreateDescriptorSets(m_Scene.GetCamera(), *m_Scene.GetLightManager(), *m_Scene.GetMaterialManager());
-			}
+				ApplyMaterialNodeMutation(
+					m_Scene,
+					state->node,
+					state->previous,
+					state->node->GetNodeType(),
+					state->node->m_RayTracingEnabled);
 	}
 	bool Restore(VansTimelineRestoreToken token) override
 	{
 		MaterialParameterState* state = m_State.Resolve(token.handle);
 		if (!state) return false;
 		DeactivateWriter(state->writer);
-		m_Scene.GetMaterialManager()->ReleaseRuntimeMaterialInstance(state->instanceKey);
+		if (state->node && state->node->m_Material == state->instance)
+			return false;
+		m_Scene.GetMaterialManager()->ReleaseRuntimeMaterialInstance(
+			state->instanceKey);
 		return m_State.Release(token.handle);
 	}
 	void ReleaseWriter(VansTimelineWriterHandle writer) override
@@ -556,13 +642,16 @@ public:
 		auto [restore, state] = m_State.Acquire(context.writer, [&]
 		{ return MaterialSwitchState{ context.writer, node, node->m_Material, material,
 			node->GetNodeType(), targetType, node->m_RayTracingEnabled }; });
-		if (node->GetNodeType() != targetType)
+		const bool targetRayTracing =
+			material->m_MaterialType != VAN_TRANSPARENT &&
+			material->m_MaterialType != VAN_PBR_TRANSMISSION;
+		if (!ApplyMaterialNodeMutation(
+			m_Scene, node, material, targetType, targetRayTracing))
 		{
-			m_Scene.RemoveRenderNodeFromVector(node); node->SetNodeType(targetType); m_Scene.RegistRenderNode(node, targetType);
+			m_State.Release(restore);
+			return { VansTimelineApplyStatus::Failed, {},
+				"Render-thread material switch failed" };
 		}
-		node->m_Material = material;
-		node->m_RayTracingEnabled = material->m_MaterialType != VAN_TRANSPARENT && material->m_MaterialType != VAN_PBR_TRANSMISSION;
-		node->RecreateDescriptorSets(m_Scene.GetCamera(), *m_Scene.GetLightManager(), *m_Scene.GetMaterialManager());
 		return { VansTimelineApplyStatus::Applied, { restore, {}, {}, MaterialResource(node) } };
 	}
 	void DeactivateWriter(VansTimelineWriterHandle writer) override
@@ -573,13 +662,12 @@ public:
 		// Only remove the material selection if this writer is still visible.
 		if (state->node->m_Material != state->applied ||
 			state->node->GetNodeType() != state->appliedType) return;
-		if (state->node->GetNodeType() != state->previousType)
-		{
-			m_Scene.RemoveRenderNodeFromVector(state->node); state->node->SetNodeType(state->previousType);
-			m_Scene.RegistRenderNode(state->node, state->previousType);
-		}
-		state->node->m_Material = state->previous; state->node->m_RayTracingEnabled = state->previousRayTracing;
-		state->node->RecreateDescriptorSets(m_Scene.GetCamera(), *m_Scene.GetLightManager(), *m_Scene.GetMaterialManager());
+		ApplyMaterialNodeMutation(
+			m_Scene,
+			state->node,
+			state->previous,
+			state->previousType,
+			state->previousRayTracing);
 	}
 	bool Restore(VansTimelineRestoreToken token) override
 	{

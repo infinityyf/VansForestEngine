@@ -25,7 +25,6 @@ void VansSceneRenderPreparationExecutor::PrepareAfterSceneContentLoaded(VansScen
 	scene.CreateSceneNodeDescriptorSets();
 	device.PrepareRayTracingData();
 
-	scene.PlayAllSceneVideos();
 }
 
 void VansSceneRenderPreparationExecutor::BindVideoComponentsToPreparedMaterials(VansScene& scene)

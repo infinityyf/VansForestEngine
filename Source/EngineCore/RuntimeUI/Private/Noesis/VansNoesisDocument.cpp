@@ -1,6 +1,7 @@
 #include "VansNoesisDocument.h"
 
 #include "VansNoesisInputAdapter.h"
+#include "../../../RuntimeCore/VansThreadContract.h"
 #include "../../Public/VansUIViewModel.h"
 
 #include <NsCore/Boxing.h>
@@ -233,6 +234,9 @@ namespace VansRuntime
 
     VansNoesisDocument::~VansNoesisDocument()
     {
+        // IRenderer::Shutdown must already have run on RT. Destruction here is
+        // deliberately limited to Main-owned IView/UI state.
+        assert(!m_RendererInitialized);
         if (m_ViewModel && m_ViewModelChangedToken != 0)
             m_ViewModel->RemovePropertyChangedHandler(m_ViewModelChangedToken);
 
@@ -245,22 +249,22 @@ namespace VansRuntime
 
     void VansNoesisDocument::Show()
     {
-        m_Visible = true;
+        m_Visible.store(true, std::memory_order_release);
     }
 
     void VansNoesisDocument::Hide()
     {
-        m_Visible = false;
+        m_Visible.store(false, std::memory_order_release);
     }
 
     void VansNoesisDocument::SetVisible(bool visible)
     {
-        m_Visible = visible;
+        m_Visible.store(visible, std::memory_order_release);
     }
 
     bool VansNoesisDocument::IsVisible() const
     {
-        return m_Visible;
+        return m_Visible.load(std::memory_order_acquire);
     }
 
     void VansNoesisDocument::SetSize(uint32_t width, uint32_t height)
@@ -364,13 +368,34 @@ namespace VansRuntime
 
     void VansNoesisDocument::Update(double totalTimeSeconds)
     {
-        if (m_View && m_Visible)
+        if (m_View && IsVisible())
             m_View->Update(totalTimeSeconds);
+    }
+
+    bool VansNoesisDocument::InitializeRenderer(Noesis::RenderDevice* renderDevice)
+    {
+        VANS_ASSERT_RENDER_THREAD();
+        if (m_RendererInitialized)
+            return true;
+        if (!m_View || renderDevice == nullptr)
+            return false;
+        m_View->GetRenderer()->Init(renderDevice);
+        m_RendererInitialized = true;
+        return true;
+    }
+
+    void VansNoesisDocument::ShutdownRenderer()
+    {
+        VANS_ASSERT_RENDER_THREAD();
+        if (!m_RendererInitialized || !m_View)
+            return;
+        m_View->GetRenderer()->Shutdown();
+        m_RendererInitialized = false;
     }
 
     void VansNoesisDocument::RenderOffscreen()
     {
-        if (!m_View || !m_Visible)
+        if (!m_View || !IsVisible() || !m_RendererInitialized)
             return;
 
         m_View->GetRenderer()->UpdateRenderTree();
@@ -379,7 +404,7 @@ namespace VansRuntime
 
     void VansNoesisDocument::Render()
     {
-        if (m_View && m_Visible)
+        if (m_View && IsVisible() && m_RendererInitialized)
             m_View->GetRenderer()->Render();
     }
 }

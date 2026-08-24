@@ -9,7 +9,7 @@ namespace VansGraphics
 
 	void VansUpscalerHistoryState::ObserveFrame(
 		std::uint64_t frameIndex,
-		const void* cameraIdentity,
+		std::uint64_t cameraIdentity,
 		VansExtent2D renderExtent,
 		VansExtent2D outputExtent,
 		VansUpscalerBackend backend,

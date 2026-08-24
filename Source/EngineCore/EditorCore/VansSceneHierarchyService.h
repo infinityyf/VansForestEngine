@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstddef>
+#include "VansSceneEditService.h"
+
 #include <optional>
 #include <string>
 
@@ -10,18 +12,13 @@ namespace Vans
 	class VansSceneEditService;
 	struct VansSerializedValue;
 
-	enum class ReparentTransformPolicy
-	{
-		KeepWorld,
-		KeepLocal
-	};
-
 	struct SceneReparentRequest
 	{
 		std::string childEntityGuid;
-		std::string newParentEntityGuid;
+		std::optional<VansSceneParentReference> newParent;
 		std::optional<std::size_t> siblingIndex;
 		ReparentTransformPolicy transformPolicy = ReparentTransformPolicy::KeepWorld;
+		std::optional<EditorAPI::RuntimeTransformSnapshot> resolvedLocalTransform;
 	};
 
 	struct SceneHierarchyEditResult
@@ -42,4 +39,3 @@ namespace Vans
 			const SceneReparentRequest& request);
 	};
 }
-

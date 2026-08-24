@@ -26,21 +26,23 @@ void RegisterEngineShaders()
         "Unlit",
         "EngineAssets/Shaders/UnLit/Deferred",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
-        sizeof(VansGraphics::VansDrawPushConstant), false, false, 4
+        0, false, false, 5
     });
 
-    reg.RegisterGraphicsShader("Shadow", {
+    VansGraphics::VansShaderEntry cascadeShadow{
         "Shadow",
         "EngineAssets/Shaders/Shadow",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
-        sizeof(VansGraphics::VansDrawPushConstant), false
-    });
+        0, false
+    };
+    cascadeShadow.colorAttachmentCount = 0;
+    reg.RegisterGraphicsShader("Shadow", std::move(cascadeShadow));
 
     VansGraphics::VansShaderEntry punctualShadow = {
         "PunctualShadow",
         "EngineAssets/Shaders/PunctualShadow",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
-        sizeof(int) * 5, false
+        0, false
     };
     // 点光/聚光阴影图集的 tile 使用正高度 viewport，保持与采样端的图集 UV
     // 布局一致。这个 viewport 约定会让 winding 相对引擎其它 Y 翻转 pass 反向；
@@ -53,42 +55,44 @@ void RegisterEngineShaders()
         "Skin",
         "EngineAssets/Shaders/UnlitSkin/Deferred",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
-        sizeof(VansGraphics::VansDrawPushConstant), false, false, 4
+        0, false, false, 5
     });
 
     reg.RegisterGraphicsShader("Cloth", {
         "Cloth",
         "EngineAssets/Shaders/Cloth/Deferred",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
-        sizeof(VansGraphics::VansDrawPushConstant), false, false, 4
+        0, false, false, 5
     });
 
     reg.RegisterGraphicsShader("HairVisibility", {
         "HairVisibility",
         "EngineAssets/Shaders/Hair/Visibility",
         VK_TRUE, VK_FALSE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
-        sizeof(VansGraphics::VansDrawPushConstant), false, false, 0
+        0, false, false, 0
     });
 
-    reg.RegisterGraphicsShader("HairShadow", {
+    VansGraphics::VansShaderEntry hairCascadeShadow{
         "HairShadow",
         "EngineAssets/Shaders/Hair/Shadow",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
-        sizeof(int) * 4, false
-    });
+        0, false
+    };
+    hairCascadeShadow.colorAttachmentCount = 0;
+    reg.RegisterGraphicsShader("HairShadow", std::move(hairCascadeShadow));
 
     reg.RegisterGraphicsShader("HairPunctualShadow", {
         "HairPunctualShadow",
         "EngineAssets/Shaders/Hair/PunctualShadow",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
-        sizeof(int) * 5, false
+        0, false
     });
 
     reg.RegisterGraphicsShader("HairDeepOpacity", {
         "HairDeepOpacity",
         "EngineAssets/Shaders/Hair/DeepOpacity",
         VK_FALSE, VK_FALSE, VK_COMPARE_OP_NEVER, VK_CULL_MODE_NONE,
-        sizeof(int) * 4, false, false, 1, true
+        0, false, false, 1, true
     });
 
     reg.RegisterGraphicsShader("HairLighting", {
@@ -109,14 +113,14 @@ void RegisterEngineShaders()
         "TransparentSimpleColor",
         "EngineAssets/Shaders/UnlitTransparent/SimpleColor",
         VK_TRUE, VK_FALSE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
-        8, true
+        0, true
     });
 
     VansGraphics::VansShaderEntry transmissionGlass = {
         "TransmissionGlass",
         "EngineAssets/Shaders/Transmission/Glass",
         VK_TRUE, VK_FALSE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
-        sizeof(VansGraphics::VansDrawPushConstant), false
+        0, false
     };
     transmissionGlass.enablePremultipliedAlphaBlend = true;
     reg.RegisterGraphicsShader("TransmissionGlass", transmissionGlass);
@@ -160,29 +164,31 @@ void RegisterEngineShaders()
         "Subsurface",
         "EngineAssets/Shaders/Subsurface/Deferred",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
-        sizeof(VansGraphics::VansDrawPushConstant), false, false, 4
+        0, false, false, 5
     });
 
     reg.RegisterGraphicsShader("GrassGBuffer", {
         "GrassGBuffer",
         "EngineAssets/Shaders/Grass/Deferred",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
-        sizeof(VansGraphics::GrassDrawPushConstants), false, false, 4  // P1: LOD distance parameters, 8 bytes.
+        sizeof(VansGraphics::GrassDrawPushConstants), false, false, 5  // P1: LOD distance parameters, 8 bytes.
     });
 
     reg.RegisterGraphicsShader("TreeGBuffer", {
         "TreeGBuffer",
         "EngineAssets/Shaders/Tree/Deferred",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
-        sizeof(VansGraphics::TreeDrawPushConstants), false, false, 4
+        sizeof(VansGraphics::TreeDrawPushConstants), false, false, 5
     });
 
-    reg.RegisterGraphicsShader("TreeShadow", {
+    VansGraphics::VansShaderEntry treeCascadeShadow{
         "TreeShadow",
         "EngineAssets/Shaders/Tree/Shadow",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
         sizeof(VansGraphics::TreeShadowPushConstants), false
-    });
+    };
+    treeCascadeShadow.colorAttachmentCount = 0;
+    reg.RegisterGraphicsShader("TreeShadow", std::move(treeCascadeShadow));
 
     reg.RegisterGraphicsShader("TreePunctualShadow", {
         "TreePunctualShadow",
@@ -191,18 +197,11 @@ void RegisterEngineShaders()
         sizeof(VansGraphics::TreePunctualShadowPushConstants), false
     });
 
-    reg.RegisterGraphicsShader("MotionVector", {
-        "MotionVector",
-        "EngineAssets/Shaders/MotionVector",
-        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
-        sizeof(VansGraphics::VansDrawPushConstant), false
-    });
-
     reg.RegisterGraphicsShader("Emissive", {
         "Emissive",
         "EngineAssets/Shaders/Emissive/Deferred",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
-        sizeof(VansGraphics::VansDrawPushConstant), false, false, 4
+        0, false, false, 5
     });
 
     // Particle billboard shader.
@@ -237,7 +236,7 @@ void RegisterEngineShaders()
         "Decal",
         "EngineAssets/Shaders/Decal",
         VK_TRUE, VK_FALSE, VK_COMPARE_OP_GREATER_OR_EQUAL, VK_CULL_MODE_FRONT_BIT,
-        sizeof(VansGraphics::VansDrawPushConstant), false, true
+        0, false, true
     });
 
     // -----------------------------------------------------------------------
@@ -261,31 +260,28 @@ void RegisterEngineShaders()
     reg.RegisterGraphicsShader("Terrain", {
         "Terrain", "EngineAssets/Shaders/Terrain/Deferred",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
-        0, false, false, 4
+        0, false, false, 5
     });
 
     reg.RegisterGraphicsShader("PBREmissive", {
         "PBREmissive",
         "EngineAssets/Shaders/Emissive/Deferred",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
-        sizeof(VansGraphics::VansDrawPushConstant), false, false, 4
+        0, false, false, 5
     });
-    reg.RegisterGraphicsShader("TerrainShadow", {
+    VansGraphics::VansShaderEntry terrainCascadeShadow{
         "TerrainShadow", "EngineAssets/Shaders/Terrain/Shadow",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
         sizeof(int), false
-    });
-    reg.RegisterGraphicsShader("TerrainMotionVector", {
-        "TerrainMotionVector", "EngineAssets/Shaders/Terrain/MotionVector",
-        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
-        0, false
-    });
+    };
+    terrainCascadeShadow.colorAttachmentCount = 0;
+    reg.RegisterGraphicsShader("TerrainShadow", std::move(terrainCascadeShadow));
     VansGraphics::VansShaderEntry terrainTessShader{
         "TerrainTess", "EngineAssets/Shaders/Terrain/DeferredTess",
         VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS, VK_CULL_MODE_NONE,
         0, false
     };
-    terrainTessShader.colorAttachmentCount = 4;
+    terrainTessShader.colorAttachmentCount = 5;
     terrainTessShader.primitiveTopology = VK_PRIMITIVE_TOPOLOGY_PATCH_LIST;
     terrainTessShader.patchControlPoints = 3;
     reg.RegisterGraphicsShader("TerrainTess", std::move(terrainTessShader));
@@ -318,6 +314,10 @@ void RegisterEngineShaders()
     reg.RegisterComputeShader("OcclusionHIZSeed", "EngineAssets/Shaders/HIZ_OCCLUSION_SEED");
     reg.RegisterComputeShader("MainCameraHiZCull", "EngineAssets/Shaders/MainCameraHiZCull", sizeof(VansGraphics::VansMainCameraHiZCullPushConstants));
     reg.RegisterComputeShader("ScreenSpaceShadow", "EngineAssets/Shaders/ScreenSpaceShadow");
+	reg.RegisterComputeShader("CascadeShadowMinMaxSeed", "EngineAssets/Shaders/CascadeShadowMinMaxSeed");
+	reg.RegisterComputeShader("CascadeShadowMinMaxReduce", "EngineAssets/Shaders/CascadeShadowMinMaxReduce");
+	reg.RegisterComputeShader("SSRClassify", "EngineAssets/Shaders/SSR_CLASSIFY");
+	reg.RegisterComputeShader("SSRPrepareIndirect", "EngineAssets/Shaders/SSR_PREPARE_INDIRECT");
     reg.RegisterComputeShader("SSRTrace", "EngineAssets/Shaders/SSR_TRACE");
     reg.RegisterComputeShader("SSRResolve", "EngineAssets/Shaders/SSR_RESOLVE");
     reg.RegisterComputeShader("SSRTemporalAA", "EngineAssets/Shaders/SSR_TEMPORALAA");
@@ -366,21 +366,18 @@ void RegisterEngineShaders()
         { VansGraphics::VansPass::GBUFFER,          "Unlit"          },
         { VansGraphics::VansPass::SHADOW,           "Shadow"         },
         { VansGraphics::VansPass::PUNCTUAL_SHADOW,  "PunctualShadow" },
-        { VansGraphics::VansPass::VELOCITY,         "MotionVector"   },
     });
 
     reg.RegisterMaterialPasses(VansGraphics::VAN_COAT, {
         { VansGraphics::VansPass::GBUFFER,          "Unlit"          },
         { VansGraphics::VansPass::SHADOW,           "Shadow"         },
         { VansGraphics::VansPass::PUNCTUAL_SHADOW,  "PunctualShadow" },
-        { VansGraphics::VansPass::VELOCITY,         "MotionVector"   },
     });
 
     reg.RegisterMaterialPasses(VansGraphics::VAN_SKIN, {
         { VansGraphics::VansPass::GBUFFER,          "Skin"           },
         { VansGraphics::VansPass::SHADOW,           "Shadow"         },
         { VansGraphics::VansPass::PUNCTUAL_SHADOW,  "PunctualShadow" },
-        { VansGraphics::VansPass::VELOCITY,         "MotionVector"   },
     });
 
     reg.RegisterMaterialPasses(VansGraphics::VAN_CLOTH, {
@@ -400,7 +397,6 @@ void RegisterEngineShaders()
         { VansGraphics::VansPass::GBUFFER,          "Subsurface"     },
         { VansGraphics::VansPass::SHADOW,           "Shadow"         },
         { VansGraphics::VansPass::PUNCTUAL_SHADOW,  "PunctualShadow" },
-        { VansGraphics::VansPass::VELOCITY,         "MotionVector"   },
     });
 
     reg.RegisterMaterialPasses(VansGraphics::VAN_GRASS, {
@@ -441,7 +437,6 @@ void RegisterEngineShaders()
         { VansGraphics::VansPass::GBUFFER,          "PBREmissive"    },
         { VansGraphics::VansPass::SHADOW,           "Shadow"         },
         { VansGraphics::VansPass::PUNCTUAL_SHADOW,  "PunctualShadow" },
-        { VansGraphics::VansPass::VELOCITY,         "MotionVector"   },
     });
 
     // Decal: only participates in DecalGBuffer, without shadow or depth writes.

@@ -137,6 +137,10 @@ namespace Vans::EditorAPI
 		virtual bool HasAnimationDebugNodes() const = 0;
 		virtual AnimationAssetBindingSnapshot GetAnimationAssetBinding(const std::string& entityGuid) const = 0;
 		virtual MotionMatchingDebugSnapshot GetMotionMatchingDebugSnapshot() const = 0;
+		virtual SceneSkeletonHierarchySnapshot GetSceneSkeletonHierarchy(
+			const std::string& entityGuidFilter) const = 0;
+		virtual SceneSkeletonNodePoseSnapshot GetSceneSkeletonNodePose(
+			const SceneSkeletonNodePoseRequest& request) const = 0;
 		virtual SkeletonDebugSnapshot GetSkeletonDebugSnapshot(const std::string& entityGuidFilter) const = 0;
 		virtual AssetSkeletonSnapshot GetAssetSkeletonSnapshot(const std::string& assetGuid) const = 0;
 		virtual AnimatorDocumentDecodeResult DecodeAnimatorDocument(
@@ -156,6 +160,7 @@ namespace Vans::EditorAPI
 			const AnimationPreviewDefinitionUpdate& update) = 0;
 		virtual bool SetAnimationPreviewPlayback(const AnimationPreviewPlaybackRequest& request) = 0;
 		virtual bool SetAnimationPreviewParameter(const AnimationPreviewParameterValue& value) = 0;
+		virtual bool SwitchAnimationPreviewGraphSet(const AnimationPreviewGraphSetRequest& request) = 0;
 		virtual bool TriggerAnimationPreviewSlot(const AnimationPreviewSlotRequest& request) = 0;
 		virtual bool SetAnimationPreviewViewport(const AnimationPreviewViewportRequest& request) = 0;
 		virtual void TickAnimationPreview(AnimationPreviewSessionId sessionId, float deltaTime) = 0;
@@ -171,8 +176,6 @@ namespace Vans::EditorAPI
 			const std::string& previewId, std::int64_t tick, bool safeEdges) = 0;
 		virtual TimelinePreviewResult StopTimelinePreview(const std::string& previewId) = 0;
 		virtual TimelinePreviewResult GetTimelinePreview(const std::string& previewId) const = 0;
-		virtual void SetFootIKDebugVisualization(bool enabled) = 0;
-		virtual FootIKDebugSnapshot GetFootIKDebugSnapshot() const = 0;
 		virtual TerrainSettingsSnapshot GetTerrainSettings() const = 0;
 		virtual void ApplyTerrainSettings(const TerrainSettingsSnapshot& settings) = 0;
 		virtual bool ApplyRuntimeEntityPreviewChange(const RuntimeEntityPreviewChange& change) = 0;

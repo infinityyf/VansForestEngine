@@ -1,6 +1,7 @@
 #include "ForestRuntimeCAPI.h"
 
 #include "../EngineCore/AudioCore/VansAudioSystem.h"
+#include "../EngineCore/AssetCore/VansAssetDatabase.h"
 #include "../EngineCore/AssetCore/Importers/Shader/VansShaderArtifactCache.h"
 #include "../EngineCore/Configration/VansConfigration.h"
 #include "../EngineCore/EventCore/VansEventBus.h"
@@ -10,6 +11,7 @@
 #include "../EngineCore/RenderCore/SceneBuild/VansSceneProjectResourceBuilder.h"
 #include "../EngineCore/RenderCore/VansCamera.h"
 #include "../EngineCore/RenderCore/VansGraphicsDevice.h"
+#include "../EngineCore/RenderCore/VansRenderSystem.h"
 #include "../EngineCore/RenderCore/VansScene.h"
 #include "../EngineCore/RenderCore/VansShaderManager.h"
 #include "../EngineCore/RenderCore/VulkanCore/VansVKDevice.h"
@@ -46,6 +48,7 @@ struct ForestRuntimeHandle
 	std::string lastError;
 	std::unique_ptr<Vans::VansRuntimeWindow> window;
 	std::unique_ptr<VansGraphics::VansVKDevice> device;
+	std::unique_ptr<VansGraphics::VansRenderSystem> renderSystem;
 	std::unique_ptr<VansGraphics::VansScene> scene;
 	std::unique_ptr<VansGraphics::VansCamera> camera;
 	std::unique_ptr<VansScriptContext> scriptContext;
@@ -76,42 +79,6 @@ namespace
 			g_ActiveRuntime = nullptr;
 	}
 
-	Vans::VansAssetType AssetTypeFromString(const std::string& value)
-	{
-		if (value == "model") return Vans::VansAssetType::Model;
-		if (value == "texture") return Vans::VansAssetType::Texture;
-		if (value == "material") return Vans::VansAssetType::Material;
-		if (value == "shader") return Vans::VansAssetType::Shader;
-		if (value == "audio") return Vans::VansAssetType::Audio;
-		if (value == "video") return Vans::VansAssetType::Video;
-		if (value == "scene") return Vans::VansAssetType::Scene;
-		if (value == "particle") return Vans::VansAssetType::Particle;
-		if (value == "animationClip") return Vans::VansAssetType::AnimationClip;
-		if (value == "animatorController") return Vans::VansAssetType::AnimatorController;
-		if (value == "boneMask") return Vans::VansAssetType::BoneMask;
-		if (value == "timeline") return Vans::VansAssetType::Timeline;
-		if (value == "actionDefinition") return Vans::VansAssetType::ActionDefinition;
-		if (value == "actionSet") return Vans::VansAssetType::ActionSet;
-		if (value == "gameplayEffect") return Vans::VansAssetType::GameplayEffect;
-		if (value == "gameplayCue") return Vans::VansAssetType::GameplayCue;
-		if (value == "attributeSet") return Vans::VansAssetType::AttributeSet;
-		if (value == "targetingPolicy") return Vans::VansAssetType::TargetingPolicy;
-		if (value == "gameplayTagTree") return Vans::VansAssetType::GameplayTagTree;
-		if (value == "payloadSchema") return Vans::VansAssetType::PayloadSchema;
-		if (value == "actionGraph") return Vans::VansAssetType::ActionGraph;
-		if (value == "cameraRigProfile") return Vans::VansAssetType::CameraRigProfile;
-		if (value == "cameraShakeProfile") return Vans::VansAssetType::CameraShakeProfile;
-		if (value == "gafEditorLayout") return Vans::VansAssetType::GAFEditorLayout;
-		if (value == "clothProfile") return Vans::VansAssetType::ClothProfile;
-		if (value == "skinProfile") return Vans::VansAssetType::SkinProfile;
-		if (value == "postProcessProfile") return Vans::VansAssetType::PostProcessProfile;
-		if (value == "ragdollProfile") return Vans::VansAssetType::RagdollProfile;
-		if (value == "audioReverbPreset") return Vans::VansAssetType::AudioReverbPreset;
-		if (value == "audioBusSnapshot") return Vans::VansAssetType::AudioBusSnapshot;
-		if (value == "audioDuckingRules") return Vans::VansAssetType::AudioDuckingRules;
-		return Vans::VansAssetType::Unknown;
-	}
-
 	Vans::VansAssetArtifactFormat ArtifactFormatFromString(const std::string& value)
 	{
 		if (value == "imported") return Vans::VansAssetArtifactFormat::Imported;
@@ -134,7 +101,7 @@ namespace
 
 			Vans::VansAssetRecord record;
 			record.guid = guid;
-			record.type = AssetTypeFromString(indexRecord.type);
+			record.type = Vans::VansAssetDatabase::ParseSerializedType(indexRecord.type);
 			record.state = indexRecord.missing
 				? Vans::VansAssetState::Missing
 				: Vans::VansAssetState::Discovered;
@@ -184,31 +151,25 @@ namespace
 
 	VansEngine::VansPhysicsSystem::GetInstance().SetPreSimulateCallback(nullptr);
 
-	if (runtime->device)
+	if (runtime->renderSystem)
+	{
+		runtime->renderSystem->WaitForIdle();
+	}
+	else if (runtime->device)
 	{
 		runtime->device->WaitForDevice();
-		if (runtime->renderingPrepared)
-		{
-			runtime->device->AfterRendering();
-			runtime->renderingPrepared = false;
-			runtime->device->WaitForDevice();
-		}
 	}
 
-	if (runtime->scene)
-	{
-		if (runtime->scene->IsSceneReady() || runtime->scene->IsSceneSwitching())
+		if (runtime->scene)
+		{
+			if (runtime->scene->IsSceneReady() || runtime->scene->IsSceneSwitching())
 				runtime->scene->UnLoadScene();
 			runtime->scene->UnloadProjectResources(runtime->device.get());
+			runtime->scene->BindRenderThreadTransactionExecutor(nullptr);
 		}
 
 		if (runtime->device)
 			runtime->device->GetPipelineCacheService().Flush(VansGraphics::VansPipelineCacheFlushReason::Manual);
-		VansRuntime::VansUISystem::Get().Shutdown();
-		if (runtime->device)
-			runtime->device->GetPipelineCacheService().Flush(VansGraphics::VansPipelineCacheFlushReason::Shutdown);
-		Vans::VansInputManager::Get().Shutdown();
-		VansGraphics::VansShaderManager::Get().Clear();
 
 		if (runtime->scriptContext)
 		{
@@ -217,8 +178,19 @@ namespace
 			runtime->scriptContext.reset();
 		}
 		runtime->camera.reset();
+		if (runtime->renderSystem && runtime->renderingPrepared)
+		{
+			runtime->renderSystem->ShutdownFrameExecution();
+			runtime->renderingPrepared = false;
+		}
+		VansRuntime::VansUISystem::Get().Shutdown();
+		if (runtime->device)
+			runtime->device->GetPipelineCacheService().Flush(VansGraphics::VansPipelineCacheFlushReason::Shutdown);
+		Vans::VansInputManager::Get().Shutdown();
+		VansGraphics::VansShaderManager::Get().Clear();
 		runtime->scene.reset();
 		m_Scene = nullptr;
+		runtime->renderSystem.reset();
 		runtime->device.reset();
 		m_GraphicsDevice = nullptr;
 		runtime->window.reset();
@@ -411,9 +383,12 @@ FOREST_RUNTIME_API int ForestRuntime_CreateWindow(ForestRuntimeHandle* runtime, 
 	runtime->device = std::move(device);
 	runtime->device->SetRuntimeSwapchainPresentationEnabled(true);
 	m_GraphicsDevice = runtime->device.get();
-
 	runtime->scene = std::make_unique<VansGraphics::VansScene>();
 	m_Scene = runtime->scene.get();
+	runtime->renderSystem = std::make_unique<VansGraphics::VansRenderSystem>(
+		*runtime->device,
+		*runtime->scene,
+		1u);
 
 	RegisterEngineShaders();
 	VansGraphics::VansSceneProjectResourceBuilder::LoadShadersFromRegistry(
@@ -421,7 +396,22 @@ FOREST_RUNTIME_API int ForestRuntime_CreateWindow(ForestRuntimeHandle* runtime, 
 		VansConfigration::GetInstance()->GetProjectRootPath(),
 		runtime->device->GetLogicDevice());
 
-	runtime->device->BeforeRendering();
+	if (!runtime->renderSystem->InitializeFrameExecution())
+	{
+		SetError(runtime, "Render-system frame execution initialization failed");
+		ShutdownGraphics(runtime);
+		return 0;
+	}
+	runtime->scene->BindRenderThreadTransactionExecutor(runtime->renderSystem.get());
+	VansRuntime::VansUIInitDesc uiDesc{};
+	uiDesc.m_Width = static_cast<std::uint32_t>(width > 0 ? width : 1280);
+	uiDesc.m_Height = static_cast<std::uint32_t>(height > 0 ? height : 720);
+	if (!VansRuntime::VansUISystem::Get().InitializeWithDevice(uiDesc, runtime->device.get()))
+	{
+		SetError(runtime, "Runtime UI frontend initialization failed");
+		ShutdownGraphics(runtime);
+		return 0;
+	}
 	runtime->renderingPrepared = true;
 	runtime->graphicsInitialized = true;
 	runtime->lastError.clear();
@@ -440,6 +430,11 @@ FOREST_RUNTIME_API int ForestRuntime_LoadCurrentScene(ForestRuntimeHandle* runti
 	if (runtime->loadedScene.empty())
 	{
 		SetError(runtime, "No packaged scene is loaded");
+		return 0;
+	}
+	if (!runtime->renderSystem || !runtime->renderSystem->WaitForIdle())
+	{
+		SetError(runtime, "Render thread failed to drain before loading the runtime scene");
 		return 0;
 	}
 
@@ -567,6 +562,8 @@ FOREST_RUNTIME_API int ForestRuntime_Tick(ForestRuntimeHandle* runtime, float)
 		frame.updateTimelinesCamera = [&](double deltaSeconds) { runtime->scene->UpdateTimelinesCamera(deltaSeconds); };
 		frame.resolveCameraControlFrame = [&] { runtime->scene->ResolveCameraControlFrame(); };
 		Vans::VansRuntimeFrameScheduler::RunGameplay(frame);
+		VansRuntime::VansUISystem::Get().Update(
+			static_cast<float>(VansGraphics::VansTimer::GetDeltaTime()));
 	}
 	return 1;
 }
@@ -575,7 +572,8 @@ FOREST_RUNTIME_API int ForestRuntime_RenderFrame(ForestRuntimeHandle* runtime)
 {
 	if (!runtime)
 		return 0;
-	if (!runtime->graphicsInitialized || !runtime->sceneLoaded || !runtime->window || !runtime->device || !runtime->camera)
+	if (!runtime->graphicsInitialized || !runtime->sceneLoaded || !runtime->window ||
+		!runtime->device || !runtime->renderSystem || !runtime->camera)
 	{
 		SetError(runtime, "Runtime scene is not ready to render");
 		return 0;
@@ -587,12 +585,21 @@ FOREST_RUNTIME_API int ForestRuntime_RenderFrame(ForestRuntimeHandle* runtime)
 		int height = 0;
 		glfwGetFramebufferSize(runtime->window->GetGLFWWindow(), &width, &height);
 		if (width > 0 && height > 0)
-			runtime->device->OnWindowResize(static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height));
+			runtime->renderSystem->RequestSurfaceResize(
+				static_cast<std::uint32_t>(width),
+				static_cast<std::uint32_t>(height));
 	}
 
 	Vans::VansEventBus::Get().Flush(Vans::VansEventLane::RenderPrep);
-	runtime->camera->Rendering();
-	runtime->camera->Present();
+	runtime->renderSystem->BeginFrame(*runtime->camera);
+	const VansGraphics::VansRenderFrameSubmitResult submitResult =
+		runtime->renderSystem->SubmitFrame();
+	if (!submitResult)
+	{
+		SetError(runtime, "Render-system frame submission failed");
+		return 0;
+	}
+	runtime->lastError.clear();
 	return 1;
 }
 

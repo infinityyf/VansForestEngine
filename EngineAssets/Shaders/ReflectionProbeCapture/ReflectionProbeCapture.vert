@@ -5,8 +5,7 @@
 layout(location = 0) in f16vec3 inPosition;
 layout(location = 1) in f16vec2 inUV;
 layout(location = 2) in f16vec3 inNormal;
-layout(location = 3) in f16vec3 inTangent;
-layout(location = 4) in f16vec3 inBitangent;
+layout(location = 3) in f16vec4 inTangentFrame;
 
 layout(set = 1, binding = 0) uniform CaptureCamera
 {
@@ -37,8 +36,10 @@ void main()
     mat3 normalMatrix = transpose(inverse(mat3(drawData.model)));
     worldPosition = world.xyz;
     worldNormal = normalize(normalMatrix * vec3(inNormal));
-    worldTangent = normalize(mat3(drawData.model) * vec3(inTangent));
-    worldBitangent = normalize(mat3(drawData.model) * vec3(inBitangent));
+    vec3 tangent = vec3(inTangentFrame.xyz);
+    vec3 bitangent = cross(vec3(inNormal), tangent) * (float(inTangentFrame.w) < 0.0 ? -1.0 : 1.0);
+    worldTangent = normalize(mat3(drawData.model) * tangent);
+    worldBitangent = normalize(mat3(drawData.model) * bitangent);
     fragUV = vec2(inUV);
     gl_Position = captureCamera.viewProjection * world;
 }

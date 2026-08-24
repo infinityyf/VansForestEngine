@@ -1,8 +1,12 @@
 #include "VansMaterial.h"
+#include "VansRenderSceneSnapshot.h"
+#include "../RuntimeCore/VansThreadContract.h"
 #include "../Util/VansLog.h"
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstring>
+#include <unordered_set>
 #include <type_traits>
 using namespace VansGraphics;
 
@@ -599,26 +603,12 @@ std::unique_ptr<VansGraphics::VansMaterial> CloneRuntimeMaterial(
 
 int RuntimePBRIndex(VansGraphics::VansMaterial& material)
 {
-	using namespace VansGraphics;
-	if (auto* typed = dynamic_cast<VansPBRMaterial*>(&material)) return typed->m_MaterialIndex;
-	if (auto* typed = dynamic_cast<VansEmissiveMaterial*>(&material)) return typed->m_MaterialIndex;
-	if (auto* typed = dynamic_cast<VansDecalMaterial*>(&material)) return typed->m_MaterialIndex;
-	if (auto* typed = dynamic_cast<VansSubsurfaceMaterial*>(&material)) return typed->m_MaterialIndex;
-	if (auto* typed = dynamic_cast<VansSkinMaterial*>(&material)) return typed->m_MaterialIndex;
-	if (auto* typed = dynamic_cast<VansClothMaterial*>(&material)) return typed->m_MaterialIndex;
-	return material.m_MaterialIndex;
+	return material.GetGlobalMaterialIndex();
 }
 
 void SetRuntimePBRIndex(VansGraphics::VansMaterial& material, int index)
 {
-	using namespace VansGraphics;
-	material.m_MaterialIndex = index;
-	if (auto* typed = dynamic_cast<VansPBRMaterial*>(&material)) typed->m_MaterialIndex = index;
-	else if (auto* typed = dynamic_cast<VansEmissiveMaterial*>(&material)) typed->m_MaterialIndex = index;
-	else if (auto* typed = dynamic_cast<VansDecalMaterial*>(&material)) typed->m_MaterialIndex = index;
-	else if (auto* typed = dynamic_cast<VansSubsurfaceMaterial*>(&material)) typed->m_MaterialIndex = index;
-	else if (auto* typed = dynamic_cast<VansSkinMaterial*>(&material)) typed->m_MaterialIndex = index;
-	else if (auto* typed = dynamic_cast<VansClothMaterial*>(&material)) typed->m_MaterialIndex = index;
+	material.SetGlobalMaterialIndex(index);
 }
 }
 
@@ -652,6 +642,7 @@ void VansGraphics::VansMaterialManager::InitializeRuntimeMaterialPools(
 	}
 	std::reverse(m_FreeRuntimePBRIndices.begin(), m_FreeRuntimePBRIndices.end());
 	std::reverse(m_FreeRuntimeCustomIndices.begin(), m_FreeRuntimeCustomIndices.end());
+	m_GlobalBindlessDescriptorsDirty = true;
 }
 
 VansGraphics::VansMaterial* VansGraphics::VansMaterialManager::AcquireRuntimeMaterialInstance(
@@ -683,11 +674,6 @@ VansGraphics::VansMaterial* VansGraphics::VansMaterialManager::AcquireRuntimeMat
 		}
 		clone->m_MaterialIndex = poolIndex;
 		m_GlobalCustomMaterialParamData[poolIndex] = m_GlobalCustomMaterialParamData[sourceIndex];
-		if (m_GlobalCustomMaterialDataBuffer.GetNativeBuffer() != VK_NULL_HANDLE)
-			m_GlobalCustomMaterialDataBuffer.UpdateMapped(
-				&m_GlobalCustomMaterialParamData[poolIndex],
-				sizeof(VansCustomMaterialPayload) * poolIndex,
-				sizeof(VansCustomMaterialPayload));
 	}
 	else
 	{
@@ -704,20 +690,13 @@ VansGraphics::VansMaterial* VansGraphics::VansMaterialManager::AcquireRuntimeMat
 		m_GlobalSkinParamData[poolIndex] = m_GlobalSkinParamData[sourceIndex];
 		if (auto* skinClone = dynamic_cast<VansSkinMaterial*>(clone.get()))
 			ResolveSkinProfileLUTForMaterial(*skinClone, m_GlobalSkinParamData[poolIndex], nullptr);
-		for (int texture = 0; texture < 5; ++texture)
-			m_GlobalPBRTextures[poolIndex * 5 + texture] = m_GlobalPBRTextures[sourceIndex * 5 + texture];
-		if (m_GlobalPBRDataBuffer.GetNativeBuffer() != VK_NULL_HANDLE)
 		{
-			m_GlobalPBRDataBuffer.UpdateMapped(&m_GlobalPBRParamData[poolIndex],
-				sizeof(VansBasePBRParam) * poolIndex, sizeof(VansBasePBRParam));
-			m_GlobalClothDataBuffer.UpdateMapped(&m_GlobalClothParamData[poolIndex],
-				sizeof(VansClothGPUParam) * poolIndex, sizeof(VansClothGPUParam));
-			m_GlobalTreeLeafDataBuffer.UpdateMapped(&m_GlobalTreeLeafParamData[poolIndex],
-				sizeof(VansTreeLeafParamsGPU) * poolIndex, sizeof(VansTreeLeafParamsGPU));
-			m_GlobalSkinDataBuffer.UpdateMapped(&m_GlobalSkinParamData[poolIndex],
-				sizeof(VansSkinGPUParam) * poolIndex, sizeof(VansSkinGPUParam));
+			std::lock_guard<std::mutex> lock(m_GlobalPBRTexturesMutex);
+			for (int texture = 0; texture < 5; ++texture)
+				m_GlobalPBRTextures[poolIndex * 5 + texture] =
+					m_GlobalPBRTextures[sourceIndex * 5 + texture];
 		}
-		RewriteGlobalBindlessTextureDescriptors(sceneGlobalDescriptorSet);
+		m_GlobalBindlessDescriptorsDirty = true;
 	}
 
 	VansMaterial* result = clone.get();
@@ -791,7 +770,7 @@ void VansGraphics::VansMaterialManager::ClearResolutionDependentRenderData(VkDev
 		RT_SSGI_SURFACE_HISTORY_A, RT_SSGI_SURFACE_HISTORY_B,
 		RT_SSGI_ATROUS_A,
 		RT_HZB_RESULT, RT_HZB_OCCLUSION_RESULT,
-		RT_SCREEN_SPACE_SHADOW_RESULT,
+		RT_SCREEN_SPACE_SHADOW_RESULT, RT_CASCADE_SHADOW_MIN_MAX,
 		RT_SSR_HIT_INFO, RT_SSR_RAY_PDF, RT_SSR_RESULT,
 		RT_SSRAA_RESULT_A, RT_SSRAA_RESULT_B, RT_SSRAA_RESULT,
 		RT_VOLUMETRIC_FOG_RESULT,
@@ -816,6 +795,8 @@ void VansGraphics::VansMaterialManager::ClearResolutionDependentRenderData(VkDev
 	m_TileLightHeaderBuffer.DestroyVulkanBuffer(device);
 	m_TileLightIndexBuffer.DestroyVulkanBuffer(device);
 	m_TileLightBuildParamsCBBuffer.DestroyVulkanBuffer(device);
+	m_SSRRayListBuffer.DestroyVulkanBuffer(device);
+	m_SSRTraceControlBuffer.DestroyVulkanBuffer(device);
 	m_PostProcessParamsCBBuffer.DestroyVulkanBuffer(device);
 	m_ExposureAdaptParamsCBBuffer.DestroyVulkanBuffer(device);
 	m_BloomParamsCBBuffer.DestroyVulkanBuffer(device);
@@ -839,6 +820,9 @@ void VansGraphics::VansMaterialManager::ClearResolutionDependentRenderData(VkDev
 	descMgr->DestroyDescriptorSetLayout(m_SSRTraceSetLayout);
 	descMgr->DestroyDescriptorSet(m_ScreenSpaceShadowDescriptorSets);
 	descMgr->DestroyDescriptorSetLayout(m_ScreenSpaceShadowSetLayout);
+	descMgr->DestroyDescriptorSet(m_CascadeShadowMinMaxDescriptorSets);
+	descMgr->DestroyDescriptorSetLayout(m_CascadeShadowMinMaxSetLayout);
+	m_CascadeShadowMinMaxMipCount = 0;
 	descMgr->DestroyDescriptorSet(m_MainCameraHiZCullDescriptorSets);
 	descMgr->DestroyDescriptorSetLayout(m_MainCameraHiZCullSetLayout);
 	descMgr->DestroyDescriptorSet(m_SSRResolveDescriptorSets);
@@ -1137,6 +1121,7 @@ bool VansGraphics::VansMaterialManager::RecordPendingSkinProfileLUTUploads(
 bool VansGraphics::VansMaterialManager::RewriteGlobalBindlessTextureDescriptors(
 	VkDescriptorSet sceneGlobalDescriptorSet)
 {
+	std::lock_guard<std::mutex> lock(m_GlobalPBRTexturesMutex);
 	if (m_GlobalPBRTextures.empty())
 		return false;
 
@@ -1181,11 +1166,13 @@ bool VansGraphics::VansMaterialManager::ReplaceGlobalBindlessTexture(
 	VansTexture* texture,
 	VkDescriptorSet sceneGlobalDescriptorSet)
 {
+	std::lock_guard<std::mutex> lock(m_GlobalPBRTexturesMutex);
 	if (!texture || textureIndex >= m_GlobalPBRTextures.size())
 		return false;
 
 	m_GlobalPBRTextures[textureIndex] = &texture->GetImage();
-	return RewriteGlobalBindlessTextureDescriptors(sceneGlobalDescriptorSet);
+	m_GlobalBindlessDescriptorsDirty = true;
+	return true;
 }
 
 void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
@@ -1207,6 +1194,7 @@ void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
 	m_GlobalTreeLeafParamData.clear();
 	m_GlobalSkinParamData.clear();
 	m_GlobalCustomMaterialParamData.clear();
+	m_GlobalBindlessDescriptorsDirty = false;
 	m_GlobalPBRTextures.clear();
 	ClearResolutionDependentRenderData(device);
 	ClearRuntimeRenderTextures();
@@ -1247,90 +1235,132 @@ void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
 
 bool VansGraphics::VansMaterialManager::FlushMaterialPayload(VansMaterial& material)
 {
-	auto getGlobalMaterialIndex = [](VansMaterial& source) -> int
-	{
-		if (auto* pbr = dynamic_cast<VansPBRMaterial*>(&source))
-			return pbr->m_MaterialIndex;
-		if (auto* emissive = dynamic_cast<VansEmissiveMaterial*>(&source))
-			return emissive->m_MaterialIndex;
-		if (auto* decal = dynamic_cast<VansDecalMaterial*>(&source))
-			return decal->m_MaterialIndex;
-		if (auto* sss = dynamic_cast<VansSubsurfaceMaterial*>(&source))
-			return sss->m_MaterialIndex;
-		if (auto* cloth = dynamic_cast<VansClothMaterial*>(&source))
-			return cloth->m_MaterialIndex;
-		if (auto* skin = dynamic_cast<VansSkinMaterial*>(&source))
-			return skin->m_MaterialIndex;
-		if (source.m_MaterialType == VansMaterialType::VAN_CUSTOM_SHADER ||
-			source.m_MaterialType == VansMaterialType::VAN_PBR_TRANSMISSION)
-		{
-			return source.m_MaterialIndex;
-		}
-		return -1;
-	};
-
-	const int index = getGlobalMaterialIndex(material);
+	const int index = material.GetGlobalMaterialIndex();
 	if (index < 0)
 		return false;
 
-	auto flushPbrPayload = [&](const VansBasePBRParam& payload) -> bool
+	auto stagePbrPayload = [&](const VansBasePBRParam& payload) -> bool
 	{
-		if (m_GlobalPBRDataBuffer.GetNativeBuffer() == VK_NULL_HANDLE)
+		if (index >= static_cast<int>(m_GlobalPBRParamData.size()))
 			return false;
-		if (index < static_cast<int>(m_GlobalPBRParamData.size()))
-			m_GlobalPBRParamData[index] = payload;
-		const VkDeviceSize offset = sizeof(VansBasePBRParam) * static_cast<VkDeviceSize>(index);
-		m_GlobalPBRDataBuffer.SetBufferData(&payload, offset, sizeof(VansBasePBRParam));
+		m_GlobalPBRParamData[index] = payload;
 		return true;
 	};
 
 	if (auto* pbr = dynamic_cast<VansPBRMaterial*>(&material))
-		return flushPbrPayload(pbr->m_BasePBRParam);
+		return stagePbrPayload(pbr->m_BasePBRParam);
 	if (auto* emissive = dynamic_cast<VansEmissiveMaterial*>(&material))
-		return flushPbrPayload(emissive->m_BasePBRParam);
+		return stagePbrPayload(emissive->m_BasePBRParam);
 	if (auto* decal = dynamic_cast<VansDecalMaterial*>(&material))
-		return flushPbrPayload(decal->m_BasePBRParam);
+		return stagePbrPayload(decal->m_BasePBRParam);
 	if (auto* sss = dynamic_cast<VansSubsurfaceMaterial*>(&material))
-		return flushPbrPayload(sss->m_BasePBRParam);
+		return stagePbrPayload(sss->m_BasePBRParam);
 	if (auto* skin = dynamic_cast<VansSkinMaterial*>(&material))
 	{
-		const bool pbrUpdated = flushPbrPayload(skin->m_BasePBRParam);
-		if (m_GlobalSkinDataBuffer.GetNativeBuffer() == VK_NULL_HANDLE)
-			return pbrUpdated;
+		const bool pbrUpdated = stagePbrPayload(skin->m_BasePBRParam);
 		VansSkinGPUParam skinPayload = skin->BuildGPUParam();
 		ResolveSkinProfileLUTForMaterial(*skin, skinPayload, nullptr);
-		if (index < static_cast<int>(m_GlobalSkinParamData.size()))
-			m_GlobalSkinParamData[index] = skinPayload;
-		const VkDeviceSize skinOffset = sizeof(VansSkinGPUParam) * static_cast<VkDeviceSize>(index);
-		m_GlobalSkinDataBuffer.SetBufferData(&skinPayload, skinOffset, sizeof(VansSkinGPUParam));
+		if (index >= static_cast<int>(m_GlobalSkinParamData.size()))
+			return false;
+		m_GlobalSkinParamData[index] = skinPayload;
 		return pbrUpdated;
 	}
 	if (auto* cloth = dynamic_cast<VansClothMaterial*>(&material))
 	{
-		const bool pbrUpdated = flushPbrPayload(cloth->m_BasePBRParam);
-		if (m_GlobalClothDataBuffer.GetNativeBuffer() == VK_NULL_HANDLE)
+		const bool pbrUpdated = stagePbrPayload(cloth->m_BasePBRParam);
+		if (index >= static_cast<int>(m_GlobalClothParamData.size()))
 			return false;
 		const VansClothGPUParam clothPayload = cloth->BuildGPUParam();
-		if (index < static_cast<int>(m_GlobalClothParamData.size()))
-			m_GlobalClothParamData[index] = clothPayload;
-		const VkDeviceSize clothOffset = sizeof(VansClothGPUParam) * static_cast<VkDeviceSize>(index);
-		m_GlobalClothDataBuffer.SetBufferData(&clothPayload, clothOffset, sizeof(VansClothGPUParam));
+		m_GlobalClothParamData[index] = clothPayload;
 		return pbrUpdated;
 	}
 
-	if (m_GlobalCustomMaterialDataBuffer.GetNativeBuffer() == VK_NULL_HANDLE)
+	if (index >= static_cast<int>(m_GlobalCustomMaterialParamData.size()))
 		return false;
-	if (index < static_cast<int>(m_GlobalCustomMaterialParamData.size()))
+	for (int valueIndex = 0; valueIndex < VANS_CUSTOM_MATERIAL_VEC4_COUNT; ++valueIndex)
+		m_GlobalCustomMaterialParamData[index].values[valueIndex] =
+			material.m_CustomMaterialPayload.values[valueIndex];
+	return true;
+}
+
+VansGraphics::VansRenderMaterialFrameData
+VansGraphics::VansMaterialManager::CaptureRenderMaterialFrameData(
+	const std::vector<VansMaterial*>& activeMaterials)
+{
+	VANS_ASSERT_MAIN_THREAD();
+	std::unordered_set<VansMaterial*> uniqueMaterials;
+	uniqueMaterials.reserve(activeMaterials.size());
+	for (VansMaterial* material : activeMaterials)
 	{
-		for (int valueIndex = 0; valueIndex < VANS_CUSTOM_MATERIAL_VEC4_COUNT; ++valueIndex)
-			m_GlobalCustomMaterialParamData[index].values[valueIndex] =
-				material.m_CustomMaterialPayload.values[valueIndex];
+		if (material && uniqueMaterials.insert(material).second)
+			FlushMaterialPayload(*material);
 	}
-	const VkDeviceSize offset = sizeof(VansCustomMaterialPayload) * static_cast<VkDeviceSize>(index);
-	m_GlobalCustomMaterialDataBuffer.SetBufferData(
-		&m_GlobalCustomMaterialParamData[index],
-		offset,
-		sizeof(VansCustomMaterialPayload));
+
+	const auto copyBytes = [](const auto& source, VansRenderMaterialBufferSnapshot& target)
+	{
+		using Element = typename std::decay_t<decltype(source)>::value_type;
+		target.elementStride = static_cast<std::uint32_t>(sizeof(Element));
+		target.bytes.resize(source.size() * sizeof(Element));
+		if (!target.bytes.empty())
+			std::memcpy(target.bytes.data(), source.data(), target.bytes.size());
+	};
+
+	VansRenderMaterialFrameData frameData;
+	copyBytes(m_GlobalPBRParamData, frameData.pbr);
+	copyBytes(m_GlobalClothParamData, frameData.cloth);
+	copyBytes(m_GlobalTreeLeafParamData, frameData.treeLeaf);
+	copyBytes(m_GlobalSkinParamData, frameData.skin);
+	copyBytes(m_GlobalCustomMaterialParamData, frameData.custom);
+	frameData.rewriteBindlessTextures = m_GlobalBindlessDescriptorsDirty;
+	m_GlobalBindlessDescriptorsDirty = false;
+	frameData.prepared = true;
+	return frameData;
+}
+
+bool VansGraphics::VansMaterialManager::UploadRenderMaterialFrameData(
+	const VansRenderMaterialFrameData& frameData)
+{
+	VANS_ASSERT_NOT_MAIN_THREAD();
+	if (!frameData.prepared)
+		return false;
+
+	const auto upload = [](const VansRenderMaterialBufferSnapshot& source,
+		VansVKBuffer& target, std::uint32_t expectedStride)
+	{
+		if (source.elementStride != expectedStride ||
+			source.bytes.size() > static_cast<std::size_t>(target.GetBufferSize()) ||
+			(!source.bytes.empty() && target.GetNativeBuffer() == VK_NULL_HANDLE))
+		{
+			return false;
+		}
+		if (!source.bytes.empty())
+			target.UpdateMapped(source.bytes.data(), 0, source.bytes.size());
+		return true;
+	};
+
+	if (!upload(frameData.pbr, m_GlobalPBRDataBuffer, sizeof(VansBasePBRParam)) ||
+		!upload(frameData.cloth, m_GlobalClothDataBuffer, sizeof(VansClothGPUParam)) ||
+		!upload(frameData.treeLeaf, m_GlobalTreeLeafDataBuffer, sizeof(VansTreeLeafParamsGPU)) ||
+		!upload(frameData.skin, m_GlobalSkinDataBuffer, sizeof(VansSkinGPUParam)) ||
+		!upload(frameData.custom, m_GlobalCustomMaterialDataBuffer, sizeof(VansCustomMaterialPayload)))
+	{
+		return false;
+	}
+	return !frameData.rewriteBindlessTextures ||
+		RewriteGlobalBindlessTextureDescriptors();
+}
+
+bool VansGraphics::VansMaterialManager::UploadAtmosphereFrameData(
+	const VansAtmospherePBRParam& payload)
+{
+	VANS_ASSERT_NOT_MAIN_THREAD();
+	if (m_AtmospherePBRDataBuffer.GetNativeBuffer() == VK_NULL_HANDLE ||
+		m_AtmospherePBRDataBuffer.GetBufferSize() < sizeof(payload))
+	{
+		return false;
+	}
+	m_AtmospherePBRDataBuffer.SetBufferData(
+		&payload, 0, sizeof(VansAtmospherePBRParam));
 	return true;
 }
 
@@ -2090,15 +2120,16 @@ void VansGraphics::VansMaterialManager::UpdateAtmosphereDescriptorSets()
 //	m_BasePBRDataBuffer.SetBufferData(&m_BasePBRParam, offset, size);
 //}
 
-void VansGraphics::VansSkyBoxMaterial::UpdateAtmosphereMaterialData(VansMaterialManager& materialManager, VansLightManager& lightManager)
+VansGraphics::VansAtmospherePBRParam
+VansGraphics::VansSkyBoxMaterial::BuildAtmosphereFrameData(
+	const VansDirectionalLight* directionalLight) const
 {
+	VansAtmospherePBRParam payload = m_AtmospherePBRParam;
 	// Preserve m_SunDirection when the scene has no directional light.
-	if (lightManager.GetDirectionLights().empty())
-		return;
+	if (directionalLight == nullptr)
+		return payload;
 
-	uint32_t offset = 0;
-	uint32_t size = sizeof(VansAtmospherePBRParam);
-	const auto& dirLight = lightManager.GetDirectionLights()[0];
+	const auto& dirLight = *directionalLight;
 	const VansCelestialLightingState celestialState = VansLightManager::ComputeCelestialLightingState(dirLight);
 	const glm::vec3 sunDirection = NormalizeMaterialDirectionSafe(celestialState.sunDirection, glm::vec3(0.0f, 1.0f, 0.0f));
 	const glm::vec3 moonDirection = NormalizeMaterialDirectionSafe(celestialState.moonDirection, -sunDirection);
@@ -2106,28 +2137,28 @@ void VansGraphics::VansSkyBoxMaterial::UpdateAtmosphereMaterialData(VansMaterial
 	const float moonBlend = glm::clamp(celestialState.moonBlend, 0.0f, 1.0f);
 	const float sunDiskVisibility = m_SunDiskEnabled ? (1.0f - moonBlend) : 0.0f;
 	const float moonDiskVisibility = m_MoonDiskEnabled ? moonBlend : 0.0f;
-	m_AtmospherePBRParam.m_SunDirection = sunDirection;
+	payload.m_SunDirection = sunDirection;
 	// CPU 预计算大气衰减后的太阳颜色，写入 AtmosphereUBO
 	// Used by shaders such as VolumeCloud.frag that cannot include LightsData.glsl.
-	m_AtmospherePBRParam.m_EffectiveSunColor = celestialState.color;
+	payload.m_EffectiveSunColor = celestialState.color;
 	const float moonPhase = 1.0f;
 	const glm::vec3 sunRadiance = glm::max(
 		VansLightManager::ComputeAtmosphereSunColor(sunDirection, dirLight.m_Color) *
-			dirLight.m_Intensity * m_AtmospherePBRParam.m_SunLuminance,
+			dirLight.m_Intensity * payload.m_SunLuminance,
 		glm::vec3(0.0f));
 	const float moonRadianceScale = (std::max)(m_MoonDiskRadianceScale / kLegacyMoonDiskRadianceScale, 0.0f);
 	const glm::vec3 moonRadiance = glm::max(
-		celestialState.color * celestialState.intensity * m_AtmospherePBRParam.m_SunLuminance,
+		celestialState.color * celestialState.intensity * payload.m_SunLuminance,
 		glm::vec3(0.0f)) * moonRadianceScale * glm::vec3(0.82f, 0.86f, 1.0f);
 
-	m_AtmospherePBRParam.m_SunDiskDirectionAngularRadius = glm::vec4(sunDirection, m_SunDiskAngularRadius);
-	m_AtmospherePBRParam.m_SunDiskRadianceEnabled = glm::vec4(sunRadiance * m_SunDiskRadianceScale, sunDiskVisibility);
-	m_AtmospherePBRParam.m_SunDiskParams = glm::vec4(m_SunDiskFeather, 1.0f, m_SunDiskOcclusionStrength, 0.0f);
-	m_AtmospherePBRParam.m_MoonDiskDirectionAngularRadius = glm::vec4(moonDirection, m_MoonDiskAngularRadius);
-	m_AtmospherePBRParam.m_MoonDiskRadianceEnabled = glm::vec4(moonRadiance, moonDiskVisibility);
-	m_AtmospherePBRParam.m_MoonDiskParams = glm::vec4(m_MoonDiskFeather, moonPhase, m_MoonDiskOcclusionStrength, 0.0f);
-	m_AtmospherePBRParam.m_MainCelestialLightInfo = glm::vec4(mainCelestialDirection, moonBlend);
-	materialManager.m_AtmospherePBRDataBuffer.SetBufferData(&m_AtmospherePBRParam, offset, size);
+	payload.m_SunDiskDirectionAngularRadius = glm::vec4(sunDirection, m_SunDiskAngularRadius);
+	payload.m_SunDiskRadianceEnabled = glm::vec4(sunRadiance * m_SunDiskRadianceScale, sunDiskVisibility);
+	payload.m_SunDiskParams = glm::vec4(m_SunDiskFeather, 1.0f, m_SunDiskOcclusionStrength, 0.0f);
+	payload.m_MoonDiskDirectionAngularRadius = glm::vec4(moonDirection, m_MoonDiskAngularRadius);
+	payload.m_MoonDiskRadianceEnabled = glm::vec4(moonRadiance, moonDiskVisibility);
+	payload.m_MoonDiskParams = glm::vec4(m_MoonDiskFeather, moonPhase, m_MoonDiskOcclusionStrength, 0.0f);
+	payload.m_MainCelestialLightInfo = glm::vec4(mainCelestialDirection, moonBlend);
+	return payload;
 }
 
 void VansGraphics::VansTransparentMaterial::CreateTransparentDescriptorLayout(const std::vector<VkDescriptorSetLayoutBinding>& bindings)

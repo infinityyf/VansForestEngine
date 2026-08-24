@@ -1,38 +1,28 @@
 #pragma once
 
 #include "../VansAnimationTypes.h"
+#include "../Procedural/VansAnimationRig.h"
+#include "../Procedural/VansPoseWorkspace.h"
+#include "VansRetargetProfile.h"
 
 #include <string>
 #include <vector>
 
 namespace VansGraphics
 {
-	struct VansRetargetTwoBoneChainDesc
-	{
-		std::string name;
-		std::string sourceRoot;
-		std::string sourceMid;
-		std::string sourceTip;
-		std::string targetRoot;
-		std::string targetMid;
-		std::string targetTip;
-		float positionWeight = 1.0f;
-	};
-
 	struct VansRetargetRuntimeDesc
 	{
 		std::string profilePath;
 		std::string sourceModelPath;
 		std::string sourceAnimatorPath;
-		std::string runtimeMode = "source_proxy";
-		std::string cachePolicy = "read_or_build";
-		std::string translationScaleMode = "auto_from_pelvis_local_translation";
-		std::string rootAlignmentMode = "none";
-		std::string targetModelSpaceAlignmentMode = "none";
+		VansRetargetTranslationScaleMode translationScaleMode =
+			VansRetargetTranslationScaleMode::AutoPelvis;
+		VansRetargetRootAlignment rootAlignment = VansRetargetRootAlignment::None;
+		VansRetargetModelSpaceAlignment targetModelSpaceAlignment =
+			VansRetargetModelSpaceAlignment::None;
 		float translationScale = 1.0f;
-		bool hasExplicitTranslationScale = false;
 		bool debugDraw = false;
-		std::vector<VansRetargetTwoBoneChainDesc> twoBoneChains;
+		std::vector<VansRetargetLimbChainDesc> limbChains;
 	};
 
 	struct VansRetargetBuildStats
@@ -41,7 +31,7 @@ namespace VansGraphics
 		uint32_t targetBoneCount = 0;
 		uint32_t mappedBoneCount = 0;
 		uint32_t unmappedTargetBoneCount = 0;
-		uint32_t twoBoneChainCount = 0;
+		uint32_t limbChainCount = 0;
 		float translationScale = 1.0f;
 	};
 
@@ -50,6 +40,7 @@ namespace VansGraphics
 	public:
 		bool Build(const Skeleton& sourceSkeleton,
 		           const Skeleton& targetSkeleton,
+		           const VansCompiledAnimationRig& targetRig,
 		           const VansRetargetRuntimeDesc& desc = {});
 		bool IsValid() const { return m_Valid; }
 		const VansRetargetBuildStats& GetStats() const { return m_Stats; }
@@ -67,26 +58,36 @@ namespace VansGraphics
 			bool copyTranslationDelta = false;
 		};
 
-		struct CompiledTwoBoneChain
+		struct CompiledLimbChain
 		{
 			std::string name;
 			int sourceRoot = -1;
 			int sourceMid = -1;
 			int sourceTip = -1;
-			int targetRoot = -1;
-			int targetMid = -1;
-			int targetTip = -1;
+			int targetChainIndex = -1;
 			float positionWeight = 1.0f;
 		};
 
 		std::vector<BoneMapEntry> m_BoneMap;
-		std::vector<CompiledTwoBoneChain> m_TwoBoneChains;
+		std::vector<CompiledLimbChain> m_LimbChains;
+		VansCompiledAnimationRig m_TargetRig;
 		std::vector<glm::mat4> m_SourceBindModelTransforms;
 		std::vector<glm::mat4> m_TargetBindModelTransforms;
 		VansRetargetBuildStats m_Stats;
+		const Skeleton* m_SourceSkeleton = nullptr;
+		const Skeleton* m_TargetSkeleton = nullptr;
 		glm::mat4 m_TargetModelSpaceCorrection = glm::mat4(1.0f);
+		glm::mat4 m_RootAlignmentCorrection = glm::mat4(1.0f);
 		bool m_HasTargetModelSpaceCorrection = false;
+		bool m_HasRootAlignmentCorrection = false;
 		bool m_Valid = false;
+		mutable std::vector<glm::mat4> m_SourceLocalScratch;
+		mutable std::vector<glm::mat4> m_TargetLocalScratch;
+		mutable std::vector<glm::quat> m_DesiredModelRotationsScratch;
+		mutable std::vector<bool> m_MappedTargetBonesScratch;
+		mutable std::vector<glm::mat4> m_ResolvedModelScratch;
+		mutable std::vector<VansBoneTransform> m_LocalPoseScratch;
+		mutable VansPoseWorkspace m_PoseWorkspaceScratch;
 
 		static glm::mat4 ComposeTransform(
 			const glm::vec3& translation,
@@ -97,9 +98,10 @@ namespace VansGraphics
 			glm::vec3& translation,
 			glm::quat& rotation,
 			glm::vec3& scale);
-		static std::vector<glm::mat4> BuildLocalFromModel(
+		static void BuildLocalFromModel(
 			const std::vector<glm::mat4>& modelTransforms,
-			const Skeleton& skeleton);
+			const Skeleton& skeleton,
+			std::vector<glm::mat4>& outLocalTransforms);
 		static void BuildModelFromLocal(
 			const std::vector<glm::mat4>& localTransforms,
 			const Skeleton& skeleton,

@@ -3,7 +3,6 @@
 #include "VansAnimationSampler.h"
 #include "VansPoseMath.h"
 #include "MotionMatching/VansMotionMatching.h"
-#include "FootPlacement/VansFootPlacementSolver.h"
 #include "../Util/VansLog.h"
 
 #include <../../GLM/glm.hpp>
@@ -60,6 +59,38 @@ namespace
 		return true;
 	}
 
+	float EvaluateGraphSetBlendCurve(VansGraphSetBlendCurve curve, float progress)
+	{
+		const float t = std::clamp(progress, 0.0f, 1.0f);
+		return curve == VansGraphSetBlendCurve::SmoothStep
+			? t * t * (3.0f - 2.0f * t) : t;
+	}
+
+	VansPosePayload BlendGraphSetPayloads(
+		const VansPosePayload& source,
+		const VansPosePayload& incoming,
+		float alpha,
+		const VansGraphSetTransitionPolicy& policy)
+	{
+		VansPosePayload result = VansPosePayloadMixer::BlendOverride(source, incoming, alpha);
+		if (!result.valid)
+			return result;
+		if (policy.events == VansGraphSetEventPolicy::DominantSource)
+			result.events = alpha < 0.5f ? source.events : incoming.events;
+		switch (policy.rootMotion)
+		{
+		case VansGraphSetRootMotionPolicy::Blend:
+			break;
+		case VansGraphSetRootMotionPolicy::DominantSource:
+			result.rootMotion = alpha < 0.5f ? source.rootMotion : incoming.rootMotion;
+			break;
+		case VansGraphSetRootMotionPolicy::IncomingOnly:
+			result.rootMotion = incoming.rootMotion;
+			break;
+		}
+		return result;
+	}
+
 	const AnimGraphStateMachineNode* FindPrimaryStateMachine(const VansAnimGraph& graph)
 	{
 		std::vector<int> executionPlan;
@@ -73,6 +104,39 @@ namespace
 				return static_cast<const AnimGraphStateMachineNode*>(node);
 		}
 		return nullptr;
+	}
+
+	bool ReadProceduralFloat(const void* context, const std::string& name, float& value)
+	{
+		const auto* parameters = static_cast<const std::unordered_map<std::string, AnimatorParameter>*>(context);
+		if (!parameters) return false;
+		const auto found = parameters->find(name);
+		if (found == parameters->end() || found->second.type != AnimatorParamType::Float) return false;
+		value = found->second.floatVal;
+		return std::isfinite(value);
+	}
+
+	bool ReadProceduralVector3(const void* context, const std::string& name, glm::vec3& value)
+	{
+		const auto* parameters = static_cast<const std::unordered_map<std::string, AnimatorParameter>*>(context);
+		if (!parameters) return false;
+		const auto found = parameters->find(name);
+		if (found == parameters->end() || found->second.type != AnimatorParamType::Vector3) return false;
+		value = found->second.vec3Val;
+		return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+	}
+
+	bool ReadProceduralQuaternion(const void* context, const std::string& name, glm::quat& value)
+	{
+		const auto* parameters = static_cast<const std::unordered_map<std::string, AnimatorParameter>*>(context);
+		if (!parameters) return false;
+		const auto found = parameters->find(name);
+		if (found == parameters->end() || found->second.type != AnimatorParamType::Quaternion) return false;
+		value = found->second.quatVal;
+		const float lengthSquared = glm::dot(value, value);
+		if (!std::isfinite(lengthSquared) || lengthSquared <= 1.0e-8f) return false;
+		value = glm::normalize(value);
+		return true;
 	}
 }
 
@@ -91,8 +155,12 @@ VansAnimationController::~VansAnimationController()
 {
 }
 
-bool VansAnimationController::SetLayerStack(
-	std::vector<VansAnimationLayerGraphSetup> layers,
+bool VansAnimationController::SetAnimationGraphSets(
+	std::vector<VansAnimationLayerSetup> layers,
+	std::vector<VansAnimationGraphSetSetup> graphSets,
+	std::string defaultGraphSetId,
+	VansGraphSetTransitionPolicy defaultTransition,
+	std::vector<VansGraphSetTransitionRule> transitionRules,
 	std::string& error)
 {
 	error.clear();
@@ -105,11 +173,10 @@ bool VansAnimationController::SetLayerStack(
 	int baseCount = 0;
 	for (size_t index = 0; index < layers.size(); ++index)
 	{
-		const VansAnimationLayerGraphSetup& layer = layers[index];
-		if (layer.definition.id.empty() || layer.definition.name.empty()
-		    || layer.definition.graphId.empty() || !layer.graph)
+		const VansAnimationLayerSetup& layer = layers[index];
+		if (layer.definition.id.empty() || layer.definition.name.empty())
 		{
-			error = "Animation layers require non-empty IDs, names and graph bindings";
+			error = "Animation layers require non-empty IDs and names";
 			return false;
 		}
 		if (!layerIds.insert(layer.definition.id).second)
@@ -131,48 +198,113 @@ bool VansAnimationController::SetLayerStack(
 			error = "Overlay animation layer '" + layer.definition.name + "' is missing its Bone Mask asset";
 			return false;
 		}
-		VansAnimGraphInstance validation(*layer.graph);
-		if (!validation.IsCompiled())
-		{
-			error = "Animation layer graph '" + layer.definition.graphId
-				+ "' failed compilation: " + validation.GetCompileError();
-			return false;
-		}
 	}
 	if (baseCount != 1)
 	{
 		error = "Animator must contain exactly one Base layer";
 		return false;
 	}
-	for (size_t index = 0; index < layers.size(); ++index)
+	if (graphSets.empty() || defaultGraphSetId.empty())
 	{
-		const VansAnimationLayerDefinition& definition = layers[index].definition;
-		if (definition.sync == VansLayerSyncMode::Independent)
-			continue;
-		bool foundEarlierLeader = false;
-		size_t leaderIndex = 0;
-		for (size_t leader = 0; leader < index; ++leader)
-			if (layers[leader].definition.id == definition.syncLeaderLayerId)
-			{
-				foundEarlierLeader = true;
-				leaderIndex = leader;
-				break;
-			}
-		if (!foundEarlierLeader)
+		error = "Animator requires at least one Graph Set and a default Graph Set ID";
+		return false;
+	}
+	if (!std::isfinite(defaultTransition.duration) || defaultTransition.duration < 0.0f)
+	{
+		error = "Default Graph Set transition duration must be finite and non-negative";
+		return false;
+	}
+
+	std::unordered_set<std::string> graphSetIds;
+	bool hasDefaultGraphSet = false;
+	for (const VansAnimationGraphSetSetup& graphSet : graphSets)
+	{
+		if (graphSet.definition.id.empty() || graphSet.definition.name.empty()
+			|| !graphSetIds.insert(graphSet.definition.id).second)
 		{
-			error = "Synced Layer '" + definition.name + "' requires an earlier leader Layer";
+			error = "Graph Sets require unique non-empty IDs and non-empty names";
 			return false;
 		}
-		if (definition.sync == VansLayerSyncMode::SyncedGraph)
+		hasDefaultGraphSet = hasDefaultGraphSet || graphSet.definition.id == defaultGraphSetId;
+		if (graphSet.bindings.size() != layers.size()
+			|| graphSet.definition.bindings.size() != layers.size())
 		{
+			error = "Graph Set '" + graphSet.definition.name
+				+ "' must explicitly bind every Layer exactly once";
+			return false;
+		}
+		for (size_t index = 0; index < layers.size(); ++index)
+		{
+			const VansAnimationGraphBindingSetup& binding = graphSet.bindings[index];
+			const VansAnimationGraphBindingDefinition& authored = graphSet.definition.bindings[index];
+			const VansAnimationLayerDefinition& layer = layers[index].definition;
+			if (binding.definition.layerId != layer.id || authored.layerId != layer.id
+				|| binding.definition.graphId != authored.graphId
+				|| binding.definition.enabled != authored.enabled)
+			{
+				error = "Graph Set '" + graphSet.definition.name
+					+ "' bindings must follow Layer Stack order and match their definitions";
+				return false;
+			}
+			if (layer.kind == VansAnimationLayerKind::Base && !binding.definition.enabled)
+			{
+				error = "The Base Layer must be enabled in every Graph Set";
+				return false;
+			}
+			if (!binding.definition.enabled)
+			{
+				if (!binding.definition.graphId.empty() || binding.graph)
+				{
+					error = "Disabled Graph Set bindings must not retain a Graph reference";
+					return false;
+				}
+				continue;
+			}
+			if (binding.definition.graphId.empty() || !binding.graph)
+			{
+				error = "Enabled Graph Set bindings require a Graph ID and Graph definition";
+				return false;
+			}
+			VansAnimGraphInstance validation(*binding.graph);
+			if (!validation.IsCompiled())
+			{
+				error = "Graph '" + binding.definition.graphId + "' in Graph Set '"
+					+ graphSet.definition.name + "' failed compilation: "
+					+ validation.GetCompileError();
+				return false;
+			}
+		}
+
+		for (size_t index = 0; index < layers.size(); ++index)
+		{
+			const VansAnimationLayerDefinition& layer = layers[index].definition;
+			if (layer.sync == VansLayerSyncMode::Independent
+				|| !graphSet.bindings[index].definition.enabled)
+				continue;
+			size_t leaderIndex = layers.size();
+			for (size_t leader = 0; leader < index; ++leader)
+				if (layers[leader].definition.id == layer.syncLeaderLayerId)
+				{
+					leaderIndex = leader;
+					break;
+				}
+			if (leaderIndex == layers.size()
+				|| !graphSet.bindings[leaderIndex].definition.enabled)
+			{
+				error = "Synced Layer '" + layer.name
+					+ "' requires an enabled earlier leader in every Graph Set";
+				return false;
+			}
+			if (layer.sync != VansLayerSyncMode::SyncedGraph)
+				continue;
 			const AnimGraphStateMachineNode* leaderStateMachine =
-				FindPrimaryStateMachine(*layers[leaderIndex].graph);
+				FindPrimaryStateMachine(*graphSet.bindings[leaderIndex].graph);
 			const AnimGraphStateMachineNode* followerStateMachine =
-				FindPrimaryStateMachine(*layers[index].graph);
+				FindPrimaryStateMachine(*graphSet.bindings[index].graph);
 			if (!leaderStateMachine || !followerStateMachine)
 			{
-				error = "Synced Graph Layer '" + definition.name
-					+ "' requires primary State Machine nodes on both Layers";
+				error = "Synced Graph Layer '" + layer.name
+					+ "' requires primary State Machine nodes on both bindings";
 				return false;
 			}
 			std::unordered_set<std::string> leaderStates;
@@ -183,48 +315,294 @@ bool VansAnimationController::SetLayerStack(
 				followerStates.insert(state.name);
 			if (leaderStates != followerStates)
 			{
-				error = "Synced Graph Layer '" + definition.name
+				error = "Synced Graph Layer '" + layer.name
 					+ "' must expose the same logical State names as its leader";
 				return false;
 			}
 		}
 	}
+	if (!hasDefaultGraphSet)
+	{
+		error = "Default Graph Set ID does not reference a Graph Set";
+		return false;
+	}
+	std::unordered_set<std::string> rulePairs;
+	for (const VansGraphSetTransitionRule& rule : transitionRules)
+	{
+		if (graphSetIds.find(rule.fromGraphSetId) == graphSetIds.end()
+			|| graphSetIds.find(rule.toGraphSetId) == graphSetIds.end()
+			|| rule.fromGraphSetId == rule.toGraphSetId
+			|| !std::isfinite(rule.policy.duration) || rule.policy.duration < 0.0f
+			|| !rulePairs.insert(rule.fromGraphSetId + "\n" + rule.toGraphSetId).second)
+		{
+			error = "Graph Set transition rules require unique valid source/target pairs and durations";
+			return false;
+		}
+	}
 
-	std::vector<LayerRuntime> runtimes;
-	runtimes.reserve(layers.size());
-	for (VansAnimationLayerGraphSetup& setup : layers)
+	std::vector<LayerRuntime> layerRuntimes;
+	layerRuntimes.reserve(layers.size());
+	for (VansAnimationLayerSetup& setup : layers)
 	{
 		LayerRuntime runtime;
 		runtime.definition = std::move(setup.definition);
-		runtime.graph = std::move(setup.graph);
-		runtime.instance = std::make_unique<VansAnimGraphInstance>(*runtime.graph);
 		runtime.maskAsset = std::move(setup.mask);
-		runtime.parameterScratch = m_Parameters;
-		runtimes.push_back(std::move(runtime));
+		layerRuntimes.push_back(std::move(runtime));
 	}
-	for (size_t index = 0; index < runtimes.size(); ++index)
+
+	std::vector<GraphSetRuntime> graphSetRuntimes;
+	graphSetRuntimes.reserve(graphSets.size());
+	for (VansAnimationGraphSetSetup& setup : graphSets)
 	{
-		if (runtimes[index].definition.sync == VansLayerSyncMode::Independent)
-			continue;
-		for (size_t leader = 0; leader < index; ++leader)
+		GraphSetRuntime runtime;
+		runtime.definition = std::move(setup.definition);
+		runtime.bindings.reserve(setup.bindings.size());
+		for (VansAnimationGraphBindingSetup& bindingSetup : setup.bindings)
 		{
-			if (runtimes[leader].definition.id == runtimes[index].definition.syncLeaderLayerId)
+			GraphBindingRuntime binding;
+			binding.definition = std::move(bindingSetup.definition);
+			binding.graph = std::move(bindingSetup.graph);
+			if (binding.graph)
+				binding.instance = std::make_unique<VansAnimGraphInstance>(*binding.graph);
+			binding.parameterScratch = m_Parameters;
+			runtime.bindings.push_back(std::move(binding));
+		}
+		for (size_t index = 0; index < runtime.bindings.size(); ++index)
+		{
+			if (!runtime.bindings[index].definition.enabled
+				|| layerRuntimes[index].definition.sync == VansLayerSyncMode::Independent)
+				continue;
+			for (size_t leader = 0; leader < index; ++leader)
 			{
-				runtimes[index].syncLeaderIndex = static_cast<int>(leader);
-				break;
+				if (layerRuntimes[leader].definition.id
+					== layerRuntimes[index].definition.syncLeaderLayerId)
+				{
+					runtime.bindings[index].syncLeaderIndex = static_cast<int>(leader);
+					break;
+				}
 			}
 		}
+		graphSetRuntimes.push_back(std::move(runtime));
 	}
-	m_LayerRuntimes = std::move(runtimes);
+
+	m_LayerRuntimes = std::move(layerRuntimes);
+	m_GraphSetRuntimes = std::move(graphSetRuntimes);
+	m_GraphSetById.clear();
+	for (size_t index = 0; index < m_GraphSetRuntimes.size(); ++index)
+		m_GraphSetById.emplace(m_GraphSetRuntimes[index].definition.id, index);
+	m_ActiveGraphSetIndex = m_GraphSetById.at(defaultGraphSetId);
+	m_IncomingGraphSetIndex = static_cast<std::size_t>(-1);
+	m_DefaultGraphSetTransition = defaultTransition;
+	m_GraphSetTransitionRules = std::move(transitionRules);
+	m_CurrentGraphSetTransition = {};
+	m_GraphSetTransitionElapsed = 0.0f;
+	m_QueuedGraphSetId.clear();
+	m_IncomingMotionMatching.reset();
 	std::string slotResetError;
 	m_SlotRuntime.Configure({}, slotResetError);
 	m_SlotPayloads.clear();
 	if (m_MotionMatching)
 	{
 		EnsureMotionMatchingGraphNode();
-		RebuildLayerInstances();
+		RebuildGraphSetInstances();
 	}
 	return true;
+}
+
+const VansGraphSetTransitionPolicy& VansAnimationController::ResolveGraphSetTransitionPolicy(
+	const std::string& fromGraphSetId,
+	const std::string& toGraphSetId) const
+{
+	for (const VansGraphSetTransitionRule& rule : m_GraphSetTransitionRules)
+		if (rule.fromGraphSetId == fromGraphSetId && rule.toGraphSetId == toGraphSetId)
+			return rule.policy;
+	return m_DefaultGraphSetTransition;
+}
+
+VansAnimationController::GraphSetRuntime* VansAnimationController::GetActiveGraphSetRuntime()
+{
+	return m_ActiveGraphSetIndex < m_GraphSetRuntimes.size()
+		? &m_GraphSetRuntimes[m_ActiveGraphSetIndex] : nullptr;
+}
+
+const VansAnimationController::GraphSetRuntime* VansAnimationController::GetActiveGraphSetRuntime() const
+{
+	return m_ActiveGraphSetIndex < m_GraphSetRuntimes.size()
+		? &m_GraphSetRuntimes[m_ActiveGraphSetIndex] : nullptr;
+}
+
+const std::string& VansAnimationController::GetActiveGraphSetId() const
+{
+	const GraphSetRuntime* active = GetActiveGraphSetRuntime();
+	static const std::string empty;
+	return active ? active->definition.id : empty;
+}
+
+const std::string& VansAnimationController::GetIncomingGraphSetId() const
+{
+	static const std::string empty;
+	return m_IncomingGraphSetIndex < m_GraphSetRuntimes.size()
+		? m_GraphSetRuntimes[m_IncomingGraphSetIndex].definition.id : empty;
+}
+
+bool VansAnimationController::IsGraphSetTransitioning() const
+{
+	return m_IncomingGraphSetIndex < m_GraphSetRuntimes.size();
+}
+
+float VansAnimationController::GetGraphSetTransitionProgress() const
+{
+	if (!IsGraphSetTransitioning())
+		return 1.0f;
+	if (m_CurrentGraphSetTransition.duration <= 0.0f)
+		return 1.0f;
+	return std::clamp(
+		m_GraphSetTransitionElapsed / m_CurrentGraphSetTransition.duration, 0.0f, 1.0f);
+}
+
+bool VansAnimationController::ApplyGraphSetPhaseHandoff(
+	const GraphSetRuntime& source,
+	GraphSetRuntime& target,
+	const VansGraphSetTransitionPolicy& policy)
+{
+	bool fullyMatched = true;
+	for (size_t index = 0; index < target.bindings.size(); ++index)
+	{
+		GraphBindingRuntime& targetBinding = target.bindings[index];
+		if (!targetBinding.definition.enabled || !targetBinding.instance)
+			continue;
+		if (policy.phase == VansGraphSetPhasePolicy::Restart)
+		{
+			targetBinding.instance->Reset();
+			continue;
+		}
+		const GraphBindingRuntime& sourceBinding = source.bindings[index];
+		if (!sourceBinding.definition.enabled || !sourceBinding.instance)
+		{
+			targetBinding.instance->Reset();
+			fullyMatched = false;
+			continue;
+		}
+
+		if (targetBinding.instance->SynchronizePrimaryStateMachineFrom(
+			*sourceBinding.instance, m_Clips))
+		{
+			if (policy.phase == VansGraphSetPhasePolicy::MatchMarker
+				&& index < source.evaluatedSync.size())
+			{
+				const std::string sourceClipName = sourceBinding.instance->GetPrimaryClipName();
+				const std::string targetClipName = targetBinding.instance->GetPrimaryClipName();
+				const auto sourceClip = m_Clips.find(sourceClipName);
+				const auto targetClip = m_Clips.find(targetClipName);
+				float markerTime = 0.0f;
+				if (sourceClip == m_Clips.end() || targetClip == m_Clips.end()
+					|| !ResolveMarkerSyncedTime(source.evaluatedSync[index],
+						sourceBinding.instance->GetPrimaryPlaybackTime(),
+						sourceClip->second.duration, targetClip->second, markerTime)
+					|| !targetBinding.instance->SetPrimaryPlaybackTime(markerTime))
+				{
+					fullyMatched = false;
+				}
+			}
+			continue;
+		}
+
+		// 无 State Machine 的 Clip Graph 仍可按归一化时间交接。
+		targetBinding.instance->SetPrimaryPlaybackTime(0.0f);
+		const auto sourceClip = m_Clips.find(sourceBinding.instance->GetPrimaryClipName());
+		const auto targetClip = m_Clips.find(targetBinding.instance->GetPrimaryClipName());
+		if (sourceClip == m_Clips.end() || targetClip == m_Clips.end()
+			|| sourceClip->second.duration <= 0.0f || targetClip->second.duration <= 0.0f)
+		{
+			targetBinding.instance->Reset();
+			fullyMatched = false;
+			continue;
+		}
+		float targetTime = sourceBinding.instance->GetPrimaryPlaybackTime()
+			/ sourceClip->second.duration * targetClip->second.duration;
+		if (policy.phase == VansGraphSetPhasePolicy::MatchMarker)
+		{
+			if (index >= source.evaluatedSync.size()
+				|| !ResolveMarkerSyncedTime(source.evaluatedSync[index],
+					sourceBinding.instance->GetPrimaryPlaybackTime(),
+					sourceClip->second.duration, targetClip->second, targetTime))
+			{
+				fullyMatched = false;
+			}
+		}
+		if (!targetBinding.instance->SetPrimaryPlaybackTime(targetTime))
+			fullyMatched = false;
+	}
+	return fullyMatched || !policy.requireStateMatch;
+}
+
+VansGraphSetSwitchResult VansAnimationController::SwitchGraphSet(
+	const std::string& graphSetId)
+{
+	const auto target = m_GraphSetById.find(graphSetId);
+	if (target == m_GraphSetById.end())
+		return VansGraphSetSwitchResult::UnknownGraphSet;
+	if (!IsGraphSetTransitioning() && target->second == m_ActiveGraphSetIndex)
+		return VansGraphSetSwitchResult::AlreadyActive;
+	if (IsGraphSetTransitioning())
+	{
+		if (target->second == m_IncomingGraphSetIndex)
+			return VansGraphSetSwitchResult::AlreadyActive;
+		switch (m_CurrentGraphSetTransition.interruption)
+		{
+		case VansGraphSetInterruptionPolicy::QueueLatest:
+			m_QueuedGraphSetId = graphSetId;
+			return VansGraphSetSwitchResult::Queued;
+		case VansGraphSetInterruptionPolicy::Reject:
+			return VansGraphSetSwitchResult::Rejected;
+		case VansGraphSetInterruptionPolicy::Force:
+			if (GetGraphSetTransitionProgress() >= 0.5f)
+				CompleteGraphSetTransition();
+			else
+			{
+				m_IncomingGraphSetIndex = static_cast<std::size_t>(-1);
+				m_IncomingMotionMatching.reset();
+				m_GraphSetTransitionElapsed = 0.0f;
+			}
+			break;
+		}
+		if (target->second == m_ActiveGraphSetIndex)
+		{
+			m_QueuedGraphSetId.clear();
+			return VansGraphSetSwitchResult::AlreadyActive;
+		}
+	}
+
+	GraphSetRuntime& source = m_GraphSetRuntimes[m_ActiveGraphSetIndex];
+	GraphSetRuntime& incoming = m_GraphSetRuntimes[target->second];
+	const VansGraphSetTransitionPolicy policy = ResolveGraphSetTransitionPolicy(
+		source.definition.id, incoming.definition.id);
+	if (!ApplyGraphSetPhaseHandoff(source, incoming, policy))
+		return VansGraphSetSwitchResult::StateHandoffFailed;
+
+	m_CurrentGraphSetTransition = policy;
+	m_GraphSetTransitionElapsed = 0.0f;
+	m_IncomingGraphSetIndex = target->second;
+	m_QueuedGraphSetId.clear();
+	if (m_MotionMatching)
+		m_IncomingMotionMatching = std::make_unique<VansMotionMatchingRuntime>(*m_MotionMatching);
+	if (policy.duration <= 0.0f)
+	{
+		CompleteGraphSetTransition();
+		return VansGraphSetSwitchResult::Completed;
+	}
+	return VansGraphSetSwitchResult::Started;
+}
+
+void VansAnimationController::CompleteGraphSetTransition()
+{
+	if (!IsGraphSetTransitioning())
+		return;
+	m_ActiveGraphSetIndex = m_IncomingGraphSetIndex;
+	m_IncomingGraphSetIndex = static_cast<std::size_t>(-1);
+	m_GraphSetTransitionElapsed = 0.0f;
+	if (m_IncomingMotionMatching)
+		m_MotionMatching = std::move(m_IncomingMotionMatching);
 }
 
 bool VansAnimationController::SetTargetPostProcessGraph(
@@ -276,14 +654,65 @@ bool VansAnimationController::SetTargetPostProcessGraph(
 		error = "Target Post Process Graph requires exactly one reachable Target Pose Input";
 		return false;
 	}
+	if (!m_AnimationRig)
+	{
+		error = "Target Post Process Graph requires a compiled Animation Rig";
+		return false;
+	}
+	auto proceduralRuntime = std::make_unique<VansProceduralGraphRuntime>();
+	if (!proceduralRuntime->Configure(*graph, *m_AnimationRig, m_QueryProfileResolver, error))
+	{
+		error = "Target Procedural Graph failed compilation: " + error;
+		return false;
+	}
 
 	m_TargetPostProcessGraph = std::move(graph);
 	m_TargetPostProcessInstance = std::make_unique<VansAnimGraphInstance>(*m_TargetPostProcessGraph);
+	m_ProceduralRuntime = std::move(proceduralRuntime);
 	return true;
+}
+
+bool VansAnimationController::SetAnimationRig(
+	VansCompiledAnimationRig rig,
+	VansGroundQueryProfileResolver queryProfileResolver,
+	std::string& error)
+{
+	error.clear();
+	if (!rig.skeleton || rig.skeleton->bones.empty())
+	{
+		error = "Animation Controller requires a compiled Rig bound to a Skeleton";
+		return false;
+	}
+	const Skeleton* compiledSkeleton = rig.skeleton;
+	if (!rig.BindSkeleton(*compiledSkeleton, error))
+		return false;
+	m_AnimationRig = std::move(rig);
+	m_QueryProfileResolver = std::move(queryProfileResolver);
+	if (m_TargetPostProcessGraph)
+	{
+		auto runtime = std::make_unique<VansProceduralGraphRuntime>();
+		if (!runtime->Configure(*m_TargetPostProcessGraph, *m_AnimationRig,
+			m_QueryProfileResolver, error)) return false;
+		m_ProceduralRuntime = std::move(runtime);
+	}
+	return true;
+}
+
+bool VansAnimationController::BindAnimationRigSkeleton(
+	const Skeleton& skeleton,
+	std::string& error)
+{
+	if (!m_AnimationRig)
+	{
+		error.clear();
+		return true;
+	}
+	return m_AnimationRig->BindSkeleton(skeleton, error);
 }
 
 void VansAnimationController::ClearTargetPostProcessGraph()
 {
+	m_ProceduralRuntime.reset();
 	m_TargetPostProcessInstance.reset();
 	m_TargetPostProcessGraph.reset();
 }
@@ -304,20 +733,25 @@ bool VansAnimationController::SetSlots(
 			error = "Slot '" + slot.name + "' references an unknown Layer";
 			return false;
 		}
-		const LayerRuntime* owner = nullptr;
-		for (const LayerRuntime& layer : m_LayerRuntimes)
-			if (layer.definition.id == slot.layerId) { owner = &layer; break; }
-		const VansAnimGraphNode* node = owner ? owner->graph->GetNode(slot.slotNodeId) : nullptr;
-		if (!node || node->GetType() != AnimGraphNodeType::Slot)
+		const size_t layerIndex = static_cast<size_t>(std::distance(
+			m_LayerRuntimes.begin(), std::find_if(m_LayerRuntimes.begin(), m_LayerRuntimes.end(),
+				[&](const LayerRuntime& layer) { return layer.definition.id == slot.layerId; })));
+		for (const GraphSetRuntime& graphSet : m_GraphSetRuntimes)
 		{
-			error = "Slot '" + slot.name + "' does not bind a Slot node in its Layer Graph";
-			return false;
-		}
-		const auto* slotNode = static_cast<const AnimGraphSlotNode*>(node);
-		if (slotNode->m_SlotId != slot.id)
-		{
-			error = "Slot '" + slot.name + "' ID does not match its bound Graph node";
-			return false;
+			const GraphBindingRuntime& binding = graphSet.bindings[layerIndex];
+			if (!binding.definition.enabled)
+				continue;
+			std::size_t matchingNodeCount = 0;
+			for (const auto& [nodeId, node] : binding.graph->GetNodes())
+				if (node && node->GetType() == AnimGraphNodeType::Slot
+					&& static_cast<const AnimGraphSlotNode*>(node.get())->m_SlotId == slot.id)
+					++matchingNodeCount;
+			if (matchingNodeCount != 1)
+			{
+				error = "Slot '" + slot.name + "' requires exactly one matching Slot node in enabled binding '"
+					+ binding.definition.graphId + "' of Graph Set '" + graphSet.definition.name + "'";
+				return false;
+			}
 		}
 		slotIds.push_back(slot.id);
 	}
@@ -343,12 +777,17 @@ bool VansAnimationController::TransferRuntimeStateFrom(
 	// Reapply scene-owned runtime configuration before restoring graph state,
 	// because Motion Matching installation may rebuild Layer instances.
 	if (previous.m_MotionMatching)
-		ConfigureMotionMatching(previous.m_MotionMatching->GetSettings());
-	if (previous.m_HasExternalFootPlacementSettings)
 	{
-		ConfigureFootPlacement(previous.m_ExternalFootPlacementSettings, skeleton);
-		SetFootPlacementRuntimeState(previous.m_FootPlacementState);
+		std::string motionMatchingError;
+		if (!ConfigureMotionMatching(previous.m_MotionMatching->GetSettings(), motionMatchingError))
+		{
+			fullyCompatible = false;
+			diagnostic = motionMatchingError;
+		}
 	}
+	m_ExternalInput = previous.m_ExternalInput;
+	if (m_ProceduralRuntime)
+		m_ProceduralRuntime->Reset(m_ExternalInput.resetToken);
 
 	for (auto& [name, parameter] : m_Parameters)
 	{
@@ -373,12 +812,50 @@ bool VansAnimationController::TransferRuntimeStateFrom(
 			layer.state = source->state;
 		else
 			fullyCompatible = false;
-		if (!layer.instance->RestoreRuntimeState(source->instance->CaptureRuntimeState()))
-			fullyCompatible = false;
 	}
 	for (const LayerRuntime& previousLayer : previous.m_LayerRuntimes)
 		if (restoredLayerIds.find(previousLayer.definition.id) == restoredLayerIds.end())
 			fullyCompatible = false;
+
+	for (GraphSetRuntime& graphSet : m_GraphSetRuntimes)
+	{
+		const auto sourceSet = std::find_if(
+			previous.m_GraphSetRuntimes.begin(), previous.m_GraphSetRuntimes.end(),
+			[&](const GraphSetRuntime& candidate)
+			{ return candidate.definition.id == graphSet.definition.id; });
+		if (sourceSet == previous.m_GraphSetRuntimes.end())
+		{
+			fullyCompatible = false;
+			continue;
+		}
+		for (std::size_t index = 0; index < graphSet.bindings.size(); ++index)
+		{
+			GraphBindingRuntime& binding = graphSet.bindings[index];
+			if (!binding.definition.enabled || !binding.instance)
+				continue;
+			const auto sourceBinding = std::find_if(
+				sourceSet->bindings.begin(), sourceSet->bindings.end(),
+				[&](const GraphBindingRuntime& candidate)
+				{ return candidate.definition.layerId == binding.definition.layerId; });
+			if (sourceBinding == sourceSet->bindings.end()
+				|| !sourceBinding->definition.enabled || !sourceBinding->instance
+				|| sourceBinding->definition.graphId != binding.definition.graphId
+				|| !binding.instance->RestoreRuntimeState(
+					sourceBinding->instance->CaptureRuntimeState()))
+			{
+				fullyCompatible = false;
+			}
+		}
+	}
+	const auto previousActive = m_GraphSetById.find(previous.GetActiveGraphSetId());
+	if (previousActive != m_GraphSetById.end())
+		m_ActiveGraphSetIndex = previousActive->second;
+	else
+		fullyCompatible = false;
+	m_IncomingGraphSetIndex = static_cast<std::size_t>(-1);
+	m_IncomingMotionMatching.reset();
+	m_GraphSetTransitionElapsed = 0.0f;
+	m_QueuedGraphSetId.clear();
 
 	m_SlotRuntime.TransferRuntimeStateFrom(previous.m_SlotRuntime, m_Clips);
 	m_PlaybackState = previous.m_PlaybackState;
@@ -440,29 +917,73 @@ const std::vector<VansSlotLifecycleEvent>& VansAnimationController::GetSlotLifec
 	return m_SlotRuntime.GetLifecycleEvents();
 }
 
-void VansAnimationController::ConfigureMotionMatching(const MotionMatchingSettings& settings)
+bool VansAnimationController::ConfigureMotionMatching(
+	const MotionMatchingSettings& settings,
+	std::string& error)
 {
+	error.clear();
+	if (settings.motionModel.driveMode != Vans::VansLocomotionDriveMode::Capsule &&
+		settings.motionModel.driveMode != Vans::VansLocomotionDriveMode::RootMotion &&
+		settings.motionModel.driveMode != Vans::VansLocomotionDriveMode::Hybrid)
+	{
+		error = "Motion Matching drive mode is invalid";
+		return false;
+	}
+	if (settings.contactProvider.empty() != settings.contactChannels.empty())
+	{
+		error = "Motion Matching contact provider and channels must either both be authored or both be empty";
+		return false;
+	}
+	std::unordered_set<std::string> contactIds;
+	std::unordered_set<int> contactSources;
+	for (const MotionMatchingContactChannel& channel : settings.contactChannels)
+	{
+		if (channel.id.empty() || !contactIds.insert(channel.id).second)
+		{
+			error = "Motion Matching contact channel IDs must be non-empty and unique";
+			return false;
+		}
+		if (channel.source != MotionMatchingContactSource::LeftFoot &&
+			channel.source != MotionMatchingContactSource::RightFoot)
+		{
+			error = "Motion Matching contact source is invalid";
+			return false;
+		}
+		if (!contactSources.insert(static_cast<int>(channel.source)).second)
+		{
+			error = "Motion Matching contact sources must be unique";
+			return false;
+		}
+	}
 	if (!m_MotionMatching)
 		m_MotionMatching = std::make_unique<VansMotionMatchingRuntime>();
 	m_MotionMatching->Configure(settings);
 	EnsureMotionMatchingGraphNode();
-	RebuildLayerInstances();
+	RebuildGraphSetInstances();
+	return true;
 }
 
-void VansAnimationController::RebuildLayerInstances()
+void VansAnimationController::RebuildGraphSetInstances()
 {
-	for (LayerRuntime& layer : m_LayerRuntimes)
-	{
-		layer.instance = std::make_unique<VansAnimGraphInstance>(*layer.graph);
-		if (!layer.instance->IsCompiled())
-			VANS_LOG_ERROR("[AnimController] Layer Graph compile failed for '" << layer.definition.name
-			               << "': " << layer.instance->GetCompileError());
-	}
+	for (GraphSetRuntime& graphSet : m_GraphSetRuntimes)
+		for (GraphBindingRuntime& binding : graphSet.bindings)
+		{
+			if (!binding.graph)
+			{
+				binding.instance.reset();
+				continue;
+			}
+			binding.instance = std::make_unique<VansAnimGraphInstance>(*binding.graph);
+			if (!binding.instance->IsCompiled())
+				VANS_LOG_ERROR("[AnimController] Graph Set binding compile failed for '"
+					<< binding.definition.graphId << "': " << binding.instance->GetCompileError());
+		}
 }
 
 const MotionMatchingDebugData* VansAnimationController::GetMotionMatchingDebugData() const
 {
-	return m_MotionMatching ? &m_MotionMatching->GetDebugData() : nullptr;
+	const VansMotionMatchingRuntime* runtime = GetOutputMotionMatchingRuntime();
+	return runtime ? &runtime->GetDebugData() : nullptr;
 }
 
 const MotionMatchingSettings* VansAnimationController::GetMotionMatchingSettings() const
@@ -470,112 +991,153 @@ const MotionMatchingSettings* VansAnimationController::GetMotionMatchingSettings
 	return m_MotionMatching ? &m_MotionMatching->GetSettings() : nullptr;
 }
 
+const std::vector<VansProceduralDebugRecord>*
+VansAnimationController::GetProceduralDebugRecords() const
+{
+	return m_ProceduralRuntime ? &m_ProceduralRuntime->GetDebugRecords() : nullptr;
+}
+
 bool VansAnimationController::MotionMatchingPrefersRootMotion() const
 {
-	return m_MotionMatching && m_MotionMatching->PrefersRootMotionThisFrame();
+	const VansMotionMatchingRuntime* runtime = GetOutputMotionMatchingRuntime();
+	return runtime && runtime->PrefersRootMotionThisFrame();
+}
+
+VansMotionMatchingRuntime* VansAnimationController::GetOutputMotionMatchingRuntime()
+{
+	if (m_IncomingMotionMatching && GetGraphSetTransitionProgress() >= 0.5f)
+		return m_IncomingMotionMatching.get();
+	return m_MotionMatching.get();
+}
+
+const VansMotionMatchingRuntime* VansAnimationController::GetOutputMotionMatchingRuntime() const
+{
+	if (m_IncomingMotionMatching && GetGraphSetTransitionProgress() >= 0.5f)
+		return m_IncomingMotionMatching.get();
+	return m_MotionMatching.get();
 }
 
 void VansAnimationController::EnsureMotionMatchingGraphNode()
 {
 	if (!m_MotionMatching)
 		return;
-	VansAnimGraph* graph = !m_LayerRuntimes.empty() ? m_LayerRuntimes.front().graph.get() : nullptr;
-	if (!graph)
-		return;
-
-	for (const auto& [id, node] : graph->GetNodes())
+	for (GraphSetRuntime& graphSet : m_GraphSetRuntimes)
 	{
-		if (node && node->GetType() == AnimGraphNodeType::MotionMatching)
-			return;
-	}
+		if (graphSet.bindings.empty())
+			continue;
+		VansAnimGraph* graph = graphSet.bindings.front().graph.get();
+		if (!graph)
+			continue;
+		bool hasMotionMatching = false;
+		for (const auto& [id, node] : graph->GetNodes())
+			if (node && node->GetType() == AnimGraphNodeType::MotionMatching)
+			{
+				hasMotionMatching = true;
+				break;
+			}
+		if (hasMotionMatching)
+			continue;
+		const int outputId = graph->GetOutputNodeId();
+		if (outputId < 0)
+			continue;
 
-	const int outputId = graph->GetOutputNodeId();
-	if (outputId < 0)
-		return;
-
-	int sourceNodeId = -1;
-	int sourcePinIndex = 0;
-	int outputLinkId = -1;
-	for (const AnimGraphLink& link : graph->GetLinks())
-	{
-		if (link.toNodeId == outputId && link.toPinIndex == 0)
+		int sourceNodeId = -1;
+		int sourcePinIndex = 0;
+		int outputLinkId = -1;
+		for (const AnimGraphLink& link : graph->GetLinks())
 		{
-			sourceNodeId = link.fromNodeId;
-			sourcePinIndex = link.fromPinIndex;
-			outputLinkId = link.linkId;
-			break;
+			if (link.toNodeId == outputId && link.toPinIndex == 0)
+			{
+				sourceNodeId = link.fromNodeId;
+				sourcePinIndex = link.fromPinIndex;
+				outputLinkId = link.linkId;
+				break;
+			}
 		}
+		if (sourceNodeId < 0 || outputLinkId < 0)
+			continue;
+
+		auto mmNode = std::make_unique<AnimGraphMotionMatchingNode>();
+		const int mmNodeId = graph->AddNode(std::move(mmNode));
+		if (mmNodeId < 0)
+			continue;
+
+		graph->RemoveLink(outputLinkId);
+		graph->AddLink(sourceNodeId, sourcePinIndex, mmNodeId, 0);
+		graph->AddLink(mmNodeId, 0, outputId, 0);
 	}
-	if (sourceNodeId < 0 || outputLinkId < 0)
-		return;
-
-	auto mmNode = std::make_unique<AnimGraphMotionMatchingNode>();
-	const int mmNodeId = graph->AddNode(std::move(mmNode));
-	if (mmNodeId < 0)
-		return;
-
-	graph->RemoveLink(outputLinkId);
-	graph->AddLink(sourceNodeId, sourcePinIndex, mmNodeId, 0);
-	graph->AddLink(mmNodeId, 0, outputId, 0);
 }
 
-const FootPlacementDebugData* VansAnimationController::GetFootPlacementDebugData() const
+void VansAnimationController::RefreshExternalMotionState()
 {
-	return m_FootPlacement ? &m_FootPlacement->GetDebugData() : nullptr;
-}
-
-void VansAnimationController::ConfigureFootPlacement(const FootPlacementSettings& settings, const Skeleton& skeleton)
-{
-	m_ExternalFootPlacementSettings = settings;
-	m_HasExternalFootPlacementSettings = true;
-	m_FootPlacementSourceNodeId = -1;
-	m_FootPlacementSettings = settings;
-	if (!m_FootPlacement)
-		m_FootPlacement = std::make_unique<VansFootPlacementSolver>();
-	if (!m_FootPlacement->Configure(settings, skeleton))
+	if (m_CharacterTrajectory && m_CharacterTrajectory->valid
+		&& m_CharacterTrajectory->hasGrounding)
 	{
-		VANS_LOG_WARN("FootPlacement configure failed for controller '" << m_Name << "': missing humanoid leg bones");
-		m_FootPlacement.reset();
+		m_ExternalInput.grounded = m_CharacterTrajectory->grounded;
+		m_ExternalInput.airborne = !m_CharacterTrajectory->grounded;
+		return;
 	}
+	if (!m_MotionMatching)
+		return;
+	const std::string& airborneParameter = m_MotionMatching->GetSettings().parameters.airborne;
+	const auto found = m_Parameters.find(airborneParameter);
+	if (found == m_Parameters.end())
+		return;
+	bool airborne = false;
+	switch (found->second.type)
+	{
+	case AnimatorParamType::Bool:
+	case AnimatorParamType::Trigger:
+		airborne = found->second.boolVal;
+		break;
+	case AnimatorParamType::Float:
+		airborne = found->second.floatVal > 0.5f;
+		break;
+	case AnimatorParamType::Int:
+		airborne = found->second.intVal != 0;
+		break;
+	default:
+		return;
+	}
+	m_ExternalInput.airborne = airborne;
+	m_ExternalInput.grounded = !airborne;
 }
 
-void VansAnimationController::SetFootPlacementEnabled(bool enabled)
+void VansAnimationController::PublishMotionMatchingContacts()
 {
-	m_ExternalFootPlacementSettings.enabled = enabled;
-	m_FootPlacementSettings.enabled = enabled;
-	if (m_FootPlacement)
-		m_FootPlacement->SetEnabled(enabled);
-}
-
-void VansAnimationController::SetFootPlacementDebugVisualization(bool enabled)
-{
-	m_ExternalFootPlacementSettings.debugVisualization = enabled;
-	m_FootPlacementSettings.debugVisualization = enabled;
-	if (m_FootPlacement)
-		m_FootPlacement->SetDebugVisualization(enabled);
-}
-
-void VansAnimationController::SetFootPlacementRuntimeState(const FootPlacementRuntimeState& state)
-{
-	m_FootPlacementState = state;
-}
-
-void VansAnimationController::SetFootPlacementAnimationPlantWeights(
-	bool valid, float left, float right)
-{
-	m_FootPlacementState.hasAnimationPlantWeights = valid;
-	m_FootPlacementState.leftPlantWeight = valid ? glm::clamp(left, 0.0f, 1.0f) : 0.0f;
-	m_FootPlacementState.rightPlantWeight = valid ? glm::clamp(right, 0.0f, 1.0f) : 0.0f;
-}
-
-bool VansAnimationController::GetMotionMatchingFootPlantWeights(
-	float& left, float& right) const
-{
-	if (!m_MotionMatching || !m_MotionMatching->WasUsedThisFrame())
-		return false;
-	left = m_MotionMatching->GetLeftFootPlantWeight();
-	right = m_MotionMatching->GetRightFootPlantWeight();
-	return true;
+	VansMotionMatchingRuntime* runtime = GetOutputMotionMatchingRuntime();
+	if (!runtime)
+		return;
+	const MotionMatchingSettings& settings = runtime->GetSettings();
+	if (settings.contactProvider.empty())
+		return;
+	m_ExternalInput.contacts.erase(
+		std::remove_if(m_ExternalInput.contacts.begin(), m_ExternalInput.contacts.end(),
+			[&settings](const VansContactAttribute& value)
+			{
+				return value.provider == settings.contactProvider;
+			}),
+		m_ExternalInput.contacts.end());
+	if (!runtime->WasUsedThisFrame())
+		return;
+	m_ExternalInput.contacts.reserve(
+		m_ExternalInput.contacts.size() + settings.contactChannels.size());
+	for (const MotionMatchingContactChannel& channel : settings.contactChannels)
+	{
+		const float weight = channel.source == MotionMatchingContactSource::LeftFoot
+			? runtime->GetLeftFootPlantWeight()
+			: runtime->GetRightFootPlantWeight();
+		VansContactAttribute attribute;
+		attribute.provider = settings.contactProvider;
+		attribute.id = channel.id;
+		attribute.phase = std::clamp(weight, 0.0f, 1.0f);
+		// Motion Matching's baked contact curve already combines normalized foot
+		// height with velocity confidence. Grounding consumes phase for plant-lock
+		// hysteresis and confidence for continuous placement strength.
+		attribute.confidence = attribute.phase;
+		attribute.present = true;
+		m_ExternalInput.contacts.push_back(std::move(attribute));
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -714,7 +1276,8 @@ bool VansAnimationController::SubmitExternalModelPose(
 	const std::vector<glm::mat4>& modelSpaceTransforms,
 	const Skeleton& skeleton,
 	float deltaTime,
-	VansExternalPoseEvaluationMode mode)
+	VansExternalPoseEvaluationMode mode,
+	bool prepareWorldQueries)
 {
 	m_FramePool.BeginFrame();
 	VansAnimationFrameMemory::Scope frameMemoryScope(m_FramePool.Resource());
@@ -743,7 +1306,8 @@ bool VansAnimationController::SubmitExternalModelPose(
 	VansPosePayload processed;
 	if (!EvaluateTargetPostProcess(deltaTime, skeleton, pose, processed))
 		return false;
-	return FinalizeLocalPose(deltaTime, skeleton, std::move(processed), false, false, false);
+	return FinalizeLocalPose(
+		deltaTime, skeleton, std::move(processed), false, false, prepareWorldQueries);
 }
 
 // ---------------------------------------------------------------------------
@@ -755,6 +1319,8 @@ void VansAnimationController::AddClip(const std::string& name, VansAnimationClip
 	m_Clips[name] = std::move(clip);
 	if (m_MotionMatching)
 		m_MotionMatching->MarkDatabaseDirty();
+	if (m_IncomingMotionMatching)
+		m_IncomingMotionMatching->MarkDatabaseDirty();
 }
 
 void VansAnimationController::AddClip(const std::string& name, const VansAnimationClip& clip)
@@ -762,6 +1328,8 @@ void VansAnimationController::AddClip(const std::string& name, const VansAnimati
 	m_Clips[name] = clip;
 	if (m_MotionMatching)
 		m_MotionMatching->MarkDatabaseDirty();
+	if (m_IncomingMotionMatching)
+		m_IncomingMotionMatching->MarkDatabaseDirty();
 }
 
 void VansAnimationController::RemoveClip(const std::string& name)
@@ -769,6 +1337,8 @@ void VansAnimationController::RemoveClip(const std::string& name)
 	m_Clips.erase(name);
 	if (m_MotionMatching)
 		m_MotionMatching->MarkDatabaseDirty();
+	if (m_IncomingMotionMatching)
+		m_IncomingMotionMatching->MarkDatabaseDirty();
 }
 
 VansAnimationClip* VansAnimationController::GetClip(const std::string& name)
@@ -808,19 +1378,28 @@ void VansAnimationController::Play()
 	for (auto& [slotId, payload] : m_SlotPayloads)
 		payload = {};
 	for (LayerRuntime& layer : m_LayerRuntimes)
-	{
-		layer.instance->Reset();
 		layer.state = {};
-	}
+	for (GraphSetRuntime& graphSet : m_GraphSetRuntimes)
+		for (GraphBindingRuntime& binding : graphSet.bindings)
+			if (binding.instance) binding.instance->Reset();
+	m_IncomingGraphSetIndex = static_cast<std::size_t>(-1);
+	m_IncomingMotionMatching.reset();
+	m_GraphSetTransitionElapsed = 0.0f;
+	m_QueuedGraphSetId.clear();
 	if (m_TargetPostProcessInstance)
 		m_TargetPostProcessInstance->Reset();
+	++m_ExternalInput.resetToken;
+	if (m_ExternalInput.resetToken == 0) ++m_ExternalInput.resetToken;
+	if (m_ProceduralRuntime) m_ProceduralRuntime->Reset(m_ExternalInput.resetToken);
 }
 
 void VansAnimationController::Play(const std::string& stateName)
 {
 	bool found = false;
-	for (LayerRuntime& layer : m_LayerRuntimes)
-		found = layer.instance->PlayState(stateName) || found;
+	if (GraphSetRuntime* graphSet = GetActiveGraphSetRuntime())
+		for (GraphBindingRuntime& binding : graphSet->bindings)
+			if (binding.instance)
+				found = binding.instance->PlayState(stateName) || found;
 	if (!found)
 	{
 		VANS_LOG_WARN("[AnimController] " << m_Name << ": state '" << stateName << "' not found");
@@ -848,12 +1427,19 @@ void VansAnimationController::Stop()
 	for (auto& [slotId, payload] : m_SlotPayloads)
 		payload = {};
 	for (LayerRuntime& layer : m_LayerRuntimes)
-	{
-		layer.instance->Reset();
 		layer.state = {};
-	}
+	for (GraphSetRuntime& graphSet : m_GraphSetRuntimes)
+		for (GraphBindingRuntime& binding : graphSet.bindings)
+			if (binding.instance) binding.instance->Reset();
+	m_IncomingGraphSetIndex = static_cast<std::size_t>(-1);
+	m_IncomingMotionMatching.reset();
+	m_GraphSetTransitionElapsed = 0.0f;
+	m_QueuedGraphSetId.clear();
 	if (m_TargetPostProcessInstance)
 		m_TargetPostProcessInstance->Reset();
+	++m_ExternalInput.resetToken;
+	if (m_ExternalInput.resetToken == 0) ++m_ExternalInput.resetToken;
+	if (m_ProceduralRuntime) m_ProceduralRuntime->Reset(m_ExternalInput.resetToken);
 
 	m_LastRootMotionDelta   = glm::vec3(0.0f);
 	m_LastRootRotationDelta = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
@@ -884,8 +1470,9 @@ float VansAnimationController::GetSpeed() const
 
 std::string VansAnimationController::GetCurrentStateName() const
 {
-	if (!m_LayerRuntimes.empty())
-		return m_LayerRuntimes.front().instance->GetCurrentStateName();
+	const GraphSetRuntime* graphSet = GetActiveGraphSetRuntime();
+	if (graphSet && !graphSet->bindings.empty() && graphSet->bindings.front().instance)
+		return graphSet->bindings.front().instance->GetCurrentStateName();
 	return {};
 }
 
@@ -896,16 +1483,18 @@ AnimationState VansAnimationController::GetPlaybackState() const
 
 float VansAnimationController::GetCurrentPlayTime() const
 {
-	if (!m_LayerRuntimes.empty())
-		return m_LayerRuntimes.front().instance->GetPrimaryPlaybackTime();
+	const GraphSetRuntime* graphSet = GetActiveGraphSetRuntime();
+	if (graphSet && !graphSet->bindings.empty() && graphSet->bindings.front().instance)
+		return graphSet->bindings.front().instance->GetPrimaryPlaybackTime();
 	return 0.0f;
 }
 
 float VansAnimationController::GetCurrentDuration() const
 {
-	if (m_LayerRuntimes.empty())
+	const GraphSetRuntime* graphSet = GetActiveGraphSetRuntime();
+	if (!graphSet || graphSet->bindings.empty() || !graphSet->bindings.front().instance)
 		return 0.0f;
-	auto it = m_Clips.find(m_LayerRuntimes.front().instance->GetPrimaryClipName());
+	auto it = m_Clips.find(graphSet->bindings.front().instance->GetPrimaryClipName());
 	return it == m_Clips.end() ? 0.0f : it->second.duration;
 }
 
@@ -951,15 +1540,18 @@ bool VansAnimationController::SeekNormalizedTime(float normalizedTime)
 {
 	normalizedTime = glm::clamp(normalizedTime, 0.0f, 1.0f);
 	bool changed = false;
-	for (LayerRuntime& layer : m_LayerRuntimes)
+	GraphSetRuntime* graphSet = GetActiveGraphSetRuntime();
+	if (!graphSet)
+		return false;
+	for (GraphBindingRuntime& binding : graphSet->bindings)
 	{
-		if (!layer.instance)
+		if (!binding.instance)
 			continue;
-		const std::string clipName = layer.instance->GetPrimaryClipName();
+		const std::string clipName = binding.instance->GetPrimaryClipName();
 		const VansAnimationClip* clip = GetClip(clipName);
 		if (!clip || clip->duration <= 0.0f)
 			continue;
-		changed = layer.instance->SetPrimaryPlaybackTime(normalizedTime * clip->duration) || changed;
+		changed = binding.instance->SetPrimaryPlaybackTime(normalizedTime * clip->duration) || changed;
 	}
 	return changed;
 }
@@ -969,17 +1561,21 @@ VansAnimationController::GetLayerRuntimeDebugInfo() const
 {
 	std::vector<LayerRuntimeDebugInfo> result;
 	result.reserve(m_LayerRuntimes.size());
-	for (const LayerRuntime& layer : m_LayerRuntimes)
+	const GraphSetRuntime* graphSet = GetActiveGraphSetRuntime();
+	for (std::size_t index = 0; index < m_LayerRuntimes.size(); ++index)
 	{
+		const LayerRuntime& layer = m_LayerRuntimes[index];
+		const GraphBindingRuntime* binding = graphSet && index < graphSet->bindings.size()
+			? &graphSet->bindings[index] : nullptr;
 		LayerRuntimeDebugInfo info;
 		info.id = layer.definition.id;
 		info.name = layer.definition.name;
 		info.weight = layer.definition.kind == VansAnimationLayerKind::Base
 			? 1.0f : layer.state.currentWeight;
-		info.enabled = layer.definition.enabled;
+		info.enabled = binding && binding->definition.enabled;
 		info.kind = layer.definition.kind;
 		info.blendMode = layer.definition.blendMode;
-		info.evaluationMilliseconds = layer.lastEvaluationMilliseconds;
+		info.evaluationMilliseconds = binding ? binding->lastEvaluationMilliseconds : 0.0f;
 		if (layer.definition.kind == VansAnimationLayerKind::Base)
 			info.boneWeights.assign(layer.compiledMask.weights.size(), 1.0f);
 		else
@@ -988,11 +1584,11 @@ VansAnimationController::GetLayerRuntimeDebugInfo() const
 			for (float maskWeight : layer.compiledMask.weights)
 				info.boneWeights.push_back(glm::clamp(maskWeight * info.weight, 0.0f, 1.0f));
 		}
-		if (layer.instance)
+		if (binding && binding->instance)
 		{
-			info.state = layer.instance->GetCurrentStateName();
-			info.clip = layer.instance->GetPrimaryClipName();
-			info.playbackTime = layer.instance->GetPrimaryPlaybackTime();
+			info.state = binding->instance->GetCurrentStateName();
+			info.clip = binding->instance->GetPrimaryClipName();
+			info.playbackTime = binding->instance->GetPrimaryPlaybackTime();
 			if (const VansAnimationClip* clip = GetClip(info.clip); clip && clip->duration > 0.0f)
 				info.normalizedTime = glm::clamp(info.playbackTime / clip->duration, 0.0f, 1.0f);
 		}
@@ -1003,6 +1599,7 @@ VansAnimationController::GetLayerRuntimeDebugInfo() const
 
 void VansAnimationController::ResolveLayerReferencePose(
 	const LayerRuntime& layer,
+	const GraphBindingRuntime& binding,
 	const Skeleton& skeleton,
 	VansAnimationFrameVector<VansBoneTransform>& outPose) const
 {
@@ -1012,7 +1609,7 @@ void VansAnimationController::ResolveLayerReferencePose(
 
 	const std::string* clipName = &layer.definition.referenceClipName;
 	if (layer.definition.additiveReference != VansAdditiveReferenceMode::ReferenceClip)
-		clipName = layer.instance ? &layer.instance->GetPrimaryClipName() : nullptr;
+		clipName = binding.instance ? &binding.instance->GetPrimaryClipName() : nullptr;
 	if (!clipName)
 		return;
 	auto clip = m_Clips.find(*clipName);
@@ -1030,22 +1627,13 @@ void VansAnimationController::ResolveLayerReferencePose(
 		outPose = std::move(sampled.localPose);
 }
 
-bool VansAnimationController::EvaluateLayerStack(
+bool VansAnimationController::PrepareLayerStack(
 	float deltaTime,
-	const Skeleton& skeleton,
-	VansPosePayload& outPayload)
+	const Skeleton& skeleton)
 {
-	outPayload = {};
 	if (m_LayerRuntimes.empty())
 		return false;
-
 	const std::uint64_t skeletonSignature = VansBoneMaskCompiler::ComputeSkeletonSignature(skeleton);
-	VansAnimationFrameVector<VansBoneTransform> bindPose;
-	VansAnimationLayerMixer::BuildBindPose(skeleton, bindPose);
-	m_EvaluatedSyncScratch.clear();
-	m_EvaluatedSyncScratch.resize(m_LayerRuntimes.size());
-	auto& evaluatedSync = m_EvaluatedSyncScratch;
-
 	for (size_t layerIndex = 0; layerIndex < m_LayerRuntimes.size(); ++layerIndex)
 	{
 		LayerRuntime& layer = m_LayerRuntimes[layerIndex];
@@ -1074,19 +1662,16 @@ bool VansAnimationController::EvaluateLayerStack(
 				return false;
 			continue;
 		}
-
 		float targetWeight = layer.definition.fixedWeight;
 		if (layer.definition.kind == VansAnimationLayerKind::Base)
 			targetWeight = 1.0f;
 		else if (layer.definition.useWeightParameter)
 		{
 			auto parameter = m_Parameters.find(layer.definition.weightParameter);
-			targetWeight = parameter != m_Parameters.end()
+				targetWeight = parameter != m_Parameters.end()
 			    && parameter->second.type == AnimatorParamType::Float
-				? parameter->second.floatVal : 0.0f;
+					? parameter->second.floatVal : 0.0f;
 		}
-		if (!layer.definition.enabled)
-			targetWeight = 0.0f;
 		targetWeight = std::clamp(targetWeight, 0.0f, 1.0f);
 		if (!layer.state.initialized)
 		{
@@ -1101,25 +1686,54 @@ bool VansAnimationController::EvaluateLayerStack(
 		}
 		else
 			layer.state.currentWeight = targetWeight;
+	}
+	return true;
+}
+
+bool VansAnimationController::EvaluateGraphSet(
+	GraphSetRuntime& graphSet,
+	VansMotionMatchingRuntime* motionMatching,
+	float deltaTime,
+	const Skeleton& skeleton,
+	VansPosePayload& outPayload)
+{
+	outPayload = {};
+	if (graphSet.bindings.size() != m_LayerRuntimes.size())
+		return false;
+	VansAnimationFrameVector<VansBoneTransform> bindPose;
+	VansAnimationLayerMixer::BuildBindPose(skeleton, bindPose);
+	graphSet.evaluatedSync.clear();
+	graphSet.evaluatedSync.resize(m_LayerRuntimes.size());
+	auto& evaluatedSync = graphSet.evaluatedSync;
+
+	for (size_t layerIndex = 0; layerIndex < m_LayerRuntimes.size(); ++layerIndex)
+	{
+		LayerRuntime& layer = m_LayerRuntimes[layerIndex];
+		GraphBindingRuntime& binding = graphSet.bindings[layerIndex];
+		if (!binding.definition.enabled)
+		{
+			binding.lastEvaluationMilliseconds = 0.0f;
+			continue;
+		}
 
 		const bool shouldUpdate = layer.definition.updateWhenWeightIsZero
 			|| layer.state.currentWeight > 1.0e-6f
 			|| layer.definition.kind == VansAnimationLayerKind::Base;
 		if (!shouldUpdate)
 		{
-			layer.lastEvaluationMilliseconds = 0.0f;
+			binding.lastEvaluationMilliseconds = 0.0f;
 			continue;
 		}
 
-		if (layer.parameterScratch.size() != m_Parameters.size())
-			layer.parameterScratch = m_Parameters;
+		if (binding.parameterScratch.size() != m_Parameters.size())
+			binding.parameterScratch = m_Parameters;
 		else
 			for (const auto& [name, parameter] : m_Parameters)
 			{
-				auto target = layer.parameterScratch.find(name);
-				if (target == layer.parameterScratch.end())
+				auto target = binding.parameterScratch.find(name);
+				if (target == binding.parameterScratch.end())
 				{
-					layer.parameterScratch = m_Parameters;
+					binding.parameterScratch = m_Parameters;
 					break;
 				}
 				target->second = parameter;
@@ -1127,31 +1741,33 @@ bool VansAnimationController::EvaluateLayerStack(
 		AnimGraphContext context;
 		context.deltaTime = deltaTime * m_GlobalSpeed;
 		context.skeleton = &skeleton;
-		context.parameters = &layer.parameterScratch;
+		context.parameters = &binding.parameterScratch;
 		context.clips = &m_Clips;
-		context.motionMatching = m_MotionMatching.get();
+		context.motionMatching = motionMatching;
 		context.characterTrajectory = m_CharacterTrajectory;
 		context.slotPayloads = &m_SlotPayloads;
 		context.ownerWorldTransform = m_OwnerWorldTransform;
 		if (layer.definition.sync == VansLayerSyncMode::Independent)
 		{
-			layer.instance->AdvanceTime(context.deltaTime, context);
+			binding.instance->AdvanceTime(context.deltaTime, context);
 		}
 		else if (layer.definition.sync == VansLayerSyncMode::SyncedGraph)
 		{
-			const LayerRuntime& leader = m_LayerRuntimes[static_cast<size_t>(layer.syncLeaderIndex)];
-			if (!layer.instance->SynchronizePrimaryStateMachineFrom(*leader.instance, m_Clips))
+			const GraphBindingRuntime& leader = graphSet.bindings[
+				static_cast<size_t>(binding.syncLeaderIndex)];
+			if (!binding.instance->SynchronizePrimaryStateMachineFrom(*leader.instance, m_Clips))
 				return false;
 			context.synchronizedStateFollower = true;
 		}
 		else
 		{
-			const LayerRuntime& leader = m_LayerRuntimes[static_cast<size_t>(layer.syncLeaderIndex)];
-			if (layer.instance->GetPrimaryClipName().empty())
-				layer.instance->SetPrimaryPlaybackTime(0.0f);
+			const GraphBindingRuntime& leader = graphSet.bindings[
+				static_cast<size_t>(binding.syncLeaderIndex)];
+			if (binding.instance->GetPrimaryClipName().empty())
+				binding.instance->SetPrimaryPlaybackTime(0.0f);
 
 			const std::string& leaderClipName = leader.instance->GetPrimaryClipName();
-			const std::string& followerClipName = layer.instance->GetPrimaryClipName();
+			const std::string& followerClipName = binding.instance->GetPrimaryClipName();
 			auto leaderClip = m_Clips.find(leaderClipName);
 			auto followerClip = m_Clips.find(followerClipName);
 			if (leaderClip != m_Clips.end() && followerClip != m_Clips.end()
@@ -1161,16 +1777,16 @@ bool VansAnimationController::EvaluateLayerStack(
 				float followerTime = leaderRawTime / leaderClip->second.duration
 					* followerClip->second.duration;
 				if (layer.definition.sync == VansLayerSyncMode::MarkerSync)
-					ResolveMarkerSyncedTime(evaluatedSync[static_cast<size_t>(layer.syncLeaderIndex)],
+					ResolveMarkerSyncedTime(evaluatedSync[static_cast<size_t>(binding.syncLeaderIndex)],
 						leaderRawTime, leaderClip->second.duration, followerClip->second, followerTime);
-				layer.instance->SetPrimaryPlaybackTime(followerTime);
+				binding.instance->SetPrimaryPlaybackTime(followerTime);
 			}
 		}
 		const auto evaluationBegin = m_DebugMetricsEnabled
 			? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
-		VansPosePayload sampled = layer.instance->Evaluate(context);
+		VansPosePayload sampled = binding.instance->Evaluate(context);
 		if (m_DebugMetricsEnabled)
-			layer.lastEvaluationMilliseconds = std::chrono::duration<float, std::milli>(
+			binding.lastEvaluationMilliseconds = std::chrono::duration<float, std::milli>(
 				std::chrono::steady_clock::now() - evaluationBegin).count();
 		if (!sampled.valid)
 		{
@@ -1192,15 +1808,11 @@ bool VansAnimationController::EvaluateLayerStack(
 			continue;
 		}
 		VansAnimationFrameVector<VansBoneTransform> referencePose = bindPose;
-		ResolveLayerReferencePose(layer, skeleton, referencePose);
+		ResolveLayerReferencePose(layer, binding, skeleton, referencePose);
 		outPayload = VansAnimationLayerMixer::ApplyLayer(
 			outPayload, sampled, layer.definition, layer.compiledMask,
 			skeleton, referencePose, layer.state.currentWeight);
 	}
-
-	for (auto& [name, parameter] : m_Parameters)
-		if (parameter.type == AnimatorParamType::Trigger)
-			parameter.boolVal = false;
 	return outPayload.valid;
 }
 
@@ -1302,41 +1914,27 @@ bool VansAnimationController::FinalizeLocalPose(
 		NormalizeRootTransform(localTransforms, skeleton);
 	}
 
-	if (pose.footPlacement.valid && pose.footPlacement.settings)
+	m_PreparedWorldQueries.clear();
+	m_HasPreparedFrame = false;
+	if (m_ProceduralRuntime)
 	{
-		if (m_FootPlacementSourceNodeId != pose.footPlacement.sourceNodeId)
-		{
-			m_FootPlacementSettings = *pose.footPlacement.settings;
-			if (!m_FootPlacement)
-				m_FootPlacement = std::make_unique<VansFootPlacementSolver>();
-			if (!m_FootPlacement->Configure(m_FootPlacementSettings, skeleton))
-				m_FootPlacement.reset();
-			m_FootPlacementSourceNodeId = pose.footPlacement.sourceNodeId;
-		}
-	}
-	else if (m_FootPlacementSourceNodeId >= 0)
-	{
-		m_FootPlacementSourceNodeId = -1;
-		if (m_HasExternalFootPlacementSettings)
-		{
-			m_FootPlacementSettings = m_ExternalFootPlacementSettings;
-			if (!m_FootPlacement)
-				m_FootPlacement = std::make_unique<VansFootPlacementSolver>();
-			if (!m_FootPlacement->Configure(m_FootPlacementSettings, skeleton))
-				m_FootPlacement.reset();
-		}
-		else
-			m_FootPlacement.reset();
-	}
-
-	if (deferWorldSpacePostProcess)
-	{
+		if (!m_AnimationRig)
+			return false;
+		if (!VansPoseMath::FromMatrices(localTransforms, pose.localPose))
+			return false;
 		m_PreparedLocalTransforms = localTransforms;
+		m_PreparedProceduralPose.assign(pose.localPose.begin(), pose.localPose.end());
+		m_PreparedProceduralNodeIds.assign(
+			pose.proceduralNodeIds.begin(), pose.proceduralNodeIds.end());
 		m_PreparedDeltaTime = deltaTime;
 		m_HasPreparedFrame = true;
+		if (deferWorldSpacePostProcess)
+			return true;
+		GatherPreparedWorldQueries(skeleton);
+		if (HasPreparedWorldQueries())
+			ResolvePreparedWorldQueries({}, skeleton);
 		return true;
 	}
-	ApplyFootPlacement(deltaTime, skeleton, localTransforms);
 	UpdateHierarchy(localTransforms, skeleton);
 	BuildFinalMatrices(localTransforms, skeleton);
 	return true;
@@ -1352,24 +1950,93 @@ void VansAnimationController::Update(float deltaTime, const Skeleton& skeleton)
 	UpdateInternal(deltaTime, skeleton, false);
 }
 
-void VansAnimationController::UpdateForMovement(float deltaTime, const Skeleton& skeleton)
+void VansAnimationController::PrepareFrame(float deltaTime, const Skeleton& skeleton)
 
 {
 	UpdateInternal(deltaTime, skeleton, true);
 }
 
-bool VansAnimationController::FinalizePreparedFrame(const Skeleton& skeleton)
+bool VansAnimationController::GatherPreparedWorldQueries(const Skeleton& skeleton)
+{
+	if (!m_HasPreparedFrame || !m_ProceduralRuntime || !m_AnimationRig)
+		return false;
+	m_AnimationRig->skeleton = &skeleton;
+	VansProceduralParameterAccessor accessor;
+	accessor.context = &m_Parameters;
+	accessor.readFloat = ReadProceduralFloat;
+	accessor.readVector3 = ReadProceduralVector3;
+	accessor.readQuaternion = ReadProceduralQuaternion;
+	m_ExternalInput.ownerWorld = m_OwnerWorldTransform;
+	auto& completedPose = m_ProceduralCompletedPoseScratch;
+	bool needsResolve = false;
+	auto& error = m_ProceduralErrorScratch;
+	error.clear();
+	if (!m_ProceduralRuntime->Prepare(
+		m_PreparedDeltaTime, m_PreparedProceduralPose, m_PreparedProceduralNodeIds,
+		accessor, m_ExternalInput, m_PreparedWorldQueries, completedPose, needsResolve, error))
+	{
+		VANS_LOG_WARN("[AnimController] Target Procedural transaction rejected: " << error);
+		m_LocalTransformScratch = m_PreparedLocalTransforms;
+		UpdateHierarchy(m_LocalTransformScratch, skeleton);
+		BuildFinalMatrices(m_LocalTransformScratch, skeleton);
+		m_PreparedWorldQueries.clear();
+		m_HasPreparedFrame = false;
+		return false;
+	}
+	if (!needsResolve)
+	{
+		m_LocalTransformScratch.resize(completedPose.size());
+		for (std::size_t index = 0; index < completedPose.size(); ++index)
+			m_LocalTransformScratch[index] = VansPoseMath::Compose(completedPose[index]);
+		UpdateHierarchy(m_LocalTransformScratch, skeleton);
+		BuildFinalMatrices(m_LocalTransformScratch, skeleton);
+		m_PreparedLocalTransforms.clear();
+		m_PreparedProceduralPose.clear();
+		m_PreparedProceduralNodeIds.clear();
+		m_HasPreparedFrame = false;
+	}
+	return true;
+}
+
+bool VansAnimationController::ResolvePreparedWorldQueries(
+	const std::vector<VansWorldQueryResult>& results,
+	const Skeleton& skeleton)
 
 {
-	if (!m_HasPreparedFrame)
+	if (!HasPreparedWorldQueries())
 		return false;
 	m_LocalTransformScratch = m_PreparedLocalTransforms;
-	ApplyFootPlacement(m_PreparedDeltaTime, skeleton, m_LocalTransformScratch);
+	if (m_ProceduralRuntime && m_AnimationRig)
+	{
+		m_AnimationRig->skeleton = &skeleton;
+		auto& completedPose = m_ProceduralCompletedPoseScratch;
+		auto& error = m_ProceduralErrorScratch;
+		error.clear();
+		if (m_ProceduralRuntime->Resolve(results, completedPose, error))
+		{
+			m_LocalTransformScratch.resize(completedPose.size());
+			for (std::size_t index = 0; index < completedPose.size(); ++index)
+				m_LocalTransformScratch[index] = VansPoseMath::Compose(completedPose[index]);
+		}
+		else
+		{
+			VANS_LOG_WARN("[AnimController] Target Procedural transaction rolled back: " << error);
+		}
+	}
 	UpdateHierarchy(m_LocalTransformScratch, skeleton);
 	BuildFinalMatrices(m_LocalTransformScratch, skeleton);
 	m_PreparedLocalTransforms.clear();
+	m_PreparedProceduralPose.clear();
+	m_PreparedProceduralNodeIds.clear();
+	m_PreparedWorldQueries.clear();
 	m_HasPreparedFrame = false;
 	return true;
+}
+
+bool VansAnimationController::HasPreparedWorldQueries() const
+{
+	return m_HasPreparedFrame && m_ProceduralRuntime
+		&& m_ProceduralRuntime->HasPreparedQueries();
 }
 
 void VansAnimationController::UpdateInternal(
@@ -1390,16 +2057,47 @@ void VansAnimationController::UpdateInternal(
 	m_LastRootMotionDelta = glm::vec3(0.0f);
 	m_LastRootRotationDelta = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
 	m_LastRootMotionValid = false;
+	m_HasPreparedFrame = false;
+	m_PreparedWorldQueries.clear();
 
 	if (m_PlaybackState == AnimationState::Stopped || m_PlaybackState == AnimationState::Paused)
 		return;
 	m_SlotRuntime.Update(deltaTime * m_GlobalSpeed, m_Clips, skeleton, m_SlotPayloads);
 
-	if (!m_LayerRuntimes.empty())
+	if (GraphSetRuntime* activeGraphSet = GetActiveGraphSetRuntime())
 	{
-		VansPosePayload pose;
-		if (!EvaluateLayerStack(deltaTime, skeleton, pose))
+		if (!PrepareLayerStack(deltaTime, skeleton))
 			return;
+		VansPosePayload pose;
+		if (!EvaluateGraphSet(*activeGraphSet, m_MotionMatching.get(), deltaTime, skeleton, pose))
+			return;
+		if (IsGraphSetTransitioning())
+		{
+			GraphSetRuntime& incoming = m_GraphSetRuntimes[m_IncomingGraphSetIndex];
+			VansPosePayload incomingPose;
+			if (!EvaluateGraphSet(
+				incoming, m_IncomingMotionMatching.get(), deltaTime, skeleton, incomingPose))
+				return;
+			m_GraphSetTransitionElapsed += std::max(0.0f, deltaTime);
+			const float alpha = EvaluateGraphSetBlendCurve(
+				m_CurrentGraphSetTransition.curve, GetGraphSetTransitionProgress());
+			pose = BlendGraphSetPayloads(
+				pose, incomingPose, alpha, m_CurrentGraphSetTransition);
+			if (GetGraphSetTransitionProgress() >= 1.0f)
+			{
+				const std::string queuedGraphSetId = std::move(m_QueuedGraphSetId);
+				CompleteGraphSetTransition();
+				m_QueuedGraphSetId.clear();
+				if (!queuedGraphSetId.empty()
+					&& queuedGraphSetId != GetActiveGraphSetId())
+					SwitchGraphSet(queuedGraphSetId);
+			}
+		}
+		for (auto& [name, parameter] : m_Parameters)
+			if (parameter.type == AnimatorParamType::Trigger)
+				parameter.boolVal = false;
+		RefreshExternalMotionState();
+		PublishMotionMatchingContacts();
 		VansPosePayload processed;
 		if (!EvaluateTargetPostProcess(deltaTime, skeleton, pose, processed))
 			return;
@@ -1436,53 +2134,6 @@ void VansAnimationController::ApplyBoneOverrides(std::vector<glm::mat4>& localTr
 // ---------------------------------------------------------------------------
 // Internal method: ExtractRootMotion
 // ---------------------------------------------------------------------------
-
-void VansAnimationController::ApplyFootPlacement(float deltaTime,
-                                                 const Skeleton& skeleton,
-                                                 std::vector<glm::mat4>& localTransforms)
-{
-	if (!m_FootPlacement || !m_FootPlacementSettings.enabled)
-		return;
-
-	FootPlacementRuntimeState state = m_FootPlacementState;
-	auto findParameter = [this](const std::string& name) -> const AnimatorParameter*
-	{
-		if (name.empty())
-			return nullptr;
-		const auto it = m_Parameters.find(name);
-		return it != m_Parameters.end() ? &it->second : nullptr;
-	};
-	const AnimatorParameter* airborneParameter = findParameter(m_FootPlacementSettings.airborneParameter);
-	if (airborneParameter)
-	{
-		const AnimatorParameter& param = *airborneParameter;
-		if (param.type == AnimatorParamType::Bool)
-			state.airborne = param.boolVal;
-		else if (param.type == AnimatorParamType::Float)
-			state.airborne = param.floatVal > 0.5f;
-		else if (param.type == AnimatorParamType::Int)
-			state.airborne = param.intVal != 0;
-	}
-	if (m_MotionMatching && m_MotionMatching->WasUsedThisFrame())
-	{
-		state.hasAnimationPlantWeights = true;
-		state.leftPlantWeight = m_MotionMatching->GetLeftFootPlantWeight();
-		state.rightPlantWeight = m_MotionMatching->GetRightFootPlantWeight();
-	}
-	else
-	{
-		// Source-proxy retargeting supplies Motion Matching contact weights from
-		// the source controller. Preserve them on the target post-process
-		// controller, which intentionally has no Motion Matching runtime itself.
-		if (!state.hasAnimationPlantWeights)
-		{
-			state.leftPlantWeight = 0.0f;
-			state.rightPlantWeight = 0.0f;
-		}
-	}
-	m_FootPlacement->SetRuntimeState(state);
-	m_FootPlacement->Solve(deltaTime, skeleton, m_OwnerWorldTransform, localTransforms);
-}
 
 void VansAnimationController::NormalizeRootTransform(std::vector<glm::mat4>& localTransforms,
                                                      const Skeleton& skeleton)
@@ -1550,8 +2201,27 @@ void VansAnimationController::UpdateHierarchy(std::vector<glm::mat4>& localTrans
 void VansAnimationController::BuildFinalMatrices(const std::vector<glm::mat4>& globalTransforms,
                                                    const Skeleton& skeleton)
 {
-	// Cache model-space global bone matrices for the bone attachment system.
+	if (globalTransforms.size() != skeleton.bones.size())
+	{
+		m_CachedLocalTransforms.clear();
+		m_CachedGlobalTransforms.clear();
+		return;
+	}
+
+	// 最终姿态是动画、程序化处理和布娃娃写回之后的统一只读快照。
 	m_CachedGlobalTransforms = globalTransforms;
+	m_CachedLocalTransforms.resize(globalTransforms.size());
+	for (std::size_t boneIndex = 0; boneIndex < globalTransforms.size(); ++boneIndex)
+	{
+		const int parentIndex = skeleton.bones[boneIndex].parentIndex;
+		m_CachedLocalTransforms[boneIndex] = parentIndex >= 0
+			&& parentIndex < static_cast<int>(globalTransforms.size())
+			? glm::inverse(globalTransforms[static_cast<std::size_t>(parentIndex)])
+				* globalTransforms[boneIndex]
+			: globalTransforms[boneIndex];
+	}
+	if (++m_FinalPoseRevision == 0)
+		++m_FinalPoseRevision;
 
 	uint32_t boneCount = static_cast<uint32_t>(skeleton.bones.size());
 	uint32_t limit = (std::min)(boneCount, MAX_BONES);
@@ -1589,9 +2259,10 @@ int VansAnimationController::DetectRootBoneIndex(const Skeleton& skeleton) const
 
 	// Inspect the current clip to find bones that have animation keyframes.
 	const VansAnimationClip* clip = nullptr;
-	if (!m_LayerRuntimes.empty() && m_LayerRuntimes.front().instance)
+	const GraphSetRuntime* graphSet = GetActiveGraphSetRuntime();
+	if (graphSet && !graphSet->bindings.empty() && graphSet->bindings.front().instance)
 	{
-		auto clipIt = m_Clips.find(m_LayerRuntimes.front().instance->GetPrimaryClipName());
+		auto clipIt = m_Clips.find(graphSet->bindings.front().instance->GetPrimaryClipName());
 		if (clipIt != m_Clips.end())
 			clip = &clipIt->second;
 	}

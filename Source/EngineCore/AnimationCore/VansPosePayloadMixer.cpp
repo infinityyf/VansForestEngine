@@ -154,9 +154,9 @@ namespace VansGraphics
 		AppendWeightedEvents(result.events, second.events, weight);
 		result.nodeTransforms = BlendNodeTransforms(first.nodeTransforms, second.nodeTransforms, weight);
 		result.sync = BlendSync(first.sync, second.sync, weight);
-		result.footPlacement = weight < 0.5f ? first.footPlacement : second.footPlacement;
-		if (!result.footPlacement.valid)
-			result.footPlacement = first.footPlacement.valid ? first.footPlacement : second.footPlacement;
+		// 程序化命令属于唯一 Target Procedural Graph，不允许跨 Pose Layer 混合。
+		result.proceduralNodeIds = weight < 0.5f
+			? first.proceduralNodeIds : second.proceduralNodeIds;
 		result.sourceWeight = glm::mix(first.sourceWeight, second.sourceWeight, weight);
 		result.valid = true;
 		return result;

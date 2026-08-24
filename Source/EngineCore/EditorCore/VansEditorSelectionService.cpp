@@ -20,7 +20,21 @@ namespace Vans
 			left.path == right.path &&
 			left.entityGuid == right.entityGuid &&
 			left.componentGuid == right.componentGuid &&
+			left.subObjectKind == right.subObjectKind &&
+			left.subObjectGuid == right.subObjectGuid &&
 			left.subObjectName == right.subObjectName;
+	}
+
+	void VansEditorSelectionService::SelectSceneSubObject(
+		EditorObjectHandle handle,
+		const std::string& source)
+	{
+		if (handle.domain != EditorObjectDomain::SceneSubObject
+			|| handle.entityGuid.empty() || handle.componentGuid.empty()
+			|| handle.subObjectKind == SceneSubObjectKind::None
+			|| handle.subObjectGuid.empty())
+			return;
+		Apply(EditorSelectionOperation::Replace, { handle }, handle, source);
 	}
 
 	bool VansEditorSelectionService::Contains(const EditorObjectHandle& handle) const
@@ -143,6 +157,9 @@ namespace Vans
 		case EditorObjectDomain::SceneEntity:
 			m_ActiveEntityGuid = active.entityGuid.empty() ? active.guid : active.entityGuid;
 			break;
+		case EditorObjectDomain::SceneSubObject:
+			m_ActiveEntityGuid = active.entityGuid;
+			break;
 		case EditorObjectDomain::ProjectAsset:
 			m_ActiveAssetPath = active.path;
 			break;
@@ -151,4 +168,3 @@ namespace Vans
 		}
 	}
 }
-

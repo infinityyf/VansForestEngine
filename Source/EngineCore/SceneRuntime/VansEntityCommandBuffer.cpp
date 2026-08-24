@@ -119,12 +119,16 @@ void VansEntityCommandBuffer::AddAnimationComponent(
 	VansEntityHandle entity,
 	std::string stableGuid,
 	VansGraphics::VansAnimationNode* animationNode,
+	std::uint64_t skeletonInstanceId,
+	std::uint32_t skeletonInstanceGeneration,
 	bool enabled)
 {
 	VansEntityCommand command;
 	command.type = VansEntityCommandType::AddAnimationComponent;
 	command.entity = entity;
 	command.animationComponent.animationNode = animationNode;
+	command.animationComponent.skeletonInstanceId = skeletonInstanceId;
+	command.animationComponent.skeletonInstanceGeneration = skeletonInstanceGeneration;
 	command.componentStableGuid = std::move(stableGuid);
 	command.boolValue = enabled;
 	m_Commands.push_back(std::move(command));

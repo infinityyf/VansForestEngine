@@ -2,10 +2,13 @@
 #extension GL_GOOGLE_include_directive : require
 #include "../../Common/CameraData.glsl"
 #include "../../Common/Common.glsl"
+#include "../../Common/MotionVector.glsl"
 
 layout(location = 0) in vec2 inUV;
 layout(location = 1) in vec3 inWorldPos;
 layout(location = 2) in float inHeight;
+layout(location = 3) in vec4 motionCurrentClip;
+layout(location = 4) in vec4 motionPreviousClip;
 
 // 地形描述符集合（set 1）。
 layout(set = 1, binding = 0) uniform sampler2D heightMap;
@@ -25,6 +28,7 @@ layout(location = 0) out vec4 outNormal;
 layout(location = 1) out vec4 outGbuffer0;
 layout(location = 2) out vec4 outGbuffer1;
 layout(location = 3) out vec4 outGbuffer2;
+layout(location = 4) out vec2 outMotionVector;
 
 // 使用高度图中心差分计算地形几何法线。
 vec3 CalculateTerrainNormal(vec2 uv) {
@@ -109,4 +113,5 @@ void main() {
 
     float linearDepth = (ViewMatrix * vec4(inWorldPos, 1.0)).z;
     outGbuffer2 = vec4(inWorldPos, -linearDepth);
+    outMotionVector = VansMotionVectorFromClip(motionCurrentClip, motionPreviousClip);
 }

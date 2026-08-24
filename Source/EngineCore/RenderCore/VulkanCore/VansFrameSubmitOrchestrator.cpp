@@ -3,6 +3,7 @@
 #include "../../Util/VansLog.h"
 
 #include <iomanip>
+#include <queue>
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
@@ -26,6 +27,36 @@ namespace
 		VkPipelineStageFlags stages = 0;
 		VkSemaphore semaphore = VK_NULL_HANDLE;
 	};
+
+}
+
+bool VansGraphics::HasSubmitDependencyPath(
+	size_t producer,
+	size_t consumer,
+	const std::vector<std::vector<size_t>>& edges)
+{
+	if (producer == consumer)
+		return true;
+	std::vector<bool> visited(edges.size(), false);
+	std::queue<size_t> pending;
+	pending.push(producer);
+	visited[producer] = true;
+	while (!pending.empty())
+	{
+		const size_t current = pending.front();
+		pending.pop();
+		for (size_t next : edges[current])
+		{
+			if (next == consumer)
+				return true;
+			if (!visited[next])
+			{
+				visited[next] = true;
+				pending.push(next);
+			}
+		}
+	}
+	return false;
 }
 
 bool VansGraphics::VansQueueCapabilities::HasValidGraphicsQueue() const
@@ -152,6 +183,29 @@ bool VansGraphics::VansFrameSubmitOrchestrator::Validate(std::string* error) con
 	std::string resourceError;
 	if (!m_ResourceStateTracker.ValidateAndBuild(m_Nodes, &resourceError))
 		return setError(resourceError);
+
+	// The final completion fence is also the lifetime proof for every frame-local
+	// edge semaphore and command buffer. Reject disconnected work instead of
+	// relying on an implicit queue-idle assumption.
+	const size_t finalNodeIndex = m_Nodes.size() - 1u;
+	std::vector<std::vector<size_t>> dependencyEdges(m_Nodes.size());
+	std::unordered_map<VkQueue, size_t> previousQueueNode;
+	for (size_t nodeIndex = 0; nodeIndex < m_Nodes.size(); ++nodeIndex)
+	{
+		const VkQueue queue = ResolveQueue(m_Nodes[nodeIndex].queue);
+		const auto previous = previousQueueNode.find(queue);
+		if (previous != previousQueueNode.end())
+			dependencyEdges[previous->second].push_back(nodeIndex);
+		previousQueueNode[queue] = nodeIndex;
+		for (const VansSubmitSyncWait& wait : m_Nodes[nodeIndex].waits)
+			dependencyEdges[producers.at(wait.point)].push_back(nodeIndex);
+	}
+	for (size_t nodeIndex = 0; nodeIndex < finalNodeIndex; ++nodeIndex)
+	{
+		if (!HasSubmitDependencyPath(nodeIndex, finalNodeIndex, dependencyEdges))
+			return setError("frame submit node is not covered by the final completion fence: "
+				+ m_Nodes[nodeIndex].name);
+	}
 
 	return true;
 }
@@ -360,19 +414,21 @@ const char* VansGraphics::ToString(VansSyncPoint point)
 {
 	switch (point)
 	{
-	case VansSyncPoint::ShadowDone: return "ShadowDone";
-	case VansSyncPoint::GBufferDone: return "GBufferDone";
-	case VansSyncPoint::TileLightDone: return "TileLightDone";
-	case VansSyncPoint::VegetationDone: return "VegetationDone";
-	case VansSyncPoint::PreDeferredDone: return "PreDeferredDone";
-	case VansSyncPoint::AsyncSSAODone: return "AsyncSSAODone";
+	case VansSyncPoint::VegetationReady: return "VegetationReady";
+	case VansSyncPoint::DepthReady: return "DepthReady";
+	case VansSyncPoint::GBufferMaterialReady: return "GBufferMaterialReady";
+	case VansSyncPoint::SSAORawReady: return "SSAORawReady";
+	case VansSyncPoint::ShadowMapsReady: return "ShadowMapsReady";
+	case VansSyncPoint::HairShadowReady: return "HairShadowReady";
+	case VansSyncPoint::TileLightReady: return "TileLightReady";
 	case VansSyncPoint::HZBReady: return "HZBReady";
-	case VansSyncPoint::CloudDone: return "CloudDone";
-	case VansSyncPoint::AsyncGIDone: return "AsyncGIDone";
+	case VansSyncPoint::SSAOReady: return "SSAOReady";
+	case VansSyncPoint::ScreenLightingReady: return "ScreenLightingReady";
+	case VansSyncPoint::CloudReady: return "CloudReady";
+	case VansSyncPoint::GIReady: return "GIReady";
 	case VansSyncPoint::WaterWaveDone: return "WaterWaveDone";
 	case VansSyncPoint::WaterInputsReady: return "WaterInputsReady";
 	case VansSyncPoint::WaterPrecomputeDone: return "WaterPrecomputeDone";
-	case VansSyncPoint::MainCameraHiZDone: return "MainCameraHiZDone";
 	case VansSyncPoint::FrameRenderDone: return "FrameRenderDone";
 	}
 	return "Unknown";

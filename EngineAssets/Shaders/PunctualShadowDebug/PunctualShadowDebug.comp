@@ -5,7 +5,7 @@
 // produces a small RGBA8 image that ordinary editor texture shaders can show.
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
-layout(set = 0, binding = 0) uniform sampler2DArray punctualShadowAtlas;
+layout(set = 0, binding = 0) uniform sampler2D punctualShadowAtlas[2];
 layout(set = 0, binding = 1, rgba8) writeonly uniform image2D debugPreview;
 
 void main()
@@ -15,9 +15,8 @@ void main()
     if (any(greaterThanEqual(dstCoord, dstSize)))
         return;
 
-    ivec3 sourceDimensions = textureSize(punctualShadowAtlas, 0);
-    ivec2 srcSize = sourceDimensions.xy;
-    int atlasCount = min(sourceDimensions.z, 2);
+    ivec2 srcSize = textureSize(punctualShadowAtlas[0], 0);
+    const int atlasCount = 2;
     int atlasWidth = max(dstSize.x / max(atlasCount, 1), 1);
     int atlasIndex = min(dstCoord.x / atlasWidth, atlasCount - 1);
     ivec2 atlasDstCoord = ivec2(dstCoord.x - atlasIndex * atlasWidth, dstCoord.y);
@@ -41,7 +40,10 @@ void main()
             ivec2(srcBase + offsets[sampleIndex] * srcPerDst),
             ivec2(0),
             srcSize - ivec2(1));
-        minDepth = min(minDepth, texelFetch(punctualShadowAtlas, ivec3(srcCoord, atlasIndex), 0).r);
+        float depth = atlasIndex == 0
+            ? texelFetch(punctualShadowAtlas[0], srcCoord, 0).r
+            : texelFetch(punctualShadowAtlas[1], srcCoord, 0).r;
+        minDepth = min(minDepth, depth);
     }
 
     // Cleared Atlas texels are 1.0. Invert and apply a logarithmic-like power

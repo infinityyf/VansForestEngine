@@ -107,6 +107,13 @@ void VansUISystem::Shutdown()
     m_Impl.reset();
 }
 
+void VansUISystem::ShutdownRendering()
+{
+    if (!m_Impl || !m_Impl->m_NoesisSystem)
+        return;
+    m_Impl->m_NoesisSystem->ShutdownRendering();
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Per-frame
 // ─────────────────────────────────────────────────────────────────────────────

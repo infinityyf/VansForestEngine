@@ -1006,6 +1006,7 @@ namespace VansGraphics
 			m_VansVKLogicDevice, sizeof(temporalData), VK_FORMAT_R32_SFLOAT,
 			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+
 		manager->m_SSGITemporalCBBuffer.SetBufferData(&temporalData, 0, sizeof(temporalData));
 
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_SSGI(manager->m_SSGITexSetLayout, manager->m_SSGIDescriptorSets);
@@ -1050,7 +1051,7 @@ namespace VansGraphics
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_MainCameraHiZCull(
 			manager->m_MainCameraHiZCullSetLayout,
 			manager->m_MainCameraHiZCullDescriptorSets,
-			1);
+			VansMainCameraVisibilityState::kFrameSlotCount);
 
 		manager->m_HIZMipCount = 1 + (int)std::floor(std::log2(std::min(m_RenderWidth, m_RenderHeight)));
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_HIZ(manager->m_HZBTexSetLayouts, manager->m_HZBDescriptorSets, manager->m_HIZMipCount - 1);
@@ -1068,8 +1069,21 @@ namespace VansGraphics
 		sssResult->InitTextureWithoutData(
 			m_VansVKCommandBuffer,
 			m_RenderWidth, m_RenderHeight,
-			1, VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true);
+			1, VK_FORMAT_R16_SFLOAT, false, false, true,
+			VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SCREEN_SPACE_SHADOW_RESULT, sssResult);
+
+		const uint32_t cascadeSize = uint32_t(VansConfigration::GetInstance()->GetCascadeShadowMapSize());
+		const uint32_t minMaxBaseSize = (std::max)(cascadeSize / 4u, 1u);
+		manager->m_CascadeShadowMinMaxMipCount =
+			1u + uint32_t(std::floor(std::log2(float(minMaxBaseSize))));
+		VansTexture* cascadeMinMax = new VansTexture();
+		cascadeMinMax->InitTextureWithoutData(
+			m_VansVKCommandBuffer,
+			int(minMaxBaseSize * 4u), int(minMaxBaseSize),
+			1, VK_FORMAT_R32G32_SFLOAT, false, true, true,
+			VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_CASCADE_SHADOW_MIN_MAX, cascadeMinMax);
 
 		manager->SetScreenSpaceShadowExtent(m_RenderWidth, m_RenderHeight);
 		const ScreenSpaceShadowParamsGPU& data = manager->m_ScreenSpaceShadowParams;
@@ -1083,9 +1097,15 @@ namespace VansGraphics
 		manager->m_ScreenSpaceShadowParamsCBBuffer.SetBufferData(&data, 0, sizeof(data));
 
 		manager->m_ScreenSpaceShadowShader = VansGraphics::VansShaderManager::Get().FindComputeShader("ScreenSpaceShadow");
+		manager->m_CascadeShadowMinMaxSeedShader = VansGraphics::VansShaderManager::Get().FindComputeShader("CascadeShadowMinMaxSeed");
+		manager->m_CascadeShadowMinMaxReduceShader = VansGraphics::VansShaderManager::Get().FindComputeShader("CascadeShadowMinMaxReduce");
 		VansDescriptorSetLayoutFactory::CreateAndAllocate_ScreenSpaceShadow(
 			manager->m_ScreenSpaceShadowSetLayout,
 			manager->m_ScreenSpaceShadowDescriptorSets);
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_CascadeShadowMinMax(
+			manager->m_CascadeShadowMinMaxSetLayout,
+			manager->m_CascadeShadowMinMaxDescriptorSets,
+			manager->m_CascadeShadowMinMaxMipCount);
 	}
 
 	void VansVKDevice::PreparePunctualShadowDebugRenderData()
@@ -1133,7 +1153,7 @@ namespace VansGraphics
 		VansTexture* ssrRayPdf = new VansTexture();
 		ssrRayPdf->InitTextureWithoutData(
 			m_VansVKCommandBuffer, m_RenderWidth, m_RenderHeight, 1,
-			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
+			VK_FORMAT_R32_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSR_RAY_PDF, ssrRayPdf);
 
 		VansTexture* ssrResult = new VansTexture();
@@ -1160,8 +1180,37 @@ namespace VansGraphics
 			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSRAA_RESULT, ssrAaResult);
 
+		// SSR compacts spatially coherent 8x8 tiles, not individual pixels.
+		// Keeping one workgroup per tile preserves Hi-Z cache locality and cuts
+		// the list allocation to roughly 1/64 of the full-resolution variant.
+		constexpr VkDeviceSize ssrTileSize = 8;
+		const VkDeviceSize tileGridWidth =
+			(VkDeviceSize(m_RenderWidth) + ssrTileSize - 1) / ssrTileSize;
+		const VkDeviceSize tileGridHeight =
+			(VkDeviceSize(m_RenderHeight) + ssrTileSize - 1) / ssrTileSize;
+		const VkDeviceSize tileCapacity = (std::max)(
+			VkDeviceSize(1), tileGridWidth * tileGridHeight);
+		const bool rayListReady = manager->m_SSRRayListBuffer.CreatVulkanBuffer(
+			m_VansVKLogicDevice,
+			tileCapacity * sizeof(uint32_t),
+			VK_FORMAT_R32_UINT,
+			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		const bool controlReady = manager->m_SSRTraceControlBuffer.CreatVulkanBuffer(
+			m_VansVKLogicDevice,
+			4u * sizeof(uint32_t),
+			VK_FORMAT_R32_UINT,
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		if (!rayListReady || !controlReady)
+		{
+			VANS_LOG_ERROR("[VansVKDevice] Failed to create SSR ray-list resources.");
+		}
+
 		auto vansConfigration = VansConfigration::GetInstance();
 		std::string projectRoot = vansConfigration->GetProjectRootPath();
+		manager->m_SSRClassifyShader = VansGraphics::VansShaderManager::Get().FindComputeShader("SSRClassify");
+		manager->m_SSRPrepareIndirectShader = VansGraphics::VansShaderManager::Get().FindComputeShader("SSRPrepareIndirect");
 		manager->m_SSRTraceShader = VansGraphics::VansShaderManager::Get().FindComputeShader("SSRTrace");
 
 		manager->m_SSRResolveShader = VansGraphics::VansShaderManager::Get().FindComputeShader("SSRResolve");
@@ -1625,8 +1674,12 @@ namespace VansGraphics
 		}
 		m_Scene->ReleaseASTempBuffer(this);
 		rayTracingContext.CreateRayTracingResource(this, &m_VansVKCommandBuffer, m_Scene);
-		rayTracingContext.UpdateGISettings(m_Scene->GetGISettings());
-		UploadSSGIParamsFromGISettings();
+		const VansGISettings& sceneGISettings = m_Scene->GetGISettings();
+		rayTracingContext.UpdateGISettings(sceneGISettings);
+		// 首次场景准备早于第一份渲染快照。这里必须使用刚完成构建的场景
+		// 设置；读取 m_CurrentRenderSceneSnapshot 会拿到启动默认值，并且只会
+		// 在 Play/Stop 重载后偶然恢复正确。
+		UploadSSGIParams(sceneGISettings);
 		ResetFeatureDescriptorSets();
 		m_Scene->MarkRenderNodeDescriptorSetsDirty();
 		m_Scene->ClearGIProbeResourcesDirty();
@@ -1690,8 +1743,6 @@ namespace VansGraphics
 		manager->m_TileLightBuildParamsCBBuffer.SetBufferData(&params, 0, sizeof(TileLightBuildParams));
 
 		// --- Build shader ---
-		auto vansConfigration = VansConfigration::GetInstance();
-		std::string projectRoot = vansConfigration->GetProjectRootPath();
 		manager->m_TileLightBuildShader = VansGraphics::VansShaderManager::Get().FindComputeShader("TileLightBuild");
 
 		// --- Descriptor set layout + allocation for Set 1 (write access) ---
@@ -1700,10 +1751,10 @@ namespace VansGraphics
 			manager->m_TileLightBuildDescriptorSets
 		);
 
-		// NOTE: UpdateGlobalTileLightDescriptors() is intentionally NOT called here.
-		// m_GlobalDescriptorSet is VK_NULL_HANDLE until LoadSceneForRendering() runs.
-		// The call is deferred to VansSceneLoader.cpp::LoadSceneForRendering(),
-		// after CreateGlobalDescriptorSet() allocates the set.
+		// 初次加载时 global set 尚未创建，Scene preparation 会完成绑定；若资源
+		// 因内部渲染分辨率重建，则必须在此把 global set 原子切换到新 buffer。
+		if (m_Scene->GetGlobalDescriptorSet() != VK_NULL_HANDLE)
+			m_Scene->UpdateGlobalTileLightDescriptors();
 	}
 
 } // namespace VansGraphics

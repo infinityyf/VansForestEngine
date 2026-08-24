@@ -29,6 +29,33 @@ namespace
 			queue != VK_NULL_HANDLE &&
 			commandbuffer != nullptr;
 	}
+
+	void BuildPackedTangentFrame(
+		const aiVector3D& normalValue,
+		aiVector3D& tangentValue,
+		const aiVector3D& bitangentValue,
+		float& handedness)
+	{
+		glm::vec3 normal(normalValue.x, normalValue.y, normalValue.z);
+		const float normalLength = glm::length(normal);
+		normal = normalLength > 1.0e-6f ? normal / normalLength : glm::vec3(0.0f, 1.0f, 0.0f);
+
+		glm::vec3 tangent(tangentValue.x, tangentValue.y, tangentValue.z);
+		tangent -= normal * glm::dot(normal, tangent);
+		if (glm::dot(tangent, tangent) <= 1.0e-8f)
+		{
+			const glm::vec3 reference = std::abs(normal.y) < 0.999f
+				? glm::vec3(0.0f, 1.0f, 0.0f)
+				: glm::vec3(1.0f, 0.0f, 0.0f);
+			tangent = glm::cross(reference, normal);
+		}
+		tangent = glm::normalize(tangent);
+
+		const glm::vec3 bitangent(bitangentValue.x, bitangentValue.y, bitangentValue.z);
+		handedness = glm::dot(bitangent, bitangent) > 1.0e-8f &&
+			glm::dot(glm::cross(normal, tangent), bitangent) < 0.0f ? -1.0f : 1.0f;
+		tangentValue = aiVector3D(tangent.x, tangent.y, tangent.z);
+	}
 }
 
 static uint16_t FloatToHalf(float f)
@@ -352,7 +379,12 @@ void VansGraphics::VansMesh::LoadMultiMesh(VkDevice& logic_device, VkQueue& queu
 	}
 
 	Assimp::Importer importer;
-	auto processFlag = aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_GenNormals | aiProcess_GenSmoothNormals;
+	auto processFlag = aiProcess_Triangulate
+		| aiProcess_FlipUVs
+		| aiProcess_GenNormals
+		| aiProcess_GenSmoothNormals
+		| aiProcess_SortByPType
+		| aiProcess_ValidateDataStructure;
 	if (import_tangent)
 	{
 		processFlag |= aiProcess_CalcTangentSpace;
@@ -363,19 +395,6 @@ void VansGraphics::VansMesh::LoadMultiMesh(VkDevice& logic_device, VkQueue& queu
 		VANS_LOG_ERROR("ERROR::ASSIMP (LoadMultiMesh)::" << importer.GetErrorString());
 		return;
 	}
-
-	// Derive base directory for resolving relative texture paths
-	std::string baseDir = std::filesystem::path(file_name).parent_path().string();
-
-	aiMatrix4x4 identityTransform = MakeIdentityAiMatrix();
-	std::vector<CollectedAiMesh> allMeshes;
-	CollectAiMeshes(scene->mRootNode, scene, identityTransform, "", allMeshes);
-	if (allMeshes.empty())
-	{
-		VANS_LOG_WARN("[LoadMultiMesh] No submeshes found in: " << file_name);
-		return;
-	}
-
 
 	// Auto-detect skeletal rigs. Animation clips are optional; bones alone are sufficient.
 	// Count total vertices across the canonical scene mesh list (matches ExtractVertexBoneData)
@@ -389,6 +408,31 @@ void VansGraphics::VansMesh::LoadMultiMesh(VkDevice& logic_device, VkQueue& queu
 			cachePath, file_name, import_tangent, supportRayTracing,
 			needCPUData, true, scaleFactor, trustCacheWithoutSource))
 	{
+		return;
+	}
+
+	// Assimp 的 JoinIdenticalVertices 不比较骨骼权重。只对无骨骼网格执行，
+	// 避免合并渲染属性相同但蒙皮权重不同的顶点；随后按 GPU 后变换缓存重排索引。
+	if (!sceneHasBones)
+	{
+		scene = importer.ApplyPostProcessing(
+			aiProcess_JoinIdenticalVertices | aiProcess_ImproveCacheLocality);
+		if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode)
+		{
+			VANS_LOG_ERROR("ERROR::ASSIMP (Optimize LoadMultiMesh)::" << importer.GetErrorString());
+			return;
+		}
+	}
+
+	// Derive base directory for resolving relative texture paths
+	std::string baseDir = std::filesystem::path(file_name).parent_path().string();
+
+	aiMatrix4x4 identityTransform = MakeIdentityAiMatrix();
+	std::vector<CollectedAiMesh> allMeshes;
+	CollectAiMeshes(scene->mRootNode, scene, identityTransform, "", allMeshes);
+	if (allMeshes.empty())
+	{
+		VANS_LOG_WARN("[LoadMultiMesh] No submeshes found in: " << file_name);
 		return;
 	}
 
@@ -566,7 +610,14 @@ bool VansGraphics::VansMesh::LoadMeshSubmesh(VkDevice& logic_device, VkQueue& qu
 	m_SupportRayTracing = false;
 
 	Assimp::Importer importer;
-	auto processFlag = aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_GenNormals | aiProcess_GenSmoothNormals;
+	auto processFlag = aiProcess_Triangulate
+		| aiProcess_FlipUVs
+		| aiProcess_GenNormals
+		| aiProcess_GenSmoothNormals
+		| aiProcess_JoinIdenticalVertices
+		| aiProcess_ImproveCacheLocality
+		| aiProcess_SortByPType
+		| aiProcess_ValidateDataStructure;
 	if (import_tangent)
 		processFlag |= aiProcess_CalcTangentSpace;
 
@@ -691,12 +742,12 @@ bool VansGraphics::VansMesh::LoadMeshSubmeshFromScene(VkDevice& logic_device, Vk
 
 			tangent = TransformDirection(transform, tangent);
 			bitangent = TransformDirection(transform, bitangent);
+			float tangentHandedness = 1.0f;
+			BuildPackedTangentFrame(normal, tangent, bitangent, tangentHandedness);
 			m_MeshRawData.emplace_back(FloatToHalf(tangent.x));
 			m_MeshRawData.emplace_back(FloatToHalf(tangent.y));
 			m_MeshRawData.emplace_back(FloatToHalf(tangent.z));
-			m_MeshRawData.emplace_back(FloatToHalf(bitangent.x));
-			m_MeshRawData.emplace_back(FloatToHalf(bitangent.y));
-			m_MeshRawData.emplace_back(FloatToHalf(bitangent.z));
+			m_MeshRawData.emplace_back(FloatToHalf(tangentHandedness));
 		}
 	}
 	m_VertexCount = mesh->mNumVertices;
@@ -713,7 +764,7 @@ bool VansGraphics::VansMesh::LoadMeshSubmeshFromScene(VkDevice& logic_device, Vk
 
 	m_VertexDataSize = 8 * sizeof(uint16_t);
 	if (import_tangent)
-		m_VertexDataSize += 6 * sizeof(uint16_t);
+		m_VertexDataSize += 4 * sizeof(uint16_t);
 
 	m_VertexInputBindingDescriptions =
 	{
@@ -727,8 +778,7 @@ bool VansGraphics::VansMesh::LoadMeshSubmeshFromScene(VkDevice& logic_device, Vk
 	};
 	if (import_tangent)
 	{
-		m_VertexInputAttributeDescriptions.push_back({ 3, 0, VK_FORMAT_R16G16B16_SFLOAT, 8  * sizeof(uint16_t) });
-		m_VertexInputAttributeDescriptions.push_back({ 4, 0, VK_FORMAT_R16G16B16_SFLOAT, 11 * sizeof(uint16_t) });
+		m_VertexInputAttributeDescriptions.push_back({ 3, 0, VK_FORMAT_R16G16B16A16_SFLOAT, 8 * sizeof(uint16_t) });
 	}
 
 	if (!HasMeshGpuUploadTarget(logic_device, queue, commandbuffer))

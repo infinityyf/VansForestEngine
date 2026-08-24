@@ -17,6 +17,7 @@ namespace VansGraphics
 	class VansLightManager;
 	class VansScene;
 	class VansMaterialManager;
+	struct VansRenderLightFrameData;
 }
 namespace VansGraphics
 {
@@ -60,7 +61,9 @@ namespace VansGraphics
 
 	public:
 
-		void PrepareGIProbeUpdate(VansLightManager* lightManager, VansMaterialManager* materialManager);
+		void PrepareGIProbeUpdate(
+			const VansRenderLightFrameData& lightFrame,
+			VansMaterialManager* materialManager);
 
 		void DispatchRayTracing(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VansScene* scene);
 		
@@ -70,7 +73,10 @@ namespace VansGraphics
 		// BLAS 由 mesh 管理，不在此处释放。
 		void CleanupSceneResources(VkDevice device, VansMaterialManager* materialManager = nullptr);
 
-		void UpdateGIProbe(VansVKDevice* device, VansVKCommandBuffer* commandBuffer, VansLightManager* lightManager, VansMaterialManager* materialManager);
+		void UpdateGIProbe(
+			VansVKDevice* device,
+			VansVKCommandBuffer* commandBuffer,
+			VansMaterialManager* materialManager);
 
 		void UpdateGISettings(const VansGISettings& settings);
 
@@ -135,7 +141,7 @@ namespace VansGraphics
 
 		void DispatchGIRTPreview(VansVKCommandBuffer* commandBuffer, VansMaterialManager* materialManager);
 
-		bool UpdateLightingResponseState(VansLightManager* lightManager);
+		bool UpdateLightingResponseState(const VansRenderLightFrameData& lightFrame);
 
 		void DestroyRegionRuntime(VkDevice device, GIRegionRuntime& region);
 		GIRegionRuntime* GetPreviewRegion();

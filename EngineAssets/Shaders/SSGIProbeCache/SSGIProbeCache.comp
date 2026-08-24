@@ -67,6 +67,12 @@ const float SSGI_TRACE_MAX_DISTANCE = 32.0;
 const float SSGI_TRACE_BASE_PIXEL_STEP = 1.5;
 const int SSGI_TRACE_ITERATION_BUDGET = 128;
 const float SSGI_STABLE_WORLD_SEED_SCALE = 16.0;
+// 四分之一分辨率缓存每个 texel 使用 4 条射线。相对于全分辨率仍只有
+// 0.25 ray / pixel，但可显著降低单个 4x4 screen probe 的块状方差。
+const uint SSGI_PROBE_RAY_COUNT = 4u;
+// 每四帧遍历一组新的低差异方向；Temporal 可在一个周期内累计到
+// 16 个有效样本，同时短周期重复避免长期随机漂移和镜头移动闪烁。
+const uint SSGI_PROBE_TEMPORAL_PHASE_COUNT = 4u;
 
 vec3 CosineWeightedDirection(vec2 u, mat3 TBN)
 {
@@ -80,9 +86,9 @@ vec3 CosineWeightedDirection(vec2 u, mat3 TBN)
 
 uint StableScreenProbeSeed(vec3 worldPosition, vec3 normal)
 {
-    // Screen Probe 只有一条射线，不能像高 spp 路径一样每帧完全换一组方向，
-    // 否则一个高亮命中会被放大成随镜头移动闪烁的 4x4 亮块。按世界空间
-    // 量化位置和几何法线生成固定种子，让采样图案附着在场景表面。
+    // Screen Probe 不能像高 spp 路径一样每帧完全随机换方向，否则一个
+    // 高亮命中会被放大成随镜头移动闪烁的 4x4 亮块。按世界空间量化位置
+    // 和几何法线生成固定基准种子，时域只在一个受限的低差异周期中前进。
     ivec3 positionCell = ivec3(floor(
         worldPosition * SSGI_STABLE_WORLD_SEED_SCALE));
     ivec3 normalCell = ivec3(round(clamp(normal, vec3(-1.0), vec3(1.0)) * 31.0));
@@ -324,8 +330,9 @@ void main()
     float vegetationTranslucency = vegetationMaterial
         ? clamp(normalData.w, 0.0, 1.0)
         : 0.0;
-    vec3 irradiance = EvaluateCachedFallback(
+    vec3 fallbackIrradiance = EvaluateCachedFallback(
         worldPosition, geometricNormal, vegetationTranslucency);
+    vec3 accumulatedIrradiance = vec3(0.0);
     float screenHitConfidence = 0.0;
 
     // Lumen 风格的屏幕查询缓存：昂贵的 Hi-Z trace 只在每个 4x4 screen
@@ -337,65 +344,82 @@ void main()
     BuildTBN(shadingNormal, tangent, bitangent);
     mat3 TBN = mat3(tangent, bitangent, shadingNormal);
     uint rseed = StableScreenProbeSeed(worldPosition, geometricNormal);
-    vec2 noise = R2Sequence(int(rseed & 511u));
-    vec3 direction = CosineWeightedDirection(noise, TBN);
+    uint temporalPhase = uint(FrameIndex) % SSGI_PROBE_TEMPORAL_PHASE_COUNT;
+    uint sequenceBase = temporalPhase * SSGI_PROBE_RAY_COUNT;
     float maxTraceDistance = clamp(
         regionInfo.y, 1.0, min(FarPlane, SSGI_TRACE_MAX_DISTANCE));
     float fadeStartRatio = clamp(regionInfo.z, 0.05, 0.99);
-    HiZTraceResult traceResult = TraceHiZ_UV_Bounded(
-        hizDepth,
-        ViewMatrix,
-        ProjectionMatrix,
-        startPosition,
-        direction,
-        maxTraceDistance,
-        SSGI_TRACE_BASE_PIXEL_STEP,
-        0.02,
-        SSGI_TRACE_ITERATION_BUDGET);
-
-    if (traceResult.hit)
+    for (uint rayIndex = 0u; rayIndex < SSGI_PROBE_RAY_COUNT; ++rayIndex)
     {
-        vec2 hitUV = traceResult.uv;
-        vec3 hitNormal = normalize(texture(inputNormal, hitUV).xyz);
-        if (dot(hitNormal, -direction) > 0.0)
+        // 连续 R2 序列点在余弦加权半球上分布良好；种子依然是表面稳定的，
+        // 所以增加采样数不会重新引入镜头移动时的随机闪烁。
+        vec2 noise = R2Sequence(int(
+            (rseed + sequenceBase + rayIndex) & 511u));
+        vec3 direction = CosineWeightedDirection(noise, TBN);
+        vec3 rayIrradiance = fallbackIrradiance;
+        float rayScreenConfidence = 0.0;
+        HiZTraceResult traceResult = TraceHiZ_UV_Bounded(
+            hizDepth,
+            ViewMatrix,
+            ProjectionMatrix,
+            startPosition,
+            direction,
+            maxTraceDistance,
+            SSGI_TRACE_BASE_PIXEL_STEP,
+            0.02,
+            SSGI_TRACE_ITERATION_BUDGET);
+
+        if (traceResult.hit)
         {
-            vec3 hitWorldPosition = texture(inputPosition, hitUV).xyz;
-            vec4 lastClip = LastProjectionMatrix * LastViewMatrix *
-                vec4(hitWorldPosition, 1.0);
-            lastClip /= lastClip.w;
-            lastClip.y = -lastClip.y;
-            vec2 lastColorUV = lastClip.xy * 0.5 + 0.5;
-            bool colorValid = all(greaterThanEqual(lastColorUV, vec2(0.0))) &&
-                all(lessThanEqual(lastColorUV, vec2(1.0)));
-            if (colorValid)
+            vec2 hitUV = traceResult.uv;
+            vec3 hitNormal = normalize(texture(inputNormal, hitUV).xyz);
+            if (dot(hitNormal, -direction) > 0.0)
             {
-                float sampleStability = 1.0;
-                vec3 screenIrradiance = SampleStableScreenIrradiance(
-                    lastColorUV, irradiance, sampleStability);
-                float hitDistance = length(hitWorldPosition - startPosition);
-                float screenTraceWeight = 1.0 - smoothstep(
-                    maxTraceDistance * fadeStartRatio,
-                    maxTraceDistance,
-                    hitDistance);
-                float fallbackLuminance = Luminance(irradiance);
-                float screenToFallback = Luminance(screenIrradiance) /
-                    max(fallbackLuminance, 1e-3);
-                float darkHitConfidence = smoothstep(
-                    0.45, 1.05, screenToFallback);
-                screenTraceWeight *= mix(
-                    1.0,
-                    darkHitConfidence,
-                    step(0.02, fallbackLuminance));
-                // 被判为离群值的样本同时降低混合置信度，避免已经压低的
-                // firefly 仍以满权重覆盖稳定的 DDGI fallback。
-                screenTraceWeight *= sampleStability;
-                screenIrradiance = max(screenIrradiance, irradiance * 0.75);
-                irradiance = mix(
-                    irradiance, screenIrradiance, screenTraceWeight);
-                screenHitConfidence = screenTraceWeight;
+                vec3 hitWorldPosition = texture(inputPosition, hitUV).xyz;
+                vec4 lastClip = LastProjectionMatrix * LastViewMatrix *
+                    vec4(hitWorldPosition, 1.0);
+                lastClip /= lastClip.w;
+                lastClip.y = -lastClip.y;
+                vec2 lastColorUV = lastClip.xy * 0.5 + 0.5;
+                bool colorValid = all(greaterThanEqual(lastColorUV, vec2(0.0))) &&
+                    all(lessThanEqual(lastColorUV, vec2(1.0)));
+                if (colorValid)
+                {
+                    float sampleStability = 1.0;
+                    vec3 screenIrradiance = SampleStableScreenIrradiance(
+                        lastColorUV, fallbackIrradiance, sampleStability);
+                    float hitDistance = length(hitWorldPosition - startPosition);
+                    float screenTraceWeight = 1.0 - smoothstep(
+                        maxTraceDistance * fadeStartRatio,
+                        maxTraceDistance,
+                        hitDistance);
+                    float fallbackLuminance = Luminance(fallbackIrradiance);
+                    float screenToFallback = Luminance(screenIrradiance) /
+                        max(fallbackLuminance, 1e-3);
+                    float darkHitConfidence = smoothstep(
+                        0.45, 1.05, screenToFallback);
+                    screenTraceWeight *= mix(
+                        1.0,
+                        darkHitConfidence,
+                        step(0.02, fallbackLuminance));
+                    // 被判为离群值的样本同时降低混合置信度，避免已经压低的
+                    // firefly 仍以满权重覆盖稳定的 DDGI fallback。
+                    screenTraceWeight *= sampleStability;
+                    screenIrradiance = max(
+                        screenIrradiance, fallbackIrradiance * 0.75);
+                    rayIrradiance = mix(
+                        fallbackIrradiance, screenIrradiance, screenTraceWeight);
+                    rayScreenConfidence = screenTraceWeight;
+                }
             }
         }
+
+        accumulatedIrradiance += rayIrradiance;
+        screenHitConfidence += rayScreenConfidence;
     }
+
+    vec3 irradiance = accumulatedIrradiance / float(SSGI_PROBE_RAY_COUNT);
+    screenHitConfidence /= float(SSGI_PROBE_RAY_COUNT);
 
     // Keep the cache surface depth identical to the full-resolution consumer:
     // all deferred GBuffer writers already publish positive linear depth in w.

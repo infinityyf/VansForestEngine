@@ -80,9 +80,8 @@ void DirectBRDF_Vegetation(BRDFData brdf, vec3 lightDirection, VegetationParams 
 }
 
 void CalculateDirectLight_Vegetation(BRDFData brdfData, VegetationParams veg,
-                                     sampler2DArray cascadeShadowMap, float viewDepth,
-                                     sampler2DArrayShadow punctualShadowMap,
-                                     float screenSpaceShadow,
+                                     sampler2DShadow punctualShadowMap[PUNCTUAL_SHADOW_ATLAS_COUNT],
+									 float directionalShadow,
                                      inout LightResult lightResult)
 {
     lightResult.directDiffuse  = vec3(0);
@@ -90,7 +89,7 @@ void CalculateDirectLight_Vegetation(BRDFData brdfData, VegetationParams veg,
 
     {
         vec3 dR = vec3(0), sR = vec3(0), tR = vec3(0);
-        float shadow = min(SampleCascadeShadow(brdfData.positionWS, brdfData.normal, cascadeShadowMap, viewDepth), screenSpaceShadow);
+		float shadow = directionalShadow;
         DirectBRDF_Vegetation(brdfData, uDirectionLight.direction.rgb, veg, 1.0, shadow, dR, sR, tR);
 
         vec3 lightEnergy = uDirectionLight.color.rgb * uDirectionLight.intensity;

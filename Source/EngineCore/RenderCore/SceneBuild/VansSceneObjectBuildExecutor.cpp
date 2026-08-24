@@ -209,10 +209,16 @@ void RegisterDeferredAnimationRuntimeComponents(
 				FindRuntimeComponentGuid(objectConfig.componentGuids, "animation");
 			if (!animationGuid.empty())
 			{
+				const VansGraphics::VansSkeletonInstanceHandle skeletonInstance =
+					animationComponent->m_AnimNode
+						? scene.RegisterSkeletonInstance(*animationComponent->m_AnimNode)
+						: VansGraphics::VansSkeletonInstanceHandle{};
 				runtimeWorld.Commands().AddAnimationComponent(
 					entity,
 					animationGuid,
 					animationComponent->m_AnimNode,
+					skeletonInstance.id,
+					skeletonInstance.generation,
 					animationComponent->IsEnabled());
 			}
 		}
@@ -694,7 +700,7 @@ bool VansGraphics::VansScene::LoadSceneObjects(
 		uint32_t childTransformID = UINT32_MAX;
 		std::string childEntityGuid;
 		std::string childName;
-		std::string parentEntityGuid;
+		Vans::VansSceneParentReference parent;
 	};
 
 	std::vector<ParentLink> parentLinks;
@@ -1019,7 +1025,7 @@ bool VansGraphics::VansScene::LoadSceneObjects(
 		VansSceneLightComponentBuilder::BindExplicitVideoComponentToRectLight(*this, *obj);
 		ApplyRuntimeComponentGuids(*obj, objectConfig.componentGuids);
 
-		if (!objectConfig.parentEntityGuid.empty())
+		if (objectConfig.parent)
 		{
 			ensureObjectTransform();
 			if (obj->m_TransformID != UINT32_MAX)
@@ -1028,7 +1034,7 @@ bool VansGraphics::VansScene::LoadSceneObjects(
 				link.childTransformID = obj->m_TransformID;
 				link.childEntityGuid = objectConfig.entityGuid;
 				link.childName = obj->m_ObjectName;
-				link.parentEntityGuid = objectConfig.parentEntityGuid;
+				link.parent = *objectConfig.parent;
 				parentEntityLinks.push_back(std::move(link));
 			}
 		}
@@ -1082,36 +1088,35 @@ bool VansGraphics::VansScene::LoadSceneObjects(
 		{
 			if (vehicleDrivenTransformIDs.count(childNode->m_TransformID) > 0)
 				continue;
-			m_TransformParentSystem.SetParent(childNode->m_TransformID, parentNode->m_TransformID);
+			m_TransformGraph.SetParent(childNode->m_TransformID, parentNode->m_TransformID,
+				Vans::VansTransformReparentMode::KeepLocal);
 		}
 	}
 
 	for (const auto& link : parentEntityLinks)
 	{
-		if (link.parentEntityGuid.empty())
-			continue;
-
-		VansScriptObject* parentObj = FindObjectByGuid(link.parentEntityGuid);
+		const std::string parentEntityGuid = link.parent.entityGuid.ToString();
+		VansScriptObject* parentObj = FindObjectByGuid(parentEntityGuid);
 		if (parentObj && parentObj->m_TransformID != UINT32_MAX)
 		{
-			if (vehicleDrivenTransformIDs.count(link.childTransformID) > 0)
-				continue;
-			m_TransformParentSystem.SetParent(link.childTransformID, parentObj->m_TransformID);
 			if (m_RuntimeWorld)
 			{
 				const Vans::VansEntityHandle child = m_RuntimeWorld->Entities().FindByGuid(link.childEntityGuid);
-				const Vans::VansEntityHandle parent = m_RuntimeWorld->Entities().FindByGuid(link.parentEntityGuid);
+				const Vans::VansEntityHandle parent = m_RuntimeWorld->Entities().FindByGuid(parentEntityGuid);
 				if (child.IsValid() && parent.IsValid())
 				{
 					m_RuntimeWorld->Commands().SetParent(child, parent);
 					m_RuntimeWorld->FlushCommands();
 				}
 			}
+			if (vehicleDrivenTransformIDs.count(link.childTransformID) == 0 && link.parent.IsEntity())
+				m_TransformGraph.SetParent(link.childTransformID, parentObj->m_TransformID,
+					Vans::VansTransformReparentMode::KeepLocal);
 		}
 		else
 		{
 			VANS_LOG_WARN("[TransformParent] Could not resolve parent entity for child='"
-				<< link.childName << "' parentGuid='" << link.parentEntityGuid << "'");
+				<< link.childName << "' parentGuid='" << parentEntityGuid << "'");
 		}
 	}
 
@@ -1173,8 +1178,8 @@ bool VansGraphics::VansScene::LoadSceneObjects(
 			const uint32_t oldTransformID = node->m_TransformID;
 			if (vehicleDrivenTransformIDs.count(oldTransformID) > 0)
 			{
-				if (m_TransformParentSystem.HasParent(oldTransformID))
-					m_TransformParentSystem.ClearParent(oldTransformID);
+				if (m_TransformGraph.HasParent(oldTransformID))
+					m_TransformGraph.ClearParent(oldTransformID);
 				node->m_ParentGroupName = parentName;
 				group.childNodes.push_back(node);
 				continue;
@@ -1182,8 +1187,8 @@ bool VansGraphics::VansScene::LoadSceneObjects(
 
 			if (hasNodeTransformAnimation)
 			{
-				if (m_TransformParentSystem.HasParent(oldTransformID))
-					m_TransformParentSystem.ClearParent(oldTransformID);
+				if (m_TransformGraph.HasParent(oldTransformID))
+					m_TransformGraph.ClearParent(oldTransformID);
 				node->m_ParentGroupName = parentName;
 				group.childNodes.push_back(node);
 				continue;
@@ -1191,8 +1196,8 @@ bool VansGraphics::VansScene::LoadSceneObjects(
 
 			if (oldTransformID != group.sharedTransformID)
 			{
-				if (m_TransformParentSystem.HasParent(oldTransformID))
-					m_TransformParentSystem.ClearParent(oldTransformID);
+				if (m_TransformGraph.HasParent(oldTransformID))
+					m_TransformGraph.ClearParent(oldTransformID);
 				node->ShareTransform(group.sharedTransformID);
 			}
 			childObj->m_TransformID = group.sharedTransformID;
@@ -1212,6 +1217,20 @@ bool VansGraphics::VansScene::LoadSceneObjects(
 	// === [VansSceneLoadPass::Pass4_AnimationRagdoll] ===
 	VansSceneAnimationComponentBuilder::ResolveAnimations(*this, pendingAnimComps, projectRoot);
 	RegisterDeferredAnimationRuntimeComponents(*this, *m_RuntimeWorld, objectBuildPlan.objects);
+	for (const ParentEntityLink& link : parentEntityLinks)
+	{
+		if (!link.parent.IsAnchor()
+			|| vehicleDrivenTransformIDs.count(link.childTransformID) > 0)
+			continue;
+		VansScriptObject* owner = FindObjectByGuid(link.parent.entityGuid.ToString());
+		if (!owner || owner->m_TransformID == UINT32_MAX
+			|| !SetTransformAnchorReference(link.childTransformID, owner->m_TransformID, link.parent))
+		{
+			VANS_LOG_ERROR("[TransformGraph] Could not bind anchor parent for child='"
+				<< link.childName << "' anchorGuid='" << link.parent.anchorGuid.ToString() << "'");
+			return false;
+		}
+	}
 
 	// === [VansSceneLoadPass::Pass5_ClothAnimationBinding] ===
 	VansSceneClothAnimationBindingExecutor::Execute(*this);

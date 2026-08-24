@@ -1,5 +1,6 @@
 ﻿#include "VansRenderNode.h"
 #include "VansPostProcessProfile.h"
+#include "VansDrawSubmission.h"
 #include "VansCamera.h"
 #include "VansScene.h"
 #include "VulkanCore/VansMesh.h"
@@ -212,20 +213,13 @@ std::uint32_t VansGraphics::VansRenderNode::BuildVertexFeatureMask() const
 	return mask;
 }
 
-void VansGraphics::VansRenderNode::UpdateModelData()
+void VansGraphics::VansRenderNode::PrepareModelDataForRenderFrame()
 {
 	// Save current ModelMatrix as previous before computing new one
 	m_ModelData.PrevModelMatrix = m_ModelData.ModelMatrix;
 
 	ComputeModelDataFromTransform();
 	UpdateWorldBoundsFromModelData();
-	
-	// Push updated data to GPU using the persistently mapped instance buffer in VansScene
-	// Update at the offset specified by m_TransfromIndex
-	if (m_Scene && m_TransfromIndex >= 0)
-	{
-		m_Scene->UpdateMappedInstanceTransformData(m_ModelData, static_cast<uint32_t>(m_TransfromIndex));
-	}
 }
 
 // Helper: map node type to its primary render-pass name.
@@ -248,10 +242,18 @@ static const char* GetPrimaryPassName(VansGraphics::RenderNodeType type)
 	}
 }
 
+static bool UsesDrawSubmission(VansGraphics::RenderNodeType type);
+
 void VansGraphics::VansRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalStateData& globalStateData)
 {
 	if (!CheckRenderNodeState())
 		return;
+	if (UsesDrawSubmission(m_NodeType))
+	{
+		VANS_LOG_ERROR("[VansRenderNode] Submission-managed node '" << m_NodeName
+			<< "' cannot be recorded through VansRenderNode::Draw.");
+		return;
+	}
 
 	VansGraphicsShader* shader = m_Material->GetPassShader(GetPrimaryPassName(m_NodeType));
 	if (!shader) return;
@@ -267,59 +269,80 @@ void VansGraphics::VansRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalStateDat
 
 	cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *pipeline, 0, m_UsedDescSets, {});
 
-	if (shader->GetPushConstantSize() > 0)
-	{
-		VansDrawPushConstant pc{};
-		switch (m_Material->m_MaterialType)
-		{
-		case VansMaterialType::VAN_PBR:
-			pc.materialIndex = static_cast<VansPBRMaterial*>(m_Material)->m_MaterialIndex;
-			break;
-		case VansMaterialType::VAN_EMISSIVE:
-		case VansMaterialType::VAN_PBR_EMISSIVE:
-			pc.materialIndex = static_cast<VansEmissiveMaterial*>(m_Material)->m_MaterialIndex;
-			break;
-		case VansMaterialType::VAN_DECAL:
-			pc.materialIndex = static_cast<VansDecalMaterial*>(m_Material)->m_MaterialIndex;
-			break;
-		case VansMaterialType::VAN_SUBSURFACE:
-			pc.materialIndex = static_cast<VansSubsurfaceMaterial*>(m_Material)->m_MaterialIndex;
-			break;
-		case VansMaterialType::VAN_CLOTH:
-			pc.materialIndex = m_Material->m_MaterialIndex;
-			break;
-		case VansMaterialType::VAN_SKIN:
-			pc.materialIndex = m_Material->m_MaterialIndex;
-			break;
-		case VansMaterialType::VAN_CUSTOM_SHADER:
-			pc.materialIndex = m_Material->m_MaterialIndex;
-			break;
-		default:
-			pc.materialIndex = -1;
-			break;
-		}
-		if (m_Material->m_MaterialType == VansMaterialType::VAN_CUSTOM_SHADER)
-		{
-			const auto* manager = m_Scene ? m_Scene->GetMaterialManager() : nullptr;
-			const int customPayloadCount = manager
-				? static_cast<int>(manager->m_GlobalCustomMaterialParamData.size())
-				: 0;
-			if (pc.materialIndex < 0 || pc.materialIndex >= customPayloadCount)
-			{
-				VANS_LOG_ERROR("[VansRenderNode] Skipping custom shader draw for material '"
-					<< m_Material->m_AssetName
-					<< "': materialIndex=" << pc.materialIndex
-					<< ", customPayloadCount=" << customPayloadCount);
-				return;
-			}
-		}
-		pc.transformIndex = m_TransfromIndex;
-		pc.vertexFeatureMask = BuildVertexFeatureMask();
-		cmd.UpdatePushConstants(*pipeline, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-			0, shader->GetPushConstantSize(), &pc);
-	}
-
 	cmd.DrawMesh(*m_Mesh, *pipeline, 1);
+}
+
+static bool UsesDrawSubmission(VansGraphics::RenderNodeType type)
+{
+	using namespace VansGraphics;
+	switch (type)
+	{
+	case OPAQUE_NODE:
+	case HAIR_NODE:
+	case FORWARD_OPAQUE_AFTER_DEFERRED_NODE:
+	case TRANSPARENT_NODE:
+	case DECAL_NODE:
+		return true;
+	default:
+		return false;
+	}
+}
+
+bool VansGraphics::VansRenderNode::BuildPrimaryDrawPacket(
+	VkDevice& device,
+	GlobalStateData globalState,
+	const char* passName,
+	int passUser0,
+	std::uint64_t orderGroup,
+	std::uint64_t stableOrder,
+	float cameraDepth,
+	VansDrawPacket& packet)
+{
+	if (m_Material == nullptr || passName == nullptr)
+		return false;
+	return BuildPassDrawPacket(
+		device,
+		globalState,
+		passName,
+		m_Material->GetPassShader(passName),
+		m_UsedDescSets,
+		m_UsedDescSetLayouts,
+		passUser0,
+		orderGroup,
+		stableOrder,
+		cameraDepth,
+		packet);
+}
+
+bool VansGraphics::VansRenderNode::BuildPassDrawPacket(
+	VkDevice& device,
+	GlobalStateData globalState,
+	const char* passName,
+	VansGraphicsShader* shader,
+	const std::vector<VkDescriptorSet>& descriptorSets,
+	const std::vector<VkDescriptorSetLayout>& descriptorSetLayouts,
+	int passUser0,
+	std::uint64_t orderGroup,
+	std::uint64_t stableOrder,
+	float cameraDepth,
+	VansDrawPacket& packet)
+{
+	if (shader == nullptr || !CheckRenderNodeState())
+		return false;
+	if (!ValidateDescriptorBindings(passName, descriptorSetLayouts, descriptorSets))
+		return false;
+	return VansDrawSubmission::BuildPacket(
+		device,
+		*this,
+		*shader,
+		descriptorSetLayouts,
+		descriptorSets,
+		globalState,
+		passUser0,
+		orderGroup,
+		stableOrder,
+		cameraDepth,
+		packet);
 }
 
 bool VansGraphics::VansRenderNode::PreparePipelineForDraw(VkDevice& device, GlobalStateData global_state)
@@ -352,87 +375,6 @@ bool VansGraphics::VansRenderNode::PreparePipelineForShader(
 	global_state.vertexInputAttributeDescriptions = &m_Mesh->m_VertexInputAttributeDescriptions;
 	global_state.vertexInputBindingDescriptions = &m_Mesh->m_VertexInputBindingDescriptions;
 	return shader->GetGraphicsPipeline(device, global_state, layouts) != nullptr;
-}
-
-void VansGraphics::VansRenderNode::DrawCascadeShadowWithPassShader(VansVKCommandBuffer& cmd, GlobalStateData& global_state,
-                                                                     VansGraphicsShader* passShader,
-                                                                     const std::vector<VkDescriptorSet>& descSets,
-                                                                     const std::vector<VkDescriptorSetLayout>& descSetLayouts)
-{
-	if (!passShader) return;
-
-	if (!CheckRenderNodeState())
-		return;
-
-	if (!ValidateDescriptorBindings("CascadeShadow", descSetLayouts, descSets))
-		return;
-
-	cmd.BindMesh(*m_Mesh, 0, global_state);
-
-	VansVKGraphicsPipeline* pipeline = cmd.EnsureGraphicsShader(*passShader, global_state, descSetLayouts);
-	if (pipeline == nullptr)
-		return;
-
-	cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *pipeline, 0, descSets, {});
-
-	if (passShader->GetPushConstantSize() > 0)
-	{
-		// Shadow shader expects: { materialIndex, objectIndex, cascadeIndex, vertexFeatureMask }
-		int matIdx = -1;
-		if (m_Material->m_MaterialType == VansMaterialType::VAN_PBR)
-			matIdx = static_cast<VansPBRMaterial*>(m_Material)->m_MaterialIndex;
-		else if (m_Material->m_MaterialType == VansMaterialType::VAN_EMISSIVE ||
-			m_Material->m_MaterialType == VansMaterialType::VAN_PBR_EMISSIVE)
-			matIdx = static_cast<VansEmissiveMaterial*>(m_Material)->m_MaterialIndex;
-		int pushData[4] = {
-			matIdx,
-			m_TransfromIndex,
-			global_state.cascadeIndex,
-			static_cast<int>(BuildVertexFeatureMask())
-		};
-		cmd.UpdatePushConstants(*pipeline,
-			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-			0, passShader->GetPushConstantSize(), pushData);
-	}
-
-	cmd.DrawMesh(*m_Mesh, *pipeline, 1);
-}
-
-void VansGraphics::VansRenderNode::DrawPunctualShadowWithPassShader(VansVKCommandBuffer& cmd, GlobalStateData& global_state,
-                                                                      VansGraphicsShader* passShader,
-                                                                      const std::vector<VkDescriptorSet>& descSets,
-                                                                      const std::vector<VkDescriptorSetLayout>& descSetLayouts,
-	                                                                  int shadowViewIndex)
-{
-	if (!passShader) return;
-
-	if (!CheckRenderNodeState())
-		return;
-
-	if (!ValidateDescriptorBindings("PunctualShadow", descSetLayouts, descSets))
-		return;
-
-	cmd.BindMesh(*m_Mesh, 0, global_state);
-
-	VansVKGraphicsPipeline* pipeline = cmd.EnsureGraphicsShader(*passShader, global_state, descSetLayouts);
-	if (pipeline == nullptr)
-		return;
-
-	// The render job owns the exact view. Passing it directly prevents a light
-	// array reorder from redirecting this draw into another light's tile.
-	int data[5] = {
-		shadowViewIndex,
-		0,
-		0,
-		m_TransfromIndex,
-		static_cast<int>(BuildVertexFeatureMask())
-	};
-	cmd.UpdatePushConstants(*pipeline, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-		0, passShader->GetPushConstantSize(), data);
-
-	cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *pipeline, 0, descSets, {});
-
-	cmd.DrawMesh(*m_Mesh, *pipeline, 1);
 }
 
 //void VansGraphics::VansRenderNode::DrawWithMaterial(VansMaterial* material, VansVKCommandBuffer& cmd, GlobalStateData& global_state)
@@ -614,98 +556,8 @@ void VansGraphics::VansCommonRenderNode::MarkAnimationDescriptorDirty()
 	m_DescriptorsetsDirty = true;
 }
 
-void VansGraphics::VansCommonRenderNode::SyncMaterialToGPU(VansMaterial* mat, VansMaterialManager& materialManager)
-{
-	if (!mat) return;
-	if (mat->m_MaterialType == VansMaterialType::VAN_PBR)
-	{
-		VansPBRMaterial* pbr = static_cast<VansPBRMaterial*>(mat);
-		int idx = pbr->m_MaterialIndex;
-		materialManager.m_GlobalPBRDataBuffer.UpdateMapped(
-			&pbr->m_BasePBRParam,
-			sizeof(VansBasePBRParam) * idx,
-			sizeof(VansBasePBRParam));
-	}
-	else if (mat->m_MaterialType == VansMaterialType::VAN_EMISSIVE ||
-		mat->m_MaterialType == VansMaterialType::VAN_PBR_EMISSIVE)
-	{
-		VansEmissiveMaterial* emissive = static_cast<VansEmissiveMaterial*>(mat);
-		int idx = emissive->m_MaterialIndex;
-		materialManager.m_GlobalPBRDataBuffer.UpdateMapped(
-			&emissive->m_BasePBRParam,
-			sizeof(VansBasePBRParam) * idx,
-			sizeof(VansBasePBRParam));
-	}
-	else if (mat->m_MaterialType == VansMaterialType::VAN_SUBSURFACE)
-	{
-		VansSubsurfaceMaterial* sss = static_cast<VansSubsurfaceMaterial*>(mat);
-		int idx = sss->m_MaterialIndex;
-		sss->m_BasePBRParam.m_albedo = sss->m_SubsurfaceColor;
-		sss->m_BasePBRParam.m_roughness = sss->m_SubsurfacePower;
-		sss->m_BasePBRParam.m_metallic = sss->m_Thickness;
-		sss->m_BasePBRParam.m_ao = sss->m_SubsurfaceAmount;
-		sss->m_BasePBRParam.padding = sss->m_IOR;
-		materialManager.m_GlobalPBRDataBuffer.UpdateMapped(
-			&sss->m_BasePBRParam,
-			sizeof(VansBasePBRParam) * idx,
-			sizeof(VansBasePBRParam));
-	}
-	else if (mat->m_MaterialType == VansMaterialType::VAN_SKIN)
-	{
-		VansSkinMaterial* skin = static_cast<VansSkinMaterial*>(mat);
-		int idx = skin->m_MaterialIndex;
-		if (idx < 0) return;
-		materialManager.m_GlobalPBRDataBuffer.UpdateMapped(
-			&skin->m_BasePBRParam,
-			sizeof(VansBasePBRParam) * idx,
-			sizeof(VansBasePBRParam));
-		VansSkinGPUParam skinPayload = skin->BuildGPUParam();
-		materialManager.ResolveSkinProfileLUTForMaterial(*skin, skinPayload, nullptr);
-		materialManager.m_GlobalSkinDataBuffer.UpdateMapped(
-			&skinPayload,
-			sizeof(VansSkinGPUParam) * idx,
-			sizeof(VansSkinGPUParam));
-		if (idx < static_cast<int>(materialManager.m_GlobalSkinParamData.size()))
-			materialManager.m_GlobalSkinParamData[idx] = skinPayload;
-	}
-	else if (mat->m_MaterialType == VansMaterialType::VAN_CLOTH)
-	{
-		VansClothMaterial* cloth = static_cast<VansClothMaterial*>(mat);
-		int idx = cloth->m_MaterialIndex;
-		if (idx < 0) return;
-		materialManager.m_GlobalPBRDataBuffer.UpdateMapped(
-			&cloth->m_BasePBRParam,
-			sizeof(VansBasePBRParam) * idx,
-			sizeof(VansBasePBRParam));
-		const VansClothGPUParam clothPayload = cloth->BuildGPUParam();
-		materialManager.m_GlobalClothDataBuffer.UpdateMapped(
-			&clothPayload,
-			sizeof(VansClothGPUParam) * idx,
-			sizeof(VansClothGPUParam));
-		if (idx < static_cast<int>(materialManager.m_GlobalClothParamData.size()))
-			materialManager.m_GlobalClothParamData[idx] = clothPayload;
-	}
-	else if (mat->m_MaterialType == VansMaterialType::VAN_CUSTOM_SHADER)
-	{
-		int idx = mat->m_MaterialIndex;
-		if (idx < 0 || idx >= static_cast<int>(materialManager.m_GlobalCustomMaterialParamData.size()))
-			return;
-
-		auto& gpuPayload = materialManager.m_GlobalCustomMaterialParamData[idx];
-		for (int valueIndex = 0; valueIndex < VANS_CUSTOM_MATERIAL_VEC4_COUNT; ++valueIndex)
-			gpuPayload.values[valueIndex] = mat->m_CustomMaterialPayload.values[valueIndex];
-
-		materialManager.m_GlobalCustomMaterialDataBuffer.UpdateMapped(
-			&gpuPayload,
-			sizeof(VansCustomMaterialPayload) * idx,
-			sizeof(VansCustomMaterialPayload));
-	}
-}
-
 void VansGraphics::VansCommonRenderNode::UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera)
 {
-	// Sync CPU material params to the global GPU PBR buffer so editor changes take effect.
-	SyncMaterialToGPU(m_Material, materialManager);
 	UpdateDescriptorSets(materialManager);
 }
 
@@ -865,62 +717,6 @@ void VansGraphics::VansTransparentRenderNode::UpdateDescriptorSets(VansMaterialM
 			{{ (m_VertexDeformationState.skinningOwner ? m_VertexDeformationState.skinningOwner : m_AnimOwner)->GetPreviousBoneBuffer(0).GetNativeBuffer(), 0, VK_WHOLE_SIZE }});
 		descManager->CommitDescriptorUpdates();
 	}
-}
-
-void VansGraphics::VansTransparentRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalStateData& globalStateData)
-{
-	if (!CheckRenderNodeState())
-		return;
-
-	VansGraphicsShader* shader = m_Material->GetPassShader(VansPass::FORWARD_TRANSPARENT);
-	if (!shader) return;
-
-	if (!ValidateDescriptorBindings(VansPass::FORWARD_TRANSPARENT, m_UsedDescSetLayouts, m_UsedDescSets))
-		return;
-
-	cmd.BindMesh(*m_Mesh, 0, globalStateData);
-
-	cmd.EnsureGraphicsShader(*shader, globalStateData, m_UsedDescSetLayouts);
-
-	cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *shader, 0, m_UsedDescSets, {});
-
-	if (shader->GetPushConstantSize() > 0)
-	{
-		if (m_Material->m_MaterialType == VansMaterialType::VAN_CUSTOM_SHADER ||
-			m_Material->m_MaterialType == VansMaterialType::VAN_PBR_TRANSMISSION)
-		{
-			const auto* manager = m_Scene ? m_Scene->GetMaterialManager() : nullptr;
-			const int customPayloadCount = manager
-				? static_cast<int>(manager->m_GlobalCustomMaterialParamData.size())
-				: 0;
-			if (m_Material->m_MaterialIndex < 0 || m_Material->m_MaterialIndex >= customPayloadCount)
-			{
-				VANS_LOG_ERROR("[VansTransparentRenderNode] Skipping custom shader draw for material '"
-					<< m_Material->m_AssetName
-					<< "': materialIndex=" << m_Material->m_MaterialIndex
-					<< ", customPayloadCount=" << customPayloadCount);
-				return;
-			}
-
-			VansDrawPushConstant pc{};
-			pc.materialIndex = m_Material->m_MaterialIndex;
-			pc.transformIndex = m_TransfromIndex;
-			pc.vertexFeatureMask = BuildVertexFeatureMask();
-			cmd.UpdatePushConstants(*shader->GetGraphicsPipeline(),
-				VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-				0, shader->GetPushConstantSize(), &pc);
-		}
-		else
-		{
-			// Legacy transparent shaders expect objectIndex as the first int.
-			int objectIndex = m_TransfromIndex;
-			cmd.UpdatePushConstants(*shader->GetGraphicsPipeline(),
-				VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-				0, sizeof(int), &objectIndex);
-		}
-	}
-
-	cmd.DrawMesh(*m_Mesh, *shader, 1);
 }
 
 void VansGraphics::VansPostProcessRenderNode::CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager)
@@ -1113,9 +909,9 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescriptorSets(VansMaterialMana
 	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 7, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 		{ { ssrAaResult->GetImage().GetSampler(), ssrAaResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
 	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		{ { rp->GetCascadeShadowSampler(), rp->GetCascadeShadowArrayView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+		{ { rp->GetCascadeShadowSampler(), rp->GetCascadeShadowArrayView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL } });
 	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		{ { rp->GetPunctualShadowMap().GetSampler(), rp->GetPunctualShadowMap().GetImageView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL } });
+		rp->GetPunctualShadowDescriptorInfos());
 	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 13, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{ { volumetricFogResult->GetImage().GetSampler(), volumetricFogResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
 	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], DEFERRED_BINDING_SCREEN_SPACE_SHADOW, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -1226,8 +1022,6 @@ void VansGraphics::VansSkyBoxRenderNode::CreateDescriptorSets(VansCamera* camera
 
 void VansGraphics::VansSkyBoxRenderNode::UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera)
 {
-	static_cast<VansSkyBoxMaterial*>(m_Material)->UpdateAtmosphereMaterialData(materialManager, lightManager);
-
 	UpdateDescriptorSets(materialManager);
 }
 
@@ -1240,7 +1034,7 @@ void VansGraphics::VansSkyBoxRenderNode::UpdateDescriptorSets(VansMaterialManage
 	m_DescriptorsetsDirty = false;
 }
 
-void VansGraphics::VansSkyBoxRenderNode::DrawMotionVector(
+void VansGraphics::VansSkyBoxRenderNode::DrawSkyMotionVector(
 	VansVKCommandBuffer& cmd,
 	GlobalStateData& globalState)
 {
@@ -1298,7 +1092,6 @@ void VansGraphics::VansWaterRenderNode::CreateDescriptorSets(VansCamera* camera,
 void VansGraphics::VansWaterRenderNode::UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera)
 {
 	UpdateDescriptorSets(materialManager);
-	UpdateModelData();
 }
 
 void VansGraphics::VansWaterRenderNode::UpdateDescriptorSets(VansMaterialManager& materialManager)
@@ -1342,8 +1135,6 @@ void VansGraphics::VansTerrainRenderNode::CreateDescriptorSets(VansCamera* camer
 void VansGraphics::VansTerrainRenderNode::UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera)
 {
 	UpdateDescriptorSets(materialManager);
-
-	m_Terrain->Update(camera);
 }
 
 void VansGraphics::VansTerrainRenderNode::UpdateDescriptorSets(VansMaterialManager& materialManager)
@@ -1365,11 +1156,6 @@ void VansGraphics::VansTerrainRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalS
 void VansGraphics::VansTerrainRenderNode::DrawShadow(VansVKCommandBuffer& cmd, GlobalStateData& global_state)
 {
 	m_Terrain->DrawShadow(cmd, global_state, m_UsedDescSetLayouts, m_UsedDescSets);
-}
-
-void VansGraphics::VansTerrainRenderNode::DrawMotionVector(VansVKCommandBuffer& cmd, GlobalStateData& global_state)
-{
-	m_Terrain->DrawMotionVector(cmd, global_state, m_UsedDescSetLayouts, m_UsedDescSets);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

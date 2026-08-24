@@ -26,7 +26,7 @@ namespace Vans
 	{
 		using json = nlohmann::json;
 		constexpr std::uint32_t kArtifactSchemaVersion = 1;
-		constexpr const char* kCompilerArguments = "-V --target-env vulkan1.2";
+		constexpr const char* kCompilerArguments = "-V --target-env vulkan1.2 -Os";
 		constexpr std::uint64_t kMaxStageBytes = 64ull * 1024ull * 1024ull;
 		std::mutex g_ArtifactWriteMutex;
 		std::filesystem::path g_RuntimeCookedArtifactRoot;

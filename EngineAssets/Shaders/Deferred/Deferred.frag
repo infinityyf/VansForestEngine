@@ -67,7 +67,7 @@ layout(set = 1, binding = 5, rgba32f ) uniform image2D ssao;
 layout(set = 1, binding = 6) uniform sampler2D ssgi;
 layout(set = 1, binding = 7, rgba32f ) uniform image2D ssr;
 layout(set = 1, binding = 8) uniform sampler2DArray cascadeShadowMap;
-layout(set = 1, binding = 9) uniform sampler2DArrayShadow punctualShadowMap;
+layout(set = 1, binding = 9) uniform sampler2DShadow punctualShadowMap[PUNCTUAL_SHADOW_ATLAS_COUNT];
 layout( set = 1, binding = 13 ) uniform sampler2D fogResult;
 layout( set = 1, binding = 14 ) uniform sampler2D screenSpaceShadow;
 struct GIRegionParams
@@ -217,8 +217,7 @@ vec3 ComputeDeferredGINormal(vec3 worldPos, vec3 shadingNormal)
 }
 
 bool EvaluateSubsurfaceSourceAtUV(vec2 uv, int centerMaterialIndex,
-                                  sampler2DArray directionalShadows,
-                                  sampler2DArrayShadow punctualShadows,
+                                  sampler2DShadow punctualShadows[PUNCTUAL_SHADOW_ATLAS_COUNT],
                                   out vec3 diffuseSource,
                                   out vec3 samplePosition,
                                   out vec3 sampleNormal)
@@ -258,9 +257,8 @@ bool EvaluateSubsurfaceSourceAtUV(vec2 uv, int centerMaterialIndex,
     sampleBRDF.indirectSpecular = vec4(0.0);
 
     LightResult sampleLighting;
-    CalculateDirectLight(sampleBRDF, directionalShadows, sampleGBuffer2.w,
-                         punctualShadows, SampleScreenSpaceShadow(uv),
-                         sampleLighting);
+	CalculateDirectLight(sampleBRDF, SampleScreenSpaceShadow(uv),
+					 punctualShadows, sampleLighting);
 
     float NoV = max(dot(sampleBRDF.normal, sampleBRDF.viewDirection), 0.0);
     vec3 F = fresnelSchlickRoughness(
@@ -277,7 +275,7 @@ bool EvaluateSubsurfaceSourceAtUV(vec2 uv, int centerMaterialIndex,
 vec3 EvaluateScreenSpaceBurleyDiffusion(
     BRDFData centerBRDF, SubsurfaceParams sss, int materialIndex,
     vec2 centerUV, vec3 localDiffuse,
-    sampler2DArray directionalShadows, sampler2DArrayShadow punctualShadows)
+	sampler2DShadow punctualShadows[PUNCTUAL_SHADOW_ATLAS_COUNT])
 {
     float amount = clamp(sss.subsurfaceAmount, 0.0, 1.0);
     vec3 distance = max(sss.scatteringDistance, vec3(5e-5));
@@ -324,7 +322,7 @@ vec3 EvaluateScreenSpaceBurleyDiffusion(
         bool insideViewport = all(greaterThanEqual(sampleUV, vec2(0.0))) &&
                               all(lessThanEqual(sampleUV, vec2(1.0)));
         bool valid = insideViewport && EvaluateSubsurfaceSourceAtUV(
-            sampleUV, materialIndex, directionalShadows, punctualShadows,
+			sampleUV, materialIndex, punctualShadows,
             source, samplePosition, sampleNormal);
 
         // Screen-space diffusion must not cross silhouettes, disconnected
@@ -437,7 +435,8 @@ void main()
         brdfData.fresnel0 = ComputeSkinF0(brdfData.albedo, skin.ior);
         brdfData.metallic = 0.0;
         brdfData.roughness = clamp(brdfData.roughness, 0.045, 1.0);
-        CalculateDirectLight_Skin(brdfData, curvature, skin, cascadeShadowMap, linearDepth, punctualShadowMap, sssShadow, lightResult);
+		CalculateDirectLight_Skin(brdfData, curvature, skin,
+			punctualShadowMap, sssShadow, lightResult);
         AmbientBRDF_Skin(brdfData, skin, viewDirection, lightResult.ambientDiffuse, lightResult.ambientSpecular);
 
         vec3 skinDebugColor = vec3(0.0);
@@ -462,8 +461,7 @@ void main()
         DecodeClothTangentFrame(normal, normalData.w, clothTangent, clothBitangent);
         brdfData.ao = clamp(min(ao, ssaoValue), 0.0, 1.0);
         CalculateDirectLight_Cloth(brdfData, cloth, clothTangent,
-                                   cascadeShadowMap, linearDepth, punctualShadowMap,
-                                   sssShadow, lightResult);
+								   punctualShadowMap, sssShadow, lightResult);
         AmbientBRDF_Cloth(brdfData, cloth, clothTangent, viewDirection,
                           lightResult.ambientDiffuse, lightResult.ambientSpecular);
     }
@@ -486,8 +484,7 @@ void main()
         float ior = clamp(mat.padding, 1.0, 2.5);
         brdfData.fresnel0 = vec3(DielectricF0FromIOR(ior));
 
-        CalculateDirectLight(brdfData, cascadeShadowMap, linearDepth,
-                             punctualShadowMap, sssShadow, lightResult);
+		CalculateDirectLight(brdfData, sssShadow, punctualShadowMap, lightResult);
         AmbientBRDF(brdfData, viewDirection,
                     lightResult.ambientDiffuse, lightResult.ambientSpecular);
 
@@ -495,12 +492,11 @@ void main()
                             lightResult.ambientDiffuse;
         vec3 diffused = EvaluateScreenSpaceBurleyDiffusion(
             brdfData, sss, mi, fragTexCoord, localDiffuse,
-            cascadeShadowMap, punctualShadowMap);
+			punctualShadowMap);
 
         vec3 transmission = vec3(0.0);
         CalculateDirectTransmission_Subsurface(
-            brdfData, sss, cascadeShadowMap, linearDepth,
-            punctualShadowMap, sssShadow, transmission);
+			brdfData, sss, punctualShadowMap, sssShadow, transmission);
 
         lightResult.directDiffuse = diffused + transmission;
         lightResult.ambientDiffuse = vec3(0.0);
@@ -522,7 +518,7 @@ void main()
         veg.transmissionScale = 1.0;
         veg.specularScale = 0.30;
 
-        CalculateDirectLight_Vegetation(brdfData, veg, cascadeShadowMap, linearDepth, punctualShadowMap, sssShadow, lightResult);
+		CalculateDirectLight_Vegetation(brdfData, veg, punctualShadowMap, sssShadow, lightResult);
         AmbientBRDF_Vegetation(brdfData, veg, viewDirection,
                                lightResult.ambientDiffuse, lightResult.ambientSpecular);
         lightResult.ambientSpecular = vec3(0.0); // grass blades: no ambient specular
@@ -548,7 +544,7 @@ void main()
             veg.transmissionScale = 1.0;
             veg.specularScale = max(leafScattering.z, 0.0);
 
-            CalculateDirectLight_Vegetation(brdfData, veg, cascadeShadowMap, linearDepth, punctualShadowMap, sssShadow, lightResult);
+			CalculateDirectLight_Vegetation(brdfData, veg, punctualShadowMap, sssShadow, lightResult);
             AmbientBRDF_Vegetation(brdfData, veg, viewDirection,
                                    lightResult.ambientDiffuse, lightResult.ambientSpecular);
             lightResult.ambientSpecular *= 0.35;
@@ -556,7 +552,7 @@ void main()
         else
         {
             // 树干/枝干仍按标准 PBR 接收 GI。
-            CalculateDirectLight(brdfData, cascadeShadowMap, linearDepth, punctualShadowMap, sssShadow, lightResult);
+			CalculateDirectLight(brdfData, sssShadow, punctualShadowMap, lightResult);
             AmbientBRDF(brdfData, viewDirection, lightResult.ambientDiffuse, lightResult.ambientSpecular);
         }
     }
@@ -572,7 +568,7 @@ void main()
     else
     {
         // --- Default PBR path ---
-        CalculateDirectLight(brdfData, cascadeShadowMap, linearDepth, punctualShadowMap, sssShadow, lightResult);
+		CalculateDirectLight(brdfData, sssShadow, punctualShadowMap, lightResult);
         AmbientBRDF(brdfData, viewDirection, lightResult.ambientDiffuse, lightResult.ambientSpecular);
     }
 

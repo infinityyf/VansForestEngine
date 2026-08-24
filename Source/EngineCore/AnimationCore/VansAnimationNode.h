@@ -43,8 +43,13 @@ namespace VansGraphics
 		const Skeleton& GetSkeleton() const { return m_Skeleton; }
 
 		// Controller binding
-		void SetController(VansAnimationController* controller);
+		bool SetController(VansAnimationController* controller);
 		VansAnimationController* GetController() const { return m_Controller; }
+		VansSkeletonPoseView GetFinalPoseView() const
+		{
+			return m_Controller ? m_Controller->GetFinalPoseView(m_Skeleton)
+				: VansSkeletonPoseView{};
+		}
 		// Locomotion is evaluated on the source controller for source-proxy
 		// retargeting, while the target controller only post-processes the
 		// retargeted pose. Character motion must query the same controller that
@@ -55,9 +60,10 @@ namespace VansGraphics
 				? m_SourceController.get()
 				: m_Controller;
 		}
-		void ConfigureRetargetSource(const Skeleton& sourceSkeleton,
+		bool ConfigureRetargetSource(const Skeleton& sourceSkeleton,
 		                             std::unique_ptr<VansAnimationController> sourceController,
-		                             const VansRetargetRuntimeDesc& desc);
+		                             const VansRetargetRuntimeDesc& desc,
+		                             std::string& error);
 		bool IsRetargetEnabled() const { return m_RetargetEnabled; }
 		const Skeleton& GetRetargetSourceSkeleton() const { return m_SourceSkeleton; }
 		VansAnimationController* GetRetargetSourceController() { return m_SourceController.get(); }
@@ -71,6 +77,11 @@ namespace VansGraphics
 		void Pause();
 		void Resume();
 		void Stop();
+		VansGraphSetSwitchResult SwitchGraphSet(const std::string& graphSetId);
+		const std::string& GetActiveGraphSetId() const;
+		const std::string& GetIncomingGraphSetId() const;
+		bool IsGraphSetTransitioning() const;
+		float GetGraphSetTransitionProgress() const;
 
 		// State queries
 		AnimationState GetState() const;
@@ -100,12 +111,20 @@ namespace VansGraphics
 
 		// Per-frame update, called by VansScene.
 		void Update(float deltaTime);
+		void PrepareAnimationFrame(float deltaTime);
+		void GatherAnimationWorldQueries();
+		void ResolveAnimationWorldQueries(const std::vector<VansWorldQueryResult>& results);
+		bool HasAnimationWorldQueries() const;
+		const std::vector<VansWorldQueryRequest>& GetAnimationWorldQueries() const;
 		void PrepareLocomotionFrame(float deltaTime, const Vans::VansCharacterTrajectory& trajectory);
 
 		// GPU resources
 		bool InitGPUResources(VkDevice device, uint32_t framesInFlight);
 		void DestroyGPUResources();
 		void UploadBoneMatrices(uint32_t frameIndex);
+		void UploadBoneMatrices(
+			uint32_t frameIndex,
+			const BoneMatricesSSBO& boneMatrices);
 		void UploadPerSubmeshBoneBuffers(const std::vector<std::vector<VertexBoneData>>& perSubmeshBoneData);
 
 		VansVKBuffer& GetBoneBuffer(uint32_t frameIndex) { return m_BoneBuffers[frameIndex]; }
@@ -133,8 +152,8 @@ namespace VansGraphics
 
 		// Scene-owned target controller plus optional source-proxy controller.
 		VansAnimationController* m_Controller = nullptr;
-		std::unique_ptr<VansAnimationController> m_SourceController;
 		Skeleton m_SourceSkeleton;
+		std::unique_ptr<VansAnimationController> m_SourceController;
 		VansRetargetRuntimeDesc m_RetargetDesc;
 		VansRetargetProcessor m_RetargetProcessor;
 		bool m_RetargetEnabled = false;

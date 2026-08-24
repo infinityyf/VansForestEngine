@@ -58,6 +58,20 @@ namespace VansEngine
 		return 0;
 	}
 
+	bool VansCollisionLayerManager::TryGetLayerIndex(const std::string& name, int& index) const
+	{
+		for (int candidate = 0; candidate < m_LayerCount; ++candidate)
+		{
+			if (m_LayerNames[candidate] == name)
+			{
+				index = candidate;
+				return true;
+			}
+		}
+		index = -1;
+		return false;
+	}
+
 	const std::string& VansCollisionLayerManager::GetLayerName(int index) const
 	{
 		static const std::string empty;

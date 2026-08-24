@@ -13,7 +13,6 @@
 #include "../PhysicsCore/VansCollisionLayerManager.h"
 #include "../Configration/VansConfigration.h"
 #include "../ScriptCore/VansScriptContext.h"
-#include "../AnimationCore/VansBoneAttachmentSystem.h"
 #include "../AnimationCore/VansAnimationNode.h"
 #include "../AnimationCore/MotionMatching/VansMotionMatching.h"
 #include "../RuntimeCore/VansFramePhase.h"
@@ -227,11 +226,8 @@ VansEngine::VansClothNode* VansGraphics::VansScenePhysicsComponentBuilder::LoadC
     if (config.physicsAttachOffsetY)
         clothProps.attachOffsetY = *config.physicsAttachOffsetY;
 
-    // 通过 objectRef 解析碰撞球引用。
-    // 三种解析路径（优先级递减）：
-    // 1. 对象有 render 组件 → 存 renderNodeName，运行时 FindRenderNodeByName 查找
-    // 2. 对象无 render 但有有效 m_TransformID → 存 transformID
-    // 3. 对象为纯物理骨骼绑定体（骨骼绑定在第四 pass 才加载）→ 存 sceneObjectName，运行时通过 BoneAttachmentSystem 延迟解析
+    // 通过 objectRef 解析碰撞球实体。优先缓存渲染节点或 Transform ID；
+    // sceneObjectName 仅用于实体尚未完成构建时的延迟 Transform 查找。
     if (!config.collisionSpheres.empty())
     {
         for (const auto& collisionSphere : config.collisionSpheres)
@@ -240,7 +236,7 @@ VansEngine::VansClothNode* VansGraphics::VansScenePhysicsComponentBuilder::LoadC
             if (!collisionSphere.objectRef.empty())
             {
                 std::string objectName = collisionSphere.objectRef;
-                ref.sceneObjectName = objectName;  // 始终保存原始名称，供延迟解析使用
+                ref.sceneObjectName = objectName;
 
                 VansScriptObject* refObj = scene.FindSceneObjectByName(objectName);
                 if (refObj)
@@ -255,7 +251,7 @@ VansEngine::VansClothNode* VansGraphics::VansScenePhysicsComponentBuilder::LoadC
                         // 无 render 组件但 ScriptObject 有自己的 transformID
                         ref.transformID = refObj->m_TransformID;
                     }
-                    // 否则保持未解析状态，第一帧通过 BoneAttachmentSystem 延迟查找
+                    // 否则保留实体名称，在运行时实体构建完成后解析其 Transform。
                 }
             }
             if (collisionSphere.radius)
@@ -476,7 +472,7 @@ void VansGraphics::VansScene::UpdatePhysicsTransforms()
             t.m_Position = glm::vec3(correctedPosition.x, correctedPosition.y, correctedPosition.z);
             t.m_Rotation = PxQuatToEulerDeg(pose.q);
             VansTransformStore::TransformIDToTransformDirty[transformID] = true;
-            m_TransformParentSystem.MarkOffsetDirty(transformID);
+			m_TransformGraph.MarkWorldDirty(transformID);
             return true;
         };
 
@@ -713,12 +709,12 @@ void VansGraphics::VansScene::UpdateClothSimulation(float dt)
         spheres.reserve(sphereRefs.size());
         for (auto& ref : sphereRefs)
         {
-            // 延迟解析：若前两种路径都未解析，则尝试通过 BoneAttachmentSystem 查找
+            // 延迟解析场景实体；骨骼/Socket 挂接已经由 Transform Graph 更新实体世界变换。
             if (ref.renderNodeName.empty() && ref.transformID == UINT32_MAX
                 && !ref.sceneObjectName.empty())
             {
-                ref.transformID = VansEngine::VansBoneAttachmentSystem::GetInstance()
-                                      .FindTransformIDByPhysicsObjectName(ref.sceneObjectName);
+				if (VansScriptObject* object = FindObjectByName(ref.sceneObjectName))
+					ref.transformID = object->m_TransformID;
             }
 
             glm::vec3 pos(0.0f);
@@ -775,44 +771,51 @@ void VansGraphics::VansScene::UpdateClothSimulation(float dt)
         if (clothNode && clothNode->IsEnabled()) clothNode->CommitPinnedTargets();
 }
 
-void VansGraphics::VansScene::WriteClothResultsToStagingBuffers()
+void VansGraphics::VansScene::WriteClothResultsToStagingBuffers(
+	const VansRenderSceneFrameSnapshot& snapshot)
 {
-    for (size_t i = 0; i < m_ClothNodes.size(); ++i)
+	for (const VansRenderClothFrameData& cloth : snapshot.cloth)
     {
-        VansEngine::VansClothNode* clothNode = m_ClothNodes[i];
-        if (!clothNode) continue;
+		if (cloth.clothNodeIndex >= m_ClothStagingBuffers.size())
+			continue;
+		VansVKBuffer& staging = m_ClothStagingBuffers[cloth.clothNodeIndex];
+		if (!staging.IsMapped()) continue;
 
-        // 1. NvCloth → CPU fp16 buffer (inside ClothNode, no Vulkan)
-        clothNode->WriteSimResults();
-
-        // 2. CPU → scene-owned HOST_VISIBLE staging buffer
-        if (i >= m_ClothStagingBuffers.size()) continue;
-        VansVKBuffer& staging = m_ClothStagingBuffers[i];
-        if (!staging.IsMapped()) continue;
-
-        const std::vector<uint16_t>& cpuData = clothNode->GetSimulatedVertexData();
-        size_t byteSize = cpuData.size() * sizeof(uint16_t);
-        if (byteSize == 0) continue;
-
-        std::memcpy(staging.GetMappedPtr(), cpuData.data(), byteSize);
+		const size_t byteSize = cloth.simulatedVertices.size() * sizeof(uint16_t);
+		if (byteSize == 0) continue;
+		if (byteSize > static_cast<size_t>(staging.GetBufferSize()))
+		{
+			VANS_LOG_ERROR("[VansScene] Cloth frame snapshot exceeds its staging buffer.");
+			continue;
+		}
+		std::memcpy(
+			staging.GetMappedPtr(), cloth.simulatedVertices.data(), byteSize);
     }
 }
 
-void VansGraphics::VansScene::RecordClothVertexUploads(VansVKCommandBuffer& cmd)
+void VansGraphics::VansScene::RecordClothVertexUploads(
+	VansVKCommandBuffer& cmd,
+	const VansRenderSceneFrameSnapshot& snapshot)
 {
-    for (size_t i = 0; i < m_ClothNodes.size(); ++i)
-    {
-        VansEngine::VansClothNode* clothNode = m_ClothNodes[i];
-        if (!clothNode || i >= m_ClothStagingBuffers.size()) continue;
+	for (const VansRenderClothFrameData& cloth : snapshot.cloth)
+	{
+		if (cloth.clothNodeIndex >= m_ClothNodes.size() ||
+			cloth.clothNodeIndex >= m_ClothStagingBuffers.size())
+		{
+			continue;
+		}
+		VansEngine::VansClothNode* clothNode = m_ClothNodes[cloth.clothNodeIndex];
+		if (!clothNode) continue;
 
-        VansVKBuffer& staging = m_ClothStagingBuffers[i];
-        if (!staging.IsMapped()) continue;
+		VansVKBuffer& staging = m_ClothStagingBuffers[cloth.clothNodeIndex];
+		if (!staging.IsMapped()) continue;
 
         VansGraphics::VansRenderNode* renderNode = clothNode->GetTargetRenderNode();
         if (!renderNode || !renderNode->m_Mesh) continue;
 
         VkBuffer dstBuffer = renderNode->m_Mesh->GetBLASVertexBuffer().GetNativeBuffer();
-        VkDeviceSize size   = clothNode->GetSimulatedDataByteSize();
+		VkDeviceSize size = static_cast<VkDeviceSize>(
+			cloth.simulatedVertices.size() * sizeof(uint16_t));
         if (size == 0) continue;
 
         cmd.CopyBuffer(staging.GetNativeBuffer(), dstBuffer, 0, 0, size);

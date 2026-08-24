@@ -88,6 +88,11 @@ namespace VansGraphics
 			, m_VansVKDevice(VK_NULL_HANDLE)
 		{ }
 
+		VansVKCommandBuffer(const VansVKCommandBuffer&) = delete;
+		VansVKCommandBuffer& operator=(const VansVKCommandBuffer&) = delete;
+		VansVKCommandBuffer(VansVKCommandBuffer&&) noexcept = default;
+		VansVKCommandBuffer& operator=(VansVKCommandBuffer&&) noexcept = default;
+
 	public :
 		void ClearColor(VansVKImage& image, const VkClearColorValue& value);
 
@@ -141,6 +146,8 @@ namespace VansGraphics
 		void DispatchCompute(VansComputeShader& shader, uint32_t x_size, uint32_t y_size, uint32_t z_size, const std::vector<VkDescriptorSet>& descriptor_sets);
 		void DispatchCompute(VansComputeShader& shader, uint32_t x_size, uint32_t y_size, uint32_t z_size,
 			const std::vector<VkDescriptorSet>& descriptor_sets, const void* pushConstantData, uint32_t pushConstantSize);
+		void DispatchComputeIndirect(VansComputeShader& shader, VkBuffer indirectBuffer, VkDeviceSize indirectOffset,
+			const std::vector<VkDescriptorSet>& descriptor_sets);
 
 		//blit
 		void BlitImage(VansVKImage& source, int source_mip, VansVKImage& target, int target_mip);
@@ -166,6 +173,7 @@ namespace VansGraphics
 		void BuildAccelerationStructures(VkAccelerationStructureBuildGeometryInfoKHR* buildInfo, const VkAccelerationStructureBuildRangeInfoKHR* const* rangeInfos);
 		
 		void BindGraphicsPipeline(VansVKGraphicsPipeline& graphicsPipeline);
+		void BindGraphicsPipeline(VkPipeline graphicsPipeline, VkPipelineLayout pipelineLayout);
 
 		void BindComputePipeline(VansVKComputePipeline& computePipeline);
 
@@ -198,6 +206,12 @@ namespace VansGraphics
 
 		void BindDescriptorSets(VkPipelineBindPoint pipeline_type,
 			VansVKGraphicsPipeline& pipeline,
+			int index_for_first_set,
+			const std::vector<VkDescriptorSet>& descriptor_sets,
+			const std::vector<uint32_t>& dynamic_offsets);
+
+		void BindDescriptorSets(VkPipelineBindPoint pipeline_type,
+			VkPipelineLayout pipelineLayout,
 			int index_for_first_set,
 			const std::vector<VkDescriptorSet>& descriptor_sets,
 			const std::vector<uint32_t>& dynamic_offsets);
@@ -241,10 +255,20 @@ namespace VansGraphics
 		VkDevice m_VansVKDevice;
 
 		VkPipeline m_BoundGraphicsPipeline = VK_NULL_HANDLE;
+		VkPipelineLayout m_BoundGraphicsPipelineLayout = VK_NULL_HANDLE;
+		std::vector<VkDescriptorSet> m_BoundGraphicsDescriptorSets;
+		std::vector<uint32_t> m_BoundGraphicsDynamicOffsets;
+		VkBuffer m_BoundVertexBuffer = VK_NULL_HANDLE;
+		VkDeviceSize m_BoundVertexOffset = 0;
+		VkBuffer m_BoundIndexBuffer = VK_NULL_HANDLE;
+		VkDeviceSize m_BoundIndexOffset = 0;
+		VkIndexType m_BoundIndexType = VK_INDEX_TYPE_UINT32;
 
 		VkPipeline m_BoundComputePipeline = VK_NULL_HANDLE;
 
 		VkPipeline m_BoundRayTracingPipeline = VK_NULL_HANDLE;
+
+		void ResetBindingState();
 
 
 	};

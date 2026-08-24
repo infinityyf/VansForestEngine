@@ -1,4 +1,5 @@
 #include "VansSceneEntityFactory.h"
+#include "VansSceneParentReference.h"
 
 #include "../AssetCore/VansAssetGuid.h"
 
@@ -133,6 +134,26 @@ void AppendSceneEntity(
 }
 }
 
+VansSerializedValue VansSceneEntityFactory::BuildEmptyEntity(
+    const SceneEmptyEntityFactoryRequest& request,
+    const std::string& entityId)
+{
+    return Object({
+        { "id", String(entityId.empty() ? NewGuidString() : entityId) },
+        { "name", String(request.entityName.empty() ? "Empty Object" : request.entityName) },
+        { "parent", !request.parent
+            ? VansSerializedValue::Null()
+			: WriteSceneParentReference(*request.parent) },
+        { "components", VansSerializedValue::Array({
+            BuildTransformComponent(
+                request.position,
+                request.rotation,
+                request.scale,
+                request.transformComponentGuid)
+        }) }
+    });
+}
+
 SceneModelEntityFactoryResult VansSceneEntityFactory::BuildSingleModelEntity(
     const SceneModelEntityFactoryRequest& request,
     const std::string& entityId)
@@ -241,7 +262,7 @@ SceneModelEntityFactoryResult VansSceneEntityFactory::BuildMultiMeshEntityHierar
         VansSerializedValue childEntity = Object({
             { "id", String(NewGuidString()) },
             { "name", String(childName) },
-            { "parent", String(result.rootEntityId) },
+			{ "parent", WriteEntityParentReference(result.rootEntityId) },
             { "components", VansSerializedValue::Array({
             BuildTransformComponent({ 0.0f, 0.0f, 0.0f },
                 { 0.0f, 0.0f, 0.0f, 1.0f },

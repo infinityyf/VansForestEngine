@@ -16,6 +16,12 @@ public:
         VansEditorSelectionService::Get().SelectEntity(std::move(entityGuid), "EditorSelectionFacade");
     }
 
+	static void SelectSceneSubObject(EditorObjectHandle handle)
+	{
+		VansEditorSelectionService::Get().SelectSceneSubObject(
+			std::move(handle), "EditorSelectionFacade");
+	}
+
 	static void SelectScene()
 	{
 		VansEditorSelectionService::Get().SelectScene("EditorSelectionFacade");

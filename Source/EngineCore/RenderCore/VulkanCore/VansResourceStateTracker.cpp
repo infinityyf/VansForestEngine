@@ -2,7 +2,6 @@
 
 #include "VansFrameSubmitOrchestrator.h"
 
-#include <queue>
 #include <sstream>
 #include <unordered_map>
 
@@ -15,34 +14,6 @@ namespace
 		VansGraphics::VansSubmitResourceAccess access;
 	};
 
-	bool HasDependencyPath(
-		size_t producer,
-		size_t consumer,
-		const std::vector<std::vector<size_t>>& edges)
-	{
-		if (producer == consumer)
-			return true;
-		std::vector<bool> visited(edges.size(), false);
-		std::queue<size_t> pending;
-		pending.push(producer);
-		visited[producer] = true;
-		while (!pending.empty())
-		{
-			const size_t current = pending.front();
-			pending.pop();
-			for (size_t next : edges[current])
-			{
-				if (next == consumer)
-					return true;
-				if (!visited[next])
-				{
-					visited[next] = true;
-					pending.push(next);
-				}
-			}
-		}
-		return false;
-	}
 }
 
 bool VansGraphics::VansResourceStateTracker::ValidateAndBuild(
@@ -100,7 +71,7 @@ bool VansGraphics::VansResourceStateTracker::ValidateAndBuild(
 				const ResourceAccessState& prior = previous->second;
 				const bool hazard = prior.access.write || access.write;
 				if (hazard && prior.queue != node.queue
-					&& !HasDependencyPath(prior.nodeIndex, nodeIndex, dependencyEdges))
+					&& !HasSubmitDependencyPath(prior.nodeIndex, nodeIndex, dependencyEdges))
 				{
 					return fail("cross-queue resource hazard has no sync path: " + access.name
 						+ " (" + nodes[prior.nodeIndex].name + " -> " + node.name + ")");

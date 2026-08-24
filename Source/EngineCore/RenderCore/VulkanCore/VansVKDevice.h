@@ -1,9 +1,13 @@
 ﻿#pragma once
 #include "../VansGraphicsDevice.h"
+#include "../VansCameraFrameData.h"
 #include "../VansRenderRuntimeConfig.h"
+#include "../ShadowCore/VansPunctualShadowFrameState.h"
 #include "vulkan/vulkan.h"
 #include "VansVKSurface.h"
 #include "VansVKBuffer.h"
+#include "VansVKDrawInstanceArena.h"
+#include "VansMainCameraVisibilityState.h"
 #include "VansVKImage.h"
 #include "VansVKCommandBuffer.h"
 #include "VansVKSecondaryCommandContext.h"
@@ -51,6 +55,34 @@ namespace VansGraphics
 	class VansVKDevice: public VansGraphicsDevice
 	{
 	private :
+		VansCameraDataGPU m_CameraData{};
+		glm::mat4 m_UnjitteredCameraProjection{ 1.0f };
+		VansTemporalJitter m_CameraTemporalJitter{};
+		VansVKBuffer m_CameraDataBuffer;
+		VansVKBuffer m_LightDataBuffer;
+		VansVKDrawInstanceArena m_DrawInstanceArena;
+		std::uint32_t m_CameraRenderFrameIndex = 0;
+		std::uint32_t m_CurrentCameraFrameIndex = 0;
+		bool m_CameraFrameResourcesReady = false;
+		bool m_LightFrameResourcesReady = false;
+		// Backend-owned value copy. Never retain the producer packet or scene pointers
+		// across the main-thread -> render-backend boundary.
+		VansRenderViewSnapshot m_CurrentRenderView{};
+		VansRenderSceneFrameSnapshot m_CurrentRenderSceneSnapshot{};
+		VansRenderFrameTimingSnapshot m_CurrentRenderTiming{};
+		VansRenderWorld m_RenderWorld;
+		std::vector<std::uint64_t> m_CurrentTransformKeys;
+		std::vector<std::uint32_t> m_CurrentTransformIndices;
+		VansPunctualShadowFrameState m_PunctualShadowFrameState;
+		VansMainCameraVisibilityState m_MainCameraVisibilityState;
+		bool m_HasCurrentRenderView = false;
+
+		bool InitializeCameraFrameResources();
+		void DestroyCameraFrameResources();
+		bool InitializeLightFrameResources();
+		void DestroyLightFrameResources();
+		bool UploadRenderLightFrameData(const VansRenderLightFrameData& frameData);
+
 		//memory update
 		VansVKBuffer m_StageBuffer;
 		VkDeviceSize m_FrameStageBufferOffset = 0;
@@ -224,6 +256,8 @@ namespace VansGraphics
 			ProcessPendingUpscalerConfig();
 			m_PipelineCacheService.TickPersistence();
 		}
+		VansRenderSubmissionPrepareResult PrepareRenderSubmission(
+			const VansRenderFrameSubmission& submission) override;
 
 		void Rendering() override;
 
@@ -232,10 +266,55 @@ namespace VansGraphics
 		void AfterRendering() override;
 
 		bool WaitForIdle() override { return WaitForDevice(); }
+		VansVKBuffer& GetCameraDataBuffer() { return m_CameraDataBuffer; }
+		VansVKBuffer& GetLightDataBuffer() { return m_LightDataBuffer; }
+		VansVKDrawInstanceArena& GetDrawInstanceArena() { return m_DrawInstanceArena; }
+		const VansVKDrawInstanceArena& GetDrawInstanceArena() const { return m_DrawInstanceArena; }
+		bool ShouldDrawMainCameraProxy(VansRenderProxyHandle proxy)
+		{
+			return m_MainCameraVisibilityState.ShouldDraw(proxy);
+		}
+		bool IsCurrentRenderProxyEnabled(VansRenderProxyHandle proxy) const
+		{
+			const VansRenderProxyStaticData* state = m_RenderWorld.Resolve(proxy);
+			return state != nullptr && state->enabled;
+		}
+		const VansRenderTransformFrameData* FindCurrentRenderTransform(
+			VansRenderProxyHandle proxy) const;
+		const VansRenderViewSnapshot& GetCurrentRenderViewSnapshot() const
+		{
+			return m_CurrentRenderView;
+		}
+		const VansRenderSceneFrameSnapshot& GetCurrentRenderSceneSnapshot() const
+		{
+			return m_CurrentRenderSceneSnapshot;
+		}
+		const VansRenderFrameTimingSnapshot& GetCurrentRenderTimingSnapshot() const
+		{
+			return m_CurrentRenderTiming;
+		}
+		VansMainCameraVisibilityDebugSnapshot CaptureMainCameraVisibilityDebugSnapshot() const
+		{
+			return m_MainCameraVisibilityState.GetDebugSnapshot();
+		}
+		const VansCameraDataGPU& GetCameraData() const { return m_CameraData; }
+		VansTemporalCameraSnapshot CaptureTemporalCameraSnapshot() const;
 
 		const VansRenderGraphDiagnosticsSnapshot& GetCurrentRenderGraphDiagnostics() const { return m_CurrentRenderGraphDiagnostics; }
 		const std::string& GetCurrentRenderGraphDebugSummary() const;
 		const VansFrameContext& GetCurrentFrameContext() const { return m_CurrentFrameContext; }
+		void RequestPunctualShadowDebugPreview()
+		{
+			m_PunctualShadowFrameState.RequestDebugPreview();
+		}
+		VansPunctualShadowDebugSnapshot CapturePunctualShadowDebugSnapshot() const
+		{
+			return m_PunctualShadowFrameState.CaptureDebugSnapshot();
+		}
+		std::uint32_t GetPunctualShadowTotalAtlasPages() const
+		{
+			return m_PunctualShadowFrameState.GetTotalAtlasPages();
+		}
 		void EnqueueDeferredDelete(std::function<void()> destroy);
 
 		void InitializeGpuProfiler() override;
@@ -309,14 +388,13 @@ namespace VansGraphics
 		
 		void DrawShadowMap(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd);
 
-		void DrawMotionVectorPass(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd);
+		void DrawSkyMotionVectorPass(VansVKCommandBuffer& commandBuffer);
 
-		void DrawPunctualShadowMap(VansRenderPassManager* renderPassManager, VkCommandBuffer& cmd, uint32_t atlasIndex);
+		void DrawPunctualShadowMap(uint32_t atlasIndex);
 		bool RecordShadowMapParallel(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer, int framebufferIndex);
 
 		void DrawSceneGBuffer(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
 		bool RecordSceneGBufferParallel(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer, int framebufferIndex = 0);
-		bool RecordMotionVectorPassParallel(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer, int framebufferIndex = 0);
 		bool RecordDecalPassParallel(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer, int framebufferIndex = 0);
 
 		// 拆分后的渲染 pass：
@@ -469,7 +547,7 @@ namespace VansGraphics
 
 		void UpdateGIDataDescriptorSets(VansRenderPassManager* renderPassManager);
 		void UpdateSSAOFilterDescriptorSet(VansRenderPassManager* renderPassManager);
-		void UploadSSGIParamsFromGISettings();
+		void UploadSSGIParams(const VansGISettings& settings);
 
 		void UpdateHIZSeedDescriptorSet(VansRenderPassManager* renderPassManager);
 
@@ -603,14 +681,14 @@ namespace VansGraphics
 		VkFence m_LastSubmittedGraphicsFence = VK_NULL_HANDLE;
 		bool m_LastSubmittedGraphicsFencePending = false;
 		bool m_ShadowSecondaryCommandBuffersNeedReset = false;
-		bool m_MotionVectorSecondaryCommandBuffersNeedReset = false;
 		bool m_GBufferSecondaryCommandBuffersNeedReset = false;
 		bool m_DecalSecondaryCommandBuffersNeedReset = false;
 		uint32_t m_ParallelRecordThreadCount = 4;
 		uint32_t m_MinDrawsPerSecondary = 32;
 
-		// True when a second Graphics Queue was successfully acquired for shadow rendering.
-		bool m_HasDedicatedShadowQueue = false;
+		// 仅表示取得了同一 Graphics Queue Family 的第二个逻辑队列；
+		// 不代表设备提供独立的物理 graphics engine。
+		bool m_HasSecondaryGraphicsQueue = false;
 
 		VkPhysicalDeviceProperties m_DeviceProperties;
 		
@@ -650,24 +728,28 @@ namespace VansGraphics
 		//command buffer
 		VansVKCommandBuffer m_VansVKCommandBuffer;
 
-		VansVKCommandBuffer m_VansVKShadowCommandBuffer;
+		VansVKCommandBuffer m_VansVKShadowMapsCommandBuffer;
+		VansVKCommandBuffer m_VansVKHairShadowCommandBuffer;
 
-		// CB1 异步路径专用：录制 MotionVector + GBuffer，与 Shadow CB 并行提交，
-		// 避免 CB1 结束后 CPU stall 等 fence 才能让 m_VansVKCommandBuffer 录制 CB2。
+		// GBuffer base and decals are separate submissions so depth-only async work
+		// can begin before material overlays finish.
 		VansVKCommandBuffer m_VansVKGBufferCommandBuffer;
-		VansVKCommandBuffer m_VansVKGraphicsPreCommandBuffer;
+		VansVKCommandBuffer m_VansVKGBufferMaterialCommandBuffer;
+		VansVKCommandBuffer m_VansVKSSAORawCommandBuffer;
 		VansVKCommandBuffer m_VansVKGraphicsScreenCommandBuffer;
 		// 第二条 Graphics queue 上的 SSAO compute pass；仅在该 queue 独立时提交。
 		VansVKCommandBuffer m_VansVKAsyncSSAOCommandBuffer;
 
-		// Early Compute：Vegetation、TileLight 与 MainCameraHiZ，不承载 RayTracing。
-		VansVKCommandBuffer m_VansVKAsyncEarlyCommandBuffer;
+		VansVKCommandBuffer m_VansVKVegetationCommandBuffer;
+		VansVKCommandBuffer m_VansVKEarlyAuxCommandBuffer;
 		VansVKCommandBuffer m_VansVKAsyncCloudCommandBuffer;
-		VansVKCommandBuffer m_VansVKAsyncGICommandBuffer;
+		VansVKCommandBuffer m_VansVKAsyncHZBCommandBuffer;
+		VansVKCommandBuffer m_VansVKRayTracingCommandBuffer;
+		VansVKCommandBuffer m_VansVKGIDataCommandBuffer;
 
 		// Points to the command buffer scene draw calls should record into.
 		// Defaults to m_VansVKCommandBuffer; switched temporarily to
-		// m_VansVKShadowCommandBuffer during shadow CB recording in async path.
+		// m_VansVKShadowMapsCommandBuffer during shadow CB recording in async path.
 		VansVKCommandBuffer* m_pActiveCommandBuffer = &m_VansVKCommandBuffer;
 		VansFrameContext m_CurrentFrameContext;
 		VansRenderFramePlan m_CurrentFramePlan;
@@ -685,7 +767,6 @@ namespace VansGraphics
 		
 		VansVKCommandBuffer m_ImmediateGraphicsCommandBuffer;
 		std::unique_ptr<VansVKSecondaryCommandContext> m_ShadowSecondaryCommandContext;
-		std::unique_ptr<VansVKSecondaryCommandContext> m_MotionVectorSecondaryCommandContext;
 		std::unique_ptr<VansVKSecondaryCommandContext> m_SecondaryCommandContext;
 		std::unique_ptr<VansVKSecondaryCommandContext> m_DecalSecondaryCommandContext;
 

@@ -2,11 +2,13 @@
 
 #include "../AssetCore/Serialization/VansSerializedValue.h"
 #include "../EngineAPILayer/Public/EngineDTOs.h"
+#include "../SceneCore/VansSceneParentReference.h"
 #include "VansEditorObjectReference.h"
 
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -16,12 +18,19 @@ class VansSceneDocument;
 class VansSceneEditCommand;
 using SceneStateId = std::uint64_t;
 
+enum class ReparentTransformPolicy : std::uint8_t
+{
+    KeepWorld,
+    KeepLocal,
+    Snap
+};
+
 struct SceneEditResult
 {
     bool success = false;
     std::string message;
     std::string changedEntityGuid;
-    std::string changedParentEntityGuid;
+    EditorAPI::RuntimeParentReference changedParent;
     bool runtimePreviewSupported = false;
     bool runtimeParentPreviewSupported = false;
     bool runtimeChangeApplied = false;
@@ -50,7 +59,9 @@ public:
     SceneEditResult AssignObjectReference(const ObjectReferenceAssignment& assignment);
     SceneEditResult ReparentEntity(
         const std::string& childEntityGuid,
-        const std::string& newParentEntityGuid);
+        std::optional<VansSceneParentReference> newParent,
+        ReparentTransformPolicy transformPolicy,
+        std::optional<EditorAPI::RuntimeTransformSnapshot> resolvedLocalTransform = std::nullopt);
     SceneEditResult SetEntityTransform(
         const std::string& entityGuid,
         const EditorAPI::RuntimeTransformSnapshot& transform);

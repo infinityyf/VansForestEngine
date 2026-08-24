@@ -5,6 +5,7 @@
 #include <NsCore/Ptr.h>
 #include <vector>
 #include <memory>
+#include <mutex>
 #include <string>
 
 #include "vulkan/vulkan.h"
@@ -36,6 +37,10 @@ namespace VansRuntime
 
         // 释放所有 Noesis 资源，必须在 VansVKDevice 销毁前调用
         void Shutdown();
+
+        // RT-only: shuts down IRenderer and the Vulkan RenderDevice while the
+        // device is still valid. Main subsequently destroys IView/UI objects.
+        void ShutdownRendering();
 
         // 每帧驱动：输入分发、动画更新、绑定刷新
         void Update(float deltaTime);
@@ -86,6 +91,7 @@ namespace VansRuntime
         void InstallProviders();
         void RegisterTypes();
         void LoadGlobalTheme();
+        std::vector<std::shared_ptr<VansNoesisDocument>> SnapshotActiveDocuments() const;
 
         VansGraphics::VansVKDevice*                      m_Device         = nullptr;
         bool                                             m_Initialized    = false;
@@ -104,7 +110,13 @@ namespace VansRuntime
         std::unique_ptr<VansNoesisInputAdapter> m_InputAdapter;
 
         // 所有活跃 Document
+        mutable std::mutex m_DocumentsMutex;
         std::vector<std::shared_ptr<VansNoesisDocument>> m_Documents;
+        // Main removes documents from the active set immediately, but retains
+        // them until RT has shut down their IRenderer instances.
+        std::vector<std::shared_ptr<VansNoesisDocument>> m_RetiredDocuments;
+        // RT-only stable set shared by the offscreen and onscreen stages.
+        std::vector<std::shared_ptr<VansNoesisDocument>> m_RenderFrameDocuments;
 
         // 累计时间（秒），用于 Noesis IView::Update(totalSeconds)
         double m_TotalTimeSeconds = 0.0;

@@ -1,0 +1,99 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "../Common/Common.glsl"
+#include "../Common/CameraData.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 1, binding = 0) uniform sampler2D inputNormal;
+layout(set = 1, binding = 1) uniform sampler2D inputRoughness;
+layout(set = 1, binding = 2) uniform sampler2D inputPosition;
+layout(set = 1, binding = 4, rgba32f) uniform image2D traceHit;
+layout(set = 1, binding = 5, r32f) uniform image2D tracePDF;
+
+layout(set = 1, binding = 6, std430) writeonly buffer SSRTileListBuffer
+{
+    uint tileList[];
+};
+
+layout(set = 1, binding = 7, std430) buffer SSRTraceControlBuffer
+{
+    uint rayCount;
+    uint dispatchX;
+    uint dispatchY;
+    uint dispatchZ;
+};
+
+shared uint tileHasTraceRay;
+
+void main()
+{
+    ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 screenSize = ivec2(ScreenParams.xy);
+
+    if (gl_LocalInvocationIndex == 0u)
+        tileHasTraceRay = 0u;
+    barrier();
+
+    bool pixelNeedsTrace = false;
+    bool pixelInBounds = all(lessThan(pixelCoord, screenSize));
+
+    // Classification owns initialization so pixels omitted from the compact
+    // list can never expose stale trace data from the previous frame.
+    if (pixelInBounds)
+    {
+        imageStore(traceHit, pixelCoord, vec4(0.0));
+        imageStore(tracePDF, pixelCoord, vec4(0.0));
+
+        vec3 normal = texelFetch(inputNormal, pixelCoord, 0).xyz;
+        if (length(normal) >= 0.5)
+        {
+            vec3 position = texelFetch(inputPosition, pixelCoord, 0).xyz;
+            float roughness = texelFetch(inputRoughness, pixelCoord, 0).a;
+            vec3 viewDirection = normalize(cameraPosition.xyz - position);
+            vec3 traceDirection;
+            float tracePDFValue;
+
+            // Keep this sequence bit-for-bit aligned with SSR_TRACE.
+            // Classification may reject only a tile in which every pixel
+            // would have exited before entering Hi-Z traversal.
+            if (roughness > 0.1)
+            {
+                uint seed = PixelSeedHash(pixelCoord);
+                vec2 random = R2Sequence(int((seed + uint(FrameIndex)) % 256u));
+                vec4 pdfrandom = ImportanceSampleGGX(random, roughness);
+                tracePDFValue = pdfrandom.w;
+                vec3 jitterNormal = normalize(TangentToWorld(pdfrandom.xyz, normal));
+                traceDirection = reflect(-viewDirection, jitterNormal);
+            }
+            else
+            {
+                tracePDFValue = 1.0;
+                traceDirection = reflect(-viewDirection, normal);
+            }
+
+            if (dot(traceDirection, normal) < 0.0)
+            {
+                imageStore(tracePDF, pixelCoord, vec4(tracePDFValue, 0.0, 0.0, 0.0));
+            }
+            else
+            {
+                pixelNeedsTrace = true;
+            }
+        }
+    }
+
+    if (pixelNeedsTrace)
+        atomicOr(tileHasTraceRay, 1u);
+    barrier();
+
+    // Compact one spatially coherent 8x8 tile instead of individual pixels.
+    // The trace workgroup therefore retains coalesced GBuffer/Hi-Z access and
+    // similar ray directions within each warp.
+    if (gl_LocalInvocationIndex == 0u && tileHasTraceRay != 0u)
+    {
+        uint compactTileIndex = atomicAdd(rayCount, 1u);
+        uint linearTile = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
+        tileList[compactTileIndex] = linearTile;
+    }
+}

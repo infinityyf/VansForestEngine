@@ -112,6 +112,8 @@ public:
 		VansEntityHandle entity,
 		std::string stableGuid,
 		VansGraphics::VansAnimationNode* animationNode,
+		std::uint64_t skeletonInstanceId,
+		std::uint32_t skeletonInstanceGeneration,
 		bool enabled);
 	void AddRagdollComponent(
 		VansEntityHandle entity,

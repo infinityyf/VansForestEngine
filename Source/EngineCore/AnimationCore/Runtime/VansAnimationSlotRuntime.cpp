@@ -25,9 +25,9 @@ bool VansAnimationSlotRuntime::Configure(
 	for (const VansAnimationSlotDefinition& definition : definitions)
 	{
 		if (definition.id.empty() || definition.name.empty() || definition.layerId.empty()
-			|| definition.slotNodeId < 0 || !ids.insert(definition.id).second)
+			|| !ids.insert(definition.id).second)
 		{
-			error = "Slot definitions require unique IDs/node bindings and non-empty names/layers";
+			error = "Slot definitions require unique IDs and non-empty names/layers";
 			return false;
 		}
 		if (!IsFiniteNonNegative(definition.defaultBlendIn)

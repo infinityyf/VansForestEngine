@@ -4,13 +4,6 @@
 #include "VansAnimationLayer.h"
 #include "VansPoseMath.h"
 #include "VansPosePayloadMixer.h"
-#include "IK/VansIKSolver.h"
-#include "IK/VansCCDSolver.h"
-#include "IK/VansFABRIKSolver.h"
-#include "IK/VansLookAtSolver.h"
-#include "IK/VansTwoBoneIKSolver.h"
-#include "IK/VansIKChainBuilder.h"
-#include "IK/VansIKConstraint.h"
 #include "MotionMatching/VansMotionMatching.h"
 #include <../../GLM/gtc/constants.hpp>
 #include <../../GLM/gtc/quaternion.hpp>
@@ -23,6 +16,7 @@
 #include <cmath>
 #include <functional>
 #include <sstream>
+#include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -31,46 +25,6 @@ namespace VansGraphics
 	// ═════════════════════════════════════════════════════════════
 	//  工具函数
 	// ═════════════════════════════════════════════════════════════
-
-	static const char* IKSolverTypeToString(IKSolverType type)
-	{
-		switch (type)
-		{
-		case IKSolverType::TwoBone: return "TwoBone";
-		case IKSolverType::CCD: return "CCD";
-		case IKSolverType::FABRIK: return "FABRIK";
-		case IKSolverType::LookAt: return "LookAt";
-		}
-		return "CCD";
-	}
-
-	static IKSolverType StringToIKSolverType(const std::string& value)
-	{
-		if (value == "TwoBone") return IKSolverType::TwoBone;
-		if (value == "FABRIK") return IKSolverType::FABRIK;
-		if (value == "LookAt") return IKSolverType::LookAt;
-		return IKSolverType::CCD;
-	}
-
-	static const char* IKSpaceToString(IKCoordinateSpace space)
-	{
-		switch (space)
-		{
-		case IKCoordinateSpace::Model: return "Model";
-		case IKCoordinateSpace::World: return "World";
-		case IKCoordinateSpace::Bone: return "Bone";
-		case IKCoordinateSpace::ParentBone: return "ParentBone";
-		}
-		return "Model";
-	}
-
-	static IKCoordinateSpace StringToIKSpace(const std::string& value)
-	{
-		if (value == "World") return IKCoordinateSpace::World;
-		if (value == "Bone") return IKCoordinateSpace::Bone;
-		if (value == "ParentBone") return IKCoordinateSpace::ParentBone;
-		return IKCoordinateSpace::Model;
-	}
 
 	// ═════════════════════════════════════════════════════════════
 	//  节点类型名称映射
@@ -93,10 +47,11 @@ namespace VansGraphics
 		case AnimGraphNodeType::MotionMatching: return "MotionMatching";
 		case AnimGraphNodeType::Slot:           return "Slot";
 		case AnimGraphNodeType::TargetPoseInput:return "TargetPoseInput";
-		case AnimGraphNodeType::IK:             return "IK";
-		case AnimGraphNodeType::TwoBoneIK:      return "TwoBoneIK";
-		case AnimGraphNodeType::LookAt:         return "LookAt";
-		case AnimGraphNodeType::FootPlacement:  return "FootPlacement";
+		case AnimGraphNodeType::Goal:           return "Goal";
+		case AnimGraphNodeType::AimConstraint:  return "AimConstraint";
+		case AnimGraphNodeType::Grounding:      return "Grounding";
+		case AnimGraphNodeType::LimbIK:         return "LimbIK";
+		case AnimGraphNodeType::ChainIK:        return "ChainIK";
 		}
 		return "Unknown";
 	}
@@ -1115,8 +1070,6 @@ namespace VansGraphics
 	{
 		m_ClipStates.clear();
 		m_StateMachineStates.clear();
-		m_IKSolverStates.clear();
-		m_IKSolverTypes.clear();
 		for (int nodeId : m_ExecutionPlan)
 		{
 			m_EvaluationCache[nodeId] = {};
@@ -1143,10 +1096,11 @@ namespace VansGraphics
 				runtime.currentStateName = stateName;
 				runtime.previousStateName.clear();
 				runtime.blendAlpha = 0.0f;
-				runtime.blendDuration = 0.0f;
+					runtime.blendDuration = 0.0f;
 					runtime.blendState = ControllerBlendState::Idle;
 					runtime.stateTimes[stateName] = state.startTime;
 					runtime.previousStateTimes[stateName] = state.startTime;
+					m_PreviousActiveNodes[nodeId] = true;
 					return true;
 			}
 		}
@@ -1237,6 +1191,7 @@ namespace VansGraphics
 				float& current = runtime.stateTimes[runtime.currentStateName];
 				runtime.previousStateTimes[runtime.currentStateName] = current;
 				current = time;
+				m_PreviousActiveNodes[nodeId] = true;
 				return true;
 			}
 			if (node->GetType() == AnimGraphNodeType::Clip)
@@ -1244,6 +1199,7 @@ namespace VansGraphics
 				VansAnimGraphClipRuntimeState& runtime = GetClipState(nodeId);
 				runtime.previousTime = runtime.currentTime;
 				runtime.currentTime = time;
+				m_PreviousActiveNodes[nodeId] = true;
 				return true;
 			}
 		}
@@ -1355,6 +1311,7 @@ namespace VansGraphics
 		synchronizeTimes(*leaderCurrent, *followerCurrent);
 		if (leaderPrevious && followerPrevious)
 			synchronizeTimes(*leaderPrevious, *followerPrevious);
+		m_PreviousActiveNodes[followerNodeId] = true;
 		return true;
 	}
 
@@ -1479,30 +1436,6 @@ namespace VansGraphics
 		return it->second;
 	}
 
-	VansIKSolver* VansAnimGraphInstance::GetIKSolver(int nodeId, IKSolverType type)
-	{
-		auto typeIt = m_IKSolverTypes.find(nodeId);
-		if (typeIt != m_IKSolverTypes.end() && typeIt->second == type)
-			return m_IKSolverStates[nodeId].get();
-
-		std::unique_ptr<VansIKSolver> solver;
-		switch (type)
-		{
-		case IKSolverType::TwoBone: solver = std::make_unique<VansTwoBoneIKSolver>(); break;
-		case IKSolverType::CCD: solver = std::make_unique<VansCCDSolver>(); break;
-		case IKSolverType::FABRIK: solver = std::make_unique<VansFABRIKSolver>(); break;
-		case IKSolverType::LookAt: solver = std::make_unique<VansLookAtSolver>(); break;
-		}
-		m_IKSolverTypes[nodeId] = type;
-		m_IKSolverStates[nodeId] = std::move(solver);
-		return m_IKSolverStates[nodeId].get();
-	}
-
-	VansAnimGraphIKRuntimeState& VansAnimGraphInstance::GetIKRuntimeState(int nodeId)
-	{
-		return m_IKRuntimeStates[nodeId];
-	}
-
 	// ─── 节点工厂 ──────────────────────────────────────────────
 
 	std::unique_ptr<VansAnimGraphNode> VansAnimGraph::CreateNodeByType(AnimGraphNodeType type)
@@ -1522,10 +1455,11 @@ namespace VansGraphics
 		case AnimGraphNodeType::MotionMatching:return std::make_unique<AnimGraphMotionMatchingNode>();
 		case AnimGraphNodeType::Slot:          return std::make_unique<AnimGraphSlotNode>();
 		case AnimGraphNodeType::TargetPoseInput:return std::make_unique<AnimGraphTargetPoseInputNode>();
-		case AnimGraphNodeType::IK:            return std::make_unique<AnimGraphIKNode>();
-		case AnimGraphNodeType::TwoBoneIK:     return std::make_unique<AnimGraphTwoBoneIKNode>();
-		case AnimGraphNodeType::LookAt:        return std::make_unique<AnimGraphLookAtNode>();
-		case AnimGraphNodeType::FootPlacement: return std::make_unique<AnimGraphFootPlacementNode>();
+		case AnimGraphNodeType::Goal:          return std::make_unique<AnimGraphGoalNode>();
+		case AnimGraphNodeType::AimConstraint: return std::make_unique<AnimGraphAimConstraintNode>();
+		case AnimGraphNodeType::Grounding:     return std::make_unique<AnimGraphGroundingNode>();
+		case AnimGraphNodeType::LimbIK:        return std::make_unique<AnimGraphLimbIKNode>();
+		case AnimGraphNodeType::ChainIK:       return std::make_unique<AnimGraphChainIKNode>();
 		}
 		return nullptr;
 	}
@@ -1545,10 +1479,11 @@ namespace VansGraphics
 		if (typeName == "MotionMatching") return CreateNodeByType(AnimGraphNodeType::MotionMatching);
 		if (typeName == "Slot")           return CreateNodeByType(AnimGraphNodeType::Slot);
 		if (typeName == "TargetPoseInput")return CreateNodeByType(AnimGraphNodeType::TargetPoseInput);
-		if (typeName == "IK")             return CreateNodeByType(AnimGraphNodeType::IK);
-		if (typeName == "TwoBoneIK")      return CreateNodeByType(AnimGraphNodeType::TwoBoneIK);
-		if (typeName == "LookAt")         return CreateNodeByType(AnimGraphNodeType::LookAt);
-		if (typeName == "FootPlacement")  return CreateNodeByType(AnimGraphNodeType::FootPlacement);
+		if (typeName == "Goal")           return CreateNodeByType(AnimGraphNodeType::Goal);
+		if (typeName == "AimConstraint")  return CreateNodeByType(AnimGraphNodeType::AimConstraint);
+		if (typeName == "Grounding")      return CreateNodeByType(AnimGraphNodeType::Grounding);
+		if (typeName == "LimbIK")         return CreateNodeByType(AnimGraphNodeType::LimbIK);
+		if (typeName == "ChainIK")        return CreateNodeByType(AnimGraphNodeType::ChainIK);
 		return nullptr;
 	}
 
@@ -1583,6 +1518,92 @@ namespace VansGraphics
 	}
 
 	// 序列化单个节点的特有属性
+	static const char* GoalSourceToString(VansGraphGoalSource source)
+	{
+		switch (source)
+		{
+		case VansGraphGoalSource::Binding: return "binding";
+		case VansGraphGoalSource::Parameters: return "parameters";
+		case VansGraphGoalSource::Fixed: return "fixed";
+		}
+		throw std::invalid_argument("Invalid procedural Goal source enum");
+	}
+
+	static VansGraphGoalSource StringToGoalSource(const std::string& source)
+	{
+		if (source == "binding") return VansGraphGoalSource::Binding;
+		if (source == "parameters") return VansGraphGoalSource::Parameters;
+		if (source == "fixed") return VansGraphGoalSource::Fixed;
+		throw std::invalid_argument("Unknown procedural goal source: " + source);
+	}
+
+	static void RequireOnlyFields(const nlohmann::json& value,
+		std::initializer_list<const char*> allowed)
+	{
+		if (!value.is_object())
+			throw std::invalid_argument("Procedural node properties must be an object");
+		for (const auto& item : value.items())
+		{
+			const bool known = std::any_of(allowed.begin(), allowed.end(),
+				[&](const char* field) { return item.key() == field; });
+			if (!known)
+				throw std::invalid_argument("Unknown procedural property: " + item.key());
+		}
+	}
+
+	static nlohmann::json SerializeGoal(const VansGraphGoalDefinition& goal)
+	{
+		return {
+			{ "id", goal.goalId }, { "source", GoalSourceToString(goal.source) },
+			{ "binding", goal.binding }, { "positionParameter", goal.positionParameter },
+			{ "rotationParameter", goal.rotationParameter }, { "weightParameter", goal.weightParameter },
+			{ "fixedPositionModel", { goal.fixedPositionModel.x, goal.fixedPositionModel.y, goal.fixedPositionModel.z } },
+			{ "fixedRotationModel", { goal.fixedRotationModel.x, goal.fixedRotationModel.y,
+				goal.fixedRotationModel.z, goal.fixedRotationModel.w } },
+			{ "fixedPositionWeight", goal.fixedPositionWeight },
+			{ "fixedRotationWeight", goal.fixedRotationWeight }
+		};
+	}
+
+	static void DeserializeGoal(const nlohmann::json& value, VansGraphGoalDefinition& goal)
+	{
+		RequireOnlyFields(value, { "id", "source", "binding", "positionParameter",
+			"rotationParameter", "weightParameter", "fixedPositionModel",
+			"fixedRotationModel", "fixedPositionWeight", "fixedRotationWeight" });
+		goal.goalId = value.at("id").get<std::string>();
+		goal.source = StringToGoalSource(value.at("source").get<std::string>());
+		goal.binding = value.at("binding").get<std::string>();
+		goal.positionParameter = value.at("positionParameter").get<std::string>();
+		goal.rotationParameter = value.at("rotationParameter").get<std::string>();
+		goal.weightParameter = value.at("weightParameter").get<std::string>();
+		const auto& position = value.at("fixedPositionModel");
+		goal.fixedPositionModel = { position.at(0).get<float>(), position.at(1).get<float>(), position.at(2).get<float>() };
+		const auto& rotation = value.at("fixedRotationModel");
+		goal.fixedRotationModel = { rotation.at(3).get<float>(), rotation.at(0).get<float>(),
+			rotation.at(1).get<float>(), rotation.at(2).get<float>() };
+		goal.fixedPositionWeight = value.at("fixedPositionWeight").get<float>();
+		goal.fixedRotationWeight = value.at("fixedRotationWeight").get<float>();
+	}
+
+	static const char* PlantPivotToString(VansPlantPivot pivot)
+	{
+		switch (pivot)
+		{
+		case VansPlantPivot::Heel: return "heel";
+		case VansPlantPivot::Ball: return "ball";
+		case VansPlantPivot::Ankle: return "ankle";
+		}
+		throw std::invalid_argument("Invalid Grounding plant pivot enum");
+	}
+
+	static VansPlantPivot StringToPlantPivot(const std::string& pivot)
+	{
+		if (pivot == "heel") return VansPlantPivot::Heel;
+		if (pivot == "ball") return VansPlantPivot::Ball;
+		if (pivot == "ankle") return VansPlantPivot::Ankle;
+		throw std::invalid_argument("Unknown grounding plant pivot: " + pivot);
+	}
+
 	static nlohmann::json SerializeNodeProperties(const VansAnimGraphNode* node)
 	{
 		nlohmann::json props = nlohmann::json::object();
@@ -1702,139 +1723,71 @@ namespace VansGraphics
 			props["enableFallbackInput"] = n->m_EnableFallbackInput;
 			break;
 		}
-		case AnimGraphNodeType::IK:
+		case AnimGraphNodeType::TargetPoseInput:
+			break;
+		case AnimGraphNodeType::Goal:
+			props["goal"] = SerializeGoal(static_cast<const AnimGraphGoalNode*>(node)->m_Goal); break;
+		case AnimGraphNodeType::AimConstraint:
 		{
-			auto* n = static_cast<const AnimGraphIKNode*>(node);
-			props["solverType"] = IKSolverTypeToString(n->m_Chain.solverType);
-			props["chainName"]      = n->m_Chain.chainName;
-			props["maxIterations"]  = n->m_Chain.maxIterations;
-			props["positionTol"]    = n->m_Chain.positionTolerance;
-			props["rotationTol"]    = n->m_Chain.rotationTolerance;
-			props["enableRotationTarget"] = n->m_Chain.enableRotationTarget;
-			props["rotationWeight"] = n->m_Chain.rotationWeight;
-			props["poleVector"]     = { n->m_Chain.poleVector.x, n->m_Chain.poleVector.y, n->m_Chain.poleVector.z };
-			props["poleWeight"]     = n->m_Chain.poleWeight;
-			props["poleSpace"]      = IKSpaceToString(n->m_Chain.poleSpace);
-			props["poleReferenceBone"] = n->m_Chain.poleReferenceBoneName;
-			props["maintainEffectorGlobalRotation"] = n->m_Chain.maintainEffectorGlobalRotation;
-			props["allowStretch"] = n->m_Chain.allowStretch;
-			props["startStretchRatio"] = n->m_Chain.startStretchRatio;
-			props["maxStretchScale"] = n->m_Chain.maxStretchScale;
-			nlohmann::json bonesJson = nlohmann::json::array();
-			for (const auto& b : n->m_Chain.bones)
+			const auto* n = static_cast<const AnimGraphAimConstraintNode*>(node);
+			props = { { "chain", n->m_ChainId }, { "target", SerializeGoal(n->m_Target) },
+				{ "yawLimitDegrees", { n->m_Settings.yawLimitDegrees.x, n->m_Settings.yawLimitDegrees.y } },
+				{ "pitchLimitDegrees", { n->m_Settings.pitchLimitDegrees.x, n->m_Settings.pitchLimitDegrees.y } },
+				{ "targetHalfLife", n->m_TargetHalfLife },
+				{ "maxAngularSpeedDegrees", n->m_Settings.maxAngularSpeedDegrees },
+				{ "weight", n->m_Settings.weight } };
+			break;
+		}
+		case AnimGraphNodeType::Grounding:
+		{
+			const auto& s = static_cast<const AnimGraphGroundingNode*>(node)->m_Settings;
+			props = { { "contacts", s.contacts }, { "plantSignal", s.plantSignal }, { "weight", s.weight },
+				{ "query", { { "profile", s.query.profile },
+					{ "startDistanceAgainstApproach", s.query.startDistanceAgainstApproach },
+					{ "endDistanceAlongApproach", s.query.endDistanceAlongApproach },
+					{ "maxStepUp", s.query.maxStepUp }, { "maxStepDown", s.query.maxStepDown },
+					{ "maxSlopeDegrees", s.query.maxSlopeDegrees },
+					{ "maxPlaneResidual", s.query.maxPlaneResidual },
+					{ "maxNormalDeviationDegrees", s.query.maxNormalDeviationDegrees } } },
+				{ "plant", { { "lockEnabled", s.plant.lockEnabled },
+					{ "enterPhase", s.plant.enterPhase }, { "exitPhase", s.plant.exitPhase },
+					{ "unplantDistance", s.plant.unplantDistance }, { "replantDistance", s.plant.replantDistance },
+					{ "unplantAngleDegrees", s.plant.unplantAngleDegrees },
+					{ "replantAngleDegrees", s.plant.replantAngleDegrees },
+					{ "pivot", PlantPivotToString(s.plant.pivot) },
+					{ "weightHalfLife", s.plant.weightHalfLife } } },
+				{ "alignment", { { "fullContactHeight", s.alignment.fullContactHeight },
+					{ "contactFadeHeight", s.alignment.contactFadeHeight },
+					{ "normalHalfLife", s.alignment.normalHalfLife },
+					{ "rotationWeight", s.alignment.rotationWeight } } },
+				{ "pelvis", { { "maxUpOffset", s.pelvis.maxUpOffset },
+					{ "maxDownOffset", s.pelvis.maxDownOffset },
+					{ "maxHorizontalOffset", s.pelvis.maxHorizontalOffset },
+					{ "halfLife", s.pelvis.halfLife } } } };
+			break;
+		}
+		case AnimGraphNodeType::LimbIK:
+		{
+			const auto* n = static_cast<const AnimGraphLimbIKNode*>(node);
+			const char* rotationMode = nullptr;
+			switch (n->m_Settings.tipRotationMode)
 			{
-				nlohmann::json bj;
-				bj["name"]       = b.boneName;
-				bj["isEffector"] = b.isEffector;
-				bj["weight"]     = b.stiffnessWeight;
-				bj["constraint"] = static_cast<int>(b.constraint.type);
-				bj["coneDeg"]    = b.constraint.coneAngleDeg;
-				bj["minY"]       = b.constraint.minAngleY;
-				bj["maxY"]       = b.constraint.maxAngleY;
-				bj["stiffness"]  = b.constraint.stiffness;
-				bj["axisX"] = { b.constraint.localXAxis.x, b.constraint.localXAxis.y, b.constraint.localXAxis.z };
-				bj["axisY"] = { b.constraint.localYAxis.x, b.constraint.localYAxis.y, b.constraint.localYAxis.z };
-				bj["axisZ"] = { b.constraint.localZAxis.x, b.constraint.localZAxis.y, b.constraint.localZAxis.z };
-				bj["minX"] = b.constraint.minAngleX;
-				bj["maxX"] = b.constraint.maxAngleX;
-				bj["minZ"] = b.constraint.minAngleZ;
-				bj["maxZ"] = b.constraint.maxAngleZ;
-				bj["restRotation"] = { b.constraint.restRotation.x, b.constraint.restRotation.y,
-				                         b.constraint.restRotation.z, b.constraint.restRotation.w };
-				bonesJson.push_back(bj);
+			case VansLimbTipRotationMode::PreserveInput: rotationMode = "preserveInput"; break;
+			case VansLimbTipRotationMode::MatchGoal: rotationMode = "matchGoal"; break;
+			case VansLimbTipRotationMode::FollowChain: rotationMode = "followChain"; break;
+			default: throw std::invalid_argument("Invalid Limb IK tip rotation enum");
 			}
-			props["bones"] = bonesJson;
-			props["targetPosParam"] = n->m_TargetPosParamName;
-			props["targetRotParam"] = n->m_TargetRotParamName;
-			props["weightParam"]    = n->m_WeightParamName;
-			props["useFixed"]       = n->m_UseFixedTarget;
-			props["fixedPos"]       = { n->m_FixedTargetPos.x, n->m_FixedTargetPos.y, n->m_FixedTargetPos.z };
-			props["fixedRot"]       = { n->m_FixedTargetRot.x, n->m_FixedTargetRot.y, n->m_FixedTargetRot.z, n->m_FixedTargetRot.w };
-			props["fixedWeight"]    = n->m_FixedWeight;
-			props["targetPositionSpace"] = IKSpaceToString(n->m_TargetPositionSpace);
-			props["targetRotationSpace"] = IKSpaceToString(n->m_TargetRotationSpace);
-			props["targetReferenceBone"] = n->m_TargetReferenceBoneName;
+			props = { { "chains", n->m_ChainIds }, { "tipRotationMode", rotationMode },
+				{ "positionTolerance", n->m_Settings.positionTolerance }, { "weight", n->m_Settings.weight },
+				{ "commitClampedPose", n->m_Settings.commitClampedPose } };
 			break;
 		}
-		case AnimGraphNodeType::TwoBoneIK:
+		case AnimGraphNodeType::ChainIK:
 		{
-			auto* n = static_cast<const AnimGraphTwoBoneIKNode*>(node);
-			props["root"]           = n->m_RootBoneName;
-			props["mid"]            = n->m_MidBoneName;
-			props["tip"]            = n->m_TipBoneName;
-			props["profile"]        = n->m_UseLegProfile ? "Leg" : "Arm";
-			props["isRightSide"]    = n->m_IsRightSide;
-			props["hingeMin"]       = n->m_HingeMinAngle;
-			props["hingeMax"]       = n->m_HingeMaxAngle;
-			props["coneAngle"]      = n->m_ConeAngle;
-			props["usePole"]        = n->m_UsePoleVector;
-			props["poleVector"]     = { n->m_PoleVector.x, n->m_PoleVector.y, n->m_PoleVector.z };
-			props["poleWeight"]     = n->m_PoleWeight;
-			props["targetPosParam"] = n->m_TargetPosParamName;
-			props["targetRotParam"] = n->m_TargetRotParamName;
-			props["weightParam"]    = n->m_WeightParamName;
-			props["useFixed"]       = n->m_UseFixedTarget;
-			props["fixedPos"]       = { n->m_FixedTargetPos.x, n->m_FixedTargetPos.y, n->m_FixedTargetPos.z };
-			props["fixedRot"]       = { n->m_FixedTargetRot.x, n->m_FixedTargetRot.y, n->m_FixedTargetRot.z, n->m_FixedTargetRot.w };
-			props["fixedWeight"]    = n->m_FixedWeight;
-			props["enableRotationTarget"] = n->m_EnableRotationTarget;
-			props["rotationWeight"] = n->m_RotationWeight;
-			props["targetPositionSpace"] = IKSpaceToString(n->m_TargetPositionSpace);
-			props["targetRotationSpace"] = IKSpaceToString(n->m_TargetRotationSpace);
-			props["targetReferenceBone"] = n->m_TargetReferenceBoneName;
-			props["poleSpace"] = IKSpaceToString(n->m_PoleSpace);
-			props["poleReferenceBone"] = n->m_PoleReferenceBoneName;
-			props["maintainEffectorGlobalRotation"] = n->m_MaintainEffectorGlobalRotation;
-			props["allowStretch"] = n->m_AllowStretch;
-			props["startStretchRatio"] = n->m_StartStretchRatio;
-			props["maxStretchScale"] = n->m_MaxStretchScale;
-			break;
-		}
-		case AnimGraphNodeType::LookAt:
-		{
-			auto* n = static_cast<const AnimGraphLookAtNode*>(node);
-			props["bones"]          = n->m_BoneNames;
-			props["weights"]        = n->m_BoneWeights;
-			props["maxAngleDeg"]    = n->m_MaxAnglePerBoneDeg;
-			props["forward"]        = { n->m_ForwardAxis.x, n->m_ForwardAxis.y, n->m_ForwardAxis.z };
-			props["worldForward"]   = { n->m_WorldForward.x, n->m_WorldForward.y, n->m_WorldForward.z };
-			props["modelUp"]        = { n->m_ModelUp.x, n->m_ModelUp.y, n->m_ModelUp.z };
-			props["upWeight"]       = n->m_UpWeight;
-			props["targetPosParam"] = n->m_TargetPosParamName;
-			props["weightParam"]    = n->m_WeightParamName;
-			props["useFixed"]       = n->m_UseFixedTarget;
-			props["fixedPos"]       = { n->m_FixedTargetPos.x, n->m_FixedTargetPos.y, n->m_FixedTargetPos.z };
-			props["fixedWeight"]    = n->m_FixedWeight;
-			props["targetPositionSpace"] = IKSpaceToString(n->m_TargetPositionSpace);
-			props["targetReferenceBone"] = n->m_TargetReferenceBoneName;
-			break;
-		}
-		case AnimGraphNodeType::FootPlacement:
-		{
-			auto* n = static_cast<const AnimGraphFootPlacementNode*>(node);
-			const FootPlacementSettings& s = n->m_Settings;
-			props = {
-				{ "enabled", s.enabled },
-				{ "probeOriginHeight", s.probeOriginHeight }, { "probeLength", s.probeLength },
-				{ "footHalfLength", s.footHalfLength }, { "footHalfWidth", s.footHalfWidth },
-				{ "ankleHeight", s.ankleHeight }, { "fullContactHeight", s.fullContactHeight },
-				{ "contactFadeHeight", s.contactFadeHeight }, { "maxStepUp", s.maxStepUp },
-				{ "maxStepDown", s.maxStepDown }, { "maxSlopeDeg", s.maxSlopeDeg },
-				{ "pelvisMaxDrop", s.pelvisMaxDrop }, { "pelvisSmoothTime", s.pelvisSmoothTime },
-				{ "offsetSmoothTime", s.offsetSmoothTime }, { "normalSmoothTime", s.normalSmoothTime },
-				{ "weightSmoothTime", s.weightSmoothTime }, { "globalWeightSmoothTime", s.globalWeightSmoothTime },
-				{ "ikWeight", s.ikWeight }, { "rotationWeight", s.rotationWeight },
-				{ "maxLegExtensionRatio", s.maxLegExtensionRatio }, { "poleSmoothTime", s.poleSmoothTime },
-				{ "kneePoleModelDir", { s.kneePoleModelDir.x, s.kneePoleModelDir.y, s.kneePoleModelDir.z } },
-				{ "kneePoleModelWeight", s.kneePoleModelWeight },
-				{ "debugVisualization", s.debugVisualization }, { "collisionMask", s.collisionMask },
-				{ "airborneParameter", s.airborneParameter },
-				{ "bones", {
-					{ "pelvis", s.bones.pelvis }, { "leftHip", s.bones.leftHip }, { "leftKnee", s.bones.leftKnee },
-					{ "leftFoot", s.bones.leftFoot }, { "rightHip", s.bones.rightHip }, { "rightKnee", s.bones.rightKnee },
-					{ "rightFoot", s.bones.rightFoot }
-				} }
-			};
+			const auto* n = static_cast<const AnimGraphChainIKNode*>(node);
+			props = { { "chains", n->m_ChainIds }, { "maxIterations", n->m_Settings.maxIterations },
+				{ "positionTolerance", n->m_Settings.positionTolerance }, { "weight", n->m_Settings.weight },
+				{ "commitClampedPose", n->m_Settings.commitClampedPose } };
 			break;
 		}
 		default:
@@ -1968,209 +1921,105 @@ namespace VansGraphics
 				n->m_EnableFallbackInput = props["enableFallbackInput"].get<bool>();
 			break;
 		}
-		case AnimGraphNodeType::IK:
+		case AnimGraphNodeType::TargetPoseInput:
+			RequireOnlyFields(props, {});
+			break;
+		case AnimGraphNodeType::Goal:
+			RequireOnlyFields(props, { "goal" });
+			DeserializeGoal(props.at("goal"), static_cast<AnimGraphGoalNode*>(node)->m_Goal); break;
+		case AnimGraphNodeType::AimConstraint:
 		{
-			auto* n = static_cast<AnimGraphIKNode*>(node);
-			if (props.contains("solverType"))
-			{
-				n->m_Chain.solverType = StringToIKSolverType(props["solverType"].get<std::string>());
-			}
-			if (props.contains("chainName"))     n->m_Chain.chainName        = props["chainName"].get<std::string>();
-			if (props.contains("maxIterations")) n->m_Chain.maxIterations    = props["maxIterations"].get<int>();
-			if (props.contains("positionTol"))   n->m_Chain.positionTolerance= props["positionTol"].get<float>();
-			if (props.contains("rotationTol"))   n->m_Chain.rotationTolerance= props["rotationTol"].get<float>();
-			if (props.contains("enableRotationTarget")) n->m_Chain.enableRotationTarget = props["enableRotationTarget"].get<bool>();
-			if (props.contains("rotationWeight")) n->m_Chain.rotationWeight = props["rotationWeight"].get<float>();
-			if (props.contains("poleVector") && props["poleVector"].is_array() && props["poleVector"].size() >= 3)
-			{
-				n->m_Chain.poleVector.x = props["poleVector"][0].get<float>();
-				n->m_Chain.poleVector.y = props["poleVector"][1].get<float>();
-				n->m_Chain.poleVector.z = props["poleVector"][2].get<float>();
-			}
-			if (props.contains("poleWeight"))    n->m_Chain.poleWeight       = props["poleWeight"].get<float>();
-			if (props.contains("poleSpace")) n->m_Chain.poleSpace = StringToIKSpace(props["poleSpace"].get<std::string>());
-			if (props.contains("poleReferenceBone")) n->m_Chain.poleReferenceBoneName = props["poleReferenceBone"].get<std::string>();
-			if (props.contains("maintainEffectorGlobalRotation")) n->m_Chain.maintainEffectorGlobalRotation = props["maintainEffectorGlobalRotation"].get<bool>();
-			if (props.contains("allowStretch")) n->m_Chain.allowStretch = props["allowStretch"].get<bool>();
-			if (props.contains("startStretchRatio")) n->m_Chain.startStretchRatio = props["startStretchRatio"].get<float>();
-			if (props.contains("maxStretchScale")) n->m_Chain.maxStretchScale = props["maxStretchScale"].get<float>();
-			if (props.contains("bones"))
-			{
-				for (const auto& bj : props["bones"])
-				{
-					IKBoneLink b;
-					if (bj.contains("name"))       b.boneName        = bj["name"].get<std::string>();
-					if (bj.contains("isEffector")) b.isEffector      = bj["isEffector"].get<bool>();
-					if (bj.contains("weight"))     b.stiffnessWeight = bj["weight"].get<float>();
-					if (bj.contains("constraint")) b.constraint.type = static_cast<JointConstraintType>(bj["constraint"].get<int>());
-					if (bj.contains("coneDeg"))    b.constraint.coneAngleDeg = bj["coneDeg"].get<float>();
-					if (bj.contains("minY"))       b.constraint.minAngleY    = bj["minY"].get<float>();
-					if (bj.contains("maxY"))       b.constraint.maxAngleY    = bj["maxY"].get<float>();
-					if (bj.contains("stiffness"))  b.constraint.stiffness    = bj["stiffness"].get<float>();
-					auto readAxis = [&](const char* key, glm::vec3& axis)
-					{
-						if (bj.contains(key) && bj[key].is_array() && bj[key].size() >= 3)
-							axis = glm::vec3(bj[key][0].get<float>(), bj[key][1].get<float>(), bj[key][2].get<float>());
-					};
-					readAxis("axisX", b.constraint.localXAxis);
-					readAxis("axisY", b.constraint.localYAxis);
-					readAxis("axisZ", b.constraint.localZAxis);
-					if (bj.contains("minX")) b.constraint.minAngleX = bj["minX"].get<float>();
-					if (bj.contains("maxX")) b.constraint.maxAngleX = bj["maxX"].get<float>();
-					if (bj.contains("minZ")) b.constraint.minAngleZ = bj["minZ"].get<float>();
-					if (bj.contains("maxZ")) b.constraint.maxAngleZ = bj["maxZ"].get<float>();
-					if (bj.contains("restRotation") && bj["restRotation"].is_array() && bj["restRotation"].size() >= 4)
-					{
-						b.constraint.restRotation = glm::normalize(glm::quat(
-							bj["restRotation"][3].get<float>(), bj["restRotation"][0].get<float>(),
-							bj["restRotation"][1].get<float>(), bj["restRotation"][2].get<float>()));
-					}
-					n->m_Chain.bones.push_back(b);
-				}
-			}
-			if (props.contains("targetPosParam")) n->m_TargetPosParamName = props["targetPosParam"].get<std::string>();
-			if (props.contains("targetRotParam")) n->m_TargetRotParamName = props["targetRotParam"].get<std::string>();
-			if (props.contains("weightParam"))    n->m_WeightParamName    = props["weightParam"].get<std::string>();
-			if (props.contains("useFixed"))       n->m_UseFixedTarget     = props["useFixed"].get<bool>();
-			if (props.contains("fixedPos") && props["fixedPos"].is_array() && props["fixedPos"].size() >= 3)
-			{
-				n->m_FixedTargetPos.x = props["fixedPos"][0].get<float>();
-				n->m_FixedTargetPos.y = props["fixedPos"][1].get<float>();
-				n->m_FixedTargetPos.z = props["fixedPos"][2].get<float>();
-			}
-			if (props.contains("fixedRot") && props["fixedRot"].is_array() && props["fixedRot"].size() >= 4)
-			{
-				n->m_FixedTargetRot.x = props["fixedRot"][0].get<float>();
-				n->m_FixedTargetRot.y = props["fixedRot"][1].get<float>();
-				n->m_FixedTargetRot.z = props["fixedRot"][2].get<float>();
-				n->m_FixedTargetRot.w = props["fixedRot"][3].get<float>();
-			}
-			if (props.contains("fixedWeight"))    n->m_FixedWeight        = props["fixedWeight"].get<float>();
-			if (props.contains("targetPositionSpace")) n->m_TargetPositionSpace = StringToIKSpace(props["targetPositionSpace"].get<std::string>());
-			if (props.contains("targetRotationSpace")) n->m_TargetRotationSpace = StringToIKSpace(props["targetRotationSpace"].get<std::string>());
-			if (props.contains("targetReferenceBone")) n->m_TargetReferenceBoneName = props["targetReferenceBone"].get<std::string>();
+			RequireOnlyFields(props, { "chain", "target", "yawLimitDegrees",
+				"pitchLimitDegrees", "targetHalfLife", "maxAngularSpeedDegrees", "weight" });
+			auto* n = static_cast<AnimGraphAimConstraintNode*>(node);
+			n->m_ChainId = props.at("chain").get<std::string>();
+			DeserializeGoal(props.at("target"), n->m_Target);
+			const auto& yaw = props.at("yawLimitDegrees");
+			const auto& pitch = props.at("pitchLimitDegrees");
+			n->m_Settings.yawLimitDegrees = { yaw.at(0).get<float>(), yaw.at(1).get<float>() };
+			n->m_Settings.pitchLimitDegrees = { pitch.at(0).get<float>(), pitch.at(1).get<float>() };
+			n->m_TargetHalfLife = props.at("targetHalfLife").get<float>();
+			n->m_Settings.maxAngularSpeedDegrees = props.at("maxAngularSpeedDegrees").get<float>();
+			n->m_Settings.weight = props.at("weight").get<float>();
 			break;
 		}
-		case AnimGraphNodeType::TwoBoneIK:
+		case AnimGraphNodeType::Grounding:
 		{
-			auto* n = static_cast<AnimGraphTwoBoneIKNode*>(node);
-			if (props.contains("root"))     n->m_RootBoneName  = props["root"].get<std::string>();
-			if (props.contains("mid"))      n->m_MidBoneName   = props["mid"].get<std::string>();
-			if (props.contains("tip"))      n->m_TipBoneName   = props["tip"].get<std::string>();
-			if (props.contains("profile"))  n->m_UseLegProfile = props["profile"].get<std::string>() == "Leg";
-			if (props.contains("isRightSide")) n->m_IsRightSide = props["isRightSide"].get<bool>();
-			if (props.contains("hingeMin")) n->m_HingeMinAngle = props["hingeMin"].get<float>();
-			if (props.contains("hingeMax")) n->m_HingeMaxAngle = props["hingeMax"].get<float>();
-			if (props.contains("coneAngle"))n->m_ConeAngle     = props["coneAngle"].get<float>();
-			if (props.contains("usePole"))  n->m_UsePoleVector = props["usePole"].get<bool>();
-			if (props.contains("poleVector") && props["poleVector"].is_array() && props["poleVector"].size() >= 3)
-			{
-				n->m_PoleVector.x = props["poleVector"][0].get<float>();
-				n->m_PoleVector.y = props["poleVector"][1].get<float>();
-				n->m_PoleVector.z = props["poleVector"][2].get<float>();
-			}
-			if (props.contains("poleWeight"))   n->m_PoleWeight  = props["poleWeight"].get<float>();
-			if (props.contains("targetPosParam")) n->m_TargetPosParamName = props["targetPosParam"].get<std::string>();
-			if (props.contains("targetRotParam")) n->m_TargetRotParamName = props["targetRotParam"].get<std::string>();
-			if (props.contains("weightParam"))    n->m_WeightParamName    = props["weightParam"].get<std::string>();
-			if (props.contains("useFixed"))       n->m_UseFixedTarget     = props["useFixed"].get<bool>();
-			if (props.contains("fixedPos") && props["fixedPos"].is_array() && props["fixedPos"].size() >= 3)
-			{
-				n->m_FixedTargetPos.x = props["fixedPos"][0].get<float>();
-				n->m_FixedTargetPos.y = props["fixedPos"][1].get<float>();
-				n->m_FixedTargetPos.z = props["fixedPos"][2].get<float>();
-			}
-			if (props.contains("fixedRot") && props["fixedRot"].is_array() && props["fixedRot"].size() >= 4)
-			{
-				n->m_FixedTargetRot.x = props["fixedRot"][0].get<float>();
-				n->m_FixedTargetRot.y = props["fixedRot"][1].get<float>();
-				n->m_FixedTargetRot.z = props["fixedRot"][2].get<float>();
-				n->m_FixedTargetRot.w = props["fixedRot"][3].get<float>();
-			}
-			if (props.contains("fixedWeight"))    n->m_FixedWeight        = props["fixedWeight"].get<float>();
-			if (props.contains("enableRotationTarget")) n->m_EnableRotationTarget = props["enableRotationTarget"].get<bool>();
-			if (props.contains("rotationWeight")) n->m_RotationWeight = props["rotationWeight"].get<float>();
-			if (props.contains("targetPositionSpace")) n->m_TargetPositionSpace = StringToIKSpace(props["targetPositionSpace"].get<std::string>());
-			if (props.contains("targetRotationSpace")) n->m_TargetRotationSpace = StringToIKSpace(props["targetRotationSpace"].get<std::string>());
-			if (props.contains("targetReferenceBone")) n->m_TargetReferenceBoneName = props["targetReferenceBone"].get<std::string>();
-			if (props.contains("poleSpace")) n->m_PoleSpace = StringToIKSpace(props["poleSpace"].get<std::string>());
-			if (props.contains("poleReferenceBone")) n->m_PoleReferenceBoneName = props["poleReferenceBone"].get<std::string>();
-			if (props.contains("maintainEffectorGlobalRotation")) n->m_MaintainEffectorGlobalRotation = props["maintainEffectorGlobalRotation"].get<bool>();
-			if (props.contains("allowStretch")) n->m_AllowStretch = props["allowStretch"].get<bool>();
-			if (props.contains("startStretchRatio")) n->m_StartStretchRatio = props["startStretchRatio"].get<float>();
-			if (props.contains("maxStretchScale")) n->m_MaxStretchScale = props["maxStretchScale"].get<float>();
+			RequireOnlyFields(props, { "contacts", "plantSignal", "weight", "query", "plant", "alignment", "pelvis" });
+			auto& s = static_cast<AnimGraphGroundingNode*>(node)->m_Settings;
+			s.contacts = props.at("contacts").get<std::vector<std::string>>();
+			s.plantSignal = props.at("plantSignal").get<std::string>();
+			s.weight = props.at("weight").get<float>();
+			const auto& query = props.at("query");
+			RequireOnlyFields(query, { "profile", "startDistanceAgainstApproach",
+				"endDistanceAlongApproach", "maxStepUp", "maxStepDown", "maxSlopeDegrees",
+				"maxPlaneResidual", "maxNormalDeviationDegrees" });
+			s.query.profile = query.at("profile").get<std::string>();
+			s.query.startDistanceAgainstApproach = query.at("startDistanceAgainstApproach").get<float>();
+			s.query.endDistanceAlongApproach = query.at("endDistanceAlongApproach").get<float>();
+			s.query.maxStepUp = query.at("maxStepUp").get<float>();
+			s.query.maxStepDown = query.at("maxStepDown").get<float>();
+			s.query.maxSlopeDegrees = query.at("maxSlopeDegrees").get<float>();
+			s.query.maxPlaneResidual = query.at("maxPlaneResidual").get<float>();
+			s.query.maxNormalDeviationDegrees = query.at("maxNormalDeviationDegrees").get<float>();
+			const auto& plant = props.at("plant");
+			RequireOnlyFields(plant, { "lockEnabled", "enterPhase", "exitPhase",
+				"unplantDistance", "replantDistance", "unplantAngleDegrees",
+				"replantAngleDegrees", "pivot", "weightHalfLife" });
+			s.plant.lockEnabled = plant.at("lockEnabled").get<bool>();
+			s.plant.enterPhase = plant.at("enterPhase").get<float>();
+			s.plant.exitPhase = plant.at("exitPhase").get<float>();
+			s.plant.unplantDistance = plant.at("unplantDistance").get<float>();
+			s.plant.replantDistance = plant.at("replantDistance").get<float>();
+			s.plant.unplantAngleDegrees = plant.at("unplantAngleDegrees").get<float>();
+			s.plant.replantAngleDegrees = plant.at("replantAngleDegrees").get<float>();
+			s.plant.pivot = StringToPlantPivot(plant.at("pivot").get<std::string>());
+			s.plant.weightHalfLife = plant.at("weightHalfLife").get<float>();
+			const auto& alignment = props.at("alignment");
+			RequireOnlyFields(alignment, { "fullContactHeight", "contactFadeHeight",
+				"normalHalfLife", "rotationWeight" });
+			s.alignment.fullContactHeight = alignment.at("fullContactHeight").get<float>();
+			s.alignment.contactFadeHeight = alignment.at("contactFadeHeight").get<float>();
+			s.alignment.normalHalfLife = alignment.at("normalHalfLife").get<float>();
+			s.alignment.rotationWeight = alignment.at("rotationWeight").get<float>();
+			const auto& pelvis = props.at("pelvis");
+			RequireOnlyFields(pelvis, { "maxUpOffset", "maxDownOffset", "maxHorizontalOffset", "halfLife" });
+			s.pelvis.maxUpOffset = pelvis.at("maxUpOffset").get<float>();
+			s.pelvis.maxDownOffset = pelvis.at("maxDownOffset").get<float>();
+			s.pelvis.maxHorizontalOffset = pelvis.at("maxHorizontalOffset").get<float>();
+			s.pelvis.halfLife = pelvis.at("halfLife").get<float>();
 			break;
 		}
-		case AnimGraphNodeType::LookAt:
+		case AnimGraphNodeType::LimbIK:
 		{
-			auto* n = static_cast<AnimGraphLookAtNode*>(node);
-			if (props.contains("bones"))   n->m_BoneNames   = props["bones"].get<std::vector<std::string>>();
-			if (props.contains("weights")) n->m_BoneWeights = props["weights"].get<std::vector<float>>();
-			if (props.contains("maxAngleDeg")) n->m_MaxAnglePerBoneDeg = props["maxAngleDeg"].get<float>();
-			if (props.contains("forward") && props["forward"].is_array() && props["forward"].size() >= 3)
-			{
-				n->m_ForwardAxis.x = props["forward"][0].get<float>();
-				n->m_ForwardAxis.y = props["forward"][1].get<float>();
-				n->m_ForwardAxis.z = props["forward"][2].get<float>();
-			}
-			if (props.contains("worldForward") && props["worldForward"].is_array() && props["worldForward"].size() >= 3)
-			{
-				n->m_WorldForward.x = props["worldForward"][0].get<float>();
-				n->m_WorldForward.y = props["worldForward"][1].get<float>();
-				n->m_WorldForward.z = props["worldForward"][2].get<float>();
-			}
-			if (props.contains("modelUp") && props["modelUp"].is_array() && props["modelUp"].size() >= 3)
-			{
-				n->m_ModelUp.x = props["modelUp"][0].get<float>();
-				n->m_ModelUp.y = props["modelUp"][1].get<float>();
-				n->m_ModelUp.z = props["modelUp"][2].get<float>();
-			}
-			if (props.contains("upWeight")) n->m_UpWeight = props["upWeight"].get<float>();
-			if (props.contains("targetPosParam")) n->m_TargetPosParamName = props["targetPosParam"].get<std::string>();
-			if (props.contains("weightParam"))    n->m_WeightParamName    = props["weightParam"].get<std::string>();
-			if (props.contains("useFixed"))       n->m_UseFixedTarget     = props["useFixed"].get<bool>();
-			if (props.contains("fixedPos") && props["fixedPos"].is_array() && props["fixedPos"].size() >= 3)
-			{
-				n->m_FixedTargetPos.x = props["fixedPos"][0].get<float>();
-				n->m_FixedTargetPos.y = props["fixedPos"][1].get<float>();
-				n->m_FixedTargetPos.z = props["fixedPos"][2].get<float>();
-			}
-			if (props.contains("fixedWeight"))    n->m_FixedWeight        = props["fixedWeight"].get<float>();
-			if (props.contains("targetPositionSpace")) n->m_TargetPositionSpace = StringToIKSpace(props["targetPositionSpace"].get<std::string>());
-			if (props.contains("targetReferenceBone")) n->m_TargetReferenceBoneName = props["targetReferenceBone"].get<std::string>();
+			RequireOnlyFields(props, { "chains", "tipRotationMode", "positionTolerance",
+				"weight", "commitClampedPose" });
+			auto* n = static_cast<AnimGraphLimbIKNode*>(node);
+			n->m_ChainIds = props.at("chains").get<std::vector<std::string>>();
+			const std::string mode = props.at("tipRotationMode").get<std::string>();
+			if (mode == "preserveInput")
+				n->m_Settings.tipRotationMode = VansLimbTipRotationMode::PreserveInput;
+			else if (mode == "followChain")
+				n->m_Settings.tipRotationMode = VansLimbTipRotationMode::FollowChain;
+			else if (mode == "matchGoal")
+				n->m_Settings.tipRotationMode = VansLimbTipRotationMode::MatchGoal;
+			else
+				throw std::invalid_argument("Unknown Limb IK tip rotation mode: " + mode);
+			n->m_Settings.positionTolerance = props.at("positionTolerance").get<float>();
+			n->m_Settings.weight = props.at("weight").get<float>();
+			n->m_Settings.commitClampedPose = props.at("commitClampedPose").get<bool>();
 			break;
 		}
-		case AnimGraphNodeType::FootPlacement:
+		case AnimGraphNodeType::ChainIK:
 		{
-			auto* n = static_cast<AnimGraphFootPlacementNode*>(node);
-			FootPlacementSettings& s = n->m_Settings;
-			auto readFloat = [&](const char* key, float& value) { if (props.contains(key)) value = props[key].get<float>(); };
-			auto readBool = [&](const char* key, bool& value) { if (props.contains(key)) value = props[key].get<bool>(); };
-			auto readString = [&](const char* key, std::string& value) { if (props.contains(key)) value = props[key].get<std::string>(); };
-			readBool("enabled", s.enabled);
-			readFloat("probeOriginHeight", s.probeOriginHeight); readFloat("probeLength", s.probeLength);
-			readFloat("footHalfLength", s.footHalfLength); readFloat("footHalfWidth", s.footHalfWidth);
-			readFloat("ankleHeight", s.ankleHeight); readFloat("fullContactHeight", s.fullContactHeight);
-			readFloat("contactFadeHeight", s.contactFadeHeight); readFloat("maxStepUp", s.maxStepUp);
-			readFloat("maxStepDown", s.maxStepDown); readFloat("maxSlopeDeg", s.maxSlopeDeg);
-			readFloat("pelvisMaxDrop", s.pelvisMaxDrop); readFloat("pelvisSmoothTime", s.pelvisSmoothTime);
-			readFloat("offsetSmoothTime", s.offsetSmoothTime); readFloat("normalSmoothTime", s.normalSmoothTime);
-			readFloat("weightSmoothTime", s.weightSmoothTime); readFloat("globalWeightSmoothTime", s.globalWeightSmoothTime);
-			readFloat("ikWeight", s.ikWeight); readFloat("rotationWeight", s.rotationWeight);
-			readFloat("maxLegExtensionRatio", s.maxLegExtensionRatio); readFloat("poleSmoothTime", s.poleSmoothTime);
-			readFloat("kneePoleModelWeight", s.kneePoleModelWeight); readBool("debugVisualization", s.debugVisualization);
-			if (props.contains("collisionMask")) s.collisionMask = props["collisionMask"].get<uint32_t>();
-			readString("airborneParameter", s.airborneParameter);
-			if (props.contains("kneePoleModelDir") && props["kneePoleModelDir"].is_array() && props["kneePoleModelDir"].size() >= 3)
-				s.kneePoleModelDir = glm::vec3(props["kneePoleModelDir"][0].get<float>(), props["kneePoleModelDir"][1].get<float>(), props["kneePoleModelDir"][2].get<float>());
-			if (props.contains("bones") && props["bones"].is_object())
-			{
-				const auto& bones = props["bones"];
-				s.bones.pelvis = bones.value("pelvis", s.bones.pelvis); s.bones.leftHip = bones.value("leftHip", s.bones.leftHip);
-				s.bones.leftKnee = bones.value("leftKnee", s.bones.leftKnee); s.bones.leftFoot = bones.value("leftFoot", s.bones.leftFoot);
-				s.bones.rightHip = bones.value("rightHip", s.bones.rightHip); s.bones.rightKnee = bones.value("rightKnee", s.bones.rightKnee);
-				s.bones.rightFoot = bones.value("rightFoot", s.bones.rightFoot);
-			}
+			RequireOnlyFields(props, { "chains", "maxIterations", "positionTolerance",
+				"weight", "commitClampedPose" });
+			auto* n = static_cast<AnimGraphChainIKNode*>(node);
+			n->m_ChainIds = props.at("chains").get<std::vector<std::string>>();
+			n->m_Settings.maxIterations = props.at("maxIterations").get<int>();
+			n->m_Settings.positionTolerance = props.at("positionTolerance").get<float>();
+			n->m_Settings.weight = props.at("weight").get<float>();
+			n->m_Settings.commitClampedPose = props.at("commitClampedPose").get<bool>();
 			break;
 		}
 		default:
@@ -2479,314 +2328,94 @@ namespace VansGraphics
 		return ctx.targetPoseInput ? *ctx.targetPoseInput : AnimGraphPose{};
 	}
 
-	static void ResolveIKChainBoneIndices(IKChainDefinition& chain, const Skeleton& skeleton)
+
+	namespace
 	{
-		for (IKBoneLink& link : chain.bones)
+		std::vector<AnimGraphPin> ProceduralPosePins()
 		{
-			if (link.boneIndex >= 0 || link.boneName.empty())
-				continue;
-
-			auto it = skeleton.boneNameToIndex.find(link.boneName);
-			if (it != skeleton.boneNameToIndex.end())
-				link.boneIndex = it->second;
-		}
-	}
-
-	static glm::vec3 ReadVec3Param(const AnimGraphContext& ctx,
-	                               const std::string& name,
-	                               const glm::vec3& def)
-	{
-		if (!ctx.parameters || name.empty()) return def;
-		auto it = ctx.parameters->find(name);
-		if (it == ctx.parameters->end()) return def;
-		if (it->second.type != AnimatorParamType::Vector3) return def;
-		return it->second.vec3Val;
-	}
-
-	static glm::quat ReadQuatParam(const AnimGraphContext& ctx,
-	                               const std::string& name,
-	                               const glm::quat& def)
-	{
-		if (!ctx.parameters || name.empty()) return def;
-		auto it = ctx.parameters->find(name);
-		if (it == ctx.parameters->end()) return def;
-		if (it->second.type != AnimatorParamType::Quaternion) return def;
-		return it->second.quatVal;
-	}
-
-	static float ReadFloatParam(const AnimGraphContext& ctx,
-	                            const std::string& name,
-	                            float def)
-	{
-		if (!ctx.parameters || name.empty()) return def;
-		auto it = ctx.parameters->find(name);
-		if (it == ctx.parameters->end()) return def;
-		if (it->second.type != AnimatorParamType::Float) return def;
-		return it->second.floatVal;
-	}
-
-	// ─── AnimGraphIKNode ─────────────────────────────────────────
-
-	AnimGraphIKNode::AnimGraphIKNode()
-	{
-		m_Type = AnimGraphNodeType::IK;
-		m_Name = "IK";
-	}
-
-	AnimGraphIKNode::~AnimGraphIKNode() = default;
-
-	std::vector<AnimGraphPin> AnimGraphIKNode::GetPins() const
-	{
-		return {
-			{ 0, "InPose",  AnimGraphPinType::Pose, AnimGraphPinKind::Input  },
-			{ 0, "OutPose", AnimGraphPinType::Pose, AnimGraphPinKind::Output }
-		};
-	}
-
-	AnimGraphPose AnimGraphIKNode::Evaluate(const AnimGraphContext& ctx,
-	                                       VansAnimGraphInstance& instance) const
-	{
-		// 1. 拉取上游 Pose
-		AnimGraphPose pose = instance.EvaluateInput(m_NodeId, 0, ctx);
-		if (!pose.valid || !ctx.skeleton) return pose;
-		if (m_Chain.bones.size() < 2) return pose;
-		auto& runtime = instance.GetIKRuntimeState(m_NodeId);
-		if (runtime.skeleton != ctx.skeleton)
-		{
-			runtime.chain = m_Chain;
-			ResolveIKChainBoneIndices(runtime.chain, *ctx.skeleton);
-			runtime.targetReferenceBoneIndex = ResolveGraphBoneIndex(
-				*ctx.skeleton, m_TargetReferenceBoneName);
-			runtime.skeleton = ctx.skeleton;
-		}
-		const IKChainDefinition& resolvedChain = runtime.chain;
-
-		// 2. 读取目标
-		float weight = m_UseFixedTarget
-			? m_FixedWeight
-			: ReadFloatParam(ctx, m_WeightParamName, m_FixedWeight);
-		if (weight < 1e-4f) return pose;
-
-		IKTarget target;
-		target.position = m_UseFixedTarget
-			? m_FixedTargetPos
-			: ReadVec3Param(ctx, m_TargetPosParamName, m_FixedTargetPos);
-		target.rotation = m_UseFixedTarget
-			? m_FixedTargetRot
-			: ReadQuatParam(ctx, m_TargetRotParamName, m_FixedTargetRot);
-		target.positionWeight = weight;
-		target.rotationWeight = m_Chain.enableRotationTarget ? weight * m_Chain.rotationWeight : 0.0f;
-		target.positionSpace = m_TargetPositionSpace;
-		target.rotationSpace = m_TargetRotationSpace;
-		target.referenceBoneIndex = runtime.targetReferenceBoneIndex;
-
-		// 3. 构建 tempGlobals
-		VansPoseMath::ToMatrices(pose.localPose, runtime.localMatrices);
-		BuildTempGlobals(runtime.localMatrices, *ctx.skeleton, runtime.globalMatrices);
-
-		// 4. 求解
-		if (VansIKSolver* solver = instance.GetIKSolver(m_NodeId, m_Chain.solverType))
-		{
-			IKSolveContext solveContext;
-			solveContext.deltaTime = ctx.deltaTime;
-			solveContext.ownerWorldTransform = ctx.ownerWorldTransform;
-			solver->Solve(runtime.localMatrices, runtime.globalMatrices,
-			              *ctx.skeleton, resolvedChain, target, solveContext);
-			if (!VansPoseMath::FromMatrices(runtime.localMatrices, pose.localPose))
-				return {};
+			return {
+				{ 0, "InPose", AnimGraphPinType::Pose, AnimGraphPinKind::Input },
+				{ 0, "OutPose", AnimGraphPinType::Pose, AnimGraphPinKind::Output }
+			};
 		}
 
-		return pose;
-	}
-
-	// ─── AnimGraphTwoBoneIKNode ──────────────────────────────────
-
-	AnimGraphTwoBoneIKNode::AnimGraphTwoBoneIKNode()
-	{
-		m_Type = AnimGraphNodeType::TwoBoneIK;
-		m_Name = "TwoBoneIK";
-	}
-
-	AnimGraphTwoBoneIKNode::~AnimGraphTwoBoneIKNode() = default;
-
-	std::vector<AnimGraphPin> AnimGraphTwoBoneIKNode::GetPins() const
-	{
-		return {
-			{ 0, "InPose",  AnimGraphPinType::Pose, AnimGraphPinKind::Input  },
-			{ 0, "OutPose", AnimGraphPinType::Pose, AnimGraphPinKind::Output }
-		};
-	}
-
-	AnimGraphPose AnimGraphTwoBoneIKNode::Evaluate(const AnimGraphContext& ctx,
-	                                              VansAnimGraphInstance& instance) const
-	{
-		AnimGraphPose pose = instance.EvaluateInput(m_NodeId, 0, ctx);
-		if (!pose.valid || !ctx.skeleton) return pose;
-
-		auto& runtime = instance.GetIKRuntimeState(m_NodeId);
-		if (runtime.skeleton != ctx.skeleton)
+		AnimGraphPose AppendProceduralNode(
+			int nodeId, const AnimGraphContext& ctx, VansAnimGraphInstance& instance)
 		{
-			runtime.chain = m_UseLegProfile
-				? VansIKChainBuilder::BuildHumanoidLeg(
-					*ctx.skeleton, m_RootBoneName, m_MidBoneName, m_TipBoneName, m_IsRightSide)
-				: VansIKChainBuilder::BuildHumanoidArm(
-					*ctx.skeleton, m_RootBoneName, m_MidBoneName, m_TipBoneName, m_IsRightSide);
-			runtime.chain.solverType = IKSolverType::TwoBone;
-			if (runtime.chain.bones.size() >= 2)
-			{
-				runtime.chain.bones[0].constraint.coneAngleDeg = m_ConeAngle;
-				runtime.chain.bones[1].constraint.minAngleY = m_HingeMinAngle;
-				runtime.chain.bones[1].constraint.maxAngleY = m_HingeMaxAngle;
-			}
-			if (m_UsePoleVector)
-			{
-				runtime.chain.poleVector = m_PoleVector;
-				runtime.chain.poleWeight = m_PoleWeight;
-			}
-			runtime.chain.poleSpace = m_PoleSpace;
-			runtime.chain.poleReferenceBoneName = m_PoleReferenceBoneName;
-			runtime.chain.enableRotationTarget = m_EnableRotationTarget;
-			runtime.chain.rotationWeight = m_RotationWeight;
-			runtime.chain.maintainEffectorGlobalRotation = m_MaintainEffectorGlobalRotation;
-			runtime.chain.allowStretch = m_AllowStretch;
-			runtime.chain.startStretchRatio = m_StartStretchRatio;
-			runtime.chain.maxStretchScale = m_MaxStretchScale;
-			runtime.targetReferenceBoneIndex = ResolveGraphBoneIndex(
-				*ctx.skeleton, m_TargetReferenceBoneName);
-			runtime.skeleton = ctx.skeleton;
-		}
-		IKChainDefinition& chain = runtime.chain;
-		if (chain.bones.size() != 3 || !IK_ValidateChain(*ctx.skeleton, chain, true)) return pose;
-
-		float weight = m_UseFixedTarget
-			? m_FixedWeight
-			: ReadFloatParam(ctx, m_WeightParamName, m_FixedWeight);
-		if (weight < 1e-4f) return pose;
-
-		IKTarget target;
-		target.position = m_UseFixedTarget
-			? m_FixedTargetPos
-			: ReadVec3Param(ctx, m_TargetPosParamName, m_FixedTargetPos);
-		target.rotation = m_UseFixedTarget
-			? m_FixedTargetRot
-			: ReadQuatParam(ctx, m_TargetRotParamName, m_FixedTargetRot);
-		target.positionWeight = weight;
-		target.rotationWeight = m_EnableRotationTarget ? weight * m_RotationWeight : 0.0f;
-		target.positionSpace = m_TargetPositionSpace;
-		target.rotationSpace = m_TargetRotationSpace;
-		target.referenceBoneIndex = runtime.targetReferenceBoneIndex;
-
-		VansPoseMath::ToMatrices(pose.localPose, runtime.localMatrices);
-		BuildTempGlobals(runtime.localMatrices, *ctx.skeleton, runtime.globalMatrices);
-
-		IKSolveContext solveContext;
-		solveContext.deltaTime = ctx.deltaTime;
-		solveContext.ownerWorldTransform = ctx.ownerWorldTransform;
-		if (VansIKSolver* solver = instance.GetIKSolver(m_NodeId, IKSolverType::TwoBone))
-			solver->Solve(runtime.localMatrices, runtime.globalMatrices, *ctx.skeleton,
-				chain, target, solveContext);
-		if (!VansPoseMath::FromMatrices(runtime.localMatrices, pose.localPose))
-			return {};
-		return pose;
-	}
-
-	// ─── AnimGraphLookAtNode ─────────────────────────────────────
-
-	AnimGraphLookAtNode::AnimGraphLookAtNode()
-	{
-		m_Type = AnimGraphNodeType::LookAt;
-		m_Name = "LookAt";
-	}
-
-	AnimGraphLookAtNode::~AnimGraphLookAtNode() = default;
-
-	std::vector<AnimGraphPin> AnimGraphLookAtNode::GetPins() const
-	{
-		return {
-			{ 0, "InPose",  AnimGraphPinType::Pose, AnimGraphPinKind::Input  },
-			{ 0, "OutPose", AnimGraphPinType::Pose, AnimGraphPinKind::Output }
-		};
-	}
-
-	AnimGraphPose AnimGraphLookAtNode::Evaluate(const AnimGraphContext& ctx,
-	                                           VansAnimGraphInstance& instance) const
-	{
-		AnimGraphPose pose = instance.EvaluateInput(m_NodeId, 0, ctx);
-		if (!pose.valid || !ctx.skeleton) return pose;
-		if (m_BoneNames.empty()) return pose;
-
-		auto& runtime = instance.GetIKRuntimeState(m_NodeId);
-		if (runtime.skeleton != ctx.skeleton)
-		{
-			runtime.chain = VansIKChainBuilder::BuildLookAt(
-				*ctx.skeleton, m_BoneNames, m_BoneWeights);
-			runtime.targetReferenceBoneIndex = ResolveGraphBoneIndex(
-				*ctx.skeleton, m_TargetReferenceBoneName);
-			runtime.skeleton = ctx.skeleton;
-		}
-		const IKChainDefinition& chain = runtime.chain;
-		if (chain.bones.empty()) return pose;
-
-		float weight = m_UseFixedTarget
-			? m_FixedWeight
-			: ReadFloatParam(ctx, m_WeightParamName, m_FixedWeight);
-		if (weight < 1e-4f) return pose;
-
-		IKTarget target;
-		target.position = m_UseFixedTarget
-			? m_FixedTargetPos
-			: ReadVec3Param(ctx, m_TargetPosParamName, m_FixedTargetPos);
-		target.positionWeight = weight;
-		target.positionSpace = m_TargetPositionSpace;
-		target.referenceBoneIndex = runtime.targetReferenceBoneIndex;
-
-		VansPoseMath::ToMatrices(pose.localPose, runtime.localMatrices);
-		BuildTempGlobals(runtime.localMatrices, *ctx.skeleton, runtime.globalMatrices);
-
-		auto* solver = static_cast<VansLookAtSolver*>(
-			instance.GetIKSolver(m_NodeId, IKSolverType::LookAt));
-		if (!solver) return pose;
-		solver->m_ForwardAxis = m_ForwardAxis;
-		solver->m_WorldForward = m_WorldForward;
-		solver->m_ModelUp = m_ModelUp;
-		solver->m_UpWeight = m_UpWeight;
-		solver->m_MaxAnglePerBoneDeg = m_MaxAnglePerBoneDeg;
-		IKSolveContext solveContext;
-		solveContext.deltaTime = ctx.deltaTime;
-		solveContext.ownerWorldTransform = ctx.ownerWorldTransform;
-		solver->Solve(runtime.localMatrices, runtime.globalMatrices,
-		             *ctx.skeleton, chain, target, solveContext);
-		if (!VansPoseMath::FromMatrices(runtime.localMatrices, pose.localPose))
-			return {};
-		return pose;
-	}
-
-	// ─── AnimGraphFootPlacementNode ───────────────────────────────
-
-	AnimGraphFootPlacementNode::AnimGraphFootPlacementNode()
-	{
-		m_Type = AnimGraphNodeType::FootPlacement;
-		m_Name = "FootPlacement";
-	}
-
-	std::vector<AnimGraphPin> AnimGraphFootPlacementNode::GetPins() const
-	{
-		return {
-			{ 0, "InPose",  AnimGraphPinType::Pose, AnimGraphPinKind::Input  },
-			{ 0, "OutPose", AnimGraphPinType::Pose, AnimGraphPinKind::Output }
-		};
-	}
-
-	AnimGraphPose AnimGraphFootPlacementNode::Evaluate(const AnimGraphContext& ctx,
-	                                                  VansAnimGraphInstance& instance) const
-	{
-		AnimGraphPose pose = instance.EvaluateInput(m_NodeId, 0, ctx);
-		if (!pose.valid)
+			AnimGraphPose pose = instance.EvaluateInput(nodeId, 0, ctx);
+			if (pose.valid) pose.proceduralNodeIds.push_back(nodeId);
 			return pose;
-		pose.footPlacement.valid = true;
-		pose.footPlacement.sourceNodeId = m_NodeId;
-		pose.footPlacement.settings = &m_Settings;
-		return pose;
+		}
+	}
+
+	AnimGraphGoalNode::AnimGraphGoalNode()
+	{
+		m_Type = AnimGraphNodeType::Goal;
+		m_Name = "Goal";
+	}
+
+	std::vector<AnimGraphPin> AnimGraphGoalNode::GetPins() const { return ProceduralPosePins(); }
+
+	AnimGraphPose AnimGraphGoalNode::Evaluate(
+		const AnimGraphContext& ctx, VansAnimGraphInstance& instance) const
+	{
+		return AppendProceduralNode(m_NodeId, ctx, instance);
+	}
+
+	AnimGraphAimConstraintNode::AnimGraphAimConstraintNode()
+	{
+		m_Type = AnimGraphNodeType::AimConstraint;
+		m_Name = "Aim Constraint";
+	}
+
+	std::vector<AnimGraphPin> AnimGraphAimConstraintNode::GetPins() const { return ProceduralPosePins(); }
+
+	AnimGraphPose AnimGraphAimConstraintNode::Evaluate(
+		const AnimGraphContext& ctx, VansAnimGraphInstance& instance) const
+	{
+		return AppendProceduralNode(m_NodeId, ctx, instance);
+	}
+
+	AnimGraphGroundingNode::AnimGraphGroundingNode()
+	{
+		m_Type = AnimGraphNodeType::Grounding;
+		m_Name = "Grounding";
+	}
+
+	std::vector<AnimGraphPin> AnimGraphGroundingNode::GetPins() const { return ProceduralPosePins(); }
+
+	AnimGraphPose AnimGraphGroundingNode::Evaluate(
+		const AnimGraphContext& ctx, VansAnimGraphInstance& instance) const
+	{
+		return AppendProceduralNode(m_NodeId, ctx, instance);
+	}
+
+	AnimGraphLimbIKNode::AnimGraphLimbIKNode()
+	{
+		m_Type = AnimGraphNodeType::LimbIK;
+		m_Name = "Limb IK";
+	}
+
+	std::vector<AnimGraphPin> AnimGraphLimbIKNode::GetPins() const { return ProceduralPosePins(); }
+
+	AnimGraphPose AnimGraphLimbIKNode::Evaluate(
+		const AnimGraphContext& ctx, VansAnimGraphInstance& instance) const
+	{
+		return AppendProceduralNode(m_NodeId, ctx, instance);
+	}
+
+	AnimGraphChainIKNode::AnimGraphChainIKNode()
+	{
+		m_Type = AnimGraphNodeType::ChainIK;
+		m_Name = "Chain IK";
+	}
+
+	std::vector<AnimGraphPin> AnimGraphChainIKNode::GetPins() const { return ProceduralPosePins(); }
+
+	AnimGraphPose AnimGraphChainIKNode::Evaluate(
+		const AnimGraphContext& ctx, VansAnimGraphInstance& instance) const
+	{
+		return AppendProceduralNode(m_NodeId, ctx, instance);
 	}
 
 }  // namespace VansGraphics

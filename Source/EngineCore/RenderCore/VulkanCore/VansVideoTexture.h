@@ -106,6 +106,8 @@ namespace VansGraphics
 
     private:
         // ── 后台解码线程函数 ─────────────────────────────────────────────────
+		bool RecordPendingUploadLocked(VansVKCommandBuffer& cmd);
+
         void DecodeThreadFunc();
 
         // ── 将像素数据上传到 GPU（仅主线程录制阶段调用）────────────────────
@@ -165,6 +167,8 @@ namespace VansGraphics
         std::condition_variable    m_ConsumerCv; // 消费者等待队列有帧（预留）
 
         // ── 最后一帧像素缓存（主线程专用）────────────────────────────────────
+		// Main 发布、RT 消费的待上传帧交接锁；不覆盖 present 或 GPU 等待。
+		std::mutex m_PendingFrameMutex;
         std::vector<uint8_t> m_LastFramePixels;
         int                  m_LastFrameUploadSlot = -1;
         bool                 m_HasNewFrame = false;

@@ -50,9 +50,7 @@
 #include "../AnimationCore/VansAnimatorIO.h"
 #include "../AnimationCore/VansAnimGraph.h"
 #include "../AnimationCore/VansAnimationClipLoader.h"
-#include "../AnimationCore/VansBoneAttachmentSystem.h"
 #include "../AnimationCore/VansSkinnedMeshLoader.h"
-#include "../AnimationCore/FootPlacement/VansFootPlacementTypes.h"
 
 #include "../Util/VansLog.h"
 #include "../Util/VansProfiler.h"
@@ -76,6 +74,55 @@ namespace VansGraphics
 namespace
 {
 	using SceneLoadClock = std::chrono::steady_clock;
+
+	enum class SceneGpuMaintenanceOperation
+	{
+		WaitIdle,
+		RebuildRenderer,
+		PrepareScene
+	};
+
+	class SceneGpuMaintenanceTransaction final
+		: public IVansRenderThreadTransaction
+	{
+	public:
+		SceneGpuMaintenanceTransaction(
+			VansScene& scene,
+			VansVKDevice& expectedDevice,
+			SceneGpuMaintenanceOperation operation)
+			: m_Scene(scene),
+			  m_ExpectedDevice(expectedDevice),
+			  m_Operation(operation) {}
+
+		bool Execute(VansGraphicsDevice& backend) override
+		{
+			VANS_ASSERT_RENDER_THREAD();
+			auto* device = dynamic_cast<VansVKDevice*>(&backend);
+			if (device != &m_ExpectedDevice || !backend.WaitForIdle())
+				return false;
+			if (m_Operation == SceneGpuMaintenanceOperation::RebuildRenderer)
+				device->PrepareRenderingData();
+			else if (m_Operation == SceneGpuMaintenanceOperation::PrepareScene)
+				VansSceneRenderPreparationExecutor::PrepareAfterSceneContentLoaded(
+					m_Scene, *device);
+			return true;
+		}
+
+	private:
+		VansScene& m_Scene;
+		VansVKDevice& m_ExpectedDevice;
+		SceneGpuMaintenanceOperation m_Operation;
+	};
+
+	bool ExecuteSceneGpuMaintenance(
+		VansScene& scene,
+		VansVKDevice& device,
+		SceneGpuMaintenanceOperation operation)
+	{
+		return scene.ExecuteRenderThreadTransaction(
+			std::make_unique<SceneGpuMaintenanceTransaction>(
+				scene, device, operation));
+	}
 
 	double SceneLoadMsSince(SceneLoadClock::time_point start)
 	{
@@ -342,7 +389,13 @@ bool VansGraphics::VansScene::LoadSceneForRendering(const char* scenePath, VansV
         m_SceneState = VansSceneState::Unloading;
         VANS_LOG("[VansScene] Unloading previous scene...");
 
-        device->WaitForDevice();
+        if (!ExecuteSceneGpuMaintenance(
+			*this, *device, SceneGpuMaintenanceOperation::WaitIdle))
+		{
+			VANS_LOG_ERROR("[VansScene] Render thread failed to idle before scene unload");
+			m_SceneState = VansSceneState::Ready;
+			return false;
+		}
         UnLoadScene();
 
         m_SceneState = VansSceneState::Empty;
@@ -357,20 +410,39 @@ bool VansGraphics::VansScene::LoadSceneForRendering(const char* scenePath, VansV
     if (rebuildRenderingDataAfterUnload)
     {
         VANS_LOG("[VansScene] Rebuilding renderer data after scene unload");
-        device->PrepareRenderingData();
+        if (!ExecuteSceneGpuMaintenance(
+			*this, *device, SceneGpuMaintenanceOperation::RebuildRenderer))
+		{
+			VANS_LOG_ERROR("[VansScene] Render-thread renderer rebuild failed");
+			m_SceneState = VansSceneState::Empty;
+			return false;
+		}
     }
 
     if (!VansSceneContentBuildExecutor::BuildFromFile(*this, scenePath))
     {
         VANS_LOG_ERROR("[VansScene] Scene content build failed, unloading partially built scene");
         m_SceneState = VansSceneState::Unloading;
-        device->WaitForDevice();
+        ExecuteSceneGpuMaintenance(
+			*this, *device, SceneGpuMaintenanceOperation::WaitIdle);
         UnLoadScene();
         m_SceneState = VansSceneState::Empty;
         return false;
     }
 
-    VansSceneRenderPreparationExecutor::PrepareAfterSceneContentLoaded(*this, *device);
+    if (!ExecuteSceneGpuMaintenance(
+		*this, *device, SceneGpuMaintenanceOperation::PrepareScene))
+	{
+		VANS_LOG_ERROR("[VansScene] Render-thread scene GPU preparation failed");
+		m_SceneState = VansSceneState::Unloading;
+		ExecuteSceneGpuMaintenance(
+			*this, *device, SceneGpuMaintenanceOperation::WaitIdle);
+		UnLoadScene();
+		m_SceneState = VansSceneState::Empty;
+		return false;
+	}
+
+	PlayAllSceneVideos();
 
 	m_SceneState = VansSceneState::Ready;
     VANS_LOG("[VansScene] Scene ready for rendering");
@@ -414,10 +486,13 @@ VansScriptObject* VansGraphics::VansScene::FindObjectByGuid(const std::string& g
     return nullptr;
 }
 
-bool VansGraphics::VansScene::SetEntityParentByGuid(
+bool VansGraphics::VansScene::SetEntityParentReferenceByGuid(
     const std::string& childEntityGuid,
-    const std::string& parentEntityGuid)
+    const Vans::VansSceneParentReference* parentReference,
+    Vans::VansTransformReparentMode mode)
 {
+	const std::string parentEntityGuid = parentReference
+		? parentReference->entityGuid.ToString() : std::string{};
     if (childEntityGuid.empty() || childEntityGuid == parentEntityGuid)
         return false;
 
@@ -430,11 +505,16 @@ bool VansGraphics::VansScene::SetEntityParentByGuid(
         VansScriptObject* parent = FindObjectByGuid(parentEntityGuid);
         if (!parent)
             return false;
-        m_TransformParentSystem.SetParent(child->m_TransformID, parent->m_TransformID);
+		const bool transformParentApplied = parentReference->IsAnchor()
+			? SetTransformAnchorReference(child->m_TransformID, parent->m_TransformID, *parentReference, mode)
+			: m_TransformGraph.SetParent(child->m_TransformID, parent->m_TransformID, mode);
+		if (!transformParentApplied)
+			return false;
     }
-    else if (m_TransformParentSystem.HasParent(child->m_TransformID))
+    else if (m_TransformGraph.HasParent(child->m_TransformID))
     {
-        m_TransformParentSystem.ClearParent(child->m_TransformID);
+		if (!m_TransformGraph.ClearParent(child->m_TransformID, mode))
+			return false;
     }
 
     if (m_RuntimeWorld)
@@ -466,8 +546,59 @@ bool VansGraphics::VansScene::SetEntityParentByGuid(
         }
     }
 
-    VansTransformStore::TransformIDToTransformDirty[child->m_TransformID] = true;
-    return true;
+	VansTransformStore::TransformIDToTransformDirty[child->m_TransformID] = true;
+	return m_TransformGraph.Resolve();
+}
+
+bool VansGraphics::VansScene::TryGetEntityLocalTransformByGuid(
+	const std::string& entityGuid,
+	Vans::VansLocalTransform& transform) const
+{
+	const VansScriptObject* object = FindObjectByGuid(entityGuid);
+	return object && m_TransformGraph.TryGetLocalTransform(object->m_TransformID, transform);
+}
+
+bool VansGraphics::VansScene::SetEntityLocalTransformByGuid(
+	const std::string& entityGuid,
+	const Vans::VansLocalTransform& transform)
+{
+	VansScriptObject* object = FindObjectByGuid(entityGuid);
+	if (!object)
+		return false;
+	if (m_TransformGraph.HasParent(object->m_TransformID))
+	{
+		if (!m_TransformGraph.SetLocalTransform(object->m_TransformID, transform))
+			return false;
+		return m_TransformGraph.Resolve();
+	}
+	return m_TransformGraph.SetWorldTransform(object->m_TransformID, transform.ToMatrix());
+}
+
+bool VansGraphics::VansScene::SetTransformAnchorReference(
+	uint32_t childTransformID,
+	uint32_t ownerTransformID,
+	const Vans::VansSceneParentReference& parent,
+	Vans::VansTransformReparentMode mode)
+{
+	if (!parent.IsAnchor() || !m_RuntimeWorld)
+		return false;
+	const Vans::VansComponentHandle component = m_RuntimeWorld->FindComponentByGuid(
+		parent.animationComponentGuid.ToString(), Vans::VansRuntimeComponentType_Animation);
+	auto* storage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeAnimationComponent>*>(
+		m_RuntimeWorld->FindStorage(Vans::VansRuntimeComponentType_Animation));
+	const Vans::VansRuntimeAnimationComponent* animation = storage ? storage->Get(component) : nullptr;
+	if (!animation || animation->skeletonInstanceId == 0
+		|| animation->skeletonInstanceGeneration == 0)
+		return false;
+	Vans::VansTransformAnchorHandle anchor;
+	anchor.instanceId = animation->skeletonInstanceId;
+	anchor.instanceGeneration = animation->skeletonInstanceGeneration;
+	anchor.kind = parent.kind == Vans::VansSceneParentKind::Bone
+		? Vans::VansTransformAnchorKind::Bone : Vans::VansTransformAnchorKind::Socket;
+	anchor.anchorGuid = parent.anchorGuid.ToString();
+	return m_TransformGraph.SetAnchor(
+		childTransformID, ownerTransformID, std::move(anchor),
+		mode);
 }
 
 bool VansGraphics::VansScene::SetEntityNameByGuid(

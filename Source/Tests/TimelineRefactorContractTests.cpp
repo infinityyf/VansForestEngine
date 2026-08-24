@@ -15,6 +15,10 @@
 #include "../EngineCore/EventCore/VansEventBus.h"
 #include "../EngineCore/EditorCore/Timeline/VansTimelineTrackDescriptorRegistry.h"
 #include "../EngineCore/EditorCore/Timeline/VansTimelineEditService.h"
+#include "../EngineCore/AnimationCore/VansAnimationClip.h"
+#include "../EngineCore/AnimationCore/VansAnimationController.h"
+#include "../EngineCore/AnimationCore/VansAnimatorIO.h"
+#include "../EngineCore/AnimationCore/VansAnimatorRuntimeCompiler.h"
 
 #include <cmath>
 #include <algorithm>
@@ -366,6 +370,7 @@ bool TestTimelineEditorInteractionContract()
 bool TestTimelineDemoHallAssetContract()
 {
 	namespace fs = std::filesystem;
+	using namespace VansGraphics;
 	fs::path workspace = fs::current_path();
 	for (int depth = 0; depth < 6 && !fs::exists(workspace / "DemoHallProject"); ++depth)
 		workspace = workspace.parent_path();
@@ -377,12 +382,88 @@ bool TestTimelineDemoHallAssetContract()
 	std::string error;
 	if (!ExpectTimeline(Vans::VansTimelineSerialization::Load(source, asset, error),
 		error.c_str())) return false;
+	const fs::path animatorSource = workspace / "DemoHallProject" / "Assets" /
+		"MotionMatchDataBase" / "UEFN_Mannequin.vanimator";
+	const fs::path clipSource = workspace / "DemoHallProject" / "Assets" /
+		"Animations" / "WindowBreak" / "AlbomBreak_Unreal_Take.vclip";
+	AnimatorAssetData animator;
+	VansAnimationClip windowBreakClip;
+	Skeleton windowBreakSkeleton;
+	if (!ExpectTimeline(VansAnimatorIO::Load(animatorSource.string(), animator),
+		"DemoHall UEFN Animator could not be loaded for runtime Slot validation") ||
+		!ExpectTimeline(VansAnimationClipIO::Load(
+			clipSource.string(), windowBreakClip, windowBreakSkeleton),
+			"DemoHall window-break Clip could not be loaded for runtime Slot validation")) return false;
+	const auto authoredWindowBreakClip = std::find_if(
+		animator.clipRefs.begin(), animator.clipRefs.end(), [](const AnimatorClipRef& reference)
+		{
+			return reference.name == "AlbomBreak" &&
+				reference.assetGuid == "1ba43559-b0e3-4d94-83a1-b7358c1bd5f5" &&
+				reference.pathHint == "Assets/Animations/WindowBreak/AlbomBreak_Unreal_Take.vclip";
+		});
+	if (!ExpectTimeline(authoredWindowBreakClip != animator.clipRefs.end(),
+		"DemoHall Animator did not author AlbomBreak as a startup Clip reference")) return false;
+	VansAnimatorRuntimeCompileOptions compileOptions;
+	compileOptions.rigResolver = [&](const std::string& rigGuid,
+		fs::path& path, std::string& resolveError)
+	{
+		if (rigGuid != animator.animationRigGuid)
+		{
+			resolveError = "DemoHall Animator requested an unexpected Animation Rig: " + rigGuid;
+			return false;
+		}
+		path = workspace / "DemoHallProject" / "Assets" /
+			"AnimationRigs" / "UEFN.vanimrig";
+		if (fs::is_regular_file(path))
+			return true;
+		resolveError = "DemoHall UEFN Animation Rig asset is unavailable";
+		return false;
+	};
+	compileOptions.queryProfileResolver = [](const std::string& profile,
+		std::uint32_t& mask, std::string& resolveError)
+	{
+		if (profile != "characterGround")
+		{
+			resolveError = "DemoHall Animator requested an unexpected physics query profile: "
+				+ profile;
+			return false;
+		}
+		mask = 0x3u;
+		return true;
+	};
+	auto animatorController = VansAnimatorRuntimeCompiler::Compile(
+		animator, windowBreakSkeleton,
+		[&](const AnimatorClipRef& reference, fs::path& path, std::string& resolveError)
+		{
+			path = workspace / "DemoHallProject" / reference.pathHint;
+			if (fs::is_regular_file(path)) return true;
+			resolveError = "DemoHall Animator Clip path is unavailable: " + reference.pathHint;
+			return false;
+		}, {}, compileOptions, error);
+	if (!ExpectTimeline(animatorController != nullptr, error.c_str())) return false;
+	if (!ExpectTimeline(animatorController->GetClip("AlbomBreak") != nullptr,
+		"DemoHall Animator did not preload AlbomBreak into its runtime controller")) return false;
+	VansSlotPlayRequest slotRequest;
+	slotRequest.clipName = "AlbomBreak";
+	slotRequest.blendIn = 0.25f;
+	slotRequest.blendOut = 0.25f;
+	slotRequest.externallyDriven = true;
+	slotRequest.suppressRootMotion = true;
+	const VansSlotPlaybackHandle slotPlayback = animatorController->PlaySlot(
+		"slot-window-break-full-body", slotRequest);
+	if (!ExpectTimeline(slotPlayback &&
+		animatorController->DriveSlot(slotPlayback, 2.6f, 1.0f),
+		"DemoHall UEFN Animator rejected the externally-driven window-break Slot")) return false;
+	animatorController->Play();
+	animatorController->Update(0.0f, windowBreakSkeleton);
 	bool hasCameraShake = false;
 	bool hasVirtualCameraParameters = false;
 	bool hasVisibleRedFade = false;
 	bool hasReusableCameraTransition = false;
 	bool hasPlayerRelativeShoulder = false;
 	bool hasPlayerForwardLookAt = false;
+	bool hasCharacterAnimationBinding = false;
+	bool hasWindowBreakCharacterAnimation = false;
 	Vans::VansTimelineTick cameraTransitionStart = 0;
 	Vans::VansTimelineTick cameraTransitionEnd = 0;
 	Vans::VansTimelineTick cameraBlendInTicks = 0;
@@ -398,8 +479,38 @@ bool TestTimelineDemoHallAssetContract()
 	const Vans::VansTimelineChannel* shakePosition = nullptr;
 	const Vans::VansTimelineChannel* shakeRotation = nullptr;
 	const Vans::VansTimelineChannel* fadeWeight = nullptr;
+	for (const Vans::VansTimelineBinding& binding : asset.bindings)
+		hasCharacterAnimationBinding |= binding.id == "binding-impact-player-animation" &&
+			binding.targetGuid == "4186c86d-7c0a-4556-8077-d1f80ebc1da5" &&
+			binding.componentGuid == "49be5afc-60b7-4024-8dc4-491c3312e689";
 	for (const Vans::VansTimelineTrack& track : asset.tracks)
 	{
+		if (track.type.stableName == Vans::TimelineNames::AnimationClip)
+			for (const Vans::VansTimelineSection& section : track.sections)
+			{
+				if (!section.extensionData) continue;
+				const auto* slot = Vans::VansTimelineFindSourceField(*section.extensionData, "slot");
+				const auto* layer = Vans::VansTimelineFindSourceField(*section.extensionData, "layer");
+				const auto* controllerClip = Vans::VansTimelineFindSourceField(
+					*section.extensionData, "controllerClip");
+				hasWindowBreakCharacterAnimation |=
+					track.bindingId == "binding-impact-player-animation" &&
+					section.startTick == 0 && section.durationTicks == 180000 &&
+					section.sourceInTick == 0 && section.sourceOutTick == 312000 &&
+					std::abs(section.playRate - (5.2 / 3.0)) < 0.000001 &&
+					section.loopMode == Vans::VansTimelineLoopMode::None &&
+					section.easeInTicks == 15000 && section.easeOutTicks == 15000 &&
+					section.blendIn.shape == "SmoothStep" && section.blendOut.shape == "SmoothStep" &&
+					section.completionMode == Vans::VansTimelineCompletionMode::RestoreState &&
+					section.assetGuid == "1ba43559-b0e3-4d94-83a1-b7358c1bd5f5" &&
+					section.assetPath == "Assets/Animations/WindowBreak/AlbomBreak_Unreal_Take.vclip" &&
+					slot && slot->kind == Vans::VansSerializedValue::Kind::String &&
+					slot->stringValue == "slot-window-break-full-body" &&
+					layer && layer->kind == Vans::VansSerializedValue::Kind::String &&
+					layer->stringValue == "layer-base" &&
+					controllerClip && controllerClip->kind == Vans::VansSerializedValue::Kind::String &&
+					controllerClip->stringValue == "AlbomBreak";
+			}
 		if (track.type.stableName == Vans::TimelineNames::CameraProperty)
 		{
 			bool hasLensChannel = false;
@@ -509,6 +620,8 @@ bool TestTimelineDemoHallAssetContract()
 		"DemoHall camera shake must run between reusable CameraCut enter and exit blends")) return false;
 	if (!ExpectTimeline(hasPlayerRelativeShoulder && hasPlayerForwardLookAt,
 		"DemoHall virtual camera must use editable player-relative shoulder and forward-look constraints")) return false;
+	if (!ExpectTimeline(hasCharacterAnimationBinding && hasWindowBreakCharacterAnimation,
+		"DemoHall window-break character animation binding, timing, slot, or easing is invalid")) return false;
 	if (!ExpectTimeline(hasVisibleRedFade,
 		"DemoHall impact Timeline red fade is missing or visually negligible")) return false;
 	const auto fadeAt = [&](Vans::VansTimelineTick tick)
@@ -545,7 +658,7 @@ bool TestTimelineDemoHallAssetContract()
 		return false;
 	}
 	if (!ExpectTimeline(compiled.timeline->ContentHash() != 0 &&
-		compiled.timeline->Tracks(Vans::VansTimelineEvaluationPhase::PostScript).size() == 5 &&
+		compiled.timeline->Tracks(Vans::VansTimelineEvaluationPhase::PostScript).size() == 6 &&
 		compiled.timeline->Tracks(Vans::VansTimelineEvaluationPhase::Camera).size() == 3,
 		"DemoHall Timeline did not compile its complete two-phase track set")) return false;
 	Vans::VansTimelineBindingResolver bindings;
@@ -570,7 +683,7 @@ bool TestTimelineDemoHallAssetContract()
 	Vans::VansTimelineEvaluator::Evaluate(*compiled.timeline,
 		Vans::VansTimelineEvaluationPhase::Camera, firstImpactFrame,
 		parameters, bindings, { 0, 1 }, { 0, 1 }, 0, arena, cameraOutputs, diagnostics);
-	if (!ExpectTimeline(postScriptOutputs.size() == 5 && cameraOutputs.size() == 2 &&
+	if (!ExpectTimeline(postScriptOutputs.size() == 6 && cameraOutputs.size() == 2 &&
 		!Vans::VansTimelineValidator::HasErrors(diagnostics),
 		"DemoHall first impact frame did not dispatch every active PostScript and Camera output")) return false;
 

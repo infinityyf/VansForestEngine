@@ -241,12 +241,116 @@ namespace
 		return "replace";
 	}
 
+	const char* ToString(VansGraphSetBlendCurve value)
+	{
+		return value == VansGraphSetBlendCurve::Linear ? "linear" : "smoothStep";
+	}
+
+	const char* ToString(VansGraphSetPhasePolicy value)
+	{
+		switch (value)
+		{
+		case VansGraphSetPhasePolicy::Restart: return "restart";
+		case VansGraphSetPhasePolicy::MatchNormalizedTime: return "matchNormalizedTime";
+		case VansGraphSetPhasePolicy::MatchMarker: return "matchMarker";
+		}
+		return "matchNormalizedTime";
+	}
+
+	const char* ToString(VansGraphSetEventPolicy value)
+	{
+		return value == VansGraphSetEventPolicy::DominantSource
+			? "dominantSource" : "weightedBoth";
+	}
+
+	const char* ToString(VansGraphSetRootMotionPolicy value)
+	{
+		switch (value)
+		{
+		case VansGraphSetRootMotionPolicy::Blend: return "blend";
+		case VansGraphSetRootMotionPolicy::DominantSource: return "dominantSource";
+		case VansGraphSetRootMotionPolicy::IncomingOnly: return "incomingOnly";
+		}
+		return "blend";
+	}
+
+	const char* ToString(VansGraphSetInterruptionPolicy value)
+	{
+		switch (value)
+		{
+		case VansGraphSetInterruptionPolicy::QueueLatest: return "queueLatest";
+		case VansGraphSetInterruptionPolicy::Reject: return "reject";
+		case VansGraphSetInterruptionPolicy::Force: return "force";
+		}
+		return "queueLatest";
+	}
+
+	json SerializeGraphSetTransitionPolicy(const VansGraphSetTransitionPolicy& policy)
+	{
+		return {
+			{ "duration", policy.duration },
+			{ "curve", ToString(policy.curve) },
+			{ "phase", ToString(policy.phase) },
+			{ "events", ToString(policy.events) },
+			{ "rootMotion", ToString(policy.rootMotion) },
+			{ "interruption", ToString(policy.interruption) },
+			{ "requireStateMatch", policy.requireStateMatch }
+		};
+	}
+
+	bool DeserializeGraphSetTransitionPolicy(
+		const json& source,
+		VansGraphSetTransitionPolicy& policy,
+		std::string& error)
+	{
+		std::string unknown;
+		if (!HasOnlyFields(source,
+			{ "duration", "curve", "phase", "events", "rootMotion", "interruption", "requireStateMatch" },
+			unknown))
+		{
+			error = "Invalid Graph Set transition policy field: " + unknown;
+			return false;
+		}
+		try
+		{
+			policy.duration = source.at("duration").get<float>();
+			policy.requireStateMatch = source.at("requireStateMatch").get<bool>();
+			if (!ParseEnum(source.at("curve").get<std::string>(),
+				{ { "linear", VansGraphSetBlendCurve::Linear },
+				  { "smoothStep", VansGraphSetBlendCurve::SmoothStep } }, policy.curve)
+				|| !ParseEnum(source.at("phase").get<std::string>(),
+					{ { "restart", VansGraphSetPhasePolicy::Restart },
+					  { "matchNormalizedTime", VansGraphSetPhasePolicy::MatchNormalizedTime },
+					  { "matchMarker", VansGraphSetPhasePolicy::MatchMarker } }, policy.phase)
+				|| !ParseEnum(source.at("events").get<std::string>(),
+					{ { "dominantSource", VansGraphSetEventPolicy::DominantSource },
+					  { "weightedBoth", VansGraphSetEventPolicy::WeightedBoth } }, policy.events)
+				|| !ParseEnum(source.at("rootMotion").get<std::string>(),
+					{ { "blend", VansGraphSetRootMotionPolicy::Blend },
+					  { "dominantSource", VansGraphSetRootMotionPolicy::DominantSource },
+					  { "incomingOnly", VansGraphSetRootMotionPolicy::IncomingOnly } }, policy.rootMotion)
+				|| !ParseEnum(source.at("interruption").get<std::string>(),
+					{ { "queueLatest", VansGraphSetInterruptionPolicy::QueueLatest },
+					  { "reject", VansGraphSetInterruptionPolicy::Reject },
+					  { "force", VansGraphSetInterruptionPolicy::Force } }, policy.interruption))
+			{
+				error = "Graph Set transition policy contains an unknown enum value";
+				return false;
+			}
+		}
+		catch (const json::exception& exception)
+		{
+			error = std::string("Invalid Graph Set transition policy: ") + exception.what();
+			return false;
+		}
+		return true;
+	}
+
 	json SerializeLayer(const VansAnimationLayerDefinition& layer)
 	{
 		return {
 			{ "id", layer.id },
 			{ "name", layer.name },
-			{ "graphId", layer.graphId },
 			{ "kind", ToString(layer.kind) },
 			{ "mask", { { "guid", layer.maskGuid }, { "pathHint", layer.maskPathHint } } },
 			{ "blend", {
@@ -275,7 +379,6 @@ namespace
 				{ "mode", ToString(layer.sync) },
 				{ "leaderLayerId", layer.syncLeaderLayerId }
 			} },
-			{ "enabled", layer.enabled },
 			{ "updateWhenWeightIsZero", layer.updateWhenWeightIsZero }
 		};
 	}
@@ -286,7 +389,7 @@ namespace
 	{
 		std::string unknown;
 		if (!HasOnlyFields(source,
-			{ "id", "name", "graphId", "kind", "mask", "blend", "weight", "outputs", "sync", "enabled", "updateWhenWeightIsZero" },
+			{ "id", "name", "kind", "mask", "blend", "weight", "outputs", "sync", "updateWhenWeightIsZero" },
 			unknown))
 		{
 			error = "Invalid or unknown Layer field: " + unknown;
@@ -294,14 +397,12 @@ namespace
 		}
 		if (!source.contains("id") || !source["id"].is_string()
 			|| !source.contains("name") || !source["name"].is_string()
-			|| !source.contains("graphId") || !source["graphId"].is_string()
 			|| !source.contains("kind") || !source["kind"].is_string()
 			|| !source.contains("mask") || !source["mask"].is_object()
 			|| !source.contains("blend") || !source["blend"].is_object()
 			|| !source.contains("weight") || !source["weight"].is_object()
 			|| !source.contains("outputs") || !source["outputs"].is_object()
 			|| !source.contains("sync") || !source["sync"].is_object()
-			|| !source.contains("enabled") || !source["enabled"].is_boolean()
 			|| !source.contains("updateWhenWeightIsZero") || !source["updateWhenWeightIsZero"].is_boolean())
 		{
 			error = "Layer is missing required canonical fields";
@@ -338,7 +439,6 @@ namespace
 		{
 			layer.id = source["id"].get<std::string>();
 			layer.name = source["name"].get<std::string>();
-			layer.graphId = source["graphId"].get<std::string>();
 			layer.maskGuid = mask.at("guid").get<std::string>();
 			layer.maskPathHint = mask.at("pathHint").get<std::string>();
 			layer.referenceClipName = additive.at("clip").get<std::string>();
@@ -348,7 +448,6 @@ namespace
 			layer.weightSmoothingTime = weight.at("smoothingTime").get<float>();
 			layer.syncLeaderLayerId = sync.at("leaderLayerId").get<std::string>();
 			layer.eventWeightThreshold = outputs.at("eventWeightThreshold").get<float>();
-			layer.enabled = source["enabled"].get<bool>();
 			layer.updateWhenWeightIsZero = source["updateWhenWeightIsZero"].get<bool>();
 
 			if (!ParseEnum(source["kind"].get<std::string>(),
@@ -403,6 +502,12 @@ namespace
 			error = "Animator name cannot be empty";
 			return false;
 		}
+		Vans::VansAssetGuid animationRigGuid;
+		if (!Vans::VansAssetGuid::TryParse(data.animationRigGuid, animationRigGuid))
+		{
+			error = "Animator requires a valid animationRigGuid";
+			return false;
+		}
 		if (!data.editor.previewModelGuid.empty())
 		{
 			Vans::VansAssetGuid previewModelGuid;
@@ -451,9 +556,39 @@ namespace
 			return std::isfinite(value.x) && std::isfinite(value.y)
 				&& std::isfinite(value.z) && std::isfinite(value.w);
 		};
-		auto requiresReferenceBone = [](IKCoordinateSpace space)
+		auto finiteWeight = [](float value)
 		{
-			return space == IKCoordinateSpace::Bone || space == IKCoordinateSpace::ParentBone;
+			return std::isfinite(value) && value >= 0.0f && value <= 1.0f;
+		};
+		auto validateGoal = [&](const VansGraphGoalDefinition& goal,
+		                        bool requireGoalId,
+		                        const std::string& owner) -> bool
+		{
+			if ((requireGoalId && goal.goalId.empty())
+				|| !finiteVec3(goal.fixedPositionModel) || !finiteQuat(goal.fixedRotationModel)
+				|| glm::dot(goal.fixedRotationModel, goal.fixedRotationModel) <= 1.0e-8f
+				|| !finiteWeight(goal.fixedPositionWeight) || !finiteWeight(goal.fixedRotationWeight))
+			{
+				error = owner + " has an invalid Goal id, transform, or weight";
+				return false;
+			}
+			switch (goal.source)
+			{
+			case VansGraphGoalSource::Binding:
+				if (!goal.binding.empty()) return true;
+				error = owner + " requires a non-empty target binding";
+				return false;
+			case VansGraphGoalSource::Parameters:
+				if (hasParameter(goal.positionParameter, AnimatorParamType::Vector3)
+					&& hasParameter(goal.rotationParameter, AnimatorParamType::Quaternion, true)
+					&& hasParameter(goal.weightParameter, AnimatorParamType::Float, true)) return true;
+				error = owner + " has a missing or mistyped target parameter";
+				return false;
+			case VansGraphGoalSource::Fixed:
+				return true;
+			}
+			error = owner + " has an invalid Goal source";
+			return false;
 		};
 
 		std::unordered_set<std::string> clipNames;
@@ -633,128 +768,120 @@ namespace
 						return false;
 					}
 				}
-				else if (node->GetType() == AnimGraphNodeType::IK)
+				else if (node->GetType() == AnimGraphNodeType::Goal)
 				{
-					const auto* ik = static_cast<const AnimGraphIKNode*>(node.get());
-					const IKChainDefinition& chain = ik->m_Chain;
-					std::unordered_set<std::string> boneNames;
-					std::size_t effectorCount = 0;
-					bool validBones = chain.bones.size() >= 2;
-					for (const IKBoneLink& bone : chain.bones)
+					const auto* goal = static_cast<const AnimGraphGoalNode*>(node.get());
+					if (!validateGoal(goal->m_Goal, true, "Goal node in Graph '" + graph.name + "'"))
+						return false;
+				}
+				else if (node->GetType() == AnimGraphNodeType::AimConstraint)
+				{
+					const auto* aim = static_cast<const AnimGraphAimConstraintNode*>(node.get());
+					const auto& settings = aim->m_Settings;
+					if (aim->m_ChainId.empty()
+						|| !validateGoal(aim->m_Target, false, "Aim Constraint in Graph '" + graph.name + "'")
+						|| !std::isfinite(settings.yawLimitDegrees.x)
+						|| !std::isfinite(settings.yawLimitDegrees.y)
+						|| settings.yawLimitDegrees.x > settings.yawLimitDegrees.y
+						|| settings.yawLimitDegrees.x < -180.0f || settings.yawLimitDegrees.y > 180.0f
+						|| !std::isfinite(settings.pitchLimitDegrees.x)
+						|| !std::isfinite(settings.pitchLimitDegrees.y)
+						|| settings.pitchLimitDegrees.x > settings.pitchLimitDegrees.y
+						|| settings.pitchLimitDegrees.x < -180.0f || settings.pitchLimitDegrees.y > 180.0f
+						|| !std::isfinite(settings.maxAngularSpeedDegrees)
+						|| settings.maxAngularSpeedDegrees <= 0.0f
+						|| !finiteWeight(settings.weight)
+						|| !std::isfinite(aim->m_TargetHalfLife) || aim->m_TargetHalfLife < 0.0f)
 					{
-						validBones = validBones && !bone.boneName.empty() && boneNames.insert(bone.boneName).second
-							&& std::isfinite(bone.stiffnessWeight) && bone.stiffnessWeight >= 0.0f && bone.stiffnessWeight <= 1.0f
-							&& finiteVec3(bone.constraint.localXAxis) && finiteVec3(bone.constraint.localYAxis)
-							&& finiteVec3(bone.constraint.localZAxis) && std::isfinite(bone.constraint.minAngleX)
-							&& std::isfinite(bone.constraint.maxAngleX) && bone.constraint.minAngleX <= bone.constraint.maxAngleX
-							&& std::isfinite(bone.constraint.minAngleY) && std::isfinite(bone.constraint.maxAngleY)
-							&& bone.constraint.minAngleY <= bone.constraint.maxAngleY
-							&& std::isfinite(bone.constraint.minAngleZ) && std::isfinite(bone.constraint.maxAngleZ)
-							&& bone.constraint.minAngleZ <= bone.constraint.maxAngleZ
-							&& std::isfinite(bone.constraint.coneAngleDeg) && bone.constraint.coneAngleDeg >= 0.0f
-							&& bone.constraint.coneAngleDeg <= 180.0f && std::isfinite(bone.constraint.stiffness)
-							&& bone.constraint.stiffness >= 0.0f && bone.constraint.stiffness <= 1.0f;
-						if (bone.isEffector) ++effectorCount;
-					}
-					const bool validTarget = ik->m_UseFixedTarget
-						? finiteVec3(ik->m_FixedTargetPos) && finiteQuat(ik->m_FixedTargetRot)
-							&& std::isfinite(ik->m_FixedWeight) && ik->m_FixedWeight >= 0.0f && ik->m_FixedWeight <= 1.0f
-						: hasParameter(ik->m_TargetPosParamName, AnimatorParamType::Vector3)
-							&& hasParameter(ik->m_TargetRotParamName, AnimatorParamType::Quaternion, !chain.enableRotationTarget)
-							&& hasParameter(ik->m_WeightParamName, AnimatorParamType::Float, true);
-					if (chain.chainName.empty() || !validBones || effectorCount != 1 || !chain.bones.back().isEffector
-						|| chain.maxIterations <= 0 || !std::isfinite(chain.positionTolerance) || chain.positionTolerance <= 0.0f
-						|| !std::isfinite(chain.rotationTolerance) || chain.rotationTolerance <= 0.0f
-						|| !finiteVec3(chain.poleVector) || !std::isfinite(chain.poleWeight)
-						|| chain.poleWeight < 0.0f || chain.poleWeight > 1.0f
-						|| !std::isfinite(chain.rotationWeight) || chain.rotationWeight < 0.0f || chain.rotationWeight > 1.0f
-						|| !std::isfinite(chain.startStretchRatio) || !std::isfinite(chain.maxStretchScale)
-						|| chain.startStretchRatio < 0.0f || chain.maxStretchScale < 1.0f
-						|| chain.startStretchRatio > chain.maxStretchScale || !validTarget
-						|| (requiresReferenceBone(ik->m_TargetPositionSpace) && ik->m_TargetReferenceBoneName.empty())
-						|| (requiresReferenceBone(chain.poleSpace) && chain.poleWeight > 0.0f && chain.poleReferenceBoneName.empty()))
-					{
-						error = "IK node in Graph '" + graph.name + "' has an invalid chain, target, or constraint";
+						if (error.empty())
+							error = "Aim Constraint in Graph '" + graph.name + "' has invalid settings";
 						return false;
 					}
 				}
-				else if (node->GetType() == AnimGraphNodeType::TwoBoneIK)
+				else if (node->GetType() == AnimGraphNodeType::Grounding)
 				{
-					const auto* ik = static_cast<const AnimGraphTwoBoneIKNode*>(node.get());
-					const bool validTarget = ik->m_UseFixedTarget
-						? finiteVec3(ik->m_FixedTargetPos) && finiteQuat(ik->m_FixedTargetRot)
-							&& std::isfinite(ik->m_FixedWeight) && ik->m_FixedWeight >= 0.0f && ik->m_FixedWeight <= 1.0f
-						: hasParameter(ik->m_TargetPosParamName, AnimatorParamType::Vector3)
-							&& hasParameter(ik->m_TargetRotParamName, AnimatorParamType::Quaternion, !ik->m_EnableRotationTarget)
-							&& hasParameter(ik->m_WeightParamName, AnimatorParamType::Float, true);
-					if (ik->m_RootBoneName.empty() || ik->m_MidBoneName.empty() || ik->m_TipBoneName.empty()
-						|| ik->m_RootBoneName == ik->m_MidBoneName || ik->m_RootBoneName == ik->m_TipBoneName
-						|| ik->m_MidBoneName == ik->m_TipBoneName || !validTarget
-						|| !std::isfinite(ik->m_HingeMinAngle) || !std::isfinite(ik->m_HingeMaxAngle)
-						|| ik->m_HingeMinAngle > ik->m_HingeMaxAngle || !std::isfinite(ik->m_ConeAngle)
-						|| ik->m_ConeAngle < 0.0f || ik->m_ConeAngle > 180.0f || !finiteVec3(ik->m_PoleVector)
-						|| !std::isfinite(ik->m_PoleWeight) || ik->m_PoleWeight < 0.0f || ik->m_PoleWeight > 1.0f
-						|| !std::isfinite(ik->m_RotationWeight) || ik->m_RotationWeight < 0.0f || ik->m_RotationWeight > 1.0f
-						|| !std::isfinite(ik->m_StartStretchRatio) || !std::isfinite(ik->m_MaxStretchScale)
-						|| ik->m_StartStretchRatio < 0.0f || ik->m_MaxStretchScale < 1.0f
-						|| ik->m_StartStretchRatio > ik->m_MaxStretchScale
-						|| (requiresReferenceBone(ik->m_TargetPositionSpace) && ik->m_TargetReferenceBoneName.empty())
-						|| (ik->m_UsePoleVector && requiresReferenceBone(ik->m_PoleSpace) && ik->m_PoleReferenceBoneName.empty()))
+					const auto& settings = static_cast<const AnimGraphGroundingNode*>(node.get())->m_Settings;
+					std::unordered_set<std::string> contacts;
+					const auto finiteNonNegative = [](float value)
+					{ return std::isfinite(value) && value >= 0.0f; };
+					const bool invalidContacts = settings.contacts.empty()
+						|| std::any_of(settings.contacts.begin(), settings.contacts.end(),
+							[&](const std::string& id) { return id.empty() || !contacts.insert(id).second; });
+					if (invalidContacts || settings.query.profile.empty() || settings.query.collisionMask != 0
+						|| !finiteWeight(settings.weight)
+						|| !finiteNonNegative(settings.query.startDistanceAgainstApproach)
+						|| !finiteNonNegative(settings.query.endDistanceAlongApproach)
+						|| !finiteNonNegative(settings.query.maxStepUp)
+						|| !finiteNonNegative(settings.query.maxStepDown)
+						|| !finiteNonNegative(settings.query.maxPlaneResidual)
+						|| !std::isfinite(settings.query.maxNormalDeviationDegrees)
+						|| settings.query.maxNormalDeviationDegrees < 0.0f
+						|| settings.query.maxNormalDeviationDegrees >= 90.0f
+						|| !std::isfinite(settings.query.maxSlopeDegrees)
+						|| settings.query.maxSlopeDegrees < 0.0f || settings.query.maxSlopeDegrees >= 90.0f
+						|| !std::isfinite(settings.plant.enterPhase) || !std::isfinite(settings.plant.exitPhase)
+						|| settings.plant.exitPhase < 0.0f || settings.plant.enterPhase > 1.0f
+						|| settings.plant.enterPhase <= settings.plant.exitPhase
+						|| !finiteNonNegative(settings.plant.unplantDistance)
+						|| !finiteNonNegative(settings.plant.replantDistance)
+						|| settings.plant.replantDistance > settings.plant.unplantDistance
+						|| !finiteNonNegative(settings.plant.unplantAngleDegrees)
+						|| !finiteNonNegative(settings.plant.replantAngleDegrees)
+						|| settings.plant.replantAngleDegrees > settings.plant.unplantAngleDegrees
+						|| !finiteNonNegative(settings.plant.weightHalfLife)
+						|| !finiteNonNegative(settings.alignment.fullContactHeight)
+						|| !finiteNonNegative(settings.alignment.contactFadeHeight)
+						|| settings.alignment.contactFadeHeight <= settings.alignment.fullContactHeight
+						|| !finiteNonNegative(settings.alignment.normalHalfLife)
+						|| !finiteWeight(settings.alignment.rotationWeight)
+						|| !finiteNonNegative(settings.pelvis.maxUpOffset)
+						|| !finiteNonNegative(settings.pelvis.maxDownOffset)
+						|| !finiteNonNegative(settings.pelvis.maxHorizontalOffset)
+						|| !finiteNonNegative(settings.pelvis.halfLife)
+						|| (settings.plant.pivot != VansPlantPivot::Heel
+							&& settings.plant.pivot != VansPlantPivot::Ball
+							&& settings.plant.pivot != VansPlantPivot::Ankle)
+						|| (settings.plant.lockEnabled && settings.plantSignal.empty()))
 					{
-						error = "Two Bone IK node in Graph '" + graph.name + "' has an invalid chain or target";
+						error = "Grounding node in Graph '" + graph.name
+							+ "' has invalid authoring settings or a runtime-only collision mask";
 						return false;
 					}
 				}
-				else if (node->GetType() == AnimGraphNodeType::LookAt)
+				else if (node->GetType() == AnimGraphNodeType::LimbIK)
 				{
-					const auto* lookAt = static_cast<const AnimGraphLookAtNode*>(node.get());
-					std::unordered_set<std::string> boneNames;
-					const bool validTarget = lookAt->m_UseFixedTarget
-						? finiteVec3(lookAt->m_FixedTargetPos) && std::isfinite(lookAt->m_FixedWeight)
-							&& lookAt->m_FixedWeight >= 0.0f && lookAt->m_FixedWeight <= 1.0f
-						: hasParameter(lookAt->m_TargetPosParamName, AnimatorParamType::Vector3)
-							&& hasParameter(lookAt->m_WeightParamName, AnimatorParamType::Float, true);
-					if (lookAt->m_BoneNames.empty() || lookAt->m_BoneWeights.size() != lookAt->m_BoneNames.size()
-						|| std::any_of(lookAt->m_BoneNames.begin(), lookAt->m_BoneNames.end(),
-							[&](const std::string& name) { return name.empty() || !boneNames.insert(name).second; })
-						|| std::any_of(lookAt->m_BoneWeights.begin(), lookAt->m_BoneWeights.end(),
-							[](float weight) { return !std::isfinite(weight) || weight < 0.0f || weight > 1.0f; })
-						|| !std::isfinite(lookAt->m_MaxAnglePerBoneDeg) || lookAt->m_MaxAnglePerBoneDeg < 0.0f
-						|| lookAt->m_MaxAnglePerBoneDeg > 180.0f || !finiteVec3(lookAt->m_ForwardAxis)
-						|| !finiteVec3(lookAt->m_WorldForward) || !finiteVec3(lookAt->m_ModelUp)
-						|| !std::isfinite(lookAt->m_UpWeight) || lookAt->m_UpWeight < 0.0f || lookAt->m_UpWeight > 1.0f
-						|| !validTarget || (requiresReferenceBone(lookAt->m_TargetPositionSpace)
-							&& lookAt->m_TargetReferenceBoneName.empty()))
+					const auto* limb = static_cast<const AnimGraphLimbIKNode*>(node.get());
+					std::unordered_set<std::string> chains;
+					if (limb->m_ChainIds.empty()
+						|| std::any_of(limb->m_ChainIds.begin(), limb->m_ChainIds.end(),
+							[&](const std::string& id) { return id.empty() || !chains.insert(id).second; })
+						|| !std::isfinite(limb->m_Settings.positionTolerance)
+						|| limb->m_Settings.positionTolerance <= 0.0f
+						|| !finiteWeight(limb->m_Settings.weight)
+						|| (limb->m_Settings.tipRotationMode
+								!= VansLimbTipRotationMode::PreserveInput
+							&& limb->m_Settings.tipRotationMode
+								!= VansLimbTipRotationMode::MatchGoal
+							&& limb->m_Settings.tipRotationMode
+								!= VansLimbTipRotationMode::FollowChain))
 					{
-						error = "Look At node in Graph '" + graph.name + "' has an invalid chain or target";
+						error = "Limb IK node in Graph '" + graph.name + "' has invalid chains or settings";
 						return false;
 					}
 				}
-				else if (node->GetType() == AnimGraphNodeType::FootPlacement)
+				else if (node->GetType() == AnimGraphNodeType::ChainIK)
 				{
-					const FootPlacementSettings& settings =
-						static_cast<const AnimGraphFootPlacementNode*>(node.get())->m_Settings;
-					const float numericValues[] = { settings.probeOriginHeight, settings.probeLength,
-						settings.footHalfLength, settings.footHalfWidth, settings.ankleHeight,
-						settings.fullContactHeight, settings.contactFadeHeight, settings.maxStepUp,
-						settings.maxStepDown, settings.maxSlopeDeg, settings.pelvisMaxDrop,
-						settings.pelvisSmoothTime, settings.offsetSmoothTime, settings.normalSmoothTime,
-						settings.weightSmoothTime, settings.globalWeightSmoothTime, settings.ikWeight,
-						settings.rotationWeight, settings.maxLegExtensionRatio, settings.poleSmoothTime,
-						settings.kneePoleModelWeight };
-					const bool invalidNumeric = std::any_of(std::begin(numericValues), std::end(numericValues),
-						[](float value) { return !std::isfinite(value) || value < 0.0f; });
-					if (invalidNumeric || settings.contactFadeHeight < settings.fullContactHeight
-						|| settings.maxSlopeDeg > 89.0f || settings.ikWeight > 1.0f
-						|| settings.rotationWeight > 1.0f || settings.kneePoleModelWeight > 1.0f
-						|| !finiteVec3(settings.kneePoleModelDir)
-						|| !hasParameter(settings.airborneParameter, AnimatorParamType::Bool, true)
-						|| settings.bones.pelvis.empty() || settings.bones.leftHip.empty()
-						|| settings.bones.leftKnee.empty() || settings.bones.leftFoot.empty()
-						|| settings.bones.rightHip.empty() || settings.bones.rightKnee.empty()
-						|| settings.bones.rightFoot.empty())
+					const auto* chain = static_cast<const AnimGraphChainIKNode*>(node.get());
+					std::unordered_set<std::string> chains;
+					if (chain->m_ChainIds.empty()
+						|| std::any_of(chain->m_ChainIds.begin(), chain->m_ChainIds.end(),
+							[&](const std::string& id) { return id.empty() || !chains.insert(id).second; })
+						|| chain->m_Settings.maxIterations < 1 || chain->m_Settings.maxIterations > 64
+						|| !std::isfinite(chain->m_Settings.positionTolerance)
+						|| chain->m_Settings.positionTolerance <= 0.0f
+						|| !finiteWeight(chain->m_Settings.weight))
 					{
-						error = "Foot Placement node in Graph '" + graph.name + "' has invalid settings";
+						error = "Chain IK node in Graph '" + graph.name + "' has invalid chains or settings";
 						return false;
 					}
 				}
@@ -775,13 +902,14 @@ namespace
 				for (const auto& [nodeId, node] : graph.graph->GetNodes())
 				{
 					if (!node) continue;
-					if (node->GetType() == AnimGraphNodeType::IK
-						|| node->GetType() == AnimGraphNodeType::TwoBoneIK
-						|| node->GetType() == AnimGraphNodeType::LookAt
-						|| node->GetType() == AnimGraphNodeType::FootPlacement)
+					if (node->GetType() == AnimGraphNodeType::Goal
+						|| node->GetType() == AnimGraphNodeType::AimConstraint
+						|| node->GetType() == AnimGraphNodeType::Grounding
+						|| node->GetType() == AnimGraphNodeType::LimbIK
+						|| node->GetType() == AnimGraphNodeType::ChainIK)
 					{
 						error = "Pose Graph '" + graph.name
-							+ "' cannot contain Target Post Process IK or Foot Placement nodes";
+							+ "' cannot contain target procedural nodes";
 						return false;
 					}
 				}
@@ -835,16 +963,6 @@ namespace
 			if (layer.id.empty() || layer.name.empty() || !layerIds.insert(layer.id).second)
 			{
 				error = "Animator Layer ids/names must be non-empty and Layer ids must be unique";
-				return false;
-			}
-			if (graphIds.find(layer.graphId) == graphIds.end())
-			{
-				error = "Layer '" + layer.name + "' references an unknown Graph id";
-				return false;
-			}
-			if (graphRoles.at(layer.graphId) != AnimatorGraphAsset::Role::Pose)
-			{
-				error = "Layer '" + layer.name + "' must reference a Pose Graph";
 				return false;
 			}
 			if (layer.kind == VansAnimationLayerKind::Base)
@@ -919,10 +1037,75 @@ namespace
 				error = "Layer '" + layer.name + "' requires an earlier sync leader";
 				return false;
 			}
-			if (layer.sync == VansLayerSyncMode::SyncedGraph)
+		}
+
+		if (data.graphSets.empty() || data.defaultGraphSetId.empty())
+		{
+			error = "Animator requires Graph Sets and a default Graph Set ID";
+			return false;
+		}
+		if (!std::isfinite(data.defaultGraphSetTransition.duration)
+			|| data.defaultGraphSetTransition.duration < 0.0f)
+		{
+			error = "Default Graph Set transition duration must be finite and non-negative";
+			return false;
+		}
+		std::unordered_set<std::string> graphSetIds;
+		bool hasDefaultGraphSet = false;
+		for (const VansAnimationGraphSetDefinition& graphSet : data.graphSets)
+		{
+			if (graphSet.id.empty() || graphSet.name.empty()
+				|| !graphSetIds.insert(graphSet.id).second
+				|| graphSet.bindings.size() != data.layers.size())
 			{
-				const VansAnimGraph* leaderGraph = data.FindGraph(data.layers[leaderIndex].graphId);
-				const VansAnimGraph* followerGraph = data.FindGraph(layer.graphId);
+				error = "Graph Sets require unique IDs, names, and one ordered binding per Layer";
+				return false;
+			}
+			hasDefaultGraphSet = hasDefaultGraphSet || graphSet.id == data.defaultGraphSetId;
+			for (std::size_t index = 0; index < data.layers.size(); ++index)
+			{
+				const VansAnimationLayerDefinition& layer = data.layers[index];
+				const VansAnimationGraphBindingDefinition& binding = graphSet.bindings[index];
+				if (binding.layerId != layer.id)
+				{
+					error = "Graph Set '" + graphSet.name + "' bindings must follow Layer Stack order";
+					return false;
+				}
+				if (!binding.enabled)
+				{
+					if (layer.kind == VansAnimationLayerKind::Base || !binding.graphId.empty())
+					{
+						error = "Only Overlay bindings may be disabled, and disabled bindings must not reference a Graph";
+						return false;
+					}
+					continue;
+				}
+				if (graphIds.find(binding.graphId) == graphIds.end()
+					|| graphRoles.at(binding.graphId) != AnimatorGraphAsset::Role::Pose)
+				{
+					error = "Enabled Graph Set binding for Layer '" + layer.name
+						+ "' must reference a Pose Graph";
+					return false;
+				}
+				if (layer.sync == VansLayerSyncMode::Independent)
+					continue;
+				std::size_t leaderIndex = data.layers.size();
+				for (std::size_t leader = 0; leader < index; ++leader)
+					if (data.layers[leader].id == layer.syncLeaderLayerId)
+					{
+						leaderIndex = leader;
+						break;
+					}
+				if (leaderIndex == data.layers.size() || !graphSet.bindings[leaderIndex].enabled)
+				{
+					error = "Synced Layer '" + layer.name
+						+ "' requires an enabled earlier leader in every Graph Set";
+					return false;
+				}
+				if (layer.sync != VansLayerSyncMode::SyncedGraph)
+					continue;
+				const VansAnimGraph* leaderGraph = data.FindGraph(graphSet.bindings[leaderIndex].graphId);
+				const VansAnimGraph* followerGraph = data.FindGraph(binding.graphId);
 				const AnimGraphStateMachineNode* leaderStateMachine = leaderGraph
 					? FindPrimaryStateMachine(*leaderGraph) : nullptr;
 				const AnimGraphStateMachineNode* followerStateMachine = followerGraph
@@ -930,7 +1113,7 @@ namespace
 				if (!leaderStateMachine || !followerStateMachine)
 				{
 					error = "Synced Graph Layer '" + layer.name
-						+ "' requires primary State Machine nodes on both Layers";
+						+ "' requires primary State Machine nodes on both bindings";
 					return false;
 				}
 				std::unordered_set<std::string> leaderStates;
@@ -947,48 +1130,72 @@ namespace
 				}
 			}
 		}
+		if (!hasDefaultGraphSet)
+		{
+			error = "defaultGraphSetId does not reference a Graph Set";
+			return false;
+		}
+		std::unordered_set<std::string> transitionPairs;
+		for (const VansGraphSetTransitionRule& rule : data.graphSetTransitionRules)
+		{
+			if (graphSetIds.find(rule.fromGraphSetId) == graphSetIds.end()
+				|| graphSetIds.find(rule.toGraphSetId) == graphSetIds.end()
+				|| rule.fromGraphSetId == rule.toGraphSetId
+				|| !std::isfinite(rule.policy.duration) || rule.policy.duration < 0.0f
+				|| !transitionPairs.insert(rule.fromGraphSetId + "\n" + rule.toGraphSetId).second)
+			{
+				error = "Graph Set transition rules require unique valid source/target pairs and durations";
+				return false;
+			}
+		}
 
 		std::unordered_set<std::string> slotIds;
-		std::unordered_set<std::string> boundSlotNodes;
 		for (const VansAnimationSlotDefinition& slot : data.slots)
 		{
 			if (slot.id.empty() || slot.name.empty() || !slotIds.insert(slot.id).second
-				|| layerIds.find(slot.layerId) == layerIds.end() || slot.slotNodeId < 0
+				|| layerIds.find(slot.layerId) == layerIds.end()
 				|| !std::isfinite(slot.defaultBlendIn) || slot.defaultBlendIn < 0.0f
 				|| !std::isfinite(slot.defaultBlendOut) || slot.defaultBlendOut < 0.0f)
 			{
 				error = "Animator contains an invalid Slot definition";
 				return false;
 			}
-			const VansAnimationLayerDefinition* ownerLayer = nullptr;
-			for (const VansAnimationLayerDefinition& layer : data.layers)
-				if (layer.id == slot.layerId) { ownerLayer = &layer; break; }
-			const VansAnimGraph* ownerGraph = ownerLayer ? data.FindGraph(ownerLayer->graphId) : nullptr;
-			const VansAnimGraphNode* node = ownerGraph ? ownerGraph->GetNode(slot.slotNodeId) : nullptr;
-			if (!node || node->GetType() != AnimGraphNodeType::Slot
-				|| static_cast<const AnimGraphSlotNode*>(node)->m_SlotId != slot.id)
-			{
-				error = "Slot '" + slot.name + "' does not match its bound Slot Graph node";
-				return false;
-			}
-			boundSlotNodes.insert(slot.layerId + "#" + std::to_string(slot.slotNodeId));
 		}
-		for (const VansAnimationLayerDefinition& layer : data.layers)
+		for (const VansAnimationGraphSetDefinition& graphSet : data.graphSets)
 		{
-			const VansAnimGraph* graph = data.FindGraph(layer.graphId);
-			if (!graph)
-				continue;
-			for (const auto& [nodeId, node] : graph->GetNodes())
+			for (std::size_t layerIndex = 0; layerIndex < data.layers.size(); ++layerIndex)
 			{
-				if (!node || node->GetType() != AnimGraphNodeType::Slot)
+				const VansAnimationGraphBindingDefinition& binding = graphSet.bindings[layerIndex];
+				if (!binding.enabled)
 					continue;
-				const auto* slotNode = static_cast<const AnimGraphSlotNode*>(node.get());
-				if (slotNode->m_SlotId.empty()
-					|| boundSlotNodes.find(layer.id + "#" + std::to_string(nodeId)) == boundSlotNodes.end())
+				const VansAnimationLayerDefinition& layer = data.layers[layerIndex];
+				const VansAnimGraph* graph = data.FindGraph(binding.graphId);
+				std::unordered_map<std::string, std::size_t> graphSlotCounts;
+				for (const auto& [nodeId, node] : graph->GetNodes())
+					if (node && node->GetType() == AnimGraphNodeType::Slot)
+						++graphSlotCounts[static_cast<const AnimGraphSlotNode*>(node.get())->m_SlotId];
+				for (const VansAnimationSlotDefinition& slot : data.slots)
 				{
-					error = "Slot node in Layer '" + layer.name
-						+ "' requires exactly one matching Slot definition";
-					return false;
+					if (slot.layerId != layer.id)
+						continue;
+					if (graphSlotCounts[slot.id] != 1)
+					{
+						error = "Slot '" + slot.name
+							+ "' requires exactly one semantic Slot node in Graph '"
+							+ binding.graphId + "' of Graph Set '" + graphSet.name + "'";
+						return false;
+					}
+				}
+				for (const auto& [slotId, count] : graphSlotCounts)
+				{
+					if (slotId.empty() || count != 1
+						|| std::none_of(data.slots.begin(), data.slots.end(),
+							[&](const VansAnimationSlotDefinition& slot)
+							{ return slot.id == slotId && slot.layerId == layer.id; }))
+					{
+						error = "Slot nodes in enabled Graph bindings require one matching semantic Slot definition";
+						return false;
+					}
 				}
 			}
 		}
@@ -1003,6 +1210,7 @@ namespace
 		root = json::object();
 		root["magic"] = VANIMATOR_MAGIC;
 		root["name"] = data.name;
+		root["animationRigGuid"] = data.animationRigGuid;
 
 		json parameterArray = json::array();
 		std::vector<const AnimatorParameter*> sortedParameters;
@@ -1050,12 +1258,34 @@ namespace
 			layerArray.push_back(SerializeLayer(layer));
 		root["layers"] = std::move(layerArray);
 
+		json graphSetArray = json::array();
+		for (const VansAnimationGraphSetDefinition& graphSet : data.graphSets)
+		{
+			json bindings = json::array();
+			for (const VansAnimationGraphBindingDefinition& binding : graphSet.bindings)
+				bindings.push_back({ { "layerId", binding.layerId },
+					{ "graphId", binding.graphId }, { "enabled", binding.enabled } });
+			graphSetArray.push_back({ { "id", graphSet.id }, { "name", graphSet.name },
+				{ "bindings", std::move(bindings) } });
+		}
+		root["graphSets"] = std::move(graphSetArray);
+		root["defaultGraphSetId"] = data.defaultGraphSetId;
+		json transitionRules = json::array();
+		for (const VansGraphSetTransitionRule& rule : data.graphSetTransitionRules)
+			transitionRules.push_back({ { "from", rule.fromGraphSetId },
+				{ "to", rule.toGraphSetId },
+				{ "policy", SerializeGraphSetTransitionPolicy(rule.policy) } });
+		root["graphSetTransitions"] = {
+			{ "default", SerializeGraphSetTransitionPolicy(data.defaultGraphSetTransition) },
+			{ "rules", std::move(transitionRules) }
+		};
+
 		json slotArray = json::array();
 		for (const VansAnimationSlotDefinition& slot : data.slots)
 		{
 			slotArray.push_back({
 				{ "id", slot.id }, { "name", slot.name }, { "layerId", slot.layerId },
-				{ "nodeId", slot.slotNodeId }, { "concurrency", ToString(slot.concurrency) },
+				{ "concurrency", ToString(slot.concurrency) },
 				{ "maxQueueDepth", slot.maxQueueDepth }, { "defaultBlendIn", slot.defaultBlendIn },
 				{ "defaultBlendOut", slot.defaultBlendOut }, { "interruptible", slot.interruptible }
 			});
@@ -1085,17 +1315,21 @@ namespace
 			return false;
 		}
 		std::string unknown;
-		if (!HasOnlyFields(root, { "magic", "name", "parameters", "clips", "graphs", "layers", "slots", "editor" }, unknown))
+		if (!HasOnlyFields(root, { "magic", "name", "animationRigGuid", "parameters", "clips", "graphs", "layers", "graphSets", "defaultGraphSetId", "graphSetTransitions", "slots", "editor" }, unknown))
 		{
 			VANS_LOG_ERROR("[VansAnimatorIO] Unknown root field '" << unknown << "' in canonical animator: " << filePath);
 			return false;
 		}
 		if (!root.contains("magic") || !root["magic"].is_string() || root["magic"].get<std::string>() != VANIMATOR_MAGIC
 			|| !root.contains("name") || !root["name"].is_string()
+			|| !root.contains("animationRigGuid") || !root["animationRigGuid"].is_string()
 			|| !root.contains("parameters") || !root["parameters"].is_array()
 			|| !root.contains("clips") || !root["clips"].is_array()
 			|| !root.contains("graphs") || !root["graphs"].is_array()
 			|| !root.contains("layers") || !root["layers"].is_array()
+			|| !root.contains("graphSets") || !root["graphSets"].is_array()
+			|| !root.contains("defaultGraphSetId") || !root["defaultGraphSetId"].is_string()
+			|| !root.contains("graphSetTransitions") || !root["graphSetTransitions"].is_object()
 			|| !root.contains("slots") || !root["slots"].is_array())
 		{
 			VANS_LOG_ERROR("[VansAnimatorIO] Animator is missing required canonical fields: " << filePath);
@@ -1210,7 +1444,8 @@ static bool DeserializeAnimatorRoot(
 	std::string error;
 	try
 	{
-		parsed.name = root["name"].get<std::string>();
+			parsed.name = root["name"].get<std::string>();
+		parsed.animationRigGuid = root["animationRigGuid"].get<std::string>();
 		for (const json& source : root["parameters"])
 		{
 			std::string unknown;
@@ -1311,11 +1546,76 @@ static bool DeserializeAnimatorRoot(
 			parsed.layers.push_back(std::move(layer));
 		}
 
+		for (const json& source : root["graphSets"])
+		{
+			std::string unknown;
+			if (!HasOnlyFields(source, { "id", "name", "bindings" }, unknown)
+				|| !source.contains("id") || !source["id"].is_string()
+				|| !source.contains("name") || !source["name"].is_string()
+				|| !source.contains("bindings") || !source["bindings"].is_array())
+			{
+				VANS_LOG_ERROR("[VansAnimatorIO] Invalid Graph Set entry in: " << filePath);
+				return false;
+			}
+			VansAnimationGraphSetDefinition graphSet;
+			graphSet.id = source["id"].get<std::string>();
+			graphSet.name = source["name"].get<std::string>();
+			for (const json& bindingSource : source["bindings"])
+			{
+				if (!HasOnlyFields(bindingSource, { "layerId", "graphId", "enabled" }, unknown)
+					|| !bindingSource.contains("layerId") || !bindingSource["layerId"].is_string()
+					|| !bindingSource.contains("graphId") || !bindingSource["graphId"].is_string()
+					|| !bindingSource.contains("enabled") || !bindingSource["enabled"].is_boolean())
+				{
+					VANS_LOG_ERROR("[VansAnimatorIO] Invalid Graph Set binding in: " << filePath);
+					return false;
+				}
+				graphSet.bindings.push_back({
+					bindingSource["layerId"].get<std::string>(),
+					bindingSource["graphId"].get<std::string>(),
+					bindingSource["enabled"].get<bool>() });
+			}
+			parsed.graphSets.push_back(std::move(graphSet));
+		}
+		parsed.defaultGraphSetId = root["defaultGraphSetId"].get<std::string>();
+		const json& transitions = root["graphSetTransitions"];
+		std::string transitionUnknown;
+		if (!HasOnlyFields(transitions, { "default", "rules" }, transitionUnknown)
+			|| !transitions.contains("default") || !transitions["default"].is_object()
+			|| !transitions.contains("rules") || !transitions["rules"].is_array()
+			|| !DeserializeGraphSetTransitionPolicy(
+				transitions["default"], parsed.defaultGraphSetTransition, error))
+		{
+			VANS_LOG_ERROR("[VansAnimatorIO] Invalid Graph Set transitions in "
+				<< filePath << ": " << error);
+			return false;
+		}
+		for (const json& ruleSource : transitions["rules"])
+		{
+			if (!HasOnlyFields(ruleSource, { "from", "to", "policy" }, transitionUnknown)
+				|| !ruleSource.contains("from") || !ruleSource["from"].is_string()
+				|| !ruleSource.contains("to") || !ruleSource["to"].is_string()
+				|| !ruleSource.contains("policy") || !ruleSource["policy"].is_object())
+			{
+				VANS_LOG_ERROR("[VansAnimatorIO] Invalid Graph Set transition rule in: " << filePath);
+				return false;
+			}
+			VansGraphSetTransitionRule rule;
+			rule.fromGraphSetId = ruleSource["from"].get<std::string>();
+			rule.toGraphSetId = ruleSource["to"].get<std::string>();
+			if (!DeserializeGraphSetTransitionPolicy(ruleSource["policy"], rule.policy, error))
+			{
+				VANS_LOG_ERROR("[VansAnimatorIO] " << error << ": " << filePath);
+				return false;
+			}
+			parsed.graphSetTransitionRules.push_back(std::move(rule));
+		}
+
 		for (const json& source : root["slots"])
 		{
 			std::string unknown;
 			if (!HasOnlyFields(source,
-				{ "id", "name", "layerId", "nodeId", "concurrency", "maxQueueDepth", "defaultBlendIn", "defaultBlendOut", "interruptible" },
+				{ "id", "name", "layerId", "concurrency", "maxQueueDepth", "defaultBlendIn", "defaultBlendOut", "interruptible" },
 				unknown))
 			{
 				VANS_LOG_ERROR("[VansAnimatorIO] Invalid Slot field '" << unknown << "' in: " << filePath);
@@ -1325,7 +1625,6 @@ static bool DeserializeAnimatorRoot(
 			slot.id = source.at("id").get<std::string>();
 			slot.name = source.at("name").get<std::string>();
 			slot.layerId = source.at("layerId").get<std::string>();
-			slot.slotNodeId = source.at("nodeId").get<int>();
 			slot.maxQueueDepth = source.at("maxQueueDepth").get<std::uint32_t>();
 			slot.defaultBlendIn = source.at("defaultBlendIn").get<float>();
 			slot.defaultBlendOut = source.at("defaultBlendOut").get<float>();

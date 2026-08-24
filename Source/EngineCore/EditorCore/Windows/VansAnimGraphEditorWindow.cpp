@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <optional>
 #include <unordered_set>
 
 namespace VansGraphics
@@ -34,15 +35,18 @@ namespace VansGraphics
 	using AnimGraphStateMachineNode = Vans::EditorAPI::AnimationNodeDTO;
 	using AnimGraphMotionMatchingNode = Vans::EditorAPI::AnimationNodeDTO;
 	using AnimGraphSlotNode = Vans::EditorAPI::AnimationNodeDTO;
-	using AnimGraphIKNode = Vans::EditorAPI::AnimationNodeDTO;
-	using AnimGraphTwoBoneIKNode = Vans::EditorAPI::AnimationNodeDTO;
-	using AnimGraphLookAtNode = Vans::EditorAPI::AnimationNodeDTO;
-	using AnimGraphFootPlacementNode = Vans::EditorAPI::AnimationNodeDTO;
+	using AnimGraphGoalNode = Vans::EditorAPI::AnimationNodeDTO;
+	using AnimGraphAimConstraintNode = Vans::EditorAPI::AnimationNodeDTO;
+	using AnimGraphGroundingNode = Vans::EditorAPI::AnimationNodeDTO;
+	using AnimGraphLimbIKNode = Vans::EditorAPI::AnimationNodeDTO;
+	using AnimGraphChainIKNode = Vans::EditorAPI::AnimationNodeDTO;
 	using AnimGraphNodeType = Vans::EditorAPI::AnimGraphNodeType;
 	using AnimGraphPin = Vans::EditorAPI::AnimGraphPinDTO;
 	using AnimGraphPinKind = Vans::EditorAPI::AnimGraphPinKind;
 	using CompareOp = Vans::EditorAPI::CompareOp;
 	using VansAnimationLayerDefinition = Vans::EditorAPI::AnimationLayerDTO;
+	using VansAnimationGraphSetDefinition = Vans::EditorAPI::AnimationGraphSetDTO;
+	using VansAnimationGraphBindingDefinition = Vans::EditorAPI::AnimationGraphBindingDTO;
 	using VansAnimationSlotDefinition = Vans::EditorAPI::AnimationSlotDTO;
 	using VansAnimationLayerKind = Vans::EditorAPI::VansAnimationLayerKind;
 	using VansLayerBlendMode = Vans::EditorAPI::VansLayerBlendMode;
@@ -54,12 +58,10 @@ namespace VansGraphics
 	using VansLayerNodeTrackMode = Vans::EditorAPI::VansLayerNodeTrackMode;
 	using VansLayerSyncMode = Vans::EditorAPI::VansLayerSyncMode;
 	using VansSlotConcurrency = Vans::EditorAPI::VansSlotConcurrency;
-	using IKSolverType = Vans::EditorAPI::IKSolverType;
-	using IKProfileType = Vans::EditorAPI::IKProfileType;
-	using IKCoordinateSpace = Vans::EditorAPI::IKCoordinateSpace;
-	using JointConstraintType = Vans::EditorAPI::JointConstraintType;
-	using IKBoneLink = Vans::EditorAPI::IKBoneLinkDTO;
-	using FootPlacementSettings = Vans::EditorAPI::FootPlacementSettingsDTO;
+	using AnimationGoalSource = Vans::EditorAPI::AnimationGoalSource;
+	using AnimationGoalDefinition = Vans::EditorAPI::AnimationGoalDefinitionDTO;
+	using AnimationPlantPivot = Vans::EditorAPI::AnimationPlantPivot;
+	using AnimationLimbTipRotationMode = Vans::EditorAPI::AnimationLimbTipRotationMode;
 }
 
 using namespace VansGraphics;
@@ -105,6 +107,7 @@ namespace VansGraphics
 		std::vector<AnimatorParameter> parameters;
 		std::vector<AnimatorClipRef> clipRefs;
 		std::string selectedLayerId;
+		std::string selectedGraphSetId;
 		std::string selectedSlotId;
 		std::unordered_set<std::string> mutedLayerIds;
 		std::unordered_set<std::string> soloLayerIds;
@@ -159,6 +162,7 @@ void VansAnimGraphEditorWindow::Open(const std::string& animatorFilePath)
 	m_EditState->parameters.clear();
 	m_EditState->clipRefs.clear();
 	m_EditState->selectedLayerId.clear();
+	m_EditState->selectedGraphSetId.clear();
 	m_EditState->selectedSlotId.clear();
 	m_EditState->mutedLayerIds.clear();
 	m_EditState->soloLayerIds.clear();
@@ -784,15 +788,27 @@ void VansAnimGraphEditorWindow::UpdatePreviewDefinition()
 	}
 	nlohmann::json root = nlohmann::json::parse(encoded.canonicalJson);
 	const bool hasSolo = !m_EditState->soloLayerIds.empty();
-	for (auto& layer : root["layers"])
+	std::unordered_map<std::string, bool> previewLayerVisibility;
+	for (const auto& layer : root["layers"])
 	{
 		const std::string id = layer.value("id", "");
 		const bool base = layer.value("kind", "") == "base";
-		const bool authoredEnabled = layer.value("enabled", true);
 		const bool muted = m_EditState->mutedLayerIds.count(id) != 0;
 		const bool soloVisible = !hasSolo || base || m_EditState->soloLayerIds.count(id) != 0;
-		layer["enabled"] = authoredEnabled && !muted && soloVisible;
+		previewLayerVisibility[id] = base || (!muted && soloVisible);
 	}
+	for (auto& graphSet : root["graphSets"])
+		for (auto& binding : graphSet["bindings"])
+		{
+			const std::string layerId = binding.value("layerId", "");
+			const auto visible = previewLayerVisibility.find(layerId);
+			if (visible != previewLayerVisibility.end() && !visible->second
+				&& binding.value("enabled", false))
+			{
+				binding["enabled"] = false;
+				binding["graphId"] = "";
+			}
+		}
 	Vans::EditorAPI::AnimationPreviewDefinitionUpdate update;
 	update.sessionId = m_PreviewSessionId;
 	update.revision = ++m_PreviewRevision;
@@ -805,6 +821,9 @@ void VansAnimGraphEditorWindow::UpdatePreviewDefinition()
 		m_LastError.clear();
 		ReconcilePreviewParameters();
 		ApplyPreviewParameters();
+		if (!m_EditState->selectedGraphSetId.empty())
+			m_ActiveAPI->SwitchAnimationPreviewGraphSet(
+				{ m_PreviewSessionId, m_EditState->selectedGraphSetId });
 	}
 	m_PreviewCompilePending = false;
 	m_PreviewDocumentStateId = attemptedDocumentStateId;
@@ -1181,6 +1200,11 @@ void VansAnimGraphEditorWindow::DrawPreviewPanel()
 		if (!snapshot.diagnostic.empty())
 			ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.3f, 1.0f), "%s", snapshot.diagnostic.c_str());
 		ImGui::SeparatorText("Layers");
+		ImGui::Text("Graph Set: %s", snapshot.activeGraphSetId.empty()
+			? "(none)" : snapshot.activeGraphSetId.c_str());
+		if (!snapshot.incomingGraphSetId.empty())
+			ImGui::TextDisabled("-> %s  %.0f%%", snapshot.incomingGraphSetId.c_str(),
+				snapshot.graphSetTransitionProgress * 100.0f);
 		for (const auto& layer : snapshot.layers)
 		{
 			ImGui::Text("%s  w=%.3f  %.3f ms",
@@ -1249,6 +1273,190 @@ void VansAnimGraphEditorWindow::DrawLayersPanel()
 			id = prefix + "-" + std::to_string(suffix++);
 		return id;
 	};
+	auto findBinding = [&](VansAnimationGraphSetDefinition& graphSet,
+		const std::string& layerId) -> VansAnimationGraphBindingDefinition*
+	{
+		for (auto& binding : graphSet.bindings)
+			if (binding.layerId == layerId) return &binding;
+		return nullptr;
+	};
+	auto editTransitionPolicy = [](const char* id, auto& transition)
+	{
+		bool changed = false;
+		ImGui::PushID(id);
+		changed |= ImGui::DragFloat("Duration", &transition.duration, 0.01f, 0.0f, 10.0f);
+		int curve = static_cast<int>(transition.curve);
+		if (ImGui::Combo("Curve", &curve, "Linear\0Smooth Step\0"))
+		{
+			transition.curve = static_cast<Vans::EditorAPI::VansGraphSetBlendCurve>(curve);
+			changed = true;
+		}
+		int phase = static_cast<int>(transition.phase);
+		if (ImGui::Combo("Phase Handoff", &phase, "Restart\0Normalized Time\0Marker Sync\0"))
+		{
+			transition.phase = static_cast<Vans::EditorAPI::VansGraphSetPhasePolicy>(phase);
+			changed = true;
+		}
+		int events = static_cast<int>(transition.events);
+		if (ImGui::Combo("Transition Events", &events, "Dominant Source\0Weighted Both\0"))
+		{
+			transition.events = static_cast<Vans::EditorAPI::VansGraphSetEventPolicy>(events);
+			changed = true;
+		}
+		int rootMotion = static_cast<int>(transition.rootMotion);
+		if (ImGui::Combo("Transition Root Motion", &rootMotion,
+			"Blend\0Dominant Source\0Incoming Only\0"))
+		{
+			transition.rootMotion = static_cast<Vans::EditorAPI::VansGraphSetRootMotionPolicy>(rootMotion);
+			changed = true;
+		}
+		int interruption = static_cast<int>(transition.interruption);
+		if (ImGui::Combo("Interruption", &interruption, "Queue Latest\0Reject\0Force\0"))
+		{
+			transition.interruption = static_cast<Vans::EditorAPI::VansGraphSetInterruptionPolicy>(interruption);
+			changed = true;
+		}
+		changed |= ImGui::Checkbox("Require State Match", &transition.requireStateMatch);
+		ImGui::PopID();
+		return changed;
+	};
+	if (m_EditState->selectedGraphSetId.empty())
+		m_EditState->selectedGraphSetId = m_AssetData->defaultGraphSetId;
+	auto selectedGraphSet = [&]()
+	{
+		return std::find_if(m_AssetData->graphSets.begin(), m_AssetData->graphSets.end(),
+			[&](const VansAnimationGraphSetDefinition& graphSet)
+			{ return graphSet.id == m_EditState->selectedGraphSetId; });
+	};
+	if (selectedGraphSet() == m_AssetData->graphSets.end() && !m_AssetData->graphSets.empty())
+		m_EditState->selectedGraphSetId = m_AssetData->graphSets.front().id;
+
+	ImGui::SeparatorText("Graph Sets");
+	for (std::size_t index = 0; index < m_AssetData->graphSets.size(); ++index)
+	{
+		auto& graphSet = m_AssetData->graphSets[index];
+		ImGui::PushID(static_cast<int>(index) + 3000);
+		const std::string label = (graphSet.id == m_AssetData->defaultGraphSetId ? "[Default] " : "")
+			+ graphSet.name;
+		if (ImGui::Selectable(label.c_str(), graphSet.id == m_EditState->selectedGraphSetId))
+		{
+			m_EditState->selectedGraphSetId = graphSet.id;
+			if (m_ActiveAPI && m_PreviewSessionId != 0)
+				m_ActiveAPI->SwitchAnimationPreviewGraphSet({ m_PreviewSessionId, graphSet.id });
+			if (auto* binding = findBinding(graphSet, m_EditState->selectedLayerId);
+				binding && binding->enabled) activateGraph(binding->graphId);
+		}
+		ImGui::PopID();
+	}
+	if (ImGui::SmallButton("+ Graph Set"))
+	{
+		VansAnimationGraphSetDefinition graphSet;
+		graphSet.id = makeUniqueId("graph-set", [&](const std::string& id)
+			{ return std::any_of(m_AssetData->graphSets.begin(), m_AssetData->graphSets.end(),
+				[&](const auto& value) { return value.id == id; }); });
+		graphSet.name = "Graph Set";
+		if (auto source = selectedGraphSet(); source != m_AssetData->graphSets.end())
+			graphSet.bindings = source->bindings;
+		else
+			for (const auto& layer : m_AssetData->layers)
+				graphSet.bindings.push_back({ layer.id, {}, false });
+		m_EditState->selectedGraphSetId = graphSet.id;
+		if (m_AssetData->graphSets.empty()) m_AssetData->defaultGraphSetId = graphSet.id;
+		m_AssetData->graphSets.push_back(std::move(graphSet));
+		m_EditState->isDirty = true;
+	}
+	auto activeSet = selectedGraphSet();
+	if (activeSet != m_AssetData->graphSets.end())
+	{
+		ImGui::SameLine();
+		if (ImGui::SmallButton("Make Default"))
+		{
+			m_AssetData->defaultGraphSetId = activeSet->id;
+			m_EditState->isDirty = true;
+		}
+		ImGui::SameLine();
+		if (m_AssetData->graphSets.size() <= 1) ImGui::BeginDisabled();
+		if (ImGui::SmallButton("Delete Graph Set"))
+		{
+			const std::string removedId = activeSet->id;
+			m_AssetData->graphSets.erase(activeSet);
+			m_AssetData->graphSetTransitionRules.erase(
+				std::remove_if(m_AssetData->graphSetTransitionRules.begin(),
+					m_AssetData->graphSetTransitionRules.end(), [&](const auto& rule)
+					{ return rule.fromGraphSetId == removedId || rule.toGraphSetId == removedId; }),
+				m_AssetData->graphSetTransitionRules.end());
+			if (m_AssetData->defaultGraphSetId == removedId)
+				m_AssetData->defaultGraphSetId = m_AssetData->graphSets.front().id;
+			m_EditState->selectedGraphSetId = m_AssetData->defaultGraphSetId;
+			m_EditState->isDirty = true;
+			return;
+		}
+		if (m_AssetData->graphSets.size() <= 1) ImGui::EndDisabled();
+		if (EditStringProperty("Graph Set Name", activeSet->name)) m_EditState->isDirty = true;
+		ImGui::SeparatorText("Default Transition");
+		if (editTransitionPolicy("default", m_AssetData->defaultGraphSetTransition))
+			m_EditState->isDirty = true;
+
+		ImGui::SeparatorText("Transition Rules");
+		for (const auto& targetSet : m_AssetData->graphSets)
+		{
+			if (targetSet.id == activeSet->id)
+				continue;
+			const bool exists = std::any_of(
+				m_AssetData->graphSetTransitionRules.begin(),
+				m_AssetData->graphSetTransitionRules.end(),
+				[&](const auto& rule)
+				{ return rule.fromGraphSetId == activeSet->id && rule.toGraphSetId == targetSet.id; });
+			if (exists)
+				continue;
+			ImGui::PushID(targetSet.id.c_str());
+			const std::string label = "+ Rule -> " + targetSet.name;
+			if (ImGui::SmallButton(label.c_str()))
+			{
+				Vans::EditorAPI::GraphSetTransitionRuleDTO rule;
+				rule.fromGraphSetId = activeSet->id;
+				rule.toGraphSetId = targetSet.id;
+				rule.policy = m_AssetData->defaultGraphSetTransition;
+				m_AssetData->graphSetTransitionRules.push_back(std::move(rule));
+				m_EditState->isDirty = true;
+			}
+			ImGui::PopID();
+		}
+		for (std::size_t ruleIndex = 0;
+			ruleIndex < m_AssetData->graphSetTransitionRules.size();)
+		{
+			auto& rule = m_AssetData->graphSetTransitionRules[ruleIndex];
+			if (rule.fromGraphSetId != activeSet->id)
+			{
+				++ruleIndex;
+				continue;
+			}
+			const auto target = std::find_if(m_AssetData->graphSets.begin(),
+				m_AssetData->graphSets.end(), [&](const auto& graphSet)
+				{ return graphSet.id == rule.toGraphSetId; });
+			const std::string label = "To " + (target != m_AssetData->graphSets.end()
+				? target->name : rule.toGraphSetId);
+			ImGui::PushID(static_cast<int>(ruleIndex) + 5000);
+			bool removed = false;
+			if (ImGui::TreeNode(label.c_str()))
+			{
+				if (editTransitionPolicy("rule", rule.policy))
+					m_EditState->isDirty = true;
+				if (ImGui::SmallButton("Delete Rule"))
+				{
+					m_AssetData->graphSetTransitionRules.erase(
+						m_AssetData->graphSetTransitionRules.begin() + ruleIndex);
+					m_EditState->isDirty = true;
+					removed = true;
+				}
+				ImGui::TreePop();
+			}
+			ImGui::PopID();
+			if (!removed)
+				++ruleIndex;
+		}
+	}
+	ImGui::SeparatorText("Layer Stack");
 
 	for (std::size_t index = 0; index < m_AssetData->layers.size(); ++index)
 	{
@@ -1259,11 +1467,13 @@ void VansAnimGraphEditorWindow::DrawLayersPanel()
 		if (ImGui::Selectable(label.c_str(), selected))
 		{
 			m_EditState->selectedLayerId = layer.id;
-			activateGraph(layer.graphId);
+			if (auto graphSet = selectedGraphSet(); graphSet != m_AssetData->graphSets.end())
+				if (auto* binding = findBinding(*graphSet, layer.id); binding && binding->enabled)
+					activateGraph(binding->graphId);
 		}
 		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("Graph: %s\nMask: %s\nPreview: %s%s",
-				layer.graphId.c_str(), layer.maskPathHint.c_str(),
+			ImGui::SetTooltip("Mask: %s\nPreview: %s%s",
+				layer.maskPathHint.c_str(),
 				m_EditState->mutedLayerIds.count(layer.id) ? "Muted " : "",
 				m_EditState->soloLayerIds.count(layer.id) ? "Solo" : "");
 		ImGui::PopID();
@@ -1303,9 +1513,13 @@ void VansAnimGraphEditorWindow::DrawLayersPanel()
 		VansAnimationLayerDefinition layer;
 		layer.id = layerId;
 		layer.name = "Overlay";
-		layer.graphId = graphId;
 		layer.kind = VansAnimationLayerKind::Overlay;
 		m_AssetData->layers.push_back(std::move(layer));
+		for (auto& graphSet : m_AssetData->graphSets)
+		{
+			const bool enabled = graphSet.id == m_EditState->selectedGraphSetId;
+			graphSet.bindings.push_back({ layerId, enabled ? graphId : std::string{}, enabled });
+		}
 		m_EditState->selectedLayerId = layerId;
 		activateGraph(graphId);
 		m_EditState->isDirty = true;
@@ -1320,34 +1534,65 @@ void VansAnimGraphEditorWindow::DrawLayersPanel()
 		bool duplicatedLayer = false;
 		if (ImGui::SmallButton("Duplicate"))
 		{
-			const VansAnimGraph* sourceGraph = m_AssetData->FindGraph(selectedLayer.graphId);
-			auto graphCopy = sourceGraph ? VansAnimGraph::Clone(*sourceGraph) : nullptr;
-			if (graphCopy)
+			const std::string layerId = makeUniqueId(selectedLayer.id + "-copy", [&](const std::string& id)
 			{
-				const std::string graphId = makeUniqueId(selectedLayer.graphId + "-copy", [&](const std::string& id)
-					{ return m_AssetData->FindGraph(id) != nullptr; });
-				const std::string layerId = makeUniqueId(selectedLayer.id + "-copy", [&](const std::string& id)
+				return std::any_of(m_AssetData->layers.begin(), m_AssetData->layers.end(),
+					[&](const VansAnimationLayerDefinition& layer) { return layer.id == id; });
+			});
+			struct PendingDuplicate
+			{
+				VansAnimationGraphBindingDefinition binding;
+				std::optional<AnimatorGraphAsset> graph;
+			};
+			std::vector<PendingDuplicate> pending;
+			pending.reserve(m_AssetData->graphSets.size());
+			std::unordered_set<std::string> reservedGraphIds;
+			std::string graphToActivate;
+			for (const auto& graphSet : m_AssetData->graphSets)
+			{
+				PendingDuplicate duplicate;
+				duplicate.binding = { layerId, {}, false };
+				const VansAnimationGraphBindingDefinition sourceBinding = graphSet.bindings[selectedIndex];
+				if (sourceBinding.enabled)
+				{
+					const VansAnimGraph* sourceGraph = m_AssetData->FindGraph(sourceBinding.graphId);
+					auto graphCopy = sourceGraph ? VansAnimGraph::Clone(*sourceGraph) : nullptr;
+					if (!graphCopy)
 					{
-						return std::any_of(m_AssetData->layers.begin(), m_AssetData->layers.end(),
-							[&](const VansAnimationLayerDefinition& layer) { return layer.id == id; });
-					});
-				AnimatorGraphAsset graphAsset;
-				graphAsset.id = graphId;
-				graphAsset.name = selectedLayer.name + " Copy Graph";
-				graphAsset.role = AnimatorGraphAsset::Role::Pose;
-				graphAsset.graph = std::move(graphCopy);
-				m_AssetData->graphs.push_back(std::move(graphAsset));
-				VansAnimationLayerDefinition copy = selectedLayer;
-				copy.id = layerId;
-				copy.name += " Copy";
-				copy.graphId = graphId;
-				m_AssetData->layers.insert(m_AssetData->layers.begin() + selectedIndex + 1, copy);
-				m_EditState->selectedLayerId = layerId;
-				activateGraph(graphId);
-				m_EditState->isDirty = true;
-				selectedIndex += 1;
-				duplicatedLayer = true;
+						m_LastError = "Cannot duplicate Layer: one of its Graph Set bindings is invalid";
+						return;
+					}
+					duplicate.binding.enabled = true;
+					duplicate.binding.graphId = makeUniqueId(sourceBinding.graphId + "-copy", [&](const std::string& id)
+						{ return m_AssetData->FindGraph(id) != nullptr || reservedGraphIds.count(id) != 0; });
+					reservedGraphIds.insert(duplicate.binding.graphId);
+					AnimatorGraphAsset graphAsset;
+					graphAsset.id = duplicate.binding.graphId;
+					graphAsset.name = selectedLayer.name + " Copy Graph";
+					graphAsset.role = AnimatorGraphAsset::Role::Pose;
+					graphAsset.graph = std::move(graphCopy);
+					duplicate.graph = std::move(graphAsset);
+					if (graphSet.id == m_EditState->selectedGraphSetId)
+						graphToActivate = duplicate.binding.graphId;
+				}
+				pending.push_back(std::move(duplicate));
 			}
+			for (PendingDuplicate& duplicate : pending)
+				if (duplicate.graph)
+					m_AssetData->graphs.push_back(std::move(*duplicate.graph));
+			for (std::size_t graphSetIndex = 0; graphSetIndex < m_AssetData->graphSets.size(); ++graphSetIndex)
+				m_AssetData->graphSets[graphSetIndex].bindings.insert(
+					m_AssetData->graphSets[graphSetIndex].bindings.begin() + selectedIndex + 1,
+					std::move(pending[graphSetIndex].binding));
+			VansAnimationLayerDefinition copy = selectedLayer;
+			copy.id = layerId;
+			copy.name += " Copy";
+			m_AssetData->layers.insert(m_AssetData->layers.begin() + selectedIndex + 1, copy);
+			m_EditState->selectedLayerId = layerId;
+			if (!graphToActivate.empty()) activateGraph(graphToActivate);
+			m_EditState->isDirty = true;
+			selectedIndex += 1;
+			duplicatedLayer = true;
 		}
 		if (duplicatedLayer)
 		{
@@ -1358,7 +1603,16 @@ void VansAnimGraphEditorWindow::DrawLayersPanel()
 		if (ImGui::SmallButton("Delete"))
 		{
 			const std::string removedLayerId = selectedLayer.id;
-			const std::string removedGraphId = selectedLayer.graphId;
+			std::vector<std::string> removedGraphIds;
+			for (auto& graphSet : m_AssetData->graphSets)
+			{
+				if (selectedIndex < graphSet.bindings.size())
+				{
+					if (graphSet.bindings[selectedIndex].enabled)
+						removedGraphIds.push_back(graphSet.bindings[selectedIndex].graphId);
+					graphSet.bindings.erase(graphSet.bindings.begin() + selectedIndex);
+				}
+			}
 			m_AssetData->layers.erase(m_AssetData->layers.begin() + selectedIndex);
 			m_AssetData->slots.erase(std::remove_if(m_AssetData->slots.begin(), m_AssetData->slots.end(),
 				[&](const VansAnimationSlotDefinition& slot) { return slot.layerId == removedLayerId; }), m_AssetData->slots.end());
@@ -1368,15 +1622,24 @@ void VansAnimGraphEditorWindow::DrawLayersPanel()
 					layer.sync = VansLayerSyncMode::Independent;
 					layer.syncLeaderLayerId.clear();
 				}
-			const bool graphStillUsed = std::any_of(m_AssetData->layers.begin(), m_AssetData->layers.end(),
-				[&](const VansAnimationLayerDefinition& layer) { return layer.graphId == removedGraphId; });
-			if (!graphStillUsed)
-				m_AssetData->graphs.erase(std::remove_if(m_AssetData->graphs.begin(), m_AssetData->graphs.end(),
-					[&](const AnimatorGraphAsset& graph) { return graph.id == removedGraphId; }), m_AssetData->graphs.end());
+			m_AssetData->graphs.erase(std::remove_if(m_AssetData->graphs.begin(), m_AssetData->graphs.end(),
+				[&](const AnimatorGraphAsset& graph)
+				{
+					if (std::find(removedGraphIds.begin(), removedGraphIds.end(), graph.id) == removedGraphIds.end())
+						return false;
+					return std::none_of(m_AssetData->graphSets.begin(), m_AssetData->graphSets.end(),
+						[&](const VansAnimationGraphSetDefinition& graphSet)
+						{
+							return std::any_of(graphSet.bindings.begin(), graphSet.bindings.end(),
+								[&](const auto& binding) { return binding.enabled && binding.graphId == graph.id; });
+						});
+				}), m_AssetData->graphs.end());
 			m_EditState->mutedLayerIds.erase(removedLayerId);
 			m_EditState->soloLayerIds.erase(removedLayerId);
 			m_EditState->selectedLayerId = m_AssetData->layers.front().id;
-			activateGraph(m_AssetData->layers.front().graphId);
+			if (auto graphSet = selectedGraphSet(); graphSet != m_AssetData->graphSets.end())
+				if (auto* binding = findBinding(*graphSet, m_EditState->selectedLayerId);
+					binding && binding->enabled) activateGraph(binding->graphId);
 			m_EditState->isDirty = true;
 			selectedIndex = 0;
 		}
@@ -1392,6 +1655,8 @@ void VansAnimGraphEditorWindow::DrawLayersPanel()
 			if (ImGui::SmallButton("Move Up"))
 			{
 				std::swap(m_AssetData->layers[selectedIndex], m_AssetData->layers[selectedIndex - 1]);
+				for (auto& graphSet : m_AssetData->graphSets)
+					std::swap(graphSet.bindings[selectedIndex], graphSet.bindings[selectedIndex - 1]);
 				--selectedIndex;
 				m_EditState->isDirty = true;
 				reorderedLayer = true;
@@ -1402,6 +1667,8 @@ void VansAnimGraphEditorWindow::DrawLayersPanel()
 			if (ImGui::SmallButton("Move Down"))
 			{
 				std::swap(m_AssetData->layers[selectedIndex], m_AssetData->layers[selectedIndex + 1]);
+				for (auto& graphSet : m_AssetData->graphSets)
+					std::swap(graphSet.bindings[selectedIndex], graphSet.bindings[selectedIndex + 1]);
 				++selectedIndex;
 				m_EditState->isDirty = true;
 				reorderedLayer = true;
@@ -1412,7 +1679,68 @@ void VansAnimGraphEditorWindow::DrawLayersPanel()
 
 			ImGui::SeparatorText("Layer Inspector");
 			if (EditStringProperty("Layer Name", layer.name)) m_EditState->isDirty = true;
-			if (ImGui::Checkbox("Enabled", &layer.enabled)) m_EditState->isDirty = true;
+			if (auto graphSet = selectedGraphSet(); graphSet != m_AssetData->graphSets.end())
+			{
+				VansAnimationGraphBindingDefinition* binding = findBinding(*graphSet, layer.id);
+				if (binding)
+				{
+					ImGui::SeparatorText("Graph Set Binding");
+					if (layer.kind == VansAnimationLayerKind::Base) ImGui::BeginDisabled();
+					bool enabled = binding->enabled;
+					if (ImGui::Checkbox("Enabled In Graph Set", &enabled))
+					{
+						binding->enabled = enabled;
+						if (!enabled)
+							binding->graphId.clear();
+						else if (binding->graphId.empty())
+						{
+							auto poseGraph = std::find_if(m_AssetData->graphs.begin(), m_AssetData->graphs.end(),
+								[](const AnimatorGraphAsset& graph)
+								{ return graph.role == AnimatorGraphAsset::Role::Pose; });
+							if (poseGraph != m_AssetData->graphs.end()) binding->graphId = poseGraph->id;
+						}
+						m_EditState->isDirty = true;
+					}
+					if (layer.kind == VansAnimationLayerKind::Base) ImGui::EndDisabled();
+					if (binding->enabled)
+					{
+						const AnimatorGraphAsset* selectedGraph = nullptr;
+						for (const auto& graph : m_AssetData->graphs)
+							if (graph.id == binding->graphId) { selectedGraph = &graph; break; }
+						const char* preview = selectedGraph ? selectedGraph->name.c_str() : "(select Pose Graph)";
+						if (ImGui::BeginCombo("Pose Graph", preview))
+						{
+							for (const auto& graph : m_AssetData->graphs)
+							{
+								if (graph.role != AnimatorGraphAsset::Role::Pose) continue;
+								if (ImGui::Selectable(graph.name.c_str(), graph.id == binding->graphId))
+								{
+									binding->graphId = graph.id;
+									activateGraph(graph.id);
+									m_EditState->isDirty = true;
+								}
+							}
+							ImGui::EndCombo();
+						}
+						if (ImGui::SmallButton("+ New Pose Graph"))
+						{
+							AnimatorGraphAsset graph;
+							graph.id = makeUniqueId("graph-pose", [&](const std::string& id)
+								{ return m_AssetData->FindGraph(id) != nullptr; });
+							graph.name = "Pose Graph";
+							graph.role = AnimatorGraphAsset::Role::Pose;
+							graph.graph = std::make_unique<VansAnimGraph>();
+							const int entry = graph.graph->AddNode(VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Entry));
+							const int output = graph.graph->AddNode(VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
+							graph.graph->AddLink(entry, 0, output, 0);
+							binding->graphId = graph.id;
+							m_AssetData->graphs.push_back(std::move(graph));
+							activateGraph(binding->graphId);
+							m_EditState->isDirty = true;
+						}
+					}
+				}
+			}
 			bool muted = m_EditState->mutedLayerIds.count(layer.id) != 0;
 			if (ImGui::Checkbox("Preview Mute", &muted))
 			{
@@ -1550,11 +1878,11 @@ void VansAnimGraphEditorWindow::DrawSlotsPanel()
 		if (ImGui::Selectable(slot.name.c_str(), slot.id == m_EditState->selectedSlotId))
 			m_EditState->selectedSlotId = slot.id;
 		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("ID: %s\nLayer: %s\nNode: %d", slot.id.c_str(), slot.layerId.c_str(), slot.slotNodeId);
+			ImGui::SetTooltip("ID: %s\nLayer: %s", slot.id.c_str(), slot.layerId.c_str());
 		ImGui::PopID();
 	}
 
-	if (ImGui::SmallButton("Bind Selected Slot Node"))
+	if (ImGui::SmallButton("Create From Selected Slot Node"))
 	{
 		VansAnimGraphNode* selectedNode = m_TargetGraph
 			? m_TargetGraph->GetNode(m_EditState->selectedNodeId) : nullptr;
@@ -1570,8 +1898,7 @@ void VansAnimGraphEditorWindow::DrawSlotsPanel()
 			const auto duplicate = std::find_if(m_AssetData->slots.begin(), m_AssetData->slots.end(),
 				[&](const VansAnimationSlotDefinition& slot)
 				{
-					return slot.id == slotNode->m_SlotId
-						|| (slot.layerId == m_EditState->selectedLayerId && slot.slotNodeId == selectedNode->GetNodeId());
+					return slot.id == slotNode->m_SlotId;
 				});
 			if (duplicate != m_AssetData->slots.end())
 			{
@@ -1584,7 +1911,6 @@ void VansAnimGraphEditorWindow::DrawSlotsPanel()
 				slot.id = slotNode->m_SlotId;
 				slot.name = slotNode->m_SlotId;
 				slot.layerId = m_EditState->selectedLayerId;
-				slot.slotNodeId = selectedNode->GetNodeId();
 				m_AssetData->slots.push_back(slot);
 				m_EditState->selectedSlotId = slot.id;
 				m_EditState->isDirty = true;
@@ -1600,7 +1926,7 @@ void VansAnimGraphEditorWindow::DrawSlotsPanel()
 	ImGui::SeparatorText("Slot Inspector");
 	if (EditStringProperty("Slot Name", selected->name)) m_EditState->isDirty = true;
 	ImGui::TextDisabled("ID: %s", selected->id.c_str());
-	ImGui::TextDisabled("Layer: %s  Node: %d", selected->layerId.c_str(), selected->slotNodeId);
+	ImGui::TextDisabled("Layer: %s", selected->layerId.c_str());
 	int concurrency = static_cast<int>(selected->concurrency);
 	if (ImGui::Combo("Concurrency", &concurrency, "Replace\0Queue\0Reject\0"))
 	{
@@ -1828,10 +2154,11 @@ void VansAnimGraphEditorWindow::DrawGraphEditorCanvas()
 		if (!targetPostProcess && ImGui::MenuItem("State Machine")) addNode(AnimGraphNodeType::StateMachine);
 		if (!targetPostProcess && ImGui::MenuItem("Motion Matching")) addNode(AnimGraphNodeType::MotionMatching);
 		if (!targetPostProcess && ImGui::MenuItem("Slot")) addNode(AnimGraphNodeType::Slot);
-		if (ImGui::MenuItem("IK")) addNode(AnimGraphNodeType::IK);
-		if (ImGui::MenuItem("Two Bone IK")) addNode(AnimGraphNodeType::TwoBoneIK);
-		if (ImGui::MenuItem("Look At")) addNode(AnimGraphNodeType::LookAt);
-		if (ImGui::MenuItem("Foot Placement")) addNode(AnimGraphNodeType::FootPlacement);
+		if (ImGui::MenuItem("Goal")) addNode(AnimGraphNodeType::Goal);
+		if (ImGui::MenuItem("Aim Constraint")) addNode(AnimGraphNodeType::AimConstraint);
+		if (targetPostProcess && ImGui::MenuItem("Grounding")) addNode(AnimGraphNodeType::Grounding);
+		if (targetPostProcess && ImGui::MenuItem("Limb IK")) addNode(AnimGraphNodeType::LimbIK);
+		if (targetPostProcess && ImGui::MenuItem("Chain IK")) addNode(AnimGraphNodeType::ChainIK);
 		ImGui::EndPopup();
 	}
 
@@ -2008,18 +2335,60 @@ void VansAnimGraphEditorWindow::DrawPropertiesPanel()
 		}
 		return changed;
 	};
-	auto editCoordinateSpace = [&](const char* label, IKCoordinateSpace& value)
+	auto editGoal = [&](const char* label, AnimationGoalDefinition& goal)
 	{
-		int selected = static_cast<int>(value);
-		if (!ImGui::Combo(label, &selected, "Model\0World\0Bone\0Parent Bone\0"))
-			return false;
-		value = static_cast<IKCoordinateSpace>(selected);
-		return true;
+		bool changed = false;
+		ImGui::SeparatorText(label);
+		changed |= EditStringProperty("Goal ID", goal.goalId);
+		int source = static_cast<int>(goal.source);
+		if (ImGui::Combo("Source", &source, "Binding\0Parameters\0Fixed Model Space\0"))
+		{
+			goal.source = static_cast<AnimationGoalSource>(source);
+			changed = true;
+		}
+		if (goal.source == AnimationGoalSource::Binding)
+			changed |= EditStringProperty("Binding", goal.binding);
+		else if (goal.source == AnimationGoalSource::Parameters)
+		{
+			changed |= editParameterBinding("Position Parameter", goal.positionParameter,
+				AnimatorParamType::Vector3, false);
+			changed |= editParameterBinding("Rotation Parameter", goal.rotationParameter,
+				AnimatorParamType::Quaternion);
+			changed |= editParameterBinding("Weight Parameter", goal.weightParameter,
+				AnimatorParamType::Float);
+		}
+		else
+		{
+			changed |= ImGui::DragFloat3("Position", &goal.fixedPositionModel.x, 0.01f);
+			changed |= ImGui::DragFloat4("Rotation (xyzw)", &goal.fixedRotationModel.x, 0.01f);
+			changed |= ImGui::SliderFloat("Position Weight", &goal.fixedPositionWeight, 0.0f, 1.0f);
+			changed |= ImGui::SliderFloat("Rotation Weight", &goal.fixedRotationWeight, 0.0f, 1.0f);
+		}
+		return changed;
 	};
-	auto editTargetReference = [&](IKCoordinateSpace space, const char* label, std::string& value)
+	auto editStringList = [&](const char* label, std::vector<std::string>& values)
 	{
-		return (space == IKCoordinateSpace::Bone || space == IKCoordinateSpace::ParentBone)
-			&& EditStringProperty(label, value);
+		bool changed = false;
+		ImGui::SeparatorText(label);
+		for (int index = 0; index < static_cast<int>(values.size()); ++index)
+		{
+			ImGui::PushID(index + 24000);
+			changed |= EditStringProperty("ID", values[static_cast<std::size_t>(index)]);
+			if (ImGui::SameLine(); ImGui::SmallButton("Remove"))
+			{
+				values.erase(values.begin() + index);
+				changed = true;
+				ImGui::PopID();
+				break;
+			}
+			ImGui::PopID();
+		}
+		if (ImGui::SmallButton("Add ID"))
+		{
+			values.emplace_back();
+			changed = true;
+		}
+		return changed;
 	};
 	switch (node->GetType())
 	{
@@ -2351,8 +2720,7 @@ void VansAnimGraphEditorWindow::DrawPropertiesPanel()
 		if (EditStringProperty("Slot ID", n->m_SlotId))
 		{
 			for (VansAnimationSlotDefinition& slot : m_AssetData->slots)
-				if (slot.id == previousSlotId && slot.layerId == m_EditState->selectedLayerId
-					&& slot.slotNodeId == node->GetNodeId())
+				if (slot.id == previousSlotId && slot.layerId == m_EditState->selectedLayerId)
 				{
 					slot.id = n->m_SlotId;
 					m_EditState->selectedSlotId = n->m_SlotId;
@@ -2363,248 +2731,89 @@ void VansAnimGraphEditorWindow::DrawPropertiesPanel()
 		if (ImGui::Checkbox("Fallback Input", &n->m_EnableFallbackInput)) m_EditState->isDirty = true;
 		break;
 	}
-	case AnimGraphNodeType::IK:
+	case AnimGraphNodeType::Goal:
 	{
-		auto* n = static_cast<AnimGraphIKNode*>(node);
-		if (EditStringProperty("Chain Name", n->m_Chain.chainName)) m_EditState->isDirty = true;
-		int solver = static_cast<int>(n->m_Chain.solverType);
-		if (ImGui::Combo("Solver", &solver, "Two Bone\0CCD\0FABRIK\0Look At\0"))
-		{
-			n->m_Chain.solverType = static_cast<IKSolverType>(solver);
-			m_EditState->isDirty = true;
-		}
-		int profile = static_cast<int>(n->m_Chain.profileType);
-		if (ImGui::Combo("Profile", &profile,
-			"Custom\0Humanoid Arm\0Humanoid Leg\0Humanoid Spine\0Humanoid Head\0Tail\0Tentacle\0Rope\0"))
-		{
-			n->m_Chain.profileType = static_cast<IKProfileType>(profile);
-			m_EditState->isDirty = true;
-		}
-		if (ImGui::InputInt("Max Iterations", &n->m_Chain.maxIterations)) m_EditState->isDirty = true;
-		if (ImGui::DragFloat("Position Tolerance", &n->m_Chain.positionTolerance, 0.0001f, 0.000001f)) m_EditState->isDirty = true;
-		if (ImGui::DragFloat("Rotation Tolerance", &n->m_Chain.rotationTolerance, 0.001f, 0.0001f)) m_EditState->isDirty = true;
-		if (ImGui::InputInt("Solve Priority", &n->m_Chain.solvePriority)) m_EditState->isDirty = true;
-
-		ImGui::SeparatorText("Ordered Chain");
-		for (int index = 0; index < static_cast<int>(n->m_Chain.bones.size()); ++index)
-		{
-			IKBoneLink& link = n->m_Chain.bones[index];
-			ImGui::PushID(index + 12100);
-			const std::string header = std::to_string(index) + ": "
-				+ (link.boneName.empty() ? "(unbound)" : link.boneName);
-			if (ImGui::TreeNodeEx("##IKBone", ImGuiTreeNodeFlags_DefaultOpen, "%s", header.c_str()))
-			{
-				if (EditStringProperty("Bone", link.boneName))
-				{
-					link.boneIndex = -1;
-					m_EditState->isDirty = true;
-				}
-				if (ImGui::SliderFloat("Stiffness Weight", &link.stiffnessWeight, 0.0f, 1.0f)) m_EditState->isDirty = true;
-				if (ImGui::Checkbox("Effector", &link.isEffector)) m_EditState->isDirty = true;
-				int constraint = static_cast<int>(link.constraint.type);
-				if (ImGui::Combo("Constraint", &constraint,
-					"None\0Ball Socket\0Hinge\0Angle Limit\0Twist Limit\0Locked\0"))
-				{
-					link.constraint.type = static_cast<JointConstraintType>(constraint);
-					m_EditState->isDirty = true;
-				}
-				if (ImGui::DragFloat3("Local X Axis", &link.constraint.localXAxis.x, 0.01f)) m_EditState->isDirty = true;
-				if (ImGui::DragFloat3("Local Y Axis", &link.constraint.localYAxis.x, 0.01f)) m_EditState->isDirty = true;
-				if (ImGui::DragFloat3("Local Z Axis", &link.constraint.localZAxis.x, 0.01f)) m_EditState->isDirty = true;
-				if (ImGui::DragFloat2("X Min / Max", &link.constraint.minAngleX, 0.5f, -180.0f, 180.0f)) m_EditState->isDirty = true;
-				if (ImGui::DragFloat2("Y Min / Max", &link.constraint.minAngleY, 0.5f, -180.0f, 180.0f)) m_EditState->isDirty = true;
-				if (ImGui::DragFloat2("Z Min / Max", &link.constraint.minAngleZ, 0.5f, -180.0f, 180.0f)) m_EditState->isDirty = true;
-				if (ImGui::SliderFloat("Cone Angle", &link.constraint.coneAngleDeg, 0.0f, 180.0f)) m_EditState->isDirty = true;
-				if (ImGui::SliderFloat("Constraint Stiffness", &link.constraint.stiffness, 0.0f, 1.0f)) m_EditState->isDirty = true;
-				if (ImGui::SmallButton("Remove Bone"))
-				{
-					n->m_Chain.bones.erase(n->m_Chain.bones.begin() + index);
-					m_EditState->isDirty = true;
-					ImGui::TreePop();
-					ImGui::PopID();
-					break;
-				}
-				ImGui::TreePop();
-			}
-			ImGui::PopID();
-		}
-		if (ImGui::SmallButton("+ Chain Bone"))
-		{
-			IKBoneLink link;
-			link.isEffector = n->m_Chain.bones.empty();
-			if (!n->m_Chain.bones.empty()) n->m_Chain.bones.back().isEffector = false;
-			n->m_Chain.bones.push_back(std::move(link));
-			m_EditState->isDirty = true;
-		}
-
-		ImGui::SeparatorText("Target");
-		if (ImGui::Checkbox("Use Fixed Target", &n->m_UseFixedTarget)) m_EditState->isDirty = true;
-		if (n->m_UseFixedTarget)
-		{
-			if (ImGui::DragFloat3("Position", &n->m_FixedTargetPos.x, 0.01f)) m_EditState->isDirty = true;
-			if (ImGui::DragFloat4("Rotation (xyzw)", &n->m_FixedTargetRot.x, 0.01f)) m_EditState->isDirty = true;
-			if (ImGui::SliderFloat("Weight", &n->m_FixedWeight, 0.0f, 1.0f)) m_EditState->isDirty = true;
-		}
-		else
-		{
-			if (editParameterBinding("Position Parameter", n->m_TargetPosParamName, AnimatorParamType::Vector3, false)) m_EditState->isDirty = true;
-			if (editParameterBinding("Rotation Parameter", n->m_TargetRotParamName, AnimatorParamType::Quaternion)) m_EditState->isDirty = true;
-			if (editParameterBinding("Weight Parameter", n->m_WeightParamName, AnimatorParamType::Float)) m_EditState->isDirty = true;
-		}
-		if (editCoordinateSpace("Position Space", n->m_TargetPositionSpace)) m_EditState->isDirty = true;
-		if (editCoordinateSpace("Rotation Space", n->m_TargetRotationSpace)) m_EditState->isDirty = true;
-		if (editTargetReference(n->m_TargetPositionSpace, "Target Reference Bone", n->m_TargetReferenceBoneName)) m_EditState->isDirty = true;
-		if (ImGui::Checkbox("Rotation Target", &n->m_Chain.enableRotationTarget)) m_EditState->isDirty = true;
-		if (n->m_Chain.enableRotationTarget
-			&& ImGui::SliderFloat("Rotation Weight", &n->m_Chain.rotationWeight, 0.0f, 1.0f)) m_EditState->isDirty = true;
-		if (ImGui::Checkbox("Maintain Effector Rotation", &n->m_Chain.maintainEffectorGlobalRotation)) m_EditState->isDirty = true;
-		if (ImGui::Checkbox("Allow Stretch", &n->m_Chain.allowStretch)) m_EditState->isDirty = true;
-		if (n->m_Chain.allowStretch)
-		{
-			if (ImGui::DragFloat("Start Stretch Ratio", &n->m_Chain.startStretchRatio, 0.01f, 0.0f)) m_EditState->isDirty = true;
-			if (ImGui::DragFloat("Max Stretch Scale", &n->m_Chain.maxStretchScale, 0.01f, 1.0f)) m_EditState->isDirty = true;
-		}
-		if (ImGui::DragFloat3("Pole Vector", &n->m_Chain.poleVector.x, 0.01f)) m_EditState->isDirty = true;
-		if (ImGui::SliderFloat("Pole Weight", &n->m_Chain.poleWeight, 0.0f, 1.0f)) m_EditState->isDirty = true;
-		if (editCoordinateSpace("Pole Space", n->m_Chain.poleSpace)) m_EditState->isDirty = true;
-		if (editTargetReference(n->m_Chain.poleSpace, "Pole Reference Bone", n->m_Chain.poleReferenceBoneName)) m_EditState->isDirty = true;
+		auto* n = static_cast<AnimGraphGoalNode*>(node);
+		if (editGoal("Goal Definition", n->m_Goal)) m_EditState->isDirty = true;
 		break;
 	}
-	case AnimGraphNodeType::TwoBoneIK:
+	case AnimGraphNodeType::AimConstraint:
 	{
-		auto* n = static_cast<AnimGraphTwoBoneIKNode*>(node);
-		if (ImGui::Checkbox("Leg Profile", &n->m_UseLegProfile)) m_EditState->isDirty = true;
-		if (ImGui::Checkbox("Right Side", &n->m_IsRightSide)) m_EditState->isDirty = true;
-		if (EditStringProperty("Root Bone", n->m_RootBoneName)) m_EditState->isDirty = true;
-		if (EditStringProperty("Mid Bone", n->m_MidBoneName)) m_EditState->isDirty = true;
-		if (EditStringProperty("Tip Bone", n->m_TipBoneName)) m_EditState->isDirty = true;
-		if (ImGui::DragFloat2("Hinge Min / Max", &n->m_HingeMinAngle, 0.5f, -180.0f, 180.0f)) m_EditState->isDirty = true;
-		if (ImGui::SliderFloat("Cone Angle", &n->m_ConeAngle, 0.0f, 180.0f)) m_EditState->isDirty = true;
-		if (ImGui::Checkbox("Use Pole Vector", &n->m_UsePoleVector)) m_EditState->isDirty = true;
-		if (n->m_UsePoleVector)
-		{
-			if (ImGui::DragFloat3("Pole Vector", &n->m_PoleVector.x, 0.01f)) m_EditState->isDirty = true;
-			if (ImGui::SliderFloat("Pole Weight", &n->m_PoleWeight, 0.0f, 1.0f)) m_EditState->isDirty = true;
-			if (editCoordinateSpace("Pole Space", n->m_PoleSpace)) m_EditState->isDirty = true;
-			if (editTargetReference(n->m_PoleSpace, "Pole Reference Bone", n->m_PoleReferenceBoneName)) m_EditState->isDirty = true;
-		}
-		if (ImGui::Checkbox("Use Fixed Target", &n->m_UseFixedTarget)) m_EditState->isDirty = true;
-		if (n->m_UseFixedTarget)
-		{
-			if (ImGui::DragFloat3("Position", &n->m_FixedTargetPos.x, 0.01f)) m_EditState->isDirty = true;
-			if (ImGui::DragFloat4("Rotation (xyzw)", &n->m_FixedTargetRot.x, 0.01f)) m_EditState->isDirty = true;
-			if (ImGui::SliderFloat("Weight", &n->m_FixedWeight, 0.0f, 1.0f)) m_EditState->isDirty = true;
-		}
-		else
-		{
-			if (editParameterBinding("Position Parameter", n->m_TargetPosParamName, AnimatorParamType::Vector3, false)) m_EditState->isDirty = true;
-			if (editParameterBinding("Rotation Parameter", n->m_TargetRotParamName, AnimatorParamType::Quaternion)) m_EditState->isDirty = true;
-			if (editParameterBinding("Weight Parameter", n->m_WeightParamName, AnimatorParamType::Float)) m_EditState->isDirty = true;
-		}
-		if (editCoordinateSpace("Position Space", n->m_TargetPositionSpace)) m_EditState->isDirty = true;
-		if (editCoordinateSpace("Rotation Space", n->m_TargetRotationSpace)) m_EditState->isDirty = true;
-		if (editTargetReference(n->m_TargetPositionSpace, "Target Reference Bone", n->m_TargetReferenceBoneName)) m_EditState->isDirty = true;
-		if (ImGui::Checkbox("Rotation Target", &n->m_EnableRotationTarget)) m_EditState->isDirty = true;
-		if (n->m_EnableRotationTarget
-			&& ImGui::SliderFloat("Rotation Weight", &n->m_RotationWeight, 0.0f, 1.0f)) m_EditState->isDirty = true;
-		if (ImGui::Checkbox("Maintain Effector Rotation", &n->m_MaintainEffectorGlobalRotation)) m_EditState->isDirty = true;
-		if (ImGui::Checkbox("Allow Stretch", &n->m_AllowStretch)) m_EditState->isDirty = true;
-		if (n->m_AllowStretch)
-		{
-			if (ImGui::DragFloat("Start Stretch Ratio", &n->m_StartStretchRatio, 0.01f, 0.0f)) m_EditState->isDirty = true;
-			if (ImGui::DragFloat("Max Stretch Scale", &n->m_MaxStretchScale, 0.01f, 1.0f)) m_EditState->isDirty = true;
-		}
+		auto* n = static_cast<AnimGraphAimConstraintNode*>(node);
+		if (EditStringProperty("Rig Chain ID", n->m_ChainId)) m_EditState->isDirty = true;
+		if (editGoal("Aim Target", n->m_Target)) m_EditState->isDirty = true;
+		if (ImGui::DragFloat2("Yaw Min / Max", &n->m_AimSettings.minYawDegrees, 0.5f, -180.0f, 180.0f)) m_EditState->isDirty = true;
+		if (ImGui::DragFloat2("Pitch Min / Max", &n->m_AimSettings.minPitchDegrees, 0.5f, -180.0f, 180.0f)) m_EditState->isDirty = true;
+		if (ImGui::DragFloat("Max Angular Speed", &n->m_AimSettings.maxAngularSpeedDegrees, 1.0f, 0.0f)) m_EditState->isDirty = true;
+		if (ImGui::SliderFloat("Weight", &n->m_AimSettings.weight, 0.0f, 1.0f)) m_EditState->isDirty = true;
+		if (ImGui::DragFloat("Target Half-Life", &n->m_TargetHalfLife, 0.005f, 0.0f)) m_EditState->isDirty = true;
 		break;
 	}
-	case AnimGraphNodeType::LookAt:
+	case AnimGraphNodeType::Grounding:
 	{
-		auto* n = static_cast<AnimGraphLookAtNode*>(node);
-		ImGui::SeparatorText("Ordered Bone Chain");
-		for (int index = 0; index < static_cast<int>(n->m_BoneNames.size()); ++index)
+		auto* n = static_cast<AnimGraphGroundingNode*>(node);
+		auto& settings = n->m_GroundingSettings;
+		if (editStringList("Rig Contact IDs", settings.contacts)) m_EditState->isDirty = true;
+		if (EditStringProperty("Physics Query Profile", settings.query.profile)) m_EditState->isDirty = true;
+		if (EditStringProperty("Plant Signal", settings.plantSignal)) m_EditState->isDirty = true;
+		if (ImGui::DragFloat("Probe Start", &settings.query.startDistanceAgainstApproach, 0.01f, 0.0f)) m_EditState->isDirty = true;
+		if (ImGui::DragFloat("Probe End", &settings.query.endDistanceAlongApproach, 0.01f, 0.0f)) m_EditState->isDirty = true;
+		if (ImGui::DragFloat("Max Step Up", &settings.query.maxStepUp, 0.01f, 0.0f)) m_EditState->isDirty = true;
+		if (ImGui::DragFloat("Max Step Down", &settings.query.maxStepDown, 0.01f, 0.0f)) m_EditState->isDirty = true;
+		if (ImGui::SliderFloat("Max Slope", &settings.query.maxSlopeDegrees, 0.0f, 89.0f)) m_EditState->isDirty = true;
+		if (ImGui::DragFloat("Max Plane Residual", &settings.query.maxPlaneResidual, 0.001f, 0.0f)) m_EditState->isDirty = true;
+		if (ImGui::SliderFloat("Max Normal Deviation", &settings.query.maxNormalDeviationDegrees, 0.0f, 89.0f)) m_EditState->isDirty = true;
+		ImGui::SeparatorText("Contact Alignment");
+		if (ImGui::DragFloat("Full Contact Height", &settings.alignment.fullContactHeight, 0.005f, 0.0f)) m_EditState->isDirty = true;
+		if (ImGui::DragFloat("Contact Fade Height", &settings.alignment.contactFadeHeight, 0.005f, 0.0f)) m_EditState->isDirty = true;
+		if (ImGui::DragFloat("Normal Half-Life", &settings.alignment.normalHalfLife, 0.005f, 0.0f)) m_EditState->isDirty = true;
+		if (ImGui::SliderFloat("Rotation Weight", &settings.alignment.rotationWeight, 0.0f, 1.0f)) m_EditState->isDirty = true;
+		ImGui::SeparatorText("Plant Lock");
+		if (ImGui::Checkbox("Lock Enabled", &settings.plant.lockEnabled)) m_EditState->isDirty = true;
+		if (ImGui::SliderFloat("Enter Phase", &settings.plant.enterPhase, 0.0f, 1.0f)) m_EditState->isDirty = true;
+		if (ImGui::SliderFloat("Exit Phase", &settings.plant.exitPhase, 0.0f, 1.0f)) m_EditState->isDirty = true;
+		if (ImGui::DragFloat("Unplant Distance", &settings.plant.unplantDistance, 0.01f, 0.0f)) m_EditState->isDirty = true;
+		if (ImGui::DragFloat("Replant Distance", &settings.plant.replantDistance, 0.01f, 0.0f)) m_EditState->isDirty = true;
+		if (ImGui::SliderFloat("Unplant Angle", &settings.plant.unplantAngleDegrees, 0.0f, 90.0f)) m_EditState->isDirty = true;
+		if (ImGui::SliderFloat("Replant Angle", &settings.plant.replantAngleDegrees, 0.0f, 90.0f)) m_EditState->isDirty = true;
+		int pivot = static_cast<int>(settings.plant.pivot);
+		if (ImGui::Combo("Plant Pivot", &pivot, "Heel\0Ball\0Ankle\0"))
 		{
-			ImGui::PushID(index + 13100);
-			if (EditStringProperty("Bone", n->m_BoneNames[index])) m_EditState->isDirty = true;
-			if (index >= static_cast<int>(n->m_BoneWeights.size())) n->m_BoneWeights.resize(n->m_BoneNames.size(), 1.0f);
-			if (ImGui::SliderFloat("Weight", &n->m_BoneWeights[index], 0.0f, 1.0f)) m_EditState->isDirty = true;
-			if (ImGui::SmallButton("Remove"))
-			{
-				n->m_BoneNames.erase(n->m_BoneNames.begin() + index);
-				if (index < static_cast<int>(n->m_BoneWeights.size())) n->m_BoneWeights.erase(n->m_BoneWeights.begin() + index);
-				m_EditState->isDirty = true;
-				ImGui::PopID();
-				break;
-			}
-			ImGui::Separator();
-			ImGui::PopID();
-		}
-		if (ImGui::SmallButton("+ LookAt Bone"))
-		{
-			n->m_BoneNames.emplace_back();
-			n->m_BoneWeights.push_back(1.0f);
+			settings.plant.pivot = static_cast<AnimationPlantPivot>(pivot);
 			m_EditState->isDirty = true;
 		}
-		if (ImGui::SliderFloat("Max Angle Per Bone", &n->m_MaxAnglePerBoneDeg, 0.0f, 180.0f)) m_EditState->isDirty = true;
-		if (ImGui::DragFloat3("Forward Axis", &n->m_ForwardAxis.x, 0.01f)) m_EditState->isDirty = true;
-		if (ImGui::DragFloat3("World Forward (optional)", &n->m_WorldForward.x, 0.01f)) m_EditState->isDirty = true;
-		if (ImGui::DragFloat3("Model Up", &n->m_ModelUp.x, 0.01f)) m_EditState->isDirty = true;
-		if (ImGui::SliderFloat("Up Weight", &n->m_UpWeight, 0.0f, 1.0f)) m_EditState->isDirty = true;
-		if (ImGui::Checkbox("Use Fixed Target", &n->m_UseFixedTarget)) m_EditState->isDirty = true;
-		if (n->m_UseFixedTarget)
-		{
-			if (ImGui::DragFloat3("Position", &n->m_FixedTargetPos.x, 0.01f)) m_EditState->isDirty = true;
-			if (ImGui::SliderFloat("Weight", &n->m_FixedWeight, 0.0f, 1.0f)) m_EditState->isDirty = true;
-		}
-		else
-		{
-			if (editParameterBinding("Position Parameter", n->m_TargetPosParamName, AnimatorParamType::Vector3, false)) m_EditState->isDirty = true;
-			if (editParameterBinding("Weight Parameter", n->m_WeightParamName, AnimatorParamType::Float)) m_EditState->isDirty = true;
-		}
-		if (editCoordinateSpace("Position Space", n->m_TargetPositionSpace)) m_EditState->isDirty = true;
-		if (editTargetReference(n->m_TargetPositionSpace, "Target Reference Bone", n->m_TargetReferenceBoneName)) m_EditState->isDirty = true;
+		if (ImGui::DragFloat("Lock Weight Half-Life", &settings.plant.weightHalfLife, 0.005f, 0.0f)) m_EditState->isDirty = true;
+		ImGui::SeparatorText("Pelvis");
+		if (ImGui::DragFloat("Max Up Offset", &settings.pelvis.maxUpOffset, 0.01f, 0.0f)) m_EditState->isDirty = true;
+		if (ImGui::DragFloat("Max Down Offset", &settings.pelvis.maxDownOffset, 0.01f, 0.0f)) m_EditState->isDirty = true;
+		if (ImGui::DragFloat("Max Horizontal Offset", &settings.pelvis.maxHorizontalOffset, 0.01f, 0.0f)) m_EditState->isDirty = true;
+		if (ImGui::DragFloat("Pelvis Half-Life", &settings.pelvis.halfLife, 0.005f, 0.0f)) m_EditState->isDirty = true;
+		if (ImGui::SliderFloat("Weight", &settings.weight, 0.0f, 1.0f)) m_EditState->isDirty = true;
 		break;
 	}
-	case AnimGraphNodeType::FootPlacement:
+	case AnimGraphNodeType::LimbIK:
 	{
-		auto* n = static_cast<AnimGraphFootPlacementNode*>(node);
-		FootPlacementSettings& settings = n->m_Settings;
-		if (ImGui::Checkbox("Enabled", &settings.enabled)) m_EditState->isDirty = true;
-		if (ImGui::DragFloat("Probe Origin Height", &settings.probeOriginHeight, 0.01f, 0.0f)) m_EditState->isDirty = true;
-		if (ImGui::DragFloat("Probe Length", &settings.probeLength, 0.01f, 0.0f)) m_EditState->isDirty = true;
-		if (ImGui::DragFloat("Foot Half Length", &settings.footHalfLength, 0.005f, 0.0f)) m_EditState->isDirty = true;
-		if (ImGui::DragFloat("Foot Half Width", &settings.footHalfWidth, 0.005f, 0.0f)) m_EditState->isDirty = true;
-		if (ImGui::DragFloat("Ankle Height", &settings.ankleHeight, 0.005f, 0.0f)) m_EditState->isDirty = true;
-		if (ImGui::DragFloat("Full Contact Height", &settings.fullContactHeight, 0.005f, 0.0f)) m_EditState->isDirty = true;
-		if (ImGui::DragFloat("Contact Fade Height", &settings.contactFadeHeight, 0.005f, 0.0f)) m_EditState->isDirty = true;
-		if (ImGui::DragFloat("Max Step Up", &settings.maxStepUp, 0.01f, 0.0f)) m_EditState->isDirty = true;
-		if (ImGui::DragFloat("Max Step Down", &settings.maxStepDown, 0.01f, 0.0f)) m_EditState->isDirty = true;
-		if (ImGui::SliderFloat("Max Slope", &settings.maxSlopeDeg, 0.0f, 89.0f)) m_EditState->isDirty = true;
-		if (ImGui::DragFloat("Pelvis Max Drop", &settings.pelvisMaxDrop, 0.01f, 0.0f)) m_EditState->isDirty = true;
-		if (ImGui::DragFloat("Pelvis Smooth Time", &settings.pelvisSmoothTime, 0.005f, 0.0f)) m_EditState->isDirty = true;
-		if (ImGui::DragFloat("Offset Smooth Time", &settings.offsetSmoothTime, 0.005f, 0.0f)) m_EditState->isDirty = true;
-		if (ImGui::DragFloat("Normal Smooth Time", &settings.normalSmoothTime, 0.005f, 0.0f)) m_EditState->isDirty = true;
-		if (ImGui::DragFloat("Weight Smooth Time", &settings.weightSmoothTime, 0.005f, 0.0f)) m_EditState->isDirty = true;
-		if (ImGui::DragFloat("Global Weight Smooth", &settings.globalWeightSmoothTime, 0.005f, 0.0f)) m_EditState->isDirty = true;
-		if (ImGui::SliderFloat("IK Weight", &settings.ikWeight, 0.0f, 1.0f)) m_EditState->isDirty = true;
-		if (ImGui::SliderFloat("Rotation Weight", &settings.rotationWeight, 0.0f, 1.0f)) m_EditState->isDirty = true;
-		if (ImGui::SliderFloat("Max Leg Extension Ratio", &settings.maxLegExtensionRatio, 0.0f, 1.5f)) m_EditState->isDirty = true;
-		if (ImGui::DragFloat3("Knee Pole Model Direction", &settings.kneePoleModelDir.x, 0.01f)) m_EditState->isDirty = true;
-		if (ImGui::SliderFloat("Knee Pole Weight", &settings.kneePoleModelWeight, 0.0f, 1.0f)) m_EditState->isDirty = true;
-		if (ImGui::Checkbox("Debug Visualization", &settings.debugVisualization)) m_EditState->isDirty = true;
-		int collisionMask = static_cast<int>(settings.collisionMask);
-		if (ImGui::InputInt("Collision Mask", &collisionMask))
+		auto* n = static_cast<AnimGraphLimbIKNode*>(node);
+		if (editStringList("Rig Chain IDs", n->m_ChainIds)) m_EditState->isDirty = true;
+		int mode = static_cast<int>(n->m_LimbSettings.tipRotationMode);
+		if (ImGui::Combo("Tip Rotation", &mode, "Preserve Input\0Match Goal\0Follow Chain\0"))
 		{
-			settings.collisionMask = static_cast<std::uint32_t>(collisionMask);
+			n->m_LimbSettings.tipRotationMode = static_cast<AnimationLimbTipRotationMode>(mode);
 			m_EditState->isDirty = true;
 		}
-		if (editParameterBinding("Airborne Parameter", settings.airborneParameter, AnimatorParamType::Bool)) m_EditState->isDirty = true;
-		ImGui::SeparatorText("Humanoid Bones");
-		if (EditStringProperty("Pelvis", settings.bones.pelvis)) m_EditState->isDirty = true;
-		if (EditStringProperty("Left Hip", settings.bones.leftHip)) m_EditState->isDirty = true;
-		if (EditStringProperty("Left Knee", settings.bones.leftKnee)) m_EditState->isDirty = true;
-		if (EditStringProperty("Left Foot", settings.bones.leftFoot)) m_EditState->isDirty = true;
-		if (EditStringProperty("Right Hip", settings.bones.rightHip)) m_EditState->isDirty = true;
-		if (EditStringProperty("Right Knee", settings.bones.rightKnee)) m_EditState->isDirty = true;
-		if (EditStringProperty("Right Foot", settings.bones.rightFoot)) m_EditState->isDirty = true;
+		if (ImGui::DragFloat("Position Tolerance", &n->m_LimbSettings.positionTolerance, 0.0001f, 0.0f)) m_EditState->isDirty = true;
+		if (ImGui::SliderFloat("Weight", &n->m_LimbSettings.weight, 0.0f, 1.0f)) m_EditState->isDirty = true;
+		if (ImGui::Checkbox("Commit Clamped Pose", &n->m_LimbSettings.commitClampedPose)) m_EditState->isDirty = true;
+		break;
+	}
+	case AnimGraphNodeType::ChainIK:
+	{
+		auto* n = static_cast<AnimGraphChainIKNode*>(node);
+		if (editStringList("Rig Chain IDs", n->m_ChainIds)) m_EditState->isDirty = true;
+		if (ImGui::InputInt("Max Iterations", &n->m_ChainSettings.maxIterations)) m_EditState->isDirty = true;
+		if (ImGui::DragFloat("Position Tolerance", &n->m_ChainSettings.positionTolerance, 0.0001f, 0.0f)) m_EditState->isDirty = true;
+		if (ImGui::SliderFloat("Weight", &n->m_ChainSettings.weight, 0.0f, 1.0f)) m_EditState->isDirty = true;
+		if (ImGui::Checkbox("Commit Clamped Pose", &n->m_ChainSettings.commitClampedPose)) m_EditState->isDirty = true;
 		break;
 	}
 	default:
@@ -2713,24 +2922,38 @@ bool VansAnimGraphEditorWindow::ReloadWorkingCopyFromDocument()
 	}
 	const std::string previousGraphId = m_ActiveGraphId;
 	const std::string previousLayerId = m_EditState->selectedLayerId;
+	const std::string previousGraphSetId = m_EditState->selectedGraphSetId;
 	m_AssetData = std::move(reloaded);
 	m_EditState->name = m_AssetData->name;
 	m_EditState->parameters = m_AssetData->parameters;
 	m_EditState->clipRefs = m_AssetData->clipRefs;
 	m_EditState->selectedLayerId = previousLayerId.empty()
 		? m_AssetData->layers.front().id : previousLayerId;
+	m_EditState->selectedGraphSetId = previousGraphSetId.empty()
+		? m_AssetData->defaultGraphSetId : previousGraphSetId;
+	if (std::none_of(m_AssetData->graphSets.begin(), m_AssetData->graphSets.end(),
+		[&](const auto& graphSet) { return graphSet.id == m_EditState->selectedGraphSetId; }))
+		m_EditState->selectedGraphSetId = m_AssetData->defaultGraphSetId;
 	if (std::none_of(m_AssetData->layers.begin(), m_AssetData->layers.end(),
 		[&](const VansAnimationLayerDefinition& layer) { return layer.id == previousLayerId; }))
 		m_EditState->selectedLayerId = m_AssetData->layers.front().id;
 	if (std::none_of(m_AssetData->slots.begin(), m_AssetData->slots.end(),
 		[&](const VansAnimationSlotDefinition& slot) { return slot.id == m_EditState->selectedSlotId; }))
 		m_EditState->selectedSlotId.clear();
-	m_ActiveGraphId = previousGraphId.empty()
-		? m_AssetData->layers.front().graphId : previousGraphId;
+	auto resolveSelectedBindingGraph = [&]() -> std::string
+	{
+		for (const auto& graphSet : m_AssetData->graphSets)
+			if (graphSet.id == m_EditState->selectedGraphSetId)
+				for (const auto& binding : graphSet.bindings)
+					if (binding.layerId == m_EditState->selectedLayerId && binding.enabled)
+						return binding.graphId;
+		return {};
+	};
+	m_ActiveGraphId = previousGraphId.empty() ? resolveSelectedBindingGraph() : previousGraphId;
 	m_TargetGraph = m_AssetData->FindGraph(m_ActiveGraphId);
 	if (!m_TargetGraph)
 	{
-		m_ActiveGraphId = m_AssetData->layers.front().graphId;
+		m_ActiveGraphId = resolveSelectedBindingGraph();
 		m_TargetGraph = m_AssetData->FindGraph(m_ActiveGraphId);
 	}
 	m_EditState->selectedNodeId = -1;

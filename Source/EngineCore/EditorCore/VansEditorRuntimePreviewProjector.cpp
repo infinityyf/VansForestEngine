@@ -80,6 +80,7 @@ bool BuildRuntimeTransformPreview(
 
     edit = {};
     edit.entityGuid = entityGuid;
+	edit.space = EditorAPI::RuntimeTransformSpace::Local;
 
     if (const VansSerializedValue* position = FindObjectField(*data, "position");
         position && ReadPreviewVec3(*position, edit.position))

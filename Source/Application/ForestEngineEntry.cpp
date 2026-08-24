@@ -4,6 +4,7 @@
 #include "../EngineCore/RenderCore/VulkanCore/VansGUIVulkanBackEnd.h"
 
 #include "../EngineCore/RenderCore/VansCamera.h"
+#include "../EngineCore/RenderCore/VansRenderSystem.h"
 #include "../EngineCore/RenderCore/VansScene.h"
 #include "../EngineCore/RenderCore/SceneBuild/VansSceneProjectResourceBuilder.h"
 
@@ -16,6 +17,7 @@
 #include "../EngineCore/RuntimeUI/Public/VansUISystem.h"
 #include "../EngineCore/RenderCore/VansShaderManager.h"
 #include <cstdlib>
+#include <memory>
 
 // ????
 #include "../EngineCore/ProjectSystem/VansProjectManager.h"
@@ -23,12 +25,17 @@
 using namespace VansGraphics;
 using namespace VansEngine;
 
+namespace
+{
+	std::unique_ptr<VansRenderSystem> g_RenderSystem;
+}
+
 // ????
 bool InitializeEngineCore();
 bool InitializeGraphicsSystem();
 bool InitializePhysicsSystem();
 void RunMainLoop(VansCamera& camera);
-void ShutdownEngine();
+void ShutdownEngine(std::unique_ptr<VansCamera>& camera);
 
 bool InitializeEngineCore()
 {
@@ -145,23 +152,44 @@ void RunMainLoop(VansCamera& camera)
 	// Inject camera into scene
 	m_Scene->InjectCamera(&camera);
 
-	// Prepare for rendering
-	m_GraphicsDevice->BeforeRendering();
+	g_RenderSystem = std::make_unique<VansRenderSystem>(
+		*m_GraphicsDevice, *m_Scene, 1u);
+	if (!g_RenderSystem->InitializeFrameExecution())
+	{
+		VANS_LOG_ERROR("[ForestEngine] Failed to initialize render-system frame execution");
+		g_RenderSystem.reset();
+		return;
+	}
+	m_Scene->BindRenderThreadTransactionExecutor(g_RenderSystem.get());
+	VansRuntime::VansUIInitDesc uiDesc{};
+	uiDesc.m_Width = static_cast<std::uint32_t>(m_GraphicsDevice->GetNativeRenderWidth());
+	uiDesc.m_Height = static_cast<std::uint32_t>(m_GraphicsDevice->GetNativeRenderHeight());
+	if (!VansRuntime::VansUISystem::Get().InitializeWithDevice(
+		uiDesc,
+		dynamic_cast<VansVKDevice*>(m_GraphicsDevice)))
+	{
+		VANS_LOG_ERROR("[ForestEngine] Failed to initialize Runtime UI frontend");
+		g_RenderSystem->ShutdownFrameExecution();
+		g_RenderSystem.reset();
+		return;
+	}
 
 	// Start physics simulation thread
 	VansPhysicsSystem::GetInstance().StartSimulation();
 	VANS_LOG("[ForestEngine] Physics simulation started");
 
 	// Run the editor main loop
-	VansEditorWindow::StartEditorLoop(camera);
+	VansEditorWindow::StartEditorLoop(camera, *g_RenderSystem);
 
-	// End rendering
-	m_GraphicsDevice->AfterRendering();
+	// Stop accepting frames, but keep RT/backend alive through ordered Scene/UI
+	// Vulkan teardown. ShutdownEngine performs the final backend stop and join.
+	if (!g_RenderSystem->Quiesce())
+		VANS_LOG_ERROR("[ForestEngine] Failed to quiesce render thread after main loop.");
 	
 	VANS_LOG("[ForestEngine] Main loop finished");
 }
 
-void ShutdownEngine()
+void ShutdownEngine(std::unique_ptr<VansCamera>& camera)
 {
 	VANS_LOG("[ForestEngine] Shutting down engine systems...");
 
@@ -186,7 +214,14 @@ void ShutdownEngine()
 	VANS_LOG("[ForestEngine] Physics simulation paused for shutdown");
 
 	VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
-	if (vkDevice)
+	if (g_RenderSystem)
+	{
+		if (!g_RenderSystem->WaitForIdle())
+			VANS_LOG_ERROR("[ForestEngine] Render thread failed to reach idle before scene teardown.");
+		else
+			VANS_LOG("[ForestEngine] Render thread idle before scene teardown");
+	}
+	else if (vkDevice)
 	{
 		vkDevice->WaitForDevice();
 		VANS_LOG("[ForestEngine] Vulkan device idle before scene teardown");
@@ -197,9 +232,31 @@ void ShutdownEngine()
 	{
 		m_Scene->UnLoadScene();
 		m_Scene->UnloadProjectResources(vkDevice);
+		m_Scene->BindRenderThreadTransactionExecutor(nullptr);
 		delete m_Scene;
 		m_Scene = nullptr;
 		VANS_LOG("[ForestEngine] Scene unloaded");
+	}
+
+	// Scene components may reference the injected camera during their teardown.
+	// Release it only after the scene is gone, while its Vulkan descriptor resources
+	// and the graphics device are still alive.
+	camera.reset();
+	VANS_LOG("[ForestEngine] Camera released");
+
+	// Stop RT only after all Scene-owned Vulkan resources are gone. RT performs
+	// Noesis IRenderer shutdown before backend render-pass teardown; Main then
+	// destroys the Noesis Views and process-global UI state below.
+	if (g_RenderSystem)
+	{
+		if (m_GUIBackEnd && !g_RenderSystem->ExecuteRenderThreadTransaction(
+			m_GUIBackEnd->CreateRenderThreadShutdown()))
+		{
+			VANS_LOG_ERROR("[ForestEngine] Render-thread GUI backend shutdown failed");
+		}
+		g_RenderSystem->ShutdownFrameExecution();
+		g_RenderSystem.reset();
+		VANS_LOG("[ForestEngine] Render thread stopped after Vulkan-dependent scene teardown");
 	}
 
 	VansRuntime::VansUISystem::Get().Shutdown();
@@ -281,9 +338,10 @@ public:
 			return;
 		}
 
-		// Create camera for the scene (parameters will be applied from Scene.json in LoadSceneContent)
-		VansCamera camera(m_GraphicsDevice);
-		RunMainLoop(camera);
+		// The camera must outlive the scene: scene components detach from it during
+		// ShutdownEngine(), before the Vulkan device and descriptor manager are released.
+		m_Camera = std::make_unique<VansCamera>(m_GraphicsDevice);
+		RunMainLoop(*m_Camera);
 	}
 
 	void Shutdown()
@@ -291,13 +349,14 @@ public:
 		if (m_Shutdown)
 			return;
 
-		ShutdownEngine();
+		ShutdownEngine(m_Camera);
 		m_Shutdown = true;
 	}
 
 private:
 	bool m_Initialized = false;
 	bool m_Shutdown = false;
+	std::unique_ptr<VansCamera> m_Camera;
 };
 
 int main()

@@ -23,6 +23,11 @@ namespace VansRuntime
 	class VansUIDocument;
 }
 
+namespace VansGraphics
+{
+	class VansRenderSystem;
+}
+
 namespace Vans
 {
 	class VansGameplayTraceRecorder;
@@ -39,6 +44,7 @@ namespace Vans::EditorAPI
 
 		void BindRuntime(RuntimeSceneHandle scene, RuntimeRenderDeviceHandle device);
 		void BindGlobalRuntime(RuntimeRenderDeviceHandle device);
+		void BindRenderSystem(VansGraphics::VansRenderSystem* renderSystem);
 		void BindScriptContext(VansScriptContext* scriptContext);
 
 		SceneDataSnapshot GetSceneSnapshot() const override;
@@ -164,6 +170,10 @@ namespace Vans::EditorAPI
 		bool HasAnimationDebugNodes() const override;
 		AnimationAssetBindingSnapshot GetAnimationAssetBinding(const std::string& entityGuid) const override;
 		MotionMatchingDebugSnapshot GetMotionMatchingDebugSnapshot() const override;
+		SceneSkeletonHierarchySnapshot GetSceneSkeletonHierarchy(
+			const std::string& entityGuidFilter) const override;
+		SceneSkeletonNodePoseSnapshot GetSceneSkeletonNodePose(
+			const SceneSkeletonNodePoseRequest& request) const override;
 		SkeletonDebugSnapshot GetSkeletonDebugSnapshot(const std::string& entityGuidFilter) const override;
 		AssetSkeletonSnapshot GetAssetSkeletonSnapshot(const std::string& assetGuid) const override;
 		AnimatorDocumentDecodeResult DecodeAnimatorDocument(
@@ -183,6 +193,7 @@ namespace Vans::EditorAPI
 			const AnimationPreviewDefinitionUpdate& update) override;
 		bool SetAnimationPreviewPlayback(const AnimationPreviewPlaybackRequest& request) override;
 		bool SetAnimationPreviewParameter(const AnimationPreviewParameterValue& value) override;
+		bool SwitchAnimationPreviewGraphSet(const AnimationPreviewGraphSetRequest& request) override;
 		bool TriggerAnimationPreviewSlot(const AnimationPreviewSlotRequest& request) override;
 		bool SetAnimationPreviewViewport(const AnimationPreviewViewportRequest& request) override;
 		void TickAnimationPreview(AnimationPreviewSessionId sessionId, float deltaTime) override;
@@ -198,8 +209,6 @@ namespace Vans::EditorAPI
 			const std::string& previewId, std::int64_t tick, bool safeEdges) override;
 		TimelinePreviewResult StopTimelinePreview(const std::string& previewId) override;
 		TimelinePreviewResult GetTimelinePreview(const std::string& previewId) const override;
-		void SetFootIKDebugVisualization(bool enabled) override;
-		FootIKDebugSnapshot GetFootIKDebugSnapshot() const override;
 		TerrainSettingsSnapshot GetTerrainSettings() const override;
 		void ApplyTerrainSettings(const TerrainSettingsSnapshot& settings) override;
 		bool ApplyRuntimeEntityPreviewChange(const RuntimeEntityPreviewChange& change) override;
@@ -281,6 +290,7 @@ namespace Vans::EditorAPI
 
 		RuntimeSceneHandle m_Scene = nullptr;
 		RuntimeRenderDeviceHandle m_Device = nullptr;
+		VansGraphics::VansRenderSystem* m_RenderSystem = nullptr;
 		VansScriptContext* m_ScriptContext = nullptr;
 		EnginePlayState m_PlayState = EnginePlayState::Edit;
 		std::uint64_t m_SceneContentRevision = 0;
@@ -312,6 +322,8 @@ namespace Vans::EditorAPI
 			VkFramebuffer framebuffer = VK_NULL_HANDLE;
 			EditorTextureHandle texture = nullptr;
 		};
+		struct UIPreviewTransactionState;
+		class UIPreviewRenderTransaction;
 
 		std::unordered_map<UIPreviewId, UIPreviewGpuResource> m_UIPreviewResources;
 

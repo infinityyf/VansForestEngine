@@ -14,7 +14,7 @@ layout(set = 1, binding = 2, std430) buffer rayRadianceBuffer { f16vec4 radiance
 layout(set = 1, binding = 3, std430) readonly buffer hitEmissionBuffer { f16vec4 emission[]; } hitEmission;
 layout(set = 1, binding = 4) uniform samplerCube environmentMap;
 layout(set = 1, binding = 8) uniform sampler2D shadowMap;
-layout(set = 1, binding = 9) uniform sampler2DArrayShadow punctualShadowMap;
+layout(set = 1, binding = 9) uniform sampler2DShadow punctualShadowMap[PUNCTUAL_SHADOW_ATLAS_COUNT];
 layout(set = 1, binding = 10, std430) buffer pbrDataBuffer { f16vec4 albedoRoughness[]; } pbrInfo;
 layout(set = 1, binding = 11) uniform sampler2D giVisibilityAtlas;
 layout(set = 1, binding = 12) uniform sampler2D giIrradianceAtlas;

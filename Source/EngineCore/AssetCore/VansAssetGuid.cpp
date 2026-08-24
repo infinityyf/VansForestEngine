@@ -11,6 +11,24 @@ namespace Vans
 {
 namespace
 {
+std::uint64_t StableHash(std::string_view nameSpace, std::string_view value, std::uint64_t seed)
+{
+    std::uint64_t hash = seed;
+    const auto append = [&hash](std::string_view text)
+    {
+        for (const unsigned char character : text)
+        {
+            hash ^= character;
+            hash *= 1099511628211ull;
+        }
+    };
+    append(nameSpace);
+    hash ^= 0xffu;
+    hash *= 1099511628211ull;
+    append(value);
+    return hash;
+}
+
 bool ParseHalf(std::string_view text, std::uint64_t& value)
 {
     const auto result = std::from_chars(text.data(), text.data() + text.size(), value, 16);
@@ -26,6 +44,17 @@ VansAssetGuid VansAssetGuid::New()
     std::uint64_t low = generator();
     high = (high & 0xffffffffffff0fffull) | 0x0000000000004000ull;
     low = (low & 0x3fffffffffffffffull) | 0x8000000000000000ull;
+    return VansAssetGuid(high, low);
+}
+
+VansAssetGuid VansAssetGuid::FromStableName(std::string_view nameSpace, std::string_view value)
+{
+    std::uint64_t high = StableHash(nameSpace, value, 14695981039346656037ull);
+    std::uint64_t low = StableHash(nameSpace, value, 1099511628211ull ^ 0x9e3779b97f4a7c15ull);
+    high = (high & 0xffffffffffff0fffull) | 0x0000000000005000ull;
+    low = (low & 0x3fffffffffffffffull) | 0x8000000000000000ull;
+    if (high == 0 && low == 0)
+        low = 1;
     return VansAssetGuid(high, low);
 }
 

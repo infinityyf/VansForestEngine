@@ -1160,6 +1160,57 @@ int LuaComponentAnimSetTrigger(lua_State* L)
 	return 0;
 }
 
+int LuaComponentAnimSwitchGraphSet(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	const char* graphSetId = luaL_checkstring(L, 2);
+	auto* anim = dynamic_cast<VansScriptAnimationComponent*>(component);
+	if (!anim || !anim->m_AnimNode)
+	{
+		lua_pushboolean(L, 0);
+		return 1;
+	}
+	const VansGraphics::VansGraphSetSwitchResult result = anim->m_AnimNode->SwitchGraphSet(graphSetId);
+	const bool accepted = result == VansGraphics::VansGraphSetSwitchResult::Started
+		|| result == VansGraphics::VansGraphSetSwitchResult::Completed
+		|| result == VansGraphics::VansGraphSetSwitchResult::AlreadyActive
+		|| result == VansGraphics::VansGraphSetSwitchResult::Queued;
+	lua_pushboolean(L, accepted ? 1 : 0);
+	return 1;
+}
+
+int LuaComponentAnimGetActiveGraphSet(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* anim = dynamic_cast<VansScriptAnimationComponent*>(component);
+	if (!anim || !anim->m_AnimNode)
+	{
+		lua_pushnil(L);
+		return 1;
+	}
+	const std::string& graphSetId = anim->m_AnimNode->GetActiveGraphSetId();
+	lua_pushlstring(L, graphSetId.data(), graphSetId.size());
+	return 1;
+}
+
+int LuaComponentAnimIsGraphSetTransitioning(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* anim = dynamic_cast<VansScriptAnimationComponent*>(component);
+	lua_pushboolean(L, anim && anim->m_AnimNode
+		&& anim->m_AnimNode->IsGraphSetTransitioning());
+	return 1;
+}
+
+int LuaComponentAnimGetGraphSetTransitionProgress(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	auto* anim = dynamic_cast<VansScriptAnimationComponent*>(component);
+	lua_pushnumber(L, anim && anim->m_AnimNode
+		? anim->m_AnimNode->GetGraphSetTransitionProgress() : 0.0f);
+	return 1;
+}
+
 int LuaComponentGetVolume(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
@@ -3939,6 +3990,10 @@ void VansScriptContext::RegisterLuaBindings()
 		{ "set_int", LuaComponentAnimSetInt },
 		{ "set_vector3", LuaComponentAnimSetVector3 },
 		{ "set_trigger", LuaComponentAnimSetTrigger },
+		{ "switch_graph_set", LuaComponentAnimSwitchGraphSet },
+		{ "get_active_graph_set", LuaComponentAnimGetActiveGraphSet },
+		{ "is_graph_set_transitioning", LuaComponentAnimIsGraphSetTransitioning },
+		{ "get_graph_set_transition_progress", LuaComponentAnimGetGraphSetTransitionProgress },
 		{ "set_drive_mode", LuaComponentSetDriveMode },
 		{ "set_drive_mode_with_velocity", LuaComponentSetDriveModeWithVelocity },
 		{ "get_drive_mode", LuaComponentGetDriveMode },

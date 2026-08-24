@@ -2,6 +2,8 @@
 #include "../EngineCore/AssetCore/VansAssetResolver.h"
 #include "../EngineCore/AssetCore/VansMaterialAuthoringAsset.h"
 #include "../EngineCore/AssetCore/VansSkinProfile.h"
+#include "../EngineCore/AssetCore/VansSkeletalMeshImportSettings.h"
+#include "../EngineCore/AssetCore/Storage/VansAssetMetaStorage.h"
 #include "../EngineCore/AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../EngineCore/AssetCore/Serialization/VansSkinProfileJsonCodec.h"
 #include "../EngineCore/AudioCore/VansAudioAttenuation.h"
@@ -24,6 +26,7 @@
 #include "../EngineCore/CameraCore/VansCameraCore.h"
 #include "../EngineCore/RenderCore/VansPostProcessProfile.h"
 #include "../EngineCore/RenderCore/VansMaterial.h"
+#include "../EngineCore/RenderCore/VansDrawSubmission.h"
 #include "../EngineCore/RenderCore/VansCameraControlArbiter.h"
 #include "../EngineCore/RenderCore/Timeline/VansVirtualCameraParameterStore.h"
 #include "../EngineCore/RenderCore/GICore/VansGISettings.h"
@@ -36,20 +39,32 @@
 #include "../EngineCore/RenderCore/UpscalingCore/VansUpscaleResolutionPolicy.h"
 #include "../EngineCore/RenderCore/UpscalingCore/VansTemporalJitterSequence.h"
 #include "../EngineCore/RenderCore/VansShaderManager.h"
+#include "../EngineCore/RenderCore/VansGraphicsDevice.h"
+#include "../EngineCore/RenderCore/VansCamera.h"
+#include "../EngineCore/RenderCore/VansMainCameraVisibility.h"
+#include "../EngineCore/RenderCore/VulkanCore/VansMainCameraVisibilityState.h"
+#include "../EngineCore/RenderCore/VansRenderFrame.h"
+#include "../EngineCore/RenderCore/VansRenderSystem.h"
 #include "../EngineCore/RenderCore/SceneBuild/VansSceneResourceArtifactPrewarmer.h"
 #include "../EngineCore/RenderCore/VansTemporalProjection.h"
 #include "../EngineCore/RenderCore/ShadowCore/VansPunctualShadowManager.h"
+#include "../EngineCore/RenderCore/ShadowCore/VansPunctualShadowFrameState.h"
+#include "../EngineCore/RenderCore/BRDFData/VansLight.h"
 #include "../EngineCore/RuntimeCore/VansPackageManifest.h"
 #include "../EngineCore/RuntimeCore/VansCharacterMotion.h"
 #include "../EngineCore/RuntimeCore/VansCharacterTrajectoryGenerator.h"
 #include "../EngineCore/RuntimeCore/VansRuntimeFrameScheduler.h"
+#include "../EngineCore/RuntimeCore/VansFramePhase.h"
+#include "../EngineCore/RuntimeCore/VansThreadContract.h"
 #include "../EngineCore/SceneRuntime/VansRuntimeComponentTypes.h"
 #include "../EngineCore/SceneRuntime/VansRuntimeWorld.h"
+#include "../EngineCore/SceneRuntime/Transform/VansTransformGraph.h"
 #include "../EngineCore/SceneCore/VansPackagedResourcePlan.h"
 #include "../EngineCore/SceneCore/VansSceneContentBuildPlan.h"
 #include "../EngineCore/SceneCore/VansSceneCameraMediaComponentReader.h"
 #include "../EngineCore/SceneCore/VansSceneRuntimeProjection.h"
 #include "../EngineCore/SceneCore/VansSceneAssetDependencyBuilder.h"
+#include "../EngineCore/SceneCore/VansSceneEntityFactory.h"
 #include "../EngineCore/SceneCore/VansSceneSchema.h"
 #include "../EngineCore/SceneCore/VansSceneRuntimeComponentKey.h"
 #include "../EngineCore/SceneCore/VansSceneRenderSettingsConfigReader.h"
@@ -74,6 +89,7 @@
 #include "../EngineCore/AssetCore/Storage/VansStagedFileTransaction.h"
 #include "../EngineCore/AnimationCore/VansAnimationClip.h"
 #include "../EngineCore/AnimationCore/VansAnimationController.h"
+#include "../EngineCore/AnimationCore/VansAnimationNode.h"
 #include "../EngineCore/AnimationCore/VansAnimGraph.h"
 #include "../EngineCore/AnimationCore/VansAnimatorIO.h"
 #include "../EngineCore/AnimationCore/VansAnimatorRuntimeCompiler.h"
@@ -81,13 +97,17 @@
 #include "../EngineCore/AnimationCore/VansPoseMath.h"
 #include "../EngineCore/AnimationCore/VansPosePayloadMixer.h"
 #include "../EngineCore/AnimationCore/VansAnimationLayer.h"
+#include "../EngineCore/AnimationCore/VansSkinnedMeshLoader.h"
 #include "../EngineCore/AnimationCore/Retargeting/VansRetargetProcessor.h"
+#include "../EngineCore/AnimationCore/Storage/VansAnimationRigStorage.h"
 #include "../EngineCore/AnimationCore/Storage/VansBoneMaskStorage.h"
+#include "../EngineCore/AnimationCore/Storage/VansRetargetProfileStorage.h"
 #include "../EngineCore/AnimationCore/MotionMatching/VansMotionMatching.h"
 #include "../EngineCore/EngineAPILayer/Private/AnimationAuthoringBridge.h"
 #include "../EngineCore/ParticleCore/VansParticleRuntime.h"
 #include "TimelineRefactorContractTests.h"
 #include "GAFContractTests.h"
+#include "ProceduralAnimationContractTests.h"
 #include "../EngineCore/ProjectSystem/VansProjectManager.h"
 #include "../EngineCore/ProjectSystem/VansProjectSettingsData.h"
 #include "../EngineCore/ProjectSystem/Serialization/VansProjectSettingsJsonCodec.h"
@@ -96,7 +116,12 @@
 #include "../EngineCore/ScriptCore/VansTransform.h"
 
 #include <algorithm>
+#include <assimp/Importer.hpp>
+#include <assimp/postprocess.h>
+#include <assimp/scene.h>
 #include <chrono>
+#include <condition_variable>
+#include <cstring>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -110,8 +135,10 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <new>
+#include <mutex>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -121,6 +148,837 @@
 
 namespace
 {
+class TestRenderSystemDevice final : public VansGraphics::VansGraphicsDevice
+{
+public:
+	TestRenderSystemDevice()
+	{
+		m_RenderWidth = 1280;
+		m_RenderHeight = 720;
+	}
+
+	void BeforeRendering() override
+	{
+		beforeThread = std::this_thread::get_id();
+		++beforeCount;
+	}
+	void PrepareRenderingFrame() override
+	{
+		prepareThread = std::this_thread::get_id();
+		prepareFrontendOrder = NextOrder();
+	}
+	VansGraphics::VansRenderSubmissionPrepareResult PrepareRenderSubmission(
+		const VansGraphics::VansRenderFrameSubmission& submission) override
+	{
+		prepareThread = std::this_thread::get_id();
+		prepareBackendOrder = NextOrder();
+		preparedFrameId = submission.Frame().FrameId();
+		preparedWorkSerial = submission.WorkSerial();
+		preparedMutationCount = submission.MutationsBeforeFrame().Size();
+		if (forcedPrepareStatus != VansGraphics::VansRenderSubmissionPrepareStatus::Ready)
+			return { forcedPrepareStatus, forcedPrepareError };
+		if (!renderWorld.Apply(submission.MutationsBeforeFrame()))
+		{
+			return {
+				VansGraphics::VansRenderSubmissionPrepareStatus::FatalProtocolViolation,
+				"Test render mutation was rejected"
+			};
+		}
+		return { VansGraphics::VansRenderSubmissionPrepareStatus::Ready, {} };
+	}
+	void Rendering() override
+	{
+		renderThread = std::this_thread::get_id();
+		renderOrder = NextOrder();
+		++renderCount;
+		std::unique_lock<std::mutex> lock(renderGateMutex);
+		if (blockRendering)
+		{
+			renderGateCondition.wait(lock, [this] { return releaseRendering; });
+			blockRendering = false;
+		}
+	}
+	void Present() override
+	{
+		presentThread = std::this_thread::get_id();
+		presentOrder = NextOrder();
+		++presentCount;
+	}
+	void AfterRendering() override
+	{
+		afterThread = std::this_thread::get_id();
+		++afterCount;
+	}
+	bool WaitForIdle() override
+	{
+		waitThread = std::this_thread::get_id();
+		++waitCount;
+		return true;
+	}
+	void OnWindowResize(std::uint32_t width, std::uint32_t height) override
+	{
+		resizeThread = std::this_thread::get_id();
+		++resizeCount;
+		lastWidth = width;
+		lastHeight = height;
+	}
+	void InitializeGpuProfiler() override { ++profilerInitializeCount; }
+	void EndGpuProfilerFrame() override { ++profilerEndCount; }
+	void* GetNativeGraphicsDevice() override { return nullptr; }
+	void* GetNativeCommandBuffer() override { return nullptr; }
+
+	std::uint32_t beforeCount = 0;
+	std::uint32_t renderCount = 0;
+	std::uint32_t presentCount = 0;
+	std::uint32_t afterCount = 0;
+	std::uint32_t waitCount = 0;
+	std::uint32_t resizeCount = 0;
+	std::uint32_t profilerInitializeCount = 0;
+	std::uint32_t profilerEndCount = 0;
+	std::uint32_t lastWidth = 0;
+	std::uint32_t lastHeight = 0;
+	int* sequence = nullptr;
+	int prepareFrontendOrder = 0;
+	int prepareBackendOrder = 0;
+	int renderOrder = 0;
+	int presentOrder = 0;
+	VansGraphics::VansRenderFrameId preparedFrameId;
+	VansGraphics::VansRenderWorkSerial preparedWorkSerial;
+	std::size_t preparedMutationCount = 0;
+	VansGraphics::VansRenderWorld renderWorld;
+	VansGraphics::VansRenderSubmissionPrepareStatus forcedPrepareStatus =
+		VansGraphics::VansRenderSubmissionPrepareStatus::Ready;
+	std::string forcedPrepareError;
+	std::thread::id beforeThread;
+	std::thread::id prepareThread;
+	std::thread::id renderThread;
+	std::thread::id presentThread;
+	std::thread::id resizeThread;
+	std::thread::id waitThread;
+	std::thread::id afterThread;
+	std::mutex renderGateMutex;
+	std::condition_variable renderGateCondition;
+	bool blockRendering = false;
+	bool releaseRendering = false;
+
+private:
+	int NextOrder() { return sequence ? ++(*sequence) : 0; }
+};
+
+class TestRenderFrameSource final : public VansGraphics::IVansRenderFrameSource
+{
+public:
+	std::optional<VansGraphics::VansRenderFrameSourceOutput> PrepareMainThreadRenderFrame(
+		const VansGraphics::VansRenderFramePreparationContext& context) override
+	{
+		prepareOrder = sequence ? ++(*sequence) : 0;
+		++prepareCount;
+		lastFrameId = context.frameId;
+		lastViewportWidth = context.view.viewportWidth;
+		lastViewportHeight = context.view.viewportHeight;
+		if (!prepareSucceeded)
+			return std::nullopt;
+		VansGraphics::VansRenderFrameSourceOutput output;
+		if (useUpdatesAfterFirst && prepareCount > 1)
+		{
+			output.mutationsBeforeFrame.AddUpdate(
+				VansGraphics::VansRenderProxyHandle{ 0u, 1u },
+				VansGraphics::VansRenderProxyStaticData{ 5u, true });
+		}
+		else
+		{
+			output.mutationsBeforeFrame.AddCreate(
+				VansGraphics::VansRenderProxyHandle{ 0u, 1u },
+				VansGraphics::VansRenderProxyStaticData{ 5u, true });
+		}
+		return output;
+	}
+
+	std::uint32_t prepareCount = 0;
+	bool prepareSucceeded = true;
+	bool useUpdatesAfterFirst = false;
+	int* sequence = nullptr;
+	int prepareOrder = 0;
+	VansGraphics::VansRenderFrameId lastFrameId;
+	std::uint32_t lastViewportWidth = 0;
+	std::uint32_t lastViewportHeight = 0;
+};
+
+class TestRenderThreadTransaction final
+	: public VansGraphics::IVansRenderThreadTransaction
+{
+public:
+	TestRenderThreadTransaction(
+		std::thread::id& executedThread,
+		std::uint32_t& executeCount)
+		: m_ExecutedThread(executedThread), m_ExecuteCount(executeCount)
+	{
+	}
+
+	bool Execute(VansGraphics::VansGraphicsDevice&) override
+	{
+		m_ExecutedThread = std::this_thread::get_id();
+		++m_ExecuteCount;
+		return true;
+	}
+
+private:
+	std::thread::id& m_ExecutedThread;
+	std::uint32_t& m_ExecuteCount;
+};
+
+bool TestRenderSystemLifecycleContract()
+{
+	TestRenderSystemDevice device;
+	TestRenderFrameSource frameSource;
+	int frameSequence = 0;
+	device.sequence = &frameSequence;
+	frameSource.sequence = &frameSequence;
+	VansGraphics::VansRenderSystem renderSystem(device, frameSource);
+	const std::thread::id mainThread = std::this_thread::get_id();
+	if (!renderSystem.InitializeFrameExecution() ||
+		renderSystem.GetState() != VansGraphics::VansRenderSystemState::Running ||
+		device.beforeCount != 1)
+	{
+		return false;
+	}
+
+	VansGraphics::VansCamera camera(&device);
+	if (!renderSystem.BeginFrame(camera) ||
+		!renderSystem.IsFrameOpen() ||
+		frameSource.prepareOrder != 1 ||
+		device.prepareFrontendOrder != 0 ||
+		device.prepareBackendOrder != 0 ||
+		device.renderOrder != 0 ||
+		frameSource.prepareCount != 1 ||
+		frameSource.lastViewportWidth != 1280 ||
+		frameSource.lastViewportHeight != 720 ||
+		device.renderWorld.Resolve({ 0u, 1u }) != nullptr)
+	{
+		return false;
+	}
+	const VansGraphics::VansRenderFrameSubmitResult submitResult = renderSystem.SubmitFrame();
+	const auto frameOutcome = renderSystem.GetFrameOutcome(submitResult.frameId);
+	if (!submitResult || renderSystem.IsFrameOpen() ||
+		device.prepareFrontendOrder != 2 ||
+		device.prepareBackendOrder != 3 ||
+		device.renderOrder != 4 ||
+		device.presentOrder != 5 || device.presentCount != 1 ||
+		frameSource.lastFrameId != device.preparedFrameId ||
+		device.preparedWorkSerial != VansGraphics::VansRenderWorkSerial(0) ||
+		device.preparedMutationCount != 1 ||
+		device.renderWorld.Resolve({ 0u, 1u }) == nullptr ||
+		device.beforeThread == mainThread ||
+		device.prepareThread != device.beforeThread ||
+		device.renderThread != device.beforeThread ||
+		device.presentThread != device.beforeThread ||
+		!frameOutcome.has_value() ||
+		frameOutcome->status != VansGraphics::VansRenderFrameStatus::PresentQueued ||
+		frameOutcome->frameId != submitResult.frameId ||
+		frameOutcome->workSerial != VansGraphics::VansRenderWorkSerial(0))
+	{
+		return false;
+	}
+
+	if (!renderSystem.RequestSurfaceResize(1600, 900) ||
+		device.resizeCount != 1 || device.lastWidth != 1600 || device.lastHeight != 900 ||
+		device.resizeThread != device.beforeThread)
+	{
+		return false;
+	}
+
+	std::thread::id transactionThread;
+	std::uint32_t transactionCount = 0;
+	if (!renderSystem.ExecuteRenderThreadTransaction(
+			std::make_unique<TestRenderThreadTransaction>(
+				transactionThread, transactionCount)) ||
+		transactionCount != 1 || transactionThread != device.beforeThread ||
+		transactionThread == mainThread)
+	{
+		return false;
+	}
+
+	renderSystem.InitializeGpuProfiler();
+	renderSystem.EndGpuProfilerFrame();
+	if (device.profilerInitializeCount != 1 || device.profilerEndCount != 1)
+		return false;
+
+	if (!renderSystem.Quiesce() ||
+		renderSystem.GetState() != VansGraphics::VansRenderSystemState::Quiesced ||
+		device.waitCount != 1 || device.waitThread != device.beforeThread)
+	{
+		return false;
+	}
+
+	renderSystem.ShutdownFrameExecution();
+	if (renderSystem.GetState() != VansGraphics::VansRenderSystemState::Stopped ||
+		device.afterCount != 1 || device.afterThread != device.beforeThread)
+	{
+		return false;
+	}
+
+	return renderSystem.WaitForIdle() && device.waitCount == 1;
+}
+
+bool TestRenderSystemPrepareFailureContract()
+{
+	using namespace VansGraphics;
+	{
+		TestRenderSystemDevice device;
+		TestRenderFrameSource frameSource;
+		VansRenderSystem renderSystem(device, frameSource);
+		if (!renderSystem.InitializeFrameExecution())
+			return false;
+		VansCamera camera(&device);
+		device.forcedPrepareStatus = VansRenderSubmissionPrepareStatus::RecoverableFailure;
+		device.forcedPrepareError = "Injected recoverable prepare failure";
+		if (!renderSystem.BeginFrame(camera) || !renderSystem.IsFrameOpen() ||
+			device.renderCount != 0 || device.presentCount != 0)
+		{
+			return false;
+		}
+		const VansRenderFrameId failedFrame = renderSystem.GetCurrentFrameId();
+		const VansRenderFrameSubmitResult failedSubmit = renderSystem.SubmitFrame();
+		const auto failedOutcome = renderSystem.GetFrameOutcome(failedFrame);
+		if (failedSubmit.status != VansRenderFrameSubmitStatus::BackendFrameFailed ||
+			renderSystem.IsFrameOpen() ||
+			renderSystem.GetState() != VansRenderSystemState::Running ||
+			!failedOutcome.has_value() ||
+			failedOutcome->status != VansRenderFrameStatus::RecoverableFailure ||
+			failedOutcome->error != device.forcedPrepareError ||
+			device.presentCount != 0)
+		{
+			return false;
+		}
+
+		device.forcedPrepareStatus = VansRenderSubmissionPrepareStatus::Ready;
+		device.forcedPrepareError.clear();
+		if (!renderSystem.BeginFrame(camera) || !renderSystem.SubmitFrame())
+			return false;
+		if (!renderSystem.Quiesce())
+			return false;
+		renderSystem.ShutdownFrameExecution();
+		if (renderSystem.GetState() != VansRenderSystemState::Stopped)
+			return false;
+	}
+
+	{
+		TestRenderSystemDevice device;
+		TestRenderFrameSource frameSource;
+		VansRenderSystem renderSystem(device, frameSource);
+		if (!renderSystem.InitializeFrameExecution())
+			return false;
+		VansCamera camera(&device);
+		device.forcedPrepareStatus = VansRenderSubmissionPrepareStatus::FatalProtocolViolation;
+		device.forcedPrepareError = "Injected mutation protocol violation";
+		if (!renderSystem.BeginFrame(camera) || !renderSystem.IsFrameOpen())
+			return false;
+		const VansRenderFrameId failedFrame = renderSystem.GetCurrentFrameId();
+		const VansRenderFrameSubmitResult failedSubmit = renderSystem.SubmitFrame();
+		const auto failedOutcome = renderSystem.GetFrameOutcome(failedFrame);
+		if (failedSubmit.status != VansRenderFrameSubmitStatus::BackendFrameFailed ||
+			renderSystem.IsFrameOpen() ||
+			renderSystem.GetState() != VansRenderSystemState::Fatal ||
+			!failedOutcome.has_value() ||
+			failedOutcome->status != VansRenderFrameStatus::FatalProtocolViolation ||
+			failedOutcome->error != device.forcedPrepareError ||
+			device.renderCount != 0 || device.presentCount != 0 ||
+			renderSystem.BeginFrame(camera))
+		{
+			return false;
+		}
+		renderSystem.ShutdownFrameExecution();
+		if (renderSystem.GetState() != VansRenderSystemState::Stopped)
+			return false;
+	}
+	return true;
+}
+
+bool TestRenderSystemOneFrameLeadContract()
+{
+	using namespace VansGraphics;
+	TestRenderSystemDevice device;
+	TestRenderFrameSource frameSource;
+	frameSource.useUpdatesAfterFirst = true;
+	VansRenderSystem renderSystem(device, frameSource, 1);
+	if (!renderSystem.InitializeFrameExecution())
+		return false;
+	VansCamera camera(&device);
+	{
+		std::lock_guard<std::mutex> lock(device.renderGateMutex);
+		device.blockRendering = true;
+		device.releaseRendering = false;
+	}
+	if (!renderSystem.BeginFrame(camera))
+		return false;
+	const VansRenderFrameSubmitResult frame0 = renderSystem.SubmitFrame();
+	if (!frame0 || renderSystem.GetFrameOutcome(frame0.frameId).has_value())
+		return false;
+
+	// Main can build N while RT is deliberately blocked in N-1.
+	if (!renderSystem.BeginFrame(camera))
+		return false;
+	std::thread releaseThread([&device]
+	{
+		std::this_thread::sleep_for(std::chrono::milliseconds(40));
+		{
+			std::lock_guard<std::mutex> lock(device.renderGateMutex);
+			device.releaseRendering = true;
+		}
+		device.renderGateCondition.notify_all();
+	});
+	const auto waitStarted = std::chrono::steady_clock::now();
+	const VansRenderFrameSubmitResult frame1 = renderSystem.SubmitFrame();
+	const auto waited = std::chrono::steady_clock::now() - waitStarted;
+	releaseThread.join();
+	if (!frame1 || waited < std::chrono::milliseconds(25) ||
+		!renderSystem.GetFrameOutcome(frame0.frameId).has_value())
+	{
+		return false;
+	}
+	if (!renderSystem.Quiesce())
+		return false;
+	renderSystem.ShutdownFrameExecution();
+	return renderSystem.GetState() == VansRenderSystemState::Stopped &&
+		renderSystem.GetFrameOutcome(frame1.frameId).has_value();
+}
+
+bool TestRenderOutcomeLedgerContract()
+{
+	using namespace VansGraphics;
+	VansRenderOutcomeLedger ledger(1, 2);
+	if (!ledger.TryAcceptFrame(VansRenderWorkSerial(3), VansRenderFrameId(10)) ||
+		ledger.TryAcceptFrame(VansRenderWorkSerial(4), VansRenderFrameId(11)) ||
+		ledger.PendingFrameCount() != 1)
+	{
+		return false;
+	}
+
+	VansRenderFrameOutcome wrongOutcome;
+	wrongOutcome.workSerial = VansRenderWorkSerial(99);
+	wrongOutcome.frameId = VansRenderFrameId(10);
+	wrongOutcome.status = VansRenderFrameStatus::PresentQueued;
+	if (ledger.PublishOutcome(std::move(wrongOutcome)))
+		return false;
+
+	VansRenderFrameOutcome firstOutcome;
+	firstOutcome.workSerial = VansRenderWorkSerial(3);
+	firstOutcome.frameId = VansRenderFrameId(10);
+	firstOutcome.status = VansRenderFrameStatus::SkippedMinimized;
+	if (!ledger.PublishOutcome(std::move(firstOutcome)) ||
+		!ledger.LeadCreditReleasedFor(VansRenderFrameId(10)) ||
+		ledger.PendingFrameCount() != 0)
+	{
+		return false;
+	}
+
+	auto publishFrame = [&](std::uint64_t work, std::uint64_t frame,
+		VansRenderFrameStatus status)
+	{
+		if (!ledger.TryAcceptFrame(VansRenderWorkSerial(work), VansRenderFrameId(frame)))
+			return false;
+		VansRenderFrameOutcome outcome;
+		outcome.workSerial = VansRenderWorkSerial(work);
+		outcome.frameId = VansRenderFrameId(frame);
+		outcome.status = status;
+		return ledger.PublishOutcome(std::move(outcome));
+	};
+	if (!publishFrame(4, 11, VansRenderFrameStatus::SubmittedWithoutPresent) ||
+		!publishFrame(5, 12, VansRenderFrameStatus::RecoverableFailure) ||
+		ledger.RetainedOutcomeCount() != 2 ||
+		ledger.FindOutcome(VansRenderFrameId(10)).has_value())
+	{
+		return false;
+	}
+
+	const VansRenderOutcomeWaitResult evicted = ledger.WaitForOutcome(VansRenderFrameId(10));
+	if (evicted.status != VansRenderOutcomeWaitStatus::OutcomeEvicted)
+		return false;
+	const VansRenderOutcomeWaitResult retained = ledger.WaitForOutcome(VansRenderFrameId(12));
+	if (retained.status != VansRenderOutcomeWaitStatus::OutcomeAvailable ||
+		!retained.outcome.has_value() ||
+		retained.outcome->status != VansRenderFrameStatus::RecoverableFailure)
+	{
+		return false;
+	}
+
+	ledger.SignalStopped();
+	return ledger.WaitForOutcome(VansRenderFrameId(99)).status ==
+		VansRenderOutcomeWaitStatus::Stopped;
+}
+
+bool TestRenderFramePacketContract()
+{
+	using namespace VansGraphics;
+	static_assert(!std::is_default_constructible_v<VansRenderFramePacket>);
+	static_assert(!std::is_copy_constructible_v<VansRenderFramePacket>);
+	static_assert(std::is_move_constructible_v<VansRenderFramePacket>);
+	static_assert(!std::is_move_assignable_v<VansRenderFramePacket>);
+	static_assert(!std::is_copy_constructible_v<VansRenderFrameSubmission>);
+	static_assert(std::is_move_constructible_v<VansRenderFrameSubmission>);
+
+	VansRenderViewSnapshot invalidView;
+	VansRenderFrameBuilder invalidBuilder(
+		VansRenderFrameId(4),
+		VansLogicFrameId(7),
+		VansSurfaceEpoch(2));
+	if (invalidBuilder.SetView(invalidView))
+		return false;
+
+	VansRenderViewSnapshot view;
+	view.viewportWidth = 1920;
+	view.viewportHeight = 1080;
+	view.nearClip = 0.25f;
+	view.farClip = 5000.0f;
+	view.historyReset = VansRenderViewHistoryReset::CameraCut;
+
+	VansRenderFrameBuilder builder(
+		VansRenderFrameId(11),
+		VansLogicFrameId(19),
+		VansSurfaceEpoch(3));
+	VansRenderFrameTimingSnapshot timing;
+	timing.elapsedSeconds = 12.5;
+	timing.deltaSeconds = 1.0 / 60.0;
+	timing.renderDeltaSeconds = 1.0 / 120.0;
+	VansRenderSceneFrameSnapshot scene;
+	scene.sceneReady = true;
+	scene.sceneEpoch = 4;
+	scene.mainCameraHiZCullSettings.enableTransparent = true;
+	scene.mainCameraHiZCullSettings.depthBiasMeters = 1.25f;
+	scene.light.prepared = true;
+	scene.light.punctualShadowMapWidth = 4096;
+	scene.light.frameSequence = 3.0f;
+	scene.materials.prepared = true;
+	scene.materials.pbr.elementStride = sizeof(VansBasePBRParam);
+	scene.materials.cloth.elementStride = sizeof(VansClothGPUParam);
+	scene.materials.treeLeaf.elementStride = sizeof(VansTreeLeafParamsGPU);
+	scene.materials.skin.elementStride = sizeof(VansSkinGPUParam);
+	scene.materials.custom.elementStride = sizeof(VansCustomMaterialPayload);
+	scene.gi.prepared = true;
+	scene.postProcess.prepared = true;
+	VansPointLight pointLight{};
+	pointLight.m_ShadowMetaIndex = VANS_INVALID_SHADOW_INDEX;
+	scene.light.pointLights.emplace_back(pointLight);
+	VansRenderTransformFrameData transform;
+	transform.proxy = { 7u, 3u };
+	transform.position = glm::vec4(1.0f, 2.0f, 3.0f, 1.0f);
+	scene.transforms.emplace_back(transform);
+	VansRenderMainCameraCullInput cullInput;
+	cullInput.proxy = { 7u, 3u };
+	cullInput.nodeName = "OwnedCullInput";
+	cullInput.cullClass = VansMainCameraCullClass::Opaque;
+	cullInput.hasBounds = false;
+	scene.mainCameraCullInputs.emplace_back(std::move(cullInput));
+	scene.punctualShadow.prepared = true;
+	VansPunctualShadowLightInput shadowLight;
+	shadowLight.stableLightId = 17;
+	shadowLight.type = VansPunctualShadowLightType::Point;
+	shadowLight.gpuLightIndex = 0;
+	scene.punctualShadow.lights.emplace_back(shadowLight);
+	VansRenderPunctualShadowCasterInput shadowCaster;
+	shadowCaster.proxy = { 7u, 3u };
+	shadowCaster.shadowCasterMask = 0x3u;
+	scene.punctualShadow.casters.emplace_back(shadowCaster);
+	scene.features.hasDecal = true;
+	if (!builder.SetView(view) || builder.SetView(view) ||
+		!builder.SetTiming(timing) || builder.SetTiming(timing) ||
+		!builder.SetScene(scene) || builder.SetScene(scene))
+		return false;
+
+	auto packet = std::move(builder).Finalize();
+	return packet.has_value() &&
+		packet->FrameId() == VansRenderFrameId(11) &&
+		packet->SourceLogicFrameId() == VansLogicFrameId(19) &&
+		packet->SurfaceEpoch() == VansSurfaceEpoch(3) &&
+		packet->Timing().deltaSeconds == timing.deltaSeconds &&
+		packet->Timing().renderDeltaSeconds == timing.renderDeltaSeconds &&
+		packet->View().viewportWidth == 1920 &&
+		packet->View().viewportHeight == 1080 &&
+		packet->View().nearClip == 0.25f &&
+		packet->View().farClip == 5000.0f &&
+		packet->Scene().sceneReady &&
+		packet->Scene().sceneEpoch == 4 &&
+		packet->Scene().mainCameraHiZCullSettings.enableTransparent &&
+		packet->Scene().mainCameraHiZCullSettings.depthBiasMeters == 1.25f &&
+		packet->Scene().light.IsComplete() &&
+		packet->Scene().light.pointLights.size() == 1 &&
+		packet->Scene().light.pointLights.front().m_ShadowMetaIndex == VANS_INVALID_SHADOW_INDEX &&
+		packet->Scene().transforms.size() == 1 &&
+		packet->Scene().transforms.front().proxy == VansRenderProxyHandle{ 7u, 3u } &&
+		packet->Scene().transforms.front().position == glm::vec4(1.0f, 2.0f, 3.0f, 1.0f) &&
+		packet->Scene().mainCameraCullInputs.size() == 1 &&
+		packet->Scene().mainCameraCullInputs.front().proxy == VansRenderProxyHandle{ 7u, 3u } &&
+		packet->Scene().mainCameraCullInputs.front().nodeName == "OwnedCullInput" &&
+		packet->Scene().punctualShadow.IsComplete() &&
+		packet->Scene().punctualShadow.lights.size() == 1 &&
+		packet->Scene().punctualShadow.lights.front().stableLightId == 17 &&
+		packet->Scene().punctualShadow.casters.size() == 1 &&
+		packet->Scene().punctualShadow.casters.front().proxy == VansRenderProxyHandle{ 7u, 3u } &&
+		packet->Scene().punctualShadowJobs.empty() &&
+		!packet->Scene().features.hasPunctualShadowJobs &&
+		packet->Scene().features.hasDecal &&
+		!VansRenderPassCatalog::IsPassEnabled(
+			VansRenderPassCondition::HasPunctualShadowJobs,
+			packet->Scene().features) &&
+		packet->Timing().elapsedSeconds == 12.5 &&
+		packet->Timing().deltaSeconds == 1.0 / 60.0 &&
+		HasRenderViewHistoryReset(
+			packet->View().historyReset,
+			VansRenderViewHistoryReset::CameraCut);
+}
+
+bool TestMainCameraVisibilityBackendOwnershipContract()
+{
+	using namespace VansGraphics;
+	static_assert(VansMainCameraVisibilityState::kFrameSlotCount == 2);
+	static_assert(!std::is_copy_constructible_v<VansMainCameraVisibilityState>);
+
+	VansMainCameraVisibilityState backendState;
+	VansRenderViewSnapshot view;
+	view.view = glm::mat4(1.0f);
+	view.projection = glm::mat4(1.0f);
+	view.position = glm::vec3(0.0f);
+	view.forward = glm::vec3(0.0f, 0.0f, -1.0f);
+	view.viewportWidth = 1280;
+	view.viewportHeight = 720;
+	view.fieldOfViewRadians = glm::radians(60.0f);
+	view.nearClip = 0.1f;
+	view.farClip = 1000.0f;
+
+	VansRenderSceneFrameSnapshot scene;
+	scene.sceneReady = true;
+	scene.mainCameraHiZCullSettings.depthBiasMeters = 0.75f;
+	VansRenderMainCameraCullInput input;
+	input.proxy = { 12u, 5u };
+	input.nodeName = "BackendOwnedHiZCandidate";
+	input.cullClass = VansMainCameraCullClass::Opaque;
+	input.bounds = MakeRenderBoundsFromLocalAABB(
+		glm::vec3(-0.25f),
+		glm::vec3(0.25f),
+		glm::mat4(1.0f));
+	input.hasBounds = input.bounds.IsValid();
+	scene.mainCameraCullInputs.push_back(input);
+
+	VANS_SET_FRAME_PHASE(VansFramePhase::RenderThreadConsume);
+	backendState.PrepareFrame(view, scene, 0, 10);
+	VansVKBuffer* slotZeroObjectBuffer = &backendState.GetActiveCullObjectBuffer();
+	if (!backendState.HasActiveCandidates() ||
+		backendState.GetActiveCandidateCount() != 1 ||
+		backendState.GetActiveFrameSlotIndex() != 0 ||
+		backendState.GetActiveSettings().depthBiasMeters != 0.75f ||
+		!backendState.ShouldDraw(input.proxy))
+	{
+		VANS_SET_FRAME_PHASE(VansFramePhase::GameLogic);
+		return false;
+	}
+
+	const VansMainCameraVisibilityDebugSnapshot firstSnapshot =
+		backendState.GetDebugSnapshot();
+	backendState.PrepareFrame(view, scene, 1, 11);
+	VansVKBuffer* slotOneObjectBuffer = &backendState.GetActiveCullObjectBuffer();
+	if (slotZeroObjectBuffer == slotOneObjectBuffer ||
+		backendState.GetActiveFrameSlotIndex() != 1)
+	{
+		VANS_SET_FRAME_PHASE(VansFramePhase::GameLogic);
+		return false;
+	}
+
+	backendState.Reset();
+	const VansMainCameraVisibilityDebugSnapshot resetSnapshot =
+		backendState.GetDebugSnapshot();
+	VANS_SET_FRAME_PHASE(VansFramePhase::GameLogic);
+	return firstSnapshot.stats.enabled &&
+		firstSnapshot.stats.candidateCount == 1 &&
+		firstSnapshot.stats.preCullDrawCallCount == 1 &&
+		firstSnapshot.stats.drawnDrawCallCount == 1 &&
+		!resetSnapshot.stats.enabled &&
+		resetSnapshot.stats.candidateCount == 0 &&
+		resetSnapshot.stats.preCullDrawCallCount == 0 &&
+		firstSnapshot.culledNodes.empty();
+}
+
+bool TestPunctualShadowBackendOwnershipContract()
+{
+	using namespace VansGraphics;
+	VansPunctualShadowFrameState backendState;
+
+	auto makeFrame = []()
+	{
+		VansRenderSceneFrameSnapshot scene;
+		scene.sceneEpoch = 9;
+		scene.sceneReady = true;
+		scene.light.prepared = true;
+		scene.light.punctualShadowMapWidth = 4096;
+		VansSpotLight gpuLight{};
+		gpuLight.m_ShadowMetaIndex = VANS_INVALID_SHADOW_INDEX;
+		scene.light.spotLights.emplace_back(gpuLight);
+
+		scene.punctualShadow.prepared = true;
+		VansPunctualShadowLightInput light;
+		light.stableLightId = 41;
+		light.type = VansPunctualShadowLightType::Spot;
+		light.gpuLightIndex = 0;
+		light.position = glm::vec3(0.0f, 0.0f, -3.0f);
+		light.direction = glm::vec3(0.0f, 0.0f, -1.0f);
+		light.intensity = 10.0f;
+		light.radius = 12.0f;
+		light.settings.castShadows = true;
+		light.settings.resolution = VansShadowResolution::R128;
+		light.settings.maxShadowDistance = 100.0f;
+		scene.punctualShadow.lights.emplace_back(light);
+
+		VansRenderPunctualShadowCasterInput caster;
+		caster.proxy = { 3u, 2u };
+		caster.hasBounds = false;
+		scene.punctualShadow.casters.emplace_back(caster);
+		return scene;
+	};
+
+	VansRenderSceneFrameSnapshot first = makeFrame();
+	if (!backendState.PrepareFrame(first, 1) ||
+		first.punctualShadowJobs.empty() ||
+		!first.features.hasPunctualShadowJobs ||
+		first.light.spotLights.front().m_ShadowMetaIndex == VANS_INVALID_SHADOW_INDEX ||
+		first.punctualShadowJobs.front().casterHandles.size() != 1 ||
+		first.punctualShadowJobs.front().casterHandles.front() != VansRenderProxyHandle{ 3u, 2u })
+	{
+		return false;
+	}
+	std::vector<std::uint8_t> packedLightBuffer;
+	if (!VansLightManager::BuildRenderLightBufferPayload(
+		first.light,
+		backendState.GetGPUShadowData(),
+		backendState.GetGPUShadowViews(),
+		packedLightBuffer) ||
+		packedLightBuffer.size() != VansLightManager::GetLightBufferPayloadSize())
+	{
+		return false;
+	}
+	std::array<std::uint32_t, 4> packedCounts{};
+	std::memcpy(packedCounts.data(), packedLightBuffer.data(), sizeof(packedCounts));
+	const std::size_t packedSpotOffset = sizeof(std::uint32_t) * 4 + sizeof(float) * 4 +
+		sizeof(VansDirectionalLight) * VANS_MAX_DIRECTION_LIGHTS +
+		sizeof(VansPointLight) * VANS_MAX_POINT_LIGHTS;
+	VansSpotLight packedSpot{};
+	std::memcpy(&packedSpot, packedLightBuffer.data() + packedSpotOffset, sizeof(packedSpot));
+	if (packedCounts[0] != 0 || packedCounts[1] != 1 ||
+		packedCounts[2] != 4096 ||
+		packedCounts[3] != backendState.GetGPUShadowViews().size() ||
+		packedSpot.m_ShadowMetaIndex != first.light.spotLights.front().m_ShadowMetaIndex)
+	{
+		return false;
+	}
+	if (backendState.CaptureDebugSnapshot().statistics.residentLights != 0)
+		return false;
+
+	backendState.NotifyRenderJobsSubmitted();
+	VansRenderSceneFrameSnapshot second = makeFrame();
+	if (!backendState.PrepareFrame(second, 2) ||
+		backendState.CaptureDebugSnapshot().statistics.residentLights != 1)
+	{
+		return false;
+	}
+
+	VansRenderSceneFrameSnapshot unloaded;
+	unloaded.sceneEpoch = 10;
+	if (!backendState.PrepareFrame(unloaded, 3))
+		return false;
+	const VansPunctualShadowDebugSnapshot resetSnapshot =
+		backendState.CaptureDebugSnapshot();
+	return resetSnapshot.lights.empty() &&
+		resetSnapshot.statistics.residentLights == 0;
+}
+
+bool TestRenderWorldContract()
+{
+	using namespace VansGraphics;
+	VansRenderProxyHandleAllocator allocator;
+	const VansRenderProxyHandle first = allocator.Allocate();
+	const VansRenderProxyHandle second = allocator.Allocate();
+	if (first != VansRenderProxyHandle{ 0u, 1u } ||
+		second != VansRenderProxyHandle{ 1u, 1u } || allocator.ActiveCount() != 2)
+	{
+		return false;
+	}
+	VansRenderWorld identityOnlyWorld;
+	VansRenderMutationBatch identityOnlyCreate;
+	identityOnlyCreate.AddCreate(first, {});
+	if (!identityOnlyWorld.Apply(identityOnlyCreate) ||
+		identityOnlyWorld.Resolve(first) == nullptr ||
+		identityOnlyWorld.Resolve(first)->transformSlot != VANS_INVALID_RENDER_TRANSFORM_SLOT)
+	{
+		return false;
+	}
+
+	VansRenderWorld world;
+	VansRenderMutationBatch creates;
+	creates.AddCreate(first, { 4u, true });
+	creates.AddCreate(second, { 8u, false });
+	if (!world.Apply(creates) || world.ActiveProxyCount() != 2 ||
+		world.Resolve(first) == nullptr || world.Resolve(first)->transformSlot != 4 ||
+		world.Resolve(second) == nullptr || world.Resolve(second)->enabled)
+	{
+		return false;
+	}
+
+	// 整批失败必须保持原状态，不能只应用失败命令之前的 update。
+	VansRenderMutationBatch invalidBatch;
+	invalidBatch.AddUpdate(first, { 99u, true });
+	invalidBatch.AddDestroy({ second.index, second.generation + 1u });
+	if (world.Apply(invalidBatch) || world.Resolve(first)->transformSlot != 4 ||
+		world.RejectedMutationBatchCount() != 1)
+	{
+		return false;
+	}
+
+	VansRenderMutationBatch destroy;
+	destroy.AddDestroy(first);
+	if (!allocator.Release(first) || !world.Apply(destroy) || world.Resolve(first) != nullptr)
+		return false;
+
+	const VansRenderProxyHandle reused = allocator.Allocate();
+	if (reused.index != first.index || reused.generation == first.generation)
+		return false;
+	if (MakeRenderProxyStableId(VansRenderProxyHandle{}) != 0 ||
+		MakeRenderProxyStableId(first) == MakeRenderProxyStableId(reused) ||
+		MakeRenderProxyStableId(reused) !=
+			(static_cast<uint64_t>(reused.generation) << 32u | reused.index))
+	{
+		return false;
+	}
+	VansRenderMutationBatch replacement;
+	replacement.AddCreate(reused, { 12u, true });
+	if (!world.Apply(replacement) || world.Resolve(first) != nullptr ||
+		world.Resolve(reused) == nullptr || world.Resolve(reused)->transformSlot != 12)
+	{
+		return false;
+	}
+
+	return allocator.ActiveCount() == 2 && world.ActiveProxyCount() == 2;
+}
+
+bool TestFramePhaseThreadLocalContract()
+{
+#ifdef _DEBUG
+	g_CurrentFramePhase = VansFramePhase::GameLogic;
+	bool workerObservedOwnPhase = false;
+	std::thread worker([&workerObservedOwnPhase]
+	{
+		VANS_INIT_RENDER_THREAD();
+		g_CurrentFramePhase = VansFramePhase::GPURecord;
+		workerObservedOwnPhase =
+			g_CurrentThreadRole == VansThreadRole::Render &&
+			g_CurrentFramePhase == VansFramePhase::GPURecord;
+	});
+	worker.join();
+	return workerObservedOwnPhase &&
+		g_CurrentThreadRole == VansThreadRole::Main &&
+		g_CurrentFramePhase == VansFramePhase::GameLogic;
+#else
+	return true;
+#endif
+}
+
 thread_local bool g_TrackHeapAllocations = false;
 thread_local std::size_t g_TrackedHeapAllocationCount = 0;
 
@@ -326,17 +1184,58 @@ bool InstallTestBaseLayer(VansGraphics::VansAnimationController& controller,
                           std::string& error)
 {
     using namespace VansGraphics;
-    VansAnimationLayerGraphSetup setup;
+	VansAnimationLayerSetup setup;
     setup.definition.id = "layer-base";
     setup.definition.name = "Base";
-    setup.definition.graphId = "graph-base";
     setup.definition.kind = VansAnimationLayerKind::Base;
     setup.definition.rootMotion = VansLayerRootMotionMode::Base;
     setup.definition.nodeTracks = VansLayerNodeTrackMode::Override;
-    setup.graph = std::move(graph);
-    std::vector<VansAnimationLayerGraphSetup> layers;
+	std::vector<VansAnimationLayerSetup> layers;
     layers.push_back(std::move(setup));
-    return controller.SetLayerStack(std::move(layers), error);
+	VansAnimationGraphSetSetup graphSet;
+	graphSet.definition.id = "graph-set-default";
+	graphSet.definition.name = "Default";
+	graphSet.definition.bindings.push_back({ "layer-base", "graph-base", true });
+	VansAnimationGraphBindingSetup binding;
+	binding.definition = graphSet.definition.bindings.front();
+	binding.graph = std::move(graph);
+	graphSet.bindings.push_back(std::move(binding));
+	std::vector<VansAnimationGraphSetSetup> graphSets;
+	graphSets.push_back(std::move(graphSet));
+	return controller.SetAnimationGraphSets(
+		std::move(layers), std::move(graphSets), "graph-set-default", {}, {}, error);
+}
+
+bool InstallTestGraphSet(
+	VansGraphics::VansAnimationController& controller,
+	std::vector<VansGraphics::VansAnimationLayerSetup> layers,
+	std::vector<std::string> graphIds,
+	std::vector<std::unique_ptr<VansGraphics::VansAnimGraph>> graphs,
+	std::string& error)
+{
+	using namespace VansGraphics;
+	if (layers.size() != graphIds.size() || layers.size() != graphs.size())
+	{
+		error = "Test Graph Set fixture sizes do not match";
+		return false;
+	}
+	VansAnimationGraphSetSetup graphSet;
+	graphSet.definition.id = "graph-set-default";
+	graphSet.definition.name = "Default";
+	for (std::size_t index = 0; index < layers.size(); ++index)
+	{
+		VansAnimationGraphBindingDefinition definition{
+			layers[index].definition.id, graphIds[index], true };
+		graphSet.definition.bindings.push_back(definition);
+		VansAnimationGraphBindingSetup binding;
+		binding.definition = std::move(definition);
+		binding.graph = std::move(graphs[index]);
+		graphSet.bindings.push_back(std::move(binding));
+	}
+	std::vector<VansAnimationGraphSetSetup> graphSets;
+	graphSets.push_back(std::move(graphSet));
+	return controller.SetAnimationGraphSets(
+		std::move(layers), std::move(graphSets), "graph-set-default", {}, {}, error);
 }
 
 bool TestPackageManifestRoundTrip()
@@ -807,6 +1706,60 @@ bool TestAssetPolicies()
         "Timeline assets are not owned by the canonical Timeline importer");
 }
 
+bool TestAssetTypeSerializationContract()
+{
+    constexpr Vans::VansAssetType types[] = {
+        Vans::VansAssetType::Model,
+        Vans::VansAssetType::Texture,
+        Vans::VansAssetType::Material,
+        Vans::VansAssetType::Shader,
+        Vans::VansAssetType::Audio,
+        Vans::VansAssetType::Video,
+        Vans::VansAssetType::Scene,
+        Vans::VansAssetType::Particle,
+        Vans::VansAssetType::AnimationClip,
+        Vans::VansAssetType::AnimatorController,
+        Vans::VansAssetType::AnimationRig,
+        Vans::VansAssetType::BoneMask,
+        Vans::VansAssetType::Timeline,
+        Vans::VansAssetType::ActionDefinition,
+        Vans::VansAssetType::ActionSet,
+        Vans::VansAssetType::GameplayEffect,
+        Vans::VansAssetType::GameplayCue,
+        Vans::VansAssetType::AttributeSet,
+        Vans::VansAssetType::TargetingPolicy,
+        Vans::VansAssetType::GameplayTagTree,
+        Vans::VansAssetType::PayloadSchema,
+        Vans::VansAssetType::ActionGraph,
+        Vans::VansAssetType::CameraRigProfile,
+        Vans::VansAssetType::CameraShakeProfile,
+        Vans::VansAssetType::GAFEditorLayout,
+        Vans::VansAssetType::ClothProfile,
+        Vans::VansAssetType::SkinProfile,
+        Vans::VansAssetType::PostProcessProfile,
+        Vans::VansAssetType::RagdollProfile,
+        Vans::VansAssetType::AudioReverbPreset,
+        Vans::VansAssetType::AudioBusSnapshot,
+        Vans::VansAssetType::AudioDuckingRules
+    };
+
+    for (const Vans::VansAssetType type : types)
+    {
+        const std::string_view name = Vans::VansAssetDatabase::SerializedTypeName(type);
+        if (!Expect(name != "unknown", "A registered asset type has no serialized name"))
+            return false;
+        if (!Expect(Vans::VansAssetDatabase::ParseSerializedType(name) == type,
+            "An asset type did not round-trip through its serialized name"))
+            return false;
+    }
+
+    return Expect(
+        Vans::VansAssetDatabase::SerializedTypeName(Vans::VansAssetType::Unknown) == "unknown" &&
+        Vans::VansAssetDatabase::ParseSerializedType("unknown") == Vans::VansAssetType::Unknown &&
+        Vans::VansAssetDatabase::ParseSerializedType("AnimationRig") == Vans::VansAssetType::Unknown,
+        "Unknown or non-canonical asset type names were accepted");
+}
+
 bool TestSceneResourceArtifactPrewarmContract()
 {
     TemporaryDirectory temporary;
@@ -1273,6 +2226,273 @@ bool TestRuntimeWorldParentEditContract()
 	return true;
 }
 
+bool TestEmptySceneEntityFactoryContract()
+{
+    Vans::SceneEmptyEntityFactoryRequest request;
+    request.entityName = "Empty Object";
+    request.transformComponentGuid = "empty-transform-guid";
+    const Vans::VansSerializedValue entity =
+        Vans::VansSceneEntityFactory::BuildEmptyEntity(request, "empty-entity-guid");
+
+    if (!Expect(Vans::ReadSerializedStringField(entity, "id") == "empty-entity-guid" &&
+        Vans::ReadSerializedStringField(entity, "name") == "Empty Object",
+        "Empty object factory did not preserve the requested entity identity"))
+    {
+        return false;
+    }
+    const Vans::VansSerializedValue* parent = Vans::FindObjectField(entity, "parent");
+    if (!Expect(parent && parent->kind == Vans::VansSerializedValue::Kind::Null,
+        "Root empty object factory did not serialize a null parent"))
+    {
+        return false;
+    }
+    const Vans::VansSerializedValue* components = Vans::FindObjectField(entity, "components");
+    if (!Expect(components && components->kind == Vans::VansSerializedValue::Kind::Array &&
+        components->arrayItems.size() == 1,
+        "Empty object factory did not produce exactly one component"))
+    {
+        return false;
+    }
+    const Vans::VansSerializedValue& transform = components->arrayItems.front();
+    if (!Expect(Vans::ReadSerializedStringField(transform, "id") == "empty-transform-guid" &&
+        Vans::ReadSerializedStringField(transform, "type") == "Transform" &&
+        Vans::ReadSerializedBoolField(transform, "enabled", false),
+        "Empty object factory did not produce an enabled Transform component"))
+    {
+        return false;
+    }
+
+    const Vans::VansSerializedValue sceneRoot = Vans::VansSerializedValue::Object({
+        { "schemaVersion", Vans::VansSerializedValue::Int(Vans::VansSceneSchemaVersion) },
+        { "settings", Vans::VansSerializedValue::Object({}) },
+        { "entities", Vans::VansSerializedValue::Array({ entity }) }
+    });
+    Vans::VansSceneContentBuildPlan plan;
+    std::string error;
+    if (!Expect(Vans::VansSceneRuntimeProjection::BuildRuntimeSceneContentPlan(
+        sceneRoot,
+        "",
+        plan,
+        error), error.c_str()))
+    {
+        return false;
+    }
+    if (!Expect(plan.objects.objects.size() == 1 && plan.objects.objects.front().transform.has_value(),
+        "Transform-only empty object did not project into the runtime scene plan"))
+    {
+        return false;
+    }
+    const Vans::VansSceneObjectBuildConfig& object = plan.objects.objects.front();
+    const Vans::VansSceneTransformConfig& projectedTransform = *object.transform;
+    if (!Expect(object.entityGuid == "empty-entity-guid" &&
+        object.name == "Empty Object" &&
+        object.componentGuids.find("transform") != object.componentGuids.end() &&
+        object.componentGuids.at("transform") == "empty-transform-guid" &&
+        !object.render.has_value(),
+        "Empty object runtime projection changed its identity or added a renderer"))
+    {
+        return false;
+    }
+    if (!ExpectNear(projectedTransform.position[0], 0.0f, 0.0001f,
+        "Empty object default Transform position X changed") ||
+        !ExpectNear(projectedTransform.position[1], 0.0f, 0.0001f,
+        "Empty object default Transform position Y changed") ||
+        !ExpectNear(projectedTransform.position[2], 0.0f, 0.0001f,
+        "Empty object default Transform position Z changed") ||
+        !ExpectNear(projectedTransform.scale[0], 1.0f, 0.0001f,
+        "Empty object default Transform scale X changed") ||
+        !ExpectNear(projectedTransform.scale[1], 1.0f, 0.0001f,
+        "Empty object default Transform scale Y changed") ||
+        !ExpectNear(projectedTransform.scale[2], 1.0f, 0.0001f,
+        "Empty object default Transform scale Z changed"))
+    {
+        return false;
+    }
+
+    constexpr const char* parentGuid = "11111111-1111-4111-8111-111111111111";
+    constexpr const char* animationComponentGuid = "22222222-2222-4222-8222-222222222222";
+    constexpr const char* boneGuid = "33333333-3333-4333-8333-333333333333";
+    Vans::VansSceneParentReference entityParent;
+    entityParent.kind = Vans::VansSceneParentKind::Entity;
+    if (!Expect(Vans::VansAssetGuid::TryParse(parentGuid, entityParent.entityGuid),
+        "Empty child test parent guid is invalid"))
+    {
+        return false;
+    }
+    request.parent = entityParent;
+    const Vans::VansSerializedValue child =
+        Vans::VansSceneEntityFactory::BuildEmptyEntity(request, "child-entity-guid");
+    const Vans::VansSerializedValue* childParentValue = Vans::FindObjectField(child, "parent");
+    Vans::VansSceneParentReference childParent;
+    std::string parentError;
+    if (!Expect(childParentValue
+        && Vans::TryReadSceneParentReference(*childParentValue, childParent, parentError)
+        && childParent.kind == Vans::VansSceneParentKind::Entity
+        && childParent.entityGuid == entityParent.entityGuid,
+        "Empty child factory did not preserve its canonical entity parent reference"))
+    {
+        return false;
+    }
+
+    Vans::VansSceneParentReference boneParent;
+    boneParent.kind = Vans::VansSceneParentKind::Bone;
+    if (!Expect(Vans::VansAssetGuid::TryParse(parentGuid, boneParent.entityGuid)
+        && Vans::VansAssetGuid::TryParse(animationComponentGuid,
+            boneParent.animationComponentGuid)
+        && Vans::VansAssetGuid::TryParse(boneGuid, boneParent.anchorGuid),
+        "Empty child test bone parent identity is invalid"))
+    {
+        return false;
+    }
+    request.parent = boneParent;
+    const Vans::VansSerializedValue boneChild =
+        Vans::VansSceneEntityFactory::BuildEmptyEntity(request, "bone-child-entity-guid");
+    const Vans::VansSerializedValue* boneParentValue =
+        Vans::FindObjectField(boneChild, "parent");
+    Vans::VansSceneParentReference decodedBoneParent;
+    parentError.clear();
+    return Expect(boneParentValue
+        && Vans::TryReadSceneParentReference(
+            *boneParentValue, decodedBoneParent, parentError)
+        && decodedBoneParent.kind == Vans::VansSceneParentKind::Bone
+        && decodedBoneParent.entityGuid == boneParent.entityGuid
+        && decodedBoneParent.animationComponentGuid == boneParent.animationComponentGuid
+        && decodedBoneParent.anchorGuid == boneParent.anchorGuid,
+        "Empty child factory did not preserve its canonical bone parent reference");
+}
+
+bool TestTransformGraphAnchorContract()
+{
+	struct TransformLease
+	{
+		std::vector<std::uint32_t> ids;
+		~TransformLease()
+		{
+			for (auto it = ids.rbegin(); it != ids.rend(); ++it)
+				VansGraphics::VansTransformStore::FreeTransform(*it);
+		}
+		std::uint32_t Allocate(const glm::vec3& position)
+		{
+			const std::uint32_t id = VansGraphics::VansTransformStore::AllocateTransform();
+			ids.push_back(id);
+			auto& transform = VansGraphics::VansTransformStore::GetTransform(id);
+			transform.m_Position = position;
+			transform.m_Rotation = glm::vec3(0.0f);
+			transform.m_Scale = glm::vec3(1.0f);
+			return id;
+		}
+	} transforms;
+
+	class AnchorProvider final : public Vans::IVansTransformAnchorProvider
+	{
+	public:
+		glm::mat4 model{ 1.0f };
+		std::uint64_t revision = 1;
+		bool ResolveModelSpaceTransform(
+			const Vans::VansTransformAnchorHandle& handle,
+			glm::mat4& outModelTransform,
+			std::uint64_t& outPoseRevision) const override
+		{
+			if (handle.instanceId != 7 || handle.instanceGeneration != 3
+				|| handle.anchorGuid != "test-bone-guid")
+			{
+				return false;
+			}
+			outModelTransform = model;
+			outPoseRevision = revision;
+			return true;
+		}
+	} provider;
+
+	const std::uint32_t owner = transforms.Allocate(glm::vec3(10.0f, 0.0f, 0.0f));
+	const std::uint32_t child = transforms.Allocate(glm::vec3(12.0f, 0.0f, 0.0f));
+	const std::uint32_t attachment = transforms.Allocate(glm::vec3(25.0f, 5.0f, 0.0f));
+	const std::uint32_t snappedAttachment = transforms.Allocate(glm::vec3(100.0f, 100.0f, 0.0f));
+	Vans::VansTransformGraph graph(&provider);
+	if (!Expect(graph.SetParent(child, owner, Vans::VansTransformReparentMode::KeepWorld)
+		&& graph.Resolve(),
+		"Transform graph could not create an entity parent link"))
+	{
+		return false;
+	}
+	if (!ExpectNear(VansGraphics::VansTransformStore::GetTransform(child).m_Position.x,
+		12.0f, 0.0001f, "KeepWorld entity reparent changed child world position"))
+	{
+		return false;
+	}
+	VansGraphics::VansTransformStore::GetTransform(owner).m_Position.x = 20.0f;
+	if (!Expect(graph.Resolve(), "Transform graph failed after its entity parent moved")
+		|| !ExpectNear(VansGraphics::VansTransformStore::GetTransform(child).m_Position.x,
+			22.0f, 0.0001f, "Entity child did not follow its parent transform"))
+	{
+		return false;
+	}
+	if (!Expect(!graph.SetParent(owner, child, Vans::VansTransformReparentMode::KeepLocal),
+		"Transform graph accepted an entity hierarchy cycle"))
+	{
+		return false;
+	}
+
+	provider.model = glm::translate(glm::mat4(1.0f), glm::vec3(5.0f, 5.0f, 0.0f));
+	Vans::VansTransformAnchorHandle anchor;
+	anchor.instanceId = 7;
+	anchor.instanceGeneration = 3;
+	anchor.kind = Vans::VansTransformAnchorKind::Bone;
+	anchor.anchorGuid = "test-bone-guid";
+	if (!Expect(graph.SetAnchor(attachment, owner, anchor,
+		Vans::VansTransformReparentMode::KeepWorld) && graph.Resolve(),
+		"Transform graph could not create a bone anchor link"))
+	{
+		return false;
+	}
+	const auto& attachedAtBind =
+		VansGraphics::VansTransformStore::GetTransform(attachment).m_Position;
+	if (!ExpectNear(attachedAtBind.x, 25.0f, 0.0001f,
+		"KeepWorld bone attach changed attachment world X")
+		|| !ExpectNear(attachedAtBind.y, 5.0f, 0.0001f,
+			"KeepWorld bone attach changed attachment world Y"))
+	{
+		return false;
+	}
+	provider.model = glm::translate(glm::mat4(1.0f), glm::vec3(5.0f, 8.0f, 0.0f));
+	++provider.revision;
+	if (!Expect(graph.Resolve(), "Transform graph failed after its animated bone moved"))
+		return false;
+	const auto& attachedAfterPose =
+		VansGraphics::VansTransformStore::GetTransform(attachment).m_Position;
+	if (!ExpectNear(attachedAfterPose.x, 25.0f, 0.0001f,
+		"Bone attachment drifted in X after pose update")
+		|| !ExpectNear(attachedAfterPose.y, 8.0f, 0.0001f,
+			"Bone attachment did not follow the animated bone pose"))
+	{
+		return false;
+	}
+	if (!Expect(graph.SetAnchor(snappedAttachment, owner, anchor,
+		Vans::VansTransformReparentMode::Snap) && graph.Resolve(),
+		"Transform graph could not snap an entity to a bone anchor"))
+	{
+		return false;
+	}
+	const auto& snapped =
+		VansGraphics::VansTransformStore::GetTransform(snappedAttachment).m_Position;
+	if (!ExpectNear(snapped.x, 25.0f, 0.0001f,
+		"Snap did not reset the attachment local X")
+		|| !ExpectNear(snapped.y, 8.0f, 0.0001f,
+			"Snap did not reset the attachment local Y"))
+	{
+		return false;
+	}
+	return Expect(graph.ClearParent(snappedAttachment,
+		Vans::VansTransformReparentMode::Snap),
+		"Transform graph could not clear a snapped parent")
+		&& ExpectNear(VansGraphics::VansTransformStore::GetTransform(
+			snappedAttachment).m_Position.x, 0.0f, 0.0001f,
+			"Snap detach did not reset world X")
+		&& ExpectNear(VansGraphics::VansTransformStore::GetTransform(
+			snappedAttachment).m_Position.y, 0.0f, 0.0001f,
+			"Snap detach did not reset world Y");
+}
+
 bool TestRuntimeWorldComponentEnabledContract()
 {
 	Vans::VansRuntimeWorld world;
@@ -1627,6 +2847,8 @@ bool TestRuntimeWorldCommandBufferContract()
 		queued,
 		"queued-animation-guid",
 		animationNode,
+		7,
+		3,
 		true);
 	world.FlushCommands();
 	Vans::VansComponentHandle animationComponent = world.FindComponentByGuid(
@@ -1636,7 +2858,9 @@ bool TestRuntimeWorldCommandBufferContract()
 		world.FindStorage(Vans::VansRuntimeComponentType_Animation));
 	const Vans::VansRuntimeAnimationComponent* animationComponentData =
 		animationStorage ? animationStorage->Get(animationComponent) : nullptr;
-	if (!Expect(animationComponentData && animationComponentData->animationNode == animationNode,
+	if (!Expect(animationComponentData && animationComponentData->animationNode == animationNode
+		&& animationComponentData->skeletonInstanceId == 7
+		&& animationComponentData->skeletonInstanceGeneration == 3,
 		"Runtime world command buffer did not store animation component data"))
 		return false;
 
@@ -3141,6 +4365,7 @@ bool TestAnimatorCanonicalFormatContract()
     TemporaryDirectory temporary;
     AnimatorAssetData asset;
     asset.name = "CanonicalAnimator";
+	asset.animationRigGuid = "44444444-4444-4444-8444-444444444444";
     asset.editor.previewModelGuid = "33333333-3333-4333-8333-333333333333";
     asset.editor.previewModelPathHint = "Assets/Models/Hero.fbx";
     AnimatorParameter zeta;
@@ -3171,11 +4396,16 @@ bool TestAnimatorCanonicalFormatContract()
     VansAnimationLayerDefinition baseLayer;
     baseLayer.id = "layer-base";
     baseLayer.name = "Base";
-    baseLayer.graphId = "graph-base";
     baseLayer.kind = VansAnimationLayerKind::Base;
     baseLayer.rootMotion = VansLayerRootMotionMode::Base;
     baseLayer.nodeTracks = VansLayerNodeTrackMode::Override;
     asset.layers.push_back(baseLayer);
+	VansAnimationGraphSetDefinition graphSet;
+	graphSet.id = "graph-set-default";
+	graphSet.name = "Default";
+	graphSet.bindings.push_back({ "layer-base", "graph-base", true });
+	asset.defaultGraphSetId = graphSet.id;
+	asset.graphSets.push_back(std::move(graphSet));
 
     const fs::path firstPath = temporary.path / "canonical_first.vanimator";
     const fs::path secondPath = temporary.path / "canonical_second.vanimator";
@@ -3222,7 +4452,8 @@ bool TestAnimatorCanonicalFormatContract()
 
     AnimatorAssetData loaded;
     if (!Expect(VansAnimatorIO::Load(firstPath.string(), loaded)
-        && loaded.graphs.size() == 1 && loaded.layers.size() == 1
+		&& loaded.graphs.size() == 1 && loaded.layers.size() == 1
+		&& loaded.graphSets.size() == 1 && loaded.defaultGraphSetId == "graph-set-default"
         && loaded.FindGraph("graph-base")
         && loaded.editor.previewModelGuid == "33333333-3333-4333-8333-333333333333",
         "Canonical animator did not load"))
@@ -3468,6 +4699,11 @@ bool TestAnimationProjectAnimatorAssetsCanonicalContract()
         for (fs::recursive_directory_iterator iterator(projectRoot, error), end;
              !error && iterator != end; iterator.increment(error))
         {
+			if (iterator->is_directory() && iterator->path().filename() == "Builds")
+			{
+				iterator.disable_recursion_pending();
+				continue;
+			}
             if (!iterator->is_regular_file() || iterator->path().extension() != ".vanimator")
                 continue;
             ++animatorCount;
@@ -3486,22 +4722,19 @@ bool TestAnimationProjectAnimatorAssetsCanonicalContract()
                 && asset.layers.front().kind == VansAnimationLayerKind::Base,
                 "Project Animator is missing its canonical Base Layer"))
                 return false;
-            if (iterator->path().string().find("\\Builds\\") == std::string::npos)
-            {
-                Vans::VansAssetGuid previewGuid;
-                const fs::path previewPath = projectRoot / asset.editor.previewModelPathHint;
-                if (!Expect(Vans::VansAssetGuid::TryParse(asset.editor.previewModelGuid, previewGuid)
-                    && !asset.editor.previewModelPathHint.empty()
-                    && fs::exists(previewPath) && fs::exists(previewPath.string() + ".meta"),
-                    "Project Animator preview model is missing or not project-local"))
-                    return false;
-                nlohmann::json previewMeta;
-                std::ifstream previewMetaInput(previewPath.string() + ".meta");
-                previewMetaInput >> previewMeta;
-                if (!Expect(previewMeta.value("guid", "") == asset.editor.previewModelGuid,
-                    "Project Animator preview model GUID/pathHint pair does not resolve locally"))
-                    return false;
-            }
+			Vans::VansAssetGuid previewGuid;
+			const fs::path previewPath = projectRoot / asset.editor.previewModelPathHint;
+			if (!Expect(Vans::VansAssetGuid::TryParse(asset.editor.previewModelGuid, previewGuid)
+				&& !asset.editor.previewModelPathHint.empty()
+				&& fs::exists(previewPath) && fs::exists(previewPath.string() + ".meta"),
+				"Project Animator preview model is missing or not project-local"))
+				return false;
+			nlohmann::json previewMeta;
+			std::ifstream previewMetaInput(previewPath.string() + ".meta");
+			previewMetaInput >> previewMeta;
+			if (!Expect(previewMeta.value("guid", "") == asset.editor.previewModelGuid,
+				"Project Animator preview model GUID/pathHint pair does not resolve locally"))
+				return false;
         }
         if (!Expect(!error, "Failed while scanning project Animator assets"))
             return false;
@@ -3519,6 +4752,7 @@ bool TestAnimationProjectAnimatorAssetsCanonicalContract()
             const Vans::VansAssetType type = Vans::VansAssetDatabase::Classify(iterator->path());
             const bool animationAsset = type == Vans::VansAssetType::AnimationClip
                 || type == Vans::VansAssetType::AnimatorController
+				|| type == Vans::VansAssetType::AnimationRig
                 || type == Vans::VansAssetType::BoneMask;
             const bool timelineAsset = type == Vans::VansAssetType::Timeline
                 || type == Vans::VansAssetType::Audio
@@ -3526,7 +4760,13 @@ bool TestAnimationProjectAnimatorAssetsCanonicalContract()
                 || type == Vans::VansAssetType::Particle;
             const bool retargetSourceModel = type == Vans::VansAssetType::Model
                 && iterator->path().filename() == "SKM_UEFN_Mannequin.fbx";
-            if (!animationAsset && !timelineAsset && !retargetSourceModel)
+			const bool demoHallBackAxeAsset = projectName == "DemoHallProject"
+				&& iterator->path().generic_string().find("/Assets/Imported/Fire_Axe/")
+					!= std::string::npos
+				&& (type == Vans::VansAssetType::Model
+					|| type == Vans::VansAssetType::Material
+					|| type == Vans::VansAssetType::Texture);
+            if (!animationAsset && !timelineAsset && !retargetSourceModel && !demoHallBackAxeAsset)
                 continue;
             std::string registerError;
             if (!Expect(database.RegisterOrRefresh(iterator->path(), readOnly, registerError),
@@ -3584,6 +4824,12 @@ bool TestAnimationProjectAnimatorAssetsCanonicalContract()
             if (!Expect(VansAnimatorIO::Load(record.sourcePath.string(), animator),
                 "Registered Animator failed canonical loading"))
                 return false;
+			Vans::VansAssetGuid rigGuid;
+			const auto rigDependency = Vans::VansAssetGuid::TryParse(animator.animationRigGuid, rigGuid)
+				? database.Find(rigGuid) : std::optional<Vans::VansAssetRecord>{};
+			if (!Expect(rigDependency && rigDependency->type == Vans::VansAssetType::AnimationRig,
+				"Animator Animation Rig GUID does not resolve inside its project"))
+				return false;
             for (const AnimatorClipRef& clip : animator.clipRefs)
             {
                 Vans::VansAssetGuid guid;
@@ -3609,7 +4855,7 @@ bool TestAnimationProjectAnimatorAssetsCanonicalContract()
         const fs::path scenesRoot = projectRoot / "Scenes";
         if (!fs::exists(scenesRoot))
             continue;
-		if (projectName != "DemoHallProject")
+		if (projectName != "DemoHallProject" && projectName != "AnimationV2Project")
 			continue;
         error.clear();
         for (fs::recursive_directory_iterator iterator(scenesRoot, error), end;
@@ -3622,6 +4868,39 @@ bool TestAnimationProjectAnimatorAssetsCanonicalContract()
             if (!Expect(dependencies.success,
                 "Project scene animation or Timeline dependency closure is incomplete or contains path/cross-project references"))
                 return false;
+			if (projectName == "AnimationV2Project" && !Expect(
+				dependencies.requiredAssets.find("4dbe6fc1-88c9-4b06-82b5-e4c6c9f37005")
+					!= dependencies.requiredAssets.end(),
+				"AnimationV2 packaged dependency closure omitted the Survival Animation Rig"))
+				return false;
+			if (projectName == "DemoHallProject")
+			{
+				if (!Expect(
+					dependencies.requiredAssets.find("65af9371-2a97-43f1-93a8-04dc2e4f1002")
+						!= dependencies.requiredAssets.end()
+					&& dependencies.requiredModels.find("17ee1769-fddf-4cf8-a134-2d5471e5218c")
+						!= dependencies.requiredModels.end()
+					&& dependencies.requiredMaterials.find("b34fea44-f13c-4df3-a2c3-743898ba1b04")
+						!= dependencies.requiredMaterials.end(),
+					"DemoHall packaged dependency closure omitted the Survival back axe Rig, Model, or Material"))
+					return false;
+				constexpr const char* requiredBackAxeTextures[] = {
+					"32a681a1-0468-4d40-beca-13b8a9c814c6",
+					"eff6df6d-5b3f-457a-b00c-64990836e4aa",
+					"3341e966-03e9-4cde-812e-69c663a3e14a",
+					"ba6a0d99-d6fb-4f6f-82d9-04318f635d6d"
+				};
+				for (const char* guid : requiredBackAxeTextures)
+				{
+					const std::string message =
+						std::string("DemoHall packaged dependency closure omitted Survival back axe Texture ")
+						+ guid;
+					if (!Expect(dependencies.requiredTextures.find(guid)
+						!= dependencies.requiredTextures.end(),
+						message.c_str()))
+						return false;
+				}
+			}
         }
         if (!Expect(!error, "Failed while validating project scene animation dependencies"))
             return false;
@@ -3656,6 +4935,8 @@ bool TestAnimationProjectAnimatorAssetsCanonicalContract()
 
 bool TestAnimationV2RetargetMotionMatchingSceneContract()
 {
+	using namespace VansGraphics;
+
 	fs::path workspace = fs::current_path();
 	for (int depth = 0; depth < 5 && !fs::exists(workspace / "AnimationV2Project"); ++depth)
 	{
@@ -3682,7 +4963,12 @@ bool TestAnimationV2RetargetMotionMatchingSceneContract()
 	}
 
 	std::unordered_set<std::string> validatedCharacters;
-	for (const nlohmann::json& entity : scene.value("entities", nlohmann::json::array()))
+	if (!Expect(scene.contains("entities") && scene.at("entities").is_array(),
+		"AnimationV2 MainScene has no entities array"))
+	{
+		return false;
+	}
+	for (const nlohmann::json& entity : scene.at("entities"))
 	{
 		for (const nlohmann::json& component :
 			 entity.value("components", nlohmann::json::array()))
@@ -3697,12 +4983,14 @@ bool TestAnimationV2RetargetMotionMatchingSceneContract()
 			if (name != "TwinBlast" && name != "SWAT" && name != "Survival")
 				continue;
 			if (!Expect(animation.contains("retarget")
+				&& animation.contains("rig")
 				&& animation.contains("motion_matching")
 				&& animation["motion_matching"].contains("motion_model")
 				&& animation["motion_matching"].contains("root_motion_steering")
 				&& animation["motion_matching"].contains("root_motion_reconciliation")
 				&& animation["motion_matching"].contains("search_groups")
-				&& animation.contains("foot_placement"),
+				&& animation["motion_matching"].contains("contacts")
+				&& !animation.contains("foot_placement"),
 				"AnimationV2 retargeted character is missing Motion Matching configuration blocks"))
 			{
 				return false;
@@ -3711,14 +4999,17 @@ bool TestAnimationV2RetargetMotionMatchingSceneContract()
 			const nlohmann::json& retarget = animation.at("retarget");
 			const nlohmann::json& motionMatching = animation.at("motion_matching");
 			const nlohmann::json& motionModel = motionMatching.at("motion_model");
-			const nlohmann::json& footPlacement = animation.at("foot_placement");
+			const nlohmann::json& contacts = motionMatching.at("contacts");
 			std::unordered_set<std::string> searchGroupNames;
 			for (const nlohmann::json& group : motionMatching.at("search_groups"))
 				searchGroupNames.insert(group.value("name", ""));
 			if (!Expect(animation.value("root_motion", false)
 				&& retarget.value("enabled", false)
-				&& retarget.value("runtime_mode", "") == "source_proxy"
+				&& !retarget.contains("runtime_mode")
+				&& !retarget.contains("cache_policy")
 				&& motionMatching.value("enabled", false)
+				&& contacts.value("provider", "") == "locomotion"
+				&& contacts.value("channels", nlohmann::json::array()).size() == 2
 				&& motionModel.value("drive_mode", "") == "root_motion"
 				&& motionMatching.value("non_loop_sampling_end_margin", 0.0f) > 0.0f
 				&& motionMatching.at("root_motion_steering").value("enabled", false)
@@ -3726,9 +5017,7 @@ bool TestAnimationV2RetargetMotionMatchingSceneContract()
 				&& motionMatching.at("search_groups").size() >= 15
 				&& searchGroupNames.count("StandWalkPivot") > 0
 				&& searchGroupNames.count("StandRunPivot") > 0
-				&& searchGroupNames.count("CrouchPivot") > 0
-				&& footPlacement.value("enabled", false)
-				&& footPlacement.value("foot_lock_enabled", false),
+				&& searchGroupNames.count("CrouchPivot") > 0,
 				"AnimationV2 retargeted character is missing the Root Motion Motion Matching contract"))
 			{
 				return false;
@@ -3742,70 +5031,177 @@ bool TestAnimationV2RetargetMotionMatchingSceneContract()
 		return false;
 	}
 
+	constexpr const char* kSurvivalEntityGuid = "0c3a065a-e695-4f25-b8d5-6d83bcce00af";
+	constexpr const char* kSurvivalAnimationGuid = "b838475c-7e7f-479a-b677-e5dea83c2fff";
+	constexpr const char* kBackAxeSocketGuid = "5e6b4b56-6b5a-464e-9257-29129b7581cf";
+	constexpr const char* kBackAxeEntityGuid = "24b30a8b-ad95-423f-9125-61fd1fda15e7";
+	const nlohmann::json* backAxeEntity = nullptr;
+	const nlohmann::json* backAxeMeshEntity = nullptr;
+	for (const nlohmann::json& entity : scene.at("entities"))
+	{
+		const std::string name = entity.value("name", "");
+		if (name == "Survival_Back_Axe")
+			backAxeEntity = &entity;
+		else if (name == "Survival_Back_Axe_metal-low")
+			backAxeMeshEntity = &entity;
+	}
+	if (!Expect(backAxeEntity && backAxeMeshEntity,
+		"AnimationV2 Survival back axe Object hierarchy is missing"))
+	{
+		return false;
+	}
+	const nlohmann::json& axeParent = backAxeEntity->at("parent");
+	bool hasIdentityTransform = false;
+	bool hasAxeModel = false;
+	for (const nlohmann::json& component : backAxeEntity->at("components"))
+	{
+		const nlohmann::json& data = component.at("data");
+		if (component.value("type", "") == "Transform")
+		{
+			hasIdentityTransform = data.at("position") == nlohmann::json::array({ 0, 0, 0 })
+				&& data.at("rotation") == nlohmann::json::array({ 0, 0, 0, 1 })
+				&& data.at("scale") == nlohmann::json::array({ 1, 1, 1 });
+		}
+		else if (component.value("type", "") == "MultiMeshRoot")
+		{
+			hasAxeModel = data.at("model").value("guid", "")
+				== "17ee1769-fddf-4cf8-a134-2d5471e5218c";
+		}
+	}
+	const nlohmann::json& axeMeshParent = backAxeMeshEntity->at("parent");
+	if (!Expect(backAxeEntity->value("id", "") == kBackAxeEntityGuid
+		&& axeParent.value("kind", "") == "socket"
+		&& axeParent.value("entityGuid", "") == kSurvivalEntityGuid
+		&& axeParent.value("animationComponentGuid", "") == kSurvivalAnimationGuid
+		&& axeParent.value("anchorGuid", "") == kBackAxeSocketGuid
+		&& axeMeshParent.value("kind", "") == "entity"
+		&& axeMeshParent.value("entityGuid", "") == kBackAxeEntityGuid
+		&& hasIdentityTransform && hasAxeModel,
+		"AnimationV2 axe must be attached to the Survival Back_Axe Socket with identity local Transform"))
+	{
+		return false;
+	}
+
+	VansAnimationRigAsset survivalRig;
+	std::string survivalRigError;
+	if (!Expect(VansAnimationRigStorage::Load(
+		workspace / "AnimationV2Project" / "Assets" / "AnimationRigs" / "Survival.vanimrig",
+		survivalRig, survivalRigError), survivalRigError.c_str()))
+	{
+		return false;
+	}
+	const auto backAxeSocket = std::find_if(
+		survivalRig.sockets.begin(), survivalRig.sockets.end(),
+		[](const VansRigSocketDefinition& socket) { return socket.name == "Back_Axe"; });
+	if (!Expect(backAxeSocket != survivalRig.sockets.end()
+		&& backAxeSocket->guid == kBackAxeSocketGuid
+		&& backAxeSocket->boneGuid == "0aab6b03-caaa-5326-8521-c0f4f380e3bd"
+		&& glm::length(backAxeSocket->scaleLocal - glm::vec3(1.0f)) <= 1.0e-5f,
+		"AnimationV2 Survival Back_Axe Socket must resolve to Survival spine_04"))
+	{
+		return false;
+	}
+
+	const fs::path survivalModelPath = workspace / "AnimationV2Project" / "Assets"
+		/ "Characters" / "Survival" / "Models" / "survival_character.fbx";
+	Vans::VansAssetMeta survivalModelMeta;
+	std::string survivalModelError;
+	if (!Expect(Vans::VansAssetMetaStorage::Load(
+		Vans::VansAssetMeta::MetaPathFor(survivalModelPath),
+		survivalModelMeta, survivalModelError), survivalModelError.c_str()))
+	{
+		return false;
+	}
+	Assimp::Importer survivalImporter;
+	const aiScene* survivalScene = survivalImporter.ReadFile(
+		survivalModelPath.string(), aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_GenNormals);
+	if (!Expect(survivalScene != nullptr, survivalImporter.GetErrorString()))
+		return false;
+	Skeleton survivalSkeleton;
+	VansSkinnedMeshLoader::ExtractSkeleton(survivalScene, survivalSkeleton, 1.0f,
+		Vans::ReadSkeletalMeshImportSettings(survivalModelMeta));
+	VansCompiledAnimationRig compiledSurvivalRig;
+	std::string compileSurvivalRigError;
+	if (!Expect(VansAnimationRigCompiler::Compile(
+		survivalRig, survivalSkeleton, compiledSurvivalRig, compileSurvivalRigError),
+		compileSurvivalRigError.c_str()))
+	{
+		return false;
+	}
+	const int compiledSocketIndex = compiledSurvivalRig.FindSocketByGuid(kBackAxeSocketGuid);
+	if (!Expect(compiledSocketIndex >= 0,
+		"AnimationV2 Survival Back_Axe Socket did not compile against the Survival Skeleton"))
+	{
+		return false;
+	}
+	std::vector<glm::mat4> survivalBindModelTransforms(
+		survivalSkeleton.bones.size(), glm::mat4(1.0f));
+	for (const int boneIndex : survivalSkeleton.topologicalOrder)
+	{
+		const BoneInfo& bone = survivalSkeleton.bones[static_cast<std::size_t>(boneIndex)];
+		survivalBindModelTransforms[static_cast<std::size_t>(boneIndex)] = bone.localTransform;
+		if (bone.parentIndex >= 0)
+		{
+			survivalBindModelTransforms[static_cast<std::size_t>(boneIndex)] =
+				survivalBindModelTransforms[static_cast<std::size_t>(bone.parentIndex)]
+				* bone.localTransform;
+		}
+	}
+	const VansCompiledRigSocket& compiledSocket =
+		compiledSurvivalRig.sockets[static_cast<std::size_t>(compiledSocketIndex)];
+	const glm::mat4 socketBindModelTransform =
+		survivalBindModelTransforms[static_cast<std::size_t>(compiledSocket.boneIndex)]
+		* compiledSocket.localTransform;
+	const glm::vec3 axeMeshCenter = glm::vec3(socketBindModelTransform
+		* glm::vec4(-14.579931f, 114.222820f, 19.733490f, 1.0f));
+	const float axePlacementError =
+		glm::length(axeMeshCenter - glm::vec3(0.0f, 125.0f, -14.0f));
+	if (axePlacementError > 0.01f)
+	{
+		std::cerr << "[ForestContractTests] Survival Back_Axe bind center actual=("
+			<< axeMeshCenter.x << ", " << axeMeshCenter.y << ", " << axeMeshCenter.z
+			<< ") error=" << axePlacementError << std::endl;
+	}
+	if (!Expect(axePlacementError <= 0.01f,
+		"AnimationV2 Survival Back_Axe Socket no longer places the axe diagonally on the upper back"))
+	{
+		return false;
+	}
+
 	struct RetargetProfileExpectation
 	{
 		const char* fileName;
 		const char* profileName;
-		const char* targetModel;
-		int targetBoneCount;
 	};
 	const RetargetProfileExpectation profileExpectations[] = {
-		{"RTG_UEFN_To_Survival.vretarget", "RTG_UEFN_To_Survival",
-			"Assets/Characters/Survival/Models/survival_character.fbx", 161},
-		{"RTG_UEFN_To_SWAT.vretarget", "RTG_UEFN_To_SWAT",
-			"Assets/Characters/SWAT/Models/swat.fbx", 87}
+		{"RTG_UEFN_To_Survival.vretarget", "RTG_UEFN_To_Survival"},
+		{"RTG_UEFN_To_SWAT.vretarget", "RTG_UEFN_To_SWAT"}
 	};
 	for (const RetargetProfileExpectation& expectation : profileExpectations)
 	{
 		const fs::path profilePath = workspace / "AnimationV2Project" / "Assets"
 			/ "Retarget" / expectation.fileName;
-		std::ifstream profileInput(profilePath);
-		if (!Expect(profileInput.good(),
-			"AnimationV2 retarget profile could not be opened"))
-		{
+		VansRetargetProfileAsset profile;
+		std::string profileError;
+		if (!Expect(VansRetargetProfileStorage::Load(profilePath, profile, profileError),
+			profileError.c_str()))
 			return false;
-		}
-
-		nlohmann::json profile;
-		try
-		{
-			profileInput >> profile;
-		}
-		catch (...)
-		{
-			return Expect(false, "AnimationV2 retarget profile is not valid JSON");
-		}
-
-		const nlohmann::json& mapping = profile.at("mapping_strategy");
-		const nlohmann::json& source = profile.at("source");
-		const nlohmann::json& target = profile.at("target");
-		const nlohmann::json& options = profile.at("retarget_options");
-		const nlohmann::json& chains = options.at("two_bone_chains");
-		auto validArmChain = [&chains](std::size_t index, const char* name,
+		auto validArmChain = [&profile](std::size_t index, const char* name,
 			const char* upper, const char* lower, const char* hand)
 		{
-			if (index >= chains.size() || !chains[index].is_object())
+			if (index >= profile.limbChains.size())
 				return false;
-			const nlohmann::json& chain = chains[index];
-			const nlohmann::json expectedBones = {upper, lower, hand};
-			return chain.value("name", "") == name
-				&& chain.value("source", nlohmann::json::array()) == expectedBones
-				&& chain.value("target", nlohmann::json::array()) == expectedBones
-				&& chain.value("position_weight", 0.0f) == 1.0f;
+			const VansRetargetLimbChainDesc& chain = profile.limbChains[index];
+			return chain.name == name
+				&& chain.sourceRoot == upper && chain.sourceMid == lower && chain.sourceTip == hand
+				&& chain.targetChainId == (index == 0 ? "leftArm" : "rightArm")
+				&& chain.positionWeight == 1.0f;
 		};
-		if (!Expect(profile.value("name", "") == expectation.profileName
-			&& profile.value("runtime_mode", "") == "source_proxy"
-			&& mapping.value("primary", "") == "same_name"
-			&& !mapping.value("supports_manual_overrides", true)
-			&& source.value("model", "") == "Assets/Models/SKM_UEFN_Mannequin.fbx"
-			&& source.value("animator", "") == "Assets/MotionMatchDataBase/UEFN_Mannequin.vanimator"
-			&& source.value("expected_bones", 0) == 89
-			&& target.value("model", "") == expectation.targetModel
-			&& target.value("expected_bones", 0) == expectation.targetBoneCount
-			&& options.value("translation_scale", "") == "compatible_skeleton"
-			&& options.value("target_model_space_alignment", "") == "source_bind_pose"
-			&& options.value("root_alignment", "") == "feet_to_owner"
-			&& chains.size() == 2
+		if (!Expect(profile.name == expectation.profileName
+			&& profile.translationScaleMode == VansRetargetTranslationScaleMode::CompatibleSkeleton
+			&& profile.targetModelSpaceAlignment == VansRetargetModelSpaceAlignment::SourceBindPose
+			&& profile.rootAlignment == VansRetargetRootAlignment::FeetToOwner
+			&& profile.limbChains.size() == 2
 			&& validArmChain(0, "LeftArm", "upperarm_l", "lowerarm_l", "hand_l")
 			&& validArmChain(1, "RightArm", "upperarm_r", "lowerarm_r", "hand_r"),
 			"AnimationV2 Survival/SWAT retarget profile is incomplete or inconsistent"))
@@ -3832,6 +5228,527 @@ bool TestAnimationV2RetargetMotionMatchingSceneContract()
 		"AnimationV2 UEFN source Animator is missing the canonical Pivot clip set");
 }
 
+bool TestDemoHallSurvivalBackAxeSceneContract()
+{
+	using namespace VansGraphics;
+
+	fs::path workspace = fs::current_path();
+	for (int depth = 0; depth < 5 && !fs::exists(workspace / "DemoHallProject"); ++depth)
+	{
+		if (!workspace.has_parent_path() || workspace.parent_path() == workspace)
+			break;
+		workspace = workspace.parent_path();
+	}
+	const fs::path projectRoot = workspace / "DemoHallProject";
+	if (!fs::exists(projectRoot))
+		return true;
+
+	constexpr const char* kSurvivalEntityGuid = "38dbe7af-653a-4aeb-bfa7-1ca72e2b972c";
+	constexpr const char* kSurvivalAnimationGuid = "87f6e3d4-c8fe-458d-82f2-3e56f20b93e5";
+	constexpr const char* kBackAxeSocketGuid = "0cf5406a-6809-4b8a-9d82-062643893f56";
+	constexpr const char* kBackAxeEntityGuid = "d12e84ac-99d2-4a35-8e13-33a6c9032f27";
+	constexpr const char* kBackAxeModelGuid = "17ee1769-fddf-4cf8-a134-2d5471e5218c";
+	constexpr const char* kBackAxeMaterialGuid = "b34fea44-f13c-4df3-a2c3-743898ba1b04";
+
+	nlohmann::json scene;
+	std::ifstream sceneInput(projectRoot / "Scenes" / "DemoHall.json");
+	if (!Expect(sceneInput.good(), "DemoHall scene could not be opened"))
+		return false;
+	try
+	{
+		sceneInput >> scene;
+	}
+	catch (...)
+	{
+		return Expect(false, "DemoHall scene is not valid JSON");
+	}
+
+	const nlohmann::json* survivalEntity = nullptr;
+	const nlohmann::json* backAxeEntity = nullptr;
+	const nlohmann::json* backAxeMeshEntity = nullptr;
+	if (!Expect(scene.contains("entities") && scene.at("entities").is_array(),
+		"DemoHall scene has no entities array"))
+	{
+		return false;
+	}
+	for (const nlohmann::json& entity : scene.at("entities"))
+	{
+		const std::string name = entity.value("name", "");
+		if (name == "SurvivalCharacter")
+			survivalEntity = &entity;
+		else if (name == "Survival_Back_Axe")
+			backAxeEntity = &entity;
+		else if (name == "Survival_Back_Axe_metal-low")
+			backAxeMeshEntity = &entity;
+	}
+	if (!Expect(survivalEntity && backAxeEntity && backAxeMeshEntity,
+		"DemoHall Survival back axe Object hierarchy is missing"))
+	{
+		return false;
+	}
+
+	const nlohmann::json* survivalAnimation = nullptr;
+	for (const nlohmann::json& component : survivalEntity->at("components"))
+	{
+		if (component.value("type", "") == "Animation")
+			survivalAnimation = &component;
+	}
+	const nlohmann::json& axeParent = backAxeEntity->at("parent");
+	const nlohmann::json& meshParent = backAxeMeshEntity->at("parent");
+	bool hasIdentityTransform = false;
+	bool hasAxeModel = false;
+	for (const nlohmann::json& component : backAxeEntity->at("components"))
+	{
+		const nlohmann::json& data = component.at("data");
+		if (component.value("type", "") == "Transform")
+		{
+			hasIdentityTransform = data.at("position") == nlohmann::json::array({ 0, 0, 0 })
+				&& data.at("rotation") == nlohmann::json::array({ 0, 0, 0, 1 })
+				&& data.at("scale") == nlohmann::json::array({ 1, 1, 1 });
+		}
+		else if (component.value("type", "") == "MultiMeshRoot")
+		{
+			hasAxeModel = data.at("model").value("guid", "") == kBackAxeModelGuid;
+		}
+	}
+	bool hasAxeRenderer = false;
+	for (const nlohmann::json& component : backAxeMeshEntity->at("components"))
+	{
+		if (component.value("type", "") != "ModelRenderer")
+			continue;
+		const nlohmann::json& data = component.at("data");
+		hasAxeRenderer = !component.value("enabled", true)
+			&& data.at("model").value("guid", "") == kBackAxeModelGuid
+			&& data.at("submesh").value("index", -1) == 0
+			&& data.at("submesh").value("sourceNode", "") == "metal-low"
+			&& data.at("materialOverrides").at("default").value("guid", "")
+				== kBackAxeMaterialGuid;
+	}
+	if (!Expect(survivalEntity->value("id", "") == kSurvivalEntityGuid
+		&& survivalAnimation
+		&& survivalAnimation->value("id", "") == kSurvivalAnimationGuid
+		&& survivalAnimation->at("data").at("rig").value("guid", "")
+			== "65af9371-2a97-43f1-93a8-04dc2e4f1002"
+		&& backAxeEntity->value("id", "") == kBackAxeEntityGuid
+		&& axeParent.value("kind", "") == "socket"
+		&& axeParent.value("entityGuid", "") == kSurvivalEntityGuid
+		&& axeParent.value("animationComponentGuid", "") == kSurvivalAnimationGuid
+		&& axeParent.value("anchorGuid", "") == kBackAxeSocketGuid
+		&& meshParent.value("kind", "") == "entity"
+		&& meshParent.value("entityGuid", "") == kBackAxeEntityGuid
+		&& hasIdentityTransform && hasAxeModel && hasAxeRenderer,
+		"DemoHall axe must be attached to the Survival Back_Axe Socket and follow character visibility"))
+	{
+		return false;
+	}
+
+	VansAnimationRigAsset survivalRig;
+	std::string rigError;
+	if (!Expect(VansAnimationRigStorage::Load(
+		projectRoot / "Assets" / "AnimationRigs" / "Survival.vanimrig",
+		survivalRig, rigError), rigError.c_str()))
+	{
+		return false;
+	}
+	const auto socket = std::find_if(survivalRig.sockets.begin(), survivalRig.sockets.end(),
+		[](const VansRigSocketDefinition& value) { return value.name == "Back_Axe"; });
+	if (!Expect(socket != survivalRig.sockets.end()
+		&& socket->guid == kBackAxeSocketGuid
+		&& socket->boneGuid == "0aab6b03-caaa-5326-8521-c0f4f380e3bd"
+		&& glm::length(socket->positionLocal
+			- glm::vec3(-99.915901f, 19.805099f, 49.349899f)) <= 1.0e-4f
+		&& glm::length(socket->scaleLocal - glm::vec3(1.0f)) <= 1.0e-5f,
+		"DemoHall Survival Back_Axe Socket must resolve to spine_04 with the validated back offset"))
+	{
+		return false;
+	}
+
+	struct AssetExpectation
+	{
+		const char* relativePath;
+		const char* guid;
+	};
+	const AssetExpectation assets[] = {
+		{"Assets/Imported/Fire_Axe/Source/Fire_Axe.fbx", kBackAxeModelGuid},
+		{"Assets/Imported/Fire_Axe/Materials/Fire_Axe_PBR.mat", kBackAxeMaterialGuid},
+		{"Assets/Imported/Fire_Axe/Source/textures/Material_BaseColor.png", "32a681a1-0468-4d40-beca-13b8a9c814c6"},
+		{"Assets/Imported/Fire_Axe/Source/textures/Material_Metallic.png", "eff6df6d-5b3f-457a-b00c-64990836e4aa"},
+		{"Assets/Imported/Fire_Axe/Source/textures/Material_Normal.png", "3341e966-03e9-4cde-812e-69c663a3e14a"},
+		{"Assets/Imported/Fire_Axe/Source/textures/Material_Roughness.png", "ba6a0d99-d6fb-4f6f-82d9-04318f635d6d"}
+	};
+	for (const AssetExpectation& asset : assets)
+	{
+		const fs::path path = projectRoot / asset.relativePath;
+		Vans::VansAssetMeta meta;
+		std::string metaError;
+		if (!Expect(fs::exists(path)
+			&& Vans::VansAssetMetaStorage::Load(
+				Vans::VansAssetMeta::MetaPathFor(path), meta, metaError)
+			&& meta.guid.ToString() == asset.guid,
+			"DemoHall Survival back axe asset or metadata is missing"))
+		{
+			return false;
+		}
+	}
+
+	nlohmann::json material;
+	std::ifstream materialInput(
+		projectRoot / "Assets" / "Imported" / "Fire_Axe" / "Materials" / "Fire_Axe_PBR.mat");
+	if (!Expect(materialInput.good(), "DemoHall Fire Axe material could not be opened"))
+		return false;
+	materialInput >> material;
+	const nlohmann::json& textures = material.at("textures");
+	if (!Expect(textures.at("basecolor").value("guid", "")
+			== "32a681a1-0468-4d40-beca-13b8a9c814c6"
+		&& textures.at("metal").value("guid", "")
+			== "eff6df6d-5b3f-457a-b00c-64990836e4aa"
+		&& textures.at("normal").value("guid", "")
+			== "3341e966-03e9-4cde-812e-69c663a3e14a"
+		&& textures.at("roughness").value("guid", "")
+			== "ba6a0d99-d6fb-4f6f-82d9-04318f635d6d",
+		"DemoHall Fire Axe material texture bindings are incomplete"))
+	{
+		return false;
+	}
+
+	std::ifstream scriptInput(projectRoot / "Scripts" / "forest_lua_behaviors.lua");
+	const std::string scriptText{
+		std::istreambuf_iterator<char>{ scriptInput }, std::istreambuf_iterator<char>{} };
+	return Expect(scriptInput.good() || scriptInput.eof(),
+		"DemoHall character switch script could not be read")
+		&& Expect(scriptText.find("attachments = { \"Survival_Back_Axe_metal-low\" }")
+			!= std::string::npos
+			&& scriptText.find("set_character_attachments_enabled(option, enabled)")
+				!= std::string::npos,
+			"DemoHall character switching must toggle the Survival back axe renderer");
+}
+
+bool TestProjectRetargetOwnedSkeletonAndSkinningContract()
+{
+	using namespace VansGraphics;
+
+	fs::path workspace = fs::current_path();
+	for (int depth = 0; depth < 5
+		&& !fs::exists(workspace / "AnimationV2Project")
+		&& !fs::exists(workspace / "DemoHallProject"); ++depth)
+	{
+		if (!workspace.has_parent_path() || workspace.parent_path() == workspace)
+			break;
+		workspace = workspace.parent_path();
+	}
+	if (!fs::exists(workspace / "AnimationV2Project")
+		&& !fs::exists(workspace / "DemoHallProject"))
+		return true;
+
+	auto loadSkeleton = [](const fs::path& modelPath, Skeleton& skeleton, std::string& error)
+	{
+		Vans::VansAssetMeta meta;
+		if (!Vans::VansAssetMetaStorage::Load(
+			Vans::VansAssetMeta::MetaPathFor(modelPath), meta, error))
+			return false;
+		Assimp::Importer importer;
+		const aiScene* scene = importer.ReadFile(
+			modelPath.string(), aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_GenNormals);
+		if (!scene)
+		{
+			error = importer.GetErrorString();
+			return false;
+		}
+		VansSkinnedMeshLoader::ExtractSkeleton(
+			scene, skeleton, 1.0f, Vans::ReadSkeletalMeshImportSettings(meta));
+		if (skeleton.bones.empty())
+		{
+			error = "model has no Skeleton";
+			return false;
+		}
+		return true;
+	};
+	auto buildModelTransforms = [](const Skeleton& skeleton,
+		const std::vector<glm::mat4>& localTransforms)
+	{
+		std::vector<glm::mat4> modelTransforms(localTransforms.size(), glm::mat4(1.0f));
+		for (int boneIndex : skeleton.topologicalOrder)
+		{
+			modelTransforms[static_cast<std::size_t>(boneIndex)] =
+				localTransforms[static_cast<std::size_t>(boneIndex)];
+			const int parentIndex = skeleton.bones[static_cast<std::size_t>(boneIndex)].parentIndex;
+			if (parentIndex >= 0)
+				modelTransforms[static_cast<std::size_t>(boneIndex)] =
+					modelTransforms[static_cast<std::size_t>(parentIndex)]
+					* modelTransforms[static_cast<std::size_t>(boneIndex)];
+		}
+		return modelTransforms;
+	};
+	auto matrixDifference = [](const glm::mat4& lhs, const glm::mat4& rhs)
+	{
+		float difference = 0.0f;
+		for (int column = 0; column < 4; ++column)
+			for (int row = 0; row < 4; ++row)
+				difference = std::max(
+					difference, std::fabs(lhs[column][row] - rhs[column][row]));
+		return difference;
+	};
+
+	struct Fixture
+	{
+		const char* label;
+		const char* project;
+		const char* sourceModel;
+		const char* targetModel;
+		const char* sourceRig;
+		const char* targetRig;
+		const char* profile;
+	};
+	const Fixture fixtures[] = {
+		{"AnimationV2/TwinBlast", "AnimationV2Project",
+			"Assets/Models/SKM_UEFN_Mannequin.fbx",
+			"Assets/Characters/TwinBlast/Models/SKM_TwinBlast_ActionHero.fbx",
+			"Assets/AnimationRigs/UEFN.vanimrig", "Assets/AnimationRigs/TwinBlast.vanimrig",
+			"Assets/Retarget/RTG_UEFN_To_TwinBlast.vretarget"},
+		{"AnimationV2/SWAT", "AnimationV2Project",
+			"Assets/Models/SKM_UEFN_Mannequin.fbx",
+			"Assets/Characters/SWAT/Models/swat.fbx",
+			"Assets/AnimationRigs/UEFN.vanimrig", "Assets/AnimationRigs/SWAT.vanimrig",
+			"Assets/Retarget/RTG_UEFN_To_SWAT.vretarget"},
+		{"AnimationV2/Survival", "AnimationV2Project",
+			"Assets/Models/SKM_UEFN_Mannequin.fbx",
+			"Assets/Characters/Survival/Models/survival_character.fbx",
+			"Assets/AnimationRigs/UEFN.vanimrig", "Assets/AnimationRigs/Survival.vanimrig",
+			"Assets/Retarget/RTG_UEFN_To_Survival.vretarget"},
+		{"DemoHall/Survival", "DemoHallProject",
+			"Assets/Models/SKM_UEFN_Mannequin.fbx",
+			"Assets/Characters/Survival/Models/survival_character.fbx",
+			"Assets/AnimationRigs/UEFN.vanimrig", "Assets/AnimationRigs/Survival.vanimrig",
+			"Assets/Retarget/RTG_UEFN_To_Survival.vretarget"}
+	};
+
+	for (const Fixture& fixture : fixtures)
+	{
+		const fs::path projectRoot = workspace / fixture.project;
+		if (!fs::exists(projectRoot))
+			continue;
+		std::string error;
+		Skeleton importedSourceSkeleton;
+		Skeleton importedTargetSkeleton;
+		if (!loadSkeleton(projectRoot / fixture.sourceModel, importedSourceSkeleton, error)
+			|| !loadSkeleton(projectRoot / fixture.targetModel, importedTargetSkeleton, error))
+		{
+			return Expect(false, (std::string(fixture.label)
+				+ " failed to import its Retarget Skeletons: " + error).c_str());
+		}
+		if (std::string(fixture.sourceModel).find("SKM_UEFN_Mannequin.fbx") != std::string::npos)
+		{
+			const std::size_t mannequinWrapperCount = static_cast<std::size_t>(std::count_if(
+				importedSourceSkeleton.bones.begin(), importedSourceSkeleton.bones.end(),
+				[](const BoneInfo& bone) { return bone.name == "SKM_UEFN_Mannequin"; }));
+			if (!Expect(importedSourceSkeleton.bones.size() == 89
+				&& mannequinWrapperCount == 1,
+				(std::string(fixture.label)
+					+ " imported a duplicate non-skeleton UEFN Mesh wrapper into the deformation Skeleton").c_str()))
+			{
+				return false;
+			}
+		}
+		Skeleton incompatibleCacheLayout = importedSourceSkeleton;
+		incompatibleCacheLayout.bones.front().canonicalPath += "/stale-cache-layout";
+		incompatibleCacheLayout.RebuildIdentityMapsAndSignature();
+		if (!Expect(!incompatibleCacheLayout.MatchesAnimationLayout(importedSourceSkeleton),
+			(std::string(fixture.label)
+				+ " accepted a same-count Animation Clip cache with a different Skeleton identity").c_str()))
+		{
+			return false;
+		}
+
+		VansAnimationRigAsset sourceRigAsset;
+		VansAnimationRigAsset targetRigAsset;
+		VansRetargetProfileAsset profile;
+		if (!VansAnimationRigStorage::Load(
+				projectRoot / fixture.sourceRig, sourceRigAsset, error)
+			|| !VansAnimationRigStorage::Load(
+				projectRoot / fixture.targetRig, targetRigAsset, error)
+			|| !VansRetargetProfileStorage::Load(
+				projectRoot / fixture.profile, profile, error))
+		{
+			return Expect(false, (std::string(fixture.label)
+				+ " failed to load its Retarget assets: " + error).c_str());
+		}
+		if (!Expect(!profile.limbChains.empty(),
+			(std::string(fixture.label) + " Retarget profile has no limb mappings").c_str()))
+			return false;
+
+		VansCompiledAnimationRig compiledSourceRig;
+		VansCompiledAnimationRig compiledTargetRig;
+		if (!VansAnimationRigCompiler::Compile(
+				sourceRigAsset, importedSourceSkeleton, compiledSourceRig, error)
+			|| !VansAnimationRigCompiler::Compile(
+				targetRigAsset, importedTargetSkeleton, compiledTargetRig, error))
+		{
+			return Expect(false, (std::string(fixture.label)
+				+ " failed to compile its Animation Rigs: " + error).c_str());
+		}
+
+		VansRetargetRuntimeDesc desc;
+		desc.translationScaleMode = profile.translationScaleMode;
+		desc.translationScale = profile.explicitTranslationScale;
+		desc.rootAlignment = profile.rootAlignment;
+		desc.targetModelSpaceAlignment = profile.targetModelSpaceAlignment;
+		desc.limbChains = profile.limbChains;
+
+		// 复现 Scene Builder 的真实所有权顺序：Node 复制 Target Skeleton、
+		// ConfigureRetargetSource 复制 Source Skeleton，并在内部重绑定两套 Rig。
+		VansAnimationNode targetNode(fixture.label);
+		VansAnimationController targetController;
+		auto sourceController = std::make_unique<VansAnimationController>();
+		if (!sourceController->SetAnimationRig(std::move(compiledSourceRig), {}, error)
+			|| !targetController.SetAnimationRig(std::move(compiledTargetRig), {}, error))
+		{
+			return Expect(false, (std::string(fixture.label)
+				+ " rejected its compiled Animation Rig: " + error).c_str());
+		}
+		targetNode.SetSkeleton(importedTargetSkeleton);
+		if (!targetNode.SetController(&targetController)
+			|| !targetNode.ConfigureRetargetSource(
+				importedSourceSkeleton, std::move(sourceController), desc, error))
+		{
+			return Expect(false, (std::string(fixture.label)
+				+ " rejected equivalent node-owned Skeletons: " + error).c_str());
+		}
+		const Skeleton& sourceNodeSkeleton = targetNode.GetRetargetSourceSkeleton();
+		const Skeleton& targetNodeSkeleton = targetNode.GetSkeleton();
+		if (!Expect(targetNode.GetRetargetSourceController()->GetAnimationRig()->skeleton
+				== &sourceNodeSkeleton
+			&& targetController.GetAnimationRig()->skeleton == &targetNodeSkeleton,
+			(std::string(fixture.label)
+				+ " controllers retained imported or temporary Skeleton pointers").c_str()))
+			return false;
+
+		VansRetargetProcessor processor;
+		if (!Expect(processor.Build(
+			sourceNodeSkeleton, targetNodeSkeleton,
+			*targetController.GetAnimationRig(), desc),
+			(std::string(fixture.label)
+				+ " failed Source -> Target runtime construction").c_str()))
+			return false;
+
+		if (profile.rootAlignment == VansRetargetRootAlignment::FeetToOwner)
+		{
+			std::vector<glm::mat4> sourceBindLocals;
+			sourceBindLocals.reserve(sourceNodeSkeleton.bones.size());
+			for (const BoneInfo& bone : sourceNodeSkeleton.bones)
+				sourceBindLocals.push_back(bone.localTransform);
+			const std::vector<glm::mat4> sourceBindModels =
+				buildModelTransforms(sourceNodeSkeleton, sourceBindLocals);
+			std::vector<glm::mat4> alignedTargetBind;
+			if (!Expect(processor.Process(sourceBindModels, sourceNodeSkeleton,
+				targetNodeSkeleton, alignedTargetBind),
+				(std::string(fixture.label) + " failed bind-pose feetToOwner calibration").c_str()))
+			{
+				return false;
+			}
+			const int targetFootL = targetNodeSkeleton.boneNameToIndex.at("foot_l");
+			const int targetFootR = targetNodeSkeleton.boneNameToIndex.at("foot_r");
+			const auto footCenter = [&](const std::vector<glm::mat4>& pose)
+			{
+				return (glm::vec3(pose[static_cast<std::size_t>(targetFootL)][3])
+					+ glm::vec3(pose[static_cast<std::size_t>(targetFootR)][3])) * 0.5f;
+			};
+			const glm::vec3 bindFootCenter = footCenter(alignedTargetBind);
+			const float bindGround = std::min(
+				alignedTargetBind[static_cast<std::size_t>(targetFootL)][3].y,
+				alignedTargetBind[static_cast<std::size_t>(targetFootR)][3].y);
+			if (!Expect(std::abs(bindFootCenter.x) <= 1.0e-3f
+				&& std::abs(bindFootCenter.z) <= 1.0e-3f
+				&& std::abs(bindGround) <= 1.0e-3f,
+				(std::string(fixture.label)
+					+ " feetToOwner did not calibrate the target Bind Pose to the entity origin").c_str()))
+			{
+				return false;
+			}
+
+			std::vector<glm::mat4> translatedSource = sourceBindModels;
+			const int sourceRoot = sourceNodeSkeleton.boneNameToIndex.at("root");
+			const glm::mat4 sourceTranslation = glm::translate(
+				glm::mat4(1.0f), glm::vec3(5.0f, 0.0f, 0.0f));
+			for (std::size_t boneIndex = 0; boneIndex < sourceNodeSkeleton.bones.size(); ++boneIndex)
+			{
+				int ancestor = static_cast<int>(boneIndex);
+				while (ancestor >= 0 && ancestor != sourceRoot)
+					ancestor = sourceNodeSkeleton.bones[static_cast<std::size_t>(ancestor)].parentIndex;
+				if (ancestor == sourceRoot)
+					translatedSource[boneIndex] = sourceTranslation * translatedSource[boneIndex];
+			}
+			std::vector<glm::mat4> translatedTarget;
+			if (!Expect(processor.Process(translatedSource, sourceNodeSkeleton,
+				targetNodeSkeleton, translatedTarget)
+				&& glm::length(footCenter(translatedTarget) - bindFootCenter) > 1.0f,
+				(std::string(fixture.label)
+					+ " feetToOwner incorrectly removed animated/root horizontal displacement").c_str()))
+			{
+				return false;
+			}
+		}
+
+		std::vector<glm::mat4> sourceLocalTransforms;
+		sourceLocalTransforms.reserve(sourceNodeSkeleton.bones.size());
+		for (const BoneInfo& bone : sourceNodeSkeleton.bones)
+			sourceLocalTransforms.push_back(bone.localTransform);
+		const int drivenSourceBone = sourceNodeSkeleton.boneNameToIndex.at(
+			profile.limbChains.front().sourceRoot);
+		sourceLocalTransforms[static_cast<std::size_t>(drivenSourceBone)] *=
+			glm::rotate(glm::mat4(1.0f), glm::radians(35.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+		const std::vector<glm::mat4> sourceModelTransforms =
+			buildModelTransforms(sourceNodeSkeleton, sourceLocalTransforms);
+		std::vector<glm::mat4> targetModelTransforms;
+		if (!Expect(processor.Process(sourceModelTransforms, sourceNodeSkeleton,
+			targetNodeSkeleton, targetModelTransforms),
+			(std::string(fixture.label) + " failed Retarget pose evaluation").c_str()))
+			return false;
+
+		std::vector<glm::mat4> targetBindLocals;
+		targetBindLocals.reserve(targetNodeSkeleton.bones.size());
+		for (const BoneInfo& bone : targetNodeSkeleton.bones)
+			targetBindLocals.push_back(bone.localTransform);
+		const std::vector<glm::mat4> targetBindModels =
+			buildModelTransforms(targetNodeSkeleton, targetBindLocals);
+		float poseDifference = 0.0f;
+		for (std::size_t boneIndex = 0; boneIndex < targetModelTransforms.size(); ++boneIndex)
+			poseDifference = std::max(poseDifference,
+				matrixDifference(targetModelTransforms[boneIndex], targetBindModels[boneIndex]));
+		if (!Expect(poseDifference > 0.001f,
+			(std::string(fixture.label)
+				+ " Retarget output remained in the target bind pose").c_str()))
+			return false;
+
+		if (!Expect(targetController.SubmitExternalModelPose(
+			targetModelTransforms, targetNodeSkeleton, 1.0f / 60.0f,
+			VansExternalPoseEvaluationMode::DirectFinalPose),
+			(std::string(fixture.label) + " rejected the final target pose").c_str()))
+			return false;
+		float skinningDifference = 0.0f;
+		const BoneMatricesSSBO& skinning = targetController.GetBoneMatricesSSBO();
+		for (std::size_t boneIndex = 0; boneIndex < targetNodeSkeleton.bones.size(); ++boneIndex)
+		{
+			const glm::mat4 bindSkinning = targetBindModels[boneIndex]
+				* targetNodeSkeleton.bones[boneIndex].offsetMatrix;
+			skinningDifference = std::max(skinningDifference,
+				matrixDifference(skinning.boneMatrices[boneIndex], bindSkinning));
+		}
+		if (!Expect(skinningDifference > 0.001f,
+			(std::string(fixture.label)
+				+ " final skinning matrices remained in A-Pose").c_str()))
+			return false;
+
+		VansCompiledAnimationRig incompatibleRig = *targetController.GetAnimationRig();
+		Skeleton incompatibleSkeleton = targetNodeSkeleton;
+		incompatibleSkeleton.bones.front().localTransform[3].x += 0.25f;
+		if (!Expect(!incompatibleRig.BindSkeleton(incompatibleSkeleton, error),
+			(std::string(fixture.label)
+				+ " accepted a Skeleton with a different bind pose").c_str()))
+			return false;
+	}
+	return true;
+}
+
 bool TestRetargetUnmappedTargetBoneInheritanceContract()
 {
 	using namespace VansGraphics;
@@ -3839,6 +5756,7 @@ bool TestRetargetUnmappedTargetBoneInheritanceContract()
 	auto buildSkeleton = [](bool includeTargetOnlyWrist)
 	{
 		Skeleton skeleton;
+		skeleton.sourceSkeletonGuid = "retarget-test-skeleton";
 		auto addBone = [&](const char* name, int parentIndex,
 			const glm::vec3& translation, float rotationRadians)
 		{
@@ -3917,12 +5835,24 @@ bool TestRetargetUnmappedTargetBoneInheritanceContract()
 		buildModelTransforms(sourceSkeleton, sourceLocalTransforms);
 
 	VansRetargetRuntimeDesc desc;
-	desc.translationScaleMode = "identity";
-	desc.targetModelSpaceAlignmentMode = "source_bind_pose";
+	desc.translationScaleMode = VansRetargetTranslationScaleMode::CompatibleSkeleton;
+	desc.targetModelSpaceAlignment = VansRetargetModelSpaceAlignment::SourceBindPose;
+	auto compileEmptyRig = [](const Skeleton& skeleton, VansCompiledAnimationRig& rig)
+	{
+		VansAnimationRigAsset asset;
+		asset.name = "Retarget Test Rig";
+		asset.skeletonGuid = "retarget-test-skeleton";
+		std::string error;
+		return VansAnimationRigCompiler::Compile(asset, skeleton, rig, error);
+	};
+	VansCompiledAnimationRig baselineRig;
+	VansCompiledAnimationRig auxiliaryRig;
 	VansRetargetProcessor baselineProcessor;
 	VansRetargetProcessor auxiliaryProcessor;
-	if (!Expect(baselineProcessor.Build(sourceSkeleton, targetWithoutAuxiliary, desc) &&
-		auxiliaryProcessor.Build(sourceSkeleton, targetWithAuxiliary, desc),
+	if (!Expect(compileEmptyRig(targetWithoutAuxiliary, baselineRig)
+		&& compileEmptyRig(targetWithAuxiliary, auxiliaryRig)
+		&& baselineProcessor.Build(sourceSkeleton, targetWithoutAuxiliary, baselineRig, desc)
+		&& auxiliaryProcessor.Build(sourceSkeleton, targetWithAuxiliary, auxiliaryRig, desc),
 		"Retarget inheritance fixture failed to build"))
 	{
 		return false;
@@ -3970,13 +5900,14 @@ bool TestRetargetUnmappedTargetBoneInheritanceContract()
 		expectPreservedTargetLocal("wrist_outer_l");
 }
 
-bool TestRetargetConfiguredTwoBoneChainContract()
+bool TestRetargetConfiguredLimbChainContract()
 {
 	using namespace VansGraphics;
 
 	auto buildSkeleton = [](bool sourceArm)
 	{
 		Skeleton skeleton;
+		skeleton.sourceSkeletonGuid = "retarget-limb-test-skeleton";
 		auto addBone = [&](const char* name, int parentIndex, const glm::vec3& translation)
 		{
 			BoneInfo bone;
@@ -4022,25 +5953,40 @@ bool TestRetargetConfiguredTwoBoneChainContract()
 	const Skeleton targetSkeleton = buildSkeleton(false);
 	const std::vector<glm::mat4> sourcePose = buildBindModelTransforms(sourceSkeleton);
 	VansRetargetRuntimeDesc baselineDesc;
-	baselineDesc.translationScaleMode = "identity";
+	baselineDesc.translationScaleMode = VansRetargetTranslationScaleMode::CompatibleSkeleton;
 	VansRetargetRuntimeDesc chainDesc = baselineDesc;
-	VansRetargetTwoBoneChainDesc leftArm;
+	VansRetargetLimbChainDesc leftArm;
 	leftArm.name = "LeftArm";
 	leftArm.sourceRoot = "upperarm_l";
 	leftArm.sourceMid = "lowerarm_l";
 	leftArm.sourceTip = "hand_l";
-	leftArm.targetRoot = "upperarm_l";
-	leftArm.targetMid = "lowerarm_l";
-	leftArm.targetTip = "hand_l";
-	chainDesc.twoBoneChains.push_back(leftArm);
+	leftArm.targetChainId = "leftArm";
+	chainDesc.limbChains.push_back(leftArm);
+
+	VansAnimationRigAsset targetRigAsset;
+	targetRigAsset.name = "Retarget Limb Test Rig";
+	targetRigAsset.skeletonGuid = "retarget-limb-test-skeleton";
+	targetRigAsset.goals.push_back({ "leftHand", "hand_l" });
+	VansRigChainDefinition targetArm;
+	targetArm.id = "leftArm";
+	targetArm.solver = VansRigSolverKind::Limb;
+	targetArm.bones = { "upperarm_l", "lowerarm_l", "hand_l" };
+	targetArm.goal = "leftHand";
+	targetArm.poleAxisLocal = { 0.0f, 0.0f, 1.0f };
+	targetRigAsset.chains.push_back(std::move(targetArm));
+	VansCompiledAnimationRig targetRig;
+	std::string rigError;
+	if (!Expect(VansAnimationRigCompiler::Compile(targetRigAsset, targetSkeleton, targetRig, rigError),
+		rigError.c_str()))
+		return false;
 
 	VansRetargetProcessor baselineProcessor;
 	VansRetargetProcessor chainProcessor;
-	if (!Expect(baselineProcessor.Build(sourceSkeleton, targetSkeleton, baselineDesc) &&
-		chainProcessor.Build(sourceSkeleton, targetSkeleton, chainDesc) &&
-		baselineProcessor.GetStats().twoBoneChainCount == 0 &&
-		chainProcessor.GetStats().twoBoneChainCount == 1,
-		"Configured retarget Two-Bone chain did not compile as an opt-in feature"))
+	if (!Expect(baselineProcessor.Build(sourceSkeleton, targetSkeleton, targetRig, baselineDesc) &&
+		chainProcessor.Build(sourceSkeleton, targetSkeleton, targetRig, chainDesc) &&
+		baselineProcessor.GetStats().limbChainCount == 0 &&
+		chainProcessor.GetStats().limbChainCount == 1,
+		"Configured retarget Limb chain did not compile as an opt-in feature"))
 	{
 		return false;
 	}
@@ -4049,7 +5995,7 @@ bool TestRetargetConfiguredTwoBoneChainContract()
 	std::vector<glm::mat4> correctedPose;
 	if (!Expect(baselineProcessor.Process(sourcePose, sourceSkeleton, targetSkeleton, baselinePose) &&
 		chainProcessor.Process(sourcePose, sourceSkeleton, targetSkeleton, correctedPose),
-		"Configured retarget Two-Bone chain fixture failed to evaluate"))
+		"Configured retarget Limb chain fixture failed to evaluate"))
 	{
 		return false;
 	}
@@ -4064,10 +6010,59 @@ bool TestRetargetConfiguredTwoBoneChainContract()
 		glm::vec3(baselinePose[targetTip][3]) - glm::vec3(baselinePose[targetRoot][3]));
 	const glm::vec3 correctedDirection = glm::normalize(
 		glm::vec3(correctedPose[targetTip][3]) - glm::vec3(correctedPose[targetRoot][3]));
-	return Expect(glm::dot(sourceDirection, baselineDirection) < 0.1f,
+	if (!Expect(glm::dot(sourceDirection, baselineDirection) < 0.1f,
 		"Unconfigured retarget unexpectedly changed the target arm bind direction") &&
 		Expect(glm::dot(sourceDirection, correctedDirection) > 0.999f,
-			"Configured retarget Two-Bone chain did not match the source end-effector direction");
+			"Configured retarget Limb chain did not match the source end-effector direction"))
+	{
+		return false;
+	}
+
+	// Some FBX skeletons, including SWAT, carry a 100x scale above otherwise
+	// normal-looking arm bones. The retarget goal must use component-space chain
+	// length, matching the component-space Limb solver, instead of raw local
+	// translations that would place the hand goal next to the shoulder.
+	Skeleton scaledTargetSkeleton = buildSkeleton(false);
+	const int scaledSkeletonRoot = scaledTargetSkeleton.boneNameToIndex.at("root");
+	scaledTargetSkeleton.bones[scaledSkeletonRoot].localTransform = glm::scale(
+		scaledTargetSkeleton.bones[scaledSkeletonRoot].localTransform,
+		glm::vec3(100.0f));
+	const std::vector<glm::mat4> scaledBindPose =
+		buildBindModelTransforms(scaledTargetSkeleton);
+
+	VansCompiledAnimationRig scaledTargetRig;
+	if (!Expect(VansAnimationRigCompiler::Compile(
+		targetRigAsset, scaledTargetSkeleton, scaledTargetRig, rigError), rigError.c_str()))
+	{
+		return false;
+	}
+
+	VansRetargetProcessor scaledChainProcessor;
+	std::vector<glm::mat4> scaledCorrectedPose;
+	if (!Expect(scaledChainProcessor.Build(
+		sourceSkeleton, scaledTargetSkeleton, scaledTargetRig, chainDesc) &&
+		scaledChainProcessor.Process(
+			sourcePose, sourceSkeleton, scaledTargetSkeleton, scaledCorrectedPose),
+		"Scaled target retarget Limb chain fixture failed to evaluate"))
+	{
+		return false;
+	}
+
+	const int scaledTargetRoot = scaledTargetSkeleton.boneNameToIndex.at("upperarm_l");
+	const int scaledTargetMid = scaledTargetSkeleton.boneNameToIndex.at("lowerarm_l");
+	const int scaledTargetTip = scaledTargetSkeleton.boneNameToIndex.at("hand_l");
+	const float scaledBindReach = glm::distance(
+		glm::vec3(scaledBindPose[scaledTargetRoot][3]),
+		glm::vec3(scaledBindPose[scaledTargetMid][3])) + glm::distance(
+		glm::vec3(scaledBindPose[scaledTargetMid][3]),
+		glm::vec3(scaledBindPose[scaledTargetTip][3]));
+	const glm::vec3 scaledRootToTip =
+		glm::vec3(scaledCorrectedPose[scaledTargetTip][3])
+		- glm::vec3(scaledCorrectedPose[scaledTargetRoot][3]);
+	return Expect(glm::dot(sourceDirection, glm::normalize(scaledRootToTip)) > 0.999f,
+		"Scaled target retarget Limb chain did not match the source direction") &&
+		Expect(glm::length(scaledRootToTip) > scaledBindReach * 0.95f,
+			"Scaled target retarget Limb chain collapsed because inherited scale was ignored");
 }
 
 bool TestAnimationAuthoringBoundaryContract()
@@ -4534,6 +6529,7 @@ VansGraphics::Skeleton BuildLayerContractSkeleton()
 {
     using namespace VansGraphics;
     Skeleton skeleton;
+	skeleton.sourceSkeletonGuid = "test-skeleton";
     skeleton.bones.resize(3);
     skeleton.bones[0].name = "root";
     skeleton.bones[0].id = 0;
@@ -4699,9 +6695,16 @@ bool TestAnimatorRuntimeCompilerContract()
     std::string error;
     if (!Expect(VansBoneMaskStorage::SaveAtomic(maskPath, mask, error), error.c_str()))
         return false;
+	VansAnimationRigAsset rig;
+	rig.name = "RuntimeCompilerRig";
+	rig.skeletonGuid = "88888888-8888-4888-8888-888888888888";
+	const fs::path rigPath = temporary.path / "runtime.vanimrig";
+	if (!Expect(VansAnimationRigStorage::SaveAtomic(rigPath, rig, error), error.c_str()))
+		return false;
 
     AnimatorAssetData asset;
     asset.name = "RuntimeCompiler";
+	asset.animationRigGuid = "88888888-8888-4888-8888-888888888888";
     AnimatorParameter upperWeight;
     upperWeight.name = "UpperBodyWeight";
     upperWeight.type = AnimatorParamType::Float;
@@ -4748,14 +6751,12 @@ bool TestAnimatorRuntimeCompilerContract()
     VansAnimationLayerDefinition baseLayer;
     baseLayer.id = "layer-base";
     baseLayer.name = "Base";
-    baseLayer.graphId = "graph-base";
     baseLayer.kind = VansAnimationLayerKind::Base;
     baseLayer.rootMotion = VansLayerRootMotionMode::Base;
     asset.layers.push_back(baseLayer);
     VansAnimationLayerDefinition overlayLayer;
     overlayLayer.id = "layer-upper";
     overlayLayer.name = "Upper";
-    overlayLayer.graphId = "graph-upper";
     overlayLayer.kind = VansAnimationLayerKind::Overlay;
     overlayLayer.maskGuid = "77777777-7777-4777-8777-777777777777";
     overlayLayer.maskPathHint = "upper.vbonemask";
@@ -4763,11 +6764,19 @@ bool TestAnimatorRuntimeCompilerContract()
     overlayLayer.weightParameter = "UpperBodyWeight";
     overlayLayer.rootMotion = VansLayerRootMotionMode::Ignore;
     asset.layers.push_back(overlayLayer);
+	VansAnimationGraphSetDefinition graphSet;
+	graphSet.id = "graph-set-default";
+	graphSet.name = "Default";
+	graphSet.bindings = {
+		{ "layer-base", "graph-base", true },
+		{ "layer-upper", "graph-upper", true }
+	};
+	asset.defaultGraphSetId = graphSet.id;
+	asset.graphSets.push_back(std::move(graphSet));
     VansAnimationSlotDefinition slot;
     slot.id = "slot-upper";
     slot.name = "Upper";
     slot.layerId = "layer-upper";
-    slot.slotNodeId = slotNodeId;
     asset.slots.push_back(slot);
 
     const auto clipResolver = [&](const AnimatorClipRef& reference, fs::path& path, std::string& resolveError)
@@ -4787,8 +6796,19 @@ bool TestAnimatorRuntimeCompilerContract()
         path = maskPath;
         return true;
     };
+	VansAnimatorRuntimeCompileOptions runtimeOptions;
+	runtimeOptions.rigResolver = [&](const std::string& guid, fs::path& path, std::string& resolveError)
+	{
+		if (guid != asset.animationRigGuid)
+		{
+			resolveError = "Unexpected Animation Rig GUID";
+			return false;
+		}
+		path = rigPath;
+		return true;
+	};
     auto controller = VansAnimatorRuntimeCompiler::Compile(asset, skeleton,
-        clipResolver, maskResolver, {}, error);
+        clipResolver, maskResolver, runtimeOptions, error);
     if (!Expect(controller && controller->GetLayerCount() == 2, error.c_str()))
         return false;
     controller->SetFloat("UpperBodyWeight", 1.0f);
@@ -4806,7 +6826,7 @@ bool TestAnimatorRuntimeCompilerContract()
         return false;
 
     if (!Expect(!VansAnimatorRuntimeCompiler::Compile(
-        asset, skeleton, {}, maskResolver, {}, error),
+        asset, skeleton, {}, maskResolver, runtimeOptions, error),
         "Full-graph runtime compilation accepted a missing Clip resolver"))
         return false;
 
@@ -4814,6 +6834,7 @@ bool TestAnimatorRuntimeCompilerContract()
     bool maskResolverInvoked = false;
     VansAnimatorRuntimeCompileOptions targetOptions;
     targetOptions.mode = VansAnimatorRuntimeCompileMode::ExternalPoseTarget;
+	targetOptions.rigResolver = runtimeOptions.rigResolver;
     auto targetController = VansAnimatorRuntimeCompiler::Compile(
         asset,
         skeleton,
@@ -4834,7 +6855,7 @@ bool TestAnimatorRuntimeCompilerContract()
     if (!Expect(targetController && !clipResolverInvoked && !maskResolverInvoked,
         error.empty() ? "External-pose target resolved source Layer assets" : error.c_str()))
         return false;
-    if (!Expect(targetController->GetClipNames().empty() && !targetController->HasLayerStack()
+	if (!Expect(targetController->GetClipNames().empty() && !targetController->HasGraphSets()
         && ExpectNear(targetController->GetFloat("UpperBodyWeight"), 0.0f, 0.0001f,
             "External-pose target did not preserve authored parameters"),
         "External-pose target retained the source Clip/Layer runtime"))
@@ -4889,35 +6910,37 @@ bool TestAnimationLayerStackRuntimeContract()
     rule.endWeight = 0.75f;
     upperMask.branchRules.push_back(rule);
 
-    VansAnimationLayerGraphSetup base;
+	VansAnimationLayerSetup base;
     base.definition.id = "layer-base";
     base.definition.name = "Base";
-    base.definition.graphId = "graph-base";
     base.definition.kind = VansAnimationLayerKind::Base;
     base.definition.rootMotion = VansLayerRootMotionMode::Base;
     base.definition.nodeTracks = VansLayerNodeTrackMode::Override;
-    base.graph = buildGraph("Base");
+	auto baseGraph = buildGraph("Base");
 
-    VansAnimationLayerGraphSetup overlay;
+	VansAnimationLayerSetup overlay;
     overlay.definition.id = "layer-upper";
     overlay.definition.name = "Upper";
-    overlay.definition.graphId = "graph-upper";
     overlay.definition.kind = VansAnimationLayerKind::Overlay;
     overlay.definition.blendMode = VansLayerBlendMode::Override;
     overlay.definition.fixedWeight = 1.0f;
     overlay.definition.rootMotion = VansLayerRootMotionMode::Ignore;
     overlay.definition.events = VansLayerEventMode::ActiveOnly;
-    overlay.graph = buildGraph("Overlay");
+	auto overlayGraph = buildGraph("Overlay");
     overlay.mask = upperMask;
 
     VansAnimationController controller;
     controller.AddClip("Base", buildClip("Base", 0.0f, 0.0f, 0.0f));
     controller.AddClip("Overlay", buildClip("Overlay", 100.0f, 10.0f, 20.0f));
-    std::vector<VansAnimationLayerGraphSetup> layers;
+	std::vector<VansAnimationLayerSetup> layers;
     layers.push_back(std::move(base));
     layers.push_back(std::move(overlay));
     std::string error;
-    if (!Expect(controller.SetLayerStack(std::move(layers), error), error.c_str()))
+	std::vector<std::unique_ptr<VansAnimGraph>> graphs;
+	graphs.push_back(std::move(baseGraph));
+	graphs.push_back(std::move(overlayGraph));
+	if (!Expect(InstallTestGraphSet(controller, std::move(layers),
+		{ "graph-base", "graph-upper" }, std::move(graphs), error), error.c_str()))
         return false;
     controller.Play();
     controller.Update(0.0f, skeleton);
@@ -4949,17 +6972,150 @@ bool TestAnimationLayerStackRuntimeContract()
         "Stable Base + Overlay Animation Update performed a heap allocation"))
         return false;
 
-    VansAnimationLayerGraphSetup invalidBase;
+	VansAnimationLayerSetup invalidBase;
     invalidBase.definition.id = "not-base";
     invalidBase.definition.name = "OverlayFirst";
-    invalidBase.definition.graphId = "invalid-graph";
     invalidBase.definition.kind = VansAnimationLayerKind::Overlay;
-    invalidBase.graph = buildGraph("Base");
+	auto invalidGraph = buildGraph("Base");
     invalidBase.mask = upperMask;
-    std::vector<VansAnimationLayerGraphSetup> invalidLayers;
+	std::vector<VansAnimationLayerSetup> invalidLayers;
     invalidLayers.push_back(std::move(invalidBase));
-    return Expect(!controller.SetLayerStack(std::move(invalidLayers), error),
+	std::vector<std::unique_ptr<VansAnimGraph>> invalidGraphs;
+	invalidGraphs.push_back(std::move(invalidGraph));
+	return Expect(!InstallTestGraphSet(controller, std::move(invalidLayers),
+		{ "invalid-graph" }, std::move(invalidGraphs), error),
         "Layer Stack accepted an Animator without exactly one Base layer");
+}
+
+bool TestAnimationGraphSetSwitchRuntimeContract()
+{
+	using namespace VansGraphics;
+	const Skeleton skeleton = BuildLayerContractSkeleton();
+	auto makeClip = [](const std::string& name, float armStart, float armEnd)
+	{
+		VansAnimationClip clip;
+		clip.clipName = name;
+		clip.duration = 2.0f;
+		clip.boneKeyframes.resize(3);
+		for (int bone = 0; bone < 3; ++bone)
+		{
+			const float start = bone == 2 ? armStart : 0.0f;
+			const float end = bone == 2 ? armEnd : 0.0f;
+			clip.boneKeyframes[bone] = {
+				{ 0.0f, glm::vec3(start, 0.0f, 0.0f),
+					glm::quat(1.0f, 0.0f, 0.0f, 0.0f), glm::vec3(1.0f) },
+				{ 2.0f, glm::vec3(end, 0.0f, 0.0f),
+					glm::quat(1.0f, 0.0f, 0.0f, 0.0f), glm::vec3(1.0f) }
+			};
+		}
+		return clip;
+	};
+	auto makeGraph = [](const std::string& clipName)
+	{
+		auto graph = std::make_unique<VansAnimGraph>();
+		auto clip = std::make_unique<AnimGraphClipNode>();
+		clip->m_ClipName = clipName;
+		const int clipId = graph->AddNode(std::move(clip));
+		const int outputId = graph->AddNode(
+			VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
+		graph->AddLink(clipId, 0, outputId, 0);
+		return graph;
+	};
+	auto makeGraphSet = [&](const std::string& id, const std::string& graphId,
+		const std::string& clipName)
+	{
+		VansAnimationGraphSetSetup graphSet;
+		graphSet.definition.id = id;
+		graphSet.definition.name = id;
+		graphSet.definition.bindings.push_back({ "layer-base", graphId, true });
+		VansAnimationGraphBindingSetup binding;
+		binding.definition = graphSet.definition.bindings.front();
+		binding.graph = makeGraph(clipName);
+		graphSet.bindings.push_back(std::move(binding));
+		return graphSet;
+	};
+
+	VansAnimationController controller;
+	controller.AddClip("Exploration", makeClip("Exploration", 0.0f, 4.0f));
+	controller.AddClip("Combat", makeClip("Combat", 10.0f, 18.0f));
+	controller.AddClip("Cinematic", makeClip("Cinematic", 20.0f, 28.0f));
+	VansAnimationLayerSetup base;
+	base.definition.id = "layer-base";
+	base.definition.name = "Base";
+	base.definition.kind = VansAnimationLayerKind::Base;
+	std::vector<VansAnimationLayerSetup> layers;
+	layers.push_back(std::move(base));
+	std::vector<VansAnimationGraphSetSetup> graphSets;
+	graphSets.push_back(makeGraphSet("exploration", "graph-exploration", "Exploration"));
+	graphSets.push_back(makeGraphSet("combat", "graph-combat", "Combat"));
+	graphSets.push_back(makeGraphSet("cinematic", "graph-cinematic", "Cinematic"));
+	VansGraphSetTransitionPolicy transition;
+	transition.duration = 1.0f;
+	transition.curve = VansGraphSetBlendCurve::Linear;
+	transition.phase = VansGraphSetPhasePolicy::MatchNormalizedTime;
+	transition.events = VansGraphSetEventPolicy::DominantSource;
+	transition.interruption = VansGraphSetInterruptionPolicy::QueueLatest;
+	VansGraphSetTransitionRule combatToCinematic;
+	combatToCinematic.fromGraphSetId = "combat";
+	combatToCinematic.toGraphSetId = "cinematic";
+	combatToCinematic.policy = transition;
+	combatToCinematic.policy.duration = 0.25f;
+	combatToCinematic.policy.interruption = VansGraphSetInterruptionPolicy::Reject;
+	std::vector<VansGraphSetTransitionRule> transitionRules;
+	transitionRules.push_back(combatToCinematic);
+	std::string error;
+	if (!Expect(controller.SetAnimationGraphSets(
+		std::move(layers), std::move(graphSets), "exploration", transition,
+		std::move(transitionRules), error),
+		error.c_str()))
+		return false;
+	controller.Play();
+	controller.Update(0.0f, skeleton);
+	controller.Update(0.5f, skeleton);
+	if (!Expect(controller.SwitchGraphSet("combat") == VansGraphSetSwitchResult::Started,
+		"Graph Set switch request was not accepted"))
+		return false;
+	controller.Update(0.5f, skeleton);
+	if (!Expect(controller.GetActiveGraphSetId() == "exploration"
+		&& controller.GetIncomingGraphSetId() == "combat"
+		&& controller.IsGraphSetTransitioning(),
+		"Graph Set transition did not expose Active/Incoming state"))
+		return false;
+	// Exploration 在 t=1.0 为 2，Combat 经归一化交接后推进到 t=1.0 为 14；50% 为 8。
+	const float blendedArmX = controller.GetCachedGlobalTransform(2)[3].x;
+	if (std::fabs(blendedArmX - 8.0f) > 0.001f)
+		std::cerr << "[ForestContractTests] Graph Set blended arm X: " << blendedArmX << '\n';
+	if (!ExpectNear(blendedArmX, 8.0f, 0.001f,
+		"Dual Graph Set evaluation did not blend the composed poses"))
+		return false;
+	if (!Expect(controller.SwitchGraphSet("cinematic") == VansGraphSetSwitchResult::Queued,
+		"QueueLatest did not retain the latest Graph Set request"))
+		return false;
+	controller.Update(0.5f, skeleton);
+	if (!Expect(controller.GetActiveGraphSetId() == "combat"
+		&& controller.GetIncomingGraphSetId() == "cinematic"
+		&& controller.IsGraphSetTransitioning(),
+		"Graph Set transition did not promote Incoming and start the queued request"))
+		return false;
+	if (!ExpectNear(controller.GetCachedGlobalTransform(2)[3].x, 16.0f, 0.001f,
+		"Completed Graph Set transition did not output the incoming pose"))
+		return false;
+	if (!Expect(controller.SwitchGraphSet("exploration") == VansGraphSetSwitchResult::Rejected,
+		"Pair-specific Reject policy did not reject an interrupting request"))
+		return false;
+	controller.Update(0.125f, skeleton);
+	if (!ExpectNear(controller.GetGraphSetTransitionProgress(), 0.5f, 0.001f,
+		"Pair-specific Graph Set transition duration was not applied"))
+		return false;
+	controller.Update(0.125f, skeleton);
+	if (!Expect(controller.GetActiveGraphSetId() == "cinematic"
+		&& controller.GetIncomingGraphSetId().empty()
+		&& !controller.IsGraphSetTransitioning(),
+		"Queued Graph Set transition did not atomically promote its target"))
+		return false;
+	return Expect(controller.SwitchGraphSet("missing")
+		== VansGraphSetSwitchResult::UnknownGraphSet,
+		"Graph Set runtime accepted an unknown stable ID");
 }
 
 bool TestAnimationSlotRuntimeContract()
@@ -5011,38 +7167,38 @@ bool TestAnimationSlotRuntimeContract()
     rule.endWeight = 1.0f;
     mask.branchRules.push_back(rule);
 
-    VansAnimationLayerGraphSetup base;
+	VansAnimationLayerSetup base;
     base.definition.id = "layer-base";
     base.definition.name = "Base";
-    base.definition.graphId = "graph-base";
     base.definition.kind = VansAnimationLayerKind::Base;
     base.definition.rootMotion = VansLayerRootMotionMode::Base;
-    base.graph = makeBaseGraph();
-    VansAnimationLayerGraphSetup overlay;
+	auto baseGraph = makeBaseGraph();
+	VansAnimationLayerSetup overlay;
     overlay.definition.id = "layer-upper";
     overlay.definition.name = "Upper";
-    overlay.definition.graphId = "graph-slot";
     overlay.definition.kind = VansAnimationLayerKind::Overlay;
     overlay.definition.events = VansLayerEventMode::ActiveOnly;
-    overlay.graph = std::move(slotGraph);
     overlay.mask = mask;
 
     VansAnimationController controller;
     controller.AddClip("Base", makeClip("Base", 0.0f));
     controller.AddClip("Fire", makeClip("Fire", 20.0f));
     controller.AddClip("Reload", makeClip("Reload", 30.0f));
-    std::vector<VansAnimationLayerGraphSetup> layers;
+	std::vector<VansAnimationLayerSetup> layers;
     layers.push_back(std::move(base));
     layers.push_back(std::move(overlay));
     std::string error;
-    if (!Expect(controller.SetLayerStack(std::move(layers), error), error.c_str()))
+	std::vector<std::unique_ptr<VansAnimGraph>> graphs;
+	graphs.push_back(std::move(baseGraph));
+	graphs.push_back(std::move(slotGraph));
+	if (!Expect(InstallTestGraphSet(controller, std::move(layers),
+		{ "graph-base", "graph-slot" }, std::move(graphs), error), error.c_str()))
         return false;
 
     VansAnimationSlotDefinition slot;
     slot.id = "slot-upper";
     slot.name = "Upper";
     slot.layerId = "layer-upper";
-    slot.slotNodeId = slotNodeId;
     slot.defaultBlendIn = 0.0f;
     slot.defaultBlendOut = 0.2f;
     if (!Expect(controller.SetSlots({ slot }, error), error.c_str()))
@@ -5170,18 +7326,14 @@ bool TestAnimationHotReloadStateTransferContract()
         const int slotOutput = slotGraph->AddNode(VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
         slotGraph->AddLink(slotNodeId, 0, slotOutput, 0);
 
-        VansAnimationLayerGraphSetup base;
+		VansAnimationLayerSetup base;
         base.definition.id = "layer-base";
         base.definition.name = "Base";
-        base.definition.graphId = "graph-base";
         base.definition.kind = VansAnimationLayerKind::Base;
-        base.graph = std::move(baseGraph);
-        VansAnimationLayerGraphSetup overlay;
+		VansAnimationLayerSetup overlay;
         overlay.definition.id = "layer-upper";
         overlay.definition.name = "Upper";
-        overlay.definition.graphId = "graph-upper";
         overlay.definition.kind = VansAnimationLayerKind::Overlay;
-        overlay.graph = std::move(slotGraph);
         VansBoneMaskAsset mask;
         mask.id = "mask-upper";
         mask.name = "Upper";
@@ -5192,17 +7344,20 @@ bool TestAnimationHotReloadStateTransferContract()
         branch.endWeight = 1.0f;
         mask.branchRules.push_back(branch);
         overlay.mask = std::move(mask);
-        std::vector<VansAnimationLayerGraphSetup> layers;
+		std::vector<VansAnimationLayerSetup> layers;
         layers.push_back(std::move(base));
         layers.push_back(std::move(overlay));
         std::string error;
-        if (!controller->SetLayerStack(std::move(layers), error))
+		std::vector<std::unique_ptr<VansAnimGraph>> graphs;
+		graphs.push_back(std::move(baseGraph));
+		graphs.push_back(std::move(slotGraph));
+		if (!InstallTestGraphSet(*controller, std::move(layers),
+			{ "graph-base", "graph-upper" }, std::move(graphs), error))
             return nullptr;
         VansAnimationSlotDefinition slot;
         slot.id = "slot-upper";
         slot.name = "Upper";
         slot.layerId = "layer-upper";
-        slot.slotNodeId = slotNodeId;
         slot.defaultBlendIn = 0.0f;
         slot.defaultBlendOut = 0.1f;
         if (!controller->SetSlots({ slot }, error))
@@ -5263,7 +7418,6 @@ bool TestAnimationHotReloadStateTransferContract()
     slot.id = "slot-upper";
     slot.name = "Upper";
     slot.layerId = "layer-upper";
-    slot.slotNodeId = 1;
     if (!Expect(activeSlotRuntime.Configure({ slot }, diagnostic), diagnostic.c_str()))
         return false;
     const VansSlotPlaybackHandle removedHandle = activeSlotRuntime.Play("slot-upper", fire);
@@ -5324,31 +7478,33 @@ bool TestAnimationMarkerSyncLayerContract()
     armMask.id = "mask-arm";
     armMask.name = "Arm";
     armMask.explicitWeights["arm"] = 1.0f;
-    VansAnimationLayerGraphSetup leader;
+	VansAnimationLayerSetup leader;
     leader.definition.id = "layer-leader";
     leader.definition.name = "Leader";
-    leader.definition.graphId = "graph-leader";
     leader.definition.kind = VansAnimationLayerKind::Base;
     leader.definition.rootMotion = VansLayerRootMotionMode::Base;
-    leader.graph = makeGraph("Leader");
-    VansAnimationLayerGraphSetup follower;
+	auto leaderGraph = makeGraph("Leader");
+	VansAnimationLayerSetup follower;
     follower.definition.id = "layer-follower";
     follower.definition.name = "Follower";
-    follower.definition.graphId = "graph-follower";
     follower.definition.kind = VansAnimationLayerKind::Overlay;
     follower.definition.sync = VansLayerSyncMode::MarkerSync;
     follower.definition.syncLeaderLayerId = "layer-leader";
-    follower.graph = makeGraph("Follower");
+	auto followerGraph = makeGraph("Follower");
     follower.mask = armMask;
 
     VansAnimationController controller;
     controller.AddClip("Leader", makeClip("Leader", 2.0f, 0.0f, 0.25f, 1.25f));
     controller.AddClip("Follower", makeClip("Follower", 4.0f, 40.0f, 1.0f, 3.0f));
-    std::vector<VansAnimationLayerGraphSetup> layers;
+	std::vector<VansAnimationLayerSetup> layers;
     layers.push_back(std::move(leader));
     layers.push_back(std::move(follower));
     std::string error;
-    if (!Expect(controller.SetLayerStack(std::move(layers), error), error.c_str()))
+	std::vector<std::unique_ptr<VansAnimGraph>> graphs;
+	graphs.push_back(std::move(leaderGraph));
+	graphs.push_back(std::move(followerGraph));
+	if (!Expect(InstallTestGraphSet(controller, std::move(layers),
+		{ "graph-leader", "graph-follower" }, std::move(graphs), error), error.c_str()))
         return false;
     controller.Play();
     controller.Update(0.0f, skeleton);
@@ -5362,22 +7518,48 @@ bool TestAnimationTargetPostProcessContract()
     using namespace VansGraphics;
 
     const Skeleton skeleton = BuildLayerContractSkeleton();
+	VansAnimationRigAsset rigAsset;
+	rigAsset.name = "Target Post Process Test Rig";
+	rigAsset.skeletonGuid = "test-skeleton";
+	rigAsset.goals.push_back({ "aim", "arm" });
+	VansRigChainDefinition aimChain;
+	aimChain.id = "upperAim";
+	aimChain.solver = VansRigSolverKind::Aim;
+	aimChain.bones = { "spine", "arm" };
+	aimChain.goal = "aim";
+	aimChain.weights = { 0.0f, 1.0f };
+	aimChain.forwardAxisLocal = { 0.0f, 0.0f, -1.0f };
+	aimChain.upAxisLocal = { 0.0f, 1.0f, 0.0f };
+	rigAsset.chains.push_back(std::move(aimChain));
+	VansCompiledAnimationRig compiledRig;
+	std::string error;
+	if (!VansAnimationRigCompiler::Compile(rigAsset, skeleton, compiledRig, error))
+	{
+		std::cerr << "[ForestContractTests] Target Post Process Rig compile: " << error << '\n';
+		return false;
+	}
+	auto installRig = [&](VansAnimationController& controller)
+	{
+		return controller.SetAnimationRig(compiledRig, {}, error);
+	};
     auto makePostProcessGraph = []
     {
         auto graph = std::make_unique<VansAnimGraph>();
         const int inputId = graph->AddNode(
             VansAnimGraph::CreateNodeByType(AnimGraphNodeType::TargetPoseInput));
-        auto lookAt = std::make_unique<AnimGraphLookAtNode>();
-        lookAt->m_BoneNames = { "arm" };
-        lookAt->m_BoneWeights = { 1.0f };
-        lookAt->m_UseFixedTarget = true;
-        lookAt->m_FixedTargetPos = glm::vec3(1.0f, 0.0f, 0.0f);
-        lookAt->m_FixedWeight = 1.0f;
-        const int lookAtId = graph->AddNode(std::move(lookAt));
+        auto aim = std::make_unique<AnimGraphAimConstraintNode>();
+		aim->m_ChainId = "upperAim";
+		aim->m_Target.goalId = "aim";
+		aim->m_Target.source = VansGraphGoalSource::Fixed;
+		aim->m_Target.fixedPositionModel = glm::vec3(1.0f, 0.0f, 0.0f);
+		aim->m_Target.fixedPositionWeight = 1.0f;
+		aim->m_TargetHalfLife = 0.0f;
+		aim->m_Settings.maxAngularSpeedDegrees = 100000.0f;
+        const int aimId = graph->AddNode(std::move(aim));
         const int outputId = graph->AddNode(
             VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
-        graph->AddLink(inputId, 0, lookAtId, 0);
-        graph->AddLink(lookAtId, 0, outputId, 0);
+        graph->AddLink(inputId, 0, aimId, 0);
+        graph->AddLink(aimId, 0, outputId, 0);
         return graph;
     };
     auto aimedForward = [](const VansAnimationController& controller)
@@ -5386,10 +7568,17 @@ bool TestAnimationTargetPostProcessContract()
             * glm::vec4(0.0f, 0.0f, -1.0f, 0.0f)));
     };
 
-    std::string error;
     VansAnimationController externalController;
-    if (!Expect(externalController.SetTargetPostProcessGraph(makePostProcessGraph(), error), error.c_str()))
+	if (!installRig(externalController))
+	{
+		std::cerr << "[ForestContractTests] Target Post Process Rig install: " << error << '\n';
+		return false;
+	}
+	if (!externalController.SetTargetPostProcessGraph(makePostProcessGraph(), error))
+	{
+		std::cerr << "[ForestContractTests] Target Post Process Graph install: " << error << '\n';
         return false;
+	}
     std::vector<glm::mat4> externalModelPose(3, glm::mat4(1.0f));
     if (!Expect(externalController.SubmitExternalModelPose(
         externalModelPose, skeleton, 0.016f,
@@ -5419,6 +7608,11 @@ bool TestAnimationTargetPostProcessContract()
         return false;
 
     VansAnimationController directController;
+	if (!installRig(directController))
+	{
+		std::cerr << "[ForestContractTests] Direct-pose Rig install: " << error << '\n';
+		return false;
+	}
     if (!Expect(directController.SubmitExternalModelPose(
         externalModelPose, skeleton, 0.016f,
         VansExternalPoseEvaluationMode::DirectFinalPose),
@@ -5449,11 +7643,23 @@ bool TestAnimationTargetPostProcessContract()
 
     VansAnimationController layeredController;
     layeredController.AddClip("Base", clip);
-    if (!Expect(InstallTestBaseLayer(layeredController, std::move(baseGraph), error), error.c_str())
-        || !Expect(layeredController.SetTargetPostProcessGraph(makePostProcessGraph(), error), error.c_str()))
+	if (!installRig(layeredController))
+	{
+		std::cerr << "[ForestContractTests] Layered-pose Rig install: " << error << '\n';
+		return false;
+	}
+	if (!InstallTestBaseLayer(layeredController, std::move(baseGraph), error))
+	{
+		std::cerr << "[ForestContractTests] Layered-pose base Graph install: " << error << '\n';
+		return false;
+	}
+	if (!layeredController.SetTargetPostProcessGraph(makePostProcessGraph(), error))
+	{
+		std::cerr << "[ForestContractTests] Layered Target Post Process Graph install: " << error << '\n';
         return false;
+    }
     layeredController.Play();
-    layeredController.Update(0.0f, skeleton);
+    layeredController.Update(1.0f / 60.0f, skeleton);
     if (!Expect(glm::dot(aimedForward(layeredController), glm::vec3(1.0f, 0.0f, 0.0f)) > 0.95f,
         "Layer-composed pose skipped Target Post Process"))
         return false;
@@ -5526,25 +7732,23 @@ bool TestAnimationSyncedGraphStateContract()
         return graph;
     };
 
-    VansAnimationLayerGraphSetup leader;
+	VansAnimationLayerSetup leader;
     leader.definition.id = "layer-leader";
     leader.definition.name = "Leader";
-    leader.definition.graphId = "graph-leader";
     leader.definition.kind = VansAnimationLayerKind::Base;
-    leader.graph = makeStateGraph("BaseIdle", "BaseRun", true);
+	auto leaderGraph = makeStateGraph("BaseIdle", "BaseRun", true);
 
     VansBoneMaskAsset armMask;
     armMask.id = "mask-arm";
     armMask.name = "Arm";
     armMask.explicitWeights["arm"] = 1.0f;
-    VansAnimationLayerGraphSetup follower;
+	VansAnimationLayerSetup follower;
     follower.definition.id = "layer-follower";
     follower.definition.name = "Follower";
-    follower.definition.graphId = "graph-follower";
     follower.definition.kind = VansAnimationLayerKind::Overlay;
     follower.definition.sync = VansLayerSyncMode::SyncedGraph;
     follower.definition.syncLeaderLayerId = "layer-leader";
-    follower.graph = makeStateGraph("UpperIdle", "UpperRun", false);
+	auto followerGraph = makeStateGraph("UpperIdle", "UpperRun", false);
     follower.mask = armMask;
 
     VansAnimationController controller;
@@ -5553,11 +7757,15 @@ bool TestAnimationSyncedGraphStateContract()
     controller.AddClip("BaseRun", makeClip("BaseRun", 0.0f, 2.0f));
     controller.AddClip("UpperIdle", makeClip("UpperIdle", 10.0f, 3.0f));
     controller.AddClip("UpperRun", makeClip("UpperRun", 30.0f, 4.0f));
-    std::vector<VansAnimationLayerGraphSetup> layers;
+	std::vector<VansAnimationLayerSetup> layers;
     layers.push_back(std::move(leader));
     layers.push_back(std::move(follower));
     std::string error;
-    if (!Expect(controller.SetLayerStack(std::move(layers), error), error.c_str()))
+	std::vector<std::unique_ptr<VansAnimGraph>> graphs;
+	graphs.push_back(std::move(leaderGraph));
+	graphs.push_back(std::move(followerGraph));
+	if (!Expect(InstallTestGraphSet(controller, std::move(layers),
+		{ "graph-leader", "graph-follower" }, std::move(graphs), error), error.c_str()))
         return false;
     controller.Play();
     controller.Update(0.0f, skeleton);
@@ -6942,6 +9150,138 @@ bool TestPunctualShadowResolutionAndPendingLifecycle()
 		"Unselected pending point allocation leaked Atlas pages");
 }
 
+bool TestPointShadowAtlasUpdatePolicy()
+{
+	using namespace VansGraphics;
+	VansPunctualShadowManager manager(512, 128, 2);
+	VansPunctualShadowBudget budget = manager.GetBudget();
+	budget.atlasPageBudget = 12;
+	budget.maxDirtyTexelsPerFrame = 0;
+	manager.SetBudget(budget);
+
+	VansPunctualShadowCameraData camera;
+	std::vector<VansPunctualShadowLightInput> lights(2);
+	for (uint32_t index = 0; index < lights.size(); ++index)
+	{
+		auto& light = lights[index];
+		light.stableLightId = index + 1u;
+		light.gpuLightIndex = index;
+		light.type = VansPunctualShadowLightType::Point;
+		light.position = glm::vec3(static_cast<float>(index), 0.0f, 2.0f);
+		light.intensity = 10.0f;
+		light.radius = 10.0f;
+		light.settings.castShadows = true;
+		light.settings.resolution = VansShadowResolution::R128;
+		light.settings.maxShadowDistance = 100.0f;
+		// 点光更新策略只由 Atlas 归属决定，不能被旧资产配置覆盖。
+		light.settings.updateMode = VansShadowUpdateMode::Budgeted;
+	}
+
+	manager.PrepareFrame(camera, lights, 1);
+	std::array<uint32_t, VANS_PUNCTUAL_SHADOW_ATLAS_COUNT> initialJobsPerAtlas{};
+	for (const VansPunctualShadowRenderJob& job : manager.GetRenderJobs())
+	{
+		if (!Expect(job.atlasIndex < initialJobsPerAtlas.size() &&
+			job.rendersPendingAllocation && job.atomicGroupId != 0,
+			"Initial point shadow allocation was not scheduled as an atomic Atlas upload"))
+			return false;
+		++initialJobsPerAtlas[job.atlasIndex];
+	}
+	if (!Expect(initialJobsPerAtlas[VANS_PUNCTUAL_SHADOW_PRIMARY_ATLAS_INDEX] == 6 &&
+		initialJobsPerAtlas[VANS_PUNCTUAL_SHADOW_SECONDARY_ATLAS_INDEX] == 6,
+		"Point shadow allocation did not populate both Atlases with complete six-face groups"))
+		return false;
+	manager.NotifyRenderJobsSubmitted();
+
+	manager.PrepareFrame(camera, lights, 2);
+	uint32_t primaryLightId = VANS_INVALID_SHADOW_INDEX;
+	uint32_t secondaryLightId = VANS_INVALID_SHADOW_INDEX;
+	uint64_t secondaryLastRenderedFrame = 0;
+	for (const VansPunctualShadowRuntimeDebug& light : manager.CaptureDebugSnapshot().lights)
+	{
+		if (!light.activeBlocks[0].IsValid())
+			return Expect(false, "Resident point shadow has no valid Atlas block");
+		if (light.activeBlocks[0].atlasIndex == VANS_PUNCTUAL_SHADOW_PRIMARY_ATLAS_INDEX)
+			primaryLightId = light.stableLightId;
+		else if (light.activeBlocks[0].atlasIndex == VANS_PUNCTUAL_SHADOW_SECONDARY_ATLAS_INDEX)
+		{
+			secondaryLightId = light.stableLightId;
+			secondaryLastRenderedFrame = light.lastRenderedFrame;
+		}
+	}
+	if (!Expect(primaryLightId != VANS_INVALID_SHADOW_INDEX &&
+		secondaryLightId != VANS_INVALID_SHADOW_INDEX,
+		"Point lights were not assigned to distinct primary and secondary Atlases"))
+		return false;
+
+	const auto& primaryJobs = manager.GetRenderJobs();
+	if (!Expect(primaryJobs.size() == 6 && !manager.HasRenderJobs(VANS_PUNCTUAL_SHADOW_SECONDARY_ATLAS_INDEX),
+		"Secondary Atlas point shadow was redrawn after its initial upload"))
+		return false;
+	const uint32_t primaryAtomicGroup = primaryJobs.front().atomicGroupId;
+	for (const VansPunctualShadowRenderJob& job : primaryJobs)
+	{
+		if (!Expect(job.stableLightId == primaryLightId &&
+			job.atlasIndex == VANS_PUNCTUAL_SHADOW_PRIMARY_ATLAS_INDEX &&
+			job.atomicGroupId == primaryAtomicGroup && primaryAtomicGroup != 0 &&
+			(job.dirtyReasons & VansShadowDirty_DynamicCaster) != 0,
+			"Primary Atlas point shadow was not scheduled as one forced per-frame group"))
+			return false;
+	}
+
+	const uint32_t secondaryMetaIndex = manager.GetShadowMetaIndex(secondaryLightId);
+	if (!Expect(secondaryMetaIndex < manager.GetGPUShadowData().size(),
+		"Secondary Atlas point shadow lost its metadata binding"))
+		return false;
+	const VansPunctualShadowGPU& secondaryGPU = manager.GetGPUShadowData()[secondaryMetaIndex];
+	if (!Expect(secondaryGPU.firstView != VANS_INVALID_SHADOW_INDEX &&
+		secondaryGPU.firstView < manager.GetGPUShadowViews().size(),
+		"Secondary Atlas point shadow did not publish a cached view"))
+		return false;
+	const glm::mat4 cachedSecondaryMatrix = manager.GetGPUShadowViews()[secondaryGPU.firstView].worldToShadow;
+	manager.NotifyRenderJobsSubmitted();
+
+	manager.InvalidateAllCasters(VansShadowDirty_CasterGeometry);
+	for (auto& light : lights)
+		light.position.x += 4.0f;
+	manager.PrepareFrame(camera, lights, 3);
+	if (!Expect(manager.GetRenderJobs().size() == 6 &&
+		!manager.HasRenderJobs(VANS_PUNCTUAL_SHADOW_SECONDARY_ATLAS_INDEX),
+		"Secondary Atlas point shadow reacted to transform or caster invalidation"))
+		return false;
+
+	const uint32_t movedSecondaryMetaIndex = manager.GetShadowMetaIndex(secondaryLightId);
+	if (!Expect(movedSecondaryMetaIndex < manager.GetGPUShadowData().size(),
+		"Moved secondary Atlas point shadow lost its cached metadata"))
+		return false;
+	const VansPunctualShadowGPU& movedSecondaryGPU = manager.GetGPUShadowData()[movedSecondaryMetaIndex];
+	if (!Expect(movedSecondaryGPU.firstView != VANS_INVALID_SHADOW_INDEX &&
+		movedSecondaryGPU.firstView < manager.GetGPUShadowViews().size(),
+		"Moved secondary Atlas point shadow lost its cached sampling view"))
+		return false;
+	const glm::mat4& movedSecondaryMatrix = manager.GetGPUShadowViews()[movedSecondaryGPU.firstView].worldToShadow;
+	float maxMatrixDifference = 0.0f;
+	for (uint32_t column = 0; column < 4; ++column)
+	{
+		for (uint32_t row = 0; row < 4; ++row)
+			maxMatrixDifference = (std::max)(maxMatrixDifference,
+				std::abs(cachedSecondaryMatrix[column][row] - movedSecondaryMatrix[column][row]));
+	}
+	if (!Expect(maxMatrixDifference <= 1e-6f,
+		"Secondary Atlas reused cached depth with a newly recomputed sampling matrix"))
+		return false;
+
+	for (const VansPunctualShadowRuntimeDebug& light : manager.CaptureDebugSnapshot().lights)
+	{
+		if (light.stableLightId == secondaryLightId)
+			return Expect(light.lastRenderedFrame == secondaryLastRenderedFrame &&
+				light.dirtyFaceMask == 0,
+				"Secondary Atlas point shadow did not remain clean after its initial upload");
+	}
+
+	return Expect(false, "Secondary Atlas point shadow disappeared from diagnostics");
+}
+
 bool TestGIProbeUpdateScheduleContract()
 {
 	using namespace VansGraphics;
@@ -7036,8 +9376,43 @@ bool TestGIProbeUpdateScheduleContract()
 		return false;
 	orderedSettings.regions[2].enabled = false;
 	const std::vector<const GIProbeRegionDesc*> disabledSelectedRegions = BuildActiveGIRegionOrder(orderedSettings);
-	return Expect(disabledSelectedRegions.size() == 2u && disabledSelectedRegions[0]->stableId == 11u,
-		"GI region order retained a disabled selected region in the atlas/SSGI binding order");
+	if (!Expect(disabledSelectedRegions.size() == 2u && disabledSelectedRegions[0]->stableId == 11u,
+		"GI region order retained a disabled selected region in the atlas/SSGI binding order"))
+	{
+		return false;
+	}
+
+	// 首次 Editor 场景准备发生在第一份渲染帧快照之前。SSGI 的参数构造
+	// 必须完整表达显式传入的场景配置，不能依赖先前快照中的默认值。
+	VansGISettings sceneSettings;
+	sceneSettings.regions.clear();
+	GIProbeRegionDesc sceneRegion;
+	sceneRegion.center = glm::vec3(14.0f, 11.0f, 28.0f);
+	sceneRegion.gridDimensions = glm::uvec3(56u, 28u, 42u);
+	sceneRegion.probeSpacing = 1.0f;
+	sceneRegion.overrideGridDimensions = true;
+	sceneRegion.maxRayDistance = 19.0f;
+	sceneRegion.normalBias = 0.37f;
+	sceneRegion.volumeFadeDistance = 2.5f;
+	sceneRegion.priority = 4.0f;
+	sceneSettings.regions.push_back(sceneRegion);
+	const SSGIParamsGPU sceneParams = BuildSSGIParamsFromGISettings(
+		sceneSettings, 1920u, 1080u);
+	if (!Expect(sceneParams.regionInfo.x == 1.0f &&
+		sceneParams.screenSize == glm::vec4(1920.0f, 1080.0f, 1.0f / 1920.0f, 1.0f / 1080.0f) &&
+		sceneParams.regions[0].volumeMin.x == -14.0f &&
+		sceneParams.regions[0].volumeMin.y == -3.0f &&
+		sceneParams.regions[0].volumeMin.z == 7.0f &&
+		sceneParams.regions[0].volumeSizeAndBias == glm::vec4(56.0f, 28.0f, 42.0f, 0.37f) &&
+		sceneParams.regions[0].traceParams.x == 19.0f &&
+		sceneParams.regions[0].traceParams.z == 2.5f &&
+		sceneParams.regions[0].gridDimensionsAndPriority == glm::vec4(56.0f, 28.0f, 42.0f, 4.0f),
+		"SSGI parameter construction did not preserve first-load scene GI settings"))
+	{
+		return false;
+	}
+
+	return true;
 }
 }
 
@@ -7060,12 +9435,16 @@ bool TestAsyncComputeSubmitGraphContract()
 
 	Vans::VansProjectRenderSettingsData persistedSettings;
 	persistedSettings.commandRecordingSettings.asyncComputeEnabled = true;
+	persistedSettings.renderOutputSettings.width = 3840u;
+	persistedSettings.renderOutputSettings.height = 2160u;
 	const nlohmann::json encodedSettings =
 		Vans::VansProjectSettingsJsonCodec::EncodeRenderSettings(persistedSettings);
 	if (encodedSettings.value("schemaVersion", 0u) != 2u
 		|| encodedSettings.contains("fsr")
 		|| encodedSettings["upscaler"].value("backend", "") != "FSR"
 		|| encodedSettings["upscaler"].value("quality", "") != "Quality"
+		|| encodedSettings["outputResolution"].value("width", 0u) != 3840u
+		|| encodedSettings["outputResolution"].value("height", 0u) != 2160u
 		|| !encodedSettings["commandRecording"].value("asyncComputeEnabled", false)
 		|| encodedSettings["commandRecording"].contains("asyncComputeMode")
 		|| encodedSettings["commandRecording"].contains("asyncGIEnabled"))
@@ -7080,8 +9459,35 @@ bool TestAsyncComputeSubmitGraphContract()
 	{
 		return false;
 	}
-	if (!decodedSettings.commandRecordingSettings.asyncComputeEnabled)
+	if (!decodedSettings.commandRecordingSettings.asyncComputeEnabled
+		|| decodedSettings.renderOutputSettings.width != 3840u
+		|| decodedSettings.renderOutputSettings.height != 2160u)
 		return false;
+
+	nlohmann::json legacyWindowExtentSettings = encodedSettings;
+	legacyWindowExtentSettings.erase("outputResolution");
+	Vans::VansProjectRenderSettingsData decodedWindowExtentSettings;
+	warnings.clear();
+	if (!Vans::VansProjectSettingsJsonCodec::DecodeRenderSettings(
+		legacyWindowExtentSettings,
+		decodedWindowExtentSettings,
+		warnings,
+		codecError)
+		|| !decodedWindowExtentSettings.renderOutputSettings.UsesWindowExtent())
+	{
+		return false;
+	}
+
+	nlohmann::json invalidOutputSettings = encodedSettings;
+	invalidOutputSettings["outputResolution"]["height"] = 0u;
+	if (Vans::VansProjectSettingsJsonCodec::DecodeRenderSettings(
+		invalidOutputSettings,
+		decodedWindowExtentSettings,
+		warnings,
+		codecError))
+	{
+		return false;
+	}
 
 	nlohmann::json legacySettings = encodedSettings;
 	legacySettings["commandRecording"].erase("asyncComputeEnabled");
@@ -7125,7 +9531,7 @@ bool TestAsyncComputeSubmitGraphContract()
 	producer.name = "TileLight";
 	producer.queue = VansQueueRole::Compute;
 	producer.commandBuffers = { fakeComputeCmd };
-	producer.signals = { VansSyncPoint::TileLightDone };
+	producer.signals = { VansSyncPoint::TileLightReady };
 	producer.resources = {
 		{ "TileLightLists", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
 			VK_IMAGE_LAYOUT_UNDEFINED, false, true, false, false }
@@ -7137,7 +9543,7 @@ bool TestAsyncComputeSubmitGraphContract()
 	consumer.queue = VansQueueRole::Graphics;
 	consumer.commandBuffers = { fakeGraphicsCmd };
 	consumer.waits = {
-		{ VansSyncPoint::TileLightDone, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT }
+		{ VansSyncPoint::TileLightReady, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT }
 	};
 	consumer.resources = {
 		{ "TileLightLists", VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
@@ -7149,7 +9555,7 @@ bool TestAsyncComputeSubmitGraphContract()
 	if (!graph.Validate(&validationError))
 		return false;
 	const std::string debugSummary = graph.BuildDebugSummary();
-	if (debugSummary.find("TileLightDone") == std::string::npos
+	if (debugSummary.find("TileLightReady") == std::string::npos
 		|| debugSummary.find("TileLightLists") == std::string::npos)
 	{
 		return false;
@@ -7157,10 +9563,10 @@ bool TestAsyncComputeSubmitGraphContract()
 
 	graph.Reset();
 	VansFrameSubmitNode ssaoRawProducer;
-	ssaoRawProducer.name = "GraphicsPreHZB";
+	ssaoRawProducer.name = "SSAORaw";
 	ssaoRawProducer.queue = VansQueueRole::Graphics;
 	ssaoRawProducer.commandBuffers = { fakeGraphicsCmd };
-	ssaoRawProducer.signals = { VansSyncPoint::HZBReady };
+	ssaoRawProducer.signals = { VansSyncPoint::SSAORawReady };
 	ssaoRawProducer.resources = {
 		{ "SSAORaw", VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
 			VK_IMAGE_LAYOUT_GENERAL, true, true, false, false }
@@ -7172,9 +9578,9 @@ bool TestAsyncComputeSubmitGraphContract()
 	asyncSSAO.queue = VansQueueRole::Shadow;
 	asyncSSAO.commandBuffers = { fakeSSAOCommandBuffer };
 	asyncSSAO.waits = {
-		{ VansSyncPoint::HZBReady, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT }
+		{ VansSyncPoint::SSAORawReady, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT }
 	};
-	asyncSSAO.signals = { VansSyncPoint::AsyncSSAODone };
+	asyncSSAO.signals = { VansSyncPoint::SSAOReady };
 	asyncSSAO.resources = {
 		{ "SSAORaw", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
 			VK_IMAGE_LAYOUT_GENERAL, true, false, false, false },
@@ -7188,7 +9594,7 @@ bool TestAsyncComputeSubmitGraphContract()
 	ssaoConsumer.queue = VansQueueRole::Graphics;
 	ssaoConsumer.commandBuffers = { fakeGraphicsCmd };
 	ssaoConsumer.waits = {
-		{ VansSyncPoint::AsyncSSAODone, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT }
+		{ VansSyncPoint::SSAOReady, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT }
 	};
 	ssaoConsumer.resources = {
 		{ "SSAO", VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
@@ -7200,8 +9606,69 @@ bool TestAsyncComputeSubmitGraphContract()
 		return false;
 	const std::string ssaoDebugSummary = graph.BuildDebugSummary();
 	if (ssaoDebugSummary.find("AsyncSSAO") == std::string::npos
-		|| ssaoDebugSummary.find("AsyncSSAODone") == std::string::npos
+		|| ssaoDebugSummary.find("SSAORawReady") == std::string::npos
+		|| ssaoDebugSummary.find("SSAOReady") == std::string::npos
 		|| ssaoDebugSummary.find("queue=Shadow") == std::string::npos)
+	{
+		return false;
+	}
+
+	graph.Reset();
+	VansFrameSubmitNode shadowMaps;
+	shadowMaps.name = "ShadowMaps";
+	shadowMaps.queue = VansQueueRole::Shadow;
+	shadowMaps.commandBuffers = { fakeSSAOCommandBuffer };
+	shadowMaps.signals = { VansSyncPoint::ShadowMapsReady };
+	shadowMaps.resources = {
+		{ "PunctualShadowAtlas0", VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+			VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+			VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, true, true, true, false },
+		{ "PunctualShadowAtlas1", VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+			VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+			VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, true, true, true, false }
+	};
+	graph.AddNode(std::move(shadowMaps));
+
+	VansFrameSubmitNode shadowConsumer;
+	shadowConsumer.name = "DualPunctualShadowConsumer";
+	shadowConsumer.queue = VansQueueRole::Compute;
+	shadowConsumer.commandBuffers = { fakeComputeCmd };
+	shadowConsumer.waits = {
+		{ VansSyncPoint::ShadowMapsReady, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT }
+	};
+	shadowConsumer.resources = {
+		{ "PunctualShadowAtlas0", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
+			VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, true, false, true, false },
+		{ "PunctualShadowAtlas1", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
+			VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, true, false, true, false }
+	};
+	shadowConsumer.waitForCompletion = true;
+	graph.AddNode(std::move(shadowConsumer));
+	if (!graph.Validate(&validationError))
+		return false;
+	const std::string dualShadowSummary = graph.BuildDebugSummary();
+	if (dualShadowSummary.find("ShadowMapsReady") == std::string::npos
+		|| dualShadowSummary.find("PunctualShadowAtlas0") == std::string::npos
+		|| dualShadowSummary.find("PunctualShadowAtlas1") == std::string::npos)
+	{
+		return false;
+	}
+
+	graph.Reset();
+	VansFrameSubmitNode orphanCompute;
+	orphanCompute.name = "OrphanCompute";
+	orphanCompute.queue = VansQueueRole::Compute;
+	orphanCompute.commandBuffers = { fakeComputeCmd };
+	orphanCompute.signals = { VansSyncPoint::CloudReady };
+	graph.AddNode(std::move(orphanCompute));
+	VansFrameSubmitNode uncoveredFinal;
+	uncoveredFinal.name = "UncoveredFinal";
+	uncoveredFinal.queue = VansQueueRole::Graphics;
+	uncoveredFinal.commandBuffers = { fakeGraphicsCmd };
+	uncoveredFinal.waitForCompletion = true;
+	graph.AddNode(std::move(uncoveredFinal));
+	if (graph.Validate(&validationError)
+		|| validationError.find("not covered by the final completion fence") == std::string::npos)
 	{
 		return false;
 	}
@@ -7211,7 +9678,7 @@ bool TestAsyncComputeSubmitGraphContract()
 	unsafeProducer.name = "UnsafeProducer";
 	unsafeProducer.queue = VansQueueRole::Compute;
 	unsafeProducer.commandBuffers = { fakeComputeCmd };
-	unsafeProducer.signals = { VansSyncPoint::TileLightDone };
+	unsafeProducer.signals = { VansSyncPoint::TileLightReady };
 	unsafeProducer.resources = {
 		{ "SharedBuffer", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
 			VK_IMAGE_LAYOUT_UNDEFINED, false, true, true, false }
@@ -7239,7 +9706,7 @@ bool TestAsyncComputeSubmitGraphContract()
 	invalidConsumer.queue = VansQueueRole::Graphics;
 	invalidConsumer.commandBuffers = { fakeGraphicsCmd };
 	invalidConsumer.waits = {
-		{ VansSyncPoint::GBufferDone, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT }
+		{ VansSyncPoint::GBufferMaterialReady, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT }
 	};
 	graph.AddNode(std::move(invalidConsumer));
 	if (graph.Validate(&validationError))
@@ -7267,7 +9734,7 @@ bool TestUnifiedUpscalerHistoryContract()
 
 	history.ObserveFrame(
 		7,
-		reinterpret_cast<const void*>(1),
+		1u,
 		{ 1280, 720 },
 		{ 1920, 1080 },
 		VansUpscalerBackend::FSR,
@@ -7281,7 +9748,7 @@ bool TestUnifiedUpscalerHistoryContract()
 
 	history.ObserveFrame(
 		9,
-		reinterpret_cast<const void*>(2),
+		2u,
 		{ 960, 540 },
 		{ 1600, 900 },
 		VansUpscalerBackend::DLSS,
@@ -7666,7 +10133,10 @@ bool TestSkyFSRPipelineContract()
 
 	const VansShaderEntry* sky = shaderManager.FindShaderEntry("SkyBox");
 	const VansShaderEntry* skyMotion = shaderManager.FindShaderEntry("SkyMotionVector");
+	const VansShaderEntry* gbuffer = shaderManager.FindShaderEntry("Unlit");
+	const VansShaderEntry* terrain = shaderManager.FindShaderEntry("Terrain");
 	const auto& skyPasses = shaderManager.GetMaterialPassMap(VAN_SKY_BOX);
+	const auto& pbrPasses = shaderManager.GetMaterialPassMap(VAN_PBR);
 	const auto velocity = skyPasses.find(VansPass::VELOCITY);
 	const bool valid =
 		sky != nullptr && sky->depthTest == VK_TRUE && sky->depthWrite == VK_FALSE &&
@@ -7675,10 +10145,74 @@ bool TestSkyFSRPipelineContract()
 		skyMotion->depthWrite == VK_FALSE &&
 		skyMotion->depthCompareOp == VK_COMPARE_OP_LESS_OR_EQUAL &&
 		skyMotion->cullMode == VK_CULL_MODE_NONE &&
-		velocity != skyPasses.end() && velocity->second == "SkyMotionVector";
+		velocity != skyPasses.end() && velocity->second == "SkyMotionVector" &&
+		gbuffer != nullptr && gbuffer->colorAttachmentCount == 5 &&
+		terrain != nullptr && terrain->colorAttachmentCount == 5 &&
+		pbrPasses.find(VansPass::VELOCITY) == pbrPasses.end() &&
+		shaderManager.FindShaderEntry("MotionVector") == nullptr &&
+		shaderManager.FindShaderEntry("TerrainMotionVector") == nullptr;
 
 	return Expect(valid,
-		"Sky color and velocity pipelines must remain depth-read-only and velocity-mapped");
+		"GBuffer must own surface velocity while sky remains the only velocity-mapped overlay");
+}
+
+bool TestDrawSubmissionContract()
+{
+	using namespace VansGraphics;
+	if (!Expect(
+		sizeof(VansDrawInstanceDataGPU) == 16 &&
+		offsetof(VansDrawInstanceDataGPU, transformIndex) == 0 &&
+		offsetof(VansDrawInstanceDataGPU, materialIndex) == 4 &&
+		offsetof(VansDrawInstanceDataGPU, vertexFeatureMask) == 8 &&
+		offsetof(VansDrawInstanceDataGPU, passUser0) == 12,
+		"Draw instance GPU record no longer matches the GLSL std430 ABI"))
+	{
+		return false;
+	}
+
+	std::vector<VkDescriptorSet> descriptorsA = {
+		reinterpret_cast<VkDescriptorSet>(static_cast<std::uintptr_t>(1))
+	};
+	std::vector<VkDescriptorSet> descriptorsB = descriptorsA;
+	std::vector<VkDescriptorSet> descriptorsC = {
+		reinterpret_cast<VkDescriptorSet>(static_cast<std::uintptr_t>(2))
+	};
+
+	VansDrawPacket first;
+	first.pipeline = reinterpret_cast<VkPipeline>(static_cast<std::uintptr_t>(1));
+	first.pipelineLayout = reinterpret_cast<VkPipelineLayout>(static_cast<std::uintptr_t>(2));
+	first.descriptorSets = descriptorsA;
+	first.orderGroup = 7;
+	first.geometry.vertexBuffer = reinterpret_cast<VkBuffer>(static_cast<std::uintptr_t>(3));
+	first.geometry.indexBuffer = reinterpret_cast<VkBuffer>(static_cast<std::uintptr_t>(4));
+	first.geometry.indexCount = 36;
+	first.instanceData.transformIndex = 5;
+	first.instanceData.materialIndex = 9;
+
+	VansDrawPacket compatible = first;
+	compatible.descriptorSets = descriptorsB;
+	compatible.instanceData.transformIndex = 6;
+	compatible.instanceData.materialIndex = 10;
+	if (!Expect(VansDrawSubmission::AreBatchCompatible(first, compatible),
+		"Draw packets with identical state and geometry did not instance together"))
+	{
+		return false;
+	}
+
+	VansDrawPacket descriptorSplit = compatible;
+	descriptorSplit.descriptorSets = descriptorsC;
+	VansDrawPacket layoutSplit = compatible;
+	layoutSplit.pipelineLayout = reinterpret_cast<VkPipelineLayout>(static_cast<std::uintptr_t>(3));
+	VansDrawPacket geometrySplit = compatible;
+	geometrySplit.geometry.indexCount = 12;
+	VansDrawPacket orderSplit = compatible;
+	orderSplit.orderGroup = 8;
+	return Expect(
+		!VansDrawSubmission::AreBatchCompatible(first, descriptorSplit) &&
+		!VansDrawSubmission::AreBatchCompatible(first, layoutSplit) &&
+		!VansDrawSubmission::AreBatchCompatible(first, geometrySplit) &&
+		!VansDrawSubmission::AreBatchCompatible(first, orderSplit),
+		"Draw submission merged packets across a descriptor, geometry, or order boundary");
 }
 
 bool TestLuaInspectorProjectModuleSearchPathContract()
@@ -7707,8 +10241,76 @@ bool TestLuaInspectorProjectModuleSearchPathContract()
 		"Lua Inspector did not resolve modules from the active project's Scripts directory");
 }
 
-int main()
+int main(int argc, char** argv)
 {
+	VANS_INIT_MAIN_THREAD();
+	if (argc == 2 && std::string(argv[1]) == "--render-system")
+		return TestRenderSystemLifecycleContract() &&
+			TestRenderSystemPrepareFailureContract() &&
+			TestRenderSystemOneFrameLeadContract() &&
+			TestRenderFramePacketContract() &&
+			TestMainCameraVisibilityBackendOwnershipContract() &&
+			TestPunctualShadowBackendOwnershipContract() &&
+			TestRenderWorldContract() &&
+			TestRenderOutcomeLedgerContract() &&
+			TestDrawSubmissionContract() &&
+			TestGIProbeUpdateScheduleContract() &&
+			TestFramePhaseThreadLocalContract() ? 0 : 139;
+	if (argc == 2 && std::string(argv[1]) == "--asset-type-serialization")
+		return TestAssetTypeSerializationContract() ? 0 : 136;
+	if (argc == 2 && std::string(argv[1]) == "--animation-project-assets")
+		return TestAnimationProjectAnimatorAssetsCanonicalContract() ? 0 : 137;
+	if (argc == 2 && std::string(argv[1]) == "--demohall-survival-back-axe")
+		return TestDemoHallSurvivalBackAxeSceneContract() ? 0 : 138;
+	if (argc == 2 && std::string(argv[1]) == "--scene-entity-factory")
+		return TestEmptySceneEntityFactoryContract() ? 0 : 134;
+	if (argc == 2 && std::string(argv[1]) == "--transform-graph")
+		return TestTransformGraphAnchorContract() ? 0 : 135;
+	if (argc == 2 && std::string(argv[1]) == "--gaf-packaging")
+		return TestGAFPackagingContract() ? 0 : 103;
+	if (argc == 2 && std::string(argv[1]) == "--timeline-demohall")
+		return TestTimelineDemoHallAssetContract() ? 0 : 84;
+	if (argc == 2 && std::string(argv[1]) == "--gaf-demohall-window-break")
+		return TestGAFDemoHallWindowBreakContract() ? 0 : 108;
+	if (argc == 2 && std::string(argv[1]) == "--procedural-animation")
+		return RunProceduralAnimationContractTests() ? 0 : 129;
+	if (argc == 2 && std::string(argv[1]) == "--procedural-animation-integration")
+		return TestAnimationTargetPostProcessContract()
+			&& TestAnimationV2RetargetMotionMatchingSceneContract()
+			&& TestProjectRetargetOwnedSkeletonAndSkinningContract()
+			&& TestRetargetUnmappedTargetBoneInheritanceContract()
+			&& TestRetargetConfiguredLimbChainContract()
+			&& RunProceduralAnimationContractTests() ? 0 : 130;
+	if (argc == 2 && std::string(argv[1]) == "--target-post-process")
+		return TestAnimationTargetPostProcessContract() ? 0 : 53;
+	if (argc == 2 && std::string(argv[1]) == "--retarget-contracts")
+		return TestProjectRetargetOwnedSkeletonAndSkinningContract()
+			&& TestRetargetUnmappedTargetBoneInheritanceContract()
+			&& TestRetargetConfiguredLimbChainContract() ? 0 : 120;
+	if (argc == 2 && std::string(argv[1]) == "--retarget-runtime-assets")
+		return TestProjectRetargetOwnedSkeletonAndSkinningContract() ? 0 : 131;
+	if (argc == 2 && std::string(argv[1]) == "--animation-graph-sets")
+		return TestAnimationGraphSetSwitchRuntimeContract() ? 0 : 132;
+	if (argc == 2 && std::string(argv[1]) == "--animation-graph-sets-integration")
+		return TestAnimatorCanonicalFormatContract()
+			&& TestAnimationProjectAnimatorAssetsCanonicalContract()
+			&& TestAnimationAuthoringBoundaryContract()
+			&& TestAnimatorRuntimeCompilerContract()
+			&& TestAnimationLayerStackRuntimeContract()
+			&& TestAnimationGraphSetSwitchRuntimeContract()
+			&& TestAnimationSlotRuntimeContract()
+			&& TestAnimationHotReloadStateTransferContract()
+			&& TestAnimationMarkerSyncLayerContract()
+			&& TestAnimationTargetPostProcessContract()
+			&& TestAnimationSyncedGraphStateContract() ? 0 : 133;
+	if (argc == 2 && std::string(argv[1]) == "--animation-v2-scene")
+		return TestAnimationV2RetargetMotionMatchingSceneContract() ? 0 : 115;
+	if (argc == 2 && std::string(argv[1]) == "--point-shadow-atlas-policy")
+		return TestPointShadowAtlasUpdatePolicy() ? 0 : 128;
+	if (!TestPointShadowAtlasUpdatePolicy())
+		return 128;
+	if (!TestDrawSubmissionContract())
+		return 127;
 	if (!TestLuaInspectorProjectModuleSearchPathContract())
 		return 125;
 	if (!TestSceneResourceArtifactPrewarmContract())
@@ -7747,9 +10349,13 @@ int main()
 		return 113;
 	if (!TestAnimationV2RetargetMotionMatchingSceneContract())
 		return 115;
+	if (!TestDemoHallSurvivalBackAxeSceneContract())
+		return 138;
+	if (!TestProjectRetargetOwnedSkeletonAndSkinningContract())
+		return 131;
 	if (!TestRetargetUnmappedTargetBoneInheritanceContract())
 		return 119;
-	if (!TestRetargetConfiguredTwoBoneChainContract())
+	if (!TestRetargetConfiguredLimbChainContract())
 		return 120;
 	if (!TestGAFGameplayTagsContract())
 		return 94;
@@ -7793,6 +10399,8 @@ int main()
 		return 79;
     if (!TestAssetPolicies())
         return 2;
+	if (!TestAssetTypeSerializationContract())
+		return 136;
     if (!TestGameplayFrameOrder())
         return 3;
 	if (!TestTimelineRegistryContract())
@@ -7825,6 +10433,10 @@ int main()
 		return 66;
 	if (!TestTimelineSubTimelineContract())
 		return 67;
+	if (!TestEmptySceneEntityFactoryContract())
+		return 134;
+	if (!TestTransformGraphAnchorContract())
+		return 135;
 	if (!TestRuntimeWorldEntityLifetimeContract())
         return 23;
     if (!TestRuntimeWorldParentEditContract())
@@ -7883,6 +10495,8 @@ int main()
 		return 55;
 	if (!TestAnimationLayerStackRuntimeContract())
 		return 50;
+	if (!TestAnimationGraphSetSwitchRuntimeContract())
+		return 132;
 	if (!TestAnimationSlotRuntimeContract())
 		return 51;
 	if (!TestAnimationHotReloadStateTransferContract())
@@ -7891,9 +10505,21 @@ int main()
 		return 52;
 	if (!TestAnimationTargetPostProcessContract())
 		return 53;
+	if (!RunProceduralAnimationContractTests())
+		return 129;
 	if (!TestAnimationSyncedGraphStateContract())
 		return 54;
-    if (!TestAudioDistanceAttenuationContract())
+	if (!TestRenderSystemLifecycleContract() ||
+		!TestRenderSystemPrepareFailureContract() ||
+		!TestRenderSystemOneFrameLeadContract() ||
+		!TestRenderOutcomeLedgerContract() ||
+		!TestRenderFramePacketContract() ||
+		!TestMainCameraVisibilityBackendOwnershipContract() ||
+		!TestPunctualShadowBackendOwnershipContract() ||
+		!TestRenderWorldContract() ||
+		!TestFramePhaseThreadLocalContract())
+		return 139;
+	if (!TestAudioDistanceAttenuationContract())
         return 4;
     if (!TestAudioBusContract())
         return 5;

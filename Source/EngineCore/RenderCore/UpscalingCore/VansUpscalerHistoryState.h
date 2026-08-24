@@ -12,7 +12,7 @@ namespace VansGraphics
 		void RequestReset(VansUpscalerResetReason reason);
 		void ObserveFrame(
 			std::uint64_t frameIndex,
-			const void* cameraIdentity,
+			std::uint64_t cameraIdentity,
 			VansExtent2D renderExtent,
 			VansExtent2D outputExtent,
 			VansUpscalerBackend backend,
@@ -30,7 +30,7 @@ namespace VansGraphics
 		VansUpscalerResetReason m_PendingReasons = VansUpscalerResetReason::FirstFrame;
 		VansUpscalerResetReason m_LastConsumedReasons = VansUpscalerResetReason::None;
 		std::uint64_t m_LastObservedFrameIndex = 0;
-		const void* m_LastCameraIdentity = nullptr;
+		std::uint64_t m_LastCameraIdentity = 0;
 		VansExtent2D m_LastRenderExtent;
 		VansExtent2D m_LastOutputExtent;
 		VansUpscalerBackend m_LastBackend = VansUpscalerBackend::Off;

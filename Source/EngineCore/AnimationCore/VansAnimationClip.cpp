@@ -283,6 +283,8 @@ bool VansGraphics::VansAnimationClipIO::Save(const std::string& filePath,
 	header["duration"]       = clip.duration;
 	header["ticksPerSecond"] = clip.ticksPerSecond;
 	header["boneCount"]      = (uint32_t)skeleton.bones.size();
+	header["sourceSkeletonGuid"] = skeleton.sourceSkeletonGuid;
+	header["skeletonSignature"] = skeleton.ComputeSignature();
 
 	// Serialize globalInverseTransform
 	header["globalInverseTransform"] = Mat4ToJson(skeleton.globalInverseTransform);
@@ -294,7 +296,15 @@ bool VansGraphics::VansAnimationClipIO::Save(const std::string& filePath,
 	{
 		const BoneInfo& bone = skeleton.bones[b];
 		json boneJson;
+		if (bone.id != static_cast<int>(b) || bone.guid.empty() || bone.canonicalPath.empty())
+		{
+			VANS_LOG_ERROR("[VansAnimationClipIO] Skeleton identity is incomplete for bone index "
+				<< b << " in: " << filePath);
+			return false;
+		}
 		boneJson["name"]         = bone.name;
+		boneJson["guid"]         = bone.guid;
+		boneJson["canonicalPath"] = bone.canonicalPath;
 		boneJson["id"]           = bone.id;
 		boneJson["parentIndex"]  = bone.parentIndex;
 		boneJson["offsetMatrix"] = Mat4ToJson(bone.offsetMatrix);
@@ -459,6 +469,17 @@ bool VansGraphics::VansAnimationClipIO::Load(const std::string& filePath,
 		return false;
 	}
 
+	if (!header.is_object() || !header.contains("sourceSkeletonGuid")
+		|| !header["sourceSkeletonGuid"].is_string()
+		|| !header.contains("skeletonSignature")
+		|| !header["skeletonSignature"].is_number_unsigned()
+		|| !header.contains("globalInverseTransform")
+		|| !header.contains("bones") || !header["bones"].is_array())
+	{
+		VANS_LOG_ERROR("[VansAnimationClipIO] Missing canonical skeleton identity in: " << filePath);
+		return false;
+	}
+
 	outClip.clipName       = header.value("clipName", "");
 	outClip.stableId       = header.value("clipId", VansAnimationStableId(outClip.clipName));
 	outClip.duration       = header.value("duration", 0.0f);
@@ -471,38 +492,50 @@ bool VansGraphics::VansAnimationClipIO::Load(const std::string& filePath,
 	outClip.rootMotion = {};
 
 	// ── Reconstruct skeleton ──
-	if (header.contains("globalInverseTransform"))
-		outSkeleton.globalInverseTransform = JsonToMat4(header["globalInverseTransform"]);
-
-	outSkeleton.bones.clear();
-	outSkeleton.boneNameToIndex.clear();
+	outSkeleton = {};
+	outSkeleton.sourceSkeletonGuid = header["sourceSkeletonGuid"].get<std::string>();
+	outSkeleton.globalInverseTransform = JsonToMat4(header["globalInverseTransform"]);
+	const std::uint64_t storedSkeletonSignature = header["skeletonSignature"].get<std::uint64_t>();
 
 	const auto& bonesJson = header["bones"];
 	uint32_t boneCount = (uint32_t)bonesJson.size();
 
 	outSkeleton.bones.resize(boneCount);
-	outClip.boneKeyframes.resize(boneCount);
+	outClip.boneKeyframes.assign(boneCount, {});
 
 	std::vector<uint32_t> keyframeCounts(boneCount, 0);
 
 	for (uint32_t b = 0; b < boneCount; b++)
 	{
 		const auto& bj = bonesJson[b];
-		BoneInfo& bone     = outSkeleton.bones[b];
-		bone.name          = bj.value("name", "");
-		bone.id            = bj.value("id", (int)b);
-		bone.parentIndex   = bj.value("parentIndex", -1);
-		bone.offsetMatrix  = bj.contains("offsetMatrix") ? JsonToMat4(bj["offsetMatrix"]) : glm::mat4(1.0f);
-		bone.localTransform = bj.contains("localTransform") ? JsonToMat4(bj["localTransform"]) : glm::mat4(1.0f);
-
-		if (bj.contains("children"))
+		if (!bj.is_object() || !bj.contains("name") || !bj["name"].is_string()
+			|| !bj.contains("guid") || !bj["guid"].is_string() || bj["guid"].get<std::string>().empty()
+			|| !bj.contains("canonicalPath") || !bj["canonicalPath"].is_string()
+			|| bj["canonicalPath"].get<std::string>().empty()
+			|| !bj.contains("id") || !bj["id"].is_number_integer()
+			|| bj["id"].get<int>() != static_cast<int>(b)
+			|| !bj.contains("parentIndex") || !bj["parentIndex"].is_number_integer()
+			|| !bj.contains("offsetMatrix") || !bj.contains("localTransform")
+			|| !bj.contains("children") || !bj["children"].is_array()
+			|| !bj.contains("keyframeCount") || !bj["keyframeCount"].is_number_unsigned())
 		{
-			for (const auto& c : bj["children"])
-				bone.children.push_back(c.get<int>());
+			VANS_LOG_ERROR("[VansAnimationClipIO] Invalid canonical bone entry " << b
+				<< " in: " << filePath);
+			return false;
 		}
+		BoneInfo& bone     = outSkeleton.bones[b];
+		bone.name          = bj["name"].get<std::string>();
+		bone.guid          = bj["guid"].get<std::string>();
+		bone.canonicalPath = bj["canonicalPath"].get<std::string>();
+		bone.id            = bj["id"].get<int>();
+		bone.parentIndex   = bj["parentIndex"].get<int>();
+		bone.offsetMatrix  = JsonToMat4(bj["offsetMatrix"]);
+		bone.localTransform = JsonToMat4(bj["localTransform"]);
 
-		keyframeCounts[b] = bj.value("keyframeCount", (uint32_t)0);
-		outSkeleton.boneNameToIndex[bone.name] = bone.id;
+		for (const auto& c : bj["children"])
+			bone.children.push_back(c.get<int>());
+
+		keyframeCounts[b] = bj["keyframeCount"].get<std::uint32_t>();
 	}
 
 	std::vector<uint32_t> nodeKeyframeCounts;
@@ -654,8 +687,14 @@ bool VansGraphics::VansAnimationClipIO::Load(const std::string& filePath,
 		}
 	}
 
-	// 从 .vclip 还原的骨架也需要拓扑排序
+	// 从 .vclip 还原的骨架也需要拓扑排序和稳定身份索引。
 	outSkeleton.BuildTopologicalOrder();
+	outSkeleton.RebuildIdentityMapsAndSignature();
+	if (outSkeleton.signature != storedSkeletonSignature)
+	{
+		VANS_LOG_ERROR("[VansAnimationClipIO] Skeleton signature mismatch in: " << filePath);
+		return false;
+	}
 
 	return true;
 }

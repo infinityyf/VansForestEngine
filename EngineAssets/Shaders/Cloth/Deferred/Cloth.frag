@@ -2,6 +2,8 @@
 #extension GL_GOOGLE_include_directive : require
 layout(early_fragment_tests) in;
 #include "../../Common/CameraData.glsl"
+#include "../../Common/VansDrawSubmission.glsl"
+#include "../../Common/MotionVector.glsl"
 #include "../../Common/Common.glsl"
 #include "../../BRDF/BRDFData.glsl"
 #include "../../BRDF/ClothData.glsl"
@@ -11,6 +13,8 @@ layout( location = 1 ) in vec3 normal_ws;
 layout( location = 2 ) in vec3 tangent_ws;
 layout( location = 3 ) in vec3 bitangent_ws;
 layout( location = 4 ) in vec3 position_world;
+layout( location = 5 ) in vec4 motion_current_clip;
+layout( location = 6 ) in vec4 motion_previous_clip;
 
 // Set 4 — per-node cloth textures (albedo + normal + roughness + ao)
 layout( set = 4, binding = 0 ) uniform sampler2D clothAlbedo;
@@ -18,22 +22,17 @@ layout( set = 4, binding = 1 ) uniform sampler2D clothNormal;
 layout( set = 4, binding = 2 ) uniform sampler2D clothRoughness;
 layout( set = 4, binding = 3 ) uniform sampler2D clothAO;
 
-layout( push_constant ) uniform MaterialPushConsts
-{
-    int materialIndex;
-    int objectIndex;
-    uint vertexFeatureMask;
-} materialConst;
-
 // G-Buffer MRT outputs
 layout (location = 0) out vec4 outNormal;   // .xyz = world normal, .w = tangent angle / PI
 layout (location = 1) out vec4 outGBuffer0; // .rgb = albedo, .w = effective roughness
 layout (location = 2) out vec4 outGBuffer1; // .x = fallback sheen weight, .y = ao, .z = material ID, .w = materialIndex
 layout (location = 3) out vec4 outGBuffer2; // .xyz = world pos,     .w = linear depth
+layout (location = 4) out vec2 outMotionVector;
 
 void main()
 {
-    int mi = max(materialConst.materialIndex, 0);
+    VansDrawData drawData = VansGetDrawData();
+    int mi = max(drawData.materialIndex, 0);
     MaterialPayload mat = materialDataBuffer.materials[mi];
 
     vec3  albedo         = max(mat.albedo.rgb, vec3(0.0)) * texture(clothAlbedo, frag_uv, MaterialMipBias).rgb;
@@ -63,4 +62,5 @@ void main()
     outGBuffer0 = vec4(albedo, sheenRoughness);
     outGBuffer1 = vec4(sheenStrength, ao, float(MATERIAL_ID_CLOTH), float(mi));
     outGBuffer2 = vec4(position_world, -linearDepth);
+    outMotionVector = VansMotionVectorFromClip(motion_current_clip, motion_previous_clip);
 }

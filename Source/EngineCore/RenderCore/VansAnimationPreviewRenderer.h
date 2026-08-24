@@ -42,20 +42,21 @@ namespace VansGraphics
 		VansAnimationPreviewRenderer(const VansAnimationPreviewRenderer&) = delete;
 		VansAnimationPreviewRenderer& operator=(const VansAnimationPreviewRenderer&) = delete;
 
-		bool Initialize(
-			VansVKDevice& device,
+		bool PrepareCpu(
 			const std::filesystem::path& modelPath,
 			float scaleFactor,
 			const Vans::VansSkeletalMeshImportSettings& importSettings,
 			std::string& error);
+		bool InitializeGpuRenderThread(VansVKDevice& device, std::string& error);
 		void Shutdown();
 
-		bool Render(
+		bool RasterizeFrame(
 			const BoneMatricesSSBO& boneMatrices,
 			const std::vector<glm::vec4>& perBoneVisualizationColors,
 			const glm::vec3& modelOffset,
 			const VansAnimationPreviewView& view,
 			std::string& error);
+		bool UploadRenderThread(std::string& error);
 
 		bool IsReady() const { return m_Ready; }
 		const Skeleton& GetSkeleton() const { return m_Skeleton; }
@@ -95,8 +96,6 @@ namespace VansGraphics
 			const std::vector<glm::vec4>& perBoneVisualizationColors,
 			const glm::vec3& modelOffset,
 			const VansAnimationPreviewView& view);
-		bool Upload(std::string& error);
-
 		VansVKDevice* m_Device = nullptr;
 		VansVKImage m_ColorImage;
 		Skeleton m_Skeleton;

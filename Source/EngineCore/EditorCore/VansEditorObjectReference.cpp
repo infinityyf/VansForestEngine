@@ -14,7 +14,7 @@ namespace Vans
 {
 namespace
 {
-constexpr const char* kEditorObjectHandlePayloadHeader = "VANS_OBJECT_REF_HANDLE_V1\n";
+constexpr const char* kEditorObjectHandlePayloadHeader = "VANS_OBJECT_REF_HANDLE\n";
 
 struct ProjectAssetReferenceValue
 {
@@ -178,6 +178,7 @@ const char* ToString(EditorObjectDomain domain)
     case EditorObjectDomain::ProjectAsset: return "ProjectAsset";
     case EditorObjectDomain::SceneEntity: return "SceneEntity";
     case EditorObjectDomain::SceneComponent: return "SceneComponent";
+	case EditorObjectDomain::SceneSubObject: return "SceneSubObject";
     case EditorObjectDomain::SubAsset: return "SubAsset";
     case EditorObjectDomain::ScriptClass: return "ScriptClass";
     default: return "Unknown";
@@ -189,6 +190,7 @@ EditorObjectDomain EditorObjectDomainFromString(const std::string& value)
     if (value == "ProjectAsset") return EditorObjectDomain::ProjectAsset;
     if (value == "SceneEntity") return EditorObjectDomain::SceneEntity;
     if (value == "SceneComponent") return EditorObjectDomain::SceneComponent;
+	if (value == "SceneSubObject") return EditorObjectDomain::SceneSubObject;
     if (value == "SubAsset") return EditorObjectDomain::SubAsset;
     if (value == "ScriptClass") return EditorObjectDomain::ScriptClass;
     return EditorObjectDomain::Unknown;
@@ -208,6 +210,7 @@ const char* ToString(EditorAPI::AssetType assetType)
     case EditorAPI::AssetType::Particle: return "Particle";
     case EditorAPI::AssetType::AnimationClip: return "AnimationClip";
     case EditorAPI::AssetType::AnimatorController: return "AnimatorController";
+	case EditorAPI::AssetType::AnimationRig: return "AnimationRig";
     case EditorAPI::AssetType::BoneMask: return "BoneMask";
 	case EditorAPI::AssetType::Timeline: return "Timeline";
 	case EditorAPI::AssetType::ActionDefinition: return "ActionDefinition";
@@ -247,6 +250,7 @@ EditorAPI::AssetType EditorAssetTypeFromString(const std::string& value)
     if (type == "particle") return EditorAPI::AssetType::Particle;
     if (type == "animationclip") return EditorAPI::AssetType::AnimationClip;
     if (type == "animatorcontroller") return EditorAPI::AssetType::AnimatorController;
+	if (type == "animationrig") return EditorAPI::AssetType::AnimationRig;
     if (type == "bonemask") return EditorAPI::AssetType::BoneMask;
 	if (type == "timeline") return EditorAPI::AssetType::Timeline;
 	if (type == "actiondefinition") return EditorAPI::AssetType::ActionDefinition;
@@ -612,6 +616,8 @@ std::string SerializeEditorObjectHandle(const EditorObjectHandle& handle)
     AppendLengthPrefixed(payload, handle.entityGuid);
     AppendLengthPrefixed(payload, handle.componentGuid);
     AppendLengthPrefixed(payload, handle.componentType);
+	AppendLengthPrefixed(payload, std::to_string(static_cast<int>(handle.subObjectKind)));
+	AppendLengthPrefixed(payload, handle.subObjectGuid);
     AppendLengthPrefixed(payload, handle.subObjectName);
     return payload;
 }
@@ -634,6 +640,7 @@ bool TryDeserializeEditorObjectHandle(const void* data, std::size_t size, Editor
 
     std::string domain;
     std::string assetType;
+	std::string subObjectKind;
     if (!ReadLengthPrefixed(text, offset, domain) ||
         !ReadLengthPrefixed(text, offset, handle.guid) ||
         !ReadLengthPrefixed(text, offset, handle.path) ||
@@ -642,6 +649,8 @@ bool TryDeserializeEditorObjectHandle(const void* data, std::size_t size, Editor
         !ReadLengthPrefixed(text, offset, handle.entityGuid) ||
         !ReadLengthPrefixed(text, offset, handle.componentGuid) ||
         !ReadLengthPrefixed(text, offset, handle.componentType) ||
+		!ReadLengthPrefixed(text, offset, subObjectKind) ||
+		!ReadLengthPrefixed(text, offset, handle.subObjectGuid) ||
         !ReadLengthPrefixed(text, offset, handle.subObjectName))
     {
         handle = {};
@@ -653,6 +662,15 @@ bool TryDeserializeEditorObjectHandle(const void* data, std::size_t size, Editor
         assetTypeValue = 0;
     handle.domain = EditorObjectDomainFromString(domain);
     handle.assetType = static_cast<EditorAPI::AssetType>(assetTypeValue);
+	int subObjectKindValue = 0;
+	if (!ParseInt(subObjectKind, subObjectKindValue)
+		|| subObjectKindValue < static_cast<int>(SceneSubObjectKind::None)
+		|| subObjectKindValue > static_cast<int>(SceneSubObjectKind::Socket))
+	{
+		handle = {};
+		return false;
+	}
+	handle.subObjectKind = static_cast<SceneSubObjectKind>(subObjectKindValue);
     return handle.domain != EditorObjectDomain::Unknown;
 }
 }

@@ -225,24 +225,31 @@ void AmbientBRDF(BRDFData brdf, vec3 viewDirection, inout vec3 diffuse, inout ve
     vec3 kD = 1.0 - kS;
     kD *= 1.0 - brdf.metallic;
     
-    vec3 reflection = reflect(-viewDirection, brdf.normal); 
-	ReflectionProbeSample probeSample = SampleReflectionProbes(
-		brdf.positionWS, brdf.normal, reflection, brdf.roughness);
+    vec3 reflection = reflect(-viewDirection, brdf.normal);
 	diffuse = brdf.indirectDiffuse * brdf.ao * kD * brdf.albedo;
 
     vec2 intergrationUV = vec2(NdotV, brdf.roughness);
     intergrationUV.y = 1 - intergrationUV.y;
     vec2 environmentBRDF = texture(BRDFLUT, intergrationUV).rg;
 
-    //reflection specular lod level
-    float lod = GetMipLevelFromRoughness(brdf.roughness);
-    vec3 skySpecular = SampleSkySpecularCube(PreConvSpecularEnvironment, reflection, lod);
-    vec3 prefilteredColor = mix(skySpecular, probeSample.specular, probeSample.coverage);
     // Roughness fade: SSR quality degrades on rough surfaces — smoothly
     // fall back to the pre-filtered cubemap which is always correct.
     float ssrFade = 1.0 - smoothstep(reflectionProbeLightingParams.x, reflectionProbeLightingParams.y, brdf.roughness);
     float ssrWeight = clamp(brdf.indirectSpecular.a * ssrFade, 0.0, 1.0);
-    prefilteredColor = mix(prefilteredColor, brdf.indirectSpecular.rgb, ssrWeight);
+	vec3 prefilteredColor = brdf.indirectSpecular.rgb;
+	if (ssrWeight < 1.0)
+	{
+		ReflectionProbeSample probeSample = SampleReflectionProbes(
+			brdf.positionWS, brdf.normal, reflection, brdf.roughness);
+		vec3 probeAndSky = probeSample.specular;
+		if (probeSample.coverage < 1.0)
+		{
+			float lod = GetMipLevelFromRoughness(brdf.roughness);
+			vec3 skySpecular = SampleSkySpecularCube(PreConvSpecularEnvironment, reflection, lod);
+			probeAndSky = mix(skySpecular, probeSample.specular, probeSample.coverage);
+		}
+		prefilteredColor = mix(probeAndSky, brdf.indirectSpecular.rgb, ssrWeight);
+	}
     // Split-sum: LUT already integrates Fresnel, so use F0 (not F) here
     specular = prefilteredColor * (F * environmentBRDF.x + environmentBRDF.y) * brdf.ao;
 }

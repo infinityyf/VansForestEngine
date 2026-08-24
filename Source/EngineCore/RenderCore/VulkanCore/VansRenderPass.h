@@ -6,6 +6,7 @@
 
 #endif
 #include "vulkan/vulkan.h"
+#include <array>
 #include <vector>
 
 #include "VansVKImage.h"
@@ -110,10 +111,6 @@ namespace VansGraphics
 
 		VansVKImage m_MotionVectorImage;
 
-		// Dedicated depth for the motion-vector pass so the previous-frame
-		// m_DepthImage is preserved for compute passes (HZB / GI / SSR).
-		VansVKImage m_MotionVectorDepthImage;
-
 		// Display-resolution result after post-processing the unified HDR upscaler output.
 		VansVKImage m_FinalDisplayColorImage;
 		VansVKImage* m_DisplayPostProcessInput = nullptr;
@@ -122,16 +119,17 @@ namespace VansGraphics
 
 		VansVKImage m_ShadowMapDepthImage;
 
-		// Cascade shadow map (four configuration-sized array layers).
-		VansVKImage m_CascadeShadowMapImage;       // R32_SFLOAT linear depth for PCSS
-		VansVKImage m_CascadeShadowMapDepthImage;  // D32_SFLOAT visibility/depth test
-		VkImageView m_CascadeColorLayerViews[4];   // per-layer views for framebuffers
-		VkImageView m_CascadeDepthLayerViews[4];   // per-layer views for framebuffers
-		VkImageView m_CascadeShadowArrayView;      // 2D_ARRAY view for sampling
-		VkSampler   m_CascadeShadowSampler;        // reuse sampler for cascade array
+		// Cascade shadow map (four configuration-sized D32 array layers). The same
+		// image is used for the depth test, raw blocker search and comparison PCF.
+		VansVKImage m_CascadeShadowMapDepthImage;
+		VkImageView m_CascadeDepthLayerViews[4] = {}; // per-layer framebuffer/sample views
+		VkImageView m_CascadeShadowArrayView = VK_NULL_HANDLE;
+		VkSampler   m_CascadeShadowSampler = VK_NULL_HANDLE;        // raw nearest depth
+		VkSampler   m_CascadeShadowCompareSampler = VK_NULL_HANDLE; // linear comparison PCF
 
-		VansVKImage m_PunctualShadowMapImage;
-		VkImageView m_PunctualShadowLayerViews[VANS_PUNCTUAL_SHADOW_ATLAS_COUNT] = {};
+		// 两个完全独立的深度 Atlas。逻辑分配器按 page 成本均衡光源，GPU
+		// 则可以在两条 graphics-capable queue 上并行写入不同图像。
+		std::array<VansVKImage, VANS_PUNCTUAL_SHADOW_ATLAS_COUNT> m_PunctualShadowMapImages;
 
 
 		VansVKImage m_NormalImage;
@@ -169,7 +167,7 @@ namespace VansGraphics
 
 		VansVKRenderPass m_VansPunctualShadowPass;
 
-		VansVKRenderPass m_VansMotionVectorPass;
+		VansVKRenderPass m_VansSkyMotionVectorPass;
 
 		VansVKRenderPass m_VansUIPass;
 
@@ -221,10 +219,8 @@ namespace VansGraphics
 		//精确阴影渲染
 		void SetupVansPunctualShadowRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue);
 
-		// Motion vector pass — writes per-pixel screen-space velocity to m_MotionVectorImage.
-		// Uses a dedicated depth attachment (m_MotionVectorDepthImage) so the previous-frame
-		// m_DepthImage is preserved for HZB / GI / SSR compute passes.
-		void SetupVansMotionVectorRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, const VkExtent2D& renderResolution);
+		// Sky overlay fills motion only where GBuffer depth remains at the far plane.
+		void SetupVansSkyMotionVectorRenderPass(VkDevice& logicDevice, const VkExtent2D& renderResolution);
 
 		//uipass（ImGui 编辑器面板 → swapchain）
 		void SetupVansUIRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, VansVKSurface& surface, const VkExtent2D& renderResolution);
@@ -303,15 +299,20 @@ namespace VansGraphics
 		VansVKRenderPass& GetVansGBufferPass() { return m_VansGBufferPass; }
 		VansVKRenderPass& GetVansUIRenderPass() { return m_VansUIPass; }
 
-		VansVKImage& GetShadowMap() { return m_CascadeShadowMapImage; }
+		VansVKImage& GetShadowMap() { return m_CascadeShadowMapDepthImage; }
 
 		VkImageView GetCascadeShadowArrayView() { return m_CascadeShadowArrayView; }
 
 		VkSampler GetCascadeShadowSampler() { return m_CascadeShadowSampler; }
+		VkSampler GetCascadeShadowCompareSampler() { return m_CascadeShadowCompareSampler; }
 
-		VkImageView GetCascadeShadowLayerView(int layer) { return m_CascadeColorLayerViews[layer]; }
+		VkImageView GetCascadeShadowLayerView(int layer) { return m_CascadeDepthLayerViews[layer]; }
 
-		VansVKImage& GetPunctualShadowMap() { return m_PunctualShadowMapImage; }
+		std::vector<VkDescriptorImageInfo> GetPunctualShadowDescriptorInfos(
+			VkImageLayout layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+		std::vector<VkDescriptorImageInfo> GetPunctualShadowRawDescriptorInfos(
+			VkSampler rawSampler,
+			VkImageLayout layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
 
 		VansVKImage& GetColor() { return m_ColorImage; }
 

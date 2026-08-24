@@ -3,6 +3,8 @@
 #include <unordered_map>
 #include <memory>
 #include <string>
+#include <cstdint>
+#include <limits>
 #include <vector>
 
 namespace Vans
@@ -51,6 +53,10 @@ namespace VansGraphics
         // 按名称查找视频纹理，找不到返回 nullptr。
         VansVideoTexture* Get(const std::string& name) const;
         VansVideoTexture* GetByAssetGuid(const std::string& assetGuid) const;
+		static constexpr std::uint32_t InvalidRuntimeIndex =
+			(std::numeric_limits<std::uint32_t>::max)();
+		std::uint32_t FindRuntimeIndex(const VansVideoTexture* video) const;
+		VansVideoTexture* GetByRuntimeIndex(std::uint32_t index) const;
 
         // ── 每帧驱动 ─────────────────────────────────────────────────────────
         // 推进所有处于播放状态的视频，挑选本帧应显示的新帧。
@@ -81,6 +87,8 @@ namespace VansGraphics
         // name → VansVideoTexture（unique_ptr 持有所有权）
         std::unordered_map<std::string, std::unique_ptr<VansVideoTexture>> m_Videos;
         std::unordered_map<std::string, VansVideoTexture*> m_VideosByAssetGuid;
+		// 只在 project load/unload 的 RT idle 区间修改；逐帧快照使用稳定索引。
+		std::vector<VansVideoTexture*> m_RuntimeVideos;
     };
 
 } // namespace VansGraphics

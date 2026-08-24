@@ -10,9 +10,9 @@ layout( set = 1, binding = 1 ) uniform sampler2D inputPosition;
 layout( set = 1, binding = 2, rgba32f ) uniform image2D aaResultA;
 layout( set = 1, binding = 3, rgba32f ) uniform image2D aaResultB;
 layout( set = 1, binding = 4, rgba32f ) uniform image2D aaResult;
-layout( set = 1, binding = 5 ) uniform sampler2D inputMotionVector;  // Screen-space motion vectors (from MotionVector pass)
+layout( set = 1, binding = 5 ) uniform sampler2D inputMotionVector;  // Screen-space motion vectors from GBuffer + sky overlay.
 
-// Sample screen-space motion vector from dedicated MotionVector render pass.
+// Sample the unified GBuffer/sky motion-vector target.
 // Returns vec2 velocity in UV-space (current - previous).
 vec2 GetVelocity(vec2 uv)
 {

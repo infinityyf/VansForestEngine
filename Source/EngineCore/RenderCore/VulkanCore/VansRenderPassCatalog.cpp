@@ -1,6 +1,5 @@
 ﻿#include "VansRenderPassCatalog.h"
 
-#include "../VansScene.h"
 #include <cstring>
 
 namespace VansGraphics
@@ -44,13 +43,14 @@ namespace VansGraphics
 				|| std::strcmp(passName, VansRenderPassNames::MainCameraHiZCull) == 0
 				|| std::strcmp(passName, VansRenderPassNames::TileLightBuild) == 0
 				|| std::strcmp(passName, VansRenderPassNames::CloudRayMarch) == 0
+				|| std::strcmp(passName, VansRenderPassNames::HZB) == 0
 				|| std::strcmp(passName, VansRenderPassNames::RayTracing) == 0
 				|| std::strcmp(passName, VansRenderPassNames::GIData) == 0;
 		}
 
 		VansRenderPassNodeDesc MakeNodeDesc(
 			const VansRenderPassCatalogEntry& entry,
-			const VansScene& scene,
+			const VansRenderFeatureFrameFlags& features,
 			bool asyncComputeEnabled)
 		{
 			VansRenderPassNodeDesc desc{};
@@ -61,7 +61,7 @@ namespace VansGraphics
 				: VansRenderQueueClass::Graphics;
 			desc.resizeDependent = entry.resizeDependent;
 			desc.allowAsyncCompute = entry.allowAsyncCompute;
-			desc.enabled = VansRenderPassCatalog::IsPassEnabled(entry.condition, scene);
+			desc.enabled = VansRenderPassCatalog::IsPassEnabled(entry.condition, features);
 			desc.reads = entry.reads;
 			desc.writes = entry.writes;
 			for (auto& read : desc.reads)
@@ -74,7 +74,7 @@ namespace VansGraphics
 			}
 			for (const auto& feature : entry.preservedFeatures)
 			{
-				if (VansRenderPassCatalog::IsPassEnabled(feature.condition, scene))
+				if (VansRenderPassCatalog::IsPassEnabled(feature.condition, features))
 				{
 					desc.preservedFeatures.emplace_back(feature.name);
 				}
@@ -110,7 +110,8 @@ namespace VansGraphics
 				{ VansRenderPassNames::PunctualShadow, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::HasPunctualShadowJobs,
 					{ { "SceneGeometry", VansRenderResourceUsage::SampledRead },
 					  { "VegetationDrawData", VansRenderResourceUsage::IndirectArgumentRead } },
-					{ { "PunctualShadowAtlas", VansRenderResourceUsage::DepthStencilAttachmentWrite } },
+					{ { "PunctualShadowAtlas0", VansRenderResourceUsage::DepthStencilAttachmentWrite },
+					  { "PunctualShadowAtlas1", VansRenderResourceUsage::DepthStencilAttachmentWrite } },
 					{ "Point and spot shadows" } },
 				{ VansRenderPassNames::HairDeepOpacity, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::Always,
 					{ { "HairGeometry", VansRenderResourceUsage::SampledRead } },
@@ -121,19 +122,20 @@ namespace VansGraphics
 					  { "MainCameraCullObjects", VansRenderResourceUsage::StorageRead } },
 					{ { "MainCameraVisibilityReadback", VansRenderResourceUsage::StorageWrite } },
 					{ "Main camera HiZ occlusion culling" } },
-				{ VansRenderPassNames::MotionVector, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::Always,
-					{ { "SceneGeometry", VansRenderResourceUsage::SampledRead } },
-					{ { "MotionVectors", VansRenderResourceUsage::ColorAttachmentWrite } },
-					{ "Motion vectors" } },
 				{ VansRenderPassNames::GBuffer, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::Always,
 					{ { "SceneGeometry", VansRenderResourceUsage::SampledRead },
 					  { "VegetationDrawData", VansRenderResourceUsage::IndirectArgumentRead } },
 					{ { "Normal", VansRenderResourceUsage::ColorAttachmentWrite },
 					  { "GBuffer", VansRenderResourceUsage::ColorAttachmentWrite },
 					  { "MaterialBuffers", VansRenderResourceUsage::ColorAttachmentWrite },
+					  { "MotionVector", VansRenderResourceUsage::ColorAttachmentWrite },
 					  { "Depth", VansRenderResourceUsage::DepthStencilAttachmentWrite } },
 					{ "Deferred GBuffer", "GBuffer normal", "GBuffer material buffers", "GBuffer depth",
 					  "Existing material types and shader pass coverage" } },
+				{ VansRenderPassNames::SkyMotionVector, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::Always,
+					{ { "Depth", VansRenderResourceUsage::DepthStencilAttachmentRead } },
+					{ { "MotionVector", VansRenderResourceUsage::ColorAttachmentWrite } },
+					{ "Sky motion vectors on uncovered background pixels" } },
 				{ VansRenderPassNames::Decal, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::HasDecal,
 					{ { "Depth", VansRenderResourceUsage::DepthStencilAttachmentRead },
 					  { "GBuffer", VansRenderResourceUsage::SampledRead } },
@@ -150,13 +152,15 @@ namespace VansGraphics
 					  { "OcclusionHZB", VansRenderResourceUsage::StorageWrite } },
 					{ "HZB" } },
 				{ VansRenderPassNames::PunctualShadowDebug, VansRenderQueueClass::Compute, false, false, VansRenderPassCondition::Always,
-					{ { "PunctualShadowAtlas", VansRenderResourceUsage::SampledRead } },
+					{ { "PunctualShadowAtlas0", VansRenderResourceUsage::SampledRead },
+					  { "PunctualShadowAtlas1", VansRenderResourceUsage::SampledRead } },
 					{ { "PunctualShadowDebugPreview", VansRenderResourceUsage::StorageWrite } },
 					{} },
 				{ VansRenderPassNames::ScreenSpaceShadow, VansRenderQueueClass::Compute, true, true, VansRenderPassCondition::Always,
 					{ { "Depth", VansRenderResourceUsage::SampledRead },
 					  { "CascadeShadowDepth", VansRenderResourceUsage::SampledRead } },
-					{ { "ScreenSpaceShadow", VansRenderResourceUsage::StorageWrite } },
+					{ { "CascadeShadowMinMax", VansRenderResourceUsage::StorageWrite },
+					  { "ScreenSpaceShadow", VansRenderResourceUsage::StorageWrite } },
 					{ "Screen-space shadows" } },
 				{ VansRenderPassNames::ScreenSpaceEffects, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::Always,
 					{ { "Normal", VansRenderResourceUsage::SampledRead },
@@ -179,7 +183,8 @@ namespace VansGraphics
 					  { "HZB", VansRenderResourceUsage::SampledRead },
 					  { "RayTracingGI", VansRenderResourceUsage::SampledRead },
 					  { "CascadeShadowDepth", VansRenderResourceUsage::SampledRead },
-					  { "PunctualShadowAtlas", VansRenderResourceUsage::SampledRead },
+					  { "PunctualShadowAtlas0", VansRenderResourceUsage::SampledRead },
+					  { "PunctualShadowAtlas1", VansRenderResourceUsage::SampledRead },
 					  { "PunctualShadowMeta", VansRenderResourceUsage::StorageRead } },
 					{ { "GIData", VansRenderResourceUsage::StorageWrite } },
 					{ "SSGI", "GI SH paths" } },
@@ -192,7 +197,8 @@ namespace VansGraphics
 					{ { "Depth", VansRenderResourceUsage::SampledRead },
 					  { "LightBuffers", VansRenderResourceUsage::StorageRead },
 					  { "TileLightLists", VansRenderResourceUsage::StorageRead },
-					  { "PunctualShadowAtlas", VansRenderResourceUsage::SampledRead },
+					  { "PunctualShadowAtlas0", VansRenderResourceUsage::SampledRead },
+					  { "PunctualShadowAtlas1", VansRenderResourceUsage::SampledRead },
 					  { "PunctualShadowMeta", VansRenderResourceUsage::StorageRead } },
 					{ { "VolumetricFog", VansRenderResourceUsage::StorageWrite } },
 					{ "Volumetric fog" } },
@@ -210,14 +216,16 @@ namespace VansGraphics
 					  { "VolumetricFog", VansRenderResourceUsage::SampledRead },
 					  { "CloudRayMarch", VansRenderResourceUsage::SampledRead },
 					  { "TileLightLists", VansRenderResourceUsage::StorageRead },
-					  { "PunctualShadowAtlas", VansRenderResourceUsage::SampledRead },
+					  { "PunctualShadowAtlas0", VansRenderResourceUsage::SampledRead },
+					  { "PunctualShadowAtlas1", VansRenderResourceUsage::SampledRead },
 					  { "PunctualShadowMeta", VansRenderResourceUsage::StorageRead } },
 					{ { "SceneColor", VansRenderResourceUsage::ColorAttachmentWrite } },
 					{ "Deferred lighting", "Skybox" } },
 				{ VansRenderPassNames::ForwardOpaqueAfterDeferred, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::HasForwardOpaqueAfterDeferred,
 					{ { "SceneColor", VansRenderResourceUsage::ColorAttachmentWrite },
 					  { "Depth", VansRenderResourceUsage::DepthStencilAttachmentRead },
-					  { "PunctualShadowAtlas", VansRenderResourceUsage::SampledRead },
+					  { "PunctualShadowAtlas0", VansRenderResourceUsage::SampledRead },
+					  { "PunctualShadowAtlas1", VansRenderResourceUsage::SampledRead },
 					  { "PunctualShadowMeta", VansRenderResourceUsage::StorageRead } },
 					{ { "SceneColor", VansRenderResourceUsage::ColorAttachmentWrite },
 					  { "Depth", VansRenderResourceUsage::DepthStencilAttachmentWrite } },
@@ -269,7 +277,8 @@ namespace VansGraphics
 					  { "OpaqueSceneColor", VansRenderResourceUsage::SampledRead },
 					  { "TileLightLists", VansRenderResourceUsage::StorageRead },
 					  { "Depth", VansRenderResourceUsage::DepthStencilAttachmentRead },
-					  { "PunctualShadowAtlas", VansRenderResourceUsage::SampledRead },
+					  { "PunctualShadowAtlas0", VansRenderResourceUsage::SampledRead },
+					  { "PunctualShadowAtlas1", VansRenderResourceUsage::SampledRead },
 					  { "PunctualShadowMeta", VansRenderResourceUsage::StorageRead } },
 					{ { "SceneColor", VansRenderResourceUsage::ColorAttachmentWrite } },
 					{ "Hair composite", "Transparent rendering", "Particle rendering", "Transmission/refraction",
@@ -312,20 +321,20 @@ namespace VansGraphics
 
 	bool VansRenderPassCatalog::IsPassEnabled(
 		VansRenderPassCondition condition,
-		const VansScene& scene)
+		const VansRenderFeatureFrameFlags& features)
 	{
 		switch (condition)
 		{
 		case VansRenderPassCondition::Always:
 			return true;
 		case VansRenderPassCondition::HasPunctualShadowJobs:
-			return scene.HasPunctualShadowJobs();
+			return features.hasPunctualShadowJobs;
 		case VansRenderPassCondition::HasWater:
-			return scene.HasWaterNodes();
+			return features.hasWater;
 		case VansRenderPassCondition::HasDecal:
-			return scene.HasDecalNodes();
+			return features.hasDecal;
 		case VansRenderPassCondition::HasForwardOpaqueAfterDeferred:
-			return scene.HasForwardOpaqueAfterDeferredNodes();
+			return features.hasForwardOpaqueAfterDeferred;
 		}
 
 		return true;
@@ -385,6 +394,7 @@ namespace VansGraphics
 			VansRenderPassNames::MainCameraHiZCull,
 			VansRenderPassNames::TileLightBuild,
 			VansRenderPassNames::CloudRayMarch,
+			VansRenderPassNames::HZB,
 			VansRenderPassNames::RayTracing,
 			VansRenderPassNames::GIData })
 		{
@@ -432,6 +442,9 @@ namespace VansGraphics
 		requireAccess(VansRenderPassNames::VegetationCompute, "OcclusionHZB", false);
 		requireAccess(VansRenderPassNames::CascadeShadow, "VegetationDrawData", false);
 		requireAccess(VansRenderPassNames::GBuffer, "VegetationDrawData", false);
+		requireAccess(VansRenderPassNames::GBuffer, "MotionVector", true);
+		requireAccess(VansRenderPassNames::SkyMotionVector, "Depth", false);
+		requireAccess(VansRenderPassNames::SkyMotionVector, "MotionVector", true);
 		requireAccess(VansRenderPassNames::MainCameraHiZCull, "OcclusionHZB", false);
 		requireAccess(VansRenderPassNames::MainCameraHiZCull, "MainCameraVisibilityReadback", true);
 		requireAccess(VansRenderPassNames::TileLightBuild, "TileLightLists", true);
@@ -444,6 +457,7 @@ namespace VansGraphics
 		requireAccess(VansRenderPassNames::SSAOFilter, "SSAORaw", false);
 		requireAccess(VansRenderPassNames::SSAOFilter, "SSAO", true);
 		requireAccess(VansRenderPassNames::DeferredSkybox, "SSAO", false);
+		requireAccess(VansRenderPassNames::ScreenSpaceShadow, "CascadeShadowMinMax", true);
 		requireAccess(VansRenderPassNames::GIData, "HZB", false);
 		requireAccess(VansRenderPassNames::GIData, "GIData", true);
 		requireAccess(VansRenderPassNames::DeferredSkybox, "GIData", false);
@@ -457,7 +471,7 @@ namespace VansGraphics
 	}
 
 	void VansRenderPassCatalog::GetPreservedFeatureAuditList(
-		const VansScene& scene,
+		const VansRenderFeatureFrameFlags& features,
 		std::vector<std::string>& outRequiredFeatures,
 		std::vector<std::string>& outConditionallyDisabledFeatures)
 	{
@@ -467,10 +481,10 @@ namespace VansGraphics
 		const auto& catalog = GetCompatibilityCatalog();
 		for (const auto& entry : catalog)
 		{
-			const bool passEnabled = IsPassEnabled(entry.condition, scene);
+			const bool passEnabled = IsPassEnabled(entry.condition, features);
 			for (const auto& feature : entry.preservedFeatures)
 			{
-				if (passEnabled && IsPassEnabled(feature.condition, scene))
+				if (passEnabled && IsPassEnabled(feature.condition, features))
 				{
 					outRequiredFeatures.emplace_back(feature.name);
 				}
@@ -484,7 +498,7 @@ namespace VansGraphics
 
 	void VansRenderPassCatalog::BuildCompatibilityFramePlan(
 		VansRenderFramePlan& outPlan,
-		VansScene& scene,
+		const VansRenderFeatureFrameFlags& features,
 		uint64_t frameNumber,
 		bool asyncComputeEnabled)
 	{
@@ -494,7 +508,7 @@ namespace VansGraphics
 
 		for (const auto& entry : catalog)
 		{
-			outPlan.AddPass(MakeNodeDesc(entry, scene, asyncComputeEnabled));
+			outPlan.AddPass(MakeNodeDesc(entry, features, asyncComputeEnabled));
 		}
 	}
 }

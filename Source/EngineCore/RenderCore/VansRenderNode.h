@@ -13,6 +13,7 @@
 
 namespace VansGraphics
 {
+	struct VansDrawPacket;
 	enum  RenderNodeType
 	{
 		NONE_NODE = 0,
@@ -182,8 +183,9 @@ namespace VansGraphics
 			}
 		}
 
-		// New function for updating model data from logic code
-		void UpdateModelData();
+		// Main 提取当前帧值，backend 只消费对应 immutable snapshot。
+		void PrepareModelDataForRenderFrame();
+		const ModelDataStruct& GetPreparedModelData() const { return m_ModelData; }
 		void UpdateWorldBoundsFromTransform();
 		bool HasWorldBounds() const { return m_HasWorldBounds && m_WorldBounds.IsValid(); }
 		const VansRenderBounds& GetWorldBounds() const { return m_WorldBounds; }
@@ -195,6 +197,29 @@ namespace VansGraphics
 
 		virtual void Draw(VansVKCommandBuffer& cmd, GlobalStateData& global_state);
 
+		bool BuildPrimaryDrawPacket(
+			VkDevice& device,
+			GlobalStateData globalState,
+			const char* passName,
+			int passUser0,
+			std::uint64_t orderGroup,
+			std::uint64_t stableOrder,
+			float cameraDepth,
+			VansDrawPacket& packet);
+
+		bool BuildPassDrawPacket(
+			VkDevice& device,
+			GlobalStateData globalState,
+			const char* passName,
+			VansGraphicsShader* shader,
+			const std::vector<VkDescriptorSet>& descriptorSets,
+			const std::vector<VkDescriptorSetLayout>& descriptorSetLayouts,
+			int passUser0,
+			std::uint64_t orderGroup,
+			std::uint64_t stableOrder,
+			float cameraDepth,
+			VansDrawPacket& packet);
+
 		bool PreparePipelineForDraw(VkDevice& device, GlobalStateData global_state);
 		bool PreparePipelineForShader(
 			VkDevice& device,
@@ -204,18 +229,6 @@ namespace VansGraphics
 			const std::vector<VkDescriptorSet>& sets);
 
 
-
-		// Draw with cascade shadow push constants: { materialIndex, transformIndex, cascadeIndex }
-		void DrawCascadeShadowWithPassShader(VansVKCommandBuffer& cmd, GlobalStateData& global_state,
-		                                     VansGraphicsShader* passShader,
-		                                     const std::vector<VkDescriptorSet>& descSets,
-		                                     const std::vector<VkDescriptorSetLayout>& descSetLayouts);
-
-		void DrawPunctualShadowWithPassShader(VansVKCommandBuffer& cmd, GlobalStateData& global_state,
-		                                      VansGraphicsShader* passShader,
-		                                      const std::vector<VkDescriptorSet>& descSets,
-		                                      const std::vector<VkDescriptorSetLayout>& descSetLayouts,
-		                                      int shadowViewIndex);
 
 		//void DrawWithMaterial(VansMaterial* material ,VansVKCommandBuffer& cmd, GlobalStateData& global_state);
 
@@ -277,8 +290,6 @@ namespace VansGraphics
 
 		void MarkAnimationDescriptorDirty() override;
 
-		void SyncMaterialToGPU(VansMaterial* mat, VansMaterialManager& materialManager);
-
 		// ── Per-pass descriptor set arrays ─────────────────────────────────
 		// Shadow pass: { Global, EmptyPass, Object } (3 sets — no animation, no material textures)
 		std::vector<VkDescriptorSet>       m_ShadowDescSets;
@@ -301,7 +312,6 @@ namespace VansGraphics
 
 		void UpdateDescriptorSets(VansMaterialManager& materialManager) override;
 
-		void Draw(VansVKCommandBuffer& cmd, GlobalStateData& global_state) override;
 	};
 
 	class VansSkyBoxRenderNode : public VansRenderNode
@@ -320,7 +330,7 @@ namespace VansGraphics
 
 		void UpdateDescriptorSets(VansMaterialManager& materialManager) override;
 
-		void DrawMotionVector(VansVKCommandBuffer& cmd, GlobalStateData& globalState);
+		void DrawSkyMotionVector(VansVKCommandBuffer& cmd, GlobalStateData& globalState);
 	};
 
 	class VansPostProcessRenderNode : public VansRenderNode
@@ -431,7 +441,6 @@ namespace VansGraphics
 
 		void DrawShadow(VansVKCommandBuffer& cmd, GlobalStateData& global_state);
 
-		void DrawMotionVector(VansVKCommandBuffer& cmd, GlobalStateData& global_state);
 	};
 
 	// ── Decal render node — OBB decal, overwrites GBuffer Normal/GBuffer0/GBuffer1 ──

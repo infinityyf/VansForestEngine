@@ -7,6 +7,7 @@
 #include <iostream>
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -246,21 +247,31 @@ namespace
 		return std::clamp(angle, MIN_SPOT_OUTER_CUTOFF, MAX_SPOT_OUTER_CUTOFF);
 	}
 
-	template<typename T>
-	void UploadPaddedLightData(
-		VansGraphics::VansVKBuffer& lightBuffer,
-		uint32_t offset,
-		uint32_t maxCount,
-		const std::vector<T>& lights)
+	void AppendFramePayloadBytes(
+		std::vector<std::uint8_t>& payload,
+		std::size_t& offset,
+		const void* source,
+		std::size_t byteCount)
 	{
-		std::vector<T> paddedLights(maxCount);
-		const size_t copyCount = (std::min)(lights.size(), static_cast<size_t>(maxCount));
-		if (copyCount > 0)
-		{
-			std::copy_n(lights.begin(), copyCount, paddedLights.begin());
-		}
+		assert(offset + byteCount <= payload.size());
+		if (byteCount > 0)
+			std::memcpy(payload.data() + offset, source, byteCount);
+		offset += byteCount;
+	}
 
-		lightBuffer.SetBufferData(paddedLights.data(), offset, sizeof(T) * maxCount);
+	template<typename T>
+	void AppendPaddedFramePayload(
+		std::vector<std::uint8_t>& payload,
+		std::size_t& offset,
+		uint32_t maxCount,
+		const std::vector<T>& values)
+	{
+		const std::size_t paddedByteCount = sizeof(T) * static_cast<std::size_t>(maxCount);
+		assert(offset + paddedByteCount <= payload.size());
+		const size_t copyCount = (std::min)(values.size(), static_cast<size_t>(maxCount));
+		if (copyCount > 0)
+			std::memcpy(payload.data() + offset, values.data(), sizeof(T) * copyCount);
+		offset += paddedByteCount;
 	}
 }
 
@@ -276,7 +287,9 @@ void VansGraphics::VansLightManager::AddPointLight(
 	VansPointLight gpuLight = light;
 	gpuLight.m_ShadowMetaIndex = VANS_INVALID_SHADOW_INDEX;
 	m_PointLights.push_back(gpuLight);
-	m_PointShadowRegistrations.push_back({ m_NextStableLightId++, shadowSettings });
+	VansPunctualShadowSettings pointShadowSettings = shadowSettings;
+	pointShadowSettings.updateMode = VansShadowUpdateMode::EveryFrame;
+	m_PointShadowRegistrations.push_back({ m_NextStableLightId++, pointShadowSettings });
 }
 
 void VansGraphics::VansLightManager::AddSpotLight(
@@ -303,7 +316,6 @@ bool VansGraphics::VansLightManager::RemovePointLight(uint32_t index)
 {
 	if (index >= m_PointLights.size() || index >= m_PointShadowRegistrations.size())
 		return false;
-	m_PunctualShadowManager.RemoveLight(m_PointShadowRegistrations[index].stableLightId);
 	if (index + 1u != m_PointLights.size())
 	{
 		m_PointLights[index] = m_PointLights.back();
@@ -318,7 +330,6 @@ bool VansGraphics::VansLightManager::RemoveSpotLight(uint32_t index)
 {
 	if (index >= m_SpotLights.size() || index >= m_SpotShadowRegistrations.size())
 		return false;
-	m_PunctualShadowManager.RemoveLight(m_SpotShadowRegistrations[index].stableLightId);
 	if (index + 1u != m_SpotLights.size())
 	{
 		m_SpotLights[index] = m_SpotLights.back();
@@ -333,7 +344,6 @@ bool VansGraphics::VansLightManager::RemoveRectLight(uint32_t index)
 {
 	if (index >= m_RectLights.size() || index >= m_RectShadowRegistrations.size())
 		return false;
-	m_PunctualShadowManager.RemoveLight(m_RectShadowRegistrations[index].stableLightId);
 	if (index + 1u != m_RectLights.size())
 	{
 		m_RectLights[index] = m_RectLights.back();
@@ -439,26 +449,37 @@ void VansGraphics::VansLightManager::UpdateLightShadowMatrixData(const VansCasca
 		}
 	}
 
-	std::vector<VansPunctualShadowLightInput> punctualInputs;
-	punctualInputs.reserve(m_PointLights.size() + m_SpotLights.size() + m_RectLights.size());
+	// Punctual shadow allocation is intentionally not prepared here. Main only
+	// resolves cascade matrices; backend consumes BuildPunctualShadowFrameInput.
+}
 
-	const uint32_t pointLightCount = static_cast<uint32_t>((std::min)(m_PointLights.size(), static_cast<size_t>(m_MaxPointLightCount)));
+VansGraphics::VansRenderPunctualShadowFrameInput
+VansGraphics::VansLightManager::BuildPunctualShadowFrameInput(
+	const VansCascadeCameraData& cameraData)
+{
+	VansRenderPunctualShadowFrameInput frameInput;
+	frameInput.lights.reserve(m_PointLights.size() + m_SpotLights.size() + m_RectLights.size());
+
+	const uint32_t pointLightCount = static_cast<uint32_t>((std::min)(m_PointLights.size(), static_cast<size_t>(VANS_MAX_POINT_LIGHTS)));
 	for (uint32_t lightIndex = 0; lightIndex < pointLightCount && lightIndex < m_PointShadowRegistrations.size(); ++lightIndex)
 	{
 		VansPointLight& light = m_PointLights[lightIndex];
+		const VansPunctualShadowRegistration& registration = m_PointShadowRegistrations[lightIndex];
 		VansPunctualShadowLightInput input;
-		input.stableLightId = m_PointShadowRegistrations[lightIndex].stableLightId;
+		input.stableLightId = registration.stableLightId;
 		input.type = VansPunctualShadowLightType::Point;
 		input.gpuLightIndex = lightIndex;
 		input.position = light.m_Position;
 		input.color = light.m_Color;
 		input.intensity = light.m_Intensity;
 		input.radius = light.m_Radius;
-		input.settings = m_PointShadowRegistrations[lightIndex].settings;
-		punctualInputs.push_back(input);
+		input.settings = registration.settings;
+		// 点光没有缓存更新模式：只要投影，就固定每帧刷新完整六面。
+		input.settings.updateMode = VansShadowUpdateMode::EveryFrame;
+		frameInput.lights.push_back(input);
 	}
 
-	const uint32_t spotLightCount = static_cast<uint32_t>((std::min)(m_SpotLights.size(), static_cast<size_t>(m_MaxSpotLightCount)));
+	const uint32_t spotLightCount = static_cast<uint32_t>((std::min)(m_SpotLights.size(), static_cast<size_t>(VANS_MAX_SPOT_LIGHTS)));
 	for (uint32_t lightIndex = 0; lightIndex < spotLightCount && lightIndex < m_SpotShadowRegistrations.size(); ++lightIndex)
 	{
 		VansSpotLight& light = m_SpotLights[lightIndex];
@@ -477,10 +498,10 @@ void VansGraphics::VansLightManager::UpdateLightShadowMatrixData(const VansCasca
 		input.radius = light.m_Radius;
 		input.outerConeRadians = light.m_OuterCutOff;
 		input.settings = m_SpotShadowRegistrations[lightIndex].settings;
-		punctualInputs.push_back(input);
+		frameInput.lights.push_back(input);
 	}
 
-	const uint32_t rectLightCount = static_cast<uint32_t>((std::min)(m_RectLights.size(), static_cast<size_t>(m_MaxRectLightCount)));
+	const uint32_t rectLightCount = static_cast<uint32_t>((std::min)(m_RectLights.size(), static_cast<size_t>(VANS_MAX_RECT_LIGHTS)));
 	for (uint32_t lightIndex = 0; lightIndex < rectLightCount && lightIndex < m_RectShadowRegistrations.size(); ++lightIndex)
 	{
 		VansRectLight& light = m_RectLights[lightIndex];
@@ -498,166 +519,136 @@ void VansGraphics::VansLightManager::UpdateLightShadowMatrixData(const VansCasca
 		input.halfWidth = light.m_HalfWidth;
 		input.halfHeight = light.m_HalfHeight;
 		input.settings = m_RectShadowRegistrations[lightIndex].settings;
-		punctualInputs.push_back(input);
+		frameInput.lights.push_back(input);
 	}
 
-	VansPunctualShadowCameraData punctualCamera;
-	punctualCamera.position = cameraData.position;
-	punctualCamera.forward = cameraData.forward;
-	punctualCamera.up = cameraData.up;
-	punctualCamera.verticalFovRadians = cameraData.verticalFovRadians;
-	punctualCamera.aspectRatio = cameraData.aspectRatio;
-	punctualCamera.nearPlane = cameraData.nearPlane;
-	punctualCamera.farPlane = cameraData.farPlane;
-	punctualCamera.viewportWidth = cameraData.viewportWidth;
-	punctualCamera.viewportHeight = cameraData.viewportHeight;
-	m_PunctualShadowManager.PrepareFrame(punctualCamera, punctualInputs, ++m_ShadowFrameIndex);
-
-	for (uint32_t lightIndex = 0; lightIndex < pointLightCount && lightIndex < m_PointShadowRegistrations.size(); ++lightIndex)
-		m_PointLights[lightIndex].m_ShadowMetaIndex = m_PunctualShadowManager.GetShadowMetaIndex(m_PointShadowRegistrations[lightIndex].stableLightId);
-	for (uint32_t lightIndex = 0; lightIndex < spotLightCount && lightIndex < m_SpotShadowRegistrations.size(); ++lightIndex)
-		m_SpotLights[lightIndex].m_ShadowMetaIndex = m_PunctualShadowManager.GetShadowMetaIndex(m_SpotShadowRegistrations[lightIndex].stableLightId);
-	for (uint32_t lightIndex = 0; lightIndex < rectLightCount && lightIndex < m_RectShadowRegistrations.size(); ++lightIndex)
-		m_RectLights[lightIndex].m_ShadowMetaIndex = m_PunctualShadowManager.GetShadowMetaIndex(m_RectShadowRegistrations[lightIndex].stableLightId);
+	frameInput.camera.position = cameraData.position;
+	frameInput.camera.forward = cameraData.forward;
+	frameInput.camera.up = cameraData.up;
+	frameInput.camera.verticalFovRadians = cameraData.verticalFovRadians;
+	frameInput.camera.aspectRatio = cameraData.aspectRatio;
+	frameInput.camera.nearPlane = cameraData.nearPlane;
+	frameInput.camera.farPlane = cameraData.farPlane;
+	frameInput.camera.viewportWidth = cameraData.viewportWidth;
+	frameInput.camera.viewportHeight = cameraData.viewportHeight;
+	frameInput.prepared = true;
+	return frameInput;
 }
 
 void VansGraphics::VansLightManager::UpdateLightShadowMatrixData(const glm::vec3& cameraPosition)
 {
 	UpdateLightShadowMatrixData(MakeFallbackCascadeCamera(cameraPosition));
 }
-void VansGraphics::VansLightManager::UpdateLightCPUData()
+std::vector<VansGraphics::VansDirectionalLight>
+VansGraphics::VansLightManager::BuildPreparedDirectionalLights()
 {
-	//for (int spotLightIndex = 0; spotLightIndex < m_SpotLights.size(); spotLightIndex++)
-	//{
-
-	//	m_SpotLights[spotLightIndex].m_Position.x = std::sin(VansTimer::GetFrameTime() * 0.5f) * 6;
-	//}
-
-	auto vansConfigration = VansConfigration::GetInstance();
-	const uint32_t punctualShadowSize = static_cast<uint32_t>(vansConfigration->GetPunctualShadowMapWidth());
-
-	uint32_t offset = 0;
-	uint32_t size = sizeof(uint32_t) * 4;
-	m_LightCounts[0] = static_cast<uint32_t>((std::min)(m_PointLights.size(), static_cast<size_t>(m_MaxPointLightCount)));
-	m_LightCounts[1] = static_cast<uint32_t>((std::min)(m_SpotLights.size(), static_cast<size_t>(m_MaxSpotLightCount)));
-	m_LightCounts[2] = punctualShadowSize;
-	m_LightCounts[3] = static_cast<uint32_t>(m_PunctualShadowManager.GetGPUShadowViews().size());
-	m_LightBuffer.SetBufferData(m_LightCounts, offset, size);
-	offset += size;
-	size = sizeof(float) * 4;
-	m_SoftShadowParams[0] = m_SoftShadowParams[0] + 1;
-	m_SoftShadowParams[1] = 0.3f; // 软阴影半径控制
-	// softShadowParams.z = RectLight 计数（shader 以 uint(softShadowParams.z) 读取）
-	m_SoftShadowParams[2] = static_cast<float>((std::min)(m_RectLights.size(), static_cast<size_t>(m_MaxRectLightCount)));
-	m_SoftShadowParams[3] = 0;
-	m_LightBuffer.SetBufferData(m_SoftShadowParams, offset, size);
-	offset += size;
-	size = sizeof(VansDirectionalLight) * m_MaxDirectionLightCount;
+	std::vector<VansDirectionalLight> preparedLights = m_DirectionalLights;
+	if (preparedLights.empty())
+		m_MainCelestialLightingState = VansCelestialLightingState{};
+	for (size_t lightIndex = 0; lightIndex < preparedLights.size(); ++lightIndex)
 	{
-		// 上传前将颜色替换为大气衰减后的有效颜色
-		// m_Color 保持为美术原始值；GPU buffer 中的 color 是最终有效光照颜色
-		// 所有 include LightsData.glsl 的 shader 均通过 uDirectionLight.color 取到统一来源
-		auto dirLightsForUpload = m_DirectionalLights;
-		if (dirLightsForUpload.empty())
-			m_MainCelestialLightingState = VansCelestialLightingState{};
-		for (size_t lightIndex = 0; lightIndex < dirLightsForUpload.size(); ++lightIndex)
-		{
-			auto& dl = dirLightsForUpload[lightIndex];
-			const VansCelestialLightingState celestialState = ComputeCelestialLightingState(dl);
-			if (lightIndex == 0)
-				m_MainCelestialLightingState = celestialState;
-			dl.m_Direction = celestialState.direction;
-			dl.m_Color = celestialState.color;
-			dl.m_Intensity = celestialState.intensity;
-		}
-		UploadPaddedLightData(m_LightBuffer, offset, m_MaxDirectionLightCount, dirLightsForUpload);
+		auto& light = preparedLights[lightIndex];
+		const VansCelestialLightingState celestialState = ComputeCelestialLightingState(light);
+		if (lightIndex == 0)
+			m_MainCelestialLightingState = celestialState;
+		light.m_Direction = celestialState.direction;
+		light.m_Color = celestialState.color;
+		light.m_Intensity = celestialState.intensity;
 	}
-	offset += size;
-	size = sizeof(VansPointLight) * m_MaxPointLightCount;
-	UploadPaddedLightData(m_LightBuffer, offset, m_MaxPointLightCount, m_PointLights);
-	offset += size;
-	size = sizeof(VansSpotLight) * m_MaxSpotLightCount;
-	UploadPaddedLightData(m_LightBuffer, offset, m_MaxSpotLightCount, m_SpotLights);
-	offset += size;
-	size = sizeof(VansRectLight) * m_MaxRectLightCount;
-	UploadPaddedLightData(m_LightBuffer, offset, m_MaxRectLightCount, m_RectLights);
-	offset += size;
-	size = sizeof(VansPunctualShadowGPU) * VANS_MAX_PUNCTUAL_LIGHTS;
-	UploadPaddedLightData(
-		m_LightBuffer,
-		offset,
-		VANS_MAX_PUNCTUAL_LIGHTS,
-		m_PunctualShadowManager.GetGPUShadowData());
-	offset += size;
-	size = sizeof(VansPunctualShadowViewGPU) * VANS_MAX_PUNCTUAL_SHADOW_VIEWS;
-	UploadPaddedLightData(
-		m_LightBuffer,
-		offset,
-		VANS_MAX_PUNCTUAL_SHADOW_VIEWS,
-		m_PunctualShadowManager.GetGPUShadowViews());
-
+	return preparedLights;
 }
 
-void VansGraphics::VansLightManager::SyncLightGPUData(const glm::vec3& cameraPosition)
+void VansGraphics::VansLightManager::RefreshDerivedLightingState()
 {
-	UpdateLightShadowMatrixData(cameraPosition);
-	UpdateLightCPUData();
+	(void)BuildPreparedDirectionalLights();
 }
 
-void VansGraphics::VansLightManager::SyncLightGPUData(const VansCascadeCameraData& cameraData)
+std::size_t VansGraphics::VansLightManager::GetLightBufferPayloadSize()
 {
-	UpdateLightShadowMatrixData(cameraData);
-	UpdateLightCPUData();
-}
-
-void VansGraphics::VansLightManager::CreateLightUniformData(VkDevice& logic_device)
-{
-	uint32_t bufferSize = sizeof(uint32_t) * 4 + sizeof(VansDirectionalLight) * m_MaxDirectionLightCount +
-		sizeof(VansPointLight) * m_MaxPointLightCount +
-		sizeof(VansSpotLight) * m_MaxSpotLightCount +
-		sizeof(VansRectLight) * m_MaxRectLightCount +
+	return sizeof(uint32_t) * 4 + sizeof(float) * 4 +
+		sizeof(VansDirectionalLight) * VANS_MAX_DIRECTION_LIGHTS +
+		sizeof(VansPointLight) * VANS_MAX_POINT_LIGHTS +
+		sizeof(VansSpotLight) * VANS_MAX_SPOT_LIGHTS +
+		sizeof(VansRectLight) * VANS_MAX_RECT_LIGHTS +
 		sizeof(VansPunctualShadowGPU) * VANS_MAX_PUNCTUAL_LIGHTS +
-		sizeof(VansPunctualShadowViewGPU) * VANS_MAX_PUNCTUAL_SHADOW_VIEWS +
-		sizeof(float) * 4;
-	m_LightBuffer.CreatVulkanBuffer(
-		logic_device, bufferSize, VK_FORMAT_R32_SFLOAT,
-		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
-		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
-	);
-
-	//创建资源
-	VkDescriptorSetLayoutBinding lightBufferBinding =
-	{
-		PassBinding::CBUFFER_0,
-		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-		1,
-		VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT,
-		nullptr
-	};
-	VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom(
-		{ lightBufferBinding },
-		m_LightDataDescriptorSetLayout,
-		m_LightDataDescriptorSets);
-
-	//update descriptor
-	auto* descManager = VansVKDescriptorManager::GetInstance();
-	descManager->BeginDescriptorUpdate();
-	descManager->WriteBufferDescriptor(
-		m_LightDataDescriptorSets[0],
-		PassBinding::CBUFFER_0,
-		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-		{{
-			m_LightBuffer.GetNativeBuffer(),
-			0,
-			m_LightBuffer.GetBufferSize()
-		}});
-	descManager->CommitDescriptorUpdates();
+		sizeof(VansPunctualShadowViewGPU) * VANS_MAX_PUNCTUAL_SHADOW_VIEWS;
 }
 
-VansGraphics::VansLightManager::~VansLightManager()
+bool VansGraphics::VansLightManager::BuildRenderLightBufferPayload(
+	const VansRenderLightFrameData& frameData,
+	const std::vector<VansPunctualShadowGPU>& shadowData,
+	const std::vector<VansPunctualShadowViewGPU>& shadowViews,
+	std::vector<std::uint8_t>& outPayload)
 {
-	VansVKDescriptorManager::GetInstance()->DestroyDescriptorSet(m_LightDataDescriptorSets);
-	VansVKDescriptorManager::GetInstance()->DestroyDescriptorSetLayout(m_LightDataDescriptorSetLayout);
+	if (!frameData.IsComplete() ||
+		frameData.directionalLights.size() > VANS_MAX_DIRECTION_LIGHTS ||
+		frameData.pointLights.size() > VANS_MAX_POINT_LIGHTS ||
+		frameData.spotLights.size() > VANS_MAX_SPOT_LIGHTS ||
+		frameData.rectLights.size() > VANS_MAX_RECT_LIGHTS ||
+		shadowData.size() > VANS_MAX_PUNCTUAL_LIGHTS ||
+		shadowViews.size() > VANS_MAX_PUNCTUAL_SHADOW_VIEWS)
+	{
+		return false;
+	}
+
+	const std::array<uint32_t, 4> lightCounts = {
+		static_cast<uint32_t>(frameData.pointLights.size()),
+		static_cast<uint32_t>(frameData.spotLights.size()),
+		frameData.punctualShadowMapWidth,
+		static_cast<uint32_t>(shadowViews.size())
+	};
+	const std::array<float, 4> softShadowParams = {
+		frameData.frameSequence,
+		0.3f,
+		static_cast<float>(frameData.rectLights.size()),
+		0.0f
+	};
+
+	outPayload.assign(GetLightBufferPayloadSize(), 0u);
+	std::size_t offset = 0;
+	AppendFramePayloadBytes(outPayload, offset, lightCounts.data(), sizeof(lightCounts));
+	AppendFramePayloadBytes(outPayload, offset, softShadowParams.data(), sizeof(softShadowParams));
+	AppendPaddedFramePayload(outPayload, offset, VANS_MAX_DIRECTION_LIGHTS, frameData.directionalLights);
+	AppendPaddedFramePayload(outPayload, offset, VANS_MAX_POINT_LIGHTS, frameData.pointLights);
+	AppendPaddedFramePayload(outPayload, offset, VANS_MAX_SPOT_LIGHTS, frameData.spotLights);
+	AppendPaddedFramePayload(outPayload, offset, VANS_MAX_RECT_LIGHTS, frameData.rectLights);
+	AppendPaddedFramePayload(outPayload, offset, VANS_MAX_PUNCTUAL_LIGHTS, shadowData);
+	AppendPaddedFramePayload(outPayload, offset, VANS_MAX_PUNCTUAL_SHADOW_VIEWS, shadowViews);
+	assert(offset == outPayload.size());
+	return true;
+}
+
+VansGraphics::VansRenderLightFrameData
+VansGraphics::VansLightManager::BuildRenderLightFrameData()
+{
+	const auto vansConfigration = VansConfigration::GetInstance();
+	const std::vector<VansDirectionalLight> preparedDirectionalLights =
+		BuildPreparedDirectionalLights();
+
+	VansRenderLightFrameData frameData;
+	frameData.directionalLights.assign(
+		preparedDirectionalLights.begin(),
+		preparedDirectionalLights.begin() + (std::min)(preparedDirectionalLights.size(), static_cast<size_t>(VANS_MAX_DIRECTION_LIGHTS)));
+	frameData.pointLights.assign(
+		m_PointLights.begin(),
+		m_PointLights.begin() + (std::min)(m_PointLights.size(), static_cast<size_t>(VANS_MAX_POINT_LIGHTS)));
+	frameData.spotLights.assign(
+		m_SpotLights.begin(),
+		m_SpotLights.begin() + (std::min)(m_SpotLights.size(), static_cast<size_t>(VANS_MAX_SPOT_LIGHTS)));
+	frameData.rectLights.assign(
+		m_RectLights.begin(),
+		m_RectLights.begin() + (std::min)(m_RectLights.size(), static_cast<size_t>(VANS_MAX_RECT_LIGHTS)));
+	for (VansPointLight& light : frameData.pointLights)
+		light.m_ShadowMetaIndex = VANS_INVALID_SHADOW_INDEX;
+	for (VansSpotLight& light : frameData.spotLights)
+		light.m_ShadowMetaIndex = VANS_INVALID_SHADOW_INDEX;
+	for (VansRectLight& light : frameData.rectLights)
+		light.m_ShadowMetaIndex = VANS_INVALID_SHADOW_INDEX;
+	frameData.punctualShadowMapWidth =
+		static_cast<uint32_t>(vansConfigration->GetPunctualShadowMapWidth());
+	frameData.frameSequence = m_LightFrameSequence += 1.0f;
+	frameData.prepared = true;
+	return frameData;
 }
 
 void VansGraphics::VansLightManager::ClearLights()
@@ -669,16 +660,8 @@ void VansGraphics::VansLightManager::ClearLights()
 	m_PointShadowRegistrations.clear();
 	m_SpotShadowRegistrations.clear();
 	m_RectShadowRegistrations.clear();
-	m_PunctualShadowManager.Reset();
 	m_NextStableLightId = 1;
-	m_ShadowFrameIndex = 0;
-	memset(m_LightCounts, 0, sizeof(m_LightCounts));
-	memset(m_SoftShadowParams, 0, sizeof(m_SoftShadowParams));
+	m_LightFrameSequence = 0.0f;
+	m_MainCelestialLightingState = VansCelestialLightingState{};
 }
 
-void VansGraphics::VansLightManager::DestroyGPUResources(VkDevice device)
-{
-	m_LightBuffer.DestroyVulkanBuffer(device);
-	VansVKDescriptorManager::GetInstance()->DestroyDescriptorSet(m_LightDataDescriptorSets);
-	VansVKDescriptorManager::GetInstance()->DestroyDescriptorSetLayout(m_LightDataDescriptorSetLayout);
-}

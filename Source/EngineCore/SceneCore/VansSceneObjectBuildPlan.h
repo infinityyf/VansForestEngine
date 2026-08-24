@@ -4,6 +4,7 @@
 #include "VansSceneCameraMediaComponentConfig.h"
 #include "VansSceneLightComponentConfig.h"
 #include "VansSceneParticleComponentConfig.h"
+#include "VansSceneParentReference.h"
 #include "VansScenePhysicsComponentConfig.h"
 #include "VansSceneRenderNodeConfig.h"
 #include "VansSceneTimelineComponentConfig.h"
@@ -27,7 +28,7 @@ struct VansSceneObjectBuildConfig
 {
 	std::string entityGuid;
 	std::string name;
-	std::string parentEntityGuid;
+	std::optional<VansSceneParentReference> parent;
 	bool active = true;
 	std::optional<VansSceneTransformConfig> transform;
 	std::optional<VansSceneRenderNodeConfig> render;

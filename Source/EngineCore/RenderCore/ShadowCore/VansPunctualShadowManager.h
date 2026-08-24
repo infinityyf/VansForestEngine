@@ -16,7 +16,6 @@ namespace VansGraphics
 		VansPunctualShadowManager(uint32_t atlasSize = 4096, uint32_t basePageSize = 128, uint32_t gutter = 2);
 
 		void Reset();
-		void RemoveLight(uint32_t stableLightId);
 		void PrepareFrame(
 			const VansPunctualShadowCameraData& camera,
 			const std::vector<VansPunctualShadowLightInput>& lights,
@@ -32,23 +31,18 @@ namespace VansGraphics
 			uint32_t dirtyReason = VansShadowDirty_CasterTransform);
 
 		uint32_t GetShadowMetaIndex(uint32_t stableLightId) const;
-		bool HasRenderJobs() const { return !m_RenderJobs.empty(); }
 		bool HasRenderJobs(uint32_t atlasIndex) const;
 
 		const std::vector<VansPunctualShadowGPU>& GetGPUShadowData() const { return m_GPUShadowData; }
 		const std::vector<VansPunctualShadowViewGPU>& GetGPUShadowViews() const { return m_GPUShadowViews; }
 		const std::vector<VansPunctualShadowRenderJob>& GetRenderJobs() const { return m_RenderJobs; }
-		std::vector<VansPunctualShadowRenderJob>& GetMutableRenderJobs() { return m_RenderJobs; }
 		const VansPunctualShadowStatistics& GetStatistics() const { return m_Statistics; }
 
 		const VansPunctualShadowBudget& GetBudget() const { return m_Budget; }
 		void SetBudget(const VansPunctualShadowBudget& budget) { m_Budget = budget; }
 
-		const VansShadowAtlasAllocator& GetAtlasAllocator(uint32_t atlasIndex) const;
 		uint32_t GetTotalAtlasPages() const;
 		VansPunctualShadowDebugSnapshot CaptureDebugSnapshot() const;
-		void RequestDebugPreview();
-		bool ConsumeDebugPreviewRefreshRequest();
 
 	private:
 		struct Runtime
@@ -57,6 +51,8 @@ namespace VansGraphics
 			VansShadowRuntimeState state = VansShadowRuntimeState::Disabled;
 			std::array<VansShadowAtlasBlock, 6> activeBlocks{};
 			std::array<VansShadowAtlasBlock, 6> pendingBlocks{};
+			std::array<glm::mat4, 6> activeWorldToShadow{};
+			std::array<glm::mat4, 6> queuedWorldToShadow{};
 			uint16_t activeResolution = 0;
 			uint16_t pendingResolution = 0;
 			uint16_t targetResolution = 0;
@@ -96,6 +92,7 @@ namespace VansGraphics
 		static uint32_t PageCost(uint32_t resolution, uint32_t viewCount, uint32_t basePageSize);
 		static uint16_t DownshiftResolution(uint16_t resolution);
 		static bool IntersectsSphere(const VansShadowAABB& bounds, const glm::vec3& center, float radius);
+		static bool IsSecondaryPointResident(const Runtime& runtime);
 
 		float ComputeCoverage(const VansPunctualShadowLightInput& input, const VansPunctualShadowCameraData& camera) const;
 		float ComputeDistancePriority(const VansPunctualShadowLightInput& input, const VansPunctualShadowCameraData& camera) const;
@@ -116,7 +113,10 @@ namespace VansGraphics
 		void BuildGPUData(const std::vector<VansPunctualShadowLightInput>& lights);
 
 		glm::mat4 BuildShadowMatrix(const Runtime& runtime, uint32_t faceIndex, const VansShadowAtlasBlock& block) const;
-		VansPunctualShadowViewGPU BuildGPUView(const Runtime& runtime, uint32_t faceIndex, const VansShadowAtlasBlock& block) const;
+		VansPunctualShadowViewGPU BuildGPUView(
+			const Runtime& runtime,
+			const VansShadowAtlasBlock& block,
+			const glm::mat4& worldToShadow) const;
 
 		std::array<VansShadowAtlasAllocator, VANS_PUNCTUAL_SHADOW_ATLAS_COUNT> m_AtlasAllocators;
 		VansPunctualShadowBudget m_Budget;
@@ -129,7 +129,5 @@ namespace VansGraphics
 		VansPunctualShadowCameraData m_Camera;
 		uint64_t m_FrameIndex = 0;
 		uint32_t m_NextAtomicGroupId = 1;
-		uint32_t m_DebugPreviewHeartbeat = 1;
-		bool m_DebugPreviewForceRefresh = true;
 	};
 }

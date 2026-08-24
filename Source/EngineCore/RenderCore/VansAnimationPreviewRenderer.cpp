@@ -2,6 +2,7 @@
 
 #include "VulkanCore/VansMesh.h"
 #include "VulkanCore/VansVKDevice.h"
+#include "../RuntimeCore/VansThreadContract.h"
 
 #include <algorithm>
 #include <chrono>
@@ -48,21 +49,58 @@ VansAnimationPreviewRenderer::~VansAnimationPreviewRenderer()
 	Shutdown();
 }
 
-bool VansAnimationPreviewRenderer::Initialize(
-	VansVKDevice& device,
+bool VansAnimationPreviewRenderer::PrepareCpu(
 	const std::filesystem::path& modelPath,
 	float scaleFactor,
 	const Vans::VansSkeletalMeshImportSettings& importSettings,
 	std::string& error)
 {
-	Shutdown();
-	m_Device = &device;
-	if (!LoadCpuModel(modelPath, scaleFactor, importSettings, error))
+	if (m_Device != nullptr || m_Ready)
 	{
-		m_Device = nullptr;
+		error = "Animation preview GPU resource is still active";
 		return false;
 	}
+	m_Skeleton = {};
+	m_Vertices.clear();
+	m_Indices.clear();
+	m_ProjectedVertices.clear();
+	m_Pixels.clear();
+	m_Depth.clear();
+	m_Stats = {};
+	if (!LoadCpuModel(modelPath, scaleFactor, importSettings, error))
+		return false;
 
+	m_Pixels.resize(static_cast<std::size_t>(PreviewWidth) * PreviewHeight * 4);
+	m_Depth.resize(static_cast<std::size_t>(PreviewWidth) * PreviewHeight);
+	m_ProjectedVertices.resize(m_Vertices.size());
+	m_Stats.width = PreviewWidth;
+	m_Stats.height = PreviewHeight;
+	m_Stats.vertexCount = m_Vertices.size();
+	m_Stats.sourceTriangleCount = m_Indices.size() / 3;
+	m_Stats.renderedTriangleCount =
+		(m_Stats.sourceTriangleCount + m_TriangleStride - 1) / m_TriangleStride;
+
+	BoneMatricesSSBO bindMatrices{};
+	for (glm::mat4& matrix : bindMatrices.boneMatrices)
+		matrix = glm::mat4(1.0f);
+	const auto start = std::chrono::steady_clock::now();
+	Rasterize(bindMatrices, {}, glm::vec3(0.0f), {});
+	m_Stats.renderMilliseconds = std::chrono::duration<float, std::milli>(
+		std::chrono::steady_clock::now() - start).count();
+	return true;
+}
+
+bool VansAnimationPreviewRenderer::InitializeGpuRenderThread(
+	VansVKDevice& device,
+	std::string& error)
+{
+	VANS_ASSERT_RENDER_THREAD();
+	if (m_Pixels.empty() || m_Vertices.empty())
+	{
+		error = "Animation preview CPU data is not prepared";
+		return false;
+	}
+	m_Device = &device;
 	VkExtent3D extent{ PreviewWidth, PreviewHeight, 1 };
 	VkDevice& logicalDevice = device.GetLogicDevice();
 	if (!m_ColorImage.CreateVulkanImage(
@@ -83,28 +121,15 @@ bool VansAnimationPreviewRenderer::Initialize(
 		Shutdown();
 		return false;
 	}
-
-	m_Pixels.resize(static_cast<std::size_t>(PreviewWidth) * PreviewHeight * 4);
-	m_Depth.resize(static_cast<std::size_t>(PreviewWidth) * PreviewHeight);
-	m_ProjectedVertices.resize(m_Vertices.size());
-	m_Stats.width = PreviewWidth;
-	m_Stats.height = PreviewHeight;
-	m_Stats.vertexCount = m_Vertices.size();
-	m_Stats.sourceTriangleCount = m_Indices.size() / 3;
-	m_Stats.renderedTriangleCount =
-		(m_Stats.sourceTriangleCount + m_TriangleStride - 1) / m_TriangleStride;
 	m_Ready = true;
-
-	BoneMatricesSSBO bindMatrices{};
-	for (glm::mat4& matrix : bindMatrices.boneMatrices)
-		matrix = glm::mat4(1.0f);
-	return Render(bindMatrices, {}, glm::vec3(0.0f), {}, error);
+	return UploadRenderThread(error);
 }
 
 void VansAnimationPreviewRenderer::Shutdown()
 {
 	if (m_Device)
 	{
+		VANS_ASSERT_RENDER_THREAD();
 		VkDevice& logicalDevice = m_Device->GetLogicDevice();
 		if (logicalDevice != VK_NULL_HANDLE)
 			m_ColorImage.DestroyVulkanImage(logicalDevice);
@@ -219,7 +244,7 @@ bool VansAnimationPreviewRenderer::LoadCpuModel(
 	return true;
 }
 
-bool VansAnimationPreviewRenderer::Render(
+bool VansAnimationPreviewRenderer::RasterizeFrame(
 	const BoneMatricesSSBO& boneMatrices,
 	const std::vector<glm::vec4>& perBoneVisualizationColors,
 	const glm::vec3& modelOffset,
@@ -235,7 +260,7 @@ bool VansAnimationPreviewRenderer::Render(
 	Rasterize(boneMatrices, perBoneVisualizationColors, modelOffset, view);
 	m_Stats.renderMilliseconds = std::chrono::duration<float, std::milli>(
 		std::chrono::steady_clock::now() - start).count();
-	return Upload(error);
+	return true;
 }
 
 void VansAnimationPreviewRenderer::Rasterize(
@@ -375,8 +400,9 @@ void VansAnimationPreviewRenderer::Rasterize(
 	}
 }
 
-bool VansAnimationPreviewRenderer::Upload(std::string& error)
+bool VansAnimationPreviewRenderer::UploadRenderThread(std::string& error)
 {
+	VANS_ASSERT_RENDER_THREAD();
 	if (!m_Device || m_Pixels.empty())
 	{
 		error = "Animation preview has no render target or pixels";

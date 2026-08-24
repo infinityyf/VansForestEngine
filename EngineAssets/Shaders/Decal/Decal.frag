@@ -4,6 +4,7 @@
 
 #include "../Common/CameraData.glsl"
 #include "../Common/ModelData.glsl"
+#include "../Common/VansDrawSubmission.glsl"
 #include "../BRDF/BRDFData.glsl"
 
 // ── 顶点着色器输入 ─────────────────────────────────────────────────────────
@@ -21,14 +22,6 @@ layout( set = 0, binding = 50 ) uniform sampler2D globalPBRTextures[];
 // GBuffer2 = (worldPos.xyz, -linearDepth)
 layout( set = 1, binding = 0 ) uniform sampler2D gBuffer2Sampler;
 
-// ── Push Constants ─────────────────────────────────────────────────────────
-layout( push_constant ) uniform MaterialPushConsts
-{
-    int materialIndex;
-    int objectIndex;
-    uint vertexFeatureMask;
-} materialConst;
-
 // ── MRT 输出（3 个颜色附件，与 DecalRenderPass 附件顺序一致） ──────────────
 // 附件 0: Normal
 layout( location = 0 ) out vec4 outNormal;
@@ -40,6 +33,7 @@ layout( location = 2 ) out vec4 outGBuffer1;
 
 void main()
 {
+    VansDrawData drawData = VansGetDrawData();
     // ── 1. 从 GBuffer2 重建被遮挡表面的世界坐标 ──────────────────────────────
     vec2 screenUV = gl_FragCoord.xy * ScreenParams.zw;
     vec4 gbuf2    = texture(gBuffer2Sampler, screenUV);
@@ -51,7 +45,7 @@ void main()
     vec3 surfaceWS = gbuf2.xyz;
 
     // ── 2. OBB 越界测试 ──────────────────────────────────────────────────────
-    int objectIndex  = materialConst.objectIndex;
+    int objectIndex  = drawData.transformIndex;
     mat4 ModelMatrix = ModelBuffer.transforms[objectIndex].ModelMatrix;
     mat4 invModel    = inverse(ModelMatrix);
     vec4 localPos    = invModel * vec4(surfaceWS, 1.0);
@@ -64,7 +58,7 @@ void main()
     vec2 decal_uv = localPos.xz * 0.5 + 0.5;
 
     // ── 4. 采样贴花 PBR 纹理 ────────────────────────────────────────────────
-    int mi = nonuniformEXT(materialConst.materialIndex);
+    int mi = nonuniformEXT(drawData.materialIndex);
     MaterialPayload matData = materialDataBuffer.materials[mi];
 
     vec4 albedoSample    = texture(globalPBRTextures[mi * 5 + 0], decal_uv, MaterialMipBias);

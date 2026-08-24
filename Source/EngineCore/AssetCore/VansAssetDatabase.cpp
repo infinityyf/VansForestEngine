@@ -13,6 +13,47 @@ namespace Vans
 {
 namespace
 {
+struct SerializedAssetTypeEntry
+{
+    VansAssetType type;
+    std::string_view name;
+};
+
+constexpr SerializedAssetTypeEntry SerializedAssetTypes[] = {
+    { VansAssetType::Model, "model" },
+    { VansAssetType::Texture, "texture" },
+    { VansAssetType::Material, "material" },
+    { VansAssetType::Shader, "shader" },
+    { VansAssetType::Audio, "audio" },
+    { VansAssetType::Video, "video" },
+    { VansAssetType::Scene, "scene" },
+    { VansAssetType::Particle, "particle" },
+    { VansAssetType::AnimationClip, "animationClip" },
+    { VansAssetType::AnimatorController, "animatorController" },
+    { VansAssetType::AnimationRig, "animationRig" },
+    { VansAssetType::BoneMask, "boneMask" },
+    { VansAssetType::Timeline, "timeline" },
+    { VansAssetType::ActionDefinition, "actionDefinition" },
+    { VansAssetType::ActionSet, "actionSet" },
+    { VansAssetType::GameplayEffect, "gameplayEffect" },
+    { VansAssetType::GameplayCue, "gameplayCue" },
+    { VansAssetType::AttributeSet, "attributeSet" },
+    { VansAssetType::TargetingPolicy, "targetingPolicy" },
+    { VansAssetType::GameplayTagTree, "gameplayTagTree" },
+    { VansAssetType::PayloadSchema, "payloadSchema" },
+    { VansAssetType::ActionGraph, "actionGraph" },
+    { VansAssetType::CameraRigProfile, "cameraRigProfile" },
+    { VansAssetType::CameraShakeProfile, "cameraShakeProfile" },
+    { VansAssetType::GAFEditorLayout, "gafEditorLayout" },
+    { VansAssetType::ClothProfile, "clothProfile" },
+    { VansAssetType::SkinProfile, "skinProfile" },
+    { VansAssetType::PostProcessProfile, "postProcessProfile" },
+    { VansAssetType::RagdollProfile, "ragdollProfile" },
+    { VansAssetType::AudioReverbPreset, "audioReverbPreset" },
+    { VansAssetType::AudioBusSnapshot, "audioBusSnapshot" },
+    { VansAssetType::AudioDuckingRules, "audioDuckingRules" }
+};
+
 std::wstring LowerExtension(const std::filesystem::path& path)
 {
     std::wstring extension = path.extension().wstring();
@@ -418,6 +459,7 @@ VansAssetType VansAssetDatabase::Classify(const std::filesystem::path& sourcePat
     if (extension == L".particle") return VansAssetType::Particle;
     if (extension == L".vclip") return VansAssetType::AnimationClip;
     if (extension == L".vanimator") return VansAssetType::AnimatorController;
+	if (extension == L".vanimrig") return VansAssetType::AnimationRig;
 	if (extension == L".vbonemask") return VansAssetType::BoneMask;
     if (extension == L".vtimeline") return VansAssetType::Timeline;
 	if (extension == L".vaction") return VansAssetType::ActionDefinition;
@@ -456,6 +498,7 @@ std::string VansAssetDatabase::ImporterFor(VansAssetType type)
     case VansAssetType::Particle: return "ParticleImporter";
     case VansAssetType::AnimationClip: return "AnimationClipImporter";
     case VansAssetType::AnimatorController: return "AnimatorControllerImporter";
+	case VansAssetType::AnimationRig: return "AnimationRigImporter";
 	case VansAssetType::BoneMask: return "BoneMaskImporter";
     case VansAssetType::Timeline: return "TimelineImporter";
 	case VansAssetType::ActionDefinition: return "GameplayActionImporter";
@@ -479,6 +522,22 @@ std::string VansAssetDatabase::ImporterFor(VansAssetType type)
     case VansAssetType::AudioDuckingRules: return "AudioDuckingRulesImporter";
     default: return {};
     }
+}
+
+std::string_view VansAssetDatabase::SerializedTypeName(VansAssetType type) noexcept
+{
+    for (const SerializedAssetTypeEntry& entry : SerializedAssetTypes)
+        if (entry.type == type)
+            return entry.name;
+    return "unknown";
+}
+
+VansAssetType VansAssetDatabase::ParseSerializedType(std::string_view value) noexcept
+{
+    for (const SerializedAssetTypeEntry& entry : SerializedAssetTypes)
+        if (entry.name == value)
+            return entry.type;
+    return VansAssetType::Unknown;
 }
 
 std::filesystem::path VansAssetDatabase::Normalize(const std::filesystem::path& path) const

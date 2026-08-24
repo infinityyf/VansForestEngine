@@ -3,13 +3,13 @@
 
 #include "../../Common/CameraData.glsl"
 #include "../../Common/ModelData.glsl"
+#include "../../Common/VansDrawSubmission.glsl"
 #include "../../Common/VertexDeformation.glsl"
 
 layout(location = 0) in vec4 position;
 layout(location = 1) in vec2 uv;
 layout(location = 2) in vec3 normal;
-layout(location = 3) in vec3 tangent;
-layout(location = 4) in vec3 bitangent;
+layout(location = 3) in vec4 tangentFrame;
 
 layout(location = 0) out vec2 fragUV;
 layout(location = 1) out vec3 positionWS;
@@ -18,25 +18,18 @@ layout(location = 3) out vec3 tangentWS;
 layout(location = 4) out vec3 bitangentWS;
 layout(location = 5) out vec4 clipPos;
 
-layout(push_constant) uniform DrawPushConsts
-{
-    int materialIndex;
-    int transformIndex;
-    uint vertexFeatureMask;
-    int passUser0;
-} pc;
-
 void main()
 {
-    mat4 model = ModelBuffer.transforms[pc.transformIndex].ModelMatrix;
-    mat4 normalMatrix = ModelBuffer.transforms[pc.transformIndex].NormalMatrix;
+    VansDrawData drawData = VansGetDrawData();
+    mat4 model = ModelBuffer.transforms[drawData.transformIndex].ModelMatrix;
+    mat4 normalMatrix = ModelBuffer.transforms[drawData.transformIndex].NormalMatrix;
 
     VansVertexSurface surface;
     surface.position = position;
     surface.normal = normal;
-    surface.tangent = tangent;
-    surface.bitangent = bitangent;
-    VansApplyVertexDeformation(surface, pc.vertexFeatureMask);
+    surface.tangent = tangentFrame.xyz;
+    surface.bitangent = VansBuildBitangent(normal, tangentFrame.xyz, tangentFrame.w);
+    VansApplyVertexDeformation(surface, drawData.vertexFeatureMask);
 
     vec4 world = model * surface.position;
     positionWS = world.xyz;

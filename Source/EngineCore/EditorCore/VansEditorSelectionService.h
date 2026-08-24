@@ -41,6 +41,7 @@ namespace Vans
 		bool Contains(const EditorObjectHandle& handle) const;
 
 		void SelectEntity(std::string entityGuid, const std::string& source);
+		void SelectSceneSubObject(EditorObjectHandle handle, const std::string& source);
 		void SelectScene(const std::string& source);
 		void SelectAsset(std::filesystem::path assetPath, const std::string& source);
 
@@ -58,4 +59,3 @@ namespace Vans
 		bool m_SceneSelected = false;
 	};
 }
-

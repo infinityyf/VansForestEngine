@@ -518,6 +518,8 @@ namespace
 				const std::string owner = "scene entity '" + entityName + "' Animation";
 				CollectStrictAssetReference(FindObjectField(*data, "animator"),
 					VansAssetType::AnimatorController, owner + ".animator", dependencies, result);
+				CollectStrictAssetReference(FindObjectField(*data, "rig"),
+					VansAssetType::AnimationRig, owner + ".rig", dependencies, result);
 
 				const VansSerializedValue* retarget = ReadSerializedObjectField(*data, "retarget");
 				if (retarget == nullptr)
@@ -757,6 +759,8 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 			AppendDependencyError(result, dependency.chain + " cannot load Animator definition");
 			continue;
 		}
+		pendingDependencies.push_back({ animator.animationRigGuid, VansAssetType::AnimationRig,
+			dependency.chain + " -> Animation Rig -> " + animator.animationRigGuid });
 		for (const VansGraphics::AnimatorClipRef& clip : animator.clipRefs)
 		{
 			pendingDependencies.push_back({ clip.assetGuid, VansAssetType::AnimationClip,

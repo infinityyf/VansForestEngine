@@ -2,7 +2,6 @@
 
 #include "VansAnimationTypes.h"
 #include "VansAnimationFrameMemory.h"
-#include "FootPlacement/VansFootPlacementTypes.h"
 
 #include <../../GLM/glm.hpp>
 #include <../../GLM/gtc/quaternion.hpp>
@@ -66,15 +65,6 @@ namespace VansGraphics
 		bool valid = false;
 	};
 
-	struct VansFootPlacementRequest
-	{
-		int sourceNodeId = -1;
-		// Definition-owned settings stay immutable for the lifetime of the graph
-		// instance. The per-frame pose only transports this non-owning reference.
-		const FootPlacementSettings* settings = nullptr;
-		bool valid = false;
-	};
-
 	// 拥有型 Payload 先作为统一正确性边界；Animator Compiler 随后为节点分配
 	// 预分配 scratch buffer，并以 View 传递相同的数据语义。
 	struct VansPosePayload
@@ -85,7 +75,8 @@ namespace VansGraphics
 		VansAnimationFrameVector<VansAnimationEventSample> events;
 		VansAnimationFrameVector<SampledNodeTransform> nodeTransforms;
 		VansAnimationSyncState sync;
-		VansFootPlacementRequest footPlacement;
+		// Target Procedural Graph 的活动节点顺序。只保存稳定节点 id，不携带配置指针。
+		VansAnimationFrameVector<int> proceduralNodeIds;
 		float sourceWeight = 1.0f;
 		bool sourceAdditive = false;
 		VansAnimationFrameVector<float> sourceBoneMask;

@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <optional>
 #include <shared_mutex>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -23,6 +24,7 @@ enum class VansAssetType
     Particle,
     AnimationClip,
     AnimatorController,
+	AnimationRig,
 	BoneMask,
 	Timeline,
 	ActionDefinition,
@@ -161,6 +163,8 @@ public:
 
     static VansAssetType Classify(const std::filesystem::path& sourcePath);
     static std::string ImporterFor(VansAssetType type);
+    static std::string_view SerializedTypeName(VansAssetType type) noexcept;
+    static VansAssetType ParseSerializedType(std::string_view value) noexcept;
 
 private:
     std::filesystem::path Normalize(const std::filesystem::path& path) const;

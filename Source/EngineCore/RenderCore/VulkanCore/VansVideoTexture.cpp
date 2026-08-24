@@ -222,11 +222,15 @@ void VansVideoTexture::Close()
     if (m_DecodeThread.joinable())
         m_DecodeThread.join();
 
+	std::lock_guard<std::mutex> pendingLock(m_PendingFrameMutex);
+
     // 清空帧队列
     {
         std::lock_guard<std::mutex> lock(m_QueueMutex);
         while (!m_FrameQueue.empty())
             m_FrameQueue.pop();
+		RecycleFramePixelsLocked(m_LastFramePixels);
+		RecycleUploadSlotLocked(m_LastFrameUploadSlot);
         ClearFramePixelPoolLocked();
         ClearUploadSlotsLocked();
     }
@@ -272,6 +276,8 @@ void VansVideoTexture::Stop()
     m_NeedRestart.store(true);
     m_ProducerCv.notify_all();
 
+	std::lock_guard<std::mutex> pendingLock(m_PendingFrameMutex);
+
     // 3. 清空主线程侧的待显示帧队列（旧帧已不需要）
     {
         std::lock_guard<std::mutex> lock(m_QueueMutex);
@@ -296,6 +302,7 @@ bool VansVideoTexture::Seek(double seconds)
 {
 	if (!m_IsReady.load()) return false;
 	const double target = std::clamp(seconds, 0.0, std::max(0.0, m_VideoDuration));
+	std::lock_guard<std::mutex> pendingLock(m_PendingFrameMutex);
 	{
 		std::lock_guard<std::mutex> lock(m_QueueMutex);
 		while (!m_FrameQueue.empty())
@@ -352,6 +359,7 @@ bool VansVideoTexture::Tick(double deltaTime)
         // 通知后台线程队列有空位
         m_ProducerCv.notify_one();
 
+		std::lock_guard<std::mutex> pendingLock(m_PendingFrameMutex);
         {
             std::lock_guard<std::mutex> lock(m_QueueMutex);
             RecycleFramePixelsLocked(m_LastFramePixels);
@@ -376,6 +384,12 @@ bool VansVideoTexture::Tick(double deltaTime)
 // RecordPendingUpload — 将待显示视频帧记录到当前帧图形命令缓冲
 // ===========================================================================
 bool VansVideoTexture::RecordPendingUpload(VansVKCommandBuffer& cmd)
+{
+	std::lock_guard<std::mutex> pendingLock(m_PendingFrameMutex);
+	return RecordPendingUploadLocked(cmd);
+}
+
+bool VansVideoTexture::RecordPendingUploadLocked(VansVKCommandBuffer& cmd)
 {
     if (!m_IsReady.load() || !m_HasPendingUpload ||
         (m_LastFrameUploadSlot < 0 && m_LastFramePixels.empty()))
@@ -558,6 +572,7 @@ bool VansVideoTexture::CopyNewFrameToArrayLayer(VansTexture* targetArray,
                                                  VansVKCommandBuffer& cmd,
                                                  int layerIndex)
 {
+	std::lock_guard<std::mutex> pendingLock(m_PendingFrameMutex);
     if (!targetArray || !m_HasNewFrame || m_LastFramePixels.empty())
         return false;
 
@@ -574,12 +589,13 @@ bool VansVideoTexture::RecordNewFrameToArrayLayer(VansTexture* targetArray,
                                                    VansVKCommandBuffer& cmd,
                                                    int layerIndex)
 {
+	std::lock_guard<std::mutex> pendingLock(m_PendingFrameMutex);
     if (!targetArray || !m_HasNewFrame || m_LastFramePixels.empty())
         return false;
 
     // 面光源视频优先复用已经上传到 GPU 的主视频纹理，避免同一帧再次走 CPU staging。
     // 若外部调用顺序未提前上传主视频纹理，这里补录一次主纹理上传。
-    if (m_HasPendingUpload && !RecordPendingUpload(cmd))
+    if (m_HasPendingUpload && !RecordPendingUploadLocked(cmd))
         return false;
 
     bool ok = false;

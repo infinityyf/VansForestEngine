@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 #include <string>
+#include <unordered_set>
 
 namespace Vans
 {
@@ -98,6 +99,34 @@ bool VansProjectSettingsJsonCodec::DecodeRenderSettings(
 			return false;
 		}
 
+		if (root.contains("outputResolution"))
+		{
+			if (!root["outputResolution"].is_object())
+			{
+				error = "outputResolution must be an object";
+				return false;
+			}
+			const nlohmann::json& outputResolution = root["outputResolution"];
+			settings.renderOutputSettings.width =
+				outputResolution.value("width", 0u);
+			settings.renderOutputSettings.height =
+				outputResolution.value("height", 0u);
+			constexpr std::uint32_t kMinimumOutputWidth = 320u;
+			constexpr std::uint32_t kMinimumOutputHeight = 180u;
+			constexpr std::uint32_t kMaximumOutputDimension = 16384u;
+			if (!settings.renderOutputSettings.UsesWindowExtent() &&
+				(!settings.renderOutputSettings.HasExplicitExtent() ||
+				 settings.renderOutputSettings.width < kMinimumOutputWidth ||
+				 settings.renderOutputSettings.height < kMinimumOutputHeight ||
+				 settings.renderOutputSettings.width > kMaximumOutputDimension ||
+				 settings.renderOutputSettings.height > kMaximumOutputDimension))
+			{
+				error = "outputResolution must be 0x0 (follow window) or an explicit "
+					"resolution between 320x180 and 16384x16384";
+				return false;
+			}
+		}
+
 		if (root.contains("commandRecording") && root["commandRecording"].is_object())
 		{
 			const nlohmann::json& commandRecording = root["commandRecording"];
@@ -163,6 +192,10 @@ nlohmann::json VansProjectSettingsJsonCodec::EncodeRenderSettings(
 		{ "framesInFlight", settings.commandRecordingSettings.framesInFlight },
 		{ "asyncComputeEnabled", settings.commandRecordingSettings.asyncComputeEnabled }
 	};
+	root["outputResolution"] = {
+		{ "width", settings.renderOutputSettings.width },
+		{ "height", settings.renderOutputSettings.height }
+	};
 	root["mainCameraHiZCulling"] = {
 		{ "enabled", settings.mainCameraHiZCullSettings.enabled },
 		{ "enableOpaque", settings.mainCameraHiZCullSettings.enableOpaque },
@@ -188,8 +221,56 @@ bool VansProjectSettingsJsonCodec::DecodePhysicsSettings(
 	error.clear();
 	try
 	{
-		settings.fixedTimeStep = root.value("fixedTimeStep",
-			root.value("physicsDeltaTime", 1.0f / 60.0f));
+		if (!root.is_object() || !root.contains("fixedTimeStep")
+			|| !root["fixedTimeStep"].is_number() || !root.contains("queryProfiles")
+			|| !root["queryProfiles"].is_object())
+		{
+			error = "Physics settings require numeric fixedTimeStep and object queryProfiles";
+			return false;
+		}
+		for (const auto& item : root.items())
+			if (item.key() != "fixedTimeStep" && item.key() != "queryProfiles")
+			{
+				error = "Physics settings contain unknown field '" + item.key() + "'";
+				return false;
+			}
+		settings.fixedTimeStep = root.at("fixedTimeStep").get<float>();
+		if (!std::isfinite(settings.fixedTimeStep) || settings.fixedTimeStep <= 0.0f)
+		{
+			error = "Physics fixedTimeStep must be finite and positive";
+			return false;
+		}
+		settings.queryProfiles.clear();
+		for (const auto& profile : root.at("queryProfiles").items())
+		{
+			if (profile.key().empty() || !profile.value().is_object()
+				|| profile.value().size() != 1 || !profile.value().contains("collisionLayers")
+				|| !profile.value().at("collisionLayers").is_array())
+			{
+				error = "Physics query profile '" + profile.key()
+					+ "' requires only a collisionLayers array";
+				return false;
+			}
+			std::vector<std::string> layers;
+			std::unordered_set<std::string> uniqueLayers;
+			for (const nlohmann::json& layer : profile.value().at("collisionLayers"))
+			{
+				if (!layer.is_string() || layer.get<std::string>().empty()
+					|| !uniqueLayers.insert(layer.get<std::string>()).second)
+				{
+					error = "Physics query profile '" + profile.key()
+						+ "' contains an invalid or duplicate collision layer";
+					return false;
+				}
+				layers.push_back(layer.get<std::string>());
+			}
+			if (layers.empty())
+			{
+				error = "Physics query profile '" + profile.key() + "' cannot be empty";
+				return false;
+			}
+			settings.queryProfiles.emplace(profile.key(), std::move(layers));
+		}
 	}
 	catch (const nlohmann::json::exception& exception)
 	{
@@ -204,6 +285,9 @@ nlohmann::json VansProjectSettingsJsonCodec::EncodePhysicsSettings(
 {
 	nlohmann::json root;
 	root["fixedTimeStep"] = settings.fixedTimeStep;
+	root["queryProfiles"] = nlohmann::json::object();
+	for (const auto& [name, layers] : settings.queryProfiles)
+		root["queryProfiles"][name] = { { "collisionLayers", layers } };
 	return root;
 }
 }

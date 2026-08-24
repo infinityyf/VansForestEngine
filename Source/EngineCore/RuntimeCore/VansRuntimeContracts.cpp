@@ -2,6 +2,7 @@
 #include "VansThreadContract.h"
 
 #ifdef _DEBUG
-VansFramePhase g_CurrentFramePhase = VansFramePhase::GameLogic;
+thread_local VansFramePhase g_CurrentFramePhase = VansFramePhase::GameLogic;
+thread_local VansThreadRole g_CurrentThreadRole = VansThreadRole::Unknown;
 std::thread::id g_MainThreadId;
 #endif

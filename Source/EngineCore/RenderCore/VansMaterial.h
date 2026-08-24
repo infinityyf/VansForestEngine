@@ -34,6 +34,7 @@
 #include <cstdint>
 
 #include <memory>
+#include <mutex>
 
 #include <variant>
 
@@ -260,6 +261,7 @@ namespace VansGraphics
 	class VansDecalMaterial;
 
 	class VansMaterial;
+	struct VansRenderMaterialFrameData;
 
 
 
@@ -307,28 +309,6 @@ namespace VansGraphics
 		VAN_PBR_EMISSIVE = 19,
 
 	};
-
-
-
-	// Lightweight push-constant payload built at draw time.
-
-	// Each field maps to a global GPU resource index.
-
-	struct alignas(16) VansDrawPushConstant
-
-	{
-
-		int materialIndex;    // index into global PBR param SSBO / bindless textures
-
-		int transformIndex;   // index into per-object transform SSBO
-
-		std::uint32_t vertexFeatureMask; // mesh/render-item vertex deformation flags
-
-		int passUser0;        // reserved for pass-specific data; keeps ABI at 16 bytes
-
-	};
-
-	static_assert(sizeof(VansDrawPushConstant) == 16, "VansDrawPushConstant must stay 16 bytes");
 
 
 
@@ -588,6 +568,7 @@ namespace VansGraphics
 		std::unordered_map<std::string, RuntimeMaterialInstance> m_RuntimeMaterialInstances;
 		std::vector<int> m_FreeRuntimePBRIndices;
 		std::vector<int> m_FreeRuntimeCustomIndices;
+		bool m_GlobalBindlessDescriptorsDirty = false;
 
 		struct SkinProfileLUTCacheEntry
 		{
@@ -640,6 +621,7 @@ namespace VansGraphics
 		static constexpr const char* RT_HZB_OCCLUSION_RESULT = "Runtime.HZB.OcclusionResult";
 
 		static constexpr const char* RT_SCREEN_SPACE_SHADOW_RESULT = "Runtime.ScreenSpaceShadow.Result";
+		static constexpr const char* RT_CASCADE_SHADOW_MIN_MAX = "Runtime.CascadeShadow.MinMax";
 
 		static constexpr const char* RT_PUNCTUAL_SHADOW_DEBUG_PREVIEW = "Runtime.PunctualShadow.DebugPreview";
 
@@ -756,7 +738,13 @@ namespace VansGraphics
 
 		void ClearScenePBRData(VkDevice device);
 
+		// Main-only CPU staging; GPU buffers are uploaded from the published frame on RT.
 		bool FlushMaterialPayload(VansMaterial& material);
+		VansRenderMaterialFrameData CaptureRenderMaterialFrameData(
+			const std::vector<VansMaterial*>& activeMaterials);
+		bool UploadRenderMaterialFrameData(
+			const VansRenderMaterialFrameData& frameData);
+		bool UploadAtmosphereFrameData(const VansAtmospherePBRParam& payload);
 
 		void ResetSkinProfileLUTCache();
 		bool ResolveSkinProfileLUTForMaterial(
@@ -847,12 +835,17 @@ namespace VansGraphics
 		VkDescriptorSetLayout m_SSRTraceSetLayout = VK_NULL_HANDLE;
 
 		std::vector<VkDescriptorSet> m_SSRTraceDescriptorSets;
+		VansVKBuffer m_SSRRayListBuffer;
+		VansVKBuffer m_SSRTraceControlBuffer;
 
 
 
 		VkDescriptorSetLayout m_ScreenSpaceShadowSetLayout = VK_NULL_HANDLE;
 
 		std::vector<VkDescriptorSet> m_ScreenSpaceShadowDescriptorSets;
+		VkDescriptorSetLayout m_CascadeShadowMinMaxSetLayout = VK_NULL_HANDLE;
+		std::vector<VkDescriptorSet> m_CascadeShadowMinMaxDescriptorSets;
+		uint32_t m_CascadeShadowMinMaxMipCount = 0;
 
 		VansVKBuffer m_ScreenSpaceShadowParamsCBBuffer;
 
@@ -945,6 +938,11 @@ namespace VansGraphics
 
 
 		std::vector<VansVKImage*> m_GlobalPBRTextures;
+		// The texture table is scene-stable, but runtime material instances and
+		// live texture edits may replace entries while RT publishes descriptors.
+		// This narrow mutex protects that rare ownership handoff only; per-frame
+		// material payloads continue through immutable frame snapshots.
+		mutable std::mutex m_GlobalPBRTexturesMutex;
 
 		VkDescriptorSetLayout m_GlobalPBRTexSetLayout = VK_NULL_HANDLE;
 
@@ -1084,11 +1082,15 @@ namespace VansGraphics
 
 
 
-		VansComputeShader* m_SSRTraceShader;
+		VansComputeShader* m_SSRClassifyShader = nullptr;
+		VansComputeShader* m_SSRPrepareIndirectShader = nullptr;
+		VansComputeShader* m_SSRTraceShader = nullptr;
 
 
 
 		VansComputeShader* m_ScreenSpaceShadowShader = nullptr;
+		VansComputeShader* m_CascadeShadowMinMaxSeedShader = nullptr;
+		VansComputeShader* m_CascadeShadowMinMaxReduceShader = nullptr;
 
 		VansComputeShader* m_MainCameraHiZCullShader = nullptr;
 
@@ -1305,6 +1307,9 @@ namespace VansGraphics
 
 		int m_MaterialIndex = -1;
 
+		int GetGlobalMaterialIndex() const { return m_MaterialIndex; }
+		void SetGlobalMaterialIndex(int index) { m_MaterialIndex = index; }
+
 
 
 		// Lookup shader for a specific pass. Returns nullptr if this material
@@ -1362,12 +1367,6 @@ namespace VansGraphics
 
 
 
-		// Index into the global PBR param SSBO / bindless texture array.
-
-		// Assigned during PreparePBRMaterialData; used by draw push-constant.
-
-		int m_MaterialIndex = -1;
-
 	};
 
 
@@ -1410,10 +1409,6 @@ namespace VansGraphics
 		VansTexture* m_EmissiveTexture = nullptr;
 
 
-
-
-
-		int m_MaterialIndex = -1;
 
 
 
@@ -1465,8 +1460,6 @@ namespace VansGraphics
 
 
 
-
-		int m_MaterialIndex = -1;
 
 	};
 
@@ -1569,7 +1562,8 @@ namespace VansGraphics
 
 
 
-		void UpdateAtmosphereMaterialData(VansMaterialManager& materialManager, VansLightManager& lightManager);
+		VansAtmospherePBRParam BuildAtmosphereFrameData(
+			const VansDirectionalLight* directionalLight) const;
 
 	};
 
@@ -1812,8 +1806,6 @@ namespace VansGraphics
 
 
 		VansBasePBRParam m_BasePBRParam;
-
-		int              m_MaterialIndex = -1;
 
 
 

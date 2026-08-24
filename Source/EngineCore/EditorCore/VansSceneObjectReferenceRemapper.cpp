@@ -4,6 +4,7 @@
 #include "../AssetCore/Serialization/VansSerializedObjectReference.h"
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../SceneCore/VansSceneDocument.h"
+#include "../SceneCore/VansSceneParentReference.h"
 
 #include <string>
 #include <unordered_map>
@@ -40,7 +41,9 @@ void BuildChildrenIndex(
         const std::string id = ReadSerializedStringField(entity, "id");
         if (id.empty())
             continue;
-        const std::string parent = ReadSerializedStringField(entity, "parent");
+		const VansSerializedValue* parentValue = FindObjectField(entity, "parent");
+		const std::string parent = parentValue
+			? ReadSceneParentEntityGuid(*parentValue) : std::string{};
         children[parent].push_back(id);
     }
 }
@@ -65,19 +68,6 @@ void RenameDuplicatedEntity(VansSerializedValue& entity, bool rootEntity)
         return;
     if (rootEntity)
         nameValue->stringValue += " Copy";
-}
-
-void RemapStringField(
-    VansSerializedValue& object,
-    const char* key,
-    const std::unordered_map<std::string, std::string>& mapping)
-{
-    VansSerializedValue* value = FindObjectField(object, key);
-    if (!value || value->kind != VansSerializedValue::Kind::String)
-        return;
-    const auto found = mapping.find(value->stringValue);
-    if (found != mapping.end())
-        value->stringValue = found->second;
 }
 
 bool RemapGuid(std::string& guid, const std::unordered_map<std::string, std::string>& mapping)
@@ -125,6 +115,27 @@ void RemapSceneObjectReferences(VansSerializedValue& value, const SceneObjectRef
         for (VansSerializedValue& item : value.arrayItems)
             RemapSceneObjectReferences(item, remap);
     }
+}
+
+void RemapParentReference(VansSerializedValue& entity, const SceneObjectReferenceRemap& remap)
+{
+	VansSerializedValue* value = FindObjectField(entity, "parent");
+	if (!value || value->kind == VansSerializedValue::Kind::Null)
+		return;
+	VansSceneParentReference parent;
+	std::string error;
+	if (!TryReadSceneParentReference(*value, parent, error))
+		return;
+	std::string entityGuid = parent.entityGuid.ToString();
+	if (RemapGuid(entityGuid, remap.entityGuids))
+		VansAssetGuid::TryParse(entityGuid, parent.entityGuid);
+	if (parent.IsAnchor())
+	{
+		std::string componentGuid = parent.animationComponentGuid.ToString();
+		if (RemapGuid(componentGuid, remap.componentGuids))
+			VansAssetGuid::TryParse(componentGuid, parent.animationComponentGuid);
+	}
+	*value = WriteSceneParentReference(parent);
 }
 }
 
@@ -179,8 +190,6 @@ SceneEntityDuplicateResult DuplicateSceneEntitySubtree(
             VansSerializedValue::String(remap.entityGuids[oldEntityGuid]));
         RenameDuplicatedEntity(clone, oldEntityGuid == rootEntityGuid);
 
-        RemapStringField(clone, "parent", remap.entityGuids);
-
         VansSerializedValue* components = FindObjectField(clone, "components");
         if (components && components->kind == VansSerializedValue::Kind::Array)
         {
@@ -200,8 +209,11 @@ SceneEntityDuplicateResult DuplicateSceneEntitySubtree(
         clonedEntities.push_back(std::move(clone));
     }
 
-    for (VansSerializedValue& clone : clonedEntities)
+	for (VansSerializedValue& clone : clonedEntities)
+	{
+		RemapParentReference(clone, remap);
         RemapSceneObjectReferences(clone, remap);
+	}
 
     result.entities.reserve(clonedEntities.size());
     for (VansSerializedValue& clone : clonedEntities)

@@ -19,6 +19,7 @@
 #include "../../GameplayActionSchema/VansGameplayAssetSchema.h"
 #include "../../GameplayActionSchema/VansGameplayActionHostAuthoring.h"
 #include "../../SceneCore/VansSceneDocument.h"
+#include "../../SceneCore/VansSceneParentReference.h"
 #include "../../ScriptCore/VansLuaScriptInspectorService.h"
 #include "../../Util/VansLog.h"
 
@@ -97,6 +98,7 @@ const char* AssetTypeName(Vans::EditorAPI::AssetType type)
     case Vans::EditorAPI::AssetType::AnimationClip: return "Animation Clip";
     case Vans::EditorAPI::AssetType::AnimatorController: return "Animator Controller";
     case Vans::EditorAPI::AssetType::BoneMask: return "Bone Mask";
+	case Vans::EditorAPI::AssetType::AnimationRig: return "Animation Rig";
 	case Vans::EditorAPI::AssetType::Timeline: return "Timeline";
 	case Vans::EditorAPI::AssetType::ActionDefinition: return "Action Definition";
 	case Vans::EditorAPI::AssetType::ActionSet: return "Action Set";
@@ -203,14 +205,14 @@ Vans::VansSerializedValue DefaultSerializedComponentData(const std::string& type
     {
         return Value::Array({ Value::Float(x), Value::Float(y), Value::Float(z) });
     };
-    auto shadowFields = []()
+    auto shadowFields = [](const char* updateMode = "OnChange")
     {
         return std::vector<std::pair<std::string, Value>>{
             { "castShadows", Value::Bool(true) },
             { "shadowPolicy", Value::String("Auto") },
             { "shadowPriority", Value::Int(128) },
             { "shadowResolution", Value::String("Auto") },
-            { "shadowUpdateMode", Value::String("OnChange") },
+            { "shadowUpdateMode", Value::String(updateMode) },
             { "shadowFallback", Value::String("ScreenSpace") },
             { "shadowMaxDistance", Value::Float(30.0) },
             { "shadowNearPlane", Value::Float(0.0) },
@@ -284,7 +286,8 @@ Vans::VansSerializedValue DefaultSerializedComponentData(const std::string& type
             fields.emplace_back("innercutoff", Value::Float(15.0));
             fields.emplace_back("outerCutoff", Value::Float(30.0));
         }
-        std::vector<std::pair<std::string, Value>> shadows = shadowFields();
+        std::vector<std::pair<std::string, Value>> shadows = shadowFields(
+            type == "PointLight" ? "EveryFrame" : "OnChange");
         fields.insert(fields.end(), shadows.begin(), shadows.end());
         return Value::Object(std::move(fields));
     }
@@ -1161,7 +1164,8 @@ bool RebuildRuntimeEntityFromSceneDocument(
         const std::string id = Vans::ReadSerializedStringField(entity, "id");
         if (id == entityGuid)
             entityToRebuild = &entity;
-        if (Vans::ReadSerializedStringField(entity, "parent") == entityGuid)
+		const Vans::VansSerializedValue* parentValue = Vans::FindObjectField(entity, "parent");
+		if (parentValue && Vans::ReadSceneParentEntityGuid(*parentValue) == entityGuid)
             childGuids.push_back(id);
     }
     if (!entityToRebuild)
@@ -1193,7 +1197,10 @@ bool RebuildRuntimeEntityFromSceneDocument(
             continue;
         Vans::EditorAPI::RuntimeEntityReparentRequest reparentRequest;
         reparentRequest.childEntityGuid = childGuid;
-        reparentRequest.newParentEntityGuid = entityGuid;
+		reparentRequest.newParent.kind = Vans::EditorAPI::RuntimeParentKind::Entity;
+		reparentRequest.newParent.entityGuid = entityGuid;
+		reparentRequest.transformPolicy =
+			Vans::EditorAPI::RuntimeReparentTransformPolicy::KeepLocal;
         const Vans::EditorAPI::RuntimeEntityReparentResult reparentResult =
             api.ReparentRuntimeEntity(reparentRequest);
         if (!reparentResult.applied && !reparentResult.message.empty())
@@ -1212,6 +1219,7 @@ struct VansInspectorWindow::Impl
 {
     void ShowWindow(Vans::EditorAPI::IEngineEditorAPI& api);
     void DrawSceneEntity(Vans::EditorAPI::IEngineEditorAPI& api);
+	void DrawSceneSubObject(Vans::EditorAPI::IEngineEditorAPI& api);
     void DrawSceneSettings();
     void DrawAsset(Vans::EditorAPI::IEngineEditorAPI& api);
     void DrawAudioAssetPreview(const std::filesystem::path& sourcePath,
@@ -2190,6 +2198,70 @@ bool VansInspectorWindow::Impl::DrawComponent(Vans::EditorAPI::IEngineEditorAPI&
     return changed;
 }
 
+void VansInspectorWindow::Impl::DrawSceneSubObject(
+	Vans::EditorAPI::IEngineEditorAPI& api)
+{
+	const Vans::EditorObjectHandle& handle =
+		Vans::VansEditorSelectionService::Get().Snapshot().active;
+	if (handle.domain != Vans::EditorObjectDomain::SceneSubObject)
+		return;
+	Vans::EditorAPI::SceneSkeletonNodePoseRequest request;
+	request.entityGuid = handle.entityGuid;
+	request.animationComponentGuid = handle.componentGuid;
+	request.kind = handle.subObjectKind == Vans::SceneSubObjectKind::Socket
+		? Vans::EditorAPI::SceneSkeletonNodeKind::Socket
+		: Vans::EditorAPI::SceneSkeletonNodeKind::Bone;
+	request.anchorGuid = handle.subObjectGuid;
+	const Vans::EditorAPI::SceneSkeletonNodePoseSnapshot pose =
+		api.GetSceneSkeletonNodePose(request);
+	if (!pose.available)
+	{
+		ImGui::TextDisabled("The selected skeleton node is no longer available.");
+		return;
+	}
+
+	auto drawTransform = [](const char* label,
+		const Vans::EditorAPI::RuntimeTransformSnapshot& transform)
+	{
+		if (!ImGui::TreeNodeEx(label, ImGuiTreeNodeFlags_DefaultOpen))
+			return;
+		if (!transform.available)
+			ImGui::TextDisabled("Unavailable");
+		else
+		{
+			ImGui::Text("Position  %.4f  %.4f  %.4f",
+				transform.position.x, transform.position.y, transform.position.z);
+			ImGui::Text("Rotation  %.3f  %.3f  %.3f",
+				transform.rotationDegrees.x,
+				transform.rotationDegrees.y,
+				transform.rotationDegrees.z);
+			ImGui::Text("Scale     %.4f  %.4f  %.4f",
+				transform.scale.x, transform.scale.y, transform.scale.z);
+		}
+		ImGui::TreePop();
+	};
+
+	ImGui::TextUnformatted(pose.name.c_str());
+	ImGui::TextDisabled(handle.subObjectKind == Vans::SceneSubObjectKind::Bone
+		? "Animated Bone (read-only pose)" : "Rig Socket (read-only runtime pose)");
+	ImGui::Separator();
+	ImGui::Text("Owner Entity: %s", pose.entityGuid.c_str());
+	ImGui::Text("Animation Component: %s", pose.animationComponentGuid.c_str());
+	ImGui::Text("Skeleton: %s", pose.skeletonGuid.c_str());
+	ImGui::Text("Pose Revision: %llu",
+		static_cast<unsigned long long>(pose.poseRevision));
+	ImGui::Text(handle.subObjectKind == Vans::SceneSubObjectKind::Bone
+		? "Bone GUID: %s" : "Socket GUID: %s", pose.anchorGuid.c_str());
+	if (!pose.boneGuid.empty() && handle.subObjectKind == Vans::SceneSubObjectKind::Socket)
+		ImGui::Text("Bone GUID: %s", pose.boneGuid.c_str());
+	if (!pose.canonicalPath.empty())
+		ImGui::Text("Path: %s", pose.canonicalPath.c_str());
+	drawTransform(handle.subObjectKind == Vans::SceneSubObjectKind::Socket
+		? "Socket Offset" : "Local Transform", pose.localTransform);
+	drawTransform("Model Transform", pose.modelTransform);
+	drawTransform("World Transform", pose.worldTransform);
+}
+
 void VansInspectorWindow::Impl::DrawSceneEntity(Vans::EditorAPI::IEngineEditorAPI& api)
 {
     Vans::VansSceneDocument* document = VansEditorWindow::GetSceneDocument();
@@ -2602,7 +2674,11 @@ void VansInspectorWindow::Impl::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ap
     m_ActiveAPI = &api;
     m_CollisionLayerNames = api.GetRuntimeCollisionLayerNames();
     m_PendingObjectReferenceEdit.reset();
+	const Vans::EditorObjectHandle& activeSelection =
+		Vans::VansEditorSelectionService::Get().Snapshot().active;
     if (Vans::VansEditorSelection::IsSceneSelected()) DrawSceneSettings();
+	else if (activeSelection.domain == Vans::EditorObjectDomain::SceneSubObject)
+		DrawSceneSubObject(api);
     else if (!Vans::VansEditorSelection::EntityGuid().empty()) DrawSceneEntity(api);
     else if (!Vans::VansEditorSelection::AssetPath().empty()) DrawAsset(api);
     else ImGui::TextDisabled("Select an entity or project asset");

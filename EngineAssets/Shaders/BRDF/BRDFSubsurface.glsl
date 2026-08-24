@@ -90,18 +90,13 @@ vec3 DirectBurleyTransmission(BRDFData brdf, vec3 lightDirection,
 // that front lighting and back lighting never spend the same energy twice.
 void CalculateDirectTransmission_Subsurface(
     BRDFData brdfData, SubsurfaceParams sss,
-    sampler2DArray cascadeShadowMap, float viewDepth,
-    sampler2DArrayShadow punctualShadowMap, float screenSpaceShadow,
+	sampler2DShadow punctualShadowMap[PUNCTUAL_SHADOW_ATLAS_COUNT], float directionalShadow,
     inout vec3 transmission)
 {
     transmission = vec3(0.0);
 
     vec3 L = uDirectionLight.direction.rgb;
     vec3 directionalTerm = DirectBurleyTransmission(brdfData, L, sss);
-    float directionalShadow = min(
-        SampleCascadeShadow(brdfData.positionWS, brdfData.normal,
-                            cascadeShadowMap, viewDepth),
-        screenSpaceShadow);
     transmission += directionalTerm * uDirectionLight.color.rgb *
                     uDirectionLight.intensity * directionalShadow;
 

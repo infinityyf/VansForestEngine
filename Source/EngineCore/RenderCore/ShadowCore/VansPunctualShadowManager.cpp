@@ -97,8 +97,6 @@ namespace VansGraphics
 		m_RenderJobs.clear();
 		m_Statistics = {};
 		m_NextAtomicGroupId = 1;
-		m_DebugPreviewHeartbeat = 1;
-		m_DebugPreviewForceRefresh = true;
 		for (VansShadowAtlasAllocator& allocator : m_AtlasAllocators)
 		{
 			allocator.Reset(
@@ -106,16 +104,6 @@ namespace VansGraphics
 				allocator.GetBasePageSize(),
 				allocator.GetGutter());
 		}
-	}
-
-	void VansPunctualShadowManager::RemoveLight(uint32_t stableLightId)
-	{
-		const auto found = m_Runtimes.find(stableLightId);
-		if (found == m_Runtimes.end())
-			return;
-		ReleaseRuntime(found->second);
-		m_Runtimes.erase(found);
-		m_LightToMetaIndex.erase(stableLightId);
 	}
 
 	void VansPunctualShadowManager::PrepareFrame(
@@ -146,8 +134,10 @@ namespace VansGraphics
 		for (const VansPunctualShadowLightInput& input : lights)
 		{
 			Runtime& runtime = m_Runtimes[input.stableLightId];
+			const bool typeChanged = runtime.hasPreviousInput && runtime.input.type != input.type;
 			const bool projectionChanged = runtime.hasPreviousInput && ProjectionChanged(runtime, input);
-			if (runtime.hasPreviousInput && runtime.input.type != input.type)
+			const bool keepSecondaryPointCache = !typeChanged && IsSecondaryPointResident(runtime);
+			if (typeChanged)
 				ReleaseRuntime(runtime);
 			runtime.input = input;
 			runtime.requiredFaceMask = RequiredFaceMask(input.type);
@@ -172,14 +162,20 @@ namespace VansGraphics
 				runtime.activeResolution != 0,
 				runtime.coverage);
 
-			if (projectionChanged)
+			if (projectionChanged && !keepSecondaryPointCache)
 			{
 				runtime.dirtyFaceMask = runtime.requiredFaceMask;
 				runtime.dirtyReasons |= VansShadowDirty_LightTransform | VansShadowDirty_Projection;
 				runtime.projectionValid = false;
 			}
 
-			if (input.settings.updateMode == VansShadowUpdateMode::EveryFrame && runtime.activeResolution != 0)
+			const bool updatesEveryFrame =
+				(input.type == VansPunctualShadowLightType::Point &&
+					runtime.activeResolution != 0 &&
+					runtime.activeBlocks[0].atlasIndex == VANS_PUNCTUAL_SHADOW_PRIMARY_ATLAS_INDEX) ||
+				(input.type != VansPunctualShadowLightType::Point &&
+					input.settings.updateMode == VansShadowUpdateMode::EveryFrame);
+			if (updatesEveryFrame && runtime.activeResolution != 0)
 			{
 				runtime.dirtyFaceMask = runtime.requiredFaceMask;
 				runtime.dirtyReasons |= VansShadowDirty_DynamicCaster;
@@ -188,7 +184,9 @@ namespace VansGraphics
 			const uint16_t desired = ComputeDesiredResolution(input, camera, runtime.coverage);
 			Candidate candidate;
 			candidate.runtime = &runtime;
-			candidate.resolution = ResolveHystereticResolution(runtime, desired);
+			candidate.resolution = keepSecondaryPointCache
+				? runtime.activeResolution
+				: ResolveHystereticResolution(runtime, desired);
 			candidate.pageCost = PageCost(
 				candidate.resolution,
 				ViewCount(input.type),
@@ -358,6 +356,7 @@ namespace VansGraphics
 			if (runtime.pendingResolution != 0 &&
 				runtime.queuedPendingFaceMask == runtime.requiredFaceMask)
 			{
+				runtime.activeWorldToShadow = runtime.queuedWorldToShadow;
 				runtime.lastRenderedFrame = m_FrameIndex;
 				runtime.staleFrames = 0;
 				runtime.dirtyReasons = VansShadowDirty_None;
@@ -365,6 +364,12 @@ namespace VansGraphics
 			}
 			else if (runtime.queuedActiveFaceMask != 0)
 			{
+				for (uint32_t face = 0; face < ViewCount(runtime.input.type); ++face)
+				{
+					const uint8_t faceBit = static_cast<uint8_t>(1u << face);
+					if ((runtime.queuedActiveFaceMask & faceBit) != 0)
+						runtime.activeWorldToShadow[face] = runtime.queuedWorldToShadow[face];
+				}
 				runtime.dirtyFaceMask &= static_cast<uint8_t>(~runtime.queuedActiveFaceMask);
 				runtime.lastRenderedFrame = m_FrameIndex;
 				if (runtime.dirtyFaceMask == 0)
@@ -387,7 +392,7 @@ namespace VansGraphics
 		for (auto& pair : m_Runtimes)
 		{
 			Runtime& runtime = pair.second;
-			if (runtime.activeResolution == 0)
+			if (runtime.activeResolution == 0 || IsSecondaryPointResident(runtime))
 				continue;
 			runtime.dirtyFaceMask |= runtime.requiredFaceMask;
 			runtime.dirtyReasons |= dirtyReason;
@@ -402,7 +407,7 @@ namespace VansGraphics
 		for (auto& pair : m_Runtimes)
 		{
 			Runtime& runtime = pair.second;
-			if (runtime.activeResolution == 0)
+			if (runtime.activeResolution == 0 || IsSecondaryPointResident(runtime))
 				continue;
 			if (IntersectsSphere(oldBounds, runtime.input.position, runtime.input.radius) ||
 				IntersectsSphere(newBounds, runtime.input.position, runtime.input.radius))
@@ -425,11 +430,6 @@ namespace VansGraphics
 		{
 			return job.atlasIndex == atlasIndex;
 		});
-	}
-
-	const VansShadowAtlasAllocator& VansPunctualShadowManager::GetAtlasAllocator(uint32_t atlasIndex) const
-	{
-		return m_AtlasAllocators[(std::min)(atlasIndex, VANS_PUNCTUAL_SHADOW_ATLAS_COUNT - 1u)];
 	}
 
 	uint32_t VansPunctualShadowManager::GetTotalAtlasPages() const
@@ -492,26 +492,6 @@ namespace VansGraphics
 		return snapshot;
 	}
 
-	void VansPunctualShadowManager::RequestDebugPreview()
-	{
-		if (m_DebugPreviewHeartbeat == 0)
-			m_DebugPreviewForceRefresh = true;
-		// The editor sends a heartbeat while the preview is visible. A short grace
-		// period avoids toggling the diagnostic pass during tab/window transitions.
-		m_DebugPreviewHeartbeat = 3;
-	}
-
-	bool VansPunctualShadowManager::ConsumeDebugPreviewRefreshRequest()
-	{
-		if (m_DebugPreviewHeartbeat == 0)
-			return false;
-
-		const bool shouldRefresh = m_DebugPreviewForceRefresh || m_Statistics.renderedViews > 0;
-		m_DebugPreviewForceRefresh = false;
-		--m_DebugPreviewHeartbeat;
-		return shouldRefresh;
-	}
-
 	uint8_t VansPunctualShadowManager::RequiredFaceMask(VansPunctualShadowLightType type)
 	{
 		return type == VansPunctualShadowLightType::Point ? 0x3Fu : 0x01u;
@@ -545,6 +525,14 @@ namespace VansGraphics
 			return false;
 		const glm::vec3 closest = glm::clamp(center, bounds.min, bounds.max);
 		return glm::dot(center - closest, center - closest) <= radius * radius;
+	}
+
+	bool VansPunctualShadowManager::IsSecondaryPointResident(const Runtime& runtime)
+	{
+		return runtime.input.type == VansPunctualShadowLightType::Point &&
+			runtime.activeResolution != 0 &&
+			runtime.activeBlocks[0].IsValid() &&
+			runtime.activeBlocks[0].atlasIndex == VANS_PUNCTUAL_SHADOW_SECONDARY_ATLAS_INDEX;
 	}
 
 	float VansPunctualShadowManager::ComputeCoverage(
@@ -792,6 +780,8 @@ namespace VansGraphics
 		runtime.pendingFaceMask = 0;
 		runtime.queuedActiveFaceMask = 0;
 		runtime.queuedPendingFaceMask = 0;
+		runtime.activeWorldToShadow = {};
+		runtime.queuedWorldToShadow = {};
 		runtime.projectionValid = false;
 		runtime.atlasWeight = 0.0f;
 		runtime.residencyFrames = 0;
@@ -861,10 +851,16 @@ namespace VansGraphics
 		for (Runtime* runtime : orderedRuntimes)
 		{
 			const uint32_t viewCount = ViewCount(runtime->input.type);
+			// 点光入驻任一 Atlas 时必须原子写满六面。入驻后只有主 Atlas
+			// 点光绕过逐帧预算；次 Atlas 保留提交成功时的静态缓存。
+			const bool pointPendingMustRender = runtime->input.type == VansPunctualShadowLightType::Point;
+			const bool primaryPointMustRender = pointPendingMustRender &&
+				runtime->activeResolution != 0 &&
+				runtime->activeBlocks[0].atlasIndex == VANS_PUNCTUAL_SHADOW_PRIMARY_ATLAS_INDEX;
 			if (runtime->pendingResolution != 0 && runtime->pendingFaceMask != 0)
 			{
 				const uint64_t groupTexels = static_cast<uint64_t>(runtime->pendingResolution) * runtime->pendingResolution * viewCount;
-				if (groupTexels <= remainingTexels)
+				if (pointPendingMustRender || groupTexels <= remainingTexels)
 				{
 					const uint32_t atomicGroup = m_NextAtomicGroupId++;
 					for (uint32_t face = 0; face < viewCount; ++face)
@@ -885,7 +881,9 @@ namespace VansGraphics
 						job.worldToShadow = BuildShadowMatrix(*runtime, face, block);
 						m_RenderJobs.push_back(std::move(job));
 					}
-					remainingTexels -= groupTexels;
+					remainingTexels = groupTexels < remainingTexels
+						? remainingTexels - groupTexels
+						: 0ull;
 					m_Statistics.dirtyTexels += groupTexels;
 					m_Statistics.renderedViews += viewCount;
 					// 保持 PendingRender；只有 GPU 提交成功通知才能原子发布。
@@ -903,10 +901,11 @@ namespace VansGraphics
 				continue;
 
 			uint8_t scheduledMask = runtime->dirtyFaceMask;
-			const bool requiresAtomicUpdate = !runtime->projectionValid;
+			const bool requiresAtomicUpdate = runtime->input.type == VansPunctualShadowLightType::Point ||
+				!runtime->projectionValid;
 			const uint64_t faceTexels = static_cast<uint64_t>(runtime->activeResolution) * runtime->activeResolution;
 			const uint64_t requestedTexels = faceTexels * CountBits(scheduledMask);
-			if (requiresAtomicUpdate && requestedTexels > remainingTexels)
+			if (!primaryPointMustRender && requiresAtomicUpdate && requestedTexels > remainingTexels)
 			{
 				++runtime->staleFrames;
 				runtime->state = VansShadowRuntimeState::ResidentDirty;
@@ -937,7 +936,9 @@ namespace VansGraphics
 				job.atlasRect = { block.x, block.y, block.resolution, block.resolution };
 				job.worldToShadow = BuildShadowMatrix(*runtime, face, block);
 				m_RenderJobs.push_back(std::move(job));
-				remainingTexels -= faceTexels;
+				remainingTexels = faceTexels < remainingTexels
+					? remainingTexels - faceTexels
+					: 0ull;
 				m_Statistics.dirtyTexels += faceTexels;
 				++m_Statistics.renderedViews;
 				queuedMask |= bit;
@@ -1009,7 +1010,10 @@ namespace VansGraphics
 					runtime.atlasWeight = (std::min)(1.0f, runtime.atlasWeight + kAtlasFadeInStep);
 				gpu.atlasWeight = runtime.atlasWeight;
 				for (uint32_t face = 0; face < gpu.viewCount; ++face)
-					m_GPUShadowViews.push_back(BuildGPUView(runtime, face, runtime.activeBlocks[face]));
+					m_GPUShadowViews.push_back(BuildGPUView(
+						runtime,
+						runtime.activeBlocks[face],
+						runtime.activeWorldToShadow[face]));
 				++m_Statistics.residentLights;
 				m_Statistics.residentViews += gpu.viewCount;
 				++runtime.residencyFrames;
@@ -1043,7 +1047,8 @@ namespace VansGraphics
 				if (!ValidateBlock(block) || block.atlasIndex != job.atlasIndex)
 					continue;
 				job.shadowViewIndex = static_cast<uint32_t>(m_GPUShadowViews.size());
-				m_GPUShadowViews.push_back(BuildGPUView(runtime, job.faceIndex, block));
+				m_GPUShadowViews.push_back(BuildGPUView(runtime, block, job.worldToShadow));
+				runtime.queuedWorldToShadow[job.faceIndex] = job.worldToShadow;
 				runtime.queuedPendingFaceMask |= faceBit;
 			}
 			else if (metaIndex < m_GPUShadowData.size() &&
@@ -1053,6 +1058,7 @@ namespace VansGraphics
 				if (viewIndex < m_GPUShadowViews.size())
 				{
 					job.shadowViewIndex = viewIndex;
+					runtime.queuedWorldToShadow[job.faceIndex] = job.worldToShadow;
 					runtime.queuedActiveFaceMask |= faceBit;
 				}
 			}
@@ -1064,7 +1070,8 @@ namespace VansGraphics
 				if (ValidateBlock(block) && block.atlasIndex == job.atlasIndex)
 				{
 					job.shadowViewIndex = static_cast<uint32_t>(m_GPUShadowViews.size());
-					m_GPUShadowViews.push_back(BuildGPUView(runtime, job.faceIndex, block));
+					m_GPUShadowViews.push_back(BuildGPUView(runtime, block, job.worldToShadow));
+					runtime.queuedWorldToShadow[job.faceIndex] = job.worldToShadow;
 					runtime.queuedActiveFaceMask |= faceBit;
 				}
 			}
@@ -1125,11 +1132,11 @@ namespace VansGraphics
 
 	VansPunctualShadowViewGPU VansPunctualShadowManager::BuildGPUView(
 		const Runtime& runtime,
-		uint32_t faceIndex,
-		const VansShadowAtlasBlock& block) const
+		const VansShadowAtlasBlock& block,
+		const glm::mat4& worldToShadow) const
 	{
 		VansPunctualShadowViewGPU view;
-		view.worldToShadow = BuildShadowMatrix(runtime, faceIndex, block);
+		view.worldToShadow = worldToShadow;
 		const float atlasSize = static_cast<float>(m_AtlasAllocators[0].GetAtlasSize());
 		const float resolution = static_cast<float>(block.resolution);
 		view.atlasScaleBias = glm::vec4(

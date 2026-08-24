@@ -5,6 +5,7 @@
 #include "../AssetCore/Serialization/VansSerializedValue.h"
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../SceneCore/VansSceneDocument.h"
+#include "../SceneCore/VansSceneParentReference.h"
 
 #include <string>
 #include <unordered_map>
@@ -49,9 +50,8 @@ namespace
 			}
 
 			const VansSerializedValue* parentField = FindObjectField(entity, "parent");
-			const std::string parent = parentField && parentField->kind == VansSerializedValue::Kind::String
-				? parentField->stringValue
-				: std::string{};
+			const std::string parent = parentField
+				? ReadSceneParentEntityGuid(*parentField) : std::string{};
 
 			EntityHierarchyRecord record;
 			record.index = index;
@@ -87,9 +87,11 @@ SceneHierarchyEditResult VansSceneHierarchyService::Reparent(
 {
 	if (request.childEntityGuid.empty())
 		return { false, false, "Child entity id must not be empty" };
-	if (request.transformPolicy != ReparentTransformPolicy::KeepWorld)
-		return { false, false, "Only KeepWorld reparent is supported in the current transform model" };
-	if (request.childEntityGuid == request.newParentEntityGuid)
+	const std::string newParentEntityGuid = request.newParent
+		? request.newParent->entityGuid.ToString() : std::string{};
+	if (request.newParent && !request.newParent->IsValid())
+		return { false, false, "Parent reference is invalid" };
+	if (request.childEntityGuid == newParentEntityGuid)
 		return { false, false, "An entity cannot be parented to itself" };
 
 	const VansSerializedValue root = document.SerializedRootSnapshot();
@@ -102,24 +104,23 @@ SceneHierarchyEditResult VansSceneHierarchyService::Reparent(
 	if (child == entities.end())
 		return { false, false, "Child entity does not exist" };
 
-	if (!request.newParentEntityGuid.empty() &&
-		entities.find(request.newParentEntityGuid) == entities.end())
+	if (!newParentEntityGuid.empty() &&
+		entities.find(newParentEntityGuid) == entities.end())
 	{
 		return { false, false, "Parent entity does not exist" };
 	}
 
-	if (!request.newParentEntityGuid.empty() &&
-		IsDescendantOf(entities, request.newParentEntityGuid, request.childEntityGuid))
+	if (!newParentEntityGuid.empty() &&
+		IsDescendantOf(entities, newParentEntityGuid, request.childEntityGuid))
 	{
 		return { false, false, "Cannot parent an entity to one of its descendants" };
 	}
 
-	if (child->second.parent == request.newParentEntityGuid)
-		return { true, false, "Entity parent is unchanged" };
-
 	const SceneEditResult editResult = editService.ReparentEntity(
 		request.childEntityGuid,
-		request.newParentEntityGuid);
+		request.newParent,
+		request.transformPolicy,
+		request.resolvedLocalTransform);
 	if (!editResult)
 		return { false, false, editResult.message };
 

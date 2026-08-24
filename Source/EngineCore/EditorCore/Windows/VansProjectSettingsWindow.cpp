@@ -436,6 +436,29 @@ void VansProjectSettingsWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 				m_UpscalerEditDirty = true;
 			ImGui::EndDisabled();
 
+			int outputResolution[2] = {
+				static_cast<int>(m_UpscalerEdit.outputWidth),
+				static_cast<int>(m_UpscalerEdit.outputHeight)
+			};
+			ImGui::SetNextItemWidth(180.0f);
+			if (ImGui::InputInt2("Final Output Resolution", outputResolution))
+			{
+				m_UpscalerEdit.outputWidth = static_cast<std::uint32_t>(
+					std::max(outputResolution[0], 0));
+				m_UpscalerEdit.outputHeight = static_cast<std::uint32_t>(
+					std::max(outputResolution[1], 0));
+				m_UpscalerEditDirty = true;
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("4K"))
+			{
+				m_UpscalerEdit.outputWidth = 3840u;
+				m_UpscalerEdit.outputHeight = 2160u;
+				m_UpscalerEditDirty = true;
+			}
+			ImGui::TextDisabled(
+				"The upscaler quality mode derives the internal base resolution from this target.");
+
 			if (ImGui::Button("Apply Upscaler Settings"))
 			{
 				const Vans::EditorAPI::ApplyUpscalerSettingsResult apply =

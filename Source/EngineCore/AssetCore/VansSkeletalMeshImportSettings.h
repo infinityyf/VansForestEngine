@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <unordered_map>
 
 namespace Vans
 {
@@ -15,6 +16,11 @@ struct VansLegacySkeletalImportFixups
 
 struct VansSkeletalMeshImportSettings
 {
+	// 骨架资产身份与模型 meta 中的稳定骨骼子资产。运行时只能把这些 GUID
+	// 编译为当前 Skeleton index，场景和编辑器不得持久化数组下标。
+	std::string sourceSkeletonGuid;
+	std::unordered_map<std::string, std::string> boneGuidByCanonicalPath;
+
 	// Preferred source for inverse bind matrices.
 	// "fbxCluster" preserves offsets authored by the source file.
 	// "hierarchy" rebuilds inverse-binds from the imported bone node hierarchy.

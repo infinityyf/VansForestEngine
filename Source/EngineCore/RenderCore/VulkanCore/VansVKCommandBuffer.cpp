@@ -324,19 +324,10 @@ void VansGraphics::VansVKCommandBuffer::ExecuteSecondaryCommandBuffer(std::vecto
 void VansGraphics::VansVKCommandBuffer::BindMesh(VansMesh& mesh, uint32_t fist_bind, GlobalStateData& global_state_data)
 {
 	VertexBufferParameters vparam = mesh.GetVertexBufferParameter();
-	VansGraphics::vkCmdBindVertexBuffers(
-		m_VansVKCommandBuffer,
-		fist_bind,
-		1,
-		&vparam.Buffer,
-		&vparam.MemoryOffset);
+	BindVertexBuffers(fist_bind, 1, &vparam.Buffer, &vparam.MemoryOffset);
 
 	IndexBufferParameters iparam = mesh.GetIndexBufferParameter();
-	VansGraphics::vkCmdBindIndexBuffer(
-		m_VansVKCommandBuffer,
-		iparam.Buffer,
-		iparam.MemoryOffset,
-		iparam.IndexType);
+	BindIndexBuffer(iparam.Buffer, iparam.MemoryOffset, iparam.IndexType);
 
 	// ?? mesh ? vertex input data
 	global_state_data.vertexInputAttributeDescriptions = &mesh.m_VertexInputAttributeDescriptions;
@@ -446,6 +437,41 @@ void VansGraphics::VansVKCommandBuffer::DispatchCompute(
 	pipeline->DispatchCompute(m_VansVKCommandBuffer, x_size, y_size, z_size);
 }
 
+void VansGraphics::VansVKCommandBuffer::DispatchComputeIndirect(
+	VansComputeShader& shader,
+	VkBuffer indirectBuffer,
+	VkDeviceSize indirectOffset,
+	const std::vector<VkDescriptorSet>& descriptor_sets)
+{
+	VansVKComputePipeline* pipeline = shader.GetComputePipeline();
+	if (pipeline == nullptr || pipeline->m_VansPipelineLayout == VK_NULL_HANDLE)
+	{
+		VANS_LOG_ERROR("indirect dispatch skipped because compute pipeline is not ready");
+		return;
+	}
+	if (indirectBuffer == VK_NULL_HANDLE)
+	{
+		VANS_LOG_ERROR("indirect dispatch skipped because the argument buffer is null");
+		return;
+	}
+	if (!ValidateDescriptorSets(descriptor_sets, "compute indirect dispatch"))
+	{
+		return;
+	}
+
+	BindComputePipeline(*pipeline);
+	VansGraphics::vkCmdBindDescriptorSets(
+		m_VansVKCommandBuffer,
+		VK_PIPELINE_BIND_POINT_COMPUTE,
+		pipeline->m_VansPipelineLayout,
+		0,
+		static_cast<uint32_t>(descriptor_sets.size()),
+		descriptor_sets.data(),
+		0,
+		nullptr);
+	VansGraphics::vkCmdDispatchIndirect(m_VansVKCommandBuffer, indirectBuffer, indirectOffset);
+}
+
 void VansGraphics::VansVKCommandBuffer::BlitImage(VansVKImage& source, int source_mip, VansVKImage& target, int target_mip)
 {
 	VkImageCopy copyRegion = {};
@@ -552,15 +578,12 @@ void VansGraphics::VansVKCommandBuffer::BindDescriptorSets(
 	{
 		return;
 	}
-	VansGraphics::vkCmdBindDescriptorSets(
-		m_VansVKCommandBuffer,
+	BindDescriptorSets(
 		pipeline_type,
-		pipeline->m_VansPipelineLayout,
+		*pipeline,
 		index_for_first_set,
-		static_cast<uint32_t>(descriptor_sets.size()),
-		descriptor_sets.data(),
-		static_cast<uint32_t>(dynamic_offsets.size()),
-		dynamic_offsets.data());
+		descriptor_sets,
+		dynamic_offsets);
 }
 
 void VansGraphics::VansVKCommandBuffer::BindDescriptorSets(
@@ -570,7 +593,22 @@ void VansGraphics::VansVKCommandBuffer::BindDescriptorSets(
 	const std::vector<VkDescriptorSet>& descriptor_sets,
 	const std::vector<uint32_t>& dynamic_offsets)
 {
-	if (pipeline.m_VansPipelineLayout == VK_NULL_HANDLE)
+	BindDescriptorSets(
+		pipeline_type,
+		pipeline.m_VansPipelineLayout,
+		index_for_first_set,
+		descriptor_sets,
+		dynamic_offsets);
+}
+
+void VansGraphics::VansVKCommandBuffer::BindDescriptorSets(
+	VkPipelineBindPoint pipeline_type,
+	VkPipelineLayout pipelineLayout,
+	int index_for_first_set,
+	const std::vector<VkDescriptorSet>& descriptor_sets,
+	const std::vector<uint32_t>& dynamic_offsets)
+{
+	if (pipelineLayout == VK_NULL_HANDLE)
 	{
 		VANS_LOG_ERROR("descriptor bind skipped because graphics pipeline layout is null");
 		return;
@@ -579,26 +617,80 @@ void VansGraphics::VansVKCommandBuffer::BindDescriptorSets(
 	{
 		return;
 	}
+	const bool cacheableGraphicsBind =
+		pipeline_type == VK_PIPELINE_BIND_POINT_GRAPHICS && index_for_first_set == 0;
+	if (cacheableGraphicsBind
+		&& m_BoundGraphicsPipelineLayout == pipelineLayout
+		&& m_BoundGraphicsDescriptorSets == descriptor_sets
+		&& m_BoundGraphicsDynamicOffsets == dynamic_offsets)
+	{
+		return;
+	}
 	VansGraphics::vkCmdBindDescriptorSets(
 		m_VansVKCommandBuffer,
 		pipeline_type,
-		pipeline.m_VansPipelineLayout,
+		pipelineLayout,
 		index_for_first_set,
 		static_cast<uint32_t>(descriptor_sets.size()),
 		descriptor_sets.data(),
 		static_cast<uint32_t>(dynamic_offsets.size()),
 		dynamic_offsets.data());
+	if (cacheableGraphicsBind)
+	{
+		m_BoundGraphicsPipelineLayout = pipelineLayout;
+		m_BoundGraphicsDescriptorSets = descriptor_sets;
+		m_BoundGraphicsDynamicOffsets = dynamic_offsets;
+	}
+	else if (pipeline_type == VK_PIPELINE_BIND_POINT_GRAPHICS)
+	{
+		m_BoundGraphicsDescriptorSets.clear();
+		m_BoundGraphicsDynamicOffsets.clear();
+	}
 }
 
 void VansGraphics::VansVKCommandBuffer::BindGraphicsPipeline(VansVKGraphicsPipeline& graphicsPipeline)
 {
-	if (m_BoundGraphicsPipeline == graphicsPipeline.m_GraphicsPipeline)
+	BindGraphicsPipeline(graphicsPipeline.m_GraphicsPipeline, graphicsPipeline.m_VansPipelineLayout);
+}
+
+void VansGraphics::VansVKCommandBuffer::BindGraphicsPipeline(
+	VkPipeline graphicsPipeline,
+	VkPipelineLayout pipelineLayout)
+{
+	if (graphicsPipeline == VK_NULL_HANDLE || pipelineLayout == VK_NULL_HANDLE)
 	{
+		VANS_LOG_ERROR("graphics pipeline bind skipped because prepared handles are null");
 		return;
 	}
+	if (m_BoundGraphicsPipeline == graphicsPipeline)
+		return;
 
-	graphicsPipeline.BindGraphicsPipeline(m_VansVKCommandBuffer);
-	m_BoundGraphicsPipeline = graphicsPipeline.m_GraphicsPipeline;
+	VansGraphics::vkCmdBindPipeline(
+		m_VansVKCommandBuffer,
+		VK_PIPELINE_BIND_POINT_GRAPHICS,
+		graphicsPipeline);
+	m_BoundGraphicsPipeline = graphicsPipeline;
+	if (m_BoundGraphicsPipelineLayout != pipelineLayout)
+	{
+		m_BoundGraphicsPipelineLayout = pipelineLayout;
+		m_BoundGraphicsDescriptorSets.clear();
+		m_BoundGraphicsDynamicOffsets.clear();
+	}
+}
+
+void VansGraphics::VansVKCommandBuffer::ResetBindingState()
+{
+	m_BoundGraphicsPipeline = VK_NULL_HANDLE;
+	m_BoundGraphicsPipelineLayout = VK_NULL_HANDLE;
+	m_BoundGraphicsDescriptorSets.clear();
+	m_BoundGraphicsDynamicOffsets.clear();
+	m_BoundVertexBuffer = VK_NULL_HANDLE;
+	m_BoundVertexOffset = 0;
+	m_BoundIndexBuffer = VK_NULL_HANDLE;
+	m_BoundIndexOffset = 0;
+	m_BoundIndexType = VK_INDEX_TYPE_UINT32;
+	m_BoundComputePipeline = VK_NULL_HANDLE;
+	m_BoundRayTracingPipeline = VK_NULL_HANDLE;
 }
 
 void VansGraphics::VansVKCommandBuffer::BindComputePipeline(VansVKComputePipeline& computePipeline)
@@ -714,9 +806,7 @@ bool VansGraphics::VansVKCommandBuffer::BeginCommandBufferRecord(VkCommandBuffer
 		VANS_LOG_ERROR("Could not begin command buffer.");
 		return false;
 	}
-	m_BoundGraphicsPipeline = VK_NULL_HANDLE;
-	m_BoundComputePipeline = VK_NULL_HANDLE;
-	m_BoundRayTracingPipeline = VK_NULL_HANDLE;
+	ResetBindingState();
 	return true;
 }
 
@@ -746,9 +836,7 @@ bool VansGraphics::VansVKCommandBuffer::BeginSecondaryCommandBufferRecord(
 		VANS_LOG_ERROR("Could not begin secondary command buffer.");
 		return false;
 	}
-	m_BoundGraphicsPipeline = VK_NULL_HANDLE;
-	m_BoundComputePipeline = VK_NULL_HANDLE;
-	m_BoundRayTracingPipeline = VK_NULL_HANDLE;
+	ResetBindingState();
 	return true;
 }
 
@@ -773,9 +861,7 @@ bool VansGraphics::VansVKCommandBuffer::ResetCommandBuffer(bool release_buffer_m
 		VANS_LOG_ERROR("Error occurred during command buffer reset.");
 		return false;
 	}
-	m_BoundGraphicsPipeline = VK_NULL_HANDLE;
-	m_BoundComputePipeline = VK_NULL_HANDLE;
-	m_BoundRayTracingPipeline = VK_NULL_HANDLE;
+	ResetBindingState();
 	return true;
 }
 
@@ -822,12 +908,31 @@ void VansGraphics::VansVKCommandBuffer::WaitEvents(
 
 void VansGraphics::VansVKCommandBuffer::BindVertexBuffers(uint32_t firstBinding, uint32_t bindingCount, const VkBuffer* buffers, const VkDeviceSize* offsets)
 {
+	if (firstBinding == 0 && bindingCount == 1 && buffers != nullptr && offsets != nullptr
+		&& m_BoundVertexBuffer == buffers[0] && m_BoundVertexOffset == offsets[0])
+	{
+		return;
+	}
 	VansGraphics::vkCmdBindVertexBuffers(m_VansVKCommandBuffer, firstBinding, bindingCount, buffers, offsets);
+	if (firstBinding == 0 && bindingCount == 1 && buffers != nullptr && offsets != nullptr)
+	{
+		m_BoundVertexBuffer = buffers[0];
+		m_BoundVertexOffset = offsets[0];
+	}
+	else
+	{
+		m_BoundVertexBuffer = VK_NULL_HANDLE;
+	}
 }
 
 void VansGraphics::VansVKCommandBuffer::BindIndexBuffer(VkBuffer buffer, VkDeviceSize offset, VkIndexType indexType)
 {
+	if (m_BoundIndexBuffer == buffer && m_BoundIndexOffset == offset && m_BoundIndexType == indexType)
+		return;
 	VansGraphics::vkCmdBindIndexBuffer(m_VansVKCommandBuffer, buffer, offset, indexType);
+	m_BoundIndexBuffer = buffer;
+	m_BoundIndexOffset = offset;
+	m_BoundIndexType = indexType;
 }
 
 void VansGraphics::VansVKCommandBuffer::DrawIndexed(uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance)

@@ -9,7 +9,6 @@ namespace Vans
 {
 namespace
 {
-using VansGraphics::FootPlacementSettings;
 using VansGraphics::MotionMatchingDatabase;
 using VansGraphics::MotionMatchingDatabaseClip;
 using VansGraphics::MotionMatchingSelectorRow;
@@ -172,21 +171,14 @@ MotionMatchingDatabaseClip DecodeMotionDatabaseClip(const VansSerializedValue& c
 	clip.loop = ReadBoolField(clipJson, "loop", clip.loop);
 	clip.phase = ReadSerializedStringField(clipJson, "phase", clip.phase);
 	clip.sourceMoveState = ReadIntField(clipJson, "source_move_state", clip.sourceMoveState);
-	clip.sourceMoveState = ReadIntField(clipJson, "sourceMoveState", clip.sourceMoveState);
 	clip.targetMoveState = ReadIntField(clipJson, "target_move_state", clip.targetMoveState);
-	clip.targetMoveState = ReadIntField(clipJson, "targetMoveState", clip.targetMoveState);
 	clip.sourceDirectionBucket = ReadIntField(
 		clipJson, "source_direction_bucket", clip.sourceDirectionBucket);
 	clip.directionBucket = ReadIntField(clipJson, "direction_bucket", clip.directionBucket);
-	clip.directionBucket = ReadIntField(clipJson, "directionBucket", clip.directionBucket);
 	clip.turnDirectionSign = ReadIntField(clipJson, "turn_direction_sign", clip.turnDirectionSign);
-	clip.turnDirectionSign = ReadIntField(clipJson, "turnDirectionSign", clip.turnDirectionSign);
 	clip.turnBucketDelta = ReadIntField(clipJson, "turn_bucket_delta", clip.turnBucketDelta);
-	clip.turnBucketDelta = ReadIntField(clipJson, "turnBucketDelta", clip.turnBucketDelta);
 	clip.samplingStart = ReadFloatField(clipJson, "sampling_start", clip.samplingStart);
-	clip.samplingStart = ReadFloatField(clipJson, "samplingStart", clip.samplingStart);
 	clip.samplingEnd = ReadFloatField(clipJson, "sampling_end", clip.samplingEnd);
-	clip.samplingEnd = ReadFloatField(clipJson, "samplingEnd", clip.samplingEnd);
 	return clip;
 }
 
@@ -196,18 +188,12 @@ MotionMatchingDatabase DecodeMotionDatabase(const VansSerializedValue& databaseJ
 	database.name = ReadSerializedStringField(databaseJson, "name", "");
 	database.schema = ReadSerializedStringField(databaseJson, "schema", database.schema);
 	database.normalizationSet = ReadSerializedStringField(databaseJson, "normalization_set", database.normalizationSet);
-	database.normalizationSet = ReadSerializedStringField(databaseJson, "normalizationSet", database.normalizationSet);
 	database.stance = ReadSerializedStringField(databaseJson, "stance", database.stance);
 	database.phase = ReadSerializedStringField(databaseJson, "phase", database.phase);
 	database.enabled = ReadBoolField(databaseJson, "enabled", database.enabled);
 	ReadIntArray(databaseJson, "move_states", database.moveStates);
-	ReadIntArray(databaseJson, "moveStates", database.moveStates);
-	ReadStringArray(databaseJson, "include", database.includeTokens);
 	ReadStringArray(databaseJson, "include_tokens", database.includeTokens);
-	ReadStringArray(databaseJson, "includeTokens", database.includeTokens);
-	ReadStringArray(databaseJson, "exclude", database.excludeTokens);
 	ReadStringArray(databaseJson, "exclude_tokens", database.excludeTokens);
-	ReadStringArray(databaseJson, "excludeTokens", database.excludeTokens);
 	if (const VansSerializedValue* clipsJson = ReadArrayField(databaseJson, "clips"))
 	{
 		for (const VansSerializedValue& clipJson : clipsJson->arrayItems)
@@ -227,7 +213,6 @@ MotionMatchingSelectorRow DecodeMotionSelectorRow(const VansSerializedValue& row
 	row.stance = ReadSerializedStringField(rowJson, "stance", row.stance);
 	row.phase = ReadSerializedStringField(rowJson, "phase", row.phase);
 	ReadIntArray(rowJson, "move_states", row.moveStates);
-	ReadIntArray(rowJson, "moveStates", row.moveStates);
 	ReadStringArray(rowJson, "databases", row.databases);
 	return row;
 }
@@ -245,18 +230,12 @@ bool DecodeMotionSearchGroup(const VansSerializedValue& groupJson,
 
 	database.schema = ReadSerializedStringField(groupJson, "schema", database.schema);
 	database.normalizationSet = ReadSerializedStringField(groupJson, "normalization_set", database.normalizationSet);
-	database.normalizationSet = ReadSerializedStringField(groupJson, "normalizationSet", database.normalizationSet);
 	database.stance = ReadSerializedStringField(groupJson, "stance", "Any");
 	database.phase = ReadSerializedStringField(groupJson, "phase", "Any");
 	database.enabled = ReadBoolField(groupJson, "enabled", database.enabled);
 	ReadIntArray(groupJson, "move_states", database.moveStates);
-	ReadIntArray(groupJson, "moveStates", database.moveStates);
 	ReadStringArray(groupJson, "include", database.includeTokens);
-	ReadStringArray(groupJson, "include_tokens", database.includeTokens);
-	ReadStringArray(groupJson, "includeTokens", database.includeTokens);
 	ReadStringArray(groupJson, "exclude", database.excludeTokens);
-	ReadStringArray(groupJson, "exclude_tokens", database.excludeTokens);
-	ReadStringArray(groupJson, "excludeTokens", database.excludeTokens);
 
 	row.name = database.name;
 	row.stance = database.stance;
@@ -272,21 +251,14 @@ VansSceneAnimationRetargetConfig DecodeRetarget(const VansSerializedValue& retar
 	config.enabled = ReadBoolField(retargetJson, "enabled", false);
 	config.profile = ReadSerializedStringField(retargetJson, "profile", "");
 	config.sourceModel = ReadAssetReferenceField(retargetJson, "source_model", "");
-	config.sourceModel = ReadAssetReferenceField(retargetJson, "sourceModel", config.sourceModel);
 	config.sourceAnimator = ReadAssetReferenceField(retargetJson, "source_animator", "");
-	config.sourceAnimator = ReadAssetReferenceField(retargetJson, "sourceAnimator", config.sourceAnimator);
-	config.runtimeMode = ReadSerializedStringField(retargetJson, "runtime_mode", config.runtimeMode);
-	config.runtimeMode = ReadSerializedStringField(retargetJson, "runtimeMode", config.runtimeMode);
-	config.cachePolicy = ReadSerializedStringField(retargetJson, "cache_policy", config.cachePolicy);
-	config.cachePolicy = ReadSerializedStringField(retargetJson, "cachePolicy", config.cachePolicy);
 	config.debugDraw = ReadBoolField(retargetJson, "debug_draw", false);
-	config.debugDraw = ReadBoolField(retargetJson, "debugDraw", config.debugDraw);
 	return config;
 }
 
-MotionMatchingSettings DecodeMotionMatching(const VansSerializedValue& mmJson)
+bool DecodeMotionMatching(const VansSerializedValue& mmJson, MotionMatchingSettings& settings)
 {
-	MotionMatchingSettings settings;
+	settings = {};
 	settings.enabled = ReadBoolField(mmJson, "enabled", false);
 	settings.autoBuild = ReadBoolField(mmJson, "auto_build", true);
 	if (const VansSerializedValue* motionModel = ReadObjectField(mmJson, "motion_model"))
@@ -296,8 +268,10 @@ MotionMatchingSettings DecodeMotionMatching(const VansSerializedValue& mmJson)
 			settings.motionModel.driveMode = VansLocomotionDriveMode::Capsule;
 		else if (driveMode == "root_motion")
 			settings.motionModel.driveMode = VansLocomotionDriveMode::RootMotion;
-		else
+		else if (driveMode == "hybrid")
 			settings.motionModel.driveMode = VansLocomotionDriveMode::Hybrid;
+		else
+			return false;
 		settings.motionModel.velocityHalfLife = ReadFloatField(
 			*motionModel, "velocity_half_life", settings.motionModel.velocityHalfLife);
 		settings.motionModel.facingHalfLife = ReadFloatField(
@@ -448,7 +422,6 @@ MotionMatchingSettings DecodeMotionMatching(const VansSerializedValue& mmJson)
 		settings.parameters.crouching = ReadSerializedStringField(*paramsJson, "crouching", settings.parameters.crouching);
 		settings.parameters.airborne = ReadSerializedStringField(*paramsJson, "airborne", settings.parameters.airborne);
 		settings.parameters.moveState = ReadSerializedStringField(*paramsJson, "move_state", settings.parameters.moveState);
-		settings.parameters.moveState = ReadSerializedStringField(*paramsJson, "moveState", settings.parameters.moveState);
 	}
 
 	if (const VansSerializedValue* rigJson = ReadObjectField(mmJson, "rig"))
@@ -460,6 +433,38 @@ MotionMatchingSettings DecodeMotionMatching(const VansSerializedValue& mmJson)
 		settings.rig.rightFoot = ReadSerializedStringField(*rigJson, "right_foot", "");
 		settings.rig.head = ReadSerializedStringField(*rigJson, "head", "");
 		settings.rig.forwardAxis = ReadVec3Field(*rigJson, "forward_axis", settings.rig.forwardAxis);
+	}
+
+	if (const VansSerializedValue* contactsField = FindObjectField(mmJson, "contacts"))
+	{
+		if (contactsField->kind != VansSerializedValue::Kind::Object)
+			return false;
+		const VansSerializedValue* contactsJson = contactsField;
+		settings.contactProvider = ReadSerializedStringField(*contactsJson, "provider", "");
+		const VansSerializedValue* channelsField = FindObjectField(*contactsJson, "channels");
+		if (settings.contactProvider.empty() || !channelsField ||
+			channelsField->kind != VansSerializedValue::Kind::Array ||
+			channelsField->arrayItems.empty())
+		{
+			return false;
+		}
+		for (const VansSerializedValue& channelJson : channelsField->arrayItems)
+		{
+			if (channelJson.kind != VansSerializedValue::Kind::Object)
+				return false;
+			VansGraphics::MotionMatchingContactChannel channel;
+			channel.id = ReadSerializedStringField(channelJson, "id", "");
+			const std::string source = ReadSerializedStringField(channelJson, "source", "");
+			if (channel.id.empty())
+				return false;
+			if (source == "leftFoot")
+				channel.source = VansGraphics::MotionMatchingContactSource::LeftFoot;
+			else if (source == "rightFoot")
+				channel.source = VansGraphics::MotionMatchingContactSource::RightFoot;
+			else
+				return false;
+			settings.contactChannels.push_back(std::move(channel));
+		}
 	}
 
 	if (const VansSerializedValue* schemaJson = ReadObjectField(mmJson, "schema"))
@@ -485,19 +490,14 @@ MotionMatchingSettings DecodeMotionMatching(const VansSerializedValue& mmJson)
 
 	if (const VansSerializedValue* statesJson = ReadObjectField(mmJson, "states"))
 	{
-		settings.states.idleState = ReadIntField(*statesJson, "idle", settings.states.idleState);
 		settings.states.idleState = ReadIntField(*statesJson, "idle_state", settings.states.idleState);
-		settings.states.crouchState = ReadIntField(*statesJson, "crouch", settings.states.crouchState);
 		settings.states.crouchState = ReadIntField(*statesJson, "crouch_state", settings.states.crouchState);
 		settings.states.idleSpeedThreshold = ReadFloatField(
 			*statesJson,
 			"idle_speed_threshold",
 			settings.states.idleSpeedThreshold);
-		ReadReplacingIntArray(*statesJson, "moving", settings.states.movingStates);
 		ReadReplacingIntArray(*statesJson, "moving_states", settings.states.movingStates);
-		ReadReplacingIntArray(*statesJson, "pace_transition", settings.states.paceTransitionStates);
 		ReadReplacingIntArray(*statesJson, "pace_transition_states", settings.states.paceTransitionStates);
-		ReadReplacingIntArray(*statesJson, "stance", settings.states.stanceStates);
 		ReadReplacingIntArray(*statesJson, "stance_states", settings.states.stanceStates);
 	}
 
@@ -514,15 +514,9 @@ MotionMatchingSettings DecodeMotionMatching(const VansSerializedValue& mmJson)
 	}
 
 	ReadStringArray(mmJson, "include_clip_tokens", settings.includeClipTokens);
-	ReadStringArray(mmJson, "includeClipTokens", settings.includeClipTokens);
 	ReadStringArray(mmJson, "exclude_clip_tokens", settings.excludeClipTokens);
-	ReadStringArray(mmJson, "excludeClipTokens", settings.excludeClipTokens);
 
 	const VansSerializedValue* selectorJson = ReadArrayField(mmJson, "selector");
-	if (!selectorJson)
-		selectorJson = ReadArrayField(mmJson, "selector_rows");
-	if (!selectorJson)
-		selectorJson = ReadArrayField(mmJson, "selectorRows");
 	if (selectorJson)
 	{
 		for (const VansSerializedValue& rowJson : selectorJson->arrayItems)
@@ -548,92 +542,8 @@ MotionMatchingSettings DecodeMotionMatching(const VansSerializedValue& mmJson)
 			}
 		}
 	}
-	if (const VansSerializedValue* searchGroupsJson = ReadArrayField(mmJson, "searchGroups"))
-	{
-		for (const VansSerializedValue& groupJson : searchGroupsJson->arrayItems)
-		{
-			MotionMatchingDatabase database;
-			MotionMatchingSelectorRow row;
-			if (DecodeMotionSearchGroup(groupJson, database, row))
-			{
-				settings.databases.push_back(std::move(database));
-				settings.selectorRows.push_back(std::move(row));
-			}
-		}
-	}
 
-	return settings;
-}
-
-FootPlacementSettings DecodeFootPlacement(const VansSerializedValue& fpJson)
-{
-	FootPlacementSettings settings;
-	settings.enabled = ReadBoolField(fpJson, "enabled", false);
-	settings.probeOriginHeight = ReadFloatField(fpJson, "probe_origin_height", settings.probeOriginHeight);
-	settings.probeLength = ReadFloatField(fpJson, "probe_length", settings.probeLength);
-	settings.footHalfLength = ReadFloatField(fpJson, "foot_half_length", settings.footHalfLength);
-	settings.footHalfWidth = ReadFloatField(fpJson, "foot_half_width", settings.footHalfWidth);
-	settings.ankleHeight = ReadFloatField(fpJson, "ankle_height", settings.ankleHeight);
-	settings.fullContactHeight = ReadFloatField(fpJson, "full_contact_height", settings.fullContactHeight);
-	settings.contactFadeHeight = ReadFloatField(fpJson, "contact_fade_height", settings.contactFadeHeight);
-	settings.maxStepUp = ReadFloatField(fpJson, "max_step_up", settings.maxStepUp);
-	settings.maxStepDown = ReadFloatField(fpJson, "max_step_down", settings.maxStepDown);
-	settings.maxSlopeDeg = ReadFloatField(fpJson, "max_slope_deg", settings.maxSlopeDeg);
-	settings.pelvisMaxDrop = ReadFloatField(fpJson, "pelvis_max_drop", settings.pelvisMaxDrop);
-	settings.pelvisSmoothTime = ReadFloatField(fpJson, "pelvis_smooth_time", settings.pelvisSmoothTime);
-	settings.offsetSmoothTime = ReadFloatField(fpJson, "offset_smooth_time", settings.offsetSmoothTime);
-	settings.normalSmoothTime = ReadFloatField(fpJson, "normal_smooth_time", settings.normalSmoothTime);
-	settings.weightSmoothTime = ReadFloatField(fpJson, "weight_smooth_time", settings.weightSmoothTime);
-	settings.globalWeightSmoothTime = ReadFloatField(fpJson, "global_weight_smooth_time", settings.globalWeightSmoothTime);
-	settings.ikWeight = ReadFloatField(fpJson, "ik_weight", settings.ikWeight);
-	settings.rotationWeight = ReadFloatField(fpJson, "rotation_weight", settings.rotationWeight);
-	settings.maxLegExtensionRatio = ReadFloatField(fpJson, "max_leg_extension_ratio", settings.maxLegExtensionRatio);
-	settings.poleSmoothTime = ReadFloatField(fpJson, "pole_smooth_time", settings.poleSmoothTime);
-	settings.footLockEnabled = ReadBoolField(fpJson, "foot_lock_enabled", settings.footLockEnabled);
-	settings.footLockEnterPlantWeight = ReadFloatField(
-		fpJson, "foot_lock_enter_plant_weight", settings.footLockEnterPlantWeight);
-	settings.footLockExitPlantWeight = ReadFloatField(
-		fpJson, "foot_lock_exit_plant_weight", settings.footLockExitPlantWeight);
-	settings.footLockMaxDistance = ReadFloatField(
-		fpJson, "foot_lock_max_distance", settings.footLockMaxDistance);
-	settings.footLockSmoothTime = ReadFloatField(
-		fpJson, "foot_lock_smooth_time", settings.footLockSmoothTime);
-	settings.kneePoleModelWeight = ReadFloatField(fpJson, "knee_pole_model_weight", settings.kneePoleModelWeight);
-	settings.kneePoleModelDir = ReadVec3Field(fpJson, "knee_pole_model_dir", settings.kneePoleModelDir);
-	settings.airborneParameter = ReadSerializedStringField(fpJson, "airborne_parameter", settings.airborneParameter);
-	settings.debugVisualization = ReadBoolField(fpJson, "debug_visualization", settings.debugVisualization);
-	settings.collisionMask = ReadUInt32Field(fpJson, "collision_mask", settings.collisionMask);
-
-	if (const VansSerializedValue* bonesJson = ReadObjectField(fpJson, "bones"))
-	{
-		settings.bones.pelvis = ReadSerializedStringField(*bonesJson, "pelvis", settings.bones.pelvis);
-		settings.bones.leftHip = ReadSerializedStringField(*bonesJson, "left_hip", settings.bones.leftHip);
-		settings.bones.leftKnee = ReadSerializedStringField(*bonesJson, "left_knee", settings.bones.leftKnee);
-		settings.bones.leftFoot = ReadSerializedStringField(*bonesJson, "left_foot", settings.bones.leftFoot);
-		settings.bones.rightHip = ReadSerializedStringField(*bonesJson, "right_hip", settings.bones.rightHip);
-		settings.bones.rightKnee = ReadSerializedStringField(*bonesJson, "right_knee", settings.bones.rightKnee);
-		settings.bones.rightFoot = ReadSerializedStringField(*bonesJson, "right_foot", settings.bones.rightFoot);
-	}
-	return settings;
-}
-
-VansSceneAnimationBoneBindingConfig DecodeBoneBinding(const VansSerializedValue& bindJson)
-{
-	VansSceneAnimationBoneBindingConfig config;
-	config.boneName = ReadSerializedStringField(bindJson, "bone_name", "");
-	config.physicsObjectName = ReadSerializedStringField(bindJson, "physics_object", "");
-	config.offsetPosition = ReadVec3Field(bindJson, "offset_position", config.offsetPosition);
-	config.offsetRotation = ReadVec3Field(bindJson, "offset_rotation", config.offsetRotation);
-	config.offsetScale = ReadVec3Field(bindJson, "offset_scale", config.offsetScale);
-	config.syncRotation = ReadBoolField(bindJson, "sync_rotation", true);
-	config.syncScale = ReadBoolField(bindJson, "sync_scale", false);
-	config.layerName = ReadSerializedStringField(bindJson, "layer", "Default");
-	config.isTrigger = ReadBoolField(bindJson, "is_trigger", false);
-	config.enabled = ReadBoolField(bindJson, "enabled", true);
-	config.autoCreateNode = ReadBoolField(bindJson, "auto_create_node", false);
-	config.shapeExtents = ReadVec3Field(bindJson, "shape_extents", config.shapeExtents);
-	config.shapeType = ReadSerializedStringField(bindJson, "shape_type", "capsule");
-	return config;
+	return true;
 }
 
 VansSceneRagdollComponentConfig DecodeRagdollConfig(const VansSerializedValue& ragdollJson)
@@ -702,26 +612,31 @@ VansSceneAnimationComponentConfig VansSceneAnimationComponentReader::ReadAnimati
 	config.enabled = ReadBoolField(animationNode, "enabled", true);
 	config.meshGroup = ReadSerializedStringField(animationNode, "mesh_group", "");
 	config.animator = ReadAssetReferenceField(animationNode, "animator", "");
+	config.rig = ReadAssetReferenceField(animationNode, "rig", "");
 	config.externClips = ReadSerializedStringField(animationNode, "extern_clips", "");
 	config.rootMotion = ReadBoolField(animationNode, "root_motion", false);
-	config.autoPlay = ReadBoolField(animationNode, "auto_play", ReadBoolField(animationNode, "autoPlay", true));
+	config.autoPlay = ReadBoolField(animationNode, "auto_play", true);
 	config.loop = ReadBoolField(animationNode, "loop", true);
 	config.rootBone = ReadSerializedStringField(animationNode, "root_bone", "");
 	config.name = ReadSerializedStringField(animationNode, "name", "");
 
-	if (const VansSerializedValue* motionMatching = ReadObjectField(animationNode, "motion_matching"))
-		config.motionMatching = DecodeMotionMatching(*motionMatching);
+	if (const VansSerializedValue* motionMatchingField = FindObjectField(animationNode, "motion_matching"))
+	{
+		if (motionMatchingField->kind != VansSerializedValue::Kind::Object)
+		{
+			config.valid = false;
+			return config;
+		}
+		MotionMatchingSettings settings;
+		if (!DecodeMotionMatching(*motionMatchingField, settings))
+		{
+			config.valid = false;
+			return config;
+		}
+		config.motionMatching = std::move(settings);
+	}
 	if (const VansSerializedValue* retarget = ReadObjectField(animationNode, "retarget"))
 		config.retarget = DecodeRetarget(*retarget);
-	if (const VansSerializedValue* footPlacement = ReadObjectField(animationNode, "foot_placement"))
-		config.footPlacement = DecodeFootPlacement(*footPlacement);
-	if (const VansSerializedValue* boneBindings = ReadArrayField(animationNode, "bone_bindings"))
-	{
-		config.boneBindings.reserve(boneBindings->arrayItems.size());
-		for (const VansSerializedValue& binding : boneBindings->arrayItems)
-			if (binding.kind == VansSerializedValue::Kind::Object)
-				config.boneBindings.push_back(DecodeBoneBinding(binding));
-	}
 	if (const VansSerializedValue* ragdoll = ReadObjectField(animationNode, "ragdoll"))
 		config.ragdoll = DecodeRagdollConfig(*ragdoll);
 

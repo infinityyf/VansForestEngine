@@ -10,7 +10,7 @@ layout( set = 1, binding = 1 ) uniform sampler2D inputRoughness;
 layout( set = 1, binding = 2 ) uniform sampler2D inputNormal;
 layout( set = 1, binding = 3 ) uniform sampler2D inputPosition;
 layout( set = 1, binding = 4, rgba32f ) uniform image2D traceHit;
-layout( set = 1, binding = 5, rgba32f ) uniform image2D tracePDF;
+layout( set = 1, binding = 5, r32f ) uniform image2D tracePDF;
 layout( set = 1, binding = 6, rgba32f ) uniform image2D resolveResult;
 
 // Golden angle in radians: 2*PI*(1 - 1/phi), phi = golden ratio.
@@ -80,8 +80,7 @@ void main()
         if (neighborHitInfo.w < 0.75)
             continue;
 
-        // PDF在trace阶段已计算；几何体命中时 xyz 存储命中点法线。
-        vec4 pdfInfo = imageLoad(tracePDF, neighborCoord);
+        float rayPDF = imageLoad(tracePDF, neighborCoord).r;
 
         vec3 color;
         vec3 lightDirection;
@@ -153,7 +152,7 @@ void main()
         float luminanceWeight = 1.0 / (1.0 + Luminance(color));
 
 		///SpatioSampler — BRDF importance weight with bilateral filter
-		float brdfWeight = SSR_BRDF(viewDirection, lightDirection, normal, roughness) / max(1e-5, pdfInfo.a);
+		float brdfWeight = SSR_BRDF(viewDirection, lightDirection, normal, roughness) / max(1e-5, rayPDF);
         float currentSampleWeight = brdfWeight * normalWeight * depthWeight * luminanceWeight;
 
 		resolvedReflectionColor += color * currentSampleWeight;

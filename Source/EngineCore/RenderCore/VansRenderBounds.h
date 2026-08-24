@@ -69,6 +69,12 @@ namespace VansGraphics
 		const VansRenderBounds& bounds,
 		const glm::mat4& worldToClip);
 
+	// 轴对齐包围盒的轻量视锥测试；适用于地形 patch 等大量规则实例。
+	bool RenderAABBIntersectsClipFrustum(
+		const glm::vec3& boundsMin,
+		const glm::vec3& boundsMax,
+		const glm::mat4& worldToClip);
+
 	bool ProjectRenderBoundsToScreen(
 		const VansRenderBounds& bounds,
 		const glm::mat4& view,

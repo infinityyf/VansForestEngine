@@ -217,7 +217,7 @@ namespace VansGraphics
                     { 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
                       VK_SHADER_STAGE_FRAGMENT_BIT, nullptr });
                 texBindings.push_back(
-                    { 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+                    { 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VANS_PUNCTUAL_SHADOW_ATLAS_COUNT,
                       VK_SHADER_STAGE_FRAGMENT_BIT, nullptr });
             }
             std::vector<VkDescriptorSet> texSets;
@@ -237,7 +237,7 @@ namespace VansGraphics
                 { {
                     (useSixWay ? positiveTex : primaryTex)->GetImage().GetSampler(),
                     (useSixWay ? positiveTex : primaryTex)->GetImage().GetImageView(),
-                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+						VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
                 } });
             if (useSixWay)
             {
@@ -265,11 +265,7 @@ namespace VansGraphics
                     m_DescriptorSet,
                     3,
                     VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                    { {
-                        renderPassManager->GetPunctualShadowMap().GetSampler(),
-                        renderPassManager->GetPunctualShadowMap().GetImageView(),
-                        VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
-                    } });
+                    renderPassManager->GetPunctualShadowDescriptorInfos());
             }
             descMgr->CommitDescriptorUpdates();
         }

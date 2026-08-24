@@ -9,13 +9,37 @@ layout( set = 1, binding = 1 ) uniform sampler2D inputRoughness;
 layout( set = 1, binding = 2 ) uniform sampler2D inputPosition;
 layout( set = 1, binding = 3 ) uniform sampler2D inputHIZ;
 layout( set = 1, binding = 4, rgba32f ) uniform image2D traceHit;
-layout( set = 1, binding = 5, rgba32f ) uniform image2D tracePDF;
+layout( set = 1, binding = 5, r32f ) uniform image2D tracePDF;
+
+layout(set = 1, binding = 6, std430) readonly buffer SSRTileListBuffer
+{
+    uint tileList[];
+};
+
+layout(set = 1, binding = 7, std430) readonly buffer SSRTraceControlBuffer
+{
+    uint rayCount;
+    uint dispatchX;
+    uint dispatchY;
+    uint dispatchZ;
+};
+
 void main() 
 {
-    ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
     ivec2 screenSize = ivec2(ScreenParams.xy);
 
-    // Dispatch 按 8x8 workgroup 向上取整，边缘线程必须跳过，避免越界写 traceHit / tracePDF。
+    uint compactTileIndex = gl_WorkGroupID.x;
+    if (compactTileIndex >= rayCount)
+        return;
+
+    uint tileGridWidth = (uint(screenSize.x) + 7u) / 8u;
+    uint linearTile = tileList[compactTileIndex];
+    ivec2 tileCoord = ivec2(
+        int(linearTile % tileGridWidth),
+        int(linearTile / tileGridWidth));
+    ivec2 pixelCoord = tileCoord * 8 + ivec2(gl_LocalInvocationID.xy);
+
+    // Edge tiles may contain lanes outside the render extent.
     if (any(greaterThanEqual(pixelCoord, screenSize)))
         return;
 
@@ -27,7 +51,7 @@ void main()
     vec3 viewDirection = normalize(cameraPosition.xyz - position);
     vec3 tracePosition = position;
     vec4 traceHitInfo = vec4(0.0);
-    vec4 tracePDFInfo = vec4(0.0);
+    float tracePDFValue = 0.0;
 
     //计算反射光线的方向
     vec3 traceDirection =vec3(0,1,0);
@@ -51,7 +75,7 @@ void main()
         // Do NOT clamp random.y — ImportanceSampleGGX already shapes the lobe
         // through the roughness parameter.  Clamping it kills spread for rough surfaces.
         vec4 pdfrandom = ImportanceSampleGGX(random, roughness);
-        tracePDFInfo.a = pdfrandom.w; // PDF值
+        tracePDFValue = pdfrandom.w;
 
         //tangent space to world space
         vec3 jitterNormal = normalize(TangentToWorld(pdfrandom.xyz, normal));
@@ -59,7 +83,7 @@ void main()
     }
     else
     {
-        tracePDFInfo.a = 1.0;
+        tracePDFValue = 1.0;
         traceDirection = reflect(-viewDirection, normal);
     }
 
@@ -70,13 +94,9 @@ void main()
     if (dot(traceDirection, normal) < 0.0)
     {
         imageStore(traceHit, pixelCoord, vec4(0.0));
-        imageStore(tracePDF, pixelCoord, tracePDFInfo);
+        imageStore(tracePDF, pixelCoord, vec4(tracePDFValue, 0.0, 0.0, 0.0));
         return;
     }
-
-    // 将反射方向存入tracePDFInfo.xyz，供miss时resolve阶段采样天空球使用
-    // on hit时会被命中点法线覆盖；on miss时xyz保留为反射方向、w=0.5
-    tracePDFInfo.xyz = traceDirection;
 
     // ─── HiZ 加速屏幕空间追踪 ───
     // 使用 TraceHiZ_UV，HIZ 存储线性深度（单位米），与射线线性深度直接比较
@@ -99,16 +119,13 @@ void main()
     if (traceResult.hit)
     {
         traceHitInfo     = vec4(traceResult.uv, traceResult.depth, 1.0);
-        // 命中点法线用于 resolve 阶段 BRDF 评估
-        ivec2 hitPixel = clamp(ivec2(traceResult.uv * ScreenParams.xy), ivec2(0), screenSize - 1);
-        tracePDFInfo.xyz = texelFetch(inputNormal, hitPixel, 0).xyz;
     }
     else
     {
-        // 未命中：反射方向已存入 tracePDFInfo.xyz，标记为 sky miss（w=0.5）
+        // Sky misses are resolved by deferred IBL, not by the SSR resolve pass.
         traceHitInfo.w = 0.5;
     }
 
     imageStore(traceHit, pixelCoord, traceHitInfo);
-    imageStore(tracePDF, pixelCoord, tracePDFInfo);
+    imageStore(tracePDF, pixelCoord, vec4(tracePDFValue, 0.0, 0.0, 0.0));
 }

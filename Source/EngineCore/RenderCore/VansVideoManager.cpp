@@ -1,6 +1,7 @@
 #include "VansVideoManager.h"
 #include "../SceneCore/VansSceneResourcePlan.h"
 #include "../Util/VansLog.h"
+#include <algorithm>
 #include <filesystem>
 #include <iterator>
 
@@ -42,10 +43,14 @@ void VansVideoManager::Load(const std::vector<Vans::VansSceneVideoResourceReques
         {
             VANS_LOG_WARN("[VansVideoManager] Duplicate video name, replacing: " << name);
             VansVideoTexture* replaced = m_Videos[name].get();
+			auto runtimeIt = std::find(
+				m_RuntimeVideos.begin(), m_RuntimeVideos.end(), replaced);
             for (auto it = m_VideosByAssetGuid.begin(); it != m_VideosByAssetGuid.end();)
                 it = it->second == replaced ? m_VideosByAssetGuid.erase(it) : std::next(it);
             m_Videos[name]->Close();
             m_Videos.erase(name);
+			if (runtimeIt != m_RuntimeVideos.end())
+				*runtimeIt = nullptr;
         }
 
         auto videoTex = std::make_unique<VansVideoTexture>();
@@ -58,6 +63,12 @@ void VansVideoManager::Load(const std::vector<Vans::VansSceneVideoResourceReques
         VANS_LOG("[VansVideoManager] Loaded video texture: name=" << name << " path=" << absPath);
         VansVideoTexture* loaded = videoTex.get();
         m_Videos.emplace(name, std::move(videoTex));
+		auto emptyRuntimeIt = std::find(
+			m_RuntimeVideos.begin(), m_RuntimeVideos.end(), nullptr);
+		if (emptyRuntimeIt == m_RuntimeVideos.end())
+			m_RuntimeVideos.push_back(loaded);
+		else
+			*emptyRuntimeIt = loaded;
         if (!entry.assetGuid.empty())
             m_VideosByAssetGuid[entry.assetGuid] = loaded;
     }
@@ -78,6 +89,19 @@ VansVideoTexture* VansVideoManager::GetByAssetGuid(const std::string& assetGuid)
 {
     const auto it = m_VideosByAssetGuid.find(assetGuid);
     return it == m_VideosByAssetGuid.end() ? nullptr : it->second;
+}
+
+std::uint32_t VansVideoManager::FindRuntimeIndex(const VansVideoTexture* video) const
+{
+	const auto it = std::find(m_RuntimeVideos.begin(), m_RuntimeVideos.end(), video);
+	return it == m_RuntimeVideos.end()
+		? InvalidRuntimeIndex
+		: static_cast<std::uint32_t>(std::distance(m_RuntimeVideos.begin(), it));
+}
+
+VansVideoTexture* VansVideoManager::GetByRuntimeIndex(std::uint32_t index) const
+{
+	return index < m_RuntimeVideos.size() ? m_RuntimeVideos[index] : nullptr;
 }
 
 // ===========================================================================
@@ -141,6 +165,7 @@ void VansVideoManager::Clear()
     // unique_ptr 析构时会自动调用 ~VansVideoTexture() → Close()，
     // 无需在此处显式调用 Close()，避免双重关闭。
     m_VideosByAssetGuid.clear();
+	m_RuntimeVideos.clear();
     m_Videos.clear();
     VANS_LOG("[VansVideoManager] 所有视频纹理已清理");
 }

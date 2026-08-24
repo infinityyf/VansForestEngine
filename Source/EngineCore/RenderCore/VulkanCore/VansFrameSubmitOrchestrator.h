@@ -4,6 +4,7 @@
 #include "VansVKCommandBuffer.h"
 #include "VansResourceStateTracker.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -19,19 +20,21 @@ namespace VansGraphics
 
 	enum class VansSyncPoint : uint8_t
 	{
-		ShadowDone,
-		GBufferDone,
-		TileLightDone,
-		VegetationDone,
-		PreDeferredDone,
-		AsyncSSAODone,
+		VegetationReady,
+		DepthReady,
+		GBufferMaterialReady,
+		SSAORawReady,
+		ShadowMapsReady,
+		HairShadowReady,
+		TileLightReady,
 		HZBReady,
-		CloudDone,
-		AsyncGIDone,
+		SSAOReady,
+		ScreenLightingReady,
+		CloudReady,
+		GIReady,
 		WaterWaveDone,
 		WaterInputsReady,
 		WaterPrecomputeDone,
-		MainCameraHiZDone,
 		FrameRenderDone
 	};
 
@@ -41,9 +44,7 @@ namespace VansGraphics
 		uint32_t computeFamily = VK_QUEUE_FAMILY_IGNORED;
 		uint32_t shadowFamily = VK_QUEUE_FAMILY_IGNORED;
 		bool hasDedicatedAsyncComputeQueue = false;
-		bool hasDedicatedShadowQueue = false;
-		bool supportsTimelineSemaphore = false;
-
+		bool hasSecondaryGraphicsQueue = false;
 		bool HasValidGraphicsQueue() const;
 		bool HasValidComputeQueue() const;
 		bool SupportsAsyncCompute() const;
@@ -86,6 +87,11 @@ namespace VansGraphics
 		VkFence fence = VK_NULL_HANDLE;
 		bool waitForCompletion = false;
 	};
+
+	bool HasSubmitDependencyPath(
+		size_t producer,
+		size_t consumer,
+		const std::vector<std::vector<size_t>>& edges);
 
 	class VansFrameSubmitOrchestrator
 	{

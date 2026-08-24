@@ -18,16 +18,12 @@ namespace Vans::EditorAPI
 			return static_cast<To>(static_cast<int>(value));
 		}
 
-		static_assert(static_cast<int>(AnimGraphNodeType::FootPlacement) ==
-			static_cast<int>(VansGraphics::AnimGraphNodeType::FootPlacement));
+		static_assert(static_cast<int>(AnimGraphNodeType::ChainIK) ==
+			static_cast<int>(VansGraphics::AnimGraphNodeType::ChainIK));
 		static_assert(static_cast<int>(AnimatorParamType::Quaternion) ==
 			static_cast<int>(VansGraphics::AnimatorParamType::Quaternion));
 		static_assert(static_cast<int>(CompareOp::LessEqual) ==
 			static_cast<int>(VansGraphics::CompareOp::LessEqual));
-		static_assert(static_cast<int>(IKProfileType::Rope) ==
-			static_cast<int>(VansGraphics::IKProfileType::Rope));
-		static_assert(static_cast<int>(JointConstraintType::Locked) ==
-			static_cast<int>(VansGraphics::JointConstraintType::Locked));
 		static_assert(static_cast<int>(VansLayerSyncMode::SyncedGraph) ==
 			static_cast<int>(VansGraphics::VansLayerSyncMode::SyncedGraph));
 
@@ -51,150 +47,104 @@ namespace Vans::EditorAPI
 			return { value.w, value.x, value.y, value.z };
 		}
 
-		JointConstraintDTO ToDTO(const VansGraphics::JointConstraint& source)
+		AnimationGoalDefinitionDTO ToDTO(const VansGraphics::VansGraphGoalDefinition& source)
 		{
-			JointConstraintDTO result;
-			result.type = BridgeEnum<JointConstraintType>(source.type);
-			result.localXAxis = ToDTO(source.localXAxis);
-			result.localYAxis = ToDTO(source.localYAxis);
-			result.localZAxis = ToDTO(source.localZAxis);
-			result.minAngleX = source.minAngleX; result.maxAngleX = source.maxAngleX;
-			result.minAngleY = source.minAngleY; result.maxAngleY = source.maxAngleY;
-			result.minAngleZ = source.minAngleZ; result.maxAngleZ = source.maxAngleZ;
-			result.coneAngleDeg = source.coneAngleDeg;
-			result.stiffness = source.stiffness;
-			result.restRotation = ToDTO(source.restRotation);
+			AnimationGoalDefinitionDTO result;
+			result.goalId = source.goalId;
+			result.source = BridgeEnum<AnimationGoalSource>(source.source);
+			result.binding = source.binding;
+			result.positionParameter = source.positionParameter;
+			result.rotationParameter = source.rotationParameter;
+			result.weightParameter = source.weightParameter;
+			result.fixedPositionModel = ToDTO(source.fixedPositionModel);
+			result.fixedRotationModel = ToDTO(source.fixedRotationModel);
+			result.fixedPositionWeight = source.fixedPositionWeight;
+			result.fixedRotationWeight = source.fixedRotationWeight;
 			return result;
 		}
 
-		VansGraphics::JointConstraint ToNative(const JointConstraintDTO& source)
+		VansGraphics::VansGraphGoalDefinition ToNative(const AnimationGoalDefinitionDTO& source)
 		{
-			VansGraphics::JointConstraint result;
-			result.type = BridgeEnum<VansGraphics::JointConstraintType>(source.type);
-			result.localXAxis = ToNative(source.localXAxis);
-			result.localYAxis = ToNative(source.localYAxis);
-			result.localZAxis = ToNative(source.localZAxis);
-			result.minAngleX = source.minAngleX; result.maxAngleX = source.maxAngleX;
-			result.minAngleY = source.minAngleY; result.maxAngleY = source.maxAngleY;
-			result.minAngleZ = source.minAngleZ; result.maxAngleZ = source.maxAngleZ;
-			result.coneAngleDeg = source.coneAngleDeg;
-			result.stiffness = source.stiffness;
-			result.restRotation = ToNative(source.restRotation);
+			VansGraphics::VansGraphGoalDefinition result;
+			result.goalId = source.goalId;
+			result.source = BridgeEnum<VansGraphics::VansGraphGoalSource>(source.source);
+			result.binding = source.binding;
+			result.positionParameter = source.positionParameter;
+			result.rotationParameter = source.rotationParameter;
+			result.weightParameter = source.weightParameter;
+			result.fixedPositionModel = ToNative(source.fixedPositionModel);
+			result.fixedRotationModel = ToNative(source.fixedRotationModel);
+			result.fixedPositionWeight = source.fixedPositionWeight;
+			result.fixedRotationWeight = source.fixedRotationWeight;
 			return result;
 		}
 
-		IKChainDefinitionDTO ToDTO(const VansGraphics::IKChainDefinition& source)
+		AnimationGroundingSettingsDTO ToDTO(const VansGraphics::VansGroundingSettings& source)
 		{
-			IKChainDefinitionDTO result;
-			result.chainName = source.chainName;
-			result.solverType = BridgeEnum<IKSolverType>(source.solverType);
-			result.profileType = BridgeEnum<IKProfileType>(source.profileType);
-			for (const auto& bone : source.bones)
-			{
-				IKBoneLinkDTO item;
-				item.boneIndex = bone.boneIndex;
-				item.boneName = bone.boneName;
-				item.constraint = ToDTO(bone.constraint);
-				item.stiffnessWeight = bone.stiffnessWeight;
-				item.isEffector = bone.isEffector;
-				result.bones.push_back(std::move(item));
-			}
-			result.maxIterations = source.maxIterations;
-			result.positionTolerance = source.positionTolerance;
-			result.rotationTolerance = source.rotationTolerance;
-			result.poleVector = ToDTO(source.poleVector);
-			result.poleWeight = source.poleWeight;
-			result.poleSpace = BridgeEnum<IKCoordinateSpace>(source.poleSpace);
-			result.poleReferenceBoneIndex = source.poleReferenceBoneIndex;
-			result.poleReferenceBoneName = source.poleReferenceBoneName;
-			result.enableRotationTarget = source.enableRotationTarget;
-			result.rotationWeight = source.rotationWeight;
-			result.maintainEffectorGlobalRotation = source.maintainEffectorGlobalRotation;
-			result.allowStretch = source.allowStretch;
-			result.startStretchRatio = source.startStretchRatio;
-			result.maxStretchScale = source.maxStretchScale;
-			result.solvePriority = source.solvePriority;
+			AnimationGroundingSettingsDTO result;
+			result.contacts = source.contacts;
+			result.query.profile = source.query.profile;
+			result.query.startDistanceAgainstApproach = source.query.startDistanceAgainstApproach;
+			result.query.endDistanceAlongApproach = source.query.endDistanceAlongApproach;
+			result.query.maxStepUp = source.query.maxStepUp;
+			result.query.maxStepDown = source.query.maxStepDown;
+			result.query.maxSlopeDegrees = source.query.maxSlopeDegrees;
+			result.query.maxPlaneResidual = source.query.maxPlaneResidual;
+			result.query.maxNormalDeviationDegrees = source.query.maxNormalDeviationDegrees;
+			result.plantSignal = source.plantSignal;
+			result.plant.lockEnabled = source.plant.lockEnabled;
+			result.plant.enterPhase = source.plant.enterPhase;
+			result.plant.exitPhase = source.plant.exitPhase;
+			result.plant.unplantDistance = source.plant.unplantDistance;
+			result.plant.replantDistance = source.plant.replantDistance;
+			result.plant.unplantAngleDegrees = source.plant.unplantAngleDegrees;
+			result.plant.replantAngleDegrees = source.plant.replantAngleDegrees;
+			result.plant.pivot = BridgeEnum<AnimationPlantPivot>(source.plant.pivot);
+			result.plant.weightHalfLife = source.plant.weightHalfLife;
+			result.alignment.fullContactHeight = source.alignment.fullContactHeight;
+			result.alignment.contactFadeHeight = source.alignment.contactFadeHeight;
+			result.alignment.normalHalfLife = source.alignment.normalHalfLife;
+			result.alignment.rotationWeight = source.alignment.rotationWeight;
+			result.pelvis.maxUpOffset = source.pelvis.maxUpOffset;
+			result.pelvis.maxDownOffset = source.pelvis.maxDownOffset;
+			result.pelvis.maxHorizontalOffset = source.pelvis.maxHorizontalOffset;
+			result.pelvis.halfLife = source.pelvis.halfLife;
+			result.weight = source.weight;
 			return result;
 		}
 
-		VansGraphics::IKChainDefinition ToNative(const IKChainDefinitionDTO& source)
+		VansGraphics::VansGroundingSettings ToNative(const AnimationGroundingSettingsDTO& source)
 		{
-			VansGraphics::IKChainDefinition result;
-			result.chainName = source.chainName;
-			result.solverType = BridgeEnum<VansGraphics::IKSolverType>(source.solverType);
-			result.profileType = BridgeEnum<VansGraphics::IKProfileType>(source.profileType);
-			for (const auto& bone : source.bones)
-			{
-				VansGraphics::IKBoneLink item;
-				item.boneIndex = bone.boneIndex;
-				item.boneName = bone.boneName;
-				item.constraint = ToNative(bone.constraint);
-				item.stiffnessWeight = bone.stiffnessWeight;
-				item.isEffector = bone.isEffector;
-				result.bones.push_back(std::move(item));
-			}
-			result.maxIterations = source.maxIterations;
-			result.positionTolerance = source.positionTolerance;
-			result.rotationTolerance = source.rotationTolerance;
-			result.poleVector = ToNative(source.poleVector);
-			result.poleWeight = source.poleWeight;
-			result.poleSpace = BridgeEnum<VansGraphics::IKCoordinateSpace>(source.poleSpace);
-			result.poleReferenceBoneIndex = source.poleReferenceBoneIndex;
-			result.poleReferenceBoneName = source.poleReferenceBoneName;
-			result.enableRotationTarget = source.enableRotationTarget;
-			result.rotationWeight = source.rotationWeight;
-			result.maintainEffectorGlobalRotation = source.maintainEffectorGlobalRotation;
-			result.allowStretch = source.allowStretch;
-			result.startStretchRatio = source.startStretchRatio;
-			result.maxStretchScale = source.maxStretchScale;
-			result.solvePriority = source.solvePriority;
+			VansGraphics::VansGroundingSettings result;
+			result.contacts = source.contacts;
+			result.query.profile = source.query.profile;
+			result.query.startDistanceAgainstApproach = source.query.startDistanceAgainstApproach;
+			result.query.endDistanceAlongApproach = source.query.endDistanceAlongApproach;
+			result.query.maxStepUp = source.query.maxStepUp;
+			result.query.maxStepDown = source.query.maxStepDown;
+			result.query.maxSlopeDegrees = source.query.maxSlopeDegrees;
+			result.query.maxPlaneResidual = source.query.maxPlaneResidual;
+			result.query.maxNormalDeviationDegrees = source.query.maxNormalDeviationDegrees;
+			result.plantSignal = source.plantSignal;
+			result.plant.lockEnabled = source.plant.lockEnabled;
+			result.plant.enterPhase = source.plant.enterPhase;
+			result.plant.exitPhase = source.plant.exitPhase;
+			result.plant.unplantDistance = source.plant.unplantDistance;
+			result.plant.replantDistance = source.plant.replantDistance;
+			result.plant.unplantAngleDegrees = source.plant.unplantAngleDegrees;
+			result.plant.replantAngleDegrees = source.plant.replantAngleDegrees;
+			result.plant.pivot = BridgeEnum<VansGraphics::VansPlantPivot>(source.plant.pivot);
+			result.plant.weightHalfLife = source.plant.weightHalfLife;
+			result.alignment.fullContactHeight = source.alignment.fullContactHeight;
+			result.alignment.contactFadeHeight = source.alignment.contactFadeHeight;
+			result.alignment.normalHalfLife = source.alignment.normalHalfLife;
+			result.alignment.rotationWeight = source.alignment.rotationWeight;
+			result.pelvis.maxUpOffset = source.pelvis.maxUpOffset;
+			result.pelvis.maxDownOffset = source.pelvis.maxDownOffset;
+			result.pelvis.maxHorizontalOffset = source.pelvis.maxHorizontalOffset;
+			result.pelvis.halfLife = source.pelvis.halfLife;
+			result.weight = source.weight;
 			return result;
-		}
-
-		FootPlacementSettingsDTO ToDTO(const VansGraphics::FootPlacementSettings& source)
-		{
-			FootPlacementSettingsDTO r;
-			r.enabled = source.enabled; r.probeOriginHeight = source.probeOriginHeight;
-			r.probeLength = source.probeLength; r.footHalfLength = source.footHalfLength;
-			r.footHalfWidth = source.footHalfWidth; r.ankleHeight = source.ankleHeight;
-			r.fullContactHeight = source.fullContactHeight; r.contactFadeHeight = source.contactFadeHeight;
-			r.maxStepUp = source.maxStepUp; r.maxStepDown = source.maxStepDown;
-			r.maxSlopeDeg = source.maxSlopeDeg; r.pelvisMaxDrop = source.pelvisMaxDrop;
-			r.pelvisSmoothTime = source.pelvisSmoothTime; r.offsetSmoothTime = source.offsetSmoothTime;
-			r.normalSmoothTime = source.normalSmoothTime; r.weightSmoothTime = source.weightSmoothTime;
-			r.globalWeightSmoothTime = source.globalWeightSmoothTime; r.ikWeight = source.ikWeight;
-			r.rotationWeight = source.rotationWeight; r.maxLegExtensionRatio = source.maxLegExtensionRatio;
-			r.poleSmoothTime = source.poleSmoothTime; r.kneePoleModelDir = ToDTO(source.kneePoleModelDir);
-			r.kneePoleModelWeight = source.kneePoleModelWeight; r.debugVisualization = source.debugVisualization;
-			r.collisionMask = source.collisionMask; r.airborneParameter = source.airborneParameter;
-			r.bones.pelvis = source.bones.pelvis; r.bones.leftHip = source.bones.leftHip;
-			r.bones.leftKnee = source.bones.leftKnee; r.bones.leftFoot = source.bones.leftFoot;
-			r.bones.rightHip = source.bones.rightHip; r.bones.rightKnee = source.bones.rightKnee;
-			r.bones.rightFoot = source.bones.rightFoot;
-			return r;
-		}
-
-		VansGraphics::FootPlacementSettings ToNative(const FootPlacementSettingsDTO& source)
-		{
-			VansGraphics::FootPlacementSettings r;
-			r.enabled = source.enabled; r.probeOriginHeight = source.probeOriginHeight;
-			r.probeLength = source.probeLength; r.footHalfLength = source.footHalfLength;
-			r.footHalfWidth = source.footHalfWidth; r.ankleHeight = source.ankleHeight;
-			r.fullContactHeight = source.fullContactHeight; r.contactFadeHeight = source.contactFadeHeight;
-			r.maxStepUp = source.maxStepUp; r.maxStepDown = source.maxStepDown;
-			r.maxSlopeDeg = source.maxSlopeDeg; r.pelvisMaxDrop = source.pelvisMaxDrop;
-			r.pelvisSmoothTime = source.pelvisSmoothTime; r.offsetSmoothTime = source.offsetSmoothTime;
-			r.normalSmoothTime = source.normalSmoothTime; r.weightSmoothTime = source.weightSmoothTime;
-			r.globalWeightSmoothTime = source.globalWeightSmoothTime; r.ikWeight = source.ikWeight;
-			r.rotationWeight = source.rotationWeight; r.maxLegExtensionRatio = source.maxLegExtensionRatio;
-			r.poleSmoothTime = source.poleSmoothTime; r.kneePoleModelDir = ToNative(source.kneePoleModelDir);
-			r.kneePoleModelWeight = source.kneePoleModelWeight; r.debugVisualization = source.debugVisualization;
-			r.collisionMask = source.collisionMask; r.airborneParameter = source.airborneParameter;
-			r.bones.pelvis = source.bones.pelvis; r.bones.leftHip = source.bones.leftHip;
-			r.bones.leftKnee = source.bones.leftKnee; r.bones.leftFoot = source.bones.leftFoot;
-			r.bones.rightHip = source.bones.rightHip; r.bones.rightKnee = source.bones.rightKnee;
-			r.bones.rightFoot = source.bones.rightFoot;
-			return r;
 		}
 
 		TransitionConditionDTO ToDTO(const VansGraphics::TransitionCondition& source)
@@ -315,46 +265,51 @@ namespace Vans::EditorAPI
 				result->m_SlotId = n.m_SlotId; result->m_EnableFallbackInput = n.m_EnableFallbackInput;
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::IK:
+			case VansGraphics::AnimGraphNodeType::Goal:
 			{
-				const auto& n = static_cast<const VansGraphics::AnimGraphIKNode&>(source);
-				result->m_Chain = ToDTO(n.m_Chain); result->m_TargetPosParamName = n.m_TargetPosParamName;
-				result->m_TargetRotParamName = n.m_TargetRotParamName; result->m_WeightParamName = n.m_WeightParamName;
-				result->m_UseFixedTarget = n.m_UseFixedTarget; result->m_FixedTargetPos = ToDTO(n.m_FixedTargetPos);
-				result->m_FixedTargetRot = ToDTO(n.m_FixedTargetRot); result->m_FixedWeight = n.m_FixedWeight;
-				result->m_TargetPositionSpace = BridgeEnum<IKCoordinateSpace>(n.m_TargetPositionSpace);
-				result->m_TargetRotationSpace = BridgeEnum<IKCoordinateSpace>(n.m_TargetRotationSpace);
-				result->m_TargetReferenceBoneName = n.m_TargetReferenceBoneName;
+				result->m_Goal = ToDTO(static_cast<const VansGraphics::AnimGraphGoalNode&>(source).m_Goal);
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::TwoBoneIK:
+			case VansGraphics::AnimGraphNodeType::AimConstraint:
 			{
-				const auto& n = static_cast<const VansGraphics::AnimGraphTwoBoneIKNode&>(source);
-				result->m_RootBoneName = n.m_RootBoneName; result->m_MidBoneName = n.m_MidBoneName; result->m_TipBoneName = n.m_TipBoneName;
-				result->m_UseLegProfile = n.m_UseLegProfile; result->m_IsRightSide = n.m_IsRightSide;
-				result->m_HingeMinAngle = n.m_HingeMinAngle; result->m_HingeMaxAngle = n.m_HingeMaxAngle; result->m_ConeAngle = n.m_ConeAngle;
-				result->m_UsePoleVector = n.m_UsePoleVector; result->m_PoleVector = ToDTO(n.m_PoleVector); result->m_PoleWeight = n.m_PoleWeight;
-				result->m_TargetPosParamName = n.m_TargetPosParamName; result->m_TargetRotParamName = n.m_TargetRotParamName; result->m_WeightParamName = n.m_WeightParamName;
-				result->m_UseFixedTarget = n.m_UseFixedTarget; result->m_FixedTargetPos = ToDTO(n.m_FixedTargetPos); result->m_FixedTargetRot = ToDTO(n.m_FixedTargetRot);
-				result->m_FixedWeight = n.m_FixedWeight; result->m_EnableRotationTarget = n.m_EnableRotationTarget; result->m_RotationWeight = n.m_RotationWeight;
-				result->m_TargetPositionSpace = BridgeEnum<IKCoordinateSpace>(n.m_TargetPositionSpace); result->m_TargetRotationSpace = BridgeEnum<IKCoordinateSpace>(n.m_TargetRotationSpace);
-				result->m_TargetReferenceBoneName = n.m_TargetReferenceBoneName; result->m_PoleSpace = BridgeEnum<IKCoordinateSpace>(n.m_PoleSpace);
-				result->m_PoleReferenceBoneName = n.m_PoleReferenceBoneName; result->m_MaintainEffectorGlobalRotation = n.m_MaintainEffectorGlobalRotation;
-				result->m_AllowStretch = n.m_AllowStretch; result->m_StartStretchRatio = n.m_StartStretchRatio; result->m_MaxStretchScale = n.m_MaxStretchScale;
+				const auto& n = static_cast<const VansGraphics::AnimGraphAimConstraintNode&>(source);
+				result->m_ChainId = n.m_ChainId;
+				result->m_Target = ToDTO(n.m_Target);
+				result->m_AimSettings.minYawDegrees = n.m_Settings.yawLimitDegrees.x;
+				result->m_AimSettings.maxYawDegrees = n.m_Settings.yawLimitDegrees.y;
+				result->m_AimSettings.minPitchDegrees = n.m_Settings.pitchLimitDegrees.x;
+				result->m_AimSettings.maxPitchDegrees = n.m_Settings.pitchLimitDegrees.y;
+				result->m_AimSettings.maxAngularSpeedDegrees = n.m_Settings.maxAngularSpeedDegrees;
+				result->m_AimSettings.weight = n.m_Settings.weight;
+				result->m_TargetHalfLife = n.m_TargetHalfLife;
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::LookAt:
+			case VansGraphics::AnimGraphNodeType::Grounding:
 			{
-				const auto& n = static_cast<const VansGraphics::AnimGraphLookAtNode&>(source);
-				result->m_BoneNames = n.m_BoneNames; result->m_BoneWeights = n.m_BoneWeights; result->m_MaxAnglePerBoneDeg = n.m_MaxAnglePerBoneDeg;
-				result->m_ForwardAxis = ToDTO(n.m_ForwardAxis); result->m_WorldForward = ToDTO(n.m_WorldForward); result->m_ModelUp = ToDTO(n.m_ModelUp); result->m_UpWeight = n.m_UpWeight;
-				result->m_TargetPosParamName = n.m_TargetPosParamName; result->m_WeightParamName = n.m_WeightParamName; result->m_UseFixedTarget = n.m_UseFixedTarget;
-				result->m_FixedTargetPos = ToDTO(n.m_FixedTargetPos); result->m_FixedWeight = n.m_FixedWeight;
-				result->m_TargetPositionSpace = BridgeEnum<IKCoordinateSpace>(n.m_TargetPositionSpace); result->m_TargetReferenceBoneName = n.m_TargetReferenceBoneName;
+				result->m_GroundingSettings = ToDTO(
+					static_cast<const VansGraphics::AnimGraphGroundingNode&>(source).m_Settings);
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::FootPlacement:
-				result->m_Settings = ToDTO(static_cast<const VansGraphics::AnimGraphFootPlacementNode&>(source).m_Settings); break;
+			case VansGraphics::AnimGraphNodeType::LimbIK:
+			{
+				const auto& n = static_cast<const VansGraphics::AnimGraphLimbIKNode&>(source);
+				result->m_ChainIds = n.m_ChainIds;
+				result->m_LimbSettings.tipRotationMode = BridgeEnum<AnimationLimbTipRotationMode>(n.m_Settings.tipRotationMode);
+				result->m_LimbSettings.positionTolerance = n.m_Settings.positionTolerance;
+				result->m_LimbSettings.weight = n.m_Settings.weight;
+				result->m_LimbSettings.commitClampedPose = n.m_Settings.commitClampedPose;
+				break;
+			}
+			case VansGraphics::AnimGraphNodeType::ChainIK:
+			{
+				const auto& n = static_cast<const VansGraphics::AnimGraphChainIKNode&>(source);
+				result->m_ChainIds = n.m_ChainIds;
+				result->m_ChainSettings.maxIterations = n.m_Settings.maxIterations;
+				result->m_ChainSettings.positionTolerance = n.m_Settings.positionTolerance;
+				result->m_ChainSettings.weight = n.m_Settings.weight;
+				result->m_ChainSettings.commitClampedPose = n.m_Settings.commitClampedPose;
+				break;
+			}
 			default: break;
 			}
 			return result;
@@ -431,46 +386,49 @@ namespace Vans::EditorAPI
 				n.m_SlotId = source.m_SlotId; n.m_EnableFallbackInput = source.m_EnableFallbackInput;
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::IK:
+			case VansGraphics::AnimGraphNodeType::Goal:
 			{
-				auto& n = static_cast<VansGraphics::AnimGraphIKNode&>(*result);
-				n.m_Chain = ToNative(source.m_Chain); n.m_TargetPosParamName = source.m_TargetPosParamName;
-				n.m_TargetRotParamName = source.m_TargetRotParamName; n.m_WeightParamName = source.m_WeightParamName;
-				n.m_UseFixedTarget = source.m_UseFixedTarget; n.m_FixedTargetPos = ToNative(source.m_FixedTargetPos);
-				n.m_FixedTargetRot = ToNative(source.m_FixedTargetRot); n.m_FixedWeight = source.m_FixedWeight;
-				n.m_TargetPositionSpace = BridgeEnum<VansGraphics::IKCoordinateSpace>(source.m_TargetPositionSpace);
-				n.m_TargetRotationSpace = BridgeEnum<VansGraphics::IKCoordinateSpace>(source.m_TargetRotationSpace);
-				n.m_TargetReferenceBoneName = source.m_TargetReferenceBoneName;
+				static_cast<VansGraphics::AnimGraphGoalNode&>(*result).m_Goal = ToNative(source.m_Goal);
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::TwoBoneIK:
+			case VansGraphics::AnimGraphNodeType::AimConstraint:
 			{
-				auto& n = static_cast<VansGraphics::AnimGraphTwoBoneIKNode&>(*result);
-				n.m_RootBoneName = source.m_RootBoneName; n.m_MidBoneName = source.m_MidBoneName; n.m_TipBoneName = source.m_TipBoneName;
-				n.m_UseLegProfile = source.m_UseLegProfile; n.m_IsRightSide = source.m_IsRightSide;
-				n.m_HingeMinAngle = source.m_HingeMinAngle; n.m_HingeMaxAngle = source.m_HingeMaxAngle; n.m_ConeAngle = source.m_ConeAngle;
-				n.m_UsePoleVector = source.m_UsePoleVector; n.m_PoleVector = ToNative(source.m_PoleVector); n.m_PoleWeight = source.m_PoleWeight;
-				n.m_TargetPosParamName = source.m_TargetPosParamName; n.m_TargetRotParamName = source.m_TargetRotParamName; n.m_WeightParamName = source.m_WeightParamName;
-				n.m_UseFixedTarget = source.m_UseFixedTarget; n.m_FixedTargetPos = ToNative(source.m_FixedTargetPos); n.m_FixedTargetRot = ToNative(source.m_FixedTargetRot);
-				n.m_FixedWeight = source.m_FixedWeight; n.m_EnableRotationTarget = source.m_EnableRotationTarget; n.m_RotationWeight = source.m_RotationWeight;
-				n.m_TargetPositionSpace = BridgeEnum<VansGraphics::IKCoordinateSpace>(source.m_TargetPositionSpace); n.m_TargetRotationSpace = BridgeEnum<VansGraphics::IKCoordinateSpace>(source.m_TargetRotationSpace);
-				n.m_TargetReferenceBoneName = source.m_TargetReferenceBoneName; n.m_PoleSpace = BridgeEnum<VansGraphics::IKCoordinateSpace>(source.m_PoleSpace);
-				n.m_PoleReferenceBoneName = source.m_PoleReferenceBoneName; n.m_MaintainEffectorGlobalRotation = source.m_MaintainEffectorGlobalRotation;
-				n.m_AllowStretch = source.m_AllowStretch; n.m_StartStretchRatio = source.m_StartStretchRatio; n.m_MaxStretchScale = source.m_MaxStretchScale;
+				auto& n = static_cast<VansGraphics::AnimGraphAimConstraintNode&>(*result);
+				n.m_ChainId = source.m_ChainId;
+				n.m_Target = ToNative(source.m_Target);
+				n.m_Settings.yawLimitDegrees = { source.m_AimSettings.minYawDegrees, source.m_AimSettings.maxYawDegrees };
+				n.m_Settings.pitchLimitDegrees = { source.m_AimSettings.minPitchDegrees, source.m_AimSettings.maxPitchDegrees };
+				n.m_Settings.maxAngularSpeedDegrees = source.m_AimSettings.maxAngularSpeedDegrees;
+				n.m_Settings.weight = source.m_AimSettings.weight;
+				n.m_TargetHalfLife = source.m_TargetHalfLife;
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::LookAt:
+			case VansGraphics::AnimGraphNodeType::Grounding:
 			{
-				auto& n = static_cast<VansGraphics::AnimGraphLookAtNode&>(*result);
-				n.m_BoneNames = source.m_BoneNames; n.m_BoneWeights = source.m_BoneWeights; n.m_MaxAnglePerBoneDeg = source.m_MaxAnglePerBoneDeg;
-				n.m_ForwardAxis = ToNative(source.m_ForwardAxis); n.m_WorldForward = ToNative(source.m_WorldForward); n.m_ModelUp = ToNative(source.m_ModelUp); n.m_UpWeight = source.m_UpWeight;
-				n.m_TargetPosParamName = source.m_TargetPosParamName; n.m_WeightParamName = source.m_WeightParamName; n.m_UseFixedTarget = source.m_UseFixedTarget;
-				n.m_FixedTargetPos = ToNative(source.m_FixedTargetPos); n.m_FixedWeight = source.m_FixedWeight;
-				n.m_TargetPositionSpace = BridgeEnum<VansGraphics::IKCoordinateSpace>(source.m_TargetPositionSpace); n.m_TargetReferenceBoneName = source.m_TargetReferenceBoneName;
+				static_cast<VansGraphics::AnimGraphGroundingNode&>(*result).m_Settings =
+					ToNative(source.m_GroundingSettings);
 				break;
 			}
-			case VansGraphics::AnimGraphNodeType::FootPlacement:
-				static_cast<VansGraphics::AnimGraphFootPlacementNode&>(*result).m_Settings = ToNative(source.m_Settings); break;
+			case VansGraphics::AnimGraphNodeType::LimbIK:
+			{
+				auto& n = static_cast<VansGraphics::AnimGraphLimbIKNode&>(*result);
+				n.m_ChainIds = source.m_ChainIds;
+				n.m_Settings.tipRotationMode = BridgeEnum<VansGraphics::VansLimbTipRotationMode>(source.m_LimbSettings.tipRotationMode);
+				n.m_Settings.positionTolerance = source.m_LimbSettings.positionTolerance;
+				n.m_Settings.weight = source.m_LimbSettings.weight;
+				n.m_Settings.commitClampedPose = source.m_LimbSettings.commitClampedPose;
+				break;
+			}
+			case VansGraphics::AnimGraphNodeType::ChainIK:
+			{
+				auto& n = static_cast<VansGraphics::AnimGraphChainIKNode&>(*result);
+				n.m_ChainIds = source.m_ChainIds;
+				n.m_Settings.maxIterations = source.m_ChainSettings.maxIterations;
+				n.m_Settings.positionTolerance = source.m_ChainSettings.positionTolerance;
+				n.m_Settings.weight = source.m_ChainSettings.weight;
+				n.m_Settings.commitClampedPose = source.m_ChainSettings.commitClampedPose;
+				break;
+			}
 			default: break;
 			}
 			return result;
@@ -533,6 +491,7 @@ namespace Vans::EditorAPI
 		{
 			auto result = std::make_unique<AnimatorDocumentDTO>();
 			result->name = source.name;
+			result->animationRigGuid = source.animationRigGuid;
 			for (const auto& parameter : source.parameters)
 			{
 				AnimatorParameterDTO item;
@@ -555,7 +514,7 @@ namespace Vans::EditorAPI
 			for (const auto& layer : source.layers)
 			{
 				AnimationLayerDTO item;
-				item.id = layer.id; item.name = layer.name; item.graphId = layer.graphId;
+				item.id = layer.id; item.name = layer.name;
 				item.kind = BridgeEnum<VansAnimationLayerKind>(layer.kind);
 				item.maskGuid = layer.maskGuid; item.maskPathHint = layer.maskPathHint;
 				item.blendMode = BridgeEnum<VansLayerBlendMode>(layer.blendMode);
@@ -569,14 +528,43 @@ namespace Vans::EditorAPI
 				item.events = BridgeEnum<VansLayerEventMode>(layer.events);
 				item.nodeTracks = BridgeEnum<VansLayerNodeTrackMode>(layer.nodeTracks);
 				item.sync = BridgeEnum<VansLayerSyncMode>(layer.sync); item.syncLeaderLayerId = layer.syncLeaderLayerId;
-				item.eventWeightThreshold = layer.eventWeightThreshold; item.enabled = layer.enabled;
+				item.eventWeightThreshold = layer.eventWeightThreshold;
 				item.updateWhenWeightIsZero = layer.updateWhenWeightIsZero;
 				result->layers.push_back(std::move(item));
+			}
+			for (const auto& graphSet : source.graphSets)
+			{
+				AnimationGraphSetDTO item;
+				item.id = graphSet.id; item.name = graphSet.name;
+				for (const auto& binding : graphSet.bindings)
+					item.bindings.push_back({ binding.layerId, binding.graphId, binding.enabled });
+				result->graphSets.push_back(std::move(item));
+			}
+			result->defaultGraphSetId = source.defaultGraphSetId;
+			result->defaultGraphSetTransition.duration = source.defaultGraphSetTransition.duration;
+			result->defaultGraphSetTransition.curve = BridgeEnum<VansGraphSetBlendCurve>(source.defaultGraphSetTransition.curve);
+			result->defaultGraphSetTransition.phase = BridgeEnum<VansGraphSetPhasePolicy>(source.defaultGraphSetTransition.phase);
+			result->defaultGraphSetTransition.events = BridgeEnum<VansGraphSetEventPolicy>(source.defaultGraphSetTransition.events);
+			result->defaultGraphSetTransition.rootMotion = BridgeEnum<VansGraphSetRootMotionPolicy>(source.defaultGraphSetTransition.rootMotion);
+			result->defaultGraphSetTransition.interruption = BridgeEnum<VansGraphSetInterruptionPolicy>(source.defaultGraphSetTransition.interruption);
+			result->defaultGraphSetTransition.requireStateMatch = source.defaultGraphSetTransition.requireStateMatch;
+			for (const auto& rule : source.graphSetTransitionRules)
+			{
+				GraphSetTransitionRuleDTO item;
+				item.fromGraphSetId = rule.fromGraphSetId; item.toGraphSetId = rule.toGraphSetId;
+				item.policy.duration = rule.policy.duration;
+				item.policy.curve = BridgeEnum<VansGraphSetBlendCurve>(rule.policy.curve);
+				item.policy.phase = BridgeEnum<VansGraphSetPhasePolicy>(rule.policy.phase);
+				item.policy.events = BridgeEnum<VansGraphSetEventPolicy>(rule.policy.events);
+				item.policy.rootMotion = BridgeEnum<VansGraphSetRootMotionPolicy>(rule.policy.rootMotion);
+				item.policy.interruption = BridgeEnum<VansGraphSetInterruptionPolicy>(rule.policy.interruption);
+				item.policy.requireStateMatch = rule.policy.requireStateMatch;
+				result->graphSetTransitionRules.push_back(std::move(item));
 			}
 			for (const auto& slot : source.slots)
 			{
 				AnimationSlotDTO item;
-				item.id = slot.id; item.name = slot.name; item.layerId = slot.layerId; item.slotNodeId = slot.slotNodeId;
+				item.id = slot.id; item.name = slot.name; item.layerId = slot.layerId;
 				item.concurrency = BridgeEnum<VansSlotConcurrency>(slot.concurrency); item.maxQueueDepth = slot.maxQueueDepth;
 				item.defaultBlendIn = slot.defaultBlendIn; item.defaultBlendOut = slot.defaultBlendOut; item.interruptible = slot.interruptible;
 				result->slots.push_back(std::move(item));
@@ -590,6 +578,7 @@ namespace Vans::EditorAPI
 			std::string& error)
 		{
 			result.name = source.name;
+			result.animationRigGuid = source.animationRigGuid;
 			for (const auto& parameter : source.parameters)
 			{
 				VansGraphics::AnimatorParameter item;
@@ -615,7 +604,7 @@ namespace Vans::EditorAPI
 			for (const auto& layer : source.layers)
 			{
 				VansGraphics::VansAnimationLayerDefinition item;
-				item.id = layer.id; item.name = layer.name; item.graphId = layer.graphId;
+				item.id = layer.id; item.name = layer.name;
 				item.kind = BridgeEnum<VansGraphics::VansAnimationLayerKind>(layer.kind);
 				item.maskGuid = layer.maskGuid; item.maskPathHint = layer.maskPathHint;
 				item.blendMode = BridgeEnum<VansGraphics::VansLayerBlendMode>(layer.blendMode);
@@ -629,14 +618,43 @@ namespace Vans::EditorAPI
 				item.events = BridgeEnum<VansGraphics::VansLayerEventMode>(layer.events);
 				item.nodeTracks = BridgeEnum<VansGraphics::VansLayerNodeTrackMode>(layer.nodeTracks);
 				item.sync = BridgeEnum<VansGraphics::VansLayerSyncMode>(layer.sync); item.syncLeaderLayerId = layer.syncLeaderLayerId;
-				item.eventWeightThreshold = layer.eventWeightThreshold; item.enabled = layer.enabled;
+				item.eventWeightThreshold = layer.eventWeightThreshold;
 				item.updateWhenWeightIsZero = layer.updateWhenWeightIsZero;
 				result.layers.push_back(std::move(item));
+			}
+			for (const auto& graphSet : source.graphSets)
+			{
+				VansGraphics::VansAnimationGraphSetDefinition item;
+				item.id = graphSet.id; item.name = graphSet.name;
+				for (const auto& binding : graphSet.bindings)
+					item.bindings.push_back({ binding.layerId, binding.graphId, binding.enabled });
+				result.graphSets.push_back(std::move(item));
+			}
+			result.defaultGraphSetId = source.defaultGraphSetId;
+			result.defaultGraphSetTransition.duration = source.defaultGraphSetTransition.duration;
+			result.defaultGraphSetTransition.curve = BridgeEnum<VansGraphics::VansGraphSetBlendCurve>(source.defaultGraphSetTransition.curve);
+			result.defaultGraphSetTransition.phase = BridgeEnum<VansGraphics::VansGraphSetPhasePolicy>(source.defaultGraphSetTransition.phase);
+			result.defaultGraphSetTransition.events = BridgeEnum<VansGraphics::VansGraphSetEventPolicy>(source.defaultGraphSetTransition.events);
+			result.defaultGraphSetTransition.rootMotion = BridgeEnum<VansGraphics::VansGraphSetRootMotionPolicy>(source.defaultGraphSetTransition.rootMotion);
+			result.defaultGraphSetTransition.interruption = BridgeEnum<VansGraphics::VansGraphSetInterruptionPolicy>(source.defaultGraphSetTransition.interruption);
+			result.defaultGraphSetTransition.requireStateMatch = source.defaultGraphSetTransition.requireStateMatch;
+			for (const auto& rule : source.graphSetTransitionRules)
+			{
+				VansGraphics::VansGraphSetTransitionRule item;
+				item.fromGraphSetId = rule.fromGraphSetId; item.toGraphSetId = rule.toGraphSetId;
+				item.policy.duration = rule.policy.duration;
+				item.policy.curve = BridgeEnum<VansGraphics::VansGraphSetBlendCurve>(rule.policy.curve);
+				item.policy.phase = BridgeEnum<VansGraphics::VansGraphSetPhasePolicy>(rule.policy.phase);
+				item.policy.events = BridgeEnum<VansGraphics::VansGraphSetEventPolicy>(rule.policy.events);
+				item.policy.rootMotion = BridgeEnum<VansGraphics::VansGraphSetRootMotionPolicy>(rule.policy.rootMotion);
+				item.policy.interruption = BridgeEnum<VansGraphics::VansGraphSetInterruptionPolicy>(rule.policy.interruption);
+				item.policy.requireStateMatch = rule.policy.requireStateMatch;
+				result.graphSetTransitionRules.push_back(std::move(item));
 			}
 			for (const auto& slot : source.slots)
 			{
 				VansGraphics::VansAnimationSlotDefinition item;
-				item.id = slot.id; item.name = slot.name; item.layerId = slot.layerId; item.slotNodeId = slot.slotNodeId;
+				item.id = slot.id; item.name = slot.name; item.layerId = slot.layerId;
 				item.concurrency = BridgeEnum<VansGraphics::VansSlotConcurrency>(slot.concurrency); item.maxQueueDepth = slot.maxQueueDepth;
 				item.defaultBlendIn = slot.defaultBlendIn; item.defaultBlendOut = slot.defaultBlendOut; item.interruptible = slot.interruptible;
 				result.slots.push_back(std::move(item));
@@ -812,7 +830,12 @@ namespace Vans::EditorAPI
 			graph.graph->GetNode(entry)->m_EditorPosX = 40.0f; graph.graph->GetNode(output)->m_EditorPosX = 360.0f;
 			graph.graph->AddLink(entry, 0, output, 0); const std::string graphId = graph.id; asset.graphs.push_back(std::move(graph));
 			VansGraphics::VansAnimationLayerDefinition base; base.id = Vans::VansAssetGuid::New().ToString();
-			base.name = "Base"; base.graphId = graphId; base.kind = VansGraphics::VansAnimationLayerKind::Base; asset.layers.push_back(std::move(base));
+			base.name = "Base"; base.kind = VansGraphics::VansAnimationLayerKind::Base;
+			const std::string baseLayerId = base.id; asset.layers.push_back(std::move(base));
+			VansGraphics::VansAnimationGraphSetDefinition graphSet;
+			graphSet.id = Vans::VansAssetGuid::New().ToString(); graphSet.name = "Default";
+			graphSet.bindings.push_back({ baseLayerId, graphId, true });
+			asset.defaultGraphSetId = graphSet.id; asset.graphSets.push_back(std::move(graphSet));
 			result.success = !path.empty() && VansGraphics::VansAnimatorIO::Save(path.string(), asset, error);
 			result.assetPath = result.success ? path.string() : std::string{};
 		}

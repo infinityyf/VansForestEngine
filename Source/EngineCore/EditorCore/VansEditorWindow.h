@@ -57,6 +57,7 @@ namespace VansGraphics
 	class VansAudioDebugWindow;
 	class VansSkeletonDebugWindow;
 	class VansMotionMatchingDebugWindow;
+	class VansRenderSystem;
 
 	//编辑器窗口
 	class VansEditorWindow
@@ -101,9 +102,11 @@ namespace VansGraphics
 	public:
 		static bool CreateVansEditorWindow(int width, int height, GRAPHICS_API api);
 
-		static void StartEditorLoop(VansGraphics::VansCamera& camera);
+		static void StartEditorLoop(
+			VansGraphics::VansCamera& camera,
+			VansGraphics::VansRenderSystem& renderSystem);
 
-		static void DrawEditorWindows(VansGraphicsDevice& device);
+		static std::unique_ptr<IVansRenderFrameOverlay> DrawEditorWindows(VansGraphicsDevice& device);
 
 		static void DestroyVansEditorWindow();
 

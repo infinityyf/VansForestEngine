@@ -1,28 +1,17 @@
 #pragma once
 
 #include "VansRenderBounds.h"
-#include "VulkanCore/VansVKBuffer.h"
+#include "VansRenderProxyHandle.h"
+#include "VansRenderSceneSnapshot.h"
 
 #include <cstdint>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 namespace VansGraphics
 {
 	class VansCamera;
 	class VansRenderNode;
-	class VansVKDevice;
-	class VansVKCommandBuffer;
-
-	enum class VansMainCameraCullClass : uint8_t
-	{
-		Opaque,
-		Hair,
-		Transparent,
-		ForwardOpaqueAfterDeferred,
-		Decal
-	};
 
 	enum VansMainCameraCullFlags : uint32_t
 	{
@@ -30,26 +19,10 @@ namespace VansGraphics
 		VANS_MAIN_CAMERA_CULL_TRANSPARENT = 1u << 1,
 	};
 
-	struct VansMainCameraHiZCullSettings
-	{
-		bool enabled = true;
-		bool enableOpaque = true;
-		bool enableHair = true;
-		bool enableTransparent = false;
-		bool enableDecal = true;
-		bool enableForwardOpaqueAfterDeferred = true;
-		float depthBiasMeters = 0.35f;
-		float cameraMotionDisableDistance = 1.0f;
-		float cameraMotionDisableAngleRadians = glm::radians(8.0f);
-		uint32_t forceVisibleFramesAfterChange = 1;
-		uint32_t refreshCulledEveryNFrames = 30;
-		float maxScreenCoverageForCull = 0.65f;
-	};
-
 	struct VansMainCameraCullCandidate
 	{
 		uint64_t nodeId = 0;
-		VansRenderNode* node = nullptr;
+		std::string nodeName;
 		VansRenderBounds bounds;
 		VansMainCameraCullClass cullClass = VansMainCameraCullClass::Opaque;
 		uint32_t flags = 0;
@@ -85,7 +58,7 @@ namespace VansGraphics
 		glm::mat4 previousViewProjection = glm::mat4(1.0f);
 		glm::vec3 previousCameraPosition = glm::vec3(0.0f);
 		glm::vec3 previousCameraForward = glm::vec3(0.0f, 0.0f, -1.0f);
-		VkExtent2D previousExtent{ 0, 0 };
+		glm::uvec2 previousExtent{ 0u, 0u };
 		float previousFov = 0.0f;
 		float previousNearClip = 0.0f;
 		float previousFarClip = 0.0f;
@@ -114,7 +87,12 @@ namespace VansGraphics
 		VansRenderBounds bounds;
 	};
 
+	struct VansMainCameraVisibilityDebugSnapshot final
+	{
+		VansMainCameraVisibilityStats stats;
+		std::vector<VansMainCameraHiZCulledNodeDebug> culledNodes;
+	};
+
 	bool TryGetStaticNodeWorldBounds(VansRenderNode* node, VansRenderBounds& bounds);
 	bool IsNodeVisibleInFrustum(VansRenderNode* node, const glm::mat4& worldToClip);
-	uint64_t MakeMainCameraCullNodeId(const VansRenderNode* node);
 }

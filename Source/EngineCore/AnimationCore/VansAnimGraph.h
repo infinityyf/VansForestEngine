@@ -15,8 +15,10 @@
 #include "VansPoseTypes.h"
 #include "VansAnimationController.h"
 #include "VansAnimGraphJson.h"
-#include "IK/VansIKTypes.h"
-#include "FootPlacement/VansFootPlacementTypes.h"
+#include "Procedural/Grounding/VansGroundingTypes.h"
+#include "Procedural/Solvers/VansAimConstraintSolver.h"
+#include "Procedural/Solvers/VansChainIKSolver.h"
+#include "Procedural/Solvers/VansLimbIKSolver.h"
 #include "../RuntimeCore/VansCharacterMotion.h"
 #include <string>
 #include <vector>
@@ -30,7 +32,6 @@ namespace VansGraphics
 	struct AnimatorParameter;
 	class VansAnimGraph;
 	class VansAnimGraphInstance;
-	class VansIKSolver;
 	class VansMotionMatchingRuntime;
 
 	// ─────────────────────────────────────────────────────────────
@@ -52,10 +53,11 @@ namespace VansGraphics
 		MotionMatching,  // Motion Matching pose source with fallback input
 		Slot,            // Gameplay one-shot source with optional fallback input
 		TargetPoseInput, // Composed/retargeted target-skeleton pose entering a post-process Graph
-		IK,              // 通用 IK 节点（CCD/FABRIK 求解人体或非关节链）
-		TwoBoneIK,       // 双骨骼 IK 节点（人体四肢快捷配置）
-		LookAt,          // 朝向/瞄准节点
-		FootPlacement    // 足部贴地后处理请求（在 Root Motion 之后执行）
+		Goal,            // 创建拥有型程序化 Goal
+		AimConstraint,   // 多骨朝向约束
+		Grounding,       // 场景批查询的 Gather/Resolve 节点
+		LimbIK,          // Rig 中三骨 Limb 链求解
+		ChainIK          // Rig 中 CCD/FABRIK 链求解
 	};
 
 	// ─────────────────────────────────────────────────────────────
@@ -373,7 +375,8 @@ namespace VansGraphics
 
 	// The only legal pose source for a Target Post Process Graph. It makes the
 	// execution boundary explicit: Layer composition or Retarget produces the
-	// input payload, and target-skeleton IK/LookAt/Foot Placement consume it.
+	// input payload; the Target Procedural Graph then schedules Goal, Grounding,
+	// Limb/Chain IK, and Aim nodes against the target skeleton.
 	class AnimGraphTargetPoseInputNode : public VansAnimGraphNode
 	{
 	public:
@@ -383,133 +386,70 @@ namespace VansGraphics
 		                       VansAnimGraphInstance& instance) const override;
 	};
 
-	// ─── IKNode ─────────────────────────────────────────────────
-	//  通用 IK 节点：使用配置好的 IKChainDefinition + 求解器
-	//  Input 0: Pose (上游动画)
-	//  Output 0: Pose (IK 修正后)
-	//  目标位置/旋转通过 Vector3/Quaternion 参数驱动。
+	enum class VansGraphGoalSource { Binding, Parameters, Fixed };
 
-	class AnimGraphIKNode : public VansAnimGraphNode
+	struct VansGraphGoalDefinition
 	{
-	public:
-		AnimGraphIKNode();
-		~AnimGraphIKNode() override;
-		std::vector<AnimGraphPin> GetPins() const override;
-		AnimGraphPose Evaluate(const AnimGraphContext& ctx,
-		                       VansAnimGraphInstance& instance) const override;
-
-		// IK 链配置
-		IKChainDefinition m_Chain;
-
-		// 目标驱动参数名（必须为 Vector3/Quaternion 类型）
-		std::string m_TargetPosParamName;
-		std::string m_TargetRotParamName;
-		std::string m_WeightParamName;       // Float 类型，0~1
-
-		// 当未指定参数时使用的固定目标
-		bool        m_UseFixedTarget = false;
-		glm::vec3   m_FixedTargetPos = glm::vec3(0.0f);
-		glm::quat   m_FixedTargetRot = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
-		float       m_FixedWeight    = 1.0f;
-		IKCoordinateSpace m_TargetPositionSpace = IKCoordinateSpace::Model;
-		IKCoordinateSpace m_TargetRotationSpace = IKCoordinateSpace::Model;
-		std::string m_TargetReferenceBoneName;
-
+		std::string goalId;
+		VansGraphGoalSource source = VansGraphGoalSource::Binding;
+		std::string binding;
+		std::string positionParameter;
+		std::string rotationParameter;
+		std::string weightParameter;
+		glm::vec3 fixedPositionModel{ 0.0f };
+		glm::quat fixedRotationModel{ 1.0f, 0.0f, 0.0f, 0.0f };
+		float fixedPositionWeight = 1.0f;
+		float fixedRotationWeight = 0.0f;
 	};
 
-	// ─── TwoBoneIKNode ──────────────────────────────────────────
-	//  人体四肢专用快捷节点：root + mid + tip 三骨骼
-	//  内部构建 IKChainDefinition + analytic two-bone solver
-
-	class AnimGraphTwoBoneIKNode : public VansAnimGraphNode
+	class AnimGraphGoalNode : public VansAnimGraphNode
 	{
 	public:
-		AnimGraphTwoBoneIKNode();
-		~AnimGraphTwoBoneIKNode() override;
+		AnimGraphGoalNode();
 		std::vector<AnimGraphPin> GetPins() const override;
-		AnimGraphPose Evaluate(const AnimGraphContext& ctx,
-		                       VansAnimGraphInstance& instance) const override;
-
-		// 配置
-		std::string m_RootBoneName;     // 肩 / 髋
-		std::string m_MidBoneName;      // 肘 / 膝
-		std::string m_TipBoneName;      // 手 / 脚
-		bool        m_UseLegProfile  = false;
-		bool        m_IsRightSide    = true;
-		float       m_HingeMinAngle  = 0.0f;
-		float       m_HingeMaxAngle  = 150.0f;
-		float       m_ConeAngle      = 60.0f;
-
-		bool        m_UsePoleVector  = false;
-		glm::vec3   m_PoleVector     = glm::vec3(0.0f, 0.0f, -1.0f);
-		float       m_PoleWeight     = 1.0f;
-
-		std::string m_TargetPosParamName;
-		std::string m_TargetRotParamName;
-		std::string m_WeightParamName;
-		bool        m_UseFixedTarget = false;
-		glm::vec3   m_FixedTargetPos = glm::vec3(0.0f);
-		glm::quat   m_FixedTargetRot = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
-		float       m_FixedWeight    = 1.0f;
-		bool        m_EnableRotationTarget = false;
-		float       m_RotationWeight = 1.0f;
-		IKCoordinateSpace m_TargetPositionSpace = IKCoordinateSpace::Model;
-		IKCoordinateSpace m_TargetRotationSpace = IKCoordinateSpace::Model;
-		std::string m_TargetReferenceBoneName;
-		IKCoordinateSpace m_PoleSpace = IKCoordinateSpace::Model;
-		std::string m_PoleReferenceBoneName;
-		bool        m_MaintainEffectorGlobalRotation = false;
-		bool        m_AllowStretch = false;
-		float       m_StartStretchRatio = 1.0f;
-		float       m_MaxStretchScale = 1.2f;
-
+		AnimGraphPose Evaluate(const AnimGraphContext& ctx, VansAnimGraphInstance& instance) const override;
+		VansGraphGoalDefinition m_Goal;
 	};
 
-	// ─── LookAtNode ─────────────────────────────────────────────
-	//  让一根或多根骨骼朝向目标点。
-
-	class AnimGraphLookAtNode : public VansAnimGraphNode
+	class AnimGraphAimConstraintNode : public VansAnimGraphNode
 	{
 	public:
-		AnimGraphLookAtNode();
-		~AnimGraphLookAtNode() override;
+		AnimGraphAimConstraintNode();
 		std::vector<AnimGraphPin> GetPins() const override;
-		AnimGraphPose Evaluate(const AnimGraphContext& ctx,
-		                       VansAnimGraphInstance& instance) const override;
-
-		// 配置
-		std::vector<std::string> m_BoneNames;     // 从根到末端
-		std::vector<float>       m_BoneWeights;
-		float                    m_MaxAnglePerBoneDeg = 80.0f;
-		glm::vec3                m_ForwardAxis = glm::vec3(0.0f, 0.0f, -1.0f);
-		// 角色 root-local 参考前向；非零时优先于 m_ForwardAxis（按绑定姿态自动推导每骨 local 轴）
-		glm::vec3                m_WorldForward = glm::vec3(0.0f);
-		glm::vec3                m_ModelUp = glm::vec3(0.0f, 1.0f, 0.0f);
-		float                    m_UpWeight = 1.0f;
-
-		std::string m_TargetPosParamName;
-		std::string m_WeightParamName;
-		bool        m_UseFixedTarget = false;
-		glm::vec3   m_FixedTargetPos = glm::vec3(0.0f);
-		float       m_FixedWeight    = 1.0f;
-		IKCoordinateSpace m_TargetPositionSpace = IKCoordinateSpace::Model;
-		std::string m_TargetReferenceBoneName;
-
+		AnimGraphPose Evaluate(const AnimGraphContext& ctx, VansAnimGraphInstance& instance) const override;
+		std::string m_ChainId;
+		VansGraphGoalDefinition m_Target;
+		VansAimConstraintSettings m_Settings;
+		float m_TargetHalfLife = 0.08f;
 	};
 
-	// ─── FootPlacementNode ───────────────────────────────────────
-	//  声明一个延迟执行的足部放置后处理。节点本身不进行物理查询；Controller
-	//  会在骨骼覆盖、Root Motion 提取/归一化之后执行请求，保证管线顺序正确。
-
-	class AnimGraphFootPlacementNode : public VansAnimGraphNode
+	class AnimGraphGroundingNode : public VansAnimGraphNode
 	{
 	public:
-		AnimGraphFootPlacementNode();
+		AnimGraphGroundingNode();
 		std::vector<AnimGraphPin> GetPins() const override;
-		AnimGraphPose Evaluate(const AnimGraphContext& ctx,
-		                       VansAnimGraphInstance& instance) const override;
+		AnimGraphPose Evaluate(const AnimGraphContext& ctx, VansAnimGraphInstance& instance) const override;
+		VansGroundingSettings m_Settings;
+	};
 
-		FootPlacementSettings m_Settings;
+	class AnimGraphLimbIKNode : public VansAnimGraphNode
+	{
+	public:
+		AnimGraphLimbIKNode();
+		std::vector<AnimGraphPin> GetPins() const override;
+		AnimGraphPose Evaluate(const AnimGraphContext& ctx, VansAnimGraphInstance& instance) const override;
+		std::vector<std::string> m_ChainIds;
+		VansLimbIKSettings m_Settings;
+	};
+
+	class AnimGraphChainIKNode : public VansAnimGraphNode
+	{
+	public:
+		AnimGraphChainIKNode();
+		std::vector<AnimGraphPin> GetPins() const override;
+		AnimGraphPose Evaluate(const AnimGraphContext& ctx, VansAnimGraphInstance& instance) const override;
+		std::vector<std::string> m_ChainIds;
+		VansChainIKSettings m_Settings;
 	};
 
 	// ═════════════════════════════════════════════════════════════
@@ -597,15 +537,6 @@ namespace VansGraphics
 		std::unordered_map<int, VansAnimGraphStateMachineRuntimeState> stateMachineStates;
 	};
 
-	struct VansAnimGraphIKRuntimeState
-	{
-		const Skeleton* skeleton = nullptr;
-		IKChainDefinition chain;
-		int targetReferenceBoneIndex = -1;
-		std::vector<glm::mat4> localMatrices;
-		std::vector<glm::mat4> globalMatrices;
-	};
-
 	// 可变播放状态、活动节点和帧缓存只属于实例；VansAnimGraph 保持定义数据。
 	class VansAnimGraphInstance
 	{
@@ -638,18 +569,12 @@ namespace VansGraphics
 		VansAnimGraphClipRuntimeState& GetClipState(int nodeId);
 		VansAnimGraphStateMachineRuntimeState& GetStateMachineState(
 			int nodeId, const AnimGraphStateMachineNode& definition);
-		VansIKSolver* GetIKSolver(int nodeId, IKSolverType type);
-		VansAnimGraphIKRuntimeState& GetIKRuntimeState(int nodeId);
-
 	private:
 		const VansAnimGraph& m_Definition;
 		std::vector<int> m_ExecutionPlan;
 		std::string m_CompileError;
 		std::unordered_map<int, VansAnimGraphClipRuntimeState> m_ClipStates;
 		std::unordered_map<int, VansAnimGraphStateMachineRuntimeState> m_StateMachineStates;
-		std::unordered_map<int, std::unique_ptr<VansIKSolver>> m_IKSolverStates;
-		std::unordered_map<int, IKSolverType> m_IKSolverTypes;
-		std::unordered_map<int, VansAnimGraphIKRuntimeState> m_IKRuntimeStates;
 		std::unordered_map<int, AnimGraphPose> m_EvaluationCache;
 		std::unordered_map<int, bool> m_EvaluatedNodes;
 		std::unordered_map<int, bool> m_EvaluatingNodes;

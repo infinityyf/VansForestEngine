@@ -3,6 +3,7 @@
 #include "VansSceneObjectReferenceResolver.h"
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../SceneCore/VansSceneDocument.h"
+#include "../SceneCore/VansSceneParentReference.h"
 
 #include <cstddef>
 #include <exception>
@@ -11,6 +12,8 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+#include <glm/gtc/quaternion.hpp>
 
 namespace Vans
 {
@@ -84,7 +87,11 @@ private:
 class VansReparentSceneEntityCommand final : public VansSceneEditCommand
 {
 public:
-    VansReparentSceneEntityCommand(std::string childEntityGuid, std::string newParentEntityGuid);
+    VansReparentSceneEntityCommand(
+        std::string childEntityGuid,
+        std::optional<VansSceneParentReference> newParent,
+        ReparentTransformPolicy transformPolicy,
+        std::optional<EditorAPI::RuntimeTransformSnapshot> resolvedLocalTransform);
 
 private:
     SceneEditResult Execute(VansSceneDocument& document) override;
@@ -92,8 +99,10 @@ private:
     SceneEditResult Redo(VansSceneDocument& document) override;
 
     std::string m_ChildEntityGuid;
-    std::string m_NewParentEntityGuid;
-    std::string m_OldParentEntityGuid;
+    std::optional<VansSceneParentReference> m_NewParent;
+    std::optional<VansSceneParentReference> m_OldParent;
+    ReparentTransformPolicy m_TransformPolicy = ReparentTransformPolicy::KeepWorld;
+    std::optional<EditorAPI::RuntimeTransformSnapshot> m_ResolvedLocalTransform;
     VansSerializedValue m_BeforeRoot;
     VansSerializedValue m_AfterRoot;
     SceneStateId m_BeforeState = 0;
@@ -126,6 +135,7 @@ struct EntityHierarchyRecord
 {
     std::size_t index = 0;
     std::string parent;
+    std::optional<VansSceneParentReference> parentReference;
 };
 
 SceneEditResult ValidatePointer(const std::string& path)
@@ -193,13 +203,26 @@ SceneEditResult RuntimePreviewEditResult(
 
 SceneEditResult RuntimeParentPreviewEditResult(
     std::string entityGuid,
-    std::string parentEntityGuid,
+    const std::optional<VansSceneParentReference>& parent,
     std::string message = {})
 {
     SceneEditResult result{ true, std::move(message) };
     result.changedEntityGuid = std::move(entityGuid);
-    result.changedParentEntityGuid = std::move(parentEntityGuid);
+    if (parent)
+    {
+        result.changedParent.entityGuid = parent->entityGuid.ToString();
+        if (parent->IsEntity())
+            result.changedParent.kind = EditorAPI::RuntimeParentKind::Entity;
+        else
+        {
+            result.changedParent.kind = parent->kind == VansSceneParentKind::Bone
+                ? EditorAPI::RuntimeParentKind::Bone : EditorAPI::RuntimeParentKind::Socket;
+            result.changedParent.animationComponentGuid = parent->animationComponentGuid.ToString();
+            result.changedParent.anchorGuid = parent->anchorGuid.ToString();
+        }
+    }
     result.runtimeParentPreviewSupported = !result.changedEntityGuid.empty();
+    result.runtimePreviewSupported = result.runtimeParentPreviewSupported;
     return result;
 }
 
@@ -253,9 +276,18 @@ bool TryBuildEntityHierarchy(
         const VansSerializedValue* parentField = FindObjectField(entity, "parent");
         EntityHierarchyRecord record;
         record.index = index;
-        record.parent = parentField && parentField->kind == VansSerializedValue::Kind::String
-            ? parentField->stringValue
-            : std::string{};
+		if (parentField && !parentField->IsNull())
+		{
+			VansSceneParentReference parent;
+			std::string parentError;
+			if (!TryReadSceneParentReference(*parentField, parent, parentError))
+			{
+				error = parentError;
+				return false;
+			}
+			record.parent = parent.entityGuid.ToString();
+			record.parentReference = std::move(parent);
+		}
         outEntities[entityId] = std::move(record);
     }
 
@@ -288,11 +320,30 @@ VansSerializedValue TransformVec3(float x, float y, float z)
     });
 }
 
+VansSerializedValue TransformQuat(const glm::quat& value)
+{
+    const glm::quat normalized = glm::normalize(value);
+    return VansSerializedValue::Array({
+        VansSerializedValue::Float(normalized.x),
+        VansSerializedValue::Float(normalized.y),
+        VansSerializedValue::Float(normalized.z),
+        VansSerializedValue::Float(normalized.w)
+    });
+}
+
+SceneEditResult ApplyEntityTransform(
+    VansSerializedValue& root,
+    const std::string& entityGuid,
+    const EditorAPI::RuntimeTransformSnapshot& transform);
+
 SceneEditResult ApplyEntityParent(
     VansSerializedValue& root,
     const std::string& childEntityGuid,
-    const std::string& newParentEntityGuid)
+    const std::optional<VansSceneParentReference>& newParent,
+    const std::optional<EditorAPI::RuntimeTransformSnapshot>& resolvedLocalTransform)
 {
+	const std::string newParentEntityGuid = newParent
+		? newParent->entityGuid.ToString() : std::string{};
     if (childEntityGuid.empty())
         return { false, "Child entity id must not be empty" };
     if (childEntityGuid == newParentEntityGuid)
@@ -313,17 +364,26 @@ SceneEditResult ApplyEntityParent(
     {
         return { false, "Cannot parent an entity to one of its descendants" };
     }
-    if (child->second.parent == newParentEntityGuid)
-        return { false, "Scene entity parent is unchanged" };
-
     VansSerializedValue* entities = FindObjectField(root, "entities");
     VansSerializedValue& childEntity = entities->arrayItems[child->second.index];
+	const VansSerializedValue* currentParent = FindObjectField(childEntity, "parent");
+	const VansSerializedValue nextParent = newParent
+		? WriteSceneParentReference(*newParent) : VansSerializedValue::Null();
+	if (currentParent && SerializedValuesEqual(*currentParent, nextParent)
+		&& !resolvedLocalTransform)
+		return { false, "Scene entity parent is unchanged" };
     SetSerializedObjectField(
         childEntity,
         "parent",
-        newParentEntityGuid.empty()
-            ? VansSerializedValue::Null()
-            : VansSerializedValue::String(newParentEntityGuid));
+		nextParent);
+	if (resolvedLocalTransform)
+	{
+		EditorAPI::RuntimeTransformSnapshot local = *resolvedLocalTransform;
+		local.space = EditorAPI::RuntimeTransformSpace::Local;
+		if (SceneEditResult transformResult = ApplyEntityTransform(root, childEntityGuid, local);
+			!transformResult)
+			return transformResult;
+	}
     return { true, {} };
 }
 
@@ -364,8 +424,11 @@ SceneEditResult ApplyEntityTransform(
 
             SetSerializedObjectField(*data, "position",
                 TransformVec3(transform.position.x, transform.position.y, transform.position.z));
-            SetSerializedObjectField(*data, "rotation",
-                TransformVec3(transform.rotationDegrees.x, transform.rotationDegrees.y, transform.rotationDegrees.z));
+            const glm::quat rotation = glm::quat(glm::radians(glm::vec3(
+                transform.rotationDegrees.x,
+                transform.rotationDegrees.y,
+                transform.rotationDegrees.z)));
+            SetSerializedObjectField(*data, "rotation", TransformQuat(rotation));
             SetSerializedObjectField(*data, "scale",
                 TransformVec3(transform.scale.x, transform.scale.y, transform.scale.z));
             return { true, {} };
@@ -594,9 +657,13 @@ SceneEditResult VansAppendSceneEntitiesCommand::Redo(VansSceneDocument& document
 
 VansReparentSceneEntityCommand::VansReparentSceneEntityCommand(
     std::string childEntityGuid,
-    std::string newParentEntityGuid)
+    std::optional<VansSceneParentReference> newParent,
+    ReparentTransformPolicy transformPolicy,
+    std::optional<EditorAPI::RuntimeTransformSnapshot> resolvedLocalTransform)
     : m_ChildEntityGuid(std::move(childEntityGuid))
-    , m_NewParentEntityGuid(std::move(newParentEntityGuid))
+    , m_NewParent(std::move(newParent))
+    , m_TransformPolicy(transformPolicy)
+    , m_ResolvedLocalTransform(std::move(resolvedLocalTransform))
 {
 }
 
@@ -612,31 +679,45 @@ SceneEditResult VansReparentSceneEntityCommand::Execute(VansSceneDocument& docum
     const auto childIt = entitiesById.find(m_ChildEntityGuid);
     if (childIt == entitiesById.end())
         return { false, "Child entity does not exist" };
-    m_OldParentEntityGuid = childIt->second.parent;
+	m_OldParent = childIt->second.parentReference;
+	if (m_TransformPolicy == ReparentTransformPolicy::KeepWorld && !m_ResolvedLocalTransform)
+		return { false, "KeepWorld reparent requires the resolved runtime-local transform" };
+	std::optional<EditorAPI::RuntimeTransformSnapshot> serializedLocalTransform =
+		m_ResolvedLocalTransform;
+	if (m_TransformPolicy == ReparentTransformPolicy::Snap)
+	{
+		EditorAPI::RuntimeTransformSnapshot identity;
+		identity.available = true;
+		identity.entityGuid = m_ChildEntityGuid;
+		identity.space = EditorAPI::RuntimeTransformSpace::Local;
+		identity.scale = { 1.0f, 1.0f, 1.0f };
+		serializedLocalTransform = std::move(identity);
+	}
 
     if (SceneEditResult result = ApplyEntityParent(
         candidate,
         m_ChildEntityGuid,
-        m_NewParentEntityGuid); !result)
+		m_NewParent,
+		serializedLocalTransform); !result)
     {
         return result;
     }
 
     m_AfterRoot = candidate;
     m_AfterState = document.ApplyEditedSerializedRoot(std::move(candidate));
-    return RuntimeParentPreviewEditResult(m_ChildEntityGuid, m_NewParentEntityGuid);
+    return RuntimeParentPreviewEditResult(m_ChildEntityGuid, m_NewParent);
 }
 
 SceneEditResult VansReparentSceneEntityCommand::Undo(VansSceneDocument& document)
 {
     document.RestoreEditedSerializedRoot(m_BeforeRoot, m_BeforeState);
-    return RuntimeParentPreviewEditResult(m_ChildEntityGuid, m_OldParentEntityGuid);
+    return RuntimeParentPreviewEditResult(m_ChildEntityGuid, m_OldParent);
 }
 
 SceneEditResult VansReparentSceneEntityCommand::Redo(VansSceneDocument& document)
 {
     document.RestoreEditedSerializedRoot(m_AfterRoot, m_AfterState);
-    return RuntimeParentPreviewEditResult(m_ChildEntityGuid, m_NewParentEntityGuid);
+    return RuntimeParentPreviewEditResult(m_ChildEntityGuid, m_NewParent);
 }
 
 VansSetSceneEntityTransformCommand::VansSetSceneEntityTransformCommand(
@@ -773,11 +854,15 @@ SceneEditResult VansSceneEditService::AssignObjectReference(const ObjectReferenc
 
 SceneEditResult VansSceneEditService::ReparentEntity(
     const std::string& childEntityGuid,
-    const std::string& newParentEntityGuid)
+    std::optional<VansSceneParentReference> newParent,
+    ReparentTransformPolicy transformPolicy,
+    std::optional<EditorAPI::RuntimeTransformSnapshot> resolvedLocalTransform)
 {
     return Execute(std::make_unique<VansReparentSceneEntityCommand>(
         childEntityGuid,
-        newParentEntityGuid));
+		std::move(newParent),
+		transformPolicy,
+		std::move(resolvedLocalTransform)));
 }
 
 SceneEditResult VansSceneEditService::SetEntityTransform(

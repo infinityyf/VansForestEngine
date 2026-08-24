@@ -7,12 +7,12 @@
 #include <../../GLM/gtx/quaternion.hpp>
 #include <string>
 #include <string_view>
-#include <string_view>
 #include <vector>
 #include <queue>
 #include <unordered_map>
 #include <variant>
 #include <cstdint>
+#include <cstring>
 
 namespace VansGraphics
 {
@@ -129,10 +129,11 @@ namespace VansGraphics
 	struct BoneInfo
 	{
 		int              id            = -1;
+		std::string      guid;
 		std::string      name;
+		std::string      canonicalPath;
 		glm::mat4        offsetMatrix  = glm::mat4(1.0f);   // bind-pose inverse
-		glm::mat4        localTransform  = glm::mat4(1.0f);  // runtime: computed per frame
-		glm::mat4        globalTransform = glm::mat4(1.0f);  // runtime: propagated from parent
+		glm::mat4        localTransform  = glm::mat4(1.0f);  // immutable bind-local transform
 		int              parentIndex   = -1;                   // -1 = root bone
 		std::vector<int> children;
 	};
@@ -142,7 +143,11 @@ namespace VansGraphics
 	struct Skeleton
 	{
 		std::vector<BoneInfo>                    bones;
+		std::string                              sourceSkeletonGuid;
+		std::uint64_t                           signature = 0;
 		std::unordered_map<std::string, int>     boneNameToIndex;
+		std::unordered_map<std::string, int>     bonePathToIndex;
+		std::unordered_map<std::string, int>     boneGuidToIndex;
 		glm::mat4                                globalInverseTransform = glm::mat4(1.0f);
 
 		// Bone indices in topological order. Parents are guaranteed to appear before children.
@@ -200,6 +205,114 @@ namespace VansGraphics
 					}
 				}
 			}
+		}
+
+		void RebuildIdentityMapsAndSignature()
+		{
+			boneNameToIndex.clear();
+			bonePathToIndex.clear();
+			boneGuidToIndex.clear();
+
+			std::unordered_map<std::string, std::uint32_t> nameCounts;
+			for (const BoneInfo& bone : bones)
+				++nameCounts[bone.name];
+
+			for (std::size_t index = 0; index < bones.size(); ++index)
+			{
+				BoneInfo& bone = bones[index];
+				bone.id = static_cast<int>(index);
+				if (nameCounts[bone.name] == 1u)
+					boneNameToIndex.emplace(bone.name, bone.id);
+				if (!bone.canonicalPath.empty())
+					bonePathToIndex.emplace(bone.canonicalPath, bone.id);
+				if (!bone.guid.empty())
+					boneGuidToIndex.emplace(bone.guid, bone.id);
+			}
+			signature = ComputeSignature();
+		}
+
+		std::uint64_t ComputeSignature() const
+		{
+			std::uint64_t hash = 14695981039346656037ull;
+			const auto addByte = [&hash](unsigned char byte)
+			{
+				hash ^= byte;
+				hash *= 1099511628211ull;
+			};
+			const auto addString = [&addByte](const std::string& value)
+			{
+				for (const unsigned char character : value)
+					addByte(character);
+				addByte(0xffu);
+			};
+			const auto addUint32 = [&addByte](std::uint32_t value)
+			{
+				for (int shift = 0; shift < 32; shift += 8)
+					addByte(static_cast<unsigned char>((value >> shift) & 0xffu));
+			};
+
+			addString(sourceSkeletonGuid);
+			addUint32(static_cast<std::uint32_t>(bones.size()));
+			for (std::size_t index = 0; index < bones.size(); ++index)
+			{
+				const BoneInfo& bone = bones[index];
+				addString(bone.guid);
+				addString(bone.canonicalPath);
+				addUint32(static_cast<std::uint32_t>(bone.parentIndex + 1));
+				for (int column = 0; column < 4; ++column)
+				{
+					for (int row = 0; row < 4; ++row)
+					{
+						std::uint32_t bits = 0;
+						std::memcpy(&bits, &bone.localTransform[column][row], sizeof(bits));
+						addUint32(bits);
+					}
+				}
+			}
+			return hash;
+		}
+
+		bool MatchesAnimationLayout(const Skeleton& other, std::string* reason = nullptr) const
+		{
+			if (signature == 0 || other.signature == 0 || signature != other.signature)
+			{
+				if (reason) *reason = "skeleton identity or bind-pose signature mismatch";
+				return false;
+			}
+			if (bones.size() != other.bones.size())
+			{
+				if (reason) *reason = "bone count mismatch";
+				return false;
+			}
+			for (std::size_t index = 0; index < bones.size(); ++index)
+			{
+				const BoneInfo& lhs = bones[index];
+				const BoneInfo& rhs = other.bones[index];
+				if (lhs.name != rhs.name || lhs.guid != rhs.guid
+					|| lhs.canonicalPath != rhs.canonicalPath
+					|| lhs.parentIndex != rhs.parentIndex)
+				{
+					if (reason) *reason = "bone identity or parent mismatch at index "
+						+ std::to_string(index);
+					return false;
+				}
+			}
+			return true;
+		}
+	};
+
+	struct VansSkeletonPoseView
+	{
+		const Skeleton* skeleton = nullptr;
+		const std::vector<glm::mat4>* localTransforms = nullptr;
+		const std::vector<glm::mat4>* modelTransforms = nullptr;
+		std::uint64_t revision = 0;
+
+		bool IsValid() const
+		{
+			return skeleton && localTransforms && modelTransforms
+				&& localTransforms->size() == skeleton->bones.size()
+				&& modelTransforms->size() == skeleton->bones.size();
 		}
 	};
 

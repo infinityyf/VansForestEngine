@@ -1,0 +1,34 @@
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2DArray cascadeDepth;
+layout(set = 0, binding = 1, rg32f) uniform image2D outMinMax;
+
+const int CASCADE_COUNT = 4;
+
+void main()
+{
+    ivec2 atlasSize = imageSize(outMinMax);
+    int cascade = int(gl_GlobalInvocationID.z);
+    ivec2 localPixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 tileSize = ivec2(atlasSize.x / CASCADE_COUNT, atlasSize.y);
+    if (cascade >= CASCADE_COUNT || any(greaterThanEqual(localPixel, tileSize)))
+        return;
+
+    ivec2 sourceSize = textureSize(cascadeDepth, 0).xy;
+	ivec2 sourceBase = localPixel * 4;
+    float minDepth = 1.0;
+    float maxDepth = 0.0;
+	for (int y = 0; y < 4; ++y)
+	for (int x = 0; x < 4; ++x)
+    {
+        ivec2 sourcePixel = min(sourceBase + ivec2(x, y), sourceSize - ivec2(1));
+        float depth = texelFetch(cascadeDepth, ivec3(sourcePixel, cascade), 0).r;
+        minDepth = min(minDepth, depth);
+        maxDepth = max(maxDepth, depth);
+    }
+
+    ivec2 atlasPixel = localPixel + ivec2(cascade * tileSize.x, 0);
+    imageStore(outMinMax, atlasPixel, vec4(minDepth, maxDepth, 0.0, 0.0));
+}

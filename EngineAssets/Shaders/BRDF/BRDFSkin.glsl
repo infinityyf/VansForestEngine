@@ -554,8 +554,8 @@ bool TrySkinDebugView(BRDFData brdf, SkinMaterialParams skin, float curvature,
 // Cascade shadow map version of skin lighting
 void CalculateDirectLight_Skin(BRDFData brdfData, float curvature,
                                SkinMaterialParams skin,
-                               sampler2DArray cascadeShadowMap, float viewDepth, sampler2DArrayShadow punctualShadowMap,
-                               float screenSpaceShadow,
+							   sampler2DShadow punctualShadowMap[PUNCTUAL_SHADOW_ATLAS_COUNT],
+							   float directionalShadow,
                                inout LightResult lightResult)
 {
     lightResult.directDiffuse  = vec3(0);
@@ -572,7 +572,7 @@ void CalculateDirectLight_Skin(BRDFData brdfData, float curvature,
     specularResult *= uDirectionLight.color.rgb * uDirectionLight.intensity;
     transmissionResult *= uDirectionLight.color.rgb * uDirectionLight.intensity;
 
-    float shadowValue = min(SampleCascadeShadow(brdfData.positionWS, brdfData.normal, cascadeShadowMap, viewDepth), screenSpaceShadow);
+	float shadowValue = directionalShadow;
     float transmissionShadow = SkinTransmissionShadow(shadowValue, NdotL_dir, curvature, skin);
 
     diffuseResult  *= shadowValue;

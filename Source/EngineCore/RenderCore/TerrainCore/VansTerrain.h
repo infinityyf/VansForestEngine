@@ -137,14 +137,14 @@ namespace VansGraphics
         void Init(VansVKDevice* device, const TerrainConfig& config);
 
         // 每帧更新：计算 LOD，更新实例缓冲。
-        void Update(VansCamera* camera);
+		void Update(
+			const glm::vec3& cameraPosition,
+			const glm::mat4& viewProjection);
 
         // 绘制
         void Draw(VansVKCommandBuffer& cmd, GlobalStateData& globalState, std::vector<VkDescriptorSetLayout>& layouts, std::vector<VkDescriptorSet>& sets);
         
         void DrawShadow(VansVKCommandBuffer& cmd, GlobalStateData& globalState, std::vector<VkDescriptorSetLayout>& layouts, std::vector<VkDescriptorSet>& sets);
-
-        void DrawMotionVector(VansVKCommandBuffer& cmd, GlobalStateData& globalState, std::vector<VkDescriptorSetLayout>& layouts, std::vector<VkDescriptorSet>& sets);
 
         // ── 供植被系统接入地形高度图 ────────────────
         VansTexture* GetHeightMap() const { return m_HeightMap; }
@@ -269,7 +269,6 @@ namespace VansGraphics
         // 着色器和管线
         VansGraphicsShader* m_TerrainShader = nullptr;
         VansGraphicsShader* m_TerrainShadowShader = nullptr;
-        VansGraphicsShader* m_TerrainMotionVectorShader = nullptr;
         VansGraphicsShader* m_TerrainTessShader = nullptr;       // DeferredTess 管线
 
         VkPipelineLayout m_PipelineLayout = VK_NULL_HANDLE;
@@ -278,10 +277,15 @@ namespace VansGraphics
         // 实例缓冲（每帧更新）
         VansVKBuffer m_InstanceBuffer;
         std::vector<TerrainInstanceData> m_InstanceDataCPU;
+        std::vector<TerrainInstanceData> m_FarInstanceScratch;
+        std::vector<TerrainInstanceData> m_NearInstanceScratch;
 
-        // 单实例缓冲按 far -> near 排列；Draw 使用 firstInstance 切 range，shadow/motion 复用全集。
+        // 单实例缓冲按 far -> near 排列；Draw 使用 firstInstance 切 range，shadow/motion 复用主相机可见集。
         uint32_t m_FarInstanceCount = 0;
         uint32_t m_NearInstanceCount = 0;
+        // LOD 拓扑只在跨越 LOD cell 或配置变化时重建；视锥可见性仍逐帧刷新。
+        std::vector<TerrainNode> m_CachedLeafNodes;
+        TerrainLodGrid m_CachedLodGrid;
         bool m_LodCacheValid = false;
         TerrainLodBuildSignature m_LastLodSignature;
 

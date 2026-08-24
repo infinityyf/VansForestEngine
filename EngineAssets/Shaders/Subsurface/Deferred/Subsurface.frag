@@ -4,6 +4,8 @@
 layout(early_fragment_tests) in;
 
 #include "../../Common/CameraData.glsl"
+#include "../../Common/VansDrawSubmission.glsl"
+#include "../../Common/MotionVector.glsl"
 #include "../../Common/Common.glsl"
 #include "../../BRDF/BRDFData.glsl"
 
@@ -12,24 +14,21 @@ layout(location = 1) in vec3 normal_ws;
 layout(location = 2) in vec3 tangent_ws;
 layout(location = 3) in vec3 bitangent_ws;
 layout(location = 4) in vec3 position_world;
+layout(location = 5) in vec4 motion_current_clip;
+layout(location = 6) in vec4 motion_previous_clip;
 
 layout(set = 0, binding = 50) uniform sampler2D globalPBRTextures[];
-
-layout(push_constant) uniform MaterialPushConsts
-{
-    int materialIndex;
-    int objectIndex;
-    uint vertexFeatureMask;
-} materialConst;
 
 layout(location = 0) out vec4 outNormal;    // .xyz = world normal, .w = physical thickness (mm)
 layout(location = 1) out vec4 outGBuffer0;  // .rgb = albedo, .w = roughness
 layout(location = 2) out vec4 outGBuffer1;  // .x = subsurface amount, .y = ao, .z = material id, .w = material index
 layout(location = 3) out vec4 outGBuffer2;  // .xyz = world pos, .w = -linearDepth
+layout(location = 4) out vec2 outMotionVector;
 
 void main()
 {
-    int mi = nonuniformEXT(materialConst.materialIndex);
+    VansDrawData drawData = VansGetDrawData();
+    int mi = nonuniformEXT(drawData.materialIndex);
     MaterialPayload mat = materialDataBuffer.materials[mi];
 
     float thicknessScaleMM = max(mat.metallic, 0.0);
@@ -53,4 +52,5 @@ void main()
     outGBuffer0 = vec4(albedo, roughness);
     outGBuffer1 = vec4(subsurfaceAmount, ao, float(MATERIAL_ID_SUBSURFACE), float(mi));
     outGBuffer2 = vec4(position_world, -linearDepth);
+    outMotionVector = VansMotionVectorFromClip(motion_current_clip, motion_previous_clip);
 }

@@ -13,8 +13,10 @@ namespace Vans
 	void VansProjectSettings::SetDefaults()
 	{
 		m_FixedTimeStep = 1.0f / 60.0f;
+		m_PhysicsQueryProfiles.clear();
 		m_UpscalerSettings = {};
 		m_CommandRecordingSettings = {};
+		m_RenderOutputSettings = {};
 		m_MainCameraHiZCullSettings = {};
 	}
 
@@ -28,6 +30,40 @@ namespace Vans
 		}
 
 		m_FixedTimeStep = fixedTimeStep;
+	}
+
+	bool VansProjectSettings::ResolvePhysicsQueryProfile(
+		const std::string& profile,
+		std::uint32_t& collisionMask,
+		std::string& error) const
+	{
+		collisionMask = 0;
+		error.clear();
+		const auto found = m_PhysicsQueryProfiles.find(profile);
+		if (found == m_PhysicsQueryProfiles.end())
+		{
+			error = "Unknown physics query profile '" + profile + "'";
+			return false;
+		}
+		for (const std::string& layerName : found->second)
+		{
+			int layerIndex = -1;
+			if (!VansEngine::VansCollisionLayerManager::Get().TryGetLayerIndex(layerName, layerIndex)
+				|| layerIndex < 0 || layerIndex >= 32)
+			{
+				error = "Physics query profile '" + profile
+					+ "' references unknown collision layer '" + layerName + "'";
+				collisionMask = 0;
+				return false;
+			}
+			collisionMask |= (1u << static_cast<std::uint32_t>(layerIndex));
+		}
+		if (collisionMask == 0)
+		{
+			error = "Physics query profile '" + profile + "' resolves to an empty mask";
+			return false;
+		}
+		return true;
 	}
 
 	bool VansProjectSettings::SetUpscalerSettings(
@@ -49,6 +85,33 @@ namespace Vans
 			return false;
 		}
 		m_UpscalerSettings = settings;
+		if (error)
+			error->clear();
+		return true;
+	}
+
+	bool VansProjectSettings::SetRenderOutputSettings(
+		const VansProjectRenderOutputSettings& settings,
+		std::string* error)
+	{
+		constexpr std::uint32_t kMinimumOutputWidth = 320u;
+		constexpr std::uint32_t kMinimumOutputHeight = 180u;
+		constexpr std::uint32_t kMaximumOutputDimension = 16384u;
+		if (!settings.UsesWindowExtent() &&
+			(!settings.HasExplicitExtent() ||
+			 settings.width < kMinimumOutputWidth ||
+			 settings.height < kMinimumOutputHeight ||
+			 settings.width > kMaximumOutputDimension ||
+			 settings.height > kMaximumOutputDimension))
+		{
+			if (error)
+			{
+				*error = "outputResolution must be 0x0 (follow window) or an explicit "
+					"resolution between 320x180 and 16384x16384";
+			}
+			return false;
+		}
+		m_RenderOutputSettings = settings;
 		if (error)
 			error->clear();
 		return true;
@@ -108,6 +171,15 @@ namespace Vans
 					renderSettings.commandRecordingSettings.frameContextRingEnabled,
 					renderSettings.commandRecordingSettings.framesInFlight,
 					renderSettings.commandRecordingSettings.asyncComputeEnabled);
+				std::string outputResolutionError;
+				if (!SetRenderOutputSettings(
+					renderSettings.renderOutputSettings,
+					&outputResolutionError))
+				{
+					VANS_LOG_ERROR("[ProjectSettings] Invalid output resolution settings: "
+						<< outputResolutionError);
+					return false;
+				}
 				SetMainCameraHiZCullSettings(renderSettings.mainCameraHiZCullSettings);
 				VANS_LOG("[ProjectSettings] Loaded render settings: " << renderSettingsPath
 					<< ", upscaler.backend=" << VansGraphics::ToString(m_UpscalerSettings.backend)
@@ -117,6 +189,11 @@ namespace Vans
 					<< ", commandRecording.frameContextRingEnabled=" << m_CommandRecordingSettings.frameContextRingEnabled
 					<< ", commandRecording.framesInFlight=" << m_CommandRecordingSettings.framesInFlight
 					<< ", commandRecording.asyncComputeEnabled=" << m_CommandRecordingSettings.asyncComputeEnabled
+					<< ", outputResolution="
+					<< (m_RenderOutputSettings.HasExplicitExtent()
+						? std::to_string(m_RenderOutputSettings.width) + "x" +
+							std::to_string(m_RenderOutputSettings.height)
+						: std::string("window"))
 					<< ", mainCameraHiZCulling.enabled=" << m_MainCameraHiZCullSettings.enabled);
 				loadedAnySettings = true;
 			}
@@ -134,6 +211,7 @@ namespace Vans
 			if (VansProjectSettingsStorage::LoadPhysicsSettings(physicsSettingsPath, physicsSettings, error))
 			{
 				SetFixedTimeStep(physicsSettings.fixedTimeStep);
+				m_PhysicsQueryProfiles = std::move(physicsSettings.queryProfiles);
 				VANS_LOG("[ProjectSettings] Loaded physics settings: " << physicsSettingsPath << ", fixedTimeStep=" << m_FixedTimeStep);
 				loadedAnySettings = true;
 			}
@@ -162,6 +240,7 @@ namespace Vans
 			VansProjectRenderSettingsData renderSettings;
 			renderSettings.upscalerSettings = m_UpscalerSettings;
 			renderSettings.commandRecordingSettings = m_CommandRecordingSettings;
+			renderSettings.renderOutputSettings = m_RenderOutputSettings;
 			renderSettings.mainCameraHiZCullSettings = m_MainCameraHiZCullSettings;
 			std::string error;
 			if (VansProjectSettingsStorage::SaveRenderSettings(renderSettingsPath, renderSettings, error))
@@ -180,6 +259,7 @@ namespace Vans
 			const std::string physicsSettingsPath = projectRootPath + projectConfig.physicsSettings;
 			VansProjectPhysicsSettingsData physicsSettings;
 			physicsSettings.fixedTimeStep = m_FixedTimeStep;
+			physicsSettings.queryProfiles = m_PhysicsQueryProfiles;
 			std::string error;
 			if (VansProjectSettingsStorage::SavePhysicsSettings(physicsSettingsPath, physicsSettings, error))
 			{

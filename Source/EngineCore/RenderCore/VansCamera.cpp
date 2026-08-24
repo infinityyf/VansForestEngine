@@ -1,8 +1,6 @@
 ﻿#include "VansCamera.h"
 #include "VansCameraControlArbiter.h"
 #include "../ScriptCore/VansTransform.h"
-#include "VulkanCore/VansDescriptorSetLayouts.h"
-#include "../VansTimer.h"
 #include "../Util/VansLog.h"
 
 #include <algorithm>
@@ -28,25 +26,6 @@ VansGraphics::VansCamera::VansCamera(VansGraphicsDevice* device)
     m_FarClip     = 10000.0f;
     m_AspectRatio = m_RenderDevice->GetAspectRatio();
 
-    VkDescriptorSetLayoutBinding uniformBufferBinding =
-    {
-        GLOBAL_BINDING_CAMERA_UBO,
-        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-        1,
-        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT,
-        nullptr
-    };
-    VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom(
-        { uniformBufferBinding },
-        m_CameraBufferLayout,
-        m_CameraBufferDescriptorSets);
-
-    // Create uniform buffer
-    m_CameraDataBuffer.CreatVulkanBuffer(static_cast<VansVKDevice*>(device)->GetLogicDevice(), sizeof(m_CameraData), VK_FORMAT_R32_SFLOAT,
-        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-
-    m_RenderFrameIndex = 0;
     m_IsRightMouseDown = false;
 }
 
@@ -262,99 +241,20 @@ glm::vec4 VansGraphics::VansCamera::GetForward()
     // GLM matrices are column-major.  ViewMatrix[2] is not the camera's
     // world-space forward vector once the camera rotates.  The inverse-view
     // basis columns are the camera axes in world space; local -Z is forward.
-    return glm::vec4(-glm::vec3(m_CameraData.InverseViewMatrix[2]), 0.0f);
+	const glm::mat4 inverseView = glm::inverse(GetViewMatrix());
+    return glm::vec4(-glm::vec3(inverseView[2]), 0.0f);
 }
 
 glm::vec4 VansGraphics::VansCamera::GetRight()
 {
-    return glm::vec4(glm::vec3(m_CameraData.InverseViewMatrix[0]), 0.0f);
+	const glm::mat4 inverseView = glm::inverse(GetViewMatrix());
+    return glm::vec4(glm::vec3(inverseView[0]), 0.0f);
 }
 
 glm::vec4 VansGraphics::VansCamera::GetUp()
 {
-    return glm::vec4(glm::vec3(m_CameraData.InverseViewMatrix[1]), 0.0f);
-}
-
-void VansGraphics::VansCamera::SetCameraData(const glm::mat4& view_matrix, const glm::mat4& projective_matrix)
-{
-    float width  = m_RenderDevice->GetNativeRenderWidth();
-    float height = m_RenderDevice->GetNativeRenderHeight();
-
-    uint32_t seqIndex = m_RenderFrameIndex & 1023u; // wrap to avoid precision drift
-    float jitterPixelX = 0.0f;
-    float jitterPixelY = 0.0f;
-    m_RenderDevice->GetTemporalUpscaleJitterOffset(
-        seqIndex,
-        jitterPixelX,
-        jitterPixelY);
-
-    m_TemporalJitter = BuildVulkanTemporalJitter(
-        glm::vec2(jitterPixelX, jitterPixelY),
-        glm::vec2(width, height));
-    const glm::mat4 jitteredProj = m_TemporalJitter.valid
-        ? ApplyClipSpaceJitter(projective_matrix, m_TemporalJitter.ndcOffset)
-        : projective_matrix;
-
-    const glm::mat4 inverseView = glm::inverse(view_matrix);
-
-    // Store camera data
-    m_CameraData.CameraPosition   = glm::vec4(m_Position, 1.0f);
-    m_CameraData.CameraDirection  = glm::vec4(-glm::vec3(inverseView[2]), 0.0f);
-    if (m_RenderFrameIndex == 0)
-    {
-        m_CameraData.LastPrevViewMatrix = view_matrix;
-        m_CameraData.LastPrevProjectionMatrix = jitteredProj;
-        m_CameraData.LastPrevVPMatrix = jitteredProj * view_matrix;
-        m_CameraData.LastViewMatrix = view_matrix;
-        m_CameraData.LastProjectionMatrix = jitteredProj;
-        m_CameraData.LastVPMatrix = jitteredProj * view_matrix;
-    }
-    else
-    {
-        m_CameraData.LastPrevViewMatrix = m_CameraData.LastViewMatrix;
-        m_CameraData.LastPrevProjectionMatrix = m_CameraData.LastProjectionMatrix;
-        m_CameraData.LastPrevVPMatrix = m_CameraData.LastVPMatrix;
-        m_CameraData.LastViewMatrix = m_CameraData.ViewMatrix;
-        m_CameraData.LastProjectionMatrix = m_CameraData.ProjectionMatrix;
-        m_CameraData.LastVPMatrix = m_CameraData.VPMatrix;
-    }
-
-    m_CameraData.ViewMatrix       = view_matrix;
-    m_CameraData.ProjectionMatrix = jitteredProj;
-    m_CameraData.VPMatrix = jitteredProj * view_matrix;
-
-    // 保存未经 jitter 的 VP，用于 MotionVector pass，保证静止时速度场精确为零
-    glm::mat4 unjitteredVP = projective_matrix * view_matrix;
-    m_CameraData.LastUnjitteredVPMatrix = (m_RenderFrameIndex == 0) ? unjitteredVP : m_CameraData.UnjitteredVPMatrix;
-    m_CameraData.UnjitteredVPMatrix     = unjitteredVP;
-	m_UnjitteredProjectionMatrix          = projective_matrix;
-
-    m_CameraData.InverseViewMatrix       = inverseView;
-    m_CameraData.InverseProjectionMatrix = glm::inverse(jitteredProj);
-    m_CameraData.ScreenParams     = glm::vec4(width, height, 1.0f / width, 1.0f / height);
-
-    float time = VansTimer::GetFrameTime();
-    m_CameraData.FrameParams  = glm::vec4(
-        m_RenderFrameIndex,
-        time,
-        m_RenderDevice->GetTemporalUpscaleMipBias(),
-        0.0f);
-    m_CameraData.CameraParams = glm::vec4(m_NearClip, m_FarClip, m_Fov, m_AspectRatio);
-
-    m_CameraDataBuffer.SetBufferData(&m_CameraData, 0, sizeof(m_CameraData));
-
-    auto* descManager = VansVKDescriptorManager::GetInstance();
-    descManager->BeginDescriptorUpdate();
-    descManager->WriteBufferDescriptor(
-        m_CameraBufferDescriptorSets[0],
-        GLOBAL_BINDING_CAMERA_UBO,
-        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-        {{
-            m_CameraDataBuffer.GetNativeBuffer(),
-            0,
-            m_CameraDataBuffer.GetBufferSize()
-        }});
-    descManager->CommitDescriptorUpdates();
+	const glm::mat4 inverseView = glm::inverse(GetViewMatrix());
+    return glm::vec4(glm::vec3(inverseView[1]), 0.0f);
 }
 
 glm::mat4 VansGraphics::VansCamera::GetViewMatrix()
@@ -374,22 +274,29 @@ glm::mat4 VansGraphics::VansCamera::GetProjectiveMatrix()
     return glm::perspective(glm::radians(m_Fov), m_AspectRatio, m_NearClip, m_FarClip);
 }
 
-VansGraphics::VansTemporalCameraSnapshot
-VansGraphics::VansCamera::CaptureTemporalSnapshot() const
+VansGraphics::VansRenderViewSnapshot
+VansGraphics::VansCamera::BuildRenderViewSnapshot(
+	std::uint32_t viewportWidth,
+	std::uint32_t viewportHeight)
 {
-	VansTemporalCameraSnapshot snapshot;
-	snapshot.view = m_CameraData.ViewMatrix;
-	snapshot.projection = m_UnjitteredProjectionMatrix;
-	snapshot.previousViewProjection = m_CameraData.LastUnjitteredVPMatrix;
-	snapshot.position = glm::vec3(m_CameraData.CameraPosition);
-	snapshot.up = glm::normalize(glm::vec3(m_CameraData.InverseViewMatrix[1]));
-	snapshot.right = glm::normalize(glm::vec3(m_CameraData.InverseViewMatrix[0]));
-	snapshot.forward = glm::normalize(glm::vec3(m_CameraData.CameraDirection));
-	snapshot.jitter = m_TemporalJitter;
-	snapshot.frameIndex = m_RenderFrameIndex;
+	SyncFromTransform();
+
+	VansRenderViewSnapshot snapshot;
+	snapshot.cameraIdentity = static_cast<std::uint64_t>(
+		reinterpret_cast<std::uintptr_t>(this));
+	snapshot.view = GetViewMatrix();
+	snapshot.projection = GetProjectiveMatrix();
+	snapshot.position = m_Position;
+	const glm::mat4 inverseView = glm::inverse(snapshot.view);
+	snapshot.forward = glm::normalize(-glm::vec3(inverseView[2]));
+	snapshot.up = glm::normalize(glm::vec3(inverseView[1]));
+	snapshot.right = glm::normalize(glm::vec3(inverseView[0]));
 	snapshot.nearClip = m_NearClip;
 	snapshot.farClip = m_FarClip;
-	snapshot.fovRadians = glm::radians(m_Fov);
+	snapshot.viewportWidth = viewportWidth;
+	snapshot.viewportHeight = viewportHeight;
+	snapshot.fieldOfViewRadians = glm::radians(m_Fov);
+	snapshot.aspectRatio = m_AspectRatio;
 	return snapshot;
 }
 
@@ -397,7 +304,7 @@ bool VansGraphics::VansCamera::ProjectWorldToViewport(
     const glm::vec3& worldPosition,
     glm::vec3& viewportPosition)
 {
-    // 脚本投影发生在 Rendering() 之前，因此这里主动读取最新绑定 Transform。
+    // 脚本投影可能发生在 render frame snapshot 之前，因此主动读取最新绑定 Transform。
     SyncFromTransform();
     const glm::vec4 clip = GetProjectiveMatrix() * GetViewMatrix() * glm::vec4(worldPosition, 1.0f);
     if (clip.w <= 0.0001f)
@@ -416,24 +323,4 @@ bool VansGraphics::VansCamera::ProjectWorldToViewport(
 
 VansGraphics::VansCamera::~VansCamera()
 {
-    VansVKDescriptorManager::GetInstance()->DestroyDescriptorSetLayout(m_CameraBufferLayout);
-    VansVKDescriptorManager::GetInstance()->DestroyDescriptorSet(m_CameraBufferDescriptorSets);
-
-    m_CameraDataBuffer.DestroyVulkanBuffer(static_cast<VansVKDevice*>(m_RenderDevice)->GetLogicDevice());
-}
-void VansGraphics::VansCamera::Rendering()
-{
-	m_RenderDevice->PrepareRenderingFrame();
-    // 若绑定了 Transform，先同步位置/旋转再构建矩阵，确保 GetViewMatrix 使用最新数据
-    SyncFromTransform();
-
-    SetCameraData(GetViewMatrix(), GetProjectiveMatrix());
-    m_RenderDevice->Rendering();
-
-    m_RenderFrameIndex++;
-}
-
-void VansGraphics::VansCamera::Present()
-{
-    m_RenderDevice->Present();
 }

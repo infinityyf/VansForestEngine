@@ -10,6 +10,7 @@
 #include <NsGui/IView.h>
 
 #include <cstdint>
+#include <atomic>
 #include <memory>
 #include <string>
 #include <vector>
@@ -45,6 +46,12 @@ namespace VansRuntime
         void RenderOffscreen() override;
         void Render() override;
 
+        // Noesis IView belongs to Main, while IRenderer belongs to RT. These
+        // methods are the only renderer-lifecycle boundary for a document.
+        bool InitializeRenderer(Noesis::RenderDevice* renderDevice);
+        void ShutdownRenderer();
+        bool IsRendererInitialized() const { return m_RendererInitialized; }
+
         Noesis::IView* GetView() const { return m_View.GetPtr(); }
         Noesis::FrameworkElement* GetContent() const { return m_Content.GetPtr(); }
 
@@ -59,7 +66,8 @@ namespace VansRuntime
         std::vector<Noesis::Ptr<Noesis::BaseComponent>> m_CommandAdapters;
 
         std::string m_SourcePath;
-        bool m_Visible = true;
+        std::atomic_bool m_Visible{ true };
+        bool m_RendererInitialized = false;
 
         VansNoesisInputAdapter* m_InputAdapter = nullptr;
         VansUIViewModel* m_ViewModel = nullptr;

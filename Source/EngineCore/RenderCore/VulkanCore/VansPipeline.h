@@ -228,7 +228,8 @@ namespace VansGraphics
 			DestroyPipeline(m_Device);
 		}
 	
-		VkPipeline GetNativePipeline() { return m_GraphicsPipeline; }
+		VkPipeline GetNativePipeline() const { return m_GraphicsPipeline; }
+		VkPipelineLayout GetNativePipelineLayout() const { return m_VansPipelineLayout; }
 	};
 
 	class VansVKComputePipeline

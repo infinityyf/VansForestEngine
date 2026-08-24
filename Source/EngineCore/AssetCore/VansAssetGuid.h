@@ -13,6 +13,7 @@ public:
     VansAssetGuid() = default;
 
     static VansAssetGuid New();
+    static VansAssetGuid FromStableName(std::string_view nameSpace, std::string_view value);
     static bool TryParse(std::string_view text, VansAssetGuid& result);
 
     bool IsValid() const;

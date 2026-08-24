@@ -3,6 +3,7 @@
 #extension GL_EXT_nonuniform_qualifier : enable
 
 #include "../../Common/CameraData.glsl"
+#include "../../Common/VansDrawSubmission.glsl"
 #define TILE_LIGHT
 #include "../../Common/TileLightData.glsl"
 #include "../../Common/CustomMaterialData.glsl"
@@ -12,7 +13,7 @@
 layout(set = 1, binding = 0) uniform sampler2D opaqueSceneColor;
 layout(set = 1, binding = 2) uniform sampler2D opaqueDepth;
 layout(set = 1, binding = 3) uniform sampler2DArray cascadeShadowMap;
-layout(set = 1, binding = 4) uniform sampler2DArrayShadow punctualShadowMap;
+layout(set = 1, binding = 4) uniform sampler2DShadow punctualShadowMap[PUNCTUAL_SHADOW_ATLAS_COUNT];
 layout(set = 0, binding = 50) uniform sampler2D globalPBRTextures[];
 
 layout(location = 0) in vec2 fragUV;
@@ -23,14 +24,6 @@ layout(location = 4) in vec3 bitangentWS;
 layout(location = 5) in vec4 clipPos;
 
 layout(location = 0) out vec4 outColor;
-
-layout(push_constant) uniform DrawPushConsts
-{
-    int materialIndex;
-    int transformIndex;
-    uint vertexFeatureMask;
-    int passUser0;
-} pc;
 
 const int GLASS_REFRACTION_THIN = 0;
 const int GLASS_REFRACTION_SCREEN_TRACE = 1;
@@ -352,7 +345,8 @@ void EvaluateDirectLighting(BRDFData brdf, float transmission, out vec3 diffuse,
 
 void main()
 {
-    CustomMaterialPayload payload = customMaterialDataBuffer.materials[pc.materialIndex];
+    VansDrawData drawData = VansGetDrawData();
+    CustomMaterialPayload payload = customMaterialDataBuffer.materials[drawData.materialIndex];
 
     vec3 baseColorFactor = max(payload.values[0].rgb, vec3(0.0));
     float alphaCoverage = clamp(payload.values[0].a, 0.0, 1.0);

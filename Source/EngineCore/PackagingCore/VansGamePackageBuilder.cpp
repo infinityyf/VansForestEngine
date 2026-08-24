@@ -592,45 +592,6 @@ namespace
 		return value;
 	}
 
-	const char* AssetTypeToString(Vans::VansAssetType type)
-	{
-		switch (type)
-		{
-		case Vans::VansAssetType::Model: return "model";
-		case Vans::VansAssetType::Texture: return "texture";
-		case Vans::VansAssetType::Material: return "material";
-		case Vans::VansAssetType::Shader: return "shader";
-		case Vans::VansAssetType::Audio: return "audio";
-		case Vans::VansAssetType::Video: return "video";
-		case Vans::VansAssetType::Scene: return "scene";
-		case Vans::VansAssetType::Particle: return "particle";
-		case Vans::VansAssetType::AnimationClip: return "animationClip";
-		case Vans::VansAssetType::AnimatorController: return "animatorController";
-		case Vans::VansAssetType::BoneMask: return "boneMask";
-		case Vans::VansAssetType::Timeline: return "timeline";
-		case Vans::VansAssetType::ActionDefinition: return "actionDefinition";
-		case Vans::VansAssetType::ActionSet: return "actionSet";
-		case Vans::VansAssetType::GameplayEffect: return "gameplayEffect";
-		case Vans::VansAssetType::GameplayCue: return "gameplayCue";
-		case Vans::VansAssetType::AttributeSet: return "attributeSet";
-		case Vans::VansAssetType::TargetingPolicy: return "targetingPolicy";
-		case Vans::VansAssetType::GameplayTagTree: return "gameplayTagTree";
-		case Vans::VansAssetType::PayloadSchema: return "payloadSchema";
-		case Vans::VansAssetType::ActionGraph: return "actionGraph";
-		case Vans::VansAssetType::CameraRigProfile: return "cameraRigProfile";
-		case Vans::VansAssetType::CameraShakeProfile: return "cameraShakeProfile";
-		case Vans::VansAssetType::GAFEditorLayout: return "gafEditorLayout";
-		case Vans::VansAssetType::ClothProfile: return "clothProfile";
-		case Vans::VansAssetType::SkinProfile: return "skinProfile";
-		case Vans::VansAssetType::PostProcessProfile: return "postProcessProfile";
-		case Vans::VansAssetType::RagdollProfile: return "ragdollProfile";
-		case Vans::VansAssetType::AudioReverbPreset: return "audioReverbPreset";
-		case Vans::VansAssetType::AudioBusSnapshot: return "audioBusSnapshot";
-		case Vans::VansAssetType::AudioDuckingRules: return "audioDuckingRules";
-		default: return "unknown";
-		}
-	}
-
 	const char* ArtifactFormatToString(Vans::VansAssetArtifactFormat format)
 	{
 		switch (format)
@@ -689,6 +650,16 @@ namespace
 			? relativeRoot
 			: relativeRoot / sourcePath.filename();
 		cookedPlan.cacheCopies.push_back({ sourcePath, relativePath, directory });
+		if (!directory)
+		{
+			const fs::path sourceMetaPath(sourcePath.string() + ".meta");
+			std::error_code metaError;
+			if (fs::is_regular_file(sourceMetaPath, metaError))
+			{
+				const fs::path relativeMetaPath(relativePath.string() + ".meta");
+				cookedPlan.cacheCopies.push_back({ sourceMetaPath, relativeMetaPath, false });
+			}
+		}
 		return relativePath;
 	}
 
@@ -981,7 +952,7 @@ namespace
 		{
 			Vans::VansPackagedAssetIndexRecord indexRecord;
 			indexRecord.guid = record.guid.ToString();
-			indexRecord.type = AssetTypeToString(record.type);
+			indexRecord.type = Vans::VansAssetDatabase::SerializedTypeName(record.type);
 			// 包运行时不保留源文件读取路径，所有读取必须落到下面的缓存索引。
 			indexRecord.sourcePath.clear();
 			indexRecord.authoringPath.clear();
@@ -1044,6 +1015,7 @@ namespace
 			}
 			if (sourceRecord->type != Vans::VansAssetType::AnimatorController
 				&& sourceRecord->type != Vans::VansAssetType::AnimationClip
+				&& sourceRecord->type != Vans::VansAssetType::AnimationRig
 				&& sourceRecord->type != Vans::VansAssetType::BoneMask
 				&& sourceRecord->type != Vans::VansAssetType::Timeline)
 				continue;

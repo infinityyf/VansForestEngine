@@ -51,6 +51,7 @@ namespace VansGraphics
 	enum ObjectBinding : uint32_t
 	{
 		OBJECT_BINDING_TRANSFORM_SSBO   = 0,   // Transform matrix SSBO (shared by all nodes)
+		OBJECT_BINDING_DRAW_INSTANCE_SSBO = 1, // Sorted draw-instance records, indexed by gl_InstanceIndex
 	};
 
 	// ====================================================================
@@ -380,6 +381,15 @@ namespace VansGraphics
 		SSS_BINDING_HIZ = 2,
 		SSS_BINDING_RESULT = 3,
 		SSS_BINDING_PARAMS = 4,
+		SSS_BINDING_CASCADE_DEPTH = 5,
+		SSS_BINDING_CASCADE_COMPARE = 6,
+		SSS_BINDING_CASCADE_MIN_MAX = 7,
+	};
+
+	enum CascadeShadowMinMaxPassBinding : uint32_t
+	{
+		CASCADE_MIN_MAX_BINDING_INPUT = 0,
+		CASCADE_MIN_MAX_BINDING_OUTPUT = 1,
 	};
 
 	// --- SSGI Temporal Accumulation Pass ---
@@ -408,6 +418,8 @@ namespace VansGraphics
 		SSR_TRACE_BINDING_HIZ        = 3,
 		SSR_TRACE_BINDING_HIT        = 4,
 		SSR_TRACE_BINDING_PDF        = 5,
+		SSR_TRACE_BINDING_RAY_LIST   = 6,
+		SSR_TRACE_BINDING_CONTROL    = 7,
 	};
 
 	// --- SSR Resolve Compute Pass ---
@@ -881,6 +893,7 @@ namespace VansGraphics
 		static void CreateAndAllocate_SSGI(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_SSGIProbeCache(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_ScreenSpaceShadow(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_CascadeShadowMinMax(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount);
 		static void CreateAndAllocate_SSGITemporal(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 2);
 		static void CreateAndAllocate_SSGIAtrous(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 2);
 		static void CreateAndAllocate_SSR_Trace(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);

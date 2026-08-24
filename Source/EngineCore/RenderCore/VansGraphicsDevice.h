@@ -1,5 +1,9 @@
 ﻿#pragma once
 #include "../ScriptCore/VansCommonUtils.h"
+#include "VansRenderFrame.h"
+#include "VansRenderThreadTransaction.h"
+
+#include <memory>
 
 struct ImDrawData;
 
@@ -10,7 +14,6 @@ namespace VansGraphics
 		INVALIDE = 0,
 		VULKAN = 1,
 	};
-
 
 	class VansGraphicsDevice
 	{
@@ -26,6 +29,11 @@ namespace VansGraphics
 		//初始化渲染资源
 		virtual void BeforeRendering() = 0;
 		virtual void PrepareRenderingFrame() {}
+		virtual VansRenderSubmissionPrepareResult PrepareRenderSubmission(
+			const VansRenderFrameSubmission&)
+		{
+			return { VansRenderSubmissionPrepareStatus::Ready, {} };
+		}
 
 		virtual void Rendering() = 0;
 		// True only while the current frame owns a valid presentation image and
@@ -76,9 +84,15 @@ namespace VansGraphics
 	{
 	public:
 		virtual ~VansGUIBackEnd() = default;
+		// Main owns the window-system frontend; native renderer resources are
+		// created and destroyed by the transactions below on RenderThread.
 		virtual void InitBackEnd(VansGraphicsDevice& device, GLFWwindow* window) = 0;
+		virtual std::unique_ptr<IVansRenderThreadTransaction>
+			CreateRenderThreadInitialization() = 0;
+		virtual std::unique_ptr<IVansRenderThreadTransaction>
+			CreateRenderThreadShutdown() = 0;
 		virtual void BeginFrame() = 0;
-		virtual void RenderDrawData(VansGraphicsDevice& device, ImDrawData* drawData) = 0;
+		virtual std::unique_ptr<IVansRenderFrameOverlay> CaptureDrawData(ImDrawData* drawData) = 0;
 		virtual void ShutdownBackEnd() = 0;
 	};
 

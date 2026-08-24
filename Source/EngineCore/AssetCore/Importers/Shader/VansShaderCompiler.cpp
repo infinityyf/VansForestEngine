@@ -321,7 +321,7 @@ namespace Vans
 			const std::filesystem::path outputPath = temporaryRoot / (std::to_string(index) + ".spv");
 			const std::filesystem::path logPath = temporaryRoot / (std::to_string(index) + ".log");
 			std::wstring command = L"glslangValidator -V " + QuoteArgument(stage.sourcePath) +
-				L" -o " + QuoteArgument(outputPath) + L" --target-env vulkan1.2";
+				L" -o " + QuoteArgument(outputPath) + L" --target-env vulkan1.2 -Os";
 			for (const auto& includeRoot : request.includeRoots)
 				command += L" -I" + QuoteArgument(includeRoot);
 

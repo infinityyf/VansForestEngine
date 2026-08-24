@@ -3,87 +3,24 @@
 #include "../ScriptCore/VansCommonUtils.h"
 #include "../ScriptCore/VansTransform.h"
 #include "VansGraphicsDevice.h"
-#include "VulkanCore/VansVKDevice.h"
-#include "VulkanCore/VansVKDescriptorManager.h"
-#include "VansTemporalProjection.h"
+#include "VansRenderFrame.h"
 #include "../SceneCore/VansSceneCameraSettingsConfig.h"
-#include <vector>
 #include <climits>
 using namespace VansGraphics;
 namespace VansGraphics
 {
 	struct VansCameraControlPose;
-	struct VansTemporalCameraSnapshot
-	{
-		glm::mat4 view{ 1.0f };
-		glm::mat4 projection{ 1.0f };
-		glm::mat4 previousViewProjection{ 1.0f };
-		glm::vec3 position{ 0.0f };
-		glm::vec3 up{ 0.0f, 1.0f, 0.0f };
-		glm::vec3 right{ 1.0f, 0.0f, 0.0f };
-		glm::vec3 forward{ 0.0f, 0.0f, -1.0f };
-		VansTemporalJitter jitter{};
-		std::uint32_t frameIndex = 0;
-		float nearClip = 0.1f;
-		float farClip = 1000.0f;
-		float fovRadians = 1.0f;
-	};
-
-    struct alignas(16) CameraDataStruct
-    {
-        glm::vec4   CameraPosition;
-        glm::vec4	CameraDirection;
-        glm::mat4x4 ViewMatrix;
-        glm::mat4x4 ProjectionMatrix;
-        glm::mat4x4 VPMatrix;
-        glm::mat4x4 LastViewMatrix;
-        glm::mat4x4 LastProjectionMatrix;
-        glm::mat4x4 LastVPMatrix;
-        glm::mat4x4 LastPrevViewMatrix;
-        glm::mat4x4 LastPrevProjectionMatrix;
-        glm::mat4x4 LastPrevVPMatrix;
-        glm::mat4x4 InverseViewMatrix;
-        glm::mat4x4 InverseProjectionMatrix;
-        // 未经 jitter 偏移的 VP 矩阵，用于 MotionVector pass，保证静止时速度场精确为零
-        glm::mat4x4 UnjitteredVPMatrix;
-        glm::mat4x4 LastUnjitteredVPMatrix;
-        //resolution, 1/resolution
-        glm::vec4 ScreenParams;
-        //frame index, time
-        glm::vec4 FrameParams;
-        //x: near, y: far, z: fov, w: aspect
-        glm::vec4 CameraParams;
-    };
-
-
-
 	class VansCamera : public VansNode
 	{
     private:
-
         //render backend引用
         VansGraphicsDevice* m_RenderDevice;
-
-        CameraDataStruct m_CameraData{};
-		glm::mat4 m_UnjitteredProjectionMatrix{ 1.0f };
-
-        uint32_t m_RenderFrameIndex;
 
         bool m_IsRightMouseDown;
 
         // ── Transform 绑定 ──────────────────────────────────────────────────
         // UINT32_MAX 表示未绑定 Transform（降级路径，直接修改 m_Position/m_Rotation）
         uint32_t m_TransformID = UINT32_MAX;
-
-		VansTemporalJitter m_TemporalJitter{};
-
-    public:
-
-        VkDescriptorSetLayout m_CameraBufferLayout;
-        std::vector<VkDescriptorSet> m_CameraBufferDescriptorSets;
-
-        //uniform buffer
-        VansVKBuffer m_CameraDataBuffer;
 
     public:
 
@@ -106,11 +43,6 @@ namespace VansGraphics
 
         glm::vec4 GetUp();
 
-        uint32_t GetFrameIndex()
-        {
-            return m_RenderFrameIndex;
-        }
-
         void SetAspectRatio(float aspect) { m_AspectRatio = aspect; }
 
         // ── 相机参数 Getter / Setter ─────────────────────────────────────────
@@ -131,16 +63,16 @@ namespace VansGraphics
         void     DetachTransformPreservingPose();
 
         // 从绑定的 Transform 读取 position 和 rotation(pitch/yaw) 写入相机成员。
-        // 每帧在 Rendering() 最前端调用，确保视图矩阵使用最新 transform 数据。
+        // 每帧在构建 render view snapshot 前调用，确保只发布已 resolve 的主线程数据。
         void SyncFromTransform();
 
         glm::mat4 GetViewMatrix();
 
         glm::mat4 GetProjectiveMatrix();
 
-		const VansTemporalJitter& GetTemporalJitter() const { return m_TemporalJitter; }
-		const CameraDataStruct& GetCameraData() const { return m_CameraData; }
-		VansTemporalCameraSnapshot CaptureTemporalSnapshot() const;
+		VansRenderViewSnapshot BuildRenderViewSnapshot(
+			std::uint32_t viewportWidth,
+			std::uint32_t viewportHeight);
 
         // 将世界坐标投影到左上角为原点的归一化视口坐标。
         // 返回 false 表示点位于相机后方或视锥之外。
@@ -151,9 +83,6 @@ namespace VansGraphics
         void ResetToDefaults();
 
     private:
-
-        void SetCameraData(const glm::mat4& view_matrix, const glm::mat4& projective_matrix);
-
         glm::vec3 m_Position;
         
         glm::vec3 m_Rotation; // pitch, yaw, roll
@@ -168,10 +97,6 @@ namespace VansGraphics
         VansCamera(VansGraphicsDevice* device);
 
         ~VansCamera();
-
-        void Rendering();
-
-        void Present();
 
         void* GetGraphicsDevice() {return m_RenderDevice;}
 

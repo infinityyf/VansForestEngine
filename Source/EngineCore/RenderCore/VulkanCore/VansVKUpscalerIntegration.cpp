@@ -8,7 +8,6 @@
 #include "../UpscalingCore/VansTemporalJitterSequence.h"
 #include "../../../Graphics/Vulkan/VansStreamlineRuntime.h"
 #include "../../Util/VansLog.h"
-#include "../../VansTimer.h"
 #include "../../RuntimeUI/Public/VansUISystem.h"
 #include <algorithm>
 #include <cmath>
@@ -94,8 +93,7 @@ namespace VansGraphics
 	bool VansVKDevice::BuildDLSSDispatch(VansStreamlineDLSSDispatch& output)
 	{
 		auto* renderPassManager = VansRenderPassManager::GetInstance();
-		VansCamera* camera = m_Scene != nullptr ? m_Scene->GetCamera() : nullptr;
-		if (renderPassManager == nullptr || camera == nullptr)
+		if (renderPassManager == nullptr || !m_HasCurrentRenderView)
 			return false;
 
 		VansVKImage& color = renderPassManager->GetColor();
@@ -103,7 +101,7 @@ namespace VansGraphics
 		VansVKImage& motion = renderPassManager->GetMotionVector();
 		const VkExtent2D outputExtent = CalculateUpscalerOutputExtent();
 		const VansTemporalCameraSnapshot cameraSnapshot =
-			camera->CaptureTemporalSnapshot();
+			CaptureTemporalCameraSnapshot();
 		output = {};
 		output.commandBuffer = CurrentGraphicsCommandBuffer().GetVKCommandBuffer();
 		output.color = { color.GetImage(), color.GetImageView(),
@@ -149,7 +147,7 @@ namespace VansGraphics
 		auto& history = m_UpscalerManager.GetHistory();
 		const VansUpscalerConfig& effective = m_UpscalerManager.GetEffectiveConfig();
 		history.ObserveFrame(
-			cameraSnapshot.frameIndex, camera,
+			cameraSnapshot.frameIndex, m_CurrentRenderView.cameraIdentity,
 			{ m_RenderWidth, m_RenderHeight },
 			{ outputExtent.width, outputExtent.height },
 			effective.backend, effective.quality);
@@ -160,8 +158,7 @@ namespace VansGraphics
 	bool VansVKDevice::BuildFSRFrameInput(VansFSRFrameInput& output)
 	{
 		auto* renderPassManager = VansRenderPassManager::GetInstance();
-		VansCamera* camera = m_Scene != nullptr ? m_Scene->GetCamera() : nullptr;
-		if (renderPassManager == nullptr || camera == nullptr)
+		if (renderPassManager == nullptr || !m_HasCurrentRenderView)
 		{
 			VANS_LOG_ERROR("[FSR] Cannot build frame input without render passes and an active camera");
 			return false;
@@ -172,7 +169,7 @@ namespace VansGraphics
 		auto& sceneColorHDR = renderPassManager->GetColor();
 		const VkExtent2D displayExtent = m_FSRController.GetDisplayExtent();
 		const VansTemporalCameraSnapshot cameraSnapshot =
-			camera->CaptureTemporalSnapshot();
+			CaptureTemporalCameraSnapshot();
 
 		output = {};
 		output.color = sceneColorHDR.GetImage();
@@ -199,7 +196,7 @@ namespace VansGraphics
 		output.jitterSamplePixelX = temporalJitter.samplePixels.x;
 		output.jitterSamplePixelY = temporalJitter.samplePixels.y;
 		output.frameTimeDeltaMs = static_cast<float>(
-			std::clamp(VansTimer::GetRealDeltaTime() * 1000.0, 0.01, 1000.0));
+			std::clamp(m_CurrentRenderTiming.renderDeltaSeconds * 1000.0, 0.01, 1000.0));
 		output.preExposure = 1.0f;
 		if (m_Scene != nullptr && m_Scene->GetMaterialManager() != nullptr)
 		{
@@ -217,7 +214,7 @@ namespace VansGraphics
 		const VansUpscalerConfig& effective = m_UpscalerManager.GetEffectiveConfig();
 		history.ObserveFrame(
 			cameraSnapshot.frameIndex,
-			camera,
+			m_CurrentRenderView.cameraIdentity,
 			{ output.renderWidth, output.renderHeight },
 			{ output.displayWidth, output.displayHeight },
 			effective.backend,
@@ -736,9 +733,7 @@ namespace VansGraphics
 		renderPassManager->SetupVansDeferredRenderPass(
 			m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue,
 			renderExtent);
-		renderPassManager->SetupVansMotionVectorRenderPass(
-			m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue,
-			renderExtent);
+		renderPassManager->SetupVansSkyMotionVectorRenderPass(m_VansVKLogicDevice, renderExtent);
 		renderPassManager->SetupVansHairDeepOpacityPass(m_VansVKLogicDevice, renderExtent);
 		renderPassManager->SetupVansHairVisibilityPass(m_VansVKLogicDevice, renderExtent);
 		renderPassManager->SetupVansHairLightingPass(m_VansVKLogicDevice, renderExtent);
@@ -820,7 +815,17 @@ namespace VansGraphics
 		uint32_t outputWidth,
 		uint32_t outputHeight)
 	{
-		RequestUpscalerConfig(config.upscaler, outputWidth, outputHeight);
+		// 项目可声明独立于宿主窗口的最终输出分辨率；旧项目的 0x0 配置仍跟随窗口。
+		const uint32_t requestedOutputWidth = config.output.HasExplicitExtent()
+			? config.output.width
+			: outputWidth;
+		const uint32_t requestedOutputHeight = config.output.HasExplicitExtent()
+			? config.output.height
+			: outputHeight;
+		RequestUpscalerConfig(
+			config.upscaler,
+			requestedOutputWidth,
+			requestedOutputHeight);
 		SetParallelCommandRecordingEnabled(config.commandRecording.parallelEnabled);
 		SetFrameContextRingEnabled(
 			config.commandRecording.frameContextRingEnabled,
