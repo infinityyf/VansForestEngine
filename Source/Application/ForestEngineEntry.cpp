@@ -153,7 +153,7 @@ void RunMainLoop(VansCamera& camera)
 	m_Scene->InjectCamera(&camera);
 
 	g_RenderSystem = std::make_unique<VansRenderSystem>(
-		*m_GraphicsDevice, *m_Scene, 1u);
+		*m_GraphicsDevice, *m_Scene, true);
 	if (!g_RenderSystem->InitializeFrameExecution())
 	{
 		VANS_LOG_ERROR("[ForestEngine] Failed to initialize render-system frame execution");
@@ -162,8 +162,8 @@ void RunMainLoop(VansCamera& camera)
 	}
 	m_Scene->BindRenderThreadTransactionExecutor(g_RenderSystem.get());
 	VansRuntime::VansUIInitDesc uiDesc{};
-	uiDesc.m_Width = static_cast<std::uint32_t>(m_GraphicsDevice->GetNativeRenderWidth());
-	uiDesc.m_Height = static_cast<std::uint32_t>(m_GraphicsDevice->GetNativeRenderHeight());
+	uiDesc.m_Width = g_RenderSystem->GetRenderWidth();
+	uiDesc.m_Height = g_RenderSystem->GetRenderHeight();
 	if (!VansRuntime::VansUISystem::Get().InitializeWithDevice(
 		uiDesc,
 		dynamic_cast<VansVKDevice*>(m_GraphicsDevice)))

@@ -214,8 +214,7 @@ namespace VansGraphics
 		VansMainCameraHiZCullSettings mainCameraHiZCullSettings;
 		std::vector<VansRenderMainCameraCullInput> mainCameraCullInputs;
 		VansRenderPunctualShadowFrameInput punctualShadow;
-		// Backend-owned copy is allowed to populate jobs before recording. The
-		// published Main packet leaves this empty.
+		// RenderThread 接管快照所有权后可在录制前填充 jobs；Main 发布时必须为空。
 		std::vector<VansPunctualShadowRenderJob> punctualShadowJobs;
 		VansRenderFeatureFrameFlags features;
 	};

@@ -79,6 +79,7 @@ struct VansAssetRecord
     std::uint64_t sourceHash = 0;
     std::uint64_t metaHash = 0;
     std::uint64_t generation = 0;
+    bool hasSkeletalMesh = false;
     std::string error;
 };
 

@@ -28,7 +28,6 @@ namespace VansGraphics
 		VansRenderWorkSerial workSerial;
 		VansRenderFrameId frameId;
 		VansRenderFrameStatus status = VansRenderFrameStatus::RecoverableFailure;
-		std::optional<VansGpuSubmitSerial> gpuSubmitSerial;
 		VansSurfaceEpoch surfaceEpoch;
 		std::string error;
 

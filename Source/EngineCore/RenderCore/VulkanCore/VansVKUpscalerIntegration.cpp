@@ -826,11 +826,11 @@ namespace VansGraphics
 			config.upscaler,
 			requestedOutputWidth,
 			requestedOutputHeight);
-		SetParallelCommandRecordingEnabled(config.commandRecording.parallelEnabled);
-		SetFrameContextRingEnabled(
+		ApplyCommandRecordingSettings(
+			config.commandRecording.parallelEnabled,
 			config.commandRecording.frameContextRingEnabled,
-			config.commandRecording.framesInFlight);
-		SetAsyncComputeEnabled(config.commandRecording.asyncComputeEnabled);
+			config.commandRecording.framesInFlight,
+			config.commandRecording.asyncComputeEnabled);
 	}
 
 	void VansVKDevice::ProcessPendingUpscalerConfig()

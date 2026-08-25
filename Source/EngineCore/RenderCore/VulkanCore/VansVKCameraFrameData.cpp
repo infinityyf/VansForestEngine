@@ -78,7 +78,7 @@ bool VansGraphics::VansVKDevice::UploadRenderLightFrameData(
 
 VansGraphics::VansRenderSubmissionPrepareResult
 VansGraphics::VansVKDevice::PrepareRenderSubmission(
-	const VansRenderFrameSubmission& submission)
+	VansRenderFrameSubmission& submission)
 {
 	if (!m_RenderWorld.Apply(submission.MutationsBeforeFrame()))
 	{
@@ -91,7 +91,14 @@ VansGraphics::VansVKDevice::PrepareRenderSubmission(
 
 	const VansRenderFramePacket& frame = submission.Frame();
 	m_CurrentRenderView = frame.View();
-	m_CurrentRenderSceneSnapshot = frame.Scene();
+	if (!submission.ConsumeSceneForRendering(m_CurrentRenderSceneSnapshot))
+	{
+		m_HasCurrentRenderView = false;
+		return {
+			VansRenderSubmissionPrepareStatus::FatalProtocolViolation,
+			"Render scene snapshot was consumed more than once"
+		};
+	}
 	m_CurrentRenderTiming = frame.Timing();
 	m_CurrentTransformKeys.clear();
 	m_CurrentTransformIndices.clear();

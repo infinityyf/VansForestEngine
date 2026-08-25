@@ -14,4 +14,5 @@ bool TestGAFNetworkContract();
 bool TestGAFDebugAndReplayContract();
 bool TestGAFSampleLibraryContract();
 bool TestGAFDemoHallWindowBreakContract();
+bool TestGAFDemoHallPlayerAttackContract();
 bool TestGAFLuaBridgeContract();

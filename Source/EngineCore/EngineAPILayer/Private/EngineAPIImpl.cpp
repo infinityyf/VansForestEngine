@@ -117,6 +117,83 @@ namespace Vans::EditorAPI
 {
 	namespace
 	{
+		struct RenderSettingsTransactionState final
+		{
+			enum class Operation
+			{
+				ApplyUpscaler,
+				ApplyCommandRecording,
+				ApplyProjectRuntimeConfig,
+				RefreshPipelineCachePath
+			};
+
+			Operation operation = Operation::ApplyUpscaler;
+			VansGraphics::VansUpscalerConfig upscalerConfig;
+			VansGraphics::VansUpscalerSelectionChange upscalerSelection;
+			VansGraphics::VansRenderRuntimeConfig runtimeConfig;
+			CommandRecordingSettingsSnapshot commandRecording;
+			std::uint32_t outputWidth = 0;
+			std::uint32_t outputHeight = 0;
+		};
+
+		// EngineAPILayer 只负责 DTO/设置翻译；所有会改变 Vulkan backend 的操作
+		// 都作为有序事务进入 RenderThread，不能从 Editor/Main 直接写 device。
+		class RenderSettingsTransaction final
+			: public VansGraphics::IVansRenderThreadTransaction
+		{
+		public:
+			explicit RenderSettingsTransaction(
+				std::shared_ptr<RenderSettingsTransactionState> state)
+				: m_State(std::move(state)) {}
+
+			bool Execute(VansGraphics::VansGraphicsDevice& backend) override
+			{
+				VANS_ASSERT_RENDER_THREAD();
+				auto* device = dynamic_cast<VansGraphics::VansVKDevice*>(&backend);
+				if (!m_State || !device)
+					return false;
+
+				switch (m_State->operation)
+				{
+				case RenderSettingsTransactionState::Operation::ApplyUpscaler:
+					m_State->upscalerSelection = device->RequestUpscalerConfig(
+						m_State->upscalerConfig,
+						m_State->outputWidth,
+						m_State->outputHeight);
+					if (!m_State->upscalerSelection.accepted)
+						return false;
+					// 在事务返回前完成 resolution-owned 资源切换，使下一次
+					// Main BuildRenderViewSnapshot 读取到匹配的新 render extent。
+					device->CommitRenderRuntimeConfigAtSafePoint();
+					return true;
+				case RenderSettingsTransactionState::Operation::ApplyCommandRecording:
+					return device->ApplyCommandRecordingSettings(
+						m_State->commandRecording.parallelEnabled,
+						m_State->commandRecording.frameContextRingEnabled,
+						m_State->commandRecording.framesInFlight,
+						m_State->commandRecording.asyncComputeRequested);
+				case RenderSettingsTransactionState::Operation::ApplyProjectRuntimeConfig:
+				{
+					device->GetPipelineCacheService().RefreshPersistencePath();
+					const VkExtent2D outputExtent = device->GetUpscalerOutputExtent();
+					device->ApplyRenderRuntimeConfig(
+						m_State->runtimeConfig,
+						outputExtent.width,
+						outputExtent.height);
+					device->CommitRenderRuntimeConfigAtSafePoint();
+					return true;
+				}
+				case RenderSettingsTransactionState::Operation::RefreshPipelineCachePath:
+					device->GetPipelineCacheService().RefreshPersistencePath();
+					return true;
+				}
+				return false;
+			}
+
+		private:
+			std::shared_ptr<RenderSettingsTransactionState> m_State;
+		};
+
 		bool TryToSceneParentReference(
 			const RuntimeParentReference& source,
 			std::optional<Vans::VansSceneParentReference>& output,
@@ -965,8 +1042,20 @@ namespace Vans::EditorAPI
 		struct AnimationPreviewSessionState
 		{
 			AnimationPreviewSessionId id = 0;
+			AnimationPreviewTargetKind targetKind =
+				AnimationPreviewTargetKind::IsolatedModel;
 			std::string modelGuid;
 			std::string modelPath;
+			std::string entityGuid;
+			std::string animationComponentGuid;
+			std::uint64_t sceneContentRevision = 0;
+			VansGraphics::AnimationState originalPlaybackState =
+				VansGraphics::AnimationState::Stopped;
+			float originalSpeed = 1.0f;
+			std::string originalGraphSetId;
+			std::unordered_map<std::string, VansGraphics::AnimatorParameter>
+				originalParameters;
+			bool originalSceneStateCaptured = false;
 			VansGraphics::Skeleton skeleton;
 			std::unique_ptr<VansGraphics::VansAnimationPreviewRenderer> renderer;
 			EditorTextureHandle texture = nullptr;
@@ -986,6 +1075,7 @@ namespace Vans::EditorAPI
 			float renderAccumulator = 0.0f;
 			bool renderDirty = true;
 			bool renderLogged = false;
+			std::uint64_t lastScenePoseRevision = 0;
 			float lastUpdateMilliseconds = 0.0f;
 			std::string diagnostic;
 		};
@@ -1112,6 +1202,235 @@ namespace Vans::EditorAPI
 		{
 			static AnimationPreviewSessionId nextId = 1;
 			return nextId++;
+		}
+
+		VansGraphics::VansAnimationNode* ResolveSceneAnimationPreviewNode(
+			VansGraphics::VansScene* scene,
+			const std::string& entityGuid,
+			const std::string& animationComponentGuid)
+		{
+			if (!scene || entityGuid.empty() || animationComponentGuid.empty())
+				return nullptr;
+			Vans::VansRuntimeWorld* world = scene->GetRuntimeWorld();
+			if (!world)
+				return nullptr;
+			auto* storage = static_cast<Vans::VansComponentStorage<
+				Vans::VansRuntimeAnimationComponent>*>(world->FindStorage(
+					Vans::VansRuntimeComponentType_Animation));
+			if (!storage)
+				return nullptr;
+			const auto& components = storage->DenseData();
+			const auto& headers = storage->Headers();
+			for (std::size_t index = 0;
+				index < components.size() && index < headers.size(); ++index)
+			{
+				const Vans::VansEntityRecord* owner =
+					world->Entities().Get(headers[index].owner);
+				if (owner && owner->stableGuid == entityGuid &&
+					headers[index].stableGuid == animationComponentGuid)
+				{
+					return components[index].animationNode;
+				}
+			}
+			return nullptr;
+		}
+
+		VansGraphics::VansAnimationController* ResolveAnimationPreviewController(
+			AnimationPreviewSessionState& session,
+			VansGraphics::VansScene* scene)
+		{
+			if (session.targetKind == AnimationPreviewTargetKind::IsolatedModel)
+				return session.controller.get();
+			VansGraphics::VansAnimationNode* node = ResolveSceneAnimationPreviewNode(
+				scene, session.entityGuid, session.animationComponentGuid);
+			return node ? node->GetLocomotionController() : nullptr;
+		}
+
+		void SetSceneAnimationPreviewSpeed(
+			VansGraphics::VansAnimationNode& node, float speed)
+		{
+			if (VansGraphics::VansAnimationController* target = node.GetController())
+				target->SetSpeed(speed);
+			if (node.IsRetargetEnabled())
+				if (VansGraphics::VansAnimationController* source =
+					node.GetRetargetSourceController())
+					source->SetSpeed(speed);
+		}
+
+		void AccumulateAnimationPreviewRootMotion(
+			const glm::vec3& delta,
+			glm::vec3& position,
+			std::vector<glm::vec3>& trail)
+		{
+			position += delta;
+			const glm::vec3 trailDelta = trail.empty()
+				? position : position - trail.back();
+			if (trail.empty() || glm::dot(trailDelta, trailDelta) > 1.0e-8f)
+			{
+				trail.push_back(position);
+				if (trail.size() > 512)
+					trail.erase(trail.begin(), trail.begin() + 128);
+			}
+		}
+
+		void RestoreAnimationPreviewParameters(
+			VansGraphics::VansAnimationController& controller,
+			const std::unordered_map<std::string,
+				VansGraphics::AnimatorParameter>& parameters)
+		{
+			for (const auto& [name, parameter] : parameters)
+			{
+				switch (parameter.type)
+				{
+				case VansGraphics::AnimatorParamType::Float:
+					controller.SetFloat(name, parameter.floatVal);
+					break;
+				case VansGraphics::AnimatorParamType::Bool:
+					controller.SetBool(name, parameter.boolVal);
+					break;
+				case VansGraphics::AnimatorParamType::Int:
+					controller.SetInt(name, parameter.intVal);
+					break;
+				case VansGraphics::AnimatorParamType::Trigger:
+					if (parameter.boolVal) controller.SetTrigger(name);
+					else controller.ResetTrigger(name);
+					break;
+				case VansGraphics::AnimatorParamType::Vector3:
+					controller.SetVector3(name, parameter.vec3Val);
+					break;
+				case VansGraphics::AnimatorParamType::Quaternion:
+					controller.SetQuaternion(name, parameter.quatVal);
+					break;
+				}
+			}
+		}
+
+		bool SeekSceneAnimationPreview(
+			VansGraphics::VansScene& scene,
+			VansGraphics::VansAnimationNode& node,
+			float targetSeconds,
+			float previewSpeed,
+			AnimationPreviewPlaybackRequest::RootMotionMode rootMotionMode,
+			glm::vec3& rootMotionPosition,
+			std::vector<glm::vec3>& rootMotionTrail,
+			std::string& diagnostic)
+		{
+			VansGraphics::VansAnimationController* controller =
+				node.GetLocomotionController();
+			if (!controller)
+			{
+				diagnostic = "Scene preview controller is no longer available";
+				return false;
+			}
+			if (node.IsGraphSetTransitioning())
+			{
+				diagnostic =
+					"Finish the active Graph Set transition before seeking the preview timeline";
+				return false;
+			}
+			if (const VansGraphics::MotionMatchingDebugData* motionMatching =
+				controller->GetMotionMatchingDebugData();
+				motionMatching && motionMatching->usedThisFrame)
+			{
+				diagnostic =
+					"Motion Matching and Turn-in-Place Warping require forward playback with a trajectory; arbitrary seek is disabled for the active graph";
+				return false;
+			}
+
+			const float duration = controller->GetCurrentDuration();
+			if (!(duration > 0.0f))
+			{
+				diagnostic = "The active Graph Set has no finite preview range";
+				return false;
+			}
+			const float clampedTarget = std::clamp(targetSeconds, 0.0f, duration);
+			SetSceneAnimationPreviewSpeed(node, 1.0f);
+			node.Play(VansGraphics::VansAnimationEvaluationPurpose::EditorPreview);
+			constexpr float fixedStep = 1.0f / 60.0f;
+			float elapsed = 0.0f;
+			while (elapsed + 0.00001f < clampedTarget)
+			{
+				const float step = (std::min)(fixedStep, clampedTarget - elapsed);
+				if (!scene.EvaluateEditorAnimationPreviewStep(&node, step))
+				{
+					diagnostic = "Scene rejected the Editor animation preview step";
+					return false;
+				}
+				if (rootMotionMode !=
+					AnimationPreviewPlaybackRequest::RootMotionMode::InPlace)
+				{
+					AccumulateAnimationPreviewRootMotion(
+						node.GetRootMotionDelta(), rootMotionPosition,
+						rootMotionTrail);
+				}
+				elapsed += step;
+			}
+			node.Pause();
+			SetSceneAnimationPreviewSpeed(node, previewSpeed);
+			diagnostic.clear();
+			return true;
+		}
+
+		bool SeekIsolatedAnimationPreview(
+			AnimationPreviewSessionState& session,
+			float targetSeconds)
+		{
+			if (!session.controller)
+				return false;
+			if (session.controller->IsGraphSetTransitioning())
+			{
+				session.diagnostic =
+					"Finish the active Graph Set transition before seeking the preview timeline";
+				return false;
+			}
+			if (const VansGraphics::MotionMatchingDebugData* motionMatching =
+				session.controller->GetMotionMatchingDebugData();
+				motionMatching && motionMatching->usedThisFrame)
+			{
+				session.diagnostic =
+					"Motion Matching requires forward playback with trajectory history; arbitrary seek is disabled for the active graph";
+				return false;
+			}
+			const float duration = session.controller->GetCurrentDuration();
+			if (!(duration > 0.0f))
+			{
+				session.diagnostic = "The active Graph Set has no finite preview range";
+				return false;
+			}
+			const float clampedTarget = std::clamp(targetSeconds, 0.0f, duration);
+			session.controller->SetSpeed(1.0f);
+			session.controller->Play();
+			constexpr float fixedStep = 1.0f / 60.0f;
+			float elapsed = 0.0f;
+			while (elapsed + 0.00001f < clampedTarget)
+			{
+				const float step = (std::min)(fixedStep, clampedTarget - elapsed);
+				session.controller->Update(step, session.skeleton);
+				if (session.rootMotionMode !=
+					AnimationPreviewPlaybackRequest::RootMotionMode::InPlace)
+				{
+					AccumulateAnimationPreviewRootMotion(
+						session.controller->GetRootMotionDelta(),
+						session.rootMotionPosition, session.rootMotionTrail);
+				}
+				elapsed += step;
+			}
+			session.controller->Pause();
+			session.controller->SetSpeed(session.speed);
+			session.diagnostic.clear();
+			session.renderDirty = true;
+			return true;
+		}
+
+		void DiscardSceneAnimationPreviewSessions()
+		{
+			std::vector<AnimationPreviewSessionId> ids;
+			for (const auto& [id, session] : GetAnimationPreviewSessions())
+				if (session && session->targetKind ==
+					AnimationPreviewTargetKind::SceneAnimationComponent)
+					ids.push_back(id);
+			for (AnimationPreviewSessionId id : ids)
+				GetAnimationPreviewSessions().erase(id);
 		}
 
 		std::uint16_t RuntimeLightComponentTypeForPatch(RuntimeLightPatchType type)
@@ -2945,6 +3264,11 @@ namespace Vans::EditorAPI
 				continue;
 			if (!filter.includeUnknown && type == AssetType::Unknown)
 				continue;
+			if (filter.requiredCapability == AssetQueryCapability::SkeletalModel &&
+				!record.hasSkeletalMesh)
+			{
+				continue;
+			}
 
 			AssetEntry entry;
 			entry.id = 0;
@@ -4035,21 +4359,40 @@ namespace Vans::EditorAPI
 
 		if (auto* device = static_cast<VansGraphics::VansVKDevice*>(m_Device))
 		{
-			device->GetPipelineCacheService().RefreshPersistencePath();
 			// CommitRenderRuntimeConfigAtSafePoint may recreate FinalDisplayColor.
 			// Invalidate editor-owned descriptors at the mutation boundary so the
 			// next viewport frame always registers the replacement image view.
 			ClearEditorRenderTexturePreviewCaches(device);
 
-			const VkExtent2D outputExtent = device->GetUpscalerOutputExtent();
-			device->ApplyRenderRuntimeConfig(
-				projectManager.GetProjectSettings().GetRenderRuntimeConfig(),
-				outputExtent.width,
-				outputExtent.height);
-			// OpenProject runs before project assets and the default scene are loaded.
-			// Resolve the requested upscaler and rebuild resolution-owned renderer data
-			// here so scene subsystems never observe the previous backend's dimensions.
-			device->CommitRenderRuntimeConfigAtSafePoint();
+			auto state = std::make_shared<RenderSettingsTransactionState>();
+			state->operation =
+				RenderSettingsTransactionState::Operation::ApplyProjectRuntimeConfig;
+			state->runtimeConfig =
+				projectManager.GetProjectSettings().GetRenderRuntimeConfig();
+			bool applied = false;
+			if (m_RenderSystem)
+			{
+				applied = m_RenderSystem->ExecuteRenderThreadTransaction(
+					std::make_unique<RenderSettingsTransaction>(state));
+			}
+			else
+			{
+				// RenderSystem 尚未绑定时只可能处于 backend 启动前，不存在并发 RT。
+				device->GetPipelineCacheService().RefreshPersistencePath();
+				const VkExtent2D outputExtent = device->GetUpscalerOutputExtent();
+				device->ApplyRenderRuntimeConfig(
+					state->runtimeConfig,
+					outputExtent.width,
+					outputExtent.height);
+				device->CommitRenderRuntimeConfigAtSafePoint();
+				applied = true;
+			}
+			if (!applied)
+			{
+				result.success = false;
+				result.message = "Render-thread project settings application failed";
+				return result;
+			}
 		}
 		return result;
 	}
@@ -4065,7 +4408,23 @@ namespace Vans::EditorAPI
 		{
 			projectManager.CloseProject();
 			if (auto* device = static_cast<VansGraphics::VansVKDevice*>(m_Device))
-				device->GetPipelineCacheService().RefreshPersistencePath();
+			{
+				if (m_RenderSystem)
+				{
+					auto state = std::make_shared<RenderSettingsTransactionState>();
+					state->operation = RenderSettingsTransactionState::Operation::RefreshPipelineCachePath;
+					if (!m_RenderSystem->ExecuteRenderThreadTransaction(
+						std::make_unique<RenderSettingsTransaction>(state)))
+					{
+						VANS_LOG_ERROR(
+							"[EngineAPI] Render-thread pipeline-cache path refresh failed");
+					}
+				}
+				else
+				{
+					device->GetPipelineCacheService().RefreshPersistencePath();
+				}
+			}
 		}
 	}
 
@@ -4391,12 +4750,30 @@ namespace Vans::EditorAPI
 			}
 		}
 
-		const VansGraphics::VansUpscalerSelectionChange selection =
-			device->RequestUpscalerConfig(
+		VansGraphics::VansUpscalerSelectionChange selection;
+		bool backendApplied = false;
+		if (m_RenderSystem)
+		{
+			auto state = std::make_shared<RenderSettingsTransactionState>();
+			state->operation = RenderSettingsTransactionState::Operation::ApplyUpscaler;
+			state->upscalerConfig = config;
+			state->outputWidth = outputSettings.width;
+			state->outputHeight = outputSettings.height;
+			backendApplied = m_RenderSystem->ExecuteRenderThreadTransaction(
+				std::make_unique<RenderSettingsTransaction>(state));
+			selection = state->upscalerSelection;
+		}
+		else
+		{
+			selection = device->RequestUpscalerConfig(
 				config,
 				outputSettings.width,
 				outputSettings.height);
-		if (!selection.accepted)
+			if (selection.accepted)
+				device->CommitRenderRuntimeConfigAtSafePoint();
+			backendApplied = selection.accepted;
+		}
+		if (!backendApplied || !selection.accepted)
 		{
 			if (projectSettingsChanged)
 			{
@@ -4411,7 +4788,7 @@ namespace Vans::EditorAPI
 				}
 			}
 			result.message = selection.error.empty()
-				? "Render backend rejected the upscaler settings"
+				? "Render-thread upscaler settings application failed"
 				: selection.error;
 			return result;
 		}
@@ -4444,13 +4821,32 @@ namespace Vans::EditorAPI
 	void EngineAPIImpl::SetCommandRecordingSettings(const CommandRecordingSettingsSnapshot& settings)
 	{
 		auto* device = static_cast<VansGraphics::VansVKDevice*>(m_Device);
+		bool backendApplied = device == nullptr;
 		if (device)
 		{
-			device->SetParallelCommandRecordingEnabled(settings.parallelEnabled);
-			device->SetFrameContextRingEnabled(
-				settings.frameContextRingEnabled,
-				settings.framesInFlight);
-			device->SetAsyncComputeEnabled(settings.asyncComputeRequested);
+			if (m_RenderSystem)
+			{
+				auto state = std::make_shared<RenderSettingsTransactionState>();
+				state->operation =
+					RenderSettingsTransactionState::Operation::ApplyCommandRecording;
+				state->commandRecording = settings;
+				backendApplied = m_RenderSystem->ExecuteRenderThreadTransaction(
+					std::make_unique<RenderSettingsTransaction>(state));
+			}
+			else
+			{
+				backendApplied = device->ApplyCommandRecordingSettings(
+					settings.parallelEnabled,
+					settings.frameContextRingEnabled,
+					settings.framesInFlight,
+					settings.asyncComputeRequested);
+			}
+		}
+		if (!backendApplied)
+		{
+			VANS_LOG_ERROR(
+				"[EngineAPI] Render-thread command-recording settings application failed");
+			return;
 		}
 
 		auto& projectManager = Vans::VansProjectManager::Get();
@@ -6559,6 +6955,9 @@ namespace Vans::EditorAPI
 			return result;
 		}
 
+		// Scene preview sessions borrow Editor-scene animation nodes. End those
+		// sessions before replacing the scene so a session cannot outlive its
+		// target or restore state across the load boundary.
 		if (scene->IsSceneReady() || scene->IsSceneSwitching())
 		{
 			if (!m_RenderSystem || !m_RenderSystem->WaitForIdle())
@@ -6570,6 +6969,7 @@ namespace Vans::EditorAPI
 			}
 			ClearEditorRenderTexturePreviewCaches(device);
 		}
+		DiscardSceneAnimationPreviewSessions();
 
 		const VansGraphics::VansSceneLoadMode runtimeMode =
 			mode == RuntimeSceneLoadMode::Runtime
@@ -6605,6 +7005,7 @@ namespace Vans::EditorAPI
 			}
 			ClearEditorRenderTexturePreviewCaches(device);
 		}
+		DiscardSceneAnimationPreviewSessions();
 
 		if (scene->IsSceneReady() || scene->IsSceneSwitching())
 			scene->UnLoadScene();
@@ -6623,8 +7024,24 @@ namespace Vans::EditorAPI
 		if (!scene)
 			return;
 
-		if (scene->AreResourcesLoaded())
-			scene->UnloadProjectResources(device);
+		if (!scene->AreResourcesLoaded())
+			return;
+		if (m_RenderSystem)
+		{
+			if (!m_RenderSystem->WaitForIdle())
+			{
+				VANS_LOG_ERROR(
+					"[RuntimeScene] Render thread failed to idle before project-resource unload.");
+				return;
+			}
+		}
+		else if (device && !device->WaitForDevice())
+		{
+			VANS_LOG_ERROR(
+				"[RuntimeScene] Render device failed to idle before project-resource unload.");
+			return;
+		}
+		scene->UnloadProjectResources(device);
 	}
 
 	bool EngineAPIImpl::LoadRuntimeProjectAssetsForScene(const std::string& scenePath)
@@ -6814,6 +7231,25 @@ namespace Vans::EditorAPI
 			visual.appliedRootYawDeltaDegrees = motionMatching->appliedRootYawDeltaDegrees;
 			visual.steeringActive = motionMatching->steeringActive;
 			visual.steeringLimited = motionMatching->steeringLimited;
+			visual.turnWarpActive = motionMatching->turnWarpActive;
+			visual.turnWarpLimited = motionMatching->turnWarpLimited;
+			visual.turnWarpNeedsReplan = motionMatching->turnWarpNeedsReplan;
+			visual.turnWarpDisableReason = motionMatching->turnWarpDisableReason;
+			visual.turnWarpReplanReason = motionMatching->turnWarpReplanReason;
+			visual.turnWarpTargetDeltaDegrees =
+				motionMatching->turnWarpTargetDeltaDegrees;
+			visual.turnWarpAuthoredRemainingYawDegrees =
+				motionMatching->turnWarpAuthoredRemainingYawDegrees;
+			visual.turnWarpScaleRatio = motionMatching->turnWarpScaleRatio;
+			visual.turnWarpResidualDegrees = motionMatching->turnWarpResidualDegrees;
+			visual.turnWarpAppliedFrameCorrectionDegrees =
+				motionMatching->turnWarpAppliedFrameCorrectionDegrees;
+			visual.turnWarpAccumulatedAdditiveDegrees =
+				motionMatching->turnWarpAccumulatedAdditiveDegrees;
+			visual.turnWarpEndpointCost = motionMatching->turnWarpEndpointCost;
+			visual.turnWarpMotionEndTimeSeconds =
+				motionMatching->turnWarpMotionEndTimeSeconds;
+			visual.turnWarpProfileIndex = motionMatching->turnWarpProfileIndex;
 			visual.rootMotionReconciliationActive =
 				motionMatching->rootMotionReconciliationActive;
 			visual.currentCost = motionMatching->currentCost;
@@ -6843,6 +7279,7 @@ namespace Vans::EditorAPI
 				candidateDto.poseCost = candidate.poseCost;
 				candidateDto.contactCost = candidate.contactCost;
 				candidateDto.biasCost = candidate.biasCost;
+				candidateDto.turnEndpointCost = candidate.turnEndpointCost;
 				visual.topCandidates.push_back(std::move(candidateDto));
 			}
 			snapshot.visuals.push_back(visual);
@@ -6885,6 +7322,7 @@ namespace Vans::EditorAPI
 			SceneSkeletonHierarchyRig rig;
 			rig.entityGuid = owner->stableGuid;
 			rig.animationComponentGuid = headers[index].stableGuid;
+			rig.nodeName = animationNode->GetName();
 			rig.skeletonGuid = skeleton.sourceSkeletonGuid;
 			rig.skeletonSignature = skeleton.signature;
 			rig.bones.reserve(skeleton.bones.size());
@@ -7364,14 +7802,66 @@ namespace Vans::EditorAPI
 		const AnimationPreviewCreateRequest& request)
 	{
 		AnimationPreviewCreateResult result;
+		auto session = std::make_unique<AnimationPreviewSessionState>();
+		session->id = NextAnimationPreviewSessionId();
+		session->targetKind = request.targetKind;
+		if (request.targetKind == AnimationPreviewTargetKind::SceneAnimationComponent)
+		{
+			auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+			if (!scene || !scene->IsSceneReady())
+			{
+				result.message = "Scene animation preview requires a loaded scene";
+				return result;
+			}
+			if (scene->GetLoadMode() != VansGraphics::VansSceneLoadMode::Editor)
+			{
+				result.message = "Scene animation preview is only available outside Play mode";
+				return result;
+			}
+			for (const auto& [id, existing] : GetAnimationPreviewSessions())
+			{
+				if (existing && existing->targetKind ==
+						AnimationPreviewTargetKind::SceneAnimationComponent &&
+					existing->entityGuid == request.entityGuid &&
+					existing->animationComponentGuid == request.animationComponentGuid)
+				{
+					result.message =
+						"This Animation Component already has an active preview session";
+					return result;
+				}
+			}
+			VansGraphics::VansAnimationNode* node = ResolveSceneAnimationPreviewNode(
+				scene, request.entityGuid, request.animationComponentGuid);
+			if (!node || !node->GetLocomotionController())
+			{
+				result.message = "Scene Animation Component could not be resolved";
+				return result;
+			}
+			session->entityGuid = request.entityGuid;
+			session->animationComponentGuid = request.animationComponentGuid;
+			session->sceneContentRevision = m_SceneContentRevision;
+			session->originalPlaybackState = node->GetState();
+			session->originalSpeed = node->GetSpeed();
+			session->originalGraphSetId = node->GetActiveGraphSetId();
+			session->originalParameters =
+				node->GetLocomotionController()->GetParameters();
+			session->originalSceneStateCaptured = true;
+			session->playing = session->originalPlaybackState ==
+				VansGraphics::AnimationState::Playing ||
+				session->originalPlaybackState == VansGraphics::AnimationState::Blending;
+			session->speed = session->originalSpeed;
+			result.success = true;
+			result.sessionId = session->id;
+			GetAnimationPreviewSessions().emplace(session->id, std::move(session));
+			return result;
+		}
+
 		auto* device = static_cast<VansGraphics::VansVKDevice*>(m_Device);
 		if (!device)
 		{
 			result.message = "Runtime render device is not available for animation preview";
 			return result;
 		}
-		auto session = std::make_unique<AnimationPreviewSessionState>();
-		session->id = NextAnimationPreviewSessionId();
 		session->modelGuid = request.previewModelGuid;
 		std::filesystem::path modelPath;
 		float scaleFactor = 1.0f;
@@ -7427,6 +7917,12 @@ namespace Vans::EditorAPI
 			return result;
 		}
 		AnimationPreviewSessionState& session = *found->second;
+		if (session.targetKind == AnimationPreviewTargetKind::SceneAnimationComponent)
+		{
+			result.message =
+				"Scene animation preview uses the saved AnimationComponent runtime and does not accept authoring definition updates";
+			return result;
+		}
 		if (update.revision < session.requestedRevision)
 		{
 			result.message = "Stale animation preview revision was ignored";
@@ -7536,16 +8032,57 @@ namespace Vans::EditorAPI
 			session.rootMotionTrail.assign(1, glm::vec3(0.0f));
 			session.renderDirty = true;
 		}
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		if (session.targetKind == AnimationPreviewTargetKind::SceneAnimationComponent)
+		{
+			if (session.sceneContentRevision != m_SceneContentRevision)
+			{
+				session.diagnostic = "Scene preview target expired after scene reload";
+				return false;
+			}
+			VansGraphics::VansAnimationNode* node = ResolveSceneAnimationPreviewNode(
+				scene, session.entityGuid, session.animationComponentGuid);
+			if (!node)
+			{
+				session.diagnostic = "Scene Animation Component no longer exists";
+				return false;
+			}
+			session.diagnostic.clear();
+			SetSceneAnimationPreviewSpeed(*node, session.speed);
+			if (request.seek)
+			{
+				session.rootMotionPosition = glm::vec3(0.0f);
+				session.rootMotionTrail.assign(1, glm::vec3(0.0f));
+				if (!SeekSceneAnimationPreview(
+					*scene, *node, request.seekSeconds, session.speed,
+					session.rootMotionMode, session.rootMotionPosition,
+					session.rootMotionTrail, session.diagnostic))
+					return false;
+				session.lastScenePoseRevision = node->GetFinalPoseView().revision;
+			}
+			if (request.playing)
+			{
+				if (node->GetState() == VansGraphics::AnimationState::Paused)
+					node->Resume();
+				else if (node->GetState() == VansGraphics::AnimationState::Stopped)
+					node->Play(
+						VansGraphics::VansAnimationEvaluationPurpose::EditorPreview);
+			}
+			else
+				node->Pause();
+			return true;
+		}
+
 		if (!session.controller)
 			return true;
+		session.diagnostic.clear();
 		session.controller->SetSpeed(session.speed);
 		if (request.seek)
 		{
 			session.rootMotionPosition = glm::vec3(0.0f);
 			session.rootMotionTrail.assign(1, glm::vec3(0.0f));
-			session.controller->SeekNormalizedTime(request.normalizedTime);
-			session.controller->Update(0.0f, session.skeleton);
-			session.renderDirty = true;
+			if (!SeekIsolatedAnimationPreview(session, request.seekSeconds))
+				return false;
 		}
 		if (request.playing)
 		{
@@ -7563,9 +8100,14 @@ namespace Vans::EditorAPI
 	{
 		auto found = GetAnimationPreviewSessions().find(value.sessionId);
 		if (found == GetAnimationPreviewSessions().end() || !found->second
-			|| !found->second->controller || value.name.empty())
+			|| value.name.empty())
 			return false;
-		auto& controller = *found->second->controller;
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		VansGraphics::VansAnimationController* resolved =
+			ResolveAnimationPreviewController(*found->second, scene);
+		if (!resolved)
+			return false;
+		auto& controller = *resolved;
 		if (!controller.HasParameter(value.name))
 			return false;
 		switch (value.type)
@@ -7581,7 +8123,14 @@ namespace Vans::EditorAPI
 				value.quaternionValue.w, value.quaternionValue.x,
 				value.quaternionValue.y, value.quaternionValue.z)); break;
 		}
-		controller.Update(0.0f, found->second->skeleton);
+		if (found->second->targetKind == AnimationPreviewTargetKind::IsolatedModel)
+		{
+			const bool paused = controller.GetPlaybackState() ==
+				VansGraphics::AnimationState::Paused;
+			if (paused) controller.Resume();
+			controller.Update(0.0f, found->second->skeleton);
+			if (paused) controller.Pause();
+		}
 		found->second->renderDirty = true;
 		return true;
 	}
@@ -7591,10 +8140,21 @@ namespace Vans::EditorAPI
 	{
 		auto found = GetAnimationPreviewSessions().find(request.sessionId);
 		if (found == GetAnimationPreviewSessions().end() || !found->second
-			|| !found->second->controller || request.graphSetId.empty())
+			|| request.graphSetId.empty())
 			return false;
-		const VansGraphics::VansGraphSetSwitchResult result =
-			found->second->controller->SwitchGraphSet(request.graphSetId);
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		VansGraphics::VansGraphSetSwitchResult result =
+			VansGraphics::VansGraphSetSwitchResult::UnknownGraphSet;
+		if (found->second->targetKind ==
+			AnimationPreviewTargetKind::SceneAnimationComponent)
+		{
+			if (VansGraphics::VansAnimationNode* node = ResolveSceneAnimationPreviewNode(
+				scene, found->second->entityGuid,
+				found->second->animationComponentGuid))
+				result = node->SwitchGraphSet(request.graphSetId);
+		}
+		else if (found->second->controller)
+			result = found->second->controller->SwitchGraphSet(request.graphSetId);
 		const bool accepted = result == VansGraphics::VansGraphSetSwitchResult::Started
 			|| result == VansGraphics::VansGraphSetSwitchResult::Completed
 			|| result == VansGraphics::VansGraphSetSwitchResult::AlreadyActive
@@ -7606,8 +8166,12 @@ namespace Vans::EditorAPI
 	bool EngineAPIImpl::TriggerAnimationPreviewSlot(const AnimationPreviewSlotRequest& request)
 	{
 		auto found = GetAnimationPreviewSessions().find(request.sessionId);
-		if (found == GetAnimationPreviewSessions().end() || !found->second
-			|| !found->second->controller)
+		if (found == GetAnimationPreviewSessions().end() || !found->second)
+			return false;
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		VansGraphics::VansAnimationController* controller =
+			ResolveAnimationPreviewController(*found->second, scene);
+		if (!controller)
 			return false;
 		VansGraphics::VansSlotPlayRequest play;
 		play.clipName = request.clipName;
@@ -7615,7 +8179,7 @@ namespace Vans::EditorAPI
 		play.loopCount = request.loopCount;
 		play.priority = request.priority;
 		const VansGraphics::VansSlotPlaybackHandle handle =
-			found->second->controller->PlaySlot(request.slotId, play);
+			controller->PlaySlot(request.slotId, play);
 		if (!handle)
 			return false;
 		found->second->slotHandles.push_back(handle);
@@ -7654,10 +8218,34 @@ namespace Vans::EditorAPI
 	void EngineAPIImpl::TickAnimationPreview(AnimationPreviewSessionId sessionId, float deltaTime)
 	{
 		auto found = GetAnimationPreviewSessions().find(sessionId);
-		if (found == GetAnimationPreviewSessions().end() || !found->second
-			|| !found->second->controller)
+		if (found == GetAnimationPreviewSessions().end() || !found->second)
 			return;
 		AnimationPreviewSessionState& session = *found->second;
+		if (session.targetKind == AnimationPreviewTargetKind::SceneAnimationComponent)
+		{
+			auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+			VansGraphics::VansAnimationNode* node = ResolveSceneAnimationPreviewNode(
+				scene, session.entityGuid, session.animationComponentGuid);
+			if (!node || session.sceneContentRevision != m_SceneContentRevision)
+			{
+				session.diagnostic = "Scene animation preview target is no longer valid";
+				return;
+			}
+			const std::uint64_t poseRevision = node->GetFinalPoseView().revision;
+			if (session.playing && poseRevision != 0 &&
+				poseRevision != session.lastScenePoseRevision &&
+				session.rootMotionMode !=
+					AnimationPreviewPlaybackRequest::RootMotionMode::InPlace)
+			{
+				AccumulateAnimationPreviewRootMotion(
+					node->GetRootMotionDelta(), session.rootMotionPosition,
+					session.rootMotionTrail);
+			}
+			session.lastScenePoseRevision = poseRevision;
+			return;
+		}
+		if (!session.controller)
+			return;
 		const auto begin = std::chrono::steady_clock::now();
 		session.controller->Update(
 			session.playing ? std::max(deltaTime, 0.0f) : 0.0f,
@@ -7665,16 +8253,9 @@ namespace Vans::EditorAPI
 		if (session.playing
 			&& session.rootMotionMode != AnimationPreviewPlaybackRequest::RootMotionMode::InPlace)
 		{
-			session.rootMotionPosition += session.controller->GetRootMotionDelta();
-			const glm::vec3 trailDelta = session.rootMotionTrail.empty()
-				? session.rootMotionPosition : session.rootMotionPosition - session.rootMotionTrail.back();
-			if (session.rootMotionTrail.empty() || glm::dot(trailDelta, trailDelta) > 1.0e-8f)
-			{
-				session.rootMotionTrail.push_back(session.rootMotionPosition);
-				if (session.rootMotionTrail.size() > 512)
-					session.rootMotionTrail.erase(session.rootMotionTrail.begin(),
-						session.rootMotionTrail.begin() + 128);
-			}
+			AccumulateAnimationPreviewRootMotion(
+				session.controller->GetRootMotionDelta(),
+				session.rootMotionPosition, session.rootMotionTrail);
 		}
 		const auto end = std::chrono::steady_clock::now();
 		session.lastUpdateMilliseconds =
@@ -7731,7 +8312,7 @@ namespace Vans::EditorAPI
 			}
 
 			const glm::vec3 modelOffset =
-				session.rootMotionMode == AnimationPreviewPlaybackRequest::RootMotionMode::ApplyToActor
+				session.rootMotionMode == AnimationPreviewPlaybackRequest::RootMotionMode::VisualOffset
 					? session.rootMotionPosition : glm::vec3(0.0f);
 			std::string renderError;
 			if (!session.renderer->RasterizeFrame(
@@ -7782,84 +8363,150 @@ namespace Vans::EditorAPI
 		auto found = GetAnimationPreviewSessions().find(sessionId);
 		if (found == GetAnimationPreviewSessions().end() || !found->second)
 			return snapshot;
-		const AnimationPreviewSessionState& session = *found->second;
+		AnimationPreviewSessionState& session = *found->second;
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		VansGraphics::VansAnimationNode* sceneNode = nullptr;
+		if (session.targetKind == AnimationPreviewTargetKind::SceneAnimationComponent)
+		{
+			sceneNode = ResolveSceneAnimationPreviewNode(
+				scene, session.entityGuid, session.animationComponentGuid);
+			if (!sceneNode || session.sceneContentRevision != m_SceneContentRevision)
+			{
+				snapshot.available = true;
+				snapshot.sceneTarget = true;
+				snapshot.entityGuid = session.entityGuid;
+				snapshot.animationComponentGuid = session.animationComponentGuid;
+				snapshot.diagnostic = "Scene animation preview target expired";
+				return snapshot;
+			}
+		}
+		VansGraphics::VansAnimationController* controller =
+			ResolveAnimationPreviewController(session, scene);
+		VansGraphics::VansAnimationController* poseController = sceneNode
+			? sceneNode->GetController() : controller;
+		const VansGraphics::Skeleton* skeleton = sceneNode
+			? &sceneNode->GetSkeleton() : &session.skeleton;
 		snapshot.available = true;
-		snapshot.compiled = session.controller != nullptr;
+		snapshot.compiled = controller != nullptr && poseController != nullptr;
 		snapshot.playing = session.playing;
+		snapshot.sceneTarget = sceneNode != nullptr;
+		snapshot.entityGuid = session.entityGuid;
+		snapshot.animationComponentGuid = session.animationComponentGuid;
 		snapshot.speed = session.speed;
 		snapshot.requestedRevision = session.requestedRevision;
 		snapshot.displayedRevision = session.displayedRevision;
-		snapshot.usingLastGoodDefinition = session.controller
+		snapshot.usingLastGoodDefinition = !sceneNode && session.controller
 			&& session.displayedRevision != session.requestedRevision;
 		snapshot.diagnostic = session.diagnostic;
 		snapshot.lastUpdateMilliseconds = session.lastUpdateMilliseconds;
-		snapshot.modelTexture = session.texture;
-		if (session.renderer && session.renderer->IsReady())
+		if (controller)
 		{
-			const auto& stats = session.renderer->GetStats();
-			snapshot.modelRendered = session.texture != nullptr;
-			snapshot.modelTextureWidth = stats.width;
-			snapshot.modelTextureHeight = stats.height;
-			snapshot.modelCenter = ToEditorVec3(session.renderer->GetModelCenter());
-			snapshot.modelRadius = session.renderer->GetModelRadius();
-			snapshot.modelVertexCount = static_cast<std::uint64_t>(stats.vertexCount);
-			snapshot.modelTriangleCount = static_cast<std::uint64_t>(stats.renderedTriangleCount);
-			snapshot.modelRenderMilliseconds = stats.renderMilliseconds;
+			if (controller->IsGraphSetTransitioning())
+			{
+				snapshot.seekSupported = false;
+				if (snapshot.diagnostic.empty())
+					snapshot.diagnostic =
+						"Timeline seek waits for the active Graph Set transition to finish";
+			}
+			if (const VansGraphics::MotionMatchingDebugData* motionMatching =
+				controller->GetMotionMatchingDebugData())
+			{
+				if (motionMatching->usedThisFrame && snapshot.diagnostic.empty())
+					snapshot.diagnostic =
+						"Motion Matching timeline seek is disabled because trajectory and turn-warp history require forward playback";
+				snapshot.seekSupported = snapshot.seekSupported &&
+					!motionMatching->usedThisFrame;
+			}
 		}
-		if (session.controller)
+		if (!sceneNode)
+		{
+			snapshot.modelTexture = session.texture;
+			if (session.renderer && session.renderer->IsReady())
+			{
+				const auto& stats = session.renderer->GetStats();
+				snapshot.modelRendered = session.texture != nullptr;
+				snapshot.modelTextureWidth = stats.width;
+				snapshot.modelTextureHeight = stats.height;
+				snapshot.modelCenter = ToEditorVec3(session.renderer->GetModelCenter());
+				snapshot.modelRadius = session.renderer->GetModelRadius();
+				snapshot.modelVertexCount =
+					static_cast<std::uint64_t>(stats.vertexCount);
+				snapshot.modelTriangleCount =
+					static_cast<std::uint64_t>(stats.renderedTriangleCount);
+				snapshot.modelRenderMilliseconds = stats.renderMilliseconds;
+			}
+		}
+		if (controller)
 		{
 			snapshot.frameScratchAllocations = static_cast<std::uint64_t>(
-				session.controller->GetLastFrameScratchAllocations());
+				controller->GetLastFrameScratchAllocations());
 			snapshot.frameScratchAllocatedBytes = static_cast<std::uint64_t>(
-				session.controller->GetLastFrameScratchAllocatedBytes());
+				controller->GetLastFrameScratchAllocatedBytes());
 		}
 
-		std::vector<glm::mat4> globals(session.skeleton.bones.size(), glm::mat4(1.0f));
-		if (session.controller
-			&& session.controller->GetCachedGlobalTransforms().size() == session.skeleton.bones.size())
-			globals = session.controller->GetCachedGlobalTransforms();
+		std::vector<glm::mat4> globals(skeleton->bones.size(), glm::mat4(1.0f));
+		if (poseController &&
+			poseController->GetCachedGlobalTransforms().size() == skeleton->bones.size())
+			globals = poseController->GetCachedGlobalTransforms();
 		else
 		{
 			auto accumulate = [&](int index)
 			{
-				if (index < 0 || index >= static_cast<int>(session.skeleton.bones.size())) return;
-				const auto& bone = session.skeleton.bones[index];
+				if (index < 0 || index >= static_cast<int>(skeleton->bones.size())) return;
+				const auto& bone = skeleton->bones[index];
 				globals[index] = bone.parentIndex >= 0
 					&& bone.parentIndex < static_cast<int>(globals.size())
 					? globals[bone.parentIndex] * bone.localTransform : bone.localTransform;
 			};
-			if (!session.skeleton.topologicalOrder.empty())
-				for (int index : session.skeleton.topologicalOrder) accumulate(index);
+			if (!skeleton->topologicalOrder.empty())
+				for (int index : skeleton->topologicalOrder) accumulate(index);
 			else
-				for (int index = 0; index < static_cast<int>(session.skeleton.bones.size()); ++index) accumulate(index);
+				for (int index = 0; index < static_cast<int>(skeleton->bones.size()); ++index)
+					accumulate(index);
 		}
-		snapshot.bones.reserve(session.skeleton.bones.size());
-		for (std::size_t index = 0; index < session.skeleton.bones.size(); ++index)
+		snapshot.bones.reserve(skeleton->bones.size());
+		for (std::size_t index = 0; index < skeleton->bones.size(); ++index)
 		{
 			AnimationPreviewBoneSnapshot bone;
-			bone.name = session.skeleton.bones[index].name;
-			bone.parentIndex = session.skeleton.bones[index].parentIndex;
+			bone.name = skeleton->bones[index].name;
+			bone.parentIndex = skeleton->bones[index].parentIndex;
 			glm::vec3 position = glm::vec3(globals[index][3]);
-			if (session.rootMotionMode == AnimationPreviewPlaybackRequest::RootMotionMode::ApplyToActor)
+			if (!sceneNode && session.rootMotionMode ==
+				AnimationPreviewPlaybackRequest::RootMotionMode::VisualOffset)
 				position += session.rootMotionPosition;
 			bone.position = ToEditorVec3(position);
 			snapshot.bones.push_back(std::move(bone));
 		}
-		if (!session.controller)
+		if (sceneNode && !globals.empty())
+		{
+			glm::vec3 minimum(std::numeric_limits<float>::max());
+			glm::vec3 maximum(std::numeric_limits<float>::lowest());
+			for (const glm::mat4& transform : globals)
+			{
+				const glm::vec3 position(transform[3]);
+				minimum = glm::min(minimum, position);
+				maximum = glm::max(maximum, position);
+			}
+			const glm::vec3 center = (minimum + maximum) * 0.5f;
+			snapshot.modelCenter = ToEditorVec3(center);
+			snapshot.modelRadius = (std::max)(glm::length(maximum - center), 0.01f);
+		}
+		if (!controller)
 			return snapshot;
 
-		snapshot.currentTime = session.controller->GetCurrentPlayTime();
-		snapshot.duration = session.controller->GetCurrentDuration();
-		snapshot.normalizedTime = session.controller->GetNormalizedTime();
-		snapshot.activeGraphSetId = session.controller->GetActiveGraphSetId();
-		snapshot.incomingGraphSetId = session.controller->GetIncomingGraphSetId();
-		snapshot.graphSetTransitionProgress = session.controller->GetGraphSetTransitionProgress();
-		snapshot.rootMotionDelta = ToEditorVec3(session.controller->GetRootMotionDelta());
+		snapshot.currentTime = controller->GetCurrentPlayTime();
+		snapshot.duration = controller->GetCurrentDuration();
+		snapshot.normalizedTime = controller->GetNormalizedTime();
+		snapshot.activeGraphSetId = controller->GetActiveGraphSetId();
+		snapshot.incomingGraphSetId = controller->GetIncomingGraphSetId();
+		snapshot.graphSetTransitionProgress =
+			controller->GetGraphSetTransitionProgress();
+		snapshot.rootMotionDelta = ToEditorVec3(controller->GetRootMotionDelta());
 		snapshot.rootMotionPosition = ToEditorVec3(session.rootMotionPosition);
 		snapshot.rootMotionTrail.reserve(session.rootMotionTrail.size());
 		for (const glm::vec3& point : session.rootMotionTrail)
 			snapshot.rootMotionTrail.push_back(ToEditorVec3(point));
-		for (const auto& source : session.controller->GetLayerRuntimeDebugInfo())
+		for (const auto& source : controller->GetLayerRuntimeDebugInfo())
 		{
 			AnimationPreviewLayerSnapshot layer;
 			layer.id = source.id;
@@ -7888,7 +8535,7 @@ namespace Vans::EditorAPI
 				}
 			}
 		}
-		for (const auto& source : session.controller->GetSampledEvents())
+		for (const auto& source : controller->GetSampledEvents())
 		{
 			AnimationPreviewEventSnapshot event;
 			event.name = std::string(source.name);
@@ -7905,17 +8552,18 @@ namespace Vans::EditorAPI
 			}, source.payload);
 			snapshot.events.push_back(std::move(event));
 		}
-		for (const auto& source : session.controller->GetSampledCurves())
+		for (const auto& source : controller->GetSampledCurves())
 			if (source.present)
 				snapshot.curves.push_back({ std::string(source.name), source.value });
-		const VansGraphics::VansAnimationSyncState& sync = session.controller->GetSyncState();
+		const VansGraphics::VansAnimationSyncState& sync = controller->GetSyncState();
 		snapshot.syncValid = sync.valid;
 		snapshot.syncMarkerId = sync.markerId;
 		snapshot.syncNextMarkerId = sync.nextMarkerId;
 		snapshot.syncPhase = sync.phase;
 		for (const VansGraphics::VansSlotPlaybackHandle handle : session.slotHandles)
 		{
-			const VansGraphics::VansSlotPlaybackStatus status = session.controller->GetSlotStatus(handle);
+			const VansGraphics::VansSlotPlaybackStatus status =
+				controller->GetSlotStatus(handle);
 			if (status.state == VansGraphics::VansSlotPlaybackState::Invalid)
 				continue;
 			AnimationPreviewSlotSnapshot slot;
@@ -7928,7 +8576,8 @@ namespace Vans::EditorAPI
 			slot.weight = status.weight;
 			snapshot.slots.push_back(std::move(slot));
 		}
-		for (const VansGraphics::VansSlotLifecycleEvent& event : session.controller->GetSlotLifecycleEvents())
+		for (const VansGraphics::VansSlotLifecycleEvent& event :
+			controller->GetSlotLifecycleEvents())
 		{
 			AnimationPreviewSlotEventSnapshot output;
 			output.handle = event.handle.value;
@@ -7944,7 +8593,63 @@ namespace Vans::EditorAPI
 	{
 		auto found = GetAnimationPreviewSessions().find(sessionId);
 		if (found == GetAnimationPreviewSessions().end()) return;
-		if (found->second)
+		if (found->second && found->second->targetKind ==
+			AnimationPreviewTargetKind::SceneAnimationComponent)
+		{
+			AnimationPreviewSessionState& session = *found->second;
+			auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+			VansGraphics::VansAnimationNode* node =
+				session.originalSceneStateCaptured &&
+				session.sceneContentRevision == m_SceneContentRevision
+				? ResolveSceneAnimationPreviewNode(
+					scene, session.entityGuid, session.animationComponentGuid)
+				: nullptr;
+			if (node)
+			{
+				SetSceneAnimationPreviewSpeed(*node, 1.0f);
+				node->Play(
+					VansGraphics::VansAnimationEvaluationPurpose::EditorPreview);
+				if (VansGraphics::VansAnimationController* controller =
+					node->GetLocomotionController())
+				{
+					RestoreAnimationPreviewParameters(
+						*controller, session.originalParameters);
+				}
+				if (!session.originalGraphSetId.empty() &&
+					node->GetActiveGraphSetId() != session.originalGraphSetId)
+				{
+					const VansGraphics::VansGraphSetSwitchResult switchResult =
+						node->SwitchGraphSet(session.originalGraphSetId);
+					if (switchResult == VansGraphics::VansGraphSetSwitchResult::Started)
+					{
+						constexpr int maxRestoreSteps = 600;
+						for (int step = 0;
+							step < maxRestoreSteps && node->IsGraphSetTransitioning();
+							++step)
+						{
+							if (!scene->EvaluateEditorAnimationPreviewStep(
+								node, 1.0f / 60.0f))
+								break;
+						}
+					}
+				}
+				SetSceneAnimationPreviewSpeed(*node, session.originalSpeed);
+				switch (session.originalPlaybackState)
+				{
+				case VansGraphics::AnimationState::Playing:
+				case VansGraphics::AnimationState::Blending:
+					break;
+				case VansGraphics::AnimationState::Paused:
+					node->Pause();
+					break;
+				case VansGraphics::AnimationState::Stopped:
+				default:
+					node->Stop();
+					break;
+				}
+			}
+		}
+		else if (found->second)
 		{
 			auto gpuState = std::make_shared<AnimationPreviewGpuTransactionState>();
 			gpuState->operation = AnimationPreviewGpuTransactionState::Operation::Destroy;

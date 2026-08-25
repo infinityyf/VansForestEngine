@@ -228,8 +228,7 @@ namespace VansRuntime
         , m_SourcePath(std::move(sourcePath))
         , m_InputAdapter(inputAdapter)
     {
-        if (m_InputAdapter && m_View)
-            m_InputAdapter->AddView(m_View.GetPtr());
+        AttachInput();
     }
 
     VansNoesisDocument::~VansNoesisDocument()
@@ -240,8 +239,7 @@ namespace VansRuntime
         if (m_ViewModel && m_ViewModelChangedToken != 0)
             m_ViewModel->RemovePropertyChangedHandler(m_ViewModelChangedToken);
 
-        if (m_InputAdapter && m_View)
-            m_InputAdapter->RemoveView(m_View.GetPtr());
+        DetachInput();
 
         m_Content.Reset();
         m_View.Reset();
@@ -250,21 +248,42 @@ namespace VansRuntime
     void VansNoesisDocument::Show()
     {
         m_Visible.store(true, std::memory_order_release);
+        AttachInput();
     }
 
     void VansNoesisDocument::Hide()
     {
         m_Visible.store(false, std::memory_order_release);
+        DetachInput();
     }
 
     void VansNoesisDocument::SetVisible(bool visible)
     {
-        m_Visible.store(visible, std::memory_order_release);
+        if (visible)
+            Show();
+        else
+            Hide();
     }
 
     bool VansNoesisDocument::IsVisible() const
     {
         return m_Visible.load(std::memory_order_acquire);
+    }
+
+    void VansNoesisDocument::AttachInput()
+    {
+        if (m_InputAttached || !m_InputAdapter || !m_View)
+            return;
+        m_InputAdapter->AddView(m_View.GetPtr());
+        m_InputAttached = true;
+    }
+
+    void VansNoesisDocument::DetachInput()
+    {
+        if (!m_InputAttached || !m_InputAdapter || !m_View)
+            return;
+        m_InputAdapter->RemoveView(m_View.GetPtr());
+        m_InputAttached = false;
     }
 
     void VansNoesisDocument::SetSize(uint32_t width, uint32_t height)

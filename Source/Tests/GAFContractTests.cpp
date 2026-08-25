@@ -32,6 +32,11 @@
 #include "../EngineCore/AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../EngineCore/AssetCore/Storage/VansFileStorage.h"
 #include "../EngineCore/AssetCore/Storage/VansJsonFileStorage.h"
+#include "../EngineCore/AnimationCore/VansAnimationClip.h"
+#include "../EngineCore/AnimationCore/VansAnimatorIO.h"
+#include "../EngineCore/AnimationCore/VansAnimatorRuntimeCompiler.h"
+#include "../EngineCore/AnimationCore/VansSkinnedMeshLoader.h"
+#include "../EngineCore/AnimationCore/MotionMatching/VansMotionMatching.h"
 #include "../EngineCore/EditorCore/VansAssetDocumentTypeRegistry.h"
 #include "../EngineCore/EditorCore/GameplayAction/VansGameplayAssetEditorModel.h"
 #include "../EngineCore/EngineAPILayer/Private/GameplayActionAuthoringBridge.h"
@@ -3356,6 +3361,375 @@ bool TestGAFDemoHallWindowBreakContract()
 		script.find("timeline.state(timelineGuid)") != std::string::npos &&
 		script.find("timelineStallSeconds >= 0.35") != std::string::npos,
 		"DemoHall scene or Lua Script.Action bridge is not wired to the window ActionHost");
+}
+
+bool TestGAFDemoHallPlayerAttackContract()
+{
+	namespace fs = std::filesystem;
+	fs::path workspace = fs::current_path();
+	for (int depth = 0; depth < 6 && !fs::exists(workspace / "DemoHallProject"); ++depth)
+		workspace = workspace.parent_path();
+	const fs::path projectRoot = workspace / "DemoHallProject";
+	const fs::path sourceAssets = projectRoot / "Assets/GAF/PlayerAttack";
+	if (!ExpectGAF(fs::is_directory(sourceAssets),
+		"DemoHall player-attack GAF assets are missing")) return false;
+
+	Vans::VansGAFProjectConfiguration configuration;
+	std::string error;
+	if (!Vans::VansGAFProjectConfiguration::LoadForProject(
+		projectRoot, workspace / "ForestEngine/ForestEngine", configuration, error))
+		return ExpectGAF(false, error.c_str());
+
+	const fs::path temporaryRoot =
+		fs::temp_directory_path() / "ForestGAFDemoHallPlayerAttackContract";
+	std::error_code filesystemError;
+	fs::remove_all(temporaryRoot, filesystemError);
+	struct Cleanup
+	{
+		fs::path path;
+		~Cleanup()
+		{
+			std::error_code ignored;
+			fs::remove_all(path, ignored);
+		}
+	} cleanup{ temporaryRoot };
+	const fs::path assetsRoot = temporaryRoot / "Assets/PlayerAttack";
+	fs::create_directories(assetsRoot, filesystemError);
+	fs::copy(sourceAssets, assetsRoot,
+		fs::copy_options::recursive | fs::copy_options::overwrite_existing, filesystemError);
+	if (!ExpectGAF(!filesystemError,
+		"DemoHall player-attack assets could not be copied for validation")) return false;
+	for (const char* fileName : { "DemoHallTags.vtagtree", "DemoHallTags.vtagtree.meta" })
+	{
+		fs::copy_file(projectRoot / "Assets/GAF/WindowBreak" / fileName,
+			assetsRoot / fileName, fs::copy_options::overwrite_existing, filesystemError);
+		if (!ExpectGAF(!filesystemError,
+			"DemoHall player-attack TagTree could not be copied for validation")) return false;
+	}
+
+	Vans::VansAssetDatabase database(temporaryRoot / "Assets", temporaryRoot / "Library/Artifacts");
+	const Vans::VansAssetScanResult scan =
+		database.Scan(Vans::VansAssetOperationPolicy::Authoring());
+	if (!ExpectGAF(scan && database.All().size() == 13,
+		"DemoHall player-attack assets and TagTree did not scan as thirteen GAF assets")) return false;
+	for (const Vans::VansAssetRecord& record : database.All())
+	{
+		Vans::VansSerializedValue source;
+		const fs::path sourcePath = fs::is_regular_file(record.authoringPath)
+			? record.authoringPath : record.sourcePath;
+		if (!Vans::VansGameplayAssetStorage::LoadSource(sourcePath, source, error))
+			return ExpectGAF(false, error.c_str());
+		const Vans::VansGameplayCookResult cooked = Vans::VansGameplayAssetStorage::Cook(
+			record.type, source, Vans::VansGameplayAssetSchemaRegistry::BuiltIns(), &configuration);
+		if (!ExpectGAF(static_cast<bool>(cooked),
+			"DemoHall player-attack asset failed configured GAF Cook")) return false;
+	}
+
+	Vans::VansGameplayRuntime runtime;
+	if (!runtime.Initialize(database.All(), configuration.settings, error))
+		return ExpectGAF(false, error.c_str());
+	const auto crowbarAttack = runtime.Assets().ResolveAction(
+		"Gameplay.DemoHall.Player.Attack.Crowbar");
+	const auto crowbarTakedown = runtime.Assets().ResolveAction(
+		"Gameplay.DemoHall.Player.Attack.Takedown.Crowbar.Attacker");
+	const auto actionSet = runtime.Assets().ResolveActionSet(
+		"4534ddf1-e858-468e-a1ab-9e8b98cf6129");
+	if (!ExpectGAF(crowbarAttack && crowbarTakedown && actionSet &&
+		crowbarAttack->executionGraph && crowbarTakedown->executionGraph &&
+		!crowbarAttack->cancellable && !crowbarAttack->interruptible &&
+		!crowbarTakedown->cancellable && !crowbarTakedown->interruptible &&
+		crowbarAttack->concurrencyGroup == crowbarTakedown->concurrencyGroup,
+		"DemoHall player-attack Action links or non-interruption policy are incomplete")) return false;
+
+	const Vans::VansEntityHandle player{ 801, 1 };
+	Vans::VansGameplayActionHostSetup setup;
+	setup.actionSets.push_back("4534ddf1-e858-468e-a1ab-9e8b98cf6129");
+	setup.initialTags.push_back({ "Target.Character.Player", 1 });
+	const auto host = runtime.CreateHost(player, setup, error);
+	if (!ExpectGAF(host && host->GrantedActions().size() == 2,
+		"DemoHall player ActionHost did not receive both CloseCombat attacks")) return false;
+
+	Vans::VansActionContext context;
+	context.owner = player;
+	context.instigator = player;
+	context.source = player;
+	context.primaryTarget = player;
+	const Vans::VansActionResult first = host->ActivateAction(crowbarAttack->id, context);
+	const Vans::VansActionResult blocked = host->ActivateAction(crowbarTakedown->id, context);
+	if (!ExpectGAF(first && !blocked && host->ActiveActions().size() == 1,
+		"DemoHall player attacks did not reject re-entry while an attack was active")) return false;
+	runtime.TickEarly(2.6);
+	const Vans::VansActionResult second = host->ActivateAction(crowbarTakedown->id, context);
+	if (!ExpectGAF(second && host->ActiveActions().size() == 1,
+		"Crowbar Takedown did not activate after Crowbar Attack completed")) return false;
+	runtime.TickEarly(3.8);
+	if (!ExpectGAF(host->ActiveActions().empty(),
+		"DemoHall player attack Action Graphs did not complete at authored clip durations")) return false;
+
+	const std::vector<std::pair<fs::path, float>> clips = {
+		{ projectRoot / "Assets/Animations/Combat/CloseCombat/A_Crowbar_Attack_Unreal_Take.vclip", 2.533333f },
+		{ projectRoot / "Assets/Animations/Combat/CloseCombat/A_TD_Crowbar_Attacker_01_Unreal_Take.vclip", 3.766667f }
+	};
+	VansGraphics::Skeleton attackClipSkeleton;
+	for (const auto& [path, duration] : clips)
+	{
+		VansGraphics::VansAnimationClip clip;
+		VansGraphics::Skeleton skeleton;
+		if (!VansGraphics::VansAnimationClipIO::Load(path.string(), clip, skeleton))
+			return ExpectGAF(false, "DemoHall attack .vclip could not be loaded");
+		auto root = skeleton.boneNameToIndex.find("root");
+		if (!ExpectGAF(clip.rootMotion.enabled && clip.rootMotion.boneName == "root" &&
+			clip.rootMotion.extractTranslation && clip.rootMotion.extractRotation &&
+			root != skeleton.boneNameToIndex.end() &&
+			root->second >= 0 && root->second < static_cast<int>(clip.boneKeyframes.size()) &&
+			clip.boneKeyframes[root->second].size() > 1 &&
+			std::abs(clip.duration - duration) < 0.001f,
+			"DemoHall attack .vclip lost its UEFN root-motion contract")) return false;
+		const auto& keys = clip.boneKeyframes[root->second];
+		float maxTravel = 0.0f;
+		for (const auto& key : keys)
+		{
+			const auto delta = key.position - keys.front().position;
+			maxTravel = std::max(maxTravel,
+				std::sqrt(delta.x * delta.x + delta.y * delta.y + delta.z * delta.z));
+		}
+		if (!ExpectGAF(maxTravel > 1.0f,
+			"DemoHall attack root-motion track contains no meaningful translation")) return false;
+
+		float maxNonRootTranslation = 0.0f;
+		float maxNonRootRotation = 0.0f;
+		for (std::size_t boneIndex = 0; boneIndex < clip.boneKeyframes.size(); ++boneIndex)
+		{
+			if (static_cast<int>(boneIndex) == root->second || clip.boneKeyframes[boneIndex].size() < 2)
+				continue;
+			const auto& firstKey = clip.boneKeyframes[boneIndex].front();
+			for (const auto& key : clip.boneKeyframes[boneIndex])
+			{
+				const glm::vec3 translationDelta = key.position - firstKey.position;
+				maxNonRootTranslation = std::max(maxNonRootTranslation, glm::length(translationDelta));
+				maxNonRootRotation = std::max(maxNonRootRotation,
+					1.0f - std::abs(glm::dot(key.rotation, firstKey.rotation)));
+			}
+		}
+		if (!ExpectGAF(maxNonRootTranslation > 0.01f || maxNonRootRotation > 0.0001f,
+			"DemoHall attack .vclip contains root motion but no animated body pose")) return false;
+		if (attackClipSkeleton.bones.empty())
+			attackClipSkeleton = skeleton;
+	}
+
+	nlohmann::ordered_json animator;
+	if (!Vans::VansJsonFileStorage::Read(
+		projectRoot / "Assets/MotionMatchDataBase/UEFN_Mannequin.vanimator", animator, error))
+		return ExpectGAF(false, error.c_str());
+	bool foundAttackSet = false;
+	for (const auto& graphSet : animator.value("graphSets", nlohmann::ordered_json::array()))
+		foundAttackSet = foundAttackSet ||
+			graphSet.value("id", std::string{}) == "graph-set-attack";
+	bool attackGraphIsNonMotionMatching = false;
+	bool attackStatesUseRootMotion = false;
+	int closeCombatClipRefs = 0;
+	for (const auto& clipRef : animator.value("clips", nlohmann::ordered_json::array()))
+	{
+		if (clipRef.value("name", std::string{}).rfind("Attack_", 0) != 0) continue;
+		const std::string pathHint = clipRef.value("asset", nlohmann::ordered_json::object())
+			.value("pathHint", std::string{});
+		if (pathHint.rfind("Assets/Animations/Combat/CloseCombat/", 0) == 0)
+			++closeCombatClipRefs;
+	}
+	for (const auto& graph : animator.value("graphs", nlohmann::ordered_json::array()))
+	{
+		if (graph.value("id", std::string{}) != "graph-attack") continue;
+		attackGraphIsNonMotionMatching = true;
+		int rootMotionStates = 0;
+		for (const auto& node : graph["graph"].value("nodes", nlohmann::ordered_json::array()))
+		{
+			attackGraphIsNonMotionMatching = attackGraphIsNonMotionMatching &&
+				node.value("type", std::string{}) != "MotionMatching";
+			for (const auto& state : node.value("properties", nlohmann::ordered_json::object())
+				.value("states", nlohmann::ordered_json::array()))
+				if (state.value("rootMotion", false)) ++rootMotionStates;
+		}
+		attackStatesUseRootMotion = rootMotionStates == 2;
+	}
+
+	VansGraphics::Skeleton sceneSkeleton;
+	if (!VansGraphics::VansSkinnedMeshLoader::LoadSkeletonFromModelAsset(
+		(projectRoot / "Assets/Models/SKM_UEFN_Mannequin.fbx").string(), sceneSkeleton, error))
+		return ExpectGAF(false, error.c_str());
+	if (!ExpectGAF(sceneSkeleton.bones.size() == attackClipSkeleton.bones.size(),
+		"DemoHall UEFN model and attack clips use different skeleton sizes")) return false;
+
+	VansGraphics::AnimatorAssetData animatorAsset;
+	if (!VansGraphics::VansAnimatorIO::Load(
+		(projectRoot / "Assets/MotionMatchDataBase/UEFN_Mannequin.vanimator").string(), animatorAsset))
+		return ExpectGAF(false, "DemoHall UEFN Animator definition could not be loaded");
+	animatorAsset.defaultGraphSetId = "graph-set-attack";
+	animatorAsset.graphSets.erase(std::remove_if(
+		animatorAsset.graphSets.begin(), animatorAsset.graphSets.end(),
+		[](const VansGraphics::VansAnimationGraphSetDefinition& graphSet)
+		{
+			return graphSet.id != "graph-set-attack";
+		}), animatorAsset.graphSets.end());
+	animatorAsset.graphs.erase(std::remove_if(
+		animatorAsset.graphs.begin(), animatorAsset.graphs.end(),
+		[](const VansGraphics::AnimatorGraphAsset& graph)
+		{
+			return graph.id != "graph-attack" && graph.id != "graph-target-post-process";
+		}), animatorAsset.graphs.end());
+	animatorAsset.graphSetTransitionRules.clear();
+	animatorAsset.clipRefs.erase(std::remove_if(
+		animatorAsset.clipRefs.begin(), animatorAsset.clipRefs.end(),
+		[](const VansGraphics::AnimatorClipRef& ref)
+		{
+			return ref.name.rfind("Attack_", 0) != 0;
+		}), animatorAsset.clipRefs.end());
+
+	VansGraphics::VansAnimatorRuntimeCompileOptions compileOptions;
+	compileOptions.enableTargetPostProcess = true;
+	compileOptions.enableRootMotion = true;
+	compileOptions.queryProfileResolver = [](
+		const std::string&, std::uint32_t& collisionMask, std::string&)
+	{
+		collisionMask = 0xFFFFFFFFu;
+		return true;
+	};
+	compileOptions.rigResolver = [&projectRoot](
+		const std::string&, fs::path& resolvedPath, std::string&)
+	{
+		resolvedPath = projectRoot / "Assets/AnimationRigs/UEFN.vanimrig";
+		return true;
+	};
+	auto attackController = VansGraphics::VansAnimatorRuntimeCompiler::Compile(
+		animatorAsset,
+		sceneSkeleton,
+		[&projectRoot](const VansGraphics::AnimatorClipRef& ref,
+			fs::path& resolvedPath, std::string& resolveError)
+		{
+			resolvedPath = projectRoot / ref.pathHint;
+			if (fs::is_regular_file(resolvedPath)) return true;
+			resolveError = "Missing DemoHall attack clip: " + resolvedPath.string();
+			return false;
+		},
+		[](const VansGraphics::VansAnimationLayerDefinition&,
+			fs::path&, std::string& resolveError)
+		{
+			resolveError = "DemoHall attack base layer unexpectedly requested a Bone Mask";
+			return false;
+		},
+		compileOptions,
+		error);
+	if (!ExpectGAF(attackController != nullptr, error.c_str())) return false;
+	VansGraphics::MotionMatchingSettings motionMatching;
+	motionMatching.enabled = true;
+	motionMatching.rig.root = "root";
+	motionMatching.rig.trajectoryRoot = "root";
+	motionMatching.rig.pelvis = "pelvis";
+	motionMatching.rig.leftFoot = "foot_l";
+	motionMatching.rig.rightFoot = "foot_r";
+	motionMatching.rig.head = "head";
+	if (!ExpectGAF(attackController->ConfigureMotionMatching(motionMatching, error), error.c_str()))
+		return false;
+	attackController->SetInt("AttackVariant", 0);
+	attackController->Play();
+	attackController->Update(0.0f, sceneSkeleton);
+	const std::vector<glm::mat4> attackPoseStart = attackController->GetCachedGlobalTransforms();
+	attackController->Update(0.4f, sceneSkeleton);
+	const std::vector<glm::mat4>& attackPoseAdvanced = attackController->GetCachedGlobalTransforms();
+	float maxRuntimePoseDelta = 0.0f;
+	for (std::size_t boneIndex = 0;
+		boneIndex < std::min(attackPoseStart.size(), attackPoseAdvanced.size()); ++boneIndex)
+	{
+		for (int column = 0; column < 4; ++column)
+			for (int row = 0; row < 4; ++row)
+				maxRuntimePoseDelta = std::max(maxRuntimePoseDelta,
+					std::abs(attackPoseAdvanced[boneIndex][column][row]
+						- attackPoseStart[boneIndex][column][row]));
+	}
+	if (!ExpectGAF(attackController->GetCurrentStateName() == "Crowbar Attack" &&
+		attackController->GetCurrentPlayTime() > 0.35f && maxRuntimePoseDelta > 0.001f,
+		"Motion Matching configuration overwrote the non-MM DemoHall attack Graph")) return false;
+
+	nlohmann::ordered_json scene;
+	if (!Vans::VansJsonFileStorage::Read(projectRoot / "Scenes/DemoHall.json", scene, error))
+		return ExpectGAF(false, error.c_str());
+	bool foundMannequinHost = false;
+	bool foundMannequinController = false;
+	bool foundSurvivalHost = false;
+	bool foundSurvivalController = false;
+	for (const auto& entity : scene.value("entities", nlohmann::ordered_json::array()))
+	{
+		const std::string entityId = entity.value("id", std::string{});
+		const bool isMannequin = entityId == "4186c86d-7c0a-4556-8077-d1f80ebc1da5";
+		const bool isSurvival = entityId == "38dbe7af-653a-4aeb-bfa7-1ca72e2b972c";
+		if (!isMannequin && !isSurvival)
+			continue;
+		for (const auto& component : entity.value("components", nlohmann::ordered_json::array()))
+		{
+			const auto data = component.value("data", nlohmann::ordered_json::object());
+			if (component.value("type", std::string{}) == "ActionHost")
+			{
+				const auto sets = data.value("actionSets", nlohmann::ordered_json::array());
+				const bool configured = !sets.empty() &&
+					sets.front().value("guid", std::string{}) ==
+						"4534ddf1-e858-468e-a1ab-9e8b98cf6129";
+				if (isMannequin) foundMannequinHost = configured;
+				if (isSurvival) foundSurvivalHost = configured;
+			}
+			if (component.value("type", std::string{}) == "Script" &&
+				data.value("entry", std::string{}) == "PlayerAttackController")
+			{
+				const auto fields = data.value("fields", nlohmann::ordered_json::object());
+				const auto attackWeapon = fields.value(
+					"attackWeapon", nlohmann::ordered_json::object());
+				const bool weaponConfigured = !isSurvival ||
+					(attackWeapon.value("domain", std::string{}) == "SceneEntity" &&
+					attackWeapon.value("entityGuid", std::string{}) ==
+						"d12e84ac-99d2-4a35-8e13-33a6c9032f27" &&
+					fields.value("weaponAnimationComponentGuid", std::string{}) ==
+						"87f6e3d4-c8fe-458d-82f2-3e56f20b93e5" &&
+					fields.value("weaponHandSocketGuid", std::string{}) ==
+						"7a33b99b-0664-4b5b-bc86-a5a85ddf03b7" &&
+					fields.value("weaponBackSocketGuid", std::string{}) ==
+						"0cf5406a-6809-4b8a-9d82-062643893f56");
+				const bool configured =
+					fields.value("actionHostOwnerGuid", std::string{}) == entityId &&
+					fields.value("crowbarAttackActionId", std::string{}) ==
+						"Gameplay.DemoHall.Player.Attack.Crowbar" &&
+					fields.value("crowbarTakedownAttackerActionId", std::string{}) ==
+						"Gameplay.DemoHall.Player.Attack.Takedown.Crowbar.Attacker" &&
+					fields.value("attackGraphSetId", std::string{}) == "graph-set-attack" &&
+					fields.value("locomotionGraphSetId", std::string{}) == "graph-set-default" &&
+					weaponConfigured;
+				if (isMannequin) foundMannequinController = configured;
+				if (isSurvival) foundSurvivalController = configured;
+			}
+		}
+	}
+	std::string script;
+	if (!Vans::VansFileStorage::ReadAllBytes(
+		projectRoot / "Scripts/forest_lua_behaviors.lua", script, error))
+		return ExpectGAF(false, error.c_str());
+	const std::size_t attackScriptBegin = script.find("M.PlayerAttackController");
+	const std::size_t attackScriptEnd = script.find("M.RuntimeStartGame", attackScriptBegin);
+	const std::string attackScript = attackScriptBegin != std::string::npos
+		? script.substr(attackScriptBegin, attackScriptEnd - attackScriptBegin) : std::string{};
+	return ExpectGAF(foundAttackSet && attackGraphIsNonMotionMatching && closeCombatClipRefs == 2 &&
+		attackStatesUseRootMotion && foundMannequinHost && foundMannequinController &&
+		foundSurvivalHost && foundSurvivalController &&
+		attackScript.find("is_key_pressed(\"J\")") != std::string::npos &&
+		attackScript.find("self.characterName ~= (character_state.activeName") != std::string::npos &&
+		attackScript.find("DemoHall player attack input: KEY_J") != std::string::npos &&
+		attackScript.find("DemoHall player attack Graph Set settled") != std::string::npos &&
+		attackScript.find("vans.action") != std::string::npos &&
+		attackScript.find("try_activate") != std::string::npos &&
+		attackScript.find("switch_graph_set") != std::string::npos &&
+		attackScript.find("reparent_to_socket") != std::string::npos &&
+		attackScript.find("self:restore_attack_weapon()") != std::string::npos &&
+		attackScript.find("weapon:reparent_to_socket(") != std::string::npos &&
+		attackScript.find("socketGuid, \"snap\"") != std::string::npos &&
+		attackScript.find("configured_string") != std::string::npos &&
+		attackScript.find("request_cancel") == std::string::npos,
+		"DemoHall player attack is not wired through GAF into the non-MM root-motion Graph Set");
 }
 
 bool TestGAFLuaBridgeContract()

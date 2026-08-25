@@ -166,6 +166,8 @@ namespace VansGraphics
 		VkExtent2D CalculateUpscalerRenderExtent() const;
 		void RecreateSceneResolutionResources(const VkExtent2D& renderExtent);
 		void ProcessPendingUpscalerConfig();
+		void ApplyFrameContextRingStateAtIdle(bool enabled, uint32_t framesInFlight);
+		void ApplyAsyncComputeStateAtIdle(bool enabled);
 
 	public:
 
@@ -234,14 +236,16 @@ namespace VansGraphics
 		VansUpscalerRuntimeDiagnostics GetUpscalerDiagnostics() const;
 		VansUpscalerCapabilities GetUpscalerCapabilities(VansUpscalerBackend backend) const;
 		bool IsParallelCommandRecordingEnabled() const { return m_EnableParallelCommandRecording; }
-		void SetParallelCommandRecordingEnabled(bool enabled) { m_EnableParallelCommandRecording = enabled; }
 		bool IsFrameContextRingEnabled() const { return m_EnableFrameContextRing; }
 		uint32_t GetConfiguredFramesInFlight() const { return m_ConfiguredFramesInFlight; }
-		void SetFrameContextRingEnabled(bool enabled, uint32_t framesInFlight);
 		bool IsAsyncComputeRequested() const { return m_AsyncComputeRequested; }
 		bool IsAsyncComputeEnabled() const { return m_AsyncComputeEnabled; }
 		const VansQueueCapabilities& GetQueueCapabilities() const { return m_QueueCapabilities; }
-		void SetAsyncComputeEnabled(bool enabled);
+		bool ApplyCommandRecordingSettings(
+			bool parallelEnabled,
+			bool frameContextRingEnabled,
+			uint32_t framesInFlight,
+			bool asyncComputeEnabled);
 		VkExtent2D GetUpscalerOutputExtent() const { return CalculateUpscalerOutputExtent(); }
 
 		// 窗口大小改变时重建交换链和UI渲染pass
@@ -250,14 +254,14 @@ namespace VansGraphics
 	public:
 
 		//初始化被渲染的数据
-		void BeforeRendering() override;
+		bool BeforeRendering() override;
 		void PrepareRenderingFrame() override
 		{
 			ProcessPendingUpscalerConfig();
 			m_PipelineCacheService.TickPersistence();
 		}
 		VansRenderSubmissionPrepareResult PrepareRenderSubmission(
-			const VansRenderFrameSubmission& submission) override;
+			VansRenderFrameSubmission& submission) override;
 
 		void Rendering() override;
 
@@ -318,8 +322,6 @@ namespace VansGraphics
 		void EnqueueDeferredDelete(std::function<void()> destroy);
 
 		void InitializeGpuProfiler() override;
-
-		void EndGpuProfilerFrame() override;
 
 		void* GetNativeGraphicsDevice() override;
 
@@ -432,6 +434,9 @@ namespace VansGraphics
 
 		static PFN_vkGetDeviceProcAddr GetDeviceProcAddr();
 		static double GetTimestampPeriodMs(VkPhysicalDevice physicalDevice);
+		static uint32_t GetQueueFamilyTimestampValidBits(
+			VkPhysicalDevice physicalDevice,
+			uint32_t queueFamilyIndex);
 		static bool CreateQueryPool(VkDevice device, const VkQueryPoolCreateInfo& createInfo, VkQueryPool& pool);
 		static void DestroyQueryPool(VkDevice device, VkQueryPool& pool);
 		static void CmdResetQueryPool(VkCommandBuffer commandBuffer, VkQueryPool pool, uint32_t firstQuery, uint32_t queryCount);
@@ -686,10 +691,6 @@ namespace VansGraphics
 		uint32_t m_ParallelRecordThreadCount = 4;
 		uint32_t m_MinDrawsPerSecondary = 32;
 
-		// 仅表示取得了同一 Graphics Queue Family 的第二个逻辑队列；
-		// 不代表设备提供独立的物理 graphics engine。
-		bool m_HasSecondaryGraphicsQueue = false;
-
 		VkPhysicalDeviceProperties m_DeviceProperties;
 		
 		//ray tracing相关的扩展
@@ -723,7 +724,6 @@ namespace VansGraphics
 		//queues
 		VkQueue m_VansVKGraphicsQueue;
 		VkQueue m_VansVKComputeQueue;
-		VkQueue m_VansVKShadowQueue = VK_NULL_HANDLE;
 
 		//command buffer
 		VansVKCommandBuffer m_VansVKCommandBuffer;
@@ -736,9 +736,8 @@ namespace VansGraphics
 		VansVKCommandBuffer m_VansVKGBufferCommandBuffer;
 		VansVKCommandBuffer m_VansVKGBufferMaterialCommandBuffer;
 		VansVKCommandBuffer m_VansVKSSAORawCommandBuffer;
+		// 屏幕空间 compute 固定在专用 compute queue 上，并接在 GIData 之后执行。
 		VansVKCommandBuffer m_VansVKGraphicsScreenCommandBuffer;
-		// 第二条 Graphics queue 上的 SSAO compute pass；仅在该 queue 独立时提交。
-		VansVKCommandBuffer m_VansVKAsyncSSAOCommandBuffer;
 
 		VansVKCommandBuffer m_VansVKVegetationCommandBuffer;
 		VansVKCommandBuffer m_VansVKEarlyAuxCommandBuffer;

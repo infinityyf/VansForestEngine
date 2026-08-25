@@ -435,10 +435,8 @@ namespace VansGraphics
 		                     const Skeleton& skeleton);
 		void BuildFinalMatrices(const std::vector<glm::mat4>& globalTransforms,
 		                        const Skeleton& skeleton);
-		void EnsureMotionMatchingGraphNode();
 		void RefreshExternalMotionState();
 		void PublishMotionMatchingContacts();
-		void RebuildGraphSetInstances();
 		bool PrepareLayerStack(float deltaTime, const Skeleton& skeleton);
 		bool EvaluateGraphSet(GraphSetRuntime& graphSet,
 		                      VansMotionMatchingRuntime* motionMatching,

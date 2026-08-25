@@ -519,10 +519,17 @@ namespace Vans::EditorAPI
 		AudioDuckingRules
 	};
 
+	enum class AssetQueryCapability
+	{
+		Any,
+		SkeletalModel
+	};
+
 	struct AssetTypeFilter
 	{
 		AssetType type = AssetType::Unknown;
 		bool includeUnknown = false;
+		AssetQueryCapability requiredCapability = AssetQueryCapability::Any;
 	};
 
 	struct AssetEntry
@@ -1944,6 +1951,20 @@ namespace Vans::EditorAPI
 		float appliedRootYawDeltaDegrees = 0.0f;
 		bool steeringActive = false;
 		bool steeringLimited = false;
+		bool turnWarpActive = false;
+		bool turnWarpLimited = false;
+		bool turnWarpNeedsReplan = false;
+		std::string turnWarpDisableReason;
+		std::string turnWarpReplanReason;
+		float turnWarpTargetDeltaDegrees = 0.0f;
+		float turnWarpAuthoredRemainingYawDegrees = 0.0f;
+		float turnWarpScaleRatio = 1.0f;
+		float turnWarpResidualDegrees = 0.0f;
+		float turnWarpAppliedFrameCorrectionDegrees = 0.0f;
+		float turnWarpAccumulatedAdditiveDegrees = 0.0f;
+		float turnWarpEndpointCost = 0.0f;
+		float turnWarpMotionEndTimeSeconds = 0.0f;
+		int turnWarpProfileIndex = -1;
 		bool rootMotionReconciliationActive = false;
 		float currentCost = 0.0f;
 		float trajectoryCost = 0.0f;
@@ -1971,6 +1992,7 @@ namespace Vans::EditorAPI
 			float poseCost = 0.0f;
 			float contactCost = 0.0f;
 			float biasCost = 0.0f;
+			float turnEndpointCost = 0.0f;
 		};
 		std::vector<Candidate> topCandidates;
 	};
@@ -2056,6 +2078,7 @@ namespace Vans::EditorAPI
 
 	struct SceneSkeletonHierarchyRig
 	{
+		std::string nodeName;
 		std::string entityGuid;
 		std::string animationComponentGuid;
 		std::string skeletonGuid;
@@ -2122,10 +2145,18 @@ namespace Vans::EditorAPI
 	};
 
 	using AnimationPreviewSessionId = std::uint64_t;
+	enum class AnimationPreviewTargetKind
+	{
+		IsolatedModel,
+		SceneAnimationComponent
+	};
 
 	struct AnimationPreviewCreateRequest
 	{
+		AnimationPreviewTargetKind targetKind = AnimationPreviewTargetKind::IsolatedModel;
 		std::string previewModelGuid;
+		std::string entityGuid;
+		std::string animationComponentGuid;
 	};
 
 	struct AnimationPreviewCreateResult
@@ -2188,8 +2219,8 @@ namespace Vans::EditorAPI
 		bool playing = true;
 		float speed = 1.0f;
 		bool seek = false;
-		float normalizedTime = 0.0f;
-		enum class RootMotionMode { InPlace, ApplyToActor, TrailOnly };
+		float seekSeconds = 0.0f;
+		enum class RootMotionMode { InPlace, VisualOffset, TrailOnly };
 		RootMotionMode rootMotionMode = RootMotionMode::InPlace;
 	};
 
@@ -2294,6 +2325,10 @@ namespace Vans::EditorAPI
 		bool available = false;
 		bool compiled = false;
 		bool playing = false;
+		bool sceneTarget = false;
+		bool seekSupported = true;
+		std::string entityGuid;
+		std::string animationComponentGuid;
 		bool usingLastGoodDefinition = false;
 		std::uint64_t requestedRevision = 0;
 		std::uint64_t displayedRevision = 0;

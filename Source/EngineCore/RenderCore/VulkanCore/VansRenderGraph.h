@@ -802,7 +802,6 @@ namespace VansGraphics
 		VkFence graphicsFence = VK_NULL_HANDLE;
 		VkFence ssaoRawFence = VK_NULL_HANDLE;
 		VkFence graphicsScreenFence = VK_NULL_HANDLE;
-		VkFence asyncSSAOFence = VK_NULL_HANDLE;
 		VkFence shadowMapsFence = VK_NULL_HANDLE;
 		VkFence hairShadowFence = VK_NULL_HANDLE;
 		VkFence gbufferFence = VK_NULL_HANDLE;
@@ -817,7 +816,6 @@ namespace VansGraphics
 		bool frameSubmitSucceeded = true;
 		bool ssaoRawRecorded = false;
 		bool graphicsScreenRecorded = false;
-		bool asyncSSAORecorded = false;
 		bool shadowMapsRecorded = false;
 		bool hairShadowRecorded = false;
 		bool gbufferRecorded = false;

@@ -309,12 +309,14 @@ namespace VansEngine
 		float rootYawDelta = 0.0f;
 		if (rootMotionValid)
 		{
-			const glm::vec3 rootLocal = Vans::AnimationToEngineLocalPlanar(animationRootDelta);
-			const float yaw = glm::radians(transform.m_Rotation.y);
-			rootWorldDelta = glm::mat3(glm::rotate(
-				glm::mat4(1.0f), yaw, glm::vec3(0.0f, 1.0f, 0.0f))) *
-				(rootLocal * settings.rootMotionToWorldScale);
-			rootYawDelta = glm::degrees(glm::eulerAngles(animationRootRotation)).z;
+			const Vans::VansRootMotionOwnerDelta ownerDelta =
+				Vans::ResolveAnimationRootMotionOwnerDelta(
+					animationRootDelta,
+					animationRootRotation,
+					transform.m_Rotation.y,
+					settings.rootMotionToWorldScale);
+			rootWorldDelta = ownerDelta.translationWorld;
+			rootYawDelta = ownerDelta.yawDegrees;
 		}
 
 		float rootWeight = 0.0f;

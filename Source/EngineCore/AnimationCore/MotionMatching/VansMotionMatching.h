@@ -4,6 +4,7 @@
 #include "../VansAnimationController.h"
 #include "VansRootMotionSteering.h"
 #include "VansRootMotionReconciler.h"
+#include "VansTurnInPlaceWarping.h"
 #include "../../RuntimeCore/VansCharacterMotion.h"
 
 #include <array>
@@ -155,6 +156,7 @@ namespace VansGraphics
 		float playbackRateSmoothing = 12.0f;
 		float trajectoryResponsiveness = 8.0f;
 		RootMotionSteeringSettings steering;
+		TurnInPlaceWarpingSettings turnInPlaceWarping;
 		RootMotionReconciliationSettings rootMotionReconciliation;
 		float facingTurnEnterThresholdDegrees = 12.0f;
 		float facingTurnExitThresholdDegrees = 4.0f;
@@ -206,6 +208,7 @@ namespace VansGraphics
 		float poseCost = 0.0f;
 		float contactCost = 0.0f;
 		float biasCost = 0.0f;
+		float turnEndpointCost = 0.0f;
 	};
 
 	struct MotionMatchingDebugData
@@ -250,6 +253,20 @@ namespace VansGraphics
 		float steeringAppliedYawRateDegreesPerSecond = 0.0f;
 		bool steeringActive = false;
 		bool steeringLimited = false;
+		bool turnWarpActive = false;
+		bool turnWarpLimited = false;
+		bool turnWarpNeedsReplan = false;
+		std::string turnWarpDisableReason;
+		std::string turnWarpReplanReason;
+		float turnWarpTargetDeltaDegrees = 0.0f;
+		float turnWarpAuthoredRemainingYawDegrees = 0.0f;
+		float turnWarpScaleRatio = 1.0f;
+		float turnWarpResidualDegrees = 0.0f;
+		float turnWarpAppliedFrameCorrectionDegrees = 0.0f;
+		float turnWarpAccumulatedAdditiveDegrees = 0.0f;
+		float turnWarpEndpointCost = 0.0f;
+		float turnWarpMotionEndTimeSeconds = 0.0f;
+		int turnWarpProfileIndex = -1;
 		bool rootMotionReconciliationActive = false;
 		glm::vec3 rootMotionTargetVelocityWorld{ 0.0f };
 		glm::vec3 rootMotionReconciledVelocityWorld{ 0.0f };
@@ -300,6 +317,7 @@ namespace VansGraphics
 		            const std::unordered_map<std::string, AnimatorParameter>& parameters,
 		            const Vans::VansCharacterTrajectory* trajectory,
 		            VansPosePayload& outPayload);
+		void BeginEvaluationFrame() { m_DebugData.usedThisFrame = false; }
 
 		const MotionMatchingDebugData& GetDebugData() const { return m_DebugData; }
 		bool WasUsedThisFrame() const { return m_DebugData.usedThisFrame; }
@@ -342,6 +360,7 @@ namespace VansGraphics
 			int directionBucketFromName = -1;
 			int turnDirectionSign = 0;
 			int turnBucketDelta = 0;
+			int turnYawProfileIndex = -1;
 			float trajectorySpeed = 0.0f;
 			int databaseIndex = -1;
 		};
@@ -354,14 +373,18 @@ namespace VansGraphics
 			float poseCost = 0.0f;
 			float contactCost = 0.0f;
 			float biasCost = 0.0f;
+			float turnEndpointCost = 0.0f;
 		};
 
 		MotionMatchingSettings m_Settings;
 		MotionMatchingDebugData m_DebugData;
 		VansRootMotionSteering m_RootMotionSteering;
+		VansTurnInPlaceWarping m_TurnInPlaceWarping;
 		VansRootMotionReconciler m_RootMotionReconciler;
 		std::vector<Sample> m_Samples;
 		std::unordered_map<std::string, std::vector<int>> m_ClipSampleIndices;
+		std::vector<TurnYawProfile> m_TurnYawProfiles;
+		std::unordered_map<std::string, int> m_ClipTurnYawProfileIndices;
 		FeatureVector m_Mean{};
 		FeatureVector m_Std{};
 		MotionMatchingResolvedRig m_Rig;
@@ -383,7 +406,6 @@ namespace VansGraphics
 		bool m_LastPivotRequested = false;
 		bool m_LastFacingTurnRequested = false;
 		int m_LastFacingTurnDirectionSign = 0;
-		int m_LastFacingTurnBucketDelta = 0;
 		std::vector<int> m_ActiveDatabaseIndices;
 
 		bool m_Blending = false;
@@ -418,7 +440,7 @@ namespace VansGraphics
 		bool m_DirectionalStateFallback = false;
 		bool m_FacingTurnRequested = false;
 		int m_FacingTurnDirectionSign = 0;
-		int m_FacingTurnBucketDelta = 0;
+		bool m_TurnWarpRootRotationAuthoritative = false;
 		float m_LeftFootPlantWeight = 0.0f;
 		float m_RightFootPlantWeight = 0.0f;
 		float m_LeftContactOffset = 0.0f;
@@ -440,9 +462,17 @@ namespace VansGraphics
 		bool IsMovingPlaybackSample(const Sample& sample) const;
 		bool IsPaceTransitionState(int state) const;
 		bool IsStanceState(int state) const;
-		int ResolveFacingTurnBucket(int moveState, int directionSign,
-		                            float absoluteAngleDegrees) const;
 		bool HasPivotDatabaseForState(int moveState) const;
+		const TurnYawProfile* ResolveTurnYawProfile(const Sample& sample) const;
+		float SampleTrajectoryFacingYaw(
+			const Vans::VansCharacterTrajectory& trajectory,
+			float predictionTimeSeconds) const;
+		float PredictTurnWarpTargetFacingYaw(
+			const Vans::VansCharacterTrajectory& trajectory,
+			float predictionTimeSeconds) const;
+		float ResolveTurnTargetDeltaDegrees(
+			const Sample& sample,
+			const Vans::VansCharacterTrajectory* trajectory) const;
 		int ResolveBoneIndex(const Skeleton& skeleton, const std::string& name) const;
 		MotionMatchingResolvedRig ResolveRig(const Skeleton& skeleton);
 		bool ValidateRig(const MotionMatchingResolvedRig& rig, std::string& outReason) const;
@@ -464,6 +494,7 @@ namespace VansGraphics
 		                  float& outContact) const;
 		MatchResult FindBestMatch(const FeatureVector& query,
 		                          const std::unordered_map<std::string, AnimatorParameter>& parameters,
+		                          const Vans::VansCharacterTrajectory* trajectory,
 		                          bool forceFinishedTransitionExit,
 		                          bool allowReplayCurrentClip = false);
 		bool ShouldConsiderSampleForParameters(const Sample& sample,

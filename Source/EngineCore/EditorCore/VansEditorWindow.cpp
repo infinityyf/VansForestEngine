@@ -1276,11 +1276,6 @@ void VansGraphics::VansEditorWindow::ProcessPendingProjectLoad()
     VansTimer::SetTimePaused(true);
     GetMutableEditorAPI().PauseRuntimePhysics();
 
-    if (m_GraphicsDevice)
-    {
-        m_GraphicsDevice->WaitForIdle();
-    }
-
     auto& editorAPI = GetMutableEditorAPI();
     editorAPI.UnloadRuntimeScene();
     editorAPI.UnloadRuntimeProjectResources();
@@ -2084,6 +2079,10 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(
             return;
 
         const Vans::ProfileFrame& frame = Vans::VansProfiler::Get().GetTimeline();
+        // 跳过 Profiler 刚启用时可能触发的延迟管线创建，同时覆盖 query
+        // ring 的多次轮转，导出的必须是持续采集后的完整帧。
+        if (frame.frameIndex < 4u)
+            return;
         bool hasGpuEvents = false;
         for (std::uint32_t eventIndex = 0u; eventIndex < frame.eventCount; ++eventIndex)
         {
@@ -2149,8 +2148,9 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(
             profilerFrameActive
             && (VansEditorWindow::m_ProfilerWindowOpen || automationGpuProfileCapture));
 #endif
-        if (profilerFrameActive)
-            VANS_PROFILER_BEGIN_FRAME();
+#if VANS_PROFILER_ENABLED
+        Vans::VansProfilerFrameScope profilerFrameScope(profilerFrameActive);
+#endif
 
         // 必须先更新输入帧状态（将 isDown 存入 wasDown），再 PollEvents 接收新事件。
         // 若顺序反转，glfwPollEvents 写入 isDown 后 Update 立即覆盖 wasDown，
@@ -2187,8 +2187,6 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(
             {
                 // Window minimized — skip rendering this frame
 #if VANS_PROFILER_ENABLED
-                if (profilerFrameActive && Vans::VansProfiler::Get().IsCaptureEnabled())
-                    renderSystem.EndGpuProfilerFrame();
                 finishAutomationGpuProfileFrame(automationGpuProfileCapture);
 #endif
                 continue;
@@ -2361,14 +2359,10 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(
 				VANS_LOG_ERROR("[Editor] Render-system frame submission failed.");
         }
 
-        // Profiler 在 Present 之后结束，确保 Submit / Present CPU 耗时被纳入同一帧。
+        // Profiler 快照由主帧 RAII 边界结束；GPU 查询由 RenderThread 异步回收。
+        // 这里不能等待 RenderThread，否则会破坏正常的 N/N-1 独立执行。
         {
 #if VANS_PROFILER_ENABLED
-            // A capture is an explicit diagnostic synchronization point.  With
-            // capture disabled, do not enqueue a synchronous RT control after
-            // every frame; that would collapse the N/N-1 pipeline.
-            if (profilerFrameActive && Vans::VansProfiler::Get().IsCaptureEnabled())
-                renderSystem.EndGpuProfilerFrame();
             finishAutomationGpuProfileFrame(automationGpuProfileCapture);
 #endif
         }

@@ -6,8 +6,8 @@
 #include "../RuntimeCore/VansFramePhase.h"
 #include "../RuntimeCore/VansThreadContract.h"
 #include "../Util/VansLog.h"
+#include "../Util/VansProfiler.h"
 
-#include <algorithm>
 #include <cassert>
 #include <condition_variable>
 #include <deque>
@@ -24,7 +24,6 @@ namespace
 		Resize,
 		WaitIdle,
 		InitializeProfiler,
-		EndProfilerFrame,
 		Transaction,
 		Stop
 	};
@@ -45,6 +44,7 @@ namespace
 		std::shared_ptr<RenderControlCompletion> completion;
 		std::uint32_t width = 0;
 		std::uint32_t height = 0;
+		std::uint64_t profilerFrameIndex = Vans::VansProfiler::INVALID_FRAME_INDEX;
 	};
 
 	void CompleteControl(
@@ -70,26 +70,42 @@ struct VansGraphics::VansRenderSystem::RenderThreadState final
 	std::thread thread;
 	bool startupCompleted = false;
 	bool startupSucceeded = false;
+	bool threadExited = false;
 };
 
 VansGraphics::VansRenderSystem::VansRenderSystem(
 	VansGraphicsDevice& backend,
 	IVansRenderFrameSource& frameSource,
-	std::uint32_t maxGameFramesAhead)
+	bool independentRenderThreadEnabled)
 	: m_Backend(backend),
 	  m_FrameSource(frameSource),
-	  m_MaxGameFramesAhead((std::min)(maxGameFramesAhead, 1u))
+	  m_IndependentRenderThreadEnabled(independentRenderThreadEnabled),
+	  m_OutcomeLedger(1)
 {
 }
 
 VansGraphics::VansRenderSystem::~VansRenderSystem()
 {
-#ifdef _DEBUG
-	assert(!m_OpenSubmission.has_value());
-	assert(m_State != VansRenderSystemState::Running);
-#endif
-	if (m_RenderThreadState && m_RenderThreadState->thread.joinable())
-		m_RenderThreadState->thread.join();
+	// 析构必须是最终安全网：调用方即使漏掉显式 Shutdown，也不能让
+	// RenderThread 永久阻塞在空队列上。显式关闭仍用于保证业务销毁顺序。
+	if (m_OpenSubmission.has_value())
+	{
+		VANS_LOG_ERROR("[RenderSystem] Discarding an unpublished frame during destruction. frameId="
+			<< m_CurrentFrameId.Value());
+		m_OpenSubmission.reset();
+		m_OutcomeLedger.SignalFatal(
+			"RenderSystem destroyed while a frame submission was still open");
+	}
+	try
+	{
+		StopAndJoinRenderThread();
+	}
+	catch (...)
+	{
+		// 析构不能抛出；joinable 线程仍必须回收，避免 std::terminate。
+		if (m_RenderThreadState && m_RenderThreadState->thread.joinable())
+			m_RenderThreadState->thread.join();
+	}
 }
 
 bool VansGraphics::VansRenderSystem::InitializeFrameExecution()
@@ -117,6 +133,8 @@ bool VansGraphics::VansRenderSystem::InitializeFrameExecution()
 		}
 	}
 	m_State = VansRenderSystemState::Running;
+	VANS_LOG("[RenderSystem] Dedicated render thread initialized; independentExecution="
+		<< (m_IndependentRenderThreadEnabled ? "true" : "false"));
 	return true;
 }
 
@@ -128,8 +146,10 @@ bool VansGraphics::VansRenderSystem::BeginFrame(VansCamera& camera)
 
 	m_CurrentFrameId = VansRenderFrameId(m_NextRenderFrameValue++);
 	const VansLogicFrameId logicFrameId(m_NextLogicFrameValue++);
-	const auto width = static_cast<std::uint32_t>(m_Backend.GetNativeRenderWidth());
-	const auto height = static_cast<std::uint32_t>(m_Backend.GetNativeRenderHeight());
+	const std::uint32_t width = GetRenderWidth();
+	const std::uint32_t height = GetRenderHeight();
+	if (width == 0 || height == 0)
+		return false;
 	VansRenderViewSnapshot view = camera.BuildRenderViewSnapshot(width, height);
 	if (m_CurrentFrameId.Value() == 0)
 		view.historyReset = view.historyReset | VansRenderViewHistoryReset::FirstFrame;
@@ -199,7 +219,7 @@ VansGraphics::VansRenderFrameSubmitResult VansGraphics::VansRenderSystem::Submit
 	}
 	// 一帧领先额度由上一条已接收帧的终态释放。等待固定放在当前帧发布前，
 	// 因此 Main 构建 N 时，RenderThread 可以完整执行 N-1。
-	if (m_MaxGameFramesAhead == 1 && m_LastAcceptedFrameId.has_value() &&
+	if (m_IndependentRenderThreadEnabled && m_LastAcceptedFrameId.has_value() &&
 		!m_OutcomeLedger.LeadCreditReleasedFor(*m_LastAcceptedFrameId))
 	{
 		const VansRenderOutcomeWaitResult previous =
@@ -228,22 +248,28 @@ VansGraphics::VansRenderFrameSubmitResult VansGraphics::VansRenderSystem::Submit
 
 	auto frameWork = std::make_unique<VansRenderFrameSubmission>(std::move(*m_OpenSubmission));
 	m_OpenSubmission.reset();
+	const std::uint64_t profilerFrameIndex =
+		Vans::VansProfiler::Get().GetActiveFrameIndex();
+	if (profilerFrameIndex != Vans::VansProfiler::INVALID_FRAME_INDEX)
+		Vans::VansProfiler::Get().MarkCurrentFrameHasRender();
 	{
 		std::lock_guard<std::mutex> lock(m_RenderThreadState->mutex);
 		RenderWorkItem item;
 		item.type = RenderWorkType::Frame;
 		item.frame = std::move(frameWork);
+		item.profilerFrameIndex = profilerFrameIndex;
 		m_RenderThreadState->workQueue.emplace_back(std::move(item));
+		++m_QueuedGpuWorkGeneration;
 	}
 	m_RenderThreadState->workAvailable.notify_one();
-	if (m_MaxGameFramesAhead == 1)
+	if (m_IndependentRenderThreadEnabled)
 	{
 		result.status = VansRenderFrameSubmitStatus::Accepted;
 		VANS_SET_FRAME_PHASE(VansFramePhase::GameLogic);
 		return result;
 	}
 
-	// maxGameFramesAhead=0 仅用于确定性协议测试或显式同步诊断；即使在该模式下，
+	// 关闭独立执行仅用于确定性协议测试或显式同步诊断；即使在该模式下，
 	// backend 仍只在 RenderThread 执行，不存在 Main inline 渲染旁路。
 	const VansRenderOutcomeWaitResult waitResult =
 		m_OutcomeLedger.WaitForOutcome(m_CurrentFrameId);
@@ -283,7 +309,7 @@ bool VansGraphics::VansRenderSystem::RequestSurfaceResize(
 	if (m_State != VansRenderSystemState::Running || m_OpenSubmission.has_value() || width == 0 || height == 0)
 		return false;
 
-	if (!EnqueueControlAndWait(
+	if (!EnqueueAndWait(
 		static_cast<std::uint32_t>(RenderWorkType::Resize), width, height))
 	{
 		return false;
@@ -300,8 +326,16 @@ bool VansGraphics::VansRenderSystem::WaitForIdle()
 		return true;
 	if (m_OpenSubmission.has_value())
 		return false;
-	return EnqueueControlAndWait(
+	if (m_LastGpuIdleGeneration.has_value() &&
+		*m_LastGpuIdleGeneration == m_QueuedGpuWorkGeneration)
+	{
+		return true;
+	}
+	const bool succeeded = EnqueueAndWait(
 		static_cast<std::uint32_t>(RenderWorkType::WaitIdle));
+	if (succeeded)
+		m_LastGpuIdleGeneration = m_QueuedGpuWorkGeneration;
+	return succeeded;
 }
 
 bool VansGraphics::VansRenderSystem::Quiesce()
@@ -311,8 +345,7 @@ bool VansGraphics::VansRenderSystem::Quiesce()
 		return true;
 	if (m_State != VansRenderSystemState::Running || m_OpenSubmission.has_value())
 		return false;
-	if (!EnqueueControlAndWait(
-		static_cast<std::uint32_t>(RenderWorkType::WaitIdle)))
+	if (!WaitForIdle())
 		return false;
 
 	m_State = VansRenderSystemState::Quiesced;
@@ -331,23 +364,11 @@ bool VansGraphics::VansRenderSystem::ExecuteRenderThreadTransaction(
 		return false;
 	}
 
-	auto completion = std::make_shared<RenderControlCompletion>();
-	{
-		std::lock_guard<std::mutex> lock(m_RenderThreadState->mutex);
-		RenderWorkItem item;
-		item.type = RenderWorkType::Transaction;
-		item.transaction = std::move(transaction);
-		item.completion = completion;
-		m_RenderThreadState->workQueue.emplace_back(std::move(item));
-	}
-	m_RenderThreadState->workAvailable.notify_one();
-
-	std::unique_lock<std::mutex> lock(completion->mutex);
-	completion->condition.wait(lock, [&completion]
-	{
-		return completion->completed;
-	});
-	return completion->succeeded;
+	return EnqueueAndWait(
+		static_cast<std::uint32_t>(RenderWorkType::Transaction),
+		0,
+		0,
+		std::move(transaction));
 }
 
 void VansGraphics::VansRenderSystem::ShutdownFrameExecution()
@@ -367,14 +388,10 @@ void VansGraphics::VansRenderSystem::ShutdownFrameExecution()
 			<< m_CurrentFrameId.Value());
 		m_State = VansRenderSystemState::Fatal;
 		m_OutcomeLedger.SignalFatal("RenderSystem shutdown requested while a frame is open");
-		return;
+		m_OpenSubmission.reset();
 	}
 
-	if (m_RenderThreadState && m_RenderThreadState->thread.joinable())
-	{
-		EnqueueControlAndWait(static_cast<std::uint32_t>(RenderWorkType::Stop));
-		m_RenderThreadState->thread.join();
-	}
+	StopAndJoinRenderThread();
 	m_State = VansRenderSystemState::Stopped;
 	m_OutcomeLedger.SignalStopped();
 }
@@ -395,35 +412,37 @@ void VansGraphics::VansRenderSystem::InitializeGpuProfiler()
 {
 	VANS_ASSERT_MAIN_THREAD();
 	if (m_State == VansRenderSystemState::Running)
-		EnqueueControlAndWait(
+		EnqueueAndWait(
 			static_cast<std::uint32_t>(RenderWorkType::InitializeProfiler));
 }
 
-void VansGraphics::VansRenderSystem::EndGpuProfilerFrame()
-{
-	VANS_ASSERT_MAIN_THREAD();
-	if (m_State == VansRenderSystemState::Running)
-		EnqueueControlAndWait(
-			static_cast<std::uint32_t>(RenderWorkType::EndProfilerFrame));
-}
-
-bool VansGraphics::VansRenderSystem::EnqueueControlAndWait(
+bool VansGraphics::VansRenderSystem::EnqueueAndWait(
 	std::uint32_t type,
 	std::uint32_t width,
-	std::uint32_t height)
+	std::uint32_t height,
+	std::unique_ptr<IVansRenderThreadTransaction> transaction)
 {
 	if (!m_RenderThreadState || !m_RenderThreadState->thread.joinable())
+		return false;
+
+	const RenderWorkType workType = static_cast<RenderWorkType>(type);
+	if ((workType == RenderWorkType::Transaction) != static_cast<bool>(transaction))
 		return false;
 
 	auto completion = std::make_shared<RenderControlCompletion>();
 	{
 		std::lock_guard<std::mutex> lock(m_RenderThreadState->mutex);
+		if (m_RenderThreadState->threadExited)
+			return false;
 		RenderWorkItem item;
-		item.type = static_cast<RenderWorkType>(type);
+		item.type = workType;
+		item.transaction = std::move(transaction);
 		item.completion = completion;
 		item.width = width;
 		item.height = height;
 		m_RenderThreadState->workQueue.emplace_back(std::move(item));
+		if (workType != RenderWorkType::WaitIdle && workType != RenderWorkType::Stop)
+			++m_QueuedGpuWorkGeneration;
 	}
 	m_RenderThreadState->workAvailable.notify_one();
 
@@ -435,18 +454,46 @@ bool VansGraphics::VansRenderSystem::EnqueueControlAndWait(
 	return completion->succeeded;
 }
 
+void VansGraphics::VansRenderSystem::StopAndJoinRenderThread()
+{
+	if (!m_RenderThreadState || !m_RenderThreadState->thread.joinable())
+		return;
+
+	bool alreadyExited = false;
+	{
+		std::lock_guard<std::mutex> lock(m_RenderThreadState->mutex);
+		alreadyExited = m_RenderThreadState->threadExited;
+	}
+	if (!alreadyExited)
+		EnqueueAndWait(static_cast<std::uint32_t>(RenderWorkType::Stop));
+	m_RenderThreadState->thread.join();
+}
+
+void VansGraphics::VansRenderSystem::PublishRenderExtentFromBackend()
+{
+	m_PublishedRenderWidth.store(
+		static_cast<std::uint32_t>(m_Backend.GetNativeRenderWidth()),
+		std::memory_order_release);
+	m_PublishedRenderHeight.store(
+		static_cast<std::uint32_t>(m_Backend.GetNativeRenderHeight()),
+		std::memory_order_release);
+}
+
 void VansGraphics::VansRenderSystem::RenderThreadMain()
 {
 	VANS_INIT_RENDER_THREAD();
-	bool startupSucceeded = true;
+	VANS_PROFILE_THREAD("Render Thread");
+	bool startupSucceeded = false;
 	try
 	{
-		m_Backend.BeforeRendering();
+		startupSucceeded = m_Backend.BeforeRendering();
 	}
 	catch (...)
 	{
 		startupSucceeded = false;
 	}
+	if (startupSucceeded)
+		PublishRenderExtentFromBackend();
 	{
 		std::lock_guard<std::mutex> lock(m_RenderThreadState->mutex);
 		m_RenderThreadState->startupSucceeded = startupSucceeded;
@@ -455,6 +502,20 @@ void VansGraphics::VansRenderSystem::RenderThreadMain()
 	m_RenderThreadState->workAvailable.notify_all();
 	if (!startupSucceeded)
 	{
+		// BeforeRendering 允许在部分资源创建后报告失败；统一在同一条
+		// RenderThread 上回滚，不能把半初始化 backend 暴露为 Running。
+		try
+		{
+			m_Backend.AfterRendering();
+		}
+		catch (...)
+		{
+		}
+		{
+			std::lock_guard<std::mutex> lock(m_RenderThreadState->mutex);
+			m_RenderThreadState->threadExited = true;
+		}
+		m_RenderThreadState->workAvailable.notify_all();
 		VANS_CLEAR_THREAD_ROLE();
 		return;
 	}
@@ -473,6 +534,8 @@ void VansGraphics::VansRenderSystem::RenderThreadMain()
 			m_RenderThreadState->workQueue.pop_front();
 		}
 
+		try
+		{
 		switch (item.type)
 		{
 		case RenderWorkType::Frame:
@@ -485,6 +548,7 @@ void VansGraphics::VansRenderSystem::RenderThreadMain()
 			outcome.surfaceEpoch = item.frame->Frame().SurfaceEpoch();
 			VansRenderSubmissionPrepareResult prepareResult;
 			bool overlaySucceeded = true;
+			Vans::VansProfiler::Get().BeginRenderFrame(item.profilerFrameIndex);
 			try
 			{
 				m_Backend.PrepareRenderingFrame();
@@ -506,6 +570,9 @@ void VansGraphics::VansRenderSystem::RenderThreadMain()
 					"Unhandled exception escaped render-thread frame execution"
 				};
 			}
+			Vans::VansProfiler::Get().EndRenderFrame(
+				item.profilerFrameIndex,
+				m_Backend.GetNativeGraphicsDevice());
 
 			if (prepareResult && overlaySucceeded && m_Backend.CanRecordCurrentFrame())
 			{
@@ -543,10 +610,6 @@ void VansGraphics::VansRenderSystem::RenderThreadMain()
 			m_Backend.InitializeGpuProfiler();
 			CompleteControl(item.completion, true);
 			break;
-		case RenderWorkType::EndProfilerFrame:
-			m_Backend.EndGpuProfilerFrame();
-			CompleteControl(item.completion, true);
-			break;
 		case RenderWorkType::Transaction:
 		{
 			bool succeeded = false;
@@ -567,6 +630,26 @@ void VansGraphics::VansRenderSystem::RenderThreadMain()
 			running = false;
 			break;
 		}
+		}
+		catch (...)
+		{
+			CompleteControl(item.completion, false);
+			m_OutcomeLedger.SignalFatal(
+				"Unhandled exception escaped render-thread control execution");
+			running = false;
+		}
+		if (item.type != RenderWorkType::Stop)
+			PublishRenderExtentFromBackend();
 	}
+
+	std::deque<RenderWorkItem> abandonedWork;
+	{
+		std::lock_guard<std::mutex> lock(m_RenderThreadState->mutex);
+		m_RenderThreadState->threadExited = true;
+		abandonedWork.swap(m_RenderThreadState->workQueue);
+	}
+	for (RenderWorkItem& abandoned : abandonedWork)
+		CompleteControl(abandoned.completion, false);
+	m_RenderThreadState->workAvailable.notify_all();
 	VANS_CLEAR_THREAD_ROLE();
 }

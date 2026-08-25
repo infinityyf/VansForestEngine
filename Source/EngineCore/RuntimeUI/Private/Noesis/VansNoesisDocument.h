@@ -56,6 +56,8 @@ namespace VansRuntime
         Noesis::FrameworkElement* GetContent() const { return m_Content.GetPtr(); }
 
     private:
+        void AttachInput();
+        void DetachInput();
         void ApplyViewModel();
         void ApplyViewModelProperty(const std::string& propertyName);
         void BindViewModelCommands();
@@ -70,6 +72,7 @@ namespace VansRuntime
         bool m_RendererInitialized = false;
 
         VansNoesisInputAdapter* m_InputAdapter = nullptr;
+        bool m_InputAttached = false;
         VansUIViewModel* m_ViewModel = nullptr;
         std::uint64_t m_ViewModelChangedToken = 0;
     };

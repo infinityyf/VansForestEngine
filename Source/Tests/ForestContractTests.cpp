@@ -56,6 +56,7 @@
 #include "../EngineCore/RuntimeCore/VansRuntimeFrameScheduler.h"
 #include "../EngineCore/RuntimeCore/VansFramePhase.h"
 #include "../EngineCore/RuntimeCore/VansThreadContract.h"
+#include "../EngineCore/Util/VansProfiler.h"
 #include "../EngineCore/SceneRuntime/VansRuntimeComponentTypes.h"
 #include "../EngineCore/SceneRuntime/VansRuntimeWorld.h"
 #include "../EngineCore/SceneRuntime/Transform/VansTransformGraph.h"
@@ -103,7 +104,10 @@
 #include "../EngineCore/AnimationCore/Storage/VansBoneMaskStorage.h"
 #include "../EngineCore/AnimationCore/Storage/VansRetargetProfileStorage.h"
 #include "../EngineCore/AnimationCore/MotionMatching/VansMotionMatching.h"
+#include "../EngineCore/AnimationCore/MotionMatching/VansRootMotionYaw.h"
+#include "../EngineCore/AnimationCore/MotionMatching/VansTurnInPlaceWarping.h"
 #include "../EngineCore/EngineAPILayer/Private/AnimationAuthoringBridge.h"
+#include "../EngineCore/EngineAPILayer/Public/EngineDTOs.h"
 #include "../EngineCore/ParticleCore/VansParticleRuntime.h"
 #include "TimelineRefactorContractTests.h"
 #include "GAFContractTests.h"
@@ -157,10 +161,11 @@ public:
 		m_RenderHeight = 720;
 	}
 
-	void BeforeRendering() override
+	bool BeforeRendering() override
 	{
 		beforeThread = std::this_thread::get_id();
 		++beforeCount;
+		return beforeSucceeded;
 	}
 	void PrepareRenderingFrame() override
 	{
@@ -168,7 +173,7 @@ public:
 		prepareFrontendOrder = NextOrder();
 	}
 	VansGraphics::VansRenderSubmissionPrepareResult PrepareRenderSubmission(
-		const VansGraphics::VansRenderFrameSubmission& submission) override
+		VansGraphics::VansRenderFrameSubmission& submission) override
 	{
 		prepareThread = std::this_thread::get_id();
 		prepareBackendOrder = NextOrder();
@@ -223,18 +228,17 @@ public:
 		lastHeight = height;
 	}
 	void InitializeGpuProfiler() override { ++profilerInitializeCount; }
-	void EndGpuProfilerFrame() override { ++profilerEndCount; }
 	void* GetNativeGraphicsDevice() override { return nullptr; }
 	void* GetNativeCommandBuffer() override { return nullptr; }
 
 	std::uint32_t beforeCount = 0;
+	bool beforeSucceeded = true;
 	std::uint32_t renderCount = 0;
 	std::uint32_t presentCount = 0;
 	std::uint32_t afterCount = 0;
 	std::uint32_t waitCount = 0;
 	std::uint32_t resizeCount = 0;
 	std::uint32_t profilerInitializeCount = 0;
-	std::uint32_t profilerEndCount = 0;
 	std::uint32_t lastWidth = 0;
 	std::uint32_t lastHeight = 0;
 	int* sequence = nullptr;
@@ -338,7 +342,8 @@ bool TestRenderSystemLifecycleContract()
 	const std::thread::id mainThread = std::this_thread::get_id();
 	if (!renderSystem.InitializeFrameExecution() ||
 		renderSystem.GetState() != VansGraphics::VansRenderSystemState::Running ||
-		device.beforeCount != 1)
+		device.beforeCount != 1 || renderSystem.GetRenderWidth() != 1280 ||
+		renderSystem.GetRenderHeight() != 720)
 	{
 		return false;
 	}
@@ -399,11 +404,13 @@ bool TestRenderSystemLifecycleContract()
 	}
 
 	renderSystem.InitializeGpuProfiler();
-	renderSystem.EndGpuProfilerFrame();
-	if (device.profilerInitializeCount != 1 || device.profilerEndCount != 1)
+	if (device.profilerInitializeCount != 1)
 		return false;
 
-	if (!renderSystem.Quiesce() ||
+	// 同一 work generation 上的重复 idle 必须合并，避免连续触发
+	// device-wide stall；Quiesce 复用同一条已完成 barrier。
+	if (!renderSystem.WaitForIdle() || !renderSystem.WaitForIdle() ||
+		device.waitCount != 1 || !renderSystem.Quiesce() ||
 		renderSystem.GetState() != VansGraphics::VansRenderSystemState::Quiesced ||
 		device.waitCount != 1 || device.waitThread != device.beforeThread)
 	{
@@ -418,6 +425,86 @@ bool TestRenderSystemLifecycleContract()
 	}
 
 	return renderSystem.WaitForIdle() && device.waitCount == 1;
+}
+
+bool TestProfilerSnapshotContract()
+{
+#if VANS_PROFILER_ENABLED
+	auto& profiler = Vans::VansProfiler::Get();
+	profiler.SetPaused(false);
+	profiler.SetCaptureEnabled(true);
+	profiler.BeginFrame();
+	{
+		Vans::VansCpuScopeTimer outer("ProfilerContract::Outer", Vans::ProfileCategory::Frame);
+		{
+			Vans::VansCpuScopeTimer inner("ProfilerContract::Inner", Vans::ProfileCategory::JobSystem);
+		}
+	}
+	profiler.EndFrame();
+
+	// The following non-blocking frame boundary publishes the completed snapshot.
+	profiler.BeginFrame();
+	const Vans::ProfileFrame& frame = profiler.GetTimeline();
+	const Vans::ProfileEvent* outerEvent = nullptr;
+	const Vans::ProfileEvent* innerEvent = nullptr;
+	for (uint32_t eventIndex = 0u; eventIndex < frame.eventCount; ++eventIndex)
+	{
+		if (std::string(frame.events[eventIndex].name) == "ProfilerContract::Outer")
+			outerEvent = &frame.events[eventIndex];
+		else if (std::string(frame.events[eventIndex].name) == "ProfilerContract::Inner")
+			innerEvent = &frame.events[eventIndex];
+	}
+	const bool snapshotValid = outerEvent != nullptr && innerEvent != nullptr &&
+		innerEvent->parentEventId == outerEvent->eventId &&
+		outerEvent->endUs >= outerEvent->startUs &&
+		innerEvent->endUs >= innerEvent->startUs &&
+		frame.droppedCpuEvents == 0u && !frame.overflow;
+	const uint64_t frozenFrameIndex = frame.frameIndex;
+	profiler.EndFrame();
+
+	profiler.SetPaused(true);
+	profiler.BeginFrame();
+	profiler.EndFrame();
+	const bool pauseValid = profiler.GetTimeline().frameIndex == frozenFrameIndex;
+
+	profiler.SetPaused(false);
+	profiler.SetCaptureEnabled(false);
+	profiler.BeginFrame();
+	profiler.EndFrame();
+	return snapshotValid && pauseValid;
+#else
+	return true;
+#endif
+}
+
+bool TestRenderSystemStartupFailureContract()
+{
+	TestRenderSystemDevice device;
+	device.beforeSucceeded = false;
+	TestRenderFrameSource frameSource;
+	{
+		VansGraphics::VansRenderSystem renderSystem(device, frameSource);
+		if (renderSystem.InitializeFrameExecution() || device.beforeCount != 1 ||
+			device.afterCount != 1 || device.beforeThread != device.afterThread)
+		{
+			return false;
+		}
+	}
+	return device.afterCount == 1;
+}
+
+bool TestRenderSystemDestructorFallbackContract()
+{
+	TestRenderSystemDevice device;
+	TestRenderFrameSource frameSource;
+	{
+		VansGraphics::VansRenderSystem renderSystem(device, frameSource);
+		if (!renderSystem.InitializeFrameExecution())
+			return false;
+		// 故意不调用 ShutdownFrameExecution：析构必须投递 Stop 并回收线程。
+	}
+	return device.beforeCount == 1 && device.afterCount == 1 &&
+		device.beforeThread == device.afterThread;
 }
 
 bool TestRenderSystemPrepareFailureContract()
@@ -500,7 +587,7 @@ bool TestRenderSystemOneFrameLeadContract()
 	TestRenderSystemDevice device;
 	TestRenderFrameSource frameSource;
 	frameSource.useUpdatesAfterFirst = true;
-	VansRenderSystem renderSystem(device, frameSource, 1);
+	VansRenderSystem renderSystem(device, frameSource, true);
 	if (!renderSystem.InitializeFrameExecution())
 		return false;
 	VansCamera camera(&device);
@@ -686,7 +773,7 @@ bool TestRenderFramePacketContract()
 		return false;
 
 	auto packet = std::move(builder).Finalize();
-	return packet.has_value() &&
+	const bool packetValid = packet.has_value() &&
 		packet->FrameId() == VansRenderFrameId(11) &&
 		packet->SourceLogicFrameId() == VansLogicFrameId(19) &&
 		packet->SurfaceEpoch() == VansSurfaceEpoch(3) &&
@@ -725,6 +812,20 @@ bool TestRenderFramePacketContract()
 		HasRenderViewHistoryReset(
 			packet->View().historyReset,
 			VansRenderViewHistoryReset::CameraCut);
+	if (!packetValid)
+		return false;
+
+	const VansRenderTransformFrameData* originalTransformStorage =
+		packet->Scene().transforms.data();
+	VansRenderFrameSubmission submission(
+		VansRenderWorkSerial(5),
+		VansRenderMutationBatch{},
+		std::move(*packet));
+	VansRenderSceneFrameSnapshot consumedScene;
+	return submission.ConsumeSceneForRendering(consumedScene) &&
+		!submission.ConsumeSceneForRendering(consumedScene) &&
+		consumedScene.transforms.size() == 1 &&
+		consumedScene.transforms.data() == originalTransformStorage;
 }
 
 bool TestMainCameraVisibilityBackendOwnershipContract()
@@ -1701,6 +1802,42 @@ bool TestAssetPolicies()
 		return false;
 	if (!Expect(Vans::VansAssetDatabase::ImporterFor(Vans::VansAssetType::SkinProfile) == "SkinProfileImporter",
 		"Skin profile assets are not owned by the canonical SkinProfile importer"))
+		return false;
+
+	const auto registerModelCapabilityProbe = [&](const char* filename, bool skeletal)
+		-> std::optional<Vans::VansAssetRecord>
+	{
+		const fs::path modelPath = assetsRoot / filename;
+		{
+			std::ofstream model(modelPath, std::ios::binary | std::ios::trunc);
+			model << "asset capability probe";
+		}
+		Vans::VansAssetMeta meta;
+		meta.guid = Vans::VansAssetGuid::New();
+		meta.importer = Vans::VansAssetDatabase::ImporterFor(Vans::VansAssetType::Model);
+		if (skeletal)
+			meta.subAssets.emplace("bone:Root", Vans::VansSubAssetId::New());
+		std::string metaError;
+		if (!Vans::VansAssetMetaStorage::SaveAtomic(
+			Vans::VansAssetMeta::MetaPathFor(modelPath), meta, metaError))
+		{
+			return std::nullopt;
+		}
+		std::string registerError;
+		if (!database.RegisterOrRefresh(
+			modelPath, Vans::VansAssetOperationPolicy::ReadOnly(), registerError))
+		{
+			return std::nullopt;
+		}
+		return database.Find(modelPath);
+	};
+	const auto skeletalModel = registerModelCapabilityProbe("SkeletalPreview.fbx", true);
+	const auto staticModel = registerModelCapabilityProbe("StaticPreview.fbx", false);
+	if (!Expect(skeletalModel && skeletalModel->hasSkeletalMesh,
+		"Imported bone metadata did not expose the skeletal preview capability"))
+		return false;
+	if (!Expect(staticModel && !staticModel->hasSkeletalMesh,
+		"Static model metadata was incorrectly exposed as a skeletal preview model"))
 		return false;
     return Expect(Vans::VansAssetDatabase::ImporterFor(Vans::VansAssetType::Timeline) == "TimelineImporter",
         "Timeline assets are not owned by the canonical Timeline importer");
@@ -3410,6 +3547,22 @@ VansGraphics::VansAnimationClip BuildContractTurnClip(const std::string& name,
 
 bool TestCharacterTrajectoryGeneratorContract()
 {
+	const glm::vec3 rootMotionStartPosition(12.0f, 0.0f, -7.0f);
+	constexpr float rootMotionStartYaw = 90.0f;
+	const Vans::VansRootMotionOwnerDelta rootMotionDelta =
+		Vans::ResolveAnimationRootMotionOwnerDelta(
+			glm::vec3(0.0f, -100.0f, 0.0f),
+			glm::angleAxis(glm::radians(30.0f), glm::vec3(0.0f, 0.0f, 1.0f)),
+			rootMotionStartYaw,
+			0.01f);
+	const glm::vec3 resolvedRootMotionPosition =
+		rootMotionStartPosition + rootMotionDelta.translationWorld;
+	const float resolvedRootMotionYaw = rootMotionStartYaw + rootMotionDelta.yawDegrees;
+	if (!Expect(glm::length(resolvedRootMotionPosition - glm::vec3(13.0f, 0.0f, -7.0f)) < 0.0001f
+		&& std::abs(resolvedRootMotionYaw - 120.0f) < 0.0001f,
+		"Root Motion did not preserve and increment the current CCT Transform basis"))
+		return false;
+
 	Vans::VansCharacterMotionSettings settings;
 	Vans::VansCharacterTrajectoryGenerator generator;
 	Vans::VansCharacterMotionIntent intent;
@@ -3688,7 +3841,107 @@ bool TestMotionMatchingAutoBuildLocomotionMetadataContract()
 		if (payload.rootMotion.valid && payload.rootMotion.translation.y > 0.0001f)
 			return Expect(false, "Motion matching reversed Root Motion at a loop or clip switch seam");
 	}
-	return true;
+	runtime.BeginEvaluationFrame();
+	return Expect(!runtime.GetDebugData().usedThisFrame,
+		"Motion Matching debug usage leaked into a later non-MM Graph evaluation");
+}
+
+bool TestTurnInPlaceWarpingMathContract()
+{
+	using namespace VansGraphics;
+
+	if (!Expect(!TurnInPlaceWarpingSettings{}.enabled,
+		"Turn In Place Warping must remain opt-in for existing Motion Matching scenes"))
+		return false;
+
+	TurnYawProfile profile;
+	profile.sampleTimesSeconds = { 0.0f, 0.5f, 1.0f };
+	profile.cumulativeYawDegrees = { 0.0f, 40.0f, 90.0f };
+	profile.durationSeconds = 1.0f;
+	profile.motionEndTimeSeconds = 1.0f;
+	profile.totalYawDegrees = 90.0f;
+	profile.directionSign = 1;
+	profile.valid = true;
+	if (!ExpectNear(profile.SampleCumulativeYaw(0.25f), 20.0f, 0.0001f,
+		"Turn Yaw Profile did not interpolate cumulative root yaw"))
+		return false;
+	if (!ExpectNear(profile.RemainingYaw(0.75f), 25.0f, 0.0001f,
+		"Turn Yaw Profile did not report the sampled remaining yaw"))
+		return false;
+
+	const glm::quat tiltedTurn = glm::normalize(
+		glm::angleAxis(glm::radians(12.0f), glm::vec3(1.0f, 0.0f, 0.0f)) *
+		glm::angleAxis(glm::radians(35.0f), glm::vec3(0.0f, 0.0f, 1.0f)));
+	glm::quat correctedTurn = tiltedTurn;
+	const float authoredYaw = ExtractRootMotionYawDegrees(tiltedTurn);
+	ApplyRootMotionYawCorrection(18.0f, correctedTurn);
+	if (!ExpectNear(
+		std::remainder(ExtractRootMotionYawDegrees(correctedTurn) - authoredYaw, 360.0f),
+		18.0f, 0.01f,
+		"Root Yaw correction did not preserve a stable signed twist under tilt"))
+		return false;
+
+	TurnInPlaceWarpingSettings settings;
+	settings.enabled = true;
+	VansTurnInPlaceWarping warping;
+	warping.Configure(settings);
+	const TurnInPlaceReachability reachable =
+		warping.EvaluateCandidate(73.0f, 90.0f, 0.8f);
+	if (!Expect(reachable.reachable
+		&& reachable.scaleRatio >= settings.minRootYawScaleRatio
+		&& reachable.scaleRatio <= settings.maxRootYawScaleRatio
+		&& std::abs(reachable.residualDegrees)
+			<= settings.maxAdditiveCorrectionDegrees,
+		"Turn endpoint reachability rejected a valid arbitrary angle"))
+		return false;
+	const TurnInPlaceReachability wrongDirection =
+		warping.EvaluateCandidate(-73.0f, 90.0f, 0.8f);
+	return Expect(!wrongDirection.reachable
+		&& wrongDirection.reason == "WrongDirection",
+		"Turn endpoint reachability accepted an opposite-direction candidate");
+}
+
+bool TestAnimationEditorPreviewPolicyContract()
+{
+	using namespace VansGraphics;
+	using namespace Vans::EditorAPI;
+
+	const VansAnimationFrameContext gameplay{
+		VansAnimationEvaluationPurpose::Gameplay, 1.0f / 60.0f };
+	const VansAnimationFrameContext editorPreview{
+		VansAnimationEvaluationPurpose::EditorPreview, 1.0f / 60.0f };
+	if (!Expect(gameplay.AllowsOwnerMotion(),
+		"Gameplay animation evaluation must retain owner/CCT Root Motion submission"))
+		return false;
+	if (!Expect(!editorPreview.AllowsOwnerMotion(),
+		"Editor animation evaluation must not overwrite the authorable Scene Transform"))
+		return false;
+
+	AnimationPreviewCreateRequest sceneRequest;
+	sceneRequest.targetKind = AnimationPreviewTargetKind::SceneAnimationComponent;
+	sceneRequest.entityGuid = "character";
+	sceneRequest.animationComponentGuid = "animation";
+	if (!Expect(sceneRequest.targetKind ==
+			AnimationPreviewTargetKind::SceneAnimationComponent &&
+		!sceneRequest.entityGuid.empty() &&
+		!sceneRequest.animationComponentGuid.empty(),
+		"Scene animation preview target identity was not represented explicitly"))
+		return false;
+
+	AnimationPreviewPlaybackRequest playback;
+	playback.seek = true;
+	playback.seekSeconds = 0.75f;
+	playback.rootMotionMode =
+		AnimationPreviewPlaybackRequest::RootMotionMode::TrailOnly;
+	if (!ExpectNear(playback.seekSeconds, 0.75f, 0.0001f,
+		"Animation preview timeline must use absolute seconds"))
+		return false;
+
+	const AssetTypeFilter previewModelFilter{
+		AssetType::Model, false, AssetQueryCapability::SkeletalModel };
+	return Expect(previewModelFilter.requiredCapability ==
+		AssetQueryCapability::SkeletalModel,
+		"Animation preview model query must require imported skeletal capability");
 }
 
 bool TestMotionMatchingCameraFacingTurnContract()
@@ -3729,6 +3982,7 @@ bool TestMotionMatchingCameraFacingTurnContract()
     settings.facingTurnEnterThresholdDegrees = 10.0f;
     settings.facingTurnExitThresholdDegrees = 3.0f;
     settings.facingTurnExitYawRateDegreesPerSecond = 8.0f;
+    settings.turnInPlaceWarping.enabled = true;
     settings.includeClipTokens = { "Idle", "Walk" };
     settings.rig.root = "root";
     settings.rig.trajectoryRoot = "root";
@@ -3754,114 +4008,160 @@ bool TestMotionMatchingCameraFacingTurnContract()
         return trajectory;
     };
 
-    for (const int turnSign : { 1, -1 })
+    for (const float deltaTime : { 1.0f / 30.0f, 1.0f / 60.0f, 1.0f / 120.0f })
     {
+      for (const int turnSign : { 1, -1 })
+      {
         VansMotionMatchingRuntime runtime;
         runtime.Configure(settings);
         VansPosePayload payload;
         Vans::VansCharacterTrajectory trajectory = buildTrajectory(37.0f);
-        if (!runtime.Update(0.033f, skeleton, clips, parameters, &trajectory, payload))
+        if (!runtime.Update(deltaTime, skeleton, clips, parameters, &trajectory, payload))
             return Expect(false, "Motion matching rejected the camera-facing idle fixture");
 
-        // A 60-degree request must choose the 90-degree authored arc and enter
-        // it at the matching Pose Search sample. Choosing the nearest 45-degree
-        // clip would leave an unresolved 15-degree error at the clip end.
-        trajectory.desiredFacingYaw = 37.0f + static_cast<float>(turnSign) * 60.0f;
+        // 73° 不存在于离散动画库中。测试必须像 CCT 一样把每帧最终 Root Yaw
+        // 积分回当前 Transform，验证一个 90° Turn 能否一次命中真实目标。
+        const float targetFacingYaw =
+            37.0f + static_cast<float>(turnSign) * 73.0f;
+        trajectory.desiredFacingYaw = targetFacingYaw;
         for (auto& future : trajectory.future)
-            future.facingYaw = trajectory.desiredFacingYaw;
+            future.facingYaw = targetFacingYaw;
 
+        int turnEntries = 0;
+        bool previousTurnActive = false;
         bool selectedExpectedTurn = false;
-        bool emittedTurnRootRotation = false;
-        for (int frame = 0; frame < 20; ++frame)
+        bool observedTurnWarp = false;
+        bool observedResidualReplan = false;
+        bool preservedRootAuthorityOnTurnExit = false;
+        bool completed = false;
+        const int maximumFrames = static_cast<int>(std::ceil(3.0f / deltaTime));
+        for (int frame = 0; frame < maximumFrames; ++frame)
         {
-            if (!runtime.Update(0.033f, skeleton, clips, parameters, &trajectory, payload))
+            if (!runtime.Update(deltaTime, skeleton, clips, parameters, &trajectory, payload))
                 return Expect(false, "Motion matching stopped during a camera-facing turn");
             const MotionMatchingDebugData& debug = runtime.GetDebugData();
-            const std::string expectedToken = turnSign > 0 ? "Turn_L_090" : "Turn_R_090";
+            const bool activeTurn = debug.activeClip.find("Turn") != std::string::npos;
+            const bool exitedTurnThisFrame = previousTurnActive && !activeTurn;
+            if (activeTurn && !previousTurnActive)
+                ++turnEntries;
+            if (exitedTurnThisFrame)
+                preservedRootAuthorityOnTurnExit =
+					runtime.PrefersRootMotionThisFrame();
+            previousTurnActive = activeTurn;
+            const std::string expectedToken =
+                turnSign > 0 ? "Turn_L_090" : "Turn_R_090";
             selectedExpectedTurn = selectedExpectedTurn ||
                 debug.activeClip.find(expectedToken) != std::string::npos;
-            emittedTurnRootRotation = emittedTurnRootRotation ||
-                (payload.rootMotion.valid &&
-                 std::abs(glm::degrees(glm::eulerAngles(payload.rootMotion.rotation)).z) > 0.01f);
-            if (!Expect(debug.facingTurnRequested &&
-                        debug.facingTurnDirectionSign == turnSign &&
-                        debug.facingTurnBucketDelta == 2,
-                "Camera facing error did not produce the expected turn request"))
-                return false;
+            observedTurnWarp = observedTurnWarp ||
+                debug.turnWarpActive || debug.turnWarpProfileIndex >= 0;
+            observedResidualReplan = observedResidualReplan ||
+                debug.turnWarpReplanReason == "ResidualReplan";
+
+            if (payload.rootMotion.valid)
+            {
+                trajectory.currentFacingYaw +=
+                    ExtractRootMotionYawDegrees(payload.rootMotion.rotation);
+                trajectory.plannedFacingYaw = trajectory.currentFacingYaw;
+            }
+            for (auto& future : trajectory.future)
+                future.facingYaw = targetFacingYaw;
+
+            const float remainingError = std::abs(std::remainder(
+                targetFacingYaw - trajectory.currentFacingYaw, 360.0f));
+            if (turnEntries > 0 && !activeTurn && remainingError <= 1.0f)
+            {
+                completed = true;
+                break;
+            }
         }
         if (!Expect(selectedExpectedTurn,
             "Camera facing error did not select the matching left/right turn clip"))
             return false;
-        if (!Expect(emittedTurnRootRotation,
-            "Selected camera-facing turn did not emit Root Motion rotation"))
+        if (!Expect(observedTurnWarp,
+            "Turn-in-place did not publish an active root-yaw profile/warp"))
             return false;
-
-        // A non-loop Turn with unresolved facing must replan directly into a
-        // covering Turn arc. An intermediate Idle frame exposes the character's
-        // front while the camera keeps moving and is not part of the locomotion
-        // contract. Replaying the same authored arc is valid only after the
-        // previous one-shot has completed.
-        bool observedDirectTurnReplan = false;
-        std::string previousClip = runtime.GetDebugData().activeClip;
-        float previousTime = runtime.GetDebugData().activeTime;
-        int frozenTurnFrames = 0;
-        for (int frame = 0; frame < 70; ++frame)
+        if (!completed)
         {
-            if (!runtime.Update(0.033f, skeleton, clips, parameters, &trajectory, payload))
-                return Expect(false, "Motion matching stopped while completing an idle turn");
             const MotionMatchingDebugData& debug = runtime.GetDebugData();
-            const bool activeTurn = debug.activeClip.find("Turn") != std::string::npos;
-            if (activeTurn && debug.activeClip == previousClip &&
-                std::abs(debug.activeTime - previousTime) <= 0.00001f)
-                ++frozenTurnFrames;
-            else
-                frozenTurnFrames = 0;
-            if (!Expect(frozenTurnFrames < 2,
-                "Turn-in-place remained frozen on a non-loop clip frame"))
-                return false;
-            if (activeTurn && debug.activeClip == previousClip &&
-                debug.activeTime + 0.01f < previousTime)
-                observedDirectTurnReplan = true;
-            if (activeTurn && payload.rootMotion.valid &&
-                !ExpectNear(debug.appliedRootYawDeltaDegrees,
-                    debug.authoredRootYawDeltaDegrees, 0.001f,
-                    "Turn Root Motion reconciliation changed the authored yaw integral"))
-                return false;
-            previousClip = debug.activeClip;
-            previousTime = debug.activeTime;
+            std::cerr << "[ForestContractTests] turn endpoint target=" << targetFacingYaw
+                << " current=" << trajectory.currentFacingYaw
+                << " frameRate=" << (1.0f / deltaTime)
+                << " error=" << std::remainder(
+                    targetFacingYaw - trajectory.currentFacingYaw, 360.0f)
+                << " entries=" << turnEntries
+                << " active=" << debug.activeClip
+                << " turnState=" << debug.facingTurnState
+                << " warpReason=" << debug.turnWarpDisableReason
+                << " replan=" << debug.turnWarpReplanReason
+                << " targetDelta=" << debug.turnWarpTargetDeltaDegrees
+                << " authoredRemaining=" << debug.turnWarpAuthoredRemainingYawDegrees
+                << " scale=" << debug.turnWarpScaleRatio
+                << " residual=" << debug.turnWarpResidualDegrees << '\n';
+            return Expect(false,
+                "A discrete Turn animation did not converge to the arbitrary target yaw");
         }
-        if (!Expect(observedDirectTurnReplan,
-            "Persistent facing intent did not directly replan a completed Turn"))
+        if (!Expect(turnEntries == 1,
+            "A static arbitrary facing target replayed a second Turn animation"))
             return false;
-
-        // Idle camera rate may keep the currently playing Turn coherent, but it
-        // must not authorize replay once the actual facing error is resolved.
-        trajectory.desiredFacingYaw = trajectory.currentFacingYaw +
-            static_cast<float>(turnSign) * 2.0f;
-        trajectory.desiredFacingYawRate = static_cast<float>(turnSign) * 30.0f;
-        for (auto& future : trajectory.future)
-            future.facingYaw = trajectory.desiredFacingYaw;
-        bool resolvedIdleTurn = false;
-        for (int frame = 0; frame < 40; ++frame)
-        {
-            if (!runtime.Update(0.033f, skeleton, clips, parameters, &trajectory, payload))
-                return Expect(false, "Motion matching stopped while resolving turn-in-place");
-            if (!runtime.GetDebugData().facingTurnRequested)
-            {
-                resolvedIdleTurn = true;
-                break;
-            }
-        }
-        if (!Expect(resolvedIdleTurn,
-            "Idle camera angular velocity replayed a resolved non-loop turn"))
+        if (!Expect(!observedResidualReplan,
+            "A static arbitrary facing target produced a residual Turn replan"))
             return false;
+        if (!Expect(preservedRootAuthorityOnTurnExit,
+			"Hybrid drive lost source Turn root authority on the outgoing switch frame"))
+			return false;
+        if (!ExpectNear(
+            std::remainder(targetFacingYaw - trajectory.currentFacingYaw, 360.0f),
+            0.0f,
+            1.0f,
+            "Turn-in-place endpoint did not match the owner Transform yaw"))
+            return false;
+      }
     }
+
+    // Capsule 驱动不拥有完整根旋转控制权：仍可保留既有离散 Turn 行为，
+    // 但不得宣称端点修正生效，也不得偷偷修改 Root Motion。
+    MotionMatchingSettings capsuleSettings = settings;
+    capsuleSettings.motionModel.driveMode = Vans::VansLocomotionDriveMode::Capsule;
+    VansMotionMatchingRuntime capsuleRuntime;
+    capsuleRuntime.Configure(capsuleSettings);
+    VansPosePayload capsulePayload;
+    Vans::VansCharacterTrajectory capsuleTrajectory = buildTrajectory(37.0f);
+    if (!capsuleRuntime.Update(
+        1.0f / 60.0f, skeleton, clips, parameters, &capsuleTrajectory, capsulePayload))
+    {
+        return Expect(false, "Capsule-drive Motion Matching fixture failed to initialize");
+    }
+    capsuleTrajectory.desiredFacingYaw = 110.0f;
+    for (auto& future : capsuleTrajectory.future)
+        future.facingYaw = capsuleTrajectory.desiredFacingYaw;
+    bool observedNonAuthoritativeTurn = false;
+    bool capsuleWarpedRootYaw = false;
+    for (int frame = 0; frame < 30; ++frame)
+    {
+        if (!capsuleRuntime.Update(
+            1.0f / 60.0f, skeleton, clips, parameters, &capsuleTrajectory, capsulePayload))
+        {
+            return Expect(false, "Capsule-drive Motion Matching stopped during a Turn");
+        }
+        const MotionMatchingDebugData& debug = capsuleRuntime.GetDebugData();
+        observedNonAuthoritativeTurn = observedNonAuthoritativeTurn ||
+            debug.turnWarpDisableReason == "RootRotationNotAuthoritative";
+        capsuleWarpedRootYaw = capsuleWarpedRootYaw || debug.turnWarpActive;
+    }
+    if (!Expect(observedNonAuthoritativeTurn && !capsuleWarpedRootYaw,
+        "Capsule drive did not explicitly disable non-authoritative Turn endpoint warping"))
+        return false;
 
     // 移动中转相机不得把 one-shot Turn 当成连续转向控制器。未来轨迹继续
     // 参与 Pose Search，剩余朝向误差由 Root Motion Steering 平滑施加。
     VansMotionMatchingRuntime movingTurnRuntime;
     movingTurnRuntime.Configure(settings);
     VansPosePayload movingTurnPayload;
+    MotionMatchingSettings movingBaselineSettings = settings;
+    movingBaselineSettings.turnInPlaceWarping.enabled = false;
+    VansMotionMatchingRuntime movingBaselineRuntime;
+    movingBaselineRuntime.Configure(movingBaselineSettings);
+    VansPosePayload movingBaselinePayload;
     Vans::VansCharacterTrajectory movingTurnTrajectory = buildTrajectory(37.0f);
     parameters["Speed"].floatVal = 0.6f;
     parameters["Direction"].floatVal = 0.0f;
@@ -3877,10 +4177,33 @@ bool TestMotionMatchingCameraFacingTurnContract()
             movingTurnTrajectory.desiredVelocityWorld * future.time;
         future.velocityWorld = movingTurnTrajectory.desiredVelocityWorld;
     }
+    bool movingPathParity = true;
+    auto compareMovingPath = [&]()
+    {
+        const MotionMatchingDebugData& enabledDebug = movingTurnRuntime.GetDebugData();
+        const MotionMatchingDebugData& baselineDebug = movingBaselineRuntime.GetDebugData();
+        const bool rotationsMatch =
+            movingTurnPayload.rootMotion.valid == movingBaselinePayload.rootMotion.valid
+            && (!movingTurnPayload.rootMotion.valid ||
+                std::abs(glm::dot(
+                    movingTurnPayload.rootMotion.rotation,
+                    movingBaselinePayload.rootMotion.rotation)) >= 0.99999f);
+        return enabledDebug.activeClip == baselineDebug.activeClip
+            && std::abs(enabledDebug.activeTime - baselineDebug.activeTime) <= 0.0001f
+            && glm::length(movingTurnPayload.rootMotion.translation
+                - movingBaselinePayload.rootMotion.translation) <= 0.0001f
+            && rotationsMatch;
+    };
     for (int frame = 0; frame < 16; ++frame)
+    {
         if (!movingTurnRuntime.Update(
-            0.033f, skeleton, clips, parameters, &movingTurnTrajectory, movingTurnPayload))
+            0.033f, skeleton, clips, parameters, &movingTurnTrajectory, movingTurnPayload)
+            || !movingBaselineRuntime.Update(
+                0.033f, skeleton, clips, parameters,
+                &movingTurnTrajectory, movingBaselinePayload))
             return Expect(false, "Motion matching stopped before the moving-turn fixture stabilized");
+        movingPathParity = movingPathParity && compareMovingPath();
+    }
 
     movingTurnTrajectory.desiredFacingYaw = movingTurnTrajectory.currentFacingYaw + 20.0f;
     movingTurnTrajectory.desiredFacingYawRate = 45.0f;
@@ -3906,8 +4229,12 @@ bool TestMotionMatchingCameraFacingTurnContract()
     for (int frame = 0; frame < 80; ++frame)
     {
         if (!movingTurnRuntime.Update(
-            0.033f, skeleton, clips, parameters, &movingTurnTrajectory, movingTurnPayload))
+            0.033f, skeleton, clips, parameters, &movingTurnTrajectory, movingTurnPayload)
+            || !movingBaselineRuntime.Update(
+                0.033f, skeleton, clips, parameters,
+                &movingTurnTrajectory, movingBaselinePayload))
             return Expect(false, "Motion matching stopped during continuous moving-camera turn");
+        movingPathParity = movingPathParity && compareMovingPath();
         const auto& debug = movingTurnRuntime.GetDebugData();
         remainedInMovingLoop = remainedInMovingLoop &&
             debug.activeClip.find("Turn") == std::string::npos &&
@@ -3926,6 +4253,9 @@ bool TestMotionMatchingCameraFacingTurnContract()
         return false;
     if (!Expect(emittedSteeredRootRotation,
         "Root Motion Steering did not publish a continuous yaw correction"))
+        return false;
+    if (!Expect(movingPathParity,
+        "Enabling Turn-in-place warping changed the existing moving Motion Matching path"))
         return false;
 
 	// Camera-relative world travel may already be curving while the held input is
@@ -4987,6 +5317,7 @@ bool TestAnimationV2RetargetMotionMatchingSceneContract()
 				&& animation.contains("motion_matching")
 				&& animation["motion_matching"].contains("motion_model")
 				&& animation["motion_matching"].contains("root_motion_steering")
+				&& animation["motion_matching"].contains("turn_in_place_warping")
 				&& animation["motion_matching"].contains("root_motion_reconciliation")
 				&& animation["motion_matching"].contains("search_groups")
 				&& animation["motion_matching"].contains("contacts")
@@ -4999,10 +5330,17 @@ bool TestAnimationV2RetargetMotionMatchingSceneContract()
 			const nlohmann::json& retarget = animation.at("retarget");
 			const nlohmann::json& motionMatching = animation.at("motion_matching");
 			const nlohmann::json& motionModel = motionMatching.at("motion_model");
+			const nlohmann::json& turnWarping =
+				motionMatching.at("turn_in_place_warping");
 			const nlohmann::json& contacts = motionMatching.at("contacts");
 			std::unordered_set<std::string> searchGroupNames;
+			std::size_t turnSearchGroupCount = 0;
 			for (const nlohmann::json& group : motionMatching.at("search_groups"))
+			{
 				searchGroupNames.insert(group.value("name", ""));
+				if (group.value("phase", "") == "Turn")
+					++turnSearchGroupCount;
+			}
 			if (!Expect(animation.value("root_motion", false)
 				&& retarget.value("enabled", false)
 				&& !retarget.contains("runtime_mode")
@@ -5011,10 +5349,19 @@ bool TestAnimationV2RetargetMotionMatchingSceneContract()
 				&& contacts.value("provider", "") == "locomotion"
 				&& contacts.value("channels", nlohmann::json::array()).size() == 2
 				&& motionModel.value("drive_mode", "") == "root_motion"
+				&& motionModel.value("root_rotation_weight", 0.0f) == 1.0f
 				&& motionMatching.value("non_loop_sampling_end_margin", 0.0f) > 0.0f
 				&& motionMatching.at("root_motion_steering").value("enabled", false)
+				&& turnWarping.value("enabled", false)
+				&& turnWarping.value("min_root_yaw_scale_ratio", 0.0f) == 0.75f
+				&& turnWarping.value("max_root_yaw_scale_ratio", 0.0f) == 1.25f
+				&& turnWarping.value("max_additive_correction_degrees", 0.0f) == 15.0f
+				&& turnWarping.value(
+					"max_additive_yaw_rate_degrees_per_second", 0.0f) == 240.0f
+				&& turnWarping.value("final_tolerance_degrees", 0.0f) == 1.0f
 				&& motionMatching.at("root_motion_reconciliation").value("enabled", false)
 				&& motionMatching.at("search_groups").size() >= 15
+				&& turnSearchGroupCount >= 2
 				&& searchGroupNames.count("StandWalkPivot") > 0
 				&& searchGroupNames.count("StandRunPivot") > 0
 				&& searchGroupNames.count("CrouchPivot") > 0,
@@ -5246,6 +5593,7 @@ bool TestDemoHallSurvivalBackAxeSceneContract()
 	constexpr const char* kSurvivalEntityGuid = "38dbe7af-653a-4aeb-bfa7-1ca72e2b972c";
 	constexpr const char* kSurvivalAnimationGuid = "87f6e3d4-c8fe-458d-82f2-3e56f20b93e5";
 	constexpr const char* kBackAxeSocketGuid = "0cf5406a-6809-4b8a-9d82-062643893f56";
+	constexpr const char* kRightHandAxeSocketGuid = "7a33b99b-0664-4b5b-bc86-a5a85ddf03b7";
 	constexpr const char* kBackAxeEntityGuid = "d12e84ac-99d2-4a35-8e13-33a6c9032f27";
 	constexpr const char* kBackAxeModelGuid = "17ee1769-fddf-4cf8-a134-2d5471e5218c";
 	constexpr const char* kBackAxeMaterialGuid = "b34fea44-f13c-4df3-a2c3-743898ba1b04";
@@ -5268,6 +5616,72 @@ bool TestDemoHallSurvivalBackAxeSceneContract()
 	const nlohmann::json* backAxeMeshEntity = nullptr;
 	if (!Expect(scene.contains("entities") && scene.at("entities").is_array(),
 		"DemoHall scene has no entities array"))
+	{
+		return false;
+	}
+	std::size_t activeMotionMatchingCharacters = 0;
+	for (const nlohmann::json& entity : scene.at("entities"))
+	{
+		for (const nlohmann::json& component :
+			 entity.value("components", nlohmann::json::array()))
+		{
+			if (component.value("type", "") != "Animation"
+				|| !component.contains("data")
+				|| !component.at("data").contains("motion_matching"))
+			{
+				continue;
+			}
+			const nlohmann::json& motionMatching =
+				component.at("data").at("motion_matching");
+			if (!motionMatching.value("enabled", false))
+				continue;
+			++activeMotionMatchingCharacters;
+			if (!Expect(motionMatching.contains("motion_model")
+				&& motionMatching.contains("turn_in_place_warping")
+				&& motionMatching.contains("databases"),
+				"DemoHall active Motion Matching character is missing Turn warping data"))
+			{
+				return false;
+			}
+			const nlohmann::json& motionModel = motionMatching.at("motion_model");
+			const nlohmann::json& turnWarping =
+				motionMatching.at("turn_in_place_warping");
+			std::size_t turnDatabaseCount = 0;
+			std::unordered_set<std::string> idleTurnClips;
+			for (const nlohmann::json& database : motionMatching.at("databases"))
+			{
+				if (database.value("phase", "") != "Turn")
+					continue;
+				++turnDatabaseCount;
+				if (database.value("name", "") != "PSD_DemoHall_Stand_Idle_Turns")
+					continue;
+				for (const nlohmann::json& clip :
+					 database.value("clips", nlohmann::json::array()))
+				{
+					idleTurnClips.insert(clip.value("name", ""));
+				}
+			}
+			if (!Expect(motionModel.value("drive_mode", "") == "root_motion"
+				&& motionModel.value("root_rotation_weight", 0.0f) == 1.0f
+				&& turnWarping.value("enabled", false)
+				&& turnWarping.value("min_root_yaw_scale_ratio", 0.0f) == 0.75f
+				&& turnWarping.value("max_root_yaw_scale_ratio", 0.0f) == 1.25f
+				&& turnWarping.value("max_additive_correction_degrees", 0.0f) == 15.0f
+				&& turnWarping.value("final_tolerance_degrees", 0.0f) == 1.0f
+				&& turnDatabaseCount >= 5
+				&& idleTurnClips.size() == 8
+				&& idleTurnClips.count("IdleTurn_L_045") > 0
+				&& idleTurnClips.count("IdleTurn_L_180") > 0
+				&& idleTurnClips.count("IdleTurn_R_045") > 0
+				&& idleTurnClips.count("IdleTurn_R_180") > 0,
+				"DemoHall Turn warping authority or left/right Turn database coverage is incomplete"))
+			{
+				return false;
+			}
+		}
+	}
+	if (!Expect(activeMotionMatchingCharacters == 2,
+		"DemoHall must explicitly configure both active Motion Matching characters"))
 	{
 		return false;
 	}
@@ -5350,15 +5764,74 @@ bool TestDemoHallSurvivalBackAxeSceneContract()
 	{
 		return false;
 	}
-	const auto socket = std::find_if(survivalRig.sockets.begin(), survivalRig.sockets.end(),
+	const auto backSocket = std::find_if(survivalRig.sockets.begin(), survivalRig.sockets.end(),
 		[](const VansRigSocketDefinition& value) { return value.name == "Back_Axe"; });
-	if (!Expect(socket != survivalRig.sockets.end()
-		&& socket->guid == kBackAxeSocketGuid
-		&& socket->boneGuid == "0aab6b03-caaa-5326-8521-c0f4f380e3bd"
-		&& glm::length(socket->positionLocal
+	const auto handSocket = std::find_if(survivalRig.sockets.begin(), survivalRig.sockets.end(),
+		[](const VansRigSocketDefinition& value) { return value.name == "RightHand_Axe"; });
+	if (!Expect(backSocket != survivalRig.sockets.end()
+		&& backSocket->guid == kBackAxeSocketGuid
+		&& backSocket->boneGuid == "0aab6b03-caaa-5326-8521-c0f4f380e3bd"
+		&& glm::length(backSocket->positionLocal
 			- glm::vec3(-99.915901f, 19.805099f, 49.349899f)) <= 1.0e-4f
-		&& glm::length(socket->scaleLocal - glm::vec3(1.0f)) <= 1.0e-5f,
+		&& glm::length(backSocket->scaleLocal - glm::vec3(1.0f)) <= 1.0e-5f,
 		"DemoHall Survival Back_Axe Socket must resolve to spine_04 with the validated back offset"))
+	{
+		return false;
+	}
+	if (!Expect(handSocket != survivalRig.sockets.end()
+		&& handSocket->guid == kRightHandAxeSocketGuid
+		&& handSocket->boneGuid == "f5b8c223-b747-5967-8751-2efed3816b1c"
+		&& glm::length(handSocket->positionLocal
+			- glm::vec3(14.579931f, -114.222816f, -19.733490f)) <= 1.0e-4f
+		&& glm::length(handSocket->scaleLocal - glm::vec3(1.0f)) <= 1.0e-5f
+		&& std::abs(handSocket->rotationLocal.w - 1.0f) <= 1.0e-5f
+		&& glm::length(glm::vec3(
+			handSocket->rotationLocal.x,
+			handSocket->rotationLocal.y,
+			handSocket->rotationLocal.z)) <= 1.0e-5f,
+		"DemoHall Survival RightHand_Axe Socket must compensate the Fire Axe middle-handle grip"))
+	{
+		return false;
+	}
+
+	const fs::path survivalModelPath = projectRoot / "Assets" / "Characters"
+		/ "Survival" / "Models" / "survival_character.fbx";
+	Vans::VansAssetMeta survivalModelMeta;
+	std::string survivalModelError;
+	if (!Expect(Vans::VansAssetMetaStorage::Load(
+		Vans::VansAssetMeta::MetaPathFor(survivalModelPath),
+		survivalModelMeta, survivalModelError), survivalModelError.c_str()))
+	{
+		return false;
+	}
+	Assimp::Importer survivalImporter;
+	const aiScene* survivalScene = survivalImporter.ReadFile(
+		survivalModelPath.string(), aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_GenNormals);
+	if (!Expect(survivalScene != nullptr, survivalImporter.GetErrorString()))
+		return false;
+	Skeleton survivalSkeleton;
+	VansSkinnedMeshLoader::ExtractSkeleton(survivalScene, survivalSkeleton, 1.0f,
+		Vans::ReadSkeletalMeshImportSettings(survivalModelMeta));
+	VansCompiledAnimationRig compiledSurvivalRig;
+	std::string compileRigError;
+	if (!Expect(VansAnimationRigCompiler::Compile(
+		survivalRig, survivalSkeleton, compiledSurvivalRig, compileRigError),
+		compileRigError.c_str()))
+	{
+		return false;
+	}
+	const int handSocketIndex = compiledSurvivalRig.FindSocketByGuid(kRightHandAxeSocketGuid);
+	bool handSocketCompilesToWeaponBone = handSocketIndex >= 0;
+	if (handSocketCompilesToWeaponBone)
+	{
+		const int boneIndex = compiledSurvivalRig.sockets[
+			static_cast<std::size_t>(handSocketIndex)].boneIndex;
+		handSocketCompilesToWeaponBone = boneIndex >= 0
+			&& boneIndex < static_cast<int>(survivalSkeleton.bones.size())
+			&& survivalSkeleton.bones[static_cast<std::size_t>(boneIndex)].name == "weapon_r";
+	}
+	if (!Expect(handSocketCompilesToWeaponBone,
+		"DemoHall Survival RightHand_Axe Socket did not compile to the weapon_r runtime bone"))
 	{
 		return false;
 	}
@@ -6532,14 +7005,20 @@ VansGraphics::Skeleton BuildLayerContractSkeleton()
 	skeleton.sourceSkeletonGuid = "test-skeleton";
     skeleton.bones.resize(3);
     skeleton.bones[0].name = "root";
+	skeleton.bones[0].guid = "00000000-0000-4000-8000-000000000001";
+	skeleton.bones[0].canonicalPath = "root";
     skeleton.bones[0].id = 0;
     skeleton.bones[0].parentIndex = -1;
     skeleton.bones[0].children = { 1 };
     skeleton.bones[1].name = "spine";
+	skeleton.bones[1].guid = "00000000-0000-4000-8000-000000000002";
+	skeleton.bones[1].canonicalPath = "root/spine";
     skeleton.bones[1].id = 1;
     skeleton.bones[1].parentIndex = 0;
     skeleton.bones[1].children = { 2 };
     skeleton.bones[2].name = "arm";
+	skeleton.bones[2].guid = "00000000-0000-4000-8000-000000000003";
+	skeleton.bones[2].canonicalPath = "root/spine/arm";
     skeleton.bones[2].id = 2;
     skeleton.bones[2].parentIndex = 1;
     for (size_t index = 0; index < skeleton.bones.size(); ++index)
@@ -6549,6 +7028,7 @@ VansGraphics::Skeleton BuildLayerContractSkeleton()
         skeleton.boneNameToIndex[skeleton.bones[index].name] = static_cast<int>(index);
     }
     skeleton.BuildTopologicalOrder();
+	skeleton.RebuildIdentityMapsAndSignature();
     return skeleton;
 }
 
@@ -6697,7 +7177,7 @@ bool TestAnimatorRuntimeCompilerContract()
         return false;
 	VansAnimationRigAsset rig;
 	rig.name = "RuntimeCompilerRig";
-	rig.skeletonGuid = "88888888-8888-4888-8888-888888888888";
+	rig.skeletonGuid = skeleton.sourceSkeletonGuid;
 	const fs::path rigPath = temporary.path / "runtime.vanimrig";
 	if (!Expect(VansAnimationRigStorage::SaveAtomic(rigPath, rig, error), error.c_str()))
 		return false;
@@ -9522,11 +10002,9 @@ bool TestAsyncComputeSubmitGraphContract()
 	const VkQueue fakeComputeQueue = reinterpret_cast<VkQueue>(uintptr_t(3));
 	const VkCommandBuffer fakeComputeCmd = reinterpret_cast<VkCommandBuffer>(uintptr_t(4));
 	const VkCommandBuffer fakeGraphicsCmd = reinterpret_cast<VkCommandBuffer>(uintptr_t(5));
-	const VkQueue fakeShadowQueue = reinterpret_cast<VkQueue>(uintptr_t(6));
-	const VkCommandBuffer fakeSSAOCommandBuffer = reinterpret_cast<VkCommandBuffer>(uintptr_t(7));
 
 	VansFrameSubmitOrchestrator graph;
-	graph.Bind(fakeDevice, fakeGraphicsQueue, fakeComputeQueue, fakeShadowQueue);
+	graph.Bind(fakeDevice, fakeGraphicsQueue, fakeComputeQueue);
 	VansFrameSubmitNode producer;
 	producer.name = "TileLight";
 	producer.queue = VansQueueRole::Compute;
@@ -9562,62 +10040,10 @@ bool TestAsyncComputeSubmitGraphContract()
 	}
 
 	graph.Reset();
-	VansFrameSubmitNode ssaoRawProducer;
-	ssaoRawProducer.name = "SSAORaw";
-	ssaoRawProducer.queue = VansQueueRole::Graphics;
-	ssaoRawProducer.commandBuffers = { fakeGraphicsCmd };
-	ssaoRawProducer.signals = { VansSyncPoint::SSAORawReady };
-	ssaoRawProducer.resources = {
-		{ "SSAORaw", VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
-			VK_IMAGE_LAYOUT_GENERAL, true, true, false, false }
-	};
-	graph.AddNode(std::move(ssaoRawProducer));
-
-	VansFrameSubmitNode asyncSSAO;
-	asyncSSAO.name = "AsyncSSAO";
-	asyncSSAO.queue = VansQueueRole::Shadow;
-	asyncSSAO.commandBuffers = { fakeSSAOCommandBuffer };
-	asyncSSAO.waits = {
-		{ VansSyncPoint::SSAORawReady, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT }
-	};
-	asyncSSAO.signals = { VansSyncPoint::SSAOReady };
-	asyncSSAO.resources = {
-		{ "SSAORaw", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
-			VK_IMAGE_LAYOUT_GENERAL, true, false, false, false },
-		{ "SSAO", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
-			VK_IMAGE_LAYOUT_GENERAL, true, true, false, false }
-	};
-	graph.AddNode(std::move(asyncSSAO));
-
-	VansFrameSubmitNode ssaoConsumer;
-	ssaoConsumer.name = "DeferredSSAOConsumer";
-	ssaoConsumer.queue = VansQueueRole::Graphics;
-	ssaoConsumer.commandBuffers = { fakeGraphicsCmd };
-	ssaoConsumer.waits = {
-		{ VansSyncPoint::SSAOReady, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT }
-	};
-	ssaoConsumer.resources = {
-		{ "SSAO", VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
-			VK_IMAGE_LAYOUT_GENERAL, true, false, false, false }
-	};
-	ssaoConsumer.waitForCompletion = true;
-	graph.AddNode(std::move(ssaoConsumer));
-	if (!graph.Validate(&validationError))
-		return false;
-	const std::string ssaoDebugSummary = graph.BuildDebugSummary();
-	if (ssaoDebugSummary.find("AsyncSSAO") == std::string::npos
-		|| ssaoDebugSummary.find("SSAORawReady") == std::string::npos
-		|| ssaoDebugSummary.find("SSAOReady") == std::string::npos
-		|| ssaoDebugSummary.find("queue=Shadow") == std::string::npos)
-	{
-		return false;
-	}
-
-	graph.Reset();
 	VansFrameSubmitNode shadowMaps;
 	shadowMaps.name = "ShadowMaps";
-	shadowMaps.queue = VansQueueRole::Shadow;
-	shadowMaps.commandBuffers = { fakeSSAOCommandBuffer };
+	shadowMaps.queue = VansQueueRole::Graphics;
+	shadowMaps.commandBuffers = { fakeGraphicsCmd };
 	shadowMaps.signals = { VansSyncPoint::ShadowMapsReady };
 	shadowMaps.resources = {
 		{ "PunctualShadowAtlas0", VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
@@ -10246,6 +10672,8 @@ int main(int argc, char** argv)
 	VANS_INIT_MAIN_THREAD();
 	if (argc == 2 && std::string(argv[1]) == "--render-system")
 		return TestRenderSystemLifecycleContract() &&
+			TestRenderSystemStartupFailureContract() &&
+			TestRenderSystemDestructorFallbackContract() &&
 			TestRenderSystemPrepareFailureContract() &&
 			TestRenderSystemOneFrameLeadContract() &&
 			TestRenderFramePacketContract() &&
@@ -10256,6 +10684,8 @@ int main(int argc, char** argv)
 			TestDrawSubmissionContract() &&
 			TestGIProbeUpdateScheduleContract() &&
 			TestFramePhaseThreadLocalContract() ? 0 : 139;
+	if (argc == 2 && std::string(argv[1]) == "--profiler")
+		return TestProfilerSnapshotContract() ? 0 : 140;
 	if (argc == 2 && std::string(argv[1]) == "--asset-type-serialization")
 		return TestAssetTypeSerializationContract() ? 0 : 136;
 	if (argc == 2 && std::string(argv[1]) == "--animation-project-assets")
@@ -10272,6 +10702,15 @@ int main(int argc, char** argv)
 		return TestTimelineDemoHallAssetContract() ? 0 : 84;
 	if (argc == 2 && std::string(argv[1]) == "--gaf-demohall-window-break")
 		return TestGAFDemoHallWindowBreakContract() ? 0 : 108;
+	if (argc == 2 && std::string(argv[1]) == "--gaf-demohall-player-attack")
+		return TestGAFDemoHallPlayerAttackContract() ? 0 : 140;
+	if (argc == 2 && std::string(argv[1]) == "--character-motion")
+		return TestCharacterTrajectoryGeneratorContract() ? 0 : 141;
+	if (argc == 2 && std::string(argv[1]) == "--motion-matching-turn-warping")
+		return (TestTurnInPlaceWarpingMathContract()
+			&& TestMotionMatchingCameraFacingTurnContract()) ? 0 : 110;
+	if (argc == 2 && std::string(argv[1]) == "--animation-editor-preview")
+		return TestAnimationEditorPreviewPolicyContract() ? 0 : 143;
 	if (argc == 2 && std::string(argv[1]) == "--procedural-animation")
 		return RunProceduralAnimationContractTests() ? 0 : 129;
 	if (argc == 2 && std::string(argv[1]) == "--procedural-animation-integration")
@@ -10337,6 +10776,10 @@ int main(int argc, char** argv)
 		return 109;
 	if (!TestMotionMatchingAutoBuildLocomotionMetadataContract())
 		return 31;
+	if (!TestTurnInPlaceWarpingMathContract())
+		return 142;
+	if (!TestAnimationEditorPreviewPolicyContract())
+		return 143;
 	if (!TestMotionMatchingCameraFacingTurnContract())
 		return 110;
 	if (!TestCameraControlArbiterContract())
@@ -10377,6 +10820,8 @@ int main(int argc, char** argv)
 		return 102;
 	if (!TestGAFDemoHallWindowBreakContract())
 		return 108;
+	if (!TestGAFDemoHallPlayerAttackContract())
+		return 140;
 	if (!TestGAFPackagingContract())
 		return 103;
 	if (!TestGAFNetworkContract())
@@ -10510,6 +10955,8 @@ int main(int argc, char** argv)
 	if (!TestAnimationSyncedGraphStateContract())
 		return 54;
 	if (!TestRenderSystemLifecycleContract() ||
+		!TestRenderSystemStartupFailureContract() ||
+		!TestRenderSystemDestructorFallbackContract() ||
 		!TestRenderSystemPrepareFailureContract() ||
 		!TestRenderSystemOneFrameLeadContract() ||
 		!TestRenderOutcomeLedgerContract() ||

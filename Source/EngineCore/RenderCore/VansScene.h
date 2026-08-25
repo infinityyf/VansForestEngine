@@ -892,6 +892,8 @@ namespace VansGraphics
 		// Per-frame skeletal animation CPU update + GPU bone matrix upload.
 
 		void EvaluateAnimations(float deltaTime);
+		bool EvaluateEditorAnimationPreviewStep(
+			VansAnimationNode* animationNode, float deltaTime);
 		void UploadAnimationRenderData(const VansRenderSceneFrameSnapshot& snapshot);
 		void UpdateActionsEarly(double deltaSeconds);
 		bool RunActionLateContinuation();

@@ -55,13 +55,11 @@ namespace VansGraphics
 
 	struct VansLogicFrameIdTag;
 	struct VansRenderFrameIdTag;
-	struct VansGpuSubmitSerialTag;
 	struct VansSurfaceEpochTag;
 	struct VansRenderWorkSerialTag;
 
 	using VansLogicFrameId = VansRenderSerial<VansLogicFrameIdTag>;
 	using VansRenderFrameId = VansRenderSerial<VansRenderFrameIdTag>;
-	using VansGpuSubmitSerial = VansRenderSerial<VansGpuSubmitSerialTag>;
 	using VansSurfaceEpoch = VansRenderSerial<VansSurfaceEpochTag>;
 
 	enum class VansRenderSubmissionPrepareStatus
@@ -160,6 +158,12 @@ namespace VansGraphics
 
 	private:
 		friend class VansRenderFrameBuilder;
+		friend class VansRenderFrameSubmission;
+
+		VansRenderSceneFrameSnapshot TakeSceneForRendering()
+		{
+			return std::move(m_Scene);
+		}
 
 		VansRenderFramePacket(
 			VansRenderFrameId frameId,
@@ -211,6 +215,16 @@ namespace VansGraphics
 			return m_MutationsBeforeFrame;
 		}
 		const VansRenderFramePacket& Frame() const { return m_Frame; }
+		// 发布后的 packet 在 Main 侧保持只读；进入 RenderThread 后，backend
+		// 通过 submission 一次性接管场景快照，避免再次深拷贝整帧 vector。
+		bool ConsumeSceneForRendering(VansRenderSceneFrameSnapshot& output)
+		{
+			if (m_SceneConsumed)
+				return false;
+			output = m_Frame.TakeSceneForRendering();
+			m_SceneConsumed = true;
+			return true;
+		}
 		bool AttachOverlay(std::unique_ptr<IVansRenderFrameOverlay> overlay)
 		{
 			if (m_Overlay || !overlay)
@@ -225,6 +239,7 @@ namespace VansGraphics
 		VansRenderMutationBatch m_MutationsBeforeFrame;
 		VansRenderFramePacket m_Frame;
 		std::unique_ptr<IVansRenderFrameOverlay> m_Overlay;
+		bool m_SceneConsumed = false;
 	};
 
 	class VansRenderFrameBuilder final

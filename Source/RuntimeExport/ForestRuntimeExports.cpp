@@ -388,7 +388,7 @@ FOREST_RUNTIME_API int ForestRuntime_CreateWindow(ForestRuntimeHandle* runtime, 
 	runtime->renderSystem = std::make_unique<VansGraphics::VansRenderSystem>(
 		*runtime->device,
 		*runtime->scene,
-		1u);
+		true);
 
 	RegisterEngineShaders();
 	VansGraphics::VansSceneProjectResourceBuilder::LoadShadersFromRegistry(

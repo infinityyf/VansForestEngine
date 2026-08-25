@@ -340,6 +340,45 @@ bool DecodeMotionMatching(const VansSerializedValue& mmJson, MotionMatchingSetti
 		settings.steering.minMovementSpeed = ReadFloatField(
 			*steering, "min_movement_speed", settings.steering.minMovementSpeed);
 	}
+	if (const VansSerializedValue* turnWarping = ReadObjectField(
+		mmJson, "turn_in_place_warping"))
+	{
+		settings.turnInPlaceWarping.enabled = ReadBoolField(
+			*turnWarping, "enabled", settings.turnInPlaceWarping.enabled);
+		settings.turnInPlaceWarping.maxTargetPredictionTime = ReadFloatField(
+			*turnWarping, "max_target_prediction_time",
+			settings.turnInPlaceWarping.maxTargetPredictionTime);
+		settings.turnInPlaceWarping.proceduralTargetTime = ReadFloatField(
+			*turnWarping, "procedural_target_time",
+			settings.turnInPlaceWarping.proceduralTargetTime);
+		settings.turnInPlaceWarping.correctionHalfLife = ReadFloatField(
+			*turnWarping, "correction_half_life",
+			settings.turnInPlaceWarping.correctionHalfLife);
+		settings.turnInPlaceWarping.minRootYawScaleRatio = ReadFloatField(
+			*turnWarping, "min_root_yaw_scale_ratio",
+			settings.turnInPlaceWarping.minRootYawScaleRatio);
+		settings.turnInPlaceWarping.maxRootYawScaleRatio = ReadFloatField(
+			*turnWarping, "max_root_yaw_scale_ratio",
+			settings.turnInPlaceWarping.maxRootYawScaleRatio);
+		settings.turnInPlaceWarping.rootYawThresholdDegrees = ReadFloatField(
+			*turnWarping, "root_yaw_threshold_degrees",
+			settings.turnInPlaceWarping.rootYawThresholdDegrees);
+		settings.turnInPlaceWarping.maxAdditiveCorrectionDegrees = ReadFloatField(
+			*turnWarping, "max_additive_correction_degrees",
+			settings.turnInPlaceWarping.maxAdditiveCorrectionDegrees);
+		settings.turnInPlaceWarping.maxAdditiveYawRateDegreesPerSecond = ReadFloatField(
+			*turnWarping, "max_additive_yaw_rate_degrees_per_second",
+			settings.turnInPlaceWarping.maxAdditiveYawRateDegreesPerSecond);
+		settings.turnInPlaceWarping.finalToleranceDegrees = ReadFloatField(
+			*turnWarping, "final_tolerance_degrees",
+			settings.turnInPlaceWarping.finalToleranceDegrees);
+		settings.turnInPlaceWarping.endpointScaleCostWeight = ReadFloatField(
+			*turnWarping, "endpoint_scale_cost_weight",
+			settings.turnInPlaceWarping.endpointScaleCostWeight);
+		settings.turnInPlaceWarping.endpointResidualCostWeight = ReadFloatField(
+			*turnWarping, "endpoint_residual_cost_weight",
+			settings.turnInPlaceWarping.endpointResidualCostWeight);
+	}
 	if (const VansSerializedValue* reconciliation = ReadObjectField(mmJson, "root_motion_reconciliation"))
 	{
 		settings.rootMotionReconciliation.enabled = ReadBoolField(

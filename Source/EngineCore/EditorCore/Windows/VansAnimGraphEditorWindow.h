@@ -121,7 +121,11 @@ namespace VansGraphics
 		void CloseImmediately();
 
 		Vans::EditorAPI::AnimationPreviewSessionId m_PreviewSessionId = 0;
-		std::string m_PreviewSessionModelGuid;
+		std::string m_PreviewSessionTargetKey;
+		Vans::EditorAPI::AnimationPreviewTargetKind m_PreviewTargetKind =
+			Vans::EditorAPI::AnimationPreviewTargetKind::IsolatedModel;
+		std::string m_PreviewSceneEntityGuid;
+		std::string m_PreviewSceneAnimationComponentGuid;
 		std::string m_PreviewSelectedSlotId;
 		std::string m_PreviewSelectedClipName;
 		std::uint64_t m_PreviewRevision = 0;
@@ -130,6 +134,7 @@ namespace VansGraphics
 		double m_PreviewCompileQueuedAt = 0.0;
 		bool m_PreviewPlaying = true;
 		float m_PreviewSpeed = 1.0f;
+		float m_PreviewPanelHeight = 285.0f;
 		float m_PreviewYaw = 0.35f;
 		float m_PreviewPitch = -0.15f;
 		float m_PreviewZoom = 0.9f;

@@ -138,6 +138,58 @@ namespace Vans
 			AnimationToEngineLocalPlanar(animationVector), facingYawDegrees);
 	}
 
+	struct VansRootMotionOwnerDelta
+	{
+		glm::vec3 translationWorld{ 0.0f };
+		float yawDegrees = 0.0f;
+	};
+
+	// Root Motion 始终是相对拥有者当前 Transform 的局部增量，不能被解释成
+	// 动画文件中的绝对世界 Transform。动画空间以 -Y 为前、Z 为旋转轴；
+	// CCT/场景空间以 +Z 为前、Y 为旋转轴。
+	inline VansRootMotionOwnerDelta ResolveAnimationRootMotionOwnerDelta(
+		const glm::vec3& animationTranslation,
+		const glm::quat& animationRotation,
+		float ownerFacingYawDegrees,
+		const glm::vec3& animationToWorldScale)
+	{
+		VansRootMotionOwnerDelta result;
+		const glm::vec3 scaledTranslation = animationTranslation * animationToWorldScale;
+		// 动画空间(X, Y, Z-up)转换到引擎空间(X, Y-up, Z)，再以拥有者当前
+		// 朝向旋转到世界空间。保留垂直分量供非 CCT 角色使用；CCT 会继续按
+		// 自身重力/落地规则接管 world Y。
+		const glm::vec3 engineLocal(
+			scaledTranslation.x,
+			scaledTranslation.z,
+			-scaledTranslation.y);
+		const float ownerYawRadians = glm::radians(ownerFacingYawDegrees);
+		result.translationWorld = glm::mat3(glm::rotate(
+			glm::mat4(1.0f), ownerYawRadians, glm::vec3(0.0f, 1.0f, 0.0f))) *
+			engineLocal;
+
+		const float rotationLength = glm::length(animationRotation);
+		if (!std::isfinite(rotationLength) || rotationLength <= 1.0e-6f)
+			return result;
+		const glm::vec3 rotatedForward = glm::normalize(animationRotation)
+			* glm::vec3(0.0f, -1.0f, 0.0f);
+		const float planarLength = glm::length(glm::vec2(rotatedForward.x, rotatedForward.y));
+		if (planarLength > 1.0e-6f)
+			result.yawDegrees = glm::degrees(std::atan2(
+				rotatedForward.x, -rotatedForward.y));
+		return result;
+	}
+
+	inline VansRootMotionOwnerDelta ResolveAnimationRootMotionOwnerDelta(
+		const glm::vec3& animationTranslation,
+		const glm::quat& animationRotation,
+		float ownerFacingYawDegrees,
+		float animationToWorldScale)
+	{
+		return ResolveAnimationRootMotionOwnerDelta(
+			animationTranslation, animationRotation, ownerFacingYawDegrees,
+			glm::vec3(animationToWorldScale));
+	}
+
 	// First-order facing response to a target yaw moving at a constant angular
 	// velocity. This lets Pose Search see where a rotating camera is heading,
 	// instead of assuming the camera stops on every individual frame.

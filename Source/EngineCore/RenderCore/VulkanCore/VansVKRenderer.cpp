@@ -434,7 +434,6 @@ namespace VansGraphics
 		m_VansVKGBufferMaterialCommandBuffer.ResetCommandBuffer(false);
 		m_VansVKSSAORawCommandBuffer.ResetCommandBuffer(false);
 		m_VansVKGraphicsScreenCommandBuffer.ResetCommandBuffer(false);
-		m_VansVKAsyncSSAOCommandBuffer.ResetCommandBuffer(false);
 		m_VansVKVegetationCommandBuffer.ResetCommandBuffer(false);
 		m_VansVKEarlyAuxCommandBuffer.ResetCommandBuffer(false);
 		m_VansVKAsyncCloudCommandBuffer.ResetCommandBuffer(false);
@@ -444,7 +443,6 @@ namespace VansGraphics
 		ResetGBufferSecondaryCommandBuffersIfNeeded();
 		m_CurrentFrameContext.ssaoRawRecorded = false;
 		m_CurrentFrameContext.graphicsScreenRecorded = false;
-		m_CurrentFrameContext.asyncSSAORecorded = false;
 		m_CurrentFrameContext.shadowMapsRecorded = false;
 		m_CurrentFrameContext.hairShadowRecorded = false;
 		m_CurrentFrameContext.gbufferRecorded = false;
@@ -536,27 +534,31 @@ namespace VansGraphics
 			<< "  render=" << m_RenderWidth << "x" << m_RenderHeight);
 	}
 
-	void VansVKDevice::BeforeRendering()
+	bool VansVKDevice::BeforeRendering()
 	{
-		CreateVKSemaphore(m_SwapChainImageAcquiredSemaphore);
-		CreateVKSemaphore(m_CommandBufferReadyToPresentSemaphore);
+		if (!CreateVKSemaphore(m_SwapChainImageAcquiredSemaphore) ||
+			!CreateVKSemaphore(m_CommandBufferReadyToPresentSemaphore))
+		{
+			VANS_LOG_ERROR("[VansVKDevice] Failed to initialize renderer semaphores.");
+			return false;
+		}
 		const VkExtent2D initialRenderExtent = CalculateUpscalerRenderExtent();
 		m_RenderWidth = initialRenderExtent.width;
 		m_RenderHeight = initialRenderExtent.height;
 		if (!InitializeCameraFrameResources())
 		{
 			VANS_LOG_ERROR("[VansVKDevice] Failed to initialize renderer-owned camera frame resources.");
-			return;
+			return false;
 		}
 		if (!InitializeLightFrameResources())
 		{
 			VANS_LOG_ERROR("[VansVKDevice] Failed to initialize renderer-owned light frame resources.");
-			return;
+			return false;
 		}
 		if (!m_DrawInstanceArena.Initialize(m_VansVKLogicDevice))
 		{
 			VANS_LOG_ERROR("[VansVKDevice] Failed to initialize renderer-owned draw-instance resources.");
-			return;
+			return false;
 		}
 
 		auto renderPassManager = VansRenderPassManager::GetInstance();
@@ -589,7 +591,11 @@ namespace VansGraphics
 		// Scene loading is deferred: done via LoadSceneForRendering() from the
 		// editor after the user selects a project and opens a scene file.
 		const VkExtent2D fsrDisplayExtent = CalculateUpscalerOutputExtent();
-		EnsureUpscalerOutputImage(fsrDisplayExtent);
+		if (!EnsureUpscalerOutputImage(fsrDisplayExtent))
+		{
+			VANS_LOG_ERROR("[VansVKDevice] Failed to initialize the upscaler output image.");
+			return false;
+		}
 		bool initialUpscalerRebuildRequired = false;
 		if (m_UpscalerManager.GetEffectiveConfig().backend == VansUpscalerBackend::DLSS)
 		{
@@ -642,6 +648,7 @@ namespace VansGraphics
 		// RuntimeUI frontend initialization is performed by the application on
 		// Main after this RT setup has published readiness. This backend only
 		// records and tears down renderer-side Noesis work.
+		return true;
 	}
 
 	void VansVKDevice::BuildCurrentRenderFramePlan(VansRenderPassManager* renderPassManager)
@@ -661,7 +668,6 @@ namespace VansGraphics
 		m_CurrentFrameContext.frameSubmitSucceeded = true;
 		m_CurrentFrameContext.ssaoRawRecorded = false;
 		m_CurrentFrameContext.graphicsScreenRecorded = false;
-		m_CurrentFrameContext.asyncSSAORecorded = false;
 		m_CurrentFrameContext.shadowMapsRecorded = false;
 		m_CurrentFrameContext.hairShadowRecorded = false;
 		m_CurrentFrameContext.gbufferRecorded = false;
@@ -830,7 +836,6 @@ namespace VansGraphics
 		m_CurrentFrameContext.graphicsFence = m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence;
 		m_CurrentFrameContext.ssaoRawFence = m_VansVKSSAORawCommandBuffer.m_CommandBufferFinishSubmitFence;
 		m_CurrentFrameContext.graphicsScreenFence = m_VansVKGraphicsScreenCommandBuffer.m_CommandBufferFinishSubmitFence;
-		m_CurrentFrameContext.asyncSSAOFence = m_VansVKAsyncSSAOCommandBuffer.m_CommandBufferFinishSubmitFence;
 		m_CurrentFrameContext.shadowMapsFence = m_VansVKShadowMapsCommandBuffer.m_CommandBufferFinishSubmitFence;
 		m_CurrentFrameContext.hairShadowFence = m_VansVKHairShadowCommandBuffer.m_CommandBufferFinishSubmitFence;
 		m_CurrentFrameContext.gbufferFence = m_VansVKGBufferCommandBuffer.m_CommandBufferFinishSubmitFence;
@@ -856,7 +861,6 @@ namespace VansGraphics
 		m_CurrentFrameContext.graphicsFence = slot.graphicsCommandBuffer.m_CommandBufferFinishSubmitFence;
 		m_CurrentFrameContext.ssaoRawFence = slot.graphicsCommandBuffer.m_CommandBufferFinishSubmitFence;
 		m_CurrentFrameContext.graphicsScreenFence = slot.graphicsCommandBuffer.m_CommandBufferFinishSubmitFence;
-		m_CurrentFrameContext.asyncSSAOFence = slot.graphicsCommandBuffer.m_CommandBufferFinishSubmitFence;
 		m_CurrentFrameContext.shadowMapsFence = slot.graphicsCommandBuffer.m_CommandBufferFinishSubmitFence;
 		m_CurrentFrameContext.hairShadowFence = slot.graphicsCommandBuffer.m_CommandBufferFinishSubmitFence;
 		m_CurrentFrameContext.gbufferFence = slot.graphicsCommandBuffer.m_CommandBufferFinishSubmitFence;
@@ -870,7 +874,6 @@ namespace VansGraphics
 		m_CurrentFrameContext.frameSubmitSucceeded = slot.frameSubmitSucceeded;
 		m_CurrentFrameContext.ssaoRawRecorded = false;
 		m_CurrentFrameContext.graphicsScreenRecorded = false;
-		m_CurrentFrameContext.asyncSSAORecorded = false;
 		m_CurrentFrameContext.shadowMapsRecorded = false;
 		m_CurrentFrameContext.hairShadowRecorded = false;
 		m_CurrentFrameContext.gbufferRecorded = false;
@@ -1047,14 +1050,45 @@ namespace VansGraphics
 		return true;
 	}
 
-	void VansVKDevice::SetFrameContextRingEnabled(bool enabled, uint32_t framesInFlight)
+	bool VansVKDevice::ApplyCommandRecordingSettings(
+		bool parallelEnabled,
+		bool frameContextRingEnabled,
+		uint32_t framesInFlight,
+		bool asyncComputeEnabled)
+	{
+		const uint32_t configuredFrames =
+			std::clamp(framesInFlight, 1u, kMaxFrameContextsInFlight);
+		const bool shouldEnableRing =
+			frameContextRingEnabled && configuredFrames > 1;
+		const bool ringResourcesNeedChange =
+			m_EnableFrameContextRing != shouldEnableRing ||
+			(shouldEnableRing && !m_FrameContextRingResourcesReady);
+		const bool asyncStateNeedsChange =
+			m_AsyncComputeRequested != asyncComputeEnabled;
+		if ((ringResourcesNeedChange || asyncStateNeedsChange) &&
+			m_VansVKLogicDevice != VK_NULL_HANDLE && !WaitForDevice())
+		{
+			return false;
+		}
+
+		m_EnableParallelCommandRecording = parallelEnabled;
+		ApplyFrameContextRingStateAtIdle(
+			frameContextRingEnabled,
+			configuredFrames);
+		if (asyncStateNeedsChange)
+			ApplyAsyncComputeStateAtIdle(asyncComputeEnabled);
+		return true;
+	}
+
+	void VansVKDevice::ApplyFrameContextRingStateAtIdle(
+		bool enabled,
+		uint32_t framesInFlight)
 	{
 		m_ConfiguredFramesInFlight = std::clamp(framesInFlight, 1u, kMaxFrameContextsInFlight);
 		const bool shouldEnable = enabled && m_ConfiguredFramesInFlight > 1;
 		if (m_EnableFrameContextRing == shouldEnable && (!shouldEnable || m_FrameContextRingResourcesReady))
 			return;
 
-		WaitForDevice();
 		if (!shouldEnable)
 		{
 			DestroyFrameContextRingResources();
@@ -1273,9 +1307,11 @@ namespace VansGraphics
 					VANS_PROFILE_SCOPE("Vulkan::RecordVegetationCompute", Vans::ProfileCategory::CommandRecord);
 					m_Scene->RecordVegetationCompute(frameGraphicsCommandBuffer);
 				});
-			// 重置本帧 GPU Profiler 查询池。
+			// 在本帧第一条 graphics command buffer 中只记录一次 query reset。
 #if VANS_PROFILER_ENABLED
-			Vans::VansGpuProfiler::Get().BeginFrame(cmd);
+			Vans::VansGpuProfiler::Get().BeginQueue(
+				cmd,
+				Vans::VansGpuQueueLane::Graphics);
 #endif
 			RecordFrameGpuStep(
 				m_CurrentFramePlan,
@@ -1618,15 +1654,9 @@ namespace VansGraphics
 					}
 					DrawSceneTransparentPost(renderPassManager, frameGraphicsCommandBuffer);
 				});
-			m_pActiveCommandBuffer = &m_VansVKCommandBuffer;
 		}
 		else
 		{
-			// 若硬件提供第二条 Graphics queue，将 SSAO 滤波提交到该 queue。
-			const bool useSecondaryGraphicsSSAO = m_QueueCapabilities.hasSecondaryGraphicsQueue;
-#if VANS_PROFILER_ENABLED
-			Vans::VansGpuProfiler::Get().PrepareFrame();
-#endif
 			// Vegetation 是 Shadow/GBuffer 唯一的 early-compute 前置条件，单独提交后
 			// 两条 graphics queue 无需等待 TileLight 与 MainCameraHiZ。
 			m_pActiveCommandBuffer = &m_VansVKVegetationCommandBuffer;
@@ -1752,8 +1782,8 @@ namespace VansGraphics
 					return;
 				}
 				{
-					Vans::VansGpuProfiler::Get().BeginQueue(shadowCmd, Vans::VansGpuQueueLane::Shadow);
-					VANS_GPU_SCOPE_LANE(shadowCmd, "Cascade Shadow", Vans::VansGpuQueueLane::Shadow);
+					Vans::VansGpuProfiler::Get().BeginQueue(shadowCmd, Vans::VansGpuQueueLane::Graphics);
+					VANS_GPU_SCOPE_LANE(shadowCmd, "Cascade Shadow", Vans::VansGpuQueueLane::Graphics);
 					const int cascadeCount = VansConfigration::GetInstance()->GetCascadeCount();
 					for (int cascade = 0; cascade < cascadeCount; ++cascade)
 					{
@@ -1784,7 +1814,7 @@ namespace VansGraphics
 					const char* scopeName = atlasIndex == VANS_PUNCTUAL_SHADOW_PRIMARY_ATLAS_INDEX
 						? "Punctual Shadow Atlas 0"
 						: "Punctual Shadow Atlas 1";
-					VANS_GPU_SCOPE_LANE(shadowCmd, scopeName, Vans::VansGpuQueueLane::Shadow);
+					VANS_GPU_SCOPE_LANE(shadowCmd, scopeName, Vans::VansGpuQueueLane::Graphics);
 					RecordFrameGraphicsPassNoGpuScope(
 						m_CurrentFramePlan,
 						VansRenderPassNames::PunctualShadow,
@@ -1817,7 +1847,7 @@ namespace VansGraphics
 					return;
 				}
 				{
-					VANS_GPU_SCOPE_LANE(shadowCmd, "Hair Deep Opacity", Vans::VansGpuQueueLane::Shadow);
+					VANS_GPU_SCOPE_LANE(shadowCmd, "Hair Deep Opacity", Vans::VansGpuQueueLane::Graphics);
 					RecordFrameGraphicsPassNoGpuScope(
 						m_CurrentFramePlan,
 						VansRenderPassNames::HairDeepOpacity,
@@ -1944,7 +1974,7 @@ namespace VansGraphics
 			}
 			m_CurrentFrameContext.gbufferMaterialRecorded = true;
 
-			// SSAO 原始结果独立提交，SSAO filter 不再借用 HZBReady 作为粗粒度代理依赖。
+			// SSAO 原始结果独立提交，SSAO filter 只等待精确的 SSAORawReady 依赖。
 			m_pActiveCommandBuffer = &m_VansVKSSAORawCommandBuffer;
 			{
 				VANS_PROFILE_SCOPE("Vulkan::RecordSSAORaw", Vans::ProfileCategory::CommandRecord);
@@ -2080,35 +2110,6 @@ namespace VansGraphics
 			}
 			m_CurrentFrameContext.giDataRecorded = true;
 
-			if (useSecondaryGraphicsSSAO)
-			{
-				m_pActiveCommandBuffer = &m_VansVKAsyncSSAOCommandBuffer;
-				VANS_PROFILE_SCOPE("Vulkan::RecordAsyncSSAO", Vans::ProfileCategory::CommandRecord);
-				if (!m_VansVKAsyncSSAOCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
-				{
-					m_CurrentFrameContext.frameSubmitSucceeded = false;
-					VANS_LOG_ERROR("[VansVKDevice] Failed to begin async SSAO command buffer.");
-					ResetAsyncFrameCommandBuffersAfterFailure();
-					return;
-				}
-				const VkCommandBuffer asyncSSAOCmd = m_VansVKAsyncSSAOCommandBuffer.GetVKCommandBuffer();
-				RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::SSAOFilter, [&]()
-				{
-					// Shadow lane 的 query pool 已由本帧 Shadow CB reset；这里继续分配 query，
-					// 不能再次 reset，否则会覆盖尚未解析的 Shadow 时间戳。
-					VANS_GPU_SCOPE_LANE(asyncSSAOCmd, "SSAO.Bilateral.Async", Vans::VansGpuQueueLane::Shadow);
-					BilateralFilterSSAO(renderPassManager, m_VansVKAsyncSSAOCommandBuffer);
-				});
-				if (!m_VansVKAsyncSSAOCommandBuffer.EndCommandBufferRecord())
-				{
-					m_CurrentFrameContext.frameSubmitSucceeded = false;
-					VANS_LOG_ERROR("[VansVKDevice] Failed to end async SSAO command buffer.");
-					ResetAsyncFrameCommandBuffersAfterFailure();
-					return;
-				}
-				m_CurrentFrameContext.asyncSSAORecorded = true;
-			}
-
 			m_pActiveCommandBuffer = &m_VansVKGraphicsScreenCommandBuffer;
 			{
 				VANS_PROFILE_SCOPE("Vulkan::RecordGraphicsScreen", Vans::ProfileCategory::CommandRecord);
@@ -2121,31 +2122,23 @@ namespace VansGraphics
 				}
 				cmd = m_VansVKGraphicsScreenCommandBuffer.GetVKCommandBuffer();
 				{
-					VANS_GPU_SCOPE(cmd, "Graphics Screen Compute");
+					VANS_GPU_SCOPE_LANE(cmd, "Graphics Screen Compute", Vans::VansGpuQueueLane::Compute);
 					RecordFrameStep(
 						m_CurrentFramePlan,
 						VansRenderPassNames::PunctualShadowDebug,
 						[&]() { UpdatePunctualShadowDebugPreview(renderPassManager, m_VansVKGraphicsScreenCommandBuffer); });
-					if (!useSecondaryGraphicsSSAO)
+					RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::SSAOFilter, [&]()
 					{
-						RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::SSAOFilter, [&]()
-						{
-							VANS_GPU_SCOPE_LANE(cmd, "SSAO.Bilateral", Vans::VansGpuQueueLane::Graphics);
-							BilateralFilterSSAO(renderPassManager, m_VansVKGraphicsScreenCommandBuffer);
-						});
-					}
+						VANS_GPU_SCOPE_LANE(cmd, "SSAO.Bilateral", Vans::VansGpuQueueLane::Compute);
+						BilateralFilterSSAO(renderPassManager, m_VansVKGraphicsScreenCommandBuffer);
+					});
 					RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::ScreenSpaceShadow, [&]() { UpdateScreenSpaceShadow(renderPassManager, m_VansVKGraphicsScreenCommandBuffer); });
 					RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::SSR, [&]() { UpdateSSR(renderPassManager, m_VansVKGraphicsScreenCommandBuffer); });
 					RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::VolumetricFog, [&]() { UpdateVolumetricFog(renderPassManager, m_VansVKGraphicsScreenCommandBuffer); });
 				}
-				VkMemoryBarrier computeToFragmentBarrier = {};
-				computeToFragmentBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-				computeToFragmentBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-				computeToFragmentBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-				m_VansVKGraphicsScreenCommandBuffer.PipelineBarrier(
-					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-					VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-					{ computeToFragmentBarrier });
+				// ScreenLightingReady semaphore 建立对
+				// GraphicsMain fragment 阶段的跨 queue 可见性；compute-only queue
+				// 不能在 command buffer 内使用 FRAGMENT_SHADER stage。
 				if (!m_VansVKGraphicsScreenCommandBuffer.EndCommandBufferRecord())
 				{
 					m_CurrentFrameContext.frameSubmitSucceeded = false;
@@ -2341,6 +2334,10 @@ namespace VansGraphics
 					DrawSceneTransparentPost(renderPassManager, m_VansVKCommandBuffer);
 				});
 		}
+
+		// 后续公共尾部仍会通过 Scene 的便捷绘制入口读取活动命令缓冲。
+		// 帧上下文环启用时必须保持绑定当前 slot，不能回退到未开始录制的旧主缓冲。
+		m_pActiveCommandBuffer = &CurrentGraphicsCommandBuffer();
 
 		RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::ExposureBloom, [&]()
 		{
@@ -3044,11 +3041,9 @@ namespace VansGraphics
 		}
 		else
 		{
-			const bool useSecondaryGraphicsSSAO = m_QueueCapabilities.hasSecondaryGraphicsQueue;
 			if (!m_CurrentFrameContext.frameSubmitSucceeded
 				|| !m_CurrentFrameContext.ssaoRawRecorded
 				|| !m_CurrentFrameContext.graphicsScreenRecorded
-				|| (useSecondaryGraphicsSSAO && !m_CurrentFrameContext.asyncSSAORecorded)
 				|| !m_CurrentFrameContext.shadowMapsRecorded
 				|| !m_CurrentFrameContext.hairShadowRecorded
 				|| !m_CurrentFrameContext.gbufferRecorded
@@ -3085,7 +3080,6 @@ namespace VansGraphics
 				earlyAux.name = "EarlyAux";
 				earlyAux.queue = VansQueueRole::Compute;
 				earlyAux.commandBuffers = { m_VansVKEarlyAuxCommandBuffer.GetVKCommandBuffer() };
-				earlyAux.signals = { VansSyncPoint::TileLightReady };
 				earlyAux.resources = {
 					{ "MainCameraCullObjects", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
 						VK_IMAGE_LAYOUT_UNDEFINED, false, false, true, false },
@@ -3113,7 +3107,7 @@ namespace VansGraphics
 
 				VansFrameSubmitNode shadowMaps;
 				shadowMaps.name = "ShadowMaps";
-				shadowMaps.queue = VansQueueRole::Shadow;
+				shadowMaps.queue = VansQueueRole::Graphics;
 				shadowMaps.commandBuffers = { m_VansVKShadowMapsCommandBuffer.GetVKCommandBuffer() };
 				shadowMaps.waits = {
 					{ VansSyncPoint::VegetationReady, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT }
@@ -3135,7 +3129,7 @@ namespace VansGraphics
 
 				VansFrameSubmitNode hairShadow;
 				hairShadow.name = "HairShadow";
-				hairShadow.queue = VansQueueRole::Shadow;
+				hairShadow.queue = VansQueueRole::Graphics;
 				hairShadow.commandBuffers = { m_VansVKHairShadowCommandBuffer.GetVKCommandBuffer() };
 				hairShadow.signals = { VansSyncPoint::HairShadowReady };
 				hairShadow.resources = {
@@ -3209,7 +3203,6 @@ namespace VansGraphics
 				asyncHZB.waits = {
 					{ VansSyncPoint::DepthReady, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT }
 				};
-				asyncHZB.signals = { VansSyncPoint::HZBReady };
 				asyncHZB.resources = {
 					{ "Depth", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
 						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, true, false, false, false },
@@ -3244,7 +3237,6 @@ namespace VansGraphics
 				giData.waits = {
 					{ VansSyncPoint::ShadowMapsReady, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT }
 				};
-				giData.signals = { VansSyncPoint::GIReady };
 				giData.resources = {
 					{ "GBufferData", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
 						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, true, false, false, false },
@@ -3264,36 +3256,14 @@ namespace VansGraphics
 				giData.fence = m_CurrentFrameContext.giDataFence;
 				m_FrameSubmitOrchestrator.AddNode(std::move(giData));
 
-				if (useSecondaryGraphicsSSAO)
-				{
-					VansFrameSubmitNode asyncSSAO;
-					asyncSSAO.name = "AsyncSSAO";
-					asyncSSAO.queue = VansQueueRole::Shadow;
-					asyncSSAO.commandBuffers = { m_VansVKAsyncSSAOCommandBuffer.GetVKCommandBuffer() };
-					asyncSSAO.waits = {
-						{ VansSyncPoint::SSAORawReady, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT }
-					};
-					asyncSSAO.signals = { VansSyncPoint::SSAOReady };
-					asyncSSAO.resources = {
-						{ "GBufferData", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
-							VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, true, false, false, false },
-						{ "SSAORaw", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
-							VK_IMAGE_LAYOUT_GENERAL, true, false, false, false },
-						{ "SSAO", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
-							VK_IMAGE_LAYOUT_GENERAL, true, true, false, false }
-					};
-					asyncSSAO.fence = m_CurrentFrameContext.asyncSSAOFence;
-					m_FrameSubmitOrchestrator.AddNode(std::move(asyncSSAO));
-				}
-
 				VansFrameSubmitNode graphicsScreen;
 				graphicsScreen.name = "GraphicsScreen";
-				graphicsScreen.queue = VansQueueRole::Graphics;
+				graphicsScreen.queue = VansQueueRole::Compute;
 				graphicsScreen.commandBuffers = { m_VansVKGraphicsScreenCommandBuffer.GetVKCommandBuffer() };
+				// HZB/RT/GI/TileLight 已在同一 compute queue 上有序完成；这里只等待
+				// Graphics queue 生产的 SSAO raw，避免让重型 compute 相互竞争。
 				graphicsScreen.waits = {
-					{ VansSyncPoint::ShadowMapsReady, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT },
-					{ VansSyncPoint::HZBReady, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT },
-					{ VansSyncPoint::TileLightReady, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT }
+					{ VansSyncPoint::SSAORawReady, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT }
 				};
 				graphicsScreen.signals = { VansSyncPoint::ScreenLightingReady };
 				graphicsScreen.resources = {
@@ -3316,17 +3286,12 @@ namespace VansGraphics
 					{ "CascadeShadowMinMax", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
 						VK_IMAGE_LAYOUT_GENERAL, true, true, false, false },
 					{ "ScreenLightingData", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+						VK_IMAGE_LAYOUT_GENERAL, true, true, false, false },
+					{ "SSAORaw", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
+						VK_IMAGE_LAYOUT_GENERAL, true, false, false, false },
+					{ "SSAO", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
 						VK_IMAGE_LAYOUT_GENERAL, true, true, false, false }
 				};
-				if (!useSecondaryGraphicsSSAO)
-				{
-					graphicsScreen.resources.push_back(
-						{ "SSAORaw", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
-							VK_IMAGE_LAYOUT_GENERAL, true, false, false, false });
-					graphicsScreen.resources.push_back(
-						{ "SSAO", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
-							VK_IMAGE_LAYOUT_GENERAL, true, true, false, false });
-				}
 				graphicsScreen.fence = m_CurrentFrameContext.graphicsScreenFence;
 				m_FrameSubmitOrchestrator.AddNode(std::move(graphicsScreen));
 
@@ -3337,11 +3302,8 @@ namespace VansGraphics
 				graphicsMain.waits = {
 					{ VansSyncPoint::ScreenLightingReady, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT },
 					{ VansSyncPoint::CloudReady, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT },
-					{ VansSyncPoint::HairShadowReady, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT },
-					{ VansSyncPoint::GIReady, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT }
+					{ VansSyncPoint::HairShadowReady, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT }
 				};
-				if (useSecondaryGraphicsSSAO)
-					graphicsMain.waits.push_back({ VansSyncPoint::SSAOReady, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT });
 				graphicsMain.externalWaits = {
 					{ m_CurrentFrameContext.imageAcquiredSemaphore, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT }
 				};
@@ -3409,8 +3371,6 @@ namespace VansGraphics
 					m_CurrentFrameContext.rayTracingFence,
 					m_CurrentFrameContext.giDataFence
 				};
-				if (useSecondaryGraphicsSSAO)
-					submittedFences.push_back(m_CurrentFrameContext.asyncSSAOFence);
 				if (VansGraphics::vkResetFences(
 					m_VansVKLogicDevice,
 					static_cast<uint32_t>(submittedFences.size()),
@@ -3433,8 +3393,6 @@ namespace VansGraphics
 				resetCommandBuffer("GBuffer-material", m_VansVKGBufferMaterialCommandBuffer);
 				resetCommandBuffer("SSAO-raw", m_VansVKSSAORawCommandBuffer);
 				resetCommandBuffer("graphics-screen", m_VansVKGraphicsScreenCommandBuffer);
-				if (useSecondaryGraphicsSSAO)
-					resetCommandBuffer("async SSAO", m_VansVKAsyncSSAOCommandBuffer);
 				resetCommandBuffer("vegetation", m_VansVKVegetationCommandBuffer);
 				resetCommandBuffer("early auxiliary", m_VansVKEarlyAuxCommandBuffer);
 				resetCommandBuffer("async cloud", m_VansVKAsyncCloudCommandBuffer);
@@ -3508,7 +3466,14 @@ namespace VansGraphics
 		// Noesis IRenderer instances are RT-affine and must be shut down before
 		// their render passes and Vulkan device resources are destroyed.
 		VansRuntime::VansUISystem::Get().ShutdownRendering();
-		if (m_FrameContextRingResourcesReady)
+		const bool frameContextGpuWorkPending = std::any_of(
+			m_FrameContextRingSlots.begin(),
+			m_FrameContextRingSlots.end(),
+			[](const VansFrameContextRingSlot& slot)
+			{
+				return slot.gpuWorkPending;
+			});
+		if (m_FrameContextRingResourcesReady && frameContextGpuWorkPending)
 			WaitForDevice();
 		DestroyParallelCommandRecording();
 		DestroyHairLightingDescriptors();

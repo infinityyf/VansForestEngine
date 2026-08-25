@@ -634,7 +634,9 @@ namespace VansGraphics
 
 		scene.RegisterAnimationRuntime(animNode, controller);
 		if (animConfig.autoPlay)
-			animNode->Play();
+			animNode->Play(scene.GetLoadMode() == VansSceneLoadMode::Runtime
+				? VansAnimationEvaluationPurpose::Gameplay
+				: VansAnimationEvaluationPurpose::EditorPreview);
 
 		VANS_LOG("[LoadAnimComp] Created animation component '" << nodeName
 			<< "' with " << controller->GetClipNames().size() << " clip(s), "

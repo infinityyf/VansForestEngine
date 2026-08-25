@@ -55,6 +55,7 @@
 #include <cassert>
 #include <cctype>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <mutex>
 #include <optional>
@@ -624,6 +625,38 @@ int LuaObjectGetTransformID(lua_State* L)
 	return 1;
 }
 
+int LuaObjectReparentToSocket(lua_State* L)
+{
+	auto* child = ResolveObject(CheckObject(L, 1));
+	auto* owner = ResolveObject(CheckObject(L, 2));
+	const char* animationComponentGuid = luaL_checkstring(L, 3);
+	const char* socketGuid = luaL_checkstring(L, 4);
+	const char* modeText = luaL_checkstring(L, 5);
+
+	Vans::VansTransformReparentMode mode;
+	if (std::strcmp(modeText, "keep_local") == 0)
+		mode = Vans::VansTransformReparentMode::KeepLocal;
+	else if (std::strcmp(modeText, "keep_world") == 0)
+		mode = Vans::VansTransformReparentMode::KeepWorld;
+	else if (std::strcmp(modeText, "snap") == 0)
+		mode = Vans::VansTransformReparentMode::Snap;
+	else
+		return luaL_error(L,
+			"reparent_to_socket mode must be keep_local, keep_world, or snap");
+
+	Vans::VansSceneParentReference parent;
+	parent.kind = Vans::VansSceneParentKind::Socket;
+	const bool validReference = owner
+		&& Vans::VansAssetGuid::TryParse(owner->m_EntityGuid, parent.entityGuid)
+		&& Vans::VansAssetGuid::TryParse(animationComponentGuid, parent.animationComponentGuid)
+		&& Vans::VansAssetGuid::TryParse(socketGuid, parent.anchorGuid);
+	auto* scene = Scene();
+	const bool reparented = validReference && child && scene
+		&& scene->SetEntityParentReferenceByGuid(child->m_EntityGuid, &parent, mode);
+	lua_pushboolean(L, reparented);
+	return 1;
+}
+
 int LuaObjectGetComponentCount(lua_State* L)
 {
 	auto* object = ResolveObject(CheckObject(L, 1));
@@ -751,7 +784,8 @@ int LuaComponentPlay(lua_State* L)
 	}
 	else if (auto* anim = dynamic_cast<VansScriptAnimationComponent*>(component))
 	{
-		if (anim->m_AnimNode) anim->m_AnimNode->Play();
+		if (anim->m_AnimNode) anim->m_AnimNode->Play(
+			VansGraphics::VansAnimationEvaluationPurpose::Gameplay);
 	}
 	return 0;
 }
@@ -813,7 +847,8 @@ int LuaComponentResume(lua_State* L)
 	}
 	else if (auto* anim = dynamic_cast<VansScriptAnimationComponent*>(component))
 	{
-		if (anim->m_AnimNode) anim->m_AnimNode->Play();
+		if (anim->m_AnimNode) anim->m_AnimNode->Play(
+			VansGraphics::VansAnimationEvaluationPurpose::Gameplay);
 	}
 	return 0;
 }
@@ -828,7 +863,8 @@ int LuaComponentRestart(lua_State* L)
 		if (anim->m_AnimNode)
 		{
 			anim->m_AnimNode->Stop();
-			anim->m_AnimNode->Play();
+			anim->m_AnimNode->Play(
+				VansGraphics::VansAnimationEvaluationPurpose::Gameplay);
 		}
 	}
 	else
@@ -1089,7 +1125,8 @@ int LuaComponentAnimPlayState(lua_State* L)
 	const char* stateName = luaL_checkstring(L, 2);
 	auto* anim = dynamic_cast<VansScriptAnimationComponent*>(component);
 	if (anim && anim->m_AnimNode)
-		anim->m_AnimNode->Play(stateName);
+		anim->m_AnimNode->Play(
+			stateName, VansGraphics::VansAnimationEvaluationPurpose::Gameplay);
 	return 0;
 }
 
@@ -3880,6 +3917,7 @@ void VansScriptContext::RegisterLuaBindings()
 		{ "getTransform", LuaObjectGetTransform },
 		{ "get_transform_id", LuaObjectGetTransformID },
 		{ "getTransformID", LuaObjectGetTransformID },
+		{ "reparent_to_socket", LuaObjectReparentToSocket },
 		{ "get_component_count", LuaObjectGetComponentCount },
 		{ "getComponentCount", LuaObjectGetComponentCount },
 		{ "get_component_by_index", LuaObjectGetComponentByIndex },

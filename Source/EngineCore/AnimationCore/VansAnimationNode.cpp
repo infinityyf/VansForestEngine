@@ -2,6 +2,7 @@
 #include "MotionMatching/VansMotionMatching.h"
 #include "../RenderCore/VansRenderNode.h"
 #include "../RenderCore/VulkanCore/VansMesh.h"
+#include "../RuntimeCore/VansCharacterMotion.h"
 #include "../ScriptCore/VansTransform.h"
 #include "../Util/VansLog.h"
 
@@ -366,7 +367,7 @@ bool VansAnimationNode::SetController(VansAnimationController* controller)
 //  播放控制（委托给 Controller）
 // ════════════════════════════════════════════════════════════════
 
-void VansAnimationNode::Play()
+void VansAnimationNode::Play(VansAnimationEvaluationPurpose purpose)
 {
 	if (m_Controller)
 	{
@@ -375,10 +376,11 @@ void VansAnimationNode::Play()
 	if (m_RetargetEnabled && m_SourceController)
 		m_SourceController->Play();
 	if (m_Controller)
-		Update(0.0f);
+		Update({ purpose, 0.0f });
 }
 
-void VansAnimationNode::Play(const std::string& stateName)
+void VansAnimationNode::Play(
+	const std::string& stateName, VansAnimationEvaluationPurpose purpose)
 {
 	if (m_Controller)
 	{
@@ -387,7 +389,7 @@ void VansAnimationNode::Play(const std::string& stateName)
 	if (m_RetargetEnabled && m_SourceController)
 		m_SourceController->Play(stateName);
 	if (m_Controller)
-		Update(0.0f);
+		Update({ purpose, 0.0f });
 }
 
 void VansAnimationNode::Pause()
@@ -743,8 +745,10 @@ void VansAnimationNode::ApplySampledNodeTransforms()
 	}
 }
 
-void VansAnimationNode::PrepareAnimationFrame(float deltaTime)
+void VansAnimationNode::PrepareAnimationFrame(
+	const VansAnimationFrameContext& context)
 {
+	const float deltaTime = context.deltaTime;
 	bool retargetSourceFramePrepared = false;
 	if (m_LocomotionFramePrepared)
 	{
@@ -862,7 +866,7 @@ void VansAnimationNode::PrepareAnimationFrame(float deltaTime)
 			m_Controller->PrepareFrame(deltaTime, m_Skeleton);
 		}
 
-		if (!retargetSourceFramePrepared &&
+		if (context.AllowsOwnerMotion() && !retargetSourceFramePrepared &&
 			m_SourceController->IsRootMotionEnabled() &&
 			m_SourceController->ShouldApplyRootMotionToOwner() && m_HasTransformID)
 		{
@@ -882,16 +886,17 @@ void VansAnimationNode::PrepareAnimationFrame(float deltaTime)
 	m_Controller->PrepareFrame(deltaTime, m_Skeleton);
 
 	// 2. 如果有 root motion，将 delta 应用到 Transform
-	if (m_Controller->IsRootMotionEnabled() &&
+	if (context.AllowsOwnerMotion() && m_Controller->IsRootMotionEnabled() &&
 		m_Controller->ShouldApplyRootMotionToOwner() && m_HasTransformID)
 	{
 		glm::vec3 deltaPos = m_Controller->GetRootMotionDelta();
 		glm::quat deltaRot = m_Controller->GetRootRotationDelta();
 		ApplyRootMotionToTransform(deltaPos, deltaRot);
 	}
-	else
+	else if (context.AllowsOwnerMotion())
 	{
-		// 诊断: 仅输出一次
+		// Gameplay-only diagnostic. Editor Preview intentionally evaluates the
+		// same pose while withholding owner/CCT motion submission.
 		static bool s_LoggedOnce = false;
 		if (!s_LoggedOnce)
 		{
@@ -936,9 +941,9 @@ const std::vector<VansWorldQueryRequest>& VansAnimationNode::GetAnimationWorldQu
 	return m_Controller ? m_Controller->GetPreparedWorldQueries() : empty;
 }
 
-void VansAnimationNode::Update(float deltaTime)
+void VansAnimationNode::Update(const VansAnimationFrameContext& context)
 {
-	PrepareAnimationFrame(deltaTime);
+	PrepareAnimationFrame(context);
 	GatherAnimationWorldQueries();
 	ResolveAnimationWorldQueries({});
 }
@@ -1192,16 +1197,11 @@ void VansAnimationNode::ApplyRootMotionToTransform(const glm::vec3& deltaPos, co
 
 	VansTransform& transform = VansTransformStore::GetTransform(m_TransformID);
 
-	// Rotate the local-space delta into world space using the owner's current yaw.
-	float yawRad = glm::radians(transform.m_Rotation.y);
-	glm::mat3 entityYawMat = glm::mat3(glm::rotate(glm::mat4(1.0f), yawRad, glm::vec3(0.0f, 1.0f, 0.0f)));
-	glm::vec3 worldDelta = entityYawMat * (deltaPos * transform.m_Scale);
-
-	transform.m_Position += worldDelta;
-
-	// Apply only the yaw component from root-motion rotation.
-	glm::vec3 deltaEuler = glm::degrees(glm::eulerAngles(deltaRot));
-	transform.m_Rotation.y += deltaEuler.y;
+	const Vans::VansRootMotionOwnerDelta ownerDelta =
+		Vans::ResolveAnimationRootMotionOwnerDelta(
+			deltaPos, deltaRot, transform.m_Rotation.y, transform.m_Scale);
+	transform.m_Position += ownerDelta.translationWorld;
+	transform.m_Rotation.y += ownerDelta.yawDegrees;
 
 	VansTransformStore::TransformIDToTransformDirty[m_TransformID] = true;
 }

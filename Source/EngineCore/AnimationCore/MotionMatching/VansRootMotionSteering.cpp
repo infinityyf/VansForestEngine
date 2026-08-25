@@ -1,4 +1,5 @@
 #include "VansRootMotionSteering.h"
+#include "VansRootMotionYaw.h"
 
 #include <algorithm>
 #include <cmath>
@@ -79,12 +80,7 @@ namespace VansGraphics
 			dt > kEpsilon ? applied / dt : 0.0f;
 		result.active = std::abs(applied) > 0.0001f;
 		if (result.active)
-		{
-			const glm::quat correction = glm::angleAxis(
-				glm::radians(applied), glm::vec3(0.0f, 0.0f, 1.0f));
-			inOutRootMotionRotation = glm::normalize(
-				correction * inOutRootMotionRotation);
-		}
+			ApplyRootMotionYawCorrection(applied, inOutRootMotionRotation);
 		return result;
 	}
 }

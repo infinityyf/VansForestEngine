@@ -292,23 +292,30 @@ namespace VansGraphics
 		resetIfValid(m_VansVKGBufferMaterialCommandBuffer.m_CommandBufferFinishSubmitFence);
 		resetIfValid(m_VansVKSSAORawCommandBuffer.m_CommandBufferFinishSubmitFence);
 		resetIfValid(m_VansVKGraphicsScreenCommandBuffer.m_CommandBufferFinishSubmitFence);
-		resetIfValid(m_VansVKAsyncSSAOCommandBuffer.m_CommandBufferFinishSubmitFence);
 		resetIfValid(m_VansVKVegetationCommandBuffer.m_CommandBufferFinishSubmitFence);
 		resetIfValid(m_VansVKEarlyAuxCommandBuffer.m_CommandBufferFinishSubmitFence);
 		resetIfValid(m_VansVKAsyncCloudCommandBuffer.m_CommandBufferFinishSubmitFence);
 		resetIfValid(m_VansVKAsyncHZBCommandBuffer.m_CommandBufferFinishSubmitFence);
 		resetIfValid(m_VansVKRayTracingCommandBuffer.m_CommandBufferFinishSubmitFence);
 		resetIfValid(m_VansVKGIDataCommandBuffer.m_CommandBufferFinishSubmitFence);
+		for (VansFrameContextRingSlot& slot : m_FrameContextRingSlots)
+		{
+			resetIfValid(slot.graphicsCommandBuffer.m_CommandBufferFinishSubmitFence);
+			slot.gpuWorkPending = false;
+			slot.commandBufferRecording = false;
+		}
+		m_LastSubmittedGraphicsFence = VK_NULL_HANDLE;
+		m_LastSubmittedGraphicsFencePending = false;
+		std::fill(
+			m_SwapchainImageInFlightFences.begin(),
+			m_SwapchainImageInFlightFences.end(),
+			VK_NULL_HANDLE);
 
 		return true;
 	}
 
-	void VansVKDevice::SetAsyncComputeEnabled(bool enabled)
+	void VansVKDevice::ApplyAsyncComputeStateAtIdle(bool enabled)
 	{
-		if (m_AsyncComputeRequested == enabled)
-			return;
-		if (m_VansVKLogicDevice != VK_NULL_HANDLE)
-			WaitForDevice();
 		m_AsyncComputeRequested = enabled;
 		RefreshAsyncComputeState();
 	}
@@ -325,10 +332,7 @@ namespace VansGraphics
 			<< " graphicsFamily=" << m_QueueCapabilities.graphicsFamily
 			<< " computeFamily=" << m_QueueCapabilities.computeFamily
 			<< " dedicatedCompute=" << (m_QueueCapabilities.hasDedicatedAsyncComputeQueue ? "true" : "false")
-			<< " secondaryGraphics=" << (m_QueueCapabilities.hasSecondaryGraphicsQueue ? "true" : "false")
-			<< " asyncSSAO=" << ((m_AsyncComputeEnabled && m_QueueCapabilities.hasSecondaryGraphicsQueue)
-				? "ShadowQueue"
-				: "GraphicsScreen"));
+			<< " schedule=ComputeScreenAfterGI");
 	}
 
 	VkDeviceAddress VansVKDevice::GetAccelerationAddress(VkAccelerationStructureDeviceAddressInfoKHR* addressInfo)
@@ -378,6 +382,29 @@ namespace VansGraphics
 		VkPhysicalDeviceProperties props{};
 		VansGraphics::vkGetPhysicalDeviceProperties(physicalDevice, &props);
 		return static_cast<double>(props.limits.timestampPeriod) * 1e-6;
+	}
+
+	uint32_t VansVKDevice::GetQueueFamilyTimestampValidBits(
+		VkPhysicalDevice physicalDevice,
+		uint32_t queueFamilyIndex)
+	{
+		if (physicalDevice == VK_NULL_HANDLE || queueFamilyIndex == VK_QUEUE_FAMILY_IGNORED)
+			return 0u;
+
+		uint32_t queueFamilyCount = 0u;
+		VansGraphics::vkGetPhysicalDeviceQueueFamilyProperties(
+			physicalDevice,
+			&queueFamilyCount,
+			nullptr);
+		if (queueFamilyIndex >= queueFamilyCount)
+			return 0u;
+
+		std::vector<VkQueueFamilyProperties> properties(queueFamilyCount);
+		VansGraphics::vkGetPhysicalDeviceQueueFamilyProperties(
+			physicalDevice,
+			&queueFamilyCount,
+			properties.data());
+		return properties[queueFamilyIndex].timestampValidBits;
 	}
 
 	bool VansVKDevice::CreateQueryPool(VkDevice device, const VkQueryPoolCreateInfo& createInfo, VkQueryPool& pool)
@@ -447,14 +474,8 @@ namespace VansGraphics
 		Vans::VansGpuProfiler::Get().Init(
 			GetLogicDevice(),
 			GetPhysicalDevice(),
-			GetGraphicsQueueFamilyIndex());
-#endif
-	}
-
-	void VansVKDevice::EndGpuProfilerFrame()
-	{
-#if VANS_PROFILER_ENABLED
-		VANS_PROFILER_END_FRAME(GetLogicDevice());
+			GetGraphicsQueueFamilyIndex(),
+			GetComputeQueueFamilyIndex());
 #endif
 	}
 
@@ -712,27 +733,9 @@ namespace VansGraphics
 			// The present queue only owns swapchain images and is not selected yet here;
 			// adding it used to append an uninitialized family index to every resource.
 
-			//recored all need queue family index
+			// Record every queue family required by the renderer.
 			std::vector<QueueInfo> queue_infos;
-			// 第二个逻辑 graphics queue 用于调度 Shadow 与 Graphics 工作；
-			// queueCount 不代表存在第二套物理光栅化硬件。
-			{
-				uint32_t qfCount = 0;
-				VansGraphics::vkGetPhysicalDeviceQueueFamilyProperties(device, &qfCount, nullptr);
-				std::vector<VkQueueFamilyProperties> qfProps(qfCount);
-				VansGraphics::vkGetPhysicalDeviceQueueFamilyProperties(device, &qfCount, qfProps.data());
-				if (m_GraphicsQueueFamilyIndex < qfCount &&
-					qfProps[m_GraphicsQueueFamilyIndex].queueCount >= 2)
-				{
-					queue_infos.push_back({ m_GraphicsQueueFamilyIndex, { 1.0f, 1.0f } });
-					m_HasSecondaryGraphicsQueue = true;
-				}
-				else
-				{
-					queue_infos.push_back({ m_GraphicsQueueFamilyIndex, { 1.0f } });
-					m_HasSecondaryGraphicsQueue = false;
-				}
-			}
+			queue_infos.push_back({ m_GraphicsQueueFamilyIndex, { 1.0f } });
 			if (m_GraphicsQueueFamilyIndex != m_ComputeQueueFamilyIndex)
 			{
 				queue_infos.push_back({ m_ComputeQueueFamilyIndex, { 1.0f } });
@@ -786,27 +789,16 @@ namespace VansGraphics
 		//request queue
 		RequestDeviceQueue(m_GraphicsQueueFamilyIndex, 0, m_VansVKGraphicsQueue);
 		RequestDeviceQueue(m_ComputeQueueFamilyIndex, 0, m_VansVKComputeQueue);
-		if (m_HasSecondaryGraphicsQueue)
-		{
-			RequestDeviceQueue(m_GraphicsQueueFamilyIndex, 1, m_VansVKShadowQueue);
-		}
-		else
-		{
-			m_VansVKShadowQueue = m_VansVKGraphicsQueue;
-		}
 
 		m_QueueCapabilities.graphicsFamily = m_GraphicsQueueFamilyIndex;
 		m_QueueCapabilities.computeFamily = m_ComputeQueueFamilyIndex;
-		m_QueueCapabilities.shadowFamily = m_GraphicsQueueFamilyIndex;
 		m_QueueCapabilities.hasDedicatedAsyncComputeQueue =
 			m_ComputeQueueFamilyIndex != VK_QUEUE_FAMILY_IGNORED &&
 			m_ComputeQueueFamilyIndex != m_GraphicsQueueFamilyIndex;
-		m_QueueCapabilities.hasSecondaryGraphicsQueue = m_HasSecondaryGraphicsQueue;
 		m_FrameSubmitOrchestrator.Bind(
 			m_VansVKLogicDevice,
 			m_VansVKGraphicsQueue,
-			m_VansVKComputeQueue,
-			m_VansVKShadowQueue);
+			m_VansVKComputeQueue);
 		RefreshAsyncComputeState();
 
 		CommandBufferCreateParams params =
@@ -832,8 +824,7 @@ namespace VansGraphics
 			|| !createFrameCommandBuffer(m_VansVKGBufferCommandBuffer, m_GraphicsQueueFamilyIndex, "GBuffer")
 			|| !createFrameCommandBuffer(m_VansVKGBufferMaterialCommandBuffer, m_GraphicsQueueFamilyIndex, "GBufferMaterial")
 			|| !createFrameCommandBuffer(m_VansVKSSAORawCommandBuffer, m_GraphicsQueueFamilyIndex, "SSAORaw")
-			|| !createFrameCommandBuffer(m_VansVKGraphicsScreenCommandBuffer, m_GraphicsQueueFamilyIndex, "GraphicsScreen")
-			|| !createFrameCommandBuffer(m_VansVKAsyncSSAOCommandBuffer, m_GraphicsQueueFamilyIndex, "AsyncSSAO")
+			|| !createFrameCommandBuffer(m_VansVKGraphicsScreenCommandBuffer, m_ComputeQueueFamilyIndex, "ComputeScreen")
 			|| !createFrameCommandBuffer(m_VansVKVegetationCommandBuffer, m_ComputeQueueFamilyIndex, "Vegetation")
 			|| !createFrameCommandBuffer(m_VansVKEarlyAuxCommandBuffer, m_ComputeQueueFamilyIndex, "EarlyAux")
 			|| !createFrameCommandBuffer(m_VansVKAsyncCloudCommandBuffer, m_ComputeQueueFamilyIndex, "AsyncCloud")
@@ -898,7 +889,6 @@ namespace VansGraphics
 		DestroyVKFence(m_VansVKGBufferMaterialCommandBuffer.m_CommandBufferFinishSubmitFence);
 		DestroyVKFence(m_VansVKSSAORawCommandBuffer.m_CommandBufferFinishSubmitFence);
 		DestroyVKFence(m_VansVKGraphicsScreenCommandBuffer.m_CommandBufferFinishSubmitFence);
-		DestroyVKFence(m_VansVKAsyncSSAOCommandBuffer.m_CommandBufferFinishSubmitFence);
 		DestroyVKFence(m_ImmediateGraphicsCommandBuffer.m_CommandBufferFinishSubmitFence);
 		m_VansVKCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 		m_VansVKVegetationCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
@@ -913,7 +903,6 @@ namespace VansGraphics
 	m_VansVKGBufferMaterialCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 		m_VansVKSSAORawCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 		m_VansVKGraphicsScreenCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
-		m_VansVKAsyncSSAOCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 		m_ImmediateGraphicsCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 
 		// Tear down VMA before destroying the logical device. All buffer/image

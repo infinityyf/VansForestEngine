@@ -1513,11 +1513,8 @@ void VansGraphics::VansScene::UnLoadScene()
 void VansGraphics::VansScene::UnloadProjectResources(VansVKDevice* device)
 {
     VANS_ASSERT_MAIN_THREAD();
-
-    if (device)
-    {
-        device->WaitForDevice();
-    }
+	// GPU/RenderThread barrier 由上层场景切换或关闭编排统一建立。Scene 只负责
+	// 项目资源所有权释放，不能绕过 VansRenderSystem 再制造 device-wide stall。
 
     ReleaseAudioSourceBindings();
     m_VideoManager.Clear();
@@ -2605,11 +2602,16 @@ void VansGraphics::VansScene::UpdateAudioReverbEnvironment(float deltaTime)
 }
 
 void VansGraphics::VansScene::EvaluateAnimations(float deltaTime){
+	const VansAnimationFrameContext animationContext{
+		m_LoadMode == VansSceneLoadMode::Runtime
+			? VansAnimationEvaluationPurpose::Gameplay
+			: VansAnimationEvaluationPurpose::EditorPreview,
+		deltaTime };
 	m_AnimationWorldQueryRequests.clear();
 	m_AnimationWorldQueryResults.clear();
 	for (VansAnimationNode* animNode : m_AnimationNodes)
 		if (animNode && animNode->IsEnabled())
-			animNode->PrepareAnimationFrame(deltaTime);
+			animNode->PrepareAnimationFrame(animationContext);
 
 	for (VansAnimationNode* animNode : m_AnimationNodes)
 	{
@@ -2630,6 +2632,28 @@ void VansGraphics::VansScene::EvaluateAnimations(float deltaTime){
 			VansEngine::VansRagdollSystem::GetInstance().PostAnimationUpdate(animNode);
 		}
 	}
+}
+
+bool VansGraphics::VansScene::EvaluateEditorAnimationPreviewStep(
+	VansAnimationNode* animationNode, float deltaTime)
+{
+	if (m_LoadMode != VansSceneLoadMode::Editor || !animationNode ||
+		!animationNode->IsEnabled() ||
+		std::find(m_AnimationNodes.begin(), m_AnimationNodes.end(), animationNode) ==
+			m_AnimationNodes.end())
+	{
+		return false;
+	}
+
+	animationNode->PrepareAnimationFrame({
+		VansAnimationEvaluationPurpose::EditorPreview,
+		(std::max)(deltaTime, 0.0f) });
+	animationNode->GatherAnimationWorldQueries();
+	std::vector<VansWorldQueryResult> results;
+	VansAnimationWorldQueryBatch::Execute(
+		animationNode->GetAnimationWorldQueries(), results);
+	animationNode->ResolveAnimationWorldQueries(results);
+	return true;
 }
 
 void VansGraphics::VansScene::UploadAnimationRenderData(

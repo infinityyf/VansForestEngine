@@ -401,11 +401,6 @@ bool VansAnimationController::SetAnimationGraphSets(
 	std::string slotResetError;
 	m_SlotRuntime.Configure({}, slotResetError);
 	m_SlotPayloads.clear();
-	if (m_MotionMatching)
-	{
-		EnsureMotionMatchingGraphNode();
-		RebuildGraphSetInstances();
-	}
 	return true;
 }
 
@@ -929,6 +924,59 @@ bool VansAnimationController::ConfigureMotionMatching(
 		error = "Motion Matching drive mode is invalid";
 		return false;
 	}
+	const TurnInPlaceWarpingSettings& turnWarp = settings.turnInPlaceWarping;
+	const bool turnWarpFinite =
+		std::isfinite(turnWarp.maxTargetPredictionTime) &&
+		std::isfinite(turnWarp.proceduralTargetTime) &&
+		std::isfinite(turnWarp.correctionHalfLife) &&
+		std::isfinite(turnWarp.minRootYawScaleRatio) &&
+		std::isfinite(turnWarp.maxRootYawScaleRatio) &&
+		std::isfinite(turnWarp.rootYawThresholdDegrees) &&
+		std::isfinite(turnWarp.maxAdditiveCorrectionDegrees) &&
+		std::isfinite(turnWarp.maxAdditiveYawRateDegreesPerSecond) &&
+		std::isfinite(turnWarp.finalToleranceDegrees) &&
+		std::isfinite(turnWarp.endpointScaleCostWeight) &&
+		std::isfinite(turnWarp.endpointResidualCostWeight);
+	if (!turnWarpFinite)
+	{
+		error = "motion_matching.turn_in_place_warping contains a non-finite value";
+		return false;
+	}
+	const float trajectoryHorizon = *std::max_element(
+		settings.schema.futureTimes.begin(), settings.schema.futureTimes.end());
+	if (turnWarp.maxTargetPredictionTime < 0.0f ||
+		turnWarp.maxTargetPredictionTime > trajectoryHorizon)
+	{
+		error = "motion_matching.turn_in_place_warping.max_target_prediction_time is outside the trajectory horizon";
+		return false;
+	}
+	if (turnWarp.proceduralTargetTime < 0.0f ||
+		turnWarp.correctionHalfLife < 0.0f ||
+		turnWarp.rootYawThresholdDegrees <= 0.0f ||
+		turnWarp.maxAdditiveCorrectionDegrees < 0.0f ||
+		turnWarp.maxAdditiveCorrectionDegrees > 45.0f ||
+		turnWarp.maxAdditiveYawRateDegreesPerSecond < 0.0f ||
+		turnWarp.finalToleranceDegrees < 0.0f ||
+		turnWarp.endpointScaleCostWeight < 0.0f ||
+		turnWarp.endpointResidualCostWeight < 0.0f)
+	{
+		error = "motion_matching.turn_in_place_warping has an invalid non-negative range";
+		return false;
+	}
+	if (turnWarp.minRootYawScaleRatio < 0.0f ||
+		turnWarp.minRootYawScaleRatio > 1.0f ||
+		turnWarp.maxRootYawScaleRatio < 1.0f ||
+		turnWarp.minRootYawScaleRatio > turnWarp.maxRootYawScaleRatio)
+	{
+		error = "motion_matching.turn_in_place_warping requires min_root_yaw_scale_ratio <= 1 <= max_root_yaw_scale_ratio";
+		return false;
+	}
+	if (turnWarp.finalToleranceDegrees >
+		settings.facingTurnExitThresholdDegrees)
+	{
+		error = "motion_matching.turn_in_place_warping.final_tolerance_degrees must not exceed facing_turn_exit_threshold_degrees";
+		return false;
+	}
 	if (settings.contactProvider.empty() != settings.contactChannels.empty())
 	{
 		error = "Motion Matching contact provider and channels must either both be authored or both be empty";
@@ -958,26 +1006,9 @@ bool VansAnimationController::ConfigureMotionMatching(
 	if (!m_MotionMatching)
 		m_MotionMatching = std::make_unique<VansMotionMatchingRuntime>();
 	m_MotionMatching->Configure(settings);
-	EnsureMotionMatchingGraphNode();
-	RebuildGraphSetInstances();
+	// Graph 拓扑属于资产定义。只有显式放置 MotionMatching 节点的 Graph 才参与匹配；
+	// 运行时不得自动包裹所有 Graph Set，否则会覆盖攻击、过场等非 MM 图的输出。
 	return true;
-}
-
-void VansAnimationController::RebuildGraphSetInstances()
-{
-	for (GraphSetRuntime& graphSet : m_GraphSetRuntimes)
-		for (GraphBindingRuntime& binding : graphSet.bindings)
-		{
-			if (!binding.graph)
-			{
-				binding.instance.reset();
-				continue;
-			}
-			binding.instance = std::make_unique<VansAnimGraphInstance>(*binding.graph);
-			if (!binding.instance->IsCompiled())
-				VANS_LOG_ERROR("[AnimController] Graph Set binding compile failed for '"
-					<< binding.definition.graphId << "': " << binding.instance->GetCompileError());
-		}
 }
 
 const MotionMatchingDebugData* VansAnimationController::GetMotionMatchingDebugData() const
@@ -1015,57 +1046,6 @@ const VansMotionMatchingRuntime* VansAnimationController::GetOutputMotionMatchin
 	if (m_IncomingMotionMatching && GetGraphSetTransitionProgress() >= 0.5f)
 		return m_IncomingMotionMatching.get();
 	return m_MotionMatching.get();
-}
-
-void VansAnimationController::EnsureMotionMatchingGraphNode()
-{
-	if (!m_MotionMatching)
-		return;
-	for (GraphSetRuntime& graphSet : m_GraphSetRuntimes)
-	{
-		if (graphSet.bindings.empty())
-			continue;
-		VansAnimGraph* graph = graphSet.bindings.front().graph.get();
-		if (!graph)
-			continue;
-		bool hasMotionMatching = false;
-		for (const auto& [id, node] : graph->GetNodes())
-			if (node && node->GetType() == AnimGraphNodeType::MotionMatching)
-			{
-				hasMotionMatching = true;
-				break;
-			}
-		if (hasMotionMatching)
-			continue;
-		const int outputId = graph->GetOutputNodeId();
-		if (outputId < 0)
-			continue;
-
-		int sourceNodeId = -1;
-		int sourcePinIndex = 0;
-		int outputLinkId = -1;
-		for (const AnimGraphLink& link : graph->GetLinks())
-		{
-			if (link.toNodeId == outputId && link.toPinIndex == 0)
-			{
-				sourceNodeId = link.fromNodeId;
-				sourcePinIndex = link.fromPinIndex;
-				outputLinkId = link.linkId;
-				break;
-			}
-		}
-		if (sourceNodeId < 0 || outputLinkId < 0)
-			continue;
-
-		auto mmNode = std::make_unique<AnimGraphMotionMatchingNode>();
-		const int mmNodeId = graph->AddNode(std::move(mmNode));
-		if (mmNodeId < 0)
-			continue;
-
-		graph->RemoveLink(outputLinkId);
-		graph->AddLink(sourceNodeId, sourcePinIndex, mmNodeId, 0);
-		graph->AddLink(mmNodeId, 0, outputId, 0);
-	}
 }
 
 void VansAnimationController::RefreshExternalMotionState()
@@ -2062,6 +2042,10 @@ void VansAnimationController::UpdateInternal(
 
 	if (m_PlaybackState == AnimationState::Stopped || m_PlaybackState == AnimationState::Paused)
 		return;
+	if (m_MotionMatching)
+		m_MotionMatching->BeginEvaluationFrame();
+	if (m_IncomingMotionMatching)
+		m_IncomingMotionMatching->BeginEvaluationFrame();
 	m_SlotRuntime.Update(deltaTime * m_GlobalSpeed, m_Clips, skeleton, m_SlotPayloads);
 
 	if (GraphSetRuntime* activeGraphSet = GetActiveGraphSetRuntime())

@@ -27,10 +27,10 @@ namespace VansGraphics
 
 	public :
 		//初始化渲染资源
-		virtual void BeforeRendering() = 0;
+		virtual bool BeforeRendering() = 0;
 		virtual void PrepareRenderingFrame() {}
 		virtual VansRenderSubmissionPrepareResult PrepareRenderSubmission(
-			const VansRenderFrameSubmission&)
+			VansRenderFrameSubmission&)
 		{
 			return { VansRenderSubmissionPrepareStatus::Ready, {} };
 		}
@@ -55,8 +55,6 @@ namespace VansGraphics
 		virtual void EndUIRenderPass() {}
 
 		virtual void InitializeGpuProfiler() {}
-
-		virtual void EndGpuProfilerFrame() {}
 
 		//获取底层device指针
 		virtual void* GetNativeGraphicsDevice() = 0;

@@ -77,13 +77,11 @@ bool VansGraphics::VansQueueCapabilities::SupportsAsyncCompute() const
 void VansGraphics::VansFrameSubmitOrchestrator::Bind(
 	VkDevice device,
 	VkQueue graphicsQueue,
-	VkQueue computeQueue,
-	VkQueue shadowQueue)
+	VkQueue computeQueue)
 {
 	m_Device = device;
 	m_GraphicsQueue = graphicsQueue;
 	m_ComputeQueue = computeQueue;
-	m_ShadowQueue = shadowQueue;
 }
 
 void VansGraphics::VansFrameSubmitOrchestrator::Shutdown()
@@ -94,7 +92,6 @@ void VansGraphics::VansFrameSubmitOrchestrator::Shutdown()
 	m_Device = VK_NULL_HANDLE;
 	m_GraphicsQueue = VK_NULL_HANDLE;
 	m_ComputeQueue = VK_NULL_HANDLE;
-	m_ShadowQueue = VK_NULL_HANDLE;
 }
 
 void VansGraphics::VansFrameSubmitOrchestrator::Reset()
@@ -334,7 +331,6 @@ VkQueue VansGraphics::VansFrameSubmitOrchestrator::ResolveQueue(VansQueueRole ro
 	{
 	case VansQueueRole::Graphics: return m_GraphicsQueue;
 	case VansQueueRole::Compute: return m_ComputeQueue;
-	case VansQueueRole::Shadow: return m_ShadowQueue;
 	}
 	return VK_NULL_HANDLE;
 }
@@ -405,7 +401,6 @@ const char* VansGraphics::ToString(VansQueueRole role)
 	{
 	case VansQueueRole::Graphics: return "Graphics";
 	case VansQueueRole::Compute: return "Compute";
-	case VansQueueRole::Shadow: return "Shadow";
 	}
 	return "Unknown";
 }
@@ -421,11 +416,8 @@ const char* VansGraphics::ToString(VansSyncPoint point)
 	case VansSyncPoint::ShadowMapsReady: return "ShadowMapsReady";
 	case VansSyncPoint::HairShadowReady: return "HairShadowReady";
 	case VansSyncPoint::TileLightReady: return "TileLightReady";
-	case VansSyncPoint::HZBReady: return "HZBReady";
-	case VansSyncPoint::SSAOReady: return "SSAOReady";
 	case VansSyncPoint::ScreenLightingReady: return "ScreenLightingReady";
 	case VansSyncPoint::CloudReady: return "CloudReady";
-	case VansSyncPoint::GIReady: return "GIReady";
 	case VansSyncPoint::WaterWaveDone: return "WaterWaveDone";
 	case VansSyncPoint::WaterInputsReady: return "WaterInputsReady";
 	case VansSyncPoint::WaterPrecomputeDone: return "WaterPrecomputeDone";

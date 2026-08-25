@@ -5,8 +5,7 @@
 
 #include <algorithm>
 #include <cstdio>
-#include <string>
-#include <unordered_map>
+#include <cstring>
 
 namespace
 {
@@ -61,13 +60,18 @@ void VansGraphics::VansProfilerWindow::DrawProfilerContents()
     ImGui::Begin("Profiler", nullptr, ImGuiWindowFlags_NoScrollbar);
 
     const Vans::ProfileFrame& frame = Vans::VansProfiler::Get().GetTimeline();
-    if (!m_PauseCapture)
+    m_PauseCapture = Vans::VansProfiler::Get().IsPaused();
+    if (!m_PauseCapture && frame.frameIndex != m_LastHistoryFrameIndex)
     {
         m_FpsHistory[m_FpsHistoryOffset] = static_cast<float>(frame.fps);
         m_FrameTimeHistory[m_FpsHistoryOffset] = static_cast<float>(frame.frameDurationUs * 0.001);
         m_FpsHistoryOffset = (m_FpsHistoryOffset + 1) % FPS_HISTORY_SIZE;
-        m_ViewStartUs = 0.0;
-        m_ViewEndUs = std::max(16667.0, frame.frameDurationUs);
+        m_LastHistoryFrameIndex = frame.frameIndex;
+        if (m_AutoFollowTimeline)
+        {
+            m_ViewStartUs = 0.0;
+            m_ViewEndUs = std::max(16667.0, frame.timelineDurationUs);
+        }
     }
 
     DrawTimelineToolbar(frame);
@@ -76,22 +80,22 @@ void VansGraphics::VansProfilerWindow::DrawProfilerContents()
     {
         if (ImGui::BeginTabItem("Timeline"))
         {
-            DrawTimeline();
+            DrawTimeline(frame);
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Hierarchy"))
         {
-            DrawHierarchy();
+            DrawHierarchy(frame);
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Frame Graph"))
         {
-            DrawFrameGraph();
+            DrawFrameGraph(frame);
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Raw Events"))
         {
-            DrawRawEvents();
+            DrawRawEvents(frame);
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
@@ -104,16 +108,18 @@ void VansGraphics::VansProfilerWindow::DrawProfilerContents()
 void VansGraphics::VansProfilerWindow::DrawTimelineToolbar(const Vans::ProfileFrame& frame)
 {
 #if VANS_PROFILER_ENABLED
-    ImGui::Text("Frame #%llu  %.3f ms  %.1f FPS  Events:%u Tracks:%u%s",
+    ImGui::Text("Frame #%llu  Main %.3f ms  GPU %.3f ms  %.1f FPS  Events:%u Tracks:%u%s",
         static_cast<unsigned long long>(frame.frameIndex),
         frame.frameDurationUs * 0.001,
+        frame.gpuDurationUs * 0.001,
         frame.fps,
         frame.eventCount,
         frame.trackCount,
         frame.overflow ? "  OVERFLOW" : "");
 
     ImGui::SameLine();
-    ImGui::Checkbox("Pause", &m_PauseCapture);
+    if (ImGui::Checkbox("Pause", &m_PauseCapture))
+        Vans::VansProfiler::Get().SetPaused(m_PauseCapture);
     ImGui::SameLine();
     ImGui::Checkbox("CPU", &m_ShowCpu);
     ImGui::SameLine();
@@ -128,7 +134,8 @@ void VansGraphics::VansProfilerWindow::DrawTimelineToolbar(const Vans::ProfileFr
     if (ImGui::Button("Reset View"))
     {
         m_ViewStartUs = 0.0;
-        m_ViewEndUs = std::max(16667.0, frame.frameDurationUs);
+        m_ViewEndUs = std::max(16667.0, frame.timelineDurationUs);
+        m_AutoFollowTimeline = true;
     }
 
     const struct FilterItem
@@ -170,10 +177,9 @@ void VansGraphics::VansProfilerWindow::DrawTimelineToolbar(const Vans::ProfileFr
 #endif
 }
 
-void VansGraphics::VansProfilerWindow::DrawTimeline()
+void VansGraphics::VansProfilerWindow::DrawTimeline(const Vans::ProfileFrame& frame)
 {
 #if VANS_PROFILER_ENABLED
-    const Vans::ProfileFrame& frame = Vans::VansProfiler::Get().GetTimeline();
     if (frame.eventCount == 0)
     {
         ImGui::Text("No profiling data");
@@ -181,24 +187,27 @@ void VansGraphics::VansProfilerWindow::DrawTimeline()
     }
 
     double viewDurationUs = std::max(100.0, m_ViewEndUs - m_ViewStartUs);
-    float zoom = static_cast<float>(frame.frameDurationUs / viewDurationUs);
+    const double timelineDurationUs = std::max(100.0, frame.timelineDurationUs);
+    float zoom = static_cast<float>(timelineDurationUs / viewDurationUs);
     ImGui::SetNextItemWidth(220.0f);
     if (ImGui::SliderFloat("Zoom", &zoom, 1.0f, 40.0f, "%.1fx"))
     {
         double center = (m_ViewStartUs + m_ViewEndUs) * 0.5;
-        double newDuration = std::max(100.0, frame.frameDurationUs / static_cast<double>(zoom));
+        double newDuration = std::max(100.0, timelineDurationUs / static_cast<double>(zoom));
         m_ViewStartUs = std::max(0.0, center - newDuration * 0.5);
         m_ViewEndUs = m_ViewStartUs + newDuration;
+        m_AutoFollowTimeline = false;
     }
 
     ImGui::SameLine();
     float startMs = static_cast<float>(m_ViewStartUs * 0.001);
     float endMs = static_cast<float>(m_ViewEndUs * 0.001);
     ImGui::SetNextItemWidth(260.0f);
-    if (ImGui::DragFloatRange2("Visible ms", &startMs, &endMs, 0.05f, 0.0f, static_cast<float>(frame.frameDurationUs * 0.001), "%.2f", "%.2f"))
+    if (ImGui::DragFloatRange2("Visible ms", &startMs, &endMs, 0.05f, 0.0f, static_cast<float>(timelineDurationUs * 0.001), "%.2f", "%.2f"))
     {
         m_ViewStartUs = startMs * 1000.0;
         m_ViewEndUs = std::max(m_ViewStartUs + 100.0, endMs * 1000.0);
+        m_AutoFollowTimeline = false;
     }
 
     ImVec2 avail = ImGui::GetContentRegionAvail();
@@ -217,6 +226,8 @@ void VansGraphics::VansProfilerWindow::DrawTimeline()
             continue;
         if (!m_ShowGpu && track.type == Vans::ProfileTrackType::GpuQueue)
             continue;
+        if (track.eventCount == 0u)
+            continue;
         DrawTrackLane(frame, track, ImVec2(childOrigin.x, cursorY), avail.x, cursorY);
     }
     ImGui::EndChild();
@@ -234,7 +245,7 @@ void VansGraphics::VansProfilerWindow::DrawTimeRuler(const Vans::ProfileFrame& f
     double pixelsPerUs = static_cast<double>(width) / visibleUs;
     const double stepUs = visibleUs > 50000.0 ? 10000.0 : (visibleUs > 20000.0 ? 5000.0 : 1000.0);
 
-    for (double t = 0.0; t <= frame.frameDurationUs + stepUs; t += stepUs)
+    for (double t = 0.0; t <= frame.timelineDurationUs + stepUs; t += stepUs)
     {
         if (t < m_ViewStartUs || t > m_ViewEndUs)
             continue;
@@ -258,10 +269,14 @@ void VansGraphics::VansProfilerWindow::DrawTrackLane(const Vans::ProfileFrame& f
 {
 #if VANS_PROFILER_ENABLED
     uint16_t maxDepth = 0;
-    for (uint32_t i = 0; i < frame.eventCount; ++i)
+    const uint32_t firstEvent = track.firstEventIndex;
+    const uint32_t lastEvent = std::min(
+        frame.eventCount,
+        firstEvent + track.eventCount);
+    for (uint32_t i = firstEvent; i < lastEvent; ++i)
     {
         const Vans::ProfileEvent& event = frame.events[i];
-        if (event.trackId == track.trackId && IsCategoryVisible(event.category) && PassSearch(event))
+        if (IsCategoryVisible(event.category) && PassSearch(event))
             maxDepth = std::max<uint16_t>(maxDepth, event.depth);
     }
 
@@ -277,14 +292,14 @@ void VansGraphics::VansProfilerWindow::DrawTrackLane(const Vans::ProfileFrame& f
     double visibleUs = std::max(100.0, m_ViewEndUs - m_ViewStartUs);
     double pixelsPerUs = static_cast<double>(width) / visibleUs;
 
-    for (uint32_t i = 0; i < frame.eventCount; ++i)
+    for (uint32_t i = firstEvent; i < lastEvent; ++i)
     {
         const Vans::ProfileEvent& event = frame.events[i];
-        if (event.trackId != track.trackId)
-            continue;
         if (!IsCategoryVisible(event.category) || !PassSearch(event))
             continue;
-        if (event.endUs < m_ViewStartUs || event.startUs > m_ViewEndUs)
+        if (event.startUs > m_ViewEndUs)
+            break;
+        if (event.endUs < m_ViewStartUs)
             continue;
 
         float x0 = origin.x + static_cast<float>((event.startUs - m_ViewStartUs) * pixelsPerUs);
@@ -325,56 +340,66 @@ void VansGraphics::VansProfilerWindow::DrawTrackLane(const Vans::ProfileFrame& f
             m_SelectedEventId = static_cast<int>(event.eventId);
     }
 
-    ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + laneHeight));
-    ImGui::Dummy(ImVec2(width, laneHeight));
-    cursorY = origin.y + laneHeight + 2.0f;
+    ImGui::SetCursorScreenPos(origin);
+    ImGui::Dummy(ImVec2(width, laneHeight + 2.0f));
+    cursorY = ImGui::GetCursorScreenPos().y;
 #endif
 }
 
-void VansGraphics::VansProfilerWindow::DrawHierarchy()
+void VansGraphics::VansProfilerWindow::DrawHierarchy(const Vans::ProfileFrame& frame)
 {
 #if VANS_PROFILER_ENABLED
-    const Vans::ProfileFrame& frame = Vans::VansProfiler::Get().GetTimeline();
-    struct Row
-    {
-        double totalUs = 0.0;
-        double maxUs = 0.0;
-        uint32_t calls = 0;
-        Vans::ProfileCategory category = Vans::ProfileCategory::Other;
-        char name[96] = {};
-    };
-
-    Row rows[512] = {};
-    uint32_t rowCount = 0;
-    std::unordered_map<std::string, uint32_t> rowLookup;
-    rowLookup.reserve(std::min<uint32_t>(frame.eventCount, 512u));
+    m_FilteredEventIndices.clear();
+    m_FilteredEventIndices.reserve(frame.eventCount);
     for (uint32_t i = 0; i < frame.eventCount; ++i)
     {
         const Vans::ProfileEvent& event = frame.events[i];
-        if (!IsCategoryVisible(event.category) || !PassSearch(event))
-            continue;
-
-        const std::string key = std::to_string(static_cast<uint32_t>(event.category)) + ":" + event.name;
-        auto lookupIt = rowLookup.find(key);
-        uint32_t rowIndex = lookupIt != rowLookup.end() ? lookupIt->second : rowCount;
-
-        if (rowIndex == rowCount && rowCount < 512)
-        {
-            rows[rowIndex].category = event.category;
-            std::snprintf(rows[rowIndex].name, sizeof(rows[rowIndex].name), "%s", event.name);
-            rowLookup.emplace(key, rowIndex);
-            ++rowCount;
-        }
-        if (rowIndex >= rowCount)
-            continue;
-
-        double durationUs = std::max(0.0, event.endUs - event.startUs);
-        rows[rowIndex].totalUs += durationUs;
-        rows[rowIndex].maxUs = std::max(rows[rowIndex].maxUs, durationUs);
-        rows[rowIndex].calls++;
+        if (IsCategoryVisible(event.category) && PassSearch(event))
+            m_FilteredEventIndices.push_back(i);
     }
 
-    std::sort(rows, rows + rowCount, [](const Row& a, const Row& b) { return a.totalUs > b.totalUs; });
+    std::sort(
+        m_FilteredEventIndices.begin(),
+        m_FilteredEventIndices.end(),
+        [&frame](uint32_t leftIndex, uint32_t rightIndex)
+        {
+            const Vans::ProfileEvent& left = frame.events[leftIndex];
+            const Vans::ProfileEvent& right = frame.events[rightIndex];
+            if (left.category != right.category)
+                return left.category < right.category;
+            return std::strcmp(left.name, right.name) < 0;
+        });
+
+    m_HierarchyRows.clear();
+    m_HierarchyRows.reserve(m_FilteredEventIndices.size());
+    for (uint32_t eventIndex : m_FilteredEventIndices)
+    {
+        const Vans::ProfileEvent& event = frame.events[eventIndex];
+        const bool startsNewRow = m_HierarchyRows.empty() ||
+            m_HierarchyRows.back().category != event.category ||
+            std::strcmp(m_HierarchyRows.back().name, event.name) != 0;
+        if (startsNewRow)
+        {
+            m_HierarchyRows.emplace_back();
+            HierarchyRow& row = m_HierarchyRows.back();
+            row.category = event.category;
+            std::snprintf(row.name, sizeof(row.name), "%s", event.name);
+        }
+
+        HierarchyRow& row = m_HierarchyRows.back();
+        const double durationUs = std::max(0.0, event.endUs - event.startUs);
+        row.totalUs += durationUs;
+        row.maxUs = std::max(row.maxUs, durationUs);
+        ++row.calls;
+    }
+
+    std::sort(
+        m_HierarchyRows.begin(),
+        m_HierarchyRows.end(),
+        [](const HierarchyRow& left, const HierarchyRow& right)
+        {
+            return left.totalUs > right.totalUs;
+        });
 
     if (ImGui::BeginTable("ProfilerHierarchy", 6, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY, ImVec2(0, 0)))
     {
@@ -386,25 +411,30 @@ void VansGraphics::VansProfilerWindow::DrawHierarchy()
         ImGui::TableSetupColumn("Max ms", ImGuiTableColumnFlags_WidthFixed, 80.0f);
         ImGui::TableHeadersRow();
 
-        for (uint32_t i = 0; i < rowCount; ++i)
+        ImGuiListClipper clipper;
+        clipper.Begin(static_cast<int>(m_HierarchyRows.size()));
+        while (clipper.Step())
         {
-            ImGui::TableNextRow();
-            ImGui::TableSetColumnIndex(0); ImGui::Text("%s", rows[i].name);
-            ImGui::TableSetColumnIndex(1); ImGui::Text("%s", CategoryName(rows[i].category));
-            ImGui::TableSetColumnIndex(2); ImGui::Text("%.3f", rows[i].totalUs * 0.001);
-            ImGui::TableSetColumnIndex(3); ImGui::Text("%u", rows[i].calls);
-            ImGui::TableSetColumnIndex(4); ImGui::Text("%.3f", rows[i].calls ? rows[i].totalUs * 0.001 / rows[i].calls : 0.0);
-            ImGui::TableSetColumnIndex(5); ImGui::Text("%.3f", rows[i].maxUs * 0.001);
+            for (int rowIndex = clipper.DisplayStart; rowIndex < clipper.DisplayEnd; ++rowIndex)
+            {
+                const HierarchyRow& row = m_HierarchyRows[static_cast<size_t>(rowIndex)];
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0); ImGui::Text("%s", row.name);
+                ImGui::TableSetColumnIndex(1); ImGui::Text("%s", CategoryName(row.category));
+                ImGui::TableSetColumnIndex(2); ImGui::Text("%.3f", row.totalUs * 0.001);
+                ImGui::TableSetColumnIndex(3); ImGui::Text("%u", row.calls);
+                ImGui::TableSetColumnIndex(4); ImGui::Text("%.3f", row.calls ? row.totalUs * 0.001 / row.calls : 0.0);
+                ImGui::TableSetColumnIndex(5); ImGui::Text("%.3f", row.maxUs * 0.001);
+            }
         }
         ImGui::EndTable();
     }
 #endif
 }
 
-void VansGraphics::VansProfilerWindow::DrawFrameGraph()
+void VansGraphics::VansProfilerWindow::DrawFrameGraph(const Vans::ProfileFrame& frame)
 {
 #if VANS_PROFILER_ENABLED
-    const Vans::ProfileFrame& frame = Vans::VansProfiler::Get().GetTimeline();
     ImGui::Text("FPS: %.1f", frame.fps);
     ImGui::SameLine();
     ImGui::Text("Frame Time: %.3f ms", frame.frameDurationUs * 0.001);
@@ -424,10 +454,9 @@ void VansGraphics::VansProfilerWindow::DrawFrameGraph()
 #endif
 }
 
-void VansGraphics::VansProfilerWindow::DrawRawEvents()
+void VansGraphics::VansProfilerWindow::DrawRawEvents(const Vans::ProfileFrame& frame)
 {
 #if VANS_PROFILER_ENABLED
-    const Vans::ProfileFrame& frame = Vans::VansProfiler::Get().GetTimeline();
     if (ImGui::BeginTable("RawEvents", 7, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY, ImVec2(0, 0)))
     {
         ImGui::TableSetupColumn("Track", ImGuiTableColumnFlags_WidthFixed, 120.0f);
@@ -439,20 +468,32 @@ void VansGraphics::VansProfilerWindow::DrawRawEvents()
         ImGui::TableSetupColumn("Flags", ImGuiTableColumnFlags_WidthFixed, 60.0f);
         ImGui::TableHeadersRow();
 
-        for (uint32_t i = 0; i < frame.eventCount; ++i)
+        m_FilteredEventIndices.clear();
+        m_FilteredEventIndices.reserve(frame.eventCount);
+        for (uint32_t eventIndex = 0u; eventIndex < frame.eventCount; ++eventIndex)
         {
-            const Vans::ProfileEvent& event = frame.events[i];
-            if (!IsCategoryVisible(event.category) || !PassSearch(event))
-                continue;
-            const Vans::ProfileTrack* track = FindTrack(frame, event.trackId);
-            ImGui::TableNextRow();
-            ImGui::TableSetColumnIndex(0); ImGui::Text("%s", track ? track->name : "?");
-            ImGui::TableSetColumnIndex(1); ImGui::Text("%s", event.name);
-            ImGui::TableSetColumnIndex(2); ImGui::Text("%s", CategoryName(event.category));
-            ImGui::TableSetColumnIndex(3); ImGui::Text("%.3f", event.startUs * 0.001);
-            ImGui::TableSetColumnIndex(4); ImGui::Text("%.3f", EventDurationMs(event));
-            ImGui::TableSetColumnIndex(5); ImGui::Text("%u", event.depth);
-            ImGui::TableSetColumnIndex(6); ImGui::Text("0x%04x", event.flags);
+            const Vans::ProfileEvent& event = frame.events[eventIndex];
+            if (IsCategoryVisible(event.category) && PassSearch(event))
+                m_FilteredEventIndices.push_back(eventIndex);
+        }
+
+        ImGuiListClipper clipper;
+        clipper.Begin(static_cast<int>(m_FilteredEventIndices.size()));
+        while (clipper.Step())
+        {
+            for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row)
+            {
+                const Vans::ProfileEvent& event = frame.events[m_FilteredEventIndices[static_cast<size_t>(row)]];
+                const Vans::ProfileTrack* track = FindTrack(frame, event.trackId);
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0); ImGui::Text("%s", track ? track->name : "?");
+                ImGui::TableSetColumnIndex(1); ImGui::Text("%s", event.name);
+                ImGui::TableSetColumnIndex(2); ImGui::Text("%s", CategoryName(event.category));
+                ImGui::TableSetColumnIndex(3); ImGui::Text("%.3f", event.startUs * 0.001);
+                ImGui::TableSetColumnIndex(4); ImGui::Text("%.3f", EventDurationMs(event));
+                ImGui::TableSetColumnIndex(5); ImGui::Text("%u", event.depth);
+                ImGui::TableSetColumnIndex(6); ImGui::Text("0x%04x", event.flags);
+            }
         }
         ImGui::EndTable();
     }

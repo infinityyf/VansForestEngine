@@ -264,6 +264,10 @@ bool VansAssetDatabase::RegisterOrRefresh(
         : VansAssetArtifactFormat::Imported;
     record.sourceHash = sourceFingerprint.contentHash;
     record.metaHash = metaFingerprint.contentHash;
+    record.hasSkeletalMesh = type == VansAssetType::Model && std::any_of(
+        meta.subAssets.begin(), meta.subAssets.end(), [](const auto& subAsset) {
+            return subAsset.first.rfind("bone:", 0) == 0;
+        });
     record.state = record.artifactPath.empty()
         ? VansAssetState::Discovered
         : VansAssetState::CpuReady;

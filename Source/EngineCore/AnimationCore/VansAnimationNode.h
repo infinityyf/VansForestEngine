@@ -13,6 +13,7 @@
 #endif
 #include "vulkan/vulkan.h"
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -21,6 +22,23 @@
 namespace VansGraphics
 {
 	class VansRenderNode;
+
+	enum class VansAnimationEvaluationPurpose : std::uint8_t
+	{
+		Gameplay,
+		EditorPreview
+	};
+
+	struct VansAnimationFrameContext
+	{
+		VansAnimationEvaluationPurpose purpose;
+		float deltaTime;
+
+		bool AllowsOwnerMotion() const
+		{
+			return purpose == VansAnimationEvaluationPurpose::Gameplay;
+		}
+	};
 
 	// Scene animation entity stored in VansScene::m_AnimationNodes.
 	// A node owns skeleton/GPU state, binds one or more VansRenderNode meshes,
@@ -72,8 +90,9 @@ namespace VansGraphics
 		bool ReplaceRetargetSourceController(std::unique_ptr<VansAnimationController> controller);
 
 		// Playback control, delegated to the active controller.
-		void Play();
-		void Play(const std::string& stateName);
+		void Play(VansAnimationEvaluationPurpose purpose);
+		void Play(const std::string& stateName,
+			VansAnimationEvaluationPurpose purpose);
 		void Pause();
 		void Resume();
 		void Stop();
@@ -110,8 +129,8 @@ namespace VansGraphics
 		void ClearBoneOverride(const std::string& boneName);
 
 		// Per-frame update, called by VansScene.
-		void Update(float deltaTime);
-		void PrepareAnimationFrame(float deltaTime);
+		void Update(const VansAnimationFrameContext& context);
+		void PrepareAnimationFrame(const VansAnimationFrameContext& context);
 		void GatherAnimationWorldQueries();
 		void ResolveAnimationWorldQueries(const std::vector<VansWorldQueryResult>& results);
 		bool HasAnimationWorldQueries() const;

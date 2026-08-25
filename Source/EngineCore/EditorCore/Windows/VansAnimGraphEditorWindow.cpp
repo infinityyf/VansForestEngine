@@ -190,6 +190,9 @@ void VansAnimGraphEditorWindow::Open(const std::string& animatorFilePath)
 	m_PreviewPlaying = true;
 	m_PreviewSpeed = 1.0f;
 	m_PreviewVisualizedLayer = -1;
+	m_PreviewTargetKind = Vans::EditorAPI::AnimationPreviewTargetKind::IsolatedModel;
+	m_PreviewSceneEntityGuid.clear();
+	m_PreviewSceneAnimationComponentGuid.clear();
 	m_PreviewRootMotionMode = Vans::EditorAPI::AnimationPreviewPlaybackRequest::RootMotionMode::InPlace;
 	m_PreviewFloats.clear();
 	m_PreviewBools.clear();
@@ -286,17 +289,22 @@ void VansAnimGraphEditorWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 	// ?????????????????????
 	if (m_CloseRequested)
 		ImGui::OpenPopup("UnsavedChanges");
+	bool closeAfterPopup = false;
 	if (ImGui::BeginPopupModal("UnsavedChanges", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
 	{
 		ImGui::Text("You have unsaved changes. Save before closing?");
-		if (ImGui::Button("Save") && Save()) { ImGui::CloseCurrentPopup(); CloseImmediately(); }
+		if (ImGui::Button("Save") && Save())
+		{
+			ImGui::CloseCurrentPopup();
+			closeAfterPopup = true;
+		}
 		ImGui::SameLine();
 		if (ImGui::Button("Discard"))
 		{
 			if (!m_Document || Vans::VansAssetDocumentEditService::RevertToSaved(m_Document->sourceDocument))
 			{
 				ImGui::CloseCurrentPopup();
-				CloseImmediately();
+				closeAfterPopup = true;
 			}
 			else
 				m_LastError = "Unable to discard Animator document edits";
@@ -304,6 +312,12 @@ void VansAnimGraphEditorWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 		ImGui::SameLine();
 		if (ImGui::Button("Cancel")) { m_CloseRequested = false; ImGui::CloseCurrentPopup(); }
 		ImGui::EndPopup();
+	}
+	if (closeAfterPopup)
+	{
+		CloseImmediately();
+		ImGui::End();
+		return;
 	}
 	DrawMenuBar();
 	DrawNavigationBar();
@@ -315,14 +329,57 @@ void VansAnimGraphEditorWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 	ImGui::SameLine();
     // 画布区域
 	ImGui::BeginChild("AnimationWorkspace", ImVec2(0, -ImGui::GetFrameHeightWithSpacing()));
-	const float previewHeight = 285.0f;
-	ImGui::BeginChild("GraphCanvas", ImVec2(0,
-		std::max(180.0f, ImGui::GetContentRegionAvail().y - previewHeight)));
+	constexpr float defaultPreviewHeight = 285.0f;
+	constexpr float minimumGraphHeight = 180.0f;
+	constexpr float minimumPreviewHeight = 180.0f;
+	constexpr float splitterHeight = 8.0f;
+	const float workspaceHeight = (std::max)(0.0f, ImGui::GetContentRegionAvail().y);
+	const float maximumPreviewHeight = (std::max)(
+		0.0f, workspaceHeight - minimumGraphHeight - splitterHeight);
+	const float effectiveMinimumPreviewHeight = (std::min)(
+		minimumPreviewHeight, maximumPreviewHeight);
+	m_PreviewPanelHeight = std::clamp(
+		m_PreviewPanelHeight, effectiveMinimumPreviewHeight, maximumPreviewHeight);
+	const float graphHeight = (std::max)(
+		0.0f, workspaceHeight - m_PreviewPanelHeight - splitterHeight);
+
+	const ImVec2 itemSpacing = ImGui::GetStyle().ItemSpacing;
+	ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(itemSpacing.x, 0.0f));
+	ImGui::BeginChild("GraphCanvas", ImVec2(0, graphHeight));
 	DrawGraphCanvas();
 	ImGui::EndChild();
-	ImGui::BeginChild("AnimationPreviewPanel", ImVec2(0, previewHeight), ImGuiChildFlags_Borders);
+
+	ImGui::InvisibleButton("##AnimationPreviewSplitter", ImVec2(-1.0f, splitterHeight));
+	const bool splitterHovered = ImGui::IsItemHovered();
+	const bool splitterActive = ImGui::IsItemActive();
+	if (splitterHovered || splitterActive)
+		ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+	if (splitterActive)
+		m_PreviewPanelHeight = std::clamp(
+			m_PreviewPanelHeight - ImGui::GetIO().MouseDelta.y,
+			effectiveMinimumPreviewHeight, maximumPreviewHeight);
+	if (splitterHovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+		m_PreviewPanelHeight = std::clamp(
+			defaultPreviewHeight, effectiveMinimumPreviewHeight, maximumPreviewHeight);
+
+	const ImVec2 splitterMin = ImGui::GetItemRectMin();
+	const ImVec2 splitterMax = ImGui::GetItemRectMax();
+	const float splitterCenterY = (splitterMin.y + splitterMax.y) * 0.5f;
+	const ImU32 splitterColor = splitterActive
+		? ImGui::GetColorU32(ImGuiCol_SeparatorActive)
+		: splitterHovered
+			? ImGui::GetColorU32(ImGuiCol_SeparatorHovered)
+			: ImGui::GetColorU32(ImGuiCol_Separator);
+	ImGui::GetWindowDrawList()->AddLine(
+		ImVec2(splitterMin.x, splitterCenterY),
+		ImVec2(splitterMax.x, splitterCenterY), splitterColor, splitterActive ? 3.0f : 1.0f);
+	if (splitterHovered)
+		ImGui::SetTooltip("Drag to resize Animation Preview. Double-click to reset.");
+
+	ImGui::BeginChild("AnimationPreviewPanel", ImVec2(0, 0), ImGuiChildFlags_Borders);
 	DrawPreviewPanel();
 	ImGui::EndChild();
+	ImGui::PopStyleVar();
 	ImGui::EndChild();
 	DrawStatusBar();
 	if (m_EditState->isDirty && !ImGui::IsAnyItemActive())
@@ -612,7 +669,7 @@ void VansAnimGraphEditorWindow::DestroyPreviewSession()
 	if (m_PreviewSessionId != 0 && m_ActiveAPI)
 		m_ActiveAPI->DestroyAnimationPreview(m_PreviewSessionId);
 	m_PreviewSessionId = 0;
-	m_PreviewSessionModelGuid.clear();
+	m_PreviewSessionTargetKey.clear();
 }
 
 void VansAnimGraphEditorWindow::ResetPreviewParameters()
@@ -735,17 +792,37 @@ void VansAnimGraphEditorWindow::EnsurePreviewSession()
 {
 	if (!m_ActiveAPI || !m_AssetData)
 		return;
-	const std::string& modelGuid = m_AssetData->editor.previewModelGuid;
-	if (modelGuid.empty())
+	std::string targetKey;
+	Vans::EditorAPI::AnimationPreviewCreateRequest request;
+	request.targetKind = m_PreviewTargetKind;
+	if (m_PreviewTargetKind ==
+		Vans::EditorAPI::AnimationPreviewTargetKind::SceneAnimationComponent)
 	{
-		DestroyPreviewSession();
-		return;
+		if (m_PreviewSceneEntityGuid.empty() ||
+			m_PreviewSceneAnimationComponentGuid.empty())
+		{
+			DestroyPreviewSession();
+			return;
+		}
+		request.entityGuid = m_PreviewSceneEntityGuid;
+		request.animationComponentGuid = m_PreviewSceneAnimationComponentGuid;
+		targetKey = "scene:" + m_PreviewSceneEntityGuid + ":" +
+			m_PreviewSceneAnimationComponentGuid;
 	}
-	if (m_PreviewSessionId != 0 && m_PreviewSessionModelGuid == modelGuid)
+	else
+	{
+		const std::string& modelGuid = m_AssetData->editor.previewModelGuid;
+		if (modelGuid.empty())
+		{
+			DestroyPreviewSession();
+			return;
+		}
+		request.previewModelGuid = modelGuid;
+		targetKey = "isolated:" + modelGuid;
+	}
+	if (m_PreviewSessionId != 0 && m_PreviewSessionTargetKey == targetKey)
 		return;
 	DestroyPreviewSession();
-	Vans::EditorAPI::AnimationPreviewCreateRequest request;
-	request.previewModelGuid = modelGuid;
 	const auto result = m_ActiveAPI->CreateAnimationPreview(request);
 	if (!result.success)
 	{
@@ -753,9 +830,15 @@ void VansAnimGraphEditorWindow::EnsurePreviewSession()
 		return;
 	}
 	m_PreviewSessionId = result.sessionId;
-	m_PreviewSessionModelGuid = modelGuid;
+	m_PreviewSessionTargetKey = std::move(targetKey);
 	m_PreviewDocumentStateId = 0;
-	QueuePreviewCompile();
+	if (m_PreviewTargetKind == Vans::EditorAPI::AnimationPreviewTargetKind::IsolatedModel)
+		QueuePreviewCompile();
+	else
+	{
+		m_PreviewCompilePending = false;
+		ApplyPreviewParameters();
+	}
 }
 
 void VansAnimGraphEditorWindow::QueuePreviewCompile()
@@ -771,6 +854,16 @@ void VansAnimGraphEditorWindow::UpdatePreviewDefinition()
 	if (!m_ActiveAPI || !m_AssetData || m_PreviewSessionId == 0)
 	{
 		m_PreviewCompilePending = false;
+		return;
+	}
+	if (m_PreviewTargetKind ==
+		Vans::EditorAPI::AnimationPreviewTargetKind::SceneAnimationComponent)
+	{
+		// A Scene target previews the saved AnimationComponent runtime. Unsaved
+		// authoring revisions remain the responsibility of Isolated Preview.
+		m_PreviewCompilePending = false;
+		m_PreviewDocumentStateId = m_Document
+			? m_Document->sourceDocument.CurrentStateId() : 0;
 		return;
 	}
 	const std::uint64_t attemptedDocumentStateId = m_Document
@@ -833,9 +926,71 @@ void VansAnimGraphEditorWindow::DrawPreviewPanel()
 {
 	if (!m_AssetData || !m_ActiveAPI)
 		return;
-	ImGui::TextUnformatted("Isolated Animation Preview");
+	ImGui::TextUnformatted("Animation Preview");
 	ImGui::SameLine();
-	const auto models = m_ActiveAPI->QueryAssets({ Vans::EditorAPI::AssetType::Model, false });
+	const auto sceneRigs = m_ActiveAPI->GetSceneSkeletonHierarchy("");
+	std::string targetLabel = "Isolated Model";
+	if (m_PreviewTargetKind ==
+		Vans::EditorAPI::AnimationPreviewTargetKind::SceneAnimationComponent)
+	{
+		targetLabel = "Scene Character";
+		for (const auto& rig : sceneRigs.rigs)
+		{
+			if (rig.entityGuid == m_PreviewSceneEntityGuid &&
+				rig.animationComponentGuid == m_PreviewSceneAnimationComponentGuid)
+			{
+				targetLabel = "Scene: " + (rig.nodeName.empty()
+					? rig.entityGuid : rig.nodeName);
+				break;
+			}
+		}
+	}
+	ImGui::SetNextItemWidth(250.0f);
+	if (ImGui::BeginCombo("##AnimationPreviewTarget", targetLabel.c_str()))
+	{
+		const bool isolatedSelected = m_PreviewTargetKind ==
+			Vans::EditorAPI::AnimationPreviewTargetKind::IsolatedModel;
+		if (ImGui::Selectable("Isolated Model", isolatedSelected))
+		{
+			m_PreviewTargetKind =
+				Vans::EditorAPI::AnimationPreviewTargetKind::IsolatedModel;
+			m_PreviewSceneEntityGuid.clear();
+			m_PreviewSceneAnimationComponentGuid.clear();
+			DestroyPreviewSession();
+			EnsurePreviewSession();
+		}
+		if (isolatedSelected) ImGui::SetItemDefaultFocus();
+		for (const auto& rig : sceneRigs.rigs)
+		{
+			const bool selected = m_PreviewTargetKind ==
+				Vans::EditorAPI::AnimationPreviewTargetKind::SceneAnimationComponent &&
+				rig.entityGuid == m_PreviewSceneEntityGuid &&
+				rig.animationComponentGuid == m_PreviewSceneAnimationComponentGuid;
+			const std::string label = "Scene: " + (rig.nodeName.empty()
+				? rig.entityGuid : rig.nodeName) + "##" + rig.animationComponentGuid;
+			if (ImGui::Selectable(label.c_str(), selected))
+			{
+				m_PreviewTargetKind = Vans::EditorAPI::AnimationPreviewTargetKind::
+					SceneAnimationComponent;
+				m_PreviewSceneEntityGuid = rig.entityGuid;
+				m_PreviewSceneAnimationComponentGuid = rig.animationComponentGuid;
+				m_PreviewRootMotionMode = Vans::EditorAPI::
+					AnimationPreviewPlaybackRequest::RootMotionMode::TrailOnly;
+				DestroyPreviewSession();
+				EnsurePreviewSession();
+			}
+			if (selected) ImGui::SetItemDefaultFocus();
+		}
+		ImGui::EndCombo();
+	}
+
+	if (m_PreviewTargetKind == Vans::EditorAPI::AnimationPreviewTargetKind::IsolatedModel)
+	{
+		ImGui::SameLine();
+		const auto models = m_ActiveAPI->QueryAssets({
+			Vans::EditorAPI::AssetType::Model,
+			false,
+			Vans::EditorAPI::AssetQueryCapability::SkeletalModel });
 	ImGui::SetNextItemWidth(340.0f);
 	const char* modelLabel = m_AssetData->editor.previewModelPathHint.empty()
 		? "Choose Preview Model..." : m_AssetData->editor.previewModelPathHint.c_str();
@@ -856,21 +1011,40 @@ void VansAnimGraphEditorWindow::DrawPreviewPanel()
 		}
 		ImGui::EndCombo();
 	}
+	}
+	else
+	{
+		ImGui::SameLine();
+		ImGui::TextDisabled("Scene View uses the final retargeted pose; sockets and attachments follow it. Owner Transform remains editable.");
+	}
 	if (m_PreviewSessionId == 0)
 	{
-		ImGui::TextDisabled("Select a skeletal Model asset to compile and preview unsaved Animator revisions.");
+		ImGui::TextDisabled(m_PreviewTargetKind ==
+			Vans::EditorAPI::AnimationPreviewTargetKind::IsolatedModel
+			? "Select a skeletal Model asset to compile and preview unsaved Animator revisions."
+			: "Load an Editor scene with an Animation Component, then select its Scene target.");
 		return;
 	}
 
-	Vans::EditorAPI::AnimationPreviewViewportRequest viewportRequest;
-	viewportRequest.sessionId = m_PreviewSessionId;
-	viewportRequest.yaw = m_PreviewYaw;
-	viewportRequest.pitch = m_PreviewPitch;
-	viewportRequest.zoom = m_PreviewZoom;
-	viewportRequest.visualizedLayerIndex = m_PreviewVisualizedLayer;
-	m_ActiveAPI->SetAnimationPreviewViewport(viewportRequest);
+	if (m_PreviewTargetKind == Vans::EditorAPI::AnimationPreviewTargetKind::IsolatedModel)
+	{
+		Vans::EditorAPI::AnimationPreviewViewportRequest viewportRequest;
+		viewportRequest.sessionId = m_PreviewSessionId;
+		viewportRequest.yaw = m_PreviewYaw;
+		viewportRequest.pitch = m_PreviewPitch;
+		viewportRequest.zoom = m_PreviewZoom;
+		viewportRequest.visualizedLayerIndex = m_PreviewVisualizedLayer;
+		m_ActiveAPI->SetAnimationPreviewViewport(viewportRequest);
+	}
 	m_ActiveAPI->TickAnimationPreview(m_PreviewSessionId, ImGui::GetIO().DeltaTime);
 	auto snapshot = m_ActiveAPI->GetAnimationPreviewSnapshot(m_PreviewSessionId);
+	if (!snapshot.available)
+	{
+		m_PreviewSessionId = 0;
+		m_PreviewSessionTargetKey.clear();
+		ImGui::TextDisabled("Preview target changed with the scene. Select a target again.");
+		return;
+	}
 	if (ImGui::BeginTable("AnimationPreviewLayout", 3,
 		ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV,
 		ImVec2(0.0f, ImGui::GetContentRegionAvail().y)))
@@ -891,6 +1065,7 @@ void VansAnimGraphEditorWindow::DrawPreviewPanel()
 			m_ActiveAPI->SetAnimationPreviewPlayback(playback);
 		}
 		ImGui::SameLine();
+		if (!snapshot.seekSupported) ImGui::BeginDisabled();
 		if (ImGui::Button("Step"))
 		{
 			m_PreviewPlaying = false;
@@ -900,16 +1075,21 @@ void VansAnimGraphEditorWindow::DrawPreviewPanel()
 			playback.speed = m_PreviewSpeed;
 			playback.rootMotionMode = m_PreviewRootMotionMode;
 			playback.seek = true;
-			playback.normalizedTime = snapshot.duration > 0.0f
-				? std::min(1.0f, snapshot.normalizedTime + (1.0f / 30.0f) / snapshot.duration)
-				: snapshot.normalizedTime;
+			playback.seekSeconds = snapshot.duration > 0.0f
+				? std::min(snapshot.duration, snapshot.currentTime + (1.0f / 30.0f))
+				: snapshot.currentTime;
 			m_ActiveAPI->SetAnimationPreviewPlayback(playback);
 		}
+		if (!snapshot.seekSupported) ImGui::EndDisabled();
 		ImGui::SameLine();
 		if (ImGui::Button("Reset Params"))
 		{
 			ResetPreviewParameters();
-			QueuePreviewCompile();
+			if (m_PreviewTargetKind ==
+				Vans::EditorAPI::AnimationPreviewTargetKind::SceneAnimationComponent)
+				ApplyPreviewParameters();
+			else
+				QueuePreviewCompile();
 		}
 		if (ImGui::SliderFloat("Speed", &m_PreviewSpeed, 0.0f, 3.0f))
 		{
@@ -921,7 +1101,28 @@ void VansAnimGraphEditorWindow::DrawPreviewPanel()
 			m_ActiveAPI->SetAnimationPreviewPlayback(playback);
 		}
 		int rootMotionMode = static_cast<int>(m_PreviewRootMotionMode);
-		if (ImGui::Combo("Root Motion", &rootMotionMode, "In Place\0Apply To Actor\0Trail Only\0"))
+		bool rootMotionChanged = false;
+		if (snapshot.sceneTarget)
+		{
+			int sceneRootMode = rootMotionMode == static_cast<int>(
+				Vans::EditorAPI::AnimationPreviewPlaybackRequest::RootMotionMode::InPlace)
+				? 0 : 1;
+			if (ImGui::Combo("Root Motion", &sceneRootMode, "In Place\0Trail Only\0"))
+			{
+				rootMotionMode = sceneRootMode == 0
+					? static_cast<int>(Vans::EditorAPI::AnimationPreviewPlaybackRequest::
+						RootMotionMode::InPlace)
+					: static_cast<int>(Vans::EditorAPI::AnimationPreviewPlaybackRequest::
+						RootMotionMode::TrailOnly);
+				rootMotionChanged = true;
+			}
+		}
+		else
+		{
+			rootMotionChanged = ImGui::Combo(
+				"Root Motion", &rootMotionMode, "In Place\0Visual Offset\0Trail Only\0");
+		}
+		if (rootMotionChanged)
 		{
 			m_PreviewRootMotionMode = static_cast<
 				Vans::EditorAPI::AnimationPreviewPlaybackRequest::RootMotionMode>(rootMotionMode);
@@ -932,20 +1133,26 @@ void VansAnimGraphEditorWindow::DrawPreviewPanel()
 			playback.rootMotionMode = m_PreviewRootMotionMode;
 			m_ActiveAPI->SetAnimationPreviewPlayback(playback);
 		}
-		float normalizedTime = snapshot.normalizedTime;
-		if (ImGui::SliderFloat("Timeline", &normalizedTime, 0.0f, 1.0f, "%.3f"))
+		const bool timelineEnabled = snapshot.seekSupported && snapshot.duration > 0.0f;
+		if (!timelineEnabled) ImGui::BeginDisabled();
+		float timelineSeconds = snapshot.currentTime;
+		if (ImGui::SliderFloat("Timeline", &timelineSeconds, 0.0f,
+			snapshot.duration > 0.0f ? snapshot.duration : 1.0f, "%.3f s"))
 		{
 			Vans::EditorAPI::AnimationPreviewPlaybackRequest playback;
 			playback.sessionId = m_PreviewSessionId;
 			playback.playing = false;
 			playback.speed = m_PreviewSpeed;
 			playback.seek = true;
-			playback.normalizedTime = normalizedTime;
+			playback.seekSeconds = timelineSeconds;
 			playback.rootMotionMode = m_PreviewRootMotionMode;
 			m_PreviewPlaying = false;
 			m_ActiveAPI->SetAnimationPreviewPlayback(playback);
 		}
+		if (!timelineEnabled) ImGui::EndDisabled();
 		ImGui::TextDisabled("%.3f / %.3f sec", snapshot.currentTime, snapshot.duration);
+		if (!snapshot.seekSupported)
+			ImGui::TextDisabled("Timeline seek is temporarily unavailable during a Graph Set transition or active Motion Matching evaluation.");
 		ImGui::SeparatorText("Parameters");
 		for (const AnimatorParameter& parameter : m_AssetData->parameters)
 		{
@@ -1045,8 +1252,30 @@ void VansAnimGraphEditorWindow::DrawPreviewPanel()
 		ImDrawList* draw = ImGui::GetWindowDrawList();
 		const ImVec2 end(origin.x + size.x, origin.y + size.y);
 		draw->AddRectFilled(origin, end, IM_COL32(18, 21, 28, 255));
+		ImVec2 visualizationOrigin = origin;
+		ImVec2 visualizationSize = size;
+		if (snapshot.modelRendered && snapshot.modelTexture &&
+			snapshot.modelTextureWidth > 0 && snapshot.modelTextureHeight > 0 &&
+			size.x > 0.0f && size.y > 0.0f)
+		{
+			const float textureAspect = static_cast<float>(snapshot.modelTextureWidth) /
+				static_cast<float>(snapshot.modelTextureHeight);
+			const float availableAspect = size.x / size.y;
+			if (availableAspect > textureAspect)
+			{
+				visualizationSize.x = size.y * textureAspect;
+				visualizationOrigin.x += (size.x - visualizationSize.x) * 0.5f;
+			}
+			else
+			{
+				visualizationSize.y = size.x / textureAspect;
+				visualizationOrigin.y += (size.y - visualizationSize.y) * 0.5f;
+			}
+		}
 		if (snapshot.modelRendered && snapshot.modelTexture)
-			draw->AddImage(snapshot.modelTexture, origin, end);
+			draw->AddImage(snapshot.modelTexture, visualizationOrigin,
+				ImVec2(visualizationOrigin.x + visualizationSize.x,
+					visualizationOrigin.y + visualizationSize.y));
 		if (ImGui::IsItemHovered())
 		{
 			m_PreviewZoom = std::clamp(m_PreviewZoom + ImGui::GetIO().MouseWheel * 0.08f, 0.2f, 3.0f);
@@ -1092,12 +1321,12 @@ void VansAnimGraphEditorWindow::DrawPreviewPanel()
 				if (!snapshot.modelRendered)
 					radius = std::max(radius, std::max(std::fabs(rx), std::fabs(ry)));
 			}
-			const float scaleX = snapshot.modelRendered
-				? 0.43f * size.x * m_PreviewZoom / radius
-				: 0.43f * std::min(size.x, size.y) * m_PreviewZoom / radius;
-			const float scaleY = snapshot.modelRendered
-				? 0.43f * size.y * m_PreviewZoom / radius : scaleX;
-			const ImVec2 middle(origin.x + size.x * 0.5f, origin.y + size.y * 0.5f);
+			const float scaleX = 0.43f * std::min(
+				visualizationSize.x, visualizationSize.y) * m_PreviewZoom / radius;
+			const float scaleY = scaleX;
+			const ImVec2 middle(
+				visualizationOrigin.x + visualizationSize.x * 0.5f,
+				visualizationOrigin.y + visualizationSize.y * 0.5f);
 			std::vector<ImVec2> screen(points.size());
 			for (std::size_t index = 0; index < points.size(); ++index)
 				screen[index] = ImVec2(middle.x + points[index].x * scaleX,

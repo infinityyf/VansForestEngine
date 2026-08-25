@@ -14,8 +14,7 @@ namespace VansGraphics
 	enum class VansQueueRole : uint8_t
 	{
 		Graphics,
-		Compute,
-		Shadow
+		Compute
 	};
 
 	enum class VansSyncPoint : uint8_t
@@ -27,11 +26,8 @@ namespace VansGraphics
 		ShadowMapsReady,
 		HairShadowReady,
 		TileLightReady,
-		HZBReady,
-		SSAOReady,
 		ScreenLightingReady,
 		CloudReady,
-		GIReady,
 		WaterWaveDone,
 		WaterInputsReady,
 		WaterPrecomputeDone,
@@ -42,9 +38,7 @@ namespace VansGraphics
 	{
 		uint32_t graphicsFamily = VK_QUEUE_FAMILY_IGNORED;
 		uint32_t computeFamily = VK_QUEUE_FAMILY_IGNORED;
-		uint32_t shadowFamily = VK_QUEUE_FAMILY_IGNORED;
 		bool hasDedicatedAsyncComputeQueue = false;
-		bool hasSecondaryGraphicsQueue = false;
 		bool HasValidGraphicsQueue() const;
 		bool HasValidComputeQueue() const;
 		bool SupportsAsyncCompute() const;
@@ -99,8 +93,7 @@ namespace VansGraphics
 		void Bind(
 			VkDevice device,
 			VkQueue graphicsQueue,
-			VkQueue computeQueue,
-			VkQueue shadowQueue);
+			VkQueue computeQueue);
 		void Shutdown();
 		void Reset();
 		void AddNode(VansFrameSubmitNode node);
@@ -120,7 +113,6 @@ namespace VansGraphics
 		VkDevice m_Device = VK_NULL_HANDLE;
 		VkQueue m_GraphicsQueue = VK_NULL_HANDLE;
 		VkQueue m_ComputeQueue = VK_NULL_HANDLE;
-		VkQueue m_ShadowQueue = VK_NULL_HANDLE;
 		std::vector<VansFrameSubmitNode> m_Nodes;
 		std::vector<VkSemaphore> m_ActiveEdgeSemaphores;
 		std::vector<VkSemaphore> m_AvailableEdgeSemaphores;

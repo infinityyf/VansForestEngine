@@ -132,6 +132,24 @@ namespace VansGraphics
 				visual.steeringRequestedCorrectionDegrees,
 				visual.steeringAppliedCorrectionDegrees,
 				visual.steeringAppliedYawRateDegreesPerSecond);
+			ImGui::Text("Turn warp: %s%s  gate: %s  replan: %s",
+				visual.turnWarpActive ? "active" : "idle",
+				visual.turnWarpLimited ? " (limited)" : "",
+				visual.turnWarpDisableReason.empty()
+					? "unknown" : visual.turnWarpDisableReason.c_str(),
+				visual.turnWarpNeedsReplan
+					? visual.turnWarpReplanReason.c_str() : "no");
+			ImGui::Text("Turn endpoint: target %.1f  authored %.1f  scale %.3f  residual %.1f",
+				visual.turnWarpTargetDeltaDegrees,
+				visual.turnWarpAuthoredRemainingYawDegrees,
+				visual.turnWarpScaleRatio,
+				visual.turnWarpResidualDegrees);
+			ImGui::Text("Turn correction: frame %.2f  additive total %.2f  cost %.3f  profile %d  motion end %.3f",
+				visual.turnWarpAppliedFrameCorrectionDegrees,
+				visual.turnWarpAccumulatedAdditiveDegrees,
+				visual.turnWarpEndpointCost,
+				visual.turnWarpProfileIndex,
+				visual.turnWarpMotionEndTimeSeconds);
 			ImGui::Text("Root transition: %s  target %.1f  reconciled %.1f deg/s",
 				visual.rootMotionReconciliationActive ? "active" : "idle",
 				visual.rootMotionTargetYawRateDegreesPerSecond,
@@ -159,7 +177,7 @@ namespace VansGraphics
 				visual.currentCost, visual.trajectoryCost, visual.poseCost, visual.contactCost);
 			if (ImGui::TreeNode("Top Candidates"))
 			{
-				if (ImGui::BeginTable("MMCandidates", 6,
+				if (ImGui::BeginTable("MMCandidates", 7,
 					ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp))
 				{
 					ImGui::TableSetupColumn("Clip");
@@ -168,6 +186,7 @@ namespace VansGraphics
 					ImGui::TableSetupColumn("Trajectory");
 					ImGui::TableSetupColumn("Pose");
 					ImGui::TableSetupColumn("Contact");
+					ImGui::TableSetupColumn("Turn End");
 					ImGui::TableHeadersRow();
 					for (const auto& candidate : visual.topCandidates)
 					{
@@ -178,6 +197,7 @@ namespace VansGraphics
 						ImGui::TableSetColumnIndex(3); ImGui::Text("%.3f", candidate.trajectoryCost);
 						ImGui::TableSetColumnIndex(4); ImGui::Text("%.3f", candidate.poseCost);
 						ImGui::TableSetColumnIndex(5); ImGui::Text("%.3f", candidate.contactCost);
+						ImGui::TableSetColumnIndex(6); ImGui::Text("%.3f", candidate.turnEndpointCost);
 					}
 					ImGui::EndTable();
 				}

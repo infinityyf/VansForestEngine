@@ -573,7 +573,19 @@ void VansMotionMatchingRuntime::Configure(const MotionMatchingSettings& settings
 {
 	m_Settings = settings;
 	m_RootMotionSteering.Configure(settings.steering);
+	m_TurnInPlaceWarping.Configure(settings.turnInPlaceWarping);
 	m_RootMotionReconciler.Configure(settings.rootMotionReconciliation);
+	float effectiveTurnRootRotationWeight = 0.0f;
+	if (settings.motionModel.driveMode == Vans::VansLocomotionDriveMode::RootMotion)
+		effectiveTurnRootRotationWeight = settings.motionModel.rootRotationWeight;
+	else if (settings.motionModel.driveMode == Vans::VansLocomotionDriveMode::Hybrid)
+	{
+		effectiveTurnRootRotationWeight =
+			settings.motionModel.transitionRootMotionWeight *
+			settings.motionModel.rootRotationWeight;
+	}
+	m_TurnWarpRootRotationAuthoritative =
+		effectiveTurnRootRotationWeight >= 0.999f;
 	MarkDatabaseDirty();
 	m_DebugData.enabled = settings.enabled;
 }
@@ -596,7 +608,6 @@ void VansMotionMatchingRuntime::MarkDatabaseDirty()
 	m_LastPivotRequested = false;
 	m_LastFacingTurnRequested = false;
 	m_LastFacingTurnDirectionSign = 0;
-	m_LastFacingTurnBucketDelta = 0;
 	m_CurrentPlaybackRate = 1.0f;
 	m_CurrentTrajectoryVelocityRoot = glm::vec3(0.0f);
 	m_LeftFootPlantWeight = 0.0f;
@@ -617,9 +628,11 @@ void VansMotionMatchingRuntime::MarkDatabaseDirty()
 	m_DirectionalStateFallback = false;
 	m_FacingTurnRequested = false;
 	m_FacingTurnDirectionSign = 0;
-	m_FacingTurnBucketDelta = 0;
 	m_RootMotionSteering.Reset();
+	m_TurnInPlaceWarping.Reset();
 	m_RootMotionReconciler.Reset();
+	m_TurnYawProfiles.clear();
+	m_ClipTurnYawProfileIndices.clear();
 	m_ActiveDatabaseIndices.clear();
 }
 
@@ -879,36 +892,80 @@ void VansMotionMatchingRuntime::ResolveActiveDatabases(
 	}
 }
 
-int VansMotionMatchingRuntime::ResolveFacingTurnBucket(
-	int moveState, int directionSign, float absoluteAngleDegrees) const
+const TurnYawProfile* VansMotionMatchingRuntime::ResolveTurnYawProfile(
+	const Sample& sample) const
 {
-	int smallestCoveringBucket = 0;
-	int largestBucket = 0;
-	for (const MotionMatchingDatabase& database : m_Settings.databases)
+	if (sample.turnYawProfileIndex < 0 ||
+		sample.turnYawProfileIndex >= static_cast<int>(m_TurnYawProfiles.size()))
 	{
-		if (!database.enabled)
-			continue;
-		for (const MotionMatchingDatabaseClip& clip : database.clips)
-		{
-			const std::string phase = ToLower(clip.phase.empty() ? database.phase : clip.phase);
-			if (phase != "turn" || clip.turnBucketDelta <= 0 ||
-			    clip.sourceMoveState != moveState || clip.targetMoveState != moveState)
-				continue;
-			if (clip.turnDirectionSign != 0 && clip.turnDirectionSign != directionSign)
-				continue;
-			const float authoredAngle = static_cast<float>(clip.turnBucketDelta) * 45.0f;
-			largestBucket = (std::max)(largestBucket, clip.turnBucketDelta);
-			if (authoredAngle + kEpsilon >= absoluteAngleDegrees &&
-			    (smallestCoveringBucket == 0 || clip.turnBucketDelta < smallestCoveringBucket))
-				smallestCoveringBucket = clip.turnBucketDelta;
-		}
+		return nullptr;
 	}
-	// Pose Search may enter a turn clip after its first frame. Select the
-	// smallest authored arc that can cover the remaining error, then let facing
-	// features choose the correct entry time inside that arc. Choosing the
-	// numerically nearest clip can under-rotate and strand a non-looping turn at
-	// its end while the error is still above threshold.
-	return smallestCoveringBucket > 0 ? smallestCoveringBucket : largestBucket;
+	const TurnYawProfile& profile = m_TurnYawProfiles[sample.turnYawProfileIndex];
+	return profile.valid ? &profile : nullptr;
+}
+
+float VansMotionMatchingRuntime::SampleTrajectoryFacingYaw(
+	const Vans::VansCharacterTrajectory& trajectory,
+	float predictionTimeSeconds) const
+{
+	const float predictionTime = (std::max)(0.0f, predictionTimeSeconds);
+	float targetFacingYaw = trajectory.currentFacingYaw;
+	float previousFacingYaw = trajectory.currentFacingYaw;
+	float previousTime = 0.0f;
+	for (const auto& future : trajectory.future)
+	{
+		if (predictionTime <= future.time)
+		{
+			const float span = (std::max)(future.time - previousTime, kEpsilon);
+			const float alpha = glm::clamp(
+				(predictionTime - previousTime) / span, 0.0f, 1.0f);
+			return previousFacingYaw + std::remainder(
+				future.facingYaw - previousFacingYaw, 360.0f) * alpha;
+		}
+		targetFacingYaw = future.facingYaw;
+		previousFacingYaw = future.facingYaw;
+		previousTime = future.time;
+	}
+	return targetFacingYaw;
+}
+
+float VansMotionMatchingRuntime::PredictTurnWarpTargetFacingYaw(
+	const Vans::VansCharacterTrajectory& trajectory,
+	float predictionTimeSeconds) const
+{
+	// Pose Search 需要角色的平滑未来轨迹；Turn Warping 需要的是 UE
+	// Motion Warping 意义上的目标 Transform 朝向。若把二者混用，剩余时间
+	// 接近零时轨迹插值会自动回缩到 currentFacingYaw，导致 Turn 提前结束并
+	// 留下需要第二段 Turn 才能修正的确定性误差。
+	const float predictionTime = (std::max)(0.0f, predictionTimeSeconds);
+	const float targetYawRate = std::isfinite(trajectory.desiredFacingYawRate)
+		? trajectory.desiredFacingYawRate : 0.0f;
+	return trajectory.desiredFacingYaw + targetYawRate * predictionTime;
+}
+
+float VansMotionMatchingRuntime::ResolveTurnTargetDeltaDegrees(
+	const Sample& sample,
+	const Vans::VansCharacterTrajectory* trajectory) const
+{
+	if (!trajectory || !trajectory->valid || !trajectory->hasFacing)
+		return m_QueryFacingDeltaDegrees;
+	const TurnYawProfile* profile = ResolveTurnYawProfile(sample);
+	const float remainingMotionTime = profile
+		? profile->RemainingMotionTime(sample.time) : 0.0f;
+	const float predictionTime = (std::min)(
+		(std::max)(0.0f, m_Settings.turnInPlaceWarping.maxTargetPredictionTime),
+		remainingMotionTime);
+	const float targetFacingYaw = PredictTurnWarpTargetFacingYaw(
+		*trajectory, predictionTime);
+	float delta = std::remainder(
+		targetFacingYaw - trajectory->currentFacingYaw, 360.0f);
+	if (std::abs(delta) >= 170.0f &&
+		std::abs(trajectory->desiredFacingYawRate) >
+			m_Settings.facingTurnExitYawRateDegreesPerSecond)
+	{
+		delta = std::copysign(std::abs(delta), trajectory->desiredFacingYawRate);
+	}
+	return delta;
 }
 
 bool VansMotionMatchingRuntime::HasPivotDatabaseForState(int moveState) const
@@ -1504,6 +1561,8 @@ bool VansMotionMatchingRuntime::BuildDatabase(const std::unordered_map<std::stri
 	const auto buildStarted = std::chrono::steady_clock::now();
 	m_Samples.clear();
 	m_ClipSampleIndices.clear();
+	m_TurnYawProfiles.clear();
+	m_ClipTurnYawProfileIndices.clear();
 	m_DebugData.topCandidates.clear();
 	m_DebugData.databaseReady = false;
 	m_DebugData.rigReady = false;
@@ -1542,6 +1601,57 @@ bool VansMotionMatchingRuntime::BuildDatabase(const std::unordered_map<std::stri
 				continue;
 
 			const VansAnimationClip& clip = clipIt->second;
+			const std::string phase = ToLower(
+				databaseClip.phase.empty() ? database.phase : databaseClip.phase);
+			int turnYawProfileIndex = -1;
+			if (m_Settings.turnInPlaceWarping.enabled &&
+				phase == "turn" && !databaseClip.loop)
+			{
+				const auto existingProfile =
+					m_ClipTurnYawProfileIndices.find(databaseClip.name);
+				if (existingProfile != m_ClipTurnYawProfileIndices.end())
+				{
+					turnYawProfileIndex = existingProfile->second;
+				}
+				else
+				{
+					TurnYawProfile profile;
+					if (BuildTurnYawProfile(
+						clip,
+						skeleton,
+						m_Rig.trajectoryRoot,
+						(std::max)(60.0f, m_Settings.sampleRate),
+						2.0f / (std::max)(1.0f, m_Settings.sampleRate),
+						m_Settings.turnInPlaceWarping.rootYawThresholdDegrees,
+						profile))
+					{
+						turnYawProfileIndex = static_cast<int>(m_TurnYawProfiles.size());
+						m_TurnYawProfiles.push_back(std::move(profile));
+						m_ClipTurnYawProfileIndices.emplace(
+							databaseClip.name, turnYawProfileIndex);
+						const TurnYawProfile& builtProfile =
+							m_TurnYawProfiles[turnYawProfileIndex];
+						if (databaseClip.turnBucketDelta > 0)
+						{
+							const float nominalYaw =
+								static_cast<float>(databaseClip.turnBucketDelta * 45) *
+								static_cast<float>(databaseClip.turnDirectionSign == 0
+									? builtProfile.directionSign : databaseClip.turnDirectionSign);
+							if (std::abs(nominalYaw - builtProfile.totalYawDegrees) > 20.0f)
+							{
+								VANS_LOG_WARN("[MotionMatching] Turn semantic angle differs from root yaw: clip="
+									<< databaseClip.name << " nominal=" << nominalYaw
+									<< " measured=" << builtProfile.totalYawDegrees);
+							}
+						}
+					}
+					else
+					{
+						VANS_LOG_WARN("[MotionMatching] Turn clip has no valid root yaw profile: "
+							<< databaseClip.name);
+					}
+				}
+			}
 			const float samplingStart = glm::clamp(databaseClip.samplingStart, 0.0f, clip.duration);
 			const float minimumSamplingEnd = (std::min)(
 				clip.duration, samplingStart + sampleStep);
@@ -1565,7 +1675,6 @@ bool VansMotionMatchingRuntime::BuildDatabase(const std::unordered_map<std::stri
 				const float speedHorizon = m_Settings.schema.futureTimes[0];
 				if (speedHorizon > kEpsilon)
 					sample.trajectorySpeed = glm::length(glm::vec2(sample.rawFeature[0], sample.rawFeature[1])) / speedHorizon;
-				const std::string phase = ToLower(databaseClip.phase.empty() ? database.phase : databaseClip.phase);
 				sample.loopLike = databaseClip.loop;
 				sample.idleLike = phase == "idle";
 				sample.startLike = phase == "start";
@@ -1581,6 +1690,7 @@ bool VansMotionMatchingRuntime::BuildDatabase(const std::unordered_map<std::stri
 				sample.directionBucketFromName = databaseClip.directionBucket;
 				sample.turnDirectionSign = databaseClip.turnDirectionSign;
 				sample.turnBucketDelta = databaseClip.turnBucketDelta;
+				sample.turnYawProfileIndex = turnYawProfileIndex;
 				sample.databaseIndex = databaseIndex;
 				const int sampleIndex = static_cast<int>(m_Samples.size());
 				m_Samples.push_back(sample);
@@ -1829,11 +1939,30 @@ bool VansMotionMatchingRuntime::ShouldConsiderSampleForParameters(
 				return false;
 			if (currentMoveState != desiredMoveState)
 				return false;
-			if (sample.turnBucketDelta != m_FacingTurnBucketDelta)
+			const TurnYawProfile* profile = ResolveTurnYawProfile(sample);
+			if (m_Settings.turnInPlaceWarping.enabled &&
+				m_TurnWarpRootRotationAuthoritative && !profile)
 				return false;
-			if (sample.turnDirectionSign != 0 &&
-			    sample.turnDirectionSign != m_FacingTurnDirectionSign)
+			const int measuredDirection = profile ? profile->directionSign : 0;
+			const int candidateDirection = sample.turnDirectionSign != 0
+				? sample.turnDirectionSign : measuredDirection;
+			if (candidateDirection != 0 &&
+				candidateDirection != m_FacingTurnDirectionSign)
 				return false;
+			if (!m_Settings.turnInPlaceWarping.enabled &&
+				sample.turnBucketDelta > 0)
+			{
+				// 未显式启用新能力的项目保持原有离散角度语义：按 45°
+				// bucket 选择能覆盖当前误差的最小 Turn。启用后才由真实
+				// Root Yaw Profile 的端点可达性替代该硬过滤。
+				const int requestedBucket = glm::clamp(
+					static_cast<int>(std::ceil(
+						(std::max)(0.0f, std::abs(m_QueryFacingDeltaDegrees) - kEpsilon)
+						/ 45.0f)),
+					1, 4);
+				if (sample.turnBucketDelta != requestedBucket)
+					return false;
+			}
 			return true;
 		}
 		return false;
@@ -1857,6 +1986,7 @@ bool VansMotionMatchingRuntime::ShouldConsiderSampleForParameters(
 VansMotionMatchingRuntime::MatchResult VansMotionMatchingRuntime::FindBestMatch(
 	const FeatureVector& query,
 	const std::unordered_map<std::string, AnimatorParameter>& parameters,
+	const Vans::VansCharacterTrajectory* trajectory,
 	bool forceFinishedTransitionExit,
 	bool allowReplayCurrentClip)
 {
@@ -1882,10 +2012,28 @@ VansMotionMatchingRuntime::MatchResult VansMotionMatchingRuntime::FindBestMatch(
 			continue;
 		}
 
-		float trajectory = 0.0f;
+		float trajectoryCost = 0.0f;
 		float pose = 0.0f;
 		float contact = 0.0f;
-		float total = ComputeCost(query, sample.feature, trajectory, pose, contact);
+		float total = ComputeCost(query, sample.feature, trajectoryCost, pose, contact);
+		float turnEndpointCost = 0.0f;
+		if (sample.turnLike && m_Settings.turnInPlaceWarping.enabled &&
+			m_TurnWarpRootRotationAuthoritative)
+		{
+			const TurnYawProfile* profile = ResolveTurnYawProfile(sample);
+			if (!profile)
+				continue;
+			const float targetDelta = ResolveTurnTargetDeltaDegrees(sample, trajectory);
+			const TurnInPlaceReachability reachability =
+				m_TurnInPlaceWarping.EvaluateCandidate(
+					targetDelta,
+					profile->RemainingYaw(sample.time),
+					(std::max)(0.0f, profile->durationSeconds - sample.time));
+			if (!reachability.reachable)
+				continue;
+			turnEndpointCost = reachability.endpointCost;
+			total += turnEndpointCost;
+		}
 
 		float bias = 0.0f;
 		if (m_CurrentSample >= 0 && m_CurrentSample < static_cast<int>(m_Samples.size()))
@@ -1902,10 +2050,11 @@ VansMotionMatchingRuntime::MatchResult VansMotionMatchingRuntime::FindBestMatch(
 
 		MatchResult result;
 		result.sampleIndex = i;
-		result.trajectoryCost = trajectory;
+		result.trajectoryCost = trajectoryCost;
 		result.poseCost = pose;
 		result.contactCost = contact;
 		result.biasCost = bias;
+		result.turnEndpointCost = turnEndpointCost;
 		result.totalCost = total + bias;
 		PushCandidateDebug(result);
 		if (result.totalCost < best.totalCost)
@@ -1929,6 +2078,7 @@ void VansMotionMatchingRuntime::PushCandidateDebug(const MatchResult& result)
 	item.poseCost = result.poseCost;
 	item.contactCost = result.contactCost;
 	item.biasCost = result.biasCost;
+	item.turnEndpointCost = result.turnEndpointCost;
 
 	auto& list = m_DebugData.topCandidates;
 	list.push_back(item);
@@ -2056,6 +2206,20 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 	m_DebugData.steeringAppliedYawRateDegreesPerSecond = 0.0f;
 	m_DebugData.steeringActive = false;
 	m_DebugData.steeringLimited = false;
+	m_DebugData.turnWarpActive = false;
+	m_DebugData.turnWarpLimited = false;
+	m_DebugData.turnWarpNeedsReplan = false;
+	m_DebugData.turnWarpDisableReason = "Inactive";
+	m_DebugData.turnWarpReplanReason.clear();
+	m_DebugData.turnWarpTargetDeltaDegrees = 0.0f;
+	m_DebugData.turnWarpAuthoredRemainingYawDegrees = 0.0f;
+	m_DebugData.turnWarpScaleRatio = 1.0f;
+	m_DebugData.turnWarpResidualDegrees = 0.0f;
+	m_DebugData.turnWarpAppliedFrameCorrectionDegrees = 0.0f;
+	m_DebugData.turnWarpAccumulatedAdditiveDegrees = 0.0f;
+	m_DebugData.turnWarpEndpointCost = 0.0f;
+	m_DebugData.turnWarpMotionEndTimeSeconds = 0.0f;
+	m_DebugData.turnWarpProfileIndex = -1;
 	m_DebugData.rootMotionReconciliationActive = false;
 	m_DebugData.rootMotionTargetVelocityWorld = glm::vec3(0.0f);
 	m_DebugData.rootMotionReconciledVelocityWorld = glm::vec3(0.0f);
@@ -2080,7 +2244,7 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 		m_HasLastSearchContext = false;
 		m_FacingTurnRequested = false;
 		m_FacingTurnDirectionSign = 0;
-		m_FacingTurnBucketDelta = 0;
+		m_TurnInPlaceWarping.Reset();
 		return false;
 	}
 
@@ -2378,7 +2542,6 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 
 		if (m_FacingTurnRequested)
 		{
-			const int desiredMoveState = m_EffectiveMoveState;
 			float directionSignal = useMovingFacingPolicy
 				? farFutureError : m_QueryFacingDeltaDegrees;
 			// At the +/-180 degree wrap boundary the shortest signed error changes
@@ -2400,22 +2563,7 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 				 absoluteFacingError < enterThreshold);
 			if (keepActiveTurnSelection)
 				directionSign = activeSample->turnDirectionSign;
-			const float requestedTurnArc = glm::clamp(
-				useMovingFacingPolicy
-					? (std::max)(absoluteFacingError, std::abs(farFutureError))
-					: absoluteFacingError,
-				0.0f,
-				180.0f);
-			const int turnBucket = keepActiveTurnSelection
-				? activeSample->turnBucketDelta
-				: ResolveFacingTurnBucket(desiredMoveState, directionSign, requestedTurnArc);
-			if (turnBucket > 0)
-			{
-				m_FacingTurnDirectionSign = directionSign;
-				m_FacingTurnBucketDelta = turnBucket;
-			}
-			else
-				m_FacingTurnRequested = false;
+			m_FacingTurnDirectionSign = directionSign;
 		}
 	}
 	else
@@ -2427,7 +2575,6 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 	if (!m_FacingTurnRequested)
 	{
 		m_FacingTurnDirectionSign = 0;
-		m_FacingTurnBucketDelta = 0;
 	}
 	constexpr float kPi = 3.14159265358979323846f;
 	constexpr float kTwoPi = kPi * 2.0f;
@@ -2444,8 +2591,7 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 		!m_HasLastSearchContext ||
 		m_LastFacingTurnRequested != m_FacingTurnRequested ||
 		(m_FacingTurnRequested &&
-		 (m_LastFacingTurnDirectionSign != m_FacingTurnDirectionSign ||
-		  m_LastFacingTurnBucketDelta != m_FacingTurnBucketDelta));
+		 m_LastFacingTurnDirectionSign != m_FacingTurnDirectionSign);
 	const bool pivotContextChanged =
 		!m_HasLastSearchContext || m_LastPivotRequested != m_PivotRequested;
 	const bool searchContextChanged =
@@ -2468,7 +2614,6 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 	m_LastPivotRequested = m_PivotRequested;
 	m_LastFacingTurnRequested = m_FacingTurnRequested;
 	m_LastFacingTurnDirectionSign = m_FacingTurnDirectionSign;
-	m_LastFacingTurnBucketDelta = m_FacingTurnBucketDelta;
 	const bool continueCompletedFacingTurn =
 		activeTransitionComplete && activeSample->turnLike && m_FacingTurnRequested;
 	const bool forceFinishedTransitionExit =
@@ -2559,7 +2704,8 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 	}
 	m_DebugData.facingTurnRequested = m_FacingTurnRequested;
 	m_DebugData.facingTurnDirectionSign = m_FacingTurnDirectionSign;
-	m_DebugData.facingTurnBucketDelta = m_FacingTurnBucketDelta;
+	m_DebugData.facingTurnBucketDelta = activeSample->turnLike
+		? activeSample->turnBucketDelta : 0;
 	NormalizeFeature(query);
 
 	m_TimeSinceSearch += deltaTime;
@@ -2579,7 +2725,8 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 		float currentContact = 0.0f;
 		const float currentCost = ComputeCost(query, currentFeature, currentTrajectory, currentPose, currentContact);
 		MatchResult best = FindBestMatch(
-			query, parameters, forceFinishedTransitionExit, continueCompletedFacingTurn);
+			query, parameters, trajectory,
+			forceFinishedTransitionExit, continueCompletedFacingTurn);
 		const bool bestIsTargetLoop =
 			best.sampleIndex >= 0 &&
 			m_Samples[best.sampleIndex].loopLike;
@@ -2597,8 +2744,8 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 			m_FacingTurnRequested;
 		const bool activeMatchesFacingTurn =
 			activeSample->turnLike && !activeTransitionComplete &&
-			activeSample->turnDirectionSign == m_FacingTurnDirectionSign &&
-			activeSample->turnBucketDelta == m_FacingTurnBucketDelta;
+			(activeSample->turnDirectionSign == 0 ||
+			 activeSample->turnDirectionSign == m_FacingTurnDirectionSign);
 		const bool shouldEnterFacingTurn =
 			bestIsFacingTurn &&
 			!activeMatchesFacingTurn &&
@@ -2732,6 +2879,8 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 		m_DebugData.poseCost = currentPose;
 		m_DebugData.contactCost = currentContact;
 		m_DebugData.biasCost = 0.0f;
+		m_DebugData.turnWarpEndpointCost = best.sampleIndex >= 0
+			? best.turnEndpointCost : 0.0f;
 		if (best.sampleIndex >= 0)
 		{
 			const Sample& selectedSample = m_Samples[best.sampleIndex];
@@ -2790,6 +2939,25 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 			VansAnimationSampleRequest outgoingRequest;
 			outgoingRequest.previousTime = previousPlaybackTime;
 			outgoingRequest.currentTime = outgoingPlaybackTime;
+			if (playbackWasTurnLike)
+			{
+				const auto profileIndexIt =
+					m_ClipTurnYawProfileIndices.find(playbackClipName);
+				if (profileIndexIt != m_ClipTurnYawProfileIndices.end() &&
+					profileIndexIt->second >= 0 &&
+					profileIndexIt->second < static_cast<int>(m_TurnYawProfiles.size()))
+				{
+					const TurnYawProfile& profile =
+						m_TurnYawProfiles[profileIndexIt->second];
+					// Turn 的完成判断与 Yaw Profile 共用同一个逻辑端点。
+					// 切换帧可能跨过该端点，Root Motion 必须裁到端点，不能把
+					// 已从可达性积分中排除的尾部 Yaw 再提交给 CCT。
+					outgoingRequest.currentTime = (std::max)(
+						outgoingRequest.previousTime,
+						(std::min)(outgoingRequest.currentTime,
+							profile.durationSeconds));
+				}
+			}
 			outgoingRequest.startTime = 0.0f;
 			outgoingRequest.endTime = outgoingClipIt->second.duration;
 			outgoingRequest.loop = playbackLoopLike;
@@ -2806,8 +2974,8 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 	}
 	if (outPayload.rootMotion.valid && deltaTime > kEpsilon)
 	{
-		const float outgoingYawRate = glm::degrees(
-			glm::eulerAngles(outPayload.rootMotion.rotation)).z / deltaTime;
+		const float outgoingYawRate =
+			ExtractRootMotionYawDegrees(outPayload.rootMotion.rotation) / deltaTime;
 		m_DebugData.authoredRootYawDeltaDegrees = outgoingYawRate * deltaTime;
 		if (switchedThisFrame)
 		{
@@ -2847,29 +3015,131 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 				facingYaw);
 		}
 	}
+	const TurnYawProfile* turnWarpProfile = nullptr;
+	int turnWarpProfileIndex = -1;
+	float turnWarpPreviousTime = previousPlaybackTime;
+	float turnWarpCurrentTime = m_CurrentTime;
+	const bool outgoingTurnOnSwitch = switchedThisFrame && playbackWasTurnLike;
+	if (outgoingTurnOnSwitch)
+	{
+		const auto profileIndexIt =
+			m_ClipTurnYawProfileIndices.find(playbackClipName);
+		if (profileIndexIt != m_ClipTurnYawProfileIndices.end())
+		{
+			turnWarpProfileIndex = profileIndexIt->second;
+			if (turnWarpProfileIndex >= 0 &&
+				turnWarpProfileIndex < static_cast<int>(m_TurnYawProfiles.size()))
+			{
+				turnWarpProfile = &m_TurnYawProfiles[turnWarpProfileIndex];
+			}
+		}
+		turnWarpCurrentTime = outgoingPlaybackTime;
+	}
+	else if (!switchedThisFrame && activeSample->turnLike)
+	{
+		turnWarpProfile = ResolveTurnYawProfile(*activeSample);
+		turnWarpProfileIndex = activeSample->turnYawProfileIndex;
+	}
+	const bool turnWarpFrame =
+		outPayload.rootMotion.valid && trajectory && trajectory->valid &&
+		(activeSample->turnLike || outgoingTurnOnSwitch) &&
+		!isMoving && !isAirborne && (!switchedThisFrame || outgoingTurnOnSwitch);
+	if (turnWarpFrame)
+	{
+		m_RootMotionSteering.Reset();
+		if (!m_Settings.turnInPlaceWarping.enabled)
+		{
+			m_TurnInPlaceWarping.Reset();
+			m_DebugData.turnWarpDisableReason = "Disabled";
+		}
+		else if (!m_TurnWarpRootRotationAuthoritative)
+		{
+			m_TurnInPlaceWarping.Reset();
+			m_DebugData.turnWarpDisableReason = "RootRotationNotAuthoritative";
+		}
+		else if (turnWarpProfile)
+		{
+			const float playbackRate = (std::max)(m_CurrentPlaybackRate, kEpsilon);
+			const float remainingMotionTime =
+				turnWarpProfile->RemainingMotionTime(turnWarpPreviousTime) / playbackRate;
+			const float predictionTime = (std::min)(
+				(std::max)(0.0f, m_Settings.turnInPlaceWarping.maxTargetPredictionTime),
+				remainingMotionTime);
+			const float targetFacingYaw = PredictTurnWarpTargetFacingYaw(
+				*trajectory, predictionTime);
+			float targetDelta = std::remainder(
+				targetFacingYaw - trajectory->currentFacingYaw, 360.0f);
+			if (std::abs(targetDelta) >= 170.0f &&
+				std::abs(trajectory->desiredFacingYawRate) >
+					m_Settings.facingTurnExitYawRateDegreesPerSecond)
+			{
+				targetDelta = std::copysign(
+					std::abs(targetDelta), trajectory->desiredFacingYawRate);
+			}
+			const float remainingClipTime = (std::max)(
+				0.0f, turnWarpProfile->durationSeconds - turnWarpPreviousTime) / playbackRate;
+			const TurnInPlaceWarpingResult turnWarp = m_TurnInPlaceWarping.Apply(
+				deltaTime,
+				outPayload.rootMotion.sourceClipId,
+				turnWarpCurrentTime,
+				targetDelta,
+				turnWarpProfile->RemainingYaw(turnWarpPreviousTime),
+				remainingClipTime,
+				outPayload.rootMotion.rotation);
+			m_DebugData.turnWarpActive = turnWarp.active;
+			m_DebugData.turnWarpLimited = turnWarp.limited;
+			m_DebugData.turnWarpNeedsReplan = turnWarp.needsReplan;
+			m_DebugData.turnWarpDisableReason = turnWarp.reason;
+			m_DebugData.turnWarpReplanReason = turnWarp.needsReplan
+				? (turnWarp.reason == "WrongDirection"
+					? "TargetChangedReplan" : "ResidualReplan")
+				: "";
+			m_DebugData.turnWarpTargetDeltaDegrees =
+				turnWarp.targetDeltaDegrees;
+			m_DebugData.turnWarpAuthoredRemainingYawDegrees =
+				turnWarp.authoredRemainingYawDegrees;
+			m_DebugData.turnWarpScaleRatio = turnWarp.scaleRatio;
+			m_DebugData.turnWarpResidualDegrees = turnWarp.residualDegrees;
+			m_DebugData.turnWarpAppliedFrameCorrectionDegrees =
+				turnWarp.appliedScaleCorrectionDegrees +
+				turnWarp.appliedAdditiveCorrectionDegrees;
+			m_DebugData.turnWarpAccumulatedAdditiveDegrees =
+				turnWarp.accumulatedAdditiveCorrectionDegrees;
+			m_DebugData.turnWarpEndpointCost = turnWarp.endpointCost;
+			m_DebugData.turnWarpMotionEndTimeSeconds =
+				turnWarpProfile->motionEndTimeSeconds;
+			m_DebugData.turnWarpProfileIndex =
+				turnWarpProfileIndex;
+			if (turnWarp.needsReplan)
+				m_TimeSinceSearch = (std::max)(
+					m_TimeSinceSearch, m_Settings.searchThrottle);
+		}
+		else
+		{
+			m_TurnInPlaceWarping.Reset();
+			m_DebugData.turnWarpDisableReason = "MissingYawProfile";
+		}
+	}
+	else
+	{
+		m_TurnInPlaceWarping.Reset();
+		if (switchedThisFrame)
+			m_DebugData.turnWarpDisableReason = "SwitchFrame";
+		else if (isMoving)
+			m_DebugData.turnWarpDisableReason = "Moving";
+		else if (isAirborne)
+			m_DebugData.turnWarpDisableReason = "Airborne";
+		else if (!activeSample->turnLike)
+			m_DebugData.turnWarpDisableReason = "NotTurn";
+	}
+
 	if (outPayload.rootMotion.valid && trajectory && trajectory->valid &&
 		isMoving && !switchedThisFrame)
 	{
 		const float predictionTime = (std::max)(
 			m_Settings.steering.predictionTime, 0.0001f);
-		float targetFacingYaw = trajectory->currentFacingYaw;
-		float previousFacingYaw = trajectory->currentFacingYaw;
-		float previousTime = 0.0f;
-		for (const auto& future : trajectory->future)
-		{
-			if (predictionTime <= future.time)
-			{
-				const float span = (std::max)(future.time - previousTime, 0.0001f);
-				const float alpha = glm::clamp(
-					(predictionTime - previousTime) / span, 0.0f, 1.0f);
-				targetFacingYaw = previousFacingYaw + std::remainder(
-					future.facingYaw - previousFacingYaw, 360.0f) * alpha;
-				break;
-			}
-			targetFacingYaw = future.facingYaw;
-			previousFacingYaw = future.facingYaw;
-			previousTime = future.time;
-		}
+		const float targetFacingYaw = SampleTrajectoryFacingYaw(
+			*trajectory, predictionTime);
 
 		float authoredFutureYaw = 0.0f;
 		VansAnimationSampleRequest steeringRequest;
@@ -2886,8 +3156,8 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 			activeClipIt->second, skeleton, steeringRequest, steeringPayload) &&
 			steeringPayload.rootMotion.valid)
 		{
-			authoredFutureYaw = glm::degrees(
-				glm::eulerAngles(steeringPayload.rootMotion.rotation)).z;
+			authoredFutureYaw =
+				ExtractRootMotionYawDegrees(steeringPayload.rootMotion.rotation);
 		}
 		const float plannedMovementSpeed = glm::length(glm::vec2(
 			trajectory->plannedVelocityWorld.x,
@@ -2923,11 +3193,15 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 	}
 	if (outPayload.rootMotion.valid)
 	{
-		m_DebugData.appliedRootYawDeltaDegrees = glm::degrees(
-			glm::eulerAngles(outPayload.rootMotion.rotation)).z;
+		m_DebugData.appliedRootYawDeltaDegrees =
+			ExtractRootMotionYawDegrees(outPayload.rootMotion.rotation);
 	}
 	outPayload.valid = outPayload.localPose.size() == skeleton.bones.size();
-	m_PrefersRootMotionThisFrame = activeSample->transitionLike || activeSample->turnLike;
+	// 切换帧的 Root Motion Payload 来自源片段。Hybrid 的权威选择也必须
+	// 跟随同一源语义，否则 Turn -> Idle 的最后一小段端点修正会被误用 loop
+	// 权重消费，破坏一次收敛保证。
+	m_PrefersRootMotionThisFrame =
+		activeSample->transitionLike || activeSample->turnLike || outgoingTurnOnSwitch;
 	m_PreviousOutputLocalPose = m_LastOutputLocalPose;
 	m_LastOutputLocalPose = outputLocalTransforms;
 
