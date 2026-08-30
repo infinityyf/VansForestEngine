@@ -15,4 +15,7 @@ bool TestGAFDebugAndReplayContract();
 bool TestGAFSampleLibraryContract();
 bool TestGAFDemoHallWindowBreakContract();
 bool TestGAFDemoHallPlayerAttackContract();
+bool TestDemoHallCrouchLocomotionContract();
+bool TestDemoHallPlayerVaultContract();
+bool TestDemoHallWhisperPreviewContract();
 bool TestGAFLuaBridgeContract();

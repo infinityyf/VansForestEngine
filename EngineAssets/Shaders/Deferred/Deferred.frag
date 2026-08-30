@@ -68,7 +68,6 @@ layout(set = 1, binding = 6) uniform sampler2D ssgi;
 layout(set = 1, binding = 7, rgba32f ) uniform image2D ssr;
 layout(set = 1, binding = 8) uniform sampler2DArray cascadeShadowMap;
 layout(set = 1, binding = 9) uniform sampler2DShadow punctualShadowMap[PUNCTUAL_SHADOW_ATLAS_COUNT];
-layout( set = 1, binding = 13 ) uniform sampler2D fogResult;
 layout( set = 1, binding = 14 ) uniform sampler2D screenSpaceShadow;
 struct GIRegionParams
 {
@@ -364,6 +363,7 @@ void main()
     float metallic = gbufferData1.x;
     float ao = gbufferData1.y;
     float materialID = gbufferData1.z;
+    int matID = int(round(materialID));
     vec3 position_world = gbufferData2.xyz;
     float depth = depthData.x;
     float linearDepth = gbufferData2.w;
@@ -398,7 +398,10 @@ void main()
     brdfData.roughness = roughness;
     brdfData.metallic = metallic;
     brdfData.ao = min(ao, ssaoValue);
-    brdfData.ao = pow(brdfData.ao, 2.0);
+    // Skin 的 cavity/occlusion 还会参与双高光瓣遮蔽。若这里再次平方，
+    // 中灰细节会同时压暗环境光与高光，产生红黑且油亮的结果。
+    if (matID != MATERIAL_ID_SKIN)
+        brdfData.ao = pow(brdfData.ao, 2.0);
     brdfData.fresnel0 = vec3(0.04);
     brdfData.viewDirection = viewDirection;
     brdfData.positionWS = position_world;
@@ -419,7 +422,6 @@ void main()
 
     float sssShadow = SampleScreenSpaceShadow(fragTexCoord);
 
-    int matID = int(round(materialID));
     if (matID == MATERIAL_ID_SKIN)
     {
         // --- Skin BRDF path ---
@@ -603,12 +605,8 @@ void main()
         else if (reflectionProbeDebugView == 7u) outColor = vec4(brdfData.indirectSpecular.rgb, 1.0);
         return;
     }
-    //outColor.rgb = lightResult.ambientSpecular;
-    //混合雾效  fogResult: rgb = in-scatter, a = opacity (1 - transmittance)
-    // fogResult 由当前帧 GBuffer / 体积雾流程生成，Deferred 合成时直接按当前 UV 采样。
-    vec4 fogData = texture(fogResult, fragTexCoord);
-    float fogOpacity = fogData.a;
-    outColor.rgb = outColor.rgb * (1.0 - fogOpacity) + fogData.rgb;
+	// 此阶段必须保持无介质的表面辐亮度；大气、指数高度雾和局部体积雾
+	// 只在 Atmosphere Composite 中按区间传输方程合成一次。
     //outColor.rgb = vec3(brdfData.ao,brdfData.ao,brdfData.ao);
     //outColor.rgb = lightResult.ambientDiffuse;
     outColor.a = 1;

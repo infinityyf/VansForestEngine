@@ -262,8 +262,10 @@ void CalculateDirectLight_Cloth(BRDFData brdf, ClothMaterialPayload cloth,
         DirectBRDF_Cloth(brdf, cloth, clothTangent, uDirectionLight.direction.rgb, dR, sR);
 
 		float shadow = directionalShadow;
-        lightResult.directDiffuse += dR * uDirectionLight.color.rgb * uDirectionLight.intensity * shadow;
-        lightResult.directSpecular += sR * uDirectionLight.color.rgb * uDirectionLight.intensity * shadow;
+		vec3 directionalIrradiance =
+			uDirectionLight.color.rgb * uDirectionLight.intensity;
+		lightResult.directDiffuse += dR * directionalIrradiance * shadow;
+		lightResult.directSpecular += sR * directionalIrradiance * shadow;
     }
 
 #ifdef TILE_LIGHT

@@ -220,16 +220,9 @@ namespace Vans::EditorAPI
 		PostProcessSettingsSnapshot GetPostProcessSettings() const override;
 		void ApplyPostProcessSettings(const PostProcessSettingsSnapshot& settings) override;
 		void CommitPostProcessSettings() override;
-		FogSettings GetFogSettings() const override;
-		void ApplyFogSettings(const FogSettings& settings) override;
-		void CommitHeightFogSettings() override;
-		FogVolumeSettings GetFogVolumeSettings() const override;
-		void ApplyFogVolumeSettings(const FogVolumeSettings& settings) override;
-		void CommitVolumetricFogSettings() override;
-		CloudSettings GetCloudSettings() const override;
-		void ApplyCloudSettings(const CloudSettings& settings) override;
-		void ResetCloudSettings() override;
-		void CommitCloudSettings() override;
+		EnvironmentSettings GetEnvironmentSettings() const override;
+		void ApplyEnvironmentSettings(const EnvironmentSettings& settings) override;
+		void CommitEnvironmentSettings() override;
 		std::vector<ScenePropertyEdit> ConsumeScenePropertyEdits() override;
 
 		EnginePlayState GetPlayState() const override;

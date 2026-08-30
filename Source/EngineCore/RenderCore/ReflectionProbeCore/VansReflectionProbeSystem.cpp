@@ -863,11 +863,10 @@ namespace VansGraphics
 	{
 		if (!m_SpecularArray || scene.GetGlobalDescriptorSet() == VK_NULL_HANDLE) return false;
 		auto* materialManager = scene.GetMaterialManager();
-		if (!materialManager || materialManager->m_AtmospherePBRDataBuffer.GetNativeBuffer() == VK_NULL_HANDLE)
-		{
-			VANS_LOG_ERROR("Reflection probe capture requires an initialized atmosphere buffer.");
+		if (!materialManager || !materialManager->m_PreConvDiffuse)
 			return false;
-		}
+		VansVKImage& skyDiffuseEnvironment =
+			materialManager->m_PreConvDiffuse->GetImage();
 		const size_t requiredLayerCount = m_Probes.size() * 6u;
 		if (m_SpecularArray->GetImage().GetImageCreateInfo().arrayLayers != requiredLayerCount)
 		{
@@ -895,7 +894,7 @@ namespace VansGraphics
 		auto* irradianceAtlas = rayTracing.GetGIRegionIrradianceAtlas(0u);
 		auto* visibilityAtlas = rayTracing.GetGIRegionVisibilityAtlas(0u);
 		const VansVKBuffer* probeState = rayTracing.GetGIRegionProbeStateBuffer(0u);
-		if (!materialManager->m_PreConvDiffuse || !irradianceAtlas || !visibilityAtlas ||
+		if (!irradianceAtlas || !visibilityAtlas ||
 			!probeState || probeState->GetNativeBuffer() == VK_NULL_HANDLE)
 		{
 			VANS_LOG_ERROR("Reflection probe capture requires sky diffuse and DDGI atlas/state resources.");
@@ -905,7 +904,6 @@ namespace VansGraphics
 		const std::vector<VkDescriptorSetLayoutBinding> bindings = {
 			{ 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
 			{ 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
-			{ 2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
 			{ 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
 			{ 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
 			{ 5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
@@ -921,13 +919,11 @@ namespace VansGraphics
 		descriptors->BeginDescriptorUpdate();
 		descriptors->WriteBufferDescriptor(m_CaptureDescriptorSet, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 			{{ m_CaptureCameraBuffer.GetNativeBuffer(), 0, sizeof(CaptureCameraData) }});
-		descriptors->WriteBufferDescriptor(m_CaptureDescriptorSet, 2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-			{{ materialManager->m_AtmospherePBRDataBuffer.GetNativeBuffer(), 0,
-				materialManager->m_AtmospherePBRDataBuffer.GetBufferSize() }});
 		descriptors->WriteImageDescriptor(m_CaptureDescriptorSet, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{ renderPassManager->GetCascadeShadowSampler(), renderPassManager->GetCascadeShadowArrayView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL }});
 		descriptors->WriteImageDescriptor(m_CaptureDescriptorSet, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{{ materialManager->m_PreConvDiffuse->GetImage().GetSampler(), materialManager->m_PreConvDiffuse->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
+			{{ skyDiffuseEnvironment.GetSampler(), skyDiffuseEnvironment.GetImageView(),
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
 		descriptors->WriteImageDescriptor(m_CaptureDescriptorSet, 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			{{ irradianceAtlas->GetImage().GetSampler(), irradianceAtlas->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
 		descriptors->WriteImageDescriptor(m_CaptureDescriptorSet, 5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,

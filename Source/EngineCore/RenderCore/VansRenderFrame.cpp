@@ -115,7 +115,7 @@ bool VansGraphics::VansRenderFrameBuilder::SetScene(
 				!scene.transforms.empty() ||
 				!scene.animations.empty() || !scene.cloth.empty() ||
 				!scene.particles.empty() || !scene.rectLightVideos.empty() ||
-				scene.materials.prepared || scene.atmosphere.prepared ||
+				scene.materials.prepared ||
 				scene.gi.prepared || scene.postProcess.prepared ||
 				!scene.mainCameraCullInputs.empty() ||
 				!scene.punctualShadowJobs.empty() || scene.features.Any())) ||

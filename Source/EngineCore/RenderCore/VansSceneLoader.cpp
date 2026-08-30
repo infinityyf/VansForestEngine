@@ -134,6 +134,40 @@ namespace
 		VANS_LOG("[SceneLoadProfile] " << phase << "=" << SceneLoadMsSince(start) << "ms");
 	}
 
+	bool BindBuiltInRuntimeAssets(VansScene& scene, const char* context)
+	{
+		for (const Vans::VansBuiltInAssetEntry& entry : Vans::VansBuiltInAssetCatalog::Entries())
+		{
+			switch (entry.type)
+			{
+			case Vans::VansAssetType::Model:
+				if (VansAsset* asset = scene.FindMeshAsset(entry.guid))
+				{
+					scene.SetProjectMeshAlias(entry.runtimeAlias, asset);
+					break;
+				}
+				VANS_LOG_ERROR("[BuiltInAssetDatabase] " << context << " mesh alias '"
+					<< entry.runtimeAlias << "' references missing guid " << entry.guid);
+				return false;
+
+			case Vans::VansAssetType::Texture:
+				// 内建纹理的 resource request 直接以 runtimeAlias 注册到纹理表。
+				if (scene.GetTextureAsset(entry.runtimeAlias) != nullptr)
+					break;
+				VANS_LOG_ERROR("[BuiltInAssetDatabase] " << context << " texture alias '"
+					<< entry.runtimeAlias << "' references missing guid " << entry.guid);
+				return false;
+
+			default:
+				VANS_LOG_ERROR("[BuiltInAssetDatabase] " << context
+					<< " has unsupported runtime asset type for alias '"
+					<< entry.runtimeAlias << "'");
+				return false;
+			}
+		}
+		return true;
+	}
+
 	void ApplyProjectAudioMixConfig(VansScene& scene)
 	{
 		const Vans::VansProjectConfig& projectConfig =
@@ -230,17 +264,8 @@ bool VansGraphics::VansScene::LoadProjectAssets(Vans::VansAssetDatabase& databas
 	LogSceneLoadPhase("projectAssets.audioMix", phaseStart);
 
 	phaseStart = SceneLoadClock::now();
-	for (const Vans::VansBuiltInAssetEntry& entry : Vans::VansBuiltInAssetCatalog::Entries())
-	{
-		if (VansAsset* asset = GetMeshAsset(entry.guid))
-			SetProjectMeshAlias(entry.runtimeAlias, asset);
-		else
-		{
-			VANS_LOG_ERROR("[BuiltInAssetDatabase] Runtime mesh alias '" << entry.runtimeAlias
-				<< "' references missing guid " << entry.guid);
-			return false;
-		}
-	}
+	if (!BindBuiltInRuntimeAssets(*this, "editor runtime"))
+		return false;
 	for (const auto& [alias, guid] : Vans::VansProjectManager::Get().GetConfig().runtimeAssetBindings)
 	{
 		if (Vans::VansBuiltInAssetCatalog::IsReservedRuntimeAlias(alias))
@@ -317,17 +342,8 @@ bool VansGraphics::VansScene::LoadPackagedProjectAssets(
 		LogSceneLoadPhase("packagedProjectAssets.audioMix", phaseStart);
 
 		phaseStart = SceneLoadClock::now();
-		for (const Vans::VansBuiltInAssetEntry& entry : Vans::VansBuiltInAssetCatalog::Entries())
-		{
-			if (VansAsset* asset = GetMeshAsset(entry.guid))
-				SetProjectMeshAlias(entry.runtimeAlias, asset);
-			else
-			{
-				VANS_LOG_ERROR("[BuiltInAssetDatabase] Packaged runtime mesh alias '" << entry.runtimeAlias
-					<< "' references missing guid " << entry.guid);
-				return false;
-			}
-		}
+		if (!BindBuiltInRuntimeAssets(*this, "packaged runtime"))
+			return false;
 		for (const auto& [alias, guid] : packagePlan.runtimeAssetBindings)
 		{
 			if (Vans::VansBuiltInAssetCatalog::IsReservedRuntimeAlias(alias))

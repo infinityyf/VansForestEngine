@@ -28,15 +28,6 @@ namespace VansGraphics
 			const char* path,
 			const std::string& projectRoot);
 
-		static void ApplyHeightFogSettings(
-			VansMaterialManager& materialManager,
-			const std::optional<Vans::VansSceneHeightFogSettingsConfig>& config);
-		static void ApplyVolumetricFogSettings(
-			VansMaterialManager& materialManager,
-			const std::optional<Vans::VansSceneVolumetricFogSettingsConfig>& config);
-		static void ApplyVolumetricCloudSettings(
-			VansMaterialManager& materialManager,
-			const std::optional<Vans::VansSceneVolumetricCloudSettingsConfig>& config);
 		static void ApplyPostProcessSettings(
 			VansMaterialManager& materialManager,
 			const std::optional<Vans::VansScenePostProcessSettingsConfig>& config);

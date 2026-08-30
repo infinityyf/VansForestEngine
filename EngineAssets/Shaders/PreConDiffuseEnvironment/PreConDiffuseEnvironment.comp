@@ -1,149 +1,84 @@
-//convole the environment map to get the diffuse irradiance
-//use different mip level to map different roughness
 #version 450
 #extension GL_GOOGLE_include_directive : require
-#include "../Common/Common.glsl"
 
-layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
-layout( set = 0, binding = 0 ) uniform samplerCube inputCubemap;
-layout( set = 0, binding = 1, rgba32f ) uniform imageCube cubemap;
-layout( set = 0, binding = 3 ) uniform preFilterInfo
+#include "../Common/Common.glsl"
+#include "../Common/CubemapDirection.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(set = 0, binding = 0) uniform samplerCube inputCubemap;
+layout(set = 0, binding = 1, rgba32f) uniform writeonly imageCube diffuseCubemap;
+layout(set = 0, binding = 3) uniform EnvironmentFilterInfo
 {
-    float textureResolution;
-    float maxMiplevel;
+    uvec4 filterInfo; // x=resolution, y=mipCount, z=diffuse samples, w=specular samples
 };
-layout( set=0, std430, binding = 4) buffer shCoefficientsBuffer 
+layout(set = 0, std430, binding = 4) buffer SHCoefficientsBuffer
 {
     float shCoefficients[27];
 };
 
-vec3 GetRightDirection(vec2 tangentCoord)
+vec2 EnvironmentHammersley(uint index, uint sampleCount)
 {
-    return vec3(256, tangentCoord);
+    return vec2(float(index) / float(max(sampleCount, 1u)),
+        RadicalInverse_VdC(index));
 }
 
-
-vec3 GetLeftDirection(vec2 tangentCoord)
+vec3 CosineSampleHemisphere(vec2 xi)
 {
-    return vec3(-256, tangentCoord);
+    float radius = sqrt(xi.x);
+    float phi = 2.0 * PI * xi.y;
+    return vec3(radius * cos(phi), radius * sin(phi),
+        sqrt(max(1.0 - xi.x, 0.0)));
 }
 
-
-vec3 GetUpDirection(vec2 tangentCoord)
+vec3 EvaluateDiffuseIrradiance(vec3 normal)
 {
-    return vec3(tangentCoord.x,256,-tangentCoord.y);
-}
-
-vec3 GetButtomDirection(vec2 tangentCoord)
-{
-    return vec3(tangentCoord.x,-256,-tangentCoord.y);
-}
-
-vec3 GetFrontDirection(vec2 tangentCoord)
-{
-    return vec3(tangentCoord,256);
-}
-
-vec3 GetBackDirection(vec2 tangentCoord)
-{
-    return vec3(tangentCoord,-256);
-}
-
-vec3 CalculateConvResult(vec3 direction)
-{
-    vec3 normal = normalize(direction);
-    vec3 irradiance = vec3(0.0);  
-    vec3 up    = vec3(0.0, 1.0, 0.0);
-    vec3 right = cross(up, normal);
-    up         = cross(normal, right);
-
-    float sampleDelta = 0.025;
-    float nrSamples = 0.0; 
-    for(float phi = 0.0; phi < 2.0 * PI; phi += sampleDelta)
+    vec3 up = abs(normal.z) < 0.999
+        ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+    vec3 tangent = normalize(cross(up, normal));
+    vec3 bitangent = cross(normal, tangent);
+    uint sampleCount = max(filterInfo.z, 1u);
+    vec3 sum = vec3(0.0);
+    for (uint sampleIndex = 0u; sampleIndex < sampleCount; ++sampleIndex)
     {
-        for(float theta = 0.0; theta < 0.5 * PI; theta += sampleDelta)
+        vec3 local = CosineSampleHemisphere(
+            EnvironmentHammersley(sampleIndex, sampleCount));
+        vec3 sampleDirection = normalize(
+            tangent * local.x + bitangent * local.y + normal * local.z);
+        sum += textureLod(inputCubemap, sampleDirection, 0.0).rgb;
+    }
+    return PI * sum / float(sampleCount);
+}
+
+void UpdateSHCoefficients()
+{
+    float weight = FOUR_PI / float(SH_SAMPLE_COUNT);
+    for (int coefficient = 0; coefficient < 27; ++coefficient)
+        shCoefficients[coefficient] = 0.0;
+    for (int sampleIndex = 0; sampleIndex < SH_SAMPLE_COUNT; ++sampleIndex)
+    {
+        vec3 direction = SampleSphere(sampleIndex, SH_SAMPLE_COUNT);
+        vec3 color = textureLod(inputCubemap, direction, 0.0).rgb;
+        for (int basisIndex = 0; basisIndex < 9; ++basisIndex)
         {
-            // spherical to cartesian (in tangent space)
-            vec3 tangentSample = vec3(sin(theta) * cos(phi),  sin(theta) * sin(phi), cos(theta));
-            // tangent space to world
-            vec3 sampleVec = tangentSample.x * right + tangentSample.y * up + tangentSample.z * normal; 
-            irradiance += texture(inputCubemap, sampleVec).rgb * cos(theta) * sin(theta);
-            nrSamples++;
+            float weightedBasis = SHBasis(basisIndex, direction) * weight;
+            shCoefficients[basisIndex * 3 + 0] += color.r * weightedBasis;
+            shCoefficients[basisIndex * 3 + 1] += color.g * weightedBasis;
+            shCoefficients[basisIndex * 3 + 2] += color.b * weightedBasis;
         }
     }
-    irradiance = PI * irradiance * (1.0 / float(nrSamples));
-    return irradiance;
 }
 
-
-
-void main() 
+void main()
 {
-    float halfResolution = textureResolution * 0.5;
-    float imageCoordBound = textureResolution - 1.0;
-
-    //gl_GlobalInvocationID : resolution + miplevel
-    ivec2 coords = ivec2(gl_GlobalInvocationID.xy);
-    vec2 direction = coords.xy - ivec2(halfResolution, halfResolution);
-
-    vec2 targetCoord = coords.yx;
-    //targetCoord.y = imageCoordBound - targetCoord.y;
-    vec3 irradiance = CalculateConvResult(GetRightDirection(direction));
-    imageStore(cubemap, ivec3(targetCoord,0), vec4(irradiance, 1.0));
-
-   // targetCoord.x = imageCoordBound - targetCoord.x;
-    irradiance = CalculateConvResult(GetLeftDirection(direction));
-    imageStore(cubemap, ivec3(targetCoord,1), vec4(irradiance, 1.0));
-
-    targetCoord = coords.xy;
-    //targetCoord.y = imageCoordBound - targetCoord.y;
-    //targetCoord.x = imageCoordBound - targetCoord.x;
-    irradiance = CalculateConvResult(GetButtomDirection(direction));
-    imageStore(cubemap, ivec3(targetCoord,2), vec4(irradiance, 1.0));
-
-    irradiance = CalculateConvResult(GetUpDirection(direction));
-    imageStore(cubemap, ivec3(targetCoord,3), vec4(irradiance, 1.0));
-
-
-    targetCoord = coords.xy;
-    //targetCoord.y = imageCoordBound - targetCoord.y;
-    //targetCoord.x = imageCoordBound - targetCoord.x;
-    irradiance = CalculateConvResult(GetFrontDirection(direction));
-    imageStore(cubemap, ivec3(targetCoord,4), vec4(irradiance, 1.0));
-
-    //targetCoord.x = imageCoordBound - targetCoord.x;
-    irradiance = CalculateConvResult(GetBackDirection(direction));
-    imageStore(cubemap, ivec3(targetCoord,5), vec4(irradiance, 1.0));
-
-    //计算球谐系数
-    if(gl_GlobalInvocationID.x >0 || gl_GlobalInvocationID.y >0)
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    uint face = gl_GlobalInvocationID.z;
+    uint resolution = max(filterInfo.x, 1u);
+    if (face >= 6u || any(greaterThanEqual(pixel, ivec2(resolution))))
         return;
 
-    // 球面积分的权重系数 (4π / SAMPLE_COUNT)
-    float weight = FOUR_PI / SH_SAMPLE_COUNT;
-
-    // 初始化球谐系数
-    for(int i = 0; i < 27; i++)
-    {
-        shCoefficients[i] = 0.0;
-    }
-    
-    // 对球面进行采样并计算系数
-    for(int s = 0; s < SH_SAMPLE_COUNT; s++) 
-    {
-        // 获取采样方向
-        vec3 dir = SampleSphere(s,SH_SAMPLE_COUNT);
-    
-        // 从立方体贴图采样颜色 (假设是线性空间颜色)
-        vec3 color = texture(inputCubemap, dir).rgb;
-        
-        // 计算每个基函数并累积系数
-        for(int i = 0; i < 9; i++) 
-        {
-            float basis = SHBasis(i, dir);
-            shCoefficients[i * 3 + 0] += color.r * basis * weight;  // 红色通道系数
-            shCoefficients[i * 3 + 1] += color.g * basis * weight;  // 绿色通道系数
-            shCoefficients[i * 3 + 2] += color.b * basis * weight;  // 蓝色通道系数
-        }
-    }
+    vec3 normal = CubemapDirectionFromPixel(pixel, face, resolution);
+    imageStore(diffuseCubemap, ivec3(pixel, int(face)),
+        vec4(max(EvaluateDiffuseIrradiance(normal), vec3(0.0)), 1.0));
+    if (all(equal(gl_GlobalInvocationID, uvec3(0u))))
+        UpdateSHCoefficients();
 }

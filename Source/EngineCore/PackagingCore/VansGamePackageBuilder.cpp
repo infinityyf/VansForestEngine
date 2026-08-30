@@ -474,8 +474,9 @@ namespace
 		return stages.find(extension) == stages.end() ? std::string{} : extension;
 	}
 
-	bool CookRegisteredEngineShaders(
+	bool CookRuntimeShaders(
 		const fs::path& engineRoot,
+		const fs::path& projectRoot,
 		const fs::path& authoringArtifactRoot,
 		const Vans::VansSceneResourceBuildPlan& resourcePlan,
 		const fs::path& packageArtifactRoot,
@@ -562,9 +563,67 @@ namespace
 		for (const auto& shader : resourcePlan.shaders)
 		{
 			if (shader.name.empty())
+			{
+				error = "Project shader program has no stable name";
+				return false;
+			}
+			if (!programIds.insert(shader.name).second)
 				continue;
-			if (programIds.insert(shader.name).second)
-				programs.push_back({ shader.name, authoringArtifactRoot });
+
+			Vans::VansShaderCompileRequest request;
+			request.programId = shader.name;
+			request.sourceFolder = fs::path(shader.source).is_absolute()
+				? fs::path(shader.source)
+				: projectRoot / shader.source;
+			request.includeRoots.push_back(engineRoot / "EngineAssets" / "Shaders");
+			request.artifactRoot = authoringArtifactRoot;
+
+			if (!shader.stages.empty())
+			{
+				for (const auto& [stage, file] : shader.stages)
+				{
+					(void)stage;
+					fs::path sourcePath(file);
+					if (sourcePath.is_relative())
+						sourcePath = request.sourceFolder / sourcePath;
+					const std::string stageName = ShaderStageName(sourcePath);
+					if (!stageName.empty())
+						request.stages.push_back({ stageName, sourcePath, "main" });
+				}
+			}
+			else
+			{
+				std::error_code enumerateError;
+				for (const fs::directory_entry& entry : fs::directory_iterator(request.sourceFolder, enumerateError))
+				{
+					if (enumerateError || !entry.is_regular_file())
+						continue;
+					const std::string stageName = ShaderStageName(entry.path());
+					if (!stageName.empty())
+						request.stages.push_back({ stageName, entry.path(), "main" });
+				}
+				if (enumerateError)
+				{
+					error = "Cannot enumerate project shader program '" + shader.name
+						+ "': " + enumerateError.message();
+					return false;
+				}
+			}
+
+			if (request.stages.empty())
+			{
+				error = "Project shader program has no compilable stages: " + shader.name;
+				return false;
+			}
+			auto prepared = Vans::VansShaderArtifactCache::Get().Prepare(request, false);
+			if (!prepared.success || !Vans::VansShaderArtifactCache::Get().CommitActive(prepared))
+			{
+				error = "Failed to cook project shader program: " + shader.name;
+				if (!prepared.compileResult.diagnostics.empty())
+					error += " (" + prepared.compileResult.diagnostics.front() + ")";
+				return false;
+			}
+			programs.push_back({ request.programId, authoringArtifactRoot });
 		}
 		if (!Vans::VansShaderArtifactCache::Get().ExportCookedArtifacts(
 			programs, packageArtifactRoot, error))
@@ -1106,6 +1165,14 @@ namespace
 			const Vans::VansResolvedSceneResourcePath resolved = packageBuildContext.ResolveTexture(texture);
 			const bool hasArtifact = resolved.artifactAvailable;
 			const bool needsSourceFallback = TextureNeedsPackagedSourceFallback(texture.path);
+			Vans::VansAssetGuid guid;
+			std::optional<Vans::VansAssetRecord> sourceRecord;
+			if (Vans::VansAssetGuid::TryParse(texture.assetGuid, guid))
+			{
+				sourceRecord = database.Find(guid);
+				if (!sourceRecord)
+					sourceRecord = builtInDatabase.Find(guid);
+			}
 			texture.cookedOnly = true;
 			if (hasArtifact && !needsSourceFallback)
 			{
@@ -1119,10 +1186,6 @@ namespace
 			}
 			else
 			{
-				Vans::VansAssetGuid guid;
-				const auto sourceRecord = Vans::VansAssetGuid::TryParse(texture.assetGuid, guid)
-					? database.Find(guid)
-					: std::optional<Vans::VansAssetRecord>{};
 				const fs::path sourceFormatPath = texture.textureType == 2
 					? (fs::path(texture.path).is_absolute()
 						? fs::path(texture.path)
@@ -1569,8 +1632,9 @@ namespace Vans
 		}
 
 		const fs::path packagedShaderArtifacts = contentRoot / "Library" / "Artifacts" / "Shaders";
-		if (!CookRegisteredEngineShaders(
+		if (!CookRuntimeShaders(
 			engineRoot,
+			projectRoot,
 			projectRoot / "Library" / "Artifacts" / "Shaders",
 			cookedPlan.packagePlan.resourcePlan,
 			packagedShaderArtifacts,

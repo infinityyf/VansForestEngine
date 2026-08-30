@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "VansRenderNode.h"
 #include "VansDrawSubmission.h"
@@ -14,6 +14,7 @@
 #include "../SceneRuntime/VansRuntimeWorld.h"
 #include "../SceneRuntime/Transform/VansTransformGraph.h"
 #include "../SceneCore/VansSceneParentReference.h"
+#include "../SceneCore/VansSceneRenderSettingsConfig.h"
 #include "../AnimationCore/Procedural/VansProceduralTypes.h"
 #include "../AnimationCore/Runtime/VansSkeletonAnchorRegistry.h"
 
@@ -28,6 +29,10 @@ namespace VansGraphics { class VansWaterMaterial; }
 
 
 namespace VansGraphics { class VansWaterSystem; }
+namespace VansGraphics { class VansAtmosphereSystem; }
+namespace VansGraphics { class VansNearMediaSystem; }
+namespace VansGraphics { class VansVolumetricCloudSystem; }
+namespace VansGraphics { struct VansAtmosphereQualityConfig; }
 
 namespace VansGraphics { class VansMesh; }
 
@@ -339,7 +344,6 @@ namespace VansGraphics
 
 		VansSceneAssetRegistry m_AssetRegistry;
 
-		VansRenderNode* m_SkyBoxNode = nullptr;
 		VansRenderNode* m_DeferredNode = nullptr;
 		std::vector<VansRenderNode*> m_OpaqueRenderNodes;
 		// GBuffer 提交列表跨帧复用容量，避免大量模型场景每帧重复分配 packet/batch/instance 数组。
@@ -352,8 +356,11 @@ namespace VansGraphics
 		VansWaterMaterial* m_WaterMaterial = nullptr;
 		bool m_HasWater = false;
 		VansWaterSystem* m_WaterSystem = nullptr;
+		std::unique_ptr<VansAtmosphereSystem> m_AtmosphereSystem;
+		std::unique_ptr<VansNearMediaSystem> m_NearMediaSystem;
+		std::unique_ptr<VansVolumetricCloudSystem> m_VolumetricCloudSystem;
 		std::vector<VansRenderNode*> m_TransParentRenderNodes;
-		std::vector<VansRenderNode*> m_ForwardOpaqueAfterDeferredRenderNodes;
+		std::vector<VansRenderNode*> m_ForwardOpaquePreAtmosphereRenderNodes;
 		std::vector<VansRenderNode*> m_PostProcessRenderNodes;
 		std::vector<VansRenderNode*> m_ScreenSpaceRenderNodes;
 		std::vector<VansRenderNode*> m_DecalRenderNodes;
@@ -380,6 +387,8 @@ namespace VansGraphics
 		std::vector<VansWorldQueryRequest> m_AnimationWorldQueryRequests;
 		std::vector<VansWorldQueryResult> m_AnimationWorldQueryResults;
 		VansMainCameraHiZCullSettings m_MainCameraHiZCullSettings;
+		Vans::VansSceneEnvironmentSettingsConfig m_EnvironmentSettings;
+		std::uint64_t m_EnvironmentSettingsGeneration = 0;
 		VansVKBuffer m_DummyBoneIDBuffer;
 		VansVKBuffer m_DummyBoneBuffer;
 		VansVKBuffer m_DummyWeightBuffer;
@@ -390,6 +399,8 @@ namespace VansGraphics
 		std::vector<VansVKBuffer> m_ClothStagingBuffers;
 		VansEngine::VansPhysicsVehicle* m_Vehicle = nullptr;
 		std::vector<VansScriptObject*> m_SceneObjects;
+		// 仅在实体集合结构发生变化时递增，供上层空间注册表按需重建。
+		std::uint64_t m_SceneObjectCollectionGeneration = 0;
 		std::vector<std::string> m_PendingEntityDestructionGuids;
 		std::unique_ptr<Vans::VansRuntimeWorld> m_RuntimeWorld;
 		std::unique_ptr<Vans::VansGameplayRuntime> m_GameplayRuntime;
@@ -432,7 +443,7 @@ namespace VansGraphics
 
 		const std::vector<VansRenderNode*>& GetTransparentRenderNodes() const { return m_TransParentRenderNodes; }
 
-		const std::vector<VansRenderNode*>& GetForwardOpaqueAfterDeferredRenderNodes() const { return m_ForwardOpaqueAfterDeferredRenderNodes; }
+		const std::vector<VansRenderNode*>& GetForwardOpaquePreAtmosphereRenderNodes() const { return m_ForwardOpaquePreAtmosphereRenderNodes; }
 
 		const std::vector<VansRenderNode*>& GetPostProcessRenderNodes() const { return m_PostProcessRenderNodes; }
 
@@ -445,6 +456,10 @@ namespace VansGraphics
 		const std::vector<VansAnimationNode*>& GetAnimationNodes() const { return m_AnimationNodes; }
 
 		const std::vector<VansScriptObject*>& GetSceneObjects() const { return m_SceneObjects; }
+		std::uint64_t GetSceneObjectCollectionGeneration() const
+		{
+			return m_SceneObjectCollectionGeneration;
+		}
 		Vans::VansRuntimeWorld* GetRuntimeWorld() { return m_RuntimeWorld.get(); }
 		const Vans::VansRuntimeWorld* GetRuntimeWorld() const { return m_RuntimeWorld.get(); }
 		Vans::VansGameplayRuntime* GetGameplayRuntime() { return m_GameplayRuntime.get(); }
@@ -626,6 +641,30 @@ namespace VansGraphics
 		// Creates the global Set 0 descriptor set and writes all global resources into it
 
 		void CreateGlobalDescriptorSet(VkDevice device);
+
+		bool InitializeEnvironmentRendering(VansVKDevice& device);
+
+		void ShutdownEnvironmentRendering();
+
+		bool ReinitializeEnvironmentRendering(
+			const VansAtmosphereQualityConfig& quality,
+			std::uint32_t renderWidth,
+			std::uint32_t renderHeight);
+
+		VansAtmosphereSystem* GetAtmosphereSystem() const
+		{
+			return m_AtmosphereSystem.get();
+		}
+
+		VansNearMediaSystem* GetNearMediaSystem() const
+		{
+			return m_NearMediaSystem.get();
+		}
+
+		VansVolumetricCloudSystem* GetVolumetricCloudSystem() const
+		{
+			return m_VolumetricCloudSystem.get();
+		}
 
 		void UpdateGlobalDescriptorSet();		// Writes only TileLight bindings (9, 10) into the global descriptor set.
 
@@ -941,6 +980,19 @@ namespace VansGraphics
 
 		void SetMainCameraHiZCullSettings(const VansMainCameraHiZCullSettings& settings);
 		const VansMainCameraHiZCullSettings& GetMainCameraHiZCullSettings() const { return m_MainCameraHiZCullSettings; }
+		void SetEnvironmentSettings(const Vans::VansSceneEnvironmentSettingsConfig& settings)
+		{
+			m_EnvironmentSettings = settings;
+			++m_EnvironmentSettingsGeneration;
+		}
+		const Vans::VansSceneEnvironmentSettingsConfig& GetEnvironmentSettings() const
+		{
+			return m_EnvironmentSettings;
+		}
+		std::uint64_t GetEnvironmentSettingsGeneration() const
+		{
+			return m_EnvironmentSettingsGeneration;
+		}
 
 	private:
 		bool ShouldDrawMainCameraNode(VansRenderNode* node);
@@ -1050,7 +1102,6 @@ namespace VansGraphics
 
 
 
-		void DrawSkyMotionVectorNode(VansVKCommandBuffer& cmd, GlobalStateData globalStateData);
 
 
 
@@ -1058,7 +1109,6 @@ namespace VansGraphics
 
 
 
-		void DrawSkyBoxNode();
 
 
 
@@ -1098,7 +1148,7 @@ namespace VansGraphics
 
 
 
-		void DrawForwardOpaqueAfterDeferredNodes();
+		void DrawForwardOpaquePreAtmosphereNodes();
 
 
 
@@ -1248,7 +1298,7 @@ namespace VansGraphics
 
 
 
-		bool HasForwardOpaqueAfterDeferredNodes() const { return !m_ForwardOpaqueAfterDeferredRenderNodes.empty(); }
+		bool HasForwardOpaquePreAtmosphereNodes() const { return !m_ForwardOpaquePreAtmosphereRenderNodes.empty(); }
 
 
 

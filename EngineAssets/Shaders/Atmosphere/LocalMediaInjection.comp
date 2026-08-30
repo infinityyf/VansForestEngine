@@ -1,0 +1,288 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "../Common/Common.glsl"
+#include "../Common/CameraData.glsl"
+#include "../Common/TileLightData.glsl"
+#include "../Common/FogVolumeCommon.glsl"
+#define PUNCTUAL_SHADOW_CONSUMER_FOG 1
+#include "../Lights/LightsData.glsl"
+#include "AtmosphereCommon.glsl"
+#include "AtmosphereViewCommon.glsl"
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+layout(set = 1, binding = 0, rgba16f) uniform writeonly image3D localMediaInjection;
+layout(set = 1, binding = 1) uniform sampler3D localMediaHistory;
+layout(set = 1, binding = 2) uniform LocalMediaParams
+{
+    vec4 depthRangeAndGrid;
+    vec4 sliceHistoryAndVolumeCount;
+    vec4 localFogTileGridAndLimits;
+} uLocal;
+layout(set = 1, binding = 3) uniform sampler2DArray localMediaCascadeShadow;
+layout(set = 1, binding = 4) uniform sampler2DShadow localMediaPunctualShadow[PUNCTUAL_SHADOW_ATLAS_COUNT];
+
+struct LocalFogVolume
+{
+    mat4 worldToLocal;
+    vec4 extinctionAnisotropyCloudPadding;
+    vec4 dimensionsAndEdgeFade;
+    vec4 scatteringAlbedo;
+    vec4 emissivePerMeter;
+    vec4 lightingAndDistanceFade;
+};
+
+layout(set = 1, binding = 7, std430) readonly buffer LocalFogVolumes
+{
+    LocalFogVolume volumes[];
+} uLocalFogVolumes;
+
+layout(set = 1, binding = 8, std430) readonly buffer LocalFogTileHeaders
+{
+    uvec2 headers[];
+} uLocalFogTileHeaders;
+
+layout(set = 1, binding = 9, std430) readonly buffer LocalFogTileIndices
+{
+    uint indices[];
+} uLocalFogTileIndices;
+
+float LocalSliceDistance(float sliceCoordinate, float nearDistance,
+    float farDistance, float sliceCount, float slicePower)
+{
+    float normalized = clamp(sliceCoordinate / max(sliceCount, 1.0), 0.0, 1.0);
+    return mix(nearDistance, farDistance, pow(normalized, slicePower));
+}
+
+vec4 LocalHistoryUVW(vec3 worldPosition, float nearDistance,
+    float farDistance, float slicePower)
+{
+    vec4 previousClip = LastProjectionMatrix * LastViewMatrix * vec4(worldPosition, 1.0);
+    if (previousClip.w <= 0.0)
+        return vec4(0.0);
+    vec2 previousUv = previousClip.xy / previousClip.w * 0.5 + 0.5;
+    previousUv.y = 1.0 - previousUv.y;
+    vec3 previousCamera = inverse(LastViewMatrix)[3].xyz;
+    float previousDistance = length(worldPosition - previousCamera);
+    float normalized = clamp((previousDistance - nearDistance) /
+        max(farDistance - nearDistance, 1.0e-5), 0.0, 1.0);
+    float sliceUv = pow(normalized, 1.0 / max(slicePower, 1.0e-4));
+    return vec4(previousUv, sliceUv, 1.0);
+}
+
+float LocalMediaPhase(float cosTheta, float anisotropy)
+{
+    float g = clamp(anisotropy, -0.98, 0.98);
+    float g2 = g * g;
+    float denominator = max(1.0 + g2 - 2.0 * g * cosTheta, 1.0e-5);
+    return (1.0 - g2) / (4.0 * PI * pow(denominator, 1.5));
+}
+
+float SampleDirectionalShadowCascade(vec3 worldPosition, int cascadeIndex)
+{
+    CascadeProjection projection = ProjectCascade(worldPosition, cascadeIndex);
+    if (projection.valid <= 0.0)
+        return 1.0;
+    float receiverBias = max(
+        uDirectionLight.cascadeTexelSize[cascadeIndex] * 0.25,
+        uDirectionLight.cascadeNormalBias[cascadeIndex]) *
+        uDirectionLight.cascadeDepthScale[cascadeIndex];
+    float receiverDepth = projection.depth - receiverBias;
+    float filterRadius = max(uDirectionLight.cascadeFilterRadius[cascadeIndex], 1.0);
+    return FilterCascadePCF(localMediaCascadeShadow, projection, cascadeIndex,
+        receiverDepth, filterRadius);
+}
+
+float SampleDirectionalShadow(vec3 worldPosition)
+{
+    float viewDepth = -(ViewMatrix * vec4(worldPosition, 1.0)).z;
+    int cascadeIndex = SelectCascade(viewDepth);
+    float visibility = SampleDirectionalShadowCascade(worldPosition, cascadeIndex);
+    float blend = ComputeCascadeBlendFactor(viewDepth, cascadeIndex);
+    if (blend > 0.0 && cascadeIndex < CASCADE_COUNT - 1)
+        visibility = mix(visibility,
+            SampleDirectionalShadowCascade(worldPosition, cascadeIndex + 1), blend);
+    return visibility;
+}
+
+vec3 EvaluatePunctualLighting(vec3 worldPosition, vec3 outgoingDirection,
+    TileLightHeader tileHeader, float anisotropy)
+{
+    vec3 lighting = vec3(0.0);
+    for (uint item = 0u; item < tileHeader.pointCount; ++item)
+    {
+        uint lightIndex = tileLightIndices[tileHeader.pointOffset + item];
+        PointLightData light = GetPointLight(int(lightIndex));
+        vec3 toLight = light.position.xyz - worldPosition;
+        float distanceToLight = length(toLight);
+        if (distanceToLight <= 1.0e-4 || distanceToLight >= light.radius)
+            continue;
+        vec3 lightDirection = toLight / distanceToLight;
+        float attenuation = 1.0 - distanceToLight / light.radius;
+        attenuation *= attenuation;
+        attenuation *= SamplePointShadowMap(worldPosition,
+            localMediaPunctualShadow, int(lightIndex));
+        lighting += light.color.rgb * light.intensity * attenuation *
+            LocalMediaPhase(dot(outgoingDirection, lightDirection), anisotropy);
+    }
+    for (uint item = 0u; item < tileHeader.spotCount; ++item)
+    {
+        uint lightIndex = tileLightIndices[tileHeader.spotOffset + item];
+        SpotLightData light = GetSpotLight(int(lightIndex));
+        vec3 toLight = light.position.xyz - worldPosition;
+        float distanceToLight = length(toLight);
+        if (distanceToLight <= 1.0e-4 || distanceToLight >= light.radius)
+            continue;
+        vec3 lightDirection = toLight / distanceToLight;
+        float coneCosine = dot(normalize(light.direction.xyz), -lightDirection);
+        float innerCosine = cos(light.innerConeAngle);
+        float outerCosine = cos(light.outerConeAngle);
+        float cone = smoothstep(outerCosine, innerCosine, coneCosine);
+        if (cone <= 0.0)
+            continue;
+        float attenuation = 1.0 - distanceToLight / light.radius;
+        attenuation *= attenuation * cone;
+        attenuation *= SampleSpotShadowMap(worldPosition,
+            localMediaPunctualShadow, int(lightIndex));
+        lighting += light.color.rgb * light.intensity * attenuation *
+            LocalMediaPhase(dot(outgoingDirection, lightDirection), anisotropy);
+    }
+    for (uint item = 0u; item < tileHeader.rectCount; ++item)
+    {
+        uint lightIndex = tileLightIndices[tileHeader.rectOffset + item];
+        RectLightData light = GetRectLight(int(lightIndex));
+        vec3 toLight = light.position_halfW.xyz - worldPosition;
+        float distanceToLight = length(toLight);
+        if (distanceToLight <= 1.0e-4 || distanceToLight >= light.right_range.w)
+            continue;
+        vec3 lightDirection = toLight / distanceToLight;
+        float facing = dot(light.normal_halfH.xyz, -lightDirection);
+        facing = light.color_twoSided.w > 0.5 ? abs(facing) : max(facing, 0.0);
+        if (facing <= 0.0)
+            continue;
+        float area = 4.0 * light.position_halfW.w * light.normal_halfH.w;
+        float attenuation = 1.0 - distanceToLight / light.right_range.w;
+        attenuation = attenuation * attenuation * area * facing /
+            max(distanceToLight * distanceToLight, 1.0e-3);
+        attenuation *= SampleRectShadowMap(worldPosition,
+            localMediaPunctualShadow, int(lightIndex));
+        lighting += light.color_twoSided.rgb * light.up_intensity.w * attenuation *
+            LocalMediaPhase(dot(outgoingDirection, lightDirection), anisotropy);
+    }
+    return lighting;
+}
+
+void main()
+{
+    ivec3 voxel = ivec3(gl_GlobalInvocationID.xyz);
+    ivec3 gridSize = imageSize(localMediaInjection);
+    if (any(greaterThanEqual(voxel, gridSize)))
+        return;
+    float nearDistance = uLocal.depthRangeAndGrid.x;
+    float farDistance = uLocal.depthRangeAndGrid.y;
+    float slicePower = uLocal.sliceHistoryAndVolumeCount.x;
+    vec2 uv = (vec2(voxel.xy) + 0.5) / vec2(gridSize.xy);
+    float distanceMeters = LocalSliceDistance(float(voxel.z) + 0.5,
+        nearDistance, farDistance, float(gridSize.z), slicePower);
+    vec3 worldPosition = cameraPosition.xyz +
+        AtmosphereWorldDirectionFromUv(uv) * distanceMeters;
+    vec4 current = vec4(0.0);
+    vec3 outgoingDirection = normalize(cameraPosition.xyz - worldPosition);
+    vec3 lightDirection = normalize(uDirectionLight.direction.xyz);
+    vec3 directionalIrradiance =
+        uDirectionLight.color.rgb * uDirectionLight.intensity;
+    uint tileGridWidth = (uint(ScreenParams.x) + uint(TILE_LIGHT_TILE_SIZE) - 1u) /
+        uint(TILE_LIGHT_TILE_SIZE);
+    uint tileGridHeight = (uint(ScreenParams.y) + uint(TILE_LIGHT_TILE_SIZE) - 1u) /
+        uint(TILE_LIGHT_TILE_SIZE);
+    uint tileX = min(uint(uv.x * float(tileGridWidth)), tileGridWidth - 1u);
+    uint tileY = min(uint(uv.y * float(tileGridHeight)), tileGridHeight - 1u);
+    TileLightHeader tileHeader = tileLightHeaders[tileY * tileGridWidth + tileX];
+    float directionalShadow = SampleDirectionalShadow(worldPosition);
+    vec3 rawCloudVisibility = SampleAtmosphereCloudShadow(
+        worldPosition - cameraPosition.xyz);
+	vec3 ambientCloudVisibility = mix(vec3(1.0), rawCloudVisibility,
+		AtmosphereCloudAmbientOcclusionStrength());
+	vec3 celestialIrradiance;
+	bool hasCelestialEnvironment =
+		AtmospherePreparedLightCelestialIrradiance(
+			lightDirection, celestialIrradiance);
+	vec3 skyEnvironment = hasCelestialEnvironment
+		? celestialIrradiance * SampleAtmosphereMultipleScattering(
+			worldPosition - cameraPosition.xyz, lightDirection) *
+			ambientCloudVisibility
+		: directionalIrradiance * (1.0 / (4.0 * PI));
+    uint volumeCount = min(uint(uLocal.sliceHistoryAndVolumeCount.w + 0.5), 64u);
+    uint localFogTileIndex = uint(voxel.y) * uint(gridSize.x) + uint(voxel.x);
+    uvec2 localFogHeader = uLocalFogTileHeaders.headers[localFogTileIndex];
+    bool localFogTileOverflow = localFogHeader.y == 0xffffffffu;
+    uint candidateCount = localFogTileOverflow
+        ? volumeCount : min(localFogHeader.y, volumeCount);
+    for (uint candidateIndex = 0u; candidateIndex < candidateCount; ++candidateIndex)
+    {
+        uint volumeIndex = localFogTileOverflow
+            ? candidateIndex
+            : uLocalFogTileIndices.indices[localFogHeader.x + candidateIndex];
+        if (volumeIndex >= volumeCount)
+            continue;
+        LocalFogVolume volume = uLocalFogVolumes.volumes[volumeIndex];
+        vec3 localPosition =
+            (volume.worldToLocal * vec4(worldPosition, 1.0)).xyz;
+        vec3 distanceToFaceMeters =
+            (vec3(0.5) - abs(localPosition)) *
+            max(volume.dimensionsAndEdgeFade.xyz, vec3(1.0e-4));
+        float minimumDistanceToFace = min(min(
+            distanceToFaceMeters.x, distanceToFaceMeters.y),
+            distanceToFaceMeters.z);
+        if (minimumDistanceToFace < 0.0)
+            continue;
+        float edgeFadeMeters = max(volume.dimensionsAndEdgeFade.w, 0.0);
+        float boxWeight = edgeFadeMeters > 0.0
+            ? smoothstep(0.0, edgeFadeMeters, minimumDistanceToFace)
+            : 1.0;
+        float distanceWeight = 1.0 - smoothstep(
+            volume.lightingAndDistanceFade.z,
+            max(volume.lightingAndDistanceFade.w,
+                volume.lightingAndDistanceFade.z + 1.0e-3),
+            distanceMeters);
+        float weight = boxWeight * distanceWeight;
+        float sigmaT = max(volume.extinctionAnisotropyCloudPadding.x, 0.0) * weight;
+        if (sigmaT <= 1.0e-7)
+            continue;
+
+        float anisotropy = volume.extinctionAnisotropyCloudPadding.y;
+        vec3 cloudVisibility = volume.extinctionAnisotropyCloudPadding.z > 0.5
+            ? mix(vec3(1.0), rawCloudVisibility,
+                AtmosphereCloudShadowStrength())
+            : vec3(1.0);
+        vec3 directional = directionalIrradiance * directionalShadow *
+            cloudVisibility * LocalMediaPhase(
+                dot(outgoingDirection, lightDirection), anisotropy);
+        vec3 punctual = EvaluatePunctualLighting(worldPosition, outgoingDirection,
+            tileHeader, anisotropy);
+        vec3 sourceRadiance = (directional + punctual) *
+            volume.lightingAndDistanceFade.x +
+            skyEnvironment * volume.lightingAndDistanceFade.y;
+        current.rgb += sourceRadiance *
+            clamp(volume.scatteringAlbedo.rgb, vec3(0.0), vec3(1.0)) * sigmaT +
+            max(volume.emissivePerMeter.rgb, vec3(0.0)) * weight;
+        current.a += sigmaT;
+    }
+    if (uLocal.sliceHistoryAndVolumeCount.y > 0.5)
+    {
+        vec4 previousUVW = LocalHistoryUVW(worldPosition,
+            nearDistance, farDistance, slicePower);
+        vec3 halfTexel = 0.5 / vec3(gridSize);
+        if (previousUVW.w > 0.5 && all(greaterThanEqual(previousUVW.xyz, halfTexel)) &&
+            all(lessThanEqual(previousUVW.xyz, vec3(1.0) - halfTexel)))
+        {
+            vec4 history = texture(localMediaHistory, previousUVW.xyz);
+            float densityDelta = abs(current.a - history.a) /
+                max(max(current.a, history.a), 1.0e-4);
+            float confidence = 1.0 - smoothstep(0.1, 0.5, densityDelta);
+            current = mix(current, history,
+                clamp(uLocal.sliceHistoryAndVolumeCount.z, 0.0, 0.999) * confidence);
+        }
+    }
+    imageStore(localMediaInjection, voxel, current);
+}

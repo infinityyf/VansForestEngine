@@ -1,4 +1,4 @@
-﻿#include "VansSceneRenderNodeBuilder.h"
+#include "VansSceneRenderNodeBuilder.h"
 
 #include "VansSceneMaterialBuilder.h"
 #include "../VulkanCore/VansMesh.h"
@@ -38,11 +38,10 @@ static VansGraphics::RenderNodeType ParseRenderNodeType(const std::string& typeV
 {
 	const std::string& s = typeValue;
 	if (s == "opaque")       return VansGraphics::OPAQUE_NODE;
-	if (s == "forward_opaque_after_deferred" || s == "forwardOpaqueAfterDeferred")
-		return VansGraphics::FORWARD_OPAQUE_AFTER_DEFERRED_NODE;
+	if (s == "forward_opaque_pre_atmosphere" || s == "forwardOpaquePreAtmosphere")
+		return VansGraphics::FORWARD_OPAQUE_PRE_ATMOSPHERE_NODE;
 	if (s == "transparent")  return VansGraphics::TRANSPARENT_NODE;
 	if (s == "post_process") return VansGraphics::POSTPROCESS_NODE;
-	if (s == "sky_box")      return VansGraphics::SKY_BOX_NODE;
 	if (s == "deferred")     return VansGraphics::DEFERRED_NODE;
 	if (s == "screen_space") return VansGraphics::SCREEN_SPACE_NODE;
 	if (s == "terrain")      return VansGraphics::TERRAIN_NODE;
@@ -64,7 +63,7 @@ static VansGraphics::RenderNodeType ResolveMaterialRenderNodeType(
         return VansGraphics::RenderNodeType::OPAQUE_NODE;
 
     return material->m_CustomShaderDepthWrite
-        ? VansGraphics::RenderNodeType::FORWARD_OPAQUE_AFTER_DEFERRED_NODE
+        ? VansGraphics::RenderNodeType::FORWARD_OPAQUE_PRE_ATMOSPHERE_NODE
         : VansGraphics::RenderNodeType::TRANSPARENT_NODE;
 }
 
@@ -379,7 +378,7 @@ VansRenderNode* VansSceneRenderNodeBuilder::LoadSingleRenderNode(
         break;
     case VansGraphics::OPAQUE_NODE:
 	case VansGraphics::HAIR_NODE:
-	case VansGraphics::FORWARD_OPAQUE_AFTER_DEFERRED_NODE:
+	case VansGraphics::FORWARD_OPAQUE_PRE_ATMOSPHERE_NODE:
         renderNode = new VansCommonRenderNode(device, type);
         if (sceneRenderNode.supportShadow)
         {
@@ -393,9 +392,6 @@ VansRenderNode* VansSceneRenderNodeBuilder::LoadSingleRenderNode(
         break;
     case VansGraphics::POSTPROCESS_NODE:
         renderNode = new VansPostProcessRenderNode(device, type);
-        break;
-    case VansGraphics::SKY_BOX_NODE:
-        renderNode = new VansSkyBoxRenderNode(device, type);
         break;
     case VansGraphics::DECAL_NODE:
         // 贴花节点：OBB 投影贴花，写入 GBuffer Normal/GBuffer0/GBuffer1
@@ -671,7 +667,7 @@ void VansSceneRenderNodeBuilder::ExpandMultiMeshToRenderNodes(VansScene& scene,
 
 		if (nodeType == RenderNodeType::OPAQUE_NODE ||
 			nodeType == RenderNodeType::HAIR_NODE ||
-			nodeType == RenderNodeType::FORWARD_OPAQUE_AFTER_DEFERRED_NODE)
+			nodeType == RenderNodeType::FORWARD_OPAQUE_PRE_ATMOSPHERE_NODE)
         {
             auto* opaque = new VansCommonRenderNode(device, nodeType);
             opaque->m_SupportShadow = supportShadow;
@@ -741,7 +737,7 @@ void VansSceneRenderNodeBuilder::ExpandMultiMeshToRenderNodes(VansScene& scene,
 
 		const char* nodeTypeName = nodeType == OPAQUE_NODE ? "OPAQUE"
 			: (nodeType == HAIR_NODE ? "HAIR"
-			: (nodeType == FORWARD_OPAQUE_AFTER_DEFERRED_NODE ? "FORWARD_OPAQUE" : "TRANSPARENT"));
+			: (nodeType == FORWARD_OPAQUE_PRE_ATMOSPHERE_NODE ? "FORWARD_OPAQUE" : "TRANSPARENT"));
 		VANS_LOG("[ExpandMultiMesh] Created render node: " << renderNodeName
 				 << " (type=" << nodeTypeName << ")");
     }

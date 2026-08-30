@@ -192,6 +192,12 @@ void VansSceneEnvironmentNodeBuilder::AddWaterNode(
         return VansWaveMode::WaveParticle;
     };
 
+    if (!waterData.valid)
+    {
+        VANS_LOG_ERROR("[AddWaterNode] Water configuration was rejected by the current scene schema.");
+        return;
+    }
+
     VansWaterConfig config;
     if (waterData.level) config.m_WaterLevel = *waterData.level;
     if (waterData.specularIntensity) config.m_SpecularIntensity = *waterData.specularIntensity;
@@ -253,10 +259,70 @@ void VansSceneEnvironmentNodeBuilder::AddWaterNode(
     if (refraction.enabled) config.m_Refraction.m_Enabled = *refraction.enabled;
     if (refraction.distortionStrength) config.m_Refraction.m_DistortionStrength = *refraction.distortionStrength;
 
+    const Vans::VansSceneWaterDetailNormalConfig& detailNormal = waterData.detailNormal;
+    if (detailNormal.enabled) config.m_DetailNormal.m_Enabled = *detailNormal.enabled;
+    if (detailNormal.decodeMode)
+        config.m_DetailNormal.m_DecodeMode = VansWaterNormalDecodeMode::RGReconstructZ;
+    if (detailNormal.flipGreen) config.m_DetailNormal.m_FlipGreen = *detailNormal.flipGreen;
+    if (detailNormal.globalStrength) config.m_DetailNormal.m_GlobalStrength = *detailNormal.globalStrength;
+    if (detailNormal.maxSlope) config.m_DetailNormal.m_MaxSlope = *detailNormal.maxSlope;
+    if (detailNormal.mipBias) config.m_DetailNormal.m_MipBias = *detailNormal.mipBias;
+    if (detailNormal.anisotropy) config.m_DetailNormal.m_Anisotropy = *detailNormal.anisotropy;
+    for (std::size_t layerIndex = 0; layerIndex < detailNormal.layers.size(); ++layerIndex)
+    {
+        const Vans::VansSceneWaterDetailNormalLayerConfig& source = detailNormal.layers[layerIndex];
+        VansWaterDetailNormalLayerConfig& destination = config.m_DetailNormal.m_Layers[layerIndex];
+        if (source.enabled) destination.m_Enabled = *source.enabled;
+        if (source.tileSizeMeters) destination.m_TileSizeMeters = *source.tileSizeMeters;
+        if (source.direction) destination.m_Direction = toVec2(*source.direction);
+        if (source.speedMetersPerSecond) destination.m_SpeedMetersPerSecond = *source.speedMetersPerSecond;
+        if (source.phase) destination.m_Phase = *source.phase;
+        if (source.strength) destination.m_Strength = *source.strength;
+        if (source.fadeStartMeters) destination.m_FadeStartMeters = *source.fadeStartMeters;
+        if (source.fadeEndMeters) destination.m_FadeEndMeters = *source.fadeEndMeters;
+    }
+
+    const Vans::VansSceneWaterEffectiveRoughnessConfig& effectiveRoughness = waterData.effectiveRoughness;
+    if (effectiveRoughness.mode)
+    {
+        config.m_EffectiveRoughness.m_Mode =
+            *effectiveRoughness.mode == Vans::VansSceneWaterEffectiveRoughnessMode::DistanceHeuristic
+            ? VansWaterEffectiveRoughnessMode::DistanceHeuristic
+            : VansWaterEffectiveRoughnessMode::BaseOnly;
+    }
+    if (effectiveRoughness.distanceStartMeters)
+        config.m_EffectiveRoughness.m_DistanceStartMeters = *effectiveRoughness.distanceStartMeters;
+    if (effectiveRoughness.distanceEndMeters)
+        config.m_EffectiveRoughness.m_DistanceEndMeters = *effectiveRoughness.distanceEndMeters;
+    if (effectiveRoughness.distanceStrength)
+        config.m_EffectiveRoughness.m_DistanceStrength = *effectiveRoughness.distanceStrength;
+
+    const Vans::VansSceneWaterColorMipConfig& colorMip = waterData.colorMip;
+    if (colorMip.refractionScatterScale)
+        config.m_ColorMip.m_RefractionScatterScale = *colorMip.refractionScatterScale;
+    if (colorMip.refractionRoughnessScale)
+        config.m_ColorMip.m_RefractionRoughnessScale = *colorMip.refractionRoughnessScale;
+    if (colorMip.forwardScatterMipScale)
+        config.m_ColorMip.m_ForwardScatterMipScale = *colorMip.forwardScatterMipScale;
+    if (colorMip.backgroundScatterScale)
+        config.m_ColorMip.m_BackgroundScatterScale = *colorMip.backgroundScatterScale;
+    if (colorMip.lodBias) config.m_ColorMip.m_LodBias = *colorMip.lodBias;
+
+    const Vans::VansSceneWaterShadowConfig& shadow = waterData.shadow;
+    if (shadow.enabled) config.m_Shadow.m_Enabled = *shadow.enabled;
+    if (shadow.quality) config.m_Shadow.m_Quality = *shadow.quality;
+    if (shadow.depthBias) config.m_Shadow.m_DepthBias = *shadow.depthBias;
+    if (shadow.normalBias) config.m_Shadow.m_NormalBias = *shadow.normalBias;
+    if (shadow.volumeStepStride) config.m_Shadow.m_VolumeStepStride = *shadow.volumeStepStride;
+
     const Vans::VansSceneWaterSSRConfig& ssr = waterData.ssr;
     if (ssr.enabled) config.m_SSR.m_Enabled = *ssr.enabled;
     if (ssr.maxDistance) config.m_SSR.m_MaxDistance = *ssr.maxDistance;
     if (ssr.maxRoughness) config.m_SSR.m_MaxRoughness = *ssr.maxRoughness;
+    if (ssr.roughnessFadeStart) config.m_SSR.m_RoughnessFadeStart = *ssr.roughnessFadeStart;
+    if (ssr.colorMipConeScale) config.m_SSR.m_ColorMipConeScale = *ssr.colorMipConeScale;
+    if (ssr.colorMipBias) config.m_SSR.m_ColorMipBias = *ssr.colorMipBias;
+    if (ssr.edgeFadePixels) config.m_SSR.m_EdgeFadePixels = *ssr.edgeFadePixels;
 
     const Vans::VansSceneWaterSSSConfig& sss = waterData.sss;
     if (sss.enabled) config.m_SSS.m_Enabled = *sss.enabled;
@@ -347,6 +413,13 @@ void VansSceneEnvironmentNodeBuilder::AddWaterNode(
             VansWaterSystem* waterSystem = new VansWaterSystem();
             waterSystem->SetWaterLevel(config.m_WaterLevel);
             waterSystem->SetWaterMaterial(mat);
+            VansTexture* detailNormal = static_cast<VansTexture*>(
+                scene.GetTextureAsset("waterDetailWaveNormal"));
+            VansTexture* neutralNormal = static_cast<VansTexture*>(
+                scene.GetTextureAsset("defaultNormal"));
+            if (detailNormal == nullptr)
+                VANS_LOG_ERROR("[AddWaterNode] Required built-in texture 'waterDetailWaveNormal' is missing");
+            waterSystem->SetDetailNormalTextures(detailNormal, neutralNormal);
             waterSystem->Initialize(vkDevice,
                 static_cast<uint32_t>(vkDevice->GetRenderWidth()),
                 static_cast<uint32_t>(vkDevice->GetRenderHeight()));

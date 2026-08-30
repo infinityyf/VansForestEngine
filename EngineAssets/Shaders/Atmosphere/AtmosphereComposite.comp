@@ -1,0 +1,252 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "../Common/CameraData.glsl"
+#include "AtmosphereCommon.glsl"
+#include "AtmosphereViewCommon.glsl"
+#include "AtmosphereMediaComposition.glsl"
+#include "../Water/water_screen_common.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(set = 1, binding = 5) uniform sampler2D rawOpaqueSceneColor;
+layout(set = 1, binding = 6) uniform sampler2D atmosphereSceneDepth;
+layout(set = 1, binding = 7, rgba16f) uniform writeonly image2D atmosphereSceneColorOutput;
+layout(set = 1, binding = 8) uniform sampler2D atmosphereWaterNormal;
+layout(set = 1, binding = 9) uniform sampler2D atmosphereWaterPositionDepth;
+
+// The cloud buffers are quarter resolution. Interval scattering and linear
+// transmittance can be reconstructed, but optical depth itself and interval
+// depths cannot be interpolated with the
+// zero sentinel of an empty texel: doing so pulls the cloud interval toward the
+// camera and creates a hard coloured silhouette.  Reconstruct valid neighbours
+// separately, retain the bilinear support as coverage, and let the missing
+// support resolve to the baseline aerial interval during composition.
+void ReconstructCloudInterval(
+	vec2 uv,
+	float terminalDistance,
+	out vec3 cloudScattering,
+	out vec3 cloudOpticalDepth,
+	out float cloudOnlyOpticalDepth,
+	out vec2 cloudDistances,
+	out float reconstructionWeight)
+{
+	ivec2 extent = textureSize(atmosphereCloudResult, 0);
+	vec2 samplePosition = uv * vec2(extent) - 0.5;
+	ivec2 baseTexel = ivec2(floor(samplePosition));
+	vec2 fraction = fract(samplePosition);
+	cloudScattering = vec3(0.0);
+	cloudOpticalDepth = vec3(0.0);
+	cloudOnlyOpticalDepth = 0.0;
+	cloudDistances = vec2(0.0);
+	reconstructionWeight = 0.0;
+	vec3 cloudTransmittance = vec3(0.0);
+	float cloudOnlyTransmittance = 0.0;
+	for (int y = 0; y < 2; ++y)
+	{
+		for (int x = 0; x < 2; ++x)
+		{
+			ivec2 texel = clamp(baseTexel + ivec2(x, y), ivec2(0), extent - 1);
+			float weightX = x == 0 ? 1.0 - fraction.x : fraction.x;
+			float weightY = y == 0 ? 1.0 - fraction.y : fraction.y;
+			float bilinearWeight = weightX * weightY;
+			vec2 distances = texelFetch(atmosphereCloudDepth, texel, 0).rg;
+			vec4 opticalDepth = texelFetch(
+				atmosphereCloudOpticalDepth, texel, 0);
+			float depthTolerance = max(2.0, terminalDistance * 1.0e-4);
+			bool valid = distances.y > distances.x && opticalDepth.a > 1.0e-6 &&
+				distances.x < terminalDistance &&
+				distances.y <= terminalDistance + depthTolerance;
+			if (!valid)
+				continue;
+			reconstructionWeight += bilinearWeight;
+			cloudScattering += bilinearWeight *
+				texelFetch(atmosphereCloudResult, texel, 0).rgb;
+			cloudTransmittance += bilinearWeight *
+				exp(-min(opticalDepth.rgb, vec3(80.0)));
+			cloudOnlyTransmittance += bilinearWeight *
+				exp(-min(opticalDepth.a, 80.0));
+			cloudDistances += bilinearWeight * distances;
+		}
+	}
+	if (reconstructionWeight <= 1.0e-6)
+	{
+		reconstructionWeight = 0.0;
+		return;
+	}
+	float inverseWeight = 1.0 / reconstructionWeight;
+	cloudScattering *= inverseWeight;
+	cloudOpticalDepth = -log(max(
+		cloudTransmittance * inverseWeight, vec3(1.0e-6)));
+	cloudOnlyOpticalDepth = -log(max(
+		cloudOnlyTransmittance * inverseWeight, 1.0e-6));
+	cloudDistances *= inverseWeight;
+	reconstructionWeight = clamp(reconstructionWeight, 0.0, 1.0);
+}
+
+struct ParticipatingMediaPath
+{
+	vec3 scattering;
+	vec3 opticalDepth;
+	float cloudOnlyOpticalDepth;
+};
+
+// 云 pass 已在占用区间内联合积分 Physical Atmosphere、Height Fog、
+// Local Fog 与云介质。这里用联合云区间替换基础介质的同一段，并继续
+// 合成云后的区间。这样场景、水面和天空都遵守同一个 S/T 区间代数。
+ParticipatingMediaPath BuildParticipatingMediaPath(
+	vec2 uv,
+	vec3 rayDirection,
+	float terminalDistance,
+	vec3 cloudScattering,
+	vec3 cloudOpticalDepth,
+	float cloudOnlyOpticalDepth,
+	vec2 cloudDistances,
+	float cloudReconstructionWeight)
+{
+	ParticipatingMediaPath path;
+	path.scattering = vec3(0.0);
+	path.opticalDepth = vec3(0.0);
+	path.cloudOnlyOpticalDepth = 0.0;
+	float cloudEntry = clamp(cloudDistances.x, 0.0, terminalDistance);
+	float cloudExit = clamp(cloudDistances.y, 0.0, terminalDistance);
+	bool hasCloud = cloudExit > cloudEntry &&
+		cloudOnlyOpticalDepth > 1.0e-6 && cloudReconstructionWeight > 1.0e-6;
+	if (!hasCloud)
+	{
+		ExtractBaseMediaInterval(uv, rayDirection, 0.0, terminalDistance,
+			path.scattering, path.opticalDepth);
+		return path;
+	}
+
+	vec3 clearPathScattering;
+	vec3 clearPathOpticalDepth;
+	ExtractBaseMediaInterval(uv, rayDirection, 0.0, terminalDistance,
+		clearPathScattering, clearPathOpticalDepth);
+
+	vec3 cloudyPathScattering = vec3(0.0);
+	vec3 cloudyPathOpticalDepth = vec3(0.0);
+	vec3 beforeCloudScattering;
+	vec3 beforeCloudOpticalDepth;
+	ExtractBaseMediaInterval(uv, rayDirection, 0.0, cloudEntry,
+		beforeCloudScattering, beforeCloudOpticalDepth);
+	ComposeInterval(cloudyPathScattering, cloudyPathOpticalDepth,
+		beforeCloudScattering, beforeCloudOpticalDepth);
+
+	ComposeInterval(cloudyPathScattering, cloudyPathOpticalDepth,
+		cloudScattering, cloudOpticalDepth);
+
+	vec3 afterCloudScattering;
+	vec3 afterCloudOpticalDepth;
+	ExtractBaseMediaInterval(uv, rayDirection, cloudExit, terminalDistance,
+		afterCloudScattering, afterCloudOpticalDepth);
+	ComposeInterval(cloudyPathScattering, cloudyPathOpticalDepth,
+		afterCloudScattering, afterCloudOpticalDepth);
+
+	// Bilinear support is sub-pixel cloud coverage. Blend complete radiative
+	// paths in (S,T), never in optical depth, so an uncovered edge keeps the
+	// full clear-air path while a covered edge replaces exactly the occupied interval.
+	path.scattering = mix(clearPathScattering,
+		cloudyPathScattering, cloudReconstructionWeight);
+	path.opticalDepth = -log(max(mix(
+		exp(-min(clearPathOpticalDepth, vec3(80.0))),
+		exp(-min(cloudyPathOpticalDepth, vec3(80.0))),
+		cloudReconstructionWeight), vec3(1.0e-6)));
+	path.cloudOnlyOpticalDepth = -log(max(mix(
+		1.0, exp(-min(cloudOnlyOpticalDepth, 80.0)),
+		cloudReconstructionWeight), 1.0e-6));
+
+	return path;
+}
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 extent = imageSize(atmosphereSceneColorOutput);
+    if (any(greaterThanEqual(pixel, extent)))
+        return;
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(extent);
+    float deviceDepth = texelFetch(atmosphereSceneDepth, pixel, 0).r;
+    bool hasOpaqueSurface = AtmosphereHasSurfaceDepth(deviceDepth);
+    bool hasSurface = false;
+    vec3 rayDirection = AtmosphereWorldDirectionFromUv(uv);
+    float terminalDistance =
+        uAtmosphereFrame.cameraWorldMetersAndMaxDistance.w;
+    if (hasOpaqueSurface)
+    {
+        vec3 worldPosition = AtmosphereWorldPositionFromDeviceDepth(
+            uv, deviceDepth);
+        vec3 cameraToSurface = worldPosition - cameraPosition.xyz;
+		terminalDistance = length(cameraToSurface);
+		if (terminalDistance > 1.0e-5)
+			rayDirection = cameraToSurface / terminalDistance;
+		hasSurface = true;
+    }
+	if (uAtmosphereFrame.atmosphereSurfaceCompositionFlags.x != 0u)
+	{
+		vec4 waterNormal = texelFetch(atmosphereWaterNormal, pixel, 0);
+		vec4 waterSurface = texelFetch(atmosphereWaterPositionDepth, pixel, 0);
+		if (WaterSurfaceValid(waterNormal, waterSurface))
+		{
+			vec3 cameraToWater = waterSurface.xyz - cameraPosition.xyz;
+			float waterDistance = length(cameraToWater);
+			if (waterDistance > 1.0e-5 &&
+				(!hasSurface || waterDistance < terminalDistance))
+			{
+				terminalDistance = waterDistance;
+				rayDirection = cameraToWater / waterDistance;
+				hasSurface = true;
+			}
+		}
+	}
+
+	vec3 cloudScattering;
+	vec3 cloudOpticalDepth;
+	float cloudOnlyOpticalDepth;
+	vec2 cloudDistances;
+	float cloudReconstructionWeight;
+	ReconstructCloudInterval(uv, terminalDistance,
+		cloudScattering, cloudOpticalDepth,
+		cloudOnlyOpticalDepth, cloudDistances, cloudReconstructionWeight);
+	ParticipatingMediaPath path = BuildParticipatingMediaPath(
+		uv, rayDirection, terminalDistance,
+		cloudScattering, cloudOpticalDepth, cloudOnlyOpticalDepth,
+		cloudDistances, cloudReconstructionWeight);
+
+	vec3 result;
+	if (hasSurface)
+	{
+		vec3 rawRadiance = texture(rawOpaqueSceneColor, uv).rgb;
+		result = path.scattering +
+			exp(-min(path.opticalDepth, vec3(80.0))) * rawRadiance;
+	}
+	else
+	{
+		vec3 physicalSky = SampleAtmosphereSkyRadiance(rayDirection);
+		vec3 clearScattering;
+		vec3 clearOpticalDepth;
+		ExtractBaseMediaInterval(uv, rayDirection, 0.0, terminalDistance,
+			clearScattering, clearOpticalDepth);
+		vec3 clearTransmittance =
+			exp(-min(clearOpticalDepth, vec3(80.0)));
+		// SkyView 是从相机到大气边界的清空路径。先从它解析出终点辐射，
+		// 再用实际（可能含云）的完整路径重组，避免把前景大气重复乘到天空上。
+		vec3 skyEndpointRadiance = max(
+			physicalSky - clearScattering, vec3(0.0)) /
+			max(clearTransmittance, vec3(1.0e-5));
+		result = path.scattering +
+			exp(-min(path.opticalDepth, vec3(80.0))) * skyEndpointRadiance;
+		for (uint bodyIndex = 0u; bodyIndex < 2u; ++bodyIndex)
+		{
+			vec3 disk = EvaluateAtmosphereCelestialDiskAtPosition(
+				bodyIndex, vec3(0.0), rayDirection);
+			float occlusionStrength = max(
+				uAtmosphereFrame.atmosphereCelestialBodies[bodyIndex].diskParameters.w,
+				0.0);
+			vec3 diskOpticalDepth = max(path.opticalDepth +
+				vec3(path.cloudOnlyOpticalDepth *
+					(occlusionStrength - 1.0)), vec3(0.0));
+			result += exp(-min(diskOpticalDepth, vec3(80.0))) * disk;
+		}
+	}
+    imageStore(atmosphereSceneColorOutput, pixel, vec4(max(result, vec3(0.0)), 1.0));
+}

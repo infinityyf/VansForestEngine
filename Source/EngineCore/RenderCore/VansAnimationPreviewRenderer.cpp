@@ -79,6 +79,40 @@ bool VansAnimationPreviewRenderer::PrepareCpu(
 	m_Stats.sourceTriangleCount = m_Indices.size() / 3;
 	m_Stats.renderedTriangleCount =
 		(m_Stats.sourceTriangleCount + m_TriangleStride - 1) / m_TriangleStride;
+	for (const CpuVertex& vertex : m_Vertices)
+	{
+		float weightSum = 0.0f;
+		bool hasInfluence = false;
+		for (std::uint32_t influence = 0; influence < MAX_BONE_INFLUENCE; ++influence)
+		{
+			const int boneId = vertex.skin.boneIDs[influence];
+			const float weight = vertex.skin.weights[influence];
+			if (!std::isfinite(weight))
+			{
+				++m_Stats.nonFiniteBoneWeightCount;
+				continue;
+			}
+			if (boneId < 0 || weight <= 0.0f)
+				continue;
+			hasInfluence = true;
+			if (static_cast<std::size_t>(boneId) >= m_Skeleton.bones.size())
+			{
+				++m_Stats.invalidBoneInfluenceCount;
+				continue;
+			}
+			weightSum += weight;
+		}
+		if (!hasInfluence)
+		{
+			++m_Stats.unboundVertexCount;
+		}
+		else
+		{
+			m_Stats.maxBoneWeightSumError = std::max(
+				m_Stats.maxBoneWeightSumError,
+				std::abs(weightSum - 1.0f));
+		}
+	}
 
 	BoneMatricesSSBO bindMatrices{};
 	for (glm::mat4& matrix : bindMatrices.boneMatrices)
@@ -251,9 +285,9 @@ bool VansAnimationPreviewRenderer::RasterizeFrame(
 	const VansAnimationPreviewView& view,
 	std::string& error)
 {
-	if (!m_Ready || !m_Device)
+	if (m_Pixels.empty() || m_Vertices.empty())
 	{
-		error = "Animation preview renderer is not initialized";
+		error = "Animation preview CPU data is not prepared";
 		return false;
 	}
 	const auto start = std::chrono::steady_clock::now();
@@ -269,6 +303,11 @@ void VansAnimationPreviewRenderer::Rasterize(
 	const glm::vec3& modelOffset,
 	const VansAnimationPreviewView& view)
 {
+	glm::vec3 deformedBoundsMin(std::numeric_limits<float>::max());
+	glm::vec3 deformedBoundsMax(std::numeric_limits<float>::lowest());
+	float deformedRadius = 0.0f;
+	std::size_t validDeformedVertexCount = 0;
+	m_Stats.invalidDeformedVertexCount = 0;
 	for (std::uint32_t y = 0; y < PreviewHeight; ++y)
 	{
 		const float gradient = static_cast<float>(y) / static_cast<float>(PreviewHeight - 1);
@@ -328,8 +367,15 @@ void VansAnimationPreviewRenderer::Rasterize(
 		if (!IsFinite(position) || !IsFinite(normal))
 		{
 			m_ProjectedVertices[vertexIndex].valid = false;
+			++m_Stats.invalidDeformedVertexCount;
 			continue;
 		}
+		const glm::vec3 deformedPosition(position);
+		deformedBoundsMin = glm::min(deformedBoundsMin, deformedPosition);
+		deformedBoundsMax = glm::max(deformedBoundsMax, deformedPosition);
+		deformedRadius = std::max(
+			deformedRadius, glm::length(deformedPosition - m_ModelCenter));
+		++validDeformedVertexCount;
 
 		const glm::vec3 viewPosition = RotateForView(
 			glm::vec3(position) + modelOffset - m_ModelCenter, cy, sy, cp, sp);
@@ -347,6 +393,18 @@ void VansAnimationPreviewRenderer::Rasterize(
 			glm::vec3(0.0f), glm::vec3(1.0f));
 		projected.valid = std::isfinite(projected.x) && std::isfinite(projected.y)
 			&& std::isfinite(projected.depth);
+	}
+	if (validDeformedVertexCount > 0)
+	{
+		m_Stats.deformedBoundsMin = deformedBoundsMin;
+		m_Stats.deformedBoundsMax = deformedBoundsMax;
+		m_Stats.deformedRadiusRatio = deformedRadius / m_ModelRadius;
+	}
+	else
+	{
+		m_Stats.deformedBoundsMin = glm::vec3(0.0f);
+		m_Stats.deformedBoundsMax = glm::vec3(0.0f);
+		m_Stats.deformedRadiusRatio = 0.0f;
 	}
 
 	const std::size_t triangleCount = m_Indices.size() / 3;

@@ -11,7 +11,7 @@ namespace VansGraphics
 		HasPunctualShadowJobs,
 		HasWater,
 		HasDecal,
-		HasForwardOpaqueAfterDeferred
+		HasForwardOpaquePreAtmosphere
 	};
 
 	namespace VansRenderPassNames
@@ -27,6 +27,7 @@ namespace VansGraphics
 		constexpr const char* GBuffer = "GBuffer";
 		constexpr const char* WaterWaveCompute = "Water Wave Compute";
 		constexpr const char* WaterGBuffer = "Water GBuffer";
+		constexpr const char* WaterSceneColorPyramidPrepare = "Water SceneColor Pyramid Prepare";
 		constexpr const char* Decal = "Decal";
 		constexpr const char* TileLightBuild = "Tile Light Build";
 		constexpr const char* HZB = "HZB";
@@ -37,13 +38,18 @@ namespace VansGraphics
 		constexpr const char* GIData = "GI Data";
 		constexpr const char* SSR = "SSR";
 		constexpr const char* RayTracing = "Ray Tracing";
-		constexpr const char* VolumetricFog = "Volumetric Fog";
-		constexpr const char* CloudRayMarch = "Cloud Ray March";
+		constexpr const char* AtmosphereStaticLuts = "Atmosphere Static LUTs";
+		constexpr const char* CloudShadow = "Cloud Shadow";
+		constexpr const char* AtmosphereViewLuts = "Atmosphere View LUTs";
+		constexpr const char* LocalMedia = "Local Volumetric Media";
+		constexpr const char* VolumetricCloud = "Volumetric Cloud";
 		constexpr const char* DepthOfFieldPrepare = "Depth Of Field Prepare";
 		constexpr const char* ExposureBloom = "Exposure Bloom";
-		constexpr const char* DeferredSkybox = "Deferred Skybox";
+		constexpr const char* RawOpaqueLighting = "Raw Opaque Lighting";
 		constexpr const char* WaterPreCompute = "Water Pre Compute";
-		constexpr const char* ForwardOpaqueAfterDeferred = "Forward Opaque After Deferred";
+		constexpr const char* WaterCompositePreAtmosphere = "Water Composite Pre Atmosphere";
+		constexpr const char* ForwardOpaquePreAtmosphere = "Forward Opaque Pre Atmosphere";
+		constexpr const char* AtmosphereComposite = "Atmosphere Composite";
 		constexpr const char* HairVisibility = "Hair Visibility";
 		constexpr const char* HairLighting = "Hair Lighting";
 		constexpr const char* TransparentSceneColorPrepare = "Transparent SceneColor Prepare";

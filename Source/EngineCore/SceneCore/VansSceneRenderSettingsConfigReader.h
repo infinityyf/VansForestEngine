@@ -2,6 +2,8 @@
 
 #include "VansSceneRenderSettingsConfig.h"
 
+#include <string>
+
 namespace Vans
 {
 struct VansSerializedValue;
@@ -9,6 +11,9 @@ struct VansSerializedValue;
 class VansSceneRenderSettingsConfigReader
 {
 public:
-	static VansSceneRenderSettingsConfig Read(const VansSerializedValue& sceneSettings);
+	static bool Read(
+		const VansSerializedValue& sceneSettings,
+		VansSceneRenderSettingsConfig& config,
+		std::string& error);
 };
 }

@@ -270,6 +270,67 @@ bool VansRetargetProcessor::Process(
 	for (size_t targetIndex = 0; targetIndex < targetSkeleton.bones.size(); ++targetIndex)
 		targetLocalTransforms[targetIndex] = targetSkeleton.bones[targetIndex].localTransform;
 
+	// 平移通道必须先在组件/模型空间对齐，再换算回目标父骨骼局部空间。
+	// 直接复制 Source local delta 只对父层级缩放完全一致的骨架成立；例如
+	// SWAT 的 motion root 位于 100x Armature 下，直接相加会把 Root Motion 放大 100 倍。
+	const auto resolveTargetLocalTranslationDelta = [&]
+	(
+		const BoneMapEntry& entry,
+		const std::vector<glm::mat4>& resolvedTargetModels,
+		const glm::quat& sourceToTargetModelRotation,
+		glm::vec3& outDelta
+	)
+	{
+		if (entry.sourceIndex < 0 ||
+			entry.sourceIndex >= static_cast<int>(sourceLocalTransforms.size()) ||
+			entry.targetIndex < 0 ||
+			entry.targetIndex >= static_cast<int>(targetSkeleton.bones.size()))
+		{
+			return false;
+		}
+
+		glm::vec3 sourceTranslation;
+		glm::quat sourceRotation;
+		glm::vec3 sourceScale;
+		glm::vec3 sourceBindTranslation;
+		glm::quat sourceBindRotation;
+		glm::vec3 sourceBindScale;
+		if (!DecomposeTransform(sourceLocalTransforms[entry.sourceIndex],
+			sourceTranslation, sourceRotation, sourceScale) ||
+			!DecomposeTransform(sourceSkeleton.bones[entry.sourceIndex].localTransform,
+				sourceBindTranslation, sourceBindRotation, sourceBindScale))
+		{
+			return false;
+		}
+
+		glm::vec3 sourceModelDelta = sourceTranslation - sourceBindTranslation;
+		const int sourceParent = sourceSkeleton.bones[entry.sourceIndex].parentIndex;
+		if (sourceParent >= 0 &&
+			sourceParent < static_cast<int>(sourceModelTransforms.size()))
+		{
+			sourceModelDelta = glm::mat3(sourceModelTransforms[sourceParent]) * sourceModelDelta;
+		}
+
+		const glm::vec3 targetModelDelta =
+			sourceToTargetModelRotation * sourceModelDelta * m_Stats.translationScale;
+		const int targetParent = targetSkeleton.bones[entry.targetIndex].parentIndex;
+		if (targetParent < 0)
+		{
+			outDelta = targetModelDelta;
+			return true;
+		}
+		if (targetParent >= static_cast<int>(resolvedTargetModels.size()))
+			return false;
+
+		const glm::mat3 targetParentLinear(resolvedTargetModels[targetParent]);
+		const float determinant = glm::determinant(targetParentLinear);
+		if (!std::isfinite(determinant) || std::abs(determinant) <= 1.0e-8f)
+			return false;
+		outDelta = glm::inverse(targetParentLinear) * targetModelDelta;
+		return std::isfinite(outDelta.x) && std::isfinite(outDelta.y) &&
+			std::isfinite(outDelta.z);
+	};
+
 	auto applyConfiguredLimbChains = [&](const glm::quat& sourceToTargetRotation)
 	{
 		if (m_LimbChains.empty())
@@ -463,28 +524,22 @@ bool VansRetargetProcessor::Process(
 				continue;
 			}
 
-			glm::vec3 sourceTranslation;
-			glm::quat sourceRotation;
-			glm::vec3 sourceScale;
-			if (!DecomposeTransform(sourceLocalTransforms[entry.sourceIndex],
-				sourceTranslation, sourceRotation, sourceScale))
-			{
-				continue;
-			}
-
-			glm::vec3 sourceBindTranslation;
-			glm::quat sourceBindRotation;
-			glm::vec3 sourceBindScale;
-			DecomposeTransform(sourceSkeleton.bones[entry.sourceIndex].localTransform,
-				sourceBindTranslation, sourceBindRotation, sourceBindScale);
-
 			glm::vec3 targetTranslation;
 			glm::quat targetRotation;
 			glm::vec3 targetScale;
 			DecomposeTransform(targetLocalTransforms[entry.targetIndex],
 				targetTranslation, targetRotation, targetScale);
 
-			targetTranslation += (sourceTranslation - sourceBindTranslation) * m_Stats.translationScale;
+			glm::vec3 targetLocalDelta(0.0f);
+			if (!resolveTargetLocalTranslationDelta(
+				entry,
+				resolvedModelTransforms,
+				glm::inverse(targetToSourceRotation),
+				targetLocalDelta))
+			{
+				continue;
+			}
+			targetTranslation += targetLocalDelta;
 			targetLocalTransforms[entry.targetIndex] =
 				ComposeTransform(targetTranslation, targetRotation, targetScale);
 		}
@@ -537,14 +592,42 @@ bool VansRetargetProcessor::Process(
 		DecomposeTransform(targetSkeleton.bones[entry.targetIndex].localTransform,
 			targetBindTranslation, targetBindRotation, targetBindScale);
 
-		glm::vec3 targetTranslation = targetBindTranslation;
-		if (entry.copyTranslationDelta)
-			targetTranslation += (sourceTranslation - sourceBindTranslation) * m_Stats.translationScale;
-
 		const glm::quat sourceDeltaRotation = sourceRotation * glm::inverse(sourceBindRotation);
 		const glm::quat targetRotation = glm::normalize(sourceDeltaRotation * targetBindRotation);
 		targetLocalTransforms[entry.targetIndex] =
-			ComposeTransform(targetTranslation, targetRotation, targetBindScale);
+			ComposeTransform(targetBindTranslation, targetRotation, targetBindScale);
+	}
+
+	std::vector<glm::mat4>& resolvedModelTransforms = m_ResolvedModelScratch;
+	BuildModelFromLocal(targetLocalTransforms, targetSkeleton, resolvedModelTransforms);
+	for (const BoneMapEntry& entry : m_BoneMap)
+	{
+		if (!entry.copyTranslationDelta ||
+			entry.targetIndex < 0 ||
+			entry.targetIndex >= static_cast<int>(targetLocalTransforms.size()))
+		{
+			continue;
+		}
+
+		glm::vec3 targetTranslation;
+		glm::quat targetRotation;
+		glm::vec3 targetScale;
+		if (!DecomposeTransform(targetLocalTransforms[entry.targetIndex],
+			targetTranslation, targetRotation, targetScale))
+		{
+			continue;
+		}
+		glm::vec3 targetLocalDelta(0.0f);
+		if (!resolveTargetLocalTranslationDelta(
+			entry,
+			resolvedModelTransforms,
+			glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
+			targetLocalDelta))
+		{
+			continue;
+		}
+		targetLocalTransforms[entry.targetIndex] = ComposeTransform(
+			targetTranslation + targetLocalDelta, targetRotation, targetScale);
 	}
 
 	if (!applyConfiguredLimbChains(glm::quat(1.0f, 0.0f, 0.0f, 0.0f)))

@@ -5,10 +5,10 @@
 #include "../VansScene.h"
 #include "../VansCamera.h"
 #include "../VansTemporalProjection.h"
+#include "../WaterCore/VansWaterSystem.h"
 #include "../UpscalingCore/VansTemporalJitterSequence.h"
 #include "../../../Graphics/Vulkan/VansStreamlineRuntime.h"
 #include "../../Util/VansLog.h"
-#include "../../RuntimeUI/Public/VansUISystem.h"
 #include <algorithm>
 #include <cmath>
 #include <utility>
@@ -29,7 +29,8 @@ namespace VansGraphics
 		// state at the point where slEvaluateFeature records its work.
 		auto synchronizeReadOnlyInput = [&](VansVKImage& image,
 			VkPipelineStageFlags producerStages,
-			VkAccessFlags producerAccess)
+			VkAccessFlags producerAccess,
+			VkImageLayout readOnlyLayout)
 		{
 			if (image.GetImage() == VK_NULL_HANDLE)
 				return false;
@@ -40,8 +41,8 @@ namespace VansGraphics
 				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 				producerAccess,
 				VK_ACCESS_SHADER_READ_BIT,
-				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+				readOnlyLayout,
+				readOnlyLayout);
 			return true;
 		};
 
@@ -49,7 +50,8 @@ namespace VansGraphics
 			renderPassManager->GetColor(),
 			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
 				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-			VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT) ||
+			VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT,
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) ||
 			!synchronizeReadOnlyInput(
 				renderPassManager->GetDepth(),
 				VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
@@ -57,12 +59,14 @@ namespace VansGraphics
 					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 				VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
 					VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-					VK_ACCESS_SHADER_READ_BIT) ||
+					VK_ACCESS_SHADER_READ_BIT,
+				VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL) ||
 			!synchronizeReadOnlyInput(
 				renderPassManager->GetMotionVector(),
 				VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
 					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-				VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT))
+				VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT,
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL))
 		{
 			return false;
 		}
@@ -741,6 +745,27 @@ namespace VansGraphics
 		renderPassManager->SetupVansScreenSpaceEffectsPass(m_VansVKLogicDevice, renderExtent);
 		renderPassManager->SetupVansWaterGBufferPass(m_VansVKLogicDevice, renderExtent);
 		PrepareResolutionDependentRenderingData();
+		if (!m_Scene->ReinitializeEnvironmentRendering(
+			m_AtmosphereQualityConfig,
+			renderExtent.width,
+			renderExtent.height))
+		{
+			VANS_LOG_ERROR("[Atmosphere] Failed to rebuild view-dependent resources");
+		}
+		if (auto* waterSystem = m_Scene->GetWaterSystem())
+		{
+			auto* materialManager = m_Scene->GetMaterialManager();
+			auto* hzbTexture = materialManager
+				? materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_HZB_RESULT)
+				: nullptr;
+			waterSystem->ReinitializeResolutionResources(
+				renderExtent.width,
+				renderExtent.height,
+				renderPassManager,
+				m_Scene->GetGlobalDescriptorSetLayout(),
+				m_Scene->GetGlobalDescriptorSet(),
+				hzbTexture ? &hzbTexture->GetImage() : nullptr);
+		}
 		SetupHairLightingDescriptors(renderPassManager);
 		SetupHairCompositeDescriptors(renderPassManager);
 		SetupTransmissionGlassDescriptors(renderPassManager);
@@ -815,6 +840,9 @@ namespace VansGraphics
 		uint32_t outputWidth,
 		uint32_t outputHeight)
 	{
+		m_AtmosphereQualityConfig = config.atmosphere;
+		m_NearMediaQualityConfig = config.nearMedia;
+		m_CloudShadowQualityConfig = config.cloudShadow;
 		// 项目可声明独立于宿主窗口的最终输出分辨率；旧项目的 0x0 配置仍跟随窗口。
 		const uint32_t requestedOutputWidth = config.output.HasExplicitExtent()
 			? config.output.width
@@ -919,9 +947,6 @@ namespace VansGraphics
 			requestedExtent);
 		if (m_Scene != nullptr)
 			m_Scene->MarkRenderNodeDescriptorSetsDirty();
-		VansRuntime::VansUISystem::Get().SetScreenSize(
-			requestedExtent.width,
-			requestedExtent.height);
 
 		VANS_LOG("[Upscaler] desired=" << ToString(m_UpscalerManager.GetDesiredConfig().backend)
 			<< " effective=" << ToString(active.backend)

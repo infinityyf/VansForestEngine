@@ -12,9 +12,9 @@ namespace
     enum class SceneSettingsGroup : uint32_t
     {
         None = 0,
-        HeightFog = 1u << 0,
-        VolumetricFog = 1u << 1,
-        Clouds = 1u << 2
+		PhysicalAtmosphere = 1u << 0,
+		HeightFog = 1u << 1,
+		Clouds = 1u << 2
     };
 
     bool g_CommandMergeBoundaryReached = false;
@@ -211,6 +211,83 @@ namespace
         TrackCommandMergeBoundary();
         return changed;
     }
+
+	bool DragDoubleTracked(
+		const char* label,
+		double* value,
+		float speed,
+		double minValue,
+		double maxValue,
+		const char* format)
+	{
+		const bool changed = ImGui::DragScalar(
+			label, ImGuiDataType_Double, value, speed, &minValue, &maxValue, format);
+		TrackCommandMergeBoundary();
+		return changed;
+	}
+
+	bool DragDouble3Tracked(
+		const char* label,
+		double value[3],
+		float speed,
+		double minValue,
+		double maxValue,
+		const char* format)
+	{
+		const bool changed = ImGui::DragScalarN(
+			label, ImGuiDataType_Double, value, 3, speed, &minValue, &maxValue, format);
+		TrackCommandMergeBoundary();
+		return changed;
+	}
+
+	bool CheckboxTracked(const char* label, bool* value)
+	{
+		const bool changed = ImGui::Checkbox(label, value);
+		TrackCommandMergeBoundary();
+		return changed;
+	}
+
+	bool EditCoefficientPerKilometer(
+		const char* label,
+		std::array<float, 3>& coefficientPerMeter)
+	{
+		float coefficientPerKilometer[3] = {
+			coefficientPerMeter[0] * 1000.0f,
+			coefficientPerMeter[1] * 1000.0f,
+			coefficientPerMeter[2] * 1000.0f
+		};
+		if (!DragFloat3Tracked(
+			label, coefficientPerKilometer, 0.0001f, 0.0f, 1.0f, "%.6f /km"))
+		{
+			return false;
+		}
+		for (std::size_t channel = 0; channel < 3; ++channel)
+			coefficientPerMeter[channel] = coefficientPerKilometer[channel] * 0.001f;
+		return true;
+	}
+
+	bool EditScalarCoefficientPerKilometer(
+		const char* label,
+		float& coefficientPerMeter)
+	{
+		float coefficientPerKilometer = coefficientPerMeter * 1000.0f;
+		if (!DragFloatTracked(
+			label, &coefficientPerKilometer,
+			0.001f, 0.0f, 1000.0f, "%.6f /km"))
+		{
+			return false;
+		}
+		coefficientPerMeter = coefficientPerKilometer * 0.001f;
+		return true;
+	}
+
+	bool EditColorArray3(const char* label, std::array<float, 3>& value)
+	{
+		const bool changed = ImGui::ColorEdit3(
+			label, value.data(), ImGuiColorEditFlags_Float);
+		TrackCommandMergeBoundary();
+		return changed;
+	}
 }
 
 void VansGraphics::VansLightWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
@@ -236,9 +313,9 @@ void VansGraphics::VansLightWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
         editorAPI.ApplyLightingSettings(lightingSettings);
     }
 
-    ImGui::Separator();
-    DrawFogParameters(editorAPI);
-    DrawFogVolumeParameters(editorAPI);
+	ImGui::Separator();
+	DrawPhysicalAtmosphereParameters(editorAPI);
+	DrawHeightFogParameters(editorAPI);
     DrawCloudParameters(editorAPI);
 
     if (g_CommandMergeBoundaryReached)
@@ -375,71 +452,198 @@ bool VansGraphics::VansLightWindow::DrawRectLights(std::vector<Vans::EditorAPI::
     return changed;
 }
 
-void VansGraphics::VansLightWindow::DrawFogParameters(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+void VansGraphics::VansLightWindow::DrawPhysicalAtmosphereParameters(
+	Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
-    if (!ImGui::CollapsingHeader("Height Fog"))
-        return;
+	if (!ImGui::CollapsingHeader("Physical Atmosphere", ImGuiTreeNodeFlags_DefaultOpen))
+		return;
+	ImGui::PushID("PhysicalAtmosphere");
 
-    Vans::EditorAPI::FogSettings fogParams = editorAPI.GetFogSettings();
-    bool changed = false;
-    g_ActiveSceneSettingsGroup = SceneSettingsGroup::HeightFog;
+	Vans::EditorAPI::EnvironmentSettings environment = editorAPI.GetEnvironmentSettings();
+	auto& planet = environment.planet;
+	auto& atmosphere = environment.physicalAtmosphere;
+	bool changed = false;
+	g_ActiveSceneSettingsGroup = SceneSettingsGroup::PhysicalAtmosphere;
 
-    changed |= DragFloatTracked("Fog Density",        &fogParams.fogDensity,      0.0001f, 0.0f,    0.1f,    "%.5f");
-    changed |= DragFloatTracked("Height Falloff",     &fogParams.heightFalloff,   0.001f,  0.0f,    1.0f,    "%.4f");
-    changed |= DragFloatTracked("Sun Scatter Scale",  &fogParams.sunScatterScale, 0.01f,   0.0f,    5.0f,    "%.3f");
-    changed |= DragFloatTracked("Ambient Scale",      &fogParams.ambientScale,    0.01f,   0.0f,    5.0f,    "%.3f");
-    changed |= DragFloatTracked("Fog Min Height",     &fogParams.fogMinHeight,    1.0f,   -10000.0f, 10000.0f, "%.1f");
-    changed |= InputFloatTracked("Sky Fog Distance",  &fogParams.skyFogDistance);
-    g_ActiveSceneSettingsGroup = SceneSettingsGroup::None;
+	changed |= CheckboxTracked("Enabled", &atmosphere.enabled);
+	if (ImGui::TreeNodeEx("Planet", ImGuiTreeNodeFlags_DefaultOpen))
+	{
+		changed |= DragDouble3Tracked("Center World", planet.centerWorldMeters.data(),
+			10.0f, -1.0e9, 1.0e9, "%.3f m");
+		changed |= DragDoubleTracked("Ground Radius", &planet.bottomRadiusMeters,
+			100.0f, 1000.0, 1.0e9, "%.1f m");
+		changed |= DragDoubleTracked("Atmosphere Height", &planet.atmosphereHeightMeters,
+			100.0f, 100.0, 1.0e7, "%.1f m");
+		changed |= EditColorArray3("Ground Albedo", atmosphere.groundAlbedo);
+		ImGui::TreePop();
+	}
 
-    if (changed)
-    {
-        editorAPI.ApplyFogSettings(fogParams);
-    }
-    if (ConsumeSceneSettingsCommit(SceneSettingsGroup::HeightFog))
-        editorAPI.CommitHeightFogSettings();
+	if (ImGui::TreeNodeEx("Rayleigh", ImGuiTreeNodeFlags_DefaultOpen))
+	{
+		changed |= EditCoefficientPerKilometer("Scattering At Ground",
+			atmosphere.rayleigh.scatteringPerMeterAtGround);
+		changed |= DragFloatTracked("Density Scale Height",
+			&atmosphere.rayleigh.densityScaleHeightMeters,
+			50.0f, 1.0f, 200000.0f, "%.1f m");
+		ImGui::TreePop();
+	}
+
+	if (ImGui::TreeNodeEx("Mie / Aerosols", ImGuiTreeNodeFlags_DefaultOpen))
+	{
+		changed |= EditCoefficientPerKilometer("Scattering At Ground",
+			atmosphere.mie.scatteringPerMeterAtGround);
+		changed |= EditCoefficientPerKilometer("Absorption At Ground",
+			atmosphere.mie.absorptionPerMeterAtGround);
+		changed |= DragFloatTracked("Density Scale Height",
+			&atmosphere.mie.densityScaleHeightMeters,
+			20.0f, 1.0f, 100000.0f, "%.1f m");
+		changed |= DragFloatTracked("Anisotropy", &atmosphere.mie.anisotropy,
+			0.005f, -0.98f, 0.98f, "%.3f");
+		ImGui::TreePop();
+	}
+
+	if (ImGui::TreeNode("Ozone Absorption"))
+	{
+		changed |= EditCoefficientPerKilometer("Absorption",
+			atmosphere.ozone.absorptionPerMeter);
+		changed |= DragFloatTracked("Center Altitude",
+			&atmosphere.ozone.centerAltitudeMeters,
+			100.0f, 0.0f, 200000.0f, "%.1f m");
+		changed |= DragFloatTracked("Half Width", &atmosphere.ozone.halfWidthMeters,
+			100.0f, 1.0f, 200000.0f, "%.1f m");
+		ImGui::TreePop();
+	}
+
+	if (ImGui::TreeNodeEx("Aerial Perspective", ImGuiTreeNodeFlags_DefaultOpen))
+	{
+		changed |= DragFloatTracked("Distance Scale",
+			&atmosphere.aerialPerspective.distanceScale,
+			0.01f, 0.01f, 8.0f, "%.3f");
+		ImGui::TextDisabled("Physical atmosphere is the only far-distance aerial medium.");
+		ImGui::TreePop();
+	}
+	if (ImGui::TreeNodeEx("Volumetric Lighting", ImGuiTreeNodeFlags_DefaultOpen))
+	{
+		changed |= DragFloatTracked("Main Light Scattering",
+			&atmosphere.mainLightVolumetricScatteringScale,
+			0.01f, 0.0f, 8.0f, "%.3f");
+		ImGui::TextDisabled("Scales direct atmospheric in-scattering only; optical depth is unchanged.");
+		ImGui::TreePop();
+	}
+
+	if (ImGui::TreeNode("Celestial Disks"))
+	{
+		for (std::size_t bodyIndex = 0;
+			bodyIndex < atmosphere.celestialBodies.size(); ++bodyIndex)
+		{
+			auto& body = atmosphere.celestialBodies[bodyIndex];
+			ImGui::PushID(static_cast<int>(bodyIndex));
+			const char* label = body.name.empty() ? "Celestial Body" : body.name.c_str();
+			if (ImGui::TreeNode(label))
+			{
+				changed |= CheckboxTracked("Disk Enabled", &body.disk.enabled);
+				float angularRadiusDegrees = ToDegrees(body.disk.angularRadiusRadians);
+				float featherDegrees = ToDegrees(body.disk.featherRadians);
+				bool angleChanged = false;
+				angleChanged |= DragFloatTracked("Angular Radius", &angularRadiusDegrees,
+					0.001f, 0.001f, 10.0f, "%.4f deg");
+				angleChanged |= DragFloatTracked("Edge Feather", &featherDegrees,
+					0.001f, 0.0f, 5.0f, "%.4f deg");
+				if (angleChanged)
+				{
+					body.disk.angularRadiusRadians = ToRadians(angularRadiusDegrees);
+					body.disk.featherRadians = ToRadians(featherDegrees);
+					changed = true;
+				}
+				changed |= DragFloatTracked("Radiance Scale", &body.disk.radianceScale,
+					0.01f, 0.0f, 100.0f, "%.3f");
+				changed |= DragFloatTracked("Cloud Occlusion", &body.disk.occlusionStrength,
+					0.05f, 0.0f, 32.0f, "%.3f");
+				ImGui::TextDisabled("Light: %s", body.lightEntityId.c_str());
+				ImGui::TreePop();
+			}
+			ImGui::PopID();
+		}
+		ImGui::TreePop();
+	}
+
+	ImGui::PopID();
+	g_ActiveSceneSettingsGroup = SceneSettingsGroup::None;
+	if (changed)
+		editorAPI.ApplyEnvironmentSettings(environment);
+	if (ConsumeSceneSettingsCommit(SceneSettingsGroup::PhysicalAtmosphere))
+		editorAPI.CommitEnvironmentSettings();
 }
 
-void VansGraphics::VansLightWindow::DrawFogVolumeParameters(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+void VansGraphics::VansLightWindow::DrawHeightFogParameters(
+	Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
-    if (!ImGui::CollapsingHeader("Volumetric Fog Volume"))
-        return;
+	if (!ImGui::CollapsingHeader("Near-Ground Height Fog", ImGuiTreeNodeFlags_DefaultOpen))
+		return;
+	ImGui::PushID("HeightFog");
 
-    Vans::EditorAPI::FogVolumeSettings fogVolumeParams = editorAPI.GetFogVolumeSettings();
-    bool changed = false;
-    g_ActiveSceneSettingsGroup = SceneSettingsGroup::VolumetricFog;
+	Vans::EditorAPI::EnvironmentSettings environment = editorAPI.GetEnvironmentSettings();
+	auto& fog = environment.heightFog;
+	bool changed = false;
+	g_ActiveSceneSettingsGroup = SceneSettingsGroup::HeightFog;
 
-    changed |= DragFloatTracked("Volume Density",      &fogVolumeParams.density,      0.01f,  0.0f,  10.0f,  "%.3f");
-    changed |= DragFloatTracked("Anisotropy (g)",      &fogVolumeParams.anisotropy,   0.01f, -1.0f,   1.0f,  "%.3f");
-    changed |= DragFloatTracked("Scatter Scale",       &fogVolumeParams.scatterScale, 0.01f,  0.0f,  10.0f,  "%.3f");
-    changed |= DragFloatTracked("Volume Ambient Scale", &fogVolumeParams.ambientScale, 0.005f, 0.0f,   5.0f,  "%.4f");
-    changed |= DragFloatTracked("Volume Near",         &fogVolumeParams.volumeNear,   0.1f,   0.01f, 100.0f, "%.2f");
-    changed |= DragFloatTracked("Volume Far",          &fogVolumeParams.volumeFar,    1.0f,   1.0f,  2000.0f, "%.1f");
-    changed |= DragFloatTracked("Slice Power",         &fogVolumeParams.slicePower,   0.05f,  0.1f,  10.0f,  "%.2f");
+	changed |= CheckboxTracked("Enabled", &fog.enabled);
+	changed |= DragFloatTracked("Ground Height (World Y)",
+		&fog.groundHeightWorldMeters, 1.0f, -10000.0f, 100000.0f, "%.1f m");
+	changed |= DragFloatTracked("Visibility At Ground",
+		&fog.visibilityAtGroundMeters, 5.0f, 20.0f, 10000.0f, "%.1f m");
+	changed |= DragFloatTracked("Density Falloff Height",
+		&fog.densityFalloffHeightMeters, 2.0f, 5.0f, 2000.0f, "%.1f m");
+	changed |= DragFloatTracked("Start Distance", &fog.startDistanceMeters,
+		1.0f, 0.0f, (std::max)(fog.maximumDistanceMeters - 1.0f, 0.0f), "%.1f m");
+	changed |= DragFloatTracked("Near Fade Distance", &fog.nearFadeDistanceMeters,
+		1.0f, 0.0f, 500.0f, "%.1f m");
+	changed |= DragFloatTracked("Maximum Distance", &fog.maximumDistanceMeters,
+		5.0f, fog.startDistanceMeters + 1.0f, 10000.0f, "%.1f m");
+	changed |= DragFloatTracked("Far Fade Distance", &fog.farFadeDistanceMeters,
+		2.0f, 0.0f, fog.maximumDistanceMeters - fog.startDistanceMeters, "%.1f m");
+	changed |= EditColorArray3("Single Scattering Albedo",
+		fog.singleScatteringAlbedo);
+	changed |= DragFloatTracked("Anisotropy", &fog.anisotropy,
+		0.005f, -0.9f, 0.9f, "%.3f");
+	changed |= EditColorArray3("Emissive Per Meter", fog.emissivePerMeter);
+	changed |= DragFloatTracked("Sky Lighting Scale", &fog.skyLightingScale,
+		0.01f, 0.0f, 4.0f, "%.3f");
+	changed |= DragFloatTracked("Main Light Volumetric Scale",
+		&fog.mainLightVolumetricScale, 0.01f, 0.0f, 4.0f, "%.3f");
+	changed |= CheckboxTracked("Receive Cloud Shadows", &fog.receiveCloudShadows);
 
-    ImGui::Separator();
-    changed |= DragFloat3Tracked("Fog Box Min", fogVolumeParams.fogBoxMin, 0.5f, -10000.0f, 10000.0f, "%.1f");
-    changed |= DragFloat3Tracked("Fog Box Max", fogVolumeParams.fogBoxMax, 0.5f, -10000.0f, 10000.0f, "%.1f");
-    g_ActiveSceneSettingsGroup = SceneSettingsGroup::None;
+	fog.nearFadeDistanceMeters = std::min(fog.nearFadeDistanceMeters,
+		fog.maximumDistanceMeters - fog.startDistanceMeters);
+	fog.farFadeDistanceMeters = std::min(fog.farFadeDistanceMeters,
+		fog.maximumDistanceMeters - fog.startDistanceMeters -
+		fog.nearFadeDistanceMeters);
+	const float derivedExtinction = 1.0f /
+		(std::max)(fog.visibilityAtGroundMeters, 1.0f);
+	ImGui::TextDisabled("Derived ground extinction: %.6f /m (T=e^-1 at visibility).",
+		derivedExtinction);
+	ImGui::TextDisabled("This medium is integrated only by the near volumetric grid.");
 
-    if (changed)
-    {
-        editorAPI.ApplyFogVolumeSettings(fogVolumeParams);
-    }
-    if (ConsumeSceneSettingsCommit(SceneSettingsGroup::VolumetricFog))
-        editorAPI.CommitVolumetricFogSettings();
+	ImGui::PopID();
+	g_ActiveSceneSettingsGroup = SceneSettingsGroup::None;
+	if (changed)
+		editorAPI.ApplyEnvironmentSettings(environment);
+	if (ConsumeSceneSettingsCommit(SceneSettingsGroup::HeightFog))
+		editorAPI.CommitEnvironmentSettings();
 }
-
 void VansGraphics::VansLightWindow::DrawCloudParameters(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
     if (!ImGui::CollapsingHeader("Volumetric Clouds", ImGuiTreeNodeFlags_DefaultOpen))
     {
         return;
     }
+	ImGui::PushID("VolumetricClouds");
 
-    Vans::EditorAPI::CloudSettings cloudParams = editorAPI.GetCloudSettings();
+    Vans::EditorAPI::EnvironmentSettings environment = editorAPI.GetEnvironmentSettings();
+    Vans::EditorAPI::CloudSettings& cloudParams = environment.volumetricClouds;
     bool changed = false;
     g_ActiveSceneSettingsGroup = SceneSettingsGroup::Clouds;
+	changed |= CheckboxTracked("Enabled", &cloudParams.enabled);
 
     float cloudBaseHeight = cloudParams.cloudMinHeight;
     float cloudThickness = std::max(cloudParams.cloudMaxHeight - cloudParams.cloudMinHeight, 100.0f);
@@ -458,7 +662,6 @@ void VansGraphics::VansLightWindow::DrawCloudParameters(Vans::EditorAPI::IEngine
     changed |= DragFloatTracked("Density", &cloudParams.density, 0.001f, 0.0f, 0.5f, "%.4f");
     changed |= DragFloatTracked("Coverage", &cloudParams.coverage, 0.005f, 0.0f, 1.0f, "%.3f");
     changed |= DragFloatTracked("Sun Brightness", &cloudParams.sunBrightness, 0.01f, 0.0f, 10.0f, "%.3f");
-    changed |= DragFloatTracked("Phase G", &cloudParams.phaseG, 0.005f, -0.5f, 1.0f, "%.3f");
 
     ImGui::Separator();
     changed |= DragFloatTracked("Main Tile", &cloudParams.mainTileMeters, 100.0f, 5000.0f, 200000.0f, "%.0f m");
@@ -480,7 +683,15 @@ void VansGraphics::VansLightWindow::DrawCloudParameters(Vans::EditorAPI::IEngine
     changed |= DragFloatTracked("Detail Erosion Low", &cloudParams.detailErosionLow, 0.005f, 0.0f, 1.0f, "%.3f");
     changed |= DragFloatTracked("Detail Erosion High", &cloudParams.detailErosionHigh, 0.005f, 0.01f, 1.0f, "%.3f");
     changed |= DragFloatTracked("Detail Edge Strength", &cloudParams.detailEdgeStrength, 0.01f, 0.0f, 3.0f, "%.3f");
-    changed |= DragFloatTracked("Shadow Density", &cloudParams.shadowDensityScale, 0.01f, 0.0f, 5.0f, "%.3f");
+
+	ImGui::SeparatorText("Cloud Shadow");
+	changed |= CheckboxTracked("Enabled##CloudShadow", &cloudParams.shadow.enabled);
+	changed |= DragFloatTracked("Atmosphere Strength",
+		&cloudParams.shadow.atmosphereStrength, 0.01f, 0.0f, 1.0f, "%.3f");
+	changed |= DragFloatTracked("Ambient Occlusion Strength",
+		&cloudParams.shadow.ambientOcclusionStrength, 0.01f, 0.0f, 1.0f, "%.3f");
+	ImGui::TextDisabled(
+		"Strength mixes physical cloud transmittance in irradiance space.");
 
     ImGui::SeparatorText("HP Optical");
     changed |= DragFloatTracked("Sigma T Ref", &cloudParams.sigmaTRef, 0.005f, 0.0f, 1.0f, "%.3f");
@@ -523,12 +734,14 @@ void VansGraphics::VansLightWindow::DrawCloudParameters(Vans::EditorAPI::IEngine
 
     ImGui::SeparatorText("HP Debug");
     changed |= DragFloatTracked("Shading Debug Mode", &cloudParams.shadingDebugMode, 1.0f, 0.0f, 8.0f, "%.0f");
+	ImGui::PopID();
     g_ActiveSceneSettingsGroup = SceneSettingsGroup::None;
 
     if (ImGui::Button("Reset Cloud Defaults"))
     {
-        editorAPI.ResetCloudSettings();
-        editorAPI.CommitCloudSettings();
+        environment.volumetricClouds = {};
+        editorAPI.ApplyEnvironmentSettings(environment);
+        editorAPI.CommitEnvironmentSettings();
         editorAPI.BreakCommandMergeGroup();
         return;
     }
@@ -540,8 +753,8 @@ void VansGraphics::VansLightWindow::DrawCloudParameters(Vans::EditorAPI::IEngine
 
     if (changed)
     {
-        editorAPI.ApplyCloudSettings(cloudParams);
+        editorAPI.ApplyEnvironmentSettings(environment);
     }
     if (ConsumeSceneSettingsCommit(SceneSettingsGroup::Clouds))
-        editorAPI.CommitCloudSettings();
+        editorAPI.CommitEnvironmentSettings();
 }

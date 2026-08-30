@@ -808,7 +808,7 @@ namespace VansGraphics
 		VkFence gbufferMaterialFence = VK_NULL_HANDLE;
 		VkFence vegetationFence = VK_NULL_HANDLE;
 		VkFence earlyAuxFence = VK_NULL_HANDLE;
-		VkFence asyncCloudFence = VK_NULL_HANDLE;
+		VkFence asyncAtmosphereFence = VK_NULL_HANDLE;
 		VkFence asyncHZBFence = VK_NULL_HANDLE;
 		VkFence rayTracingFence = VK_NULL_HANDLE;
 		VkFence giDataFence = VK_NULL_HANDLE;
@@ -822,7 +822,7 @@ namespace VansGraphics
 		bool gbufferMaterialRecorded = false;
 		bool vegetationRecorded = false;
 		bool earlyAuxRecorded = false;
-		bool asyncCloudRecorded = false;
+		bool asyncAtmosphereRecorded = false;
 		bool asyncHZBRecorded = false;
 		bool rayTracingRecorded = false;
 		bool giDataRecorded = false;

@@ -34,6 +34,25 @@ namespace
 	constexpr int SceneTexture2D = 0;
 	constexpr int SceneTextureCube = 2;
 
+	void ApplyTextureImportSettings(
+		VansSceneTextureResourceRequest& request,
+		const VansAssetMeta& meta)
+	{
+		const std::string colorSpace = meta.ReadStringSetting("colorSpace");
+		request.srgb = colorSpace.empty()
+			? meta.ReadBoolSetting("sRGB", true)
+			: colorSpace != "linear";
+		request.useCompress = meta.ReadBoolSetting("useCompress", "compress", true);
+		request.needMip = meta.ReadBoolSetting("needMip", "generateMip", true);
+		const std::string precision = meta.ReadStringSetting("precision");
+		if (!precision.empty())
+			request.precision = precision;
+		request.importChannel = meta.ReadIntSetting("importChannel", request.importChannel);
+		const std::string addressMode = meta.ReadStringSetting("addressMode");
+		if (!addressMode.empty())
+			request.addressMode = addressMode;
+	}
+
 	VansSerializedValue EmptyObject()
 	{
 		return VansSerializedValue::Object({});
@@ -856,19 +875,7 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 			request.path = texturePath;
 			request.artifactPath = record.artifactPath.string();
 			request.textureType = isCubemap ? SceneTextureCube : SceneTexture2D;
-			const std::string colorSpace = meta.ReadStringSetting("colorSpace");
-			request.srgb = colorSpace.empty()
-				? meta.ReadBoolSetting("sRGB", true)
-				: colorSpace != "linear";
-			request.useCompress = meta.ReadBoolSetting("useCompress", "compress", true);
-			request.needMip = meta.ReadBoolSetting("needMip", "generateMip", true);
-			const std::string precision = meta.ReadStringSetting("precision");
-			if (!precision.empty())
-				request.precision = precision;
-			request.importChannel = meta.ReadIntSetting("importChannel", request.importChannel);
-			const std::string addressMode = meta.ReadStringSetting("addressMode");
-			if (!addressMode.empty())
-				request.addressMode = addressMode;
+			ApplyTextureImportSettings(request, meta);
 			result.resourcePlan.textures.push_back(std::move(request));
 		}
 		else if (record.type == VansAssetType::Shader)
@@ -929,9 +936,6 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 	{
 		for (const VansBuiltInAssetEntry& entry : VansBuiltInAssetCatalog::Entries())
 		{
-			if (entry.type != VansAssetType::Model)
-				continue;
-
 			VansAssetGuid guid;
 			if (!VansAssetGuid::TryParse(entry.guid, guid))
 			{
@@ -954,18 +958,42 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 				return result;
 			}
 
-			VansSceneMeshResourceRequest request;
-			request.name = record->guid.ToString();
-			request.assetGuid = record->guid.ToString();
-			request.path = record->sourcePath.string();
-			request.artifactPath = (
-				builtInAssetDatabase->ArtifactRoot() / "Meshes" / (request.assetGuid + ".vmesh")).string();
-			request.needTangent = meta.ReadBoolSetting("generateTangents", true);
-			request.supportRayTracing = meta.ReadBoolSetting("buildRayTracingData", true);
-			request.needCpuData = meta.ReadBoolSetting("keepCpuMeshData", false);
-			request.scaleFactor = meta.ReadFloatSetting("scaleFactor", "scale", 1.0f);
-			request.loadMultiMesh = meta.ReadBoolSetting("loadMultiMesh", false);
-			result.resourcePlan.meshes.push_back(std::move(request));
+			switch (entry.type)
+			{
+			case VansAssetType::Model:
+			{
+				VansSceneMeshResourceRequest request;
+				request.name = record->guid.ToString();
+				request.assetGuid = record->guid.ToString();
+				request.path = record->sourcePath.string();
+				request.artifactPath = (
+					builtInAssetDatabase->ArtifactRoot() / "Meshes" / (request.assetGuid + ".vmesh")).string();
+				request.needTangent = meta.ReadBoolSetting("generateTangents", true);
+				request.supportRayTracing = meta.ReadBoolSetting("buildRayTracingData", true);
+				request.needCpuData = meta.ReadBoolSetting("keepCpuMeshData", false);
+				request.scaleFactor = meta.ReadFloatSetting("scaleFactor", "scale", 1.0f);
+				request.loadMultiMesh = meta.ReadBoolSetting("loadMultiMesh", false);
+				result.resourcePlan.meshes.push_back(std::move(request));
+				break;
+			}
+			case VansAssetType::Texture:
+			{
+				VansSceneTextureResourceRequest request;
+				request.name = entry.runtimeAlias;
+				request.assetGuid = record->guid.ToString();
+				// 内建纹理由 GUID/asset index 解析，不能误按项目相对路径读取。
+				request.path.clear();
+				request.artifactPath = record->artifactPath.string();
+				request.textureType = SceneTexture2D;
+				ApplyTextureImportSettings(request, meta);
+				result.resourcePlan.textures.push_back(std::move(request));
+				break;
+			}
+			default:
+				VANS_LOG_ERROR("[AssetDatabase] Unsupported built-in runtime asset type for '"
+					<< entry.runtimeAlias << "'");
+				return result;
+			}
 		}
 	}
 

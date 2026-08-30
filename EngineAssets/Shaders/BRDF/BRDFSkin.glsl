@@ -124,14 +124,18 @@ vec3 SkinProfileCurvatureRGB(float curvature, SkinMaterialParams skin)
 
 vec3 SampleSkinDiffusionLUT_Profile(float NdotL, float curvature, SkinMaterialParams skin)
 {
-    vec3 profileCurvature = SkinProfileCurvatureRGB(curvature, skin);
     if (skin.profileLutLayer >= 0.0)
     {
-        return vec3(
-            SampleSkinDiffusionLUTLayer(NdotL, profileCurvature.r, skin.profileLutLayer).r,
-            SampleSkinDiffusionLUTLayer(NdotL, profileCurvature.g, skin.profileLutLayer).g,
-            SampleSkinDiffusionLUTLayer(NdotL, profileCurvature.b, skin.profileLutLayer).b);
+        // 动态/内置 Profile LUT 已在 CPU 生成阶段烘焙 scatter amount、
+        // RGB radius、diffusion radius、颜色和边界溢色。运行时必须使用原始
+        // 宏观曲率采样，不能再次缩放各通道的 V 坐标。
+        return SampleSkinDiffusionLUTLayer(
+            NdotL, clamp(curvature, 0.0, 1.0), skin.profileLutLayer);
     }
+
+    // 旧的通用 2D LUT 不包含材质 Profile，只有该故障回退路径仍需在
+    // 采样坐标上施加 Profile 半径。
+    vec3 profileCurvature = SkinProfileCurvatureRGB(curvature, skin);
     return vec3(
         SampleSkinDiffusionLUT(NdotL, profileCurvature.r).r,
         SampleSkinDiffusionLUT(NdotL, profileCurvature.g).g,
@@ -387,10 +391,17 @@ void DirectBRDF_Skin(BRDFData brdf, vec3 lightDirection, float curvature,
     float scatterAmount = SkinEffectiveScatterAmount(skin);
     vec3 lambert = vec3(max(NdotL, 0.0));
     vec3 skinScatter = SampleSkinDiffusionLUT_Profile(NdotL, curvature, skin);
-    skinScatter = mix(lambert, skinScatter, scatterAmount);
+    // Profile LUT 已包含全局 scatterAmount；运行时只用局部 mask 控制覆盖率。
+    // 通用 LUT 回退没有烘焙 profile，才使用完整的有效散射强度。
+    float profileWeight = skin.profileLutLayer >= 0.0
+        ? clamp(skin.scatterMask, 0.0, 1.0)
+        : scatterAmount;
+    skinScatter = mix(lambert, skinScatter, profileWeight);
 
-    // Curvature-only skin tint for thin areas.
-    vec3 scatterTint = ComputeSkinScatterTint_Profile(curvature, skin.scatterColor, scatterAmount, skin);
+    // 动态/内置 Profile LUT 已包含 scatterColor；避免再次乘红色 tint。
+    vec3 scatterTint = skin.profileLutLayer >= 0.0
+        ? vec3(1.0)
+        : ComputeSkinScatterTint_Profile(curvature, skin.scatterColor, scatterAmount, skin);
 
     vec3 F = FresnelSchlick(VdotH, brdf.fresnel0);
     vec3 kD = (vec3(1.0) - F) * (1.0 - brdf.metallic);
@@ -467,8 +478,10 @@ void AmbientBRDF_Skin(BRDFData brdf, SkinMaterialParams skin,
     float NoV = max(dot(brdf.normal, viewDirection), 0.0);
     float grazingScatter = pow(1.0 - NoV, 2.0);
     float scatterAmount = SkinEffectiveScatterAmount(skin);
+    // 环境项不采样 Profile LUT，因此保留轻微掠射染色，但 scatterAmount
+    // 只在最终权重中使用一次，避免原先近似平方的能量压低。
     vec3 ambientTint = ComputeSkinScatterTint_Profile(
-        grazingScatter, skin.scatterColor, 0.45 * scatterAmount, skin);
+        grazingScatter, skin.scatterColor, 0.45, skin);
     diffuse *= mix(vec3(1.0), ambientTint, skin.ambientScatterScale * scatterAmount);
 }
 
@@ -568,9 +581,11 @@ void CalculateDirectLight_Skin(BRDFData brdfData, float curvature,
     float NdotL_dir = dot(brdfData.normal, uDirectionLight.direction.rgb);
     DirectBRDF_Skin(brdfData, uDirectionLight.direction.rgb, curvature, skin,
                     diffuseResult, specularResult, transmissionResult);
-    diffuseResult  *= uDirectionLight.color.rgb * uDirectionLight.intensity;
-    specularResult *= uDirectionLight.color.rgb * uDirectionLight.intensity;
-    transmissionResult *= uDirectionLight.color.rgb * uDirectionLight.intensity;
+    vec3 directionalIrradiance =
+        uDirectionLight.color.rgb * uDirectionLight.intensity;
+    diffuseResult *= directionalIrradiance;
+    specularResult *= directionalIrradiance;
+    transmissionResult *= directionalIrradiance;
 
 	float shadowValue = directionalShadow;
     float transmissionShadow = SkinTransmissionShadow(shadowValue, NdotL_dir, curvature, skin);

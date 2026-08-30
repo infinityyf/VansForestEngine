@@ -1033,7 +1033,46 @@ static void BuildVertexWeightMapping(Mesh::Primitive &primitive, std::vector<std
     };
     Weights **weights = new Weights*[attr.weight.size()];
     for (size_t w = 0; w < attr.weight.size(); ++w) {
-        num_vertices = attr.weight[w]->ExtractData(weights[w], vertexRemappingTablePtr);
+        Accessor &accessor = *attr.weight[w];
+        size_t extractedVertices = 0;
+        if (accessor.componentType == ComponentType_FLOAT) {
+            extractedVertices = accessor.ExtractData(weights[w], vertexRemappingTablePtr);
+        } else if (accessor.componentType == ComponentType_UNSIGNED_BYTE) {
+            struct PackedWeights8 {
+                uint8_t values[4];
+            };
+            PackedWeights8 *packed = nullptr;
+            extractedVertices = accessor.ExtractData(packed, vertexRemappingTablePtr);
+            weights[w] = new Weights[extractedVertices]{};
+            for (size_t i = 0; i < extractedVertices; ++i) {
+                for (size_t component = 0; component < 4; ++component) {
+                    weights[w][i].values[component] =
+                            static_cast<float>(packed[i].values[component]) / 255.0f;
+                }
+            }
+            delete[] packed;
+        } else if (accessor.componentType == ComponentType_UNSIGNED_SHORT) {
+            struct PackedWeights16 {
+                uint16_t values[4];
+            };
+            PackedWeights16 *packed = nullptr;
+            extractedVertices = accessor.ExtractData(packed, vertexRemappingTablePtr);
+            weights[w] = new Weights[extractedVertices]{};
+            for (size_t i = 0; i < extractedVertices; ++i) {
+                for (size_t component = 0; component < 4; ++component) {
+                    weights[w][i].values[component] =
+                            static_cast<float>(packed[i].values[component]) / 65535.0f;
+                }
+            }
+            delete[] packed;
+        } else {
+            throw DeadlyImportError("GLTF2: unsupported component type for vertex weights");
+        }
+        if (w == 0) {
+            num_vertices = extractedVertices;
+        } else if (num_vertices != extractedVertices) {
+            throw DeadlyImportError("GLTF2: vertex weight accessors have different counts");
+        }
     }
 
     struct Indices8 {

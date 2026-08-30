@@ -1089,6 +1089,53 @@ std::optional<VansSceneAudioReverbZoneConfig> ReadAuthoringAudioReverbZoneCompon
 	return config;
 }
 
+std::optional<VansSceneLocalVolumetricFogComponentConfig>
+ReadAuthoringLocalVolumetricFogComponent(const VansSerializedValue& entity)
+{
+	const VansSerializedValue* component = FindComponent(entity, "LocalVolumetricFog");
+	if (!component)
+		return std::nullopt;
+
+	VansSerializedValue emptyData = VansSerializedValue::Object({});
+	const VansSerializedValue* data = FindSerializedObjectField(*component, "data");
+	const VansSerializedValue& componentData = data ? *data : emptyData;
+
+	VansSceneLocalVolumetricFogComponentConfig config;
+	config.enabled = ReadSerializedBoolField(*component, "enabled", true);
+	config.visibilityDistanceMeters = ReadFloatFieldClamped(
+		componentData, "visibilityDistanceMeters",
+		config.visibilityDistanceMeters, 0.1f, 100000.0f);
+	config.singleScatteringAlbedo = ClampFloat3(
+		ReadSerializedFloat3ArrayField(componentData,
+			"singleScatteringAlbedo", config.singleScatteringAlbedo),
+		0.0f, 1.0f);
+	config.anisotropy = ReadFloatFieldClamped(
+		componentData, "anisotropy", config.anisotropy, -0.95f, 0.95f);
+	config.emissivePerMeter = ClampFloat3(
+		ReadSerializedFloat3ArrayField(componentData,
+			"emissivePerMeter", config.emissivePerMeter),
+		0.0f, 100000.0f);
+	config.edgeFadeDistanceMeters = ReadFloatFieldClamped(
+		componentData, "edgeFadeDistanceMeters",
+		config.edgeFadeDistanceMeters, 0.0f, 100000.0f);
+	config.distanceFadeStartMeters = ReadFloatFieldClamped(
+		componentData, "distanceFadeStartMeters",
+		config.distanceFadeStartMeters, 0.0f, 1000000.0f);
+	config.distanceFadeEndMeters = ReadFloatFieldClamped(
+		componentData, "distanceFadeEndMeters",
+		config.distanceFadeEndMeters,
+		config.distanceFadeStartMeters + 0.01f, 1000000.0f);
+	config.directLightingScale = ReadFloatFieldClamped(
+		componentData, "directLightingScale",
+		config.directLightingScale, 0.0f, 1000.0f);
+	config.skyLightingScale = ReadFloatFieldClamped(
+		componentData, "skyLightingScale",
+		config.skyLightingScale, 0.0f, 1000.0f);
+	config.receiveCloudShadows = ReadSerializedBoolField(
+		componentData, "receiveCloudShadows", config.receiveCloudShadows);
+	return config;
+}
+
 std::optional<VansSceneMultiMeshRootConfig> ReadAuthoringMultiMeshRootComponent(
 	const VansSerializedValue& entity)
 {
@@ -1276,6 +1323,8 @@ bool AppendAuthoringEntityToContentPlan(
 	objectConfig.lightComponents = ReadAuthoringLightComponents(entity);
 	objectConfig.cameraMediaComponents = ReadAuthoringCameraMediaComponents(entity);
 	objectConfig.audioReverbZone = ReadAuthoringAudioReverbZoneComponent(entity);
+	objectConfig.localVolumetricFog =
+		ReadAuthoringLocalVolumetricFogComponent(entity);
 	objectConfig.animation = VansSceneAnimationComponentReader::ReadFromAuthoringEntity(entity);
 	if (objectConfig.animation)
 	{
@@ -1355,11 +1404,17 @@ bool VansSceneRuntimeProjection::BuildRuntimeSceneContentPlan(
 	}
 
 	const VansSerializedValue* settings = FindSerializedObjectField(sceneRoot, "settings");
-	if (settings)
+	if (!settings)
 	{
-		outPlan.renderSettings = VansSceneRenderSettingsConfigReader::Read(*settings);
-		outPlan.reflectionProbes = VansSceneReflectionProbeConfigReader::Read(*settings);
+		outError = "Scene document is missing /settings";
+		return false;
 	}
+	if (!VansSceneRenderSettingsConfigReader::Read(*settings, outPlan.renderSettings, outError))
+	{
+		outPlan = {};
+		return false;
+	}
+	outPlan.reflectionProbes = VansSceneReflectionProbeConfigReader::Read(*settings);
 
 	const auto materialRecords = VansProjectManager::Get().EnumerateAssetRecords();
 	if (!materialRecords.empty())

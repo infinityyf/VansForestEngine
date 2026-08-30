@@ -1837,6 +1837,10 @@ bool VansMotionMatchingRuntime::ShouldConsiderSampleForParameters(
 	const bool currentValid = m_CurrentSample >= 0 && m_CurrentSample < static_cast<int>(m_Samples.size());
 	const Sample* currentSample = currentValid ? &m_Samples[m_CurrentSample] : nullptr;
 	const int currentMoveState = currentSample ? currentSample->targetMoveState : 0;
+	const bool currentSampleOutsideSearchDomain =
+		currentSample && !m_ActiveDatabaseIndices.empty() &&
+		std::find(m_ActiveDatabaseIndices.begin(), m_ActiveDatabaseIndices.end(),
+			currentSample->databaseIndex) == m_ActiveDatabaseIndices.end();
 	const int desiredMoveState = m_EffectiveMoveState;
 	const bool currentMoving = currentSample && IsMovingPlaybackSample(*currentSample);
 	const bool desiredMoving = !wantsIdle;
@@ -1911,6 +1915,11 @@ bool VansMotionMatchingRuntime::ShouldConsiderSampleForParameters(
 	if (forceFinishedTransitionExit)
 		return sample.loopLike &&
 		       sample.targetMoveState == desiredMoveState;
+	// A selector may intentionally hand an externally completed transition to a
+	// stable target database. In that case the target loop is the legal handoff,
+	// even though the retained source sample still reports a stance change.
+	if (currentSampleOutsideSearchDomain && sample.loopLike)
+		return sample.targetMoveState == desiredMoveState;
 
 	if (sample.transitionLike)
 	{
@@ -2619,6 +2628,12 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 	const bool forceFinishedTransitionExit =
 		activeTransitionComplete && !continueCompletedFacingTurn;
 	ResolveActiveDatabases(parameters, forceFinishedTransitionExit);
+	// Selector rows define the legal search domain. Once that domain changes,
+	// an excluded sample cannot remain active only because its continuation cost is low.
+	const bool activeSampleOutsideSearchDomain =
+		activeSample && !m_ActiveDatabaseIndices.empty() &&
+		std::find(m_ActiveDatabaseIndices.begin(), m_ActiveDatabaseIndices.end(),
+			activeSample->databaseIndex) == m_ActiveDatabaseIndices.end();
 	m_DebugData.activeDatabases.clear();
 	for (const int databaseIndex : m_ActiveDatabaseIndices)
 	{
@@ -2794,6 +2809,7 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 			shouldExitFinishedTransition ||
 			shouldEnterStartTransition ||
 			shouldEnterPivot ||
+			activeSampleOutsideSearchDomain ||
 			(shouldEnterFacingTurn && (!activeSample->turnLike || activeTransitionComplete)) ||
 			m_CurrentSample < 0;
 		float requiredImprovement = searchContextChanged
@@ -2810,12 +2826,14 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 		const bool improvesEnough =
 			best.sampleIndex >= 0 &&
 			(best.totalCost + requiredImprovement < continuationCost ||
+			 activeSampleOutsideSearchDomain ||
 			 (m_UrgentDirectionChange && !activePivotInProgress) ||
 			 shouldEnterContextTransition ||
 			 shouldExitFinishedTransition ||
 			 m_CurrentSample < 0);
 		const bool canInterruptBlend =
 			!m_Blending ||
+			activeSampleOutsideSearchDomain ||
 			(m_UrgentDirectionChange && !activePivotInProgress) ||
 			shouldEnterContextTransition ||
 			shouldExitFinishedTransition ||

@@ -139,13 +139,6 @@ void RegisterEngineShaders()
         0, false
     });
 
-    reg.RegisterGraphicsShader("SkyBox", {
-        "SkyBox",
-        "EngineAssets/Shaders/SkyBox",
-        VK_TRUE, VK_FALSE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
-        0, false, false, 2
-    });
-
     reg.RegisterGraphicsShader("SkyMotionVector", {
         "SkyMotionVector",
         "EngineAssets/Shaders/SkyMotionVector",
@@ -322,10 +315,15 @@ void RegisterEngineShaders()
     reg.RegisterComputeShader("SSRResolve", "EngineAssets/Shaders/SSR_RESOLVE");
     reg.RegisterComputeShader("SSRTemporalAA", "EngineAssets/Shaders/SSR_TEMPORALAA");
     reg.RegisterComputeShader("BilateralFilter", "EngineAssets/Shaders/BilateralFilter", sizeof(VansGraphics::VansMaterialManager::BilateralFilterPushConst));
-    reg.RegisterComputeShader("VolumetricFog", "EngineAssets/Shaders/VolumetricFog");
-    reg.RegisterComputeShader("FogLightInjection", "EngineAssets/Shaders/FogLightInjection");
-    reg.RegisterComputeShader("FogRayMarch", "EngineAssets/Shaders/FogRayMarch");
-    reg.RegisterComputeShader("CloudRayMarch", "EngineAssets/Shaders/Cloud");
+	reg.RegisterComputeShaderFile("AtmosphereTransmittance", "EngineAssets/Shaders/Atmosphere", "TransmittanceLUT.comp");
+	reg.RegisterComputeShaderFile("AtmosphereMultiScattering", "EngineAssets/Shaders/Atmosphere", "MultiScatteringLUT.comp");
+	reg.RegisterComputeShaderFile("AtmosphereSkyView", "EngineAssets/Shaders/Atmosphere", "SkyViewLUT.comp");
+	reg.RegisterComputeShaderFile("AtmosphereAerialPerspective", "EngineAssets/Shaders/Atmosphere", "AerialPerspective.comp");
+	reg.RegisterComputeShaderFile("AtmosphereComposite", "EngineAssets/Shaders/Atmosphere", "AtmosphereComposite.comp");
+	reg.RegisterComputeShaderFile("LocalMediaInjection", "EngineAssets/Shaders/Atmosphere", "LocalMediaInjection.comp");
+	reg.RegisterComputeShaderFile("LocalMediaIntegration", "EngineAssets/Shaders/Atmosphere", "LocalMediaIntegration.comp");
+	reg.RegisterComputeShaderFile("VolumetricCloudRayMarch", "EngineAssets/Shaders/Cloud", "CloudRayMarch.comp");
+	reg.RegisterComputeShaderFile("VolumetricCloudShadow", "EngineAssets/Shaders/Cloud", "CloudShadow.comp");
     reg.RegisterComputeShader("TileLightBuild", "EngineAssets/Shaders/TileLight");
     reg.RegisterComputeShader("PunctualShadowDebug", "EngineAssets/Shaders/PunctualShadowDebug");
     reg.RegisterComputeShader("ExposureLuminance", "EngineAssets/Shaders/PostProcess/ExposureLuminance");
@@ -417,11 +415,6 @@ void RegisterEngineShaders()
 
     reg.RegisterMaterialPasses(VansGraphics::VAN_POST_PROCESS, {
         { VansGraphics::VansPass::POST_PROCESS,     "Postprocess"    },
-    });
-
-    reg.RegisterMaterialPasses(VansGraphics::VAN_SKY_BOX, {
-        { VansGraphics::VansPass::SKY_BOX,          "SkyBox"         },
-		{ VansGraphics::VansPass::VELOCITY,         "SkyMotionVector"},
     });
 
     reg.RegisterMaterialPasses(VansGraphics::VAN_SCREEN_SPACE_AO, {

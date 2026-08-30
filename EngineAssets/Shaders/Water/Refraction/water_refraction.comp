@@ -10,24 +10,10 @@ layout(set = 0, binding = 1) uniform sampler2D waterGBufPosDepth;
 layout(set = 0, binding = 2) uniform sampler2D sceneGBuf2;
 layout(set = 0, binding = 3) uniform sampler2D thicknessMap;
 
-layout(set = 0, binding = 4) uniform PBRWaterParams
-{
-    vec4 absorptionCoeff;
-    vec4 scatteringCoeff;
-    vec4 cameraPosition;
-    vec4 mainLightDir;
-    vec4 mainLightColor;
-    vec4 surfaceParams;
-    vec4 refractionParams;
-    vec4 volumeParams;
-    vec4 thinSSSParams;
-    vec4 backlitParams;
-    vec4 filterParams;
-    ivec4 effectFlags;
-    mat4 invViewProjMatrix;
-    mat4 viewMatrix;
-    mat4 projMatrix;
-} params;
+#define PBR_WATER_PARAMS_SET 0
+#define PBR_WATER_PARAMS_BINDING 4
+#define PBR_WATER_PARAMS_INSTANCE params
+#include "../PBRWater/pbr_water_params.glsl"
 
 layout(set = 0, binding = 5, rgba16f) uniform writeonly image2D refractionDataOut;
 

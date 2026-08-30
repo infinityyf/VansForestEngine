@@ -1,4 +1,4 @@
-﻿#include "VansRenderNode.h"
+#include "VansRenderNode.h"
 #include "VansPostProcessProfile.h"
 #include "VansDrawSubmission.h"
 #include "VansCamera.h"
@@ -230,10 +230,9 @@ static const char* GetPrimaryPassName(VansGraphics::RenderNodeType type)
 	{
 	case OPAQUE_NODE:       return VansPass::GBUFFER;
 	case HAIR_NODE:         return VansPass::HAIR_VISIBILITY;
-	case FORWARD_OPAQUE_AFTER_DEFERRED_NODE:
-		return VansPass::FORWARD_OPAQUE_AFTER_DEFERRED;
+	case FORWARD_OPAQUE_PRE_ATMOSPHERE_NODE:
+		return VansPass::FORWARD_OPAQUE_PRE_ATMOSPHERE;
 	case TRANSPARENT_NODE:  return VansPass::FORWARD_TRANSPARENT;
-	case SKY_BOX_NODE:      return VansPass::SKY_BOX;
 	case POSTPROCESS_NODE:  return VansPass::POST_PROCESS;
 	case DEFERRED_NODE:     return VansPass::DEFERRED;
 	case SCREEN_SPACE_NODE: return VansPass::SCREEN_SPACE;
@@ -279,7 +278,7 @@ static bool UsesDrawSubmission(VansGraphics::RenderNodeType type)
 	{
 	case OPAQUE_NODE:
 	case HAIR_NODE:
-	case FORWARD_OPAQUE_AFTER_DEFERRED_NODE:
+	case FORWARD_OPAQUE_PRE_ATMOSPHERE_NODE:
 	case TRANSPARENT_NODE:
 	case DECAL_NODE:
 		return true;
@@ -829,14 +828,12 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescriptorSets(VansMaterialMana
 	VansTexture* ssaoFilterResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SSAO_FILTER_RESULT);
 	VansTexture* ssgiFilterResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SSGI_FILTER_RESULT);
 	VansTexture* ssrAaResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SSRAA_RESULT);
-	VansTexture* volumetricFogResult = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_VOLUMETRIC_FOG_RESULT);
 	VansTexture* screenSpaceShadow = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SCREEN_SPACE_SHADOW_RESULT);
 	VansTexture* screenSpaceShadowHZB = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_HZB_RESULT);
 	VansTexture* rectLightEmissive = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_RECT_LIGHT_EMISSIVE);
 	VansVKDevice* runtimeDevice = m_Scene->GetRuntimeResourceDevice();
 
 	if (ssaoFilterResult == nullptr || ssgiFilterResult == nullptr || ssrAaResult == nullptr ||
-		volumetricFogResult == nullptr ||
 		screenSpaceShadow == nullptr || screenSpaceShadowHZB == nullptr || rectLightEmissive == nullptr ||
 		runtimeDevice == nullptr ||
 		materialManager.m_SSGICBBuffer.GetNativeBuffer() == VK_NULL_HANDLE ||
@@ -912,8 +909,6 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescriptorSets(VansMaterialMana
 		{ { rp->GetCascadeShadowSampler(), rp->GetCascadeShadowArrayView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL } });
 	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		rp->GetPunctualShadowDescriptorInfos());
-	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 13, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		{ { volumetricFogResult->GetImage().GetSampler(), volumetricFogResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
 	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], DEFERRED_BINDING_SCREEN_SPACE_SHADOW, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{ { screenSpaceShadow->GetImage().GetSampler(), screenSpaceShadow->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
 	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], DEFERRED_BINDING_RECT_LIGHT_EMISSIVE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -996,71 +991,12 @@ void VansGraphics::VansScreenSpaceRenderNode::UpdateDescriptorSets(VansMaterialM
 	descMgr->WriteImageDescriptor(
 		textureResourceDescriptorSets[0], 4, // Depth
 		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		{ { VansRenderPassManager::GetInstance()->GetDepth().GetSampler(), VansRenderPassManager::GetInstance()->GetDepth().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+		{ { VansRenderPassManager::GetInstance()->GetDepth().GetSampler(), VansRenderPassManager::GetInstance()->GetDepth().GetImageView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL } });
 	descMgr->WriteImageDescriptor(
 		textureResourceDescriptorSets[0], 5, // SSAO output
 		VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 		{ { ssaoResult->GetImage().GetSampler(), ssaoResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
 	descMgr->CommitDescriptorUpdates();
-}
-
-void VansGraphics::VansSkyBoxRenderNode::CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager)
-{
-	m_MotionVectorDescSetLayouts.clear();
-	m_MotionVectorDescSets.clear();
-
-	// Set 0: Global
-	m_UsedDescSetLayouts.push_back(m_Scene->GetGlobalDescriptorSetLayout());
-	m_UsedDescSets.push_back(m_Scene->GetGlobalDescriptorSet());
-	m_MotionVectorDescSetLayouts.push_back(m_Scene->GetGlobalDescriptorSetLayout());
-	m_MotionVectorDescSets.push_back(m_Scene->GetGlobalDescriptorSet());
-
-	// Set 1: Per-Pass (Atmosphere UBO)
-	m_UsedDescSetLayouts.push_back(materialManager.m_MaterialAtmosphereDataLayout);
-	m_UsedDescSets.push_back(materialManager.m_MaterialAtmosphereDataDescriptorSets[0]);
-}
-
-void VansGraphics::VansSkyBoxRenderNode::UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera)
-{
-	UpdateDescriptorSets(materialManager);
-}
-
-void VansGraphics::VansSkyBoxRenderNode::UpdateDescriptorSets(VansMaterialManager& materialManager)
-{
-	if (!m_DescriptorsetsDirty)
-	{
-		return;
-	}
-	m_DescriptorsetsDirty = false;
-}
-
-void VansGraphics::VansSkyBoxRenderNode::DrawSkyMotionVector(
-	VansVKCommandBuffer& cmd,
-	GlobalStateData& globalState)
-{
-	if (!CheckRenderNodeState())
-		return;
-
-	VansGraphicsShader* shader = m_Material->GetPassShader(VansPass::VELOCITY);
-	if (shader == nullptr ||
-		!ValidateDescriptorBindings("SkyMotionVector", m_MotionVectorDescSetLayouts, m_MotionVectorDescSets))
-	{
-		return;
-	}
-
-	cmd.BindMesh(*m_Mesh, 0, globalState);
-	VansVKGraphicsPipeline* pipeline =
-		cmd.EnsureGraphicsShader(*shader, globalState, m_MotionVectorDescSetLayouts);
-	if (pipeline == nullptr)
-		return;
-
-	cmd.BindDescriptorSets(
-		VK_PIPELINE_BIND_POINT_GRAPHICS,
-		*pipeline,
-		0,
-		m_MotionVectorDescSets,
-		{});
-	cmd.DrawMesh(*m_Mesh, *pipeline, 1);
 }
 
 // VansShadowRenderNode removed – shadow pass now uses DrawWithPassShader() on opaque nodes

@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #if defined _WIN32
 #define VK_USE_PLATFORM_WIN32_KHR
@@ -97,6 +97,8 @@ namespace VansGraphics
 		friend class VansVKDevice;
 	private:
 		VansVKImage m_ColorImage;
+		// Deferred 与前向不透明只写原始辐亮度；大气合成后才写 m_ColorImage。
+		VansVKImage m_RawOpaqueSceneColorImage;
 
 		// Previous frame's diffuse exitant radiance.  This deliberately excludes
 		// specular, fog and all later composition so SSGI never feeds the final
@@ -106,6 +108,9 @@ namespace VansGraphics
 		// Deferred / forward-opaque scene color snapshot used by transmission
 		// glass during the later transparent pass.
 		VansVKImage m_OpaqueSceneColorImage;
+		// 水体预计算专用的早期场景色快照。它在水面 GBuffer 之后、透明与水面合成之前生成，
+		// 与透明材质使用的最终 OpaqueSceneColor 生命周期严格分离。
+		VansVKImage m_WaterBackgroundPyramidImage;
 
 		VansVKImage m_DepthImage;
 
@@ -188,15 +193,17 @@ namespace VansGraphics
 		VansVKImage m_WaterGBufAbsorptionImage;
 		VansVKImage m_WaterGBufLinearDepthImage;
 
-		// Deferred + SkyBox pass, separate from the transparent-only pass.
-		VansVKRenderPass m_VansDeferredSkyboxPass;
+		// 原始不透明光照 pass：仅产生未经过大气的 HDR 辐亮度。
+		VansVKRenderPass m_VansRawOpaqueLightingPass;
 
 		// Screen-space raw feature pass. Currently runs SSAO at half resolution
 		// and writes only storage images, so it has no framebuffer attachments.
 		VansVKRenderPass m_VansScreenSpaceEffectsPass;
 
 		// Forward opaque pass after deferred lighting and before transparent.
-		VansVKRenderPass m_VansForwardOpaqueAfterDeferredPass;
+		// RawOpaqueSceneColor 的统一大气前表面目标：Forward Opaque 与 Water
+		// Composite 分别开启独立 pass，但共享相同附件契约。
+		VansVKRenderPass m_VansPreAtmosphereSurfacePass;
 
 		VansVKRenderPass m_VansHairVisibilityPass;
 		VansVKRenderPass m_VansHairLightingPass;
@@ -206,6 +213,7 @@ namespace VansGraphics
 
 	public:
 		static VansRenderPassManager* GetInstance();
+		static VkImageUsageFlags GetSceneColorImageUsageFlags();
 
 		////framebuffer大小
 		//void SetupVansRenderPass(VkDevice& logic_device, VansVKCommandBuffer& command_buffer, VkQueue& queue, VansVKSurface& surrface);
@@ -253,11 +261,10 @@ namespace VansGraphics
 		VansVKImage& GetWaterGBufAbsorption()  { return m_WaterGBufAbsorptionImage; }
 		VansVKImage& GetWaterGBufLinearDepth() { return m_WaterGBufLinearDepthImage; }
 
-		// Deferred + SkyBox pass 访问器
-		VansVKRenderPass& GetVansDeferredSkyboxPass() { return m_VansDeferredSkyboxPass; }
+		VansVKRenderPass& GetVansRawOpaqueLightingPass() { return m_VansRawOpaqueLightingPass; }
 		VansVKRenderPass& GetVansScreenSpaceEffectsPass() { return m_VansScreenSpaceEffectsPass; }
 
-		VansVKRenderPass& GetVansForwardOpaqueAfterDeferredPass() { return m_VansForwardOpaqueAfterDeferredPass; }
+		VansVKRenderPass& GetVansPreAtmosphereSurfacePass() { return m_VansPreAtmosphereSurfacePass; }
 		VansVKRenderPass& GetVansHairVisibilityPass() { return m_VansHairVisibilityPass; }
 		VansVKRenderPass& GetVansHairLightingPass() { return m_VansHairLightingPass; }
 		VansVKRenderPass& GetVansHairDeepOpacityPass() { return m_VansHairDeepOpacityPass; }
@@ -315,10 +322,12 @@ namespace VansGraphics
 			VkImageLayout layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
 
 		VansVKImage& GetColor() { return m_ColorImage; }
+		VansVKImage& GetRawOpaqueSceneColor() { return m_RawOpaqueSceneColorImage; }
 
 		VansVKImage& GetDiffuseExitantRadianceHistory() { return m_DiffuseExitantRadianceHistoryImage; }
 
 		VansVKImage& GetOpaqueSceneColor() { return m_OpaqueSceneColorImage; }
+		VansVKImage& GetWaterBackgroundPyramid() { return m_WaterBackgroundPyramidImage; }
 
 		VansVKImage& GetDepth() { return m_DepthImage; }
 

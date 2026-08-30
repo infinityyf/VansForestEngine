@@ -272,17 +272,27 @@ namespace VansEngine
 	void VansCharacterControllerNode::PrepareLocomotion(
 		float dt, const Vans::VansCharacterMotionSettings& settings)
 	{
-		if (!m_MotionIntent.valid || m_TransformID == UINT32_MAX)
+		if (m_TransformID == UINT32_MAX)
 			return;
 
 		m_LocomotionDt = (std::max)(dt, 0.0f);
 		const VansGraphics::VansTransform& transform =
 			VansGraphics::VansTransformStore::GetTransform(m_TransformID);
+		Vans::VansCharacterMotionIntent stationaryIntent;
+		stationaryIntent.valid = true;
+		stationaryIntent.movementReferenceYaw = transform.m_Rotation.y;
+		stationaryIntent.desiredFacingYaw = transform.m_Rotation.y;
 		m_TrajectoryGenerator.Update(
-			m_LocomotionDt, m_MotionIntent, settings,
+			m_LocomotionDt,
+			m_MotionIntent.valid ? m_MotionIntent : stationaryIntent,
+			settings,
 			transform.m_Position, transform.m_Rotation.y,
-			IsGrounded() && !m_MotionIntent.jumpRequested);
+			IsGrounded() && (!m_MotionIntent.valid || !m_MotionIntent.jumpRequested));
 
+		// 没有 gameplay intent 时，Root Motion 仍可驱动水平/旋转位移，但不应
+		// 隐式启动一套脚本从未请求的重力状态。
+		if (!m_MotionIntent.valid)
+			return;
 		if (IsGrounded() && m_VerticalVelocity < 0.0f)
 			m_VerticalVelocity = -0.5f;
 		if (m_MotionIntent.jumpRequested && IsGrounded())
@@ -297,14 +307,16 @@ namespace VansEngine
 		const glm::quat& animationRootRotation,
 		bool rootMotionValid,
 		bool prefersRootMotion,
-		const Vans::VansCharacterMotionSettings& settings)
+		const Vans::VansCharacterMotionSettings& settings,
+		const glm::vec3& animationToWorldScale)
 	{
-		if (!m_MotionIntent.valid || m_TransformID == UINT32_MAX)
+		if (m_TransformID == UINT32_MAX || (!m_MotionIntent.valid && !rootMotionValid))
 			return;
 		VansGraphics::VansTransform& transform =
 			VansGraphics::VansTransformStore::GetTransform(m_TransformID);
-		const glm::vec3 capsuleDelta =
-			m_TrajectoryGenerator.GetPlannedVelocityWorld() * m_LocomotionDt;
+		const glm::vec3 capsuleDelta = m_MotionIntent.valid
+			? m_TrajectoryGenerator.GetPlannedVelocityWorld() * m_LocomotionDt
+			: glm::vec3(0.0f);
 		glm::vec3 rootWorldDelta(0.0f);
 		float rootYawDelta = 0.0f;
 		if (rootMotionValid)
@@ -314,7 +326,7 @@ namespace VansEngine
 					animationRootDelta,
 					animationRootRotation,
 					transform.m_Rotation.y,
-					settings.rootMotionToWorldScale);
+					animationToWorldScale);
 			rootWorldDelta = ownerDelta.translationWorld;
 			rootYawDelta = ownerDelta.yawDegrees;
 		}
@@ -333,13 +345,16 @@ namespace VansEngine
 		rootWeight = glm::clamp(rootWeight, 0.0f, 1.0f);
 
 		m_PendingDisplacement = glm::mix(capsuleDelta, rootWorldDelta, rootWeight);
-		m_PendingDisplacement.y = m_VerticalVelocity * m_LocomotionDt;
+		if (m_MotionIntent.valid)
+			m_PendingDisplacement.y = m_VerticalVelocity * m_LocomotionDt;
 		m_PendingDt = m_LocomotionDt;
 		m_HasPendingMove = true;
 
-		const float facingDelta = std::remainder(
-			m_TrajectoryGenerator.GetPlannedFacingYaw() - transform.m_Rotation.y,
-			360.0f);
+		const float facingDelta = m_MotionIntent.valid
+			? std::remainder(
+				m_TrajectoryGenerator.GetPlannedFacingYaw() - transform.m_Rotation.y,
+				360.0f)
+			: 0.0f;
 		const float rootRotationWeight = glm::clamp(
 			rootWeight * settings.rootRotationWeight, 0.0f, 1.0f);
 		transform.m_Rotation.y += glm::mix(facingDelta, rootYawDelta, rootRotationWeight);

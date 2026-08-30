@@ -68,11 +68,11 @@ namespace VansGraphics
 			return m_Controller ? m_Controller->GetFinalPoseView(m_Skeleton)
 				: VansSkeletonPoseView{};
 		}
-		// Locomotion is evaluated on the source controller for source-proxy
+		// Character motion is evaluated on the source controller for source-proxy
 		// retargeting, while the target controller only post-processes the
-		// retargeted pose. Character motion must query the same controller that
-		// owns Motion Matching and Root Motion.
-		VansAnimationController* GetLocomotionController() const
+		// retargeted pose. CCT motion must query the same controller that owns
+		// Motion Matching or Root Motion; Root Motion 本身不依赖 Motion Matching。
+		VansAnimationController* GetCharacterMotionController() const
 		{
 			return m_RetargetEnabled && m_SourceController
 				? m_SourceController.get()
@@ -135,7 +135,11 @@ namespace VansGraphics
 		void ResolveAnimationWorldQueries(const std::vector<VansWorldQueryResult>& results);
 		bool HasAnimationWorldQueries() const;
 		const std::vector<VansWorldQueryRequest>& GetAnimationWorldQueries() const;
-		void PrepareLocomotionFrame(float deltaTime, const Vans::VansCharacterTrajectory& trajectory);
+		// 在 CCT 提交阶段提前评估动画，使所有 Graph（包括非 Motion Matching
+		// Graph）的 Root Motion 都能在同一帧进入碰撞结算。提前评估的帧不会在
+		// 常规动画阶段重复推进，也不会绕过 CCT 直接修改 Transform。
+		void PrepareCharacterMotionFrame(
+			float deltaTime, const Vans::VansCharacterTrajectory& trajectory);
 
 		// GPU resources
 		bool InitGPUResources(VkDevice device, uint32_t framesInFlight);
@@ -187,7 +191,7 @@ namespace VansGraphics
 		// Root motion application
 		uint32_t m_TransformID           = 0;
 		bool     m_HasTransformID        = false;
-		bool     m_LocomotionFramePrepared = false;
+		bool     m_CharacterMotionFramePrepared = false;
 
 		// Bone overrides
 		std::unordered_map<std::string, glm::mat4> m_BoneOverrides;

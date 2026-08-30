@@ -131,15 +131,6 @@ void VansGraphics::VansScene::DrawVegetationShadowNode(VansVKCommandBuffer& cmd,
         static_cast<VansVegetationRenderNode*>(m_VegetationRenderNode)->DrawShadow(cmd, globalStateData);
 }
 
-void VansGraphics::VansScene::DrawSkyMotionVectorNode(
-	VansVKCommandBuffer& cmd,
-	GlobalStateData globalStateData)
-{
-	if (!IsRenderNodeEnabledForCurrentFrame(m_SkyBoxNode))
-		return;
-	static_cast<VansSkyBoxRenderNode*>(m_SkyBoxNode)->DrawSkyMotionVector(cmd, globalStateData);
-}
-
 void VansGraphics::VansScene::DrawPunctualShadowJob(const VansPunctualShadowRenderJob& job)
 {
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
@@ -213,18 +204,6 @@ void VansGraphics::VansScene::DrawPunctualShadowJob(const VansPunctualShadowRend
     if (IsRenderNodeEnabledForCurrentFrame(m_VegetationRenderNode))
         static_cast<VansVegetationRenderNode*>(m_VegetationRenderNode)->DrawPunctualShadow(
 			cmd, globalStateData, shaderViewIndex);
-}
-
-void VansGraphics::VansScene::DrawSkyBoxNode()
-{
-    if (m_SkyBoxNode == nullptr)
-    {
-        return;
-    }
-    VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
-    VansVKCommandBuffer& cmd = vkDevice->GetCommandBuffer();
-    GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
-    m_SkyBoxNode->Draw(cmd, globalStateData);
 }
 
 void VansGraphics::VansScene::DrawOpaqueNodes()
@@ -361,7 +340,7 @@ void VansGraphics::VansScene::DrawWaterGBufferNode()
 
 // ============================================================
 // DrawWaterCompositeNode — 设计文档 Pass 9
-// 在 DeferredSkybox Pass 内调用（Deferred + SkyBox 之后，EndRenderPass 之前）。
+// 在原始不透明光照 pass 内调用，输出不包含任何介质合成。
 // 读 WaterGBuf → 全屏 Fresnel 合成 → 写 SceneColor。
 // ============================================================
 void VansGraphics::VansScene::DrawWaterCompositeNode()
@@ -553,7 +532,7 @@ void VansGraphics::VansScene::DrawHairDeepOpacityNodes(VansGraphicsShader* shade
         VansDrawSubmission::Record(cmd, submission, 0, submission.batches.size());
 }
 
-void VansGraphics::VansScene::DrawForwardOpaqueAfterDeferredNodes()
+void VansGraphics::VansScene::DrawForwardOpaquePreAtmosphereNodes()
 {
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
     VansVKCommandBuffer& cmd = vkDevice->GetCommandBuffer();
@@ -561,7 +540,7 @@ void VansGraphics::VansScene::DrawForwardOpaqueAfterDeferredNodes()
     VansDrawSubmissionList submission;
     const glm::mat4 viewMatrix = vkDevice->GetCurrentRenderViewSnapshot().view;
     std::uint64_t stableOrder = 0;
-    for (auto& node : m_ForwardOpaqueAfterDeferredRenderNodes)
+    for (auto& node : m_ForwardOpaquePreAtmosphereRenderNodes)
     {
         if (!IsRenderNodeEnabledForCurrentFrame(node))
         {
@@ -578,7 +557,7 @@ void VansGraphics::VansScene::DrawForwardOpaqueAfterDeferredNodes()
             : 0.0f;
         VansDrawPacket packet;
         if (node->BuildPrimaryDrawPacket(
-            vkDevice->GetLogicDevice(), globalStateData, VansPass::FORWARD_OPAQUE_AFTER_DEFERRED,
+            vkDevice->GetLogicDevice(), globalStateData, VansPass::FORWARD_OPAQUE_PRE_ATMOSPHERE,
             0, 0, stableOrder++, depth, packet))
         {
             submission.packets.push_back(std::move(packet));

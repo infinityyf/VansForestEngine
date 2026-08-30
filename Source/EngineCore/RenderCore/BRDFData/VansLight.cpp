@@ -46,7 +46,8 @@ namespace
 
 	float SmoothStep01(float edge0, float edge1, float value)
 	{
-		const float t = glm::clamp((value - edge0) / (edge1 - edge0), 0.0f, 1.0f);
+		const float t = glm::clamp(
+			(value - edge0) / (edge1 - edge0), 0.0f, 1.0f);
 		return t * t * (3.0f - 2.0f * t);
 	}
 
@@ -354,56 +355,58 @@ bool VansGraphics::VansLightManager::RemoveRectLight(uint32_t index)
 	return true;
 }
 
-// 将 baseColor 乘以大气仰角衰减，得到 GPU 上传用的有效太阳颜色。
-// 系数与 VolumetricFog.comp AtmSunColor / CloudCommon CalcCloudSunAbsorbLight 完全一致。
 glm::vec3 VansGraphics::VansLightManager::ComputeAtmosphereSunColor(
-	const glm::vec3& sunDir, const glm::vec3& baseColor)
+	const glm::vec3& sunDir,
+	const glm::vec3& baseColor)
 {
-	// 硬编码简化大气系数（Rayleigh + Mie），与 shader 端保持一致
-	static const glm::vec3 kAtmRayleigh = glm::vec3(0.27e-5f, 0.5e-5f, 1.0e-5f);
-	static const glm::vec3 kAtmMie      = glm::vec3(0.5e-6f, 0.5e-6f, 0.5e-6f);
-	static const glm::vec3 kAtmTotal    = kAtmRayleigh + kAtmMie;
-
-	const float sinElev = glm::dot(glm::normalize(sunDir), glm::vec3(0.0f, 1.0f, 0.0f));
-	const float d       = (std::max)(sinElev * 2.0f + 0.01f, 0.01f);
-	const float od      = 100000.0f / d;
-	// exp2(-coeff * od) = pow(2, -coeff * od)，逐分量计算
-	const glm::vec3 exponent    = -kAtmTotal * od;
-	const glm::vec3 attenuation = glm::vec3(std::pow(2.0f, exponent.x),
-	                                         std::pow(2.0f, exponent.y),
-	                                         std::pow(2.0f, exponent.z));
-	return baseColor * attenuation;
+	static const glm::vec3 rayleigh(0.27e-5f, 0.5e-5f, 1.0e-5f);
+	static const glm::vec3 mie(0.5e-6f);
+	const float sineElevation = glm::dot(
+		NormalizeLightDirectionSafe(sunDir, glm::vec3(0.0f, 1.0f, 0.0f)),
+		glm::vec3(0.0f, 1.0f, 0.0f));
+	const float opticalPathDenominator =
+		(std::max)(sineElevation * 2.0f + 0.01f, 0.01f);
+	const glm::vec3 exponent = -(rayleigh + mie) *
+		(100000.0f / opticalPathDenominator);
+	return baseColor * glm::vec3(
+		std::pow(2.0f, exponent.x),
+		std::pow(2.0f, exponent.y),
+		std::pow(2.0f, exponent.z));
 }
 
-VansGraphics::VansCelestialLightingState VansGraphics::VansLightManager::ComputeCelestialLightingState(
+VansGraphics::VansCelestialLightingState
+VansGraphics::VansLightManager::ComputeCelestialLightingState(
 	const VansDirectionalLight& light)
 {
 	VansCelestialLightingState state{};
-	const glm::vec3 sunDir = NormalizeLightDirectionSafe(light.m_Direction, glm::vec3(0.0f, 1.0f, 0.0f));
-	const glm::vec3 moonDir = -sunDir;
-	const float sunElevation = sunDir.y;
-	const float nightBlend = 1.0f - SmoothStep01(-0.08f, 0.12f, sunElevation);
+	const glm::vec3 sunDirection = NormalizeLightDirectionSafe(
+		light.m_Direction, glm::vec3(0.0f, 1.0f, 0.0f));
+	const glm::vec3 moonDirection = -sunDirection;
+	const float nightBlend = 1.0f - SmoothStep01(
+		-0.08f, 0.12f, sunDirection.y);
 	const bool useMoonKey = nightBlend > 0.5f;
 
-	const glm::vec3 moonTint = glm::vec3(0.42f, 0.48f, 0.70f);
-	const float moonKeyIntensityScale = 0.035f;
-	state.sunDirection = sunDir;
-	state.moonDirection = moonDir;
-	state.direction = useMoonKey ? moonDir : sunDir;
+	const glm::vec3 moonTint(0.42f, 0.48f, 0.70f);
+	state.sunDirection = sunDirection;
+	state.moonDirection = moonDirection;
+	state.direction = useMoonKey ? moonDirection : sunDirection;
 	state.color = useMoonKey
-		? glm::vec3(
-			(std::max)(light.m_Color.x * moonTint.x, 0.0f),
-			(std::max)(light.m_Color.y * moonTint.y, 0.0f),
-			(std::max)(light.m_Color.z * moonTint.z, 0.0f))
-		: ComputeAtmosphereSunColor(sunDir, light.m_Color);
-	state.intensity = (std::max)(light.m_Intensity * (useMoonKey ? moonKeyIntensityScale : 1.0f), 0.0f);
+		? glm::max(light.m_Color * moonTint, glm::vec3(0.0f))
+		: ComputeAtmosphereSunColor(sunDirection, light.m_Color);
+	state.intensity = (std::max)(
+		light.m_Intensity * (useMoonKey ? 0.035f : 1.0f), 0.0f);
 	state.moonBlend = nightBlend;
 
-	const float moonElevation = SmoothStep01(-0.06f, 0.24f, moonDir.y);
-	const float nightDiffuseScale = glm::mix(0.018f, 0.065f, moonElevation);
-	const float nightSpecularScale = glm::mix(0.025f, 0.085f, moonElevation);
-	state.skyDiffuseScale = glm::mix(1.0f, nightDiffuseScale, nightBlend);
-	state.skySpecularScale = glm::mix(1.0f, nightSpecularScale, nightBlend);
+	const float moonElevation = SmoothStep01(
+		-0.06f, 0.24f, moonDirection.y);
+	const float nightDiffuseScale = glm::mix(
+		0.018f, 0.065f, moonElevation);
+	const float nightSpecularScale = glm::mix(
+		0.025f, 0.085f, moonElevation);
+	state.skyDiffuseScale = glm::mix(
+		1.0f, nightDiffuseScale, nightBlend);
+	state.skySpecularScale = glm::mix(
+		1.0f, nightSpecularScale, nightBlend);
 	return state;
 }
 
@@ -420,10 +423,12 @@ void VansGraphics::VansLightManager::UpdateLightShadowMatrixData(const VansCasca
 	for (int dirLightIndex = 0; dirLightIndex < directionLightCount; dirLightIndex++)
 	{
 		auto& dirLight = m_DirectionalLights[dirLightIndex];
-		const VansCelestialLightingState celestialState = ComputeCelestialLightingState(dirLight);
+		const VansCelestialLightingState celestialState =
+			ComputeCelestialLightingState(dirLight);
 		if (dirLightIndex == 0)
 			m_MainCelestialLightingState = celestialState;
-		auto lightDir = NormalizeLightDirectionSafe(celestialState.direction, glm::vec3(0.0f, -1.0f, 0.0f));
+		auto lightDir = NormalizeLightDirectionSafe(
+			celestialState.direction, glm::vec3(0.0f, -1.0f, 0.0f));
 
 		dirLight.m_CascadeSplits = glm::vec4(cascadeSplits[0], cascadeSplits[1], cascadeSplits[2], cascadeSplits[3]);
 
@@ -539,6 +544,7 @@ void VansGraphics::VansLightManager::UpdateLightShadowMatrixData(const glm::vec3
 {
 	UpdateLightShadowMatrixData(MakeFallbackCascadeCamera(cameraPosition));
 }
+
 std::vector<VansGraphics::VansDirectionalLight>
 VansGraphics::VansLightManager::BuildPreparedDirectionalLights()
 {
@@ -548,7 +554,8 @@ VansGraphics::VansLightManager::BuildPreparedDirectionalLights()
 	for (size_t lightIndex = 0; lightIndex < preparedLights.size(); ++lightIndex)
 	{
 		auto& light = preparedLights[lightIndex];
-		const VansCelestialLightingState celestialState = ComputeCelestialLightingState(light);
+		const VansCelestialLightingState celestialState =
+			ComputeCelestialLightingState(light);
 		if (lightIndex == 0)
 			m_MainCelestialLightingState = celestialState;
 		light.m_Direction = celestialState.direction;
@@ -624,11 +631,12 @@ VansGraphics::VansLightManager::BuildRenderLightFrameData()
 	const auto vansConfigration = VansConfigration::GetInstance();
 	const std::vector<VansDirectionalLight> preparedDirectionalLights =
 		BuildPreparedDirectionalLights();
-
 	VansRenderLightFrameData frameData;
 	frameData.directionalLights.assign(
 		preparedDirectionalLights.begin(),
-		preparedDirectionalLights.begin() + (std::min)(preparedDirectionalLights.size(), static_cast<size_t>(VANS_MAX_DIRECTION_LIGHTS)));
+		preparedDirectionalLights.begin() + (std::min)(
+			preparedDirectionalLights.size(),
+			static_cast<size_t>(VANS_MAX_DIRECTION_LIGHTS)));
 	frameData.pointLights.assign(
 		m_PointLights.begin(),
 		m_PointLights.begin() + (std::min)(m_PointLights.size(), static_cast<size_t>(VANS_MAX_POINT_LIGHTS)));

@@ -1,4 +1,4 @@
-﻿#include "VansScene.h"
+#include "VansScene.h"
 
 #include "Animation/VansAnimationWorldQueryBatch.h"
 #include "../RuntimeCore/VansFramePhase.h"
@@ -29,6 +29,9 @@
 #include "VulkanCore/VansDescriptorSetLayouts.h"
 #include "TerrainCore/VansTerrain.h"
 #include "WaterCore/VansWaterSystem.h"
+#include "AtmosphereCore/VansAtmosphereSystem.h"
+#include "AtmosphereCore/VansNearMediaSystem.h"
+#include "CloudCore/VansVolumetricCloudSystem.h"
 #include "VegetationCore/VansVegetationSystem.h"
 #include "VansParticleRenderNode.h"
 #include "../ParticleCore/VansParticleManager.h"
@@ -356,6 +359,113 @@ VansGraphics::VansScene::~VansScene()
     }
 }
 
+bool VansGraphics::VansScene::InitializeEnvironmentRendering(VansVKDevice& device)
+{
+	ShutdownEnvironmentRendering();
+	m_AtmosphereSystem = std::make_unique<VansAtmosphereSystem>();
+	if (!m_AtmosphereSystem->Initialize(
+		device,
+		*this,
+		device.GetAtmosphereQualityConfig(),
+		device.GetRenderWidth(),
+		device.GetRenderHeight()))
+	{
+		m_AtmosphereSystem.reset();
+		return false;
+	}
+	m_NearMediaSystem = std::make_unique<VansNearMediaSystem>();
+	if (!m_NearMediaSystem->Initialize(
+		device,
+		*this,
+		device.GetNearMediaQualityConfig(),
+		device.GetRenderWidth(),
+		device.GetRenderHeight()))
+	{
+		m_NearMediaSystem.reset();
+		m_AtmosphereSystem->Shutdown();
+		m_AtmosphereSystem.reset();
+		return false;
+	}
+	m_VolumetricCloudSystem = std::make_unique<VansVolumetricCloudSystem>();
+	if (!m_VolumetricCloudSystem->Initialize(
+		device,
+		*this,
+		device.GetCloudShadowQualityConfig(),
+		device.GetRenderWidth(),
+		device.GetRenderHeight()))
+	{
+		m_VolumetricCloudSystem.reset();
+		m_NearMediaSystem->Shutdown();
+		m_NearMediaSystem.reset();
+		m_AtmosphereSystem->Shutdown();
+		m_AtmosphereSystem.reset();
+		return false;
+	}
+	m_AtmosphereSystem->BindGlobalDescriptors(
+		m_GlobalDescriptorSet,
+		m_VolumetricCloudSystem->GetShadowDescriptor(),
+		m_VolumetricCloudSystem->GetResultDescriptor(),
+		m_NearMediaSystem->GetScatteringDescriptor(),
+		m_NearMediaSystem->GetOpticalDepthDescriptor());
+	m_NearMediaSystem->BindGlobalDescriptor(m_GlobalDescriptorSet);
+	m_VolumetricCloudSystem->BindGlobalDescriptors(m_GlobalDescriptorSet);
+	return true;
+}
+
+void VansGraphics::VansScene::ShutdownEnvironmentRendering()
+{
+	if (m_VolumetricCloudSystem)
+	{
+		m_VolumetricCloudSystem->Shutdown();
+		m_VolumetricCloudSystem.reset();
+	}
+	if (m_NearMediaSystem)
+	{
+		m_NearMediaSystem->Shutdown();
+		m_NearMediaSystem.reset();
+	}
+	if (m_AtmosphereSystem)
+	{
+		m_AtmosphereSystem->Shutdown();
+		m_AtmosphereSystem.reset();
+	}
+}
+
+bool VansGraphics::VansScene::ReinitializeEnvironmentRendering(
+	const VansAtmosphereQualityConfig& quality,
+	std::uint32_t renderWidth,
+	std::uint32_t renderHeight)
+{
+	const bool hasAtmosphereSystem = m_AtmosphereSystem != nullptr;
+	const bool hasNearMediaSystem = m_NearMediaSystem != nullptr;
+	const bool hasVolumetricCloudSystem = m_VolumetricCloudSystem != nullptr;
+	if (!hasAtmosphereSystem && !hasNearMediaSystem && !hasVolumetricCloudSystem)
+		return true;
+	if (!hasAtmosphereSystem || !hasNearMediaSystem || !hasVolumetricCloudSystem)
+	{
+		VANS_LOG_ERROR("[Atmosphere] Environment subsystem ownership is incomplete during reinitialization");
+		return false;
+	}
+	if (!m_VolumetricCloudSystem->Reinitialize(
+		m_RuntimeResourceDevice->GetCloudShadowQualityConfig(), renderWidth, renderHeight))
+		return false;
+	if (!m_NearMediaSystem->Reinitialize(
+		m_RuntimeResourceDevice->GetNearMediaQualityConfig(), renderWidth, renderHeight))
+		return false;
+	if (!m_AtmosphereSystem->ReinitializeViewResources(
+		quality, renderWidth, renderHeight))
+		return false;
+	m_AtmosphereSystem->BindGlobalDescriptors(
+		m_GlobalDescriptorSet,
+		m_VolumetricCloudSystem->GetShadowDescriptor(),
+		m_VolumetricCloudSystem->GetResultDescriptor(),
+		m_NearMediaSystem->GetScatteringDescriptor(),
+		m_NearMediaSystem->GetOpticalDepthDescriptor());
+	m_NearMediaSystem->BindGlobalDescriptor(m_GlobalDescriptorSet);
+	m_VolumetricCloudSystem->BindGlobalDescriptors(m_GlobalDescriptorSet);
+	return true;
+}
+
 void VansGraphics::VansScene::InjectCamera(VansCamera* camera)
 {
 	if (m_Camera != camera)
@@ -545,9 +655,6 @@ void VansGraphics::VansScene::RegistRenderNode(VansRenderNode* renderNode, Rende
     // 将 renderNode 记录到对应类型的 vector
     switch (type)
     {
-	case SKY_BOX_NODE:
-		m_SkyBoxNode = renderNode;
-		break;
     case DEFERRED_NODE:
         m_DeferredNode = renderNode;
         break;
@@ -557,8 +664,8 @@ void VansGraphics::VansScene::RegistRenderNode(VansRenderNode* renderNode, Rende
 	case HAIR_NODE:
 		m_HairRenderNodes.push_back(renderNode);
 		break;
-	case FORWARD_OPAQUE_AFTER_DEFERRED_NODE:
-		m_ForwardOpaqueAfterDeferredRenderNodes.push_back(renderNode);
+	case FORWARD_OPAQUE_PRE_ATMOSPHERE_NODE:
+		m_ForwardOpaquePreAtmosphereRenderNodes.push_back(renderNode);
 		break;
     case TERRAIN_NODE:
         m_TerrainRenderNode = renderNode;
@@ -593,10 +700,6 @@ void VansGraphics::VansScene::RegistRenderNode(VansRenderNode* renderNode, Rende
 void VansGraphics::VansScene::CreateNodeDescriptorSets()
 {
     //遍历所有的node生成set
-    if (m_SkyBoxNode != nullptr)
-    {
-        m_SkyBoxNode->CreateDescriptorSets(m_Camera, m_LightManager, m_MaterialManager);
-    }
     if (m_DeferredNode != nullptr)
     {
         m_DeferredNode->CreateDescriptorSets(m_Camera, m_LightManager, m_MaterialManager);
@@ -609,7 +712,7 @@ void VansGraphics::VansScene::CreateNodeDescriptorSets()
 	{
 		node->CreateDescriptorSets(m_Camera, m_LightManager, m_MaterialManager);
 	}
-	for (auto node : m_ForwardOpaqueAfterDeferredRenderNodes)
+	for (auto node : m_ForwardOpaquePreAtmosphereRenderNodes)
 	{
 		node->CreateDescriptorSets(m_Camera, m_LightManager, m_MaterialManager);
 	}
@@ -847,7 +950,7 @@ void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
         }});
 
-    // Binding 4: Pre-convolved diffuse environment
+    // Binding 4: 启动时由固定 SkyBox 一次性卷积得到的 diffuse IBL。
     descManager->WriteImageDescriptor(
         m_GlobalDescriptorSet,
         GLOBAL_BINDING_PRECONV_DIFFUSE,
@@ -858,7 +961,7 @@ void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
         }});
 
-    // Binding 5: Pre-convolved specular environment
+    // Binding 5: 启动时由固定 SkyBox 一次性卷积得到的 specular IBL。
     descManager->WriteImageDescriptor(
         m_GlobalDescriptorSet,
         GLOBAL_BINDING_PRECONV_SPECULAR,
@@ -869,7 +972,7 @@ void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
         }});
 
-    // Binding 6: SH coefficients buffer
+    // Binding 6: 同一固定 SkyBox 的 SH 系数。
     descManager->WriteBufferDescriptor(
         m_GlobalDescriptorSet,
         GLOBAL_BINDING_SH_COEFFICIENTS,
@@ -1076,11 +1179,10 @@ VansGraphics::VansRenderNode* VansGraphics::VansScene::FindRenderNodeByName(cons
         if (node && node->m_NodeName == name) return node;
 	for (auto* node : m_HairRenderNodes)
 		if (node && node->m_NodeName == name) return node;
-	for (auto* node : m_ForwardOpaqueAfterDeferredRenderNodes)
+	for (auto* node : m_ForwardOpaquePreAtmosphereRenderNodes)
 		if (node && node->m_NodeName == name) return node;
     for (auto* node : m_TransParentRenderNodes)
         if (node && node->m_NodeName == name) return node;
-    if (m_SkyBoxNode && m_SkyBoxNode->m_NodeName == name) return m_SkyBoxNode;
     if (m_TerrainRenderNode && m_TerrainRenderNode->m_NodeName == name) return m_TerrainRenderNode;
     if (m_VegetationRenderNode && m_VegetationRenderNode->m_NodeName == name) return m_VegetationRenderNode;
     return nullptr;
@@ -1137,6 +1239,9 @@ void VansGraphics::VansScene::UnLoadScene()
 
 	VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
 	VkDevice nativeDevice = vkDevice ? vkDevice->GetLogicDevice() : VK_NULL_HANDLE;
+	if (vkDevice && m_AtmosphereSystem)
+		vkDevice->WaitForDevice();
+	ShutdownEnvironmentRendering();
 	m_AudioEnvironmentReverbWetGain = 1.0f;
 	VansEngine::VansAudioSystem::GetInstance().SetDefaultReverbWetGain(m_AudioEnvironmentReverbWetGain);
 	if (nativeDevice != VK_NULL_HANDLE)
@@ -1147,12 +1252,10 @@ void VansGraphics::VansScene::UnLoadScene()
 	VANS_LOG("[VansScene] Step 0: editor selection cleared");
 
 	// ── 1. 清理场景级运行时纹理，保留屏幕空间纹理 ──
-	//  SSGI / SSAO / HZB / SSR / Fog 等屏幕空间纹理在 PrepareRenderingData()
+	//  SSGI / SSAO / HZB / SSR 等屏幕空间纹理在 PrepareRenderingData()
 	//  时创建，不依赖场景内容，无需在场景切换时销毁。
 	VANS_UNLOAD_STEP(1, "娓呯悊鍦烘櫙绾ц繍琛屾椂绾圭悊");
 	m_MaterialManager.m_SSGITemporalFrame = 0;
-	m_MaterialManager.m_FogTemporalFrame  = 0;
-	m_MaterialManager.m_FogHistoryValid   = false;
 	// DDGI region 资源重建后，标记渲染 Feature 的 descriptor set 需要重新写入
 	if (vkDevice)
 	{
@@ -1167,6 +1270,7 @@ void VansGraphics::VansScene::UnLoadScene()
 		delete obj;
 	}
 	m_SceneObjects.clear();
+	++m_SceneObjectCollectionGeneration;
 	VANS_LOG("[VansScene] Step 2a: SceneObjects released");
     VansParticleManager::Instance().Shutdown();
 
@@ -1281,9 +1385,9 @@ void VansGraphics::VansScene::UnLoadScene()
 		deleteRenderNode(node);
 	m_HairRenderNodes.clear();
 
-	for (auto* node : m_ForwardOpaqueAfterDeferredRenderNodes)
+	for (auto* node : m_ForwardOpaquePreAtmosphereRenderNodes)
 		deleteRenderNode(node);
-	m_ForwardOpaqueAfterDeferredRenderNodes.clear();
+	m_ForwardOpaquePreAtmosphereRenderNodes.clear();
 
 	for (auto* node : m_TransParentRenderNodes)
 		deleteRenderNode(node);
@@ -1306,9 +1410,6 @@ void VansGraphics::VansScene::UnLoadScene()
 	for (auto* node : m_ParticleRenderNodes)
 		deleteRenderNode(node);
 	m_ParticleRenderNodes.clear();
-
-	deleteRenderNode(m_SkyBoxNode);
-	m_SkyBoxNode = nullptr;
 
 	deleteRenderNode(m_DeferredNode);
 	m_DeferredNode = nullptr;
@@ -1703,7 +1804,7 @@ VansGraphics::VansScene::PrepareMainThreadRenderFrame(
 		snapshot.mainCameraCullInputs.reserve(
 			m_OpaqueRenderNodes.size() +
 			m_HairRenderNodes.size() +
-			m_ForwardOpaqueAfterDeferredRenderNodes.size() +
+			m_ForwardOpaquePreAtmosphereRenderNodes.size() +
 			m_TransParentRenderNodes.size() +
 			m_DecalRenderNodes.size());
 		const auto appendCullInput = [&](VansRenderNode* node, VansMainCameraCullClass cullClass)
@@ -1725,8 +1826,8 @@ VansGraphics::VansScene::PrepareMainThreadRenderFrame(
 			appendCullInput(node, VansMainCameraCullClass::Opaque);
 		for (VansRenderNode* node : m_HairRenderNodes)
 			appendCullInput(node, VansMainCameraCullClass::Hair);
-		for (VansRenderNode* node : m_ForwardOpaqueAfterDeferredRenderNodes)
-			appendCullInput(node, VansMainCameraCullClass::ForwardOpaqueAfterDeferred);
+		for (VansRenderNode* node : m_ForwardOpaquePreAtmosphereRenderNodes)
+			appendCullInput(node, VansMainCameraCullClass::ForwardOpaquePreAtmosphere);
 		for (VansRenderNode* node : m_TransParentRenderNodes)
 			appendCullInput(node, VansMainCameraCullClass::Transparent);
 		for (VansRenderNode* node : m_DecalRenderNodes)
@@ -1783,23 +1884,9 @@ VansGraphics::VansScene::PrepareMainThreadRenderFrame(
     {
         VANS_PROFILE_SCOPE("Light::BuildFrameData", Vans::ProfileCategory::RenderPrepare);
 		snapshot.light = m_LightManager.BuildRenderLightFrameData();
-		if (m_SkyBoxNode)
-		{
-			if (auto* skyMaterial = dynamic_cast<VansSkyBoxMaterial*>(
-				m_SkyBoxNode->m_Material))
-			{
-				const VansDirectionalLight* directionalLight =
-					snapshot.light.directionalLights.empty()
-						? nullptr
-						: &snapshot.light.directionalLights.front();
-				snapshot.atmosphere.payload =
-					skyMaterial->BuildAtmosphereFrameData(directionalLight);
-				snapshot.atmosphere.prepared = true;
-			}
-		}
-        m_ReflectionProbeSystem.SetRuntimeSkyCubeScales(
-            m_LightManager.GetSkyDiffuseScale(),
-            m_LightManager.GetSkySpecularScale());
+		m_ReflectionProbeSystem.SetRuntimeSkyCubeScales(
+			m_LightManager.GetSkyDiffuseScale(),
+			m_LightManager.GetSkySpecularScale());
     }
     {
         VANS_PROFILE_SCOPE("Cloth::Simulate", Vans::ProfileCategory::Physics);
@@ -2004,8 +2091,8 @@ VansGraphics::VansScene::PrepareMainThreadRenderFrame(
 	}
 	snapshot.features.hasWater = HasWaterNodes();
 	snapshot.features.hasDecal = HasDecalNodes();
-	snapshot.features.hasForwardOpaqueAfterDeferred =
-		HasForwardOpaqueAfterDeferredNodes();
+	snapshot.features.hasForwardOpaquePreAtmosphere =
+		HasForwardOpaquePreAtmosphereNodes();
 	VansTransformStore::TransformIDToTransformDirty.clear();
     return output;
 }
@@ -2689,14 +2776,6 @@ void VansGraphics::VansScene::UpdateRenderNodesDataBeforeRecord(
         }
     };
 
-	if (IsRenderNodeEnabledForCurrentFrame(m_SkyBoxNode))
-	{
-		if (sceneSnapshot.atmosphere.prepared &&
-			!m_MaterialManager.UploadAtmosphereFrameData(
-				sceneSnapshot.atmosphere.payload))
-			VANS_LOG_ERROR("[VansScene] Atmosphere frame upload was rejected.");
-		m_SkyBoxNode->UpdateDescriptorSets(m_MaterialManager);
-	}
     updateNode(m_DeferredNode);
 	if (IsRenderNodeEnabledForCurrentFrame(m_TerrainRenderNode))
 	{
@@ -2712,7 +2791,7 @@ void VansGraphics::VansScene::UpdateRenderNodesDataBeforeRecord(
         updateNode(node);
 	for (auto* node : m_HairRenderNodes)
 		updateNode(node);
-	for (auto* node : m_ForwardOpaqueAfterDeferredRenderNodes)
+	for (auto* node : m_ForwardOpaquePreAtmosphereRenderNodes)
 		updateNode(node);
     for (auto* node : m_TransParentRenderNodes)
         updateNode(node);
@@ -2733,7 +2812,6 @@ void VansGraphics::VansScene::MarkRenderNodeDescriptorSetsDirty()
 			node->MarkDescriptorSetsDirty();
 	};
 
-	markNode(m_SkyBoxNode);
 	markNode(m_DeferredNode);
 	markNode(m_TerrainRenderNode);
 	markNode(m_WaterRenderNode);
@@ -2743,7 +2821,7 @@ void VansGraphics::VansScene::MarkRenderNodeDescriptorSetsDirty()
 		markNode(node);
 	for (auto* node : m_HairRenderNodes)
 		markNode(node);
-	for (auto* node : m_ForwardOpaqueAfterDeferredRenderNodes)
+	for (auto* node : m_ForwardOpaquePreAtmosphereRenderNodes)
 		markNode(node);
 	for (auto* node : m_TransParentRenderNodes)
 		markNode(node);
@@ -3134,12 +3212,12 @@ std::vector<VansRenderNode*> VansGraphics::VansScene::CollectSSBOManagedRenderNo
     std::vector<VansRenderNode*> result;
     result.reserve(m_OpaqueRenderNodes.size()
 				 + m_HairRenderNodes.size()
-				 + m_ForwardOpaqueAfterDeferredRenderNodes.size()
+				 + m_ForwardOpaquePreAtmosphereRenderNodes.size()
                  + m_TransParentRenderNodes.size()
                  + m_DecalRenderNodes.size());
     result.insert(result.end(), m_OpaqueRenderNodes.begin(),    m_OpaqueRenderNodes.end());
 	result.insert(result.end(), m_HairRenderNodes.begin(), m_HairRenderNodes.end());
-	result.insert(result.end(), m_ForwardOpaqueAfterDeferredRenderNodes.begin(), m_ForwardOpaqueAfterDeferredRenderNodes.end());
+	result.insert(result.end(), m_ForwardOpaquePreAtmosphereRenderNodes.begin(), m_ForwardOpaquePreAtmosphereRenderNodes.end());
     result.insert(result.end(), m_TransParentRenderNodes.begin(), m_TransParentRenderNodes.end());
     result.insert(result.end(), m_DecalRenderNodes.begin(),     m_DecalRenderNodes.end());
     return result;
@@ -3328,8 +3406,8 @@ void VansGraphics::VansScene::RemoveRenderNodeFromVector(VansRenderNode* node)
     {
     case OPAQUE_NODE:      vec = &m_OpaqueRenderNodes;      break;
 	case HAIR_NODE:        vec = &m_HairRenderNodes;        break;
-	case FORWARD_OPAQUE_AFTER_DEFERRED_NODE:
-		vec = &m_ForwardOpaqueAfterDeferredRenderNodes;
+	case FORWARD_OPAQUE_PRE_ATMOSPHERE_NODE:
+		vec = &m_ForwardOpaquePreAtmosphereRenderNodes;
 		break;
     case TRANSPARENT_NODE: vec = &m_TransParentRenderNodes; break;
     case DECAL_NODE:       vec = &m_DecalRenderNodes;       break;
@@ -3802,7 +3880,11 @@ bool VansGraphics::VansScene::DestroyEntity(VansScriptObject* obj)
     //  底层 Node（RenderNode / PhysicsNode 等）不受影响——wrapper 只持非拥有指针。
     // ══════════════════════════════════════════════════════════════════════════════
     auto sit = std::find(m_SceneObjects.begin(), m_SceneObjects.end(), obj);
-    if (sit != m_SceneObjects.end()) m_SceneObjects.erase(sit);
+    if (sit != m_SceneObjects.end())
+    {
+        m_SceneObjects.erase(sit);
+		++m_SceneObjectCollectionGeneration;
+	}
     delete obj;     // 析构删除所有 VansScriptComponent wrapper
     obj = nullptr;  // 置空防止后续误用
 	m_RuntimeWorld->Commands().DestroyEntity(

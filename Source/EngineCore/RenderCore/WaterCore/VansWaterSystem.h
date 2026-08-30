@@ -14,7 +14,7 @@
 // 渲染管线流程（与设计文档 §6.1 一致）：
 //   Pass 7:  Water GBuffer Pass  → 写 WaterGBuf_Normal + WaterGBuf_LinearDepth
 //   Pass 8:  Pre-Water Compute   → SSR、折射、焦散（Phase 2 实现）
-//   Pass 9:  Water Composite     → 全屏合成，写回 SceneColor（在 DeferredSkyboxPass 内）
+//   Pass 9:  Water Composite     → 在大气合成后写回 SceneColor
 //
 // 类拆分（设计文档 W-02, W-03, W-09）：
 //   VansWaterGeometryClipmap → fixed 2:1 ring geometry and culling
@@ -30,6 +30,7 @@ namespace VansGraphics
     class VansRenderPassManager;
     class VansWaterGeometryClipmap;
     class VansWaterFFT;
+    class VansTexture;
     struct GlobalStateData;
 
     struct alignas(16) GerstnerWaveGPU
@@ -74,6 +75,12 @@ namespace VansGraphics
         glm::vec4 surfaceOptics;     // x=roughness, y=IOR, z=F0, w=specular intensity
         glm::vec4 scatteringCoeff;   // rgb=sigma_s
         glm::vec4 absorptionCoeff;   // rgb=sigma_a
+        glm::ivec4 detailNormalFlags; // x=enabled, y=active layer count, z=decode mode, w=flip green
+        glm::vec4 detailNormalGlobal; // x=time, y=global strength, z=max slope, w=mip bias
+        glm::vec4 detailLayerUvMotion[VansWaterDetailNormalConfig::MAX_LAYER_COUNT];
+        glm::vec4 detailLayerStrengthFade[VansWaterDetailNormalConfig::MAX_LAYER_COUNT];
+        glm::ivec4 detailLayerEnabled;
+        glm::vec4 effectiveRoughnessParams; // x=mode, y=distance start, z=distance end, w=strength
     };
 
     // PBRWaterParams GPU struct. Matches PBRWater surface/refraction/volume/composite shaders.
@@ -91,12 +98,29 @@ namespace VansGraphics
         glm::vec4 backlitParams;      // x=path scale, y=phase g, zw=padding
         glm::vec4 filterParams;       // x=spatial depth sensitivity, y=filter iterations, zw=padding
         glm::ivec4 effectFlags;       // x=SSR, y=refraction, z=caustics, w=thin SSS
+        glm::vec4 colorMipParams0;    // x=refraction scatter, y=roughness, z=forward scatter, w=LOD bias
+        glm::vec4 colorMipParams1;    // x=background scatter, y=actual max mip, z=min path, w=debug enabled
+        glm::vec4 shadowParams;       // x=enabled, y=quality, z=depth bias, w=normal bias
+        glm::vec4 shadowVolumeParams; // x=step stride, y=volume strength, z=surface strength
         glm::mat4 invViewProjMatrix;
         glm::mat4 viewMatrix;
         glm::mat4 projMatrix;
     };
 
-    // WaterCausticsParams GPU struct. Matches water_caustics.comp set=0 binding=9.
+    struct alignas(16) WaterSSRParamsGPU
+    {
+        glm::vec4 cameraPosition;
+        glm::mat4 projection;
+        glm::mat4 inverseProjection;
+        glm::mat4 view;
+        glm::vec4 traceParams;      // x=max distance, y=max steps, z=thickness
+        glm::vec4 screenParams;     // x=width, y=height, z=background max mip, w=debug enabled
+        glm::vec4 colorMipParams;   // x=cone scale, y=LOD bias, z=footprint validity scale
+        glm::vec4 roughnessParams;  // x=fade start, y=max roughness
+        glm::vec4 edgeParams;       // x=edge fade pixels, y=footprint safety
+    };
+
+    // WaterCausticsParams GPU struct. Matches water_caustics.comp set=1 binding=9.
     struct alignas(16) WaterCausticsParamsGPU
     {
         glm::vec4 sunDirection;
@@ -120,6 +144,9 @@ namespace VansGraphics
         void Initialize(VansVKDevice* device,
                         uint32_t renderWidth, uint32_t renderHeight);
 
+        // 纹理生命周期由 Scene Asset Registry 管理；WaterSystem 只保存非持有引用。
+        void SetDetailNormalTextures(VansTexture* detailNormal, VansTexture* neutralFallback);
+
         // SetupDescriptors：在 SetupVansWaterGBufferPass 之后（BeforeRendering 中）调用。
         // 注意：globalLayout/globalSet 可能尚未创建（在 LoadSceneForRendering 时序中
         // CreateGlobalDescriptorSet 在 AddWaterNode 之后执行），此时可传 VK_NULL_HANDLE。
@@ -135,6 +162,14 @@ namespace VansGraphics
                                      VkDescriptorSet        globalSet);
 
         void Shutdown();
+        void ReinitializeResolutionResources(
+            uint32_t renderWidth,
+            uint32_t renderHeight,
+            VansRenderPassManager* renderPassManager,
+            VkDescriptorSetLayout globalLayout,
+            VkDescriptorSet globalSet,
+            VansVKImage* sceneHZBImage);
+        void ReinitializeConfiguredResources();
 
         // ── 每帧更新 ─────────────────────────────────────────────
         void Update(float deltaTime, const glm::vec3& cameraPos,
@@ -172,6 +207,9 @@ namespace VansGraphics
         bool  IsDescriptorsReady() const                   { return m_DescriptorsReady; }
         VansWaterGeometryClipmap* GetGeometryClipmap() const { return m_GeometryClipmap; }
         VansWaterFFT* GetFFT() const                       { return m_WaterFFT; }
+        bool IsDetailNormalAssetAvailable() const          { return m_DetailNormalTexture != nullptr; }
+        float GetDetailNormalAnisotropy() const            { return m_DetailNormalAnisotropy; }
+        VansTexture* GetDetailNormalTexture() const        { return m_DetailNormalTexture; }
 
     // Wave data is stored in SSBOs; this UBO contains matrices and simulation controls.
         void UpdateWaveSSBO();
@@ -199,6 +237,10 @@ namespace VansGraphics
         // ── 引擎设备 ──────────────────────────────────────────────
         VansVKDevice*      m_Device        = nullptr;
         VansWaterMaterial* m_WaterMaterial = nullptr;
+        VansTexture* m_DetailNormalTexture = nullptr;
+        VansTexture* m_NeutralNormalTexture = nullptr;
+        VkSampler m_DetailNormalSampler = VK_NULL_HANDLE;
+        float m_DetailNormalAnisotropy = 1.0f;
 
         float m_WaterLevel       = 0.0f;
         float m_Time             = 0.0f;
@@ -244,7 +286,7 @@ namespace VansGraphics
         // ── Descriptor Sets：Water Refraction Compute（Set 0）─────
         VkDescriptorSetLayout m_RefractionLayout = VK_NULL_HANDLE;
         VkDescriptorSet       m_RefractionSet    = VK_NULL_HANDLE;
-        // ── Descriptor Sets：Water Caustics Compute（Set 0, W-14）───
+        // ── Descriptor Sets：Water Caustics Compute（Set 1, W-14）───
         VkDescriptorSetLayout m_CausticsLayout = VK_NULL_HANDLE;
         VkDescriptorSet       m_CausticsSet    = VK_NULL_HANDLE;
 

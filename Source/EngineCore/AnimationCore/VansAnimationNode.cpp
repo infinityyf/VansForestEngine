@@ -418,7 +418,7 @@ void VansAnimationNode::Stop()
 
 VansGraphSetSwitchResult VansAnimationNode::SwitchGraphSet(const std::string& graphSetId)
 {
-	VansAnimationController* controller = GetLocomotionController();
+	VansAnimationController* controller = GetCharacterMotionController();
 	return controller ? controller->SwitchGraphSet(graphSetId)
 		: VansGraphSetSwitchResult::UnknownGraphSet;
 }
@@ -750,7 +750,7 @@ void VansAnimationNode::PrepareAnimationFrame(
 {
 	const float deltaTime = context.deltaTime;
 	bool retargetSourceFramePrepared = false;
-	if (m_LocomotionFramePrepared)
+	if (m_CharacterMotionFramePrepared)
 	{
 		if (m_RetargetEnabled && m_SourceController && m_RetargetProcessor.IsValid())
 		{
@@ -761,7 +761,7 @@ void VansAnimationNode::PrepareAnimationFrame(
 			m_Controller->SetOwnerWorldTransform(
 				VansTransformStore::GetTransform(m_TransformID).GetModelMatrix());
 		}
-		m_LocomotionFramePrepared = false;
+		m_CharacterMotionFramePrepared = false;
 		if (!retargetSourceFramePrepared)
 			return;
 	}
@@ -948,19 +948,19 @@ void VansAnimationNode::Update(const VansAnimationFrameContext& context)
 	ResolveAnimationWorldQueries({});
 }
 
-void VansAnimationNode::PrepareLocomotionFrame(
+void VansAnimationNode::PrepareCharacterMotionFrame(
 	float deltaTime, const Vans::VansCharacterTrajectory& trajectory)
 {
-	VansAnimationController* locomotionController = GetLocomotionController();
-	if (!locomotionController)
+	VansAnimationController* characterMotionController = GetCharacterMotionController();
+	if (!characterMotionController)
 		return;
-	locomotionController->SetCharacterTrajectory(&trajectory);
+	characterMotionController->SetCharacterTrajectory(&trajectory);
 	if (m_HasTransformID)
 	{
 		const glm::mat4 ownerWorld =
 			VansTransformStore::GetTransform(m_TransformID).GetModelMatrix();
 		m_Controller->SetOwnerWorldTransform(ownerWorld);
-		locomotionController->SetOwnerWorldTransform(ownerWorld);
+		characterMotionController->SetOwnerWorldTransform(ownerWorld);
 	}
 	if (m_RetargetEnabled && m_SourceController)
 	{
@@ -971,7 +971,7 @@ void VansAnimationNode::PrepareLocomotionFrame(
 	{
 		m_Controller->PrepareFrame(deltaTime, m_Skeleton);
 	}
-	m_LocomotionFramePrepared = true;
+	m_CharacterMotionFramePrepared = true;
 }
 
 // ════════════════════════════════════════════════════════════════

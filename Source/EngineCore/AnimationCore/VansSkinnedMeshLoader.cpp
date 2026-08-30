@@ -22,6 +22,7 @@
 #include <cmath>
 #include <filesystem>
 #include <functional>
+#include <limits>
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
@@ -240,7 +241,137 @@ static glm::quat ConvertQuat(const aiQuaternion& q)
 	return glm::quat(q.w, q.x, q.y, q.z);
 }
 
+struct AnimationSpaceConversion
+{
+	glm::mat3 basis = glm::mat3(1.0f);
+	float positionScale = 1.0f;
+	float normalizedError = 0.0f;
+	uint32_t sampleCount = 0;
+};
+
 static const aiNode* FindAiNodeByName(const aiNode* node, const std::string& name);
+
+static AnimationSpaceConversion ResolveAnimationSpaceConversion(
+	const aiAnimation* anim,
+	const Skeleton& skeleton,
+	const aiScene* scene,
+	float fallbackScale)
+{
+	AnimationSpaceConversion conversion;
+	conversion.positionScale = fallbackScale;
+	if (!anim)
+		return conversion;
+
+	struct TranslationPair
+	{
+		glm::vec3 source = glm::vec3(0.0f);
+		glm::vec3 target = glm::vec3(0.0f);
+	};
+	std::vector<TranslationPair> pairs;
+	for (uint32_t channelIndex = 0; channelIndex < anim->mNumChannels; ++channelIndex)
+	{
+		const aiNodeAnim* channel = anim->mChannels[channelIndex];
+		if (!channel || channel->mNumPositionKeys == 0)
+			continue;
+		const auto boneIt = skeleton.boneNameToIndex.find(channel->mNodeName.C_Str());
+		if (boneIt == skeleton.boneNameToIndex.end())
+			continue;
+		const aiNode* sourceNode = scene
+			? FindAiNodeByName(scene->mRootNode, channel->mNodeName.C_Str())
+			: nullptr;
+		const glm::vec3 source = sourceNode
+			? glm::vec3(ConvertMat4(sourceNode->mTransformation)[3])
+			: ConvertVec3(channel->mPositionKeys[0].mValue);
+		const glm::vec3 target = glm::vec3(
+			skeleton.bones[static_cast<std::size_t>(boneIt->second)].localTransform[3]);
+		if (glm::dot(source, source) <= 1.0e-8f || glm::dot(target, target) <= 1.0e-8f)
+			continue;
+		pairs.push_back({ source, target });
+	}
+
+	// A signed axis permutation covers the coordinate-system changes produced by
+	// common DCC/engine exports (for example UE FBX Z-up to glTF Y-up). The uniform
+	// scale is fitted independently so centimetre FBX clips can target metre glTF rigs.
+	if (pairs.size() < 3)
+		return conversion;
+
+	static constexpr int Permutations[6][3] = {
+		{ 0, 1, 2 }, { 0, 2, 1 }, { 1, 0, 2 },
+		{ 1, 2, 0 }, { 2, 0, 1 }, { 2, 1, 0 }
+	};
+	std::vector<float> scaleSamples;
+	scaleSamples.reserve(pairs.size());
+	for (const TranslationPair& pair : pairs)
+		scaleSamples.push_back(glm::length(pair.target) / glm::length(pair.source));
+	std::sort(scaleSamples.begin(), scaleSamples.end());
+	const float fittedScale = scaleSamples[scaleSamples.size() / 2];
+	float bestError = std::numeric_limits<float>::max();
+	for (const auto& permutation : Permutations)
+	{
+		for (int signMask = 0; signMask < 8; ++signMask)
+		{
+			glm::mat3 basis(0.0f);
+			for (int outputAxis = 0; outputAxis < 3; ++outputAxis)
+			{
+				const float sign = (signMask & (1 << outputAxis)) ? -1.0f : 1.0f;
+				basis[permutation[outputAxis]][outputAxis] = sign;
+			}
+			if (glm::determinant(basis) < 0.5f)
+				continue;
+
+			float error = 0.0f;
+			for (const TranslationPair& pair : pairs)
+			{
+				const glm::vec3 delta = pair.target - fittedScale * basis * pair.source;
+				error += glm::dot(delta, delta) / glm::dot(pair.target, pair.target);
+			}
+			const float normalizedError = error / static_cast<float>(pairs.size());
+			if (normalizedError < bestError)
+			{
+				bestError = normalizedError;
+				conversion.basis = basis;
+				conversion.positionScale = fittedScale;
+				conversion.normalizedError = normalizedError;
+				conversion.sampleCount = static_cast<uint32_t>(pairs.size());
+			}
+		}
+	}
+
+	// A poor fit means the source is a genuinely different rig, not merely the
+	// same skeleton exported with another axis/unit convention.
+	if (bestError > 0.1f)
+	{
+		conversion = {};
+		conversion.positionScale = fallbackScale;
+	}
+	return conversion;
+}
+
+static glm::vec3 ConvertAnimationPosition(
+	const glm::vec3& position,
+	const AnimationSpaceConversion& conversion)
+{
+	return conversion.positionScale * conversion.basis * position;
+}
+
+static glm::quat ConvertAnimationRotation(
+	const glm::quat& rotation,
+	const AnimationSpaceConversion& conversion)
+{
+	const glm::quat basisRotation = glm::normalize(glm::quat_cast(conversion.basis));
+	return glm::normalize(basisRotation * rotation * glm::conjugate(basisRotation));
+}
+
+static glm::vec3 ConvertAnimationScale(
+	const glm::vec3& scale,
+	const AnimationSpaceConversion& conversion)
+{
+	glm::mat3 absoluteBasis(0.0f);
+	for (int column = 0; column < 3; ++column)
+		for (int row = 0; row < 3; ++row)
+			absoluteBasis[column][row] = std::abs(conversion.basis[column][row]);
+	return absoluteBasis * scale;
+}
 
 static bool AnimationHasNodeTransformChannels(
 	const aiScene* scene,
@@ -1297,6 +1428,17 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractClipFromAssimp(
 	uint32_t boneCount = (uint32_t)skeleton.bones.size();
 	outClip.boneKeyframes.resize(boneCount);
 	outClip.nodeTransformChannels.clear();
+	const AnimationSpaceConversion spaceConversion =
+		ResolveAnimationSpaceConversion(anim, skeleton, scene, scaleFactor);
+	if (spaceConversion.sampleCount > 0 &&
+		(std::abs(spaceConversion.positionScale - 1.0f) > 1.0e-4f ||
+		 MaxAbsIdentityDiff(glm::mat4(spaceConversion.basis)) > 1.0e-4f))
+	{
+		VANS_LOG("[VansSkinnedMeshLoader] Animation space converted from "
+			<< spaceConversion.sampleCount << " bind translations (scale="
+			<< spaceConversion.positionScale << ", normalizedError="
+			<< spaceConversion.normalizedError << ")");
+	}
 
 	// Process each channel (one channel per animated bone)
 	for (uint32_t c = 0; c < anim->mNumChannels; c++)
@@ -1356,6 +1498,7 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractClipFromAssimp(
 				if (tTicks > channel->mPositionKeys[channel->mNumPositionKeys - 1].mTime)
 					kf.position = ConvertVec3(channel->mPositionKeys[channel->mNumPositionKeys - 1].mValue);
 			}
+			kf.position = ConvertAnimationPosition(kf.position, spaceConversion);
 
 			// Sample rotation at time t.
 			if (channel->mNumRotationKeys == 1)
@@ -1386,6 +1529,7 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractClipFromAssimp(
 				if (tTicks > channel->mRotationKeys[channel->mNumRotationKeys - 1].mTime)
 					kf.rotation = ConvertQuat(channel->mRotationKeys[channel->mNumRotationKeys - 1].mValue);
 			}
+			kf.rotation = ConvertAnimationRotation(kf.rotation, spaceConversion);
 
 			// Sample scale at time t.
 			if (channel->mNumScalingKeys == 1)
@@ -1414,6 +1558,7 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractClipFromAssimp(
 				if (tTicks > channel->mScalingKeys[channel->mNumScalingKeys - 1].mTime)
 					kf.scale = ConvertVec3(channel->mScalingKeys[channel->mNumScalingKeys - 1].mValue);
 			}
+			kf.scale = ConvertAnimationScale(kf.scale, spaceConversion);
 
 			keyframes.push_back(kf);
 		}
@@ -1524,41 +1669,13 @@ bool VansGraphics::VansSkinnedMeshLoader::ExtractExternAnimationClips(
 
 		VansAnimationClip clip;
 
-		if (FileExists(vclipPath))
-		{
-			Skeleton cachedSkeleton;
-			if (VansAnimationClipIO::Load(vclipPath, clip, cachedSkeleton))
-			{
-				std::string skeletonMismatch;
-				if (!cachedSkeleton.MatchesAnimationLayout(originSkeleton, &skeletonMismatch))
-				{
-					VANS_LOG_WARN("[VansSkinnedMeshLoader] Cached extern clip skeleton mismatch ("
-						<< skeletonMismatch << "), re-extracting: " << vclipPath);
-					ExtractClipFromAssimp(anim, originSkeleton, clip, scene);
-					clip.clipName = clipName;
-					VansAnimationClipIO::Save(vclipPath, clip, originSkeleton);
-				}
-				else
-				{
-					VANS_LOG("[VansSkinnedMeshLoader] Loaded cached extern clip: " << vclipPath);
-				}
-			}
-			else
-			{
-				VANS_LOG_WARN("[VansSkinnedMeshLoader] Failed to load cached extern clip, re-extracting: " << vclipPath);
-				ExtractClipFromAssimp(anim, originSkeleton, clip, scene);
-				clip.clipName = clipName;
-				VansAnimationClipIO::Save(vclipPath, clip, originSkeleton);
-			}
-		}
-		else
-		{
-			// Extract clip using the ORIGIN skeleton so bone indices match
-			ExtractClipFromAssimp(anim, originSkeleton, clip, scene);
-			clip.clipName = clipName;
-			VansAnimationClipIO::Save(vclipPath, clip, originSkeleton);
-			VANS_LOG("[VansSkinnedMeshLoader] Extracted and cached extern clip: " << vclipPath);
-		}
+		// This entry point is an explicit import operation. Always rebuild from the
+		// FBX so changes to source data or coordinate conversion cannot be hidden by
+		// a stale adjacent cache.
+		ExtractClipFromAssimp(anim, originSkeleton, clip, scene);
+		clip.clipName = clipName;
+		VansAnimationClipIO::Save(vclipPath, clip, originSkeleton);
+		VANS_LOG("[VansSkinnedMeshLoader] Imported extern clip: " << vclipPath);
 
 		outClips.push_back(std::move(clip));
 	}

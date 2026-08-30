@@ -5,12 +5,10 @@
 #include "../../Common/CameraData.glsl"
 #include "../water_screen_common.glsl"
 #include "../PBRWater/pbr_water_bsdf.glsl"
+#include "../../Lights/LightsData.glsl"
 
 layout(location = 0) in vec2 inUV;
 layout(location = 0) out vec4 outColor;
-
-layout(set = 0, binding = 3) uniform sampler2D BRDFLUT;
-layout(set = 0, binding = 5) uniform samplerCube PreConvSpecularEnvironment;
 
 layout(set = 1, binding = 0) uniform sampler2D waterGBufNormal;
 layout(set = 1, binding = 1) uniform sampler2D waterGBufPosDepth;
@@ -24,27 +22,14 @@ layout(set = 1, binding = 9) uniform sampler2D waterVolumeColor;
 layout(set = 1, binding = 10) uniform sampler2D waterVolumeTransmittance;
 layout(set = 1, binding = 11) uniform sampler2D waterVolumeDepth;
 layout(set = 1, binding = 12) uniform sampler2D sceneColor;
+layout(set = 1, binding = 13) uniform sampler2DArrayShadow cascadeShadowMap;
 
-layout(set = 1, binding = 2) uniform PBRWaterParams
-{
-    vec4 absorptionCoeff;
-    vec4 scatteringCoeff;
-    vec4 cameraPosition;
-    vec4 mainLightDir;
-    vec4 mainLightColor;
-    vec4 surfaceParams;
-    vec4 refractionParams;
-    vec4 volumeParams;
-    vec4 thinSSSParams;
-    vec4 backlitParams;
-    vec4 filterParams;
-    ivec4 effectFlags;
-    mat4 invViewProjMatrix;
-    mat4 viewMatrix;
-    mat4 projMatrix;
-} p;
+#define PBR_WATER_PARAMS_SET 1
+#define PBR_WATER_PARAMS_BINDING 2
+#define PBR_WATER_PARAMS_INSTANCE p
+#include "../PBRWater/pbr_water_params.glsl"
 
-vec3 SampleRefractedScene(vec2 baseUV, vec2 uvOffset, float dispersion)
+vec3 SampleRefractedScene(vec2 baseUV, vec2 uvOffset, float dispersion, float colorLod)
 {
     if (p.effectFlags.y == 0)
         uvOffset = vec2(0.0);
@@ -52,9 +37,9 @@ vec3 SampleRefractedScene(vec2 baseUV, vec2 uvOffset, float dispersion)
     vec2 gUV = clamp(baseUV + uvOffset, vec2(0.001), vec2(0.999));
     vec2 bUV = clamp(baseUV + uvOffset * (1.0 - dispersion * 0.012), vec2(0.001), vec2(0.999));
     return vec3(
-        textureLod(sceneColor, rUV, 0.0).r,
-        textureLod(sceneColor, gUV, 0.0).g,
-        textureLod(sceneColor, bUV, 0.0).b);
+        textureLod(sceneColor, rUV, colorLod).r,
+        textureLod(sceneColor, gUV, colorLod).g,
+        textureLod(sceneColor, bUV, colorLod).b);
 }
 
 void main()
@@ -76,7 +61,7 @@ void main()
     vec3 N = normalize(normalRoughness.xyz);
     vec3 V = normalize(p.cameraPosition.xyz - W);
     vec3 L = normalize(p.mainLightDir.xyz);
-    float roughness = clamp(normalRoughness.a, 0.002, 0.3);
+    float roughness = clamp(normalRoughness.a, 0.002, 1.0);
     vec3 F0 = vec3(p.surfaceParams.z);
     float NdotV = max(dot(N, V), 0.0);
     vec3 Fview = PBRW_FresnelSchlick(F0, NdotV);
@@ -85,36 +70,56 @@ void main()
     vec4 ssr = texelFetch(waterReflection, pixel, 0);
     vec3 R = reflect(-V, N);
     ReflectionProbeSample probe = SampleReflectionProbes(W, N, R, roughness);
-    vec3 sky = SampleSkySpecularCube(PreConvSpecularEnvironment, R, roughness * 9.0);
+    vec3 sky = SampleSkySpecularCube(
+        PreConvSpecularEnvironment, R, GetMipLevelFromRoughness(roughness));
     vec3 reflectedRadiance = mix(sky, probe.specular, probe.coverage);
-    float roughnessFade = 1.0 - smoothstep(reflectionProbeLightingParams.x,
-                                           reflectionProbeLightingParams.y,
-                                           roughness);
-    float ssrConfidence = p.effectFlags.x != 0 ? clamp(ssr.a * roughnessFade, 0.0, 1.0) : 0.0;
+    float ssrConfidence = p.effectFlags.x != 0 ? clamp(ssr.a, 0.0, 1.0) : 0.0;
     reflectedRadiance = mix(reflectedRadiance, ssr.rgb, ssrConfidence);
     vec2 envBRDF = texture(BRDFLUT, vec2(NdotV, 1.0 - roughness)).rg;
     vec3 reflected = reflectedRadiance * (Fview * envBRDF.x + envBRDF.y);
 
+    float surfaceVisibility = p.shadowParams.x > 0.5
+        ? SampleCascadeShadowFast(
+            cascadeShadowMap, W, N, surface.w,
+            p.shadowParams.z, p.shadowParams.w,
+            clamp(int(p.shadowParams.y + 0.5), 0, 1))
+        : 1.0;
+    vec3 directIrradiance = max(p.mainLightColor.rgb, vec3(0.0));
     vec3 directSpec = PBRW_EvaluateDirectSpecular(
-        N, V, L, F0, roughness, p.surfaceParams.w) * max(p.mainLightColor.rgb, vec3(0.0));
+        N, V, L, F0, roughness, p.surfaceParams.w) *
+        directIrradiance * surfaceVisibility;
 
     vec4 refractionData = texelFetch(waterRefractionData, pixel, 0);
+    float refractionPathLength = clamp(
+        max(refractionData.z - surface.w, 0.0), 0.0, p.volumeParams.x);
+    vec3 sigmaS = max(texelFetch(waterGBufScatter, pixel, 0).rgb, vec3(0.0));
+    ivec2 sceneColorSize = textureSize(sceneColor, 0);
+    float sceneColorMaxMip = min(
+        p.colorMipParams1.y, float(textureQueryLevels(sceneColor) - 1));
+    float refractionColorLod = PBRW_ComputeColorMipLod(
+        refractionPathLength, sigmaS, roughness, surface.w,
+        float(sceneColorSize.y), p.projMatrix[1][1],
+        p.colorMipParams0.x, p.colorMipParams0.y,
+        p.colorMipParams0.w, sceneColorMaxMip);
     vec3 refractedScene = SampleRefractedScene(
-        screenUV, refractionData.xy, p.refractionParams.z);
+        screenUV, refractionData.xy, p.refractionParams.z, refractionColorLod);
     vec3 volumeDiffuse = textureLod(waterVolumeColor, screenUV, 0.0).rgb;
     vec3 volumeT = textureLod(waterVolumeTransmittance, screenUV, 0.0).rgb;
     vec3 causticRadiance = p.effectFlags.z != 0
         ? texelFetch(waterCaustics, pixel, 0).rgb : vec3(0.0);
 
+    // Preserve the established water-volume fill light.  The visible physical
+    // sky is not the material environment source; water IBL remains the
+    // authored SkyBox cache and this term remains tied to the prepared key.
     vec3 atmosphere = max(p.mainLightColor.rgb, vec3(0.0)) * 0.015;
     // The caustics pass outputs receiver-reflected radiance. Apply the return
     // water path once; do not multiply already-lit scene radiance by a gain.
     vec3 transmitted = (refractedScene + causticRadiance) * volumeT;
-    vec3 color = volumeDiffuse * transmissionWeight
+    vec3 transmissionRadiance = volumeDiffuse + transmitted +
+        atmosphere * (vec3(1.0) - volumeT);
+    vec3 color = transmissionRadiance * transmissionWeight
         + reflected
-        + directSpec
-        + transmitted
-        + atmosphere * (vec3(1.0) - volumeT);
+        + directSpec;
 
     if (reflectionProbeDebugView != 0u)
     {

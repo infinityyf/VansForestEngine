@@ -35,7 +35,6 @@ void main()
     VansDrawData drawData = VansGetDrawData();
     float roughness = 0.62;
     float normalStrength = 0.35;
-    float ao = 1.0;
     SkinMaterialPayload skinMaterial = GetSkinMaterialPayload(drawData.materialIndex);
     roughness = clamp(skinMaterial.roughnessNormalSpecular.x, 0.045, 1.0);
     normalStrength = clamp(skinMaterial.roughnessNormalSpecular.y, 0.0, 2.0);
@@ -47,7 +46,10 @@ void main()
     float cavity       = clamp(texture(skinCavityTexture, frag_uv, MaterialMipBias).r, 0.0, 1.0);
     float textureScatterMask = clamp(texture(skinScatterMaskTexture, frag_uv, MaterialMipBias).r, 0.0, 1.0);
     float thinnessMask = clamp(texture(skinThicknessTexture, frag_uv, MaterialMipBias).r, 0.0, 1.0);
-    float scatterMask  = textureScatterMask * thinnessMask;
+    // Scatter coverage and optical thinness are independent authored signals.
+    // Multiplying them made a dark thickness map disable the whole diffusion
+    // profile instead of affecting transmission only.
+    float scatterMask  = textureScatterMask;
     float thinnessWeight = clamp(skinMaterial.profileLUT.y, 0.0, 1.0);
     roughness = clamp(roughness * roughnessMap, 0.045, 1.0);
 
@@ -56,13 +58,11 @@ void main()
     mat3 TBN = mat3(normalize(tangent_ws), normalize(bitangent_ws), normalize(normal_ws));
     vec3 normal = normalize(TBN * normal_sample);
 
-    // Curvature for pre-integrated skin diffusion lookup.
-    // Blend geometric + normal-mapped normal derivatives so the result
-    // varies per-pixel (texture sampling) instead of being constant per-triangle
-    // (which is all dFdx of linearly interpolated varyings can give).
+    // 预积分 Skin 扩散只需要宏观几何曲率。法线贴图包含毛孔等高频细节，
+    // 若参与曲率会把微表面误判为薄组织并放大红色散射/透射。
     vec3 geoNormal = normalize(normal_ws);
-    vec3 dNdx = dFdx(geoNormal) * 0.5 + dFdx(normal) * 0.5;
-    vec3 dNdy = dFdy(geoNormal) * 0.5 + dFdy(normal) * 0.5;
+    vec3 dNdx = dFdx(geoNormal);
+    vec3 dNdy = dFdy(geoNormal);
     vec3 dPdx = dFdx(position_world);
     vec3 dPdy = dFdy(position_world);
 
@@ -83,7 +83,7 @@ void main()
     outGBuffer0 = vec4(albedo, roughness);
     outGBuffer1 = vec4(
         scatterMask,
-        cavity * ao,
+        cavity,
         PackSkinMaterialIDWithThinness(float(MATERIAL_ID_SKIN), thinnessMask, thinnessWeight),
         float(drawData.materialIndex));
 

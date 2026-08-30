@@ -5,6 +5,7 @@
 #include "../Common/CameraData.glsl"
 #include "../Common/TileLightData.glsl"
 #include "../Lights/LightsData.glsl"
+#include "../Atmosphere/AtmosphereMediaComposition.glsl"
 
 layout(location = 0) in vec4 fragColor;
 layout(location = 1) in vec2 fragUV;
@@ -108,7 +109,9 @@ vec3 EvalEnvironmentGI(SixWaySample s)
 {
     float ambientSixWay = (s.right + s.top + s.back + s.left + s.bottom + s.front) / 6.0;
     vec3 skyDiffuse = SampleSkyDiffuseCube(PreConvDiffuseEnvironment, fragBillboardUp);
-    vec3 shAmbient = vec3(shCoefficients[0], shCoefficients[9], shCoefficients[18]) * 0.282095;
+    vec3 shAmbient = vec3(
+        shCoefficients[0], shCoefficients[9], shCoefficients[18]) *
+        (0.282095 * GetSkyDiffuseCubeIntensity());
     return max(skyDiffuse + shAmbient, vec3(0.0)) * ambientSixWay * pushConst.sixWayParams0.y;
 }
 
@@ -163,7 +166,9 @@ vec3 EvalSixWayLighting(SixWaySample sixWay)
     float mainShadow = SampleCascadeShadow(
         fragWorldPos, ParticleShadowNormal(mainLightDir), cascadeShadowMap, viewDepth);
     float mainSixWay = EvalSixWay(mainLightDir, sixWay);
-    result += mainSixWay * uDirectionLight.color.rgb * uDirectionLight.intensity *
+    vec3 mainLightIrradiance =
+        uDirectionLight.color.rgb * uDirectionLight.intensity;
+    result += mainSixWay * mainLightIrradiance *
         mainShadow * pushConst.sixWayParams0.x;
 
     TileLightHeader tile = GetFragTileLightHeader();
@@ -193,5 +198,7 @@ void main()
     vec3 litColor = mix(lighting * tint, 1.0 - exp(-lighting * max(tint, vec3(0.001))), absorption);
 
     vec3 emissive = lmB.a * tint * pushConst.sixWayParams0.z;
-    outColor = vec4(litColor + emissive, alpha);
+    vec2 screenUv = gl_FragCoord.xy / max(ScreenParams.xy, vec2(1.0));
+    outColor = vec4(CompositeAtmosphereSurfaceRadiance(
+        screenUv, fragWorldPos, litColor + emissive), alpha);
 }

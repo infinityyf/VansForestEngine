@@ -42,6 +42,21 @@ namespace VansGraphics
 		GLOBAL_BINDING_TREE_LEAF_MATERIAL_SSBO   = 17, // Tree leaf subsurface/transmission payloads
 		GLOBAL_BINDING_SKIN_MATERIAL_SSBO        = 18, // Skin roughness/scatter/specular extension payloads
 		GLOBAL_BINDING_SKIN_PROFILE_LUT_ARRAY    = 19, // Skin profile pre-integrated LUT array
+		GLOBAL_BINDING_ATMOSPHERE_STATIC_UBO     = 20,
+		GLOBAL_BINDING_ATMOSPHERE_FRAME_UBO      = 21,
+		GLOBAL_BINDING_TRANSMITTANCE_LUT         = 22,
+		GLOBAL_BINDING_MULTI_SCATTERING_LUT      = 23,
+		GLOBAL_BINDING_SKY_VIEW_LUT              = 24,
+		GLOBAL_BINDING_AERIAL_SCATTERING         = 25,
+		GLOBAL_BINDING_AERIAL_OPTICAL_DEPTH      = 26,
+		GLOBAL_BINDING_CLOUD_SHADOW              = 27,
+		GLOBAL_BINDING_CLOUD_RESULT              = 28,
+		GLOBAL_BINDING_LOCAL_MEDIA_SCATTERING    = 29,
+		GLOBAL_BINDING_LOCAL_MEDIA_OPTICAL_DEPTH = 30,
+		GLOBAL_BINDING_LOCAL_MEDIA_UBO            = 32,
+		GLOBAL_BINDING_VOLUMETRIC_CLOUD_UBO       = 33,
+		GLOBAL_BINDING_CLOUD_DEPTH                = 34,
+		GLOBAL_BINDING_CLOUD_OPTICAL_DEPTH        = 35,
 		GLOBAL_BINDING_BINDLESS_TEXTURES        = 50,  // Variable count
 	};
 
@@ -229,7 +244,6 @@ namespace VansGraphics
 		DEFERRED_BINDING_SH_R             = 10,
 		DEFERRED_BINDING_SH_G             = 11,
 		DEFERRED_BINDING_SH_B             = 12,
-		DEFERRED_BINDING_FOG              = 13,
 		DEFERRED_BINDING_SCREEN_SPACE_SHADOW = 14,
 		DEFERRED_BINDING_RECT_LIGHT_EMISSIVE = 15, // 面光源发光贴图数组 (sampler2DArray)
 		DEFERRED_BINDING_IES_PROFILES        = 16, // IES profile 纹理数组 (sampler2DArray, R16F)
@@ -239,15 +253,6 @@ namespace VansGraphics
 		DEFERRED_BINDING_GI_VISIBILITY = 20,
 		DEFERRED_BINDING_GI_IRRADIANCE = 21,
 		DEFERRED_BINDING_GI_PROBE_STATE = 22,
-	};
-
-	// --- SkyBox Pass ---
-	enum SkyBoxPassBinding : uint32_t
-	{
-		SKYBOX_BINDING_ATMOSPHERE_UBO = 0,
-		SKYBOX_BINDING_FOG            = 1,
-		SKYBOX_BINDING_CLOUD          = 2,   // 1/4 分辨率体积云结果（COMBINED_IMAGE_SAMPLER）
-		SKYBOX_BINDING_MOON_ALBEDO    = 3,
 	};
 
 	// --- Screen-Space Pass (SSAO etc.) ---
@@ -351,6 +356,9 @@ namespace VansGraphics
 		SSGI_BINDING_INFO_UBO     = 6,
 		SSGI_BINDING_HIZ_DEPTH    = 10,
 		SSGI_BINDING_MATERIAL     = 11,
+		SSGI_BINDING_SCREEN_IRRADIANCE = 20,
+		SSGI_BINDING_GI_VISIBILITY = 21,
+		SSGI_BINDING_GI_PROBE_STATE = 22,
 		SSGI_BINDING_PROBE_CACHE_RADIANCE = 23,
 		SSGI_BINDING_PROBE_CACHE_SURFACE = 24,
 	};
@@ -445,49 +453,12 @@ namespace VansGraphics
 		SSR_TAA_BINDING_MOTION_VECTOR  = 5,
 	};
 
-	// --- Volumetric Fog Compose Compute Pass ---
-	enum VolumetricFogPassBinding : uint32_t
-	{
-		FOG_BINDING_POSITION      = 0,   // inputPosition    (COMBINED_IMAGE_SAMPLER)
-		FOG_BINDING_RESULT        = 1,   // fogResult        (STORAGE_IMAGE)
-		FOG_BINDING_PARAMS        = 2,   // FogParams UBO    (UNIFORM_BUFFER)
-		FOG_BINDING_VOXEL_VOLUME  = 3,   // voxelFogVolume   (COMBINED_IMAGE_SAMPLER, 3D)
-		FOG_BINDING_VOLUME_PARAMS = 4,   // FogVolumeParams UBO (UNIFORM_BUFFER)
-	};
-
-	// --- Fog Light Injection Compute Pass ---
-	enum FogLightInjectionPassBinding : uint32_t
-	{
-		FOG_INJECT_BINDING_VOXEL_GRID       = 0,   // i_VoxelGrid       (STORAGE_IMAGE, 3D, rgba16f)
-		FOG_INJECT_BINDING_SHADOW_MAP       = 1,   // fogShadowMap      (COMBINED_IMAGE_SAMPLER)
-		FOG_INJECT_BINDING_PARAMS           = 2,   // FogVolumeParams UBO
-		FOG_INJECT_BINDING_HISTORY          = 3,   // s_History         (COMBINED_IMAGE_SAMPLER, 3D)
-		FOG_INJECT_BINDING_PUNCTUAL_SHADOW  = 4,   // punctualShadowMap (COMBINED_IMAGE_SAMPLER)
-	};
-
 	// --- TileLight Build Compute Pass (Set 1, write access) ---
 	enum TileLightBuildPassBinding : uint32_t
 	{
 		TILE_BUILD_BINDING_GRID    = 0,  // TileLightHeader SSBO (write)
 		TILE_BUILD_BINDING_INDICES = 1,  // TileLight Index SSBO  (write)
 		TILE_BUILD_BINDING_PARAMS  = 2,  // TileLightBuildParams UBO (read)
-	};
-
-	// --- Cloud Ray March Compute Pass ---
-	enum CloudRayMarchPassBinding : uint32_t
-	{
-		CLOUD_MARCH_BINDING_RESULT = 0,   // cloudResult (STORAGE_IMAGE, rgba16f, 1/4 分辨率)
-		CLOUD_MARCH_BINDING_PARAMS = 1,   // CloudParams UBO (UNIFORM_BUFFER)
-		CLOUD_MARCH_BINDING_MAIN_NOISE = 2,   // cloudMainNoise  (sampler3D, 128^3 RGBA Perlin-Worley)
-		CLOUD_MARCH_BINDING_DETAIL_NOISE = 3, // cloudDetailNoise(sampler3D, 32^3 RGBA detail)
-	};
-
-	// --- Fog Ray March Accumulate Compute Pass ---
-	enum FogRayMarchPassBinding : uint32_t
-	{
-		FOG_MARCH_BINDING_INPUT_VOXEL    = 0,   // s_VoxelGrid       (COMBINED_IMAGE_SAMPLER, 3D)
-		FOG_MARCH_BINDING_RESULT         = 1,   // i_RayMarchResult  (STORAGE_IMAGE, 3D, rgba16f)
-		FOG_MARCH_BINDING_VOLUME_PARAMS  = 2,   // FogVolumeParams UBO (UNIFORM_BUFFER)
 	};
 
 	// --- Bilateral Filter Compute Pass ---
@@ -591,6 +562,7 @@ namespace VansGraphics
 		WATER_GBUF_BINDING_DISPLACEMENT  = 1,   // Compute 输出的水面位移贴图 Texture2DArray（Vertex 采样）
 		WATER_GBUF_BINDING_DERIVATIVE    = 4,   // dPdx/dPdz Texture2DArray
 		WATER_GBUF_BINDING_FLOW_MAP      = 5,   // Generated flow map sampler
+		WATER_GBUF_BINDING_DETAIL_NORMAL = 6,   // Built-in RG detail normal texture
 	};
 
 	// --- Water Wave Compute Pass（Set 0）---
@@ -626,6 +598,7 @@ namespace VansGraphics
 		WATER_COMP_BINDING_VOLUME_TRANSMITTANCE = 10,
 		WATER_COMP_BINDING_VOLUME_DEPTH  = 11,
 		WATER_COMP_BINDING_SCENE_COLOR   = 12,
+		WATER_COMP_BINDING_CASCADE_SHADOW = 13,
 	};
 
 	// --- Hair Composite Pass（Set 1）---
@@ -715,6 +688,8 @@ namespace VansGraphics
 		WATER_VOLUME_BINDING_COLOR_OUT = 8,
 		WATER_VOLUME_BINDING_TRANSMITTANCE_OUT = 9,
 		WATER_VOLUME_BINDING_DEPTH_OUT = 10,
+		WATER_VOLUME_BINDING_BACKGROUND_PYRAMID = 11,
+		WATER_VOLUME_BINDING_CASCADE_SHADOW = 12,
 	};
 
 	enum WaterVolumeFilterComputeBinding : uint32_t
@@ -886,7 +861,6 @@ namespace VansGraphics
 		static void CreateAndAllocate_VertexDeformation(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_PostProcess(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_DeferredLighting(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
-		static void CreateAndAllocate_SkyBox(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_ScreenSpace(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_Empty(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_Terrain(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
@@ -899,10 +873,6 @@ namespace VansGraphics
 		static void CreateAndAllocate_SSR_Trace(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_SSR_Resolve(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_SSR_TemporalAA(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
-		static void CreateAndAllocate_VolumetricFog(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
-		static void CreateAndAllocate_FogLightInjection(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
-		static void CreateAndAllocate_FogRayMarch(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
-		static void CreateAndAllocate_CloudRayMarch(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_BilateralFilter(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 3);
 		static void CreateAndAllocate_HIZ(std::vector<VkDescriptorSetLayout>& outLayouts, std::vector<VkDescriptorSet>& outSets, uint32_t mipCount);
 		static void CreateAndAllocate_HIZSeed(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);

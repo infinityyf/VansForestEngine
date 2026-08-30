@@ -85,14 +85,14 @@ float CloudGet3DNoise(vec3 pos)
 // --------------------------------------------------------------------------
 // 云密度采样
 //
-// worldPos: 大气空间世界坐标（已加 planetRadius + seaLevel 偏移）
+// worldPos: 以 Environment.Planet 中心为原点的米制坐标。
 //   worldPos.y = 实际距星球中心距离（注：当前使用平坦地球近似，直接用 worldPos.y）
 // 体积云参数从 CloudRayMarch.comp 的 uCloud 读取，Inspector 可实时调节。
 // --------------------------------------------------------------------------
 float SampleCloudDensity(vec3 worldPos)
 {
-    // 大气空间坐标：worldPos.y ≈ planetRadius + 海拔，减去 planetRadius 得到海拔高度
-    float heightAbove = worldPos.y - uCloud.planetRadius;
+    // 径向距离减去 Planet.bottomRadius 得到真实海拔。
+    float heightAbove = length(worldPos) - uCloud.planetBottomRadius;
 
     if (heightAbove < uCloud.cloudMinHeight || heightAbove > uCloud.cloudMaxHeight)
         return 0.0;
@@ -139,63 +139,6 @@ float SampleCloudDensity(vec3 worldPos)
 }
 
 // --------------------------------------------------------------------------
-// 太阳可见性：沿太阳方向对云密度做简化光线积分
-// 返回 [0, 1]，0=完全遮挡，1=完全照亮
-//
-// 修复：步长基于从当前点到云层出口的实际路径长度（平面近似，与 SampleCloudDensity 保持一致）。
-// 原始实现使用固定的 cloudThickness/SHADOW_STEPS 作为步长，当太阳仰角较低时，
-// 每步在 Y 方向覆盖量 = stepSize × sunDir.y 远小于云层厚度，导致阴影严重低估，
-// 云体明暗变化消失（背光面不够暗）。
-// --------------------------------------------------------------------------
-float GetCloudSunVisibility(vec3 worldPos, vec3 sunDir)
-{
-    const int SHADOW_STEPS = 8;  // 增至 8 步，提升阴影精度
-
-    // 使用平面近似高度（与 SampleCloudDensity 中的 heightAbove 计算一致）
-    float heightAbove = worldPos.y - uCloud.planetRadius;
-    float cloudThickness = max(uCloud.cloudMaxHeight - uCloud.cloudMinHeight, 1.0);
-    float absSunY = abs(sunDir.y);
-
-    // 计算从当前点沿太阳方向到云层出口的实际距离
-    float tSunExit;
-    if (sunDir.y > 0.001)
-    {
-        // 太阳在地平线以上：出口为云顶平面
-        tSunExit = (uCloud.cloudMaxHeight - heightAbove) / sunDir.y;
-    }
-    else if (sunDir.y < -0.001)
-    {
-        // 太阳在地平线以下（黄昏边缘）：出口为云底平面
-        tSunExit = (uCloud.cloudMinHeight - heightAbove) / sunDir.y;
-    }
-    else
-    {
-        // 太阳近乎水平：限制最大光路为云层厚度的 3 倍，防止步长爆炸
-        tSunExit = cloudThickness * 3.0;
-    }
-    tSunExit = max(tSunExit, 0.0);
-
-    if (tSunExit <= 0.0) return 1.0;
-
-    float horizonFactor = 1.0 - smoothstep(0.05, 0.22, absSunY);
-    float maxProxyPath = mix(cloudThickness * 3.0, cloudThickness * 1.15, horizonFactor);
-    tSunExit = min(tSunExit, maxProxyPath);
-
-    float stepSize = tSunExit / float(SHADOW_STEPS);
-    vec3  increment = sunDir * stepSize;
-    vec3  pos       = worldPos + increment * 0.5;
-    float od        = 0.0;
-
-    for (int i = 0; i < SHADOW_STEPS; i++, pos += increment)
-        od += SampleCloudDensity(pos);
-
-    float shadowScale = uCloud.shadowDensityScale * mix(1.0, 0.45, horizonFactor);
-    float visibility = exp(-od * stepSize * shadowScale);
-    float horizonFloor = mix(0.0, 0.11, horizonFactor);
-    return clamp(max(visibility, horizonFloor), 0.0, 1.0);
-}
-
-// --------------------------------------------------------------------------
 // 球壳射线相交
 //
 // 支持相机在云层以下 / 云层内 / 云层以上全部六种情形（见文档 §8.8）。
@@ -223,7 +166,7 @@ struct CloudShellResult
     bool  hit;
 };
 
-// rayOrigin: 大气空间相机位置（含 planetRadius + seaLevel 偏移）
+// rayOrigin: 相对于 Planet 中心的米制相机位置。
 CloudShellResult IntersectCloudShell(vec3 rayOrigin, vec3 rayDir,
                                       float planetRadius, float shellBot, float shellTop)
 {
@@ -264,23 +207,6 @@ CloudShellResult IntersectCloudShell(vec3 rayOrigin, vec3 rayDir,
 
     res.hit = (res.tEnd > res.tStart) && (res.tEnd > 0.0);
     return res;
-}
-
-// --------------------------------------------------------------------------
-// 大气太阳色衰减（简化版，与 SkyBox.frag 保持一致）
-// --------------------------------------------------------------------------
-vec3 CalcCloudSunAbsorbLight(vec3 sunDirection)
-{
-    float lDotU = dot(normalize(sunDirection), vec3(0.0, 1.0, 0.0));
-
-    // 简化大气散射系数（硬编码，与 SkyBox.frag 原始值一致）
-    const vec3 rayleighCoeff = vec3(0.27, 0.5, 1.0) * 1e-5;
-    const vec3 mieCoeff      = vec3(0.5e-6);
-    const vec3 totalCoeff    = rayleighCoeff + mieCoeff;
-
-    float depth        = 100000.0 / max(lDotU * 2.0 + 0.01, 0.01);
-    vec3  scatterCoeff = totalCoeff * depth;
-    return exp2(-scatterCoeff);
 }
 
 #endif // CLOUD_COMMON_GLSL

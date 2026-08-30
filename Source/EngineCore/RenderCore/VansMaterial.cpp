@@ -12,8 +12,6 @@ using namespace VansGraphics;
 
 namespace
 {
-constexpr float kLegacyMoonDiskRadianceScale = 0.00008f;
-
 std::string NormalizeSkinProfileName(std::string value)
 {
 	std::string normalized;
@@ -152,16 +150,6 @@ bool BuildSkinProfilePresetPayload(
 	}
 
 	return false;
-}
-
-glm::vec3 NormalizeMaterialDirectionSafe(const glm::vec3& direction, const glm::vec3& fallbackDirection)
-{
-	if (std::isfinite(direction.x) && std::isfinite(direction.y) && std::isfinite(direction.z) &&
-		glm::dot(direction, direction) > 1e-6f)
-	{
-		return glm::normalize(direction);
-	}
-	return glm::normalize(fallbackDirection);
 }
 
 bool ReadMaterialVec3(const VansMaterialParameterValue& value, glm::vec3& out)
@@ -544,16 +532,6 @@ VansGraphics::VansMaterialManager::VansMaterialManager()
 {
 }
 
-void VansGraphics::VansMaterialManager::UploadCloudParamsToGPU()
-{
-	if (m_CloudParamsCBBuffer.GetNativeBuffer() == VK_NULL_HANDLE)
-	{
-		return;
-	}
-
-	m_CloudParamsCBBuffer.SetBufferData(&m_CloudParams, 0, sizeof(VansCloudParamsGPU));
-}
-
 VansGraphics::VansMaterialManager::~VansMaterialManager()
 {
 	ClearRuntimeMaterialInstances();
@@ -773,10 +751,6 @@ void VansGraphics::VansMaterialManager::ClearResolutionDependentRenderData(VkDev
 		RT_SCREEN_SPACE_SHADOW_RESULT, RT_CASCADE_SHADOW_MIN_MAX,
 		RT_SSR_HIT_INFO, RT_SSR_RAY_PDF, RT_SSR_RESULT,
 		RT_SSRAA_RESULT_A, RT_SSRAA_RESULT_B, RT_SSRAA_RESULT,
-		RT_VOLUMETRIC_FOG_RESULT,
-		RT_FOG_VOXEL_INJECTION, RT_FOG_VOXEL_INJECTION_HISTORY,
-		RT_FOG_VOXEL_RAYMARCH,
-		RT_CLOUD_BUFFER, RT_CLOUD_MAIN_NOISE, RT_CLOUD_DETAIL_NOISE,
 		RT_EXPOSURE_LUMINANCE, RT_EXPOSURE_CURRENT, RT_UPSCALER_EXPOSURE,
 		RT_DOF_RESULT, RT_BLOOM_PREFILTER,
 		RT_BLOOM_MIP0, RT_BLOOM_MIP1, RT_BLOOM_MIP2, RT_BLOOM_MIP3,
@@ -787,11 +761,8 @@ void VansGraphics::VansMaterialManager::ClearResolutionDependentRenderData(VkDev
 		RemoveRuntimeRenderTexture(name);
 
 	m_ScreenSpaceShadowParamsCBBuffer.DestroyVulkanBuffer(device);
-	m_FogParamsCBBuffer.DestroyVulkanBuffer(device);
-	m_FogVolumeParamsCBBuffer.DestroyVulkanBuffer(device);
 	m_SSGITemporalCBBuffer.DestroyVulkanBuffer(device);
 	m_SSGICBBuffer.DestroyVulkanBuffer(device);
-	m_CloudParamsCBBuffer.DestroyVulkanBuffer(device);
 	m_TileLightHeaderBuffer.DestroyVulkanBuffer(device);
 	m_TileLightIndexBuffer.DestroyVulkanBuffer(device);
 	m_TileLightBuildParamsCBBuffer.DestroyVulkanBuffer(device);
@@ -831,12 +802,6 @@ void VansGraphics::VansMaterialManager::ClearResolutionDependentRenderData(VkDev
 	descMgr->DestroyDescriptorSetLayout(m_SSRAASetLayout);
 	descMgr->DestroyDescriptorSet(m_BilateralFilterDescriptorSets);
 	descMgr->DestroyDescriptorSetLayout(m_BilateralFilterSetLayout);
-	descMgr->DestroyDescriptorSet(m_VolumetricFogDescriptorSets);
-	descMgr->DestroyDescriptorSetLayout(m_VolumetricFogSetLayout);
-	descMgr->DestroyDescriptorSet(m_FogLightInjectionDescriptorSets);
-	descMgr->DestroyDescriptorSetLayout(m_FogLightInjectionSetLayout);
-	descMgr->DestroyDescriptorSet(m_FogRayMarchDescriptorSets);
-	descMgr->DestroyDescriptorSetLayout(m_FogRayMarchSetLayout);
 	descMgr->DestroyDescriptorSet(m_SSGITemporalDescriptorSets);
 	descMgr->DestroyDescriptorSetLayout(m_SSGITemporalSetLayout);
 	descMgr->DestroyDescriptorSet(m_SSGIAtrousDescriptorSets);
@@ -845,8 +810,6 @@ void VansGraphics::VansMaterialManager::ClearResolutionDependentRenderData(VkDev
 	descMgr->DestroyDescriptorSetLayout(m_HIZSeedSetLayout);
 	descMgr->DestroyDescriptorSet(m_OcclusionHIZSeedDescriptorSets);
 	descMgr->DestroyDescriptorSetLayout(m_OcclusionHIZSeedSetLayout);
-	descMgr->DestroyDescriptorSet(m_CloudRayMarchDescriptorSets);
-	descMgr->DestroyDescriptorSetLayout(m_CloudRayMarchSetLayout);
 	descMgr->DestroyDescriptorSet(m_TileLightBuildDescriptorSets);
 	descMgr->DestroyDescriptorSetLayout(m_TileLightBuildSetLayout);
 	descMgr->DestroyDescriptorSet(m_ExposureLuminanceDescriptorSets);
@@ -1206,7 +1169,6 @@ void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
 	deleteTexture(m_SkinBSDFLUT);
 	deleteTexture(m_SkinProfileLUTArray);
 	deleteTexture(m_ClothBRDFLUT);
-	deleteTexture(m_MoonAlbedoTexture);
 	deleteTexture(m_LTC1);
 	deleteTexture(m_LTC2);
 
@@ -1217,7 +1179,6 @@ void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
 	m_GlobalSkinDataBuffer.DestroyVulkanBuffer(device);
 	m_GlobalCustomMaterialDataBuffer.DestroyVulkanBuffer(device);
 	m_SkySHResultBuffer.DestroyVulkanBuffer(device);
-	m_AtmospherePBRDataBuffer.DestroyVulkanBuffer(device);
 
 	// Release descriptor sets and layouts.
 	auto descMgr = VansVKDescriptorManager::GetInstance();
@@ -1225,10 +1186,6 @@ void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
 	descMgr->DestroyDescriptorSetLayout(m_GlobalPBRDataSetLayout);
 	descMgr->DestroyDescriptorSet(m_GlobalPBRTexDescriptorSets);
 	descMgr->DestroyDescriptorSetLayout(m_GlobalPBRTexSetLayout);
-	descMgr->DestroyDescriptorSet(m_MaterialAtmosphereDataDescriptorSets);
-	descMgr->DestroyDescriptorSetLayout(m_MaterialAtmosphereDataLayout);
-	descMgr->DestroyDescriptorSet(m_BRDFInterationTextDescriptorSets);
-	descMgr->DestroyDescriptorSetLayout(m_BRDFInterationTexSetLayout);
 	descMgr->DestroyDescriptorSet(m_PunctualShadowDebugDescriptorSets);
 	descMgr->DestroyDescriptorSetLayout(m_PunctualShadowDebugSetLayout);
 }
@@ -1348,20 +1305,6 @@ bool VansGraphics::VansMaterialManager::UploadRenderMaterialFrameData(
 	}
 	return !frameData.rewriteBindlessTextures ||
 		RewriteGlobalBindlessTextureDescriptors();
-}
-
-bool VansGraphics::VansMaterialManager::UploadAtmosphereFrameData(
-	const VansAtmospherePBRParam& payload)
-{
-	VANS_ASSERT_NOT_MAIN_THREAD();
-	if (m_AtmospherePBRDataBuffer.GetNativeBuffer() == VK_NULL_HANDLE ||
-		m_AtmospherePBRDataBuffer.GetBufferSize() < sizeof(payload))
-	{
-		return false;
-	}
-	m_AtmospherePBRDataBuffer.SetBufferData(
-		&payload, 0, sizeof(VansAtmospherePBRParam));
-	return true;
 }
 
 bool VansGraphics::VansMaterialManager::ApplyMaterialParameter(
@@ -1880,30 +1823,6 @@ bool VansGraphics::VansMaterialManager::ApplyMaterialParameter(
 	return false;
 }
 
-void VansGraphics::VansMaterialManager::ApplyFogSettings(const VansFogSettings& settings)
-{
-	m_FogSettings = settings;
-	if (m_FogParamsCBBuffer.GetNativeBuffer() == VK_NULL_HANDLE)
-		return;
-
-	m_FogParamsCBBuffer.SetBufferData(
-		&m_FogSettings,
-		0,
-		sizeof(VansFogSettings));
-}
-
-void VansGraphics::VansMaterialManager::ApplyFogVolumeSettings(const VansFogVolumeSettings& settings)
-{
-	m_FogVolumeSettings = settings;
-	if (m_FogVolumeParamsCBBuffer.GetNativeBuffer() == VK_NULL_HANDLE)
-		return;
-
-	m_FogVolumeParamsCBBuffer.SetBufferData(
-		&m_FogVolumeSettings,
-		0,
-		sizeof(VansFogVolumeSettings));
-}
-
 VansGraphics::VansScreenSpacePunctualShadowSettings
 VansGraphics::VansMaterialManager::GetScreenSpacePunctualShadowSettings() const
 {
@@ -1952,51 +1871,6 @@ void VansGraphics::VansMaterialManager::SetScreenSpaceShadowExtent(uint32_t widt
 			0,
 			sizeof(m_ScreenSpaceShadowParams));
 	}
-}
-
-void VansGraphics::VansMaterialManager::UpdatePBRLutDescriptorSets()
-{
-	//update descriptor
-	auto* descMgr = VansVKDescriptorManager::GetInstance();
-	descMgr->BeginDescriptorUpdate();
-	descMgr->WriteBufferDescriptor(
-		m_BRDFInterationTextDescriptorSets[0],
-		PassBinding::BUFFER_3,
-		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-		{ { m_SkySHResultBuffer.GetNativeBuffer(), 0, m_SkySHResultBuffer.GetBufferSize() } });
-
-	descMgr->WriteImageDescriptor(
-		m_BRDFInterationTextDescriptorSets[0],
-		PassBinding::TEXTURE_0,
-		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		{ { m_BRDFIntegralLUT->GetImage().GetSampler(), m_BRDFIntegralLUT->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-	descMgr->WriteImageDescriptor(
-		m_BRDFInterationTextDescriptorSets[0],
-		PassBinding::TEXTURE_1,
-		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		{ { m_PreConvDiffuse->GetImage().GetSampler(), m_PreConvDiffuse->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-	descMgr->WriteImageDescriptor(
-		m_BRDFInterationTextDescriptorSets[0],
-		PassBinding::TEXTURE_2,
-		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		{ { m_PreConvSpecular->GetImage().GetSampler(), m_PreConvSpecular->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-	descMgr->WriteImageDescriptor(
-		m_BRDFInterationTextDescriptorSets[0],
-		PassBinding::TEXTURE_4,
-		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		{ { m_SkinBSDFLUT->GetImage().GetSampler(), m_SkinBSDFLUT->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-
-	// Binding 8: cloth BRDF LUT (split-sum .rg and sheen tint .b).
-	if (m_ClothBRDFLUT)
-	{
-		descMgr->WriteImageDescriptor(
-			m_BRDFInterationTextDescriptorSets[0],
-			PassBinding::TEXTURE_5,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{ { m_ClothBRDFLUT->GetImage().GetSampler(), m_ClothBRDFLUT->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-	}
-
-	descMgr->CommitDescriptorUpdates();
 }
 
 void VansGraphics::VansClothMaterial::BuildClothTextureDescriptors()
@@ -2061,48 +1935,6 @@ void VansGraphics::VansClothMaterial::BuildClothTextureDescriptors()
 	descManager->CommitDescriptorUpdates();
 }
 
-void VansGraphics::VansMaterialManager::UpdateAtmosphereDescriptorSets()
-{
-	//update descriptor
-	auto* descMgr = VansVKDescriptorManager::GetInstance();
-	descMgr->BeginDescriptorUpdate();
-	descMgr->WriteBufferDescriptor(
-		m_MaterialAtmosphereDataDescriptorSets[0],
-		SKYBOX_BINDING_ATMOSPHERE_UBO,
-		VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-		{ { m_AtmospherePBRDataBuffer.GetNativeBuffer(), 0, m_AtmospherePBRDataBuffer.GetBufferSize() } });
-
-	VansTexture* volumetricFogResult = GetRuntimeRenderTexture(RT_VOLUMETRIC_FOG_RESULT);
-	if (volumetricFogResult != nullptr)
-	{
-		descMgr->WriteImageDescriptor(
-			m_MaterialAtmosphereDataDescriptorSets[0],
-			SKYBOX_BINDING_FOG,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{ { volumetricFogResult->GetImage().GetSampler(), volumetricFogResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
-	}
-
-	// Bind the quarter-resolution volumetric-cloud result to the skybox set.
-	VansTexture* cloudBuffer = GetRuntimeRenderTexture(RT_CLOUD_BUFFER);
-	if (cloudBuffer != nullptr)
-	{
-		descMgr->WriteImageDescriptor(
-			m_MaterialAtmosphereDataDescriptorSets[0],
-			SKYBOX_BINDING_CLOUD,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{ { cloudBuffer->GetImage().GetSampler(), cloudBuffer->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
-	}
-	if (m_MoonAlbedoTexture != nullptr)
-	{
-		descMgr->WriteImageDescriptor(
-			m_MaterialAtmosphereDataDescriptorSets[0],
-			SKYBOX_BINDING_MOON_ALBEDO,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{ { m_MoonAlbedoTexture->GetImage().GetSampler(), m_MoonAlbedoTexture->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-	}
-	descMgr->CommitDescriptorUpdates();
-}
-
 //void VansGraphics::VansMaterial::CreatePBRMaterialDataBuffer(VkDevice& logic_device)
 //{
 //	VkDeviceSize bufferSize = sizeof(m_BasePBRParam);
@@ -2119,47 +1951,6 @@ void VansGraphics::VansMaterialManager::UpdateAtmosphereDescriptorSets()
 //	uint32_t size = sizeof(VansBasePBRParam);
 //	m_BasePBRDataBuffer.SetBufferData(&m_BasePBRParam, offset, size);
 //}
-
-VansGraphics::VansAtmospherePBRParam
-VansGraphics::VansSkyBoxMaterial::BuildAtmosphereFrameData(
-	const VansDirectionalLight* directionalLight) const
-{
-	VansAtmospherePBRParam payload = m_AtmospherePBRParam;
-	// Preserve m_SunDirection when the scene has no directional light.
-	if (directionalLight == nullptr)
-		return payload;
-
-	const auto& dirLight = *directionalLight;
-	const VansCelestialLightingState celestialState = VansLightManager::ComputeCelestialLightingState(dirLight);
-	const glm::vec3 sunDirection = NormalizeMaterialDirectionSafe(celestialState.sunDirection, glm::vec3(0.0f, 1.0f, 0.0f));
-	const glm::vec3 moonDirection = NormalizeMaterialDirectionSafe(celestialState.moonDirection, -sunDirection);
-	const glm::vec3 mainCelestialDirection = NormalizeMaterialDirectionSafe(celestialState.direction, sunDirection);
-	const float moonBlend = glm::clamp(celestialState.moonBlend, 0.0f, 1.0f);
-	const float sunDiskVisibility = m_SunDiskEnabled ? (1.0f - moonBlend) : 0.0f;
-	const float moonDiskVisibility = m_MoonDiskEnabled ? moonBlend : 0.0f;
-	payload.m_SunDirection = sunDirection;
-	// CPU 预计算大气衰减后的太阳颜色，写入 AtmosphereUBO
-	// Used by shaders such as VolumeCloud.frag that cannot include LightsData.glsl.
-	payload.m_EffectiveSunColor = celestialState.color;
-	const float moonPhase = 1.0f;
-	const glm::vec3 sunRadiance = glm::max(
-		VansLightManager::ComputeAtmosphereSunColor(sunDirection, dirLight.m_Color) *
-			dirLight.m_Intensity * payload.m_SunLuminance,
-		glm::vec3(0.0f));
-	const float moonRadianceScale = (std::max)(m_MoonDiskRadianceScale / kLegacyMoonDiskRadianceScale, 0.0f);
-	const glm::vec3 moonRadiance = glm::max(
-		celestialState.color * celestialState.intensity * payload.m_SunLuminance,
-		glm::vec3(0.0f)) * moonRadianceScale * glm::vec3(0.82f, 0.86f, 1.0f);
-
-	payload.m_SunDiskDirectionAngularRadius = glm::vec4(sunDirection, m_SunDiskAngularRadius);
-	payload.m_SunDiskRadianceEnabled = glm::vec4(sunRadiance * m_SunDiskRadianceScale, sunDiskVisibility);
-	payload.m_SunDiskParams = glm::vec4(m_SunDiskFeather, 1.0f, m_SunDiskOcclusionStrength, 0.0f);
-	payload.m_MoonDiskDirectionAngularRadius = glm::vec4(moonDirection, m_MoonDiskAngularRadius);
-	payload.m_MoonDiskRadianceEnabled = glm::vec4(moonRadiance, moonDiskVisibility);
-	payload.m_MoonDiskParams = glm::vec4(m_MoonDiskFeather, moonPhase, m_MoonDiskOcclusionStrength, 0.0f);
-	payload.m_MainCelestialLightInfo = glm::vec4(mainCelestialDirection, moonBlend);
-	return payload;
-}
 
 void VansGraphics::VansTransparentMaterial::CreateTransparentDescriptorLayout(const std::vector<VkDescriptorSetLayoutBinding>& bindings)
 {

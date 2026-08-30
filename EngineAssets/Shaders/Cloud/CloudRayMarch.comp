@@ -5,7 +5,9 @@
 // CloudRayMarch.comp — 1/4 分辨率体积云光线步进
 //
 // 输出:
-//   cloudResult (RGBA16F)  RGB = 内散射颜色，A = 透射率
+//   cloudResult (RGBA16F)  RGB = 云区间内散射，A = 平均透射率（诊断）
+//   cloudOpticalDepth (RGBA16F) RGB = 云区间 RGB 光学深度
+//   cloudDepth (RG32F) RG = 云区间入口/出口距离
 //
 // 渲染规格:
 //   - 分辨率: ScreenWidth/4 × ScreenHeight/4（由 CPU dispatch 计算，向上取整）
@@ -17,7 +19,8 @@
 // ==========================================================================
 
 #include "../Common/CameraData.glsl"
-#include "../Lights/LightsData.glsl"
+#include "../Atmosphere/AtmosphereCommon.glsl"
+#include "../Atmosphere/AtmosphereViewCommon.glsl"
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -25,20 +28,20 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 // Set 1, binding 0: 云层结果输出（1/4 分辨率，RGBA16F）
 // --------------------------------------------------------------------------
 layout(set = 1, binding = 0, rgba16f) uniform writeonly image2D cloudResult;
+layout(set = 1, binding = 1, rg32f) uniform writeonly image2D cloudDepth;
 
 // --------------------------------------------------------------------------
 // Set 1, binding 1: 云层参数 UBO
 // --------------------------------------------------------------------------
-layout(set = 1, binding = 1) uniform CloudParamsUBO
+layout(set = 1, binding = 2) uniform CloudParamsUBO
 {
-    float planetRadius;   // 大气层球半径（米），与 Atmosphere.glsl 中 earthRadius 一致
-    float seaLevel;       // 海拔基准（米），对应 Atmosphere.glsl 中 initSeaLevel
+    float planetBottomRadius; // 唯一来源为 Environment.Planet.bottomRadiusMeters
     float cloudMinHeight; // 云底高度，相对海平面（米）
     float cloudMaxHeight; // 云顶高度，相对海平面（米）
     float density;        // 云基础密度系数
     float coverage;       // 云覆盖度 [0, 1]
     float sunBrightness;  // 太阳光强度倍率
-    float phaseG;         // Henyey-Greenstein 相位 g
+    float atmosphereShadowStrength;
     float mainTileMeters;
     float detailTileMeters;
     float mainHeightScale;
@@ -54,7 +57,7 @@ layout(set = 1, binding = 1) uniform CloudParamsUBO
     float detailErosionLow;
     float detailErosionHigh;
     float detailEdgeStrength;
-    float shadowDensityScale;
+    float _opticalPadding;
     float sigmaTRef;
     float viewAbsorption;
     float lightAbsorption;
@@ -87,13 +90,19 @@ layout(set = 1, binding = 1) uniform CloudParamsUBO
     float boundaryGradientStep;
     float boundaryGradientStrength;
     float shadingDebugMode;
+    float _cloudPadding;
+    vec4 shadowClipmapParameters;
+	vec4 shadowRayMarchParameters;
 } uCloud;
 
 // --------------------------------------------------------------------------
 // Set 1, binding 2/3: 预计算 3D 噪声纹理
 // --------------------------------------------------------------------------
-layout(set = 1, binding = 2) uniform sampler3D cloudMainNoise;
-layout(set = 1, binding = 3) uniform sampler3D cloudDetailNoise;
+layout(set = 1, binding = 3) uniform sampler3D cloudMainNoise;
+layout(set = 1, binding = 4) uniform sampler3D cloudDetailNoise;
+layout(set = 1, binding = 6, rgba16f) uniform writeonly image2D cloudOpticalDepth;
+layout(set = 1, binding = 7) uniform sampler3D localMediaInjection;
+layout(set = 1, binding = 8) uniform sampler2D cloudSceneDepth;
 
 #include "../Common/CloudCommon.glsl"
 #include "../Common/CloudLightingHP.glsl"
@@ -110,25 +119,18 @@ const int   MARCH_STEPS_MIN  = 32;     // 最少步数（防止极薄云欠采�
 const int   MARCH_STEPS_MAX  = 128;    // 最多步数（性能上限，对应 128 × 80m = 10240m）
 const float TRANSMIT_CUTOFF  = 0.01;   // 透射率低于此值时提前终止
 
-// --------------------------------------------------------------------------
-// 从屏幕 UV 重建世界空间视线方向（与 VolumetricFog.comp 一致）
-// --------------------------------------------------------------------------
-vec3 ReconstructWorldRayDir(vec2 uv)
+float CloudSurfaceTerminalDistance(vec2 uv)
 {
-    // NDC [-1, 1]
-    vec2 ndc = uv * 2.0 - 1.0;
-    // Vulkan NDC Y 轴向下（Y=-1 在屏幕顶部），与 OpenGL 约定相反。
-    // 逆投影矩阵按 OpenGL 约定构建，因此需翻转 Y 使方向正确
-    // （与 FogLightInjection.comp 中的 ndc.y *= -1.0 完全一致）
-    ndc.y *= -1.0;
-
-    // 逆投影到视空间（z = 1 代表远平面方向）
-    vec4 clipPos = vec4(ndc, 1.0, 1.0);
-    vec3 viewDir = normalize((InverseProjectionMatrix * clipPos).xyz);
-
-    // 逆视图矩阵旋转到世界空间（忽略平移）
-    vec3 worldDir = normalize(mat3(InverseViewMatrix) * viewDir);
-    return worldDir;
+    ivec2 depthExtent = textureSize(cloudSceneDepth, 0);
+    ivec2 depthPixel = clamp(ivec2(uv * vec2(depthExtent)),
+        ivec2(0), depthExtent - 1);
+    float deviceDepth = texelFetch(cloudSceneDepth, depthPixel, 0).r;
+    if (!AtmosphereHasSurfaceDepth(deviceDepth))
+        return uAtmosphereFrame.cameraWorldMetersAndMaxDistance.w;
+    vec2 depthUv = (vec2(depthPixel) + 0.5) / vec2(depthExtent);
+    vec3 worldPosition = AtmosphereWorldPositionFromDeviceDepth(
+        depthUv, deviceDepth);
+    return length(worldPosition - cameraPosition.xyz);
 }
 
 // --------------------------------------------------------------------------
@@ -147,15 +149,15 @@ void main()
     vec2 uv = (vec2(pixelCoord) + 0.5) / vec2(outputSize);
 
     // 重建世界空间视线方向
-    vec3 rayDir = ReconstructWorldRayDir(uv);
+    vec3 rayDir = AtmosphereWorldDirectionFromUv(uv);
 
     // 大气空间相机位置（加入地球半径 + 海拔偏移）
-    vec3 rayOrigin = cameraPosition.xyz + vec3(0.0, uCloud.planetRadius + uCloud.seaLevel, 0.0);
+    vec3 rayOrigin = -uAtmosphereFrame.planetCenterRelativeToCameraMeters.xyz;
 
     // 球壳相交：找云层 [tStart, tEnd]
     CloudShellResult shell = IntersectCloudShell(
         rayOrigin, rayDir,
-        uCloud.planetRadius,
+        uCloud.planetBottomRadius,
         uCloud.cloudMinHeight,
         uCloud.cloudMaxHeight
     );
@@ -164,6 +166,20 @@ void main()
     {
         // 无交叉：透射率 = 1（无云遮挡），内散射 = 0
         imageStore(cloudResult, pixelCoord, vec4(0.0, 0.0, 0.0, 1.0));
+        imageStore(cloudDepth, pixelCoord, vec4(0.0));
+		imageStore(cloudOpticalDepth, pixelCoord, vec4(0.0));
+        return;
+    }
+
+    // 云属于参与介质，必须在最近不透明表面处终止，不能只在最终天空分支
+    // 作为覆盖层处理。Forward Opaque 已在本 pass 之前写入主深度。
+    float terminalDistance = CloudSurfaceTerminalDistance(uv);
+    shell.tEnd = min(shell.tEnd, terminalDistance);
+    if (shell.tEnd <= shell.tStart)
+    {
+        imageStore(cloudResult, pixelCoord, vec4(0.0, 0.0, 0.0, 1.0));
+        imageStore(cloudDepth, pixelCoord, vec4(0.0));
+		imageStore(cloudOpticalDepth, pixelCoord, vec4(0.0));
         return;
     }
 
@@ -174,8 +190,15 @@ void main()
     int   marchSteps = clamp(int(ceil(tRange / MARCH_MAX_STEP_M)), MARCH_STEPS_MIN, MARCH_STEPS_MAX);
     float stepSize   = tRange / float(marchSteps);
 
-    vec3  inscatter      = vec3(0.0);
-    float transmittance  = 1.0;
+	vec3 inscatter = vec3(0.0);
+	vec3 opticalDepth = vec3(0.0);
+	float cloudOnlyOpticalDepth = 0.0;
+	float intervalStart = 0.0;
+	float intervalEnd = 0.0;
+	vec3 storedInscatter = vec3(0.0);
+	vec3 storedOpticalDepth = vec3(0.0);
+	float storedCloudOnlyOpticalDepth = 0.0;
+	bool intervalStarted = false;
 
     for (int i = 0; i < marchSteps; i++)
     {
@@ -183,12 +206,90 @@ void main()
         float t   = shell.tStart + (float(i) + 0.5) * stepSize;
         vec3  pos = rayOrigin + rayDir * t;
 
-        AccumulateHPCloudSample(pos, stepSize, lightingEnv, inscatter, transmittance);
+		CloudSampleProps cloudMedium = EvaluateCloudSampleProps(pos);
+		// Empty samples before the first cloud cell and after the last cloud cell
+		// are not part of the cloud replacement interval.  Integrating the whole
+		// geometric shell as soon as one cloud sample existed made the result jump
+		// from an empty interval to kilometres of separately sampled atmosphere at
+		// the silhouette, which appeared as a cyan contour.
+		bool cloudPresent = cloudMedium.sigmaTView * stepSize > 1.0e-5;
+		if (!intervalStarted && !cloudPresent)
+			continue;
+		if (!intervalStarted)
+		{
+			intervalStarted = true;
+			intervalStart = max(t - 0.5 * stepSize, shell.tStart);
+		}
+		vec3 positionRelativeToCamera = pos +
+			uAtmosphereFrame.planetCenterRelativeToCameraMeters.xyz;
+		float segmentStart = max(t - 0.5 * stepSize, shell.tStart);
+		float segmentEnd = min(t + 0.5 * stepSize, shell.tEnd);
+		// 云占用区间必须和同一区间内的物理大气、近地高度雾共同积分；
+		// composite 随后只替换该区间，不能截断云后的介质。
+		AtmosphereMedium atmosphereMedium = EvaluateNearMediaSegmentMedium(
+			positionRelativeToCamera, rayDir, segmentStart, segmentEnd);
+		ParticipatingMediaSample medium = EmptyParticipatingMediaSample();
+		AddParticipatingMediaSample(medium,
+			EvaluateAtmosphereScatteringSource(
+				positionRelativeToCamera, rayDir, atmosphereMedium),
+			atmosphereMedium.extinction);
+		if (cloudMedium.sigmaTView > 0.0)
+		{
+			AddParticipatingMediaSample(medium,
+				EvaluateHPCloudSourceRadiance(
+					pos, stepSize, lightingEnv, cloudMedium) *
+					cloudMedium.sigmaTView,
+				vec3(cloudMedium.sigmaTView));
+		}
+		float localNear = uLocalMedia.nearMediaDepthRangeAndGrid.x;
+		float localFar = uLocalMedia.nearMediaDepthRangeAndGrid.y;
+		if (t >= localNear && t <= localFar)
+		{
+			vec4 localFroxel = SampleParticipatingMediaFroxel(
+				localMediaInjection, uv, t,
+				vec4(0.0, 0.0, localNear, localFar),
+				vec4(uLocalMedia.nearMediaDepthRangeAndGrid.zw,
+					uLocalMedia.nearMediaSliceHistoryAndVolumeCount.x, 0.0));
+			AddParticipatingMediaSample(medium,
+				localFroxel.rgb, vec3(localFroxel.a));
+		}
+		IntegrateParticipatingMediaStep(medium, stepSize,
+			inscatter, opticalDepth);
+		cloudOnlyOpticalDepth += cloudMedium.sigmaTView * stepSize;
+
+		// Snapshot only at a cloud-bearing sample.  Atmosphere inside gaps between
+		// cloud cells remains correctly integrated, while atmosphere in a trailing
+		// empty part of the shell is discarded by retaining the last snapshot.
+		if (cloudPresent)
+		{
+			intervalEnd = min(t + 0.5 * stepSize, shell.tEnd);
+			storedInscatter = inscatter;
+			storedOpticalDepth = opticalDepth;
+			storedCloudOnlyOpticalDepth = cloudOnlyOpticalDepth;
+		}
 
         // 提前终止
-        if (transmittance < TRANSMIT_CUTOFF) break;
+		vec3 transmittance = exp(-min(opticalDepth, vec3(80.0)));
+		if (max(max(transmittance.r, transmittance.g), transmittance.b) < TRANSMIT_CUTOFF)
+			break;
     }
 
-    // 输出：RGB = 内散射，A = 透射率
-    imageStore(cloudResult, pixelCoord, vec4(inscatter, transmittance));
+	if (!intervalStarted || intervalEnd <= intervalStart ||
+		storedCloudOnlyOpticalDepth <= 0.0)
+	{
+		imageStore(cloudResult, pixelCoord, vec4(0.0, 0.0, 0.0, 1.0));
+		imageStore(cloudDepth, pixelCoord, vec4(0.0));
+		imageStore(cloudOpticalDepth, pixelCoord, vec4(0.0));
+		return;
+	}
+	vec3 transmittance = exp(-min(storedOpticalDepth, vec3(80.0)));
+	imageStore(cloudResult, pixelCoord,
+		vec4(storedInscatter, dot(transmittance, vec3(1.0 / 3.0))));
+	imageStore(cloudDepth, pixelCoord, vec4(intervalStart, intervalEnd, 0.0, 0.0));
+	// RGB 是物理大气 + Height Fog + Local Fog + Cloud 的联合区间。Alpha
+	// is the cloud-only optical depth used as interval validity and for the
+	// independently authored celestial-disk occlusion strength.
+	imageStore(cloudOpticalDepth, pixelCoord,
+		vec4(min(storedOpticalDepth, vec3(80.0)),
+			min(storedCloudOnlyOpticalDepth, 80.0)));
 }

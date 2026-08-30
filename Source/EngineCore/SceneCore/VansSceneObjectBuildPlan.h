@@ -3,6 +3,7 @@
 #include "VansSceneAnimationComponentConfig.h"
 #include "VansSceneCameraMediaComponentConfig.h"
 #include "VansSceneLightComponentConfig.h"
+#include "VansSceneLocalVolumetricFogComponentConfig.h"
 #include "VansSceneParticleComponentConfig.h"
 #include "VansSceneParentReference.h"
 #include "VansScenePhysicsComponentConfig.h"
@@ -39,6 +40,7 @@ struct VansSceneObjectBuildConfig
 	VansSceneLightComponentConfig lightComponents;
 	VansSceneCameraMediaComponentConfig cameraMediaComponents;
 	std::optional<VansSceneAudioReverbZoneConfig> audioReverbZone;
+	std::optional<VansSceneLocalVolumetricFogComponentConfig> localVolumetricFog;
 	std::optional<VansSceneAnimationComponentConfig> animation;
 	std::optional<VansSceneParticleComponentConfig> particle;
 	std::optional<VansSceneTimelineComponentConfig> timeline;

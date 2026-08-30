@@ -1,4 +1,4 @@
-﻿#include "EngineAPIImpl.h"
+#include "EngineAPIImpl.h"
 
 #include "AnimationAuthoringBridge.h"
 #include "GameplayActionAuthoringBridge.h"
@@ -165,6 +165,11 @@ namespace Vans::EditorAPI
 					// 在事务返回前完成 resolution-owned 资源切换，使下一次
 					// Main BuildRenderViewSnapshot 读取到匹配的新 render extent。
 					device->CommitRenderRuntimeConfigAtSafePoint();
+					{
+						const VkExtent2D outputExtent = device->GetUpscalerOutputExtent();
+						m_State->outputWidth = outputExtent.width;
+						m_State->outputHeight = outputExtent.height;
+					}
 					return true;
 				case RenderSettingsTransactionState::Operation::ApplyCommandRecording:
 					return device->ApplyCommandRecordingSettings(
@@ -181,6 +186,9 @@ namespace Vans::EditorAPI
 						outputExtent.width,
 						outputExtent.height);
 					device->CommitRenderRuntimeConfigAtSafePoint();
+					const VkExtent2D appliedOutputExtent = device->GetUpscalerOutputExtent();
+					m_State->outputWidth = appliedOutputExtent.width;
+					m_State->outputHeight = appliedOutputExtent.height;
 					return true;
 				}
 				case RenderSettingsTransactionState::Operation::RefreshPipelineCachePath:
@@ -193,6 +201,14 @@ namespace Vans::EditorAPI
 		private:
 			std::shared_ptr<RenderSettingsTransactionState> m_State;
 		};
+
+		void ApplyRuntimeUIOutputExtent(std::uint32_t width, std::uint32_t height)
+		{
+			VANS_ASSERT_MAIN_THREAD();
+			auto& uiSystem = VansRuntime::VansUISystem::Get();
+			if (width > 0 && height > 0 && uiSystem.IsInitialized())
+				uiSystem.SetScreenSize(width, height);
+		}
 
 		bool TryToSceneParentReference(
 			const RuntimeParentReference& source,
@@ -360,6 +376,7 @@ namespace Vans::EditorAPI
 			VkImage image = VK_NULL_HANDLE;
 			VkImageView view = VK_NULL_HANDLE;
 			std::uint32_t layer = UINT32_MAX;
+			std::uint32_t mipLevel = UINT32_MAX;
 			EditorTextureHandle texture = nullptr;
 		};
 
@@ -688,6 +705,7 @@ namespace Vans::EditorAPI
 			const char* name,
 			VansGraphics::VansVKImage& image,
 			std::uint32_t requestedLayer,
+			std::uint32_t requestedMip,
 			VkImageLayout layout)
 		{
 			RenderTexturePreview preview;
@@ -700,6 +718,8 @@ namespace Vans::EditorAPI
 
 			const uint32_t layerCount = std::max(image.GetImageCreateInfo().arrayLayers, 1u);
 			const uint32_t layer = std::min(requestedLayer, layerCount - 1u);
+			const uint32_t mipCount = std::max(image.GetImageCreateInfo().mipLevels, 1u);
+			const uint32_t mipLevel = std::min(requestedMip, mipCount - 1u);
 
 			auto& caches = GetLayerPreviewCaches();
 
@@ -711,7 +731,8 @@ namespace Vans::EditorAPI
 			if (it == caches.end())
 				it = caches.insert(caches.end(), LayerPreviewCache{ id });
 
-			if (!it->texture || it->image != image.GetImage() || it->layer != layer)
+			if (!it->texture || it->image != image.GetImage() ||
+				it->layer != layer || it->mipLevel != mipLevel)
 			{
 				RetireEditorTexture(renderDevice, it->texture);
 				it->texture = nullptr;
@@ -721,9 +742,10 @@ namespace Vans::EditorAPI
 					it->view = VK_NULL_HANDLE;
 				}
 
-				it->view = image.CreateLayerMipView(logicalDevice, layer, 0);
+				it->view = image.CreateLayerMipView(logicalDevice, layer, mipLevel);
 				it->image = image.GetImage();
 				it->layer = layer;
+				it->mipLevel = mipLevel;
 				if (it->view != VK_NULL_HANDLE)
 				{
 					it->texture = Vans::Editor::VansEditorTextureBridge::RegisterTexture(
@@ -735,8 +757,8 @@ namespace Vans::EditorAPI
 
 			VkExtent3D extent = image.GetImageDimension();
 			preview.texture = it->texture;
-			preview.width = extent.width;
-			preview.height = extent.height;
+			preview.width = (std::max)(extent.width >> mipLevel, 1u);
+			preview.height = (std::max)(extent.height >> mipLevel, 1u);
 			return preview;
 		}
 
@@ -791,7 +813,7 @@ namespace Vans::EditorAPI
 				return "Hair";
 			case VansGraphics::VansMainCameraCullClass::Transparent:
 				return "Transparent";
-			case VansGraphics::VansMainCameraCullClass::ForwardOpaqueAfterDeferred:
+			case VansGraphics::VansMainCameraCullClass::ForwardOpaquePreAtmosphere:
 				return "Forward Opaque";
 			case VansGraphics::VansMainCameraCullClass::Decal:
 				return "Decal";
@@ -1243,7 +1265,7 @@ namespace Vans::EditorAPI
 				return session.controller.get();
 			VansGraphics::VansAnimationNode* node = ResolveSceneAnimationPreviewNode(
 				scene, session.entityGuid, session.animationComponentGuid);
-			return node ? node->GetLocomotionController() : nullptr;
+			return node ? node->GetCharacterMotionController() : nullptr;
 		}
 
 		void SetSceneAnimationPreviewSpeed(
@@ -1316,7 +1338,7 @@ namespace Vans::EditorAPI
 			std::string& diagnostic)
 		{
 			VansGraphics::VansAnimationController* controller =
-				node.GetLocomotionController();
+				node.GetCharacterMotionController();
 			if (!controller)
 			{
 				diagnostic = "Scene preview controller is no longer available";
@@ -1757,8 +1779,6 @@ namespace Vans::EditorAPI
 			if (!lightManager)
 				return;
 
-			// Editor commands publish CPU light state only. The render backend owns
-			// the eventual Vulkan buffer upload for the next prepared frame.
 			lightManager->RefreshDerivedLightingState();
 		}
 
@@ -2280,6 +2300,42 @@ namespace Vans::EditorAPI
 			settings.volume.spatialFilterIterations = source.m_Volume.m_SpatialFilterIterations;
 			settings.volume.spatialDepthSensitivity = source.m_Volume.m_SpatialDepthSensitivity;
 
+			settings.detailNormal.enabled = source.m_DetailNormal.m_Enabled;
+			settings.detailNormal.decodeMode = static_cast<int>(source.m_DetailNormal.m_DecodeMode);
+			settings.detailNormal.flipGreen = source.m_DetailNormal.m_FlipGreen;
+			settings.detailNormal.globalStrength = source.m_DetailNormal.m_GlobalStrength;
+			settings.detailNormal.maxSlope = source.m_DetailNormal.m_MaxSlope;
+			settings.detailNormal.mipBias = source.m_DetailNormal.m_MipBias;
+			settings.detailNormal.anisotropy = source.m_DetailNormal.m_Anisotropy;
+			settings.detailNormal.layerCount = VansGraphics::VansWaterDetailNormalConfig::MAX_LAYER_COUNT;
+			for (std::size_t layerIndex = 0; layerIndex < settings.detailNormal.layers.size(); ++layerIndex)
+			{
+				const auto& sourceLayer = source.m_DetailNormal.m_Layers[layerIndex];
+				auto& destinationLayer = settings.detailNormal.layers[layerIndex];
+				destinationLayer.enabled = sourceLayer.m_Enabled;
+				destinationLayer.tileSizeMeters = sourceLayer.m_TileSizeMeters;
+				destinationLayer.direction = ToEditorVec2(sourceLayer.m_Direction);
+				destinationLayer.speedMetersPerSecond = sourceLayer.m_SpeedMetersPerSecond;
+				destinationLayer.phase = sourceLayer.m_Phase;
+				destinationLayer.strength = sourceLayer.m_Strength;
+				destinationLayer.fadeStartMeters = sourceLayer.m_FadeStartMeters;
+				destinationLayer.fadeEndMeters = sourceLayer.m_FadeEndMeters;
+			}
+			settings.effectiveRoughness.mode = static_cast<int>(source.m_EffectiveRoughness.m_Mode);
+			settings.effectiveRoughness.distanceStartMeters = source.m_EffectiveRoughness.m_DistanceStartMeters;
+			settings.effectiveRoughness.distanceEndMeters = source.m_EffectiveRoughness.m_DistanceEndMeters;
+			settings.effectiveRoughness.distanceStrength = source.m_EffectiveRoughness.m_DistanceStrength;
+			settings.colorMip.refractionScatterScale = source.m_ColorMip.m_RefractionScatterScale;
+			settings.colorMip.refractionRoughnessScale = source.m_ColorMip.m_RefractionRoughnessScale;
+			settings.colorMip.forwardScatterMipScale = source.m_ColorMip.m_ForwardScatterMipScale;
+			settings.colorMip.backgroundScatterScale = source.m_ColorMip.m_BackgroundScatterScale;
+			settings.colorMip.lodBias = source.m_ColorMip.m_LodBias;
+			settings.shadow.enabled = source.m_Shadow.m_Enabled;
+			settings.shadow.quality = source.m_Shadow.m_Quality;
+			settings.shadow.depthBias = source.m_Shadow.m_DepthBias;
+			settings.shadow.normalBias = source.m_Shadow.m_NormalBias;
+			settings.shadow.volumeStepStride = source.m_Shadow.m_VolumeStepStride;
+
 			settings.thinSSSEnabled = source.m_SSS.m_Enabled;
 			settings.maxThicknessDistance = source.m_SSS.m_MaxThicknessDistance;
 			settings.deepWaterThicknessFallback = source.m_SSS.m_DeepWaterThicknessFallback;
@@ -2293,6 +2349,10 @@ namespace Vans::EditorAPI
 			settings.ssrEnabled = source.m_SSR.m_Enabled;
 			settings.ssrMaxDistance = source.m_SSR.m_MaxDistance;
 			settings.ssrMaxRoughness = source.m_SSR.m_MaxRoughness;
+			settings.ssrRoughnessFadeStart = source.m_SSR.m_RoughnessFadeStart;
+			settings.ssrColorMipConeScale = source.m_SSR.m_ColorMipConeScale;
+			settings.ssrColorMipBias = source.m_SSR.m_ColorMipBias;
+			settings.ssrEdgeFadePixels = source.m_SSR.m_EdgeFadePixels;
 			return settings;
 		}
 
@@ -2362,6 +2422,50 @@ namespace Vans::EditorAPI
 			destination.m_Volume.m_SpatialFilterIterations = settings.volume.spatialFilterIterations;
 			destination.m_Volume.m_SpatialDepthSensitivity = settings.volume.spatialDepthSensitivity;
 
+			destination.m_DetailNormal.m_Enabled = settings.detailNormal.enabled;
+			destination.m_DetailNormal.m_DecodeMode = VansGraphics::VansWaterNormalDecodeMode::RGReconstructZ;
+			destination.m_DetailNormal.m_FlipGreen = settings.detailNormal.flipGreen;
+			destination.m_DetailNormal.m_GlobalStrength = settings.detailNormal.globalStrength;
+			destination.m_DetailNormal.m_MaxSlope = settings.detailNormal.maxSlope;
+			destination.m_DetailNormal.m_MipBias = settings.detailNormal.mipBias;
+			destination.m_DetailNormal.m_Anisotropy = settings.detailNormal.anisotropy;
+			const std::size_t detailLayerCount = (std::min)(
+				std::size_t(settings.detailNormal.layerCount), settings.detailNormal.layers.size());
+			for (std::size_t layerIndex = 0; layerIndex < destination.m_DetailNormal.m_Layers.size(); ++layerIndex)
+			{
+				auto& destinationLayer = destination.m_DetailNormal.m_Layers[layerIndex];
+				if (layerIndex >= detailLayerCount)
+				{
+					destinationLayer.m_Enabled = false;
+					continue;
+				}
+				const auto& sourceLayer = settings.detailNormal.layers[layerIndex];
+				destinationLayer.m_Enabled = sourceLayer.enabled;
+				destinationLayer.m_TileSizeMeters = sourceLayer.tileSizeMeters;
+				destinationLayer.m_Direction = ToRuntimeVec2(sourceLayer.direction);
+				destinationLayer.m_SpeedMetersPerSecond = sourceLayer.speedMetersPerSecond;
+				destinationLayer.m_Phase = sourceLayer.phase;
+				destinationLayer.m_Strength = sourceLayer.strength;
+				destinationLayer.m_FadeStartMeters = sourceLayer.fadeStartMeters;
+				destinationLayer.m_FadeEndMeters = sourceLayer.fadeEndMeters;
+			}
+			destination.m_EffectiveRoughness.m_Mode = settings.effectiveRoughness.mode == 1
+				? VansGraphics::VansWaterEffectiveRoughnessMode::DistanceHeuristic
+				: VansGraphics::VansWaterEffectiveRoughnessMode::BaseOnly;
+			destination.m_EffectiveRoughness.m_DistanceStartMeters = settings.effectiveRoughness.distanceStartMeters;
+			destination.m_EffectiveRoughness.m_DistanceEndMeters = settings.effectiveRoughness.distanceEndMeters;
+			destination.m_EffectiveRoughness.m_DistanceStrength = settings.effectiveRoughness.distanceStrength;
+			destination.m_ColorMip.m_RefractionScatterScale = settings.colorMip.refractionScatterScale;
+			destination.m_ColorMip.m_RefractionRoughnessScale = settings.colorMip.refractionRoughnessScale;
+			destination.m_ColorMip.m_ForwardScatterMipScale = settings.colorMip.forwardScatterMipScale;
+			destination.m_ColorMip.m_BackgroundScatterScale = settings.colorMip.backgroundScatterScale;
+			destination.m_ColorMip.m_LodBias = settings.colorMip.lodBias;
+			destination.m_Shadow.m_Enabled = settings.shadow.enabled;
+			destination.m_Shadow.m_Quality = settings.shadow.quality;
+			destination.m_Shadow.m_DepthBias = settings.shadow.depthBias;
+			destination.m_Shadow.m_NormalBias = settings.shadow.normalBias;
+			destination.m_Shadow.m_VolumeStepStride = settings.shadow.volumeStepStride;
+
 			destination.m_SSS.m_Enabled = settings.thinSSSEnabled;
 			destination.m_SSS.m_MaxThicknessDistance = settings.maxThicknessDistance;
 			destination.m_SSS.m_DeepWaterThicknessFallback = settings.deepWaterThicknessFallback;
@@ -2375,6 +2479,10 @@ namespace Vans::EditorAPI
 			destination.m_SSR.m_Enabled = settings.ssrEnabled;
 			destination.m_SSR.m_MaxDistance = settings.ssrMaxDistance;
 			destination.m_SSR.m_MaxRoughness = settings.ssrMaxRoughness;
+			destination.m_SSR.m_RoughnessFadeStart = settings.ssrRoughnessFadeStart;
+			destination.m_SSR.m_ColorMipConeScale = settings.ssrColorMipConeScale;
+			destination.m_SSR.m_ColorMipBias = settings.ssrColorMipBias;
+			destination.m_SSR.m_EdgeFadePixels = settings.ssrEdgeFadePixels;
 			destination.Validate();
 		}
 
@@ -2393,6 +2501,15 @@ namespace Vans::EditorAPI
 				|| previous.m_Spectrum.m_WindDependency != current.m_Spectrum.m_WindDependency
 				|| previous.m_Spectrum.m_Depth != current.m_Spectrum.m_Depth
 				|| previous.m_Spectrum.m_RandomSeed != current.m_Spectrum.m_RandomSeed;
+		}
+
+		bool ShouldReinitializeWaterResources(
+			const VansGraphics::VansWaterConfig& previous,
+			const VansGraphics::VansWaterConfig& current)
+		{
+			return previous.m_Volume.m_ResolutionScale != current.m_Volume.m_ResolutionScale
+				|| previous.m_Geometry.m_MeshDim != current.m_Geometry.m_MeshDim
+				|| previous.m_DetailNormal.m_Anisotropy != current.m_DetailNormal.m_Anisotropy;
 		}
 
 		bool ShouldRegenerateGerstnerSpectrum(
@@ -2490,6 +2607,169 @@ namespace Vans::EditorAPI
 				ScenePropertyValues::Float(value.x),
 				ScenePropertyValues::Float(value.y),
 				ScenePropertyValues::Float(value.z)
+			});
+		}
+
+		ScenePropertyValue Vec2ScenePropertyValue(const glm::vec2& value)
+		{
+			return ScenePropertyValues::Array({
+				ScenePropertyValues::Float(value.x),
+				ScenePropertyValues::Float(value.y)
+			});
+		}
+
+		ScenePropertyValue WaterScenePropertyValue(const VansGraphics::VansWaterConfig& config)
+		{
+			std::vector<ScenePropertyValue> detailLayers;
+			detailLayers.reserve(config.m_DetailNormal.m_Layers.size());
+			for (const VansGraphics::VansWaterDetailNormalLayerConfig& layer : config.m_DetailNormal.m_Layers)
+			{
+				detailLayers.push_back(ScenePropertyValues::Object({
+					{ "enabled", ScenePropertyValues::Bool(layer.m_Enabled) },
+					{ "tileSizeMeters", ScenePropertyValues::Float(layer.m_TileSizeMeters) },
+					{ "direction", Vec2ScenePropertyValue(layer.m_Direction) },
+					{ "speedMetersPerSecond", ScenePropertyValues::Float(layer.m_SpeedMetersPerSecond) },
+					{ "phase", ScenePropertyValues::Float(layer.m_Phase) },
+					{ "strength", ScenePropertyValues::Float(layer.m_Strength) },
+					{ "fadeStartMeters", ScenePropertyValues::Float(layer.m_FadeStartMeters) },
+					{ "fadeEndMeters", ScenePropertyValues::Float(layer.m_FadeEndMeters) }
+				}));
+			}
+
+			const char* waveMode = config.m_Spectrum.m_Mode == VansGraphics::VansWaveMode::Gerstner
+				? "gerstner"
+				: config.m_Spectrum.m_Mode == VansGraphics::VansWaveMode::FFT ? "fft" : "waveParticle";
+			const char* roughnessMode =
+				config.m_EffectiveRoughness.m_Mode == VansGraphics::VansWaterEffectiveRoughnessMode::DistanceHeuristic
+				? "distanceHeuristic" : "baseOnly";
+
+			return ScenePropertyValues::Object({
+				{ "level", ScenePropertyValues::Float(config.m_WaterLevel) },
+				{ "specularIntensity", ScenePropertyValues::Float(config.m_SpecularIntensity) },
+				{ "medium", ScenePropertyValues::Object({
+					{ "absorption", Vec3ScenePropertyValue(config.m_Medium.m_AbsorptionCoeff) },
+					{ "scattering", Vec3ScenePropertyValue(config.m_Medium.m_ScatteringCoeff) },
+					{ "ior", ScenePropertyValues::Float(config.m_Medium.m_IOR) },
+					{ "anisotropy", ScenePropertyValues::Float(config.m_Medium.m_Anisotropy) },
+					{ "roughness", ScenePropertyValues::Float(config.m_Medium.m_WaterRoughness) }
+				}) },
+				{ "geometry", ScenePropertyValues::Object({
+					{ "lodCount", ScenePropertyValues::Int(config.m_Geometry.m_LodCount) },
+					{ "basePatchSize", ScenePropertyValues::Float(config.m_Geometry.m_BasePatchSize) },
+					{ "meshDim", ScenePropertyValues::Int(config.m_Geometry.m_MeshDim) },
+					{ "morphStartRatio", ScenePropertyValues::Float(config.m_Geometry.m_MorphStartRatio) }
+				}) },
+				{ "spectrum", ScenePropertyValues::Object({
+					{ "mode", ScenePropertyValues::String(waveMode) },
+					{ "cascadeCount", ScenePropertyValues::Int(config.m_Spectrum.m_CascadeCount) },
+					{ "baseCoverage", ScenePropertyValues::Float(config.m_Spectrum.m_BaseCoverage) },
+					{ "cascadeScale", ScenePropertyValues::Float(config.m_Spectrum.m_CascadeScale) },
+					{ "windDirection", Vec2ScenePropertyValue(config.m_Spectrum.m_WindDirection) },
+					{ "windSpeed", ScenePropertyValues::Float(config.m_Spectrum.m_WindSpeed) },
+					{ "swellAmplitude", ScenePropertyValues::Float(config.m_Spectrum.m_SwellAmplitude) },
+					{ "choppiness", ScenePropertyValues::Float(config.m_Spectrum.m_Choppiness) },
+					{ "gerstnerWaveCount", ScenePropertyValues::Int(config.m_Spectrum.m_GerstnerWaveCount) },
+					{ "spectrumAmplitude", ScenePropertyValues::Float(config.m_Spectrum.m_SpectrumAmplitude) },
+					{ "minWavelength", ScenePropertyValues::Float(config.m_Spectrum.m_MinWavelength) },
+					{ "smallWaveDamping", ScenePropertyValues::Float(config.m_Spectrum.m_SmallWaveDamping) },
+					{ "windDependency", ScenePropertyValues::Float(config.m_Spectrum.m_WindDependency) },
+					{ "depth", ScenePropertyValues::Float(config.m_Spectrum.m_Depth) },
+					{ "repeatPeriod", ScenePropertyValues::Float(config.m_Spectrum.m_RepeatPeriod) },
+					{ "randomSeed", ScenePropertyValues::Int(config.m_Spectrum.m_RandomSeed) }
+				}) },
+				{ "waveParticle", ScenePropertyValues::Object({
+					{ "particlesPerCascade", ScenePropertyValues::Int(config.m_WaveParticle.m_ParticlesPerCascade) },
+					{ "rmsAmplitude", ScenePropertyValues::Float(config.m_WaveParticle.m_RmsAmplitude) },
+					{ "packetWidth", ScenePropertyValues::Float(config.m_WaveParticle.m_PacketWidth) },
+					{ "dispersionScale", ScenePropertyValues::Float(config.m_WaveParticle.m_DispersionScale) },
+					{ "directionSpread", ScenePropertyValues::Float(config.m_WaveParticle.m_DirectionSpread) },
+					{ "cascadeAmplitudeFalloff", ScenePropertyValues::Float(config.m_WaveParticle.m_CascadeAmplitudeFalloff) },
+					{ "foamThreshold", ScenePropertyValues::Float(config.m_WaveParticle.m_FoamThreshold) },
+					{ "foamSoftness", ScenePropertyValues::Float(config.m_WaveParticle.m_FoamSoftness) },
+					{ "randomSeed", ScenePropertyValues::Int(config.m_WaveParticle.m_RandomSeed) }
+				}) },
+				{ "flowMap", ScenePropertyValues::Object({
+					{ "enabled", ScenePropertyValues::Bool(config.m_FlowMap.m_Enabled) },
+					{ "strength", ScenePropertyValues::Float(config.m_FlowMap.m_Strength) },
+					{ "speed", ScenePropertyValues::Float(config.m_FlowMap.m_Speed) },
+					{ "phaseLength", ScenePropertyValues::Float(config.m_FlowMap.m_PhaseLength) },
+					{ "noiseAmount", ScenePropertyValues::Float(config.m_FlowMap.m_NoiseAmount) },
+					{ "worldOrigin", Vec2ScenePropertyValue(config.m_FlowMap.m_WorldOrigin) },
+					{ "worldSize", Vec2ScenePropertyValue(config.m_FlowMap.m_WorldSize) },
+					{ "fallbackDirection", Vec2ScenePropertyValue(config.m_FlowMap.m_FallbackDirection) }
+				}) },
+				{ "detailNormal", ScenePropertyValues::Object({
+					{ "enabled", ScenePropertyValues::Bool(config.m_DetailNormal.m_Enabled) },
+					{ "decodeMode", ScenePropertyValues::String("rgReconstructZ") },
+					{ "flipGreen", ScenePropertyValues::Bool(config.m_DetailNormal.m_FlipGreen) },
+					{ "globalStrength", ScenePropertyValues::Float(config.m_DetailNormal.m_GlobalStrength) },
+					{ "maxSlope", ScenePropertyValues::Float(config.m_DetailNormal.m_MaxSlope) },
+					{ "mipBias", ScenePropertyValues::Float(config.m_DetailNormal.m_MipBias) },
+					{ "anisotropy", ScenePropertyValues::Float(config.m_DetailNormal.m_Anisotropy) },
+					{ "layers", ScenePropertyValues::Array(std::move(detailLayers)) }
+				}) },
+				{ "effectiveRoughness", ScenePropertyValues::Object({
+					{ "mode", ScenePropertyValues::String(roughnessMode) },
+					{ "distanceStartMeters", ScenePropertyValues::Float(config.m_EffectiveRoughness.m_DistanceStartMeters) },
+					{ "distanceEndMeters", ScenePropertyValues::Float(config.m_EffectiveRoughness.m_DistanceEndMeters) },
+					{ "distanceStrength", ScenePropertyValues::Float(config.m_EffectiveRoughness.m_DistanceStrength) }
+				}) },
+				{ "colorMip", ScenePropertyValues::Object({
+					{ "refractionScatterScale", ScenePropertyValues::Float(config.m_ColorMip.m_RefractionScatterScale) },
+					{ "refractionRoughnessScale", ScenePropertyValues::Float(config.m_ColorMip.m_RefractionRoughnessScale) },
+					{ "forwardScatterMipScale", ScenePropertyValues::Float(config.m_ColorMip.m_ForwardScatterMipScale) },
+					{ "backgroundScatterScale", ScenePropertyValues::Float(config.m_ColorMip.m_BackgroundScatterScale) },
+					{ "lodBias", ScenePropertyValues::Float(config.m_ColorMip.m_LodBias) }
+				}) },
+				{ "shadow", ScenePropertyValues::Object({
+					{ "enabled", ScenePropertyValues::Bool(config.m_Shadow.m_Enabled) },
+					{ "quality", ScenePropertyValues::Int(config.m_Shadow.m_Quality) },
+					{ "depthBias", ScenePropertyValues::Float(config.m_Shadow.m_DepthBias) },
+					{ "normalBias", ScenePropertyValues::Float(config.m_Shadow.m_NormalBias) },
+					{ "volumeStepStride", ScenePropertyValues::Int(config.m_Shadow.m_VolumeStepStride) }
+				}) },
+				{ "optics", ScenePropertyValues::Object({
+					{ "maxCrossDistance", ScenePropertyValues::Float(config.m_Optics.m_MaxCrossDistance) },
+					{ "maxRefractionCrossDistance", ScenePropertyValues::Float(config.m_Optics.m_MaxRefractionCrossDistance) },
+					{ "multiScatterScale", ScenePropertyValues::Float(config.m_Optics.m_MultiScatterScale) },
+					{ "waterDispersionStrength", ScenePropertyValues::Float(config.m_Optics.m_WaterDispersionStrength) },
+					{ "sssPathScale", ScenePropertyValues::Float(config.m_Optics.m_SSSPathScale) },
+					{ "sssNonlinearStrength", ScenePropertyValues::Float(config.m_Optics.m_SSSNonlinearStrength) },
+					{ "sssScatterBoost", ScenePropertyValues::Float(config.m_Optics.m_SSSScatterBoost) },
+					{ "backlitPathScale", ScenePropertyValues::Float(config.m_Optics.m_BacklitPathScale) },
+					{ "backlitPhaseG", ScenePropertyValues::Float(config.m_Optics.m_BacklitPhaseG) }
+				}) },
+				{ "volume", ScenePropertyValues::Object({
+					{ "resolutionScale", ScenePropertyValues::Float(config.m_Volume.m_ResolutionScale) },
+					{ "sampleCount", ScenePropertyValues::Int(config.m_Volume.m_SampleCount) },
+					{ "spatialFilterIterations", ScenePropertyValues::Int(config.m_Volume.m_SpatialFilterIterations) },
+					{ "spatialDepthSensitivity", ScenePropertyValues::Float(config.m_Volume.m_SpatialDepthSensitivity) }
+				}) },
+				{ "sss", ScenePropertyValues::Object({
+					{ "enabled", ScenePropertyValues::Bool(config.m_SSS.m_Enabled) },
+					{ "maxThickness", ScenePropertyValues::Float(config.m_SSS.m_MaxThicknessDistance) },
+					{ "deepFallback", ScenePropertyValues::Float(config.m_SSS.m_DeepWaterThicknessFallback) }
+				}) },
+				{ "caustics", ScenePropertyValues::Object({
+					{ "enabled", ScenePropertyValues::Bool(config.m_Caustics.m_Enabled) },
+					{ "intensity", ScenePropertyValues::Float(config.m_Caustics.m_Intensity) },
+					{ "maxDistance", ScenePropertyValues::Float(config.m_Caustics.m_MaxDistance) },
+					{ "maxGain", ScenePropertyValues::Float(config.m_Caustics.m_MaxGain) },
+					{ "filterRadius", ScenePropertyValues::Float(config.m_Caustics.m_FilterRadius) }
+				}) },
+				{ "refraction", ScenePropertyValues::Object({
+					{ "enabled", ScenePropertyValues::Bool(config.m_Refraction.m_Enabled) },
+					{ "distortionStrength", ScenePropertyValues::Float(config.m_Refraction.m_DistortionStrength) }
+				}) },
+				{ "ssr", ScenePropertyValues::Object({
+					{ "enabled", ScenePropertyValues::Bool(config.m_SSR.m_Enabled) },
+					{ "maxDistance", ScenePropertyValues::Float(config.m_SSR.m_MaxDistance) },
+					{ "maxRoughness", ScenePropertyValues::Float(config.m_SSR.m_MaxRoughness) },
+					{ "roughnessFadeStart", ScenePropertyValues::Float(config.m_SSR.m_RoughnessFadeStart) },
+					{ "colorMipConeScale", ScenePropertyValues::Float(config.m_SSR.m_ColorMipConeScale) },
+					{ "colorMipBias", ScenePropertyValues::Float(config.m_SSR.m_ColorMipBias) },
+					{ "edgeFadePixels", ScenePropertyValues::Float(config.m_SSR.m_EdgeFadePixels) }
+				}) }
 			});
 		}
 
@@ -2637,17 +2917,15 @@ namespace Vans::EditorAPI
 			destination.UploadMetadata();
 		}
 
-		CloudSettings ToCloudSettings(const VansGraphics::VansCloudParamsGPU& source)
+		CloudSettings ToCloudSettings(const Vans::VansSceneVolumetricCloudSettingsConfig& source)
 		{
 			CloudSettings settings;
-			settings.planetRadius = source.planetRadius;
-			settings.seaLevel = source.seaLevel;
+			settings.enabled = source.enabled;
 			settings.cloudMinHeight = source.cloudMinHeight;
 			settings.cloudMaxHeight = source.cloudMaxHeight;
 			settings.density = source.density;
 			settings.coverage = source.coverage;
 			settings.sunBrightness = source.sunBrightness;
-			settings.phaseG = source.phaseG;
 			settings.mainTileMeters = source.mainTileMeters;
 			settings.detailTileMeters = source.detailTileMeters;
 			settings.mainHeightScale = source.mainHeightScale;
@@ -2663,7 +2941,6 @@ namespace Vans::EditorAPI
 			settings.detailErosionLow = source.detailErosionLow;
 			settings.detailErosionHigh = source.detailErosionHigh;
 			settings.detailEdgeStrength = source.detailEdgeStrength;
-			settings.shadowDensityScale = source.shadowDensityScale;
 			settings.sigmaTRef = source.sigmaTRef;
 			settings.viewAbsorption = source.viewAbsorption;
 			settings.lightAbsorption = source.lightAbsorption;
@@ -2696,21 +2973,22 @@ namespace Vans::EditorAPI
 			settings.boundaryGradientStep = source.boundaryGradientStep;
 			settings.boundaryGradientStrength = source.boundaryGradientStrength;
 			settings.shadingDebugMode = source.shadingDebugMode;
+			settings.shadow.enabled = source.shadow.enabled;
+			settings.shadow.atmosphereStrength = source.shadow.atmosphereStrength;
+			settings.shadow.ambientOcclusionStrength = source.shadow.ambientOcclusionStrength;
 			return settings;
 		}
 
-		void ApplyCloudSettingsToGPUData(
+		Vans::VansSceneVolumetricCloudSettingsConfig ToRuntimeCloudSettings(
 			const CloudSettings& settings,
-			VansGraphics::VansCloudParamsGPU& destination)
+			Vans::VansSceneVolumetricCloudSettingsConfig destination = {})
 		{
-			destination.planetRadius = settings.planetRadius;
-			destination.seaLevel = settings.seaLevel;
+			destination.enabled = settings.enabled;
 			destination.cloudMinHeight = settings.cloudMinHeight;
 			destination.cloudMaxHeight = settings.cloudMaxHeight;
 			destination.density = settings.density;
 			destination.coverage = settings.coverage;
 			destination.sunBrightness = settings.sunBrightness;
-			destination.phaseG = settings.phaseG;
 			destination.mainTileMeters = settings.mainTileMeters;
 			destination.detailTileMeters = settings.detailTileMeters;
 			destination.mainHeightScale = settings.mainHeightScale;
@@ -2726,7 +3004,6 @@ namespace Vans::EditorAPI
 			destination.detailErosionLow = settings.detailErosionLow;
 			destination.detailErosionHigh = settings.detailErosionHigh;
 			destination.detailEdgeStrength = settings.detailEdgeStrength;
-			destination.shadowDensityScale = settings.shadowDensityScale;
 			destination.sigmaTRef = settings.sigmaTRef;
 			destination.viewAbsorption = settings.viewAbsorption;
 			destination.lightAbsorption = settings.lightAbsorption;
@@ -2759,8 +3036,141 @@ namespace Vans::EditorAPI
 			destination.boundaryGradientStep = settings.boundaryGradientStep;
 			destination.boundaryGradientStrength = settings.boundaryGradientStrength;
 			destination.shadingDebugMode = settings.shadingDebugMode;
+			destination.shadow.enabled = settings.shadow.enabled;
+			destination.shadow.atmosphereStrength = settings.shadow.atmosphereStrength;
+			destination.shadow.ambientOcclusionStrength = settings.shadow.ambientOcclusionStrength;
+			return destination;
 		}
 
+		EnvironmentSettings ToAPIEnvironmentSettings(
+			const Vans::VansSceneEnvironmentSettingsConfig& source)
+		{
+			EnvironmentSettings settings;
+			settings.planet.centerWorldMeters = source.planet.centerWorldMeters;
+			settings.planet.bottomRadiusMeters = source.planet.bottomRadiusMeters;
+			settings.planet.atmosphereHeightMeters = source.planet.atmosphereHeightMeters;
+			const auto& src = source.physicalAtmosphere;
+			auto& dst = settings.physicalAtmosphere;
+			dst.enabled = src.enabled;
+			dst.groundAlbedo = src.groundAlbedo;
+			dst.rayleigh.scatteringPerMeterAtGround =
+				src.rayleigh.scatteringPerMeterAtGround;
+			dst.rayleigh.densityScaleHeightMeters =
+				src.rayleigh.densityScaleHeightMeters;
+			dst.mie.scatteringPerMeterAtGround = src.mie.scatteringPerMeterAtGround;
+			dst.mie.absorptionPerMeterAtGround = src.mie.absorptionPerMeterAtGround;
+			dst.mie.densityScaleHeightMeters = src.mie.densityScaleHeightMeters;
+			dst.mie.anisotropy = src.mie.anisotropy;
+			dst.ozone.absorptionPerMeter = src.ozone.absorptionPerMeter;
+			dst.ozone.centerAltitudeMeters = src.ozone.centerAltitudeMeters;
+			dst.ozone.halfWidthMeters = src.ozone.halfWidthMeters;
+			dst.aerialPerspective.distanceScale = src.aerialPerspective.distanceScale;
+			dst.mainLightVolumetricScatteringScale =
+				src.mainLightVolumetricScatteringScale;
+			dst.celestialBodies.reserve(src.celestialBodies.size());
+			for (const auto& sourceBody : src.celestialBodies)
+			{
+				CelestialBodySettings body;
+				body.name = sourceBody.name;
+				body.lightEntityId = sourceBody.lightEntityId;
+				body.disk.enabled = sourceBody.disk.enabled;
+				body.disk.angularRadiusRadians = sourceBody.disk.angularRadiusRadians;
+				body.disk.featherRadians = sourceBody.disk.featherRadians;
+				body.disk.radianceScale = sourceBody.disk.radianceScale;
+				body.disk.occlusionStrength = sourceBody.disk.occlusionStrength;
+				dst.celestialBodies.push_back(std::move(body));
+			}
+			settings.heightFog.enabled = source.heightFog.enabled;
+			settings.heightFog.groundHeightWorldMeters =
+				source.heightFog.groundHeightWorldMeters;
+			settings.heightFog.visibilityAtGroundMeters =
+				source.heightFog.visibilityAtGroundMeters;
+			settings.heightFog.densityFalloffHeightMeters =
+				source.heightFog.densityFalloffHeightMeters;
+			settings.heightFog.startDistanceMeters = source.heightFog.startDistanceMeters;
+			settings.heightFog.nearFadeDistanceMeters =
+				source.heightFog.nearFadeDistanceMeters;
+			settings.heightFog.maximumDistanceMeters =
+				source.heightFog.maximumDistanceMeters;
+			settings.heightFog.farFadeDistanceMeters =
+				source.heightFog.farFadeDistanceMeters;
+			settings.heightFog.singleScatteringAlbedo =
+				source.heightFog.singleScatteringAlbedo;
+			settings.heightFog.anisotropy = source.heightFog.anisotropy;
+			settings.heightFog.emissivePerMeter = source.heightFog.emissivePerMeter;
+			settings.heightFog.skyLightingScale = source.heightFog.skyLightingScale;
+			settings.heightFog.mainLightVolumetricScale =
+				source.heightFog.mainLightVolumetricScale;
+			settings.heightFog.receiveCloudShadows =
+				source.heightFog.receiveCloudShadows;
+			settings.volumetricClouds = ToCloudSettings(source.volumetricClouds);
+			return settings;
+		}
+
+		Vans::VansSceneEnvironmentSettingsConfig ToRuntimeEnvironmentSettings(
+			const EnvironmentSettings& source)
+		{
+			Vans::VansSceneEnvironmentSettingsConfig settings;
+			settings.planet.centerWorldMeters = source.planet.centerWorldMeters;
+			settings.planet.bottomRadiusMeters = source.planet.bottomRadiusMeters;
+			settings.planet.atmosphereHeightMeters = source.planet.atmosphereHeightMeters;
+			const auto& src = source.physicalAtmosphere;
+			auto& dst = settings.physicalAtmosphere;
+			dst.enabled = src.enabled;
+			dst.groundAlbedo = src.groundAlbedo;
+			dst.rayleigh.scatteringPerMeterAtGround =
+				src.rayleigh.scatteringPerMeterAtGround;
+			dst.rayleigh.densityScaleHeightMeters =
+				src.rayleigh.densityScaleHeightMeters;
+			dst.mie.scatteringPerMeterAtGround = src.mie.scatteringPerMeterAtGround;
+			dst.mie.absorptionPerMeterAtGround = src.mie.absorptionPerMeterAtGround;
+			dst.mie.densityScaleHeightMeters = src.mie.densityScaleHeightMeters;
+			dst.mie.anisotropy = src.mie.anisotropy;
+			dst.ozone.absorptionPerMeter = src.ozone.absorptionPerMeter;
+			dst.ozone.centerAltitudeMeters = src.ozone.centerAltitudeMeters;
+			dst.ozone.halfWidthMeters = src.ozone.halfWidthMeters;
+			dst.aerialPerspective.distanceScale = src.aerialPerspective.distanceScale;
+			dst.mainLightVolumetricScatteringScale =
+				src.mainLightVolumetricScatteringScale;
+			dst.celestialBodies.reserve(src.celestialBodies.size());
+			for (const auto& sourceBody : src.celestialBodies)
+			{
+				Vans::VansSceneCelestialBodySettingsConfig body;
+				body.name = sourceBody.name;
+				body.lightEntityId = sourceBody.lightEntityId;
+				body.disk.enabled = sourceBody.disk.enabled;
+				body.disk.angularRadiusRadians = sourceBody.disk.angularRadiusRadians;
+				body.disk.featherRadians = sourceBody.disk.featherRadians;
+				body.disk.radianceScale = sourceBody.disk.radianceScale;
+				body.disk.occlusionStrength = sourceBody.disk.occlusionStrength;
+				dst.celestialBodies.push_back(std::move(body));
+			}
+			settings.heightFog.enabled = source.heightFog.enabled;
+			settings.heightFog.groundHeightWorldMeters =
+				source.heightFog.groundHeightWorldMeters;
+			settings.heightFog.visibilityAtGroundMeters =
+				source.heightFog.visibilityAtGroundMeters;
+			settings.heightFog.densityFalloffHeightMeters =
+				source.heightFog.densityFalloffHeightMeters;
+			settings.heightFog.startDistanceMeters = source.heightFog.startDistanceMeters;
+			settings.heightFog.nearFadeDistanceMeters =
+				source.heightFog.nearFadeDistanceMeters;
+			settings.heightFog.maximumDistanceMeters =
+				source.heightFog.maximumDistanceMeters;
+			settings.heightFog.farFadeDistanceMeters =
+				source.heightFog.farFadeDistanceMeters;
+			settings.heightFog.singleScatteringAlbedo =
+				source.heightFog.singleScatteringAlbedo;
+			settings.heightFog.anisotropy = source.heightFog.anisotropy;
+			settings.heightFog.emissivePerMeter = source.heightFog.emissivePerMeter;
+			settings.heightFog.skyLightingScale = source.heightFog.skyLightingScale;
+			settings.heightFog.mainLightVolumetricScale =
+				source.heightFog.mainLightVolumetricScale;
+			settings.heightFog.receiveCloudShadows =
+				source.heightFog.receiveCloudShadows;
+			settings.volumetricClouds = ToRuntimeCloudSettings(source.volumetricClouds);
+			return settings;
+		}
 		PostProcessSettingsSnapshot ToAPIPostProcessSettings(
 			const VansGraphics::VansPostProcessProfile& source)
 		{
@@ -2913,253 +3323,60 @@ namespace Vans::EditorAPI
 			bool m_HasBefore = false;
 		};
 
-		FogSettings ToAPIFogSettings(const VansGraphics::VansFogSettings& source)
-		{
-			FogSettings settings;
-			settings.fogDensity = source.fogDensity;
-			settings.heightFalloff = source.heightFalloff;
-			settings.sunScatterScale = source.sunScatterScale;
-			settings.ambientScale = source.ambientScale;
-			settings.fogMinHeight = source.fogMinHeight;
-			settings.skyFogDistance = source.skyFogDistance;
-			return settings;
-		}
-
-		VansGraphics::VansFogSettings ToRuntimeFogSettings(const FogSettings& source)
-		{
-			VansGraphics::VansFogSettings settings;
-			settings.fogDensity = source.fogDensity;
-			settings.heightFalloff = source.heightFalloff;
-			settings.sunScatterScale = source.sunScatterScale;
-			settings.ambientScale = source.ambientScale;
-			settings.fogMinHeight = source.fogMinHeight;
-			settings.skyFogDistance = source.skyFogDistance;
-			return settings;
-		}
-
-		FogVolumeSettings ToAPIFogVolumeSettings(const VansGraphics::VansFogVolumeSettings& source)
-		{
-			FogVolumeSettings settings;
-			settings.density = source.density;
-			settings.anisotropy = source.anisotropy;
-			settings.scatterScale = source.scatterScale;
-			settings.ambientScale = source.ambientScale;
-			settings.volumeNear = source.volumeNear;
-			settings.volumeFar = source.volumeFar;
-			settings.slicePower = source.slicePower;
-			settings.padding = source.padding;
-			std::copy(std::begin(source.fogBoxMin), std::end(source.fogBoxMin), std::begin(settings.fogBoxMin));
-			std::copy(std::begin(source.fogBoxMax), std::end(source.fogBoxMax), std::begin(settings.fogBoxMax));
-			return settings;
-		}
-
-		VansGraphics::VansFogVolumeSettings ToRuntimeFogVolumeSettings(const FogVolumeSettings& source)
-		{
-			VansGraphics::VansFogVolumeSettings settings;
-			settings.density = source.density;
-			settings.anisotropy = source.anisotropy;
-			settings.scatterScale = source.scatterScale;
-			settings.ambientScale = source.ambientScale;
-			settings.volumeNear = source.volumeNear;
-			settings.volumeFar = source.volumeFar;
-			settings.slicePower = source.slicePower;
-			settings.padding = source.padding;
-			std::copy(std::begin(source.fogBoxMin), std::end(source.fogBoxMin), std::begin(settings.fogBoxMin));
-			std::copy(std::begin(source.fogBoxMax), std::end(source.fogBoxMax), std::begin(settings.fogBoxMax));
-			return settings;
-		}
-
-		class SetFogSettingsCommand final : public IEngineCommand
+		class SetEnvironmentSettingsCommand final : public IEngineCommand
 		{
 		public:
-			explicit SetFogSettingsCommand(FogSettings settings)
-				: m_Settings(settings)
+			explicit SetEnvironmentSettingsCommand(
+				Vans::VansSceneEnvironmentSettingsConfig settings)
+				: m_Settings(std::move(settings))
 			{
 			}
 
 			void Execute(EngineCommandContext& context) override
 			{
 				auto* scene = static_cast<VansGraphics::VansScene*>(context.GetScene());
-				auto* materialManager = scene ? scene->GetMaterialManager() : nullptr;
-				if (!materialManager)
+				if (!scene)
 					return;
-
 				if (!m_HasBefore)
 				{
-					m_Before = ToAPIFogSettings(materialManager->GetFogSettings());
+					m_Before = scene->GetEnvironmentSettings();
 					m_HasBefore = true;
 				}
-
-				materialManager->ApplyFogSettings(ToRuntimeFogSettings(m_Settings));
+				scene->SetEnvironmentSettings(m_Settings);
 			}
 
 			void Undo(EngineCommandContext& context) override
 			{
 				if (!m_HasBefore)
 					return;
-
 				auto* scene = static_cast<VansGraphics::VansScene*>(context.GetScene());
-				auto* materialManager = scene ? scene->GetMaterialManager() : nullptr;
-				if (!materialManager)
-					return;
-
-				materialManager->ApplyFogSettings(ToRuntimeFogSettings(m_Before));
+				if (scene)
+					scene->SetEnvironmentSettings(m_Before);
 			}
 
 			std::string GetDescription() const override
 			{
-				return "Set fog settings";
+				return "Set environment settings";
 			}
 
 			bool CanMergeWith(const IEngineCommand& other) const override
 			{
-				return dynamic_cast<const SetFogSettingsCommand*>(&other) != nullptr;
+				return dynamic_cast<const SetEnvironmentSettingsCommand*>(&other) != nullptr;
 			}
 
 			bool MergeWith(const IEngineCommand& other, EngineCommandContext& context) override
 			{
-				const auto* next = dynamic_cast<const SetFogSettingsCommand*>(&other);
+				const auto* next = dynamic_cast<const SetEnvironmentSettingsCommand*>(&other);
 				if (!next)
 					return false;
-
 				m_Settings = next->m_Settings;
 				Execute(context);
 				return true;
 			}
 
 		private:
-			FogSettings m_Settings;
-			FogSettings m_Before;
-			bool m_HasBefore = false;
-		};
-
-		class SetFogVolumeSettingsCommand final : public IEngineCommand
-		{
-		public:
-			explicit SetFogVolumeSettingsCommand(FogVolumeSettings settings)
-				: m_Settings(settings)
-			{
-			}
-
-			void Execute(EngineCommandContext& context) override
-			{
-				auto* scene = static_cast<VansGraphics::VansScene*>(context.GetScene());
-				auto* materialManager = scene ? scene->GetMaterialManager() : nullptr;
-				if (!materialManager)
-					return;
-
-				if (!m_HasBefore)
-				{
-					m_Before = ToAPIFogVolumeSettings(materialManager->GetFogVolumeSettings());
-					m_HasBefore = true;
-				}
-
-				materialManager->ApplyFogVolumeSettings(ToRuntimeFogVolumeSettings(m_Settings));
-			}
-
-			void Undo(EngineCommandContext& context) override
-			{
-				if (!m_HasBefore)
-					return;
-
-				auto* scene = static_cast<VansGraphics::VansScene*>(context.GetScene());
-				auto* materialManager = scene ? scene->GetMaterialManager() : nullptr;
-				if (!materialManager)
-					return;
-
-				materialManager->ApplyFogVolumeSettings(ToRuntimeFogVolumeSettings(m_Before));
-			}
-
-			std::string GetDescription() const override
-			{
-				return "Set fog volume settings";
-			}
-
-			bool CanMergeWith(const IEngineCommand& other) const override
-			{
-				return dynamic_cast<const SetFogVolumeSettingsCommand*>(&other) != nullptr;
-			}
-
-			bool MergeWith(const IEngineCommand& other, EngineCommandContext& context) override
-			{
-				const auto* next = dynamic_cast<const SetFogVolumeSettingsCommand*>(&other);
-				if (!next)
-					return false;
-
-				m_Settings = next->m_Settings;
-				Execute(context);
-				return true;
-			}
-
-		private:
-			FogVolumeSettings m_Settings;
-			FogVolumeSettings m_Before;
-			bool m_HasBefore = false;
-		};
-
-		class SetCloudSettingsCommand final : public IEngineCommand
-		{
-		public:
-			explicit SetCloudSettingsCommand(CloudSettings settings)
-				: m_Settings(settings)
-			{
-			}
-
-			void Execute(EngineCommandContext& context) override
-			{
-				auto* scene = static_cast<VansGraphics::VansScene*>(context.GetScene());
-				auto* materialManager = scene ? scene->GetMaterialManager() : nullptr;
-				if (!materialManager)
-					return;
-
-				if (!m_HasBefore)
-				{
-					m_Before = ToCloudSettings(materialManager->m_CloudParams);
-					m_HasBefore = true;
-				}
-
-				ApplyCloudSettingsToGPUData(m_Settings, materialManager->m_CloudParams);
-				materialManager->UploadCloudParamsToGPU();
-			}
-
-			void Undo(EngineCommandContext& context) override
-			{
-				if (!m_HasBefore)
-					return;
-
-				auto* scene = static_cast<VansGraphics::VansScene*>(context.GetScene());
-				auto* materialManager = scene ? scene->GetMaterialManager() : nullptr;
-				if (!materialManager)
-					return;
-
-				ApplyCloudSettingsToGPUData(m_Before, materialManager->m_CloudParams);
-				materialManager->UploadCloudParamsToGPU();
-			}
-
-			std::string GetDescription() const override
-			{
-				return "Set cloud settings";
-			}
-
-			bool CanMergeWith(const IEngineCommand& other) const override
-			{
-				return dynamic_cast<const SetCloudSettingsCommand*>(&other) != nullptr;
-			}
-
-			bool MergeWith(const IEngineCommand& other, EngineCommandContext& context) override
-			{
-				const auto* next = dynamic_cast<const SetCloudSettingsCommand*>(&other);
-				if (!next)
-					return false;
-
-				m_Settings = next->m_Settings;
-				Execute(context);
-				return true;
-			}
-
-		private:
-			CloudSettings m_Settings;
-			CloudSettings m_Before;
+			Vans::VansSceneEnvironmentSettingsConfig m_Settings;
+			Vans::VansSceneEnvironmentSettingsConfig m_Before;
 			bool m_HasBefore = false;
 		};
 	}
@@ -4385,6 +4602,9 @@ namespace Vans::EditorAPI
 					outputExtent.width,
 					outputExtent.height);
 				device->CommitRenderRuntimeConfigAtSafePoint();
+				const VkExtent2D appliedOutputExtent = device->GetUpscalerOutputExtent();
+				state->outputWidth = appliedOutputExtent.width;
+				state->outputHeight = appliedOutputExtent.height;
 				applied = true;
 			}
 			if (!applied)
@@ -4393,6 +4613,7 @@ namespace Vans::EditorAPI
 				result.message = "Render-thread project settings application failed";
 				return result;
 			}
+			ApplyRuntimeUIOutputExtent(state->outputWidth, state->outputHeight);
 		}
 		return result;
 	}
@@ -4751,6 +4972,8 @@ namespace Vans::EditorAPI
 		}
 
 		VansGraphics::VansUpscalerSelectionChange selection;
+		std::uint32_t appliedOutputWidth = 0;
+		std::uint32_t appliedOutputHeight = 0;
 		bool backendApplied = false;
 		if (m_RenderSystem)
 		{
@@ -4762,6 +4985,8 @@ namespace Vans::EditorAPI
 			backendApplied = m_RenderSystem->ExecuteRenderThreadTransaction(
 				std::make_unique<RenderSettingsTransaction>(state));
 			selection = state->upscalerSelection;
+			appliedOutputWidth = state->outputWidth;
+			appliedOutputHeight = state->outputHeight;
 		}
 		else
 		{
@@ -4770,7 +4995,12 @@ namespace Vans::EditorAPI
 				outputSettings.width,
 				outputSettings.height);
 			if (selection.accepted)
+			{
 				device->CommitRenderRuntimeConfigAtSafePoint();
+				const VkExtent2D outputExtent = device->GetUpscalerOutputExtent();
+				appliedOutputWidth = outputExtent.width;
+				appliedOutputHeight = outputExtent.height;
+			}
 			backendApplied = selection.accepted;
 		}
 		if (!backendApplied || !selection.accepted)
@@ -4792,6 +5022,7 @@ namespace Vans::EditorAPI
 				: selection.error;
 			return result;
 		}
+		ApplyRuntimeUIOutputExtent(appliedOutputWidth, appliedOutputHeight);
 
 		result.accepted = true;
 		result.runtimeFallbackExpected = selection.fallbackActive;
@@ -4927,8 +5158,6 @@ namespace Vans::EditorAPI
 					previews.push_back(BuildImagePreview(device, 142, "SSGI Reconstruct (Raw)", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
 				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_SSGI_FILTER_RESULT))
 					previews.push_back(BuildImagePreview(device, 167, "SSGI Filtered (Deferred)", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
-				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_VOLUMETRIC_FOG_RESULT))
-					previews.push_back(BuildImagePreview(device, 143, "Fog Blend Result", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
 				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_SCREEN_SPACE_SHADOW_RESULT))
 					previews.push_back(BuildImagePreview(device, 144, "Screen Space Shadow", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
 				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_EXPOSURE_LUMINANCE))
@@ -6441,6 +6670,7 @@ namespace Vans::EditorAPI
 				name,
 				image,
 				layer,
+				filter.mipLevel,
 				VK_IMAGE_LAYOUT_GENERAL);
 		};
 
@@ -6459,6 +6689,25 @@ namespace Vans::EditorAPI
 			return build(205, "Caustics", waterSystem->GetCausticsImage(), 0u);
 		if (textureName == "thickness")
 			return build(206, "Thickness", waterSystem->GetThicknessImage(), 0u);
+		if (textureName == "background_pyramid")
+		{
+			auto* renderPassManager = VansGraphics::VansRenderPassManager::GetInstance();
+			return renderPassManager
+				? BuildLayerImagePreview(
+					device, 207, "Water Background Pyramid",
+					renderPassManager->GetWaterBackgroundPyramid(), 0u,
+					filter.mipLevel, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+				: RenderTexturePreview{};
+		}
+		if (textureName == "detail_normal")
+		{
+			VansGraphics::VansTexture* detailNormal = waterSystem->GetDetailNormalTexture();
+			return detailNormal
+				? BuildLayerImagePreview(
+					device, 208, "Water Detail Wave Normal", detailNormal->GetImage(),
+					0u, filter.mipLevel, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+				: RenderTexturePreview{};
+		}
 
 		auto* fft = waterSystem->GetFFT();
 		if (!fft)
@@ -6488,15 +6737,11 @@ namespace Vans::EditorAPI
 		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
 		if (!scene || !scene->HasWaterNodes() || !settings.available)
 			return;
-		if (m_RenderSystem && !m_RenderSystem->WaitForIdle())
-		{
-			VANS_LOG_ERROR("[EngineAPI] Could not synchronize water settings with RenderThread.");
-			return;
-		}
 
-		VansGraphics::VansWaterConfig& config = scene->EditWaterConfig();
-		const VansGraphics::VansWaterConfig previousConfig = config;
-		ApplyWaterSettingsToConfig(settings, config);
+		VansGraphics::VansWaterConfig& destinationConfig = scene->EditWaterConfig();
+		const VansGraphics::VansWaterConfig previousConfig = destinationConfig;
+		VansGraphics::VansWaterConfig nextConfig = previousConfig;
+		ApplyWaterSettingsToConfig(settings, nextConfig);
 
 		auto* waterSystem = scene->GetWaterSystem();
 
@@ -6506,9 +6751,11 @@ namespace Vans::EditorAPI
 		public:
 			WaterGpuSettingsTransaction(
 				VansGraphics::VansWaterSystem& waterSystem,
+				VansGraphics::VansWaterConfig& destinationConfig,
 				const VansGraphics::VansWaterConfig& previousConfig,
 				const VansGraphics::VansWaterConfig& config)
 				: m_WaterSystem(waterSystem)
+				, m_DestinationConfig(destinationConfig)
 				, m_PreviousConfig(previousConfig)
 				, m_Config(config)
 			{
@@ -6517,6 +6764,12 @@ namespace Vans::EditorAPI
 			bool Execute(VansGraphics::VansGraphicsDevice&) override
 			{
 				VANS_ASSERT_RENDER_THREAD();
+				m_DestinationConfig = m_Config;
+				if (ShouldReinitializeWaterResources(m_PreviousConfig, m_Config))
+				{
+					m_WaterSystem.ReinitializeConfiguredResources();
+					return true;
+				}
 				m_WaterSystem.SetWaterLevel(m_Config.m_WaterLevel);
 				if (ShouldRegenerateGerstnerSpectrum(m_PreviousConfig, m_Config))
 					m_WaterSystem.UpdateWaveSSBO();
@@ -6532,6 +6785,7 @@ namespace Vans::EditorAPI
 
 		private:
 			VansGraphics::VansWaterSystem& m_WaterSystem;
+			VansGraphics::VansWaterConfig& m_DestinationConfig;
 			VansGraphics::VansWaterConfig m_PreviousConfig;
 			VansGraphics::VansWaterConfig m_Config;
 		};
@@ -6542,34 +6796,65 @@ namespace Vans::EditorAPI
 			{
 				if (!m_RenderSystem->ExecuteRenderThreadTransaction(
 					std::make_unique<WaterGpuSettingsTransaction>(
-						*waterSystem, previousConfig, config)))
+						*waterSystem, destinationConfig, previousConfig, nextConfig)))
 				{
-					config = previousConfig;
 					VANS_LOG_ERROR("[EngineAPI] Render-thread water resource update failed.");
 					return;
 				}
 			}
 			else
 			{
-				waterSystem->SetWaterLevel(config.m_WaterLevel);
-				if (ShouldRegenerateGerstnerSpectrum(previousConfig, config))
+				destinationConfig = nextConfig;
+				if (ShouldReinitializeWaterResources(previousConfig, nextConfig))
+				{
+					waterSystem->ReinitializeConfiguredResources();
+				}
+				else
+				{
+				waterSystem->SetWaterLevel(nextConfig.m_WaterLevel);
+				if (ShouldRegenerateGerstnerSpectrum(previousConfig, nextConfig))
 					waterSystem->UpdateWaveSSBO();
-				if (ShouldRegenerateWaveParticleSpectrum(previousConfig, config))
+				if (ShouldRegenerateWaveParticleSpectrum(previousConfig, nextConfig))
 					waterSystem->UpdateWaveParticleSSBO();
-				if (ShouldReinitializeWaterFFT(previousConfig, config))
+				if (ShouldReinitializeWaterFFT(previousConfig, nextConfig))
 					if (auto* fft = waterSystem->GetFFT())
 						fft->MarkReinit();
+				}
 			}
+		}
+		else
+		{
+			destinationConfig = nextConfig;
 		}
 
 		if (VansGraphics::VansRenderNode* waterNode = scene->GetWaterRenderNode())
 		{
 			glm::vec3 position = waterNode->GetTransformPosition();
-			position.y = config.m_WaterLevel;
+			position.y = nextConfig.m_WaterLevel;
 			waterNode->SetTransformData(
 				position,
 				waterNode->GetTransformRotation(),
 				waterNode->GetTransformScale());
+		}
+
+		ScenePropertyValue waterSettings = WaterScenePropertyValue(nextConfig);
+		for (auto& [fieldName, fieldValue] : waterSettings.objectFields)
+		{
+			ScenePropertyEdit edit{
+				"/settings/water/" + fieldName,
+				std::move(fieldValue)
+			};
+			auto pending = std::find_if(
+				m_PendingScenePropertyEdits.begin(),
+				m_PendingScenePropertyEdits.end(),
+				[&edit](const ScenePropertyEdit& candidate)
+				{
+					return candidate.propertyPointer == edit.propertyPointer;
+				});
+			if (pending != m_PendingScenePropertyEdits.end())
+				*pending = std::move(edit);
+			else
+				m_PendingScenePropertyEdits.push_back(std::move(edit));
 		}
 	}
 
@@ -6590,6 +6875,27 @@ namespace Vans::EditorAPI
 
 		stats.systemInitialized = true;
 		stats.fftAvailable = waterSystem->GetFFT() != nullptr;
+		stats.detailNormalAssetAvailable = waterSystem->IsDetailNormalAssetAvailable();
+		stats.detailNormalAnisotropyActive = waterSystem->GetDetailNormalAnisotropy();
+		stats.effectiveRoughnessMode = static_cast<int>(
+			scene->GetWaterConfig().m_EffectiveRoughness.m_Mode);
+		if (auto* detailNormal = waterSystem->GetDetailNormalTexture())
+		{
+			stats.detailNormalMipCount =
+				detailNormal->GetImage().GetImageCreateInfo().mipLevels;
+		}
+		if (auto* renderPassManager = VansGraphics::VansRenderPassManager::GetInstance())
+		{
+			VansGraphics::VansVKImage& background =
+				renderPassManager->GetWaterBackgroundPyramid();
+			stats.waterBackgroundPyramidMipCount = background.GetImageCreateInfo().mipLevels;
+			const VkExtent3D extent = background.GetImageDimension();
+			stats.waterBackgroundPyramidWidth = extent.width;
+			stats.waterBackgroundPyramidHeight = extent.height;
+			stats.shadowCascadeAvailable =
+				renderPassManager->GetCascadeShadowArrayView() != VK_NULL_HANDLE &&
+				renderPassManager->GetCascadeShadowCompareSampler() != VK_NULL_HANDLE;
+		}
 		auto* geometry = waterSystem->GetGeometryClipmap();
 		if (geometry)
 		{
@@ -7832,7 +8138,7 @@ namespace Vans::EditorAPI
 			}
 			VansGraphics::VansAnimationNode* node = ResolveSceneAnimationPreviewNode(
 				scene, request.entityGuid, request.animationComponentGuid);
-			if (!node || !node->GetLocomotionController())
+			if (!node || !node->GetCharacterMotionController())
 			{
 				result.message = "Scene Animation Component could not be resolved";
 				return result;
@@ -7844,7 +8150,7 @@ namespace Vans::EditorAPI
 			session->originalSpeed = node->GetSpeed();
 			session->originalGraphSetId = node->GetActiveGraphSetId();
 			session->originalParameters =
-				node->GetLocomotionController()->GetParameters();
+				node->GetCharacterMotionController()->GetParameters();
 			session->originalSceneStateCaptured = true;
 			session->playing = session->originalPlaybackState ==
 				VansGraphics::AnimationState::Playing ||
@@ -8610,7 +8916,7 @@ namespace Vans::EditorAPI
 				node->Play(
 					VansGraphics::VansAnimationEvaluationPurpose::EditorPreview);
 				if (VansGraphics::VansAnimationController* controller =
-					node->GetLocomotionController())
+					node->GetCharacterMotionController())
 				{
 					RestoreAnimationPreviewParameters(
 						*controller, session.originalParameters);
@@ -9060,170 +9366,169 @@ namespace Vans::EditorAPI
 		}) });
 	}
 
-	void EngineAPIImpl::ApplyFogSettings(const FogSettings& settings)
+	EnvironmentSettings EngineAPIImpl::GetEnvironmentSettings() const
+	{
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		return scene ? ToAPIEnvironmentSettings(scene->GetEnvironmentSettings()) : EnvironmentSettings{};
+	}
+
+	void EngineAPIImpl::ApplyEnvironmentSettings(const EnvironmentSettings& settings)
 	{
 		if (m_RenderSystem && !m_RenderSystem->WaitForIdle())
 			return;
-		SubmitCommand(std::make_unique<SetFogSettingsCommand>(settings));
+		SubmitCommand(std::make_unique<SetEnvironmentSettingsCommand>(
+			ToRuntimeEnvironmentSettings(settings)));
 	}
 
-	void EngineAPIImpl::CommitHeightFogSettings()
+	void EngineAPIImpl::CommitEnvironmentSettings()
 	{
-		const FogSettings settings = GetFogSettings();
-		m_PendingScenePropertyEdits.push_back({ "/settings/heightFog", ScenePropertyValues::Object({
-			{ "fogDensity", ScenePropertyValues::Float(settings.fogDensity) },
-			{ "heightFalloff", ScenePropertyValues::Float(settings.heightFalloff) },
-			{ "sunScatterScale", ScenePropertyValues::Float(settings.sunScatterScale) },
-			{ "ambientScale", ScenePropertyValues::Float(settings.ambientScale) },
-			{ "fogMinHeight", ScenePropertyValues::Float(settings.fogMinHeight) },
-			{ "skyFogDistance", ScenePropertyValues::Float(settings.skyFogDistance) }
-		}) });
+		const EnvironmentSettings settings = GetEnvironmentSettings();
+		auto float3 = [](const std::array<float, 3>& value)
+		{
+			return ScenePropertyValues::Array({
+				ScenePropertyValues::Float(value[0]),
+				ScenePropertyValues::Float(value[1]),
+				ScenePropertyValues::Float(value[2])
+			});
+		};
+		auto double3 = [](const std::array<double, 3>& value)
+		{
+			return ScenePropertyValues::Array({
+				ScenePropertyValues::Float(value[0]),
+				ScenePropertyValues::Float(value[1]),
+				ScenePropertyValues::Float(value[2])
+			});
+		};
+		std::vector<ScenePropertyValue> celestialBodies;
+		celestialBodies.reserve(settings.physicalAtmosphere.celestialBodies.size());
+		for (const CelestialBodySettings& body :
+			settings.physicalAtmosphere.celestialBodies)
+		{
+			celestialBodies.push_back(ScenePropertyValues::Object({
+				{ "name", ScenePropertyValues::String(body.name) },
+				{ "lightEntityId", ScenePropertyValues::String(body.lightEntityId) },
+				{ "disk", ScenePropertyValues::Object({
+					{ "enabled", ScenePropertyValues::Bool(body.disk.enabled) },
+					{ "angularRadiusRadians", ScenePropertyValues::Float(body.disk.angularRadiusRadians) },
+					{ "featherRadians", ScenePropertyValues::Float(body.disk.featherRadians) },
+					{ "radianceScale", ScenePropertyValues::Float(body.disk.radianceScale) },
+					{ "occlusionStrength", ScenePropertyValues::Float(body.disk.occlusionStrength) }
+				}) }
+			}));
+		}
+		const CloudSettings& cloud = settings.volumetricClouds;
+		m_PendingScenePropertyEdits.push_back({
+			"/settings/environment",
+			ScenePropertyValues::Object({
+				{ "planet", ScenePropertyValues::Object({
+					{ "centerWorldMeters", double3(settings.planet.centerWorldMeters) },
+					{ "bottomRadiusMeters", ScenePropertyValues::Float(settings.planet.bottomRadiusMeters) },
+					{ "atmosphereHeightMeters", ScenePropertyValues::Float(settings.planet.atmosphereHeightMeters) }
+				}) },
+				{ "physicalAtmosphere", ScenePropertyValues::Object({
+					{ "enabled", ScenePropertyValues::Bool(settings.physicalAtmosphere.enabled) },
+					{ "groundAlbedo", float3(settings.physicalAtmosphere.groundAlbedo) },
+					{ "rayleigh", ScenePropertyValues::Object({
+						{ "scatteringPerMeterAtGround", float3(settings.physicalAtmosphere.rayleigh.scatteringPerMeterAtGround) },
+						{ "densityScaleHeightMeters", ScenePropertyValues::Float(settings.physicalAtmosphere.rayleigh.densityScaleHeightMeters) }
+					}) },
+					{ "mie", ScenePropertyValues::Object({
+						{ "scatteringPerMeterAtGround", float3(settings.physicalAtmosphere.mie.scatteringPerMeterAtGround) },
+						{ "absorptionPerMeterAtGround", float3(settings.physicalAtmosphere.mie.absorptionPerMeterAtGround) },
+						{ "densityScaleHeightMeters", ScenePropertyValues::Float(settings.physicalAtmosphere.mie.densityScaleHeightMeters) },
+						{ "anisotropy", ScenePropertyValues::Float(settings.physicalAtmosphere.mie.anisotropy) }
+					}) },
+					{ "ozone", ScenePropertyValues::Object({
+						{ "absorptionPerMeter", float3(settings.physicalAtmosphere.ozone.absorptionPerMeter) },
+						{ "centerAltitudeMeters", ScenePropertyValues::Float(settings.physicalAtmosphere.ozone.centerAltitudeMeters) },
+						{ "halfWidthMeters", ScenePropertyValues::Float(settings.physicalAtmosphere.ozone.halfWidthMeters) }
+					}) },
+					{ "aerialPerspective", ScenePropertyValues::Object({
+						{ "distanceScale", ScenePropertyValues::Float(settings.physicalAtmosphere.aerialPerspective.distanceScale) }
+					}) },
+					{ "mainLightVolumetricScatteringScale", ScenePropertyValues::Float(
+						settings.physicalAtmosphere.mainLightVolumetricScatteringScale) },
+					{ "celestialBodies", ScenePropertyValues::Array(std::move(celestialBodies)) }
+				}) },
+				{ "heightFog", ScenePropertyValues::Object({
+					{ "enabled", ScenePropertyValues::Bool(settings.heightFog.enabled) },
+					{ "groundHeightWorldMeters", ScenePropertyValues::Float(settings.heightFog.groundHeightWorldMeters) },
+					{ "visibilityAtGroundMeters", ScenePropertyValues::Float(settings.heightFog.visibilityAtGroundMeters) },
+					{ "densityFalloffHeightMeters", ScenePropertyValues::Float(settings.heightFog.densityFalloffHeightMeters) },
+					{ "startDistanceMeters", ScenePropertyValues::Float(settings.heightFog.startDistanceMeters) },
+					{ "nearFadeDistanceMeters", ScenePropertyValues::Float(settings.heightFog.nearFadeDistanceMeters) },
+					{ "maximumDistanceMeters", ScenePropertyValues::Float(settings.heightFog.maximumDistanceMeters) },
+					{ "farFadeDistanceMeters", ScenePropertyValues::Float(settings.heightFog.farFadeDistanceMeters) },
+					{ "singleScatteringAlbedo", float3(settings.heightFog.singleScatteringAlbedo) },
+					{ "anisotropy", ScenePropertyValues::Float(settings.heightFog.anisotropy) },
+					{ "emissivePerMeter", float3(settings.heightFog.emissivePerMeter) },
+					{ "skyLightingScale", ScenePropertyValues::Float(settings.heightFog.skyLightingScale) },
+					{ "mainLightVolumetricScale", ScenePropertyValues::Float(settings.heightFog.mainLightVolumetricScale) },
+					{ "receiveCloudShadows", ScenePropertyValues::Bool(settings.heightFog.receiveCloudShadows) }
+				}) },
+				{ "volumetricClouds", ScenePropertyValues::Object({
+					{ "enabled", ScenePropertyValues::Bool(cloud.enabled) },
+					{ "cloudMinHeight", ScenePropertyValues::Float(cloud.cloudMinHeight) },
+					{ "cloudMaxHeight", ScenePropertyValues::Float(cloud.cloudMaxHeight) },
+					{ "density", ScenePropertyValues::Float(cloud.density) },
+					{ "coverage", ScenePropertyValues::Float(cloud.coverage) },
+					{ "sunBrightness", ScenePropertyValues::Float(cloud.sunBrightness) },
+					{ "mainTileMeters", ScenePropertyValues::Float(cloud.mainTileMeters) },
+					{ "detailTileMeters", ScenePropertyValues::Float(cloud.detailTileMeters) },
+					{ "mainHeightScale", ScenePropertyValues::Float(cloud.mainHeightScale) },
+					{ "detailHeightScale", ScenePropertyValues::Float(cloud.detailHeightScale) },
+					{ "thresholdLowCoverage", ScenePropertyValues::Float(cloud.thresholdLowCoverage) },
+					{ "thresholdHighCoverage", ScenePropertyValues::Float(cloud.thresholdHighCoverage) },
+					{ "densityRemapLow", ScenePropertyValues::Float(cloud.densityRemapLow) },
+					{ "densityRemapHigh", ScenePropertyValues::Float(cloud.densityRemapHigh) },
+					{ "mainErosionStrength", ScenePropertyValues::Float(cloud.mainErosionStrength) },
+					{ "detailErosionStrength", ScenePropertyValues::Float(cloud.detailErosionStrength) },
+					{ "edgeErosionStrength", ScenePropertyValues::Float(cloud.edgeErosionStrength) },
+					{ "verticalShapePower", ScenePropertyValues::Float(cloud.verticalShapePower) },
+					{ "detailErosionLow", ScenePropertyValues::Float(cloud.detailErosionLow) },
+					{ "detailErosionHigh", ScenePropertyValues::Float(cloud.detailErosionHigh) },
+					{ "detailEdgeStrength", ScenePropertyValues::Float(cloud.detailEdgeStrength) },
+					{ "sigmaTRef", ScenePropertyValues::Float(cloud.sigmaTRef) },
+					{ "viewAbsorption", ScenePropertyValues::Float(cloud.viewAbsorption) },
+					{ "lightAbsorption", ScenePropertyValues::Float(cloud.lightAbsorption) },
+					{ "singleScatteringAlbedo", ScenePropertyValues::Float(cloud.singleScatteringAlbedo) },
+					{ "forwardEccentricity", ScenePropertyValues::Float(cloud.forwardEccentricity) },
+					{ "backwardEccentricity", ScenePropertyValues::Float(cloud.backwardEccentricity) },
+					{ "msAttenuation", ScenePropertyValues::Float(cloud.msAttenuation) },
+					{ "msContribution", ScenePropertyValues::Float(cloud.msContribution) },
+					{ "msEccentricity", ScenePropertyValues::Float(cloud.msEccentricity) },
+					{ "scatteringTintR", ScenePropertyValues::Float(cloud.scatteringTintR) },
+					{ "scatteringTintG", ScenePropertyValues::Float(cloud.scatteringTintG) },
+					{ "scatteringTintB", ScenePropertyValues::Float(cloud.scatteringTintB) },
+					{ "scatterSourceODScale", ScenePropertyValues::Float(cloud.scatterSourceODScale) },
+					{ "scatterSourceCurvePow", ScenePropertyValues::Float(cloud.scatterSourceCurvePow) },
+					{ "aoUpwardScale", ScenePropertyValues::Float(cloud.aoUpwardScale) },
+					{ "ambientBottomStrength", ScenePropertyValues::Float(cloud.ambientBottomStrength) },
+					{ "ambientTopStrength", ScenePropertyValues::Float(cloud.ambientTopStrength) },
+					{ "ambientDuskWarmth", ScenePropertyValues::Float(cloud.ambientDuskWarmth) },
+					{ "boundaryConfidence", ScenePropertyValues::Float(cloud.boundaryConfidence) },
+					{ "boundaryWrap", ScenePropertyValues::Float(cloud.boundaryWrap) },
+					{ "phiFwdIntensity", ScenePropertyValues::Float(cloud.phiFwdIntensity) },
+					{ "phiFwdDepthPow", ScenePropertyValues::Float(cloud.phiFwdDepthPow) },
+					{ "phiFwdDepthBias", ScenePropertyValues::Float(cloud.phiFwdDepthBias) },
+					{ "phiFwdMSBuildScale", ScenePropertyValues::Float(cloud.phiFwdMSBuildScale) },
+					{ "phiFwdCompress", ScenePropertyValues::Float(cloud.phiFwdCompress) },
+					{ "phiFwdMaxDistance", ScenePropertyValues::Float(cloud.phiFwdMaxDistance) },
+					{ "phiFwdConeRatio", ScenePropertyValues::Float(cloud.phiFwdConeRatio) },
+					{ "phiFwdMinStep", ScenePropertyValues::Float(cloud.phiFwdMinStep) },
+					{ "lightStepCount", ScenePropertyValues::Float(cloud.lightStepCount) },
+					{ "boundaryGradientStep", ScenePropertyValues::Float(cloud.boundaryGradientStep) },
+					{ "boundaryGradientStrength", ScenePropertyValues::Float(cloud.boundaryGradientStrength) },
+					{ "shadingDebugMode", ScenePropertyValues::Float(cloud.shadingDebugMode) },
+					{ "shadow", ScenePropertyValues::Object({
+						{ "enabled", ScenePropertyValues::Bool(cloud.shadow.enabled) },
+						{ "atmosphereStrength", ScenePropertyValues::Float(cloud.shadow.atmosphereStrength) },
+						{ "ambientOcclusionStrength", ScenePropertyValues::Float(cloud.shadow.ambientOcclusionStrength) }
+					}) }
+				}) }
+			})
+		});
 	}
-
-	FogSettings EngineAPIImpl::GetFogSettings() const
-	{
-		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
-		auto* materialManager = scene ? scene->GetMaterialManager() : nullptr;
-		if (!materialManager)
-			return {};
-
-		return ToAPIFogSettings(materialManager->GetFogSettings());
-	}
-
-	void EngineAPIImpl::ApplyFogVolumeSettings(const FogVolumeSettings& settings)
-	{
-		if (m_RenderSystem && !m_RenderSystem->WaitForIdle())
-			return;
-		SubmitCommand(std::make_unique<SetFogVolumeSettingsCommand>(settings));
-	}
-
-	void EngineAPIImpl::CommitVolumetricFogSettings()
-	{
-		const FogVolumeSettings settings = GetFogVolumeSettings();
-		m_PendingScenePropertyEdits.push_back({ "/settings/volumetricFog", ScenePropertyValues::Object({
-			{ "density", ScenePropertyValues::Float(settings.density) },
-			{ "anisotropy", ScenePropertyValues::Float(settings.anisotropy) },
-			{ "scatterScale", ScenePropertyValues::Float(settings.scatterScale) },
-			{ "ambientScale", ScenePropertyValues::Float(settings.ambientScale) },
-			{ "volumeNear", ScenePropertyValues::Float(settings.volumeNear) },
-			{ "volumeFar", ScenePropertyValues::Float(settings.volumeFar) },
-			{ "slicePower", ScenePropertyValues::Float(settings.slicePower) },
-			{ "fogBoxMin", ScenePropertyValues::Array({
-				ScenePropertyValues::Float(settings.fogBoxMin[0]),
-				ScenePropertyValues::Float(settings.fogBoxMin[1]),
-				ScenePropertyValues::Float(settings.fogBoxMin[2])
-			}) },
-			{ "fogBoxMax", ScenePropertyValues::Array({
-				ScenePropertyValues::Float(settings.fogBoxMax[0]),
-				ScenePropertyValues::Float(settings.fogBoxMax[1]),
-				ScenePropertyValues::Float(settings.fogBoxMax[2])
-			}) }
-		}) });
-	}
-
-	FogVolumeSettings EngineAPIImpl::GetFogVolumeSettings() const
-	{
-		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
-		auto* materialManager = scene ? scene->GetMaterialManager() : nullptr;
-		if (!materialManager)
-			return {};
-
-		return ToAPIFogVolumeSettings(materialManager->GetFogVolumeSettings());
-	}
-
-	CloudSettings EngineAPIImpl::GetCloudSettings() const
-	{
-		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
-		auto* materialManager = scene ? scene->GetMaterialManager() : nullptr;
-		if (!materialManager)
-			return {};
-
-		return ToCloudSettings(materialManager->m_CloudParams);
-	}
-
-	void EngineAPIImpl::ApplyCloudSettings(const CloudSettings& settings)
-	{
-		if (m_RenderSystem && !m_RenderSystem->WaitForIdle())
-			return;
-		SubmitCommand(std::make_unique<SetCloudSettingsCommand>(settings));
-	}
-
-	void EngineAPIImpl::ResetCloudSettings()
-	{
-		if (m_RenderSystem && !m_RenderSystem->WaitForIdle())
-			return;
-		SubmitCommand(std::make_unique<SetCloudSettingsCommand>(
-			ToCloudSettings(VansGraphics::VansCloudParamsGPU())));
-	}
-
-	void EngineAPIImpl::CommitCloudSettings()
-	{
-		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
-		if (!scene || !scene->GetMaterialManager())
-			return;
-
-		auto* materialManager = scene->GetMaterialManager();
-		const CloudSettings settings = ToCloudSettings(materialManager->m_CloudParams);
-		m_PendingScenePropertyEdits.push_back({ "/settings/volumetricClouds", ScenePropertyValues::Object({
-			{ "planetRadius", ScenePropertyValues::Float(settings.planetRadius) },
-			{ "seaLevel", ScenePropertyValues::Float(settings.seaLevel) },
-			{ "cloudBaseHeight", ScenePropertyValues::Float(settings.cloudMinHeight) },
-			{ "cloudThickness", ScenePropertyValues::Float(std::max(settings.cloudMaxHeight - settings.cloudMinHeight, 100.0f)) },
-			{ "density", ScenePropertyValues::Float(settings.density) },
-			{ "coverage", ScenePropertyValues::Float(settings.coverage) },
-			{ "sunBrightness", ScenePropertyValues::Float(settings.sunBrightness) },
-			{ "phaseG", ScenePropertyValues::Float(settings.phaseG) },
-			{ "mainTileMeters", ScenePropertyValues::Float(settings.mainTileMeters) },
-			{ "detailTileMeters", ScenePropertyValues::Float(settings.detailTileMeters) },
-			{ "mainHeightScale", ScenePropertyValues::Float(settings.mainHeightScale) },
-			{ "detailHeightScale", ScenePropertyValues::Float(settings.detailHeightScale) },
-			{ "thresholdLowCoverage", ScenePropertyValues::Float(settings.thresholdLowCoverage) },
-			{ "thresholdHighCoverage", ScenePropertyValues::Float(settings.thresholdHighCoverage) },
-			{ "densityRemapLow", ScenePropertyValues::Float(settings.densityRemapLow) },
-			{ "densityRemapHigh", ScenePropertyValues::Float(settings.densityRemapHigh) },
-			{ "mainErosionStrength", ScenePropertyValues::Float(settings.mainErosionStrength) },
-			{ "detailErosionStrength", ScenePropertyValues::Float(settings.detailErosionStrength) },
-			{ "edgeErosionStrength", ScenePropertyValues::Float(settings.edgeErosionStrength) },
-			{ "verticalShapePower", ScenePropertyValues::Float(settings.verticalShapePower) },
-			{ "detailErosionLow", ScenePropertyValues::Float(settings.detailErosionLow) },
-			{ "detailErosionHigh", ScenePropertyValues::Float(settings.detailErosionHigh) },
-			{ "detailEdgeStrength", ScenePropertyValues::Float(settings.detailEdgeStrength) },
-			{ "shadowDensityScale", ScenePropertyValues::Float(settings.shadowDensityScale) },
-			{ "sigmaTRef", ScenePropertyValues::Float(settings.sigmaTRef) },
-			{ "viewAbsorption", ScenePropertyValues::Float(settings.viewAbsorption) },
-			{ "lightAbsorption", ScenePropertyValues::Float(settings.lightAbsorption) },
-			{ "singleScatteringAlbedo", ScenePropertyValues::Float(settings.singleScatteringAlbedo) },
-			{ "forwardEccentricity", ScenePropertyValues::Float(settings.forwardEccentricity) },
-			{ "backwardEccentricity", ScenePropertyValues::Float(settings.backwardEccentricity) },
-			{ "msAttenuation", ScenePropertyValues::Float(settings.msAttenuation) },
-			{ "msContribution", ScenePropertyValues::Float(settings.msContribution) },
-			{ "msEccentricity", ScenePropertyValues::Float(settings.msEccentricity) },
-			{ "scatteringTintR", ScenePropertyValues::Float(settings.scatteringTintR) },
-			{ "scatteringTintG", ScenePropertyValues::Float(settings.scatteringTintG) },
-			{ "scatteringTintB", ScenePropertyValues::Float(settings.scatteringTintB) },
-			{ "scatterSourceODScale", ScenePropertyValues::Float(settings.scatterSourceODScale) },
-			{ "scatterSourceCurvePow", ScenePropertyValues::Float(settings.scatterSourceCurvePow) },
-			{ "aoUpwardScale", ScenePropertyValues::Float(settings.aoUpwardScale) },
-			{ "ambientBottomStrength", ScenePropertyValues::Float(settings.ambientBottomStrength) },
-			{ "ambientTopStrength", ScenePropertyValues::Float(settings.ambientTopStrength) },
-			{ "ambientDuskWarmth", ScenePropertyValues::Float(settings.ambientDuskWarmth) },
-			{ "boundaryConfidence", ScenePropertyValues::Float(settings.boundaryConfidence) },
-			{ "boundaryWrap", ScenePropertyValues::Float(settings.boundaryWrap) },
-			{ "phiFwdIntensity", ScenePropertyValues::Float(settings.phiFwdIntensity) },
-			{ "phiFwdDepthPow", ScenePropertyValues::Float(settings.phiFwdDepthPow) },
-			{ "phiFwdDepthBias", ScenePropertyValues::Float(settings.phiFwdDepthBias) },
-			{ "phiFwdMSBuildScale", ScenePropertyValues::Float(settings.phiFwdMSBuildScale) },
-			{ "phiFwdCompress", ScenePropertyValues::Float(settings.phiFwdCompress) },
-			{ "phiFwdMaxDistance", ScenePropertyValues::Float(settings.phiFwdMaxDistance) },
-			{ "phiFwdConeRatio", ScenePropertyValues::Float(settings.phiFwdConeRatio) },
-			{ "phiFwdMinStep", ScenePropertyValues::Float(settings.phiFwdMinStep) },
-			{ "lightStepCount", ScenePropertyValues::Float(settings.lightStepCount) },
-			{ "boundaryGradientStep", ScenePropertyValues::Float(settings.boundaryGradientStep) },
-			{ "boundaryGradientStrength", ScenePropertyValues::Float(settings.boundaryGradientStrength) },
-			{ "shadingDebugMode", ScenePropertyValues::Float(settings.shadingDebugMode) }
-		}) });
-	}
-
 	std::vector<ScenePropertyEdit> EngineAPIImpl::ConsumeScenePropertyEdits()
 	{
 		std::vector<ScenePropertyEdit> edits = std::move(m_PendingScenePropertyEdits);

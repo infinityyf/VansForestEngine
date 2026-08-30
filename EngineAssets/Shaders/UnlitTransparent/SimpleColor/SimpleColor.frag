@@ -2,6 +2,8 @@
 #extension GL_GOOGLE_include_directive : require
 
 #include "../../Common/CameraData.glsl"
+#include "../../Atmosphere/AtmosphereCommon.glsl"
+#include "../../Atmosphere/AtmosphereMediaComposition.glsl"
 
 layout( location = 0 ) in vec2 frag_uv;
 layout( location = 1 ) in vec3 normal_ws;
@@ -28,5 +30,7 @@ void main()
     vec3  baseColor = texColor.rgb;
     float alpha     = texColor.a * (0.4 + 0.4 * rim);  // modulate texture alpha by rim
 
-    outColor = vec4(baseColor, alpha);
+    vec2 screenUv = gl_FragCoord.xy / max(ScreenParams.xy, vec2(1.0));
+    outColor = vec4(CompositeAtmosphereSurfaceRadiance(
+        screenUv, position_world, baseColor), alpha);
 }

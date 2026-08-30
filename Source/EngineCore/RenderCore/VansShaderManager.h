@@ -74,6 +74,11 @@ namespace VansGraphics
         void RegisterShader(VansShaderEntry entry);
         void RegisterGraphicsShader(const std::string& shaderName, VansShaderEntry entry);
         void RegisterComputeShader(const std::string& shaderName, const std::string& relativePath, int pushConstantSize = 0);
+		void RegisterComputeShaderFile(
+			const std::string& shaderName,
+			const std::string& relativePath,
+			const std::string& computeFile,
+			int pushConstantSize = 0);
         void RegisterRayTracingShader(const std::string& shaderName, const std::string& relativePath, int pushConstantSize = 0);
 
         const VansShaderEntry* FindShaderEntry(const std::string& shaderName) const;

@@ -456,6 +456,8 @@ bool VansSceneProjectResourceBuilder::LoadTextures(VansScene& scene,
         VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, loadContext.ResolveEnginePath("EngineAssets/Textures/Default/defaultRoughness.png").string(), "defaultRoughness", vkDevice, false);
         VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, loadContext.ResolveEnginePath("EngineAssets/Textures/Default/defaultAo.png").string(),        "defaultAo",        vkDevice, false);
 		VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, loadContext.ResolveEnginePath("EngineAssets/Textures/Default/defaultNormal.png").string(),    "defaultNormal",    vkDevice, false);
+		VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, loadContext.ResolveEnginePath("EngineAssets/Textures/Default/defaultSkinCavity.png").string(), "defaultSkinCavity", vkDevice, false);
+		VansSceneProjectResourceBuilder::ImportDefaultTexture(scene, loadContext.ResolveEnginePath("EngineAssets/Textures/Default/defaultSkinMask.png").string(),   "defaultSkinMask",   vkDevice, false);
 	}
 	return true;
 }

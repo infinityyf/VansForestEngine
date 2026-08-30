@@ -1,0 +1,85 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "../Common/CameraData.glsl"
+#include "../Atmosphere/AtmosphereCommon.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(set = 1, binding = 2) uniform CloudParamsUBO
+{
+    float planetBottomRadius; float cloudMinHeight; float cloudMaxHeight; float density;
+    float coverage; float sunBrightness; float atmosphereShadowStrength; float mainTileMeters;
+    float detailTileMeters; float mainHeightScale; float detailHeightScale; float thresholdLowCoverage;
+    float thresholdHighCoverage; float densityRemapLow; float densityRemapHigh; float mainErosionStrength;
+    float detailErosionStrength; float edgeErosionStrength; float verticalShapePower; float detailErosionLow;
+    float detailErosionHigh; float detailEdgeStrength; float _opticalPadding; float sigmaTRef;
+    float viewAbsorption; float lightAbsorption; float singleScatteringAlbedo; float forwardEccentricity;
+    float backwardEccentricity; float msAttenuation; float msContribution; float msEccentricity;
+    float scatteringTintR; float scatteringTintG; float scatteringTintB; float scatterSourceODScale;
+    float scatterSourceCurvePow; float aoUpwardScale; float ambientBottomStrength; float ambientTopStrength;
+    float ambientDuskWarmth; float boundaryConfidence; float boundaryWrap; float phiFwdIntensity;
+    float phiFwdDepthPow; float phiFwdDepthBias; float phiFwdMSBuildScale; float phiFwdCompress;
+    float phiFwdMaxDistance; float phiFwdConeRatio; float phiFwdMinStep; float lightStepCount;
+    float boundaryGradientStep; float boundaryGradientStrength; float shadingDebugMode; float _cloudPadding;
+    vec4 shadowClipmapParameters;
+	vec4 shadowRayMarchParameters;
+} uCloud;
+layout(set = 1, binding = 3) uniform sampler3D cloudMainNoise;
+layout(set = 1, binding = 4) uniform sampler3D cloudDetailNoise;
+layout(set = 1, binding = 5, rgba16f) uniform writeonly image2DArray cloudShadowOutput;
+
+#include "../Common/CloudCommon.glsl"
+
+void main()
+{
+    ivec3 texel = ivec3(gl_GlobalInvocationID.xyz);
+    ivec3 extent = imageSize(cloudShadowOutput);
+    if (any(greaterThanEqual(texel, extent)))
+        return;
+    if (uAtmosphereFrame.atmosphereCelestialBodies[0].directionAndValidity.w <= 0.5 ||
+        uCloud.density <= 1.0e-7 || uCloud.shadowRayMarchParameters.w < 0.5)
+    {
+        imageStore(cloudShadowOutput, texel, vec4(1.0));
+        return;
+    }
+    vec3 centerRelative = uAtmosphereFrame.planetCenterRelativeToCameraMeters.xyz;
+    vec3 cameraRelativeToCenter = -centerRelative;
+    vec3 up = normalize(cameraRelativeToCenter);
+    vec3 tangentX = normalize(cross(abs(up.y) < 0.99 ? vec3(0.0, 1.0, 0.0) :
+        vec3(1.0, 0.0, 0.0), up));
+    vec3 tangentY = cross(up, tangentX);
+    float levelFraction = extent.z <= 1 ? 0.0 : float(texel.z) / float(extent.z - 1);
+    float coverageMeters = mix(uCloud.shadowClipmapParameters.x,
+        uCloud.shadowClipmapParameters.y, levelFraction);
+    float texelWorldMeters = 2.0 * coverageMeters /
+        max(float(extent.x), 1.0);
+    vec2 cameraTangentWorld = vec2(
+        dot(cameraRelativeToCenter, tangentX),
+        dot(cameraRelativeToCenter, tangentY));
+    vec2 snappedCenter = round(cameraTangentWorld / texelWorldMeters) *
+        texelWorldMeters;
+    vec2 snappedOffset = snappedCenter - cameraTangentWorld;
+    vec2 uv = (vec2(texel.xy) + 0.5) / vec2(extent.xy) * 2.0 - 1.0;
+    vec3 groundPoint = up * uCloud.planetBottomRadius +
+        tangentX * (uv.x * coverageMeters + snappedOffset.x) +
+        tangentY * (uv.y * coverageMeters + snappedOffset.y);
+    groundPoint = normalize(groundPoint) * uCloud.planetBottomRadius;
+    vec3 lightDirection = normalize(uAtmosphereFrame.atmosphereCelestialBodies[0].directionAndValidity.xyz);
+    CloudShellResult shell = IntersectCloudShell(groundPoint, lightDirection,
+        uCloud.planetBottomRadius, uCloud.cloudMinHeight, uCloud.cloudMaxHeight);
+    float opticalDepth = 0.0;
+    if (shell.hit)
+    {
+		int sampleCount = clamp(int(uCloud.shadowRayMarchParameters.x), 1, 128);
+        float stepLength = (shell.tEnd - shell.tStart) / float(sampleCount);
+        for (int sampleIndex = 0; sampleIndex < sampleCount; ++sampleIndex)
+        {
+            float distanceMeters = shell.tStart + (float(sampleIndex) + 0.5) * stepLength;
+            opticalDepth += SampleCloudDensity(groundPoint + lightDirection * distanceMeters) *
+                max(uCloud.sigmaTRef, 0.0) * max(uCloud.lightAbsorption, 0.0) *
+                stepLength;
+        }
+    }
+    float transmittance = exp(-min(opticalDepth, 80.0));
+    imageStore(cloudShadowOutput, texel, vec4(vec3(transmittance), 1.0));
+}

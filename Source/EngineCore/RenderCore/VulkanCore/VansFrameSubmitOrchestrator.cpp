@@ -417,7 +417,6 @@ const char* VansGraphics::ToString(VansSyncPoint point)
 	case VansSyncPoint::HairShadowReady: return "HairShadowReady";
 	case VansSyncPoint::TileLightReady: return "TileLightReady";
 	case VansSyncPoint::ScreenLightingReady: return "ScreenLightingReady";
-	case VansSyncPoint::CloudReady: return "CloudReady";
 	case VansSyncPoint::WaterWaveDone: return "WaterWaveDone";
 	case VansSyncPoint::WaterInputsReady: return "WaterInputsReady";
 	case VansSyncPoint::WaterPrecomputeDone: return "WaterPrecomputeDone";

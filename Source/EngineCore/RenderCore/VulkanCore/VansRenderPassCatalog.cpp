@@ -1,4 +1,4 @@
-﻿#include "VansRenderPassCatalog.h"
+#include "VansRenderPassCatalog.h"
 
 #include <cstring>
 
@@ -42,7 +42,10 @@ namespace VansGraphics
 			return std::strcmp(passName, VansRenderPassNames::VegetationCompute) == 0
 				|| std::strcmp(passName, VansRenderPassNames::MainCameraHiZCull) == 0
 				|| std::strcmp(passName, VansRenderPassNames::TileLightBuild) == 0
-				|| std::strcmp(passName, VansRenderPassNames::CloudRayMarch) == 0
+				|| std::strcmp(passName, VansRenderPassNames::AtmosphereStaticLuts) == 0
+				|| std::strcmp(passName, VansRenderPassNames::CloudShadow) == 0
+				|| std::strcmp(passName, VansRenderPassNames::AtmosphereViewLuts) == 0
+				|| std::strcmp(passName, VansRenderPassNames::VolumetricCloud) == 0
 				|| std::strcmp(passName, VansRenderPassNames::HZB) == 0
 				|| std::strcmp(passName, VansRenderPassNames::RayTracing) == 0
 				|| std::strcmp(passName, VansRenderPassNames::GIData) == 0;
@@ -178,6 +181,23 @@ namespace VansGraphics
 					  { "GBuffer", VansRenderResourceUsage::SampledRead } },
 					{ { "RayTracingGI", VansRenderResourceUsage::StorageWrite } },
 					{ "BLAS/TLAS", "Ray tracing dispatch", "GI/probe integration" } },
+				{ VansRenderPassNames::AtmosphereStaticLuts, VansRenderQueueClass::Compute, false, true, VansRenderPassCondition::Always,
+					{},
+					{ { "AtmosphereTransmittance", VansRenderResourceUsage::StorageWrite },
+					  { "AtmosphereMultiScattering", VansRenderResourceUsage::StorageWrite } },
+					{ "Physical-atmosphere transmittance and multiple-scattering LUTs" } },
+				{ VansRenderPassNames::CloudShadow, VansRenderQueueClass::Compute, true, true, VansRenderPassCondition::Always,
+					{},
+					{ { "CloudShadow", VansRenderResourceUsage::StorageWrite } },
+					{ "Current-frame cloud shadow clipmaps" } },
+				{ VansRenderPassNames::AtmosphereViewLuts, VansRenderQueueClass::Compute, true, true, VansRenderPassCondition::Always,
+					{ { "AtmosphereTransmittance", VansRenderResourceUsage::SampledRead },
+					  { "AtmosphereMultiScattering", VansRenderResourceUsage::SampledRead },
+					  { "CloudShadow", VansRenderResourceUsage::SampledRead } },
+					{ { "AtmosphereSkyView", VansRenderResourceUsage::StorageWrite },
+					  { "AtmosphereAerialScattering", VansRenderResourceUsage::StorageWrite },
+					  { "AtmosphereAerialOpticalDepth", VansRenderResourceUsage::StorageWrite } },
+					{ "Physical sky and aerial perspective" } },
 				{ VansRenderPassNames::GIData, VansRenderQueueClass::Compute, true, true, VansRenderPassCondition::Always,
 					{ { "GBuffer", VansRenderResourceUsage::SampledRead },
 					  { "HZB", VansRenderResourceUsage::SampledRead },
@@ -185,7 +205,8 @@ namespace VansGraphics
 					  { "CascadeShadowDepth", VansRenderResourceUsage::SampledRead },
 					  { "PunctualShadowAtlas0", VansRenderResourceUsage::SampledRead },
 					  { "PunctualShadowAtlas1", VansRenderResourceUsage::SampledRead },
-					  { "PunctualShadowMeta", VansRenderResourceUsage::StorageRead } },
+					  { "PunctualShadowMeta", VansRenderResourceUsage::StorageRead },
+					  { "PreConvolvedDiffuseEnvironment", VansRenderResourceUsage::SampledRead } },
 					{ { "GIData", VansRenderResourceUsage::StorageWrite } },
 					{ "SSGI", "GI SH paths" } },
 				{ VansRenderPassNames::SSR, VansRenderQueueClass::Compute, true, true, VansRenderPassCondition::Always,
@@ -193,43 +214,60 @@ namespace VansGraphics
 					  { "SceneColor", VansRenderResourceUsage::SampledRead } },
 					{ { "SSR", VansRenderResourceUsage::StorageWrite } },
 					{ "SSR" } },
-				{ VansRenderPassNames::VolumetricFog, VansRenderQueueClass::Compute, true, true, VansRenderPassCondition::Always,
+				{ VansRenderPassNames::LocalMedia, VansRenderQueueClass::Compute, true, true, VansRenderPassCondition::Always,
 					{ { "Depth", VansRenderResourceUsage::SampledRead },
+					  { "AtmosphereTransmittance", VansRenderResourceUsage::SampledRead },
+					  { "AtmosphereMultiScattering", VansRenderResourceUsage::SampledRead },
+					  { "AtmosphereSkyView", VansRenderResourceUsage::SampledRead },
+					  { "CloudShadow", VansRenderResourceUsage::SampledRead },
 					  { "LightBuffers", VansRenderResourceUsage::StorageRead },
 					  { "TileLightLists", VansRenderResourceUsage::StorageRead },
 					  { "PunctualShadowAtlas0", VansRenderResourceUsage::SampledRead },
 					  { "PunctualShadowAtlas1", VansRenderResourceUsage::SampledRead },
 					  { "PunctualShadowMeta", VansRenderResourceUsage::StorageRead } },
-					{ { "VolumetricFog", VansRenderResourceUsage::StorageWrite } },
-					{ "Volumetric fog" } },
-				{ VansRenderPassNames::CloudRayMarch, VansRenderQueueClass::Compute, true, true, VansRenderPassCondition::Always,
-					{ { "Atmosphere", VansRenderResourceUsage::StorageRead } },
-					{ { "CloudRayMarch", VansRenderResourceUsage::StorageWrite } },
-					{ "Cloud ray marching" } },
-				{ VansRenderPassNames::DeferredSkybox, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::Always,
+					{ { "LocalMediaInjection", VansRenderResourceUsage::StorageWrite },
+					  { "LocalMediaScattering", VansRenderResourceUsage::StorageWrite },
+					  { "LocalMediaOpticalDepth", VansRenderResourceUsage::StorageWrite } },
+					{ "Local volumetric media RGB interval data" } },
+				{ VansRenderPassNames::RawOpaqueLighting, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::Always,
 					{ { "GBuffer", VansRenderResourceUsage::SampledRead },
+					  { "PreConvolvedDiffuseEnvironment", VansRenderResourceUsage::SampledRead },
+					  { "PreConvolvedSpecularEnvironment", VansRenderResourceUsage::SampledRead },
+					  { "SkySHCoefficients", VansRenderResourceUsage::StorageRead },
 					  { "HZB", VansRenderResourceUsage::SampledRead },
 					  { "SSAO", VansRenderResourceUsage::SampledRead },
 					  { "ScreenSpaceShadow", VansRenderResourceUsage::SampledRead },
 					  { "GIData", VansRenderResourceUsage::SampledRead },
 					  { "SSR", VansRenderResourceUsage::SampledRead },
-					  { "VolumetricFog", VansRenderResourceUsage::SampledRead },
-					  { "CloudRayMarch", VansRenderResourceUsage::SampledRead },
 					  { "TileLightLists", VansRenderResourceUsage::StorageRead },
 					  { "PunctualShadowAtlas0", VansRenderResourceUsage::SampledRead },
 					  { "PunctualShadowAtlas1", VansRenderResourceUsage::SampledRead },
 					  { "PunctualShadowMeta", VansRenderResourceUsage::StorageRead } },
-					{ { "SceneColor", VansRenderResourceUsage::ColorAttachmentWrite } },
-					{ "Deferred lighting", "Skybox" } },
-				{ VansRenderPassNames::ForwardOpaqueAfterDeferred, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::HasForwardOpaqueAfterDeferred,
-					{ { "SceneColor", VansRenderResourceUsage::ColorAttachmentWrite },
+					{ { "RawOpaqueSceneColor", VansRenderResourceUsage::ColorAttachmentWrite } },
+					{ "Deferred raw surface lighting" } },
+				{ VansRenderPassNames::ForwardOpaquePreAtmosphere, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::HasForwardOpaquePreAtmosphere,
+					{ { "RawOpaqueSceneColor", VansRenderResourceUsage::ColorAttachmentWrite },
+					  { "PreConvolvedDiffuseEnvironment", VansRenderResourceUsage::SampledRead },
+					  { "PreConvolvedSpecularEnvironment", VansRenderResourceUsage::SampledRead },
+					  { "SkySHCoefficients", VansRenderResourceUsage::StorageRead },
 					  { "Depth", VansRenderResourceUsage::DepthStencilAttachmentRead },
 					  { "PunctualShadowAtlas0", VansRenderResourceUsage::SampledRead },
 					  { "PunctualShadowAtlas1", VansRenderResourceUsage::SampledRead },
 					  { "PunctualShadowMeta", VansRenderResourceUsage::StorageRead } },
-					{ { "SceneColor", VansRenderResourceUsage::ColorAttachmentWrite },
+					{ { "RawOpaqueSceneColor", VansRenderResourceUsage::ColorAttachmentWrite },
 					  { "Depth", VansRenderResourceUsage::DepthStencilAttachmentWrite } },
-					{ "Forward opaque after deferred" } },
+					{ "Forward raw surface lighting before atmosphere" } },
+				{ VansRenderPassNames::VolumetricCloud, VansRenderQueueClass::Compute, true, false, VansRenderPassCondition::Always,
+					{ { "AtmosphereTransmittance", VansRenderResourceUsage::SampledRead },
+					  { "AtmosphereMultiScattering", VansRenderResourceUsage::SampledRead },
+					  { "AtmosphereSkyView", VansRenderResourceUsage::SampledRead },
+					  { "CloudShadow", VansRenderResourceUsage::SampledRead },
+					  { "LocalMediaInjection", VansRenderResourceUsage::SampledRead },
+					  { "Depth", VansRenderResourceUsage::SampledRead } },
+					{ { "CloudRadiance", VansRenderResourceUsage::StorageWrite },
+					  { "CloudDepth", VansRenderResourceUsage::StorageWrite },
+					  { "CloudOpticalDepth", VansRenderResourceUsage::StorageWrite } },
+					{ "Depth-clamped cloud and overlapping Froxel media ray marching" } },
 				{ VansRenderPassNames::WaterWaveCompute, VansRenderQueueClass::Compute, true, true, VansRenderPassCondition::HasWater,
 					{ { "WaterWaveInputs", VansRenderResourceUsage::StorageRead } },
 					{ { "WaterWaveSpectrum", VansRenderResourceUsage::StorageWrite },
@@ -243,8 +281,12 @@ namespace VansGraphics
 					  { "WaterFlowMap", VansRenderResourceUsage::SampledRead } },
 					{ { "WaterGBuffer", VansRenderResourceUsage::ColorAttachmentWrite } },
 					{ "Water GBuffer tested against main scene depth" } },
+				{ VansRenderPassNames::WaterSceneColorPyramidPrepare, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::HasWater,
+					{ { "RawOpaqueSceneColor", VansRenderResourceUsage::TransferSrc } },
+					{ { "WaterBackgroundPyramid", VansRenderResourceUsage::TransferDst } },
+					{ "Capture pre-water scene color and build its mip pyramid" } },
 				{ VansRenderPassNames::WaterPreCompute, VansRenderQueueClass::Compute, true, true, VansRenderPassCondition::HasWater,
-					{ { "SceneColor", VansRenderResourceUsage::SampledRead },
+					{ { "WaterBackgroundPyramid", VansRenderResourceUsage::SampledRead },
 					  { "HZB", VansRenderResourceUsage::SampledRead },
 					  { "WaterGBuffer", VansRenderResourceUsage::SampledRead } },
 					{ { "WaterThickness", VansRenderResourceUsage::StorageWrite },
@@ -253,13 +295,44 @@ namespace VansGraphics
 					  { "WaterVolumeRaw", VansRenderResourceUsage::StorageWrite },
 					  { "WaterVolumeFiltered", VansRenderResourceUsage::StorageWrite } },
 					{ "PBRWater refraction data, volume integration/filter, SSR and caustics" } },
+				{ VansRenderPassNames::WaterCompositePreAtmosphere, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::HasWater,
+					{ { "WaterGBuffer", VansRenderResourceUsage::SampledRead },
+					  { "GBuffer", VansRenderResourceUsage::SampledRead },
+					  { "WaterBackgroundPyramid", VansRenderResourceUsage::SampledRead },
+					  { "WaterSSR", VansRenderResourceUsage::SampledRead },
+					  { "WaterRefractionData", VansRenderResourceUsage::SampledRead },
+					  { "WaterVolumeFiltered", VansRenderResourceUsage::SampledRead },
+					  { "PreConvolvedSpecularEnvironment", VansRenderResourceUsage::SampledRead },
+					  { "CascadeShadowDepth", VansRenderResourceUsage::SampledRead },
+					  { "Depth", VansRenderResourceUsage::DepthStencilAttachmentRead } },
+					{ { "RawOpaqueSceneColor", VansRenderResourceUsage::ColorAttachmentWrite } },
+					{ "Resolve the unchanged water material before participating-media composition" } },
+				{ VansRenderPassNames::AtmosphereComposite, VansRenderQueueClass::Compute, true, false, VansRenderPassCondition::Always,
+					{ { "RawOpaqueSceneColor", VansRenderResourceUsage::SampledRead },
+					  { "Depth", VansRenderResourceUsage::SampledRead },
+					  { "WaterGBuffer", VansRenderResourceUsage::SampledRead },
+					  { "AtmosphereSkyView", VansRenderResourceUsage::SampledRead },
+					  { "AtmosphereAerialScattering", VansRenderResourceUsage::SampledRead },
+					  { "AtmosphereAerialOpticalDepth", VansRenderResourceUsage::SampledRead },
+					  { "CloudRadiance", VansRenderResourceUsage::SampledRead },
+					  { "CloudDepth", VansRenderResourceUsage::SampledRead },
+					  { "CloudOpticalDepth", VansRenderResourceUsage::SampledRead },
+					  { "LocalMediaScattering", VansRenderResourceUsage::SampledRead },
+					  { "LocalMediaOpticalDepth", VansRenderResourceUsage::SampledRead } },
+					{ { "SceneColor", VansRenderResourceUsage::StorageWrite } },
+					{ "Physical sky and participating media over opaque and water surfaces" } },
 				{ VansRenderPassNames::HairVisibility, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::Always,
 					{ { "HairGeometry", VansRenderResourceUsage::SampledRead } },
 					{ { "HairOIT", VansRenderResourceUsage::StorageWrite } },
 					{ "Hair visibility", "Hair OIT buffers" } },
 				{ VansRenderPassNames::HairLighting, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::Always,
 					{ { "HairOIT", VansRenderResourceUsage::StorageRead },
-					  { "GBuffer", VansRenderResourceUsage::SampledRead } },
+					  { "GBuffer", VansRenderResourceUsage::SampledRead },
+					  { "PreConvolvedDiffuseEnvironment", VansRenderResourceUsage::SampledRead },
+					  { "AtmosphereAerialScattering", VansRenderResourceUsage::SampledRead },
+					  { "AtmosphereAerialOpticalDepth", VansRenderResourceUsage::SampledRead },
+					  { "LocalMediaScattering", VansRenderResourceUsage::SampledRead },
+					  { "LocalMediaOpticalDepth", VansRenderResourceUsage::SampledRead } },
 					{ { "HairLighting", VansRenderResourceUsage::ColorAttachmentWrite } },
 					{ "Hair lighting" } },
 				{ VansRenderPassNames::DepthOfFieldPrepare, VansRenderQueueClass::Compute, true, true, VansRenderPassCondition::Always,
@@ -268,6 +341,7 @@ namespace VansGraphics
 					{ "Depth of field" } },
 				{ VansRenderPassNames::TransparentSceneColorPrepare, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::Always,
 					{ { "SceneColor", VansRenderResourceUsage::TransferSrc },
+					  { "RawOpaqueSceneColor", VansRenderResourceUsage::TransferSrc },
 					  { "DepthOfField", VansRenderResourceUsage::TransferSrc } },
 					{ { "SceneColor", VansRenderResourceUsage::TransferDst },
 					  { "OpaqueSceneColor", VansRenderResourceUsage::TransferDst } },
@@ -275,14 +349,20 @@ namespace VansGraphics
 				{ VansRenderPassNames::TransparentPostProcess, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::Always,
 					{ { "SceneColor", VansRenderResourceUsage::SampledRead },
 					  { "OpaqueSceneColor", VansRenderResourceUsage::SampledRead },
+					  { "WaterBackgroundPyramid", VansRenderResourceUsage::SampledRead },
+					  { "PreConvolvedDiffuseEnvironment", VansRenderResourceUsage::SampledRead },
+					  { "PreConvolvedSpecularEnvironment", VansRenderResourceUsage::SampledRead },
+					  { "AtmosphereAerialScattering", VansRenderResourceUsage::SampledRead },
+					  { "AtmosphereAerialOpticalDepth", VansRenderResourceUsage::SampledRead },
+					  { "LocalMediaScattering", VansRenderResourceUsage::SampledRead },
+					  { "LocalMediaOpticalDepth", VansRenderResourceUsage::SampledRead },
 					  { "TileLightLists", VansRenderResourceUsage::StorageRead },
 					  { "Depth", VansRenderResourceUsage::DepthStencilAttachmentRead },
 					  { "PunctualShadowAtlas0", VansRenderResourceUsage::SampledRead },
 					  { "PunctualShadowAtlas1", VansRenderResourceUsage::SampledRead },
 					  { "PunctualShadowMeta", VansRenderResourceUsage::StorageRead } },
 					{ { "SceneColor", VansRenderResourceUsage::ColorAttachmentWrite } },
-					{ "Hair composite", "Transparent rendering", "Particle rendering", "Transmission/refraction",
-					  { "Water composite", VansRenderPassCondition::HasWater } } },
+					{ "Hair composite", "Transparent rendering", "Particle rendering", "Transmission/refraction" } },
 				{ VansRenderPassNames::ExposureBloom, VansRenderQueueClass::Compute, true, true, VansRenderPassCondition::Always,
 					{ { "SceneColor", VansRenderResourceUsage::SampledRead } },
 					{ { "Exposure", VansRenderResourceUsage::StorageWrite },
@@ -333,8 +413,8 @@ namespace VansGraphics
 			return features.hasWater;
 		case VansRenderPassCondition::HasDecal:
 			return features.hasDecal;
-		case VansRenderPassCondition::HasForwardOpaqueAfterDeferred:
-			return features.hasForwardOpaqueAfterDeferred;
+		case VansRenderPassCondition::HasForwardOpaquePreAtmosphere:
+			return features.hasForwardOpaquePreAtmosphere;
 		}
 
 		return true;
@@ -393,7 +473,9 @@ namespace VansGraphics
 			VansRenderPassNames::VegetationCompute,
 			VansRenderPassNames::MainCameraHiZCull,
 			VansRenderPassNames::TileLightBuild,
-			VansRenderPassNames::CloudRayMarch,
+			VansRenderPassNames::AtmosphereStaticLuts,
+			VansRenderPassNames::CloudShadow,
+			VansRenderPassNames::AtmosphereViewLuts,
 			VansRenderPassNames::HZB,
 			VansRenderPassNames::RayTracing,
 			VansRenderPassNames::GIData })
@@ -437,6 +519,19 @@ namespace VansGraphics
 			outErrors.emplace_back(
 				"Temporal Upscale must execute after transparent/exposure work and before display post-process");
 		}
+		const std::size_t waterPreComputeIndex =
+			findPassIndex(VansRenderPassNames::WaterPreCompute);
+		const std::size_t waterCompositeIndex =
+			findPassIndex(VansRenderPassNames::WaterCompositePreAtmosphere);
+		const std::size_t atmosphereCompositeIndex =
+			findPassIndex(VansRenderPassNames::AtmosphereComposite);
+		if (!(waterPreComputeIndex < waterCompositeIndex &&
+			waterCompositeIndex < atmosphereCompositeIndex &&
+			atmosphereCompositeIndex < transparentIndex))
+		{
+			outErrors.emplace_back(
+				"Water must resolve before atmosphere media while ordinary transparent rendering remains after atmosphere");
+		}
 
 		requireAccess(VansRenderPassNames::VegetationCompute, "VegetationDrawData", true);
 		requireAccess(VansRenderPassNames::VegetationCompute, "OcclusionHZB", false);
@@ -448,19 +543,37 @@ namespace VansGraphics
 		requireAccess(VansRenderPassNames::MainCameraHiZCull, "OcclusionHZB", false);
 		requireAccess(VansRenderPassNames::MainCameraHiZCull, "MainCameraVisibilityReadback", true);
 		requireAccess(VansRenderPassNames::TileLightBuild, "TileLightLists", true);
-		requireAccess(VansRenderPassNames::VolumetricFog, "TileLightLists", false);
-		requireAccess(VansRenderPassNames::DeferredSkybox, "TileLightLists", false);
+		requireAccess(VansRenderPassNames::LocalMedia, "TileLightLists", false);
+		requireAccess(VansRenderPassNames::LocalMedia, "AtmosphereTransmittance", false);
+		requireAccess(VansRenderPassNames::LocalMedia, "CloudShadow", false);
+		requireAccess(VansRenderPassNames::LocalMedia, "LocalMediaInjection", true);
+		requireAccess(VansRenderPassNames::AtmosphereStaticLuts, "AtmosphereTransmittance", true);
+		requireAccess(VansRenderPassNames::CloudShadow, "CloudShadow", true);
+		requireAccess(VansRenderPassNames::AtmosphereViewLuts, "CloudShadow", false);
+		requireAccess(VansRenderPassNames::RawOpaqueLighting, "PreConvolvedDiffuseEnvironment", false);
+		requireAccess(VansRenderPassNames::RawOpaqueLighting, "PreConvolvedSpecularEnvironment", false);
+		requireAccess(VansRenderPassNames::RawOpaqueLighting, "TileLightLists", false);
 		requireAccess(VansRenderPassNames::TransparentPostProcess, "TileLightLists", false);
-		requireAccess(VansRenderPassNames::CloudRayMarch, "CloudRayMarch", true);
-		requireAccess(VansRenderPassNames::DeferredSkybox, "CloudRayMarch", false);
+		requireAccess(VansRenderPassNames::VolumetricCloud, "CloudRadiance", true);
+		requireAccess(VansRenderPassNames::VolumetricCloud, "CloudOpticalDepth", true);
+		requireAccess(VansRenderPassNames::VolumetricCloud, "LocalMediaInjection", false);
+		requireAccess(VansRenderPassNames::VolumetricCloud, "Depth", false);
+		requireAccess(VansRenderPassNames::WaterCompositePreAtmosphere, "WaterGBuffer", false);
+		requireAccess(VansRenderPassNames::WaterCompositePreAtmosphere, "RawOpaqueSceneColor", true);
+		requireAccess(VansRenderPassNames::AtmosphereComposite, "CloudRadiance", false);
+		requireAccess(VansRenderPassNames::AtmosphereComposite, "CloudOpticalDepth", false);
+		requireAccess(VansRenderPassNames::AtmosphereComposite, "LocalMediaScattering", false);
+		requireAccess(VansRenderPassNames::AtmosphereComposite, "LocalMediaOpticalDepth", false);
+		requireAccess(VansRenderPassNames::AtmosphereComposite, "Depth", false);
+		requireAccess(VansRenderPassNames::AtmosphereComposite, "WaterGBuffer", false);
 		requireAccess(VansRenderPassNames::ScreenSpaceEffects, "SSAORaw", true);
 		requireAccess(VansRenderPassNames::SSAOFilter, "SSAORaw", false);
 		requireAccess(VansRenderPassNames::SSAOFilter, "SSAO", true);
-		requireAccess(VansRenderPassNames::DeferredSkybox, "SSAO", false);
+		requireAccess(VansRenderPassNames::RawOpaqueLighting, "SSAO", false);
 		requireAccess(VansRenderPassNames::ScreenSpaceShadow, "CascadeShadowMinMax", true);
 		requireAccess(VansRenderPassNames::GIData, "HZB", false);
 		requireAccess(VansRenderPassNames::GIData, "GIData", true);
-		requireAccess(VansRenderPassNames::DeferredSkybox, "GIData", false);
+		requireAccess(VansRenderPassNames::RawOpaqueLighting, "GIData", false);
 		requireAccess(VansRenderPassNames::TemporalUpscale, "SceneColor", false);
 		requireAccess(VansRenderPassNames::TemporalUpscale, "Depth", false);
 		requireAccess(VansRenderPassNames::TemporalUpscale, "MotionVector", false);

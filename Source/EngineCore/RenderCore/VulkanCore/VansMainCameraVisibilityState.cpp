@@ -218,8 +218,8 @@ bool VansGraphics::VansMainCameraVisibilityState::ShouldCullClassRunHiZ(
 		return s.enableHair;
 	case VansMainCameraCullClass::Transparent:
 		return s.enableTransparent;
-	case VansMainCameraCullClass::ForwardOpaqueAfterDeferred:
-		return s.enableForwardOpaqueAfterDeferred;
+	case VansMainCameraCullClass::ForwardOpaquePreAtmosphere:
+		return s.enableForwardOpaquePreAtmosphere;
 	case VansMainCameraCullClass::Decal:
 		return s.enableDecal;
 	default:

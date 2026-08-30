@@ -92,7 +92,8 @@ void CalculateDirectLight_Vegetation(BRDFData brdfData, VegetationParams veg,
 		float shadow = directionalShadow;
         DirectBRDF_Vegetation(brdfData, uDirectionLight.direction.rgb, veg, 1.0, shadow, dR, sR, tR);
 
-        vec3 lightEnergy = uDirectionLight.color.rgb * uDirectionLight.intensity;
+        vec3 lightEnergy =
+            uDirectionLight.color.rgb * uDirectionLight.intensity;
         lightResult.directDiffuse  += (dR * shadow + tR) * lightEnergy;
         lightResult.directSpecular += sR * shadow * lightEnergy;
     }

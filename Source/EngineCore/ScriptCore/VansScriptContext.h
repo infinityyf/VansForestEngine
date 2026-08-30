@@ -16,6 +16,7 @@
 #include "../ParticleCore/VansParticleRuntime.h"
 #include "../RuntimeUI/Public/VansUIRuntimeHandles.h"
 #include "../SceneRuntime/VansRuntimeHandle.h"
+#include "../SceneCore/VansSceneLocalVolumetricFogComponentConfig.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -333,6 +334,17 @@ public:
 	float m_FadeDistance = 2.0f;
 	float m_WetGain = 0.6f;
 	int m_Priority = 0;
+};
+
+class VansScriptLocalVolumetricFogComponent : public VansScriptComponent
+{
+public:
+	VansScriptLocalVolumetricFogComponent()
+	{
+		m_ComponentName = "LocalVolumetricFog";
+	}
+
+	Vans::VansSceneLocalVolumetricFogComponentConfig m_Settings;
 };
 
 class VansScriptVideoComponent : public VansScriptComponent

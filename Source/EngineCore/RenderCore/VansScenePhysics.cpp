@@ -14,7 +14,6 @@
 #include "../Configration/VansConfigration.h"
 #include "../ScriptCore/VansScriptContext.h"
 #include "../AnimationCore/VansAnimationNode.h"
-#include "../AnimationCore/MotionMatching/VansMotionMatching.h"
 #include "../RuntimeCore/VansFramePhase.h"
 
 #include "VulkanCore/VansMesh.h"
@@ -533,7 +532,7 @@ void VansGraphics::VansScene::PrepareCharacterLocomotion(float deltaTime)
 	VANS_ASSERT_FRAME_PHASE(VansFramePhase::GameLogic);
 	for (VansEngine::VansCharacterControllerNode* cct : m_CharControllerNodes)
 	{
-		if (!cct || !cct->IsEnabled() || !cct->HasMotionIntent())
+		if (!cct || !cct->IsEnabled())
 			continue;
 
 		VansAnimationNode* animation = nullptr;
@@ -549,26 +548,46 @@ void VansGraphics::VansScene::PrepareCharacterLocomotion(float deltaTime)
 
 		Vans::VansCharacterMotionSettings motionSettings;
 		VansAnimationController* controller =
-			animation ? animation->GetLocomotionController() : nullptr;
-		if (controller)
-			if (const MotionMatchingSettings* mm = controller->GetMotionMatchingSettings())
-				motionSettings = mm->motionModel;
+			animation ? animation->GetCharacterMotionController() : nullptr;
+		const bool hasConfiguredMotionModel = controller &&
+			controller->TryGetCharacterMotionSettings(motionSettings);
+
+		const bool animationRoutesOwnerMotion = animation && controller &&
+			animation->IsRootMotionEnabled() &&
+			controller->ShouldApplyRootMotionToOwner();
+		if (!cct->HasMotionIntent() && !animationRoutesOwnerMotion)
+			continue;
+
+		// 未配置独立运动模型的普通 Animation Graph 保持原有的全量 Root
+		// Motion 语义；配置了运动模型时仍遵守 Capsule/RootMotion/Hybrid 策略。
+		// 这使 Root Motion 能力与 Motion Matching 的存在完全解耦。
+		glm::vec3 animationToWorldScale(motionSettings.rootMotionToWorldScale);
+		if (!hasConfiguredMotionModel && animationRoutesOwnerMotion)
+		{
+			motionSettings.driveMode = Vans::VansLocomotionDriveMode::RootMotion;
+			if (cct->GetTransformID() < VansTransformStore::GlobalTransforms.size())
+				animationToWorldScale =
+					VansTransformStore::GetTransform(cct->GetTransformID()).m_Scale;
+		}
 
 		cct->PrepareLocomotion(deltaTime, motionSettings);
 		bool rootMotionValid = false;
 		bool rootMotionPreferred = false;
 		glm::vec3 rootDelta(0.0f);
 		glm::quat rootRotation(1.0f, 0.0f, 0.0f, 0.0f);
-		if (animation && controller && controller->IsMotionMatchingConfigured())
+		if (animation && controller)
 		{
-			animation->PrepareLocomotionFrame(deltaTime, cct->GetTrajectory());
+			// 只要该动画与 CCT 共享 Transform，就在 CCT flush 前完成一次评估。
+			// 当前 Graph 是否包含 Motion Matching 不再影响 Root Motion 提交。
+			animation->PrepareCharacterMotionFrame(deltaTime, cct->GetTrajectory());
 			rootDelta = animation->GetRootMotionDelta();
 			rootRotation = animation->GetRootRotationDelta();
-			rootMotionValid = animation->IsRootMotionEnabled() && animation->HasRootMotionDelta();
-			rootMotionPreferred = controller->MotionMatchingPrefersRootMotion();
+			rootMotionValid = animationRoutesOwnerMotion && animation->HasRootMotionDelta();
+			rootMotionPreferred = controller->CharacterMotionPrefersRootMotion();
 		}
 		cct->ResolveLocomotion(
-			rootDelta, rootRotation, rootMotionValid, rootMotionPreferred, motionSettings);
+			rootDelta, rootRotation, rootMotionValid, rootMotionPreferred,
+			motionSettings, animationToWorldScale);
 	}
 }
 

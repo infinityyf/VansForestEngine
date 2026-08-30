@@ -143,6 +143,83 @@ bool VansProjectSettingsJsonCodec::DecodeRenderSettings(
 				commandRecording.value("asyncComputeEnabled", false);
 		}
 
+		if (!root.contains("atmosphereQuality") || !root["atmosphereQuality"].is_object() ||
+			!root.contains("nearMediaQuality") || !root["nearMediaQuality"].is_object() ||
+			!root.contains("cloudShadowQuality") || !root["cloudShadowQuality"].is_object())
+		{
+			error = "Render settings require atmosphereQuality, nearMediaQuality, and cloudShadowQuality objects";
+			return false;
+		}
+		const nlohmann::json& atmosphere = root.at("atmosphereQuality");
+		auto& atmosphereSettings = settings.atmosphereQualitySettings;
+		atmosphereSettings.transmittanceWidth = atmosphere.at("transmittanceWidth").get<std::uint32_t>();
+		atmosphereSettings.transmittanceHeight = atmosphere.at("transmittanceHeight").get<std::uint32_t>();
+		atmosphereSettings.multiScatteringWidth = atmosphere.at("multiScatteringWidth").get<std::uint32_t>();
+		atmosphereSettings.multiScatteringHeight = atmosphere.at("multiScatteringHeight").get<std::uint32_t>();
+		atmosphereSettings.skyViewWidth = atmosphere.at("skyViewWidth").get<std::uint32_t>();
+		atmosphereSettings.skyViewHeight = atmosphere.at("skyViewHeight").get<std::uint32_t>();
+		atmosphereSettings.farAerialTileSize = atmosphere.at("farAerialTileSize").get<std::uint32_t>();
+		atmosphereSettings.farAerialSlices = atmosphere.at("farAerialSlices").get<std::uint32_t>();
+		atmosphereSettings.farAerialMaxDistanceMeters = atmosphere.at("farAerialMaxDistanceMeters").get<float>();
+		atmosphereSettings.transmittanceSamples = atmosphere.at("transmittanceSamples").get<std::uint32_t>();
+		atmosphereSettings.multiScatteringSamples = atmosphere.at("multiScatteringSamples").get<std::uint32_t>();
+		atmosphereSettings.skyViewSamples = atmosphere.at("skyViewSamples").get<std::uint32_t>();
+		atmosphereSettings.farAerialSamplesPerSlice = atmosphere.at("farAerialSamplesPerSlice").get<std::uint32_t>();
+		if (atmosphereSettings.transmittanceWidth == 0 || atmosphereSettings.transmittanceHeight == 0 ||
+			atmosphereSettings.multiScatteringWidth == 0 || atmosphereSettings.multiScatteringHeight == 0 ||
+			atmosphereSettings.skyViewWidth == 0 || atmosphereSettings.skyViewHeight == 0 ||
+			atmosphereSettings.farAerialTileSize == 0 || atmosphereSettings.farAerialSlices == 0 ||
+			!std::isfinite(atmosphereSettings.farAerialMaxDistanceMeters) ||
+			atmosphereSettings.farAerialMaxDistanceMeters <= 0.0f ||
+			atmosphereSettings.transmittanceSamples == 0 || atmosphereSettings.multiScatteringSamples == 0 ||
+			atmosphereSettings.skyViewSamples == 0 || atmosphereSettings.farAerialSamplesPerSlice == 0)
+		{
+			error = "atmosphereQuality dimensions, distances, and sample counts must be positive";
+			return false;
+		}
+
+		const nlohmann::json& nearMedia = root.at("nearMediaQuality");
+		auto& nearMediaSettings = settings.nearMediaQualitySettings;
+		nearMediaSettings.tileSize = nearMedia.at("tileSize").get<std::uint32_t>();
+		nearMediaSettings.slices = nearMedia.at("slices").get<std::uint32_t>();
+		nearMediaSettings.nearDistanceMeters = nearMedia.at("nearDistanceMeters").get<float>();
+		nearMediaSettings.farDistanceMeters = nearMedia.at("farDistanceMeters").get<float>();
+		nearMediaSettings.sliceDistributionPower = nearMedia.at("sliceDistributionPower").get<float>();
+		nearMediaSettings.temporalReprojection = nearMedia.at("temporalReprojection").get<bool>();
+		nearMediaSettings.historyWeight = nearMedia.at("historyWeight").get<float>();
+		if (nearMediaSettings.tileSize == 0 || nearMediaSettings.slices == 0 ||
+			!std::isfinite(nearMediaSettings.nearDistanceMeters) || nearMediaSettings.nearDistanceMeters < 0.0f ||
+			!std::isfinite(nearMediaSettings.farDistanceMeters) ||
+			nearMediaSettings.farDistanceMeters <= nearMediaSettings.nearDistanceMeters ||
+			!std::isfinite(nearMediaSettings.sliceDistributionPower) || nearMediaSettings.sliceDistributionPower <= 0.0f ||
+			!std::isfinite(nearMediaSettings.historyWeight) || nearMediaSettings.historyWeight < 0.0f ||
+			nearMediaSettings.historyWeight >= 1.0f)
+		{
+			error = "nearMediaQuality contains invalid dimensions, distance mapping, or history weight";
+			return false;
+		}
+
+		const nlohmann::json& cloudShadow = root.at("cloudShadowQuality");
+		auto& cloudShadowSettings = settings.cloudShadowQualitySettings;
+		cloudShadowSettings.clipmapCount = cloudShadow.at("clipmapCount").get<std::uint32_t>();
+		cloudShadowSettings.resolution = cloudShadow.at("resolution").get<std::uint32_t>();
+		cloudShadowSettings.nearCoverageMeters = cloudShadow.at("nearCoverageMeters").get<float>();
+		cloudShadowSettings.farCoverageMeters = cloudShadow.at("farCoverageMeters").get<float>();
+		cloudShadowSettings.rayMarchSamples = cloudShadow.at("rayMarchSamples").get<std::uint32_t>();
+		cloudShadowSettings.clipmapCrossFadeFraction = cloudShadow.at("clipmapCrossFadeFraction").get<float>();
+		if (cloudShadowSettings.clipmapCount == 0 || cloudShadowSettings.resolution == 0 ||
+			!std::isfinite(cloudShadowSettings.nearCoverageMeters) || cloudShadowSettings.nearCoverageMeters <= 0.0f ||
+			!std::isfinite(cloudShadowSettings.farCoverageMeters) ||
+			cloudShadowSettings.farCoverageMeters <= cloudShadowSettings.nearCoverageMeters ||
+			cloudShadowSettings.rayMarchSamples == 0 ||
+			!std::isfinite(cloudShadowSettings.clipmapCrossFadeFraction) ||
+			cloudShadowSettings.clipmapCrossFadeFraction < 0.0f ||
+			cloudShadowSettings.clipmapCrossFadeFraction > 0.5f)
+		{
+			error = "cloudShadowQuality contains invalid clipmap dimensions or coverage";
+			return false;
+		}
+
 		if (root.contains("mainCameraHiZCulling") && root["mainCameraHiZCulling"].is_object())
 		{
 			const nlohmann::json& hiz = root["mainCameraHiZCulling"];
@@ -151,8 +228,8 @@ bool VansProjectSettingsJsonCodec::DecodeRenderSettings(
 			settings.mainCameraHiZCullSettings.enableHair = hiz.value("enableHair", true);
 			settings.mainCameraHiZCullSettings.enableTransparent = hiz.value("enableTransparent", false);
 			settings.mainCameraHiZCullSettings.enableDecal = hiz.value("enableDecal", true);
-			settings.mainCameraHiZCullSettings.enableForwardOpaqueAfterDeferred =
-				hiz.value("enableForwardOpaqueAfterDeferred", true);
+			settings.mainCameraHiZCullSettings.enableForwardOpaquePreAtmosphere =
+				hiz.value("enableForwardOpaquePreAtmosphere", true);
 			settings.mainCameraHiZCullSettings.depthBiasMeters =
 				std::max(hiz.value("depthBiasMeters", 0.35f), 0.0f);
 			settings.mainCameraHiZCullSettings.cameraMotionDisableDistance =
@@ -196,13 +273,45 @@ nlohmann::json VansProjectSettingsJsonCodec::EncodeRenderSettings(
 		{ "width", settings.renderOutputSettings.width },
 		{ "height", settings.renderOutputSettings.height }
 	};
+	root["atmosphereQuality"] = {
+		{ "transmittanceWidth", settings.atmosphereQualitySettings.transmittanceWidth },
+		{ "transmittanceHeight", settings.atmosphereQualitySettings.transmittanceHeight },
+		{ "multiScatteringWidth", settings.atmosphereQualitySettings.multiScatteringWidth },
+		{ "multiScatteringHeight", settings.atmosphereQualitySettings.multiScatteringHeight },
+		{ "skyViewWidth", settings.atmosphereQualitySettings.skyViewWidth },
+		{ "skyViewHeight", settings.atmosphereQualitySettings.skyViewHeight },
+		{ "farAerialTileSize", settings.atmosphereQualitySettings.farAerialTileSize },
+		{ "farAerialSlices", settings.atmosphereQualitySettings.farAerialSlices },
+		{ "farAerialMaxDistanceMeters", settings.atmosphereQualitySettings.farAerialMaxDistanceMeters },
+		{ "transmittanceSamples", settings.atmosphereQualitySettings.transmittanceSamples },
+		{ "multiScatteringSamples", settings.atmosphereQualitySettings.multiScatteringSamples },
+		{ "skyViewSamples", settings.atmosphereQualitySettings.skyViewSamples },
+		{ "farAerialSamplesPerSlice", settings.atmosphereQualitySettings.farAerialSamplesPerSlice }
+	};
+	root["nearMediaQuality"] = {
+		{ "tileSize", settings.nearMediaQualitySettings.tileSize },
+		{ "slices", settings.nearMediaQualitySettings.slices },
+		{ "nearDistanceMeters", settings.nearMediaQualitySettings.nearDistanceMeters },
+		{ "farDistanceMeters", settings.nearMediaQualitySettings.farDistanceMeters },
+		{ "sliceDistributionPower", settings.nearMediaQualitySettings.sliceDistributionPower },
+		{ "temporalReprojection", settings.nearMediaQualitySettings.temporalReprojection },
+		{ "historyWeight", settings.nearMediaQualitySettings.historyWeight }
+	};
+	root["cloudShadowQuality"] = {
+		{ "clipmapCount", settings.cloudShadowQualitySettings.clipmapCount },
+		{ "resolution", settings.cloudShadowQualitySettings.resolution },
+		{ "nearCoverageMeters", settings.cloudShadowQualitySettings.nearCoverageMeters },
+		{ "farCoverageMeters", settings.cloudShadowQualitySettings.farCoverageMeters },
+		{ "rayMarchSamples", settings.cloudShadowQualitySettings.rayMarchSamples },
+		{ "clipmapCrossFadeFraction", settings.cloudShadowQualitySettings.clipmapCrossFadeFraction }
+	};
 	root["mainCameraHiZCulling"] = {
 		{ "enabled", settings.mainCameraHiZCullSettings.enabled },
 		{ "enableOpaque", settings.mainCameraHiZCullSettings.enableOpaque },
 		{ "enableHair", settings.mainCameraHiZCullSettings.enableHair },
 		{ "enableTransparent", settings.mainCameraHiZCullSettings.enableTransparent },
 		{ "enableDecal", settings.mainCameraHiZCullSettings.enableDecal },
-		{ "enableForwardOpaqueAfterDeferred", settings.mainCameraHiZCullSettings.enableForwardOpaqueAfterDeferred },
+		{ "enableForwardOpaquePreAtmosphere", settings.mainCameraHiZCullSettings.enableForwardOpaquePreAtmosphere },
 		{ "depthBiasMeters", settings.mainCameraHiZCullSettings.depthBiasMeters },
 		{ "cameraMotionDisableDistance", settings.mainCameraHiZCullSettings.cameraMotionDisableDistance },
 		{ "cameraMotionDisableAngleRadians", settings.mainCameraHiZCullSettings.cameraMotionDisableAngleRadians },

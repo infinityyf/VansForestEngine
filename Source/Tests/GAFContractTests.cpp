@@ -30,21 +30,29 @@
 #include "../EngineCore/GameplayTargeting/VansGameplayTargeting.h"
 #include "../EngineCore/PackagingCore/VansGameplayAssetPackageCooker.h"
 #include "../EngineCore/AssetCore/Serialization/VansSerializedValueAccess.h"
+#include "../EngineCore/AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 #include "../EngineCore/AssetCore/Storage/VansFileStorage.h"
+#include "../EngineCore/AssetCore/Storage/VansAssetMetaStorage.h"
 #include "../EngineCore/AssetCore/Storage/VansJsonFileStorage.h"
+#include "../EngineCore/AssetCore/VansSkeletalMeshImportSettings.h"
 #include "../EngineCore/AnimationCore/VansAnimationClip.h"
+#include "../EngineCore/AnimationCore/VansAnimationSampler.h"
 #include "../EngineCore/AnimationCore/VansAnimatorIO.h"
 #include "../EngineCore/AnimationCore/VansAnimatorRuntimeCompiler.h"
+#include "../EngineCore/AnimationCore/VansPoseMath.h"
 #include "../EngineCore/AnimationCore/VansSkinnedMeshLoader.h"
 #include "../EngineCore/AnimationCore/MotionMatching/VansMotionMatching.h"
 #include "../EngineCore/EditorCore/VansAssetDocumentTypeRegistry.h"
 #include "../EngineCore/EditorCore/GameplayAction/VansGameplayAssetEditorModel.h"
 #include "../EngineCore/EngineAPILayer/Private/GameplayActionAuthoringBridge.h"
 #include "../EngineCore/EventCore/VansEventBus.h"
+#include "../EngineCore/RenderCore/VansAnimationPreviewRenderer.h"
+#include "../EngineCore/SceneCore/VansSceneAnimationComponentReader.h"
 #include "../EngineCore/SceneRuntime/VansRuntimeComponentTypes.h"
 #include "../EngineCore/SceneRuntime/VansRuntimeWorld.h"
 #include "../EngineCore/ScriptCore/VansLuaGameplayActionBridge.h"
 #include "../EngineCore/TimelineCore/VansTimelineCompiler.h"
+#include "../EngineCore/TimelineCore/VansTimelineSerialization.h"
 #include "../EngineCore/TimelineCore/VansTimelineTrackExtensionRegistry.h"
 #include "../EngineCore/TimelineRuntime/VansTimelineApplierRegistry.h"
 #include "../EngineCore/TimelineRuntime/VansTimelineClockRegistry.h"
@@ -52,11 +60,13 @@
 #include "../EngineCore/EditorCore/Timeline/VansTimelineTrackDescriptorRegistry.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <filesystem>
 #include <iostream>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 
 extern "C"
@@ -3730,6 +3740,1418 @@ bool TestGAFDemoHallPlayerAttackContract()
 		attackScript.find("configured_string") != std::string::npos &&
 		attackScript.find("request_cancel") == std::string::npos,
 		"DemoHall player attack is not wired through GAF into the non-MM root-motion Graph Set");
+}
+
+bool TestDemoHallCrouchLocomotionContract()
+{
+	namespace fs = std::filesystem;
+	fs::path workspace = fs::current_path();
+	for (int depth = 0; depth < 6 && !fs::exists(workspace / "DemoHallProject"); ++depth)
+		workspace = workspace.parent_path();
+	const fs::path projectRoot = workspace / "DemoHallProject";
+	std::string error;
+
+	nlohmann::ordered_json animator;
+	if (!Vans::VansJsonFileStorage::Read(
+		projectRoot / "Assets/MotionMatchDataBase/UEFN_Mannequin.vanimator", animator, error))
+		return ExpectGAF(false, error.c_str());
+
+	struct StanceGraphExpectation
+	{
+		const char* graphSetId;
+		const char* graphId;
+		const char* clipName;
+	};
+	const std::array<StanceGraphExpectation, 2> expectedGraphs = {{
+		{ "graph-set-crouch-enter", "graph-crouch-enter", "StandToCrouch" },
+		{ "graph-set-crouch-exit", "graph-crouch-exit", "CrouchToStand" }
+	}};
+	for (const StanceGraphExpectation& expected : expectedGraphs)
+	{
+		bool foundSet = false;
+		for (const auto& graphSet : animator.value("graphSets", nlohmann::ordered_json::array()))
+		{
+			if (graphSet.value("id", std::string{}) != expected.graphSetId) continue;
+			const auto bindings = graphSet.value("bindings", nlohmann::ordered_json::array());
+			foundSet = bindings.size() == 1 && bindings.front().value("enabled", false) &&
+				bindings.front().value("graphId", std::string{}) == expected.graphId &&
+				bindings.front().value("layerId", std::string{}) == "layer-base";
+		}
+		if (!ExpectGAF(foundSet, "DemoHall crouch Graph Set binding is missing")) return false;
+
+		bool foundGraph = false;
+		for (const auto& graph : animator.value("graphs", nlohmann::ordered_json::array()))
+		{
+			if (graph.value("id", std::string{}) != expected.graphId) continue;
+			bool containsMotionMatching = false;
+			bool preservesWindowBreakSlot = false;
+			int matchingStates = 0;
+			for (const auto& node : graph["graph"].value("nodes", nlohmann::ordered_json::array()))
+			{
+				containsMotionMatching = containsMotionMatching ||
+					node.value("type", std::string{}) == "MotionMatching";
+				preservesWindowBreakSlot = preservesWindowBreakSlot ||
+					(node.value("type", std::string{}) == "Slot" &&
+					node.value("properties", nlohmann::ordered_json::object())
+						.value("slotId", std::string{}) == "slot-window-break-full-body");
+				for (const auto& state : node.value("properties", nlohmann::ordered_json::object())
+					.value("states", nlohmann::ordered_json::array()))
+				{
+					if (state.value("name", std::string{}) == expected.clipName &&
+						state.value("clip", std::string{}) == expected.clipName &&
+						!state.value("loop", true) && state.value("rootMotion", false) &&
+						std::abs(state.value("speed", 0.0f) - 1.0f) < 0.0001f)
+						++matchingStates;
+				}
+			}
+			foundGraph = !containsMotionMatching && preservesWindowBreakSlot && matchingStates == 1;
+		}
+		if (!ExpectGAF(foundGraph,
+			"DemoHall crouch Graph must be a non-MM root-motion one-shot and preserve the full-body Slot")) return false;
+	}
+
+	auto hasTransitionRule = [&](const char* from, const char* to, float duration)
+	{
+		for (const auto& rule : animator.value("graphSetTransitions", nlohmann::ordered_json::object())
+			.value("rules", nlohmann::ordered_json::array()))
+		{
+			if (rule.value("from", std::string{}) != from ||
+				rule.value("to", std::string{}) != to) continue;
+			const auto policy = rule.value("policy", nlohmann::ordered_json::object());
+			return policy.value("phase", std::string{}) == "restart" &&
+				policy.value("interruption", std::string{}) == "reject" &&
+				policy.value("rootMotion", std::string{}) == "incomingOnly" &&
+				std::abs(policy.value("duration", 0.0f) - duration) < 0.001f;
+		}
+		return false;
+	};
+	if (!ExpectGAF(
+		hasTransitionRule("graph-set-default", "graph-set-crouch-enter", 0.08f) &&
+		hasTransitionRule("graph-set-crouch-enter", "graph-set-default", 0.12f) &&
+		hasTransitionRule("graph-set-default", "graph-set-crouch-exit", 0.08f) &&
+		hasTransitionRule("graph-set-crouch-exit", "graph-set-default", 0.12f),
+		"DemoHall crouch Graph Set transitions lost restart/reject/incoming-only ownership")) return false;
+
+	nlohmann::ordered_json scene;
+	if (!Vans::VansJsonFileStorage::Read(projectRoot / "Scenes/DemoHall.json", scene, error))
+		return ExpectGAF(false, error.c_str());
+	int configuredCharacters = 0;
+	std::optional<VansGraphics::MotionMatchingSettings> sceneMotionMatching;
+	for (const auto& entity : scene.value("entities", nlohmann::ordered_json::array()))
+	{
+		const std::string entityId = entity.value("id", std::string{});
+		if (entityId != "4186c86d-7c0a-4556-8077-d1f80ebc1da5" &&
+			entityId != "38dbe7af-653a-4aeb-bfa7-1ca72e2b972c") continue;
+		bool hasSingleOwnerMotionMatching = false;
+		bool hasCharacterMove = false;
+		for (const auto& component : entity.value("components", nlohmann::ordered_json::array()))
+		{
+			const auto data = component.value("data", nlohmann::ordered_json::object());
+			if (component.value("type", std::string{}) == "Animation")
+			{
+				if (!sceneMotionMatching)
+				{
+					const Vans::VansSceneAnimationComponentConfig animationConfig =
+						Vans::VansSceneAnimationComponentReader::ReadAuthoringAnimationComponent(
+							Vans::DecodeSerializedValueJson(component));
+					if (animationConfig.motionMatching)
+						sceneMotionMatching = *animationConfig.motionMatching;
+				}
+				const auto motionMatching = data.value("motion_matching", nlohmann::ordered_json::object());
+				bool hasStanceDatabase = false;
+				for (const auto& database : motionMatching.value("databases", nlohmann::ordered_json::array()))
+					hasStanceDatabase = hasStanceDatabase ||
+						database.value("name", std::string{}) == "PSD_DemoHall_Stance_Transitions";
+				bool hasStanceSelector = false;
+				bool hasStandGraphSetHandoff = false;
+				bool hasCrouchGraphSetHandoff = false;
+				for (const auto& selector : motionMatching.value("selector", nlohmann::ordered_json::array()))
+				{
+					const std::string selectorName = selector.value("name", std::string{});
+					hasStanceSelector = hasStanceSelector || selectorName == "StanceTransition";
+					const auto databases = selector.value("databases", nlohmann::ordered_json::array());
+					const bool targetsSingleDatabase = databases.size() == 1;
+					hasStandGraphSetHandoff = hasStandGraphSetHandoff ||
+						(selectorName == "StandGraphSetHandoff" &&
+						selector.value("stance", std::string{}) == "Stand" &&
+						selector.value("phase", std::string{}) == "Transition" &&
+						selector.value("move_states", nlohmann::ordered_json::array()) ==
+							nlohmann::ordered_json::array({ 0 }) && targetsSingleDatabase &&
+						databases.front() == "PSD_DemoHall_Stand_Idles");
+					hasCrouchGraphSetHandoff = hasCrouchGraphSetHandoff ||
+						(selectorName == "CrouchGraphSetHandoff" &&
+						selector.value("stance", std::string{}) == "Crouch" &&
+						selector.value("phase", std::string{}) == "Transition" &&
+						selector.value("move_states", nlohmann::ordered_json::array()) ==
+							nlohmann::ordered_json::array({ 4 }) && targetsSingleDatabase &&
+						databases.front() == "PSD_DemoHall_Crouch_Idles");
+				}
+				hasSingleOwnerMotionMatching = motionMatching.value("enabled", false) &&
+					!hasStanceDatabase && !hasStanceSelector &&
+					hasStandGraphSetHandoff && hasCrouchGraphSetHandoff;
+			}
+			else if (component.value("type", std::string{}) == "Script" &&
+				data.value("entry", std::string{}) == "CharacterMove")
+				hasCharacterMove = true;
+		}
+		if (hasSingleOwnerMotionMatching && hasCharacterMove) ++configuredCharacters;
+	}
+	if (!ExpectGAF(configuredCharacters == 2,
+		"Both DemoHall characters must route stance transitions outside Motion Matching")) return false;
+
+	std::string script;
+	if (!Vans::VansFileStorage::ReadAllBytes(
+		projectRoot / "Scripts/forest_lua_behaviors.lua", script, error))
+		return ExpectGAF(false, error.c_str());
+	const std::size_t moveBegin = script.find("M.CharacterMove");
+	const std::size_t moveEnd = script.find("M.AnimationControl", moveBegin);
+	const std::string moveScript = moveBegin != std::string::npos && moveEnd != std::string::npos
+		? script.substr(moveBegin, moveEnd - moveBegin) : std::string{};
+	if (!ExpectGAF(
+		moveScript.find("is_key_pressed(\"LEFT_CONTROL\")") != std::string::npos &&
+		moveScript.find("is_key_down(\"LEFT_CONTROL\")") == std::string::npos &&
+		moveScript.find("self.requestedCrouching") != std::string::npos &&
+		moveScript.find("self.resolvedCrouching") != std::string::npos &&
+		moveScript.find("self:hold_stance_motion(nil)") != std::string::npos &&
+		moveScript.find("self:write_stance_parameters(self.resolvedCrouching") != std::string::npos &&
+		moveScript.find("self.crouchEnterGraphSetId") != std::string::npos &&
+		moveScript.find("self.crouchExitGraphSetId") != std::string::npos &&
+		moveScript.find("anim:switch_graph_set(self.locomotionGraphSetId)") != std::string::npos &&
+		moveScript.find("set_root_motion_enabled(false)") == std::string::npos,
+		"DemoHall CharacterMove does not own a persistent toggle crouch Graph Set flow")) return false;
+
+	VansGraphics::Skeleton sceneSkeleton;
+	if (!VansGraphics::VansSkinnedMeshLoader::LoadSkeletonFromModelAsset(
+		(projectRoot / "Assets/Models/SKM_UEFN_Mannequin.fbx").string(), sceneSkeleton, error))
+		return ExpectGAF(false, error.c_str());
+	for (const StanceGraphExpectation& expected : expectedGraphs)
+	{
+		VansGraphics::AnimatorAssetData stanceAsset;
+		if (!VansGraphics::VansAnimatorIO::Load(
+			(projectRoot / "Assets/MotionMatchDataBase/UEFN_Mannequin.vanimator").string(), stanceAsset))
+			return ExpectGAF(false, "DemoHall animator could not be loaded for crouch Graph validation");
+		stanceAsset.defaultGraphSetId = expected.graphSetId;
+		stanceAsset.graphSets.erase(std::remove_if(
+			stanceAsset.graphSets.begin(), stanceAsset.graphSets.end(),
+			[&](const VansGraphics::VansAnimationGraphSetDefinition& graphSet)
+			{
+				return graphSet.id != expected.graphSetId;
+			}), stanceAsset.graphSets.end());
+		stanceAsset.graphs.erase(std::remove_if(
+			stanceAsset.graphs.begin(), stanceAsset.graphs.end(),
+			[&](const VansGraphics::AnimatorGraphAsset& graph)
+			{
+				return graph.id != expected.graphId;
+			}), stanceAsset.graphs.end());
+		stanceAsset.graphSetTransitionRules.clear();
+		stanceAsset.clipRefs.erase(std::remove_if(
+			stanceAsset.clipRefs.begin(), stanceAsset.clipRefs.end(),
+			[&](const VansGraphics::AnimatorClipRef& ref)
+			{
+				return ref.name != expected.clipName;
+			}), stanceAsset.clipRefs.end());
+		VansGraphics::VansAnimatorRuntimeCompileOptions options;
+		options.enableTargetPostProcess = false;
+		options.enableRootMotion = true;
+		options.rigResolver = [&projectRoot](
+			const std::string&, fs::path& resolvedPath, std::string&)
+		{
+			resolvedPath = projectRoot / "Assets/AnimationRigs/UEFN.vanimrig";
+			return true;
+		};
+		auto controller = VansGraphics::VansAnimatorRuntimeCompiler::Compile(
+			stanceAsset, sceneSkeleton,
+			[&projectRoot](const VansGraphics::AnimatorClipRef& ref,
+				fs::path& resolvedPath, std::string& resolveError)
+			{
+				resolvedPath = projectRoot / ref.pathHint;
+				if (fs::is_regular_file(resolvedPath)) return true;
+				resolveError = "Missing DemoHall crouch clip: " + resolvedPath.string();
+				return false;
+			},
+			[](const VansGraphics::VansAnimationLayerDefinition&,
+				fs::path&, std::string& resolveError)
+			{
+				resolveError = "DemoHall crouch base layer unexpectedly requested a Bone Mask";
+				return false;
+			},
+			options, error);
+		if (!ExpectGAF(controller != nullptr, error.c_str())) return false;
+		controller->Play();
+		controller->Update(0.0f, sceneSkeleton);
+		controller->Update(1.0f / 30.0f, sceneSkeleton);
+		if (!ExpectGAF(controller->GetCurrentStateName() == expected.clipName &&
+			controller->GetCurrentPlayTime() > 0.0f && controller->HasRootMotionDelta(),
+			"DemoHall crouch Graph did not evaluate its authored root-motion one-shot")) return false;
+	}
+
+	if (!ExpectGAF(sceneMotionMatching.has_value(),
+		"DemoHall crouch contract could not resolve the scene Motion Matching settings")) return false;
+	VansGraphics::AnimatorAssetData roundTripAsset;
+	if (!VansGraphics::VansAnimatorIO::Load(
+		(projectRoot / "Assets/MotionMatchDataBase/UEFN_Mannequin.vanimator").string(), roundTripAsset))
+		return ExpectGAF(false, "DemoHall Animator could not be loaded for stance round-trip validation");
+	VansGraphics::VansAnimatorRuntimeCompileOptions roundTripOptions;
+	roundTripOptions.enableTargetPostProcess = false;
+	roundTripOptions.enableRootMotion = true;
+	roundTripOptions.rigResolver = [&projectRoot](
+		const std::string&, fs::path& resolvedPath, std::string&)
+	{
+		resolvedPath = projectRoot / "Assets/AnimationRigs/UEFN.vanimrig";
+		return true;
+	};
+	auto roundTripController = VansGraphics::VansAnimatorRuntimeCompiler::Compile(
+		roundTripAsset, sceneSkeleton,
+		[&projectRoot](const VansGraphics::AnimatorClipRef& ref,
+			fs::path& resolvedPath, std::string& resolveError)
+		{
+			resolvedPath = projectRoot / ref.pathHint;
+			if (fs::is_regular_file(resolvedPath)) return true;
+			resolveError = "Missing DemoHall stance round-trip clip: " + resolvedPath.string();
+			return false;
+		},
+		[](const VansGraphics::VansAnimationLayerDefinition&,
+			fs::path&, std::string& resolveError)
+		{
+			resolveError = "DemoHall stance round-trip base layer unexpectedly requested a Bone Mask";
+			return false;
+		},
+		roundTripOptions, error);
+	if (!ExpectGAF(roundTripController != nullptr, error.c_str()) ||
+		!ExpectGAF(roundTripController->ConfigureMotionMatching(*sceneMotionMatching, error), error.c_str()))
+		return false;
+
+	auto updateFrames = [&](int count)
+	{
+		for (int frame = 0; frame < count; ++frame)
+			roundTripController->Update(1.0f / 60.0f, sceneSkeleton);
+	};
+	auto hasActiveDatabase = [&](const char* databaseName)
+	{
+		const auto* debug = roundTripController->GetMotionMatchingDebugData();
+		return debug && std::find(debug->activeDatabases.begin(), debug->activeDatabases.end(),
+			databaseName) != debug->activeDatabases.end();
+	};
+	auto setStance = [&](bool crouching)
+	{
+		roundTripController->SetFloat("Speed", 0.0f);
+		roundTripController->SetFloat("Direction", 0.0f);
+		roundTripController->SetFloat("IsCrouching", crouching ? 1.0f : 0.0f);
+		roundTripController->SetFloat("IsAirborne", 0.0f);
+		roundTripController->SetInt("MoveState", crouching ? 4 : 0);
+	};
+	auto switchGraphSet = [&](const char* graphSetId)
+	{
+		const auto result = roundTripController->SwitchGraphSet(graphSetId);
+		return result == VansGraphics::VansGraphSetSwitchResult::Started ||
+			result == VansGraphics::VansGraphSetSwitchResult::Completed ||
+			result == VansGraphics::VansGraphSetSwitchResult::AlreadyActive;
+	};
+
+	setStance(false);
+	roundTripController->Play();
+	roundTripController->Update(0.0f, sceneSkeleton);
+	updateFrames(12);
+	const auto* standDebug = roundTripController->GetMotionMatchingDebugData();
+	if (!ExpectGAF(standDebug && standDebug->activeClip == "Idle_Stand" &&
+		hasActiveDatabase("PSD_DemoHall_Stand_Idles"),
+		"DemoHall default Graph Set did not begin in standing Motion Matching")) return false;
+
+	if (!ExpectGAF(switchGraphSet("graph-set-crouch-enter"),
+		"DemoHall standing Graph Set rejected the crouch-enter switch")) return false;
+	updateFrames(6);
+	if (!ExpectGAF(roundTripController->GetActiveGraphSetId() == "graph-set-crouch-enter" &&
+		roundTripController->GetCurrentStateName() == "StandToCrouch",
+		"DemoHall crouch-enter Graph Set did not take animation ownership")) return false;
+	updateFrames(150);
+	setStance(true);
+	if (!ExpectGAF(switchGraphSet("graph-set-default"),
+		"DemoHall crouch-enter Graph Set rejected the locomotion return")) return false;
+	updateFrames(12);
+	const auto* crouchDebug = roundTripController->GetMotionMatchingDebugData();
+	const bool crouchReturnValid =
+		roundTripController->GetActiveGraphSetId() == "graph-set-default" &&
+		!roundTripController->IsGraphSetTransitioning() && crouchDebug &&
+		crouchDebug->activeClip == "Crouch_Idle" &&
+		hasActiveDatabase("PSD_DemoHall_Crouch_Idles") &&
+		!hasActiveDatabase("PSD_DemoHall_Stand_Idles");
+	if (!crouchReturnValid && crouchDebug)
+	{
+		std::cout << "[GAF] Crouch return debug: graphSet="
+			<< roundTripController->GetActiveGraphSetId()
+			<< " transitioning=" << roundTripController->IsGraphSetTransitioning()
+			<< " activeClip=" << crouchDebug->activeClip
+			<< " selectedClip=" << crouchDebug->selectedClip
+			<< " switches=" << crouchDebug->switches << " databases=";
+		for (const std::string& database : crouchDebug->activeDatabases)
+			std::cout << database << ',';
+		std::cout << '\n';
+	}
+	if (!ExpectGAF(crouchReturnValid,
+		"DemoHall crouch-enter return did not resolve to crouching Motion Matching")) return false;
+
+	if (!ExpectGAF(switchGraphSet("graph-set-crouch-exit"),
+		"DemoHall crouching Graph Set rejected the crouch-exit switch")) return false;
+	updateFrames(6);
+	if (!ExpectGAF(roundTripController->GetActiveGraphSetId() == "graph-set-crouch-exit" &&
+		roundTripController->GetCurrentStateName() == "CrouchToStand",
+		"DemoHall crouch-exit Graph Set did not take animation ownership")) return false;
+	updateFrames(150);
+	setStance(false);
+	if (!ExpectGAF(switchGraphSet("graph-set-default"),
+		"DemoHall crouch-exit Graph Set rejected the locomotion return")) return false;
+	updateFrames(12);
+	const auto* returnedStandDebug = roundTripController->GetMotionMatchingDebugData();
+	if (!ExpectGAF(roundTripController->GetActiveGraphSetId() == "graph-set-default" &&
+		!roundTripController->IsGraphSetTransitioning() && returnedStandDebug &&
+		returnedStandDebug->activeClip == "Idle_Stand" &&
+		hasActiveDatabase("PSD_DemoHall_Stand_Idles") &&
+		!hasActiveDatabase("PSD_DemoHall_Crouch_Idles"),
+		"DemoHall crouch-exit return did not resolve to standing Motion Matching")) return false;
+	return true;
+}
+
+bool TestDemoHallPlayerVaultContract()
+{
+	namespace fs = std::filesystem;
+	fs::path workspace = fs::current_path();
+	for (int depth = 0; depth < 6 && !fs::exists(workspace / "DemoHallProject"); ++depth)
+		workspace = workspace.parent_path();
+	const fs::path projectRoot = workspace / "DemoHallProject";
+	const fs::path clipPath = projectRoot /
+		"Assets/Animations/Traversal/Vault/anim_Vault_Unreal_Take.vclip";
+	std::string error;
+
+	VansGraphics::VansAnimationClip vaultClip;
+	VansGraphics::Skeleton vaultSkeleton;
+	if (!VansGraphics::VansAnimationClipIO::Load(clipPath.string(), vaultClip, vaultSkeleton))
+		return ExpectGAF(false, "DemoHall vault .vclip could not be loaded");
+	const auto root = vaultSkeleton.boneNameToIndex.find("root");
+	if (!ExpectGAF(vaultClip.rootMotion.enabled && vaultClip.rootMotion.boneName == "root" &&
+		vaultClip.rootMotion.extractTranslation && vaultClip.rootMotion.extractRotation &&
+		std::abs(vaultClip.duration - 1.6f) < 0.001f &&
+		root != vaultSkeleton.boneNameToIndex.end() && root->second >= 0 &&
+		root->second < static_cast<int>(vaultClip.boneKeyframes.size()) &&
+		vaultClip.boneKeyframes[root->second].size() > 1,
+		"DemoHall vault clip lost its 1.6 second root-motion contract")) return false;
+	float authoredRootTravel = 0.0f;
+	const auto& rootKeys = vaultClip.boneKeyframes[root->second];
+	for (const auto& key : rootKeys)
+		authoredRootTravel = std::max(authoredRootTravel,
+			glm::length(key.position - rootKeys.front().position));
+	if (!ExpectGAF(authoredRootTravel > 100.0f,
+		"DemoHall vault clip contains no meaningful authored traversal")) return false;
+
+	nlohmann::ordered_json animator;
+	if (!Vans::VansJsonFileStorage::Read(
+		projectRoot / "Assets/MotionMatchDataBase/UEFN_Mannequin.vanimator", animator, error))
+		return ExpectGAF(false, error.c_str());
+	bool foundVaultClip = false;
+	for (const auto& ref : animator.value("clips", nlohmann::ordered_json::array()))
+	{
+		const auto asset = ref.value("asset", nlohmann::ordered_json::object());
+		foundVaultClip = foundVaultClip ||
+			(ref.value("name", std::string{}) == "Vault" &&
+			asset.value("guid", std::string{}) == "680c6d8e-9fa0-4401-879a-7211eb07f3f6" &&
+			asset.value("pathHint", std::string{}) ==
+				"Assets/Animations/Traversal/Vault/anim_Vault_Unreal_Take.vclip");
+	}
+	bool foundVaultSet = false;
+	for (const auto& graphSet : animator.value("graphSets", nlohmann::ordered_json::array()))
+	{
+		if (graphSet.value("id", std::string{}) != "graph-set-vault") continue;
+		const auto bindings = graphSet.value("bindings", nlohmann::ordered_json::array());
+		foundVaultSet = bindings.size() == 1 &&
+			bindings.front().value("graphId", std::string{}) == "graph-vault" &&
+			bindings.front().value("layerId", std::string{}) == "layer-base" &&
+			bindings.front().value("enabled", false);
+	}
+	bool vaultGraphValid = false;
+	for (const auto& graph : animator.value("graphs", nlohmann::ordered_json::array()))
+	{
+		if (graph.value("id", std::string{}) != "graph-vault") continue;
+		int vaultStates = 0;
+		bool containsMotionMatching = false;
+		for (const auto& node : graph["graph"].value("nodes", nlohmann::ordered_json::array()))
+		{
+			containsMotionMatching = containsMotionMatching ||
+				node.value("type", std::string{}) == "MotionMatching";
+			for (const auto& state : node.value("properties", nlohmann::ordered_json::object())
+				.value("states", nlohmann::ordered_json::array()))
+			{
+				if (state.value("name", std::string{}) == "Vault" &&
+					state.value("clip", std::string{}) == "Vault" &&
+					!state.value("loop", true) && state.value("rootMotion", false))
+					++vaultStates;
+			}
+		}
+		vaultGraphValid = !containsMotionMatching && vaultStates == 1;
+	}
+	bool hasVaultEnterRule = false;
+	bool hasVaultExitRule = false;
+	for (const auto& rule : animator.value("graphSetTransitions", nlohmann::ordered_json::object())
+		.value("rules", nlohmann::ordered_json::array()))
+	{
+		const auto policy = rule.value("policy", nlohmann::ordered_json::object());
+		const bool rootMotionIncoming =
+			policy.value("rootMotion", std::string{}) == "incomingOnly" &&
+			policy.value("phase", std::string{}) == "restart";
+		hasVaultEnterRule = hasVaultEnterRule || (rootMotionIncoming &&
+			rule.value("from", std::string{}) == "graph-set-default" &&
+			rule.value("to", std::string{}) == "graph-set-vault");
+		hasVaultExitRule = hasVaultExitRule || (rootMotionIncoming &&
+			rule.value("from", std::string{}) == "graph-set-vault" &&
+			rule.value("to", std::string{}) == "graph-set-default");
+	}
+
+	VansGraphics::Skeleton sceneSkeleton;
+	if (!VansGraphics::VansSkinnedMeshLoader::LoadSkeletonFromModelAsset(
+		(projectRoot / "Assets/Models/SKM_UEFN_Mannequin.fbx").string(), sceneSkeleton, error))
+		return ExpectGAF(false, error.c_str());
+	if (!ExpectGAF(sceneSkeleton.bones.size() == vaultSkeleton.bones.size(),
+		"DemoHall UEFN model and vault clip use different skeleton sizes")) return false;
+
+	VansGraphics::AnimatorAssetData animatorAsset;
+	if (!VansGraphics::VansAnimatorIO::Load(
+		(projectRoot / "Assets/MotionMatchDataBase/UEFN_Mannequin.vanimator").string(), animatorAsset))
+		return ExpectGAF(false, "DemoHall UEFN Animator definition could not be loaded for vault");
+	animatorAsset.defaultGraphSetId = "graph-set-vault";
+	animatorAsset.graphSets.erase(std::remove_if(
+		animatorAsset.graphSets.begin(), animatorAsset.graphSets.end(),
+		[](const VansGraphics::VansAnimationGraphSetDefinition& graphSet)
+		{
+			return graphSet.id != "graph-set-vault";
+		}), animatorAsset.graphSets.end());
+	animatorAsset.graphs.erase(std::remove_if(
+		animatorAsset.graphs.begin(), animatorAsset.graphs.end(),
+		[](const VansGraphics::AnimatorGraphAsset& graph)
+		{
+			return graph.id != "graph-vault" && graph.id != "graph-target-post-process";
+		}), animatorAsset.graphs.end());
+	animatorAsset.graphSetTransitionRules.clear();
+	animatorAsset.clipRefs.erase(std::remove_if(
+		animatorAsset.clipRefs.begin(), animatorAsset.clipRefs.end(),
+		[](const VansGraphics::AnimatorClipRef& ref)
+		{
+			return ref.name != "Vault";
+		}), animatorAsset.clipRefs.end());
+	VansGraphics::VansAnimatorRuntimeCompileOptions compileOptions;
+	compileOptions.enableTargetPostProcess = true;
+	compileOptions.enableRootMotion = true;
+	compileOptions.queryProfileResolver = [](
+		const std::string&, std::uint32_t& collisionMask, std::string&)
+	{
+		collisionMask = 0xFFFFFFFFu;
+		return true;
+	};
+	compileOptions.rigResolver = [&projectRoot](
+		const std::string&, fs::path& resolvedPath, std::string&)
+	{
+		resolvedPath = projectRoot / "Assets/AnimationRigs/UEFN.vanimrig";
+		return true;
+	};
+	auto vaultController = VansGraphics::VansAnimatorRuntimeCompiler::Compile(
+		animatorAsset, sceneSkeleton,
+		[&projectRoot](const VansGraphics::AnimatorClipRef& ref,
+			fs::path& resolvedPath, std::string& resolveError)
+		{
+			resolvedPath = projectRoot / ref.pathHint;
+			if (fs::is_regular_file(resolvedPath)) return true;
+			resolveError = "Missing DemoHall vault clip: " + resolvedPath.string();
+			return false;
+		},
+		[](const VansGraphics::VansAnimationLayerDefinition&,
+			fs::path&, std::string& resolveError)
+		{
+			resolveError = "DemoHall vault base layer unexpectedly requested a Bone Mask";
+			return false;
+		},
+		compileOptions, error);
+	if (!ExpectGAF(vaultController != nullptr, error.c_str())) return false;
+	vaultController->Play();
+	vaultController->Update(0.0f, sceneSkeleton);
+	float runtimeRootTravel = 0.0f;
+	for (int frame = 0; frame < 36; ++frame)
+	{
+		vaultController->Update(1.0f / 30.0f, sceneSkeleton);
+		if (vaultController->HasRootMotionDelta())
+			runtimeRootTravel += glm::length(vaultController->GetRootMotionDelta());
+	}
+	if (!ExpectGAF(vaultController->GetCurrentStateName() == "Vault" &&
+		vaultController->GetCurrentPlayTime() > 1.1f && runtimeRootTravel > 50.0f,
+		"DemoHall vault Graph did not evaluate its root-motion clip at runtime")) return false;
+
+	nlohmann::ordered_json scene;
+	if (!Vans::VansJsonFileStorage::Read(projectRoot / "Scenes/DemoHall.json", scene, error))
+		return ExpectGAF(false, error.c_str());
+	int configuredCharacters = 0;
+	for (const auto& entity : scene.value("entities", nlohmann::ordered_json::array()))
+	{
+		const std::string entityId = entity.value("id", std::string{});
+		if (entityId != "4186c86d-7c0a-4556-8077-d1f80ebc1da5" &&
+			entityId != "38dbe7af-653a-4aeb-bfa7-1ca72e2b972c") continue;
+		bool animationRoutesRootMotion = false;
+		bool hasCct = false;
+		bool hasVaultScript = false;
+		for (const auto& component : entity.value("components", nlohmann::ordered_json::array()))
+		{
+			const auto data = component.value("data", nlohmann::ordered_json::object());
+			const std::string type = component.value("type", std::string{});
+			if (type == "Animation")
+			{
+				const auto motionModel = data.value("motion_matching", nlohmann::ordered_json::object())
+					.value("motion_model", nlohmann::ordered_json::object());
+				animationRoutesRootMotion = data.value("root_motion", false) &&
+					motionModel.value("drive_mode", std::string{}) == "root_motion" &&
+					std::abs(motionModel.value("root_motion_to_world_scale", 0.0f) - 0.01f) < 0.0001f;
+			}
+			else if (type == "CharacterController")
+				hasCct = true;
+			else if (type == "Script" &&
+				data.value("entry", std::string{}) == "PlayerVaultController")
+			{
+				const auto fields = data.value("fields", nlohmann::ordered_json::object());
+				hasVaultScript = fields.value("vaultGraphSetId", std::string{}) == "graph-set-vault" &&
+					fields.value("locomotionGraphSetId", std::string{}) == "graph-set-default" &&
+					std::abs(fields.value("vaultDuration", 0.0f) - 1.6f) < 0.001f;
+			}
+		}
+		if (animationRoutesRootMotion && hasCct && hasVaultScript) ++configuredCharacters;
+	}
+	std::string script;
+	if (!Vans::VansFileStorage::ReadAllBytes(
+		projectRoot / "Scripts/forest_lua_behaviors.lua", script, error))
+		return ExpectGAF(false, error.c_str());
+	const std::size_t vaultScriptBegin = script.find("M.PlayerVaultController");
+	const std::size_t vaultScriptEnd = script.find("M.RuntimeStartGame", vaultScriptBegin);
+	const std::string vaultScript = vaultScriptBegin != std::string::npos
+		? script.substr(vaultScriptBegin, vaultScriptEnd - vaultScriptBegin) : std::string{};
+	return ExpectGAF(foundVaultClip && foundVaultSet && vaultGraphValid &&
+		hasVaultEnterRule && hasVaultExitRule && configuredCharacters == 2 &&
+		vaultScript.find("is_key_pressed(\"V\")") != std::string::npos &&
+		vaultScript.find("set_root_motion_enabled(true)") != std::string::npos &&
+		vaultScript.find("switch_graph_set") != std::string::npos &&
+		vaultScript.find("self.vaultElapsed >= self.vaultDuration") != std::string::npos &&
+		script.find("character_state.fullBodyActionActive") != std::string::npos &&
+		script.find("character_state.attackActive") == std::string::npos,
+		"DemoHall vault is not wired through input, Graph Set, root motion, and CCT ownership");
+}
+
+bool TestDemoHallWhisperPreviewContract()
+{
+	namespace fs = std::filesystem;
+	fs::path workspace = fs::current_path();
+	for (int depth = 0; depth < 6 && !fs::exists(workspace / "DemoHallProject"); ++depth)
+		workspace = workspace.parent_path();
+	const fs::path projectRoot = workspace / "DemoHallProject";
+	const fs::path whisperRoot = projectRoot / "Assets/Characters/Whisper";
+	std::string error;
+
+	VansGraphics::Skeleton modelSkeleton;
+	if (!VansGraphics::VansSkinnedMeshLoader::LoadSkeletonFromModelAsset(
+		(whisperRoot / "Models/SK_Whisper.glb").string(), modelSkeleton, error))
+		return ExpectGAF(false, error.c_str());
+	if (!ExpectGAF(modelSkeleton.bones.size() == 68 &&
+		modelSkeleton.boneNameToIndex.find("root") != modelSkeleton.boneNameToIndex.end() &&
+		modelSkeleton.boneNameToIndex.find("pelvis") != modelSkeleton.boneNameToIndex.end() &&
+		modelSkeleton.boneNameToIndex.find("head") != modelSkeleton.boneNameToIndex.end(),
+		"DemoHall Whisper model did not retain its weighted 68-bone skeleton")) return false;
+
+	struct ClipExpectation
+	{
+		const char* file;
+		float duration;
+	};
+	static constexpr ClipExpectation Clips[] = {
+		{ "Anim_WhisperDead_Unreal_Take.vclip", 0.1f },
+		{ "anima_whisper_sittoidle_Unreal_Take.vclip", 3.0f },
+		{ "Anim_Whisper_Idle1_Unreal_Take.vclip", 1.9f },
+		{ "Anim_Whisper_Idle2_Unreal_Take.vclip", 11.266666f },
+		{ "Anim_Whisper_Idle3_Unreal_Take.vclip", 1.833333f },
+		{ "Anim_Whisper_Idle4_Unreal_Take.vclip", 11.266666f },
+		{ "Anim_Whisper_Walk1_Unreal_Take.vclip", 1.366667f },
+		{ "Anim_Whisper_Walk2_Unreal_Take.vclip", 1.333333f },
+		{ "Anim_Whisper_Walk_Back_Unreal_Take.vclip", 1.366667f },
+		{ "Anim_Whisper_Walk_Left_Unreal_Take.vclip", 1.266667f },
+		{ "Anim_Whisper_Walk_Right_Unreal_Take.vclip", 1.266667f },
+		{ "Anim_Whisper_Run_Unreal_Take.vclip", 0.633333f },
+		{ "Anim_Whisper_Attack1_Unreal_Take.vclip", 1.833333f },
+		{ "Anim_Whisper_Attack2_Unreal_Take.vclip", 1.733333f },
+		{ "Anim_Whisper_Attack3_Unreal_Take.vclip", 2.1f },
+		{ "Anim_Whisper_Taking_Damage1_Unreal_Take.vclip", 1.333333f },
+		{ "Anim_Whisper_Taking_Damage2_Unreal_Take.vclip", 0.866667f },
+		{ "Anim_Whisper_Death_Unreal_Take.vclip", 2.166667f },
+	};
+	for (const auto& expected : Clips)
+	{
+		VansGraphics::VansAnimationClip clip;
+		VansGraphics::Skeleton clipSkeleton;
+		if (!VansGraphics::VansAnimationClipIO::Load(
+			(whisperRoot / "Animations" / expected.file).string(), clip, clipSkeleton))
+			return ExpectGAF(false, "DemoHall Whisper preview clip could not be loaded");
+		if (!ExpectGAF(std::abs(clip.duration - expected.duration) < 0.002f &&
+			clipSkeleton.bones.size() == modelSkeleton.bones.size() &&
+			clip.boneKeyframes.size() == modelSkeleton.bones.size(),
+			"DemoHall Whisper preview clip duration or skeleton binding changed")) return false;
+		for (std::size_t bone = 0; bone < modelSkeleton.bones.size(); ++bone)
+			if (!ExpectGAF(clipSkeleton.bones[bone].name == modelSkeleton.bones[bone].name,
+				"DemoHall Whisper clip bone order does not match its model")) return false;
+		const int spineIndex = modelSkeleton.boneNameToIndex.at("spine_01");
+		const auto& spineKeys = clip.boneKeyframes[static_cast<std::size_t>(spineIndex)];
+		const glm::vec3 spineBind = glm::vec3(
+			modelSkeleton.bones[static_cast<std::size_t>(spineIndex)].localTransform[3]);
+		const bool spineTranslationIsValid = !spineKeys.empty() &&
+			std::isfinite(spineKeys.front().position.x) &&
+			std::isfinite(spineKeys.front().position.y) &&
+			std::isfinite(spineKeys.front().position.z) &&
+			glm::length(spineKeys.front().position - spineBind) < 0.001f;
+		if (!ExpectGAF(spineTranslationIsValid,
+			"DemoHall Whisper clip coordinates do not match the glTF skeleton space")) return false;
+		if (std::string(expected.file) == "Anim_Whisper_Idle1_Unreal_Take.vclip" &&
+			!ExpectGAF(std::abs(spineKeys.front().rotation.y + 0.1038613f) < 0.001f &&
+				std::abs(spineKeys.front().rotation.z - 0.0059622f) < 0.001f,
+				"DemoHall Whisper clip rotation axes do not match the glTF skeleton space")) return false;
+	}
+
+	VansGraphics::VansAnimationClip deformationClip;
+	VansGraphics::Skeleton deformationClipSkeleton;
+	if (!VansGraphics::VansAnimationClipIO::Load(
+		(whisperRoot / "Animations/Anim_Whisper_Idle1_Unreal_Take.vclip").string(),
+		deformationClip, deformationClipSkeleton))
+		return ExpectGAF(false, "DemoHall Whisper deformation clip could not be loaded");
+	VansGraphics::VansAnimationSampleRequest sampleRequest;
+	sampleRequest.currentTime = 0.5f;
+	sampleRequest.endTime = deformationClip.duration;
+	sampleRequest.loop = true;
+	VansGraphics::VansPosePayload sampledPose;
+	if (!VansGraphics::VansAnimationSampler::Sample(
+		deformationClip, modelSkeleton, sampleRequest, sampledPose))
+		return ExpectGAF(false, "DemoHall Whisper deformation pose could not be sampled");
+	std::vector<glm::mat4> deformationGlobals(modelSkeleton.bones.size(), glm::mat4(1.0f));
+	for (std::size_t bone = 0; bone < deformationGlobals.size(); ++bone)
+		deformationGlobals[bone] = VansGraphics::VansPoseMath::Compose(sampledPose.localPose[bone]);
+	for (int bone : modelSkeleton.topologicalOrder)
+	{
+		const int parent = modelSkeleton.bones[static_cast<std::size_t>(bone)].parentIndex;
+		if (parent >= 0)
+			deformationGlobals[static_cast<std::size_t>(bone)] =
+				deformationGlobals[static_cast<std::size_t>(parent)] *
+				deformationGlobals[static_cast<std::size_t>(bone)];
+	}
+	VansGraphics::BoneMatricesSSBO deformationMatrices{};
+	for (glm::mat4& matrix : deformationMatrices.boneMatrices)
+		matrix = glm::mat4(1.0f);
+	for (std::size_t bone = 0; bone < modelSkeleton.bones.size(); ++bone)
+		deformationMatrices.boneMatrices[bone] = deformationGlobals[bone] *
+			modelSkeleton.bones[bone].offsetMatrix;
+
+	Vans::VansAssetMeta whisperModelMeta;
+	if (!Vans::VansAssetMetaStorage::Load(
+		whisperRoot / "Models/SK_Whisper.glb.meta", whisperModelMeta, error))
+		return ExpectGAF(false, error.c_str());
+	VansGraphics::VansAnimationPreviewRenderer deformationPreview;
+	if (!deformationPreview.PrepareCpu(
+		whisperRoot / "Models/SK_Whisper.glb", 1.0f,
+		Vans::ReadSkeletalMeshImportSettings(whisperModelMeta), error) ||
+		!deformationPreview.RasterizeFrame(
+			deformationMatrices, {}, glm::vec3(0.0f), {}, error))
+		return ExpectGAF(false, error.c_str());
+	const auto& deformationStats = deformationPreview.GetStats();
+	std::cout << "[GAF] Whisper skin stats: vertices=" << deformationStats.vertexCount
+		<< " unbound=" << deformationStats.unboundVertexCount
+		<< " invalidInfluences=" << deformationStats.invalidBoneInfluenceCount
+		<< " nonFiniteWeights=" << deformationStats.nonFiniteBoneWeightCount
+		<< " maxWeightSumError=" << deformationStats.maxBoneWeightSumError
+		<< " invalidDeformed=" << deformationStats.invalidDeformedVertexCount
+		<< " radiusRatio=" << deformationStats.deformedRadiusRatio << '\n';
+	if (!ExpectGAF(deformationStats.unboundVertexCount == 0 &&
+		deformationStats.invalidBoneInfluenceCount == 0 &&
+		deformationStats.nonFiniteBoneWeightCount == 0 &&
+		deformationStats.maxBoneWeightSumError < 1.0e-5f &&
+		deformationStats.invalidDeformedVertexCount == 0 &&
+		deformationStats.deformedRadiusRatio > 0.8f &&
+		deformationStats.deformedRadiusRatio < 1.25f,
+		"DemoHall Whisper asset contains invalid weights or produces exploded CPU skinning")) return false;
+
+	VansGraphics::AnimatorAssetData whisperAnimatorAsset;
+	if (!VansGraphics::VansAnimatorIO::Load(
+		(whisperRoot / "Animation/Whisper.vanimator").string(), whisperAnimatorAsset))
+		return ExpectGAF(false, "DemoHall Whisper Animator definition could not be loaded");
+	VansGraphics::VansAnimatorRuntimeCompileOptions whisperCompileOptions;
+	whisperCompileOptions.enableTargetPostProcess = false;
+	whisperCompileOptions.enableRootMotion = false;
+	whisperCompileOptions.rigResolver = [&whisperRoot](
+		const std::string&, fs::path& resolvedPath, std::string&)
+	{
+		resolvedPath = whisperRoot / "Animation/Whisper.vanimrig";
+		return true;
+	};
+	auto whisperController = VansGraphics::VansAnimatorRuntimeCompiler::Compile(
+		whisperAnimatorAsset, modelSkeleton,
+		[&projectRoot](const VansGraphics::AnimatorClipRef& ref,
+			fs::path& resolvedPath, std::string& resolveError)
+		{
+			resolvedPath = projectRoot / ref.pathHint;
+			if (fs::is_regular_file(resolvedPath)) return true;
+			resolveError = "Missing DemoHall Whisper clip: " + resolvedPath.string();
+			return false;
+		},
+		[](const VansGraphics::VansAnimationLayerDefinition&,
+			fs::path&, std::string& resolveError)
+		{
+			resolveError = "DemoHall Whisper base layer unexpectedly requested a Bone Mask";
+			return false;
+		},
+		whisperCompileOptions, error);
+	if (!ExpectGAF(whisperController != nullptr, error.c_str())) return false;
+	const auto& whisperParameters = whisperController->GetParameters();
+	const auto whisperWakeParameter = whisperParameters.find("WakeUp");
+	const bool demoHallHasWakeTrigger = whisperWakeParameter != whisperParameters.end() &&
+		whisperWakeParameter->second.type == VansGraphics::AnimatorParamType::Trigger;
+	whisperController->Play();
+	whisperController->Update(0.0f, modelSkeleton);
+	const bool demoHallBeganDead = whisperController->GetCurrentStateName() == "Dead";
+	if (!deformationPreview.RasterizeFrame(
+		whisperController->GetBoneMatricesSSBO(), {}, glm::vec3(0.0f), {}, error))
+		return ExpectGAF(false, error.c_str());
+	const VansGraphics::VansAnimationPreviewRenderStats deadPreviewStats =
+		deformationPreview.GetStats();
+	std::cout << "[GAF] Whisper Dead preview: renderedTriangles="
+		<< deadPreviewStats.renderedTriangleCount
+		<< " invalidDeformed=" << deadPreviewStats.invalidDeformedVertexCount
+		<< " boundsMin=(" << deadPreviewStats.deformedBoundsMin.x << ','
+		<< deadPreviewStats.deformedBoundsMin.y << ','
+		<< deadPreviewStats.deformedBoundsMin.z << ") boundsMax=("
+		<< deadPreviewStats.deformedBoundsMax.x << ','
+		<< deadPreviewStats.deformedBoundsMax.y << ','
+		<< deadPreviewStats.deformedBoundsMax.z << ") radiusRatio="
+		<< deadPreviewStats.deformedRadiusRatio << '\n';
+	whisperController->Update(0.5f, modelSkeleton);
+	const bool demoHallLoopedDead = whisperController->GetCurrentStateName() == "Dead";
+	whisperController->SetTrigger("WakeUp");
+	whisperController->Update(0.0f, modelSkeleton);
+	const bool demoHallEnteredSitToIdle =
+		whisperController->GetCurrentStateName() == "SitToIdle";
+	whisperController->Update(1.5f, modelSkeleton);
+	if (!deformationPreview.RasterizeFrame(
+		whisperController->GetBoneMatricesSSBO(), {}, glm::vec3(0.0f), {}, error))
+		return ExpectGAF(false, error.c_str());
+	const VansGraphics::VansAnimationPreviewRenderStats sitToIdlePreviewStats =
+		deformationPreview.GetStats();
+	std::cout << "[GAF] Whisper SitToIdle preview: renderedTriangles="
+		<< sitToIdlePreviewStats.renderedTriangleCount
+		<< " invalidDeformed=" << sitToIdlePreviewStats.invalidDeformedVertexCount
+		<< " radiusRatio=" << sitToIdlePreviewStats.deformedRadiusRatio << '\n';
+	whisperController->Update(1.501f, modelSkeleton);
+	const bool demoHallEnteredIdle = whisperController->GetCurrentStateName() == "Idle1";
+	whisperController->Update(0.5f, modelSkeleton);
+	if (!deformationPreview.RasterizeFrame(
+		whisperController->GetBoneMatricesSSBO(), {}, glm::vec3(0.0f), {}, error))
+		return ExpectGAF(false, error.c_str());
+	const auto& controllerStats = deformationPreview.GetStats();
+	float maxControllerMatrixDiff = 0.0f;
+	for (std::size_t bone = 0; bone < modelSkeleton.bones.size(); ++bone)
+		for (int column = 0; column < 4; ++column)
+			for (int row = 0; row < 4; ++row)
+				maxControllerMatrixDiff = std::max(maxControllerMatrixDiff,
+					std::abs(whisperController->GetBoneMatricesSSBO().boneMatrices[bone][column][row]
+						- deformationMatrices.boneMatrices[bone][column][row]));
+	if (!ExpectGAF(demoHallHasWakeTrigger && demoHallBeganDead && demoHallLoopedDead &&
+		deadPreviewStats.renderedTriangleCount > 0 &&
+		deadPreviewStats.invalidDeformedVertexCount == 0 &&
+		deadPreviewStats.deformedRadiusRatio > 0.8f &&
+		deadPreviewStats.deformedRadiusRatio < 2.0f &&
+		demoHallEnteredSitToIdle && demoHallEnteredIdle &&
+		sitToIdlePreviewStats.renderedTriangleCount > 0 &&
+		sitToIdlePreviewStats.invalidDeformedVertexCount == 0 &&
+		sitToIdlePreviewStats.deformedRadiusRatio > 0.8f &&
+		sitToIdlePreviewStats.deformedRadiusRatio < 2.0f &&
+		whisperController->GetCurrentStateName() == "Idle1" &&
+		controllerStats.invalidDeformedVertexCount == 0 &&
+		controllerStats.deformedRadiusRatio > 0.8f &&
+		controllerStats.deformedRadiusRatio < 1.25f &&
+		maxControllerMatrixDiff < 1.0e-5f,
+		"DemoHall Whisper runtime controller produced invalid or exploded skinning")) return false;
+	nlohmann::ordered_json animator;
+	if (!Vans::VansJsonFileStorage::Read(
+		whisperRoot / "Animation/Whisper.vanimator", animator, error))
+		return ExpectGAF(false, error.c_str());
+	int stateCount = 0;
+	int transitionCount = 0;
+	bool containsMotionMatching = false;
+	bool allStatesDisableRootMotion = true;
+	bool defaultsToDead = false;
+	for (const auto& graph : animator.value("graphs", nlohmann::ordered_json::array()))
+		for (const auto& node : graph.value("graph", nlohmann::ordered_json::object())
+			.value("nodes", nlohmann::ordered_json::array()))
+		{
+			containsMotionMatching = containsMotionMatching ||
+				node.value("type", std::string{}) == "MotionMatching";
+			const auto properties = node.value("properties", nlohmann::ordered_json::object());
+			defaultsToDead = defaultsToDead ||
+				properties.value("defaultState", std::string{}) == "Dead";
+			for (const auto& state : properties.value("states", nlohmann::ordered_json::array()))
+			{
+				++stateCount;
+				allStatesDisableRootMotion = allStatesDisableRootMotion &&
+					!state.value("rootMotion", true);
+			}
+			transitionCount += static_cast<int>(
+				properties.value("transitions", nlohmann::ordered_json::array()).size());
+		}
+	bool hasPreviewParameter = false;
+	bool hasWakeParameter = false;
+	for (const auto& parameter : animator.value("parameters", nlohmann::ordered_json::array()))
+	{
+		hasPreviewParameter = hasPreviewParameter ||
+			(parameter.value("name", std::string{}) == "PreviewState" &&
+			parameter.value("type", std::string{}) == "int" &&
+			parameter.value("default", 0) == -1);
+		hasWakeParameter = hasWakeParameter ||
+			(parameter.value("name", std::string{}) == "WakeUp" &&
+			parameter.value("type", std::string{}) == "trigger");
+	}
+	if (!ExpectGAF(animator.value("clips", nlohmann::ordered_json::array()).size() == 18 &&
+		animator.value("graphs", nlohmann::ordered_json::array()).size() == 1 &&
+		stateCount == 18 && transitionCount == 18 && defaultsToDead &&
+		hasPreviewParameter && hasWakeParameter &&
+		!containsMotionMatching && allStatesDisableRootMotion,
+		"DemoHall Whisper animator is not the Dead-gated stationary 18-state graph")) return false;
+
+	nlohmann::ordered_json material;
+	if (!Vans::VansJsonFileStorage::Read(
+		whisperRoot / "Materials/Whisper_Body.mat", material, error))
+		return ExpectGAF(false, error.c_str());
+	const auto textures = material.value("textures", nlohmann::ordered_json::object());
+	if (!ExpectGAF(material.value("materialType", std::string{}) == "pbr" &&
+		textures.size() == 5 &&
+		fs::is_regular_file(whisperRoot / "Textures/Whisper_Body_Albedo.png") &&
+		fs::is_regular_file(whisperRoot / "Textures/Whisper_Body_Normal.png") &&
+		fs::is_regular_file(whisperRoot / "Textures/Whisper_Body_AO.png") &&
+		fs::is_regular_file(whisperRoot / "Textures/Whisper_Body_Metallic.png") &&
+		fs::is_regular_file(whisperRoot / "Textures/Whisper_Body_Roughness.png"),
+		"DemoHall Whisper PBR material or imported textures are incomplete")) return false;
+
+	nlohmann::ordered_json scene;
+	if (!Vans::VansJsonFileStorage::Read(projectRoot / "Scenes/DemoHall.json", scene, error))
+		return ExpectGAF(false, error.c_str());
+	bool foundPreview = false;
+	for (const auto& entity : scene.value("entities", nlohmann::ordered_json::array()))
+	{
+		if (entity.value("name", std::string{}) != "Whisper_Preview") continue;
+		bool hasModel = false;
+		bool hasAnimation = false;
+		bool hasPreviewScript = false;
+		bool previewWaitsForGAFWake = false;
+		bool hasCharacterController = false;
+		for (const auto& component : entity.value("components", nlohmann::ordered_json::array()))
+		{
+			const std::string type = component.value("type", std::string{});
+			const auto data = component.value("data", nlohmann::ordered_json::object());
+			hasCharacterController = hasCharacterController || type == "CharacterController";
+			if (type == "ModelRenderer")
+				hasModel = component.value("enabled", false) &&
+					data.value("model", nlohmann::ordered_json::object())
+					.value("guid", std::string{}) == "d08d594d-f68c-4497-8663-c85a4695f2d6";
+			else if (type == "Animation")
+				hasAnimation = component.value("enabled", false) &&
+					data.value("mesh_group", std::string{}) == "Whisper" &&
+					!data.value("root_motion", true) &&
+					data.value("auto_play", false) && !data.contains("motion_matching") &&
+					data.value("animator", nlohmann::ordered_json::object())
+						.value("guid", std::string{}) == "ec68421a-fff2-4db4-82c4-00cbb052c84c" &&
+					data.value("rig", nlohmann::ordered_json::object())
+						.value("guid", std::string{}) == "873c655f-18a8-4aea-8632-ff095e6cc7cc";
+			else if (type == "Script" && data.value("entry", std::string{}) ==
+				"WhisperAnimationPreview")
+			{
+				hasPreviewScript = true;
+				previewWaitsForGAFWake = !data.value("fields", nlohmann::ordered_json::object())
+					.value("cycleAnimations", true);
+			}
+		}
+		foundPreview = hasModel && hasAnimation && hasPreviewScript &&
+			previewWaitsForGAFWake && !hasCharacterController;
+	}
+	std::string script;
+	if (!Vans::VansFileStorage::ReadAllBytes(
+		projectRoot / "Scripts/forest_lua_behaviors.lua", script, error))
+		return ExpectGAF(false, error.c_str());
+
+	const fs::path itemGafRoot = projectRoot / "Assets/GAF/ItemInteraction";
+	nlohmann::ordered_json pickupAction;
+	nlohmann::ordered_json pickupActionSet;
+	nlohmann::ordered_json pickupTimeline;
+	nlohmann::ordered_json demoHallTags;
+	if (!Vans::VansJsonFileStorage::Read(
+		itemGafRoot / "FrameStand4Pickup.vaction", pickupAction, error) ||
+		!Vans::VansJsonFileStorage::Read(
+			itemGafRoot / "FrameStand4Pickup.vactionset", pickupActionSet, error) ||
+		!Vans::VansJsonFileStorage::Read(
+			projectRoot / "Assets/Cinematics/FrameStand4PickupWake.vtimeline",
+			pickupTimeline, error) ||
+		!Vans::VansJsonFileStorage::Read(
+			projectRoot / "Assets/GAF/WindowBreak/DemoHallTags.vtagtree",
+			demoHallTags, error))
+		return ExpectGAF(false, error.c_str());
+	const auto gafSourceCompiles = [&error](
+		const fs::path& path, Vans::VansAssetType type)
+	{
+		Vans::VansSerializedValue source;
+		if (!Vans::VansGameplayAssetStorage::LoadSource(path, source, error)) return false;
+		const Vans::VansGameplayCookResult cooked =
+			Vans::VansGameplayAssetStorage::Cook(type, source);
+		if (!cooked) return false;
+		return static_cast<bool>(Vans::VansGameplayAssetCompiler::Compile(cooked.asset));
+	};
+	const bool pickupGafAssetsCompile =
+		gafSourceCompiles(itemGafRoot / "FrameStand4Pickup.vaction",
+			Vans::VansAssetType::ActionDefinition) &&
+		gafSourceCompiles(itemGafRoot / "FrameStand4Pickup.vactionset",
+			Vans::VansAssetType::ActionSet) &&
+		gafSourceCompiles(itemGafRoot / "PickupInspect.vactiongraph",
+			Vans::VansAssetType::ActionGraph) &&
+		gafSourceCompiles(projectRoot / "Assets/GAF/WindowBreak/DemoHallTags.vtagtree",
+			Vans::VansAssetType::GameplayTagTree);
+	Vans::VansTimelineAsset pickupTimelineAsset;
+	if (!Vans::VansTimelineSerialization::Load(
+		projectRoot / "Assets/Cinematics/FrameStand4PickupWake.vtimeline",
+		pickupTimelineAsset, error))
+		return ExpectGAF(false, error.c_str());
+	Vans::VansTimelineCompileOptions pickupTimelineCompileOptions;
+	pickupTimelineCompileOptions.extensions =
+		&Vans::VansTimelineTrackExtensionRegistry::BuiltIns();
+	const Vans::VansTimelineCompileResult compiledPickupTimeline =
+		Vans::VansTimelineCompiler::Compile(
+			pickupTimelineAsset, pickupTimelineCompileOptions);
+	const bool pickupTimelineCompiles = static_cast<bool>(compiledPickupTimeline);
+
+	const fs::path pickupRuntimeRoot =
+		fs::temp_directory_path() / "ForestGAFDemoHallFrameStand4PickupContract";
+	std::error_code pickupFilesystemError;
+	fs::remove_all(pickupRuntimeRoot, pickupFilesystemError);
+	struct GafPickupCleanup
+	{
+		fs::path path;
+		~GafPickupCleanup()
+		{
+			std::error_code ignored;
+			fs::remove_all(path, ignored);
+		}
+	} pickupCleanup{ pickupRuntimeRoot };
+	const fs::path pickupRuntimeAssets = pickupRuntimeRoot / "Assets";
+	fs::create_directories(pickupRuntimeAssets, pickupFilesystemError);
+	const std::vector<std::pair<fs::path, fs::path>> pickupRuntimeFiles = {
+		{ itemGafRoot / "FrameStand4Pickup.vaction", pickupRuntimeAssets / "FrameStand4Pickup.vaction" },
+		{ itemGafRoot / "FrameStand4Pickup.vaction.meta", pickupRuntimeAssets / "FrameStand4Pickup.vaction.meta" },
+		{ itemGafRoot / "FrameStand4Pickup.vactionset", pickupRuntimeAssets / "FrameStand4Pickup.vactionset" },
+		{ itemGafRoot / "FrameStand4Pickup.vactionset.meta", pickupRuntimeAssets / "FrameStand4Pickup.vactionset.meta" },
+		{ itemGafRoot / "PickupInspect.vactiongraph", pickupRuntimeAssets / "PickupInspect.vactiongraph" },
+		{ itemGafRoot / "PickupInspect.vactiongraph.meta", pickupRuntimeAssets / "PickupInspect.vactiongraph.meta" },
+		{ itemGafRoot / "ItemOwner.vtargeting", pickupRuntimeAssets / "ItemOwner.vtargeting" },
+		{ itemGafRoot / "ItemOwner.vtargeting.meta", pickupRuntimeAssets / "ItemOwner.vtargeting.meta" },
+		{ projectRoot / "Assets/GAF/WindowBreak/DemoHallTags.vtagtree", pickupRuntimeAssets / "DemoHallTags.vtagtree" },
+		{ projectRoot / "Assets/GAF/WindowBreak/DemoHallTags.vtagtree.meta", pickupRuntimeAssets / "DemoHallTags.vtagtree.meta" },
+		{ projectRoot / "Assets/Cinematics/FrameStand4PickupWake.vtimeline", pickupRuntimeAssets / "FrameStand4PickupWake.vtimeline" },
+		{ projectRoot / "Assets/Cinematics/FrameStand4PickupWake.vtimeline.meta", pickupRuntimeAssets / "FrameStand4PickupWake.vtimeline.meta" },
+	};
+	for (const auto& [source, destination] : pickupRuntimeFiles)
+	{
+		fs::copy_file(source, destination, fs::copy_options::overwrite_existing,
+			pickupFilesystemError);
+		if (!ExpectGAF(!pickupFilesystemError,
+			"Frame_Stand_4 GAF runtime fixture could not be copied")) return false;
+	}
+	Vans::VansAssetDatabase pickupDatabase(
+		pickupRuntimeAssets, pickupRuntimeRoot / "Library/Artifacts");
+	const Vans::VansAssetScanResult pickupScan =
+		pickupDatabase.Scan(Vans::VansAssetOperationPolicy::Authoring());
+	if (!ExpectGAF(pickupScan && pickupDatabase.All().size() == 6,
+		"Frame_Stand_4 GAF assets did not scan as a six-asset runtime closure")) return false;
+	Vans::VansGameplayRuntime pickupRuntime;
+	Vans::VansGameplayRuntimeDependencies pickupRuntimeDependencies;
+	pickupRuntimeDependencies.graphNodeRegistrars.push_back(
+		[](Vans::VansActionGraphNodeRegistry& registry, std::string& registrationError)
+		{
+			return Vans::VansRegisterCameraActionGraphNodes(registry, registrationError);
+		});
+	if (!pickupRuntime.Initialize(
+		pickupDatabase.All(), Vans::VansGAFSettings{}, pickupRuntimeDependencies, error))
+		return ExpectGAF(false, error.c_str());
+	const auto runtimePickupAction = pickupRuntime.Assets().ResolveAction(
+		"Gameplay.DemoHall.Item.FrameStand4PickupWake");
+	const auto* runtimePickupSet = pickupRuntime.Assets().ResolveActionSet(
+		"e30100ce-50a7-4a44-95fe-d91fc3ad678d");
+	Vans::VansGameplayActionHostSetup pickupHostSetup;
+	pickupHostSetup.actionSets.push_back("e30100ce-50a7-4a44-95fe-d91fc3ad678d");
+	pickupHostSetup.initialTags.push_back({ "Target.Interactable.Item", 1 });
+	const auto pickupHost = pickupRuntime.CreateHost({ 902, 1 }, pickupHostSetup, error);
+	const bool pickupRuntimeLinksResolve = runtimePickupAction && runtimePickupSet &&
+		runtimePickupAction->executionGraph && runtimePickupAction->timelineAssets.size() == 1 &&
+		runtimePickupAction->timelineAssets.front() ==
+			"45453c77-62f3-4c8a-a949-3de554409767" &&
+		runtimePickupSet->grants.size() == 1 && pickupHost &&
+		pickupHost->GrantedActions().size() == 1;
+
+	bool hasPickupScriptBridge = false;
+	for (const auto& extension : pickupAction.value(
+		"extensions", nlohmann::ordered_json::array()))
+	{
+		const auto properties = extension.value(
+			"properties", nlohmann::ordered_json::object());
+		hasPickupScriptBridge = hasPickupScriptBridge ||
+			extension.value("bridge", std::string{}) == "Script.Action" &&
+			properties.value("entry", std::string{}) == "InteractablePickup" &&
+			properties.value("callback", std::string{}) == "play_pickup_presentation" &&
+			properties.value("timelineComponentGuid", std::string{}) ==
+				"296cfa68-af40-4509-b181-a57925cd6337";
+	}
+	const auto pickupExecution = pickupAction.value(
+		"execution", nlohmann::ordered_json::object());
+	const bool pickupActionUsesGAF =
+		pickupAction.value("actionId", std::string{}) ==
+			"Gameplay.DemoHall.Item.FrameStand4PickupWake" &&
+		pickupExecution.value("executor", std::string{}) == "Action.Executor.Graph" &&
+		pickupExecution.value("graph", nlohmann::ordered_json::object())
+			.value("assetGuid", std::string{}) ==
+			"ad301673-a461-4a6b-8137-c3e95c44c474" &&
+		pickupExecution.value("timeline", nlohmann::ordered_json::object())
+			.value("assetGuid", std::string{}) ==
+			"45453c77-62f3-4c8a-a949-3de554409767" &&
+		hasPickupScriptBridge;
+	bool pickupSetGrantsAction = false;
+	for (const auto& grant : pickupActionSet.value(
+		"grants", nlohmann::ordered_json::array()))
+		pickupSetGrantsAction = pickupSetGrantsAction ||
+			grant.value("action", nlohmann::ordered_json::object())
+				.value("assetGuid", std::string{}) ==
+				"cba9cbd4-3a09-484b-aa11-ad3aa825eccb" &&
+			grant.value("inputBinding", std::string{}) == "Input.Interact";
+
+	bool timelineBindsFrameStand = false;
+	bool timelineBindsWhisperAnimation = false;
+	for (const auto& binding : pickupTimeline.value(
+		"bindings", nlohmann::ordered_json::array()))
+	{
+		const std::string bindingId = binding.value("id", std::string{});
+		timelineBindsFrameStand = timelineBindsFrameStand ||
+			bindingId == "binding-pickup-item" &&
+			binding.value("targetGuid", std::string{}) ==
+				"a50146bf-af31-5bb8-bcb1-a1a331fc1932";
+		timelineBindsWhisperAnimation = timelineBindsWhisperAnimation ||
+			bindingId == "binding-whisper-animation" &&
+			binding.value("targetGuid", std::string{}) ==
+				"d21cfc31-dba5-44cb-a271-f0f2c20cded1" &&
+			binding.value("componentGuid", std::string{}) ==
+				"a524b6e3-7c08-4ac5-a116-77d44b6099c9" &&
+			binding.value("required", false);
+	}
+	bool timelineFiresWakeTrigger = false;
+	bool timelineCompletesPickupAction = false;
+	for (const auto& track : pickupTimeline.value(
+		"tracks", nlohmann::ordered_json::array()))
+	{
+		const std::string type = track.value("type", std::string{});
+		const auto extensionData = track.value(
+			"extensionData", nlohmann::ordered_json::object());
+		if (type == "Timeline.AnimatorParameter")
+		{
+			bool hasPostCommitKey = false;
+			for (const auto& section : track.value(
+				"sections", nlohmann::ordered_json::array()))
+				for (const auto& channel : section.value(
+					"channels", nlohmann::ordered_json::array()))
+					for (const auto& key : channel.value(
+						"keys", nlohmann::ordered_json::array()))
+						hasPostCommitKey = hasPostCommitKey ||
+							key.value("tick", -1) == 27000 &&
+							key.value("value", false);
+			timelineFiresWakeTrigger =
+				track.value("bindingId", std::string{}) ==
+					"binding-whisper-animation" &&
+				extensionData.value("parameterName", std::string{}) == "WakeUp" &&
+				extensionData.value("parameterType", std::string{}) == "Trigger" &&
+				extensionData.value("firePolicy", std::string{}) == "Forward" &&
+				extensionData.value("seekPolicy", std::string{}) == "Never" &&
+				hasPostCommitKey;
+		}
+		else if (type == "Action.Event")
+			timelineCompletesPickupAction =
+				extensionData.value("action", std::string{}) ==
+					"Gameplay.DemoHall.Item.FrameStand4PickupWake" &&
+				extensionData.value("event", std::string{}) ==
+					"Interaction.Pickup.Finished";
+	}
+
+	bool frameStandPickupConfigured = false;
+	bool frameStandTimelineConfigured = false;
+	for (const auto& entity : scene.value("entities", nlohmann::ordered_json::array()))
+	{
+		const std::string entityName = entity.value("name", std::string{});
+		if (entityName == "Frame_Stand_4")
+		{
+			bool hasTrigger = false;
+			bool hasActionHost = false;
+			bool hasPickupScript = false;
+			for (const auto& component : entity.value(
+				"components", nlohmann::ordered_json::array()))
+			{
+				const std::string type = component.value("type", std::string{});
+				const auto data = component.value(
+					"data", nlohmann::ordered_json::object());
+				if (type == "Physics")
+					hasTrigger = data.value("bodyType", std::string{}) == "static" &&
+						data.value("layer", std::string{}) == "Trigger" &&
+						data.value("isTrigger", false);
+				else if (type == "ActionHost")
+					for (const auto& actionSet : data.value(
+						"actionSets", nlohmann::ordered_json::array()))
+						hasActionHost = hasActionHost ||
+							actionSet.value("guid", std::string{}) ==
+							"e30100ce-50a7-4a44-95fe-d91fc3ad678d";
+				else if (type == "Script" && data.value(
+					"entry", std::string{}) == "InteractablePickup")
+				{
+					const auto fields = data.value(
+						"fields", nlohmann::ordered_json::object());
+					hasPickupScript =
+						fields.value("itemId", std::string{}) ==
+							"whisper_frame_stand_4" &&
+						fields.value("actionHostOwnerGuid", std::string{}) ==
+							"a50146bf-af31-5bb8-bcb1-a1a331fc1932" &&
+						fields.value("pickupActionId", std::string{}) ==
+							"Gameplay.DemoHall.Item.FrameStand4PickupWake" &&
+						fields.value("inspectTimelineComponentGuid", std::string{}) ==
+							"296cfa68-af40-4509-b181-a57925cd6337" &&
+						std::abs(fields.value("inspectHoldSeconds", 0.0f) - 0.45f) < 0.001f;
+				}
+			}
+			frameStandPickupConfigured = hasTrigger && hasActionHost && hasPickupScript;
+		}
+		else if (entityName == "FrameStand4PickupTimeline")
+		{
+			for (const auto& component : entity.value(
+				"components", nlohmann::ordered_json::array()))
+			{
+				if (component.value("id", std::string{}) !=
+					"296cfa68-af40-4509-b181-a57925cd6337" ||
+					component.value("type", std::string{}) != "Timeline") continue;
+				frameStandTimelineConfigured = component.value(
+					"data", nlohmann::ordered_json::object())
+					.value("timeline", nlohmann::ordered_json::object())
+					.value("guid", std::string{}) ==
+					"45453c77-62f3-4c8a-a949-3de554409767";
+			}
+		}
+	}
+	bool registeredWhisperActionTag = false;
+	bool registeredWhisperTargetTag = false;
+	for (const auto& tag : demoHallTags.value("tags", nlohmann::ordered_json::array()))
+	{
+		registeredWhisperActionTag = registeredWhisperActionTag ||
+			tag.value("name", std::string{}) == "Action.DemoHall.Whisper.Wake";
+		registeredWhisperTargetTag = registeredWhisperTargetTag ||
+			tag.value("name", std::string{}) == "Target.DemoHall.WhisperWake";
+	}
+	const std::size_t pickupScriptBegin = script.find("M.InteractablePickup");
+	const std::size_t pickupScriptEnd = script.find("M.GlassBreakInteractable", pickupScriptBegin);
+	const std::string pickupScript = pickupScriptBegin != std::string::npos
+		? script.substr(pickupScriptBegin, pickupScriptEnd - pickupScriptBegin) : std::string{};
+	const bool pickupUsesExistingGafInventoryFlow =
+		pickupScript.find("vans.action.try_activate") != std::string::npos &&
+		pickupScript.find("inventory.add") != std::string::npos &&
+		pickupScript.find("timeline.pause") != std::string::npos &&
+		pickupScript.find("self:commit_inventory()") != std::string::npos &&
+		pickupScript.find("session.timelineCommitPulse = true") != std::string::npos &&
+		pickupScript.find("timeline.resume(timelineGuid)") != std::string::npos;
+
+	const fs::path animationV2Root = workspace / "AnimationV2Project";
+	nlohmann::ordered_json animationV2Scene;
+	if (!Vans::VansJsonFileStorage::Read(
+		animationV2Root / "Scenes/WhisperPreview.json", animationV2Scene, error))
+		return ExpectGAF(false, error.c_str());
+	bool foundAnimationV2Preview = false;
+	bool foundAnimationV2Camera = false;
+	bool animationV2PreviewWakeConfigured = false;
+	for (const auto& entity : animationV2Scene.value("entities", nlohmann::ordered_json::array()))
+	{
+		const std::string entityName = entity.value("name", std::string{});
+		bool hasModel = false;
+		bool hasAnimation = false;
+		bool hasPreviewScript = false;
+		bool hasCamera = false;
+		bool hasCameraScript = false;
+		bool hasCharacterController = false;
+		for (const auto& component : entity.value("components", nlohmann::ordered_json::array()))
+		{
+			const std::string type = component.value("type", std::string{});
+			const auto data = component.value("data", nlohmann::ordered_json::object());
+			hasCharacterController = hasCharacterController || type == "CharacterController";
+			hasCamera = hasCamera || type == "Camera";
+			if (type == "ModelRenderer")
+				hasModel = data.value("model", nlohmann::ordered_json::object())
+					.value("guid", std::string{}) == "d08d594d-f68c-4497-8663-c85a4695f2d6";
+			else if (type == "Animation")
+				hasAnimation = data.value("mesh_group", std::string{}) == "Whisper" &&
+					!data.value("root_motion", true) && data.value("auto_play", false) &&
+					data.value("animator", nlohmann::ordered_json::object())
+						.value("guid", std::string{}) == "ec68421a-fff2-4db4-82c4-00cbb052c84c" &&
+					data.value("rig", nlohmann::ordered_json::object())
+						.value("guid", std::string{}) == "873c655f-18a8-4aea-8632-ff095e6cc7cc";
+			else if (type == "Script")
+			{
+				const std::string entry = data.value("entry", std::string{});
+				hasPreviewScript = hasPreviewScript || entry == "WhisperAnimationPreview";
+				hasCameraScript = hasCameraScript || entry == "WhisperPreviewCamera";
+				if (entry == "WhisperAnimationPreview")
+				{
+					const auto fields = data.value("fields", nlohmann::ordered_json::object());
+					animationV2PreviewWakeConfigured = fields.value("cycleAnimations", false) &&
+						fields.value("autoWake", false) &&
+						std::abs(fields.value("wakeDelay", 0.0f) - 2.0f) < 0.001f;
+				}
+			}
+		}
+		if (entityName == "Whisper_Preview")
+			foundAnimationV2Preview = hasModel && hasAnimation && hasPreviewScript &&
+				!hasCharacterController;
+		else if (entityName == "WhisperPreviewCamera")
+			foundAnimationV2Camera = hasCamera && hasCameraScript;
+	}
+	const auto animationV2GI = animationV2Scene.value("settings", nlohmann::ordered_json::object())
+		.value("globalIllumination", nlohmann::ordered_json::object());
+	const auto animationV2GIRegions = animationV2GI.value(
+		"regions", nlohmann::ordered_json::array());
+	const bool animationV2GIDisabled = animationV2GIRegions.size() == 1 &&
+		!animationV2GIRegions[0].value("enabled", true);
+	std::string animationV2Script;
+	if (!Vans::VansFileStorage::ReadAllBytes(
+		animationV2Root / "Scripts/forest_lua_behaviors.lua", animationV2Script, error))
+		return ExpectGAF(false, error.c_str());
+	const fs::path animationV2WhisperRoot = animationV2Root / "Assets/Characters/Whisper";
+
+	VansGraphics::Skeleton animationV2Skeleton;
+	if (!VansGraphics::VansSkinnedMeshLoader::LoadSkeletonFromModelAsset(
+		(animationV2WhisperRoot / "Models/SK_Whisper.glb").string(), animationV2Skeleton, error))
+		return ExpectGAF(false, error.c_str());
+	VansGraphics::VansAnimationClip deadClip;
+	VansGraphics::VansAnimationClip sitToIdleClip;
+	VansGraphics::Skeleton deadSkeleton;
+	VansGraphics::Skeleton sitToIdleSkeleton;
+	if (!VansGraphics::VansAnimationClipIO::Load(
+		(animationV2WhisperRoot / "Animations/Anim_WhisperDead_Unreal_Take.vclip").string(),
+		deadClip, deadSkeleton) ||
+		!VansGraphics::VansAnimationClipIO::Load(
+			(animationV2WhisperRoot / "Animations/anima_whisper_sittoidle_Unreal_Take.vclip").string(),
+			sitToIdleClip, sitToIdleSkeleton))
+		return ExpectGAF(false, "AnimationV2 Whisper startup clips could not be loaded");
+	if (!ExpectGAF(std::abs(deadClip.duration - 0.1f) < 0.002f &&
+		std::abs(sitToIdleClip.duration - 3.0f) < 0.002f &&
+		deadSkeleton.bones.size() == animationV2Skeleton.bones.size() &&
+		sitToIdleSkeleton.bones.size() == animationV2Skeleton.bones.size(),
+		"AnimationV2 Whisper startup clips lost their duration or 68-bone binding")) return false;
+	for (std::size_t bone = 0; bone < animationV2Skeleton.bones.size(); ++bone)
+		if (!ExpectGAF(deadSkeleton.bones[bone].name == animationV2Skeleton.bones[bone].name &&
+			sitToIdleSkeleton.bones[bone].name == animationV2Skeleton.bones[bone].name,
+			"AnimationV2 Whisper startup clip bone order does not match the model")) return false;
+
+	VansGraphics::AnimatorAssetData animationV2AnimatorAsset;
+	if (!VansGraphics::VansAnimatorIO::Load(
+		(animationV2WhisperRoot / "Animation/Whisper.vanimator").string(),
+		animationV2AnimatorAsset))
+		return ExpectGAF(false, "AnimationV2 Whisper startup Animator could not be loaded");
+	VansGraphics::VansAnimatorRuntimeCompileOptions animationV2CompileOptions;
+	animationV2CompileOptions.enableTargetPostProcess = false;
+	animationV2CompileOptions.enableRootMotion = false;
+	animationV2CompileOptions.rigResolver = [&animationV2WhisperRoot](
+		const std::string&, fs::path& resolvedPath, std::string&)
+	{
+		resolvedPath = animationV2WhisperRoot / "Animation/Whisper.vanimrig";
+		return true;
+	};
+	auto animationV2Controller = VansGraphics::VansAnimatorRuntimeCompiler::Compile(
+		animationV2AnimatorAsset, animationV2Skeleton,
+		[&animationV2Root](const VansGraphics::AnimatorClipRef& ref,
+			fs::path& resolvedPath, std::string& resolveError)
+		{
+			resolvedPath = animationV2Root / ref.pathHint;
+			if (fs::is_regular_file(resolvedPath)) return true;
+			resolveError = "Missing AnimationV2 Whisper clip: " + resolvedPath.string();
+			return false;
+		},
+		[](const VansGraphics::VansAnimationLayerDefinition&,
+			fs::path&, std::string& resolveError)
+		{
+			resolveError = "AnimationV2 Whisper base layer unexpectedly requested a Bone Mask";
+			return false;
+		},
+		animationV2CompileOptions, error);
+	if (!ExpectGAF(animationV2Controller != nullptr, error.c_str())) return false;
+	const auto& animationV2Parameters = animationV2Controller->GetParameters();
+	const auto wakeParameter = animationV2Parameters.find("WakeUp");
+	const bool hasExposedWakeTrigger = wakeParameter != animationV2Parameters.end() &&
+		wakeParameter->second.type == VansGraphics::AnimatorParamType::Trigger;
+	animationV2Controller->Play();
+	animationV2Controller->Update(0.0f, animationV2Skeleton);
+	const bool beganDead = animationV2Controller->GetCurrentStateName() == "Dead";
+	animationV2Controller->Update(deadClip.duration * 25.0f + 0.017f, animationV2Skeleton);
+	const bool loopedDeadUntilWake = animationV2Controller->GetCurrentStateName() == "Dead";
+	const bool wakeInitiallyClear = !animationV2Controller->IsTriggerSet("WakeUp");
+	animationV2Controller->SetTrigger("WakeUp");
+	const bool wakeSignalRaised = animationV2Controller->IsTriggerSet("WakeUp");
+	animationV2Controller->Update(0.0f, animationV2Skeleton);
+	const bool enteredSitToIdle = animationV2Controller->GetCurrentStateName() == "SitToIdle";
+	const bool wakeSignalConsumed = !animationV2Controller->IsTriggerSet("WakeUp");
+	animationV2Controller->Update(sitToIdleClip.duration + 0.001f, animationV2Skeleton);
+	const bool enteredIdle1 = animationV2Controller->GetCurrentStateName() == "Idle1";
+	animationV2Controller->SetInt("PreviewState", 1);
+	animationV2Controller->Update(0.13f, animationV2Skeleton);
+	const bool switchedToIdle2 = animationV2Controller->GetCurrentStateName() == "Idle2";
+	animationV2Controller->SetInt("PreviewState", 15);
+	animationV2Controller->Update(0.13f, animationV2Skeleton);
+	const bool switchedToOriginalDeath = animationV2Controller->GetCurrentStateName() == "Death";
+	animationV2Controller->SetInt("PreviewState", 0);
+	animationV2Controller->Update(0.13f, animationV2Skeleton);
+	const bool returnedToIdle1 = animationV2Controller->GetCurrentStateName() == "Idle1";
+	if (!deformationPreview.RasterizeFrame(
+		animationV2Controller->GetBoneMatricesSSBO(), {}, glm::vec3(0.0f), {}, error))
+		return ExpectGAF(false, error.c_str());
+	const auto& startupStats = deformationPreview.GetStats();
+	if (!ExpectGAF(hasExposedWakeTrigger && beganDead && loopedDeadUntilWake &&
+		wakeInitiallyClear && wakeSignalRaised && enteredSitToIdle && wakeSignalConsumed &&
+		enteredIdle1 && switchedToIdle2 && switchedToOriginalDeath && returnedToIdle1 &&
+		startupStats.invalidDeformedVertexCount == 0 &&
+		startupStats.deformedRadiusRatio > 0.8f &&
+		startupStats.deformedRadiusRatio < 1.25f,
+		"AnimationV2 Whisper wake gate or post-wake 16-clip preview routing is invalid")) return false;
+
+	return ExpectGAF(foundPreview &&
+		script.find("M.WhisperAnimationPreview") != std::string::npos &&
+		script.find("set_root_motion_enabled(false)") != std::string::npos &&
+		script.find("set_int(\"PreviewState\"") != std::string::npos &&
+		script.find("cycleAnimations ~= false") != std::string::npos &&
+		script.find("set_trigger(\"WakeUp\")") == std::string::npos &&
+		pickupGafAssetsCompile && pickupTimelineCompiles && pickupRuntimeLinksResolve &&
+		pickupActionUsesGAF && pickupSetGrantsAction &&
+		timelineBindsFrameStand && timelineBindsWhisperAnimation &&
+		timelineFiresWakeTrigger && timelineCompletesPickupAction &&
+		frameStandPickupConfigured && frameStandTimelineConfigured &&
+		registeredWhisperActionTag && registeredWhisperTargetTag &&
+		pickupUsesExistingGafInventoryFlow &&
+		fs::is_regular_file(whisperRoot /
+			"Animations/Anim_WhisperDead_Unreal_Take.vclip") &&
+		fs::is_regular_file(whisperRoot /
+			"Animations/anima_whisper_sittoidle_Unreal_Take.vclip") &&
+		foundAnimationV2Preview && foundAnimationV2Camera && animationV2GIDisabled &&
+		animationV2PreviewWakeConfigured &&
+		animationV2Script.find("M.WhisperAnimationPreview") != std::string::npos &&
+		animationV2Script.find("set_trigger(\"WakeUp\")") != std::string::npos &&
+		animationV2Script.find("WHISPER_WAKE_TRANSITION_DURATION") != std::string::npos &&
+		animationV2Script.find("M.WhisperPreviewCamera") != std::string::npos &&
+		fs::is_regular_file(animationV2WhisperRoot / "Models/SK_Whisper.glb") &&
+		fs::is_regular_file(animationV2WhisperRoot / "Animation/Whisper.vanimator") &&
+		fs::is_regular_file(animationV2WhisperRoot / "Animation/Whisper.vanimrig"),
+		"Frame_Stand_4 pickup is not wired through GAF inventory commit into the native Whisper wake trigger");
 }
 
 bool TestGAFLuaBridgeContract()

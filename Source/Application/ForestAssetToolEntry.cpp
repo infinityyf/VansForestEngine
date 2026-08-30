@@ -65,7 +65,7 @@ namespace
 			<< "  ForestAssetTool rewrite-animation-assets --project <path> --write\n"
 			<< "  ForestAssetTool validate-animation-assets --project <path>\n"
 			<< "  ForestAssetTool import-animation-fbx --project <path> --source <asset-relative-fbx>"
-				" --skeleton <asset-relative-vclip>\n"
+				" --skeleton <asset-relative-vclip|model>\n"
 			<< "  ForestAssetTool rebuild-animation-clips --project <path>"
 				" --source-root <path>... --destination-root <asset-relative-directory>"
 				" --skeleton <asset-relative-model|none> (--dry-run|--write)\n"
@@ -414,19 +414,34 @@ namespace
 		}
 
 		const fs::path skeletonPath = fs::weakly_canonical(projectRoot / options.skeletonClipPath, fileError);
-		if (fileError || !fs::is_regular_file(skeletonPath) || skeletonPath.extension() != ".vclip"
+		if (fileError || !fs::is_regular_file(skeletonPath)
 			|| !IsWithin(skeletonPath, assetsRoot))
 		{
-			std::cerr << "Invalid project skeleton clip: " << options.skeletonClipPath << '\n';
+			std::cerr << "Invalid project skeleton asset: " << options.skeletonClipPath << '\n';
 			return 2;
 		}
 
 		VansGraphics::VansAnimationClip referenceClip;
 		VansGraphics::Skeleton skeleton;
-		if (!VansGraphics::VansAnimationClipIO::Load(skeletonPath.string(), referenceClip, skeleton)
-			|| skeleton.bones.empty())
+		std::string skeletonExtension = skeletonPath.extension().string();
+		std::transform(skeletonExtension.begin(), skeletonExtension.end(), skeletonExtension.begin(),
+			[](unsigned char character) { return static_cast<char>(std::tolower(character)); });
+		bool skeletonLoaded = false;
+		if (skeletonExtension == ".vclip")
+			skeletonLoaded = VansGraphics::VansAnimationClipIO::Load(
+				skeletonPath.string(), referenceClip, skeleton);
+		else if (skeletonExtension == ".fbx" || skeletonExtension == ".gltf"
+			|| skeletonExtension == ".glb")
 		{
-			std::cerr << "Failed to load reference skeleton from: " << skeletonPath << '\n';
+			std::string skeletonError;
+			skeletonLoaded = VansGraphics::VansSkinnedMeshLoader::LoadSkeletonFromModelAsset(
+				skeletonPath.string(), skeleton, skeletonError);
+			if (!skeletonLoaded && !skeletonError.empty())
+				std::cerr << skeletonError << '\n';
+		}
+		if (!skeletonLoaded || skeleton.bones.empty())
+		{
+			std::cerr << "Failed to load skeleton asset from: " << skeletonPath << '\n';
 			return 1;
 		}
 

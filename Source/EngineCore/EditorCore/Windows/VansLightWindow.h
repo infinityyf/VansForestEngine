@@ -14,8 +14,8 @@ namespace VansGraphics
 		bool DrawSpotLights(std::vector<Vans::EditorAPI::SpotLightSettings>& spotLights);
 		bool DrawRectLights(std::vector<Vans::EditorAPI::RectLightSettings>& rectLights);
 
-		void DrawFogParameters(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
-		void DrawFogVolumeParameters(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
+		void DrawPhysicalAtmosphereParameters(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
+		void DrawHeightFogParameters(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
 		void DrawCloudParameters(Vans::EditorAPI::IEngineEditorAPI& editorAPI);
 		void ShowWindow(Vans::EditorAPI::IEngineEditorAPI&) override;
 	};

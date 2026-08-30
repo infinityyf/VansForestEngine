@@ -97,8 +97,9 @@ void CalculateDirectTransmission_Subsurface(
 
     vec3 L = uDirectionLight.direction.rgb;
     vec3 directionalTerm = DirectBurleyTransmission(brdfData, L, sss);
-    transmission += directionalTerm * uDirectionLight.color.rgb *
-                    uDirectionLight.intensity * directionalShadow;
+    vec3 directionalIrradiance =
+        uDirectionLight.color.rgb * uDirectionLight.intensity;
+    transmission += directionalTerm * directionalIrradiance * directionalShadow;
 
     for (uint i = 0; i < uPointLightCount; ++i)
     {

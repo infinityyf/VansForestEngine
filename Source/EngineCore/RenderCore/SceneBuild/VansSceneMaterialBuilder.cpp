@@ -135,24 +135,6 @@ namespace VansGraphics
 				static_cast<float>(Vans::ReadSerializedNumber(raw.arrayItems[2], fallback.z)));
 		}
 
-		void ApplySkyDiskConfig(
-			const Vans::VansSerializedValue& disk,
-			bool& enabled,
-			float& angularRadius,
-			float& feather,
-			float& radianceScale,
-			float& occlusionStrength)
-		{
-			enabled = Vans::ReadSerializedBoolField(disk, "enabled", enabled);
-			if (const auto* value = Vans::FindObjectField(disk, "angularRadius"))
-				angularRadius = static_cast<float>(Vans::ReadSerializedNumber(*value, angularRadius));
-			if (const auto* value = Vans::FindObjectField(disk, "feather"))
-				feather = static_cast<float>(Vans::ReadSerializedNumber(*value, feather));
-			if (const auto* value = Vans::FindObjectField(disk, "radianceScale"))
-				radianceScale = static_cast<float>(Vans::ReadSerializedNumber(*value, radianceScale));
-			if (const auto* value = Vans::FindObjectField(disk, "occlusionStrength"))
-				occlusionStrength = static_cast<float>(Vans::ReadSerializedNumber(*value, occlusionStrength));
-		}
 	}
 
 	VansMaterialType VansSceneMaterialBuilder::ParseMaterialType(
@@ -165,7 +147,6 @@ namespace VansGraphics
 		if (type == "transparent") return VansMaterialType::VAN_TRANSPARENT;
 		if (type == "glass" || type == "transmission" || type == "pbr_transmission") return VansMaterialType::VAN_PBR_TRANSMISSION;
 		if (type == "post_process") return VansMaterialType::VAN_POST_PROCESS;
-		if (type == "sky_box") return VansMaterialType::VAN_SKY_BOX;
 		if (type == "deferred") return VansMaterialType::VAN_DEFERRED;
 		if (type == "ssao") return VansMaterialType::VAN_SCREEN_SPACE_AO;
 		if (type == "skin") return VansMaterialType::VAN_SKIN;
@@ -192,7 +173,6 @@ namespace VansGraphics
 		case VansMaterialType::VAN_TRANSPARENT: return new VansTransparentMaterial();
 		case VansMaterialType::VAN_PBR_TRANSMISSION: return new VansTransmissionMaterial();
 		case VansMaterialType::VAN_POST_PROCESS: return new VansPostProcessMaterial();
-		case VansMaterialType::VAN_SKY_BOX: return new VansSkyBoxMaterial();
 		case VansMaterialType::VAN_DEFERRED: return new VansDeferredMaterial();
 		case VansMaterialType::VAN_SCREEN_SPACE_AO: return new VansSSAOMaterial();
 		case VansMaterialType::VAN_SKIN: return new VansSkinMaterial();
@@ -250,7 +230,7 @@ namespace VansGraphics
 				return;
 			}
 			const char* automaticPass = material->m_CustomShaderDepthWrite
-				? VansPass::FORWARD_OPAQUE_AFTER_DEFERRED
+				? VansPass::FORWARD_OPAQUE_PRE_ATMOSPHERE
 				: VansPass::FORWARD_TRANSPARENT;
 			material->m_PassShaders[automaticPass] = shader;
 
@@ -624,16 +604,14 @@ void VansSceneMaterialBuilder::PopulateMaterial(
         skin->m_RoughnessTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "roughness_texture", "defaultRoughness");
         skin->m_CavityTexture = ResolveMaterialTexture(scene, sceneMaterial, "cavity_texture");
         if (!skin->m_CavityTexture)
-            skin->m_CavityTexture = ResolveMaterialTexture(scene, sceneMaterial, "specular_texture");
-        if (!skin->m_CavityTexture)
             skin->m_CavityTexture = ResolveMaterialTexture(scene, sceneMaterial, "ao_texture");
-        skin->m_CavityTexture = scene.ResolveTextureAssetOrDefault(skin->m_CavityTexture, "defaultAo");
+        skin->m_CavityTexture = scene.ResolveTextureAssetOrDefault(skin->m_CavityTexture, "defaultSkinCavity");
         skin->m_ScatterMaskTexture = ResolveMaterialTexture(scene, sceneMaterial, "scatter_mask_texture");
         if (!skin->m_ScatterMaskTexture)
             skin->m_ScatterMaskTexture = ResolveMaterialTexture(scene, sceneMaterial, "sss_mask_texture");
         if (!skin->m_ScatterMaskTexture)
             skin->m_ScatterMaskTexture = ResolveMaterialTexture(scene, sceneMaterial, "subsurface_mask_texture");
-        skin->m_ScatterMaskTexture = scene.ResolveTextureAssetOrDefault(skin->m_ScatterMaskTexture, "defaultAo");
+        skin->m_ScatterMaskTexture = scene.ResolveTextureAssetOrDefault(skin->m_ScatterMaskTexture, "defaultSkinMask");
         const bool hasExplicitThinnessTexture =
             FindDirectMaterialField(sceneMaterial, "thickness_texture") != nullptr ||
             FindDirectMaterialField(sceneMaterial, "transmission_texture") != nullptr ||
@@ -643,7 +621,7 @@ void VansSceneMaterialBuilder::PopulateMaterial(
             skin->m_ThicknessTexture = ResolveMaterialTexture(scene, sceneMaterial, "transmission_texture");
         if (!skin->m_ThicknessTexture)
             skin->m_ThicknessTexture = ResolveMaterialTexture(scene, sceneMaterial, "thinness_texture");
-        skin->m_ThicknessTexture = scene.ResolveTextureAssetOrDefault(skin->m_ThicknessTexture, "defaultAo");
+        skin->m_ThicknessTexture = scene.ResolveTextureAssetOrDefault(skin->m_ThicknessTexture, "defaultSkinMask");
         skin->m_SkinParams.profileLUT.y = hasExplicitThinnessTexture ? 1.0f : 0.0f;
         glm::vec3 scatterColor = ReadMaterialVec3Field(sceneMaterial, "subsurfaceColor", skin->m_BasePBRParam.m_albedo);
         scatterColor = ReadMaterialVec3Field(sceneMaterial, "sssColor", scatterColor);
@@ -969,46 +947,6 @@ void VansSceneMaterialBuilder::PopulateMaterial(
         decal->m_MetalTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "metal_texture", "defaultMetal");
         decal->m_RoughnessTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "roughness_texture", "defaultRoughness");
         decal->m_AoTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "ao_texture", "defaultAo");
-        break;
-    }
-    case VansMaterialType::VAN_SKY_BOX:
-    {
-        auto* sky = static_cast<VansSkyBoxMaterial*>(material);
-        sky->m_AtmospherePBRParam.m_PlanetRadius = 6340000;
-        sky->m_AtmospherePBRParam.m_InitSeaLevel = 200;
-        sky->m_AtmospherePBRParam.m_AtmosphereWidth = 80000;
-        sky->m_AtmospherePBRParam.m_RayleighScalarHeight = 8500;
-        sky->m_AtmospherePBRParam.m_MieScalarHeight = 1200;
-        sky->m_AtmospherePBRParam.m_MieAnisotropy = 0.78f;
-        sky->m_AtmospherePBRParam.m_OzoneLevelCenterHeight = 25000;
-        sky->m_AtmospherePBRParam.m_OzoneLevelWidth = 15000;
-        sky->m_AtmospherePBRParam.m_SunLuminance = 10;
-        if (const auto* celestial = FindDirectMaterialField(sceneMaterial, "celestial");
-			celestial && celestial->kind == Vans::VansSerializedValue::Kind::Object)
-        {
-            if (const auto* sun = Vans::FindObjectField(*celestial, "sun");
-				sun && sun->kind == Vans::VansSerializedValue::Kind::Object)
-            {
-				ApplySkyDiskConfig(
-					*sun,
-					sky->m_SunDiskEnabled,
-					sky->m_SunDiskAngularRadius,
-					sky->m_SunDiskFeather,
-					sky->m_SunDiskRadianceScale,
-					sky->m_SunDiskOcclusionStrength);
-            }
-            if (const auto* moon = Vans::FindObjectField(*celestial, "moon");
-				moon && moon->kind == Vans::VansSerializedValue::Kind::Object)
-            {
-				ApplySkyDiskConfig(
-					*moon,
-					sky->m_MoonDiskEnabled,
-					sky->m_MoonDiskAngularRadius,
-					sky->m_MoonDiskFeather,
-					sky->m_MoonDiskRadianceScale,
-					sky->m_MoonDiskOcclusionStrength);
-            }
-        }
         break;
     }
     default:

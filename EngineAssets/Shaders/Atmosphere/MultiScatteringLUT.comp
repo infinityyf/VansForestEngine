@@ -1,0 +1,82 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "../Common/CameraData.glsl"
+#include "AtmosphereCommon.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(set = 1, binding = 1, rgba16f) uniform writeonly image2D multiScatteringOutput;
+
+vec3 FibonacciDirection(uint index, uint count)
+{
+    float fraction = (float(index) + 0.5) / float(count);
+    float cosineTheta = 1.0 - 2.0 * fraction;
+    float sineTheta = sqrt(max(1.0 - cosineTheta * cosineTheta, 0.0));
+    float azimuth = 2.39996323 * float(index);
+    return vec3(cos(azimuth) * sineTheta, cosineTheta, sin(azimuth) * sineTheta);
+}
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 extent = imageSize(multiScatteringOutput);
+    if (any(greaterThanEqual(pixel, extent)))
+        return;
+
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(extent);
+    float altitude = uv.y * uAtmosphere.planetRadiiMeters.z;
+    float radius = AtmosphereBottomRadius() + altitude;
+    float sunCosine = uv.x * 2.0 - 1.0;
+    vec3 sunDirection = normalize(vec3(
+        sqrt(max(1.0 - sunCosine * sunCosine, 0.0)), sunCosine, 0.0));
+    vec3 origin = uAtmosphereFrame.planetCenterRelativeToCameraMeters.xyz +
+        vec3(0.0, radius, 0.0);
+
+    uint directionCount = clamp(uAtmosphere.atmosphereLutSampleCounts.y, 8u, 64u);
+    vec3 firstOrder = vec3(0.0);
+    vec3 scatteringFeedback = vec3(0.0);
+    for (uint directionIndex = 0u; directionIndex < directionCount; ++directionIndex)
+    {
+        vec3 direction = FibonacciDirection(directionIndex, directionCount);
+        float topDistance = AtmosphereDistanceToTop(origin, direction);
+        float groundDistance;
+        bool hitsGround = AtmosphereRayHitsGround(origin, direction, groundDistance);
+        float rayDistance = hitsGround ? min(topDistance, groundDistance) : topDistance;
+        const uint marchSamples = 16u;
+        float stepMeters = rayDistance / float(marchSamples);
+        vec3 viewOpticalDepth = vec3(0.0);
+        vec3 rayLuminance = vec3(0.0);
+        vec3 rayFeedback = vec3(0.0);
+        for (uint sampleIndex = 0u; sampleIndex < marchSamples; ++sampleIndex)
+        {
+            float distance = (float(sampleIndex) + 0.5) * stepMeters;
+            vec3 position = origin + direction * distance;
+            AtmosphereMedium medium = EvaluatePhysicalAtmosphereMedium(
+                AtmosphereAltitude(position));
+            vec3 transmittanceView = exp(-min(viewOpticalDepth, vec3(80.0)));
+            vec3 transmittanceSun = SampleAtmosphereTransmittance(position, sunDirection);
+            vec3 scattering = medium.rayleighScattering + medium.mieScattering;
+            rayLuminance += transmittanceView * AtmosphereIntegratedSegmentSource(
+                scattering * transmittanceSun * ATM_INV_FOUR_PI,
+                medium.extinction, stepMeters);
+            rayFeedback += transmittanceView * AtmosphereIntegratedSegmentSource(
+                scattering, medium.extinction, stepMeters);
+            viewOpticalDepth += medium.extinction * stepMeters;
+        }
+        if (hitsGround && groundDistance <= topDistance)
+        {
+            vec3 transmittanceView = exp(-min(viewOpticalDepth, vec3(80.0)));
+            vec3 transmittanceSun = SampleAtmosphereTransmittance(
+                origin + direction * groundDistance, sunDirection);
+            vec3 groundAlbedo = uAtmosphere.ozoneHalfWidthAndGroundAlbedo.yzw;
+            rayLuminance += transmittanceView * transmittanceSun * groundAlbedo *
+                max(sunCosine, 0.0) / ATM_PI;
+        }
+        firstOrder += rayLuminance;
+        scatteringFeedback += rayFeedback;
+    }
+    firstOrder /= float(directionCount);
+    scatteringFeedback = clamp(scatteringFeedback / float(directionCount), vec3(0.0), vec3(0.95));
+    vec3 multipleScattering = firstOrder / max(vec3(1.0) - scatteringFeedback, vec3(0.05));
+    imageStore(multiScatteringOutput, pixel, vec4(max(multipleScattering, vec3(0.0)), 1.0));
+}

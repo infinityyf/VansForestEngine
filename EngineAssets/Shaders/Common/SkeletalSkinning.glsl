@@ -27,17 +27,12 @@ mat4 VansBuildCurrentSkinMatrix()
     vec4 weights = vansSkinningWeights.weights[gl_VertexIndex];
 
     mat4 skinMatrix = mat4(0.0);
-    float totalWeight = 0.0;
     for (int influence = 0; influence < 4; ++influence)
     {
-        if (ids[influence] >= 0)
-        {
-            skinMatrix += weights[influence] * vansSkinningCurrentBones.boneMatrices[ids[influence]];
-            totalWeight += weights[influence];
-        }
+		skinMatrix += weights[influence] * vansSkinningCurrentBones.boneMatrices[ids[influence]];
     }
 
-    return totalWeight > 0.0001 ? skinMatrix : mat4(1.0);
+	return skinMatrix;
 }
 
 mat4 VansBuildPreviousSkinMatrix()
@@ -46,17 +41,12 @@ mat4 VansBuildPreviousSkinMatrix()
     vec4 weights = vansSkinningWeights.weights[gl_VertexIndex];
 
     mat4 skinMatrix = mat4(0.0);
-    float totalWeight = 0.0;
     for (int influence = 0; influence < 4; ++influence)
     {
-        if (ids[influence] >= 0)
-        {
-            skinMatrix += weights[influence] * vansSkinningPreviousBones.boneMatrices[ids[influence]];
-            totalWeight += weights[influence];
-        }
+		skinMatrix += weights[influence] * vansSkinningPreviousBones.boneMatrices[ids[influence]];
     }
 
-    return totalWeight > 0.0001 ? skinMatrix : mat4(1.0);
+	return skinMatrix;
 }
 
 #endif

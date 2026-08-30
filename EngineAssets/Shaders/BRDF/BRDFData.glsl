@@ -165,7 +165,8 @@ vec3 fresnelSchlickRoughness(float cosTheta, vec3 F0, float roughness)
 
 float GetMipLevelFromRoughness(float roughness)
 {
-    return roughness * 9.0;
+    return clamp(roughness, 0.0, 1.0) *
+        float(max(textureQueryLevels(PreConvSpecularEnvironment) - 1, 0));
 }
 
 

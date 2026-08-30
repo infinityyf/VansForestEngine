@@ -26,24 +26,6 @@ void ApplyOptionalValue(const std::optional<T>& source, T& destination)
 	}
 }
 
-void ApplyOptionalFloat3(const std::optional<std::array<float, 3>>& source, float destination[4])
-{
-	if (!source.has_value())
-	{
-		return;
-	}
-
-	for (size_t index = 0; index < 3; ++index)
-	{
-		destination[index] = (*source)[index];
-	}
-}
-
-float ResolveOptionalFloat(const std::optional<float>& source, float fallback)
-{
-	return source.has_value() ? *source : fallback;
-}
-
 void LogSceneDocumentLoadDiagnostics(
 	const char* path,
 	const Vans::SceneDiagnostics& diagnostics)
@@ -102,9 +84,7 @@ bool VansSceneContentBuildExecutor::BuildFromPlan(
 	const std::string& projectRoot)
 {
 	const Vans::VansSceneRenderSettingsConfig& renderSettings = buildPlan.renderSettings;
-	ApplyHeightFogSettings(*scene.GetMaterialManager(), renderSettings.heightFog);
-	ApplyVolumetricFogSettings(*scene.GetMaterialManager(), renderSettings.volumetricFog);
-	ApplyVolumetricCloudSettings(*scene.GetMaterialManager(), renderSettings.volumetricClouds);
+	scene.SetEnvironmentSettings(renderSettings.environment);
 	ApplyPostProcessSettings(*scene.GetMaterialManager(), renderSettings.postProcess);
 	ApplyMainCameraHiZCullSettings(scene, renderSettings.mainCameraHiZCulling);
 	if (Vans::VansProjectManager::Get().IsProjectLoaded())
@@ -139,147 +119,6 @@ bool VansSceneContentBuildExecutor::BuildFromPlan(
 
 	VANS_LOG("[VansScene] Scene content loaded from: " << path);
 	return true;
-}
-
-void VansSceneContentBuildExecutor::ApplyHeightFogSettings(
-	VansMaterialManager& materialManager,
-	const std::optional<Vans::VansSceneHeightFogSettingsConfig>& config)
-{
-	if (!config.has_value())
-	{
-		return;
-	}
-
-	VansFogSettings settings = materialManager.GetFogSettings();
-	ApplyOptionalValue(config->fogDensity, settings.fogDensity);
-	ApplyOptionalValue(config->heightFalloff, settings.heightFalloff);
-	ApplyOptionalValue(config->sunScatterScale, settings.sunScatterScale);
-	ApplyOptionalValue(config->ambientScale, settings.ambientScale);
-	ApplyOptionalValue(config->fogMinHeight, settings.fogMinHeight);
-	ApplyOptionalValue(config->skyFogDistance, settings.skyFogDistance);
-	materialManager.ApplyFogSettings(settings);
-}
-
-void VansSceneContentBuildExecutor::ApplyVolumetricFogSettings(
-	VansMaterialManager& materialManager,
-	const std::optional<Vans::VansSceneVolumetricFogSettingsConfig>& config)
-{
-	if (!config.has_value())
-	{
-		return;
-	}
-
-	VansFogVolumeSettings settings = materialManager.GetFogVolumeSettings();
-	ApplyOptionalValue(config->density, settings.density);
-	ApplyOptionalValue(config->anisotropy, settings.anisotropy);
-	ApplyOptionalValue(config->scatterScale, settings.scatterScale);
-	ApplyOptionalValue(config->ambientScale, settings.ambientScale);
-	ApplyOptionalValue(config->volumeNear, settings.volumeNear);
-	ApplyOptionalValue(config->volumeFar, settings.volumeFar);
-	ApplyOptionalValue(config->slicePower, settings.slicePower);
-	ApplyOptionalFloat3(config->fogBoxMin, settings.fogBoxMin);
-	ApplyOptionalFloat3(config->fogBoxMax, settings.fogBoxMax);
-	materialManager.ApplyFogVolumeSettings(settings);
-}
-
-void VansSceneContentBuildExecutor::ApplyVolumetricCloudSettings(
-	VansMaterialManager& materialManager,
-	const std::optional<Vans::VansSceneVolumetricCloudSettingsConfig>& config)
-{
-	if (!config.has_value())
-	{
-		return;
-	}
-
-	VansCloudParamsGPU& params = materialManager.m_CloudParams;
-
-	ApplyOptionalValue(config->planetRadius, params.planetRadius);
-	ApplyOptionalValue(config->seaLevel, params.seaLevel);
-
-	const float baseHeight = ResolveOptionalFloat(config->cloudBaseHeight,
-		ResolveOptionalFloat(config->cloudMinHeight, params.cloudMinHeight));
-	const float thickness = ResolveOptionalFloat(config->cloudThickness,
-		ResolveOptionalFloat(config->cloudMaxHeight, params.cloudMaxHeight) - baseHeight);
-	params.cloudMinHeight = baseHeight;
-	params.cloudMaxHeight = baseHeight + std::max(thickness, 100.0f);
-
-	ApplyOptionalValue(config->density, params.density);
-	ApplyOptionalValue(config->coverage, params.coverage);
-	ApplyOptionalValue(config->sunBrightness, params.sunBrightness);
-	ApplyOptionalValue(config->phaseG, params.phaseG);
-
-	ApplyOptionalValue(config->mainTileMeters, params.mainTileMeters);
-	ApplyOptionalValue(config->detailTileMeters, params.detailTileMeters);
-	ApplyOptionalValue(config->mainHeightScale, params.mainHeightScale);
-	ApplyOptionalValue(config->detailHeightScale, params.detailHeightScale);
-
-	ApplyOptionalValue(config->thresholdLowCoverage, params.thresholdLowCoverage);
-	ApplyOptionalValue(config->thresholdHighCoverage, params.thresholdHighCoverage);
-	ApplyOptionalValue(config->densityRemapLow, params.densityRemapLow);
-	ApplyOptionalValue(config->densityRemapHigh, params.densityRemapHigh);
-
-	ApplyOptionalValue(config->mainErosionStrength, params.mainErosionStrength);
-	ApplyOptionalValue(config->detailErosionStrength, params.detailErosionStrength);
-	ApplyOptionalValue(config->edgeErosionStrength, params.edgeErosionStrength);
-	ApplyOptionalValue(config->verticalShapePower, params.verticalShapePower);
-
-	ApplyOptionalValue(config->detailErosionLow, params.detailErosionLow);
-	ApplyOptionalValue(config->detailErosionHigh, params.detailErosionHigh);
-	ApplyOptionalValue(config->detailEdgeStrength, params.detailEdgeStrength);
-	ApplyOptionalValue(config->shadowDensityScale, params.shadowDensityScale);
-	ApplyOptionalValue(config->sigmaTRef, params.sigmaTRef);
-	ApplyOptionalValue(config->viewAbsorption, params.viewAbsorption);
-	ApplyOptionalValue(config->lightAbsorption, params.lightAbsorption);
-	ApplyOptionalValue(config->singleScatteringAlbedo, params.singleScatteringAlbedo);
-	ApplyOptionalValue(config->forwardEccentricity, params.forwardEccentricity);
-	ApplyOptionalValue(config->backwardEccentricity, params.backwardEccentricity);
-	ApplyOptionalValue(config->msAttenuation, params.msAttenuation);
-	ApplyOptionalValue(config->msContribution, params.msContribution);
-	ApplyOptionalValue(config->msEccentricity, params.msEccentricity);
-	ApplyOptionalValue(config->scatteringTintR, params.scatteringTintR);
-	ApplyOptionalValue(config->scatteringTintG, params.scatteringTintG);
-	ApplyOptionalValue(config->scatteringTintB, params.scatteringTintB);
-	ApplyOptionalValue(config->scatterSourceODScale, params.scatterSourceODScale);
-	ApplyOptionalValue(config->scatterSourceCurvePow, params.scatterSourceCurvePow);
-	ApplyOptionalValue(config->aoUpwardScale, params.aoUpwardScale);
-	ApplyOptionalValue(config->ambientBottomStrength, params.ambientBottomStrength);
-	ApplyOptionalValue(config->ambientTopStrength, params.ambientTopStrength);
-	ApplyOptionalValue(config->ambientDuskWarmth, params.ambientDuskWarmth);
-	ApplyOptionalValue(config->boundaryConfidence, params.boundaryConfidence);
-	ApplyOptionalValue(config->boundaryWrap, params.boundaryWrap);
-	ApplyOptionalValue(config->phiFwdIntensity, params.phiFwdIntensity);
-	ApplyOptionalValue(config->phiFwdDepthPow, params.phiFwdDepthPow);
-	ApplyOptionalValue(config->phiFwdDepthBias, params.phiFwdDepthBias);
-	ApplyOptionalValue(config->phiFwdMSBuildScale, params.phiFwdMSBuildScale);
-	ApplyOptionalValue(config->phiFwdCompress, params.phiFwdCompress);
-	ApplyOptionalValue(config->phiFwdMaxDistance, params.phiFwdMaxDistance);
-	ApplyOptionalValue(config->phiFwdConeRatio, params.phiFwdConeRatio);
-	ApplyOptionalValue(config->phiFwdMinStep, params.phiFwdMinStep);
-	ApplyOptionalValue(config->lightStepCount, params.lightStepCount);
-	ApplyOptionalValue(config->boundaryGradientStep, params.boundaryGradientStep);
-	ApplyOptionalValue(config->boundaryGradientStrength, params.boundaryGradientStrength);
-	ApplyOptionalValue(config->shadingDebugMode, params.shadingDebugMode);
-
-	params.mainTileMeters = std::max(params.mainTileMeters, 1000.0f);
-	params.detailTileMeters = std::max(params.detailTileMeters, 500.0f);
-	params.densityRemapHigh = std::max(params.densityRemapHigh, params.densityRemapLow + 0.01f);
-	params.detailErosionHigh = std::max(params.detailErosionHigh, params.detailErosionLow + 0.01f);
-	params.sigmaTRef = std::max(params.sigmaTRef, 0.0f);
-	params.viewAbsorption = std::max(params.viewAbsorption, 0.0f);
-	params.lightAbsorption = std::max(params.lightAbsorption, 0.0f);
-	params.singleScatteringAlbedo = std::clamp(params.singleScatteringAlbedo, 0.0f, 0.9999f);
-	params.forwardEccentricity = std::clamp(params.forwardEccentricity, 0.0f, 0.95f);
-	params.backwardEccentricity = std::clamp(params.backwardEccentricity, 0.0f, 0.95f);
-	params.msAttenuation = std::clamp(params.msAttenuation, 0.0f, 1.0f);
-	params.msContribution = std::clamp(params.msContribution, 0.0f, 1.0f);
-	params.msEccentricity = std::clamp(params.msEccentricity, 0.0f, 1.0f);
-	params.scatterSourceODScale = std::max(params.scatterSourceODScale, 0.001f);
-	params.scatterSourceCurvePow = std::max(params.scatterSourceCurvePow, 0.01f);
-	params.phiFwdConeRatio = std::max(params.phiFwdConeRatio, 1.01f);
-	params.phiFwdMinStep = std::max(params.phiFwdMinStep, 1.0f);
-	params.lightStepCount = std::clamp(params.lightStepCount, 1.0f, 16.0f);
-	params.boundaryGradientStrength = std::clamp(params.boundaryGradientStrength, 0.0f, 1.0f);
-	materialManager.UploadCloudParamsToGPU();
 }
 
 void VansSceneContentBuildExecutor::ApplyPostProcessSettings(
@@ -467,7 +306,7 @@ void VansSceneContentBuildExecutor::ApplyMainCameraHiZCullSettings(
 		ApplyOptionalValue(config->enableHair, settings.enableHair);
 		ApplyOptionalValue(config->enableTransparent, settings.enableTransparent);
 		ApplyOptionalValue(config->enableDecal, settings.enableDecal);
-		ApplyOptionalValue(config->enableForwardOpaqueAfterDeferred, settings.enableForwardOpaqueAfterDeferred);
+		ApplyOptionalValue(config->enableForwardOpaquePreAtmosphere, settings.enableForwardOpaquePreAtmosphere);
 		ApplyOptionalValue(config->depthBiasMeters, settings.depthBiasMeters);
 		ApplyOptionalValue(config->cameraMotionDisableDistance, settings.cameraMotionDisableDistance);
 		ApplyOptionalValue(config->cameraMotionDisableAngleRadians, settings.cameraMotionDisableAngleRadians);
@@ -495,7 +334,7 @@ void VansSceneContentBuildExecutor::ApplyProjectMainCameraHiZCullSettings(
 	settings.enableHair = projectSettings.enableHair;
 	settings.enableTransparent = projectSettings.enableTransparent;
 	settings.enableDecal = projectSettings.enableDecal;
-	settings.enableForwardOpaqueAfterDeferred = projectSettings.enableForwardOpaqueAfterDeferred;
+	settings.enableForwardOpaquePreAtmosphere = projectSettings.enableForwardOpaquePreAtmosphere;
 	settings.depthBiasMeters = projectSettings.depthBiasMeters;
 	settings.cameraMotionDisableDistance = projectSettings.cameraMotionDisableDistance;
 	settings.cameraMotionDisableAngleRadians = projectSettings.cameraMotionDisableAngleRadians;

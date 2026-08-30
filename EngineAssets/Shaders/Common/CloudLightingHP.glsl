@@ -33,7 +33,7 @@ CloudSampleProps EvaluateCloudSampleProps(vec3 pos)
 {
     CloudSampleProps props;
     props.density = SampleCloudDensity(pos);
-    float heightAbove = pos.y - uCloud.planetRadius;
+    float heightAbove = length(pos) - uCloud.planetBottomRadius;
     props.heightFrac = GetCloudHeightFraction(
         heightAbove,
         uCloud.cloudMinHeight,
@@ -60,17 +60,20 @@ float HPPhaseOctave(float cosTheta, int octave)
 CloudLightingEnv EvaluateCloudLightingEnv(vec3 rayDir)
 {
     CloudLightingEnv env;
-    env.sunDir = normalize(uDirectionLight.direction.xyz);
-    env.sunColor = uDirectionLight.color.rgb * uDirectionLight.intensity * uCloud.sunBrightness;
+    env.sunDir = normalize(
+        uAtmosphereFrame.preparedMainLightDirectionAndValidity.xyz);
+    env.sunColor = uAtmosphereFrame.preparedMainLightColorAndIntensity.rgb *
+        uAtmosphereFrame.preparedMainLightColorAndIntensity.w *
+        uCloud.sunBrightness;
     env.cosTheta = dot(rayDir, env.sunDir);
-
-    float rawSunElevation = dot(env.sunDir, vec3(0.0, 1.0, 0.0));
+    vec3 cameraUp = normalize(-uAtmosphereFrame.planetCenterRelativeToCameraMeters.xyz);
+    float rawSunElevation = dot(env.sunDir, cameraUp);
     float sunElevation = clamp(rawSunElevation, 0.0, 1.0);
     float duskFactor = 1.0 - smoothstep(0.02, 0.28, sunElevation);
-
     vec3 daySky = vec3(0.55, 0.72, 0.95);
     vec3 duskSky = vec3(0.95, 0.62, 0.28);
-    vec3 skyTint = mix(daySky, duskSky, duskFactor * clamp(uCloud.ambientDuskWarmth, 0.0, 1.0));
+    vec3 skyTint = mix(daySky, duskSky,
+        duskFactor * clamp(uCloud.ambientDuskWarmth, 0.0, 1.0));
     env.ambientTop = skyTint * max(uCloud.ambientTopStrength, 0.0) * env.sunColor;
     env.ambientBottom = skyTint * max(uCloud.ambientBottomStrength, 0.0) * env.sunColor;
     return env;
@@ -81,7 +84,7 @@ float CloudDistanceToShellExit(vec3 pos, vec3 dir)
     CloudShellResult shell = IntersectCloudShell(
         pos,
         dir,
-        uCloud.planetRadius,
+        uCloud.planetBottomRadius,
         uCloud.cloudMinHeight,
         uCloud.cloudMaxHeight);
     return shell.hit ? max(shell.tEnd, 0.0) : 0.0;
@@ -209,12 +212,14 @@ vec3 EvaluateHPSunLuminance(vec3 pos, float heightFrac, CloudLightingEnv env,
     return luminance;
 }
 
-void AccumulateHPCloudSample(vec3 pos, float stepSize, CloudLightingEnv env,
-                             inout vec3 inscatter, inout float transmittance)
+vec3 EvaluateHPCloudSourceRadiance(
+    vec3 pos,
+    float stepSize,
+    CloudLightingEnv env,
+    CloudSampleProps props)
 {
-    CloudSampleProps props = EvaluateCloudSampleProps(pos);
     if (props.density <= 0.0 || props.sigmaTView <= 0.0)
-        return;
+		return vec3(0.0);
 
     float lightOD = 0.0;
     float phiFwd = 0.0;
@@ -235,7 +240,7 @@ void AccumulateHPCloudSample(vec3 pos, float stepSize, CloudLightingEnv env,
                  + env.ambientBottom * (1.0 - props.heightFrac);
 
     vec3 sampleScattering = directional * sourceAmount
-                          + phiMapped * env.sunColor
+						  + phiMapped * env.sunColor
                           + ambient * sourceAmount;
 
     int debugMode = int(round(uCloud.shadingDebugMode));
@@ -256,8 +261,7 @@ void AccumulateHPCloudSample(vec3 pos, float stepSize, CloudLightingEnv env,
     else if (debugMode == 8)
         sampleScattering = vec3(sourceAmount);
 
-    inscatter += sampleScattering * (1.0 - stepT) * transmittance;
-    transmittance *= stepT;
+	return sampleScattering;
 }
 
 #endif // CLOUD_LIGHTING_HP_GLSL

@@ -80,16 +80,17 @@ namespace VansEngine
         // dt           : 本帧时间步长（秒）
         void QueueMove(const glm::vec3& displacement, float dt);
 
-		// Locomotion is intent-driven: gameplay publishes intent, the CCT owns the
-		// smoothed trajectory, and animation root motion is resolved into one
-		// collision-tested move request.
+		// CCT 是角色世界 Transform 的唯一运行时权威。Gameplay intent 和动画
+		// Root Motion 都在这里合成为一次带碰撞的 move；Root Motion 不要求存在
+		// gameplay intent，也不依赖 Motion Matching。
 		void SetMotionIntent(const Vans::VansCharacterMotionIntent& intent);
 		void PrepareLocomotion(float dt, const Vans::VansCharacterMotionSettings& settings);
 		void ResolveLocomotion(const glm::vec3& animationRootDelta,
 		                       const glm::quat& animationRootRotation,
 		                       bool rootMotionValid,
 		                       bool prefersRootMotion,
-		                       const Vans::VansCharacterMotionSettings& settings);
+		                       const Vans::VansCharacterMotionSettings& settings,
+		                       const glm::vec3& animationToWorldScale);
 		const Vans::VansCharacterTrajectory& GetTrajectory() const
 		{
 			return m_TrajectoryGenerator.GetTrajectory();

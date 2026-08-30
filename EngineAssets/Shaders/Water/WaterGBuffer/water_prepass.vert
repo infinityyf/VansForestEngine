@@ -26,6 +26,15 @@ layout(set = 1, binding = 0) uniform WaterSurfaceParams
     vec4 flowMapWorld;
     vec4 flowMapParams;
     vec4 flowMapFallback;
+    vec4 surfaceOptics;
+    vec4 scatteringCoeff;
+    vec4 absorptionCoeff;
+    ivec4 detailNormalFlags;
+    vec4 detailNormalGlobal;
+    vec4 detailLayerUvMotion[4];
+    vec4 detailLayerStrengthFade[4];
+    ivec4 detailLayerEnabled;
+    vec4 effectiveRoughnessParams;
 } params;
 layout(set = 1, binding = 1) uniform sampler2DArray displacementMap;
 layout(set = 1, binding = 4) uniform sampler2DArray derivativeMap;
@@ -165,6 +174,8 @@ layout(location = 1) out float outLinearDepth;
 layout(location = 2) out vec3 outWorldNormal;
 layout(location = 3) flat out int outLodLevel;
 layout(location = 4) out vec2 outWorldXZ;
+layout(location = 5) out vec3 outMacroDPdx;
+layout(location = 6) out vec3 outMacroDPdz;
 
 void main()
 {
@@ -195,5 +206,7 @@ void main()
     outWorldNormal = worldNormal;
     outLodLevel = pc.lodLevel;
     outWorldXZ = worldXZ;
+    outMacroDPdx = surface.dPdx;
+    outMacroDPdz = surface.dPdz;
     gl_Position = params.waterVPMatrix * vec4(worldPosition, 1.0);
 }

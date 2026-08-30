@@ -158,11 +158,76 @@ struct VansSceneWaterRefractionConfig
 	std::optional<float> distortionStrength;
 };
 
+enum class VansSceneWaterNormalDecodeMode : std::uint32_t
+{
+	RGReconstructZ = 0,
+};
+
+enum class VansSceneWaterEffectiveRoughnessMode : std::uint32_t
+{
+	BaseOnly = 0,
+	DistanceHeuristic = 1,
+};
+
+struct VansSceneWaterDetailNormalLayerConfig
+{
+	std::optional<bool> enabled;
+	std::optional<float> tileSizeMeters;
+	std::optional<VansSceneFloat2> direction;
+	std::optional<float> speedMetersPerSecond;
+	std::optional<float> phase;
+	std::optional<float> strength;
+	std::optional<float> fadeStartMeters;
+	std::optional<float> fadeEndMeters;
+};
+
+struct VansSceneWaterDetailNormalConfig
+{
+	std::optional<bool> enabled;
+	std::optional<VansSceneWaterNormalDecodeMode> decodeMode;
+	std::optional<bool> flipGreen;
+	std::optional<float> globalStrength;
+	std::optional<float> maxSlope;
+	std::optional<float> mipBias;
+	std::optional<float> anisotropy;
+	std::vector<VansSceneWaterDetailNormalLayerConfig> layers;
+};
+
+struct VansSceneWaterEffectiveRoughnessConfig
+{
+	std::optional<VansSceneWaterEffectiveRoughnessMode> mode;
+	std::optional<float> distanceStartMeters;
+	std::optional<float> distanceEndMeters;
+	std::optional<float> distanceStrength;
+};
+
+struct VansSceneWaterColorMipConfig
+{
+	std::optional<float> refractionScatterScale;
+	std::optional<float> refractionRoughnessScale;
+	std::optional<float> forwardScatterMipScale;
+	std::optional<float> backgroundScatterScale;
+	std::optional<float> lodBias;
+};
+
+struct VansSceneWaterShadowConfig
+{
+	std::optional<bool> enabled;
+	std::optional<int> quality;
+	std::optional<float> depthBias;
+	std::optional<float> normalBias;
+	std::optional<int> volumeStepStride;
+};
+
 struct VansSceneWaterSSRConfig
 {
 	std::optional<bool> enabled;
 	std::optional<float> maxDistance;
 	std::optional<float> maxRoughness;
+	std::optional<float> roughnessFadeStart;
+	std::optional<float> colorMipConeScale;
+	std::optional<float> colorMipBias;
+	std::optional<float> edgeFadePixels;
 };
 
 struct VansSceneWaterSSSConfig
@@ -203,6 +268,7 @@ struct VansSceneWaterGeometryConfig
 
 struct VansSceneWaterNodeConfig
 {
+	bool valid = true;
 	std::optional<float> level;
 	std::optional<float> specularIntensity;
 	std::optional<std::string> name;
@@ -212,6 +278,10 @@ struct VansSceneWaterNodeConfig
 	VansSceneWaterFlowMapConfig flowMap;
 	VansSceneWaterCausticsConfig caustics;
 	VansSceneWaterRefractionConfig refraction;
+	VansSceneWaterDetailNormalConfig detailNormal;
+	VansSceneWaterEffectiveRoughnessConfig effectiveRoughness;
+	VansSceneWaterColorMipConfig colorMip;
+	VansSceneWaterShadowConfig shadow;
 	VansSceneWaterSSRConfig ssr;
 	VansSceneWaterSSSConfig sss;
 	VansSceneWaterOpticsConfig optics;

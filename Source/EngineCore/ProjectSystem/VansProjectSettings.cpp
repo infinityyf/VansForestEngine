@@ -17,6 +17,9 @@ namespace Vans
 		m_UpscalerSettings = {};
 		m_CommandRecordingSettings = {};
 		m_RenderOutputSettings = {};
+		m_AtmosphereQualitySettings = {};
+		m_NearMediaQualitySettings = {};
+		m_CloudShadowQualitySettings = {};
 		m_MainCameraHiZCullSettings = {};
 	}
 
@@ -180,6 +183,9 @@ namespace Vans
 						<< outputResolutionError);
 					return false;
 				}
+				m_AtmosphereQualitySettings = renderSettings.atmosphereQualitySettings;
+				m_NearMediaQualitySettings = renderSettings.nearMediaQualitySettings;
+				m_CloudShadowQualitySettings = renderSettings.cloudShadowQualitySettings;
 				SetMainCameraHiZCullSettings(renderSettings.mainCameraHiZCullSettings);
 				VANS_LOG("[ProjectSettings] Loaded render settings: " << renderSettingsPath
 					<< ", upscaler.backend=" << VansGraphics::ToString(m_UpscalerSettings.backend)
@@ -241,6 +247,9 @@ namespace Vans
 			renderSettings.upscalerSettings = m_UpscalerSettings;
 			renderSettings.commandRecordingSettings = m_CommandRecordingSettings;
 			renderSettings.renderOutputSettings = m_RenderOutputSettings;
+			renderSettings.atmosphereQualitySettings = m_AtmosphereQualitySettings;
+			renderSettings.nearMediaQualitySettings = m_NearMediaQualitySettings;
+			renderSettings.cloudShadowQualitySettings = m_CloudShadowQualitySettings;
 			renderSettings.mainCameraHiZCullSettings = m_MainCameraHiZCullSettings;
 			std::string error;
 			if (VansProjectSettingsStorage::SaveRenderSettings(renderSettingsPath, renderSettings, error))

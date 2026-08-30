@@ -12,6 +12,9 @@ namespace Vans
 		VansProjectUpscalerSettings upscalerSettings;
 		VansProjectCommandRecordingSettings commandRecordingSettings;
 		VansProjectRenderOutputSettings renderOutputSettings;
+		VansProjectAtmosphereQualitySettings atmosphereQualitySettings;
+		VansProjectNearMediaQualitySettings nearMediaQualitySettings;
+		VansProjectCloudShadowQualitySettings cloudShadowQualitySettings;
 		VansProjectMainCameraHiZCullSettings mainCameraHiZCullSettings;
 	};
 

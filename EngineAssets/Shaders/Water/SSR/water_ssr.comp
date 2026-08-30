@@ -17,6 +17,7 @@
 
 #include "../../Common/Common.glsl"
 #include "../water_screen_common.glsl"
+#include "../PBRWater/pbr_water_common.glsl"
 // NOTE: CameraData.glsl NOT included — set=0 binding=0 is used by waterGBufNormal
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
@@ -26,19 +27,19 @@ layout(set = 0, binding = 0) uniform sampler2D waterGBufNormal;     // RGB = wor
 layout(set = 0, binding = 1) uniform sampler2D waterGBufPosDepth;   // RGB = worldPos, A = linearDepth
 layout(set = 0, binding = 2) uniform sampler2D sceneHZB;            // 场景 HZB depth mip chain
 layout(set = 0, binding = 3) uniform sampler2D sceneGBuf2;          // scene worldPos.xyz + linearDepth.w
-layout(set = 0, binding = 4) uniform sampler2D sceneColor;          // SceneColor
+layout(set = 0, binding = 4) uniform sampler2D waterBackgroundPyramid;
 
 layout(set = 0, binding = 5) uniform WaterSSRParams
 {
-    vec4  cameraPosition;      // xyz = worldPos
-    mat4  projMatrix;          // 投影矩阵
-    mat4  invProjMatrix;       // 逆投影矩阵
-    mat4  viewMatrix;          // 视图矩阵
-    float maxDistance;         // 最大追踪距离（m）
-    int   maxSteps;            // 最大步数
-    float thickness;           // HZB 深度容差
-    float maxRoughness;
-    vec4  surfaceParams;        // x=current water roughness
+    vec4 cameraPosition;
+    mat4 projection;
+    mat4 inverseProjection;
+    mat4 view;
+    vec4 traceParams;
+    vec4 screenParams;
+    vec4 colorMipParams;
+    vec4 roughnessParams;
+    vec4 edgeParams;
 } params;
 
 // ── 输出 ────────────────────────────────────────────────────
@@ -50,12 +51,6 @@ void main()
     ivec2 size  = imageSize(reflectionOut);
     if (pixel.x >= size.x || pixel.y >= size.y)
         return;
-
-    if (params.surfaceParams.x > params.maxRoughness)
-    {
-        imageStore(reflectionOut, pixel, vec4(0.0));
-        return;
-    }
 
     vec2 uv = WaterPixelUV(pixel, size);
 
@@ -82,6 +77,16 @@ void main()
 
     // 世界空间法线（直接读取 RGB，非 oct 解码）
     vec3 normal = normalize(normalCoverage.rgb);
+    float effectiveRoughness = clamp(normalCoverage.a, 0.002, 1.0);
+    float roughnessValidity = 1.0 - smoothstep(
+        params.roughnessParams.x,
+        max(params.roughnessParams.y, params.roughnessParams.x + 1e-4),
+        effectiveRoughness);
+    if (roughnessValidity <= 0.0)
+    {
+        imageStore(reflectionOut, pixel, vec4(0.0));
+        return;
+    }
 
     // 视线方向
     vec3 viewDir = normalize(params.cameraPosition.xyz - worldPos);
@@ -99,15 +104,16 @@ void main()
     // ── HZB ray march（使用标准 TraceHiZ_UV）─────────────────
     vec3 rayOrigin = worldPos + normal * SSR_START_BIAS;
 
-    HiZTraceResult traceResult = TraceHiZ_UV(
+    HiZTraceResult traceResult = TraceHiZ_UV_Bounded(
         sceneHZB,
-        params.viewMatrix,
-        params.projMatrix,
+        params.view,
+        params.projection,
         rayOrigin,
         reflectDir,
-        params.maxDistance,
+        params.traceParams.x,
         1.0,    // traceStride: 初始步长（像素）
-        max(params.thickness, 0.01)
+        max(params.traceParams.z, 0.01),
+        max(int(params.traceParams.y + 0.5), 1)
     );
 
     vec3 reflectionColor;
@@ -115,14 +121,49 @@ void main()
 
     if (traceResult.hit)
     {
-        // 命中 → 采样场景颜色
         vec2 hitUV = traceResult.uv;
-        // 边缘淡出
-        float edgeFade = 1.0;
-        edgeFade *= smoothstep(0.0, 0.05, hitUV.x) * smoothstep(1.0, 0.95, hitUV.x);
-        edgeFade *= smoothstep(0.0, 0.05, hitUV.y) * smoothstep(1.0, 0.95, hitUV.y);
-        reflectionColor = textureLod(sceneColor, hitUV, 0.0).rgb * edgeFade;
-        hitFlag = edgeFade;
+        ivec2 hitPixel = WaterUVToPixel(hitUV, textureSize(sceneGBuf2, 0));
+        vec4 hitSurface = texelFetch(sceneGBuf2, hitPixel, 0);
+        bool hitValid = SceneDepthValid(hitSurface.w) &&
+            hitSurface.w > 0.0 && dot(hitSurface.xyz - worldPos, hitSurface.xyz - worldPos) > 1e-6;
+        if (!hitValid)
+        {
+            imageStore(reflectionOut, pixel, vec4(0.0));
+            return;
+        }
+
+        float rayLength = length(hitSurface.xyz - worldPos);
+        float hitViewDepth = max(abs((params.view * vec4(hitSurface.xyz, 1.0)).z), 1e-3);
+        float pixelsPerMeter = 0.5 * params.screenParams.y *
+            abs(params.projection[1][1]) / hitViewDepth;
+        float coneRadiusWorld = rayLength * effectiveRoughness * effectiveRoughness *
+            params.colorMipParams.x;
+        float footprintPixels = max(coneRadiusWorld * pixelsPerMeter, 1.0);
+        float colorLod = clamp(
+            log2(footprintPixels) + params.colorMipParams.y,
+            0.0,
+            params.screenParams.z);
+
+        vec2 edgePixels = min(hitUV, vec2(1.0) - hitUV) * params.screenParams.xy;
+        float nearestEdgePixels = min(edgePixels.x, edgePixels.y);
+        float requiredEdgePixels = params.edgeParams.x +
+            footprintPixels * max(params.edgeParams.y, 0.0);
+        float edgeValidity = smoothstep(
+            requiredEdgePixels,
+            max(requiredEdgePixels * 2.0, requiredEdgePixels + 1.0),
+            nearestEdgePixels);
+        float minScreenExtent = min(params.screenParams.x, params.screenParams.y);
+        float footprintValidity = 1.0 - smoothstep(
+            minScreenExtent * 0.15,
+            minScreenExtent * 0.35,
+            footprintPixels * max(params.colorMipParams.z, 0.0));
+
+        reflectionColor = textureLod(
+            waterBackgroundPyramid, hitUV, colorLod).rgb;
+        hitFlag = clamp(
+            roughnessValidity * edgeValidity * footprintValidity,
+            0.0,
+            1.0);
     }
     else
     {

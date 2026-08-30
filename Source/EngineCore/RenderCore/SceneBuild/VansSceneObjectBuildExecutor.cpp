@@ -84,6 +84,7 @@ struct RuntimeComponentBuildResults
 {
 	VansScriptRenderComponent* render = nullptr;
 	VansScriptAudioReverbZoneComponent* audioReverbZone = nullptr;
+	VansScriptLocalVolumetricFogComponent* localVolumetricFog = nullptr;
 	VansScriptParticleComponent* particle = nullptr;
 	VansGraphics::VansSceneCameraMediaBuildResult cameraMedia;
 	VansGraphics::VansScenePhysicsBuildResult physics;
@@ -995,6 +996,16 @@ bool VansGraphics::VansScene::LoadSceneObjects(
 			runtimeComponentBuildResults.audioReverbZone = reverbZone;
 		}
 
+		if (objectConfig.localVolumetricFog)
+		{
+			ensureObjectTransform();
+			auto* fogVolume = new VansScriptLocalVolumetricFogComponent();
+			fogVolume->m_Settings = *objectConfig.localVolumetricFog;
+			fogVolume->m_Enabled = objectConfig.localVolumetricFog->enabled;
+			obj->AddComponent(fogVolume);
+			runtimeComponentBuildResults.localVolumetricFog = fogVolume;
+		}
+
 		if (objectConfig.animation)
 		{
 			VansSceneAnimationComponentBuilder::AddAnimationPlaceholder(
@@ -1041,6 +1052,7 @@ bool VansGraphics::VansScene::LoadSceneObjects(
 
 		obj->SetActive(objectConfig.active);
 		m_SceneObjects.push_back(obj);
+		++m_SceneObjectCollectionGeneration;
 		m_RuntimeWorld->Commands().CreateEntity(
 			{ objectConfig.entityGuid, objectConfig.name, Vans::VansEntityHandle{}, objectConfig.active });
 		m_RuntimeWorld->FlushCommands();

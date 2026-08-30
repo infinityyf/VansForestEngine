@@ -399,7 +399,7 @@ RenderNodeType RuntimeNodeTypeForMaterial(const VansMaterial& material, RenderNo
 		return TRANSPARENT_NODE;
 	if (material.m_MaterialType == VAN_CUSTOM_SHADER)
 		return material.HasPass(VansPass::GBUFFER) ? OPAQUE_NODE
-			: (material.m_CustomShaderDepthWrite ? FORWARD_OPAQUE_AFTER_DEFERRED_NODE : TRANSPARENT_NODE);
+			: (material.m_CustomShaderDepthWrite ? FORWARD_OPAQUE_PRE_ATMOSPHERE_NODE : TRANSPARENT_NODE);
 	if (fallback == DECAL_NODE || material.m_MaterialType == VAN_DECAL) return DECAL_NODE;
 	return OPAQUE_NODE;
 }

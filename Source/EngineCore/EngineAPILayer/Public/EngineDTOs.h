@@ -5,6 +5,7 @@
 #include "EngineIds.h"
 
 #include <cstdint>
+#include <array>
 #include <memory>
 #include <string>
 #include <utility>
@@ -1240,6 +1241,7 @@ namespace Vans::EditorAPI
 		std::string category;
 		std::string name;
 		std::uint32_t layer = 0;
+		std::uint32_t mipLevel = 0;
 		std::uint32_t probeIndex = 0;
 		std::uint32_t face = 0;
 		float roughness = 0.0f;
@@ -1717,6 +1719,57 @@ namespace Vans::EditorAPI
 		float spatialDepthSensitivity = 2.0f;
 	};
 
+	struct WaterDetailNormalLayerSettings
+	{
+		bool enabled = false;
+		float tileSizeMeters = 1.0f;
+		Vec2 direction = { 1.0f, 0.0f };
+		float speedMetersPerSecond = 0.05f;
+		float phase = 0.0f;
+		float strength = 0.2f;
+		float fadeStartMeters = 0.0f;
+		float fadeEndMeters = 80.0f;
+	};
+
+	struct WaterDetailNormalSettings
+	{
+		bool enabled = true;
+		int decodeMode = 0;
+		bool flipGreen = false;
+		float globalStrength = 1.0f;
+		float maxSlope = 1.5f;
+		float mipBias = 0.0f;
+		float anisotropy = 8.0f;
+		std::uint32_t layerCount = 4;
+		std::array<WaterDetailNormalLayerSettings, 4> layers{};
+	};
+
+	struct WaterEffectiveRoughnessSettings
+	{
+		int mode = 0;
+		float distanceStartMeters = 25.0f;
+		float distanceEndMeters = 180.0f;
+		float distanceStrength = 0.08f;
+	};
+
+	struct WaterColorMipSettings
+	{
+		float refractionScatterScale = 0.35f;
+		float refractionRoughnessScale = 0.10f;
+		float forwardScatterMipScale = 0.30f;
+		float backgroundScatterScale = 0.25f;
+		float lodBias = 0.0f;
+	};
+
+	struct WaterShadowSettings
+	{
+		bool enabled = true;
+		int quality = 1;
+		float depthBias = 0.0005f;
+		float normalBias = 0.02f;
+		int volumeStepStride = 2;
+	};
+
 	struct WaterSettingsSnapshot
 	{
 		bool available = false;
@@ -1729,6 +1782,10 @@ namespace Vans::EditorAPI
 		WaterFlowMapSettings flowMap;
 		WaterOpticsSettings optics;
 		WaterVolumeSettings volume;
+		WaterDetailNormalSettings detailNormal;
+		WaterEffectiveRoughnessSettings effectiveRoughness;
+		WaterColorMipSettings colorMip;
+		WaterShadowSettings shadow;
 		bool thinSSSEnabled = true;
 		float maxThicknessDistance = 15.0f;
 		float deepWaterThicknessFallback = 0.8f;
@@ -1742,6 +1799,10 @@ namespace Vans::EditorAPI
 		bool ssrEnabled = true;
 		float ssrMaxDistance = 500.0f;
 		float ssrMaxRoughness = 0.3f;
+		float ssrRoughnessFadeStart = 0.18f;
+		float ssrColorMipConeScale = 0.35f;
+		float ssrColorMipBias = 0.0f;
+		float ssrEdgeFadePixels = 12.0f;
 	};
 
 	struct WaterRuntimeStats
@@ -1757,6 +1818,15 @@ namespace Vans::EditorAPI
 		float geometryLodRatio = 2.0f;
 		int maxSpectrumCascade = 0;
 		int fftFieldCount = 0;
+		bool detailNormalAssetAvailable = false;
+		std::string detailNormalRuntimeAlias = "waterDetailWaveNormal";
+		std::uint32_t detailNormalMipCount = 0;
+		float detailNormalAnisotropyActive = 1.0f;
+		std::uint32_t waterBackgroundPyramidMipCount = 0;
+		std::uint32_t waterBackgroundPyramidWidth = 0;
+		std::uint32_t waterBackgroundPyramidHeight = 0;
+		int effectiveRoughnessMode = 0;
+		bool shadowCascadeAvailable = false;
 	};
 
 	struct MeshLoadRequest
@@ -2541,14 +2611,11 @@ namespace Vans::EditorAPI
 
 	};
 
-	struct FogSettings
+	struct PlanetSettings
 	{
-		float fogDensity = 0.01f;
-		float heightFalloff = 0.05f;
-		float sunScatterScale = 0.3f;
-		float ambientScale = 0.5f;
-		float fogMinHeight = -100.0f;
-		float skyFogDistance = 3000000.0f;
+		std::array<double, 3> centerWorldMeters{ 0.0, -6340200.0, 0.0 };
+		double bottomRadiusMeters = 6340000.0;
+		double atmosphereHeightMeters = 80000.0;
 	};
 
 	struct ScenePropertyEdit
@@ -2557,30 +2624,93 @@ namespace Vans::EditorAPI
 		ScenePropertyValue value;
 	};
 
-	struct FogVolumeSettings
+	struct RayleighSettings
 	{
-		float density = 0.05f;
-		float anisotropy = 0.6f;
-		float scatterScale = 1.0f;
-		float ambientScale = 0.05f;
-		float volumeNear = 2.0f;
-		float volumeFar = 200.0f;
-		float slicePower = 2.0f;
-		float padding = 0.0f;
-		float fogBoxMin[4] = { -50.0f, -50.0f, -50.0f, 0.0f };
-		float fogBoxMax[4] = { 50.0f, 50.0f, 50.0f, 0.0f };
+		std::array<float, 3> scatteringPerMeterAtGround{ 5.802e-6f, 13.558e-6f, 33.1e-6f };
+		float densityScaleHeightMeters = 8500.0f;
+	};
+
+	struct MieSettings
+	{
+		std::array<float, 3> scatteringPerMeterAtGround{ 3.996e-6f, 3.996e-6f, 3.996e-6f };
+		std::array<float, 3> absorptionPerMeterAtGround{ 4.4e-6f, 4.4e-6f, 4.4e-6f };
+		float densityScaleHeightMeters = 1200.0f;
+		float anisotropy = 0.78f;
+	};
+
+	struct OzoneSettings
+	{
+		std::array<float, 3> absorptionPerMeter{ 0.650e-6f, 1.881e-6f, 0.085e-6f };
+		float centerAltitudeMeters = 25000.0f;
+		float halfWidthMeters = 15000.0f;
+	};
+
+	struct CelestialDiskSettings
+	{
+		bool enabled = true;
+		float angularRadiusRadians = 0.018f;
+		float featherRadians = 0.0015f;
+		float radianceScale = 1.0f;
+		float occlusionStrength = 8.0f;
+	};
+
+	struct CelestialBodySettings
+	{
+		std::string name;
+		std::string lightEntityId;
+		CelestialDiskSettings disk;
+	};
+
+	struct AerialPerspectiveSettings
+	{
+		float distanceScale = 1.0f;
+	};
+
+	struct PhysicalAtmosphereSettings
+	{
+		bool enabled = true;
+		std::array<float, 3> groundAlbedo{ 0.4f, 0.4f, 0.4f };
+		RayleighSettings rayleigh;
+		MieSettings mie;
+		OzoneSettings ozone;
+		AerialPerspectiveSettings aerialPerspective;
+		float mainLightVolumetricScatteringScale = 1.0f;
+		std::vector<CelestialBodySettings> celestialBodies;
+	};
+
+	struct CloudShadowSettings
+	{
+		bool enabled = true;
+		float atmosphereStrength = 1.0f;
+		float ambientOcclusionStrength = 0.25f;
+	};
+
+	struct HeightFogSettings
+	{
+		bool enabled = true;
+		float groundHeightWorldMeters = 0.0f;
+		float visibilityAtGroundMeters = 600.0f;
+		float densityFalloffHeightMeters = 100.0f;
+		float startDistanceMeters = 0.0f;
+		float nearFadeDistanceMeters = 20.0f;
+		float maximumDistanceMeters = 1500.0f;
+		float farFadeDistanceMeters = 300.0f;
+		std::array<float, 3> singleScatteringAlbedo{ 0.98f, 0.98f, 0.98f };
+		float anisotropy = 0.2f;
+		std::array<float, 3> emissivePerMeter{ 0.0f, 0.0f, 0.0f };
+		float skyLightingScale = 1.0f;
+		float mainLightVolumetricScale = 1.0f;
+		bool receiveCloudShadows = true;
 	};
 
 	struct CloudSettings
 	{
-		float planetRadius = 6340000.0f;
-		float seaLevel = 200.0f;
+		bool enabled = true;
 		float cloudMinHeight = 1070.0f;
 		float cloudMaxHeight = 7410.0f;
 		float density = 0.025f;
 		float coverage = 0.350f;
 		float sunBrightness = 0.380f;
-		float phaseG = 0.365f;
 		float mainTileMeters = 43300.0f;
 		float detailTileMeters = 2200.0f;
 		float mainHeightScale = 0.260f;
@@ -2596,7 +2726,6 @@ namespace Vans::EditorAPI
 		float detailErosionLow = 0.280f;
 		float detailErosionHigh = 0.810f;
 		float detailEdgeStrength = 0.270f;
-		float shadowDensityScale = 0.870f;
 		float sigmaTRef = 1.000f;
 		float viewAbsorption = 1.000f;
 		float lightAbsorption = 1.000f;
@@ -2629,6 +2758,15 @@ namespace Vans::EditorAPI
 		float boundaryGradientStep = 250.000f;
 		float boundaryGradientStrength = 0.000f;
 		float shadingDebugMode = 0.000f;
+		CloudShadowSettings shadow;
+	};
+
+	struct EnvironmentSettings
+	{
+		PlanetSettings planet;
+		PhysicalAtmosphereSettings physicalAtmosphere;
+		HeightFogSettings heightFog;
+		CloudSettings volumetricClouds;
 	};
 
 	struct ShaderStageSourceSnapshot

@@ -348,6 +348,19 @@ Vans::VansSerializedValue DefaultSerializedComponentData(const std::string& type
             { "gainHF", Value::Float(0.89) },
             { "decayTime", Value::Float(1.49) }
         });
+	if (type == "LocalVolumetricFog")
+		return Value::Object({
+			{ "visibilityDistanceMeters", Value::Float(80.0) },
+			{ "singleScatteringAlbedo", vec3(0.95, 0.97, 1.0) },
+			{ "anisotropy", Value::Float(0.2) },
+			{ "emissivePerMeter", vec3(0.0, 0.0, 0.0) },
+			{ "edgeFadeDistanceMeters", Value::Float(2.0) },
+			{ "distanceFadeStartMeters", Value::Float(0.0) },
+			{ "distanceFadeEndMeters", Value::Float(2000.0) },
+			{ "directLightingScale", Value::Float(1.0) },
+			{ "skyLightingScale", Value::Float(1.0) },
+			{ "receiveCloudShadows", Value::Bool(true) }
+		});
     if (type == "Particle")
         return Value::Object({
             { "asset", Value::String("") },
@@ -578,6 +591,33 @@ bool AudioReverbZoneScalarLimits(const std::string& label, const std::string& co
         return true;
     }
     return false;
+}
+
+bool LocalVolumetricFogScalarLimits(const std::string& label,
+	const std::string& componentType, float& minValue, float& maxValue, float& speed)
+{
+	if (Lower(componentType) != "localvolumetricfog")
+		return false;
+
+	const std::string field = Lower(label);
+	if (field == "visibilitydistancemeters")
+	{
+		minValue = 0.1f; maxValue = 100000.0f; speed = 0.1f; return true;
+	}
+	if (field == "anisotropy")
+	{
+		minValue = -0.95f; maxValue = 0.95f; speed = 0.01f; return true;
+	}
+	if (field == "edgefadedistancemeters" || field == "distancefadestartmeters" ||
+		field == "distancefadeendmeters")
+	{
+		minValue = 0.0f; maxValue = 1000000.0f; speed = 0.1f; return true;
+	}
+	if (field == "directlightingscale" || field == "skylightingscale")
+	{
+		minValue = 0.0f; maxValue = 1000.0f; speed = 0.01f; return true;
+	}
+	return false;
 }
 
 bool AudioComponentScalarLimits(const std::string& label, const std::string& componentType,
@@ -1848,6 +1888,16 @@ bool VansInspectorWindow::Impl::DrawSerializedValue(
                 changed = true;
             }
         }
+		else if (LocalVolumetricFogScalarLimits(label, componentType,
+			minValue, maxValue, speed))
+		{
+			float numeric = static_cast<float>(edited);
+			if (ImGui::DragFloat("##value", &numeric, speed, minValue, maxValue, "%.3f"))
+			{
+				value = Vans::VansSerializedValue::Float(std::clamp(numeric, minValue, maxValue));
+				changed = true;
+			}
+		}
         else if (AudioComponentScalarLimits(label, componentType, minValue, maxValue, speed))
         {
             float numeric = static_cast<float>(edited);
@@ -1936,6 +1986,15 @@ bool VansInspectorWindow::Impl::DrawSerializedValue(
                 changed = true;
             }
         }
+		else if (LocalVolumetricFogScalarLimits(label, componentType,
+			minValue, maxValue, speed))
+		{
+			if (ImGui::DragFloat("##value", &edited, speed, minValue, maxValue, "%.3f"))
+			{
+				value = Vans::VansSerializedValue::Float(std::clamp(edited, minValue, maxValue));
+				changed = true;
+			}
+		}
         else if (MaterialScalarLimits(label, parentKey, minValue, maxValue, speed))
         {
             if (ImGui::DragFloat("##value", &edited, speed, minValue, maxValue, "%.3f"))
@@ -2326,7 +2385,7 @@ void VansInspectorWindow::Impl::DrawSceneEntity(Vans::EditorAPI::IEngineEditorAP
         {
             static const char* types[] = { "ModelRenderer", "Physics", "Camera", "Animation",
                 "CharacterController", "DirectionalLight", "PointLight", "SpotLight", "RectLight",
-				"Audio", "AudioVolume", "AudioReverbZone", "Video", "Particle", "Cloth", "Vehicle",
+				"Audio", "AudioVolume", "AudioReverbZone", "LocalVolumetricFog", "Video", "Particle", "Cloth", "Vehicle",
 				"ActionHost", "Script" };
             for (const char* type : types)
             {

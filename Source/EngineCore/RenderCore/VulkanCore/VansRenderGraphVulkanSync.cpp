@@ -121,6 +121,45 @@ namespace VansGraphics
 		return state;
 	}
 
+	VkImageUsageFlags VansRenderGraphVulkanSyncMapper::MapImageUsage(
+		VansRenderResourceUsage usage)
+	{
+		switch (usage)
+		{
+		case VansRenderResourceUsage::ColorAttachmentWrite:
+			return VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+		case VansRenderResourceUsage::DepthStencilAttachmentRead:
+		case VansRenderResourceUsage::DepthStencilAttachmentWrite:
+			return VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+		case VansRenderResourceUsage::SampledRead:
+			return VK_IMAGE_USAGE_SAMPLED_BIT;
+		case VansRenderResourceUsage::StorageRead:
+		case VansRenderResourceUsage::StorageWrite:
+			return VK_IMAGE_USAGE_STORAGE_BIT;
+		case VansRenderResourceUsage::TransferSrc:
+			return VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+		case VansRenderResourceUsage::TransferDst:
+			return VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+		case VansRenderResourceUsage::IndirectArgumentRead:
+		case VansRenderResourceUsage::AccelerationStructureBuildRead:
+		case VansRenderResourceUsage::AccelerationStructureBuildWrite:
+		case VansRenderResourceUsage::Present:
+			return 0;
+		}
+		return 0;
+	}
+
+	VkImageUsageFlags VansRenderGraphVulkanSyncMapper::BuildImageUsage(
+		std::initializer_list<VansRenderResourceUsage> usages)
+	{
+		VkImageUsageFlags flags = 0;
+		for (const VansRenderResourceUsage usage : usages)
+		{
+			flags |= MapImageUsage(usage);
+		}
+		return flags;
+	}
+
 	VansVulkanSyncDependency VansRenderGraphVulkanSyncMapper::MapDependency(
 		const VansRenderGraphDependency& dependency)
 	{

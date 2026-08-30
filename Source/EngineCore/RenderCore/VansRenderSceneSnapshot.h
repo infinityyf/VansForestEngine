@@ -22,7 +22,7 @@ namespace VansGraphics
 		Opaque,
 		Hair,
 		Transparent,
-		ForwardOpaqueAfterDeferred,
+		ForwardOpaquePreAtmosphere,
 		Decal
 	};
 
@@ -35,7 +35,7 @@ namespace VansGraphics
 		bool enableHair = true;
 		bool enableTransparent = false;
 		bool enableDecal = true;
-		bool enableForwardOpaqueAfterDeferred = true;
+		bool enableForwardOpaquePreAtmosphere = true;
 		float depthBiasMeters = 0.35f;
 		float cameraMotionDisableDistance = 1.0f;
 		float cameraMotionDisableAngleRadians = glm::radians(8.0f);
@@ -59,12 +59,12 @@ namespace VansGraphics
 		bool hasPunctualShadowJobs = false;
 		bool hasWater = false;
 		bool hasDecal = false;
-		bool hasForwardOpaqueAfterDeferred = false;
+		bool hasForwardOpaquePreAtmosphere = false;
 
 		bool Any() const
 		{
 			return hasPunctualShadowJobs || hasWater || hasDecal ||
-				hasForwardOpaqueAfterDeferred;
+				hasForwardOpaquePreAtmosphere;
 		}
 	};
 
@@ -166,12 +166,6 @@ namespace VansGraphics
 		bool prepared = false;
 	};
 
-	struct VansRenderAtmosphereFrameData final
-	{
-		VansAtmospherePBRParam payload{};
-		bool prepared = false;
-	};
-
 	struct VansRenderGIFrameData final
 	{
 		VansGISettings settings;
@@ -208,7 +202,6 @@ namespace VansGraphics
 		std::vector<VansRenderParticleFrameData> particles;
 		std::vector<VansRenderRectLightVideoFrameData> rectLightVideos;
 		VansRenderMaterialFrameData materials;
-		VansRenderAtmosphereFrameData atmosphere;
 		VansRenderGIFrameData gi;
 		VansRenderPostProcessFrameData postProcess;
 		VansMainCameraHiZCullSettings mainCameraHiZCullSettings;

@@ -319,6 +319,12 @@ namespace VansGraphics
 		bool IsMotionMatchingConfigured() const { return m_MotionMatching != nullptr; }
 		const MotionMatchingDebugData* GetMotionMatchingDebugData() const;
 		const MotionMatchingSettings* GetMotionMatchingSettings() const;
+		// Character Motion 消费统一的运动模型接口，不需要知道配置当前是否由
+		// Motion Matching 提供。没有显式配置时由调用方选择 Root Motion/Capsule
+		// 的通用默认策略。
+		bool TryGetCharacterMotionSettings(
+			Vans::VansCharacterMotionSettings& settings) const;
+		bool CharacterMotionPrefersRootMotion() const;
 		const std::vector<VansProceduralDebugRecord>* GetProceduralDebugRecords() const;
 		void SetCharacterTrajectory(const Vans::VansCharacterTrajectory* trajectory) { m_CharacterTrajectory = trajectory; }
 		bool MotionMatchingPrefersRootMotion() const;

@@ -47,16 +47,18 @@ namespace
         Vans::EditorAPI::IEngineEditorAPI& editorAPI,
         const char* label,
         const char* textureName,
-        std::uint32_t requestedLayer = 0u)
+        std::uint32_t requestedLayer = 0u,
+        std::uint32_t requestedMip = 0u)
     {
         ImGui::Text("%s", label);
         ImGui::SameLine();
-        ImGui::TextDisabled("layer %u", requestedLayer);
+        ImGui::TextDisabled("layer %u, mip %u", requestedLayer, requestedMip);
 
         Vans::EditorAPI::RenderTextureFilter filter;
         filter.category = "water";
         filter.name = textureName;
         filter.layer = requestedLayer;
+        filter.mipLevel = requestedMip;
         std::vector<Vans::EditorAPI::RenderTexturePreview> previews =
             editorAPI.QueryRenderTexturePreviews(filter);
         const Vans::EditorAPI::RenderTexturePreview preview =
@@ -168,6 +170,57 @@ void VansWaterWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
                 changed |= ImGui::DragFloat("Anisotropy", &settings.medium.anisotropy, 0.01f, -0.95f, 0.98f, "%.3f");
             }
 
+            if (ImGui::CollapsingHeader("Detail Normal", ImGuiTreeNodeFlags_DefaultOpen))
+            {
+                ImGui::TextDisabled("Built-in: %s", stats.detailNormalRuntimeAlias.c_str());
+                ImGui::SameLine();
+                ImGui::TextColored(
+                    stats.detailNormalAssetAvailable ? ImVec4(0.35f, 0.85f, 0.45f, 1.0f) : ImVec4(0.95f, 0.35f, 0.30f, 1.0f),
+                    stats.detailNormalAssetAvailable ? "loaded" : "missing");
+                ImGui::TextDisabled("%u mips, %.1fx active anisotropy",
+                    stats.detailNormalMipCount, stats.detailNormalAnisotropyActive);
+                changed |= ImGui::Checkbox("Enable##DetailNormal", &settings.detailNormal.enabled);
+                changed |= ImGui::Checkbox("Flip Green", &settings.detailNormal.flipGreen);
+                changed |= ImGui::DragFloat("Global Strength", &settings.detailNormal.globalStrength, 0.01f, 0.0f, 2.0f, "%.3f");
+                changed |= ImGui::DragFloat("Max Slope", &settings.detailNormal.maxSlope, 0.01f, 0.1f, 4.0f, "%.3f");
+                changed |= ImGui::DragFloat("Detail Mip Bias", &settings.detailNormal.mipBias, 0.02f, -2.0f, 2.0f, "%.2f");
+                changed |= ImGui::DragFloat("Requested Anisotropy", &settings.detailNormal.anisotropy, 0.25f, 1.0f, 16.0f, "%.1f");
+
+                const char* roughnessModes[] = { "Base Only", "Distance Heuristic" };
+                int roughnessMode = std::clamp(settings.effectiveRoughness.mode, 0, 1);
+                if (ImGui::Combo("Effective Roughness", &roughnessMode, roughnessModes, IM_ARRAYSIZE(roughnessModes)))
+                {
+                    settings.effectiveRoughness.mode = roughnessMode;
+                    changed = true;
+                }
+                if (roughnessMode == 1)
+                {
+                    changed |= ImGui::DragFloat("Roughness Distance Start", &settings.effectiveRoughness.distanceStartMeters, 0.5f, 0.0f, 10000.0f, "%.1f m");
+                    changed |= ImGui::DragFloat("Roughness Distance End", &settings.effectiveRoughness.distanceEndMeters, 0.5f, 0.01f, 10000.0f, "%.1f m");
+                    changed |= ImGui::DragFloat("Distance Roughness Strength", &settings.effectiveRoughness.distanceStrength, 0.005f, 0.0f, 0.5f, "%.3f");
+                }
+
+                for (std::size_t layerIndex = 0; layerIndex < settings.detailNormal.layers.size(); ++layerIndex)
+                {
+                    ImGui::PushID(static_cast<int>(layerIndex));
+                    auto& layer = settings.detailNormal.layers[layerIndex];
+                    const std::string label = "Layer " + std::to_string(layerIndex);
+                    if (ImGui::TreeNode(label.c_str()))
+                    {
+                        changed |= ImGui::Checkbox("Enabled", &layer.enabled);
+                        changed |= ImGui::DragFloat("Tile Size", &layer.tileSizeMeters, 0.01f, 0.01f, 1000.0f, "%.3f m");
+                        changed |= EditVec2("Direction", layer.direction, 0.01f, -1.0f, 1.0f, "%.3f");
+                        changed |= ImGui::DragFloat("Speed", &layer.speedMetersPerSecond, 0.005f, -100.0f, 100.0f, "%.3f m/s");
+                        changed |= ImGui::DragFloat("Phase", &layer.phase, 0.01f, -1000.0f, 1000.0f, "%.3f");
+                        changed |= ImGui::DragFloat("Strength", &layer.strength, 0.01f, 0.0f, 2.0f, "%.3f");
+                        changed |= ImGui::DragFloat("Fade Start", &layer.fadeStartMeters, 0.25f, 0.0f, 100000.0f, "%.1f m");
+                        changed |= ImGui::DragFloat("Fade End", &layer.fadeEndMeters, 0.25f, 0.01f, 100000.0f, "%.1f m");
+                        ImGui::TreePop();
+                    }
+                    ImGui::PopID();
+                }
+            }
+
             if (ImGui::CollapsingHeader("Waves"))
             {
                 const char* modeNames[] = { "Gerstner", "FFT", "Wave Particle" };
@@ -277,6 +330,22 @@ void VansWaterWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
                 changed |= ImGui::DragFloat("Spatial Depth Sensitivity", &settings.volume.spatialDepthSensitivity, 0.01f, 0.0f, 32.0f, "%.2f");
             }
 
+            if (ImGui::CollapsingHeader("Color Mip & Shadows"))
+            {
+                changed |= ImGui::DragFloat("Refraction Scatter Scale", &settings.colorMip.refractionScatterScale, 0.01f, 0.0f, 4.0f, "%.3f");
+                changed |= ImGui::DragFloat("Refraction Roughness Scale", &settings.colorMip.refractionRoughnessScale, 0.01f, 0.0f, 4.0f, "%.3f");
+                changed |= ImGui::DragFloat("Forward Scatter Mip Scale", &settings.colorMip.forwardScatterMipScale, 0.01f, 0.0f, 4.0f, "%.3f");
+                changed |= ImGui::DragFloat("Background Scatter Scale", &settings.colorMip.backgroundScatterScale, 0.01f, 0.0f, 4.0f, "%.3f");
+                changed |= ImGui::DragFloat("Color LOD Bias", &settings.colorMip.lodBias, 0.02f, -4.0f, 4.0f, "%.2f");
+                ImGui::SeparatorText("Cascade Shadow");
+                changed |= ImGui::Checkbox("Enable##WaterShadow", &settings.shadow.enabled);
+                changed |= ImGui::SliderInt("Shadow Quality", &settings.shadow.quality, 0, 1);
+                changed |= ImGui::DragFloat("Shadow Depth Bias", &settings.shadow.depthBias, 0.00001f, 0.0f, 0.05f, "%.6f");
+                changed |= ImGui::DragFloat("Shadow Normal Bias", &settings.shadow.normalBias, 0.001f, 0.0f, 1.0f, "%.4f m");
+                changed |= ImGui::SliderInt("Volume Shadow Step Stride", &settings.shadow.volumeStepStride, 1, 8);
+                ImGui::TextDisabled("Cascade resource: %s", stats.shadowCascadeAvailable ? "available" : "unavailable");
+            }
+
             if (ImGui::CollapsingHeader("Caustics"))
             {
                 changed |= ImGui::Checkbox("Enable##Caustics", &settings.causticsEnabled);
@@ -297,6 +366,10 @@ void VansWaterWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
                 changed |= ImGui::Checkbox("Enable##SSR", &settings.ssrEnabled);
                 changed |= ImGui::DragFloat("Max Distance (m)", &settings.ssrMaxDistance, 1.0f, 10.0f, 2000.0f, "%.0f");
                 changed |= ImGui::DragFloat("Max Roughness", &settings.ssrMaxRoughness, 0.01f, 0.0f, 1.0f, "%.3f");
+                changed |= ImGui::DragFloat("Roughness Fade Start", &settings.ssrRoughnessFadeStart, 0.01f, 0.0f, 1.0f, "%.3f");
+                changed |= ImGui::DragFloat("Color Mip Cone Scale", &settings.ssrColorMipConeScale, 0.01f, 0.0f, 4.0f, "%.3f");
+                changed |= ImGui::DragFloat("SSR Color LOD Bias", &settings.ssrColorMipBias, 0.02f, -4.0f, 4.0f, "%.2f");
+                changed |= ImGui::DragFloat("Edge Fade", &settings.ssrEdgeFadePixels, 0.5f, 0.0f, 128.0f, "%.1f px");
             }
 
             ImGui::EndTabItem();
@@ -348,6 +421,21 @@ void VansWaterWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 
                 ImGui::Separator();
                 DisplayWaterTexture(editorAPI, "Flow Map", "flow_map");
+
+                ImGui::SeparatorText("Detail & Scene Color Pyramid");
+                const int maxDetailMip = stats.detailNormalMipCount > 0u
+                    ? static_cast<int>(stats.detailNormalMipCount - 1u) : 0;
+                static int detailMip = 0;
+                detailMip = std::clamp(detailMip, 0, maxDetailMip);
+                ImGui::SliderInt("Detail Normal Mip", &detailMip, 0, maxDetailMip);
+                DisplayWaterTexture(editorAPI, "Detail Wave Normal", "detail_normal", 0u, static_cast<std::uint32_t>(detailMip));
+
+                const int maxBackgroundMip = stats.waterBackgroundPyramidMipCount > 0u
+                    ? static_cast<int>(stats.waterBackgroundPyramidMipCount - 1u) : 0;
+                static int backgroundMip = 0;
+                backgroundMip = std::clamp(backgroundMip, 0, maxBackgroundMip);
+                ImGui::SliderInt("Water Background Mip", &backgroundMip, 0, maxBackgroundMip);
+                DisplayWaterTexture(editorAPI, "Water Background Pyramid", "background_pyramid", 0u, static_cast<std::uint32_t>(backgroundMip));
 
                 if (stats.fftAvailable)
                 {

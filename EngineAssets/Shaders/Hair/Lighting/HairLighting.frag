@@ -4,6 +4,7 @@
 #include "../../Common/CameraData.glsl"
 #define LightCBBind 0
 #include "../../Lights/LightsData.glsl"
+#include "../../Atmosphere/AtmosphereMediaComposition.glsl"
 #include "../../BRDF/BRDFData.glsl"
 #include "../../BRDF/BRDFHair.glsl"
 
@@ -123,7 +124,7 @@ vec4 ShadeHairNode(HairOITNode node, float surfaceVisibility, float sharedHairOp
     vec3 positionWS = ReconstructWorldPosition(fragUV, linearDepth);
     vec3 V = normalize(cameraPosition.xyz - positionWS);
     vec3 L = normalize(uDirectionLight.direction.xyz);
-    vec3 lightColor = max(uDirectionLight.color.rgb * uDirectionLight.intensity, vec3(0.0));
+    vec3 lightColor = uDirectionLight.color.rgb * uDirectionLight.intensity;
 
     HairData hair;
     hair.positionWS = positionWS;
@@ -148,7 +149,9 @@ vec4 ShadeHairNode(HairOITNode node, float surfaceVisibility, float sharedHairOp
     vec3 indirect = SampleSkyDiffuseCube(PreConvDiffuseEnvironment, normalWS) * albedo * ao;
 
     float opacity = clamp(node.coverage, 0.0, 1.0);
-    return vec4(max(direct + indirect, vec3(0.0)) * opacity, opacity);
+    vec3 radiance = CompositeAtmosphereSurfaceRadiance(
+        fragUV, positionWS, max(direct + indirect, vec3(0.0)));
+    return vec4(radiance * opacity, opacity);
 }
 
 void InsertSorted(inout HairOITNode sortedNodes[HAIR_OIT_SORT_LIMIT], inout int sortedCount, HairOITNode node)

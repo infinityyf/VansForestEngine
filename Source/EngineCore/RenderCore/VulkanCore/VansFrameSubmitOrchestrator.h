@@ -27,7 +27,6 @@ namespace VansGraphics
 		HairShadowReady,
 		TileLightReady,
 		ScreenLightingReady,
-		CloudReady,
 		WaterWaveDone,
 		WaterInputsReady,
 		WaterPrecomputeDone,

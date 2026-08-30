@@ -1,0 +1,68 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "../Common/CameraData.glsl"
+#include "AtmosphereCommon.glsl"
+#include "AtmosphereViewCommon.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(set = 1, binding = 1) uniform sampler3D localMediaInjectionInput;
+layout(set = 1, binding = 2) uniform LocalMediaParams
+{
+    vec4 depthRangeAndGrid;
+    vec4 sliceHistoryAndVolumeCount;
+    vec4 localFogTileGridAndLimits;
+} uLocal;
+layout(set = 1, binding = 5, rgba16f) uniform writeonly image3D localMediaScatteringOutput;
+layout(set = 1, binding = 6, rgba16f) uniform writeonly image3D localMediaOpticalDepthOutput;
+
+float LocalSliceDistance(float sliceCoordinate, float nearDistance,
+    float farDistance, float sliceCount, float slicePower)
+{
+    float normalized = clamp(sliceCoordinate / max(sliceCount, 1.0), 0.0, 1.0);
+    return mix(nearDistance, farDistance, pow(normalized, slicePower));
+}
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec3 gridSize = imageSize(localMediaScatteringOutput);
+    if (any(greaterThanEqual(pixel, gridSize.xy)))
+        return;
+    vec3 accumulatedScattering = vec3(0.0);
+    vec3 accumulatedOpticalDepth = vec3(0.0);
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(gridSize.xy);
+    vec3 rayDirection = AtmosphereWorldDirectionFromUv(uv);
+    for (int slice = 0; slice < gridSize.z; ++slice)
+    {
+        vec4 injected = texelFetch(localMediaInjectionInput,
+            ivec3(pixel, slice), 0);
+        float nearDistance = uLocal.depthRangeAndGrid.x;
+        float farDistance = uLocal.depthRangeAndGrid.y;
+        float slicePower = uLocal.sliceHistoryAndVolumeCount.x;
+        float sliceStart = LocalSliceDistance(float(slice), nearDistance,
+            farDistance, float(gridSize.z), slicePower);
+        float sliceEnd = LocalSliceDistance(float(slice + 1), nearDistance,
+            farDistance, float(gridSize.z), slicePower);
+        float thickness = max(sliceEnd - sliceStart, 0.0);
+		float sampleDistance = 0.5 * (sliceStart + sliceEnd);
+		vec3 positionRelativeToCamera = rayDirection * sampleDistance;
+		if (thickness > 0.0)
+        {
+			AtmosphereMedium atmosphere = EvaluateNearMediaSegmentMedium(
+				positionRelativeToCamera, rayDirection, sliceStart, sliceEnd);
+			ParticipatingMediaSample medium = EmptyParticipatingMediaSample();
+			AddParticipatingMediaSample(medium,
+				EvaluateAtmosphereScatteringSource(
+					positionRelativeToCamera, rayDirection, atmosphere),
+				atmosphere.extinction);
+			AddParticipatingMediaSample(medium, injected.rgb, vec3(injected.a));
+			IntegrateParticipatingMediaStep(medium, thickness,
+				accumulatedScattering, accumulatedOpticalDepth);
+        }
+        imageStore(localMediaScatteringOutput, ivec3(pixel, slice),
+            vec4(accumulatedScattering, 0.0));
+        imageStore(localMediaOpticalDepthOutput, ivec3(pixel, slice),
+            vec4(accumulatedOpticalDepth, 0.0));
+    }
+}

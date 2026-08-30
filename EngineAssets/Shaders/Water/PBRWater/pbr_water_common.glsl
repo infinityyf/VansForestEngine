@@ -11,6 +11,30 @@ float PBRW_Luminance(vec3 c)
     return dot(c, vec3(0.2126, 0.7152, 0.0722));
 }
 
+float PBRW_ComputeColorMipLod(
+    float pathLength,
+    vec3 scatteringCoeff,
+    float effectiveRoughness,
+    float viewDepth,
+    float renderHeight,
+    float projectionY,
+    float scatterScale,
+    float roughnessScale,
+    float lodBias,
+    float maxMip)
+{
+    float safePath = max(pathLength, 0.0);
+    float tauS = max(PBRW_Luminance(scatteringCoeff) * safePath, 0.0);
+    float scatterWeight = 1.0 - exp(-tauS);
+    float radiusWorld = safePath *
+        (scatterScale * scatterWeight +
+         roughnessScale * effectiveRoughness * effectiveRoughness);
+    float pixelsPerMeter = 0.5 * renderHeight * abs(projectionY) /
+        max(viewDepth, 1e-3);
+    float radiusPixels = max(radiusWorld * pixelsPerMeter, 1.0);
+    return clamp(log2(radiusPixels) + lodBias, 0.0, maxMip);
+}
+
 vec3 PBRW_FresnelSchlick(vec3 F0, float cosTheta)
 {
     float f = pow(PBRW_Saturate(1.0 - cosTheta), 5.0);

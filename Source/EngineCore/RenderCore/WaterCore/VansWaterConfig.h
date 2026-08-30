@@ -1,6 +1,8 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstdint>
 #include <glm/glm.hpp>
 #include <string>
@@ -13,6 +15,17 @@ namespace VansGraphics
         Gerstner = 0,
         FFT = 1,
         WaveParticle = 2,
+    };
+
+    enum class VansWaterNormalDecodeMode : std::uint32_t
+    {
+        RGReconstructZ = 0,
+    };
+
+    enum class VansWaterEffectiveRoughnessMode : std::uint32_t
+    {
+        BaseOnly = 0,
+        DistanceHeuristic = 1,
     };
 
     struct VansWaterMediumConfig
@@ -104,6 +117,63 @@ namespace VansGraphics
         float m_DistortionStrength = 0.025f;
     };
 
+    struct VansWaterDetailNormalLayerConfig
+    {
+        bool m_Enabled = false;
+        float m_TileSizeMeters = 1.0f;
+        glm::vec2 m_Direction = { 1.0f, 0.0f };
+        float m_SpeedMetersPerSecond = 0.05f;
+        float m_Phase = 0.0f;
+        float m_Strength = 0.2f;
+        float m_FadeStartMeters = 0.0f;
+        float m_FadeEndMeters = 80.0f;
+    };
+
+    struct VansWaterDetailNormalConfig
+    {
+        static constexpr std::uint32_t MAX_LAYER_COUNT = 4;
+
+        bool m_Enabled = true;
+        VansWaterNormalDecodeMode m_DecodeMode = VansWaterNormalDecodeMode::RGReconstructZ;
+        bool m_FlipGreen = false;
+        float m_GlobalStrength = 1.0f;
+        float m_MaxSlope = 1.5f;
+        float m_MipBias = 0.0f;
+        float m_Anisotropy = 8.0f;
+        std::array<VansWaterDetailNormalLayerConfig, MAX_LAYER_COUNT> m_Layers = {{
+            { true, 1.50f, { 1.0f, 0.0f }, 0.05f, 0.00f, 0.30f, 0.0f, 90.0f },
+            { true, 0.65f, { 0.70710678f, 0.70710678f }, 0.08f, 0.37f, 0.20f, 5.0f, 60.0f },
+            { false, 0.30f, { -0.6f, 0.8f }, 0.12f, 0.73f, 0.12f, 5.0f, 35.0f },
+            { false, 0.15f, { 0.8f, -0.6f }, 0.18f, 0.19f, 0.08f, 2.0f, 20.0f },
+        }};
+    };
+
+    struct VansWaterEffectiveRoughnessConfig
+    {
+        VansWaterEffectiveRoughnessMode m_Mode = VansWaterEffectiveRoughnessMode::BaseOnly;
+        float m_DistanceStartMeters = 25.0f;
+        float m_DistanceEndMeters = 180.0f;
+        float m_DistanceStrength = 0.08f;
+    };
+
+    struct VansWaterColorMipConfig
+    {
+        float m_RefractionScatterScale = 0.35f;
+        float m_RefractionRoughnessScale = 0.10f;
+        float m_ForwardScatterMipScale = 0.30f;
+        float m_BackgroundScatterScale = 0.25f;
+        float m_LodBias = 0.0f;
+    };
+
+    struct VansWaterShadowConfig
+    {
+        bool m_Enabled = true;
+        int m_Quality = 1;
+        float m_DepthBias = 0.0005f;
+        float m_NormalBias = 0.02f;
+        int m_VolumeStepStride = 2;
+    };
+
     struct VansWaterOpticsConfig
     {
         float m_MaxCrossDistance = 40.0f;
@@ -130,6 +200,10 @@ namespace VansGraphics
         bool m_Enabled = true;
         float m_MaxDistance = 500.0f;
         float m_MaxRoughness = 0.3f;
+        float m_RoughnessFadeStart = 0.18f;
+        float m_ColorMipConeScale = 0.35f;
+        float m_ColorMipBias = 0.0f;
+        float m_EdgeFadePixels = 12.0f;
     };
 
     struct VansWaterSSSConfig
@@ -160,6 +234,10 @@ namespace VansGraphics
         VansWaterFlowMapConfig m_FlowMap;
         VansWaterCausticsConfig m_Caustics;
         VansWaterRefractionConfig m_Refraction;
+        VansWaterDetailNormalConfig m_DetailNormal;
+        VansWaterEffectiveRoughnessConfig m_EffectiveRoughness;
+        VansWaterColorMipConfig m_ColorMip;
+        VansWaterShadowConfig m_Shadow;
         VansWaterOpticsConfig m_Optics;
         VansWaterVolumeConfig m_Volume;
         VansWaterSSRConfig m_SSR;
@@ -167,6 +245,11 @@ namespace VansGraphics
 
         void Validate()
         {
+            const auto finiteOr = [](float value, float fallback)
+            {
+                return std::isfinite(value) ? value : fallback;
+            };
+
             m_Geometry.m_LodCount = std::clamp(m_Geometry.m_LodCount, 1, MAX_GEOMETRY_LODS);
             m_Geometry.m_BasePatchSize = (std::max)(m_Geometry.m_BasePatchSize, 0.25f);
             m_Geometry.m_MeshDim = std::clamp(m_Geometry.m_MeshDim, 17, 257);
@@ -229,6 +312,71 @@ namespace VansGraphics
             m_Refraction.m_DistortionStrength = std::clamp(
                 m_Refraction.m_DistortionStrength, 0.0f, 0.1f);
 
+            m_DetailNormal.m_DecodeMode = VansWaterNormalDecodeMode::RGReconstructZ;
+            m_DetailNormal.m_GlobalStrength = std::clamp(
+                finiteOr(m_DetailNormal.m_GlobalStrength, 1.0f), 0.0f, 2.0f);
+            m_DetailNormal.m_MaxSlope = std::clamp(
+                finiteOr(m_DetailNormal.m_MaxSlope, 1.5f), 0.1f, 4.0f);
+            m_DetailNormal.m_MipBias = std::clamp(
+                finiteOr(m_DetailNormal.m_MipBias, 0.0f), -2.0f, 2.0f);
+            m_DetailNormal.m_Anisotropy = std::clamp(
+                finiteOr(m_DetailNormal.m_Anisotropy, 8.0f), 1.0f, 16.0f);
+            for (VansWaterDetailNormalLayerConfig& layer : m_DetailNormal.m_Layers)
+            {
+                layer.m_TileSizeMeters = std::clamp(
+                    finiteOr(layer.m_TileSizeMeters, 1.0f), 0.01f, 1000.0f);
+                layer.m_SpeedMetersPerSecond = std::clamp(
+                    finiteOr(layer.m_SpeedMetersPerSecond, 0.0f), -100.0f, 100.0f);
+                layer.m_Phase = finiteOr(layer.m_Phase, 0.0f);
+                layer.m_Strength = std::clamp(
+                    finiteOr(layer.m_Strength, 0.0f), 0.0f, 2.0f);
+                layer.m_FadeStartMeters = std::clamp(
+                    finiteOr(layer.m_FadeStartMeters, 0.0f), 0.0f, 100000.0f);
+                layer.m_FadeEndMeters = std::clamp(
+                    finiteOr(layer.m_FadeEndMeters, layer.m_FadeStartMeters + 1.0f),
+                    layer.m_FadeStartMeters + 0.01f, 100000.0f);
+                if (!std::isfinite(layer.m_Direction.x) ||
+                    !std::isfinite(layer.m_Direction.y) ||
+                    glm::length(layer.m_Direction) < 0.001f)
+                {
+                    layer.m_Direction = { 1.0f, 0.0f };
+                }
+                else
+                {
+                    layer.m_Direction = glm::normalize(layer.m_Direction);
+                }
+            }
+
+            const std::uint32_t roughnessMode = std::min(
+                static_cast<std::uint32_t>(m_EffectiveRoughness.m_Mode),
+                static_cast<std::uint32_t>(VansWaterEffectiveRoughnessMode::DistanceHeuristic));
+            m_EffectiveRoughness.m_Mode = static_cast<VansWaterEffectiveRoughnessMode>(roughnessMode);
+            m_EffectiveRoughness.m_DistanceStartMeters = std::clamp(
+                finiteOr(m_EffectiveRoughness.m_DistanceStartMeters, 25.0f), 0.0f, 10000.0f);
+            m_EffectiveRoughness.m_DistanceEndMeters = std::clamp(
+                finiteOr(m_EffectiveRoughness.m_DistanceEndMeters, 180.0f),
+                m_EffectiveRoughness.m_DistanceStartMeters + 0.01f, 10000.0f);
+            m_EffectiveRoughness.m_DistanceStrength = std::clamp(
+                finiteOr(m_EffectiveRoughness.m_DistanceStrength, 0.08f), 0.0f, 0.5f);
+
+            m_ColorMip.m_RefractionScatterScale = std::clamp(
+                finiteOr(m_ColorMip.m_RefractionScatterScale, 0.35f), 0.0f, 4.0f);
+            m_ColorMip.m_RefractionRoughnessScale = std::clamp(
+                finiteOr(m_ColorMip.m_RefractionRoughnessScale, 0.10f), 0.0f, 4.0f);
+            m_ColorMip.m_ForwardScatterMipScale = std::clamp(
+                finiteOr(m_ColorMip.m_ForwardScatterMipScale, 0.30f), 0.0f, 4.0f);
+            m_ColorMip.m_BackgroundScatterScale = std::clamp(
+                finiteOr(m_ColorMip.m_BackgroundScatterScale, 0.25f), 0.0f, 4.0f);
+            m_ColorMip.m_LodBias = std::clamp(
+                finiteOr(m_ColorMip.m_LodBias, 0.0f), -4.0f, 4.0f);
+
+            m_Shadow.m_Quality = std::clamp(m_Shadow.m_Quality, 0, 1);
+            m_Shadow.m_DepthBias = std::clamp(
+                finiteOr(m_Shadow.m_DepthBias, 0.0005f), 0.0f, 0.05f);
+            m_Shadow.m_NormalBias = std::clamp(
+                finiteOr(m_Shadow.m_NormalBias, 0.02f), 0.0f, 1.0f);
+            m_Shadow.m_VolumeStepStride = std::clamp(m_Shadow.m_VolumeStepStride, 1, 8);
+
             m_Medium.m_IOR = std::clamp(m_Medium.m_IOR, 1.01f, 2.0f);
             m_Medium.m_Anisotropy = std::clamp(m_Medium.m_Anisotropy, -0.95f, 0.98f);
             m_Medium.m_WaterRoughness = std::clamp(m_Medium.m_WaterRoughness, 0.002f, 0.3f);
@@ -253,6 +401,19 @@ namespace VansGraphics
             m_Volume.m_SpatialFilterIterations = std::clamp(m_Volume.m_SpatialFilterIterations, 0, 4);
             m_Volume.m_SpatialDepthSensitivity =
                 std::clamp(m_Volume.m_SpatialDepthSensitivity, 0.0f, 32.0f);
+
+            m_SSR.m_MaxDistance = std::clamp(
+                finiteOr(m_SSR.m_MaxDistance, 500.0f), 1.0f, 10000.0f);
+            m_SSR.m_MaxRoughness = std::clamp(
+                finiteOr(m_SSR.m_MaxRoughness, 0.3f), 0.002f, 1.0f);
+            m_SSR.m_RoughnessFadeStart = std::clamp(
+                finiteOr(m_SSR.m_RoughnessFadeStart, 0.18f), 0.0f, m_SSR.m_MaxRoughness);
+            m_SSR.m_ColorMipConeScale = std::clamp(
+                finiteOr(m_SSR.m_ColorMipConeScale, 0.35f), 0.0f, 4.0f);
+            m_SSR.m_ColorMipBias = std::clamp(
+                finiteOr(m_SSR.m_ColorMipBias, 0.0f), -4.0f, 4.0f);
+            m_SSR.m_EdgeFadePixels = std::clamp(
+                finiteOr(m_SSR.m_EdgeFadePixels, 12.0f), 0.0f, 128.0f);
         }
     };
 }

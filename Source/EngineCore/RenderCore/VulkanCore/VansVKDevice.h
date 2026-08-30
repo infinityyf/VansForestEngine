@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "../VansGraphicsDevice.h"
 #include "../VansCameraFrameData.h"
 #include "../VansRenderRuntimeConfig.h"
@@ -241,6 +241,9 @@ namespace VansGraphics
 		bool IsAsyncComputeRequested() const { return m_AsyncComputeRequested; }
 		bool IsAsyncComputeEnabled() const { return m_AsyncComputeEnabled; }
 		const VansQueueCapabilities& GetQueueCapabilities() const { return m_QueueCapabilities; }
+		const VansAtmosphereQualityConfig& GetAtmosphereQualityConfig() const { return m_AtmosphereQualityConfig; }
+		const VansNearMediaQualityConfig& GetNearMediaQualityConfig() const { return m_NearMediaQualityConfig; }
+		const VansCloudShadowQualityConfig& GetCloudShadowQualityConfig() const { return m_CloudShadowQualityConfig; }
 		bool ApplyCommandRecordingSettings(
 			bool parallelEnabled,
 			bool frameContextRingEnabled,
@@ -350,6 +353,7 @@ namespace VansGraphics
 
 		//获取device properties
 		VkPhysicalDeviceProperties GetDeviceProperties() { return m_DeviceProperties; }
+		const VkPhysicalDeviceFeatures& GetDeviceFeatures() const { return m_DeviceFeatures2.features; }
 
 		VkPhysicalDeviceRayTracingPipelinePropertiesKHR GetRayTracingProperties() { return m_RayTracingProperties; }
 		VkDeviceSize GetAccelerationStructureScratchAlignment() const
@@ -400,16 +404,22 @@ namespace VansGraphics
 		bool RecordDecalPassParallel(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer, int framebufferIndex = 0);
 
 		// 拆分后的渲染 pass：
-		//   DrawSceneDeferredSkybox  — ScreenSpaceFeature + Deferred + SkyBox（写入 SceneColor）
-		//   DrawSceneTransparentPost — ForwardOpaqueAfterDeferred + Transparent + Particles + PostProcess（读 SceneColor，写 PostProcess 输出）
-		// 设计文档 §6.1 Pass 6 = DrawSceneDeferredSkybox，Pass 10-12 = DrawSceneTransparentPost
-		void DrawSceneDeferredSkybox(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
+		//   DrawSceneRawOpaqueLighting — Deferred 只写入未经大气的 RawOpaqueSceneColor
+		//   DrawSceneTransparentPost — ForwardOpaquePreAtmosphere + Transparent + Particles + PostProcess（读 SceneColor，写 PostProcess 输出）
+		// 大气合成随后写 SceneColor，透明、水面和头发只消费合成后的颜色。
+		void DrawSceneRawOpaqueLighting(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
 		void DrawSceneTransparentPost(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
 		void DrawHairLighting(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
 		void DrawHairComposite(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
 		void ClearHairOITResources(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
 		void PrepareHairOITForResolve(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
+		void BuildSceneColorPyramid(
+			VansVKImage& source,
+			VansVKImage& target,
+			VansVKCommandBuffer& commandBuffer,
+			VkPipelineStageFlags consumerStages);
 		void CopyOpaqueSceneColorForTransmission(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
+		void PrepareWaterBackgroundPyramid(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
 		void ResolveDepthOfFieldIntoSceneColor(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
 		void PrepareSceneColorForTransparentPass(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer);
 		VkDescriptorSetLayout GetHairOITPassLayout() const { return m_HairLightingPassLayout; }
@@ -467,14 +477,12 @@ namespace VansGraphics
 
 		void UpdatePunctualShadowDebugPreview(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
-		void UpdateVolumetricFog(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
-
-		void UpdateFogLightInjection(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd, uint32_t frameIdx);
-
-		void UpdateFogRayMarch(VansVKCommandBuffer& computeCmd, uint32_t frameIdx);
-
-		// 体积云 1/4 分辨率光线步进（Compute Pass，在 Deferred 之前执行）
-		void UpdateCloudRayMarch(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
+		void UpdateAtmosphereStaticLuts(VansVKCommandBuffer& commandBuffer);
+		void UpdateCloudShadow(VansVKCommandBuffer& commandBuffer);
+		void UpdateAtmosphereViewLuts(VansVKCommandBuffer& commandBuffer);
+		void UpdateLocalMedia(VansVKCommandBuffer& commandBuffer);
+		void CompositeAtmosphere(VansVKCommandBuffer& commandBuffer);
+		void UpdateVolumetricCloud(VansVKCommandBuffer& commandBuffer);
 
 		// TileLight Build pass: culls lights per tile each frame
 		void BuildTileLightLists(VansVKCommandBuffer& cmd);
@@ -498,15 +506,11 @@ namespace VansGraphics
 		uint64_t m_OcclusionHIZSeedDescSetGeneration = 0;
 		uint64_t m_MainCameraHiZCullDescSetGeneration = 0;
 		uint64_t m_SSRDescSetGeneration = 0;
-		uint64_t m_VolumetricFogDescSetGeneration = 0;
-		uint64_t m_FogLightInjectionDescSetGeneration = 0;
-		uint64_t m_FogRayMarchDescSetGeneration = 0;
 		uint64_t m_TileLightBuildDescSetGeneration = 0;
 		uint64_t m_PPExposureDescSetGeneration = 0;
 		uint64_t m_PPDepthOfFieldDescSetGeneration = 0;
 		uint64_t m_PPBloomDescSetGeneration = 0;
 		uint64_t m_PPBloomShapeDescSetGeneration = 0;
-		uint64_t m_CloudRayMarchDescSetGeneration = 0;
 		uint64_t m_ScreenSpaceShadowDescSetGeneration = 0;
 
 		VkDescriptorSetLayout m_HairCompositePassLayout = VK_NULL_HANDLE;
@@ -568,15 +572,6 @@ namespace VansGraphics
 
 		void UpdateScreenSpaceShadowSets(VansRenderPassManager* renderPassManager);
 
-		void UpdateVolumetricFogSets(VansRenderPassManager* renderPassManager);
-
-		void UpdateFogLightInjectionSets(VansRenderPassManager* renderPassManager);
-
-		void UpdateFogRayMarchSets();
-
-		// 体积云描述符集写入（一次性，场景加载后首帧调用）
-		void UpdateCloudRayMarchSets(VansRenderPassManager* renderPassManager);
-
 		void UpdateTileLightBuildSets();
 
 		// 后处理 Compute Pass descriptor set 写入（一次性）
@@ -617,11 +612,6 @@ namespace VansGraphics
 		void PreparePunctualShadowDebugRenderData();
 
 		void PrepareSSRRenderData();
-
-		void PrepareVolumetricData();
-
-		// 体积云 RT 纹理、Shader、描述符集初始化（场景加载时调用）
-		void PrepareCloudRenderData();
 
 		void PrepareTileLightData();
 
@@ -671,6 +661,9 @@ namespace VansGraphics
 		VkSemaphore m_CommandBufferReadyToPresentSemaphore;
 
 		bool m_AsyncComputeRequested = false;
+		VansAtmosphereQualityConfig m_AtmosphereQualityConfig;
+		VansNearMediaQualityConfig m_NearMediaQualityConfig;
+		VansCloudShadowQualityConfig m_CloudShadowQualityConfig;
 		bool m_AsyncComputeEnabled = false;
 		VansQueueCapabilities m_QueueCapabilities;
 		VansFrameSubmitOrchestrator m_FrameSubmitOrchestrator;
@@ -741,7 +734,7 @@ namespace VansGraphics
 
 		VansVKCommandBuffer m_VansVKVegetationCommandBuffer;
 		VansVKCommandBuffer m_VansVKEarlyAuxCommandBuffer;
-		VansVKCommandBuffer m_VansVKAsyncCloudCommandBuffer;
+		VansVKCommandBuffer m_VansVKAsyncAtmosphereCommandBuffer;
 		VansVKCommandBuffer m_VansVKAsyncHZBCommandBuffer;
 		VansVKCommandBuffer m_VansVKRayTracingCommandBuffer;
 		VansVKCommandBuffer m_VansVKGIDataCommandBuffer;

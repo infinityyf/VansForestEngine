@@ -1,7 +1,5 @@
 #pragma once
 
-
-
 #include "VulkanCore/VansShader.h"
 
 #include "VulkanCore/VansTexture.h"
@@ -46,54 +44,6 @@ namespace VansGraphics
 
 {
 	struct VansGISettings;
-
-	struct VansFogSettings
-
-	{
-
-		float fogDensity = 0.002f;
-
-		float heightFalloff = 0.08f;
-
-		float sunScatterScale = 0.3f;
-
-		float ambientScale = 0.5f;
-
-		float fogMinHeight = -100.0f;
-
-		float skyFogDistance = 10000.0f;
-
-	};
-
-
-
-	struct VansFogVolumeSettings
-
-	{
-
-		float density = 0.05f;
-
-		float anisotropy = 0.6f;
-
-		float scatterScale = 1.0f;
-
-		float ambientScale = 0.05f;
-
-		float volumeNear = 2.0f;
-
-		float volumeFar = 200.0f;
-
-		float slicePower = 2.0f;
-
-		float padding = 0.0f;
-
-		float fogBoxMin[4] = { -50.0f, -50.0f, -50.0f, 0.0f };
-
-		float fogBoxMax[4] = { 50.0f, 50.0f, 50.0f, 0.0f };
-
-	};
-
-
 
 	static constexpr uint32_t VANS_SSGI_MAX_GI_REGIONS = 8u;
 	static constexpr uint32_t VANS_SSGI_PROBE_CACHE_TILE_SIZE = 4u;
@@ -203,11 +153,10 @@ namespace VansGraphics
 
 		static constexpr const char* PUNCTUAL_SHADOW  = "punctualShadow";   // 点光/聚光阴影
 
-		static constexpr const char* FORWARD_OPAQUE_AFTER_DEFERRED = "forwardOpaqueAfterDeferred";
+		static constexpr const char* FORWARD_OPAQUE_PRE_ATMOSPHERE = "forwardOpaquePreAtmosphere";
 
 		static constexpr const char* FORWARD_TRANSPARENT = "transparent";   // forward transparent
 
-		static constexpr const char* SKY_BOX          = "skybox";           // sky box
 
 		static constexpr const char* DEFERRED         = "deferred";         // deferred lighting resolve
 
@@ -238,8 +187,6 @@ namespace VansGraphics
 	class VansPBRMaterial;
 
 	class VansTransparentMaterial;
-
-	class VansSkyBoxMaterial;
 
 	class VansSkinMaterial;
 
@@ -276,8 +223,6 @@ namespace VansGraphics
 		VAN_TRANSPARENT = 2,
 
 		VAN_POST_PROCESS = 3,
-
-		VAN_SKY_BOX = 4,
 
 		VAN_DEFERRED = 5,
 
@@ -398,154 +343,6 @@ namespace VansGraphics
 
 
 
-	struct alignas(16) VansCloudParamsGPU
-
-	{
-
-		float planetRadius         = 6340000.0f;
-
-		float seaLevel             = 200.0f;
-
-		float cloudMinHeight       = 1070.0f;     // Cloud base height (m)
-
-		float cloudMaxHeight       = 7410.0f;     // Cloud top height = base + thickness (m)
-
-
-
-		float density              = 0.025f;
-
-		float coverage             = 0.350f;
-
-		float sunBrightness        = 0.380f;
-
-		float phaseG               = 0.365f;
-
-
-
-		float mainTileMeters       = 43300.0f;
-
-		float detailTileMeters     = 2200.0f;
-
-		float mainHeightScale      = 0.260f;
-
-		float detailHeightScale    = 3.070f;
-
-
-
-		float thresholdLowCoverage = 0.115f;      // Overcast threshold
-
-		float thresholdHighCoverage = 0.720f;     // Clear threshold
-
-		float densityRemapLow      = 0.425f;
-
-		float densityRemapHigh     = 0.915f;
-
-
-
-		float mainErosionStrength  = 1.160f;
-
-		float detailErosionStrength = 1.340f;
-
-		float edgeErosionStrength  = 0.500f;
-
-		float verticalShapePower   = 1.420f;
-
-
-
-		float detailErosionLow     = 0.280f;
-
-		float detailErosionHigh    = 0.810f;
-
-		float detailEdgeStrength   = 0.270f;
-
-		float shadowDensityScale   = 0.870f;
-
-
-
-		float sigmaTRef            = 1.000f;
-
-		float viewAbsorption       = 1.000f;
-
-		float lightAbsorption      = 1.000f;
-
-		float singleScatteringAlbedo = 0.999f;
-
-
-
-		float forwardEccentricity  = 0.700f;
-
-		float backwardEccentricity = 0.250f;
-
-		float msAttenuation        = 0.500f;
-
-		float msContribution       = 0.500f;
-
-
-
-		float msEccentricity       = 0.500f;
-
-		float scatteringTintR      = 1.000f;
-
-		float scatteringTintG      = 1.000f;
-
-		float scatteringTintB      = 1.000f;
-
-
-
-		float scatterSourceODScale = 0.120f;
-
-		float scatterSourceCurvePow = 1.000f;
-
-		float aoUpwardScale        = 1.000f;
-
-		float ambientBottomStrength = 0.100f;
-
-
-
-		float ambientTopStrength   = 0.350f;
-
-		float ambientDuskWarmth    = 0.650f;
-
-		float boundaryConfidence   = 0.750f;
-
-		float boundaryWrap         = 0.350f;
-
-
-
-		float phiFwdIntensity      = 0.800f;
-
-		float phiFwdDepthPow       = 1.000f;
-
-		float phiFwdDepthBias      = 0.050f;
-
-		float phiFwdMSBuildScale   = 1.000f;
-
-
-
-		float phiFwdCompress       = 1.000f;
-
-		float phiFwdMaxDistance    = 6000.000f;
-
-		float phiFwdConeRatio      = 1.450f;
-
-		float phiFwdMinStep        = 80.000f;
-
-
-
-		float lightStepCount       = 8.000f;
-
-		float boundaryGradientStep = 250.000f;
-
-		float boundaryGradientStrength = 0.000f;
-
-		float shadingDebugMode     = 0.000f;
-
-	};
-
-	static_assert(sizeof(VansCloudParamsGPU) == 224, "Cloud parameter layout must match CloudParamsUBO");
-
-
-
 	class VansMaterialManager
 
 	{
@@ -641,15 +438,7 @@ namespace VansGraphics
 
 		static constexpr const char* RT_SSAO_FILTER_RESULT = "Runtime.SSAO.FilterResult";
 
-		static constexpr const char* RT_VOLUMETRIC_FOG_RESULT = "Runtime.VolumetricFog.Result";
-
 		static constexpr const char* RT_RECT_LIGHT_EMISSIVE = "Runtime.RectLight.EmissiveArray";
-
-		static constexpr const char* RT_FOG_VOXEL_INJECTION = "Runtime.Fog.VoxelInjection";
-
-		static constexpr const char* RT_FOG_VOXEL_INJECTION_HISTORY = "Runtime.Fog.VoxelInjectionHistory";
-
-		static constexpr const char* RT_FOG_VOXEL_RAYMARCH  = "Runtime.Fog.VoxelRayMarch";
 
 		static constexpr const char* RT_HAIR_VIS0           = "Runtime.Hair.Vis0";
 
@@ -669,11 +458,6 @@ namespace VansGraphics
 
 
 
-		static constexpr const char* RT_CLOUD_BUFFER         = "Runtime.Cloud.Buffer";
-
-		static constexpr const char* RT_CLOUD_MAIN_NOISE     = "Runtime.Cloud.MainNoise3D";
-
-		static constexpr const char* RT_CLOUD_DETAIL_NOISE   = "Runtime.Cloud.DetailNoise3D";
 		static constexpr const char* RT_EXPOSURE_LUMINANCE   = "Runtime.PostProcess.Exposure.Luminance";
 		static constexpr const char* RT_EXPOSURE_CURRENT     = "Runtime.PostProcess.Exposure.Current";
 		static constexpr const char* RT_UPSCALER_EXPOSURE    = "Runtime.Upscaler.ExposureMultiplier";
@@ -744,8 +528,6 @@ namespace VansGraphics
 			const std::vector<VansMaterial*>& activeMaterials);
 		bool UploadRenderMaterialFrameData(
 			const VansRenderMaterialFrameData& frameData);
-		bool UploadAtmosphereFrameData(const VansAtmospherePBRParam& payload);
-
 		void ResetSkinProfileLUTCache();
 		bool ResolveSkinProfileLUTForMaterial(
 			VansSkinMaterial& skin,
@@ -781,14 +563,6 @@ namespace VansGraphics
 		bool RewriteGlobalBindlessTextureDescriptors(
 			VkDescriptorSet sceneGlobalDescriptorSet = VK_NULL_HANDLE);
 
-		const VansFogSettings& GetFogSettings() const { return m_FogSettings; }
-
-		const VansFogVolumeSettings& GetFogVolumeSettings() const { return m_FogVolumeSettings; }
-
-		void ApplyFogSettings(const VansFogSettings& settings);
-
-		void ApplyFogVolumeSettings(const VansFogVolumeSettings& settings);
-
 		VansScreenSpacePunctualShadowSettings GetScreenSpacePunctualShadowSettings() const;
 
 		void ApplyScreenSpacePunctualShadowSettings(const VansScreenSpacePunctualShadowSettings& settings);
@@ -796,17 +570,6 @@ namespace VansGraphics
 		void SetScreenSpaceShadowExtent(uint32_t width, uint32_t height);
 
 
-
-		VkDescriptorSetLayout m_MaterialAtmosphereDataLayout = VK_NULL_HANDLE;
-
-		std::vector<VkDescriptorSet> m_MaterialAtmosphereDataDescriptorSets;
-
-
-
-
-		VkDescriptorSetLayout m_BRDFInterationTexSetLayout = VK_NULL_HANDLE;
-
-		std::vector<VkDescriptorSet> m_BRDFInterationTextDescriptorSets;
 
 
 
@@ -875,44 +638,6 @@ namespace VansGraphics
 
 
 
-		VkDescriptorSetLayout m_VolumetricFogSetLayout = VK_NULL_HANDLE;
-
-		std::vector<VkDescriptorSet> m_VolumetricFogDescriptorSets;
-
-		VansVKBuffer m_FogParamsCBBuffer;
-
-		VansFogSettings m_FogSettings;
-
-
-
-		// --- Voxel Fog (Light Injection + Ray March) ---
-
-		VkDescriptorSetLayout m_FogLightInjectionSetLayout = VK_NULL_HANDLE;
-
-		std::vector<VkDescriptorSet> m_FogLightInjectionDescriptorSets;
-
-
-
-		VkDescriptorSetLayout m_FogRayMarchSetLayout = VK_NULL_HANDLE;
-
-		std::vector<VkDescriptorSet> m_FogRayMarchDescriptorSets;
-
-
-
-		VansVKBuffer m_FogVolumeParamsCBBuffer;   // FogVolumeParams UBO (density, anisotropy, scatter, ambient)
-
-		VansFogVolumeSettings m_FogVolumeSettings;
-
-		uint32_t     m_FogTemporalFrame = 0;       // ping-pong frame index for fog injection
-
-		bool         m_FogHistoryValid = false;    // invalidated on creation/scene change
-
-
-
-
-
-
-
 		VansVKBuffer m_GlobalPBRDataBuffer;
 		VansVKBuffer m_GlobalClothDataBuffer;
 		VansVKBuffer m_GlobalTreeLeafDataBuffer;
@@ -956,19 +681,11 @@ namespace VansGraphics
 
 		VkDescriptorSet m_VideoBindlessDescriptorSet = VK_NULL_HANDLE;
 
-
-
-
+		// Git 原有 IBL 资源：启动时从 SkyBox 一次性生成，运行时只采样。
 		VansTexture* m_PreConvDiffuse = nullptr;
-
-		// Unfiltered sky radiance used by ray-traced transport.  This must stay
-		// separate from m_PreConvDiffuse, which already stores hemispherical
-		// irradiance for raster IBL.
 		VansTexture* m_EnvironmentRadiance = nullptr;
-
-
-
 		VansTexture* m_PreConvSpecular = nullptr;
+
 
 
 
@@ -988,7 +705,6 @@ namespace VansGraphics
 
 
 
-		VansTexture* m_MoonAlbedoTexture = nullptr;
 
 
 
@@ -1049,8 +765,6 @@ namespace VansGraphics
 
 
 		VansVKBuffer m_SSGICBBuffer;
-
-
 
 		VansVKBuffer m_SkySHResultBuffer;
 
@@ -1127,26 +841,6 @@ namespace VansGraphics
 
 
 		VansComputeShader* m_BilateralFilterShader;
-
-
-
-		VansComputeShader* m_VolumetrcFogShader;
-
-
-
-		VansComputeShader* m_FogLightInjectionShader;
-
-		VansComputeShader* m_FogRayMarchShader;
-
-		VansComputeShader*             m_CloudRayMarchShader         = nullptr;
-
-		VkDescriptorSetLayout          m_CloudRayMarchSetLayout       = VK_NULL_HANDLE;
-
-		std::vector<VkDescriptorSet>   m_CloudRayMarchDescriptorSets;
-
-		VansVKBuffer                   m_CloudParamsCBBuffer;   // CloudParams UBO
-
-		VansCloudParamsGPU            m_CloudParams;
 
 
 
@@ -1243,26 +937,10 @@ namespace VansGraphics
 
 
 
-		VansVKBuffer m_AtmospherePBRDataBuffer;
-
-
 
 		
 
 	public:
-
-
-
-		// ?? PBR LUT ????
-		void UpdatePBRLutDescriptorSets();
-
-
-
-		void UpdateAtmosphereDescriptorSets();
-
-
-
-		void UploadCloudParamsToGPU();
 
 
 
@@ -1521,49 +1199,6 @@ namespace VansGraphics
 		VansTexture* m_ThicknessTexture = nullptr;
 
 		VansTexture* m_ReflectionTexture = nullptr;
-
-	};
-
-
-
-	// ============================================================
-
-	// VansSkyBoxMaterial - sky / atmosphere (type 4)
-
-	// ============================================================
-
-	class VansSkyBoxMaterial : public VansMaterial
-
-	{
-
-	public:
-
-		VansAtmospherePBRParam m_AtmospherePBRParam;
-
-		float m_SunDiskAngularRadius = 0.00465f;
-
-		float m_SunDiskFeather = 0.00075f;
-
-		float m_SunDiskRadianceScale = 1.0f;
-
-		float m_SunDiskOcclusionStrength = 6.0f;
-
-		bool m_SunDiskEnabled = true;
-
-		float m_MoonDiskAngularRadius = 0.00465f;
-
-		float m_MoonDiskFeather = 0.00075f;
-
-		float m_MoonDiskRadianceScale = 0.00008f;
-
-		float m_MoonDiskOcclusionStrength = 6.0f;
-
-		bool m_MoonDiskEnabled = true;
-
-
-
-		VansAtmospherePBRParam BuildAtmosphereFrameData(
-			const VansDirectionalLight* directionalLight) const;
 
 	};
 

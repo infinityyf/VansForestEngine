@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../AssetCore/Serialization/VansSerializedValue.h"
+#include "VansSceneLocalVolumetricFogComponentConfig.h"
 #include "VansSceneParentReference.h"
 
 #include <array>
@@ -49,11 +50,26 @@ struct SceneModelEntityFactoryResult
     std::vector<VansSerializedValue> entities;
 };
 
+struct SceneLocalVolumetricFogEntityFactoryRequest
+{
+    std::string entityName = "Local Volumetric Fog";
+    std::string transformComponentGuid;
+    std::string fogComponentGuid;
+    std::array<float, 3> position = { 0.0f, 0.0f, 0.0f };
+    std::array<float, 4> rotation = { 0.0f, 0.0f, 0.0f, 1.0f };
+    std::array<float, 3> scale = { 20.0f, 2.0f, 20.0f };
+    VansSceneLocalVolumetricFogComponentConfig settings;
+};
+
 class VansSceneEntityFactory
 {
 public:
     static VansSerializedValue BuildEmptyEntity(
         const SceneEmptyEntityFactoryRequest& request,
+        const std::string& entityId = {});
+
+    static VansSerializedValue BuildLocalVolumetricFogEntity(
+        const SceneLocalVolumetricFogEntityFactoryRequest& request,
         const std::string& entityId = {});
 
     static SceneModelEntityFactoryResult BuildSingleModelEntity(

@@ -19,6 +19,7 @@ layout(location = 7) in vec2  instPadding;     // m_Padding（保留）
 // ── 输出到片元着色器 ─────────────────────────────────────────────────────
 layout(location = 0) out vec4 fragColor;
 layout(location = 1) out vec2 fragUV;
+layout(location = 2) out vec3 fragWorldPos;
 
 // ── Push Constants（精灵表列/行数） ─────────────────────────────────────
 layout(push_constant) uniform ParticlePushConst
@@ -60,4 +61,5 @@ void main()
     fragUV = (inUV + vec2(col, row)) * frameSize;
 
     fragColor = instColor;
+    fragWorldPos = worldPos;
 }

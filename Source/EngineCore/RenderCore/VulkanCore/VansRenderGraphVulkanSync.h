@@ -4,6 +4,7 @@
 #include "vulkan/vulkan.h"
 
 #include <cstdint>
+#include <initializer_list>
 #include <string>
 #include <vector>
 
@@ -73,6 +74,11 @@ namespace VansGraphics
 	public:
 		static VansVulkanRenderGraphSyncPlan BuildSyncPlan(const VansRenderGraphBarrierPlan& barrierPlan);
 		static VansVulkanResourceSyncState MapResourceUsage(VansRenderResourceUsage usage);
+		// 资源的逻辑访问必须同时决定 VkImage 的物理用途，避免图上声明
+		// StorageWrite、实际图像却没有 STORAGE_BIT 的未定义行为。
+		static VkImageUsageFlags MapImageUsage(VansRenderResourceUsage usage);
+		static VkImageUsageFlags BuildImageUsage(
+			std::initializer_list<VansRenderResourceUsage> usages);
 
 	private:
 		static VansVulkanSyncDependency MapDependency(const VansRenderGraphDependency& dependency);

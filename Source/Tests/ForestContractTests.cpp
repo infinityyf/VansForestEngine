@@ -1,5 +1,6 @@
 #include "../EngineCore/AssetCore/VansAssetDatabase.h"
 #include "../EngineCore/AssetCore/VansAssetResolver.h"
+#include "../EngineCore/AssetCore/VansBuiltInAssetCatalog.h"
 #include "../EngineCore/AssetCore/VansMaterialAuthoringAsset.h"
 #include "../EngineCore/AssetCore/VansSkinProfile.h"
 #include "../EngineCore/AssetCore/VansSkeletalMeshImportSettings.h"
@@ -32,6 +33,8 @@
 #include "../EngineCore/RenderCore/GICore/VansGISettings.h"
 #include "../EngineCore/RenderCore/VulkanCore/VansVideoThumbnail.h"
 #include "../EngineCore/RenderCore/VulkanCore/VansFrameSubmitOrchestrator.h"
+#include "../EngineCore/RenderCore/VulkanCore/VansRenderGraphVulkanSync.h"
+#include "../EngineCore/RenderCore/VulkanCore/VansRenderPass.h"
 #include "../EngineCore/RenderCore/VulkanCore/VansRenderPassCatalog.h"
 #include "../EngineCore/RenderCore/FidelityFXCore/VansFSRTypes.h"
 #include "../EngineCore/RenderCore/UpscalingCore/VansUpscalerHistoryState.h"
@@ -45,6 +48,8 @@
 #include "../EngineCore/RenderCore/VulkanCore/VansMainCameraVisibilityState.h"
 #include "../EngineCore/RenderCore/VansRenderFrame.h"
 #include "../EngineCore/RenderCore/VansRenderSystem.h"
+#include "../EngineCore/RenderCore/WaterCore/VansWaterConfig.h"
+#include "../EngineCore/RenderCore/AtmosphereCore/VansAtmosphereMath.h"
 #include "../EngineCore/RenderCore/SceneBuild/VansSceneResourceArtifactPrewarmer.h"
 #include "../EngineCore/RenderCore/VansTemporalProjection.h"
 #include "../EngineCore/RenderCore/ShadowCore/VansPunctualShadowManager.h"
@@ -62,6 +67,7 @@
 #include "../EngineCore/SceneRuntime/Transform/VansTransformGraph.h"
 #include "../EngineCore/SceneCore/VansPackagedResourcePlan.h"
 #include "../EngineCore/SceneCore/VansSceneContentBuildPlan.h"
+#include "../EngineCore/SceneCore/VansSceneEnvironmentNodeConfigReader.h"
 #include "../EngineCore/SceneCore/VansSceneCameraMediaComponentReader.h"
 #include "../EngineCore/SceneCore/VansSceneRuntimeProjection.h"
 #include "../EngineCore/SceneCore/VansSceneAssetDependencyBuilder.h"
@@ -152,6 +158,8 @@
 
 namespace
 {
+Vans::VansSerializedValue BuildValidEnvironmentSettingsForTest();
+
 class TestRenderSystemDevice final : public VansGraphics::VansGraphicsDevice
 {
 public:
@@ -1584,7 +1592,9 @@ bool TestSkinProfileMaterialProjectionContract()
 
 	const Value sceneRoot = Value::Object({
 		{ "schemaVersion", Value::Int(Vans::VansSceneSchemaVersion) },
-		{ "settings", Value::Object({}) },
+		{ "settings", Value::Object({
+			{ "environment", BuildValidEnvironmentSettingsForTest() }
+		}) },
 		{ "entities", Value::Array({}) }
 	});
 
@@ -1705,6 +1715,89 @@ bool TestSkinProfileLUTGenerationContract()
 			static_cast<size_t>((kTestLUTSize / 2) - 1)) * 4u;
 	return Expect(neutralPixels[terminatorOffset] > neutralPixels[terminatorOffset + 2u],
 		"Generated skin LUT did not preserve stronger red scatter near the terminator");
+}
+
+bool TestSkinDefaultTextureContract()
+{
+	using namespace Vans;
+
+	struct ExpectedTexture
+	{
+		const char* alias;
+		const char* guid;
+		const char* sourcePath;
+	};
+	const ExpectedTexture expectedTextures[] = {
+		{
+			"defaultSkinCavity",
+			"5f6d5237-1a6b-4b98-8b22-7cb738d88e09",
+			"EngineAssets/Textures/Default/defaultSkinCavity.png"
+		},
+		{
+			"defaultSkinMask",
+			"b4b0a914-7e03-4b9a-92e9-fd6e73f32842",
+			"EngineAssets/Textures/Default/defaultSkinMask.png"
+		}
+	};
+
+	const auto& builtIns = VansBuiltInAssetCatalog::Entries();
+	fs::path engineRoot;
+	for (fs::path cursor = fs::current_path(); !cursor.empty() && engineRoot.empty();
+		cursor = cursor.parent_path())
+	{
+		for (const fs::path& candidate : { cursor, cursor / "ForestEngine" })
+		{
+			if (fs::is_regular_file(candidate / expectedTextures[0].sourcePath))
+			{
+				engineRoot = candidate;
+				break;
+			}
+		}
+		if (cursor == cursor.root_path())
+			break;
+	}
+	if (!Expect(!engineRoot.empty(), "Skin default textures are missing from EngineAssets"))
+		return false;
+
+	TemporaryDirectory artifactDirectory;
+	VansAssetDatabase builtInDatabase(
+		engineRoot / "EngineAssets", artifactDirectory.path / "Artifacts");
+	for (const ExpectedTexture& expected : expectedTextures)
+	{
+		const auto entry = std::find_if(
+			builtIns.begin(), builtIns.end(), [&](const VansBuiltInAssetEntry& candidate)
+			{
+				return candidate.runtimeAlias != nullptr &&
+					std::string(candidate.runtimeAlias) == expected.alias;
+			});
+		if (!Expect(entry != builtIns.end() &&
+			entry->type == VansAssetType::Texture &&
+			std::string(entry->guid) == expected.guid &&
+			std::string(entry->sourcePath) == expected.sourcePath &&
+			VansBuiltInAssetCatalog::IsReservedRuntimeAlias(expected.alias),
+			"Skin default texture is not a stable built-in asset contract"))
+		{
+			return false;
+		}
+
+		std::string assetError;
+		if (!Expect(builtInDatabase.RegisterOrRefresh(
+			engineRoot / expected.sourcePath,
+			VansAssetOperationPolicy::ReadOnly(), assetError),
+			assetError.empty() ? "Skin default texture could not be indexed" : assetError.c_str()))
+		{
+			return false;
+		}
+		const std::optional<VansAssetRecord> record =
+			builtInDatabase.Find(engineRoot / expected.sourcePath);
+		if (!Expect(record && record->type == VansAssetType::Texture &&
+			record->guid.ToString() == expected.guid,
+			"Skin default texture meta does not match its built-in catalog entry"))
+		{
+			return false;
+		}
+	}
+	return true;
 }
 
 bool TestAssetPolicies()
@@ -2496,6 +2589,51 @@ bool TestEmptySceneEntityFactoryContract()
         && decodedBoneParent.animationComponentGuid == boneParent.animationComponentGuid
         && decodedBoneParent.anchorGuid == boneParent.anchorGuid,
         "Empty child factory did not preserve its canonical bone parent reference");
+}
+
+bool TestLocalVolumetricFogEntityFactoryContract()
+{
+	Vans::SceneLocalVolumetricFogEntityFactoryRequest request;
+	request.entityName = "Ground Fog";
+	request.transformComponentGuid = "ground-fog-transform";
+	request.fogComponentGuid = "ground-fog-component";
+	request.position = { -3.0f, 0.25f, -10.0f };
+	request.scale = { 54.0f, 2.5f, 40.0f };
+	request.settings.visibilityDistanceMeters = 150.0f;
+	request.settings.edgeFadeDistanceMeters = 0.6f;
+	request.settings.skyLightingScale = 0.7f;
+	request.settings.receiveCloudShadows = true;
+	const Vans::VansSerializedValue entity =
+		Vans::VansSceneEntityFactory::BuildLocalVolumetricFogEntity(
+			request, "ground-fog-entity");
+	const Vans::VansSerializedValue* components =
+		Vans::FindObjectField(entity, "components");
+	if (!Expect(
+		Vans::ReadSerializedStringField(entity, "id") == "ground-fog-entity" &&
+		Vans::ReadSerializedStringField(entity, "name") == "Ground Fog" &&
+		components && components->kind == Vans::VansSerializedValue::Kind::Array &&
+		components->arrayItems.size() == 2,
+		"Local fog factory did not produce the canonical entity structure"))
+	{
+		return false;
+	}
+	const Vans::VansSerializedValue& transform = components->arrayItems[0];
+	const Vans::VansSerializedValue& fog = components->arrayItems[1];
+	const Vans::VansSerializedValue* fogData = Vans::FindObjectField(fog, "data");
+	const Vans::VansSerializedValue* visibility = fogData
+		? Vans::FindObjectField(*fogData, "visibilityDistanceMeters") : nullptr;
+	const Vans::VansSerializedValue* edgeFade = fogData
+		? Vans::FindObjectField(*fogData, "edgeFadeDistanceMeters") : nullptr;
+	return Expect(
+		Vans::ReadSerializedStringField(transform, "id") == "ground-fog-transform" &&
+		Vans::ReadSerializedStringField(transform, "type") == "Transform" &&
+		Vans::ReadSerializedStringField(fog, "id") == "ground-fog-component" &&
+		Vans::ReadSerializedStringField(fog, "type") == "LocalVolumetricFog" &&
+		Vans::ReadSerializedBoolField(fog, "enabled", false) &&
+		visibility && std::abs(Vans::ReadSerializedNumber(*visibility) - 150.0) < 1.0e-6 &&
+		edgeFade && std::abs(Vans::ReadSerializedNumber(*edgeFade) - 0.6) < 1.0e-6 &&
+		Vans::ReadSerializedBoolField(*fogData, "receiveCloudShadows", false),
+		"Local fog factory did not serialize its physical authoring parameters");
 }
 
 bool TestTransformGraphAnchorContract()
@@ -5781,15 +5919,9 @@ bool TestDemoHallSurvivalBackAxeSceneContract()
 	if (!Expect(handSocket != survivalRig.sockets.end()
 		&& handSocket->guid == kRightHandAxeSocketGuid
 		&& handSocket->boneGuid == "f5b8c223-b747-5967-8751-2efed3816b1c"
-		&& glm::length(handSocket->positionLocal
-			- glm::vec3(14.579931f, -114.222816f, -19.733490f)) <= 1.0e-4f
 		&& glm::length(handSocket->scaleLocal - glm::vec3(1.0f)) <= 1.0e-5f
-		&& std::abs(handSocket->rotationLocal.w - 1.0f) <= 1.0e-5f
-		&& glm::length(glm::vec3(
-			handSocket->rotationLocal.x,
-			handSocket->rotationLocal.y,
-			handSocket->rotationLocal.z)) <= 1.0e-5f,
-		"DemoHall Survival RightHand_Axe Socket must compensate the Fire Axe middle-handle grip"))
+		&& std::abs(glm::length(handSocket->rotationLocal) - 1.0f) <= 1.0e-5f,
+		"DemoHall Survival RightHand_Axe Socket must use a normalized rigid local transform"))
 	{
 		return false;
 	}
@@ -5832,6 +5964,123 @@ bool TestDemoHallSurvivalBackAxeSceneContract()
 	}
 	if (!Expect(handSocketCompilesToWeaponBone,
 		"DemoHall Survival RightHand_Axe Socket did not compile to the weapon_r runtime bone"))
+	{
+		return false;
+	}
+
+	VansAnimationClip attackClip;
+	Skeleton attackSkeleton;
+	if (!Expect(VansAnimationClipIO::Load(
+		(projectRoot / "Assets" / "Animations" / "Combat" / "CloseCombat"
+			/ "A_Crowbar_Attack_Unreal_Take.vclip").string(), attackClip, attackSkeleton),
+		"DemoHall attack clip could not be loaded for axe grip diagnostics"))
+	{
+		return false;
+	}
+	VansRetargetProfileAsset attackRetargetProfile;
+	std::string attackRetargetError;
+	if (!Expect(VansRetargetProfileStorage::Load(
+		projectRoot / "Assets" / "Retarget" / "RTG_UEFN_To_Survival.vretarget",
+		attackRetargetProfile, attackRetargetError), attackRetargetError.c_str()))
+	{
+		return false;
+	}
+	VansRetargetRuntimeDesc attackRetargetDesc;
+	attackRetargetDesc.translationScaleMode = attackRetargetProfile.translationScaleMode;
+	attackRetargetDesc.translationScale = attackRetargetProfile.explicitTranslationScale;
+	attackRetargetDesc.rootAlignment = attackRetargetProfile.rootAlignment;
+	attackRetargetDesc.targetModelSpaceAlignment =
+		attackRetargetProfile.targetModelSpaceAlignment;
+	attackRetargetDesc.limbChains = attackRetargetProfile.limbChains;
+	VansRetargetProcessor attackRetargetProcessor;
+	if (!Expect(attackRetargetProcessor.Build(attackSkeleton, survivalSkeleton,
+		compiledSurvivalRig, attackRetargetDesc),
+		"DemoHall attack retarget processor could not be built for axe grip diagnostics"))
+	{
+		return false;
+	}
+	const int targetWeapon = survivalSkeleton.boneNameToIndex.at("weapon_r");
+	const int targetHandL = survivalSkeleton.boneNameToIndex.at("hand_l");
+	const int targetHandR = survivalSkeleton.boneNameToIndex.at("hand_r");
+	const int targetMiddleR = survivalSkeleton.boneNameToIndex.at("middle_01_r");
+	const int targetIndexR = survivalSkeleton.boneNameToIndex.at("index_01_r");
+	const int targetRingR = survivalSkeleton.boneNameToIndex.at("ring_01_r");
+	const int targetPinkyR = survivalSkeleton.boneNameToIndex.at("pinky_01_r");
+	const int targetMiddleL = survivalSkeleton.boneNameToIndex.at("middle_01_l");
+	const int targetIndexL = survivalSkeleton.boneNameToIndex.at("index_01_l");
+	const int targetRingL = survivalSkeleton.boneNameToIndex.at("ring_01_l");
+	const int targetPinkyL = survivalSkeleton.boneNameToIndex.at("pinky_01_l");
+	glm::vec3 sampledRightPalmCenter(0.0f);
+	glm::vec3 sampledHandleAxis(0.0f);
+	std::size_t sampledGripPoseCount = 0;
+	for (int sampleIndex = 0; sampleIndex <= 10; ++sampleIndex)
+	{
+		VansAnimationSampleRequest request;
+		request.currentTime = attackClip.duration * static_cast<float>(sampleIndex) / 10.0f;
+		request.endTime = attackClip.duration;
+		request.loop = false;
+		VansPosePayload payload;
+		if (!VansAnimationSampler::Sample(attackClip, attackSkeleton, request, payload))
+			continue;
+		std::vector<glm::mat4> sourceModels;
+		VansPoseMath::ToMatrices(payload.localPose, sourceModels);
+		for (int boneIndex : attackSkeleton.topologicalOrder)
+		{
+			const int parentIndex = attackSkeleton.bones[boneIndex].parentIndex;
+			if (parentIndex >= 0)
+				sourceModels[boneIndex] = sourceModels[parentIndex] * sourceModels[boneIndex];
+		}
+		std::vector<glm::mat4> targetModels;
+		if (!attackRetargetProcessor.Process(
+			sourceModels, attackSkeleton, survivalSkeleton, targetModels))
+		{
+			continue;
+		}
+		const glm::mat4 weaponInverse = glm::inverse(targetModels[targetWeapon]);
+		const glm::vec3 leftInWeapon = glm::vec3(weaponInverse
+			* glm::vec4(glm::vec3(targetModels[targetHandL][3]), 1.0f));
+		const glm::vec3 rightInWeapon = glm::vec3(weaponInverse
+			* glm::vec4(glm::vec3(targetModels[targetHandR][3]), 1.0f));
+		const auto boneInWeapon = [&](int boneIndex)
+		{
+			return glm::vec3(weaponInverse
+				* glm::vec4(glm::vec3(targetModels[boneIndex][3]), 1.0f));
+		};
+		const glm::vec3 rightFingerCentroid = (boneInWeapon(targetMiddleR)
+			+ boneInWeapon(targetIndexR) + boneInWeapon(targetRingR)
+			+ boneInWeapon(targetPinkyR)) * 0.25f;
+		const glm::vec3 leftFingerCentroid = (boneInWeapon(targetMiddleL)
+			+ boneInWeapon(targetIndexL) + boneInWeapon(targetRingL)
+			+ boneInWeapon(targetPinkyL)) * 0.25f;
+		const glm::vec3 rightPalmCenter = (rightInWeapon + rightFingerCentroid) * 0.5f;
+		const glm::vec3 leftPalmCenter = (leftInWeapon + leftFingerCentroid) * 0.5f;
+		const glm::vec3 handSeparation = leftPalmCenter - rightPalmCenter;
+		const float handSeparationLength = glm::length(handSeparation);
+		if (handSeparationLength <= 1.0e-5f)
+			continue;
+		sampledRightPalmCenter += rightPalmCenter;
+		sampledHandleAxis += handSeparation / handSeparationLength;
+		++sampledGripPoseCount;
+	}
+	if (!Expect(sampledGripPoseCount == 11,
+		"DemoHall attack clip did not provide the expected retargeted two-hand grip samples"))
+	{
+		return false;
+	}
+	sampledRightPalmCenter /= static_cast<float>(sampledGripPoseCount);
+	sampledHandleAxis = glm::normalize(sampledHandleAxis);
+	// Fire Axe 的斧头在 -Y 端；右手应握在 +Y 柄尾下方约 13 cm，并让 -Y 朝向左手。
+	const glm::vec3 axeRightHandGripLocal(-14.579931f, 145.417932f, 20.369572f);
+	const glm::quat configuredRotation = glm::normalize(handSocket->rotationLocal);
+	const glm::quat expectedRotation = glm::rotation(
+		glm::vec3(0.0f, 1.0f, 0.0f), sampledHandleAxis)
+		* glm::angleAxis(3.14159265358979323846f, glm::vec3(0.0f, 0.0f, 1.0f));
+	const glm::vec3 configuredGripCenter = handSocket->positionLocal
+		+ configuredRotation * axeRightHandGripLocal;
+	if (!Expect(glm::length(configuredGripCenter - sampledRightPalmCenter) <= 0.01f
+		&& std::abs(glm::dot(configuredRotation, expectedRotation)) >= 0.99999f,
+		"DemoHall Survival RightHand_Axe Socket must place the lower handle in the right palm "
+		"and align the Fire Axe -Y head direction with the retargeted two-hand attack grip"))
 	{
 		return false;
 	}
@@ -6140,8 +6389,9 @@ bool TestProjectRetargetOwnedSkeletonAndSkinningContract()
 
 			std::vector<glm::mat4> translatedSource = sourceBindModels;
 			const int sourceRoot = sourceNodeSkeleton.boneNameToIndex.at("root");
+			const float authoredRootTranslation = 5.0f;
 			const glm::mat4 sourceTranslation = glm::translate(
-				glm::mat4(1.0f), glm::vec3(5.0f, 0.0f, 0.0f));
+				glm::mat4(1.0f), glm::vec3(authoredRootTranslation, 0.0f, 0.0f));
 			for (std::size_t boneIndex = 0; boneIndex < sourceNodeSkeleton.bones.size(); ++boneIndex)
 			{
 				int ancestor = static_cast<int>(boneIndex);
@@ -6153,9 +6403,10 @@ bool TestProjectRetargetOwnedSkeletonAndSkinningContract()
 			std::vector<glm::mat4> translatedTarget;
 			if (!Expect(processor.Process(translatedSource, sourceNodeSkeleton,
 				targetNodeSkeleton, translatedTarget)
-				&& glm::length(footCenter(translatedTarget) - bindFootCenter) > 1.0f,
+				&& std::abs(glm::length(footCenter(translatedTarget) - bindFootCenter)
+					- authoredRootTranslation) <= 1.0e-3f,
 				(std::string(fixture.label)
-					+ " feetToOwner incorrectly removed animated/root horizontal displacement").c_str()))
+					+ " feetToOwner changed the authored component-space Root Motion magnitude").c_str()))
 			{
 				return false;
 			}
@@ -7593,9 +7844,95 @@ bool TestAnimationGraphSetSwitchRuntimeContract()
 		&& !controller.IsGraphSetTransitioning(),
 		"Queued Graph Set transition did not atomically promote its target"))
 		return false;
-	return Expect(controller.SwitchGraphSet("missing")
+	if (!Expect(controller.SwitchGraphSet("missing")
 		== VansGraphSetSwitchResult::UnknownGraphSet,
-		"Graph Set runtime accepted an unknown stable ID");
+		"Graph Set runtime accepted an unknown stable ID"))
+		return false;
+
+	// Root Motion 生产与 Motion Matching 解耦：CCT 在脚本/物理提交阶段提前
+	// 评估任意 Graph，常规动画阶段不得重复推进，也不得把增量解释为绝对位置。
+	auto makeRootMotionClip = [](const std::string& name, float rootTravel)
+	{
+		VansAnimationClip clip;
+		clip.clipName = name;
+		clip.duration = 2.0f;
+		clip.rootMotion.enabled = true;
+		clip.rootMotion.boneName = "root";
+		clip.rootMotion.extractTranslation = true;
+		clip.rootMotion.extractRotation = true;
+		clip.boneKeyframes.resize(3);
+		for (int bone = 0; bone < 3; ++bone)
+		{
+			const float end = bone == 0 ? rootTravel : 0.0f;
+			clip.boneKeyframes[bone] = {
+				{ 0.0f, glm::vec3(0.0f),
+					glm::quat(1.0f, 0.0f, 0.0f, 0.0f), glm::vec3(1.0f) },
+				{ 2.0f, glm::vec3(end, 0.0f, 0.0f),
+					glm::quat(1.0f, 0.0f, 0.0f, 0.0f), glm::vec3(1.0f) }
+			};
+		}
+		return clip;
+	};
+
+	VansAnimationController characterMotionController;
+	characterMotionController.AddClip(
+		"RootAttack", makeRootMotionClip("RootAttack", 100.0f));
+	characterMotionController.AddClip(
+		"Idle", makeRootMotionClip("Idle", 0.0f));
+	VansAnimationLayerSetup motionBase;
+	motionBase.definition.id = "layer-base";
+	motionBase.definition.name = "Base";
+	motionBase.definition.kind = VansAnimationLayerKind::Base;
+	motionBase.definition.rootMotion = VansLayerRootMotionMode::Base;
+	std::vector<VansAnimationLayerSetup> motionLayers;
+	motionLayers.push_back(std::move(motionBase));
+	std::vector<VansAnimationGraphSetSetup> motionGraphSets;
+	motionGraphSets.push_back(makeGraphSet(
+		"root-attack", "graph-root-attack", "RootAttack"));
+	motionGraphSets.push_back(makeGraphSet("idle", "graph-idle", "Idle"));
+	VansGraphSetTransitionPolicy rootTransition;
+	rootTransition.duration = 0.1f;
+	rootTransition.curve = VansGraphSetBlendCurve::Linear;
+	rootTransition.phase = VansGraphSetPhasePolicy::MatchNormalizedTime;
+	rootTransition.rootMotion = VansGraphSetRootMotionPolicy::IncomingOnly;
+	if (!Expect(characterMotionController.SetAnimationGraphSets(
+		std::move(motionLayers), std::move(motionGraphSets), "root-attack",
+		rootTransition, {}, error), error.c_str()))
+		return false;
+	characterMotionController.EnableRootMotion(true);
+	VansAnimationNode characterMotionNode("CharacterMotionContract");
+	characterMotionNode.SetSkeleton(skeleton);
+	if (!Expect(characterMotionNode.SetController(&characterMotionController),
+		"Character motion fixture could not bind its controller"))
+		return false;
+	characterMotionNode.Play(VansAnimationEvaluationPurpose::Gameplay);
+	Vans::VansCharacterTrajectory stationaryTrajectory;
+	characterMotionNode.PrepareCharacterMotionFrame(0.25f, stationaryTrajectory);
+	if (!Expect(!characterMotionController.IsMotionMatchingConfigured() &&
+		characterMotionNode.HasRootMotionDelta() &&
+		std::abs(characterMotionNode.GetRootMotionDelta().x - 12.5f) < 0.001f,
+		"Non-Motion-Matching Graph did not publish Root Motion for CCT submission"))
+		return false;
+	const float preparedPlayTime = characterMotionNode.GetCurrentPlayTime();
+	characterMotionNode.PrepareAnimationFrame({
+		VansAnimationEvaluationPurpose::Gameplay, 0.25f });
+	if (!ExpectNear(characterMotionNode.GetCurrentPlayTime(), preparedPlayTime, 0.0001f,
+		"CCT-prepared animation frame advanced twice"))
+		return false;
+
+	glm::vec3 committedOwnerPosition(4.0f, 0.0f, -3.0f);
+	committedOwnerPosition += characterMotionNode.GetRootMotionDelta();
+	const glm::vec3 positionBeforeReturn = committedOwnerPosition;
+	if (!Expect(characterMotionNode.SwitchGraphSet("idle") ==
+		VansGraphSetSwitchResult::Started,
+		"Root Motion fixture could not return to its idle Graph Set"))
+		return false;
+	characterMotionNode.PrepareCharacterMotionFrame(0.1f, stationaryTrajectory);
+	committedOwnerPosition += characterMotionNode.GetRootMotionDelta();
+	characterMotionNode.PrepareAnimationFrame({
+		VansAnimationEvaluationPurpose::Gameplay, 0.1f });
+	return Expect(glm::length(committedOwnerPosition - positionBeforeReturn) < 0.0001f,
+		"Graph Set return reinterpreted Root Motion as an absolute owner Transform");
 }
 
 bool TestAnimationSlotRuntimeContract()
@@ -9405,10 +9742,133 @@ bool TestExposureParameterContract()
 		"DOF inverse render height was not uploaded");
 }
 
+Vans::VansSerializedValue BuildValidEnvironmentSettingsForTest()
+{
+	using Value = Vans::VansSerializedValue;
+	return Value::Object({
+		{ "planet", Value::Object({
+			{ "centerWorldMeters", Value::Array({ Value::Float(0.0), Value::Float(-6340200.0), Value::Float(0.0) }) },
+			{ "bottomRadiusMeters", Value::Float(6340000.0) },
+			{ "atmosphereHeightMeters", Value::Float(80000.0) }
+		}) },
+		{ "physicalAtmosphere", Value::Object({
+			{ "enabled", Value::Bool(true) },
+			{ "groundAlbedo", Value::Array({ Value::Float(0.4), Value::Float(0.4), Value::Float(0.4) }) },
+			{ "rayleigh", Value::Object({
+				{ "scatteringPerMeterAtGround", Value::Array({ Value::Float(5.802e-6), Value::Float(13.558e-6), Value::Float(33.1e-6) }) },
+				{ "densityScaleHeightMeters", Value::Float(8500.0) }
+			}) },
+			{ "mie", Value::Object({
+				{ "scatteringPerMeterAtGround", Value::Array({ Value::Float(3.996e-6), Value::Float(3.996e-6), Value::Float(3.996e-6) }) },
+				{ "absorptionPerMeterAtGround", Value::Array({ Value::Float(4.4e-6), Value::Float(4.4e-6), Value::Float(4.4e-6) }) },
+				{ "densityScaleHeightMeters", Value::Float(1200.0) },
+				{ "anisotropy", Value::Float(0.78) }
+			}) },
+			{ "ozone", Value::Object({
+				{ "absorptionPerMeter", Value::Array({ Value::Float(0.650e-6), Value::Float(1.881e-6), Value::Float(0.085e-6) }) },
+				{ "centerAltitudeMeters", Value::Float(25000.0) },
+				{ "halfWidthMeters", Value::Float(15000.0) }
+			}) },
+			{ "aerialPerspective", Value::Object({
+				{ "distanceScale", Value::Float(1.0) }
+			}) },
+			{ "mainLightVolumetricScatteringScale", Value::Float(1.0) },
+			{ "celestialBodies", Value::Array({ Value::Object({
+				{ "name", Value::String("Sun") },
+				{ "lightEntityId", Value::String("test-sun") },
+				{ "disk", Value::Object({
+					{ "enabled", Value::Bool(true) },
+					{ "angularRadiusRadians", Value::Float(0.018) },
+					{ "featherRadians", Value::Float(0.0015) },
+					{ "radianceScale", Value::Float(1.0) },
+					{ "occlusionStrength", Value::Float(8.0) }
+				}) }
+			}) }) }
+		}) },
+		{ "heightFog", Value::Object({
+			{ "enabled", Value::Bool(true) },
+			{ "groundHeightWorldMeters", Value::Float(100.0) },
+			{ "visibilityAtGroundMeters", Value::Float(500.0) },
+			{ "densityFalloffHeightMeters", Value::Float(120.0) },
+			{ "startDistanceMeters", Value::Float(0.0) },
+			{ "nearFadeDistanceMeters", Value::Float(20.0) },
+			{ "maximumDistanceMeters", Value::Float(1500.0) },
+			{ "farFadeDistanceMeters", Value::Float(300.0) },
+			{ "singleScatteringAlbedo", Value::Array({ Value::Float(0.95), Value::Float(0.97), Value::Float(1.0) }) },
+			{ "anisotropy", Value::Float(0.2) },
+			{ "emissivePerMeter", Value::Array({ Value::Float(0.0), Value::Float(0.0), Value::Float(0.0) }) },
+			{ "skyLightingScale", Value::Float(1.0) },
+			{ "mainLightVolumetricScale", Value::Float(1.0) },
+			{ "receiveCloudShadows", Value::Bool(true) }
+		}) },
+		{ "volumetricClouds", Value::Object({
+			{ "enabled", Value::Bool(true) },
+			{ "cloudMinHeight", Value::Float(1070.0) },
+			{ "cloudMaxHeight", Value::Float(7410.0) },
+			{ "density", Value::Float(0.025) },
+			{ "coverage", Value::Float(0.35) },
+			{ "sunBrightness", Value::Float(0.38) },
+			{ "mainTileMeters", Value::Float(43300.0) },
+			{ "detailTileMeters", Value::Float(2200.0) },
+			{ "mainHeightScale", Value::Float(0.26) },
+			{ "detailHeightScale", Value::Float(3.07) },
+			{ "thresholdLowCoverage", Value::Float(0.115) },
+			{ "thresholdHighCoverage", Value::Float(0.72) },
+			{ "densityRemapLow", Value::Float(0.425) },
+			{ "densityRemapHigh", Value::Float(0.915) },
+			{ "mainErosionStrength", Value::Float(1.16) },
+			{ "detailErosionStrength", Value::Float(1.34) },
+			{ "edgeErosionStrength", Value::Float(0.5) },
+			{ "verticalShapePower", Value::Float(1.42) },
+			{ "detailErosionLow", Value::Float(0.28) },
+			{ "detailErosionHigh", Value::Float(0.81) },
+			{ "detailEdgeStrength", Value::Float(0.27) },
+			{ "sigmaTRef", Value::Float(1.0) },
+			{ "viewAbsorption", Value::Float(1.0) },
+			{ "lightAbsorption", Value::Float(1.0) },
+			{ "singleScatteringAlbedo", Value::Float(0.999) },
+			{ "forwardEccentricity", Value::Float(0.7) },
+			{ "backwardEccentricity", Value::Float(0.25) },
+			{ "msAttenuation", Value::Float(0.5) },
+			{ "msContribution", Value::Float(0.5) },
+			{ "msEccentricity", Value::Float(1.0) },
+			{ "scatteringTintR", Value::Float(1.0) },
+			{ "scatteringTintG", Value::Float(1.0) },
+			{ "scatteringTintB", Value::Float(1.0) },
+			{ "scatterSourceODScale", Value::Float(0.12) },
+			{ "scatterSourceCurvePow", Value::Float(1.0) },
+			{ "aoUpwardScale", Value::Float(1.0) },
+			{ "ambientBottomStrength", Value::Float(0.1) },
+			{ "ambientTopStrength", Value::Float(0.35) },
+			{ "ambientDuskWarmth", Value::Float(0.65) },
+			{ "boundaryConfidence", Value::Float(0.75) },
+			{ "boundaryWrap", Value::Float(0.35) },
+			{ "phiFwdIntensity", Value::Float(0.8) },
+			{ "phiFwdDepthPow", Value::Float(1.0) },
+			{ "phiFwdDepthBias", Value::Float(0.05) },
+			{ "phiFwdMSBuildScale", Value::Float(1.0) },
+			{ "phiFwdCompress", Value::Float(1.0) },
+			{ "phiFwdMaxDistance", Value::Float(6000.0) },
+			{ "phiFwdConeRatio", Value::Float(1.45) },
+			{ "phiFwdMinStep", Value::Float(80.0) },
+			{ "lightStepCount", Value::Float(8.0) },
+			{ "boundaryGradientStep", Value::Float(250.0) },
+			{ "boundaryGradientStrength", Value::Float(0.0) },
+			{ "shadingDebugMode", Value::Float(0.0) },
+			{ "shadow", Value::Object({
+				{ "enabled", Value::Bool(true) },
+				{ "atmosphereStrength", Value::Float(0.75) },
+				{ "ambientOcclusionStrength", Value::Float(0.25) }
+			}) }
+		}) }
+	});
+}
+
 bool TestPostProcessSceneSettingsProjection()
 {
 	using Value = Vans::VansSerializedValue;
 	const Value sceneSettings = Value::Object({
+		{ "environment", BuildValidEnvironmentSettingsForTest() },
 		{ "postProcess", Value::Object({
 			{ "exposure", Value::Object({
 				{ "enableAutoExposure", Value::Bool(false) },
@@ -9452,8 +9912,14 @@ bool TestPostProcessSceneSettingsProjection()
 		}) }
 	});
 
-	const Vans::VansSceneRenderSettingsConfig config =
-		Vans::VansSceneRenderSettingsConfigReader::Read(sceneSettings);
+	Vans::VansSceneRenderSettingsConfig config;
+	std::string error;
+	const bool readSucceeded =
+		Vans::VansSceneRenderSettingsConfigReader::Read(sceneSettings, config, error);
+	const std::string validationMessage =
+		"Scene render settings failed strict environment validation: " + error;
+	if (!Expect(readSucceeded, validationMessage.c_str()))
+		return false;
 	if (!Expect(config.postProcess.has_value(), "Post-process scene settings were not projected"))
 		return false;
 	const Vans::VansScenePostProcessSettingsConfig& postProcess = *config.postProcess;
@@ -10085,7 +10551,7 @@ bool TestAsyncComputeSubmitGraphContract()
 	orphanCompute.name = "OrphanCompute";
 	orphanCompute.queue = VansQueueRole::Compute;
 	orphanCompute.commandBuffers = { fakeComputeCmd };
-	orphanCompute.signals = { VansSyncPoint::CloudReady };
+	orphanCompute.signals = { VansSyncPoint::WaterWaveDone };
 	graph.AddNode(std::move(orphanCompute));
 	VansFrameSubmitNode uncoveredFinal;
 	uncoveredFinal.name = "UncoveredFinal";
@@ -10561,17 +11027,13 @@ bool TestSkyFSRPipelineContract()
 	const VansShaderEntry* skyMotion = shaderManager.FindShaderEntry("SkyMotionVector");
 	const VansShaderEntry* gbuffer = shaderManager.FindShaderEntry("Unlit");
 	const VansShaderEntry* terrain = shaderManager.FindShaderEntry("Terrain");
-	const auto& skyPasses = shaderManager.GetMaterialPassMap(VAN_SKY_BOX);
 	const auto& pbrPasses = shaderManager.GetMaterialPassMap(VAN_PBR);
-	const auto velocity = skyPasses.find(VansPass::VELOCITY);
 	const bool valid =
-		sky != nullptr && sky->depthTest == VK_TRUE && sky->depthWrite == VK_FALSE &&
-		sky->depthCompareOp == VK_COMPARE_OP_LESS_OR_EQUAL &&
+		sky == nullptr &&
 		skyMotion != nullptr && skyMotion->depthTest == VK_TRUE &&
 		skyMotion->depthWrite == VK_FALSE &&
 		skyMotion->depthCompareOp == VK_COMPARE_OP_LESS_OR_EQUAL &&
 		skyMotion->cullMode == VK_CULL_MODE_NONE &&
-		velocity != skyPasses.end() && velocity->second == "SkyMotionVector" &&
 		gbuffer != nullptr && gbuffer->colorAttachmentCount == 5 &&
 		terrain != nullptr && terrain->colorAttachmentCount == 5 &&
 		pbrPasses.find(VansPass::VELOCITY) == pbrPasses.end() &&
@@ -10579,7 +11041,7 @@ bool TestSkyFSRPipelineContract()
 		shaderManager.FindShaderEntry("TerrainMotionVector") == nullptr;
 
 	return Expect(valid,
-		"GBuffer must own surface velocity while sky remains the only velocity-mapped overlay");
+		"GBuffer must own surface velocity while physical-sky velocity remains an independent fullscreen pass");
 }
 
 bool TestDrawSubmissionContract()
@@ -10667,9 +11129,856 @@ bool TestLuaInspectorProjectModuleSearchPathContract()
 		"Lua Inspector did not resolve modules from the active project's Scripts directory");
 }
 
+bool TestWaterRenderingRefactorContract()
+{
+	using namespace Vans;
+	using namespace VansGraphics;
+
+	const auto& builtIns = VansBuiltInAssetCatalog::Entries();
+	const auto detailNormal = std::find_if(
+		builtIns.begin(), builtIns.end(), [](const VansBuiltInAssetEntry& entry)
+		{
+			return entry.runtimeAlias != nullptr &&
+				std::string(entry.runtimeAlias) == "waterDetailWaveNormal";
+		});
+	if (!Expect(detailNormal != builtIns.end() &&
+		detailNormal->type == VansAssetType::Texture &&
+		std::string(detailNormal->guid) == "6ba76755-170f-4915-8054-54699138937c" &&
+		std::string(detailNormal->sourcePath) ==
+			"EngineAssets/Textures/Water/DetailWaveTexture.png" &&
+		VansBuiltInAssetCatalog::IsReservedRuntimeAlias("waterDetailWaveNormal"),
+		"Water detail normal is not a stable built-in texture contract"))
+	{
+		return false;
+	}
+
+	fs::path engineRoot;
+	for (fs::path cursor = fs::current_path(); !cursor.empty() && engineRoot.empty();
+		cursor = cursor.parent_path())
+	{
+		for (const fs::path& candidate : { cursor, cursor / "ForestEngine" })
+		{
+			if (fs::is_regular_file(candidate / detailNormal->sourcePath))
+			{
+				engineRoot = candidate;
+				break;
+			}
+		}
+		if (cursor == cursor.root_path())
+			break;
+	}
+	if (!Expect(!engineRoot.empty(),
+		"Water detail normal source asset is missing from EngineAssets"))
+	{
+		return false;
+	}
+	TemporaryDirectory artifactDirectory;
+	VansAssetDatabase builtInDatabase(
+		engineRoot / "EngineAssets", artifactDirectory.path / "Artifacts");
+	std::string assetError;
+	if (!Expect(builtInDatabase.RegisterOrRefresh(
+		engineRoot / detailNormal->sourcePath,
+		VansAssetOperationPolicy::ReadOnly(), assetError),
+		assetError.empty() ? "Water detail normal could not be indexed" : assetError.c_str()))
+	{
+		return false;
+	}
+	const std::optional<VansAssetRecord> detailRecord =
+		builtInDatabase.Find(engineRoot / detailNormal->sourcePath);
+	if (!Expect(detailRecord && detailRecord->type == VansAssetType::Texture &&
+		detailRecord->guid.ToString() == detailNormal->guid,
+		"Water detail normal meta does not match its built-in catalog entry"))
+	{
+		return false;
+	}
+
+	const nlohmann::json waterJson = {
+		{ "detailNormal", {
+			{ "enabled", true },
+			{ "decodeMode", "rgReconstructZ" },
+			{ "flipGreen", true },
+			{ "globalStrength", 0.8 },
+			{ "maxSlope", 1.7 },
+			{ "mipBias", -0.25 },
+			{ "anisotropy", 12.0 },
+			{ "layers", nlohmann::json::array({ {
+				{ "enabled", true },
+				{ "tileSizeMeters", 1.25 },
+				{ "direction", nlohmann::json::array({ 0.0, 1.0 }) },
+				{ "speedMetersPerSecond", 0.15 },
+				{ "phase", 0.4 },
+				{ "strength", 0.3 },
+				{ "fadeStartMeters", 4.0 },
+				{ "fadeEndMeters", 90.0 }
+			} }) }
+		} },
+		{ "effectiveRoughness", {
+			{ "mode", "distanceHeuristic" },
+			{ "distanceStartMeters", 30.0 },
+			{ "distanceEndMeters", 200.0 },
+			{ "distanceStrength", 0.12 }
+		} },
+		{ "colorMip", {
+			{ "refractionScatterScale", 0.45 },
+			{ "refractionRoughnessScale", 0.2 },
+			{ "forwardScatterMipScale", 0.35 },
+			{ "backgroundScatterScale", 0.3 },
+			{ "lodBias", 0.5 }
+		} },
+		{ "shadow", {
+			{ "enabled", true },
+			{ "quality", 1 },
+			{ "depthBias", 0.001 },
+			{ "normalBias", 0.03 },
+			{ "volumeStepStride", 3 }
+		} },
+		{ "ssr", {
+			{ "enabled", true },
+			{ "maxDistance", 600.0 },
+			{ "maxRoughness", 0.4 },
+			{ "roughnessFadeStart", 0.22 },
+			{ "colorMipConeScale", 0.55 },
+			{ "colorMipBias", 0.2 },
+			{ "edgeFadePixels", 18.0 }
+		} }
+	};
+	const VansSceneWaterNodeConfig decoded =
+		VansSceneEnvironmentNodeConfigReader::ReadWater(
+			DecodeSerializedValueJson(waterJson));
+	if (!Expect(decoded.valid && decoded.detailNormal.layers.size() == 1 &&
+		decoded.detailNormal.decodeMode == VansSceneWaterNormalDecodeMode::RGReconstructZ &&
+		decoded.detailNormal.anisotropy.value_or(0.0f) == 12.0f &&
+		decoded.effectiveRoughness.mode ==
+			VansSceneWaterEffectiveRoughnessMode::DistanceHeuristic &&
+		decoded.colorMip.lodBias.value_or(0.0f) == 0.5f &&
+		decoded.shadow.volumeStepStride.value_or(0) == 3 &&
+		decoded.ssr.colorMipConeScale.value_or(0.0f) == 0.55f,
+		"Current water scene schema did not decode the rendering refactor settings"))
+	{
+		return false;
+	}
+
+	nlohmann::json invalidWater = waterJson;
+	invalidWater["detailNormal"]["decodeMode"] = "unsupportedRgb";
+	if (!Expect(!VansSceneEnvironmentNodeConfigReader::ReadWater(
+		DecodeSerializedValueJson(invalidWater)).valid,
+		"Water scene schema accepted an unsupported detail-normal decode mode"))
+	{
+		return false;
+	}
+
+	VansWaterConfig runtimeConfig;
+	runtimeConfig.m_DetailNormal.m_Anisotropy = 100.0f;
+	runtimeConfig.m_DetailNormal.m_Layers[0].m_Direction = glm::vec2(0.0f);
+	runtimeConfig.m_DetailNormal.m_Layers[0].m_FadeStartMeters = 10.0f;
+	runtimeConfig.m_DetailNormal.m_Layers[0].m_FadeEndMeters = 1.0f;
+	runtimeConfig.m_Shadow.m_Quality = 5;
+	runtimeConfig.m_Shadow.m_VolumeStepStride = 0;
+	runtimeConfig.m_SSR.m_MaxRoughness = 0.2f;
+	runtimeConfig.m_SSR.m_RoughnessFadeStart = 0.8f;
+	runtimeConfig.Validate();
+	return Expect(runtimeConfig.m_DetailNormal.m_Anisotropy == 16.0f &&
+		runtimeConfig.m_DetailNormal.m_Layers[0].m_Direction == glm::vec2(1.0f, 0.0f) &&
+		runtimeConfig.m_DetailNormal.m_Layers[0].m_FadeEndMeters > 10.0f &&
+		runtimeConfig.m_Shadow.m_Quality == 1 &&
+		runtimeConfig.m_Shadow.m_VolumeStepStride == 1 &&
+		runtimeConfig.m_SSR.m_RoughnessFadeStart == 0.2f,
+		"Water runtime validation did not enforce the current rendering contract");
+}
+
+bool TestAtmosphereMathAndDataContract()
+{
+	using namespace VansGraphics;
+	const VkImageUsageFlags sceneColorUsage =
+		VansRenderPassManager::GetSceneColorImageUsageFlags();
+	const VkImageUsageFlags requiredSceneColorUsage =
+		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+		VK_IMAGE_USAGE_SAMPLED_BIT |
+		VK_IMAGE_USAGE_STORAGE_BIT |
+		VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+		VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	if (!Expect(
+		(sceneColorUsage & requiredSceneColorUsage) == requiredSceneColorUsage,
+		"SceneColor image usage does not cover the render-graph access contract"))
+	{
+		return false;
+	}
+	if (!Expect(
+		VansRenderGraphVulkanSyncMapper::MapImageUsage(
+			VansRenderResourceUsage::StorageWrite) == VK_IMAGE_USAGE_STORAGE_BIT,
+		"RenderGraph StorageWrite does not map to Vulkan storage-image usage"))
+	{
+		return false;
+	}
+
+	VansRenderFramePlan atmosphereFramePlan;
+	VansRenderFeatureFrameFlags atmosphereFeatures{};
+	atmosphereFeatures.hasForwardOpaquePreAtmosphere = true;
+	atmosphereFeatures.hasWater = true;
+	VansRenderPassCatalog::BuildCompatibilityFramePlan(
+		atmosphereFramePlan, atmosphereFeatures, 1u, false);
+	const VansRenderPassNodeDesc* localMedia =
+		atmosphereFramePlan.FindPass(VansRenderPassNames::LocalMedia);
+	const VansRenderPassNodeDesc* volumetricCloud =
+		atmosphereFramePlan.FindPass(VansRenderPassNames::VolumetricCloud);
+	const VansRenderPassNodeDesc* atmosphereComposite =
+		atmosphereFramePlan.FindPass(VansRenderPassNames::AtmosphereComposite);
+	const VansRenderPassNodeDesc* waterComposite =
+		atmosphereFramePlan.FindPass(VansRenderPassNames::WaterCompositePreAtmosphere);
+	const VansRenderPassNodeDesc* transparentPostProcess =
+		atmosphereFramePlan.FindPass(VansRenderPassNames::TransparentPostProcess);
+	const auto hasAccess = [](const std::vector<VansRenderResourceAccess>& accesses,
+		const char* resourceName, VansRenderResourceUsage usage)
+	{
+		return std::any_of(accesses.begin(), accesses.end(),
+			[&](const VansRenderResourceAccess& access)
+			{
+				return access.name == resourceName && access.usage == usage;
+			});
+	};
+	if (!Expect(
+		atmosphereComposite != nullptr &&
+		localMedia != nullptr &&
+		hasAccess(localMedia->writes, "LocalMediaInjection", VansRenderResourceUsage::StorageWrite) &&
+		volumetricCloud != nullptr &&
+		hasAccess(volumetricCloud->reads, "LocalMediaInjection", VansRenderResourceUsage::SampledRead) &&
+		hasAccess(volumetricCloud->reads, "Depth", VansRenderResourceUsage::SampledRead) &&
+		hasAccess(volumetricCloud->writes, "CloudRadiance", VansRenderResourceUsage::StorageWrite) &&
+		waterComposite != nullptr &&
+		hasAccess(waterComposite->reads, "WaterGBuffer", VansRenderResourceUsage::SampledRead) &&
+		hasAccess(waterComposite->writes, "RawOpaqueSceneColor", VansRenderResourceUsage::ColorAttachmentWrite) &&
+		hasAccess(atmosphereComposite->reads, "RawOpaqueSceneColor", VansRenderResourceUsage::SampledRead) &&
+		hasAccess(atmosphereComposite->reads, "AtmosphereAerialScattering", VansRenderResourceUsage::SampledRead) &&
+		hasAccess(atmosphereComposite->reads, "AtmosphereAerialOpticalDepth", VansRenderResourceUsage::SampledRead) &&
+		hasAccess(atmosphereComposite->reads, "CloudRadiance", VansRenderResourceUsage::SampledRead) &&
+		hasAccess(atmosphereComposite->reads, "CloudDepth", VansRenderResourceUsage::SampledRead) &&
+		hasAccess(atmosphereComposite->reads, "CloudOpticalDepth", VansRenderResourceUsage::SampledRead) &&
+		hasAccess(atmosphereComposite->reads, "LocalMediaScattering", VansRenderResourceUsage::SampledRead) &&
+		hasAccess(atmosphereComposite->reads, "LocalMediaOpticalDepth", VansRenderResourceUsage::SampledRead) &&
+		hasAccess(atmosphereComposite->reads, "Depth", VansRenderResourceUsage::SampledRead) &&
+		hasAccess(atmosphereComposite->reads, "WaterGBuffer", VansRenderResourceUsage::SampledRead) &&
+		hasAccess(atmosphereComposite->writes, "SceneColor", VansRenderResourceUsage::StorageWrite) &&
+		transparentPostProcess != nullptr &&
+		hasAccess(transparentPostProcess->reads, "AtmosphereAerialScattering", VansRenderResourceUsage::SampledRead) &&
+		hasAccess(transparentPostProcess->reads, "AtmosphereAerialOpticalDepth", VansRenderResourceUsage::SampledRead) &&
+		hasAccess(transparentPostProcess->reads, "LocalMediaScattering", VansRenderResourceUsage::SampledRead) &&
+		hasAccess(transparentPostProcess->reads, "LocalMediaOpticalDepth", VansRenderResourceUsage::SampledRead),
+		"AtmosphereComposite render-graph resources do not match its descriptors"))
+	{
+		return false;
+	}
+	const auto findPassIndex = [&](const char* passName)
+	{
+		const auto& passes = atmosphereFramePlan.GetPasses();
+		for (std::size_t index = 0; index < passes.size(); ++index)
+		{
+			if (passes[index].name == passName)
+				return index;
+		}
+		return passes.size();
+	};
+	if (!Expect(
+		findPassIndex(VansRenderPassNames::AtmosphereStaticLuts) <
+			findPassIndex(VansRenderPassNames::CloudShadow) &&
+		findPassIndex(VansRenderPassNames::CloudShadow) <
+			findPassIndex(VansRenderPassNames::AtmosphereViewLuts) &&
+		findPassIndex(VansRenderPassNames::AtmosphereViewLuts) <
+			findPassIndex(VansRenderPassNames::LocalMedia) &&
+		findPassIndex(VansRenderPassNames::LocalMedia) <
+			findPassIndex(VansRenderPassNames::RawOpaqueLighting) &&
+		findPassIndex(VansRenderPassNames::RawOpaqueLighting) <
+			findPassIndex(VansRenderPassNames::ForwardOpaquePreAtmosphere) &&
+		findPassIndex(VansRenderPassNames::ForwardOpaquePreAtmosphere) <
+			findPassIndex(VansRenderPassNames::VolumetricCloud) &&
+		findPassIndex(VansRenderPassNames::VolumetricCloud) <
+			findPassIndex(VansRenderPassNames::WaterGBuffer) &&
+		findPassIndex(VansRenderPassNames::WaterGBuffer) <
+			findPassIndex(VansRenderPassNames::WaterPreCompute) &&
+		findPassIndex(VansRenderPassNames::WaterPreCompute) <
+			findPassIndex(VansRenderPassNames::WaterCompositePreAtmosphere) &&
+		findPassIndex(VansRenderPassNames::WaterCompositePreAtmosphere) <
+			findPassIndex(VansRenderPassNames::AtmosphereComposite) &&
+		findPassIndex(VansRenderPassNames::AtmosphereComposite) <
+			findPassIndex(VansRenderPassNames::TransparentPostProcess),
+		"Participating media is not composited between opaque and transparent rendering"))
+	{
+		return false;
+	}
+
+	VansDirectionalLight dayLight{};
+	dayLight.m_Direction = glm::vec3(0.0f, 1.0f, 0.0f);
+	dayLight.m_Color = glm::vec3(1.0f, 0.8f, 0.6f);
+	dayLight.m_Intensity = 20.0f;
+	const VansCelestialLightingState dayState =
+		VansLightManager::ComputeCelestialLightingState(dayLight);
+	VansDirectionalLight nightLight = dayLight;
+	nightLight.m_Direction = glm::vec3(0.0f, -1.0f, 0.0f);
+	const VansCelestialLightingState nightState =
+		VansLightManager::ComputeCelestialLightingState(nightLight);
+	if (!Expect(
+		glm::dot(dayState.direction, dayLight.m_Direction) > 0.999f &&
+		std::abs(dayState.intensity - dayLight.m_Intensity) < 1.0e-6f &&
+		std::abs(dayState.skyDiffuseScale - 1.0f) < 1.0e-6f &&
+		std::abs(dayState.skySpecularScale - 1.0f) < 1.0e-6f &&
+		glm::dot(nightState.direction, -nightLight.m_Direction) > 0.999f &&
+		std::abs(nightState.intensity - nightLight.m_Intensity * 0.035f) < 1.0e-6f &&
+		nightState.skyDiffuseScale < 0.1f &&
+		nightState.skySpecularScale < 0.1f &&
+		nightState.skyDiffuseScale < dayState.skyDiffuseScale &&
+		nightState.skySpecularScale < dayState.skySpecularScale,
+		"Main-light day/night derivation no longer preserves surface and SkyBox IBL scaling"))
+	{
+		return false;
+	}
+
+	fs::path atmosphereAssetRoot;
+	for (fs::path cursor = fs::current_path();
+		!cursor.empty() && atmosphereAssetRoot.empty(); cursor = cursor.parent_path())
+	{
+		for (const fs::path& candidate : { cursor, cursor / "ForestEngine" })
+		{
+			if (fs::is_regular_file(candidate /
+				"EngineAssets/Shaders/Atmosphere/AtmosphereCommon.glsl") &&
+				fs::is_regular_file(candidate /
+				"Source/EngineCore/EditorCore/Windows/VansLightWindow.cpp"))
+			{
+				atmosphereAssetRoot = candidate;
+				break;
+			}
+		}
+		if (cursor == cursor.root_path())
+			break;
+	}
+	if (!Expect(!atmosphereAssetRoot.empty(),
+		"Atmosphere shader sources are unavailable to the release contract test"))
+	{
+		return false;
+	}
+	const auto readText = [&](const fs::path& relativePath)
+	{
+		std::ifstream stream(atmosphereAssetRoot / relativePath, std::ios::binary);
+		return std::string(std::istreambuf_iterator<char>(stream),
+			std::istreambuf_iterator<char>());
+	};
+	const std::string atmosphereCommon = readText(
+		"EngineAssets/Shaders/Atmosphere/AtmosphereCommon.glsl");
+	const std::string participatingMediaCommon = readText(
+		"EngineAssets/Shaders/Atmosphere/ParticipatingMediaCommon.glsl");
+	const std::string transmittanceLut = readText(
+		"EngineAssets/Shaders/Atmosphere/TransmittanceLUT.comp");
+	const std::string multiScatteringLut = readText(
+		"EngineAssets/Shaders/Atmosphere/MultiScatteringLUT.comp");
+	const std::string skyViewLut = readText(
+		"EngineAssets/Shaders/Atmosphere/SkyViewLUT.comp");
+	const std::string mediaComposition = readText(
+		"EngineAssets/Shaders/Atmosphere/AtmosphereMediaComposition.glsl");
+	const std::string atmosphereCompositeShader = readText(
+		"EngineAssets/Shaders/Atmosphere/AtmosphereComposite.comp");
+	const std::string aerialPerspectiveShader = readText(
+		"EngineAssets/Shaders/Atmosphere/AerialPerspective.comp");
+	const std::string localMediaIntegrationShader = readText(
+		"EngineAssets/Shaders/Atmosphere/LocalMediaIntegration.comp");
+	const std::string localMediaInjectionShader = readText(
+		"EngineAssets/Shaders/Atmosphere/LocalMediaInjection.comp");
+	const std::string nearMediaSystemSource = readText(
+		"Source/EngineCore/RenderCore/AtmosphereCore/VansNearMediaSystem.cpp");
+	const std::string nearMediaSystemHeader = readText(
+		"Source/EngineCore/RenderCore/AtmosphereCore/VansNearMediaSystem.h");
+	const std::string rendererSource = readText(
+		"Source/EngineCore/RenderCore/VulkanCore/VansVKRenderer.cpp");
+	const std::string inspectorSource = readText(
+		"Source/EngineCore/EditorCore/Windows/VansInspectorWindow.cpp");
+	const std::string runtimeProjectionSource = readText(
+		"Source/EngineCore/SceneCore/VansSceneRuntimeProjection.cpp");
+	const std::string cloudRayMarchShader = readText(
+		"EngineAssets/Shaders/Cloud/CloudRayMarch.comp");
+	const std::string cloudShadowShader = readText(
+		"EngineAssets/Shaders/Cloud/CloudShadow.comp");
+	const std::string waterCompositeShader = readText(
+		"EngineAssets/Shaders/Water/WaterComposite/water_composite.frag");
+	const std::string waterScreenCommon = readText(
+		"EngineAssets/Shaders/Water/water_screen_common.glsl");
+	const std::string lightWindowSource = readText(
+		"Source/EngineCore/EditorCore/Windows/VansLightWindow.cpp");
+	const std::string cloudLighting = readText(
+		"EngineAssets/Shaders/Common/CloudLightingHP.glsl");
+	const std::string giPointLight = readText(
+		"EngineAssets/Shaders/GIPointLight/GIPointLight.comp");
+	const std::string reflectionProbeCapture = readText(
+		"EngineAssets/Shaders/ReflectionProbeCapture/ReflectionProbeCapture.frag");
+	const std::string reflectionProbeCaptureSky = readText(
+		"EngineAssets/Shaders/ReflectionProbeCaptureSky/ReflectionProbeCaptureSky.frag");
+	if (!Expect(
+		atmosphereCommon.find("EvaluatePhysicalAtmosphereMedium") != std::string::npos &&
+		atmosphereCommon.find("EvaluatePhysicalAerialPerspectiveSegmentMedium") != std::string::npos &&
+		atmosphereCommon.find("EvaluateNearMediaSegmentMedium") != std::string::npos &&
+		atmosphereCommon.find("EvaluateAtmosphericFogMedium") == std::string::npos &&
+		atmosphereCommon.find("atmosphericFogTransmittance") == std::string::npos &&
+		atmosphereCommon.find("AtmosphereIntegratedSegmentSource") != std::string::npos &&
+		transmittanceLut.find("EvaluatePhysicalAtmosphereMedium") != std::string::npos &&
+		transmittanceLut.find("EvaluateAtmosphericFogMedium") == std::string::npos &&
+		transmittanceLut.find("atmosphericFogTransmittanceOutput") == std::string::npos &&
+		multiScatteringLut.find("EvaluatePhysicalAtmosphereMedium") != std::string::npos &&
+		multiScatteringLut.find("heightFogScattering") == std::string::npos &&
+		multiScatteringLut.find("atmosphericFogRayleighScattering") == std::string::npos &&
+		skyViewLut.find("EvaluateAtmosphereClearSkyScatteringSource") != std::string::npos &&
+		skyViewLut.find("SampleAtmosphereCloudShadow") == std::string::npos,
+		"Physical Atmosphere is not the single transmittance/LUT owner"))
+	{
+		return false;
+	}
+	if (!Expect(
+		mediaComposition.find("#include \"AtmosphereCommon.glsl\"") != std::string::npos &&
+		atmosphereCompositeShader.find("environmentLightingCubemap") == std::string::npos &&
+		atmosphereCommon.find("environmentLightingCubemap") == std::string::npos,
+		"Media consumers are not self-contained or the atmosphere still owns an IBL cubemap"))
+	{
+		return false;
+	}
+	if (!Expect(
+		atmosphereCompositeShader.find("uniform sampler2D atmosphereSceneDepth") !=
+			std::string::npos &&
+		atmosphereCompositeShader.find("AtmosphereHasSurfaceDepth(deviceDepth)") !=
+			std::string::npos &&
+		atmosphereCompositeShader.find("AtmosphereWorldPositionFromDeviceDepth") !=
+			std::string::npos &&
+		atmosphereCompositeShader.find("uniform sampler2D atmosphereWaterPositionDepth") !=
+			std::string::npos &&
+		atmosphereCompositeShader.find("WaterSurfaceValid") != std::string::npos &&
+		atmosphereCompositeShader.find("BuildParticipatingMediaPath") !=
+			std::string::npos &&
+		atmosphereCompositeShader.find("result = path.scattering") !=
+			std::string::npos &&
+		atmosphereCompositeShader.find("baselineSky - baselineAtCursor") ==
+			std::string::npos &&
+		atmosphereCompositeShader.find("skyTail") == std::string::npos &&
+		atmosphereCompositeShader.find("atmosphereGBufferPosition") == std::string::npos &&
+		atmosphereCompositeShader.find("positionDepth.w > 0.0") == std::string::npos,
+		"Opaque aerial perspective is not driven by authoritative scene depth"))
+	{
+		return false;
+	}
+	if (!Expect(
+		waterCompositeShader.find("CompositeAtmosphereSurfaceRadiance") ==
+			std::string::npos &&
+		waterScreenCommon.find("positionDepth.a < WATER_INVALID_DEPTH") ==
+			std::string::npos &&
+		waterScreenCommon.find("!isnan(positionDepth.a)") != std::string::npos &&
+		waterScreenCommon.find("!isinf(positionDepth.a)") != std::string::npos &&
+		lightWindowSource.find("ImGui::PushID(\"AtmosphericFog\")") ==
+			std::string::npos &&
+		lightWindowSource.find("ImGui::PushID(\"PhysicalAtmosphere\")") !=
+			std::string::npos &&
+		lightWindowSource.find("ImGui::PushID(\"HeightFog\")") !=
+			std::string::npos &&
+		lightWindowSource.find("\"Maximum Distance\"") != std::string::npos &&
+		lightWindowSource.find("\"Visibility At Ground\"") != std::string::npos &&
+		lightWindowSource.find("\"Density Falloff Height\"") != std::string::npos &&
+		lightWindowSource.find("ImGui::PushID(\"LocalVolumetricFog\")") ==
+			std::string::npos &&
+		lightWindowSource.find("ImGui::PushID(\"VolumetricClouds\")") !=
+			std::string::npos,
+		"Water validity still drops far surfaces, owns camera-media composition, or editor IDs are not scoped"))
+	{
+		return false;
+	}
+	if (!Expect(
+		participatingMediaCommon.find("IntegrateParticipatingMediaStep") != std::string::npos &&
+		participatingMediaCommon.find("ComposeParticipatingMediaInterval") != std::string::npos &&
+		participatingMediaCommon.find("SampleParticipatingMediaFroxel") != std::string::npos &&
+		cloudRayMarchShader.find("storedCloudOnlyOpticalDepth") != std::string::npos &&
+		cloudRayMarchShader.find("uniform sampler3D localMediaInjection") != std::string::npos &&
+		cloudRayMarchShader.find("uniform sampler2D cloudSceneDepth") != std::string::npos &&
+		cloudRayMarchShader.find("CloudSurfaceTerminalDistance") != std::string::npos &&
+		cloudRayMarchShader.find("SampleParticipatingMediaFroxel") != std::string::npos &&
+		cloudRayMarchShader.find("EvaluateNearMediaSegmentMedium") != std::string::npos &&
+		aerialPerspectiveShader.find("EvaluatePhysicalAerialPerspectiveSegmentMedium") != std::string::npos &&
+		aerialPerspectiveShader.find("IntegrateParticipatingMediaStep") != std::string::npos &&
+		localMediaIntegrationShader.find("EvaluateNearMediaSegmentMedium") != std::string::npos &&
+		localMediaIntegrationShader.find("IntegrateParticipatingMediaStep") != std::string::npos &&
+		cloudRayMarchShader.find("intervalStart") != std::string::npos &&
+		cloudRayMarchShader.find("intervalEnd") != std::string::npos &&
+		atmosphereCompositeShader.find("ReconstructCloudInterval") != std::string::npos &&
+		mediaComposition.find("ExtractBaseMediaInterval") != std::string::npos &&
+		atmosphereCompositeShader.find("ExtractBaseMediaInterval") != std::string::npos &&
+		atmosphereCompositeShader.find("cloudOnlyOpticalDepth") != std::string::npos &&
+		atmosphereCompositeShader.find("afterCloudScattering") != std::string::npos &&
+		atmosphereCompositeShader.find(
+			"cloudExit, terminalDistance") != std::string::npos &&
+		atmosphereCompositeShader.find(
+			"texture(atmosphereCloudDepth, uv)") == std::string::npos,
+		"Camera-to-surface/cloud media intervals no longer preserve before/joint/after ordering"))
+	{
+		return false;
+	}
+	if (!Expect(
+		localMediaInjectionShader.find("readonly buffer LocalFogVolumes") != std::string::npos &&
+		localMediaInjectionShader.find("readonly buffer LocalFogTileHeaders") != std::string::npos &&
+		localMediaInjectionShader.find("readonly buffer LocalFogTileIndices") != std::string::npos &&
+		localMediaInjectionShader.find("localFogTileOverflow") != std::string::npos &&
+		localMediaInjectionShader.find("distanceToFaceMeters") != std::string::npos &&
+		localMediaInjectionShader.find("AtmosphereCloudShadowStrength()") != std::string::npos &&
+		localMediaInjectionShader.find("SampleAtmosphereMultipleScattering(") != std::string::npos &&
+		nearMediaSystemSource.find("MaxLocalFogVolumes") != std::string::npos &&
+		nearMediaSystemSource.find("RefreshLocalFogRegistry") != std::string::npos &&
+		nearMediaSystemSource.find("GetSceneObjectCollectionGeneration") != std::string::npos &&
+		nearMediaSystemSource.find("m_LocalFogTileHeadersBuffer") != std::string::npos &&
+		nearMediaSystemSource.find("m_HistoryValid = false") != std::string::npos &&
+		nearMediaSystemSource.find("effectiveFarDistanceMeters") != std::string::npos &&
+		nearMediaSystemSource.find("environment.heightFog.maximumDistanceMeters") != std::string::npos &&
+		nearMediaSystemSource.find("m_PreviousEffectiveFarDistanceMeters") != std::string::npos &&
+		nearMediaSystemHeader.find("void InvalidateHistory()") != std::string::npos &&
+		rendererSource.find("nearMedia->InvalidateHistory()") != std::string::npos &&
+		runtimeProjectionSource.find("FindComponent(entity, \"LocalVolumetricFog\")") != std::string::npos &&
+		inspectorSource.find("if (type == \"LocalVolumetricFog\")") != std::string::npos &&
+		inspectorSource.find("\"AudioReverbZone\", \"LocalVolumetricFog\"") != std::string::npos,
+		"Entity Local Volumetric Fog is not authorable or NearMedia no longer aggregates volumes"))
+	{
+		return false;
+	}
+	if (!Expect(
+		cloudShadowShader.find("shadowExtinctionScale") == std::string::npos &&
+		cloudShadowShader.find("max(uCloud.sigmaTRef, 0.0)") != std::string::npos &&
+		cloudShadowShader.find("max(uCloud.lightAbsorption, 0.0)") != std::string::npos &&
+		atmosphereCommon.find("aerialPerspectiveAndVolumetricLighting.y") != std::string::npos &&
+		aerialPerspectiveShader.find("uAtmosphere.aerialPerspectiveParameters.y") == std::string::npos &&
+		atmosphereCompositeShader.find("uAtmosphere.aerialPerspectiveParameters.y") == std::string::npos &&
+		lightWindowSource.find("Optical Depth Scale") == std::string::npos &&
+		lightWindowSource.find("Main Light Scattering") != std::string::npos &&
+		lightWindowSource.find("Surface Strength") == std::string::npos &&
+		lightWindowSource.find("Shadow Extinction Scale") == std::string::npos,
+		"Cloud shadow reintroduced a second optical-depth dial or a dead surface control"))
+	{
+		return false;
+	}
+	if (!Expect(
+		atmosphereCommon.find("AtmosphereHeightFogDirectionalOpticalDepth") == std::string::npos &&
+		atmosphereCommon.find("heightFogInScatteringColor") == std::string::npos &&
+		atmosphereCommon.find("EvaluateHeightFogSegmentMedium") != std::string::npos &&
+		atmosphereCommon.find("heightFogDistanceParameters") != std::string::npos &&
+		atmosphereCommon.find("cameraWorldMetersAndMaxDistance.y") != std::string::npos &&
+		atmosphereCommon.find("preparedMainLightColorAndIntensity.w") != std::string::npos &&
+		atmosphereCommon.find("uAtmosphere.heightFogEmissiveAndSkyScale.xyz") != std::string::npos &&
+		atmosphereCommon.find("uAtmosphere.heightFogAlbedoAndAnisotropy.w") != std::string::npos &&
+		atmosphereCommon.find("AtmosphereHeightFogPhase(cosineTheta") != std::string::npos &&
+		atmosphereCommon.find("AtmospherePreparedLightCelestialIrradiance") != std::string::npos &&
+		atmosphereCommon.find("atmosphericFogCloudTransmittance") == std::string::npos &&
+		atmosphereCommon.find("atmosphericFogRayleighScattering") == std::string::npos &&
+		atmosphereCommon.find("AtmosphereAtmosphericFogMiePhase") == std::string::npos &&
+		atmosphereCommon.find("AtmosphereExponentialMediumDirectionalOpticalDepth") == std::string::npos &&
+		atmosphereCommon.find("SampleAtmosphereMultipleScattering(") != std::string::npos &&
+		atmosphereCommon.find("heightFogPhaseShaping") == std::string::npos &&
+		atmosphereCommon.find("heightFogEnvironmentLightingColor") == std::string::npos &&
+		atmosphereCommon.find("softPeak") == std::string::npos,
+		"Near-ground Height Fog or single Physical Atmosphere lighting contract regressed"))
+	{
+		return false;
+	}
+	if (!Expect(
+		cloudLighting.find("preparedMainLightDirectionAndValidity") != std::string::npos &&
+		cloudLighting.find("preparedMainLightColorAndIntensity") != std::string::npos &&
+		cloudLighting.find("SampleAtmosphereTransmittance") == std::string::npos,
+		"Cloud lighting no longer preserves the prepared day/night main-light contract"))
+	{
+		return false;
+	}
+	if (!Expect(
+		giPointLight.find("layout(set = 1, binding = 4) uniform samplerCube environmentMap") !=
+			std::string::npos &&
+		giPointLight.find("texture(environmentMap, rayDirection).rgb * pushConstants.lightingParams.x") !=
+			std::string::npos &&
+		giPointLight.find("uDirectionLight.color.rgb * uDirectionLight.intensity") !=
+			std::string::npos &&
+		giPointLight.find("GetSkyDiffuseCubeIntensity") == std::string::npos &&
+		reflectionProbeCapture.find(
+			"layout(set = 1, binding = 3) uniform samplerCube skyDiffuseEnvironment") !=
+			std::string::npos &&
+		reflectionProbeCapture.find(
+			"texture(skyDiffuseEnvironment, normal).rgb / PI") != std::string::npos &&
+		reflectionProbeCaptureSky.find(
+			"textureLod(PreConvSpecularEnvironment, direction, 0.0).rgb") !=
+			std::string::npos &&
+		reflectionProbeCapture.find("atmosphericFog") == std::string::npos &&
+		reflectionProbeCaptureSky.find("atmosphericFog") == std::string::npos,
+		"Git-baseline GI or Reflection Probe SkyBox sampling was replaced by atmosphere media"))
+	{
+		return false;
+	}
+
+	const auto nearEqual = [](const glm::dvec3& left, const glm::dvec3& right, double tolerance)
+	{
+		return glm::all(glm::lessThanEqual(glm::abs(left - right), glm::dvec3(tolerance)));
+	};
+
+	const VansAtmosphereInterval a{ glm::dvec3(0.12, 0.08, 0.03), glm::dvec3(0.1, 0.2, 0.3) };
+	const VansAtmosphereInterval b{ glm::dvec3(0.06, 0.07, 0.09), glm::dvec3(0.4, 0.2, 0.1) };
+	const VansAtmosphereInterval c{ glm::dvec3(0.03, 0.02, 0.01), glm::dvec3(0.2, 0.5, 0.7) };
+	const VansAtmosphereInterval left = ComposeAtmosphereIntervals(
+		ComposeAtmosphereIntervals(a, b), c);
+	const VansAtmosphereInterval right = ComposeAtmosphereIntervals(
+		a, ComposeAtmosphereIntervals(b, c));
+	if (!Expect(nearEqual(left.scattering, right.scattering, 1.0e-12) &&
+		nearEqual(left.opticalDepth, right.opticalDepth, 1.0e-12),
+		"Atmosphere interval composition is not associative"))
+		return false;
+
+	Vans::VansSceneEnvironmentSettingsConfig environment;
+	environment.planet.centerWorldMeters = { 0.0, -6340000.0, 0.0 };
+	environment.planet.bottomRadiusMeters = 6340000.0;
+	environment.physicalAtmosphere.enabled = true;
+	environment.heightFog.enabled = false;
+	const glm::dvec3 horizontalDirection(1.0, 0.0, 0.0);
+	const VansAtmosphereMediumSample physicalReference =
+		EvaluatePhysicalAerialPerspectiveSegmentMedium(
+			environment, glm::dvec3(0.0, 1000.0, 0.0),
+			horizontalDirection, 0.0, 1.0);
+	for (float& coefficient :
+		environment.physicalAtmosphere.rayleigh.scatteringPerMeterAtGround)
+		coefficient *= 2.0f;
+	const VansAtmosphereMediumSample doubledRayleigh =
+		EvaluatePhysicalAerialPerspectiveSegmentMedium(
+			environment, glm::dvec3(0.0, 1000.0, 0.0),
+			horizontalDirection, 0.0, 1.0);
+	if (!Expect(
+		glm::all(glm::greaterThan(doubledRayleigh.scatteringPerMeter,
+			physicalReference.scatteringPerMeter)) &&
+		glm::all(glm::greaterThan(doubledRayleigh.extinctionPerMeter,
+			physicalReference.extinctionPerMeter)),
+		"Physical Atmosphere ground coefficients no longer control Far AP"))
+		return false;
+
+	environment.physicalAtmosphere.enabled = false;
+	environment.heightFog.enabled = true;
+	environment.heightFog.groundHeightWorldMeters = 1000.0f;
+	environment.heightFog.visibilityAtGroundMeters = 500.0f;
+	environment.heightFog.densityFalloffHeightMeters = 500.0f;
+	environment.heightFog.startDistanceMeters = 0.0f;
+	environment.heightFog.nearFadeDistanceMeters = 0.0f;
+	environment.heightFog.maximumDistanceMeters = 2000.0f;
+	environment.heightFog.farFadeDistanceMeters = 0.0f;
+	environment.heightFog.singleScatteringAlbedo = { 0.5f, 0.75f, 1.0f };
+	const VansAtmosphereMediumSample farWithoutPhysical =
+		EvaluatePhysicalAerialPerspectiveSegmentMedium(
+			environment, glm::dvec3(0.0, 1000.0, 0.0),
+			horizontalDirection, 0.0, 1000.0);
+	const VansAtmosphereMediumSample nearAtGround =
+		EvaluateNearMediaSegmentMedium(environment,
+			glm::dvec3(0.0, 1000.0, 0.0), horizontalDirection, 0.0, 1000.0);
+	const VansAtmosphereMediumSample nearAboveOneFalloff =
+		EvaluateNearMediaSegmentMedium(environment,
+			glm::dvec3(0.0, 1500.0, 0.0), horizontalDirection, 0.0, 1000.0);
+	const VansAtmosphereMediumSample nearBelowGround =
+		EvaluateNearMediaSegmentMedium(environment,
+			glm::dvec3(0.0, 500.0, 0.0), horizontalDirection, 0.0, 1000.0);
+	const VansAtmosphereMediumSample nearPastMaximum =
+		EvaluateNearMediaSegmentMedium(environment,
+			glm::dvec3(0.0, 1000.0, 0.0), horizontalDirection, 2001.0, 2101.0);
+	if (!Expect(
+		nearEqual(farWithoutPhysical.extinctionPerMeter, glm::dvec3(0.0), 1.0e-15) &&
+		std::abs(nearAtGround.extinctionPerMeter.x - 0.002) < 1.0e-9 &&
+		std::abs(nearAboveOneFalloff.extinctionPerMeter.x -
+			0.002 / std::exp(1.0)) < 1.0e-9 &&
+		std::abs(nearBelowGround.extinctionPerMeter.x - 0.002) < 1.0e-9 &&
+		nearEqual(nearPastMaximum.extinctionPerMeter, glm::dvec3(0.0), 1.0e-15) &&
+		nearEqual(nearAtGround.scatteringPerMeter,
+			glm::dvec3(0.001, 0.0015, 0.002), 1.0e-9),
+		"NearMedia does not isolate and integrate near-ground Height Fog correctly"))
+		return false;
+
+	environment.heightFog.startDistanceMeters = 100.0f;
+	environment.heightFog.nearFadeDistanceMeters = 100.0f;
+	environment.heightFog.maximumDistanceMeters = 800.0f;
+	environment.heightFog.farFadeDistanceMeters = 100.0f;
+	if (!Expect(
+		std::abs(EvaluateHeightFogDistanceWeight(environment.heightFog, 100.0)) < 1.0e-12 &&
+		std::abs(EvaluateHeightFogDistanceWeight(environment.heightFog, 150.0) - 0.5) < 1.0e-12 &&
+		std::abs(EvaluateHeightFogDistanceWeight(environment.heightFog, 200.0) - 1.0) < 1.0e-12 &&
+		std::abs(EvaluateHeightFogDistanceWeight(environment.heightFog, 750.0) - 0.5) < 1.0e-12 &&
+		std::abs(EvaluateHeightFogDistanceWeight(environment.heightFog, 800.0)) < 1.0e-12,
+		"Height Fog near/far distance fades are not smooth and bounded"))
+		return false;
+
+	const VansAtmosphereInterval cumulative = ComposeAtmosphereIntervals(a, b);
+	const VansAtmosphereInterval extracted = ExtractAtmosphereInterval(a, cumulative);
+	const VansAtmosphereInterval restored = ComposeAtmosphereIntervals(a, extracted);
+	if (!Expect(nearEqual(extracted.scattering, b.scattering, 1.0e-12) &&
+		nearEqual(extracted.opticalDepth, b.opticalDepth, 1.0e-12) &&
+		nearEqual(restored.scattering, cumulative.scattering, 1.0e-12),
+		"Atmosphere cumulative interval extraction did not reconstruct the original interval"))
+		return false;
+	const VansAtmosphereInterval neutral{};
+	if (!Expect(nearEqual(CompositeAtmosphereInterval(glm::dvec3(0.7), neutral),
+		glm::dvec3(0.7), 1.0e-12),
+		"A disabled atmosphere is not an identity transform"))
+		return false;
+	const glm::dvec3 absorbed = CompositeAtmosphereInterval(
+		glm::dvec3(1.0), { glm::dvec3(0.0), glm::dvec3(1000.0) });
+	if (!Expect(std::isfinite(absorbed.x) && std::isfinite(absorbed.y) &&
+		std::isfinite(absorbed.z) &&
+		glm::all(glm::lessThanEqual(absorbed, glm::dvec3(1.0e-12))),
+		"Large RGB optical depth produced light or a non-finite result"))
+		return false;
+
+	const auto tangent = IntersectRaySphere(glm::dvec3(1.0, 0.0, -2.0),
+		glm::dvec3(0.0, 0.0, 1.0), glm::dvec3(0.0), 1.0);
+	const auto outside = IntersectRaySphere(glm::dvec3(2.0, 0.0, -2.0),
+		glm::dvec3(0.0, 0.0, 1.0), glm::dvec3(0.0), 1.0);
+	const auto inside = IntersectRaySphere(glm::dvec3(0.0),
+		glm::dvec3(0.0, 0.0, 1.0), glm::dvec3(0.0), 1.0);
+	if (!Expect(tangent && std::abs(tangent->entryMeters - 2.0) < 1.0e-12 &&
+		std::abs(tangent->exitMeters - 2.0) < 1.0e-12 && !outside &&
+		inside && inside->entryMeters == 0.0 &&
+		std::abs(inside->exitMeters - 1.0) < 1.0e-12,
+		"Atmosphere ray-sphere intersection failed tangent/outside/inside coverage"))
+		return false;
+
+	for (int slice = 0; slice <= 64; ++slice)
+	{
+		const double normalized = static_cast<double>(slice) / 64.0;
+		const double distance =
+			EncodeAerialPerspectiveSliceDistance(normalized, 100000.0);
+		const double decoded =
+			DecodeAerialPerspectiveSliceDistance(distance, 100000.0);
+		if (!Expect(std::abs(decoded - normalized) < 1.0e-12,
+			"Aerial perspective slice distance encode/decode is not invertible"))
+			return false;
+	}
+
+	using Value = Vans::VansSerializedValue;
+	Vans::VansSceneRenderSettingsConfig decodedSettings;
+	std::string error;
+	if (!Expect(!Vans::VansSceneRenderSettingsConfigReader::Read(
+		Value::Object({ { "heightFog", Value::Object({}) } }),
+		decodedSettings, error), "Legacy top-level fog contract was accepted"))
+		return false;
+	Value validEnvironment = BuildValidEnvironmentSettingsForTest();
+	error.clear();
+	if (!Expect(Vans::VansSceneRenderSettingsConfigReader::Read(
+		Value::Object({ { "environment", validEnvironment } }),
+		decodedSettings, error),
+		("Current atmosphere schema was rejected: " + error).c_str()))
+		return false;
+	if (!Expect(
+		decodedSettings.environment.physicalAtmosphere.enabled &&
+		std::abs(decodedSettings.environment.physicalAtmosphere
+			.aerialPerspective.distanceScale - 1.0f) < 1.0e-6f &&
+		std::abs(decodedSettings.environment.heightFog.visibilityAtGroundMeters -
+			500.0f) < 1.0e-6f &&
+		std::abs(decodedSettings.environment.heightFog.densityFalloffHeightMeters -
+			120.0f) < 1.0e-6f &&
+		std::abs(decodedSettings.environment.volumetricClouds
+			.shadow.atmosphereStrength - 0.75f) < 1.0e-6f,
+		"Current atmosphere fields were not decoded"))
+		return false;
+
+	Value legacyEnvironment = BuildValidEnvironmentSettingsForTest();
+	for (auto& field : legacyEnvironment.objectFields)
+		if (field.first == "physicalAtmosphere")
+			field.first = "physicalSky";
+	error.clear();
+	if (!Expect(!Vans::VansSceneRenderSettingsConfigReader::Read(
+		Value::Object({ { "environment", legacyEnvironment } }),
+		decodedSettings, error),
+		"Removed physicalSky schema was accepted through a compatibility path"))
+		return false;
+
+	Value invalidHeightFogEnvironment = BuildValidEnvironmentSettingsForTest();
+	auto* invalidHeightFog =
+		Vans::FindObjectField(invalidHeightFogEnvironment, "heightFog");
+	Vans::SetSerializedObjectField(*invalidHeightFog,
+		"visibilityAtGroundMeters", Value::Float(0.0));
+	error.clear();
+	if (!Expect(!Vans::VansSceneRenderSettingsConfigReader::Read(
+		Value::Object({ { "environment", invalidHeightFogEnvironment } }),
+		decodedSettings, error), "Non-positive Height Fog visibility was accepted"))
+		return false;
+
+	Value invalidShadowEnvironment = BuildValidEnvironmentSettingsForTest();
+	auto* invalidClouds =
+		Vans::FindObjectField(invalidShadowEnvironment, "volumetricClouds");
+	auto* invalidShadow = Vans::FindObjectField(*invalidClouds, "shadow");
+	Vans::SetSerializedObjectField(*invalidShadow,
+		"atmosphereStrength", Value::Float(1.01));
+	error.clear();
+	if (!Expect(!Vans::VansSceneRenderSettingsConfigReader::Read(
+		Value::Object({ { "environment", invalidShadowEnvironment } }),
+		decodedSettings, error),
+		"Out-of-range cloud-shadow irradiance strength was accepted"))
+		return false;
+
+	Value invalidEnvironment = BuildValidEnvironmentSettingsForTest();
+	auto* clouds = Vans::FindObjectField(invalidEnvironment, "volumetricClouds");
+	Vans::SetSerializedObjectField(*clouds, "cloudMaxHeight", Value::Float(100.0));
+	Vans::SetSerializedObjectField(*clouds, "cloudMinHeight", Value::Float(200.0));
+	error.clear();
+	if (!Expect(!Vans::VansSceneRenderSettingsConfigReader::Read(
+		Value::Object({ { "environment", invalidEnvironment } }),
+		decodedSettings, error),
+		"Invalid cloud layer bounds were accepted by strict scene validation"))
+	{
+		return false;
+	}
+
+	Vans::VansProjectRenderSettingsData qualitySettings;
+	qualitySettings.atmosphereQualitySettings.farAerialTileSize = 8u;
+	qualitySettings.nearMediaQualitySettings.farDistanceMeters = 2000.0f;
+	qualitySettings.nearMediaQualitySettings.historyWeight = 0.85f;
+	qualitySettings.cloudShadowQualitySettings.clipmapCrossFadeFraction = 0.12f;
+	const nlohmann::json encodedQuality =
+		Vans::VansProjectSettingsJsonCodec::EncodeRenderSettings(qualitySettings);
+	if (!Expect(
+		encodedQuality["atmosphereQuality"].contains("farAerialTileSize") &&
+		!encodedQuality["atmosphereQuality"].contains("aerialPerspectiveTileSize") &&
+		!encodedQuality["atmosphereQuality"].contains(
+			"aerialPerspectiveTemporalReprojection") &&
+		encodedQuality.contains("nearMediaQuality") &&
+		!encodedQuality.contains("localFogQuality") &&
+		encodedQuality["nearMediaQuality"].contains("historyWeight") &&
+		encodedQuality["cloudShadowQuality"].contains(
+			"clipmapCrossFadeFraction"),
+		"Project quality codec did not emit the current atmosphere schema"))
+	{
+		return false;
+	}
+	Vans::VansProjectRenderSettingsData decodedQuality;
+	std::vector<std::string> qualityWarnings;
+	std::string qualityError;
+	if (!Expect(Vans::VansProjectSettingsJsonCodec::DecodeRenderSettings(
+		encodedQuality, decodedQuality, qualityWarnings, qualityError) &&
+		decodedQuality.atmosphereQualitySettings.farAerialTileSize == 8u &&
+		std::abs(decodedQuality.nearMediaQualitySettings.historyWeight - 0.85f) <
+			1.0e-6f &&
+		std::abs(decodedQuality.cloudShadowQualitySettings.clipmapCrossFadeFraction -
+			0.12f) < 1.0e-6f,
+		"Project quality current-schema round trip failed"))
+	{
+		return false;
+	}
+	return true;
+}
+
 int main(int argc, char** argv)
 {
 	VANS_INIT_MAIN_THREAD();
+	if (argc == 2 && std::string(argv[1]) == "--atmosphere")
+		return TestAtmosphereMathAndDataContract() ? 0 : 144;
+	if (argc == 2 && std::string(argv[1]) == "--water-rendering")
+		return TestWaterRenderingRefactorContract() ? 0 : 141;
+	if (argc == 2 && std::string(argv[1]) == "--skin-rendering")
+	{
+		const auto runSkinContract = [](const char* name, bool (*test)())
+		{
+			if (test())
+				return true;
+			std::cerr << "[ForestContractTests] Skin contract failed: " << name << '\n';
+			return false;
+		};
+		return runSkinContract("profile-json-round-trip", TestSkinProfileJsonRoundTrip) &&
+			runSkinContract("profile-json-aliases", TestSkinProfileJsonAliasDecode) &&
+			runSkinContract("material-profile-projection", TestSkinProfileMaterialProjectionContract) &&
+			runSkinContract("profile-lut-generation", TestSkinProfileLUTGenerationContract) &&
+			runSkinContract("default-textures", TestSkinDefaultTextureContract) ? 0 : 145;
+	}
 	if (argc == 2 && std::string(argv[1]) == "--render-system")
 		return TestRenderSystemLifecycleContract() &&
 			TestRenderSystemStartupFailureContract() &&
@@ -10694,6 +12003,8 @@ int main(int argc, char** argv)
 		return TestDemoHallSurvivalBackAxeSceneContract() ? 0 : 138;
 	if (argc == 2 && std::string(argv[1]) == "--scene-entity-factory")
 		return TestEmptySceneEntityFactoryContract() ? 0 : 134;
+	if (argc == 2 && std::string(argv[1]) == "--local-volumetric-fog")
+		return TestLocalVolumetricFogEntityFactoryContract() ? 0 : 146;
 	if (argc == 2 && std::string(argv[1]) == "--transform-graph")
 		return TestTransformGraphAnchorContract() ? 0 : 135;
 	if (argc == 2 && std::string(argv[1]) == "--gaf-packaging")
@@ -10704,6 +12015,12 @@ int main(int argc, char** argv)
 		return TestGAFDemoHallWindowBreakContract() ? 0 : 108;
 	if (argc == 2 && std::string(argv[1]) == "--gaf-demohall-player-attack")
 		return TestGAFDemoHallPlayerAttackContract() ? 0 : 140;
+	if (argc == 2 && std::string(argv[1]) == "--demohall-crouch-locomotion")
+		return TestDemoHallCrouchLocomotionContract() ? 0 : 147;
+	if (argc == 2 && std::string(argv[1]) == "--demohall-player-vault")
+		return TestDemoHallPlayerVaultContract() ? 0 : 144;
+	if (argc == 2 && std::string(argv[1]) == "--demohall-whisper-preview")
+		return TestDemoHallWhisperPreviewContract() ? 0 : 145;
 	if (argc == 2 && std::string(argv[1]) == "--character-motion")
 		return TestCharacterTrajectoryGeneratorContract() ? 0 : 141;
 	if (argc == 2 && std::string(argv[1]) == "--motion-matching-turn-warping")
@@ -10822,6 +12139,12 @@ int main(int argc, char** argv)
 		return 108;
 	if (!TestGAFDemoHallPlayerAttackContract())
 		return 140;
+	if (!TestDemoHallCrouchLocomotionContract())
+		return 147;
+	if (!TestDemoHallPlayerVaultContract())
+		return 144;
+	if (!TestDemoHallWhisperPreviewContract())
+		return 145;
 	if (!TestGAFPackagingContract())
 		return 103;
 	if (!TestGAFNetworkContract())
@@ -10842,8 +12165,14 @@ int main(int argc, char** argv)
 		return 78;
 	if (!TestSkinProfileLUTGenerationContract())
 		return 79;
+	if (!TestSkinDefaultTextureContract())
+		return 145;
     if (!TestAssetPolicies())
         return 2;
+	if (!TestWaterRenderingRefactorContract())
+		return 141;
+	if (!TestAtmosphereMathAndDataContract())
+		return 144;
 	if (!TestAssetTypeSerializationContract())
 		return 136;
     if (!TestGameplayFrameOrder())
@@ -10880,6 +12209,8 @@ int main(int argc, char** argv)
 		return 67;
 	if (!TestEmptySceneEntityFactoryContract())
 		return 134;
+	if (!TestLocalVolumetricFogEntityFactoryContract())
+		return 146;
 	if (!TestTransformGraphAnchorContract())
 		return 135;
 	if (!TestRuntimeWorldEntityLifetimeContract())

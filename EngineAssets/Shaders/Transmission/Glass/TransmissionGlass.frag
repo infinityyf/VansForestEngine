@@ -8,6 +8,7 @@
 #include "../../Common/TileLightData.glsl"
 #include "../../Common/CustomMaterialData.glsl"
 #include "../../Lights/LightsData.glsl"
+#include "../../Atmosphere/AtmosphereMediaComposition.glsl"
 #include "../../Lighting/RectLightLTC.glsl"
 
 layout(set = 1, binding = 0) uniform sampler2D opaqueSceneColor;
@@ -422,5 +423,7 @@ void main()
     directSpecular *= localReflectionStrength;
 
     vec3 color = environmentDiffuse + reflection + transmissionColor + directDiffuse + directSpecular;
+    vec2 screenUv = gl_FragCoord.xy / max(ScreenParams.xy, vec2(1.0));
+    color = CompositeAtmosphereSurfaceRadiance(screenUv, positionWS, color);
     outColor = vec4(color * alphaCoverage, alphaCoverage);
 }

@@ -585,6 +585,50 @@ float ComputeCascadeReceiverBias(vec3 normalWS, int cascadeIdx)
     return max(minimumBiasWorld, normalBiasWorld) * uDirectionLight.cascadeDepthScale[cascadeIdx];
 }
 
+// 为无法在每个积分步执行 PCSS 的效果提供稳定、固定成本的级联阴影查询。
+// 级联矩阵与选择逻辑仍由 LightsData 统一持有；调用方只选择单点或四点比较过滤。
+float SampleCascadeShadowFast(
+    sampler2DArrayShadow cascadeShadowMap,
+    vec3 positionWS,
+    vec3 normalWS,
+    float viewDepth,
+    float depthBias,
+    float normalBias,
+    int quality)
+{
+    if (uDirectionLight.intensity <= 0.0)
+        return 1.0;
+
+    int cascadeIdx = SelectCascade(max(viewDepth, 0.0));
+    CascadeProjection p = ProjectCascade(
+        positionWS + normalize(normalWS) * max(normalBias, 0.0), cascadeIdx);
+    if (p.valid <= 0.0)
+        return 1.0;
+
+    float receiverDepth = p.depth - max(depthBias, 0.0);
+    float visibility = texture(
+        cascadeShadowMap, vec4(p.uv, float(cascadeIdx), receiverDepth));
+    if (quality > 0)
+    {
+        vec2 texel = 1.0 / vec2(textureSize(cascadeShadowMap, 0).xy);
+        const vec2 offsets[4] = vec2[](
+            vec2(-0.5, -0.5), vec2(0.5, -0.5),
+            vec2(-0.5, 0.5), vec2(0.5, 0.5));
+        visibility = 0.0;
+        for (int tap = 0; tap < 4; ++tap)
+        {
+            visibility += texture(cascadeShadowMap,
+                vec4(p.uv + offsets[tap] * texel,
+                     float(cascadeIdx), receiverDepth));
+        }
+        visibility *= 0.25;
+    }
+
+    float lastSplit = uDirectionLight.cascadeSplits[CASCADE_COUNT - 1];
+    float distanceFade = 1.0 - smoothstep(lastSplit * 0.85, lastSplit, viewDepth);
+    return mix(1.0, visibility, distanceFade);
+}
+
 float FetchCascadeDepthR32(sampler2DArray shadowMap, ivec2 texel, int cascadeIdx)
 {
     ivec3 size = textureSize(shadowMap, 0);
@@ -966,7 +1010,9 @@ void CalculateDirectDiffuse(vec3 positionWS, vec3 normalWS, sampler2D shadowMap,
     // GI stores outgoing diffuse radiance, including the Lambert albedo / PI term.
     float dirNoL = max(dot(normalWS, uDirectionLight.direction.xyz), 0.0);
     float dirShadow = SampleGICascadeShadow(samplePos, normalWS, shadowMap);
-    diffuseResult += dirNoL * uDirectionLight.color.rgb * uDirectionLight.intensity * dirShadow * albedo * INV_PI;
+    vec3 directionalIrradiance =
+        uDirectionLight.color.rgb * uDirectionLight.intensity;
+    diffuseResult += dirNoL * directionalIrradiance * dirShadow * albedo * INV_PI;
 
     for (uint lightIndex = 0u; lightIndex < uPointLightCount; ++lightIndex)
     {
@@ -1071,7 +1117,10 @@ void CalculateDirectLight(BRDFData brdfData, float directionalShadow,
     vec3 diffuseResult = vec3(0);
     vec3 specularResult = vec3(0);
     DirectBRDF(brdfData, uDirectionLight.direction.rgb, diffuseResult, specularResult);
-    diffuseResult *= uDirectionLight.color.rgb * uDirectionLight.intensity;
+    vec3 directionalIrradiance =
+        uDirectionLight.color.rgb * uDirectionLight.intensity;
+    diffuseResult *= directionalIrradiance;
+    specularResult *= directionalIrradiance;
 
 	float shadowValue = directionalShadow;
     diffuseResult *= shadowValue;

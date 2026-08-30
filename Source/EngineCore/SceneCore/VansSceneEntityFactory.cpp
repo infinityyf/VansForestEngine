@@ -37,6 +37,11 @@ VansSerializedValue Bool(bool value)
     return VansSerializedValue::Bool(value);
 }
 
+VansSerializedValue Float(float value)
+{
+    return VansSerializedValue::Float(value);
+}
+
 VansSerializedValue FloatArray(
     float x,
     float y,
@@ -126,6 +131,36 @@ VansSerializedValue BuildModelRendererComponent(
     });
 }
 
+VansSerializedValue BuildLocalVolumetricFogComponent(
+    const VansSceneLocalVolumetricFogComponentConfig& settings,
+    const std::string& componentGuid)
+{
+    return Object({
+        { "id", String(componentGuid.empty() ? NewGuidString() : componentGuid) },
+        { "type", String("LocalVolumetricFog") },
+        { "version", Int(1) },
+        { "enabled", Bool(settings.enabled) },
+        { "data", Object({
+            { "visibilityDistanceMeters", Float(settings.visibilityDistanceMeters) },
+            { "singleScatteringAlbedo", FloatArray(
+                settings.singleScatteringAlbedo[0],
+                settings.singleScatteringAlbedo[1],
+                settings.singleScatteringAlbedo[2]) },
+            { "anisotropy", Float(settings.anisotropy) },
+            { "emissivePerMeter", FloatArray(
+                settings.emissivePerMeter[0],
+                settings.emissivePerMeter[1],
+                settings.emissivePerMeter[2]) },
+            { "edgeFadeDistanceMeters", Float(settings.edgeFadeDistanceMeters) },
+            { "distanceFadeStartMeters", Float(settings.distanceFadeStartMeters) },
+            { "distanceFadeEndMeters", Float(settings.distanceFadeEndMeters) },
+            { "directLightingScale", Float(settings.directLightingScale) },
+            { "skyLightingScale", Float(settings.skyLightingScale) },
+            { "receiveCloudShadows", Bool(settings.receiveCloudShadows) }
+        }) }
+    });
+}
+
 void AppendSceneEntity(
     SceneModelEntityFactoryResult& result,
     VansSerializedValue entity)
@@ -150,6 +185,28 @@ VansSerializedValue VansSceneEntityFactory::BuildEmptyEntity(
                 request.rotation,
                 request.scale,
                 request.transformComponentGuid)
+        }) }
+    });
+}
+
+VansSerializedValue VansSceneEntityFactory::BuildLocalVolumetricFogEntity(
+    const SceneLocalVolumetricFogEntityFactoryRequest& request,
+    const std::string& entityId)
+{
+    return Object({
+        { "id", String(entityId.empty() ? NewGuidString() : entityId) },
+        { "name", String(request.entityName.empty()
+            ? "Local Volumetric Fog" : request.entityName) },
+        { "parent", VansSerializedValue::Null() },
+        { "components", VansSerializedValue::Array({
+            BuildTransformComponent(
+                request.position,
+                request.rotation,
+                request.scale,
+                request.transformComponentGuid),
+            BuildLocalVolumetricFogComponent(
+                request.settings,
+                request.fogComponentGuid)
         }) }
     });
 }

@@ -187,16 +187,9 @@ namespace Vans::EditorAPI
 		virtual PostProcessSettingsSnapshot GetPostProcessSettings() const = 0;
 		virtual void ApplyPostProcessSettings(const PostProcessSettingsSnapshot& settings) = 0;
 		virtual void CommitPostProcessSettings() = 0;
-		virtual FogSettings GetFogSettings() const = 0;
-		virtual void ApplyFogSettings(const FogSettings& settings) = 0;
-		virtual void CommitHeightFogSettings() = 0;
-		virtual FogVolumeSettings GetFogVolumeSettings() const = 0;
-		virtual void ApplyFogVolumeSettings(const FogVolumeSettings& settings) = 0;
-		virtual void CommitVolumetricFogSettings() = 0;
-		virtual CloudSettings GetCloudSettings() const = 0;
-		virtual void ApplyCloudSettings(const CloudSettings& settings) = 0;
-		virtual void ResetCloudSettings() = 0;
-		virtual void CommitCloudSettings() = 0;
+		virtual EnvironmentSettings GetEnvironmentSettings() const = 0;
+		virtual void ApplyEnvironmentSettings(const EnvironmentSettings& settings) = 0;
+		virtual void CommitEnvironmentSettings() = 0;
 		virtual std::vector<ScenePropertyEdit> ConsumeScenePropertyEdits() = 0;
 
 		virtual EnginePlayState GetPlayState() const = 0;

@@ -27,6 +27,14 @@ namespace VansGraphics
 		std::size_t vertexCount = 0;
 		std::size_t sourceTriangleCount = 0;
 		std::size_t renderedTriangleCount = 0;
+		std::size_t unboundVertexCount = 0;
+		std::size_t invalidBoneInfluenceCount = 0;
+		std::size_t nonFiniteBoneWeightCount = 0;
+		float maxBoneWeightSumError = 0.0f;
+		std::size_t invalidDeformedVertexCount = 0;
+		glm::vec3 deformedBoundsMin = glm::vec3(0.0f);
+		glm::vec3 deformedBoundsMax = glm::vec3(0.0f);
+		float deformedRadiusRatio = 0.0f;
 		float renderMilliseconds = 0.0f;
 	};
 

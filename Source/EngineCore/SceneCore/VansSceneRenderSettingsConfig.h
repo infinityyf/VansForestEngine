@@ -8,89 +8,159 @@
 
 namespace Vans
 {
-struct VansSceneHeightFogSettingsConfig
+struct VansScenePlanetSettingsConfig
 {
-	std::optional<float> fogDensity;
-	std::optional<float> heightFalloff;
-	std::optional<float> sunScatterScale;
-	std::optional<float> ambientScale;
-	std::optional<float> fogMinHeight;
-	std::optional<float> skyFogDistance;
+	std::array<double, 3> centerWorldMeters{ 0.0, -6340200.0, 0.0 };
+	double bottomRadiusMeters = 6340000.0;
+	double atmosphereHeightMeters = 80000.0;
 };
 
-struct VansSceneVolumetricFogSettingsConfig
+struct VansSceneRayleighSettingsConfig
 {
-	std::optional<float> density;
-	std::optional<float> anisotropy;
-	std::optional<float> scatterScale;
-	std::optional<float> ambientScale;
-	std::optional<float> volumeNear;
-	std::optional<float> volumeFar;
-	std::optional<float> slicePower;
-	std::optional<std::array<float, 3>> fogBoxMin;
-	std::optional<std::array<float, 3>> fogBoxMax;
+	std::array<float, 3> scatteringPerMeterAtGround{ 5.802e-6f, 13.558e-6f, 33.1e-6f };
+	float densityScaleHeightMeters = 8500.0f;
+};
+
+struct VansSceneMieSettingsConfig
+{
+	std::array<float, 3> scatteringPerMeterAtGround{ 3.996e-6f, 3.996e-6f, 3.996e-6f };
+	std::array<float, 3> absorptionPerMeterAtGround{ 4.4e-6f, 4.4e-6f, 4.4e-6f };
+	float densityScaleHeightMeters = 1200.0f;
+	float anisotropy = 0.78f;
+};
+
+struct VansSceneOzoneSettingsConfig
+{
+	std::array<float, 3> absorptionPerMeter{ 0.650e-6f, 1.881e-6f, 0.085e-6f };
+	float centerAltitudeMeters = 25000.0f;
+	float halfWidthMeters = 15000.0f;
+};
+
+struct VansSceneCelestialDiskSettingsConfig
+{
+	bool enabled = true;
+	float angularRadiusRadians = 0.018f;
+	float featherRadians = 0.0015f;
+	float radianceScale = 1.0f;
+	float occlusionStrength = 8.0f;
+};
+
+struct VansSceneCelestialBodySettingsConfig
+{
+	std::string name;
+	std::string lightEntityId;
+	VansSceneCelestialDiskSettingsConfig disk;
+};
+
+struct VansSceneAerialPerspectiveSettingsConfig
+{
+	float distanceScale = 1.0f;
+};
+
+struct VansScenePhysicalAtmosphereSettingsConfig
+{
+	bool enabled = true;
+	std::array<float, 3> groundAlbedo{ 0.4f, 0.4f, 0.4f };
+	VansSceneRayleighSettingsConfig rayleigh;
+	VansSceneMieSettingsConfig mie;
+	VansSceneOzoneSettingsConfig ozone;
+	VansSceneAerialPerspectiveSettingsConfig aerialPerspective;
+	// 仅缩放物理大气的主光直射入散射，不改变 extinction/optical depth。
+	float mainLightVolumetricScatteringScale = 1.0f;
+	std::vector<VansSceneCelestialBodySettingsConfig> celestialBodies;
+};
+
+struct VansSceneCloudShadowSettingsConfig
+{
+	bool enabled = true;
+	// 强度只在线性辐照度域混合 1 与物理云透射率，不缩放光学厚度。
+	float atmosphereStrength = 1.0f;
+	float ambientOcclusionStrength = 0.25f;
+};
+
+struct VansSceneHeightFogSettingsConfig
+{
+	bool enabled = true;
+	float groundHeightWorldMeters = 0.0f;
+	// 地面高度上达到 e^-1 透射率的距离，直接决定基准消光 1 / visibility。
+	float visibilityAtGroundMeters = 600.0f;
+	float densityFalloffHeightMeters = 100.0f;
+	float startDistanceMeters = 0.0f;
+	float nearFadeDistanceMeters = 20.0f;
+	float maximumDistanceMeters = 1500.0f;
+	float farFadeDistanceMeters = 300.0f;
+	std::array<float, 3> singleScatteringAlbedo{ 0.98f, 0.98f, 0.98f };
+	float anisotropy = 0.2f;
+	std::array<float, 3> emissivePerMeter{ 0.0f, 0.0f, 0.0f };
+	float skyLightingScale = 1.0f;
+	float mainLightVolumetricScale = 1.0f;
+	bool receiveCloudShadows = true;
 };
 
 struct VansSceneVolumetricCloudSettingsConfig
 {
-	std::optional<float> planetRadius;
-	std::optional<float> seaLevel;
-	std::optional<float> cloudBaseHeight;
-	std::optional<float> cloudMinHeight;
-	std::optional<float> cloudThickness;
-	std::optional<float> cloudMaxHeight;
-	std::optional<float> density;
-	std::optional<float> coverage;
-	std::optional<float> sunBrightness;
-	std::optional<float> phaseG;
-	std::optional<float> mainTileMeters;
-	std::optional<float> detailTileMeters;
-	std::optional<float> mainHeightScale;
-	std::optional<float> detailHeightScale;
-	std::optional<float> thresholdLowCoverage;
-	std::optional<float> thresholdHighCoverage;
-	std::optional<float> densityRemapLow;
-	std::optional<float> densityRemapHigh;
-	std::optional<float> mainErosionStrength;
-	std::optional<float> detailErosionStrength;
-	std::optional<float> edgeErosionStrength;
-	std::optional<float> verticalShapePower;
-	std::optional<float> detailErosionLow;
-	std::optional<float> detailErosionHigh;
-	std::optional<float> detailEdgeStrength;
-	std::optional<float> shadowDensityScale;
-	std::optional<float> sigmaTRef;
-	std::optional<float> viewAbsorption;
-	std::optional<float> lightAbsorption;
-	std::optional<float> singleScatteringAlbedo;
-	std::optional<float> forwardEccentricity;
-	std::optional<float> backwardEccentricity;
-	std::optional<float> msAttenuation;
-	std::optional<float> msContribution;
-	std::optional<float> msEccentricity;
-	std::optional<float> scatteringTintR;
-	std::optional<float> scatteringTintG;
-	std::optional<float> scatteringTintB;
-	std::optional<float> scatterSourceODScale;
-	std::optional<float> scatterSourceCurvePow;
-	std::optional<float> aoUpwardScale;
-	std::optional<float> ambientBottomStrength;
-	std::optional<float> ambientTopStrength;
-	std::optional<float> ambientDuskWarmth;
-	std::optional<float> boundaryConfidence;
-	std::optional<float> boundaryWrap;
-	std::optional<float> phiFwdIntensity;
-	std::optional<float> phiFwdDepthPow;
-	std::optional<float> phiFwdDepthBias;
-	std::optional<float> phiFwdMSBuildScale;
-	std::optional<float> phiFwdCompress;
-	std::optional<float> phiFwdMaxDistance;
-	std::optional<float> phiFwdConeRatio;
-	std::optional<float> phiFwdMinStep;
-	std::optional<float> lightStepCount;
-	std::optional<float> boundaryGradientStep;
-	std::optional<float> boundaryGradientStrength;
-	std::optional<float> shadingDebugMode;
+	bool enabled = true;
+	float cloudMinHeight = 1070.0f;
+	float cloudMaxHeight = 7410.0f;
+	float density = 0.025f;
+	float coverage = 0.350f;
+	float sunBrightness = 0.380f;
+	float mainTileMeters = 43300.0f;
+	float detailTileMeters = 2200.0f;
+	float mainHeightScale = 0.260f;
+	float detailHeightScale = 3.070f;
+	float thresholdLowCoverage = 0.115f;
+	float thresholdHighCoverage = 0.720f;
+	float densityRemapLow = 0.425f;
+	float densityRemapHigh = 0.915f;
+	float mainErosionStrength = 1.160f;
+	float detailErosionStrength = 1.340f;
+	float edgeErosionStrength = 0.500f;
+	float verticalShapePower = 1.420f;
+	float detailErosionLow = 0.280f;
+	float detailErosionHigh = 0.810f;
+	float detailEdgeStrength = 0.270f;
+	float sigmaTRef = 1.000f;
+	float viewAbsorption = 1.000f;
+	float lightAbsorption = 1.000f;
+	float singleScatteringAlbedo = 0.999f;
+	float forwardEccentricity = 0.700f;
+	float backwardEccentricity = 0.250f;
+	float msAttenuation = 0.500f;
+	float msContribution = 0.500f;
+	float msEccentricity = 0.500f;
+	float scatteringTintR = 1.000f;
+	float scatteringTintG = 1.000f;
+	float scatteringTintB = 1.000f;
+	float scatterSourceODScale = 0.120f;
+	float scatterSourceCurvePow = 1.000f;
+	float aoUpwardScale = 1.000f;
+	float ambientBottomStrength = 0.100f;
+	float ambientTopStrength = 0.350f;
+	float ambientDuskWarmth = 0.650f;
+	float boundaryConfidence = 0.750f;
+	float boundaryWrap = 0.350f;
+	float phiFwdIntensity = 0.800f;
+	float phiFwdDepthPow = 1.000f;
+	float phiFwdDepthBias = 0.050f;
+	float phiFwdMSBuildScale = 1.000f;
+	float phiFwdCompress = 1.000f;
+	float phiFwdMaxDistance = 6000.000f;
+	float phiFwdConeRatio = 1.450f;
+	float phiFwdMinStep = 80.000f;
+	float lightStepCount = 8.000f;
+	float boundaryGradientStep = 250.000f;
+	float boundaryGradientStrength = 0.000f;
+	float shadingDebugMode = 0.000f;
+	VansSceneCloudShadowSettingsConfig shadow;
+};
+
+struct VansSceneEnvironmentSettingsConfig
+{
+	VansScenePlanetSettingsConfig planet;
+	VansScenePhysicalAtmosphereSettingsConfig physicalAtmosphere;
+	VansSceneHeightFogSettingsConfig heightFog;
+	VansSceneVolumetricCloudSettingsConfig volumetricClouds;
 };
 
 struct VansScenePostProcessSettingsConfig
@@ -176,7 +246,7 @@ struct VansSceneMainCameraHiZCullSettingsConfig
 	std::optional<bool> enableHair;
 	std::optional<bool> enableTransparent;
 	std::optional<bool> enableDecal;
-	std::optional<bool> enableForwardOpaqueAfterDeferred;
+	std::optional<bool> enableForwardOpaquePreAtmosphere;
 	std::optional<float> depthBiasMeters;
 	std::optional<float> cameraMotionDisableDistance;
 	std::optional<float> cameraMotionDisableAngleRadians;
@@ -187,9 +257,7 @@ struct VansSceneMainCameraHiZCullSettingsConfig
 
 struct VansSceneRenderSettingsConfig
 {
-	std::optional<VansSceneHeightFogSettingsConfig> heightFog;
-	std::optional<VansSceneVolumetricFogSettingsConfig> volumetricFog;
-	std::optional<VansSceneVolumetricCloudSettingsConfig> volumetricClouds;
+	VansSceneEnvironmentSettingsConfig environment;
 	std::optional<VansScenePostProcessSettingsConfig> postProcess;
 	std::optional<VansSceneGISettingsConfig> globalIllumination;
 	std::optional<VansSceneMainCameraHiZCullSettingsConfig> mainCameraHiZCulling;

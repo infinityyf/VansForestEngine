@@ -6,7 +6,7 @@
 //
 // 功能：每帧一次，将所有点光源/聚光灯按屏幕 Tile 分格裁剪，
 //       输出 TileLightHeader 数组（Grid）和光源索引数组（Indices），
-//       供 Deferred.frag / FogLightInjection.comp 读取。
+//       供表面光照与 LocalMediaInjection.comp 共享读取。
 //
 // 设计：固定步长分配（无 atomic），每个 invocation 处理一个 Tile
 //   - 点光源索引槽：tile T 占用 [T * TILE_LIGHT_MAX_PT_PER_TILE, ...)

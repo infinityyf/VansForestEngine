@@ -76,11 +76,14 @@ const char* DefaultTextureForSlot(const std::string& slot)
 		return "defaultMetal";
 	if (slot == "roughness")
 		return "defaultRoughness";
-	if (slot == "ao" || slot == "occlusion" ||
-		slot == "cavity" || slot == "specular" ||
-		slot == "sss_mask" || slot == "sssmask" ||
+	if (slot == "cavity" || slot == "specular")
+		return "defaultSkinCavity";
+	if (slot == "sss_mask" || slot == "sssmask" ||
 		slot == "subsurface_mask" || slot == "scatter_mask" ||
 		slot == "thickness" || slot == "transmission" || slot == "thinness")
+		return "defaultSkinMask";
+	if (slot == "ao" || slot == "occlusion" ||
+		slot == "ambient_occlusion")
 		return "defaultAo";
 	return "defaultAlbedo";
 }
@@ -475,7 +478,7 @@ RenderNodeType NodeTypeForMaterial(const VansMaterial& material, RenderNodeType 
 		return material.HasPass(VansPass::GBUFFER)
 			? OPAQUE_NODE
 			: (material.m_CustomShaderDepthWrite
-				? FORWARD_OPAQUE_AFTER_DEFERRED_NODE
+				? FORWARD_OPAQUE_PRE_ATMOSPHERE_NODE
 				: TRANSPARENT_NODE);
 	}
 	if (fallback == DECAL_NODE || material.m_MaterialType == VAN_DECAL)

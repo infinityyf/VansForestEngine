@@ -385,12 +385,115 @@ VansSceneWaterRefractionConfig DecodeWaterRefraction(const VansSerializedValue& 
 	return config;
 }
 
+VansSceneWaterDetailNormalConfig DecodeWaterDetailNormal(
+	const VansSerializedValue& detailNode,
+	bool& valid)
+{
+	VansSceneWaterDetailNormalConfig config;
+	config.enabled = ReadOptionalBoolField(detailNode, "enabled");
+	config.flipGreen = ReadOptionalBoolField(detailNode, "flipGreen");
+	config.globalStrength = ReadOptionalFloatField(detailNode, "globalStrength");
+	config.maxSlope = ReadOptionalFloatField(detailNode, "maxSlope");
+	config.mipBias = ReadOptionalFloatField(detailNode, "mipBias");
+	config.anisotropy = ReadOptionalFloatField(detailNode, "anisotropy");
+
+	if (std::optional<std::string> decodeMode = ReadOptionalStringField(detailNode, "decodeMode"))
+	{
+		if (*decodeMode == "rgReconstructZ")
+			config.decodeMode = VansSceneWaterNormalDecodeMode::RGReconstructZ;
+		else
+		{
+			valid = false;
+			VANS_LOG_ERROR("[SceneLoader] water.detailNormal.decodeMode must be 'rgReconstructZ'.");
+		}
+	}
+
+	if (const VansSerializedValue* layers = FindObjectField(detailNode, "layers"))
+	{
+		if (layers->kind != VansSerializedValue::Kind::Array || layers->arrayItems.size() > 4)
+		{
+			valid = false;
+			VANS_LOG_ERROR("[SceneLoader] water.detailNormal.layers must be an array with at most 4 entries.");
+			return config;
+		}
+		for (const VansSerializedValue& layerNode : layers->arrayItems)
+		{
+			if (layerNode.kind != VansSerializedValue::Kind::Object)
+			{
+				valid = false;
+				VANS_LOG_ERROR("[SceneLoader] Every water.detailNormal.layers entry must be an object.");
+				return config;
+			}
+			VansSceneWaterDetailNormalLayerConfig layer;
+			layer.enabled = ReadOptionalBoolField(layerNode, "enabled");
+			layer.tileSizeMeters = ReadOptionalFloatField(layerNode, "tileSizeMeters");
+			layer.direction = ReadOptionalFloat2Field(layerNode, "direction");
+			layer.speedMetersPerSecond = ReadOptionalFloatField(layerNode, "speedMetersPerSecond");
+			layer.phase = ReadOptionalFloatField(layerNode, "phase");
+			layer.strength = ReadOptionalFloatField(layerNode, "strength");
+			layer.fadeStartMeters = ReadOptionalFloatField(layerNode, "fadeStartMeters");
+			layer.fadeEndMeters = ReadOptionalFloatField(layerNode, "fadeEndMeters");
+			config.layers.push_back(std::move(layer));
+		}
+	}
+	return config;
+}
+
+VansSceneWaterEffectiveRoughnessConfig DecodeWaterEffectiveRoughness(
+	const VansSerializedValue& roughnessNode,
+	bool& valid)
+{
+	VansSceneWaterEffectiveRoughnessConfig config;
+	if (std::optional<std::string> mode = ReadOptionalStringField(roughnessNode, "mode"))
+	{
+		if (*mode == "baseOnly")
+			config.mode = VansSceneWaterEffectiveRoughnessMode::BaseOnly;
+		else if (*mode == "distanceHeuristic")
+			config.mode = VansSceneWaterEffectiveRoughnessMode::DistanceHeuristic;
+		else
+		{
+			valid = false;
+			VANS_LOG_ERROR("[SceneLoader] water.effectiveRoughness.mode is invalid.");
+		}
+	}
+	config.distanceStartMeters = ReadOptionalFloatField(roughnessNode, "distanceStartMeters");
+	config.distanceEndMeters = ReadOptionalFloatField(roughnessNode, "distanceEndMeters");
+	config.distanceStrength = ReadOptionalFloatField(roughnessNode, "distanceStrength");
+	return config;
+}
+
+VansSceneWaterColorMipConfig DecodeWaterColorMip(const VansSerializedValue& colorMipNode)
+{
+	VansSceneWaterColorMipConfig config;
+	config.refractionScatterScale = ReadOptionalFloatField(colorMipNode, "refractionScatterScale");
+	config.refractionRoughnessScale = ReadOptionalFloatField(colorMipNode, "refractionRoughnessScale");
+	config.forwardScatterMipScale = ReadOptionalFloatField(colorMipNode, "forwardScatterMipScale");
+	config.backgroundScatterScale = ReadOptionalFloatField(colorMipNode, "backgroundScatterScale");
+	config.lodBias = ReadOptionalFloatField(colorMipNode, "lodBias");
+	return config;
+}
+
+VansSceneWaterShadowConfig DecodeWaterShadow(const VansSerializedValue& shadowNode)
+{
+	VansSceneWaterShadowConfig config;
+	config.enabled = ReadOptionalBoolField(shadowNode, "enabled");
+	config.quality = ReadOptionalIntField(shadowNode, "quality");
+	config.depthBias = ReadOptionalFloatField(shadowNode, "depthBias");
+	config.normalBias = ReadOptionalFloatField(shadowNode, "normalBias");
+	config.volumeStepStride = ReadOptionalIntField(shadowNode, "volumeStepStride");
+	return config;
+}
+
 VansSceneWaterSSRConfig DecodeWaterSSR(const VansSerializedValue& ssrNode)
 {
 	VansSceneWaterSSRConfig config;
 	config.enabled = ReadOptionalBoolField(ssrNode, "enabled");
 	config.maxDistance = ReadOptionalFloatField(ssrNode, "maxDistance");
 	config.maxRoughness = ReadOptionalFloatField(ssrNode, "maxRoughness");
+	config.roughnessFadeStart = ReadOptionalFloatField(ssrNode, "roughnessFadeStart");
+	config.colorMipConeScale = ReadOptionalFloatField(ssrNode, "colorMipConeScale");
+	config.colorMipBias = ReadOptionalFloatField(ssrNode, "colorMipBias");
+	config.edgeFadePixels = ReadOptionalFloatField(ssrNode, "edgeFadePixels");
 	return config;
 }
 
@@ -817,7 +920,10 @@ VansSceneWaterNodeConfig VansSceneEnvironmentNodeConfigReader::ReadWater(
 {
 	VansSceneWaterNodeConfig config;
 	if (waterNode.kind != VansSerializedValue::Kind::Object)
+	{
+		config.valid = false;
 		return config;
+	}
 
 	config.level = ReadOptionalFloatField(waterNode, "level");
 	config.specularIntensity = ReadOptionalFloatField(waterNode, "specularIntensity");
@@ -835,6 +941,14 @@ VansSceneWaterNodeConfig VansSceneEnvironmentNodeConfigReader::ReadWater(
 		config.caustics = DecodeWaterCaustics(*caustics);
 	if (const VansSerializedValue* refraction = ReadObjectField(waterNode, "refraction"))
 		config.refraction = DecodeWaterRefraction(*refraction);
+	if (const VansSerializedValue* detailNormal = ReadObjectField(waterNode, "detailNormal"))
+		config.detailNormal = DecodeWaterDetailNormal(*detailNormal, config.valid);
+	if (const VansSerializedValue* effectiveRoughness = ReadObjectField(waterNode, "effectiveRoughness"))
+		config.effectiveRoughness = DecodeWaterEffectiveRoughness(*effectiveRoughness, config.valid);
+	if (const VansSerializedValue* colorMip = ReadObjectField(waterNode, "colorMip"))
+		config.colorMip = DecodeWaterColorMip(*colorMip);
+	if (const VansSerializedValue* shadow = ReadObjectField(waterNode, "shadow"))
+		config.shadow = DecodeWaterShadow(*shadow);
 	if (const VansSerializedValue* ssr = ReadObjectField(waterNode, "ssr"))
 		config.ssr = DecodeWaterSSR(*ssr);
 	if (const VansSerializedValue* sss = ReadObjectField(waterNode, "sss"))

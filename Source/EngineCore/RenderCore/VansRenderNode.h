@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 //#include "VulkanCore/VansMesh.h"
 #include "../VansNode.h"
@@ -20,7 +20,6 @@ namespace VansGraphics
 		OPAQUE_NODE = 1 << 0,
 		TRANSPARENT_NODE = 1 << 1,
 		POSTPROCESS_NODE = 1 << 2,
-		SKY_BOX_NODE = 1 << 3,
 		DEFERRED_NODE = 1 << 4,
 		SCREEN_SPACE_NODE = 1 << 5,
 		TERRAIN_NODE = 1 << 6,
@@ -28,7 +27,7 @@ namespace VansGraphics
 		DECAL_NODE = 1 << 8,    // OBB 贴花节点，叠写 GBuffer
 		PARTICLE_NODE = 1 << 9, // 粒子实例化 Billboard 节点
 		WATER_NODE = 1 << 10,   // 水面节点，独立 Water GBuffer Pass
-		FORWARD_OPAQUE_AFTER_DEFERRED_NODE = 1 << 11,
+		FORWARD_OPAQUE_PRE_ATMOSPHERE_NODE = 1 << 11,
 		HAIR_NODE = 1 << 12,
 	};
 
@@ -92,7 +91,7 @@ namespace VansGraphics
 
 		// 共享 Transform SSBO 中的槽位索引。默认 -1 表示"未分配槽位"：
 		// PrepareInstanceTransformData 仅为 Opaque/Transparent/Decal 节点分配真实索引，
-		// 其余节点（SkyBox/Deferred/Terrain/Water/Vegetation 等）保持 -1，
+		// 其余节点（Deferred/Terrain/Water/Vegetation 等）保持 -1，
 		// UpdateModelData 的 `m_TransfromIndex >= 0` 守卫会跳过 SSBO 写入，
 		// 避免未分配节点（如 Water）误写槽位 0 覆盖第一个不透明物体（如 Gun）的 Transform。
 		int m_TransfromIndex = -1;
@@ -312,25 +311,6 @@ namespace VansGraphics
 
 		void UpdateDescriptorSets(VansMaterialManager& materialManager) override;
 
-	};
-
-	class VansSkyBoxRenderNode : public VansRenderNode
-	{
-	private:
-		std::vector<VkDescriptorSetLayout> m_MotionVectorDescSetLayouts;
-		std::vector<VkDescriptorSet> m_MotionVectorDescSets;
-
-	public:
-
-		VansSkyBoxRenderNode(VkDevice& device, RenderNodeType type) : VansRenderNode(device, type) {}
-
-		void CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager) override;
-
-		void UpdateRenderData(VansVKDevice* device, VansMaterialManager& materialManager, VansLightManager& lightManager, VansCamera* camera) override;
-
-		void UpdateDescriptorSets(VansMaterialManager& materialManager) override;
-
-		void DrawSkyMotionVector(VansVKCommandBuffer& cmd, GlobalStateData& globalState);
 	};
 
 	class VansPostProcessRenderNode : public VansRenderNode

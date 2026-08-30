@@ -13,6 +13,9 @@ namespace Vans
 	using VansProjectUpscalerSettings = VansGraphics::VansUpscalerConfig;
 	using VansProjectCommandRecordingSettings = VansGraphics::VansCommandRecordingConfig;
 	using VansProjectRenderOutputSettings = VansGraphics::VansRenderOutputConfig;
+	using VansProjectAtmosphereQualitySettings = VansGraphics::VansAtmosphereQualityConfig;
+	using VansProjectNearMediaQualitySettings = VansGraphics::VansNearMediaQualityConfig;
+	using VansProjectCloudShadowQualitySettings = VansGraphics::VansCloudShadowQualityConfig;
 
 	struct VansProjectMainCameraHiZCullSettings
 	{
@@ -21,7 +24,7 @@ namespace Vans
 		bool enableHair = true;
 		bool enableTransparent = false;
 		bool enableDecal = true;
-		bool enableForwardOpaqueAfterDeferred = true;
+		bool enableForwardOpaquePreAtmosphere = true;
 		float depthBiasMeters = 0.35f;
 		float cameraMotionDisableDistance = 1.0f;
 		float cameraMotionDisableAngleRadians = 0.13962634f;
@@ -52,12 +55,22 @@ namespace Vans
 			std::string* error = nullptr);
 		const VansProjectCommandRecordingSettings& GetCommandRecordingSettings() const { return m_CommandRecordingSettings; }
 		const VansProjectRenderOutputSettings& GetRenderOutputSettings() const { return m_RenderOutputSettings; }
+		const VansProjectAtmosphereQualitySettings& GetAtmosphereQualitySettings() const { return m_AtmosphereQualitySettings; }
+		const VansProjectNearMediaQualitySettings& GetNearMediaQualitySettings() const { return m_NearMediaQualitySettings; }
+		const VansProjectCloudShadowQualitySettings& GetCloudShadowQualitySettings() const { return m_CloudShadowQualitySettings; }
 		bool SetRenderOutputSettings(
 			const VansProjectRenderOutputSettings& settings,
 			std::string* error = nullptr);
 		VansGraphics::VansRenderRuntimeConfig GetRenderRuntimeConfig() const
 		{
-			return { m_UpscalerSettings, m_CommandRecordingSettings, m_RenderOutputSettings };
+			return {
+				m_UpscalerSettings,
+				m_CommandRecordingSettings,
+				m_RenderOutputSettings,
+				m_AtmosphereQualitySettings,
+				m_NearMediaQualitySettings,
+				m_CloudShadowQualitySettings
+			};
 		}
 		void SetCommandRecordingSettings(
 			bool parallelEnabled,
@@ -75,6 +88,9 @@ private:
 		VansProjectUpscalerSettings m_UpscalerSettings;
 		VansProjectCommandRecordingSettings m_CommandRecordingSettings;
 		VansProjectRenderOutputSettings m_RenderOutputSettings;
+		VansProjectAtmosphereQualitySettings m_AtmosphereQualitySettings;
+		VansProjectNearMediaQualitySettings m_NearMediaQualitySettings;
+		VansProjectCloudShadowQualitySettings m_CloudShadowQualitySettings;
 		VansProjectMainCameraHiZCullSettings m_MainCameraHiZCullSettings;
 	};
 }

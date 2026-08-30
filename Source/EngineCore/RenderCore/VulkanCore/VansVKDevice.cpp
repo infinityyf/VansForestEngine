@@ -294,7 +294,7 @@ namespace VansGraphics
 		resetIfValid(m_VansVKGraphicsScreenCommandBuffer.m_CommandBufferFinishSubmitFence);
 		resetIfValid(m_VansVKVegetationCommandBuffer.m_CommandBufferFinishSubmitFence);
 		resetIfValid(m_VansVKEarlyAuxCommandBuffer.m_CommandBufferFinishSubmitFence);
-		resetIfValid(m_VansVKAsyncCloudCommandBuffer.m_CommandBufferFinishSubmitFence);
+		resetIfValid(m_VansVKAsyncAtmosphereCommandBuffer.m_CommandBufferFinishSubmitFence);
 		resetIfValid(m_VansVKAsyncHZBCommandBuffer.m_CommandBufferFinishSubmitFence);
 		resetIfValid(m_VansVKRayTracingCommandBuffer.m_CommandBufferFinishSubmitFence);
 		resetIfValid(m_VansVKGIDataCommandBuffer.m_CommandBufferFinishSubmitFence);
@@ -827,7 +827,7 @@ namespace VansGraphics
 			|| !createFrameCommandBuffer(m_VansVKGraphicsScreenCommandBuffer, m_ComputeQueueFamilyIndex, "ComputeScreen")
 			|| !createFrameCommandBuffer(m_VansVKVegetationCommandBuffer, m_ComputeQueueFamilyIndex, "Vegetation")
 			|| !createFrameCommandBuffer(m_VansVKEarlyAuxCommandBuffer, m_ComputeQueueFamilyIndex, "EarlyAux")
-			|| !createFrameCommandBuffer(m_VansVKAsyncCloudCommandBuffer, m_ComputeQueueFamilyIndex, "AsyncCloud")
+			|| !createFrameCommandBuffer(m_VansVKAsyncAtmosphereCommandBuffer, m_ComputeQueueFamilyIndex, "AsyncAtmosphere")
 			|| !createFrameCommandBuffer(m_VansVKAsyncHZBCommandBuffer, m_ComputeQueueFamilyIndex, "AsyncHZB")
 			|| !createFrameCommandBuffer(m_VansVKRayTracingCommandBuffer, m_ComputeQueueFamilyIndex, "RayTracing")
 			|| !createFrameCommandBuffer(m_VansVKGIDataCommandBuffer, m_ComputeQueueFamilyIndex, "GIData")
@@ -879,7 +879,7 @@ namespace VansGraphics
 		DestroyVKFence(m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
 		DestroyVKFence(m_VansVKVegetationCommandBuffer.m_CommandBufferFinishSubmitFence);
 		DestroyVKFence(m_VansVKEarlyAuxCommandBuffer.m_CommandBufferFinishSubmitFence);
-		DestroyVKFence(m_VansVKAsyncCloudCommandBuffer.m_CommandBufferFinishSubmitFence);
+		DestroyVKFence(m_VansVKAsyncAtmosphereCommandBuffer.m_CommandBufferFinishSubmitFence);
 		DestroyVKFence(m_VansVKAsyncHZBCommandBuffer.m_CommandBufferFinishSubmitFence);
 		DestroyVKFence(m_VansVKRayTracingCommandBuffer.m_CommandBufferFinishSubmitFence);
 		DestroyVKFence(m_VansVKGIDataCommandBuffer.m_CommandBufferFinishSubmitFence);
@@ -893,7 +893,7 @@ namespace VansGraphics
 		m_VansVKCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 		m_VansVKVegetationCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 		m_VansVKEarlyAuxCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
-		m_VansVKAsyncCloudCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
+		m_VansVKAsyncAtmosphereCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 		m_VansVKAsyncHZBCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 		m_VansVKRayTracingCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);
 		m_VansVKGIDataCommandBuffer.DestroyVulkanCommandBuffer(m_VansVKLogicDevice);

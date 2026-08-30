@@ -2,6 +2,8 @@
 
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
 
 namespace Vans
@@ -100,6 +102,165 @@ std::optional<std::array<float, 3>> ReadOptionalFloat3Field(const VansSerialized
 	};
 }
 
+std::optional<std::array<double, 3>> ReadOptionalDouble3Field(
+	const VansSerializedValue& object,
+	const char* key)
+{
+	const VansSerializedValue* field = FindObjectField(object, key);
+	if (!field || field->kind != VansSerializedValue::Kind::Array || field->arrayItems.size() != 3)
+	{
+		return std::nullopt;
+	}
+
+	std::array<double, 3> values{};
+	for (size_t index = 0; index < values.size(); ++index)
+	{
+		const VansSerializedValue& item = field->arrayItems[index];
+		if (item.kind != VansSerializedValue::Kind::Float &&
+			item.kind != VansSerializedValue::Kind::Int)
+		{
+			return std::nullopt;
+		}
+		values[index] = ReadSerializedNumber(item);
+	}
+	return values;
+}
+
+bool RequireObjectField(
+	const VansSerializedValue& object,
+	const char* key,
+	const char* path,
+	const VansSerializedValue*& value,
+	std::string& error)
+{
+	value = ReadObjectField(object, key);
+	if (value)
+	{
+		return true;
+	}
+	error = std::string(path) + "/" + key + " must be an object";
+	return false;
+}
+
+bool RequireArrayField(
+	const VansSerializedValue& object,
+	const char* key,
+	const char* path,
+	const VansSerializedValue*& value,
+	std::string& error)
+{
+	value = ReadArrayField(object, key);
+	if (value)
+	{
+		return true;
+	}
+	error = std::string(path) + "/" + key + " must be an array";
+	return false;
+}
+
+bool RequireBoolField(
+	const VansSerializedValue& object,
+	const char* key,
+	const char* path,
+	bool& value,
+	std::string& error)
+{
+	const std::optional<bool> parsed = ReadOptionalBoolField(object, key);
+	if (parsed)
+	{
+		value = *parsed;
+		return true;
+	}
+	error = std::string(path) + "/" + key + " must be a bool";
+	return false;
+}
+
+bool RequireFloatField(
+	const VansSerializedValue& object,
+	const char* key,
+	const char* path,
+	float& value,
+	std::string& error)
+{
+	const std::optional<float> parsed = ReadOptionalFloatField(object, key);
+	if (parsed)
+	{
+		value = *parsed;
+		return true;
+	}
+	error = std::string(path) + "/" + key + " must be numeric";
+	return false;
+}
+
+bool RequireDoubleField(
+	const VansSerializedValue& object,
+	const char* key,
+	const char* path,
+	double& value,
+	std::string& error)
+{
+	const VansSerializedValue* field = FindObjectField(object, key);
+	if (field && (field->kind == VansSerializedValue::Kind::Float ||
+		field->kind == VansSerializedValue::Kind::Int))
+	{
+		value = ReadSerializedNumber(*field);
+		return true;
+	}
+	error = std::string(path) + "/" + key + " must be numeric";
+	return false;
+}
+
+bool RequireStringField(
+	const VansSerializedValue& object,
+	const char* key,
+	const char* path,
+	std::string& value,
+	std::string& error)
+{
+	const std::optional<std::string> parsed = ReadOptionalStringField(object, key);
+	if (parsed && !parsed->empty())
+	{
+		value = *parsed;
+		return true;
+	}
+	error = std::string(path) + "/" + key + " must be a non-empty string";
+	return false;
+}
+
+bool RequireFloat3Field(
+	const VansSerializedValue& object,
+	const char* key,
+	const char* path,
+	std::array<float, 3>& value,
+	std::string& error)
+{
+	const std::optional<std::array<float, 3>> parsed = ReadOptionalFloat3Field(object, key);
+	if (parsed)
+	{
+		value = *parsed;
+		return true;
+	}
+	error = std::string(path) + "/" + key + " must contain exactly three numbers";
+	return false;
+}
+
+bool RequireDouble3Field(
+	const VansSerializedValue& object,
+	const char* key,
+	const char* path,
+	std::array<double, 3>& value,
+	std::string& error)
+{
+	const std::optional<std::array<double, 3>> parsed = ReadOptionalDouble3Field(object, key);
+	if (parsed)
+	{
+		value = *parsed;
+		return true;
+	}
+	error = std::string(path) + "/" + key + " must contain exactly three numbers";
+	return false;
+}
+
 std::optional<std::array<uint32_t, 3>> ReadOptionalUInt3Field(const VansSerializedValue& object, const char* key)
 {
 	const VansSerializedValue* field = FindObjectField(object, key);
@@ -147,115 +308,397 @@ std::optional<VansSceneGIRegionSettingsConfig> DecodeGIRegionSettings(const Vans
 	return config;
 }
 
-std::optional<VansSceneHeightFogSettingsConfig> DecodeHeightFog(const VansSerializedValue& sceneSettings)
+bool DecodeVolumetricClouds(
+	const VansSerializedValue& cloud,
+	VansSceneVolumetricCloudSettingsConfig& config,
+	std::string& error)
 {
-	const VansSerializedValue* fog = ReadObjectField(sceneSettings, "heightFog");
-	if (!fog)
+	const char* path = "/settings/environment/volumetricClouds";
+#define VANS_REQUIRE_CLOUD_FLOAT(field) \
+	if (!RequireFloatField(cloud, #field, path, config.field, error)) return false
+	VANS_REQUIRE_CLOUD_FLOAT(cloudMinHeight);
+	VANS_REQUIRE_CLOUD_FLOAT(cloudMaxHeight);
+	VANS_REQUIRE_CLOUD_FLOAT(density);
+	VANS_REQUIRE_CLOUD_FLOAT(coverage);
+	VANS_REQUIRE_CLOUD_FLOAT(sunBrightness);
+	VANS_REQUIRE_CLOUD_FLOAT(mainTileMeters);
+	VANS_REQUIRE_CLOUD_FLOAT(detailTileMeters);
+	VANS_REQUIRE_CLOUD_FLOAT(mainHeightScale);
+	VANS_REQUIRE_CLOUD_FLOAT(detailHeightScale);
+	VANS_REQUIRE_CLOUD_FLOAT(thresholdLowCoverage);
+	VANS_REQUIRE_CLOUD_FLOAT(thresholdHighCoverage);
+	VANS_REQUIRE_CLOUD_FLOAT(densityRemapLow);
+	VANS_REQUIRE_CLOUD_FLOAT(densityRemapHigh);
+	VANS_REQUIRE_CLOUD_FLOAT(mainErosionStrength);
+	VANS_REQUIRE_CLOUD_FLOAT(detailErosionStrength);
+	VANS_REQUIRE_CLOUD_FLOAT(edgeErosionStrength);
+	VANS_REQUIRE_CLOUD_FLOAT(verticalShapePower);
+	VANS_REQUIRE_CLOUD_FLOAT(detailErosionLow);
+	VANS_REQUIRE_CLOUD_FLOAT(detailErosionHigh);
+	VANS_REQUIRE_CLOUD_FLOAT(detailEdgeStrength);
+	VANS_REQUIRE_CLOUD_FLOAT(sigmaTRef);
+	VANS_REQUIRE_CLOUD_FLOAT(viewAbsorption);
+	VANS_REQUIRE_CLOUD_FLOAT(lightAbsorption);
+	VANS_REQUIRE_CLOUD_FLOAT(singleScatteringAlbedo);
+	VANS_REQUIRE_CLOUD_FLOAT(forwardEccentricity);
+	VANS_REQUIRE_CLOUD_FLOAT(backwardEccentricity);
+	VANS_REQUIRE_CLOUD_FLOAT(msAttenuation);
+	VANS_REQUIRE_CLOUD_FLOAT(msContribution);
+	VANS_REQUIRE_CLOUD_FLOAT(msEccentricity);
+	VANS_REQUIRE_CLOUD_FLOAT(scatteringTintR);
+	VANS_REQUIRE_CLOUD_FLOAT(scatteringTintG);
+	VANS_REQUIRE_CLOUD_FLOAT(scatteringTintB);
+	VANS_REQUIRE_CLOUD_FLOAT(scatterSourceODScale);
+	VANS_REQUIRE_CLOUD_FLOAT(scatterSourceCurvePow);
+	VANS_REQUIRE_CLOUD_FLOAT(aoUpwardScale);
+	VANS_REQUIRE_CLOUD_FLOAT(ambientBottomStrength);
+	VANS_REQUIRE_CLOUD_FLOAT(ambientTopStrength);
+	VANS_REQUIRE_CLOUD_FLOAT(ambientDuskWarmth);
+	VANS_REQUIRE_CLOUD_FLOAT(boundaryConfidence);
+	VANS_REQUIRE_CLOUD_FLOAT(boundaryWrap);
+	VANS_REQUIRE_CLOUD_FLOAT(phiFwdIntensity);
+	VANS_REQUIRE_CLOUD_FLOAT(phiFwdDepthPow);
+	VANS_REQUIRE_CLOUD_FLOAT(phiFwdDepthBias);
+	VANS_REQUIRE_CLOUD_FLOAT(phiFwdMSBuildScale);
+	VANS_REQUIRE_CLOUD_FLOAT(phiFwdCompress);
+	VANS_REQUIRE_CLOUD_FLOAT(phiFwdMaxDistance);
+	VANS_REQUIRE_CLOUD_FLOAT(phiFwdConeRatio);
+	VANS_REQUIRE_CLOUD_FLOAT(phiFwdMinStep);
+	VANS_REQUIRE_CLOUD_FLOAT(lightStepCount);
+	VANS_REQUIRE_CLOUD_FLOAT(boundaryGradientStep);
+	VANS_REQUIRE_CLOUD_FLOAT(boundaryGradientStrength);
+	VANS_REQUIRE_CLOUD_FLOAT(shadingDebugMode);
+#undef VANS_REQUIRE_CLOUD_FLOAT
+	const VansSerializedValue* shadow = nullptr;
+	if (!RequireObjectField(cloud, "shadow", path, shadow, error) ||
+		!RequireBoolField(*shadow, "enabled",
+			"/settings/environment/volumetricClouds/shadow",
+			config.shadow.enabled, error) ||
+		!RequireFloatField(*shadow, "atmosphereStrength",
+			"/settings/environment/volumetricClouds/shadow",
+			config.shadow.atmosphereStrength, error) ||
+		!RequireFloatField(*shadow, "ambientOcclusionStrength",
+			"/settings/environment/volumetricClouds/shadow",
+			config.shadow.ambientOcclusionStrength, error))
 	{
-		return std::nullopt;
+		return false;
 	}
-
-	VansSceneHeightFogSettingsConfig config;
-	config.fogDensity = ReadOptionalFloatField(*fog, "fogDensity");
-	config.heightFalloff = ReadOptionalFloatField(*fog, "heightFalloff");
-	config.sunScatterScale = ReadOptionalFloatField(*fog, "sunScatterScale");
-	config.ambientScale = ReadOptionalFloatField(*fog, "ambientScale");
-	config.fogMinHeight = ReadOptionalFloatField(*fog, "fogMinHeight");
-	config.skyFogDistance = ReadOptionalFloatField(*fog, "skyFogDistance");
-	return config;
+	const float* finiteValues[] = {
+		&config.cloudMinHeight, &config.cloudMaxHeight, &config.density, &config.coverage,
+		&config.sunBrightness, &config.mainTileMeters, &config.detailTileMeters,
+		&config.mainHeightScale, &config.detailHeightScale, &config.thresholdLowCoverage,
+		&config.thresholdHighCoverage, &config.densityRemapLow, &config.densityRemapHigh,
+		&config.mainErosionStrength, &config.detailErosionStrength, &config.edgeErosionStrength,
+		&config.verticalShapePower, &config.detailErosionLow, &config.detailErosionHigh,
+		&config.detailEdgeStrength, &config.sigmaTRef,
+		&config.viewAbsorption, &config.lightAbsorption, &config.singleScatteringAlbedo,
+		&config.forwardEccentricity, &config.backwardEccentricity, &config.msAttenuation,
+		&config.msContribution, &config.msEccentricity, &config.scatteringTintR,
+		&config.scatteringTintG, &config.scatteringTintB, &config.scatterSourceODScale,
+		&config.scatterSourceCurvePow, &config.aoUpwardScale, &config.ambientBottomStrength,
+		&config.ambientTopStrength, &config.ambientDuskWarmth, &config.boundaryConfidence,
+		&config.boundaryWrap, &config.phiFwdIntensity, &config.phiFwdDepthPow,
+		&config.phiFwdDepthBias, &config.phiFwdMSBuildScale, &config.phiFwdCompress,
+		&config.phiFwdMaxDistance, &config.phiFwdConeRatio, &config.phiFwdMinStep,
+		&config.lightStepCount, &config.boundaryGradientStep, &config.boundaryGradientStrength,
+		&config.shadingDebugMode, &config.shadow.atmosphereStrength,
+		&config.shadow.ambientOcclusionStrength
+	};
+	for (const float* value : finiteValues)
+	{
+		if (!std::isfinite(*value))
+		{
+			error = std::string(path) + " contains a non-finite number";
+			return false;
+		}
+	}
+	if (config.msEccentricity < 0.0f || config.msEccentricity > 1.0f)
+	{
+		error = std::string(path) + "/msEccentricity must be in [0, 1]";
+		return false;
+	}
+	if (config.cloudMinHeight >= config.cloudMaxHeight ||
+		config.density < 0.0f || config.coverage < 0.0f || config.coverage > 1.0f ||
+		config.sunBrightness < 0.0f ||
+		config.mainTileMeters <= 0.0f || config.detailTileMeters <= 0.0f ||
+		config.mainHeightScale <= 0.0f || config.detailHeightScale <= 0.0f ||
+		config.thresholdLowCoverage > config.thresholdHighCoverage ||
+		config.densityRemapLow > config.densityRemapHigh ||
+		config.detailErosionLow > config.detailErosionHigh ||
+		config.sigmaTRef < 0.0f || config.viewAbsorption < 0.0f ||
+		config.lightAbsorption < 0.0f || config.singleScatteringAlbedo < 0.0f ||
+		config.singleScatteringAlbedo > 1.0f || std::abs(config.forwardEccentricity) >= 1.0f ||
+		std::abs(config.backwardEccentricity) >= 1.0f ||
+		config.scatteringTintR < 0.0f || config.scatteringTintG < 0.0f ||
+		config.scatteringTintB < 0.0f || config.phiFwdMaxDistance <= 0.0f ||
+		config.phiFwdMinStep <= 0.0f || config.lightStepCount < 1.0f ||
+		config.boundaryGradientStep <= 0.0f ||
+		config.shadow.atmosphereStrength < 0.0f ||
+		config.shadow.atmosphereStrength > 1.0f ||
+		config.shadow.ambientOcclusionStrength < 0.0f ||
+		config.shadow.ambientOcclusionStrength > 1.0f)
+	{
+		error = std::string(path) + " contains values outside the physical cloud domain";
+		return false;
+	}
+	return true;
 }
 
-std::optional<VansSceneVolumetricFogSettingsConfig> DecodeVolumetricFog(const VansSerializedValue& sceneSettings)
+bool DecodeEnvironment(
+	const VansSerializedValue& sceneSettings,
+	VansSceneEnvironmentSettingsConfig& config,
+	std::string& error)
 {
-	const VansSerializedValue* fog = ReadObjectField(sceneSettings, "volumetricFog");
-	if (!fog)
+	const VansSerializedValue* environment = nullptr;
+	const VansSerializedValue* planet = nullptr;
+	const VansSerializedValue* atmosphere = nullptr;
+	const VansSerializedValue* rayleigh = nullptr;
+	const VansSerializedValue* mie = nullptr;
+	const VansSerializedValue* ozone = nullptr;
+	const VansSerializedValue* aerialPerspective = nullptr;
+	const VansSerializedValue* celestialBodies = nullptr;
+	const VansSerializedValue* heightFog = nullptr;
+	const VansSerializedValue* clouds = nullptr;
+
+	if (!RequireObjectField(sceneSettings, "environment", "/settings", environment, error) ||
+		!RequireObjectField(*environment, "planet", "/settings/environment", planet, error) ||
+		!RequireDouble3Field(*planet, "centerWorldMeters", "/settings/environment/planet",
+			config.planet.centerWorldMeters, error) ||
+		!RequireDoubleField(*planet, "bottomRadiusMeters", "/settings/environment/planet",
+			config.planet.bottomRadiusMeters, error) ||
+		!RequireDoubleField(*planet, "atmosphereHeightMeters", "/settings/environment/planet",
+			config.planet.atmosphereHeightMeters, error))
 	{
-		return std::nullopt;
+		return false;
 	}
 
-	VansSceneVolumetricFogSettingsConfig config;
-	config.density = ReadOptionalFloatField(*fog, "density");
-	config.anisotropy = ReadOptionalFloatField(*fog, "anisotropy");
-	config.scatterScale = ReadOptionalFloatField(*fog, "scatterScale");
-	config.ambientScale = ReadOptionalFloatField(*fog, "ambientScale");
-	config.volumeNear = ReadOptionalFloatField(*fog, "volumeNear");
-	config.volumeFar = ReadOptionalFloatField(*fog, "volumeFar");
-	config.slicePower = ReadOptionalFloatField(*fog, "slicePower");
-	config.fogBoxMin = ReadOptionalFloat3Field(*fog, "fogBoxMin");
-	config.fogBoxMax = ReadOptionalFloat3Field(*fog, "fogBoxMax");
-	return config;
-}
-
-std::optional<VansSceneVolumetricCloudSettingsConfig> DecodeVolumetricClouds(const VansSerializedValue& sceneSettings)
-{
-	const VansSerializedValue* cloud = ReadObjectField(sceneSettings, "volumetricClouds");
-	if (!cloud)
+	if (!std::isfinite(config.planet.bottomRadiusMeters) ||
+		config.planet.bottomRadiusMeters <= 0.0 ||
+		!std::isfinite(config.planet.atmosphereHeightMeters) ||
+		config.planet.atmosphereHeightMeters <= 0.0 ||
+		!std::all_of(config.planet.centerWorldMeters.begin(),
+			config.planet.centerWorldMeters.end(),
+			[](double value) { return std::isfinite(value); }))
 	{
-		return std::nullopt;
+		error = "/settings/environment/planet contains invalid radii or center";
+		return false;
 	}
 
-	VansSceneVolumetricCloudSettingsConfig config;
-	config.planetRadius = ReadOptionalFloatField(*cloud, "planetRadius");
-	config.seaLevel = ReadOptionalFloatField(*cloud, "seaLevel");
-	config.cloudBaseHeight = ReadOptionalFloatField(*cloud, "cloudBaseHeight");
-	config.cloudMinHeight = ReadOptionalFloatField(*cloud, "cloudMinHeight");
-	config.cloudThickness = ReadOptionalFloatField(*cloud, "cloudThickness");
-	config.cloudMaxHeight = ReadOptionalFloatField(*cloud, "cloudMaxHeight");
-	config.density = ReadOptionalFloatField(*cloud, "density");
-	config.coverage = ReadOptionalFloatField(*cloud, "coverage");
-	config.sunBrightness = ReadOptionalFloatField(*cloud, "sunBrightness");
-	config.phaseG = ReadOptionalFloatField(*cloud, "phaseG");
-	config.mainTileMeters = ReadOptionalFloatField(*cloud, "mainTileMeters");
-	config.detailTileMeters = ReadOptionalFloatField(*cloud, "detailTileMeters");
-	config.mainHeightScale = ReadOptionalFloatField(*cloud, "mainHeightScale");
-	config.detailHeightScale = ReadOptionalFloatField(*cloud, "detailHeightScale");
-	config.thresholdLowCoverage = ReadOptionalFloatField(*cloud, "thresholdLowCoverage");
-	config.thresholdHighCoverage = ReadOptionalFloatField(*cloud, "thresholdHighCoverage");
-	config.densityRemapLow = ReadOptionalFloatField(*cloud, "densityRemapLow");
-	config.densityRemapHigh = ReadOptionalFloatField(*cloud, "densityRemapHigh");
-	config.mainErosionStrength = ReadOptionalFloatField(*cloud, "mainErosionStrength");
-	config.detailErosionStrength = ReadOptionalFloatField(*cloud, "detailErosionStrength");
-	config.edgeErosionStrength = ReadOptionalFloatField(*cloud, "edgeErosionStrength");
-	config.verticalShapePower = ReadOptionalFloatField(*cloud, "verticalShapePower");
-	config.detailErosionLow = ReadOptionalFloatField(*cloud, "detailErosionLow");
-	config.detailErosionHigh = ReadOptionalFloatField(*cloud, "detailErosionHigh");
-	config.detailEdgeStrength = ReadOptionalFloatField(*cloud, "detailEdgeStrength");
-	config.shadowDensityScale = ReadOptionalFloatField(*cloud, "shadowDensityScale");
-	config.sigmaTRef = ReadOptionalFloatField(*cloud, "sigmaTRef");
-	config.viewAbsorption = ReadOptionalFloatField(*cloud, "viewAbsorption");
-	config.lightAbsorption = ReadOptionalFloatField(*cloud, "lightAbsorption");
-	config.singleScatteringAlbedo = ReadOptionalFloatField(*cloud, "singleScatteringAlbedo");
-	config.forwardEccentricity = ReadOptionalFloatField(*cloud, "forwardEccentricity");
-	config.backwardEccentricity = ReadOptionalFloatField(*cloud, "backwardEccentricity");
-	config.msAttenuation = ReadOptionalFloatField(*cloud, "msAttenuation");
-	config.msContribution = ReadOptionalFloatField(*cloud, "msContribution");
-	config.msEccentricity = ReadOptionalFloatField(*cloud, "msEccentricity");
-	config.scatteringTintR = ReadOptionalFloatField(*cloud, "scatteringTintR");
-	config.scatteringTintG = ReadOptionalFloatField(*cloud, "scatteringTintG");
-	config.scatteringTintB = ReadOptionalFloatField(*cloud, "scatteringTintB");
-	config.scatterSourceODScale = ReadOptionalFloatField(*cloud, "scatterSourceODScale");
-	config.scatterSourceCurvePow = ReadOptionalFloatField(*cloud, "scatterSourceCurvePow");
-	config.aoUpwardScale = ReadOptionalFloatField(*cloud, "aoUpwardScale");
-	config.ambientBottomStrength = ReadOptionalFloatField(*cloud, "ambientBottomStrength");
-	config.ambientTopStrength = ReadOptionalFloatField(*cloud, "ambientTopStrength");
-	config.ambientDuskWarmth = ReadOptionalFloatField(*cloud, "ambientDuskWarmth");
-	config.boundaryConfidence = ReadOptionalFloatField(*cloud, "boundaryConfidence");
-	config.boundaryWrap = ReadOptionalFloatField(*cloud, "boundaryWrap");
-	config.phiFwdIntensity = ReadOptionalFloatField(*cloud, "phiFwdIntensity");
-	config.phiFwdDepthPow = ReadOptionalFloatField(*cloud, "phiFwdDepthPow");
-	config.phiFwdDepthBias = ReadOptionalFloatField(*cloud, "phiFwdDepthBias");
-	config.phiFwdMSBuildScale = ReadOptionalFloatField(*cloud, "phiFwdMSBuildScale");
-	config.phiFwdCompress = ReadOptionalFloatField(*cloud, "phiFwdCompress");
-	config.phiFwdMaxDistance = ReadOptionalFloatField(*cloud, "phiFwdMaxDistance");
-	config.phiFwdConeRatio = ReadOptionalFloatField(*cloud, "phiFwdConeRatio");
-	config.phiFwdMinStep = ReadOptionalFloatField(*cloud, "phiFwdMinStep");
-	config.lightStepCount = ReadOptionalFloatField(*cloud, "lightStepCount");
-	config.boundaryGradientStep = ReadOptionalFloatField(*cloud, "boundaryGradientStep");
-	config.boundaryGradientStrength = ReadOptionalFloatField(*cloud, "boundaryGradientStrength");
-	config.shadingDebugMode = ReadOptionalFloatField(*cloud, "shadingDebugMode");
-	return config;
-}
+	auto& physical = config.physicalAtmosphere;
+	const char* physicalPath = "/settings/environment/physicalAtmosphere";
+	if (!RequireObjectField(*environment, "physicalAtmosphere",
+			"/settings/environment", atmosphere, error) ||
+		!RequireBoolField(*atmosphere, "enabled", physicalPath, physical.enabled, error) ||
+		!RequireFloat3Field(*atmosphere, "groundAlbedo", physicalPath,
+			physical.groundAlbedo, error) ||
+		!RequireObjectField(*atmosphere, "rayleigh", physicalPath, rayleigh, error) ||
+		!RequireFloat3Field(*rayleigh, "scatteringPerMeterAtGround",
+			"/settings/environment/physicalAtmosphere/rayleigh",
+			physical.rayleigh.scatteringPerMeterAtGround, error) ||
+		!RequireFloatField(*rayleigh, "densityScaleHeightMeters",
+			"/settings/environment/physicalAtmosphere/rayleigh",
+			physical.rayleigh.densityScaleHeightMeters, error) ||
+		!RequireObjectField(*atmosphere, "mie", physicalPath, mie, error) ||
+		!RequireFloat3Field(*mie, "scatteringPerMeterAtGround",
+			"/settings/environment/physicalAtmosphere/mie",
+			physical.mie.scatteringPerMeterAtGround, error) ||
+		!RequireFloat3Field(*mie, "absorptionPerMeterAtGround",
+			"/settings/environment/physicalAtmosphere/mie",
+			physical.mie.absorptionPerMeterAtGround, error) ||
+		!RequireFloatField(*mie, "densityScaleHeightMeters",
+			"/settings/environment/physicalAtmosphere/mie",
+			physical.mie.densityScaleHeightMeters, error) ||
+		!RequireFloatField(*mie, "anisotropy",
+			"/settings/environment/physicalAtmosphere/mie",
+			physical.mie.anisotropy, error) ||
+		!RequireObjectField(*atmosphere, "ozone", physicalPath, ozone, error) ||
+		!RequireFloat3Field(*ozone, "absorptionPerMeter",
+			"/settings/environment/physicalAtmosphere/ozone",
+			physical.ozone.absorptionPerMeter, error) ||
+		!RequireFloatField(*ozone, "centerAltitudeMeters",
+			"/settings/environment/physicalAtmosphere/ozone",
+			physical.ozone.centerAltitudeMeters, error) ||
+		!RequireFloatField(*ozone, "halfWidthMeters",
+			"/settings/environment/physicalAtmosphere/ozone",
+			physical.ozone.halfWidthMeters, error) ||
+		!RequireObjectField(*atmosphere, "aerialPerspective", physicalPath,
+			aerialPerspective, error) ||
+		!RequireFloatField(*aerialPerspective, "distanceScale",
+			"/settings/environment/physicalAtmosphere/aerialPerspective",
+			physical.aerialPerspective.distanceScale, error) ||
+		!RequireFloatField(*atmosphere, "mainLightVolumetricScatteringScale",
+			physicalPath,
+			physical.mainLightVolumetricScatteringScale, error) ||
+		!RequireArrayField(*atmosphere, "celestialBodies", physicalPath,
+			celestialBodies, error))
+	{
+		return false;
+	}
 
+	auto allFiniteInRange = [](const std::array<float, 3>& values,
+		float minimum, float maximum)
+	{
+		return std::all_of(values.begin(), values.end(), [&](float value)
+		{
+			return std::isfinite(value) && value >= minimum && value <= maximum;
+		});
+	};
+	if (!allFiniteInRange(physical.groundAlbedo, 0.0f, 1.0f) ||
+		!allFiniteInRange(physical.rayleigh.scatteringPerMeterAtGround, 0.0f, 1.0f) ||
+		!allFiniteInRange(physical.mie.scatteringPerMeterAtGround, 0.0f, 1.0f) ||
+		!allFiniteInRange(physical.mie.absorptionPerMeterAtGround, 0.0f, 1.0f) ||
+		!allFiniteInRange(physical.ozone.absorptionPerMeter, 0.0f, 1.0f) ||
+		!std::isfinite(physical.rayleigh.densityScaleHeightMeters) ||
+		physical.rayleigh.densityScaleHeightMeters <= 0.0f ||
+		!std::isfinite(physical.mie.densityScaleHeightMeters) ||
+		physical.mie.densityScaleHeightMeters <= 0.0f ||
+		!std::isfinite(physical.mie.anisotropy) ||
+		std::abs(physical.mie.anisotropy) >= 0.99f ||
+		!std::isfinite(physical.ozone.centerAltitudeMeters) ||
+		physical.ozone.centerAltitudeMeters < 0.0f ||
+		!std::isfinite(physical.ozone.halfWidthMeters) ||
+		physical.ozone.halfWidthMeters <= 0.0f ||
+		!std::isfinite(physical.aerialPerspective.distanceScale) ||
+		physical.aerialPerspective.distanceScale <= 0.0f ||
+		!std::isfinite(physical.mainLightVolumetricScatteringScale) ||
+		physical.mainLightVolumetricScatteringScale < 0.0f)
+	{
+		error = std::string(physicalPath) + " contains invalid physical coefficients";
+		return false;
+	}
+
+	if (celestialBodies->arrayItems.size() > 2)
+	{
+		error = std::string(physicalPath) + "/celestialBodies supports at most two bodies";
+		return false;
+	}
+	physical.celestialBodies.clear();
+	physical.celestialBodies.reserve(celestialBodies->arrayItems.size());
+	for (size_t index = 0; index < celestialBodies->arrayItems.size(); ++index)
+	{
+		const VansSerializedValue& bodyNode = celestialBodies->arrayItems[index];
+		const std::string bodyPath = std::string(physicalPath) +
+			"/celestialBodies/" + std::to_string(index);
+		if (bodyNode.kind != VansSerializedValue::Kind::Object)
+		{
+			error = bodyPath + " must be an object";
+			return false;
+		}
+		VansSceneCelestialBodySettingsConfig body;
+		const VansSerializedValue* disk = nullptr;
+		if (!RequireStringField(bodyNode, "name", bodyPath.c_str(), body.name, error) ||
+			!RequireStringField(bodyNode, "lightEntityId", bodyPath.c_str(),
+				body.lightEntityId, error) ||
+			!RequireObjectField(bodyNode, "disk", bodyPath.c_str(), disk, error))
+		{
+			return false;
+		}
+		const std::string diskPath = bodyPath + "/disk";
+		if (!RequireBoolField(*disk, "enabled", diskPath.c_str(), body.disk.enabled, error) ||
+			!RequireFloatField(*disk, "angularRadiusRadians", diskPath.c_str(),
+				body.disk.angularRadiusRadians, error) ||
+			!RequireFloatField(*disk, "featherRadians", diskPath.c_str(),
+				body.disk.featherRadians, error) ||
+			!RequireFloatField(*disk, "radianceScale", diskPath.c_str(),
+				body.disk.radianceScale, error) ||
+			!RequireFloatField(*disk, "occlusionStrength", diskPath.c_str(),
+				body.disk.occlusionStrength, error))
+		{
+			return false;
+		}
+		if (!std::isfinite(body.disk.angularRadiusRadians) ||
+			body.disk.angularRadiusRadians <= 0.0f ||
+			body.disk.angularRadiusRadians >= 0.25f ||
+			!std::isfinite(body.disk.featherRadians) || body.disk.featherRadians < 0.0f ||
+			!std::isfinite(body.disk.radianceScale) || body.disk.radianceScale < 0.0f ||
+			!std::isfinite(body.disk.occlusionStrength) || body.disk.occlusionStrength < 0.0f)
+		{
+			error = diskPath + " contains invalid values";
+			return false;
+		}
+		for (const auto& existing : physical.celestialBodies)
+		{
+			if (existing.lightEntityId == body.lightEntityId)
+			{
+				error = bodyPath + "/lightEntityId must be unique";
+				return false;
+			}
+		}
+		physical.celestialBodies.push_back(std::move(body));
+	}
+	if (physical.enabled && physical.celestialBodies.empty())
+	{
+		error = std::string(physicalPath) + " requires a celestial body when enabled";
+		return false;
+	}
+
+	auto& fog = config.heightFog;
+	const char* fogPath = "/settings/environment/heightFog";
+	if (!RequireObjectField(*environment, "heightFog", "/settings/environment",
+			heightFog, error) ||
+		!RequireBoolField(*heightFog, "enabled", fogPath, fog.enabled, error) ||
+		!RequireFloatField(*heightFog, "groundHeightWorldMeters", fogPath,
+			fog.groundHeightWorldMeters, error) ||
+		!RequireFloatField(*heightFog, "visibilityAtGroundMeters", fogPath,
+			fog.visibilityAtGroundMeters, error) ||
+		!RequireFloatField(*heightFog, "densityFalloffHeightMeters", fogPath,
+			fog.densityFalloffHeightMeters, error) ||
+		!RequireFloatField(*heightFog, "startDistanceMeters", fogPath,
+			fog.startDistanceMeters, error) ||
+		!RequireFloatField(*heightFog, "nearFadeDistanceMeters", fogPath,
+			fog.nearFadeDistanceMeters, error) ||
+		!RequireFloatField(*heightFog, "maximumDistanceMeters", fogPath,
+			fog.maximumDistanceMeters, error) ||
+		!RequireFloatField(*heightFog, "farFadeDistanceMeters", fogPath,
+			fog.farFadeDistanceMeters, error) ||
+		!RequireFloat3Field(*heightFog, "singleScatteringAlbedo", fogPath,
+			fog.singleScatteringAlbedo, error) ||
+		!RequireFloatField(*heightFog, "anisotropy", fogPath,
+			fog.anisotropy, error) ||
+		!RequireFloat3Field(*heightFog, "emissivePerMeter", fogPath,
+			fog.emissivePerMeter, error) ||
+		!RequireFloatField(*heightFog, "skyLightingScale", fogPath,
+			fog.skyLightingScale, error) ||
+		!RequireFloatField(*heightFog, "mainLightVolumetricScale", fogPath,
+			fog.mainLightVolumetricScale, error) ||
+		!RequireBoolField(*heightFog, "receiveCloudShadows", fogPath,
+			fog.receiveCloudShadows, error))
+	{
+		return false;
+	}
+
+	if (!std::isfinite(fog.groundHeightWorldMeters) ||
+		!std::isfinite(fog.visibilityAtGroundMeters) || fog.visibilityAtGroundMeters <= 0.0f ||
+		!std::isfinite(fog.densityFalloffHeightMeters) || fog.densityFalloffHeightMeters <= 0.0f ||
+		!std::isfinite(fog.startDistanceMeters) || fog.startDistanceMeters < 0.0f ||
+		!std::isfinite(fog.nearFadeDistanceMeters) || fog.nearFadeDistanceMeters < 0.0f ||
+		!std::isfinite(fog.maximumDistanceMeters) ||
+		fog.maximumDistanceMeters <= fog.startDistanceMeters ||
+		!std::isfinite(fog.farFadeDistanceMeters) || fog.farFadeDistanceMeters < 0.0f ||
+		fog.nearFadeDistanceMeters + fog.farFadeDistanceMeters >
+			fog.maximumDistanceMeters - fog.startDistanceMeters ||
+		!allFiniteInRange(fog.singleScatteringAlbedo, 0.0f, 1.0f) ||
+		!std::isfinite(fog.anisotropy) || std::abs(fog.anisotropy) >= 0.99f ||
+		!allFiniteInRange(fog.emissivePerMeter, 0.0f, 100000.0f) ||
+		!std::isfinite(fog.skyLightingScale) || fog.skyLightingScale < 0.0f ||
+		!std::isfinite(fog.mainLightVolumetricScale) ||
+		fog.mainLightVolumetricScale < 0.0f)
+	{
+		error = std::string(fogPath) + " contains invalid near-ground fog values";
+		return false;
+	}
+
+	if (!RequireObjectField(*environment, "volumetricClouds",
+			"/settings/environment", clouds, error) ||
+		!RequireBoolField(*clouds, "enabled",
+			"/settings/environment/volumetricClouds",
+			config.volumetricClouds.enabled, error) ||
+		!DecodeVolumetricClouds(*clouds, config.volumetricClouds, error))
+	{
+		return false;
+	}
+	return true;
+}
 std::optional<VansScenePostProcessSettingsConfig> DecodePostProcess(
 	const VansSerializedValue& sceneSettings)
 {
@@ -371,7 +814,7 @@ std::optional<VansSceneMainCameraHiZCullSettingsConfig> DecodeMainCameraHiZCulli
 	config.enableHair = ReadOptionalBoolField(*hiz, "enableHair");
 	config.enableTransparent = ReadOptionalBoolField(*hiz, "enableTransparent");
 	config.enableDecal = ReadOptionalBoolField(*hiz, "enableDecal");
-	config.enableForwardOpaqueAfterDeferred = ReadOptionalBoolField(*hiz, "enableForwardOpaqueAfterDeferred");
+	config.enableForwardOpaquePreAtmosphere = ReadOptionalBoolField(*hiz, "enableForwardOpaquePreAtmosphere");
 	config.depthBiasMeters = ReadOptionalFloatField(*hiz, "depthBiasMeters");
 	config.cameraMotionDisableDistance = ReadOptionalFloatField(*hiz, "cameraMotionDisableDistance");
 	config.cameraMotionDisableAngleRadians = ReadOptionalFloatField(*hiz, "cameraMotionDisableAngleRadians");
@@ -382,21 +825,26 @@ std::optional<VansSceneMainCameraHiZCullSettingsConfig> DecodeMainCameraHiZCulli
 }
 }
 
-VansSceneRenderSettingsConfig VansSceneRenderSettingsConfigReader::Read(
-	const VansSerializedValue& sceneSettings)
+bool VansSceneRenderSettingsConfigReader::Read(
+	const VansSerializedValue& sceneSettings,
+	VansSceneRenderSettingsConfig& config,
+	std::string& error)
 {
-	VansSceneRenderSettingsConfig config;
+	config = VansSceneRenderSettingsConfig{};
+	error.clear();
 	if (sceneSettings.kind != VansSerializedValue::Kind::Object)
 	{
-		return config;
+		error = "/settings must be an object";
+		return false;
 	}
 
-	config.heightFog = DecodeHeightFog(sceneSettings);
-	config.volumetricFog = DecodeVolumetricFog(sceneSettings);
-	config.volumetricClouds = DecodeVolumetricClouds(sceneSettings);
+	if (!DecodeEnvironment(sceneSettings, config.environment, error))
+	{
+		return false;
+	}
 	config.postProcess = DecodePostProcess(sceneSettings);
 	config.globalIllumination = DecodeGISettings(sceneSettings);
 	config.mainCameraHiZCulling = DecodeMainCameraHiZCulling(sceneSettings);
-	return config;
+	return true;
 }
 }

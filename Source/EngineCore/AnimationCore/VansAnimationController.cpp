@@ -1022,6 +1022,21 @@ const MotionMatchingSettings* VansAnimationController::GetMotionMatchingSettings
 	return m_MotionMatching ? &m_MotionMatching->GetSettings() : nullptr;
 }
 
+bool VansAnimationController::TryGetCharacterMotionSettings(
+	Vans::VansCharacterMotionSettings& settings) const
+{
+	const MotionMatchingSettings* configured = GetMotionMatchingSettings();
+	if (!configured)
+		return false;
+	settings = configured->motionModel;
+	return true;
+}
+
+bool VansAnimationController::CharacterMotionPrefersRootMotion() const
+{
+	return MotionMatchingPrefersRootMotion();
+}
+
 const std::vector<VansProceduralDebugRecord>*
 VansAnimationController::GetProceduralDebugRecords() const
 {
@@ -1494,6 +1509,7 @@ void VansAnimationController::EnableRootMotion(bool enable)
 	m_RootMotionEnabled = enable;
 	m_LastRootMotionDelta = glm::vec3(0.0f);
 	m_LastRootRotationDelta = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+	m_LastRootMotionValid = false;
 }
 
 bool VansAnimationController::IsRootMotionEnabled() const

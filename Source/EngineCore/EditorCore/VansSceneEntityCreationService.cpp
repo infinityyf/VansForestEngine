@@ -88,6 +88,53 @@ std::string MakeUniqueEntityName(
     }
     return baseName + " (New)";
 }
+
+VansSceneEntityCreationService::Result CommitCreatedEntity(
+    Vans::EditorAPI::IEngineEditorAPI& editorAPI,
+    Vans::VansSceneEditService& editService,
+    Vans::VansSerializedValue entity,
+    const char* subjectName)
+{
+    const std::string entityGuid = Vans::ReadSerializedStringField(entity, "id");
+    if (entityGuid.empty())
+        return { false, false, {}, std::string(subjectName) +
+            " factory did not produce an entity id" };
+
+    const Vans::EditorAPI::ScenePropertyValue runtimeEntity =
+        Vans::FromSerializedValue(entity);
+    auto createRuntimeEntity = [&editorAPI, runtimeEntity]()
+    {
+        Vans::EditorAPI::RuntimeSceneEntitiesCreateRequest createRequest;
+        createRequest.sceneEntities.push_back(runtimeEntity);
+        return editorAPI.CreateRuntimeSceneEntities(createRequest).created;
+    };
+
+    Vans::SceneEditLifecycleHooks hooks;
+    hooks.afterExecute = createRuntimeEntity;
+    hooks.afterUndo = [&editorAPI, entityGuid]()
+    {
+        Vans::EditorAPI::RuntimeEntityDestroyRequest destroyRequest;
+        destroyRequest.entityGuid = entityGuid;
+        return editorAPI.DestroyRuntimeEntity(destroyRequest).destroyed;
+    };
+    hooks.afterRedo = createRuntimeEntity;
+
+    std::vector<Vans::VansSerializedValue> appendedEntities;
+    appendedEntities.push_back(std::move(entity));
+    const Vans::SceneEditResult editResult =
+        editService.AppendEntities(std::move(appendedEntities), std::move(hooks));
+    if (!editResult)
+        return { false, false, {}, editResult.message };
+
+    VansSceneEntityCreationService::Result result;
+    result.success = true;
+    result.runtimeChangeApplied = editResult.runtimeChangeApplied;
+    result.entityGuid = entityGuid;
+    if (!result.runtimeChangeApplied)
+        result.message = std::string(subjectName) +
+            " was added to the scene document, but runtime preview creation failed";
+    return result;
+}
 }
 
 VansSceneEntityCreationService::Result VansSceneEntityCreationService::CreateEmptyObject(
@@ -119,41 +166,29 @@ VansSceneEntityCreationService::Result VansSceneEntityCreationService::CreateEmp
     factoryRequest.parent = request.parent;
     Vans::VansSerializedValue entity =
         Vans::VansSceneEntityFactory::BuildEmptyEntity(factoryRequest);
-    const std::string entityGuid = Vans::ReadSerializedStringField(entity, "id");
-    if (entityGuid.empty())
-        return { false, false, {}, "Empty object factory did not produce an entity id" };
+    return CommitCreatedEntity(editorAPI, editService, std::move(entity), "Empty object");
+}
 
-    const Vans::EditorAPI::ScenePropertyValue runtimeEntity = Vans::FromSerializedValue(entity);
-    auto createRuntimeEntity = [&editorAPI, runtimeEntity]()
-    {
-        Vans::EditorAPI::RuntimeSceneEntitiesCreateRequest createRequest;
-        createRequest.sceneEntities.push_back(runtimeEntity);
-        return editorAPI.CreateRuntimeSceneEntities(createRequest).created;
-    };
+VansSceneEntityCreationService::Result
+VansSceneEntityCreationService::CreateLocalVolumetricFog(
+    Vans::EditorAPI::IEngineEditorAPI& editorAPI,
+    const Vans::VansSceneDocument& document,
+    Vans::VansSceneEditService& editService,
+    const LocalVolumetricFogRequest& request)
+{
+    const Vans::VansSerializedValue sceneRoot = document.SerializedRootSnapshot();
+    const Vans::VansSerializedValue* entities = FindSceneEntities(sceneRoot);
+    if (!entities)
+        return { false, false, {}, "Scene document has no entities array" };
 
-    Vans::SceneEditLifecycleHooks hooks;
-    hooks.afterExecute = createRuntimeEntity;
-    hooks.afterUndo = [&editorAPI, entityGuid]()
-    {
-        Vans::EditorAPI::RuntimeEntityDestroyRequest destroyRequest;
-        destroyRequest.entityGuid = entityGuid;
-        return editorAPI.DestroyRuntimeEntity(destroyRequest).destroyed;
-    };
-    hooks.afterRedo = createRuntimeEntity;
-
-    std::vector<Vans::VansSerializedValue> appendedEntities;
-    appendedEntities.push_back(std::move(entity));
-    const Vans::SceneEditResult editResult =
-        editService.AppendEntities(std::move(appendedEntities), std::move(hooks));
-    if (!editResult)
-        return { false, false, {}, editResult.message };
-
-    Result result;
-    result.success = true;
-    result.runtimeChangeApplied = editResult.runtimeChangeApplied;
-    result.entityGuid = entityGuid;
-    if (!result.runtimeChangeApplied)
-        result.message = "Empty object was added to the scene document, but runtime preview creation failed";
-    return result;
+    Vans::SceneLocalVolumetricFogEntityFactoryRequest factoryRequest;
+    factoryRequest.entityName = MakeUniqueEntityName(*entities, request.baseName);
+    factoryRequest.position = request.position;
+    factoryRequest.scale = request.dimensions;
+    factoryRequest.settings = request.settings;
+    Vans::VansSerializedValue entity =
+        Vans::VansSceneEntityFactory::BuildLocalVolumetricFogEntity(factoryRequest);
+    return CommitCreatedEntity(editorAPI, editService, std::move(entity),
+        "Local volumetric fog");
 }
 }

@@ -214,6 +214,41 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
         Vans::VansEditorSelection::SelectEntity(result.entityGuid);
     };
 
+    auto createLocalVolumetricFog = [&editorAPI, document]()
+    {
+        Vans::VansSceneEditService* editService =
+            VansEditorWindow::GetSceneEditService();
+        if (!document || !editService)
+            return;
+
+        VansSceneEntityCreationService::LocalVolumetricFogRequest request;
+        request.dimensions = { 20.0f, 2.0f, 20.0f };
+        request.settings.visibilityDistanceMeters = 150.0f;
+        request.settings.singleScatteringAlbedo = { 0.96f, 0.98f, 1.0f };
+        request.settings.anisotropy = 0.25f;
+        request.settings.edgeFadeDistanceMeters = 0.5f;
+        request.settings.distanceFadeEndMeters = 1000.0f;
+        request.settings.directLightingScale = 1.0f;
+        request.settings.skyLightingScale = 0.75f;
+        request.settings.receiveCloudShadows = true;
+        const VansSceneEntityCreationService::Result result =
+            VansSceneEntityCreationService::CreateLocalVolumetricFog(
+                editorAPI, *document, *editService, request);
+        if (!result)
+        {
+            VANS_LOG_ERROR("[Hierarchy] Create local volumetric fog failed: "
+                << result.message);
+            return;
+        }
+        if (!result.runtimeChangeApplied)
+        {
+            if (!result.message.empty())
+                VANS_LOG_WARN("[Hierarchy] " << result.message);
+            VansEditorWindow::ReloadCurrentSceneForEditing();
+        }
+        Vans::VansEditorSelection::SelectEntity(result.entityGuid);
+    };
+
     if (ImGui::Button("+ Create"))
         ImGui::OpenPopup("HierarchyCreateMenu");
 	static int reparentPolicyIndex = 0;
@@ -234,6 +269,12 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
     {
         if (ImGui::MenuItem("Empty Object"))
             createEmptyObject(std::nullopt);
+		if (ImGui::BeginMenu("Visual Effects"))
+		{
+			if (ImGui::MenuItem("Local Volumetric Fog"))
+				createLocalVolumetricFog();
+			ImGui::EndMenu();
+		}
 
 		const std::optional<Vans::VansSceneParentReference> selectedParent =
 			ParentReferenceFromHandle(

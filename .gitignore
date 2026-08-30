@@ -10,5 +10,15 @@ x64
 !/EngineAssets/Models/fullscreen.obj.meta
 !/EngineAssets/Models/plane.obj.meta
 !/EngineAssets/Models/sphere.obj.meta
-/EngineAssets/Textures
+/EngineAssets/Textures/*
+!/EngineAssets/Textures/Water/
+/EngineAssets/Textures/Water/*
+!/EngineAssets/Textures/Water/DetailWaveTexture.png
+!/EngineAssets/Textures/Water/DetailWaveTexture.png.meta
+!/EngineAssets/Textures/Default/
+/EngineAssets/Textures/Default/*
+!/EngineAssets/Textures/Default/defaultSkinCavity.png
+!/EngineAssets/Textures/Default/defaultSkinCavity.png.meta
+!/EngineAssets/Textures/Default/defaultSkinMask.png
+!/EngineAssets/Textures/Default/defaultSkinMask.png.meta
 /openspec

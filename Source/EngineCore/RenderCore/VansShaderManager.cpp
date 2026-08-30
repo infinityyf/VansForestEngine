@@ -49,6 +49,21 @@ void VansShaderManager::RegisterComputeShader(const std::string& shaderName, con
     RegisterShader(std::move(entry));
 }
 
+void VansShaderManager::RegisterComputeShaderFile(
+	const std::string& shaderName,
+	const std::string& relativePath,
+	const std::string& computeFile,
+	int pushConstantSize)
+{
+	VansShaderEntry entry;
+	entry.name = shaderName;
+	entry.relativePath = relativePath;
+	entry.kind = VansManagedShaderKind::Compute;
+	entry.pushConstantSize = pushConstantSize;
+	entry.explicitStageFiles[VK_SHADER_STAGE_COMPUTE_BIT] = computeFile;
+	RegisterShader(std::move(entry));
+}
+
 void VansShaderManager::RegisterRayTracingShader(const std::string& shaderName, const std::string& relativePath, int pushConstantSize)
 {
     VansShaderEntry entry;
