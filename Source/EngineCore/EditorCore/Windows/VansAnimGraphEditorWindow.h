@@ -4,9 +4,7 @@
 #include <imgui_node_editor.h>
 #include <memory>
 #include <cstdint>
-#include <array>
 #include <string>
-#include <unordered_map>
 #include <vector>
 namespace ax { namespace NodeEditor { struct EditorContext; } }
 namespace Vans { struct VansOpenAssetDocument; }
@@ -90,14 +88,6 @@ namespace VansGraphics
 		void DrawClipsPanel();
 		void DrawGraphCanvas();
 		void DrawStatusBar();
-		void DrawPreviewPanel();
-		void EnsurePreviewSession();
-		void QueuePreviewCompile();
-		void UpdatePreviewDefinition();
-		void DestroyPreviewSession();
-		void ResetPreviewParameters();
-		void ReconcilePreviewParameters();
-		void ApplyPreviewParameters();
 		void DrawNavigationBar();
 		void DrawGraphEditorCanvas();
 		void DrawSubgraphPreviewCanvas();
@@ -119,32 +109,5 @@ namespace VansGraphics
 		bool Redo();
 		bool Save();
 		void CloseImmediately();
-
-		Vans::EditorAPI::AnimationPreviewSessionId m_PreviewSessionId = 0;
-		std::string m_PreviewSessionTargetKey;
-		Vans::EditorAPI::AnimationPreviewTargetKind m_PreviewTargetKind =
-			Vans::EditorAPI::AnimationPreviewTargetKind::IsolatedModel;
-		std::string m_PreviewSceneEntityGuid;
-		std::string m_PreviewSceneAnimationComponentGuid;
-		std::string m_PreviewSelectedSlotId;
-		std::string m_PreviewSelectedClipName;
-		std::uint64_t m_PreviewRevision = 0;
-		std::uint64_t m_PreviewDocumentStateId = 0;
-		bool m_PreviewCompilePending = false;
-		double m_PreviewCompileQueuedAt = 0.0;
-		bool m_PreviewPlaying = true;
-		float m_PreviewSpeed = 1.0f;
-		float m_PreviewPanelHeight = 285.0f;
-		float m_PreviewYaw = 0.35f;
-		float m_PreviewPitch = -0.15f;
-		float m_PreviewZoom = 0.9f;
-		int m_PreviewVisualizedLayer = -1;
-		Vans::EditorAPI::AnimationPreviewPlaybackRequest::RootMotionMode m_PreviewRootMotionMode =
-			Vans::EditorAPI::AnimationPreviewPlaybackRequest::RootMotionMode::InPlace;
-		std::unordered_map<std::string, float> m_PreviewFloats;
-		std::unordered_map<std::string, bool> m_PreviewBools;
-		std::unordered_map<std::string, int> m_PreviewInts;
-		std::unordered_map<std::string, std::array<float, 4>> m_PreviewVectors;
-		std::unordered_map<std::string, Vans::EditorAPI::AnimatorParamType> m_PreviewParameterTypes;
 	};
 }  // namespace VansGraphics

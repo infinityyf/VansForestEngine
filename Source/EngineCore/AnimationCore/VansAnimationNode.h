@@ -88,6 +88,9 @@ namespace VansGraphics
 		const VansAnimationController* GetRetargetSourceController() const { return m_SourceController.get(); }
 		const VansRetargetRuntimeDesc& GetRetargetRuntimeDesc() const { return m_RetargetDesc; }
 		bool ReplaceRetargetSourceController(std::unique_ptr<VansAnimationController> controller);
+		bool ExchangeRetargetSourceController(
+			std::unique_ptr<VansAnimationController> controller,
+			std::unique_ptr<VansAnimationController>& previousController);
 
 		// Playback control, delegated to the active controller.
 		void Play(VansAnimationEvaluationPurpose purpose);

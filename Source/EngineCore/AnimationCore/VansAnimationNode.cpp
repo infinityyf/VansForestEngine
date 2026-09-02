@@ -290,6 +290,14 @@ bool VansAnimationNode::ConfigureRetargetSource(
 bool VansAnimationNode::ReplaceRetargetSourceController(
 	std::unique_ptr<VansAnimationController> controller)
 {
+	std::unique_ptr<VansAnimationController> previous;
+	return ExchangeRetargetSourceController(std::move(controller), previous);
+}
+
+bool VansAnimationNode::ExchangeRetargetSourceController(
+	std::unique_ptr<VansAnimationController> controller,
+	std::unique_ptr<VansAnimationController>& previousController)
+{
 	if (!m_RetargetEnabled || !controller)
 		return false;
 	std::string error;
@@ -299,6 +307,7 @@ bool VansAnimationNode::ReplaceRetargetSourceController(
 			<< ": replacement source Rig bind rejected: " << error);
 		return false;
 	}
+	previousController = std::move(m_SourceController);
 	m_SourceController = std::move(controller);
 	m_LastRetargetSourceMMSwitchCount = -1;
 	m_LastRetargetSourceMMActiveClip.clear();

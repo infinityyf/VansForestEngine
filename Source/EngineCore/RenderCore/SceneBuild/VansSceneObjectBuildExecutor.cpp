@@ -15,7 +15,10 @@
 #include "../../SceneRuntime/VansRuntimeWorld.h"
 #include "../../GameplayActionCore/VansGameplayRuntime.h"
 #include "../../GameplayActionAdapters/Camera/VansCameraActionService.h"
+#include "../../GameplayActionAdapters/Character/VansCharacterActionServices.h"
+#include "../../GameplayActionAdapters/Combat/VansCombatActionService.h"
 #include "../../CameraGameplayAction/VansCameraActionGraphNodes.h"
+#include "../../AICore/VansAIWorld.h"
 #include "../../GameplayActionSchema/VansGAFProjectConfiguration.h"
 #include "../../PhysicsCore/VansCollisionLayerManager.h"
 #include "../../PhysicsCore/VansPhysics.h"
@@ -550,6 +553,8 @@ bool RegisterRuntimeComponents(
 	const RuntimeComponentBuildResults& buildResults,
 	const std::optional<Vans::VansSceneTimelineComponentConfig>& timelineConfig,
 	const std::optional<Vans::VansGameplayActionHostSetup>& actionHostConfig,
+	const std::optional<Vans::VansSceneNavigationAgentConfig>& navigationAgentConfig,
+	const std::optional<Vans::VansSceneAIAgentConfig>& aiAgentConfig,
 	Vans::VansGameplayRuntime* gameplayRuntime,
 	std::string& error)
 {
@@ -656,6 +661,32 @@ bool RegisterRuntimeComponents(
 				actionHostComponentGuid + "'";
 			return false;
 		}
+	}
+	if (navigationAgentConfig)
+	{
+		const std::string componentGuid =
+			FindRuntimeComponentGuid(componentGuids, "navigation_agent");
+		if (componentGuid.empty() || navigationAgentConfig->runtime.navigationMeshPath.empty())
+		{
+			error = "NavigationAgent requires stable component and Navigation Mesh asset GUIDs";
+			return false;
+		}
+		runtimeWorld.Commands().AddNavigationAgentComponent(
+			entity, componentGuid, navigationAgentConfig->runtime,
+			navigationAgentConfig->enabled);
+	}
+	if (aiAgentConfig)
+	{
+		const std::string componentGuid =
+			FindRuntimeComponentGuid(componentGuids, "ai_agent");
+		if (componentGuid.empty() || aiAgentConfig->runtime.behaviorPath.empty())
+		{
+			error = "AIAgent requires stable component and AI Behavior asset GUIDs";
+			return false;
+		}
+		runtimeWorld.Commands().AddAIAgentComponent(
+			entity, componentGuid, aiAgentConfig->runtime,
+			aiAgentConfig->enabled);
 	}
 	runtimeWorld.FlushCommands();
 	if (transformGuid != componentGuids.end() && !transformGuid->second.empty())
@@ -837,6 +868,33 @@ bool VansGraphics::VansScene::LoadSceneObjects(
 					m_CameraControlArbiter->CoreRuntime(), assets, error,
 					std::move(resolvePosition));
 			});
+		gameplayDependencies.serviceFactories.push_back(
+			[this](const Vans::VansGameplayAssetLibrary&, std::string& error)
+				-> std::shared_ptr<Vans::IVansActionService>
+			{
+				if (!m_RuntimeWorld || !m_GameplayRuntime)
+				{
+					error = "Combat Action Service requires the scene runtime";
+					return {};
+				}
+				m_CombatActionService = Vans::VansCombatActionService::Create(
+					*m_RuntimeWorld, *m_GameplayRuntime, error);
+				return m_CombatActionService;
+			});
+		gameplayDependencies.serviceFactories.push_back(
+			[this](const Vans::VansGameplayAssetLibrary&, std::string& error)
+				-> std::shared_ptr<Vans::IVansActionService>
+			{
+				return m_RuntimeWorld
+					? Vans::VansAnimationActionService::Create(*m_RuntimeWorld, error) : nullptr;
+			});
+		gameplayDependencies.serviceFactories.push_back(
+			[this](const Vans::VansGameplayAssetLibrary&, std::string& error)
+				-> std::shared_ptr<Vans::IVansActionService>
+			{
+				return m_RuntimeWorld
+					? Vans::VansNavigationActionService::Create(*m_RuntimeWorld, error) : nullptr;
+			});
 		if (!m_GameplayRuntime->Initialize(projectManager.EnumerateAssetRecords(),
 			gameplayConfiguration.settings, gameplayDependencies, gameplayError))
 		{
@@ -852,6 +910,7 @@ bool VansGraphics::VansScene::LoadSceneObjects(
 		VansScriptObject* obj = new VansScriptObject();
 		obj->m_EntityGuid = objectConfig.entityGuid;
 		obj->m_ObjectName = objectConfig.name;
+		obj->m_ModelAssetGuid = objectConfig.ResolveModelAssetGuid();
 
 		const bool hasObjTransform = objectConfig.transform.has_value();
 		glm::vec3 objPos(0.0f), objRot(0.0f), objScl(1.0f);
@@ -1072,6 +1131,8 @@ bool VansGraphics::VansScene::LoadSceneObjects(
 			runtimeComponentBuildResults,
 			objectConfig.timeline,
 			objectConfig.actionHost,
+			objectConfig.navigationAgent,
+			objectConfig.aiAgent,
 			m_GameplayRuntime.get(),
 			runtimeComponentError))
 		{
@@ -1247,6 +1308,14 @@ bool VansGraphics::VansScene::LoadSceneObjects(
 	// === [VansSceneLoadPass::Pass5_ClothAnimationBinding] ===
 	VansSceneClothAnimationBindingExecutor::Execute(*this);
 	ConfigureTimelineRuntime();
+	m_AIWorld = std::make_unique<Vans::VansAIWorld>();
+	std::string aiError;
+	if (!m_AIWorld->Initialize(*m_RuntimeWorld, m_GameplayRuntime.get(), projectRoot, aiError))
+	{
+		VANS_LOG_ERROR("[SceneBuild] Could not initialize AI World: " << aiError);
+		m_AIWorld.reset();
+		return false;
+	}
 
 	m_AudioManager.PlayAutoPlay();
 	return true;

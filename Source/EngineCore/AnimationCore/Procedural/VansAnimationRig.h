@@ -15,6 +15,7 @@ namespace VansGraphics
 
 	enum class VansRigSolverKind { Limb, CCD, FABRIK, Aim };
 	enum class VansJointLimitKind { Hinge, SwingTwist, Locked };
+	enum class VansRigAttachmentParentKind { Bone, Socket };
 
 	struct VansRigGoalDefinition
 	{
@@ -82,6 +83,18 @@ namespace VansGraphics
 		glm::vec3 scaleLocal{ 1.0f };
 	};
 
+	// 模型相对 Bone/Socket 锚点的资产级位姿。它不引用场景 Entity，
+	// 因此可以在不同场景中复用，并由预览工具独立保存到 Animation Rig。
+	struct VansRigAttachmentProfileDefinition
+	{
+		std::string modelGuid;
+		VansRigAttachmentParentKind parentKind = VansRigAttachmentParentKind::Socket;
+		std::string anchorGuid;
+		glm::vec3 positionLocal{ 0.0f };
+		glm::quat rotationLocal{ 1.0f, 0.0f, 0.0f, 0.0f };
+		glm::vec3 scaleLocal{ 1.0f };
+	};
+
 	struct VansAnimationRigAsset
 	{
 		std::string name;
@@ -90,6 +103,7 @@ namespace VansGraphics
 		glm::vec3 modelUp{ 0.0f, 1.0f, 0.0f };
 		std::unordered_map<std::string, std::string> semanticBones;
 		std::vector<VansRigSocketDefinition> sockets;
+		std::vector<VansRigAttachmentProfileDefinition> attachmentProfiles;
 		std::vector<VansRigGoalDefinition> goals;
 		std::vector<VansRigChainDefinition> chains;
 		std::vector<VansRigJointLimitDefinition> jointLimits;
@@ -157,6 +171,16 @@ namespace VansGraphics
 		glm::mat4 localTransform{ 1.0f };
 	};
 
+	struct VansCompiledRigAttachmentProfile
+	{
+		std::string modelGuid;
+		VansRigAttachmentParentKind parentKind = VansRigAttachmentParentKind::Socket;
+		std::string anchorGuid;
+		glm::vec3 positionLocal{ 0.0f };
+		glm::quat rotationLocal{ 1.0f, 0.0f, 0.0f, 0.0f };
+		glm::vec3 scaleLocal{ 1.0f };
+	};
+
 	struct VansCompiledAnimationRig
 	{
 		std::string name;
@@ -167,6 +191,7 @@ namespace VansGraphics
 		glm::vec3 modelUp{ 0.0f, 1.0f, 0.0f };
 		std::unordered_map<std::string, int> semanticBoneIndices;
 		std::vector<VansCompiledRigSocket> sockets;
+		std::vector<VansCompiledRigAttachmentProfile> attachmentProfiles;
 		std::vector<VansCompiledRigGoal> goals;
 		std::vector<VansCompiledRigChain> chains;
 		std::vector<VansCompiledRigJointLimit> jointLimits;
@@ -174,12 +199,17 @@ namespace VansGraphics
 		std::unordered_map<std::string, int> goalIndexById;
 		std::unordered_map<std::string, int> socketIndexByGuid;
 		std::unordered_map<std::string, int> socketIndexByName;
+		std::unordered_map<std::string, int> attachmentProfileIndexByKey;
 		std::unordered_map<std::string, int> chainIndexById;
 		std::unordered_map<std::string, int> contactIndexById;
 
 		int FindGoal(const std::string& id) const;
 		int FindSocketByGuid(const std::string& guid) const;
 		int FindSocketByName(const std::string& name) const;
+		const VansCompiledRigAttachmentProfile* FindAttachmentProfile(
+			const std::string& modelGuid,
+			VansRigAttachmentParentKind parentKind,
+			const std::string& anchorGuid) const;
 		int FindChain(const std::string& id) const;
 		int FindContact(const std::string& id) const;
 		const VansCompiledRigJointLimit* FindJointLimit(int boneIndex) const;

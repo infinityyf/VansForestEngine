@@ -269,6 +269,18 @@ namespace VansEngine
 		m_MotionIntent.valid = true;
 	}
 
+	void VansCharacterControllerNode::AcquireGameplayMovementBlock()
+	{
+		if (m_GameplayMovementBlockCount < UINT32_MAX)
+			++m_GameplayMovementBlockCount;
+	}
+
+	void VansCharacterControllerNode::ReleaseGameplayMovementBlock()
+	{
+		if (m_GameplayMovementBlockCount > 0)
+			--m_GameplayMovementBlockCount;
+	}
+
 	void VansCharacterControllerNode::PrepareLocomotion(
 		float dt, const Vans::VansCharacterMotionSettings& settings)
 	{
@@ -278,6 +290,16 @@ namespace VansEngine
 		m_LocomotionDt = (std::max)(dt, 0.0f);
 		const VansGraphics::VansTransform& transform =
 			VansGraphics::VansTransformStore::GetTransform(m_TransformID);
+		if (IsGameplayMovementBlocked())
+		{
+			// GAF 受击等动作只建立一个可叠加的移动锁。CCT 仍然是唯一位移
+			// 权威，并在锁存续期间同时屏蔽脚本、AI 与动画 Root Motion。
+			m_MotionIntent = {};
+			m_MotionIntent.valid = true;
+			m_MotionIntent.movementReferenceYaw = transform.m_Rotation.y;
+			m_MotionIntent.desiredFacingYaw = transform.m_Rotation.y;
+			m_MotionIntent.hasFacing = true;
+		}
 		Vans::VansCharacterMotionIntent stationaryIntent;
 		stationaryIntent.valid = true;
 		stationaryIntent.movementReferenceYaw = transform.m_Rotation.y;
@@ -310,6 +332,8 @@ namespace VansEngine
 		const Vans::VansCharacterMotionSettings& settings,
 		const glm::vec3& animationToWorldScale)
 	{
+		if (IsGameplayMovementBlocked())
+			rootMotionValid = false;
 		if (m_TransformID == UINT32_MAX || (!m_MotionIntent.valid && !rootMotionValid))
 			return;
 		VansGraphics::VansTransform& transform =

@@ -98,6 +98,7 @@ void VansGizmos::Draw(Vans::EditorAPI::IEngineEditorAPI& api,
 {
     if (!camera) return;
 
+    ImGuizmo::SetID(0x53434E45); // "SCNE": Scene Transform Gizmo
     ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
     ImGuizmo::SetRect(windowPos.x, windowPos.y, windowSize.x, windowSize.y);
 
@@ -384,7 +385,8 @@ void VansGizmos::Draw(Vans::EditorAPI::IEngineEditorAPI& api,
     }
 
     const std::string selectedGuid = Vans::VansEditorSelection::EntityGuid();
-    auto transform = api.GetRuntimeTransform(selectedGuid);
+    auto transform = api.GetRuntimeTransform(
+        selectedGuid, Vans::EditorAPI::RuntimeTransformSpace::World);
     if (!transform.available)  return;
 
 

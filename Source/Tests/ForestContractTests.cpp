@@ -1,4 +1,5 @@
 #include "../EngineCore/AssetCore/VansAssetDatabase.h"
+#include "NavigationAIContractTests.h"
 #include "../EngineCore/AssetCore/VansAssetResolver.h"
 #include "../EngineCore/AssetCore/VansBuiltInAssetCatalog.h"
 #include "../EngineCore/AssetCore/VansMaterialAuthoringAsset.h"
@@ -45,6 +46,7 @@
 #include "../EngineCore/RenderCore/VansGraphicsDevice.h"
 #include "../EngineCore/RenderCore/VansCamera.h"
 #include "../EngineCore/RenderCore/VansMainCameraVisibility.h"
+#include "../EngineCore/RenderCore/VansScene.h"
 #include "../EngineCore/RenderCore/VulkanCore/VansMainCameraVisibilityState.h"
 #include "../EngineCore/RenderCore/VansRenderFrame.h"
 #include "../EngineCore/RenderCore/VansRenderSystem.h"
@@ -75,6 +77,8 @@
 #include "../EngineCore/SceneCore/VansSceneSchema.h"
 #include "../EngineCore/SceneCore/VansSceneRuntimeComponentKey.h"
 #include "../EngineCore/SceneCore/VansSceneRenderSettingsConfigReader.h"
+#include "../EngineCore/SceneCore/VansSceneDocumentLoader.h"
+#include "../EngineCore/SceneCore/Storage/VansSceneFileStorage.h"
 #include "../EngineCore/TimelineRuntime/VansTimelineApplierRegistry.h"
 #include "../EngineCore/TimelineRuntime/VansTimelineClockRegistry.h"
 #include "../EngineCore/TimelineRuntime/VansTimelineEvaluator.h"
@@ -88,6 +92,9 @@
 #include "../EngineCore/EditorCore/Timeline/VansTimelineEditService.h"
 #include "../EngineCore/EditorCore/Timeline/VansTimelineCommandMap.h"
 #include "../EngineCore/EditorCore/VansAssetDocumentRegistry.h"
+#include "../EngineCore/EditorCore/VansAssetDocumentEditService.h"
+#include "../EngineCore/EditorCore/VansSceneEditService.h"
+#include "../EngineCore/EditorCore/Animation/VansAnimationRigSaveService.h"
 #include "../EngineCore/AssetCore/Serialization/VansSerializedValue.h"
 #include "../EngineCore/AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 #include "../EngineCore/AssetCore/Storage/VansMaterialAuthoringAssetStorage.h"
@@ -2108,6 +2115,7 @@ bool TestGameplayFrameOrder()
     frame.syncPhysicsTransforms = [&] { trace.push_back("physics"); };
 	frame.updateNonCameraScripts = [&] { trace.push_back("scripts"); };
 	frame.updateActionsEarly = [&](double) { trace.push_back("actions-early"); };
+	frame.updateAI = [&](double) { trace.push_back("ai"); };
 	frame.prepareCharacterLocomotion = [&](double) { trace.push_back("locomotion"); };
 	frame.flushCharacterControllerTransforms = [&] { trace.push_back("cct"); };
 	frame.updateTimelinesPostScript = [&](double) { trace.push_back("timeline-post"); };
@@ -2122,7 +2130,7 @@ bool TestGameplayFrameOrder()
 	frame.resolveCameraControlFrame = [&] { trace.push_back("camera-resolve"); };
 	Vans::VansRuntimeFrameScheduler::RunGameplay(frame);
 
-	const std::vector<std::string> expected{ "camera-begin", "physics", "scripts", "actions-early", "locomotion", "cct",
+	const std::vector<std::string> expected{ "camera-begin", "physics", "scripts", "actions-early", "ai", "locomotion", "cct",
 		"timeline-post", "post-extra", "timeline-late", "actions-late", "camera", "camera-base", "timeline-camera",
 		"camera-extra", "camera-resolve" };
     if (!Expect(trace == expected, "Gameplay frame callback order changed"))
@@ -2683,6 +2691,7 @@ bool TestTransformGraphAnchorContract()
 	const std::uint32_t child = transforms.Allocate(glm::vec3(12.0f, 0.0f, 0.0f));
 	const std::uint32_t attachment = transforms.Allocate(glm::vec3(25.0f, 5.0f, 0.0f));
 	const std::uint32_t snappedAttachment = transforms.Allocate(glm::vec3(100.0f, 100.0f, 0.0f));
+	const std::uint32_t profiledAttachment = transforms.Allocate(glm::vec3(-50.0f));
 	Vans::VansTransformGraph graph(&provider);
 	if (!Expect(graph.SetParent(child, owner, Vans::VansTransformReparentMode::KeepWorld)
 		&& graph.Resolve(),
@@ -2754,6 +2763,38 @@ bool TestTransformGraphAnchorContract()
 		"Snap did not reset the attachment local X")
 		|| !ExpectNear(snapped.y, 8.0f, 0.0001f,
 			"Snap did not reset the attachment local Y"))
+	{
+		return false;
+	}
+	Vans::VansLocalTransform profileLocal;
+	profileLocal.position = glm::vec3(2.0f, 3.0f, 4.0f);
+	profileLocal.rotation = glm::angleAxis(
+		glm::radians(30.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+	profileLocal.scale = glm::vec3(1.5f);
+	if (!Expect(graph.SetAnchorWithLocalTransform(
+		profiledAttachment, owner, anchor, profileLocal) && graph.Resolve(),
+		"Transform graph could not atomically apply an attachment profile"))
+	{
+		return false;
+	}
+	Vans::VansLocalTransform resolvedProfileLocal;
+	const auto& profiledWorld =
+		VansGraphics::VansTransformStore::GetTransform(profiledAttachment).m_Position;
+	if (!Expect(graph.TryGetLocalTransform(profiledAttachment, resolvedProfileLocal),
+		"Transform graph did not expose the authored profile Local Transform")
+		|| !ExpectNear(glm::length(resolvedProfileLocal.position - profileLocal.position),
+			0.0f, 1.0e-5f, "Attachment profile local position changed")
+		|| !ExpectNear(std::abs(glm::dot(
+			resolvedProfileLocal.rotation, profileLocal.rotation)),
+			1.0f, 1.0e-5f, "Attachment profile local rotation changed")
+		|| !ExpectNear(glm::length(resolvedProfileLocal.scale - profileLocal.scale),
+			0.0f, 1.0e-5f, "Attachment profile local scale changed")
+		|| !ExpectNear(profiledWorld.x, 27.0f, 1.0e-4f,
+			"Attachment profile world X is incorrect")
+		|| !ExpectNear(profiledWorld.y, 11.0f, 1.0e-4f,
+			"Attachment profile world Y is incorrect")
+		|| !ExpectNear(profiledWorld.z, 4.0f, 1.0e-4f,
+			"Attachment profile world Z is incorrect"))
 	{
 		return false;
 	}
@@ -2923,8 +2964,21 @@ bool TestRuntimeComponentKeyCanonicalizationContract()
 	if (!Expect(Vans::CanonicalRuntimeComponentKeyForName("LuaScript") == "script",
 		"LuaScript did not canonicalize to script runtime component key"))
 		return false;
-	return Expect(Vans::VansRuntimeComponentTypeIdForKey("transform") == Vans::VansRuntimeComponentType_Transform,
-		"Transform runtime component key did not resolve to transform type id");
+	if (!Expect(Vans::CanonicalRuntimeComponentKeyForName("NavigationAgent") == "navigation_agent",
+		"NavigationAgent did not canonicalize to navigation agent runtime component key"))
+		return false;
+	if (!Expect(Vans::CanonicalRuntimeComponentKeyForName("AIAgent") == "ai_agent",
+		"AIAgent did not canonicalize to AI agent runtime component key"))
+		return false;
+	if (!Expect(Vans::VansRuntimeComponentTypeIdForKey("transform") == Vans::VansRuntimeComponentType_Transform,
+		"Transform runtime component key did not resolve to transform type id"))
+		return false;
+	if (!Expect(Vans::VansRuntimeComponentTypeIdForKey("navigation_agent") ==
+		Vans::VansRuntimeComponentType_NavigationAgent,
+		"Navigation agent runtime component key did not resolve to navigation agent type id"))
+		return false;
+	return Expect(Vans::VansRuntimeComponentTypeIdForKey("ai_agent") == Vans::VansRuntimeComponentType_AIAgent,
+		"AI agent runtime component key did not resolve to AI agent type id");
 }
 
 bool TestRuntimeWorldCommandBufferContract()
@@ -4055,12 +4109,36 @@ bool TestAnimationEditorPreviewPolicyContract()
 		"Editor animation evaluation must not overwrite the authorable Scene Transform"))
 		return false;
 
+	VansScene previewScene;
+	VansAnimationNode previewNode("EditorPreviewContract");
+	previewNode.SetEnabled(false);
+	previewScene.RegisterAnimationRuntime(&previewNode, nullptr);
+	if (!Expect(previewScene.BeginEditorAnimationPreview(&previewNode)
+		&& !previewScene.BeginEditorAnimationPreview(&previewNode),
+		"A disabled Scene Animation Node must have one exclusive Editor preview driver"))
+		return false;
+	if (!Expect(!previewNode.IsEnabled() &&
+		previewScene.EvaluateEditorAnimationPreviewStep(&previewNode, 1.0f / 60.0f),
+		"Editor preview must evaluate a disabled Scene Animation Node without enabling it"))
+		return false;
+	previewScene.EndEditorAnimationPreview(&previewNode);
+	if (!Expect(!previewNode.IsEnabled() &&
+		!previewScene.EvaluateEditorAnimationPreviewStep(&previewNode, 1.0f / 60.0f),
+		"Releasing Editor preview must preserve the Scene Animation Node enable state"))
+		return false;
+	if (!Expect(previewScene.BeginEditorAnimationPreview(&previewNode),
+		"A released Scene Animation Node could not re-enter Editor preview"))
+		return false;
+	previewScene.EndEditorAnimationPreview(&previewNode);
+
 	AnimationPreviewCreateRequest sceneRequest;
 	sceneRequest.targetKind = AnimationPreviewTargetKind::SceneAnimationComponent;
+	sceneRequest.animatorAssetGuid = "00000000-0000-4000-8000-000000000001";
 	sceneRequest.entityGuid = "character";
 	sceneRequest.animationComponentGuid = "animation";
 	if (!Expect(sceneRequest.targetKind ==
 			AnimationPreviewTargetKind::SceneAnimationComponent &&
+		!sceneRequest.animatorAssetGuid.empty() &&
 		!sceneRequest.entityGuid.empty() &&
 		!sceneRequest.animationComponentGuid.empty(),
 		"Scene animation preview target identity was not represented explicitly"))
@@ -4075,11 +4153,136 @@ bool TestAnimationEditorPreviewPolicyContract()
 		"Animation preview timeline must use absolute seconds"))
 		return false;
 
+	AnimationPreviewSnapshot motionMatchingPreview;
+	motionMatchingPreview.seekSupported = false;
+	motionMatchingPreview.seekUnavailableReason =
+		"Motion Matching requires forward playback";
+	if (!Expect(motionMatchingPreview.diagnostic.empty()
+		&& !motionMatchingPreview.seekUnavailableReason.empty(),
+		"A timeline-seek limitation must not be exposed as a preview error"))
+		return false;
+
 	const AssetTypeFilter previewModelFilter{
 		AssetType::Model, false, AssetQueryCapability::SkeletalModel };
 	return Expect(previewModelFilter.requiredCapability ==
 		AssetQueryCapability::SkeletalModel,
 		"Animation preview model query must require imported skeletal capability");
+}
+
+bool TestAnimationSocketAttachmentAuthoringContract()
+{
+	using namespace VansGraphics;
+	using namespace Vans::EditorAPI;
+	const std::string modelGuid = "00000000-0000-4000-8000-000000000013";
+	Vans::VansSceneObjectBuildConfig multiMeshRoot;
+	multiMeshRoot.multiMeshRoot = Vans::VansSceneMultiMeshRootConfig{ modelGuid };
+	Vans::VansSceneObjectBuildConfig renderedObject;
+	Vans::VansSceneRenderNodeConfig render;
+	render.mesh = modelGuid;
+	renderedObject.render = render;
+	if (!Expect(multiMeshRoot.ResolveModelAssetGuid() == modelGuid
+		&& renderedObject.ResolveModelAssetGuid() == modelGuid,
+		"Scene Model identity must cover both MultiMeshRoot and ModelRenderer entities"))
+		return false;
+
+	struct RegistryReset
+	{
+		~RegistryReset() { Vans::VansAssetDocumentRegistry::Get().Clear(); }
+	} registryReset;
+	TemporaryDirectory temporary;
+	const fs::path rigPath = temporary.path / "SocketPreview.vanimrig";
+	std::string error;
+	VansAnimationRigAsset originalRig;
+	originalRig.name = "Socket Preview Rig";
+	originalRig.skeletonGuid = "00000000-0000-4000-8000-000000000010";
+	if (!Expect(VansAnimationRigStorage::SaveAtomic(rigPath, originalRig, error),
+		error.c_str()))
+		return false;
+
+	auto rigDocument = Vans::VansAssetDocumentRegistry::Get().GetOrOpen(rigPath);
+	if (!Expect(rigDocument && rigDocument->sourceDocument.IsLoaded(),
+		"Socket Rig save fixture did not load"))
+		return false;
+
+	VansAnimationRigAsset editedRig = originalRig;
+	editedRig.name = "Edited Socket Preview Rig";
+	VansRigSocketDefinition socket;
+	socket.guid = "00000000-0000-4000-8000-000000000011";
+	socket.name = "Weapon";
+	socket.boneGuid = "00000000-0000-4000-8000-000000000012";
+	socket.positionLocal = glm::vec3(0.1f, 0.2f, 0.3f);
+	editedRig.sockets.push_back(socket);
+	VansRigAttachmentProfileDefinition profile;
+	profile.modelGuid = modelGuid;
+	profile.parentKind = VansRigAttachmentParentKind::Socket;
+	profile.anchorGuid = socket.guid;
+	profile.positionLocal = glm::vec3(-0.4f, 0.5f, 0.6f);
+	profile.rotationLocal = glm::angleAxis(glm::radians(35.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+	profile.scaleLocal = glm::vec3(1.0f);
+	editedRig.attachmentProfiles.push_back(profile);
+	nlohmann::json rigJson;
+	if (!Expect(VansAnimationRigStorage::SerializeToJsonObject(
+		editedRig, rigJson, error), error.c_str()))
+		return false;
+	const auto rigEdit = Vans::VansAssetDocumentEditService::ReplaceRoot(
+		rigDocument->sourceDocument, Vans::DecodeSerializedValueJson(rigJson));
+	if (!Expect(rigEdit && rigDocument->sourceDocument.IsDirty(),
+		"Socket Rig fixture did not become dirty"))
+		return false;
+
+	const auto save = Vans::VansAnimationRigSaveService::Save(rigDocument);
+	VansAnimationRigAsset diskRig;
+	if (!Expect(save && save.published
+		&& !rigDocument->sourceDocument.IsDirty()
+		&& VansAnimationRigStorage::Load(rigPath, diskRig, error)
+		&& diskRig.name == editedRig.name
+		&& diskRig.sockets.size() == 1
+		&& diskRig.sockets.front().guid == socket.guid
+		&& diskRig.attachmentProfiles.size() == 1
+		&& diskRig.attachmentProfiles.front().modelGuid == profile.modelGuid
+		&& diskRig.attachmentProfiles.front().anchorGuid == socket.guid
+		&& glm::length(diskRig.attachmentProfiles.front().positionLocal
+			- profile.positionLocal) <= 1.0e-6f,
+		"Rig-only save did not publish Socket and attachment-profile data"))
+		return false;
+
+	Skeleton skeleton;
+	skeleton.sourceSkeletonGuid = originalRig.skeletonGuid;
+	BoneInfo bone;
+	bone.id = 0;
+	bone.guid = socket.boneGuid;
+	bone.name = "weapon";
+	bone.canonicalPath = "weapon";
+	bone.parentIndex = -1;
+	skeleton.bones.push_back(std::move(bone));
+	skeleton.RebuildIdentityMapsAndSignature();
+	VansCompiledAnimationRig compiledRig;
+	if (!Expect(VansAnimationRigCompiler::Compile(
+		diskRig, skeleton, compiledRig, error), error.c_str()))
+	{
+		return false;
+	}
+	const VansCompiledRigAttachmentProfile* compiledProfile =
+		compiledRig.FindAttachmentProfile(
+			modelGuid, VansRigAttachmentParentKind::Socket, socket.guid);
+	if (!Expect(compiledProfile
+		&& glm::length(compiledProfile->positionLocal - profile.positionLocal) <= 1.0e-6f
+		&& std::abs(glm::dot(compiledProfile->rotationLocal,
+			glm::normalize(profile.rotationLocal))) >= 0.999999f
+		&& glm::length(compiledProfile->scaleLocal - profile.scaleLocal) <= 1.0e-6f,
+		"Animation Rig compiler did not publish the attachment profile for runtime lookup"))
+	{
+		return false;
+	}
+
+	AnimationPreviewAttachmentBindingRequest previewBinding;
+	previewBinding.entityGuid = "scene-object";
+	previewBinding.parent.kind = RuntimeParentKind::Socket;
+	previewBinding.parent.anchorGuid = socket.guid;
+	return Expect(!previewBinding.entityGuid.empty()
+		&& previewBinding.parent.kind == RuntimeParentKind::Socket
+		&& !previewBinding.parent.anchorGuid.empty(),
+		"Temporary Scene attachment binding was not represented independently");
 }
 
 bool TestMotionMatchingCameraFacingTurnContract()
@@ -5967,6 +6170,23 @@ bool TestDemoHallSurvivalBackAxeSceneContract()
 	{
 		return false;
 	}
+	const VansCompiledRigAttachmentProfile* backAxeProfile =
+		compiledSurvivalRig.FindAttachmentProfile(
+			kBackAxeModelGuid, VansRigAttachmentParentKind::Socket, kBackAxeSocketGuid);
+	const VansCompiledRigAttachmentProfile* handAxeProfile =
+		compiledSurvivalRig.FindAttachmentProfile(
+			kBackAxeModelGuid, VansRigAttachmentParentKind::Socket, kRightHandAxeSocketGuid);
+	if (!Expect(backAxeProfile && handAxeProfile
+		&& glm::length(backAxeProfile->positionLocal) <= 1.0e-6f
+		&& std::abs(backAxeProfile->rotationLocal.w - 1.0f) <= 1.0e-6f
+		&& glm::length(backAxeProfile->scaleLocal - glm::vec3(1.0f)) <= 1.0e-6f
+		&& glm::length(handAxeProfile->positionLocal
+			- glm::vec3(-60.95047f, 39.508575f, -6.698608f)) <= 1.0e-4f
+		&& std::abs(glm::length(handAxeProfile->rotationLocal) - 1.0f) <= 1.0e-5f,
+		"DemoHall Fire Axe hand/back attachment profiles were not compiled for runtime consumption"))
+	{
+		return false;
+	}
 
 	VansAnimationClip attackClip;
 	Skeleton attackSkeleton;
@@ -6141,8 +6361,10 @@ bool TestDemoHallSurvivalBackAxeSceneContract()
 		&& Expect(scriptText.find("attachments = { \"Survival_Back_Axe_metal-low\" }")
 			!= std::string::npos
 			&& scriptText.find("set_character_attachments_enabled(option, enabled)")
-				!= std::string::npos,
-			"DemoHall character switching must toggle the Survival back axe renderer");
+				!= std::string::npos
+			&& scriptText.find("weapon:bind_to_socket_profile(") != std::string::npos
+			&& scriptText.find("weapon:reparent_to_socket(") == std::string::npos,
+			"DemoHall character switching and attack must consume the Fire Axe attachment profiles");
 }
 
 bool TestProjectRetargetOwnedSkeletonAndSkinningContract()
@@ -8396,11 +8618,37 @@ bool TestAnimationTargetPostProcessContract()
 		std::cerr << "[ForestContractTests] Target Post Process Graph install: " << error << '\n';
         return false;
 	}
+	VansAnimationRigAsset incompatibleRigAsset;
+	incompatibleRigAsset.name = "Target Post Process Incompatible Rig";
+	incompatibleRigAsset.skeletonGuid = "test-skeleton";
+	VansCompiledAnimationRig incompatibleRig;
+	if (!VansAnimationRigCompiler::Compile(
+		incompatibleRigAsset, skeleton, incompatibleRig, error))
+	{
+		std::cerr << "[ForestContractTests] Incompatible Rig compile: " << error << '\n';
+		return false;
+	}
+	if (!Expect(!externalController.ReplaceAnimationRig(std::move(incompatibleRig), error)
+		&& externalController.GetAnimationRig()
+		&& externalController.GetAnimationRig()->FindChain("upperAim") >= 0,
+		"Rejected Animation Rig replacement did not preserve the last-good live Rig"))
+		return false;
+	VansCompiledAnimationRig replacementRig;
+	if (!VansAnimationRigCompiler::Compile(
+		rigAsset, skeleton, replacementRig, error))
+	{
+		std::cerr << "[ForestContractTests] Replacement Rig compile: " << error << '\n';
+		return false;
+	}
+	if (!Expect(externalController.ReplaceAnimationRig(
+		std::move(replacementRig), error),
+		"Compatible Animation Rig replacement was rejected"))
+		return false;
     std::vector<glm::mat4> externalModelPose(3, glm::mat4(1.0f));
     if (!Expect(externalController.SubmitExternalModelPose(
         externalModelPose, skeleton, 0.016f,
         VansExternalPoseEvaluationMode::TargetPostProcess),
-        "Retarget-style pose did not enter Target Post Process"))
+		"Compatible Rig replacement left Target Post Process with an invalid Rig lifetime"))
         return false;
     if (!Expect(glm::dot(aimedForward(externalController), glm::vec3(1.0f, 0.0f, 0.0f)) > 0.95f,
         "Target Post Process did not modify the retargeted target-skeleton pose"))
@@ -11997,6 +12245,8 @@ int main(int argc, char** argv)
 		return TestProfilerSnapshotContract() ? 0 : 140;
 	if (argc == 2 && std::string(argv[1]) == "--asset-type-serialization")
 		return TestAssetTypeSerializationContract() ? 0 : 136;
+	if (argc == 2 && std::string(argv[1]) == "--navigation-ai")
+		return RunNavigationAIContractTests() ? 0 : 148;
 	if (argc == 2 && std::string(argv[1]) == "--animation-project-assets")
 		return TestAnimationProjectAnimatorAssetsCanonicalContract() ? 0 : 137;
 	if (argc == 2 && std::string(argv[1]) == "--demohall-survival-back-axe")
@@ -12015,12 +12265,14 @@ int main(int argc, char** argv)
 		return TestGAFDemoHallWindowBreakContract() ? 0 : 108;
 	if (argc == 2 && std::string(argv[1]) == "--gaf-demohall-player-attack")
 		return TestGAFDemoHallPlayerAttackContract() ? 0 : 140;
+	if (argc == 2 && std::string(argv[1]) == "--gaf-demohall-melee-hit")
+		return TestGAFDemoHallMeleeHitRuntimeContract() ? 0 : 153;
 	if (argc == 2 && std::string(argv[1]) == "--demohall-crouch-locomotion")
 		return TestDemoHallCrouchLocomotionContract() ? 0 : 147;
 	if (argc == 2 && std::string(argv[1]) == "--demohall-player-vault")
 		return TestDemoHallPlayerVaultContract() ? 0 : 144;
-	if (argc == 2 && std::string(argv[1]) == "--demohall-whisper-preview")
-		return TestDemoHallWhisperPreviewContract() ? 0 : 145;
+	if (argc == 2 && std::string(argv[1]) == "--demohall-whisper-ai")
+		return TestDemoHallWhisperAIContract() ? 0 : 145;
 	if (argc == 2 && std::string(argv[1]) == "--character-motion")
 		return TestCharacterTrajectoryGeneratorContract() ? 0 : 141;
 	if (argc == 2 && std::string(argv[1]) == "--motion-matching-turn-warping")
@@ -12028,6 +12280,8 @@ int main(int argc, char** argv)
 			&& TestMotionMatchingCameraFacingTurnContract()) ? 0 : 110;
 	if (argc == 2 && std::string(argv[1]) == "--animation-editor-preview")
 		return TestAnimationEditorPreviewPolicyContract() ? 0 : 143;
+	if (argc == 2 && std::string(argv[1]) == "--animation-socket-attachment-authoring")
+		return TestAnimationSocketAttachmentAuthoringContract() ? 0 : 154;
 	if (argc == 2 && std::string(argv[1]) == "--procedural-animation")
 		return RunProceduralAnimationContractTests() ? 0 : 129;
 	if (argc == 2 && std::string(argv[1]) == "--procedural-animation-integration")
@@ -12065,6 +12319,8 @@ int main(int argc, char** argv)
 		return TestPointShadowAtlasUpdatePolicy() ? 0 : 128;
 	if (!TestPointShadowAtlasUpdatePolicy())
 		return 128;
+	if (!RunNavigationAIContractTests())
+		return 148;
 	if (!TestDrawSubmissionContract())
 		return 127;
 	if (!TestLuaInspectorProjectModuleSearchPathContract())
@@ -12139,11 +12395,13 @@ int main(int argc, char** argv)
 		return 108;
 	if (!TestGAFDemoHallPlayerAttackContract())
 		return 140;
+	if (!TestGAFDemoHallMeleeHitRuntimeContract())
+		return 153;
 	if (!TestDemoHallCrouchLocomotionContract())
 		return 147;
 	if (!TestDemoHallPlayerVaultContract())
 		return 144;
-	if (!TestDemoHallWhisperPreviewContract())
+	if (!TestDemoHallWhisperAIContract())
 		return 145;
 	if (!TestGAFPackagingContract())
 		return 103;
@@ -12281,6 +12539,8 @@ int main(int argc, char** argv)
 		return 52;
 	if (!TestAnimationTargetPostProcessContract())
 		return 53;
+	if (!TestAnimationSocketAttachmentAuthoringContract())
+		return 154;
 	if (!RunProceduralAnimationContractTests())
 		return 129;
 	if (!TestAnimationSyncedGraphStateContract())

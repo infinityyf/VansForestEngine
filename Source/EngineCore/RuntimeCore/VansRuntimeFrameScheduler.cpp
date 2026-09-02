@@ -27,10 +27,13 @@ void VansRuntimeFrameScheduler::RunGameplay(const VansRuntimeGameplayFrame& fram
         if (frame.updateNonCameraScripts)
             frame.updateNonCameraScripts();
     }
-	if (frame.gameplayActive && frame.updateActionsEarly)
+	if (frame.gameplayActive)
 	{
 		VansEventBus::Get().Flush(VansEventLane::GameLogic);
-		frame.updateActionsEarly(frame.deltaSeconds);
+		if (frame.updateActionsEarly)
+			frame.updateActionsEarly(frame.deltaSeconds);
+		if (frame.updateAI)
+			frame.updateAI(frame.deltaSeconds);
 	}
 	if (frame.gameplayActive && frame.prepareCharacterLocomotion)
 		frame.prepareCharacterLocomotion(frame.deltaSeconds);

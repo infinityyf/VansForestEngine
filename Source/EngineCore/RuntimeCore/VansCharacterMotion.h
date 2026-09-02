@@ -138,6 +138,27 @@ namespace Vans
 			AnimationToEngineLocalPlanar(animationVector), facingYawDegrees);
 	}
 
+	// Converts a desired world-space visual-forward yaw into the owner Transform
+	// yaw required by a model whose authored forward axis may not be engine +Z.
+	// Locomotion keeps its own movementReferenceYaw, so this correction never
+	// reverses path following or CCT movement.
+	inline float ResolveModelOwnerFacingYaw(
+		float desiredWorldForwardYawDegrees,
+		const glm::vec3& modelForwardLocal)
+	{
+		const glm::vec2 planarForward(modelForwardLocal.x, modelForwardLocal.z);
+		const float planarLength = glm::length(planarForward);
+		if (!std::isfinite(desiredWorldForwardYawDegrees) ||
+			!std::isfinite(planarLength) || planarLength <= 1.0e-6f)
+		{
+			return desiredWorldForwardYawDegrees;
+		}
+		const float authoredForwardYaw = glm::degrees(std::atan2(
+			planarForward.x, planarForward.y));
+		return std::remainder(
+			desiredWorldForwardYawDegrees - authoredForwardYaw, 360.0f);
+	}
+
 	struct VansRootMotionOwnerDelta
 	{
 		glm::vec3 translationWorld{ 0.0f };

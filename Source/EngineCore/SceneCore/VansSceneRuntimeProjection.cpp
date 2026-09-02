@@ -32,6 +32,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <glm/glm.hpp>
@@ -42,6 +43,30 @@
 
 namespace Vans
 {
+std::array<float, 3> ProjectSceneQuaternionToEulerDegrees(
+	const std::array<float, 4>& rotationXYZW,
+	bool yawOnly)
+{
+	glm::quat rotation(
+		rotationXYZW[3], rotationXYZW[0], rotationXYZW[1], rotationXYZW[2]);
+	const float length = glm::length(rotation);
+	if (std::isfinite(length) && length > 1.0e-6f)
+		rotation = glm::normalize(rotation);
+
+	// glm::eulerAngles may represent a 137-degree Yaw as (180, 43, 180).
+	// 对显式声明 yawOnly 的 AI 角色保持单一 Yaw 分支，避免后续只更新 Y
+	// 时出现转向反号；未配置角色完全保留通用 Euler 投影。
+	if (yawOnly)
+	{
+		const float yaw = std::remainder(
+			glm::degrees(2.0f * std::atan2(rotation.y, rotation.w)), 360.0f);
+		return { 0.0f, yaw, 0.0f };
+	}
+
+	const glm::vec3 euler = glm::degrees(glm::eulerAngles(rotation));
+	return { euler.x, euler.y, euler.z };
+}
+
 namespace
 {
 std::string LowerAsciiCopy(std::string value)
@@ -588,7 +613,8 @@ std::string RuntimeComponentKey(const std::string& type)
 		{ "PointLight", "point_light" }, { "SpotLight", "spot_light" }, { "RectLight", "rect_light" },
 		{ "Audio", "audio" }, { "AudioVolume", "audio_volume" },
 		{ "AudioReverbZone", "audio_reverb_zone" }, { "Video", "video" }, { "Particle", "particle" },
-		{ "Cloth", "cloth" }, { "Vehicle", "vehicle" }, { "Timeline", "timeline" }
+		{ "Cloth", "cloth" }, { "Vehicle", "vehicle" }, { "Timeline", "timeline" },
+		{ "NavigationAgent", "navigation_agent" }, { "AIAgent", "ai_agent" }
 	};
 
 	const auto found = keys.find(type);
@@ -740,7 +766,9 @@ std::array<float, 3> ClampFloat3(
 	};
 }
 
-VansSceneTransformConfig BuildAuthoringObjectTransform(const VansSerializedValue* transformComponent)
+VansSceneTransformConfig BuildAuthoringObjectTransform(
+	const VansSerializedValue* transformComponent,
+	bool yawOnly)
 {
 	VansSceneTransformConfig transform;
 	if (!transformComponent || !ReadSerializedBoolField(*transformComponent, "enabled", true))
@@ -756,13 +784,12 @@ VansSceneTransformConfig BuildAuthoringObjectTransform(const VansSerializedValue
 	const VansSerializedValue* rotation = FindObjectField(*data, "rotation");
 	if (rotation && rotation->kind == VansSerializedValue::Kind::Array && rotation->arrayItems.size() == 4)
 	{
-		const glm::quat quatRotation(
-			static_cast<float>(ReadSerializedNumber(rotation->arrayItems[3], 1.0)),
+		transform.rotation = ProjectSceneQuaternionToEulerDegrees({
 			static_cast<float>(ReadSerializedNumber(rotation->arrayItems[0], 0.0)),
 			static_cast<float>(ReadSerializedNumber(rotation->arrayItems[1], 0.0)),
-			static_cast<float>(ReadSerializedNumber(rotation->arrayItems[2], 0.0)));
-		const glm::vec3 euler = glm::degrees(glm::eulerAngles(quatRotation));
-		transform.rotation = { euler.x, euler.y, euler.z };
+			static_cast<float>(ReadSerializedNumber(rotation->arrayItems[2], 0.0)),
+			static_cast<float>(ReadSerializedNumber(rotation->arrayItems[3], 1.0)) },
+			yawOnly);
 	}
 
 	return transform;
@@ -1234,6 +1261,113 @@ std::optional<VansGameplayActionHostSetup> ReadAuthoringActionHostComponent(
 	return setup;
 }
 
+std::optional<VansSceneNavigationAgentConfig> ReadAuthoringNavigationAgentComponent(
+	const VansSerializedValue& entity,
+	const std::string& projectRoot)
+{
+	const VansSerializedValue* component = FindComponent(entity, "NavigationAgent");
+	if (!component) return std::nullopt;
+	VansSceneNavigationAgentConfig config;
+	config.enabled = ReadSerializedBoolField(*component, "enabled", true);
+	const VansSerializedValue* data = FindSerializedObjectField(*component, "data");
+	if (!data) return config;
+	if (const VansSerializedValue* asset = FindObjectField(*data, "navigationMesh"))
+	{
+		const std::string reference = ReadGameplayAssetReference(*asset);
+		VansAssetGuid guid;
+		if (VansAssetGuid::TryParse(reference, guid))
+			config.runtime.navigationMeshGuid = reference;
+		config.runtime.navigationMeshPath = ProjectRelativeAssetPathFromGuid(
+			reference, VansAssetType::NavigationMesh, projectRoot, true);
+	}
+	auto readFloat = [&](const char* name, float current)
+	{
+		const VansSerializedValue* value = FindObjectField(*data, name);
+		return value ? static_cast<float>(ReadSerializedNumber(*value, current)) : current;
+	};
+	config.runtime.maxSpeed = std::max(0.0f, readFloat("maxSpeed", config.runtime.maxSpeed));
+	config.runtime.acceleration = std::max(0.0f,
+		readFloat("acceleration", config.runtime.acceleration));
+	config.runtime.stoppingDistance = std::max(0.0f,
+		readFloat("stoppingDistance", config.runtime.stoppingDistance));
+	config.runtime.repathInterval = std::max(0.02f,
+		readFloat("repathInterval", config.runtime.repathInterval));
+	config.runtime.targetMoveThreshold = std::max(0.0f,
+		readFloat("targetMoveThreshold", config.runtime.targetMoveThreshold));
+	return config;
+}
+
+std::optional<VansSceneAIAgentConfig> ReadAuthoringAIAgentComponent(
+	const VansSerializedValue& entity,
+	const std::string& projectRoot)
+{
+	const VansSerializedValue* component = FindComponent(entity, "AIAgent");
+	if (!component) return std::nullopt;
+	VansSceneAIAgentConfig config;
+	config.enabled = ReadSerializedBoolField(*component, "enabled", true);
+	const VansSerializedValue* data = FindSerializedObjectField(*component, "data");
+	if (!data) return config;
+	if (const VansSerializedValue* asset = FindObjectField(*data, "behavior"))
+	{
+		const std::string reference = ReadGameplayAssetReference(*asset);
+		VansAssetGuid guid;
+		if (VansAssetGuid::TryParse(reference, guid))
+			config.runtime.behaviorGuid = reference;
+		config.runtime.behaviorPath = ProjectRelativeAssetPathFromGuid(
+			reference, VansAssetType::AIBehavior, projectRoot, true);
+	}
+	config.runtime.targetTag = ReadSerializedStringField(
+		*data, "targetTag", config.runtime.targetTag);
+	config.runtime.readyAnimationState = ReadSerializedStringField(
+		*data, "readyAnimationState", config.runtime.readyAnimationState);
+	config.runtime.movementParameter = ReadSerializedStringField(
+		*data, "movementParameter", config.runtime.movementParameter);
+	auto readFloat = [&](const char* name, float current)
+	{
+		const VansSerializedValue* value = FindObjectField(*data, name);
+		return value ? static_cast<float>(ReadSerializedNumber(*value, current)) : current;
+	};
+	config.runtime.idleSpeedThreshold = std::max(0.0f,
+		readFloat("idleSpeedThreshold", config.runtime.idleSpeedThreshold));
+	config.runtime.runSpeedThreshold = std::max(config.runtime.idleSpeedThreshold,
+		readFloat("runSpeedThreshold", config.runtime.runSpeedThreshold));
+	if (const VansSerializedValue* value = FindObjectField(*data, "maxMovementState"))
+	{
+		config.runtime.maxMovementState = std::clamp(
+			static_cast<int>(ReadSerializedNumber(*value, config.runtime.maxMovementState)),
+			0, 2);
+	}
+	if (const VansSerializedValue* sight = FindObjectField(*data, "sight"))
+	{
+		config.runtime.sight.enabled = ReadSerializedBoolField(
+			*sight, "enabled", config.runtime.sight.enabled);
+		config.runtime.sight.blackboardKey = ReadSerializedStringField(
+			*sight, "blackboardKey", config.runtime.sight.blackboardKey);
+		if (const VansSerializedValue* value = FindObjectField(*sight, "range"))
+			config.runtime.sight.range = std::max(0.0f,
+				static_cast<float>(ReadSerializedNumber(*value, config.runtime.sight.range)));
+		if (const VansSerializedValue* value = FindObjectField(*sight, "horizontalFovDegrees"))
+			config.runtime.sight.horizontalFovDegrees = std::clamp(
+				static_cast<float>(ReadSerializedNumber(
+					*value, config.runtime.sight.horizontalFovDegrees)), 0.0f, 360.0f);
+		if (const VansSerializedValue* value = FindObjectField(*sight, "eyeHeight"))
+			config.runtime.sight.eyeHeight = std::max(0.0f,
+				static_cast<float>(ReadSerializedNumber(*value, config.runtime.sight.eyeHeight)));
+		if (const VansSerializedValue* value = FindObjectField(*sight, "loseTargetGraceSeconds"))
+			config.runtime.sight.loseTargetGraceSeconds = std::max(0.0f,
+				static_cast<float>(ReadSerializedNumber(
+					*value, config.runtime.sight.loseTargetGraceSeconds)));
+		config.runtime.sight.occlusionLayer = ReadSerializedStringField(
+			*sight, "occlusionLayer", config.runtime.sight.occlusionLayer);
+	}
+	if (const VansSerializedValue* facing = FindObjectField(*data, "facing"))
+	{
+		config.runtime.facing.yawOnly = ReadSerializedBoolField(
+			*facing, "yawOnly", config.runtime.facing.yawOnly);
+	}
+	return config;
+}
+
 bool AppendAuthoringEntityToContentPlan(
 	const VansSerializedValue& entity,
 	VansSceneContentBuildPlan& plan,
@@ -1283,7 +1417,10 @@ bool AppendAuthoringEntityToContentPlan(
 	objectConfig.name = ReadSerializedStringField(entity, "name");
 	objectConfig.parent = std::move(parentReference);
 	objectConfig.active = ReadSerializedBoolField(entity, "active", true);
-	objectConfig.transform = BuildAuthoringObjectTransform(transformComponent);
+	objectConfig.aiAgent = ReadAuthoringAIAgentComponent(entity, projectRoot);
+	const bool yawOnly = objectConfig.aiAgent &&
+		objectConfig.aiAgent->runtime.facing.yawOnly;
+	objectConfig.transform = BuildAuthoringObjectTransform(transformComponent, yawOnly);
 	if (transformComponent)
 	{
 		const std::string transformGuid = ReadSerializedStringField(*transformComponent, "id");
@@ -1375,6 +1512,7 @@ bool AppendAuthoringEntityToContentPlan(
 		if (!resolvedPath.empty()) objectConfig.timeline->timelineAssetPath = resolvedPath;
 	}
 	objectConfig.actionHost = ReadAuthoringActionHostComponent(entity);
+	objectConfig.navigationAgent = ReadAuthoringNavigationAgentComponent(entity, projectRoot);
 	objectConfig.scriptComponents = std::move(scriptComponents);
 
 	plan.objects.objects.push_back(std::move(objectConfig));

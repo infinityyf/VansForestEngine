@@ -33,6 +33,8 @@ constexpr SerializedAssetTypeEntry SerializedAssetTypes[] = {
     { VansAssetType::AnimationRig, "animationRig" },
     { VansAssetType::BoneMask, "boneMask" },
     { VansAssetType::Timeline, "timeline" },
+    { VansAssetType::NavigationMesh, "navigationMesh" },
+    { VansAssetType::AIBehavior, "aiBehavior" },
     { VansAssetType::ActionDefinition, "actionDefinition" },
     { VansAssetType::ActionSet, "actionSet" },
     { VansAssetType::GameplayEffect, "gameplayEffect" },
@@ -250,6 +252,7 @@ bool VansAssetDatabase::RegisterOrRefresh(
     record.metaPath = metaPath;
 	record.authoringPath = type == VansAssetType::Material || type == VansAssetType::Shader ||
 		type == VansAssetType::Timeline || type == VansAssetType::ActionDefinition ||
+		type == VansAssetType::AIBehavior ||
 		type == VansAssetType::ActionSet || type == VansAssetType::GameplayEffect ||
 		type == VansAssetType::GameplayCue || type == VansAssetType::AttributeSet ||
 		type == VansAssetType::TargetingPolicy || type == VansAssetType::GameplayTagTree ||
@@ -466,6 +469,8 @@ VansAssetType VansAssetDatabase::Classify(const std::filesystem::path& sourcePat
 	if (extension == L".vanimrig") return VansAssetType::AnimationRig;
 	if (extension == L".vbonemask") return VansAssetType::BoneMask;
     if (extension == L".vtimeline") return VansAssetType::Timeline;
+	if (extension == L".vnavmesh") return VansAssetType::NavigationMesh;
+	if (extension == L".vaibehavior") return VansAssetType::AIBehavior;
 	if (extension == L".vaction") return VansAssetType::ActionDefinition;
 	if (extension == L".vactionset") return VansAssetType::ActionSet;
 	if (extension == L".veffect") return VansAssetType::GameplayEffect;
@@ -505,6 +510,8 @@ std::string VansAssetDatabase::ImporterFor(VansAssetType type)
 	case VansAssetType::AnimationRig: return "AnimationRigImporter";
 	case VansAssetType::BoneMask: return "BoneMaskImporter";
     case VansAssetType::Timeline: return "TimelineImporter";
+	case VansAssetType::NavigationMesh: return "NavigationMeshImporter";
+	case VansAssetType::AIBehavior: return "AIBehaviorImporter";
 	case VansAssetType::ActionDefinition: return "GameplayActionImporter";
 	case VansAssetType::ActionSet: return "GameplayActionSetImporter";
 	case VansAssetType::GameplayEffect: return "GameplayEffectImporter";

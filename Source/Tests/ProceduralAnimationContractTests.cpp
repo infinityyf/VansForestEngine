@@ -735,6 +735,70 @@ namespace
 		nlohmann::json rigJson;
 		if (!VansAnimationRigStorage::SerializeToJsonObject(fixture.asset, rigJson, error))
 			return Check(false, error.c_str());
+		VansAnimationRigAsset socketRig = fixture.asset;
+		const int socketBoneIndex = fixture.skeleton.boneNameToIndex.at("foot_l");
+		fixture.skeleton.bones[static_cast<std::size_t>(socketBoneIndex)].guid =
+			"00000000-0000-4000-8000-000000000003";
+		fixture.skeleton.RebuildIdentityMapsAndSignature();
+		VansRigSocketDefinition socket;
+		socket.guid = "00000000-0000-4000-8000-000000000002";
+		socket.name = "Weapon";
+		socket.boneGuid = fixture.skeleton.bones[static_cast<std::size_t>(socketBoneIndex)].guid;
+		socket.positionLocal = glm::vec3(0.12f, -0.34f, 0.56f);
+		socket.rotationLocal = glm::angleAxis(
+			glm::radians(37.0f), glm::normalize(glm::vec3(1.0f, 2.0f, 3.0f)));
+		socket.scaleLocal = glm::vec3(0.8f, 1.1f, 1.25f);
+		socketRig.sockets.push_back(socket);
+		VansRigAttachmentProfileDefinition attachmentProfile;
+		attachmentProfile.modelGuid = "00000000-0000-4000-8000-000000000004";
+		attachmentProfile.parentKind = VansRigAttachmentParentKind::Socket;
+		attachmentProfile.anchorGuid = socket.guid;
+		attachmentProfile.positionLocal = glm::vec3(-0.4f, 0.2f, 0.7f);
+		attachmentProfile.rotationLocal = glm::angleAxis(
+			glm::radians(-24.0f), glm::normalize(glm::vec3(0.5f, 1.0f, -0.25f)));
+		attachmentProfile.scaleLocal = glm::vec3(1.2f, 0.9f, 1.1f);
+		socketRig.attachmentProfiles.push_back(attachmentProfile);
+		VansCompiledAnimationRig attachmentRig;
+		if (!VansAnimationRigCompiler::Compile(
+			socketRig, fixture.skeleton, attachmentRig, error))
+			return Check(false, error.c_str());
+		nlohmann::json socketRigJson;
+		if (!VansAnimationRigStorage::SerializeToJsonObject(socketRig, socketRigJson, error))
+			return Check(false, error.c_str());
+		VansAnimationRigAsset parsedSocketRig;
+		if (!VansAnimationRigStorage::DeserializeFromJsonObject(
+			socketRigJson, parsedSocketRig, error))
+			return Check(false, error.c_str());
+		if (!Check(parsedSocketRig.sockets.size() == 1
+			&& parsedSocketRig.sockets.front().guid == socket.guid
+			&& parsedSocketRig.sockets.front().boneGuid == socket.boneGuid
+			&& glm::length(parsedSocketRig.sockets.front().positionLocal
+				- socket.positionLocal) <= 1.0e-6f
+			&& std::abs(glm::dot(parsedSocketRig.sockets.front().rotationLocal,
+				socket.rotationLocal)) >= 1.0f - 1.0e-6f
+			&& glm::length(parsedSocketRig.sockets.front().scaleLocal
+				- socket.scaleLocal) <= 1.0e-6f
+			&& parsedSocketRig.attachmentProfiles.size() == 1
+			&& parsedSocketRig.attachmentProfiles.front().modelGuid
+				== attachmentProfile.modelGuid
+			&& parsedSocketRig.attachmentProfiles.front().parentKind
+				== VansRigAttachmentParentKind::Socket
+			&& parsedSocketRig.attachmentProfiles.front().anchorGuid == socket.guid
+			&& glm::length(parsedSocketRig.attachmentProfiles.front().positionLocal
+				- attachmentProfile.positionLocal) <= 1.0e-6f
+			&& std::abs(glm::dot(
+				parsedSocketRig.attachmentProfiles.front().rotationLocal,
+				attachmentProfile.rotationLocal)) >= 1.0f - 1.0e-6f
+			&& glm::length(parsedSocketRig.attachmentProfiles.front().scaleLocal
+				- attachmentProfile.scaleLocal) <= 1.0e-6f,
+			"Rig storage did not round-trip Socket and attachment-profile local transforms"))
+			return false;
+		nlohmann::json missingAttachmentProfiles = rigJson;
+		missingAttachmentProfiles.erase("attachmentProfiles");
+		VansAnimationRigAsset missingAttachmentProfilesRig;
+		if (!Check(!VansAnimationRigStorage::DeserializeFromJsonObject(
+			missingAttachmentProfiles, missingAttachmentProfilesRig, error),
+			"Rig storage defaulted the canonical attachmentProfiles field")) return false;
 		nlohmann::json incompleteRigJson = rigJson;
 		incompleteRigJson["chains"][0].erase("softReachStartRatio");
 		VansAnimationRigAsset incompleteRig;

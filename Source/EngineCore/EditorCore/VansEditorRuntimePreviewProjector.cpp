@@ -1,6 +1,7 @@
 #include "VansEditorRuntimePreviewProjector.h"
 
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
+#include "../SceneCore/VansSceneRuntimeProjection.h"
 
 #define GLM_ENABLE_EXPERIMENTAL
 #include <../../GLM/glm.hpp>
@@ -42,20 +43,22 @@ bool ReadPreviewVec3(const VansSerializedValue& value, EditorAPI::Vec3& out)
     return true;
 }
 
-bool ReadPreviewRotationEuler(const VansSerializedValue& value, EditorAPI::Vec3& out)
+bool ReadPreviewRotationEuler(
+	const VansSerializedValue& value,
+	bool yawOnly,
+	EditorAPI::Vec3& out)
 {
     if (value.kind != VansSerializedValue::Kind::Array)
         return false;
 
     if (value.arrayItems.size() == 4)
     {
-        const glm::quat quaternion(
-            static_cast<float>(ReadSerializedNumber(value.arrayItems[3])),
-            static_cast<float>(ReadSerializedNumber(value.arrayItems[0])),
-            static_cast<float>(ReadSerializedNumber(value.arrayItems[1])),
-            static_cast<float>(ReadSerializedNumber(value.arrayItems[2])));
-        const glm::vec3 euler = glm::degrees(glm::eulerAngles(quaternion));
-        out = { euler.x, euler.y, euler.z };
+		const std::array<float, 3> euler = ProjectSceneQuaternionToEulerDegrees({
+			static_cast<float>(ReadSerializedNumber(value.arrayItems[0])),
+			static_cast<float>(ReadSerializedNumber(value.arrayItems[1])),
+			static_cast<float>(ReadSerializedNumber(value.arrayItems[2])),
+			static_cast<float>(ReadSerializedNumber(value.arrayItems[3])) }, yawOnly);
+		out = { euler[0], euler[1], euler[2] };
         return true;
     }
 
@@ -74,9 +77,20 @@ bool BuildRuntimeTransformPreview(
     if (!transformComponent || !ReadSerializedBoolField(*transformComponent, "enabled", true))
         return false;
 
-    const VansSerializedValue* data = FindObjectField(*transformComponent, "data");
-    if (!data)
-        return false;
+	const VansSerializedValue* data = FindObjectField(*transformComponent, "data");
+	if (!data)
+		return false;
+	bool yawOnly = false;
+	if (const VansSerializedValue* aiComponent = FindSerializedComponent(entity, "AIAgent"))
+	{
+		if (const VansSerializedValue* aiData = FindObjectField(*aiComponent, "data");
+			aiData && aiData->kind == VansSerializedValue::Kind::Object)
+		{
+			if (const VansSerializedValue* facing = FindObjectField(*aiData, "facing");
+				facing && facing->kind == VansSerializedValue::Kind::Object)
+				yawOnly = ReadSerializedBoolField(*facing, "yawOnly", false);
+		}
+	}
 
     edit = {};
     edit.entityGuid = entityGuid;
@@ -87,8 +101,8 @@ bool BuildRuntimeTransformPreview(
     {
         edit.writePosition = true;
     }
-    if (const VansSerializedValue* rotation = FindObjectField(*data, "rotation");
-        rotation && ReadPreviewRotationEuler(*rotation, edit.rotationDegrees))
+	if (const VansSerializedValue* rotation = FindObjectField(*data, "rotation");
+		rotation && ReadPreviewRotationEuler(*rotation, yawOnly, edit.rotationDegrees))
     {
         edit.writeRotation = true;
     }

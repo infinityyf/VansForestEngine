@@ -582,6 +582,7 @@ SceneEditResult VansAppendSceneEntitiesCommand::Execute(VansSceneDocument& docum
     if (m_Entities.empty())
         return { false, "No scene entities to append" };
     VansSerializedValue candidate = document.SerializedRootSnapshot();
+	VansSerializedValue beforeRoot = candidate;
     VansSerializedValue* entities = FindObjectField(candidate, "entities");
     if (!entities || entities->kind != VansSerializedValue::Kind::Array)
         return { false, "Scene document has no entities array" };
@@ -596,6 +597,11 @@ SceneEditResult VansAppendSceneEntitiesCommand::Execute(VansSceneDocument& docum
     {
         SceneEditResult result{ true, {} };
         result.runtimeChangeApplied = m_Hooks.afterExecute();
+		if (!result.runtimeChangeApplied)
+		{
+			document.RestoreEditedSerializedRoot(std::move(beforeRoot), m_BeforeState);
+			return { false, "Runtime scene entity append failed" };
+		}
         return result;
     }
     return { true, {} };

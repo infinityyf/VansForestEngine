@@ -46,6 +46,16 @@ namespace VansGraphics
 			}
 			return true;
 		}
+
+		std::string AttachmentProfileKey(
+			const std::string& modelGuid,
+			VansRigAttachmentParentKind parentKind,
+			const std::string& anchorGuid)
+		{
+			return modelGuid + '\x1f'
+				+ (parentKind == VansRigAttachmentParentKind::Bone ? "bone" : "socket")
+				+ '\x1f' + anchorGuid;
+		}
 	}
 
 	int VansCompiledAnimationRig::FindGoal(const std::string& id) const
@@ -64,6 +74,23 @@ namespace VansGraphics
 	{
 		const auto found = socketIndexByName.find(name);
 		return found == socketIndexByName.end() ? -1 : found->second;
+	}
+
+	const VansCompiledRigAttachmentProfile*
+	VansCompiledAnimationRig::FindAttachmentProfile(
+		const std::string& modelGuid,
+		VansRigAttachmentParentKind parentKind,
+		const std::string& anchorGuid) const
+	{
+		const auto found = attachmentProfileIndexByKey.find(
+			AttachmentProfileKey(modelGuid, parentKind, anchorGuid));
+		if (found == attachmentProfileIndexByKey.end()
+			|| found->second < 0
+			|| found->second >= static_cast<int>(attachmentProfiles.size()))
+		{
+			return nullptr;
+		}
+		return &attachmentProfiles[static_cast<std::size_t>(found->second)];
 	}
 
 	int VansCompiledAnimationRig::FindChain(const std::string& id) const
@@ -184,6 +211,45 @@ namespace VansGraphics
 			outRig.socketIndexByName.emplace(source.name, socketIndex);
 			outRig.sockets.push_back({ source.guid, source.name, bone->second,
 				VansPoseMath::Compose(local) });
+		}
+
+		std::unordered_set<std::string> attachmentProfileKeys;
+		for (const VansRigAttachmentProfileDefinition& source : asset.attachmentProfiles)
+		{
+			const bool validParentKind =
+				source.parentKind == VansRigAttachmentParentKind::Bone
+				|| source.parentKind == VansRigAttachmentParentKind::Socket;
+			const bool anchorExists = source.parentKind == VansRigAttachmentParentKind::Bone
+				? skeleton.boneGuidToIndex.find(source.anchorGuid)
+					!= skeleton.boneGuidToIndex.end()
+				: outRig.socketIndexByGuid.find(source.anchorGuid)
+					!= outRig.socketIndexByGuid.end();
+			const float rotationLength = glm::length(source.rotationLocal);
+			const std::string key = AttachmentProfileKey(
+				source.modelGuid, source.parentKind, source.anchorGuid);
+			if (source.modelGuid.empty() || source.anchorGuid.empty()
+				|| !validParentKind || !anchorExists
+				|| !attachmentProfileKeys.emplace(key).second
+				|| !Finite(source.positionLocal) || !Finite(source.rotationLocal)
+				|| !std::isfinite(rotationLength) || rotationLength <= kAxisEpsilon
+				|| !Finite(source.scaleLocal)
+				|| std::abs(source.scaleLocal.x) <= kAxisEpsilon
+				|| std::abs(source.scaleLocal.y) <= kAxisEpsilon
+				|| std::abs(source.scaleLocal.z) <= kAxisEpsilon)
+			{
+				error = "Animation Rig attachment profiles require a unique model/anchor, "
+					"a resolvable Bone/Socket, and finite local TRS";
+				return false;
+			}
+			const int profileIndex = static_cast<int>(outRig.attachmentProfiles.size());
+			outRig.attachmentProfileIndexByKey.emplace(key, profileIndex);
+			outRig.attachmentProfiles.push_back({
+				source.modelGuid,
+				source.parentKind,
+				source.anchorGuid,
+				source.positionLocal,
+				glm::normalize(source.rotationLocal),
+				source.scaleLocal });
 		}
 
 		for (const VansRigGoalDefinition& source : asset.goals)

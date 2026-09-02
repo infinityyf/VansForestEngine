@@ -46,6 +46,7 @@ namespace Vans::EditorAPI
 		virtual GAFProjectConfigurationResult ApplyGAFProjectConfiguration(
 			const GAFProjectConfigurationSnapshot& configuration) = 0;
 		virtual GAFRuntimeDebugSnapshot GetGAFRuntimeDebugSnapshot() = 0;
+		virtual GAFCombatDebugSnapshot GetGAFCombatDebugSnapshot() const = 0;
 		virtual GAFDebugCommandResult ControlGAFDebugger(const GAFDebugCommand& command) = 0;
 		virtual GAFTraceCommandResult ControlGAFTrace(const GAFTraceCommand& command) = 0;
 		virtual GAFSimulationResult SimulateGAFAction(const GAFSimulationRequest& request) = 0;
@@ -151,6 +152,10 @@ namespace Vans::EditorAPI
 			const std::string& canonicalJson) const = 0;
 		virtual BoneMaskDocumentEncodeResult EncodeBoneMaskDocument(
 			const BoneMaskDocumentDTO& document) const = 0;
+		virtual AnimationRigDocumentDecodeResult DecodeAnimationRigDocument(
+			const std::string& canonicalJson) const = 0;
+		virtual AnimationRigDocumentEncodeResult EncodeAnimationRigDocument(
+			const AnimationRigDocumentDTO& document) const = 0;
 		virtual BoneMaskCompileResult CompileBoneMaskDocument(
 			const BoneMaskDocumentDTO& document,
 			const AssetSkeletonSnapshot& skeleton) const = 0;
@@ -166,6 +171,22 @@ namespace Vans::EditorAPI
 		virtual void TickAnimationPreview(AnimationPreviewSessionId sessionId, float deltaTime) = 0;
 		virtual AnimationPreviewSnapshot GetAnimationPreviewSnapshot(
 			AnimationPreviewSessionId sessionId) const = 0;
+		virtual AnimationPreviewRigSnapshot GetAnimationPreviewRigSnapshot(
+			AnimationPreviewSessionId sessionId) const = 0;
+		virtual std::vector<AnimationPreviewSceneEntitySnapshot>
+			QueryAnimationPreviewSceneEntities(AnimationPreviewSessionId sessionId) const = 0;
+		virtual AnimationRigDocumentDecodeResult GetAnimationPreviewWorkingRigDocument(
+			AnimationPreviewSessionId sessionId) const = 0;
+		virtual AnimationPreviewRigEditResult SetAnimationPreviewRigSocketTransform(
+			const AnimationPreviewRigSocketTransformRequest& request) = 0;
+		virtual AnimationPreviewRigEditResult SetAnimationPreviewRigAttachmentProfile(
+			const AnimationPreviewRigAttachmentProfileRequest& request) = 0;
+		virtual AnimationPreviewAttachmentEditResult SetAnimationPreviewAttachmentTransform(
+			const AnimationPreviewAttachmentTransformRequest& request) = 0;
+		virtual AnimationPreviewAttachmentEditResult SetAnimationPreviewAttachmentBinding(
+			const AnimationPreviewAttachmentBindingRequest& request) = 0;
+		virtual AnimationPreviewRigEditResult AdoptAnimationPreviewRig(
+			const AnimationPreviewRigAdoptRequest& request) = 0;
 		virtual void DestroyAnimationPreview(AnimationPreviewSessionId sessionId) = 0;
 		virtual TimelinePreviewResult StartTimelinePreview(const TimelinePreviewStartRequest& request) = 0;
 		virtual TimelinePreviewResult ConfigureTimelinePreviewPlayback(
@@ -196,8 +217,10 @@ namespace Vans::EditorAPI
 		virtual void SetPlayState(EnginePlayState state) = 0;
 		virtual EntityId RaycastScene(const Ray& ray) const = 0;
 		virtual std::string PickRuntimeEntity(const Ray& ray) const = 0;
-		virtual RuntimeTransformSnapshot GetRuntimeTransform(const std::string& entityGuid) const = 0;
-		virtual void ApplyRuntimeTransform(const RuntimeTransformEdit& edit) = 0;
+		virtual RuntimeTransformSnapshot GetRuntimeTransform(
+			const std::string& entityGuid, RuntimeTransformSpace space) const = 0;
+		virtual RuntimeTransformEditResult ApplyRuntimeTransform(
+			const RuntimeTransformEdit& edit) = 0;
 		virtual std::vector<RuntimeMultiMeshGroupSnapshot> BuildRuntimeMultiMeshExpansionSnapshot() = 0;
 		virtual AudioBusDebugSnapshot GetAudioBusDebugSnapshot() const = 0;
 		virtual void SetAudioBusGain(const std::string& busName, float gain) = 0;
@@ -219,6 +242,7 @@ namespace Vans::EditorAPI
 		virtual void FlushRuntimeCharacterControllerTransforms() = 0;
 		virtual void UpdateRuntimeNonCameraScripts() = 0;
 		virtual void UpdateRuntimeActionsEarly(double deltaSeconds) = 0;
+		virtual void UpdateRuntimeAI(double deltaSeconds) = 0;
 		virtual void RunRuntimeActionLateContinuation() = 0;
 		virtual void UpdateRuntimeTimelinesPostScript(double deltaSeconds) = 0;
 		virtual void BeginRuntimeCameraControlFrame() = 0;

@@ -5,12 +5,14 @@
 
 namespace Vans::EditorAPI
 {
+class IEngineEditorAPI;
+
 class ModelAssetPlacementPreparationService
 {
 public:
     static ModelAssetPlacementPayload Prepare(
         const ModelAssetPlacementRequest& request,
-        RuntimeSceneHandle scene,
-        RuntimeRenderDeviceHandle device);
+        IEngineEditorAPI& editorAPI,
+        RuntimeSceneHandle scene);
 };
 }

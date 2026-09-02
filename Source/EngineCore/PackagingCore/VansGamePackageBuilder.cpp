@@ -1076,11 +1076,13 @@ namespace
 				&& sourceRecord->type != Vans::VansAssetType::AnimationClip
 				&& sourceRecord->type != Vans::VansAssetType::AnimationRig
 				&& sourceRecord->type != Vans::VansAssetType::BoneMask
-				&& sourceRecord->type != Vans::VansAssetType::Timeline)
+				&& sourceRecord->type != Vans::VansAssetType::Timeline
+				&& sourceRecord->type != Vans::VansAssetType::NavigationMesh
+				&& sourceRecord->type != Vans::VansAssetType::AIBehavior)
 				continue;
 			if (!fs::is_regular_file(sourceRecord->sourcePath, ec))
 			{
-				cookedPlan.missingResources.push_back({ "animation dependency", guidText,
+				cookedPlan.missingResources.push_back({ "source-format dependency", guidText,
 					sourceRecord->sourcePath.string(), {} });
 				ec.clear();
 				continue;
@@ -1108,7 +1110,7 @@ namespace
 			}
 			else
 			{
-				cookedPlan.missingResources.push_back({ "animation dependency index", guidText,
+				cookedPlan.missingResources.push_back({ "source-format dependency index", guidText,
 					sourceRecord->sourcePath.string(), {} });
 			}
 			ec.clear();

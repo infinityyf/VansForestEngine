@@ -6,6 +6,8 @@
 #include "../../EngineAPILayer/Public/IEngineEditorAPI.h"
 #include "../../Util/VansLog.h"
 #include <imgui.h>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <cmath>
@@ -109,8 +111,6 @@ namespace VansGraphics
 		std::string selectedLayerId;
 		std::string selectedGraphSetId;
 		std::string selectedSlotId;
-		std::unordered_set<std::string> mutedLayerIds;
-		std::unordered_set<std::string> soloLayerIds;
 		bool isDirty = false;
 		bool needsInitialLayout = false;
 		int selectedNodeId = -1;
@@ -125,7 +125,6 @@ VansAnimGraphEditorWindow::VansAnimGraphEditorWindow()
 }
 VansAnimGraphEditorWindow::~VansAnimGraphEditorWindow()
 {
-	DestroyPreviewSession();
 	if (m_NodeEditorCtx)
 	{
 		ne::DestroyEditor(m_NodeEditorCtx);
@@ -164,8 +163,6 @@ void VansAnimGraphEditorWindow::Open(const std::string& animatorFilePath)
 	m_EditState->selectedLayerId.clear();
 	m_EditState->selectedGraphSetId.clear();
 	m_EditState->selectedSlotId.clear();
-	m_EditState->mutedLayerIds.clear();
-	m_EditState->soloLayerIds.clear();
 	m_EditState->selectedNodeId = -1;
 	m_EditState->selectedLinkId = -1;
 	m_SelectedStateIndex = -1;
@@ -183,22 +180,6 @@ void VansAnimGraphEditorWindow::Open(const std::string& animatorFilePath)
 	config.ContextMenuButtonIndex = 1;       // 鍙抽敭鑿滃崟
 	m_NodeEditorCtx = ne::CreateEditor(&config);
 	m_NavigationStack.clear();
-	m_PreviewRevision = 0;
-	m_PreviewDocumentStateId = 0;
-	m_PreviewCompilePending = true;
-	m_PreviewCompileQueuedAt = 0.0;
-	m_PreviewPlaying = true;
-	m_PreviewSpeed = 1.0f;
-	m_PreviewVisualizedLayer = -1;
-	m_PreviewTargetKind = Vans::EditorAPI::AnimationPreviewTargetKind::IsolatedModel;
-	m_PreviewSceneEntityGuid.clear();
-	m_PreviewSceneAnimationComponentGuid.clear();
-	m_PreviewRootMotionMode = Vans::EditorAPI::AnimationPreviewPlaybackRequest::RootMotionMode::InPlace;
-	m_PreviewFloats.clear();
-	m_PreviewBools.clear();
-	m_PreviewInts.clear();
-	m_PreviewVectors.clear();
-	m_PreviewParameterTypes.clear();
 }
 void VansAnimGraphEditorWindow::Close()
 {
@@ -219,7 +200,6 @@ void VansAnimGraphEditorWindow::Close()
 
 void VansAnimGraphEditorWindow::CloseImmediately()
 {
-	DestroyPreviewSession();
 	if (m_NodeEditorCtx)
 	{
 		ne::DestroyEditor(m_NodeEditorCtx);
@@ -252,7 +232,6 @@ void VansAnimGraphEditorWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 			return;
 		}
 		m_NeedsDecode = false;
-		ResetPreviewParameters();
 	}
 	if (!m_AssetData || !m_TargetGraph || !m_Document)
 	{
@@ -284,7 +263,6 @@ void VansAnimGraphEditorWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 	if (!m_EditState->isDirty
 		&& m_DocumentStateId != m_Document->sourceDocument.CurrentStateId())
 		ReloadWorkingCopyFromDocument();
-	EnsurePreviewSession();
 	// ============================================================================
 	// ?????????????????????
 	if (m_CloseRequested)
@@ -327,67 +305,17 @@ void VansAnimGraphEditorWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 	DrawLeftPanel();
 	ImGui::EndChild();
 	ImGui::SameLine();
-    // 画布区域
+	// Animation Graph Editor只负责Animator资产的图编辑。场景动画预览由
+	// Animation/Scene Animation Preview独立窗口持有，避免编辑文档与场景
+	// 临时状态共享生命周期。
 	ImGui::BeginChild("AnimationWorkspace", ImVec2(0, -ImGui::GetFrameHeightWithSpacing()));
-	constexpr float defaultPreviewHeight = 285.0f;
-	constexpr float minimumGraphHeight = 180.0f;
-	constexpr float minimumPreviewHeight = 180.0f;
-	constexpr float splitterHeight = 8.0f;
-	const float workspaceHeight = (std::max)(0.0f, ImGui::GetContentRegionAvail().y);
-	const float maximumPreviewHeight = (std::max)(
-		0.0f, workspaceHeight - minimumGraphHeight - splitterHeight);
-	const float effectiveMinimumPreviewHeight = (std::min)(
-		minimumPreviewHeight, maximumPreviewHeight);
-	m_PreviewPanelHeight = std::clamp(
-		m_PreviewPanelHeight, effectiveMinimumPreviewHeight, maximumPreviewHeight);
-	const float graphHeight = (std::max)(
-		0.0f, workspaceHeight - m_PreviewPanelHeight - splitterHeight);
-
-	const ImVec2 itemSpacing = ImGui::GetStyle().ItemSpacing;
-	ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(itemSpacing.x, 0.0f));
-	ImGui::BeginChild("GraphCanvas", ImVec2(0, graphHeight));
+	ImGui::BeginChild("GraphCanvas", ImVec2(0, 0));
 	DrawGraphCanvas();
 	ImGui::EndChild();
-
-	ImGui::InvisibleButton("##AnimationPreviewSplitter", ImVec2(-1.0f, splitterHeight));
-	const bool splitterHovered = ImGui::IsItemHovered();
-	const bool splitterActive = ImGui::IsItemActive();
-	if (splitterHovered || splitterActive)
-		ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
-	if (splitterActive)
-		m_PreviewPanelHeight = std::clamp(
-			m_PreviewPanelHeight - ImGui::GetIO().MouseDelta.y,
-			effectiveMinimumPreviewHeight, maximumPreviewHeight);
-	if (splitterHovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
-		m_PreviewPanelHeight = std::clamp(
-			defaultPreviewHeight, effectiveMinimumPreviewHeight, maximumPreviewHeight);
-
-	const ImVec2 splitterMin = ImGui::GetItemRectMin();
-	const ImVec2 splitterMax = ImGui::GetItemRectMax();
-	const float splitterCenterY = (splitterMin.y + splitterMax.y) * 0.5f;
-	const ImU32 splitterColor = splitterActive
-		? ImGui::GetColorU32(ImGuiCol_SeparatorActive)
-		: splitterHovered
-			? ImGui::GetColorU32(ImGuiCol_SeparatorHovered)
-			: ImGui::GetColorU32(ImGuiCol_Separator);
-	ImGui::GetWindowDrawList()->AddLine(
-		ImVec2(splitterMin.x, splitterCenterY),
-		ImVec2(splitterMax.x, splitterCenterY), splitterColor, splitterActive ? 3.0f : 1.0f);
-	if (splitterHovered)
-		ImGui::SetTooltip("Drag to resize Animation Preview. Double-click to reset.");
-
-	ImGui::BeginChild("AnimationPreviewPanel", ImVec2(0, 0), ImGuiChildFlags_Borders);
-	DrawPreviewPanel();
-	ImGui::EndChild();
-	ImGui::PopStyleVar();
 	ImGui::EndChild();
 	DrawStatusBar();
 	if (m_EditState->isDirty && !ImGui::IsAnyItemActive())
 		CommitWorkingCopyToDocument();
-	if (m_Document && m_PreviewDocumentStateId != m_Document->sourceDocument.CurrentStateId())
-		QueuePreviewCompile();
-	if (m_PreviewCompilePending && ImGui::GetTime() - m_PreviewCompileQueuedAt >= 0.15)
-		UpdatePreviewDefinition();
 	if (ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows))
 	{
 		if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S))
@@ -664,815 +592,6 @@ void VansAnimGraphEditorWindow::DrawStatusBar()
 	}
 }
 
-void VansAnimGraphEditorWindow::DestroyPreviewSession()
-{
-	if (m_PreviewSessionId != 0 && m_ActiveAPI)
-		m_ActiveAPI->DestroyAnimationPreview(m_PreviewSessionId);
-	m_PreviewSessionId = 0;
-	m_PreviewSessionTargetKey.clear();
-}
-
-void VansAnimGraphEditorWindow::ResetPreviewParameters()
-{
-	m_PreviewFloats.clear();
-	m_PreviewBools.clear();
-	m_PreviewInts.clear();
-	m_PreviewVectors.clear();
-	m_PreviewParameterTypes.clear();
-	if (!m_AssetData)
-		return;
-	for (const AnimatorParameter& parameter : m_AssetData->parameters)
-	{
-		m_PreviewParameterTypes[parameter.name] = parameter.type;
-		switch (parameter.type)
-		{
-		case AnimatorParamType::Float: m_PreviewFloats[parameter.name] = parameter.floatVal; break;
-		case AnimatorParamType::Bool: m_PreviewBools[parameter.name] = parameter.boolVal; break;
-		case AnimatorParamType::Int: m_PreviewInts[parameter.name] = parameter.intVal; break;
-		case AnimatorParamType::Trigger: break;
-		case AnimatorParamType::Vector3:
-			m_PreviewVectors[parameter.name] = {
-				parameter.vec3Val.x, parameter.vec3Val.y, parameter.vec3Val.z, 0.0f };
-			break;
-		case AnimatorParamType::Quaternion:
-			m_PreviewVectors[parameter.name] = {
-				parameter.quatVal.x, parameter.quatVal.y, parameter.quatVal.z, parameter.quatVal.w };
-			break;
-		}
-	}
-	m_PreviewSelectedSlotId = m_AssetData->slots.empty() ? "" : m_AssetData->slots.front().id;
-	m_PreviewSelectedClipName = m_AssetData->clipRefs.empty() ? "" : m_AssetData->clipRefs.front().name;
-}
-
-void VansAnimGraphEditorWindow::ReconcilePreviewParameters()
-{
-	const auto previousFloats = m_PreviewFloats;
-	const auto previousBools = m_PreviewBools;
-	const auto previousInts = m_PreviewInts;
-	const auto previousVectors = m_PreviewVectors;
-	const auto previousTypes = m_PreviewParameterTypes;
-	ResetPreviewParameters();
-	if (!m_AssetData)
-		return;
-	for (const AnimatorParameter& parameter : m_AssetData->parameters)
-	{
-		const auto previousType = previousTypes.find(parameter.name);
-		if (previousType == previousTypes.end() || previousType->second != parameter.type)
-			continue;
-		switch (parameter.type)
-		{
-		case AnimatorParamType::Float:
-			if (const auto found = previousFloats.find(parameter.name); found != previousFloats.end())
-				m_PreviewFloats[parameter.name] = found->second;
-			break;
-		case AnimatorParamType::Bool:
-			if (const auto found = previousBools.find(parameter.name); found != previousBools.end())
-				m_PreviewBools[parameter.name] = found->second;
-			break;
-		case AnimatorParamType::Int:
-			if (const auto found = previousInts.find(parameter.name); found != previousInts.end())
-				m_PreviewInts[parameter.name] = found->second;
-			break;
-		case AnimatorParamType::Vector3:
-		case AnimatorParamType::Quaternion:
-			if (const auto found = previousVectors.find(parameter.name); found != previousVectors.end())
-				m_PreviewVectors[parameter.name] = found->second;
-			break;
-		case AnimatorParamType::Trigger:
-			break;
-		}
-	}
-}
-
-void VansAnimGraphEditorWindow::ApplyPreviewParameters()
-{
-	if (!m_ActiveAPI || !m_AssetData || m_PreviewSessionId == 0)
-		return;
-	for (const AnimatorParameter& parameter : m_AssetData->parameters)
-	{
-		Vans::EditorAPI::AnimationPreviewParameterValue value;
-		value.sessionId = m_PreviewSessionId;
-		value.name = parameter.name;
-		switch (parameter.type)
-		{
-		case AnimatorParamType::Float:
-			value.type = Vans::EditorAPI::AnimationPreviewParameterType::Float;
-			value.floatValue = m_PreviewFloats.at(parameter.name);
-			break;
-		case AnimatorParamType::Bool:
-			value.type = Vans::EditorAPI::AnimationPreviewParameterType::Bool;
-			value.boolValue = m_PreviewBools.at(parameter.name);
-			break;
-		case AnimatorParamType::Int:
-			value.type = Vans::EditorAPI::AnimationPreviewParameterType::Int;
-			value.intValue = m_PreviewInts.at(parameter.name);
-			break;
-		case AnimatorParamType::Vector3:
-		{
-			value.type = Vans::EditorAPI::AnimationPreviewParameterType::Vector3;
-			const auto& vector = m_PreviewVectors.at(parameter.name);
-			value.vectorValue = { vector[0], vector[1], vector[2] };
-			break;
-		}
-		case AnimatorParamType::Quaternion:
-		{
-			value.type = Vans::EditorAPI::AnimationPreviewParameterType::Quaternion;
-			const auto& vector = m_PreviewVectors.at(parameter.name);
-			value.quaternionValue = { vector[0], vector[1], vector[2], vector[3] };
-			break;
-		}
-		case AnimatorParamType::Trigger:
-			continue;
-		}
-		m_ActiveAPI->SetAnimationPreviewParameter(value);
-	}
-}
-
-void VansAnimGraphEditorWindow::EnsurePreviewSession()
-{
-	if (!m_ActiveAPI || !m_AssetData)
-		return;
-	std::string targetKey;
-	Vans::EditorAPI::AnimationPreviewCreateRequest request;
-	request.targetKind = m_PreviewTargetKind;
-	if (m_PreviewTargetKind ==
-		Vans::EditorAPI::AnimationPreviewTargetKind::SceneAnimationComponent)
-	{
-		if (m_PreviewSceneEntityGuid.empty() ||
-			m_PreviewSceneAnimationComponentGuid.empty())
-		{
-			DestroyPreviewSession();
-			return;
-		}
-		request.entityGuid = m_PreviewSceneEntityGuid;
-		request.animationComponentGuid = m_PreviewSceneAnimationComponentGuid;
-		targetKey = "scene:" + m_PreviewSceneEntityGuid + ":" +
-			m_PreviewSceneAnimationComponentGuid;
-	}
-	else
-	{
-		const std::string& modelGuid = m_AssetData->editor.previewModelGuid;
-		if (modelGuid.empty())
-		{
-			DestroyPreviewSession();
-			return;
-		}
-		request.previewModelGuid = modelGuid;
-		targetKey = "isolated:" + modelGuid;
-	}
-	if (m_PreviewSessionId != 0 && m_PreviewSessionTargetKey == targetKey)
-		return;
-	DestroyPreviewSession();
-	const auto result = m_ActiveAPI->CreateAnimationPreview(request);
-	if (!result.success)
-	{
-		m_LastError = result.message;
-		return;
-	}
-	m_PreviewSessionId = result.sessionId;
-	m_PreviewSessionTargetKey = std::move(targetKey);
-	m_PreviewDocumentStateId = 0;
-	if (m_PreviewTargetKind == Vans::EditorAPI::AnimationPreviewTargetKind::IsolatedModel)
-		QueuePreviewCompile();
-	else
-	{
-		m_PreviewCompilePending = false;
-		ApplyPreviewParameters();
-	}
-}
-
-void VansAnimGraphEditorWindow::QueuePreviewCompile()
-{
-	if (m_PreviewCompilePending)
-		return;
-	m_PreviewCompilePending = true;
-	m_PreviewCompileQueuedAt = ImGui::GetTime();
-}
-
-void VansAnimGraphEditorWindow::UpdatePreviewDefinition()
-{
-	if (!m_ActiveAPI || !m_AssetData || m_PreviewSessionId == 0)
-	{
-		m_PreviewCompilePending = false;
-		return;
-	}
-	if (m_PreviewTargetKind ==
-		Vans::EditorAPI::AnimationPreviewTargetKind::SceneAnimationComponent)
-	{
-		// A Scene target previews the saved AnimationComponent runtime. Unsaved
-		// authoring revisions remain the responsibility of Isolated Preview.
-		m_PreviewCompilePending = false;
-		m_PreviewDocumentStateId = m_Document
-			? m_Document->sourceDocument.CurrentStateId() : 0;
-		return;
-	}
-	const std::uint64_t attemptedDocumentStateId = m_Document
-		? m_Document->sourceDocument.CurrentStateId() : 0;
-	m_AssetData->name = m_EditState->name;
-	m_AssetData->parameters = m_EditState->parameters;
-	m_AssetData->clipRefs = m_EditState->clipRefs;
-	const auto encoded = m_ActiveAPI->EncodeAnimatorDocument(*m_AssetData);
-	if (!encoded.success)
-	{
-		m_LastError = encoded.message;
-		m_PreviewCompilePending = false;
-		m_PreviewDocumentStateId = attemptedDocumentStateId;
-		return;
-	}
-	nlohmann::json root = nlohmann::json::parse(encoded.canonicalJson);
-	const bool hasSolo = !m_EditState->soloLayerIds.empty();
-	std::unordered_map<std::string, bool> previewLayerVisibility;
-	for (const auto& layer : root["layers"])
-	{
-		const std::string id = layer.value("id", "");
-		const bool base = layer.value("kind", "") == "base";
-		const bool muted = m_EditState->mutedLayerIds.count(id) != 0;
-		const bool soloVisible = !hasSolo || base || m_EditState->soloLayerIds.count(id) != 0;
-		previewLayerVisibility[id] = base || (!muted && soloVisible);
-	}
-	for (auto& graphSet : root["graphSets"])
-		for (auto& binding : graphSet["bindings"])
-		{
-			const std::string layerId = binding.value("layerId", "");
-			const auto visible = previewLayerVisibility.find(layerId);
-			if (visible != previewLayerVisibility.end() && !visible->second
-				&& binding.value("enabled", false))
-			{
-				binding["enabled"] = false;
-				binding["graphId"] = "";
-			}
-		}
-	Vans::EditorAPI::AnimationPreviewDefinitionUpdate update;
-	update.sessionId = m_PreviewSessionId;
-	update.revision = ++m_PreviewRevision;
-	update.canonicalJson = root.dump();
-	const auto result = m_ActiveAPI->UpdateAnimationPreviewDefinition(update);
-	if (!result.success)
-		m_LastError = result.message;
-	else
-	{
-		m_LastError.clear();
-		ReconcilePreviewParameters();
-		ApplyPreviewParameters();
-		if (!m_EditState->selectedGraphSetId.empty())
-			m_ActiveAPI->SwitchAnimationPreviewGraphSet(
-				{ m_PreviewSessionId, m_EditState->selectedGraphSetId });
-	}
-	m_PreviewCompilePending = false;
-	m_PreviewDocumentStateId = attemptedDocumentStateId;
-}
-
-void VansAnimGraphEditorWindow::DrawPreviewPanel()
-{
-	if (!m_AssetData || !m_ActiveAPI)
-		return;
-	ImGui::TextUnformatted("Animation Preview");
-	ImGui::SameLine();
-	const auto sceneRigs = m_ActiveAPI->GetSceneSkeletonHierarchy("");
-	std::string targetLabel = "Isolated Model";
-	if (m_PreviewTargetKind ==
-		Vans::EditorAPI::AnimationPreviewTargetKind::SceneAnimationComponent)
-	{
-		targetLabel = "Scene Character";
-		for (const auto& rig : sceneRigs.rigs)
-		{
-			if (rig.entityGuid == m_PreviewSceneEntityGuid &&
-				rig.animationComponentGuid == m_PreviewSceneAnimationComponentGuid)
-			{
-				targetLabel = "Scene: " + (rig.nodeName.empty()
-					? rig.entityGuid : rig.nodeName);
-				break;
-			}
-		}
-	}
-	ImGui::SetNextItemWidth(250.0f);
-	if (ImGui::BeginCombo("##AnimationPreviewTarget", targetLabel.c_str()))
-	{
-		const bool isolatedSelected = m_PreviewTargetKind ==
-			Vans::EditorAPI::AnimationPreviewTargetKind::IsolatedModel;
-		if (ImGui::Selectable("Isolated Model", isolatedSelected))
-		{
-			m_PreviewTargetKind =
-				Vans::EditorAPI::AnimationPreviewTargetKind::IsolatedModel;
-			m_PreviewSceneEntityGuid.clear();
-			m_PreviewSceneAnimationComponentGuid.clear();
-			DestroyPreviewSession();
-			EnsurePreviewSession();
-		}
-		if (isolatedSelected) ImGui::SetItemDefaultFocus();
-		for (const auto& rig : sceneRigs.rigs)
-		{
-			const bool selected = m_PreviewTargetKind ==
-				Vans::EditorAPI::AnimationPreviewTargetKind::SceneAnimationComponent &&
-				rig.entityGuid == m_PreviewSceneEntityGuid &&
-				rig.animationComponentGuid == m_PreviewSceneAnimationComponentGuid;
-			const std::string label = "Scene: " + (rig.nodeName.empty()
-				? rig.entityGuid : rig.nodeName) + "##" + rig.animationComponentGuid;
-			if (ImGui::Selectable(label.c_str(), selected))
-			{
-				m_PreviewTargetKind = Vans::EditorAPI::AnimationPreviewTargetKind::
-					SceneAnimationComponent;
-				m_PreviewSceneEntityGuid = rig.entityGuid;
-				m_PreviewSceneAnimationComponentGuid = rig.animationComponentGuid;
-				m_PreviewRootMotionMode = Vans::EditorAPI::
-					AnimationPreviewPlaybackRequest::RootMotionMode::TrailOnly;
-				DestroyPreviewSession();
-				EnsurePreviewSession();
-			}
-			if (selected) ImGui::SetItemDefaultFocus();
-		}
-		ImGui::EndCombo();
-	}
-
-	if (m_PreviewTargetKind == Vans::EditorAPI::AnimationPreviewTargetKind::IsolatedModel)
-	{
-		ImGui::SameLine();
-		const auto models = m_ActiveAPI->QueryAssets({
-			Vans::EditorAPI::AssetType::Model,
-			false,
-			Vans::EditorAPI::AssetQueryCapability::SkeletalModel });
-	ImGui::SetNextItemWidth(340.0f);
-	const char* modelLabel = m_AssetData->editor.previewModelPathHint.empty()
-		? "Choose Preview Model..." : m_AssetData->editor.previewModelPathHint.c_str();
-	if (ImGui::BeginCombo("##AnimatorPreviewModel", modelLabel))
-	{
-		for (const auto& model : models)
-		{
-			const bool selected = model.guid == m_AssetData->editor.previewModelGuid;
-			if (ImGui::Selectable(model.relativePath.c_str(), selected))
-			{
-				m_AssetData->editor.previewModelGuid = model.guid;
-				m_AssetData->editor.previewModelPathHint = model.relativePath;
-				m_EditState->isDirty = true;
-				DestroyPreviewSession();
-				EnsurePreviewSession();
-			}
-			if (selected) ImGui::SetItemDefaultFocus();
-		}
-		ImGui::EndCombo();
-	}
-	}
-	else
-	{
-		ImGui::SameLine();
-		ImGui::TextDisabled("Scene View uses the final retargeted pose; sockets and attachments follow it. Owner Transform remains editable.");
-	}
-	if (m_PreviewSessionId == 0)
-	{
-		ImGui::TextDisabled(m_PreviewTargetKind ==
-			Vans::EditorAPI::AnimationPreviewTargetKind::IsolatedModel
-			? "Select a skeletal Model asset to compile and preview unsaved Animator revisions."
-			: "Load an Editor scene with an Animation Component, then select its Scene target.");
-		return;
-	}
-
-	if (m_PreviewTargetKind == Vans::EditorAPI::AnimationPreviewTargetKind::IsolatedModel)
-	{
-		Vans::EditorAPI::AnimationPreviewViewportRequest viewportRequest;
-		viewportRequest.sessionId = m_PreviewSessionId;
-		viewportRequest.yaw = m_PreviewYaw;
-		viewportRequest.pitch = m_PreviewPitch;
-		viewportRequest.zoom = m_PreviewZoom;
-		viewportRequest.visualizedLayerIndex = m_PreviewVisualizedLayer;
-		m_ActiveAPI->SetAnimationPreviewViewport(viewportRequest);
-	}
-	m_ActiveAPI->TickAnimationPreview(m_PreviewSessionId, ImGui::GetIO().DeltaTime);
-	auto snapshot = m_ActiveAPI->GetAnimationPreviewSnapshot(m_PreviewSessionId);
-	if (!snapshot.available)
-	{
-		m_PreviewSessionId = 0;
-		m_PreviewSessionTargetKey.clear();
-		ImGui::TextDisabled("Preview target changed with the scene. Select a target again.");
-		return;
-	}
-	if (ImGui::BeginTable("AnimationPreviewLayout", 3,
-		ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV,
-		ImVec2(0.0f, ImGui::GetContentRegionAvail().y)))
-	{
-		ImGui::TableSetupColumn("Controls", ImGuiTableColumnFlags_WidthFixed, 270.0f);
-		ImGui::TableSetupColumn("Viewport", ImGuiTableColumnFlags_WidthStretch);
-		ImGui::TableSetupColumn("Diagnostics", ImGuiTableColumnFlags_WidthFixed, 310.0f);
-		ImGui::TableNextColumn();
-		ImGui::BeginChild("AnimationPreviewControls");
-		if (ImGui::Button(m_PreviewPlaying ? "Pause" : "Play"))
-		{
-			m_PreviewPlaying = !m_PreviewPlaying;
-			Vans::EditorAPI::AnimationPreviewPlaybackRequest playback;
-			playback.sessionId = m_PreviewSessionId;
-			playback.playing = m_PreviewPlaying;
-			playback.speed = m_PreviewSpeed;
-			playback.rootMotionMode = m_PreviewRootMotionMode;
-			m_ActiveAPI->SetAnimationPreviewPlayback(playback);
-		}
-		ImGui::SameLine();
-		if (!snapshot.seekSupported) ImGui::BeginDisabled();
-		if (ImGui::Button("Step"))
-		{
-			m_PreviewPlaying = false;
-			Vans::EditorAPI::AnimationPreviewPlaybackRequest playback;
-			playback.sessionId = m_PreviewSessionId;
-			playback.playing = false;
-			playback.speed = m_PreviewSpeed;
-			playback.rootMotionMode = m_PreviewRootMotionMode;
-			playback.seek = true;
-			playback.seekSeconds = snapshot.duration > 0.0f
-				? std::min(snapshot.duration, snapshot.currentTime + (1.0f / 30.0f))
-				: snapshot.currentTime;
-			m_ActiveAPI->SetAnimationPreviewPlayback(playback);
-		}
-		if (!snapshot.seekSupported) ImGui::EndDisabled();
-		ImGui::SameLine();
-		if (ImGui::Button("Reset Params"))
-		{
-			ResetPreviewParameters();
-			if (m_PreviewTargetKind ==
-				Vans::EditorAPI::AnimationPreviewTargetKind::SceneAnimationComponent)
-				ApplyPreviewParameters();
-			else
-				QueuePreviewCompile();
-		}
-		if (ImGui::SliderFloat("Speed", &m_PreviewSpeed, 0.0f, 3.0f))
-		{
-			Vans::EditorAPI::AnimationPreviewPlaybackRequest playback;
-			playback.sessionId = m_PreviewSessionId;
-			playback.playing = m_PreviewPlaying;
-			playback.speed = m_PreviewSpeed;
-			playback.rootMotionMode = m_PreviewRootMotionMode;
-			m_ActiveAPI->SetAnimationPreviewPlayback(playback);
-		}
-		int rootMotionMode = static_cast<int>(m_PreviewRootMotionMode);
-		bool rootMotionChanged = false;
-		if (snapshot.sceneTarget)
-		{
-			int sceneRootMode = rootMotionMode == static_cast<int>(
-				Vans::EditorAPI::AnimationPreviewPlaybackRequest::RootMotionMode::InPlace)
-				? 0 : 1;
-			if (ImGui::Combo("Root Motion", &sceneRootMode, "In Place\0Trail Only\0"))
-			{
-				rootMotionMode = sceneRootMode == 0
-					? static_cast<int>(Vans::EditorAPI::AnimationPreviewPlaybackRequest::
-						RootMotionMode::InPlace)
-					: static_cast<int>(Vans::EditorAPI::AnimationPreviewPlaybackRequest::
-						RootMotionMode::TrailOnly);
-				rootMotionChanged = true;
-			}
-		}
-		else
-		{
-			rootMotionChanged = ImGui::Combo(
-				"Root Motion", &rootMotionMode, "In Place\0Visual Offset\0Trail Only\0");
-		}
-		if (rootMotionChanged)
-		{
-			m_PreviewRootMotionMode = static_cast<
-				Vans::EditorAPI::AnimationPreviewPlaybackRequest::RootMotionMode>(rootMotionMode);
-			Vans::EditorAPI::AnimationPreviewPlaybackRequest playback;
-			playback.sessionId = m_PreviewSessionId;
-			playback.playing = m_PreviewPlaying;
-			playback.speed = m_PreviewSpeed;
-			playback.rootMotionMode = m_PreviewRootMotionMode;
-			m_ActiveAPI->SetAnimationPreviewPlayback(playback);
-		}
-		const bool timelineEnabled = snapshot.seekSupported && snapshot.duration > 0.0f;
-		if (!timelineEnabled) ImGui::BeginDisabled();
-		float timelineSeconds = snapshot.currentTime;
-		if (ImGui::SliderFloat("Timeline", &timelineSeconds, 0.0f,
-			snapshot.duration > 0.0f ? snapshot.duration : 1.0f, "%.3f s"))
-		{
-			Vans::EditorAPI::AnimationPreviewPlaybackRequest playback;
-			playback.sessionId = m_PreviewSessionId;
-			playback.playing = false;
-			playback.speed = m_PreviewSpeed;
-			playback.seek = true;
-			playback.seekSeconds = timelineSeconds;
-			playback.rootMotionMode = m_PreviewRootMotionMode;
-			m_PreviewPlaying = false;
-			m_ActiveAPI->SetAnimationPreviewPlayback(playback);
-		}
-		if (!timelineEnabled) ImGui::EndDisabled();
-		ImGui::TextDisabled("%.3f / %.3f sec", snapshot.currentTime, snapshot.duration);
-		if (!snapshot.seekSupported)
-			ImGui::TextDisabled("Timeline seek is temporarily unavailable during a Graph Set transition or active Motion Matching evaluation.");
-		ImGui::SeparatorText("Parameters");
-		for (const AnimatorParameter& parameter : m_AssetData->parameters)
-		{
-			ImGui::PushID(parameter.name.c_str());
-			Vans::EditorAPI::AnimationPreviewParameterValue value;
-			value.sessionId = m_PreviewSessionId;
-			value.name = parameter.name;
-			bool changed = false;
-			switch (parameter.type)
-			{
-			case AnimatorParamType::Float:
-				value.type = Vans::EditorAPI::AnimationPreviewParameterType::Float;
-				changed = ImGui::DragFloat(parameter.name.c_str(), &m_PreviewFloats[parameter.name], 0.02f);
-				value.floatValue = m_PreviewFloats[parameter.name];
-				break;
-			case AnimatorParamType::Bool:
-				value.type = Vans::EditorAPI::AnimationPreviewParameterType::Bool;
-				changed = ImGui::Checkbox(parameter.name.c_str(), &m_PreviewBools[parameter.name]);
-				value.boolValue = m_PreviewBools[parameter.name];
-				break;
-			case AnimatorParamType::Int:
-				value.type = Vans::EditorAPI::AnimationPreviewParameterType::Int;
-				changed = ImGui::InputInt(parameter.name.c_str(), &m_PreviewInts[parameter.name]);
-				value.intValue = m_PreviewInts[parameter.name];
-				break;
-			case AnimatorParamType::Trigger:
-				value.type = Vans::EditorAPI::AnimationPreviewParameterType::Trigger;
-				changed = ImGui::Button(("Trigger " + parameter.name).c_str());
-				break;
-			case AnimatorParamType::Vector3:
-			{
-				value.type = Vans::EditorAPI::AnimationPreviewParameterType::Vector3;
-				auto& vector = m_PreviewVectors[parameter.name];
-				changed = ImGui::DragFloat3(parameter.name.c_str(), vector.data(), 0.02f);
-				value.vectorValue = { vector[0], vector[1], vector[2] };
-				break;
-			}
-			case AnimatorParamType::Quaternion:
-			{
-				value.type = Vans::EditorAPI::AnimationPreviewParameterType::Quaternion;
-				auto& vector = m_PreviewVectors[parameter.name];
-				changed = ImGui::DragFloat4(parameter.name.c_str(), vector.data(), 0.01f);
-				value.quaternionValue = { vector[0], vector[1], vector[2], vector[3] };
-				break;
-			}
-			}
-			if (changed) m_ActiveAPI->SetAnimationPreviewParameter(value);
-			ImGui::PopID();
-		}
-		if (!m_AssetData->slots.empty() && !m_AssetData->clipRefs.empty())
-		{
-			ImGui::SeparatorText("Slot Sandbox");
-			if (ImGui::BeginCombo("Slot", m_PreviewSelectedSlotId.c_str()))
-			{
-				for (const auto& slot : m_AssetData->slots)
-					if (ImGui::Selectable(slot.name.c_str(), slot.id == m_PreviewSelectedSlotId))
-						m_PreviewSelectedSlotId = slot.id;
-				ImGui::EndCombo();
-			}
-			if (ImGui::BeginCombo("Clip", m_PreviewSelectedClipName.c_str()))
-			{
-				for (const auto& clip : m_AssetData->clipRefs)
-					if (ImGui::Selectable(clip.name.c_str(), clip.name == m_PreviewSelectedClipName))
-						m_PreviewSelectedClipName = clip.name;
-				ImGui::EndCombo();
-			}
-			if (ImGui::Button("Trigger Slot"))
-			{
-				Vans::EditorAPI::AnimationPreviewSlotRequest request;
-				request.sessionId = m_PreviewSessionId;
-				request.slotId = m_PreviewSelectedSlotId;
-				request.clipName = m_PreviewSelectedClipName;
-				m_ActiveAPI->TriggerAnimationPreviewSlot(request);
-			}
-		}
-		ImGui::EndChild();
-
-		ImGui::TableNextColumn();
-		const char* visualizationLabel = m_PreviewVisualizedLayer < 0
-			? "Final Layer Sources"
-			: (m_PreviewVisualizedLayer < static_cast<int>(snapshot.layers.size())
-				? snapshot.layers[m_PreviewVisualizedLayer].name.c_str() : "Final Layer Sources");
-		ImGui::SetNextItemWidth(-1.0f);
-		if (ImGui::BeginCombo("##PreviewVisualization", visualizationLabel))
-		{
-			if (ImGui::Selectable("Final Layer Sources", m_PreviewVisualizedLayer < 0))
-				m_PreviewVisualizedLayer = -1;
-			for (int index = 0; index < static_cast<int>(snapshot.layers.size()); ++index)
-				if (ImGui::Selectable(snapshot.layers[index].name.c_str(), m_PreviewVisualizedLayer == index))
-					m_PreviewVisualizedLayer = index;
-			ImGui::EndCombo();
-		}
-		const ImVec2 origin = ImGui::GetCursorScreenPos();
-		ImVec2 size = ImGui::GetContentRegionAvail();
-		ImGui::InvisibleButton("AnimatorPreviewSkeleton", size,
-			ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
-		ImDrawList* draw = ImGui::GetWindowDrawList();
-		const ImVec2 end(origin.x + size.x, origin.y + size.y);
-		draw->AddRectFilled(origin, end, IM_COL32(18, 21, 28, 255));
-		ImVec2 visualizationOrigin = origin;
-		ImVec2 visualizationSize = size;
-		if (snapshot.modelRendered && snapshot.modelTexture &&
-			snapshot.modelTextureWidth > 0 && snapshot.modelTextureHeight > 0 &&
-			size.x > 0.0f && size.y > 0.0f)
-		{
-			const float textureAspect = static_cast<float>(snapshot.modelTextureWidth) /
-				static_cast<float>(snapshot.modelTextureHeight);
-			const float availableAspect = size.x / size.y;
-			if (availableAspect > textureAspect)
-			{
-				visualizationSize.x = size.y * textureAspect;
-				visualizationOrigin.x += (size.x - visualizationSize.x) * 0.5f;
-			}
-			else
-			{
-				visualizationSize.y = size.x / textureAspect;
-				visualizationOrigin.y += (size.y - visualizationSize.y) * 0.5f;
-			}
-		}
-		if (snapshot.modelRendered && snapshot.modelTexture)
-			draw->AddImage(snapshot.modelTexture, visualizationOrigin,
-				ImVec2(visualizationOrigin.x + visualizationSize.x,
-					visualizationOrigin.y + visualizationSize.y));
-		if (ImGui::IsItemHovered())
-		{
-			m_PreviewZoom = std::clamp(m_PreviewZoom + ImGui::GetIO().MouseWheel * 0.08f, 0.2f, 3.0f);
-			if (ImGui::IsMouseDragging(ImGuiMouseButton_Left))
-			{
-				m_PreviewYaw += ImGui::GetIO().MouseDelta.x * 0.01f;
-				m_PreviewPitch = std::clamp(m_PreviewPitch + ImGui::GetIO().MouseDelta.y * 0.01f, -1.45f, 1.45f);
-			}
-		}
-		if (!snapshot.bones.empty())
-		{
-			struct Point { float x; float y; float z; };
-			Point center{};
-			if (snapshot.modelRendered)
-			{
-				center = { snapshot.modelCenter.x, snapshot.modelCenter.y, snapshot.modelCenter.z };
-			}
-			else
-			{
-				for (const auto& bone : snapshot.bones)
-				{
-					center.x += bone.position.x;
-					center.y += bone.position.y;
-					center.z += bone.position.z;
-				}
-				const float invCount = 1.0f / static_cast<float>(snapshot.bones.size());
-				center.x *= invCount; center.y *= invCount; center.z *= invCount;
-			}
-			const float cy = std::cos(m_PreviewYaw), sy = std::sin(m_PreviewYaw);
-			const float cp = std::cos(m_PreviewPitch), sp = std::sin(m_PreviewPitch);
-			std::vector<Point> points;
-			float radius = snapshot.modelRendered
-				? std::max(snapshot.modelRadius, 0.0001f) : 0.0001f;
-			for (const auto& bone : snapshot.bones)
-			{
-				const float x = bone.position.x - center.x;
-				const float y = bone.position.y - center.y;
-				const float z = bone.position.z - center.z;
-				const float rx = cy * x + sy * z;
-				const float rz = -sy * x + cy * z;
-				const float ry = cp * y - sp * rz;
-				points.push_back({ rx, ry, sp * y + cp * rz });
-				if (!snapshot.modelRendered)
-					radius = std::max(radius, std::max(std::fabs(rx), std::fabs(ry)));
-			}
-			const float scaleX = 0.43f * std::min(
-				visualizationSize.x, visualizationSize.y) * m_PreviewZoom / radius;
-			const float scaleY = scaleX;
-			const ImVec2 middle(
-				visualizationOrigin.x + visualizationSize.x * 0.5f,
-				visualizationOrigin.y + visualizationSize.y * 0.5f);
-			std::vector<ImVec2> screen(points.size());
-			for (std::size_t index = 0; index < points.size(); ++index)
-				screen[index] = ImVec2(middle.x + points[index].x * scaleX,
-					middle.y - points[index].y * scaleY);
-			auto weightColor = [](float weight)
-			{
-				weight = std::clamp(weight, 0.0f, 1.0f);
-				return IM_COL32(
-					static_cast<int>(65.0f + 190.0f * weight),
-					static_cast<int>(125.0f + 45.0f * (1.0f - weight)),
-					static_cast<int>(235.0f - 185.0f * weight), 255);
-			};
-			auto boneColor = [&](std::size_t index)
-			{
-				if (m_PreviewVisualizedLayer >= 0
-					&& m_PreviewVisualizedLayer < static_cast<int>(snapshot.layers.size()))
-				{
-					const auto& weights = snapshot.layers[m_PreviewVisualizedLayer].boneWeights;
-					return weightColor(index < weights.size() ? weights[index] : 0.0f);
-				}
-				const int layerIndex = snapshot.bones[index].dominantLayerIndex;
-				static const ImU32 colors[] = {
-					IM_COL32(90, 205, 245, 255), IM_COL32(245, 155, 70, 255),
-					IM_COL32(180, 100, 240, 255), IM_COL32(80, 220, 135, 255),
-					IM_COL32(245, 90, 125, 255)
-				};
-				return colors[static_cast<std::size_t>((std::max)(0, layerIndex))
-					% (sizeof(colors) / sizeof(colors[0]))];
-			};
-			if (m_PreviewRootMotionMode != Vans::EditorAPI::AnimationPreviewPlaybackRequest::RootMotionMode::InPlace
-				&& snapshot.rootMotionTrail.size() > 1)
-			{
-				std::vector<ImVec2> trail;
-				trail.reserve(snapshot.rootMotionTrail.size());
-				for (const auto& value : snapshot.rootMotionTrail)
-				{
-					const float x = value.x - center.x;
-					const float y = value.y - center.y;
-					const float z = value.z - center.z;
-					const float rx = cy * x + sy * z;
-					const float rz = -sy * x + cy * z;
-					const float ry = cp * y - sp * rz;
-					trail.emplace_back(middle.x + rx * scaleX, middle.y - ry * scaleY);
-				}
-				for (std::size_t index = 1; index < trail.size(); ++index)
-					draw->AddLine(trail[index - 1], trail[index], IM_COL32(120, 240, 150, 210), 2.0f);
-			}
-			int hoveredBone = -1;
-			float hoveredDistance = 64.0f;
-			for (std::size_t index = 0; index < points.size(); ++index)
-			{
-				const int parent = snapshot.bones[index].parentIndex;
-				if (parent >= 0 && parent < static_cast<int>(screen.size()))
-					draw->AddLine(screen[parent], screen[index], boneColor(index), 2.0f);
-				draw->AddCircleFilled(screen[index], 3.5f, boneColor(index));
-				const float dx = screen[index].x - ImGui::GetIO().MousePos.x;
-				const float dy = screen[index].y - ImGui::GetIO().MousePos.y;
-				const float distance = dx * dx + dy * dy;
-				if (distance < hoveredDistance) { hoveredDistance = distance; hoveredBone = static_cast<int>(index); }
-			}
-			if (ImGui::IsItemHovered() && hoveredBone >= 0)
-			{
-				const auto& bone = snapshot.bones[hoveredBone];
-				const char* layerName = bone.dominantLayerIndex >= 0
-					&& bone.dominantLayerIndex < static_cast<int>(snapshot.layers.size())
-					? snapshot.layers[bone.dominantLayerIndex].name.c_str() : "Base";
-				ImGui::SetTooltip("%s\nSource: %s\nWeight: %.3f",
-					bone.name.c_str(), layerName, bone.dominantLayerWeight);
-			}
-		}
-		else
-			draw->AddText(ImVec2(origin.x + 12.0f, origin.y + 12.0f),
-				IM_COL32(170, 175, 185, 255), "Preview is waiting for a valid compiled definition.");
-		if (snapshot.usingLastGoodDefinition)
-			draw->AddText(ImVec2(origin.x + 12.0f, origin.y + 12.0f),
-				IM_COL32(255, 190, 70, 255), "Showing last-good revision");
-
-		ImGui::TableNextColumn();
-		ImGui::BeginChild("AnimationPreviewDiagnostics");
-		ImGui::Text("Revision: %llu / %llu",
-			static_cast<unsigned long long>(snapshot.displayedRevision),
-			static_cast<unsigned long long>(snapshot.requestedRevision));
-		ImGui::Text("Update: %.3f ms", snapshot.lastUpdateMilliseconds);
-		if (snapshot.modelRendered)
-		{
-			ImGui::Text("Model preview: %.3f ms", snapshot.modelRenderMilliseconds);
-			ImGui::TextDisabled("%llu vertices / %llu sampled triangles / %ux%u",
-				static_cast<unsigned long long>(snapshot.modelVertexCount),
-				static_cast<unsigned long long>(snapshot.modelTriangleCount),
-				snapshot.modelTextureWidth, snapshot.modelTextureHeight);
-		}
-		if (snapshot.frameScratchAllocations == 0)
-			ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.45f, 1.0f),
-				"Frame scratch: stable (0 upstream allocations)");
-		else
-			ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f),
-				"Frame scratch: %llu allocations / %llu bytes",
-				static_cast<unsigned long long>(snapshot.frameScratchAllocations),
-				static_cast<unsigned long long>(snapshot.frameScratchAllocatedBytes));
-		if (!snapshot.diagnostic.empty())
-			ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.3f, 1.0f), "%s", snapshot.diagnostic.c_str());
-		ImGui::SeparatorText("Layers");
-		ImGui::Text("Graph Set: %s", snapshot.activeGraphSetId.empty()
-			? "(none)" : snapshot.activeGraphSetId.c_str());
-		if (!snapshot.incomingGraphSetId.empty())
-			ImGui::TextDisabled("-> %s  %.0f%%", snapshot.incomingGraphSetId.c_str(),
-				snapshot.graphSetTransitionProgress * 100.0f);
-		for (const auto& layer : snapshot.layers)
-		{
-			ImGui::Text("%s  w=%.3f  %.3f ms",
-				layer.name.c_str(), layer.weight, layer.evaluationMilliseconds);
-			ImGui::TextDisabled("%s  %s  t=%.3f", layer.state.c_str(), layer.clip.c_str(), layer.normalizedTime);
-		}
-		ImGui::SeparatorText("Root Motion / Sync");
-		ImGui::Text("Delta: %.3f, %.3f, %.3f", snapshot.rootMotionDelta.x,
-			snapshot.rootMotionDelta.y, snapshot.rootMotionDelta.z);
-		ImGui::Text("Position: %.3f, %.3f, %.3f", snapshot.rootMotionPosition.x,
-			snapshot.rootMotionPosition.y, snapshot.rootMotionPosition.z);
-		if (snapshot.syncValid)
-			ImGui::Text("Markers: %llu -> %llu  phase=%.3f",
-				static_cast<unsigned long long>(snapshot.syncMarkerId),
-				static_cast<unsigned long long>(snapshot.syncNextMarkerId), snapshot.syncPhase);
-		else
-			ImGui::TextDisabled("Sync markers: inactive");
-		ImGui::SeparatorText("Slots");
-		if (snapshot.slots.empty())
-			ImGui::TextDisabled("No active or completed preview slot handles.");
-		for (const auto& slot : snapshot.slots)
-		{
-			ImGui::Text("%s / %s", slot.slotId.c_str(), slot.clipName.c_str());
-			ImGui::TextDisabled("%s  t=%.3f  w=%.3f", slot.state.c_str(),
-				slot.playbackTime, slot.weight);
-		}
-		for (const auto& event : snapshot.slotEvents)
-			ImGui::BulletText("%s: %s / %s", event.type.c_str(),
-				event.slotId.c_str(), event.clipName.c_str());
-		ImGui::SeparatorText("Events / Curves");
-		for (const auto& event : snapshot.events)
-			ImGui::BulletText("Event %s @ %.3f  %s", event.name.c_str(), event.time, event.payload.c_str());
-		for (const auto& curve : snapshot.curves)
-			ImGui::BulletText("Curve %s = %.3f", curve.name.c_str(), curve.value);
-		ImGui::EndChild();
-		ImGui::EndTable();
-	}
-}
-
 void VansAnimGraphEditorWindow::DrawLayersPanel()
 {
 	ImGui::Text("Layers");
@@ -1570,8 +689,6 @@ void VansAnimGraphEditorWindow::DrawLayersPanel()
 		if (ImGui::Selectable(label.c_str(), graphSet.id == m_EditState->selectedGraphSetId))
 		{
 			m_EditState->selectedGraphSetId = graphSet.id;
-			if (m_ActiveAPI && m_PreviewSessionId != 0)
-				m_ActiveAPI->SwitchAnimationPreviewGraphSet({ m_PreviewSessionId, graphSet.id });
 			if (auto* binding = findBinding(graphSet, m_EditState->selectedLayerId);
 				binding && binding->enabled) activateGraph(binding->graphId);
 		}
@@ -1701,10 +818,7 @@ void VansAnimGraphEditorWindow::DrawLayersPanel()
 					activateGraph(binding->graphId);
 		}
 		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("Mask: %s\nPreview: %s%s",
-				layer.maskPathHint.c_str(),
-				m_EditState->mutedLayerIds.count(layer.id) ? "Muted " : "",
-				m_EditState->soloLayerIds.count(layer.id) ? "Solo" : "");
+			ImGui::SetTooltip("Mask: %s", layer.maskPathHint.c_str());
 		ImGui::PopID();
 	}
 
@@ -1863,8 +977,6 @@ void VansAnimGraphEditorWindow::DrawLayersPanel()
 								[&](const auto& binding) { return binding.enabled && binding.graphId == graph.id; });
 						});
 				}), m_AssetData->graphs.end());
-			m_EditState->mutedLayerIds.erase(removedLayerId);
-			m_EditState->soloLayerIds.erase(removedLayerId);
 			m_EditState->selectedLayerId = m_AssetData->layers.front().id;
 			if (auto graphSet = selectedGraphSet(); graphSet != m_AssetData->graphSets.end())
 				if (auto* binding = findBinding(*graphSet, m_EditState->selectedLayerId);
@@ -1970,19 +1082,6 @@ void VansAnimGraphEditorWindow::DrawLayersPanel()
 					}
 				}
 			}
-			bool muted = m_EditState->mutedLayerIds.count(layer.id) != 0;
-			if (ImGui::Checkbox("Preview Mute", &muted))
-			{
-				if (muted) m_EditState->mutedLayerIds.insert(layer.id); else m_EditState->mutedLayerIds.erase(layer.id);
-				QueuePreviewCompile();
-			}
-			bool solo = m_EditState->soloLayerIds.count(layer.id) != 0;
-			if (ImGui::Checkbox("Preview Solo", &solo))
-			{
-				if (solo) m_EditState->soloLayerIds.insert(layer.id); else m_EditState->soloLayerIds.erase(layer.id);
-				QueuePreviewCompile();
-			}
-
 			if (layer.kind == VansAnimationLayerKind::Overlay)
 			{
 				if (EditStringProperty("Mask Path", layer.maskPathHint)) m_EditState->isDirty = true;

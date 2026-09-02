@@ -19,6 +19,8 @@
 #include "../../VansTimer.h"
 #include "../../Util/VansLog.h"
 #include "VansMotionMatchingDebugWindow.h"
+#include "VansGAFDebuggerWindow.h"
+#include "VansSceneAnimationPreviewWindow.h"
 
 void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
@@ -30,9 +32,6 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
         ImGui::Begin("Scene");
 		Vans::EditorAPI::UpscalerSettingsSnapshot upscalerSettings =
 			editorAPI.GetUpscalerSettings();
-
-        // ImGuizmo must be told a new frame is starting once per ImGui frame.
-        ImGuizmo::BeginFrame();
 
         // ── Gizmo mode toolbar ────────────────────────────────────────────────
         {
@@ -272,8 +271,18 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
                 }
             }
 
-            m_Gizmos.HandleHotkeys();
-            m_Gizmos.Draw(editorAPI, m_Camera, imageScreenPos, drawSize);
+			bool previewHandleActive = false;
+			if (VansEditorWindow::m_SceneAnimationPreviewWindow)
+			{
+				previewHandleActive = VansEditorWindow::m_SceneAnimationPreviewWindow
+					->DrawSceneViewportHandle(
+						editorAPI, m_Camera, imageScreenPos, drawSize);
+			}
+			if (!previewHandleActive)
+			{
+				m_Gizmos.HandleHotkeys();
+				m_Gizmos.Draw(editorAPI, m_Camera, imageScreenPos, drawSize);
+			}
 
             // ── Vehicle physics debug visualization ───────────────────────
             ImGui::Checkbox("Vehicle Debug", &VansEditorWindow::m_VehicleDebugGizmos);
@@ -509,6 +518,117 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
 							drawList->AddText(ImVec2(screen.x + 8.0f, screen.y - 18.0f),
 								IM_COL32(255, 255, 210, 245), label);
 						}
+					}
+				}
+			}
+
+			// 打击窗口的调试开关由 GAF Debugger 统一管理；Scene 只读取 DTO 绘制，
+			// 不直接依赖战斗服务或物理运行时。
+			if (VansGAFDebuggerWindow::CombatOverlayEnabled() && m_Camera)
+			{
+				const glm::mat4 viewProj = m_Camera->GetProjectiveMatrix() * m_Camera->GetViewMatrix();
+				ImDrawList* drawList = ImGui::GetWindowDrawList();
+				const auto combatDebug = editorAPI.GetGAFCombatDebugSnapshot();
+				const auto toGlm = [](const Vans::EditorAPI::Vec3& value)
+				{
+					return glm::vec3(value.x, value.y, value.z);
+				};
+				const auto projectWorld = [&](const glm::vec3& world, ImVec2& screen) -> bool
+				{
+					const glm::vec4 clip = viewProj * glm::vec4(world, 1.0f);
+					if (clip.w <= 1e-5f)
+						return false;
+					const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+					screen = ImVec2(
+						imageScreenPos.x + (ndc.x * 0.5f + 0.5f) * drawSize.x,
+						imageScreenPos.y + (-ndc.y * 0.5f + 0.5f) * drawSize.y);
+					return ndc.z >= 0.0f && ndc.z <= 1.0f;
+				};
+				const auto drawLine = [&](const glm::vec3& from, const glm::vec3& to,
+				                          ImU32 color, float thickness)
+				{
+					ImVec2 a, b;
+					if (projectWorld(from, a) && projectWorld(to, b))
+						drawList->AddLine(a, b, color, thickness);
+				};
+				const auto drawPoint = [&](const glm::vec3& world, ImU32 color, float radius)
+				{
+					ImVec2 point;
+					if (projectWorld(world, point))
+						drawList->AddCircleFilled(point, radius, color);
+				};
+
+				for (const auto& window : combatDebug.windows)
+				{
+					const ImU32 color = window.active
+						? IM_COL32(255, 92, 40, 245) : IM_COL32(145, 145, 145, 175);
+					const glm::vec3 origin = toGlm(window.origin);
+					if (VansGAFDebuggerWindow::ShowCombatWeaponPath())
+					{
+						const glm::vec3 previousBase = toGlm(window.previousBase);
+						const glm::vec3 previousTip = toGlm(window.previousTip);
+						const glm::vec3 currentBase = toGlm(window.currentBase);
+						const glm::vec3 currentTip = toGlm(window.currentTip);
+						drawLine(previousBase, previousTip, IM_COL32(255, 188, 60, 180), 1.5f);
+						drawLine(previousBase, currentBase, color, 2.0f);
+						drawLine(previousTip, currentTip, color, 2.0f);
+						drawLine(currentBase, currentTip, color, 3.0f);
+						drawPoint(currentBase, color, 4.0f);
+						drawPoint(currentTip, color, 5.0f);
+					}
+					if (VansGAFDebuggerWindow::ShowCombatSector())
+					{
+						glm::vec3 forward = toGlm(window.forward);
+						forward.y = 0.0f;
+						if (glm::dot(forward, forward) < 1e-6f)
+							forward = glm::vec3(0.0f, 0.0f, 1.0f);
+						else
+							forward = glm::normalize(forward);
+						const float forwardAngle = std::atan2(forward.x, forward.z);
+						const float halfAngle = window.halfAngleDegrees * 0.01745329251994329577f;
+						glm::vec3 previous = origin;
+						constexpr int segmentCount = 28;
+						for (int segment = 0; segment <= segmentCount; ++segment)
+						{
+							const float factor = static_cast<float>(segment) / segmentCount;
+							const float angle = forwardAngle - halfAngle + factor * halfAngle * 2.0f;
+							const glm::vec3 point = origin + glm::vec3(std::sin(angle), 0.0f, std::cos(angle)) * window.range;
+							if (segment == 0)
+								drawLine(origin, point, color, 1.5f);
+							else
+								drawLine(previous, point, color, 1.5f);
+							if (segment == segmentCount)
+								drawLine(point, origin, color, 1.5f);
+							previous = point;
+						}
+					}
+				}
+
+				if (VansGAFDebuggerWindow::ShowCombatHurtBodies())
+				{
+					for (const auto& body : combatDebug.hurtBodies)
+					{
+						const ImU32 color = body.hit
+							? IM_COL32(255, 45, 45, 255) : IM_COL32(75, 255, 130, 225);
+						const glm::vec3 center = toGlm(body.center);
+						const glm::vec3 bottom = center - glm::vec3(0.0f, body.halfHeight, 0.0f);
+						const glm::vec3 top = center + glm::vec3(0.0f, body.halfHeight, 0.0f);
+						drawLine(bottom, top, color, 2.0f);
+						constexpr int segmentCount = 24;
+						for (int segment = 0; segment < segmentCount; ++segment)
+						{
+							const float angleA = static_cast<float>(segment) / segmentCount * 6.28318530717958647692f;
+							const float angleB = static_cast<float>(segment + 1) / segmentCount * 6.28318530717958647692f;
+							const glm::vec3 radialA(std::cos(angleA) * body.radius, 0.0f,
+								std::sin(angleA) * body.radius);
+							const glm::vec3 radialB(std::cos(angleB) * body.radius, 0.0f,
+								std::sin(angleB) * body.radius);
+							drawLine(bottom + radialA, bottom + radialB, color, 1.5f);
+							drawLine(top + radialA, top + radialB, color, 1.5f);
+							if ((segment % 6) == 0)
+								drawLine(bottom + radialA, top + radialA, color, 1.0f);
+						}
+						drawPoint(center, color, 3.5f);
 					}
 				}
 			}

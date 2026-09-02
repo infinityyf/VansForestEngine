@@ -3,6 +3,8 @@
 #include "Animation/VansAnimationWorldQueryBatch.h"
 #include "../RuntimeCore/VansFramePhase.h"
 #include "../GameplayActionCore/VansGameplayRuntime.h"
+#include "../GameplayActionAdapters/Combat/VansCombatActionService.h"
+#include "../AICore/VansAIWorld.h"
 #include "Timeline/VansVirtualCameraParameterStore.h"
 
 #include "../RuntimeCore/VansThreadContract.h"
@@ -481,6 +483,16 @@ bool VansGraphics::VansScene::ReplaceAnimationRuntimeController(
 	VansAnimationNode* animNode,
 	std::unique_ptr<VansAnimationController> controller)
 {
+	std::unique_ptr<VansAnimationController> previous;
+	return ExchangeAnimationRuntimeController(
+		animNode, std::move(controller), previous);
+}
+
+bool VansGraphics::VansScene::ExchangeAnimationRuntimeController(
+	VansAnimationNode* animNode,
+	std::unique_ptr<VansAnimationController> controller,
+	std::unique_ptr<VansAnimationController>& previousController)
+{
 	if (!animNode || !controller)
 		return false;
 	VansAnimationController* previous = animNode->GetController();
@@ -496,7 +508,7 @@ bool VansGraphics::VansScene::ReplaceAnimationRuntimeController(
 		*registered = replacement;
 	else
 		m_AnimationControllers.push_back(replacement);
-	delete previous;
+	previousController.reset(previous);
 	return true;
 }
 
@@ -1196,6 +1208,14 @@ void VansGraphics::VansScene::UpdateActionsEarly(double deltaSeconds)
 		return;
 	m_GameplayRuntime->SynchronizeHostEnablement(*m_RuntimeWorld);
 	m_GameplayRuntime->TickEarly(deltaSeconds);
+	if (m_CombatActionService)
+		m_CombatActionService->Tick(deltaSeconds);
+}
+
+void VansGraphics::VansScene::UpdateAI(double deltaSeconds)
+{
+	if (m_AIWorld)
+		m_AIWorld->Update(deltaSeconds);
 }
 
 bool VansGraphics::VansScene::RunActionLateContinuation()
@@ -1219,6 +1239,8 @@ void VansGraphics::VansScene::UnLoadScene()
 			VANS_LOG_ERROR("[VansScene] Failed to release render proxy handle during scene unload.");
 	}
 	m_MainRenderProxyBindings.clear();
+	if (m_AIWorld)
+		m_AIWorld->Shutdown();
 	if (m_GameplayRuntime)
 		m_GameplayRuntime->Shutdown();
 	if (m_TimelineRuntime)
@@ -1231,6 +1253,8 @@ void VansGraphics::VansScene::UnLoadScene()
 	if (m_RuntimeWorld)
 		m_RuntimeWorld->Clear();
 	m_GameplayRuntime.reset();
+	m_CombatActionService.reset();
+	m_AIWorld.reset();
 	if (m_CameraControlArbiter)
 	{
 		m_CameraControlArbiter->Clear(m_Camera);
@@ -1447,6 +1471,7 @@ void VansGraphics::VansScene::UnLoadScene()
 
 	// ── 9b. 清理动画节点（析构函数会销毁 GPU bone buffer）──────────────
 	VANS_UNLOAD_STEP("9b", "Clear animation nodes");
+	m_EditorPreviewDrivenAnimationNodes.clear();
 	for (auto* animNode : m_AnimationNodes)
 	{
 		delete animNode;
@@ -1757,7 +1782,11 @@ VansGraphics::VansScene::PrepareMainThreadRenderFrame(
 			++animationIndex)
 		{
 			VansAnimationNode* animation = m_AnimationNodes[animationIndex];
-			if (!animation || !animation->IsEnabled())
+			const bool editorPreviewDriven = animation &&
+				m_LoadMode == VansSceneLoadMode::Editor &&
+				m_EditorPreviewDrivenAnimationNodes.find(animation) !=
+					m_EditorPreviewDrivenAnimationNodes.end();
+			if (!animation || (!animation->IsEnabled() && !editorPreviewDriven))
 				continue;
 			VansRenderAnimationFrameData frameData;
 			frameData.animationNodeIndex = animationIndex;
@@ -2694,15 +2723,22 @@ void VansGraphics::VansScene::EvaluateAnimations(float deltaTime){
 			? VansAnimationEvaluationPurpose::Gameplay
 			: VansAnimationEvaluationPurpose::EditorPreview,
 		deltaTime };
+	const auto isSceneDriven = [this](VansAnimationNode* animationNode)
+	{
+		return animationNode && animationNode->IsEnabled() &&
+			(m_LoadMode != VansSceneLoadMode::Editor ||
+			 m_EditorPreviewDrivenAnimationNodes.find(animationNode) ==
+				m_EditorPreviewDrivenAnimationNodes.end());
+	};
 	m_AnimationWorldQueryRequests.clear();
 	m_AnimationWorldQueryResults.clear();
 	for (VansAnimationNode* animNode : m_AnimationNodes)
-		if (animNode && animNode->IsEnabled())
+		if (isSceneDriven(animNode))
 			animNode->PrepareAnimationFrame(animationContext);
 
 	for (VansAnimationNode* animNode : m_AnimationNodes)
 	{
-		if (!animNode || !animNode->IsEnabled()) continue;
+		if (!isSceneDriven(animNode)) continue;
 		animNode->GatherAnimationWorldQueries();
 		const auto& nodeRequests = animNode->GetAnimationWorldQueries();
 		m_AnimationWorldQueryRequests.insert(
@@ -2713,7 +2749,7 @@ void VansGraphics::VansScene::EvaluateAnimations(float deltaTime){
 
 	for (VansAnimationNode* animNode : m_AnimationNodes)
 	{
-		if (animNode && animNode->IsEnabled())
+		if (isSceneDriven(animNode))
 		{
 			animNode->ResolveAnimationWorldQueries(m_AnimationWorldQueryResults);
 			VansEngine::VansRagdollSystem::GetInstance().PostAnimationUpdate(animNode);
@@ -2721,13 +2757,33 @@ void VansGraphics::VansScene::EvaluateAnimations(float deltaTime){
 	}
 }
 
+bool VansGraphics::VansScene::BeginEditorAnimationPreview(
+	VansAnimationNode* animationNode)
+{
+	if (m_LoadMode != VansSceneLoadMode::Editor || !animationNode ||
+		std::find(m_AnimationNodes.begin(), m_AnimationNodes.end(), animationNode) ==
+			m_AnimationNodes.end())
+	{
+		return false;
+	}
+	return m_EditorPreviewDrivenAnimationNodes.insert(animationNode).second;
+}
+
+void VansGraphics::VansScene::EndEditorAnimationPreview(
+	VansAnimationNode* animationNode)
+{
+	if (animationNode)
+		m_EditorPreviewDrivenAnimationNodes.erase(animationNode);
+}
+
 bool VansGraphics::VansScene::EvaluateEditorAnimationPreviewStep(
 	VansAnimationNode* animationNode, float deltaTime)
 {
 	if (m_LoadMode != VansSceneLoadMode::Editor || !animationNode ||
-		!animationNode->IsEnabled() ||
 		std::find(m_AnimationNodes.begin(), m_AnimationNodes.end(), animationNode) ==
-			m_AnimationNodes.end())
+			m_AnimationNodes.end() ||
+		m_EditorPreviewDrivenAnimationNodes.find(animationNode) ==
+			m_EditorPreviewDrivenAnimationNodes.end())
 	{
 		return false;
 	}
@@ -4040,6 +4096,7 @@ bool VansGraphics::VansScene::DestroyEntity(VansScriptObject* obj)
     // ══════════════════════════════════════════════════════════════════════════════
     if (animNode)
     {
+		m_EditorPreviewDrivenAnimationNodes.erase(animNode);
         // 6a. 先清理 AnimationController（由 animNode->GetController() 获取）
         VansAnimationController* ctrl = animNode->GetController();
         if (ctrl)

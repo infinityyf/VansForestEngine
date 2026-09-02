@@ -288,11 +288,19 @@ namespace VansGraphics
 		bool SetAnimationRig(VansCompiledAnimationRig rig,
 		                     VansGroundQueryProfileResolver queryProfileResolver,
 		                     std::string& error);
+		bool ReplaceAnimationRig(VansCompiledAnimationRig rig, std::string& error);
 		bool BindAnimationRigSkeleton(const Skeleton& skeleton, std::string& error);
 		const VansCompiledAnimationRig* GetAnimationRig() const
 		{
-			return m_AnimationRig ? &*m_AnimationRig : nullptr;
+			return m_AnimationRig.get();
 		}
+		void SetAnimationRigAssetIdentity(std::string guid, std::string path)
+		{
+			m_AnimationRigAssetGuid = std::move(guid);
+			m_AnimationRigAssetPath = std::move(path);
+		}
+		const std::string& GetAnimationRigAssetGuid() const { return m_AnimationRigAssetGuid; }
+		const std::string& GetAnimationRigAssetPath() const { return m_AnimationRigAssetPath; }
 		void ClearTargetPostProcessGraph();
 		bool HasTargetPostProcessGraph() const { return m_TargetPostProcessInstance != nullptr; }
 		bool HasGraphSets() const { return !m_GraphSetRuntimes.empty(); }
@@ -417,7 +425,9 @@ namespace VansGraphics
 		std::unique_ptr<VansMotionMatchingRuntime> m_MotionMatching;
 		std::unique_ptr<VansMotionMatchingRuntime> m_IncomingMotionMatching;
 		const Vans::VansCharacterTrajectory* m_CharacterTrajectory = nullptr;
-		std::optional<VansCompiledAnimationRig> m_AnimationRig;
+		std::unique_ptr<VansCompiledAnimationRig> m_AnimationRig;
+		std::string m_AnimationRigAssetGuid;
+		std::string m_AnimationRigAssetPath;
 		VansGroundQueryProfileResolver m_QueryProfileResolver;
 		std::unique_ptr<VansProceduralGraphRuntime> m_ProceduralRuntime;
 		VansAnimationExternalInputSnapshot m_ExternalInput;

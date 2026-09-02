@@ -84,6 +84,11 @@ public:
 		std::uint32_t ownerTransformId,
 		VansTransformAnchorHandle anchor,
 		VansTransformReparentMode mode = VansTransformReparentMode::KeepWorld);
+	bool SetAnchorWithLocalTransform(
+		std::uint32_t childTransformId,
+		std::uint32_t ownerTransformId,
+		VansTransformAnchorHandle anchor,
+		const VansLocalTransform& localTransform);
 	bool ClearParent(
 		std::uint32_t childTransformId,
 		VansTransformReparentMode mode = VansTransformReparentMode::KeepWorld);

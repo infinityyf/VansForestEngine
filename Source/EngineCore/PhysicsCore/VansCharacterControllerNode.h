@@ -84,6 +84,9 @@ namespace VansEngine
 		// Root Motion 都在这里合成为一次带碰撞的 move；Root Motion 不要求存在
 		// gameplay intent，也不依赖 Motion Matching。
 		void SetMotionIntent(const Vans::VansCharacterMotionIntent& intent);
+		void AcquireGameplayMovementBlock();
+		void ReleaseGameplayMovementBlock();
+		bool IsGameplayMovementBlocked() const { return m_GameplayMovementBlockCount > 0; }
 		void PrepareLocomotion(float dt, const Vans::VansCharacterMotionSettings& settings);
 		void ResolveLocomotion(const glm::vec3& animationRootDelta,
 		                       const glm::quat& animationRootRotation,
@@ -155,6 +158,7 @@ namespace VansEngine
 		Vans::VansCharacterTrajectoryGenerator m_TrajectoryGenerator;
 		float                               m_VerticalVelocity = 0.0f;
 		float                               m_LocomotionDt = 0.0f;
+		std::uint32_t                       m_GameplayMovementBlockCount = 0;
         // ── Ragdoll 接管（非拥有指针，生命周期由场景保证）────────────────
         VansGraphics::VansAnimationNode*  m_FollowRagdollAnimNode    = nullptr;
         std::string                       m_FollowRagdollBone        = "pelvis";

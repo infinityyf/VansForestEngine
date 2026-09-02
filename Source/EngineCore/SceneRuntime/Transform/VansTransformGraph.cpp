@@ -28,6 +28,15 @@ bool Finite(const glm::quat& value)
 	return std::isfinite(value.w) && std::isfinite(value.x)
 		&& std::isfinite(value.y) && std::isfinite(value.z);
 }
+
+bool ValidLocalTransform(const VansLocalTransform& value)
+{
+	return Finite(value.position) && Finite(value.rotation) && Finite(value.scale)
+		&& glm::length(value.rotation) > kTransformEpsilon
+		&& std::abs(value.scale.x) > kTransformEpsilon
+		&& std::abs(value.scale.y) > kTransformEpsilon
+		&& std::abs(value.scale.z) > kTransformEpsilon;
+}
 }
 
 glm::mat4 VansLocalTransform::ToMatrix() const
@@ -167,6 +176,38 @@ bool VansTransformGraph::SetAnchor(
 	return true;
 }
 
+bool VansTransformGraph::SetAnchorWithLocalTransform(
+	std::uint32_t childTransformId,
+	std::uint32_t ownerTransformId,
+	VansTransformAnchorHandle anchor,
+	const VansLocalTransform& localTransform)
+{
+	m_LastError.clear();
+	if (!ValidateTransformId(childTransformId) || !ValidateTransformId(ownerTransformId)
+		|| !anchor.IsValid() || !ValidLocalTransform(localTransform))
+	{
+		m_LastError = "Transform attachment profile references an invalid transform, anchor, or local TRS";
+		return false;
+	}
+	if (childTransformId == ownerTransformId || WouldCreateCycle(childTransformId, ownerTransformId))
+	{
+		m_LastError = "Transform attachment profile would create a cycle";
+		return false;
+	}
+
+	Node& node = m_Nodes[childTransformId];
+	node.link.childTransformId = childTransformId;
+	node.link.parentTransformId = ownerTransformId;
+	node.link.usesAnchor = true;
+	node.link.anchor = std::move(anchor);
+	node.local = localTransform;
+	node.local.rotation = glm::normalize(node.local.rotation);
+	node.importWorldBeforeResolve = false;
+	node.anchorWasUnresolved = false;
+	RebuildTopologicalOrder();
+	return true;
+}
+
 bool VansTransformGraph::ClearParent(
 	std::uint32_t childTransformId,
 	VansTransformReparentMode mode)
@@ -223,12 +264,7 @@ bool VansTransformGraph::SetLocalTransform(
 	const VansLocalTransform& localTransform)
 {
 	const auto found = m_Nodes.find(transformId);
-	if (found == m_Nodes.end() || !Finite(localTransform.position)
-		|| !Finite(localTransform.rotation) || !Finite(localTransform.scale)
-		|| glm::length(localTransform.rotation) <= kTransformEpsilon
-		|| std::abs(localTransform.scale.x) <= kTransformEpsilon
-		|| std::abs(localTransform.scale.y) <= kTransformEpsilon
-		|| std::abs(localTransform.scale.z) <= kTransformEpsilon)
+	if (found == m_Nodes.end() || !ValidLocalTransform(localTransform))
 		return false;
 	found->second.local = localTransform;
 	found->second.local.rotation = glm::normalize(found->second.local.rotation);

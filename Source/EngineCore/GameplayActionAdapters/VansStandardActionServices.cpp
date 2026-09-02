@@ -168,6 +168,23 @@ std::vector<VansActionServiceCapability> BuildCapabilities()
 	}));
 	result.push_back(Service("Service.Combat", Prediction::AuthorityOnly,
 	{
+		Command("Combat.BeginMeleeWindow", ResourcePolicy::Create, Prediction::AuthorityOnly,
+			{ asset("sourceBase"), asset("sourceTip"), optionalString("targetLayer"),
+				optionalString("targetTag"), asset("responseAction"), optionalString("window"),
+				NumberField("startSeconds", ValueKind::Float, true,
+					VansSerializedValue::Float(0.0), 0.0, 3600.0),
+				NumberField("endSeconds", ValueKind::Float, true,
+					VansSerializedValue::Float(0.5), 0.0, 3600.0),
+				NumberField("sweepRadius", ValueKind::Float, false,
+					VansSerializedValue::Float(0.1), 0.001, 1000.0),
+				NumberField("range", ValueKind::Float, false,
+					VansSerializedValue::Float(2.0), 0.001, 1000000.0),
+				NumberField("halfAngleDegrees", ValueKind::Float, false,
+					VansSerializedValue::Float(90.0), 0.0, 180.0),
+				NumberField("verticalTolerance", ValueKind::Float, false,
+					VansSerializedValue::Float(1.0), 0.0, 1000000.0),
+				NumberField("maximumHits", ValueKind::Int, false,
+					VansSerializedValue::Int(1), 1.0, 65535.0) }),
 		Command("Combat.ResolveHit", ResourcePolicy::None, Prediction::AuthorityOnly,
 			{ Field("targets", ValueKind::Array, true, VansSerializedValue::Array({})),
 				asset("damageProfile"), optionalString("policy") }),
@@ -229,6 +246,8 @@ std::vector<VansActionServiceCapability> BuildCapabilities()
 	}));
 	result.push_back(Service("Service.Navigation", Prediction::AuthorityOnly,
 	{
+		Command("Navigation.BlockMovement", ResourcePolicy::Create, Prediction::AuthorityOnly,
+			{ optionalString("reason") }),
 		Command("Navigation.RequestPath", ResourcePolicy::Create, Prediction::AuthorityOnly,
 			{ Field("destination", ValueKind::Object, true, VansSerializedValue::Object({})),
 				optionalString("agentProfile") }),

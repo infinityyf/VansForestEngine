@@ -1,6 +1,7 @@
 #include "AnimationAuthoringBridge.h"
 
 #include "../../AnimationCore/VansAnimatorIO.h"
+#include "../../AnimationCore/Storage/VansAnimationRigStorage.h"
 #include "../../AnimationCore/Storage/VansBoneMaskStorage.h"
 #include "../../AssetCore/VansAssetGuid.h"
 
@@ -696,6 +697,184 @@ namespace Vans::EditorAPI
 			return result;
 		}
 
+		AnimationRigDocumentDTO ToDTO(const VansGraphics::VansAnimationRigAsset& source)
+		{
+			AnimationRigDocumentDTO result;
+			result.name = source.name;
+			result.skeletonGuid = source.skeletonGuid;
+			result.modelForward = { source.modelForward.x, source.modelForward.y, source.modelForward.z };
+			result.modelUp = { source.modelUp.x, source.modelUp.y, source.modelUp.z };
+			result.semanticBones.assign(source.semanticBones.begin(), source.semanticBones.end());
+			std::sort(result.semanticBones.begin(), result.semanticBones.end(),
+				[](const auto& left, const auto& right) { return left.first < right.first; });
+			for (const auto& socket : source.sockets)
+			{
+				AnimationRigSocketDTO item;
+				item.guid = socket.guid;
+				item.name = socket.name;
+				item.boneGuid = socket.boneGuid;
+				item.positionLocal = { socket.positionLocal.x, socket.positionLocal.y, socket.positionLocal.z };
+				item.rotationLocal = { socket.rotationLocal.x, socket.rotationLocal.y,
+					socket.rotationLocal.z, socket.rotationLocal.w };
+				item.scaleLocal = { socket.scaleLocal.x, socket.scaleLocal.y, socket.scaleLocal.z };
+				result.sockets.push_back(std::move(item));
+			}
+			for (const auto& profile : source.attachmentProfiles)
+			{
+				AnimationRigAttachmentProfileDTO item;
+				item.modelGuid = profile.modelGuid;
+				item.parentKind = BridgeEnum<AnimationRigAttachmentParentKind>(profile.parentKind);
+				item.anchorGuid = profile.anchorGuid;
+				item.positionLocal = { profile.positionLocal.x, profile.positionLocal.y,
+					profile.positionLocal.z };
+				item.rotationLocal = { profile.rotationLocal.x, profile.rotationLocal.y,
+					profile.rotationLocal.z, profile.rotationLocal.w };
+				item.scaleLocal = { profile.scaleLocal.x, profile.scaleLocal.y,
+					profile.scaleLocal.z };
+				result.attachmentProfiles.push_back(std::move(item));
+			}
+			for (const auto& goal : source.goals)
+				result.goals.push_back({ goal.id, goal.effectorBone });
+			for (const auto& chain : source.chains)
+			{
+				AnimationRigChainDTO item;
+				item.id = chain.id;
+				item.solver = BridgeEnum<AnimationRigSolverKind>(chain.solver);
+				item.bones = chain.bones;
+				item.goal = chain.goal;
+				item.poleAxisLocal = { chain.poleAxisLocal.x, chain.poleAxisLocal.y, chain.poleAxisLocal.z };
+				item.softReachStartRatio = chain.softReachStartRatio;
+				item.maxStretchScale = chain.maxStretchScale;
+				item.weights = chain.weights;
+				item.solveWeights = chain.solveWeights;
+				item.maxStepDegrees = chain.maxStepDegrees;
+				item.forwardAxisLocal = { chain.forwardAxisLocal.x, chain.forwardAxisLocal.y, chain.forwardAxisLocal.z };
+				item.upAxisLocal = { chain.upAxisLocal.x, chain.upAxisLocal.y, chain.upAxisLocal.z };
+				result.chains.push_back(std::move(item));
+			}
+			for (const auto& limit : source.jointLimits)
+			{
+				AnimationRigJointLimitDTO item;
+				item.bone = limit.bone;
+				item.kind = BridgeEnum<AnimationRigJointLimitKind>(limit.kind);
+				item.axisLocal = { limit.axisLocal.x, limit.axisLocal.y, limit.axisLocal.z };
+				item.swingReferenceAxisLocal = { limit.swingReferenceAxisLocal.x,
+					limit.swingReferenceAxisLocal.y, limit.swingReferenceAxisLocal.z };
+				item.minDegrees = limit.minDegrees;
+				item.maxDegrees = limit.maxDegrees;
+				item.swingLimitDegrees = { limit.swingLimitDegrees.x, limit.swingLimitDegrees.y };
+				result.jointLimits.push_back(std::move(item));
+			}
+			for (const auto& contact : source.contacts)
+			{
+				AnimationRigContactDTO item;
+				item.id = contact.id;
+				item.chain = contact.chain;
+				item.footBone = contact.footBone;
+				item.ballBone = contact.ballBone;
+				item.soleForwardLocal = { contact.soleForwardLocal.x, contact.soleForwardLocal.y, contact.soleForwardLocal.z };
+				item.soleNormalLocal = { contact.soleNormalLocal.x, contact.soleNormalLocal.y, contact.soleNormalLocal.z };
+				for (const auto& sample : contact.soleSamplesLocal)
+					item.soleSamplesLocal.push_back({ sample.id,
+						{ sample.positionLocal.x, sample.positionLocal.y, sample.positionLocal.z } });
+				item.heelPivotLocal = { contact.heelPivotLocal.x, contact.heelPivotLocal.y, contact.heelPivotLocal.z };
+				item.ballPivotLocal = { contact.ballPivotLocal.x, contact.ballPivotLocal.y, contact.ballPivotLocal.z };
+				item.anklePivotLocal = { contact.anklePivotLocal.x, contact.anklePivotLocal.y, contact.anklePivotLocal.z };
+				item.sweepRadius = contact.sweepRadius;
+				result.contacts.push_back(std::move(item));
+			}
+			return result;
+		}
+
+		VansGraphics::VansAnimationRigAsset ToNative(const AnimationRigDocumentDTO& source)
+		{
+			VansGraphics::VansAnimationRigAsset result;
+			result.name = source.name;
+			result.skeletonGuid = source.skeletonGuid;
+			result.modelForward = { source.modelForward.x, source.modelForward.y, source.modelForward.z };
+			result.modelUp = { source.modelUp.x, source.modelUp.y, source.modelUp.z };
+			for (const auto& semantic : source.semanticBones)
+				result.semanticBones.emplace(semantic.first, semantic.second);
+			for (const auto& socket : source.sockets)
+			{
+				VansGraphics::VansRigSocketDefinition item;
+				item.guid = socket.guid;
+				item.name = socket.name;
+				item.boneGuid = socket.boneGuid;
+				item.positionLocal = { socket.positionLocal.x, socket.positionLocal.y, socket.positionLocal.z };
+				item.rotationLocal = { socket.rotationLocal.w, socket.rotationLocal.x,
+					socket.rotationLocal.y, socket.rotationLocal.z };
+				item.scaleLocal = { socket.scaleLocal.x, socket.scaleLocal.y, socket.scaleLocal.z };
+				result.sockets.push_back(std::move(item));
+			}
+			for (const auto& profile : source.attachmentProfiles)
+			{
+				VansGraphics::VansRigAttachmentProfileDefinition item;
+				item.modelGuid = profile.modelGuid;
+				item.parentKind = BridgeEnum<VansGraphics::VansRigAttachmentParentKind>(
+					profile.parentKind);
+				item.anchorGuid = profile.anchorGuid;
+				item.positionLocal = { profile.positionLocal.x, profile.positionLocal.y,
+					profile.positionLocal.z };
+				item.rotationLocal = { profile.rotationLocal.w, profile.rotationLocal.x,
+					profile.rotationLocal.y, profile.rotationLocal.z };
+				item.scaleLocal = { profile.scaleLocal.x, profile.scaleLocal.y,
+					profile.scaleLocal.z };
+				result.attachmentProfiles.push_back(std::move(item));
+			}
+			for (const auto& goal : source.goals)
+				result.goals.push_back({ goal.id, goal.effectorBone });
+			for (const auto& chain : source.chains)
+			{
+				VansGraphics::VansRigChainDefinition item;
+				item.id = chain.id;
+				item.solver = BridgeEnum<VansGraphics::VansRigSolverKind>(chain.solver);
+				item.bones = chain.bones;
+				item.goal = chain.goal;
+				item.poleAxisLocal = { chain.poleAxisLocal.x, chain.poleAxisLocal.y, chain.poleAxisLocal.z };
+				item.softReachStartRatio = chain.softReachStartRatio;
+				item.maxStretchScale = chain.maxStretchScale;
+				item.weights = chain.weights;
+				item.solveWeights = chain.solveWeights;
+				item.maxStepDegrees = chain.maxStepDegrees;
+				item.forwardAxisLocal = { chain.forwardAxisLocal.x, chain.forwardAxisLocal.y, chain.forwardAxisLocal.z };
+				item.upAxisLocal = { chain.upAxisLocal.x, chain.upAxisLocal.y, chain.upAxisLocal.z };
+				result.chains.push_back(std::move(item));
+			}
+			for (const auto& limit : source.jointLimits)
+			{
+				VansGraphics::VansRigJointLimitDefinition item;
+				item.bone = limit.bone;
+				item.kind = BridgeEnum<VansGraphics::VansJointLimitKind>(limit.kind);
+				item.axisLocal = { limit.axisLocal.x, limit.axisLocal.y, limit.axisLocal.z };
+				item.swingReferenceAxisLocal = { limit.swingReferenceAxisLocal.x,
+					limit.swingReferenceAxisLocal.y, limit.swingReferenceAxisLocal.z };
+				item.minDegrees = limit.minDegrees;
+				item.maxDegrees = limit.maxDegrees;
+				item.swingLimitDegrees = { limit.swingLimitDegrees.x, limit.swingLimitDegrees.y };
+				result.jointLimits.push_back(std::move(item));
+			}
+			for (const auto& contact : source.contacts)
+			{
+				VansGraphics::VansRigContactDefinition item;
+				item.id = contact.id;
+				item.chain = contact.chain;
+				item.footBone = contact.footBone;
+				item.ballBone = contact.ballBone;
+				item.soleForwardLocal = { contact.soleForwardLocal.x, contact.soleForwardLocal.y, contact.soleForwardLocal.z };
+				item.soleNormalLocal = { contact.soleNormalLocal.x, contact.soleNormalLocal.y, contact.soleNormalLocal.z };
+				for (const auto& sample : contact.soleSamplesLocal)
+					item.soleSamplesLocal.push_back({ sample.id,
+						{ sample.positionLocal.x, sample.positionLocal.y, sample.positionLocal.z } });
+				item.heelPivotLocal = { contact.heelPivotLocal.x, contact.heelPivotLocal.y, contact.heelPivotLocal.z };
+				item.ballPivotLocal = { contact.ballPivotLocal.x, contact.ballPivotLocal.y, contact.ballPivotLocal.z };
+				item.anklePivotLocal = { contact.anklePivotLocal.x, contact.anklePivotLocal.y, contact.anklePivotLocal.z };
+				item.sweepRadius = contact.sweepRadius;
+				result.contacts.push_back(std::move(item));
+			}
+			return result;
+		}
+
 		std::filesystem::path MakeUniquePath(const std::filesystem::path& directory,
 			const std::string& baseName, const std::string& extension)
 		{
@@ -764,6 +943,37 @@ namespace Vans::EditorAPI
 		return result;
 	}
 
+	AnimationRigDocumentDecodeResult AnimationAuthoringBridge::DecodeAnimationRig(
+		const std::string& canonicalJson)
+	{
+		AnimationRigDocumentDecodeResult result;
+		try
+		{
+			const auto root = nlohmann::json::parse(canonicalJson);
+			VansGraphics::VansAnimationRigAsset native;
+			if (!VansGraphics::VansAnimationRigStorage::DeserializeFromJsonObject(
+				root, native, result.message))
+				return result;
+			result.document = ToDTO(native);
+			result.success = true;
+		}
+		catch (const std::exception& exception) { result.message = exception.what(); }
+		return result;
+	}
+
+	AnimationRigDocumentEncodeResult AnimationAuthoringBridge::EncodeAnimationRig(
+		const AnimationRigDocumentDTO& document)
+	{
+		AnimationRigDocumentEncodeResult result;
+		nlohmann::json root;
+		if (!VansGraphics::VansAnimationRigStorage::SerializeToJsonObject(
+			ToNative(document), root, result.message))
+			return result;
+		result.canonicalJson = root.dump(4);
+		result.success = true;
+		return result;
+	}
+
 	BoneMaskCompileResult AnimationAuthoringBridge::CompileBoneMask(
 		const BoneMaskDocumentDTO& document, const AssetSkeletonSnapshot& snapshot)
 	{
@@ -816,6 +1026,15 @@ namespace Vans::EditorAPI
 			VansGraphics::VansBoneMaskAsset asset;
 			asset.id = Vans::VansAssetGuid::New().ToString(); asset.name = path.stem().string();
 			result.success = !path.empty() && VansGraphics::VansBoneMaskStorage::SaveAtomic(path, asset, error);
+			result.assetPath = result.success ? path.string() : std::string{};
+		}
+		else if (request.kind == AnimationAuthoringAssetKind::AnimationRig)
+		{
+			const auto path = MakeUniquePath(directory, "New Animation Rig", ".vanimrig");
+			VansGraphics::VansAnimationRigAsset asset;
+			asset.name = path.stem().string();
+			result.success = !path.empty()
+				&& VansGraphics::VansAnimationRigStorage::SaveAtomic(path, asset, error);
 			result.assetPath = result.success ? path.string() : std::string{};
 		}
 		else

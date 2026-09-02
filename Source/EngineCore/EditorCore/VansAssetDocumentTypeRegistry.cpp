@@ -9,6 +9,12 @@
 #include "../TimelineCore/VansTimelineSerialization.h"
 #include "../TimelineCore/VansTimelineValidator.h"
 #include "../TimelineCore/VansTimelineTrackExtensionRegistry.h"
+#include "../AnimationCore/Storage/VansAnimationRigStorage.h"
+#include "../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
+
+#include <nlohmann/json.hpp>
+
+#include <algorithm>
 
 namespace Vans
 {
@@ -41,6 +47,37 @@ VansAssetDocumentTypeRegistry::VansAssetDocumentTypeRegistry()
 	};
 	std::string ignored;
 	Register(VansAssetType::Timeline, std::move(timeline), ignored);
+
+	VansAssetDocumentTypeDescriptor animationRig;
+	animationRig.validateBeforeSave = [](
+		const std::filesystem::path&, const VansSerializedValue& root)
+	{
+		std::vector<VansAssetDocumentDiagnostic> result;
+		VansGraphics::VansAnimationRigAsset asset;
+		std::string error;
+		const nlohmann::json json = EncodeSerializedValueJson<nlohmann::json>(root);
+		if (!VansGraphics::VansAnimationRigStorage::DeserializeFromJsonObject(
+			json, asset, error))
+			result.push_back({ VansAssetDocumentDiagnosticSeverity::Error, {}, std::move(error) });
+		return result;
+	};
+	animationRig.collectDependencies = [](
+		const std::filesystem::path&, const VansSerializedValue& root)
+	{
+		VansGraphics::VansAnimationRigAsset asset;
+		std::string error;
+		const nlohmann::json json = EncodeSerializedValueJson<nlohmann::json>(root);
+		if (!VansGraphics::VansAnimationRigStorage::DeserializeFromJsonObject(
+			json, asset, error) || asset.skeletonGuid.empty())
+			return std::vector<std::string>{};
+		std::vector<std::string> dependencies{ asset.skeletonGuid };
+		for (const auto& profile : asset.attachmentProfiles)
+			if (std::find(dependencies.begin(), dependencies.end(), profile.modelGuid)
+				== dependencies.end())
+				dependencies.push_back(profile.modelGuid);
+		return dependencies;
+	};
+	Register(VansAssetType::AnimationRig, std::move(animationRig), ignored);
 
 	const VansGameplayAssetSchemaRegistry& gameplaySchemas = VansGameplayAssetSchemaRegistry::BuiltIns();
 	const VansAssetType gameplayAssetTypes[] = {

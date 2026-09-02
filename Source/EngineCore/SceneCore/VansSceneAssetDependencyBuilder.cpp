@@ -323,6 +323,9 @@ namespace
 			case VansAssetType::Material: result.requiredMaterials.insert(found->first); break;
 			case VansAssetType::Shader: result.requiredShaders.insert(found->first); break;
 			case VansAssetType::SkinProfile: result.requiredSkinProfiles.insert(found->first); break;
+			case VansAssetType::NavigationMesh:
+			case VansAssetType::AIBehavior:
+				result.requiredAssets.insert(found->first); break;
 			default:
 				if (VansGameplayAssetSchemaRegistry::IsGameplayAssetType(found->second))
 					result.requiredAssets.insert(found->first);
@@ -580,6 +583,41 @@ namespace
 		}
 	}
 
+	void CollectSceneAIDependencies(
+		const VansSerializedValue& sceneDocument,
+		std::vector<TypedAssetDependency>& dependencies,
+		VansSceneAssetDependencyBuildResult& result)
+	{
+		const VansSerializedValue* entities = ReadSerializedArrayField(sceneDocument, "entities");
+		if (entities == nullptr) return;
+		for (const VansSerializedValue& entity : entities->arrayItems)
+		{
+			const std::string entityName = ReadSerializedStringField(entity, "name", "<unnamed>");
+			const VansSerializedValue* components = ReadSerializedArrayField(entity, "components");
+			if (components == nullptr) continue;
+			for (const VansSerializedValue& component : components->arrayItems)
+			{
+				const std::string type = ReadSerializedStringField(component, "type");
+				const VansSerializedValue* data = ReadSerializedObjectField(component, "data");
+				if (!data) continue;
+				if (type == "NavigationAgent")
+				{
+					CollectStrictAssetReference(FindObjectField(*data, "navigationMesh"),
+						VansAssetType::NavigationMesh,
+						"scene entity '" + entityName + "' NavigationAgent.navigationMesh",
+						dependencies, result);
+				}
+				else if (type == "AIAgent")
+				{
+					CollectStrictAssetReference(FindObjectField(*data, "behavior"),
+						VansAssetType::AIBehavior,
+						"scene entity '" + entityName + "' AIAgent.behavior",
+						dependencies, result);
+				}
+			}
+		}
+	}
+
 	VansAssetType TimelineReferenceType(
 		const VansTimelineDependency& dependency,
 		const std::unordered_map<std::string, VansAssetRecord>& records)
@@ -648,6 +686,8 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 	CollectSceneAnimationDependencies(sceneDocument, animationDependencies, result);
 	std::vector<TypedAssetDependency> timelineDependencies;
 	CollectSceneTimelineDependencies(sceneDocument, timelineDependencies, result);
+	std::vector<TypedAssetDependency> aiDependencies;
+	CollectSceneAIDependencies(sceneDocument, aiDependencies, result);
 	if (const VansSerializedValue* vegetationConfig = ReadVegetationField(sceneDocument))
 	{
 		VansSerializedValue externalVegetationConfig = LoadVegetationConfigFromReference(*vegetationConfig, projectRoot.string());
@@ -671,6 +711,8 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 		animationDependencies.begin(), animationDependencies.end());
 	pendingDependencies.insert(pendingDependencies.end(),
 		timelineDependencies.begin(), timelineDependencies.end());
+	pendingDependencies.insert(pendingDependencies.end(),
+		aiDependencies.begin(), aiDependencies.end());
 	std::unordered_set<std::string> expandedAnimators;
 	std::unordered_set<std::string> expandedTimelines;
 	while (!pendingDependencies.empty())

@@ -14,6 +14,7 @@ struct VansRuntimeGameplayFrame
     std::function<void()> syncPhysicsTransforms;
     std::function<void()> updateNonCameraScripts;
 	std::function<void(double)> updateActionsEarly;
+	std::function<void(double)> updateAI;
 	std::function<void(double)> prepareCharacterLocomotion;
     std::function<void()> flushCharacterControllerTransforms;
 	std::function<void(double)> updateTimelinesPostScript;

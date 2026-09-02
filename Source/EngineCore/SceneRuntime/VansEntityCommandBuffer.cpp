@@ -357,6 +357,36 @@ void VansEntityCommandBuffer::AddActionHostComponent(
 	m_Commands.push_back(std::move(command));
 }
 
+void VansEntityCommandBuffer::AddNavigationAgentComponent(
+	VansEntityHandle entity,
+	std::string stableGuid,
+	VansRuntimeNavigationAgentComponent component,
+	bool enabled)
+{
+	VansEntityCommand command;
+	command.type = VansEntityCommandType::AddNavigationAgentComponent;
+	command.entity = entity;
+	command.navigationAgentComponent = std::move(component);
+	command.componentStableGuid = std::move(stableGuid);
+	command.boolValue = enabled;
+	m_Commands.push_back(std::move(command));
+}
+
+void VansEntityCommandBuffer::AddAIAgentComponent(
+	VansEntityHandle entity,
+	std::string stableGuid,
+	VansRuntimeAIAgentComponent component,
+	bool enabled)
+{
+	VansEntityCommand command;
+	command.type = VansEntityCommandType::AddAIAgentComponent;
+	command.entity = entity;
+	command.aiAgentComponent = std::move(component);
+	command.componentStableGuid = std::move(stableGuid);
+	command.boolValue = enabled;
+	m_Commands.push_back(std::move(command));
+}
+
 void VansEntityCommandBuffer::SetEntityActive(VansEntityHandle entity, bool active)
 {
 	VansEntityCommand command;

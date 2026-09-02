@@ -51,6 +51,10 @@ add_library(Forest::EditorCore ALIAS ForestEditorCore)
 forest_apply_common_settings(ForestEditorCore)
 forest_apply_source_groups(ForestEditorCore)
 
+if(MSVC)
+    target_compile_options(ForestEditorCore PRIVATE /bigobj)
+endif()
+
 target_compile_definitions(ForestEditorCore
     PRIVATE
         FOREST_ENGINE_SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}"

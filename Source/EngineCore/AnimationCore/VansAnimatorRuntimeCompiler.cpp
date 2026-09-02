@@ -62,6 +62,7 @@ namespace VansGraphics
 		if (!controller->SetAnimationRig(
 			std::move(compiledRig), options.queryProfileResolver, error))
 			return nullptr;
+		controller->SetAnimationRigAssetIdentity(rigGuid, rigPath.string());
 		for (const AnimatorParameter& parameter : asset.parameters)
 		{
 			controller->AddParameter(parameter.name, parameter.type);

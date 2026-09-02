@@ -30,6 +30,8 @@ enum class VansEntityCommandType
 	AddLightComponent,
 	AddTimelineComponent,
 	AddActionHostComponent,
+	AddNavigationAgentComponent,
+	AddAIAgentComponent,
 	SetEntityActive,
 	SetEntityName,
 	SetComponentEnabled,
@@ -62,6 +64,8 @@ struct VansEntityCommand
 	VansRuntimeLightComponent lightComponent;
 	VansRuntimeTimelineComponent timelineComponent;
 	VansRuntimeActionHostComponent actionHostComponent;
+	VansRuntimeNavigationAgentComponent navigationAgentComponent;
+	VansRuntimeAIAgentComponent aiAgentComponent;
 	std::uint16_t componentTypeId = VansInvalidComponentTypeId;
 	std::string componentStableGuid;
 	std::string stringValue;
@@ -198,6 +202,16 @@ public:
 		VansEntityHandle entity,
 		std::string stableGuid,
 		std::shared_ptr<VansActionHost> host,
+		bool enabled);
+	void AddNavigationAgentComponent(
+		VansEntityHandle entity,
+		std::string stableGuid,
+		VansRuntimeNavigationAgentComponent component,
+		bool enabled);
+	void AddAIAgentComponent(
+		VansEntityHandle entity,
+		std::string stableGuid,
+		VansRuntimeAIAgentComponent component,
 		bool enabled);
 	void SetEntityActive(VansEntityHandle entity, bool active);
 	void SetEntityName(VansEntityHandle entity, std::string name);

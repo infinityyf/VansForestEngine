@@ -77,6 +77,25 @@ namespace VansGraphics
 			return json::array({ normalized.x, normalized.y, normalized.z, normalized.w });
 		}
 
+		bool ReadAttachmentParentKind(
+			const std::string& value,
+			VansRigAttachmentParentKind& result)
+		{
+			if (value == "bone") { result = VansRigAttachmentParentKind::Bone; return true; }
+			if (value == "socket") { result = VansRigAttachmentParentKind::Socket; return true; }
+			return false;
+		}
+
+		const char* WriteAttachmentParentKind(VansRigAttachmentParentKind value)
+		{
+			switch (value)
+			{
+			case VansRigAttachmentParentKind::Bone: return "bone";
+			case VansRigAttachmentParentKind::Socket: return "socket";
+			}
+			return nullptr;
+		}
+
 		bool ReadSolver(const std::string& value, VansRigSolverKind& result)
 		{
 			if (value == "limb") { result = VansRigSolverKind::Limb; return true; }
@@ -153,9 +172,9 @@ namespace VansGraphics
 		{
 			if (!RequireObjectFields(root,
 				{ "assetKind", "name", "skeletonGuid", "modelAxes", "semanticBones",
-				  "sockets", "goals", "chains", "jointLimits", "contacts" },
+				  "sockets", "attachmentProfiles", "goals", "chains", "jointLimits", "contacts" },
 				{ "assetKind", "name", "skeletonGuid", "modelAxes", "semanticBones",
-				  "sockets", "goals", "chains", "jointLimits", "contacts" },
+				  "sockets", "attachmentProfiles", "goals", "chains", "jointLimits", "contacts" },
 				"Animation Rig", error))
 				return false;
 			for (const char* forbidden : { "version", "schemaVersion", "formatVersion" })
@@ -169,6 +188,7 @@ namespace VansGraphics
 			if (!root["assetKind"].is_string() || root["assetKind"].get<std::string>() != "animationRig"
 				|| !root["name"].is_string() || !root["skeletonGuid"].is_string()
 				|| !root["semanticBones"].is_object() || !root["sockets"].is_array()
+				|| !root["attachmentProfiles"].is_array()
 				|| !root["goals"].is_array()
 				|| !root["chains"].is_array() || !root["jointLimits"].is_array()
 				|| !root["contacts"].is_array())
@@ -218,6 +238,41 @@ namespace VansGraphics
 					return false;
 				}
 				asset.sockets.push_back(std::move(socket));
+			}
+			std::unordered_set<std::string> attachmentProfileKeys;
+			for (const json& value : root["attachmentProfiles"])
+			{
+				if (!RequireObjectFields(value,
+					{ "modelGuid", "parentKind", "anchorGuid", "positionLocal",
+					  "rotationLocal", "scaleLocal" },
+					{ "modelGuid", "parentKind", "anchorGuid", "positionLocal",
+					  "rotationLocal", "scaleLocal" },
+					"attachment profile", error)
+					|| !value["modelGuid"].is_string()
+					|| !value["parentKind"].is_string()
+					|| !value["anchorGuid"].is_string())
+					return false;
+				VansRigAttachmentProfileDefinition profile;
+				profile.modelGuid = value["modelGuid"].get<std::string>();
+				profile.anchorGuid = value["anchorGuid"].get<std::string>();
+				if (profile.modelGuid.empty() || profile.anchorGuid.empty()
+					|| !ReadAttachmentParentKind(
+						value["parentKind"].get<std::string>(), profile.parentKind)
+					|| !ReadVec3(value["positionLocal"], profile.positionLocal)
+					|| !ReadQuat(value["rotationLocal"], profile.rotationLocal)
+					|| !ReadVec3(value["scaleLocal"], profile.scaleLocal))
+				{
+					error = "attachment profile requires model/anchor identity and finite local TRS";
+					return false;
+				}
+				const std::string key = profile.modelGuid + '\x1f'
+					+ value["parentKind"].get<std::string>() + '\x1f' + profile.anchorGuid;
+				if (!attachmentProfileKeys.emplace(key).second)
+				{
+					error = "Animation Rig attachment profiles must be unique per model and anchor";
+					return false;
+				}
+				asset.attachmentProfiles.push_back(std::move(profile));
 			}
 			for (const json& value : root["goals"])
 			{
@@ -478,6 +533,7 @@ namespace VansGraphics
 				{ "up", WriteVec3(asset.modelUp) } } },
 			{ "semanticBones", asset.semanticBones },
 			{ "sockets", json::array() },
+			{ "attachmentProfiles", json::array() },
 			{ "goals", json::array() },
 			{ "chains", json::array() },
 			{ "jointLimits", json::array() },
@@ -490,6 +546,23 @@ namespace VansGraphics
 				{ "positionLocal", WriteVec3(socket.positionLocal) },
 				{ "rotationLocal", WriteQuat(socket.rotationLocal) },
 				{ "scaleLocal", WriteVec3(socket.scaleLocal) }
+			});
+		}
+		for (const VansRigAttachmentProfileDefinition& profile : asset.attachmentProfiles)
+		{
+			const char* parentKind = WriteAttachmentParentKind(profile.parentKind);
+			if (!parentKind || profile.modelGuid.empty() || profile.anchorGuid.empty())
+			{
+				error = "Animation Rig contains an invalid attachment profile identity";
+				return false;
+			}
+			root["attachmentProfiles"].push_back({
+				{ "modelGuid", profile.modelGuid },
+				{ "parentKind", parentKind },
+				{ "anchorGuid", profile.anchorGuid },
+				{ "positionLocal", WriteVec3(profile.positionLocal) },
+				{ "rotationLocal", WriteQuat(profile.rotationLocal) },
+				{ "scaleLocal", WriteVec3(profile.scaleLocal) }
 			});
 		}
 		for (const VansRigGoalDefinition& goal : asset.goals)

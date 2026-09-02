@@ -12,6 +12,8 @@
 #include "../EngineCore/GameplayActionNetwork/VansGameplayActionNetwork.h"
 #include "../EngineCore/GameplayActionAdapters/VansStandardActionServices.h"
 #include "../EngineCore/GameplayActionAdapters/Camera/VansCameraActionService.h"
+#include "../EngineCore/GameplayActionAdapters/Character/VansCharacterActionServices.h"
+#include "../EngineCore/GameplayActionAdapters/Combat/VansCombatActionService.h"
 #include "../EngineCore/CameraGameplayAction/VansCameraActionGraphNodes.h"
 #include "../EngineCore/GameplayActionExecution/VansActionTask.h"
 #include "../EngineCore/GameplayActionExecution/VansActionExecutionGraph.h"
@@ -35,7 +37,9 @@
 #include "../EngineCore/AssetCore/Storage/VansAssetMetaStorage.h"
 #include "../EngineCore/AssetCore/Storage/VansJsonFileStorage.h"
 #include "../EngineCore/AssetCore/VansSkeletalMeshImportSettings.h"
+#include "../EngineCore/AICore/VansAIBehaviorAsset.h"
 #include "../EngineCore/AnimationCore/VansAnimationClip.h"
+#include "../EngineCore/AnimationCore/VansAnimationNode.h"
 #include "../EngineCore/AnimationCore/VansAnimationSampler.h"
 #include "../EngineCore/AnimationCore/VansAnimatorIO.h"
 #include "../EngineCore/AnimationCore/VansAnimatorRuntimeCompiler.h"
@@ -47,10 +51,15 @@
 #include "../EngineCore/EngineAPILayer/Private/GameplayActionAuthoringBridge.h"
 #include "../EngineCore/EventCore/VansEventBus.h"
 #include "../EngineCore/RenderCore/VansAnimationPreviewRenderer.h"
+#include "../EngineCore/NavigationCore/VansNavigationMesh.h"
+#include "../EngineCore/PhysicsCore/VansCharacterControllerNode.h"
+#include "../EngineCore/PhysicsCore/VansPhysics.h"
+#include "../EngineCore/PhysicsCore/VansPhysicsNode.h"
 #include "../EngineCore/SceneCore/VansSceneAnimationComponentReader.h"
 #include "../EngineCore/SceneRuntime/VansRuntimeComponentTypes.h"
 #include "../EngineCore/SceneRuntime/VansRuntimeWorld.h"
 #include "../EngineCore/ScriptCore/VansLuaGameplayActionBridge.h"
+#include "../EngineCore/ScriptCore/VansTransform.h"
 #include "../EngineCore/TimelineCore/VansTimelineCompiler.h"
 #include "../EngineCore/TimelineCore/VansTimelineSerialization.h"
 #include "../EngineCore/TimelineCore/VansTimelineTrackExtensionRegistry.h"
@@ -3381,8 +3390,11 @@ bool TestGAFDemoHallPlayerAttackContract()
 		workspace = workspace.parent_path();
 	const fs::path projectRoot = workspace / "DemoHallProject";
 	const fs::path sourceAssets = projectRoot / "Assets/GAF/PlayerAttack";
+	const fs::path responseAssets = projectRoot / "Assets/GAF/WhisperCombat";
 	if (!ExpectGAF(fs::is_directory(sourceAssets),
-		"DemoHall player-attack GAF assets are missing")) return false;
+		"DemoHall player-attack GAF assets are missing") ||
+		!ExpectGAF(fs::is_directory(responseAssets),
+		"DemoHall Whisper hit-response GAF assets are missing")) return false;
 
 	Vans::VansGAFProjectConfiguration configuration;
 	std::string error;
@@ -3409,6 +3421,10 @@ bool TestGAFDemoHallPlayerAttackContract()
 		fs::copy_options::recursive | fs::copy_options::overwrite_existing, filesystemError);
 	if (!ExpectGAF(!filesystemError,
 		"DemoHall player-attack assets could not be copied for validation")) return false;
+	fs::copy(responseAssets, assetsRoot / "WhisperCombat",
+		fs::copy_options::recursive | fs::copy_options::overwrite_existing, filesystemError);
+	if (!ExpectGAF(!filesystemError,
+		"DemoHall Whisper response assets could not be copied for validation")) return false;
 	for (const char* fileName : { "DemoHallTags.vtagtree", "DemoHallTags.vtagtree.meta" })
 	{
 		fs::copy_file(projectRoot / "Assets/GAF/WindowBreak" / fileName,
@@ -3420,8 +3436,8 @@ bool TestGAFDemoHallPlayerAttackContract()
 	Vans::VansAssetDatabase database(temporaryRoot / "Assets", temporaryRoot / "Library/Artifacts");
 	const Vans::VansAssetScanResult scan =
 		database.Scan(Vans::VansAssetOperationPolicy::Authoring());
-	if (!ExpectGAF(scan && database.All().size() == 13,
-		"DemoHall player-attack assets and TagTree did not scan as thirteen GAF assets")) return false;
+	if (!ExpectGAF(scan && database.All().size() == 16,
+		"DemoHall attack, response, and TagTree did not scan as sixteen GAF assets")) return false;
 	for (const Vans::VansAssetRecord& record : database.All())
 	{
 		Vans::VansSerializedValue source;
@@ -3431,31 +3447,136 @@ bool TestGAFDemoHallPlayerAttackContract()
 			return ExpectGAF(false, error.c_str());
 		const Vans::VansGameplayCookResult cooked = Vans::VansGameplayAssetStorage::Cook(
 			record.type, source, Vans::VansGameplayAssetSchemaRegistry::BuiltIns(), &configuration);
-		if (!ExpectGAF(static_cast<bool>(cooked),
-			"DemoHall player-attack asset failed configured GAF Cook")) return false;
+		if (!cooked)
+		{
+			std::cerr << "[GAF] Cook source: " << sourcePath.string()
+				<< " error: " << cooked.error << '\n';
+			for (const auto& diagnostic : cooked.diagnostics)
+				std::cerr << "[GAF] " << diagnostic.code << " " << diagnostic.fieldPath
+					<< ": " << diagnostic.message << '\n';
+			return ExpectGAF(false,
+				"DemoHall player-attack asset failed configured GAF Cook");
+		}
 	}
 
+	Vans::VansGameplayRuntimeDependencies runtimeDependencies;
+	for (const auto& service : Vans::VansCreateFakeStandardActionServices())
+		runtimeDependencies.services.push_back(service);
 	Vans::VansGameplayRuntime runtime;
-	if (!runtime.Initialize(database.All(), configuration.settings, error))
+	if (!runtime.Initialize(database.All(), configuration.settings, runtimeDependencies, error))
 		return ExpectGAF(false, error.c_str());
 	const auto crowbarAttack = runtime.Assets().ResolveAction(
 		"Gameplay.DemoHall.Player.Attack.Crowbar");
 	const auto crowbarTakedown = runtime.Assets().ResolveAction(
 		"Gameplay.DemoHall.Player.Attack.Takedown.Crowbar.Attacker");
+	const auto whisperHitReact = runtime.Assets().ResolveAction(
+		"Gameplay.DemoHall.Whisper.HitReact");
 	const auto actionSet = runtime.Assets().ResolveActionSet(
 		"4534ddf1-e858-468e-a1ab-9e8b98cf6129");
-	if (!ExpectGAF(crowbarAttack && crowbarTakedown && actionSet &&
+	const auto whisperActionSet = runtime.Assets().ResolveActionSet(
+		"269218a3-6809-48f6-b055-97891161c303");
+	if (!ExpectGAF(crowbarAttack && crowbarTakedown && whisperHitReact &&
+		actionSet && whisperActionSet &&
 		crowbarAttack->executionGraph && crowbarTakedown->executionGraph &&
+		whisperHitReact->executionGraph &&
 		!crowbarAttack->cancellable && !crowbarAttack->interruptible &&
 		!crowbarTakedown->cancellable && !crowbarTakedown->interruptible &&
 		crowbarAttack->concurrencyGroup == crowbarTakedown->concurrencyGroup,
-		"DemoHall player-attack Action links or non-interruption policy are incomplete")) return false;
+		"DemoHall attack or hit-response Action links are incomplete")) return false;
+	for (Vans::VansActionServiceId required : crowbarAttack->requiredServices)
+		if (!runtime.Services().Resolve(required))
+			std::cerr << "[GAF] Missing Crowbar service id=" << required.value << '\n';
+	const auto combatServiceId = Vans::VansMakeStableId<Vans::VansActionServiceIdTag>(
+		"Service.Combat");
+	if (!runtime.Services().Resolve(combatServiceId))
+		std::cerr << "[GAF] Runtime did not register Service.Combat id="
+			<< combatServiceId.value << '\n';
+
+	const Vans::VansActionServiceCapability* combatCapability =
+		Vans::VansFindStandardActionServiceCapability(
+			Vans::VansMakeStableId<Vans::VansActionServiceIdTag>("Service.Combat"));
+	const Vans::VansActionServiceCapability* navigationCapability =
+		Vans::VansFindStandardActionServiceCapability(
+			Vans::VansMakeStableId<Vans::VansActionServiceIdTag>("Service.Navigation"));
+	const auto hasCommand = [](const Vans::VansActionServiceCapability* capability,
+		const char* stableName)
+	{
+		return capability && std::find(capability->commands.begin(), capability->commands.end(),
+			stableName) != capability->commands.end();
+	};
+	if (!ExpectGAF(hasCommand(combatCapability, "Combat.BeginMeleeWindow") &&
+		hasCommand(navigationCapability, "Navigation.BlockMovement"),
+		"Standard GAF services do not expose melee windows and movement blocking")) return false;
+	nlohmann::ordered_json attackGraphSource;
+	nlohmann::ordered_json responseGraphSource;
+	if (!Vans::VansJsonFileStorage::Read(
+		sourceAssets / "CrowbarAttack.vactiongraph", attackGraphSource, error) ||
+		!Vans::VansJsonFileStorage::Read(
+			responseAssets / "WhisperHitReact.vactiongraph", responseGraphSource, error))
+		return ExpectGAF(false, error.c_str());
+	bool foundConfiguredMeleeWindow = false;
+	for (const auto& node : attackGraphSource.value("nodes", nlohmann::ordered_json::array()))
+	{
+		const auto properties = node.value("properties", nlohmann::ordered_json::object());
+		if (properties.value("command", std::string{}) != "Combat.BeginMeleeWindow") continue;
+		const auto payload = properties.value("payload", nlohmann::ordered_json::object());
+		foundConfiguredMeleeWindow =
+			payload.value("sourceBase", std::string{}) ==
+				"928f6ad1-4aac-4b57-a244-8a021f518401" &&
+			payload.value("sourceTip", std::string{}) ==
+				"c28c047e-aebd-4668-8ca6-04de3f348402" &&
+			payload.value("targetLayer", std::string{}) == "Enemy" &&
+			payload.value("targetTag", std::string{}) == "Target.Character.Enemy" &&
+			payload.value("responseAction", std::string{}) ==
+				"Gameplay.DemoHall.Whisper.HitReact" &&
+			std::abs(payload.value("startSeconds", 0.0f) - 0.72f) < 0.001f &&
+			std::abs(payload.value("endSeconds", 0.0f) - 1.38f) < 0.001f &&
+			std::abs(payload.value("sweepRadius", 0.0f) - 0.18f) < 0.001f &&
+			std::abs(payload.value("range", 0.0f) - 2.2f) < 0.001f &&
+			std::abs(payload.value("halfAngleDegrees", 0.0f) - 57.5f) < 0.001f &&
+			payload.value("maximumHits", 0) == 4;
+	}
+	bool foundMovementBlock = false;
+	bool foundHitAnimation = false;
+	bool foundResponseWait = false;
+	for (const auto& node : responseGraphSource.value("nodes", nlohmann::ordered_json::array()))
+	{
+		const auto properties = node.value("properties", nlohmann::ordered_json::object());
+		const std::string command = properties.value("command", std::string{});
+		foundMovementBlock = foundMovementBlock || command == "Navigation.BlockMovement";
+		if (command == "Animation.Play")
+		{
+			const auto payload = properties.value("payload", nlohmann::ordered_json::object());
+			foundHitAnimation = payload.value("clip", std::string{}) == "TakingDamage1" &&
+				!payload.value("loop", true);
+		}
+		if (node.value("type", std::string{}) == "Action.Graph.Wait")
+			foundResponseWait = std::abs(properties.value("seconds", 0.0f) - 1.333333f) < 0.001f;
+	}
+	if (!ExpectGAF(foundConfiguredMeleeWindow && foundMovementBlock &&
+		foundHitAnimation && foundResponseWait,
+		"DemoHall GAF assets lost the melee window or Whisper response configuration")) return false;
+	if (!ExpectGAF(
+		Vans::VansPointInsideMeleeSector(
+			glm::vec3(0.8f, 1.0f, 1.2f), 0.35f, glm::vec3(0.0f),
+			glm::vec3(0.0f, 0.0f, 1.0f), 2.2f, 55.0f, 1.0f) &&
+		!Vans::VansPointInsideMeleeSector(
+			glm::vec3(0.0f, 0.0f, -1.5f), 0.2f, glm::vec3(0.0f),
+			glm::vec3(0.0f, 0.0f, 1.0f), 2.2f, 55.0f, 1.0f) &&
+		Vans::VansContinuousWeaponPathIntersectsSphere(
+			glm::vec3(-1.0f, 1.0f, 1.0f), glm::vec3(-1.0f, 1.0f, 2.0f),
+			glm::vec3(1.0f, 1.0f, 1.0f), glm::vec3(1.0f, 1.0f, 2.0f),
+			glm::vec3(0.0f, 1.0f, 1.5f), 0.15f),
+		"Melee sector validation or cross-frame weapon sweep geometry regressed")) return false;
 
 	const Vans::VansEntityHandle player{ 801, 1 };
 	Vans::VansGameplayActionHostSetup setup;
 	setup.actionSets.push_back("4534ddf1-e858-468e-a1ab-9e8b98cf6129");
 	setup.initialTags.push_back({ "Target.Character.Player", 1 });
 	const auto host = runtime.CreateHost(player, setup, error);
+	if (!host || host->GrantedActions().size() != 2)
+		std::cerr << "[GAF] Player host error: " << error << " grants="
+			<< (host ? host->GrantedActions().size() : 0) << '\n';
 	if (!ExpectGAF(host && host->GrantedActions().size() == 2,
 		"DemoHall player ActionHost did not receive both CloseCombat attacks")) return false;
 
@@ -3475,6 +3596,26 @@ bool TestGAFDemoHallPlayerAttackContract()
 	runtime.TickEarly(3.8);
 	if (!ExpectGAF(host->ActiveActions().empty(),
 		"DemoHall player attack Action Graphs did not complete at authored clip durations")) return false;
+
+	const Vans::VansEntityHandle whisper{ 802, 1 };
+	Vans::VansGameplayActionHostSetup whisperSetup;
+	whisperSetup.actionSets.push_back("269218a3-6809-48f6-b055-97891161c303");
+	whisperSetup.initialTags.push_back({ "Target.Character.Enemy", 1 });
+	const auto whisperHost = runtime.CreateHost(whisper, whisperSetup, error);
+	Vans::VansActionContext responseContext;
+	responseContext.owner = whisper;
+	responseContext.instigator = player;
+	responseContext.source = player;
+	responseContext.primaryTarget = player;
+	const Vans::VansActionResult responseResult = whisperHost
+		? whisperHost->ActivateAction(whisperHitReact->id, responseContext)
+		: Vans::VansActionResult{};
+	if (!ExpectGAF(whisperHost && responseResult && whisperHost->ActiveActions().size() == 1,
+		"Whisper hit response could not activate through its own GAF ActionHost")) return false;
+	runtime.TickEarly(1.4);
+	if (!ExpectGAF(whisperHost->ActiveActions().empty(),
+		"Whisper hit response did not release its GAF resources after the configured animation"))
+		return false;
 
 	const std::vector<std::pair<fs::path, float>> clips = {
 		{ projectRoot / "Assets/Animations/Combat/CloseCombat/A_Crowbar_Attack_Unreal_Take.vclip", 2.533333f },
@@ -3595,7 +3736,9 @@ bool TestGAFDemoHallPlayerAttackContract()
 		}), animatorAsset.clipRefs.end());
 
 	VansGraphics::VansAnimatorRuntimeCompileOptions compileOptions;
-	compileOptions.enableTargetPostProcess = true;
+	// 此契约只验证 CloseCombat Graph 与 Root Motion；目标后处理图属于另一条
+	// 已有专用契约，不能让它的世界查询等待阻塞攻击配置验收。
+	compileOptions.enableTargetPostProcess = false;
 	compileOptions.enableRootMotion = true;
 	compileOptions.queryProfileResolver = [](
 		const std::string&, std::uint32_t& collisionMask, std::string&)
@@ -3629,16 +3772,6 @@ bool TestGAFDemoHallPlayerAttackContract()
 		compileOptions,
 		error);
 	if (!ExpectGAF(attackController != nullptr, error.c_str())) return false;
-	VansGraphics::MotionMatchingSettings motionMatching;
-	motionMatching.enabled = true;
-	motionMatching.rig.root = "root";
-	motionMatching.rig.trajectoryRoot = "root";
-	motionMatching.rig.pelvis = "pelvis";
-	motionMatching.rig.leftFoot = "foot_l";
-	motionMatching.rig.rightFoot = "foot_r";
-	motionMatching.rig.head = "head";
-	if (!ExpectGAF(attackController->ConfigureMotionMatching(motionMatching, error), error.c_str()))
-		return false;
 	attackController->SetInt("AttackVariant", 0);
 	attackController->Play();
 	attackController->Update(0.0f, sceneSkeleton);
@@ -3657,7 +3790,8 @@ bool TestGAFDemoHallPlayerAttackContract()
 	}
 	if (!ExpectGAF(attackController->GetCurrentStateName() == "Crowbar Attack" &&
 		attackController->GetCurrentPlayTime() > 0.35f && maxRuntimePoseDelta > 0.001f,
-		"Motion Matching configuration overwrote the non-MM DemoHall attack Graph")) return false;
+		"The non-Motion-Matching DemoHall attack Graph did not advance its runtime pose"))
+		return false;
 
 	nlohmann::ordered_json scene;
 	if (!Vans::VansJsonFileStorage::Read(projectRoot / "Scenes/DemoHall.json", scene, error))
@@ -3666,16 +3800,73 @@ bool TestGAFDemoHallPlayerAttackContract()
 	bool foundMannequinController = false;
 	bool foundSurvivalHost = false;
 	bool foundSurvivalController = false;
-	for (const auto& entity : scene.value("entities", nlohmann::ordered_json::array()))
+	bool foundAxeHitBase = false;
+	bool foundAxeHitTip = false;
+	bool foundWhisperHurtBody = false;
+	bool foundWhisperResponseHost = false;
+	const auto hasLocalPosition = [](const nlohmann::ordered_json& entity,
+		const glm::vec3& expected)
+	{
+		for (const auto& component : entity.value(
+			"components", nlohmann::ordered_json::array()))
+		{
+			if (component.value("type", std::string{}) != "Transform") continue;
+			const auto position = component.value("data", nlohmann::ordered_json::object())
+				.value("position", nlohmann::ordered_json::array());
+			return position.size() == 3 &&
+				std::abs(position[0].get<float>() - expected.x) < 0.001f &&
+				std::abs(position[1].get<float>() - expected.y) < 0.001f &&
+				std::abs(position[2].get<float>() - expected.z) < 0.001f;
+		}
+		return false;
+	};
+	const auto& sceneEntities = scene.at("entities");
+	for (const auto& entity : sceneEntities)
 	{
 		const std::string entityId = entity.value("id", std::string{});
+		const auto& parent = entity.at("parent");
+		const bool isAxeChild = parent.is_object() &&
+			parent.value("kind", std::string{}) == "entity" &&
+			parent.value("entityGuid", std::string{}) ==
+				"d12e84ac-99d2-4a35-8e13-33a6c9032f27";
+		foundAxeHitBase = foundAxeHitBase ||
+			(entityId == "928f6ad1-4aac-4b57-a244-8a021f518401" && isAxeChild &&
+			hasLocalPosition(entity, glm::vec3(-14.58f, 72.0f, 21.46f)));
+		foundAxeHitTip = foundAxeHitTip ||
+			(entityId == "c28c047e-aebd-4668-8ca6-04de3f348402" && isAxeChild &&
+			hasLocalPosition(entity, glm::vec3(-14.58f, 154.45f, 19.98f)));
+		if (entityId == "d21cfc31-dba5-44cb-a271-f0f2c20cded1")
+		{
+			for (const auto& component : entity.at("components"))
+			{
+				const auto& data = component.at("data");
+				if (component.value("type", std::string{}) == "Physics")
+					foundWhisperHurtBody = foundWhisperHurtBody ||
+						data.value("name", std::string{}) == "Whisper_Torso_HurtBody" &&
+						data.value("bodyType", std::string{}) == "kinematic" &&
+						data.value("colliderType", std::string{}) == "capsule" &&
+						data.value("layer", std::string{}) == "Enemy" &&
+						data.value("isTrigger", false) &&
+						std::abs(data.value("capsuleRadius", 0.0f) - 0.38f) < 0.001f &&
+						std::abs(data.value("capsuleHalfHeight", 0.0f) - 0.5f) < 0.001f;
+				if (component.value("type", std::string{}) == "ActionHost")
+				{
+					const auto sets = data.value("actionSets", nlohmann::ordered_json::array());
+					const auto tags = data.value("initialTags", nlohmann::ordered_json::array());
+					foundWhisperResponseHost = !sets.empty() && !tags.empty() &&
+						sets.front().value("guid", std::string{}) ==
+							"269218a3-6809-48f6-b055-97891161c303" &&
+						tags.front().value("tag", std::string{}) == "Target.Character.Enemy";
+				}
+			}
+		}
 		const bool isMannequin = entityId == "4186c86d-7c0a-4556-8077-d1f80ebc1da5";
 		const bool isSurvival = entityId == "38dbe7af-653a-4aeb-bfa7-1ca72e2b972c";
 		if (!isMannequin && !isSurvival)
 			continue;
-		for (const auto& component : entity.value("components", nlohmann::ordered_json::array()))
+		for (const auto& component : entity.at("components"))
 		{
-			const auto data = component.value("data", nlohmann::ordered_json::object());
+			const auto& data = component.at("data");
 			if (component.value("type", std::string{}) == "ActionHost")
 			{
 				const auto sets = data.value("actionSets", nlohmann::ordered_json::array());
@@ -3715,6 +3906,19 @@ bool TestGAFDemoHallPlayerAttackContract()
 			}
 		}
 	}
+	nlohmann::ordered_json whisperAnimator;
+	if (!Vans::VansJsonFileStorage::Read(
+		projectRoot / "Assets/Characters/Whisper/Animation/Whisper.vanimator",
+		whisperAnimator, error)) return ExpectGAF(false, error.c_str());
+	bool foundWhisperHitAnimation = false;
+	for (const auto& graph : whisperAnimator.value("graphs", nlohmann::ordered_json::array()))
+		for (const auto& node : graph.value("graph", nlohmann::ordered_json::object())
+			.value("nodes", nlohmann::ordered_json::array()))
+			for (const auto& state : node.value("properties", nlohmann::ordered_json::object())
+				.value("states", nlohmann::ordered_json::array()))
+				foundWhisperHitAnimation = foundWhisperHitAnimation ||
+					(state.value("name", std::string{}) == "TakingDamage1" &&
+					!state.value("loop", true));
 	std::string script;
 	if (!Vans::VansFileStorage::ReadAllBytes(
 		projectRoot / "Scripts/forest_lua_behaviors.lua", script, error))
@@ -3725,7 +3929,8 @@ bool TestGAFDemoHallPlayerAttackContract()
 		? script.substr(attackScriptBegin, attackScriptEnd - attackScriptBegin) : std::string{};
 	return ExpectGAF(foundAttackSet && attackGraphIsNonMotionMatching && closeCombatClipRefs == 2 &&
 		attackStatesUseRootMotion && foundMannequinHost && foundMannequinController &&
-		foundSurvivalHost && foundSurvivalController &&
+		foundSurvivalHost && foundSurvivalController && foundAxeHitBase && foundAxeHitTip &&
+		foundWhisperHurtBody && foundWhisperResponseHost && foundWhisperHitAnimation &&
 		attackScript.find("is_key_pressed(\"J\")") != std::string::npos &&
 		attackScript.find("self.characterName ~= (character_state.activeName") != std::string::npos &&
 		attackScript.find("DemoHall player attack input: KEY_J") != std::string::npos &&
@@ -3740,6 +3945,302 @@ bool TestGAFDemoHallPlayerAttackContract()
 		attackScript.find("configured_string") != std::string::npos &&
 		attackScript.find("request_cancel") == std::string::npos,
 		"DemoHall player attack is not wired through GAF into the non-MM root-motion Graph Set");
+}
+
+bool TestGAFDemoHallMeleeHitRuntimeContract()
+{
+	namespace fs = std::filesystem;
+	fs::path workspace = fs::current_path();
+	for (int depth = 0; depth < 6 && !fs::exists(workspace / "DemoHallProject"); ++depth)
+		workspace = workspace.parent_path();
+	const fs::path projectRoot = workspace / "DemoHallProject";
+	const fs::path temporaryRoot =
+		fs::temp_directory_path() / "ForestGAFDemoHallMeleeHitRuntimeContract";
+	std::error_code filesystemError;
+	fs::remove_all(temporaryRoot, filesystemError);
+	struct TemporaryCleanup
+	{
+		fs::path path;
+		~TemporaryCleanup()
+		{
+			std::error_code ignored;
+			fs::remove_all(path, ignored);
+		}
+	} temporaryCleanup{ temporaryRoot };
+
+	const fs::path assetsRoot = temporaryRoot / "Assets/PlayerAttack";
+	fs::create_directories(assetsRoot, filesystemError);
+	fs::copy(projectRoot / "Assets/GAF/PlayerAttack", assetsRoot,
+		fs::copy_options::recursive | fs::copy_options::overwrite_existing,
+		filesystemError);
+	if (!ExpectGAF(!filesystemError,
+		"DemoHall player-attack assets could not be copied for the runtime hit test"))
+		return false;
+	fs::copy(projectRoot / "Assets/GAF/WhisperCombat", assetsRoot / "WhisperCombat",
+		fs::copy_options::recursive | fs::copy_options::overwrite_existing,
+		filesystemError);
+	if (!ExpectGAF(!filesystemError,
+		"DemoHall Whisper response assets could not be copied for the runtime hit test"))
+		return false;
+	for (const char* fileName : { "DemoHallTags.vtagtree", "DemoHallTags.vtagtree.meta" })
+	{
+		fs::copy_file(projectRoot / "Assets/GAF/WindowBreak" / fileName,
+			assetsRoot / fileName, fs::copy_options::overwrite_existing, filesystemError);
+		if (!ExpectGAF(!filesystemError,
+			"DemoHall TagTree could not be copied for the runtime hit test")) return false;
+	}
+
+	Vans::VansGAFProjectConfiguration configuration;
+	std::string error;
+	if (!Vans::VansGAFProjectConfiguration::LoadForProject(
+		projectRoot, workspace / "ForestEngine/ForestEngine", configuration, error))
+		return ExpectGAF(false, error.c_str());
+	Vans::VansAssetDatabase database(
+		temporaryRoot / "Assets", temporaryRoot / "Library/Artifacts");
+	const Vans::VansAssetScanResult scan =
+		database.Scan(Vans::VansAssetOperationPolicy::Authoring());
+	if (!ExpectGAF(scan && database.All().size() == 16,
+		"DemoHall melee runtime fixture did not scan as sixteen GAF assets")) return false;
+
+	VansGraphics::VansAnimationClip referenceClip;
+	VansGraphics::Skeleton whisperSkeleton;
+	if (!VansGraphics::VansAnimationClipIO::Load(
+		(projectRoot / "Assets/Characters/Whisper/Animations/"
+			"Anim_Whisper_Taking_Damage1_Unreal_Take.vclip").string(),
+		referenceClip, whisperSkeleton))
+		return ExpectGAF(false, "Whisper hit clip could not provide the runtime skeleton");
+	VansGraphics::AnimatorAssetData whisperAnimatorAsset;
+	if (!VansGraphics::VansAnimatorIO::Load(
+		(projectRoot / "Assets/Characters/Whisper/Animation/Whisper.vanimator").string(),
+		whisperAnimatorAsset))
+		return ExpectGAF(false, "Whisper Animator could not be loaded for the runtime hit test");
+	VansGraphics::VansAnimatorRuntimeCompileOptions compileOptions;
+	compileOptions.enableTargetPostProcess = false;
+	compileOptions.enableRootMotion = false;
+	compileOptions.rigResolver = [&projectRoot](
+		const std::string&, fs::path& resolvedPath, std::string&)
+	{
+		resolvedPath = projectRoot /
+			"Assets/Characters/Whisper/Animation/Whisper.vanimrig";
+		return true;
+	};
+	auto whisperController = VansGraphics::VansAnimatorRuntimeCompiler::Compile(
+		whisperAnimatorAsset, whisperSkeleton,
+		[&projectRoot](const VansGraphics::AnimatorClipRef& ref,
+			fs::path& resolvedPath, std::string& resolveError)
+		{
+			resolvedPath = projectRoot / ref.pathHint;
+			if (fs::is_regular_file(resolvedPath)) return true;
+			resolveError = "Missing DemoHall Whisper clip: " + resolvedPath.string();
+			return false;
+		},
+		[](const VansGraphics::VansAnimationLayerDefinition&,
+			fs::path&, std::string& resolveError)
+		{
+			resolveError = "Whisper base layer unexpectedly requested a Bone Mask";
+			return false;
+		}, compileOptions, error);
+	if (!ExpectGAF(whisperController != nullptr, error.c_str())) return false;
+	whisperController->Play();
+	whisperController->Update(0.0f, whisperSkeleton);
+	const std::string stateBeforeHit = whisperController->GetCurrentStateName();
+
+	Vans::VansRuntimeWorld world;
+	const Vans::VansEntityHandle attacker = world.CreateEntity({
+		"demohall-melee-attacker", "Survival Runtime Attacker" });
+	const Vans::VansEntityHandle hitBase = world.CreateEntity({
+		"928f6ad1-4aac-4b57-a244-8a021f518401", "Survival_Axe_Hit_Base", attacker });
+	const Vans::VansEntityHandle hitTip = world.CreateEntity({
+		"c28c047e-aebd-4668-8ca6-04de3f348402", "Survival_Axe_Hit_Tip", attacker });
+	const Vans::VansEntityHandle whisper = world.CreateEntity({
+		"demohall-melee-whisper", "Whisper Runtime Target" });
+	if (!ExpectGAF(attacker.IsValid() && hitBase.IsValid() && hitTip.IsValid() &&
+		whisper.IsValid(), "DemoHall melee runtime entities could not be created")) return false;
+
+	std::vector<std::uint32_t> transformIds;
+	const auto addTransform = [&](Vans::VansEntityHandle owner, const char* guid,
+		const glm::vec3& position)
+	{
+		const std::uint32_t id = VansGraphics::VansTransformStore::AllocateTransform();
+		transformIds.push_back(id);
+		VansGraphics::VansTransform& transform =
+			VansGraphics::VansTransformStore::GetTransform(id);
+		transform.m_Position = position;
+		transform.m_Rotation = glm::vec3(0.0f);
+		transform.m_Scale = glm::vec3(1.0f);
+		return world.AddComponent(owner, Vans::VansRuntimeComponentType_Transform,
+			Vans::VansRuntimeTransformComponent{ id }, guid).IsValid() ? id : UINT32_MAX;
+	};
+	const std::uint32_t attackerTransform = addTransform(
+		attacker, "demohall-melee-attacker-transform", glm::vec3(0.0f));
+	const std::uint32_t baseTransform = addTransform(
+		hitBase, "demohall-melee-base-transform", glm::vec3(-1.0f, 1.05f, -0.6f));
+	const std::uint32_t tipTransform = addTransform(
+		hitTip, "demohall-melee-tip-transform", glm::vec3(-1.0f, 1.05f, -1.6f));
+	const std::uint32_t whisperTransform = addTransform(
+		whisper, "demohall-melee-whisper-transform", glm::vec3(0.0f, 0.0f, -1.1f));
+	if (!ExpectGAF(attackerTransform != UINT32_MAX && baseTransform != UINT32_MAX &&
+		tipTransform != UINT32_MAX && whisperTransform != UINT32_MAX,
+		"DemoHall melee runtime transforms could not be created"))
+	{
+		for (std::uint32_t id : transformIds) VansGraphics::VansTransformStore::FreeTransform(id);
+		return false;
+	}
+	// 生产场景的 Survival 根节点带有 X=-90° 与 0.01 缩放作为模型导入
+	// 修正。打击前向只能读取 locomotion yaw，不能经过完整模型矩阵。
+	VansGraphics::VansTransform& attackerWorld =
+		VansGraphics::VansTransformStore::GetTransform(attackerTransform);
+	attackerWorld.m_Rotation = glm::vec3(-90.0f, 180.0f, 0.0f);
+	attackerWorld.m_Scale = glm::vec3(0.01f);
+
+	VansEngine::VansPhysicsSystem& physicsSystem =
+		VansEngine::VansPhysicsSystem::GetInstance();
+	if (!ExpectGAF(physicsSystem.Initialize(),
+		"PhysX could not initialize for the production hurt-body runtime test"))
+	{
+		physicsSystem.Shutdown();
+		for (std::uint32_t id : transformIds) VansGraphics::VansTransformStore::FreeTransform(id);
+		return false;
+	}
+	VansEngine::VansPhysicsNode hurtBody;
+	VansEngine::PhysicsNodeProperties hurtBodyProperties;
+	hurtBodyProperties.enabled = true;
+	hurtBodyProperties.bodyType = VansEngine::PhysicsBodyType::Kinematic;
+	hurtBodyProperties.colliderType = VansEngine::PhysicsColliderType::Capsule;
+	hurtBodyProperties.layerName = "Enemy";
+	hurtBodyProperties.isTrigger = true;
+	hurtBodyProperties.capsuleRadius = 0.38f;
+	hurtBodyProperties.capsuleHalfHeight = 0.5f;
+	hurtBodyProperties.shapeOffset = glm::vec3(0.0f, 1.05f, 0.0f);
+	hurtBody.SetName("Whisper_Torso_HurtBody");
+	hurtBody.Initialize(hurtBodyProperties, whisperTransform);
+	VansEngine::VansCharacterControllerNode whisperCct;
+	VansGraphics::VansAnimationNode whisperAnimation("Whisper Runtime Animation");
+	whisperAnimation.SetSkeleton(whisperSkeleton);
+	const bool controllerBound = whisperAnimation.SetController(whisperController.get());
+	const Vans::VansComponentHandle hurtBodyComponent = world.AddComponent(
+		whisper, Vans::VansRuntimeComponentType_Physics,
+		Vans::VansRuntimePhysicsComponent{ &hurtBody }, "demohall-whisper-hurt-body");
+	const Vans::VansComponentHandle cctComponent = world.AddComponent(
+		whisper, Vans::VansRuntimeComponentType_CharacterController,
+		Vans::VansRuntimeCharacterControllerComponent{ &whisperCct },
+		"demohall-whisper-cct");
+	const Vans::VansComponentHandle animationComponent = world.AddComponent(
+		whisper, Vans::VansRuntimeComponentType_Animation,
+		Vans::VansRuntimeAnimationComponent{ &whisperAnimation },
+		"demohall-whisper-animation");
+
+	Vans::VansGameplayRuntime gameplayRuntime;
+	struct RuntimeCleanup
+	{
+		Vans::VansGameplayRuntime& gameplayRuntime;
+		Vans::VansRuntimeWorld& world;
+		VansEngine::VansPhysicsNode& hurtBody;
+		VansEngine::VansCharacterControllerNode& cct;
+		VansEngine::VansPhysicsSystem& physicsSystem;
+		std::vector<std::uint32_t>& transformIds;
+		~RuntimeCleanup()
+		{
+			gameplayRuntime.Shutdown();
+			world.Clear();
+			hurtBody.Shutdown();
+			cct.Release();
+			for (std::uint32_t id : transformIds)
+				VansGraphics::VansTransformStore::FreeTransform(id);
+			physicsSystem.Shutdown();
+		}
+	} runtimeCleanup{
+		gameplayRuntime, world, hurtBody, whisperCct, physicsSystem, transformIds };
+	if (!ExpectGAF(hurtBody.IsEnabled() && controllerBound &&
+		hurtBodyComponent.IsValid() && cctComponent.IsValid() && animationComponent.IsValid(),
+		"Whisper production hurt-body, CCT, or Animation component is unavailable")) return false;
+
+	auto combatService = Vans::VansCombatActionService::Create(
+		world, gameplayRuntime, error);
+	auto animationService = Vans::VansAnimationActionService::Create(world, error);
+	auto navigationService = Vans::VansNavigationActionService::Create(world, error);
+	if (!ExpectGAF(combatService && animationService && navigationService, error.c_str()))
+		return false;
+	Vans::VansGameplayRuntimeDependencies dependencies;
+	dependencies.services = { combatService, animationService, navigationService };
+	if (!gameplayRuntime.Initialize(
+		database.All(), configuration.settings, dependencies, error))
+		return ExpectGAF(false, error.c_str());
+
+	Vans::VansGameplayActionHostSetup attackerSetup;
+	attackerSetup.actionSets.push_back("4534ddf1-e858-468e-a1ab-9e8b98cf6129");
+	attackerSetup.initialTags.push_back({ "Target.Character.Player", 1 });
+	const auto attackerHost = gameplayRuntime.CreateHost(attacker, attackerSetup, error);
+	Vans::VansGameplayActionHostSetup whisperSetup;
+	whisperSetup.actionSets.push_back("269218a3-6809-48f6-b055-97891161c303");
+	whisperSetup.initialTags.push_back({ "Target.Character.Enemy", 1 });
+	const auto whisperHost = gameplayRuntime.CreateHost(whisper, whisperSetup, error);
+	const auto crowbarAttack = gameplayRuntime.Assets().ResolveAction(
+		"Gameplay.DemoHall.Player.Attack.Crowbar");
+	if (!ExpectGAF(attackerHost && whisperHost && crowbarAttack,
+		"Production GAF hosts or Crowbar attack did not resolve")) return false;
+
+	Vans::VansActionContext attackContext;
+	attackContext.owner = attacker;
+	attackContext.instigator = attacker;
+	attackContext.source = attacker;
+	attackContext.primaryTarget = whisper;
+	const Vans::VansActionResult attackResult =
+		attackerHost->ActivateAction(crowbarAttack->id, attackContext);
+	if (!ExpectGAF(attackResult && attackerHost->ActiveActions().size() == 1,
+		"Production Crowbar GAF Action did not open its configured melee resource"))
+		return false;
+
+	combatService->Tick(0.25);
+	combatService->Tick(0.25);
+	VansGraphics::VansTransformStore::GetTransform(baseTransform).m_Position.x = 1.0f;
+	VansGraphics::VansTransformStore::GetTransform(tipTransform).m_Position.x = 1.0f;
+	combatService->Tick(0.25);
+	const Vans::VansCombatDebugSnapshot hitSnapshot =
+		combatService->CaptureDebugSnapshot();
+	const bool debugWindowValidated = hitSnapshot.available &&
+		!hitSnapshot.windows.empty() && hitSnapshot.windows.front().active &&
+		hitSnapshot.windows.front().window == "PrimaryMeleeHit" &&
+		glm::length(hitSnapshot.windows.front().forward - glm::vec3(0.0f, 0.0f, -1.0f)) < 0.001f &&
+		hitSnapshot.windows.front().hitCount == 1;
+	const bool hurtBodyValidated = std::any_of(
+		hitSnapshot.hurtBodies.begin(), hitSnapshot.hurtBodies.end(),
+		[](const Vans::VansCombatDebugHurtBody& body)
+		{
+			return body.target == "Whisper Runtime Target" && body.hit &&
+				std::abs(body.radius - 0.38f) < 0.001f;
+		});
+	if (!(debugWindowValidated && hurtBodyValidated &&
+		whisperHost->ActiveActions().size() == 1 &&
+		whisperCct.IsGameplayMovementBlocked() &&
+		whisperController->GetCurrentStateName() == "TakingDamage1"))
+	{
+		std::cerr << "[GAF] Runtime hit diagnostic: window=" << debugWindowValidated
+			<< " hurtBody=" << hurtBodyValidated
+			<< " responseActions=" << whisperHost->ActiveActions().size()
+			<< " movementBlocked=" << whisperCct.IsGameplayMovementBlocked()
+			<< " animation='" << whisperController->GetCurrentStateName() << "'\n";
+	}
+	if (!ExpectGAF(debugWindowValidated && hurtBodyValidated &&
+		whisperHost->ActiveActions().size() == 1 &&
+		whisperCct.IsGameplayMovementBlocked() &&
+		whisperController->GetCurrentStateName() == "TakingDamage1",
+		"Validated production melee hit did not block Whisper movement and play TakingDamage1"))
+		return false;
+
+	combatService->Tick(0.25);
+	if (!ExpectGAF(whisperHost->ActiveActions().size() == 1 &&
+		combatService->CaptureDebugSnapshot().windows.front().hitCount == 1,
+		"A single attack window applied the Whisper response more than once")) return false;
+	gameplayRuntime.TickEarly(1.4);
+	if (!ExpectGAF(whisperHost->ActiveActions().empty() &&
+		!whisperCct.IsGameplayMovementBlocked() &&
+		whisperController->GetCurrentStateName() == stateBeforeHit,
+		"Whisper hit response did not release movement and restore animation state")) return false;
+
+	std::cout << "[GAF] Production melee hit validated: window=PrimaryMeleeHit"
+		" hits=1 response=TakingDamage1 movementBlockReleased=1\n";
+	return true;
 }
 
 bool TestDemoHallCrouchLocomotionContract()
@@ -4337,7 +4838,7 @@ bool TestDemoHallPlayerVaultContract()
 		"DemoHall vault is not wired through input, Graph Set, root motion, and CCT ownership");
 }
 
-bool TestDemoHallWhisperPreviewContract()
+bool TestDemoHallWhisperAIContract()
 {
 	namespace fs = std::filesystem;
 	fs::path workspace = fs::current_path();
@@ -4354,8 +4855,37 @@ bool TestDemoHallWhisperPreviewContract()
 	if (!ExpectGAF(modelSkeleton.bones.size() == 68 &&
 		modelSkeleton.boneNameToIndex.find("root") != modelSkeleton.boneNameToIndex.end() &&
 		modelSkeleton.boneNameToIndex.find("pelvis") != modelSkeleton.boneNameToIndex.end() &&
-		modelSkeleton.boneNameToIndex.find("head") != modelSkeleton.boneNameToIndex.end(),
+		modelSkeleton.boneNameToIndex.find("head") != modelSkeleton.boneNameToIndex.end() &&
+		modelSkeleton.boneNameToIndex.find("foot_l") != modelSkeleton.boneNameToIndex.end() &&
+		modelSkeleton.boneNameToIndex.find("foot_r") != modelSkeleton.boneNameToIndex.end() &&
+		modelSkeleton.boneNameToIndex.find("ball_l") != modelSkeleton.boneNameToIndex.end() &&
+		modelSkeleton.boneNameToIndex.find("ball_r") != modelSkeleton.boneNameToIndex.end(),
 		"DemoHall Whisper model did not retain its weighted 68-bone skeleton")) return false;
+	std::vector<glm::mat4> whisperBindGlobals(
+		modelSkeleton.bones.size(), glm::mat4(1.0f));
+	for (int bone : modelSkeleton.topologicalOrder)
+	{
+		whisperBindGlobals[static_cast<std::size_t>(bone)] =
+			modelSkeleton.bones[static_cast<std::size_t>(bone)].localTransform;
+		const int parent = modelSkeleton.bones[static_cast<std::size_t>(bone)].parentIndex;
+		if (parent >= 0)
+			whisperBindGlobals[static_cast<std::size_t>(bone)] =
+				whisperBindGlobals[static_cast<std::size_t>(parent)] *
+				whisperBindGlobals[static_cast<std::size_t>(bone)];
+	}
+	const auto bindPosition = [&whisperBindGlobals](int bone)
+	{
+		return glm::vec3(whisperBindGlobals[static_cast<std::size_t>(bone)][3]);
+	};
+	glm::vec3 whisperAuthoredToeForward =
+		(bindPosition(modelSkeleton.boneNameToIndex.at("ball_l")) -
+		 bindPosition(modelSkeleton.boneNameToIndex.at("foot_l"))) +
+		(bindPosition(modelSkeleton.boneNameToIndex.at("ball_r")) -
+		 bindPosition(modelSkeleton.boneNameToIndex.at("foot_r")));
+	whisperAuthoredToeForward.y = 0.0f;
+	if (!ExpectGAF(glm::length(whisperAuthoredToeForward) > 1.0e-4f,
+		"DemoHall Whisper bind pose does not expose a stable anatomical forward")) return false;
+	whisperAuthoredToeForward = glm::normalize(whisperAuthoredToeForward);
 
 	struct ClipExpectation
 	{
@@ -4411,6 +4941,75 @@ bool TestDemoHallWhisperPreviewContract()
 			!ExpectGAF(std::abs(spineKeys.front().rotation.y + 0.1038613f) < 0.001f &&
 				std::abs(spineKeys.front().rotation.z - 0.0059622f) < 0.001f,
 				"DemoHall Whisper clip rotation axes do not match the glTF skeleton space")) return false;
+	}
+
+	const auto sampleWhisperClipGlobals = [&whisperRoot, &modelSkeleton](
+		const char* file, float requestedTime, std::vector<glm::mat4>& outGlobals)
+	{
+		VansGraphics::VansAnimationClip clip;
+		VansGraphics::Skeleton clipSkeleton;
+		if (!VansGraphics::VansAnimationClipIO::Load(
+			(whisperRoot / "Animations" / file).string(), clip, clipSkeleton)) return false;
+		VansGraphics::VansAnimationSampleRequest request;
+		request.currentTime = std::min(requestedTime, std::max(0.0f, clip.duration - 0.0001f));
+		request.endTime = clip.duration;
+		request.loop = false;
+		VansGraphics::VansPosePayload pose;
+		if (!VansGraphics::VansAnimationSampler::Sample(
+			clip, modelSkeleton, request, pose)) return false;
+		outGlobals.assign(modelSkeleton.bones.size(), glm::mat4(1.0f));
+		for (std::size_t bone = 0; bone < outGlobals.size(); ++bone)
+			outGlobals[bone] = VansGraphics::VansPoseMath::Compose(pose.localPose[bone]);
+		for (int bone : modelSkeleton.topologicalOrder)
+		{
+			const int parent = modelSkeleton.bones[static_cast<std::size_t>(bone)].parentIndex;
+			if (parent >= 0)
+				outGlobals[static_cast<std::size_t>(bone)] =
+					outGlobals[static_cast<std::size_t>(parent)] *
+					outGlobals[static_cast<std::size_t>(bone)];
+		}
+		return true;
+	};
+	std::vector<glm::mat4> sitEndGlobals;
+	std::vector<glm::mat4> idleStartGlobals;
+	std::vector<glm::mat4> walkStartGlobals;
+	if (!sampleWhisperClipGlobals(
+		"anima_whisper_sittoidle_Unreal_Take.vclip", 3.0f, sitEndGlobals) ||
+		!sampleWhisperClipGlobals(
+			"Anim_Whisper_Idle1_Unreal_Take.vclip", 0.0f, idleStartGlobals) ||
+		!sampleWhisperClipGlobals(
+			"Anim_Whisper_Walk1_Unreal_Take.vclip", 0.0f, walkStartGlobals))
+		return ExpectGAF(false, "DemoHall Whisper facing diagnostic clips could not be sampled");
+	const auto rotationDifferenceDegrees = [](const glm::mat4& lhs, const glm::mat4& rhs)
+	{
+		const glm::quat lhsRotation = glm::normalize(glm::quat_cast(glm::mat3(lhs)));
+		const glm::quat rhsRotation = glm::normalize(glm::quat_cast(glm::mat3(rhs)));
+		const float cosine = glm::clamp(std::abs(glm::dot(lhsRotation, rhsRotation)), 0.0f, 1.0f);
+		return 2.0f * std::acos(cosine) * 57.2957795f;
+	};
+	const int rootIndex = modelSkeleton.boneNameToIndex.at("root");
+	const int pelvisIndex = modelSkeleton.boneNameToIndex.at("pelvis");
+	const float sitToIdleRootDelta = rotationDifferenceDegrees(
+			sitEndGlobals[static_cast<std::size_t>(rootIndex)],
+			idleStartGlobals[static_cast<std::size_t>(rootIndex)]);
+	const float sitToIdlePelvisDelta = rotationDifferenceDegrees(
+			sitEndGlobals[static_cast<std::size_t>(pelvisIndex)],
+			idleStartGlobals[static_cast<std::size_t>(pelvisIndex)]);
+	const float sitToWalkRootDelta = rotationDifferenceDegrees(
+			sitEndGlobals[static_cast<std::size_t>(rootIndex)],
+			walkStartGlobals[static_cast<std::size_t>(rootIndex)]);
+	const float sitToWalkPelvisDelta = rotationDifferenceDegrees(
+			sitEndGlobals[static_cast<std::size_t>(pelvisIndex)],
+			walkStartGlobals[static_cast<std::size_t>(pelvisIndex)]);
+	std::cout << "[GAF] Whisper facing deltas: SitEnd->IdleStart root="
+		<< sitToIdleRootDelta << " pelvis=" << sitToIdlePelvisDelta
+		<< " SitEnd->WalkStart root=" << sitToWalkRootDelta
+		<< " pelvis=" << sitToWalkPelvisDelta << '\n';
+	if (!ExpectGAF(sitToIdleRootDelta < 0.1f && sitToIdlePelvisDelta < 1.0f &&
+		sitToWalkRootDelta < 0.1f && sitToWalkPelvisDelta < 20.0f,
+		"DemoHall Whisper stand-up, Idle, and Walk clips do not share one facing basis"))
+	{
+		return false;
 	}
 
 	VansGraphics::VansAnimationClip deformationClip;
@@ -4572,6 +5171,24 @@ bool TestDemoHallWhisperPreviewContract()
 		controllerStats.deformedRadiusRatio < 1.25f &&
 		maxControllerMatrixDiff < 1.0e-5f,
 		"DemoHall Whisper runtime controller produced invalid or exploded skinning")) return false;
+	const VansGraphics::VansCompiledAnimationRig* whisperRig = whisperController->GetAnimationRig();
+	if (!ExpectGAF(whisperRig &&
+		glm::dot(whisperRig->modelForward, whisperAuthoredToeForward) > 0.9999f,
+		"DemoHall Whisper Rig forward does not match the skeleton toe direction"))
+	{
+		return false;
+	}
+	whisperController->SetInt("MoveState", 1);
+	whisperController->Update(0.13f, modelSkeleton);
+	const bool demoHallEnteredWalk = whisperController->GetCurrentStateName() == "Walk1";
+	whisperController->SetInt("MoveState", 2);
+	whisperController->Update(0.13f, modelSkeleton);
+	const bool demoHallEnteredRun = whisperController->GetCurrentStateName() == "Run";
+	whisperController->SetInt("MoveState", 0);
+	whisperController->Update(0.13f, modelSkeleton);
+	if (!ExpectGAF(demoHallEnteredWalk && demoHallEnteredRun &&
+		whisperController->GetCurrentStateName() == "Idle1",
+		"DemoHall Whisper MoveState does not route Idle, Walk, and Run")) return false;
 	nlohmann::ordered_json animator;
 	if (!Vans::VansJsonFileStorage::Read(
 		whisperRoot / "Animation/Whisper.vanimator", animator, error))
@@ -4599,24 +5216,24 @@ bool TestDemoHallWhisperPreviewContract()
 			transitionCount += static_cast<int>(
 				properties.value("transitions", nlohmann::ordered_json::array()).size());
 		}
-	bool hasPreviewParameter = false;
+	bool hasMoveParameter = false;
 	bool hasWakeParameter = false;
 	for (const auto& parameter : animator.value("parameters", nlohmann::ordered_json::array()))
 	{
-		hasPreviewParameter = hasPreviewParameter ||
-			(parameter.value("name", std::string{}) == "PreviewState" &&
+		hasMoveParameter = hasMoveParameter ||
+			(parameter.value("name", std::string{}) == "MoveState" &&
 			parameter.value("type", std::string{}) == "int" &&
-			parameter.value("default", 0) == -1);
+			parameter.value("default", -1) == 0);
 		hasWakeParameter = hasWakeParameter ||
 			(parameter.value("name", std::string{}) == "WakeUp" &&
 			parameter.value("type", std::string{}) == "trigger");
 	}
 	if (!ExpectGAF(animator.value("clips", nlohmann::ordered_json::array()).size() == 18 &&
 		animator.value("graphs", nlohmann::ordered_json::array()).size() == 1 &&
-		stateCount == 18 && transitionCount == 18 && defaultsToDead &&
-		hasPreviewParameter && hasWakeParameter &&
+		stateCount == 18 && transitionCount == 8 && defaultsToDead &&
+		hasMoveParameter && hasWakeParameter &&
 		!containsMotionMatching && allStatesDisableRootMotion,
-		"DemoHall Whisper animator is not the Dead-gated stationary 18-state graph")) return false;
+		"DemoHall Whisper animator is not the Dead-gated gameplay locomotion graph")) return false;
 
 	nlohmann::ordered_json material;
 	if (!Vans::VansJsonFileStorage::Read(
@@ -4635,20 +5252,49 @@ bool TestDemoHallWhisperPreviewContract()
 	nlohmann::ordered_json scene;
 	if (!Vans::VansJsonFileStorage::Read(projectRoot / "Scenes/DemoHall.json", scene, error))
 		return ExpectGAF(false, error.c_str());
-	bool foundPreview = false;
+	bool foundWhisper = false;
+	glm::vec3 whisperPosition(0.0f);
+	std::vector<glm::vec3> playerPositions;
 	for (const auto& entity : scene.value("entities", nlohmann::ordered_json::array()))
 	{
-		if (entity.value("name", std::string{}) != "Whisper_Preview") continue;
+		const bool isWhisperEntity = entity.value("id", std::string{}) ==
+			"d21cfc31-dba5-44cb-a271-f0f2c20cded1" &&
+			entity.value("name", std::string{}) == "Whisper";
+		const auto position = entity.value("components", nlohmann::ordered_json::array());
+		glm::vec3 entityPosition(0.0f);
+		bool hasTransform = false;
+		bool playerTargetTag = false;
+		for (const auto& component : position)
+		{
+			const auto data = component.value("data", nlohmann::ordered_json::object());
+			if (component.value("type", std::string{}) == "Transform")
+			{
+				const auto values = data.value("position", nlohmann::ordered_json::array());
+				if (values.size() == 3)
+				{
+					entityPosition = glm::vec3(values[0].get<float>(),
+						values[1].get<float>(), values[2].get<float>());
+					hasTransform = true;
+				}
+			}
+			else if (component.value("type", std::string{}) == "ActionHost")
+				for (const auto& tag : data.value("initialTags", nlohmann::ordered_json::array()))
+					playerTargetTag = playerTargetTag ||
+						tag.value("tag", std::string{}) == "Target.Character.Player";
+		}
+		if (hasTransform && playerTargetTag) playerPositions.push_back(entityPosition);
+		if (!isWhisperEntity) continue;
 		bool hasModel = false;
 		bool hasAnimation = false;
-		bool hasPreviewScript = false;
-		bool previewWaitsForGAFWake = false;
 		bool hasCharacterController = false;
+		bool hasNavigationAgent = false;
+		bool hasAIAgent = false;
+		bool hasPreviewScript = false;
+		whisperPosition = entityPosition;
 		for (const auto& component : entity.value("components", nlohmann::ordered_json::array()))
 		{
 			const std::string type = component.value("type", std::string{});
 			const auto data = component.value("data", nlohmann::ordered_json::object());
-			hasCharacterController = hasCharacterController || type == "CharacterController";
 			if (type == "ModelRenderer")
 				hasModel = component.value("enabled", false) &&
 					data.value("model", nlohmann::ordered_json::object())
@@ -4662,17 +5308,79 @@ bool TestDemoHallWhisperPreviewContract()
 						.value("guid", std::string{}) == "ec68421a-fff2-4db4-82c4-00cbb052c84c" &&
 					data.value("rig", nlohmann::ordered_json::object())
 						.value("guid", std::string{}) == "873c655f-18a8-4aea-8632-ff095e6cc7cc";
-			else if (type == "Script" && data.value("entry", std::string{}) ==
-				"WhisperAnimationPreview")
+			else if (type == "CharacterController")
+				hasCharacterController = component.value("enabled", false) &&
+					data.value("layer", std::string{}) == "Enemy" &&
+					std::abs(data.value("radius", 0.0f) - 0.35f) < 0.001f;
+			else if (type == "NavigationAgent")
+				hasNavigationAgent = component.value("enabled", false) &&
+					data.value("navigationMesh", nlohmann::ordered_json::object())
+						.value("guid", std::string{}) ==
+						"fcb8f186-b52d-48fc-bd57-8315d4b0fcad" &&
+					std::abs(data.value("maxSpeed", 0.0f) - 1.5f) < 0.001f &&
+					std::abs(data.value("acceleration", 0.0f) - 6.0f) < 0.001f &&
+					std::abs(data.value("stoppingDistance", 0.0f) - 1.6f) < 0.001f;
+			else if (type == "AIAgent")
 			{
-				hasPreviewScript = true;
-				previewWaitsForGAFWake = !data.value("fields", nlohmann::ordered_json::object())
-					.value("cycleAnimations", true);
+				const auto facing = data.value("facing", nlohmann::ordered_json::object());
+				const auto sight = data.value("sight", nlohmann::ordered_json::object());
+				hasAIAgent = component.value("enabled", false) &&
+					data.value("behavior", nlohmann::ordered_json::object())
+						.value("guid", std::string{}) ==
+						"7a8d6d19-57fc-4d5a-9a94-8b1ef226d301" &&
+					data.value("targetTag", std::string{}) == "Target.Character.Player" &&
+					data.value("readyAnimationState", std::string{}) == "Idle1" &&
+					data.value("movementParameter", std::string{}) == "MoveState" &&
+					data.value("maxMovementState", 2) == 1 &&
+					facing.value("yawOnly", false) &&
+					sight.value("enabled", false) &&
+					sight.value("blackboardKey", std::string{}) == "HasVisualTarget" &&
+					std::abs(sight.value("range", 0.0f) - 14.0f) < 0.001f &&
+					std::abs(sight.value("horizontalFovDegrees", 0.0f) - 240.0f) < 0.001f &&
+					sight.value("occlusionLayer", std::string{}) == "Environment";
 			}
+			else if (type == "Script")
+				hasPreviewScript = hasPreviewScript ||
+					data.value("entry", std::string{}) == "WhisperAnimationPreview";
 		}
-		foundPreview = hasModel && hasAnimation && hasPreviewScript &&
-			previewWaitsForGAFWake && !hasCharacterController;
+		foundWhisper = hasTransform && hasModel && hasAnimation &&
+			hasCharacterController && hasNavigationAgent && hasAIAgent && !hasPreviewScript;
 	}
+	Vans::VansAIBehaviorAsset whisperBehavior;
+	if (!Vans::VansAIBehaviorAssetStorage::Load(
+		projectRoot / "Assets/AI/WhisperChase.vaibehavior", whisperBehavior, error))
+		return ExpectGAF(false, error.c_str());
+	const auto* dormantState = whisperBehavior.FindState("Dormant");
+	const auto* awakeningState = whisperBehavior.FindState("Awakening");
+	const auto* armedIdleState = whisperBehavior.FindState("ArmedIdle");
+	const auto* patrolState = whisperBehavior.FindState("Patrol");
+	const auto* chaseState = whisperBehavior.FindState("Chase");
+	const bool behaviorIsPickupGatedChase =
+		whisperBehavior.initialState == "Dormant" && dormantState && awakeningState &&
+		armedIdleState && patrolState && chaseState &&
+		!dormantState->transitions.empty() &&
+		dormantState->transitions.front().condition.key == "ActivationRequested" &&
+		!awakeningState->transitions.empty() &&
+		awakeningState->transitions.front().condition.expectedString == "$ready" &&
+		!armedIdleState->transitions.empty() &&
+		armedIdleState->transitions.front().targetState == "Patrol" &&
+		patrolState->task == Vans::VansAITaskKind::Patrol && patrolState->patrol &&
+		std::abs(patrolState->patrol->radius - 4.0f) < 0.001f &&
+		!patrolState->transitions.empty() &&
+		patrolState->transitions.front().condition.key == "HasVisualTarget" &&
+		chaseState->task == Vans::VansAITaskKind::MoveToTarget &&
+		!chaseState->transitions.empty() &&
+		chaseState->transitions.front().condition.key == "HasVisualTarget" &&
+		!chaseState->transitions.front().condition.expectedBool;
+	Vans::VansNavigationMesh demoHallNavigation;
+	if (!demoHallNavigation.Load(
+		projectRoot / "Assets/Navigation/DemoHall.vnavmesh", error))
+		return ExpectGAF(false, error.c_str());
+	bool allPlayerSpawnsReachable = playerPositions.size() == 2u;
+	for (const glm::vec3& playerPosition : playerPositions)
+		allPlayerSpawnsReachable = allPlayerSpawnsReachable &&
+			demoHallNavigation.FindPath(whisperPosition, playerPosition).status ==
+			Vans::VansNavigationPathStatus::Complete;
 	std::string script;
 	if (!Vans::VansFileStorage::ReadAllBytes(
 		projectRoot / "Scripts/forest_lua_behaviors.lua", script, error))
@@ -4682,6 +5390,7 @@ bool TestDemoHallWhisperPreviewContract()
 	nlohmann::ordered_json pickupAction;
 	nlohmann::ordered_json pickupActionSet;
 	nlohmann::ordered_json pickupTimeline;
+	nlohmann::ordered_json wakeTimeline;
 	nlohmann::ordered_json demoHallTags;
 	if (!Vans::VansJsonFileStorage::Read(
 		itemGafRoot / "FrameStand4Pickup.vaction", pickupAction, error) ||
@@ -4690,6 +5399,9 @@ bool TestDemoHallWhisperPreviewContract()
 		!Vans::VansJsonFileStorage::Read(
 			projectRoot / "Assets/Cinematics/FrameStand4PickupWake.vtimeline",
 			pickupTimeline, error) ||
+		!Vans::VansJsonFileStorage::Read(
+			projectRoot / "Assets/Cinematics/FrameStand4WhisperWake.vtimeline",
+			wakeTimeline, error) ||
 		!Vans::VansJsonFileStorage::Read(
 			projectRoot / "Assets/GAF/WindowBreak/DemoHallTags.vtagtree",
 			demoHallTags, error))
@@ -4724,7 +5436,16 @@ bool TestDemoHallWhisperPreviewContract()
 	const Vans::VansTimelineCompileResult compiledPickupTimeline =
 		Vans::VansTimelineCompiler::Compile(
 			pickupTimelineAsset, pickupTimelineCompileOptions);
-	const bool pickupTimelineCompiles = static_cast<bool>(compiledPickupTimeline);
+	Vans::VansTimelineAsset wakeTimelineAsset;
+	if (!Vans::VansTimelineSerialization::Load(
+		projectRoot / "Assets/Cinematics/FrameStand4WhisperWake.vtimeline",
+		wakeTimelineAsset, error))
+		return ExpectGAF(false, error.c_str());
+	const Vans::VansTimelineCompileResult compiledWakeTimeline =
+		Vans::VansTimelineCompiler::Compile(
+			wakeTimelineAsset, pickupTimelineCompileOptions);
+	const bool pickupTimelineCompiles = static_cast<bool>(compiledPickupTimeline) &&
+		static_cast<bool>(compiledWakeTimeline);
 
 	const fs::path pickupRuntimeRoot =
 		fs::temp_directory_path() / "ForestGAFDemoHallFrameStand4PickupContract";
@@ -4838,6 +5559,11 @@ bool TestDemoHallWhisperPreviewContract()
 			bindingId == "binding-pickup-item" &&
 			binding.value("targetGuid", std::string{}) ==
 				"a50146bf-af31-5bb8-bcb1-a1a331fc1932";
+	}
+	for (const auto& binding : wakeTimeline.value(
+		"bindings", nlohmann::ordered_json::array()))
+	{
+		const std::string bindingId = binding.value("id", std::string{});
 		timelineBindsWhisperAnimation = timelineBindsWhisperAnimation ||
 			bindingId == "binding-whisper-animation" &&
 			binding.value("targetGuid", std::string{}) ==
@@ -4847,8 +5573,11 @@ bool TestDemoHallWhisperPreviewContract()
 			binding.value("required", false);
 	}
 	bool timelineFiresWakeTrigger = false;
+	int timelineWakeTick = -1;
+	int timelineCompletionTick = -1;
 	bool timelineCompletesPickupAction = false;
-	for (const auto& track : pickupTimeline.value(
+	bool pickupPreviewDoesNotWake = true;
+	for (const auto& track : wakeTimeline.value(
 		"tracks", nlohmann::ordered_json::array()))
 	{
 		const std::string type = track.value("type", std::string{});
@@ -4856,16 +5585,19 @@ bool TestDemoHallWhisperPreviewContract()
 			"extensionData", nlohmann::ordered_json::object());
 		if (type == "Timeline.AnimatorParameter")
 		{
-			bool hasPostCommitKey = false;
+			bool hasPreviewCompletionKey = false;
 			for (const auto& section : track.value(
 				"sections", nlohmann::ordered_json::array()))
 				for (const auto& channel : section.value(
 					"channels", nlohmann::ordered_json::array()))
 					for (const auto& key : channel.value(
 						"keys", nlohmann::ordered_json::array()))
-						hasPostCommitKey = hasPostCommitKey ||
-							key.value("tick", -1) == 27000 &&
-							key.value("value", false);
+					{
+						const int tick = key.value("tick", -1);
+						const bool isWakeKey = tick == 1 && key.value("value", false);
+						hasPreviewCompletionKey = hasPreviewCompletionKey || isWakeKey;
+						if (isWakeKey) timelineWakeTick = tick;
+					}
 			timelineFiresWakeTrigger =
 				track.value("bindingId", std::string{}) ==
 					"binding-whisper-animation" &&
@@ -4873,18 +5605,33 @@ bool TestDemoHallWhisperPreviewContract()
 				extensionData.value("parameterType", std::string{}) == "Trigger" &&
 				extensionData.value("firePolicy", std::string{}) == "Forward" &&
 				extensionData.value("seekPolicy", std::string{}) == "Never" &&
-				hasPostCommitKey;
+				hasPreviewCompletionKey;
 		}
-		else if (type == "Action.Event")
+	}
+	for (const auto& track : pickupTimeline.value(
+		"tracks", nlohmann::ordered_json::array()))
+	{
+		const std::string type = track.value("type", std::string{});
+		pickupPreviewDoesNotWake = pickupPreviewDoesNotWake &&
+			type != "Timeline.AnimatorParameter";
+		if (type == "Action.Event")
+		{
+			const auto extensionData = track.value(
+				"extensionData", nlohmann::ordered_json::object());
+			for (const auto& section : track.value(
+				"sections", nlohmann::ordered_json::array()))
+				timelineCompletionTick = section.value("startTick", -1);
 			timelineCompletesPickupAction =
 				extensionData.value("action", std::string{}) ==
 					"Gameplay.DemoHall.Item.FrameStand4PickupWake" &&
 				extensionData.value("event", std::string{}) ==
 					"Interaction.Pickup.Finished";
+		}
 	}
 
 	bool frameStandPickupConfigured = false;
 	bool frameStandTimelineConfigured = false;
+	bool frameStandWakeTimelineConfigured = false;
 	for (const auto& entity : scene.value("entities", nlohmann::ordered_json::array()))
 	{
 		const std::string entityName = entity.value("name", std::string{});
@@ -4917,16 +5664,36 @@ bool TestDemoHallWhisperPreviewContract()
 					hasPickupScript =
 						fields.value("itemId", std::string{}) ==
 							"whisper_frame_stand_4" &&
+						fields.value("aiTarget", nlohmann::ordered_json::object())
+							.value("entityGuid", std::string{}) ==
+							"d21cfc31-dba5-44cb-a271-f0f2c20cded1" &&
 						fields.value("actionHostOwnerGuid", std::string{}) ==
 							"a50146bf-af31-5bb8-bcb1-a1a331fc1932" &&
 						fields.value("pickupActionId", std::string{}) ==
 							"Gameplay.DemoHall.Item.FrameStand4PickupWake" &&
 						fields.value("inspectTimelineComponentGuid", std::string{}) ==
 							"296cfa68-af40-4509-b181-a57925cd6337" &&
+						fields.value("wakeTimelineComponentGuid", std::string{}) ==
+							"7796d4bf-538e-45b0-a6bb-0e85f8182397" &&
 						std::abs(fields.value("inspectHoldSeconds", 0.0f) - 0.45f) < 0.001f;
 				}
 			}
 			frameStandPickupConfigured = hasTrigger && hasActionHost && hasPickupScript;
+		}
+		else if (entityName == "FrameStand4WhisperWakeTimeline")
+		{
+			for (const auto& component : entity.value(
+				"components", nlohmann::ordered_json::array()))
+			{
+				if (component.value("id", std::string{}) !=
+					"7796d4bf-538e-45b0-a6bb-0e85f8182397" ||
+					component.value("type", std::string{}) != "Timeline") continue;
+				frameStandWakeTimelineConfigured = component.value(
+					"data", nlohmann::ordered_json::object())
+					.value("timeline", nlohmann::ordered_json::object())
+					.value("guid", std::string{}) ==
+					"ec7e1ea6-d801-43c5-b9b6-05f6f73df4ca";
+			}
 		}
 		else if (entityName == "FrameStand4PickupTimeline")
 		{
@@ -4957,13 +5724,50 @@ bool TestDemoHallWhisperPreviewContract()
 	const std::size_t pickupScriptEnd = script.find("M.GlassBreakInteractable", pickupScriptBegin);
 	const std::string pickupScript = pickupScriptBegin != std::string::npos
 		? script.substr(pickupScriptBegin, pickupScriptEnd - pickupScriptBegin) : std::string{};
+	const std::size_t pickupCommitBegin = pickupScript.find(
+		"function M.InteractablePickup:commit_inventory()");
+	const std::size_t pickupRotateBegin = pickupScript.find(
+		"function M.InteractablePickup:rotate_preview()", pickupCommitBegin);
+	const std::string pickupCommitScript =
+		pickupCommitBegin != std::string::npos && pickupRotateBegin != std::string::npos
+		? pickupScript.substr(pickupCommitBegin, pickupRotateBegin - pickupCommitBegin)
+		: std::string{};
+	const std::size_t pickupFinishBegin = pickupScript.find(
+		"function M.InteractablePickup:finish_pickup_interaction()");
+	const std::size_t pickupDisableBegin = pickupScript.find(
+		"function M.InteractablePickup:on_disable()", pickupFinishBegin);
+	const std::string pickupFinishScript =
+		pickupFinishBegin != std::string::npos && pickupDisableBegin != std::string::npos
+		? pickupScript.substr(pickupFinishBegin, pickupDisableBegin - pickupFinishBegin)
+		: std::string{};
+	const std::size_t pickupGameplayRestore = pickupFinishScript.find(
+		"runtime.set_mode(runtime.Mode.Gameplay)");
+	const std::size_t pickupCommittedGate = pickupFinishScript.find(
+		"if self.committed then");
+	const std::size_t pickupWakePlay = pickupFinishScript.find(
+		"wakeTimeline.play(wakeTimelineGuid, true)");
+	const std::size_t pickupActivation = pickupFinishScript.find(
+		"vans.ai.request_activation(self.aiTarget)");
+	const std::size_t pickupGameplayRelease = pickupFinishScript.find(
+		"vans.ai.release_to_gameplay(self.aiTarget)");
 	const bool pickupUsesExistingGafInventoryFlow =
 		pickupScript.find("vans.action.try_activate") != std::string::npos &&
 		pickupScript.find("inventory.add") != std::string::npos &&
 		pickupScript.find("timeline.pause") != std::string::npos &&
 		pickupScript.find("self:commit_inventory()") != std::string::npos &&
-		pickupScript.find("session.timelineCommitPulse = true") != std::string::npos &&
-		pickupScript.find("timeline.resume(timelineGuid)") != std::string::npos;
+		pickupScript.find("timeline.resume(timelineGuid)") != std::string::npos &&
+		pickupScript.find("session.timelineCommitPulse") == std::string::npos &&
+		pickupCommitScript.find("vans.ai.request_activation") == std::string::npos &&
+		pickupGameplayRestore != std::string::npos &&
+		pickupCommittedGate != std::string::npos &&
+		pickupWakePlay != std::string::npos &&
+		pickupActivation != std::string::npos &&
+		pickupGameplayRelease != std::string::npos &&
+		pickupCommittedGate > pickupGameplayRestore &&
+		pickupWakePlay > pickupCommittedGate &&
+		pickupActivation > pickupWakePlay &&
+		pickupGameplayRelease > pickupActivation &&
+		pickupScript.find("set_trigger(\"WakeUp\")") == std::string::npos;
 
 	const fs::path animationV2Root = workspace / "AnimationV2Project";
 	nlohmann::ordered_json animationV2Scene;
@@ -5125,17 +5929,14 @@ bool TestDemoHallWhisperPreviewContract()
 		startupStats.deformedRadiusRatio < 1.25f,
 		"AnimationV2 Whisper wake gate or post-wake 16-clip preview routing is invalid")) return false;
 
-	return ExpectGAF(foundPreview &&
-		script.find("M.WhisperAnimationPreview") != std::string::npos &&
-		script.find("set_root_motion_enabled(false)") != std::string::npos &&
-		script.find("set_int(\"PreviewState\"") != std::string::npos &&
-		script.find("cycleAnimations ~= false") != std::string::npos &&
-		script.find("set_trigger(\"WakeUp\")") == std::string::npos &&
+	return ExpectGAF(foundWhisper && behaviorIsPickupGatedChase && allPlayerSpawnsReachable &&
 		pickupGafAssetsCompile && pickupTimelineCompiles && pickupRuntimeLinksResolve &&
 		pickupActionUsesGAF && pickupSetGrantsAction &&
 		timelineBindsFrameStand && timelineBindsWhisperAnimation &&
-		timelineFiresWakeTrigger && timelineCompletesPickupAction &&
+		timelineFiresWakeTrigger && timelineCompletesPickupAction && pickupPreviewDoesNotWake &&
+		timelineCompletionTick == 77999 && timelineWakeTick == 1 &&
 		frameStandPickupConfigured && frameStandTimelineConfigured &&
+		frameStandWakeTimelineConfigured &&
 		registeredWhisperActionTag && registeredWhisperTargetTag &&
 		pickupUsesExistingGafInventoryFlow &&
 		fs::is_regular_file(whisperRoot /
@@ -5151,7 +5952,7 @@ bool TestDemoHallWhisperPreviewContract()
 		fs::is_regular_file(animationV2WhisperRoot / "Models/SK_Whisper.glb") &&
 		fs::is_regular_file(animationV2WhisperRoot / "Animation/Whisper.vanimator") &&
 		fs::is_regular_file(animationV2WhisperRoot / "Animation/Whisper.vanimrig"),
-		"Frame_Stand_4 pickup is not wired through GAF inventory commit into the native Whisper wake trigger");
+		"Frame_Stand_4 pickup is not wired through Whisper wake, AI chase, navigation, CCT, and locomotion");
 }
 
 bool TestGAFLuaBridgeContract()

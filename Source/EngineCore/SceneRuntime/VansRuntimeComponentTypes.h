@@ -2,6 +2,7 @@
 
 #include "VansRuntimeHandle.h"
 
+#include "../AICore/VansAIRuntimeComponents.h"
 #include "../AssetCore/Serialization/VansSerializedObjectReference.h"
 #include "../AudioCore/VansAudioDirectionality.h"
 #include "../AudioCore/VansAudioOcclusion.h"
@@ -64,6 +65,8 @@ enum VansRuntimeComponentTypeId : std::uint16_t
 	VansRuntimeComponentType_Transform = 20,
 	VansRuntimeComponentType_Timeline = 21,
 	VansRuntimeComponentType_ActionHost = 22,
+	VansRuntimeComponentType_NavigationAgent = 23,
+	VansRuntimeComponentType_AIAgent = 24,
 };
 
 struct VansRuntimeTransformComponent
@@ -265,6 +268,8 @@ inline std::uint16_t VansRuntimeComponentTypeIdForKey(const std::string& key)
 	if (key == "transform") return VansRuntimeComponentType_Transform;
 	if (key == "timeline") return VansRuntimeComponentType_Timeline;
 	if (key == "action_host" || key == "gaf") return VansRuntimeComponentType_ActionHost;
+	if (key == "navigation_agent") return VansRuntimeComponentType_NavigationAgent;
+	if (key == "ai_agent") return VansRuntimeComponentType_AIAgent;
 	return VansInvalidComponentTypeId;
 }
 }

@@ -1,5 +1,13 @@
 #include "VansSceneDocument.h"
 
+#include "../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
+#include "../AssetCore/Storage/VansStagedFileTransaction.h"
+#include "Storage/VansSceneFileStorage.h"
+#include "VansSceneDocumentLoader.h"
+#include "VansSceneSchema.h"
+
+#include <nlohmann/json.hpp>
+
 #include <utility>
 
 namespace Vans
@@ -64,6 +72,63 @@ SceneDocumentSnapshot VansSceneDocument::CreateSnapshot() const
         m_LoadedFingerprint,
         m_CurrentStateId
     };
+}
+
+bool VansSceneDocument::StageSave(SceneDocumentSaveStage& stage, std::string& error) const
+{
+    stage = {};
+    error.clear();
+    if (!IsDirty())
+        return true;
+    const SceneJson root = EncodeSerializedValueJson<SceneJson>(*m_Root);
+    if (!IsHealthy() || !root.is_object() || !VansSceneSchema::ValidateSceneJson(root).empty())
+    {
+        error = "Cannot save an invalid scene document";
+        return false;
+    }
+    if (m_SourcePath.empty())
+    {
+        error = "Scene save target is empty";
+        return false;
+    }
+    const std::filesystem::path target =
+        std::filesystem::absolute(m_SourcePath).lexically_normal();
+    const SceneFileFingerprint current = VansSceneDocumentLoader::Fingerprint(target, &error);
+    if (!current.valid)
+        return false;
+    if (current != m_LoadedFingerprint)
+    {
+        error = "Scene file was modified outside the editor";
+        return false;
+    }
+    VansStagedFile file;
+    if (!VansSceneFileStorage::StageSceneDocument(target, root, file, error))
+        return false;
+    stage.targetPath = std::move(file.targetPath);
+    stage.temporaryPath = std::move(file.temporaryPath);
+    stage.stateId = m_CurrentStateId;
+    return true;
+}
+
+bool VansSceneDocument::AdoptStagedSave(
+    const SceneDocumentSaveStage& stage,
+    std::string& error)
+{
+    error.clear();
+    if (stage.targetPath.empty())
+        return true;
+    const std::filesystem::path target =
+        std::filesystem::absolute(stage.targetPath).lexically_normal();
+    if (target != std::filesystem::absolute(m_SourcePath).lexically_normal())
+    {
+        error = "Scene document save stage target mismatch: " + target.string();
+        return false;
+    }
+    const SceneFileFingerprint fingerprint = VansSceneDocumentLoader::Fingerprint(target, &error);
+    if (!fingerprint.valid)
+        return false;
+    MarkSaved(target, fingerprint, stage.stateId != 0 ? stage.stateId : m_CurrentStateId);
+    return true;
 }
 
 SceneStateId VansSceneDocument::AllocateStateId()

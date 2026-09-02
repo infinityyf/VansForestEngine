@@ -27,6 +27,8 @@ enum class VansAssetType
 	AnimationRig,
 	BoneMask,
 	Timeline,
+	NavigationMesh,
+	AIBehavior,
 	ActionDefinition,
 	ActionSet,
 	GameplayEffect,

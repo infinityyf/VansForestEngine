@@ -30,9 +30,11 @@ namespace Vans::EditorAPI
 namespace VansGraphics
 {
 	class VansAnimGraphEditorWindow;
+	class VansSceneAnimationPreviewWindow;
 	class VansBoneMaskEditorWindow;
 	class VansTimelineEditorWindow;
 	class VansGameplayActionEditorWindow;
+	class VansGAFDebuggerWindow;
 	class VansUIEditorWindow;
 	class VansHierachuWindow;
 	class VansLightWindow;
@@ -85,6 +87,7 @@ namespace VansGraphics
 		static bool m_HiZCullWindowOpen;
 		static bool m_ProjectSettingsWindowOpen;
 		static bool m_AudioDebugWindowOpen;
+		static bool m_GAFDebuggerWindowOpen;
 		static bool m_SkeletonDebugWindowOpen;
 		static bool m_MotionMatchingDebugWindowOpen;
 
@@ -176,9 +179,11 @@ namespace VansGraphics
 		static VansProfilerWindow* m_ProfilerWindow;
 
 		static VansAnimGraphEditorWindow* m_AnimGraphEditorWindow;
+		static VansSceneAnimationPreviewWindow* m_SceneAnimationPreviewWindow;
 		static VansBoneMaskEditorWindow* m_BoneMaskEditorWindow;
 		static VansTimelineEditorWindow* m_TimelineEditorWindow;
 		static VansGameplayActionEditorWindow* m_GameplayActionEditorWindow;
+		static VansGAFDebuggerWindow* m_GAFDebuggerWindow;
 
 		// Asset-document based animation authoring entry used by Project and
 		// Inspector windows. Dispatch is by current canonical extension.

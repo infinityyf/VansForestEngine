@@ -5,6 +5,20 @@ set(FOREST_EXTERNAL_DIR "${FOREST_ROOT}/External" CACHE INTERNAL "")
 
 add_library(ForestThirdParty INTERFACE)
 
+# Recast/Detour 只作为运行时导航基础库接入。Demo、示例和上游测试不属于
+# ForestEngine 的交付目标，固定关闭以避免污染工程与安装规则。
+set(RECASTNAVIGATION_DEMO OFF CACHE BOOL "" FORCE)
+set(RECASTNAVIGATION_TESTS OFF CACHE BOOL "" FORCE)
+set(RECASTNAVIGATION_EXAMPLES OFF CACHE BOOL "" FORCE)
+# CMake 4.x 不再隐式兼容 3.1；Recast 1.6.0 的入口仍使用旧声明。
+# 只提升策略下限，不改写 vendored 上游的构建文件。
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+add_subdirectory(
+    "${FOREST_EXTERNAL_DIR}/RecastNavigation"
+    "${CMAKE_CURRENT_BINARY_DIR}/External/RecastNavigation"
+    EXCLUDE_FROM_ALL
+)
+
 set(FOREST_LUA_DIR "${FOREST_EXTERNAL_DIR}/Lua/lua-5.4.8" CACHE INTERNAL "")
 
 set(FOREST_LUA_SOURCES
@@ -136,7 +150,12 @@ target_link_libraries(ForestThirdParty
         OpenAL32
 )
 
-target_link_libraries(ForestThirdParty INTERFACE ForestExternalLua)
+target_link_libraries(ForestThirdParty
+    INTERFACE
+        ForestExternalLua
+        RecastNavigation::Recast
+        RecastNavigation::Detour
+)
 
 add_library(ForestExternalNoesisVk STATIC
     "${FOREST_EXTERNAL_DIR}/NoesisGUI/Src/Packages/Render/VKRenderDevice/Src/Render.VKRenderDevice.cpp"

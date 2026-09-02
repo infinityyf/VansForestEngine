@@ -43,6 +43,8 @@ namespace Vans { struct VansSceneObjectBuildPlan; }
 namespace Vans { struct VansPackagedResourcePlan; }
 namespace Vans { class VansTimelineRuntimeSystem; }
 namespace Vans { class VansGameplayRuntime; }
+namespace Vans { class VansCombatActionService; }
+namespace Vans { class VansAIWorld; }
 namespace VansGraphics { class VansCameraControlArbiter; }
 namespace VansGraphics { class VansVirtualCameraParameterStore; }
 
@@ -86,6 +88,7 @@ class VansScriptParticleComponent;
 #include <vector>
 #include <atomic>
 #include <memory>
+#include <unordered_set>
 
 #include <map>
 
@@ -206,6 +209,11 @@ namespace VansGraphics
 		bool FinalizeDrawSubmission(
 			VansDrawSortPolicy sortPolicy,
 			VansDrawSubmissionList& submission);
+		bool SetEntityParentReferenceInternal(
+			const std::string& childEntityGuid,
+			const Vans::VansSceneParentReference* parent,
+			Vans::VansTransformReparentMode mode,
+			const Vans::VansLocalTransform* anchorLocalTransform);
 
 	public:
 
@@ -382,6 +390,7 @@ namespace VansGraphics
 		std::unordered_map<const VansRenderNode*, MainRenderProxyBinding> m_MainRenderProxyBindings;
 		VansRenderMutationBatch m_PendingRenderMutations;
 		std::vector<VansAnimationNode*> m_AnimationNodes;
+		std::unordered_set<VansAnimationNode*> m_EditorPreviewDrivenAnimationNodes;
 		std::vector<VansAnimationController*> m_AnimationControllers;
 		// 场景级查询批次跨帧复用容量，避免每帧为 Grounding 临时分配。
 		std::vector<VansWorldQueryRequest> m_AnimationWorldQueryRequests;
@@ -404,6 +413,8 @@ namespace VansGraphics
 		std::vector<std::string> m_PendingEntityDestructionGuids;
 		std::unique_ptr<Vans::VansRuntimeWorld> m_RuntimeWorld;
 		std::unique_ptr<Vans::VansGameplayRuntime> m_GameplayRuntime;
+		std::shared_ptr<Vans::VansCombatActionService> m_CombatActionService;
+		std::unique_ptr<Vans::VansAIWorld> m_AIWorld;
 		std::unique_ptr<Vans::VansTimelineRuntimeSystem> m_TimelineRuntime;
 		std::unique_ptr<VansCameraControlArbiter> m_CameraControlArbiter;
 		std::unique_ptr<VansVirtualCameraParameterStore> m_VirtualCameraParameters;
@@ -464,6 +475,10 @@ namespace VansGraphics
 		const Vans::VansRuntimeWorld* GetRuntimeWorld() const { return m_RuntimeWorld.get(); }
 		Vans::VansGameplayRuntime* GetGameplayRuntime() { return m_GameplayRuntime.get(); }
 		const Vans::VansGameplayRuntime* GetGameplayRuntime() const { return m_GameplayRuntime.get(); }
+		Vans::VansCombatActionService* GetCombatActionService() { return m_CombatActionService.get(); }
+		const Vans::VansCombatActionService* GetCombatActionService() const { return m_CombatActionService.get(); }
+		Vans::VansAIWorld* GetAIWorld() { return m_AIWorld.get(); }
+		const Vans::VansAIWorld* GetAIWorld() const { return m_AIWorld.get(); }
 		VansSkeletonInstanceHandle RegisterSkeletonInstance(VansAnimationNode& animationNode)
 		{
 			return m_SkeletonAnchorRegistry.RegisterInstance(animationNode);
@@ -499,16 +514,30 @@ namespace VansGraphics
 			uint32_t childTransformID,
 			uint32_t ownerTransformID,
 			const Vans::VansSceneParentReference& parent,
-			Vans::VansTransformReparentMode mode = Vans::VansTransformReparentMode::KeepLocal);
+			Vans::VansTransformReparentMode mode = Vans::VansTransformReparentMode::KeepLocal,
+			const Vans::VansLocalTransform* anchorLocalTransform = nullptr);
 
 		bool SetEntityParentReferenceByGuid(
 			const std::string& childEntityGuid,
 			const Vans::VansSceneParentReference* parent,
 			Vans::VansTransformReparentMode mode);
+		bool BindEntityToAnimationAttachmentProfileByGuid(
+			const std::string& childEntityGuid,
+			const Vans::VansSceneParentReference& parent);
+		bool TryGetEntityParentReferenceByGuid(
+			const std::string& childEntityGuid,
+			Vans::VansSceneParentReference& parent,
+			bool& hasParent) const;
 		bool TryGetEntityLocalTransformByGuid(
 			const std::string& entityGuid,
 			Vans::VansLocalTransform& transform) const;
 		bool SetEntityLocalTransformByGuid(
+			const std::string& entityGuid,
+			const Vans::VansLocalTransform& transform);
+		bool TryGetEntityWorldTransformByGuid(
+			const std::string& entityGuid,
+			Vans::VansLocalTransform& transform) const;
+		bool SetEntityWorldTransformByGuid(
 			const std::string& entityGuid,
 			const Vans::VansLocalTransform& transform);
 		bool SetEntityNameByGuid(const std::string& entityGuid, const std::string& name);
@@ -931,10 +960,13 @@ namespace VansGraphics
 		// Per-frame skeletal animation CPU update + GPU bone matrix upload.
 
 		void EvaluateAnimations(float deltaTime);
+		bool BeginEditorAnimationPreview(VansAnimationNode* animationNode);
+		void EndEditorAnimationPreview(VansAnimationNode* animationNode);
 		bool EvaluateEditorAnimationPreviewStep(
 			VansAnimationNode* animationNode, float deltaTime);
 		void UploadAnimationRenderData(const VansRenderSceneFrameSnapshot& snapshot);
 		void UpdateActionsEarly(double deltaSeconds);
+		void UpdateAI(double deltaSeconds);
 		bool RunActionLateContinuation();
 		void UpdateTimelinesPostScript(double deltaSeconds);
 		void BeginCameraControlFrame();
@@ -1217,6 +1249,10 @@ namespace VansGraphics
 		bool ReplaceAnimationRuntimeController(
 			VansAnimationNode* animNode,
 			std::unique_ptr<VansAnimationController> controller);
+		bool ExchangeAnimationRuntimeController(
+			VansAnimationNode* animNode,
+			std::unique_ptr<VansAnimationController> controller,
+			std::unique_ptr<VansAnimationController>& previousController);
 
 		bool AreGIProbeResourcesDirty() const { return m_GIProbeResourcesDirty; }
 		bool AreGIParametersDirty() const { return m_GIParametersDirty; }

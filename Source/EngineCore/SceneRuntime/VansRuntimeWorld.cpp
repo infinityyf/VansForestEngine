@@ -304,6 +304,22 @@ void VansRuntimeWorld::FlushCommands()
 				command.componentStableGuid,
 				command.boolValue);
 			break;
+		case VansEntityCommandType::AddNavigationAgentComponent:
+			AddComponent(
+				command.entity,
+				VansRuntimeComponentType_NavigationAgent,
+				command.navigationAgentComponent,
+				command.componentStableGuid,
+				command.boolValue);
+			break;
+		case VansEntityCommandType::AddAIAgentComponent:
+			AddComponent(
+				command.entity,
+				VansRuntimeComponentType_AIAgent,
+				command.aiAgentComponent,
+				command.componentStableGuid,
+				command.boolValue);
+			break;
 		case VansEntityCommandType::SetEntityActive:
 			SetEntityActive(command.entity, command.boolValue);
 			break;

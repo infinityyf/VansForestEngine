@@ -17,9 +17,11 @@
 #include "Windows/VansConsoleWindow.h"
 #include "Windows/VansProfilerWindow.h"
 #include "Windows/VansAnimGraphEditorWindow.h"
+#include "Windows/VansSceneAnimationPreviewWindow.h"
 #include "Windows/VansBoneMaskEditorWindow.h"
 #include "Windows/VansTimelineEditorWindow.h"
 #include "Windows/VansGameplayActionEditorWindow.h"
+#include "Windows/VansGAFDebuggerWindow.h"
 #include "Windows/VansClothProfileEditorWindow.h"
 #include "Windows/VansWaterWindow.h"
 #include "Windows/VansTerrainWindow.h"
@@ -62,6 +64,7 @@
 
 #include "imgui.h"
 #include "backends/imgui_impl_glfw.h"
+#include "ImGuizmo.h"
 
 #include <iostream>
 #include <cstdint>
@@ -469,6 +472,7 @@ bool VansGraphics::VansEditorWindow::m_PcgWindowOpen = false;
 bool VansGraphics::VansEditorWindow::m_HiZCullWindowOpen = false;
 bool VansGraphics::VansEditorWindow::m_ProjectSettingsWindowOpen = false;
 bool VansGraphics::VansEditorWindow::m_AudioDebugWindowOpen = false;
+bool VansGraphics::VansEditorWindow::m_GAFDebuggerWindowOpen = false;
 bool VansGraphics::VansEditorWindow::m_SkeletonDebugWindowOpen = false;
 bool VansGraphics::VansEditorWindow::m_MotionMatchingDebugWindowOpen = false;
 
@@ -510,9 +514,12 @@ VansGraphics::VansConsoleWindow* VansGraphics::VansEditorWindow::m_ConsoleWindow
 VansGraphics::VansProfilerWindow* VansGraphics::VansEditorWindow::m_ProfilerWindow;
 
 VansGraphics::VansAnimGraphEditorWindow* VansGraphics::VansEditorWindow::m_AnimGraphEditorWindow;
+VansGraphics::VansSceneAnimationPreviewWindow*
+	VansGraphics::VansEditorWindow::m_SceneAnimationPreviewWindow;
 VansGraphics::VansBoneMaskEditorWindow* VansGraphics::VansEditorWindow::m_BoneMaskEditorWindow;
 VansGraphics::VansTimelineEditorWindow* VansGraphics::VansEditorWindow::m_TimelineEditorWindow;
 VansGraphics::VansGameplayActionEditorWindow* VansGraphics::VansEditorWindow::m_GameplayActionEditorWindow;
+VansGraphics::VansGAFDebuggerWindow* VansGraphics::VansEditorWindow::m_GAFDebuggerWindow;
 
 VansGraphics::VansUIEditorWindow* VansGraphics::VansEditorWindow::m_UIEditorWindow;
 
@@ -925,6 +932,7 @@ void VansGraphics::VansEditorWindow::OpenAssetForAuthoring(const std::string& so
 	{
 		if (m_GameplayActionEditorWindow) m_GameplayActionEditorWindow->Open(sourcePath);
 		else VANS_LOG_WARN("[GAFEditor] Gameplay Action Editor is not initialized");
+		if (m_GAFDebuggerWindow) m_GAFDebuggerWindow->SetSimulationSourcePath(sourcePath);
 		return;
 	}
 	VANS_LOG_WARN("[Editor] Unsupported authoring asset: " << sourcePath);
@@ -1122,9 +1130,12 @@ void VansGraphics::VansEditorWindow::CreateWindowComponents()
     m_ProfilerWindow = AddEditorWindowComponent<VansProfilerWindow>(m_Windows);
 
     m_AnimGraphEditorWindow = AddEditorWindowComponent<VansAnimGraphEditorWindow>(m_Windows);
+	m_SceneAnimationPreviewWindow =
+		AddEditorWindowComponent<VansSceneAnimationPreviewWindow>(m_Windows);
     m_BoneMaskEditorWindow = AddEditorWindowComponent<VansBoneMaskEditorWindow>(m_Windows);
 	m_TimelineEditorWindow = AddEditorWindowComponent<VansTimelineEditorWindow>(m_Windows);
 	m_GameplayActionEditorWindow = AddEditorWindowComponent<VansGameplayActionEditorWindow>(m_Windows);
+	m_GAFDebuggerWindow = AddEditorWindowComponent<VansGAFDebuggerWindow>(m_Windows);
 
     m_UIEditorWindow = AddEditorWindowComponent<VansUIEditorWindow>(m_Windows);
 
@@ -1382,6 +1393,9 @@ VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& device)
     m_GUIBackEnd->BeginFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
+	// ImGuizmo 在整个编辑器 ImGui 帧中共享状态，统一初始化一次，所有工具窗口
+	// 才能在 Scene 窗口关闭或未绘制时继续使用视口手柄。
+	ImGuizmo::BeginFrame();
 
     // ── Project Selector Overlay ──────────────────────────────────────────
     // When no project is loaded yet, show the full-screen selector instead
@@ -1742,9 +1756,17 @@ VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& device)
                 ImGui::MenuItem("Project Settings", nullptr, &m_ProjectSettingsWindowOpen);
                 ImGui::MenuItem("UI Editor", nullptr, &m_UIEditorWindowOpen);
                 ImGui::MenuItem("Audio Debug", nullptr, &m_AudioDebugWindowOpen);
+				ImGui::MenuItem("GAF Debugger", nullptr, &m_GAFDebuggerWindowOpen);
                 ImGui::Separator();
                 if (ImGui::BeginMenu("Animation"))
                 {
+					bool scenePreviewOpen = m_SceneAnimationPreviewWindow
+						&& m_SceneAnimationPreviewWindow->IsOpen();
+					if (ImGui::MenuItem("Scene Animation Preview", nullptr,
+						&scenePreviewOpen) && m_SceneAnimationPreviewWindow)
+					{
+						m_SceneAnimationPreviewWindow->SetOpen(scenePreviewOpen);
+					}
                     if (ImGui::MenuItem("Animation Graph", nullptr, false, canOpenSelectedAnimationGraph))
                     {
                         OpenSelectedAnimationGraph();
@@ -2244,6 +2266,11 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(
 			VANS_PROFILE_SCOPE("GameplayAction::TickEarly", Vans::ProfileCategory::Script);
 			editorAPI.UpdateRuntimeActionsEarly(deltaSeconds);
 		};
+		gameplayFrame.updateAI = [&editorAPI](double deltaSeconds)
+		{
+			VANS_PROFILE_SCOPE("AI::Update", Vans::ProfileCategory::Script);
+			editorAPI.UpdateRuntimeAI(deltaSeconds);
+		};
 		gameplayFrame.prepareCharacterLocomotion = [&editorAPI](double deltaSeconds)
 		{
 			editorAPI.PrepareRuntimeCharacterLocomotion(deltaSeconds);
@@ -2392,6 +2419,7 @@ void VansGraphics::VansEditorWindow::DestroyVansEditorWindow()
     m_ConsoleWindow = nullptr;
     m_ProfilerWindow = nullptr;
     m_AnimGraphEditorWindow = nullptr;
+	m_SceneAnimationPreviewWindow = nullptr;
     m_BoneMaskEditorWindow = nullptr;
 	m_TimelineEditorWindow = nullptr;
     m_UIEditorWindow = nullptr;

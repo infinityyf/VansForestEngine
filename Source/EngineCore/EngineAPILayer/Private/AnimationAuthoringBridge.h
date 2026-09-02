@@ -4,7 +4,7 @@
 
 namespace Vans::EditorAPI
 {
-	enum class AnimationAuthoringAssetKind { Animator, BoneMask };
+	enum class AnimationAuthoringAssetKind { Animator, BoneMask, AnimationRig };
 
 	struct AnimationAuthoringAssetCreateRequest
 	{
@@ -26,6 +26,8 @@ namespace Vans::EditorAPI
 		static AnimatorDocumentEncodeResult EncodeAnimator(const AnimatorDocumentDTO& document);
 		static BoneMaskDocumentDecodeResult DecodeBoneMask(const std::string& canonicalJson);
 		static BoneMaskDocumentEncodeResult EncodeBoneMask(const BoneMaskDocumentDTO& document);
+		static AnimationRigDocumentDecodeResult DecodeAnimationRig(const std::string& canonicalJson);
+		static AnimationRigDocumentEncodeResult EncodeAnimationRig(const AnimationRigDocumentDTO& document);
 		static BoneMaskCompileResult CompileBoneMask(
 			const BoneMaskDocumentDTO& document,
 			const AssetSkeletonSnapshot& skeleton);

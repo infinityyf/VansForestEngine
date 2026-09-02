@@ -545,6 +545,10 @@ FOREST_RUNTIME_API int ForestRuntime_Tick(ForestRuntimeHandle* runtime, float)
 		{
 			runtime->scene->UpdateActionsEarly(deltaSeconds);
 		};
+		frame.updateAI = [&](double deltaSeconds)
+		{
+			runtime->scene->UpdateAI(deltaSeconds);
+		};
 		frame.prepareCharacterLocomotion = [&](double deltaSeconds)
 		{
 			runtime->scene->PrepareCharacterLocomotion(static_cast<float>(deltaSeconds));

@@ -1,6 +1,7 @@
 #include "ModelAssetPlacementPreparationService.h"
 
 #include "ScenePropertyValueBuilders.h"
+#include "../Public/IEngineEditorAPI.h"
 #include "../../AssetCore/Importers/VansModelImportReport.h"
 #include "../../AssetCore/VansAssetDatabase.h"
 #include "../../AssetCore/VansAssetGuid.h"
@@ -8,8 +9,6 @@
 #include "../../AssetCore/Storage/VansAssetMetaStorage.h"
 #include "../../ProjectSystem/VansProjectManager.h"
 #include "../../RenderCore/VansScene.h"
-#include "../../RenderCore/VulkanCore/VansMesh.h"
-#include "../../RenderCore/VulkanCore/VansVKDevice.h"
 #include "../../SceneCore/VansSceneDocument.h"
 #include "../../SceneCore/VansSceneEntityFactory.h"
 #include "../../Util/VansLog.h"
@@ -120,75 +119,6 @@ Vans::SceneModelEntityFactoryRequest BuildSceneRequest(
     return request;
 }
 
-MeshLoadResult EnsureProjectMeshLoaded(
-    VansGraphics::VansScene* scene,
-    VansGraphics::VansVKDevice* device,
-    const MeshLoadRequest& request)
-{
-    MeshLoadResult result;
-    if (!scene || !device || request.meshName.empty() || request.sourcePath.empty())
-        return result;
-
-    if (scene->HasProjectMeshAlias(request.meshName))
-    {
-        result.available = scene->FindMeshAsset(request.meshName) != nullptr;
-        return result;
-    }
-
-    auto* mesh = new VansGraphics::VansMesh(false, false);
-    mesh->LoadMesh(
-        device->GetLogicDevice(),
-        device->GetGraphicsQueue(),
-        &device->GetCommandBuffer(),
-        request.sourcePath,
-        false);
-    mesh->SetName(request.meshName);
-    scene->AddMeshAsset(mesh);
-    scene->SetProjectMeshAlias(request.meshName, mesh);
-
-    result.loaded = true;
-    result.available = true;
-    return result;
-}
-
-ProjectMeshInfoSnapshot GetProjectMeshInfo(VansGraphics::VansScene* scene, const std::string& meshName)
-{
-    ProjectMeshInfoSnapshot snapshot;
-    if (!scene || meshName.empty())
-        return snapshot;
-
-    auto* mesh = static_cast<VansGraphics::VansMesh*>(scene->FindMeshAsset(meshName));
-    if (!mesh)
-        return snapshot;
-
-    snapshot.available = true;
-    snapshot.isMultiMesh = mesh->m_IsMultiMesh;
-
-    const auto& materialInfos = mesh->m_SubmeshMaterialInfos;
-    snapshot.submeshes.reserve(mesh->m_SubMeshes.size());
-    for (std::size_t i = 0; i < mesh->m_SubMeshes.size(); ++i)
-    {
-        VansGraphics::VansMesh* submesh = mesh->m_SubMeshes[i];
-        ProjectSubmeshInfo info;
-        if (submesh)
-        {
-            info.sourceNodeName = submesh->m_SourceNodeName;
-            info.vertexCount = static_cast<std::uint32_t>(submesh->GetMeshVertexCount());
-            info.indexCount = submesh->GetIndexCount();
-        }
-
-        if (!materialInfos.empty())
-        {
-            const auto& materialInfo = i < materialInfos.size() ? materialInfos[i] : materialInfos[0];
-            info.materialName = materialInfo.materialName;
-            info.diffuseTexturePath = materialInfo.diffuseTexPath;
-        }
-        snapshot.submeshes.push_back(info);
-    }
-
-    return snapshot;
-}
-
 std::string MakeUniqueEntityName(VansGraphics::VansScene* scene, const std::string& baseName)
 {
     if (!scene || baseName.empty())
@@ -201,28 +131,15 @@ std::string MakeUniqueEntityName(VansGraphics::VansScene* scene, const std::stri
     return uniqueName;
 }
 
-std::string GetDefaultMaterialAssetName(VansGraphics::VansScene* scene)
-{
-    if (!scene)
-        return {};
-
-    const auto& materials = scene->GetMaterialAssets();
-    if (materials.empty() || !materials[0])
-        return {};
-
-    return materials[0]->m_AssetName;
-}
-
 }
 
 ModelAssetPlacementPayload ModelAssetPlacementPreparationService::Prepare(
     const ModelAssetPlacementRequest& request,
-    RuntimeSceneHandle sceneHandle,
-    RuntimeRenderDeviceHandle deviceHandle)
+    IEngineEditorAPI& editorAPI,
+    RuntimeSceneHandle sceneHandle)
 {
     ModelAssetPlacementPayload payload;
     auto* scene = static_cast<VansGraphics::VansScene*>(sceneHandle);
-    auto* device = static_cast<VansGraphics::VansVKDevice*>(deviceHandle);
 
     Vans::VansAssetGuid guid;
     if (!Vans::VansAssetGuid::TryParse(request.assetGuid, guid))
@@ -250,19 +167,26 @@ ModelAssetPlacementPayload ModelAssetPlacementPreparationService::Prepare(
         return payload;
     }
 
-    const std::string meshName = record->sourcePath.stem().string();
+	const std::string meshName = request.assetGuid;
+	const std::string entityBaseName = record->sourcePath.stem().string();
     MeshLoadRequest loadRequest;
     loadRequest.meshName = meshName;
     loadRequest.sourcePath = record->sourcePath.string();
-    const MeshLoadResult loadResult = EnsureProjectMeshLoaded(scene, device, loadRequest);
+	const MeshLoadResult loadResult = editorAPI.EnsureProjectMeshLoaded(loadRequest);
+	if (!loadResult.available)
+	{
+		payload.message = "Model mesh could not be uploaded on the RenderThread";
+		return payload;
+	}
     if (loadResult.loaded)
         VANS_LOG("[EngineAPI] Mesh loaded for placement: "
             << record->sourcePath.string() << " as '" << meshName << "'");
+	else
+		VANS_LOG("[EngineAPI] Reusing resident model mesh for placement: "
+			<< meshName);
 
-    const ProjectMeshInfoSnapshot droppedMesh = GetProjectMeshInfo(scene, meshName);
-    const std::string uniqueName = MakeUniqueEntityName(scene, meshName);
-    if (scene)
-        scene->SetProjectMeshAlias(request.assetGuid, scene->FindMeshAsset(meshName));
+	const ProjectMeshInfoSnapshot droppedMesh = editorAPI.GetProjectMeshInfo(meshName);
+	const std::string uniqueName = MakeUniqueEntityName(scene, entityBaseName);
 
     Vans::SceneModelEntityFactoryResult sceneEntities;
     if (droppedMesh.available && droppedMesh.isMultiMesh)
@@ -295,7 +219,7 @@ ModelAssetPlacementPayload ModelAssetPlacementPreparationService::Prepare(
         const std::string renderComponentGuid = Vans::VansAssetGuid::New().ToString();
         Vans::SceneModelEntityFactoryRequest sceneRequest =
             BuildSceneRequest(uniqueName, request.assetGuid, request.worldPosition);
-        sceneRequest.defaultMaterialGuid = GetDefaultMaterialAssetName(scene);
+		sceneRequest.defaultMaterialGuid = editorAPI.GetDefaultMaterialAssetName();
         sceneRequest.transformComponentGuid = transformComponentGuid;
         sceneRequest.modelRendererComponentGuid = renderComponentGuid;
         sceneEntities = Vans::VansSceneEntityFactory::BuildSingleModelEntity(

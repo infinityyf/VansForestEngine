@@ -128,6 +128,9 @@ class VansScriptObject
 public:
 	std::string m_EntityGuid;
 	std::string m_ObjectName;
+	// 该实体直接来源的模型资产。普通 ModelRenderer 与 MultiMeshRoot
+	// 都在场景构建时写入，工具不需要反查渲染节点或子实体。
+	std::string m_ModelAssetGuid;
 	std::vector<VansScriptComponent*> m_Components;
 	std::uint32_t m_TransformID = 0;
 	bool m_OwnsTransform = false;

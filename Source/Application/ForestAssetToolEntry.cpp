@@ -8,6 +8,11 @@
 #include "../EngineCore/AssetCore/Importers/VansModelImporter.h"
 #include "../EngineCore/AssetCore/Storage/VansAssetMetaStorage.h"
 #include "../EngineCore/AssetCore/Storage/VansJsonFileStorage.h"
+#include "../EngineCore/NavigationCore/VansNavigationMesh.h"
+#include "../EngineCore/NavigationCore/VansSceneNavigationGeometry.h"
+#include "../EngineCore/SceneCore/VansSceneContentBuildPlan.h"
+#include "../EngineCore/SceneCore/VansSceneDocumentLoader.h"
+#include "../EngineCore/SceneCore/VansSceneRuntimeProjection.h"
 #include "../EngineCore/ScriptCore/VansLuaScriptInspectorService.h"
 
 #include <algorithm>
@@ -38,7 +43,8 @@ namespace
 		RebuildAnimationClips,
 		RefreshSkeletonSubAssets,
 		InspectSkeleton,
-		ValidateLuaScript
+		ValidateLuaScript,
+		BakeNavigation
 	};
 
 	struct Options
@@ -48,6 +54,7 @@ namespace
 		fs::path sourcePath;
 		fs::path skeletonClipPath;
 		fs::path destinationRoot;
+		fs::path outputPath;
 		std::vector<fs::path> sourceRoots;
 		fs::path scriptPath;
 		std::string entryName;
@@ -74,7 +81,9 @@ namespace
 			<< "  ForestAssetTool inspect-skeleton --project <path> --source <asset-relative-model>"
 				" [--bone <name>]...\n"
 			<< "  ForestAssetTool validate-lua-script --project <path> --script <project-relative-lua>"
-				" --entry <table-name>\n";
+				" --entry <table-name>\n"
+			<< "  ForestAssetTool bake-navigation --project <path> --source <project-relative-scene>"
+				" --output <asset-relative-vnavmesh> --write\n";
 	}
 
 	bool ParseOptions(int argc, char** argv, Options& options, std::string& error)
@@ -92,6 +101,7 @@ namespace
 		else if (command == "refresh-skeleton-subassets") options.command = Command::RefreshSkeletonSubAssets;
 		else if (command == "inspect-skeleton") options.command = Command::InspectSkeleton;
 		else if (command == "validate-lua-script") options.command = Command::ValidateLuaScript;
+		else if (command == "bake-navigation") options.command = Command::BakeNavigation;
 		else if (command == "--help" || command == "-h") options.showHelp = true;
 		else
 		{
@@ -147,6 +157,15 @@ namespace
 					return false;
 				}
 				options.destinationRoot = argv[index];
+			}
+			else if (argument == "--output")
+			{
+				if (++index >= argc)
+				{
+					error = "Missing value for --output.";
+					return false;
+				}
+				options.outputPath = argv[index];
 			}
 			else if (argument == "--script")
 			{
@@ -238,6 +257,13 @@ namespace
 			&& (modeCount != 0 || options.scriptPath.empty() || options.entryName.empty()))
 		{
 			error = "Lua validation requires --script and --entry and does not accept a rewrite mode.";
+			return false;
+		}
+		if (options.command == Command::BakeNavigation
+			&& (modeCount != 1 || !options.write || options.sourcePath.empty()
+				|| options.outputPath.empty()))
+		{
+			error = "Navigation bake requires --source, --output, and --write.";
 			return false;
 		}
 		return true;
@@ -399,6 +425,78 @@ namespace
 			if (pathIt == path.end() || *pathIt != *rootIt)
 				return false;
 		return true;
+	}
+
+	int BakeNavigation(const fs::path& projectRoot, const fs::path& assetsRoot,
+		const Options& options)
+	{
+		std::error_code fileError;
+		const fs::path scenePath = fs::weakly_canonical(
+			projectRoot / options.sourcePath, fileError);
+		if (fileError || !fs::is_regular_file(scenePath) || !IsWithin(scenePath, projectRoot))
+		{
+			std::cerr << "Invalid project Scene source: " << options.sourcePath << '\n';
+			return 2;
+		}
+
+		const fs::path requestedOutput = (projectRoot / options.outputPath).lexically_normal();
+		const fs::path outputParent = fs::weakly_canonical(
+			requestedOutput.parent_path(), fileError);
+		const fs::path outputPath = (outputParent / requestedOutput.filename()).lexically_normal();
+		if (fileError || outputPath.extension() != ".vnavmesh" ||
+			!IsWithin(outputPath, assetsRoot))
+		{
+			std::cerr << "Navigation output must be a .vnavmesh file inside Assets: "
+				<< options.outputPath << '\n';
+			return 2;
+		}
+
+		Vans::SceneDocumentLoadResult loaded = Vans::VansSceneDocumentLoader::Load(scenePath);
+		if (!loaded)
+		{
+			std::cerr << "Could not load Scene document: " << scenePath << '\n';
+			return 1;
+		}
+		Vans::VansSceneContentBuildPlan contentPlan;
+		std::string error;
+		if (!Vans::VansSceneRuntimeProjection::BuildRuntimeSceneContentPlan(
+			loaded.document->SerializedRootSnapshot(), projectRoot.generic_string(),
+			contentPlan, error))
+		{
+			std::cerr << "Could not project Scene for navigation: " << error << '\n';
+			return 1;
+		}
+		const Vans::VansNavigationGeometry geometry =
+			Vans::VansSceneNavigationGeometry::BuildEnvironmentGeometry(contentPlan.objects);
+		if (geometry.Empty())
+		{
+			std::cerr << "Scene contains no enabled Environment box collider geometry.\n";
+			return 1;
+		}
+
+		Vans::VansNavigationMesh navigationMesh;
+		const Vans::VansNavigationBuildSettings settings;
+		if (!navigationMesh.Build(geometry, settings, error) ||
+			!navigationMesh.Save(outputPath, error))
+		{
+			std::cerr << "Navigation bake failed: " << error << '\n';
+			return 1;
+		}
+
+		Vans::VansAssetDatabase database(assetsRoot);
+		if (!database.RegisterOrRefresh(
+			outputPath, Vans::VansAssetOperationPolicy::Authoring(), error))
+		{
+			std::cerr << "Navigation asset registration failed: " << error << '\n';
+			return 1;
+		}
+		const auto record = database.Find(outputPath);
+		std::cout << "Navigation bake complete: vertices=" << geometry.VertexCount()
+			<< " triangles=" << geometry.TriangleCount()
+			<< " output=" << fs::relative(outputPath, projectRoot).generic_string();
+		if (record) std::cout << " guid=" << record->guid.ToString();
+		std::cout << '\n';
+		return 0;
 	}
 
 	int ImportAnimationFbx(const fs::path& projectRoot, const fs::path& assetsRoot,
@@ -987,6 +1085,8 @@ namespace
 				<< " entry=\"" << options.entryName << "\" fields=" << result.fields.size() << '\n';
 			return 0;
 		}
+		if (options.command == Command::BakeNavigation)
+			return BakeNavigation(projectRoot, fs::weakly_canonical(assetsRoot), options);
 
 		Vans::VansAssetDatabase database(assetsRoot);
 		const Vans::VansAssetScanResult scanResult = database.Scan(

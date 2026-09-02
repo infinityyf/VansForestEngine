@@ -18,6 +18,7 @@ public:
     {
         bool success = false;
         std::string message;
+		std::string entityGuid;
 
         explicit operator bool() const { return success; }
     };

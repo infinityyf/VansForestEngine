@@ -507,6 +507,59 @@ bool VansGraphics::VansScene::SetEntityParentReferenceByGuid(
     const Vans::VansSceneParentReference* parentReference,
     Vans::VansTransformReparentMode mode)
 {
+	return SetEntityParentReferenceInternal(
+		childEntityGuid, parentReference, mode, nullptr);
+}
+
+bool VansGraphics::VansScene::BindEntityToAnimationAttachmentProfileByGuid(
+	const std::string& childEntityGuid,
+	const Vans::VansSceneParentReference& parent)
+{
+	if (!parent.IsAnchor() || !m_RuntimeWorld)
+		return false;
+	VansScriptObject* child = FindObjectByGuid(childEntityGuid);
+	VansScriptObject* owner = FindObjectByGuid(parent.entityGuid.ToString());
+	if (!child || !owner || child->m_ModelAssetGuid.empty())
+		return false;
+
+	const Vans::VansComponentHandle component = m_RuntimeWorld->FindComponentByGuid(
+		parent.animationComponentGuid.ToString(), Vans::VansRuntimeComponentType_Animation);
+	auto* storage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeAnimationComponent>*>(
+		m_RuntimeWorld->FindStorage(Vans::VansRuntimeComponentType_Animation));
+	const Vans::VansRuntimeAnimationComponent* animation = storage ? storage->Get(component) : nullptr;
+	const Vans::VansComponentHeader* header = m_RuntimeWorld->GetComponentHeader(component);
+	const Vans::VansEntityHandle ownerEntity =
+		m_RuntimeWorld->Entities().FindByGuid(owner->m_EntityGuid);
+	if (!animation || !animation->animationNode || !header || header->owner != ownerEntity)
+		return false;
+	const VansAnimationController* controller = animation->animationNode->GetController();
+	const VansCompiledAnimationRig* rig = controller ? controller->GetAnimationRig() : nullptr;
+	const VansRigAttachmentParentKind parentKind =
+		parent.kind == Vans::VansSceneParentKind::Bone
+			? VansRigAttachmentParentKind::Bone
+			: VansRigAttachmentParentKind::Socket;
+	const VansCompiledRigAttachmentProfile* profile = rig
+		? rig->FindAttachmentProfile(
+			child->m_ModelAssetGuid, parentKind, parent.anchorGuid.ToString())
+		: nullptr;
+	if (!profile)
+		return false;
+
+	Vans::VansLocalTransform localTransform;
+	localTransform.position = profile->positionLocal;
+	localTransform.rotation = profile->rotationLocal;
+	localTransform.scale = profile->scaleLocal;
+	return SetEntityParentReferenceInternal(
+		childEntityGuid, &parent, Vans::VansTransformReparentMode::KeepLocal,
+		&localTransform);
+}
+
+bool VansGraphics::VansScene::SetEntityParentReferenceInternal(
+	const std::string& childEntityGuid,
+	const Vans::VansSceneParentReference* parentReference,
+	Vans::VansTransformReparentMode mode,
+	const Vans::VansLocalTransform* anchorLocalTransform)
+{
 	const std::string parentEntityGuid = parentReference
 		? parentReference->entityGuid.ToString() : std::string{};
     if (childEntityGuid.empty() || childEntityGuid == parentEntityGuid)
@@ -522,7 +575,8 @@ bool VansGraphics::VansScene::SetEntityParentReferenceByGuid(
         if (!parent)
             return false;
 		const bool transformParentApplied = parentReference->IsAnchor()
-			? SetTransformAnchorReference(child->m_TransformID, parent->m_TransformID, *parentReference, mode)
+			? SetTransformAnchorReference(child->m_TransformID, parent->m_TransformID,
+				*parentReference, mode, anchorLocalTransform)
 			: m_TransformGraph.SetParent(child->m_TransformID, parent->m_TransformID, mode);
 		if (!transformParentApplied)
 			return false;
@@ -574,6 +628,71 @@ bool VansGraphics::VansScene::TryGetEntityLocalTransformByGuid(
 	return object && m_TransformGraph.TryGetLocalTransform(object->m_TransformID, transform);
 }
 
+bool VansGraphics::VansScene::TryGetEntityParentReferenceByGuid(
+	const std::string& childEntityGuid,
+	Vans::VansSceneParentReference& parent,
+	bool& hasParent) const
+{
+	hasParent = false;
+	parent = {};
+	const VansScriptObject* child = FindObjectByGuid(childEntityGuid);
+	if (!child)
+		return false;
+	const Vans::VansTransformGraphLink* link =
+		m_TransformGraph.GetLink(child->m_TransformID);
+	if (!link)
+		return true;
+	const VansScriptObject* parentObject = nullptr;
+	for (const VansScriptObject* object : m_SceneObjects)
+	{
+		if (object && object->m_TransformID == link->parentTransformId)
+		{
+			parentObject = object;
+			break;
+		}
+	}
+	if (!parentObject || !Vans::VansAssetGuid::TryParse(
+		parentObject->m_EntityGuid, parent.entityGuid))
+		return false;
+	parent.kind = Vans::VansSceneParentKind::Entity;
+	if (link->usesAnchor)
+	{
+		if (!m_RuntimeWorld)
+			return false;
+		auto* storage = static_cast<const Vans::VansComponentStorage<
+			Vans::VansRuntimeAnimationComponent>*>(m_RuntimeWorld->FindStorage(
+				Vans::VansRuntimeComponentType_Animation));
+		if (!storage)
+			return false;
+		const auto& components = storage->DenseData();
+		const auto& headers = storage->Headers();
+		bool componentFound = false;
+		for (std::size_t index = 0;
+			index < components.size() && index < headers.size(); ++index)
+		{
+			const auto& animation = components[index];
+			const Vans::VansEntityRecord* owner =
+				m_RuntimeWorld->Entities().Get(headers[index].owner);
+			if (!owner || owner->stableGuid != parentObject->m_EntityGuid
+				|| animation.skeletonInstanceId != link->anchor.instanceId
+				|| animation.skeletonInstanceGeneration != link->anchor.instanceGeneration)
+				continue;
+			if (!Vans::VansAssetGuid::TryParse(
+				headers[index].stableGuid, parent.animationComponentGuid))
+				return false;
+			componentFound = true;
+			break;
+		}
+		if (!componentFound || !Vans::VansAssetGuid::TryParse(
+			link->anchor.anchorGuid, parent.anchorGuid))
+			return false;
+		parent.kind = link->anchor.kind == Vans::VansTransformAnchorKind::Bone
+			? Vans::VansSceneParentKind::Bone : Vans::VansSceneParentKind::Socket;
+	}
+	hasParent = true;
+	return true;
+}
+
 bool VansGraphics::VansScene::SetEntityLocalTransformByGuid(
 	const std::string& entityGuid,
 	const Vans::VansLocalTransform& transform)
@@ -590,11 +709,31 @@ bool VansGraphics::VansScene::SetEntityLocalTransformByGuid(
 	return m_TransformGraph.SetWorldTransform(object->m_TransformID, transform.ToMatrix());
 }
 
+bool VansGraphics::VansScene::TryGetEntityWorldTransformByGuid(
+	const std::string& entityGuid,
+	Vans::VansLocalTransform& transform) const
+{
+	const VansScriptObject* object = FindObjectByGuid(entityGuid);
+	return object && VansTransformStore::IsAllocated(object->m_TransformID)
+		&& Vans::VansLocalTransform::TryFromMatrix(
+			VansTransformStore::GetTransform(object->m_TransformID).GetModelMatrix(), transform);
+}
+
+bool VansGraphics::VansScene::SetEntityWorldTransformByGuid(
+	const std::string& entityGuid,
+	const Vans::VansLocalTransform& transform)
+{
+	VansScriptObject* object = FindObjectByGuid(entityGuid);
+	return object && m_TransformGraph.SetWorldTransform(
+		object->m_TransformID, transform.ToMatrix()) && m_TransformGraph.Resolve();
+}
+
 bool VansGraphics::VansScene::SetTransformAnchorReference(
 	uint32_t childTransformID,
 	uint32_t ownerTransformID,
 	const Vans::VansSceneParentReference& parent,
-	Vans::VansTransformReparentMode mode)
+	Vans::VansTransformReparentMode mode,
+	const Vans::VansLocalTransform* anchorLocalTransform)
 {
 	if (!parent.IsAnchor() || !m_RuntimeWorld)
 		return false;
@@ -612,9 +751,11 @@ bool VansGraphics::VansScene::SetTransformAnchorReference(
 	anchor.kind = parent.kind == Vans::VansSceneParentKind::Bone
 		? Vans::VansTransformAnchorKind::Bone : Vans::VansTransformAnchorKind::Socket;
 	anchor.anchorGuid = parent.anchorGuid.ToString();
-	return m_TransformGraph.SetAnchor(
-		childTransformID, ownerTransformID, std::move(anchor),
-		mode);
+	return anchorLocalTransform
+		? m_TransformGraph.SetAnchorWithLocalTransform(
+			childTransformID, ownerTransformID, std::move(anchor), *anchorLocalTransform)
+		: m_TransformGraph.SetAnchor(
+			childTransformID, ownerTransformID, std::move(anchor), mode);
 }
 
 bool VansGraphics::VansScene::SetEntityNameByGuid(

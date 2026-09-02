@@ -673,24 +673,35 @@ bool VansAnimationController::SetAnimationRig(
 	std::string& error)
 {
 	error.clear();
-	if (!rig.skeleton || rig.skeleton->bones.empty())
+	auto candidateRig = std::make_unique<VansCompiledAnimationRig>(std::move(rig));
+	if (!candidateRig->skeleton || candidateRig->skeleton->bones.empty())
 	{
 		error = "Animation Controller requires a compiled Rig bound to a Skeleton";
 		return false;
 	}
-	const Skeleton* compiledSkeleton = rig.skeleton;
-	if (!rig.BindSkeleton(*compiledSkeleton, error))
+	const Skeleton* compiledSkeleton = candidateRig->skeleton;
+	if (!candidateRig->BindSkeleton(*compiledSkeleton, error))
 		return false;
-	m_AnimationRig = std::move(rig);
-	m_QueryProfileResolver = std::move(queryProfileResolver);
+	std::unique_ptr<VansProceduralGraphRuntime> candidateRuntime;
 	if (m_TargetPostProcessGraph)
 	{
-		auto runtime = std::make_unique<VansProceduralGraphRuntime>();
-		if (!runtime->Configure(*m_TargetPostProcessGraph, *m_AnimationRig,
-			m_QueryProfileResolver, error)) return false;
-		m_ProceduralRuntime = std::move(runtime);
+		candidateRuntime = std::make_unique<VansProceduralGraphRuntime>();
+		if (!candidateRuntime->Configure(*m_TargetPostProcessGraph, *candidateRig,
+			queryProfileResolver, error))
+			return false;
 	}
+	m_AnimationRig = std::move(candidateRig);
+	m_QueryProfileResolver = std::move(queryProfileResolver);
+	if (m_TargetPostProcessGraph)
+		m_ProceduralRuntime = std::move(candidateRuntime);
 	return true;
+}
+
+bool VansAnimationController::ReplaceAnimationRig(
+	VansCompiledAnimationRig rig,
+	std::string& error)
+{
+	return SetAnimationRig(std::move(rig), m_QueryProfileResolver, error);
 }
 
 bool VansAnimationController::BindAnimationRigSkeleton(

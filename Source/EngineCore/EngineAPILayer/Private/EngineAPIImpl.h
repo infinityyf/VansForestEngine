@@ -79,6 +79,7 @@ namespace Vans::EditorAPI
 		GAFProjectConfigurationResult ApplyGAFProjectConfiguration(
 			const GAFProjectConfigurationSnapshot& configuration) override;
 		GAFRuntimeDebugSnapshot GetGAFRuntimeDebugSnapshot() override;
+		GAFCombatDebugSnapshot GetGAFCombatDebugSnapshot() const override;
 		GAFDebugCommandResult ControlGAFDebugger(const GAFDebugCommand& command) override;
 		GAFTraceCommandResult ControlGAFTrace(const GAFTraceCommand& command) override;
 		GAFSimulationResult SimulateGAFAction(const GAFSimulationRequest& request) override;
@@ -184,6 +185,10 @@ namespace Vans::EditorAPI
 			const std::string& canonicalJson) const override;
 		BoneMaskDocumentEncodeResult EncodeBoneMaskDocument(
 			const BoneMaskDocumentDTO& document) const override;
+		AnimationRigDocumentDecodeResult DecodeAnimationRigDocument(
+			const std::string& canonicalJson) const override;
+		AnimationRigDocumentEncodeResult EncodeAnimationRigDocument(
+			const AnimationRigDocumentDTO& document) const override;
 		BoneMaskCompileResult CompileBoneMaskDocument(
 			const BoneMaskDocumentDTO& document,
 			const AssetSkeletonSnapshot& skeleton) const override;
@@ -199,6 +204,22 @@ namespace Vans::EditorAPI
 		void TickAnimationPreview(AnimationPreviewSessionId sessionId, float deltaTime) override;
 		AnimationPreviewSnapshot GetAnimationPreviewSnapshot(
 			AnimationPreviewSessionId sessionId) const override;
+		AnimationPreviewRigSnapshot GetAnimationPreviewRigSnapshot(
+			AnimationPreviewSessionId sessionId) const override;
+		std::vector<AnimationPreviewSceneEntitySnapshot>
+			QueryAnimationPreviewSceneEntities(AnimationPreviewSessionId sessionId) const override;
+		AnimationRigDocumentDecodeResult GetAnimationPreviewWorkingRigDocument(
+			AnimationPreviewSessionId sessionId) const override;
+		AnimationPreviewRigEditResult SetAnimationPreviewRigSocketTransform(
+			const AnimationPreviewRigSocketTransformRequest& request) override;
+		AnimationPreviewRigEditResult SetAnimationPreviewRigAttachmentProfile(
+			const AnimationPreviewRigAttachmentProfileRequest& request) override;
+		AnimationPreviewAttachmentEditResult SetAnimationPreviewAttachmentTransform(
+			const AnimationPreviewAttachmentTransformRequest& request) override;
+		AnimationPreviewAttachmentEditResult SetAnimationPreviewAttachmentBinding(
+			const AnimationPreviewAttachmentBindingRequest& request) override;
+		AnimationPreviewRigEditResult AdoptAnimationPreviewRig(
+			const AnimationPreviewRigAdoptRequest& request) override;
 		void DestroyAnimationPreview(AnimationPreviewSessionId sessionId) override;
 		TimelinePreviewResult StartTimelinePreview(const TimelinePreviewStartRequest& request) override;
 		TimelinePreviewResult ConfigureTimelinePreviewPlayback(
@@ -229,8 +250,10 @@ namespace Vans::EditorAPI
 		void SetPlayState(EnginePlayState state) override;
 		EntityId RaycastScene(const Ray& ray) const override;
 		std::string PickRuntimeEntity(const Ray& ray) const override;
-		RuntimeTransformSnapshot GetRuntimeTransform(const std::string& entityGuid) const override;
-		void ApplyRuntimeTransform(const RuntimeTransformEdit& edit) override;
+		RuntimeTransformSnapshot GetRuntimeTransform(
+			const std::string& entityGuid, RuntimeTransformSpace space) const override;
+		RuntimeTransformEditResult ApplyRuntimeTransform(
+			const RuntimeTransformEdit& edit) override;
 		std::vector<RuntimeMultiMeshGroupSnapshot> BuildRuntimeMultiMeshExpansionSnapshot() override;
 		AudioBusDebugSnapshot GetAudioBusDebugSnapshot() const override;
 		void SetAudioBusGain(const std::string& busName, float gain) override;
@@ -252,6 +275,7 @@ namespace Vans::EditorAPI
 		void FlushRuntimeCharacterControllerTransforms() override;
 		void UpdateRuntimeNonCameraScripts() override;
 		void UpdateRuntimeActionsEarly(double deltaSeconds) override;
+		void UpdateRuntimeAI(double deltaSeconds) override;
 		void RunRuntimeActionLateContinuation() override;
 		void UpdateRuntimeTimelinesPostScript(double deltaSeconds) override;
 		void BeginRuntimeCameraControlFrame() override;

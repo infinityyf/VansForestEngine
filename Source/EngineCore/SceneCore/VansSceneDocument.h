@@ -49,6 +49,13 @@ private:
     std::shared_ptr<const VansSerializedValue> m_Root;
 };
 
+struct SceneDocumentSaveStage
+{
+    std::filesystem::path targetPath;
+    std::filesystem::path temporaryPath;
+    SceneStateId stateId = 0;
+};
+
 class VansSceneEditService;
 class VansSceneSaveService;
 class VansSetScenePropertyCommand;
@@ -74,6 +81,8 @@ public:
     bool IsDirty() const { return m_CurrentStateId != m_SavedStateId; }
     bool IsHealthy() const;
     SceneDocumentSnapshot CreateSnapshot() const;
+    bool StageSave(SceneDocumentSaveStage& stage, std::string& error) const;
+    bool AdoptStagedSave(const SceneDocumentSaveStage& stage, std::string& error);
 
 private:
     friend class VansSceneDocumentLoader;

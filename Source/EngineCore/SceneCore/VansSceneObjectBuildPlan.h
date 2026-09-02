@@ -1,6 +1,7 @@
 #pragma once
 
 #include "VansSceneAnimationComponentConfig.h"
+#include "VansSceneAIComponentConfig.h"
 #include "VansSceneCameraMediaComponentConfig.h"
 #include "VansSceneLightComponentConfig.h"
 #include "VansSceneLocalVolumetricFogComponentConfig.h"
@@ -45,9 +46,18 @@ struct VansSceneObjectBuildConfig
 	std::optional<VansSceneParticleComponentConfig> particle;
 	std::optional<VansSceneTimelineComponentConfig> timeline;
 	std::optional<VansGameplayActionHostSetup> actionHost;
+	std::optional<VansSceneNavigationAgentConfig> navigationAgent;
+	std::optional<VansSceneAIAgentConfig> aiAgent;
 	VansScriptComponentDescriptors scriptComponents;
 	VansScriptUIComponentDescriptors uiComponents;
 	std::unordered_map<std::string, std::string> componentGuids;
+
+	std::string ResolveModelAssetGuid() const
+	{
+		if (multiMeshRoot && !multiMeshRoot->modelGuid.empty())
+			return multiMeshRoot->modelGuid;
+		return render ? render->mesh : std::string{};
+	}
 };
 
 struct VansSceneObjectBuildPlan

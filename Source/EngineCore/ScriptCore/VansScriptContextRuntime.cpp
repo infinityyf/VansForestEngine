@@ -13,6 +13,7 @@
 #include "VansLuaUIBridge.h"
 #include "VansLuaGameplayActionBridge.h"
 #include "VansTransform.h"
+#include "../AICore/VansAIEvents.h"
 #include "../AnimationCore/VansAnimationController.h"
 #include "../AnimationCore/VansAnimationNode.h"
 #include "../AudioCore/VansAudioManager.h"
@@ -654,6 +655,27 @@ int LuaObjectReparentToSocket(lua_State* L)
 	const bool reparented = validReference && child && scene
 		&& scene->SetEntityParentReferenceByGuid(child->m_EntityGuid, &parent, mode);
 	lua_pushboolean(L, reparented);
+	return 1;
+}
+
+int LuaObjectBindToSocketProfile(lua_State* L)
+{
+	auto* child = ResolveObject(CheckObject(L, 1));
+	auto* owner = ResolveObject(CheckObject(L, 2));
+	const char* animationComponentGuid = luaL_checkstring(L, 3);
+	const char* socketGuid = luaL_checkstring(L, 4);
+
+	Vans::VansSceneParentReference parent;
+	parent.kind = Vans::VansSceneParentKind::Socket;
+	const bool validReference = owner
+		&& Vans::VansAssetGuid::TryParse(owner->m_EntityGuid, parent.entityGuid)
+		&& Vans::VansAssetGuid::TryParse(animationComponentGuid, parent.animationComponentGuid)
+		&& Vans::VansAssetGuid::TryParse(socketGuid, parent.anchorGuid);
+	auto* scene = Scene();
+	const bool bound = validReference && child && scene
+		&& scene->BindEntityToAnimationAttachmentProfileByGuid(
+			child->m_EntityGuid, parent);
+	lua_pushboolean(L, bound);
 	return 1;
 }
 
@@ -2564,6 +2586,43 @@ int LuaTimeSeconds(lua_State* L)
 	return 1;
 }
 
+Vans::VansEntityHandle ReadAIEventTarget(lua_State* L, int index)
+{
+	if (luaL_testudata(L, index, "Vans.Object"))
+	{
+		LuaObjectUserdata* handle = CheckObject(L, index);
+		return handle ? handle->runtimeEntity : Vans::VansEntityHandle{};
+	}
+	if (lua_isstring(L, index))
+	{
+		const char* guid = lua_tostring(L, index);
+		auto* scene = Scene();
+		auto* world = scene ? scene->GetRuntimeWorld() : nullptr;
+		return world && guid ? world->Entities().FindByGuid(guid) : Vans::VansEntityHandle{};
+	}
+	return {};
+}
+
+int LuaAIRequestActivation(lua_State* L)
+{
+	const Vans::VansEntityHandle target = ReadAIEventTarget(L, 1);
+	if (target.IsValid())
+		Vans::VansEventBus::Get().Enqueue(
+			Vans::VansAIActivationRequested{ target }, Vans::VansEventLane::GameLogic);
+	lua_pushboolean(L, target.IsValid());
+	return 1;
+}
+
+int LuaAIReleaseToGameplay(lua_State* L)
+{
+	const Vans::VansEntityHandle target = ReadAIEventTarget(L, 1);
+	if (target.IsValid())
+		Vans::VansEventBus::Get().Enqueue(
+			Vans::VansAIGameplayReleased{ target }, Vans::VansEventLane::GameLogic);
+	lua_pushboolean(L, target.IsValid());
+	return 1;
+}
+
 int LuaTimelinePlay(lua_State* L)
 {
 	const char* componentGuid = luaL_checkstring(L, 1);
@@ -3918,6 +3977,7 @@ void VansScriptContext::RegisterLuaBindings()
 		{ "get_transform_id", LuaObjectGetTransformID },
 		{ "getTransformID", LuaObjectGetTransformID },
 		{ "reparent_to_socket", LuaObjectReparentToSocket },
+		{ "bind_to_socket_profile", LuaObjectBindToSocketProfile },
 		{ "get_component_count", LuaObjectGetComponentCount },
 		{ "getComponentCount", LuaObjectGetComponentCount },
 		{ "get_component_by_index", LuaObjectGetComponentByIndex },
@@ -4080,6 +4140,11 @@ void VansScriptContext::RegisterLuaBindings()
 	lua_pushcfunction(L, LuaLog); lua_setfield(L, -2, "log");
 	lua_pushcfunction(L, LuaFindObject); lua_setfield(L, -2, "find_object");
 	lua_pushcfunction(L, LuaTimeSeconds); lua_setfield(L, -2, "time_seconds");
+
+	lua_newtable(L);
+	lua_pushcfunction(L, LuaAIRequestActivation); lua_setfield(L, -2, "request_activation");
+	lua_pushcfunction(L, LuaAIReleaseToGameplay); lua_setfield(L, -2, "release_to_gameplay");
+	lua_setfield(L, -2, "ai");
 
 	lua_newtable(L);
 	lua_pushcfunction(L, LuaTimelinePlay); lua_setfield(L, -2, "play");

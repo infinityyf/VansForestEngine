@@ -233,6 +233,14 @@ namespace Vans::EditorAPI
 		bool writeScale = true;
 	};
 
+	struct RuntimeTransformEditResult
+	{
+		bool applied = false;
+		std::string message;
+		RuntimeTransformSnapshot localTransform;
+		RuntimeTransformSnapshot worldTransform;
+	};
+
 	enum class RuntimePreviewLightType
 	{
 		Directional,
@@ -992,6 +1000,39 @@ namespace Vans::EditorAPI
 		std::vector<GAFDebugNamedValue> effects;
 		std::vector<GAFDebugNamedValue> grants;
 		std::vector<GAFDebugActionSnapshot> actions;
+	};
+
+	struct GAFCombatWindowDebugSnapshot
+	{
+		std::string owner;
+		std::string window;
+		bool active = false;
+		Vec3 origin;
+		Vec3 forward;
+		Vec3 previousBase;
+		Vec3 previousTip;
+		Vec3 currentBase;
+		Vec3 currentTip;
+		float range = 0.0f;
+		float halfAngleDegrees = 0.0f;
+		float sweepRadius = 0.0f;
+		std::size_t hitCount = 0;
+	};
+
+	struct GAFHurtBodyDebugSnapshot
+	{
+		std::string target;
+		Vec3 center;
+		float radius = 0.0f;
+		float halfHeight = 0.0f;
+		bool hit = false;
+	};
+
+	struct GAFCombatDebugSnapshot
+	{
+		bool available = false;
+		std::vector<GAFCombatWindowDebugSnapshot> windows;
+		std::vector<GAFHurtBodyDebugSnapshot> hurtBodies;
 	};
 
 	struct GAFRuntimeDebugSnapshot
@@ -2214,6 +2255,114 @@ namespace Vans::EditorAPI
 		std::vector<AssetSkeletonBoneSnapshot> bones;
 	};
 
+	enum class AnimationRigSolverKind { Limb, CCD, FABRIK, Aim };
+	enum class AnimationRigJointLimitKind { Hinge, SwingTwist, Locked };
+	enum class AnimationRigAttachmentParentKind { Bone, Socket };
+
+	struct AnimationRigSocketDTO
+	{
+		std::string guid;
+		std::string name;
+		std::string boneGuid;
+		Vec3 positionLocal;
+		Vec4 rotationLocal{ 0.0f, 0.0f, 0.0f, 1.0f };
+		Vec3 scaleLocal{ 1.0f, 1.0f, 1.0f };
+	};
+
+	struct AnimationRigAttachmentProfileDTO
+	{
+		std::string modelGuid;
+		AnimationRigAttachmentParentKind parentKind =
+			AnimationRigAttachmentParentKind::Socket;
+		std::string anchorGuid;
+		Vec3 positionLocal;
+		Vec4 rotationLocal{ 0.0f, 0.0f, 0.0f, 1.0f };
+		Vec3 scaleLocal{ 1.0f, 1.0f, 1.0f };
+	};
+
+	struct AnimationRigGoalDTO
+	{
+		std::string id;
+		std::string effectorBone;
+	};
+
+	struct AnimationRigChainDTO
+	{
+		std::string id;
+		AnimationRigSolverKind solver = AnimationRigSolverKind::Limb;
+		std::vector<std::string> bones;
+		std::string goal;
+		Vec3 poleAxisLocal{ 0.0f, 0.0f, 1.0f };
+		float softReachStartRatio = 0.97f;
+		float maxStretchScale = 1.0f;
+		std::vector<float> weights;
+		std::vector<float> solveWeights;
+		float maxStepDegrees = 180.0f;
+		Vec3 forwardAxisLocal{ 0.0f, 0.0f, 1.0f };
+		Vec3 upAxisLocal{ 0.0f, 1.0f, 0.0f };
+	};
+
+	struct AnimationRigJointLimitDTO
+	{
+		std::string bone;
+		AnimationRigJointLimitKind kind = AnimationRigJointLimitKind::Hinge;
+		Vec3 axisLocal{ 1.0f, 0.0f, 0.0f };
+		Vec3 swingReferenceAxisLocal{ 0.0f, 0.0f, 1.0f };
+		float minDegrees = -180.0f;
+		float maxDegrees = 180.0f;
+		Vec2 swingLimitDegrees{ 180.0f, 180.0f };
+	};
+
+	struct AnimationRigSoleSampleDTO
+	{
+		std::string id;
+		Vec3 positionLocal;
+	};
+
+	struct AnimationRigContactDTO
+	{
+		std::string id;
+		std::string chain;
+		std::string footBone;
+		std::string ballBone;
+		Vec3 soleForwardLocal{ 0.0f, 0.0f, 1.0f };
+		Vec3 soleNormalLocal{ 0.0f, 1.0f, 0.0f };
+		std::vector<AnimationRigSoleSampleDTO> soleSamplesLocal;
+		Vec3 heelPivotLocal;
+		Vec3 ballPivotLocal;
+		Vec3 anklePivotLocal;
+		float sweepRadius = 0.035f;
+	};
+
+	struct AnimationRigDocumentDTO
+	{
+		std::string name;
+		std::string skeletonGuid;
+		Vec3 modelForward{ 0.0f, 0.0f, 1.0f };
+		Vec3 modelUp{ 0.0f, 1.0f, 0.0f };
+		std::vector<std::pair<std::string, std::string>> semanticBones;
+		std::vector<AnimationRigSocketDTO> sockets;
+		std::vector<AnimationRigAttachmentProfileDTO> attachmentProfiles;
+		std::vector<AnimationRigGoalDTO> goals;
+		std::vector<AnimationRigChainDTO> chains;
+		std::vector<AnimationRigJointLimitDTO> jointLimits;
+		std::vector<AnimationRigContactDTO> contacts;
+	};
+
+	struct AnimationRigDocumentDecodeResult
+	{
+		bool success = false;
+		AnimationRigDocumentDTO document;
+		std::string message;
+	};
+
+	struct AnimationRigDocumentEncodeResult
+	{
+		bool success = false;
+		std::string canonicalJson;
+		std::string message;
+	};
+
 	using AnimationPreviewSessionId = std::uint64_t;
 	enum class AnimationPreviewTargetKind
 	{
@@ -2225,6 +2374,10 @@ namespace Vans::EditorAPI
 	{
 		AnimationPreviewTargetKind targetKind = AnimationPreviewTargetKind::IsolatedModel;
 		std::string previewModelGuid;
+		// Scene preview always runs the explicitly selected Animator. The target
+		// Animation Component supplies its Skeleton, target Animation Rig/Socket
+		// context, and Retarget chain.
+		std::string animatorAssetGuid;
 		std::string entityGuid;
 		std::string animationComponentGuid;
 	};
@@ -2351,11 +2504,143 @@ namespace Vans::EditorAPI
 
 	struct AnimationPreviewBoneSnapshot
 	{
+		std::string guid;
 		std::string name;
 		int parentIndex = -1;
 		Vec3 position;
 		int dominantLayerIndex = 0;
 		float dominantLayerWeight = 0.0f;
+	};
+
+	struct AnimationPreviewSocketSnapshot
+	{
+		std::string guid;
+		std::string name;
+		std::string boneGuid;
+		int parentBoneIndex = -1;
+		RuntimeTransformSnapshot localTransform;
+		RuntimeTransformSnapshot modelTransform;
+		RuntimeTransformSnapshot worldTransform;
+		std::size_t attachmentCount = 0;
+	};
+
+	enum class AnimationPreviewAttachmentSourceKind { SceneEntity, TransientModel };
+
+	struct AnimationPreviewAttachmentSnapshot
+	{
+		std::uint64_t previewAttachmentId = 0;
+		AnimationPreviewAttachmentSourceKind sourceKind =
+			AnimationPreviewAttachmentSourceKind::SceneEntity;
+		std::string name;
+		std::string entityGuid;
+		std::string modelGuid;
+		RuntimeParentReference parent;
+		RuntimeTransformSnapshot localTransform;
+		RuntimeTransformSnapshot worldTransform;
+		RuntimeReparentTransformPolicy currentReparentPolicy =
+			RuntimeReparentTransformPolicy::KeepLocal;
+		bool editable = false;
+		bool dirty = false;
+		bool temporary = false;
+	};
+
+	struct AnimationPreviewAttachmentProfileSnapshot
+	{
+		std::string modelGuid;
+		RuntimeParentKind parentKind = RuntimeParentKind::Socket;
+		std::string anchorGuid;
+		RuntimeTransformSnapshot localTransform;
+	};
+
+	struct AnimationPreviewRigSnapshot
+	{
+		bool available = false;
+		AnimationPreviewSessionId sessionId = 0;
+		std::uint64_t sceneContentRevision = 0;
+		std::uint64_t rigRevision = 0;
+		std::uint64_t attachmentRevision = 0;
+		std::string entityGuid;
+		std::string animationComponentGuid;
+		std::string targetSkeletonGuid;
+		std::string rigAssetGuid;
+		std::string rigAssetPath;
+		bool retargetEnabled = false;
+		std::string retargetProfilePath;
+		std::string retargetSourceModelPath;
+		std::string retargetSourceAnimatorPath;
+		std::vector<AnimationPreviewSocketSnapshot> sockets;
+		std::vector<AnimationPreviewAttachmentProfileSnapshot> attachmentProfiles;
+		std::vector<AnimationPreviewAttachmentSnapshot> attachments;
+		std::string diagnostic;
+	};
+
+	struct AnimationPreviewRigSocketTransformRequest
+	{
+		AnimationPreviewSessionId sessionId = 0;
+		std::uint64_t expectedRigRevision = 0;
+		std::string socketGuid;
+		RuntimeTransformSpace space = RuntimeTransformSpace::Local;
+		RuntimeTransformSnapshot transform;
+	};
+
+	struct AnimationPreviewRigEditResult
+	{
+		bool success = false;
+		std::uint64_t acceptedRevision = 0;
+		bool usingLastGoodRig = false;
+		std::string message;
+	};
+
+	struct AnimationPreviewRigAttachmentProfileRequest
+	{
+		AnimationPreviewSessionId sessionId = 0;
+		std::uint64_t expectedRigRevision = 0;
+		std::string modelGuid;
+		RuntimeParentKind parentKind = RuntimeParentKind::None;
+		std::string anchorGuid;
+		RuntimeTransformSnapshot localTransform;
+		bool remove = false;
+	};
+
+	struct AnimationPreviewAttachmentTransformRequest
+	{
+		AnimationPreviewSessionId sessionId = 0;
+		std::uint64_t expectedAttachmentRevision = 0;
+		std::string entityGuid;
+		RuntimeTransformSpace space = RuntimeTransformSpace::Local;
+		RuntimeTransformSnapshot transform;
+	};
+
+	struct AnimationPreviewAttachmentBindingRequest
+	{
+		AnimationPreviewSessionId sessionId = 0;
+		std::uint64_t expectedAttachmentRevision = 0;
+		std::string entityGuid;
+		RuntimeParentReference parent;
+		RuntimeReparentTransformPolicy transformPolicy =
+			RuntimeReparentTransformPolicy::KeepLocal;
+	};
+
+	struct AnimationPreviewAttachmentEditResult
+	{
+		bool success = false;
+		std::uint64_t acceptedRevision = 0;
+		RuntimeTransformSnapshot localTransform;
+		std::string message;
+	};
+
+	struct AnimationPreviewSceneEntitySnapshot
+	{
+		std::string entityGuid;
+		std::string name;
+		std::string modelGuid;
+		bool active = true;
+	};
+
+	struct AnimationPreviewRigAdoptRequest
+	{
+		AnimationPreviewSessionId sessionId = 0;
+		std::uint64_t expectedRigRevision = 0;
 	};
 
 	struct AnimationPreviewEventSnapshot
@@ -2397,6 +2682,7 @@ namespace Vans::EditorAPI
 		bool playing = false;
 		bool sceneTarget = false;
 		bool seekSupported = true;
+		std::string seekUnavailableReason;
 		std::string entityGuid;
 		std::string animationComponentGuid;
 		bool usingLastGoodDefinition = false;
@@ -2430,6 +2716,7 @@ namespace Vans::EditorAPI
 		std::string diagnostic;
 		std::vector<Vec3> rootMotionTrail;
 		std::vector<AnimationPreviewBoneSnapshot> bones;
+		std::vector<AnimationPreviewSocketSnapshot> sockets;
 		std::vector<AnimationPreviewLayerSnapshot> layers;
 		std::vector<AnimationPreviewEventSnapshot> events;
 		std::vector<AnimationPreviewCurveSnapshot> curves;

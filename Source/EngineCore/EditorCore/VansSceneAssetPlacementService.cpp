@@ -21,7 +21,7 @@ VansSceneAssetPlacementService::Result VansSceneAssetPlacementService::PlaceMode
     const Vans::EditorAPI::ModelAssetPlacementPayload payload =
         editorAPI.PrepareModelAssetPlacement(request);
     if (!payload.prepared)
-        return { false, payload.message };
+        return { false, payload.message, {} };
 
     std::vector<Vans::VansSerializedValue> entities;
     entities.reserve(payload.sceneEntities.size());
@@ -29,7 +29,7 @@ VansSceneAssetPlacementService::Result VansSceneAssetPlacementService::PlaceMode
     {
         Vans::VansSerializedValue entity = Vans::ToSerializedValue(entityValue);
         if (entity.kind != Vans::VansSerializedValue::Kind::Object)
-            return { false, "Prepared model placement payload contains invalid scene entity" };
+            return { false, "Prepared model placement payload contains invalid scene entity", {} };
         entities.push_back(std::move(entity));
     }
 
@@ -60,9 +60,9 @@ VansSceneAssetPlacementService::Result VansSceneAssetPlacementService::PlaceMode
     const Vans::SceneEditResult result =
         editService.AppendEntities(std::move(entities), std::move(hooks));
     if (!result)
-        return { false, result.message };
+        return { false, result.message, {} };
     if (expectsRuntimeAppend && !result.runtimeChangeApplied)
-        return { false, "Runtime model entity creation failed" };
-    return { true, {} };
+        return { false, "Runtime model entity creation failed", {} };
+    return { true, {}, payload.runtimeEntityGuid };
 }
 }
