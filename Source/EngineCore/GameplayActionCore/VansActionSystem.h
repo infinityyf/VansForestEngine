@@ -25,7 +25,6 @@ struct VansActionQuery
 	VansActionHostRef host;
 	VansActionId action;
 	std::optional<VansActionInstanceState> state;
-	std::optional<VansPredictionKey> prediction;
 };
 
 struct VansActionView
@@ -53,13 +52,13 @@ public:
 	virtual VansActionSetHandle ApplyActionSet(VansActionHostRef host,
 		const VansActionSetDefinition& set, std::string& error) = 0;
 	virtual VansActivationReport CanActivate(VansActionHostRef host, VansActionSpecHandle spec,
-		const VansActionContext& context, bool hasAuthority, bool predicted) const = 0;
+		const VansActionContext& context) const = 0;
 	virtual VansActivationReport CanActivate(VansActionHostRef host, VansActionId action,
-		const VansActionContext& context, bool hasAuthority, bool predicted) const = 0;
+		const VansActionContext& context) const = 0;
 	virtual VansActionResult TryActivate(VansActionHostRef host, VansActionSpecHandle spec,
-		VansActionContext context, bool hasAuthority, bool predicted) = 0;
+		VansActionContext context) = 0;
 	virtual VansActionResult TryActivate(VansActionHostRef host, VansActionId action,
-		VansActionContext context, bool hasAuthority, bool predicted) = 0;
+		VansActionContext context) = 0;
 	virtual bool RequestCancel(VansActionInstanceRef action,
 		VansActionCancelReason reason, std::string& error) = 0;
 	virtual std::size_t InterruptByQuery(const VansActionQuery& query, std::string& error) = 0;
@@ -81,13 +80,13 @@ public:
 	VansActionSetHandle ApplyActionSetReference(VansActionHostRef host,
 		std::string_view reference, std::string& error);
 	VansActivationReport CanActivate(VansActionHostRef host, VansActionSpecHandle spec,
-		const VansActionContext& context, bool hasAuthority, bool predicted) const override;
+		const VansActionContext& context) const override;
 	VansActivationReport CanActivate(VansActionHostRef host, VansActionId action,
-		const VansActionContext& context, bool hasAuthority, bool predicted) const override;
+		const VansActionContext& context) const override;
 	VansActionResult TryActivate(VansActionHostRef host, VansActionSpecHandle spec,
-		VansActionContext context, bool hasAuthority, bool predicted) override;
+		VansActionContext context) override;
 	VansActionResult TryActivate(VansActionHostRef host, VansActionId action,
-		VansActionContext context, bool hasAuthority, bool predicted) override;
+		VansActionContext context) override;
 	bool RequestCancel(VansActionInstanceRef action,
 		VansActionCancelReason reason, std::string& error) override;
 	std::size_t InterruptByQuery(const VansActionQuery& query, std::string& error) override;

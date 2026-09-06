@@ -1,29 +1,32 @@
 #include "VansSceneAssetDependencyBuilder.h"
 
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
-#include "../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
-#include "../AssetCore/Storage/VansMaterialAuthoringAssetStorage.h"
 #include "../AssetCore/VansAssetMeta.h"
+#include "../AssetCore/VansAssetObjectRepository.h"
 #include "../AssetCore/VansBuiltInAssetCatalog.h"
 #include "../AssetCore/VansMaterialAuthoringAsset.h"
 #include "../AssetCore/VansShaderAuthoringAsset.h"
-#include "../AssetCore/Storage/VansAssetMetaStorage.h"
-#include "../AssetCore/Storage/VansJsonFileStorage.h"
-#include "../AssetCore/Storage/VansShaderAuthoringAssetStorage.h"
 #include "../AudioCore/VansAudioBus.h"
+#include "../AICore/VansAIBehaviorAsset.h"
 #include "../AnimationCore/VansAnimatorIO.h"
+#include "../AnimationCore/Procedural/VansAnimationRig.h"
+#include "../AnimationCore/Retargeting/VansRetargetProfile.h"
+#include "../AnimationCore/VansBoneMask.h"
 #include "../GameplayActionSchema/VansGameplayAssetSchema.h"
-#include "../SceneCore/VansSceneDocumentLoader.h"
+#include "../NavigationCore/VansNavigationMesh.h"
+#include "../PhysicsCore/VansRagdollTypes.h"
+#include "../RuntimeUI/Serialization/VansUIAssetDocument.h"
 #include "../SceneCore/VansSceneSchema.h"
+#include "../SceneCore/VansSceneLocalVolumetricFogComponentConfig.h"
+#include "../SceneCore/Serialization/VansVegetationConfigCodec.h"
 #include "../TimelineCore/VansTimelineDependencyBuilder.h"
-#include "../TimelineCore/VansTimelineSerialization.h"
 #include "../TimelineCore/VansTimelineValidator.h"
 #include "../Util/VansLog.h"
 
 #include <algorithm>
 #include <cctype>
 #include <deque>
-#include <nlohmann/json.hpp>
+#include <memory>
 #include <unordered_map>
 #include <vector>
 
@@ -51,41 +54,6 @@ namespace
 		const std::string addressMode = meta.ReadStringSetting("addressMode");
 		if (!addressMode.empty())
 			request.addressMode = addressMode;
-	}
-
-	VansSerializedValue EmptyObject()
-	{
-		return VansSerializedValue::Object({});
-	}
-
-	VansSerializedValue LoadSerializedJsonFileOrEmpty(const std::filesystem::path& path, const char* context)
-	{
-		nlohmann::json root;
-		std::string error;
-		if (!VansJsonFileStorage::Read(path, root, error))
-		{
-			VANS_LOG_ERROR("[" << context << "] Cannot read JSON file: " << path.string() << " (" << error << ")");
-			return EmptyObject();
-		}
-		if (!root.is_object())
-			return EmptyObject();
-		return DecodeSerializedValueJson(root);
-	}
-
-	VansSerializedValue LoadSceneDocumentOrEmpty(const std::filesystem::path& path)
-	{
-		SceneDocumentLoadResult loadResult = VansSceneDocumentLoader::Load(path);
-		if (!loadResult)
-		{
-			VANS_LOG_ERROR("[AssetDatabase] Cannot read Scene document: " << path.string());
-			for (const SceneDiagnostic& diagnostic : loadResult.diagnostics)
-			{
-				if (!diagnostic.message.empty())
-					VANS_LOG_ERROR("[AssetDatabase] " << diagnostic.message);
-			}
-			return EmptyObject();
-		}
-		return loadResult.document->SerializedRootSnapshot();
 	}
 
 	const VansSerializedValue* ReadSerializedObjectField(const VansSerializedValue& object, const char* key)
@@ -225,48 +193,6 @@ namespace
 		return FindObjectField(*settings, "vegetation");
 	}
 
-	std::string ReadVegetationConfigPath(const VansSerializedValue& vegetationData)
-	{
-		if (vegetationData.kind == VansSerializedValue::Kind::String)
-			return vegetationData.stringValue;
-		if (vegetationData.kind != VansSerializedValue::Kind::Object)
-			return {};
-		std::string path = ReadSerializedStringField(vegetationData, "config");
-		if (path.empty()) path = ReadSerializedStringField(vegetationData, "configPath");
-		if (path.empty()) path = ReadSerializedStringField(vegetationData, "path");
-		return path;
-	}
-
-	VansSerializedValue LoadVegetationConfigFromReference(const VansSerializedValue& vegetationData, const std::string& projectRoot)
-	{
-		const std::string configPath = ReadVegetationConfigPath(vegetationData);
-		if (configPath.empty())
-			return vegetationData;
-
-		std::filesystem::path resolved = std::filesystem::path(configPath);
-		if (resolved.is_relative())
-			resolved = std::filesystem::path(projectRoot) / resolved;
-
-		VansSerializedValue loaded = LoadSerializedJsonFileOrEmpty(resolved, "VegetationConfig");
-		if (loaded.kind != VansSerializedValue::Kind::Object)
-		{
-			VANS_LOG_ERROR("[VegetationConfig] Invalid JSON config file: " << resolved.string());
-			return EmptyObject();
-		}
-		VANS_LOG("[VegetationConfig] Loaded config file: " << resolved.string());
-
-		if (vegetationData.kind == VansSerializedValue::Kind::Object)
-		{
-			for (const auto& [key, value] : vegetationData.objectFields)
-			{
-				if (key == "config" || key == "configPath" || key == "path")
-					continue;
-				SetSerializedObjectField(loaded, key, value);
-			}
-		}
-		return loaded;
-	}
-
 	std::string LowerAsciiCopy(std::string value)
 	{
 		std::transform(value.begin(), value.end(), value.begin(),
@@ -325,10 +251,10 @@ namespace
 			case VansAssetType::SkinProfile: result.requiredSkinProfiles.insert(found->first); break;
 			case VansAssetType::NavigationMesh:
 			case VansAssetType::AIBehavior:
+			case VansAssetType::VegetationConfig:
 				result.requiredAssets.insert(found->first); break;
 			default:
-				if (VansGameplayAssetSchemaRegistry::IsGameplayAssetType(found->second))
-					result.requiredAssets.insert(found->first);
+				result.requiredAssets.insert(found->first);
 				break;
 			}
 			return;
@@ -345,6 +271,57 @@ namespace
 		{
 			for (const auto& [key, item] : value.objectFields)
 				CollectSerializedAssetReferences(item, assetTypesByGuid, result);
+		}
+	}
+
+	void AppendDependencyError(
+		VansSceneAssetDependencyBuildResult& result,
+		const std::string& message);
+
+	template <typename Asset>
+	std::shared_ptr<const Asset> ResolveMemoryAsset(
+		const VansAssetObjectRepository& repository,
+		const VansAssetRecord& record)
+	{
+		VansAssetObjectSnapshotInfo info;
+		if (!repository.FindInfo(record.guid, info) || info.assetType != record.type)
+			return {};
+		return repository.ResolveLatest<Asset>(record.guid);
+	}
+
+	void ExpandUIAssetDependencies(
+		const std::unordered_map<std::string, VansAssetRecord>& recordsByGuid,
+		const std::unordered_map<std::string, VansAssetType>& assetTypesByGuid,
+		const VansAssetObjectRepository& objectRepository,
+		VansSceneAssetDependencyBuildResult& result)
+	{
+		std::deque<std::string> pending(
+			result.requiredAssets.begin(), result.requiredAssets.end());
+		std::unordered_set<std::string> expanded;
+		while (!pending.empty())
+		{
+			const std::string guid = std::move(pending.front());
+			pending.pop_front();
+			if (!expanded.insert(guid).second) continue;
+			const auto found = recordsByGuid.find(guid);
+			if (found == recordsByGuid.end()) continue;
+			const VansAssetType type = found->second.type;
+			if (type != VansAssetType::UIScreen && type != VansAssetType::UIComponent &&
+				type != VansAssetType::UIThemeTokens && type != VansAssetType::UILocalization)
+				continue;
+
+			const auto memoryDocument = ResolveMemoryAsset<VansRuntime::VansUIAssetDocument>(
+				objectRepository, found->second);
+			if (!memoryDocument)
+			{
+				AppendDependencyError(result,
+					"UI asset '" + guid + "' has no memory object");
+				continue;
+			}
+			const std::unordered_set<std::string> before = result.requiredAssets;
+			CollectSerializedAssetReferences(memoryDocument->root, assetTypesByGuid, result);
+			for (const std::string& dependency : result.requiredAssets)
+				if (before.find(dependency) == before.end()) pending.push_back(dependency);
 		}
 	}
 
@@ -516,6 +493,91 @@ namespace
 		dependencies.push_back({ guidText, expectedType, chain + " -> " + guidText });
 	}
 
+	void CollectSceneLocalFogDependencies(
+		const VansSerializedValue& sceneDocument,
+		std::vector<TypedAssetDependency>& dependencies,
+		std::unordered_map<std::string, int>& fieldTextureRequiredChannels,
+		VansSceneAssetDependencyBuildResult& result)
+	{
+		const VansSerializedValue* entities = ReadSerializedArrayField(sceneDocument, "entities");
+		if (!entities)
+			return;
+		for (const VansSerializedValue& entity : entities->arrayItems)
+		{
+			const std::string entityName = ReadSerializedStringField(entity, "name", "<unnamed>");
+			const VansSerializedValue* components = ReadSerializedArrayField(entity, "components");
+			if (!components)
+				continue;
+			for (const VansSerializedValue& component : components->arrayItems)
+			{
+				if (ReadSerializedStringField(component, "type") != "LocalVolumetricFog")
+					continue;
+				const VansSerializedValue* data = ReadSerializedObjectField(component, "data");
+				if (!data)
+					continue;
+				for (const char* fieldName : { "shapeMask", "detailNoise", "flow" })
+				{
+					const VansSerializedValue* field = ReadSerializedObjectField(*data, fieldName);
+					if (!field)
+						continue;
+					const std::string chain = "scene entity '" + entityName +
+						"' LocalVolumetricFog." + fieldName;
+					const VansSerializedValue* source = ReadSerializedObjectField(*field, "source");
+					const VansSerializedValue* asset = source
+						? FindObjectField(*source, "asset") : nullptr;
+					const std::string guid = asset ? ReadAssetGuidReference(*asset) : std::string{};
+					if (source)
+					{
+						const std::string channels = ReadSerializedStringField(
+							*source, "channels", fieldName == std::string("flow") ? "rg" : "r");
+						VansLocalFogTextureChannel channel0{};
+						VansLocalFogTextureChannel channel1{};
+						const bool validChannel = fieldName == std::string("flow")
+							? TryParseLocalFogVector2TextureChannels(
+								channels, channel0, channel1)
+							: TryParseLocalFogScalarTextureChannels(channels, channel0);
+						if (!validChannel)
+							AppendDependencyError(result, chain + ".source.channels is invalid");
+						else if (!guid.empty())
+						{
+							const int requiredChannels =
+								RequiredLocalFogFieldChannelCount(channels);
+							int& accumulated = fieldTextureRequiredChannels[guid];
+							accumulated = (std::max)(accumulated, requiredChannels);
+						}
+					}
+					if (!guid.empty())
+						CollectStrictAssetReference(asset, VansAssetType::Texture,
+							chain + ".source.asset", dependencies, result);
+					if (const VansSerializedValue* mapping = ReadSerializedObjectField(*field, "mapping"))
+					{
+						const std::string projection = ReadSerializedStringField(*mapping, "projection", "localXZ");
+						const std::string addressMode = ReadSerializedStringField(*mapping, "addressMode");
+						if (projection != "localXZ")
+							AppendDependencyError(result, chain + ".mapping.projection must be localXZ");
+						if (!addressMode.empty() && addressMode != "repeat" &&
+							addressMode != "clampToEdge" && addressMode != "clampToBorderZero")
+							AppendDependencyError(result, chain + ".mapping.addressMode is invalid");
+					}
+				}
+
+				const VansSerializedValue* detail = ReadSerializedObjectField(*data, "detailNoise");
+				const VansSerializedValue* flow = ReadSerializedObjectField(*data, "flow");
+				const VansSerializedValue* flowSpeed = flow
+					? FindObjectField(*flow, "speedMetersPerSecond") : nullptr;
+				if (detail && flow && ReadSerializedBoolField(*detail, "enabled", false) &&
+					ReadSerializedBoolField(*flow, "enabled", false) && flowSpeed &&
+					ReadSerializedNumber(*flowSpeed, 0.0) > 0.0)
+				{
+					const VansSerializedValue* mapping = ReadSerializedObjectField(*detail, "mapping");
+					if (mapping && ReadSerializedStringField(*mapping, "addressMode", "repeat") != "repeat")
+						AppendDependencyError(result, "scene entity '" + entityName +
+							"' LocalVolumetricFog flowed detailNoise must use repeat address mode");
+				}
+			}
+		}
+	}
+
 	void CollectSceneAnimationDependencies(
 		const VansSerializedValue& sceneDocument,
 		std::vector<TypedAssetDependency>& dependencies,
@@ -543,19 +605,24 @@ namespace
 				CollectStrictAssetReference(FindObjectField(*data, "rig"),
 					VansAssetType::AnimationRig, owner + ".rig", dependencies, result);
 
-				const VansSerializedValue* retarget = ReadSerializedObjectField(*data, "retarget");
-				if (retarget == nullptr)
-					continue;
-				const VansSerializedValue* sourceModel = FindObjectField(*retarget, "source_model");
-				if (sourceModel == nullptr)
-					sourceModel = FindObjectField(*retarget, "sourceModel");
-				const VansSerializedValue* sourceAnimator = FindObjectField(*retarget, "source_animator");
-				if (sourceAnimator == nullptr)
-					sourceAnimator = FindObjectField(*retarget, "sourceAnimator");
-				CollectStrictAssetReference(sourceModel, VansAssetType::Model,
-					owner + ".retarget.sourceModel", dependencies, result);
-				CollectStrictAssetReference(sourceAnimator, VansAssetType::AnimatorController,
-					owner + ".retarget.sourceAnimator", dependencies, result);
+				if (const VansSerializedValue* retarget = ReadSerializedObjectField(*data, "retarget"))
+				{
+					CollectStrictAssetReference(FindObjectField(*retarget, "profile"),
+						VansAssetType::RetargetProfile,
+						owner + ".retarget.profile", dependencies, result);
+					CollectStrictAssetReference(FindObjectField(*retarget, "source_model"),
+						VansAssetType::Model,
+						owner + ".retarget.source_model", dependencies, result);
+					CollectStrictAssetReference(FindObjectField(*retarget, "source_animator"),
+						VansAssetType::AnimatorController,
+						owner + ".retarget.source_animator", dependencies, result);
+				}
+				if (const VansSerializedValue* ragdoll = ReadSerializedObjectField(*data, "ragdoll"))
+				{
+					CollectStrictAssetReference(FindObjectField(*ragdoll, "profile"),
+						VansAssetType::RagdollProfile,
+						owner + ".ragdoll.profile", dependencies, result);
+				}
 			}
 		}
 	}
@@ -630,8 +697,10 @@ namespace
 
 VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResourcePlan(
 	VansAssetDatabase& database,
-	const std::filesystem::path& scenePath,
+	const VansSerializedValue& sceneDocument,
+	const std::filesystem::path& sceneSourcePath,
 	const std::unordered_map<std::string, std::string>& runtimeAssetBindings,
+	const VansAssetObjectRepository& objectRepository,
 	VansAssetDatabase* builtInAssetDatabase)
 {
 	VansSceneAssetDependencyBuildResult result;
@@ -643,15 +712,14 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 			result.requiredModels.insert(guid);
 	}
 
-	VansSerializedValue sceneDocument = LoadSceneDocumentOrEmpty(scenePath);
 	if (sceneDocument.kind != VansSerializedValue::Kind::Object ||
 		ReadSerializedIntField(sceneDocument, "schemaVersion", 0) != VansSceneSchemaVersion)
 	{
-		VANS_LOG_ERROR("[AssetDatabase] Cannot collect Scene dependencies from " << scenePath.string());
+		VANS_LOG_ERROR("[AssetDatabase] Cannot collect Scene dependencies from " << sceneSourcePath.string());
 		return result;
 	}
 
-	VANS_LOG("[AssetDatabase] Collecting dependencies from " << scenePath.string());
+	VANS_LOG("[AssetDatabase] Collecting dependencies from " << sceneSourcePath.string());
 	const VansSerializedValue* entities = ReadSerializedArrayField(sceneDocument, "entities");
 	if (entities == nullptr)
 	{
@@ -680,24 +748,77 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 			assetRecordsByGuid.emplace(record.guid.ToString(), record);
 		}
 	}
-
 	CollectSerializedAssetReferences(sceneDocument, assetTypesByGuid, result);
+	ExpandUIAssetDependencies(assetRecordsByGuid, assetTypesByGuid, objectRepository, result);
 	std::vector<TypedAssetDependency> animationDependencies;
 	CollectSceneAnimationDependencies(sceneDocument, animationDependencies, result);
 	std::vector<TypedAssetDependency> timelineDependencies;
 	CollectSceneTimelineDependencies(sceneDocument, timelineDependencies, result);
 	std::vector<TypedAssetDependency> aiDependencies;
 	CollectSceneAIDependencies(sceneDocument, aiDependencies, result);
+	std::vector<TypedAssetDependency> localFogDependencies;
+	std::unordered_map<std::string, int> localFogFieldTextureRequiredChannels;
+	CollectSceneLocalFogDependencies(
+		sceneDocument, localFogDependencies, localFogFieldTextureRequiredChannels, result);
 	if (const VansSerializedValue* vegetationConfig = ReadVegetationField(sceneDocument))
 	{
-		VansSerializedValue externalVegetationConfig = LoadVegetationConfigFromReference(*vegetationConfig, projectRoot.string());
-		if (externalVegetationConfig.kind == VansSerializedValue::Kind::Object)
+		const std::string vegetationGuidText =
+			VansVegetationConfigCodec::ReadReferenceGuid(*vegetationConfig);
+		VansVegetationConfigAsset vegetationAsset;
+		VansSceneVegetationNodeConfig effectiveVegetation;
+		bool vegetationResolved = false;
+		std::string vegetationError;
+		VansAssetGuid vegetationGuid;
+		if (!VansAssetGuid::TryParse(vegetationGuidText, vegetationGuid))
 		{
-			CollectSerializedAssetReferences(externalVegetationConfig, assetTypesByGuid, result);
-			VANS_LOG("[AssetDatabase] Collected vegetation dependencies: "
-				<< result.requiredModels.size() << " models, "
-				<< result.requiredMaterials.size() << " materials, "
-				<< result.requiredTextures.size() << " textures");
+			result.errors.push_back(
+				"Vegetation reference must contain a valid asset GUID");
+		}
+		else
+		{
+			const std::optional<VansAssetRecord> record = database.Find(vegetationGuid);
+			if (!record || record->type != VansAssetType::VegetationConfig)
+			{
+				result.errors.push_back(
+					"Vegetation configuration GUID is not registered as a vegetation asset: " +
+					vegetationGuidText);
+			}
+			else
+			{
+				const auto published = ResolveMemoryAsset<VansVegetationConfigAsset>(
+					objectRepository, *record);
+				if (published)
+				{
+					vegetationAsset = *published;
+				}
+				else
+				{
+					vegetationError = "Vegetation configuration has no memory object";
+					result.errors.push_back(vegetationError);
+				}
+				if (vegetationError.empty())
+				{
+					vegetationResolved = VansVegetationConfigCodec::ResolveReference(
+						*vegetationConfig, vegetationAsset, effectiveVegetation, vegetationError);
+					if (!vegetationResolved)
+						result.errors.push_back(std::move(vegetationError));
+				}
+			}
+		}
+		if (vegetationResolved && effectiveVegetation.valid)
+		{
+			VansSerializedValue effectiveRoot;
+			if (!VansVegetationConfigCodec::Encode(
+				effectiveVegetation, effectiveRoot, vegetationError))
+				result.errors.push_back(std::move(vegetationError));
+			else
+			{
+				CollectSerializedAssetReferences(effectiveRoot, assetTypesByGuid, result);
+				VANS_LOG("[AssetDatabase] Collected vegetation dependencies: "
+					<< result.requiredModels.size() << " models, "
+					<< result.requiredMaterials.size() << " materials, "
+					<< result.requiredTextures.size() << " textures");
+			}
 		}
 	}
 
@@ -713,6 +834,8 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 		timelineDependencies.begin(), timelineDependencies.end());
 	pendingDependencies.insert(pendingDependencies.end(),
 		aiDependencies.begin(), aiDependencies.end());
+	pendingDependencies.insert(pendingDependencies.end(),
+		localFogDependencies.begin(), localFogDependencies.end());
 	std::unordered_set<std::string> expandedAnimators;
 	std::unordered_set<std::string> expandedTimelines;
 	while (!pendingDependencies.empty())
@@ -746,14 +869,73 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 			AppendDependencyError(result, dependency.chain + " resolves to the wrong asset type");
 			continue;
 		}
+		if (record.type == VansAssetType::AIBehavior)
+		{
+			if (!ResolveMemoryAsset<VansAIBehaviorAsset>(objectRepository, record))
+			{
+				AppendDependencyError(result,
+					dependency.chain + " has no AI Behavior memory object");
+				continue;
+			}
+		}
+		else if (record.type == VansAssetType::NavigationMesh)
+		{
+			if (!ResolveMemoryAsset<VansNavigationMesh>(objectRepository, record))
+			{
+				AppendDependencyError(result,
+					dependency.chain + " has no Navigation Mesh memory object");
+				continue;
+			}
+		}
+		else if (record.type == VansAssetType::RetargetProfile)
+		{
+			if (!ResolveMemoryAsset<VansGraphics::VansRetargetProfileAsset>(
+					objectRepository, record))
+			{
+				AppendDependencyError(result,
+					dependency.chain + " has no Retarget Profile memory object");
+				continue;
+			}
+		}
+		else if (record.type == VansAssetType::RagdollProfile)
+		{
+			if (!ResolveMemoryAsset<VansEngine::RagdollProfile>(objectRepository, record))
+			{
+				AppendDependencyError(result,
+					dependency.chain + " has no Ragdoll Profile memory object");
+				continue;
+			}
+		}
+		else if (record.type == VansAssetType::AnimationRig)
+		{
+			if (!ResolveMemoryAsset<VansGraphics::VansAnimationRigAsset>(objectRepository, record))
+			{
+				AppendDependencyError(result,
+					dependency.chain + " has no Animation Rig memory object");
+				continue;
+			}
+		}
+		else if (record.type == VansAssetType::BoneMask)
+		{
+			if (!ResolveMemoryAsset<VansGraphics::VansBoneMaskAsset>(objectRepository, record))
+			{
+				AppendDependencyError(result,
+					dependency.chain + " has no Bone Mask memory object");
+				continue;
+			}
+		}
 		if (record.type == VansAssetType::Timeline)
 		{
 			if (!expandedTimelines.insert(dependency.guid).second) continue;
 			VansTimelineAsset timeline;
-			std::string timelineError;
-			if (!VansTimelineSerialization::Load(record.sourcePath, timeline, timelineError))
+			const auto memoryTimeline = ResolveMemoryAsset<VansTimelineAsset>(
+				objectRepository, record);
+			if (memoryTimeline)
+				timeline = *memoryTimeline;
+			else
 			{
-				AppendDependencyError(result, dependency.chain + " cannot load Timeline: " + timelineError);
+				AppendDependencyError(result,
+					dependency.chain + " has no Timeline memory object");
 				continue;
 			}
 			VansTimelineDependencyClosure closure;
@@ -777,7 +959,14 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 						return false;
 					}
 					identity = reference.guid;
-					return VansTimelineSerialization::Load(child->second.sourcePath, nested, error);
+					if (const auto published = objectRepository.ResolveLatest<VansTimelineAsset>(
+						child->second.guid))
+					{
+						nested = *published;
+						return true;
+					}
+					error = "SubTimeline has no memory object";
+					return false;
 				}, closure, diagnostics);
 			if (!closureBuilt)
 			{
@@ -814,12 +1003,15 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 		if (record.type != VansAssetType::AnimatorController ||
 			!expandedAnimators.insert(dependency.guid).second) continue;
 
-		VansGraphics::AnimatorAssetData animator;
-		if (!VansGraphics::VansAnimatorIO::Load(record.sourcePath.string(), animator))
+		const auto memoryAnimator = ResolveMemoryAsset<VansGraphics::AnimatorAssetData>(
+			objectRepository, record);
+		if (!memoryAnimator)
 		{
-			AppendDependencyError(result, dependency.chain + " cannot load Animator definition");
+			AppendDependencyError(result,
+				dependency.chain + " has no Animator memory object");
 			continue;
 		}
+		const VansGraphics::AnimatorAssetData& animator = *memoryAnimator;
 		pendingDependencies.push_back({ animator.animationRigGuid, VansAssetType::AnimationRig,
 			dependency.chain + " -> Animation Rig -> " + animator.animationRigGuid });
 		for (const VansGraphics::AnimatorClipRef& clip : animator.clipRefs)
@@ -840,22 +1032,30 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 
 	for (const VansAssetRecord& record : database.All())
 	{
-		if (record.type != VansAssetType::Material ||
-			result.requiredMaterials.find(record.guid.ToString()) == result.requiredMaterials.end())
+		if (record.type != VansAssetType::Material || record.state == VansAssetState::Missing)
 			continue;
 
 		VansMaterialAuthoringAsset material;
-		std::string materialError;
-		if (!VansMaterialAuthoringAssetStorage::Load(record.sourcePath, material, materialError))
+		const auto memoryMaterial = ResolveMemoryAsset<VansMaterialAuthoringAsset>(
+			objectRepository, record);
+		if (memoryMaterial)
+			material = *memoryMaterial;
+		else
 		{
-			VANS_LOG_ERROR("[AssetDatabase] Cannot read material dependency data: "
-				<< record.sourcePath.string() << " (" << materialError << ")");
+			AppendDependencyError(result,
+				"Material '" + record.guid.ToString() + "' has no memory object");
 			continue;
 		}
 
-		CollectSerializedAssetReferences(WriteMaterialAuthoringAssetRoot(material), assetTypesByGuid, result);
-		CollectMaterialTextureDependencies(database, material, result.requiredTextures);
+		if (result.requiredMaterials.find(record.guid.ToString()) != result.requiredMaterials.end())
+		{
+			CollectSerializedAssetReferences(
+				WriteMaterialAuthoringAssetRoot(material), assetTypesByGuid, result);
+			CollectMaterialTextureDependencies(database, material, result.requiredTextures);
+		}
 	}
+	if (!result.errors.empty())
+		return result;
 
 	for (const VansAssetRecord& record : database.All())
 	{
@@ -863,10 +1063,13 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 			continue;
 
 		VansAssetMeta meta;
-		std::string metaError;
-		if (!VansAssetMetaStorage::Load(record.metaPath, meta, metaError))
+		const auto memoryMeta = ResolveMemoryAsset<VansAssetMeta>(objectRepository, record);
+		if (memoryMeta)
+			meta = *memoryMeta;
+		else
 		{
-			VANS_LOG_ERROR("[AssetDatabase] " << metaError);
+			AppendDependencyError(result,
+				"Asset metadata '" + record.guid.ToString() + "' has no memory object");
 			continue;
 		}
 		if (!meta.HasObjectSettings())
@@ -874,7 +1077,6 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 			VANS_LOG_ERROR("[AssetDatabase] Asset settings must be an object: " << record.metaPath.string());
 			continue;
 		}
-
 		std::error_code relativeError;
 		const std::string relativePath = std::filesystem::relative(
 			record.sourcePath, projectRoot, relativeError).generic_string();
@@ -908,6 +1110,31 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 		{
 			if (result.requiredTextures.find(record.guid.ToString()) == result.requiredTextures.end())
 				continue;
+			const auto localFogField = localFogFieldTextureRequiredChannels.find(
+				record.guid.ToString());
+			if (localFogField != localFogFieldTextureRequiredChannels.end())
+			{
+				const std::string colorSpace = LowerAsciiCopy(
+					meta.ReadStringSetting("colorSpace"));
+				const bool isSrgb = colorSpace.empty()
+					? meta.ReadBoolSetting("sRGB", true) : colorSpace != "linear";
+				const VansLocalFogFieldTextureImportSettings fieldImport{
+					!isSrgb,
+					meta.ReadBoolSetting("useCompress", "compress", true),
+					meta.ReadBoolSetting("needMip", "generateMip", true),
+					meta.ReadIntSetting("importChannel", 4),
+					meta.ReadStringSetting("precision", "low8")
+				};
+				if (!ValidateLocalFogFieldTextureImportSettings(
+					fieldImport, localFogField->second))
+				{
+					AppendDependencyError(result,
+						"LocalVolumetricFog field texture " + record.guid.ToString() +
+						" must be linear, uncompressed, mipmapped, and expose all selected channels "
+						"through a low8 importChannel 1, 2, or 4 artifact");
+					continue;
+				}
+			}
 			const bool isCubemap = record.sourcePath.extension() == ".cubemap";
 			const std::string texturePath = isCubemap
 				? meta.ReadStringSetting("sourcePath") : relativePath;
@@ -925,15 +1152,16 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 			if (result.requiredShaders.find(record.guid.ToString()) == result.requiredShaders.end())
 				continue;
 
-			VansShaderAuthoringAsset shader;
-			std::string shaderError;
-			if (!VansShaderAuthoringAssetStorage::Load(record.sourcePath, shader, shaderError))
+			const auto shader = ResolveMemoryAsset<VansShaderAuthoringAsset>(
+				objectRepository, record);
+			if (!shader)
 			{
-				VANS_LOG_ERROR("[AssetDatabase] Cannot read shader asset: "
-					<< record.sourcePath.string() << " (" << shaderError << ")");
+				AppendDependencyError(result,
+					"Shader '" + record.guid.ToString() + "' has no memory object");
 				continue;
 			}
-			result.resourcePlan.shaders.push_back(BuildShaderResourceRequest(shader, record, projectRoot));
+			result.resourcePlan.shaders.push_back(BuildShaderResourceRequest(
+				*shader, record, projectRoot));
 		}
 		else if (record.type == VansAssetType::Audio)
 		{
@@ -993,13 +1221,16 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 			}
 
 			VansAssetMeta meta;
-			std::string metaError;
-			if (!VansAssetMetaStorage::Load(record->metaPath, meta, metaError))
+			const auto memoryMeta = ResolveMemoryAsset<VansAssetMeta>(
+				objectRepository, *record);
+			if (memoryMeta)
+				meta = *memoryMeta;
+			else
 			{
-				VANS_LOG_ERROR("[AssetDatabase] " << metaError);
+				VANS_LOG_ERROR("[AssetDatabase] Built-in asset metadata has no memory object: "
+					<< record->guid.ToString());
 				return result;
 			}
-
 			switch (entry.type)
 			{
 			case VansAssetType::Model:
@@ -1031,9 +1262,13 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 				result.resourcePlan.textures.push_back(std::move(request));
 				break;
 			}
+			case VansAssetType::UIXaml:
+				// 内置 XAML 是内存配置资产，不产生 GPU 资源请求。
+				result.requiredAssets.insert(record->guid.ToString());
+				break;
 			default:
 				VANS_LOG_ERROR("[AssetDatabase] Unsupported built-in runtime asset type for '"
-					<< entry.runtimeAlias << "'");
+					<< entry.sourcePath << "'");
 				return result;
 			}
 		}
@@ -1044,6 +1279,8 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 	result.requiredAssets.insert(result.requiredTextures.begin(), result.requiredTextures.end());
 	result.requiredAssets.insert(result.requiredShaders.begin(), result.requiredShaders.end());
 	result.requiredAssets.insert(result.requiredSkinProfiles.begin(), result.requiredSkinProfiles.end());
+	if (!result.errors.empty())
+		return result;
 	result.success = true;
 	return result;
 }

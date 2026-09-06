@@ -200,6 +200,7 @@ void VansTimelineSessionService::ReconcileChildSessions(Session& session)
 				desc.timeline = std::move(childAsset);
 				desc.world = session.world;
 				desc.owner = session.owner;
+				desc.scope = session.scope;
 				desc.parent = session.handle;
 				desc.root = session.root;
 				desc.hierarchicalBias = session.hierarchicalBias + track.priority;
@@ -326,6 +327,7 @@ VansTimelineSessionResult VansTimelineSessionService::Create(const VansTimelineS
 	session.debugLabel = desc.debugLabel;
 	session.world = desc.world;
 	session.owner = desc.owner;
+	session.scope = desc.scope;
 	session.bindingOverrides = desc.bindingOverrides;
 	session.bindingOverrides.insert(session.bindingOverrides.begin(),
 		desc.inheritedBindingOverrides.begin(), desc.inheritedBindingOverrides.end());
@@ -697,7 +699,7 @@ void VansTimelineSessionService::Evaluate(
 			output.retainsPreAnimatedState = false;
 	}
 	DeactivateWritersBeforeApply(*session, phase);
-	m_Appliers.Apply(*session->timeline, session->outputs, session->bindings,
+	m_Appliers.Apply(*session->timeline, session->outputs, session->bindings, session->scope,
 		m_Writers, m_PreAnimated, m_Diagnostics);
 	// 单阶段应用以 Session 为事务边界。先接管本次求值创建的全部 writer，
 	// 再检查错误，确保部分应用失败时 FailSession 能完整恢复现场。

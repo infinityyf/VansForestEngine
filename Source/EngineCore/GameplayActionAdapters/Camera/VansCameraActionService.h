@@ -12,6 +12,8 @@
 
 namespace Vans
 {
+const VansActionServiceCapability& VansCameraActionCapability();
+
 class VansCameraActionService final : public IVansActionService
 {
 public:

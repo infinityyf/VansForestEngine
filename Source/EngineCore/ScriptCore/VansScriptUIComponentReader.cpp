@@ -6,7 +6,7 @@
 
 namespace
 {
-void ReadStringArrayField(
+void ReadAssetGuidArrayField(
 	const Vans::VansSerializedValue& object,
 	const char* key,
 	std::vector<std::string>& outValues)
@@ -18,8 +18,10 @@ void ReadStringArrayField(
 
 	for (const Vans::VansSerializedValue& value : values->arrayItems)
 	{
-		if (value.kind == Vans::VansSerializedValue::Kind::String && !value.stringValue.empty())
-			outValues.push_back(value.stringValue);
+		if (value.kind != Vans::VansSerializedValue::Kind::Object)
+			continue;
+		const std::string guid = Vans::ReadSerializedStringField(value, "guid");
+		if (!guid.empty()) outValues.push_back(guid);
 	}
 }
 }
@@ -36,8 +38,8 @@ bool VansScriptUIComponentReader::TryReadUIComponent(
 	VansScriptUIComponentDescriptor descriptor;
 	descriptor.componentGuid = componentGuid;
 	descriptor.enabled = enabled;
-	ReadStringArrayField(uiData, "autoOpen", descriptor.autoOpenScreens);
-	ReadStringArrayField(uiData, "preload", descriptor.preloadScreens);
+	ReadAssetGuidArrayField(uiData, "autoOpen", descriptor.autoOpenScreenAssetGuids);
+	ReadAssetGuidArrayField(uiData, "preload", descriptor.preloadScreenAssetGuids);
 	outDescriptor = std::move(descriptor);
-	return !outDescriptor.autoOpenScreens.empty() || !outDescriptor.preloadScreens.empty();
+	return !outDescriptor.autoOpenScreenAssetGuids.empty() || !outDescriptor.preloadScreenAssetGuids.empty();
 }

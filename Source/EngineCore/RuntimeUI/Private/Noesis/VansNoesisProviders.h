@@ -31,9 +31,7 @@ namespace VansRuntime
         const Vans::VansPathResolver*   pathResolver);
 
     // ── VansNoesisXamlProvider ──────────────────────────────────────
-    // URI 格式：
-    //   engine://UI/Themes/BaseTheme.xaml  → EngineAssets/UI/Themes/BaseTheme.xaml
-    //   UI/Views/HUD.xaml                  → [ProjectRoot]/Assets/UI/Views/HUD.xaml
+    // XAML 统一使用 asset://GUID，并从已发布的内存快照读取。
     class VansNoesisXamlProvider : public Noesis::XamlProvider
     {
     public:

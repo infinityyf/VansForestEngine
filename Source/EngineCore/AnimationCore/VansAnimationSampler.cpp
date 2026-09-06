@@ -228,7 +228,7 @@ namespace VansGraphics
 					const double eventTime = std::clamp(static_cast<double>(event.time),
 					                                  static_cast<double>(start), static_cast<double>(end));
 					const bool crossed = current > previous
-						? eventTime > previous + kTimeEpsilon && eventTime <= current + kTimeEpsilon
+						? (eventTime > previous + kTimeEpsilon || (previous == start && eventTime == start)) && eventTime <= current + kTimeEpsilon
 						: eventTime < previous - kTimeEpsilon && eventTime >= current - kTimeEpsilon;
 					if (crossed)
 						occurrences.push_back({ eventTime, &event, 0 });
@@ -245,7 +245,7 @@ namespace VansGraphics
 				{
 					const double traversalTime = phase + static_cast<double>(cycle) * range;
 					const bool crossed = current > previous
-						? traversalTime > previous + kTimeEpsilon && traversalTime <= current + kTimeEpsilon
+						? (traversalTime > previous + kTimeEpsilon || (previous == start && traversalTime == start)) && traversalTime <= current + kTimeEpsilon
 						: traversalTime < previous - kTimeEpsilon && traversalTime >= current - kTimeEpsilon;
 					if (crossed)
 						occurrences.push_back({ traversalTime, &event, cycle });
@@ -268,6 +268,7 @@ namespace VansGraphics
 				sample.name = occurrence.event->name;
 				sample.sourceTime = occurrence.event->time;
 				sample.loopIndex = occurrence.loopIndex;
+				sample.forward = current > previous;
 				sample.payload = occurrence.event->payload;
 				outEvents.push_back(std::move(sample));
 			}

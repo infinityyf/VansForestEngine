@@ -1,11 +1,11 @@
 #include "VansEditorMaterialSchemaService.h"
 
 #include "../AssetCore/VansMaterialAuthoringAsset.h"
-#include "../AssetCore/VansShaderAuthoringAsset.h"
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
-#include "../AssetCore/Storage/VansShaderAuthoringAssetStorage.h"
+#include "../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 #include "../EngineAPILayer/Public/IEngineEditorAPI.h"
 
+#include <nlohmann/json.hpp>
 #include <string>
 #include <utility>
 
@@ -28,16 +28,16 @@ VansSerializedValue LoadShaderAuthoringParameters(
         return VansSerializedValue::Object({});
 
     const std::string shaderGuidText = ReadSerializedStringField(*shaderReference, "guid");
-    const EditorAPI::AssetGuidResolution shaderAsset = api.ResolveAssetGuid(shaderGuidText);
-    if (!shaderAsset.found || shaderAsset.asset.type != EditorAPI::AssetType::Shader)
+    const EditorAPI::ShaderAuthoringSchemaSnapshot schema =
+        api.GetShaderAuthoringSchema(shaderGuidText);
+    if (!schema.available || schema.parametersCanonicalJson.empty())
         return VansSerializedValue::Object({});
 
-    VansShaderAuthoringAsset shader;
-    std::string error;
-    if (!VansShaderAuthoringAssetStorage::Load(shaderAsset.sourcePath, shader, error))
+    const nlohmann::ordered_json parameters = nlohmann::ordered_json::parse(
+        schema.parametersCanonicalJson, nullptr, false);
+    if (parameters.is_discarded() || !parameters.is_object())
         return VansSerializedValue::Object({});
-
-    return shader.parameters;
+    return DecodeSerializedValueJson(parameters);
 }
 }
 

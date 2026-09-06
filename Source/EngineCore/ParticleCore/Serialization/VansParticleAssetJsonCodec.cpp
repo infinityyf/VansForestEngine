@@ -6,6 +6,8 @@
 #include <exception>
 #include <memory>
 #include <utility>
+#include <cmath>
+#include <stdexcept>
 
 namespace VansGraphics
 {
@@ -19,6 +21,8 @@ Vans::ParticleJson VansParticleAssetJsonCodec::Encode(const VansParticleAsset& a
     global["duration"] = asset.m_Duration;
     global["loop"] = asset.m_Loop;
     global["prewarm"] = asset.m_Prewarm;
+    global["startDelay"] = asset.m_StartDelay;
+    global["worldAligned"] = asset.m_WorldAligned;
     global["simulationSpace"] = asset.m_SimSpace;
     root["global"] = std::move(global);
 
@@ -51,6 +55,10 @@ bool VansParticleAssetJsonCodec::Decode(
             decoded.m_Duration = global.value("duration", 5.0f);
             decoded.m_Loop = global.value("loop", true);
             decoded.m_Prewarm = global.value("prewarm", false);
+            decoded.m_StartDelay = global.value("startDelay", 0.0f);
+            if (!std::isfinite(decoded.m_StartDelay) || decoded.m_StartDelay < 0)
+                throw std::runtime_error("Particle startDelay must be finite and nonnegative");
+            decoded.m_WorldAligned = global.value("worldAligned", false);
             decoded.m_SimSpace = global.value("simulationSpace", std::string("Local"));
         }
 

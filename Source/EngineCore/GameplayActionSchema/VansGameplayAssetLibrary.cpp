@@ -1,6 +1,9 @@
 #include "VansGameplayAssetLibrary.h"
 
 #include "VansGameplayAssetStorage.h"
+#include "../GameplayActionCore/VansGAFExtensionRegistry.h"
+#include "../AssetCore/Serialization/VansSerializedValueAccess.h"
+#include "../AssetCore/VansAssetObjectRepository.h"
 
 #include <algorithm>
 #include <cctype>
@@ -20,11 +23,19 @@ std::string NormalizePath(std::filesystem::path path)
 	return value;
 }
 
-bool IsCookedRecord(const VansAssetRecord& record)
+std::string AssetReference(const VansSerializedValue* value)
 {
-	return record.artifactFormat == VansAssetArtifactFormat::Cooked ||
-		record.artifactPath.extension() == ".gafcooked";
+	if (!value) return {};
+	if (value->kind == VansSerializedValue::Kind::String) return value->stringValue;
+	if (value->kind != VansSerializedValue::Kind::Object) return {};
+	for (const char* field : { "stableId", "id", "guid", "path", "assetGuid", "assetPath" })
+	{
+		const std::string reference = ReadSerializedStringField(*value, field);
+		if (!reference.empty()) return reference;
+	}
+	return {};
 }
+
 }
 
 void VansGameplayAssetLibrary::Clear()
@@ -33,10 +44,6 @@ void VansGameplayAssetLibrary::Clear()
 	m_ByGuid.clear();
 	m_ByPath.clear();
 	m_ActionSets.clear();
-	m_CameraRigIds.clear();
-	m_CameraShakeIds.clear();
-	m_CameraRigs.clear();
-	m_CameraShakes.clear();
 	m_Cues.clear();
 	m_CueIds.clear();
 	m_Actions = {};
@@ -49,41 +56,65 @@ void VansGameplayAssetLibrary::Clear()
 	m_Loaded = false;
 }
 
-bool VansGameplayAssetLibrary::ValidatePredictionRollbackPolicy(std::string& error) const
-{
-	for (const Entry& entry : m_Entries)
-	{
-		const auto* graph = std::get_if<std::shared_ptr<const VansCompiledActionGraph>>(
-			&entry.asset.data);
-		if (!graph || !*graph) continue;
-		for (const VansCompiledActionGraphNode& node : (*graph)->nodes)
-		{
-			const bool sideEffecting = node.kind == VansActionGraphNodeKind::Command ||
-				node.kind == VansActionGraphNodeKind::Transaction ||
-				node.kind == VansActionGraphNodeKind::Bridge;
-			if (node.predictable && sideEffecting &&
-				node.rollbackPlan == VansActionGraphRollbackPlan::None)
-			{
-				error = entry.sourcePath.string() + ": predictable node '" + node.guid +
-					"' has no rollback plan";
-				return false;
-			}
-		}
-	}
-	return true;
-}
-
 bool VansGameplayAssetLibrary::Load(
 	const std::vector<VansAssetRecord>& records,
+	const VansAssetObjectRepository& assetObjects,
 	std::string& error)
 
 {
-	return Load(records, {}, error);
+	return Load(records, assetObjects, {}, error);
 }
 
 bool VansGameplayAssetLibrary::Load(
 	const std::vector<VansAssetRecord>& records,
+	const VansAssetObjectRepository& assetObjects,
 	const std::vector<VansGameplayAssetSourceOverride>& sourceOverrides,
+	std::string& error)
+{
+	VansGAFTypeRegistry types;
+	VansGAFSchemaRegistry schemas;
+	if (!VansRegisterDefaultEngineGAFTypes(types, error) || !types.Seal(error)) return false;
+	schemas.BindTypes(types);
+	if (!VansRegisterDefaultEngineGAFSchemas(schemas, error) ||
+		!schemas.Seal(error)) return false;
+	VansGameplayAssetCompilerRegistry compilers;
+	if (!VansRegisterDefaultGameplayAssetCompilers(compilers, error) ||
+		!compilers.Seal(error)) return false;
+	return Load(records, assetObjects, sourceOverrides, schemas, compilers, error);
+}
+
+bool VansGameplayAssetLibrary::Load(
+	const std::vector<VansAssetRecord>& records,
+	const VansAssetObjectRepository& assetObjects,
+	const std::vector<VansGameplayAssetSourceOverride>& sourceOverrides,
+	const VansGAFSchemaRegistry& extensionSchemas,
+	std::string& error)
+{
+	VansGameplayAssetCompilerRegistry compilers;
+	if (!VansRegisterDefaultGameplayAssetCompilers(compilers, error) ||
+		!compilers.Seal(error)) return false;
+	return Load(records, assetObjects, sourceOverrides, extensionSchemas, compilers, error);
+}
+
+bool VansGameplayAssetLibrary::Load(
+	const std::vector<VansAssetRecord>& records,
+	const VansAssetObjectRepository& assetObjects,
+	const std::vector<VansGameplayAssetSourceOverride>& sourceOverrides,
+	const VansGAFSchemaRegistry& extensionSchemas,
+	const VansGameplayAssetCompilerRegistry& compilers,
+	std::string& error)
+{
+	return Load(records, assetObjects, sourceOverrides,
+		VansGameplayAssetSchemaRegistry::BuiltIns(), extensionSchemas, compilers, error);
+}
+
+bool VansGameplayAssetLibrary::Load(
+	const std::vector<VansAssetRecord>& records,
+	const VansAssetObjectRepository& assetObjects,
+	const std::vector<VansGameplayAssetSourceOverride>& sourceOverrides,
+	const VansGameplayAssetSchemaRegistry& assetSchemas,
+	const VansGAFSchemaRegistry& extensionSchemas,
+	const VansGameplayAssetCompilerRegistry& compilers,
 	std::string& error)
 {
 	Clear();
@@ -100,8 +131,8 @@ bool VansGameplayAssetLibrary::Load(
 	std::vector<VansAssetRecord> ordered;
 	for (const VansAssetRecord& record : records)
 		if (record.state != VansAssetState::Missing &&
-			VansGameplayAssetSchemaRegistry::IsGameplayAssetType(record.type) &&
-			record.type != VansAssetType::GAFEditorLayout)
+			assetSchemas.Resolve(record.type) &&
+			!assetSchemas.Resolve(record.type)->editorOnly)
 			ordered.push_back(record);
 	std::sort(ordered.begin(), ordered.end(), [](const auto& left, const auto& right)
 	{
@@ -122,7 +153,8 @@ bool VansGameplayAssetLibrary::Load(
 		if (sourceOverride)
 		{
 			VansGameplayCookResult cookResult =
-				VansGameplayAssetStorage::Cook(record.type, *sourceOverride);
+				VansGameplayAssetStorage::Cook(record.type, *sourceOverride,
+					assetSchemas, nullptr, &extensionSchemas);
 			if (!cookResult)
 			{
 				error = record.sourcePath.string() + ": " + cookResult.error;
@@ -131,34 +163,33 @@ bool VansGameplayAssetLibrary::Load(
 			}
 			cooked = std::move(cookResult.asset);
 		}
-		else if (IsCookedRecord(record))
-		{
-			if (!VansGameplayAssetStorage::LoadCooked(record.artifactPath, cooked, error))
-			{
-				error = record.artifactPath.string() + ": " + error;
-				Clear();
-				return false;
-			}
-		}
 		else
 		{
-			const std::filesystem::path sourcePath = !record.authoringPath.empty()
-				? record.authoringPath : record.sourcePath;
-			VansSerializedValue source;
-			if (!VansGameplayAssetStorage::LoadSource(sourcePath, source, error))
+			const std::shared_ptr<const VansGameplayAssetMemoryObject> memoryAsset =
+				assetObjects.ResolveLatest<VansGameplayAssetMemoryObject>(record.guid);
+			if (!memoryAsset)
 			{
-				error = sourcePath.string() + ": " + error;
+				error = record.guid.ToString() + ": GAF memory object is unavailable";
 				Clear();
 				return false;
 			}
-			VansGameplayCookResult cookResult = VansGameplayAssetStorage::Cook(record.type, source);
-			if (!cookResult)
+			if (memoryAsset->hasCookedAsset)
 			{
-				error = sourcePath.string() + ": " + cookResult.error;
-				Clear();
-				return false;
+				cooked = memoryAsset->cookedAsset;
 			}
-			cooked = std::move(cookResult.asset);
+			else
+			{
+				VansGameplayCookResult cookResult = VansGameplayAssetStorage::Cook(
+					record.type, memoryAsset->sourceDocument,
+					assetSchemas, nullptr, &extensionSchemas);
+				if (!cookResult)
+				{
+					error = memoryAsset->sourcePath.string() + ": " + cookResult.error;
+					Clear();
+					return false;
+				}
+				cooked = std::move(cookResult.asset);
+			}
 		}
 		if (cooked.assetType != record.type)
 		{
@@ -166,7 +197,20 @@ bool VansGameplayAssetLibrary::Load(
 			Clear();
 			return false;
 		}
-		VansGameplayCompileResult compileResult = VansGameplayAssetCompiler::Compile(cooked);
+		VansGameplayDiagnostics extensionDiagnostics;
+		VansGameplayAssetStorage::AppendExtensionDiagnostics(
+			record.type, cooked.runtimeDocument, extensionSchemas, extensionDiagnostics);
+		for (const VansGameplayDiagnostic& diagnostic : extensionDiagnostics)
+			if (diagnostic.severity == VansGameplayDiagnosticSeverity::Error ||
+				diagnostic.severity == VansGameplayDiagnosticSeverity::Fatal)
+			{
+				error = record.guid.ToString() + ": " + diagnostic.code + " " +
+					diagnostic.fieldPath + " " + diagnostic.message;
+				Clear();
+				return false;
+			}
+		VansGameplayCompileResult compileResult =
+			VansGameplayAssetCompiler::Compile(cooked, compilers);
 		if (!compileResult)
 		{
 			error = record.guid.ToString() + ": " + compileResult.error;
@@ -250,26 +294,6 @@ bool VansGameplayAssetLibrary::BuildRegistries(std::string& error)
 		{
 			hasTargetingPolicies = true;
 			if (!m_TargetingPolicies.Register(*policy, error)) return false;
-		}
-		else if (const auto* rig = std::get_if<VansCameraRigDefinition>(&entry.asset.data))
-		{
-			const std::size_t index = m_CameraRigs.size();
-			if (!m_CameraRigIds.emplace(rig->id, index).second)
-			{
-				error = "duplicate Camera Rig id: " + rig->stableName;
-				return false;
-			}
-			m_CameraRigs.push_back(*rig);
-		}
-		else if (const auto* shake = std::get_if<VansCameraShakeDefinition>(&entry.asset.data))
-		{
-			const std::size_t index = m_CameraShakes.size();
-			if (!m_CameraShakeIds.emplace(shake->id, index).second)
-			{
-				error = "duplicate Camera Shake id: " + shake->stableName;
-				return false;
-			}
-			m_CameraShakes.push_back(*shake);
 		}
 	}
 	return m_Tags.Seal(error) && m_Attributes.Seal(error) && m_PayloadSchemas.Seal(error) &&
@@ -382,9 +406,12 @@ bool VansGameplayAssetLibrary::LinkReferences(std::string& error)
 			&entry.asset.data);
 		if (!actionPointer || !*actionPointer) continue;
 		auto action = std::make_shared<VansCompiledActionDefinition>(**actionPointer);
-		if (!action->targetingPolicyReference.empty())
+		for (VansCompiledActionRecord& operation : action->program.activate.operations)
 		{
-			if (const Entry* target = ResolveEntry(action->targetingPolicyReference))
+			if (operation.type != "Gameplay.Targeting.Resolve") continue;
+			VansSerializedValue* asset = FindObjectField(operation.inputs, "asset");
+			const std::string reference = AssetReference(asset);
+			if (const Entry* target = ResolveEntry(reference))
 			{
 				const auto* policy = std::get_if<VansTargetingPolicy>(&target->asset.data);
 				if (!policy)
@@ -393,17 +420,63 @@ bool VansGameplayAssetLibrary::LinkReferences(std::string& error)
 						action->name;
 					return false;
 				}
-				action->targetingPolicy = policy->id;
+				*asset = VansSerializedValue::String(policy->name);
+			}
+			else if (!m_TargetingPolicies.IsSealed() || !m_TargetingPolicies.Resolve(
+				VansMakeStableId<VansTargetingPolicyIdTag>(reference)))
+			{
+				error = "Action TargetingPolicy reference is unresolved: " + action->name;
+				return false;
 			}
 		}
-		if (action->targetingPolicy && (!m_TargetingPolicies.IsSealed() ||
-			!m_TargetingPolicies.Resolve(action->targetingPolicy)))
+		for (VansCompiledActionRecord& operation : action->program.commit.operations)
 		{
-			error = "Action TargetingPolicy reference is unresolved: " + action->name;
-			return false;
+			if (operation.type != "Gameplay.Effects.Apply") continue;
+			VansSerializedValue* asset = FindObjectField(operation.inputs, "asset");
+			const std::string reference = AssetReference(asset);
+			if (const Entry* target = ResolveEntry(reference))
+			{
+				const auto* definition = std::get_if<std::shared_ptr<const VansEffectDefinition>>(
+					&target->asset.data);
+				if (!definition || !*definition)
+				{
+					error = "Action Effect reference has the wrong asset type: " + reference;
+					return false;
+				}
+				*asset = VansSerializedValue::String((*definition)->name);
+			}
+			else if (!m_Effects.Resolve(VansMakeStableId<VansEffectIdTag>(reference)))
+			{
+				error = "Action Effect reference is unresolved: " + reference;
+				return false;
+			}
 		}
-		if (!resolveCueList(action->presentationCueReferences,
-			action->presentationCues, "Action " + action->name)) return false;
+		for (VansCompiledActionRecord& operation : action->program.execute.operations)
+		{
+			if (operation.type != "Gameplay.Cue.Emit") continue;
+			VansSerializedValue* assets = FindObjectField(operation.inputs, "assets");
+			if (!assets || assets->kind != VansSerializedValue::Kind::Array) continue;
+			for (VansSerializedValue& asset : assets->arrayItems)
+			{
+				const std::string reference = AssetReference(&asset);
+				if (const Entry* target = ResolveEntry(reference))
+				{
+					const auto* cue = std::get_if<VansCompiledGameplayCueDefinition>(
+						&target->asset.data);
+					if (!cue)
+					{
+						error = "Action Cue reference has the wrong asset type: " + reference;
+						return false;
+					}
+					asset = VansSerializedValue::String(cue->name);
+				}
+				else if (m_CueIds.find(VansMakeStableId<VansCueIdTag>(reference)) == m_CueIds.end())
+				{
+					error = "Action Cue reference is unresolved: " + reference;
+					return false;
+				}
+			}
+		}
 		const auto resolveActionList = [&](const std::vector<std::string>& references,
 			std::vector<VansActionId>& actions, std::string_view field)
 		{
@@ -421,13 +494,34 @@ bool VansGameplayAssetLibrary::LinkReferences(std::string& error)
 			action->blockedActions, "blockedActions") ||
 			!resolveActionList(action->cancelActionReferences,
 				action->cancelActions, "cancelActions")) return false;
-		for (VansActionTransitionRule& rule : action->transitionRules)
-			if (!resolveAction(rule.targetActionReference, rule.targetAction,
-				"Action " + action->name + " transition " + rule.name, rule.targetAction))
-				return false;
-		if (!resolveAction(action->failureFallback.actionReference,
-			action->failureFallback.action, "Action " + action->name + " failure fallback",
-			action->failureFallback.action)) return false;
+		const auto resolveActionRecordReference = [&](VansCompiledActionRecord& record,
+			const char* field, const std::string& owner)
+		{
+			VansSerializedValue* value = FindObjectField(record.inputs, field);
+			const std::string reference = AssetReference(value);
+			if (reference.empty()) return true;
+			VansActionId resolved;
+			if (!resolveAction(reference, {}, owner, resolved)) return false;
+			for (const Entry& candidate : m_Entries)
+			{
+				const auto* definition = std::get_if<
+					std::shared_ptr<const VansCompiledActionDefinition>>(&candidate.asset.data);
+				if (definition && *definition && (*definition)->id == resolved)
+				{
+					*value = VansSerializedValue::String((*definition)->name);
+					return true;
+				}
+			}
+			error = owner + " could not canonicalize its Action reference";
+			return false;
+		};
+		for (VansCompiledActionRecord& transition : action->program.transitions)
+			if (!resolveActionRecordReference(transition, "target",
+				"Action " + action->name + " transition")) return false;
+		for (VansCompiledActionRecord& policy : action->program.policies)
+			if (policy.type == "Core.Policy.Failure" &&
+				!resolveActionRecordReference(policy, "action",
+					"Action " + action->name + " failure fallback")) return false;
 		if (!action->executionGraphAsset.empty())
 		{
 			const Entry* target = ResolveEntry(action->executionGraphAsset);
@@ -447,27 +541,8 @@ bool VansGameplayAssetLibrary::LinkReferences(std::string& error)
 			error = "Graph Action Executor requires an Action Graph asset: " + action->name;
 			return false;
 		}
-		for (VansActionEffectReference& effect : action->commitEffects)
-		{
-			if (const Entry* target = ResolveEntry(effect.assetReference))
-			{
-				const auto* definition = std::get_if<std::shared_ptr<const VansEffectDefinition>>(
-					&target->asset.data);
-				if (!definition || !*definition)
-				{
-					error = "Action Effect reference has the wrong asset type: " + effect.assetReference;
-					return false;
-				}
-				effect.effect = (*definition)->id;
-			}
-			if (!m_Effects.Resolve(effect.effect))
-			{
-				error = "Action Effect reference is unresolved: " + effect.assetReference;
-				return false;
-			}
-		}
 		*actionPointer = action;
-		if (!m_Actions.RegisterRevision(std::move(action), error)) return false;
+		if (!m_Actions.Register(std::move(action), error)) return false;
 	}
 
 	for (std::size_t entryIndex = 0; entryIndex < m_Entries.size(); ++entryIndex)
@@ -488,43 +563,70 @@ bool VansGameplayAssetLibrary::LinkReferences(std::string& error)
 				}
 				grant.action = (*definition)->id;
 			}
-			if (!m_Actions.ResolveLatest(grant.action))
+			if (!m_Actions.Resolve(grant.action))
 			{
 				error = "ActionSet grant is unresolved: " + grant.actionReference;
 				return false;
 			}
-		}
-		for (std::size_t index = 0; index < set->initialEffects.size(); ++index)
-		{
-			const std::string reference = index < set->initialEffectReferences.size()
-				? set->initialEffectReferences[index] : std::string{};
-			if (const Entry* target = ResolveEntry(reference))
-			{
-				const auto* definition = std::get_if<std::shared_ptr<const VansEffectDefinition>>(
-					&target->asset.data);
-				if (!definition || !*definition)
+			for (const VansCompiledActionRecord& extension : grant.extensions)
+				if (extension.type == "Gameplay.Tags.Dynamic")
 				{
-					error = "ActionSet Effect reference has the wrong asset type: " + reference;
+					const VansSerializedValue* tags = FindObjectField(extension.inputs, "tags");
+					if (!tags || tags->kind != VansSerializedValue::Kind::Array)
+					{
+						error = "ActionSet dynamic Tag extension is invalid: " + set->name;
+						return false;
+					}
+					for (const VansSerializedValue& tag : tags->arrayItems)
+						if (tag.kind != VansSerializedValue::Kind::String ||
+							!m_Tags.Find(tag.stringValue))
+						{
+							error = "ActionSet dynamic Tag is unresolved: " +
+								ReadSerializedString(tag);
+							return false;
+						}
+				}
+		}
+		std::unordered_set<VansAttributeId> initializedAttributes;
+		for (VansCompiledActionRecord& initializer : set->initializers)
+		{
+			if (initializer.type == "Gameplay.Effects.Initialize")
+			{
+				VansSerializedValue* asset = FindObjectField(initializer.inputs, "asset");
+				const std::string reference = AssetReference(asset);
+				if (const Entry* target = ResolveEntry(reference))
+				{
+					const auto* definition = std::get_if<std::shared_ptr<const VansEffectDefinition>>(
+						&target->asset.data);
+					if (!definition || !*definition)
+					{
+						error = "ActionSet Effect reference has the wrong asset type: " + reference;
+						return false;
+					}
+					*asset = VansSerializedValue::String((*definition)->name);
+				}
+				const std::string stableName = AssetReference(asset);
+				if (!m_Effects.Resolve(VansMakeStableId<VansEffectIdTag>(stableName)))
+				{
+					error = "ActionSet Effect reference is unresolved: " + reference;
 					return false;
 				}
-				set->initialEffects[index] = (*definition)->id;
 			}
-			if (!m_Effects.Resolve(set->initialEffects[index]))
+			else if (initializer.type == "Gameplay.Attributes.Initialize")
 			{
-				error = "ActionSet Effect reference is unresolved: " + reference;
-				return false;
-			}
-		}
-		std::unordered_set<VansAttributeId> overriddenAttributes;
-		for (const VansActionSetDefinition::AttributeOverride& overrideValue :
-			set->attributeOverrides)
-		{
-			if (!overrideValue.attribute || !std::isfinite(overrideValue.value) ||
-				!m_Attributes.Resolve(overrideValue.attribute) ||
-				!overriddenAttributes.insert(overrideValue.attribute).second)
-			{
-				error = "ActionSet Attribute override is invalid: " + set->name;
-				return false;
+				const std::string attributeName =
+					ReadSerializedStringField(initializer.inputs, "attribute");
+				const VansAttributeId attribute =
+					VansMakeStableId<VansAttributeIdTag>(attributeName);
+				const VansSerializedValue* value = FindObjectField(initializer.inputs, "value");
+				if (attributeName.empty() || !value ||
+					!std::isfinite(ReadSerializedNumber(*value)) ||
+					!m_Attributes.Resolve(attribute) ||
+					!initializedAttributes.insert(attribute).second)
+				{
+					error = "ActionSet Attribute initializer is invalid: " + set->name;
+					return false;
+				}
 			}
 		}
 		if (!m_ActionSets.emplace(set->id, entryIndex).second)
@@ -559,7 +661,7 @@ std::shared_ptr<const VansCompiledActionDefinition> VansGameplayAssetLibrary::Re
 	if (const Entry* entry = ResolveEntry(reference))
 		if (const auto* action = std::get_if<std::shared_ptr<const VansCompiledActionDefinition>>(
 			&entry->asset.data)) return *action;
-	return m_Actions.ResolveLatest(VansMakeStableId<VansActionIdTag>(reference));
+	return m_Actions.Resolve(VansMakeStableId<VansActionIdTag>(reference));
 }
 
 const VansActionSetDefinition* VansGameplayAssetLibrary::ResolveActionSet(
@@ -572,21 +674,28 @@ const VansActionSetDefinition* VansGameplayAssetLibrary::ResolveActionSet(
 		? nullptr : std::get_if<VansActionSetDefinition>(&m_Entries[found->second].asset.data);
 }
 
-const VansCameraRigDefinition* VansGameplayAssetLibrary::ResolveCameraRig(
-	std::string_view reference) const
+const VansCompiledGameplayExtensionAsset* VansGameplayAssetLibrary::ResolveExtensionAsset(
+	std::string_view reference,
+	std::string_view typeId) const
 {
 	if (const Entry* entry = ResolveEntry(reference))
-		return std::get_if<VansCameraRigDefinition>(&entry->asset.data);
-	const auto found = m_CameraRigIds.find(VansMakeStableId<VansCameraRigIdTag>(reference));
-	return found == m_CameraRigIds.end() ? nullptr : &m_CameraRigs[found->second];
+		if (const auto* extension = std::get_if<VansCompiledGameplayExtensionAsset>(
+			&entry->asset.data); extension && extension->typeId == typeId) return extension;
+	for (const Entry& entry : m_Entries)
+		if (const auto* extension = std::get_if<VansCompiledGameplayExtensionAsset>(
+			&entry.asset.data); extension && extension->typeId == typeId &&
+			extension->stableName == reference) return extension;
+	return nullptr;
 }
 
-const VansCameraShakeDefinition* VansGameplayAssetLibrary::ResolveCameraShake(
-	std::string_view reference) const
+std::vector<const VansCompiledGameplayExtensionAsset*> VansGameplayAssetLibrary::ExtensionAssets(
+	std::string_view typeId) const
 {
-	if (const Entry* entry = ResolveEntry(reference))
-		return std::get_if<VansCameraShakeDefinition>(&entry->asset.data);
-	const auto found = m_CameraShakeIds.find(VansMakeStableId<VansCameraShakeIdTag>(reference));
-	return found == m_CameraShakeIds.end() ? nullptr : &m_CameraShakes[found->second];
+	std::vector<const VansCompiledGameplayExtensionAsset*> result;
+	for (const Entry& entry : m_Entries)
+		if (const auto* extension = std::get_if<VansCompiledGameplayExtensionAsset>(
+			&entry.asset.data); extension && extension->typeId == typeId)
+			result.push_back(extension);
+	return result;
 }
 }

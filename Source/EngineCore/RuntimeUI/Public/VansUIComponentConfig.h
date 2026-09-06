@@ -37,11 +37,11 @@ namespace VansRuntime
         std::uint32_t schemaVersion = 1;
         std::string guid;
         std::string name;
-        std::string xamlPath;
+        std::string xamlAssetGuid;
         std::vector<VansUIComponentPropertyConfig> publicProperties;
         std::vector<VansUIComponentEventConfig> events;
         std::vector<VansUIComponentStateConfig> states;
         std::unordered_map<std::string, std::string> animations;
-        std::string sourceConfigPath;
+        std::string sourceAssetGuid;
     };
 }

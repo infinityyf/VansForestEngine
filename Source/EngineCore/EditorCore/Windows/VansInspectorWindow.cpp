@@ -19,6 +19,7 @@
 #include "../../GameplayActionSchema/VansGameplayAssetSchema.h"
 #include "../../GameplayActionSchema/VansGameplayActionHostAuthoring.h"
 #include "../../SceneCore/VansSceneDocument.h"
+#include "../../SceneCore/VansSceneEntityFactory.h"
 #include "../../SceneCore/VansSceneParentReference.h"
 #include "../../ScriptCore/VansLuaScriptInspectorService.h"
 #include "../../Util/VansLog.h"
@@ -33,6 +34,7 @@
 #include <array>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -99,6 +101,7 @@ const char* AssetTypeName(Vans::EditorAPI::AssetType type)
     case Vans::EditorAPI::AssetType::AnimatorController: return "Animator Controller";
     case Vans::EditorAPI::AssetType::BoneMask: return "Bone Mask";
 	case Vans::EditorAPI::AssetType::AnimationRig: return "Animation Rig";
+	case Vans::EditorAPI::AssetType::RetargetProfile: return "Retarget Profile";
 	case Vans::EditorAPI::AssetType::Timeline: return "Timeline";
 	case Vans::EditorAPI::AssetType::ActionDefinition: return "Action Definition";
 	case Vans::EditorAPI::AssetType::ActionSet: return "Action Set";
@@ -119,6 +122,12 @@ const char* AssetTypeName(Vans::EditorAPI::AssetType type)
     case Vans::EditorAPI::AssetType::AudioReverbPreset: return "Audio Reverb Preset";
     case Vans::EditorAPI::AssetType::AudioBusSnapshot: return "Audio Bus Snapshot";
     case Vans::EditorAPI::AssetType::AudioDuckingRules: return "Audio Ducking Rules";
+	case Vans::EditorAPI::AssetType::UIScreen: return "UI Screen";
+	case Vans::EditorAPI::AssetType::UIComponent: return "UI Component";
+	case Vans::EditorAPI::AssetType::UIThemeTokens: return "UI Theme Tokens";
+	case Vans::EditorAPI::AssetType::UILocalization: return "UI Localization";
+	case Vans::EditorAPI::AssetType::UIXaml: return "UI XAML";
+	case Vans::EditorAPI::AssetType::VegetationConfig: return "Vegetation Config";
     default: return "Asset";
     }
 }
@@ -174,6 +183,31 @@ const std::vector<const char*>* EnumOptions(const std::string& key)
     if (field == "drive_mode") return &driveMode;
 	if (field == "persistence") return &actionGrantPersistence;
     return nullptr;
+}
+
+const std::vector<const char*>* LocalVolumetricFogEnumOptions(
+	const std::string& key,
+	const std::string& componentType,
+	const std::string& pointer)
+{
+	if (Lower(componentType) != "localvolumetricfog")
+		return nullptr;
+	static const std::vector<const char*> projection{ "localXZ" };
+	static const std::vector<const char*> addressMode{
+		"clampToBorderZero", "clampToEdge", "repeat"
+	};
+	static const std::vector<const char*> scalarChannels{ "r", "g", "b", "a" };
+	static const std::vector<const char*> vectorChannels{
+		"rg", "rb", "ra", "gr", "gb", "ga",
+		"br", "bg", "ba", "ar", "ag", "ab"
+	};
+	const std::string field = Lower(key);
+	if (field == "projection") return &projection;
+	if (field == "addressmode") return &addressMode;
+	if (field == "channels")
+		return Lower(pointer).find("/flow/") != std::string::npos
+			? &vectorChannels : &scalarChannels;
+	return nullptr;
 }
 
 const std::vector<const char*>* AudioReverbZoneShapeOptions(
@@ -349,21 +383,11 @@ Vans::VansSerializedValue DefaultSerializedComponentData(const std::string& type
             { "decayTime", Value::Float(1.49) }
         });
 	if (type == "LocalVolumetricFog")
-		return Value::Object({
-			{ "visibilityDistanceMeters", Value::Float(80.0) },
-			{ "singleScatteringAlbedo", vec3(0.95, 0.97, 1.0) },
-			{ "anisotropy", Value::Float(0.2) },
-			{ "emissivePerMeter", vec3(0.0, 0.0, 0.0) },
-			{ "edgeFadeDistanceMeters", Value::Float(2.0) },
-			{ "distanceFadeStartMeters", Value::Float(0.0) },
-			{ "distanceFadeEndMeters", Value::Float(2000.0) },
-			{ "directLightingScale", Value::Float(1.0) },
-			{ "skyLightingScale", Value::Float(1.0) },
-			{ "receiveCloudShadows", Value::Bool(true) }
-		});
+		return Vans::VansSceneEntityFactory::BuildLocalVolumetricFogComponentData(
+			Vans::VansSceneLocalVolumetricFogComponentConfig{});
     if (type == "Particle")
         return Value::Object({
-            { "asset", Value::String("") },
+            { "asset", Value::Object({ { "guid", Value::String("") } }) },
             { "play_on_awake", Value::Bool(true) }
         });
     if (type == "Script")
@@ -381,7 +405,7 @@ Vans::VansSerializedValue DefaultSerializedComponentData(const std::string& type
         });
     if (type == "Cloth")
         return Value::Object({
-            { "profilePath", Value::String("") },
+			{ "profile", Value::Object({ { "guid", Value::String("") } }) },
             { "physicsAttachOffsetY", Value::Float(0.0) }
         });
     if (type == "Vehicle")
@@ -408,7 +432,8 @@ Vans::VansSerializedValue MakeSerializedComponent(const std::string& type)
 bool IsColorField(const std::string& key)
 {
     const std::string field = Lower(key);
-    return field.find("color") != std::string::npos || field == "albedo" ||
+    return field.find("color") != std::string::npos ||
+        field.find("albedo") != std::string::npos ||
         field.find("emissive") != std::string::npos || field.find("tint") != std::string::npos;
 }
 
@@ -617,7 +642,136 @@ bool LocalVolumetricFogScalarLimits(const std::string& label,
 	{
 		minValue = 0.0f; maxValue = 1000.0f; speed = 0.01f; return true;
 	}
+	if (field == "influence" || field == "phaseoffset01")
+	{
+		minValue = 0.0f; maxValue = 1.0f; speed = 0.01f; return true;
+	}
+	if (field == "speedmeterspersecond")
+	{
+		minValue = 0.0f; maxValue = 1000.0f; speed = 0.01f; return true;
+	}
+	if (field == "loopdistancemeters")
+	{
+		minValue = 0.01f; maxValue = 100000.0f; speed = 0.01f; return true;
+	}
+	if (field == "lodbias")
+	{
+		minValue = -16.0f; maxValue = 16.0f; speed = 0.05f; return true;
+	}
 	return false;
+}
+
+bool ParticleVolumetricScalarLimits(const std::string& label,
+    const std::string& pointer, float& minValue, float& maxValue, float& speed)
+{
+    const std::string path = Lower(pointer);
+    if (path.find("/renderer/volumetric/") == std::string::npos)
+        return false;
+
+    const std::string field = Lower(label);
+    if (field == "radiusscale")
+    {
+        minValue = 0.01f; maxValue = 32.0f; speed = 0.01f; return true;
+    }
+    if (field == "maxdistancemeters")
+    {
+        minValue = 0.1f; maxValue = 100000.0f; speed = 0.1f; return true;
+    }
+    if (field == "densitymultiplier" || field == "extinctionpermeter")
+    {
+        minValue = 0.0f; maxValue = 100.0f; speed = 0.01f; return true;
+    }
+    if (field == "anisotropy")
+    {
+        minValue = -0.9f; maxValue = 0.9f; speed = 0.01f; return true;
+    }
+    if (field == "edgesoftness")
+    {
+        minValue = 0.001f; maxValue = 1.0f; speed = 0.01f; return true;
+    }
+    if (field == "directlightingscale" || field == "skylightingscale")
+    {
+        minValue = 0.0f; maxValue = 100.0f; speed = 0.01f; return true;
+    }
+    if (field == "injectionpriority")
+    {
+        minValue = 0.0f; maxValue = 255.0f; speed = 1.0f; return true;
+    }
+    return false;
+}
+
+bool ParticleLifecycleScalarLimits(const std::string& label,
+    const std::string& pointer, float& minValue, float& maxValue, float& speed)
+{
+    const std::string path = Lower(pointer);
+    if (path.find("/asset/emitters/") == std::string::npos)
+        return false;
+
+    const std::string field = Lower(label);
+    if (field == "t" && (path.find("/curve/") != std::string::npos ||
+        path.find("/keys/") != std::string::npos ||
+        path.find("/stops/") != std::string::npos))
+    {
+        minValue = 0.0f; maxValue = 1.0f; speed = 0.01f; return true;
+    }
+    if (path.find("/lifetime/") != std::string::npos &&
+        (field == "value" || field == "min" || field == "max"))
+    {
+        minValue = 0.01f; maxValue = 3600.0f; speed = 0.05f; return true;
+    }
+    if ((path.find("/size/") != std::string::npos ||
+        path.find("/curve/") != std::string::npos) &&
+        (field == "value" || field == "min" || field == "max"))
+    {
+        minValue = 0.0f; maxValue = 64.0f; speed = 0.01f; return true;
+    }
+    if (field == "speed")
+    {
+        minValue = 0.0f; maxValue = 1000.0f; speed = 0.01f; return true;
+    }
+    if (field == "angle")
+    {
+        minValue = 0.0f; maxValue = 180.0f; speed = 0.25f; return true;
+    }
+    if (field == "drag")
+    {
+        minValue = 0.0f; maxValue = 100.0f; speed = 0.01f; return true;
+    }
+    if (field == "strength" || field == "frequency" || field == "scrollspeed")
+    {
+        minValue = 0.0f; maxValue = 100.0f; speed = 0.01f; return true;
+    }
+    if (field == "rate")
+    {
+        minValue = 0.0f; maxValue = 1000000.0f; speed = 0.1f; return true;
+    }
+    return false;
+}
+
+const std::vector<const char*>* ParticleAssetEnumOptions(
+    const std::string& label, const std::string& pointer,
+    const std::string& parentKey)
+{
+    const std::string path = Lower(pointer);
+    if (path.find("/asset/") == std::string::npos)
+        return nullptr;
+    const std::string field = Lower(label);
+    static const std::vector<const char*> curveModes{
+        "Constant", "RandomBetween", "Curve", "RandomBetweenCurves" };
+    static const std::vector<const char*> velocityModes{ "Cone", "Random" };
+    static const std::vector<const char*> shapes{
+        "Sphere", "Box", "Cone", "Disk", "Edge" };
+    static const std::vector<const char*> spawnTypes{
+        "RateOverTime", "Burst" };
+    static const std::vector<const char*> simulationSpaces{ "Local", "World" };
+    if (field == "mode")
+        return Lower(parentKey) == "initvelocity"
+            ? &velocityModes : &curveModes;
+    if (field == "shape") return &shapes;
+    if (field == "type" && path.find("/spawn/") != std::string::npos)
+        return &spawnTypes;
+    if (field == "simulationspace") return &simulationSpaces;
+    return nullptr;
 }
 
 bool AudioComponentScalarLimits(const std::string& label, const std::string& componentType,
@@ -745,6 +899,23 @@ std::optional<Vans::VansSerializedValue> DefaultSerializedArrayElement(
     using Value = Vans::VansSerializedValue;
     const std::string field = Lower(label);
     const std::string path = Lower(pointer);
+	const bool particleAsset = path.find("/asset/emitters/") != std::string::npos;
+	if (particleAsset && (field == "curve" || field == "keys" ||
+		field == "minkeys" || field == "maxkeys"))
+	{
+		return Value::Object({
+			{ "t", Value::Float(1.0) },
+			{ "value", Value::Float(1.0) }
+		});
+	}
+	if (particleAsset && field == "stops")
+	{
+		return Value::Object({
+			{ "t", Value::Float(1.0) },
+			{ "color", Value::Array({ Value::Float(1.0), Value::Float(1.0),
+				Value::Float(1.0), Value::Float(0.0) }) }
+		});
+	}
 	if (Lower(componentType) == "actionhost")
 		if (auto item = Vans::VansGameplayActionHostAuthoring::CreateDefaultArrayElement(label))
 			return item;
@@ -785,6 +956,181 @@ bool EnsureSerializedField(
         return false;
     Vans::SetSerializedObjectField(object, name, std::move(defaultValue));
     return true;
+}
+
+void MergeParticleAuthoringSchema(Vans::VansSerializedValue& root)
+{
+    using Value = Vans::VansSerializedValue;
+    Vans::VansSerializedValue* emitters = Vans::FindObjectField(root, "emitters");
+    if (!emitters || emitters->kind != Value::Kind::Array)
+        return;
+
+    for (Value& emitter : emitters->arrayItems)
+    {
+        if (emitter.kind != Value::Kind::Object)
+            continue;
+		for (const char* stackName : { "initialize", "update" })
+		{
+			Value* stack = Vans::FindObjectField(emitter, stackName);
+			if (!stack || stack->kind != Value::Kind::Array)
+				continue;
+			for (Value& module : stack->arrayItems)
+				if (module.kind == Value::Kind::Object)
+					EnsureSerializedField(module, "enabled", Value::Bool(true));
+		}
+        Value* renderer = Vans::FindObjectField(emitter, "renderer");
+        if (!renderer || renderer->kind != Value::Kind::Object)
+            continue;
+        Value* volumetric = Vans::FindObjectField(*renderer, "volumetric");
+        if (!volumetric)
+        {
+            Vans::SetSerializedObjectField(*renderer, "volumetric", Value::Object({}));
+            volumetric = Vans::FindObjectField(*renderer, "volumetric");
+        }
+        if (!volumetric || volumetric->kind != Value::Kind::Object)
+            continue;
+        EnsureSerializedField(*volumetric, "enabled", Value::Bool(false));
+        EnsureSerializedField(*volumetric, "keepSurfaceRenderer", Value::Bool(false));
+        EnsureSerializedField(*volumetric, "radiusScale", Value::Float(1.0));
+        EnsureSerializedField(*volumetric, "maxDistanceMeters", Value::Float(100.0));
+        EnsureSerializedField(*volumetric, "densityMultiplier", Value::Float(1.0));
+        EnsureSerializedField(*volumetric, "extinctionPerMeter", Value::Float(0.1));
+        EnsureSerializedField(*volumetric, "singleScatteringAlbedo", Value::Array({
+            Value::Float(0.9), Value::Float(0.9), Value::Float(0.9) }));
+        EnsureSerializedField(*volumetric, "anisotropy", Value::Float(0.0));
+        EnsureSerializedField(*volumetric, "emissivePerMeter", Value::Array({
+            Value::Float(0.0), Value::Float(0.0), Value::Float(0.0) }));
+        EnsureSerializedField(*volumetric, "edgeSoftness", Value::Float(0.35));
+        EnsureSerializedField(*volumetric, "directLightingScale", Value::Float(1.0));
+        EnsureSerializedField(*volumetric, "skyLightingScale", Value::Float(1.0));
+        EnsureSerializedField(*volumetric, "receiveCloudShadows", Value::Bool(true));
+        EnsureSerializedField(*volumetric, "injectionPriority", Value::Int(128));
+    }
+}
+
+Vans::VansSerializedValue MakeParticleModuleAuthoringValue(const std::string& name)
+{
+    using Value = Vans::VansSerializedValue;
+    const auto curve = [](double value)
+    {
+        return Value::Object({
+            { "mode", Value::String("Constant") },
+            { "value", Value::Float(value) }
+        });
+    };
+    if (name == "InitLifetime")
+        return Value::Object({ { "module", Value::String(name) },
+            { "enabled", Value::Bool(true) }, { "lifetime", curve(1.0) } });
+    if (name == "InitVelocity")
+        return Value::Object({ { "module", Value::String(name) },
+            { "enabled", Value::Bool(true) }, { "mode", Value::String("Cone") },
+            { "angle", Value::Float(25.0) }, { "speed", Value::Float(2.0) } });
+    if (name == "InitPositionShape")
+        return Value::Object({ { "module", Value::String(name) },
+            { "enabled", Value::Bool(true) }, { "shape", Value::String("Cone") },
+            { "radius", Value::Float(0.2) }, { "arc", Value::Float(360.0) } });
+    if (name == "InitSize")
+        return Value::Object({ { "module", Value::String(name) },
+            { "enabled", Value::Bool(true) }, { "size", curve(0.1) } });
+    if (name == "InitColor")
+        return Value::Object({ { "module", Value::String(name) },
+            { "enabled", Value::Bool(true) },
+            { "color", Value::Array({ Value::Float(1.0), Value::Float(1.0),
+                Value::Float(1.0), Value::Float(1.0) }) } });
+    if (name == "InitRotation")
+        return Value::Object({ { "module", Value::String(name) },
+            { "enabled", Value::Bool(true) }, { "angle", curve(0.0) } });
+    if (name == "UpdateGravity")
+        return Value::Object({ { "module", Value::String(name) },
+            { "enabled", Value::Bool(true) },
+            { "gravity", Value::Array({ Value::Float(0.0), Value::Float(-9.8),
+                Value::Float(0.0) }) } });
+    if (name == "UpdateColorOverLifetime")
+        return Value::Object({ { "module", Value::String(name) },
+            { "enabled", Value::Bool(true) },
+            { "gradient", Value::Object({ { "stops", Value::Array({
+                Value::Object({ { "t", Value::Float(0.0) },
+                    { "color", Value::Array({ Value::Float(1.0), Value::Float(1.0),
+                        Value::Float(1.0), Value::Float(1.0) }) } }),
+                Value::Object({ { "t", Value::Float(1.0) },
+                    { "color", Value::Array({ Value::Float(1.0), Value::Float(1.0),
+                        Value::Float(1.0), Value::Float(0.0) }) } }) }) } }) } });
+    if (name == "UpdateSizeOverLifetime")
+        return Value::Object({ { "module", Value::String(name) },
+            { "enabled", Value::Bool(true) }, { "curve", Value::Array({
+                Value::Object({ { "t", Value::Float(0.0) }, { "value", Value::Float(1.0) } }),
+                Value::Object({ { "t", Value::Float(1.0) }, { "value", Value::Float(1.0) } }) }) } });
+    if (name == "UpdateVelocityOverLifetime")
+        return Value::Object({ { "module", Value::String(name) },
+            { "enabled", Value::Bool(true) }, { "drag", Value::Float(0.1) },
+            { "turbulence", Value::Object({ { "enabled", Value::Bool(false) },
+                { "strength", Value::Float(0.5) }, { "frequency", Value::Float(1.0) },
+                { "scrollSpeed", Value::Float(0.2) } }) } });
+    if (name == "UpdateRotationOverLifetime")
+        return Value::Object({ { "module", Value::String(name) },
+            { "enabled", Value::Bool(true) }, { "angularVelocity", curve(45.0) } });
+    if (name == "UpdateSpriteAnim")
+        return Value::Object({ { "module", Value::String(name) },
+            { "enabled", Value::Bool(true) }, { "columns", Value::Int(4) },
+            { "rows", Value::Int(4) }, { "fps", Value::Float(0.0) } });
+    return Value::Object({});
+}
+
+bool DrawParticleModuleAddMenu(Vans::VansSerializedValue& stack,
+    const std::string& pointer)
+{
+    using Value = Vans::VansSerializedValue;
+    const std::string path = Lower(pointer);
+    const auto hasSuffix = [&path](const char* suffix)
+    {
+        const std::size_t length = std::strlen(suffix);
+        return path.size() >= length &&
+            path.compare(path.size() - length, length, suffix) == 0;
+    };
+    const bool initialize = hasSuffix("/initialize");
+    const bool update = hasSuffix("/update");
+    if (path.find("/asset/emitters/") == std::string::npos ||
+        (!initialize && !update) || stack.kind != Value::Kind::Array)
+    {
+        return false;
+    }
+
+    static constexpr std::array<const char*, 6> initializeModules{
+        "InitLifetime", "InitVelocity", "InitPositionShape",
+        "InitSize", "InitColor", "InitRotation" };
+    static constexpr std::array<const char*, 6> updateModules{
+        "UpdateGravity", "UpdateColorOverLifetime", "UpdateSizeOverLifetime",
+        "UpdateVelocityOverLifetime", "UpdateRotationOverLifetime", "UpdateSpriteAnim" };
+    bool changed = false;
+    if (ImGui::SmallButton("Add Module"))
+        ImGui::OpenPopup("ParticleModuleMenu");
+    if (ImGui::BeginPopup("ParticleModuleMenu"))
+    {
+        const auto drawOption = [&](const char* moduleName)
+        {
+            const bool exists = std::any_of(stack.arrayItems.begin(), stack.arrayItems.end(),
+                [moduleName](const Value& item)
+                {
+                    return item.kind == Value::Kind::Object &&
+                        Vans::ReadSerializedStringField(item, "module") == moduleName;
+                });
+            if (exists)
+                ImGui::BeginDisabled();
+            if (ImGui::MenuItem(moduleName) && !exists)
+            {
+                stack.arrayItems.push_back(MakeParticleModuleAuthoringValue(moduleName));
+                changed = true;
+            }
+            if (exists)
+                ImGui::EndDisabled();
+        };
+        if (initialize)
+            for (const char* moduleName : initializeModules) drawOption(moduleName);
+        if (update)
+            for (const char* moduleName : updateModules) drawOption(moduleName);
+        ImGui::EndPopup();
+    }
+    return changed;
 }
 
 bool NormalizeAudioImportSettings(Vans::VansSerializedValue& settings)
@@ -1253,6 +1599,276 @@ bool RebuildRuntimeEntityFromSceneDocument(
     return reparentedAll;
 }
 
+const Vans::VansSerializedValue* ReadLocalFogObjectField(
+	const Vans::VansSerializedValue& object,
+	const char* name)
+{
+	const Vans::VansSerializedValue* value = Vans::FindObjectField(object, name);
+	return value && value->kind == Vans::VansSerializedValue::Kind::Object
+		? value : nullptr;
+}
+
+std::string ReadLocalFogFieldAssetGuid(const Vans::VansSerializedValue& field)
+{
+	const Vans::VansSerializedValue* source = ReadLocalFogObjectField(field, "source");
+	const Vans::VansSerializedValue* asset = source
+		? Vans::FindObjectField(*source, "asset") : nullptr;
+	if (!asset)
+		return {};
+	return asset->kind == Vans::VansSerializedValue::Kind::String
+		? asset->stringValue
+		: Vans::ReadSerializedStringField(*asset, "guid");
+}
+
+void DrawLocalFogDiagnostic(const ImVec4& color, const char* field, const char* message)
+{
+	ImGui::TextColored(color, "%s", field);
+	ImGui::SameLine();
+	ImGui::TextWrapped("%s", message);
+}
+
+void DrawLocalFogFieldPreview(
+	const char* label,
+	const Vans::EditorAPI::LocalFogFieldPreviewSnapshot& preview,
+	Vans::EditorAPI::LocalFogFieldPreviewKind kind)
+{
+	if (!preview.available || preview.sampleColumns == 0 || preview.sampleRows == 0)
+		return;
+	const std::size_t expectedSamples =
+		static_cast<std::size_t>(preview.sampleColumns) * preview.sampleRows;
+	const bool isFlow = kind == Vans::EditorAPI::LocalFogFieldPreviewKind::FlowVector;
+	if ((isFlow && preview.flowSamples.size() != expectedSamples) ||
+		(!isFlow && preview.scalarSamples.size() != expectedSamples))
+	{
+		return;
+	}
+
+	ImGui::PushID(label);
+	ImGui::TextDisabled("%s · selected channel preview", label);
+	const float availableWidth = ImGui::GetContentRegionAvail().x;
+	const float previewExtent = (std::max)(1.0f, (std::min)(220.0f, availableWidth));
+	const ImVec2 size(previewExtent, previewExtent);
+	const ImVec2 origin = ImGui::GetCursorScreenPos();
+	ImGui::InvisibleButton("##LocalFogFieldPreview", size);
+	ImDrawList* drawList = ImGui::GetWindowDrawList();
+	const float cellWidth = size.x / static_cast<float>(preview.sampleColumns);
+	const float cellHeight = size.y / static_cast<float>(preview.sampleRows);
+	for (std::uint32_t y = 0; y < preview.sampleRows; ++y)
+	{
+		for (std::uint32_t x = 0; x < preview.sampleColumns; ++x)
+		{
+			const std::size_t index =
+				static_cast<std::size_t>(y) * preview.sampleColumns + x;
+			ImVec4 color;
+			if (isFlow)
+			{
+				const Vans::EditorAPI::Vec2 flow = preview.flowSamples[index];
+				color = ImVec4(
+					std::clamp(flow.x * 0.5f + 0.5f, 0.0f, 1.0f),
+					std::clamp(flow.y * 0.5f + 0.5f, 0.0f, 1.0f),
+					0.5f,
+					1.0f);
+			}
+			else
+			{
+				const float value = std::clamp(
+					preview.scalarSamples[index], 0.0f, 1.0f);
+				color = ImVec4(value, value, value, 1.0f);
+			}
+			const ImVec2 minimum(
+				origin.x + static_cast<float>(x) * cellWidth,
+				origin.y + static_cast<float>(y) * cellHeight);
+			const ImVec2 maximum(minimum.x + cellWidth + 0.5f,
+				minimum.y + cellHeight + 0.5f);
+			drawList->AddRectFilled(minimum, maximum,
+				ImGui::ColorConvertFloat4ToU32(color));
+		}
+	}
+
+	if (isFlow)
+	{
+		const std::uint32_t arrowStride = (std::max)(
+			1u, (std::max)(preview.sampleColumns, preview.sampleRows) / 8u);
+		for (std::uint32_t y = arrowStride / 2u; y < preview.sampleRows; y += arrowStride)
+		{
+			for (std::uint32_t x = arrowStride / 2u; x < preview.sampleColumns; x += arrowStride)
+			{
+				const Vans::EditorAPI::Vec2 flow = preview.flowSamples[
+					static_cast<std::size_t>(y) * preview.sampleColumns + x];
+				const float magnitude = std::sqrt(flow.x * flow.x + flow.y * flow.y);
+				if (magnitude <= 0.02f)
+					continue;
+				const float scale = (std::min)(cellWidth, cellHeight) *
+					0.42f * static_cast<float>(arrowStride);
+				const ImVec2 center(
+					origin.x + (static_cast<float>(x) + 0.5f) * cellWidth,
+					origin.y + (static_cast<float>(y) + 0.5f) * cellHeight);
+				const ImVec2 tip(center.x + flow.x * scale,
+					center.y + flow.y * scale);
+				const float directionX = flow.x / magnitude;
+				const float directionY = flow.y / magnitude;
+				const float head = (std::min)(4.0f, scale * 0.35f);
+				const ImVec2 left(
+					tip.x - directionX * head - directionY * head * 0.55f,
+					tip.y - directionY * head + directionX * head * 0.55f);
+				const ImVec2 right(
+					tip.x - directionX * head + directionY * head * 0.55f,
+					tip.y - directionY * head - directionX * head * 0.55f);
+				const ImU32 arrowColor = IM_COL32(255, 255, 255, 215);
+				drawList->AddLine(center, tip, arrowColor, 1.2f);
+				drawList->AddTriangleFilled(tip, left, right, arrowColor);
+			}
+		}
+	}
+	drawList->AddRect(origin, ImVec2(origin.x + size.x, origin.y + size.y),
+		IM_COL32(150, 158, 170, 190));
+	if (ImGui::IsItemHovered())
+	{
+		ImGui::SetTooltip("Source %u x %u%s", preview.sourceWidth,
+			preview.sourceHeight,
+			isFlow ? " · right = +X, down = +Z" : "");
+	}
+	ImGui::PopID();
+}
+
+struct LocalFogFieldValidation final
+{
+	bool samples = false;
+	std::string assetGuid;
+	std::string channels;
+};
+
+void DrawLocalVolumetricFogDiagnostics(
+	Vans::EditorAPI::IEngineEditorAPI& api,
+	const Vans::VansSerializedValue& data)
+{
+	const ImVec4 errorColor(0.95f, 0.30f, 0.28f, 1.0f);
+	const ImVec4 warningColor(0.95f, 0.68f, 0.22f, 1.0f);
+	const Vans::VansSerializedValue* shape = ReadLocalFogObjectField(data, "shapeMask");
+	const Vans::VansSerializedValue* detail = ReadLocalFogObjectField(data, "detailNoise");
+	const Vans::VansSerializedValue* flow = ReadLocalFogObjectField(data, "flow");
+
+	int configuredTextureFetches = 0;
+	const auto validateField = [&](const char* label,
+		const Vans::VansSerializedValue* field,
+		const char* defaultChannels,
+		bool textureOptional,
+		Vans::EditorAPI::LocalFogFieldPreviewKind previewKind)
+	{
+		LocalFogFieldValidation validation;
+		if (!field || !Vans::ReadSerializedBoolField(*field, "enabled", false))
+			return validation;
+		const std::string assetGuid = ReadLocalFogFieldAssetGuid(*field);
+		if (assetGuid.empty())
+		{
+			if (!textureOptional)
+				DrawLocalFogDiagnostic(errorColor, label, "is enabled but has no Texture asset");
+			return validation;
+		}
+		const Vans::EditorAPI::AssetGuidResolution resolved = api.ResolveAssetGuid(assetGuid);
+		if (!resolved.found || resolved.asset.type != Vans::EditorAPI::AssetType::Texture)
+		{
+			DrawLocalFogDiagnostic(errorColor, label, "does not resolve to a Texture asset");
+			return validation;
+		}
+		validation.samples = true;
+		validation.assetGuid = assetGuid;
+		if (!resolved.textureImport.available)
+		{
+			DrawLocalFogDiagnostic(warningColor, label, "Texture import metadata is unavailable");
+			return validation;
+		}
+		const Vans::VansSerializedValue* source = ReadLocalFogObjectField(*field, "source");
+		const std::string channels = source
+			? Vans::ReadSerializedStringField(*source, "channels", defaultChannels)
+			: defaultChannels;
+		validation.channels = channels;
+		Vans::VansLocalFogTextureChannel channel0{};
+		Vans::VansLocalFogTextureChannel channel1{};
+		const bool channelSelectionValid =
+			previewKind == Vans::EditorAPI::LocalFogFieldPreviewKind::FlowVector
+			? Vans::TryParseLocalFogVector2TextureChannels(
+				channels, channel0, channel1)
+			: Vans::TryParseLocalFogScalarTextureChannels(channels, channel0);
+		if (!channelSelectionValid)
+		{
+			DrawLocalFogDiagnostic(errorColor, label,
+				previewKind == Vans::EditorAPI::LocalFogFieldPreviewKind::FlowVector
+				? "must select two distinct RGBA channels"
+				: "must select one RGBA channel");
+			return validation;
+		}
+		const Vans::VansLocalFogFieldTextureImportSettings importSettings{
+			resolved.textureImport.linear,
+			resolved.textureImport.compressed,
+			resolved.textureImport.mipmapped,
+			resolved.textureImport.channelCount,
+			resolved.textureImport.precision
+		};
+		if (!Vans::ValidateLocalFogFieldTextureImportSettings(
+			importSettings, Vans::RequiredLocalFogFieldChannelCount(channels)))
+		{
+			DrawLocalFogDiagnostic(errorColor, label,
+				"Texture must be Linear, low8, uncompressed, mipmapped, and contain every selected channel");
+			return validation;
+		}
+		Vans::EditorAPI::LocalFogFieldPreviewRequest previewRequest;
+		previewRequest.assetGuid = validation.assetGuid;
+		previewRequest.channels = validation.channels;
+		previewRequest.kind = previewKind;
+		const Vans::EditorAPI::LocalFogFieldPreviewSnapshot preview =
+			api.GetLocalFogFieldPreview(previewRequest);
+		if (preview.available)
+		{
+			DrawLocalFogFieldPreview(label, preview, previewKind);
+		}
+		else if (!preview.message.empty())
+		{
+			DrawLocalFogDiagnostic(warningColor, label, preview.message.c_str());
+		}
+		return validation;
+	};
+
+	const LocalFogFieldValidation shapeValidation = validateField(
+		"Shape Mask", shape, "r", false,
+		Vans::EditorAPI::LocalFogFieldPreviewKind::Scalar);
+	const LocalFogFieldValidation detailValidation = validateField(
+		"Detail Noise", detail, "r", false,
+		Vans::EditorAPI::LocalFogFieldPreviewKind::Scalar);
+	const LocalFogFieldValidation flowValidation = validateField(
+		"Flow Map", flow, "rg", true,
+		Vans::EditorAPI::LocalFogFieldPreviewKind::FlowVector);
+	const bool shapeSamples = shapeValidation.samples;
+	const bool detailSamples = detailValidation.samples;
+	const bool flowTextureSamples = flowValidation.samples;
+	configuredTextureFetches += shapeSamples ? 1 : 0;
+
+	const bool detailEnabled = detail &&
+		Vans::ReadSerializedBoolField(*detail, "enabled", false) &&
+		ReadSerializedFloatOr(Vans::FindObjectField(*detail, "influence"), 1.0f) > 1.0e-6f;
+	const bool flowEnabled = flow && Vans::ReadSerializedBoolField(*flow, "enabled", false);
+	const float flowSpeed = flow
+		? ReadSerializedFloatOr(Vans::FindObjectField(*flow, "speedMetersPerSecond"), 0.0f)
+		: 0.0f;
+	const bool flowingDetail = detailEnabled && detailSamples && flowEnabled && flowSpeed > 1.0e-6f;
+	const bool mappedFlowingDetail = flowingDetail && flowTextureSamples;
+	configuredTextureFetches += detailSamples ? (mappedFlowingDetail ? 2 : 1) : 0;
+	configuredTextureFetches += mappedFlowingDetail ? 1 : 0;
+
+	if (flowEnabled && !detailEnabled)
+		DrawLocalFogDiagnostic(warningColor, "Flow", "only advects enabled Detail Noise with non-zero influence");
+	if (flowingDetail && detail)
+	{
+		const Vans::VansSerializedValue* mapping = ReadLocalFogObjectField(*detail, "mapping");
+		if (mapping && Vans::ReadSerializedStringField(*mapping, "addressMode", "repeat") != "repeat")
+			DrawLocalFogDiagnostic(errorColor, "Detail Noise", "must use Repeat while Flow is active");
+	}
+	if (shapeSamples || detailSamples)
+		ImGui::TextDisabled("2D fields use Local XZ and are extruded along Local Y.");
+	ImGui::TextDisabled("Configured upper bound: %d field texture fetches per volume/froxel hit.",
+		configuredTextureFetches);
+}
+
 }
 
 struct VansInspectorWindow::Impl
@@ -1695,21 +2311,45 @@ bool VansInspectorWindow::Impl::DrawSerializedValue(
             ImGuiTreeNodeFlags_SpanAvailWidth;
         if (ImGui::TreeNodeEx(FriendlyLabel(label).c_str(), flags))
         {
+			const std::string semanticParent =
+				Vans::ReadSerializedStringField(value, "module", label);
             for (auto& [fieldName, fieldValue] : value.objectFields)
             {
                 const std::string childPointer = pointer + "/" + EscapePointerToken(fieldName);
                 const bool identity = fieldName == "id" || fieldName == "guid" ||
                     fieldName == "sceneGuid" || fieldName == "schemaVersion" ||
                     fieldName == "version" || fieldName == "importer" ||
-                    fieldName == "assetKind";
+                    fieldName == "assetKind" ||
+					(fieldName == "module" &&
+						Lower(pointer).find("/asset/emitters/") != std::string::npos);
                 changed |= DrawSerializedValue(
                     fieldName,
                     fieldValue,
                     childPointer,
                     readOnly || identity,
                     componentType,
-                    label);
+                    semanticParent);
             }
+			if (!readOnly && Lower(componentType) == "localvolumetricfog" &&
+				Lower(label) == "flow")
+			{
+				const float speed = ReadSerializedFloatOr(
+					Vans::FindObjectField(value, "speedMetersPerSecond"), 0.0f);
+				const float distance = ReadSerializedFloatOr(
+					Vans::FindObjectField(value, "loopDistanceMeters"), 1.0f);
+				const Vans::VansSerializedValue* source =
+					Vans::FindObjectField(value, "source");
+				const bool hasFlowTexture = source &&
+					!ReadLocalFogFieldAssetGuid(*source).empty();
+				if (speed > 1.0e-6f && hasFlowTexture)
+					ImGui::TextDisabled(
+						"Flow-map phase duration: %.2f s", distance / speed);
+				else if (speed > 1.0e-6f)
+					ImGui::TextDisabled(
+						"Fallback direction continuously advects Detail Noise");
+				else
+					ImGui::TextDisabled("Flow is static while speed is zero");
+			}
             ImGui::TreePop();
         }
         break;
@@ -1811,6 +2451,7 @@ bool VansInspectorWindow::Impl::DrawSerializedValue(
             }
             if (!readOnly)
             {
+				changed |= DrawParticleModuleAddMenu(value, pointer);
 				if (std::optional<Vans::VansSerializedValue> defaultElement =
 					DefaultSerializedArrayElement(label, pointer, componentType))
                 {
@@ -1898,6 +2539,28 @@ bool VansInspectorWindow::Impl::DrawSerializedValue(
 				changed = true;
 			}
 		}
+        else if (ParticleLifecycleScalarLimits(label, pointer,
+            minValue, maxValue, speed))
+        {
+            float numeric = static_cast<float>(edited);
+            if (ImGui::DragFloat("##value", &numeric, speed, minValue, maxValue, "%.3f"))
+            {
+                value = Vans::VansSerializedValue::Float(
+                    std::clamp(numeric, minValue, maxValue));
+                changed = true;
+            }
+        }
+        else if (ParticleVolumetricScalarLimits(label, pointer,
+            minValue, maxValue, speed))
+        {
+            float numeric = static_cast<float>(edited);
+            if (ImGui::DragFloat("##value", &numeric, speed, minValue, maxValue, "%.3f"))
+            {
+                value = Vans::VansSerializedValue::Float(
+                    std::clamp(numeric, minValue, maxValue));
+                changed = true;
+            }
+        }
         else if (AudioComponentScalarLimits(label, componentType, minValue, maxValue, speed))
         {
             float numeric = static_cast<float>(edited);
@@ -1995,6 +2658,26 @@ bool VansInspectorWindow::Impl::DrawSerializedValue(
 				changed = true;
 			}
 		}
+        else if (ParticleLifecycleScalarLimits(label, pointer,
+            minValue, maxValue, speed))
+        {
+            if (ImGui::DragFloat("##value", &edited, speed, minValue, maxValue, "%.3f"))
+            {
+                value = Vans::VansSerializedValue::Float(
+                    std::clamp(edited, minValue, maxValue));
+                changed = true;
+            }
+        }
+        else if (ParticleVolumetricScalarLimits(label, pointer,
+            minValue, maxValue, speed))
+        {
+            if (ImGui::DragFloat("##value", &edited, speed, minValue, maxValue, "%.3f"))
+            {
+                value = Vans::VansSerializedValue::Float(
+                    std::clamp(edited, minValue, maxValue));
+                changed = true;
+            }
+        }
         else if (MaterialScalarLimits(label, parentKey, minValue, maxValue, speed))
         {
             if (ImGui::DragFloat("##value", &edited, speed, minValue, maxValue, "%.3f"))
@@ -2048,7 +2731,39 @@ bool VansInspectorWindow::Impl::DrawSerializedValue(
                 ImGui::EndCombo();
             }
         }
-        else if (const auto* options = EnumOptions(label))
+		else if (const auto* options = LocalVolumetricFogEnumOptions(
+			label, componentType, pointer))
+		{
+			if (ImGui::BeginCombo("##value", current.c_str()))
+			{
+				for (const char* option : *options)
+				{
+					if (ImGui::Selectable(option, current == option))
+					{
+						value = Vans::VansSerializedValue::String(option);
+						changed = true;
+					}
+				}
+				ImGui::EndCombo();
+			}
+		}
+		else if (const auto* options = ParticleAssetEnumOptions(
+			label, pointer, parentKey))
+		{
+			if (ImGui::BeginCombo("##value", current.c_str()))
+			{
+				for (const char* option : *options)
+				{
+					if (ImGui::Selectable(option, current == option))
+					{
+						value = Vans::VansSerializedValue::String(option);
+						changed = true;
+					}
+				}
+				ImGui::EndCombo();
+			}
+		}
+		else if (const auto* options = EnumOptions(label))
         {
             if (ImGui::BeginCombo("##value", current.c_str()))
             {
@@ -2248,6 +2963,8 @@ bool VansInspectorWindow::Impl::DrawComponent(Vans::EditorAPI::IEngineEditorAPI&
 						diagnostic.fieldPath.c_str());
 				}
 			}
+			if (type == "LocalVolumetricFog")
+				DrawLocalVolumetricFogDiagnostics(api, *data);
         }
         ImGui::Unindent(8.0f);
     }
@@ -2623,6 +3340,8 @@ void VansInspectorWindow::Impl::DrawAsset(Vans::EditorAPI::IEngineEditorAPI& api
         if (displayRootValue.kind != Vans::VansSerializedValue::Kind::Object)
             displayRootValue = Vans::VansSerializedValue::Object({});
         Vans::MergeMaterialAuthoringSchema(api, displayRootValue);
+        if (selectedExtension == ".particle")
+            MergeParticleAuthoringSchema(displayRootValue);
         for (auto& [propertyKey, propertyValue] : displayRootValue.objectFields)
         {
             const std::string propertyPointer = "/asset/" + EscapePointerToken(propertyKey);

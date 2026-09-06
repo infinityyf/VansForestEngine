@@ -7,28 +7,33 @@
 #include "../SceneRuntime/VansRuntimeWorld.h"
 
 #include <algorithm>
-#include <cmath>
+#include <unordered_set>
 
 namespace Vans
 {
 bool VansGameplayRuntime::Initialize(
 	const std::vector<VansAssetRecord>& records,
+	const VansAssetObjectRepository& assetObjects,
 	std::string& error)
 
 {
-	return Initialize(records, VansGAFSettings{}, VansGameplayRuntimeDependencies{}, error);
+	return Initialize(records, assetObjects, VansGAFSettings{},
+		VansGameplayRuntimeDependencies{}, error);
 }
 
 bool VansGameplayRuntime::Initialize(
 	const std::vector<VansAssetRecord>& records,
+	const VansAssetObjectRepository& assetObjects,
 	const VansGAFSettings& settings,
 	std::string& error)
 {
-	return Initialize(records, settings, VansGameplayRuntimeDependencies{}, error);
+	return Initialize(records, assetObjects, settings,
+		VansGameplayRuntimeDependencies{}, error);
 }
 
 bool VansGameplayRuntime::Initialize(
 	const std::vector<VansAssetRecord>& records,
+	const VansAssetObjectRepository& assetObjects,
 	const VansGAFSettings& settings,
 	const VansGameplayRuntimeDependencies& dependencies,
 	std::string& error)
@@ -43,91 +48,146 @@ bool VansGameplayRuntime::Initialize(
 		error = "Gameplay Runtime GAF performance budget is invalid";
 		return false;
 	}
-	if (settings.networkMode == VansGAFNetworkMode::ExternalTransport &&
-		settings.failWithoutTransport && !dependencies.externalNetworkTransportAvailable)
-	{
-		error = "Gameplay Runtime requires an external Action transport, but none was provided";
-		return false;
-	}
 	m_Settings = settings;
-	m_ExternalCosts = dependencies.externalCosts;
+	m_ExternalCosts.reset();
+	m_HostInitializers.clear();
+	m_ActionSetInitializers.clear();
 	m_GraphNodes = {};
+	m_Drivers = {};
 	m_Executors = {};
 	m_Services = {};
 	m_Cues = {};
 	m_TargetingHandlers = {};
-	if (!m_Assets.Load(records, dependencies.sourceOverrides, error)) return false;
-	if (settings.predictionEnabled && settings.requireRollbackPlan &&
-		!m_Assets.ValidatePredictionRollbackPolicy(error))
+	m_Types = {};
+	m_Schemas = VansGAFSchemaRegistry{};
+	m_AssetSchemas = {};
+	m_AssetCompilers = {};
+	std::vector<std::shared_ptr<const IVansGameplayModuleContributor>> contributors;
+	contributors.reserve(dependencies.contributors.size() + 2);
+	contributors.push_back(VansMakeGAFModuleContributor(
+		VansMakeGAFModuleDescriptor("Core", "GAF Core"),
+		VansRegisterCoreGAFTypes,
+		VansRegisterCoreGAFSchemas,
+		[this](VansGAFRuntimeRegistry& context, std::string& contributionError)
+		{
+			return context.RegisterExecutorOwnedDriver(
+				"Core.Driver.Immediate", contributionError) &&
+				context.RegisterService(
+				std::make_shared<VansActionRoutingService>(m_Scheduler), contributionError);
+		}, VansRegisterCoreGameplayAssetCompilers,
+		VansRegisterCoreGameplayAssetSchemas));
+	contributors.push_back(VansMakeGAFModuleContributor(
+		VansMakeGAFModuleDescriptor("Core.Graph", "GAF Core Graph", { "Core" }),
+		{}, {},
+		[](VansGAFRuntimeRegistry& context, std::string& contributionError)
+		{
+			return context.RegisterExecutorOwnedDriver(
+				"Core.Driver.Graph", contributionError) &&
+				context.RegisterGraphNodes(
+				VansRegisterBuiltInActionGraphNodes, contributionError);
+		}, {}));
+	contributors.insert(contributors.end(), dependencies.contributors.begin(),
+		dependencies.contributors.end());
+	std::vector<std::shared_ptr<const IVansGameplayModuleContributor>> orderedContributors;
+	if (!VansOrderGameplayModuleContributors(contributors, orderedContributors, error))
 	{
 		m_Assets.Clear();
 		return false;
 	}
-	if (!m_Services.Register(std::make_shared<VansActionRoutingService>(m_Scheduler), error))
-	{
-		m_Assets.Clear();
+	for (const auto& contributor : orderedContributors)
+		if (!contributor->Descriptor().environment.runtime ||
+			!contributor->Descriptor().environment.cook)
+		{
+			error = "GAF Runtime contributor does not support Runtime and Cook: " +
+				contributor->Descriptor().moduleId;
+			return false;
+		}
+		else if (!contributor->RegisterTypes(m_Types, error))
+		{
+			if (error.empty()) error = "GAF module Type registration failed: " +
+				contributor->Descriptor().moduleId;
+			return false;
+		}
+	if (!m_Types.Seal(error)) return false;
+	m_Schemas.BindTypes(m_Types);
+	for (const auto& contributor : orderedContributors)
+		if (!contributor->RegisterSchemas(m_Schemas, error))
+		{
+			if (error.empty()) error = "GAF module Schema registration failed: " +
+				contributor->Descriptor().moduleId;
+			return false;
+		}
+	if (!m_Schemas.Seal(error)) return false;
+	for (const auto& contributor : orderedContributors)
+		if (!contributor->RegisterAssetSchemas(m_AssetSchemas, error))
+		{
+			if (error.empty()) error = "GAF module Asset Schema registration failed: " +
+				contributor->Descriptor().moduleId;
+			return false;
+		}
+	if (!m_AssetSchemas.Seal(error)) return false;
+	for (const auto& contributor : orderedContributors)
+		if (!contributor->RegisterAssetCompilers(m_AssetCompilers, error))
+		{
+			if (error.empty()) error = "GAF module asset Compiler registration failed: " +
+				contributor->Descriptor().moduleId;
+			return false;
+		}
+	if (!m_AssetCompilers.Seal(error)) return false;
+	if (!m_Assets.Load(records, assetObjects, dependencies.sourceOverrides,
+		m_AssetSchemas, m_Schemas, m_AssetCompilers, error))
 		return false;
-	}
-	for (const std::shared_ptr<IVansActionService>& service : dependencies.services)
-		if (!m_Services.Register(service, error))
+	std::unordered_set<std::string> activeModules;
+	for (const auto& contributor : orderedContributors)
+		activeModules.insert(contributor->Descriptor().moduleId);
+	for (const auto& definition : m_Assets.Actions().Definitions())
+		for (const std::string& moduleId : definition->program.modules)
+			if (activeModules.find(moduleId) == activeModules.end())
+			{
+				error = "Action requires an inactive GAF module: " +
+					definition->name + " -> " + moduleId;
+				m_Assets.Clear();
+				return false;
+			}
+	VansGAFRuntimeRegistry contributionContext(
+		m_Assets, m_Services, m_GraphNodes, m_Drivers, m_TargetingHandlers, m_ExternalCosts,
+		m_HostInitializers, m_ActionSetInitializers);
+	for (const auto& contributor : orderedContributors)
+		if (!contributor->RegisterRuntime(contributionContext, error))
 		{
+			if (error.empty()) error = "Gameplay module contribution failed: " +
+				contributor->Descriptor().moduleId;
 			m_Assets.Clear();
 			return false;
 		}
-	for (const VansGameplayRuntimeDependencies::ServiceFactory& factory :
-		dependencies.serviceFactories)
-	{
-		if (!factory)
-		{
-			error = "Gameplay Runtime contains an invalid Action Service factory";
-			m_Assets.Clear();
-			return false;
-		}
-		std::shared_ptr<IVansActionService> service = factory(m_Assets, error);
-		if (!service || !m_Services.Register(std::move(service), error))
-		{
-			if (error.empty()) error = "Gameplay Runtime Action Service factory failed";
-			m_Assets.Clear();
-			return false;
-		}
-	}
-	if (!VansRegisterBuiltInActionGraphNodes(m_GraphNodes, error))
-	{
-		m_Assets.Clear();
-		return false;
-	}
-	if (!VansRegisterBuiltInTargetingHandlers(m_TargetingHandlers, error))
-	{
-		m_Assets.Clear();
-		return false;
-	}
-	for (const VansGameplayRuntimeDependencies::TargetingHandlerRegistrar& registrar :
-		dependencies.targetingHandlerRegistrars)
-	{
-		if (!registrar || !registrar(m_TargetingHandlers, error))
-		{
-			if (error.empty()) error = "Gameplay Runtime Targeting handler registrar failed";
-			m_Assets.Clear();
-			return false;
-		}
-	}
-	for (const VansGameplayRuntimeDependencies::GraphNodeRegistrar& registrar :
-		dependencies.graphNodeRegistrars)
-	{
-		if (!registrar || !registrar(m_GraphNodes, error))
-		{
-			if (error.empty()) error = "Gameplay Runtime Graph node registrar failed";
-			m_Assets.Clear();
-			return false;
-		}
-	}
-	if (!m_GraphNodes.Seal(error) || !m_TargetingHandlers.Seal(error) ||
+	if (!m_GraphNodes.Seal(error) || !m_Drivers.Seal(error) ||
+		!m_TargetingHandlers.Seal(error) ||
 		!VansRegisterBuiltInActionExecutors(m_Executors, &m_GraphNodes, error,
 			m_Settings.performance.maximumGraphTransitionsPerTick) ||
 		!m_Executors.Seal(error) || !m_Services.Seal(error))
 	{
 		m_Assets.Clear();
 		return false;
+	}
+	for (const auto& definition : m_Assets.Actions().Definitions())
+	{
+		for (const VansCompiledActionRecord& driver : definition->program.execute.drivers)
+			if (!m_Drivers.Contains(driver.type))
+			{
+				error = "Action Driver implementation is missing: " +
+					definition->name + " -> " + driver.type;
+				m_Assets.Clear();
+				return false;
+			}
+		for (const std::string& capability : definition->program.capabilities)
+			if (!m_Services.Resolve(
+				VansMakeStableId<VansActionServiceIdTag>(capability)))
+			{
+				error = "Action capability is missing: " +
+					definition->name + " -> " + capability;
+				m_Assets.Clear();
+				return false;
+			}
 	}
 	for (const VansCompiledGameplayCueDefinition& cue : m_Assets.Cues())
 	{
@@ -151,8 +211,13 @@ bool VansGameplayRuntime::Initialize(
 void VansGameplayRuntime::Shutdown()
 {
 	m_Scheduler.Clear();
+	std::vector<std::string> resourceErrors;
+	m_WorldResources.ReleaseAll(resourceErrors);
+	m_WorldResources = {};
 	m_Cues = {};
 	m_ExternalCosts.reset();
+	m_HostInitializers.clear();
+	m_ActionSetInitializers.clear();
 	m_Initialized = false;
 }
 
@@ -176,6 +241,7 @@ std::shared_ptr<VansActionHost> VansGameplayRuntime::CreateHost(
 	VansActionHostDependencies dependencies;
 	dependencies.definitions = &m_Assets.Actions();
 	dependencies.executors = &m_Executors;
+	dependencies.drivers = &m_Drivers;
 	dependencies.tagDictionary = &m_Assets.Tags();
 	dependencies.attributeRegistry = &m_Assets.Attributes();
 	dependencies.effectRegistry = m_Assets.Effects();
@@ -183,9 +249,9 @@ std::shared_ptr<VansActionHost> VansGameplayRuntime::CreateHost(
 	dependencies.targetingPolicies = m_Assets.TargetingPolicies();
 	dependencies.targetingHandlers = &m_TargetingHandlers;
 	dependencies.services = &m_Services;
+	dependencies.actionSetInitializers = &m_ActionSetInitializers;
 	dependencies.externalCosts = m_ExternalCosts.get();
-	dependencies.predictionEnabled = m_Settings.predictionEnabled &&
-		m_Settings.networkMode != VansGAFNetworkMode::Disabled;
+	dependencies.worldResources = &m_WorldResources;
 	dependencies.limits.maximumActiveActions = m_Settings.performance.maximumActiveActionsPerHost;
 	dependencies.limits.maximumTasksPerAction = m_Settings.performance.maximumTasksPerAction;
 	dependencies.limits.maximumActiveEffects = m_Settings.performance.maximumEffectsPerHost;
@@ -194,25 +260,17 @@ std::shared_ptr<VansActionHost> VansGameplayRuntime::CreateHost(
 	if (!host->Initialize(error)) return {};
 
 	std::uint32_t sourceSlot = 0;
-	for (const VansGameplayInitialTag& initial : setup.initialTags)
+	for (const VansGameplayHostInitializer& initializer : setup.initializers)
 	{
-		const VansGameplayTagDefinition* tag = m_Assets.Tags().Find(initial.tag);
-		if (!tag || initial.count == 0 ||
-			!host->Tags().Add(tag->id, SourceFor(owner, sourceSlot++), initial.count))
+		const auto found = m_HostInitializers.find(initializer.type);
+		if (found == m_HostInitializers.end())
 		{
-			error = "ActionHost initial Tag is invalid: " + initial.tag;
+			error = "ActionHost initializer type is not registered: " + initializer.type;
 			return {};
 		}
-	}
-	for (const VansGameplayInitialAttribute& initial : setup.initialAttributes)
-	{
-		const VansAttributeId attribute = VansMakeStableId<VansAttributeIdTag>(initial.attribute);
-		if (!std::isfinite(initial.value) || !m_Assets.Attributes().Resolve(attribute) ||
-			!host->Attributes().SetBase(attribute, initial.value))
-		{
-			error = "ActionHost initial Attribute is invalid: " + initial.attribute;
-			return {};
-		}
+		if (initializer.inputs.kind != VansSerializedValue::Kind::Object ||
+			!found->second(*host, m_Assets, owner, SourceFor(owner, sourceSlot++),
+				initializer.inputs, error)) return {};
 	}
 	for (const std::string& reference : setup.actionSets)
 	{
@@ -234,21 +292,8 @@ std::shared_ptr<VansActionHost> VansGameplayRuntime::CreateHost(
 		VansActionGrantDesc grant;
 		grant.action = action->id;
 		grant.actionReference = initial.action;
-		grant.level = initial.level;
-		grant.inputBinding = initial.inputBinding;
-		grant.charges = initial.charges;
-		grant.persistence = initial.persistence;
+		grant.extensions = initial.extensions;
 		grant.source = SourceFor(owner, sourceSlot++);
-		for (const std::string& tagName : initial.dynamicTags)
-		{
-			const VansGameplayTagDefinition* tag = m_Assets.Tags().Find(tagName);
-			if (!tag)
-			{
-				error = "ActionHost grant dynamic Tag is unresolved: " + tagName;
-				return {};
-			}
-			grant.dynamicTags.push_back(tag->id);
-		}
 		if (!host->Grant(grant, error)) return {};
 	}
 	for (const std::string& reference : setup.autoActivate)
@@ -271,9 +316,9 @@ std::shared_ptr<VansActionHost> VansGameplayRuntime::CreateHost(
 		}
 		VansActionActivationRequest request;
 		request.spec = spec->handle;
-		request.context.owner = owner;
-		request.context.instigator = owner;
-		request.context.primaryTarget = owner;
+		request.context.SetEntity(VansActionContextSlots::Owner, owner);
+		request.context.SetEntity(VansActionContextSlots::Instigator, owner);
+		request.context.SetEntity(VansActionContextSlots::PrimaryTarget, owner);
 		const VansActionResult result = host->Activate(request);
 		if (!result)
 		{

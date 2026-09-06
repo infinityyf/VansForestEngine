@@ -9,11 +9,9 @@
 #include "../../AnimationCore/VansAnimGraph.h"
 #include "../../AnimationCore/VansAnimationClipLoader.h"
 #include "../../AnimationCore/VansSkinnedMeshLoader.h"
-#include "../../AnimationCore/Storage/VansBoneMaskStorage.h"
-#include "../../AnimationCore/Storage/VansRetargetProfileStorage.h"
+#include "../../AssetCore/VansAssetMeta.h"
 #include "../../ProjectSystem/VansProjectManager.h"
 #include "../../PhysicsCore/VansCharacterControllerNode.h"
-#include "../../PhysicsCore/Storage/VansRagdollProfileStorage.h"
 #include "../../PhysicsCore/VansRagdollSystem.h"
 #include "../../ScriptCore/VansScriptContext.h"
 #include "../../Util/VansLog.h"
@@ -26,36 +24,6 @@ namespace VansGraphics
 {
 	namespace
 	{
-		std::string ResolveProjectAssetPath(const std::string& projectRoot, const std::string& assetPath)
-		{
-			if (assetPath.empty())
-				return "";
-
-			std::filesystem::path path(assetPath);
-			if (path.is_absolute())
-				return path.lexically_normal().string();
-
-			const std::filesystem::path projectRelative =
-				(std::filesystem::path(projectRoot) / path).lexically_normal();
-			if (std::filesystem::exists(projectRelative))
-				return projectRelative.string();
-
-			std::filesystem::path ancestor = std::filesystem::path(projectRoot).lexically_normal();
-			while (!ancestor.empty())
-			{
-				const std::filesystem::path candidate = (ancestor / path).lexically_normal();
-				if (std::filesystem::exists(candidate))
-					return candidate.string();
-
-				const std::filesystem::path parent = ancestor.parent_path();
-				if (parent == ancestor)
-					break;
-				ancestor = parent;
-			}
-
-			return projectRelative.string();
-		}
-
 		uint32_t CountVerticesWithBoneInfluence(const std::vector<VertexBoneData>& boneData)
 		{
 			uint32_t count = 0;
@@ -73,20 +41,44 @@ namespace VansGraphics
 			return count;
 		}
 
-		bool LoadRetargetProfile(
-			const std::string& profilePath,
+		void ApplyRetargetProfile(
+			const VansRetargetProfileAsset& profile,
 			VansRetargetRuntimeDesc& desc,
-			std::string& error)
+			const std::string& profileGuid)
 		{
-			VansRetargetProfileAsset profile;
-			if (!VansRetargetProfileStorage::Load(profilePath, profile, error))
-				return false;
+			desc.profileAssetGuid = profileGuid;
 			desc.translationScaleMode = profile.translationScaleMode;
 			desc.translationScale = profile.explicitTranslationScale;
 			desc.rootAlignment = profile.rootAlignment;
 			desc.targetModelSpaceAlignment = profile.targetModelSpaceAlignment;
-			desc.limbChains = std::move(profile.limbChains);
-			return true;
+			desc.limbChains = profile.limbChains;
+		}
+
+		template <typename T>
+		std::shared_ptr<const T> ResolveConfigAssetObject(
+			const std::string& guidText,
+			Vans::VansAssetType expectedType,
+			const std::string& label,
+			std::string& error)
+		{
+			Vans::VansAssetGuid guid;
+			if (!Vans::VansAssetGuid::TryParse(guidText, guid))
+			{
+				error = label + " has an invalid asset GUID '" + guidText + "'";
+				return nullptr;
+			}
+			Vans::VansAssetObjectSnapshotInfo info;
+			const Vans::VansAssetObjectRepository& repository =
+				Vans::VansProjectManager::Get().GetAssetObjectRepository();
+			if (!repository.FindInfo(guid, info) || info.assetType != expectedType)
+			{
+				error = label + " is not loaded in the object repository: " + guidText;
+				return nullptr;
+			}
+			auto object = repository.ResolveLatest<T>(guid);
+			if (!object)
+				error = label + " decoded object type does not match its repository entry";
+			return object;
 		}
 
 		bool ResolveAnimationAssetPath(
@@ -138,11 +130,22 @@ namespace VansGraphics
 			return true;
 		}
 
-		bool LoadSkeletonFromModel(const std::string& fullModelPath, Skeleton& outSkeleton)
+		bool LoadSkeletonFromModel(
+			const std::string& modelGuid,
+			const std::string& fullModelPath,
+			Skeleton& outSkeleton)
 		{
 			std::string error;
+			const auto meta = ResolveConfigAssetObject<Vans::VansAssetMeta>(
+				modelGuid, Vans::VansAssetType::Model, "Skeleton Model", error);
+			if (!meta)
+			{
+				VANS_LOG_WARN("[Retarget] failed to resolve source Skeleton metadata: "
+					<< modelGuid << " (" << error << ")");
+				return false;
+			}
 			if (!VansSkinnedMeshLoader::LoadSkeletonFromModelAsset(
-				fullModelPath, outSkeleton, error))
+				fullModelPath, Vans::ReadSkeletalMeshImportSettings(*meta), outSkeleton, error))
 			{
 				VANS_LOG_WARN("[Retarget] failed to load source Skeleton asset: "
 					<< fullModelPath << " (" << error << ")");
@@ -152,17 +155,22 @@ namespace VansGraphics
 		}
 
 		std::unique_ptr<VansAnimationController> LoadAnimatorController(
-			const std::string& fullAnimatorPath,
+			const std::string& animatorGuid,
 			const Skeleton& skeleton,
 			const MotionMatchingSettings* motionMatchingSettings,
 			bool enableRootMotion,
 			const std::string& logOwner)
 		{
-			AnimatorAssetData assetData;
-			if (!VansAnimatorIO::Load(fullAnimatorPath, assetData))
+			std::string animatorError;
+			const auto assetData = ResolveConfigAssetObject<AnimatorAssetData>(
+				animatorGuid,
+				Vans::VansAssetType::AnimatorController,
+				"Animator",
+				animatorError);
+			if (!assetData)
 			{
-				VANS_LOG_WARN("[Retarget] failed to load source .vanimator for '"
-					<< logOwner << "': " << fullAnimatorPath);
+				VANS_LOG_WARN("[Retarget] source Animator is unavailable for '"
+					<< logOwner << "': " << animatorError);
 				return nullptr;
 			}
 
@@ -170,10 +178,10 @@ namespace VansGraphics
 			VansAnimatorRuntimeCompileOptions options;
 			options.enableTargetPostProcess = false;
 			options.enableRootMotion = enableRootMotion;
-			options.rigResolver = [](const std::string& guid, std::filesystem::path& path, std::string& error)
+			options.rigResolver = [](const std::string& guid, std::string& error)
 			{
-				return ResolveAnimationAssetPath(guid, Vans::VansAssetType::AnimationRig,
-					"Animation Rig", "", path, error);
+				return ResolveConfigAssetObject<VansAnimationRigAsset>(guid,
+					Vans::VansAssetType::AnimationRig, "Animation Rig", error);
 			};
 			options.queryProfileResolver = [](const std::string& profile, std::uint32_t& mask, std::string& error)
 			{
@@ -181,17 +189,24 @@ namespace VansGraphics
 					.ResolvePhysicsQueryProfile(profile, mask, error);
 			};
 			auto controller = VansAnimatorRuntimeCompiler::Compile(
-				assetData,
+				*assetData,
 				skeleton,
-				[](const AnimatorClipRef& ref, std::filesystem::path& path, std::string& error)
+				[](const AnimatorClipRef& ref,
+					std::shared_ptr<const VansAnimationClipAsset>& clip,
+					std::string& error)
 				{
-					return ResolveAnimationAssetPath(ref.assetGuid, Vans::VansAssetType::AnimationClip,
-						"Animation Clip '" + ref.name + "'", ref.pathHint, path, error);
+					clip = ResolveConfigAssetObject<VansAnimationClipAsset>(ref.assetGuid,
+						Vans::VansAssetType::AnimationClip,
+						"Animation Clip '" + ref.name + "'", error);
+					return clip != nullptr;
 				},
-				[](const VansAnimationLayerDefinition& layer, std::filesystem::path& path, std::string& error)
+				[](const VansAnimationLayerDefinition& layer,
+					std::shared_ptr<const VansBoneMaskAsset>& mask, std::string& error)
 				{
-					return ResolveAnimationAssetPath(layer.maskGuid, Vans::VansAssetType::BoneMask,
-						"Bone Mask for Layer '" + layer.name + "'", layer.maskPathHint, path, error);
+					mask = ResolveConfigAssetObject<VansBoneMaskAsset>(layer.maskGuid,
+						Vans::VansAssetType::BoneMask,
+						"Bone Mask for Layer '" + layer.name + "'", error);
+					return mask != nullptr;
 				},
 				options,
 				compileError);
@@ -214,7 +229,7 @@ namespace VansGraphics
 			}
 
 			VANS_LOG("[Retarget] loaded source controller for '" << logOwner
-				<< "': " << fullAnimatorPath
+				<< "': " << animatorGuid
 				<< " clips=" << controller->GetClipNames().size());
 			return controller;
 		}
@@ -254,7 +269,7 @@ namespace VansGraphics
 		VkDevice device = vkDevice->GetLogicDevice();
 
 		const std::string& meshGroupName = animConfig.meshGroup;
-		const std::string& animatorPath = animConfig.animator;
+		const std::string& animatorGuid = animConfig.animatorGuid;
 		const std::string& externClips = animConfig.externClips;
 		const bool enableRootMotion = animConfig.rootMotion;
 		const std::string& rootBone = animConfig.rootBone;
@@ -314,14 +329,17 @@ namespace VansGraphics
 		}
 
 		VansAnimationController* controller = nullptr;
-		if (!animatorPath.empty())
+		if (!animatorGuid.empty())
 		{
-			const std::string fullAnimatorPath = projectRoot + animatorPath;
-
-			AnimatorAssetData assetData;
-			if (!VansAnimatorIO::Load(fullAnimatorPath, assetData))
+			std::string resolveError;
+			const auto assetData = ResolveConfigAssetObject<AnimatorAssetData>(
+				animatorGuid,
+				Vans::VansAssetType::AnimatorController,
+				"Animator",
+				resolveError);
+			if (!assetData)
 			{
-				VANS_LOG_WARN("[LoadAnimComp] Failed to load .vanimator: " << fullAnimatorPath);
+				VANS_LOG_WARN("[LoadAnimComp] " << resolveError);
 				return nullptr;
 			}
 
@@ -332,11 +350,11 @@ namespace VansGraphics
 				: VansAnimatorRuntimeCompileMode::FullGraph;
 			options.enableTargetPostProcess = true;
 			options.enableRootMotion = enableRootMotion && !retargetRequested;
-			options.animationRigGuidOverride = animConfig.rig;
-			options.rigResolver = [](const std::string& guid, std::filesystem::path& path, std::string& error)
+			options.animationRigGuidOverride = animConfig.rigGuid;
+			options.rigResolver = [](const std::string& guid, std::string& error)
 			{
-				return ResolveAnimationAssetPath(guid, Vans::VansAssetType::AnimationRig,
-					"Animation Rig", "", path, error);
+				return ResolveConfigAssetObject<VansAnimationRigAsset>(guid,
+					Vans::VansAssetType::AnimationRig, "Animation Rig", error);
 			};
 			options.queryProfileResolver = [](const std::string& profile, std::uint32_t& mask, std::string& error)
 			{
@@ -344,17 +362,24 @@ namespace VansGraphics
 					.ResolvePhysicsQueryProfile(profile, mask, error);
 			};
 			auto compiledController = VansAnimatorRuntimeCompiler::Compile(
-				assetData,
+				*assetData,
 				meshAsset->m_AnimImportResult.skeleton,
-				[](const AnimatorClipRef& ref, std::filesystem::path& path, std::string& error)
+				[](const AnimatorClipRef& ref,
+					std::shared_ptr<const VansAnimationClipAsset>& clip,
+					std::string& error)
 				{
-					return ResolveAnimationAssetPath(ref.assetGuid, Vans::VansAssetType::AnimationClip,
-						"Animation Clip '" + ref.name + "'", ref.pathHint, path, error);
+					clip = ResolveConfigAssetObject<VansAnimationClipAsset>(ref.assetGuid,
+						Vans::VansAssetType::AnimationClip,
+						"Animation Clip '" + ref.name + "'", error);
+					return clip != nullptr;
 				},
-				[](const VansAnimationLayerDefinition& layer, std::filesystem::path& path, std::string& error)
+				[](const VansAnimationLayerDefinition& layer,
+					std::shared_ptr<const VansBoneMaskAsset>& mask, std::string& error)
 				{
-					return ResolveAnimationAssetPath(layer.maskGuid, Vans::VansAssetType::BoneMask,
-						"Bone Mask for Layer '" + layer.name + "'", layer.maskPathHint, path, error);
+					mask = ResolveConfigAssetObject<VansBoneMaskAsset>(layer.maskGuid,
+						Vans::VansAssetType::BoneMask,
+						"Bone Mask for Layer '" + layer.name + "'", error);
+					return mask != nullptr;
 				},
 				options,
 				compileError);
@@ -365,7 +390,7 @@ namespace VansGraphics
 			}
 			controller = compiledController.release();
 
-			VANS_LOG("[LoadAnimComp] Loaded controller from .vanimator: " << fullAnimatorPath);
+			VANS_LOG("[LoadAnimComp] Loaded controller from memory Animator: " << animatorGuid);
 		}
 		else
 		{
@@ -509,19 +534,33 @@ namespace VansGraphics
 				delete animNode;
 				return nullptr;
 			};
-			if (retargetConfig.sourceModel.empty() || retargetConfig.sourceAnimator.empty())
+			if (retargetConfig.profileGuid.empty() ||
+				retargetConfig.sourceModelGuid.empty() ||
+				retargetConfig.sourceAnimatorGuid.empty())
 			{
 				VANS_LOG_WARN("[Retarget] '" << objectName
 					<< "' retarget is enabled but source_model/source_animator is missing");
 				return failRetarget();
 			}
 
-			const std::string fullSourceModelPath = ResolveProjectAssetPath(projectRoot, retargetConfig.sourceModel);
-			const std::string fullSourceAnimatorPath = ResolveProjectAssetPath(projectRoot, retargetConfig.sourceAnimator);
-			const std::string fullProfilePath = ResolveProjectAssetPath(projectRoot, retargetConfig.profile);
+			std::filesystem::path sourceModelPath;
+			std::string resolveError;
+			if (!ResolveAnimationAssetPath(
+				retargetConfig.sourceModelGuid,
+				Vans::VansAssetType::Model,
+				"Retarget Source Model",
+				"",
+				sourceModelPath,
+				resolveError))
+			{
+				VANS_LOG_WARN("[Retarget] '" << objectName << "' " << resolveError);
+				return failRetarget();
+			}
+			const std::string fullSourceModelPath = sourceModelPath.string();
 
 			Skeleton sourceSkeleton;
-			if (!LoadSkeletonFromModel(fullSourceModelPath, sourceSkeleton))
+			if (!LoadSkeletonFromModel(
+				retargetConfig.sourceModelGuid, fullSourceModelPath, sourceSkeleton))
 			{
 				VANS_LOG_WARN("[Retarget] '" << objectName << "' failed to load source skeleton: "
 					<< fullSourceModelPath);
@@ -532,7 +571,7 @@ namespace VansGraphics
 				animConfig.motionMatching ? &(*animConfig.motionMatching) : nullptr;
 			std::unique_ptr<VansAnimationController> sourceController =
 				LoadAnimatorController(
-					fullSourceAnimatorPath,
+					retargetConfig.sourceAnimatorGuid,
 					sourceSkeleton,
 					mmSettings,
 					enableRootMotion,
@@ -540,22 +579,27 @@ namespace VansGraphics
 			if (!sourceController)
 			{
 				VANS_LOG_WARN("[Retarget] '" << objectName << "' failed to compile source Animator: "
-					<< fullSourceAnimatorPath);
+					<< retargetConfig.sourceAnimatorGuid);
 				return failRetarget();
 			}
 
 			VansRetargetRuntimeDesc retargetDesc;
-			retargetDesc.profilePath = fullProfilePath;
-			retargetDesc.sourceModelPath = fullSourceModelPath;
-			retargetDesc.sourceAnimatorPath = fullSourceAnimatorPath;
+			retargetDesc.sourceModelAssetGuid = retargetConfig.sourceModelGuid;
+			retargetDesc.sourceAnimatorAssetGuid = retargetConfig.sourceAnimatorGuid;
 			retargetDesc.debugDraw = retargetConfig.debugDraw;
 			std::string retargetProfileError;
-			if (!LoadRetargetProfile(fullProfilePath, retargetDesc, retargetProfileError))
+			const auto retargetProfile = ResolveConfigAssetObject<VansRetargetProfileAsset>(
+				retargetConfig.profileGuid,
+				Vans::VansAssetType::RetargetProfile,
+				"Retarget Profile",
+				retargetProfileError);
+			if (!retargetProfile)
 			{
 				VANS_LOG_WARN("[Retarget] '" << objectName << "' has an invalid profile: "
 					<< retargetProfileError);
 				return failRetarget();
 			}
+			ApplyRetargetProfile(*retargetProfile, retargetDesc, retargetConfig.profileGuid);
 			std::string retargetBuildError;
 			if (!animNode->ConfigureRetargetSource(
 				sourceSkeleton,
@@ -570,8 +614,8 @@ namespace VansGraphics
 			}
 		}
 
-		if (!animatorPath.empty())
-			animNode->SetAnimatorFilePath(projectRoot + animatorPath);
+		if (!animatorGuid.empty())
+			animNode->SetAnimatorAssetGuid(animatorGuid);
 
 		if (!rootBone.empty())
 			animNode->SetRootBone(rootBone);
@@ -656,19 +700,22 @@ namespace VansGraphics
 		if (obj == nullptr || animNode == nullptr)
 			return false;
 
-		const std::string& profilePath = ragdollConfig.profile;
-		if (profilePath.empty())
+		const std::string& profileGuid = ragdollConfig.profileGuid;
+		if (profileGuid.empty())
 		{
 			VANS_LOG_WARN("[LoadRagdollComp] object '" << obj->m_ObjectName << "' ragdoll missing profile");
 			return false;
 		}
 
-		const std::string fullProfilePath = projectRoot + profilePath;
-		VansEngine::RagdollProfile profile;
 		std::string error;
-		if (!VansEngine::VansRagdollProfileStorage::Load(fullProfilePath, profile, error))
+		const auto profile = ResolveConfigAssetObject<VansEngine::RagdollProfile>(
+			profileGuid,
+			Vans::VansAssetType::RagdollProfile,
+			"Ragdoll Profile",
+			error);
+		if (!profile)
 		{
-			VANS_LOG_WARN("[LoadRagdollComp] failed to load profile: " << fullProfilePath << " (" << error << ")");
+			VANS_LOG_WARN("[LoadRagdollComp] " << error);
 			return false;
 		}
 
@@ -685,7 +732,7 @@ namespace VansGraphics
 			return false;
 		}
 
-		if (!VansEngine::VansRagdollSystem::GetInstance().CreateRagdoll(animNode, profile))
+		if (!VansEngine::VansRagdollSystem::GetInstance().CreateRagdoll(animNode, *profile))
 			return false;
 
 		const VansEngine::RagdollDriveMode mode = ParseRagdollDriveMode(ragdollConfig.driveMode);
@@ -697,10 +744,10 @@ namespace VansGraphics
 		auto* ragdollComp = new VansScriptRagdollComponent();
 		ragdollComp->m_AnimNode = animNode;
 		ragdollComp->m_InitialDriveMode = mode;
-		ragdollComp->m_ProfilePath = profilePath;
-		ragdollComp->m_ProfileName = profile.name;
-		ragdollComp->m_ConfiguredBodyCount = static_cast<int>(profile.bodies.size());
-		ragdollComp->m_ConfiguredJointCount = static_cast<int>(profile.joints.size());
+		ragdollComp->m_ProfileAssetGuid = profileGuid;
+		ragdollComp->m_ProfileName = profile->name;
+		ragdollComp->m_ConfiguredBodyCount = static_cast<int>(profile->bodies.size());
+		ragdollComp->m_ConfiguredJointCount = static_cast<int>(profile->joints.size());
 		obj->AddComponent(ragdollComp);
 
 		auto* cctComp = obj->GetComponent<VansScriptCharacterControllerComponent>();
@@ -716,7 +763,7 @@ namespace VansGraphics
 		}
 
 		VANS_LOG("[LoadRagdollComp] Created ragdoll component for '" << obj->m_ObjectName
-			<< "' profile='" << profile.name << "' bodies=" << profile.bodies.size());
+			<< "' profile='" << profile->name << "' bodies=" << profile->bodies.size());
 		return true;
 	}
 

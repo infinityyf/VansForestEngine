@@ -6,7 +6,7 @@
 #include "../../AssetCore/VansAssetDatabase.h"
 #include "../../AssetCore/VansAssetGuid.h"
 #include "../../AssetCore/VansAssetMeta.h"
-#include "../../AssetCore/Storage/VansAssetMetaStorage.h"
+#include "../../AssetCore/VansAssetObjectRepository.h"
 #include "../../ProjectSystem/VansProjectManager.h"
 #include "../../RenderCore/VansScene.h"
 #include "../../SceneCore/VansSceneDocument.h"
@@ -60,12 +60,12 @@ GeneratedMaterialLookup BuildGeneratedMaterialLookup(const std::string& modelGui
     if (!record || record->metaPath.empty())
         return lookup;
 
-    Vans::VansAssetMeta meta;
-    std::string metaError;
-    if (!Vans::VansAssetMetaStorage::Load(record->metaPath, meta, metaError))
+    const auto meta = Vans::VansProjectManager::Get().GetAssetObjectRepository()
+        .ResolveLatest<Vans::VansAssetMeta>(record->guid);
+    if (!meta)
         return lookup;
 
-    const Vans::VansModelImportReport report = Vans::ReadModelImportReport(meta);
+    const Vans::VansModelImportReport report = Vans::ReadModelImportReport(*meta);
     std::unordered_map<std::string, std::string> textureGuidToName;
     for (const Vans::VansModelImportReportTexture& texture : report.textures)
     {

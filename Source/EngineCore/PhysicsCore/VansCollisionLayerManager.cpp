@@ -1,6 +1,5 @@
 #include "VansCollisionLayerManager.h"
 
-#include "Storage/VansCollisionLayerStorage.h"
 #include "../Util/VansLog.h"
 
 namespace VansEngine
@@ -22,30 +21,6 @@ namespace VansEngine
 		m_LayerNames = config.layerNames;
 		m_CollisionMasks = config.collisionMasks;
 		m_LayerCount = config.layerCount;
-	}
-
-	bool VansCollisionLayerManager::LoadFromFile(const std::string& path)
-	{
-		VansCollisionLayerConfig config;
-		std::string error;
-		const VansCollisionLayerLoadStatus status = VansCollisionLayerStorage::Load(path, config, error);
-		if (status == VansCollisionLayerLoadStatus::Loaded)
-		{
-			ApplyConfig(config);
-			VANS_LOG("[PhysicsLayer] Loaded " << m_LayerCount << " layers from " << path);
-			return true;
-		}
-
-		if (status == VansCollisionLayerLoadStatus::Missing)
-		{
-			VANS_LOG_WARN("[PhysicsLayer] File not found: " << path << " - using defaults");
-			ResetToDefaults();
-			return false;
-		}
-
-		VANS_LOG_WARN("[PhysicsLayer] Cannot read: " << path << " (" << error << ") using defaults");
-		ResetToDefaults();
-		return false;
 	}
 
 	int VansCollisionLayerManager::GetLayerIndex(const std::string& name) const

@@ -436,13 +436,15 @@ vec3 AtmosphereCloudVisibility(
         clamp(strength, 0.0, 1.0));
 }
 
-// 物理大气与近场 Height Fog 共用同一个光源可见度查询。
-// 云影只调制直射辐照度；多次散射/天空填充使用独立的低频 AO 强度。
-vec3 EvaluateAtmosphereScatteringSourceInternal(
+// 已解析的主天体可见度是光照源项的一部分，而不是视线消光的一部分。
+// 这使普通 Aerial pass、清空 LUT 与云层联合区间可以各自提供正确的
+// “采样点到太阳”透射率，同时共享完全相同的 Rayleigh/Mie 计算。
+vec3 EvaluateAtmosphereScatteringSourceWithResolvedPrimaryVisibility(
     vec3 positionRelativeToCamera,
     vec3 viewDirection,
     AtmosphereMedium medium,
-    bool includeCloudShadow)
+    vec3 primaryDirectVisibility,
+    vec3 primaryAmbientVisibility)
 {
     vec3 source = medium.heightFogEmissive;
     vec3 physicalScattering =
@@ -450,16 +452,6 @@ vec3 EvaluateAtmosphereScatteringSourceInternal(
     bool hasHeightFog =
         dot(medium.heightFogScattering, medium.heightFogScattering) > 0.0;
     bool heightFogHasCelestialLight = false;
-    vec3 rawCloudVisibility = includeCloudShadow
-        ? SampleAtmosphereCloudShadow(positionRelativeToCamera)
-        : vec3(1.0);
-    vec3 atmosphereCloudVisibility = mix(
-        vec3(1.0), rawCloudVisibility,
-        includeCloudShadow ? AtmosphereCloudShadowStrength() : 0.0);
-    vec3 ambientCloudVisibility = mix(
-        vec3(1.0), rawCloudVisibility,
-        includeCloudShadow ? AtmosphereCloudAmbientOcclusionStrength() : 0.0);
-
     for (uint bodyIndex = 0u; bodyIndex < 2u; ++bodyIndex)
     {
         AtmosphereCelestialBody body =
@@ -472,7 +464,9 @@ vec3 EvaluateAtmosphereScatteringSourceInternal(
         vec3 lightTransmittance = SampleAtmosphereTransmittance(
             positionRelativeToCamera, lightDirection);
         vec3 bodyCloudVisibility =
-            bodyIndex == 0u ? atmosphereCloudVisibility : vec3(1.0);
+            bodyIndex == 0u ? primaryDirectVisibility : vec3(1.0);
+        vec3 bodyAmbientVisibility =
+            bodyIndex == 0u ? primaryAmbientVisibility : vec3(1.0);
 
         if (dot(physicalScattering, physicalScattering) > 0.0)
         {
@@ -491,7 +485,7 @@ vec3 EvaluateAtmosphereScatteringSourceInternal(
                     phaseScattering * directScatteringScale +
                  SampleAtmosphereMultipleScattering(
                     positionRelativeToCamera, lightDirection) *
-                    ambientCloudVisibility * physicalScattering);
+                    bodyAmbientVisibility * physicalScattering);
         }
 
         if (hasHeightFog)
@@ -500,7 +494,7 @@ vec3 EvaluateAtmosphereScatteringSourceInternal(
             vec3 fogCloudVisibility =
                 bodyIndex == 0u &&
                 uAtmosphere.heightFogLightingParameters.y > 0.5
-                    ? atmosphereCloudVisibility : vec3(1.0);
+                    ? primaryDirectVisibility : vec3(1.0);
             source += medium.heightFogScattering *
                 body.topOfAtmosphereIrradiance.rgb *
                 lightTransmittance * fogCloudVisibility *
@@ -510,7 +504,7 @@ vec3 EvaluateAtmosphereScatteringSourceInternal(
                 body.topOfAtmosphereIrradiance.rgb *
                 SampleAtmosphereMultipleScattering(
                     positionRelativeToCamera, lightDirection) *
-                ambientCloudVisibility *
+                bodyAmbientVisibility *
                 max(uAtmosphere.heightFogEmissiveAndSkyScale.w, 0.0);
         }
     }
@@ -525,10 +519,9 @@ vec3 EvaluateAtmosphereScatteringSourceInternal(
             uAtmosphereFrame.preparedMainLightColorAndIntensity.rgb *
             uAtmosphereFrame.preparedMainLightColorAndIntensity.w;
         vec3 fogCloudVisibility =
-            includeCloudShadow &&
             uAtmosphere.heightFogLightingParameters.y > 0.5 &&
             dot(lightDirection, AtmospherePrimaryDirection()) > 0.999
-                ? atmosphereCloudVisibility : vec3(1.0);
+                ? primaryDirectVisibility : vec3(1.0);
         source += medium.heightFogScattering * preparedIrradiance *
             fogCloudVisibility *
             AtmosphereHeightFogPhase(dot(viewDirection, lightDirection)) *
@@ -536,13 +529,40 @@ vec3 EvaluateAtmosphereScatteringSourceInternal(
     }
     return source;
 }
+
+// 将原始云透射率转换为当前场景的直射/低频多次散射可见度。
+// 云层联合步进会传入该采样点到太阳的局部透射率；普通 Aerial pass
+// 则传入地面 clipmap 的完整云柱透射率。
+vec3 EvaluateAtmosphereScatteringSourceWithPrimaryCloudTransmittance(
+    vec3 positionRelativeToCamera,
+    vec3 viewDirection,
+    AtmosphereMedium medium,
+    vec3 rawPrimaryCloudTransmittance)
+{
+    vec3 clampedTransmittance = clamp(
+        rawPrimaryCloudTransmittance, vec3(0.0), vec3(1.0));
+    return EvaluateAtmosphereScatteringSourceWithResolvedPrimaryVisibility(
+        positionRelativeToCamera,
+        viewDirection,
+        medium,
+        mix(vec3(1.0), clampedTransmittance,
+            AtmosphereCloudShadowStrength()),
+        mix(vec3(1.0), clampedTransmittance,
+            AtmosphereCloudAmbientOcclusionStrength()));
+}
+
+// 物理大气与近场 Height Fog 共用同一个光源可见度查询。
+// 云影只调制直射辐照度；多次散射/天空填充使用独立的低频 AO 强度。
 vec3 EvaluateAtmosphereScatteringSource(
     vec3 positionRelativeToCamera,
     vec3 viewDirection,
     AtmosphereMedium medium)
 {
-    return EvaluateAtmosphereScatteringSourceInternal(
-        positionRelativeToCamera, viewDirection, medium, true);
+    return EvaluateAtmosphereScatteringSourceWithPrimaryCloudTransmittance(
+        positionRelativeToCamera,
+        viewDirection,
+        medium,
+        SampleAtmosphereCloudShadow(positionRelativeToCamera));
 }
 
 // 探针捕获应反映清空中的大气，而不把主视图附近的动态云影烘进缓存。
@@ -551,8 +571,9 @@ vec3 EvaluateAtmosphereClearSkyScatteringSource(
     vec3 viewDirection,
     AtmosphereMedium medium)
 {
-    return EvaluateAtmosphereScatteringSourceInternal(
-        positionRelativeToCamera, viewDirection, medium, false);
+    return EvaluateAtmosphereScatteringSourceWithResolvedPrimaryVisibility(
+        positionRelativeToCamera, viewDirection, medium,
+        vec3(1.0), vec3(1.0));
 }
 
 vec3 AtmospherePrimaryDirection()

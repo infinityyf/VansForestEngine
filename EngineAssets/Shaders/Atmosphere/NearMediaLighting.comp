@@ -1,0 +1,278 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "../Common/Common.glsl"
+#include "../Common/CameraData.glsl"
+#include "../Common/TileLightData.glsl"
+#define PUNCTUAL_SHADOW_CONSUMER_FOG 1
+#include "../Lights/LightsData.glsl"
+#include "AtmosphereCommon.glsl"
+#include "AtmosphereViewCommon.glsl"
+#include "NearMediaDepthCommon.glsl"
+#include "NearMediaTemporalCommon.glsl"
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+layout(set = 1, binding = 0, rgba16f) uniform writeonly image3D localMediaInjection;
+layout(set = 1, binding = 2) uniform LocalMediaParams
+{
+    vec4 depthRangeAndGrid;
+    vec4 sliceHistoryAndVolumeCount;
+    vec4 localFogTileGridAndLimits;
+    // x: 最大采样数，y: 最大追踪距离（米）。
+    vec4 lightTransmittance;
+} uLocal;
+layout(set = 1, binding = 3) uniform sampler2DArray localMediaCascadeShadow;
+layout(set = 1, binding = 4) uniform sampler2DShadow localMediaPunctualShadow[PUNCTUAL_SHADOW_ATLAS_COUNT];
+layout(set = 1, binding = 19, rgba16f) uniform readonly image3D nearMediaScatteringExtinction;
+layout(set = 1, binding = 20, rgba16f) uniform readonly image3D nearMediaLightingPhaseCloud;
+layout(set = 1, binding = 21, rgba16f) uniform readonly image3D nearMediaEmissiveWeight;
+layout(set = 1, binding = 22) uniform sampler3D nearMediaExtinctionSampler;
+
+const int NEAR_MEDIA_MAX_LIGHT_TRANSMITTANCE_SAMPLES = 32;
+
+float NearMediaPhase(float cosTheta, float anisotropy)
+{
+    float g = clamp(anisotropy, -0.98, 0.98);
+    float g2 = g * g;
+    float denominator = max(1.0 + g2 - 2.0 * g * cosTheta, 1.0e-5);
+    return (1.0 - g2) / (4.0 * PI * pow(denominator, 1.5));
+}
+
+float SampleDirectionalGeometryShadow(vec3 worldPosition, vec3 lightDirection)
+{
+    float viewDepth = abs((ViewMatrix * vec4(worldPosition, 1.0)).z);
+    return SampleCascadeShadow(worldPosition, lightDirection,
+        localMediaCascadeShadow, viewDepth);
+}
+
+float SampleNearMediaExtinction(vec3 worldPosition, out bool insideVolume)
+{
+    vec4 uvw = NearMediaCurrentUVW(worldPosition,
+        uLocal.depthRangeAndGrid.x,
+        uLocal.depthRangeAndGrid.y,
+        uLocal.sliceHistoryAndVolumeCount.x);
+    ivec3 volumeSize = textureSize(nearMediaExtinctionSampler, 0);
+    vec3 halfTexel = 0.5 / vec3(volumeSize);
+    insideVolume = uvw.w > 0.5 &&
+        all(greaterThanEqual(uvw.xyz, halfTexel)) &&
+        all(lessThanEqual(uvw.xyz, vec3(1.0) - halfTexel));
+    if (!insideVolume)
+        return 0.0;
+    return max(textureLod(nearMediaExtinctionSampler, uvw.xyz, 0.0).a, 0.0);
+}
+
+// 在统一 NearMedia extinction 场中计算光源到 froxel 的 Beer-Lambert
+// 透射。二次分布把更多样本放在当前 froxel 附近，稳定厚介质的暗面，
+// 同时让固定样本数仍能覆盖较远遮挡体。
+float NearMediaLightTransmittance(
+    vec3 worldPosition,
+    vec3 directionToLight,
+    float distanceToLight)
+{
+    int sampleCount = clamp(
+        int(uLocal.lightTransmittance.x + 0.5),
+        1, NEAR_MEDIA_MAX_LIGHT_TRANSMITTANCE_SAMPLES);
+    float traceDistance = min(max(distanceToLight, 0.0),
+        max(uLocal.lightTransmittance.y, 0.0));
+    if (traceDistance <= 1.0e-4)
+        return 1.0;
+
+    float opticalDepth = 0.0;
+    float previousDistance = 0.0;
+    for (int sampleIndex = 0;
+        sampleIndex < NEAR_MEDIA_MAX_LIGHT_TRANSMITTANCE_SAMPLES;
+        ++sampleIndex)
+    {
+        if (sampleIndex >= sampleCount)
+            break;
+        float normalizedEnd = float(sampleIndex + 1) / float(sampleCount);
+        float segmentEnd = traceDistance * normalizedEnd * normalizedEnd;
+        float segmentLength = segmentEnd - previousDistance;
+        float sampleDistance = previousDistance + 0.5 * segmentLength;
+        bool insideVolume = false;
+        float sigmaT = SampleNearMediaExtinction(
+            worldPosition + directionToLight * sampleDistance,
+            insideVolume);
+        if (!insideVolume)
+            break;
+        opticalDepth += sigmaT * segmentLength;
+        if (opticalDepth >= 12.0)
+            return exp(-12.0);
+        previousDistance = segmentEnd;
+    }
+    return exp(-opticalDepth);
+}
+
+vec3 EvaluatePunctualLighting(vec3 worldPosition, vec3 outgoingDirection,
+    TileLightHeader tileHeader, float anisotropy)
+{
+    vec3 lighting = vec3(0.0);
+    for (uint item = 0u; item < tileHeader.pointCount; ++item)
+    {
+        uint lightIndex = tileLightIndices[tileHeader.pointOffset + item];
+        PointLightData light = GetPointLight(int(lightIndex));
+        vec3 toLight = light.position.xyz - worldPosition;
+        float distanceToLight = length(toLight);
+        if (distanceToLight <= 1.0e-4 || distanceToLight >= light.radius)
+            continue;
+        vec3 lightDirection = toLight / distanceToLight;
+        float attenuation = 1.0 - distanceToLight / light.radius;
+        attenuation *= attenuation;
+        attenuation *= SamplePointShadowMap(worldPosition,
+            localMediaPunctualShadow, int(lightIndex));
+        attenuation *= NearMediaLightTransmittance(
+            worldPosition, lightDirection, distanceToLight);
+        lighting += light.color.rgb * light.intensity * attenuation *
+            NearMediaPhase(dot(outgoingDirection, lightDirection), anisotropy);
+    }
+    for (uint item = 0u; item < tileHeader.spotCount; ++item)
+    {
+        uint lightIndex = tileLightIndices[tileHeader.spotOffset + item];
+        SpotLightData light = GetSpotLight(int(lightIndex));
+        vec3 toLight = light.position.xyz - worldPosition;
+        float distanceToLight = length(toLight);
+        if (distanceToLight <= 1.0e-4 || distanceToLight >= light.radius)
+            continue;
+        vec3 lightDirection = toLight / distanceToLight;
+        float coneCosine = dot(normalize(light.direction.xyz), -lightDirection);
+        float innerCosine = cos(light.innerConeAngle);
+        float outerCosine = cos(light.outerConeAngle);
+        float cone = smoothstep(outerCosine, innerCosine, coneCosine);
+        if (cone <= 0.0)
+            continue;
+        float attenuation = 1.0 - distanceToLight / light.radius;
+        attenuation *= attenuation * cone;
+        attenuation *= SampleSpotShadowMap(worldPosition,
+            localMediaPunctualShadow, int(lightIndex));
+        attenuation *= NearMediaLightTransmittance(
+            worldPosition, lightDirection, distanceToLight);
+        lighting += light.color.rgb * light.intensity * attenuation *
+            NearMediaPhase(dot(outgoingDirection, lightDirection), anisotropy);
+    }
+    for (uint item = 0u; item < tileHeader.rectCount; ++item)
+    {
+        uint lightIndex = tileLightIndices[tileHeader.rectOffset + item];
+        RectLightData light = GetRectLight(int(lightIndex));
+        vec3 toLight = light.position_halfW.xyz - worldPosition;
+        float distanceToLight = length(toLight);
+        if (distanceToLight <= 1.0e-4 || distanceToLight >= light.right_range.w)
+            continue;
+        vec3 lightDirection = toLight / distanceToLight;
+        float facing = dot(light.normal_halfH.xyz, -lightDirection);
+        facing = light.color_twoSided.w > 0.5 ? abs(facing) : max(facing, 0.0);
+        if (facing <= 0.0)
+            continue;
+        float area = 4.0 * light.position_halfW.w * light.normal_halfH.w;
+        float attenuation = 1.0 - distanceToLight / light.right_range.w;
+        attenuation = attenuation * attenuation * area * facing /
+            max(distanceToLight * distanceToLight, 1.0e-3);
+        attenuation *= SampleRectShadowMap(worldPosition,
+            localMediaPunctualShadow, int(lightIndex));
+        attenuation *= NearMediaLightTransmittance(
+            worldPosition, lightDirection, distanceToLight);
+        lighting += light.color_twoSided.rgb * light.up_intensity.w * attenuation *
+            NearMediaPhase(dot(outgoingDirection, lightDirection), anisotropy);
+    }
+    return lighting;
+}
+
+void main()
+{
+    ivec3 voxel = ivec3(gl_GlobalInvocationID.xyz);
+    ivec3 gridSize = imageSize(localMediaInjection);
+    if (any(greaterThanEqual(voxel, gridSize)))
+        return;
+
+    vec4 scatteringExtinction = max(
+        imageLoad(nearMediaScatteringExtinction, voxel), vec4(0.0));
+    vec4 lightingPhaseCloud = imageLoad(
+        nearMediaLightingPhaseCloud, voxel);
+    vec4 emissiveWeight = max(
+        imageLoad(nearMediaEmissiveWeight, voxel), vec4(0.0));
+    if (scatteringExtinction.a <= 1.0e-7 &&
+        dot(emissiveWeight.rgb, emissiveWeight.rgb) <= 1.0e-12)
+    {
+        imageStore(localMediaInjection, voxel, vec4(0.0));
+        return;
+    }
+
+    float nearViewDepth = uLocal.depthRangeAndGrid.x;
+    float farViewDepth = uLocal.depthRangeAndGrid.y;
+    float slicePower = uLocal.sliceHistoryAndVolumeCount.x;
+    vec2 uv = (vec2(voxel.xy) + 0.5) / vec2(gridSize.xy);
+    vec3 rayDirection = AtmosphereWorldDirectionFromUv(uv);
+    float sliceStartViewDepth = NearMediaSliceViewDepth(float(voxel.z),
+        nearViewDepth, farViewDepth, float(gridSize.z), slicePower);
+    float sliceEndViewDepth = NearMediaSliceViewDepth(float(voxel.z) + 1.0,
+        nearViewDepth, farViewDepth, float(gridSize.z), slicePower);
+    float sliceStartDistance = NearMediaRayDistanceFromViewDepth(
+        rayDirection, sliceStartViewDepth);
+    float sliceEndDistance = NearMediaRayDistanceFromViewDepth(
+        rayDirection, sliceEndViewDepth);
+    float subFroxelJitter = uLocal.localFogTileGridAndLimits.w > 0.5
+        ? NearMediaSubFroxelJitter(
+            uvec2(voxel.xy), uint(max(FrameIndex, 0.0)))
+        : 0.5;
+    float sampleDistance = mix(
+        sliceStartDistance, sliceEndDistance, subFroxelJitter);
+    vec3 worldPosition = cameraPosition.xyz + rayDirection * sampleDistance;
+    vec3 outgoingDirection = -rayDirection;
+
+    float scatteringWeight = max(emissiveWeight.a, 1.0e-7);
+    float directLightingScale = max(
+        lightingPhaseCloud.x / scatteringWeight, 0.0);
+    float skyLightingScale = max(
+        lightingPhaseCloud.y / scatteringWeight, 0.0);
+    float anisotropy = clamp(
+        lightingPhaseCloud.z / scatteringWeight, -0.98, 0.98);
+    float receiveCloudShadows = clamp(
+        lightingPhaseCloud.w / scatteringWeight, 0.0, 1.0);
+
+    uint tileGridWidth =
+        (uint(ScreenParams.x) + uint(TILE_LIGHT_TILE_SIZE) - 1u) /
+        uint(TILE_LIGHT_TILE_SIZE);
+    uint tileGridHeight =
+        (uint(ScreenParams.y) + uint(TILE_LIGHT_TILE_SIZE) - 1u) /
+        uint(TILE_LIGHT_TILE_SIZE);
+    uint tileX = min(uint(uv.x * float(tileGridWidth)), tileGridWidth - 1u);
+    uint tileY = min(uint(uv.y * float(tileGridHeight)), tileGridHeight - 1u);
+    TileLightHeader tileHeader = tileLightHeaders[tileY * tileGridWidth + tileX];
+
+    vec3 lightDirection = normalize(uDirectionLight.direction.xyz);
+    vec3 directionalIrradiance =
+        uDirectionLight.color.rgb * uDirectionLight.intensity;
+    float geometryVisibility = SampleDirectionalGeometryShadow(
+        worldPosition, lightDirection);
+    float mediumVisibility = NearMediaLightTransmittance(
+        worldPosition, lightDirection, uLocal.lightTransmittance.y);
+    vec3 rawCloudVisibility = SampleAtmosphereCloudShadow(
+        worldPosition - cameraPosition.xyz);
+    vec3 cloudVisibility = mix(vec3(1.0),
+        mix(vec3(1.0), rawCloudVisibility,
+            AtmosphereCloudShadowStrength()),
+        receiveCloudShadows);
+    vec3 directional = directionalIrradiance * geometryVisibility *
+        mediumVisibility * cloudVisibility * NearMediaPhase(
+            dot(outgoingDirection, lightDirection), anisotropy);
+
+    vec3 punctual = EvaluatePunctualLighting(
+        worldPosition, outgoingDirection, tileHeader, anisotropy);
+    vec3 ambientCloudVisibility = mix(vec3(1.0), rawCloudVisibility,
+        AtmosphereCloudAmbientOcclusionStrength());
+    vec3 celestialIrradiance;
+    bool hasCelestialEnvironment =
+        AtmospherePreparedLightCelestialIrradiance(
+            lightDirection, celestialIrradiance);
+    vec3 skyEnvironment = hasCelestialEnvironment
+        ? celestialIrradiance * SampleAtmosphereMultipleScattering(
+            worldPosition - cameraPosition.xyz, lightDirection) *
+            ambientCloudVisibility
+        : directionalIrradiance * (1.0 / (4.0 * PI));
+
+    vec3 sourceRadiance = (directional + punctual) * directLightingScale +
+        skyEnvironment * skyLightingScale;
+    vec3 sourcePerMeter = sourceRadiance * scatteringExtinction.rgb +
+        emissiveWeight.rgb;
+    imageStore(localMediaInjection, voxel,
+        vec4(max(sourcePerMeter, vec3(0.0)), scatteringExtinction.a));
+}

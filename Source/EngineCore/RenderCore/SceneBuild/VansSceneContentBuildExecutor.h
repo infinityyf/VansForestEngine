@@ -17,7 +17,10 @@ namespace VansGraphics
 	class VansSceneContentBuildExecutor
 	{
 	public:
-		static bool BuildFromFile(VansScene& scene, const char* path);
+		static bool BuildFromDocument(
+			VansScene& scene,
+			const Vans::VansSerializedValue& sceneDocument,
+			const std::filesystem::path& sceneSourcePath);
 
 	private:
 		static bool BuildFromPlan(
@@ -25,7 +28,7 @@ namespace VansGraphics
 			VkDevice& nativeDevice,
 			VansVKDevice* vkDevice,
 			const Vans::VansSceneContentBuildPlan& buildPlan,
-			const char* path,
+			const std::filesystem::path& sceneSourcePath,
 			const std::string& projectRoot);
 
 		static void ApplyPostProcessSettings(
@@ -40,6 +43,7 @@ namespace VansGraphics
 		static void ApplyGISettings(
 			VansScene& scene,
 			const std::optional<Vans::VansSceneGISettingsConfig>& config);
-		static std::string ResolveProjectRootFromScenePath(const char* path);
+		static std::string ResolveProjectRootFromScenePath(
+			const std::filesystem::path& sceneSourcePath);
 	};
 }

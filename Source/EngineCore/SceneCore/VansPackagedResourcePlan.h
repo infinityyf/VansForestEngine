@@ -17,6 +17,7 @@ struct VansPackagedAssetIndexRecord
 	std::string sourcePath;
 	std::string authoringPath;
 	std::string artifactPath;
+	std::string metaPath;
 	std::string artifactFormat;
 	std::uint64_t sourceHash = 0;
 	std::uint64_t metaHash = 0;

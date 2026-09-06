@@ -22,6 +22,16 @@ using namespace VansGraphics;
 
 namespace
 {
+	void RestoreRootReference(VansBoneTransform& root, const glm::mat4& bindTransform)
+	{
+		VansBoneTransform bind;
+		if (!VansPoseMath::TryDecompose(bindTransform, bind))
+			return;
+		// 角色实体负责位移与朝向，骨骼自身的缩放仍属于姿态。
+		root.translation = bind.translation;
+		root.rotation = bind.rotation;
+	}
+
 	std::uint64_t ResolveMarkerId(const AnimationSyncMarker& marker)
 	{
 		return marker.id != 0 ? marker.id : VansAnimationStableId(marker.name);
@@ -503,6 +513,21 @@ bool VansAnimationController::ApplyGraphSetPhaseHandoff(
 		}
 
 		// 无 State Machine 的 Clip Graph 仍可按归一化时间交接。
+		// 状态不匹配时必须重新进入默认状态，不能把另一个状态的进度
+		// 当作 Clip Graph 的进度套入（例如行走切到蹲起）。
+		auto hasStateMachine = [](const GraphBindingRuntime& binding)
+		{
+			for (int id : binding.instance->GetExecutionPlan())
+				if (binding.graph->GetNode(id)->GetType() == AnimGraphNodeType::StateMachine)
+					return true;
+			return false;
+		};
+		if (hasStateMachine(sourceBinding) || hasStateMachine(targetBinding))
+		{
+			targetBinding.instance->Reset();
+			fullyMatched = false;
+			continue;
+		}
 		targetBinding.instance->SetPrimaryPlaybackTime(0.0f);
 		const auto sourceClip = m_Clips.find(sourceBinding.instance->GetPrimaryClipName());
 		const auto targetClip = m_Clips.find(targetBinding.instance->GetPrimaryClipName());
@@ -1323,6 +1348,7 @@ bool VansAnimationController::SubmitExternalModelPose(
 void VansAnimationController::AddClip(const std::string& name, VansAnimationClip&& clip)
 {
 	m_Clips[name] = std::move(clip);
+	m_Clips[name].stableId = VansAnimationStableId(name);
 	if (m_MotionMatching)
 		m_MotionMatching->MarkDatabaseDirty();
 	if (m_IncomingMotionMatching)
@@ -1332,6 +1358,7 @@ void VansAnimationController::AddClip(const std::string& name, VansAnimationClip
 void VansAnimationController::AddClip(const std::string& name, const VansAnimationClip& clip)
 {
 	m_Clips[name] = clip;
+	m_Clips[name].stableId = VansAnimationStableId(name);
 	if (m_MotionMatching)
 		m_MotionMatching->MarkDatabaseDirty();
 	if (m_IncomingMotionMatching)
@@ -1802,6 +1829,17 @@ bool VansAnimationController::EvaluateGraphSet(
 			continue;
 		}
 
+		// 图已经独立提取 Root Motion；只统一返回姿态的根参考系，
+		// 不修改 MM 的采样历史，也不把原始转身烘进 Mesh Space 叠层。
+		// 在 Base 图评估后检测，保留无命名 root 骨架的片段感知规则。
+		if (m_RootBoneIndex < 0)
+			m_RootBoneIndex = DetectRootBoneIndex(skeleton);
+		const bool hasPoseRoot = m_RootBoneIndex >= 0
+			&& m_RootBoneIndex < static_cast<int>(sampled.localPose.size());
+		if (hasPoseRoot)
+			RestoreRootReference(sampled.localPose[m_RootBoneIndex],
+				skeleton.bones[m_RootBoneIndex].localTransform);
+
 		const std::uint64_t stableLayerId = VansAnimationStableId(layer.definition.id);
 		for (VansAnimationEventSample& event : sampled.events)
 			event.sourceLayerId = stableLayerId;
@@ -1816,6 +1854,9 @@ bool VansAnimationController::EvaluateGraphSet(
 		}
 		VansAnimationFrameVector<VansBoneTransform> referencePose = bindPose;
 		ResolveLayerReferencePose(layer, binding, skeleton, referencePose);
+		if (hasPoseRoot)
+			RestoreRootReference(referencePose[m_RootBoneIndex],
+				skeleton.bones[m_RootBoneIndex].localTransform);
 		outPayload = VansAnimationLayerMixer::ApplyLayer(
 			outPayload, sampled, layer.definition, layer.compiledMask,
 			skeleton, referencePose, layer.state.currentWeight);
@@ -2152,24 +2193,12 @@ void VansAnimationController::NormalizeRootTransform(std::vector<glm::mat4>& loc
 	if (m_RootBoneIndex < 0 || m_RootBoneIndex >= static_cast<int>(localTransforms.size()))
 		return;
 
-	glm::vec3 pos, scale, skew;
-	glm::quat rot;
-	glm::vec4 perspective;
-	glm::decompose(localTransforms[m_RootBoneIndex], scale, rot, pos, skew, perspective);
-
-	glm::vec3 bindPos, bindScale, bindSkew;
-	glm::quat bindRot;
-	glm::vec4 bindPerspective;
-	glm::decompose(skeleton.bones[m_RootBoneIndex].localTransform,
-	               bindScale, bindRot, bindPos, bindSkew, bindPerspective);
-
-	glm::mat4 T = glm::translate(glm::mat4(1.0f), bindPos);
-	// In-place/external locomotion owns both translation and facing. Preserving
-	// sampled root rotation here double-applies authored turns on top of the CCT
-	// owner rotation and drags the feet around the character.
-	glm::mat4 R = glm::toMat4(glm::normalize(bindRot));
-	glm::mat4 S = glm::scale(glm::mat4(1.0f), scale);
-	localTransforms[m_RootBoneIndex] = T * R * S;
+	VansBoneTransform root;
+	if (!VansPoseMath::TryDecompose(localTransforms[m_RootBoneIndex], root))
+		return;
+	// Bone Overrides 仍在合成后写入，因此最终输出继续遵守相同的根骨约束。
+	RestoreRootReference(root, skeleton.bones[m_RootBoneIndex].localTransform);
+	localTransforms[m_RootBoneIndex] = VansPoseMath::Compose(root);
 }
 
 // ---------------------------------------------------------------------------

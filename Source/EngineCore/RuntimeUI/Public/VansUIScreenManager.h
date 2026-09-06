@@ -25,7 +25,7 @@ namespace VansRuntime
         // ── 栈式界面（PauseMenu、Inventory 等） ──────────────────
 
         // 压入一个新界面，自动加载 XAML 并显示
-        void PushScreen(const std::string& xamlPath,
+        void PushScreen(const std::string& xamlAssetGuid,
                         std::shared_ptr<VansUIViewModel> vm = nullptr);
         std::shared_ptr<VansUIScreen> LoadScreen(const std::string& configPath,
                                                  std::shared_ptr<VansUIViewModel> vm = nullptr);
@@ -42,13 +42,13 @@ namespace VansRuntime
         void PopScreen();
 
         // 替换当前顶层界面（先 Pop 再 Push，不增加栈深度）
-        void ReplaceScreen(const std::string& xamlPath,
+        void ReplaceScreen(const std::string& xamlAssetGuid,
                            std::shared_ptr<VansUIViewModel> vm = nullptr);
 
         // ── 常驻 HUD ─────────────────────────────────────────────
 
         // 设置 HUD（不进栈，常驻于最底层）
-        void SetHUD(const std::string& xamlPath,
+        void SetHUD(const std::string& xamlAssetGuid,
                     std::shared_ptr<VansUIViewModel> vm = nullptr);
         std::shared_ptr<VansUIScreen> SetHUDConfig(const std::string& configPath,
                                                    std::shared_ptr<VansUIViewModel> vm = nullptr);
@@ -58,7 +58,7 @@ namespace VansRuntime
         // ── 模态弹窗 ──────────────────────────────────────────────
 
         // 显示模态弹窗（会屏蔽底层输入）
-        void ShowModal(const std::string& xamlPath,
+        void ShowModal(const std::string& xamlAssetGuid,
                        std::shared_ptr<VansUIViewModel> vm = nullptr);
         std::shared_ptr<VansUIScreen> ShowModalConfig(const std::string& configPath,
                                                       std::shared_ptr<VansUIViewModel> vm = nullptr);
@@ -69,7 +69,7 @@ namespace VansRuntime
 
         // name 为叠加层唯一标识符（可同时存在多个）
         void ShowOverlay(const std::string& name,
-                         const std::string& xamlPath,
+                         const std::string& xamlAssetGuid,
                          std::shared_ptr<VansUIViewModel> vm = nullptr);
         void HideOverlay(const std::string& name);
 

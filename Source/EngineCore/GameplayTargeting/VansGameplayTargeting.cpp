@@ -151,6 +151,9 @@ VansSerializedValue VansEncodeTargetData(const VansTargetData& data)
 					{ "position", VectorValue(target.position) },
 					{ "normal", VectorValue(target.normal) },
 					{ "distance", VansSerializedValue::Float(target.distance) },
+					{ "hitEntity", HandleValue(target.hitEntity) },
+					{ "componentGuid", VansSerializedValue::String(target.componentGuid) },
+					{ "region", VansSerializedValue::String(target.region) },
 					{ "surface", VansSerializedValue::String(std::to_string(target.surface.value)) } });
 			else
 				return VansSerializedValue::Object({
@@ -160,7 +163,6 @@ VansSerializedValue VansEncodeTargetData(const VansTargetData& data)
 		}, source));
 	}
 	return VansSerializedValue::Object({
-		{ "version", VansSerializedValue::Int(data.version) },
 		{ "values", VansSerializedValue::Array(std::move(values)) }
 	});
 }
@@ -175,10 +177,8 @@ bool VansDecodeTargetData(const VansSerializedValue& value,
 		error = "TargetData root or policy is invalid";
 		return false;
 	}
-	const VansSerializedValue* version = FindObjectField(value, "version");
 	const VansSerializedValue* values = FindObjectField(value, "values");
-	if (!version || !values || version->kind != VansSerializedValue::Kind::Int ||
-		version->intValue <= 0 || version->intValue > UINT32_MAX ||
+	if (!values ||
 		values->kind != VansSerializedValue::Kind::Array ||
 		values->arrayItems.size() > policy.maximumTargets ||
 		!std::isfinite(policy.maximumCoordinateMagnitude) ||
@@ -189,7 +189,6 @@ bool VansDecodeTargetData(const VansSerializedValue& value,
 		return false;
 	}
 	VansTargetData decoded;
-	decoded.version = static_cast<std::uint32_t>(version->intValue);
 	const auto allowEntity = [&](VansEntityHandle entity)
 	{
 		return entity.IsValid() && (!policy.entityAllowed || policy.entityAllowed(entity));
@@ -301,6 +300,14 @@ bool VansDecodeTargetData(const VansSerializedValue& value,
 				!ReadUnsigned(FindObjectField(item, "surface"), surface))
 				{ error = "TargetData Hit is invalid or unauthorized"; return false; }
 			hit.surface = VansGameplayTagId{ surface };
+			if (const auto* body = FindObjectField(item, "hitEntity"))
+			{
+				if (!ReadHandle(body, hit.hitEntity) ||
+					(hit.hitEntity.IsValid() && !allowEntity(hit.hitEntity)))
+				{ error = "TargetData hit entity is invalid or unauthorized"; return false; }
+			}
+			hit.componentGuid = ReadSerializedStringField(item, "componentGuid");
+			hit.region = ReadSerializedStringField(item, "region");
 			decoded.values.push_back(hit);
 		}
 		else if (kind == "Deferred")
@@ -381,11 +388,7 @@ bool VansTargetingHandlerRegistry::Register(
 
 bool VansTargetingHandlerRegistry::Seal(std::string& error)
 {
-	if (m_Handlers.empty())
-	{
-		error = "Targeting handler registry is empty";
-		return false;
-	}
+	error.clear();
 	m_Sealed = true;
 	return true;
 }
@@ -407,7 +410,7 @@ VansTargetingResult VansTargetingPipeline::Execute(
 	result.data = std::move(initial);
 	if (!policy.id || policy.steps.empty() || !handlers.IsSealed())
 	{
-		result.error = VansActionError::DefinitionInvalid;
+		result.error = VansActionError::InvalidDefinition;
 		result.message = "Targeting policy or handler registry is invalid";
 		return result;
 	}
@@ -417,7 +420,16 @@ VansTargetingResult VansTargetingPipeline::Execute(
 		VansTargetingTraceEntry trace;
 		trace.step = step.stableName;
 		trace.inputCount = result.data.values.size();
-		if (step.kind == VansTargetingStepKind::Acquire)
+		const auto handler = handlers.Resolve(step.handler);
+		if (!handler)
+		{
+			trace.message = "handler is missing";
+			result.trace.push_back(std::move(trace));
+			result.error = VansActionError::Dependency;
+			result.message = "Targeting handler is missing: " + step.stableName;
+			return result;
+		}
+		if (handler->BeginsPipeline())
 		{
 			if (acquired)
 			{
@@ -433,17 +445,8 @@ VansTargetingResult VansTargetingPipeline::Execute(
 		{
 			trace.message = "Acquire must run before this step";
 			result.trace.push_back(std::move(trace));
-			result.error = VansActionError::DefinitionInvalid;
+			result.error = VansActionError::InvalidDefinition;
 			result.message = "Targeting policy does not begin with Acquire";
-			return result;
-		}
-		const auto handler = handlers.Resolve(step.handler);
-		if (!handler)
-		{
-			trace.message = "handler is missing";
-			result.trace.push_back(std::move(trace));
-			result.error = VansActionError::ServiceMissing;
-			result.message = "Targeting handler is missing: " + step.stableName;
 			return result;
 		}
 		trace.succeeded = handler->Execute(step, context, result.data.values, trace.message);
@@ -451,14 +454,14 @@ VansTargetingResult VansTargetingPipeline::Execute(
 		result.trace.push_back(trace);
 		if (!trace.succeeded)
 		{
-			result.error = VansActionError::TargetInvalid;
+			result.error = VansActionError::Rejected;
 			result.message = trace.message;
 			return result;
 		}
 	}
 	if (!acquired)
 	{
-		result.error = VansActionError::DefinitionInvalid;
+		result.error = VansActionError::InvalidDefinition;
 		result.message = "Targeting policy has no Acquire step";
 	}
 	return result;
@@ -472,11 +475,13 @@ public:
 	VansActionGraphNodeTypeId TypeId() const override
 		{ return VansMakeStableId<VansActionGraphNodeTypeIdTag>("Targeting.Acquire.Owner"); }
 	std::string_view StableName() const override { return "Targeting.Acquire.Owner"; }
+	bool BeginsPipeline() const override { return true; }
 	bool Execute(const VansTargetingStep&, const VansActionContext& context,
 		std::vector<VansTargetDataValue>& values, std::string& message) const override
 	{
-		if (!context.owner.IsValid()) { message = "Targeting owner is invalid"; return false; }
-		values.push_back(context.owner);
+		const VansEntityHandle owner = context.Entity(VansActionContextSlots::Owner);
+		if (!owner.IsValid()) { message = "Targeting owner is invalid"; return false; }
+		values.push_back(owner);
 		return true;
 	}
 };
@@ -487,12 +492,15 @@ public:
 	VansActionGraphNodeTypeId TypeId() const override
 		{ return VansMakeStableId<VansActionGraphNodeTypeIdTag>("Targeting.Acquire.PrimaryTarget"); }
 	std::string_view StableName() const override { return "Targeting.Acquire.PrimaryTarget"; }
+	bool BeginsPipeline() const override { return true; }
 	bool Execute(const VansTargetingStep&, const VansActionContext& context,
 		std::vector<VansTargetDataValue>& values, std::string& message) const override
 	{
-		if (!context.primaryTarget.IsValid())
+		const VansEntityHandle primaryTarget =
+			context.Entity(VansActionContextSlots::PrimaryTarget);
+		if (!primaryTarget.IsValid())
 			{ message = "Targeting primary target is invalid"; return false; }
-		values.push_back(context.primaryTarget);
+		values.push_back(primaryTarget);
 		return true;
 	}
 };
@@ -525,7 +533,7 @@ public:
 	bool Execute(const VansTargetingStep& step, const VansActionContext&,
 		std::vector<VansTargetDataValue>& values, std::string& message) const override
 	{
-		const std::int64_t count = ReadSerializedIntField(step.parameters, "count", 1);
+		const std::int64_t count = ReadSerializedIntField(step.inputs, "count", 1);
 		if (count <= 0) { message = "Targeting limit count must be positive"; return false; }
 		if (values.size() > static_cast<std::size_t>(count))
 			values.resize(static_cast<std::size_t>(count));

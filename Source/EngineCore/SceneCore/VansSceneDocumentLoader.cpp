@@ -46,10 +46,31 @@ std::uint64_t HashBytes(const std::string& bytes)
     return result;
 }
 
+SceneFileFingerprint FingerprintLoadedBytes(
+    const std::filesystem::path& path,
+    const std::string& bytes,
+    std::string* error)
+{
+    SceneFileFingerprint result;
+    std::error_code ec;
+    result.writeTime = std::filesystem::last_write_time(path, ec);
+    if (ec)
+    {
+        if (error) *error = "Cannot query scene write time: " + ec.message();
+        return result;
+    }
+    result.size = bytes.size();
+    result.contentHash = HashBytes(bytes);
+    result.valid = true;
+    return result;
+}
+
 }
 
 bool VansSceneDocumentLoader::IsSceneDocumentFile(const std::filesystem::path& path, std::string* error)
 {
+	VansScopedIOContext ioContext(
+		VansIODomain::Authoring, "SceneDocument.Probe", false);
     if (!HasSceneDocumentExtension(path))
         return false;
 
@@ -86,6 +107,8 @@ bool VansSceneDocumentLoader::IsSceneDocumentFile(const std::filesystem::path& p
 
 SceneDocumentLoadResult VansSceneDocumentLoader::Load(const std::filesystem::path& path)
 {
+	VansScopedIOContext ioContext(
+		VansIODomain::Authoring, "SceneDocument.Load", false);
     SceneDocumentLoadResult result;
     std::string bytes;
     std::string error;
@@ -108,7 +131,8 @@ SceneDocumentLoadResult VansSceneDocumentLoader::Load(const std::filesystem::pat
         document->m_Root = std::make_unique<VansSerializedValue>(
             DecodeSerializedValueJson(parsedRoot));
         document->m_SourcePath = std::filesystem::absolute(path).lexically_normal();
-        document->m_LoadedFingerprint = Fingerprint(document->m_SourcePath, &error);
+        document->m_LoadedFingerprint =
+            FingerprintLoadedBytes(document->m_SourcePath, bytes, &error);
 
         if (!document->m_LoadedFingerprint.valid)
             document->m_Diagnostics.push_back({ SceneDiagnosticSeverity::Error, "", error });
@@ -125,29 +149,15 @@ SceneDocumentLoadResult VansSceneDocumentLoader::Load(const std::filesystem::pat
 
 SceneFileFingerprint VansSceneDocumentLoader::Fingerprint(const std::filesystem::path& path, std::string* error)
 {
-    SceneFileFingerprint result;
+	VansScopedIOContext ioContext(
+		VansIODomain::Authoring, "SceneDocument.Fingerprint", false);
     std::string bytes;
     std::string localError;
-    std::error_code ec;
     if (!VansFileStorage::ReadAllBytes(path, bytes, localError))
     {
         if (error) *error = localError;
-        return result;
-    }
-    result.size = std::filesystem::file_size(path, ec);
-    if (ec)
-    {
-        if (error) *error = "Cannot query scene file size: " + ec.message();
         return {};
     }
-    result.writeTime = std::filesystem::last_write_time(path, ec);
-    if (ec)
-    {
-        if (error) *error = "Cannot query scene write time: " + ec.message();
-        return {};
-    }
-    result.contentHash = HashBytes(bytes);
-    result.valid = true;
-    return result;
+    return FingerprintLoadedBytes(path, bytes, error);
 }
 }

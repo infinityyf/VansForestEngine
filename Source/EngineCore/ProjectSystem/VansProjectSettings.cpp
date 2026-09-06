@@ -1,12 +1,11 @@
 #include "VansProjectSettings.h"
-#include "VansProjectConfig.h"
 #include "VansProjectSettingsData.h"
-#include "Storage/VansProjectSettingsStorage.h"
 #include "../PhysicsCore/VansCollisionLayerManager.h"
 #include "../Util/VansLog.h"
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace Vans
 {
@@ -149,144 +148,55 @@ namespace Vans
 			std::clamp(m_MainCameraHiZCullSettings.maxScreenCoverageForCull, 0.05f, 1.0f);
 	}
 
-	bool VansProjectSettings::LoadFromProjectFiles(const std::string& projectRootPath, const VansProjectConfig& projectConfig)
+	bool VansProjectSettings::ApplyRenderSettingsData(
+		const VansProjectRenderSettingsData& renderSettings,
+		std::string& error)
 	{
-		bool loadedAnySettings = false;
-
-		if (!projectConfig.renderSettings.empty())
-		{
-			const std::string renderSettingsPath = projectRootPath + projectConfig.renderSettings;
-			VansProjectRenderSettingsData renderSettings;
-			std::vector<std::string> warnings;
-			std::string error;
-			if (VansProjectSettingsStorage::LoadRenderSettings(renderSettingsPath, renderSettings, warnings, error))
-			{
-				for (const std::string& warning : warnings)
-					VANS_LOG_WARN("[ProjectSettings] " << warning);
-				std::string upscalerError;
-				if (!SetUpscalerSettings(renderSettings.upscalerSettings, &upscalerError))
-				{
-					VANS_LOG_ERROR("[ProjectSettings] Invalid upscaler settings: " << upscalerError);
-					return false;
-				}
-				SetCommandRecordingSettings(
-					renderSettings.commandRecordingSettings.parallelEnabled,
-					renderSettings.commandRecordingSettings.frameContextRingEnabled,
-					renderSettings.commandRecordingSettings.framesInFlight,
-					renderSettings.commandRecordingSettings.asyncComputeEnabled);
-				std::string outputResolutionError;
-				if (!SetRenderOutputSettings(
-					renderSettings.renderOutputSettings,
-					&outputResolutionError))
-				{
-					VANS_LOG_ERROR("[ProjectSettings] Invalid output resolution settings: "
-						<< outputResolutionError);
-					return false;
-				}
-				m_AtmosphereQualitySettings = renderSettings.atmosphereQualitySettings;
-				m_NearMediaQualitySettings = renderSettings.nearMediaQualitySettings;
-				m_CloudShadowQualitySettings = renderSettings.cloudShadowQualitySettings;
-				SetMainCameraHiZCullSettings(renderSettings.mainCameraHiZCullSettings);
-				VANS_LOG("[ProjectSettings] Loaded render settings: " << renderSettingsPath
-					<< ", upscaler.backend=" << VansGraphics::ToString(m_UpscalerSettings.backend)
-					<< ", upscaler.quality=" << VansGraphics::ToString(m_UpscalerSettings.quality)
-					<< ", upscaler.fsrSharpness=" << m_UpscalerSettings.fsrSharpness
-					<< ", commandRecording.parallelEnabled=" << m_CommandRecordingSettings.parallelEnabled
-					<< ", commandRecording.frameContextRingEnabled=" << m_CommandRecordingSettings.frameContextRingEnabled
-					<< ", commandRecording.framesInFlight=" << m_CommandRecordingSettings.framesInFlight
-					<< ", commandRecording.asyncComputeEnabled=" << m_CommandRecordingSettings.asyncComputeEnabled
-					<< ", outputResolution="
-					<< (m_RenderOutputSettings.HasExplicitExtent()
-						? std::to_string(m_RenderOutputSettings.width) + "x" +
-							std::to_string(m_RenderOutputSettings.height)
-						: std::string("window"))
-					<< ", mainCameraHiZCulling.enabled=" << m_MainCameraHiZCullSettings.enabled);
-				loadedAnySettings = true;
-			}
-			else
-			{
-				VANS_LOG_WARN("[ProjectSettings] Cannot read render settings: " << renderSettingsPath << " (" << error << ")");
-			}
-		}
-
-		if (!projectConfig.physicsSettings.empty())
-		{
-			const std::string physicsSettingsPath = projectRootPath + projectConfig.physicsSettings;
-			VansProjectPhysicsSettingsData physicsSettings;
-			std::string error;
-			if (VansProjectSettingsStorage::LoadPhysicsSettings(physicsSettingsPath, physicsSettings, error))
-			{
-				SetFixedTimeStep(physicsSettings.fixedTimeStep);
-				m_PhysicsQueryProfiles = std::move(physicsSettings.queryProfiles);
-				VANS_LOG("[ProjectSettings] Loaded physics settings: " << physicsSettingsPath << ", fixedTimeStep=" << m_FixedTimeStep);
-				loadedAnySettings = true;
-			}
-			else
-			{
-				VANS_LOG_WARN("[ProjectSettings] Cannot read physics settings: " << physicsSettingsPath << " (" << error << ")");
-			}
-		}
-
-		if (!projectConfig.collisionLayerSettings.empty())
-		{
-			const std::string collisionLayerSettingsPath = projectRootPath + projectConfig.collisionLayerSettings;
-			loadedAnySettings = LoadCollisionLayerSettingsFromFile(collisionLayerSettingsPath) || loadedAnySettings;
-		}
-
-		return loadedAnySettings;
+		VansProjectSettings candidate = *this;
+		if (!candidate.SetUpscalerSettings(renderSettings.upscalerSettings, &error))
+			return false;
+		candidate.SetCommandRecordingSettings(
+			renderSettings.commandRecordingSettings.parallelEnabled,
+			renderSettings.commandRecordingSettings.frameContextRingEnabled,
+			renderSettings.commandRecordingSettings.framesInFlight,
+			renderSettings.commandRecordingSettings.asyncComputeEnabled);
+		if (!candidate.SetRenderOutputSettings(renderSettings.renderOutputSettings, &error))
+			return false;
+		candidate.m_AtmosphereQualitySettings = renderSettings.atmosphereQualitySettings;
+		candidate.m_NearMediaQualitySettings = renderSettings.nearMediaQualitySettings;
+		candidate.m_CloudShadowQualitySettings = renderSettings.cloudShadowQualitySettings;
+		candidate.SetMainCameraHiZCullSettings(renderSettings.mainCameraHiZCullSettings);
+		*this = std::move(candidate);
+		error.clear();
+		return true;
 	}
 
-	bool VansProjectSettings::SaveToProjectFiles(const std::string& projectRootPath, const VansProjectConfig& projectConfig) const
+	void VansProjectSettings::ApplyPhysicsSettingsData(
+		const VansProjectPhysicsSettingsData& physicsSettings)
 	{
-		bool savedAnySettings = false;
-
-		if (!projectConfig.renderSettings.empty())
-		{
-			const std::string renderSettingsPath = projectRootPath + projectConfig.renderSettings;
-			VansProjectRenderSettingsData renderSettings;
-			renderSettings.upscalerSettings = m_UpscalerSettings;
-			renderSettings.commandRecordingSettings = m_CommandRecordingSettings;
-			renderSettings.renderOutputSettings = m_RenderOutputSettings;
-			renderSettings.atmosphereQualitySettings = m_AtmosphereQualitySettings;
-			renderSettings.nearMediaQualitySettings = m_NearMediaQualitySettings;
-			renderSettings.cloudShadowQualitySettings = m_CloudShadowQualitySettings;
-			renderSettings.mainCameraHiZCullSettings = m_MainCameraHiZCullSettings;
-			std::string error;
-			if (VansProjectSettingsStorage::SaveRenderSettings(renderSettingsPath, renderSettings, error))
-			{
-				VANS_LOG("[ProjectSettings] Saved render settings: " << renderSettingsPath);
-				savedAnySettings = true;
-			}
-			else
-			{
-				VANS_LOG_ERROR("[ProjectSettings] Cannot write render settings: " << renderSettingsPath << " (" << error << ")");
-			}
-		}
-
-		if (!projectConfig.physicsSettings.empty())
-		{
-			const std::string physicsSettingsPath = projectRootPath + projectConfig.physicsSettings;
-			VansProjectPhysicsSettingsData physicsSettings;
-			physicsSettings.fixedTimeStep = m_FixedTimeStep;
-			physicsSettings.queryProfiles = m_PhysicsQueryProfiles;
-			std::string error;
-			if (VansProjectSettingsStorage::SavePhysicsSettings(physicsSettingsPath, physicsSettings, error))
-			{
-				VANS_LOG("[ProjectSettings] Saved physics settings: " << physicsSettingsPath);
-				savedAnySettings = true;
-			}
-			else
-			{
-				VANS_LOG_ERROR("[ProjectSettings] Cannot write physics settings: " << physicsSettingsPath << " (" << error << ")");
-			}
-		}
-
-		return savedAnySettings;
+		SetFixedTimeStep(physicsSettings.fixedTimeStep);
+		m_PhysicsQueryProfiles = physicsSettings.queryProfiles;
 	}
 
-	bool VansProjectSettings::LoadCollisionLayerSettingsFromFile(const std::string& filePath)
+	VansProjectRenderSettingsData VansProjectSettings::BuildRenderSettingsData() const
 	{
-		return VansEngine::VansCollisionLayerManager::Get().LoadFromFile(filePath);
+		VansProjectRenderSettingsData settings;
+		settings.upscalerSettings = m_UpscalerSettings;
+		settings.commandRecordingSettings = m_CommandRecordingSettings;
+		settings.renderOutputSettings = m_RenderOutputSettings;
+		settings.atmosphereQualitySettings = m_AtmosphereQualitySettings;
+		settings.nearMediaQualitySettings = m_NearMediaQualitySettings;
+		settings.cloudShadowQualitySettings = m_CloudShadowQualitySettings;
+		settings.mainCameraHiZCullSettings = m_MainCameraHiZCullSettings;
+		return settings;
+	}
+
+	VansProjectPhysicsSettingsData VansProjectSettings::BuildPhysicsSettingsData() const
+	{
+		VansProjectPhysicsSettingsData settings;
+		settings.fixedTimeStep = m_FixedTimeStep;
+		settings.queryProfiles = m_PhysicsQueryProfiles;
+		return settings;
 	}
 
 }

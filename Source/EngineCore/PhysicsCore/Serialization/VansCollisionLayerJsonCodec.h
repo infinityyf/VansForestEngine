@@ -1,6 +1,7 @@
 #pragma once
 
 #include <nlohmann/json_fwd.hpp>
+#include <string>
 
 namespace VansEngine
 {
@@ -9,6 +10,10 @@ namespace VansEngine
 	class VansCollisionLayerJsonCodec
 	{
 	public:
-		static bool Decode(const nlohmann::json& root, VansCollisionLayerConfig& config);
+		static bool Decode(
+			const nlohmann::json& root,
+			VansCollisionLayerConfig& config,
+			std::string& error);
+		static nlohmann::json Encode(const VansCollisionLayerConfig& config);
 	};
 }

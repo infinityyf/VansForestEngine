@@ -12,7 +12,10 @@ namespace Vans
 enum class VansCookedTextureFormat : std::uint32_t
 {
     Unknown = 0,
-    BC3 = 1
+    BC3 = 1,
+    RGBA8 = 2,
+    R8 = 3,
+    RG8 = 4
 };
 
 struct VansCookedTextureMip

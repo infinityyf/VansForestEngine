@@ -3,6 +3,7 @@
 #include "AnimationAuthoringDTOs.h"
 
 #include "EngineIds.h"
+#include "../../AssetCore/Serialization/VansSerializedValue.h"
 
 #include <cstdint>
 #include <array>
@@ -50,12 +51,12 @@ namespace Vans::EditorAPI
 		bool visible = false;
 		std::string assetKind;
 		std::string name;
-		std::string xamlPath;
+		std::string xamlAssetGuid;
 		std::string layer;
 		std::int32_t zOrder = 0;
-		std::vector<std::string> themes;
-		std::vector<std::string> tokens;
-		std::vector<std::string> localization;
+		std::vector<std::string> themeAssetGuids;
+		std::vector<std::string> tokenAssetGuids;
+		std::vector<std::string> localizationAssetGuids;
 		std::vector<std::string> dependencies;
 		std::vector<UIScreenEventSummary> events;
 		UIScreenPerformanceBudgetSummary performanceBudget;
@@ -333,6 +334,15 @@ namespace Vans::EditorAPI
 		bool active = true;
 	};
 
+	// Local Fog 的实时预览直接携带当前场景 schema 中的完整组件值。
+	// 后续同一组件增加 VDB/SVT 等形态字段时无需再维护一份平行 DTO schema。
+	struct RuntimeLocalVolumetricFogEdit
+	{
+		std::string entityGuid;
+		std::string componentGuid;
+		VansSerializedValue component;
+	};
+
 	struct RuntimeEntityPreviewChange
 	{
 		bool hasTransform = false;
@@ -343,6 +353,7 @@ namespace Vans::EditorAPI
 		std::vector<RuntimeLightEdit> lights;
 		std::vector<RuntimeComponentEnabledEdit> componentEnabled;
 		std::vector<RuntimeRendererMaterialOverrideEdit> materialOverrides;
+		std::vector<RuntimeLocalVolumetricFogEdit> localVolumetricFogEdits;
 
 		bool Empty() const
 		{
@@ -352,7 +363,8 @@ namespace Vans::EditorAPI
 				parentEdits.empty() &&
 				lights.empty() &&
 				componentEnabled.empty() &&
-				materialOverrides.empty();
+				materialOverrides.empty() &&
+				localVolumetricFogEdits.empty();
 		}
 	};
 
@@ -362,6 +374,10 @@ namespace Vans::EditorAPI
 		std::string sourceNode;
 		std::string sourceMaterial;
 		std::string materialGuid;
+		bool materialRequiresSave = false;
+		std::string materialSourcePath;
+		std::string materialSourceCanonicalJson;
+		std::string materialMetaCanonicalJson;
 	};
 
 	struct RuntimeMultiMeshGroupSnapshot
@@ -396,6 +412,21 @@ namespace Vans::EditorAPI
 		Unchanged,
 		Empty,
 		Ready
+	};
+
+	struct RuntimeSceneDocumentSnapshot
+	{
+		std::string sourcePath;
+		std::string canonicalJson;
+		std::uint64_t authoringStateId = 0;
+
+		bool Empty() const { return sourcePath.empty() || canonicalJson.empty(); }
+	};
+
+	struct RuntimeSceneLoadRequest
+	{
+		RuntimeSceneDocumentSnapshot document;
+		RuntimeSceneLoadMode mode = RuntimeSceneLoadMode::Editor;
 	};
 
 	struct RuntimeSceneLoadDiagnostic
@@ -505,6 +536,7 @@ namespace Vans::EditorAPI
 		AnimationClip,
 		AnimatorController,
 		AnimationRig,
+		RetargetProfile,
 		BoneMask,
 		Timeline,
 		ActionDefinition,
@@ -525,7 +557,13 @@ namespace Vans::EditorAPI
 		RagdollProfile,
 		AudioReverbPreset,
 		AudioBusSnapshot,
-		AudioDuckingRules
+		AudioDuckingRules,
+		UIScreen,
+		UIComponent,
+		UIThemeTokens,
+		UILocalization,
+		UIXaml,
+		VegetationConfig
 	};
 
 	enum class AssetQueryCapability
@@ -584,6 +622,7 @@ namespace Vans::EditorAPI
 		CameraRigProfile,
 		CameraShakeProfile,
 		SkinProfile,
+		ClothProfile,
 		AudioReverbPreset,
 		AudioBusSnapshot,
 		AudioDuckingRules
@@ -615,14 +654,77 @@ namespace Vans::EditorAPI
 
 	struct AssetGuidResolution
 	{
+		struct TextureImportSettings
+		{
+			bool available = false;
+			bool linear = false;
+			bool compressed = true;
+			bool mipmapped = false;
+			int channelCount = 0;
+			std::string precision = "low8";
+		};
+
 		bool found = false;
 		AssetEntry asset;
 		std::string sourcePath;
+		TextureImportSettings textureImport;
+	};
+
+	enum class LocalFogFieldPreviewKind : std::uint8_t
+	{
+		Scalar,
+		FlowVector
+	};
+
+	struct LocalFogFieldPreviewRequest
+	{
+		std::string assetGuid;
+		std::string channels;
+		LocalFogFieldPreviewKind kind = LocalFogFieldPreviewKind::Scalar;
+		std::uint32_t sampleColumns = 16;
+		std::uint32_t sampleRows = 16;
+	};
+
+	// CPU-only authoring preview。EditorCore 不接触源文件解码或渲染资源。
+	struct LocalFogFieldPreviewSnapshot
+	{
+		bool available = false;
+		std::uint32_t sourceWidth = 0;
+		std::uint32_t sourceHeight = 0;
+		std::uint32_t sampleColumns = 0;
+		std::uint32_t sampleRows = 0;
+		std::vector<float> scalarSamples;
+		std::vector<Vec2> flowSamples;
+		std::string message;
 	};
 
 	struct AssetRefreshResult
 	{
 		bool success = false;
+		std::string message;
+	};
+
+	struct AssetWorkingCopyPublishRequest
+	{
+		std::string sourcePath;
+		bool sourceLoaded = false;
+		std::string sourceCanonicalJson;
+		bool metaLoaded = false;
+		std::string metaCanonicalJson;
+	};
+
+	struct AssetWorkingCopyPublishResult
+	{
+		bool success = false;
+		std::uint64_t generation = 0;
+		std::string message;
+	};
+
+	struct ShaderAuthoringSchemaSnapshot
+	{
+		bool available = false;
+		std::uint64_t generation = 0;
+		std::string parametersCanonicalJson;
 		std::string message;
 	};
 
@@ -760,8 +862,6 @@ namespace Vans::EditorAPI
 		std::string displayName;
 		std::string category;
 		std::string nodeKind;
-		bool predictable = false;
-		bool authorityOnly = false;
 		bool allowed = true;
 		std::vector<GAFGraphPinSnapshot> pins;
 		std::vector<GAFGraphPropertySnapshot> properties;
@@ -779,7 +879,6 @@ namespace Vans::EditorAPI
 		std::string guid;
 		std::string type;
 		std::string nodeKind;
-		bool predictable = false;
 		double x = 0.0;
 		double y = 0.0;
 		GAFEditorValue properties;
@@ -809,7 +908,6 @@ namespace Vans::EditorAPI
 		std::string sourcePath;
 		AssetType assetType = AssetType::Unknown;
 		std::string assetKind;
-		std::uint32_t schemaVersion = 0;
 		std::uint64_t contentHash = 0;
 		bool dirty = false;
 		bool canUndo = false;
@@ -909,12 +1007,7 @@ namespace Vans::EditorAPI
 	{
 		bool available = false;
 		std::string settingsDirectory;
-		std::uint32_t schemaVersion = 1;
 		std::vector<std::string> defaultTagRoots;
-		std::string networkMode = "Disabled";
-		bool predictionEnabled = false;
-		bool requireRollbackPlan = true;
-		bool failWithoutTransport = true;
 		bool deterministicCook = true;
 		bool stripEditorMetadata = true;
 		bool treatCookWarningsAsErrors = false;
@@ -925,9 +1018,13 @@ namespace Vans::EditorAPI
 		std::uint32_t maximumEffectsPerHost = 256;
 		std::uint32_t maximumPayloadBytes = 4096;
 		std::vector<std::string> allowedNodeTypes;
-		std::vector<std::string> allowedServices;
-		std::vector<std::string> allowedHandlers;
-		std::vector<std::string> bridgeAllowlist;
+		std::vector<std::string> allowedModules;
+		std::vector<std::string> allowedCapabilities;
+		std::vector<std::string> allowedPolicies;
+		std::vector<std::string> allowedGuards;
+		std::vector<std::string> allowedDrivers;
+		std::vector<std::string> allowedSignals;
+		std::vector<std::string> allowedValueTypes;
 		std::vector<GAFNamedString> severityOverrides;
 		std::vector<std::string> saveBlockingCodes;
 		std::vector<std::string> cookBlockingCodes;
@@ -965,8 +1062,6 @@ namespace Vans::EditorAPI
 		std::string type;
 		std::string name;
 		std::string dependency;
-		std::string predictionPolicy;
-		bool undone = false;
 	};
 
 	struct GAFDebugActionSnapshot
@@ -977,7 +1072,7 @@ namespace Vans::EditorAPI
 		std::string endReason;
 		std::string error;
 		double elapsedSeconds = 0.0;
-		std::string predictionKey;
+		std::string correlationId;
 		std::string executor;
 		std::vector<std::string> activeNodes;
 		std::vector<std::string> waitingNodes;
@@ -993,7 +1088,6 @@ namespace Vans::EditorAPI
 	{
 		std::string owner;
 		bool enabled = false;
-		bool commitFrozen = false;
 		std::size_t activeCueCount = 0;
 		std::vector<GAFDebugNamedValue> tags;
 		std::vector<GAFDebugNamedValue> attributes;
@@ -1026,6 +1120,8 @@ namespace Vans::EditorAPI
 		float radius = 0.0f;
 		float halfHeight = 0.0f;
 		bool hit = false;
+		Vec3 axis{ 1.0f, 0.0f, 0.0f };
+		std::string region;
 	};
 
 	struct GAFCombatDebugSnapshot
@@ -1057,7 +1153,6 @@ namespace Vans::EditorAPI
 		Node,
 		Event,
 		Error,
-		Prediction,
 		Attribute,
 		Window
 	};
@@ -1160,16 +1255,10 @@ namespace Vans::EditorAPI
 		std::uint32_t generation = 0;
 	};
 
-	struct GAFSimulationTag
+	struct GAFSimulationInitializer
 	{
-		std::string name;
-		std::uint32_t count = 1;
-	};
-
-	struct GAFSimulationAttribute
-	{
-		std::string name;
-		double value = 0.0;
+		std::string type;
+		std::string inputsJson = "{}";
 	};
 
 	struct GAFSimulationRequest
@@ -1189,12 +1278,8 @@ namespace Vans::EditorAPI
 		double rayDirectionY = 0.0;
 		double rayDirectionZ = 1.0;
 		double rayLength = 100.0;
-		std::vector<GAFSimulationTag> initialTags;
-		std::vector<GAFSimulationAttribute> initialAttributes;
+		std::vector<GAFSimulationInitializer> initializers;
 		std::string payloadJson = "{}";
-		bool hasAuthority = true;
-		bool locallyControlled = true;
-		bool predicted = false;
 		std::uint64_t randomSeed = 1;
 		std::uint32_t tickCount = 1;
 		double deltaSeconds = 1.0 / 60.0;
@@ -1208,6 +1293,7 @@ namespace Vans::EditorAPI
 		std::string actionReference;
 		std::string disposition;
 		std::string error;
+		std::string reasonCode;
 		std::string message;
 		std::vector<GAFNamedString> serviceActivity;
 		std::vector<GAFRuntimeDebugSnapshot> steps;
@@ -1246,6 +1332,9 @@ namespace Vans::EditorAPI
 	struct ProjectConfigSnapshot
 	{
 		bool projectLoaded = false;
+		bool dirty = false;
+		std::uint64_t stateId = 0;
+		std::uint64_t savedStateId = 0;
 		std::string projectRootPath;
 		std::string projectName;
 		std::string engineVersion;

@@ -1,4 +1,5 @@
 #include "VansAssetDocumentEditService.h"
+#include "VansAssetDocumentRegistry.h"
 
 #include "../AssetCore/VansAssetDocument.h"
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
@@ -179,6 +180,7 @@ AssetDocumentEditResult ExecuteCommand(
     AssetDocumentEditHistory& history = Histories()[HistoryKey(document)];
     history.undo.push_back(std::move(command));
     history.redo.clear();
+	VansAssetDocumentRegistry::Get().PublishWorkingCopy(document);
     return result;
 }
 }
@@ -283,7 +285,10 @@ AssetDocumentEditResult VansAssetDocumentEditService::Undo(VansAssetDocument& do
     history.undo.pop_back();
     AssetDocumentEditResult result = command->Undo(document);
     if (result)
+	{
         history.redo.push_back(std::move(command));
+		VansAssetDocumentRegistry::Get().PublishWorkingCopy(document);
+	}
     else
         history.undo.push_back(std::move(command));
     return result;
@@ -298,7 +303,10 @@ AssetDocumentEditResult VansAssetDocumentEditService::Redo(VansAssetDocument& do
     history.redo.pop_back();
     AssetDocumentEditResult result = command->Redo(document);
     if (result)
+	{
         history.undo.push_back(std::move(command));
+		VansAssetDocumentRegistry::Get().PublishWorkingCopy(document);
+	}
     else
         history.redo.push_back(std::move(command));
     return result;

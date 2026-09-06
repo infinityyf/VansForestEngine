@@ -8,7 +8,8 @@
 #include "../PhysicsCore/VansClothNode.h"
 #include "../PhysicsCore/VansClothSystem.h"
 #include "../AssetCore/VansClothProfile.h"
-#include "../AssetCore/Storage/VansClothProfileStorage.h"
+#include "../AssetCore/VansAssetObjectRepository.h"
+#include "../ProjectSystem/VansProjectManager.h"
 #include "../PhysicsCore/VansCharacterControllerNode.h"
 #include "../PhysicsCore/VansCollisionLayerManager.h"
 #include "../Configration/VansConfigration.h"
@@ -152,9 +153,9 @@ void VansGraphics::VansScene::RegisterCharacterControllerNode(VansEngine::VansCh
 
 VansEngine::VansClothNode* VansGraphics::VansScenePhysicsComponentBuilder::LoadClothNode(
     VansScene& scene,
-    const Vans::VansSceneClothNodeConfig& config,
-    VansRenderNode* associatedRenderNode,
-    std::string* outProfilePath)
+	const Vans::VansSceneClothNodeConfig& config,
+	VansRenderNode* associatedRenderNode,
+	std::string* outProfileGuid)
 {
     using namespace VansEngine;
 
@@ -167,60 +168,56 @@ VansEngine::VansClothNode* VansGraphics::VansScenePhysicsComponentBuilder::LoadC
     }
 
     ClothNodeProperties clothProps;
-    if (!config.profilePath)
-    {
-        VANS_LOG_ERROR("[VansScenePhysicsComponentBuilder] LoadClothNode: Cloth component requires profilePath.");
-        return nullptr;
-    }
+	if (!config.profileGuid)
+	{
+		VANS_LOG_ERROR("[VansScenePhysicsComponentBuilder] LoadClothNode: Cloth component requires a Profile asset GUID.");
+		return nullptr;
+	}
 
-    // ── 新格式：通过 profilePath 从 .clothprofile 文件加载配置 ──────────────
-    if (config.profilePath)
-    {
-        std::string profilePath = *config.profilePath;
+	Vans::VansAssetGuid profileGuid;
+	if (!Vans::VansAssetGuid::TryParse(*config.profileGuid, profileGuid))
+	{
+		VANS_LOG_ERROR("[VansScenePhysicsComponentBuilder] LoadClothNode: invalid Cloth Profile GUID: "
+			<< *config.profileGuid);
+		return nullptr;
+	}
+	const auto profile = Vans::VansProjectManager::Get().GetAssetObjectRepository()
+		.ResolveLatest<VansClothProfile>(profileGuid);
+	if (!profile)
+	{
+		VANS_LOG_ERROR("[VansScenePhysicsComponentBuilder] LoadClothNode: Cloth Profile is not loaded in memory: "
+			<< *config.profileGuid);
+		return nullptr;
+	}
+	{
+		// 通过 profile 局部坐标近邻匹配填充 props
+		VansMesh* mesh = renderNode->m_Mesh;
+		if (mesh)
+		{
+			// 骨骼蒙皮数据将在 Pass5（所有 AnimationNode 加载完毕后）通过
+			// LateBindBonesFromProfile() 延迟解析，此处传入 nullptr 即可。
+			clothProps = ClothNodeProperties::FromProfile(
+				*profile,
+				mesh->GetMeshRawPositionData(),
+				mesh->GetMeshVertexCount(),
+				nullptr);
+		}
+		else
+		{
+			VANS_LOG_WARN("[VansScenePhysicsComponentBuilder] LoadClothNode: RenderNode 无 Mesh，无法解析固定点索引。");
+			clothProps.stiffness     = profile->m_Stiffness;
+			clothProps.damping       = profile->m_Damping;
+			clothProps.friction      = profile->m_Friction;
+			clothProps.gravity       = profile->m_Gravity;
+			clothProps.selfCollision = profile->m_SelfCollision;
+			clothProps.enabled       = true;
+		}
+	}
+	if (outProfileGuid)
+		*outProfileGuid = *config.profileGuid;
 
-        VansClothProfile profile;
-        std::string profileError;
-        if (!VansEngine::VansClothProfileStorage::Load(profilePath, profile, profileError))
-        {
-            VANS_LOG_ERROR("[VansScenePhysicsComponentBuilder] LoadClothNode: 加载 Profile 失败: " << profilePath
-                           << " (" << profileError << ")，回退为默认参数。");
-        }
-        else
-        {
-            // 通过 profile 局部坐标近邻匹配填充 props
-            VansMesh* mesh = renderNode->m_Mesh;
-            if (mesh)
-            {
-                // 骨骼蒙皮数据将在 Pass5（所有 AnimationNode 加载完毕后）通过
-                // LateBindBonesFromProfile() 延迟解析，此处传入 nullptr 即可。
-                clothProps = ClothNodeProperties::FromProfile(
-                    profile,
-                    mesh->GetMeshRawPositionData(),
-                    mesh->GetMeshVertexCount(),
-                    nullptr);
-            }
-            else
-            {
-                VANS_LOG_WARN("[VansScenePhysicsComponentBuilder] LoadClothNode: RenderNode 无 Mesh，无法解析固定点索引。");
-                clothProps.stiffness     = profile.m_Stiffness;
-                clothProps.damping       = profile.m_Damping;
-                clothProps.friction      = profile.m_Friction;
-                clothProps.gravity       = profile.m_Gravity;
-                clothProps.selfCollision = profile.m_SelfCollision;
-                clothProps.enabled       = true;
-            }
-        }
-
-        // 输出 profilePath 供调用方存入 VansScriptClothComponent
-        if (outProfilePath)
-            *outProfilePath = profilePath;
-    }
-    else
-    {
-        return nullptr;
-    }
-
-    // 解析 physicsAttachOffsetY — 无论使用 profilePath 还是旧格式均适用
+    // physicsAttachOffsetY is component-local runtime tuning layered on the
+    // immutable in-memory cloth profile.
     // 用于将布料固定点从颈部/领口向下对准角色肩膀位置（单位：米）
     if (config.physicsAttachOffsetY)
         clothProps.attachOffsetY = *config.physicsAttachOffsetY;
@@ -335,6 +332,8 @@ VansEngine::VansPhysicsNode* VansGraphics::VansScenePhysicsComponentBuilder::Loa
     // 解析 Trigger 标志
     if (config.isTrigger)
         properties.isTrigger = *config.isTrigger;
+    if (config.hitRegion)
+        properties.hitRegion = *config.hitRegion;
 
 	if (associatedRenderNode == nullptr && standaloneTransformID == UINT32_MAX)
     {
@@ -589,6 +588,19 @@ void VansGraphics::VansScene::PrepareCharacterLocomotion(float deltaTime)
 			rootDelta, rootRotation, rootMotionValid, rootMotionPreferred,
 			motionSettings, animationToWorldScale);
 	}
+}
+
+void VansGraphics::VansScene::SyncAnimatedHurtBodies()
+{
+    auto& physics = VansEngine::VansPhysicsSystem::GetInstance();
+    std::lock_guard<std::mutex> lock(physics.GetSimulationMutex());
+    if (!physics.GetScene()) return;
+    PxSceneWriteLock sceneLock(*physics.GetScene());
+    // 动画最终姿态与 Transform Graph 已完成，立即更新骨骼受击体的查询姿态。
+    for (auto* node : m_PhysicsNodes)
+        if (node && node->IsEnabled() && !node->GetProperties().hitRegion.empty() &&
+            m_TransformGraph.HasParent(node->GetTransformID()))
+            node->UpdatePhysicsFromTransform();
 }
 
 void VansGraphics::VansScene::UpdateCharControllerTransforms()

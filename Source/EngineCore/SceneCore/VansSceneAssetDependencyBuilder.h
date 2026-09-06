@@ -11,6 +11,8 @@
 
 namespace Vans
 {
+	class VansAssetObjectRepository;
+
 	struct VansSceneAssetDependencyBuildResult
 	{
 		bool success = false;
@@ -29,8 +31,10 @@ namespace Vans
 	public:
 		static VansSceneAssetDependencyBuildResult BuildResourcePlan(
 			VansAssetDatabase& database,
-			const std::filesystem::path& scenePath,
+			const VansSerializedValue& sceneDocument,
+			const std::filesystem::path& sceneSourcePath,
 			const std::unordered_map<std::string, std::string>& runtimeAssetBindings,
+			const VansAssetObjectRepository& objectRepository,
 			VansAssetDatabase* builtInAssetDatabase = nullptr);
 	};
 }

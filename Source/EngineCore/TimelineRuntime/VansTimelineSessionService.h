@@ -26,6 +26,7 @@ struct VansTimelineSessionDesc
 	std::shared_ptr<const VansCompiledTimeline> timeline;
 	VansRuntimeWorld* world = nullptr;
 	VansEntityHandle owner;
+	VansTimelineSessionScope scope;
 	VansTimelineSessionHandle parent;
 	VansTimelineSessionHandle root;
 	std::int32_t hierarchicalBias = 0;
@@ -141,6 +142,7 @@ private:
 		std::unordered_set<std::string> firedPerLoop;
 		VansRuntimeWorld* world = nullptr;
 		VansEntityHandle owner;
+		VansTimelineSessionScope scope;
 		std::vector<VansTimelineBindingOverride> bindingOverrides;
 		std::vector<VansTimelineRuntimeBinding> runtimeBindings;
 		std::uint64_t correlation = 0;

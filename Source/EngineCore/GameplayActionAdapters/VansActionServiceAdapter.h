@@ -11,9 +11,26 @@
 
 namespace Vans
 {
-const std::vector<VansActionServiceCapability>& VansStandardActionServiceCapabilities();
-const VansActionServiceCapability* VansFindStandardActionServiceCapability(
-	VansActionServiceId service);
+VansActionCommandFieldSchema VansActionCommandField(
+	std::string name,
+	VansActionCommandValueKind kind,
+	bool required = false,
+	VansSerializedValue defaultValue = {});
+VansActionCommandFieldSchema VansActionCommandNumberField(
+	std::string name,
+	VansActionCommandValueKind kind,
+	bool required,
+	VansSerializedValue defaultValue,
+	double minimum,
+	double maximum);
+VansActionCommandFieldSchema VansActionCommandResourceField();
+VansActionCommandSchema VansActionCommandCapability(
+	std::string stableName,
+	VansActionCommandResourcePolicy resourcePolicy,
+	std::vector<VansActionCommandFieldSchema> fields = {});
+VansActionServiceCapability VansActionServiceCapabilityDescriptor(
+	std::string stableName,
+	std::vector<VansActionCommandSchema> commands);
 VansSerializedValue VansBuildActionCommandSamplePayload(
 	const VansActionCommandSchema& schema);
 
@@ -66,7 +83,6 @@ private:
 	std::uint64_t m_NextSequence = 1;
 };
 
-std::vector<std::shared_ptr<VansFakeActionService>> VansCreateFakeStandardActionServices();
 bool VansRunActionServiceConformance(
 	VansActionServiceRegistry& registry,
 	const std::vector<std::shared_ptr<VansFakeActionService>>& services,

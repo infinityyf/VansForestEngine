@@ -111,93 +111,12 @@ VansGameplayTagQuery TagQuery(const VansSerializedValue* value)
 	return result;
 }
 
-VansActionAuthorityPolicy AuthorityPolicy(std::string_view value)
-{
-	if (value == "LocalOwner") return VansActionAuthorityPolicy::LocalOwner;
-	if (value == "AuthorityOnly") return VansActionAuthorityPolicy::AuthorityOnly;
-	return VansActionAuthorityPolicy::Any;
-}
-
-VansActionReplicationPolicy ReplicationPolicy(std::string_view value)
-{
-	if (value == "OwnerPredicted") return VansActionReplicationPolicy::OwnerPredicted;
-	if (value == "ServerAuthoritative") return VansActionReplicationPolicy::ServerAuthoritative;
-	if (value == "Replicated") return VansActionReplicationPolicy::Replicated;
-	return VansActionReplicationPolicy::LocalOnly;
-}
-
 VansActionConcurrencyPolicy ConcurrencyPolicy(std::string_view value)
 {
 	if (value == "Reject" || value == "RejectNew") return VansActionConcurrencyPolicy::RejectNew;
 	if (value == "CancelExisting") return VansActionConcurrencyPolicy::CancelExisting;
 	if (value == "Queue" || value == "QueueNew") return VansActionConcurrencyPolicy::QueueNew;
 	return VansActionConcurrencyPolicy::Allow;
-}
-
-VansActionCostRefundPolicy RefundPolicy(std::string_view value)
-{
-	if (value == "OnCommitFailure") return VansActionCostRefundPolicy::OnCommitFailure;
-	if (value == "OnCancel") return VansActionCostRefundPolicy::OnCancel;
-	if (value == "Always") return VansActionCostRefundPolicy::Always;
-	return VansActionCostRefundPolicy::Never;
-}
-
-VansActionCostKind CostKind(std::string_view value)
-{
-	if (value == "Inventory") return VansActionCostKind::Inventory;
-	if (value == "Reservation") return VansActionCostKind::Reservation;
-	return VansActionCostKind::Attribute;
-}
-
-VansActionRequirementKind RequirementKind(std::string_view value)
-{
-	if (value == "PrimaryTarget") return VansActionRequirementKind::PrimaryTarget;
-	if (value == "TargetData") return VansActionRequirementKind::TargetData;
-	if (value == "Service") return VansActionRequirementKind::Service;
-	return VansActionRequirementKind::Attribute;
-}
-
-VansActionRequirementComparison RequirementComparison(std::string_view value)
-{
-	if (value == "Less") return VansActionRequirementComparison::Less;
-	if (value == "LessOrEqual") return VansActionRequirementComparison::LessOrEqual;
-	if (value == "Equal") return VansActionRequirementComparison::Equal;
-	if (value == "NotEqual") return VansActionRequirementComparison::NotEqual;
-	if (value == "Greater") return VansActionRequirementComparison::Greater;
-	return VansActionRequirementComparison::GreaterOrEqual;
-}
-
-VansActionEndPolicy EndPolicy(std::string_view value)
-{
-	if (value == "Explicit") return VansActionEndPolicy::Explicit;
-	if (value == "TimelineEnd") return VansActionEndPolicy::TimelineEnd;
-	if (value == "FirstTerminal") return VansActionEndPolicy::FirstTerminal;
-	return VansActionEndPolicy::ExecutorResult;
-}
-
-VansActionTransitionTrigger TransitionTrigger(std::string_view value)
-{
-	if (value == "Input") return VansActionTransitionTrigger::Input;
-	if (value == "Completed") return VansActionTransitionTrigger::Completed;
-	if (value == "Failed") return VansActionTransitionTrigger::Failed;
-	return VansActionTransitionTrigger::Event;
-}
-
-VansActionError ActionErrorByName(std::string_view value)
-{
-	if (value == "DefinitionMissing") return VansActionError::DefinitionMissing;
-	if (value == "DefinitionInvalid") return VansActionError::DefinitionInvalid;
-	if (value == "RequirementsFailed") return VansActionError::RequirementsFailed;
-	if (value == "TargetInvalid") return VansActionError::TargetInvalid;
-	if (value == "CostUnavailable") return VansActionError::CostUnavailable;
-	if (value == "CooldownActive") return VansActionError::CooldownActive;
-	if (value == "ConcurrencyBlocked") return VansActionError::ConcurrencyBlocked;
-	if (value == "AuthorityDenied") return VansActionError::AuthorityDenied;
-	if (value == "ServiceMissing") return VansActionError::ServiceMissing;
-	if (value == "CommitFailed") return VansActionError::CommitFailed;
-	if (value == "TimedOut") return VansActionError::TimedOut;
-	if (value == "BudgetExceeded") return VansActionError::BudgetExceeded;
-	return VansActionError::ExecutionFailed;
 }
 
 bool CompileAction(
@@ -209,106 +128,116 @@ bool CompileAction(
 	auto action = std::make_shared<VansCompiledActionDefinition>();
 	action->name = StringAt(root, "/actionId");
 	action->id = StableId<VansActionIdTag>(action->name);
-	action->nameSpace = StringAt(root, "/namespace");
-	action->definitionVersion = static_cast<std::uint32_t>(std::max<std::int64_t>(1,
-		IntAt(root, "/definitionVersion", 1)));
-	action->schemaVersion = cooked.schemaVersion;
 	action->contentHash = cooked.contentHash;
-	action->authoringGuid = StringAt(root, "/authoringGuid");
-	for (const std::string& tag : StringArray(At(root, "/tags")))
-		action->abilityTags.push_back(StableId<VansGameplayTagIdTag>(tag));
-	action->category = StringAt(root, "/category", "Gameplay");
-	action->priority = static_cast<std::int32_t>(IntAt(root, "/priority", 0));
-	action->replicationPolicy = ReplicationPolicy(StringAt(root, "/replication", "LocalOnly"));
-	action->authorityPolicy = AuthorityPolicy(StringAt(root, "/activation/authority", "Any"));
-	action->activationRequirements = TagQuery(At(root, "/activation/requirements"));
-	action->blockedByTags = TagQuery(At(root, "/activation/blockedTags"));
-	const std::string targeting = ReferenceString(At(root, "/activation/targeting/asset"));
-	action->targetingPolicyReference = targeting;
-	action->targetingPolicy = StableId<VansTargetingPolicyIdTag>(targeting);
-	action->triggers = StringArray(At(root, "/activation/triggers"));
-	action->concurrencyGroup = StableId<VansActionConcurrencyGroupIdTag>(
-		StringAt(root, "/commit/concurrency/group"));
-	action->concurrencyPolicy = ConcurrencyPolicy(StringAt(root, "/commit/concurrency/mode"));
-	action->concurrencyLimit = static_cast<std::uint32_t>(std::max<std::int64_t>(0,
-		IntAt(root, "/commit/concurrency/limit", 1)));
-	action->concurrencyQueueTimeoutSeconds =
-		NumberAt(root, "/commit/concurrency/queueTimeout", 0.0);
-	if (const VansSerializedValue* requirements = At(root, "/commit/requirements");
-		requirements && requirements->kind == VansSerializedValue::Kind::Array)
+
+	action->program.metadata.displayName = StringAt(root, "/metadata/displayName");
+	action->program.metadata.category = StringAt(root, "/metadata/category", "Gameplay");
+	action->program.metadata.labels = StringArray(At(root, "/metadata/labels"));
+	action->program.metadata.priority =
+		static_cast<std::int32_t>(IntAt(root, "/metadata/priority", 0));
+	if (const VansSerializedValue* schema = At(root, "/context/schema"))
+		action->program.contextSchema = *schema;
+	if (const VansSerializedValue* defaults = At(root, "/context/defaults"))
+		action->program.contextDefaults = *defaults;
+
+	const auto appendRecords = [&](const char* path,
+		std::vector<VansCompiledActionRecord>& destination)
 	{
-		for (const VansSerializedValue& item : requirements->arrayItems)
+		const VansSerializedValue* values = At(root, path);
+		if (!values || values->kind != VansSerializedValue::Kind::Array) return;
+		for (std::size_t index = 0; index < values->arrayItems.size(); ++index)
 		{
-			if (item.kind != VansSerializedValue::Kind::Object) continue;
-			VansActionRequirementDefinition requirement;
-			requirement.kind = RequirementKind(
-				ReadSerializedStringField(item, "kind", "Attribute"));
-			requirement.attribute = StableId<VansAttributeIdTag>(
-				ReadSerializedStringField(item, "attribute"));
-			requirement.comparison = RequirementComparison(
-				ReadSerializedStringField(item, "comparison", "GreaterOrEqual"));
-			requirement.value = NumberField(item, "value");
-			requirement.minimumTargets = static_cast<std::uint32_t>((std::max<std::int64_t>)(0,
-				ReadSerializedIntField(item, "minimumTargets", 1)));
-			requirement.service = StableId<VansActionServiceIdTag>(
-				ReadSerializedStringField(item, "service"));
-			action->commitRequirements.push_back(requirement);
+			const VansSerializedValue& item = values->arrayItems[index];
+			const VansSerializedValue* inputs = item.kind == VansSerializedValue::Kind::Object
+				? FindObjectField(item, "inputs") : nullptr;
+			const std::string type = item.kind == VansSerializedValue::Kind::Object
+				? ReadSerializedStringField(item, "type") : std::string{};
+			if (type.empty() || !inputs || inputs->kind != VansSerializedValue::Kind::Object)
+			{
+				AddDiagnostic(diagnostics, VansGameplayDiagnosticSeverity::Error,
+					"GAF-ACTION-REGISTERED-TYPE", "Registered Action record is invalid",
+					std::string(path) + "/" + std::to_string(index));
+				continue;
+			}
+			destination.push_back({ type, *inputs });
 		}
-	}
-	if (const VansSerializedValue* costs = At(root, "/commit/costs");
-		costs && costs->kind == VansSerializedValue::Kind::Array)
+	};
+	appendRecords("/policies", action->program.policies);
+	appendRecords("/phases/activate/guards", action->program.activate.guards);
+	appendRecords("/phases/activate/operations", action->program.activate.operations);
+	appendRecords("/phases/commit/guards", action->program.commit.guards);
+	appendRecords("/phases/commit/operations", action->program.commit.operations);
+	appendRecords("/phases/execute/drivers", action->program.execute.drivers);
+	appendRecords("/phases/execute/operations", action->program.execute.operations);
+	appendRecords("/phases/finish/operations", action->program.finish.operations);
+	appendRecords("/phases/cancel/operations", action->program.cancel.operations);
+	appendRecords("/transitions", action->program.transitions);
+	appendRecords("/extensions", action->program.extensions);
+
+	const auto appendActionReferences = [&](const VansSerializedValue* values,
+		std::vector<std::string>& references, std::vector<VansActionId>& actions)
 	{
-		for (const VansSerializedValue& item : costs->arrayItems)
+		if (!values || values->kind != VansSerializedValue::Kind::Array) return;
+		for (const VansSerializedValue& item : values->arrayItems)
 		{
-			if (item.kind != VansSerializedValue::Kind::Object) continue;
-			VansActionCostDefinition cost;
-			cost.kind = CostKind(ReadSerializedStringField(item, "kind", "Attribute"));
-			cost.attribute = StableId<VansAttributeIdTag>(ReadSerializedStringField(item, "attribute"));
-			cost.amount = NumberField(item, "amount");
-			cost.refundPolicy = RefundPolicy(ReadSerializedStringField(item, "refund", "Never"));
-			cost.resource = ReadSerializedStringField(item, "resource");
-			if (const VansSerializedValue* payload = FindObjectField(item, "payload"))
-				cost.payload = *payload;
-			action->costs.push_back(cost);
+			const std::string reference = ReferenceString(&item);
+			if (reference.empty()) continue;
+			references.push_back(reference);
+			actions.push_back(StableId<VansActionIdTag>(reference));
 		}
-	}
-	if (const VansSerializedValue* cooldowns = At(root, "/commit/cooldowns");
-		cooldowns && cooldowns->kind == VansSerializedValue::Kind::Array)
+	};
+
+	for (const VansCompiledActionRecord& policy : action->program.policies)
 	{
-		for (const VansSerializedValue& item : cooldowns->arrayItems)
+		const VansSerializedValue& inputs = policy.inputs;
+		if (policy.type == "Core.Policy.Concurrency")
 		{
-			if (item.kind != VansSerializedValue::Kind::Object) continue;
-			VansActionCooldownDefinition cooldown;
-			cooldown.durationSeconds = NumberField(item, "duration");
-			cooldown.cooldownTag = StableId<VansGameplayTagIdTag>(
-				ReadSerializedStringField(item, "tag"));
-			action->cooldowns.push_back(cooldown);
+			action->concurrencyGroup = StableId<VansActionConcurrencyGroupIdTag>(
+				ReadSerializedStringField(inputs, "group"));
+			action->concurrencyPolicy = ConcurrencyPolicy(
+				ReadSerializedStringField(inputs, "mode", "Allow"));
+			action->concurrencyLimit = static_cast<std::uint32_t>((std::max<std::int64_t>)(1,
+				ReadSerializedIntField(inputs, "limit", 1)));
+			action->concurrencyQueueTimeoutSeconds =
+				NumberField(inputs, "queueTimeout", 0.0);
 		}
+		else if (policy.type == "Core.Policy.Cancellation")
+			action->cancellable = ReadSerializedBoolField(inputs, "cancellable", true);
+		else if (policy.type == "Core.Policy.Interruption")
+		{
+			action->interruptible = ReadSerializedBoolField(inputs, "interruptible", true);
+			appendActionReferences(FindObjectField(inputs, "blockedActions"),
+				action->blockedActionReferences, action->blockedActions);
+			appendActionReferences(FindObjectField(inputs, "cancelActions"),
+				action->cancelActionReferences, action->cancelActions);
+		}
+		else if (policy.type == "Core.Policy.Completion" ||
+			policy.type == "Core.Policy.Clock" || policy.type == "Core.Policy.Trigger")
+		{
+			// Generic policy records remain in the compiled program for their contributors.
+		}
+		else if (policy.type != "Core.Policy.Budget" &&
+			policy.type != "Core.Policy.InputBuffer" &&
+			policy.type != "Core.Policy.Failure")
+			AddDiagnostic(diagnostics, VansGameplayDiagnosticSeverity::Error,
+				"GAF-ACTION-POLICY", "Action policy type is not registered", policy.type);
 	}
-	for (const std::string& tag : StringArray(At(root, "/commit/grantedWhileRunning")))
-		action->grantedWhileRunning.push_back(StableId<VansGameplayTagIdTag>(tag));
-	if (const VansSerializedValue* effects = At(root, "/commit/effects");
-		effects && effects->kind == VansSerializedValue::Kind::Array)
+
+	action->executor = StableId<VansActionExecutorIdTag>("Action.Executor.Immediate");
+	for (const VansCompiledActionRecord& driver : action->program.execute.drivers)
 	{
-		for (const VansSerializedValue& item : effects->arrayItems)
+		if (driver.type == "Core.Driver.Graph")
 		{
-			const std::string name = ReferenceString(&item);
-			if (name.empty()) continue;
-			action->commitEffects.push_back({ StableId<VansEffectIdTag>(name),
-				item.kind == VansSerializedValue::Kind::Object &&
-				ReadSerializedBoolField(item, "removeOnEnd", false), name });
+			action->executor = StableId<VansActionExecutorIdTag>("Action.Executor.Graph");
+			action->executionGraphAsset = ReferenceString(
+				FindObjectField(driver.inputs, "graph"));
 		}
+		else if (driver.type == "Core.Driver.Immediate")
+			action->executor = StableId<VansActionExecutorIdTag>("Action.Executor.Immediate");
 	}
-	action->executor = StableId<VansActionExecutorIdTag>(
-		StringAt(root, "/execution/executor", "Action.Executor.Immediate"));
-	action->executionGraphAsset = ReferenceString(At(root, "/execution/graph"));
-	const std::string timeline = ReferenceString(At(root, "/execution/timeline"));
-	if (!timeline.empty()) action->timelineAssets.push_back(timeline);
-	for (const std::string& extra : StringArray(At(root, "/execution/timelines")))
-		action->timelineAssets.push_back(extra);
-	if (const VansSerializedValue* variables = At(root, "/execution/variables");
+
+	if (const VansSerializedValue* variables = At(root, "/variables");
 		variables && variables->kind == VansSerializedValue::Kind::Array)
-	{
 		for (const VansSerializedValue& item : variables->arrayItems)
 		{
 			if (item.kind != VansSerializedValue::Kind::Object) continue;
@@ -319,111 +248,12 @@ bool CompileAction(
 				variable.defaultValue = *defaultValue;
 			action->variables.push_back(std::move(variable));
 		}
-	}
-	action->timeDomain = StringAt(root, "/execution/timeDomain", "Game");
-	action->endPolicy = EndPolicy(StringAt(root, "/execution/endPolicy", "ExecutorResult"));
-	action->cancellable = BoolAt(root, "/transitions/cancellable", true);
-	action->interruptible = BoolAt(root, "/transitions/interruptible", true);
-	const auto appendActionReferences = [&](const char* path,
-		std::vector<std::string>& references, std::vector<VansActionId>& actions)
-	{
-		const VansSerializedValue* values = At(root, path);
-		if (!values || values->kind != VansSerializedValue::Kind::Array) return;
-		for (const VansSerializedValue& item : values->arrayItems)
-		{
-			const std::string reference = ReferenceString(&item);
-			if (reference.empty()) continue;
-			references.push_back(reference);
-			actions.push_back(StableId<VansActionIdTag>(reference));
-		}
-	};
-	appendActionReferences("/transitions/blockedActions",
-		action->blockedActionReferences, action->blockedActions);
-	appendActionReferences("/transitions/cancelActions",
-		action->cancelActionReferences, action->cancelActions);
-	const auto appendTransitionRule = [&](const VansSerializedValue& item,
-		std::string path, bool comboWindow)
-	{
-		if (item.kind != VansSerializedValue::Kind::Object) return;
-		VansActionTransitionRule rule;
-		rule.name = ReadSerializedStringField(item, "name", comboWindow ? "Combo" : "Transition");
-		rule.trigger = comboWindow ? VansActionTransitionTrigger::Input :
-			TransitionTrigger(ReadSerializedStringField(item, "trigger", "Event"));
-		const std::string eventName = ReadSerializedStringField(item, "event");
-		rule.event = StableId<VansActionFieldIdTag>(eventName);
-		rule.inputBinding = ReadSerializedStringField(item, "input");
-		const std::string target = ReferenceString(FindObjectField(item, "target"));
-		rule.targetActionReference = target;
-		rule.targetAction = StableId<VansActionIdTag>(target);
-		rule.minimumTimeSeconds = NumberField(item, comboWindow ? "openTime" : "minimumTime", 0.0);
-		rule.maximumTimeSeconds = NumberField(item, comboWindow ? "closeTime" : "maximumTime", -1.0);
-		rule.priority = static_cast<std::int32_t>(ReadSerializedIntField(item, "priority", 0));
-		rule.consumeTrigger = ReadSerializedBoolField(item, "consume", false);
-		rule.cancelSource = ReadSerializedBoolField(item, "cancelSource", true);
-		rule.inheritPrimaryTarget = ReadSerializedBoolField(item, "inheritPrimaryTarget", true);
-		rule.requirements = TagQuery(FindObjectField(item, "requirements"));
-		if (const VansSerializedValue* patch = FindObjectField(item, "contextPatch"))
-			rule.contextPatch = *patch;
-		const bool triggerValid =
-			(rule.trigger != VansActionTransitionTrigger::Event || rule.event) &&
-			(rule.trigger != VansActionTransitionTrigger::Input || !rule.inputBinding.empty());
-		if (rule.name.empty() || !rule.targetAction || !triggerValid ||
-			!std::isfinite(rule.minimumTimeSeconds) || !std::isfinite(rule.maximumTimeSeconds) ||
-			rule.minimumTimeSeconds < 0.0 ||
-			(rule.maximumTimeSeconds >= 0.0 &&
-				rule.maximumTimeSeconds < rule.minimumTimeSeconds))
-		{
-			AddDiagnostic(diagnostics, VansGameplayDiagnosticSeverity::Error,
-				"GAF-ACTION-TRANSITION", "Action transition rule is invalid", std::move(path));
-			return;
-		}
-		action->transitionRules.push_back(std::move(rule));
-	};
-	if (const VansSerializedValue* rules = At(root, "/transitions/rules");
-		rules && rules->kind == VansSerializedValue::Kind::Array)
-		for (std::size_t index = 0; index < rules->arrayItems.size(); ++index)
-			appendTransitionRule(rules->arrayItems[index],
-				"/transitions/rules/" + std::to_string(index), false);
-	if (const VansSerializedValue* combos = At(root, "/transitions/comboWindows");
-		combos && combos->kind == VansSerializedValue::Kind::Array)
-		for (std::size_t index = 0; index < combos->arrayItems.size(); ++index)
-			appendTransitionRule(combos->arrayItems[index],
-				"/transitions/comboWindows/" + std::to_string(index), true);
-	std::stable_sort(action->transitionRules.begin(), action->transitionRules.end(),
-		[](const VansActionTransitionRule& left, const VansActionTransitionRule& right)
-		{ return left.priority > right.priority; });
-	action->inputBuffer.enabled = BoolAt(root, "/transitions/inputBuffer/enabled", false);
-	action->inputBuffer.durationSeconds =
-		NumberAt(root, "/transitions/inputBuffer/duration", 0.0);
-	action->inputBuffer.maximumEntries = static_cast<std::uint32_t>((std::max<std::int64_t>)(1,
-		IntAt(root, "/transitions/inputBuffer/maximumEntries", 1)));
-	const std::string fallbackAction = ReferenceString(At(root, "/transitions/failureFallback/action"));
-	action->failureFallback.actionReference = fallbackAction;
-	action->failureFallback.action = StableId<VansActionIdTag>(fallbackAction);
-	for (const std::string& fallbackError : StringArray(
-		At(root, "/transitions/failureFallback/errors")))
-		action->failureFallback.errors.push_back(ActionErrorByName(fallbackError));
-	action->failureFallback.inheritPrimaryTarget =
-		BoolAt(root, "/transitions/failureFallback/inheritPrimaryTarget", true);
-	if (const VansSerializedValue* patch = At(root, "/transitions/failureFallback/contextPatch"))
-		action->failureFallback.contextPatch = *patch;
-	if (const VansSerializedValue* cues = At(root, "/presentation/cues");
-		cues && cues->kind == VansSerializedValue::Kind::Array)
-	{
-		for (const VansSerializedValue& item : cues->arrayItems)
-		{
-			const std::string reference = ReferenceString(&item);
-			if (reference.empty()) continue;
-			action->presentationCueReferences.push_back(reference);
-			action->presentationCues.push_back(StableId<VansCueIdTag>(reference));
-		}
-	}
-	for (const std::string& name : StringArray(At(root, "/dependencies/services")))
-		action->requiredServices.push_back(StableId<VansActionServiceIdTag>(name));
-	action->assetDependencies = cooked.dependencies;
-	if (const VansSerializedValue* extensions = At(root, "/extensions"))
-		action->extensionData = *extensions;
-	const VansGameplayDiagnostics runtimeDiagnostics = VansActionDefinitionRegistry::Validate(*action);
+
+	action->program.capabilities = StringArray(At(root, "/dependencies/capabilities"));
+	action->program.modules = StringArray(At(root, "/dependencies/modules"));
+
+	const VansGameplayDiagnostics runtimeDiagnostics =
+		VansActionDefinitionRegistry::Validate(*action);
 	diagnostics.insert(diagnostics.end(), runtimeDiagnostics.begin(), runtimeDiagnostics.end());
 	output = std::shared_ptr<const VansCompiledActionDefinition>(std::move(action));
 	return !HasErrors(diagnostics);
@@ -444,44 +274,35 @@ bool CompileActionSet(const VansGameplayCookedAsset& cooked, VansCompiledGamepla
 			VansActionGrantDesc grant;
 			grant.actionReference = ReferenceString(FindObjectField(item, "action"));
 			grant.action = StableId<VansActionIdTag>(grant.actionReference);
-			grant.level = FindObjectField(item, "level")
-				? ReadSerializedNumber(*FindObjectField(item, "level"), 1.0) : 1.0;
-			grant.inputBinding = ReadSerializedStringField(item, "inputBinding");
-			for (const std::string& tag : StringArray(FindObjectField(item, "dynamicTags")))
-				grant.dynamicTags.push_back(StableId<VansGameplayTagIdTag>(tag));
-			grant.charges = static_cast<std::int32_t>(ReadSerializedIntField(item, "charges", -1));
-			const std::string persistence = ReadSerializedStringField(item, "persistence", "OwnerLifetime");
-			if (persistence == "Transient") grant.persistence = VansActionGrantPersistence::Transient;
-			else if (persistence == "Persistent") grant.persistence = VansActionGrantPersistence::Persistent;
+			if (const VansSerializedValue* extensions = FindObjectField(item, "extensions");
+				extensions && extensions->kind == VansSerializedValue::Kind::Array)
+				for (const VansSerializedValue& extension : extensions->arrayItems)
+				{
+					if (extension.kind != VansSerializedValue::Kind::Object) continue;
+					const std::string type = ReadSerializedStringField(extension, "type");
+					const VansSerializedValue* inputs = FindObjectField(extension, "inputs");
+					if (!type.empty() && inputs && inputs->kind == VansSerializedValue::Kind::Object)
+						grant.extensions.push_back({ type, *inputs });
+				}
 			set.grants.push_back(std::move(grant));
 		}
 	}
-	if (const VansSerializedValue* effects = At(root, "/initialEffects");
-		effects && effects->kind == VansSerializedValue::Kind::Array)
+	const auto appendRecords = [&root](const char* path,
+		std::vector<VansCompiledActionRecord>& destination)
 	{
-		for (const VansSerializedValue& item : effects->arrayItems)
+		const VansSerializedValue* records = At(root, path);
+		if (!records || records->kind != VansSerializedValue::Kind::Array) return;
+		for (const VansSerializedValue& record : records->arrayItems)
 		{
-			const std::string effect = ReferenceString(&item);
-			if (effect.empty()) continue;
-			set.initialEffectReferences.push_back(effect);
-			set.initialEffects.push_back(StableId<VansEffectIdTag>(effect));
+			if (record.kind != VansSerializedValue::Kind::Object) continue;
+			const std::string type = ReadSerializedStringField(record, "type");
+			const VansSerializedValue* inputs = FindObjectField(record, "inputs");
+			if (!type.empty() && inputs && inputs->kind == VansSerializedValue::Kind::Object)
+				destination.push_back({ type, *inputs });
 		}
-	}
-	if (const VansSerializedValue* overrides = At(root, "/attributeOverrides");
-		overrides && overrides->kind == VansSerializedValue::Kind::Array)
-	{
-		for (const VansSerializedValue& item : overrides->arrayItems)
-		{
-			if (item.kind != VansSerializedValue::Kind::Object) continue;
-			set.attributeOverrides.push_back({
-				StableId<VansAttributeIdTag>(ReadSerializedStringField(item, "attribute")),
-				NumberField(item, "value") });
-		}
-	}
-	const std::string revoke = StringAt(root, "/revokePolicy", "CancelRunning");
-	if (revoke == "KeepRunning") set.revokePolicy = VansActionRevokePolicy::KeepRunning;
-	else if (revoke == "DeferUntilIdle") set.revokePolicy = VansActionRevokePolicy::DeferUntilIdle;
-	set.removeInitialEffectsOnRevoke = BoolAt(root, "/removeInitialEffectsOnRevoke", true);
+	};
+	appendRecords("/initializers", set.initializers);
+	appendRecords("/policies", set.policies);
 	output = std::move(set);
 	return true;
 }
@@ -518,8 +339,6 @@ bool CompileEffect(const VansGameplayCookedAsset& cooked, VansCompiledGameplayAs
 	auto effect = std::make_shared<VansEffectDefinition>();
 	effect->name = StringAt(root, "/effectId");
 	effect->id = StableId<VansEffectIdTag>(effect->name);
-	effect->definitionVersion = static_cast<std::uint32_t>(std::max<std::int64_t>(1,
-		IntAt(root, "/definitionVersion", 1)));
 	const std::string durationPolicy = StringAt(root, "/duration/policy", "Instant");
 	if (durationPolicy == "Duration") effect->durationPolicy = VansEffectDurationPolicy::Duration;
 	else if (durationPolicy == "Infinite") effect->durationPolicy = VansEffectDurationPolicy::Infinite;
@@ -542,54 +361,81 @@ bool CompileEffect(const VansGameplayCookedAsset& cooked, VansCompiledGameplayAs
 		effect->effectTags.push_back(StableId<VansGameplayTagIdTag>(tag));
 	for (const std::string& tag : StringArray(At(root, "/grantedTags")))
 		effect->grantedTags.push_back(StableId<VansGameplayTagIdTag>(tag));
-	if (const VansSerializedValue* modifiers = At(root, "/modifiers");
-		modifiers && modifiers->kind == VansSerializedValue::Kind::Array)
+	if (const VansSerializedValue* extensions = At(root, "/extensions");
+		extensions && extensions->kind == VansSerializedValue::Kind::Array)
 	{
-		for (const VansSerializedValue& item : modifiers->arrayItems)
+		for (const VansSerializedValue& extension : extensions->arrayItems)
 		{
-			if (item.kind != VansSerializedValue::Kind::Object) continue;
-			VansEffectModifier modifier;
-			modifier.attribute = StableId<VansAttributeIdTag>(ReadSerializedStringField(item, "attribute"));
-			modifier.operation = ModifierOperation(ReadSerializedStringField(item, "operation", "Additive"));
-			modifier.magnitude = FindObjectField(item, "magnitude")
-				? ReadSerializedNumber(*FindObjectField(item, "magnitude")) : 0.0;
-			modifier.priority = static_cast<std::int32_t>(ReadSerializedIntField(item, "priority", 0));
-			modifier.magnitudeSource = EffectMagnitudeSource(
-				ReadSerializedStringField(item, "magnitudeSource", "Fixed"));
-			modifier.setByCallerField = StableId<VansActionFieldIdTag>(
-				ReadSerializedStringField(item, "setByCaller"));
-			modifier.capturedAttribute = StableId<VansAttributeIdTag>(
-				ReadSerializedStringField(item, "capturedAttribute"));
-			modifier.capturePolicy = ReadSerializedStringField(item, "capture", "Snapshot") == "Dynamic"
-				? VansEffectCapturePolicy::Dynamic : VansEffectCapturePolicy::Snapshot;
-			modifier.contextPayloadPath = ReadSerializedStringField(item, "contextPath");
-			modifier.targetDataMetric = EffectTargetDataMetric(
-				ReadSerializedStringField(item, "targetMetric", "Count"));
-			modifier.randomMinimum = NumberField(item, "randomMinimum", 0.0);
-			modifier.randomMaximum = NumberField(item, "randomMaximum", 1.0);
-			modifier.coefficient = NumberField(item, "coefficient", 1.0);
-			modifier.preAdd = NumberField(item, "preAdd", 0.0);
-			modifier.postAdd = NumberField(item, "postAdd", 0.0);
-			effect->modifiers.push_back(modifier);
+			if (extension.kind != VansSerializedValue::Kind::Object) continue;
+			const std::string type = ReadSerializedStringField(extension, "type");
+			const VansSerializedValue* inputs = FindObjectField(extension, "inputs");
+			if (!inputs || inputs->kind != VansSerializedValue::Kind::Object) continue;
+			if (type == "Gameplay.Effect.AttributeModifier")
+			{
+				VansEffectModifier modifier;
+				modifier.attribute = StableId<VansAttributeIdTag>(
+					ReadSerializedStringField(*inputs, "attribute"));
+				modifier.operation = ModifierOperation(
+					ReadSerializedStringField(*inputs, "operation", "Additive"));
+				modifier.magnitude = FindObjectField(*inputs, "magnitude")
+					? ReadSerializedNumber(*FindObjectField(*inputs, "magnitude")) : 0.0;
+				modifier.priority = static_cast<std::int32_t>(
+					ReadSerializedIntField(*inputs, "priority", 0));
+				modifier.magnitudeSource = EffectMagnitudeSource(
+					ReadSerializedStringField(*inputs, "magnitudeSource", "Fixed"));
+				modifier.setByCallerField = StableId<VansActionFieldIdTag>(
+					ReadSerializedStringField(*inputs, "setByCaller"));
+				modifier.capturedAttribute = StableId<VansAttributeIdTag>(
+					ReadSerializedStringField(*inputs, "capturedAttribute"));
+				modifier.capturePolicy = ReadSerializedStringField(*inputs, "capture", "Snapshot") == "Dynamic"
+					? VansEffectCapturePolicy::Dynamic : VansEffectCapturePolicy::Snapshot;
+				modifier.contextPayloadPath = ReadSerializedStringField(*inputs, "contextPath");
+				modifier.targetDataMetric = EffectTargetDataMetric(
+					ReadSerializedStringField(*inputs, "targetMetric", "Count"));
+				modifier.randomMinimum = NumberField(*inputs, "randomMinimum", 0.0);
+				modifier.randomMaximum = NumberField(*inputs, "randomMaximum", 1.0);
+				modifier.coefficient = NumberField(*inputs, "coefficient", 1.0);
+				modifier.preAdd = NumberField(*inputs, "preAdd", 0.0);
+				modifier.postAdd = NumberField(*inputs, "postAdd", 0.0);
+				effect->modifiers.push_back(modifier);
+				continue;
+			}
+			if (type != "Gameplay.Effect.CueBinding") continue;
+			std::vector<VansCueId>* cueIds = nullptr;
+			std::vector<std::string>* cueReferences = nullptr;
+			const std::string phase = ReadSerializedStringField(*inputs, "phase", "Execute");
+			if (phase == "Execute")
+			{
+				cueIds = &effect->executeCues;
+				cueReferences = &effect->executeCueReferences;
+			}
+			else if (phase == "Persistent")
+			{
+				cueIds = &effect->persistentCues;
+				cueReferences = &effect->persistentCueReferences;
+			}
+			else if (phase == "Periodic")
+			{
+				cueIds = &effect->periodicCues;
+				cueReferences = &effect->periodicCueReferences;
+			}
+			else if (phase == "Remove")
+			{
+				cueIds = &effect->removeCues;
+				cueReferences = &effect->removeCueReferences;
+			}
+			const VansSerializedValue* assets = FindObjectField(*inputs, "assets");
+			if (!cueIds || !cueReferences || !assets || assets->kind != VansSerializedValue::Kind::Array)
+				continue;
+			for (const VansSerializedValue& item : assets->arrayItems)
+			{
+				const std::string reference = ReferenceString(&item);
+				if (reference.empty()) continue;
+				cueReferences->push_back(reference);
+				cueIds->push_back(StableId<VansCueIdTag>(reference));
+			}
 		}
 	}
-	const auto appendCues = [&](const char* path, std::vector<VansCueId>& destination,
-		std::vector<std::string>& references)
-	{
-		const VansSerializedValue* cues = At(root, path);
-		if (!cues || cues->kind != VansSerializedValue::Kind::Array) return;
-		for (const VansSerializedValue& item : cues->arrayItems)
-		{
-			const std::string reference = ReferenceString(&item);
-			if (reference.empty()) continue;
-			references.push_back(reference);
-			destination.push_back(StableId<VansCueIdTag>(reference));
-		}
-	};
-	appendCues("/cues/execute", effect->executeCues, effect->executeCueReferences);
-	appendCues("/cues/persistent", effect->persistentCues, effect->persistentCueReferences);
-	appendCues("/cues/periodic", effect->periodicCues, effect->periodicCueReferences);
-	appendCues("/cues/remove", effect->removeCues, effect->removeCueReferences);
 	output = std::shared_ptr<const VansEffectDefinition>(std::move(effect));
 	return true;
 }
@@ -611,22 +457,25 @@ bool CompileCue(const VansGameplayCookedAsset& cooked, VansCompiledGameplayAsset
 	cue.id = StableId<VansCueIdTag>(cue.name);
 	cue.scope = CueScope(StringAt(root, "/scope", "Target"));
 	cue.payloadSchemaAsset = ReferenceString(At(root, "/payloadSchema"));
-	if (const VansSerializedValue* adapters = At(root, "/adapters");
-		adapters && adapters->kind == VansSerializedValue::Kind::Array)
-		for (const VansSerializedValue& source : adapters->arrayItems)
+	if (const VansSerializedValue* bindings = At(root, "/bindings");
+		bindings && bindings->kind == VansSerializedValue::Kind::Array)
+		for (const VansSerializedValue& binding : bindings->arrayItems)
 		{
-			if (source.kind != VansSerializedValue::Kind::Object) continue;
+			if (binding.kind != VansSerializedValue::Kind::Object ||
+				ReadSerializedStringField(binding, "type") != "Gameplay.Cue.Invoke") continue;
+			const VansSerializedValue* inputs = FindObjectField(binding, "inputs");
+			if (!inputs || inputs->kind != VansSerializedValue::Kind::Object) continue;
 			VansGameplayCueAdapterMapping mapping;
-			mapping.serviceName = ReadSerializedStringField(source, "service");
+			mapping.serviceName = ReadSerializedStringField(*inputs, "capability");
 			mapping.service = StableId<VansActionServiceIdTag>(mapping.serviceName);
-			mapping.commandName = ReadSerializedStringField(source, "command");
+			mapping.commandName = ReadSerializedStringField(*inputs, "invoke");
 			mapping.command = StableId<VansActionFieldIdTag>(mapping.commandName);
-			mapping.updateCommandName = ReadSerializedStringField(source, "updateCommand");
+			mapping.updateCommandName = ReadSerializedStringField(*inputs, "update");
 			mapping.updateCommand = StableId<VansActionFieldIdTag>(mapping.updateCommandName);
-			mapping.removeCommandName = ReadSerializedStringField(source, "removeCommand");
+			mapping.removeCommandName = ReadSerializedStringField(*inputs, "release");
 			mapping.removeCommand = StableId<VansActionFieldIdTag>(mapping.removeCommandName);
-			mapping.asset = ReferenceString(FindObjectField(source, "asset"));
-			if (const VansSerializedValue* parameters = FindObjectField(source, "parameters"))
+			mapping.asset = ReferenceString(FindObjectField(*inputs, "asset"));
+			if (const VansSerializedValue* parameters = FindObjectField(*inputs, "parameters"))
 				mapping.parameters = *parameters;
 			cue.adapterMappings.push_back(std::move(mapping));
 		}
@@ -668,7 +517,6 @@ bool CompileAttributeSet(
 				definition.maximum = ReadSerializedNumber(*maximum);
 				definition.hasMaximum = true;
 			}
-			definition.replicated = ReadSerializedBoolField(item, "replicated", false);
 			std::string error;
 			if (!validator.Register(definition, error))
 				AddDiagnostic(diagnostics, VansGameplayDiagnosticSeverity::Error,
@@ -690,15 +538,6 @@ bool CompileAttributeSet(
 	return !HasErrors(diagnostics);
 }
 
-VansTargetingStepKind TargetingStepKind(std::string_view value)
-{
-	if (value == "Filter") return VansTargetingStepKind::Filter;
-	if (value == "Sort") return VansTargetingStepKind::Sort;
-	if (value == "Limit") return VansTargetingStepKind::Limit;
-	if (value == "Lock") return VansTargetingStepKind::Lock;
-	return VansTargetingStepKind::Acquire;
-}
-
 bool CompileTargeting(const VansGameplayCookedAsset& cooked, VansCompiledGameplayAssetData& output)
 {
 	const VansSerializedValue& root = cooked.runtimeDocument;
@@ -712,11 +551,10 @@ bool CompileTargeting(const VansGameplayCookedAsset& cooked, VansCompiledGamepla
 		{
 			if (item.kind != VansSerializedValue::Kind::Object) continue;
 			VansTargetingStep step;
-			step.kind = TargetingStepKind(ReadSerializedStringField(item, "kind", "Acquire"));
-			step.stableName = ReadSerializedStringField(item, "handler");
+			step.stableName = ReadSerializedStringField(item, "type");
 			step.handler = StableId<VansActionGraphNodeTypeIdTag>(step.stableName);
-			if (const VansSerializedValue* parameters = FindObjectField(item, "parameters"))
-				step.parameters = *parameters;
+			if (const VansSerializedValue* inputs = FindObjectField(item, "inputs"))
+				step.inputs = *inputs;
 			policy.steps.push_back(std::move(step));
 		}
 	}
@@ -819,17 +657,9 @@ VansActionGraphNodeKind GraphNodeKind(std::string_view value)
 	if (value == "Latent") return VansActionGraphNodeKind::Latent;
 	if (value == "State") return VansActionGraphNodeKind::State;
 	if (value == "Flow") return VansActionGraphNodeKind::Flow;
-	if (value == "Transaction") return VansActionGraphNodeKind::Transaction;
 	if (value == "Bridge") return VansActionGraphNodeKind::Bridge;
 	if (value == "SubAction") return VansActionGraphNodeKind::SubAction;
 	return VansActionGraphNodeKind::Pure;
-}
-
-VansActionGraphRollbackPlan GraphRollbackPlan(std::string_view value)
-{
-	if (value == "Automatic") return VansActionGraphRollbackPlan::Automatic;
-	if (value == "Compensate") return VansActionGraphRollbackPlan::Compensate;
-	return VansActionGraphRollbackPlan::None;
 }
 
 bool CompileGraph(
@@ -840,8 +670,6 @@ bool CompileGraph(
 	const VansSerializedValue& root = cooked.runtimeDocument;
 	auto graph = std::make_shared<VansCompiledActionGraph>();
 	graph->name = StringAt(root, "/graphId");
-	graph->version = static_cast<std::uint32_t>(std::max<std::int64_t>(1,
-		IntAt(root, "/definitionVersion", 1)));
 	graph->contentHash = cooked.contentHash;
 	std::unordered_map<std::string, std::uint32_t> nodesByGuid;
 	if (const VansSerializedValue* nodes = At(root, "/nodes");
@@ -856,9 +684,6 @@ bool CompileGraph(
 			const std::string type = ReadSerializedStringField(item, "type");
 			node.type = StableId<VansActionGraphNodeTypeIdTag>(type);
 			node.kind = GraphNodeKind(ReadSerializedStringField(item, "kind", "Pure"));
-			node.predictable = ReadSerializedBoolField(item, "predictable", false);
-			node.rollbackPlan = GraphRollbackPlan(
-				ReadSerializedStringField(item, "rollbackPlan", "None"));
 			if (const VansSerializedValue* properties = FindObjectField(item, "properties"))
 				node.properties = *properties;
 			if (node.guid.empty() || !nodesByGuid.emplace(node.guid,
@@ -900,154 +725,121 @@ bool CompileGraph(
 	return !HasErrors(diagnostics);
 }
 
-bool CompileCameraProfile(
-	const VansGameplayCookedAsset& cooked,
-	VansCompiledGameplayAssetData& output,
-	VansGameplayDiagnostics& diagnostics)
-{
-	auto vectorAt = [&](const char* path, glm::vec3 fallback = glm::vec3(0.0f))
-	{
-		const VansSerializedValue* object = At(cooked.runtimeDocument, path);
-		if (!object) return fallback;
-		return glm::vec3(
-			static_cast<float>(NumberField(*object, "x", fallback.x)),
-			static_cast<float>(NumberField(*object, "y", fallback.y)),
-			static_cast<float>(NumberField(*object, "z", fallback.z)));
-	};
-	if (cooked.assetType == VansAssetType::CameraRigProfile)
-	{
-		VansCameraRigDefinition rig;
-		rig.stableName = StringAt(cooked.runtimeDocument, "/cameraRigId");
-		rig.id = StableId<VansCameraRigIdTag>(rig.stableName);
-		rig.follow.enabled = true;
-		rig.follow.mode = StringAt(cooked.runtimeDocument, "/follow/mode", "SpringArm");
-		rig.follow.targetBinding = StringAt(cooked.runtimeDocument, "/follow/targetBinding", "Avatar");
-		rig.follow.localOffset = vectorAt("/follow/offset", { 0.0f, 1.6f, -3.0f });
-		rig.follow.positionDamping = static_cast<float>(
-			NumberAt(cooked.runtimeDocument, "/follow/damping", 0.15));
-		rig.lookAt.enabled = BoolAt(cooked.runtimeDocument, "/lookAt/enabled", true);
-		rig.lookAt.targetBinding = StringAt(cooked.runtimeDocument, "/lookAt/targetBinding", "Avatar");
-		rig.lookAt.worldOffset = vectorAt("/lookAt/offset", { 0.0f, 1.4f, 0.0f });
-		rig.lookAt.rotationDamping = static_cast<float>(
-			NumberAt(cooked.runtimeDocument, "/lookAt/damping", 0.1));
-		rig.collision.enabled = BoolAt(cooked.runtimeDocument, "/collision/enabled", true);
-		rig.collision.radius = static_cast<float>(
-			NumberAt(cooked.runtimeDocument, "/collision/probeRadius", 0.2));
-		rig.collision.minimumDistance = static_cast<float>(
-			NumberAt(cooked.runtimeDocument, "/collision/minimumDistance", 0.1));
-		rig.collision.padding = static_cast<float>(
-			NumberAt(cooked.runtimeDocument, "/collision/padding", 0.05));
-		rig.collision.recoverySeconds = static_cast<float>(
-			NumberAt(cooked.runtimeDocument, "/collision/recoverySeconds", 0.2));
-		rig.collision.layers = StringArray(At(cooked.runtimeDocument, "/collision/layers"));
-		rig.initialView.pose.position = rig.follow.localOffset;
-		rig.initialView.lens.fieldOfView = static_cast<float>(
-			NumberAt(cooked.runtimeDocument, "/lens/fieldOfView", 60.0));
-		rig.initialView.lens.nearClip = static_cast<float>(
-			NumberAt(cooked.runtimeDocument, "/lens/nearPlane", 0.1));
-		rig.initialView.lens.farClip = static_cast<float>(
-			NumberAt(cooked.runtimeDocument, "/lens/farPlane", 1000.0));
-		rig.focusDistance = static_cast<float>(
-			NumberAt(cooked.runtimeDocument, "/lens/focusDistance", 10.0));
-		rig.composition.screenX = static_cast<float>(
-			NumberAt(cooked.runtimeDocument, "/composition/screenX", 0.5));
-		rig.composition.screenY = static_cast<float>(
-			NumberAt(cooked.runtimeDocument, "/composition/screenY", 0.5));
-		rig.composition.deadZoneX = static_cast<float>(
-			NumberAt(cooked.runtimeDocument, "/composition/deadZoneX", 0.1));
-		rig.composition.deadZoneY = static_cast<float>(
-			NumberAt(cooked.runtimeDocument, "/composition/deadZoneY", 0.1));
-		if (rig.initialView.lens.nearClip >= rig.initialView.lens.farClip)
-		{
-			AddDiagnostic(diagnostics, VansGameplayDiagnosticSeverity::Error,
-				"GAF-CAMERA-LENS-RANGE", "Camera near plane must be smaller than far plane",
-				"/lens/nearPlane");
-			return false;
-		}
-		VansCameraRuntime validator;
-		std::string error;
-		if (!validator.RegisterRig(rig, error))
-		{
-			AddDiagnostic(diagnostics, VansGameplayDiagnosticSeverity::Error,
-				"GAF-CAMERA-RIG", error, "/cameraRigId");
-			return false;
-		}
-		output = std::move(rig);
-		return true;
-	}
+}
 
-	VansCameraShakeDefinition shake;
-	shake.stableName = StringAt(cooked.runtimeDocument, "/cameraShakeId");
-	shake.id = StableId<VansCameraShakeIdTag>(shake.stableName);
-	shake.translationAmplitude = vectorAt("/noise/translationAmplitude", glm::vec3(0.05f));
-	shake.rotationAmplitude = vectorAt("/noise/rotationAmplitude", glm::vec3(0.5f));
-	shake.frequency = static_cast<float>(NumberAt(cooked.runtimeDocument, "/noise/frequency", 12.0));
-	shake.attackSeconds = static_cast<float>(NumberAt(cooked.runtimeDocument, "/envelope/attack", 0.05));
-	shake.sustainSeconds = static_cast<float>(NumberAt(cooked.runtimeDocument, "/envelope/sustain", 0.1));
-	shake.releaseSeconds = static_cast<float>(NumberAt(cooked.runtimeDocument, "/envelope/release", 0.15));
-	shake.minimumDistance = static_cast<float>(NumberAt(
-		cooked.runtimeDocument, "/falloff/minimumDistance", 0.0));
-	shake.maximumDistance = static_cast<float>(NumberAt(
-		cooked.runtimeDocument, "/falloff/maximumDistance", 25.0));
-	shake.falloffExponent = static_cast<float>(NumberAt(
-		cooked.runtimeDocument, "/falloff/exponent", 1.0));
-	shake.seed = static_cast<std::uint64_t>(std::max<std::int64_t>(
-		0, IntAt(cooked.runtimeDocument, "/seed", 0)));
-	VansCameraRuntime validator;
-	std::string error;
-	if (!validator.RegisterShake(shake, error))
+bool VansGameplayAssetCompilerRegistry::Register(
+	VansAssetType assetType,
+	std::string stableName,
+	Compiler compiler,
+	std::string& error)
+{
+	if (m_Sealed)
 	{
-		AddDiagnostic(diagnostics, VansGameplayDiagnosticSeverity::Error,
-			"GAF-CAMERA-SHAKE", error, "/cameraShakeId");
+		error = "Gameplay asset Compiler registry is sealed";
 		return false;
 	}
-	output = std::move(shake);
+	if (assetType == VansAssetType::Unknown || stableName.empty() || !compiler)
+	{
+		error = "Gameplay asset Compiler descriptor is invalid";
+		return false;
+	}
+	if (!m_Compilers.emplace(assetType,
+		Entry{ std::move(stableName), std::move(compiler) }).second)
+	{
+		error = "duplicate Gameplay asset Compiler";
+		return false;
+	}
 	return true;
 }
+
+bool VansGameplayAssetCompilerRegistry::Seal(std::string& error)
+{
+	if (m_Compilers.empty())
+	{
+		error = "Gameplay asset Compiler registry is empty";
+		return false;
+	}
+	m_Sealed = true;
+	return true;
 }
 
-VansGameplayCompileResult VansGameplayAssetCompiler::Compile(const VansGameplayCookedAsset& cooked)
+const VansGameplayAssetCompilerRegistry::Compiler* VansGameplayAssetCompilerRegistry::Resolve(
+	VansAssetType assetType) const
+{
+	const auto found = m_Compilers.find(assetType);
+	return found == m_Compilers.end() ? nullptr : &found->second.compiler;
+}
+
+bool VansRegisterCoreGameplayAssetCompilers(
+	VansGameplayAssetCompilerRegistry& registry,
+	std::string& error)
+{
+	return registry.Register(VansAssetType::ActionDefinition, "Core.Asset.Action",
+		[](const auto& cooked, auto& output, auto& diagnostics)
+		{ return CompileAction(cooked, output, diagnostics); }, error) &&
+		registry.Register(VansAssetType::ActionSet, "Core.Asset.ActionSet",
+			[](const auto& cooked, auto& output, auto&)
+			{ return CompileActionSet(cooked, output); }, error) &&
+		registry.Register(VansAssetType::PayloadSchema, "Core.Asset.PayloadSchema",
+			[](const auto& cooked, auto& output, auto&)
+			{ return CompilePayload(cooked, output); }, error) &&
+		registry.Register(VansAssetType::ActionGraph, "Core.Asset.ActionGraph",
+			[](const auto& cooked, auto& output, auto& diagnostics)
+			{ return CompileGraph(cooked, output, diagnostics); }, error);
+}
+
+bool VansRegisterGameplayPrimitiveAssetCompilers(
+	VansGameplayAssetCompilerRegistry& registry,
+	std::string& error)
+{
+	return registry.Register(VansAssetType::GameplayEffect, "Gameplay.Asset.Effect",
+		[](const auto& cooked, auto& output, auto&)
+		{ return CompileEffect(cooked, output); }, error) &&
+		registry.Register(VansAssetType::GameplayCue, "Gameplay.Asset.Cue",
+			[](const auto& cooked, auto& output, auto&)
+			{ return CompileCue(cooked, output); }, error) &&
+		registry.Register(VansAssetType::AttributeSet, "Gameplay.Asset.AttributeSet",
+			[](const auto& cooked, auto& output, auto& diagnostics)
+			{ return CompileAttributeSet(cooked, output, diagnostics); }, error) &&
+		registry.Register(VansAssetType::TargetingPolicy, "Gameplay.Asset.TargetingPolicy",
+			[](const auto& cooked, auto& output, auto&)
+			{ return CompileTargeting(cooked, output); }, error) &&
+		registry.Register(VansAssetType::GameplayTagTree, "Gameplay.Asset.TagTree",
+			[](const auto& cooked, auto& output, auto& diagnostics)
+			{ return CompileTagTree(cooked, output, diagnostics); }, error);
+}
+
+VansGameplayCompileResult VansGameplayAssetCompiler::Compile(
+	const VansGameplayCookedAsset& cooked)
+{
+	static const VansGameplayAssetCompilerRegistry compilers = []
+	{
+		VansGameplayAssetCompilerRegistry registry;
+		std::string error;
+		VansRegisterDefaultGameplayAssetCompilers(registry, error);
+		registry.Seal(error);
+		return registry;
+	}();
+	return Compile(cooked, compilers);
+}
+
+VansGameplayCompileResult VansGameplayAssetCompiler::Compile(
+	const VansGameplayCookedAsset& cooked,
+	const VansGameplayAssetCompilerRegistry& compilers)
 {
 	VansGameplayCompileResult result;
 	result.asset.assetType = cooked.assetType;
-	result.asset.schemaVersion = cooked.schemaVersion;
 	result.asset.contentHash = cooked.contentHash;
 	result.asset.dependencies = cooked.dependencies;
-	const VansGameplayAssetSchemaDescriptor* schema =
-		VansGameplayAssetSchemaRegistry::BuiltIns().Resolve(cooked.assetType);
-	if (!schema || schema->editorOnly || cooked.schemaVersion != schema->schemaVersion ||
-		cooked.contentHash == 0)
+	if (cooked.assetType == VansAssetType::Unknown || cooked.contentHash == 0 ||
+		!compilers.IsSealed())
 	{
 		result.error = "Gameplay compiled asset header is invalid";
 		return result;
 	}
-	bool compiled = false;
-	switch (cooked.assetType)
-	{
-	case VansAssetType::ActionDefinition:
-		compiled = CompileAction(cooked, result.asset.data, result.diagnostics); break;
-	case VansAssetType::ActionSet:
-		compiled = CompileActionSet(cooked, result.asset.data); break;
-	case VansAssetType::GameplayEffect:
-		compiled = CompileEffect(cooked, result.asset.data); break;
-	case VansAssetType::GameplayCue:
-		compiled = CompileCue(cooked, result.asset.data); break;
-	case VansAssetType::AttributeSet:
-		compiled = CompileAttributeSet(cooked, result.asset.data, result.diagnostics); break;
-	case VansAssetType::TargetingPolicy:
-		compiled = CompileTargeting(cooked, result.asset.data); break;
-	case VansAssetType::GameplayTagTree:
-		compiled = CompileTagTree(cooked, result.asset.data, result.diagnostics); break;
-	case VansAssetType::PayloadSchema:
-		compiled = CompilePayload(cooked, result.asset.data); break;
-	case VansAssetType::ActionGraph:
-		compiled = CompileGraph(cooked, result.asset.data, result.diagnostics); break;
-	case VansAssetType::CameraRigProfile:
-	case VansAssetType::CameraShakeProfile:
-		compiled = CompileCameraProfile(cooked, result.asset.data, result.diagnostics); break;
-	default:
-		break;
-	}
+	const VansGameplayAssetCompilerRegistry::Compiler* compiler =
+		compilers.Resolve(cooked.assetType);
+	const bool compiled = compiler && (*compiler)(cooked, result.asset.data, result.diagnostics);
 	if (!compiled)
 		result.error = HasErrors(result.diagnostics)
 			? "Gameplay asset failed typed compilation"

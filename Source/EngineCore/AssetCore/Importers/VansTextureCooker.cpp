@@ -23,7 +23,11 @@ namespace
 {
 constexpr std::array<char, 8> kArtifactMagic = { 'V', 'A', 'N', 'S', 'T', 'E', 'X', '\0' };
 constexpr std::uint32_t kFormatBC3 = static_cast<std::uint32_t>(VansCookedTextureFormat::BC3);
+constexpr std::uint32_t kFormatRGBA8 = static_cast<std::uint32_t>(VansCookedTextureFormat::RGBA8);
+constexpr std::uint32_t kFormatR8 = static_cast<std::uint32_t>(VansCookedTextureFormat::R8);
+constexpr std::uint32_t kFormatRG8 = static_cast<std::uint32_t>(VansCookedTextureFormat::RG8);
 constexpr std::uint64_t kMaxArtifactBytes = 2ull * 1024ull * 1024ull * 1024ull;
+constexpr std::uint64_t kBufferCopyOffsetAlignment = 4u;
 
 struct TextureArtifactHeader
 {
@@ -167,6 +171,63 @@ std::vector<std::uint8_t> CompressBC3(const std::uint8_t* source, int width, int
     return result;
 }
 
+std::vector<std::uint8_t> PackUncompressed(
+    const std::uint8_t* source,
+    int width,
+    int height,
+    int channelCount)
+{
+    const std::size_t pixelCount = static_cast<std::size_t>(width) * height;
+    std::vector<std::uint8_t> result(pixelCount * static_cast<std::size_t>(channelCount));
+    for (std::size_t pixel = 0; pixel < pixelCount; ++pixel)
+    {
+        for (int channel = 0; channel < channelCount; ++channel)
+            result[pixel * channelCount + channel] = source[pixel * 4u + channel];
+    }
+    return result;
+}
+
+bool TryCalculateMipSize(
+    std::uint32_t format,
+    std::uint32_t width,
+    std::uint32_t height,
+    std::uint64_t& result)
+{
+    if (format == kFormatBC3)
+    {
+        const std::uint64_t blocksX = (static_cast<std::uint64_t>(width) + 3u) / 4u;
+        const std::uint64_t blocksY = (static_cast<std::uint64_t>(height) + 3u) / 4u;
+        if (blocksX > kMaxArtifactBytes / 16u ||
+            blocksY > kMaxArtifactBytes / (blocksX * 16u))
+        {
+            return false;
+        }
+        result = blocksX * blocksY * 16u;
+        return true;
+    }
+    std::uint64_t bytesPerTexel = 0;
+    if (format == kFormatR8)
+        bytesPerTexel = 1u;
+    else if (format == kFormatRG8)
+        bytesPerTexel = 2u;
+    else if (format == kFormatRGBA8)
+        bytesPerTexel = 4u;
+    if (bytesPerTexel != 0)
+    {
+        if (height == 0 || width > kMaxArtifactBytes / bytesPerTexel / height)
+            return false;
+        result = static_cast<std::uint64_t>(width) * height * bytesPerTexel;
+        return true;
+    }
+    return false;
+}
+
+std::uint64_t AlignBufferCopyOffset(std::uint64_t value)
+{
+    return (value + kBufferCopyOffsetAlignment - 1u) &
+        ~(kBufferCopyOffsetAlignment - 1u);
+}
+
 bool ReadHeaderAndTable(
     const std::filesystem::path& artifactPath,
     TextureArtifactHeader& header,
@@ -186,7 +247,9 @@ bool ReadHeaderAndTable(
         error = "Cooked texture has an invalid header: " + artifactPath.string();
         return false;
     }
-    if (header.version != VansTextureCooker::ArtifactVersion || header.format != kFormatBC3 ||
+    if (header.version != VansTextureCooker::ArtifactVersion ||
+        (header.format != kFormatBC3 && header.format != kFormatRGBA8 &&
+            header.format != kFormatR8 && header.format != kFormatRG8) ||
         header.width == 0 || header.height == 0 || header.mipCount == 0 || header.mipCount > 32 ||
         header.dataSize == 0 || header.dataSize > kMaxArtifactBytes)
     {
@@ -225,15 +288,13 @@ bool ReadHeaderAndTable(
     std::uint64_t expectedOffset = 0;
     for (const TextureArtifactMip& mip : mips)
     {
-        const std::uint64_t blocksX = (static_cast<std::uint64_t>(expectedWidth) + 3u) / 4u;
-        const std::uint64_t blocksY = (static_cast<std::uint64_t>(expectedHeight) + 3u) / 4u;
-        if (blocksX > kMaxArtifactBytes / 16u ||
-            blocksY > kMaxArtifactBytes / (blocksX * 16u))
+		expectedOffset = AlignBufferCopyOffset(expectedOffset);
+        std::uint64_t expectedSize = 0;
+        if (!TryCalculateMipSize(header.format, expectedWidth, expectedHeight, expectedSize))
         {
             error = "Cooked texture mip dimensions overflow: " + artifactPath.string();
             return false;
         }
-        const std::uint64_t expectedSize = blocksX * blocksY * 16u;
         if (mip.width != expectedWidth || mip.height != expectedHeight ||
             mip.offset != expectedOffset || mip.size != expectedSize ||
             expectedOffset > header.dataSize || expectedSize > header.dataSize - expectedOffset)
@@ -362,12 +423,13 @@ bool VansTextureCooker::IsEligible(const std::filesystem::path& sourcePath, cons
     const std::wstring extension = LowerExtension(sourcePath);
     if (extension != L".png" && extension != L".jpg" && extension != L".jpeg" && extension != L".tga")
         return false;
-    if (!meta.ReadBoolSetting("useCompress", "compress", true))
-        return false;
     const std::string precision = meta.ReadStringSetting("precision", "low8");
     if (precision != "low8" && precision != "8" && precision != "rgba8")
         return false;
-    return meta.ReadIntSetting("importChannel", 4) == 4;
+    const int importChannel = meta.ReadIntSetting("importChannel", 4);
+    const bool useCompress = meta.ReadBoolSetting("useCompress", "compress", true);
+    return useCompress ? importChannel == 4
+        : importChannel == 1 || importChannel == 2 || importChannel == 4;
 }
 
 VansTextureCookResult VansTextureCooker::CookIfNeeded(
@@ -402,7 +464,7 @@ VansTextureCookResult VansTextureCooker::CookIfNeeded(
     if (!loaded || width <= 0 || height <= 0)
     {
         result.status = VansTextureCookStatus::Failed;
-        result.error = "Cannot decode texture for offline compression: " + sourcePath.string();
+        result.error = "Cannot decode texture for offline cooking: " + sourcePath.string();
         if (loaded)
             stbi_image_free(loaded);
         result.artifactPath.clear();
@@ -422,24 +484,44 @@ VansTextureCookResult VansTextureCooker::CookIfNeeded(
     std::vector<std::uint8_t> rgba(loaded, loaded + baseBytes);
     stbi_image_free(loaded);
 
+    const bool useCompress = meta.ReadBoolSetting("useCompress", "compress", true);
+    const int importChannel = meta.ReadIntSetting("importChannel", 4);
+    const std::uint32_t cookedFormat = useCompress
+        ? kFormatBC3
+        : importChannel == 1 ? kFormatR8
+        : importChannel == 2 ? kFormatRG8
+        : kFormatRGBA8;
     const int mipCount = CalculateMipCount(width, height);
     std::vector<TextureArtifactMip> artifactMips;
     artifactMips.reserve(static_cast<std::size_t>(mipCount));
     std::vector<std::uint8_t> artifactData;
-    artifactData.reserve(baseBytes / 3u + 256u);
+    artifactData.reserve(useCompress ? baseBytes / 3u + 256u : baseBytes);
 
     int mipWidth = width;
     int mipHeight = height;
     for (int mipIndex = 0; mipIndex < mipCount; ++mipIndex)
     {
-        std::vector<std::uint8_t> compressed = CompressBC3(rgba.data(), mipWidth, mipHeight);
+        std::vector<std::uint8_t> mipPayload = useCompress
+            ? CompressBC3(rgba.data(), mipWidth, mipHeight)
+            : PackUncompressed(rgba.data(), mipWidth, mipHeight, importChannel);
+        const std::size_t alignedOffset = static_cast<std::size_t>(
+			AlignBufferCopyOffset(artifactData.size()));
+		if (alignedOffset > kMaxArtifactBytes ||
+			mipPayload.size() > kMaxArtifactBytes - alignedOffset)
+        {
+            result.status = VansTextureCookStatus::Failed;
+            result.error = "Cooked texture mip chain exceeds the artifact size limit: " + sourcePath.string();
+            result.artifactPath.clear();
+            return result;
+        }
+		artifactData.resize(alignedOffset, 0u);
         TextureArtifactMip mip{};
         mip.width = static_cast<std::uint32_t>(mipWidth);
         mip.height = static_cast<std::uint32_t>(mipHeight);
         mip.offset = static_cast<std::uint64_t>(artifactData.size());
-        mip.size = static_cast<std::uint64_t>(compressed.size());
+        mip.size = static_cast<std::uint64_t>(mipPayload.size());
         artifactMips.push_back(mip);
-        artifactData.insert(artifactData.end(), compressed.begin(), compressed.end());
+        artifactData.insert(artifactData.end(), mipPayload.begin(), mipPayload.end());
 
         if (mipIndex + 1 < mipCount)
         {
@@ -452,7 +534,7 @@ VansTextureCookResult VansTextureCooker::CookIfNeeded(
     TextureArtifactHeader header{};
     std::memcpy(header.magic, kArtifactMagic.data(), kArtifactMagic.size());
     header.version = ArtifactVersion;
-    header.format = kFormatBC3;
+    header.format = cookedFormat;
     header.width = static_cast<std::uint32_t>(width);
     header.height = static_cast<std::uint32_t>(height);
     header.mipCount = static_cast<std::uint32_t>(artifactMips.size());

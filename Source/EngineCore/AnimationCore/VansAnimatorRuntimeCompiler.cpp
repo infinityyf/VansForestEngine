@@ -1,7 +1,5 @@
 #include "VansAnimatorRuntimeCompiler.h"
 
-#include "Storage/VansBoneMaskStorage.h"
-#include "Storage/VansAnimationRigStorage.h"
 #include "VansAnimationClipLoader.h"
 
 #include <nlohmann/json.hpp>
@@ -28,17 +26,12 @@ namespace VansGraphics
 			error = "Animator compilation requires an Animation Rig asset resolver";
 			return nullptr;
 		}
-		std::filesystem::path rigPath;
-		if (!options.rigResolver(rigGuid, rigPath, error))
+		const std::shared_ptr<const VansAnimationRigAsset> rigAsset =
+			options.rigResolver(rigGuid, error);
+		if (!rigAsset)
 			return nullptr;
-		VansAnimationRigAsset rigAsset;
-		if (!VansAnimationRigStorage::Load(rigPath, rigAsset, error))
-		{
-			error = "Failed to load Animation Rig '" + rigGuid + "': " + error;
-			return nullptr;
-		}
 		VansCompiledAnimationRig compiledRig;
-		if (!VansAnimationRigCompiler::Compile(rigAsset, skeleton, compiledRig, error))
+		if (!VansAnimationRigCompiler::Compile(*rigAsset, skeleton, compiledRig, error))
 		{
 			error = "Animation Rig '" + rigGuid + "' failed compilation: " + error;
 			return nullptr;
@@ -62,7 +55,7 @@ namespace VansGraphics
 		if (!controller->SetAnimationRig(
 			std::move(compiledRig), options.queryProfileResolver, error))
 			return nullptr;
-		controller->SetAnimationRigAssetIdentity(rigGuid, rigPath.string());
+		controller->SetAnimationRigAssetGuid(rigGuid);
 		for (const AnimatorParameter& parameter : asset.parameters)
 		{
 			controller->AddParameter(parameter.name, parameter.type);
@@ -94,16 +87,10 @@ namespace VansGraphics
 						error = "Animator full-graph compilation requires a Bone Mask asset resolver";
 						return nullptr;
 					}
-					std::filesystem::path maskPath;
-					if (!maskResolver(definition, maskPath, error))
+					std::shared_ptr<const VansBoneMaskAsset> mask;
+					if (!maskResolver(definition, mask, error) || !mask)
 						return nullptr;
-					VansBoneMaskAsset mask;
-					if (!VansBoneMaskStorage::Load(maskPath, mask, error))
-					{
-						error = "Failed to load Bone Mask for Layer '" + definition.name + "': " + error;
-						return nullptr;
-					}
-					setup.mask = std::move(mask);
+					setup.mask = *mask;
 				}
 				layers.push_back(std::move(setup));
 			}

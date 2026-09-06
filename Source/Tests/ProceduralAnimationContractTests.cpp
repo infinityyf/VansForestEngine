@@ -6,7 +6,7 @@
 #include "../EngineCore/AnimationCore/Procedural/Solvers/VansChainIKSolver.h"
 #include "../EngineCore/AnimationCore/Procedural/Solvers/VansLimbIKSolver.h"
 #include "../EngineCore/AnimationCore/Storage/VansAnimationRigStorage.h"
-#include "../EngineCore/AnimationCore/Storage/VansRetargetProfileStorage.h"
+#include "../EngineCore/AnimationCore/Serialization/VansRetargetProfileJsonCodec.h"
 #include "../EngineCore/AnimationCore/VansAnimationController.h"
 #include "../EngineCore/AnimationCore/VansPoseMath.h"
 #include "../EngineCore/AssetCore/Serialization/VansSerializedValueAccess.h"
@@ -1236,24 +1236,24 @@ namespace
 		profile.name = "Strict Profile";
 		nlohmann::json value;
 		std::string error;
-		if (!VansRetargetProfileStorage::SerializeToJsonObject(profile, value, error))
+		if (!VansRetargetProfileJsonCodec::Encode(profile, value, error))
 			return Check(false, error.c_str());
 		value["retarget_options"] = nlohmann::json::object();
 		VansRetargetProfileAsset parsed;
-		if (!Check(!VansRetargetProfileStorage::DeserializeFromJsonObject(value, parsed, error),
+		if (!Check(!VansRetargetProfileJsonCodec::Decode(value, parsed, error),
 			"Retarget Profile accepted a legacy compatibility field")) return false;
 		profile.translationScaleMode = static_cast<VansRetargetTranslationScaleMode>(255);
-		if (!Check(!VansRetargetProfileStorage::SerializeToJsonObject(profile, value, error),
+		if (!Check(!VansRetargetProfileJsonCodec::Encode(profile, value, error),
 			"Retarget Profile storage silently rewrote an invalid translation scale enum"))
 			return false;
 		profile.translationScaleMode = VansRetargetTranslationScaleMode::AutoPelvis;
 		profile.rootAlignment = static_cast<VansRetargetRootAlignment>(255);
-		if (!Check(!VansRetargetProfileStorage::SerializeToJsonObject(profile, value, error),
+		if (!Check(!VansRetargetProfileJsonCodec::Encode(profile, value, error),
 			"Retarget Profile storage silently rewrote an invalid root alignment enum"))
 			return false;
 		profile.rootAlignment = VansRetargetRootAlignment::None;
 		profile.targetModelSpaceAlignment = static_cast<VansRetargetModelSpaceAlignment>(255);
-		if (!Check(!VansRetargetProfileStorage::SerializeToJsonObject(profile, value, error),
+		if (!Check(!VansRetargetProfileJsonCodec::Encode(profile, value, error),
 			"Retarget Profile storage silently rewrote an invalid model alignment enum"))
 			return false;
 
@@ -1287,7 +1287,7 @@ namespace
 			if (!config) continue;
 			const auto expected = expectedRigs.find(config->name);
 			if (expected == expectedRigs.end()) continue;
-			if (!Check(config->valid && config->rig == expected->second,
+			if (!Check(config->valid && config->rigGuid == expected->second,
 				"Project scene animation did not resolve its required Animation Rig")) return false;
 			if (!Check(found.insert(config->name).second,
 				"Project scene contains a duplicate configured character")) return false;

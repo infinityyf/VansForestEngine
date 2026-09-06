@@ -11,6 +11,6 @@ namespace VansRuntime
 		std::uint32_t schemaVersion = 1;
 		std::string locale;
 		std::unordered_map<std::string, std::string> strings;
-		std::string sourceConfigPath;
+		std::string sourceAssetGuid;
 	};
 }

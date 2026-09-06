@@ -46,6 +46,10 @@ namespace VansRuntime
         bool InitializeWithDevice(const VansUIInitDesc& desc,
                                    VansGraphics::VansVKDevice* device);
 
+        // 项目配置资产发布到内存仓库后显式应用全局主题。
+        // UI 核心初始化与项目资产绑定是两个独立生命周期阶段。
+        bool ApplyGlobalThemeFromMemory(std::string& error);
+
         // 在场景卸载完成后、VansVKDevice 销毁前调用
         void Shutdown();
 
@@ -61,15 +65,14 @@ namespace VansRuntime
 
         // ── 文档管理 ──────────────────────────────────────────────
 
-        // xamlPath：项目相对路径（如 "UI/Views/HUD.xaml"）
-        //           或引擎协议路径（如 "engine://UI/...xaml"）
-        std::shared_ptr<VansUIDocument> LoadDocument(const std::string& xamlPath);
-        std::shared_ptr<VansUIScreen> LoadScreen(const std::string& configPath);
-        std::shared_ptr<VansUIScreen> LoadScreen(const std::string& configPath,
+        // UI document and screen assets are resolved from the project memory repository by GUID.
+        std::shared_ptr<VansUIDocument> LoadDocument(const std::string& xamlAssetGuid);
+        std::shared_ptr<VansUIScreen> LoadScreen(const std::string& screenAssetGuid);
+        std::shared_ptr<VansUIScreen> LoadScreen(const std::string& screenAssetGuid,
                                                  std::shared_ptr<VansUIViewModel> vm);
-        bool PreloadScreen(const std::string& configPath);
-        void ReleaseScreen(const std::string& configPath);
-        std::shared_ptr<VansUIScreen> ReloadScreen(const std::string& configPath,
+        bool PreloadScreen(const std::string& screenAssetGuid);
+        void ReleaseScreen(const std::string& screenAssetGuid);
+        std::shared_ptr<VansUIScreen> ReloadScreen(const std::string& screenAssetGuid,
                                                    std::shared_ptr<VansUIViewModel> vm = nullptr);
         void CloseScreen(VansUIHandleId screenId);
         void CloseScreenByName(const std::string& name);

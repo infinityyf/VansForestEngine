@@ -10,7 +10,7 @@ namespace Vans
 {
 	struct VansSceneRagdollComponentConfig
 	{
-		std::string profile;
+		std::string profileGuid;
 		std::string driveMode = "animation";
 		float blendWeight = 0.0f;
 	};
@@ -18,9 +18,9 @@ namespace Vans
 	struct VansSceneAnimationRetargetConfig
 	{
 		bool enabled = false;
-		std::string profile;
-		std::string sourceModel;
-		std::string sourceAnimator;
+		std::string profileGuid;
+		std::string sourceModelGuid;
+		std::string sourceAnimatorGuid;
 		bool debugDraw = false;
 	};
 
@@ -29,8 +29,8 @@ namespace Vans
 		bool valid = false;
 		bool enabled = true;
 		std::string meshGroup;
-		std::string animator;
-		std::string rig;
+		std::string animatorGuid;
+		std::string rigGuid;
 		std::string externClips;
 		bool rootMotion = false;
 		bool autoPlay = true;

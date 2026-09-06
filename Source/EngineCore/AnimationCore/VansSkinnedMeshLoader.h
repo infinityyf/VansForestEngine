@@ -21,25 +21,23 @@ namespace VansGraphics
 	//   - Per-vertex bone influences (IDs + weights)
 	//   - Animation clips (one per aiAnimation)
 	//
-	// It also handles .vclip caching: if cached clips exist on disk next to the
-	// FBX, they are loaded directly instead of re-extracting from Assimp.
+	// Serialized .vclip publication is intentionally outside this decoder. Model
+	// loading and preview extraction produce in-memory results and never write assets.
 	// -----------------------------------------------------------------------
 
 	class VansSkinnedMeshLoader
 	{
 	public:
-		// Load a Skeleton from a model asset and project its adjacent .meta file into
-		// the import settings. This is the canonical file boundary for stable
-		// Skeleton and bone identities; callers must not import a model Skeleton
-		// with default settings.
+		// 从原始模型资源构建 Skeleton。模型 .meta 必须由项目/导入边界预先解析为
+		// 内存设置；AnimationCore 不得自行访问配置文件。
 		static bool LoadSkeletonFromModelAsset(
 			const std::string& modelPath,
+			const Vans::VansSkeletalMeshImportSettings& importSettings,
 			Skeleton& outSkeleton,
 			std::string& error);
 
 		// Main entry point: process an already-loaded aiScene for animation data.
 		// If the model has animations, fills outResult with skeleton + clips + bone weights.
-		// If cached .vclip files exist, loads from those instead of extracting.
 		static bool ProcessAnimatedMesh(const aiScene* scene,
 		                                const std::string& fbxFilePath,
 		                                uint32_t totalVertexCount,
@@ -72,22 +70,16 @@ namespace VansGraphics
 
 		// Load animation clips from an external FBX file, mapping bone channels
 		// to an existing origin-model skeleton. Only animation data is extracted,
-		// without bone weights. Clips are cached as .vclip files alongside the
-		// external FBX. Returns true if at least one clip was extracted.
+		// without bone weights. Returns true if at least one clip was extracted.
+		// The caller decides whether and when to serialize the result.
 		static bool ExtractExternAnimationClips(
 		    const std::string& externFbxPath,
 		    const Skeleton& originSkeleton,
 		    std::vector<VansAnimationClip>& outClips);
 
 	private:
-		// Utility: get parent directory from a file path.
-		static std::string GetParentDirectory(const std::string& filePath);
-
 		// Utility: get base filename without extension.
 		static std::string GetFileBaseName(const std::string& filePath);
-
-		// Utility: check if a file exists on disk.
-		static bool FileExists(const std::string& filePath);
 	};
 
 }  // namespace VansGraphics

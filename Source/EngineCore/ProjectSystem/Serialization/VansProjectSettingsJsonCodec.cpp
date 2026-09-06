@@ -187,15 +187,23 @@ bool VansProjectSettingsJsonCodec::DecodeRenderSettings(
 		nearMediaSettings.sliceDistributionPower = nearMedia.at("sliceDistributionPower").get<float>();
 		nearMediaSettings.temporalReprojection = nearMedia.at("temporalReprojection").get<bool>();
 		nearMediaSettings.historyWeight = nearMedia.at("historyWeight").get<float>();
+		nearMediaSettings.lightTransmittanceSamples =
+			nearMedia.at("lightTransmittanceSamples").get<std::uint32_t>();
+		nearMediaSettings.lightTransmittanceMaxDistanceMeters =
+			nearMedia.at("lightTransmittanceMaxDistanceMeters").get<float>();
 		if (nearMediaSettings.tileSize == 0 || nearMediaSettings.slices == 0 ||
 			!std::isfinite(nearMediaSettings.nearDistanceMeters) || nearMediaSettings.nearDistanceMeters < 0.0f ||
 			!std::isfinite(nearMediaSettings.farDistanceMeters) ||
 			nearMediaSettings.farDistanceMeters <= nearMediaSettings.nearDistanceMeters ||
 			!std::isfinite(nearMediaSettings.sliceDistributionPower) || nearMediaSettings.sliceDistributionPower <= 0.0f ||
 			!std::isfinite(nearMediaSettings.historyWeight) || nearMediaSettings.historyWeight < 0.0f ||
-			nearMediaSettings.historyWeight >= 1.0f)
+			nearMediaSettings.historyWeight >= 1.0f ||
+			nearMediaSettings.lightTransmittanceSamples == 0 ||
+			nearMediaSettings.lightTransmittanceSamples > 32 ||
+			!std::isfinite(nearMediaSettings.lightTransmittanceMaxDistanceMeters) ||
+			nearMediaSettings.lightTransmittanceMaxDistanceMeters <= 0.0f)
 		{
-			error = "nearMediaQuality contains invalid dimensions, distance mapping, or history weight";
+			error = "nearMediaQuality contains invalid dimensions, distance mapping, history weight, or light transmittance quality";
 			return false;
 		}
 
@@ -295,7 +303,10 @@ nlohmann::json VansProjectSettingsJsonCodec::EncodeRenderSettings(
 		{ "farDistanceMeters", settings.nearMediaQualitySettings.farDistanceMeters },
 		{ "sliceDistributionPower", settings.nearMediaQualitySettings.sliceDistributionPower },
 		{ "temporalReprojection", settings.nearMediaQualitySettings.temporalReprojection },
-		{ "historyWeight", settings.nearMediaQualitySettings.historyWeight }
+		{ "historyWeight", settings.nearMediaQualitySettings.historyWeight },
+		{ "lightTransmittanceSamples", settings.nearMediaQualitySettings.lightTransmittanceSamples },
+		{ "lightTransmittanceMaxDistanceMeters",
+			settings.nearMediaQualitySettings.lightTransmittanceMaxDistanceMeters }
 	};
 	root["cloudShadowQuality"] = {
 		{ "clipmapCount", settings.cloudShadowQualitySettings.clipmapCount },

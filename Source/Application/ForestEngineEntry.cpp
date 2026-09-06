@@ -173,6 +173,17 @@ void RunMainLoop(VansCamera& camera)
 		g_RenderSystem.reset();
 		return;
 	}
+	if (Vans::VansProjectManager::Get().IsProjectLoaded())
+	{
+		std::string themeError;
+		if (!VansRuntime::VansUISystem::Get().ApplyGlobalThemeFromMemory(themeError))
+		{
+			VANS_LOG_ERROR("[ForestEngine] Failed to apply Runtime UI global theme: " << themeError);
+			g_RenderSystem->ShutdownFrameExecution();
+			g_RenderSystem.reset();
+			return;
+		}
+	}
 
 	// Start physics simulation thread
 	VansPhysicsSystem::GetInstance().StartSimulation();

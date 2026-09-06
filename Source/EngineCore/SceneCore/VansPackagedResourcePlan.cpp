@@ -317,6 +317,7 @@ namespace
 		json["sourcePath"] = MakeStoredPath(record.sourcePath, contentRoot);
 		json["authoringPath"] = MakeStoredPath(record.authoringPath, contentRoot);
 		json["artifactPath"] = MakeStoredPath(record.artifactPath, contentRoot);
+		json["metaPath"] = MakeStoredPath(record.metaPath, contentRoot);
 		json["artifactFormat"] = record.artifactFormat;
 		json["sourceHash"] = record.sourceHash;
 		json["metaHash"] = record.metaHash;
@@ -332,6 +333,7 @@ namespace
 		record.sourcePath = ResolveStoredPath(json.value("sourcePath", ""), contentRoot);
 		record.authoringPath = ResolveStoredPath(json.value("authoringPath", ""), contentRoot);
 		record.artifactPath = ResolveStoredPath(json.value("artifactPath", ""), contentRoot);
+		record.metaPath = ResolveStoredPath(json.at("metaPath").get<std::string>(), contentRoot);
 		record.artifactFormat = json.at("artifactFormat").get<std::string>();
 		record.sourceHash = json.value("sourceHash", static_cast<std::uint64_t>(0));
 		record.metaHash = json.value("metaHash", static_cast<std::uint64_t>(0));

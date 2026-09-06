@@ -64,6 +64,10 @@ struct SceneLocalVolumetricFogEntityFactoryRequest
 class VansSceneEntityFactory
 {
 public:
+	// Factory 与 Inspector 共用这一份 Local Fog data 写出逻辑，避免默认模板漂移。
+	static VansSerializedValue BuildLocalVolumetricFogComponentData(
+		const VansSceneLocalVolumetricFogComponentConfig& settings);
+
     static VansSerializedValue BuildEmptyEntity(
         const SceneEmptyEntityFactoryRequest& request,
         const std::string& entityId = {});

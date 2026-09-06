@@ -2,6 +2,7 @@
 
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
 
+#include <algorithm>
 #include <cmath>
 #include <unordered_set>
 
@@ -147,16 +148,6 @@ bool ValidateCommandPayload(
 	return true;
 }
 
-int PredictionSupportRank(VansActionServicePredictionSupport support)
-{
-	switch (support)
-	{
-	case VansActionServicePredictionSupport::AuthorityOnly: return 0;
-	case VansActionServicePredictionSupport::Predictable: return 1;
-	case VansActionServicePredictionSupport::PredictableWithRollback: return 2;
-	}
-	return 0;
-}
 }
 
 bool VansActionServiceRegistry::Register(
@@ -169,7 +160,7 @@ bool VansActionServiceRegistry::Register(
 		return false;
 	}
 	if (!service || !service->Capability().service ||
-		service->Capability().stableName.empty() || service->Capability().version == 0)
+		service->Capability().stableName.empty())
 	{
 		error = "Action Service capability is invalid";
 		return false;
@@ -180,11 +171,12 @@ bool VansActionServiceRegistry::Register(
 		error = "Action Service stable ID does not match its name";
 		return false;
 	}
-	if (!m_Services.emplace(service->Capability().service, std::move(service)).second)
+	if (!m_Services.emplace(service->Capability().service, service).second)
 	{
 		error = "duplicate Action Service";
 		return false;
 	}
+	m_TickOrder.push_back(std::move(service));
 	return true;
 }
 
@@ -192,15 +184,6 @@ bool VansActionServiceRegistry::Seal(std::string& error)
 {
 	for (const auto& entry : m_Services)
 	{
-		std::unordered_set<std::string> commands;
-		for (const std::string& command : entry.second->Capability().commands)
-		{
-			if (command.empty() || !commands.insert(command).second)
-			{
-				error = "Action Service contains an invalid or duplicate command";
-				return false;
-			}
-		}
 		std::unordered_set<std::string> schemaNames;
 		std::unordered_set<VansActionFieldId> schemaIds;
 		for (const VansActionCommandSchema& command : entry.second->Capability().commandSchemas)
@@ -216,12 +199,6 @@ bool VansActionServiceRegistry::Seal(std::string& error)
 				error = "Action Service contains a duplicate command schema";
 				return false;
 			}
-			if (PredictionSupportRank(command.prediction) >
-				PredictionSupportRank(entry.second->Capability().prediction))
-			{
-				error = "Action Service command prediction support exceeds its service capability";
-				return false;
-			}
 			std::unordered_set<std::string> fields;
 			for (const VansActionCommandFieldSchema& field : command.fields)
 			{
@@ -235,8 +212,19 @@ bool VansActionServiceRegistry::Seal(std::string& error)
 			}
 		}
 	}
+	std::sort(m_TickOrder.begin(), m_TickOrder.end(), [](const auto& left, const auto& right)
+	{
+		return left->Capability().stableName < right->Capability().stableName;
+	});
 	m_Sealed = true;
 	return true;
+}
+
+void VansActionServiceRegistry::Tick(double deltaSeconds) const
+{
+	if (!m_Sealed) return;
+	for (const std::shared_ptr<IVansActionService>& service : m_TickOrder)
+		service->Tick(deltaSeconds);
 }
 
 const VansActionCommandSchema* VansActionServiceRegistry::ResolveCommandSchema(
@@ -282,53 +270,47 @@ VansActionCommandResult VansActionServiceRegistry::Execute(const VansActionComma
 {
 	const auto service = Resolve(command.service);
 	if (!service)
-		return { VansActionError::ServiceMissing, {}, VansSerializedValue::Object({}),
-			"Action Service is missing" };
+		return { VansActionError::Dependency, {}, VansSerializedValue::Object({}),
+			"Action Service is missing", "Core.ActionService.Missing" };
 	if (!m_Sealed)
-		return { VansActionError::InvalidState, {}, VansSerializedValue::Object({}),
-			"Action Service registry is not sealed" };
+		return { VansActionError::Internal, {}, VansSerializedValue::Object({}),
+			"Action Service registry is not sealed", "Core.ActionService.RegistryNotSealed" };
 	if (!command.command || command.stableName.empty() ||
 		command.command != VansMakeStableId<VansActionFieldIdTag>(command.stableName))
 	{
-		return { VansActionError::DefinitionInvalid, {}, VansSerializedValue::Object({}),
-			"Action Service command stable identity is invalid" };
+		return { VansActionError::InvalidDefinition, {}, VansSerializedValue::Object({}),
+			"Action Service command stable identity is invalid",
+			"Core.ActionService.InvalidCommandIdentity" };
 	}
 
 	const VansActionCommandSchema* schema = ResolveCommandSchema(command.service, command.command);
-	bool knownLegacyCommand = false;
-	for (const std::string& name : service->Capability().commands)
-		if (name == command.stableName)
-			knownLegacyCommand = true;
-	if (!schema && !knownLegacyCommand)
+	if (!schema)
 	{
-		return { VansActionError::DefinitionInvalid, {}, VansSerializedValue::Object({}),
-			"Action Service command is not declared by the service" };
-	}
-	if (command.predicted &&
-		(service->Capability().prediction == VansActionServicePredictionSupport::AuthorityOnly ||
-			(schema && schema->prediction == VansActionServicePredictionSupport::AuthorityOnly)))
-	{
-		return { VansActionError::AuthorityDenied, {}, VansSerializedValue::Object({}),
-			"Action Service command does not support prediction" };
+		return { VansActionError::InvalidDefinition, {}, VansSerializedValue::Object({}),
+			"Action Service command is not declared by the service",
+			"Core.ActionService.CommandNotDeclared" };
 	}
 	if (schema)
 	{
 		std::string payloadError;
 		if (!ValidateCommandPayload(*schema, command.payload, payloadError))
 		{
-			return { VansActionError::DefinitionInvalid, {}, VansSerializedValue::Object({}),
-				std::move(payloadError) };
+			return { VansActionError::InvalidDefinition, {}, VansSerializedValue::Object({}),
+				std::move(payloadError), "Core.ActionService.InvalidPayload" };
 		}
 	}
 
 	VansActionCommandResult result = service->Execute(command);
+	if (result.error != VansActionError::None && result.reasonCode.empty())
+		result.reasonCode = VansActionDefaultReasonCode(result.error);
 	if (!result || !schema)
 		return result;
 
 	if (schema->resourcePolicy == VansActionCommandResourcePolicy::Create && !result.resource)
 	{
-		result.error = VansActionError::InternalInvariant;
+		result.error = VansActionError::Internal;
 		result.message = "Action Service create command did not return a resource handle";
+		result.reasonCode = "Core.ActionService.ResourceMissing";
 		return result;
 	}
 	if (schema->resourcePolicy != VansActionCommandResourcePolicy::Create && result.resource)
@@ -336,8 +318,9 @@ VansActionCommandResult VansActionServiceRegistry::Execute(const VansActionComma
 		std::string releaseError;
 		service->Release(result.resource, releaseError);
 		result.resource = {};
-		result.error = VansActionError::InternalInvariant;
+		result.error = VansActionError::Internal;
 		result.message = "Action Service command returned an unexpected resource handle";
+		result.reasonCode = "Core.ActionService.UnexpectedResource";
 		if (!releaseError.empty())
 			result.message += ": " + releaseError;
 	}

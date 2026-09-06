@@ -1,5 +1,6 @@
 #include "VansNoesisProviders.h"
 #include "VansNoesisRenderDevice.h"
+#include "../../VansUIAssetResolver.h"
 
 #include "../../../ProjectSystem/VansProjectManager.h"
 #include "../../../ProjectSystem/VansPathResolver.h"
@@ -15,6 +16,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <string_view>
 #include <unordered_map>
 
 #include <stb_image.h>
@@ -144,17 +146,40 @@ VansNoesisXamlProvider::VansNoesisXamlProvider(
 
 Noesis::Ptr<Noesis::Stream> VansNoesisXamlProvider::LoadXaml(const Noesis::Uri& uri)
 {
-    const std::string uriStr   = uri.Str();
-    const std::string fullPath = ResolveUIPath(uriStr, m_ProjectManager, m_PathResolver);
-
-    auto buffer = ReadFileToBuffer(fullPath);
-    if (buffer.empty())
+	static constexpr std::string_view assetScheme = "asset://";
+    const std::string uriStr = uri.Str();
+	if (uriStr.rfind(assetScheme, 0) != 0)
     {
-        VANS_LOG_ERROR("[NoesisXamlProvider] XAML not found: uri='" << uriStr << "' resolved='" << fullPath << "'");
+		VANS_LOG_ERROR("[NoesisXamlProvider] XAML URI must use asset://GUID: '"
+			<< uriStr << "'");
         return nullptr;
     }
+	Vans::VansAssetGuid guid;
+	if (!Vans::VansAssetGuid::TryParse(uriStr.substr(assetScheme.size()), guid))
+	{
+		VANS_LOG_ERROR("[NoesisXamlProvider] XAML URI contains an invalid asset GUID: '"
+			<< uriStr << "'");
+		return nullptr;
+	}
+	const std::optional<Vans::VansAssetRecord> record =
+		m_ProjectManager->FindAssetRecord(guid);
+	if (!record || record->type != Vans::VansAssetType::UIXaml)
+	{
+		VANS_LOG_ERROR("[NoesisXamlProvider] XAML asset is not indexed: "
+			<< guid.ToString());
+		return nullptr;
+	}
+	const std::shared_ptr<const VansUIXamlAsset> xaml =
+		m_ProjectManager->GetAssetObjectRepository().ResolveLatest<VansUIXamlAsset>(guid);
+	if (!xaml || xaml->bytes.empty())
+	{
+		VANS_LOG_ERROR("[NoesisXamlProvider] XAML memory snapshot is unavailable: "
+			<< guid.ToString());
+		return nullptr;
+	}
 
-    return Noesis::Ptr<Noesis::Stream>(*new OwnedMemoryStream(std::move(buffer)));
+    return Noesis::Ptr<Noesis::Stream>(*new OwnedMemoryStream(
+		std::vector<uint8_t>(xaml->bytes.begin(), xaml->bytes.end())));
 }
 
 // ── VansNoesisTextureProvider ─────────────────────────────────────────

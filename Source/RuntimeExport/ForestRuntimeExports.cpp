@@ -20,6 +20,8 @@
 #include "../EngineCore/RuntimeCore/VansRuntimeFrameScheduler.h"
 #include "../EngineCore/RuntimeCore/VansThreadContract.h"
 #include "../EngineCore/SceneCore/VansPackagedResourcePlan.h"
+#include "../EngineCore/SceneCore/VansAssetObjectBootstrapper.h"
+#include "../EngineCore/SceneCore/VansSceneDocumentLoader.h"
 #include "../EngineCore/ScriptCore/VansScriptContext.h"
 #include "../EngineCore/Util/VansInputManager.h"
 #include "../EngineCore/RuntimeUI/Public/VansUISystem.h"
@@ -108,7 +110,11 @@ namespace
 			record.sourcePath = indexRecord.sourcePath;
 			record.authoringPath = indexRecord.authoringPath;
 			record.artifactPath = indexRecord.artifactPath;
+			record.metaPath = indexRecord.metaPath;
 			record.artifactFormat = ArtifactFormatFromString(indexRecord.artifactFormat);
+			if (record.sourcePath.empty() &&
+				record.artifactFormat == Vans::VansAssetArtifactFormat::Source)
+				record.sourcePath = record.artifactPath;
 			record.sourceHash = indexRecord.sourceHash;
 			record.metaHash = indexRecord.metaHash;
 			records.push_back(std::move(record));
@@ -440,6 +446,17 @@ FOREST_RUNTIME_API int ForestRuntime_LoadCurrentScene(ForestRuntimeHandle* runti
 
 	Vans::VansProjectManager& projectManager = Vans::VansProjectManager::Get();
 	const fs::path scenePath = (runtime->contentRoot / runtime->loadedScene).lexically_normal();
+	Vans::SceneDocumentLoadResult sceneDocumentLoad = Vans::VansSceneDocumentLoader::Load(scenePath);
+	if (!sceneDocumentLoad)
+	{
+		std::string message = "Cannot load packaged scene document: " + scenePath.string();
+		if (!sceneDocumentLoad.diagnostics.empty() && !sceneDocumentLoad.diagnostics.front().message.empty())
+			message += " (" + sceneDocumentLoad.diagnostics.front().message + ")";
+		SetError(runtime, message);
+		return 0;
+	}
+	const Vans::VansSerializedValue sceneDocument =
+		sceneDocumentLoad.document->SerializedRootSnapshot();
 	if (!runtime->resourcePlan.empty())
 	{
 		const fs::path resourcePlanPath = (runtime->contentRoot / runtime->resourcePlan).lexically_normal();
@@ -450,7 +467,18 @@ FOREST_RUNTIME_API int ForestRuntime_LoadCurrentScene(ForestRuntimeHandle* runti
 			SetError(runtime, "Cannot load packaged resource plan: " + planError);
 			return 0;
 		}
-		projectManager.SetPackagedAssetRecords(BuildRuntimeAssetRecords(packagePlan.assetIndex));
+		std::vector<Vans::VansAssetRecord> packagedAssetRecords =
+			BuildRuntimeAssetRecords(packagePlan.assetIndex);
+		projectManager.SetPackagedAssetRecords(packagedAssetRecords);
+		const Vans::VansAssetObjectBootstrapResult bootstrap =
+			Vans::VansAssetObjectBootstrapper::Publish(
+				packagedAssetRecords, projectManager.GetAssetObjectRepository());
+		if (!bootstrap)
+		{
+			SetError(runtime, "Packaged configuration asset bootstrap failed: " +
+				bootstrap.errors.front());
+			return 0;
+		}
 		if (!runtime->scene->LoadPackagedProjectAssets(packagePlan, runtime->device.get()))
 		{
 			SetError(runtime, "Packaged project asset loading failed for scene: " + scenePath.string());
@@ -465,11 +493,19 @@ FOREST_RUNTIME_API int ForestRuntime_LoadCurrentScene(ForestRuntimeHandle* runti
 			SetError(runtime, "Packaged project has no asset database");
 			return 0;
 		}
-		if (!runtime->scene->LoadProjectAssets(*database, scenePath, runtime->device.get()))
+		if (!runtime->scene->LoadProjectAssets(
+			*database, sceneDocument, scenePath, runtime->device.get()))
 		{
 			SetError(runtime, "Project asset loading failed for scene: " + scenePath.string());
 			return 0;
 		}
+	}
+
+	std::string uiThemeError;
+	if (!VansRuntime::VansUISystem::Get().ApplyGlobalThemeFromMemory(uiThemeError))
+	{
+		SetError(runtime, "Runtime UI global theme application failed: " + uiThemeError);
+		return 0;
 	}
 
 	runtime->camera = std::make_unique<VansGraphics::VansCamera>(runtime->device.get());
@@ -480,7 +516,8 @@ FOREST_RUNTIME_API int ForestRuntime_LoadCurrentScene(ForestRuntimeHandle* runti
 	VANS_LOG("[ForestRuntime] Runtime script context ready");
 
 	if (!runtime->scene->LoadSceneForRendering(
-			scenePath.string().c_str(),
+			sceneDocument,
+			scenePath,
 			runtime->device.get(),
 			VansGraphics::VansSceneLoadMode::Runtime) ||
 		!runtime->scene->IsSceneReady())

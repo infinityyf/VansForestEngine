@@ -33,6 +33,11 @@ public:
 	bool HasPayloadSchema(VansTimelinePayloadTypeId type) const;
 	bool ValidatePayload(VansTimelinePayloadTypeId type,
 		const VansSerializedValue& payload, std::string& error) const;
+	VansTimelineSessionResult CreateActionSession(
+		std::string assetReference,
+		VansEntityHandle owner,
+		VansTimelineSessionScope scope);
+	bool IsReadyForActionSessions() const { return m_World && static_cast<bool>(m_AssetLoader); }
 	void SyncTimelineComponents();
 	void UpdateRuntimePostScript(double deltaSeconds);
 	void UpdateRuntimeCamera(double deltaSeconds);

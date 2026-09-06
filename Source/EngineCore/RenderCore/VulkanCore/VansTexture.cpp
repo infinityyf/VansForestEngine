@@ -30,6 +30,40 @@ namespace VansGraphics
 		{
 			g_TextureUploadFailures.fetch_add(1, std::memory_order_relaxed);
 		}
+
+		bool ResolveCookedTextureFormat(
+			Vans::VansCookedTextureFormat cookedFormat,
+			bool isSRGB,
+			bool useCompress,
+			int importChannel,
+			VkFormat& result)
+		{
+			switch (cookedFormat)
+			{
+			case Vans::VansCookedTextureFormat::BC3:
+				if (!useCompress || importChannel != 4)
+					return false;
+				result = isSRGB ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK;
+				return true;
+			case Vans::VansCookedTextureFormat::RGBA8:
+				if (useCompress || importChannel != 4)
+					return false;
+				result = isSRGB ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+				return true;
+			case Vans::VansCookedTextureFormat::R8:
+				if (useCompress || importChannel != 1)
+					return false;
+				result = isSRGB ? VK_FORMAT_R8_SRGB : VK_FORMAT_R8_UNORM;
+				return true;
+			case Vans::VansCookedTextureFormat::RG8:
+				if (useCompress || importChannel != 2)
+					return false;
+				result = isSRGB ? VK_FORMAT_R8G8_SRGB : VK_FORMAT_R8G8_UNORM;
+				return true;
+			default:
+				return false;
+			}
+		}
 	}
 
 	// =====================================================================
@@ -838,7 +872,9 @@ namespace VansGraphics
 				<< error);
 			return false;
 		}
-		if (cooked.format != Vans::VansCookedTextureFormat::BC3 ||
+		VkFormat format = VK_FORMAT_UNDEFINED;
+		if (!ResolveCookedTextureFormat(cooked.format, loadDesc.isSRGB,
+			loadDesc.useCompress, loadDesc.importChannel, format) ||
 			cooked.width == 0 || cooked.height == 0 || cooked.mips.empty() || cooked.data.empty() ||
 			cooked.data.size() > static_cast<size_t>(std::numeric_limits<int>::max()))
 		{
@@ -850,9 +886,6 @@ namespace VansGraphics
 		if (!vkDevice)
 			return false;
 		VkDevice device = vkDevice->GetLogicDevice();
-		const VkFormat format = loadDesc.isSRGB
-			? VK_FORMAT_BC3_SRGB_BLOCK
-			: VK_FORMAT_BC3_UNORM_BLOCK;
 		const VkExtent3D extent = { cooked.width, cooked.height, 1 };
 		if (!m_Image.CreateVulkanImage(
 			device,
@@ -924,7 +957,9 @@ namespace VansGraphics
 		std::string error;
 		if (!Vans::VansTextureCooker::LoadArtifact(loadDesc.cookedPath, cooked, error))
 			return false;
-		if (cooked.format != Vans::VansCookedTextureFormat::BC3 ||
+		VkFormat format = VK_FORMAT_UNDEFINED;
+		if (!ResolveCookedTextureFormat(cooked.format, loadDesc.isSRGB,
+			loadDesc.useCompress, loadDesc.importChannel, format) ||
 			cooked.width == 0 || cooked.height == 0 || cooked.mips.empty() || cooked.data.empty() ||
 			cooked.data.size() > static_cast<size_t>(std::numeric_limits<int>::max()))
 		{
@@ -932,9 +967,6 @@ namespace VansGraphics
 		}
 
 		VkDevice device = vkDevice.GetLogicDevice();
-		const VkFormat format = loadDesc.isSRGB
-			? VK_FORMAT_BC3_SRGB_BLOCK
-			: VK_FORMAT_BC3_UNORM_BLOCK;
 		const VkExtent3D extent = { cooked.width, cooked.height, 1 };
 		if (!m_Image.CreateVulkanImage(
 			device,

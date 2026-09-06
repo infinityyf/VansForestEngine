@@ -3,38 +3,15 @@
 #include "Public/VansUIComponent.h"
 #include "Public/VansUISystem.h"
 #include "Serialization/VansUIComponentConfigReader.h"
-#include "Serialization/VansUIDocumentLoader.h"
-#include "Serialization/VansUIDocumentMigrator.h"
 #include "Serialization/VansUIDocumentValidator.h"
-#include "../Configration/VansConfigration.h"
-#include "../ProjectSystem/VansProjectManager.h"
+#include "VansUIAssetResolver.h"
 #include "../Util/VansLog.h"
 
-#include <filesystem>
 #include <utility>
 #include <vector>
 
 namespace VansRuntime
 {
-    namespace
-    {
-        std::filesystem::path ResolveUIConfigPath(const std::string& configPath)
-        {
-            std::filesystem::path path(configPath);
-            if (path.is_absolute())
-                return path;
-
-            auto& projectManager = Vans::VansProjectManager::Get();
-            if (projectManager.IsProjectLoaded())
-                return std::filesystem::path(projectManager.ResolveAssetPath(configPath));
-
-            if (auto* configuration = VansConfigration::GetInstance())
-                return std::filesystem::path(configuration->GetProjectRootPath()) / configPath;
-
-            return path;
-        }
-    }
-
     VansUIComponentRegistry& VansUIComponentRegistry::Get()
     {
         static VansUIComponentRegistry registry;
@@ -42,40 +19,32 @@ namespace VansRuntime
     }
 
     std::shared_ptr<VansUIComponentInstance> VansUIComponentRegistry::LoadComponent(
-        const std::string& configPath)
+        const std::string& configAssetGuid)
     {
-        VansUIAssetDocument document;
+        std::shared_ptr<const VansUIAssetDocument> document;
         std::string error;
-        if (!VansUIDocumentLoader::Load(ResolveUIConfigPath(configPath), document, error))
+        if (!VansUIAssetResolver::ResolveDocument(
+            configAssetGuid, Vans::VansAssetType::UIComponent, document, error))
         {
-            VANS_LOG_ERROR("[RuntimeUI] Failed to load UI component config '" << configPath << "': " << error);
+            VANS_LOG_ERROR("[RuntimeUI] Failed to resolve UI component asset '" << configAssetGuid << "': " << error);
             return nullptr;
         }
 
         VansUIComponentConfig config;
-        config.sourceConfigPath = configPath;
+        config.sourceAssetGuid = configAssetGuid;
         std::vector<std::string> diagnostics;
-        if (!VansUIDocumentMigrator::MigrateToCurrent(document, VansUIDocumentKind::Component, diagnostics))
-        {
-            for (const std::string& diagnostic : diagnostics)
-                VANS_LOG_ERROR("[RuntimeUI] " << configPath << ": " << diagnostic);
-            return nullptr;
-        }
-        for (const std::string& diagnostic : diagnostics)
-            VANS_LOG_WARN("[RuntimeUI] " << configPath << ": " << diagnostic);
-        diagnostics.clear();
-        if (!VansUIComponentConfigReader::Read(document.root, config, diagnostics) ||
+        if (!VansUIComponentConfigReader::Read(document->root, config, diagnostics) ||
             !VansUIDocumentValidator::ValidateComponentConfig(config, diagnostics))
         {
             for (const std::string& diagnostic : diagnostics)
-                VANS_LOG_ERROR("[RuntimeUI] " << configPath << ": " << diagnostic);
+                VANS_LOG_ERROR("[RuntimeUI] " << configAssetGuid << ": " << diagnostic);
             return nullptr;
         }
 
-        auto uiDocument = VansUISystem::Get().LoadDocument(config.xamlPath);
+        auto uiDocument = VansUISystem::Get().LoadDocument(config.xamlAssetGuid);
         if (!uiDocument)
         {
-            VANS_LOG_ERROR("[RuntimeUI] Failed to load UI component XAML '" << config.xamlPath << "'");
+            VANS_LOG_ERROR("[RuntimeUI] Failed to resolve UI component XAML '" << config.xamlAssetGuid << "'");
             return nullptr;
         }
 

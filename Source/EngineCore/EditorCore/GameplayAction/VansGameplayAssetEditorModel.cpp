@@ -419,20 +419,6 @@ AssetDocumentEditResult VansGameplayAssetEditorModel::Redo()
 		: AssetDocumentEditResult{ false, "No GAF asset is open" };
 }
 
-AssetDocumentEditResult VansGameplayAssetEditorModel::MigrateToCurrent(
-	const VansGameplayAssetMigrationRegistry& migrations,
-	std::vector<VansGameplayMigrationRecord>& report)
-{
-	if (!IsOpen() || !m_Schema) return { false, "No GAF asset is open" };
-	VansSerializedValue migrated = Snapshot();
-	std::string error;
-	if (!migrations.Migrate(m_AssetType, m_Schema->schemaVersion, migrated, report, error))
-		return { false, error };
-	if (report.empty()) return { true, {} };
-	return VansAssetDocumentEditService::ReplaceRoot(
-		m_Document->sourceDocument, std::move(migrated));
-}
-
 std::vector<VansGameplaySemanticDiffEntry> VansGameplayAssetEditorModel::DiffAgainst(
 	const VansSerializedValue& other) const
 {

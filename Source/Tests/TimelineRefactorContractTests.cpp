@@ -19,6 +19,8 @@
 #include "../EngineCore/AnimationCore/VansAnimationController.h"
 #include "../EngineCore/AnimationCore/VansAnimatorIO.h"
 #include "../EngineCore/AnimationCore/VansAnimatorRuntimeCompiler.h"
+#include "../EngineCore/AnimationCore/Storage/VansAnimationRigStorage.h"
+#include "../EngineCore/AssetCore/Storage/VansFileStorage.h"
 
 #include <cmath>
 #include <algorithm>
@@ -26,6 +28,7 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <unordered_map>
 #include <unordered_set>
 #include <nlohmann/json.hpp>
 
@@ -403,21 +406,31 @@ bool TestTimelineDemoHallAssetContract()
 		});
 	if (!ExpectTimeline(authoredWindowBreakClip != animator.clipRefs.end(),
 		"DemoHall Animator did not author AlbomBreak as a startup Clip reference")) return false;
+	std::unordered_map<std::string, std::shared_ptr<const VansAnimationClipAsset>> clipAssets;
+	for (const AnimatorClipRef& reference : animator.clipRefs)
+	{
+		auto loaded = std::make_shared<VansAnimationClipAsset>();
+		const fs::path path = workspace / "DemoHallProject" / reference.pathHint;
+		if (!ExpectTimeline(VansAnimationClipIO::Load(
+			path.string(), loaded->clip, loaded->skeleton),
+			"DemoHall Animator Clip could not be loaded into the test memory repository"))
+			return false;
+		clipAssets.emplace(reference.assetGuid, std::move(loaded));
+	}
 	VansAnimatorRuntimeCompileOptions compileOptions;
+	auto rigObject = std::make_shared<VansAnimationRigAsset>();
+	if (!ExpectTimeline(VansAnimationRigStorage::Load(
+		workspace / "DemoHallProject" / "Assets" / "AnimationRigs" / "UEFN.vanimrig",
+		*rigObject, error), error.c_str())) return false;
 	compileOptions.rigResolver = [&](const std::string& rigGuid,
-		fs::path& path, std::string& resolveError)
+		std::string& resolveError) -> std::shared_ptr<const VansAnimationRigAsset>
 	{
 		if (rigGuid != animator.animationRigGuid)
 		{
 			resolveError = "DemoHall Animator requested an unexpected Animation Rig: " + rigGuid;
-			return false;
+			return {};
 		}
-		path = workspace / "DemoHallProject" / "Assets" /
-			"AnimationRigs" / "UEFN.vanimrig";
-		if (fs::is_regular_file(path))
-			return true;
-		resolveError = "DemoHall UEFN Animation Rig asset is unavailable";
-		return false;
+		return rigObject;
 	};
 	compileOptions.queryProfileResolver = [](const std::string& profile,
 		std::uint32_t& mask, std::string& resolveError)
@@ -431,16 +444,25 @@ bool TestTimelineDemoHallAssetContract()
 		mask = 0x3u;
 		return true;
 	};
+	Vans::VansIOAudit::Reset();
 	auto animatorController = VansAnimatorRuntimeCompiler::Compile(
 		animator, windowBreakSkeleton,
-		[&](const AnimatorClipRef& reference, fs::path& path, std::string& resolveError)
+		[&](const AnimatorClipRef& reference,
+			std::shared_ptr<const VansAnimationClipAsset>& clip,
+			std::string& resolveError)
 		{
-			path = workspace / "DemoHallProject" / reference.pathHint;
-			if (fs::is_regular_file(path)) return true;
-			resolveError = "DemoHall Animator Clip path is unavailable: " + reference.pathHint;
-			return false;
+			const auto found = clipAssets.find(reference.assetGuid);
+			if (found == clipAssets.end())
+			{
+				resolveError = "DemoHall Animator requested an unexpected Clip asset";
+				return false;
+			}
+			clip = found->second;
+			return true;
 		}, {}, compileOptions, error);
 	if (!ExpectTimeline(animatorController != nullptr, error.c_str())) return false;
+	if (!ExpectTimeline(Vans::VansIOAudit::Snapshot().empty(),
+		"DemoHall Animator runtime compilation performed disk I/O")) return false;
 	if (!ExpectTimeline(animatorController->GetClip("AlbomBreak") != nullptr,
 		"DemoHall Animator did not preload AlbomBreak into its runtime controller")) return false;
 	VansSlotPlayRequest slotRequest;

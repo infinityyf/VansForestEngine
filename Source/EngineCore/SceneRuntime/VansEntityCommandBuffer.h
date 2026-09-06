@@ -100,7 +100,7 @@ public:
 		VansEntityHandle entity,
 		std::string stableGuid,
 		VansEngine::VansClothNode* clothNode,
-		std::string profilePath,
+		std::string profileAssetGuid,
 		bool enabled);
 	void AddCharacterControllerComponent(
 		VansEntityHandle entity,
@@ -124,7 +124,7 @@ public:
 		std::string stableGuid,
 		VansGraphics::VansAnimationNode* animationNode,
 		std::uint8_t initialDriveMode,
-		std::string profilePath,
+		std::string profileAssetGuid,
 		std::string profileName,
 		int configuredBodyCount,
 		int configuredJointCount,

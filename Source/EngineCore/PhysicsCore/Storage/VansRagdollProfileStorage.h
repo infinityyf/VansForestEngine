@@ -11,5 +11,6 @@ class VansRagdollProfileStorage
 {
 public:
     static bool Load(const std::filesystem::path& filePath, RagdollProfile& profile, std::string& error);
+    static bool SaveAtomic(const std::filesystem::path& filePath, const RagdollProfile& profile, std::string& error);
 };
 }

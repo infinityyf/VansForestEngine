@@ -285,6 +285,14 @@ bool VansAtmosphereSystem::CreateViewResources()
 		VK_SAMPLE_COUNT_1_BIT, false, false, true,
 		VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE))
 		return false;
+	if (!m_AerialClearScattering.CreateVulkanImage(
+		device,
+		{ m_AerialWidth, m_AerialHeight, m_Quality.farAerialSlices },
+		VK_FORMAT_R16G16B16A16_SFLOAT,
+		1, 1, VK_IMAGE_TYPE_3D, AtmosphereImageUsage,
+		VK_SAMPLE_COUNT_1_BIT, false, false, true,
+		VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE))
+		return false;
 	return m_AerialOpticalDepth.CreateVulkanImage(
 		device,
 		{ m_AerialWidth, m_AerialHeight, m_Quality.farAerialSlices },
@@ -310,7 +318,9 @@ bool VansAtmosphereSystem::CreateDescriptorResources()
 		{ 6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, compute, nullptr },
 		{ 7, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, compute, nullptr },
 		{ 8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, compute, nullptr },
-		{ 9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, compute, nullptr }
+		{ 9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, compute, nullptr },
+		{ 10, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, compute, nullptr },
+		{ 11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, compute, nullptr }
 	};
 	if (!descriptors->CreateDesciptorSetLayout(bindings, m_PassLayout))
 		return false;
@@ -347,6 +357,10 @@ bool VansAtmosphereSystem::CreateDescriptorResources()
 	descriptors->WriteImageDescriptor(m_PassSet, 9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{{ renderPasses->GetWaterGBufLinearDepth().GetSampler(),
 		   renderPasses->GetWaterGBufLinearDepth().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
+	descriptors->WriteImageDescriptor(m_PassSet, 10, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+		{{ m_AerialClearScattering.GetSampler(), m_AerialClearScattering.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
+	descriptors->WriteImageDescriptor(m_PassSet, 11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		{{ m_AerialClearScattering.GetSampler(), m_AerialClearScattering.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
 	descriptors->CommitDescriptorUpdates();
 	return true;
 }
@@ -649,6 +663,7 @@ void VansAtmosphereSystem::RecordViewLutUpdates(
 	m_SkyViewReady = true;
 
 	TransitionForWrite(commandBuffer, m_AerialScattering, m_AerialReady);
+	TransitionForWrite(commandBuffer, m_AerialClearScattering, m_AerialReady);
 	TransitionForWrite(commandBuffer, m_AerialOpticalDepth, m_AerialReady);
 	commandBuffer.EnsureComputeShader(*m_AerialPerspectiveShader, layouts);
 	commandBuffer.DispatchCompute(
@@ -657,6 +672,7 @@ void VansAtmosphereSystem::RecordViewLutUpdates(
 		DivideRoundUp(m_AerialHeight, 8u),
 		1u, sets);
 	BarrierForSampling(commandBuffer, m_AerialScattering);
+	BarrierForSampling(commandBuffer, m_AerialClearScattering);
 	BarrierForSampling(commandBuffer, m_AerialOpticalDepth);
 	m_AerialReady = true;
 }
@@ -741,6 +757,7 @@ void VansAtmosphereSystem::DestroyViewResources()
 	VkDevice device = m_Device->GetLogicDevice();
 	m_SkyViewLut.DestroyVulkanImage(device);
 	m_AerialScattering.DestroyVulkanImage(device);
+	m_AerialClearScattering.DestroyVulkanImage(device);
 	m_AerialOpticalDepth.DestroyVulkanImage(device);
 	m_SkyViewReady = false;
 	m_AerialReady = false;

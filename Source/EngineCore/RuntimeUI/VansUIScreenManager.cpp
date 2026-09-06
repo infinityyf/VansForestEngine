@@ -6,63 +6,17 @@
 #include "Public/VansUIScreen.h"
 #include "Public/VansUIResourceRegistry.h"
 #include "Public/VansUIViewModel.h"
-#include "Serialization/VansUIDocumentLoader.h"
-#include "Serialization/VansUIDocumentMigrator.h"
 #include "Serialization/VansUIDocumentValidator.h"
 #include "Serialization/VansUIScreenConfigReader.h"
-#include "../Configration/VansConfigration.h"
-#include "../ProjectSystem/VansProjectManager.h"
+#include "VansUIAssetResolver.h"
 #include "../Util/VansLog.h"
 
 #include <cassert>
 #include <algorithm>
-#include <filesystem>
 #include <utility>
 
 namespace VansRuntime
 {
-namespace
-{
-std::string ResolveUIProjectRelativePath(const std::string& path)
-{
-    std::string normalized = path;
-    std::replace(normalized.begin(), normalized.end(), '\\', '/');
-    if (normalized.rfind("Assets/", 0) == 0)
-        return normalized;
-
-    auto& projectManager = Vans::VansProjectManager::Get();
-    const auto& dirs = projectManager.GetConfig().assetDirectories;
-    const auto uiDir = dirs.find("ui");
-    if (uiDir == dirs.end())
-        return normalized;
-
-    std::string root = uiDir->second;
-    std::replace(root.begin(), root.end(), '\\', '/');
-    while (!root.empty() && root.back() == '/')
-        root.pop_back();
-
-    if (normalized.rfind("UI/", 0) == 0)
-        return root + "/" + normalized.substr(3);
-    return root + "/" + normalized;
-}
-
-std::filesystem::path ResolveUIConfigPath(const std::string& configPath)
-{
-    std::filesystem::path path(configPath);
-    if (path.is_absolute())
-        return path;
-
-    auto& projectManager = Vans::VansProjectManager::Get();
-    if (projectManager.IsProjectLoaded())
-        return std::filesystem::path(projectManager.ResolveAssetPath(ResolveUIProjectRelativePath(configPath)));
-
-    if (auto* configuration = VansConfigration::GetInstance())
-        return std::filesystem::path(configuration->GetProjectRootPath()) / configPath;
-
-    return path;
-}
-}
-
 VansUIScreenManager::VansUIScreenManager(VansUISystem& uiSystem)
     : m_UISystem(uiSystem)
 {}
@@ -73,65 +27,56 @@ VansUIScreenManager::~VansUIScreenManager()
 }
 
 std::shared_ptr<VansUIScreen> VansUIScreenManager::CreateScreenFromConfig(
-    const std::string& configPath,
+    const std::string& configAssetGuid,
     std::shared_ptr<VansUIViewModel> vm)
 {
-    VansUIAssetDocument document;
+    std::shared_ptr<const VansUIAssetDocument> document;
     std::string error;
-    const std::filesystem::path resolvedPath = ResolveUIConfigPath(configPath);
-    if (!VansUIDocumentLoader::Load(resolvedPath, document, error))
+    if (!VansUIAssetResolver::ResolveDocument(
+        configAssetGuid, Vans::VansAssetType::UIScreen, document, error))
     {
-        VANS_LOG_ERROR("[RuntimeUI] Failed to load UI screen config '" << configPath << "': " << error);
+        VANS_LOG_ERROR("[RuntimeUI] Failed to resolve UI screen asset '" << configAssetGuid << "': " << error);
         return nullptr;
     }
 
     VansUIScreenConfig config;
-    config.sourceConfigPath = configPath;
+    config.sourceAssetGuid = configAssetGuid;
     std::vector<std::string> diagnostics;
-    if (!VansUIDocumentMigrator::MigrateToCurrent(document, VansUIDocumentKind::Screen, diagnostics))
-    {
-        for (const std::string& diagnostic : diagnostics)
-            VANS_LOG_ERROR("[RuntimeUI] " << configPath << ": " << diagnostic);
-        return nullptr;
-    }
-    for (const std::string& diagnostic : diagnostics)
-        VANS_LOG_WARN("[RuntimeUI] " << configPath << ": " << diagnostic);
-    diagnostics.clear();
-    if (!VansUIScreenConfigReader::Read(document.root, config, diagnostics) ||
+    if (!VansUIScreenConfigReader::Read(document->root, config, diagnostics) ||
         !VansUIDocumentValidator::ValidateScreenConfig(config, diagnostics))
     {
         for (const std::string& diagnostic : diagnostics)
-            VANS_LOG_ERROR("[RuntimeUI] " << configPath << ": " << diagnostic);
+            VANS_LOG_ERROR("[RuntimeUI] " << configAssetGuid << ": " << diagnostic);
         return nullptr;
     }
 
     std::string resourceError;
-    for (const std::string& tokenPath : config.tokens)
+    for (const std::string& tokenAssetGuid : config.tokenAssetGuids)
     {
         resourceError.clear();
-        if (!VansUIResourceRegistry::Get().LoadThemeTokens(tokenPath, resourceError))
+        if (!VansUIResourceRegistry::Get().LoadThemeTokens(tokenAssetGuid, resourceError))
         {
-            VANS_LOG_ERROR("[RuntimeUI] Failed to load UI tokens '" << tokenPath
+            VANS_LOG_ERROR("[RuntimeUI] Failed to resolve UI tokens '" << tokenAssetGuid
                 << "' for screen '" << config.name << "': " << resourceError);
             return nullptr;
         }
     }
-    for (const std::string& localizationPath : config.localization)
+    for (const std::string& localizationAssetGuid : config.localizationAssetGuids)
     {
         resourceError.clear();
-        if (!VansUIResourceRegistry::Get().LoadLocalization(localizationPath, resourceError))
+        if (!VansUIResourceRegistry::Get().LoadLocalization(localizationAssetGuid, resourceError))
         {
-            VANS_LOG_ERROR("[RuntimeUI] Failed to load UI localization '" << localizationPath
+            VANS_LOG_ERROR("[RuntimeUI] Failed to resolve UI localization '" << localizationAssetGuid
                 << "' for screen '" << config.name << "': " << resourceError);
             return nullptr;
         }
     }
 
-    auto uiDocument = m_UISystem.LoadDocument(config.xamlPath);
+    auto uiDocument = m_UISystem.LoadDocument(config.xamlAssetGuid);
     if (!uiDocument)
     {
-        VANS_LOG_ERROR("[RuntimeUI] Failed to load UI screen XAML '" << config.xamlPath
-            << "' from config '" << configPath << "'");
+        VANS_LOG_ERROR("[RuntimeUI] Failed to resolve UI screen XAML '" << config.xamlAssetGuid
+            << "' from asset '" << configAssetGuid << "'");
         return nullptr;
     }
 
@@ -193,7 +138,7 @@ void VansUIScreenManager::BindConfiguredEvents(const std::shared_ptr<VansUIScree
         if (!element.IsValid())
         {
             VANS_LOG_WARN("[RuntimeUI] Event source not found: " << binding.source
-                << " in " << screen->GetConfig().sourceConfigPath);
+                << " in " << screen->GetConfig().sourceAssetGuid);
             continue;
         }
 
@@ -344,7 +289,7 @@ std::shared_ptr<VansUIScreen> VansUIScreenManager::ReloadScreen(
     std::vector<std::shared_ptr<VansUIScreen>> matching;
     for (const auto& screen : m_Screens)
     {
-        if (screen && screen->GetConfig().sourceConfigPath == configPath)
+        if (screen && screen->GetConfig().sourceAssetGuid == configPath)
             matching.push_back(screen);
     }
     for (const auto& screen : matching)
@@ -396,7 +341,7 @@ std::shared_ptr<VansUIScreen> VansUIScreenManager::ShowModalConfig(
 // Screen stack
 // ─────────────────────────────────────────────────────────────────────────────
 
-void VansUIScreenManager::PushScreen(const std::string& xamlPath,
+void VansUIScreenManager::PushScreen(const std::string& xamlAssetGuid,
                                       std::shared_ptr<VansUIViewModel> vm)
 {
     // Hide the current top screen before pushing a new one
@@ -405,7 +350,7 @@ void VansUIScreenManager::PushScreen(const std::string& xamlPath,
         m_ScreenStack.top()->Hide();
     }
 
-    auto doc = m_UISystem.LoadDocument(xamlPath);
+    auto doc = m_UISystem.LoadDocument(xamlAssetGuid);
     if (!doc) return;
 
     if (vm)
@@ -445,7 +390,7 @@ void VansUIScreenManager::PopScreen()
     }
 }
 
-void VansUIScreenManager::ReplaceScreen(const std::string& xamlPath,
+void VansUIScreenManager::ReplaceScreen(const std::string& xamlAssetGuid,
                                          std::shared_ptr<VansUIViewModel> vm)
 {
     // Unload current top without revealing the one beneath it
@@ -459,7 +404,7 @@ void VansUIScreenManager::ReplaceScreen(const std::string& xamlPath,
         }
     }
 
-    auto doc = m_UISystem.LoadDocument(xamlPath);
+    auto doc = m_UISystem.LoadDocument(xamlAssetGuid);
     if (!doc) return;
 
     if (vm)
@@ -474,7 +419,7 @@ void VansUIScreenManager::ReplaceScreen(const std::string& xamlPath,
 // HUD
 // ─────────────────────────────────────────────────────────────────────────────
 
-void VansUIScreenManager::SetHUD(const std::string& xamlPath,
+void VansUIScreenManager::SetHUD(const std::string& xamlAssetGuid,
                                    std::shared_ptr<VansUIViewModel> vm)
 {
     if (m_HUDDocument)
@@ -483,7 +428,7 @@ void VansUIScreenManager::SetHUD(const std::string& xamlPath,
         m_HUDDocument.reset();
     }
 
-    m_HUDDocument = m_UISystem.LoadDocument(xamlPath);
+    m_HUDDocument = m_UISystem.LoadDocument(xamlAssetGuid);
     if (m_HUDDocument && vm)
     {
         m_HUDDocument->SetDataContext(vm.get());
@@ -504,7 +449,7 @@ void VansUIScreenManager::HideHUD()
 // Modal
 // ─────────────────────────────────────────────────────────────────────────────
 
-void VansUIScreenManager::ShowModal(const std::string& xamlPath,
+void VansUIScreenManager::ShowModal(const std::string& xamlAssetGuid,
                                      std::shared_ptr<VansUIViewModel> vm)
 {
     // Only one modal at a time
@@ -513,7 +458,7 @@ void VansUIScreenManager::ShowModal(const std::string& xamlPath,
         HideModal();
     }
 
-    m_ModalDocument = m_UISystem.LoadDocument(xamlPath);
+    m_ModalDocument = m_UISystem.LoadDocument(xamlAssetGuid);
     if (!m_ModalDocument) return;
 
     if (vm)
@@ -552,13 +497,13 @@ bool VansUIScreenManager::IsModalVisible() const
 // ─────────────────────────────────────────────────────────────────────────────
 
 void VansUIScreenManager::ShowOverlay(const std::string& name,
-                                       const std::string& xamlPath,
+                                       const std::string& xamlAssetGuid,
                                        std::shared_ptr<VansUIViewModel> vm)
 {
     // Hide existing overlay with the same name first
     HideOverlay(name);
 
-    auto doc = m_UISystem.LoadDocument(xamlPath);
+    auto doc = m_UISystem.LoadDocument(xamlAssetGuid);
     if (!doc) return;
 
     if (vm)

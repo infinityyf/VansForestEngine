@@ -248,12 +248,12 @@ namespace VansEngine
 			(m_CookingParams != nullptr) ||
 			(m_EventCallback != nullptr);
 
-		VansClothSystem::GetInstance().Shutdown();
-
 		// The singleton destructor can call Shutdown() after explicit engine shutdown.
-		// Make repeated calls harmless by never releasing stale PhysX pointers twice.
+		// Other singleton dependencies may already be destroyed on that second call.
 		if (!hadResources)
 			return;
+
+		VansClothSystem::GetInstance().Shutdown();
 
 		// Release the controller manager before the PxScene.
 		if (m_ControllerManager)

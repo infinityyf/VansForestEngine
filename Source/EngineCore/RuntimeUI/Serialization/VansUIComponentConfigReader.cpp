@@ -58,7 +58,9 @@ namespace VansRuntime
             std::max<std::int64_t>(1, Vans::ReadSerializedIntField(root, "schemaVersion", 1)));
         config.guid = Vans::ReadSerializedStringField(root, "guid");
         config.name = Vans::ReadSerializedStringField(root, "name");
-        config.xamlPath = Vans::ReadSerializedStringField(root, "xaml");
+        if (const Vans::VansSerializedValue* xaml = Vans::FindObjectField(root, "xaml");
+            xaml && xaml->kind == Vans::VansSerializedValue::Kind::Object)
+            config.xamlAssetGuid = Vans::ReadSerializedStringField(*xaml, "guid");
 
         if (const Vans::VansSerializedValue* properties = Vans::FindObjectField(root, "publicProperties");
             properties && properties->kind == Vans::VansSerializedValue::Kind::Array)
@@ -136,7 +138,7 @@ namespace VansRuntime
             diagnostics.push_back("UI component config is missing required field: guid.");
         if (config.name.empty())
             diagnostics.push_back("UI component config is missing required field: name.");
-        if (config.xamlPath.empty())
+        if (config.xamlAssetGuid.empty())
             diagnostics.push_back("UI component config is missing required field: xaml.");
 
         return diagnostics.empty();

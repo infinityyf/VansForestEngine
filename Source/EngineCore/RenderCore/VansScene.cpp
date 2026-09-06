@@ -3,7 +3,11 @@
 #include "Animation/VansAnimationWorldQueryBatch.h"
 #include "../RuntimeCore/VansFramePhase.h"
 #include "../GameplayActionCore/VansGameplayRuntime.h"
-#include "../GameplayActionAdapters/Combat/VansCombatActionService.h"
+#include "../GameplayActionAdapters/Character/VansAnimationEventActionService.h"
+#include "../GameplayActionAdapters/Projectile/VansProjectileActionService.h"
+#include "../GameplayActionAdapters/Projectile/VansProjectilePhysics.h"
+#include "SceneBuild/VansSceneParticleComponentBuilder.h"
+#include "../ProjectSystem/VansProjectManager.h"
 #include "../AICore/VansAIWorld.h"
 #include "Timeline/VansVirtualCameraParameterStore.h"
 
@@ -1208,8 +1212,6 @@ void VansGraphics::VansScene::UpdateActionsEarly(double deltaSeconds)
 		return;
 	m_GameplayRuntime->SynchronizeHostEnablement(*m_RuntimeWorld);
 	m_GameplayRuntime->TickEarly(deltaSeconds);
-	if (m_CombatActionService)
-		m_CombatActionService->Tick(deltaSeconds);
 }
 
 void VansGraphics::VansScene::UpdateAI(double deltaSeconds)
@@ -1253,7 +1255,6 @@ void VansGraphics::VansScene::UnLoadScene()
 	if (m_RuntimeWorld)
 		m_RuntimeWorld->Clear();
 	m_GameplayRuntime.reset();
-	m_CombatActionService.reset();
 	m_AIWorld.reset();
 	if (m_CameraControlArbiter)
 	{
@@ -1797,7 +1798,14 @@ VansGraphics::VansScene::PrepareMainThreadRenderFrame(
     {
         VANS_PROFILE_SCOPE("Transform::ResolveParentChild", Vans::ProfileCategory::RenderPrepare);
         m_TransformGraph.Resolve();
+        SyncAnimatedHurtBodies();
     }
+	if (m_LoadMode == VansSceneLoadMode::Runtime && m_GameplayRuntime)
+	{
+		const auto service = std::dynamic_pointer_cast<Vans::VansAnimationEventActionService>(
+			m_GameplayRuntime->Services().Resolve(Vans::VansMakeStableId<Vans::VansActionServiceIdTag>("Service.AnimationEvents")));
+		if (service) service->PublishEvaluatedEvents();
+	}
 	{
 		VANS_PROFILE_SCOPE("RenderWorld::ExtractProxyMutations", Vans::ProfileCategory::RenderPrepare);
 		const std::vector<VansRenderNode*> transformNodes = CollectSSBOManagedRenderNodes();
@@ -2029,12 +2037,12 @@ VansGraphics::VansScene::PrepareMainThreadRenderFrame(
                                     particle->worldPositionOverrideY,
                                     particle->worldPositionOverrideZ,
                                     1.f);
-                                particle->runtime->m_LocalToWorld = overrideMatrix;
+                                particle->runtime->SetOwnerWorldTransform(overrideMatrix);
                             }
                             else
                             {
                                 auto& transform = VansTransformStore::GetTransform(transformId);
-                                particle->runtime->m_LocalToWorld = transform.GetModelMatrix();
+                                particle->runtime->SetOwnerWorldTransform(transform.GetModelMatrix());
                             }
                         }
                     }
@@ -2062,22 +2070,30 @@ VansGraphics::VansScene::PrepareMainThreadRenderFrame(
 						if (component.typeId != Vans::VansRuntimeComponentType_Particle)
 							continue;
 						auto* particle = storage->Get(component);
-						if (!particle || !particle->runtime || !particle->renderNode)
+						if (!particle || !particle->runtime)
 							continue;
 
 						particle->playTime = particle->runtime->m_PlayTime;
 						particle->isPlaying = particle->runtime->m_IsPlaying;
-						const auto renderNodeIt = std::find(
-							m_ParticleRenderNodes.begin(),
-							m_ParticleRenderNodes.end(),
-							particle->renderNode);
-						if (renderNodeIt == m_ParticleRenderNodes.end())
-							continue;
 
 						VansRenderParticleFrameData frameData;
-						frameData.particleRenderNodeIndex = static_cast<std::uint32_t>(
-							std::distance(m_ParticleRenderNodes.begin(), renderNodeIt));
+						if (particle->renderNode)
+						{
+							const auto renderNodeIt = std::find(
+								m_ParticleRenderNodes.begin(),
+								m_ParticleRenderNodes.end(),
+								particle->renderNode);
+							if (renderNodeIt != m_ParticleRenderNodes.end())
+								frameData.particleRenderNodeIndex = static_cast<std::uint32_t>(
+									std::distance(m_ParticleRenderNodes.begin(), renderNodeIt));
+						}
 						frameData.instances = particle->runtime->GetRenderBuffer();
+						frameData.volumetricInjectionEnabled =
+							m_RuntimeWorld->IsComponentEffectivelyEnabled(component) &&
+							particle->runtime->HasVolumetricInjectionEnabled();
+						if (frameData.volumetricInjectionEnabled)
+							frameData.volumetricInstances =
+								particle->runtime->GetVolumetricRenderBuffer();
 						snapshot.particles.emplace_back(std::move(frameData));
 					}
 				}
@@ -2144,6 +2160,16 @@ void VansGraphics::VansScene::PrepareRenderBackendData(
         WriteClothResultsToStagingBuffers(sceneSnapshot);
     }
 
+	std::vector<VansVolumetricParticleInstanceData> volumetricParticles;
+	bool volumetricParticleFeatureRequested = false;
+	for (const VansRenderParticleFrameData& particle : sceneSnapshot.particles)
+	{
+		volumetricParticleFeatureRequested |= particle.volumetricInjectionEnabled;
+		volumetricParticles.insert(
+			volumetricParticles.end(),
+			particle.volumetricInstances.begin(),
+			particle.volumetricInstances.end());
+	}
 	if (!sceneSnapshot.particles.empty() && nativeDevice != VK_NULL_HANDLE)
     {
         VANS_PROFILE_SCOPE("Particle::UploadInstanceBuffers", Vans::ProfileCategory::Particles);
@@ -2158,6 +2184,9 @@ void VansGraphics::VansScene::PrepareRenderBackendData(
 					nativeDevice, particle.instances, view.view);
         }
     }
+	if (m_NearMediaSystem)
+		m_NearMediaSystem->PrepareVolumetricParticles(
+			view, volumetricParticleFeatureRequested, volumetricParticles);
 
     {
         VANS_PROFILE_SCOPE("Animation::UploadRenderData", Vans::ProfileCategory::Animation);
@@ -3684,12 +3713,12 @@ bool VansGraphics::VansScene::ApplyRuntimeComponentEnabled(
 
 		if (effectiveEnabled)
 		{
-			for (const std::string& screenPath : runtimeComponent->preloadScreens)
-				VansRuntime::VansUISystem::Get().PreloadScreen(screenPath);
+			for (const std::string& assetGuid : runtimeComponent->preloadScreenAssetGuids)
+				VansRuntime::VansUISystem::Get().PreloadScreen(assetGuid);
 			runtimeComponent->openScreens.clear();
-			for (const std::string& screenPath : runtimeComponent->autoOpenScreens)
+			for (const std::string& assetGuid : runtimeComponent->autoOpenScreenAssetGuids)
 			{
-				auto screen = VansRuntime::VansUISystem::Get().LoadScreen(screenPath);
+				auto screen = VansRuntime::VansUISystem::Get().LoadScreen(assetGuid);
 				if (screen)
 					runtimeComponent->openScreens.push_back(screen->GetHandleId());
 			}
@@ -3699,8 +3728,8 @@ bool VansGraphics::VansScene::ApplyRuntimeComponentEnabled(
 			for (std::uint64_t screenId : runtimeComponent->openScreens)
 				VansRuntime::VansUISystem::Get().CloseScreen(screenId);
 			runtimeComponent->openScreens.clear();
-			for (const std::string& screenPath : runtimeComponent->preloadScreens)
-				VansRuntime::VansUISystem::Get().ReleaseScreen(screenPath);
+			for (const std::string& assetGuid : runtimeComponent->preloadScreenAssetGuids)
+				VansRuntime::VansUISystem::Get().ReleaseScreen(assetGuid);
 		}
 		return true;
 	}
@@ -3838,6 +3867,153 @@ bool VansGraphics::VansScene::QueueDestroyEntity(VansScriptObject* obj)
         m_PendingEntityDestructionGuids.push_back(obj->m_EntityGuid);
     }
     return true;
+}
+
+Vans::VansProjectileSceneBackend VansGraphics::VansScene::MakeProjectileSceneBackend()
+{
+	return {
+		[this](const Vans::VansProjectileSpawnRequest& request, std::string& error) { return SpawnPhysicsInstance(request, error); },
+		[this](Vans::VansEntityHandle entity)
+		{
+			const auto* record = m_RuntimeWorld ? m_RuntimeWorld->Entities().Get(entity) : nullptr;
+			return record && QueueDestroyEntity(FindObjectByGuid(record->stableGuid));
+		},
+		[this](Vans::VansEntityHandle owner, const std::string& object, const std::string& animation,
+			const std::string& socket, std::string& error)
+		{
+			const auto* record = m_RuntimeWorld ? m_RuntimeWorld->Entities().Get(owner) : nullptr;
+			Vans::VansSceneParentReference parent;
+			parent.kind = Vans::VansSceneParentKind::Socket;
+			if (!record || !Vans::VansAssetGuid::TryParse(record->stableGuid, parent.entityGuid)
+				|| !Vans::VansAssetGuid::TryParse(animation, parent.animationComponentGuid)
+				|| !Vans::VansAssetGuid::TryParse(socket, parent.anchorGuid)
+				|| !BindEntityToAnimationAttachmentProfileByGuid(object, parent))
+			{ error = "Socket attachment profile could not be applied"; return false; }
+			return true;
+		}
+	};
+}
+
+Vans::VansEntityHandle VansGraphics::VansScene::SpawnPhysicsInstance(
+	const Vans::VansProjectileSpawnRequest& request, std::string& error)
+{
+	VANS_ASSERT_MAIN_THREAD();
+	VansScriptObject* sourceObject = FindObjectByGuid(request.source);
+	VansRenderNode* source = sourceObject ? FindPrimaryRenderNodeByEntityGuid(request.source) : nullptr;
+	if (!m_RuntimeWorld || m_LoadMode != VansSceneLoadMode::Runtime || !source || !source->m_Mesh
+		|| !source->m_Material || source->m_AnimationEnabled || source->m_HasSkeletonBone
+		|| !VansTransformStore::IsAllocated(source->m_TransformID)
+		|| (source->GetNodeType() != OPAQUE_NODE && source->GetNodeType() != FORWARD_OPAQUE_PRE_ATMOSPHERE_NODE
+			&& source->GetNodeType() != TRANSPARENT_NODE))
+	{ error = "Physics instance requires a loaded static mesh renderer in a runtime scene"; return {}; }
+	// 事件消费在下一次动画求值前进行。先复制上帧最终的世界姿态，归位操作不能改变此快照。
+	const VansTransform pose = VansTransformStore::GetTransform(source->m_TransformID);
+	if (pose.m_Scale.x <= 0 || pose.m_Scale.y <= 0 || pose.m_Scale.z <= 0)
+	{ error = "Physics instance requires positive world scale"; return {}; }
+	const glm::vec3 boundsMin = source->m_Mesh->GetLocalBoundsMin();
+	const glm::vec3 boundsMax = source->m_Mesh->GetLocalBoundsMax();
+	if (glm::any(glm::lessThanEqual(boundsMax - boundsMin, glm::vec3(0))))
+	{ error = "Physics instance mesh bounds are empty"; return {}; }
+	const uint32_t slot = AllocateTransformSlot();
+	if (slot == UINT32_MAX) { error = "Scene transform capacity exhausted"; return {}; }
+	// 与场景销毁相同的结构变更屏障，避免渲染线程仍遍历上一帧的共享数据。
+	if (m_RenderThreadTransactionExecutor && !ExecuteRenderThreadTransaction(std::make_unique<SceneEntityDestructionBarrier>()))
+	{ m_TransformSlotAllocator.FreeSlot(slot); error = "Render structural mutation barrier failed"; return {}; }
+	std::unique_ptr<VansRenderNode> render;
+	if (source->GetNodeType() == TRANSPARENT_NODE)
+		render = std::make_unique<VansTransparentRenderNode>(source->m_Device, source->GetNodeType());
+	else
+	{
+		auto common = std::make_unique<VansCommonRenderNode>(source->m_Device, source->GetNodeType());
+		if (const auto* original = dynamic_cast<VansCommonRenderNode*>(source))
+		{ common->m_SupportShadow = original->m_SupportShadow; common->m_ShadowCasterMask = original->m_ShadowCasterMask; }
+		render = std::move(common);
+	}
+	const std::string guid = Vans::VansAssetGuid::New().ToString();
+	render->m_EntityGuid = guid;
+	render->SetName(sourceObject->m_ObjectName + "_Projectile_" + guid.substr(0, 8));
+	render->m_Mesh = source->m_Mesh;
+	render->m_SourceMesh = source->m_SourceMesh;
+	render->m_SubmeshIndex = source->m_SubmeshIndex;
+	render->m_Material = source->m_Material;
+	render->m_RayTracingEnabled = source->m_RayTracingEnabled;
+	render->m_TransfromIndex = static_cast<int>(slot);
+	render->SetTransformData(pose.m_Position, pose.m_Rotation, pose.m_Scale);
+	auto body = std::make_unique<VansEngine::VansPhysicsNode>();
+	const auto properties = Vans::VansBuildProjectilePhysicsProperties(request, boundsMin, boundsMax, pose.m_Scale);
+	body->SetName(render->m_NodeName);
+	{
+		auto& physics = VansEngine::VansPhysicsSystem::GetInstance();
+		std::lock_guard<std::mutex> lock(physics.GetSimulationMutex());
+		body->Initialize(properties, render->m_TransformID, render->m_Mesh);
+		auto* actor = body->GetActor() ? body->GetActor()->is<physx::PxRigidDynamic>() : nullptr;
+		if (!actor)
+		{ body.reset(); m_TransformSlotAllocator.FreeSlot(slot); error = "Dynamic physics actor creation failed"; return {}; }
+		// 形状挂载后计算真实质心和惯量，保留偏心模型的视觉位置。
+		Vans::VansLaunchProjectileBody(*actor, request);
+	}
+	render->CreateDescriptorSets(m_Camera, m_LightManager, m_MaterialManager);
+	auto object = std::make_unique<VansScriptObject>();
+	object->m_EntityGuid = guid;
+	object->m_ObjectName = render->m_NodeName;
+	object->m_ModelAssetGuid = sourceObject->m_ModelAssetGuid;
+	object->m_TransformID = render->m_TransformID;
+	auto* renderComponent = new VansScriptRenderComponent();
+	renderComponent->m_ComponentName = "render";
+	renderComponent->m_ComponentGuid = Vans::VansAssetGuid::New().ToString();
+	renderComponent->m_RenderNode = render.get();
+	object->AddComponent(renderComponent);
+	auto* physicsComponent = new VansScriptPhysicsComponent();
+	physicsComponent->m_ComponentName = "physics";
+	physicsComponent->m_ComponentGuid = Vans::VansAssetGuid::New().ToString();
+	physicsComponent->m_PhysicsNode = body.get();
+	object->AddComponent(physicsComponent);
+	VansScriptParticleComponent* particleComponent = nullptr;
+	if (request.particle)
+	{
+		auto config = *request.particle;
+		config.playOnAwake = false;
+		particleComponent = VansSceneParticleComponentBuilder::BuildParticle(*this, source->m_Device, *object,
+			config, Vans::VansProjectManager::Get().GetProjectRootPath(), true, pose.m_Position, pose.m_Rotation, pose.m_Scale);
+		if (!particleComponent || !particleComponent->m_RenderNode || !particleComponent->m_Runtime)
+		{
+			std::lock_guard<std::mutex> lock(VansEngine::VansPhysicsSystem::GetInstance().GetSimulationMutex());
+			physicsComponent->m_PhysicsNode = nullptr;
+			body.reset();
+			m_TransformSlotAllocator.FreeSlot(slot);
+			error = "Projectile particle component could not be created from its loaded asset";
+			return {};
+		}
+		particleComponent->m_ComponentName = "particle";
+		particleComponent->m_ComponentGuid = Vans::VansAssetGuid::New().ToString();
+		particleComponent->m_PlayOnAwake = request.particle->playOnAwake;
+		particleComponent->m_Runtime->m_EmitterPositionLocal = (boundsMin + boundsMax) * 0.5f;
+		particleComponent->m_Runtime->SetOwnerWorldTransform(render->GetTransformMatrix());
+		if (particleComponent->m_PlayOnAwake) particleComponent->Play();
+		particleComponent->m_Runtime->DeferFirstUpdate();
+	}
+	m_RuntimeWorld->Commands().CreateEntity({guid, object->m_ObjectName, {}, true});
+	m_RuntimeWorld->FlushCommands();
+	const auto entity = m_RuntimeWorld->Entities().FindByGuid(guid);
+	m_RuntimeWorld->Commands().AddTransformComponent(entity, Vans::VansAssetGuid::New().ToString(), object->m_TransformID, true);
+	m_RuntimeWorld->Commands().AddRenderComponent(entity, renderComponent->m_ComponentGuid, render.get(), {}, true);
+	m_RuntimeWorld->Commands().AddPhysicsComponent(entity, physicsComponent->m_ComponentGuid, body.get(), true);
+	if (particleComponent)
+		m_RuntimeWorld->Commands().AddParticleComponent(entity, particleComponent->m_ComponentGuid,
+			particleComponent->m_Runtime.get(), particleComponent->m_RenderNode, particleComponent->m_PlayOnAwake,
+			particleComponent->m_IsPlaying, particleComponent->m_PlayTime, false, 0, 0, 0, true);
+	m_RuntimeWorld->FlushCommands();
+	RegistRenderNode(render.get(), render->GetNodeType());
+	m_PhysicsNodes.push_back(body.release());
+	m_SceneObjects.push_back(object.release());
+	++m_SceneObjectCollectionGeneration;
+	VANS_LOG("[Projectile] Spawned entity=" << guid << " source=" << request.source
+		<< " position=" << pose.m_Position.x << "," << pose.m_Position.y << "," << pose.m_Position.z
+		<< " velocity=" << request.velocity.x << "," << request.velocity.y << "," << request.velocity.z
+		<< " restitution=" << request.restitution << " combine=" << request.restitutionCombine
+		<< " particle=" << (request.particle ? request.particle->assetGuid : "none"));
+	render.release();
+	return entity;
 }
 
 void VansGraphics::VansScene::FlushPendingEntityDestructions()

@@ -41,7 +41,7 @@ public:
 		{
 			if (diagnostic.severity == VansGameplayDiagnosticSeverity::Error ||
 				diagnostic.severity == VansGameplayDiagnosticSeverity::Fatal)
-				return { VansActionExecutorStatus::Failed, VansActionError::ExecutionFailed,
+				return { VansActionExecutorStatus::Failed, VansActionError::Execution,
 					diagnostic.code + ": " + diagnostic.message };
 		}
 		return m_Runtime.Start(context);
@@ -83,6 +83,79 @@ private:
 	VansActionGraphRuntime m_Runtime;
 	std::vector<VansActionEvent> m_Events;
 };
+}
+
+bool VansActionDriverRegistry::RegisterExecutorOwned(
+	std::string typeId,
+	std::string& error)
+{
+	if (m_Sealed)
+	{
+		error = "Action Driver registry is sealed";
+		return false;
+	}
+	if (typeId.empty() || !m_Entries.emplace(std::move(typeId), Entry{}).second)
+	{
+		error = "duplicate or invalid Action Driver TypeId";
+		return false;
+	}
+	return true;
+}
+
+bool VansActionDriverRegistry::RegisterSidecar(
+	std::string typeId,
+	Factory factory,
+	std::string& error)
+{
+	if (m_Sealed)
+	{
+		error = "Action Driver registry is sealed";
+		return false;
+	}
+	if (typeId.empty() || !factory ||
+		!m_Entries.emplace(std::move(typeId), Entry{ std::move(factory) }).second)
+	{
+		error = "duplicate or invalid Action Driver TypeId";
+		return false;
+	}
+	return true;
+}
+
+bool VansActionDriverRegistry::Seal(std::string& error)
+{
+	if (m_Entries.empty())
+	{
+		error = "Action Driver registry is empty";
+		return false;
+	}
+	m_Sealed = true;
+	return true;
+}
+
+std::unique_ptr<IVansActionSidecarDriver> VansActionDriverRegistry::Create(
+	const VansCompiledActionRecord& record,
+	std::string& error) const
+{
+	if (!m_Sealed)
+	{
+		error = "Action Driver registry is not sealed";
+		return {};
+	}
+	const auto found = m_Entries.find(record.type);
+	if (found == m_Entries.end())
+	{
+		error = "Action Driver implementation is not registered: " + record.type;
+		return {};
+	}
+	if (!found->second.factory) return {};
+	auto driver = found->second.factory(record);
+	if (!driver) error = "Action Driver factory returned null: " + record.type;
+	return driver;
+}
+
+bool VansActionDriverRegistry::Contains(std::string_view typeId) const
+{
+	return m_Entries.find(std::string(typeId)) != m_Entries.end();
 }
 
 bool VansActionVariableStore::Initialize(

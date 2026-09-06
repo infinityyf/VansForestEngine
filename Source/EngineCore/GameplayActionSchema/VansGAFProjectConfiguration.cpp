@@ -1,5 +1,6 @@
 #include "VansGAFProjectConfiguration.h"
 
+#include "../GameplayActionCore/VansGAFExtensionRegistry.h"
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 #include "../AssetCore/Storage/VansFileStorage.h"
@@ -30,9 +31,9 @@ bool ReadRequired(const std::filesystem::path& path, Json& root, std::string& er
 		error = path.filename().string() + ": " + error;
 		return false;
 	}
-	if (!root.is_object() || root.value("schemaVersion", 0u) != 1u)
+	if (!root.is_object())
 	{
-		error = path.filename().string() + ": invalid root or schemaVersion";
+		error = path.filename().string() + ": invalid root";
 		return false;
 	}
 	return true;
@@ -64,26 +65,6 @@ Json SortedStrings(const std::unordered_set<std::string>& values)
 	return sorted;
 }
 
-const char* NetworkModeName(VansGAFNetworkMode mode)
-{
-	switch (mode)
-	{
-	case VansGAFNetworkMode::Disabled: return "Disabled";
-	case VansGAFNetworkMode::Loopback: return "Loopback";
-	case VansGAFNetworkMode::ExternalTransport: return "ExternalTransport";
-	}
-	return "Disabled";
-}
-
-bool ReadNetworkMode(std::string_view name, VansGAFNetworkMode& mode)
-{
-	if (name == "Disabled") mode = VansGAFNetworkMode::Disabled;
-	else if (name == "Loopback") mode = VansGAFNetworkMode::Loopback;
-	else if (name == "ExternalTransport") mode = VansGAFNetworkMode::ExternalTransport;
-	else return false;
-	return true;
-}
-
 bool ReadDiagnosticSeverity(std::string_view name, VansGameplayDiagnosticSeverity& severity)
 {
 	if (name == "Info") severity = VansGameplayDiagnosticSeverity::Info;
@@ -98,15 +79,7 @@ Json BuildSettingsJson(const VansGAFProjectConfiguration& configuration)
 {
 	const VansGAFSettings& settings = configuration.settings;
 	return Json{
-		{ "schemaVersion", settings.schemaVersion },
 		{ "defaultTagRoots", settings.defaultTagRoots },
-		{ "network", Json{
-			{ "mode", NetworkModeName(settings.networkMode) },
-			{ "predictionEnabled", settings.predictionEnabled },
-			{ "requireRollbackPlan", settings.requireRollbackPlan },
-			{ "failWithoutTransport", settings.failWithoutTransport },
-			{ "maximumPayloadBytes", settings.performance.maximumPayloadBytes }
-		} },
 		{ "cook", Json{
 			{ "deterministic", settings.deterministicCook },
 			{ "stripEditorMetadata", settings.stripEditorMetadata },
@@ -116,7 +89,8 @@ Json BuildSettingsJson(const VansGAFProjectConfiguration& configuration)
 			{ "maximumActiveActionsPerHost", settings.performance.maximumActiveActionsPerHost },
 			{ "maximumTasksPerAction", settings.performance.maximumTasksPerAction },
 			{ "maximumGraphTransitionsPerTick", settings.performance.maximumGraphTransitionsPerTick },
-			{ "maximumEffectsPerHost", settings.performance.maximumEffectsPerHost }
+			{ "maximumEffectsPerHost", settings.performance.maximumEffectsPerHost },
+			{ "maximumPayloadBytes", settings.performance.maximumPayloadBytes }
 		} },
 		{ "templateDirectory", settings.templateDirectory }
 	};
@@ -124,12 +98,52 @@ Json BuildSettingsJson(const VansGAFProjectConfiguration& configuration)
 
 Json BuildSchemaJson(const VansGAFProjectConfiguration& configuration)
 {
+	std::vector<const VansGAFConfiguredType*> configuredTypes;
+	configuredTypes.reserve(configuration.configuredTypes.size());
+	for (const VansGAFConfiguredType& type : configuration.configuredTypes)
+		configuredTypes.push_back(&type);
+	std::sort(configuredTypes.begin(), configuredTypes.end(), [](const auto* left, const auto* right)
+	{
+		return left->typeId < right->typeId;
+	});
+	Json types = Json::array();
+	for (const VansGAFConfiguredType* type : configuredTypes)
+	{
+		Json fields = Json::array();
+		for (const VansGAFConfiguredInputField& field : type->fields)
+		{
+			Json encoded{
+				{ "name", field.name },
+				{ "valueType", field.valueType },
+				{ "required", field.required }
+			};
+			if (!field.defaultValue.IsNull())
+				encoded["default"] = EncodeSerializedValueJson<Json>(field.defaultValue);
+			fields.push_back(std::move(encoded));
+		}
+		types.push_back(Json{
+			{ "module", type->moduleId },
+			{ "typeId", type->typeId },
+			{ "displayName", type->displayName },
+			{ "kind", type->kind },
+			{ "fields", std::move(fields) }
+		});
+	}
 	return Json{
-		{ "schemaVersion", 1 },
-		{ "allowedNodeTypes", SortedStrings(configuration.allowlist.nodeTypes) },
-		{ "allowedServices", SortedStrings(configuration.allowlist.services) },
-		{ "allowedHandlers", SortedStrings(configuration.allowlist.handlers) },
-		{ "bridgeAllowlist", SortedStrings(configuration.allowlist.bridges) }
+		{ "modules", SortedStrings(configuration.allowlist.modules) },
+		{ "types", std::move(types) },
+		{ "allowlist", Json{
+			{ "nodeTypes", SortedStrings(configuration.allowlist.nodeTypes) },
+			{ "capabilities", SortedStrings(configuration.allowlist.capabilities) },
+			{ "policies", SortedStrings(configuration.allowlist.policies) },
+			{ "guards", SortedStrings(configuration.allowlist.guards) },
+			{ "operations", SortedStrings(configuration.allowlist.operations) },
+			{ "drivers", SortedStrings(configuration.allowlist.drivers) },
+			{ "extensions", SortedStrings(configuration.allowlist.extensions) },
+			{ "transitions", SortedStrings(configuration.allowlist.transitions) },
+			{ "signals", SortedStrings(configuration.allowlist.signals) },
+			{ "valueTypes", SortedStrings(configuration.allowlist.valueTypes) }
+		} }
 	};
 }
 
@@ -142,7 +156,6 @@ Json BuildValidationJson(const VansGAFProjectConfiguration& configuration)
 	std::sort(sortedOverrides.begin(), sortedOverrides.end());
 	for (const auto& entry : sortedOverrides) overrides[entry.first] = entry.second;
 	return Json{
-		{ "schemaVersion", 1 },
 		{ "severityOverrides", std::move(overrides) },
 		{ "saveBlockingCodes", SortedStrings(configuration.validation.saveBlockingCodes) },
 		{ "cookBlockingCodes", SortedStrings(configuration.validation.cookBlockingCodes) },
@@ -159,7 +172,7 @@ Json BuildTemplatesJson(const VansGAFProjectConfiguration& configuration)
 	std::sort(names.begin(), names.end());
 	for (const std::string& name : names)
 		templates[name] = EncodeSerializedValueJson<Json>(configuration.templates.at(name));
-	return Json{ { "schemaVersion", 1 }, { "templates", std::move(templates) } };
+	return Json{ { "templates", std::move(templates) } };
 }
 
 bool LoadTemplateDirectory(
@@ -182,8 +195,23 @@ bool LoadTemplateDirectory(
 		error = "GAF configuration root cannot be resolved: " + pathError.message();
 		return false;
 	}
+	const std::filesystem::path candidate = (root / relative).lexically_normal();
+	const std::filesystem::path lexicalContained = candidate.lexically_relative(root);
+	if (lexicalContained.empty() || lexicalContained.is_absolute() ||
+		(!lexicalContained.empty() && *lexicalContained.begin() == ".."))
+	{
+		error = "GAF templateDirectory escapes the project or engine root";
+		return false;
+	}
+	const bool exists = std::filesystem::exists(candidate, pathError);
+	if (pathError)
+	{
+		error = "GAF templateDirectory cannot be inspected: " + pathError.message();
+		return false;
+	}
+	if (!exists) return true;
 	const std::filesystem::path directory =
-		std::filesystem::weakly_canonical(root / relative, pathError);
+		std::filesystem::weakly_canonical(candidate, pathError);
 	if (pathError)
 	{
 		error = "GAF templateDirectory cannot be resolved: " + pathError.message();
@@ -196,7 +224,6 @@ bool LoadTemplateDirectory(
 		error = "GAF templateDirectory escapes the project or engine root";
 		return false;
 	}
-	if (!std::filesystem::exists(directory)) return true;
 	if (!std::filesystem::is_directory(directory))
 	{
 		error = "GAF templateDirectory is not a directory: " + directory.string();
@@ -233,40 +260,24 @@ bool LoadTemplateDirectory(
 	}
 	return true;
 }
-}
 
-bool VansGAFProjectConfiguration::Load(
-	const std::filesystem::path& directory,
+bool DecodeConfigurationJsonDocuments(
+	const Json& settings,
+	const Json& schemas,
+	const Json& validation,
+	const Json& templates,
 	VansGAFProjectConfiguration& configuration,
 	std::string& error)
 {
 	configuration = {};
-	Json settings;
-	Json schemas;
-	Json validation;
-	Json templates;
-	if (!ReadRequired(directory / "GAFSettings.json", settings, error) ||
-		!ReadRequired(directory / "GAFSchemaRegistry.json", schemas, error) ||
-		!ReadRequired(directory / "GAFValidationRules.json", validation, error) ||
-		!ReadRequired(directory / "GAFTemplates.json", templates, error)) return false;
-	configuration.settings.schemaVersion = settings.value("schemaVersion", 1u);
-	if (settings.contains("defaultTagRoots") && settings["defaultTagRoots"].is_array())
-		configuration.settings.defaultTagRoots = settings["defaultTagRoots"].get<std::vector<std::string>>();
-	if (settings.contains("network") && settings["network"].is_object())
-	{
-		if (!ReadNetworkMode(settings["network"].value("mode", std::string("Disabled")),
-			configuration.settings.networkMode))
+	for (const auto& document : { &settings, &schemas, &validation, &templates })
+		if (!document->is_object())
 		{
-			error = "GAFSettings.json: invalid network mode";
+			error = "GAF configuration document has an invalid root";
 			return false;
 		}
-		configuration.settings.predictionEnabled = settings["network"].value("predictionEnabled", false);
-		configuration.settings.requireRollbackPlan = settings["network"].value("requireRollbackPlan", true);
-		configuration.settings.failWithoutTransport =
-			settings["network"].value("failWithoutTransport", true);
-		configuration.settings.performance.maximumPayloadBytes =
-			settings["network"].value("maximumPayloadBytes", 4096u);
-	}
+	if (settings.contains("defaultTagRoots") && settings["defaultTagRoots"].is_array())
+		configuration.settings.defaultTagRoots = settings["defaultTagRoots"].get<std::vector<std::string>>();
 	if (settings.contains("cook") && settings["cook"].is_object())
 	{
 		configuration.settings.deterministicCook = settings["cook"].value("deterministic", true);
@@ -287,16 +298,53 @@ bool VansGAFProjectConfiguration::Load(
 			performance.value("maximumGraphTransitionsPerTick", 1024u);
 		configuration.settings.performance.maximumEffectsPerHost =
 			performance.value("maximumEffectsPerHost", 256u);
+		configuration.settings.performance.maximumPayloadBytes =
+			performance.value("maximumPayloadBytes", 4096u);
 	}
-	ReadStringSet(schemas, "allowedNodeTypes", configuration.allowlist.nodeTypes);
-	ReadStringSet(schemas, "allowedServices", configuration.allowlist.services);
-	ReadStringSet(schemas, "allowedHandlers", configuration.allowlist.handlers);
-	ReadStringSet(schemas, "bridgeAllowlist", configuration.allowlist.bridges);
+	ReadStringSet(schemas, "modules", configuration.allowlist.modules);
+	if (schemas.contains("types") && schemas["types"].is_array())
+		for (const Json& encodedType : schemas["types"])
+		{
+			if (!encodedType.is_object()) continue;
+			VansGAFConfiguredType type;
+			type.moduleId = encodedType.value("module", std::string{});
+			type.typeId = encodedType.value("typeId", std::string{});
+			type.displayName = encodedType.value("displayName", std::string{});
+			type.kind = encodedType.value("kind", std::string{});
+			if (encodedType.contains("fields") && encodedType["fields"].is_array())
+				for (const Json& encodedField : encodedType["fields"])
+				{
+					if (!encodedField.is_object()) continue;
+					VansGAFConfiguredInputField field;
+					field.name = encodedField.value("name", std::string{});
+					field.valueType = encodedField.value("valueType", std::string{});
+					field.required = encodedField.value("required", false);
+					if (encodedField.contains("default"))
+						field.defaultValue = DecodeSerializedValueJson(encodedField["default"]);
+					type.fields.push_back(std::move(field));
+				}
+			configuration.configuredTypes.push_back(std::move(type));
+		}
+	if (schemas.contains("allowlist") && schemas["allowlist"].is_object())
+	{
+		const Json& allowlist = schemas["allowlist"];
+		ReadStringSet(allowlist, "nodeTypes", configuration.allowlist.nodeTypes);
+		ReadStringSet(allowlist, "capabilities", configuration.allowlist.capabilities);
+		ReadStringSet(allowlist, "policies", configuration.allowlist.policies);
+		ReadStringSet(allowlist, "guards", configuration.allowlist.guards);
+		ReadStringSet(allowlist, "operations", configuration.allowlist.operations);
+		ReadStringSet(allowlist, "drivers", configuration.allowlist.drivers);
+		ReadStringSet(allowlist, "extensions", configuration.allowlist.extensions);
+		ReadStringSet(allowlist, "transitions", configuration.allowlist.transitions);
+		ReadStringSet(allowlist, "signals", configuration.allowlist.signals);
+		ReadStringSet(allowlist, "valueTypes", configuration.allowlist.valueTypes);
+	}
 	if (validation.contains("severityOverrides") && validation["severityOverrides"].is_object())
 		for (auto entry = validation["severityOverrides"].begin();
 			entry != validation["severityOverrides"].end(); ++entry)
 			if (entry.value().is_string())
-				configuration.validation.severityOverrides.emplace(entry.key(), entry.value().get<std::string>());
+				configuration.validation.severityOverrides.emplace(
+					entry.key(), entry.value().get<std::string>());
 	ReadStringSet(validation, "saveBlockingCodes", configuration.validation.saveBlockingCodes);
 	ReadStringSet(validation, "cookBlockingCodes", configuration.validation.cookBlockingCodes);
 	ReadStringSet(validation, "ciBlockingCodes", configuration.validation.ciBlockingCodes);
@@ -304,6 +352,54 @@ bool VansGAFProjectConfiguration::Load(
 		for (auto entry = templates["templates"].begin(); entry != templates["templates"].end(); ++entry)
 			configuration.templates.emplace(entry.key(), DecodeSerializedValueJson(entry.value()));
 	return configuration.Validate(error);
+}
+}
+
+bool VansGAFProjectConfiguration::Load(
+	const std::filesystem::path& directory,
+	VansGAFProjectConfiguration& configuration,
+	std::string& error)
+{
+	Json settings;
+	Json schemas;
+	Json validation;
+	Json templates;
+	if (!ReadRequired(directory / "GAFSettings.json", settings, error) ||
+		!ReadRequired(directory / "GAFSchemaRegistry.json", schemas, error) ||
+		!ReadRequired(directory / "GAFValidationRules.json", validation, error) ||
+		!ReadRequired(directory / "GAFTemplates.json", templates, error)) return false;
+	return DecodeConfigurationJsonDocuments(
+		settings, schemas, validation, templates, configuration, error);
+}
+
+std::array<std::string_view, 4> VansGAFProjectConfiguration::DocumentFileNames()
+{
+	return { kConfigurationFiles[0], kConfigurationFiles[1],
+		kConfigurationFiles[2], kConfigurationFiles[3] };
+}
+
+bool VansGAFProjectConfiguration::DecodeDocuments(
+	const VansGAFProjectConfigurationDocuments& documents,
+	VansGAFProjectConfiguration& configuration,
+	std::string& error)
+{
+	return DecodeConfigurationJsonDocuments(
+		EncodeSerializedValueJson<Json>(documents.settings),
+		EncodeSerializedValueJson<Json>(documents.schemaRegistry),
+		EncodeSerializedValueJson<Json>(documents.validationRules),
+		EncodeSerializedValueJson<Json>(documents.templates),
+		configuration, error);
+}
+
+VansGAFProjectConfigurationDocuments VansGAFProjectConfiguration::EncodeDocuments(
+	const VansGAFProjectConfiguration& configuration)
+{
+	VansGAFProjectConfigurationDocuments documents;
+	documents.settings = DecodeSerializedValueJson(BuildSettingsJson(configuration));
+	documents.schemaRegistry = DecodeSerializedValueJson(BuildSchemaJson(configuration));
+	documents.validationRules = DecodeSerializedValueJson(BuildValidationJson(configuration));
+	documents.templates = DecodeSerializedValueJson(BuildTemplatesJson(configuration));
+	return documents;
 }
 
 bool VansGAFProjectConfiguration::LoadForProject(
@@ -396,17 +492,19 @@ bool VansGAFProjectConfiguration::Save(
 			return false;
 		}
 	}
-	const auto rollbackFiles = [&](std::size_t count, std::string& rollbackError)
+	const auto restoreFiles = [&](std::size_t count, std::string& restoreFailure)
 	{
-		for (std::size_t rollback = 0; rollback < count; ++rollback)
+		for (std::size_t restoreIndex = 0; restoreIndex < count; ++restoreIndex)
 		{
-			const std::filesystem::path path = directory / kConfigurationFiles[rollback];
-			if (hadPrevious[rollback])
+			const std::filesystem::path path = directory / kConfigurationFiles[restoreIndex];
+			if (hadPrevious[restoreIndex])
 			{
 				std::string restoreError;
-				if (!VansFileStorage::WriteAtomicBytes(path, previousBytes[rollback], restoreError))
+				if (!VansFileStorage::WriteAtomicBytes(
+					path, previousBytes[restoreIndex], restoreError))
 				{
-					rollbackError = std::string(kConfigurationFiles[rollback]) + ": " + restoreError;
+					restoreFailure = std::string(kConfigurationFiles[restoreIndex]) +
+						": " + restoreError;
 					return false;
 				}
 			}
@@ -416,7 +514,8 @@ bool VansGAFProjectConfiguration::Save(
 				std::filesystem::remove(path, removeError);
 				if (removeError)
 				{
-					rollbackError = std::string(kConfigurationFiles[rollback]) + ": " + removeError.message();
+					restoreFailure = std::string(kConfigurationFiles[restoreIndex]) +
+						": " + removeError.message();
 					return false;
 				}
 			}
@@ -428,9 +527,9 @@ bool VansGAFProjectConfiguration::Save(
 		if (VansJsonFileStorage::WriteAtomic(directory / kConfigurationFiles[index], documents[index], error))
 			continue;
 		const std::string writeError = std::string(kConfigurationFiles[index]) + ": " + error;
-		std::string rollbackError;
-		if (!rollbackFiles(index, rollbackError))
-			error = writeError + "; rollback failed for " + rollbackError;
+		std::string restoreFailure;
+		if (!restoreFiles(index, restoreFailure))
+			error = writeError + "; previous files could not be restored: " + restoreFailure;
 		else
 			error = writeError;
 		return false;
@@ -440,9 +539,10 @@ bool VansGAFProjectConfiguration::Save(
 	{
 		const std::string verificationError =
 			"saved GAF project configuration failed verification: " + error;
-		std::string rollbackError;
-		error = rollbackFiles(documents.size(), rollbackError)
-			? verificationError : verificationError + "; rollback failed for " + rollbackError;
+		std::string restoreFailure;
+		error = restoreFiles(documents.size(), restoreFailure)
+			? verificationError
+			: verificationError + "; previous files could not be restored: " + restoreFailure;
 		return false;
 	}
 	return true;
@@ -450,10 +550,9 @@ bool VansGAFProjectConfiguration::Save(
 
 bool VansGAFProjectConfiguration::Validate(std::string& error) const
 {
-	if (settings.schemaVersion != 1 || settings.defaultTagRoots.empty() ||
-		settings.templateDirectory.empty())
+	if (settings.defaultTagRoots.empty() || settings.templateDirectory.empty())
 	{
-		error = "GAFSettings requires schemaVersion, defaultTagRoots and templateDirectory";
+		error = "GAFSettings requires defaultTagRoots and templateDirectory";
 		return false;
 	}
 	std::unordered_set<std::string> tagRoots;
@@ -463,11 +562,6 @@ bool VansGAFProjectConfiguration::Validate(std::string& error) const
 			error = "GAFSettings defaultTagRoots contains an empty or duplicate root";
 			return false;
 		}
-	if (settings.networkMode == VansGAFNetworkMode::Disabled && settings.predictionEnabled)
-	{
-		error = "GAF prediction requires Loopback or ExternalTransport network mode";
-		return false;
-	}
 	const VansGAFPerformanceBudget& budget = settings.performance;
 	if (budget.maximumActiveActionsPerHost == 0 || budget.maximumTasksPerAction == 0 ||
 		budget.maximumGraphTransitionsPerTick == 0 || budget.maximumEffectsPerHost == 0 ||
@@ -483,6 +577,29 @@ bool VansGAFProjectConfiguration::Validate(std::string& error) const
 			error = "GAF validation severity override is invalid: " + entry.first;
 			return false;
 		}
+	std::unordered_set<std::string> configuredTypeIds;
+	for (const VansGAFConfiguredType& type : configuredTypes)
+	{
+		if (type.moduleId.empty() || allowlist.modules.find(type.moduleId) == allowlist.modules.end() ||
+			type.typeId.empty() || type.displayName.empty() ||
+			(type.kind != "Policy" && type.kind != "Guard" && type.kind != "Operation" &&
+				type.kind != "Driver" && type.kind != "Transition" && type.kind != "Extension" &&
+				type.kind != "Signal" && type.kind != "Task" && type.kind != "Resource" &&
+				type.kind != "ContextSlot") ||
+			!configuredTypeIds.insert(type.typeId).second)
+		{
+			error = "GAF configured Type is invalid or duplicated: " + type.typeId;
+			return false;
+		}
+		std::unordered_set<std::string> fieldNames;
+		for (const VansGAFConfiguredInputField& field : type.fields)
+			if (field.name.empty() || field.valueType.empty() ||
+				!fieldNames.insert(field.name).second)
+			{
+				error = "GAF configured input field is invalid: " + type.typeId;
+				return false;
+			}
+	}
 	if (templates.empty())
 	{
 		error = "GAFTemplates contains no templates";
@@ -491,12 +608,59 @@ bool VansGAFProjectConfiguration::Validate(std::string& error) const
 	for (const auto& entry : templates)
 	{
 		if (entry.first.empty() || entry.second.kind != VansSerializedValue::Kind::Object ||
-			ReadSerializedStringField(entry.second, "assetKind") != entry.first ||
-			ReadSerializedIntField(entry.second, "schemaVersion", 0) <= 0)
+			ReadSerializedStringField(entry.second, "assetKind") != entry.first)
 		{
 			error = "GAF template identity is invalid: " + entry.first;
 			return false;
 		}
+	}
+	return true;
+}
+
+bool VansGAFProjectConfiguration::RegisterConfiguredTypes(
+	VansGAFTypeRegistry& registry,
+	std::string& error) const
+{
+	const auto readKind = [](std::string_view name, VansGAFExtensionKind& kind)
+	{
+		if (name == "Policy") kind = VansGAFExtensionKind::Policy;
+		else if (name == "Guard") kind = VansGAFExtensionKind::Guard;
+		else if (name == "Operation") kind = VansGAFExtensionKind::Operation;
+		else if (name == "Driver") kind = VansGAFExtensionKind::Driver;
+		else if (name == "Transition") kind = VansGAFExtensionKind::Transition;
+		else if (name == "Extension") kind = VansGAFExtensionKind::Extension;
+		else if (name == "Signal") kind = VansGAFExtensionKind::Signal;
+		else if (name == "Task") kind = VansGAFExtensionKind::Task;
+		else if (name == "Resource") kind = VansGAFExtensionKind::Resource;
+		else if (name == "ContextSlot") kind = VansGAFExtensionKind::ContextSlot;
+		else return false;
+		return true;
+	};
+	for (const VansGAFConfiguredType& type : configuredTypes)
+	{
+		VansGAFExtensionKind kind{};
+		if (!readKind(type.kind, kind) ||
+			!registry.RegisterType({ type.typeId, type.displayName, kind }, error))
+		{
+			if (error.empty()) error = "GAF configured Type kind is invalid: " + type.typeId;
+			return false;
+		}
+	}
+	return true;
+}
+
+bool VansGAFProjectConfiguration::RegisterConfiguredSchemas(
+	VansGAFSchemaRegistry& registry,
+	std::string& error) const
+{
+	for (const VansGAFConfiguredType& type : configuredTypes)
+	{
+		VansGAFInputSchemaDescriptor schema;
+		schema.typeId = type.typeId;
+		for (const VansGAFConfiguredInputField& field : type.fields)
+			schema.fields.push_back({ field.name, field.valueType,
+				field.required, field.defaultValue });
+		if (!registry.Register(std::move(schema), error)) return false;
 	}
 	return true;
 }

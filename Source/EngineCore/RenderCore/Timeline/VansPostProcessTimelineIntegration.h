@@ -6,12 +6,12 @@ namespace VansGraphics
 {
 class VansPostProcessProfile;
 }
-namespace Vans { class VansAssetResolver; }
+namespace Vans { class VansAssetObjectRepository; }
 namespace VansGraphics
 {
 bool VansRegisterPostProcessTimelineIntegration(
 	VansPostProcessProfile& profile,
-	std::shared_ptr<Vans::VansAssetResolver> resolver,
+	const Vans::VansAssetObjectRepository& repository,
 	Vans::VansTimelineApplierRegistry& registry,
 	std::string& error);
 }

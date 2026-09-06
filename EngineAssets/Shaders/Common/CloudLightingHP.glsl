@@ -216,15 +216,19 @@ vec3 EvaluateHPCloudSourceRadiance(
     vec3 pos,
     float stepSize,
     CloudLightingEnv env,
-    CloudSampleProps props)
+    CloudSampleProps props,
+    out float lightOpticalDepth)
 {
-    if (props.density <= 0.0 || props.sigmaTView <= 0.0)
-		return vec3(0.0);
-
-    float lightOD = 0.0;
     float phiFwd = 0.0;
     float boundary = 1.0;
-    vec3 directional = EvaluateHPSunLuminance(pos, props.heightFrac, env, lightOD, phiFwd, boundary);
+    vec3 directional = EvaluateHPSunLuminance(
+        pos, props.heightFrac, env,
+        lightOpticalDepth, phiFwd, boundary);
+
+    // 联合云区间还需要这个采样点到太阳的云光学厚度来照明物理大气。
+    // 即使当前视线采样恰好落在云洞中，也不能丢掉太阳方向上的遮挡查询。
+    if (props.density <= 0.0 || props.sigmaTView <= 0.0)
+		return vec3(0.0);
 
     float omega0 = clamp(uCloud.singleScatteringAlbedo, 0.0, 0.9999);
     float stepT = exp(-props.sigmaTView * stepSize);
@@ -235,7 +239,7 @@ vec3 EvaluateHPCloudSourceRadiance(
     float phiScalar = phiFwd * max(uCloud.phiFwdIntensity, 0.0);
     float phiMapped = CompressHPPhi(phiScalar);
 
-    float upwardAO = exp(-(lightOD * max(env.sunDir.y, 0.05)) * max(uCloud.aoUpwardScale, 0.0));
+    float upwardAO = exp(-(lightOpticalDepth * max(env.sunDir.y, 0.05)) * max(uCloud.aoUpwardScale, 0.0));
     vec3 ambient = env.ambientTop * upwardAO
                  + env.ambientBottom * (1.0 - props.heightFrac);
 
@@ -249,7 +253,7 @@ vec3 EvaluateHPCloudSourceRadiance(
     else if (debugMode == 2)
         sampleScattering = vec3(1.0 - stepT);
     else if (debugMode == 3)
-        sampleScattering = vec3(1.0 - exp(-lightOD));
+        sampleScattering = vec3(1.0 - exp(-lightOpticalDepth));
     else if (debugMode == 4)
         sampleScattering = directional;
     else if (debugMode == 5)

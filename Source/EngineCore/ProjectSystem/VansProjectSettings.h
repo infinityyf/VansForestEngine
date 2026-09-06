@@ -9,6 +9,8 @@
 namespace Vans
 {
 	struct VansProjectConfig;
+	struct VansProjectRenderSettingsData;
+	struct VansProjectPhysicsSettingsData;
 
 	using VansProjectUpscalerSettings = VansGraphics::VansUpscalerConfig;
 	using VansProjectCommandRecordingSettings = VansGraphics::VansCommandRecordingConfig;
@@ -37,8 +39,12 @@ namespace Vans
 	{
 	public:
 		void SetDefaults();
-		bool LoadFromProjectFiles(const std::string& projectRootPath, const VansProjectConfig& projectConfig);
-		bool SaveToProjectFiles(const std::string& projectRootPath, const VansProjectConfig& projectConfig) const;
+		bool ApplyRenderSettingsData(
+			const VansProjectRenderSettingsData& settings,
+			std::string& error);
+		void ApplyPhysicsSettingsData(const VansProjectPhysicsSettingsData& settings);
+		VansProjectRenderSettingsData BuildRenderSettingsData() const;
+		VansProjectPhysicsSettingsData BuildPhysicsSettingsData() const;
 
 		float GetFixedTimeStep() const { return m_FixedTimeStep; }
 		void SetFixedTimeStep(float fixedTimeStep);
@@ -81,8 +87,6 @@ namespace Vans
 		void SetMainCameraHiZCullSettings(const VansProjectMainCameraHiZCullSettings& settings);
 
 private:
-		bool LoadCollisionLayerSettingsFromFile(const std::string& filePath);
-
 		float m_FixedTimeStep = 1.0f / 60.0f;
 		std::unordered_map<std::string, std::vector<std::string>> m_PhysicsQueryProfiles;
 		VansProjectUpscalerSettings m_UpscalerSettings;

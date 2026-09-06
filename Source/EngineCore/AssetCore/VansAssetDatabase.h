@@ -25,6 +25,7 @@ enum class VansAssetType
     AnimationClip,
     AnimatorController,
 	AnimationRig,
+	RetargetProfile,
 	BoneMask,
 	Timeline,
 	NavigationMesh,
@@ -47,7 +48,13 @@ enum class VansAssetType
     RagdollProfile,
     AudioReverbPreset,
     AudioBusSnapshot,
-    AudioDuckingRules
+    AudioDuckingRules,
+	UIScreen,
+	UIComponent,
+	UIThemeTokens,
+	UILocalization,
+	UIXaml,
+	VegetationConfig
 };
 
 enum class VansAssetState
@@ -68,6 +75,16 @@ enum class VansAssetArtifactFormat
 	Cooked
 };
 
+struct VansTextureAssetImportSettings
+{
+	bool available = false;
+	bool linear = false;
+	bool compressed = true;
+	bool mipmapped = false;
+	int channelCount = 0;
+	std::string precision = "low8";
+};
+
 struct VansAssetRecord
 {
     VansAssetGuid guid;
@@ -82,6 +99,8 @@ struct VansAssetRecord
     std::uint64_t metaHash = 0;
     std::uint64_t generation = 0;
     bool hasSkeletalMesh = false;
+	bool memoryOnly = false;
+	VansTextureAssetImportSettings textureImport;
     std::string error;
 };
 
@@ -152,6 +171,7 @@ public:
         const VansAssetOperationPolicy& policy,
         std::string& error,
         bool* artifactCooked = nullptr);
+	bool RegisterMemoryAsset(VansAssetRecord record, std::string& error);
     VansTextureArtifactEnsureResult EnsureTextureArtifact(VansAssetGuid guid);
     bool UpdateImportedArtifact(
         VansAssetGuid guid,

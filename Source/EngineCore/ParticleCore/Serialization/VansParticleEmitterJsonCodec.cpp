@@ -3,6 +3,8 @@
 #include <nlohmann/json.hpp>
 
 #include <memory>
+#include <cmath>
+#include <stdexcept>
 #include <string>
 #include <utility>
 
@@ -26,6 +28,89 @@ void DecodeCurveKeys(const Vans::ParticleJson& root, std::vector<CurveKey>& curv
 
     for (const auto& key : root)
         curve.push_back({ key.value("t", 0.0f), key.value("value", 0.0f) });
+}
+
+void ValidateNormalizedCurve(const std::vector<CurveKey>& curve,
+    const char* field, bool requireNonNegativeValues)
+{
+    if (curve.empty())
+        throw std::invalid_argument(std::string(field) + " must contain at least one key");
+    float previousTime = -1.0f;
+    for (const CurveKey& key : curve)
+    {
+        const bool validValue = std::isfinite(key.value) &&
+            (!requireNonNegativeValues || key.value >= 0.0f);
+        if (!std::isfinite(key.t) || key.t < 0.0f || key.t > 1.0f ||
+            key.t <= previousTime || !validValue)
+        {
+            throw std::invalid_argument(std::string(field) +
+                " keys must use strictly increasing normalized t values and valid values");
+        }
+        previousTime = key.t;
+    }
+}
+
+void ValidateColorGradient(const VansColorGradient& gradient)
+{
+    if (gradient.m_Stops.empty())
+        throw std::invalid_argument(
+            "UpdateColorOverLifetime.gradient must contain at least one stop");
+    float previousTime = -1.0f;
+    for (const ColorGradientStop& stop : gradient.m_Stops)
+    {
+        const bool finiteColor = std::isfinite(stop.color.r) &&
+            std::isfinite(stop.color.g) && std::isfinite(stop.color.b) &&
+            std::isfinite(stop.color.a);
+        const bool validColor = glm::all(glm::greaterThanEqual(
+            glm::vec3(stop.color), glm::vec3(0.0f))) &&
+            stop.color.a >= 0.0f && stop.color.a <= 1.0f;
+        if (!std::isfinite(stop.t) || stop.t < 0.0f || stop.t > 1.0f ||
+            stop.t <= previousTime || !finiteColor || !validColor)
+        {
+            throw std::invalid_argument(
+                "UpdateColorOverLifetime.gradient stops must be ordered in normalized time with non-negative RGB and alpha in [0,1]");
+        }
+        previousTime = stop.t;
+    }
+}
+
+void ValidateNonNegativeFloatCurve(const VansFloatCurve& curve,
+    const char* field, float minimumValue)
+{
+    const auto requireRange = [field, minimumValue](float minimum, float maximum)
+    {
+        if (!std::isfinite(minimum) || !std::isfinite(maximum) ||
+            minimum < minimumValue || maximum < minimum)
+        {
+            throw std::invalid_argument(std::string(field) +
+                " must contain a finite non-decreasing non-negative range");
+        }
+    };
+    const auto requireKeys = [field, minimumValue](
+        const std::vector<CurveKey>& keys)
+    {
+        ValidateNormalizedCurve(keys, field, true);
+        for (const CurveKey& key : keys)
+            if (key.value < minimumValue)
+                throw std::invalid_argument(std::string(field) +
+                    " contains a value below its supported minimum");
+    };
+    switch (curve.m_Mode)
+    {
+    case FloatCurveMode::Constant:
+        requireRange(curve.m_Value, curve.m_Value);
+        break;
+    case FloatCurveMode::RandomBetween:
+        requireRange(curve.m_Min, curve.m_Max);
+        break;
+    case FloatCurveMode::Curve:
+        requireKeys(curve.m_Keys);
+        break;
+    case FloatCurveMode::RandomBetweenCurves:
+        requireKeys(curve.m_MinKeys);
+        requireKeys(curve.m_MaxKeys);
+        break;
+    }
 }
 
 Vans::ParticleJson EncodeFloatCurve(const VansFloatCurve& curve)
@@ -218,6 +303,114 @@ void DecodeSixWayLighting(const Vans::ParticleJson& root, VansParticleSixWayLigh
     config.m_LightmapRemapMax = root.value("lightmapRemapMax", 1.0f);
 }
 
+Vans::ParticleJson EncodeVolumetricConfig(const VansParticleVolumetricConfig& config)
+{
+    return {
+        { "enabled", config.m_Enabled },
+        { "keepSurfaceRenderer", config.m_KeepSurfaceRenderer },
+        { "radiusScale", config.m_RadiusScale },
+        { "maxDistanceMeters", config.m_MaxDistanceMeters },
+        { "densityMultiplier", config.m_DensityMultiplier },
+        { "extinctionPerMeter", config.m_ExtinctionPerMeter },
+        { "singleScatteringAlbedo", {
+            config.m_SingleScatteringAlbedo.r,
+            config.m_SingleScatteringAlbedo.g,
+            config.m_SingleScatteringAlbedo.b } },
+        { "anisotropy", config.m_Anisotropy },
+        { "emissivePerMeter", {
+            config.m_EmissivePerMeter.r,
+            config.m_EmissivePerMeter.g,
+            config.m_EmissivePerMeter.b } },
+        { "edgeSoftness", config.m_EdgeSoftness },
+        { "directLightingScale", config.m_DirectLightingScale },
+        { "skyLightingScale", config.m_SkyLightingScale },
+        { "receiveCloudShadows", config.m_ReceiveCloudShadows },
+        { "injectionPriority", config.m_InjectionPriority }
+    };
+}
+
+bool ShouldEncodeVolumetricConfig(const VansParticleVolumetricConfig& config)
+{
+    // Keep legacy assets unchanged, but retain authored tuning while the optional
+    // renderer is disabled so artists can configure it before opting in.
+    const VansParticleVolumetricConfig defaults;
+    return config.m_Enabled != defaults.m_Enabled ||
+        config.m_KeepSurfaceRenderer != defaults.m_KeepSurfaceRenderer ||
+        config.m_RadiusScale != defaults.m_RadiusScale ||
+        config.m_MaxDistanceMeters != defaults.m_MaxDistanceMeters ||
+        config.m_DensityMultiplier != defaults.m_DensityMultiplier ||
+        config.m_ExtinctionPerMeter != defaults.m_ExtinctionPerMeter ||
+        glm::any(glm::notEqual(
+            config.m_SingleScatteringAlbedo, defaults.m_SingleScatteringAlbedo)) ||
+        config.m_Anisotropy != defaults.m_Anisotropy ||
+        glm::any(glm::notEqual(config.m_EmissivePerMeter, defaults.m_EmissivePerMeter)) ||
+        config.m_EdgeSoftness != defaults.m_EdgeSoftness ||
+        config.m_DirectLightingScale != defaults.m_DirectLightingScale ||
+        config.m_SkyLightingScale != defaults.m_SkyLightingScale ||
+        config.m_ReceiveCloudShadows != defaults.m_ReceiveCloudShadows ||
+        config.m_InjectionPriority != defaults.m_InjectionPriority;
+}
+
+void DecodeVolumetricConfig(
+    const Vans::ParticleJson& root, VansParticleVolumetricConfig& config)
+{
+    config.m_Enabled = root.value("enabled", false);
+    config.m_KeepSurfaceRenderer = root.value("keepSurfaceRenderer", false);
+    config.m_RadiusScale = root.value("radiusScale", 1.0f);
+    config.m_MaxDistanceMeters = root.value("maxDistanceMeters", 100.0f);
+    config.m_DensityMultiplier = root.value("densityMultiplier", 1.0f);
+    config.m_ExtinctionPerMeter = root.value("extinctionPerMeter", 0.1f);
+    config.m_Anisotropy = root.value("anisotropy", 0.0f);
+    config.m_EdgeSoftness = root.value("edgeSoftness", 0.35f);
+    config.m_DirectLightingScale = root.value("directLightingScale", 1.0f);
+    config.m_SkyLightingScale = root.value("skyLightingScale", 1.0f);
+    config.m_ReceiveCloudShadows = root.value("receiveCloudShadows", true);
+    config.m_InjectionPriority = root.value("injectionPriority", 128u);
+    auto readVec3 = [](const Vans::ParticleJson& value, glm::vec3 fallback)
+    {
+        if (!value.is_array() || value.size() < 3)
+            return fallback;
+        return glm::vec3(value[0].get<float>(), value[1].get<float>(), value[2].get<float>());
+    };
+    if (root.contains("singleScatteringAlbedo"))
+        config.m_SingleScatteringAlbedo = readVec3(
+            root["singleScatteringAlbedo"], glm::vec3(0.9f));
+    if (root.contains("emissivePerMeter"))
+        config.m_EmissivePerMeter = readVec3(
+            root["emissivePerMeter"], glm::vec3(0.0f));
+
+    const auto isFiniteVec3 = [](const glm::vec3& value)
+    {
+        return std::isfinite(value.x) && std::isfinite(value.y) &&
+            std::isfinite(value.z);
+    };
+
+    const bool finite = std::isfinite(config.m_RadiusScale) &&
+        std::isfinite(config.m_MaxDistanceMeters) &&
+        std::isfinite(config.m_DensityMultiplier) &&
+        std::isfinite(config.m_ExtinctionPerMeter) &&
+        std::isfinite(config.m_Anisotropy) &&
+        std::isfinite(config.m_EdgeSoftness) &&
+        std::isfinite(config.m_DirectLightingScale) &&
+        std::isfinite(config.m_SkyLightingScale) &&
+        isFiniteVec3(config.m_SingleScatteringAlbedo) &&
+        isFiniteVec3(config.m_EmissivePerMeter);
+    const bool ranges = config.m_RadiusScale > 0.0f &&
+        config.m_MaxDistanceMeters > 0.0f &&
+        config.m_DensityMultiplier >= 0.0f &&
+        config.m_ExtinctionPerMeter >= 0.0f &&
+        config.m_Anisotropy >= -0.9f && config.m_Anisotropy <= 0.9f &&
+        config.m_EdgeSoftness > 0.0f && config.m_EdgeSoftness <= 1.0f &&
+        config.m_DirectLightingScale >= 0.0f &&
+        config.m_SkyLightingScale >= 0.0f &&
+        glm::all(glm::greaterThanEqual(config.m_SingleScatteringAlbedo, glm::vec3(0.0f))) &&
+        glm::all(glm::lessThanEqual(config.m_SingleScatteringAlbedo, glm::vec3(1.0f))) &&
+        glm::all(glm::greaterThanEqual(config.m_EmissivePerMeter, glm::vec3(0.0f))) &&
+        config.m_InjectionPriority <= 255u;
+    if (!finite || !ranges)
+        throw std::invalid_argument("renderer.volumetric contains invalid medium parameters");
+}
+
 Vans::ParticleJson EncodeRendererConfig(const VansParticleRendererConfig& config)
 {
     auto typeToString = [](VansParticleRendererType type) -> std::string {
@@ -265,6 +458,8 @@ Vans::ParticleJson EncodeRendererConfig(const VansParticleRendererConfig& config
     root["sortMode"] = sortToString(config.m_SortMode);
     root["lightingMode"] = lightingToString(config.m_LightingMode);
     root["sixWayLighting"] = EncodeSixWayLighting(config.m_SixWayLighting);
+    if (ShouldEncodeVolumetricConfig(config.m_Volumetric))
+        root["volumetric"] = EncodeVolumetricConfig(config.m_Volumetric);
     root["castShadows"] = config.m_CastShadows;
     root["receiveShadows"] = config.m_ReceiveShadows;
     return root;
@@ -307,6 +502,13 @@ void DecodeRendererConfig(const Vans::ParticleJson& root, VansParticleRendererCo
         DecodeSixWayLighting(root["sixWayLighting"], config.m_SixWayLighting);
         if (config.m_SixWayLighting.m_Enabled)
             config.m_LightingMode = VansParticleLightingMode::SixWayLit;
+    }
+
+    if (root.contains("volumetric"))
+    {
+        if (!root["volumetric"].is_object())
+            throw std::invalid_argument("renderer.volumetric must be an object");
+        DecodeVolumetricConfig(root["volumetric"], config.m_Volumetric);
     }
 
     if (config.m_SixWayLighting.m_Columns <= 1)
@@ -453,10 +655,15 @@ std::unique_ptr<VansParticleModule> CreateModule(const Vans::ParticleJson& root)
 
 void DecodeModule(const Vans::ParticleJson& root, VansParticleModule& module)
 {
+    module.m_Enabled = root.value("enabled", true);
     if (auto* initLifetime = dynamic_cast<VansInitLifetimeModule*>(&module))
     {
         if (root.contains("lifetime"))
+        {
             DecodeFloatCurve(root["lifetime"], initLifetime->m_Lifetime);
+            ValidateNonNegativeFloatCurve(
+                initLifetime->m_Lifetime, "InitLifetime.lifetime", 0.01f);
+        }
     }
     else if (auto* initVelocity = dynamic_cast<VansInitVelocityModule*>(&module))
     {
@@ -464,11 +671,21 @@ void DecodeModule(const Vans::ParticleJson& root, VansParticleModule& module)
         initVelocity->m_VelocityMode = mode == "Random" ? VansInitVelocityMode::Random : VansInitVelocityMode::Cone;
         initVelocity->m_ConeAngle = root.value("angle", 25.0f);
         initVelocity->m_Speed = root.value("speed", 2.0f);
+        if (!std::isfinite(initVelocity->m_ConeAngle) ||
+            initVelocity->m_ConeAngle < 0.0f || initVelocity->m_ConeAngle > 180.0f ||
+            !std::isfinite(initVelocity->m_Speed) || initVelocity->m_Speed < 0.0f)
+        {
+            throw std::invalid_argument(
+                "InitVelocity angle must be in [0,180] and speed must be non-negative");
+        }
     }
     else if (auto* initSize = dynamic_cast<VansInitSizeModule*>(&module))
     {
         if (root.contains("size"))
+        {
             DecodeFloatCurve(root["size"], initSize->m_Size);
+            ValidateNonNegativeFloatCurve(initSize->m_Size, "InitSize.size", 0.0f);
+        }
     }
     else if (auto* initColor = dynamic_cast<VansInitColorModule*>(&module))
     {
@@ -511,12 +728,19 @@ void DecodeModule(const Vans::ParticleJson& root, VansParticleModule& module)
     else if (auto* updateColor = dynamic_cast<VansUpdateColorOverLifetime*>(&module))
     {
         if (root.contains("gradient"))
+        {
             DecodeColorGradient(root["gradient"], updateColor->m_Gradient);
+            ValidateColorGradient(updateColor->m_Gradient);
+        }
     }
     else if (auto* updateSize = dynamic_cast<VansUpdateSizeOverLifetime*>(&module))
     {
         if (root.contains("curve"))
+        {
             DecodeCurveKeys(root["curve"], updateSize->m_Curve);
+            ValidateNormalizedCurve(updateSize->m_Curve,
+                "UpdateSizeOverLifetime.curve", true);
+        }
     }
     else if (auto* updateVelocity = dynamic_cast<VansUpdateVelocityOverLifetime*>(&module))
     {
@@ -528,6 +752,17 @@ void DecodeModule(const Vans::ParticleJson& root, VansParticleModule& module)
             updateVelocity->m_TurbulenceStrength = turbulence.value("strength", 0.5f);
             updateVelocity->m_TurbulenceFrequency = turbulence.value("frequency", 1.0f);
             updateVelocity->m_TurbulenceScrollSpeed = turbulence.value("scrollSpeed", 0.2f);
+        }
+        if (!std::isfinite(updateVelocity->m_Drag) || updateVelocity->m_Drag < 0.0f ||
+            !std::isfinite(updateVelocity->m_TurbulenceStrength) ||
+            updateVelocity->m_TurbulenceStrength < 0.0f ||
+            !std::isfinite(updateVelocity->m_TurbulenceFrequency) ||
+            updateVelocity->m_TurbulenceFrequency < 0.0f ||
+            !std::isfinite(updateVelocity->m_TurbulenceScrollSpeed) ||
+            updateVelocity->m_TurbulenceScrollSpeed < 0.0f)
+        {
+            throw std::invalid_argument(
+                "UpdateVelocityOverLifetime parameters must be finite and non-negative");
         }
     }
     else if (auto* updateRotation = dynamic_cast<VansUpdateRotationOverLifetime*>(&module))
@@ -559,7 +794,10 @@ Vans::ParticleJson VansParticleEmitterJsonCodec::EncodeEmitter(const VansParticl
         {
             auto encoded = EncodeModule(*module);
             if (!encoded.empty())
+            {
+                encoded["enabled"] = module->m_Enabled;
                 initialize.push_back(std::move(encoded));
+            }
         }
     }
     root["initialize"] = std::move(initialize);
@@ -571,7 +809,10 @@ Vans::ParticleJson VansParticleEmitterJsonCodec::EncodeEmitter(const VansParticl
         {
             auto encoded = EncodeModule(*module);
             if (!encoded.empty())
+            {
+                encoded["enabled"] = module->m_Enabled;
                 update.push_back(std::move(encoded));
+            }
         }
     }
     root["update"] = std::move(update);

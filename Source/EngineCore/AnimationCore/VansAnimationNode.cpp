@@ -282,8 +282,8 @@ bool VansAnimationNode::ConfigureRetargetSource(
 		<< " translationScaleMode='" << RetargetTranslationScaleModeName(desc.translationScaleMode) << "'"
 		<< " rootAlignment='" << RetargetRootAlignmentName(desc.rootAlignment) << "'"
 		<< " targetModelSpaceAlignment='" << RetargetModelAlignmentName(desc.targetModelSpaceAlignment) << "'"
-		<< " sourceModel='" << desc.sourceModelPath
-		<< "' sourceAnimator='" << desc.sourceAnimatorPath << "'");
+		<< " sourceModel='" << desc.sourceModelAssetGuid
+		<< "' sourceAnimator='" << desc.sourceAnimatorAssetGuid << "'");
 	return true;
 }
 
@@ -804,6 +804,9 @@ void VansAnimationNode::PrepareAnimationFrame(
 					<< ": source used=" << sourceMM->usedThisFrame
 					<< " querySpeed=" << sourceMM->querySpeed
 					<< " queryDirection=" << sourceMM->queryDirection
+					<< " facingYaw=" << sourceMM->currentFacingYawDegrees
+					<< " desiredYaw=" << sourceMM->desiredFacingYawDegrees
+					<< " appliedRootYaw=" << sourceMM->appliedRootYawDeltaDegrees
 					<< " moveState=" << m_SourceController->GetInt("MoveState")
 					<< " activeClip='" << sourceMM->activeClip << "'"
 					<< " selectedClip='" << sourceMM->selectedClip << "'"
@@ -1239,7 +1242,11 @@ void VansAnimationNode::SyncRetargetParameters()
 			break;
 		case AnimatorParamType::Trigger:
 			if (param.boolVal)
+			{
 				m_SourceController->SetTrigger(name);
+				// 外部姿态控制器不执行普通图更新；移交后消费，避免下一帧重复触发源图。
+				m_Controller->ResetTrigger(name);
+			}
 			break;
 		case AnimatorParamType::Vector3:
 			m_SourceController->SetVector3(name, param.vec3Val);

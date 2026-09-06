@@ -42,10 +42,11 @@ namespace Vans
 				}
 			}
 
-			config.renderSettings = root.value("renderSettings", "ProjectSettings/RenderSettings.json");
-			config.physicsSettings = root.value("physicsSettings", "ProjectSettings/PhysicsSettings.json");
-			config.audioSettings = root.value("audioSettings", "ProjectSettings/AudioMix.json");
-			config.collisionLayerSettings = root.value("collisionLayerSettings", "ProjectSettings/PhysicsLayers.json");
+			config.renderSettings = root.at("renderSettings").get<std::string>();
+			config.physicsSettings = root.at("physicsSettings").get<std::string>();
+			config.audioSettings = root.at("audioSettings").get<std::string>();
+			config.collisionLayerSettings =
+				root.at("collisionLayerSettings").get<std::string>();
 
 			config.assetDirectories.clear();
 			if (root.contains("assetDirectories") && root["assetDirectories"].is_object())

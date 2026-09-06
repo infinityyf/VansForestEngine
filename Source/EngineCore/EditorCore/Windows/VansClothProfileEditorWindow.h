@@ -4,6 +4,7 @@
 
 #include <imgui.h>
 #include <GLM/glm.hpp>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -11,6 +12,11 @@
 namespace VansEngine
 {
     struct VansClothProfile;
+}
+
+namespace Vans
+{
+    struct VansOpenAssetDocument;
 }
 
 namespace VansGraphics
@@ -44,7 +50,9 @@ namespace VansGraphics
         std::string                   m_CurrentProfilePath;
         std::string                   m_ProjectRootPath;
         std::unique_ptr<VansEngine::VansClothProfile> m_Profile;
-        bool                          m_IsDirty           = false; // 有未保存改动
+        std::shared_ptr<Vans::VansOpenAssetDocument> m_Document;
+        Vans::EditorAPI::IEngineEditorAPI* m_ActiveAPI = nullptr;
+        std::uint64_t m_DocumentStateId = 0;
 
         // ── 编辑器专用 CPU 网格数据（由 m_Profile.m_ModelPath 独立加载）──────
         struct EditorParticle
@@ -127,7 +135,9 @@ namespace VansGraphics
                                      const EditorBone& bone) const;
 
         void SaveProfile();
-        void RevertProfile(); // 重新从文件加载，丢弃当前改动
+        void RevertProfile(); // 回到共享文档最近一次保存的内存快照
+        bool DecodeProfileDocument();
+        bool PublishProfileEdit();
         void DrawProfileEditorContents();
 
         // Assimp CPU-only 辅助（静态，不依赖任何引擎对象）

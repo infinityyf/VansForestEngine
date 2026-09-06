@@ -13,6 +13,20 @@ layout(set = 1, binding = 6) uniform sampler2D atmosphereSceneDepth;
 layout(set = 1, binding = 7, rgba16f) uniform writeonly image2D atmosphereSceneColorOutput;
 layout(set = 1, binding = 8) uniform sampler2D atmosphereWaterNormal;
 layout(set = 1, binding = 9) uniform sampler2D atmosphereWaterPositionDepth;
+layout(set = 1, binding = 11) uniform sampler3D atmosphereClearAerialScattering;
+
+vec3 SampleClearPhysicalAerialScatteringAt(vec2 uv, float distanceMeters)
+{
+	if (distanceMeters <= 0.0)
+		return vec3(0.0);
+	float slice = AtmosphereAerialSliceCoordinate(distanceMeters);
+	float sliceCount =
+		max(uAtmosphereFrame.aerialPerspectiveParameters.z, 1.0);
+	float centeredSlice =
+		(slice * (sliceCount - 1.0) + 0.5) / sliceCount;
+	return texture(atmosphereClearAerialScattering,
+		vec3(uv, centeredSlice)).rgb;
+}
 
 // The cloud buffers are quarter resolution. Interval scattering and linear
 // transmittance can be reconstructed, but optical depth itself and interval
@@ -222,17 +236,18 @@ void main()
 	else
 	{
 		vec3 physicalSky = SampleAtmosphereSkyRadiance(rayDirection);
-		vec3 clearScattering;
-		vec3 clearOpticalDepth;
-		ExtractBaseMediaInterval(uv, rayDirection, 0.0, terminalDistance,
-			clearScattering, clearOpticalDepth);
-		vec3 clearTransmittance =
-			exp(-min(clearOpticalDepth, vec3(80.0)));
-		// SkyView 是从相机到大气边界的清空路径。先从它解析出终点辐射，
-		// 再用实际（可能含云）的完整路径重组，避免把前景大气重复乘到天空上。
+		vec3 clearPhysicalScattering =
+			SampleClearPhysicalAerialScatteringAt(uv, terminalDistance);
+		vec3 clearPhysicalOpticalDepth =
+			SampleFarAerialOpticalDepthAt(uv, terminalDistance);
+		vec3 clearPhysicalTransmittance =
+			exp(-min(clearPhysicalOpticalDepth, vec3(80.0)));
+		// SkyView 与清空 Aerial 使用同一个物理大气源项。只以这组同基准
+		// 数据反解大气边界辐射，再交给实际含云/近场介质路径重组；不能用
+		// 已受云影调制的 Aerial 做减法，否则会把被遮住的太阳晕恢复出来。
 		vec3 skyEndpointRadiance = max(
-			physicalSky - clearScattering, vec3(0.0)) /
-			max(clearTransmittance, vec3(1.0e-5));
+			physicalSky - clearPhysicalScattering, vec3(0.0)) /
+			max(clearPhysicalTransmittance, vec3(1.0e-5));
 		result = path.scattering +
 			exp(-min(path.opticalDepth, vec3(80.0))) * skyEndpointRadiance;
 		for (uint bodyIndex = 0u; bodyIndex < 2u; ++bodyIndex)

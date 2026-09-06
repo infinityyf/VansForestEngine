@@ -1,6 +1,7 @@
 #pragma once
 
 #include "EngineCommandContext.h"
+#include "VansLocalFogFieldPreviewService.h"
 
 #include "../Public/IEngineEditorAPI.h"
 #include "../../GameplayActionDebug/VansGameplayActionDebug.h"
@@ -59,8 +60,14 @@ namespace Vans::EditorAPI
 		ProjectBrowserRootSnapshot GetProjectBrowserRoot() const override;
 		AssetDragPayload CreateAssetDragPayload(const std::string& assetPath) override;
 		AssetGuidResolution ResolveAssetGuid(const std::string& assetGuid) const override;
+		ShaderAuthoringSchemaSnapshot GetShaderAuthoringSchema(
+			const std::string& shaderAssetGuid) const override;
+		LocalFogFieldPreviewSnapshot GetLocalFogFieldPreview(
+			const LocalFogFieldPreviewRequest& request) const override;
 		ProjectAssetCreateResult CreateProjectAsset(const ProjectAssetCreateRequest& request) override;
 		AssetRefreshResult RefreshProjectAsset(const std::string& assetPath, bool importIfMissing) override;
+		AssetWorkingCopyPublishResult PublishAssetWorkingCopy(
+			const AssetWorkingCopyPublishRequest& request) override;
 		GAFEditorDocumentSnapshot OpenGAFAsset(const std::string& sourcePath) override;
 		GAFEditorOperationResult SetGAFAssetField(const GAFEditorFieldEditRequest& request) override;
 		GAFEditorOperationResult ResetGAFAssetField(
@@ -91,12 +98,10 @@ namespace Vans::EditorAPI
 		ProjectConfigEditResult SetProjectPathField(ProjectPathField field, const std::string& relativePath) override;
 		ProjectConfigEditResult SetProjectScriptSearchPaths(const std::vector<std::string>& paths) override;
 		ProjectConfigEditResult SetProjectAssetDirectory(const std::string& key, const std::string& relativePath) override;
-		ProjectConfigEditResult SaveProjectConfig() override;
+		ProjectConfigEditResult SaveProjectDocuments() override;
 		float GetProjectPhysicsFixedTimeStep() const override;
 		ProjectConfigEditResult SetProjectPhysicsFixedTimeStep(float fixedTimeStep) override;
 		bool SetCurrentProjectScenePath(const std::string& scenePath) override;
-		void ScanProjectAssets() override;
-
 		EditorTextureHandle GetViewportTexture(ViewportId id) const override;
 		RenderTexturePreview GetViewportPreview(ViewportId id) const override;
 		UpscalerSettingsSnapshot GetUpscalerSettings() const override;
@@ -162,11 +167,10 @@ namespace Vans::EditorAPI
 		std::string GetProjectRootPath() const override;
 		bool IsRuntimeSceneReady() const override;
 		bool IsRuntimeSceneSwitching() const override;
-		RuntimeSceneLoadResult LoadRuntimeScene(const std::string& scenePath, RuntimeSceneLoadMode mode) override;
+		RuntimeSceneLoadResult LoadRuntimeScene(const RuntimeSceneLoadRequest& request) override;
 		void UnloadRuntimeScene() override;
 		bool AreRuntimeProjectResourcesLoaded() const override;
 		void UnloadRuntimeProjectResources() override;
-		bool LoadRuntimeProjectAssetsForScene(const std::string& scenePath) override;
 		VehicleDebugSnapshot GetVehicleDebugSnapshot() const override;
 		bool HasAnimationDebugNodes() const override;
 		AnimationAssetBindingSnapshot GetAnimationAssetBinding(const std::string& entityGuid) const override;
@@ -328,6 +332,7 @@ namespace Vans::EditorAPI
 		std::unordered_map<UIDocumentId, std::shared_ptr<VansRuntime::VansUIDocument>> m_UIDocuments;
 		std::unordered_map<UIDocumentId, std::string> m_UIDocumentSourcePaths;
 		std::unordered_map<UIDocumentId, VansRuntime::VansUIHandleId> m_UIScreenPreviewHandles;
+		mutable VansLocalFogFieldPreviewService m_LocalFogFieldPreviewService;
 
 		struct UIPreviewGpuResource
 		{

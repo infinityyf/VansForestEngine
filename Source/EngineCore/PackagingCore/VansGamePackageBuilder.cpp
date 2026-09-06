@@ -13,8 +13,11 @@
 #include "../RenderCore/VulkanCore/VansMesh.h"
 #include "../RenderCore/VulkanCore/VansPipelineDescriptor.h"
 #include "../RuntimeCore/VansPackageManifest.h"
+#include "../AssetCore/VansAssetObjectRepository.h"
 #include "../SceneCore/VansPackagedResourcePlan.h"
 #include "../SceneCore/VansSceneAssetDependencyBuilder.h"
+#include "../SceneCore/VansAssetObjectBootstrapper.h"
+#include "../SceneCore/VansSceneDocumentLoader.h"
 #include "../SceneCore/VansSceneResourceLoadContext.h"
 #include "../Util/VansLog.h"
 
@@ -709,16 +712,17 @@ namespace
 			? relativeRoot
 			: relativeRoot / sourcePath.filename();
 		cookedPlan.cacheCopies.push_back({ sourcePath, relativePath, directory });
-		if (!directory)
-		{
-			const fs::path sourceMetaPath(sourcePath.string() + ".meta");
-			std::error_code metaError;
-			if (fs::is_regular_file(sourceMetaPath, metaError))
-			{
-				const fs::path relativeMetaPath(relativePath.string() + ".meta");
-				cookedPlan.cacheCopies.push_back({ sourceMetaPath, relativeMetaPath, false });
-			}
-		}
+		return relativePath;
+	}
+
+	fs::path RegisterMetadataCache(
+		const std::string& guid,
+		const fs::path& metaPath,
+		CookedPackagePlanBuild& cookedPlan)
+	{
+		const fs::path relativePath =
+			fs::path("Library") / "Artifacts" / "Metadata" / (guid + ".meta");
+		cookedPlan.cacheCopies.push_back({ metaPath, relativePath, false });
 		return relativePath;
 	}
 
@@ -878,7 +882,7 @@ namespace
 		Vans::VansAssetDatabase builtInDatabase(
 			engineRoot / "EngineAssets",
 			projectRoot / projectConfig.importedArtifactRoot / "Engine");
-		const Vans::VansAssetScanResult scanResult = database.Scan(Vans::VansAssetOperationPolicy::Authoring());
+		const Vans::VansAssetScanResult scanResult = database.Scan(Vans::VansAssetOperationPolicy::ReadOnly());
 		for (const std::string& scanError : scanResult.errors)
 			VANS_LOG_ERROR("[PackageResourcePlan] " << scanError);
 		if (!scanResult)
@@ -898,12 +902,41 @@ namespace
 			error = "Built-in asset scan failed while building cooked resource plan";
 			return false;
 		}
+		Vans::VansAssetObjectRepository objectRepository;
+		std::vector<Vans::VansAssetRecord> memoryRecords = database.All();
+		const std::vector<Vans::VansAssetRecord> builtInMemoryRecords = builtInDatabase.All();
+		memoryRecords.insert(
+			memoryRecords.end(), builtInMemoryRecords.begin(), builtInMemoryRecords.end());
+		const Vans::VansAssetObjectBootstrapResult memoryBootstrap =
+			Vans::VansAssetObjectBootstrapper::Publish(memoryRecords, objectRepository);
+		if (!memoryBootstrap)
+		{
+			for (const std::string& bootstrapError : memoryBootstrap.errors)
+				VANS_LOG_ERROR("[PackageResourcePlan] " << bootstrapError);
+			error = "Cannot build the in-memory authoring asset repository for package planning";
+			return false;
+		}
+
+		Vans::SceneDocumentLoadResult sceneDocumentLoad =
+			Vans::VansSceneDocumentLoader::Load(scenePath);
+		if (!sceneDocumentLoad)
+		{
+			error = "Cannot load scene document for cooked resource plan";
+			if (!sceneDocumentLoad.diagnostics.empty() &&
+				!sceneDocumentLoad.diagnostics.front().message.empty())
+				error += ": " + sceneDocumentLoad.diagnostics.front().message;
+			return false;
+		}
+		const Vans::VansSerializedValue sceneDocument =
+			sceneDocumentLoad.document->SerializedRootSnapshot();
 
 		Vans::VansSceneAssetDependencyBuildResult dependencyResult =
 			Vans::VansSceneAssetDependencyBuilder::BuildResourcePlan(
 				database,
+				sceneDocument,
 				scenePath,
 				projectConfig.runtimeAssetBindings,
+				objectRepository,
 				&builtInDatabase);
 		if (!dependencyResult.success)
 		{
@@ -943,8 +976,10 @@ namespace
 
 				dependencyResult = Vans::VansSceneAssetDependencyBuilder::BuildResourcePlan(
 					database,
+					sceneDocument,
 					scenePath,
 					projectConfig.runtimeAssetBindings,
+					objectRepository,
 					&builtInDatabase);
 				if (!dependencyResult.success)
 				{
@@ -1016,10 +1051,21 @@ namespace
 			indexRecord.sourcePath.clear();
 			indexRecord.authoringPath.clear();
 			indexRecord.artifactPath = record.artifactPath.string();
+			indexRecord.missing = record.state == Vans::VansAssetState::Missing;
+			if (!indexRecord.missing)
+			{
+				std::error_code metaError;
+				if (fs::is_regular_file(record.metaPath, metaError))
+					indexRecord.metaPath = RegisterMetadataCache(
+						indexRecord.guid, record.metaPath, cookedPlan).generic_string();
+				else
+					cookedPlan.missingResources.push_back({
+						"asset metadata", indexRecord.guid, record.metaPath.string(), {}
+					});
+			}
 			indexRecord.artifactFormat = ArtifactFormatToString(record.artifactFormat);
 			indexRecord.sourceHash = record.sourceHash;
 			indexRecord.metaHash = record.metaHash;
-			indexRecord.missing = record.state == Vans::VansAssetState::Missing;
 			assetIndexByGuid[indexRecord.guid] = cookedPlan.packagePlan.assetIndex.size();
 			cookedPlan.packagePlan.assetIndex.push_back(std::move(indexRecord));
 		}
@@ -1030,6 +1076,40 @@ namespace
 				? nullptr
 				: &cookedPlan.packagePlan.assetIndex[found->second];
 		};
+		for (const Vans::VansAssetRecord& sourceAsset : indexedAssets)
+		{
+			if (sourceAsset.state == Vans::VansAssetState::Missing ||
+				!Vans::VansAssetObjectBootstrapper::Supports(sourceAsset.type) ||
+				Vans::VansGameplayAssetSchemaRegistry::IsGameplayAssetType(sourceAsset.type))
+				continue;
+			std::error_code sourceError;
+			if (!fs::is_regular_file(sourceAsset.sourcePath, sourceError))
+			{
+				cookedPlan.missingResources.push_back({
+					"memory asset source",
+					sourceAsset.guid.ToString(),
+					sourceAsset.sourcePath.string(),
+					{}
+				});
+				continue;
+			}
+			Vans::VansPackagedAssetIndexRecord* record = indexedRecord(sourceAsset.guid.ToString());
+			if (!record)
+			{
+				cookedPlan.missingResources.push_back({
+					"memory asset index",
+					sourceAsset.guid.ToString(),
+					sourceAsset.sourcePath.string(),
+					{}
+				});
+				continue;
+			}
+			record->artifactPath = RegisterSourceFormatCache(
+				sourceAsset.guid.ToString(), sourceAsset.sourcePath, false, cookedPlan).generic_string();
+			record->artifactFormat = "source";
+			RegisterCookedSourceAsset(
+				projectRoot, sourceAsset.sourcePath.string(), cookedPlan.cookedSourceAssets);
+		}
 		for (const Vans::VansGameplayPackagedAssetRecord& gameplayAsset : gameplayCook.assets)
 		{
 			Vans::VansPackagedAssetIndexRecord* record = indexedRecord(gameplayAsset.guid);
@@ -1072,13 +1152,8 @@ namespace
 				cookedPlan.missingResources.push_back({ "asset dependency", guidText, {}, {} });
 				continue;
 			}
-			if (sourceRecord->type != Vans::VansAssetType::AnimatorController
-				&& sourceRecord->type != Vans::VansAssetType::AnimationClip
-				&& sourceRecord->type != Vans::VansAssetType::AnimationRig
-				&& sourceRecord->type != Vans::VansAssetType::BoneMask
-				&& sourceRecord->type != Vans::VansAssetType::Timeline
-				&& sourceRecord->type != Vans::VansAssetType::NavigationMesh
-				&& sourceRecord->type != Vans::VansAssetType::AIBehavior)
+			if (Vans::VansAssetObjectBootstrapper::Supports(sourceRecord->type) ||
+				sourceRecord->type != Vans::VansAssetType::AnimationClip)
 				continue;
 			if (!fs::is_regular_file(sourceRecord->sourcePath, ec))
 			{
@@ -1526,7 +1601,7 @@ namespace Vans
 		}
 
 		CookedPackagePlanBuild cookedPlan;
-		if (request.useCookedResourcePlan && request.includeLibrary)
+		if (request.includeLibrary)
 		{
 			if (!BuildCookedPackagePlan(
 				projectRoot,
@@ -1581,7 +1656,7 @@ namespace Vans
 			return result;
 		}
 
-		if (request.includeLibrary && cookedPlan.enabled)
+		if (request.includeLibrary)
 		{
 			std::unordered_set<std::string> copiedArtifactSet;
 			for (const fs::path& artifactPath : cookedPlan.artifactPaths)
@@ -1626,13 +1701,6 @@ namespace Vans
 			}
 			++copiedFiles;
 		}
-		else if (request.includeLibrary &&
-			!CopyDirectoryTo(projectRoot / "Library", contentRoot / "Library", copiedFiles, error))
-		{
-			result.message = error;
-			return result;
-		}
-
 		const fs::path packagedShaderArtifacts = contentRoot / "Library" / "Artifacts" / "Shaders";
 		if (!CookRuntimeShaders(
 			engineRoot,

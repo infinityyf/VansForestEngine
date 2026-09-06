@@ -13,10 +13,7 @@ namespace VansGraphics
                                           const glm::mat4&)
     {
         for (uint32_t i = 0; i < pool.m_AliveCount; ++i)
-        {
-            pool.m_Velocity[i]  += m_Gravity * deltaTime;
-            pool.m_Position[i]  += pool.m_Velocity[i] * deltaTime;
-        }
+            pool.m_Velocity[i] += m_Gravity * deltaTime;
     }
 
     // ──────────────────────────────────────────────────────────────────────
@@ -62,10 +59,10 @@ namespace VansGraphics
     {
         for (uint32_t i = 0; i < pool.m_AliveCount; ++i)
         {
-            // Size 字段存储初始大小 × 曲线倍率
-            float initSize   = pool.m_Size[i];
+            // 曲线表示生成尺寸的倍率，不依赖帧率，也不会逐帧累乘。
+            float initSize   = pool.m_InitialSize[i];
             float multiplier = EvalCurve(pool.m_NormalizedAge[i]);
-            pool.m_Size[i]   = initSize * multiplier;
+            pool.m_Size[i]   = std::max(initSize * multiplier, 0.0f);
         }
     }
 
@@ -87,8 +84,8 @@ namespace VansGraphics
     {
         for (uint32_t i = 0; i < pool.m_AliveCount; ++i)
         {
-            // 阻力衰减：速度每秒按 drag 减少
-            pool.m_Velocity[i] *= (1.f - m_Drag * deltaTime);
+            // 指数阻力在不同帧率和较大 deltaTime 下保持稳定，不会反向速度。
+            pool.m_Velocity[i] *= std::exp(-std::max(m_Drag, 0.0f) * deltaTime);
 
             // 湍流扰动
             if (m_TurbulenceEnabled)
@@ -102,10 +99,6 @@ namespace VansGraphics
                 );
                 pool.m_Velocity[i] += offset * m_TurbulenceStrength * deltaTime;
             }
-
-            // 用更新后的速度推进位置（若 Gravity 模块未处理位置，则此处处理）
-            // 注意：若同时存在 Gravity 模块，应避免重复积分位置。
-            // 设计约定：Gravity 模块负责位置积分；此模块仅修改速度。
         }
     }
 

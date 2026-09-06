@@ -294,13 +294,12 @@ namespace VansGraphics
 		{
 			return m_AnimationRig.get();
 		}
-		void SetAnimationRigAssetIdentity(std::string guid, std::string path)
+		// 运行时仅保存资源身份；编辑文档路径由工具层按 GUID 解析。
+		void SetAnimationRigAssetGuid(std::string guid)
 		{
 			m_AnimationRigAssetGuid = std::move(guid);
-			m_AnimationRigAssetPath = std::move(path);
 		}
 		const std::string& GetAnimationRigAssetGuid() const { return m_AnimationRigAssetGuid; }
-		const std::string& GetAnimationRigAssetPath() const { return m_AnimationRigAssetPath; }
 		void ClearTargetPostProcessGraph();
 		bool HasTargetPostProcessGraph() const { return m_TargetPostProcessInstance != nullptr; }
 		bool HasGraphSets() const { return !m_GraphSetRuntimes.empty(); }
@@ -427,7 +426,6 @@ namespace VansGraphics
 		const Vans::VansCharacterTrajectory* m_CharacterTrajectory = nullptr;
 		std::unique_ptr<VansCompiledAnimationRig> m_AnimationRig;
 		std::string m_AnimationRigAssetGuid;
-		std::string m_AnimationRigAssetPath;
 		VansGroundQueryProfileResolver m_QueryProfileResolver;
 		std::unique_ptr<VansProceduralGraphRuntime> m_ProceduralRuntime;
 		VansAnimationExternalInputSnapshot m_ExternalInput;

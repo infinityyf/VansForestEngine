@@ -4,10 +4,10 @@
 #include "VansAIBehaviorAsset.h"
 #include "VansAIEvents.h"
 #include "VansAIRuntimeComponents.h"
+#include "../AssetCore/VansAssetObjectRepository.h"
 #include "../EventCore/VansScopedEventConnections.h"
 #include "../NavigationCore/VansNavigationMesh.h"
 
-#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
@@ -41,7 +41,7 @@ public:
 
 	bool Initialize(VansRuntimeWorld& world,
 		VansGameplayRuntime* gameplayRuntime,
-		std::filesystem::path projectRoot,
+		const VansAssetObjectRepository& assetObjects,
 		std::string& error);
 	void Shutdown();
 	void Update(double deltaSeconds);
@@ -50,8 +50,8 @@ public:
 private:
 	struct AgentRuntime
 	{
-		std::shared_ptr<VansAIBehaviorAsset> behavior;
-		std::shared_ptr<VansNavigationMesh> navigationMesh;
+		std::shared_ptr<const VansAIBehaviorAsset> behavior;
+		std::shared_ptr<const VansNavigationMesh> navigationMesh;
 		VansAIBlackboard blackboard;
 		std::string currentState;
 		VansEntityHandle target;
@@ -74,23 +74,20 @@ private:
 	};
 
 	static std::uint64_t EntityKey(VansEntityHandle entity);
-	std::filesystem::path ResolveProjectPath(const std::string& path) const;
 	bool InitializeAgent(AgentRuntime& runtime,
 		const VansRuntimeAIAgentComponent& ai,
 		const VansRuntimeNavigationAgentComponent& navigation,
 		std::string& error);
-	std::shared_ptr<VansAIBehaviorAsset> LoadBehavior(
-		const std::string& path, std::string& error);
-	std::shared_ptr<VansNavigationMesh> LoadNavigationMesh(
-		const std::string& path, std::string& error);
+	std::shared_ptr<const VansAIBehaviorAsset> ResolveBehavior(
+		const std::string& guid, std::string& error) const;
+	std::shared_ptr<const VansNavigationMesh> ResolveNavigationMesh(
+		const std::string& guid, std::string& error) const;
 
 	VansRuntimeWorld* m_World = nullptr;
 	VansGameplayRuntime* m_GameplayRuntime = nullptr;
-	std::filesystem::path m_ProjectRoot;
+	const VansAssetObjectRepository* m_AssetObjects = nullptr;
 	VansScopedEventConnections m_Connections;
 	std::unordered_map<std::uint64_t, AgentRuntime> m_Agents;
-	std::unordered_map<std::string, std::shared_ptr<VansAIBehaviorAsset>> m_BehaviorCache;
-	std::unordered_map<std::string, std::shared_ptr<VansNavigationMesh>> m_NavigationCache;
 	std::unordered_set<std::uint64_t> m_PendingActivation;
 	std::unordered_set<std::uint64_t> m_PendingGameplayRelease;
 };

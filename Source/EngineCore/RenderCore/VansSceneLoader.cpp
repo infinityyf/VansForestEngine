@@ -21,6 +21,7 @@
 #include "../ProjectSystem/VansProjectManager.h"
 #include "../AssetCore/VansAssetDatabase.h"
 #include "../AssetCore/VansBuiltInAssetCatalog.h"
+#include "../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 #include "../SceneCore/VansPackagedResourcePlan.h"
 #include "../SceneCore/VansSceneAssetDependencyBuilder.h"
 #include "../SceneCore/VansSceneResourceLoadContext.h"
@@ -33,6 +34,7 @@
 #include "VansVideoManager.h"
 #include "../AudioCore/VansAudioManager.h"
 #include "../AudioCore/VansAudioMixConfig.h"
+#include "../AudioCore/Serialization/VansAudioMixConfigJsonCodec.h"
 #include "../AudioCore/VansAudioSystem.h"
 
 #include "VulkanCore/VansMesh.h"
@@ -67,6 +69,7 @@
 #include <mutex>
 #include <cctype>
 #include <random>
+#include <nlohmann/json.hpp>
 #include <glm/gtx/quaternion.hpp>
 
 namespace VansGraphics
@@ -138,6 +141,10 @@ namespace
 	{
 		for (const Vans::VansBuiltInAssetEntry& entry : Vans::VansBuiltInAssetCatalog::Entries())
 		{
+			// 配置型内建资产通过内存仓库消费，不参与场景渲染资源别名绑定。
+			if (entry.runtimeAlias == nullptr)
+				continue;
+
 			switch (entry.type)
 			{
 			case Vans::VansAssetType::Model:
@@ -170,41 +177,32 @@ namespace
 
 	void ApplyProjectAudioMixConfig(VansScene& scene)
 	{
-		const Vans::VansProjectConfig& projectConfig =
-			Vans::VansProjectManager::Get().GetConfig();
-		if (projectConfig.audioSettings.empty())
+		const Vans::VansSerializedValue* document =
+			Vans::VansProjectManager::Get().GetAudioMixDocument();
+		if (!document)
 			return;
-
-		std::filesystem::path mixPath = std::filesystem::path(projectConfig.audioSettings);
-		if (mixPath.is_relative())
-			mixPath = std::filesystem::path(Vans::VansProjectManager::Get().GetProjectRootPath()) / mixPath;
-
-		std::error_code ec;
-		if (!std::filesystem::is_regular_file(mixPath, ec))
-		{
-			VANS_LOG_WARN("[AudioMix] Project audio mix config not found: " << mixPath.string());
-			return;
-		}
 
 		VansEngine::AudioMixConfig mixConfig;
 		std::string error;
-		if (!VansEngine::VansAudioMixConfigStorage::Load(mixPath, mixConfig, error))
+		if (!VansEngine::VansAudioMixConfigJsonCodec::Decode(
+			Vans::EncodeSerializedValueJson<nlohmann::json>(*document), mixConfig, error))
 		{
-			VANS_LOG_ERROR("[AudioMix] Cannot load project audio mix config: "
-				<< mixPath.string() << " (" << error << ")");
+			VANS_LOG_ERROR("[AudioMix] Cannot decode the in-memory project audio mix: " << error);
 			return;
 		}
 
 		if (VansEngine::VansAudioManager* audioManager = scene.GetAudioManager())
 		{
 			audioManager->ApplyMixConfig(mixConfig);
-			VANS_LOG("[AudioMix] Applied project audio mix config: " << mixPath.string());
+			VANS_LOG("[AudioMix] Applied in-memory project audio mix");
 		}
 	}
 }
 
 bool VansGraphics::VansScene::LoadProjectAssets(Vans::VansAssetDatabase& database,
-    const std::filesystem::path& scenePath, VansVKDevice* device)
+    const Vans::VansSerializedValue& sceneDocument,
+    const std::filesystem::path& sceneSourcePath,
+    VansVKDevice* device)
 {
 	VANS_PROFILE_SCOPE("SceneLoad.LoadProjectAssets", Vans::ProfileCategory::IO);
 	const auto totalStart = SceneLoadClock::now();
@@ -221,25 +219,13 @@ bool VansGraphics::VansScene::LoadProjectAssets(Vans::VansAssetDatabase& databas
 	try
 	{
 	auto phaseStart = SceneLoadClock::now();
-	const Vans::VansAssetScanResult scanResult = database.Scan(Vans::VansAssetOperationPolicy::ReadOnly());
-	LogSceneLoadPhase("projectAssets.scan", phaseStart);
-	if (!scanResult)
-	{
-		for (const std::string& error : scanResult.errors)
-			VANS_LOG_ERROR("[AssetDatabase] Scan error: " << error);
-	}
-	else
-	{
-		VANS_LOG("[AssetDatabase] Scan refreshed " << scanResult.registered
-			<< " assets, generated " << scanResult.generatedMeta << " meta files");
-	}
-
-	phaseStart = SceneLoadClock::now();
 	const Vans::VansSceneAssetDependencyBuildResult assetBatch =
 		Vans::VansSceneAssetDependencyBuilder::BuildResourcePlan(
 			database,
-			scenePath,
+			sceneDocument,
+			sceneSourcePath,
 			Vans::VansProjectManager::Get().GetConfig().runtimeAssetBindings,
+			Vans::VansProjectManager::Get().GetAssetObjectRepository(),
 			Vans::VansProjectManager::Get().GetBuiltInAssetDatabase());
 	LogSceneLoadPhase("projectAssets.dependencyPlan", phaseStart);
 	if (!assetBatch.success)
@@ -375,11 +361,15 @@ bool VansGraphics::VansScene::LoadPackagedProjectAssets(
 	}
 }
 
-bool VansGraphics::VansScene::LoadSceneForRendering(const char* scenePath, VansVKDevice* device, VansSceneLoadMode mode)
+bool VansGraphics::VansScene::LoadSceneForRendering(
+	const Vans::VansSerializedValue& sceneDocument,
+	const std::filesystem::path& sceneSourcePath,
+	VansVKDevice* device,
+	VansSceneLoadMode mode)
 {
     VANS_ASSERT_MAIN_THREAD();
 
-    if (scenePath == nullptr || scenePath[0] == '\0')
+    if (sceneSourcePath.empty())
     {
         VANS_LOG_ERROR("[VansScene] LoadSceneForRendering requires a non-empty scene path");
         return false;
@@ -395,7 +385,7 @@ bool VansGraphics::VansScene::LoadSceneForRendering(const char* scenePath, VansV
         return false;
     }
 
-    VANS_LOG("[VansScene] LoadSceneForRendering: " << scenePath);
+    VANS_LOG("[VansScene] LoadSceneForRendering: " << sceneSourcePath.string());
     m_RuntimeResourceDevice = device;
 	device->RequestUpscalerHistoryReset(VansUpscalerResetReason::SceneChange);
 
@@ -421,7 +411,7 @@ bool VansGraphics::VansScene::LoadSceneForRendering(const char* scenePath, VansV
 
 	m_SceneState = VansSceneState::Loading;
 	m_LoadMode = mode;
-	VANS_LOG("[VansScene] Loading scene: " << scenePath);
+	VANS_LOG("[VansScene] Loading scene: " << sceneSourcePath.string());
 
     if (rebuildRenderingDataAfterUnload)
     {
@@ -435,7 +425,7 @@ bool VansGraphics::VansScene::LoadSceneForRendering(const char* scenePath, VansV
 		}
     }
 
-    if (!VansSceneContentBuildExecutor::BuildFromFile(*this, scenePath))
+    if (!VansSceneContentBuildExecutor::BuildFromDocument(*this, sceneDocument, sceneSourcePath))
     {
         VANS_LOG_ERROR("[VansScene] Scene content build failed, unloading partially built scene");
         m_SceneState = VansSceneState::Unloading;
@@ -466,15 +456,6 @@ bool VansGraphics::VansScene::LoadSceneForRendering(const char* scenePath, VansV
 }
 // ===========================================================================
 // Single render node loading (extracted from LoadRenderNodes loop body)
-
-// ===========================================================================
-// Resource loading (meshes, shaders, textures, materials)
-// ===========================================================================
-
-bool VansGraphics::VansScene::LoadSceneContent(const char* path)
-{
-    return VansSceneContentBuildExecutor::BuildFromFile(*this, path);
-}
 
 VansTexture* VansGraphics::VansScene::LoadOrGetTexture(const std::string& absPath, bool isSRGB)
 {
@@ -520,7 +501,10 @@ bool VansGraphics::VansScene::BindEntityToAnimationAttachmentProfileByGuid(
 	VansScriptObject* child = FindObjectByGuid(childEntityGuid);
 	VansScriptObject* owner = FindObjectByGuid(parent.entityGuid.ToString());
 	if (!child || !owner || child->m_ModelAssetGuid.empty())
+	{
+		VANS_LOG_WARN("[AttachmentProfile] Object/model missing: child=" << childEntityGuid);
 		return false;
+	}
 
 	const Vans::VansComponentHandle component = m_RuntimeWorld->FindComponentByGuid(
 		parent.animationComponentGuid.ToString(), Vans::VansRuntimeComponentType_Animation);
@@ -531,7 +515,10 @@ bool VansGraphics::VansScene::BindEntityToAnimationAttachmentProfileByGuid(
 	const Vans::VansEntityHandle ownerEntity =
 		m_RuntimeWorld->Entities().FindByGuid(owner->m_EntityGuid);
 	if (!animation || !animation->animationNode || !header || header->owner != ownerEntity)
+	{
+		VANS_LOG_WARN("[AttachmentProfile] Animation owner mismatch: component=" << parent.animationComponentGuid.ToString());
 		return false;
+	}
 	const VansAnimationController* controller = animation->animationNode->GetController();
 	const VansCompiledAnimationRig* rig = controller ? controller->GetAnimationRig() : nullptr;
 	const VansRigAttachmentParentKind parentKind =
@@ -543,15 +530,22 @@ bool VansGraphics::VansScene::BindEntityToAnimationAttachmentProfileByGuid(
 			child->m_ModelAssetGuid, parentKind, parent.anchorGuid.ToString())
 		: nullptr;
 	if (!profile)
+	{
+		VANS_LOG_WARN("[AttachmentProfile] Profile missing: model=" << child->m_ModelAssetGuid
+			<< " socket=" << parent.anchorGuid.ToString() << " rig=" << (rig != nullptr)
+			<< " profiles=" << (rig ? rig->attachmentProfiles.size() : 0));
 		return false;
+	}
 
 	Vans::VansLocalTransform localTransform;
 	localTransform.position = profile->positionLocal;
 	localTransform.rotation = profile->rotationLocal;
 	localTransform.scale = profile->scaleLocal;
-	return SetEntityParentReferenceInternal(
+	const bool attached = SetEntityParentReferenceInternal(
 		childEntityGuid, &parent, Vans::VansTransformReparentMode::KeepLocal,
 		&localTransform);
+	if (!attached) VANS_LOG_WARN("[AttachmentProfile] Transform reparent rejected: child=" << childEntityGuid);
+	return attached;
 }
 
 bool VansGraphics::VansScene::SetEntityParentReferenceInternal(

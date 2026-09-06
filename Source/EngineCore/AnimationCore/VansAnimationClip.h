@@ -5,6 +5,29 @@
 
 namespace VansGraphics
 {
+	bool VansValidateAnimationClipEvents(const VansAnimationClip& clip, std::string& error);
+	struct VansAnimationClipAsset
+	{
+		VansAnimationClip clip;
+		Skeleton skeleton;
+	};
+
+	class VansAnimationClipBinaryCodec
+	{
+	public:
+		static bool Encode(
+			const VansAnimationClip& clip,
+			const Skeleton& skeleton,
+			std::string& outBytes,
+			std::string& error);
+		static bool Decode(
+			const std::string& bytes,
+			VansAnimationClip& outClip,
+			Skeleton& outSkeleton,
+			std::string& error);
+		static bool Peek(const std::string& bytes, VansAnimationClipInfo& outInfo);
+	};
+
 	// ────────────────────────────────────────────────────────────────
 	//  VansAnimationClipIO
 	//

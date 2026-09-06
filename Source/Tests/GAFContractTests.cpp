@@ -1,20 +1,34 @@
 #include "GAFContractTests.h"
+#include <assimp/Importer.hpp>
+#include <assimp/postprocess.h>
+#include <fstream>
+#include "../EngineCore/SceneRuntime/Transform/VansTransformGraph.h"
+#include "../EngineCore/AnimationCore/Runtime/VansSkeletonAnchorRegistry.h"
+#include "../EngineCore/SceneCore/VansScenePhysicsComponentReader.h"
 
 #include "../EngineCore/GameplayActionCore/VansActionDefinition.h"
 #include "../EngineCore/GameplayActionCore/VansActionHost.h"
 #include "../EngineCore/GameplayActionCore/VansActionRoutingService.h"
 #include "../EngineCore/GameplayActionCore/VansActionScheduler.h"
 #include "../EngineCore/GameplayActionCore/VansGameplayRuntime.h"
+#include "../EngineCore/GameplayActionCore/VansGameplayModuleContributor.h"
 #include "../EngineCore/GameplayActionCore/VansActionResourceLedger.h"
 #include "../EngineCore/GameplayActionCore/VansActionServices.h"
 #include "../EngineCore/GameplayActionCore/VansActionSystem.h"
 #include "../EngineCore/GameplayActionDebug/VansGameplayActionDebug.h"
-#include "../EngineCore/GameplayActionNetwork/VansGameplayActionNetwork.h"
-#include "../EngineCore/GameplayActionAdapters/VansStandardActionServices.h"
+#include "../EngineCore/GameplayActionAdapters/VansActionServiceAdapter.h"
+#include "../EngineCore/GameplayActionAdapters/VansGameplayPrimitivesContributor.h"
+#include "../EngineCore/GameplayActionAdapters/Audio/VansAudioActionCapability.h"
 #include "../EngineCore/GameplayActionAdapters/Camera/VansCameraActionService.h"
+#include "../EngineCore/GameplayActionAdapters/Camera/VansCameraGameplayAssetCompiler.h"
 #include "../EngineCore/GameplayActionAdapters/Character/VansCharacterActionServices.h"
+#include "../EngineCore/GameplayActionAdapters/Character/VansAnimationEventActionService.h"
+#include "../EngineCore/GameplayActionAdapters/Projectile/VansProjectileActionService.h"
 #include "../EngineCore/GameplayActionAdapters/Combat/VansCombatActionService.h"
-#include "../EngineCore/CameraGameplayAction/VansCameraActionGraphNodes.h"
+#include "../EngineCore/GameplayActionAdapters/Physics/VansPhysicsQueryActionCapability.h"
+#include "../EngineCore/GameplayActionAdapters/Projectile/VansProjectileActionCapability.h"
+#include "../EngineCore/GameplayActionAdapters/UI/VansUIActionCapability.h"
+#include "../EngineCore/GameplayActionAdapters/VFX/VansVFXActionCapability.h"
 #include "../EngineCore/GameplayActionExecution/VansActionTask.h"
 #include "../EngineCore/GameplayActionExecution/VansActionExecutionGraph.h"
 #include "../EngineCore/GameplayActionTimeline/VansGameplayActionTimelineIntegration.h"
@@ -24,7 +38,6 @@
 #include "../EngineCore/GameplayActionSchema/VansGAFProjectConfiguration.h"
 #include "../EngineCore/GameplayActionSchema/VansGameplayAssetCompiler.h"
 #include "../EngineCore/GameplayActionSchema/VansGameplayAssetLibrary.h"
-#include "../EngineCore/GameplayActionSchema/VansGameplayAssetMigration.h"
 #include "../EngineCore/GameplayActionSchema/VansGameplayAssetSchema.h"
 #include "../EngineCore/GameplayActionSchema/VansGameplayAssetStorage.h"
 #include "../EngineCore/GameplayActionSchema/VansGameplayActionHostAuthoring.h"
@@ -37,17 +50,23 @@
 #include "../EngineCore/AssetCore/Storage/VansAssetMetaStorage.h"
 #include "../EngineCore/AssetCore/Storage/VansJsonFileStorage.h"
 #include "../EngineCore/AssetCore/VansSkeletalMeshImportSettings.h"
+#include "../EngineCore/AssetCore/VansAssetObjectRepository.h"
 #include "../EngineCore/AICore/VansAIBehaviorAsset.h"
 #include "../EngineCore/AnimationCore/VansAnimationClip.h"
 #include "../EngineCore/AnimationCore/VansAnimationNode.h"
 #include "../EngineCore/AnimationCore/VansAnimationSampler.h"
 #include "../EngineCore/AnimationCore/VansAnimatorIO.h"
 #include "../EngineCore/AnimationCore/VansAnimatorRuntimeCompiler.h"
+#include "../EngineCore/AnimationCore/Storage/VansAnimationRigStorage.h"
+#include "../EngineCore/AnimationCore/Storage/VansBoneMaskStorage.h"
 #include "../EngineCore/AnimationCore/VansPoseMath.h"
+#include "../EngineCore/AnimationCore/Retargeting/VansRetargetProcessor.h"
+#include "../EngineCore/AnimationCore/Storage/VansRetargetProfileStorage.h"
 #include "../EngineCore/AnimationCore/VansSkinnedMeshLoader.h"
 #include "../EngineCore/AnimationCore/MotionMatching/VansMotionMatching.h"
 #include "../EngineCore/EditorCore/VansAssetDocumentTypeRegistry.h"
 #include "../EngineCore/EditorCore/GameplayAction/VansGameplayAssetEditorModel.h"
+#include "../EngineCore/EditorCore/GameplayAction/VansGameplayEditorContributor.h"
 #include "../EngineCore/EngineAPILayer/Private/GameplayActionAuthoringBridge.h"
 #include "../EngineCore/EventCore/VansEventBus.h"
 #include "../EngineCore/RenderCore/VansAnimationPreviewRenderer.h"
@@ -56,6 +75,7 @@
 #include "../EngineCore/PhysicsCore/VansPhysics.h"
 #include "../EngineCore/PhysicsCore/VansPhysicsNode.h"
 #include "../EngineCore/SceneCore/VansSceneAnimationComponentReader.h"
+#include "../EngineCore/SceneCore/VansAssetObjectBootstrapper.h"
 #include "../EngineCore/SceneRuntime/VansRuntimeComponentTypes.h"
 #include "../EngineCore/SceneRuntime/VansRuntimeWorld.h"
 #include "../EngineCore/ScriptCore/VansLuaGameplayActionBridge.h"
@@ -90,6 +110,242 @@ bool ExpectGAF(bool value, const char* message)
 {
 	if (!value) std::cerr << "[GAF] " << message << '\n';
 	return value;
+}
+
+const Vans::VansCompiledActionRecord* FindCompiledActionRecord(
+	const std::vector<Vans::VansCompiledActionRecord>& records,
+	std::string_view type)
+{
+	const auto found = std::find_if(records.begin(), records.end(), [&](const auto& record)
+	{
+		return record.type == type;
+	});
+	return found == records.end() ? nullptr : &*found;
+}
+
+std::string CompiledActionReference(
+	const Vans::VansCompiledActionRecord* record,
+	const char* field)
+{
+	if (!record) return {};
+	const Vans::VansSerializedValue* value = Vans::FindObjectField(record->inputs, field);
+	if (!value) return {};
+	if (value->kind == Vans::VansSerializedValue::Kind::String) return value->stringValue;
+	if (value->kind != Vans::VansSerializedValue::Kind::Object) return {};
+	for (const char* key : { "stableId", "id", "guid", "path", "assetGuid", "assetPath" })
+	{
+		const std::string reference = Vans::ReadSerializedStringField(*value, key);
+		if (!reference.empty()) return reference;
+	}
+	return {};
+}
+
+void SetGrantExtension(
+	Vans::VansActionGrantDesc& grant,
+	std::string type,
+	Vans::VansSerializedValue inputs)
+{
+	const auto found = std::find_if(grant.extensions.begin(), grant.extensions.end(),
+		[&](const auto& extension) { return extension.type == type; });
+	if (found == grant.extensions.end())
+		grant.extensions.push_back({ std::move(type), std::move(inputs) });
+	else
+		found->inputs = std::move(inputs);
+}
+
+void AddHostTagInitializer(
+	Vans::VansGameplayActionHostSetup& setup,
+	std::string tag,
+	std::uint32_t count = 1)
+{
+	setup.initializers.push_back({ "Gameplay.Tags.Initialize",
+		Vans::VansSerializedValue::Object({
+			{ "tag", Vans::VansSerializedValue::String(std::move(tag)) },
+			{ "count", Vans::VansSerializedValue::Int(count) }
+		}) });
+}
+
+void AddHostAttributeInitializer(
+	Vans::VansGameplayActionHostSetup& setup,
+	std::string attribute,
+	double value)
+{
+	setup.initializers.push_back({ "Gameplay.Attributes.Initialize",
+		Vans::VansSerializedValue::Object({
+			{ "attribute", Vans::VansSerializedValue::String(std::move(attribute)) },
+			{ "value", Vans::VansSerializedValue::Float(value) }
+		}) });
+}
+
+bool BootstrapGameplayMemory(
+	const std::vector<Vans::VansAssetRecord>& records,
+	Vans::VansAssetObjectRepository& repository,
+	std::string& error)
+{
+	const Vans::VansAssetObjectBootstrapResult result =
+		Vans::VansAssetObjectBootstrapper::Publish(records, repository);
+	if (result) return true;
+	error = result.errors.empty()
+		? "GAF memory bootstrap failed" : result.errors.front();
+	return false;
+}
+
+const std::vector<Vans::VansActionServiceCapability>& TestActionCapabilities()
+{
+	static const std::vector<Vans::VansActionServiceCapability> capabilities{
+		Vans::VansAnimationActionCapability(),
+		Vans::VansAudioActionCapability(),
+		Vans::VansVFXActionCapability(),
+		Vans::VansCombatActionCapability(),
+		Vans::VansPhysicsQueryActionCapability(),
+		Vans::VansProjectileActionCapability(),
+		Vans::VansCameraActionCapability(),
+		Vans::VansNavigationActionCapability(),
+		Vans::VansUIActionCapability()
+	};
+	return capabilities;
+}
+
+const Vans::VansActionServiceCapability* FindTestActionCapability(
+	Vans::VansActionServiceId service)
+{
+	const auto& capabilities = TestActionCapabilities();
+	const auto found = std::find_if(capabilities.begin(), capabilities.end(),
+		[service](const auto& capability) { return capability.service == service; });
+	return found == capabilities.end() ? nullptr : &*found;
+}
+
+std::vector<std::shared_ptr<Vans::VansFakeActionService>> CreateTestFakeActionServices()
+{
+	std::vector<std::shared_ptr<Vans::VansFakeActionService>> services;
+	for (const auto& capability : TestActionCapabilities())
+		services.push_back(std::make_shared<Vans::VansFakeActionService>(capability));
+	return services;
+}
+
+std::shared_ptr<const Vans::IVansGameplayModuleContributor> MakeTestRuntimeContributor(
+	std::string moduleName,
+	std::vector<std::shared_ptr<Vans::IVansActionService>> services = {},
+	Vans::VansGameplayModuleAssetCompilerContribution assetCompilerContribution = {},
+	Vans::VansGameplayModuleAssetSchemaContribution assetSchemaContribution = {})
+{
+	return Vans::VansMakeGAFModuleContributor(
+		Vans::VansMakeGAFModuleDescriptor(std::move(moduleName), "GAF Contract Module",
+			{ "Core" }, {}, Vans::VansGAFModuleSource::Project),
+		{}, {},
+		[services = std::move(services)](
+			Vans::VansGAFRuntimeRegistry& contribution,
+			std::string& error)
+		{
+			for (const auto& service : services)
+				if (!contribution.RegisterService(service, error)) return false;
+			return true;
+		}, std::move(assetCompilerContribution), std::move(assetSchemaContribution));
+}
+
+std::shared_ptr<const Vans::IVansGameplayModuleContributor> MakeProjectSchemaContributor(
+	Vans::VansGAFProjectConfiguration configuration)
+{
+	return Vans::VansMakeGAFModuleContributor(
+		Vans::VansMakeGAFModuleDescriptor("Project.Script", "Project Script GAF",
+			{ "Core" }, {}, Vans::VansGAFModuleSource::Project),
+		[configuration](Vans::VansGAFTypeRegistry& registry, std::string& error)
+		{
+			return configuration.RegisterConfiguredTypes(registry, error);
+		},
+		[configuration](Vans::VansGAFSchemaRegistry& registry, std::string& error)
+		{
+			return configuration.RegisterConfiguredSchemas(registry, error);
+		},
+		{});
+}
+
+class PassiveTimelineTestDriver final : public Vans::IVansActionSidecarDriver
+{
+public:
+	bool Start(Vans::VansActionExecutionContext&, std::string&) override { return true; }
+	bool Tick(Vans::VansActionExecutionContext&, std::string&) override { return true; }
+	void Finish(Vans::VansActionExecutionContext&, Vans::VansActionEndReason) override {}
+	std::string_view StableName() const override { return "Timeline.Driver.Session.Test"; }
+};
+
+std::shared_ptr<const Vans::IVansGameplayModuleContributor> MakeTestTimelineContributor()
+{
+	return Vans::VansMakeGAFModuleContributor(
+		Vans::VansMakeGAFModuleDescriptor("Timeline", "Timeline GAF Test Driver", { "Core" }),
+		Vans::VansRegisterTimelineGAFTypes,
+		Vans::VansRegisterTimelineGAFSchemas,
+		[](Vans::VansGAFRuntimeRegistry& registry, std::string& error)
+		{
+			return registry.RegisterSidecarDriver("Timeline.Driver.Session",
+				[](const Vans::VansCompiledActionRecord&)
+				{ return std::make_unique<PassiveTimelineTestDriver>(); }, error);
+		});
+}
+
+template<typename TService>
+std::shared_ptr<const Vans::IVansGameplayModuleContributor> MakeTestRuntimeContributor(
+	std::string moduleName,
+	const std::vector<std::shared_ptr<TService>>& services)
+{
+	std::vector<std::shared_ptr<Vans::IVansActionService>> actionServices;
+	actionServices.reserve(services.size());
+	for (const auto& service : services) actionServices.push_back(service);
+	return MakeTestRuntimeContributor(
+		std::move(moduleName), std::move(actionServices));
+}
+
+bool LoadContractSkeletonFromModel(
+	const std::filesystem::path& modelPath,
+	VansGraphics::Skeleton& skeleton,
+	std::string& error)
+{
+	Vans::VansAssetMeta meta;
+	if (!Vans::VansAssetMetaStorage::Load(
+		Vans::VansAssetMeta::MetaPathFor(modelPath), meta, error))
+	{
+		error = "Skeleton model metadata is required: " + error;
+		return false;
+	}
+	return VansGraphics::VansSkinnedMeshLoader::LoadSkeletonFromModelAsset(
+		modelPath.string(), Vans::ReadSkeletalMeshImportSettings(meta), skeleton, error);
+}
+
+std::shared_ptr<const VansGraphics::VansAnimationRigAsset> LoadRigForContract(
+	const std::filesystem::path& path, std::string& error)
+{
+	auto rig = std::make_shared<VansGraphics::VansAnimationRigAsset>();
+	if (!VansGraphics::VansAnimationRigStorage::Load(path, *rig, error))
+		return {};
+	return rig;
+}
+
+bool LoadAnimationClipAssetForContract(
+	const std::filesystem::path& path,
+	std::shared_ptr<const VansGraphics::VansAnimationClipAsset>& outAsset,
+	std::string& error)
+{
+	auto asset = std::make_shared<VansGraphics::VansAnimationClipAsset>();
+	if (!VansGraphics::VansAnimationClipIO::Load(
+		path.string(), asset->clip, asset->skeleton))
+	{
+		error = "Animation Clip cannot be loaded: " + path.string();
+		return false;
+	}
+	outAsset = std::move(asset);
+	return true;
+}
+
+VansGraphics::VansAnimatorMaskResolver ProjectMaskResolverForContract(const std::filesystem::path& project)
+{
+	return [project](const VansGraphics::VansAnimationLayerDefinition& layer,
+		std::shared_ptr<const VansGraphics::VansBoneMaskAsset>& result, std::string& error)
+	{
+		auto mask = std::make_shared<VansGraphics::VansBoneMaskAsset>();
+		if (!VansGraphics::VansBoneMaskStorage::Load(project / layer.maskPathHint, *mask, error)) return false;
+		result = std::move(mask);
+		return true;
+	};
 }
 
 class ProbeCueAdapter final : public Vans::IVansGameplayCueAdapter
@@ -146,6 +402,7 @@ public:
 		return Vans::VansMakeStableId<Vans::VansActionGraphNodeTypeIdTag>("Targeting.TestAcquire");
 	}
 	std::string_view StableName() const override { return "Targeting.TestAcquire"; }
+	bool BeginsPipeline() const override { return true; }
 	bool Execute(const Vans::VansTargetingStep&, const Vans::VansActionContext&,
 		std::vector<Vans::VansTargetDataValue>& values, std::string&) const override
 	{
@@ -179,8 +436,11 @@ public:
 	{
 		capability.service = Vans::VansMakeStableId<Vans::VansActionServiceIdTag>("Service.Probe");
 		capability.stableName = "Service.Probe";
-		capability.prediction = Vans::VansActionServicePredictionSupport::PredictableWithRollback;
-		capability.commands.push_back("Probe.Run");
+		Vans::VansActionCommandSchema command;
+		command.command = Vans::VansMakeStableId<Vans::VansActionFieldIdTag>("Probe.Run");
+		command.stableName = "Probe.Run";
+		command.resourcePolicy = Vans::VansActionCommandResourcePolicy::Create;
+		capability.commandSchemas.push_back(std::move(command));
 	}
 	const Vans::VansActionServiceCapability& Capability() const override { return capability; }
 	Vans::VansActionCommandResult Execute(const Vans::VansActionCommand& command) override
@@ -246,12 +506,12 @@ public:
 	Vans::VansActionExecutorResult Start(Vans::VansActionExecutionContext&) override
 	{
 		return { Vans::VansActionExecutorStatus::Failed,
-			Vans::VansActionError::ExecutionFailed, "requested failure" };
+			Vans::VansActionError::Execution, "requested failure" };
 	}
 	Vans::VansActionExecutorResult Tick(Vans::VansActionExecutionContext&) override
 	{
 		return { Vans::VansActionExecutorStatus::Failed,
-			Vans::VansActionError::ExecutionFailed, "requested failure" };
+			Vans::VansActionError::Execution, "requested failure" };
 	}
 	bool RequestCancel(Vans::VansActionExecutionContext&, Vans::VansActionCancelReason) override
 	{
@@ -269,7 +529,6 @@ public:
 		return Vans::VansMakeStableId<Vans::VansActionGraphNodeTypeIdTag>("Graph.Probe.Immediate");
 	}
 	std::string_view StableName() const override { return "Graph.Probe.Immediate"; }
-	bool SupportsPrediction() const override { return true; }
 	Vans::VansActionGraphNodeResult Start(Vans::VansActionExecutionContext&,
 		const Vans::VansCompiledActionGraphNode&, Vans::VansSerializedValue&) const override
 	{
@@ -292,7 +551,6 @@ public:
 		return Vans::VansMakeStableId<Vans::VansActionGraphNodeTypeIdTag>("Graph.Probe.Wait");
 	}
 	std::string_view StableName() const override { return "Graph.Probe.Wait"; }
-	bool SupportsPrediction() const override { return true; }
 	Vans::VansActionGraphNodeResult Start(Vans::VansActionExecutionContext&,
 		const Vans::VansCompiledActionGraphNode&, Vans::VansSerializedValue& state) const override
 	{
@@ -453,7 +711,7 @@ bool TestGAFCuesAndEffectsContract()
 	Vans::VansEffectSpec spec;
 	spec.definition = definition;
 	spec.source = 77;
-	spec.context.predictionKey = { 1, 9 };
+	spec.context.correlationId = 9;
 	const auto first = effects.Apply(spec);
 	const auto second = effects.Apply(spec);
 	if (!ExpectGAF(first && first.active && second && second.stacked && second.active == first.active &&
@@ -462,7 +720,7 @@ bool TestGAFCuesAndEffectsContract()
 		adapter->addCount == 1 && adapter->updateCount == 1 && adapter->lastIntensity == 2.0,
 		"Periodic Effect incorrectly installed a persistent Attribute modifier")) return false;
 	const auto overflow = effects.Apply(spec);
-	if (!ExpectGAF(!overflow && overflow.error == Vans::VansActionError::ConcurrencyBlocked,
+	if (!ExpectGAF(!overflow && overflow.error == Vans::VansActionError::Rejected,
 		"Effect overflow policy 未阻止超限堆叠")) return false;
 	effects.Tick(0.25);
 	if (!ExpectGAF(std::abs(attributes.Base(healthId) - 80.0) < 0.0001 && adapter->executeCount == 1,
@@ -519,7 +777,7 @@ bool TestGAFCuesAndEffectsContract()
 	const Vans::VansEffectApplicationResult budgetFirst = budgetEffects.Apply(budgetSpec);
 	const Vans::VansEffectApplicationResult budgetBlocked = budgetEffects.Apply(budgetSpec);
 	if (!ExpectGAF(budgetFirst && !budgetBlocked &&
-		budgetBlocked.error == Vans::VansActionError::BudgetExceeded,
+		budgetBlocked.error == Vans::VansActionError::Budget,
 		"Active Effect budget did not reject a distinct duration Effect")) return false;
 	if (!budgetEffects.Remove(budgetFirst.active, error)) return false;
 	if (!ExpectGAF(static_cast<bool>(budgetEffects.Apply(budgetSpec)),
@@ -556,9 +814,10 @@ bool TestGAFCuesAndEffectsContract()
 	Vans::VansEffectSpec contextSpec;
 	contextSpec.definition = makeInstantEffect("Effect.ContextPayload", contextModifier);
 	contextSpec.source = 102;
-	contextSpec.context.payload = Vans::VansSerializedValue::Object({
+	contextSpec.context.SetSerialized(Vans::VansActionContextSlots::Payload,
+		Vans::VansSerializedValue::Object({
 		{ "bonus", Vans::VansSerializedValue::Float(4.0) }
-	});
+	}));
 	if (!ExpectGAF(effects.Apply(contextSpec) &&
 		std::abs(attributes.Base(healthId) - 30.0) < 0.0001,
 		"Context payload Effect did not resolve its numeric JSON pointer")) return false;
@@ -635,7 +894,7 @@ bool TestGAFCuesAndEffectsContract()
 		"Dynamic Effect did not refresh after its captured Attribute changed")) return false;
 	if (!effects.Remove(dynamic.active, error) || !targetData.Release(targetHandle)) return false;
 
-	const auto* audioCapability = Vans::VansFindStandardActionServiceCapability(
+	const auto* audioCapability = FindTestActionCapability(
 		Vans::VansMakeStableId<Vans::VansActionServiceIdTag>("Service.Audio"));
 	if (!ExpectGAF(audioCapability != nullptr, "Standard Audio Action Service capability is missing"))
 		return false;
@@ -662,10 +921,10 @@ bool TestGAFCuesAndEffectsContract()
 		return ExpectGAF(false, error.c_str());
 	Vans::VansGameplayCueService serviceCues(&serviceCueRegistry);
 	Vans::VansGameplayCueParameters serviceParameters;
-	serviceParameters.context.owner = { 8, 1 };
-	serviceParameters.context.predictionKey = { 2, 4 };
+	serviceParameters.context.SetEntity(Vans::VansActionContextSlots::Owner, { 8, 1 });
+	serviceParameters.context.correlationId = 4;
 	serviceParameters.intensity = 0.75;
-	const Vans::VansGameplayCueKey serviceKey{ { 2, 4 }, serviceCueId, 1 };
+	const Vans::VansGameplayCueKey serviceKey{ 2, serviceCueId, 1 };
 	const auto serviceCueHandle = serviceCues.Add(serviceKey,
 		serviceCues.DefaultScope(serviceCueId), serviceParameters, 11, error);
 	if (!ExpectGAF(serviceCueHandle && audio->ActiveResourceCount() == 1 &&
@@ -689,9 +948,9 @@ bool TestGAFTargetingContract()
 	Vans::VansTargetingPolicy policy;
 	policy.id = Vans::VansMakeStableId<Vans::VansTargetingPolicyIdTag>("Targeting.FirstEntity");
 	policy.name = "Targeting.FirstEntity";
-	policy.steps.push_back({ Vans::VansTargetingStepKind::Acquire, acquire->TypeId(),
+	policy.steps.push_back({ acquire->TypeId(),
 		std::string(acquire->StableName()), Vans::VansSerializedValue::Object({}) });
-	policy.steps.push_back({ Vans::VansTargetingStepKind::Limit, limit->TypeId(),
+	policy.steps.push_back({ limit->TypeId(),
 		std::string(limit->StableName()), Vans::VansSerializedValue::Object({}) });
 	const auto result = Vans::VansTargetingPipeline::Execute(policy, {}, handlers);
 	if (!ExpectGAF(result && result.data.values.size() == 1 && result.trace.size() == 2 &&
@@ -720,21 +979,17 @@ bool TestGAFDefinitionAndServiceContract()
 	auto first = std::make_shared<Vans::VansCompiledActionDefinition>();
 	first->id = Vans::VansMakeStableId<Vans::VansActionIdTag>("Action.Test");
 	first->name = "Action.Test";
-	first->definitionVersion = 1;
-	first->schemaVersion = 1;
 	first->contentHash = 11;
 	first->executor = Vans::VansMakeStableId<Vans::VansActionExecutorIdTag>("Executor.Test");
 	std::string error;
-	if (!definitions.RegisterRevision(first, error)) return ExpectGAF(false, error.c_str());
+	if (!definitions.Register(first, error)) return ExpectGAF(false, error.c_str());
 	auto second = std::make_shared<Vans::VansCompiledActionDefinition>(*first);
-	second->definitionVersion = 2;
 	second->contentHash = 22;
-	if (!definitions.RegisterRevision(second, error)) return ExpectGAF(false, error.c_str());
-	if (!ExpectGAF(definitions.ResolveLatest(first->id) == second &&
-		definitions.ResolveRevision(first->id, 1) == first && definitions.LatestRevision(first->id) == 2,
-		"Action Definition revision pinning 错误")) return false;
+	if (!definitions.Replace(second, error)) return ExpectGAF(false, error.c_str());
+	if (!ExpectGAF(definitions.Resolve(first->id) == second,
+		"Action Definition safe-point replacement failed")) return false;
 	auto invalid = std::make_shared<Vans::VansCompiledActionDefinition>();
-	if (!ExpectGAF(!definitions.RegisterRevision(invalid, error),
+	if (!ExpectGAF(!definitions.Register(invalid, error),
 		"无效 Action Definition 被注册")) return false;
 
 	auto service = std::make_shared<ProbeActionService>();
@@ -751,12 +1006,16 @@ bool TestGAFDefinitionAndServiceContract()
 	if (!ExpectGAF(service->Release(result.resource, error) && service->releaseCount == 1,
 		"Action Service 资源释放错误")) return false;
 
-	const auto& capabilities = Vans::VansStandardActionServiceCapabilities();
+	const auto& capabilities = TestActionCapabilities();
 	std::size_t commandCount = 0;
+	const bool everyCapabilityHasCommands = std::all_of(
+		capabilities.begin(), capabilities.end(), [](const auto& capability)
+		{ return !capability.commandSchemas.empty(); });
 	for (const auto& capability : capabilities) commandCount += capability.commandSchemas.size();
-	if (!ExpectGAF(capabilities.size() == 9 && commandCount == 35,
+	if (!ExpectGAF(capabilities.size() == 9 && everyCapabilityHasCommands &&
+		commandCount >= capabilities.size(),
 		"GAF 九类标准 Service 或命令目录不完整")) return false;
-	auto fakeServices = Vans::VansCreateFakeStandardActionServices();
+	auto fakeServices = CreateTestFakeActionServices();
 	Vans::VansActionServiceRegistry standardRegistry;
 	for (const auto& fake : fakeServices)
 		if (!standardRegistry.Register(fake, error)) return ExpectGAF(false, error.c_str());
@@ -779,13 +1038,13 @@ bool TestGAFDefinitionAndServiceContract()
 	invalidCommand.stableName = "Camera.Shot";
 	invalidCommand.payload = Vans::VansSerializedValue::Object({});
 	if (!ExpectGAF(standardRegistry.Execute(invalidCommand).error ==
-		Vans::VansActionError::DefinitionInvalid,
+		Vans::VansActionError::InvalidDefinition,
 		"GAF Service 未拒绝缺少必填字段的命令")) return false;
 	invalidCommand.payload = Vans::VansBuildActionCommandSamplePayload(*cameraShot);
 	Vans::SetSerializedObjectField(invalidCommand.payload, "typo",
 		Vans::VansSerializedValue::Bool(true));
 	if (!ExpectGAF(standardRegistry.Execute(invalidCommand).error ==
-		Vans::VansActionError::DefinitionInvalid,
+		Vans::VansActionError::InvalidDefinition,
 		"GAF Service 未拒绝未知负载字段")) return false;
 	const auto combatServiceId =
 		Vans::VansMakeStableId<Vans::VansActionServiceIdTag>("Service.Combat");
@@ -794,15 +1053,54 @@ bool TestGAFDefinitionAndServiceContract()
 	const Vans::VansActionCommandSchema* resolveHit =
 		standardRegistry.ResolveCommandSchema(combatServiceId, resolveHitId);
 	if (!ExpectGAF(resolveHit != nullptr, "GAF Combat Service 命令 Schema 无法解析")) return false;
-	invalidCommand = {};
-	invalidCommand.service = combatServiceId;
-	invalidCommand.command = resolveHitId;
-	invalidCommand.stableName = "Combat.ResolveHit";
-	invalidCommand.predicted = true;
-	invalidCommand.payload = Vans::VansBuildActionCommandSamplePayload(*resolveHit);
-	return ExpectGAF(standardRegistry.Execute(invalidCommand).error ==
-		Vans::VansActionError::AuthorityDenied,
-		"GAF Service 未拒绝 AuthorityOnly 命令的预测执行");
+
+	Vans::VansGAFModuleEnvironment editorOnly;
+	editorOnly.runtime = false;
+	editorOnly.cook = false;
+	editorOnly.editor = true;
+	const auto coreEditor = Vans::VansMakeGAFEditorContributor(
+		Vans::VansMakeGAFModuleDescriptor(
+			"Core", "GAF Core Editor", {}, {}, Vans::VansGAFModuleSource::Engine, editorOnly),
+		[](Vans::VansGAFEditorRegistry& registry, std::string& registerError)
+		{
+			return registry.Register({ "Core.Driver.Graph", "Graph", "Core",
+				Vans::VansGAFExtensionKind::Driver }, registerError);
+		});
+	const auto cameraEditor = Vans::VansMakeGAFEditorContributor(
+		Vans::VansMakeGAFModuleDescriptor(
+			"Gameplay.Camera", "Camera GAF Editor", { "Core" }, {},
+			Vans::VansGAFModuleSource::Engine, editorOnly),
+		[](Vans::VansGAFEditorRegistry& registry, std::string& registerError)
+		{
+			return registry.Register({ "Camera.Shot", "Camera Shot", "Camera",
+				Vans::VansGAFExtensionKind::Operation }, registerError);
+		});
+	std::vector<std::shared_ptr<const Vans::IVansGameplayEditorContributor>> orderedEditors;
+	if (!Vans::VansOrderGameplayEditorContributors(
+		{ cameraEditor, coreEditor }, orderedEditors, error) || orderedEditors.size() != 2 ||
+		orderedEditors.front()->Descriptor().moduleId != "Core")
+		return ExpectGAF(false, error.empty()
+			? "GAF Editor contributors were not dependency ordered" : error.c_str());
+	Vans::VansGAFEditorRegistry editorRegistry;
+	for (const auto& contributor : orderedEditors)
+		if (!contributor->RegisterEditor(editorRegistry, error))
+			return ExpectGAF(false, error.c_str());
+	if (!editorRegistry.Seal(error) ||
+		!editorRegistry.Resolve("Core.Driver.Graph") ||
+		!editorRegistry.Resolve("Camera.Shot") ||
+		editorRegistry.Descriptors().size() != 2)
+		return ExpectGAF(false, "GAF Editor registry did not retain contributed descriptors");
+	if (!ExpectGAF(!editorRegistry.Register(
+		{ "Camera.Shot", "Duplicate", "Camera", Vans::VansGAFExtensionKind::Operation },
+		error), "sealed GAF Editor registry accepted a replacement")) return false;
+	error.clear();
+	Vans::VansAssetObjectRepository emptyAssetObjects;
+	Vans::VansGameplayRuntime coreOnlyRuntime;
+	if (!ExpectGAF(coreOnlyRuntime.Initialize({}, emptyAssetObjects, error),
+		error.empty() ? "GAF Core could not initialize without Gameplay.Primitives"
+			: error.c_str())) return false;
+	coreOnlyRuntime.Shutdown();
+	return true;
 }
 
 bool TestGAFResourceLedgerAndTaskContract()
@@ -813,45 +1111,43 @@ bool TestGAFResourceLedgerAndTaskContract()
 	Vans::VansActionResourceEntry first;
 	first.type = "Probe";
 	first.debugName = "first";
-	first.prediction = Vans::VansActionPredictionResourcePolicy::UndoRedo;
 	first.release = [&] { order.push_back(10); return true; };
-	first.undo = [&] { order.push_back(11); return true; };
-	first.redo = [&] { order.push_back(12); return true; };
 	const auto firstHandle = ledger.Register(std::move(first), error);
 	Vans::VansActionResourceEntry second;
 	second.type = "Probe";
 	second.debugName = "second";
 	second.dependsOn = firstHandle;
-	second.prediction = Vans::VansActionPredictionResourcePolicy::UndoRedo;
 	second.release = [&] { order.push_back(20); return true; };
-	second.undo = [&] { order.push_back(21); return true; };
-	second.redo = [&] { order.push_back(22); return true; };
 	const auto secondHandle = ledger.Register(std::move(second), error);
 	if (!firstHandle || !secondHandle) return ExpectGAF(false, error.c_str());
 	std::vector<std::string> errors;
-	if (!ledger.RollbackPredicted(errors) || !ledger.ReplayPredicted(errors) ||
-		!ledger.ReleaseAll(errors)) return false;
-	const std::vector<int> expected{ 21, 11, 12, 22, 20, 10 };
+	if (!ledger.ReleaseAll(errors)) return false;
+	const std::vector<int> expected{ 20, 10 };
 	if (!ExpectGAF(order == expected && ledger.ActiveCount() == 0 && ledger.IsReleased(),
-		"ResourceLedger Undo/Redo/Release 顺序错误")) return false;
+		"ResourceLedger lifecycle release order is invalid")) return false;
 	if (!ExpectGAF(!ledger.Register({}, error), "已释放 ResourceLedger 仍接受资源")) return false;
 
-	double balance = 100.0;
-	Vans::VansActionCommitTransaction transaction;
-	Vans::VansActionCommitStep cost;
-	cost.name = "cost";
-	cost.preflight = [&](std::string&) { return balance >= 30.0; };
-	cost.apply = [&](std::string&) { balance -= 30.0; return true; };
-	cost.compensate = [&](std::string&) { balance += 30.0; return true; };
-	if (!transaction.AddStep(std::move(cost), error)) return false;
-	Vans::VansActionCommitStep failure;
-	failure.name = "forced failure";
-	failure.preflight = [](std::string&) { return true; };
-	failure.apply = [](std::string& message) { message = "requested"; return false; };
-	failure.compensate = [](std::string&) { return true; };
-	if (!transaction.AddStep(std::move(failure), error)) return false;
-	if (!ExpectGAF(!transaction.Commit(error) && balance == 100.0 &&
-		!transaction.CompensationFailed(), "CommitTransaction 未原子补偿")) return false;
+	Vans::VansActionResourceLedger actionResources;
+	Vans::VansActionResourceLedger hostResources;
+	int transferredReleaseCount = 0;
+	Vans::VansActionResourceEntry transferred;
+	transferred.type = "Probe.Transferred";
+	transferred.debugName = "transferred";
+	transferred.release = [&] { ++transferredReleaseCount; return true; };
+	const Vans::VansActionResourceHandle actionResource =
+		actionResources.Register(std::move(transferred), error);
+	Vans::VansActionResourceHandle hostResource;
+	if (!actionResource || !actionResources.Transfer(
+		actionResource, hostResources, hostResource, error))
+		return ExpectGAF(false, error.c_str());
+	if (!ExpectGAF(actionResources.ActiveCount() == 0 &&
+		hostResources.ActiveCount() == 1 && transferredReleaseCount == 0,
+		"ResourceLedger transfer released or duplicated the resource")) return false;
+	errors.clear();
+	if (!actionResources.ReleaseAll(errors) || transferredReleaseCount != 0)
+		return ExpectGAF(false, "Action ResourceLedger released a transferred Host resource");
+	if (!hostResources.ReleaseAll(errors) || transferredReleaseCount != 1)
+		return ExpectGAF(false, "Host ResourceLedger did not release a transferred resource exactly once");
 
 	Vans::VansActionTaskSet tasks;
 	int cancelCount = 0;
@@ -869,6 +1165,15 @@ bool TestGAFResourceLedgerAndTaskContract()
 	tasks.Tick(0.5);
 	if (!ExpectGAF(taskHandle && tasks.ActiveCount() == 0 && cancelCount == 1 && terminalCount == 1,
 		"Action Task timeout 未单次终结")) return false;
+	if (!ExpectGAF(tasks.State(taskHandle) == Vans::VansActionTaskState::TimedOut,
+		"Action Task terminal state was lost after releasing active budget")) return false;
+	Vans::VansActionTaskState consumedState{};
+	if (!tasks.Consume(taskHandle, consumedState, error) ||
+		!ExpectGAF(consumedState == Vans::VansActionTaskState::TimedOut,
+			"Action Task terminal result could not be consumed")) return false;
+	error.clear();
+	if (!ExpectGAF(!tasks.Consume(taskHandle, consumedState, error),
+		"Action Task terminal result was consumable more than once")) return false;
 	if (!ExpectGAF(!tasks.Complete(taskHandle, error), "终结后的 Action Task 仍可完成")) return false;
 	Vans::VansActionTaskSet budgetTasks(1);
 	Vans::VansActionTaskDesc budgetTask;
@@ -894,13 +1199,12 @@ bool TestGAFExecutionGraphContract()
 		return ExpectGAF(false, error.c_str());
 	auto graph = std::make_shared<Vans::VansCompiledActionGraph>();
 	graph->name = "Graph.Probe";
-	graph->version = 1;
 	graph->contentHash = 123;
 	graph->entryNode = 0;
 	graph->nodes.push_back({ "node-a", immediate->TypeId(),
-		Vans::VansActionGraphNodeKind::Flow, Vans::VansSerializedValue::Object({}), true });
+		Vans::VansActionGraphNodeKind::Flow, Vans::VansSerializedValue::Object({}) });
 	graph->nodes.push_back({ "node-b", wait->TypeId(),
-		Vans::VansActionGraphNodeKind::Latent, Vans::VansSerializedValue::Object({}), true });
+		Vans::VansActionGraphNodeKind::Latent, Vans::VansSerializedValue::Object({}) });
 	graph->edges.push_back({ 0, "Success", 1, 0 });
 	Vans::VansActionGraphRuntime runtime;
 	const auto diagnostics = runtime.Initialize(graph, &handlers);
@@ -921,7 +1225,7 @@ bool TestGAFExecutionGraphContract()
 		if (diagnostic.severity == Vans::VansGameplayDiagnosticSeverity::Error) return false;
 	const Vans::VansActionExecutorResult budgetResult = budgetRuntime.Start(context);
 	if (!ExpectGAF(budgetResult.status == Vans::VansActionExecutorStatus::Failed &&
-		budgetResult.error == Vans::VansActionError::BudgetExceeded && !budgetRuntime.IsRunning(),
+		budgetResult.error == Vans::VansActionError::Budget && !budgetRuntime.IsRunning(),
 		"ExecutionGraph transition budget did not terminate runaway same-tick work")) return false;
 
 	Vans::VansActionGraphNodeRegistry builtIns;
@@ -931,9 +1235,11 @@ bool TestGAFExecutionGraphContract()
 		"Action.Graph.Sequence", "Action.Graph.Parallel", "Action.Graph.Race",
 		"Action.Graph.Branch", "Action.Graph.Switch", "Action.Graph.Loop",
 		"Action.Graph.Repeat", "Action.Graph.Channel", "Action.Graph.Gate",
-		"Action.Graph.Wait", "Action.Graph.Timeout", "Action.Graph.Command",
+		"Action.Graph.Wait", "Action.Graph.Timeout", "Core.Graph.Invoke",
+		"Core.Graph.ReadBinding", "Core.Graph.WaitSignal", "Core.Graph.AwaitTask",
+		"Core.Graph.ReleaseResource", "Core.Graph.TransferResource", "Core.Graph.EmitSignal",
 		"Action.Graph.Complete", "Action.Graph.Fail", "Action.Graph.SubAction",
-		"Action.Graph.Transition", "Action.Graph.Try", "Action.Graph.Compensate"
+		"Action.Graph.Transition", "Action.Graph.Try"
 	};
 	for (const std::string& name : builtInNames)
 	{
@@ -942,6 +1248,200 @@ bool TestGAFExecutionGraphContract()
 		if (!ExpectGAF(handler && handler->StableName() == name,
 			"Built-in Action Graph node registry is incomplete")) return false;
 	}
+	const auto literalBinding = [](const char* type, Vans::VansSerializedValue value)
+	{
+		return Vans::VansSerializedValue::Object({
+			{ "source", Vans::VansSerializedValue::String("Literal") },
+			{ "type", Vans::VansSerializedValue::String(type) },
+			{ "value", std::move(value) }
+		});
+	};
+	const auto variableBinding = [](const char* type, const char* name)
+	{
+		return Vans::VansSerializedValue::Object({
+			{ "source", Vans::VansSerializedValue::String("Variable") },
+			{ "type", Vans::VansSerializedValue::String(type) },
+			{ "name", Vans::VansSerializedValue::String(name) }
+		});
+	};
+	const auto outputBinding = [](const char* type, const char* name)
+	{
+		return Vans::VansSerializedValue::Object({
+			{ "target", Vans::VansSerializedValue::String("Variable") },
+			{ "type", Vans::VansSerializedValue::String(type) },
+			{ "name", Vans::VansSerializedValue::String(name) }
+		});
+	};
+	const auto handleValue = [](Vans::VansGenerationHandle handle)
+	{
+		return Vans::VansSerializedValue::Object({
+			{ "index", Vans::VansSerializedValue::Int(handle.index) },
+			{ "generation", Vans::VansSerializedValue::Int(handle.generation) }
+		});
+	};
+
+	Vans::VansActionVariableStore primitiveVariables;
+	if (!primitiveVariables.Initialize({
+		{ Vans::VansMakeStableId<Vans::VansActionFieldIdTag>("binding.value"),
+			"binding.value", Vans::VansSerializedValue::Int(0) },
+		{ Vans::VansMakeStableId<Vans::VansActionFieldIdTag>("signal.payload"),
+			"signal.payload", Vans::VansSerializedValue::Object({}) },
+		{ Vans::VansMakeStableId<Vans::VansActionFieldIdTag>("resource.host"),
+			"resource.host", Vans::VansSerializedValue::Object({}) }
+	}, error)) return ExpectGAF(false, error.c_str());
+	Vans::VansActionContext primitiveActionContext;
+	primitiveActionContext.SetEntity(Vans::VansActionContextSlots::Owner, { 31, 1 });
+	primitiveActionContext.SetEntity(Vans::VansActionContextSlots::PrimaryTarget, { 32, 1 });
+	Vans::VansActionExecutionContext primitiveContext;
+	primitiveContext.context = &primitiveActionContext;
+	primitiveContext.variables = &primitiveVariables;
+	Vans::VansSerializedValue nodeState = Vans::VansSerializedValue::Object({});
+
+	Vans::VansCompiledActionGraphNode readBindingNode{
+		"read-binding",
+		Vans::VansMakeStableId<Vans::VansActionGraphNodeTypeIdTag>("Core.Graph.ReadBinding"),
+		Vans::VansActionGraphNodeKind::Pure,
+		Vans::VansSerializedValue::Object({
+			{ "input", literalBinding("Int", Vans::VansSerializedValue::Int(42)) },
+			{ "output", outputBinding("Int", "binding.value") }
+		})
+	};
+	const auto readBindingHandler = builtIns.Resolve(readBindingNode.type);
+	if (!readBindingHandler || readBindingHandler->Start(
+		primitiveContext, readBindingNode, nodeState).status !=
+		Vans::VansActionGraphNodeStatus::Succeeded)
+		return ExpectGAF(false, "ReadBinding node did not resolve and write typed bindings");
+	const Vans::VansSerializedValue* bindingValue = primitiveVariables.Get(
+		Vans::VansMakeStableId<Vans::VansActionFieldIdTag>("binding.value"));
+	if (!ExpectGAF(bindingValue && bindingValue->kind == Vans::VansSerializedValue::Kind::Int &&
+		bindingValue->intValue == 42, "ReadBinding node lost the typed value")) return false;
+
+	Vans::VansCompiledActionGraphNode waitSignalNode{
+		"wait-signal",
+		Vans::VansMakeStableId<Vans::VansActionGraphNodeTypeIdTag>("Core.Graph.WaitSignal"),
+		Vans::VansActionGraphNodeKind::Latent,
+		Vans::VansSerializedValue::Object({
+			{ "signal", Vans::VansSerializedValue::String("Signal.Test.ExactAction") },
+			{ "timeoutSeconds", Vans::VansSerializedValue::Float(1.0) },
+			{ "payloadOutput", outputBinding("Object", "signal.payload") }
+		})
+	};
+	const auto waitSignalHandler = builtIns.Resolve(waitSignalNode.type);
+	nodeState = Vans::VansSerializedValue::Object({});
+	if (!waitSignalHandler || waitSignalHandler->Start(
+		primitiveContext, waitSignalNode, nodeState).status !=
+		Vans::VansActionGraphNodeStatus::Waiting)
+		return ExpectGAF(false, "WaitSignal node did not enter its latent state");
+	std::vector<Vans::VansActionEvent> signalEvents{
+		{ Vans::VansMakeStableId<Vans::VansActionFieldIdTag>("Signal.Test.ExactAction"),
+			"Signal.Test.ExactAction", { 31, 1 }, { 32, 1 },
+			Vans::VansSerializedValue::Object({
+				{ "marker", Vans::VansSerializedValue::String("Hit") }
+			}) }
+	};
+	primitiveContext.events = &signalEvents;
+	if (waitSignalHandler->Tick(primitiveContext, waitSignalNode, nodeState).status !=
+		Vans::VansActionGraphNodeStatus::Succeeded)
+		return ExpectGAF(false, "WaitSignal node did not consume the exact Action signal");
+	const Vans::VansSerializedValue* signalPayload = primitiveVariables.Get(
+		Vans::VansMakeStableId<Vans::VansActionFieldIdTag>("signal.payload"));
+	if (!ExpectGAF(signalPayload && Vans::ReadSerializedStringField(
+		*signalPayload, "marker") == "Hit", "WaitSignal node did not preserve its payload")) return false;
+	primitiveContext.events = nullptr;
+
+	Vans::VansActionTaskSet graphTasks;
+	Vans::VansActionTaskDesc graphTask;
+	graphTask.type = Vans::VansMakeStableId<Vans::VansActionGraphNodeTypeIdTag>("Task.GraphProbe");
+	graphTask.debugName = "graph task";
+	const Vans::VansActionTaskHandle graphTaskHandle = graphTasks.Create(std::move(graphTask), error);
+	Vans::VansCompiledActionGraphNode awaitTaskNode{
+		"await-task",
+		Vans::VansMakeStableId<Vans::VansActionGraphNodeTypeIdTag>("Core.Graph.AwaitTask"),
+		Vans::VansActionGraphNodeKind::Latent,
+		Vans::VansSerializedValue::Object({
+			{ "task", literalBinding("Resource", handleValue(graphTaskHandle.value)) }
+		})
+	};
+	primitiveContext.tasks = &graphTasks;
+	const auto awaitTaskHandler = builtIns.Resolve(awaitTaskNode.type);
+	nodeState = Vans::VansSerializedValue::Object({});
+	if (!graphTaskHandle || !awaitTaskHandler || awaitTaskHandler->Start(
+		primitiveContext, awaitTaskNode, nodeState).status != Vans::VansActionGraphNodeStatus::Waiting ||
+		!graphTasks.Complete(graphTaskHandle, error) || awaitTaskHandler->Tick(
+		primitiveContext, awaitTaskNode, nodeState).status != Vans::VansActionGraphNodeStatus::Succeeded)
+		return ExpectGAF(false, "AwaitTask node did not observe and consume task completion");
+
+	Vans::VansActionResourceLedger graphActionResources;
+	Vans::VansActionResourceLedger graphHostResources;
+	int graphResourceReleaseCount = 0;
+	Vans::VansActionResourceEntry graphResource;
+	graphResource.type = "Probe.GraphResource";
+	graphResource.debugName = "graph resource";
+	graphResource.release = [&] { ++graphResourceReleaseCount; return true; };
+	const Vans::VansActionResourceHandle graphResourceHandle =
+		graphActionResources.Register(std::move(graphResource), error);
+	Vans::VansCompiledActionGraphNode transferResourceNode{
+		"transfer-resource",
+		Vans::VansMakeStableId<Vans::VansActionGraphNodeTypeIdTag>("Core.Graph.TransferResource"),
+		Vans::VansActionGraphNodeKind::Command,
+		Vans::VansSerializedValue::Object({
+			{ "resource", literalBinding("Resource", handleValue(graphResourceHandle.value)) },
+			{ "destination", Vans::VansSerializedValue::String("Host") },
+			{ "output", outputBinding("Resource", "resource.host") }
+		})
+	};
+	primitiveContext.resources = &graphActionResources;
+	primitiveContext.hostResources = &graphHostResources;
+	const auto transferResourceHandler = builtIns.Resolve(transferResourceNode.type);
+	nodeState = Vans::VansSerializedValue::Object({});
+	if (!graphResourceHandle || !transferResourceHandler || transferResourceHandler->Start(
+		primitiveContext, transferResourceNode, nodeState).status !=
+		Vans::VansActionGraphNodeStatus::Succeeded || graphActionResources.ActiveCount() != 0 ||
+		graphHostResources.ActiveCount() != 1 || graphResourceReleaseCount != 0)
+		return ExpectGAF(false, "TransferResource node did not move ownership to the Host ledger");
+	Vans::VansCompiledActionGraphNode releaseResourceNode{
+		"release-resource",
+		Vans::VansMakeStableId<Vans::VansActionGraphNodeTypeIdTag>("Core.Graph.ReleaseResource"),
+		Vans::VansActionGraphNodeKind::Command,
+		Vans::VansSerializedValue::Object({
+			{ "resource", variableBinding("Resource", "resource.host") }
+		})
+	};
+	primitiveContext.resources = &graphHostResources;
+	const auto releaseResourceHandler = builtIns.Resolve(releaseResourceNode.type);
+	if (!releaseResourceHandler || releaseResourceHandler->Start(
+		primitiveContext, releaseResourceNode, nodeState).status !=
+		Vans::VansActionGraphNodeStatus::Succeeded || graphHostResources.ActiveCount() != 0 ||
+		graphResourceReleaseCount != 1)
+		return ExpectGAF(false, "ReleaseResource node did not release Host-owned state exactly once");
+
+	Vans::VansActionEvent emittedSignal;
+	int emittedSignalCount = 0;
+	primitiveContext.emitSignal = [&](Vans::VansActionEvent event, std::string&)
+	{
+		emittedSignal = std::move(event);
+		++emittedSignalCount;
+		return true;
+	};
+	Vans::VansCompiledActionGraphNode emitSignalNode{
+		"emit-signal",
+		Vans::VansMakeStableId<Vans::VansActionGraphNodeTypeIdTag>("Core.Graph.EmitSignal"),
+		Vans::VansActionGraphNodeKind::Command,
+		Vans::VansSerializedValue::Object({
+			{ "signal", Vans::VansSerializedValue::String("Signal.Test.ExactAction") },
+			{ "payload", literalBinding("Object", Vans::VansSerializedValue::Object({
+				{ "marker", Vans::VansSerializedValue::String("Notify") }
+			})) }
+		})
+	};
+	const auto emitSignalHandler = builtIns.Resolve(emitSignalNode.type);
+	if (!emitSignalHandler || emitSignalHandler->Start(
+		primitiveContext, emitSignalNode, nodeState).status !=
+		Vans::VansActionGraphNodeStatus::Succeeded || emittedSignalCount != 1 ||
+		emittedSignal.stableName != "Signal.Test.ExactAction" ||
+		emittedSignal.source.index != 31 || emittedSignal.target.index != 32 ||
+		Vans::ReadSerializedStringField(emittedSignal.payload, "marker") != "Notify")
+		return ExpectGAF(false, "EmitSignal node did not route the exact Action signal and payload");
 
 	const auto builtInType = [](const char* name)
 	{
@@ -949,16 +1449,15 @@ bool TestGAFExecutionGraphContract()
 	};
 	auto repeatGraph = std::make_shared<Vans::VansCompiledActionGraph>();
 	repeatGraph->name = "Graph.Repeat";
-	repeatGraph->version = 1;
 	repeatGraph->contentHash = 201;
 	repeatGraph->entryNode = 0;
 	repeatGraph->nodes.push_back({ "repeat", builtInType("Action.Graph.Repeat"),
 		Vans::VansActionGraphNodeKind::Flow,
-		Vans::VansSerializedValue::Object({ { "count", Vans::VansSerializedValue::Int(2) } }), true });
+		Vans::VansSerializedValue::Object({ { "count", Vans::VansSerializedValue::Int(2) } }) });
 	repeatGraph->nodes.push_back({ "body", builtInType("Action.Graph.Complete"),
-		Vans::VansActionGraphNodeKind::Flow, Vans::VansSerializedValue::Object({}), true });
+		Vans::VansActionGraphNodeKind::Flow, Vans::VansSerializedValue::Object({}) });
 	repeatGraph->nodes.push_back({ "end", builtInType("Action.Graph.Complete"),
-		Vans::VansActionGraphNodeKind::Flow, Vans::VansSerializedValue::Object({}), true });
+		Vans::VansActionGraphNodeKind::Flow, Vans::VansSerializedValue::Object({}) });
 	repeatGraph->edges.push_back({ 0, "Body", 1, 0 });
 	repeatGraph->edges.push_back({ 1, "Success", 0, 0 });
 	repeatGraph->edges.push_back({ 0, "Success", 2, 1 });
@@ -972,18 +1471,17 @@ bool TestGAFExecutionGraphContract()
 
 	auto parallelGraph = std::make_shared<Vans::VansCompiledActionGraph>();
 	parallelGraph->name = "Graph.Parallel";
-	parallelGraph->version = 1;
 	parallelGraph->contentHash = 202;
 	parallelGraph->entryNode = 0;
 	parallelGraph->nodes.push_back({ "parallel", builtInType("Action.Graph.Parallel"),
 		Vans::VansActionGraphNodeKind::Flow,
-		Vans::VansSerializedValue::Object({ { "branches", Vans::VansSerializedValue::Int(2) } }), true });
+		Vans::VansSerializedValue::Object({ { "branches", Vans::VansSerializedValue::Int(2) } }) });
 	parallelGraph->nodes.push_back({ "left", builtInType("Action.Graph.Complete"),
-		Vans::VansActionGraphNodeKind::Flow, Vans::VansSerializedValue::Object({}), true });
+		Vans::VansActionGraphNodeKind::Flow, Vans::VansSerializedValue::Object({}) });
 	parallelGraph->nodes.push_back({ "right", builtInType("Action.Graph.Complete"),
-		Vans::VansActionGraphNodeKind::Flow, Vans::VansSerializedValue::Object({}), true });
+		Vans::VansActionGraphNodeKind::Flow, Vans::VansSerializedValue::Object({}) });
 	parallelGraph->nodes.push_back({ "joined", builtInType("Action.Graph.Complete"),
-		Vans::VansActionGraphNodeKind::Flow, Vans::VansSerializedValue::Object({}), true });
+		Vans::VansActionGraphNodeKind::Flow, Vans::VansSerializedValue::Object({}) });
 	parallelGraph->edges.push_back({ 0, "Branch", 1, 0 });
 	parallelGraph->edges.push_back({ 0, "Branch", 2, 1 });
 	parallelGraph->edges.push_back({ 1, "Success", 0, 0 });
@@ -1001,20 +1499,19 @@ bool TestGAFExecutionGraphContract()
 
 	auto raceGraph = std::make_shared<Vans::VansCompiledActionGraph>();
 	raceGraph->name = "Graph.Race";
-	raceGraph->version = 1;
 	raceGraph->contentHash = 203;
 	raceGraph->entryNode = 0;
 	raceGraph->nodes.push_back({ "race", builtInType("Action.Graph.Race"),
 		Vans::VansActionGraphNodeKind::Flow,
 		Vans::VansSerializedValue::Object({ { "cancelNodes", Vans::VansSerializedValue::Array({
-			Vans::VansSerializedValue::String("wait") }) } }), true });
+			Vans::VansSerializedValue::String("wait") }) } }) });
 	raceGraph->nodes.push_back({ "wait", builtInType("Action.Graph.Wait"),
 		Vans::VansActionGraphNodeKind::Latent,
-		Vans::VansSerializedValue::Object({ { "seconds", Vans::VansSerializedValue::Float(10.0) } }), true });
+		Vans::VansSerializedValue::Object({ { "seconds", Vans::VansSerializedValue::Float(10.0) } }) });
 	raceGraph->nodes.push_back({ "winner", builtInType("Action.Graph.Complete"),
-		Vans::VansActionGraphNodeKind::Flow, Vans::VansSerializedValue::Object({}), true });
+		Vans::VansActionGraphNodeKind::Flow, Vans::VansSerializedValue::Object({}) });
 	raceGraph->nodes.push_back({ "end", builtInType("Action.Graph.Complete"),
-		Vans::VansActionGraphNodeKind::Flow, Vans::VansSerializedValue::Object({}), true });
+		Vans::VansActionGraphNodeKind::Flow, Vans::VansSerializedValue::Object({}) });
 	raceGraph->edges.push_back({ 0, "Branch", 1, 0 });
 	raceGraph->edges.push_back({ 0, "Branch", 2, 1 });
 	raceGraph->edges.push_back({ 1, "Success", 0, 0 });
@@ -1031,15 +1528,14 @@ bool TestGAFExecutionGraphContract()
 
 	auto loopGraph = std::make_shared<Vans::VansCompiledActionGraph>();
 	loopGraph->name = "Graph.LoopBudget";
-	loopGraph->version = 1;
 	loopGraph->contentHash = 204;
 	loopGraph->entryNode = 0;
 	loopGraph->nodes.push_back({ "loop", builtInType("Action.Graph.Loop"),
 		Vans::VansActionGraphNodeKind::Flow, Vans::VansSerializedValue::Object({
 			{ "condition", Vans::VansSerializedValue::Bool(true) },
-			{ "maximumIterations", Vans::VansSerializedValue::Int(2) } }), true });
+			{ "maximumIterations", Vans::VansSerializedValue::Int(2) } }) });
 	loopGraph->nodes.push_back({ "body", builtInType("Action.Graph.Complete"),
-		Vans::VansActionGraphNodeKind::Flow, Vans::VansSerializedValue::Object({}), true });
+		Vans::VansActionGraphNodeKind::Flow, Vans::VansSerializedValue::Object({}) });
 	loopGraph->edges.push_back({ 0, "Body", 1, 0 });
 	loopGraph->edges.push_back({ 1, "Success", 0, 0 });
 	Vans::VansActionGraphRuntime loopRuntime;
@@ -1047,18 +1543,17 @@ bool TestGAFExecutionGraphContract()
 		if (diagnostic.severity == Vans::VansGameplayDiagnosticSeverity::Error) return false;
 	const Vans::VansActionExecutorResult looped = loopRuntime.Start(context);
 	if (!ExpectGAF(looped.status == Vans::VansActionExecutorStatus::Failed &&
-		looped.error == Vans::VansActionError::BudgetExceeded,
+		looped.error == Vans::VansActionError::Budget,
 		"Loop node did not preserve its specific bounded-loop failure")) return false;
 
 	auto timeoutGraph = std::make_shared<Vans::VansCompiledActionGraph>();
 	timeoutGraph->name = "Graph.Timeout";
-	timeoutGraph->version = 1;
 	timeoutGraph->contentHash = 205;
 	timeoutGraph->entryNode = 0;
 	timeoutGraph->nodes.push_back({ "timeout", builtInType("Action.Graph.Timeout"),
 		Vans::VansActionGraphNodeKind::Latent, Vans::VansSerializedValue::Object({
 			{ "seconds", Vans::VansSerializedValue::Float(0.1) },
-			{ "fail", Vans::VansSerializedValue::Bool(true) } }), true });
+			{ "fail", Vans::VansSerializedValue::Bool(true) } }) });
 	Vans::VansActionGraphRuntime timeoutRuntime;
 	for (const auto& diagnostic : timeoutRuntime.Initialize(timeoutGraph, &builtIns, 32))
 		if (diagnostic.severity == Vans::VansGameplayDiagnosticSeverity::Error) return false;
@@ -1067,40 +1562,9 @@ bool TestGAFExecutionGraphContract()
 	context.deltaSeconds = 0.1;
 	const Vans::VansActionExecutorResult timedOut = timeoutRuntime.Tick(context);
 	if (!ExpectGAF(timedOut.status == Vans::VansActionExecutorStatus::Failed &&
-		timedOut.error == Vans::VansActionError::TimedOut,
+		timedOut.error == Vans::VansActionError::Timeout,
 		"Timeout node did not expose a stable timeout error")) return false;
 
-	Vans::VansActionResourceLedger compensationLedger;
-	int compensationCount = 0;
-	Vans::VansActionResourceEntry compensatable;
-	compensatable.type = "GraphProbe";
-	compensatable.debugName = "compensatable";
-	compensatable.prediction = Vans::VansActionPredictionResourcePolicy::UndoOnly;
-	compensatable.release = [] { return true; };
-	compensatable.undo = [&] { ++compensationCount; return true; };
-	if (!compensationLedger.Register(std::move(compensatable), error)) return false;
-	auto compensateGraph = std::make_shared<Vans::VansCompiledActionGraph>();
-	compensateGraph->name = "Graph.Compensate";
-	compensateGraph->version = 1;
-	compensateGraph->contentHash = 206;
-	compensateGraph->entryNode = 0;
-	compensateGraph->nodes.push_back({ "compensate", builtInType("Action.Graph.Compensate"),
-		Vans::VansActionGraphNodeKind::Transaction, Vans::VansSerializedValue::Object({}), true });
-	Vans::VansActionGraphRuntime compensateRuntime;
-	for (const auto& diagnostic : compensateRuntime.Initialize(compensateGraph, &builtIns, 32))
-		if (diagnostic.severity == Vans::VansGameplayDiagnosticSeverity::Error) return false;
-	context.resources = &compensationLedger;
-	const Vans::VansActionExecutorResult compensated = compensateRuntime.Start(context);
-	if (!ExpectGAF(compensated.status == Vans::VansActionExecutorStatus::Succeeded &&
-		compensationCount == 1,
-		"Compensate node did not roll back predicted Action resources")) return false;
-
-	if (!ExpectGAF(Vans::VansCameraActionGraphNodeDescriptors().size() == 8,
-		"Camera Action Graph descriptor catalog is incomplete")) return false;
-	Vans::VansActionGraphNodeRegistry cameraHandlers;
-	if (!Vans::VansRegisterBuiltInActionGraphNodes(cameraHandlers, error) ||
-		!Vans::VansRegisterCameraActionGraphNodes(cameraHandlers, error) ||
-		!cameraHandlers.Seal(error)) return ExpectGAF(false, error.c_str());
 	Vans::VansGameplayAssetLibrary emptyCameraAssets;
 	Vans::VansCameraRuntime cameraRuntime;
 	Vans::VansCameraViewSnapshot baseCamera;
@@ -1127,10 +1591,6 @@ bool TestGAFExecutionGraphContract()
 	cameraContext.variables = &cameraVariables;
 	cameraContext.resources = &cameraResources;
 	cameraContext.services = &cameraServices;
-	const auto cameraType = [](const char* name)
-	{
-		return Vans::VansMakeStableId<Vans::VansActionGraphNodeTypeIdTag>(name);
-	};
 	const auto position = [](double x, double y, double z)
 	{
 		return Vans::VansSerializedValue::Object({
@@ -1143,19 +1603,32 @@ bool TestGAFExecutionGraphContract()
 	lockGraph->name = "Graph.CameraLock";
 	lockGraph->contentHash = 301;
 	lockGraph->entryNode = 0;
-	lockGraph->nodes.push_back({ "lock", cameraType("Camera.StartLockOn"),
+	lockGraph->nodes.push_back({ "lock",
+		Vans::VansMakeStableId<Vans::VansActionGraphNodeTypeIdTag>("Core.Graph.Invoke"),
 		Vans::VansActionGraphNodeKind::Command, Vans::VansSerializedValue::Object({
-			{ "target", position(1.0, 0.0, 0.0) },
-			{ "resultVariable", Vans::VansSerializedValue::String("camera.lock") }
-		}), true });
-	lockGraph->nodes.push_back({ "update", cameraType("Camera.UpdateLockOn"),
+			{ "capability", Vans::VansSerializedValue::String("Service.Camera") },
+			{ "operation", Vans::VansSerializedValue::String("Camera.LockOn") },
+			{ "inputs", Vans::VansSerializedValue::Object({
+				{ "target", literalBinding("Object", position(1.0, 0.0, 0.0)) }
+			}) },
+			{ "outputs", Vans::VansSerializedValue::Object({
+				{ "resource", outputBinding("Resource", "camera.lock") }
+			}) }
+		}) });
+	lockGraph->nodes.push_back({ "update",
+		Vans::VansMakeStableId<Vans::VansActionGraphNodeTypeIdTag>("Core.Graph.Invoke"),
 		Vans::VansActionGraphNodeKind::Command, Vans::VansSerializedValue::Object({
-			{ "resourceVariable", Vans::VansSerializedValue::String("camera.lock") },
-			{ "target", position(0.0, 0.0, 1.0) }
-		}), true });
+			{ "capability", Vans::VansSerializedValue::String("Service.Camera") },
+			{ "operation", Vans::VansSerializedValue::String("Camera.UpdateLockOn") },
+			{ "inputs", Vans::VansSerializedValue::Object({
+				{ "resource", variableBinding("Resource", "camera.lock") },
+				{ "target", literalBinding("Object", position(0.0, 0.0, 1.0)) }
+			}) },
+			{ "outputs", Vans::VansSerializedValue::Object({}) }
+		}) });
 	lockGraph->edges.push_back({ 0, "Success", 1, 0 });
 	Vans::VansActionGraphRuntime lockRuntime;
-	for (const auto& diagnostic : lockRuntime.Initialize(lockGraph, &cameraHandlers, 16))
+	for (const auto& diagnostic : lockRuntime.Initialize(lockGraph, &builtIns, 16))
 		if (diagnostic.severity == Vans::VansGameplayDiagnosticSeverity::Error)
 			return ExpectGAF(false, diagnostic.message.c_str());
 	const Vans::VansActionExecutorResult locked = lockRuntime.Start(cameraContext);
@@ -1169,12 +1642,18 @@ bool TestGAFExecutionGraphContract()
 	releaseGraph->name = "Graph.CameraRelease";
 	releaseGraph->contentHash = 302;
 	releaseGraph->entryNode = 0;
-	releaseGraph->nodes.push_back({ "release", cameraType("Camera.Release"),
+	releaseGraph->nodes.push_back({ "release",
+		Vans::VansMakeStableId<Vans::VansActionGraphNodeTypeIdTag>("Core.Graph.Invoke"),
 		Vans::VansActionGraphNodeKind::Command, Vans::VansSerializedValue::Object({
-			{ "resourceVariable", Vans::VansSerializedValue::String("camera.lock") }
-		}), true });
+			{ "capability", Vans::VansSerializedValue::String("Service.Camera") },
+			{ "operation", Vans::VansSerializedValue::String("Camera.Release") },
+			{ "inputs", Vans::VansSerializedValue::Object({
+				{ "resource", variableBinding("Resource", "camera.lock") }
+			}) },
+			{ "outputs", Vans::VansSerializedValue::Object({}) }
+		}) });
 	Vans::VansActionGraphRuntime releaseRuntime;
-	for (const auto& diagnostic : releaseRuntime.Initialize(releaseGraph, &cameraHandlers, 8))
+	for (const auto& diagnostic : releaseRuntime.Initialize(releaseGraph, &builtIns, 8))
 		if (diagnostic.severity == Vans::VansGameplayDiagnosticSeverity::Error)
 			return ExpectGAF(false, diagnostic.message.c_str());
 	if (!ExpectGAF(releaseRuntime.Start(cameraContext).status ==
@@ -1186,13 +1665,15 @@ bool TestGAFExecutionGraphContract()
 	eventGraph->name = "Graph.CameraEvent";
 	eventGraph->contentHash = 303;
 	eventGraph->entryNode = 0;
-	eventGraph->nodes.push_back({ "wait-event", cameraType("Camera.WaitEvent"),
+	eventGraph->nodes.push_back({ "wait-event",
+		Vans::VansMakeStableId<Vans::VansActionGraphNodeTypeIdTag>("Core.Graph.WaitSignal"),
 		Vans::VansActionGraphNodeKind::Latent, Vans::VansSerializedValue::Object({
-			{ "event", Vans::VansSerializedValue::String("Camera.BlendComplete") },
-			{ "resultVariable", Vans::VansSerializedValue::String("camera.event") }
-		}), true });
+			{ "signal", Vans::VansSerializedValue::String("Camera.BlendComplete") },
+			{ "timeoutSeconds", Vans::VansSerializedValue::Float(0.0) },
+			{ "payloadOutput", outputBinding("Object", "camera.event") }
+		}) });
 	Vans::VansActionGraphRuntime eventRuntime;
-	for (const auto& diagnostic : eventRuntime.Initialize(eventGraph, &cameraHandlers, 8))
+	for (const auto& diagnostic : eventRuntime.Initialize(eventGraph, &builtIns, 8))
 		if (diagnostic.severity == Vans::VansGameplayDiagnosticSeverity::Error)
 			return ExpectGAF(false, diagnostic.message.c_str());
 	if (eventRuntime.Start(cameraContext).status != Vans::VansActionExecutorStatus::Waiting)
@@ -1218,7 +1699,7 @@ bool TestGAFActionHostLifecycleContract()
 		bool CanCommit(const Vans::VansActionExternalCostRequest& request,
 			std::string& message) const override
 		{
-			if (request.kind != Vans::VansActionCostKind::Inventory ||
+			if (request.operation != "Project.Inventory.Consume" ||
 				request.resource != "Inventory.Test.Ammo" || request.amount <= 0.0)
 			{
 				message = "unsupported external cost";
@@ -1231,24 +1712,15 @@ bool TestGAFActionHostLifecycleContract()
 			}
 			return true;
 		}
-		Vans::VansGenerationHandle Commit(const Vans::VansActionExternalCostRequest& request,
+		bool Commit(const Vans::VansActionExternalCostRequest& request,
 			std::string& message) override
 		{
-			if (!CanCommit(request, message)) return {};
+			if (!CanCommit(request, message)) return false;
 			balance -= request.amount;
-			return receipts.Emplace(request.amount);
-		}
-		bool Settle(Vans::VansGenerationHandle receipt, bool refund,
-			std::string& message) override
-		{
-			const double* amount = receipts.Resolve(receipt);
-			if (!amount) { message = "stale external cost receipt"; return false; }
-			if (refund) balance += *amount;
-			return receipts.Release(receipt);
+			return true;
 		}
 
 		double balance = 5.0;
-		Vans::VansGenerationPool<double> receipts;
 	};
 	ProbeExternalCostProvider externalCosts;
 	std::string error;
@@ -1281,26 +1753,50 @@ bool TestGAFActionHostLifecycleContract()
 			[](const Vans::VansCompiledActionDefinition&)
 			{ return std::make_unique<ProbeFailExecutor>(); }, error) ||
 		!executors.Seal(error)) return false;
+	Vans::VansActionDriverRegistry drivers;
+	if (!drivers.RegisterExecutorOwned("Test.Executor", error) || !drivers.Seal(error))
+		return false;
 	Vans::VansActionDefinitionRegistry definitions;
 	auto action = std::make_shared<Vans::VansCompiledActionDefinition>();
 	action->id = Vans::VansMakeStableId<Vans::VansActionIdTag>("Action.Test.Host");
 	action->name = "Action.Test.Host";
-	action->definitionVersion = 1;
-	action->schemaVersion = 1;
 	action->contentHash = 901;
 	action->executor = executorId;
 	action->concurrencyGroup = Vans::VansMakeStableId<Vans::VansActionConcurrencyGroupIdTag>("Group.Test");
 	action->concurrencyPolicy = Vans::VansActionConcurrencyPolicy::RejectNew;
-	action->costs.push_back({ energyId, 30.0, Vans::VansActionCostRefundPolicy::OnCancel });
-	Vans::VansActionCostDefinition inventoryCost;
-	inventoryCost.kind = Vans::VansActionCostKind::Inventory;
-	inventoryCost.resource = "Inventory.Test.Ammo";
-	inventoryCost.amount = 2.0;
-	inventoryCost.refundPolicy = Vans::VansActionCostRefundPolicy::OnCancel;
-	action->costs.push_back(std::move(inventoryCost));
-	action->cooldowns.push_back({ 0.5, tags.Find("Cooldown.Test")->id });
-	action->cooldowns.push_back({ 1.0, tags.Find("Cooldown.Shared")->id });
-	action->grantedWhileRunning.push_back(tags.Find("Action.Running")->id);
+	action->program.commit.operations.push_back({ "Gameplay.Attributes.Consume",
+		Vans::VansSerializedValue::Object({
+			{ "attribute", Vans::VansSerializedValue::String("Character.Energy") },
+			{ "amount", Vans::VansSerializedValue::Float(30.0) }
+		}) });
+	action->program.commit.operations.push_back({ "Core.ExternalCost.Commit",
+		Vans::VansSerializedValue::Object({
+			{ "operation", Vans::VansSerializedValue::String("Project.Inventory.Consume") },
+			{ "resource", Vans::VansSerializedValue::String("Inventory.Test.Ammo") },
+			{ "amount", Vans::VansSerializedValue::Float(2.0) }
+		}) });
+	action->program.commit.operations.push_back({ "Gameplay.Cooldown.Apply",
+		Vans::VansSerializedValue::Object({
+			{ "duration", Vans::VansSerializedValue::Float(0.5) },
+			{ "tag", Vans::VansSerializedValue::String("Cooldown.Test") }
+		}) });
+	action->program.commit.operations.push_back({ "Gameplay.Cooldown.Apply",
+		Vans::VansSerializedValue::Object({
+			{ "duration", Vans::VansSerializedValue::Float(1.0) },
+			{ "tag", Vans::VansSerializedValue::String("Cooldown.Shared") }
+		}) });
+	action->program.commit.operations.push_back({ "Gameplay.Tags.Grant",
+		Vans::VansSerializedValue::Object({
+			{ "tags", Vans::VansSerializedValue::Array({
+				Vans::VansSerializedValue::String("Action.Running") }) }
+		}) });
+	auto persistentDefinition = std::make_shared<Vans::VansCompiledActionDefinition>(*action);
+	persistentDefinition->id =
+		Vans::VansMakeStableId<Vans::VansActionIdTag>("Action.Test.Persistent");
+	persistentDefinition->name = "Action.Test.Persistent";
+	persistentDefinition->contentHash = 908;
+	persistentDefinition->program.commit.operations.erase(
+		persistentDefinition->program.commit.operations.begin() + 1);
 	auto queuedAction = std::make_shared<Vans::VansCompiledActionDefinition>(*action);
 	queuedAction->id = Vans::VansMakeStableId<Vans::VansActionIdTag>("Action.Test.Queued");
 	queuedAction->name = "Action.Test.Queued";
@@ -1310,9 +1806,7 @@ bool TestGAFActionHostLifecycleContract()
 	queuedAction->concurrencyPolicy = Vans::VansActionConcurrencyPolicy::QueueNew;
 	queuedAction->concurrencyLimit = 1;
 	queuedAction->concurrencyQueueTimeoutSeconds = 1.0;
-	queuedAction->costs.clear();
-	queuedAction->cooldowns.clear();
-	queuedAction->grantedWhileRunning.clear();
+	queuedAction->program.commit.operations.clear();
 	auto timeoutAction = std::make_shared<Vans::VansCompiledActionDefinition>(*queuedAction);
 	timeoutAction->id = Vans::VansMakeStableId<Vans::VansActionIdTag>("Action.Test.QueueTimeout");
 	timeoutAction->name = "Action.Test.QueueTimeout";
@@ -1328,51 +1822,62 @@ bool TestGAFActionHostLifecycleContract()
 	transitionSource->id = Vans::VansMakeStableId<Vans::VansActionIdTag>("Action.Test.TransitionSource");
 	transitionSource->name = "Action.Test.TransitionSource";
 	transitionSource->contentHash = 905;
-	Vans::VansActionTransitionRule comboRule;
-	comboRule.name = "BufferedCombo";
-	comboRule.trigger = Vans::VansActionTransitionTrigger::Input;
-	comboRule.inputBinding = "Combo";
-	comboRule.targetAction = transitionTarget->id;
-	comboRule.minimumTimeSeconds = 0.3;
-	comboRule.maximumTimeSeconds = 1.0;
-	comboRule.priority = 10;
-	comboRule.cancelSource = true;
-	comboRule.contextPatch = Vans::VansSerializedValue::Object({
-		{ "comboStage", Vans::VansSerializedValue::Int(2) }
-	});
-	transitionSource->transitionRules.push_back(std::move(comboRule));
-	transitionSource->inputBuffer.enabled = true;
-	transitionSource->inputBuffer.durationSeconds = 0.5;
-	transitionSource->inputBuffer.maximumEntries = 1;
+	transitionSource->program.transitions.push_back({ "Core.Transition.Combo",
+		Vans::VansSerializedValue::Object({
+			{ "name", Vans::VansSerializedValue::String("BufferedCombo") },
+			{ "input", Vans::VansSerializedValue::String("Combo") },
+			{ "target", Vans::VansSerializedValue::String(transitionTarget->name) },
+			{ "openTime", Vans::VansSerializedValue::Float(0.3) },
+			{ "closeTime", Vans::VansSerializedValue::Float(1.0) },
+			{ "priority", Vans::VansSerializedValue::Int(10) },
+			{ "cancelSource", Vans::VansSerializedValue::Bool(true) },
+			{ "contextPatch", Vans::VansSerializedValue::Object({
+				{ "comboStage", Vans::VansSerializedValue::Int(2) }
+			}) }
+		}) });
+	transitionSource->program.policies.push_back({ "Core.Policy.InputBuffer",
+		Vans::VansSerializedValue::Object({
+			{ "enabled", Vans::VansSerializedValue::Bool(true) },
+			{ "duration", Vans::VansSerializedValue::Float(0.5) },
+			{ "maximumEntries", Vans::VansSerializedValue::Int(1) }
+		}) });
 	auto failureSource = std::make_shared<Vans::VansCompiledActionDefinition>(*transitionTarget);
 	failureSource->id = Vans::VansMakeStableId<Vans::VansActionIdTag>("Action.Test.FailureSource");
 	failureSource->name = "Action.Test.FailureSource";
 	failureSource->contentHash = 906;
 	failureSource->executor = failExecutorId;
-	failureSource->failureFallback.action = transitionTarget->id;
-	failureSource->failureFallback.errors.push_back(Vans::VansActionError::ExecutionFailed);
+	failureSource->program.policies.push_back({ "Core.Policy.Failure",
+		Vans::VansSerializedValue::Object({
+			{ "action", Vans::VansSerializedValue::String(transitionTarget->name) },
+			{ "errors", Vans::VansSerializedValue::Array({
+				Vans::VansSerializedValue::String("Execution") }) }
+		}) });
 	auto targetingAction = std::make_shared<Vans::VansCompiledActionDefinition>(*transitionTarget);
 	targetingAction->id = Vans::VansMakeStableId<Vans::VansActionIdTag>("Action.Test.Targeting");
 	targetingAction->name = "Action.Test.Targeting";
 	targetingAction->contentHash = 907;
-	targetingAction->targetingPolicy =
-		Vans::VansMakeStableId<Vans::VansTargetingPolicyIdTag>("Targeting.Test.Primary");
-	if (!definitions.RegisterRevision(action, error) ||
-		!definitions.RegisterRevision(queuedAction, error) ||
-		!definitions.RegisterRevision(timeoutAction, error) ||
-		!definitions.RegisterRevision(transitionTarget, error) ||
-		!definitions.RegisterRevision(transitionSource, error) ||
-		!definitions.RegisterRevision(failureSource, error) ||
-		!definitions.RegisterRevision(targetingAction, error))
+	targetingAction->program.activate.operations.push_back({ "Gameplay.Targeting.Resolve",
+		Vans::VansSerializedValue::Object({
+			{ "asset", Vans::VansSerializedValue::String("Targeting.Test.Primary") }
+		}) });
+	if (!definitions.Register(action, error) ||
+		!definitions.Register(queuedAction, error) ||
+		!definitions.Register(timeoutAction, error) ||
+		!definitions.Register(transitionTarget, error) ||
+		!definitions.Register(transitionSource, error) ||
+		!definitions.Register(failureSource, error) ||
+		!definitions.Register(targetingAction, error) ||
+		!definitions.Register(persistentDefinition, error))
 		return ExpectGAF(false, error.c_str());
 	Vans::VansTargetingPolicyRegistry targetingPolicies;
 	Vans::VansTargetingPolicy targetingPolicy;
-	targetingPolicy.id = targetingAction->targetingPolicy;
+	targetingPolicy.id =
+		Vans::VansMakeStableId<Vans::VansTargetingPolicyIdTag>("Targeting.Test.Primary");
 	targetingPolicy.name = "Targeting.Test.Primary";
-	targetingPolicy.steps.push_back({ Vans::VansTargetingStepKind::Acquire,
+	targetingPolicy.steps.push_back({
 		Vans::VansMakeStableId<Vans::VansActionGraphNodeTypeIdTag>("Targeting.Acquire.PrimaryTarget"),
 		"Targeting.Acquire.PrimaryTarget", Vans::VansSerializedValue::Object({}) });
-	targetingPolicy.steps.push_back({ Vans::VansTargetingStepKind::Lock,
+	targetingPolicy.steps.push_back({
 		Vans::VansMakeStableId<Vans::VansActionGraphNodeTypeIdTag>("Targeting.Lock.Entity"),
 		"Targeting.Lock.Entity", Vans::VansSerializedValue::Object({}) });
 	if (!targetingPolicies.Register(std::move(targetingPolicy), error) ||
@@ -1383,6 +1888,7 @@ bool TestGAFActionHostLifecycleContract()
 	Vans::VansActionHostDependencies dependencies;
 	dependencies.definitions = &definitions;
 	dependencies.executors = &executors;
+	dependencies.drivers = &drivers;
 	dependencies.tagDictionary = &tags;
 	dependencies.attributeRegistry = &attributes;
 	dependencies.targetingPolicies = &targetingPolicies;
@@ -1397,14 +1903,14 @@ bool TestGAFActionHostLifecycleContract()
 	const Vans::VansActionSpecHandle targetingSpec = host.Grant(targetingGrant, error);
 	Vans::VansActionActivationRequest targetingRequest;
 	targetingRequest.spec = targetingSpec;
-	targetingRequest.context.primaryTarget = { 71, 1 };
+	targetingRequest.context.SetEntity(Vans::VansActionContextSlots::PrimaryTarget, { 71, 1 });
 	const Vans::VansActionResult targetingDryRun = host.CanActivate(
-		targetingRequest.spec, targetingRequest.context,
-		targetingRequest.hasAuthority, targetingRequest.predicted);
+		targetingRequest.spec, targetingRequest.context);
 	const Vans::VansActionResult targeted = host.Activate(targetingRequest);
 	const auto targetedSnapshot = targeted ? host.Query(targeted.action) : std::nullopt;
 	const Vans::VansTargetDataHandle activeTargetData = targetedSnapshot
-		? targetedSnapshot->context.targetData : Vans::VansTargetDataHandle{};
+		? targetedSnapshot->context.TargetData(Vans::VansActionContextSlots::TargetData)
+		: Vans::VansTargetDataHandle{};
 	const Vans::VansTargetData* activeTargets = host.ResolveTargetData(activeTargetData);
 	const auto* activeTarget = activeTargets && !activeTargets->values.empty()
 		? std::get_if<Vans::VansEntityHandle>(&activeTargets->values.front()) : nullptr;
@@ -1422,7 +1928,9 @@ bool TestGAFActionHostLifecycleContract()
 	Vans::VansActionGrantDesc grant;
 	grant.action = action->id;
 	grant.source = 44;
-	grant.charges = 2;
+	SetGrantExtension(grant, "Gameplay.Charges", Vans::VansSerializedValue::Object({
+		{ "count", Vans::VansSerializedValue::Int(2) }
+	}));
 	const auto spec = host.Grant(grant, error);
 	if (!spec) return ExpectGAF(false, error.c_str());
 	int startedEvents = 0;
@@ -1436,27 +1944,25 @@ bool TestGAFActionHostLifecycleContract()
 		[&](const auto&) { ++queuedEvents; }, Vans::VansEventLane::GameLogic);
 	Vans::VansActionActivationRequest request;
 	request.spec = spec;
-	request.context.instigator = { 7, 1 };
-	request.context.predictionKey = { 2, 5 };
+	request.context.SetEntity(Vans::VansActionContextSlots::Instigator, { 7, 1 });
+	request.context.correlationId = 2;
 	const auto first = host.Activate(request);
 	if (!ExpectGAF(first && first.action && host.Query(first.action)->state == Vans::VansActionInstanceState::Waiting &&
 		std::abs(host.Attributes().Current(energyId) - 70.0) < 0.0001 &&
 		std::abs(externalCosts.balance - 3.0) < 0.0001 &&
-		externalCosts.receipts.ActiveCount() == 1 &&
 		host.Tags().Has(tags.Find("Action.Running")->id) &&
 		host.Tags().Has(tags.Find("Cooldown.Test")->id) &&
 		host.Tags().Has(tags.Find("Cooldown.Shared")->id) && host.IsCooldownActive(action->id),
 		"Action Host 未完成激活 Commit")) return false;
 	const auto blocked = host.Activate(request);
-	if (!ExpectGAF(!blocked && blocked.error == Vans::VansActionError::CooldownActive,
+	if (!ExpectGAF(!blocked && blocked.error == Vans::VansActionError::Rejected,
 		"Action Host 未执行 Cooldown 门禁")) return false;
 	if (!host.Cancel(first.action, Vans::VansActionCancelReason::User, error)) return false;
 	if (!ExpectGAF(host.Query(first.action)->state == Vans::VansActionInstanceState::Ended &&
-		std::abs(host.Attributes().Current(energyId) - 100.0) < 0.0001 &&
-		std::abs(externalCosts.balance - 5.0) < 0.0001 &&
-		externalCosts.receipts.ActiveCount() == 0 &&
+		std::abs(host.Attributes().Current(energyId) - 70.0) < 0.0001 &&
+		std::abs(externalCosts.balance - 3.0) < 0.0001 &&
 		!host.Tags().Has(tags.Find("Action.Running")->id),
-		"Action 取消未退款或未释放运行资源")) return false;
+		"Action cancellation did not preserve committed costs or release lifecycle resources")) return false;
 	Vans::VansEventBus::Get().Flush(Vans::VansEventLane::GameLogic);
 	if (!ExpectGAF(startedEvents == 1 && endedEvents == 1,
 		"Action lifecycle 事实事件未按 lane 发布")) return false;
@@ -1470,30 +1976,41 @@ bool TestGAFActionHostLifecycleContract()
 		"Action cooldown collection or history snapshot is invalid")) return false;
 	executorState->tickCount = 0;
 	const auto second = host.Activate(request);
-	if (!second) return false;
+	if (!second)
+	{
+		std::cerr << "[GAF] second Host activation failed: " << second.message << '\n';
+		return false;
+	}
 	host.Tick(0.1);
 	host.Tick(0.1);
 	if (!ExpectGAF(host.Query(second.action)->state == Vans::VansActionInstanceState::Ended &&
 		host.Query(second.action)->endReason == Vans::VansActionEndReason::Completed &&
-		std::abs(host.Attributes().Current(energyId) - 70.0) < 0.0001 &&
-		std::abs(externalCosts.balance - 3.0) < 0.0001 &&
-		externalCosts.receipts.ActiveCount() == 0 &&
+		std::abs(host.Attributes().Current(energyId) - 40.0) < 0.0001 &&
+		std::abs(externalCosts.balance - 1.0) < 0.0001 &&
 		executorState->finishCount == 2, "Action Executor 完成路径或 Finish 次数错误")) return false;
 	host.Tick(1.0);
 	std::shared_ptr<Vans::VansActionHost> hostView(&host, [](Vans::VansActionHost*) {});
 	const auto schedulerHandle = scheduler.Register(hostView, error);
-	if (!schedulerHandle) return false;
+	if (!schedulerHandle) return ExpectGAF(false, error.c_str());
 	executorState->tickCount = 0;
-	const auto lateAction = host.Activate(request);
+	Vans::VansActionGrantDesc lateGrant;
+	lateGrant.action = transitionTarget->id;
+	lateGrant.source = 47;
+	const Vans::VansActionSpecHandle lateSpec = host.Grant(lateGrant, error);
+	Vans::VansActionActivationRequest lateRequest = request;
+	lateRequest.spec = lateSpec;
+	const auto lateAction = host.Activate(lateRequest);
 	Vans::VansActionEvent event;
 	event.type = Vans::VansMakeStableId<Vans::VansActionFieldIdTag>("Action.Event.Probe");
 	event.stableName = "Action.Event.Probe";
-	if (!lateAction || !host.EnqueueEvent(lateAction.action, std::move(event), error)) return false;
+	if (!lateAction || !host.EnqueueEvent(lateAction.action, std::move(event), error))
+		return ExpectGAF(false, lateAction ? error.c_str() : lateAction.message.c_str());
 	if (!ExpectGAF(scheduler.RunLateContinuation() && !scheduler.RunLateContinuation() &&
 		executorState->eventCount == 1 && executorState->tickCount == 1,
 		"ActionScheduler 未限制 SameFrame late continuation 为一次")) return false;
 	if (!host.Cancel(lateAction.action, Vans::VansActionCancelReason::System, error) ||
-		!scheduler.Unregister(schedulerHandle)) return false;
+		!scheduler.Unregister(schedulerHandle) ||
+		!host.Revoke(lateSpec, Vans::VansActionRevokePolicy::KeepRunning, error)) return false;
 	if (!host.Revoke(spec, Vans::VansActionRevokePolicy::KeepRunning, error)) return false;
 	Vans::VansActionGrantDesc queuedGrant;
 	queuedGrant.action = queuedAction->id;
@@ -1506,7 +2023,7 @@ bool TestGAFActionHostLifecycleContract()
 	executorState->tickCount = 0;
 	Vans::VansActionActivationRequest queuedRequest;
 	queuedRequest.spec = queuedSpec;
-	queuedRequest.context.instigator = { 7, 1 };
+	queuedRequest.context.SetEntity(Vans::VansActionContextSlots::Instigator, { 7, 1 });
 	const Vans::VansActionResult queueOwner = host.Activate(queuedRequest);
 	const Vans::VansActionResult queued = host.Activate(queuedRequest);
 	if (!ExpectGAF(queueOwner && queued &&
@@ -1532,7 +2049,7 @@ bool TestGAFActionHostLifecycleContract()
 		timedQueue.disposition == Vans::VansActionActivationDisposition::Queued &&
 		timedSnapshot && timedSnapshot->state == Vans::VansActionInstanceState::Ended &&
 		timedSnapshot->endReason == Vans::VansActionEndReason::TimedOut &&
-		timedSnapshot->error == Vans::VansActionError::ConcurrencyQueueExpired,
+		timedSnapshot->error == Vans::VansActionError::Timeout,
 		"Concurrency queue timeout was not machine-queryable")) return false;
 	if (!host.Cancel(timeoutOwner.action, Vans::VansActionCancelReason::System, error)) return false;
 	Vans::VansEventBus::Get().Flush(Vans::VansEventLane::GameLogic);
@@ -1542,7 +2059,9 @@ bool TestGAFActionHostLifecycleContract()
 	Vans::VansActionSetDefinition set;
 	set.id = Vans::VansMakeStableId<Vans::VansActionSetIdTag>("ActionSet.Test");
 	set.name = "ActionSet.Test";
-	grant.charges = 1;
+	SetGrantExtension(grant, "Gameplay.Charges", Vans::VansSerializedValue::Object({
+		{ "count", Vans::VansSerializedValue::Int(1) }
+	}));
 	set.grants.push_back(grant);
 	const auto setHandle = host.ApplyActionSet(set, error);
 	if (!ExpectGAF(setHandle && host.GrantedActions().size() == 1,
@@ -1574,8 +2093,8 @@ bool TestGAFActionHostLifecycleContract()
 	executorState->tickCount = 0;
 	Vans::VansActionActivationRequest routedActivation;
 	routedActivation.spec = transitionSourceSpec;
-	routedActivation.context.owner = { 9, 1 };
-	routedActivation.context.instigator = { 9, 1 };
+	routedActivation.context.SetEntity(Vans::VansActionContextSlots::Owner, { 9, 1 });
+	routedActivation.context.SetEntity(Vans::VansActionContextSlots::Instigator, { 9, 1 });
 	const Vans::VansActionResult routedSource = transitionHost.Activate(routedActivation);
 	Vans::VansActionCommand routeCommand;
 	routeCommand.service = Vans::VansMakeStableId<Vans::VansActionServiceIdTag>("Service.Action");
@@ -1600,11 +2119,11 @@ bool TestGAFActionHostLifecycleContract()
 	executorState->tickCount = 0;
 	Vans::VansActionActivationRequest transitionActivation;
 	transitionActivation.spec = transitionSourceSpec;
-	transitionActivation.context.instigator = { 9, 1 };
-	transitionActivation.context.primaryTarget = { 99, 1 };
+	transitionActivation.context.SetEntity(Vans::VansActionContextSlots::Instigator, { 9, 1 });
+	transitionActivation.context.SetEntity(Vans::VansActionContextSlots::PrimaryTarget, { 99, 1 });
 	const Vans::VansActionResult transitionOwner = transitionHost.Activate(transitionActivation);
 	Vans::VansActionContext inputContext;
-	inputContext.primaryTarget = { 100, 1 };
+	inputContext.SetEntity(Vans::VansActionContextSlots::PrimaryTarget, { 100, 1 });
 	const Vans::VansActionResult buffered = transitionHost.ActivateInput("Combo", inputContext);
 	if (!ExpectGAF(transitionOwner && buffered &&
 		buffered.disposition == Vans::VansActionActivationDisposition::Queued &&
@@ -1625,7 +2144,7 @@ bool TestGAFActionHostLifecycleContract()
 	executorState->tickCount = 0;
 	Vans::VansActionActivationRequest failureActivation;
 	failureActivation.spec = failureSourceSpec;
-	failureActivation.context.instigator = { 9, 1 };
+	failureActivation.context.SetEntity(Vans::VansActionContextSlots::Instigator, { 9, 1 });
 	const Vans::VansActionResult failedSource = transitionHost.Activate(failureActivation);
 	if (!ExpectGAF(failedSource && transitionHost.Query(failedSource.action)->state ==
 		Vans::VansActionInstanceState::Ended,
@@ -1650,18 +2169,19 @@ bool TestGAFActionHostLifecycleContract()
 	const Vans::VansActionSpecHandle limitedSpec = limitedHost.Grant(limitedGrant, error);
 	Vans::VansActionActivationRequest limitedRequest;
 	limitedRequest.spec = limitedSpec;
-	limitedRequest.context.instigator = { 8, 1 };
+	limitedRequest.context.SetEntity(Vans::VansActionContextSlots::Instigator, { 8, 1 });
 	Vans::VansActionActivationRequest oversizedPayloadRequest = limitedRequest;
-	oversizedPayloadRequest.context.payload = Vans::VansSerializedValue::Object({
+	oversizedPayloadRequest.context.SetSerialized(Vans::VansActionContextSlots::Payload,
+		Vans::VansSerializedValue::Object({
 		{ "oversized", Vans::VansSerializedValue::String(std::string(64, 'x')) }
-	});
+	}));
 	if (!ExpectGAF(limitedHost.CanActivate(oversizedPayloadRequest.spec,
-		oversizedPayloadRequest.context).error == Vans::VansActionError::BudgetExceeded,
+		oversizedPayloadRequest.context).error == Vans::VansActionError::Budget,
 		"Action Host accepted a Context payload above the project budget")) return false;
 	const Vans::VansActionResult limitedFirst = limitedHost.Activate(limitedRequest);
 	const Vans::VansActionResult limitedBlocked = limitedHost.Activate(limitedRequest);
 	if (!ExpectGAF(limitedFirst && !limitedBlocked &&
-		limitedBlocked.error == Vans::VansActionError::BudgetExceeded,
+		limitedBlocked.error == Vans::VansActionError::Budget,
 		"Action Host budget did not reject an excess active Action")) return false;
 	if (!limitedHost.Cancel(limitedFirst.action, Vans::VansActionCancelReason::System, error)) return false;
 	const Vans::VansActionResult limitedAfterRelease = limitedHost.Activate(limitedRequest);
@@ -1673,13 +2193,16 @@ bool TestGAFActionHostLifecycleContract()
 	if (!persistenceSource.Initialize(error) ||
 		!persistenceSource.Attributes().SetBase(energyId, 77.0)) return false;
 	Vans::VansActionGrantDesc persistentGrant;
-	persistentGrant.action = action->id;
+	persistentGrant.action = persistentDefinition->id;
 	persistentGrant.source = 1001;
-	persistentGrant.persistence = Vans::VansActionGrantPersistence::Persistent;
+	SetGrantExtension(persistentGrant, "Core.Grant.Lifetime",
+		Vans::VansSerializedValue::Object({
+			{ "policy", Vans::VansSerializedValue::String("Persistent") }
+		}));
 	const auto persistentSpec = persistenceSource.Grant(persistentGrant, error);
 	Vans::VansActionActivationRequest persistentActivation;
 	persistentActivation.spec = persistentSpec;
-	persistentActivation.context.instigator = { 10, 1 };
+	persistentActivation.context.SetEntity(Vans::VansActionContextSlots::Instigator, { 10, 1 });
 	const auto persistentAction = persistenceSource.Activate(persistentActivation);
 	if (!persistentAction || !persistenceSource.Cancel(
 		persistentAction.action, Vans::VansActionCancelReason::User, error)) return false;
@@ -1691,15 +2214,16 @@ bool TestGAFActionHostLifecycleContract()
 		!persistenceTarget.RestorePersistentState(persistentState, error))
 		return ExpectGAF(false, error.c_str());
 	const auto restoredGrants = persistenceTarget.GrantedActions();
-	if (!ExpectGAF(restoredGrants.size() == 1 &&
-		restoredGrants.front().persistence == Vans::VansActionGrantPersistence::Persistent &&
-		std::abs(persistenceTarget.Attributes().Base(energyId) - 77.0) < 0.0001 &&
-		persistenceTarget.IsCooldownActive(action->id),
-		"Action Host persistent Grant, Attribute, or cooldown did not round-trip")) return false;
-	auto incompatibleState = persistentState;
-	incompatibleState.version = 99;
-	return ExpectGAF(!persistenceTarget.RestorePersistentState(incompatibleState, error),
-		"Action Host accepted an incompatible persistence state version");
+	const auto persistentLifetime = restoredGrants.empty() ? nullptr : FindCompiledActionRecord(
+		restoredGrants.front().extensions, "Core.Grant.Lifetime");
+	if (!ExpectGAF(restoredGrants.size() == 1 && persistentLifetime &&
+		Vans::ReadSerializedStringField(persistentLifetime->inputs, "policy") == "Persistent",
+		"Action Host persistent Grant did not round-trip")) return false;
+	if (!ExpectGAF(std::abs(persistenceTarget.Attributes().Base(energyId) - 47.0) < 0.0001,
+		"Action Host persistent committed Attribute cost did not round-trip")) return false;
+	if (!ExpectGAF(persistenceTarget.IsCooldownActive(persistentDefinition->id),
+		"Action Host persistent cooldown did not round-trip")) return false;
+	return true;
 }
 
 bool TestGAFPackagingContract()
@@ -1807,23 +2331,34 @@ bool TestGAFPackagingContract()
 	Vans::VansSerializedValue action = configuration.templates.at("ActionDefinition");
 	if (!Vans::SetSerializedPointer(action, "/actionId",
 		Vans::VansSerializedValue::String("Gameplay.Contract.Root"), &error) ||
-		!Vans::SetSerializedPointer(action, "/execution/variables",
+		!Vans::SetSerializedPointer(action, "/variables",
 			Vans::VansSerializedValue::Array({
 				Vans::VansSerializedValue::Object({
 					{ "name", Vans::VansSerializedValue::String("TimelineValue") },
+					{ "type", Vans::VansSerializedValue::String("Core.Value.Float") },
 					{ "default", Vans::VansSerializedValue::Float(0.25) }
 				})
 			}), &error) ||
-		!Vans::SetSerializedPointer(action, "/execution/executor",
-		Vans::VansSerializedValue::String("Action.Executor.Graph"), &error) ||
-		!Vans::SetSerializedPointer(action, "/execution/graph",
+		!Vans::SetSerializedPointer(action, "/phases/execute/drivers/0/type",
+			Vans::VansSerializedValue::String("Core.Driver.Graph"), &error) ||
+		!Vans::SetSerializedPointer(action, "/phases/execute/drivers/0/inputs",
 			Vans::VansSerializedValue::Object({
-				{ "assetGuid", Vans::VansSerializedValue::String(graphRecord->guid.ToString()) }
+				{ "graph", Vans::VansSerializedValue::Object({
+					{ "assetGuid", Vans::VansSerializedValue::String(graphRecord->guid.ToString()) }
+				}) }
 			}), &error)) return ExpectGAF(false, error.c_str());
-	Vans::SetSerializedObjectField(action, "contractReference",
-		Vans::VansSerializedValue::Object({
-			{ "assetGuid", Vans::VansSerializedValue::String(effectRecord->guid.ToString()) }
-		}));
+	if (!Vans::SetSerializedPointer(action, "/phases/commit/operations",
+		Vans::VansSerializedValue::Array({
+			Vans::VansSerializedValue::Object({
+				{ "type", Vans::VansSerializedValue::String("Gameplay.Effects.Apply") },
+				{ "inputs", Vans::VansSerializedValue::Object({
+					{ "asset", Vans::VansSerializedValue::Object({
+						{ "assetGuid", Vans::VansSerializedValue::String(effectRecord->guid.ToString()) }
+					}) },
+					{ "removeOnEnd", Vans::VansSerializedValue::Bool(false) }
+				}) }
+			})
+		}), &error)) return ExpectGAF(false, error.c_str());
 	const std::filesystem::path actionPath = assetsRoot / "RootAction.vaction";
 	if (!Vans::VansGameplayAssetStorage::SaveSourceAtomic(actionPath, action, error))
 		return ExpectGAF(false, error.c_str());
@@ -1848,8 +2383,12 @@ bool TestGAFPackagingContract()
 			cooked.contentHash == record.contentHash,
 			"GAF packaged artifact could not be verified")) return false;
 	}
+	Vans::VansAssetObjectRepository sourceAssetObjects;
+	if (!BootstrapGameplayMemory(database.All(), sourceAssetObjects, error))
+		return ExpectGAF(false, error.c_str());
+	Vans::VansIOAudit::Reset();
 	Vans::VansGameplayAssetLibrary sourceLibrary;
-	if (!sourceLibrary.Load(database.All(), error) ||
+	if (!sourceLibrary.Load(database.All(), sourceAssetObjects, error) ||
 		!ExpectGAF(sourceLibrary.AssetCount() == 3 &&
 			sourceLibrary.ResolveAction(actionRecord->guid.ToString()) != nullptr &&
 			sourceLibrary.ResolveAction(actionRecord->guid.ToString())->executionGraph != nullptr,
@@ -1862,10 +2401,22 @@ bool TestGAFPackagingContract()
 	runtimeSettings.performance.maximumEffectsPerHost = 5;
 	Vans::VansGameplayRuntime gameplayRuntime;
 	Vans::VansGameplayRuntimeDependencies runtimeDependencies;
-	const auto runtimeFakeServices = Vans::VansCreateFakeStandardActionServices();
-	for (const auto& fake : runtimeFakeServices) runtimeDependencies.services.push_back(fake);
-	if (!gameplayRuntime.Initialize(database.All(), runtimeSettings, runtimeDependencies, error))
+	runtimeDependencies.contributors.push_back(
+		Vans::VansMakeGameplayPrimitivesGAFContributor());
+	const auto runtimeFakeServices = CreateTestFakeActionServices();
+	runtimeDependencies.contributors.push_back(MakeTestRuntimeContributor(
+		"Test.SourceRuntime", runtimeFakeServices));
+	if (!gameplayRuntime.Initialize(database.All(), sourceAssetObjects,
+		runtimeSettings, runtimeDependencies, error))
 		return ExpectGAF(false, error.c_str());
+	const auto sourceRuntimeIO = Vans::VansIOAudit::Snapshot();
+	if (!ExpectGAF(std::none_of(sourceRuntimeIO.begin(), sourceRuntimeIO.end(),
+		[](const Vans::VansIOEvent& event)
+		{
+			return event.operation == Vans::VansIOOperation::Read ||
+				event.operation == Vans::VansIOOperation::ReadRange;
+		}), "GAF source library/runtime read asset data from disk after memory bootstrap"))
+		return false;
 	if (!ExpectGAF(gameplayRuntime.Settings().performance.maximumActiveActionsPerHost == 2 &&
 		gameplayRuntime.Settings().performance.maximumTasksPerAction == 3 &&
 		gameplayRuntime.Settings().performance.maximumGraphTransitionsPerTick == 4 &&
@@ -1894,24 +2445,27 @@ bool TestGAFPackagingContract()
 		"RuntimeWorld did not retain the configured ActionHost component")) return false;
 	Vans::VansActionActivationRequest activation;
 	activation.spec = runtimeHost->GrantedActions().front().handle;
-	activation.context.owner = owner;
-	activation.context.instigator = owner;
-	activation.context.primaryTarget = owner;
+	activation.context.SetEntity(Vans::VansActionContextSlots::Owner, owner);
+	activation.context.SetEntity(Vans::VansActionContextSlots::Instigator, owner);
+	activation.context.SetEntity(Vans::VansActionContextSlots::PrimaryTarget, owner);
 	const Vans::VansActionResult activationResult = runtimeHost->Activate(activation);
 	if (!ExpectGAF(activationResult && runtimeHost->Query(activationResult.action).has_value(),
 		"Scene ActionHost could not activate its configured Action")) return false;
 	Vans::VansActionSystem actionSystem(gameplayRuntime);
 	const Vans::VansActionHostRef actionHostRef{ owner };
 	Vans::VansActionContext apiContext;
-	apiContext.owner = owner;
-	apiContext.instigator = owner;
+	apiContext.SetEntity(Vans::VansActionContextSlots::Owner, owner);
+	apiContext.SetEntity(Vans::VansActionContextSlots::Instigator, owner);
 	const auto apiReport = actionSystem.CanActivate(actionHostRef,
-		runtimeHost->GrantedActions().front().handle, apiContext, true, false);
+		runtimeHost->GrantedActions().front().handle, apiContext);
 	const auto apiViews = actionSystem.QueryActive({ actionHostRef });
 	const auto apiInspection = actionSystem.Inspect({ actionHostRef, activationResult.action });
 	if (!ExpectGAF(apiReport.allowed && apiViews.size() == 1 && apiInspection &&
 		apiInspection->instance.handle == activationResult.action,
 		"Public ActionSystem API did not validate, query, and inspect the live Host")) return false;
+	const Vans::VansActionResult isolatedAction = runtimeHost->Activate(activation);
+	if (!ExpectGAF(isolatedAction && isolatedAction.action != activationResult.action,
+		"GAF Timeline isolation test could not create two concurrent instances")) return false;
 	failureStage = "compile and execute gameplay Timeline";
 
 	const std::array<const char*, 6> gafTimelineTracks{
@@ -1966,7 +2520,8 @@ bool TestGAFPackagingContract()
 		Vans::VansSerializedValue::Object({
 			{ "action", Vans::VansSerializedValue::String("Gameplay.Contract.Root") },
 			{ "variable", Vans::VansSerializedValue::String("TimelineValue") },
-			{ "valueType", Vans::VansSerializedValue::String("Float") }
+			{ "valueType", Vans::VansSerializedValue::String("Float") },
+			{ "actionScope", Vans::VansSerializedValue::String("HostQuery") }
 		}), { Vans::VansTimelineChannel{
 			"gaf-parameter-channel", "value", Vans::VansTimelineValueType::Float,
 			Vans::VansTimelineExtrapolation::None, Vans::VansTimelineExtrapolation::None,
@@ -1976,19 +2531,22 @@ bool TestGAFPackagingContract()
 		Vans::VansSerializedValue::Object({
 			{ "action", Vans::VansSerializedValue::String("Gameplay.Contract.Root") },
 			{ "window", Vans::VansSerializedValue::String("Attack") },
-			{ "payload", emptyPayload() }
+			{ "payload", emptyPayload() },
+			{ "actionScope", Vans::VansSerializedValue::String("HostQuery") }
 		}));
 	addTimelineTrack("Action.Event", 2, 1,
 		Vans::VansSerializedValue::Object({
 			{ "action", Vans::VansSerializedValue::String("Gameplay.Contract.Root") },
 			{ "event", Vans::VansSerializedValue::String("Timeline.Contract.Event") },
-			{ "payload", emptyPayload() }
+			{ "payload", emptyPayload() },
+			{ "actionScope", Vans::VansSerializedValue::String("HostQuery") }
 		}));
 	addTimelineTrack("Action.Marker", 2, 1,
 		Vans::VansSerializedValue::Object({
 			{ "action", Vans::VansSerializedValue::String("Gameplay.Contract.Root") },
 			{ "marker", Vans::VansSerializedValue::String("Contract") },
-			{ "payload", emptyPayload() }
+			{ "payload", emptyPayload() },
+			{ "actionScope", Vans::VansSerializedValue::String("HostQuery") }
 		}));
 	addTimelineTrack("Action.SubAction", 2, 1,
 		Vans::VansSerializedValue::Object({
@@ -2003,7 +2561,8 @@ bool TestGAFPackagingContract()
 			{ "mode", Vans::VansSerializedValue::String("Execute") },
 			{ "scope", Vans::VansSerializedValue::String("Owner") },
 			{ "payload", emptyPayload() },
-			{ "intensity", Vans::VansSerializedValue::Float(1.0) }
+			{ "intensity", Vans::VansSerializedValue::Float(1.0) },
+			{ "actionScope", Vans::VansSerializedValue::String("HostQuery") }
 		}));
 
 	Vans::VansTimelineCompileOptions timelineOptions;
@@ -2035,6 +2594,8 @@ bool TestGAFPackagingContract()
 		desc.kind = kind;
 		desc.timeline = compiledTimeline.timeline;
 		desc.owner = owner;
+		if (kind == Vans::VansTimelineSessionKind::Action)
+			desc.scope = Vans::VansMakeExactActionTimelineScope(activationResult.action);
 		desc.clockType = std::string(Vans::TimelineClockNames::Manual);
 		desc.runtimeBindings.push_back({ timelineBinding.stableId,
 			Vans::VansMakeStableId<Vans::VansRuntimeObjectTypeTag>("Gameplay.ActionHostOwner"),
@@ -2052,11 +2613,15 @@ bool TestGAFPackagingContract()
 	Vans::VansSerializedValue timelineValue;
 	const Vans::VansActionFieldId timelineVariable =
 		Vans::VansMakeStableId<Vans::VansActionFieldIdTag>("TimelineValue");
+	Vans::VansSerializedValue isolatedTimelineValue;
 	if (!ExpectGAF(actionTimeline &&
 		runtimeHost->ReadVariable(activationResult.action, timelineVariable, timelineValue, error) &&
+		runtimeHost->ReadVariable(isolatedAction.action, timelineVariable, isolatedTimelineValue, error) &&
 		timelineValue.kind == Vans::VansSerializedValue::Kind::Float &&
-		std::abs(timelineValue.floatValue - 0.75) < 0.0001,
-		"Action Timeline did not apply its sampled parameter")) return false;
+		std::abs(timelineValue.floatValue - 0.75) < 0.0001 &&
+		isolatedTimelineValue.kind == Vans::VansSerializedValue::Kind::Float &&
+		std::abs(isolatedTimelineValue.floatValue - 0.25) < 0.0001,
+		"ExactAction Timeline scope modified the wrong concurrent Action")) return false;
 	const auto actionTimelineState = timelineSessions.Query(actionTimeline);
 	if (!ExpectGAF(actionTimelineState &&
 		actionTimelineState->state != Vans::VansTimelinePlayerState::Error,
@@ -2066,6 +2631,16 @@ bool TestGAFPackagingContract()
 		!ExpectGAF(timelineValue.kind == Vans::VansSerializedValue::Kind::Float &&
 			std::abs(timelineValue.floatValue - 0.25) < 0.0001,
 			"Action Timeline parameter did not restore on session release")) return false;
+	const Vans::VansTimelineSessionHandle hostQueryTimeline =
+		runTimelineSession(Vans::VansTimelineSessionKind::Component);
+	if (!ExpectGAF(hostQueryTimeline &&
+		runtimeHost->ReadVariable(activationResult.action, timelineVariable, timelineValue, error) &&
+		runtimeHost->ReadVariable(isolatedAction.action, timelineVariable, isolatedTimelineValue, error) &&
+		std::abs(timelineValue.floatValue - 0.75) < 0.0001 &&
+		std::abs(isolatedTimelineValue.floatValue - 0.75) < 0.0001,
+		"Explicit HostQuery Timeline scope did not preserve broadcast behavior")) return false;
+	if (!timelineSessions.Release(hostQueryTimeline))
+		return ExpectGAF(false, "HostQuery Timeline session could not be released");
 	const Vans::VansTimelineSessionHandle previewTimeline =
 		runTimelineSession(Vans::VansTimelineSessionKind::Preview);
 	if (!ExpectGAF(previewTimeline &&
@@ -2105,11 +2680,23 @@ bool TestGAFPackagingContract()
 		record.artifactFormat = Vans::VansAssetArtifactFormat::Cooked;
 		packagedRecords.push_back(std::move(record));
 	}
+	Vans::VansAssetObjectRepository cookedAssetObjects;
+	if (!BootstrapGameplayMemory(packagedRecords, cookedAssetObjects, error))
+		return ExpectGAF(false, error.c_str());
+	Vans::VansIOAudit::Reset();
 	Vans::VansGameplayAssetLibrary cookedLibrary;
-	if (!cookedLibrary.Load(packagedRecords, error) ||
+	if (!cookedLibrary.Load(packagedRecords, cookedAssetObjects, error) ||
 		!ExpectGAF(cookedLibrary.AssetCount() == sourceLibrary.AssetCount() &&
 			cookedLibrary.ResolveAction(actionRecord->guid.ToString()) != nullptr,
 			"GAF cooked asset library does not match source-mode resolution")) return false;
+	const auto cookedRuntimeIO = Vans::VansIOAudit::Snapshot();
+	if (!ExpectGAF(std::none_of(cookedRuntimeIO.begin(), cookedRuntimeIO.end(),
+		[](const Vans::VansIOEvent& event)
+		{
+			return event.operation == Vans::VansIOOperation::Read ||
+				event.operation == Vans::VansIOOperation::ReadRange;
+		}), "GAF cooked library read packaged data from disk after memory bootstrap"))
+		return false;
 	gameplayRuntime.Shutdown();
 	world.Clear();
 	failureStage = "reject editor-only assets during cooking";
@@ -2131,208 +2718,6 @@ bool TestGAFPackagingContract()
 	return completed;
 }
 
-bool TestGAFNetworkContract()
-{
-	Vans::VansActionActivationNetworkMessage activation;
-	activation.action = Vans::VansMakeStableId<Vans::VansActionIdTag>("Gameplay.Network.Contract");
-	activation.context.owner = { 4, 2 };
-	activation.context.instigator = { 5, 3 };
-	activation.context.source = { 6, 4 };
-	activation.context.primaryTarget = { 7, 5 };
-	activation.context.predictionKey = { 17, 99 };
-	activation.context.randomSeed = UINT64_MAX - 3;
-	activation.context.payload = Vans::VansSerializedValue::Object({
-		{ "damage", Vans::VansSerializedValue::Float(42.5) },
-		{ "tags", Vans::VansSerializedValue::Array({
-			Vans::VansSerializedValue::String("Damage.Fire") }) }
-	});
-	activation.hasTargetData = true;
-	activation.targetData.values.push_back(Vans::VansEntityHandle{ 8, 1 });
-	activation.targetData.values.push_back(Vans::VansTargetLocation{ { 1.0, 2.0, 3.0 } });
-	activation.targetData.values.push_back(Vans::VansTargetDirection{ { 0.0, 0.0, 1.0 } });
-	activation.targetData.values.push_back(Vans::VansTargetTransform{
-		{ 4.0, 5.0, 6.0 }, { 0.0, 0.0, 0.0, 1.0 }, { 1.0, 1.0, 1.0 } });
-	activation.targetData.values.push_back(Vans::VansTargetArea{
-		{ 10.0, 20.0, 30.0 }, 12.0 });
-	activation.targetData.values.push_back(Vans::VansTargetShape{
-		Vans::VansTargetShapeKind::Capsule,
-		{ { 2.0, 3.0, 4.0 }, { 0.0, 0.0, 0.0, 1.0 }, { 1.0, 1.0, 1.0 } },
-		{ 0.5, 1.5, 0.5 }, 0.5, 1.5 });
-	activation.targetData.values.push_back(Vans::VansTargetRay{
-		{ 1.0, 2.0, 3.0 }, { 0.0, 0.0, 1.0 }, 100.0 });
-	activation.targetData.values.push_back(Vans::VansTargetHitResult{
-		{ 9, 1 }, { 3.0, 2.0, 1.0 }, { 0.0, 1.0, 0.0 }, 12.0,
-		Vans::VansMakeStableId<Vans::VansGameplayTagIdTag>("Surface.Metal") });
-	activation.targetData.values.push_back(Vans::VansDeferredTargetQuery{
-		Vans::VansMakeStableId<Vans::VansActionServiceIdTag>("Service.PhysicsQuery"),
-		Vans::VansSerializedValue::Object({
-			{ "shape", Vans::VansSerializedValue::String("Capsule") },
-			{ "radius", Vans::VansSerializedValue::Float(0.5) } }) });
-	activation.definitionContentHash = UINT64_MAX - 7;
-	Vans::VansActionNetworkPacket packet;
-	packet.header.type = Vans::VansActionNetworkMessageType::ActivationRequest;
-	packet.header.connection = 17;
-	packet.header.sequence = 1;
-	packet.header.dictionaryVersion = 7;
-	packet.header.contentManifestHash = 9;
-	packet.payload = Vans::VansEncodeActionActivationMessage(activation);
-	std::vector<std::uint8_t> bytes;
-	const auto encoded = Vans::VansActionNetworkCodec::Encode(packet, bytes);
-	if (!ExpectGAF(bytes.size() > 4 && bytes[0] == 0x47 && bytes[1] == 0x41 &&
-		bytes[2] == 0x46 && bytes[3] == 0x31,
-		"Gameplay Action network packet does not use the canonical little-endian wire format"))
-		return false;
-	Vans::VansActionNetworkPacket decodedPacket;
-	const auto decoded = Vans::VansActionNetworkCodec::Decode(bytes, decodedPacket);
-	Vans::VansActionActivationNetworkMessage decodedActivation;
-	std::string error;
-	Vans::VansTargetDataNetworkPolicy targetPolicy;
-	targetPolicy.entityAllowed = [](Vans::VansEntityHandle entity) { return entity.index < 100; };
-	targetPolicy.deferredServiceAllowed = [](Vans::VansActionServiceId service)
-	{
-		return service == Vans::VansMakeStableId<Vans::VansActionServiceIdTag>(
-			"Service.PhysicsQuery");
-	};
-	if (!ExpectGAF(encoded && decoded &&
-		Vans::VansDecodeActionActivationMessage(
-			decodedPacket.payload, decodedActivation, error, targetPolicy) &&
-		decodedActivation.action == activation.action &&
-		decodedActivation.context.owner == activation.context.owner &&
-		decodedActivation.context.randomSeed == activation.context.randomSeed &&
-		decodedActivation.definitionContentHash == activation.definitionContentHash &&
-		decodedActivation.hasTargetData && decodedActivation.targetData.values.size() == 9 &&
-		std::holds_alternative<Vans::VansEntityHandle>(decodedActivation.targetData.values[0]) &&
-		std::holds_alternative<Vans::VansTargetLocation>(decodedActivation.targetData.values[1]) &&
-		std::holds_alternative<Vans::VansTargetDirection>(decodedActivation.targetData.values[2]) &&
-		std::holds_alternative<Vans::VansTargetTransform>(decodedActivation.targetData.values[3]) &&
-		std::holds_alternative<Vans::VansTargetArea>(decodedActivation.targetData.values[4]) &&
-		std::holds_alternative<Vans::VansTargetShape>(decodedActivation.targetData.values[5]) &&
-		std::holds_alternative<Vans::VansTargetRay>(decodedActivation.targetData.values[6]) &&
-		std::holds_alternative<Vans::VansTargetHitResult>(decodedActivation.targetData.values[7]) &&
-		std::holds_alternative<Vans::VansDeferredTargetQuery>(decodedActivation.targetData.values[8]),
-		"Gameplay Action network packet did not round-trip without identity loss")) return false;
-	Vans::VansActionActivationNetworkMessage rejectedTargetData;
-	Vans::VansTargetDataNetworkPolicy restrictiveTargetPolicy = targetPolicy;
-	restrictiveTargetPolicy.maximumTargets = 8;
-	if (!ExpectGAF(!Vans::VansDecodeActionActivationMessage(
-		decodedPacket.payload, rejectedTargetData, error, restrictiveTargetPolicy),
-		"Gameplay Action network accepted TargetData above the count budget")) return false;
-	restrictiveTargetPolicy = targetPolicy;
-	restrictiveTargetPolicy.maximumDistance = 50.0;
-	if (!ExpectGAF(!Vans::VansDecodeActionActivationMessage(
-		decodedPacket.payload, rejectedTargetData, error, restrictiveTargetPolicy),
-		"Gameplay Action network accepted TargetData above the distance budget")) return false;
-	restrictiveTargetPolicy = targetPolicy;
-	restrictiveTargetPolicy.entityAllowed = [](Vans::VansEntityHandle entity)
-		{ return entity.index != 9; };
-	if (!ExpectGAF(!Vans::VansDecodeActionActivationMessage(
-		decodedPacket.payload, rejectedTargetData, error, restrictiveTargetPolicy),
-		"Gameplay Action network accepted unauthorized TargetData entities")) return false;
-	restrictiveTargetPolicy = targetPolicy;
-	restrictiveTargetPolicy.maximumDeferredDescriptorBytes = 4;
-	if (!ExpectGAF(!Vans::VansDecodeActionActivationMessage(
-		decodedPacket.payload, rejectedTargetData, error, restrictiveTargetPolicy),
-		"Gameplay Action network accepted an oversized Deferred TargetData descriptor")) return false;
-
-	Vans::VansActionNetworkPeerPolicy peerPolicy;
-	peerPolicy.dictionaryVersion = 7;
-	peerPolicy.contentManifestHash = 9;
-	peerPolicy.maximumPacketsPerSecond = 1000.0;
-	peerPolicy.burstPackets = 64.0;
-	Vans::VansActionNetworkGate gate(peerPolicy);
-	if (!ExpectGAF(static_cast<bool>(gate.Accept(packet, 0.0)),
-		"Gameplay Action network gate rejected a valid packet")) return false;
-	if (!ExpectGAF(gate.Accept(packet, 0.001).error == Vans::VansActionNetworkError::Duplicate,
-		"Gameplay Action network replay window accepted a duplicate")) return false;
-	packet.header.sequence = 3;
-	if (!gate.Accept(packet, 0.002)) return false;
-	packet.header.sequence = 2;
-	if (!ExpectGAF(static_cast<bool>(gate.Accept(packet, 0.003)),
-		"Gameplay Action network replay window rejected valid reordering")) return false;
-	packet.header.sequence = 4;
-	packet.header.contentManifestHash = 10;
-	if (!ExpectGAF(gate.Accept(packet, 0.004).error == Vans::VansActionNetworkError::ContentMismatch,
-		"Gameplay Action network gate accepted a content mismatch")) return false;
-
-	Vans::VansActionLoopbackConfig loopbackConfig;
-	loopbackConfig.latencyTicks = 2;
-	loopbackConfig.dropEvery = 3;
-	loopbackConfig.duplicateEvery = 2;
-	Vans::VansActionLoopbackTransport loopback(loopbackConfig);
-	if (!loopback.Send(17, 23, bytes, error)) return ExpectGAF(false, error.c_str());
-	loopback.Advance();
-	std::vector<std::uint8_t> delivered;
-	if (!ExpectGAF(!loopback.Receive(23, delivered),
-		"Loopback transport ignored configured latency")) return false;
-	loopback.Advance();
-	if (!ExpectGAF(loopback.Receive(23, delivered) && delivered == bytes,
-		"Loopback transport did not deliver the packet")) return false;
-	if (!loopback.Send(17, 23, bytes, error)) return false;
-	loopback.Advance(2);
-	const bool duplicateFirst = loopback.Receive(23, delivered);
-	const bool duplicateSecond = loopback.Receive(23, delivered);
-	if (!ExpectGAF(duplicateFirst && duplicateSecond,
-		"Loopback transport did not reproduce duplicate delivery")) return false;
-	if (!loopback.Send(17, 23, bytes, error)) return false;
-	loopback.Advance(2);
-	if (!ExpectGAF(!loopback.Receive(23, delivered),
-		"Loopback transport did not reproduce packet loss")) return false;
-
-	for (std::size_t size = 0; size < 48 && size < bytes.size(); ++size)
-	{
-		std::vector<std::uint8_t> truncated(bytes.begin(), bytes.begin() + size);
-		Vans::VansActionNetworkPacket ignored;
-		if (!ExpectGAF(!Vans::VansActionNetworkCodec::Decode(truncated, ignored),
-			"Gameplay Action network decoder accepted a truncated packet")) return false;
-	}
-	std::vector<std::uint8_t> corrupted = bytes;
-	corrupted.back() ^= 0x5au;
-	Vans::VansActionNetworkPacket ignored;
-	if (!ExpectGAF(Vans::VansActionNetworkCodec::Decode(corrupted, ignored).error ==
-		Vans::VansActionNetworkError::HashMismatch,
-		"Gameplay Action network decoder accepted corrupted payload bytes")) return false;
-	std::uint32_t fuzzState = 0x51f15e77u;
-	for (std::size_t sample = 0; sample < 512; ++sample)
-	{
-		fuzzState = fuzzState * 1664525u + 1013904223u;
-		std::vector<std::uint8_t> fuzzBytes(fuzzState % 257u);
-		for (std::uint8_t& byte : fuzzBytes)
-		{
-			fuzzState = fuzzState * 1664525u + 1013904223u;
-			byte = static_cast<std::uint8_t>(fuzzState >> 24u);
-		}
-		Vans::VansActionNetworkPacket fuzzPacket;
-		const Vans::VansActionNetworkResult fuzzDecoded =
-			Vans::VansActionNetworkCodec::Decode(fuzzBytes, fuzzPacket);
-		if (fuzzDecoded)
-		{
-			std::vector<std::uint8_t> canonical;
-			if (!Vans::VansActionNetworkCodec::Encode(fuzzPacket, canonical))
-				return ExpectGAF(false,
-					"Gameplay Action network fuzz decode produced a non-encodable packet");
-		}
-	}
-	for (std::uint32_t iteration = 0; iteration < 1000; ++iteration)
-	{
-		packet.header.sequence = iteration + 100;
-		packet.payload = Vans::VansEncodeActionActivationMessage(activation);
-		std::vector<std::uint8_t> repeated;
-		Vans::VansActionNetworkPacket repeatedPacket;
-		if (!Vans::VansActionNetworkCodec::Encode(packet, repeated) ||
-			!Vans::VansActionNetworkCodec::Decode(repeated, repeatedPacket))
-			return ExpectGAF(false,
-				"Gameplay Action network repeated codec stability contract failed");
-	}
-	Vans::VansActionNetworkLimits strictLimits;
-	strictLimits.maximumDepth = 1;
-	packet.payload = Vans::VansSerializedValue::Array({
-		Vans::VansSerializedValue::Array({
-			Vans::VansSerializedValue::Array({ Vans::VansSerializedValue::Int(1) }) }) });
-	return ExpectGAF(Vans::VansActionNetworkCodec::Encode(packet, delivered, strictLimits).error ==
-		Vans::VansActionNetworkError::BudgetExceeded,
-		"Gameplay Action network encoder ignored recursive payload budgets");
-}
-
 bool TestGAFDebugAndReplayContract()
 {
 	using namespace Vans;
@@ -2345,11 +2730,12 @@ bool TestGAFDebugAndReplayContract()
 	previousAction.action = actionId;
 	previousAction.sourceSpec = { { 2, 1 } };
 	previousAction.state = VansActionInstanceState::Running;
-	previousAction.context.owner = owner;
+	previousAction.context.SetEntity(VansActionContextSlots::Owner, owner);
 	previousAction.context.randomSeed = 7;
-	previousAction.context.payload = VansSerializedValue::Object({
+	previousAction.context.SetSerialized(VansActionContextSlots::Payload,
+		VansSerializedValue::Object({
 		{ "mode", VansSerializedValue::String("debug") }
-	});
+	}));
 	previousAction.hasTargetData = true;
 	previousAction.targetData.values.push_back(VansTargetLocation{ { 4.0, 5.0, 6.0 } });
 	previousAction.targetData.values.push_back(
@@ -2360,8 +2746,7 @@ bool TestGAFDebugAndReplayContract()
 		VansMakeStableId<VansActionGraphNodeTypeIdTag>("Action.Graph.Wait"),
 		"WaitForMarker", VansActionTaskState::Waiting, 0.1, 1.0 });
 	previousAction.taskCount = previousAction.tasks.size();
-	previousAction.resources.push_back({ { { 3, 1 } }, "Cue", "ChargeLoop", {},
-		VansActionPredictionResourcePolicy::UndoRedo, false });
+	previousAction.resources.push_back({ { { 3, 1 } }, "Cue", "ChargeLoop", {} });
 	previousAction.resourceCount = previousAction.resources.size();
 	previousAction.executor.executor = "ExecutionGraph";
 	previousAction.executor.activeNodes = { "Acquire" };
@@ -2372,17 +2757,24 @@ bool TestGAFDebugAndReplayContract()
 	previousHost.tags.push_back({ VansMakeStableId<VansGameplayTagIdTag>("State.Ready"), 1 });
 	previousHost.attributes.push_back({ health, 100.0, 100.0 });
 	previousHost.effects.push_back({ { { 4, 1 } },
-		VansMakeStableId<VansEffectIdTag>("Effect.Debug"), 9, 2.0, 0.5, 2, { 1, 3 } });
+		VansMakeStableId<VansEffectIdTag>("Effect.Debug"), 9, 2.0, 0.5, 2, 1 });
 	VansGrantedActionSpecSnapshot grant;
 	grant.handle = previousAction.sourceSpec;
 	grant.action = actionId;
-	grant.definitionVersion = 4;
-	grant.level = 2.0;
-	grant.inputBinding = "Primary";
-	grant.dynamicTags.push_back(VansMakeStableId<VansGameplayTagIdTag>("Grant.Debug"));
-	grant.charges = 3;
+	grant.extensions = {
+		{ "Core.Level", VansSerializedValue::Object({
+			{ "value", VansSerializedValue::Float(2.0) } }) },
+		{ "Gameplay.Input.Binding", VansSerializedValue::Object({
+			{ "binding", VansSerializedValue::String("Primary") } }) },
+		{ "Gameplay.Tags.Dynamic", VansSerializedValue::Object({
+			{ "tags", VansSerializedValue::Array({
+				VansSerializedValue::String("Grant.Debug") }) } }) },
+		{ "Gameplay.Charges", VansSerializedValue::Object({
+			{ "count", VansSerializedValue::Int(3) } }) },
+		{ "Core.Grant.Lifetime", VansSerializedValue::Object({
+			{ "policy", VansSerializedValue::String("Persistent") } }) }
+	};
 	grant.source = 91;
-	grant.persistence = VansActionGrantPersistence::Persistent;
 	previousHost.grants.push_back(grant);
 	previousHost.actions.push_back(previousAction);
 	VansGameplayDebugSnapshot previous;
@@ -2398,8 +2790,8 @@ bool TestGAFDebugAndReplayContract()
 	currentHost.attributes.front().currentValue = 75.0;
 	auto& currentAction = currentHost.actions.front();
 	currentAction.state = VansActionInstanceState::Waiting;
-	currentAction.error = VansActionError::ExecutionFailed;
-	currentAction.prediction = { 8, 12 };
+	currentAction.error = VansActionError::Execution;
+	currentAction.correlationId = 8;
 	currentAction.executor.activeNodes = { "ResolveHit" };
 	currentAction.recentEvents.push_back({ 1,
 		VansMakeStableId<VansActionFieldIdTag>("Gameplay.Hit"), "Gameplay.Hit" });
@@ -2427,12 +2819,8 @@ bool TestGAFDebugAndReplayContract()
 	add(window);
 	VansActionBreakpoint errorBreakpoint;
 	errorBreakpoint.kind = VansActionBreakpointKind::Error;
-	errorBreakpoint.error = VansActionError::ExecutionFailed;
+	errorBreakpoint.error = VansActionError::Execution;
 	add(errorBreakpoint);
-	VansActionBreakpoint prediction;
-	prediction.kind = VansActionBreakpointKind::Prediction;
-	prediction.prediction = { 8, 12 };
-	add(prediction);
 	VansActionBreakpoint attribute;
 	attribute.kind = VansActionBreakpointKind::Attribute;
 	attribute.attribute = health;
@@ -2440,8 +2828,8 @@ bool TestGAFDebugAndReplayContract()
 	attribute.value = 90.0;
 	add(attribute);
 	const auto hits = breakpoints.Evaluate(previous, current);
-	if (!ExpectGAF(hits.size() == 7,
-		"GAF debugger did not edge-trigger state/node/event/window/error/prediction/attribute breakpoints"))
+	if (!ExpectGAF(hits.size() == 6,
+		"GAF debugger did not edge-trigger state/node/event/window/error/attribute breakpoints"))
 		return false;
 	if (!ExpectGAF(breakpoints.Evaluate(current, current).empty(),
 		"GAF debugger repeated edge-triggered breakpoints without a state change")) return false;
@@ -2512,6 +2900,20 @@ bool TestGAFAssetSchemaAndCookContract()
 	const Vans::VansGameplayAssetSchemaRegistry& schemas =
 		Vans::VansGameplayAssetSchemaRegistry::BuiltIns();
 	if (!ExpectGAF(schemas.IsSealed(), "内置 GAF Schema Registry 未封存")) return false;
+	std::string compilerError;
+	Vans::VansGameplayAssetCompilerRegistry coreCompilers;
+	if (!Vans::VansRegisterCoreGameplayAssetCompilers(coreCompilers, compilerError))
+		return ExpectGAF(false, compilerError.c_str());
+	if (!ExpectGAF(!Vans::VansRegisterCoreGameplayAssetCompilers(
+		coreCompilers, compilerError),
+		"GAF asset Compiler registry accepted duplicate asset types")) return false;
+	if (!coreCompilers.Seal(compilerError)) return ExpectGAF(false, compilerError.c_str());
+	const Vans::VansGameplayCookResult cameraCook = Vans::VansGameplayAssetStorage::Cook(
+		Vans::VansAssetType::CameraRigProfile,
+		schemas.CreateDefault(Vans::VansAssetType::CameraRigProfile));
+	if (!ExpectGAF(cameraCook &&
+		!Vans::VansGameplayAssetCompiler::Compile(cameraCook.asset, coreCompilers),
+		"GAF asset compilation did not reject a missing Camera contributor")) return false;
 	for (const AssetCase& assetCase : cases)
 	{
 		const std::filesystem::path path(std::string("asset") + assetCase.extension);
@@ -2535,8 +2937,8 @@ bool TestGAFAssetSchemaAndCookContract()
 	if (!ExpectGAF(actionTemplate != configuration.templates.end() &&
 		configuration.templates.size() == 12 &&
 		configuration.allowlist.nodeTypes.count("Action.Graph.Complete") == 1 &&
-		configuration.allowlist.handlers.size() == 5 &&
-		configuration.allowlist.handlers.count("Targeting.Filter.TagQuery") == 0 &&
+		configuration.allowlist.modules.count("Core") == 1 &&
+		configuration.allowlist.capabilities.count("Targeting.Filter.TagQuery") == 0 &&
 		configuration.settings.performance.maximumGraphTransitionsPerTick == 1024,
 		"GAF 项目配置没有完整加载")) return false;
 	Vans::VansGameplayDiagnostics policyDiagnostics = {
@@ -2581,7 +2983,7 @@ bool TestGAFAssetSchemaAndCookContract()
 		return ExpectGAF(false, error.c_str());
 	std::filesystem::create_directories(templateProject / "GAFTemplates");
 	Vans::VansSerializedValue externalActionTemplate = actionTemplate->second;
-	if (!Vans::SetSerializedPointer(externalActionTemplate, "/displayName",
+	if (!Vans::SetSerializedPointer(externalActionTemplate, "/metadata/displayName",
 		Vans::VansSerializedValue::String("External Action Template"), &error) ||
 		!Vans::VansGameplayAssetStorage::SaveSourceAtomic(
 			templateProject / "GAFTemplates/Action.vaction",
@@ -2590,8 +2992,10 @@ bool TestGAFAssetSchemaAndCookContract()
 	Vans::VansGAFProjectConfiguration loadedExternalTemplates;
 	if (!Vans::VansGAFProjectConfiguration::LoadForProject(templateProject, sourceRoot,
 		loadedExternalTemplates, error)) return ExpectGAF(false, error.c_str());
-	if (!ExpectGAF(Vans::ReadSerializedStringField(
-		loadedExternalTemplates.templates.at("ActionDefinition"), "displayName") ==
+	const Vans::VansSerializedValue* externalMetadata = Vans::FindSerializedPointer(
+		loadedExternalTemplates.templates.at("ActionDefinition"), "/metadata");
+	if (!ExpectGAF(externalMetadata && Vans::ReadSerializedStringField(
+		*externalMetadata, "displayName") ==
 		"External Action Template",
 		"GAF templateDirectory did not override the project Action template")) return false;
 
@@ -2626,12 +3030,35 @@ bool TestGAFAssetSchemaAndCookContract()
 		return ExpectGAF(false, "Camera GAF contract asset scan failed");
 	const auto rigRecord = cameraDatabase.Find(rigPath);
 	const auto shakeRecord = cameraDatabase.Find(shakePath);
+	Vans::VansAssetObjectRepository cameraAssetObjects;
+	if (!BootstrapGameplayMemory(cameraDatabase.All(), cameraAssetObjects, error))
+		return ExpectGAF(false, error.c_str());
 	Vans::VansGameplayAssetLibrary cameraAssets;
-	if (!rigRecord || !shakeRecord || !cameraAssets.Load(cameraDatabase.All(), error) ||
-		!ExpectGAF(cameraAssets.CameraRigs().size() == 1 &&
-			cameraAssets.CameraShakes().size() == 1 &&
-			cameraAssets.ResolveCameraRig(rigRecord->guid.ToString()) &&
-			cameraAssets.ResolveCameraShake(shakeRecord->guid.ToString()),
+	Vans::VansGAFTypeRegistry cameraTypes;
+	Vans::VansGAFSchemaRegistry cameraSchemas;
+	Vans::VansGameplayAssetCompilerRegistry cameraCompilers;
+	if (!Vans::VansRegisterCoreGAFTypes(cameraTypes, error) ||
+		!Vans::VansRegisterGameplayPrimitiveGAFTypes(cameraTypes, error) ||
+		!Vans::VansRegisterTimelineGAFTypes(cameraTypes, error) ||
+		!cameraTypes.Seal(error)) return ExpectGAF(false, error.c_str());
+	cameraSchemas.BindTypes(cameraTypes);
+	if (!Vans::VansRegisterCoreGAFSchemas(cameraSchemas, error) ||
+		!Vans::VansRegisterGameplayPrimitiveGAFSchemas(cameraSchemas, error) ||
+		!Vans::VansRegisterTimelineGAFSchemas(cameraSchemas, error) ||
+		!cameraSchemas.Seal(error) ||
+		!Vans::VansRegisterDefaultGameplayAssetCompilers(cameraCompilers, error) ||
+		!cameraCompilers.Seal(error)) return ExpectGAF(false, error.c_str());
+	if (!rigRecord || !shakeRecord ||
+		!cameraAssets.Load(cameraDatabase.All(), cameraAssetObjects, {},
+			cameraSchemas, cameraCompilers, error) ||
+		!ExpectGAF(cameraAssets.ExtensionAssets(
+				Vans::VansCameraRigGameplayAssetType).size() == 1 &&
+			cameraAssets.ExtensionAssets(
+				Vans::VansCameraShakeGameplayAssetType).size() == 1 &&
+			cameraAssets.ResolveExtensionAssetAs<Vans::VansCameraRigDefinition>(
+				rigRecord->guid.ToString(), Vans::VansCameraRigGameplayAssetType) &&
+			cameraAssets.ResolveExtensionAssetAs<Vans::VansCameraShakeDefinition>(
+				shakeRecord->guid.ToString(), Vans::VansCameraShakeGameplayAssetType),
 			"Camera profiles did not reach the typed GAF asset library")) return false;
 	Vans::VansCameraRuntime cameraRuntime;
 	Vans::VansCameraViewSnapshot cameraBase;
@@ -2688,19 +3115,21 @@ bool TestGAFAssetSchemaAndCookContract()
 		return ExpectGAF(false, "Camera GAF resource release or stale-handle rejection failed");
 
 	Vans::VansSerializedValue action = actionTemplate->second;
-	Vans::SetSerializedObjectField(action, "unknownFutureField",
-		Vans::VansSerializedValue::String("preserve-me"));
-	Vans::SetSerializedObjectField(action, "editorMetadata",
-		Vans::VansSerializedValue::Object({ { "folded", Vans::VansSerializedValue::Bool(true) } }));
-	if (!Vans::SetSerializedPointer(action, "/commit/cooldowns",
+	if (!Vans::SetSerializedPointer(action, "/phases/commit/operations",
 		Vans::VansSerializedValue::Array({
 			Vans::VansSerializedValue::Object({
-				{ "duration", Vans::VansSerializedValue::Float(0.5) },
-				{ "tag", Vans::VansSerializedValue::String("Cooldown.Primary") }
+				{ "type", Vans::VansSerializedValue::String("Gameplay.Cooldown.Apply") },
+				{ "inputs", Vans::VansSerializedValue::Object({
+					{ "duration", Vans::VansSerializedValue::Float(0.5) },
+					{ "tag", Vans::VansSerializedValue::String("Cooldown.Primary") }
+				}) }
 			}),
 			Vans::VansSerializedValue::Object({
-				{ "duration", Vans::VansSerializedValue::Float(1.0) },
-				{ "tag", Vans::VansSerializedValue::String("Cooldown.Shared") }
+				{ "type", Vans::VansSerializedValue::String("Gameplay.Cooldown.Apply") },
+				{ "inputs", Vans::VansSerializedValue::Object({
+					{ "duration", Vans::VansSerializedValue::Float(1.0) },
+					{ "tag", Vans::VansSerializedValue::String("Cooldown.Shared") }
+				}) }
 			})
 		}), &error)) return ExpectGAF(false, error.c_str());
 	const auto diagnostics = Vans::VansAssetDocumentTypeRegistry::Get().ValidateBeforeSave(
@@ -2710,10 +3139,14 @@ bool TestGAFAssetSchemaAndCookContract()
 			return ExpectGAF(false, diagnostic.message.c_str());
 	const Vans::VansGameplayCookResult first = Vans::VansGameplayAssetStorage::Cook(
 		Vans::VansAssetType::ActionDefinition, action);
-	if (!ExpectGAF(first && first.asset.contentHash != 0 &&
-		Vans::FindObjectField(first.asset.runtimeDocument, "unknownFutureField") != nullptr &&
-		Vans::FindObjectField(first.asset.runtimeDocument, "editorMetadata") == nullptr,
-		"GAF Cook 未保留未知字段或未剥离编辑器字段")) return false;
+	if (!ExpectGAF(first && first.asset.contentHash != 0,
+		"GAF current ActionDefinition did not Cook")) return false;
+	Vans::VansSerializedValue unknownAction = action;
+	Vans::SetSerializedObjectField(unknownAction, "unknownFutureField",
+		Vans::VansSerializedValue::String("must-be-rejected"));
+	if (!ExpectGAF(!Vans::VansGameplayAssetStorage::Cook(
+		Vans::VansAssetType::ActionDefinition, unknownAction),
+		"GAF current ActionDefinition accepted an unregistered root field")) return false;
 	Vans::VansSerializedValue reordered = action;
 	std::reverse(reordered.objectFields.begin(), reordered.objectFields.end());
 	const Vans::VansGameplayCookResult second = Vans::VansGameplayAssetStorage::Cook(
@@ -2724,7 +3157,7 @@ bool TestGAFAssetSchemaAndCookContract()
 		Vans::VansAssetType::ActionDefinition, action,
 		Vans::VansGameplayAssetSchemaRegistry::BuiltIns(), &configuration);
 	Vans::VansGAFProjectConfiguration changedCookPolicy = configuration;
-	changedCookPolicy.allowlist.handlers.insert("Targeting.Custom.Contract");
+	changedCookPolicy.allowlist.capabilities.insert("Targeting.Custom.Contract");
 	const Vans::VansGameplayCookResult changedPolicyCook = Vans::VansGameplayAssetStorage::Cook(
 		Vans::VansAssetType::ActionDefinition, action,
 		Vans::VansGameplayAssetSchemaRegistry::BuiltIns(), &changedCookPolicy);
@@ -2735,41 +3168,23 @@ bool TestGAFAssetSchemaAndCookContract()
 		Vans::VansGameplayAssetSchemaRegistry::BuiltIns(), &blockedGraphPolicy);
 	Vans::VansSerializedValue cameraGraph = configuration.templates.at("ActionGraph");
 	if (!Vans::SetSerializedPointer(cameraGraph, "/nodes/0/type",
-		Vans::VansSerializedValue::String("Camera.PushShot"), &error)) return false;
-	Vans::VansGAFProjectConfiguration blockedCameraBridge = configuration;
-	blockedCameraBridge.allowlist.bridges.erase("Camera.Action");
+		Vans::VansSerializedValue::String("Core.Graph.Invoke"), &error) ||
+		!Vans::SetSerializedPointer(cameraGraph, "/nodes/0/properties/capability",
+			Vans::VansSerializedValue::String("Camera.Action"), &error)) return false;
+	Vans::VansGAFProjectConfiguration blockedCameraCapability = configuration;
+	blockedCameraCapability.allowlist.capabilities.erase("Camera.Action");
 	const Vans::VansGameplayCookResult blockedCameraCook = Vans::VansGameplayAssetStorage::Cook(
 		Vans::VansAssetType::ActionGraph, cameraGraph,
-		Vans::VansGameplayAssetSchemaRegistry::BuiltIns(), &blockedCameraBridge);
+		Vans::VansGameplayAssetSchemaRegistry::BuiltIns(), &blockedCameraCapability);
 	Vans::VansSerializedValue timelineAction = action;
-	if (!Vans::SetSerializedPointer(timelineAction, "/execution/timeline",
-		Vans::VansSerializedValue::Object({
-			{ "assetGuid", Vans::VansSerializedValue::String("timeline-contract-guid") }
-		}), &error)) return false;
-	Vans::VansGAFProjectConfiguration blockedTimelineBridge = configuration;
-	blockedTimelineBridge.allowlist.bridges.erase("Timeline.Action");
+	if (!Vans::SetSerializedPointer(timelineAction, "/dependencies/capabilities",
+		Vans::VansSerializedValue::Array({
+			Vans::VansSerializedValue::String("Timeline.Action") }), &error)) return false;
+	Vans::VansGAFProjectConfiguration blockedTimelineCapability = configuration;
+	blockedTimelineCapability.allowlist.capabilities.erase("Timeline.Action");
 	const Vans::VansGameplayCookResult blockedTimelineCook = Vans::VansGameplayAssetStorage::Cook(
 		Vans::VansAssetType::ActionDefinition, timelineAction,
-		Vans::VansGameplayAssetSchemaRegistry::BuiltIns(), &blockedTimelineBridge);
-	Vans::VansSerializedValue predictedGraph = configuration.templates.at("ActionGraph");
-	if (!Vans::SetSerializedPointer(predictedGraph, "/nodes/0/type",
-		Vans::VansSerializedValue::String("Action.Graph.Command"), &error) ||
-		!Vans::SetSerializedPointer(predictedGraph, "/nodes/0/kind",
-			Vans::VansSerializedValue::String("Command"), &error) ||
-		!Vans::SetSerializedPointer(predictedGraph, "/nodes/0/predictable",
-			Vans::VansSerializedValue::Bool(true), &error)) return false;
-	Vans::VansGAFProjectConfiguration rollbackPolicy = configuration;
-	rollbackPolicy.settings.networkMode = Vans::VansGAFNetworkMode::Loopback;
-	rollbackPolicy.settings.predictionEnabled = true;
-	rollbackPolicy.settings.requireRollbackPlan = true;
-	const Vans::VansGameplayCookResult blockedRollbackCook = Vans::VansGameplayAssetStorage::Cook(
-		Vans::VansAssetType::ActionGraph, predictedGraph,
-		Vans::VansGameplayAssetSchemaRegistry::BuiltIns(), &rollbackPolicy);
-	if (!Vans::SetSerializedPointer(predictedGraph, "/nodes/0/rollbackPlan",
-		Vans::VansSerializedValue::String("Automatic"), &error)) return false;
-	const Vans::VansGameplayCookResult allowedRollbackCook = Vans::VansGameplayAssetStorage::Cook(
-		Vans::VansAssetType::ActionGraph, predictedGraph,
-		Vans::VansGameplayAssetSchemaRegistry::BuiltIns(), &rollbackPolicy);
+		Vans::VansGameplayAssetSchemaRegistry::BuiltIns(), &blockedTimelineCapability);
 	if (!ExpectGAF(configuredCook && changedPolicyCook &&
 		configuredCook.asset.contentHash != changedPolicyCook.asset.contentHash &&
 		!blockedGraphCook && std::any_of(blockedGraphCook.diagnostics.begin(),
@@ -2777,14 +3192,10 @@ bool TestGAFAssetSchemaAndCookContract()
 			{ return diagnostic.code == "GAF-PROJECT-NODE-ALLOWLIST"; }) &&
 		!blockedCameraCook && std::any_of(blockedCameraCook.diagnostics.begin(),
 			blockedCameraCook.diagnostics.end(), [](const auto& diagnostic)
-			{ return diagnostic.code == "GAF-PROJECT-BRIDGE-ALLOWLIST"; }) &&
+			{ return diagnostic.code == "GAF-PROJECT-CAPABILITY-ALLOWLIST"; }) &&
 		!blockedTimelineCook && std::any_of(blockedTimelineCook.diagnostics.begin(),
 			blockedTimelineCook.diagnostics.end(), [](const auto& diagnostic)
-			{ return diagnostic.code == "GAF-PROJECT-BRIDGE-ALLOWLIST"; }) &&
-		!blockedRollbackCook && allowedRollbackCook &&
-		std::any_of(blockedRollbackCook.diagnostics.begin(),
-			blockedRollbackCook.diagnostics.end(), [](const auto& diagnostic)
-			{ return diagnostic.code == "GAF-PROJECT-ROLLBACK-PLAN"; }),
+			{ return diagnostic.code == "GAF-PROJECT-CAPABILITY-ALLOWLIST"; }),
 		"GAF Cook did not fingerprint or enforce project policy")) return false;
 
 	const std::filesystem::path tempDirectory =
@@ -2838,8 +3249,11 @@ bool TestGAFAssetSchemaAndCookContract()
 		const Vans::VansGameplayCookResult cooked =
 			Vans::VansGameplayAssetStorage::Cook(assetCase.type, source->second);
 		if (!ExpectGAF(static_cast<bool>(cooked), "GAF 模板无法 Cook")) return false;
+		Vans::VansGameplayAssetCompilerRegistry compilers;
+		if (!Vans::VansRegisterDefaultGameplayAssetCompilers(compilers, error) ||
+			!compilers.Seal(error)) return ExpectGAF(false, error.c_str());
 		const Vans::VansGameplayCompileResult compiled =
-			Vans::VansGameplayAssetCompiler::Compile(cooked.asset);
+			Vans::VansGameplayAssetCompiler::Compile(cooked.asset, compilers);
 		if (!ExpectGAF(static_cast<bool>(compiled) && compiled.asset.assetType == assetCase.type &&
 			compiled.asset.contentHash == cooked.asset.contentHash,
 			"GAF 模板无法编译为强类型运行时资产")) return false;
@@ -2847,30 +3261,15 @@ bool TestGAFAssetSchemaAndCookContract()
 	const auto compiledAction = Vans::VansGameplayAssetCompiler::Compile(first.asset);
 	const auto* actionDefinition = std::get_if<std::shared_ptr<const Vans::VansCompiledActionDefinition>>(
 		&compiledAction.asset.data);
+	const std::size_t cooldownOperationCount = actionDefinition && *actionDefinition
+		? static_cast<std::size_t>(std::count_if(
+			(*actionDefinition)->program.commit.operations.begin(),
+			(*actionDefinition)->program.commit.operations.end(), [](const auto& operation)
+			{ return operation.type == "Gameplay.Cooldown.Apply"; })) : 0;
 	if (!ExpectGAF(compiledAction && actionDefinition && *actionDefinition &&
 		(*actionDefinition)->id == Vans::VansMakeStableId<Vans::VansActionIdTag>("Gameplay.NewAction") &&
-		(*actionDefinition)->cooldowns.size() == 2,
+		cooldownOperationCount == 2,
 		"ActionDefinition 强类型编译结果错误")) return false;
-
-	Vans::VansGameplayAssetMigrationRegistry migrations;
-	if (!migrations.Register(Vans::VansAssetType::ActionDefinition, 1, "Contract v1 to v2",
-		[](Vans::VansSerializedValue& document, std::string&)
-		{
-			Vans::SetSerializedObjectField(document, "migrated",
-				Vans::VansSerializedValue::Bool(true));
-			return true;
-		}, error) || !migrations.Seal(error)) return ExpectGAF(false, error.c_str());
-	Vans::VansSerializedValue migrationDocument = actionTemplate->second;
-	std::vector<Vans::VansGameplayMigrationRecord> migrationReport;
-	if (!migrations.Migrate(Vans::VansAssetType::ActionDefinition, 2,
-		migrationDocument, migrationReport, error)) return ExpectGAF(false, error.c_str());
-	if (!ExpectGAF(migrationReport.size() == 1 &&
-		Vans::ReadSerializedIntField(migrationDocument, "schemaVersion") == 2 &&
-		Vans::ReadSerializedBoolField(migrationDocument, "migrated"),
-		"GAF 资产迁移没有连续推进版本")) return false;
-	if (!migrations.Migrate(Vans::VansAssetType::ActionDefinition, 2,
-		migrationDocument, migrationReport, error)) return ExpectGAF(false, error.c_str());
-	if (!ExpectGAF(migrationReport.empty(), "GAF 资产迁移不满足幂等性")) return false;
 
 	const std::filesystem::path editorDirectory =
 		std::filesystem::temp_directory_path() / "ForestGAFEditorModelContract";
@@ -2885,50 +3284,55 @@ bool TestGAFAssetSchemaAndCookContract()
 	if (!ExpectGAF(editor.IsOpen() && !editor.Fields().empty() &&
 		!editor.Document()->sourceDocument.IsDirty(),
 		"GAF 编辑器模型未打开共享资产文档")) return false;
-	if (!editor.SetValue("/category", Vans::VansSerializedValue::String("Combat")) ||
-		!editor.AppendArrayItem("/tags", Vans::VansSerializedValue::String("Action.Combat")) ||
-		!editor.DuplicateArrayItem("/tags", 0))
+	if (!editor.SetValue("/metadata/category", Vans::VansSerializedValue::String("Combat")) ||
+		!editor.AppendArrayItem("/metadata/labels", Vans::VansSerializedValue::String("Action.Combat")) ||
+		!editor.DuplicateArrayItem("/metadata/labels", 0))
 		return ExpectGAF(false, "GAF 编辑器字段或数组命令执行失败");
 	if (!ExpectGAF(editor.Document()->sourceDocument.IsDirty() &&
-		Vans::FindSerializedPointer(editor.Snapshot(), "/tags")->arrayItems.size() == 2 &&
+		Vans::FindSerializedPointer(editor.Snapshot(), "/metadata/labels")->arrayItems.size() == 2 &&
 		!editor.DiffAgainst(editorBaseline).empty() && editor.PreviewCook(),
 		"GAF 编辑器修改、Diff 或 Cook 预览错误")) return false;
 	if (!editor.Undo() ||
-		!ExpectGAF(Vans::FindSerializedPointer(editor.Snapshot(), "/tags")->arrayItems.size() == 1,
+		!ExpectGAF(Vans::FindSerializedPointer(editor.Snapshot(), "/metadata/labels")->arrayItems.size() == 1,
 			"GAF 编辑器 Undo 未恢复数组命令") || !editor.Redo() ||
-		!editor.RemoveArrayItem("/tags", 1) || !editor.ResetField("/category")) return false;
-	if (!ExpectGAF(Vans::ReadSerializedStringField(editor.Snapshot(), "category") == "Gameplay",
+		!editor.RemoveArrayItem("/metadata/labels", 1) || !editor.ResetField("/metadata/category")) return false;
+	const Vans::VansSerializedValue editorSnapshot = editor.Snapshot();
+	const Vans::VansSerializedValue* editorMetadata =
+		Vans::FindSerializedPointer(editorSnapshot, "/metadata");
+	if (!ExpectGAF(editorMetadata &&
+		Vans::ReadSerializedStringField(*editorMetadata, "category") == "Gameplay",
 		"GAF 编辑器字段默认值重置错误")) return false;
 	const auto* actionSchema = schemas.Resolve(Vans::VansAssetType::ActionDefinition);
-	const auto costsSchema = actionSchema ? std::find_if(actionSchema->fields.begin(),
+	const auto operationsSchema = actionSchema ? std::find_if(actionSchema->fields.begin(),
 		actionSchema->fields.end(), [](const Vans::VansGameplayPropertySchema& field)
 		{
-			return field.path == "/commit/costs";
+			return field.path == "/phases/commit/operations";
 		}) : std::vector<Vans::VansGameplayPropertySchema>::const_iterator{};
-	if (!ExpectGAF(actionSchema && costsSchema != actionSchema->fields.end() &&
-		costsSchema->children.size() == 6 && costsSchema->hasArrayElement,
-		"GAF Action Cost 缺少结构化数组 Schema")) return false;
+	if (!ExpectGAF(actionSchema && operationsSchema != actionSchema->fields.end() &&
+		operationsSchema->children.size() == 2 && operationsSchema->hasArrayElement,
+		"GAF Action commit phase does not expose typed Operation records")) return false;
 	const auto* effectSchema = schemas.Resolve(Vans::VansAssetType::GameplayEffect);
-	const auto modifiersSchema = effectSchema ? std::find_if(effectSchema->fields.begin(),
+	const auto extensionsSchema = effectSchema ? std::find_if(effectSchema->fields.begin(),
 		effectSchema->fields.end(), [](const Vans::VansGameplayPropertySchema& field)
 		{
-			return field.path == "/modifiers";
+			return field.path == "/extensions";
 		}) : std::vector<Vans::VansGameplayPropertySchema>::const_iterator{};
-	if (!ExpectGAF(effectSchema && modifiersSchema != effectSchema->fields.end() &&
-		modifiersSchema->children.size() == 15 && modifiersSchema->hasArrayElement,
-		"GAF Effect modifier schema does not expose magnitude sources and capture settings"))
+	if (!ExpectGAF(effectSchema && extensionsSchema != effectSchema->fields.end() &&
+		extensionsSchema->children.size() == 2 && extensionsSchema->hasArrayElement,
+		"GAF Effect schema does not expose typed extension records"))
 		return false;
-	if (!editor.AppendArrayItem("/commit/costs", costsSchema->arrayElementDefault) ||
-		!editor.SetValue("/commit/costs/0/attribute",
-			Vans::VansSerializedValue::String("Resource.Mana")) ||
-		!editor.SetValue("/commit/costs/0/amount", Vans::VansSerializedValue::Float(10.0)) ||
-		!editor.SetValue("/commit/costs/0/refund", Vans::VansSerializedValue::String("Always")) ||
-		!editor.ResetField("/commit/costs/0/refund"))
-		return ExpectGAF(false, "GAF 递归字段编辑或默认值重置失败");
-	if (!ExpectGAF(Vans::ReadSerializedStringField(
-		*Vans::FindSerializedPointer(editor.Snapshot(), "/commit/costs/0"), "refund") == "Never" &&
-		!editor.SetValue("/commit/costs/0/refund", Vans::VansSerializedValue::String("Invalid")),
-		"GAF 嵌套 Enum 校验未阻断非法配置")) return false;
+	if (!editor.AppendArrayItem("/phases/commit/operations",
+		operationsSchema->arrayElementDefault) ||
+		!editor.SetValue("/phases/commit/operations/0/type",
+			Vans::VansSerializedValue::String("Gameplay.Attributes.Consume")) ||
+		!editor.SetValue("/phases/commit/operations/0/inputs",
+			Vans::VansSerializedValue::Object({
+				{ "attribute", Vans::VansSerializedValue::String("Resource.Mana") },
+				{ "amount", Vans::VansSerializedValue::Float(10.0) }
+			})))
+		return ExpectGAF(false, "GAF typed Operation authoring failed");
+	if (!ExpectGAF(static_cast<bool>(editor.PreviewCook()),
+		"GAF typed Operation did not pass current-schema Cook validation")) return false;
 	editor.Close();
 	Vans::VansAssetDocumentRegistry::Get().Clear();
 	Vans::VansGAFProjectConfiguration customRoots = configuration;
@@ -2948,7 +3352,8 @@ bool TestGAFAssetSchemaAndCookContract()
 	Vans::VansAssetDocumentRegistry::Get().Clear();
 	const auto graphNodeCatalog =
 		Vans::EditorAPI::GameplayActionAuthoringBridge::GetGraphNodeCatalog();
-	if (!ExpectGAF(graphNodeCatalog.size() == 26 &&
+	if (!ExpectGAF(graphNodeCatalog.size() ==
+			Vans::VansBuiltInActionGraphNodeDescriptors().size() &&
 		std::all_of(graphNodeCatalog.begin(), graphNodeCatalog.end(),
 			[](const auto& node) { return node.allowed && !node.pins.empty(); }),
 		"GAF Graph editor node catalog is incomplete")) return false;
@@ -3099,53 +3504,50 @@ bool TestGAFSampleLibraryContract()
 			std::cerr << "[GAF sample package] " << packageError << '\n';
 		return false;
 	}
-	Vans::VansSerializedValue unsafePredictedGraph;
-	const std::filesystem::path unsafeGraphPath = assetsRoot / "Shooter/Fire.vactiongraph";
-	if (!Vans::VansGameplayAssetStorage::LoadSource(
-		unsafeGraphPath, unsafePredictedGraph, error) ||
-		!Vans::SetSerializedPointer(unsafePredictedGraph, "/nodes/0/predictable",
-			Vans::VansSerializedValue::Bool(true), &error)) return false;
-	Vans::VansGameplayRuntime unsafeRuntime;
-	Vans::VansGameplayRuntimeDependencies unsafeDependencies;
-	unsafeDependencies.sourceOverrides.push_back({ unsafeGraphPath, unsafePredictedGraph });
-	Vans::VansGAFSettings predictiveSettings = configuration.settings;
-	predictiveSettings.networkMode = Vans::VansGAFNetworkMode::Loopback;
-	predictiveSettings.predictionEnabled = true;
-	predictiveSettings.requireRollbackPlan = true;
-	std::string rollbackError;
-	if (!ExpectGAF(!unsafeRuntime.Initialize(database.All(), predictiveSettings,
-		unsafeDependencies, rollbackError) && rollbackError.find("rollback plan") != std::string::npos,
-		"Runtime source override bypassed the prediction rollback policy")) return false;
-
+	Vans::VansAssetObjectRepository assetObjects;
+	if (!BootstrapGameplayMemory(database.All(), assetObjects, error))
+		return ExpectGAF(false, error.c_str());
 	Vans::VansGameplayRuntime runtime;
 	Vans::VansGameplayRuntimeDependencies dependencies;
-	const auto fakeServices = Vans::VansCreateFakeStandardActionServices();
-	for (const auto& service : fakeServices) dependencies.services.push_back(service);
-	dependencies.graphNodeRegistrars.push_back(
-		[](Vans::VansActionGraphNodeRegistry& registry, std::string& registrationError)
-		{
-			return Vans::VansRegisterCameraActionGraphNodes(registry, registrationError);
-		});
-	if (!runtime.Initialize(database.All(), configuration.settings, dependencies, error))
+	dependencies.contributors.push_back(
+		Vans::VansMakeGameplayPrimitivesGAFContributor());
+	const auto fakeServices = CreateTestFakeActionServices();
+	dependencies.contributors.push_back(MakeTestRuntimeContributor(
+		"Test.SampleRuntime", fakeServices));
+	dependencies.contributors.push_back(MakeTestRuntimeContributor(
+		"Gameplay.Camera", {}, Vans::VansRegisterCameraGameplayAssetCompilers,
+		Vans::VansRegisterCameraGameplayAssetSchemas));
+	if (!runtime.Initialize(database.All(), assetObjects,
+		configuration.settings, dependencies, error))
 		return ExpectGAF(false, error.c_str());
 	if (!ExpectGAF(runtime.Assets().AssetCount() == 37 &&
 		runtime.Assets().Actions().ActionCount() == 10 &&
 		runtime.Assets().Cues().size() == 5 &&
-		runtime.Assets().CameraRigs().size() == 2 &&
-		runtime.Assets().CameraShakes().size() == 2,
+		runtime.Assets().ExtensionAssets(
+			Vans::VansCameraRigGameplayAssetType).size() == 2 &&
+		runtime.Assets().ExtensionAssets(
+			Vans::VansCameraShakeGameplayAssetType).size() == 2,
 		"GAF sample library typed asset counts are incomplete")) return false;
 
 	const auto fire = runtime.Assets().ResolveAction("Gameplay.Sample.Shooter.Fire");
 	const auto finisher = runtime.Assets().ResolveAction("Gameplay.Sample.Melee.Finisher");
 	const auto lightAttack = runtime.Assets().ResolveAction("Gameplay.Sample.Melee.LightAttack");
+	const auto* fireTargeting = fire ? FindCompiledActionRecord(
+		fire->program.activate.operations, "Gameplay.Targeting.Resolve") : nullptr;
+	const auto* fireCue = fire ? FindCompiledActionRecord(
+		fire->program.execute.operations, "Gameplay.Cue.Emit") : nullptr;
+	const Vans::VansSerializedValue* fireCueAssets = fireCue
+		? Vans::FindObjectField(fireCue->inputs, "assets") : nullptr;
+	const auto* lightAttackCombo = lightAttack ? FindCompiledActionRecord(
+		lightAttack->program.transitions, "Core.Transition.Combo") : nullptr;
 	if (!ExpectGAF(fire && finisher && lightAttack &&
-		fire->targetingPolicy == Vans::VansMakeStableId<Vans::VansTargetingPolicyIdTag>(
-			"Targeting.Sample.PrimaryEntity") &&
-		fire->presentationCues.size() == 1 &&
-		fire->presentationCues.front() == Vans::VansMakeStableId<Vans::VansCueIdTag>(
-			"Cue.Sample.Shooter.Fire") &&
-		lightAttack->transitionRules.size() == 1 &&
-		lightAttack->transitionRules.front().targetAction == finisher->id,
+		CompiledActionReference(fireTargeting, "asset") ==
+			"Targeting.Sample.PrimaryEntity" &&
+		fireCueAssets && fireCueAssets->kind == Vans::VansSerializedValue::Kind::Array &&
+		fireCueAssets->arrayItems.size() == 1 &&
+		fireCueAssets->arrayItems.front().kind == Vans::VansSerializedValue::Kind::String &&
+		fireCueAssets->arrayItems.front().stringValue == "Cue.Sample.Shooter.Fire" &&
+		CompiledActionReference(lightAttackCombo, "target") == finisher->name,
 		"GAF sample GUID references did not link to runtime stable IDs")) return false;
 
 	Vans::VansGameplayActionHostSetup setup;
@@ -3155,12 +3557,10 @@ bool TestGAFSampleLibraryContract()
 		"00000000-0000-4000-8000-000000004007",
 		"00000000-0000-4000-8000-000000005301"
 	};
-	setup.initialTags.push_back({ "State.HasKey", 1 });
-	setup.initialAttributes = {
-		{ "Attribute.Ammo", 10.0 },
-		{ "Attribute.Stamina", 20.0 },
-		{ "Attribute.WeaponHeat", 0.0 }
-	};
+	AddHostTagInitializer(setup, "State.HasKey");
+	AddHostAttributeInitializer(setup, "Attribute.Ammo", 10.0);
+	AddHostAttributeInitializer(setup, "Attribute.Stamina", 20.0);
+	AddHostAttributeInitializer(setup, "Attribute.WeaponHeat", 0.0);
 	const Vans::VansEntityHandle owner{ 401, 1 };
 	const Vans::VansEntityHandle target{ 402, 1 };
 	const auto host = runtime.CreateHost(owner, setup, error);
@@ -3173,20 +3573,20 @@ bool TestGAFSampleLibraryContract()
 		"GAF sample ActionSets did not grant actions or apply Attribute overrides")) return false;
 
 	Vans::VansActionContext context;
-	context.owner = owner;
-	context.instigator = owner;
-	context.primaryTarget = target;
+	context.SetEntity(Vans::VansActionContextSlots::Owner, owner);
+	context.SetEntity(Vans::VansActionContextSlots::Instigator, owner);
+	context.SetEntity(Vans::VansActionContextSlots::PrimaryTarget, target);
 	context.randomSeed = 12345;
 	const Vans::VansAttributeId requirementAmmo =
 		Vans::VansMakeStableId<Vans::VansAttributeIdTag>("Attribute.Ammo");
 	Vans::VansActionContext missingTargetContext = context;
-	missingTargetContext.primaryTarget = {};
+	missingTargetContext.Remove(Vans::VansActionContextSlots::PrimaryTarget);
 	if (!ExpectGAF(host->CanActivateAction(fire->id, missingTargetContext).error ==
-		Vans::VansActionError::TargetInvalid,
+		Vans::VansActionError::Rejected,
 		"GAF TargetData commit requirement accepted a missing target")) return false;
 	if (!host->Attributes().AddBase(requirementAmmo, -30.0)) return false;
 	if (!ExpectGAF(host->CanActivateAction(fire->id, context).error ==
-		Vans::VansActionError::RequirementsFailed,
+		Vans::VansActionError::Rejected,
 		"GAF Attribute commit requirement accepted an insufficient value")) return false;
 	if (!host->Attributes().AddBase(requirementAmmo, 30.0)) return false;
 	const auto activate = [&](std::string_view name)
@@ -3232,11 +3632,9 @@ bool TestGAFSampleLibraryContract()
 		"GAF sample actions did not execute, settle resources, or commit attributes"))
 		return false;
 	Vans::VansGameplayActionHostSetup revokeSetup;
-	revokeSetup.initialAttributes = {
-		{ "Attribute.Ammo", 10.0 },
-		{ "Attribute.Stamina", 20.0 },
-		{ "Attribute.WeaponHeat", 0.0 }
-	};
+	AddHostAttributeInitializer(revokeSetup, "Attribute.Ammo", 10.0);
+	AddHostAttributeInitializer(revokeSetup, "Attribute.Stamina", 20.0);
+	AddHostAttributeInitializer(revokeSetup, "Attribute.WeaponHeat", 0.0);
 	const auto revokeHost = runtime.CreateHost({ 403, 1 }, revokeSetup, error);
 	const Vans::VansActionSetDefinition* shooterSet =
 		runtime.Assets().ResolveActionSet("00000000-0000-4000-8000-000000002005");
@@ -3267,8 +3665,6 @@ bool TestGAFDemoHallWindowBreakContract()
 	if (!Vans::VansGAFProjectConfiguration::LoadForProject(
 		projectRoot, workspace / "ForestEngine/ForestEngine", configuration, error))
 		return ExpectGAF(false, error.c_str());
-	if (!ExpectGAF(configuration.settings.networkMode == Vans::VansGAFNetworkMode::Disabled,
-		"DemoHall window-break interaction unexpectedly enables GAF networking")) return false;
 
 	const fs::path temporaryRoot =
 		fs::temp_directory_path() / "ForestGAFDemoHallWindowBreakContract";
@@ -3308,31 +3704,45 @@ bool TestGAFDemoHallWindowBreakContract()
 			"DemoHall window-break asset failed configured GAF Cook")) return false;
 	}
 
+	Vans::VansAssetObjectRepository assetObjects;
+	if (!BootstrapGameplayMemory(database.All(), assetObjects, error))
+		return ExpectGAF(false, error.c_str());
 	Vans::VansGameplayRuntime runtime;
-	if (!runtime.Initialize(database.All(), configuration.settings, error))
+	Vans::VansGameplayRuntimeDependencies windowRuntimeDependencies;
+	windowRuntimeDependencies.contributors.push_back(
+		Vans::VansMakeGameplayPrimitivesGAFContributor());
+	windowRuntimeDependencies.contributors.push_back(
+		MakeProjectSchemaContributor(configuration));
+	windowRuntimeDependencies.contributors.push_back(MakeTestTimelineContributor());
+	if (!runtime.Initialize(database.All(), assetObjects, configuration.settings,
+		windowRuntimeDependencies, error))
 		return ExpectGAF(false, error.c_str());
 	const auto action = runtime.Assets().ResolveAction("Gameplay.DemoHall.Window.Break");
 	const auto actionSet = runtime.Assets().ResolveActionSet(
 		"4d408a1b-97bc-4453-b3b0-c8e1426b7e1b");
+	const auto* graphDriver = action ? FindCompiledActionRecord(
+		action->program.execute.drivers, "Core.Driver.Graph") : nullptr;
+	const auto* timelineDriver = action ? FindCompiledActionRecord(
+		action->program.execute.drivers, "Timeline.Driver.Session") : nullptr;
 	if (!ExpectGAF(action && actionSet && action->executionGraph &&
-		action->timelineAssets.size() == 1 &&
-		action->timelineAssets.front() == "8d2df4b5-3c7e-4c69-9f76-9b6e63fac850",
-		"DemoHall window-break Action links are incomplete")) return false;
+		CompiledActionReference(graphDriver, "graph") ==
+			"d33889f3-b988-4aab-9f09-1868151d18d3" && !timelineDriver,
+		"DemoHall window-break Action must not duplicate its scene-owned Timeline session")) return false;
 
 	const Vans::VansEntityHandle owner{ 701, 1 };
 	const Vans::VansEntityHandle player{ 702, 1 };
 	Vans::VansGameplayActionHostSetup setup;
 	setup.actionSets.push_back("4d408a1b-97bc-4453-b3b0-c8e1426b7e1b");
-	setup.initialTags.push_back({ "Target.Interactable.Window", 1 });
+	AddHostTagInitializer(setup, "Target.Interactable.Window");
 	const auto host = runtime.CreateHost(owner, setup, error);
 	if (!ExpectGAF(host && host->GrantedActions().size() == 1,
 		"DemoHall window ActionHost did not receive its ActionSet")) return false;
 
 	Vans::VansActionContext context;
-	context.owner = owner;
-	context.instigator = player;
-	context.source = player;
-	context.primaryTarget = owner;
+	context.SetEntity(Vans::VansActionContextSlots::Owner, owner);
+	context.SetEntity(Vans::VansActionContextSlots::Instigator, player);
+	context.SetEntity(Vans::VansActionContextSlots::Source, player);
+	context.SetEntity(Vans::VansActionContextSlots::PrimaryTarget, owner);
 	const Vans::VansActionResult first = host->ActivateAction(action->id, context);
 	const Vans::VansGameplayTagId broken =
 		Vans::VansMakeStableId<Vans::VansGameplayTagIdTag>("State.DemoHall.Window.Broken");
@@ -3460,10 +3870,24 @@ bool TestGAFDemoHallPlayerAttackContract()
 	}
 
 	Vans::VansGameplayRuntimeDependencies runtimeDependencies;
-	for (const auto& service : Vans::VansCreateFakeStandardActionServices())
-		runtimeDependencies.services.push_back(service);
+	runtimeDependencies.contributors.push_back(
+		Vans::VansMakeGameplayPrimitivesGAFContributor());
+	runtimeDependencies.contributors.push_back(MakeProjectSchemaContributor(configuration));
+	runtimeDependencies.contributors.push_back(MakeTestRuntimeContributor(
+		"Gameplay.Combat", { std::make_shared<Vans::VansFakeActionService>(
+			Vans::VansCombatActionCapability()) }));
+	runtimeDependencies.contributors.push_back(MakeTestRuntimeContributor(
+		"Gameplay.Animation", { std::make_shared<Vans::VansFakeActionService>(
+			Vans::VansAnimationActionCapability()) }));
+	runtimeDependencies.contributors.push_back(MakeTestRuntimeContributor(
+		"Gameplay.Navigation", { std::make_shared<Vans::VansFakeActionService>(
+			Vans::VansNavigationActionCapability()) }));
+	Vans::VansAssetObjectRepository assetObjects;
+	if (!BootstrapGameplayMemory(database.All(), assetObjects, error))
+		return ExpectGAF(false, error.c_str());
 	Vans::VansGameplayRuntime runtime;
-	if (!runtime.Initialize(database.All(), configuration.settings, runtimeDependencies, error))
+	if (!runtime.Initialize(database.All(), assetObjects,
+		configuration.settings, runtimeDependencies, error))
 		return ExpectGAF(false, error.c_str());
 	const auto crowbarAttack = runtime.Assets().ResolveAction(
 		"Gameplay.DemoHall.Player.Attack.Crowbar");
@@ -3483,9 +3907,13 @@ bool TestGAFDemoHallPlayerAttackContract()
 		!crowbarTakedown->cancellable && !crowbarTakedown->interruptible &&
 		crowbarAttack->concurrencyGroup == crowbarTakedown->concurrencyGroup,
 		"DemoHall attack or hit-response Action links are incomplete")) return false;
-	for (Vans::VansActionServiceId required : crowbarAttack->requiredServices)
+	for (const std::string& capability : crowbarAttack->program.capabilities)
+	{
+		const Vans::VansActionServiceId required =
+			Vans::VansMakeStableId<Vans::VansActionServiceIdTag>(capability);
 		if (!runtime.Services().Resolve(required))
 			std::cerr << "[GAF] Missing Crowbar service id=" << required.value << '\n';
+	}
 	const auto combatServiceId = Vans::VansMakeStableId<Vans::VansActionServiceIdTag>(
 		"Service.Combat");
 	if (!runtime.Services().Resolve(combatServiceId))
@@ -3493,16 +3921,17 @@ bool TestGAFDemoHallPlayerAttackContract()
 			<< combatServiceId.value << '\n';
 
 	const Vans::VansActionServiceCapability* combatCapability =
-		Vans::VansFindStandardActionServiceCapability(
+		FindTestActionCapability(
 			Vans::VansMakeStableId<Vans::VansActionServiceIdTag>("Service.Combat"));
 	const Vans::VansActionServiceCapability* navigationCapability =
-		Vans::VansFindStandardActionServiceCapability(
+		FindTestActionCapability(
 			Vans::VansMakeStableId<Vans::VansActionServiceIdTag>("Service.Navigation"));
 	const auto hasCommand = [](const Vans::VansActionServiceCapability* capability,
 		const char* stableName)
 	{
-		return capability && std::find(capability->commands.begin(), capability->commands.end(),
-			stableName) != capability->commands.end();
+		return capability && std::any_of(capability->commandSchemas.begin(),
+			capability->commandSchemas.end(), [stableName](const auto& command)
+			{ return command.stableName == stableName; });
 	};
 	if (!ExpectGAF(hasCommand(combatCapability, "Combat.BeginMeleeWindow") &&
 		hasCommand(navigationCapability, "Navigation.BlockMovement"),
@@ -3518,23 +3947,31 @@ bool TestGAFDemoHallPlayerAttackContract()
 	for (const auto& node : attackGraphSource.value("nodes", nlohmann::ordered_json::array()))
 	{
 		const auto properties = node.value("properties", nlohmann::ordered_json::object());
-		if (properties.value("command", std::string{}) != "Combat.BeginMeleeWindow") continue;
-		const auto payload = properties.value("payload", nlohmann::ordered_json::object());
+		if (node.value("type", std::string{}) != "Core.Graph.Invoke" ||
+			properties.value("operation", std::string{}) != "Combat.BeginMeleeWindow") continue;
+		const auto inputs = properties.value("inputs", nlohmann::ordered_json::object());
+		const auto literal = [&inputs](const char* name) -> nlohmann::ordered_json
+		{
+			const auto found = inputs.find(name);
+			if (found == inputs.end() || !found->is_object() ||
+				found->value("source", std::string{}) != "Literal") return {};
+			return found->value("value", nlohmann::ordered_json{});
+		};
 		foundConfiguredMeleeWindow =
-			payload.value("sourceBase", std::string{}) ==
+			literal("sourceBase") ==
 				"928f6ad1-4aac-4b57-a244-8a021f518401" &&
-			payload.value("sourceTip", std::string{}) ==
+			literal("sourceTip") ==
 				"c28c047e-aebd-4668-8ca6-04de3f348402" &&
-			payload.value("targetLayer", std::string{}) == "Enemy" &&
-			payload.value("targetTag", std::string{}) == "Target.Character.Enemy" &&
-			payload.value("responseAction", std::string{}) ==
+			literal("targetLayer") == "Enemy" &&
+			literal("targetTag") == "Target.Character.Enemy" &&
+			literal("responseAction") ==
 				"Gameplay.DemoHall.Whisper.HitReact" &&
-			std::abs(payload.value("startSeconds", 0.0f) - 0.72f) < 0.001f &&
-			std::abs(payload.value("endSeconds", 0.0f) - 1.38f) < 0.001f &&
-			std::abs(payload.value("sweepRadius", 0.0f) - 0.18f) < 0.001f &&
-			std::abs(payload.value("range", 0.0f) - 2.2f) < 0.001f &&
-			std::abs(payload.value("halfAngleDegrees", 0.0f) - 57.5f) < 0.001f &&
-			payload.value("maximumHits", 0) == 4;
+			std::abs(literal("startSeconds").get<float>() - 0.72f) < 0.001f &&
+			std::abs(literal("endSeconds").get<float>() - 1.38f) < 0.001f &&
+			std::abs(literal("sweepRadius").get<float>() - 0.18f) < 0.001f &&
+			std::abs(literal("range").get<float>() - 2.2f) < 0.001f &&
+			std::abs(literal("halfAngleDegrees").get<float>() - 57.5f) < 0.001f &&
+			literal("maximumHits") == 4;
 	}
 	bool foundMovementBlock = false;
 	bool foundHitAnimation = false;
@@ -3542,13 +3979,15 @@ bool TestGAFDemoHallPlayerAttackContract()
 	for (const auto& node : responseGraphSource.value("nodes", nlohmann::ordered_json::array()))
 	{
 		const auto properties = node.value("properties", nlohmann::ordered_json::object());
-		const std::string command = properties.value("command", std::string{});
+		const std::string command = properties.value("operation", std::string{});
 		foundMovementBlock = foundMovementBlock || command == "Navigation.BlockMovement";
 		if (command == "Animation.Play")
 		{
-			const auto payload = properties.value("payload", nlohmann::ordered_json::object());
-			foundHitAnimation = payload.value("clip", std::string{}) == "TakingDamage1" &&
-				!payload.value("loop", true);
+			const auto inputs = properties.value("inputs", nlohmann::ordered_json::object());
+			foundHitAnimation =
+				inputs.value("clip", nlohmann::ordered_json::object()).value(
+					"value", std::string{}) == "TakingDamage1" &&
+				!inputs.value("loop", nlohmann::ordered_json::object()).value("value", true);
 		}
 		if (node.value("type", std::string{}) == "Action.Graph.Wait")
 			foundResponseWait = std::abs(properties.value("seconds", 0.0f) - 1.333333f) < 0.001f;
@@ -3572,7 +4011,7 @@ bool TestGAFDemoHallPlayerAttackContract()
 	const Vans::VansEntityHandle player{ 801, 1 };
 	Vans::VansGameplayActionHostSetup setup;
 	setup.actionSets.push_back("4534ddf1-e858-468e-a1ab-9e8b98cf6129");
-	setup.initialTags.push_back({ "Target.Character.Player", 1 });
+	AddHostTagInitializer(setup, "Target.Character.Player");
 	const auto host = runtime.CreateHost(player, setup, error);
 	if (!host || host->GrantedActions().size() != 2)
 		std::cerr << "[GAF] Player host error: " << error << " grants="
@@ -3581,10 +4020,10 @@ bool TestGAFDemoHallPlayerAttackContract()
 		"DemoHall player ActionHost did not receive both CloseCombat attacks")) return false;
 
 	Vans::VansActionContext context;
-	context.owner = player;
-	context.instigator = player;
-	context.source = player;
-	context.primaryTarget = player;
+	context.SetEntity(Vans::VansActionContextSlots::Owner, player);
+	context.SetEntity(Vans::VansActionContextSlots::Instigator, player);
+	context.SetEntity(Vans::VansActionContextSlots::Source, player);
+	context.SetEntity(Vans::VansActionContextSlots::PrimaryTarget, player);
 	const Vans::VansActionResult first = host->ActivateAction(crowbarAttack->id, context);
 	const Vans::VansActionResult blocked = host->ActivateAction(crowbarTakedown->id, context);
 	if (!ExpectGAF(first && !blocked && host->ActiveActions().size() == 1,
@@ -3600,13 +4039,13 @@ bool TestGAFDemoHallPlayerAttackContract()
 	const Vans::VansEntityHandle whisper{ 802, 1 };
 	Vans::VansGameplayActionHostSetup whisperSetup;
 	whisperSetup.actionSets.push_back("269218a3-6809-48f6-b055-97891161c303");
-	whisperSetup.initialTags.push_back({ "Target.Character.Enemy", 1 });
+	AddHostTagInitializer(whisperSetup, "Target.Character.Enemy");
 	const auto whisperHost = runtime.CreateHost(whisper, whisperSetup, error);
 	Vans::VansActionContext responseContext;
-	responseContext.owner = whisper;
-	responseContext.instigator = player;
-	responseContext.source = player;
-	responseContext.primaryTarget = player;
+	responseContext.SetEntity(Vans::VansActionContextSlots::Owner, whisper);
+	responseContext.SetEntity(Vans::VansActionContextSlots::Instigator, player);
+	responseContext.SetEntity(Vans::VansActionContextSlots::Source, player);
+	responseContext.SetEntity(Vans::VansActionContextSlots::PrimaryTarget, player);
 	const Vans::VansActionResult responseResult = whisperHost
 		? whisperHost->ActivateAction(whisperHitReact->id, responseContext)
 		: Vans::VansActionResult{};
@@ -3704,8 +4143,8 @@ bool TestGAFDemoHallPlayerAttackContract()
 	}
 
 	VansGraphics::Skeleton sceneSkeleton;
-	if (!VansGraphics::VansSkinnedMeshLoader::LoadSkeletonFromModelAsset(
-		(projectRoot / "Assets/Models/SKM_UEFN_Mannequin.fbx").string(), sceneSkeleton, error))
+	if (!LoadContractSkeletonFromModel(
+		projectRoot / "Assets/Models/SKM_UEFN_Mannequin.fbx", sceneSkeleton, error))
 		return ExpectGAF(false, error.c_str());
 	if (!ExpectGAF(sceneSkeleton.bones.size() == attackClipSkeleton.bones.size(),
 		"DemoHall UEFN model and attack clips use different skeleton sizes")) return false;
@@ -3747,28 +4186,22 @@ bool TestGAFDemoHallPlayerAttackContract()
 		return true;
 	};
 	compileOptions.rigResolver = [&projectRoot](
-		const std::string&, fs::path& resolvedPath, std::string&)
+		const std::string&, std::string& resolveError)
 	{
-		resolvedPath = projectRoot / "Assets/AnimationRigs/UEFN.vanimrig";
-		return true;
+		return LoadRigForContract(
+			projectRoot / "Assets/AnimationRigs/UEFN.vanimrig", resolveError);
 	};
-	auto attackController = VansGraphics::VansAnimatorRuntimeCompiler::Compile(
+		auto attackController = VansGraphics::VansAnimatorRuntimeCompiler::Compile(
 		animatorAsset,
 		sceneSkeleton,
 		[&projectRoot](const VansGraphics::AnimatorClipRef& ref,
-			fs::path& resolvedPath, std::string& resolveError)
+			std::shared_ptr<const VansGraphics::VansAnimationClipAsset>& clip,
+			std::string& resolveError)
 		{
-			resolvedPath = projectRoot / ref.pathHint;
-			if (fs::is_regular_file(resolvedPath)) return true;
-			resolveError = "Missing DemoHall attack clip: " + resolvedPath.string();
-			return false;
+			return LoadAnimationClipAssetForContract(
+				projectRoot / ref.pathHint, clip, resolveError);
 		},
-		[](const VansGraphics::VansAnimationLayerDefinition&,
-			fs::path&, std::string& resolveError)
-		{
-			resolveError = "DemoHall attack base layer unexpectedly requested a Bone Mask";
-			return false;
-		},
+		ProjectMaskResolverForContract(projectRoot),
 		compileOptions,
 		error);
 	if (!ExpectGAF(attackController != nullptr, error.c_str())) return false;
@@ -3834,29 +4267,35 @@ bool TestGAFDemoHallPlayerAttackContract()
 			hasLocalPosition(entity, glm::vec3(-14.58f, 72.0f, 21.46f)));
 		foundAxeHitTip = foundAxeHitTip ||
 			(entityId == "c28c047e-aebd-4668-8ca6-04de3f348402" && isAxeChild &&
-			hasLocalPosition(entity, glm::vec3(-14.58f, 154.45f, 19.98f)));
+				hasLocalPosition(entity, glm::vec3(-14.58f, 154.45f, 19.98f)));
+		if (parent.is_object() && parent.value("kind", std::string{}) == "bone" &&
+			parent.value("entityGuid", std::string{}) == "d21cfc31-dba5-44cb-a271-f0f2c20cded1")
+			for (const auto& component : entity.at("components"))
+				if (component.value("type", std::string{}) == "Physics")
+				{
+					const auto& data = component.at("data");
+					foundWhisperHurtBody = foundWhisperHurtBody ||
+						(data.value("hitRegion", std::string{}) == "Chest" &&
+						data.value("bodyType", std::string{}) == "kinematic" &&
+						data.value("layer", std::string{}) == "Enemy" && data.value("isTrigger", false));
+				}
 		if (entityId == "d21cfc31-dba5-44cb-a271-f0f2c20cded1")
 		{
 			for (const auto& component : entity.at("components"))
 			{
 				const auto& data = component.at("data");
-				if (component.value("type", std::string{}) == "Physics")
-					foundWhisperHurtBody = foundWhisperHurtBody ||
-						data.value("name", std::string{}) == "Whisper_Torso_HurtBody" &&
-						data.value("bodyType", std::string{}) == "kinematic" &&
-						data.value("colliderType", std::string{}) == "capsule" &&
-						data.value("layer", std::string{}) == "Enemy" &&
-						data.value("isTrigger", false) &&
-						std::abs(data.value("capsuleRadius", 0.0f) - 0.38f) < 0.001f &&
-						std::abs(data.value("capsuleHalfHeight", 0.0f) - 0.5f) < 0.001f;
 				if (component.value("type", std::string{}) == "ActionHost")
 				{
 					const auto sets = data.value("actionSets", nlohmann::ordered_json::array());
-					const auto tags = data.value("initialTags", nlohmann::ordered_json::array());
-					foundWhisperResponseHost = !sets.empty() && !tags.empty() &&
+					const auto initializers = data.value(
+						"initializers", nlohmann::ordered_json::array());
+					foundWhisperResponseHost = !sets.empty() && !initializers.empty() &&
 						sets.front().value("guid", std::string{}) ==
 							"269218a3-6809-48f6-b055-97891161c303" &&
-						tags.front().value("tag", std::string{}) == "Target.Character.Enemy";
+						initializers.front().value("type", std::string{}) ==
+							"Gameplay.Tags.Initialize" &&
+						initializers.front().value("inputs", nlohmann::ordered_json::object())
+							.value("tag", std::string{}) == "Target.Character.Enemy";
 				}
 			}
 		}
@@ -3924,7 +4363,8 @@ bool TestGAFDemoHallPlayerAttackContract()
 		projectRoot / "Scripts/forest_lua_behaviors.lua", script, error))
 		return ExpectGAF(false, error.c_str());
 	const std::size_t attackScriptBegin = script.find("M.PlayerAttackController");
-	const std::size_t attackScriptEnd = script.find("M.RuntimeStartGame", attackScriptBegin);
+	// 按下一个模块声明限定近战脚本，新增其他控制器不会污染近战契约检查。
+	const std::size_t attackScriptEnd = script.find("\nM.", attackScriptBegin);
 	const std::string attackScript = attackScriptBegin != std::string::npos
 		? script.substr(attackScriptBegin, attackScriptEnd - attackScriptBegin) : std::string{};
 	return ExpectGAF(foundAttackSet && attackGraphIsNonMotionMatching && closeCombatClipRefs == 2 &&
@@ -3938,13 +4378,185 @@ bool TestGAFDemoHallPlayerAttackContract()
 		attackScript.find("vans.action") != std::string::npos &&
 		attackScript.find("try_activate") != std::string::npos &&
 		attackScript.find("switch_graph_set") != std::string::npos &&
-		attackScript.find("reparent_to_socket") != std::string::npos &&
+		attackScript.find("bind_to_socket_profile") != std::string::npos &&
 		attackScript.find("self:restore_attack_weapon()") != std::string::npos &&
-		attackScript.find("weapon:reparent_to_socket(") != std::string::npos &&
-		attackScript.find("socketGuid, \"snap\"") != std::string::npos &&
+		attackScript.find("weapon:bind_to_socket_profile(") != std::string::npos &&
+		attackScript.find("self.weaponAnimationComponentGuid, socketGuid") != std::string::npos &&
 		attackScript.find("configured_string") != std::string::npos &&
 		attackScript.find("request_cancel") == std::string::npos,
 		"DemoHall player attack is not wired through GAF into the non-MM root-motion Graph Set");
+}
+
+bool TestDemoHallHurtBodiesContract()
+{
+	using namespace VansGraphics;
+	using namespace VansEngine;
+	namespace fs = std::filesystem;
+	// 长胶囊端部、斜向胶囊、退化武器路径以及靠近但未接触的反例。
+	const glm::vec3 p(-1, 0.75f, -0.2f), q(-1, 0.75f, 0.2f);
+	if (!ExpectGAF(Vans::VansContinuousWeaponPathIntersectsCapsule(p, q,
+		-p + glm::vec3(0, 1.5f, 0), -q + glm::vec3(0, 1.5f, 0),
+		glm::vec3(0, -0.8f, 0), glm::vec3(0, 0.8f, 0), 0.05f) &&
+		!Vans::VansContinuousWeaponPathIntersectsSphere(p, q,
+		glm::vec3(1, 0.75f, -0.2f), glm::vec3(1, 0.75f, 0.2f), glm::vec3(0), 0.05f) &&
+		!Vans::VansContinuousWeaponPathIntersectsCapsule(glm::vec3(-1, 1.1f, 0), glm::vec3(1, 1.1f, 0),
+		glm::vec3(-1, 1.1f, 0), glm::vec3(1, 1.1f, 0), glm::vec3(0, -0.8f, 0), glm::vec3(0, 0.8f, 0), 0.1f),
+		"Capsule narrow phase ignored the segment or produced a near-miss hit")) return false;
+	fs::path workspace = fs::current_path();
+	for (int depth = 0; depth < 6 && !fs::exists(workspace / "DemoHallProject"); ++depth) workspace = workspace.parent_path();
+	const auto project = workspace / "DemoHallProject";
+	nlohmann::ordered_json scene;
+	std::string error;
+	if (!Vans::VansJsonFileStorage::Read(project / "Scenes/DemoHall.json", scene, error)) return ExpectGAF(false, error.c_str());
+	auto& physics = VansPhysicsSystem::GetInstance();
+	if (!ExpectGAF(physics.Initialize(), "Hurt body PhysX initialization failed")) return false;
+	struct PhysicsCleanup { VansPhysicsSystem& physics; ~PhysicsCleanup() { physics.Shutdown(); } } physicsCleanup{physics};
+	std::size_t checked = 0;
+	for (bool survival : { false, true })
+	{
+		const std::string ownerName = survival ? "SurvivalCharacter" : "Whisper";
+		const auto& owner = *std::find_if(scene["entities"].begin(), scene["entities"].end(),
+			[&](const auto& e) { return e.value("name", std::string{}) == ownerName; });
+		Skeleton skeleton;
+		if (!LoadContractSkeletonFromModel(project / (survival
+			? "Assets/Characters/Survival/Models/survival_character.fbx" : "Assets/Characters/Whisper/Models/SK_Whisper.glb"), skeleton, error))
+			return ExpectGAF(false, error.c_str());
+		VansAnimationController controller;
+		VansAnimationNode animation("Hurt body anchor contract");
+		animation.SetSkeleton(skeleton);
+		if (!ExpectGAF(animation.SetController(&controller), "Hurt body controller binding failed")) return false;
+		VansSkeletonAnchorRegistry anchors;
+		const auto instance = anchors.RegisterInstance(animation);
+		Vans::VansTransformGraph graph(&anchors);
+		std::vector<uint32_t> transforms;
+		std::vector<std::unique_ptr<VansPhysicsNode>> nodes;
+		struct Cleanup
+		{
+			std::vector<uint32_t>& transforms;
+			std::vector<std::unique_ptr<VansPhysicsNode>>& nodes;
+			~Cleanup() { nodes.clear(); for (auto id : transforms) VansTransformStore::FreeTransform(id); }
+		} cleanup{ transforms, nodes };
+		const auto allocate = [&]() { const auto id = VansTransformStore::AllocateTransform(); transforms.push_back(id); return id; };
+		const auto ownerId = allocate();
+		auto& ownerTransform = VansTransformStore::GetTransform(ownerId);
+		ownerTransform.m_Position = glm::vec3(0);
+		ownerTransform.m_Rotation = survival ? glm::vec3(-90, 35, 0) : glm::vec3(0, -25, 0);
+		ownerTransform.m_Scale = glm::vec3(survival ? .01f : 1.f);
+		std::vector<glm::mat4> pose(skeleton.bones.size());
+		const auto poseAt = [&](bool articulated)
+		{
+			for (std::size_t i = 0; i < skeleton.bones.size(); ++i)
+			{
+				const auto& bone = skeleton.bones[i];
+				glm::mat4 local = bone.localTransform;
+				if (articulated && (bone.name == "lowerarm_l" || bone.name == "calf_r" || bone.name == "head"))
+					local *= glm::rotate(glm::mat4(1), glm::radians(65.0f), glm::vec3(0, 0, 1));
+				pose[i] = bone.parentIndex < 0 ? local : pose[bone.parentIndex] * local;
+			}
+			return controller.SubmitExternalModelPose(pose, skeleton, 0.016f, VansExternalPoseEvaluationMode::DirectFinalPose);
+		};
+		if (!ExpectGAF(poseAt(false), "Bind pose publication failed")) return false;
+		std::unordered_set<std::string> regions;
+		std::string animationGuid;
+		for (const auto& c : owner["components"])
+		{
+			if (c.value("type", std::string{}) == "Animation") animationGuid = c["id"].get<std::string>();
+			if (c.value("type", std::string{}) == "Physics")
+				return ExpectGAF(false, "Character still has the obsolete root hurt capsule");
+		}
+		for (const auto& entity : scene["entities"])
+		{
+			const auto& parent = entity["parent"];
+			if (!parent.is_object() || parent.value("entityGuid", std::string{}) != owner["id"].get<std::string>()) continue;
+			const auto components = Vans::VansScenePhysicsComponentReader::ReadAuthoringComponents(Vans::DecodeSerializedValueJson(entity));
+			if (!components.physics || !components.physics->hitRegion) continue;
+			const auto& c = *components.physics;
+			const auto boneGuid = parent.value("anchorGuid", std::string{});
+			if (!ExpectGAF(parent.value("kind", std::string{}) == "bone" &&
+				parent.value("animationComponentGuid", std::string{}) == animationGuid &&
+				skeleton.boneGuidToIndex.count(boneGuid) && regions.insert(*c.hitRegion).second &&
+				c.isTrigger.value_or(false) && c.bodyType.value_or("") == "kinematic" &&
+				c.colliderType.value_or("") == "capsule" && c.layer.value_or("") == (survival ? "Player" : "Enemy"),
+				"Hurt body region, bone binding, trigger or layer configuration is invalid")) return false;
+			Vans::VansLocalTransform local;
+			for (const auto& transform : entity["components"])
+				if (transform.value("type", std::string{}) == "Transform")
+				{
+					const auto& d = transform["data"];
+					local.position = glm::vec3(d["position"][0], d["position"][1], d["position"][2]);
+					local.rotation = glm::quat(d["rotation"][3], d["rotation"][0], d["rotation"][1], d["rotation"][2]);
+				}
+			const auto id = allocate();
+			if (!ExpectGAF(graph.SetAnchorWithLocalTransform(id, ownerId,
+				anchors.MakeAnchorHandle(instance, Vans::VansTransformAnchorKind::Bone, boneGuid), local) && graph.Resolve(),
+				"Runtime skeleton anchor did not resolve a configured hurt body")) return false;
+			PhysicsNodeProperties properties;
+			properties.enabled = true;
+			properties.bodyType = PhysicsBodyType::Kinematic;
+			properties.colliderType = PhysicsColliderType::Capsule;
+			properties.isTrigger = true;
+			properties.hitRegion = *c.hitRegion;
+			properties.layerName = *c.layer;
+			properties.capsuleRadius = c.capsuleRadius.value_or(0);
+			properties.capsuleHalfHeight = c.capsuleHalfHeight.value_or(0);
+			auto node = std::make_unique<VansPhysicsNode>();
+			node->SetName(entity["name"].get<std::string>());
+			node->Initialize(properties, id);
+			nodes.push_back(std::move(node));
+		}
+		if (!ExpectGAF(regions.size() == 17, "Both DemoHall characters require 17 distinct hurt regions")) return false;
+		std::vector<glm::vec3> initialCenters;
+		for (const auto& node : nodes) initialCenters.push_back(VansTransformStore::GetTransform(node->GetTransformID()).m_Position);
+		float maximumMotion = 0;
+		for (bool articulated : { false, true })
+		{
+			if (!ExpectGAF(poseAt(articulated) && graph.Resolve(), "Animated hurt body pose did not resolve")) return false;
+			for (std::size_t i = 0; i < nodes.size(); ++i)
+			{
+				auto& node = *nodes[i];
+				node.UpdatePhysicsFromTransform();
+				const auto& t = VansTransformStore::GetTransform(node.GetTransformID());
+				const glm::quat rotation(glm::radians(t.m_Rotation));
+				const auto axis = rotation * glm::vec3(1,0,0);
+				const auto direction = rotation * glm::vec3(0,1,0);
+				const float radius = node.GetProperties().capsuleRadius * t.m_Scale.x;
+				const float halfHeight = node.GetProperties().capsuleHalfHeight * t.m_Scale.y;
+				if (!ExpectGAF(radius > .02f && radius < .3f && halfHeight < .5f,
+					"Hurt body world units or dimensions are incorrect")) return false;
+				struct OnlyActor final : physx::PxQueryFilterCallback
+				{
+					const physx::PxRigidActor* actor = nullptr;
+					physx::PxQueryHitType::Enum preFilter(const physx::PxFilterData&, const physx::PxShape*,
+						const physx::PxRigidActor* candidate, physx::PxHitFlags&) override
+					{ return candidate == actor ? physx::PxQueryHitType::eBLOCK : physx::PxQueryHitType::eNONE; }
+					physx::PxQueryHitType::Enum postFilter(const physx::PxFilterData&, const physx::PxQueryHit&,
+						const physx::PxShape*, const physx::PxRigidActor*) override { return physx::PxQueryHitType::eBLOCK; }
+				} filter;
+				filter.actor = node.GetActor();
+				physx::PxRaycastBuffer result;
+				physx::PxQueryFilterData query;
+				query.flags |= physx::PxQueryFlag::ePREFILTER;
+				const auto origin = t.m_Position + direction * radius * 4.f;
+				const auto px = [](glm::vec3 v) { return physx::PxVec3(v.x,v.y,v.z); };
+				const bool hit = physics.GetScene()->raycast(px(origin), px(-direction), radius * 8.f,
+					result, physx::PxHitFlag::eDEFAULT, query, &filter);
+				if (!ExpectGAF(hit && result.hasBlock && result.block.actor == node.GetActor() &&
+					std::abs(result.block.distance - radius*3.f) < .005f,
+					"PhysX ray did not hit the current bone-bound capsule at its expected surface")) return false;
+				if (!ExpectGAF(Vans::VansContinuousWeaponPathIntersectsCapsule(origin, origin,
+					t.m_Position - direction * radius * 4.f, t.m_Position - direction * radius * 4.f,
+					t.m_Position - axis * halfHeight, t.m_Position + axis * halfHeight, radius),
+					"Melee query missed a body hit by PhysX")) return false;
+				maximumMotion = std::max(maximumMotion, glm::length(t.m_Position - initialCenters[i]));
+				++checked;
+			}
+		}
+		if (!ExpectGAF(maximumMotion > .05f, "Articulated bones did not move their hurt bodies")) return false;
+		std::cout << "[HurtBodies] " << ownerName << " regions=" << regions.size()
+			<< " posedMotion=" << maximumMotion << " rayAndMelee=34\n";
+	}
+	std::cout << "[HurtBodies] PASS regions=34 posedShapeChecks=" << checked << '\n';
+	return true;
 }
 
 bool TestGAFDemoHallMeleeHitRuntimeContract()
@@ -4018,24 +4630,23 @@ bool TestGAFDemoHallMeleeHitRuntimeContract()
 	compileOptions.enableTargetPostProcess = false;
 	compileOptions.enableRootMotion = false;
 	compileOptions.rigResolver = [&projectRoot](
-		const std::string&, fs::path& resolvedPath, std::string&)
+		const std::string&, std::string& resolveError)
 	{
-		resolvedPath = projectRoot /
-			"Assets/Characters/Whisper/Animation/Whisper.vanimrig";
-		return true;
+		return LoadRigForContract(projectRoot /
+			"Assets/Characters/Whisper/Animation/Whisper.vanimrig", resolveError);
 	};
 	auto whisperController = VansGraphics::VansAnimatorRuntimeCompiler::Compile(
 		whisperAnimatorAsset, whisperSkeleton,
 		[&projectRoot](const VansGraphics::AnimatorClipRef& ref,
-			fs::path& resolvedPath, std::string& resolveError)
+			std::shared_ptr<const VansGraphics::VansAnimationClipAsset>& clip,
+			std::string& resolveError)
 		{
-			resolvedPath = projectRoot / ref.pathHint;
-			if (fs::is_regular_file(resolvedPath)) return true;
-			resolveError = "Missing DemoHall Whisper clip: " + resolvedPath.string();
-			return false;
+			return LoadAnimationClipAssetForContract(
+				projectRoot / ref.pathHint, clip, resolveError);
 		},
 		[](const VansGraphics::VansAnimationLayerDefinition&,
-			fs::path&, std::string& resolveError)
+			std::shared_ptr<const VansGraphics::VansBoneMaskAsset>&,
+			std::string& resolveError)
 		{
 			resolveError = "Whisper base layer unexpectedly requested a Bone Mask";
 			return false;
@@ -4109,17 +4720,41 @@ bool TestGAFDemoHallMeleeHitRuntimeContract()
 	hurtBodyProperties.colliderType = VansEngine::PhysicsColliderType::Capsule;
 	hurtBodyProperties.layerName = "Enemy";
 	hurtBodyProperties.isTrigger = true;
+	hurtBodyProperties.hitRegion = "Chest";
 	hurtBodyProperties.capsuleRadius = 0.38f;
 	hurtBodyProperties.capsuleHalfHeight = 0.5f;
 	hurtBodyProperties.shapeOffset = glm::vec3(0.0f, 1.05f, 0.0f);
-	hurtBody.SetName("Whisper_Torso_HurtBody");
+	hurtBody.SetName("Whisper_Chest_HurtBody");
 	hurtBody.Initialize(hurtBodyProperties, whisperTransform);
+	VansEngine::VansPhysicsNode armBody;
+	auto armProperties = hurtBodyProperties;
+	armProperties.hitRegion = "RightForearm";
+	armProperties.capsuleRadius = .08f;
+	armProperties.capsuleHalfHeight = .18f;
+	armProperties.shapeOffset.x = .45f;
+	armBody.SetName("Whisper_RightForearm_HurtBody");
+	armBody.Initialize(armProperties, whisperTransform);
+	VansEngine::VansPhysicsNode playerBody;
+	auto playerProperties = armProperties;
+	playerProperties.hitRegion = "Head";
+	playerProperties.layerName = "Player";
+	playerProperties.shapeOffset = glm::vec3(0);
+	const auto playerHead = world.CreateEntity({ "survival-head", "Survival Head", attacker });
+	const auto playerHeadTransform = addTransform(playerHead, "survival-head-transform", glm::vec3(0,1.05f,0));
+	playerBody.SetName("Survival_Head_HurtBody");
+	playerBody.Initialize(playerProperties, playerHeadTransform);
+	world.AddComponent(playerHead, Vans::VansRuntimeComponentType_Physics,
+		Vans::VansRuntimePhysicsComponent{ &playerBody }, "demohall-survival-head-body");
+	const auto armEntity = world.CreateEntity({ "whisper-arm", "Whisper Arm", whisper });
+	world.AddComponent(armEntity, Vans::VansRuntimeComponentType_Physics,
+		Vans::VansRuntimePhysicsComponent{ &armBody }, "demohall-whisper-arm-body");
 	VansEngine::VansCharacterControllerNode whisperCct;
 	VansGraphics::VansAnimationNode whisperAnimation("Whisper Runtime Animation");
 	whisperAnimation.SetSkeleton(whisperSkeleton);
 	const bool controllerBound = whisperAnimation.SetController(whisperController.get());
+	const auto chestEntity = world.CreateEntity({ "whisper-chest", "Whisper Chest", whisper });
 	const Vans::VansComponentHandle hurtBodyComponent = world.AddComponent(
-		whisper, Vans::VansRuntimeComponentType_Physics,
+		chestEntity, Vans::VansRuntimeComponentType_Physics,
 		Vans::VansRuntimePhysicsComponent{ &hurtBody }, "demohall-whisper-hurt-body");
 	const Vans::VansComponentHandle cctComponent = world.AddComponent(
 		whisper, Vans::VansRuntimeComponentType_CharacterController,
@@ -4136,6 +4771,8 @@ bool TestGAFDemoHallMeleeHitRuntimeContract()
 		Vans::VansGameplayRuntime& gameplayRuntime;
 		Vans::VansRuntimeWorld& world;
 		VansEngine::VansPhysicsNode& hurtBody;
+		VansEngine::VansPhysicsNode& armBody;
+		VansEngine::VansPhysicsNode& playerBody;
 		VansEngine::VansCharacterControllerNode& cct;
 		VansEngine::VansPhysicsSystem& physicsSystem;
 		std::vector<std::uint32_t>& transformIds;
@@ -4144,13 +4781,15 @@ bool TestGAFDemoHallMeleeHitRuntimeContract()
 			gameplayRuntime.Shutdown();
 			world.Clear();
 			hurtBody.Shutdown();
+			armBody.Shutdown();
+			playerBody.Shutdown();
 			cct.Release();
 			for (std::uint32_t id : transformIds)
 				VansGraphics::VansTransformStore::FreeTransform(id);
 			physicsSystem.Shutdown();
 		}
 	} runtimeCleanup{
-		gameplayRuntime, world, hurtBody, whisperCct, physicsSystem, transformIds };
+		gameplayRuntime, world, hurtBody, armBody, playerBody, whisperCct, physicsSystem, transformIds };
 	if (!ExpectGAF(hurtBody.IsEnabled() && controllerBound &&
 		hurtBodyComponent.IsValid() && cctComponent.IsValid() && animationComponent.IsValid(),
 		"Whisper production hurt-body, CCT, or Animation component is unavailable")) return false;
@@ -4162,18 +4801,29 @@ bool TestGAFDemoHallMeleeHitRuntimeContract()
 	if (!ExpectGAF(combatService && animationService && navigationService, error.c_str()))
 		return false;
 	Vans::VansGameplayRuntimeDependencies dependencies;
-	dependencies.services = { combatService, animationService, navigationService };
+	dependencies.contributors.push_back(
+		Vans::VansMakeGameplayPrimitivesGAFContributor());
+	dependencies.contributors.push_back(MakeProjectSchemaContributor(configuration));
+	dependencies.contributors.push_back(MakeTestRuntimeContributor(
+		"Gameplay.Combat", { combatService }));
+	dependencies.contributors.push_back(MakeTestRuntimeContributor(
+		"Gameplay.Animation", { animationService }));
+	dependencies.contributors.push_back(MakeTestRuntimeContributor(
+		"Gameplay.Navigation", { navigationService }));
+	Vans::VansAssetObjectRepository assetObjects;
+	if (!BootstrapGameplayMemory(database.All(), assetObjects, error))
+		return ExpectGAF(false, error.c_str());
 	if (!gameplayRuntime.Initialize(
-		database.All(), configuration.settings, dependencies, error))
+		database.All(), assetObjects, configuration.settings, dependencies, error))
 		return ExpectGAF(false, error.c_str());
 
 	Vans::VansGameplayActionHostSetup attackerSetup;
 	attackerSetup.actionSets.push_back("4534ddf1-e858-468e-a1ab-9e8b98cf6129");
-	attackerSetup.initialTags.push_back({ "Target.Character.Player", 1 });
+	AddHostTagInitializer(attackerSetup, "Target.Character.Player");
 	const auto attackerHost = gameplayRuntime.CreateHost(attacker, attackerSetup, error);
 	Vans::VansGameplayActionHostSetup whisperSetup;
 	whisperSetup.actionSets.push_back("269218a3-6809-48f6-b055-97891161c303");
-	whisperSetup.initialTags.push_back({ "Target.Character.Enemy", 1 });
+	AddHostTagInitializer(whisperSetup, "Target.Character.Enemy");
 	const auto whisperHost = gameplayRuntime.CreateHost(whisper, whisperSetup, error);
 	const auto crowbarAttack = gameplayRuntime.Assets().ResolveAction(
 		"Gameplay.DemoHall.Player.Attack.Crowbar");
@@ -4181,10 +4831,10 @@ bool TestGAFDemoHallMeleeHitRuntimeContract()
 		"Production GAF hosts or Crowbar attack did not resolve")) return false;
 
 	Vans::VansActionContext attackContext;
-	attackContext.owner = attacker;
-	attackContext.instigator = attacker;
-	attackContext.source = attacker;
-	attackContext.primaryTarget = whisper;
+	attackContext.SetEntity(Vans::VansActionContextSlots::Owner, attacker);
+	attackContext.SetEntity(Vans::VansActionContextSlots::Instigator, attacker);
+	attackContext.SetEntity(Vans::VansActionContextSlots::Source, attacker);
+	attackContext.SetEntity(Vans::VansActionContextSlots::PrimaryTarget, whisper);
 	const Vans::VansActionResult attackResult =
 		attackerHost->ActivateAction(crowbarAttack->id, attackContext);
 	if (!ExpectGAF(attackResult && attackerHost->ActiveActions().size() == 1,
@@ -4208,6 +4858,7 @@ bool TestGAFDemoHallMeleeHitRuntimeContract()
 		[](const Vans::VansCombatDebugHurtBody& body)
 		{
 			return body.target == "Whisper Runtime Target" && body.hit &&
+				body.region == "Chest" && body.componentGuid == "demohall-whisper-hurt-body" &&
 				std::abs(body.radius - 0.38f) < 0.001f;
 		});
 	if (!(debugWindowValidated && hurtBodyValidated &&
@@ -4227,6 +4878,48 @@ bool TestGAFDemoHallMeleeHitRuntimeContract()
 		whisperController->GetCurrentStateName() == "TakingDamage1",
 		"Validated production melee hit did not block Whisper movement and play TakingDamage1"))
 		return false;
+	const auto responseSnapshot = whisperHost->ActiveActions().front();
+	const auto* detailedHit = responseSnapshot.targetData.values.empty() ? nullptr :
+		std::get_if<Vans::VansTargetHitResult>(&responseSnapshot.targetData.values.front());
+	if (!ExpectGAF(detailedHit && detailedHit->entity == whisper && detailedHit->hitEntity == chestEntity &&
+		detailedHit->region == "Chest" && detailedHit->componentGuid == "demohall-whisper-hurt-body" &&
+		std::count_if(hitSnapshot.hurtBodies.begin(), hitSnapshot.hurtBodies.end(),
+			[](const auto& body) { return body.hit; }) == 1,
+		"Multi-part hit lost its region, collider identity or character-level deduplication")) return false;
+	Vans::VansTargetData decodedHit;
+	if (!Vans::VansDecodeTargetData(Vans::VansEncodeTargetData(responseSnapshot.targetData), decodedHit, error))
+		return ExpectGAF(false, error.c_str());
+	const auto& roundTrip = std::get<Vans::VansTargetHitResult>(decodedHit.values.front());
+	if (!ExpectGAF(roundTrip.region == detailedHit->region && roundTrip.hitEntity == chestEntity &&
+		roundTrip.componentGuid == detailedHit->componentGuid && roundTrip.position == detailedHit->position,
+		"TargetData serialization discarded detailed body hit data")) return false;
+	// Survival 尚未配置受击表现时，也必须能够发出分部位检测结果。
+	Vans::VansActionCommand reverse;
+	reverse.action = responseSnapshot.handle;
+	reverse.stableName = "Combat.BeginMeleeWindow";
+	reverse.context.SetEntity(Vans::VansActionContextSlots::Owner, whisper);
+	reverse.payload = Vans::DecodeSerializedValueJson(nlohmann::ordered_json{
+		{ "sourceBase", "928f6ad1-4aac-4b57-a244-8a021f518401" },
+		{ "sourceTip", "c28c047e-aebd-4668-8ca6-04de3f348402" },
+		{ "window", "SurvivalProbe" }, { "startSeconds", 0 }, { "endSeconds", .5 },
+		{ "targetLayer", "Player" }, { "targetTag", "Target.Character.Player" },
+		{ "sweepRadius", .02 }, { "range", 2.2 }, { "halfAngleDegrees", 180 }, { "verticalTolerance", 2 }
+	});
+	const auto reverseWindow = combatService->Execute(reverse);
+	if (!ExpectGAF(static_cast<bool>(reverseWindow), "Detection-only melee window was rejected")) return false;
+	VansGraphics::VansTransformStore::GetTransform(baseTransform).m_Position = glm::vec3(-1,1.05f,-.3f);
+	VansGraphics::VansTransformStore::GetTransform(tipTransform).m_Position = glm::vec3(-1,1.05f,.3f);
+	combatService->Tick(.01);
+	VansGraphics::VansTransformStore::GetTransform(baseTransform).m_Position.x = 1;
+	VansGraphics::VansTransformStore::GetTransform(tipTransform).m_Position.x = 1;
+	combatService->Tick(.01);
+	const auto reverseSnapshot = combatService->CaptureDebugSnapshot();
+	if (!ExpectGAF(std::any_of(reverseSnapshot.hurtBodies.begin(), reverseSnapshot.hurtBodies.end(),
+		[](const auto& body) { return body.hit && body.region == "Head" && body.target == "Survival Runtime Attacker"; }) &&
+		attackerHost->ActiveActions().size() == 1,
+		"Survival detection required a response animation or targeted the body entity as a separate character")) return false;
+	if (!combatService->Release(reverseWindow.resource, error)) return ExpectGAF(false, error.c_str());
+	std::cout << "[GAF] Detailed hits: Whisper=Chest Survival=Head multipartDedup=1 targetDataRoundTrip=1\n";
 
 	combatService->Tick(0.25);
 	if (!ExpectGAF(whisperHost->ActiveActions().size() == 1 &&
@@ -4274,7 +4967,7 @@ bool TestDemoHallCrouchLocomotionContract()
 		{
 			if (graphSet.value("id", std::string{}) != expected.graphSetId) continue;
 			const auto bindings = graphSet.value("bindings", nlohmann::ordered_json::array());
-			foundSet = bindings.size() == 1 && bindings.front().value("enabled", false) &&
+			foundSet = !bindings.empty() && bindings.front().value("enabled", false) &&
 				bindings.front().value("graphId", std::string{}) == expected.graphId &&
 				bindings.front().value("layerId", std::string{}) == "layer-base";
 		}
@@ -4319,7 +5012,8 @@ bool TestDemoHallCrouchLocomotionContract()
 			if (rule.value("from", std::string{}) != from ||
 				rule.value("to", std::string{}) != to) continue;
 			const auto policy = rule.value("policy", nlohmann::ordered_json::object());
-			return policy.value("phase", std::string{}) == "restart" &&
+			return policy.value("phase", std::string{}) == "matchNormalizedTime" &&
+				!policy.value("requireStateMatch", true) &&
 				policy.value("interruption", std::string{}) == "reject" &&
 				policy.value("rootMotion", std::string{}) == "incomingOnly" &&
 				std::abs(policy.value("duration", 0.0f) - duration) < 0.001f;
@@ -4331,7 +5025,7 @@ bool TestDemoHallCrouchLocomotionContract()
 		hasTransitionRule("graph-set-crouch-enter", "graph-set-default", 0.12f) &&
 		hasTransitionRule("graph-set-default", "graph-set-crouch-exit", 0.08f) &&
 		hasTransitionRule("graph-set-crouch-exit", "graph-set-default", 0.12f),
-		"DemoHall crouch Graph Set transitions lost restart/reject/incoming-only ownership")) return false;
+		"DemoHall crouch Graph Set transitions lost phase handoff/reject/incoming-only ownership")) return false;
 
 	nlohmann::ordered_json scene;
 	if (!Vans::VansJsonFileStorage::Read(projectRoot / "Scenes/DemoHall.json", scene, error))
@@ -4422,8 +5116,8 @@ bool TestDemoHallCrouchLocomotionContract()
 		"DemoHall CharacterMove does not own a persistent toggle crouch Graph Set flow")) return false;
 
 	VansGraphics::Skeleton sceneSkeleton;
-	if (!VansGraphics::VansSkinnedMeshLoader::LoadSkeletonFromModelAsset(
-		(projectRoot / "Assets/Models/SKM_UEFN_Mannequin.fbx").string(), sceneSkeleton, error))
+	if (!LoadContractSkeletonFromModel(
+		projectRoot / "Assets/Models/SKM_UEFN_Mannequin.fbx", sceneSkeleton, error))
 		return ExpectGAF(false, error.c_str());
 	for (const StanceGraphExpectation& expected : expectedGraphs)
 	{
@@ -4432,6 +5126,9 @@ bool TestDemoHallCrouchLocomotionContract()
 			(projectRoot / "Assets/MotionMatchDataBase/UEFN_Mannequin.vanimator").string(), stanceAsset))
 			return ExpectGAF(false, "DemoHall animator could not be loaded for crouch Graph validation");
 		stanceAsset.defaultGraphSetId = expected.graphSetId;
+		// 此处只验证基础蹲起 Clip；完整叠层由下方往返和手枪对照测试覆盖。
+		stanceAsset.layers.resize(1);
+		for (auto& graphSet : stanceAsset.graphSets) graphSet.bindings.resize(1);
 		stanceAsset.graphSets.erase(std::remove_if(
 			stanceAsset.graphSets.begin(), stanceAsset.graphSets.end(),
 			[&](const VansGraphics::VansAnimationGraphSetDefinition& graphSet)
@@ -4455,27 +5152,21 @@ bool TestDemoHallCrouchLocomotionContract()
 		options.enableTargetPostProcess = false;
 		options.enableRootMotion = true;
 		options.rigResolver = [&projectRoot](
-			const std::string&, fs::path& resolvedPath, std::string&)
+			const std::string&, std::string& resolveError)
 		{
-			resolvedPath = projectRoot / "Assets/AnimationRigs/UEFN.vanimrig";
-			return true;
+			return LoadRigForContract(
+				projectRoot / "Assets/AnimationRigs/UEFN.vanimrig", resolveError);
 		};
 		auto controller = VansGraphics::VansAnimatorRuntimeCompiler::Compile(
 			stanceAsset, sceneSkeleton,
 			[&projectRoot](const VansGraphics::AnimatorClipRef& ref,
-				fs::path& resolvedPath, std::string& resolveError)
+				std::shared_ptr<const VansGraphics::VansAnimationClipAsset>& clip,
+				std::string& resolveError)
 			{
-				resolvedPath = projectRoot / ref.pathHint;
-				if (fs::is_regular_file(resolvedPath)) return true;
-				resolveError = "Missing DemoHall crouch clip: " + resolvedPath.string();
-				return false;
+				return LoadAnimationClipAssetForContract(
+					projectRoot / ref.pathHint, clip, resolveError);
 			},
-			[](const VansGraphics::VansAnimationLayerDefinition&,
-				fs::path&, std::string& resolveError)
-			{
-				resolveError = "DemoHall crouch base layer unexpectedly requested a Bone Mask";
-				return false;
-			},
+			ProjectMaskResolverForContract(projectRoot),
 			options, error);
 		if (!ExpectGAF(controller != nullptr, error.c_str())) return false;
 		controller->Play();
@@ -4496,27 +5187,21 @@ bool TestDemoHallCrouchLocomotionContract()
 	roundTripOptions.enableTargetPostProcess = false;
 	roundTripOptions.enableRootMotion = true;
 	roundTripOptions.rigResolver = [&projectRoot](
-		const std::string&, fs::path& resolvedPath, std::string&)
+		const std::string&, std::string& resolveError)
 	{
-		resolvedPath = projectRoot / "Assets/AnimationRigs/UEFN.vanimrig";
-		return true;
+		return LoadRigForContract(
+			projectRoot / "Assets/AnimationRigs/UEFN.vanimrig", resolveError);
 	};
 	auto roundTripController = VansGraphics::VansAnimatorRuntimeCompiler::Compile(
 		roundTripAsset, sceneSkeleton,
 		[&projectRoot](const VansGraphics::AnimatorClipRef& ref,
-			fs::path& resolvedPath, std::string& resolveError)
+			std::shared_ptr<const VansGraphics::VansAnimationClipAsset>& clip,
+			std::string& resolveError)
 		{
-			resolvedPath = projectRoot / ref.pathHint;
-			if (fs::is_regular_file(resolvedPath)) return true;
-			resolveError = "Missing DemoHall stance round-trip clip: " + resolvedPath.string();
-			return false;
+			return LoadAnimationClipAssetForContract(
+				projectRoot / ref.pathHint, clip, resolveError);
 		},
-		[](const VansGraphics::VansAnimationLayerDefinition&,
-			fs::path&, std::string& resolveError)
-		{
-			resolveError = "DemoHall stance round-trip base layer unexpectedly requested a Bone Mask";
-			return false;
-		},
+		ProjectMaskResolverForContract(projectRoot),
 		roundTripOptions, error);
 	if (!ExpectGAF(roundTripController != nullptr, error.c_str()) ||
 		!ExpectGAF(roundTripController->ConfigureMotionMatching(*sceneMotionMatching, error), error.c_str()))
@@ -4662,7 +5347,7 @@ bool TestDemoHallPlayerVaultContract()
 	{
 		if (graphSet.value("id", std::string{}) != "graph-set-vault") continue;
 		const auto bindings = graphSet.value("bindings", nlohmann::ordered_json::array());
-		foundVaultSet = bindings.size() == 1 &&
+		foundVaultSet = !bindings.empty() &&
 			bindings.front().value("graphId", std::string{}) == "graph-vault" &&
 			bindings.front().value("layerId", std::string{}) == "layer-base" &&
 			bindings.front().value("enabled", false);
@@ -4706,8 +5391,8 @@ bool TestDemoHallPlayerVaultContract()
 	}
 
 	VansGraphics::Skeleton sceneSkeleton;
-	if (!VansGraphics::VansSkinnedMeshLoader::LoadSkeletonFromModelAsset(
-		(projectRoot / "Assets/Models/SKM_UEFN_Mannequin.fbx").string(), sceneSkeleton, error))
+	if (!LoadContractSkeletonFromModel(
+		projectRoot / "Assets/Models/SKM_UEFN_Mannequin.fbx", sceneSkeleton, error))
 		return ExpectGAF(false, error.c_str());
 	if (!ExpectGAF(sceneSkeleton.bones.size() == vaultSkeleton.bones.size(),
 		"DemoHall UEFN model and vault clip use different skeleton sizes")) return false;
@@ -4746,27 +5431,21 @@ bool TestDemoHallPlayerVaultContract()
 		return true;
 	};
 	compileOptions.rigResolver = [&projectRoot](
-		const std::string&, fs::path& resolvedPath, std::string&)
+		const std::string&, std::string& resolveError)
 	{
-		resolvedPath = projectRoot / "Assets/AnimationRigs/UEFN.vanimrig";
-		return true;
+		return LoadRigForContract(
+			projectRoot / "Assets/AnimationRigs/UEFN.vanimrig", resolveError);
 	};
 	auto vaultController = VansGraphics::VansAnimatorRuntimeCompiler::Compile(
 		animatorAsset, sceneSkeleton,
 		[&projectRoot](const VansGraphics::AnimatorClipRef& ref,
-			fs::path& resolvedPath, std::string& resolveError)
+			std::shared_ptr<const VansGraphics::VansAnimationClipAsset>& clip,
+			std::string& resolveError)
 		{
-			resolvedPath = projectRoot / ref.pathHint;
-			if (fs::is_regular_file(resolvedPath)) return true;
-			resolveError = "Missing DemoHall vault clip: " + resolvedPath.string();
-			return false;
+			return LoadAnimationClipAssetForContract(
+				projectRoot / ref.pathHint, clip, resolveError);
 		},
-		[](const VansGraphics::VansAnimationLayerDefinition&,
-			fs::path&, std::string& resolveError)
-		{
-			resolveError = "DemoHall vault base layer unexpectedly requested a Bone Mask";
-			return false;
-		},
+		ProjectMaskResolverForContract(projectRoot),
 		compileOptions, error);
 	if (!ExpectGAF(vaultController != nullptr, error.c_str())) return false;
 	vaultController->Play();
@@ -4849,8 +5528,8 @@ bool TestDemoHallWhisperAIContract()
 	std::string error;
 
 	VansGraphics::Skeleton modelSkeleton;
-	if (!VansGraphics::VansSkinnedMeshLoader::LoadSkeletonFromModelAsset(
-		(whisperRoot / "Models/SK_Whisper.glb").string(), modelSkeleton, error))
+	if (!LoadContractSkeletonFromModel(
+		whisperRoot / "Models/SK_Whisper.glb", modelSkeleton, error))
 		return ExpectGAF(false, error.c_str());
 	if (!ExpectGAF(modelSkeleton.bones.size() == 68 &&
 		modelSkeleton.boneNameToIndex.find("root") != modelSkeleton.boneNameToIndex.end() &&
@@ -5080,23 +5759,23 @@ bool TestDemoHallWhisperAIContract()
 	whisperCompileOptions.enableTargetPostProcess = false;
 	whisperCompileOptions.enableRootMotion = false;
 	whisperCompileOptions.rigResolver = [&whisperRoot](
-		const std::string&, fs::path& resolvedPath, std::string&)
+		const std::string&, std::string& resolveError)
 	{
-		resolvedPath = whisperRoot / "Animation/Whisper.vanimrig";
-		return true;
+		return LoadRigForContract(
+			whisperRoot / "Animation/Whisper.vanimrig", resolveError);
 	};
 	auto whisperController = VansGraphics::VansAnimatorRuntimeCompiler::Compile(
 		whisperAnimatorAsset, modelSkeleton,
 		[&projectRoot](const VansGraphics::AnimatorClipRef& ref,
-			fs::path& resolvedPath, std::string& resolveError)
+			std::shared_ptr<const VansGraphics::VansAnimationClipAsset>& clip,
+			std::string& resolveError)
 		{
-			resolvedPath = projectRoot / ref.pathHint;
-			if (fs::is_regular_file(resolvedPath)) return true;
-			resolveError = "Missing DemoHall Whisper clip: " + resolvedPath.string();
-			return false;
+			return LoadAnimationClipAssetForContract(
+				projectRoot / ref.pathHint, clip, resolveError);
 		},
 		[](const VansGraphics::VansAnimationLayerDefinition&,
-			fs::path&, std::string& resolveError)
+			std::shared_ptr<const VansGraphics::VansBoneMaskAsset>&,
+			std::string& resolveError)
 		{
 			resolveError = "DemoHall Whisper base layer unexpectedly requested a Bone Mask";
 			return false;
@@ -5278,9 +5957,13 @@ bool TestDemoHallWhisperAIContract()
 				}
 			}
 			else if (component.value("type", std::string{}) == "ActionHost")
-				for (const auto& tag : data.value("initialTags", nlohmann::ordered_json::array()))
+				for (const auto& initializer : data.value(
+					"initializers", nlohmann::ordered_json::array()))
 					playerTargetTag = playerTargetTag ||
-						tag.value("tag", std::string{}) == "Target.Character.Player";
+						initializer.value("type", std::string{}) ==
+							"Gameplay.Tags.Initialize" &&
+						initializer.value("inputs", nlohmann::ordered_json::object())
+							.value("tag", std::string{}) == "Target.Character.Player";
 		}
 		if (hasTransform && playerTargetTag) playerPositions.push_back(entityPosition);
 		if (!isWhisperEntity) continue;
@@ -5387,6 +6070,10 @@ bool TestDemoHallWhisperAIContract()
 		return ExpectGAF(false, error.c_str());
 
 	const fs::path itemGafRoot = projectRoot / "Assets/GAF/ItemInteraction";
+	Vans::VansGAFProjectConfiguration gafConfiguration;
+	if (!Vans::VansGAFProjectConfiguration::LoadForProject(
+		projectRoot, workspace / "ForestEngine/ForestEngine", gafConfiguration, error))
+		return ExpectGAF(false, error.c_str());
 	nlohmann::ordered_json pickupAction;
 	nlohmann::ordered_json pickupActionSet;
 	nlohmann::ordered_json pickupTimeline;
@@ -5406,13 +6093,14 @@ bool TestDemoHallWhisperAIContract()
 			projectRoot / "Assets/GAF/WindowBreak/DemoHallTags.vtagtree",
 			demoHallTags, error))
 		return ExpectGAF(false, error.c_str());
-	const auto gafSourceCompiles = [&error](
+	const auto gafSourceCompiles = [&error, &gafConfiguration](
 		const fs::path& path, Vans::VansAssetType type)
 	{
 		Vans::VansSerializedValue source;
 		if (!Vans::VansGameplayAssetStorage::LoadSource(path, source, error)) return false;
 		const Vans::VansGameplayCookResult cooked =
-			Vans::VansGameplayAssetStorage::Cook(type, source);
+			Vans::VansGameplayAssetStorage::Cook(type, source,
+				Vans::VansGameplayAssetSchemaRegistry::BuiltIns(), &gafConfiguration);
 		if (!cooked) return false;
 		return static_cast<bool>(Vans::VansGameplayAssetCompiler::Compile(cooked.asset));
 	};
@@ -5491,63 +6179,124 @@ bool TestDemoHallWhisperAIContract()
 		"Frame_Stand_4 GAF assets did not scan as a six-asset runtime closure")) return false;
 	Vans::VansGameplayRuntime pickupRuntime;
 	Vans::VansGameplayRuntimeDependencies pickupRuntimeDependencies;
-	pickupRuntimeDependencies.graphNodeRegistrars.push_back(
-		[](Vans::VansActionGraphNodeRegistry& registry, std::string& registrationError)
-		{
-			return Vans::VansRegisterCameraActionGraphNodes(registry, registrationError);
-		});
+	pickupRuntimeDependencies.contributors.push_back(
+		Vans::VansMakeGameplayPrimitivesGAFContributor());
+	pickupRuntimeDependencies.contributors.push_back(
+		MakeProjectSchemaContributor(gafConfiguration));
+	pickupRuntimeDependencies.contributors.push_back(MakeTestTimelineContributor());
+	pickupRuntimeDependencies.contributors.push_back(MakeTestRuntimeContributor(
+		"Test.PickupRuntime", {}));
+	Vans::VansAssetObjectRepository pickupAssetObjects;
+	if (!BootstrapGameplayMemory(pickupDatabase.All(), pickupAssetObjects, error))
+		return ExpectGAF(false, error.c_str());
 	if (!pickupRuntime.Initialize(
-		pickupDatabase.All(), Vans::VansGAFSettings{}, pickupRuntimeDependencies, error))
+		pickupDatabase.All(), pickupAssetObjects, Vans::VansGAFSettings{},
+		pickupRuntimeDependencies, error))
 		return ExpectGAF(false, error.c_str());
 	const auto runtimePickupAction = pickupRuntime.Assets().ResolveAction(
 		"Gameplay.DemoHall.Item.FrameStand4PickupWake");
 	const auto* runtimePickupSet = pickupRuntime.Assets().ResolveActionSet(
 		"e30100ce-50a7-4a44-95fe-d91fc3ad678d");
+	const auto* runtimePickupGraph = runtimePickupAction ? FindCompiledActionRecord(
+		runtimePickupAction->program.execute.drivers, "Core.Driver.Graph") : nullptr;
+	const auto* runtimePickupTimeline = runtimePickupAction ? FindCompiledActionRecord(
+		runtimePickupAction->program.execute.drivers, "Timeline.Driver.Session") : nullptr;
 	Vans::VansGameplayActionHostSetup pickupHostSetup;
 	pickupHostSetup.actionSets.push_back("e30100ce-50a7-4a44-95fe-d91fc3ad678d");
-	pickupHostSetup.initialTags.push_back({ "Target.Interactable.Item", 1 });
+	AddHostTagInitializer(pickupHostSetup, "Target.Interactable.Item");
 	const auto pickupHost = pickupRuntime.CreateHost({ 902, 1 }, pickupHostSetup, error);
 	const bool pickupRuntimeLinksResolve = runtimePickupAction && runtimePickupSet &&
-		runtimePickupAction->executionGraph && runtimePickupAction->timelineAssets.size() == 1 &&
-		runtimePickupAction->timelineAssets.front() ==
-			"45453c77-62f3-4c8a-a949-3de554409767" &&
+		runtimePickupAction->executionGraph &&
+		CompiledActionReference(runtimePickupGraph, "graph") ==
+			"ad301673-a461-4a6b-8137-c3e95c44c474" && !runtimePickupTimeline &&
 		runtimePickupSet->grants.size() == 1 && pickupHost &&
 		pickupHost->GrantedActions().size() == 1;
+	bool pickupWaitsForExternalCompletion = false;
+	if (runtimePickupAction && pickupHost)
+	{
+		Vans::VansActionContext pickupContext;
+		pickupContext.SetEntity(Vans::VansActionContextSlots::Owner, { 902, 1 });
+		pickupContext.SetEntity(Vans::VansActionContextSlots::Instigator, { 903, 1 });
+		pickupContext.SetEntity(Vans::VansActionContextSlots::Source, { 903, 1 });
+		pickupContext.SetEntity(Vans::VansActionContextSlots::PrimaryTarget, { 902, 1 });
+		const Vans::VansActionResult activated = pickupHost->ActivateAction(
+			runtimePickupAction->id, pickupContext);
+		pickupRuntime.TickEarly(5.0);
+		const auto held = activated ? pickupHost->Query(activated.action) : std::nullopt;
+		const bool heldUntilExplicitExit = held &&
+			held->state == Vans::VansActionInstanceState::Waiting;
+		Vans::VansActionEvent completion;
+		completion.stableName = "Interaction.Pickup.Finished";
+		completion.type = Vans::VansMakeStableId<Vans::VansActionFieldIdTag>(
+			completion.stableName);
+		if (heldUntilExplicitExit &&
+			pickupHost->EnqueueEvent(activated.action, std::move(completion), error))
+		{
+			pickupRuntime.TickEarly(0.0);
+			const auto ended = pickupHost->Query(activated.action);
+			pickupWaitsForExternalCompletion = ended &&
+				ended->state == Vans::VansActionInstanceState::Ended &&
+				ended->endReason == Vans::VansActionEndReason::Completed;
+		}
+		std::cout << "[GAF] Pickup preview lifecycle: heldAfter5s="
+			<< heldUntilExplicitExit << " explicitCompletion="
+			<< pickupWaitsForExternalCompletion << " duplicateActionTimeline="
+			<< (runtimePickupTimeline != nullptr) << '\n';
+	}
 
 	bool hasPickupScriptBridge = false;
 	for (const auto& extension : pickupAction.value(
 		"extensions", nlohmann::ordered_json::array()))
 	{
-		const auto properties = extension.value(
-			"properties", nlohmann::ordered_json::object());
+		const auto inputs = extension.value(
+			"inputs", nlohmann::ordered_json::object());
 		hasPickupScriptBridge = hasPickupScriptBridge ||
-			extension.value("bridge", std::string{}) == "Script.Action" &&
-			properties.value("entry", std::string{}) == "InteractablePickup" &&
-			properties.value("callback", std::string{}) == "play_pickup_presentation" &&
-			properties.value("timelineComponentGuid", std::string{}) ==
+			extension.value("type", std::string{}) == "Script.Action" &&
+			inputs.value("entry", std::string{}) == "InteractablePickup" &&
+			inputs.value("callback", std::string{}) == "play_pickup_presentation" &&
+			inputs.value("timelineComponentGuid", std::string{}) ==
 				"296cfa68-af40-4509-b181-a57925cd6337";
 	}
-	const auto pickupExecution = pickupAction.value(
-		"execution", nlohmann::ordered_json::object());
+	bool hasGraphDriver = false;
+	bool hasTimelineDriver = false;
+	const auto phases = pickupAction.value("phases", nlohmann::ordered_json::object());
+	const auto execute = phases.value("execute", nlohmann::ordered_json::object());
+	for (const auto& driver : execute.value("drivers", nlohmann::ordered_json::array()))
+	{
+		const auto inputs = driver.value("inputs", nlohmann::ordered_json::object());
+		hasGraphDriver = hasGraphDriver ||
+			driver.value("type", std::string{}) == "Core.Driver.Graph" &&
+			inputs.value("graph", nlohmann::ordered_json::object())
+				.value("assetGuid", std::string{}) ==
+				"ad301673-a461-4a6b-8137-c3e95c44c474";
+		hasTimelineDriver = hasTimelineDriver ||
+			driver.value("type", std::string{}) == "Timeline.Driver.Session" &&
+			inputs.value("timeline", nlohmann::ordered_json::object())
+				.value("assetGuid", std::string{}) ==
+				"45453c77-62f3-4c8a-a949-3de554409767";
+	}
 	const bool pickupActionUsesGAF =
 		pickupAction.value("actionId", std::string{}) ==
 			"Gameplay.DemoHall.Item.FrameStand4PickupWake" &&
-		pickupExecution.value("executor", std::string{}) == "Action.Executor.Graph" &&
-		pickupExecution.value("graph", nlohmann::ordered_json::object())
-			.value("assetGuid", std::string{}) ==
-			"ad301673-a461-4a6b-8137-c3e95c44c474" &&
-		pickupExecution.value("timeline", nlohmann::ordered_json::object())
-			.value("assetGuid", std::string{}) ==
-			"45453c77-62f3-4c8a-a949-3de554409767" &&
-		hasPickupScriptBridge;
+		hasGraphDriver && !hasTimelineDriver && hasPickupScriptBridge;
 	bool pickupSetGrantsAction = false;
 	for (const auto& grant : pickupActionSet.value(
 		"grants", nlohmann::ordered_json::array()))
+	{
+		bool hasInputBinding = false;
+		for (const auto& extension : grant.value(
+			"extensions", nlohmann::ordered_json::array()))
+		{
+			const auto inputs = extension.value("inputs", nlohmann::ordered_json::object());
+			hasInputBinding = hasInputBinding ||
+				extension.value("type", std::string{}) == "Gameplay.Input.Binding" &&
+				inputs.value("binding", std::string{}) == "Input.Interact";
+		}
 		pickupSetGrantsAction = pickupSetGrantsAction ||
 			grant.value("action", nlohmann::ordered_json::object())
 				.value("assetGuid", std::string{}) ==
-				"cba9cbd4-3a09-484b-aa11-ad3aa825eccb" &&
-			grant.value("inputBinding", std::string{}) == "Input.Interact";
+				"cba9cbd4-3a09-484b-aa11-ad3aa825eccb" && hasInputBinding;
+	}
 
 	bool timelineBindsFrameStand = false;
 	bool timelineBindsWhisperAnimation = false;
@@ -5750,6 +6499,22 @@ bool TestDemoHallWhisperAIContract()
 		"vans.ai.request_activation(self.aiTarget)");
 	const std::size_t pickupGameplayRelease = pickupFinishScript.find(
 		"vans.ai.release_to_gameplay(self.aiTarget)");
+	std::string inspectionView;
+	if (!Vans::VansFileStorage::ReadAllBytes(
+		projectRoot / "Assets/UI/Views/ItemInspection.xaml", inspectionView, error))
+		return ExpectGAF(false, error.c_str());
+	std::string inspectionScreen;
+	if (!Vans::VansFileStorage::ReadAllBytes(
+		projectRoot / "Assets/UI/Screens/ItemInspection.vui.json", inspectionScreen, error))
+		return ExpectGAF(false, error.c_str());
+	const bool pickupInspectionIsMousePreviewWithEscapeExit =
+		pickupScript.find("keys.is_mouse_button_down(\"LEFT\")") != std::string::npos &&
+		pickupScript.find("keys.get_mouse_delta()") != std::string::npos &&
+		script.find("keys.is_key_pressed(\"ESCAPE\")") != std::string::npos &&
+		script.find("ui.inspect.exit") == std::string::npos &&
+		inspectionView.find("BtnExitInspection") == std::string::npos &&
+		inspectionView.find("[Esc]") != std::string::npos &&
+		inspectionScreen.find("\"events\": []") != std::string::npos;
 	const bool pickupUsesExistingGafInventoryFlow =
 		pickupScript.find("vans.action.try_activate") != std::string::npos &&
 		pickupScript.find("inventory.add") != std::string::npos &&
@@ -5758,6 +6523,8 @@ bool TestDemoHallWhisperAIContract()
 		pickupScript.find("timeline.resume(timelineGuid)") != std::string::npos &&
 		pickupScript.find("session.timelineCommitPulse") == std::string::npos &&
 		pickupCommitScript.find("vans.ai.request_activation") == std::string::npos &&
+		pickupFinishScript.find("local completedOutro") != std::string::npos &&
+		pickupFinishScript.find("wakeStarted = completedOutro") != std::string::npos &&
 		pickupGameplayRestore != std::string::npos &&
 		pickupCommittedGate != std::string::npos &&
 		pickupWakePlay != std::string::npos &&
@@ -5835,8 +6602,8 @@ bool TestDemoHallWhisperAIContract()
 	const fs::path animationV2WhisperRoot = animationV2Root / "Assets/Characters/Whisper";
 
 	VansGraphics::Skeleton animationV2Skeleton;
-	if (!VansGraphics::VansSkinnedMeshLoader::LoadSkeletonFromModelAsset(
-		(animationV2WhisperRoot / "Models/SK_Whisper.glb").string(), animationV2Skeleton, error))
+	if (!LoadContractSkeletonFromModel(
+		animationV2WhisperRoot / "Models/SK_Whisper.glb", animationV2Skeleton, error))
 		return ExpectGAF(false, error.c_str());
 	VansGraphics::VansAnimationClip deadClip;
 	VansGraphics::VansAnimationClip sitToIdleClip;
@@ -5868,23 +6635,23 @@ bool TestDemoHallWhisperAIContract()
 	animationV2CompileOptions.enableTargetPostProcess = false;
 	animationV2CompileOptions.enableRootMotion = false;
 	animationV2CompileOptions.rigResolver = [&animationV2WhisperRoot](
-		const std::string&, fs::path& resolvedPath, std::string&)
+		const std::string&, std::string& resolveError)
 	{
-		resolvedPath = animationV2WhisperRoot / "Animation/Whisper.vanimrig";
-		return true;
+		return LoadRigForContract(
+			animationV2WhisperRoot / "Animation/Whisper.vanimrig", resolveError);
 	};
 	auto animationV2Controller = VansGraphics::VansAnimatorRuntimeCompiler::Compile(
 		animationV2AnimatorAsset, animationV2Skeleton,
 		[&animationV2Root](const VansGraphics::AnimatorClipRef& ref,
-			fs::path& resolvedPath, std::string& resolveError)
+			std::shared_ptr<const VansGraphics::VansAnimationClipAsset>& clip,
+			std::string& resolveError)
 		{
-			resolvedPath = animationV2Root / ref.pathHint;
-			if (fs::is_regular_file(resolvedPath)) return true;
-			resolveError = "Missing AnimationV2 Whisper clip: " + resolvedPath.string();
-			return false;
+			return LoadAnimationClipAssetForContract(
+				animationV2Root / ref.pathHint, clip, resolveError);
 		},
 		[](const VansGraphics::VansAnimationLayerDefinition&,
-			fs::path&, std::string& resolveError)
+			std::shared_ptr<const VansGraphics::VansBoneMaskAsset>&,
+			std::string& resolveError)
 		{
 			resolveError = "AnimationV2 Whisper base layer unexpectedly requested a Bone Mask";
 			return false;
@@ -5931,7 +6698,8 @@ bool TestDemoHallWhisperAIContract()
 
 	return ExpectGAF(foundWhisper && behaviorIsPickupGatedChase && allPlayerSpawnsReachable &&
 		pickupGafAssetsCompile && pickupTimelineCompiles && pickupRuntimeLinksResolve &&
-		pickupActionUsesGAF && pickupSetGrantsAction &&
+		pickupWaitsForExternalCompletion && pickupActionUsesGAF && pickupSetGrantsAction &&
+		pickupInspectionIsMousePreviewWithEscapeExit &&
 		timelineBindsFrameStand && timelineBindsWhisperAnimation &&
 		timelineFiresWakeTrigger && timelineCompletesPickupAction && pickupPreviewDoesNotWake &&
 		timelineCompletionTick == 77999 && timelineWakeTick == 1 &&
@@ -5953,6 +6721,218 @@ bool TestDemoHallWhisperAIContract()
 		fs::is_regular_file(animationV2WhisperRoot / "Animation/Whisper.vanimator") &&
 		fs::is_regular_file(animationV2WhisperRoot / "Animation/Whisper.vanimrig"),
 		"Frame_Stand_4 pickup is not wired through Whisper wake, AI chase, navigation, CCT, and locomotion");
+}
+
+bool TestDemoHallPlayerThrowContract()
+{
+	using namespace VansGraphics;
+	namespace fs = std::filesystem;
+	fs::path workspace = fs::current_path();
+	for (int i = 0; i < 6 && !fs::exists(workspace / "DemoHallProject"); ++i)
+		workspace = workspace.parent_path();
+	const fs::path project = workspace / "DemoHallProject";
+	std::string error;
+	Vans::VansGAFProjectConfiguration config;
+	if (!Vans::VansGAFProjectConfiguration::LoadForProject(project,
+		workspace / "ForestEngine/ForestEngine", config, error)) return ExpectGAF(false, error.c_str());
+	const fs::path temporary = fs::temp_directory_path() / "ForestDemoHallThrowContract";
+	fs::remove_all(temporary);
+	struct Cleanup { fs::path path; ~Cleanup() { std::error_code ec; fs::remove_all(path, ec); } } cleanup{temporary};
+	fs::create_directories(temporary / "Assets");
+	for (const char* folder : {"PlayerAttack", "PlayerThrow", "WhisperCombat"})
+		fs::copy(project / "Assets/GAF" / folder, temporary / "Assets" / folder, fs::copy_options::recursive);
+	for (const char* file : {"DemoHallTags.vtagtree", "DemoHallTags.vtagtree.meta"})
+		fs::copy_file(project / "Assets/GAF/WindowBreak" / file, temporary / "Assets" / file);
+	Vans::VansAssetDatabase db(temporary / "Assets", temporary / "Library");
+	if (!ExpectGAF(static_cast<bool>(db.Scan(Vans::VansAssetOperationPolicy::Authoring())), "Throw assets did not scan")) return false;
+	Vans::VansAssetObjectRepository objects;
+	if (!BootstrapGameplayMemory(db.All(), objects, error)) return ExpectGAF(false, error.c_str());
+	Vans::VansGameplayRuntimeDependencies deps;
+	deps.contributors.push_back(Vans::VansMakeGameplayPrimitivesGAFContributor());
+	deps.contributors.push_back(MakeProjectSchemaContributor(config));
+	deps.contributors.push_back(MakeTestRuntimeContributor("Gameplay.Navigation", {std::make_shared<Vans::VansFakeActionService>(Vans::VansNavigationActionCapability())}));
+	deps.contributors.push_back(MakeTestRuntimeContributor("Gameplay.Combat", {std::make_shared<Vans::VansFakeActionService>(Vans::VansCombatActionCapability())}));
+	deps.contributors.push_back(MakeTestRuntimeContributor("Gameplay.Animation", {std::make_shared<Vans::VansFakeActionService>(Vans::VansAnimationActionCapability())}));
+	deps.contributors.push_back(MakeTestRuntimeContributor("Gameplay.AnimationEvents", {std::make_shared<Vans::VansFakeActionService>(Vans::VansAnimationEventActionCapability())}));
+	deps.contributors.push_back(MakeTestRuntimeContributor("Gameplay.Projectile", {std::make_shared<Vans::VansFakeActionService>(Vans::VansProjectileActionCapability())}));
+	deps.contributors.push_back(MakeTestRuntimeContributor("Gameplay.Attachment", {std::make_shared<Vans::VansFakeActionService>(Vans::VansAttachmentActionCapability())}));
+	Vans::VansGameplayRuntime runtime;
+	if (!runtime.Initialize(db.All(), objects, config.settings, deps, error)) return ExpectGAF(false, error.c_str());
+	Vans::VansGameplayActionHostSetup setup;
+	setup.actionSets = {"4534ddf1-e858-468e-a1ab-9e8b98cf6129", "274440c3-2aa8-567f-b0e2-630bed9a15a4"};
+	AddHostTagInitializer(setup, "Target.Character.Player");
+	const Vans::VansEntityHandle entity{901, 1};
+	auto host = runtime.CreateHost(entity, setup, error);
+	auto action = runtime.Assets().ResolveAction("Gameplay.DemoHall.Player.Throw.Smoke");
+	auto attack = runtime.Assets().ResolveAction("Gameplay.DemoHall.Player.Attack.Crowbar");
+	if (!ExpectGAF(host && action && attack && host->GrantedActions().size() == 3, "Throw grant or action missing")) return false;
+	Vans::VansActionContext context;
+	context.SetEntity(Vans::VansActionContextSlots::Owner, entity);
+	context.SetEntity(Vans::VansActionContextSlots::Instigator, entity);
+	context.SetEntity(Vans::VansActionContextSlots::Source, entity);
+	context.SetEntity(Vans::VansActionContextSlots::PrimaryTarget, entity);
+	context.SetSerialized(Vans::VansActionContextSlots::Payload,
+		Vans::VansSerializedValue::Object({{"hasProjectile", Vans::VansSerializedValue::Bool(false)}}));
+	auto started = host->ActivateAction(action->id, context);
+	if (!ExpectGAF(started && !host->ActivateAction(attack->id, context)
+		&& !host->ActivateAction(action->id, context), "GAF throw did not block attack or re-entry")) return false;
+	auto signal = [&](Vans::VansActionHandle handle, const char* name)
+	{
+		Vans::VansActionEvent event;
+		event.stableName = name;
+		event.type = Vans::VansMakeStableId<Vans::VansActionFieldIdTag>(name);
+		if (!host->EnqueueEvent(handle, std::move(event), error)) return false;
+		runtime.TickEarly(0.01);
+		return true;
+	};
+	runtime.TickEarly(5.0);
+	if (!ExpectGAF(host->ActiveActions().size() == 1, "Throw must wait for Clip release, not elapsed time")) return false;
+	if (!signal(started.action, "Throw.Release")) return ExpectGAF(false, error.c_str());
+	if (!ExpectGAF(host->ActiveActions().size() == 1, "Release must leave the remainder of Throw active")) return false;
+	if (!signal(started.action, "Throw.Finished")) return ExpectGAF(false, error.c_str());
+	if (!ExpectGAF(host->ActiveActions().empty() && host->ActivateAction(attack->id, context)
+		&& !host->ActivateAction(action->id, context), "Throw completion or reverse attack exclusion failed")) return false;
+	runtime.TickEarly(2.6);
+	started = host->ActivateAction(action->id, context);
+	if (!ExpectGAF(static_cast<bool>(started), "Throw could not repeat")) return false;
+	if (!signal(started.action, "Throw.Release") || !signal(started.action, "Throw.Finished")
+		|| !ExpectGAF(host->ActiveActions().empty(), "Repeated Throw did not finish")) return false;
+
+	// 真实 clip 和重定向器提供手掌、腰部及模型挂接的检查数据。
+	VansAnimationClip clip;
+	Skeleton source, target;
+	if (!ExpectGAF(VansAnimationClipIO::Load((project / "Assets/Animations/Interaction/Throw/AS_throw_Unreal_Take.vclip").string(), clip, source)
+		&& std::abs(clip.duration - 4.533333f) < 0.001f, "Throw clip duration is invalid")) return false;
+	// These are sampler/codec contracts, independent of the DemoHall Lua controller.
+	if (!ExpectGAF(clip.events.size() == 2 && clip.events[0].name == "Throw.Release"
+		&& std::abs(clip.events[0].time - 38.0f / 30.0f) < 0.0001f
+		&& clip.events[1].name == "Throw.Finished", "Throw Clip markers are missing")) return false;
+	std::string encoded;
+	VansAnimationClip decoded;
+	Skeleton decodedSkeleton;
+	if (!VansAnimationClipBinaryCodec::Encode(clip, source, encoded, error)
+		|| !VansAnimationClipBinaryCodec::Decode(encoded, decoded, decodedSkeleton, error)) return ExpectGAF(false, error.c_str());
+	if (!ExpectGAF(decoded.events.size() == clip.events.size() && decoded.events[0].id == clip.events[0].id
+		&& decoded.boneKeyframes.size() == clip.boneKeyframes.size(), "Clip event round trip changed animation data")) return false;
+	auto sampledEvents = [&](float previous, float current, bool loop)
+	{
+		VansAnimationSampleRequest request;
+		request.previousTime = previous; request.currentTime = current;
+		request.endTime = decoded.duration; request.loop = loop;
+		VansPosePayload payload;
+		VansAnimationSampler::Sample(decoded, decodedSkeleton, request, payload);
+		return payload.events;
+	};
+	const auto crossed = sampledEvents(1.0f, 1.5f, false);
+	if (!ExpectGAF(crossed.size() == 1 && crossed[0].name == "Throw.Release" && crossed[0].forward,
+		"A coarse animation frame missed or duplicated the release")) return false;
+	if (!ExpectGAF(sampledEvents(1.5f, 1.5f, false).empty() && sampledEvents(1.5f, 1.6f, false).empty(),
+		"Paused or later animation frames replayed an event")) return false;
+	const auto reversed = sampledEvents(1.5f, 1.0f, false);
+	if (!ExpectGAF(reversed.size() == 1 && !reversed[0].forward, "Reverse event direction was lost")) return false;
+	decoded.events.resize(1);
+	const auto looped = sampledEvents(0, decoded.duration * 2 + 1.5f, true);
+	if (!ExpectGAF(looped.size() == 3 && looped[0].loopIndex == 0 && looped[2].loopIndex == 2,
+		"Multi-loop traversal lost release events")) return false;
+	decoded.events[0].time = 0;
+	if (!ExpectGAF(sampledEvents(0, 0.1f, false).size() == 1 && sampledEvents(0.1f, 0.2f, false).empty(),
+		"Start-of-clip event did not fire exactly once")) return false;
+	decoded.events[0].time = decoded.duration + 1;
+	if (!ExpectGAF(!VansAnimationClipBinaryCodec::Encode(decoded, decodedSkeleton, encoded, error),
+		"Clip codec accepted an out-of-range event")) return false;
+	VansAnimationController aliases;
+	aliases.AddClip("Throw", clip); aliases.AddClip("OtherTake", clip);
+	if (!ExpectGAF(aliases.GetClip("Throw")->stableId != aliases.GetClip("OtherTake")->stableId,
+		"Controller aliases collided for imported clips sharing a take name")) return false;
+	const auto modelPath = project / "Assets/Characters/Survival/Models/survival_character.fbx";
+	Vans::VansAssetMeta modelMeta;
+	if (!Vans::VansAssetMetaStorage::Load(Vans::VansAssetMeta::MetaPathFor(modelPath), modelMeta, error)) return ExpectGAF(false, error.c_str());
+	Assimp::Importer importer;
+	const aiScene* scene = importer.ReadFile(modelPath.string(), aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_GenNormals);
+	if (!ExpectGAF(scene != nullptr, "Survival model failed to load")) return false;
+	VansSkinnedMeshLoader::ExtractSkeleton(scene, target, 1.0f, Vans::ReadSkeletalMeshImportSettings(modelMeta));
+	VansAnimationRigAsset rig;
+	VansCompiledAnimationRig compiled;
+	VansRetargetProfileAsset profile;
+	if (!VansAnimationRigStorage::Load(project / "Assets/AnimationRigs/Survival.vanimrig", rig, error)
+		|| !VansAnimationRigCompiler::Compile(rig, target, compiled, error)
+		|| !VansRetargetProfileStorage::Load(project / "Assets/Retarget/RTG_UEFN_To_Survival.vretarget", profile, error)) return ExpectGAF(false, error.c_str());
+	VansRetargetRuntimeDesc desc;
+	desc.translationScaleMode = profile.translationScaleMode;
+	desc.translationScale = profile.explicitTranslationScale;
+	desc.rootAlignment = profile.rootAlignment;
+	desc.targetModelSpaceAlignment = profile.targetModelSpaceAlignment;
+	desc.limbChains = profile.limbChains;
+	VansRetargetProcessor processor;
+	if (!ExpectGAF(processor.Build(source, target, compiled, desc), "Throw retarget failed")) return false;
+	const auto handSocket = std::find_if(rig.sockets.begin(), rig.sockets.end(), [](const auto& s) { return s.name == "LeftHand_Smoke"; });
+	const auto waistSocket = std::find_if(rig.sockets.begin(), rig.sockets.end(), [](const auto& s) { return s.name == "Waist_Smoke"; });
+	if (!ExpectGAF(handSocket != rig.sockets.end() && waistSocket != rig.sockets.end(), "Smoke sockets missing")) return false;
+	const int hand = target.boneNameToIndex.at("hand_l");
+	const int pelvis = target.boneNameToIndex.at("pelvis");
+	if (!ExpectGAF(compiled.sockets[compiled.FindSocketByGuid(handSocket->guid)].boneIndex == hand
+		&& compiled.sockets[compiled.FindSocketByGuid(waistSocket->guid)].boneIndex == pelvis, "Smoke attached to wrong bone")) return false;
+	glm::vec3 grip(0), axis(0);
+	nlohmann::ordered_json poses = nlohmann::ordered_json::array();
+	for (int sample = 0; sample <= 16; ++sample)
+	{
+		VansAnimationSampleRequest request;
+		request.currentTime = clip.duration * sample / 16.0f;
+		request.endTime = clip.duration;
+		request.loop = false;
+		VansPosePayload payload;
+		if (!ExpectGAF(VansAnimationSampler::Sample(clip, source, request, payload), "Throw pose sampling failed")) return false;
+		std::vector<glm::mat4> sourceModels, targetModels;
+		VansPoseMath::ToMatrices(payload.localPose, sourceModels);
+		for (int i : source.topologicalOrder) if (source.bones[i].parentIndex >= 0) sourceModels[i] = sourceModels[source.bones[i].parentIndex] * sourceModels[i];
+		if (!ExpectGAF(processor.Process(sourceModels, source, target, targetModels), "Throw pose retarget failed")) return false;
+		const glm::mat4 inverseHand = glm::inverse(targetModels[hand]);
+		auto localBone = [&](const char* name) { return glm::vec3(inverseHand * targetModels[target.boneNameToIndex.at(name)][3]); };
+		const glm::vec3 knuckles = (localBone("index_01_l") + localBone("middle_01_l") + localBone("ring_01_l") + localBone("pinky_01_l")) * 0.25f;
+		const glm::vec3 width = glm::normalize(localBone("index_01_l") - localBone("pinky_01_l"));
+		const glm::vec3 normal = glm::normalize(glm::cross(glm::normalize(knuckles), width));
+		grip += knuckles * 0.5f + normal * 2.0f;
+		axis += width;
+		nlohmann::ordered_json frame;
+		frame["time"] = request.currentTime;
+		for (const char* name : {"root", "pelvis", "spine_01", "spine_05", "head", "upperarm_l", "lowerarm_l", "hand_l", "index_01_l", "pinky_01_l", "upperarm_r", "lowerarm_r", "hand_r", "thigh_l", "calf_l", "foot_l", "thigh_r", "calf_r", "foot_r"})
+		{
+			const auto p = targetModels[target.boneNameToIndex.at(name)][3];
+			if (!ExpectGAF(std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z), "Throw retarget produced invalid positions")) return false;
+			frame[name] = {p.x,p.y,p.z};
+		}
+		auto socketMatrix = [](const auto& s) { return glm::translate(glm::mat4(1),s.positionLocal) * glm::mat4_cast(s.rotationLocal); };
+		for (const auto* socket : {&*handSocket, &*waistSocket})
+		{
+			const auto matrix = targetModels[socket == &*handSocket ? hand : pelvis] * socketMatrix(*socket);
+			const auto* attachment = compiled.FindAttachmentProfile(
+				"f9c8f428-5388-5466-9c5d-a5dbeb564cd5", VansRigAttachmentParentKind::Socket, socket->guid);
+			if (!ExpectGAF(attachment != nullptr, "Smoke attachment profile missing")) return false;
+			Vans::VansLocalTransform local;
+			local.position = attachment->positionLocal;
+			local.rotation = attachment->rotationLocal;
+			local.scale = attachment->scaleLocal;
+			Vans::VansLocalTransform resolved;
+			if (!ExpectGAF(Vans::VansLocalTransform::TryFromMatrix(
+				glm::scale(glm::mat4(1), glm::vec3(0.01f)) * matrix * local.ToMatrix(), resolved),
+				"Smoke world scale cannot be represented by the production TransformGraph")) return false;
+			frame[socket->name] = {{matrix[0].x,matrix[1].x,matrix[2].x,matrix[3].x},{matrix[0].y,matrix[1].y,matrix[2].y,matrix[3].y},{matrix[0].z,matrix[1].z,matrix[2].z,matrix[3].z},{0,0,0,1}};
+		}
+		poses.push_back(frame);
+	}
+	grip /= 17.0f;
+	const glm::quat rotation = glm::rotation(glm::vec3(0,1,0), glm::normalize(axis));
+	std::cout << "THROW_GRIP=" << nlohmann::ordered_json({{"position",{grip.x,grip.y,grip.z}}, {"rotation",{rotation.x,rotation.y,rotation.z,rotation.w}}}).dump() << '\n';
+	std::ofstream(fs::temp_directory_path() / "ForestDemoHallThrowPoses.json") << poses.dump(2);
+	if (!ExpectGAF(glm::length(handSocket->positionLocal - grip) < 0.1f && std::abs(glm::dot(handSocket->rotationLocal,rotation)) > 0.999f, "Smoke grip does not match sampled left palm")) return false;
+	lua_State* lua = luaL_newstate();
+	if (!ExpectGAF(lua != nullptr, "Throw Lua state unavailable")) return false;
+	luaL_openlibs(lua);
+	lua_pushstring(lua, project.generic_string().c_str()); lua_setglobal(lua, "throw_project");
+	const bool luaOk = luaL_loadfile(lua, (project / "Migration/Throw/throw_lifecycle_test.lua").string().c_str()) == LUA_OK && lua_pcall(lua, 0, 1, 0) == LUA_OK;
+	if (!luaOk) error = lua_tostring(lua,-1);
+	lua_close(lua);
+	return ExpectGAF(luaOk, error.c_str());
 }
 
 bool TestGAFLuaBridgeContract()

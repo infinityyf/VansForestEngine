@@ -34,5 +34,9 @@ namespace VansEngine
             const std::filesystem::path& path,
             AudioMixConfig& config,
             std::string& error);
+		static bool SaveAtomic(
+			const std::filesystem::path& path,
+			const AudioMixConfig& config,
+			std::string& error);
     };
 }

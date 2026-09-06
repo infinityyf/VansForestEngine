@@ -62,6 +62,32 @@ bool VansTimelineRuntimeSystem::ValidatePayload(
 	return m_Payloads->Validate(type, payload, error);
 }
 
+VansTimelineSessionResult VansTimelineRuntimeSystem::CreateActionSession(
+	std::string assetReference,
+	VansEntityHandle owner,
+	VansTimelineSessionScope scope)
+{
+	if (!m_AssetLoader)
+		return { false, {}, "Timeline runtime asset loader is not configured" };
+	if (assetReference.empty() || !owner.IsValid() || !scope)
+		return { false, {}, "Timeline Action Session descriptor is invalid" };
+	VansRuntimeTimelineComponent component;
+	component.assetGuid = std::move(assetReference);
+	std::shared_ptr<const VansCompiledTimeline> timeline;
+	std::string error;
+	if (!m_AssetLoader(component, timeline, error))
+		return { false, {}, std::move(error) };
+	VansTimelineSessionDesc desc;
+	desc.kind = VansTimelineSessionKind::External;
+	desc.timeline = std::move(timeline);
+	desc.world = m_World;
+	desc.owner = owner;
+	desc.scope = std::move(scope);
+	desc.clockType = std::string(TimelineClockNames::Manual);
+	desc.debugLabel = "GAF.ActionSession";
+	return m_Sessions->Create(desc);
+}
+
 VansTimelineSessionHandle VansTimelineRuntimeSystem::CreateComponentSession(
 	const VansRuntimeTimelineComponent& component,
 	const VansComponentHeader& header,
@@ -159,6 +185,8 @@ void VansTimelineRuntimeSystem::UpdateRuntimeCamera(double deltaSeconds)
 {
 	(void)deltaSeconds;
 	m_Sessions->AdvanceAndEvaluateAll(VansTimelineSessionKind::Component,
+		VansTimelineEvaluationPhase::Camera, 0.0);
+	m_Sessions->AdvanceAndEvaluateAll(VansTimelineSessionKind::External,
 		VansTimelineEvaluationPhase::Camera, 0.0);
 }
 

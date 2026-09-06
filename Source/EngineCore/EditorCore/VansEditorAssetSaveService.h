@@ -33,5 +33,6 @@ public:
     VansAssetSaveResult SaveAsset(EditorAPI::IEngineEditorAPI& editorAPI, const std::filesystem::path& sourcePath);
     VansAssetSaveResult SaveAsset(EditorAPI::IEngineEditorAPI& editorAPI, const std::shared_ptr<VansOpenAssetDocument>& document);
     VansAssetSaveResult SaveAllDirtyAssets(EditorAPI::IEngineEditorAPI& editorAPI);
+	VansAssetSaveResult SaveSceneOwnedAssets(EditorAPI::IEngineEditorAPI& editorAPI);
 };
 }

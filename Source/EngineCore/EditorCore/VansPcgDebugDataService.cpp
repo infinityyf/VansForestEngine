@@ -1,60 +1,23 @@
 #include "VansPcgDebugDataService.h"
 
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
-#include "../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
-#include "../AssetCore/Storage/VansJsonFileStorage.h"
+#include "../ProjectSystem/VansProjectManager.h"
 #include "../RenderCore/PcgCore/VansPcgSceneConfigAdapter.h"
 #include "../SceneCore/VansSceneDocument.h"
-#include "../SceneCore/VansSceneEnvironmentNodeConfigReader.h"
-
-#include <nlohmann/json.hpp>
+#include "../SceneCore/Serialization/VansVegetationConfigCodec.h"
 
 #include <algorithm>
 #include <filesystem>
+#include <memory>
 #include <utility>
 
 namespace VansGraphics
 {
 namespace
 {
-using Json = Vans::VansJsonFileStorage::OrderedJson;
-
 std::string PathString(const std::filesystem::path& path)
 {
 	return path.lexically_normal().string();
-}
-
-std::filesystem::path ResolveProjectPath(const std::filesystem::path& projectRoot, const std::string& path)
-{
-	if (path.empty())
-		return {};
-
-	std::filesystem::path resolved(path);
-	if (resolved.is_relative() && !projectRoot.empty())
-		resolved = projectRoot / resolved;
-	return resolved.lexically_normal();
-}
-
-Json ReadJsonFile(const std::filesystem::path& path)
-{
-	Json root;
-	std::string error;
-	if (!Vans::VansJsonFileStorage::Read(path, root, error))
-		return Json();
-	return root;
-}
-
-Vans::VansSerializedValue EmptyObject()
-{
-	return Vans::VansSerializedValue::Object({});
-}
-
-Vans::VansSerializedValue ReadSerializedJsonFile(const std::filesystem::path& path)
-{
-	Json root = ReadJsonFile(path);
-	if (!root.is_object())
-		return EmptyObject();
-	return Vans::DecodeSerializedValueJson(root);
 }
 
 const Vans::VansSerializedValue* ReadSerializedObjectField(
@@ -63,47 +26,6 @@ const Vans::VansSerializedValue* ReadSerializedObjectField(
 {
 	const Vans::VansSerializedValue* field = Vans::FindObjectField(object, key);
 	return field != nullptr && field->kind == Vans::VansSerializedValue::Kind::Object ? field : nullptr;
-}
-
-std::string ReadVegetationConfigPath(const Vans::VansSerializedValue& vegetationData)
-{
-	if (vegetationData.kind == Vans::VansSerializedValue::Kind::String)
-		return vegetationData.stringValue;
-	if (vegetationData.kind != Vans::VansSerializedValue::Kind::Object)
-		return {};
-
-	std::string path = Vans::ReadSerializedStringField(vegetationData, "config");
-	if (path.empty()) path = Vans::ReadSerializedStringField(vegetationData, "configPath");
-	if (path.empty()) path = Vans::ReadSerializedStringField(vegetationData, "path");
-	return path;
-}
-
-Vans::VansSerializedValue LoadVegetationConfigFromReference(
-	const Vans::VansSerializedValue& vegetationData,
-	const std::filesystem::path& projectRoot,
-	std::string& resolvedSource)
-{
-	const std::string configPath = ReadVegetationConfigPath(vegetationData);
-	if (configPath.empty())
-		return vegetationData;
-
-	const std::filesystem::path resolved = ResolveProjectPath(projectRoot, configPath);
-	resolvedSource = PathString(resolved);
-
-	Vans::VansSerializedValue loaded = ReadSerializedJsonFile(resolved);
-	if (loaded.kind != Vans::VansSerializedValue::Kind::Object)
-		return EmptyObject();
-
-	if (vegetationData.kind == Vans::VansSerializedValue::Kind::Object)
-	{
-		for (const auto& [key, value] : vegetationData.objectFields)
-		{
-			if (key == "config" || key == "configPath" || key == "path")
-				continue;
-			Vans::SetSerializedObjectField(loaded, key, value);
-		}
-	}
-	return loaded;
 }
 
 std::string MaskRefLabel(const Vans::VansSerializedValue& owner)
@@ -151,17 +73,6 @@ std::string MaskRefLabel(const Vans::VansSerializedValue& owner)
 	return path.empty() ? "<inline>" : path;
 }
 
-bool LooksLikeVegetationConfig(const Vans::VansSerializedValue& root)
-{
-	return root.kind == Vans::VansSerializedValue::Kind::Object
-		&& (Vans::FindObjectField(root, "instanceCount") != nullptr
-			|| Vans::FindObjectField(root, "bladeHeight") != nullptr
-			|| Vans::FindObjectField(root, "placement") != nullptr
-			|| Vans::FindObjectField(root, "trees") != nullptr
-			|| Vans::FindObjectField(root, "pcg") != nullptr
-			|| Vans::FindObjectField(root, "masks") != nullptr);
-}
-
 void AddVegetationEntry(
 	const Vans::VansSerializedValue& vegetationData,
 	const std::filesystem::path& projectRoot,
@@ -169,16 +80,32 @@ void AddVegetationEntry(
 	const std::string& jsonPath,
 	std::vector<PcgVegetationDebugEntry>& entries)
 {
-	std::string resolvedSource = sourcePath;
-	Vans::VansSerializedValue config = LoadVegetationConfigFromReference(vegetationData, projectRoot, resolvedSource);
-	if (!LooksLikeVegetationConfig(config))
+	Vans::VansAssetGuid guid;
+	const std::string guidText =
+		Vans::VansVegetationConfigCodec::ReadReferenceGuid(vegetationData);
+	if (!Vans::VansAssetGuid::TryParse(guidText, guid))
+		return;
+	const std::shared_ptr<const Vans::VansVegetationConfigAsset> asset =
+		Vans::VansProjectManager::Get().GetAssetObjectRepository()
+			.ResolveLatest<Vans::VansVegetationConfigAsset>(guid);
+	if (!asset)
+		return;
+
+	Vans::VansSceneVegetationNodeConfig vegetationConfig;
+	std::string error;
+	if (!Vans::VansVegetationConfigCodec::ResolveReference(
+		vegetationData, *asset, vegetationConfig, error))
+		return;
+	Vans::VansSerializedValue config;
+	if (!Vans::VansVegetationConfigCodec::Encode(vegetationConfig, config, error))
 		return;
 
 	PcgVegetationDebugEntry entry;
-	entry.sourcePath = resolvedSource;
+	entry.sourcePath = sourcePath;
+	if (const std::optional<Vans::VansAssetRecord> record =
+		Vans::VansProjectManager::Get().FindAssetRecord(guid))
+		entry.sourcePath = PathString(record->sourcePath);
 	entry.jsonPath = jsonPath;
-	const Vans::VansSceneVegetationNodeConfig vegetationConfig =
-		Vans::VansSceneEnvironmentNodeConfigReader::ReadVegetation(config, PathString(projectRoot));
 
 	entry.label = vegetationConfig.name.value_or(std::string());
 	if (entry.label.empty())
@@ -305,25 +232,6 @@ std::vector<PcgVegetationDebugEntry> VansPcgDebugDataService::Collect(
 			entries);
 	}
 
-	if (!entries.empty() || projectRoot.empty())
-		return entries;
-
-	const std::filesystem::path vegetationRoot = projectRoot / "Assets" / "Vegetation";
-	if (!std::filesystem::exists(vegetationRoot))
-		return entries;
-
-	for (const auto& file : std::filesystem::recursive_directory_iterator(vegetationRoot))
-	{
-		if (!file.is_regular_file() || file.path().extension() != ".json")
-			continue;
-
-		Vans::VansSerializedValue root = ReadSerializedJsonFile(file.path());
-		if (!LooksLikeVegetationConfig(root))
-			continue;
-
-		AddVegetationEntry(root, projectRoot, PathString(file.path()),
-			PathString(std::filesystem::relative(file.path(), projectRoot)), entries);
-	}
 	return entries;
 }
 

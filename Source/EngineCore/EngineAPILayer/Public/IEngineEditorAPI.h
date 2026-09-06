@@ -26,8 +26,14 @@ namespace Vans::EditorAPI
 		virtual ProjectBrowserRootSnapshot GetProjectBrowserRoot() const = 0;
 		virtual AssetDragPayload CreateAssetDragPayload(const std::string& assetPath) = 0;
 		virtual AssetGuidResolution ResolveAssetGuid(const std::string& assetGuid) const = 0;
+		virtual ShaderAuthoringSchemaSnapshot GetShaderAuthoringSchema(
+			const std::string& shaderAssetGuid) const = 0;
+		virtual LocalFogFieldPreviewSnapshot GetLocalFogFieldPreview(
+			const LocalFogFieldPreviewRequest& request) const = 0;
 		virtual ProjectAssetCreateResult CreateProjectAsset(const ProjectAssetCreateRequest& request) = 0;
 		virtual AssetRefreshResult RefreshProjectAsset(const std::string& assetPath, bool importIfMissing) = 0;
+		virtual AssetWorkingCopyPublishResult PublishAssetWorkingCopy(
+			const AssetWorkingCopyPublishRequest& request) = 0;
 		virtual GAFEditorDocumentSnapshot OpenGAFAsset(const std::string& sourcePath) = 0;
 		virtual GAFEditorOperationResult SetGAFAssetField(const GAFEditorFieldEditRequest& request) = 0;
 		virtual GAFEditorOperationResult ResetGAFAssetField(
@@ -58,12 +64,10 @@ namespace Vans::EditorAPI
 		virtual ProjectConfigEditResult SetProjectPathField(ProjectPathField field, const std::string& relativePath) = 0;
 		virtual ProjectConfigEditResult SetProjectScriptSearchPaths(const std::vector<std::string>& paths) = 0;
 		virtual ProjectConfigEditResult SetProjectAssetDirectory(const std::string& key, const std::string& relativePath) = 0;
-		virtual ProjectConfigEditResult SaveProjectConfig() = 0;
+		virtual ProjectConfigEditResult SaveProjectDocuments() = 0;
 		virtual float GetProjectPhysicsFixedTimeStep() const = 0;
 		virtual ProjectConfigEditResult SetProjectPhysicsFixedTimeStep(float fixedTimeStep) = 0;
 		virtual bool SetCurrentProjectScenePath(const std::string& scenePath) = 0;
-		virtual void ScanProjectAssets() = 0;
-
 		virtual EditorTextureHandle GetViewportTexture(ViewportId id) const = 0;
 		virtual RenderTexturePreview GetViewportPreview(ViewportId id) const = 0;
 		virtual UpscalerSettingsSnapshot GetUpscalerSettings() const = 0;
@@ -129,11 +133,10 @@ namespace Vans::EditorAPI
 		virtual std::string GetProjectRootPath() const = 0;
 		virtual bool IsRuntimeSceneReady() const = 0;
 		virtual bool IsRuntimeSceneSwitching() const = 0;
-		virtual RuntimeSceneLoadResult LoadRuntimeScene(const std::string& scenePath, RuntimeSceneLoadMode mode) = 0;
+		virtual RuntimeSceneLoadResult LoadRuntimeScene(const RuntimeSceneLoadRequest& request) = 0;
 		virtual void UnloadRuntimeScene() = 0;
 		virtual bool AreRuntimeProjectResourcesLoaded() const = 0;
 		virtual void UnloadRuntimeProjectResources() = 0;
-		virtual bool LoadRuntimeProjectAssetsForScene(const std::string& scenePath) = 0;
 		virtual VehicleDebugSnapshot GetVehicleDebugSnapshot() const = 0;
 		virtual bool HasAnimationDebugNodes() const = 0;
 		virtual AnimationAssetBindingSnapshot GetAnimationAssetBinding(const std::string& entityGuid) const = 0;

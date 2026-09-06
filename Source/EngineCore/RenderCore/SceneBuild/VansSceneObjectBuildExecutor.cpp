@@ -14,10 +14,8 @@
 #include "../../SceneRuntime/VansRuntimeComponentTypes.h"
 #include "../../SceneRuntime/VansRuntimeWorld.h"
 #include "../../GameplayActionCore/VansGameplayRuntime.h"
-#include "../../GameplayActionAdapters/Camera/VansCameraActionService.h"
-#include "../../GameplayActionAdapters/Character/VansCharacterActionServices.h"
-#include "../../GameplayActionAdapters/Combat/VansCombatActionService.h"
-#include "../../CameraGameplayAction/VansCameraActionGraphNodes.h"
+#include "../../GameplayActionAdapters/VansSceneGameplayContributors.h"
+#include "../../TimelineRuntime/VansTimelineRuntimeSystem.h"
 #include "../../AICore/VansAIWorld.h"
 #include "../../GameplayActionSchema/VansGAFProjectConfiguration.h"
 #include "../../PhysicsCore/VansCollisionLayerManager.h"
@@ -234,7 +232,7 @@ void RegisterDeferredAnimationRuntimeComponents(
 				FindRuntimeComponentGuid(objectConfig.componentGuids, "ragdoll"),
 				ragdollComponent->m_AnimNode,
 				static_cast<std::uint8_t>(ragdollComponent->m_InitialDriveMode),
-				ragdollComponent->m_ProfilePath,
+				ragdollComponent->m_ProfileAssetGuid,
 				ragdollComponent->m_ProfileName,
 				ragdollComponent->m_ConfiguredBodyCount,
 				ragdollComponent->m_ConfiguredJointCount,
@@ -360,7 +358,7 @@ void QueuePhysicsRuntimeComponents(
 			entity,
 			physicsBuild.cloth->m_ComponentGuid,
 			physicsBuild.cloth->m_ClothNode,
-			physicsBuild.cloth->m_ProfilePath,
+			physicsBuild.cloth->m_ProfileAssetGuid,
 			physicsBuild.cloth->IsEnabled());
 		registrationChecks.push_back({ physicsBuild.cloth, Vans::VansRuntimeComponentType_Cloth });
 	}
@@ -455,8 +453,8 @@ void QueueScriptRuntimeComponents(
 			continue;
 
 		Vans::VansRuntimeUIComponent runtimeUI;
-		runtimeUI.autoOpenScreens = uiComponent->m_AutoOpenScreens;
-		runtimeUI.preloadScreens = uiComponent->m_PreloadScreens;
+		runtimeUI.autoOpenScreenAssetGuids = uiComponent->m_AutoOpenScreenAssetGuids;
+		runtimeUI.preloadScreenAssetGuids = uiComponent->m_PreloadScreenAssetGuids;
 		runtimeUI.openScreens.assign(uiComponent->m_OpenScreens.begin(), uiComponent->m_OpenScreens.end());
 		runtimeWorld.Commands().AddUIComponent(
 			entity,
@@ -666,7 +664,7 @@ bool RegisterRuntimeComponents(
 	{
 		const std::string componentGuid =
 			FindRuntimeComponentGuid(componentGuids, "navigation_agent");
-		if (componentGuid.empty() || navigationAgentConfig->runtime.navigationMeshPath.empty())
+		if (componentGuid.empty() || navigationAgentConfig->runtime.navigationMeshGuid.empty())
 		{
 			error = "NavigationAgent requires stable component and Navigation Mesh asset GUIDs";
 			return false;
@@ -679,7 +677,7 @@ bool RegisterRuntimeComponents(
 	{
 		const std::string componentGuid =
 			FindRuntimeComponentGuid(componentGuids, "ai_agent");
-		if (componentGuid.empty() || aiAgentConfig->runtime.behaviorPath.empty())
+		if (componentGuid.empty() || aiAgentConfig->runtime.behaviorGuid.empty())
 		{
 			error = "AIAgent requires stable component and AI Behavior asset GUIDs";
 			return false;
@@ -828,75 +826,47 @@ bool VansGraphics::VansScene::LoadSceneObjects(
 	{
 		std::string gameplayError;
 		Vans::VansProjectManager& projectManager = Vans::VansProjectManager::Get();
-		Vans::VansGAFProjectConfiguration gameplayConfiguration;
-		if (!Vans::VansGAFProjectConfiguration::LoadForProject(
-			projectManager.GetProjectRootPath(),
-			projectManager.GetPathResolver().GetEngineRoot(),
-			gameplayConfiguration,
-			gameplayError))
+		const Vans::VansGAFProjectConfiguration* gameplayConfiguration =
+			projectManager.GetGAFProjectConfiguration();
+		if (!gameplayConfiguration)
 		{
-			VANS_LOG_ERROR("[SceneBuild] Could not load GAF project configuration: " << gameplayError);
+			VANS_LOG_ERROR("[SceneBuild] GAF project configuration is unavailable in memory");
 			return false;
 		}
 		Vans::VansGameplayRuntimeDependencies gameplayDependencies;
-		gameplayDependencies.graphNodeRegistrars.push_back(
-			Vans::VansRegisterCameraActionGraphNodes);
-		gameplayDependencies.serviceFactories.push_back(
-			[this](const Vans::VansGameplayAssetLibrary& assets, std::string& error)
-				-> std::shared_ptr<Vans::IVansActionService>
+		if (!m_TimelineRuntime)
+			m_TimelineRuntime = std::make_unique<Vans::VansTimelineRuntimeSystem>();
+		auto resolvePosition = [this](Vans::VansEntityHandle entity, glm::vec3& position)
+		{
+			if (!m_RuntimeWorld || !m_RuntimeWorld->IsAlive(entity)) return false;
+			auto* storage = static_cast<Vans::VansComponentStorage<
+				Vans::VansRuntimeTransformComponent>*>(m_RuntimeWorld->FindStorage(
+					Vans::VansRuntimeComponentType_Transform));
+			if (!storage) return false;
+			for (Vans::VansComponentHandle component :
+				m_RuntimeWorld->CollectComponentsOwnedBy(entity))
 			{
-				auto resolvePosition = [this](Vans::VansEntityHandle entity, glm::vec3& position)
-				{
-					if (!m_RuntimeWorld || !m_RuntimeWorld->IsAlive(entity)) return false;
-					auto* storage = static_cast<Vans::VansComponentStorage<
-						Vans::VansRuntimeTransformComponent>*>(m_RuntimeWorld->FindStorage(
-							Vans::VansRuntimeComponentType_Transform));
-					if (!storage) return false;
-					for (Vans::VansComponentHandle component :
-						m_RuntimeWorld->CollectComponentsOwnedBy(entity))
-					{
-						if (component.typeId != Vans::VansRuntimeComponentType_Transform) continue;
-						const Vans::VansRuntimeTransformComponent* transform = storage->Get(component);
-						if (!transform || transform->transformStoreId == UINT32_MAX) return false;
-						position = VansTransformStore::GetTransform(
-							transform->transformStoreId).m_Position;
-						return true;
-					}
-					return false;
-				};
-				return Vans::VansCameraActionService::Create(
-					m_CameraControlArbiter->CoreRuntime(), assets, error,
-					std::move(resolvePosition));
-			});
-		gameplayDependencies.serviceFactories.push_back(
-			[this](const Vans::VansGameplayAssetLibrary&, std::string& error)
-				-> std::shared_ptr<Vans::IVansActionService>
-			{
-				if (!m_RuntimeWorld || !m_GameplayRuntime)
-				{
-					error = "Combat Action Service requires the scene runtime";
-					return {};
-				}
-				m_CombatActionService = Vans::VansCombatActionService::Create(
-					*m_RuntimeWorld, *m_GameplayRuntime, error);
-				return m_CombatActionService;
-			});
-		gameplayDependencies.serviceFactories.push_back(
-			[this](const Vans::VansGameplayAssetLibrary&, std::string& error)
-				-> std::shared_ptr<Vans::IVansActionService>
-			{
-				return m_RuntimeWorld
-					? Vans::VansAnimationActionService::Create(*m_RuntimeWorld, error) : nullptr;
-			});
-		gameplayDependencies.serviceFactories.push_back(
-			[this](const Vans::VansGameplayAssetLibrary&, std::string& error)
-				-> std::shared_ptr<Vans::IVansActionService>
-			{
-				return m_RuntimeWorld
-					? Vans::VansNavigationActionService::Create(*m_RuntimeWorld, error) : nullptr;
-			});
+				if (component.typeId != Vans::VansRuntimeComponentType_Transform) continue;
+				const Vans::VansRuntimeTransformComponent* transform = storage->Get(component);
+				if (!transform || transform->transformStoreId == UINT32_MAX) return false;
+				position = VansTransformStore::GetTransform(transform->transformStoreId).m_Position;
+				return true;
+			}
+			return false;
+		};
+		const Vans::VansSceneGameplayContributorContext contributorContext{
+			*m_RuntimeWorld, *m_GameplayRuntime, m_CameraControlArbiter->CoreRuntime(),
+			*m_TimelineRuntime,
+			std::move(resolvePosition), MakeProjectileSceneBackend() };
+		if (!Vans::VansDiscoverSceneGameplayContributors(
+			*gameplayConfiguration, contributorContext, gameplayDependencies, gameplayError))
+		{
+			VANS_LOG_ERROR("[SceneBuild] Could not discover Gameplay modules: " << gameplayError);
+			return false;
+		}
 		if (!m_GameplayRuntime->Initialize(projectManager.EnumerateAssetRecords(),
-			gameplayConfiguration.settings, gameplayDependencies, gameplayError))
+			projectManager.GetAssetObjectRepository(), gameplayConfiguration->settings,
+			gameplayDependencies, gameplayError))
 		{
 			VANS_LOG_ERROR("[SceneBuild] Could not initialize Gameplay Runtime: " << gameplayError);
 			return false;
@@ -1004,7 +974,6 @@ bool VansGraphics::VansScene::LoadSceneObjects(
 				*this,
 				*obj,
 				objectConfig.physicsComponents,
-				projectRoot,
 				hasObjTransform,
 				ensureObjectTransform);
 
@@ -1310,7 +1279,11 @@ bool VansGraphics::VansScene::LoadSceneObjects(
 	ConfigureTimelineRuntime();
 	m_AIWorld = std::make_unique<Vans::VansAIWorld>();
 	std::string aiError;
-	if (!m_AIWorld->Initialize(*m_RuntimeWorld, m_GameplayRuntime.get(), projectRoot, aiError))
+	if (!m_AIWorld->Initialize(
+		*m_RuntimeWorld,
+		m_GameplayRuntime.get(),
+		Vans::VansProjectManager::Get().GetAssetObjectRepository(),
+		aiError))
 	{
 		VANS_LOG_ERROR("[SceneBuild] Could not initialize AI World: " << aiError);
 		m_AIWorld.reset();

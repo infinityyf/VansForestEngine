@@ -1,10 +1,13 @@
 #include "../EngineCore/AssetCore/VansAssetDatabase.h"
+#include "../EngineCore/AssetCore/VansAssetObjectRepository.h"
 #include "NavigationAIContractTests.h"
 #include "../EngineCore/AssetCore/VansAssetResolver.h"
 #include "../EngineCore/AssetCore/VansBuiltInAssetCatalog.h"
 #include "../EngineCore/AssetCore/VansMaterialAuthoringAsset.h"
+#include "../EngineCore/AssetCore/VansShaderAuthoringAsset.h"
 #include "../EngineCore/AssetCore/VansSkinProfile.h"
 #include "../EngineCore/AssetCore/VansSkeletalMeshImportSettings.h"
+#include "../EngineCore/AssetCore/Importers/VansTextureCooker.h"
 #include "../EngineCore/AssetCore/Storage/VansAssetMetaStorage.h"
 #include "../EngineCore/AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../EngineCore/AssetCore/Serialization/VansSkinProfileJsonCodec.h"
@@ -25,6 +28,8 @@
 #include "../EngineCore/AudioCore/VansAudioPreviewPlayer.h"
 #include "../EngineCore/AudioCore/VansAudioVirtualization.h"
 #include "../EngineCore/AudioCore/VansAudioWaveform.h"
+#include "../EngineCore/PhysicsCore/Storage/VansCollisionLayerStorage.h"
+#include "../EngineCore/PhysicsCore/VansCollisionLayerConfig.h"
 #include "../EngineCore/CameraCore/VansCameraCore.h"
 #include "../EngineCore/RenderCore/VansPostProcessProfile.h"
 #include "../EngineCore/RenderCore/VansMaterial.h"
@@ -47,6 +52,7 @@
 #include "../EngineCore/RenderCore/VansCamera.h"
 #include "../EngineCore/RenderCore/VansMainCameraVisibility.h"
 #include "../EngineCore/RenderCore/VansScene.h"
+#include "../EngineCore/RenderCore/VansRenderNode.h"
 #include "../EngineCore/RenderCore/VulkanCore/VansMainCameraVisibilityState.h"
 #include "../EngineCore/RenderCore/VansRenderFrame.h"
 #include "../EngineCore/RenderCore/VansRenderSystem.h"
@@ -64,15 +70,20 @@
 #include "../EngineCore/RuntimeCore/VansFramePhase.h"
 #include "../EngineCore/RuntimeCore/VansThreadContract.h"
 #include "../EngineCore/Util/VansProfiler.h"
+#include "../EngineCore/Util/VansFileFingerprint.h"
 #include "../EngineCore/SceneRuntime/VansRuntimeComponentTypes.h"
 #include "../EngineCore/SceneRuntime/VansRuntimeWorld.h"
 #include "../EngineCore/SceneRuntime/Transform/VansTransformGraph.h"
 #include "../EngineCore/SceneCore/VansPackagedResourcePlan.h"
 #include "../EngineCore/SceneCore/VansSceneContentBuildPlan.h"
+#include "../EngineCore/SceneCore/VansSceneAnimationComponentReader.h"
 #include "../EngineCore/SceneCore/VansSceneEnvironmentNodeConfigReader.h"
+#include "../EngineCore/SceneCore/Serialization/VansVegetationConfigCodec.h"
+#include "../EngineCore/SceneCore/Storage/VansVegetationConfigStorage.h"
 #include "../EngineCore/SceneCore/VansSceneCameraMediaComponentReader.h"
 #include "../EngineCore/SceneCore/VansSceneRuntimeProjection.h"
 #include "../EngineCore/SceneCore/VansSceneAssetDependencyBuilder.h"
+#include "../EngineCore/SceneCore/VansAssetObjectBootstrapper.h"
 #include "../EngineCore/SceneCore/VansSceneEntityFactory.h"
 #include "../EngineCore/SceneCore/VansSceneSchema.h"
 #include "../EngineCore/SceneCore/VansSceneRuntimeComponentKey.h"
@@ -92,8 +103,10 @@
 #include "../EngineCore/EditorCore/Timeline/VansTimelineEditService.h"
 #include "../EngineCore/EditorCore/Timeline/VansTimelineCommandMap.h"
 #include "../EngineCore/EditorCore/VansAssetDocumentRegistry.h"
+#include "../EngineCore/EditorCore/VansAssetDocumentTypeRegistry.h"
 #include "../EngineCore/EditorCore/VansAssetDocumentEditService.h"
 #include "../EngineCore/EditorCore/VansSceneEditService.h"
+#include "../EngineCore/EditorCore/VansEditorRuntimePreviewProjector.h"
 #include "../EngineCore/EditorCore/Animation/VansAnimationRigSaveService.h"
 #include "../EngineCore/AssetCore/Serialization/VansSerializedValue.h"
 #include "../EngineCore/AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
@@ -116,18 +129,29 @@
 #include "../EngineCore/AnimationCore/Storage/VansAnimationRigStorage.h"
 #include "../EngineCore/AnimationCore/Storage/VansBoneMaskStorage.h"
 #include "../EngineCore/AnimationCore/Storage/VansRetargetProfileStorage.h"
+#include "../EngineCore/AnimationCore/Serialization/VansRetargetProfileJsonCodec.h"
+#include "../EngineCore/AICore/Serialization/VansAIBehaviorJsonCodec.h"
+#include "../EngineCore/PhysicsCore/Serialization/VansRagdollProfileJsonCodec.h"
 #include "../EngineCore/AnimationCore/MotionMatching/VansMotionMatching.h"
 #include "../EngineCore/AnimationCore/MotionMatching/VansRootMotionYaw.h"
 #include "../EngineCore/AnimationCore/MotionMatching/VansTurnInPlaceWarping.h"
 #include "../EngineCore/EngineAPILayer/Private/AnimationAuthoringBridge.h"
+#include "../EngineCore/EngineAPILayer/Private/AnimationPreviewRigAuthoringService.h"
+#include "../EngineCore/EngineAPILayer/Private/RuntimeGeneratedMaterialAssetService.h"
+#include "../EngineCore/EngineAPILayer/Private/VansLocalFogFieldPreviewService.h"
 #include "../EngineCore/EngineAPILayer/Public/EngineDTOs.h"
 #include "../EngineCore/ParticleCore/VansParticleRuntime.h"
+#include "../EngineCore/ParticleCore/Serialization/VansParticleAssetJsonCodec.h"
 #include "TimelineRefactorContractTests.h"
 #include "GAFContractTests.h"
 #include "ProceduralAnimationContractTests.h"
 #include "../EngineCore/ProjectSystem/VansProjectManager.h"
 #include "../EngineCore/ProjectSystem/VansProjectSettingsData.h"
 #include "../EngineCore/ProjectSystem/Serialization/VansProjectSettingsJsonCodec.h"
+#include "../EngineCore/ProjectSystem/Storage/VansProjectSettingsStorage.h"
+#include "../EngineCore/GameplayActionSchema/VansGAFProjectConfiguration.h"
+#include "../EngineCore/AssetCore/Storage/VansFileStorage.h"
+#include "../EngineCore/RuntimeUI/VansUIAssetResolver.h"
 #include "../EngineCore/ScriptCore/VansScriptContext.h"
 #include "../EngineCore/ScriptCore/VansLuaScriptInspectorService.h"
 #include "../EngineCore/ScriptCore/VansTransform.h"
@@ -1576,6 +1600,7 @@ bool TestSkinProfileMaterialProjectionContract()
 	profileRecord.guid = profileGuid;
 	profileRecord.type = Vans::VansAssetType::SkinProfile;
 	profileRecord.state = Vans::VansAssetState::CpuReady;
+	profileRecord.sourceHash = 0x14141414u;
 	profileRecord.sourcePath = profilePath;
 	profileRecord.authoringPath = profilePath;
 
@@ -1583,6 +1608,7 @@ bool TestSkinProfileMaterialProjectionContract()
 	materialRecord.guid = materialGuid;
 	materialRecord.type = Vans::VansAssetType::Material;
 	materialRecord.state = Vans::VansAssetState::CpuReady;
+	materialRecord.sourceHash = 0x24242424u;
 	materialRecord.sourcePath = materialPath;
 	materialRecord.authoringPath = materialPath;
 
@@ -1596,6 +1622,36 @@ bool TestSkinProfileMaterialProjectionContract()
 	Vans::VansProjectManager::Get().CloseProject();
 	Vans::VansProjectManager::Get().SetPackagedAssetRecords({ materialRecord, profileRecord });
 	ScopedPackagedAssets scopedAssets;
+	Vans::VansAssetObjectRepository& repository =
+		Vans::VansProjectManager::Get().GetAssetObjectRepository();
+	if (!Expect(
+		repository.Publish<Vans::VansMaterialAuthoringAsset>(
+			materialGuid,
+			materialRecord.type,
+			Vans::AssetObjectContentHash(materialRecord),
+			std::make_shared<const Vans::VansMaterialAuthoringAsset>(material),
+			{ profileGuid },
+			error).IsValid() &&
+		repository.Publish<Vans::VansSkinProfile>(
+			profileGuid,
+			profileRecord.type,
+			Vans::AssetObjectContentHash(profileRecord),
+			std::make_shared<const Vans::VansSkinProfile>(profile),
+			{},
+			error).IsValid(),
+		"Could not publish material and skin profile memory objects"))
+		return false;
+
+	std::error_code removeError;
+	fs::remove(materialPath, removeError);
+	if (!Expect(!removeError && !fs::exists(materialPath),
+		"Could not remove the material source before runtime projection"))
+		return false;
+	removeError.clear();
+	fs::remove(profilePath, removeError);
+	if (!Expect(!removeError && !fs::exists(profilePath),
+		"Could not remove the skin profile source before runtime projection"))
+		return false;
 
 	const Value sceneRoot = Value::Object({
 		{ "schemaVersion", Value::Int(Vans::VansSceneSchemaVersion) },
@@ -1605,6 +1661,7 @@ bool TestSkinProfileMaterialProjectionContract()
 		{ "entities", Value::Array({}) }
 	});
 
+	Vans::VansIOAudit::Reset();
 	Vans::VansSceneContentBuildPlan plan;
 	if (!Expect(Vans::VansSceneRuntimeProjection::BuildRuntimeSceneContentPlan(
 		sceneRoot,
@@ -1658,8 +1715,21 @@ bool TestSkinProfileMaterialProjectionContract()
 	if (!ExpectSerializedIntField(runtimeMaterial, "skinProfileLutLayer", 3,
 		"Skin profile LUT layer was not projected into runtime material"))
 		return false;
-	return ExpectSerializedVec3Field(runtimeMaterial, "profileScatterRadius", glm::vec3(1.31f, 1.08f, 0.82f),
-		"Skin profile RGB scatter radius was not projected into runtime material");
+	if (!ExpectSerializedVec3Field(runtimeMaterial, "profileScatterRadius", glm::vec3(1.31f, 1.08f, 0.82f),
+		"Skin profile RGB scatter radius was not projected into runtime material"))
+		return false;
+	const auto projectionIOEvents = Vans::VansIOAudit::Snapshot();
+	return Expect(std::none_of(
+		projectionIOEvents.begin(), projectionIOEvents.end(),
+		[&](const Vans::VansIOEvent& event)
+		{
+			if (event.operation != Vans::VansIOOperation::Read)
+				return false;
+			const fs::path normalized = event.path.lexically_normal();
+			return normalized == materialPath.lexically_normal() ||
+				normalized == profilePath.lexically_normal();
+		}),
+		"Runtime material projection reread a deleted authoring asset instead of memory");
 }
 
 bool TestSkinProfileLUTGenerationContract()
@@ -1903,6 +1973,19 @@ bool TestAssetPolicies()
 	if (!Expect(Vans::VansAssetDatabase::ImporterFor(Vans::VansAssetType::SkinProfile) == "SkinProfileImporter",
 		"Skin profile assets are not owned by the canonical SkinProfile importer"))
 		return false;
+	if (!Expect(
+		Vans::VansAssetDatabase::Classify("RTG_Source_To_Target.vretarget") ==
+			Vans::VansAssetType::RetargetProfile &&
+		Vans::VansAssetDatabase::ImporterFor(Vans::VansAssetType::RetargetProfile) ==
+			"RetargetProfileImporter",
+		"Retarget profiles are not classified by their current canonical extension"))
+		return false;
+	if (!Expect(
+		Vans::VansAssetDatabase::Classify("Hero.vragdoll") ==
+			Vans::VansAssetType::RagdollProfile &&
+		Vans::VansAssetDatabase::Classify("Hero.ragdoll") == Vans::VansAssetType::Unknown,
+		"Ragdoll classification did not converge on the current .vragdoll extension"))
+		return false;
 
 	const auto registerModelCapabilityProbe = [&](const char* filename, bool skeletal)
 		-> std::optional<Vans::VansAssetRecord>
@@ -1957,6 +2040,7 @@ bool TestAssetTypeSerializationContract()
         Vans::VansAssetType::AnimationClip,
         Vans::VansAssetType::AnimatorController,
         Vans::VansAssetType::AnimationRig,
+		Vans::VansAssetType::RetargetProfile,
         Vans::VansAssetType::BoneMask,
         Vans::VansAssetType::Timeline,
         Vans::VansAssetType::ActionDefinition,
@@ -1977,7 +2061,13 @@ bool TestAssetTypeSerializationContract()
         Vans::VansAssetType::RagdollProfile,
         Vans::VansAssetType::AudioReverbPreset,
         Vans::VansAssetType::AudioBusSnapshot,
-        Vans::VansAssetType::AudioDuckingRules
+        Vans::VansAssetType::AudioDuckingRules,
+		Vans::VansAssetType::UIScreen,
+		Vans::VansAssetType::UIComponent,
+		Vans::VansAssetType::UIThemeTokens,
+		Vans::VansAssetType::UILocalization,
+		Vans::VansAssetType::UIXaml,
+		Vans::VansAssetType::VegetationConfig
     };
 
     for (const Vans::VansAssetType type : types)
@@ -2500,15 +2590,12 @@ bool TestEmptySceneEntityFactoryContract()
         return false;
     }
 
-    const Vans::VansSerializedValue sceneRoot = Vans::VansSerializedValue::Object({
-        { "schemaVersion", Vans::VansSerializedValue::Int(Vans::VansSceneSchemaVersion) },
-        { "settings", Vans::VansSerializedValue::Object({}) },
-        { "entities", Vans::VansSerializedValue::Array({ entity }) }
-    });
+	const Vans::VansSerializedValue entities =
+		Vans::VansSerializedValue::Array({ entity });
     Vans::VansSceneContentBuildPlan plan;
     std::string error;
-    if (!Expect(Vans::VansSceneRuntimeProjection::BuildRuntimeSceneContentPlan(
-        sceneRoot,
+	if (!Expect(Vans::VansSceneRuntimeProjection::BuildRuntimeSceneEntityPlan(
+		entities,
         "",
         plan,
         error), error.c_str()))
@@ -2516,7 +2603,7 @@ bool TestEmptySceneEntityFactoryContract()
         return false;
     }
     if (!Expect(plan.objects.objects.size() == 1 && plan.objects.objects.front().transform.has_value(),
-        "Transform-only empty object did not project into the runtime scene plan"))
+		"Transform-only empty object did not project without a synthetic Scene document"))
     {
         return false;
     }
@@ -2543,6 +2630,50 @@ bool TestEmptySceneEntityFactoryContract()
         "Empty object default Transform scale Y changed") ||
         !ExpectNear(projectedTransform.scale[2], 1.0f, 0.0001f,
         "Empty object default Transform scale Z changed"))
+    {
+        return false;
+    }
+
+    constexpr const char* animatorGuid = "44444444-4444-4444-8444-444444444444";
+    constexpr const char* rigGuid = "55555555-5555-4555-8555-555555555555";
+    const Vans::VansSerializedValue animationEntity = Vans::VansSerializedValue::Object({
+        { "id", Vans::VansSerializedValue::String("animation-entity-guid") },
+        { "name", Vans::VansSerializedValue::String("Animation Entity") },
+        { "active", Vans::VansSerializedValue::Bool(true) },
+        { "parent", Vans::VansSerializedValue::Null() },
+        { "components", Vans::VansSerializedValue::Array({
+            Vans::VansSerializedValue::Object({
+                { "id", Vans::VansSerializedValue::String("animation-component-guid") },
+                { "type", Vans::VansSerializedValue::String("Animation") },
+                { "enabled", Vans::VansSerializedValue::Bool(true) },
+                { "data", Vans::VansSerializedValue::Object({
+                    { "name", Vans::VansSerializedValue::String("Animation Entity") },
+                    { "mesh_group", Vans::VansSerializedValue::String("Character") },
+                    { "animator", Vans::VansSerializedValue::Object({
+                        { "guid", Vans::VansSerializedValue::String(animatorGuid) }
+                    }) },
+                    { "rig", Vans::VansSerializedValue::Object({
+                        { "guid", Vans::VansSerializedValue::String(rigGuid) }
+                    }) }
+                }) }
+            })
+        }) }
+    });
+    Vans::VansSceneContentBuildPlan animationPlan;
+    error.clear();
+    if (!Expect(Vans::VansSceneRuntimeProjection::BuildRuntimeSceneEntityPlan(
+        Vans::VansSerializedValue::Array({ animationEntity }),
+        "C:/PackageRoot",
+        animationPlan,
+        error), error.c_str()))
+    {
+        return false;
+    }
+    if (!Expect(animationPlan.objects.objects.size() == 1 &&
+        animationPlan.objects.objects.front().animation.has_value() &&
+        animationPlan.objects.objects.front().animation->animatorGuid == animatorGuid &&
+        animationPlan.objects.objects.front().animation->rigGuid == rigGuid,
+        "Runtime Scene projection rewrote Animation asset GUIDs into disk paths"))
     {
         return false;
     }
@@ -2611,6 +2742,21 @@ bool TestLocalVolumetricFogEntityFactoryContract()
 	request.settings.edgeFadeDistanceMeters = 0.6f;
 	request.settings.skyLightingScale = 0.7f;
 	request.settings.receiveCloudShadows = true;
+	request.settings.shapeMask.enabled = true;
+	request.settings.shapeMask.source.assetGuid = "11111111-2222-4333-8444-555555555555";
+	request.settings.shapeMask.source.channel = Vans::VansLocalFogTextureChannel::G;
+	request.settings.shapeMask.mapping.tiling = { 2.0f, 3.0f };
+	request.settings.detailNoise.enabled = true;
+	request.settings.detailNoise.source.assetGuid = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+	request.settings.detailNoise.mapping.offset = { 0.25f, -0.5f };
+	request.settings.flow.enabled = true;
+	request.settings.flow.source.assetGuid = "99999999-8888-4777-8666-555555555555";
+	request.settings.flow.source.xChannel = Vans::VansLocalFogTextureChannel::B;
+	request.settings.flow.source.zChannel = Vans::VansLocalFogTextureChannel::A;
+	request.settings.flow.fallbackDirectionLocalXZ = { 3.0f, 4.0f };
+	request.settings.flow.speedMetersPerSecond = 2.0f;
+	request.settings.flow.loopDistanceMeters = 5.0f;
+	request.settings.flow.phaseOffset01 = 1.25f;
 	const Vans::VansSerializedValue entity =
 		Vans::VansSceneEntityFactory::BuildLocalVolumetricFogEntity(
 			request, "ground-fog-entity");
@@ -2632,6 +2778,26 @@ bool TestLocalVolumetricFogEntityFactoryContract()
 		? Vans::FindObjectField(*fogData, "visibilityDistanceMeters") : nullptr;
 	const Vans::VansSerializedValue* edgeFade = fogData
 		? Vans::FindObjectField(*fogData, "edgeFadeDistanceMeters") : nullptr;
+	const Vans::VansSerializedValue* shape = fogData
+		? Vans::FindObjectField(*fogData, "shapeMask") : nullptr;
+	const Vans::VansSerializedValue* detail = fogData
+		? Vans::FindObjectField(*fogData, "detailNoise") : nullptr;
+	const Vans::VansSerializedValue* flow = fogData
+		? Vans::FindObjectField(*fogData, "flow") : nullptr;
+	const Vans::VansSerializedValue* shapeSource = shape
+		? Vans::FindObjectField(*shape, "source") : nullptr;
+	const Vans::VansSerializedValue* shapeAsset = shapeSource
+		? Vans::FindObjectField(*shapeSource, "asset") : nullptr;
+	const Vans::VansSerializedValue* shapeMapping = shape
+		? Vans::FindObjectField(*shape, "mapping") : nullptr;
+	const Vans::VansSerializedValue* flowSource = flow
+		? Vans::FindObjectField(*flow, "source") : nullptr;
+	const Vans::VansSerializedValue* flowAsset = flowSource
+		? Vans::FindObjectField(*flowSource, "asset") : nullptr;
+	const Vans::VansSerializedValue* fallback = flow
+		? Vans::FindObjectField(*flow, "fallbackDirectionLocalXZ") : nullptr;
+	const Vans::VansSerializedValue* phase = flow
+		? Vans::FindObjectField(*flow, "phaseOffset01") : nullptr;
 	return Expect(
 		Vans::ReadSerializedStringField(transform, "id") == "ground-fog-transform" &&
 		Vans::ReadSerializedStringField(transform, "type") == "Transform" &&
@@ -2640,8 +2806,426 @@ bool TestLocalVolumetricFogEntityFactoryContract()
 		Vans::ReadSerializedBoolField(fog, "enabled", false) &&
 		visibility && std::abs(Vans::ReadSerializedNumber(*visibility) - 150.0) < 1.0e-6 &&
 		edgeFade && std::abs(Vans::ReadSerializedNumber(*edgeFade) - 0.6) < 1.0e-6 &&
-		Vans::ReadSerializedBoolField(*fogData, "receiveCloudShadows", false),
-		"Local fog factory did not serialize its physical authoring parameters");
+		Vans::ReadSerializedBoolField(*fogData, "receiveCloudShadows", false) &&
+		shape && detail && flow && shapeSource && shapeAsset && shapeMapping &&
+		flowSource && flowAsset &&
+		Vans::ReadSerializedBoolField(*shape, "enabled", false) &&
+		Vans::ReadSerializedStringField(*shapeSource, "channels") == "g" &&
+		Vans::ReadSerializedStringField(*shapeAsset, "guid") ==
+			"11111111-2222-4333-8444-555555555555" &&
+		Vans::ReadSerializedStringField(*shapeMapping, "projection") == "localXZ" &&
+		Vans::ReadSerializedStringField(*shapeMapping, "addressMode") ==
+			"clampToBorderZero" &&
+		Vans::ReadSerializedBoolField(*detail, "enabled", false) &&
+		Vans::ReadSerializedStringField(*flowSource, "channels") == "ba" &&
+		Vans::ReadSerializedStringField(*flowAsset, "guid") ==
+			"99999999-8888-4777-8666-555555555555" &&
+		fallback && fallback->kind == Vans::VansSerializedValue::Kind::Array &&
+		fallback->arrayItems.size() == 2 &&
+		std::abs(Vans::ReadSerializedNumber(fallback->arrayItems[0]) - 0.6) < 1.0e-6 &&
+		std::abs(Vans::ReadSerializedNumber(fallback->arrayItems[1]) - 0.8) < 1.0e-6 &&
+		phase && std::abs(Vans::ReadSerializedNumber(*phase) - 0.25) < 1.0e-6,
+		"Local fog factory did not serialize the canonical Shape/Detail/Flow schema");
+}
+
+bool TestLocalVolumetricFogFieldPreviewContract()
+{
+	const std::uint8_t scalarPixel[] = { 10, 64, 128, 255 };
+	Vans::EditorAPI::LocalFogFieldPreviewRequest scalarRequest;
+	scalarRequest.channels = "b";
+	scalarRequest.kind = Vans::EditorAPI::LocalFogFieldPreviewKind::Scalar;
+	scalarRequest.sampleColumns = 1;
+	scalarRequest.sampleRows = 100;
+	const Vans::EditorAPI::LocalFogFieldPreviewSnapshot scalarPreview =
+		Vans::EditorAPI::BuildLocalFogFieldPreviewFromRgba8(
+			scalarPixel, sizeof(scalarPixel), 1, 1, scalarRequest);
+	if (!Expect(scalarPreview.available && scalarPreview.sourceWidth == 1 &&
+		scalarPreview.sourceHeight == 1 && scalarPreview.sampleColumns == 4 &&
+		scalarPreview.sampleRows == 32 && scalarPreview.scalarSamples.size() == 128 &&
+		std::all_of(scalarPreview.scalarSamples.begin(), scalarPreview.scalarSamples.end(),
+			[](float value) { return std::abs(value - 128.0f / 255.0f) < 1.0e-6f; }),
+		"Local Fog scalar preview did not select the requested channel or clamp its grid"))
+	{
+		return false;
+	}
+
+	const std::uint8_t axisPixel[] = { 255, 128, 0, 255 };
+	Vans::EditorAPI::LocalFogFieldPreviewRequest flowRequest;
+	flowRequest.channels = "rg";
+	flowRequest.kind = Vans::EditorAPI::LocalFogFieldPreviewKind::FlowVector;
+	flowRequest.sampleColumns = 4;
+	flowRequest.sampleRows = 4;
+	const Vans::EditorAPI::LocalFogFieldPreviewSnapshot axisPreview =
+		Vans::EditorAPI::BuildLocalFogFieldPreviewFromRgba8(
+			axisPixel, sizeof(axisPixel), 1, 1, flowRequest);
+	if (!Expect(axisPreview.available && axisPreview.flowSamples.size() == 16 &&
+		std::all_of(axisPreview.flowSamples.begin(), axisPreview.flowSamples.end(),
+			[](const Vans::EditorAPI::Vec2& value)
+			{
+				return std::abs(value.x - 1.0f) < 1.0e-6f &&
+					std::abs(value.y) < 1.0e-6f;
+			}),
+		"Local Fog flow preview did not apply the shader-equivalent 8-bit neutral dead zone"))
+	{
+		return false;
+	}
+
+	const std::uint8_t diagonalPixel[] = { 255, 255, 0, 255 };
+	const Vans::EditorAPI::LocalFogFieldPreviewSnapshot diagonalPreview =
+		Vans::EditorAPI::BuildLocalFogFieldPreviewFromRgba8(
+			diagonalPixel, sizeof(diagonalPixel), 1, 1, flowRequest);
+	const float diagonal = std::sqrt(0.5f);
+	if (!Expect(diagonalPreview.available && !diagonalPreview.flowSamples.empty() &&
+		std::abs(diagonalPreview.flowSamples.front().x - diagonal) < 1.0e-6f &&
+		std::abs(diagonalPreview.flowSamples.front().y - diagonal) < 1.0e-6f,
+		"Local Fog flow preview did not clamp decoded vector length like the shader"))
+	{
+		return false;
+	}
+
+	flowRequest.channels = "rr";
+	const Vans::EditorAPI::LocalFogFieldPreviewSnapshot invalidPreview =
+		Vans::EditorAPI::BuildLocalFogFieldPreviewFromRgba8(
+			axisPixel, sizeof(axisPixel), 1, 1, flowRequest);
+	return Expect(!invalidPreview.available && !invalidPreview.message.empty(),
+		"Local Fog flow preview accepted duplicate vector channels");
+}
+
+bool TestLocalVolumetricFogRuntimePreviewProjectionContract()
+{
+	Vans::SceneLocalVolumetricFogEntityFactoryRequest request;
+	request.fogComponentGuid = "live-local-fog-component";
+	request.settings.visibilityDistanceMeters = 321.0f;
+	request.settings.detailNoise.enabled = true;
+	request.settings.detailNoise.source.assetGuid =
+		"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+	request.settings.detailNoise.mapping.tiling = { 7.0f, 9.0f };
+	request.settings.detailNoise.influence = 0.35f;
+	request.settings.flow.enabled = true;
+	request.settings.flow.fallbackDirectionLocalXZ = { 0.0f, 1.0f };
+	request.settings.flow.speedMetersPerSecond = 4.5f;
+	const Vans::VansSerializedValue entity =
+		Vans::VansSceneEntityFactory::BuildLocalVolumetricFogEntity(
+			request, "live-local-fog-entity");
+
+	const Vans::EditorAPI::RuntimeEntityPreviewChange change =
+		Vans::BuildRuntimeEntityPreviewChange(entity);
+	if (!Expect(change.localVolumetricFogEdits.size() == 1,
+		"Local Fog Inspector preview did not carry the current component schema"))
+		return false;
+
+	const Vans::EditorAPI::RuntimeLocalVolumetricFogEdit& edit =
+		change.localVolumetricFogEdits.front();
+	Vans::VansSceneLocalVolumetricFogComponentConfig projected;
+	if (!Expect(edit.entityGuid == "live-local-fog-entity" &&
+		edit.componentGuid == "live-local-fog-component" &&
+		Vans::VansSceneRuntimeProjection::ProjectLocalVolumetricFogComponent(
+			edit.component, projected),
+		"Local Fog runtime preview could not reuse the canonical scene projection"))
+		return false;
+
+	return Expect(
+		std::abs(projected.visibilityDistanceMeters - 321.0f) < 1.0e-6f &&
+		projected.detailNoise.enabled &&
+		projected.detailNoise.source.assetGuid ==
+			"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" &&
+		std::abs(projected.detailNoise.mapping.tiling[0] - 7.0f) < 1.0e-6f &&
+		std::abs(projected.detailNoise.mapping.tiling[1] - 9.0f) < 1.0e-6f &&
+		std::abs(projected.detailNoise.influence - 0.35f) < 1.0e-6f &&
+		projected.flow.enabled &&
+		std::abs(projected.flow.speedMetersPerSecond - 4.5f) < 1.0e-6f,
+		"Local Fog runtime preview lost Noise/Flow rendering parameters");
+}
+
+bool TestLocalVolumetricFogFieldDependencyContract()
+{
+	TemporaryDirectory temporary;
+	const fs::path assetsRoot = temporary.path / "Assets";
+	const fs::path artifactRoot = temporary.path / "Library" / "Artifacts";
+	const fs::path texturePath = assetsRoot / "PackedLocalFogFields.tga";
+	fs::create_directories(assetsRoot);
+	const std::uint8_t tga[] = {
+		0, 0, 2, 0, 0, 0, 0, 0,
+		0, 0, 0, 0, 2, 0, 2, 0,
+		32, 0x28,
+		128, 128, 255, 255, 128, 128, 255, 255,
+		128, 128, 255, 255, 128, 128, 255, 255
+	};
+	{
+		std::ofstream texture(texturePath, std::ios::binary | std::ios::trunc);
+		texture.write(reinterpret_cast<const char*>(tga), sizeof(tga));
+		if (!Expect(static_cast<bool>(texture),
+			"Could not create the Local Fog field texture fixture"))
+			return false;
+	}
+
+	Vans::VansAssetGuid textureGuid;
+	if (!Expect(Vans::VansAssetGuid::TryParse(
+		"12345678-1234-4234-8234-123456789abc", textureGuid),
+		"Could not parse the Local Fog field texture fixture GUID"))
+		return false;
+	Vans::VansAssetMeta meta;
+	meta.guid = textureGuid;
+	meta.importer = Vans::VansAssetDatabase::ImporterFor(Vans::VansAssetType::Texture);
+	auto saveTextureMeta = [&](bool linear, int importChannel = 4,
+		const char* precision = "low8")
+	{
+		meta.SetSerializedSettings(Vans::VansSerializedValue::Object({
+			{ "colorSpace", Vans::VansSerializedValue::String(
+				linear ? "linear" : "sRGB") },
+			{ "sRGB", Vans::VansSerializedValue::Bool(!linear) },
+			{ "useCompress", Vans::VansSerializedValue::Bool(false) },
+			{ "needMip", Vans::VansSerializedValue::Bool(true) },
+			{ "importChannel", Vans::VansSerializedValue::Int(importChannel) },
+			{ "precision", Vans::VansSerializedValue::String(precision) }
+		}));
+		std::string error;
+		return Vans::VansAssetMetaStorage::SaveAtomic(
+			Vans::VansAssetMeta::MetaPathFor(texturePath), meta, error);
+	};
+	if (!Expect(saveTextureMeta(true),
+		"Could not create valid Local Fog field texture metadata"))
+		return false;
+
+	Vans::VansAssetDatabase database(assetsRoot, artifactRoot);
+	if (!Expect(static_cast<bool>(
+		database.Scan(Vans::VansAssetOperationPolicy::ReadOnly())),
+		"Could not index the Local Fog field texture fixture"))
+		return false;
+	Vans::VansAssetObjectRepository objectRepository;
+	auto refreshObjectRepository = [&]()
+	{
+		objectRepository.Clear();
+		const Vans::VansAssetScanResult scan =
+			database.Scan(Vans::VansAssetOperationPolicy::ReadOnly());
+		if (!scan) return false;
+		return static_cast<bool>(Vans::VansAssetObjectBootstrapper::Publish(
+			database.All(), objectRepository));
+	};
+	if (!Expect(refreshObjectRepository(),
+		"Could not publish Local Fog field texture metadata to memory"))
+		return false;
+
+	auto buildSceneDocument = [&](Vans::VansLocalFogTextureAddressMode detailAddress)
+	{
+		Vans::VansSceneData scene;
+		scene.sceneGuid = Vans::VansAssetGuid::New();
+		Vans::VansSceneEntityData entity;
+		entity.id = Vans::VansEntityGuid::New();
+		entity.name = "Local Fog Field Dependency Probe";
+		entity.components.push_back(Vans::VansSceneSchema::MakeTransform());
+		Vans::VansSceneLocalVolumetricFogComponentConfig settings;
+		settings.shapeMask.enabled = true;
+		settings.shapeMask.source.assetGuid = textureGuid.ToString();
+		settings.shapeMask.source.channel = Vans::VansLocalFogTextureChannel::R;
+		settings.detailNoise.enabled = true;
+		settings.detailNoise.source.assetGuid = textureGuid.ToString();
+		settings.detailNoise.source.channel = Vans::VansLocalFogTextureChannel::G;
+		settings.detailNoise.mapping.addressMode = detailAddress;
+		settings.flow.enabled = true;
+		settings.flow.source.assetGuid = textureGuid.ToString();
+		settings.flow.source.xChannel = Vans::VansLocalFogTextureChannel::B;
+		settings.flow.source.zChannel = Vans::VansLocalFogTextureChannel::A;
+		settings.flow.speedMetersPerSecond = 1.0f;
+		Vans::VansSceneComponentData fog;
+		fog.id = Vans::VansComponentGuid::New();
+		fog.type = "LocalVolumetricFog";
+		fog.enabled = true;
+		fog.data = Vans::VansSceneEntityFactory::BuildLocalVolumetricFogComponentData(
+			settings);
+		entity.components.push_back(std::move(fog));
+		scene.entities.push_back(std::move(entity));
+		return Vans::DecodeSerializedValueJson(
+			Vans::VansSceneSchema::SerializeSceneJson(scene));
+	};
+
+	const fs::path sceneSourcePath = temporary.path / "Scenes" / "LocalFog.scene.json";
+	Vans::VansIOAudit::Reset();
+	const Vans::VansSceneAssetDependencyBuildResult valid =
+		Vans::VansSceneAssetDependencyBuilder::BuildResourcePlan(
+			database,
+			buildSceneDocument(Vans::VansLocalFogTextureAddressMode::Repeat),
+			sceneSourcePath,
+			{},
+			objectRepository);
+	const auto dependencyIO = Vans::VansIOAudit::Snapshot();
+	if (!Expect(valid.success && valid.requiredTextures.size() == 1 &&
+		valid.requiredTextures.find(textureGuid.ToString()) != valid.requiredTextures.end() &&
+		valid.resourcePlan.textures.size() == 1 &&
+		!valid.resourcePlan.textures.front().srgb &&
+		!valid.resourcePlan.textures.front().useCompress &&
+		valid.resourcePlan.textures.front().needMip,
+		"Local Fog Shape/Detail/Flow did not deduplicate into one valid texture dependency"))
+		return false;
+	if (!Expect(std::none_of(
+		dependencyIO.begin(), dependencyIO.end(),
+		[](const Vans::VansIOEvent& event)
+		{
+			return event.domain == Vans::VansIODomain::Authoring;
+		}),
+		"Local Fog dependency planning touched authoring storage after memory bootstrap"))
+		return false;
+
+	const Vans::VansTextureArtifactEnsureResult ensured =
+		database.EnsureTextureArtifact(textureGuid);
+	Vans::VansCookedTextureData cookedTexture;
+	std::string cookedTextureError;
+	if (!Expect(ensured.status == Vans::VansTextureArtifactEnsureStatus::Cooked &&
+		fs::is_regular_file(ensured.artifactPath) &&
+		Vans::VansTextureCooker::LoadArtifact(
+			ensured.artifactPath, cookedTexture, cookedTextureError) &&
+		cookedTexture.format == Vans::VansCookedTextureFormat::RGBA8 &&
+		cookedTexture.width == 2 && cookedTexture.height == 2 &&
+		cookedTexture.mips.size() == 2 && cookedTexture.data.size() == 20,
+		"Local Fog field texture did not produce a complete uncompressed RGBA8 .vtex artifact"))
+	{
+		return false;
+	}
+	const Vans::VansTextureArtifactEnsureResult current =
+		database.EnsureTextureArtifact(textureGuid);
+	if (!Expect(current.status == Vans::VansTextureArtifactEnsureStatus::UpToDate,
+		"Local Fog field texture artifact was not reused after a current cook"))
+	{
+		return false;
+	}
+	const std::optional<Vans::VansAssetRecord> cookedRecord = database.Find(textureGuid);
+	if (!Expect(cookedRecord &&
+		cookedRecord->artifactFormat == Vans::VansAssetArtifactFormat::Imported &&
+		cookedRecord->artifactPath == ensured.artifactPath,
+		"Local Fog field texture artifact was not published into the asset index"))
+	{
+		return false;
+	}
+	Vans::VansAssetResolver packagedResolver(
+		Vans::VansAssetAccessMode::Package, { *cookedRecord });
+	const Vans::VansResolvedAsset packagedTexture = packagedResolver.Resolve(
+		textureGuid.ToString(), Vans::VansAssetType::Texture);
+	if (!Expect(packagedTexture.valid && packagedTexture.artifactAvailable &&
+		packagedTexture.readPath == ensured.artifactPath,
+		"Packaged Local Fog field texture did not resolve to its cooked-only artifact"))
+	{
+		return false;
+	}
+	const auto verifyCompactFieldArtifact = [&](const char* fileName,
+		const char* guidText,
+		int importChannel,
+		Vans::VansCookedTextureFormat expectedFormat,
+		std::size_t expectedBytes)
+	{
+		const fs::path compactTexturePath = assetsRoot / fileName;
+		{
+			std::ofstream texture(compactTexturePath, std::ios::binary | std::ios::trunc);
+			const std::uint8_t compactTgaHeader[] = {
+				0, 0, 2, 0, 0, 0, 0, 0,
+				0, 0, 0, 0, 3, 0, 3, 0,
+				32, 0x28
+			};
+			const std::uint8_t compactPixel[] = { 128, 64, 255, 255 };
+			texture.write(reinterpret_cast<const char*>(compactTgaHeader),
+				sizeof(compactTgaHeader));
+			for (int pixel = 0; pixel < 9; ++pixel)
+				texture.write(reinterpret_cast<const char*>(compactPixel), sizeof(compactPixel));
+			if (!texture)
+				return false;
+		}
+		Vans::VansAssetMeta compactMeta;
+		if (!Vans::VansAssetGuid::TryParse(guidText, compactMeta.guid))
+			return false;
+		compactMeta.importer = Vans::VansAssetDatabase::ImporterFor(
+			Vans::VansAssetType::Texture);
+		compactMeta.SetSerializedSettings(Vans::VansSerializedValue::Object({
+			{ "colorSpace", Vans::VansSerializedValue::String("linear") },
+			{ "sRGB", Vans::VansSerializedValue::Bool(false) },
+			{ "useCompress", Vans::VansSerializedValue::Bool(false) },
+			{ "needMip", Vans::VansSerializedValue::Bool(true) },
+			{ "importChannel", Vans::VansSerializedValue::Int(importChannel) }
+		}));
+		const fs::path compactMetaPath = Vans::VansAssetMeta::MetaPathFor(compactTexturePath);
+		std::string error;
+		if (!Vans::VansAssetMetaStorage::SaveAtomic(compactMetaPath, compactMeta, error))
+			return false;
+		const Vans::VansTextureCookResult cook = Vans::VansTextureCooker::CookIfNeeded(
+			compactTexturePath, compactMetaPath, compactMeta, artifactRoot);
+		Vans::VansCookedTextureData loaded;
+		return cook.status == Vans::VansTextureCookStatus::Cooked &&
+			Vans::VansTextureCooker::LoadArtifact(cook.artifactPath, loaded, error) &&
+			loaded.format == expectedFormat && loaded.mips.size() == 2 &&
+			loaded.data.size() == expectedBytes &&
+			std::all_of(loaded.mips.begin(), loaded.mips.end(),
+				[](const Vans::VansCookedTextureMip& mip) { return mip.offset % 4u == 0u; });
+	};
+	if (!Expect(
+		verifyCompactFieldArtifact(
+			"ShapeR8.tga", "22345678-1234-4234-8234-123456789abc", 1,
+			Vans::VansCookedTextureFormat::R8, 13) &&
+		verifyCompactFieldArtifact(
+			"FlowRG8.tga", "32345678-1234-4234-8234-123456789abc", 2,
+			Vans::VansCookedTextureFormat::RG8, 22),
+		"Local Fog compact R8/RG8 field textures did not round-trip through .vtex"))
+	{
+		return false;
+	}
+
+	const Vans::VansSceneAssetDependencyBuildResult invalidAddress =
+		Vans::VansSceneAssetDependencyBuilder::BuildResourcePlan(
+			database,
+			buildSceneDocument(Vans::VansLocalFogTextureAddressMode::ClampToEdge),
+			sceneSourcePath,
+			{},
+			objectRepository);
+	if (!Expect(!invalidAddress.success && !invalidAddress.errors.empty(),
+		"Local Fog dependency validation accepted flowed non-repeat Detail Noise"))
+		return false;
+
+	if (!Expect(saveTextureMeta(true, 2),
+		"Could not create the insufficient-channel Local Fog metadata"))
+		return false;
+	if (!Expect(refreshObjectRepository(),
+		"Could not refresh insufficient-channel Local Fog metadata in memory"))
+		return false;
+	const Vans::VansSceneAssetDependencyBuildResult invalidChannels =
+		Vans::VansSceneAssetDependencyBuilder::BuildResourcePlan(
+			database,
+			buildSceneDocument(Vans::VansLocalFogTextureAddressMode::Repeat),
+			sceneSourcePath,
+			{},
+			objectRepository);
+	if (!Expect(!invalidChannels.success && !invalidChannels.errors.empty(),
+		"Local Fog dependency validation accepted BA flow channels from an RG texture"))
+		return false;
+
+	if (!Expect(saveTextureMeta(true, 4, "high16"),
+		"Could not create the unsupported-precision Local Fog metadata"))
+		return false;
+	if (!Expect(refreshObjectRepository(),
+		"Could not refresh unsupported-precision Local Fog metadata in memory"))
+		return false;
+	const Vans::VansSceneAssetDependencyBuildResult invalidPrecision =
+		Vans::VansSceneAssetDependencyBuilder::BuildResourcePlan(
+			database,
+			buildSceneDocument(Vans::VansLocalFogTextureAddressMode::Repeat),
+			sceneSourcePath,
+			{},
+			objectRepository);
+	if (!Expect(!invalidPrecision.success && !invalidPrecision.errors.empty(),
+		"Local Fog dependency validation accepted a non-cookable texture precision"))
+		return false;
+
+	if (!Expect(saveTextureMeta(false, 4),
+		"Could not create invalid Local Fog field texture metadata"))
+		return false;
+	if (!Expect(refreshObjectRepository(),
+		"Could not refresh sRGB Local Fog metadata in memory"))
+		return false;
+	const Vans::VansSceneAssetDependencyBuildResult invalidColorSpace =
+		Vans::VansSceneAssetDependencyBuilder::BuildResourcePlan(
+			database,
+			buildSceneDocument(Vans::VansLocalFogTextureAddressMode::Repeat),
+			sceneSourcePath,
+			{},
+			objectRepository);
+	return Expect(!invalidColorSpace.success && !invalidColorSpace.errors.empty(),
+		"Local Fog dependency validation accepted an sRGB field texture");
 }
 
 bool TestTransformGraphAnchorContract()
@@ -3114,7 +3698,7 @@ bool TestRuntimeWorldCommandBufferContract()
 		queued,
 		"queued-cloth-guid",
 		clothNode,
-		"Profiles/cloth.profile",
+		"0467883c-ddb2-4064-9de1-ba6fae26f90f",
 		true);
 	world.FlushCommands();
 	Vans::VansComponentHandle clothComponent = world.FindComponentByGuid(
@@ -3127,7 +3711,7 @@ bool TestRuntimeWorldCommandBufferContract()
 	if (!Expect(
 		clothComponentData &&
 			clothComponentData->clothNode == clothNode &&
-			clothComponentData->profilePath == "Profiles/cloth.profile",
+			clothComponentData->profileAssetGuid == "0467883c-ddb2-4064-9de1-ba6fae26f90f",
 		"Runtime world command buffer did not store cloth component data"))
 		return false;
 
@@ -3198,7 +3782,7 @@ bool TestRuntimeWorldCommandBufferContract()
 		"queued-ragdoll-guid",
 		animationNode,
 		2,
-		"Profiles/hero.ragdoll",
+		"8f8f1201-1ed8-4f3e-8cc6-641c5b1d0001",
 		"Hero",
 		12,
 		11,
@@ -3215,7 +3799,7 @@ bool TestRuntimeWorldCommandBufferContract()
 		ragdollComponentData &&
 			ragdollComponentData->animationNode == animationNode &&
 			ragdollComponentData->initialDriveMode == 2 &&
-			ragdollComponentData->profilePath == "Profiles/hero.ragdoll" &&
+			ragdollComponentData->profileAssetGuid == "8f8f1201-1ed8-4f3e-8cc6-641c5b1d0001" &&
 			ragdollComponentData->profileName == "Hero" &&
 			ragdollComponentData->configuredBodyCount == 12 &&
 			ragdollComponentData->configuredJointCount == 11,
@@ -3438,8 +4022,8 @@ bool TestRuntimeWorldCommandBufferContract()
 		return false;
 
 	Vans::VansRuntimeUIComponent uiComponentData;
-	uiComponentData.autoOpenScreens = { "MainMenu", "Hud" };
-	uiComponentData.preloadScreens = { "Inventory" };
+	uiComponentData.autoOpenScreenAssetGuids = { "MainMenu", "Hud" };
+	uiComponentData.preloadScreenAssetGuids = { "Inventory" };
 	uiComponentData.openScreens = { 10, 11 };
 	world.Commands().AddUIComponent(
 		queued,
@@ -3456,10 +4040,10 @@ bool TestRuntimeWorldCommandBufferContract()
 		uiStorage ? uiStorage->Get(uiComponent) : nullptr;
 	if (!Expect(
 		storedUIComponent &&
-			storedUIComponent->autoOpenScreens.size() == 2 &&
-			storedUIComponent->autoOpenScreens[0] == "MainMenu" &&
-			storedUIComponent->preloadScreens.size() == 1 &&
-			storedUIComponent->preloadScreens[0] == "Inventory" &&
+			storedUIComponent->autoOpenScreenAssetGuids.size() == 2 &&
+			storedUIComponent->autoOpenScreenAssetGuids[0] == "MainMenu" &&
+			storedUIComponent->preloadScreenAssetGuids.size() == 1 &&
+			storedUIComponent->preloadScreenAssetGuids[0] == "Inventory" &&
 			storedUIComponent->openScreens.size() == 2 &&
 			storedUIComponent->openScreens[1] == 11,
 		"Runtime world command buffer did not store UI component data"))
@@ -4902,20 +5486,26 @@ bool TestRootMotionReconciliationContract()
 		"Root transition velocity did not decay toward the destination clip");
 }
 
-std::string BuildMinimalVClipHeader(bool includeNodeTransformChannels)
+std::string BuildMinimalVClipHeader(
+	bool includeNodeTransformChannels, std::uint64_t skeletonSignature)
 {
     std::string header =
         R"({"clipName":"ConfiguredSkeletalOnly","duration":0.0,"ticksPerSecond":60.0,"boneCount":0,)"
-        R"("globalInverseTransform":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1],"bones":[])";
+		R"("sourceSkeletonGuid":"contract-skeleton","skeletonSignature":)"
+		+ std::to_string(skeletonSignature)
+		+ R"(,"globalInverseTransform":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1],"bones":[])";
     if (includeNodeTransformChannels)
         header += R"(,"nodeTransformChannels":[])";
     header += "}";
     return header;
 }
 
-bool WriteMinimalVClip(const fs::path& path, bool includeNodeTransformChannels)
+bool WriteMinimalVClip(
+	const fs::path& path, bool includeNodeTransformChannels,
+	std::uint64_t skeletonSignature)
 {
-    const std::string header = BuildMinimalVClipHeader(includeNodeTransformChannels);
+	const std::string header = BuildMinimalVClipHeader(
+		includeNodeTransformChannels, skeletonSignature);
     const char magic[6] = {'V', 'C', 'L', 'I', 'P', '\0'};
     const std::uint32_t version = 1;
     const std::uint32_t headerSize = static_cast<std::uint32_t>(header.size());
@@ -4944,30 +5534,31 @@ bool TestAnimationClipNodeTransformChannelConfigContract()
     using namespace VansGraphics;
 
     TemporaryDirectory temporary;
-    VansAnimationClip clip;
-    Skeleton skeleton;
+	VansAnimationClip clip;
+	Skeleton skeleton;
+	Skeleton fixtureSkeleton;
+	fixtureSkeleton.sourceSkeletonGuid = "contract-skeleton";
+	fixtureSkeleton.RebuildIdentityMapsAndSignature();
 
-    const fs::path unconfiguredClip = temporary.path / "unconfigured_skeletal_only.vclip";
-    if (!Expect(WriteMinimalVClip(unconfiguredClip, false),
+	const fs::path unconfiguredClip = temporary.path / "unconfigured_skeletal_only.vclip";
+	if (!Expect(WriteMinimalVClip(unconfiguredClip, false, fixtureSkeleton.signature),
         "Failed to write unconfigured skeletal-only vclip fixture"))
         return false;
     if (!Expect(!VansAnimationClipIO::Load(unconfiguredClip.string(), clip, skeleton),
         "Skeletal-only vclip without nodeTransformChannels resource config loaded unexpectedly"))
         return false;
 
-    const fs::path configuredClip = temporary.path / "configured_skeletal_only.vclip";
-    if (!Expect(WriteMinimalVClip(configuredClip, false) && WriteVClipMeta(configuredClip, false),
-        "Failed to write configured skeletal-only vclip fixture"))
-        return false;
-    if (!Expect(VansAnimationClipIO::Load(configuredClip.string(), clip, skeleton),
-        "Skeletal-only vclip with nodeTransformChannels=false config did not load"))
-        return false;
-    if (!Expect(clip.nodeTransformChannels.empty(),
-        "Skeletal-only vclip config created unexpected node transform channels"))
-        return false;
+	const fs::path configuredClip = temporary.path / "configured_skeletal_only.vclip";
+	if (!Expect(WriteMinimalVClip(configuredClip, false, fixtureSkeleton.signature) &&
+		WriteVClipMeta(configuredClip, false),
+		"Failed to write configured skeletal-only vclip fixture"))
+		return false;
+	if (!Expect(!VansAnimationClipIO::Load(configuredClip.string(), clip, skeleton),
+		"Legacy metadata changed the current Animation Clip source schema"))
+		return false;
 
-    const fs::path currentClip = temporary.path / "current_empty_node_channels.vclip";
-    if (!Expect(WriteMinimalVClip(currentClip, true),
+	const fs::path currentClip = temporary.path / "current_empty_node_channels.vclip";
+	if (!Expect(WriteMinimalVClip(currentClip, true, fixtureSkeleton.signature),
         "Failed to write current-format empty node transform channel fixture"))
         return false;
     if (!Expect(VansAnimationClipIO::Load(currentClip.string(), clip, skeleton),
@@ -5420,25 +6011,11 @@ bool TestAnimationProjectAnimatorAssetsCanonicalContract()
         {
             if (!iterator->is_regular_file())
                 continue;
-            const Vans::VansAssetType type = Vans::VansAssetDatabase::Classify(iterator->path());
-            const bool animationAsset = type == Vans::VansAssetType::AnimationClip
-                || type == Vans::VansAssetType::AnimatorController
-				|| type == Vans::VansAssetType::AnimationRig
-                || type == Vans::VansAssetType::BoneMask;
-            const bool timelineAsset = type == Vans::VansAssetType::Timeline
-                || type == Vans::VansAssetType::Audio
-                || type == Vans::VansAssetType::Video
-                || type == Vans::VansAssetType::Particle;
-            const bool retargetSourceModel = type == Vans::VansAssetType::Model
-                && iterator->path().filename() == "SKM_UEFN_Mannequin.fbx";
-			const bool demoHallBackAxeAsset = projectName == "DemoHallProject"
-				&& iterator->path().generic_string().find("/Assets/Imported/Fire_Axe/")
-					!= std::string::npos
-				&& (type == Vans::VansAssetType::Model
-					|| type == Vans::VansAssetType::Material
-					|| type == Vans::VansAssetType::Texture);
-            if (!animationAsset && !timelineAsset && !retargetSourceModel && !demoHallBackAxeAsset)
-                continue;
+			const Vans::VansAssetType type = Vans::VansAssetDatabase::Classify(iterator->path());
+			if (type == Vans::VansAssetType::Unknown || type == Vans::VansAssetType::Scene)
+				continue;
+			if (!fs::is_regular_file(Vans::VansAssetMeta::MetaPathFor(iterator->path())))
+				continue;
             std::string registerError;
             if (!Expect(database.RegisterOrRefresh(iterator->path(), readOnly, registerError),
                 "Animation or Timeline dependency asset failed read-only registration"))
@@ -5446,6 +6023,14 @@ bool TestAnimationProjectAnimatorAssetsCanonicalContract()
         }
         if (!Expect(!error, "Failed while registering project animation and Timeline assets"))
             return false;
+		Vans::VansAssetObjectRepository objectRepository;
+		const Vans::VansAssetObjectBootstrapResult objectBootstrap =
+			Vans::VansAssetObjectBootstrapper::Publish(database.All(), objectRepository);
+		if (!Expect(static_cast<bool>(objectBootstrap),
+			objectBootstrap.errors.empty()
+				? "Project animation memory repository bootstrap failed"
+				: objectBootstrap.errors.front().c_str()))
+			return false;
 
         for (const Vans::VansAssetRecord& record : database.All())
         {
@@ -5534,12 +6119,23 @@ bool TestAnimationProjectAnimatorAssetsCanonicalContract()
         {
             if (!iterator->is_regular_file() || iterator->path().extension() != ".json")
                 continue;
+			Vans::SceneDocumentLoadResult sceneDocumentLoad =
+				Vans::VansSceneDocumentLoader::Load(iterator->path());
+			if (!Expect(static_cast<bool>(sceneDocumentLoad),
+				"Project scene document could not be loaded before dependency analysis"))
+				return false;
             const Vans::VansSceneAssetDependencyBuildResult dependencies =
-                Vans::VansSceneAssetDependencyBuilder::BuildResourcePlan(database, iterator->path(), {});
+				Vans::VansSceneAssetDependencyBuilder::BuildResourcePlan(
+					database,
+					sceneDocumentLoad.document->SerializedRootSnapshot(),
+					iterator->path(),
+					{},
+					objectRepository);
             if (!Expect(dependencies.success,
                 "Project scene animation or Timeline dependency closure is incomplete or contains path/cross-project references"))
                 return false;
-			if (projectName == "AnimationV2Project" && !Expect(
+			if (projectName == "AnimationV2Project" &&
+				iterator->path().filename() == "MainScene.json" && !Expect(
 				dependencies.requiredAssets.find("4dbe6fc1-88c9-4b06-82b5-e4c6c9f37005")
 					!= dependencies.requiredAssets.end(),
 				"AnimationV2 packaged dependency closure omitted the Survival Animation Rig"))
@@ -5914,6 +6510,384 @@ bool TestAnimationV2RetargetMotionMatchingSceneContract()
 		}));
 	return Expect(sourceAnimator.clipRefs.size() >= 195 && pivotClipCount == 60,
 		"AnimationV2 UEFN source Animator is missing the canonical Pivot clip set");
+}
+
+bool TestDemoHallPistolPoseContract()
+{
+    // 使用正式导入器、采样器和重定向器检查姿态，不向项目写临时证据。
+    fs::path workspace = fs::current_path();
+    for (int depth = 0; depth < 6 && !fs::exists(workspace / "DemoHallProject"); ++depth)
+        workspace = workspace.parent_path();
+    const fs::path project = workspace / "DemoHallProject";
+    if (!fs::exists(project)) return true;
+    const fs::path model = project / "Assets/Characters/Survival/Models/survival_character.fbx";
+    Vans::VansAssetMeta meta;
+    std::string error;
+    if (!Expect(Vans::VansAssetMetaStorage::Load(Vans::VansAssetMeta::MetaPathFor(model), meta, error), error.c_str())) return false;
+    Assimp::Importer importer;
+    const aiScene* scene = importer.ReadFile(model.string(), aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_GenNormals);
+    if (!Expect(scene != nullptr, importer.GetErrorString())) return false;
+    Skeleton target;
+    VansSkinnedMeshLoader::ExtractSkeleton(scene, target, 1.0f, Vans::ReadSkeletalMeshImportSettings(meta));
+    VansAnimationRigAsset rig;
+    if (!Expect(VansAnimationRigStorage::Load(project / "Assets/AnimationRigs/Survival.vanimrig", rig, error), error.c_str())) return false;
+    VansCompiledAnimationRig compiled;
+    if (!Expect(VansAnimationRigCompiler::Compile(rig, target, compiled, error), error.c_str())) return false;
+    VansRetargetProfileAsset profile;
+    if (!Expect(VansRetargetProfileStorage::Load(project / "Assets/Retarget/RTG_UEFN_To_Survival.vretarget", profile, error), error.c_str())) return false;
+    VansRetargetRuntimeDesc desc;
+    desc.translationScaleMode = profile.translationScaleMode;
+    desc.translationScale = profile.explicitTranslationScale;
+    desc.rootAlignment = profile.rootAlignment;
+    desc.targetModelSpaceAlignment = profile.targetModelSpaceAlignment;
+    desc.limbChains = profile.limbChains;
+    for (const std::string name : { "AS_idle_to_aim", "AS_aim_to_idle", "AS_shot" })
+    {
+        VansAnimationClip clip;
+        Skeleton source;
+        if (!Expect(VansAnimationClipIO::Load((project / "Assets/Animations/Combat/Pistol" / (name + "_Unreal_Take.vclip")).string(), clip, source), "Pistol clip load failed")) return false;
+        VansRetargetProcessor retarget;
+        if (!Expect(retarget.Build(source, target, compiled, desc), "Pistol retarget build failed")) return false;
+        for (int index = 0; index <= 20; ++index)
+        {
+            VansAnimationSampleRequest request;
+            request.currentTime = clip.duration * static_cast<float>(index) / 20.0f;
+            request.endTime = clip.duration;
+            request.loop = false;
+            VansPosePayload pose;
+            if (!Expect(VansAnimationSampler::Sample(clip, source, request, pose), "Pistol sample failed")) return false;
+            std::vector<glm::mat4> models;
+            VansPoseMath::ToMatrices(pose.localPose, models);
+            for (int bone : source.topologicalOrder)
+                if (source.bones[bone].parentIndex >= 0) models[bone] = models[source.bones[bone].parentIndex] * models[bone];
+            std::vector<glm::mat4> targetModels;
+            if (!Expect(retarget.Process(models, source, target, targetModels), "Pistol retarget sample failed")) return false;
+            for (std::size_t bone = 0; bone < target.bones.size(); ++bone)
+            {
+                for (int row = 0; row < 4; ++row)
+                {
+                    for (int column = 0; column < 4; ++column)
+                    {
+                        const float value = targetModels[bone][column][row];
+                        if (!Expect(std::isfinite(value), "Pistol retarget produced a non-finite transform")) return false;
+                    }
+                }
+            }
+        }
+    }
+    return true;
+}
+
+bool TestDemoHallPistolOverlayContract()
+{
+    // 正式项目的同一套输入分别进入基础图与叠层图，比较实际 MM 和重定向输出。
+    fs::path workspace = fs::current_path();
+    for (int depth = 0; depth < 6 && !fs::exists(workspace / "DemoHallProject"); ++depth)
+        workspace = workspace.parent_path();
+    const fs::path project = workspace / "DemoHallProject";
+    if (!fs::exists(project)) return true;
+    std::string error;
+    AnimatorAssetData asset, baselineAsset;
+    if (!Expect(VansAnimatorIO::Load((project / "Assets/MotionMatchDataBase/UEFN_Mannequin.vanimator").string(), asset), "Pistol Animator load failed")) return false;
+    AnimGraphJson baselineJson;
+    if (!Expect(VansAnimatorIO::SerializeToJsonObject(asset, baselineJson, error), error.c_str())) return false;
+    baselineJson["layers"].erase(1);
+    for (auto& set : baselineJson["graphSets"]) set["bindings"].erase(1);
+    for (auto& rule : baselineJson["graphSetTransitions"]["rules"]) rule["policy"]["phase"] = "restart";
+    if (!Expect(VansAnimatorIO::DeserializeFromJsonObject(baselineJson, baselineAsset, error), error.c_str())) return false;
+    std::unordered_map<std::string, std::shared_ptr<const VansAnimationClipAsset>> clips;
+    for (const auto& ref : asset.clipRefs)
+    {
+        auto clip = std::make_shared<VansAnimationClipAsset>();
+        if (!Expect(VansAnimationClipIO::Load((project / ref.pathHint).string(), clip->clip, clip->skeleton), ref.pathHint.c_str())) return false;
+        clips.emplace(ref.assetGuid, std::move(clip));
+    }
+    const auto raiseRef = std::find_if(asset.clipRefs.begin(), asset.clipRefs.end(), [](const auto& ref) { return ref.name == "Pistol_Raise"; });
+    if (!Expect(raiseRef != asset.clipRefs.end(), "Missing raise clip")) return false;
+    const Skeleton& source = clips.at(raiseRef->assetGuid)->skeleton;
+    auto rig = std::make_shared<VansAnimationRigAsset>();
+    auto mask = std::make_shared<VansBoneMaskAsset>();
+    if (!Expect(VansAnimationRigStorage::Load(project / "Assets/AnimationRigs/UEFN.vanimrig", *rig, error)
+        && VansBoneMaskStorage::Load(project / "Assets/Animations/Combat/Pistol/Pistol_UpperBody.vbonemask", *mask, error), error.c_str())) return false;
+    VansAnimatorRuntimeCompileOptions options;
+    options.enableTargetPostProcess = false;
+    options.enableRootMotion = true;
+    options.rigResolver = [rig](const auto&, auto&) { return rig; };
+    auto clipResolver = [&clips](const AnimatorClipRef& ref, std::shared_ptr<const VansAnimationClipAsset>& out, std::string&) { out = clips.at(ref.assetGuid); return true; };
+    auto maskResolver = [mask](const VansAnimationLayerDefinition&, std::shared_ptr<const VansBoneMaskAsset>& out, std::string&) { out = mask; return true; };
+    auto baseline = VansAnimatorRuntimeCompiler::Compile(baselineAsset, source, clipResolver, maskResolver, options, error);
+    auto layered = VansAnimatorRuntimeCompiler::Compile(asset, source, clipResolver, maskResolver, options, error);
+    if (!Expect(baseline && layered, error.c_str())) return false;
+    nlohmann::json sceneJson;
+    std::ifstream(project / "Scenes/DemoHall.json") >> sceneJson;
+    std::optional<MotionMatchingSettings> settings;
+    for (const auto& entity : sceneJson["entities"])
+        for (const auto& component : entity["components"])
+            if (component.value("id", "") == "87f6e3d4-c8fe-458d-82f2-3e56f20b93e5")
+                settings = Vans::VansSceneAnimationComponentReader::ReadAuthoringAnimationComponent(Vans::DecodeSerializedValueJson(component)).motionMatching;
+    if (!Expect(settings && settings->enabled, "Survival MM settings were not read")) return false;
+    if (!Expect(baseline->ConfigureMotionMatching(*settings, error) && layered->ConfigureMotionMatching(*settings, error), error.c_str())) return false;
+    const fs::path model = project / "Assets/Characters/Survival/Models/survival_character.fbx";
+    Vans::VansAssetMeta meta;
+    if (!Expect(Vans::VansAssetMetaStorage::Load(Vans::VansAssetMeta::MetaPathFor(model), meta, error), error.c_str())) return false;
+    Assimp::Importer importer;
+    const aiScene* scene = importer.ReadFile(model.string(), aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_GenNormals);
+    if (!Expect(scene != nullptr, importer.GetErrorString())) return false;
+    Skeleton target;
+    VansSkinnedMeshLoader::ExtractSkeleton(scene, target, 1.0f, Vans::ReadSkeletalMeshImportSettings(meta));
+    VansAnimationRigAsset targetRig;
+    VansCompiledAnimationRig compiledRig;
+    VansRetargetProfileAsset profile;
+    if (!Expect(VansAnimationRigStorage::Load(project / "Assets/AnimationRigs/Survival.vanimrig", targetRig, error)
+        && VansAnimationRigCompiler::Compile(targetRig, target, compiledRig, error)
+        && VansRetargetProfileStorage::Load(project / "Assets/Retarget/RTG_UEFN_To_Survival.vretarget", profile, error), error.c_str())) return false;
+    VansRetargetRuntimeDesc desc;
+    desc.translationScaleMode = profile.translationScaleMode; desc.translationScale = profile.explicitTranslationScale;
+    desc.rootAlignment = profile.rootAlignment; desc.targetModelSpaceAlignment = profile.targetModelSpaceAlignment; desc.limbChains = profile.limbChains;
+    VansRetargetProcessor baseRetarget, layerRetarget;
+    if (!Expect(baseRetarget.Build(source, target, compiledRig, desc) && layerRetarget.Build(source, target, compiledRig, desc), "Retarget build failed")) return false;
+    auto matrixError = [](const glm::mat4& a, const glm::mat4& b)
+    {
+        float result = 0.0f;
+        for (int c = 0; c < 4; ++c) for (int r = 0; r < 4; ++r) result = std::max(result, std::abs(a[c][r] - b[c][r]));
+        return result;
+    };
+    auto lowerBone = [](const std::string& name)
+    {
+        return name == "root" || name == "pelvis" || name.find("thigh") == 0 || name.find("calf") == 0
+            || name.find("foot") == 0 || name.find("ball") == 0 || name.find("ankle") == 0 || name.find("ik_foot") == 0;
+    };
+    float sourceLowerError = 0.0f, targetLowerError = 0.0f, offError = 0.0f, upperDifference = 0.0f, rootError = 0.0f;
+    int mmFrames = 0, crouchFrames = 0;
+    std::set<std::string> activeClips;
+    std::unordered_map<std::string, int> events;
+    Vans::VansCharacterTrajectory trajectory;
+    trajectory.valid = trajectory.hasFacing = trajectory.hasGrounding = true;
+    baseline->SetCharacterTrajectory(&trajectory); layered->SetCharacterTrajectory(&trajectory);
+    baseline->Play(); layered->Play();
+    std::string previousUpperState;
+    float previousUpperTime = 0.0f;
+    int previousPhase = 0;
+    constexpr float dt = 1.0f / 60.0f;
+    for (int frame = 0; frame < 1200; ++frame)
+    {
+        const bool crouching = frame >= 900 && frame < 1080;
+        const bool stanceClip = (frame >= 840 && frame < 900) || (frame >= 1020 && frame < 1080);
+        const float speed = frame < 60 || stanceClip || frame >= 1140 ? 0.0f : (crouching ? 2.1f : 2.5f);
+        const float direction = frame < 300 ? 0.0f : frame < 510 ? 1.5707963f : frame < 780 ? 3.1415926f : 0.0f;
+        trajectory.currentFacingYaw = frame * .1f;
+        trajectory.desiredFacingYaw = trajectory.currentFacingYaw + 20.0f;
+        trajectory.plannedFacingYaw = trajectory.currentFacingYaw + .2f;
+        trajectory.movementReferenceYaw = trajectory.currentFacingYaw;
+        trajectory.moveInputLocal = glm::vec2(-std::sin(direction), std::cos(direction));
+        trajectory.currentVelocityWorld = Vans::LocomotionLocalToWorldPlanar(glm::vec3(trajectory.moveInputLocal.x, 0.0f, trajectory.moveInputLocal.y) * speed, trajectory.currentFacingYaw);
+        trajectory.desiredVelocityWorld = trajectory.plannedVelocityWorld = trajectory.requestedVelocityWorld = trajectory.currentVelocityWorld;
+        trajectory.originWorld += trajectory.currentVelocityWorld * dt;
+        for (int sample = 0; sample < 3; ++sample)
+        {
+            auto& point = trajectory.future[sample]; point.time = settings->schema.futureTimes[sample];
+            point.positionWorld = trajectory.originWorld + trajectory.currentVelocityWorld * point.time;
+            point.velocityWorld = trajectory.currentVelocityWorld; point.facingYaw = trajectory.currentFacingYaw + 12.0f * point.time;
+        }
+        const int phase = frame < 120 ? 0 : frame < 300 ? 1 : frame < 360 ? 2 : frame < 450 ? 3
+            : frame < 510 ? 2 : frame < 690 ? 4 : frame < 780 ? 0 : frame < 960 ? 1 : frame < 990 ? 2 : frame < 1110 ? 3 : 0;
+        layered->SetInt("PistolPhase", phase); layered->SetFloat("PistolUpperBodyWeight", phase == 0 ? 0.0f : 1.0f);
+        if (phase != previousPhase && (phase == 1 || phase == 3 || phase == 4)) layered->SetTrigger("PistolActionStart");
+        previousPhase = phase;
+        for (auto* controller : {baseline.get(), layered.get()})
+        {
+            controller->SetBool("UseMotionMatching", true); controller->SetFloat("Speed", speed / 7.0f);
+            controller->SetFloat("Direction", direction); controller->SetFloat("IsCrouching", crouching ? 1.0f : 0.0f);
+            controller->SetInt("MoveState", crouching ? 4 : speed > 0.0f ? 1 : 0);
+            controller->SetOwnerWorldTransform(glm::translate(glm::mat4(1.0f), trajectory.originWorld));
+            if (frame == 840) controller->SwitchGraphSet("graph-set-crouch-enter");
+            if (frame == 1020) controller->SwitchGraphSet("graph-set-crouch-exit");
+            if (frame == 900 || frame == 1080) controller->SwitchGraphSet("graph-set-default");
+            controller->Update(dt, source);
+        }
+        const auto* a = baseline->GetMotionMatchingDebugData(); const auto* b = layered->GetMotionMatchingDebugData();
+        if (!Expect(a && b && a->databaseReady && b->databaseReady, "Actual MM database was not built")) return false;
+        if (!Expect(a->usedThisFrame == b->usedThisFrame && a->activeClip == b->activeClip
+            && std::abs(a->activeTime - b->activeTime) < 1.e-6f && std::abs(a->poseCost - b->poseCost) < 1.e-6f
+            && std::abs(a->currentCost - b->currentCost) < 1.e-6f, ("Overlay changed MM state at frame " + std::to_string(frame)).c_str())) return false;
+        if (!stanceClip && !baseline->IsGraphSetTransitioning())
+        {
+            if (!Expect(a->usedThisFrame, "MM stopped evaluating under the pistol layer")) return false;
+            ++mmFrames; activeClips.insert(a->activeClip);
+        }
+        if (stanceClip) ++crouchFrames;
+        const auto debug = layered->GetLayerRuntimeDebugInfo();
+        if (!Expect(debug.size() == 2, "Pistol layer missing")) return false;
+        const auto& upper = debug[1];
+        if (upper.state == previousUpperState && (upper.state == "PistolRaise" || upper.state == "PistolShot"))
+            if (!Expect(upper.playbackTime + .001f >= previousUpperTime, "Crouch switch restarted the upper-body clip")) return false;
+        previousUpperState = upper.state; previousUpperTime = upper.playbackTime;
+        for (const auto& event : layered->GetSampledEvents()) ++events[std::string(event.name)];
+        rootError = std::max(rootError, glm::length(baseline->GetRootMotionDelta() - layered->GetRootMotionDelta()));
+        rootError = std::max(rootError, glm::length(baseline->GetRootRotationDelta() - layered->GetRootRotationDelta()));
+        const auto& basePose = baseline->GetCachedGlobalTransforms(); const auto& layerPose = layered->GetCachedGlobalTransforms();
+        for (std::size_t bone = 0; bone < source.bones.size(); ++bone)
+        {
+            const float difference = matrixError(basePose[bone], layerPose[bone]);
+            if (lowerBone(source.bones[bone].name)) sourceLowerError = std::max(sourceLowerError, difference);
+            if (frame < 120 || frame >= 1160) offError = std::max(offError, difference);
+            if (source.bones[bone].name == "hand_r") upperDifference = std::max(upperDifference, difference);
+        }
+        std::vector<glm::mat4> baseTarget, layerTarget;
+        if (!Expect(baseRetarget.Process(basePose, source, target, baseTarget) && layerRetarget.Process(layerPose, source, target, layerTarget), "Layered retarget failed")) return false;
+        for (std::size_t bone = 0; bone < target.bones.size(); ++bone)
+            if (lowerBone(target.bones[bone].name)) targetLowerError = std::max(targetLowerError, matrixError(baseTarget[bone], layerTarget[bone]));
+    }
+    // 用正式转身片段锁定朝向回归：只在内存统一输入根参考系，作为独立对照。
+    // 其余骨骼、正式遮罩和 Survival 重定向完全相同，资源本身不得被改写。
+    const int facingRoot = source.boneNameToIndex.at("root");
+    VansBoneTransform facingBind;
+    if (!Expect(VansPoseMath::TryDecompose(source.bones[facingRoot].localTransform, facingBind),
+        "Pistol facing fixture could not read the source root bind transform")) return false;
+    auto makeFacingController = [&](const std::string& turnName, const std::string& upperName,
+                                    bool normalizedInput, bool withOverlay)
+    {
+        auto controller = std::make_unique<VansAnimationController>();
+        std::vector<VansAnimationLayerSetup> layers;
+        std::vector<std::string> graphIds;
+        std::vector<std::unique_ptr<VansAnimGraph>> graphs;
+        const std::string names[] = { turnName, upperName };
+        for (int layerIndex = 0; layerIndex < (withOverlay ? 2 : 1); ++layerIndex)
+        {
+            const auto ref = std::find_if(asset.clipRefs.begin(), asset.clipRefs.end(),
+                [&](const auto& candidate) { return candidate.name == names[layerIndex]; });
+            if (ref == asset.clipRefs.end()) return std::unique_ptr<VansAnimationController>{};
+            VansAnimationClip clip = clips.at(ref->assetGuid)->clip;
+            if (normalizedInput)
+                for (auto& key : clip.boneKeyframes[facingRoot])
+                {
+                    key.position = facingBind.translation;
+                    key.rotation = facingBind.rotation;
+                }
+            controller->AddClip(names[layerIndex], std::move(clip));
+            VansAnimationLayerSetup layer;
+            layer.definition = asset.layers[layerIndex];
+            layer.definition.useWeightParameter = false;
+            layer.definition.fixedWeight = 1.0f;
+            layer.definition.weightSmoothingTime = 0.0f;
+            if (layerIndex == 1) layer.mask = *mask;
+            layers.push_back(std::move(layer));
+            graphIds.push_back("facing-graph-" + std::to_string(layerIndex));
+            auto graph = std::make_unique<VansAnimGraph>();
+            auto clipNode = std::make_unique<AnimGraphClipNode>();
+            clipNode->m_ClipName = names[layerIndex]; clipNode->m_Loop = false;
+            const int input = graph->AddNode(std::move(clipNode));
+            const int output = graph->AddNode(VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
+            graph->AddLink(input, 0, output, 0);
+            graphs.push_back(std::move(graph));
+        }
+        if (!InstallTestGraphSet(*controller, std::move(layers), std::move(graphIds), std::move(graphs), error))
+            return std::unique_ptr<VansAnimationController>{};
+        controller->EnableRootMotion(true); controller->Play();
+        return controller;
+    };
+    int facingCases = 0, facingFrames = 0;
+    float sourceFacingError = 0.0f, targetFacingError = 0.0f, facingRootMotionError = 0.0f;
+    for (const std::string turn : { "IdleTurn_L_090", "IdleTurn_R_090", "IdleTurn_L_180", "IdleTurn_R_180" })
+    {
+        for (const std::string upper : { "Pistol_Raise", "Pistol_Aim", "Pistol_Shot", "Pistol_Lower" })
+        {
+            auto actual = makeFacingController(turn, upper, false, true);
+            auto expected = makeFacingController(turn, upper, true, true);
+            auto baseOnly = makeFacingController(turn, upper, false, false);
+            if (!Expect(actual && expected && baseOnly, error.empty() ? "Pistol facing clip fixture failed" : error.c_str())) return false;
+            const float duration = std::max(actual->GetClip(turn)->duration, actual->GetClip(upper)->duration);
+            const int frameCount = static_cast<int>(std::ceil(duration / dt));
+            for (int frame = 0; frame <= frameCount; ++frame)
+            {
+                for (auto* controller : { actual.get(), expected.get(), baseOnly.get() })
+                    controller->Update(frame == 0 ? 0.0f : dt, source);
+                const auto& actualPose = actual->GetCachedGlobalTransforms();
+                const auto& expectedPose = expected->GetCachedGlobalTransforms();
+                for (std::size_t bone = 0; bone < source.bones.size(); ++bone)
+                {
+                    const float difference = matrixError(actualPose[bone], expectedPose[bone]);
+                    sourceFacingError = std::max(sourceFacingError, difference);
+                    if (!Expect(difference < .001f, ("Pistol source facing changed under " + turn
+                        + "/" + upper + " bone=" + source.bones[bone].name + " frame=" + std::to_string(frame)).c_str())) return false;
+                    if (lowerBone(source.bones[bone].name))
+                        if (!Expect(matrixError(actualPose[bone], baseOnly->GetCachedGlobalTransform(static_cast<int>(bone))) < .001f,
+                            "Pistol facing correction changed turn-clip lower-body output")) return false;
+                }
+                facingRootMotionError = std::max(facingRootMotionError,
+                    glm::length(actual->GetRootMotionDelta() - baseOnly->GetRootMotionDelta()));
+                facingRootMotionError = std::max(facingRootMotionError,
+                    glm::length(actual->GetRootRotationDelta() - baseOnly->GetRootRotationDelta()));
+                std::vector<glm::mat4> actualTarget, expectedTarget;
+                if (!Expect(layerRetarget.Process(actualPose, source, target, actualTarget)
+                    && baseRetarget.Process(expectedPose, source, target, expectedTarget), "Pistol facing retarget failed")) return false;
+                for (std::size_t bone = 0; bone < target.bones.size(); ++bone)
+                {
+                    const float difference = matrixError(actualTarget[bone], expectedTarget[bone]);
+                    targetFacingError = std::max(targetFacingError, difference);
+                    if (!Expect(difference < .002f, ("Pistol Survival facing changed under " + turn
+                        + "/" + upper + " bone=" + target.bones[bone].name + " frame=" + std::to_string(frame)).c_str())) return false;
+                }
+                ++facingFrames;
+            }
+            ++facingCases;
+        }
+    }
+    if (!Expect(facingRootMotionError < 1.e-6f, "Pistol facing correction changed turn-clip root motion")) return false;
+    nlohmann::json report = {{"frames",1200},{"motionMatchingFrames",mmFrames},{"stanceTransitionFrames",crouchFrames},
+        {"distinctMotionClips",activeClips},{"sourceLowerMaxMatrixError",sourceLowerError},{"targetLowerMaxMatrixError",targetLowerError},
+        {"inactiveLayerMaxMatrixError",offError},{"upperBodyDifference",upperDifference},{"rootMotionMaxError",rootError},{"events",events},
+        {"facingCases",facingCases},{"facingFrames",facingFrames},{"sourceFacingMaxMatrixError",sourceFacingError},
+        {"survivalFacingMaxMatrixError",targetFacingError},{"facingRootMotionMaxError",facingRootMotionError}};
+    std::cout << report.dump(2) << '\n';
+    // 完成回调与下一次输入同帧发生时，相位值没有经过中间采样；显式触发仍须重播。
+    AnimatorAssetData weaponAsset;
+    if (!Expect(VansAnimatorIO::Load((project / "Assets/Imported/Pistol_9mm/Animation/Pistol.vanimator").string(), weaponAsset), "Weapon Animator load failed")) return false;
+    Skeleton weaponSkeleton;
+    for (const auto& ref : weaponAsset.clipRefs)
+    {
+        auto clip = std::make_shared<VansAnimationClipAsset>();
+        if (!Expect(VansAnimationClipIO::Load((project / ref.pathHint).string(), clip->clip, clip->skeleton), "Weapon clip load failed")) return false;
+        weaponSkeleton = clip->skeleton;
+        clips.emplace(ref.assetGuid, std::move(clip));
+    }
+    VansAnimatorRuntimeCompileOptions weaponOptions;
+    weaponOptions.enableTargetPostProcess = false;
+    auto weaponRig = std::make_shared<VansAnimationRigAsset>();
+    if (!Expect(VansAnimationRigStorage::Load(project / "Assets/Imported/Pistol_9mm/Animation/Pistol.vanimrig", *weaponRig, error), error.c_str())) return false;
+    weaponOptions.rigResolver = [weaponRig](const auto&, auto&) { return weaponRig; };
+    auto weapon = VansAnimatorRuntimeCompiler::Compile(weaponAsset, weaponSkeleton, clipResolver, maskResolver, weaponOptions, error);
+    if (!Expect(weapon != nullptr, error.c_str())) return false;
+    weapon->Play();
+    for (int shot = 0; shot < 3; ++shot)
+    {
+        layered->SetInt("PistolPhase", 2); layered->SetInt("PistolPhase", 3);
+        layered->SetFloat("PistolUpperBodyWeight", 1.0f); layered->SetTrigger("PistolActionStart");
+        weapon->SetBool("PistolFiring", false); weapon->SetBool("PistolFiring", true); weapon->SetTrigger("PistolActionStart");
+        if (shot == 1) layered->SwitchGraphSet("graph-set-crouch-enter");
+        if (shot == 2) layered->SwitchGraphSet("graph-set-default");
+        int finishes = 0;
+        for (int frame = 0; frame < 80; ++frame)
+        {
+            layered->Update(dt, source); weapon->Update(dt, weaponSkeleton);
+            for (const auto& event : layered->GetSampledEvents())
+                if (event.name == "Pistol_Shot.Finished") ++finishes;
+            if (frame == 1)
+            {
+                const auto upper = layered->GetLayerRuntimeDebugInfo().at(1);
+                const auto mechanism = weapon->GetLayerRuntimeDebugInfo().at(0);
+                if (!Expect(upper.state == "PistolShot" && upper.playbackTime < .1f
+                    && mechanism.state == "Recoil" && mechanism.playbackTime < .2f,
+                    "Consecutive shot did not restart body and weapon")) return false;
+            }
+        }
+        if (!Expect(finishes == 1 && !layered->IsTriggerSet("PistolActionStart") && !weapon->IsTriggerSet("PistolActionStart"),
+            "Consecutive shot trigger was lost or repeated")) return false;
+    }
+    return Expect(mmFrames > 1000 && activeClips.size() > 4 && sourceLowerError < .001f && targetLowerError < .001f
+        && offError < .01f && rootError < 1.e-6f && upperDifference > 1.0f
+        && events["Pistol_Raise.Finished"] == 2 && events["Pistol_Shot.Finished"] == 2 && events["Pistol_Lower.Finished"] == 1,
+        "Pistol overlay violated movement, mask, phase continuity or event ownership");
 }
 
 bool TestDemoHallSurvivalBackAxeSceneContract()
@@ -6358,7 +7332,7 @@ bool TestDemoHallSurvivalBackAxeSceneContract()
 		std::istreambuf_iterator<char>{ scriptInput }, std::istreambuf_iterator<char>{} };
 	return Expect(scriptInput.good() || scriptInput.eof(),
 		"DemoHall character switch script could not be read")
-		&& Expect(scriptText.find("attachments = { \"Survival_Back_Axe_metal-low\" }")
+		&& Expect(scriptText.find("\"Survival_Back_Axe_metal-low\"")
 			!= std::string::npos
 			&& scriptText.find("set_character_attachments_enabled(option, enabled)")
 				!= std::string::npos
@@ -7605,6 +8579,126 @@ bool TestBoneMaskCompilationAndStorageContract()
         "Bone Mask loader accepted a forbidden generation field");
 }
 
+bool TestAnimationPreviewRigSessionContract(
+	VansGraphics::VansAnimationController& controller,
+	const VansGraphics::Skeleton& skeleton,
+	const VansGraphics::VansAnimationRigAsset& rig,
+	const fs::path& rigPath,
+	bool retargetTarget)
+{
+	using namespace VansGraphics;
+	using namespace Vans::EditorAPI;
+	auto& project = Vans::VansProjectManager::Get();
+	project.CloseProject();
+	constexpr AnimationPreviewSessionId sessionId = 91001;
+	struct SessionGuard
+	{
+		VansAnimationController& controller;
+		~SessionGuard()
+		{
+			std::string ignored;
+			AnimationPreviewRigAuthoringService::EndSession(91001, &controller, ignored);
+			Vans::VansAssetDocumentRegistry::Get().Clear();
+			Vans::VansProjectManager::Get().CloseProject();
+		}
+	} guard{ controller };
+	std::string error;
+	Vans::VansAssetRecord record;
+	if (!Expect(Vans::VansAssetGuid::TryParse(controller.GetAnimationRigAssetGuid(), record.guid),
+		"Memory-compiled controller lost its target Rig GUID"))
+		return false;
+	record.type = Vans::VansAssetType::AnimationRig;
+	record.state = Vans::VansAssetState::CpuReady;
+	// 同时覆盖当前 Rig 的 sourcePath，以及显式作者文档优先于 source/artifact 的情况。
+	record.sourcePath = retargetTarget ? rigPath.parent_path() / "wrong-source.vanimrig" : rigPath;
+	if (retargetTarget) record.authoringPath = rigPath;
+	record.artifactPath = rigPath.parent_path() / "wrong-artifact.vanimrig";
+	project.SetPackagedAssetRecords({ record });
+	auto memoryRig = rig;
+	memoryRig.name += retargetTarget ? " Retarget Memory Preview" : " Direct Memory Preview";
+	if (!Expect(project.GetAssetObjectRepository().Publish<VansAnimationRigAsset>(
+		record.guid, record.type, 1, std::make_shared<const VansAnimationRigAsset>(memoryRig),
+		{}, error).IsValid(), error.c_str()))
+		return false;
+
+	AnimationPreviewRigContext context;
+	context.sessionId = sessionId;
+	context.controller = &controller;
+	context.skeleton = &skeleton;
+	context.retargetEnabled = retargetTarget;
+	Vans::VansIOAudit::Reset();
+	if (!Expect(AnimationPreviewRigAuthoringService::BeginSession(sessionId, controller, error),
+		error.c_str()))
+		return false;
+	auto snapshot = AnimationPreviewRigAuthoringService::GetSnapshot(context);
+	std::string workingJson;
+	if (!Expect(snapshot.available && snapshot.rigAssetGuid == record.guid.ToString()
+		&& fs::path(snapshot.rigAssetPath) == rigPath.lexically_normal()
+		&& snapshot.retargetEnabled == retargetTarget && snapshot.sockets.size() == 1
+		&& AnimationPreviewRigAuthoringService::GetWorkingCanonicalJson(sessionId, workingJson, error)
+		&& nlohmann::json::parse(workingJson).at("name") == memoryRig.name,
+		"Preview did not resolve the target Rig document from its GUID and memory object"))
+		return false;
+
+	AnimationPreviewRigSocketTransformRequest edit;
+	edit.sessionId = sessionId;
+	edit.socketGuid = rig.sockets.front().guid;
+	edit.space = RuntimeTransformSpace::Local;
+	edit.transform = snapshot.sockets.front().localTransform;
+	edit.transform.position.x += 2.0f;
+	const auto edited = AnimationPreviewRigAuthoringService::SetSocketTransform(context, edit);
+	if (!Expect(edited.success
+		&& AnimationPreviewRigAuthoringService::EndSession(sessionId, &controller, error)
+		&& Vans::VansIOAudit::Snapshot().empty()
+		&& std::abs(controller.GetAnimationRig()->sockets.front().localTransform[3].x
+			- rig.sockets.front().positionLocal.x) < 1.0e-6f,
+		"Preview start/edit/stop performed I/O or failed to restore the target Socket"))
+		return false;
+
+	// 通过预览返回的文档路径走实际保存服务，保存后结束会话须保留已采用的修改。
+	if (!Expect(AnimationPreviewRigAuthoringService::BeginSession(sessionId, controller, error),
+		error.c_str()))
+		return false;
+	const auto savedEdit = AnimationPreviewRigAuthoringService::SetSocketTransform(context, edit);
+	if (!Expect(savedEdit.success && AnimationPreviewRigAuthoringService::GetWorkingCanonicalJson(
+		sessionId, workingJson, error), error.c_str()))
+		return false;
+	auto document = Vans::VansAssetDocumentRegistry::Get().GetOrOpen(snapshot.rigAssetPath);
+	if (!Expect(document && document->sourceDocument.IsLoaded(),
+		"Resolved preview Rig document could not be opened for explicit Save"))
+		return false;
+	const auto documentEdit = Vans::VansAssetDocumentEditService::ReplaceRoot(
+		document->sourceDocument,
+		Vans::DecodeSerializedValueJson(nlohmann::json::parse(workingJson)));
+	if (!Expect(static_cast<bool>(documentEdit), documentEdit.message.c_str()))
+		return false;
+	const auto saved = Vans::VansAnimationRigSaveService::Save(document);
+	VansAnimationRigAsset diskRig;
+	if (!Expect(saved.success && saved.published
+		&& VansAnimationRigStorage::Load(rigPath, diskRig, error)
+		&& diskRig.name == memoryRig.name && diskRig.sockets.size() == 1
+		&& std::abs(diskRig.sockets.front().positionLocal.x - edit.transform.position.x) < 1.0e-6f
+		&& AnimationPreviewRigAuthoringService::Adopt({ sessionId, savedEdit.acceptedRevision }, controller).success
+		&& AnimationPreviewRigAuthoringService::EndSession(sessionId, &controller, error)
+		&& std::abs(controller.GetAnimationRig()->sockets.front().localTransform[3].x
+			- edit.transform.position.x) < 1.0e-6f,
+		"Preview Rig save/adopt/stop did not preserve the authored target Socket"))
+		return false;
+
+	record.sourcePath.clear();
+	record.authoringPath.clear();
+	project.SetPackagedAssetRecords({ record });
+	if (!Expect(!AnimationPreviewRigAuthoringService::BeginSession(sessionId, controller, error)
+		&& error.find("authoring document") != std::string::npos
+		&& !AnimationPreviewRigAuthoringService::GetSnapshot(context).available,
+		"Preview accepted a cooked artifact as an authoring document or retained a failed session"))
+		return false;
+	std::cout << "[ForestContractTests] Animation preview Rig "
+		<< (retargetTarget ? "retarget target" : "direct target")
+		<< ": GUID resolution, memory-only preview, Socket rollback and explicit Save passed\n";
+	return true;
+}
+
 bool TestAnimatorRuntimeCompilerContract()
 {
     using namespace VansGraphics;
@@ -7633,6 +8727,12 @@ bool TestAnimatorRuntimeCompilerContract()
         && VansAnimationClipIO::Save(overlayPath.string(), makeClip("Overlay", 10.0f, 20.0f), skeleton),
         "Runtime compiler fixture clips failed to save"))
         return false;
+	const auto baseClipAsset = std::make_shared<VansAnimationClipAsset>();
+	baseClipAsset->clip = makeClip("Base", 0.0f, 0.0f);
+	baseClipAsset->skeleton = skeleton;
+	const auto overlayClipAsset = std::make_shared<VansAnimationClipAsset>();
+	overlayClipAsset->clip = makeClip("Overlay", 10.0f, 20.0f);
+	overlayClipAsset->skeleton = skeleton;
 
     VansBoneMaskAsset mask;
     mask.id = "mask-upper";
@@ -7651,6 +8751,12 @@ bool TestAnimatorRuntimeCompilerContract()
 	VansAnimationRigAsset rig;
 	rig.name = "RuntimeCompilerRig";
 	rig.skeletonGuid = skeleton.sourceSkeletonGuid;
+	VansRigSocketDefinition previewSocket;
+	previewSocket.guid = "88888888-8888-4888-8888-888888888801";
+	previewSocket.name = "PreviewSocket";
+	previewSocket.boneGuid = skeleton.bones[2].guid;
+	previewSocket.positionLocal = glm::vec3(0.5f, 0.0f, 0.0f);
+	rig.sockets.push_back(previewSocket);
 	const fs::path rigPath = temporary.path / "runtime.vanimrig";
 	if (!Expect(VansAnimationRigStorage::SaveAtomic(rigPath, rig, error), error.c_str()))
 		return false;
@@ -7732,38 +8838,45 @@ bool TestAnimatorRuntimeCompilerContract()
     slot.layerId = "layer-upper";
     asset.slots.push_back(slot);
 
-    const auto clipResolver = [&](const AnimatorClipRef& reference, fs::path& path, std::string& resolveError)
+	const auto clipResolver = [&](const AnimatorClipRef& reference,
+		std::shared_ptr<const VansAnimationClipAsset>& clip, std::string& resolveError)
     {
-        if (reference.assetGuid == "55555555-5555-4555-8555-555555555555") path = basePath;
-        else if (reference.assetGuid == "66666666-6666-4666-8666-666666666666") path = overlayPath;
+		if (reference.assetGuid == "55555555-5555-4555-8555-555555555555") clip = baseClipAsset;
+		else if (reference.assetGuid == "66666666-6666-4666-8666-666666666666") clip = overlayClipAsset;
         else { resolveError = "Unexpected Clip GUID"; return false; }
         return true;
     };
-    const auto maskResolver = [&](const VansAnimationLayerDefinition& layer, fs::path& path, std::string& resolveError)
+	const auto maskObject = std::make_shared<const VansBoneMaskAsset>(mask);
+	const auto rigObject = std::make_shared<const VansAnimationRigAsset>(rig);
+	const auto maskResolver = [&](const VansAnimationLayerDefinition& layer,
+		std::shared_ptr<const VansBoneMaskAsset>& resolvedMask, std::string& resolveError)
     {
         if (layer.maskGuid != "77777777-7777-4777-8777-777777777777")
         {
             resolveError = "Unexpected Bone Mask GUID";
             return false;
         }
-        path = maskPath;
+		resolvedMask = maskObject;
         return true;
     };
 	VansAnimatorRuntimeCompileOptions runtimeOptions;
-	runtimeOptions.rigResolver = [&](const std::string& guid, fs::path& path, std::string& resolveError)
+	runtimeOptions.rigResolver = [&](const std::string& guid, std::string& resolveError)
 	{
 		if (guid != asset.animationRigGuid)
 		{
 			resolveError = "Unexpected Animation Rig GUID";
-			return false;
+			return std::shared_ptr<const VansAnimationRigAsset>{};
 		}
-		path = rigPath;
-		return true;
+		return rigObject;
 	};
+	Vans::VansIOAudit::Reset();
     auto controller = VansAnimatorRuntimeCompiler::Compile(asset, skeleton,
         clipResolver, maskResolver, runtimeOptions, error);
     if (!Expect(controller && controller->GetLayerCount() == 2, error.c_str()))
         return false;
+	if (!Expect(Vans::VansIOAudit::Snapshot().empty(),
+		"Animator runtime compilation performed I/O after asset memory publication"))
+		return false;
     controller->SetFloat("UpperBodyWeight", 1.0f);
     controller->Play();
     controller->Update(0.0f, skeleton);
@@ -7785,19 +8898,34 @@ bool TestAnimatorRuntimeCompilerContract()
 
     bool clipResolverInvoked = false;
     bool maskResolverInvoked = false;
+	auto targetRig = rig;
+	targetRig.name = "RetargetPreviewRig";
+	targetRig.sockets.front().positionLocal.x = 0.75f;
+	const fs::path targetRigPath = temporary.path / "target.vanimrig";
+	if (!Expect(VansAnimationRigStorage::SaveAtomic(targetRigPath, targetRig, error), error.c_str()))
+		return false;
     VansAnimatorRuntimeCompileOptions targetOptions;
     targetOptions.mode = VansAnimatorRuntimeCompileMode::ExternalPoseTarget;
-	targetOptions.rigResolver = runtimeOptions.rigResolver;
+	targetOptions.animationRigGuidOverride = "99999999-9999-4999-8999-999999999999";
+	targetOptions.rigResolver = [&](const std::string& guid, std::string& resolveError)
+	{
+		if (guid == targetOptions.animationRigGuidOverride)
+			return std::make_shared<const VansAnimationRigAsset>(targetRig);
+		resolveError = "Retarget preview resolved the source Animator Rig instead of the target Rig";
+		return std::shared_ptr<const VansAnimationRigAsset>{};
+	};
     auto targetController = VansAnimatorRuntimeCompiler::Compile(
         asset,
         skeleton,
-        [&](const AnimatorClipRef&, fs::path&, std::string& resolveError)
+		[&](const AnimatorClipRef&,
+			std::shared_ptr<const VansAnimationClipAsset>&, std::string& resolveError)
         {
             clipResolverInvoked = true;
             resolveError = "External-pose target must not resolve source Clips";
             return false;
         },
-        [&](const VansAnimationLayerDefinition&, fs::path&, std::string& resolveError)
+		[&](const VansAnimationLayerDefinition&,
+			std::shared_ptr<const VansBoneMaskAsset>&, std::string& resolveError)
         {
             maskResolverInvoked = true;
             resolveError = "External-pose target must not resolve source Bone Masks";
@@ -7815,10 +8943,13 @@ bool TestAnimatorRuntimeCompilerContract()
         return false;
 
     std::vector<glm::mat4> externalPose(skeleton.bones.size(), glm::mat4(1.0f));
-    return Expect(targetController->SubmitExternalModelPose(
+    if (!Expect(targetController->SubmitExternalModelPose(
         externalPose, skeleton, 0.016f, VansExternalPoseEvaluationMode::TargetPostProcess)
         && targetController->GetCachedGlobalTransforms().size() == skeleton.bones.size(),
-        "External-pose target did not accept a retargeted model-space pose");
+        "External-pose target did not accept a retargeted model-space pose"))
+		return false;
+	return TestAnimationPreviewRigSessionContract(*controller, skeleton, rig, rigPath, false)
+		&& TestAnimationPreviewRigSessionContract(*targetController, skeleton, targetRig, targetRigPath, true);
 }
 
 bool TestAnimationLayerStackRuntimeContract()
@@ -7938,6 +9069,182 @@ bool TestAnimationLayerStackRuntimeContract()
 	return Expect(!InstallTestGraphSet(controller, std::move(invalidLayers),
 		{ "invalid-graph" }, std::move(invalidGraphs), error),
         "Layer Stack accepted an Animator without exactly one Base layer");
+}
+
+bool TestAnimationLayerRootReferenceFrameContract()
+{
+    using namespace VansGraphics;
+
+    // 同一动作仅改变被提取的根骨参考系，角色空间的瞄准结果必须保持不变。
+    Skeleton skeleton;
+    skeleton.sourceSkeletonGuid = "layer-root-frame";
+    const char* names[] = { "scene", "root", "pelvis", "spine", "hand", "leg" };
+    const int parents[] = { -1, 0, 1, 2, 3, 2 };
+    skeleton.bones.resize(6);
+    std::vector<VansBoneTransform> bind(6);
+    bind[0].rotation = glm::angleAxis(glm::radians(31.0f), glm::vec3(0, 1, 0));
+    bind[0].translation = glm::vec3(3, 0, -2);
+    bind[1].rotation = glm::angleAxis(glm::radians(23.0f), glm::vec3(0, 1, 0));
+    bind[1].translation = glm::vec3(2, 0, 3);
+    bind[2].translation = glm::vec3(0, 2, 0);
+    bind[3].translation = glm::vec3(0, 1, 0);
+    bind[4].translation = glm::vec3(1, 1, 0);
+    bind[5].translation = glm::vec3(0, -2, 0);
+    for (int index = 0; index < 6; ++index)
+    {
+        auto& bone = skeleton.bones[index];
+        bone.name = names[index]; bone.id = index; bone.parentIndex = parents[index];
+        bone.guid = "layer-root-frame-" + std::to_string(index);
+        bone.canonicalPath = parents[index] < 0 ? names[index]
+            : skeleton.bones[parents[index]].canonicalPath + "/" + names[index];
+        bone.localTransform = VansPoseMath::Compose(bind[index]);
+        bone.offsetMatrix = glm::mat4(1.0f);
+        skeleton.boneNameToIndex[bone.name] = index;
+        if (parents[index] >= 0) skeleton.bones[parents[index]].children.push_back(index);
+    }
+    skeleton.BuildTopologicalOrder();
+    skeleton.RebuildIdentityMapsAndSignature();
+
+    auto makeClip = [&](const std::string& name, float rootYaw, bool normalized, bool upper)
+    {
+        VansAnimationClip clip;
+        clip.clipName = name; clip.duration = 2.0f;
+        clip.rootMotion.enabled = true; clip.rootMotion.boneName = "root";
+        clip.rootMotion.extractTranslation = clip.rootMotion.extractRotation = true;
+        clip.boneKeyframes.resize(bind.size());
+        for (std::size_t bone = 0; bone < bind.size(); ++bone)
+        {
+            for (float time : { 0.0f, 2.0f })
+            {
+                VansBoneTransform transform = bind[bone];
+                if (bone == 1)
+                {
+                    // 缩放属于姿态，不能随根平移和根旋转一起清除。
+                    transform.scale = glm::vec3(1.1f);
+                    if (!normalized)
+                    {
+                        transform.translation += glm::vec3(4.0f + time, 0, 2.0f * time);
+                        transform.rotation = bind[bone].rotation * glm::angleAxis(
+                            glm::radians(rootYaw + time * 8.0f), glm::vec3(0, 1, 0));
+                    }
+                }
+                if (bone == 3) transform.rotation = glm::angleAxis(
+                    glm::radians(upper ? 13.0f : -6.0f), glm::vec3(0, 1, 0));
+                if (bone == 4) transform.rotation = glm::angleAxis(
+                    glm::radians(upper ? -35.0f : 22.0f), glm::vec3(1, 0, 0));
+                if (bone == 5) transform.rotation = glm::angleAxis(
+                    glm::radians(upper ? 67.0f : -12.0f), glm::vec3(1, 0, 0));
+                clip.boneKeyframes[bone].push_back(
+                    { time, transform.translation, transform.rotation, transform.scale });
+            }
+        }
+        return clip;
+    };
+    auto makeGraph = [](const std::string& clipName)
+    {
+        auto graph = std::make_unique<VansAnimGraph>();
+        auto clip = std::make_unique<AnimGraphClipNode>();
+        clip->m_ClipName = clipName;
+        const int input = graph->AddNode(std::move(clip));
+        const int output = graph->AddNode(VansAnimGraph::CreateNodeByType(AnimGraphNodeType::Output));
+        graph->AddLink(input, 0, output, 0);
+        return graph;
+    };
+    std::string error;
+    auto makeController = [&](float yaw, bool normalized, bool withOverlay,
+                              VansLayerBlendMode mode, VansAdditiveReferenceMode referenceMode)
+    {
+        auto controller = std::make_unique<VansAnimationController>();
+        controller->AddClip("Turn", makeClip("Turn", yaw, normalized, false));
+        controller->AddClip("Aim", makeClip("Aim", -37.0f, normalized, true));
+        controller->AddClip("Reference", makeClip("Reference", 69.0f, normalized, false));
+        VansAnimationLayerSetup base;
+        base.definition.id = "layer-base"; base.definition.name = "Base";
+        base.definition.kind = VansAnimationLayerKind::Base;
+        base.definition.rootMotion = VansLayerRootMotionMode::Base;
+        std::vector<VansAnimationLayerSetup> layers;
+        layers.push_back(std::move(base));
+        std::vector<std::string> ids{ "graph-base" };
+        std::vector<std::unique_ptr<VansAnimGraph>> graphs;
+        graphs.push_back(makeGraph("Turn"));
+        if (withOverlay)
+        {
+            VansAnimationLayerSetup overlay;
+            overlay.definition.id = "layer-upper"; overlay.definition.name = "Upper";
+            overlay.definition.kind = VansAnimationLayerKind::Overlay;
+            overlay.definition.blendMode = mode;
+            overlay.definition.rotationSpace = VansRotationBlendSpace::Mesh;
+            overlay.definition.rootMotion = VansLayerRootMotionMode::Ignore;
+            overlay.definition.additiveReference = referenceMode;
+            overlay.definition.referenceClipName = "Reference";
+            overlay.definition.referenceTime = 0.25f;
+            VansBoneMaskAsset mask;
+            mask.id = "mask-upper"; mask.name = "Upper";
+            mask.explicitWeights = { { "spine", 0.25f }, { "hand", 1.0f } };
+            overlay.mask = std::move(mask);
+            layers.push_back(std::move(overlay));
+            ids.push_back("graph-upper"); graphs.push_back(makeGraph("Aim"));
+        }
+        if (!InstallTestGraphSet(*controller, std::move(layers), std::move(ids), std::move(graphs), error))
+            return std::unique_ptr<VansAnimationController>{};
+        controller->EnableRootMotion(true);
+        controller->Play();
+        return controller;
+    };
+    auto matrixError = [](const glm::mat4& a, const glm::mat4& b)
+    {
+        float result = 0;
+        for (int c = 0; c < 4; ++c) for (int r = 0; r < 4; ++r)
+            result = std::max(result, std::abs(a[c][r] - b[c][r]));
+        return result;
+    };
+    int cases = 0;
+    for (float yaw : { 0.0f, 90.0f, -90.0f, 180.0f, -180.0f })
+    {
+        for (const auto reference : { VansAdditiveReferenceMode::BindPose,
+            VansAdditiveReferenceMode::FirstFrame, VansAdditiveReferenceMode::ClipTime,
+            VansAdditiveReferenceMode::ReferenceClip })
+        {
+            const auto mode = reference == VansAdditiveReferenceMode::BindPose
+                ? VansLayerBlendMode::Override : VansLayerBlendMode::Additive;
+            auto raw = makeController(yaw, false, true, mode, reference);
+            auto normalized = makeController(yaw, true, true, mode, reference);
+            auto locomotion = makeController(yaw, false, false, mode, reference);
+            if (!Expect(raw && normalized && locomotion, error.c_str())) return false;
+            for (float dt : { 0.0f, 0.25f, 0.25f })
+            {
+                raw->Update(dt, skeleton); normalized->Update(dt, skeleton); locomotion->Update(dt, skeleton);
+                for (std::size_t bone = 0; bone < skeleton.bones.size(); ++bone)
+                {
+                    if (!Expect(matrixError(raw->GetCachedGlobalTransform(static_cast<int>(bone)),
+                        normalized->GetCachedGlobalTransform(static_cast<int>(bone))) < .0001f,
+                        ("Layer retained extracted root facing: yaw=" + std::to_string(yaw)
+                            + " bone=" + skeleton.bones[bone].name + " reference="
+                            + std::to_string(static_cast<int>(reference))).c_str())) return false;
+                }
+                for (int bone : { 0, 1, 2, 5 })
+                    if (!Expect(matrixError(raw->GetCachedGlobalTransform(bone),
+                        locomotion->GetCachedGlobalTransform(bone)) < .0001f,
+                        "Root-frame correction changed an unmasked locomotion bone")) return false;
+                if (!Expect(raw->HasRootMotionDelta() == locomotion->HasRootMotionDelta()
+                    && glm::length(raw->GetRootMotionDelta() - locomotion->GetRootMotionDelta()) < .000001f
+                    && glm::length(raw->GetRootRotationDelta() - locomotion->GetRootRotationDelta()) < .000001f,
+                    "Root-frame correction changed extracted movement or turning")) return false;
+                VansBoneTransform root;
+                if (!Expect(VansPoseMath::TryDecompose(glm::inverse(raw->GetCachedGlobalTransform(0))
+                    * raw->GetCachedGlobalTransform(1), root)
+                    && glm::length(root.scale - glm::vec3(1.1f)) < .0001f,
+                    "Root-frame correction discarded authored root scale")) return false;
+            }
+            if (!Expect(raw->HasRootMotionDelta() && glm::length(raw->GetRootMotionDelta()) > .1f
+                && std::abs(raw->GetRootRotationDelta().w) < .99999f,
+                "Root-frame fixture did not exercise moving and rotating root motion")) return false;
+            ++cases;
+        }
+    }
+    std::cout << "[ForestContractTests] Layer root reference frame: " << cases
+        << " cases, mesh override/additive, partial mask, root ancestry and scale preserved\n";
+    return true;
 }
 
 bool TestAnimationGraphSetSwitchRuntimeContract()
@@ -9653,6 +10960,15 @@ bool TestPackagedAudioResourcePlanRoundTrip()
 {
     TemporaryDirectory temporary;
     Vans::VansPackagedResourcePlan plan;
+	Vans::VansPackagedAssetIndexRecord indexedAsset;
+	indexedAsset.guid = "2c86c128-f3f0-4dbd-9e4e-0f0f0a61c9d1";
+	indexedAsset.type = "model";
+	indexedAsset.artifactPath = "Library/Artifacts/Resources/2c86c128/model.vmesh";
+	indexedAsset.metaPath = "Library/Artifacts/Metadata/2c86c128-f3f0-4dbd-9e4e-0f0f0a61c9d1.meta";
+	indexedAsset.artifactFormat = "imported";
+	indexedAsset.sourceHash = 7;
+	indexedAsset.metaHash = 11;
+	plan.assetIndex.push_back(indexedAsset);
     Vans::VansSceneAudioResourceRequest audio;
     audio.name = "CaveDrip";
     audio.assetGuid = "audio-guid";
@@ -9681,6 +10997,11 @@ bool TestPackagedAudioResourcePlanRoundTrip()
         return false;
     if (!Expect(loaded.resourcePlan.audios.size() == 1, "Packaged audio resource count changed"))
         return false;
+	if (!Expect(loaded.assetIndex.size() == 1 &&
+		loaded.assetIndex.front().metaPath ==
+			(temporary.path / indexedAsset.metaPath).lexically_normal().generic_string(),
+		"Packaged asset metadata path did not round-trip into the package root"))
+		return false;
 
     const Vans::VansSceneAudioResourceRequest& roundTrip = loaded.resourcePlan.audios.front();
     if (!Expect(roundTrip.attenuationMode == "inverse", "Packaged audio attenuation mode did not round-trip"))
@@ -9689,6 +11010,74 @@ bool TestPackagedAudioResourcePlanRoundTrip()
         "Packaged audio reverb send did not round-trip"))
         return false;
     return Expect(roundTrip.bus == "Music", "Packaged audio bus did not round-trip");
+}
+
+bool TestMediaComponentGuidProjection()
+{
+	using Value = Vans::VansSerializedValue;
+	const std::string audioGuid = "0ad3dc29-20bb-4b43-87a5-8e63c6b25dda";
+	const std::string videoGuid = "a1d4b131-8512-4f23-8bdb-445f4b4dc825";
+	const Value sceneRoot = Value::Object({
+		{ "schemaVersion", Value::Int(Vans::VansSceneSchemaVersion) },
+		{ "settings", Value::Object({
+			{ "environment", BuildValidEnvironmentSettingsForTest() }
+		}) },
+		{ "entities", Value::Array({
+			Value::Object({
+				{ "id", Value::String("media-entity") },
+				{ "name", Value::String("Media") },
+				{ "components", Value::Array({
+					Value::Object({
+						{ "id", Value::String("transform-component") },
+						{ "type", Value::String("Transform") },
+						{ "enabled", Value::Bool(true) },
+						{ "data", Value::Object({
+							{ "position", Value::Array({ Value::Float(0.0), Value::Float(0.0), Value::Float(0.0) }) },
+							{ "rotation", Value::Array({ Value::Float(0.0), Value::Float(0.0), Value::Float(0.0), Value::Float(1.0) }) },
+							{ "scale", Value::Array({ Value::Float(1.0), Value::Float(1.0), Value::Float(1.0) }) }
+						}) }
+					}),
+					Value::Object({
+						{ "id", Value::String("audio-component") },
+						{ "type", Value::String("Audio") },
+						{ "enabled", Value::Bool(true) },
+						{ "data", Value::Object({
+							{ "source", Value::Object({
+								{ "guid", Value::String(audioGuid) }
+							}) }
+						}) }
+					}),
+					Value::Object({
+						{ "id", Value::String("video-component") },
+						{ "type", Value::String("Video") },
+						{ "enabled", Value::Bool(true) },
+						{ "data", Value::Object({
+							{ "source", Value::Object({
+								{ "guid", Value::String(videoGuid) }
+							}) }
+						}) }
+					})
+				}) }
+			})
+		}) }
+	});
+
+	Vans::VansSceneContentBuildPlan plan;
+	std::string error;
+	if (!Vans::VansSceneRuntimeProjection::BuildRuntimeSceneContentPlan(
+		sceneRoot, {}, plan, error))
+	{
+		std::cerr << "[MediaGuidProjection] " << error << '\n';
+		return false;
+	}
+	if (!Expect(plan.objects.objects.size() == 1,
+		"Media component GUID projection changed the scene object count"))
+		return false;
+	const Vans::VansSceneCameraMediaComponentConfig& media =
+		plan.objects.objects.front().cameraMediaComponents;
+	return Expect(media.audio && media.audio->sourceName == audioGuid &&
+		media.video && media.video->sourceName == videoGuid,
+		"Audio/video asset references were converted from GUIDs to runtime aliases");
 }
 
 bool TestAudioReverbZoneRuntimeProjection()
@@ -11569,6 +12958,8 @@ bool TestAtmosphereMathAndDataContract()
 		atmosphereFramePlan.FindPass(VansRenderPassNames::LocalMedia);
 	const VansRenderPassNodeDesc* volumetricCloud =
 		atmosphereFramePlan.FindPass(VansRenderPassNames::VolumetricCloud);
+	const VansRenderPassNodeDesc* atmosphereViewLuts =
+		atmosphereFramePlan.FindPass(VansRenderPassNames::AtmosphereViewLuts);
 	const VansRenderPassNodeDesc* atmosphereComposite =
 		atmosphereFramePlan.FindPass(VansRenderPassNames::AtmosphereComposite);
 	const VansRenderPassNodeDesc* waterComposite =
@@ -11586,6 +12977,9 @@ bool TestAtmosphereMathAndDataContract()
 	};
 	if (!Expect(
 		atmosphereComposite != nullptr &&
+		atmosphereViewLuts != nullptr &&
+		hasAccess(atmosphereViewLuts->writes,
+			"AtmosphereAerialClearScattering", VansRenderResourceUsage::StorageWrite) &&
 		localMedia != nullptr &&
 		hasAccess(localMedia->writes, "LocalMediaInjection", VansRenderResourceUsage::StorageWrite) &&
 		volumetricCloud != nullptr &&
@@ -11597,6 +12991,7 @@ bool TestAtmosphereMathAndDataContract()
 		hasAccess(waterComposite->writes, "RawOpaqueSceneColor", VansRenderResourceUsage::ColorAttachmentWrite) &&
 		hasAccess(atmosphereComposite->reads, "RawOpaqueSceneColor", VansRenderResourceUsage::SampledRead) &&
 		hasAccess(atmosphereComposite->reads, "AtmosphereAerialScattering", VansRenderResourceUsage::SampledRead) &&
+		hasAccess(atmosphereComposite->reads, "AtmosphereAerialClearScattering", VansRenderResourceUsage::SampledRead) &&
 		hasAccess(atmosphereComposite->reads, "AtmosphereAerialOpticalDepth", VansRenderResourceUsage::SampledRead) &&
 		hasAccess(atmosphereComposite->reads, "CloudRadiance", VansRenderResourceUsage::SampledRead) &&
 		hasAccess(atmosphereComposite->reads, "CloudDepth", VansRenderResourceUsage::SampledRead) &&
@@ -11679,6 +13074,25 @@ bool TestAtmosphereMathAndDataContract()
 		return false;
 	}
 
+	const glm::vec2 fallbackDirection = glm::normalize(glm::vec2(4.0f, 1.0f));
+	const glm::vec2 detailUvPerMeter = glm::vec2(3.0f / 54.0f, 2.5f / 40.0f);
+	const auto fallbackFlowUvOffset = [&](float timeSeconds)
+	{
+		const float travelledMeters = timeSeconds * 1.5f + 0.17f * 6.0f;
+		const glm::vec2 offset = fallbackDirection * travelledMeters * detailUvPerMeter;
+		return glm::vec2(
+			offset.x - std::floor(offset.x),
+			offset.y - std::floor(offset.y));
+	};
+	const glm::vec2 fallbackAtStart = fallbackFlowUvOffset(0.0f);
+	const glm::vec2 fallbackAtOldHalfCycle = fallbackFlowUvOffset(2.0f);
+	if (!Expect(
+		glm::length(fallbackAtOldHalfCycle - fallbackAtStart) > 0.1f,
+		"Uniform local-fog flow still returns to the same noise UV at the old half cycle"))
+	{
+		return false;
+	}
+
 	fs::path atmosphereAssetRoot;
 	for (fs::path cursor = fs::current_path();
 		!cursor.empty() && atmosphereAssetRoot.empty(); cursor = cursor.parent_path())
@@ -11712,6 +13126,8 @@ bool TestAtmosphereMathAndDataContract()
 		"EngineAssets/Shaders/Atmosphere/AtmosphereCommon.glsl");
 	const std::string participatingMediaCommon = readText(
 		"EngineAssets/Shaders/Atmosphere/ParticipatingMediaCommon.glsl");
+	const std::string nearMediaDepthCommon = readText(
+		"EngineAssets/Shaders/Atmosphere/NearMediaDepthCommon.glsl");
 	const std::string transmittanceLut = readText(
 		"EngineAssets/Shaders/Atmosphere/TransmittanceLUT.comp");
 	const std::string multiScatteringLut = readText(
@@ -11727,11 +13143,27 @@ bool TestAtmosphereMathAndDataContract()
 	const std::string localMediaIntegrationShader = readText(
 		"EngineAssets/Shaders/Atmosphere/LocalMediaIntegration.comp");
 	const std::string localMediaInjectionShader = readText(
-		"EngineAssets/Shaders/Atmosphere/LocalMediaInjection.comp");
+		"EngineAssets/Shaders/Atmosphere/LocalMediaInjection.comp") + readText(
+		"EngineAssets/Shaders/Atmosphere/NearMediaInjectionCommon.glsl");
+	const std::string nearMediaLightingShader = readText(
+		"EngineAssets/Shaders/Atmosphere/NearMediaLighting.comp");
+	const std::string localMediaTemporalResolveShader = readText(
+		"EngineAssets/Shaders/Atmosphere/LocalMediaTemporalResolve.comp") + readText(
+		"EngineAssets/Shaders/Atmosphere/NearMediaTemporalResolveCommon.glsl");
+	const std::string nearMediaTemporalCommon = readText(
+		"EngineAssets/Shaders/Atmosphere/NearMediaTemporalCommon.glsl");
+	const std::string localFogFieldSamplingShader = readText(
+		"EngineAssets/Shaders/Atmosphere/LocalFogFieldSampling.glsl");
+	const std::string localFogFlowAdvectionShader = readText(
+		"EngineAssets/Shaders/Atmosphere/LocalFogFlowAdvection.glsl");
+	const std::string localFogMediumCommonShader = readText(
+		"EngineAssets/Shaders/Atmosphere/LocalFogMediumCommon.glsl");
 	const std::string nearMediaSystemSource = readText(
 		"Source/EngineCore/RenderCore/AtmosphereCore/VansNearMediaSystem.cpp");
 	const std::string nearMediaSystemHeader = readText(
 		"Source/EngineCore/RenderCore/AtmosphereCore/VansNearMediaSystem.h");
+	const std::string shaderRegistrationSource = readText(
+		"Source/EngineCore/RenderCore/VansShaderRegistrations.cpp");
 	const std::string rendererSource = readText(
 		"Source/EngineCore/RenderCore/VulkanCore/VansVKRenderer.cpp");
 	const std::string inspectorSource = readText(
@@ -11770,7 +13202,10 @@ bool TestAtmosphereMathAndDataContract()
 		multiScatteringLut.find("heightFogScattering") == std::string::npos &&
 		multiScatteringLut.find("atmosphericFogRayleighScattering") == std::string::npos &&
 		skyViewLut.find("EvaluateAtmosphereClearSkyScatteringSource") != std::string::npos &&
-		skyViewLut.find("SampleAtmosphereCloudShadow") == std::string::npos,
+		skyViewLut.find("SampleAtmosphereCloudShadow") == std::string::npos &&
+		aerialPerspectiveShader.find("aerialClearScatteringOutput") != std::string::npos &&
+		aerialPerspectiveShader.find("EvaluateAtmosphereClearSkyScatteringSource") !=
+			std::string::npos,
 		"Physical Atmosphere is not the single transmittance/LUT owner"))
 	{
 		return false;
@@ -11797,6 +13232,14 @@ bool TestAtmosphereMathAndDataContract()
 			std::string::npos &&
 		atmosphereCompositeShader.find("result = path.scattering") !=
 			std::string::npos &&
+		atmosphereCompositeShader.find(
+			"uniform sampler3D atmosphereClearAerialScattering") != std::string::npos &&
+		atmosphereCompositeShader.find(
+			"SampleClearPhysicalAerialScatteringAt") != std::string::npos &&
+		atmosphereCompositeShader.find(
+			"physicalSky - clearPhysicalScattering") != std::string::npos &&
+		atmosphereCompositeShader.find(
+			"SampleFarAerialOpticalDepthAt") != std::string::npos &&
 		atmosphereCompositeShader.find("baselineSky - baselineAtCursor") ==
 			std::string::npos &&
 		atmosphereCompositeShader.find("skyTail") == std::string::npos &&
@@ -11834,6 +13277,21 @@ bool TestAtmosphereMathAndDataContract()
 		participatingMediaCommon.find("IntegrateParticipatingMediaStep") != std::string::npos &&
 		participatingMediaCommon.find("ComposeParticipatingMediaInterval") != std::string::npos &&
 		participatingMediaCommon.find("SampleParticipatingMediaFroxel") != std::string::npos &&
+		participatingMediaCommon.find("float viewDepthMeters") != std::string::npos &&
+		nearMediaDepthCommon.find("NearMediaRayDistanceFromViewDepth") != std::string::npos &&
+		nearMediaDepthCommon.find("NearMediaViewDepthFromRayDistance") != std::string::npos &&
+		nearMediaDepthCommon.find("NearMediaSliceViewDepth") != std::string::npos &&
+		nearMediaDepthCommon.find("-viewDirection.z") != std::string::npos &&
+		localMediaInjectionShader.find("sliceStartViewDepth") != std::string::npos &&
+		localMediaInjectionShader.find("NearMediaRayDistanceFromViewDepth") != std::string::npos &&
+		nearMediaTemporalCommon.find("previousViewDepth") != std::string::npos &&
+		localMediaInjectionShader.find("length(worldPosition - previousCamera)") == std::string::npos &&
+		localMediaIntegrationShader.find("sliceStartViewDepth") != std::string::npos &&
+		localMediaIntegrationShader.find("sliceStartDistance, sliceEndDistance") != std::string::npos &&
+		mediaComposition.find("NearMediaRayDistanceFromViewDepth") != std::string::npos &&
+		mediaComposition.find("NearMediaViewDepthFromRayDistance") != std::string::npos &&
+		cloudRayMarchShader.find("localViewDepth") != std::string::npos &&
+		cloudRayMarchShader.find("localMediaInjection, uv, localViewDepth") != std::string::npos &&
 		cloudRayMarchShader.find("storedCloudOnlyOpticalDepth") != std::string::npos &&
 		cloudRayMarchShader.find("uniform sampler3D localMediaInjection") != std::string::npos &&
 		cloudRayMarchShader.find("uniform sampler2D cloudSceneDepth") != std::string::npos &&
@@ -11865,22 +13323,99 @@ bool TestAtmosphereMathAndDataContract()
 		localMediaInjectionShader.find("readonly buffer LocalFogTileIndices") != std::string::npos &&
 		localMediaInjectionShader.find("localFogTileOverflow") != std::string::npos &&
 		localMediaInjectionShader.find("distanceToFaceMeters") != std::string::npos &&
-		localMediaInjectionShader.find("AtmosphereCloudShadowStrength()") != std::string::npos &&
-		localMediaInjectionShader.find("SampleAtmosphereMultipleScattering(") != std::string::npos &&
+		localMediaInjectionShader.find("IntersectLocalFogSliceSegment") != std::string::npos &&
+		localMediaInjectionShader.find("overlapDistance / sliceThickness") != std::string::npos &&
+		localMediaInjectionShader.find("NearMediaMaterialAccumulation") !=
+			std::string::npos &&
+		localMediaInjectionShader.find("AccumulateNearMediaMaterial") !=
+			std::string::npos &&
+		localMediaInjectionShader.find("nearMediaScatteringExtinction") !=
+			std::string::npos &&
+		localMediaInjectionShader.find("SampleDirectionalGeometryShadow") ==
+			std::string::npos &&
+		localMediaInjectionShader.find("EvaluatePunctualLighting") ==
+			std::string::npos &&
+		localMediaInjectionShader.find(
+			"volume.worldToLocal * vec4(worldPosition, 1.0)") == std::string::npos &&
+		localMediaInjectionShader.find("EvaluateLocalFogDensityFactor") != std::string::npos &&
+		localMediaInjectionShader.find("NearMediaSubFroxelJitter") != std::string::npos &&
+		localMediaInjectionShader.find("localFogTileGridAndLimits.w > 0.5") != std::string::npos &&
+		localMediaInjectionShader.find("mix(overlapStartDistance") != std::string::npos &&
+		localMediaInjectionShader.find("localMediaHistory") == std::string::npos &&
+		localMediaInjectionShader.find("densityDelta") == std::string::npos &&
+		localMediaInjectionShader.find("motionConfidence") == std::string::npos &&
+		localMediaInjectionShader.find(
+			"SampleDirectionalShadow(sampleWorldPosition, densityFactor)") == std::string::npos &&
+		nearMediaLightingShader.find("NearMediaLightTransmittance") !=
+			std::string::npos &&
+		nearMediaLightingShader.find("SampleCascadeShadow") != std::string::npos &&
+		nearMediaLightingShader.find("EvaluatePunctualLighting") != std::string::npos &&
+		nearMediaLightingShader.find("geometryVisibility *") != std::string::npos &&
+		nearMediaLightingShader.find("mediumVisibility * cloudVisibility") !=
+			std::string::npos &&
+		nearMediaLightingShader.find("uParticles") == std::string::npos &&
+		nearMediaLightingShader.find("uLocalFogVolumes") == std::string::npos &&
+		nearMediaTemporalCommon.find("NEAR_MEDIA_SUB_FROXEL_SEQUENCE[16]") != std::string::npos &&
+		nearMediaTemporalCommon.find("NearMediaHistoryUVW") != std::string::npos &&
+		localMediaTemporalResolveShader.find("readonly image3D localMediaCurrent") != std::string::npos &&
+		localMediaTemporalResolveShader.find("writeonly image3D localMediaResolved") != std::string::npos &&
+		localMediaTemporalResolveShader.find(
+			"VANS_NEAR_MEDIA_WITH_PARTICLE_REACTIVE_HISTORY 0") != std::string::npos &&
+		localMediaTemporalResolveShader.find("NearMediaSliceViewDepth(float(voxel.z) + 0.5") != std::string::npos &&
+		localMediaTemporalResolveShader.find("sumSquared / neighborhoodSampleCount") != std::string::npos &&
+		localMediaTemporalResolveShader.find("clippedHistory = clamp(history") != std::string::npos &&
+		localMediaTemporalResolveShader.find("responsiveHistoryWeight") != std::string::npos &&
+		localMediaTemporalResolveShader.find("densityDelta") == std::string::npos &&
+		localMediaIntegrationShader.find("binding = 12") != std::string::npos &&
+		localFogFieldSamplingShader.find("nonuniformEXT(descriptorIndex)") != std::string::npos &&
+		localFogFieldSamplingShader.find("ComputeLocalFogFieldLod") != std::string::npos &&
+		localFogFlowAdvectionShader.find("BuildFlowAdvectionPhases") != std::string::npos &&
+		localFogFlowAdvectionShader.find("BuildUniformFlowUvOffset") != std::string::npos &&
+		localFogFlowAdvectionShader.find("OffsetSecondFlowLayerUv") != std::string::npos &&
+		localFogFlowAdvectionShader.find("ApplyFlowDecodeDeadZone") != std::string::npos &&
+		localFogFlowAdvectionShader.find("ClampLocalFogFlowLength") != std::string::npos &&
+		localFogMediumCommonShader.find("LOCAL_FOG_SHAPE_ENABLED") != std::string::npos &&
+		localFogMediumCommonShader.find("LOCAL_FOG_DETAIL_ENABLED") != std::string::npos &&
+		localFogMediumCommonShader.find("LOCAL_FOG_FLOW_ENABLED") != std::string::npos &&
+		localFogMediumCommonShader.find("FrameTime") != std::string::npos &&
+		localFogMediumCommonShader.find("detailUv - flowUvOffset") != std::string::npos &&
+		localFogMediumCommonShader.find(
+			"rawDetail = mix(detail1, detail0, phases.blend)") != std::string::npos &&
+		nearMediaLightingShader.find("AtmosphereCloudShadowStrength()") != std::string::npos &&
+		nearMediaLightingShader.find("SampleAtmosphereMultipleScattering(") != std::string::npos &&
 		nearMediaSystemSource.find("MaxLocalFogVolumes") != std::string::npos &&
 		nearMediaSystemSource.find("RefreshLocalFogRegistry") != std::string::npos &&
 		nearMediaSystemSource.find("GetSceneObjectCollectionGeneration") != std::string::npos &&
 		nearMediaSystemSource.find("m_LocalFogTileHeadersBuffer") != std::string::npos &&
+		nearMediaSystemSource.find("FindComputeShader(\"NearMediaLighting\")") != std::string::npos &&
+		nearMediaSystemSource.find("FindComputeShader(\"LocalMediaTemporalResolve\")") != std::string::npos &&
+		shaderRegistrationSource.find(
+			"RegisterComputeShaderFile(\"NearMediaLighting\"") != std::string::npos &&
+		nearMediaSystemSource.find("m_RawInjectionInitialized") != std::string::npos &&
+		nearMediaSystemSource.find("m_InjectionInitialized[target]") != std::string::npos &&
+		nearMediaSystemSource.find("m_Injection[target], m_HistoryValid") == std::string::npos &&
+		nearMediaSystemSource.find("DispatchCompute(*m_InjectionShader") <
+			nearMediaSystemSource.find("DispatchCompute(*m_LightingShader") &&
+		nearMediaSystemSource.find("DispatchCompute(*m_LightingShader") <
+			nearMediaSystemSource.find("DispatchCompute(*m_TemporalResolveShader") &&
+		nearMediaSystemSource.find("DispatchCompute(*m_TemporalResolveShader") <
+			nearMediaSystemSource.find("DispatchCompute(*m_IntegrationShader") &&
 		nearMediaSystemSource.find("m_HistoryValid = false") != std::string::npos &&
 		nearMediaSystemSource.find("effectiveFarDistanceMeters") != std::string::npos &&
 		nearMediaSystemSource.find("environment.heightFog.maximumDistanceMeters") != std::string::npos &&
 		nearMediaSystemSource.find("m_PreviousEffectiveFarDistanceMeters") != std::string::npos &&
+		nearMediaSystemSource.find("VansLocalFogFieldResourceTable::RegisterScalar") != std::string::npos &&
+		nearMediaSystemSource.find("VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK") != std::string::npos &&
+		nearMediaSystemHeader.find("sizeof(VansNearMediaParamsGPU) == 64") != std::string::npos &&
+		nearMediaSystemHeader.find("sizeof(VansLocalFogVolumeGPU) == 272") != std::string::npos &&
 		nearMediaSystemHeader.find("void InvalidateHistory()") != std::string::npos &&
 		rendererSource.find("nearMedia->InvalidateHistory()") != std::string::npos &&
 		runtimeProjectionSource.find("FindComponent(entity, \"LocalVolumetricFog\")") != std::string::npos &&
 		inspectorSource.find("if (type == \"LocalVolumetricFog\")") != std::string::npos &&
+		inspectorSource.find(
+			"Fallback direction continuously advects Detail Noise") != std::string::npos &&
 		inspectorSource.find("\"AudioReverbZone\", \"LocalVolumetricFog\"") != std::string::npos,
-		"Entity Local Volumetric Fog is not authorable or NearMedia no longer aggregates volumes"))
+		"Entity Local Volumetric Fog injection, lighting, or authoring contract regressed"))
 	{
 		return false;
 	}
@@ -11889,6 +13424,21 @@ bool TestAtmosphereMathAndDataContract()
 		cloudShadowShader.find("max(uCloud.sigmaTRef, 0.0)") != std::string::npos &&
 		cloudShadowShader.find("max(uCloud.lightAbsorption, 0.0)") != std::string::npos &&
 		atmosphereCommon.find("aerialPerspectiveAndVolumetricLighting.y") != std::string::npos &&
+		atmosphereCommon.find(
+			"EvaluateAtmosphereScatteringSourceWithPrimaryCloudTransmittance") !=
+			std::string::npos &&
+		cloudLighting.find("out float lightOpticalDepth") != std::string::npos &&
+		cloudRayMarchShader.find("cloudSunOpticalDepth") != std::string::npos &&
+		cloudRayMarchShader.find(
+			"exp(-min(cloudSunOpticalDepth, 80.0))") != std::string::npos &&
+		cloudRayMarchShader.find("terminatedByCloudOpacity") != std::string::npos &&
+		cloudRayMarchShader.find("missingCloudOpticalDepth") != std::string::npos &&
+		cloudRayMarchShader.find("OPAQUE_OPTICAL_DEPTH") != std::string::npos &&
+		cloudRayMarchShader.find(
+			"cloudTransmittance < TRANSMIT_CUTOFF") != std::string::npos &&
+		cloudRayMarchShader.find(
+			"EvaluateAtmosphereScatteringSourceWithPrimaryCloudTransmittance") !=
+			std::string::npos &&
 		aerialPerspectiveShader.find("uAtmosphere.aerialPerspectiveParameters.y") == std::string::npos &&
 		atmosphereCompositeShader.find("uAtmosphere.aerialPerspectiveParameters.y") == std::string::npos &&
 		lightWindowSource.find("Optical Depth Scale") == std::string::npos &&
@@ -11968,6 +13518,39 @@ bool TestAtmosphereMathAndDataContract()
 	if (!Expect(nearEqual(left.scattering, right.scattering, 1.0e-12) &&
 		nearEqual(left.opticalDepth, right.opticalDepth, 1.0e-12),
 		"Atmosphere interval composition is not associative"))
+		return false;
+
+	// SkyView is clear-sky radiance. Recovering its endpoint with a shadowed
+	// Aerial prefix algebraically restores the missing Mie halo. The endpoint
+	// baseline must therefore use the independently integrated clear prefix.
+	const glm::dvec3 clearPhysicalScattering(4.0);
+	const glm::dvec3 shadowedPhysicalScattering(1.0);
+	const glm::dvec3 physicalTransmittance(0.5);
+	const glm::dvec3 clearSkyEndpoint(10.0);
+	const glm::dvec3 physicalSky = clearPhysicalScattering +
+		physicalTransmittance * clearSkyEndpoint;
+	const glm::dvec3 resolvedClearEndpoint =
+		(physicalSky - clearPhysicalScattering) / physicalTransmittance;
+	const glm::dvec3 cloudOccludedSky = shadowedPhysicalScattering +
+		physicalTransmittance * resolvedClearEndpoint;
+	const glm::dvec3 legacyResolvedEndpoint =
+		(physicalSky - shadowedPhysicalScattering) / physicalTransmittance;
+	const glm::dvec3 legacyCloudSky = shadowedPhysicalScattering +
+		physicalTransmittance * legacyResolvedEndpoint;
+	if (!Expect(
+		nearEqual(cloudOccludedSky, glm::dvec3(6.0), 1.0e-12) &&
+		nearEqual(legacyCloudSky, physicalSky, 1.0e-12) &&
+		glm::all(glm::lessThan(cloudOccludedSky, legacyCloudSky)),
+		"Sky endpoint extraction cancels cloud-occluded Physical Atmosphere scattering"))
+		return false;
+
+	const double highDynamicRangeSkyRadiance = 100.0;
+	const double earlyExitResidual = highDynamicRangeSkyRadiance * 0.01;
+	const double opaqueClosedResidual = highDynamicRangeSkyRadiance *
+		std::exp(-13.815510558);
+	if (!Expect(
+		earlyExitResidual >= 1.0 && opaqueClosedResidual <= 1.0e-4,
+		"Opaque cloud early termination still leaks high-dynamic-range Physical Atmosphere radiance"))
 		return false;
 
 	Vans::VansSceneEnvironmentSettingsConfig environment;
@@ -12171,6 +13754,8 @@ bool TestAtmosphereMathAndDataContract()
 	qualitySettings.atmosphereQualitySettings.farAerialTileSize = 8u;
 	qualitySettings.nearMediaQualitySettings.farDistanceMeters = 2000.0f;
 	qualitySettings.nearMediaQualitySettings.historyWeight = 0.85f;
+	qualitySettings.nearMediaQualitySettings.lightTransmittanceSamples = 16u;
+	qualitySettings.nearMediaQualitySettings.lightTransmittanceMaxDistanceMeters = 24.0f;
 	qualitySettings.cloudShadowQualitySettings.clipmapCrossFadeFraction = 0.12f;
 	const nlohmann::json encodedQuality =
 		Vans::VansProjectSettingsJsonCodec::EncodeRenderSettings(qualitySettings);
@@ -12182,6 +13767,9 @@ bool TestAtmosphereMathAndDataContract()
 		encodedQuality.contains("nearMediaQuality") &&
 		!encodedQuality.contains("localFogQuality") &&
 		encodedQuality["nearMediaQuality"].contains("historyWeight") &&
+		encodedQuality["nearMediaQuality"].contains("lightTransmittanceSamples") &&
+		encodedQuality["nearMediaQuality"].contains(
+			"lightTransmittanceMaxDistanceMeters") &&
 		encodedQuality["cloudShadowQuality"].contains(
 			"clipmapCrossFadeFraction"),
 		"Project quality codec did not emit the current atmosphere schema"))
@@ -12196,6 +13784,9 @@ bool TestAtmosphereMathAndDataContract()
 		decodedQuality.atmosphereQualitySettings.farAerialTileSize == 8u &&
 		std::abs(decodedQuality.nearMediaQualitySettings.historyWeight - 0.85f) <
 			1.0e-6f &&
+		decodedQuality.nearMediaQualitySettings.lightTransmittanceSamples == 16u &&
+		std::abs(decodedQuality.nearMediaQualitySettings.
+			lightTransmittanceMaxDistanceMeters - 24.0f) < 1.0e-6f &&
 		std::abs(decodedQuality.cloudShadowQualitySettings.clipmapCrossFadeFraction -
 			0.12f) < 1.0e-6f,
 		"Project quality current-schema round trip failed"))
@@ -12205,9 +13796,2077 @@ bool TestAtmosphereMathAndDataContract()
 	return true;
 }
 
+bool TestProjectSettingsExplicitSaveContract()
+{
+	TemporaryDirectory temporary;
+	const fs::path projectRoot = temporary.path / "Project";
+	fs::create_directories(projectRoot / "ProjectSettings");
+
+	Vans::VansProjectConfig config;
+	config.SetDefaults("ProjectDocumentContract");
+	if (!Expect(config.SaveToFile((projectRoot / "ForestProject.json").string()),
+		"Could not create the project config fixture"))
+		return false;
+
+	Vans::VansProjectSettings settings;
+	settings.SetDefaults();
+	std::string error;
+	if (!Expect(
+		Vans::VansProjectSettingsStorage::SaveRenderSettings(
+			(projectRoot / config.renderSettings).string(),
+			settings.BuildRenderSettingsData(), error) &&
+		Vans::VansProjectSettingsStorage::SavePhysicsSettings(
+			(projectRoot / config.physicsSettings).string(),
+			settings.BuildPhysicsSettingsData(), error),
+		"Could not create the project settings fixtures"))
+		return false;
+	VansEngine::VansCollisionLayerConfig collisionLayers;
+	collisionLayers.ResetToDefaults();
+	VansEngine::AudioMixConfig audioMix;
+	audioMix.displayName = "ProjectDocumentContract Default Audio Mix";
+	if (!Expect(
+		VansEngine::VansCollisionLayerStorage::SaveAtomic(
+			(projectRoot / config.collisionLayerSettings).string(),
+			collisionLayers,
+			error) &&
+		VansEngine::VansAudioMixConfigStorage::SaveAtomic(
+			(projectRoot / config.audioSettings).string(), audioMix, error),
+		"Could not create the collision layer and audio mix fixtures"))
+		return false;
+
+	const fs::path configPath = projectRoot / "ForestProject.json";
+	const fs::path renderPath = projectRoot / config.renderSettings;
+	const fs::path physicsPath = projectRoot / config.physicsSettings;
+	std::string configBefore;
+	std::string renderBefore;
+	std::string physicsBefore;
+	if (!Expect(
+		Vans::VansFileStorage::ReadAllBytes(configPath, configBefore, error) &&
+		Vans::VansFileStorage::ReadAllBytes(renderPath, renderBefore, error) &&
+		Vans::VansFileStorage::ReadAllBytes(physicsPath, physicsBefore, error),
+		"Could not capture project document baselines"))
+		return false;
+
+	Vans::VansProjectManager& manager = Vans::VansProjectManager::Get();
+	manager.CloseProject();
+	struct CloseProjectGuard
+	{
+		Vans::VansProjectManager& manager;
+		~CloseProjectGuard() { manager.CloseProject(); }
+	} closeGuard{ manager };
+	Vans::VansProjectOpenOptions openOptions;
+	openOptions.updateRecentProjects = false;
+	openOptions.scanAssets = false;
+	if (!Expect(openOptions.assetPolicy.meta == Vans::VansAssetMetaPolicy::RequireExisting,
+		"Default project-open asset policy is not read-only") ||
+		!Expect(manager.OpenProject(projectRoot.string(), openOptions),
+			"Could not open the project document fixture") ||
+		!Expect(!manager.HasDirtyProjectDocuments(),
+			"Freshly loaded project documents are dirty"))
+		return false;
+
+	error.clear();
+	Vans::VansIOAudit::Reset();
+	if (!Expect(manager.SetProjectPhysicsFixedTimeStep(1.0f / 120.0f, error),
+		"Could not apply the physics setting to memory") ||
+		!Expect(manager.HasDirtyProjectDocuments(),
+			"In-memory project settings edit did not become dirty"))
+		return false;
+	const auto applyIOEvents = Vans::VansIOAudit::Snapshot();
+	if (!Expect(std::none_of(
+		applyIOEvents.begin(), applyIOEvents.end(),
+		[](const Vans::VansIOEvent& event)
+		{
+			return event.domain == Vans::VansIODomain::Authoring &&
+				event.operation == Vans::VansIOOperation::StageWrite;
+		}), "Applying project settings produced an Authoring write event"))
+		return false;
+
+	std::string physicsAfterApply;
+	if (!Expect(Vans::VansFileStorage::ReadAllBytes(physicsPath, physicsAfterApply, error) &&
+		physicsAfterApply == physicsBefore,
+		"Applying project settings wrote the authoring file before explicit save"))
+		return false;
+
+	Vans::VansIOAudit::Reset();
+	if (!Expect(manager.SaveProjectDocuments(error),
+		"Explicit project document save failed") ||
+		!Expect(!manager.HasDirtyProjectDocuments() &&
+			manager.GetProjectDocumentStateId() == manager.GetProjectDocumentSavedStateId(),
+			"Explicit save did not advance the saved project document state"))
+		return false;
+	const auto saveIOEvents = Vans::VansIOAudit::Snapshot();
+	const std::size_t authoringWrites = static_cast<std::size_t>(std::count_if(
+		saveIOEvents.begin(), saveIOEvents.end(),
+		[](const Vans::VansIOEvent& event)
+		{
+			return event.domain == Vans::VansIODomain::Authoring &&
+				event.operation == Vans::VansIOOperation::StageWrite && event.success;
+		}));
+	if (!Expect(authoringWrites == 1,
+		"Explicit physics save did not write exactly one dirty project document"))
+		return false;
+
+	std::string configAfterSave;
+	std::string renderAfterSave;
+	std::string physicsAfterSave;
+	if (!Expect(
+		Vans::VansFileStorage::ReadAllBytes(configPath, configAfterSave, error) &&
+		Vans::VansFileStorage::ReadAllBytes(renderPath, renderAfterSave, error) &&
+		Vans::VansFileStorage::ReadAllBytes(physicsPath, physicsAfterSave, error) &&
+		configAfterSave == configBefore && renderAfterSave == renderBefore &&
+		physicsAfterSave != physicsBefore,
+		"Explicit physics save touched unrelated project documents or skipped its dirty file"))
+		return false;
+
+	const Vans::VansGAFProjectConfiguration* loadedGAF =
+		manager.GetGAFProjectConfiguration();
+	if (!Expect(loadedGAF != nullptr,
+		"Project manager did not retain the loaded GAF configuration"))
+		return false;
+	Vans::VansGAFProjectConfiguration gafConfiguration = *loadedGAF;
+	gafConfiguration.settings.performance.maximumActiveActionsPerHost = 17;
+	Vans::VansIOAudit::Reset();
+	if (!Expect(manager.SetGAFProjectConfiguration(gafConfiguration, error),
+		"Could not apply the GAF project configuration to memory") ||
+		!Expect(manager.HasDirtyProjectDocuments(),
+			"In-memory GAF project configuration did not become dirty"))
+		return false;
+	const auto gafApplyIOEvents = Vans::VansIOAudit::Snapshot();
+	if (!Expect(std::none_of(
+		gafApplyIOEvents.begin(), gafApplyIOEvents.end(),
+		[](const Vans::VansIOEvent& event)
+		{
+			return event.domain == Vans::VansIODomain::Authoring &&
+				event.operation == Vans::VansIOOperation::StageWrite;
+		}), "Applying the GAF project configuration produced an Authoring write event"))
+		return false;
+	for (const std::string_view fileName :
+		Vans::VansGAFProjectConfiguration::DocumentFileNames())
+	{
+		if (!Expect(!fs::exists(projectRoot / "ProjectSettings" / fileName),
+			"Applying the GAF project configuration created a file before explicit save"))
+			return false;
+	}
+
+	Vans::VansIOAudit::Reset();
+	if (!Expect(manager.SaveProjectDocuments(error),
+		"Explicit GAF project configuration save failed") ||
+		!Expect(!manager.HasDirtyProjectDocuments(),
+			"Explicit GAF save did not clear the project document dirty state"))
+		return false;
+	const auto gafSaveIOEvents = Vans::VansIOAudit::Snapshot();
+	const std::size_t gafAuthoringWrites = static_cast<std::size_t>(std::count_if(
+		gafSaveIOEvents.begin(), gafSaveIOEvents.end(),
+		[](const Vans::VansIOEvent& event)
+		{
+			return event.domain == Vans::VansIODomain::Authoring &&
+				event.operation == Vans::VansIOOperation::StageWrite && event.success;
+		}));
+	if (!Expect(gafAuthoringWrites ==
+		Vans::VansGAFProjectConfiguration::DocumentFileNames().size(),
+		"Explicit GAF save did not publish exactly its four project documents"))
+		return false;
+	Vans::VansGAFProjectConfiguration persistedGAF;
+	if (!Expect(Vans::VansGAFProjectConfiguration::Load(
+		projectRoot / "ProjectSettings", persistedGAF, error) &&
+		persistedGAF.settings.performance.maximumActiveActionsPerHost == 17,
+		"Explicit GAF save did not persist the in-memory configuration"))
+		return false;
+
+	if (!Expect(manager.SetProjectPhysicsFixedTimeStep(1.0f / 90.0f, error),
+		"Could not create a second in-memory physics edit"))
+		return false;
+	Vans::VansProjectPhysicsSettingsData externalPhysics =
+		manager.GetProjectSettings().BuildPhysicsSettingsData();
+	externalPhysics.fixedTimeStep = 1.0f / 30.0f;
+	if (!Expect(Vans::VansProjectSettingsStorage::SavePhysicsSettings(
+		physicsPath.string(), externalPhysics, error),
+		"Could not create an external project-settings conflict"))
+		return false;
+	std::string externalPhysicsBytes;
+	if (!Expect(Vans::VansFileStorage::ReadAllBytes(
+		physicsPath, externalPhysicsBytes, error),
+		"Could not capture the external project-settings edit"))
+		return false;
+	error.clear();
+	if (!Expect(!manager.SaveProjectDocuments(error) &&
+		manager.HasDirtyProjectDocuments(),
+		"Project document save did not reject an external file conflict"))
+		return false;
+	std::string physicsAfterConflict;
+	return Expect(
+		Vans::VansFileStorage::ReadAllBytes(physicsPath, physicsAfterConflict, error) &&
+		physicsAfterConflict == externalPhysicsBytes,
+		"Conflict rejection overwrote the externally modified project document");
+}
+
+bool TestSceneMemoryDependencyPlanContract()
+{
+	TemporaryDirectory temporary;
+	const fs::path assetsRoot = temporary.path / "Assets";
+	const fs::path sceneSourcePath = temporary.path / "Scenes" / "MemoryScene.json";
+	fs::create_directories(assetsRoot);
+	fs::create_directories(sceneSourcePath.parent_path());
+	Vans::VansAssetDatabase database(assetsRoot, temporary.path / "Artifacts");
+
+	Vans::VansSceneData scene;
+	if (!Expect(Vans::VansAssetGuid::TryParse(
+		"11111111-2222-4333-8444-555555555555", scene.sceneGuid),
+		"Could not create the in-memory scene GUID fixture"))
+		return false;
+	const Vans::SceneJson sceneJson = Vans::VansSceneSchema::SerializeSceneJson(scene);
+	std::string error;
+	{
+		Vans::VansScopedIOContext fixtureWrite(
+			Vans::VansIODomain::Authoring, "ContractFixture.SceneWrite", true);
+		if (!Expect(Vans::VansSceneFileStorage::WriteSceneDocument(
+			sceneSourcePath, sceneJson, error),
+			"Could not create the scene memory-load fixture"))
+			return false;
+	}
+	Vans::VansIOAudit::Reset();
+	Vans::SceneDocumentLoadResult sceneLoad =
+		Vans::VansSceneDocumentLoader::Load(sceneSourcePath);
+	if (!Expect(static_cast<bool>(sceneLoad),
+		"Could not load the scene memory-load fixture"))
+		return false;
+	const auto loadIOEvents = Vans::VansIOAudit::Snapshot();
+	const std::size_t sceneReads = static_cast<std::size_t>(std::count_if(
+		loadIOEvents.begin(), loadIOEvents.end(),
+		[&](const Vans::VansIOEvent& event)
+		{
+			return event.domain == Vans::VansIODomain::Authoring &&
+				event.operation == Vans::VansIOOperation::Read &&
+				event.path.lexically_normal() == sceneSourcePath.lexically_normal();
+		}));
+	if (!Expect(sceneReads == 1,
+		"Loading a scene document did not perform exactly one Authoring read"))
+		return false;
+	const Vans::VansSerializedValue sceneDocument =
+		sceneLoad.document->SerializedRootSnapshot();
+	std::error_code removeError;
+	fs::remove(sceneSourcePath, removeError);
+	if (!Expect(!removeError, "Could not remove the loaded scene fixture before projection"))
+		return false;
+	Vans::VansAssetObjectRepository objectRepository;
+	Vans::VansIOAudit::Reset();
+	const Vans::VansSceneAssetDependencyBuildResult result =
+		Vans::VansSceneAssetDependencyBuilder::BuildResourcePlan(
+			database, sceneDocument, sceneSourcePath, {}, objectRepository);
+	const auto dependencyIO = Vans::VansIOAudit::Snapshot();
+	return Expect(result.success && !fs::exists(sceneSourcePath),
+		"Scene dependency planning still requires the authoring scene file on disk") &&
+		Expect(std::none_of(
+			dependencyIO.begin(), dependencyIO.end(),
+			[](const Vans::VansIOEvent& event)
+			{
+				return event.domain == Vans::VansIODomain::Authoring;
+			}),
+			"Scene dependency planning performed authoring I/O after memory bootstrap");
+}
+
+bool TestAuthoringCodecContract()
+{
+	std::string error;
+
+	const nlohmann::json retargetRoot = {
+		{ "assetKind", "retargetProfile" },
+		{ "name", "RTG_Test" },
+		{ "translationScale", { { "mode", "compatibleSkeleton" } } },
+		{ "rootAlignment", "feetToOwner" },
+		{ "targetModelSpaceAlignment", "sourceBindPose" },
+		{ "limbMappings", nlohmann::json::array({ {
+			{ "id", "LeftArm" },
+			{ "sourceBones", { "upperarm_l", "lowerarm_l", "hand_l" } },
+			{ "targetChain", "leftArm" },
+			{ "positionWeight", 1.0 }
+		} }) }
+	};
+	VansGraphics::VansRetargetProfileAsset retarget;
+	nlohmann::json retargetEncoded;
+	VansGraphics::VansRetargetProfileAsset retargetRoundTrip;
+	if (!Expect(
+		VansGraphics::VansRetargetProfileJsonCodec::Decode(
+			retargetRoot, retarget, error) &&
+		VansGraphics::VansRetargetProfileJsonCodec::Encode(
+			retarget, retargetEncoded, error) &&
+		VansGraphics::VansRetargetProfileJsonCodec::Decode(
+			retargetEncoded, retargetRoundTrip, error) &&
+		retargetRoundTrip.name == retarget.name &&
+		retargetRoundTrip.limbChains.size() == 1,
+		"Retarget profile pure Codec did not round-trip the current schema"))
+		return false;
+	nlohmann::json invalidRetarget = retargetRoot;
+	invalidRetarget["legacyField"] = true;
+	if (!Expect(!VansGraphics::VansRetargetProfileJsonCodec::Decode(
+		invalidRetarget, retargetRoundTrip, error),
+		"Retarget profile Codec accepted a non-current field"))
+		return false;
+
+	const nlohmann::json aiRoot = {
+		{ "magic", "VAI_BEHAVIOR" },
+		{ "name", "WhisperTest" },
+		{ "blackboard", nlohmann::json::array({ {
+			{ "name", "HasTarget" }, { "type", "bool" }, { "default", false }
+		} }) },
+		{ "initialState", "Idle" },
+		{ "states", nlohmann::json::array({
+			{
+				{ "id", "Idle" }, { "task", "Hold" },
+				{ "transitions", nlohmann::json::array({ {
+					{ "condition", {
+						{ "type", "BlackboardBool" },
+						{ "key", "HasTarget" }, { "value", true }
+					} },
+					{ "target", "Chase" }
+				} }) }
+			},
+			{
+				{ "id", "Chase" }, { "task", "MoveToTarget" },
+				{ "transitions", nlohmann::json::array() }
+			}
+		}) }
+	};
+	Vans::VansAIBehaviorAsset ai;
+	nlohmann::json aiEncoded;
+	Vans::VansAIBehaviorAsset aiRoundTrip;
+	if (!Expect(
+		Vans::VansAIBehaviorJsonCodec::Decode(aiRoot, ai, error) &&
+		Vans::VansAIBehaviorJsonCodec::Encode(ai, aiEncoded, error) &&
+		Vans::VansAIBehaviorJsonCodec::Decode(aiEncoded, aiRoundTrip, error) &&
+		aiRoundTrip.name == ai.name && aiRoundTrip.states.size() == 2 &&
+		aiRoundTrip.blackboard.size() == 1,
+		"AI Behavior pure Codec did not round-trip the current schema"))
+		return false;
+
+	const nlohmann::json ragdollRoot = {
+		{ "name", "Hero" },
+		{ "bodies", nlohmann::json::array({ {
+			{ "bone_name", "pelvis" }, { "shape_type", "box" },
+			{ "box_extents", { 0.1, 0.2, 0.1 } },
+			{ "mass", 10.0 }, { "layer", "CharacterInternal" }
+		} }) },
+		{ "joints", nlohmann::json::array() }
+	};
+	VansEngine::RagdollProfile ragdoll;
+	nlohmann::json ragdollEncoded;
+	VansEngine::RagdollProfile ragdollRoundTrip;
+	if (!Expect(
+		VansEngine::VansRagdollProfileJsonCodec::Decode(
+			ragdollRoot, ragdoll, error) &&
+		VansEngine::VansRagdollProfileJsonCodec::Encode(
+			ragdoll, ragdollEncoded, error) &&
+		VansEngine::VansRagdollProfileJsonCodec::Decode(
+			ragdollEncoded, ragdollRoundTrip, error) &&
+		ragdollRoundTrip.bodies.size() == 1 &&
+		ragdollRoundTrip.bodies.front().boneName == "pelvis",
+		"Ragdoll pure Codec did not round-trip the current schema"))
+		return false;
+	nlohmann::json legacyRagdoll = ragdollRoot;
+	legacyRagdoll["bodies"][0].erase("bone_name");
+	legacyRagdoll["bodies"][0]["boneName"] = "pelvis";
+	if (!Expect(!VansEngine::VansRagdollProfileJsonCodec::Decode(
+		legacyRagdoll, ragdollRoundTrip, error),
+		"Ragdoll Codec still accepts the removed camelCase field path"))
+		return false;
+
+	const auto& registry = Vans::VansAssetDocumentTypeRegistry::Get();
+	const Vans::VansAssetType registeredDocumentTypes[] = {
+		Vans::VansAssetType::Material,
+		Vans::VansAssetType::Shader,
+		Vans::VansAssetType::Particle,
+		Vans::VansAssetType::AnimatorController,
+		Vans::VansAssetType::AnimationRig,
+		Vans::VansAssetType::RetargetProfile,
+		Vans::VansAssetType::BoneMask,
+		Vans::VansAssetType::Timeline,
+		Vans::VansAssetType::AIBehavior,
+		Vans::VansAssetType::ClothProfile,
+		Vans::VansAssetType::SkinProfile,
+		Vans::VansAssetType::PostProcessProfile,
+		Vans::VansAssetType::RagdollProfile,
+		Vans::VansAssetType::AudioReverbPreset,
+		Vans::VansAssetType::AudioBusSnapshot,
+		Vans::VansAssetType::AudioDuckingRules,
+		Vans::VansAssetType::UIScreen,
+		Vans::VansAssetType::UIComponent,
+		Vans::VansAssetType::UIThemeTokens,
+		Vans::VansAssetType::UILocalization,
+		Vans::VansAssetType::VegetationConfig
+	};
+	for (const Vans::VansAssetType type : registeredDocumentTypes)
+	{
+		if (!Expect(registry.Find(type) != nullptr,
+			"A configurable authoring asset type is missing its document descriptor"))
+			return false;
+	}
+	const auto validate = [&](Vans::VansAssetType type, const nlohmann::json& root)
+	{
+		const fs::path path = type == Vans::VansAssetType::RetargetProfile
+			? fs::path("Profile.vretarget") : fs::path{};
+		return registry.ValidateBeforeSave(
+			type, path, Vans::DecodeSerializedValueJson(root));
+	};
+	const nlohmann::json uiScreenRoot = {
+		{ "schemaVersion", 1 },
+		{ "guid", "ui-screen-guid" },
+		{ "name", "HUD" },
+		{ "xaml", { { "guid", "11111111-2222-4333-8444-555555555551" } } }
+	};
+	const nlohmann::json uiComponentRoot = {
+		{ "schemaVersion", 1 },
+		{ "guid", "ui-component-guid" },
+		{ "name", "Button" },
+		{ "xaml", { { "guid", "11111111-2222-4333-8444-555555555552" } } }
+	};
+	const nlohmann::json uiTokensRoot = {
+		{ "schemaVersion", 1 },
+		{ "name", "Default" },
+		{ "colors", { { "accent", "#FFFFFFFF" } } }
+	};
+	const nlohmann::json uiLocalizationRoot = {
+		{ "schemaVersion", 1 },
+		{ "locale", "zh-CN" },
+		{ "strings", { { "menu.play", "Play" } } }
+	};
+	const nlohmann::json vegetationRoot = {
+		{ "name", "ContractGrass" },
+		{ "instanceCount", 128 },
+		{ "boneCount", 3 },
+		{ "material", "11111111-2222-4333-8444-555555555555" },
+		{ "placement", {
+			{ "boundsMin", { -10.0, -10.0 } },
+			{ "boundsMax", { 10.0, 10.0 } }
+		} }
+	};
+	Vans::VansVegetationConfigAsset vegetationAsset;
+	Vans::VansSerializedValue vegetationEncoded;
+	Vans::VansVegetationConfigAsset vegetationRoundTrip;
+	const Vans::VansSerializedValue vegetationSerialized =
+		Vans::DecodeSerializedValueJson(vegetationRoot);
+	const Vans::VansSerializedValue vegetationReference =
+		Vans::VansSerializedValue::Object({
+			{ "asset", Vans::VansSerializedValue::Object({
+				{ "guid", Vans::VansSerializedValue::String(
+					"5d5d1201-1ed8-4f3e-8cc6-641c5b1d0001") }
+			}) }
+		});
+	Vans::VansSceneVegetationNodeConfig resolvedVegetation;
+	if (!Expect(
+		Vans::VansVegetationConfigCodec::Decode(
+			vegetationSerialized, vegetationAsset, error) &&
+		Vans::VansVegetationConfigCodec::Encode(
+			vegetationAsset.config, vegetationEncoded, error) &&
+		Vans::VansVegetationConfigCodec::Decode(
+			vegetationEncoded, vegetationRoundTrip, error) &&
+		vegetationRoundTrip.config.instanceCount == vegetationAsset.config.instanceCount &&
+		Vans::VansVegetationConfigCodec::ResolveReference(
+			vegetationReference, vegetationAsset, resolvedVegetation, error) &&
+		resolvedVegetation.name == vegetationAsset.config.name,
+		"Vegetation pure Codec did not round-trip or resolve a GUID reference"))
+		return false;
+	const Vans::VansSerializedValue legacyVegetationReference =
+		Vans::VansSerializedValue::Object({
+			{ "config", Vans::VansSerializedValue::String(
+				"Assets/Vegetation/MainVegetation.json") }
+		});
+	if (!Expect(
+		Vans::VansVegetationConfigCodec::ReadReferenceGuid(
+			legacyVegetationReference).empty(),
+		"Vegetation Codec still accepts a path-based scene reference"))
+		return false;
+	return Expect(
+		validate(Vans::VansAssetType::RetargetProfile, retargetRoot).empty() &&
+		validate(Vans::VansAssetType::AIBehavior, aiRoot).empty() &&
+		validate(Vans::VansAssetType::RagdollProfile, ragdollRoot).empty() &&
+		validate(Vans::VansAssetType::UIScreen, uiScreenRoot).empty() &&
+		validate(Vans::VansAssetType::UIComponent, uiComponentRoot).empty() &&
+		validate(Vans::VansAssetType::UIThemeTokens, uiTokensRoot).empty() &&
+		validate(Vans::VansAssetType::UILocalization, uiLocalizationRoot).empty() &&
+		validate(Vans::VansAssetType::VegetationConfig, vegetationRoot).empty() &&
+		Vans::VansAssetDatabase::Classify("Profile.vretarget") ==
+			Vans::VansAssetType::RetargetProfile &&
+		Vans::VansAssetDatabase::Classify("Profile.vragdoll") ==
+			Vans::VansAssetType::RagdollProfile &&
+		Vans::VansAssetDatabase::Classify("Profile.ragdoll") ==
+			Vans::VansAssetType::Unknown &&
+		Vans::VansAssetDatabase::Classify("HUD.vui.json") ==
+			Vans::VansAssetType::UIScreen &&
+		Vans::VansAssetDatabase::Classify("Button.vcomp.json") ==
+			Vans::VansAssetType::UIComponent &&
+		Vans::VansAssetDatabase::Classify("Default.tokens.json") ==
+			Vans::VansAssetType::UIThemeTokens &&
+		Vans::VansAssetDatabase::Classify("zh-CN.loc.json") ==
+			Vans::VansAssetType::UILocalization &&
+		Vans::VansAssetDatabase::Classify("HUD.xaml") ==
+			Vans::VansAssetType::UIXaml &&
+		Vans::VansAssetDatabase::Classify(
+			"Assets/Vegetation/MainVegetation.json") ==
+			Vans::VansAssetType::VegetationConfig,
+		"Authoring Codec types are not registered under their single current schema");
+}
+
+bool TestAssetObjectRepositoryContract()
+{
+	struct RepositoryFixture
+	{
+		int value = 0;
+	};
+	struct WrongRepositoryFixture
+	{
+		int value = 0;
+	};
+	struct RepositoryViewFixture
+	{
+		int value = 0;
+	};
+
+	Vans::VansAssetGuid guid;
+	Vans::VansAssetGuid dependency;
+	if (!Expect(
+		Vans::VansAssetGuid::TryParse(
+			"11111111-2222-4333-8444-555555555555", guid) &&
+		Vans::VansAssetGuid::TryParse(
+			"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", dependency),
+		"Could not create asset object repository GUID fixtures"))
+		return false;
+
+	Vans::VansAssetObjectRepository repository;
+	std::string error;
+	const auto first = repository.Publish<RepositoryFixture>(
+		guid,
+		Vans::VansAssetType::AIBehavior,
+		10,
+		std::make_shared<const RepositoryFixture>(RepositoryFixture{ 7 }),
+		{ dependency },
+		error);
+	if (!Expect(first.IsValid() && repository.Size() == 1,
+		"Could not publish the first decoded asset object"))
+		return false;
+	const std::shared_ptr<const RepositoryFixture> firstObject = repository.Resolve(first);
+	if (!Expect(firstObject && firstObject->value == 7,
+		"A current asset object handle did not resolve"))
+		return false;
+	const auto firstView = repository.PublishView<RepositoryViewFixture>(
+		guid,
+		Vans::VansAssetType::AIBehavior,
+		10,
+		std::make_shared<const RepositoryViewFixture>(RepositoryViewFixture{ 17 }),
+		error);
+	Vans::VansAssetObjectHandle<RepositoryViewFixture> latestViewHandle;
+	const auto latestView =
+		repository.ResolveLatest<RepositoryViewFixture>(guid, &latestViewHandle);
+	if (!Expect(
+		firstView.IsValid() && firstView.generation == first.generation &&
+		latestView && latestView->value == 17 &&
+		latestViewHandle.generation == first.generation,
+		"Could not attach a typed memory view to the current asset generation"))
+		return false;
+
+	const auto unchanged = repository.Publish<RepositoryFixture>(
+		guid,
+		Vans::VansAssetType::AIBehavior,
+		10,
+		std::make_shared<const RepositoryFixture>(RepositoryFixture{ 99 }),
+		{ dependency },
+		error);
+	if (!Expect(unchanged.generation == first.generation &&
+		repository.Resolve(unchanged)->value == 7,
+		"Publishing an unchanged content hash advanced or replaced its generation"))
+		return false;
+
+	const auto second = repository.Publish<RepositoryFixture>(
+		guid,
+		Vans::VansAssetType::AIBehavior,
+		11,
+		std::make_shared<const RepositoryFixture>(RepositoryFixture{ 9 }),
+		{ dependency },
+		error);
+	Vans::VansAssetObjectHandle<RepositoryFixture> latestHandle;
+	const std::shared_ptr<const RepositoryFixture> latest =
+		repository.ResolveLatest<RepositoryFixture>(guid, &latestHandle);
+	Vans::VansAssetObjectSnapshotInfo info;
+	if (!Expect(
+		second.IsValid() && second.generation != first.generation &&
+		!repository.Resolve(first) && !repository.Resolve(firstView) &&
+		!repository.ResolveLatest<RepositoryViewFixture>(guid) &&
+		latest && latest->value == 9 &&
+		latestHandle.generation == second.generation &&
+		repository.FindInfo(guid, info) &&
+		info.generation == second.generation && info.contentHash == 11 &&
+		info.dependencies.size() == 1 && info.dependencies.front() == dependency,
+		"Asset generation replacement did not atomically invalidate its primary object and typed views"))
+		return false;
+
+	const auto wrong = repository.Publish<WrongRepositoryFixture>(
+		guid,
+		Vans::VansAssetType::AIBehavior,
+		12,
+		std::make_shared<const WrongRepositoryFixture>(),
+		{},
+		error);
+	if (!Expect(!wrong.IsValid() && !error.empty(),
+		"Asset repository accepted a decoded object type change for one GUID"))
+		return false;
+
+	if (!Expect(repository.Remove(guid) && !repository.Resolve(second) &&
+		repository.Size() == 0,
+		"Removing an asset object did not invalidate its current handle"))
+		return false;
+	const auto republished = repository.Publish<RepositoryFixture>(
+		guid,
+		Vans::VansAssetType::AIBehavior,
+		13,
+		std::make_shared<const RepositoryFixture>(RepositoryFixture{ 12 }),
+		{},
+		error);
+	if (!Expect(republished.IsValid() && republished.generation != second.generation,
+		"Republishing a removed asset reused a stale generation"))
+		return false;
+	repository.Clear();
+	if (!Expect(repository.Size() == 0 && !repository.Resolve(republished),
+		"Clearing the repository did not invalidate published handles"))
+		return false;
+
+	TemporaryDirectory temporary;
+	const fs::path shaderArtifactDirectory = temporary.path / "ShaderArtifact";
+	const fs::path shaderAuthoringPath = shaderArtifactDirectory / "MemoryShader.vshader";
+	fs::create_directories(shaderArtifactDirectory);
+	{
+		Vans::VansScopedIOContext fixtureWrite(
+			Vans::VansIODomain::Authoring,
+			"ContractFixture.PackagedShaderAuthoringWrite",
+			true);
+		if (!Expect(Vans::VansFileStorage::WriteAtomicBytes(
+			shaderAuthoringPath,
+			"{\"schemaVersion\":1,\"name\":\"MemoryShader\"}",
+			error), error.c_str()))
+			return false;
+	}
+	Vans::VansAssetGuid shaderGuid;
+	if (!Expect(Vans::VansAssetGuid::TryParse(
+		"92b3650e-f18d-4af9-b7e8-d6059f77ae42", shaderGuid),
+		"Packaged Shader memory fixture GUID is invalid"))
+		return false;
+	Vans::VansAssetRecord shaderRecord;
+	shaderRecord.guid = shaderGuid;
+	shaderRecord.type = Vans::VansAssetType::Shader;
+	shaderRecord.state = Vans::VansAssetState::CpuReady;
+	shaderRecord.sourcePath = shaderArtifactDirectory;
+	shaderRecord.authoringPath = shaderAuthoringPath;
+	shaderRecord.artifactPath = shaderArtifactDirectory;
+	shaderRecord.artifactFormat = Vans::VansAssetArtifactFormat::Source;
+	shaderRecord.sourceHash = 0x92b3650eu;
+	const Vans::VansAssetObjectBootstrapResult shaderBootstrap =
+		Vans::VansAssetObjectBootstrapper::Publish({ shaderRecord }, repository);
+	const auto shaderObject =
+		repository.ResolveLatest<Vans::VansShaderAuthoringAsset>(shaderGuid);
+	return Expect(
+		static_cast<bool>(shaderBootstrap) && shaderObject &&
+		shaderObject->name == "MemoryShader",
+		shaderBootstrap.errors.empty()
+			? "Packaged Shader bootstrap did not use its indexed authoring document"
+			: shaderBootstrap.errors.front().c_str());
+}
+
+bool TestAnimationClipMemoryAssetContract()
+{
+	using namespace VansGraphics;
+	TemporaryDirectory temporary;
+	const fs::path assetsRoot = temporary.path / "Assets";
+	const fs::path clipPath = assetsRoot / "Animation" / "MemoryClip.vclip";
+	fs::create_directories(clipPath.parent_path());
+
+	const Skeleton skeleton = BuildLayerContractSkeleton();
+	VansAnimationClip clip;
+	clip.clipName = "MemoryClip";
+	clip.duration = 1.0f;
+	clip.boneKeyframes.resize(skeleton.bones.size());
+	for (std::size_t bone = 0; bone < clip.boneKeyframes.size(); ++bone)
+	{
+		clip.boneKeyframes[bone].push_back({
+			0.0f, glm::vec3(static_cast<float>(bone), 0.0f, 0.0f),
+			glm::quat(1.0f, 0.0f, 0.0f, 0.0f), glm::vec3(1.0f) });
+	}
+
+	std::string bytes;
+	std::string error;
+	VansAnimationClip decodedClip;
+	Skeleton decodedSkeleton;
+	Vans::VansIOAudit::Reset();
+	if (!Expect(VansAnimationClipBinaryCodec::Encode(
+		clip, skeleton, bytes, error) &&
+		VansAnimationClipBinaryCodec::Decode(
+			bytes, decodedClip, decodedSkeleton, error) &&
+		decodedClip.clipName == clip.clipName &&
+		decodedSkeleton.signature == skeleton.ComputeSignature() &&
+		Vans::VansIOAudit::Snapshot().empty(),
+		"Animation Clip binary Codec did not round-trip without disk I/O"))
+		return false;
+
+	Vans::VansAssetGuid guid;
+	if (!Expect(Vans::VansAssetGuid::TryParse(
+		"02e2a71c-88bf-4b04-8a02-e64c538a1ee2", guid),
+		"Could not create the Animation Clip memory-asset GUID"))
+		return false;
+	Vans::VansAssetMeta meta;
+	meta.guid = guid;
+	meta.importer = Vans::VansAssetDatabase::ImporterFor(
+		Vans::VansAssetType::AnimationClip);
+	{
+		Vans::VansScopedIOContext fixtureWrite(
+			Vans::VansIODomain::Authoring, "ContractFixture.AnimationClipWrite", true);
+		if (!Expect(
+			Vans::VansFileStorage::WriteAtomicBytes(clipPath, bytes, error) &&
+			Vans::VansAssetMetaStorage::SaveAtomic(
+				Vans::VansAssetMeta::MetaPathFor(clipPath), meta, error),
+			"Could not create the Animation Clip memory-asset fixture"))
+			return false;
+	}
+
+	Vans::VansAssetDatabase database(
+		assetsRoot, temporary.path / "Library" / "Artifacts");
+	const Vans::VansAssetScanResult scan =
+		database.Scan(Vans::VansAssetOperationPolicy::ReadOnly());
+	if (!Expect(scan.errors.empty() && scan.registered == 1,
+		"Could not register the Animation Clip memory-asset fixture"))
+		return false;
+	Vans::VansAssetObjectRepository repository;
+	const Vans::VansAssetObjectBootstrapResult bootstrap =
+		Vans::VansAssetObjectBootstrapper::Publish(database.All(), repository);
+	if (!Expect(static_cast<bool>(bootstrap),
+		bootstrap.errors.empty()
+			? "Animation Clip memory bootstrap failed"
+			: bootstrap.errors.front().c_str()))
+		return false;
+
+	std::error_code removeError;
+	fs::remove(clipPath, removeError);
+	if (!Expect(!removeError, "Could not remove the bootstrapped Animation Clip source"))
+		return false;
+	Vans::VansIOAudit::Reset();
+	const auto memoryAsset = repository.ResolveLatest<VansAnimationClipAsset>(guid);
+	if (!Expect(memoryAsset && memoryAsset->clip.clipName == clip.clipName &&
+		memoryAsset->skeleton.signature == skeleton.ComputeSignature() &&
+		!fs::exists(clipPath) && Vans::VansIOAudit::Snapshot().empty(),
+		"Animation Clip runtime object still depends on its source file after bootstrap"))
+		return false;
+
+	fs::path sourceFbx;
+	for (fs::path cursor = fs::current_path(); !cursor.empty() && sourceFbx.empty();
+		cursor = cursor.parent_path())
+	{
+		for (const fs::path& candidate : { cursor, cursor / "ForestEngine" })
+		{
+			const fs::path model = candidate /
+				"External/assimp/test/models-nonbsd/FBX/2013_BINARY/multiple_animations_test.fbx";
+			if (fs::is_regular_file(model))
+			{
+				sourceFbx = model;
+				break;
+			}
+		}
+		if (cursor == cursor.root_path())
+			break;
+	}
+	if (!Expect(!sourceFbx.empty(),
+		"Animation Clip contract FBX fixture is unavailable"))
+		return false;
+
+	const fs::path runtimeModelPath = temporary.path / "MemoryAnimation.fbx";
+	std::error_code copyError;
+	fs::copy_file(sourceFbx, runtimeModelPath,
+		fs::copy_options::overwrite_existing, copyError);
+	if (!Expect(!copyError, "Could not copy the Animation Clip runtime fixture"))
+		return false;
+
+	Assimp::Importer importer;
+	const aiScene* importedScene = importer.ReadFile(runtimeModelPath.string(),
+		aiProcess_Triangulate | aiProcess_FlipUVs);
+	if (!Expect(importedScene && importedScene->HasAnimations(),
+		"Animation Clip runtime fixture has no imported animations"))
+		return false;
+	std::uint32_t totalVertices = 0;
+	for (std::uint32_t mesh = 0; mesh < importedScene->mNumMeshes; ++mesh)
+		totalVertices += importedScene->mMeshes[mesh]->mNumVertices;
+
+	Vans::VansSkeletalMeshImportSettings importSettings;
+	importSettings.sourceSkeletonGuid = guid.ToString();
+	VansAnimationImportResult runtimeImport;
+	Vans::VansIOAudit::Reset();
+	if (!Expect(VansSkinnedMeshLoader::ProcessAnimatedMesh(
+		importedScene,
+		runtimeModelPath.string(),
+		totalVertices,
+		1.0f,
+		runtimeImport,
+		importSettings),
+		"Runtime model animation extraction failed"))
+		return false;
+	bool createdClipFile = false;
+	for (const fs::directory_entry& entry : fs::directory_iterator(temporary.path))
+		createdClipFile = createdClipFile || entry.path().extension() == ".vclip";
+	return Expect(!runtimeImport.clips.empty() && !createdClipFile &&
+		Vans::VansIOAudit::Snapshot().empty(),
+		"Runtime model animation extraction read or wrote serialized Animation Clip assets");
+}
+
+bool TestProjectAssetMemoryBootstrapContract()
+{
+	fs::path workspaceRoot;
+	for (fs::path cursor = fs::current_path(); !cursor.empty(); cursor = cursor.parent_path())
+	{
+		if (fs::is_regular_file(cursor / "AnimationV2Project/ForestProject.json") &&
+			fs::is_regular_file(cursor / "DemoHallProject/ForestProject.json") &&
+			fs::is_regular_file(cursor / "DustV2Project/ForestProject.json") &&
+			fs::is_regular_file(cursor / "SponzaProject/ForestProject.json") &&
+			fs::is_regular_file(cursor / "TestV2Project/ForestProject.json"))
+		{
+			workspaceRoot = cursor;
+			break;
+		}
+		if (cursor == cursor.root_path())
+			break;
+	}
+	if (!Expect(!workspaceRoot.empty(),
+		"Project memory-bootstrap workspace is unavailable"))
+		return false;
+
+	const char* projectNames[] = {
+		"AnimationV2Project",
+		"DemoHallProject",
+		"DustV2Project",
+		"SponzaProject",
+		"TestV2Project"
+	};
+	const fs::path engineSourceRoot =
+		workspaceRoot / "ForestEngine" / "ForestEngine";
+	std::size_t validatedSceneCount = 0;
+	Vans::VansProjectManager& projectManager = Vans::VansProjectManager::Get();
+	projectManager.CloseProject();
+	struct ProjectManagerCloseGuard
+	{
+		Vans::VansProjectManager& manager;
+		~ProjectManagerCloseGuard() { manager.CloseProject(); }
+	} projectManagerCloseGuard{ projectManager };
+	for (const char* projectName : projectNames)
+	{
+		const fs::path projectRoot = workspaceRoot / projectName;
+		Vans::VansProjectConfig projectConfig;
+		if (!Expect(projectConfig.LoadFromFile(
+			(projectRoot / "ForestProject.json").string()),
+			(std::string(projectName) + " project config could not be loaded").c_str()))
+			return false;
+		Vans::VansAssetDatabase database(
+			projectRoot / projectConfig.assetsRoot,
+			projectRoot / projectConfig.importedArtifactRoot);
+		Vans::VansAssetDatabase builtInDatabase(
+			engineSourceRoot / "EngineAssets",
+			projectRoot / projectConfig.importedArtifactRoot / "Engine");
+		Vans::VansIOAudit::Reset();
+		const Vans::VansAssetScanResult scan =
+			database.Scan(Vans::VansAssetOperationPolicy::ReadOnly());
+		if (!Expect(static_cast<bool>(scan),
+			(std::string(projectName) + " read-only asset scan failed").c_str()))
+			return false;
+
+		std::vector<std::string> builtInErrors;
+		if (!Expect(Vans::VansBuiltInAssetCatalog::RegisterAssets(
+			builtInDatabase,
+			engineSourceRoot,
+			Vans::VansAssetOperationPolicy::ReadOnly(),
+			builtInErrors),
+			builtInErrors.empty()
+				? (std::string(projectName) + " built-in asset scan failed").c_str()
+				: builtInErrors.front().c_str()))
+			return false;
+
+		std::vector<Vans::VansAssetRecord> memoryRecords = database.All();
+		const std::vector<Vans::VansAssetRecord> builtInRecords = builtInDatabase.All();
+		memoryRecords.insert(
+			memoryRecords.end(), builtInRecords.begin(), builtInRecords.end());
+		Vans::VansAssetObjectRepository repository;
+		const Vans::VansAssetObjectBootstrapResult bootstrap =
+			Vans::VansAssetObjectBootstrapper::Publish(memoryRecords, repository);
+		if (!Expect(static_cast<bool>(bootstrap),
+			bootstrap.errors.empty()
+				? (std::string(projectName) + " memory asset bootstrap failed").c_str()
+				: bootstrap.errors.front().c_str()))
+			return false;
+		const std::optional<Vans::VansAssetRecord> baseThemeRecord =
+			builtInDatabase.Find(
+				engineSourceRoot / "EngineAssets" / "ui" / "Themes" / "BaseTheme.xaml");
+		if (!Expect(baseThemeRecord &&
+			baseThemeRecord->type == Vans::VansAssetType::UIXaml &&
+			baseThemeRecord->guid.ToString() ==
+				"18dcb044-c0d3-4bc6-a868-8b38785b82aa" &&
+			repository.ResolveLatest<VansRuntime::VansUIXamlAsset>(
+				baseThemeRecord->guid),
+			(std::string(projectName) +
+				" built-in BaseTheme XAML was not published to memory").c_str()))
+			return false;
+
+		const std::vector<Vans::VansIOEvent> events = Vans::VansIOAudit::Snapshot();
+		const bool wroteStorage = std::any_of(
+			events.begin(), events.end(), [](const Vans::VansIOEvent& event)
+			{
+				return event.operation == Vans::VansIOOperation::StageWrite;
+			});
+		if (!Expect(!wroteStorage && repository.Size() != 0,
+			(std::string(projectName) +
+				" project-open bootstrap wrote authoring data or published no memory assets").c_str()))
+			return false;
+
+		projectManager.CloseProject();
+		projectManager.SetPackagedAssetRecords(memoryRecords);
+		const Vans::VansAssetObjectBootstrapResult runtimeBootstrap =
+			Vans::VansAssetObjectBootstrapper::Publish(
+				memoryRecords, projectManager.GetAssetObjectRepository());
+		if (!Expect(static_cast<bool>(runtimeBootstrap),
+			runtimeBootstrap.errors.empty()
+				? (std::string(projectName) + " runtime repository bootstrap failed").c_str()
+				: runtimeBootstrap.errors.front().c_str()))
+			return false;
+
+		const fs::path scenesRoot = projectRoot / "Scenes";
+		std::error_code sceneScanError;
+		for (fs::directory_iterator iterator(scenesRoot, sceneScanError), end;
+			!sceneScanError && iterator != end; iterator.increment(sceneScanError))
+		{
+			if (!iterator->is_regular_file() || iterator->path().extension() != ".json")
+				continue;
+			const fs::path scenePath = iterator->path();
+			Vans::VansIOAudit::Reset();
+			Vans::SceneDocumentLoadResult sceneLoad =
+				Vans::VansSceneDocumentLoader::Load(scenePath);
+			if (!Expect(static_cast<bool>(sceneLoad),
+				(std::string(projectName) + " scene could not be loaded: " +
+					scenePath.filename().string()).c_str()))
+				return false;
+			const std::vector<Vans::VansIOEvent> sceneLoadEvents =
+				Vans::VansIOAudit::Snapshot();
+			const std::size_t sceneReads = static_cast<std::size_t>(std::count_if(
+				sceneLoadEvents.begin(), sceneLoadEvents.end(),
+				[&](const Vans::VansIOEvent& event)
+				{
+					return event.domain == Vans::VansIODomain::Authoring &&
+						event.operation == Vans::VansIOOperation::Read && event.success &&
+						event.path.lexically_normal() == scenePath.lexically_normal();
+				}));
+			if (!Expect(sceneReads == 1,
+				(std::string(projectName) + " scene was not read exactly once: " +
+					scenePath.filename().string()).c_str()))
+				return false;
+
+			const Vans::VansSerializedValue sceneDocument =
+				sceneLoad.document->SerializedRootSnapshot();
+			Vans::VansIOAudit::Reset();
+			const Vans::VansSceneAssetDependencyBuildResult dependencyResult =
+				Vans::VansSceneAssetDependencyBuilder::BuildResourcePlan(
+					database,
+					sceneDocument,
+					scenePath,
+					projectConfig.runtimeAssetBindings,
+					repository,
+					&builtInDatabase);
+			Vans::VansSceneContentBuildPlan runtimePlan;
+			std::string runtimeError;
+			const bool projected =
+				Vans::VansSceneRuntimeProjection::BuildRuntimeSceneContentPlan(
+					sceneDocument, projectRoot.string(), runtimePlan, runtimeError);
+			const std::vector<Vans::VansIOEvent> runtimeEvents =
+				Vans::VansIOAudit::Snapshot();
+			const bool touchedAuthoringStorage = std::any_of(
+				runtimeEvents.begin(), runtimeEvents.end(),
+				[](const Vans::VansIOEvent& event)
+				{
+					return event.domain == Vans::VansIODomain::Authoring &&
+						(event.operation == Vans::VansIOOperation::Read ||
+							event.operation == Vans::VansIOOperation::StageWrite);
+				});
+			if (!Expect(dependencyResult.success && projected &&
+				!touchedAuthoringStorage,
+				(runtimeError.empty()
+					? std::string(projectName) +
+						" scene runtime planning touched authoring storage: " +
+						scenePath.filename().string()
+					: runtimeError).c_str()))
+				return false;
+			++validatedSceneCount;
+		}
+		if (!Expect(!sceneScanError,
+			(std::string(projectName) + " scenes directory could not be scanned").c_str()))
+			return false;
+		projectManager.CloseProject();
+	}
+	return Expect(validatedSceneCount == 6,
+		"Workspace scene memory-runtime contract did not cover all six scenes");
+}
+
+bool TestVegetationMemoryAssetContract()
+{
+	TemporaryDirectory temporary;
+	const fs::path assetsRoot = temporary.path / "Assets";
+	const fs::path artifactRoot = temporary.path / "Library" / "Artifacts";
+	const fs::path vegetationPath = assetsRoot / "Vegetation" / "MemoryVegetation.json";
+	fs::create_directories(vegetationPath.parent_path());
+
+	Vans::VansAssetGuid vegetationGuid;
+	if (!Expect(Vans::VansAssetGuid::TryParse(
+		"5d5d1201-1ed8-4f3e-8cc6-641c5b1d9999", vegetationGuid),
+		"Could not create the vegetation memory-asset GUID fixture"))
+		return false;
+
+	Vans::VansVegetationConfigAsset vegetationAsset;
+	vegetationAsset.config.valid = true;
+	vegetationAsset.config.name = "MemoryVegetation";
+	vegetationAsset.config.instanceCount = 64;
+	vegetationAsset.config.boneCount = 3;
+	vegetationAsset.config.placement = Vans::VansSceneVegetationPlacementConfig{};
+	vegetationAsset.config.placement->boundsMin = Vans::VansSceneFloat2{ -4.0f, -4.0f };
+	vegetationAsset.config.placement->boundsMax = Vans::VansSceneFloat2{ 4.0f, 4.0f };
+	Vans::VansAssetMeta meta;
+	meta.guid = vegetationGuid;
+	meta.importer = Vans::VansAssetDatabase::ImporterFor(
+		Vans::VansAssetType::VegetationConfig);
+	std::string error;
+	{
+		Vans::VansScopedIOContext fixtureWrite(
+			Vans::VansIODomain::Authoring, "ContractFixture.VegetationWrite", true);
+		if (!Expect(
+			Vans::VansVegetationConfigStorage::SaveAtomic(
+				vegetationPath, vegetationAsset.config, error) &&
+			Vans::VansAssetMetaStorage::SaveAtomic(
+				Vans::VansAssetMeta::MetaPathFor(vegetationPath), meta, error),
+			"Could not create the vegetation memory-asset fixture"))
+			return false;
+	}
+
+	Vans::VansAssetDatabase database(assetsRoot, artifactRoot);
+	const Vans::VansAssetScanResult scan =
+		database.Scan(Vans::VansAssetOperationPolicy::ReadOnly());
+	if (!Expect(scan.errors.empty() && scan.registered == 1,
+		"Could not register the vegetation memory-asset fixture"))
+		return false;
+
+	using Value = Vans::VansSerializedValue;
+	const Value sceneRoot = Value::Object({
+		{ "schemaVersion", Value::Int(Vans::VansSceneSchemaVersion) },
+		{ "settings", Value::Object({
+			{ "environment", BuildValidEnvironmentSettingsForTest() },
+			{ "vegetation", Value::Object({
+				{ "asset", Value::Object({
+					{ "guid", Value::String(vegetationGuid.ToString()) }
+				}) }
+			}) }
+		}) },
+		{ "entities", Value::Array({}) }
+	});
+
+	Vans::VansProjectManager& manager = Vans::VansProjectManager::Get();
+	manager.CloseProject();
+	struct RepositoryGuard
+	{
+		Vans::VansProjectManager& manager;
+		~RepositoryGuard() { manager.CloseProject(); }
+	} repositoryGuard{ manager };
+	const Vans::VansAssetObjectBootstrapResult bootstrap =
+		Vans::VansAssetObjectBootstrapper::Publish(
+			database.All(), manager.GetAssetObjectRepository());
+	if (!Expect(static_cast<bool>(bootstrap),
+		bootstrap.errors.empty()
+			? "Vegetation project-open bootstrap failed"
+			: bootstrap.errors.front().c_str()))
+		return false;
+
+	const Vans::VansSceneAssetDependencyBuildResult dependencyResult =
+		Vans::VansSceneAssetDependencyBuilder::BuildResourcePlan(
+			database,
+			sceneRoot,
+			temporary.path / "Scenes" / "MemoryScene.json",
+			{},
+			manager.GetAssetObjectRepository());
+	if (!Expect(dependencyResult.success &&
+		manager.GetAssetObjectRepository().ResolveLatest<
+			Vans::VansVegetationConfigAsset>(vegetationGuid) != nullptr,
+		"Vegetation dependency planning did not consume the project memory object"))
+		return false;
+
+	std::error_code removeError;
+	fs::remove(vegetationPath, removeError);
+	if (!Expect(!removeError && !fs::exists(vegetationPath),
+		"Could not remove the vegetation disk source before runtime projection"))
+		return false;
+
+	Vans::VansIOAudit::Reset();
+	Vans::VansSceneContentBuildPlan plan;
+	if (!Expect(Vans::VansSceneRuntimeProjection::BuildRuntimeSceneContentPlan(
+		sceneRoot, temporary.path.string(), plan, error), error.c_str()))
+		return false;
+	const auto projectionIOEvents = Vans::VansIOAudit::Snapshot();
+	return Expect(
+		plan.vegetation.has_value() &&
+		plan.vegetation->name == "MemoryVegetation" &&
+		std::none_of(
+			projectionIOEvents.begin(), projectionIOEvents.end(),
+			[&](const Vans::VansIOEvent& event)
+			{
+				return event.operation == Vans::VansIOOperation::Read &&
+					event.path.lexically_normal() == vegetationPath.lexically_normal();
+			}),
+		"Runtime vegetation projection reread the deleted authoring asset instead of memory");
+}
+
+bool TestUIAssetMemoryBootstrapContract()
+{
+	TemporaryDirectory temporary;
+	const fs::path screenPath = temporary.path / "MemoryScreen.vui.json";
+	const fs::path xamlPath = temporary.path / "MemoryScreen.xaml";
+	Vans::VansAssetGuid screenGuid;
+	Vans::VansAssetGuid xamlGuid;
+	if (!Expect(
+		Vans::VansAssetGuid::TryParse("10000000-0000-4000-8000-000000000001", screenGuid) &&
+		Vans::VansAssetGuid::TryParse("10000000-0000-4000-8000-000000000002", xamlGuid),
+		"UI memory contract GUID constants are invalid"))
+		return false;
+
+	const std::string screenBytes =
+		"{\n"
+		"  \"schemaVersion\": 1,\n"
+		"  \"guid\": \"memory.screen\",\n"
+		"  \"name\": \"MemoryScreen\",\n"
+		"  \"xaml\": { \"guid\": \"" + xamlGuid.ToString() + "\" },\n"
+		"  \"themes\": [], \"tokens\": [], \"localization\": []\n"
+		"}\n";
+	const std::string xamlBytes =
+		"<Grid xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\"/>";
+	std::string error;
+	if (!Expect(
+		Vans::VansFileStorage::WriteAtomicBytes(screenPath, screenBytes, error) &&
+		Vans::VansFileStorage::WriteAtomicBytes(xamlPath, xamlBytes, error),
+		error.c_str()))
+		return false;
+
+	Vans::VansAssetRecord screenRecord;
+	screenRecord.guid = screenGuid;
+	screenRecord.type = Vans::VansAssetType::UIScreen;
+	screenRecord.state = Vans::VansAssetState::CpuReady;
+	screenRecord.sourcePath = screenPath;
+	screenRecord.sourceHash = 0x1001u;
+	Vans::VansAssetRecord xamlRecord;
+	xamlRecord.guid = xamlGuid;
+	xamlRecord.type = Vans::VansAssetType::UIXaml;
+	xamlRecord.state = Vans::VansAssetState::CpuReady;
+	xamlRecord.sourcePath = xamlPath;
+	xamlRecord.sourceHash = 0x1002u;
+
+	auto& projectManager = Vans::VansProjectManager::Get();
+	projectManager.CloseProject();
+	projectManager.SetPackagedAssetRecords({ screenRecord, xamlRecord });
+	struct ScopedPackagedUIAssets
+	{
+		~ScopedPackagedUIAssets()
+		{
+			Vans::VansProjectManager::Get().SetPackagedAssetRecords({});
+			Vans::VansProjectManager::Get().GetAssetObjectRepository().Clear();
+		}
+	} scopedAssets;
+	const Vans::VansAssetObjectBootstrapResult bootstrap =
+		Vans::VansAssetObjectBootstrapper::Publish(
+			{ screenRecord, xamlRecord }, projectManager.GetAssetObjectRepository());
+	if (!Expect(static_cast<bool>(bootstrap),
+		bootstrap.errors.empty() ? "UI memory bootstrap failed" : bootstrap.errors.front().c_str()))
+		return false;
+
+	Vans::VansAssetObjectSnapshotInfo screenInfo;
+	if (!Expect(
+		projectManager.GetAssetObjectRepository().FindInfo(screenGuid, screenInfo) &&
+		screenInfo.dependencies.size() == 1 && screenInfo.dependencies.front() == xamlGuid,
+		"UI screen memory snapshot did not retain its XAML GUID dependency"))
+		return false;
+
+	std::error_code removeError;
+	fs::remove(screenPath, removeError);
+	fs::remove(xamlPath, removeError);
+	if (!Expect(!fs::exists(screenPath) && !fs::exists(xamlPath),
+		"UI memory contract could not remove authoring sources"))
+		return false;
+
+	Vans::VansIOAudit::Reset();
+	std::shared_ptr<const VansRuntime::VansUIAssetDocument> document;
+	std::string xamlUri;
+	if (!Expect(
+		VansRuntime::VansUIAssetResolver::ResolveDocument(
+			screenGuid.ToString(), Vans::VansAssetType::UIScreen, document, error) &&
+		VansRuntime::VansUIAssetResolver::ResolveXamlUri(
+			xamlGuid.ToString(), xamlUri, error) &&
+		xamlUri == "asset://" + xamlGuid.ToString() &&
+		document &&
+		projectManager.GetAssetObjectRepository().ResolveLatest<VansRuntime::VansUIXamlAsset>(xamlGuid),
+		error.c_str()))
+		return false;
+	const auto events = Vans::VansIOAudit::Snapshot();
+	return Expect(
+		std::none_of(events.begin(), events.end(), [](const Vans::VansIOEvent& event)
+		{
+			return event.operation == Vans::VansIOOperation::Read ||
+				event.operation == Vans::VansIOOperation::ReadRange;
+		}),
+		"Runtime UI asset resolution performed disk I/O after memory bootstrap");
+}
+
+bool TestAssetWorkingCopyMemoryPublicationContract()
+{
+	TemporaryDirectory temporary;
+	const fs::path sourcePath = temporary.path / "WorkingSnapshot.vaudiosnapshot";
+	const fs::path metaPath = Vans::VansAssetMeta::MetaPathFor(sourcePath);
+	Vans::VansAssetGuid guid;
+	if (!Expect(Vans::VansAssetGuid::TryParse(
+		"20000000-0000-4000-8000-000000000001", guid),
+		"Working-copy contract GUID is invalid"))
+		return false;
+
+	Vans::VansAudioBusSnapshotAsset fixture;
+	fixture.guid = guid.ToString();
+	fixture.displayName = "Working Snapshot";
+	fixture.snapshot.buses.push_back({ "Master", 0.5f });
+	Vans::VansAssetMeta meta;
+	meta.guid = guid;
+	meta.importer = Vans::VansAssetDatabase::ImporterFor(
+		Vans::VansAssetType::AudioBusSnapshot);
+	std::string error;
+	{
+		Vans::VansScopedIOContext fixtureWrite(
+			Vans::VansIODomain::Authoring, "ContractFixture.WorkingCopyWrite", true);
+		if (!Expect(
+			Vans::VansAudioBusSnapshotAssetStorage::SaveAtomic(
+				sourcePath, fixture, error) &&
+			Vans::VansAssetMetaStorage::SaveAtomic(metaPath, meta, error),
+			error.c_str()))
+			return false;
+	}
+
+	Vans::VansAssetRecord record;
+	record.guid = guid;
+	record.type = Vans::VansAssetType::AudioBusSnapshot;
+	record.state = Vans::VansAssetState::CpuReady;
+	record.sourcePath = sourcePath;
+	record.metaPath = metaPath;
+	record.sourceHash = 0x2001u;
+	record.metaHash = 0x2002u;
+	Vans::VansAssetObjectRepository repository;
+	const Vans::VansAssetObjectBootstrapResult bootstrap =
+		Vans::VansAssetObjectBootstrapper::Publish({ record }, repository);
+	if (!Expect(static_cast<bool>(bootstrap),
+		bootstrap.errors.empty() ? "Working-copy bootstrap failed" : bootstrap.errors.front().c_str()))
+		return false;
+
+	auto& documentRegistry = Vans::VansAssetDocumentRegistry::Get();
+	documentRegistry.Clear();
+	struct RegistryGuard
+	{
+		~RegistryGuard()
+		{
+			Vans::VansAssetDocumentEditService::ClearAllHistories();
+			auto& registry = Vans::VansAssetDocumentRegistry::Get();
+			registry.ClearWorkingCopyPublisher();
+			registry.Clear();
+		}
+	} registryGuard;
+	const std::shared_ptr<Vans::VansOpenAssetDocument> documents =
+		documentRegistry.GetOrOpen(sourcePath);
+	if (!Expect(documents && documents->sourceDocument.IsLoaded() &&
+		documents->metaDocument.IsLoaded(),
+		"Working-copy authoring documents did not open"))
+		return false;
+
+	documentRegistry.SetWorkingCopyPublisher(
+		[&](const Vans::VansOpenAssetDocument& openDocument, std::string& publishError)
+		{
+			const std::string sourceJson =
+				Vans::EncodeSerializedValueJson<nlohmann::ordered_json>(
+					openDocument.sourceDocument.SerializedRootSnapshot()).dump();
+			const std::string metaJson =
+				Vans::EncodeSerializedValueJson<nlohmann::ordered_json>(
+					openDocument.metaDocument.SerializedRootSnapshot()).dump();
+			Vans::VansAssetRecord workingRecord = record;
+			workingRecord.sourceHash = Vans::ComputeMemoryFnv1a64(
+				sourceJson.data(), sourceJson.size());
+			workingRecord.metaHash = Vans::ComputeMemoryFnv1a64(
+				metaJson.data(), metaJson.size());
+			const std::uint64_t workingHash =
+				Vans::AssetObjectContentHash(workingRecord);
+			if (!Vans::VansAssetObjectBootstrapper::PublishSerialized(
+				record,
+				openDocument.sourceDocument.SerializedRootSnapshot(),
+				workingHash,
+				repository,
+				publishError))
+				return false;
+			return Vans::VansAssetObjectBootstrapper::PublishMetadataSerialized(
+				record,
+				openDocument.metaDocument.SerializedRootSnapshot(),
+				workingHash,
+				repository,
+				publishError);
+		});
+
+	std::string diskBefore;
+	if (!Expect(Vans::VansFileStorage::ReadAllBytes(sourcePath, diskBefore, error), error.c_str()))
+		return false;
+	Vans::VansAssetObjectSnapshotInfo initialInfo;
+	if (!Expect(repository.FindInfo(guid, initialInfo),
+		"Working-copy initial repository snapshot is missing"))
+		return false;
+
+	Vans::VansIOAudit::Reset();
+	const Vans::AssetDocumentEditResult gainEdit =
+		Vans::VansAssetDocumentEditService::Set(
+			documents->sourceDocument,
+			Vans::MakeDocumentPropertyPath(
+				Vans::DocumentPropertySpace::AssetSource, "/buses/0/gain"),
+			Vans::VansSerializedValue::Float(0.2));
+	Vans::VansAssetObjectSnapshotInfo editedInfo;
+	const std::shared_ptr<const Vans::VansAudioBusSnapshotAsset> edited =
+		repository.ResolveLatest<Vans::VansAudioBusSnapshotAsset>(guid);
+	const auto editEvents = Vans::VansIOAudit::Snapshot();
+	std::string diskAfterEdit;
+	Vans::VansFileStorage::ReadAllBytes(sourcePath, diskAfterEdit, error);
+	if (!Expect(gainEdit && documents->sourceDocument.IsDirty() && edited &&
+		!edited->snapshot.buses.empty() &&
+		std::abs(edited->snapshot.buses.front().gain - 0.2f) <= 0.0001f &&
+		repository.FindInfo(guid, editedInfo) &&
+		editedInfo.generation > initialInfo.generation &&
+		diskAfterEdit == diskBefore && editEvents.empty(),
+		"A valid authoring edit did not publish only to the memory repository"))
+		return false;
+
+	const std::uint64_t lastGoodGeneration = editedInfo.generation;
+	const Vans::AssetDocumentEditResult invalidEdit =
+		Vans::VansAssetDocumentEditService::Set(
+			documents->sourceDocument,
+			Vans::MakeDocumentPropertyPath(
+				Vans::DocumentPropertySpace::AssetSource, "/buses"),
+			Vans::VansSerializedValue::String("invalid"));
+	Vans::VansAssetObjectSnapshotInfo invalidInfo;
+	const std::shared_ptr<const Vans::VansAudioBusSnapshotAsset> lastGood =
+		repository.ResolveLatest<Vans::VansAudioBusSnapshotAsset>(guid);
+	if (!Expect(invalidEdit && !documents->lastError.empty() && lastGood &&
+		!lastGood->snapshot.buses.empty() &&
+		std::abs(lastGood->snapshot.buses.front().gain - 0.2f) <= 0.0001f &&
+		repository.FindInfo(guid, invalidInfo) &&
+		invalidInfo.generation == lastGoodGeneration,
+		"An invalid intermediate edit replaced the last-good runtime snapshot"))
+		return false;
+
+	if (!Expect(Vans::VansAssetDocumentEditService::Undo(
+		documents->sourceDocument) && documents->lastError.empty(),
+		"Undo did not restore a publishable working snapshot"))
+		return false;
+	if (!Expect(static_cast<bool>(Vans::VansAssetDocumentEditService::Undo(
+		documents->sourceDocument)),
+		"Undo did not return the working document to its saved state"))
+		return false;
+	const std::shared_ptr<const Vans::VansAudioBusSnapshotAsset> restored =
+		repository.ResolveLatest<Vans::VansAudioBusSnapshotAsset>(guid);
+	std::string diskAfterUndo;
+	Vans::VansFileStorage::ReadAllBytes(sourcePath, diskAfterUndo, error);
+	return Expect(!documents->sourceDocument.IsDirty() && restored &&
+		!restored->snapshot.buses.empty() &&
+		std::abs(restored->snapshot.buses.front().gain - 0.5f) <= 0.0001f &&
+		diskAfterUndo == diskBefore,
+		"Undo did not restore memory state without changing the authoring file");
+}
+
+bool TestGeneratedMaterialMemoryBoundaryContract()
+{
+	TemporaryDirectory temporary;
+	const fs::path assetsRoot = temporary.path / "Assets";
+	fs::create_directories(assetsRoot);
+	Vans::VansAssetDatabase database(
+		assetsRoot, temporary.path / "Library" / "Artifacts");
+
+	VkDevice device = VK_NULL_HANDLE;
+	VansGraphics::VansRenderNode node(device, VansGraphics::OPAQUE_NODE);
+	VansGraphics::VansPBRMaterial material;
+	material.m_AssetName = "MemoryBoundary";
+	material.m_MaterialType = VansGraphics::VAN_PBR;
+	material.m_BasePBRParam.m_albedo = glm::vec3(0.2f, 0.4f, 0.6f);
+	material.m_BasePBRParam.m_metallic = 0.1f;
+	material.m_BasePBRParam.m_roughness = 0.7f;
+	material.m_BasePBRParam.m_ao = 1.0f;
+	node.m_Material = &material;
+	node.m_SubmeshIndex = 3u;
+
+	auto& documentRegistry = Vans::VansAssetDocumentRegistry::Get();
+	documentRegistry.Clear();
+	struct RegistryGuard
+	{
+		~RegistryGuard()
+		{
+			Vans::VansAssetDocumentEditService::ClearAllHistories();
+			Vans::VansAssetDocumentRegistry::Get().Clear();
+		}
+	} registryGuard;
+
+	Vans::VansIOAudit::Reset();
+	const Vans::EditorAPI::RuntimeGeneratedMaterialDraft draft =
+		Vans::EditorAPI::BuildRuntimeGeneratedMaterialDraft(
+			"MemoryBoundaryModel", &node, database);
+	if (!Expect(draft.requiresSave && !draft.guid.empty() &&
+		!draft.sourcePath.empty() && !draft.sourceCanonicalJson.empty() &&
+		!draft.metaCanonicalJson.empty(),
+		"Runtime-generated material did not produce an in-memory authoring draft"))
+		return false;
+	const fs::path sourcePath = draft.sourcePath;
+	const fs::path metaPath = Vans::VansAssetMeta::MetaPathFor(sourcePath);
+	if (!Expect(!fs::exists(sourcePath) && !fs::exists(metaPath) &&
+		Vans::VansIOAudit::Snapshot().empty(),
+		"Generating a runtime material draft touched authoring storage"))
+		return false;
+
+	std::string error;
+	Vans::VansAssetGuid guid;
+	if (!Expect(Vans::VansAssetGuid::TryParse(draft.guid, guid),
+		"Generated material draft GUID is invalid"))
+		return false;
+	const Vans::VansSerializedValue sourceRoot =
+		Vans::DecodeSerializedValueJson(
+			nlohmann::ordered_json::parse(draft.sourceCanonicalJson));
+	const Vans::VansSerializedValue metaRoot =
+		Vans::DecodeSerializedValueJson(
+			nlohmann::ordered_json::parse(draft.metaCanonicalJson));
+	const auto documents = documentRegistry.CreateInMemory(
+		sourcePath, sourceRoot, metaRoot, true, error);
+	if (!Expect(documents && documents->IsDirty() &&
+		documentRegistry.SceneOwnedDirtyDocuments().size() == 1,
+		error.empty() ? "Generated material was not registered as a scene-owned dirty document"
+			: error.c_str()))
+		return false;
+
+	Vans::VansAssetRecord record;
+	record.guid = guid;
+	record.type = Vans::VansAssetType::Material;
+	record.state = Vans::VansAssetState::CpuReady;
+	record.sourcePath = sourcePath;
+	record.metaPath = metaPath;
+	record.sourceHash = Vans::ComputeMemoryFnv1a64(
+		draft.sourceCanonicalJson.data(), draft.sourceCanonicalJson.size());
+	record.metaHash = Vans::ComputeMemoryFnv1a64(
+		draft.metaCanonicalJson.data(), draft.metaCanonicalJson.size());
+	record.memoryOnly = true;
+	Vans::VansAssetObjectRepository repository;
+	const std::uint64_t contentHash = Vans::AssetObjectContentHash(record);
+	if (!Expect(
+		Vans::VansAssetObjectBootstrapper::PublishSerialized(
+			record, sourceRoot, contentHash, repository, error) &&
+		Vans::VansAssetObjectBootstrapper::PublishMetadataSerialized(
+			record, metaRoot, contentHash, repository, error) &&
+		database.RegisterMemoryAsset(record, error),
+		error.empty() ? "Generated material could not publish as a memory asset"
+			: error.c_str()))
+		return false;
+	const auto indexed = database.Find(guid);
+	if (!Expect(indexed && indexed->memoryOnly &&
+		repository.ResolveLatest<Vans::VansMaterialAuthoringAsset>(guid) &&
+		!fs::exists(sourcePath) && !fs::exists(metaPath) &&
+		Vans::VansIOAudit::Snapshot().empty(),
+		"Generated material memory publication performed disk I/O or lost its memory-only state"))
+		return false;
+
+	Vans::VansAssetDocumentSaveStage sourceStage;
+	Vans::VansAssetDocumentSaveStage metaStage;
+	Vans::VansStagedFileTransaction transaction;
+	if (!Expect(
+		documents->sourceDocument.StageSave(sourceStage, error) &&
+		documents->metaDocument.StageSave(metaStage, error),
+		error.empty() ? "Generated material could not stage its explicit save"
+			: error.c_str()))
+		return false;
+	transaction.Add({ sourceStage.targetPath, sourceStage.temporaryPath });
+	transaction.Add({ metaStage.targetPath, metaStage.temporaryPath });
+	if (!Expect(transaction.Publish(error) &&
+		documents->sourceDocument.AdoptStagedSave(sourceStage, error) &&
+		documents->metaDocument.AdoptStagedSave(metaStage, error),
+		error.empty() ? "Generated material explicit save did not publish atomically"
+			: error.c_str()))
+		return false;
+	return Expect(fs::is_regular_file(sourcePath) && fs::is_regular_file(metaPath) &&
+		!documents->IsDirty(),
+		"Generated material did not reach disk only at the explicit save boundary");
+}
+
+bool TestRuntimeConfigurationMemoryBoundaryContract()
+{
+	fs::path sourceFile = fs::path(__FILE__);
+	if (sourceFile.is_relative()) sourceFile = fs::absolute(sourceFile);
+	const fs::path engineRoot = sourceFile.parent_path().parent_path().parent_path();
+	const fs::path coreRoot = engineRoot / "Source" / "EngineCore";
+	const std::vector<fs::path> runtimeRoots = {
+		coreRoot / "AICore",
+		coreRoot / "AnimationCore",
+		coreRoot / "AudioCore",
+		coreRoot / "CameraCore",
+		coreRoot / "EventCore",
+		coreRoot / "GameplayActionAdapters",
+		coreRoot / "GameplayActionCore",
+		coreRoot / "GameplayActionExecution",
+		coreRoot / "GameplayActionSchema",
+		coreRoot / "GameplayActionTimeline",
+		coreRoot / "GameplayAttributes",
+		coreRoot / "GameplayCues",
+		coreRoot / "GameplayEffects",
+		coreRoot / "GameplayTags",
+		coreRoot / "GameplayTargeting",
+		coreRoot / "NavigationCore",
+		coreRoot / "ParticleCore",
+		coreRoot / "PhysicsCore",
+		coreRoot / "RenderCore",
+		coreRoot / "RuntimeUI",
+		coreRoot / "SceneCore",
+		coreRoot / "SceneRuntime",
+		coreRoot / "ScriptCore",
+		coreRoot / "Timeline",
+		coreRoot / "TimelineCore",
+		coreRoot / "TimelineRuntime"
+	};
+	const std::vector<std::string> forbiddenCalls = {
+		"Storage::Load(",
+		"IO::Load(",
+		"VansJsonFileStorage::Read",
+		"VansFileStorage::ReadAllBytes",
+		"VansFileStorage::ReadAllText",
+		"VansUIDocumentLoader::Load(",
+		"VansTimelineSerialization::Load(",
+		"std::ifstream",
+		"Storage::Save(",
+		"IO::Save(",
+		"SaveAtomic(",
+		"VansJsonFileStorage::Write",
+		"VansFileStorage::WriteAtomic",
+		"std::ofstream"
+	};
+	const std::vector<std::string> excludedPathFragments = {
+		"/Storage/",
+		"/Serialization/",
+		"/ReflectionProbeCore/",
+		"/VulkanCore/"
+	};
+	const std::vector<std::string> persistenceFiles = {
+		"VansAIBehaviorAsset.cpp", "VansAIBehaviorAsset.h",
+		"VansAnimationClip.cpp", "VansAnimationClip.h",
+		"VansAnimatorIO.cpp", "VansAnimatorIO.h",
+		"VansAssetObjectBootstrapper.cpp", "VansAssetObjectBootstrapper.h",
+		"VansAudioMixConfig.cpp", "VansAudioMixConfig.h",
+		"VansGAFProjectConfiguration.cpp", "VansGAFProjectConfiguration.h",
+		"VansGameplayAssetStorage.cpp", "VansGameplayAssetStorage.h",
+		"VansIESProfile.cpp",
+		"VansNavigationMesh.cpp", "VansNavigationMesh.h",
+		"VansNoesisProviders.cpp",
+		"VansPackagedResourcePlan.cpp", "VansPackagedResourcePlan.h",
+		"VansSceneDocumentLoader.cpp", "VansSceneDocumentLoader.h",
+		"VansTimelineSerialization.cpp", "VansTimelineSerialization.h"
+	};
+	auto readText = [](const fs::path& path)
+	{
+		std::ifstream input(path, std::ios::binary);
+		return std::string(
+			std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+	};
+	for (const fs::path& root : runtimeRoots)
+	{
+		std::error_code scanError;
+		for (fs::recursive_directory_iterator iterator(root, scanError), end;
+			!scanError && iterator != end; iterator.increment(scanError))
+		{
+			if (!iterator->is_regular_file()) continue;
+			const std::string extension = iterator->path().extension().string();
+			if (extension != ".cpp" && extension != ".h" && extension != ".hpp") continue;
+			const std::string relative = fs::relative(iterator->path(), coreRoot).generic_string();
+			if (std::any_of(excludedPathFragments.begin(), excludedPathFragments.end(),
+				[&](const std::string& fragment) { return relative.find(fragment) != std::string::npos; }))
+				continue;
+			const std::string fileName = iterator->path().filename().string();
+			if (std::find(persistenceFiles.begin(), persistenceFiles.end(), fileName)
+				!= persistenceFiles.end())
+				continue;
+
+			const std::string source = readText(iterator->path());
+			for (const std::string& forbidden : forbiddenCalls)
+			{
+				if (source.find(forbidden) == std::string::npos) continue;
+				std::cerr << "[RuntimeConfigBoundary] " << relative
+					<< " contains forbidden authoring I/O token '" << forbidden << "'\n";
+				return Expect(false,
+					"A runtime configuration consumer directly accesses authoring storage");
+			}
+		}
+		if (!Expect(!scanError,
+			"Unable to scan a runtime module for authoring storage dependencies"))
+			return false;
+	}
+
+	const fs::path noesisProvider = coreRoot / "RuntimeUI" / "Private" /
+		"Noesis" / "VansNoesisProviders.cpp";
+	const std::string noesisSource = readText(noesisProvider);
+	const std::size_t xamlBegin = noesisSource.find("VansNoesisXamlProvider::LoadXaml");
+	const std::size_t xamlEnd = noesisSource.find("VansNoesisTextureProvider::", xamlBegin);
+	if (!Expect(xamlBegin != std::string::npos && xamlEnd != std::string::npos,
+		"Noesis XAML provider boundary could not be located"))
+		return false;
+	const std::string xamlSection = noesisSource.substr(xamlBegin, xamlEnd - xamlBegin);
+	if (!Expect(
+		xamlSection.find("ResolveLatest<VansUIXamlAsset>") != std::string::npos &&
+		xamlSection.find("ReadFileToBuffer") == std::string::npos &&
+		xamlSection.find("ReadAllBytes") == std::string::npos,
+		"Noesis XAML loading is not exclusively backed by the UI memory repository"))
+		return false;
+
+	const std::string dependencyHeader = readText(
+		coreRoot / "SceneCore" / "VansSceneAssetDependencyBuilder.h");
+	if (!Expect(
+		dependencyHeader.find("const VansAssetObjectRepository& objectRepository")
+			!= std::string::npos &&
+		dependencyHeader.find("VansAssetObjectRepository* objectRepository")
+			== std::string::npos,
+		"Scene dependency planning does not require an in-memory asset repository"))
+		return false;
+
+	const std::string packageEntry = readText(
+		engineRoot / "Source" / "Application" / "ForestPackageToolEntry.cpp");
+	const std::string packageRequest = readText(
+		coreRoot / "PackagingCore" / "VansGamePackageBuilder.h");
+	const std::string packageBuilder = readText(
+		coreRoot / "PackagingCore" / "VansGamePackageBuilder.cpp");
+	return Expect(
+		packageEntry.find("--legacy-assets") == std::string::npos &&
+		packageEntry.find("--no-cooked-resource-plan") == std::string::npos &&
+		packageRequest.find("useCookedResourcePlan") == std::string::npos &&
+		packageBuilder.find("database.Scan(Vans::VansAssetOperationPolicy::Authoring())")
+			== std::string::npos,
+		"Packaging still exposes a second non-repository authoring path");
+}
+
+bool TestVolumetricParticleInjectionContract()
+{
+	using VansGraphics::VansParticleAsset;
+	using VansGraphics::VansParticleAssetJsonCodec;
+	Vans::ParticleJson legacy = {
+		{ "version", 1 },
+		{ "name", "LegacySurfaceParticle" },
+		{ "global", {
+			{ "duration", 5.0 }, { "loop", true }, { "prewarm", false },
+			{ "simulationSpace", "World" } } },
+		{ "emitters", Vans::ParticleJson::array({ {
+			{ "name", "Emitter" }, { "enabled", true }, { "maxParticles", 16 },
+			{ "spawn", { { "type", "RateOverTime" }, { "rate", 10.0 } } },
+			{ "initialize", Vans::ParticleJson::array({
+				{ { "module", "InitLifetime" },
+				  { "lifetime", { { "mode", "Constant" }, { "value", 2.0 } } } },
+				{ { "module", "InitSize" },
+				  { "size", { { "mode", "Constant" }, { "value", 2.0 } } } },
+				{ { "module", "InitColor" },
+				  { "color", Vans::ParticleJson::array({ 1.0, 1.0, 1.0, 1.0 }) } }
+			}) },
+			{ "update", Vans::ParticleJson::array() },
+			{ "renderer", {
+				{ "type", "Billboard" }, { "texture", "" },
+				{ "blendMode", "Alpha" }, { "sortMode", "None" },
+				{ "castShadows", false }, { "receiveShadows", false } } }
+		} }) }
+	};
+
+	std::string error;
+	VansParticleAsset surfaceAsset;
+	if (!Expect(VansParticleAssetJsonCodec::Decode(
+		legacy, "legacy.particle", surfaceAsset, error),
+		"A legacy particle asset without renderer.volumetric was rejected") ||
+		!Expect(surfaceAsset.m_Emitters.size() == 1u &&
+			!surfaceAsset.m_Emitters[0]->m_RendererConfig.m_Volumetric.m_Enabled,
+			"Legacy particle assets did not default volumetric injection to disabled"))
+		return false;
+	VansGraphics::VansParticleRuntime surfaceRuntime;
+	surfaceRuntime.m_Asset = &surfaceAsset;
+	surfaceRuntime.Play();
+	surfaceRuntime.Update(0.11f);
+	surfaceRuntime.SwapBuffers();
+	if (!Expect(!surfaceRuntime.GetRenderBuffer().empty() &&
+		surfaceRuntime.GetVolumetricRenderBuffer().empty() &&
+		!surfaceRuntime.HasVolumetricInjectionEnabled(),
+		"The disabled volumetric option changed the legacy surface-particle path"))
+		return false;
+
+	Vans::ParticleJson volumetric = legacy;
+	volumetric["name"] = "VolumetricParticle";
+	volumetric["emitters"][0]["renderer"]["volumetric"] = {
+		{ "enabled", true }, { "keepSurfaceRenderer", false },
+		{ "radiusScale", 1.25 }, { "maxDistanceMeters", 80.0 },
+		{ "densityMultiplier", 0.8 }, { "extinctionPerMeter", 1.5 },
+		{ "singleScatteringAlbedo", { 0.7, 0.8, 0.9 } },
+		{ "anisotropy", 0.35 }, { "emissivePerMeter", { 0.1, 0.05, 0.0 } },
+		{ "edgeSoftness", 0.4 }, { "directLightingScale", 1.1 },
+		{ "skyLightingScale", 0.3 }, { "receiveCloudShadows", true },
+		{ "injectionPriority", 201 }
+	};
+	VansParticleAsset volumetricAsset;
+	error.clear();
+	if (!Expect(VansParticleAssetJsonCodec::Decode(
+		volumetric, "volumetric.particle", volumetricAsset, error),
+		("A valid volumetric particle asset was rejected: " + error).c_str()))
+		return false;
+	VansGraphics::VansParticleRuntime volumetricRuntime;
+	volumetricRuntime.m_Asset = &volumetricAsset;
+	volumetricRuntime.Play();
+	volumetricRuntime.Update(0.11f);
+	volumetricRuntime.SwapBuffers();
+	if (!Expect(volumetricRuntime.GetRenderBuffer().empty() &&
+		!volumetricRuntime.GetVolumetricRenderBuffer().empty() &&
+		volumetricRuntime.HasVolumetricInjectionEnabled() &&
+		volumetricRuntime.m_AliveInstanceCount.load() > 0u,
+		"A volume-only emitter did not suppress only its surface instances") ||
+		!Expect(volumetricRuntime.GetVolumetricRenderBuffer()[0].m_Metadata.w == 201u &&
+			std::abs(volumetricRuntime.GetVolumetricRenderBuffer()[0].
+				m_DistanceAndPadding.x - 80.0f) < 1.0e-5f,
+			"Volumetric particle candidate parameters were not baked into frame data"))
+		return false;
+	const Vans::ParticleJson encoded =
+		VansParticleAssetJsonCodec::Encode(volumetricAsset);
+	if (!Expect(encoded["emitters"][0]["renderer"].contains("volumetric") &&
+		encoded["emitters"][0]["renderer"]["volumetric"]["enabled"].get<bool>() &&
+		encoded["emitters"][0]["renderer"]["volumetric"]["injectionPriority"].get<unsigned>() == 201u,
+		"Volumetric particle authoring parameters did not round-trip"))
+		return false;
+	auto& disabledTuning = volumetricAsset.m_Emitters[0]->m_RendererConfig.m_Volumetric;
+	disabledTuning.m_Enabled = false;
+	disabledTuning.m_ExtinctionPerMeter = 2.25f;
+	const Vans::ParticleJson disabledTuningEncoded =
+		VansParticleAssetJsonCodec::Encode(volumetricAsset);
+	if (!Expect(
+		disabledTuningEncoded["emitters"][0]["renderer"].contains("volumetric") &&
+		!disabledTuningEncoded["emitters"][0]["renderer"]["volumetric"]["enabled"].get<bool>() &&
+		std::abs(disabledTuningEncoded["emitters"][0]["renderer"]["volumetric"]
+			["extinctionPerMeter"].get<float>() - 2.25f) < 1.0e-5f,
+		"Disabled volumetric tuning was discarded before the artist opted in"))
+		return false;
+	Vans::ParticleJson invalid = volumetric;
+	invalid["emitters"][0]["renderer"]["volumetric"]["anisotropy"] = 1.0;
+	VansParticleAsset invalidAsset;
+	error.clear();
+	if (!Expect(!VansParticleAssetJsonCodec::Decode(
+		invalid, "invalid.particle", invalidAsset, error),
+		"An invalid volumetric-particle anisotropy value was accepted"))
+		return false;
+
+	Vans::ParticleJson lifecycle = volumetric;
+	lifecycle["name"] = "LifecycleDrivenParticle";
+	lifecycle["emitters"][0]["maxParticles"] = 1u;
+	lifecycle["emitters"][0]["spawn"]["rate"] = 10.0;
+	lifecycle["emitters"][0]["initialize"] = Vans::ParticleJson::array({
+		{ { "module", "InitLifetime" }, { "enabled", true },
+		  { "lifetime", { { "mode", "Constant" }, { "value", 2.0 } } } },
+		{ { "module", "InitVelocity" }, { "enabled", true },
+		  { "mode", "Cone" }, { "angle", 0.0 }, { "speed", 1.0 } },
+		{ { "module", "InitSize" }, { "enabled", true },
+		  { "size", { { "mode", "Constant" }, { "value", 2.0 } } } }
+	});
+	lifecycle["emitters"][0]["update"] = Vans::ParticleJson::array({
+		{ { "module", "UpdateSizeOverLifetime" }, { "enabled", true },
+		  { "curve", Vans::ParticleJson::array({
+			  { { "t", 0.0 }, { "value", 2.0 } },
+			  { { "t", 1.0 }, { "value", 2.0 } } }) } },
+		{ { "module", "UpdateColorOverLifetime" }, { "enabled", true },
+		  { "gradient", { { "stops", Vans::ParticleJson::array({
+			  { { "t", 0.0 }, { "color", { 1.0, 1.0, 1.0, 1.0 } } },
+			  { { "t", 0.5 }, { "color", { 1.0, 1.0, 1.0, 1.0 } } },
+			  { { "t", 1.0 }, { "color", { 1.0, 1.0, 1.0, 0.0 } } }
+		  }) } } } }
+	});
+	VansParticleAsset lifecycleAsset;
+	error.clear();
+	if (!Expect(VansParticleAssetJsonCodec::Decode(
+		lifecycle, "lifecycle.particle", lifecycleAsset, error),
+		("A valid lifecycle-module particle was rejected: " + error).c_str()))
+		return false;
+	auto& lifecycleEmitter = *lifecycleAsset.m_Emitters[0];
+	lifecycleEmitter.Update(0.11f, glm::mat4(1.0f));
+	lifecycleEmitter.Update(0.11f, glm::mat4(1.0f));
+	if (!Expect(lifecycleEmitter.m_ParticlePool.m_AliveCount == 1u &&
+		std::abs(lifecycleEmitter.m_ParticlePool.m_Size[0] - 4.0f) < 1.0e-5f,
+		"Size Over Lifetime compounded the previous frame instead of the initial size") ||
+		!Expect(lifecycleEmitter.m_ParticlePool.m_Position[0].y > 0.2f,
+			"Initial velocity did not move a particle without a Gravity module"))
+		return false;
+	lifecycleEmitter.Update(1.4f, glm::mat4(1.0f));
+	lifecycleEmitter.Update(0.1f, glm::mat4(1.0f));
+	if (!Expect(lifecycleEmitter.m_ParticlePool.m_Color[0].a > 0.0f &&
+		lifecycleEmitter.m_ParticlePool.m_Color[0].a < 0.5f,
+		"Color Over Lifetime did not fade near the end of normalized lifetime"))
+		return false;
+	const Vans::ParticleJson lifecycleEncoded =
+		VansParticleAssetJsonCodec::Encode(lifecycleAsset);
+	if (!Expect(lifecycleEncoded["emitters"][0]["update"][0]
+		.value("enabled", false),
+		"Particle module enabled state did not round-trip"))
+		return false;
+	Vans::ParticleJson invalidCurve = lifecycle;
+	invalidCurve["emitters"][0]["update"][0]["curve"][1]["t"] = 0.0;
+	error.clear();
+	if (!Expect(!VansParticleAssetJsonCodec::Decode(
+		invalidCurve, "invalid_curve.particle", invalidAsset, error),
+		"An unordered normalized lifetime curve was accepted"))
+		return false;
+
+	fs::path sourceRoot;
+	for (fs::path cursor = fs::current_path(); !cursor.empty() && sourceRoot.empty();
+		cursor = cursor.parent_path())
+	{
+		for (const fs::path& candidate : { cursor, cursor / "ForestEngine" })
+		{
+			if (fs::exists(candidate / "Source" / "EngineCore") &&
+				fs::exists(candidate / "EngineAssets" / "Shaders"))
+			{
+				sourceRoot = candidate;
+				break;
+			}
+		}
+		if (cursor == cursor.root_path()) break;
+	}
+	if (!Expect(!sourceRoot.empty(),
+		"Cannot locate the ForestEngine source root for particle injection checks"))
+		return false;
+	auto readText = [](const fs::path& path)
+	{
+		std::ifstream stream(path, std::ios::binary);
+		return std::string(std::istreambuf_iterator<char>(stream),
+			std::istreambuf_iterator<char>());
+	};
+	const fs::path shaderRoot = sourceRoot / "EngineAssets" / "Shaders" / "Atmosphere";
+	const std::string nearMedia = readText(sourceRoot / "Source" / "EngineCore" /
+		"RenderCore" / "AtmosphereCore" / "VansNearMediaSystem.cpp");
+	const std::string localInjection = readText(shaderRoot /
+		"LocalMediaInjection.comp");
+	const std::string unifiedInjection = readText(shaderRoot /
+		"NearMediaUnifiedInjection.comp");
+	const std::string sharedInjection = readText(shaderRoot /
+		"NearMediaInjectionCommon.glsl");
+	const std::string sharedLighting = readText(shaderRoot /
+		"NearMediaLighting.comp");
+	const std::string particleProvider = readText(shaderRoot /
+		"VolumetricParticleMediumProvider.glsl");
+	const std::string temporal = readText(shaderRoot /
+		"VolumetricParticleTemporalResolve.comp") + readText(shaderRoot /
+		"NearMediaTemporalResolveCommon.glsl");
+	const std::string particleBuilder = readText(sourceRoot / "Source" /
+		"EngineCore" / "RenderCore" / "SceneBuild" /
+		"VansSceneParticleComponentBuilder.cpp");
+	const std::string inspector = readText(sourceRoot / "Source" / "EngineCore" /
+		"EditorCore" / "Windows" / "VansInspectorWindow.cpp");
+	const std::size_t prewarmTransform = particleBuilder.find("SetOwnerWorldTransform(");
+	const std::size_t playOnAwake = particleBuilder.find("particleComp->Play()");
+	if (!Expect(
+		nearMedia.find("if (!featureRequested)") != std::string::npos &&
+		nearMedia.find("CreateVolumetricParticleResources()") != std::string::npos &&
+		nearMedia.find("m_VolumetricParticleFeatureRequested &&") != std::string::npos &&
+		nearMedia.find("m_NearMediaUnifiedInjectionShader") != std::string::npos &&
+		nearMedia.find("BuildNearMediaPassBindings(false)") != std::string::npos &&
+		nearMedia.find("BuildNearMediaPassBindings(true)") != std::string::npos &&
+		nearMedia.find("{ 5, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE") != std::string::npos &&
+		nearMedia.find("{ 6, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE") != std::string::npos &&
+		nearMedia.find("bindings[index].binding == 10u") != std::string::npos &&
+		localInjection.find("VANS_NEAR_MEDIA_WITH_VOLUMETRIC_PARTICLES 0") != std::string::npos &&
+		unifiedInjection.find("VANS_NEAR_MEDIA_WITH_VOLUMETRIC_PARTICLES 1") != std::string::npos &&
+		sharedInjection.find("NearMediaMediumSample") != std::string::npos &&
+		sharedInjection.find("NearMediaMaterialAccumulation") != std::string::npos &&
+		sharedInjection.find("AccumulateNearMediaMaterial") != std::string::npos &&
+		sharedInjection.find("uDirectionLight") == std::string::npos &&
+		sharedInjection.find("EvaluatePunctualLighting") == std::string::npos &&
+		sharedLighting.find("NearMediaLightTransmittance") != std::string::npos &&
+		sharedLighting.find("uParticles") == std::string::npos &&
+		sharedLighting.find("uLocalFogVolumes") == std::string::npos &&
+		particleProvider.find("uParticles.particles") != std::string::npos &&
+		particleProvider.find("uLocalFog") == std::string::npos &&
+		particleProvider.find("LocalFogField") == std::string::npos &&
+		particleProvider.find("uDirectionLight") == std::string::npos &&
+		particleProvider.find("SampleDirectionalShadow") == std::string::npos &&
+		particleProvider.find("EvaluatePunctualLighting") == std::string::npos &&
+		particleProvider.find("IntegrateParticleDensityOverFroxel") != std::string::npos &&
+		particleProvider.find("froxelFootprintRadius") != std::string::npos &&
+		particleProvider.find("candidateOverflow") != std::string::npos &&
+		particleProvider.find("? particleCount") != std::string::npos &&
+		nearMedia.find("header.y = OverflowCandidateCount") != std::string::npos &&
+		particleProvider.find("subFroxelJitter") == std::string::npos &&
+		inspector.find("DrawParticleModuleAddMenu") != std::string::npos &&
+		inspector.find("ParticleLifecycleScalarLimits") != std::string::npos &&
+		sharedInjection.find("ParticlePhase") == std::string::npos &&
+		sharedInjection.find("EvaluateParticlePunctualLighting") == std::string::npos &&
+		!fs::exists(shaderRoot / "VolumetricParticleInjection.comp") &&
+		prewarmTransform != std::string::npos && playOnAwake != std::string::npos &&
+		prewarmTransform < playOnAwake &&
+		nearMedia.find("m_VolumetricParticlePassSets[target], 5") == std::string::npos &&
+		nearMedia.find("m_VolumetricParticlePassSets[target], 6") == std::string::npos &&
+		temporal.find("VANS_NEAR_MEDIA_WITH_PARTICLE_REACTIVE_HISTORY 1") !=
+			std::string::npos &&
+		temporal.find("particleReactive") != std::string::npos &&
+		temporal.find("historyWeight *= 1.0 - particleReactive") != std::string::npos &&
+		fs::exists(shaderRoot / "NearMediaUnifiedInjectioncomp.spv") &&
+		fs::file_size(shaderRoot / "NearMediaUnifiedInjectioncomp.spv") > 0u &&
+		fs::exists(shaderRoot / "NearMediaLightingcomp.spv") &&
+		fs::file_size(shaderRoot / "NearMediaLightingcomp.spv") > 0u &&
+		fs::file_size(shaderRoot / "VolumetricParticleTemporalResolvecomp.spv") > 0u,
+		"Particle medium-provider independence or unified NearMedia lighting is incomplete"))
+		return false;
+
+	const fs::path workspaceRoot = sourceRoot.parent_path().parent_path();
+	const fs::path demoAsset = workspaceRoot / "DemoHallProject" / "Assets" /
+		"Particles" / "VolumetricSmokeTest.particle";
+	const fs::path demoMeta = fs::path(demoAsset.string() + ".meta");
+	const fs::path demoScene = workspaceRoot / "DemoHallProject" / "Scenes" / "DemoHall.json";
+	if (!Expect(fs::exists(demoAsset) && fs::exists(demoMeta) && fs::exists(demoScene),
+		"DemoHall volumetric-particle test files are missing"))
+		return false;
+	const nlohmann::json demoAssetJson = nlohmann::json::parse(readText(demoAsset));
+	const nlohmann::json demoMetaJson = nlohmann::json::parse(readText(demoMeta));
+	const nlohmann::json demoSceneJson = nlohmann::json::parse(readText(demoScene));
+	VansParticleAsset decodedDemoAsset;
+	error.clear();
+	if (!Expect(VansParticleAssetJsonCodec::Decode(
+		demoAssetJson, demoAsset.string(), decodedDemoAsset, error),
+		("DemoHall volumetric-particle asset failed runtime decoding: " + error).c_str()))
+		return false;
+	if (!Expect(!decodedDemoAsset.m_Prewarm && decodedDemoAsset.m_StartDelay == 2.0f,
+		"Thrown smoke must start empty and delay emission for two seconds"))
+		return false;
+	// Keep immediate prewarm/transform coverage using an in-memory fixture. The
+	// actual grenade asset intentionally waits for its post-spawn emission delay.
+	decodedDemoAsset.m_Prewarm = true;
+	decodedDemoAsset.m_StartDelay = 0.0f;
+	VansGraphics::VansParticleRuntime demoRuntime;
+	demoRuntime.m_Asset = &decodedDemoAsset;
+	demoRuntime.m_LocalToWorld = glm::mat4(1.0f);
+	demoRuntime.m_LocalToWorld[3] = glm::vec4(-3.0f, 1.0f, 0.0f, 1.0f);
+	demoRuntime.Play();
+	if (!Expect(!demoRuntime.GetVolumetricRenderBuffer().empty(),
+		"DemoHall prewarmed test asset produced no immediately previewable volume instances") ||
+		!Expect(std::abs(demoRuntime.GetVolumetricRenderBuffer()[0].
+			m_WorldPositionRadius.x + 3.0f) < 2.5f &&
+			std::abs(demoRuntime.GetVolumetricRenderBuffer()[0].
+				m_WorldPositionRadius.z) < 2.5f,
+			"Prewarmed volumetric particles were simulated before the object transform"))
+		return false;
+	float minimumRadius = 1000000.0f;
+	float maximumRadius = 0.0f;
+	float minimumHeight = 1000000.0f;
+	float maximumHeight = -1000000.0f;
+	float minimumExtinction = 1000000.0f;
+	float maximumExtinction = 0.0f;
+	for (const auto& instance : demoRuntime.GetVolumetricRenderBuffer())
+	{
+		minimumRadius = std::min(minimumRadius, instance.m_WorldPositionRadius.w);
+		maximumRadius = std::max(maximumRadius, instance.m_WorldPositionRadius.w);
+		minimumHeight = std::min(minimumHeight, instance.m_WorldPositionRadius.y);
+		maximumHeight = std::max(maximumHeight, instance.m_WorldPositionRadius.y);
+		minimumExtinction = std::min(
+			minimumExtinction, instance.m_ScatteringAlbedoExtinction.a);
+		maximumExtinction = std::max(
+			maximumExtinction, instance.m_ScatteringAlbedoExtinction.a);
+	}
+	if (!Expect(demoRuntime.GetVolumetricRenderBuffer().size() > 180u &&
+		maximumHeight - minimumHeight > 1.5f,
+		"DemoHall smoke does not form a dense, continuous rising column") ||
+		!Expect(maximumRadius > minimumRadius * 2.0f,
+			"DemoHall smoke does not expand over normalized lifetime") ||
+		!Expect(minimumExtinction < maximumExtinction * 0.6f,
+			"DemoHall smoke does not fade through volumetric extinction"))
+		return false;
+	demoRuntime.SwapBuffers();
+	if (!Expect(!demoRuntime.GetVolumetricRenderBuffer().empty(),
+		"DemoHall prewarmed volume instances did not survive the first frame swap"))
+		return false;
+	VansScriptParticleComponent facadeComponent;
+	facadeComponent.m_Runtime = std::make_unique<VansGraphics::VansParticleRuntime>();
+	facadeComponent.m_Runtime->m_Asset = &decodedDemoAsset;
+	facadeComponent.Play();
+	if (!Expect(facadeComponent.m_IsPlaying &&
+		!facadeComponent.m_Runtime->GetVolumetricRenderBuffer().empty(),
+		"Particle component Play bypassed runtime prewarm"))
+		return false;
+	facadeComponent.Stop();
+	if (!Expect(!facadeComponent.m_IsPlaying &&
+		facadeComponent.m_Runtime->GetRenderBuffer().empty() &&
+		facadeComponent.m_Runtime->GetVolumetricRenderBuffer().empty(),
+		"Particle component Stop left stale surface or volume instances"))
+		return false;
+	const std::string demoGuid = demoMetaJson.value("guid", "");
+	bool sceneObjectFound = false;
+	for (const auto& entity : demoSceneJson.value("entities", nlohmann::json::array()))
+	{
+		if (entity.value("name", "") != "Volumetric_Particle_Smoke_Test")
+			continue;
+		for (const auto& component : entity.value("components", nlohmann::json::array()))
+		{
+			if (component.value("type", "") == "Particle" &&
+				component.value("data", nlohmann::json::object())
+					.value("asset", nlohmann::json::object()).value("guid", "") == demoGuid)
+				sceneObjectFound = true;
+		}
+	}
+	const auto& demoUpdate = demoAssetJson["emitters"][0]["update"];
+	const auto hasEnabledModule = [&demoUpdate](const char* moduleName)
+	{
+		return std::any_of(demoUpdate.begin(), demoUpdate.end(),
+			[moduleName](const nlohmann::json& module)
+			{
+				return module.value("module", "") == moduleName &&
+					module.value("enabled", false);
+			});
+	};
+	return Expect(
+		demoAssetJson["emitters"][0]["renderer"]["volumetric"]
+			.value("enabled", false) &&
+		demoAssetJson["emitters"][0]["renderer"]["volumetric"]
+			.value("densityMultiplier", 0.0f) > 0.0f &&
+		demoAssetJson["emitters"][0]["renderer"]["volumetric"]
+			.value("densityMultiplier", 1000.0f) <= 1.0f &&
+		hasEnabledModule("UpdateColorOverLifetime") &&
+		hasEnabledModule("UpdateSizeOverLifetime") &&
+		hasEnabledModule("UpdateVelocityOverLifetime") && !sceneObjectFound,
+		"DemoHall smoke modules are incomplete or its standalone emitter remains");
+}
+
 int main(int argc, char** argv)
 {
 	VANS_INIT_MAIN_THREAD();
+	if (argc == 2 && std::string(argv[1]) == "--packaged-resource-plan")
+		return TestPackagedAudioResourcePlanRoundTrip() &&
+			TestMediaComponentGuidProjection() ? 0 : 168;
+	if (argc == 2 && std::string(argv[1]) == "--animation-clip-memory-asset")
+		return TestAnimationClipMemoryAssetContract() ? 0 : 165;
+	if (argc == 2 && std::string(argv[1]) == "--project-asset-memory-bootstrap")
+		return TestProjectAssetMemoryBootstrapContract() ? 0 : 166;
+	if (argc == 2 && std::string(argv[1]) == "--runtime-config-memory-boundary")
+		return TestRuntimeConfigurationMemoryBoundaryContract() ? 0 : 167;
+	if (argc == 2 && std::string(argv[1]) == "--vegetation-memory-asset")
+		return TestVegetationMemoryAssetContract() ? 0 : 160;
+	if (argc == 2 && std::string(argv[1]) == "--ui-memory-assets")
+		return TestUIAssetMemoryBootstrapContract() ? 0 : 162;
+	if (argc == 2 && std::string(argv[1]) == "--asset-working-copy-memory")
+		return TestAssetWorkingCopyMemoryPublicationContract() ? 0 : 163;
+	if (argc == 2 && std::string(argv[1]) == "--generated-material-memory")
+		return TestGeneratedMaterialMemoryBoundaryContract() ? 0 : 164;
+	if (argc == 2 && std::string(argv[1]) == "--asset-object-repository")
+		return TestAssetObjectRepositoryContract() ? 0 : 159;
+	if (argc == 2 && std::string(argv[1]) == "--authoring-codecs")
+		return TestAuthoringCodecContract() ? 0 : 157;
+	if (argc == 2 && std::string(argv[1]) == "--project-settings-explicit-save")
+		return TestProjectSettingsExplicitSaveContract() ? 0 : 155;
+	if (argc == 2 && std::string(argv[1]) == "--scene-memory-load")
+		return TestSceneMemoryDependencyPlanContract() ? 0 : 156;
+	if (argc == 2 && std::string(argv[1]) == "--runtime-world-components")
+		return TestRuntimeWorldComponentEnabledContract() &&
+			TestRuntimeWorldComponentLifetimeContract() &&
+			TestRuntimeComponentKeyCanonicalizationContract() &&
+			TestRuntimeWorldCommandBufferContract() ? 0 : 161;
 	if (argc == 2 && std::string(argv[1]) == "--atmosphere")
 		return TestAtmosphereMathAndDataContract() ? 0 : 144;
 	if (argc == 2 && std::string(argv[1]) == "--water-rendering")
@@ -12249,24 +15908,63 @@ int main(int argc, char** argv)
 		return RunNavigationAIContractTests() ? 0 : 148;
 	if (argc == 2 && std::string(argv[1]) == "--animation-project-assets")
 		return TestAnimationProjectAnimatorAssetsCanonicalContract() ? 0 : 137;
+	if (argc == 2 && std::string(argv[1]) == "--demohall-pistol-poses")
+		return TestDemoHallPistolPoseContract() ? 0 : 139;
+	if (argc == 2 && std::string(argv[1]) == "--demohall-pistol-overlay")
+		return TestDemoHallPistolOverlayContract() ? 0 : 139;
 	if (argc == 2 && std::string(argv[1]) == "--demohall-survival-back-axe")
 		return TestDemoHallSurvivalBackAxeSceneContract() ? 0 : 138;
 	if (argc == 2 && std::string(argv[1]) == "--scene-entity-factory")
 		return TestEmptySceneEntityFactoryContract() ? 0 : 134;
 	if (argc == 2 && std::string(argv[1]) == "--local-volumetric-fog")
-		return TestLocalVolumetricFogEntityFactoryContract() ? 0 : 146;
+		return TestLocalVolumetricFogEntityFactoryContract() &&
+			TestLocalVolumetricFogFieldPreviewContract() &&
+			TestLocalVolumetricFogRuntimePreviewProjectionContract() &&
+			TestLocalVolumetricFogFieldDependencyContract() ? 0 : 146;
+	if (argc == 2 && std::string(argv[1]) == "--volumetric-particles")
+		return TestVolumetricParticleInjectionContract() ? 0 : 169;
+	if (argc == 2 && std::string(argv[1]) == "--projectile-smoke")
+		return TestProjectileSmokeContract() ? 0 : 170;
 	if (argc == 2 && std::string(argv[1]) == "--transform-graph")
 		return TestTransformGraphAnchorContract() ? 0 : 135;
 	if (argc == 2 && std::string(argv[1]) == "--gaf-packaging")
 		return TestGAFPackagingContract() ? 0 : 103;
+	if (argc == 2 && std::string(argv[1]) == "--gaf-core")
+	{
+		if (!TestGAFDefinitionAndServiceContract())
+		{
+			std::cerr << "[GAF core] definition/service contract failed\n";
+			return 98;
+		}
+		if (!TestGAFResourceLedgerAndTaskContract())
+		{
+			std::cerr << "[GAF core] resource/task contract failed\n";
+			return 99;
+		}
+		if (!TestGAFExecutionGraphContract())
+		{
+			std::cerr << "[GAF core] execution graph contract failed\n";
+			return 100;
+		}
+		if (!TestGAFActionHostLifecycleContract())
+		{
+			std::cerr << "[GAF core] Action Host lifecycle contract failed\n";
+			return 101;
+		}
+		return 0;
+	}
 	if (argc == 2 && std::string(argv[1]) == "--timeline-demohall")
 		return TestTimelineDemoHallAssetContract() ? 0 : 84;
 	if (argc == 2 && std::string(argv[1]) == "--gaf-demohall-window-break")
 		return TestGAFDemoHallWindowBreakContract() ? 0 : 108;
 	if (argc == 2 && std::string(argv[1]) == "--gaf-demohall-player-attack")
 		return TestGAFDemoHallPlayerAttackContract() ? 0 : 140;
+	if (argc == 2 && std::string(argv[1]) == "--demohall-player-throw")
+		return TestDemoHallPlayerThrowContract() ? 0 : 154;
 	if (argc == 2 && std::string(argv[1]) == "--gaf-demohall-melee-hit")
 		return TestGAFDemoHallMeleeHitRuntimeContract() ? 0 : 153;
+	if (argc == 2 && std::string(argv[1]) == "--demohall-hurt-bodies")
+		return TestDemoHallHurtBodiesContract() ? 0 : 153;
 	if (argc == 2 && std::string(argv[1]) == "--demohall-crouch-locomotion")
 		return TestDemoHallCrouchLocomotionContract() ? 0 : 147;
 	if (argc == 2 && std::string(argv[1]) == "--demohall-player-vault")
@@ -12280,6 +15978,8 @@ int main(int argc, char** argv)
 			&& TestMotionMatchingCameraFacingTurnContract()) ? 0 : 110;
 	if (argc == 2 && std::string(argv[1]) == "--animation-editor-preview")
 		return TestAnimationEditorPreviewPolicyContract() ? 0 : 143;
+	if (argc == 2 && std::string(argv[1]) == "--animation-preview-rig-identity")
+		return TestAnimatorRuntimeCompilerContract() ? 0 : 143;
 	if (argc == 2 && std::string(argv[1]) == "--animation-socket-attachment-authoring")
 		return TestAnimationSocketAttachmentAuthoringContract() ? 0 : 154;
 	if (argc == 2 && std::string(argv[1]) == "--procedural-animation")
@@ -12301,12 +16001,15 @@ int main(int argc, char** argv)
 		return TestProjectRetargetOwnedSkeletonAndSkinningContract() ? 0 : 131;
 	if (argc == 2 && std::string(argv[1]) == "--animation-graph-sets")
 		return TestAnimationGraphSetSwitchRuntimeContract() ? 0 : 132;
+	if (argc == 2 && std::string(argv[1]) == "--animation-layer-root-frame")
+		return TestAnimationLayerRootReferenceFrameContract() ? 0 : 139;
 	if (argc == 2 && std::string(argv[1]) == "--animation-graph-sets-integration")
 		return TestAnimatorCanonicalFormatContract()
 			&& TestAnimationProjectAnimatorAssetsCanonicalContract()
 			&& TestAnimationAuthoringBoundaryContract()
 			&& TestAnimatorRuntimeCompilerContract()
 			&& TestAnimationLayerStackRuntimeContract()
+			&& TestAnimationLayerRootReferenceFrameContract()
 			&& TestAnimationGraphSetSwitchRuntimeContract()
 			&& TestAnimationSlotRuntimeContract()
 			&& TestAnimationHotReloadStateTransferContract()
@@ -12317,6 +16020,26 @@ int main(int argc, char** argv)
 		return TestAnimationV2RetargetMotionMatchingSceneContract() ? 0 : 115;
 	if (argc == 2 && std::string(argv[1]) == "--point-shadow-atlas-policy")
 		return TestPointShadowAtlasUpdatePolicy() ? 0 : 128;
+	if (!TestProjectSettingsExplicitSaveContract())
+		return 155;
+	if (!TestSceneMemoryDependencyPlanContract())
+		return 156;
+	if (!TestAuthoringCodecContract())
+		return 157;
+	if (!TestAssetObjectRepositoryContract())
+		return 159;
+	if (!TestAnimationClipMemoryAssetContract())
+		return 165;
+	if (!TestRuntimeConfigurationMemoryBoundaryContract())
+		return 167;
+	if (!TestVegetationMemoryAssetContract())
+		return 160;
+	if (!TestUIAssetMemoryBootstrapContract())
+		return 162;
+	if (!TestAssetWorkingCopyMemoryPublicationContract())
+		return 163;
+	if (!TestGeneratedMaterialMemoryBoundaryContract())
+		return 164;
 	if (!TestPointShadowAtlasUpdatePolicy())
 		return 128;
 	if (!RunNavigationAIContractTests())
@@ -12395,6 +16118,10 @@ int main(int argc, char** argv)
 		return 108;
 	if (!TestGAFDemoHallPlayerAttackContract())
 		return 140;
+	if (!TestDemoHallPlayerThrowContract())
+		return 154;
+	if (!TestProjectileSmokeContract())
+		return 170;
 	if (!TestGAFDemoHallMeleeHitRuntimeContract())
 		return 153;
 	if (!TestDemoHallCrouchLocomotionContract())
@@ -12405,8 +16132,6 @@ int main(int argc, char** argv)
 		return 145;
 	if (!TestGAFPackagingContract())
 		return 103;
-	if (!TestGAFNetworkContract())
-		return 104;
 	if (!TestGAFDebugAndReplayContract())
 		return 105;
 	if (!TestGAFSampleLibraryContract())
@@ -12469,6 +16194,12 @@ int main(int argc, char** argv)
 		return 134;
 	if (!TestLocalVolumetricFogEntityFactoryContract())
 		return 146;
+	if (!TestLocalVolumetricFogFieldPreviewContract())
+		return 157;
+	if (!TestLocalVolumetricFogRuntimePreviewProjectionContract())
+		return 158;
+	if (!TestLocalVolumetricFogFieldDependencyContract())
+		return 146;
 	if (!TestTransformGraphAnchorContract())
 		return 135;
 	if (!TestRuntimeWorldEntityLifetimeContract())
@@ -12529,6 +16260,8 @@ int main(int argc, char** argv)
 		return 55;
 	if (!TestAnimationLayerStackRuntimeContract())
 		return 50;
+	if (!TestAnimationLayerRootReferenceFrameContract())
+		return 139;
 	if (!TestAnimationGraphSetSwitchRuntimeContract())
 		return 132;
 	if (!TestAnimationSlotRuntimeContract())

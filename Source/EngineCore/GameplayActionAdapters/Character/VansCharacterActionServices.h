@@ -20,6 +20,9 @@ namespace Vans
 {
 class VansRuntimeWorld;
 
+const VansActionServiceCapability& VansAnimationActionCapability();
+const VansActionServiceCapability& VansNavigationActionCapability();
+
 class VansAnimationActionService final : public IVansActionService
 {
 public:

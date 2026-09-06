@@ -4,6 +4,7 @@
 
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Vans
@@ -19,6 +20,8 @@ struct VansBuiltInAssetEntry
 class VansBuiltInAssetCatalog
 {
 public:
+	static constexpr std::string_view BaseThemeGuid =
+		"18dcb044-c0d3-4bc6-a868-8b38785b82aa";
 	static const std::vector<VansBuiltInAssetEntry>& Entries();
 	static bool IsReservedRuntimeAlias(const std::string& alias);
 	static bool RegisterAssets(

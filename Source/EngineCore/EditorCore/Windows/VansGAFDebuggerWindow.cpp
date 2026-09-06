@@ -8,6 +8,7 @@
 #include <cctype>
 #include <cstdio>
 #include <iterator>
+#include <nlohmann/json.hpp>
 #include <optional>
 
 namespace VansGraphics
@@ -117,11 +118,11 @@ void VansGAFDebuggerWindow::DrawRuntimeDebugger(
 	m_DebugBreakpoints = editorAPI.ControlGAFDebugger(queryBreakpoints).breakpoints;
 	ImGui::SeparatorText("Breakpoints");
 	const char* breakpointKinds[] = {
-		"Action", "State", "Node", "Event", "Error", "Prediction", "Attribute", "Window"
+		"Action", "State", "Node", "Event", "Error", "Attribute", "Window"
 	};
 	ImGui::SetNextItemWidth(135.0f);
 	if (ImGui::Combo("##breakpoint-kind", &m_DebugBreakpointKind,
-		"Action\0State\0Node\0Event\0Error\0Prediction\0Attribute\0Window\0"))
+		"Action\0State\0Node\0Event\0Error\0Attribute\0Window\0"))
 		m_DebugBreakpointExpression.fill('\0');
 	ImGui::SameLine();
 	if (m_DebugBreakpointKind == static_cast<int>(Vans::EditorAPI::GAFDebugBreakpointKind::State))
@@ -144,18 +145,15 @@ void VansGAFDebuggerWindow::DrawRuntimeDebugger(
 	}
 	else if (m_DebugBreakpointKind == static_cast<int>(Vans::EditorAPI::GAFDebugBreakpointKind::Error))
 	{
-		const char* errors[] = { "DefinitionMissing", "DefinitionInvalid", "NotGranted",
-			"RequirementsFailed", "TargetInvalid", "CostUnavailable", "CooldownActive",
-			"ConcurrencyBlocked", "AuthorityDenied", "ServiceMissing", "CommitFailed",
-			"ExecutionFailed", "Cancelled", "TimedOut", "InternalInvariant", "InvalidState",
-			"ConcurrencyRejected", "ConcurrencyQueueExpired", "BudgetExceeded" };
+		const char* errors[] = { "InvalidDefinition", "Rejected", "Dependency", "Execution",
+			"Timeout", "Cancelled", "Resource", "Budget", "Internal" };
 		int selected = 0;
 		for (int index = 0; index < static_cast<int>(std::size(errors)); ++index)
 			if (m_DebugBreakpointExpression.data() == std::string(errors[index])) selected = index;
 		ImGui::SetNextItemWidth((std::max)(160.0f, ImGui::GetContentRegionAvail().x - 280.0f));
 		if (ImGui::Combo("##breakpoint-expression", &selected,
 			"DefinitionMissing\0DefinitionInvalid\0NotGranted\0RequirementsFailed\0TargetInvalid\0"
-			"CostUnavailable\0CooldownActive\0ConcurrencyBlocked\0AuthorityDenied\0ServiceMissing\0"
+			"CostUnavailable\0CooldownActive\0ConcurrencyBlocked\0ServiceMissing\0"
 			"CommitFailed\0ExecutionFailed\0Cancelled\0TimedOut\0InternalInvariant\0InvalidState\0"
 			"ConcurrencyRejected\0ConcurrencyQueueExpired\0BudgetExceeded\0"))
 			std::snprintf(m_DebugBreakpointExpression.data(), m_DebugBreakpointExpression.size(),
@@ -167,7 +165,7 @@ void VansGAFDebuggerWindow::DrawRuntimeDebugger(
 	else
 	{
 		const char* hints[] = { "Action id", "State", "Node name", "Event name", "ErrorCode",
-			"connection:sequence", "Attribute id", "Window name" };
+			"Attribute id", "Window name" };
 		ImGui::SetNextItemWidth((std::max)(160.0f, ImGui::GetContentRegionAvail().x - 280.0f));
 		ImGui::InputTextWithHint("##breakpoint-expression", hints[m_DebugBreakpointKind],
 			m_DebugBreakpointExpression.data(), m_DebugBreakpointExpression.size());
@@ -384,8 +382,6 @@ void VansGAFDebuggerWindow::DrawRuntimeDebugger(
 		const std::string hostLabel = "Owner " + host.owner + "##" + host.owner;
 		if (!ImGui::CollapsingHeader(hostLabel.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) continue;
 		ImGui::Text("%s   Cues %zu", host.enabled ? "Enabled" : "Disabled", host.activeCueCount);
-		if (host.commitFrozen)
-			ImGui::TextColored(ImVec4(0.95f, 0.30f, 0.28f, 1.0f), "Commit frozen");
 		const auto drawValues = [](const char* label,
 			const std::vector<Vans::EditorAPI::GAFDebugNamedValue>& values)
 		{
@@ -411,8 +407,8 @@ void VansGAFDebuggerWindow::DrawRuntimeDebugger(
 		{
 			const std::string actionLabel = action.actionId + "  [" + action.state + "]##" + action.handle;
 			if (!ImGui::TreeNodeEx(actionLabel.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) continue;
-			ImGui::Text("Handle %s   Time %.3f   Prediction %s",
-				action.handle.c_str(), action.elapsedSeconds, action.predictionKey.c_str());
+			ImGui::Text("Handle %s   Time %.3f   Correlation %s",
+				action.handle.c_str(), action.elapsedSeconds, action.correlationId.c_str());
 			ImGui::Text("Executor %s   End %s   Error %s", action.executor.c_str(),
 				action.endReason.c_str(), action.error.c_str());
 			drawValues("Variables", action.variables);
@@ -430,8 +426,7 @@ void VansGAFDebuggerWindow::DrawRuntimeDebugger(
 			if (!action.resources.empty() && ImGui::TreeNode("Resource Ledger"))
 			{
 				for (const auto& resource : action.resources)
-					ImGui::BulletText("%s %s [%s]%s", resource.type.c_str(), resource.name.c_str(),
-						resource.predictionPolicy.c_str(), resource.undone ? " undone" : "");
+					ImGui::BulletText("%s %s", resource.type.c_str(), resource.name.c_str());
 				ImGui::TreePop();
 			}
 			if (!action.recentEvents.empty() && ImGui::TreeNode("Events"))
@@ -462,13 +457,6 @@ void VansGAFDebuggerWindow::DrawSimulator(
 	if (ImGui::Combo("Mode", &mode, "Can Activate\0Execute\0"))
 		m_SimulationRequest.mode = mode == 0
 			? GAFSimulationMode::CanActivate : GAFSimulationMode::Execute;
-	ImGui::SameLine();
-	ImGui::Checkbox("Authority", &m_SimulationRequest.hasAuthority);
-	ImGui::SameLine();
-	ImGui::Checkbox("Local owner", &m_SimulationRequest.locallyControlled);
-	ImGui::SameLine();
-	ImGui::Checkbox("Predicted", &m_SimulationRequest.predicted);
-
 	if (ImGui::BeginTable("##simulation-entities", 4,
 		ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_BordersInnerV))
 	{
@@ -557,20 +545,20 @@ void VansGAFDebuggerWindow::DrawSimulator(
 	}
 
 	ImGui::SeparatorText("Initial State");
-	for (std::size_t index = 0; index < m_SimulationRequest.initialTags.size(); ++index)
+	for (std::size_t index = 0; index < m_SimulationRequest.initializers.size(); ++index)
 	{
 		ImGui::PushID(static_cast<int>(index));
-		ImGui::Text("%s x%u", m_SimulationRequest.initialTags[index].name.c_str(),
-			m_SimulationRequest.initialTags[index].count);
+		ImGui::TextWrapped("%s %s", m_SimulationRequest.initializers[index].type.c_str(),
+			m_SimulationRequest.initializers[index].inputsJson.c_str());
 		ImGui::SameLine();
 		if (ImGui::SmallButton("x"))
 		{
-			m_SimulationRequest.initialTags.erase(
-				m_SimulationRequest.initialTags.begin() + static_cast<std::ptrdiff_t>(index));
+			m_SimulationRequest.initializers.erase(
+				m_SimulationRequest.initializers.begin() + static_cast<std::ptrdiff_t>(index));
 			ImGui::PopID();
 			break;
 		}
-		HelpMarker("Remove Tag");
+		HelpMarker("Remove initializer");
 		ImGui::PopID();
 	}
 	ImGui::SetNextItemWidth((std::max)(180.0f, ImGui::GetContentRegionAvail().x - 190.0f));
@@ -582,25 +570,11 @@ void VansGAFDebuggerWindow::DrawSimulator(
 	ImGui::SameLine();
 	if (ImGui::Button("Add Tag") && m_SimulationNewTag[0] != '\0' && m_SimulationNewTagCount > 0)
 	{
-		m_SimulationRequest.initialTags.push_back({ m_SimulationNewTag.data(),
-			m_SimulationNewTagCount });
+		nlohmann::ordered_json inputs{
+			{ "tag", m_SimulationNewTag.data() }, { "count", m_SimulationNewTagCount } };
+		m_SimulationRequest.initializers.push_back({
+			"Gameplay.Tags.Initialize", inputs.dump() });
 		m_SimulationNewTag.fill('\0');
-	}
-	for (std::size_t index = 0; index < m_SimulationRequest.initialAttributes.size(); ++index)
-	{
-		ImGui::PushID(static_cast<int>(index + 10000));
-		ImGui::Text("%s = %.6g", m_SimulationRequest.initialAttributes[index].name.c_str(),
-			m_SimulationRequest.initialAttributes[index].value);
-		ImGui::SameLine();
-		if (ImGui::SmallButton("x"))
-		{
-			m_SimulationRequest.initialAttributes.erase(
-				m_SimulationRequest.initialAttributes.begin() + static_cast<std::ptrdiff_t>(index));
-			ImGui::PopID();
-			break;
-		}
-		HelpMarker("Remove Attribute");
-		ImGui::PopID();
 	}
 	ImGui::SetNextItemWidth((std::max)(180.0f, ImGui::GetContentRegionAvail().x - 240.0f));
 	ImGui::InputTextWithHint("##new-simulation-attribute", "Attribute",
@@ -612,8 +586,11 @@ void VansGAFDebuggerWindow::DrawSimulator(
 	ImGui::SameLine();
 	if (ImGui::Button("Add Attribute") && m_SimulationNewAttribute[0] != '\0')
 	{
-		m_SimulationRequest.initialAttributes.push_back({
-			m_SimulationNewAttribute.data(), m_SimulationNewAttributeValue });
+		nlohmann::ordered_json inputs{
+			{ "attribute", m_SimulationNewAttribute.data() },
+			{ "value", m_SimulationNewAttributeValue } };
+		m_SimulationRequest.initializers.push_back({
+			"Gameplay.Attributes.Initialize", inputs.dump() });
 		m_SimulationNewAttribute.fill('\0');
 	}
 	ImGui::InputTextMultiline("Payload", m_SimulationPayload.data(), m_SimulationPayload.size(),
@@ -702,4 +679,3 @@ void VansGAFDebuggerWindow::DrawSimulator(
 	}
 }
 }
-

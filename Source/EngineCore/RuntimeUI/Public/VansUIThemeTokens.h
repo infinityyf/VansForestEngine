@@ -16,6 +16,6 @@ namespace VansRuntime
 		VansUIVariantMap font;
 		VansUIVariantMap spacing;
 		VansUIVariantMap motion;
-		std::string sourceConfigPath;
+		std::string sourceAssetGuid;
 	};
 }

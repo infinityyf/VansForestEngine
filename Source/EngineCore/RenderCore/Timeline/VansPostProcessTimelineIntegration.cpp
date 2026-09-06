@@ -1,13 +1,11 @@
 #include "VansPostProcessTimelineIntegration.h"
 
 #include "../VansPostProcessProfile.h"
-#include "../Storage/VansPostProcessProfileStorage.h"
-#include "../../AssetCore/VansAssetResolver.h"
+#include "../../AssetCore/VansAssetObjectRepository.h"
 #include "../../TimelineRuntime/VansTimelineEvaluator.h"
 #include "../../TimelineRuntime/VansTimelineModuleApplierState.h"
 
 #include <algorithm>
-#include <unordered_map>
 
 namespace VansGraphics
 {
@@ -92,8 +90,10 @@ struct PostProcessRestoreState
 class FadeTimelineApplier final : public Vans::IVansTimelineOutputApplier
 {
 public:
-	FadeTimelineApplier(VansPostProcessProfile& profile, std::shared_ptr<Vans::VansAssetResolver> resolver)
-		: m_Profile(profile), m_Resolver(std::move(resolver)) {}
+	FadeTimelineApplier(
+		VansPostProcessProfile& profile,
+		const Vans::VansAssetObjectRepository& repository)
+		: m_Profile(profile), m_Repository(repository) {}
 	Vans::VansTimelineOutputTypeId OutputType() const override
 	{
 		return Vans::VansMakeStableId<Vans::VansTimelineOutputTypeTag>(
@@ -138,18 +138,15 @@ public:
 		{
 			if (context.section->assetGuid.empty())
 				return { Vans::VansTimelineApplyStatus::Failed, {}, "PostProcess mode requires a profile asset" };
-			const Vans::VansResolvedAsset asset = m_Resolver->Resolve(
-				context.section->assetGuid, Vans::VansAssetType::PostProcessProfile);
-			if (!asset.valid) return { Vans::VansTimelineApplyStatus::Failed, {}, asset.error };
-			auto found = m_Profiles.find(context.section->assetGuid);
-			if (found == m_Profiles.end())
-			{
-				VansPostProcessProfile loaded; std::string loadError;
-				if (!VansPostProcessProfileStorage::Load(asset.readPath, loaded, loadError))
-					return { Vans::VansTimelineApplyStatus::Failed, {}, loadError };
-				found = m_Profiles.emplace(context.section->assetGuid, std::move(loaded)).first;
-			}
-			m_Profile = BlendProfile(state->previous, found->second, value);
+			Vans::VansAssetGuid guid;
+			if (!Vans::VansAssetGuid::TryParse(context.section->assetGuid, guid))
+				return { Vans::VansTimelineApplyStatus::Failed, {}, "PostProcess profile GUID is invalid" };
+			const std::shared_ptr<const VansPostProcessProfile> target =
+				m_Repository.ResolveLatest<VansPostProcessProfile>(guid);
+			if (!target)
+				return { Vans::VansTimelineApplyStatus::Failed, {},
+					"PostProcess profile memory snapshot is unavailable" };
+			m_Profile = BlendProfile(state->previous, *target, value);
 		}
 		const Vans::VansTimelineResourceId resource{ Vans::VansStableHash64("Render.PostProcess"),
 			static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(&m_Profile)) };
@@ -167,19 +164,17 @@ public:
 	void ReleaseAll() override { m_State.Clear(); }
 private:
 	VansPostProcessProfile& m_Profile;
-	std::shared_ptr<Vans::VansAssetResolver> m_Resolver;
-	std::unordered_map<std::string, VansPostProcessProfile> m_Profiles;
+	const Vans::VansAssetObjectRepository& m_Repository;
 	Vans::VansTimelineModuleApplierState<PostProcessRestoreState> m_State;
 };
 }
 
 bool VansRegisterPostProcessTimelineIntegration(
 	VansPostProcessProfile& profile,
-	std::shared_ptr<Vans::VansAssetResolver> resolver,
+	const Vans::VansAssetObjectRepository& repository,
 	Vans::VansTimelineApplierRegistry& registry,
 	std::string& error)
 {
-	if (!resolver) { error = "PostProcess Timeline integration requires an asset resolver"; return false; }
-	return registry.Register(std::make_shared<FadeTimelineApplier>(profile, std::move(resolver)), error);
+	return registry.Register(std::make_shared<FadeTimelineApplier>(profile, repository), error);
 }
 }

@@ -4,24 +4,19 @@
 #include "../Common/CameraData.glsl"
 #include "AtmosphereCommon.glsl"
 #include "AtmosphereViewCommon.glsl"
+#include "NearMediaDepthCommon.glsl"
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
-layout(set = 1, binding = 1) uniform sampler3D localMediaInjectionInput;
+layout(set = 1, binding = 12, rgba16f) uniform readonly image3D localMediaInjectionInput;
 layout(set = 1, binding = 2) uniform LocalMediaParams
 {
     vec4 depthRangeAndGrid;
     vec4 sliceHistoryAndVolumeCount;
     vec4 localFogTileGridAndLimits;
+    vec4 lightTransmittance;
 } uLocal;
 layout(set = 1, binding = 5, rgba16f) uniform writeonly image3D localMediaScatteringOutput;
 layout(set = 1, binding = 6, rgba16f) uniform writeonly image3D localMediaOpticalDepthOutput;
-
-float LocalSliceDistance(float sliceCoordinate, float nearDistance,
-    float farDistance, float sliceCount, float slicePower)
-{
-    float normalized = clamp(sliceCoordinate / max(sliceCount, 1.0), 0.0, 1.0);
-    return mix(nearDistance, farDistance, pow(normalized, slicePower));
-}
 
 void main()
 {
@@ -35,22 +30,28 @@ void main()
     vec3 rayDirection = AtmosphereWorldDirectionFromUv(uv);
     for (int slice = 0; slice < gridSize.z; ++slice)
     {
-        vec4 injected = texelFetch(localMediaInjectionInput,
-            ivec3(pixel, slice), 0);
-        float nearDistance = uLocal.depthRangeAndGrid.x;
-        float farDistance = uLocal.depthRangeAndGrid.y;
+        vec4 injected = imageLoad(localMediaInjectionInput,
+            ivec3(pixel, slice));
+        float nearViewDepth = uLocal.depthRangeAndGrid.x;
+        float farViewDepth = uLocal.depthRangeAndGrid.y;
         float slicePower = uLocal.sliceHistoryAndVolumeCount.x;
-        float sliceStart = LocalSliceDistance(float(slice), nearDistance,
-            farDistance, float(gridSize.z), slicePower);
-        float sliceEnd = LocalSliceDistance(float(slice + 1), nearDistance,
-            farDistance, float(gridSize.z), slicePower);
-        float thickness = max(sliceEnd - sliceStart, 0.0);
-		float sampleDistance = 0.5 * (sliceStart + sliceEnd);
-		vec3 positionRelativeToCamera = rayDirection * sampleDistance;
+        float sliceStartViewDepth = NearMediaSliceViewDepth(float(slice),
+            nearViewDepth, farViewDepth, float(gridSize.z), slicePower);
+        float sliceEndViewDepth = NearMediaSliceViewDepth(float(slice + 1),
+            nearViewDepth, farViewDepth, float(gridSize.z), slicePower);
+        float sliceStartDistance = NearMediaRayDistanceFromViewDepth(
+            rayDirection, sliceStartViewDepth);
+        float sliceEndDistance = NearMediaRayDistanceFromViewDepth(
+            rayDirection, sliceEndViewDepth);
+        float thickness = max(sliceEndDistance - sliceStartDistance, 0.0);
+        float sampleDistance = 0.5 *
+            (sliceStartDistance + sliceEndDistance);
+        vec3 positionRelativeToCamera = rayDirection * sampleDistance;
 		if (thickness > 0.0)
         {
-			AtmosphereMedium atmosphere = EvaluateNearMediaSegmentMedium(
-				positionRelativeToCamera, rayDirection, sliceStart, sliceEnd);
+            AtmosphereMedium atmosphere = EvaluateNearMediaSegmentMedium(
+                positionRelativeToCamera, rayDirection,
+                sliceStartDistance, sliceEndDistance);
 			ParticipatingMediaSample medium = EmptyParticipatingMediaSample();
 			AddParticipatingMediaSample(medium,
 				EvaluateAtmosphereScatteringSource(

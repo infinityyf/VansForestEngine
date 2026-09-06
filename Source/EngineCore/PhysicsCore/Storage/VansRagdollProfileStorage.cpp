@@ -15,7 +15,7 @@ bool VansRagdollProfileStorage::Load(
     RagdollJson root;
     if (!Vans::VansJsonFileStorage::Read(filePath, root, error))
     {
-        error = "Cannot read .ragdoll file " + filePath.string() + ": " + error;
+        error = "Cannot read .vragdoll file " + filePath.string() + ": " + error;
         return false;
     }
 
@@ -26,5 +26,15 @@ bool VansRagdollProfileStorage::Load(
     }
 
     return true;
+}
+
+bool VansRagdollProfileStorage::SaveAtomic(
+    const std::filesystem::path& filePath,
+    const RagdollProfile& profile,
+    std::string& error)
+{
+    RagdollJson root;
+    return VansRagdollProfileJsonCodec::Encode(profile, root, error)
+        && Vans::VansJsonFileStorage::WriteAtomic(filePath, root, error);
 }
 }

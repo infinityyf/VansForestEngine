@@ -13,7 +13,7 @@ namespace VansRuntime
 			diagnostics.push_back("UI screen guid must not be empty.");
 		if (config.name.empty())
 			diagnostics.push_back("UI screen name must not be empty.");
-		if (config.xamlPath.empty())
+		if (config.xamlAssetGuid.empty())
 			diagnostics.push_back("UI screen xaml path must not be empty.");
 		for (const VansUIScreenEventBindingConfig& event : config.events)
 		{
@@ -22,13 +22,13 @@ namespace VansRuntime
 			if (!event.eventName.empty() && event.eventName != "Click")
 				diagnostics.push_back("UI event binding currently supports Click only: " + event.eventName);
 		}
-		for (const std::string& theme : config.themes)
+		for (const std::string& theme : config.themeAssetGuids)
 			if (theme.empty())
 				diagnostics.push_back("UI screen theme path must not be empty.");
-		for (const std::string& tokens : config.tokens)
+		for (const std::string& tokens : config.tokenAssetGuids)
 			if (tokens.empty())
 				diagnostics.push_back("UI screen token path must not be empty.");
-		for (const std::string& localization : config.localization)
+		for (const std::string& localization : config.localizationAssetGuids)
 			if (localization.empty())
 				diagnostics.push_back("UI screen localization path must not be empty.");
 		for (const std::string& dependency : config.dependencies)
@@ -72,7 +72,7 @@ namespace VansRuntime
 			diagnostics.push_back("UI component guid must not be empty.");
 		if (config.name.empty())
 			diagnostics.push_back("UI component name must not be empty.");
-		if (config.xamlPath.empty())
+		if (config.xamlAssetGuid.empty())
 			diagnostics.push_back("UI component xaml path must not be empty.");
 
 		for (const VansUIComponentPropertyConfig& property : config.publicProperties)

@@ -81,7 +81,6 @@ struct VansEffectDefinition
 {
 	VansEffectId id;
 	std::string name;
-	std::uint32_t definitionVersion = 1;
 	VansEffectDurationPolicy durationPolicy = VansEffectDurationPolicy::Instant;
 	double durationSeconds = 0.0;
 	double periodSeconds = 0.0;
@@ -138,7 +137,7 @@ struct VansActiveEffectSnapshot
 	double remainingSeconds = 0.0;
 	double periodRemainingSeconds = 0.0;
 	std::uint32_t stacks = 1;
-	VansPredictionKey prediction;
+	std::uint64_t correlationId = 0;
 };
 
 struct VansEffectApplicationResult

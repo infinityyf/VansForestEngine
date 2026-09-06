@@ -1,6 +1,7 @@
 #include "VansAssetDocument.h"
 
 #include "Serialization/VansSerializedValueJsonAdapter.h"
+#include "Serialization/VansJsonDocumentCodec.h"
 #include "Storage/VansFileStorage.h"
 #include "Storage/VansJsonFileStorage.h"
 #include "VansAssetDocumentJson.h"
@@ -11,6 +12,34 @@
 
 namespace Vans
 {
+namespace
+{
+VansAssetFileFingerprint FingerprintLoadedAssetBytes(
+    const std::filesystem::path& path,
+    const std::string& bytes,
+    std::string& error)
+{
+    VansAssetFileFingerprint fingerprint;
+    std::error_code ec;
+    fingerprint.lastWriteTime = std::filesystem::last_write_time(path, ec);
+    if (ec)
+    {
+        error = ec.message();
+        return fingerprint;
+    }
+    fingerprint.exists = true;
+    fingerprint.size = bytes.size();
+    std::uint64_t hash = 14695981039346656037ull;
+    for (const unsigned char value : bytes)
+    {
+        hash ^= value;
+        hash *= 1099511628211ull;
+    }
+    fingerprint.contentHash = hash;
+    return fingerprint;
+}
+}
+
 VansAssetDocument::VansAssetDocument()
     : m_Root(std::make_unique<VansSerializedValue>(VansSerializedValue::Object({})))
 {
@@ -25,6 +54,8 @@ VansSerializedValue VansAssetDocument::SerializedRootSnapshot() const
 
 VansAssetFileFingerprint VansAssetDocument::Fingerprint(const std::filesystem::path& path, std::string& error)
 {
+	VansScopedIOContext ioContext(
+		VansIODomain::Authoring, "AssetDocument.Fingerprint", false);
     VansAssetFileFingerprint fingerprint;
     std::error_code ec;
     if (!std::filesystem::exists(path, ec))
@@ -35,32 +66,10 @@ VansAssetFileFingerprint VansAssetDocument::Fingerprint(const std::filesystem::p
         return fingerprint;
     }
 
-    fingerprint.exists = true;
-    fingerprint.size = std::filesystem::file_size(path, ec);
-    if (ec)
-    {
-        error = ec.message();
-        return {};
-    }
-    fingerprint.lastWriteTime = std::filesystem::last_write_time(path, ec);
-    if (ec)
-    {
-        error = ec.message();
-        return {};
-    }
-
     std::string bytes;
     if (!VansFileStorage::ReadAllBytes(path, bytes, error))
         return {};
-
-    std::uint64_t hash = 14695981039346656037ull;
-    for (const unsigned char value : bytes)
-    {
-        hash ^= value;
-        hash *= 1099511628211ull;
-    }
-    fingerprint.contentHash = hash;
-    return fingerprint;
+	return FingerprintLoadedAssetBytes(path, bytes, error);
 }
 
 void VansAssetDocument::Reset()
@@ -76,11 +85,16 @@ void VansAssetDocument::Reset()
 
 bool VansAssetDocument::Load(const std::filesystem::path& path, std::string& error)
 {
+	VansScopedIOContext ioContext(
+		VansIODomain::Authoring, "AssetDocument.Load", false);
     Reset();
     try
     {
+		std::string bytes;
+		if (!VansFileStorage::ReadAllBytes(path, bytes, error))
+			return false;
         AssetDocumentJson root;
-        if (!VansJsonFileStorage::Read(path, root, error))
+		if (!VansJsonDocumentCodec::Parse(bytes, root, error))
             return false;
         if (!root.is_object())
         {
@@ -89,7 +103,7 @@ bool VansAssetDocument::Load(const std::filesystem::path& path, std::string& err
         }
         *m_Root = DecodeSerializedValueJson(root);
         m_Path = std::filesystem::absolute(path).lexically_normal();
-        m_LoadedFingerprint = Fingerprint(m_Path, error);
+		m_LoadedFingerprint = FingerprintLoadedAssetBytes(m_Path, bytes, error);
         if (!m_LoadedFingerprint.exists)
             return false;
         m_Loaded = true;
@@ -103,6 +117,28 @@ bool VansAssetDocument::Load(const std::filesystem::path& path, std::string& err
         error = exception.what();
         return false;
     }
+}
+
+bool VansAssetDocument::InitializeNew(
+	const std::filesystem::path& path,
+	VansSerializedValue root,
+	std::string& error)
+{
+	error.clear();
+	Reset();
+	if (path.empty() || root.kind != VansSerializedValue::Kind::Object)
+	{
+		error = "New asset document requires an object root and a target path";
+		return false;
+	}
+	m_Path = std::filesystem::absolute(path).lexically_normal();
+	*m_Root = std::move(root);
+	m_LoadedFingerprint = {};
+	m_Loaded = true;
+	m_CurrentStateId = 2;
+	m_SavedStateId = 1;
+	m_NextStateId = 3;
+	return true;
 }
 
 VansAssetDocumentStateId VansAssetDocument::AllocateStateId()
@@ -131,6 +167,8 @@ void VansAssetDocument::RestoreEditedSerializedRoot(VansSerializedValue root, Va
 
 bool VansAssetDocument::StageSave(VansAssetDocumentSaveStage& stage, std::string& error) const
 {
+	VansScopedIOContext ioContext(
+		VansIODomain::Authoring, "AssetDocument.StageSave", true);
     stage = {};
     if (!m_Loaded || !IsDirty()) return true;
     const VansAssetFileFingerprint currentFingerprint = Fingerprint(m_Path, error);
@@ -158,6 +196,16 @@ bool VansAssetDocument::StageSave(VansAssetDocumentSaveStage& stage, std::string
 
 bool VansAssetDocument::AdoptStagedSave(const VansAssetDocumentSaveStage& stage, std::string& error)
 {
+	if (!ObservePublishedSave(stage, error))
+		return false;
+	AdoptObservedSave(stage);
+	return true;
+}
+
+bool VansAssetDocument::ObservePublishedSave(
+	const VansAssetDocumentSaveStage& stage,
+	std::string& error)
+{
     if (!m_Loaded)
         return true;
     if (!stage.targetPath.empty() && stage.targetPath != m_Path)
@@ -173,7 +221,12 @@ bool VansAssetDocument::AdoptStagedSave(const VansAssetDocumentSaveStage& stage,
         error = "Saved asset document is missing: " + m_Path.string();
         return false;
     }
-    m_SavedStateId = stage.stateId != 0 ? stage.stateId : m_CurrentStateId;
     return true;
+}
+
+void VansAssetDocument::AdoptObservedSave(const VansAssetDocumentSaveStage& stage)
+{
+	if (!m_Loaded) return;
+	m_SavedStateId = stage.stateId != 0 ? stage.stateId : m_CurrentStateId;
 }
 }

@@ -72,14 +72,14 @@ void VansEntityCommandBuffer::AddClothComponent(
 	VansEntityHandle entity,
 	std::string stableGuid,
 	VansEngine::VansClothNode* clothNode,
-	std::string profilePath,
+	std::string profileAssetGuid,
 	bool enabled)
 {
 	VansEntityCommand command;
 	command.type = VansEntityCommandType::AddClothComponent;
 	command.entity = entity;
 	command.clothComponent.clothNode = clothNode;
-	command.clothComponent.profilePath = std::move(profilePath);
+	command.clothComponent.profileAssetGuid = std::move(profileAssetGuid);
 	command.componentStableGuid = std::move(stableGuid);
 	command.boolValue = enabled;
 	m_Commands.push_back(std::move(command));
@@ -139,7 +139,7 @@ void VansEntityCommandBuffer::AddRagdollComponent(
 	std::string stableGuid,
 	VansGraphics::VansAnimationNode* animationNode,
 	std::uint8_t initialDriveMode,
-	std::string profilePath,
+	std::string profileAssetGuid,
 	std::string profileName,
 	int configuredBodyCount,
 	int configuredJointCount,
@@ -150,7 +150,7 @@ void VansEntityCommandBuffer::AddRagdollComponent(
 	command.entity = entity;
 	command.ragdollComponent.animationNode = animationNode;
 	command.ragdollComponent.initialDriveMode = initialDriveMode;
-	command.ragdollComponent.profilePath = std::move(profilePath);
+	command.ragdollComponent.profileAssetGuid = std::move(profileAssetGuid);
 	command.ragdollComponent.profileName = std::move(profileName);
 	command.ragdollComponent.configuredBodyCount = configuredBodyCount;
 	command.ragdollComponent.configuredJointCount = configuredJointCount;

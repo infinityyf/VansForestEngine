@@ -88,7 +88,7 @@ struct VansRuntimePhysicsComponent
 struct VansRuntimeClothComponent
 {
 	VansEngine::VansClothNode* clothNode = nullptr;
-	std::string profilePath;
+	std::string profileAssetGuid;
 };
 
 struct VansRuntimeCharacterControllerComponent
@@ -112,7 +112,7 @@ struct VansRuntimeRagdollComponent
 {
 	VansGraphics::VansAnimationNode* animationNode = nullptr;
 	std::uint8_t initialDriveMode = 0;
-	std::string profilePath;
+	std::string profileAssetGuid;
 	std::string profileName;
 	int configuredBodyCount = 0;
 	int configuredJointCount = 0;
@@ -151,8 +151,8 @@ struct VansRuntimeAudioReverbZoneComponent
 
 struct VansRuntimeUIComponent
 {
-	std::vector<std::string> autoOpenScreens;
-	std::vector<std::string> preloadScreens;
+	std::vector<std::string> autoOpenScreenAssetGuids;
+	std::vector<std::string> preloadScreenAssetGuids;
 	std::vector<std::uint64_t> openScreens;
 };
 

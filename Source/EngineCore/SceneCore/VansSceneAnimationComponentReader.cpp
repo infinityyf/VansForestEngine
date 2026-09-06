@@ -109,13 +109,9 @@ std::string ReadAssetReferenceField(
 	const std::string& fallback)
 {
 	const VansSerializedValue* field = FindObjectField(object, key);
-	if (!field)
-		return fallback;
-	if (field->kind == VansSerializedValue::Kind::String)
-		return field->stringValue;
-	if (field->kind == VansSerializedValue::Kind::Object)
-		return ReadSerializedStringField(*field, "guid", fallback);
-	return fallback;
+	return field && field->kind == VansSerializedValue::Kind::Object
+		? ReadSerializedStringField(*field, "guid", fallback)
+		: fallback;
 }
 
 void ReadIntArray(const VansSerializedValue& object, const char* key, std::vector<int>& out)
@@ -249,9 +245,9 @@ VansSceneAnimationRetargetConfig DecodeRetarget(const VansSerializedValue& retar
 {
 	VansSceneAnimationRetargetConfig config;
 	config.enabled = ReadBoolField(retargetJson, "enabled", false);
-	config.profile = ReadSerializedStringField(retargetJson, "profile", "");
-	config.sourceModel = ReadAssetReferenceField(retargetJson, "source_model", "");
-	config.sourceAnimator = ReadAssetReferenceField(retargetJson, "source_animator", "");
+	config.profileGuid = ReadAssetReferenceField(retargetJson, "profile", "");
+	config.sourceModelGuid = ReadAssetReferenceField(retargetJson, "source_model", "");
+	config.sourceAnimatorGuid = ReadAssetReferenceField(retargetJson, "source_animator", "");
 	config.debugDraw = ReadBoolField(retargetJson, "debug_draw", false);
 	return config;
 }
@@ -588,7 +584,7 @@ bool DecodeMotionMatching(const VansSerializedValue& mmJson, MotionMatchingSetti
 VansSceneRagdollComponentConfig DecodeRagdollConfig(const VansSerializedValue& ragdollJson)
 {
 	VansSceneRagdollComponentConfig config;
-	config.profile = ReadAssetReferenceField(ragdollJson, "profile", "");
+	config.profileGuid = ReadAssetReferenceField(ragdollJson, "profile", "");
 	config.driveMode = ReadSerializedStringField(ragdollJson, "drive_mode", "animation");
 	config.blendWeight = ReadFloatField(ragdollJson, "blend_weight", 0.0f);
 	return config;
@@ -650,8 +646,8 @@ VansSceneAnimationComponentConfig VansSceneAnimationComponentReader::ReadAnimati
 	config.valid = true;
 	config.enabled = ReadBoolField(animationNode, "enabled", true);
 	config.meshGroup = ReadSerializedStringField(animationNode, "mesh_group", "");
-	config.animator = ReadAssetReferenceField(animationNode, "animator", "");
-	config.rig = ReadAssetReferenceField(animationNode, "rig", "");
+	config.animatorGuid = ReadAssetReferenceField(animationNode, "animator", "");
+	config.rigGuid = ReadAssetReferenceField(animationNode, "rig", "");
 	config.externClips = ReadSerializedStringField(animationNode, "extern_clips", "");
 	config.rootMotion = ReadBoolField(animationNode, "root_motion", false);
 	config.autoPlay = ReadBoolField(animationNode, "auto_play", true);

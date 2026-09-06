@@ -2,6 +2,7 @@
 #include "VansSceneDocument.h"
 #include "../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 #include "../AssetCore/Storage/VansStagedFileTransaction.h"
+#include "../AssetCore/Storage/VansFileStorage.h"
 #include "Storage/VansSceneFileStorage.h"
 #include "VansSceneDocumentLoader.h"
 #include "VansSceneSchema.h"
@@ -29,6 +30,8 @@ SceneSaveResult VansSceneSaveService::SaveSnapshot(VansSceneDocument& document,
     const SceneDocumentSnapshot& snapshot, const std::filesystem::path& rawTarget,
     bool checkSourceFingerprint, bool allowOverwrite) const
 {
+	VansScopedIOContext ioContext(
+		VansIODomain::Authoring, "SceneDocument.Save", true);
     const SceneJson snapshotRoot =
         EncodeSerializedValueJson<SceneJson>(snapshot.SerializedRootSnapshot());
     if (!document.IsHealthy() || !snapshotRoot.is_object() ||

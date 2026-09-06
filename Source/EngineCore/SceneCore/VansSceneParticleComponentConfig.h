@@ -6,7 +6,7 @@ namespace Vans
 {
 struct VansSceneParticleComponentConfig
 {
-	std::string assetPath;
+	std::string assetGuid;
 	bool playOnAwake = true;
 };
 }

@@ -194,8 +194,10 @@ bool VansGameplayEffectService::ResolveMagnitude(
 		break;
 	case VansEffectMagnitudeSource::ContextPayload:
 	{
-		const VansSerializedValue* payload =
-			FindSerializedPointer(spec.context.payload, modifier.contextPayloadPath);
+		const VansSerializedValue* contextPayload =
+			spec.context.Serialized(VansActionContextSlots::Payload);
+		const VansSerializedValue* payload = contextPayload
+			? FindSerializedPointer(*contextPayload, modifier.contextPayloadPath) : nullptr;
 		if (!payload || (payload->kind != VansSerializedValue::Kind::Int &&
 			payload->kind != VansSerializedValue::Kind::Float))
 		{
@@ -207,7 +209,8 @@ bool VansGameplayEffectService::ResolveMagnitude(
 	}
 	case VansEffectMagnitudeSource::TargetData:
 	{
-		const VansTargetDataHandle handle = spec.targetData ? spec.targetData : spec.context.targetData;
+		const VansTargetDataHandle handle = spec.targetData ? spec.targetData :
+			spec.context.TargetData(VansActionContextSlots::TargetData);
 		const VansTargetData* data = m_TargetData ? m_TargetData->Resolve(handle) : nullptr;
 		if (!data)
 		{
@@ -308,13 +311,13 @@ VansEffectApplicationResult VansGameplayEffectService::Apply(const VansEffectSpe
 	if (!spec.definition || !ValidateEffectDefinition(*spec.definition, error) ||
 		!m_Attributes || !m_Tags || spec.source == 0 || !std::isfinite(spec.level))
 	{
-		result.error = VansActionError::DefinitionInvalid;
+		result.error = VansActionError::InvalidDefinition;
 		result.message = error.empty() ? "Effect service or spec is invalid" : std::move(error);
 		return result;
 	}
 	if (!m_Tags->Matches(spec.definition->requirements))
 	{
-		result.error = VansActionError::RequirementsFailed;
+		result.error = VansActionError::Rejected;
 		result.message = "Effect requirements failed";
 		return result;
 	}
@@ -322,14 +325,14 @@ VansEffectApplicationResult VansGameplayEffectService::Apply(const VansEffectSpe
 		!spec.definition->immunity.any.empty() || !spec.definition->immunity.none.empty();
 	if (hasImmunityQuery && m_Tags->Matches(spec.definition->immunity))
 	{
-		result.error = VansActionError::RequirementsFailed;
+		result.error = VansActionError::Rejected;
 		result.message = "Effect was blocked by immunity";
 		return result;
 	}
 	VansEffectSpec prepared;
 	if (!PrepareSpec(spec, prepared, result.message))
 	{
-		result.error = VansActionError::DefinitionInvalid;
+		result.error = VansActionError::InvalidDefinition;
 		return result;
 	}
 	if (prepared.definition->durationPolicy == VansEffectDurationPolicy::Instant)
@@ -337,7 +340,7 @@ VansEffectApplicationResult VansGameplayEffectService::Apply(const VansEffectSpe
 		const std::vector<VansAttributeSnapshot> snapshot = m_Attributes->Capture();
 		if (!ApplyInstantModifiers(prepared, 1, result.message))
 		{
-			result.error = VansActionError::CommitFailed;
+			result.error = VansActionError::Execution;
 			return result;
 		}
 		ActiveEffect transient;
@@ -347,7 +350,7 @@ VansEffectApplicationResult VansGameplayEffectService::Apply(const VansEffectSpe
 		if (!EmitExecuteCues(prepared.definition->executeCues, transient, result.message))
 		{
 			m_Attributes->Restore(snapshot);
-			result.error = VansActionError::ServiceMissing;
+			result.error = VansActionError::Dependency;
 			return result;
 		}
 		return result;
@@ -358,7 +361,7 @@ VansEffectApplicationResult VansGameplayEffectService::Apply(const VansEffectSpe
 		ActiveEffect* active = m_Active.Resolve(existing.value);
 		if (!active)
 		{
-			result.error = VansActionError::InternalInvariant;
+			result.error = VansActionError::Internal;
 			result.message = "Effect stack handle became stale";
 			return result;
 		}
@@ -370,7 +373,7 @@ VansEffectApplicationResult VansGameplayEffectService::Apply(const VansEffectSpe
 		{
 			if (prepared.definition->overflowPolicy == VansEffectOverflowPolicy::Reject)
 			{
-				result.error = VansActionError::ConcurrencyBlocked;
+				result.error = VansActionError::Rejected;
 				result.message = "Effect stack is full";
 				return result;
 			}
@@ -399,7 +402,7 @@ VansEffectApplicationResult VansGameplayEffectService::Apply(const VansEffectSpe
 			active->periodRemainingSeconds = previousPeriod;
 			std::string ignored;
 			RebuildStackResources(existing, *active, ignored);
-			result.error = VansActionError::CommitFailed;
+			result.error = VansActionError::Execution;
 			return result;
 		}
 		result.active = existing;
@@ -408,7 +411,7 @@ VansEffectApplicationResult VansGameplayEffectService::Apply(const VansEffectSpe
 	}
 	if (m_MaximumActiveEffects == 0 || m_Active.ActiveCount() >= m_MaximumActiveEffects)
 	{
-		result.error = VansActionError::BudgetExceeded;
+		result.error = VansActionError::Budget;
 		result.message = "Active Effect budget exceeded";
 		return result;
 	}
@@ -426,7 +429,7 @@ VansEffectApplicationResult VansGameplayEffectService::Apply(const VansEffectSpe
 	{
 		ReleaseResources(*stored);
 		m_Active.Release(handle.value);
-		result.error = VansActionError::CommitFailed;
+		result.error = VansActionError::Execution;
 		return result;
 	}
 	if (prepared.definition->executePeriodicOnApply && prepared.definition->periodSeconds > 0.0 &&
@@ -434,7 +437,7 @@ VansEffectApplicationResult VansGameplayEffectService::Apply(const VansEffectSpe
 	{
 		ReleaseResources(*stored);
 		m_Active.Release(handle.value);
-		result.error = VansActionError::CommitFailed;
+		result.error = VansActionError::Execution;
 		return result;
 	}
 	result.active = handle;
@@ -577,7 +580,7 @@ std::vector<VansActiveEffectSnapshot> VansGameplayEffectService::Snapshot() cons
 	{
 		result.push_back({ { handle }, active.spec.definition->id, active.spec.source,
 			active.remainingSeconds, active.periodRemainingSeconds, active.stacks,
-			active.spec.context.predictionKey });
+			active.spec.context.correlationId });
 	});
 	std::sort(result.begin(), result.end(), [](const auto& left, const auto& right)
 	{
@@ -600,8 +603,7 @@ VansActiveEffectHandle VansGameplayEffectService::FindStack(const VansEffectSpec
 	if (spec.definition->stackingPolicy == VansEffectStackingPolicy::None) return result;
 	m_Active.ForEach([&](VansGenerationHandle handle, const ActiveEffect& active)
 	{
-		if (result || active.spec.definition->id != spec.definition->id ||
-			active.spec.definition->definitionVersion != spec.definition->definitionVersion) return;
+		if (result || active.spec.definition->id != spec.definition->id) return;
 		if (spec.definition->stackingPolicy == VansEffectStackingPolicy::AggregateByTarget ||
 			active.spec.source == spec.source)
 			result = { handle };
@@ -746,7 +748,7 @@ bool VansGameplayEffectService::ApplyPersistentResources(
 	}
 	for (VansCueId cue : definition.persistentCues)
 	{
-		VansGameplayCueKey key{ effect.spec.context.predictionKey, cue, m_CueSequence++ };
+		VansGameplayCueKey key{ effect.spec.context.correlationId, cue, m_CueSequence++ };
 		const VansCueHandle cueHandle = m_Cues->Add(key, m_Cues->DefaultScope(cue),
 			BuildCueParameters(effect), effect.tagSource, error);
 		if (!cueHandle) return false;
@@ -867,7 +869,7 @@ bool VansGameplayEffectService::EmitExecuteCues(
 	}
 	for (VansCueId cue : cues)
 	{
-		const VansGameplayCueKey key{ effect.spec.context.predictionKey, cue, m_CueSequence++ };
+		const VansGameplayCueKey key{ effect.spec.context.correlationId, cue, m_CueSequence++ };
 		if (!m_Cues->Execute(key, m_Cues->DefaultScope(cue), BuildCueParameters(effect), error))
 			return false;
 	}
@@ -878,7 +880,7 @@ VansGameplayCueParameters VansGameplayEffectService::BuildCueParameters(const Ac
 {
 	VansGameplayCueParameters parameters;
 	parameters.context = effect.spec.context;
-	parameters.target = effect.spec.context.primaryTarget;
+	parameters.target = effect.spec.context.Entity(VansActionContextSlots::PrimaryTarget);
 	parameters.intensity = 0.0;
 	for (const VansEffectSpec& stack : effect.stackSpecs) parameters.intensity += stack.level;
 	return parameters;

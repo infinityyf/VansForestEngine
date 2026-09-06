@@ -36,6 +36,22 @@ bool VansActionTaskSet::Cancel(VansActionTaskHandle handle, std::string& error)
 	return End(handle, VansActionTaskState::Cancelled, error);
 }
 
+bool VansActionTaskSet::Consume(
+	VansActionTaskHandle handle,
+	VansActionTaskState& state,
+	std::string& error)
+{
+	const auto found = m_TerminalTasks.find(handle);
+	if (found == m_TerminalTasks.end())
+	{
+		error = "Action Task is not terminal or its result was already consumed";
+		return false;
+	}
+	state = found->second;
+	m_TerminalTasks.erase(found);
+	return true;
+}
+
 void VansActionTaskSet::CancelAll()
 {
 	m_AcceptingTasks = false;
@@ -69,7 +85,10 @@ void VansActionTaskSet::Tick(double deltaSeconds)
 VansActionTaskState VansActionTaskSet::State(VansActionTaskHandle handle) const
 {
 	const Task* task = m_Tasks.Resolve(handle.value);
-	return task ? task->state : VansActionTaskState::Failed;
+	if (task) return task->state;
+	const auto terminal = m_TerminalTasks.find(handle);
+	return terminal == m_TerminalTasks.end()
+		? VansActionTaskState::Failed : terminal->second;
 }
 
 std::vector<VansActionTaskSnapshot> VansActionTaskSet::Snapshot() const
@@ -80,6 +99,8 @@ std::vector<VansActionTaskSnapshot> VansActionTaskSet::Snapshot() const
 		result.push_back({ { handle }, task.desc.type, task.desc.debugName, task.state,
 			task.elapsedSeconds, task.desc.timeoutSeconds });
 	});
+	for (const auto& [handle, state] : m_TerminalTasks)
+		result.push_back({ handle, {}, "terminal task", state, 0.0, 0.0 });
 	std::sort(result.begin(), result.end(), [](const auto& left, const auto& right)
 	{
 		return left.handle.value.index < right.handle.value.index;
@@ -102,6 +123,7 @@ bool VansActionTaskSet::End(
 		if (task->desc.cancel) task->desc.cancel();
 	task->state = state;
 	if (task->desc.terminal) task->desc.terminal(state);
+	m_TerminalTasks.emplace(handle, state);
 	return m_Tasks.Release(handle.value);
 }
 }

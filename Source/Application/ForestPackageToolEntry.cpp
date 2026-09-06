@@ -29,7 +29,6 @@ namespace
 		bool includeLibrary = true;
 		bool includeBinaries = true;
 		bool overwriteExisting = true;
-		bool useCookedResourcePlan = true;
 		bool prewarmResourceCaches = true;
 		bool showHelp = false;
 	};
@@ -112,7 +111,6 @@ namespace
 			<< "  --binary-dir <path>      Directory containing ForestGameLauncher.exe and ForestRuntime.dll.\n"
 			<< "  --no-engine-assets       Do not copy EngineAssets.\n"
 			<< "  --no-library             Do not copy project Library.\n"
-			<< "  --legacy-assets          Package with the old asset scan path and full Library copy.\n"
 			<< "  --no-cache-prewarm       Do not build missing cooked resource caches before packaging.\n"
 			<< "  --no-binaries            Do not copy launcher/runtime binaries.\n"
 			<< "  --no-overwrite           Fail if the package output already exists.\n"
@@ -186,10 +184,6 @@ namespace
 			else if (arg == "--no-library")
 			{
 				options.includeLibrary = false;
-			}
-			else if (arg == "--legacy-assets" || arg == "--no-cooked-resource-plan")
-			{
-				options.useCookedResourcePlan = false;
 			}
 			else if (arg == "--no-cache-prewarm")
 			{
@@ -292,7 +286,6 @@ int main(int argc, char** argv)
 	request.includeLibrary = options.includeLibrary;
 	request.includeBinaries = options.includeBinaries;
 	request.overwriteExisting = options.overwriteExisting;
-	request.useCookedResourcePlan = options.useCookedResourcePlan;
 	request.prewarmResourceCaches = options.prewarmResourceCaches;
 
 	const Vans::VansGamePackageResult result = Vans::VansGamePackageBuilder::Build(request);

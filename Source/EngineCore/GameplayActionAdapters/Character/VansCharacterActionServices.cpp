@@ -1,6 +1,6 @@
 #include "VansCharacterActionServices.h"
 
-#include "../VansStandardActionServices.h"
+#include "../VansActionServiceAdapter.h"
 #include "../../AnimationCore/VansAnimationController.h"
 #include "../../AnimationCore/VansAnimationNode.h"
 #include "../../AssetCore/Serialization/VansSerializedValueAccess.h"
@@ -15,6 +15,9 @@ namespace Vans
 {
 namespace
 {
+using ValueKind = VansActionCommandValueKind;
+using ResourcePolicy = VansActionCommandResourcePolicy;
+
 template <typename T>
 T* FindOwnedEnabledComponent(
 	VansRuntimeWorld& world,
@@ -33,6 +36,72 @@ T* FindOwnedEnabledComponent(
 }
 }
 
+const VansActionServiceCapability& VansAnimationActionCapability()
+{
+	static const VansActionServiceCapability capability =
+		VansActionServiceCapabilityDescriptor("Service.Animation", {
+			VansActionCommandCapability("Animation.Play", ResourcePolicy::Create, {
+				VansActionCommandField("clip", ValueKind::String, true),
+				VansActionCommandField("slot", ValueKind::String, false,
+					VansSerializedValue::String({})),
+				VansActionCommandNumberField("layer", ValueKind::Int, false,
+					VansSerializedValue::Int(0), 0.0, 255.0),
+				VansActionCommandNumberField("rate", ValueKind::Float, false,
+					VansSerializedValue::Float(1.0), 0.01, 100.0),
+				VansActionCommandField("loop", ValueKind::Bool, false,
+					VansSerializedValue::Bool(false))
+			}),
+			VansActionCommandCapability("Animation.Stop", ResourcePolicy::Release, {
+				VansActionCommandResourceField(),
+				VansActionCommandNumberField("blendOut", ValueKind::Float, false,
+					VansSerializedValue::Float(0.0), 0.0, 1.0)
+			}),
+			VansActionCommandCapability("Animation.SetRate", ResourcePolicy::Update, {
+				VansActionCommandResourceField(),
+				VansActionCommandNumberField("rate", ValueKind::Float, false,
+					VansSerializedValue::Float(1.0), 0.01, 100.0)
+			}),
+			VansActionCommandCapability("Animation.JumpMarker", ResourcePolicy::Update, {
+				VansActionCommandResourceField(),
+				VansActionCommandField("marker", ValueKind::String, true)
+			}),
+			VansActionCommandCapability("Animation.WaitMarker", ResourcePolicy::Create, {
+				VansActionCommandResourceField(),
+				VansActionCommandField("marker", ValueKind::String, true),
+				VansActionCommandNumberField("timeout", ValueKind::Float, false,
+					VansSerializedValue::Float(0.0), 0.0, 3600.0)
+			})
+		});
+	return capability;
+}
+
+const VansActionServiceCapability& VansNavigationActionCapability()
+{
+	static const VansActionServiceCapability capability =
+		VansActionServiceCapabilityDescriptor("Service.Navigation", {
+			VansActionCommandCapability("Navigation.BlockMovement", ResourcePolicy::Create, {
+				VansActionCommandField("reason", ValueKind::String, false,
+					VansSerializedValue::String({}))
+			}),
+			VansActionCommandCapability("Navigation.RequestPath", ResourcePolicy::Create, {
+				VansActionCommandField("destination", ValueKind::Object, true,
+					VansSerializedValue::Object({})),
+				VansActionCommandField("agentProfile", ValueKind::String, false,
+					VansSerializedValue::String({}))
+			}),
+			VansActionCommandCapability("Navigation.Move", ResourcePolicy::Create, {
+				VansActionCommandField("destination", ValueKind::Object, true,
+					VansSerializedValue::Object({})),
+				VansActionCommandNumberField("acceptanceRadius", ValueKind::Float, false,
+					VansSerializedValue::Float(0.1), 0.0, 1000000.0)
+			}),
+			VansActionCommandCapability("Navigation.Cancel", ResourcePolicy::Release, {
+				VansActionCommandResourceField()
+			})
+		});
+	return capability;
+}
+
 VansAnimationActionService::VansAnimationActionService(
 	VansRuntimeWorld& world,
 	VansActionServiceCapability capability)
@@ -45,15 +114,9 @@ std::shared_ptr<VansAnimationActionService> VansAnimationActionService::Create(
 	VansRuntimeWorld& world,
 	std::string& error)
 {
-	const VansActionServiceCapability* capability = VansFindStandardActionServiceCapability(
-		VansMakeStableId<VansActionServiceIdTag>("Service.Animation"));
-	if (!capability)
-	{
-		error = "Standard Animation Action Service capability is missing";
-		return {};
-	}
+	(void)error;
 	return std::shared_ptr<VansAnimationActionService>(
-		new VansAnimationActionService(world, *capability));
+		new VansAnimationActionService(world, VansAnimationActionCapability()));
 }
 
 VansActionCommandResult VansAnimationActionService::Execute(
@@ -61,12 +124,12 @@ VansActionCommandResult VansAnimationActionService::Execute(
 {
 	if (command.stableName != "Animation.Play")
 	{
-		return { VansActionError::DefinitionInvalid, {}, VansSerializedValue::Object({}),
+		return { VansActionError::InvalidDefinition, {}, VansSerializedValue::Object({}),
 			"The scene Animation service currently requires Animation.Play" };
 	}
 	VansRuntimeAnimationComponent* component = FindOwnedEnabledComponent<
 		VansRuntimeAnimationComponent>(m_World, VansRuntimeComponentType_Animation,
-			command.context.owner);
+			command.context.Entity(VansActionContextSlots::Owner));
 	VansGraphics::VansAnimationController* controller = component && component->animationNode
 		? component->animationNode->GetCharacterMotionController() : nullptr;
 	const std::string state = ReadSerializedStringField(command.payload, "clip");
@@ -75,7 +138,7 @@ VansActionCommandResult VansAnimationActionService::Execute(
 		? static_cast<float>(ReadSerializedNumber(*rateValue, 1.0)) : 1.0f;
 	if (!controller || state.empty())
 	{
-		return { VansActionError::TargetInvalid, {}, VansSerializedValue::Object({}),
+		return { VansActionError::Rejected, {}, VansSerializedValue::Object({}),
 			"Animation.Play requires an enabled owner Animation component and state" };
 	}
 	PlaybackResource playback;
@@ -116,15 +179,9 @@ std::shared_ptr<VansNavigationActionService> VansNavigationActionService::Create
 	VansRuntimeWorld& world,
 	std::string& error)
 {
-	const VansActionServiceCapability* capability = VansFindStandardActionServiceCapability(
-		VansMakeStableId<VansActionServiceIdTag>("Service.Navigation"));
-	if (!capability)
-	{
-		error = "Standard Navigation Action Service capability is missing";
-		return {};
-	}
+	(void)error;
 	return std::shared_ptr<VansNavigationActionService>(
-		new VansNavigationActionService(world, *capability));
+		new VansNavigationActionService(world, VansNavigationActionCapability()));
 }
 
 VansActionCommandResult VansNavigationActionService::Execute(
@@ -132,15 +189,16 @@ VansActionCommandResult VansNavigationActionService::Execute(
 {
 	if (command.stableName != "Navigation.BlockMovement")
 	{
-		return { VansActionError::DefinitionInvalid, {}, VansSerializedValue::Object({}),
+		return { VansActionError::InvalidDefinition, {}, VansSerializedValue::Object({}),
 			"The scene Navigation service currently requires Navigation.BlockMovement" };
 	}
 	VansRuntimeCharacterControllerComponent* component = FindOwnedEnabledComponent<
 		VansRuntimeCharacterControllerComponent>(m_World,
-			VansRuntimeComponentType_CharacterController, command.context.owner);
+			VansRuntimeComponentType_CharacterController,
+			command.context.Entity(VansActionContextSlots::Owner));
 	if (!component || !component->controllerNode)
 	{
-		return { VansActionError::TargetInvalid, {}, VansSerializedValue::Object({}),
+		return { VansActionError::Rejected, {}, VansSerializedValue::Object({}),
 			"Navigation.BlockMovement requires an enabled owner CharacterController" };
 	}
 	component->controllerNode->AcquireGameplayMovementBlock();

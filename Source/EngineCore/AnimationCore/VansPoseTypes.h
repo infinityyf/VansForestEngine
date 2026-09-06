@@ -52,6 +52,7 @@ namespace VansGraphics
 		float sourceTime = 0.0f;
 		std::int64_t loopIndex = 0;
 		float weight = 1.0f;
+		bool forward = true;
 		VansAnimationEventValue payload;
 	};
 

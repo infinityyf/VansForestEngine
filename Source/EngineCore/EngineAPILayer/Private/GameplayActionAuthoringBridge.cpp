@@ -6,7 +6,6 @@
 #include "../../EditorCore/GameplayAction/VansGameplayAssetEditorModel.h"
 #include "../../EditorCore/VansAssetDocumentEditService.h"
 #include "../../EditorCore/VansEditorAssetSaveService.h"
-#include "../../CameraGameplayAction/VansCameraActionGraphNodes.h"
 #include "../../GameplayActionExecution/VansActionExecutionGraph.h"
 #include "../../ProjectSystem/VansProjectManager.h"
 
@@ -87,11 +86,7 @@ const std::vector<VansActionGraphNodeDescriptor>& AuthoringGraphNodeDescriptors(
 {
 	static const std::vector<VansActionGraphNodeDescriptor> descriptors = []
 	{
-		std::vector<VansActionGraphNodeDescriptor> result =
-			VansBuiltInActionGraphNodeDescriptors();
-		const auto& camera = VansCameraActionGraphNodeDescriptors();
-		result.insert(result.end(), camera.begin(), camera.end());
-		return result;
+		return VansBuiltInActionGraphNodeDescriptors();
 	}();
 	return descriptors;
 }
@@ -99,11 +94,11 @@ const std::vector<VansActionGraphNodeDescriptor>& AuthoringGraphNodeDescriptors(
 bool LoadActiveGAFConfiguration(VansGAFProjectConfiguration& configuration)
 {
 	auto& projectManager = VansProjectManager::Get();
-	if (!projectManager.IsProjectLoaded()) return false;
-	std::string ignored;
-	return VansGAFProjectConfiguration::LoadForProject(
-		projectManager.GetProjectRootPath(),
-		projectManager.GetPathResolver().GetEngineRoot(), configuration, ignored);
+	const VansGAFProjectConfiguration* active =
+		projectManager.GetGAFProjectConfiguration();
+	if (!projectManager.IsProjectLoaded() || !active) return false;
+	configuration = *active;
+	return true;
 }
 
 std::string GraphNodeKindName(VansActionGraphNodeKind kind)
@@ -114,7 +109,6 @@ std::string GraphNodeKindName(VansActionGraphNodeKind kind)
 	case VansActionGraphNodeKind::Latent: return "Latent";
 	case VansActionGraphNodeKind::State: return "State";
 	case VansActionGraphNodeKind::Flow: return "Flow";
-	case VansActionGraphNodeKind::Transaction: return "Transaction";
 	case VansActionGraphNodeKind::Bridge: return "Bridge";
 	case VansActionGraphNodeKind::SubAction: return "SubAction";
 	default: return "Pure";
@@ -204,7 +198,6 @@ GAFGraphSnapshot BuildGraphSnapshot(const VansSerializedValue& root)
 		node.guid = ReadSerializedStringField(source, "guid");
 		node.type = ReadSerializedStringField(source, "type");
 		node.nodeKind = ReadSerializedStringField(source, "kind", "Pure");
-		node.predictable = ReadSerializedBoolField(source, "predictable", false);
 		if (const VansSerializedValue* editor = FindObjectField(source, "editor"))
 		{
 			if (const VansSerializedValue* x = FindObjectField(*editor, "x"))
@@ -421,7 +414,6 @@ GAFEditorDocumentSnapshot BuildSnapshot(VansGameplayAssetEditorModel& model)
 		VansGameplayAssetSchemaRegistry::BuiltIns().Resolve(model.AssetType()))
 	{
 		result.assetKind = schema->assetKind;
-		result.schemaVersion = schema->schemaVersion;
 	}
 	result.dirty = model.Document()->sourceDocument.IsDirty();
 	result.canUndo = VansAssetDocumentEditService::CanUndo(model.Document()->sourceDocument);
@@ -685,8 +677,6 @@ std::vector<GAFGraphNodeTypeSnapshot> GameplayActionAuthoringBridge::GetGraphNod
 		node.displayName = descriptor.displayName;
 		node.category = descriptor.category;
 		node.nodeKind = GraphNodeKindName(descriptor.kind);
-		node.predictable = descriptor.predictable;
-		node.authorityOnly = descriptor.authorityOnly;
 		node.allowed = !hasProjectAllowlist ||
 			allowedNodeTypes.find(descriptor.stableName) != allowedNodeTypes.end();
 		for (const VansActionGraphPinDescriptor& source : descriptor.pins)
@@ -755,7 +745,6 @@ GAFEditorOperationResult GameplayActionAuthoringBridge::EditGraph(
 			{ "guid", VansSerializedValue::String(guid) },
 			{ "type", VansSerializedValue::String(descriptor->stableName) },
 			{ "kind", VansSerializedValue::String(GraphNodeKindName(descriptor->kind)) },
-			{ "predictable", VansSerializedValue::Bool(descriptor->predictable) },
 			{ "properties", DefaultGraphNodeProperties(*descriptor) },
 			{ "editor", VansSerializedValue::Object({
 				{ "x", VansSerializedValue::Float(request.x) },
@@ -946,26 +935,18 @@ GAFProjectConfigurationSnapshot GameplayActionAuthoringBridge::GetProjectConfigu
 		result.message = "Open a project before editing GAF configuration";
 		return result;
 	}
-	const std::filesystem::path projectRoot = projectManager.GetProjectRootPath();
-	const std::filesystem::path engineRoot = projectManager.GetPathResolver().GetEngineRoot();
-	VansGAFProjectConfiguration configuration;
-	std::string error;
-	if (!VansGAFProjectConfiguration::LoadForProject(
-		projectRoot, engineRoot, configuration, error))
+	const VansGAFProjectConfiguration* active =
+		projectManager.GetGAFProjectConfiguration();
+	if (!active)
 	{
-		result.message = std::move(error);
+		result.message = "GAF project configuration is unavailable in memory";
 		return result;
 	}
+	const VansGAFProjectConfiguration& configuration = *active;
+	const std::filesystem::path projectRoot = projectManager.GetProjectRootPath();
 	result.available = true;
 	result.settingsDirectory = (projectRoot / "ProjectSettings").string();
-	result.schemaVersion = configuration.settings.schemaVersion;
 	result.defaultTagRoots = configuration.settings.defaultTagRoots;
-	result.networkMode = configuration.settings.networkMode == VansGAFNetworkMode::Loopback
-		? "Loopback" : configuration.settings.networkMode == VansGAFNetworkMode::ExternalTransport
-		? "ExternalTransport" : "Disabled";
-	result.predictionEnabled = configuration.settings.predictionEnabled;
-	result.requireRollbackPlan = configuration.settings.requireRollbackPlan;
-	result.failWithoutTransport = configuration.settings.failWithoutTransport;
 	result.deterministicCook = configuration.settings.deterministicCook;
 	result.stripEditorMetadata = configuration.settings.stripEditorMetadata;
 	result.treatCookWarningsAsErrors = configuration.settings.treatCookWarningsAsErrors;
@@ -977,9 +958,13 @@ GAFProjectConfigurationSnapshot GameplayActionAuthoringBridge::GetProjectConfigu
 	result.maximumEffectsPerHost = configuration.settings.performance.maximumEffectsPerHost;
 	result.maximumPayloadBytes = configuration.settings.performance.maximumPayloadBytes;
 	result.allowedNodeTypes = Sorted(configuration.allowlist.nodeTypes);
-	result.allowedServices = Sorted(configuration.allowlist.services);
-	result.allowedHandlers = Sorted(configuration.allowlist.handlers);
-	result.bridgeAllowlist = Sorted(configuration.allowlist.bridges);
+	result.allowedModules = Sorted(configuration.allowlist.modules);
+	result.allowedCapabilities = Sorted(configuration.allowlist.capabilities);
+	result.allowedPolicies = Sorted(configuration.allowlist.policies);
+	result.allowedGuards = Sorted(configuration.allowlist.guards);
+	result.allowedDrivers = Sorted(configuration.allowlist.drivers);
+	result.allowedSignals = Sorted(configuration.allowlist.signals);
+	result.allowedValueTypes = Sorted(configuration.allowlist.valueTypes);
 	std::vector<std::pair<std::string, std::string>> overrides(
 		configuration.validation.severityOverrides.begin(),
 		configuration.validation.severityOverrides.end());
@@ -1033,9 +1018,11 @@ GAFProjectConfigurationResult GameplayActionAuthoringBridge::ApplyProjectConfigu
 		result.message = "Open a project before editing GAF configuration";
 		return result;
 	}
-	if (source.schemaVersion != 1 || HasEmptyOrDuplicate(source.defaultTagRoots) ||
-		HasEmptyOrDuplicate(source.allowedNodeTypes) || HasEmptyOrDuplicate(source.allowedServices) ||
-		HasEmptyOrDuplicate(source.allowedHandlers) || HasEmptyOrDuplicate(source.bridgeAllowlist) ||
+	if (HasEmptyOrDuplicate(source.defaultTagRoots) ||
+		HasEmptyOrDuplicate(source.allowedNodeTypes) || HasEmptyOrDuplicate(source.allowedModules) ||
+		HasEmptyOrDuplicate(source.allowedCapabilities) || HasEmptyOrDuplicate(source.allowedPolicies) ||
+		HasEmptyOrDuplicate(source.allowedGuards) || HasEmptyOrDuplicate(source.allowedDrivers) ||
+		HasEmptyOrDuplicate(source.allowedSignals) || HasEmptyOrDuplicate(source.allowedValueTypes) ||
 		HasEmptyOrDuplicate(source.saveBlockingCodes) || HasEmptyOrDuplicate(source.cookBlockingCodes) ||
 		HasEmptyOrDuplicate(source.ciBlockingCodes))
 	{
@@ -1043,22 +1030,7 @@ GAFProjectConfigurationResult GameplayActionAuthoringBridge::ApplyProjectConfigu
 		return result;
 	}
 	VansGAFProjectConfiguration configuration;
-	configuration.settings.schemaVersion = source.schemaVersion;
 	configuration.settings.defaultTagRoots = source.defaultTagRoots;
-	if (source.networkMode == "Disabled")
-		configuration.settings.networkMode = VansGAFNetworkMode::Disabled;
-	else if (source.networkMode == "Loopback")
-		configuration.settings.networkMode = VansGAFNetworkMode::Loopback;
-	else if (source.networkMode == "ExternalTransport")
-		configuration.settings.networkMode = VansGAFNetworkMode::ExternalTransport;
-	else
-	{
-		result.message = "GAF network mode is invalid";
-		return result;
-	}
-	configuration.settings.predictionEnabled = source.predictionEnabled;
-	configuration.settings.requireRollbackPlan = source.requireRollbackPlan;
-	configuration.settings.failWithoutTransport = source.failWithoutTransport;
 	configuration.settings.deterministicCook = source.deterministicCook;
 	configuration.settings.stripEditorMetadata = source.stripEditorMetadata;
 	configuration.settings.treatCookWarningsAsErrors = source.treatCookWarningsAsErrors;
@@ -1070,9 +1042,13 @@ GAFProjectConfigurationResult GameplayActionAuthoringBridge::ApplyProjectConfigu
 	configuration.settings.performance.maximumEffectsPerHost = source.maximumEffectsPerHost;
 	configuration.settings.performance.maximumPayloadBytes = source.maximumPayloadBytes;
 	configuration.allowlist.nodeTypes.insert(source.allowedNodeTypes.begin(), source.allowedNodeTypes.end());
-	configuration.allowlist.services.insert(source.allowedServices.begin(), source.allowedServices.end());
-	configuration.allowlist.handlers.insert(source.allowedHandlers.begin(), source.allowedHandlers.end());
-	configuration.allowlist.bridges.insert(source.bridgeAllowlist.begin(), source.bridgeAllowlist.end());
+	configuration.allowlist.modules.insert(source.allowedModules.begin(), source.allowedModules.end());
+	configuration.allowlist.capabilities.insert(source.allowedCapabilities.begin(), source.allowedCapabilities.end());
+	configuration.allowlist.policies.insert(source.allowedPolicies.begin(), source.allowedPolicies.end());
+	configuration.allowlist.guards.insert(source.allowedGuards.begin(), source.allowedGuards.end());
+	configuration.allowlist.drivers.insert(source.allowedDrivers.begin(), source.allowedDrivers.end());
+	configuration.allowlist.signals.insert(source.allowedSignals.begin(), source.allowedSignals.end());
+	configuration.allowlist.valueTypes.insert(source.allowedValueTypes.begin(), source.allowedValueTypes.end());
 	std::unordered_set<std::string> overrideCodes;
 	for (const GAFNamedString& entry : source.severityOverrides)
 	{
@@ -1107,20 +1083,17 @@ GAFProjectConfigurationResult GameplayActionAuthoringBridge::ApplyProjectConfigu
 		}
 		configuration.templates.emplace(sourceTemplate.assetKind, std::move(document));
 	}
-	const std::filesystem::path projectRoot = projectManager.GetProjectRootPath();
-	const std::filesystem::path engineRoot = projectManager.GetPathResolver().GetEngineRoot();
-	const std::filesystem::path directory = projectRoot / "ProjectSettings";
 	std::string error;
-	if (!VansGAFProjectConfiguration::EnsureProjectFiles(
-		directory, engineRoot / "EngineAssets/GAF/ProjectSettings", error) ||
-		!VansGAFProjectConfiguration::Save(directory, configuration, error))
+	if (!projectManager.SetGAFProjectConfiguration(configuration, error))
 	{
 		result.message = std::move(error);
 		return result;
 	}
 	result.configuration = GetProjectConfiguration();
 	result.success = result.configuration.available;
-	result.message = result.success ? "GAF project configuration saved" : result.configuration.message;
+	result.message = result.success
+		? "GAF project configuration applied in memory; save the project to write it to disk"
+		: result.configuration.message;
 	return result;
 }
 }

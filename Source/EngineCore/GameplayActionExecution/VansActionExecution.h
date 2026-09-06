@@ -38,7 +38,6 @@ enum class VansActionCancelReason : std::uint8_t
 	Concurrency,
 	GrantRevoked,
 	OwnerDestroyed,
-	PredictionRejected,
 	System
 };
 
@@ -78,13 +77,17 @@ private:
 struct VansActionExecutionContext
 {
 	VansActionHandle action;
+	VansEntityHandle owner;
 	const VansCompiledActionDefinition* definition = nullptr;
 	const VansActionContext* context = nullptr;
 	VansActionVariableStore* variables = nullptr;
 	VansActionTaskSet* tasks = nullptr;
 	VansActionResourceLedger* resources = nullptr;
+	VansActionResourceLedger* hostResources = nullptr;
+	VansActionResourceLedger* worldResources = nullptr;
 	const VansActionServiceRegistry* services = nullptr;
 	const std::vector<VansActionEvent>* events = nullptr;
+	std::function<bool(VansActionEvent, std::string&)> emitSignal;
 	double deltaSeconds = 0.0;
 };
 
@@ -105,6 +108,39 @@ public:
 	virtual void OnEvent(VansActionExecutionContext& context, const VansActionEvent& event) = 0;
 	virtual void Finish(VansActionExecutionContext& context, VansActionEndReason reason) = 0;
 	virtual VansActionExecutorDebugView DebugView() const { return {}; }
+};
+
+// A Driver may own the primary Action executor or run as a sidecar beside it.
+// Sidecars are module-owned and receive the same lifecycle without introducing
+// a dependency from GAF Core to the module that implements them.
+class IVansActionSidecarDriver
+{
+public:
+	virtual ~IVansActionSidecarDriver() = default;
+	virtual bool Start(VansActionExecutionContext& context, std::string& error) = 0;
+	virtual bool Tick(VansActionExecutionContext& context, std::string& error) = 0;
+	virtual void Finish(VansActionExecutionContext& context, VansActionEndReason reason) = 0;
+	virtual std::string_view StableName() const = 0;
+};
+
+class VansActionDriverRegistry
+{
+public:
+	using Factory = std::function<std::unique_ptr<IVansActionSidecarDriver>(
+		const VansCompiledActionRecord&)>;
+
+	bool RegisterExecutorOwned(std::string typeId, std::string& error);
+	bool RegisterSidecar(std::string typeId, Factory factory, std::string& error);
+	bool Seal(std::string& error);
+	std::unique_ptr<IVansActionSidecarDriver> Create(
+		const VansCompiledActionRecord& record, std::string& error) const;
+	bool Contains(std::string_view typeId) const;
+	bool IsSealed() const { return m_Sealed; }
+
+private:
+	struct Entry { Factory factory; };
+	bool m_Sealed = false;
+	std::unordered_map<std::string, Entry> m_Entries;
 };
 
 class VansActionExecutorRegistry

@@ -145,7 +145,7 @@ void VansUIEditorWindow::DrawMetaPanel(Vans::EditorAPI::IEngineEditorAPI& api)
         ImGui::Separator();
         ImGui::TextColored(ImVec4(0.7f, 0.9f, 0.7f, 1.0f), "Screen");
         ImGui::Text("Name: %s", snapshot.name.c_str());
-        ImGui::TextWrapped("XAML: %s", snapshot.xamlPath.c_str());
+        ImGui::TextWrapped("XAML asset: %s", snapshot.xamlAssetGuid.c_str());
         ImGui::Text("Layer: %s", snapshot.layer.c_str());
         ImGui::Text("Z Order: %d", snapshot.zOrder);
 
@@ -168,16 +168,16 @@ void VansUIEditorWindow::DrawMetaPanel(Vans::EditorAPI::IEngineEditorAPI& api)
 
         ImGui::Spacing();
         ImGui::TextColored(ImVec4(0.8f, 0.7f, 1.0f, 1.0f), "Resources");
-        for (const std::string& theme : snapshot.themes)
+        for (const std::string& theme : snapshot.themeAssetGuids)
             ImGui::BulletText("Theme: %s", theme.c_str());
-        for (const std::string& token : snapshot.tokens)
+        for (const std::string& token : snapshot.tokenAssetGuids)
             ImGui::BulletText("Tokens: %s", token.c_str());
-        for (const std::string& loc : snapshot.localization)
+        for (const std::string& loc : snapshot.localizationAssetGuids)
             ImGui::BulletText("Localization: %s", loc.c_str());
         for (const std::string& dependency : snapshot.dependencies)
             ImGui::BulletText("Dependency: %s", dependency.c_str());
-        if (snapshot.themes.empty() && snapshot.tokens.empty() &&
-            snapshot.localization.empty() && snapshot.dependencies.empty())
+        if (snapshot.themeAssetGuids.empty() && snapshot.tokenAssetGuids.empty() &&
+            snapshot.localizationAssetGuids.empty() && snapshot.dependencies.empty())
         {
             ImGui::TextDisabled("No resources declared.");
         }

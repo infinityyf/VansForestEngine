@@ -21,13 +21,9 @@ namespace VansEngine
 		VansCollisionLayerManager(const VansCollisionLayerManager&) = delete;
 		VansCollisionLayerManager& operator=(const VansCollisionLayerManager&) = delete;
 
-		// ── 初始化 / 加载 ──────────────────────────────────────────────
-		// path 由调用方根据 ForestProject.json 中的 collisionLayerSettings 拼接。
-		// 加载失败则保留默认值并返回 false
-		bool LoadFromFile(const std::string& path);
-
 		// 重置为默认状态（仅 "Default" layer，全碰撞）
 		void ResetToDefaults();
+		void ApplyConfig(const VansCollisionLayerConfig& config);
 
 		// ── 查询接口 ──────────────────────────────────────────────────
 		// 根据名称获取 layer 索引，找不到返回 0 (Default)
@@ -48,8 +44,6 @@ namespace VansEngine
 
 	private:
 		VansCollisionLayerManager();
-		void ApplyConfig(const VansCollisionLayerConfig& config);
-
 		std::array<std::string, MAX_PHYSICS_LAYERS> m_LayerNames;
 		std::array<uint32_t, MAX_PHYSICS_LAYERS>    m_CollisionMasks;
 		int m_LayerCount = 1;

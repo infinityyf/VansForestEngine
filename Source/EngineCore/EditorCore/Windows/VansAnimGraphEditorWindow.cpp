@@ -482,6 +482,51 @@ void VansAnimGraphEditorWindow::DrawClipsPanel()
 		ImGui::Selectable(clip.name.c_str(), &selected);
 		if (ImGui::IsItemHovered())
 			ImGui::SetTooltip("%s\nGUID: %s", clip.pathHint.c_str(), clip.assetGuid.c_str());
+		ImGui::SameLine();
+		if (ImGui::SmallButton("Events"))
+		{
+			if (Vans::EditorAPI::OpenAnimationClipEvents(clip.assetGuid, m_ClipEvents, m_LastError))
+			{
+				m_ClipEventsDirty = false;
+				ImGui::OpenPopup("Clip Events");
+			}
+		}
+		if (ImGui::BeginPopupModal("Clip Events", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+		{
+			ImGui::Text("%s | %.3f seconds%s", clip.name.c_str(), m_ClipEvents.duration,
+				m_ClipEventsDirty ? " | Modified" : "");
+			ImGui::TextWrapped("Events follow Clip playback time. GAF subscriptions decide what each event does.");
+			for (size_t index = 0; index < m_ClipEvents.events.size(); ++index)
+			{
+				auto& event = m_ClipEvents.events[index];
+				ImGui::PushID(static_cast<int>(index));
+				char name[256], payload[1024];
+				std::snprintf(name, sizeof(name), "%s", event.name.c_str());
+				std::snprintf(payload, sizeof(payload), "%s", event.payloadJson.c_str());
+				ImGui::SetNextItemWidth(125);
+				m_ClipEventsDirty |= ImGui::DragFloat("Time (s)", &event.time, 0.001f, 0, m_ClipEvents.duration, "%.3f");
+				ImGui::SameLine();
+				ImGui::SetNextItemWidth(225);
+				if (ImGui::InputText("Name", name, sizeof(name))) { event.name = name; m_ClipEventsDirty = true; }
+				ImGui::SetNextItemWidth(440);
+				if (ImGui::InputText("Payload (JSON)", payload, sizeof(payload))) { event.payloadJson = payload; m_ClipEventsDirty = true; }
+				if (ImGui::SmallButton("Remove"))
+				{ m_ClipEvents.events.erase(m_ClipEvents.events.begin() + index); m_ClipEventsDirty = true; --index; }
+				ImGui::Separator();
+				ImGui::PopID();
+			}
+			if (ImGui::Button("Add Event"))
+			{ m_ClipEvents.events.push_back({0, 0.0f, "NewEvent", "null"}); m_ClipEventsDirty = true; }
+			ImGui::SameLine();
+			if (ImGui::Button("Save Clip Events"))
+			{
+				if (Vans::EditorAPI::SaveAnimationClipEvents(m_ClipEvents, m_LastError)) m_ClipEventsDirty = false;
+			}
+			ImGui::SameLine();
+			if (ImGui::Button(m_ClipEventsDirty ? "Discard and Close" : "Close")) ImGui::CloseCurrentPopup();
+			if (!m_LastError.empty()) ImGui::TextWrapped("%s", m_LastError.c_str());
+			ImGui::EndPopup();
+		}
 		ImGui::SameLine(ImGui::GetContentRegionAvail().x - 20);
 		if (ImGui::SmallButton("X"))
 		{

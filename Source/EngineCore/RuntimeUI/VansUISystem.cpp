@@ -4,6 +4,7 @@
 #include "Public/VansUIResourceRegistry.h"
 #include "Public/VansUIScreen.h"
 #include "Public/VansUIScreenManager.h"
+#include "VansUIAssetResolver.h"
 
 #include "Private/Noesis/VansNoesisUISystem.h"
 #include "Private/Noesis/VansNoesisDocument.h"
@@ -85,6 +86,17 @@ bool VansUISystem::InitializeWithDevice(const VansUIInitDesc& desc,
     return m_Impl->m_NoesisSystem->Initialize(desc);
 }
 
+bool VansUISystem::ApplyGlobalThemeFromMemory(std::string& error)
+{
+    error.clear();
+    if (!m_Impl || !m_Impl->m_NoesisSystem || !m_Impl->m_NoesisSystem->IsInitialized())
+    {
+        error = "Runtime UI must be initialized before applying the global theme";
+        return false;
+    }
+    return m_Impl->m_NoesisSystem->ApplyGlobalThemeFromMemory(error);
+}
+
 void VansUISystem::Shutdown()
 {
     if (!m_Impl) return;
@@ -128,10 +140,14 @@ void VansUISystem::Update(float deltaTime)
 // Document management
 // ─────────────────────────────────────────────────────────────────────────────
 
-std::shared_ptr<VansUIDocument> VansUISystem::LoadDocument(const std::string& xamlPath)
+std::shared_ptr<VansUIDocument> VansUISystem::LoadDocument(const std::string& xamlAssetGuid)
 {
     if (!m_Impl || !m_Impl->m_NoesisSystem) return nullptr;
-    return m_Impl->m_NoesisSystem->LoadDocument(xamlPath);
+    std::string uri;
+    std::string error;
+    if (!VansUIAssetResolver::ResolveXamlUri(xamlAssetGuid, uri, error))
+        return nullptr;
+    return m_Impl->m_NoesisSystem->LoadDocument(uri);
 }
 
 std::shared_ptr<VansUIScreen> VansUISystem::LoadScreen(const std::string& configPath)

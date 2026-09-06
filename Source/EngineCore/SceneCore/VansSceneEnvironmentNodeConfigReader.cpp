@@ -1,15 +1,10 @@
 #include "VansSceneEnvironmentNodeConfigReader.h"
 
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
-#include "../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
-#include "../AssetCore/Storage/VansJsonFileStorage.h"
 #include "../Util/VansLog.h"
-
-#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <cctype>
-#include <filesystem>
 #include <optional>
 
 namespace Vans
@@ -516,59 +511,6 @@ VansSceneWaterGeometryConfig DecodeWaterGeometry(const VansSerializedValue& geom
 	return config;
 }
 
-std::string ReadVegetationConfigPath(const VansSerializedValue& vegetationNode)
-{
-	if (vegetationNode.kind == VansSerializedValue::Kind::String)
-		return vegetationNode.stringValue;
-	if (vegetationNode.kind != VansSerializedValue::Kind::Object)
-		return {};
-
-	std::string path = ReadOptionalStringField(vegetationNode, "config").value_or(std::string());
-	if (path.empty()) path = ReadOptionalStringField(vegetationNode, "configPath").value_or(std::string());
-	if (path.empty()) path = ReadOptionalStringField(vegetationNode, "path").value_or(std::string());
-	return path;
-}
-
-VansSerializedValue LoadVegetationConfigFromReference(
-	const VansSerializedValue& vegetationNode,
-	const std::string& projectRoot)
-{
-	const std::string configPath = ReadVegetationConfigPath(vegetationNode);
-	if (configPath.empty())
-		return vegetationNode;
-
-	std::filesystem::path resolved(configPath);
-	if (resolved.is_relative())
-		resolved = std::filesystem::path(projectRoot) / resolved;
-
-	nlohmann::json loaded;
-	std::string error;
-	if (!VansJsonFileStorage::Read(resolved, loaded, error))
-	{
-		VANS_LOG_ERROR("[VegetationConfig] Cannot read config file: " << resolved.string() << " (" << error << ")");
-		return VansSerializedValue::Object({});
-	}
-
-	if (!loaded.is_object())
-	{
-		VANS_LOG_ERROR("[VegetationConfig] Invalid JSON config file: " << resolved.string());
-		return VansSerializedValue::Object({});
-	}
-	VANS_LOG("[VegetationConfig] Loaded config file: " << resolved.string());
-
-	VansSerializedValue resolvedNode = DecodeSerializedValueJson(loaded);
-	if (vegetationNode.kind == VansSerializedValue::Kind::Object)
-	{
-		for (const auto& [key, value] : vegetationNode.objectFields)
-		{
-			if (key == "config" || key == "configPath" || key == "path")
-				continue;
-			SetSerializedObjectField(resolvedNode, key, value);
-		}
-	}
-	return resolvedNode;
-}
-
 std::optional<std::int32_t> ReadSubmeshIndex(const VansSerializedValue& node)
 {
 	if (node.kind != VansSerializedValue::Kind::Object)
@@ -963,19 +905,16 @@ VansSceneWaterNodeConfig VansSceneEnvironmentNodeConfigReader::ReadWater(
 }
 
 VansSceneVegetationNodeConfig VansSceneEnvironmentNodeConfigReader::ReadVegetation(
-	const VansSerializedValue& vegetationNode,
-	const std::string& projectRoot)
+	const VansSerializedValue& vegetationNode)
 {
-	VansSerializedValue resolvedVegetationNode =
-		LoadVegetationConfigFromReference(vegetationNode, projectRoot);
-	if (resolvedVegetationNode.kind != VansSerializedValue::Kind::Object)
+	if (vegetationNode.kind != VansSerializedValue::Kind::Object)
 	{
-		VANS_LOG_ERROR("[SceneLoader] Vegetation config must be an object or config path.");
+		VANS_LOG_ERROR("[SceneLoader] Vegetation config must be an object.");
 		VansSceneVegetationNodeConfig config;
 		config.valid = false;
 		return config;
 	}
 
-	return DecodeVegetationObject(resolvedVegetationNode);
+	return DecodeVegetationObject(vegetationNode);
 }
 }

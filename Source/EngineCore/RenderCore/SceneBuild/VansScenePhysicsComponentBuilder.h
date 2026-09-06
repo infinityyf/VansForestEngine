@@ -25,7 +25,6 @@ namespace VansGraphics
 			VansScene& scene,
 			VansScriptObject& object,
 			const Vans::VansScenePhysicsComponentsConfig& components,
-			const std::string& projectRoot,
 			bool hasObjectTransform,
 			const std::function<void()>& ensureObjectTransform);
 
@@ -39,7 +38,7 @@ namespace VansGraphics
 			VansScene& scene,
 			const Vans::VansSceneClothNodeConfig& config,
 			VansRenderNode* associatedRenderNode,
-			std::string* outProfilePath = nullptr);
+			std::string* outProfileGuid = nullptr);
 
 		static VansEngine::VansCharacterControllerNode* LoadCharacterControllerNode(
 			VansScene& scene,

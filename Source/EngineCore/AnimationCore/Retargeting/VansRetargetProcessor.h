@@ -12,9 +12,9 @@ namespace VansGraphics
 {
 	struct VansRetargetRuntimeDesc
 	{
-		std::string profilePath;
-		std::string sourceModelPath;
-		std::string sourceAnimatorPath;
+		std::string profileAssetGuid;
+		std::string sourceModelAssetGuid;
+		std::string sourceAnimatorAssetGuid;
 		VansRetargetTranslationScaleMode translationScaleMode =
 			VansRetargetTranslationScaleMode::AutoPelvis;
 		VansRetargetRootAlignment rootAlignment = VansRetargetRootAlignment::None;

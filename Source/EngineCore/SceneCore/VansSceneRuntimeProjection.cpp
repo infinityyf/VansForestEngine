@@ -3,14 +3,11 @@
 #include "../AssetCore/VansAssetDatabase.h"
 #include "../AssetCore/VansAssetMeta.h"
 #include "../AssetCore/VansMaterialAuthoringAsset.h"
+#include "../AssetCore/VansShaderAuthoringAsset.h"
 #include "../AssetCore/VansSkinProfile.h"
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
-#include "../AssetCore/Storage/VansAssetMetaStorage.h"
-#include "../AssetCore/Storage/VansMaterialAuthoringAssetStorage.h"
-#include "../AssetCore/Storage/VansShaderAuthoringAssetStorage.h"
-#include "../AssetCore/Storage/VansSkinProfileStorage.h"
 #include "../AudioCore/VansAudioReverbEnvironment.h"
-#include "../AudioCore/Storage/VansAudioReverbPresetAssetStorage.h"
+#include "../AudioCore/VansAudioReverbPresetAsset.h"
 #include "../ProjectSystem/VansProjectManager.h"
 #include "../Util/VansLog.h"
 #include "../ScriptCore/VansScriptComponentReader.h"
@@ -28,6 +25,7 @@
 #include "VansSceneRuntimeComponentKey.h"
 #include "VansSceneSchema.h"
 #include "VansSceneVehicleComponentReader.h"
+#include "Serialization/VansVegetationConfigCodec.h"
 
 #include <algorithm>
 #include <array>
@@ -37,6 +35,7 @@
 #include <filesystem>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <memory>
 #include <optional>
 #include <system_error>
 #include <unordered_map>
@@ -118,38 +117,25 @@ const std::filesystem::path& RuntimeReadPath(const VansAssetRecord& record)
 	return !record.artifactPath.empty() ? record.artifactPath : record.sourcePath;
 }
 
-const std::filesystem::path& AuthoringReadPath(const VansAssetRecord& record)
-{
-	return !record.authoringPath.empty() ? record.authoringPath : record.sourcePath;
-}
-
 std::string RuntimeAssetNameFromGuid(const std::string& guid)
 {
 	if (guid.empty())
 		return {};
 
-	for (const VansAssetRecord& record : VansProjectManager::Get().EnumerateAssetRecords())
-	{
-		if (record.guid.ToString() != guid)
-			continue;
-
-		VansAssetMeta meta;
-		std::string error;
-		if (VansAssetMetaStorage::Load(record.metaPath, meta, error) && meta.HasObjectSettings())
-		{
-			const std::string runtimeName = meta.ReadStringSetting("runtimeName");
-			if (!runtimeName.empty())
-				return runtimeName;
-		}
-
-		if (record.type == VansAssetType::Shader)
-		{
-			VansShaderAuthoringAsset shader;
-			if (VansShaderAuthoringAssetStorage::Load(AuthoringReadPath(record), shader, error) && !shader.name.empty())
-				return shader.name;
-		}
+	VansAssetGuid parsedGuid;
+	if (!VansAssetGuid::TryParse(guid, parsedGuid))
 		return guid;
+	const VansAssetObjectRepository& repository =
+		VansProjectManager::Get().GetAssetObjectRepository();
+	if (const auto meta = repository.ResolveLatest<VansAssetMeta>(parsedGuid))
+	{
+		const std::string runtimeName = meta->ReadStringSetting("runtimeName");
+		if (!runtimeName.empty())
+			return runtimeName;
 	}
+	if (const auto shader = repository.ResolveLatest<VansShaderAuthoringAsset>(parsedGuid);
+		shader && !shader->name.empty())
+		return shader->name;
 	return guid;
 }
 
@@ -219,24 +205,16 @@ bool TryApplyAudioReverbPresetAsset(
 	if (!VansAssetGuid::TryParse(guidText, guid))
 		return false;
 
-	const std::optional<VansAssetRecord> record = VansProjectManager::Get().FindAssetRecord(guid);
-	if (!record || record->type != VansAssetType::AudioReverbPreset ||
-		record->state == VansAssetState::Missing)
+	const auto asset = VansProjectManager::Get().GetAssetObjectRepository()
+		.ResolveLatest<VansAudioReverbPresetAsset>(guid);
+	if (!asset)
 	{
-		return false;
-	}
-
-	VansAudioReverbPresetAsset asset;
-	std::string error;
-	if (!VansAudioReverbPresetAssetStorage::Load(AuthoringReadPath(*record), asset, error))
-	{
-		VANS_LOG_ERROR("[SceneRuntimeProjection] Cannot read audio reverb preset asset: "
-			<< AuthoringReadPath(*record).string() << " (" << error << ")");
+		VANS_LOG_ERROR("[SceneRuntimeProjection] Audio reverb preset is not loaded: " << guidText);
 		return false;
 	}
 
 	config.presetAssetGuid = guidText;
-	config.presetParameters = asset.parameters;
+	config.presetParameters = asset->parameters;
 	config.overridePresetParameters = true;
 	return true;
 }
@@ -295,23 +273,15 @@ bool TryMergeSkinProfileAsset(VansSerializedValue& material, const VansSerialize
 	if (!VansAssetGuid::TryParse(guidText, guid))
 		return false;
 
-	const std::optional<VansAssetRecord> record = VansProjectManager::Get().FindAssetRecord(guid);
-	if (!record || record->type != VansAssetType::SkinProfile || record->state == VansAssetState::Missing)
+	const auto profile = VansProjectManager::Get().GetAssetObjectRepository()
+		.ResolveLatest<VansSkinProfile>(guid);
+	if (!profile)
 	{
-		VANS_LOG_WARN("[SceneRuntimeProjection] skinProfile reference is not a valid SkinProfile asset: " << guidText);
+		VANS_LOG_WARN("[SceneRuntimeProjection] Skin Profile is not loaded: " << guidText);
 		return false;
 	}
 
-	VansSkinProfile profile;
-	std::string error;
-	if (!VansSkinProfileStorage::Load(AuthoringReadPath(*record), profile, error))
-	{
-		VANS_LOG_ERROR("[SceneRuntimeProjection] Cannot read skin profile asset: "
-			<< AuthoringReadPath(*record).string() << " (" << error << ")");
-		return false;
-	}
-
-	const VansSerializedValue profileParameters = BuildSkinProfileMaterialParametersValue(profile);
+	const VansSerializedValue profileParameters = BuildSkinProfileMaterialParametersValue(*profile);
 	std::vector<VansSerializedValue> inheritedFields;
 	for (const auto& [name, value] : profileParameters.objectFields)
 	{
@@ -326,7 +296,7 @@ bool TryMergeSkinProfileAsset(VansSerializedValue& material, const VansSerialize
 	SetSerializedObjectField(
 		material,
 		"skinProfile",
-		VansSerializedValue::String(profile.basePreset.empty() ? "custom" : profile.basePreset));
+		VansSerializedValue::String(profile->basePreset.empty() ? "custom" : profile->basePreset));
 	SetSerializedObjectField(material, "skinProfileAssetGuid", VansSerializedValue::String(guidText));
 	SetSerializedObjectField(material, "skinProfileInheritedFields", VansSerializedValue::Array(std::move(inheritedFields)));
 	return true;
@@ -345,19 +315,15 @@ VansSerializedValue RuntimeShaderAssetFromReference(const VansSerializedValue& r
 	if (!VansAssetGuid::TryParse(guidText, guid))
 		return VansSerializedValue::Object({});
 
-	std::optional<VansAssetRecord> record = VansProjectManager::Get().FindAssetRecord(guid);
-	if (!record || record->type != VansAssetType::Shader)
-		return VansSerializedValue::Object({});
-
-	VansShaderAuthoringAsset shader;
-	std::string error;
-	if (!VansShaderAuthoringAssetStorage::Load(AuthoringReadPath(*record), shader, error))
+	const auto shader = VansProjectManager::Get().GetAssetObjectRepository()
+		.ResolveLatest<VansShaderAuthoringAsset>(guid);
+	if (!shader)
 	{
-		VANS_LOG_ERROR("[SceneRuntimeProjection] Cannot read shader asset: " << AuthoringReadPath(*record).string() << " (" << error << ")");
+		VANS_LOG_ERROR("[SceneRuntimeProjection] Shader asset is not loaded: " << guidText);
 		return VansSerializedValue::Object({});
 	}
-	return shader.root.kind == VansSerializedValue::Kind::Object
-		? shader.root
+	return shader->root.kind == VansSerializedValue::Kind::Object
+		? shader->root
 		: VansSerializedValue::Object({});
 }
 
@@ -471,13 +437,15 @@ VansSerializedValue RuntimeMaterialShaderValue(const VansSerializedValue& shader
 
 std::optional<VansSceneMaterialConfig> RuntimeMaterialConfigFromAsset(const VansAssetRecord& record)
 {
-	VansMaterialAuthoringAsset asset;
-	std::string error;
-	if (!VansMaterialAuthoringAssetStorage::Load(AuthoringReadPath(record), asset, error))
+	const auto assetObject = VansProjectManager::Get().GetAssetObjectRepository()
+		.ResolveLatest<VansMaterialAuthoringAsset>(record.guid);
+	if (!assetObject)
 	{
-		VANS_LOG_ERROR("[SceneRuntimeProjection] Cannot read material asset: " << AuthoringReadPath(record).string() << " (" << error << ")");
+		VANS_LOG_ERROR("[SceneRuntimeProjection] Material asset is not loaded: "
+			<< record.guid.ToString());
 		return std::nullopt;
 	}
+	const VansMaterialAuthoringAsset& asset = *assetObject;
 
 	const std::string materialType = MaterialAuthoringTypeOrDefault(asset.materialType);
 	const std::string preferredRoot = asset.preferredImportModel;
@@ -754,6 +722,20 @@ std::array<float, 3> ReadSerializedFloat3ArrayField(
 	};
 }
 
+std::array<float, 2> ReadSerializedFloat2ArrayField(
+	const VansSerializedValue& object,
+	const char* key,
+	const std::array<float, 2>& fallback)
+{
+	const VansSerializedValue* value = FindObjectField(object, key);
+	if (!value || value->kind != VansSerializedValue::Kind::Array || value->arrayItems.size() < 2)
+		return fallback;
+	return {
+		static_cast<float>(ReadSerializedNumber(value->arrayItems[0], fallback[0])),
+		static_cast<float>(ReadSerializedNumber(value->arrayItems[1], fallback[1]))
+	};
+}
+
 std::array<float, 3> ClampFloat3(
 	const std::array<float, 3>& value,
 	float minValue,
@@ -764,6 +746,120 @@ std::array<float, 3> ClampFloat3(
 		std::clamp(value[1], minValue, maxValue),
 		std::clamp(value[2], minValue, maxValue)
 	};
+}
+
+bool ReadLocalFogMapping2D(
+	const VansSerializedValue* value,
+	const char* fieldName,
+	VansLocalFogTextureMapping2DConfig& mapping)
+{
+	if (!value)
+		return true;
+	bool valid = true;
+	const std::string projection = ReadSerializedStringField(
+		*value, "projection", ToString(mapping.projection));
+	if (!TryParseLocalFogTextureProjection(projection, mapping.projection))
+	{
+		VANS_LOG_ERROR("[LocalVolumetricFog] " << fieldName
+			<< ".mapping.projection must be 'localXZ'");
+		valid = false;
+	}
+	mapping.tiling = ReadSerializedFloat2ArrayField(*value, "tiling", mapping.tiling);
+	mapping.offset = ReadSerializedFloat2ArrayField(*value, "offset", mapping.offset);
+	const std::string addressMode = ReadSerializedStringField(
+		*value, "addressMode", ToString(mapping.addressMode));
+	if (!TryParseLocalFogTextureAddressMode(addressMode, mapping.addressMode))
+	{
+		VANS_LOG_ERROR("[LocalVolumetricFog] " << fieldName
+			<< ".mapping.addressMode is invalid: " << addressMode);
+		valid = false;
+	}
+	return valid;
+}
+
+void ReadLocalFogScalarLayer(
+	const VansSerializedValue& componentData,
+	const char* fieldName,
+	VansLocalFogScalarDensityLayerConfig& layer)
+{
+	const VansSerializedValue* value = FindSerializedObjectField(componentData, fieldName);
+	if (!value)
+		return;
+	bool valid = true;
+	layer.enabled = ReadSerializedBoolField(*value, "enabled", layer.enabled);
+	if (const VansSerializedValue* source = FindSerializedObjectField(*value, "source"))
+	{
+		if (const VansSerializedValue* asset = FindSerializedObjectField(*source, "asset"))
+			layer.source.assetGuid = ReadSerializedStringField(*asset, "guid");
+		const std::string channels = ReadSerializedStringField(
+			*source, "channels", ToString(layer.source.channel));
+		if (!TryParseLocalFogScalarTextureChannels(
+			channels, layer.source.channel))
+		{
+			VANS_LOG_ERROR("[LocalVolumetricFog] " << fieldName
+				<< ".source.channels must be one of r/g/b/a");
+			valid = false;
+		}
+	}
+	valid = ReadLocalFogMapping2D(
+		FindSerializedObjectField(*value, "mapping"), fieldName, layer.mapping) && valid;
+	const std::array<float, 2> inputRange = ReadSerializedFloat2ArrayField(
+		*value, "inputRange", { layer.inputMinimum, layer.inputMaximum });
+	layer.inputMinimum = inputRange[0];
+	layer.inputMaximum = inputRange[1];
+	layer.influence = ReadFloatFieldClamped(
+		*value, "influence", layer.influence, 0.0f, 1.0f);
+	layer.lodBias = ReadFloatFieldClamped(
+		*value, "lodBias", layer.lodBias, -16.0f, 16.0f);
+	layer.invert = ReadSerializedBoolField(*value, "invert", layer.invert);
+	if (!valid)
+		layer.enabled = false;
+}
+
+void ReadLocalFogFlow(
+	const VansSerializedValue& componentData,
+	VansLocalFogFlowConfig& flow)
+{
+	const VansSerializedValue* value = FindSerializedObjectField(componentData, "flow");
+	if (!value)
+		return;
+	bool valid = true;
+	flow.enabled = ReadSerializedBoolField(*value, "enabled", flow.enabled);
+	if (const VansSerializedValue* source = FindSerializedObjectField(*value, "source"))
+	{
+		if (const VansSerializedValue* asset = FindSerializedObjectField(*source, "asset"))
+			flow.source.assetGuid = ReadSerializedStringField(*asset, "guid");
+		std::string defaultChannels = ToString(flow.source.xChannel);
+		defaultChannels += ToString(flow.source.zChannel);
+		const std::string channels = ReadSerializedStringField(*source, "channels", defaultChannels);
+		VansLocalFogTextureChannel xChannel = flow.source.xChannel;
+		VansLocalFogTextureChannel zChannel = flow.source.zChannel;
+		if (!TryParseLocalFogVector2TextureChannels(
+			channels, xChannel, zChannel))
+		{
+			VANS_LOG_ERROR("[LocalVolumetricFog] flow.source.channels must contain two distinct r/g/b/a channels");
+			valid = false;
+		}
+		else
+		{
+			flow.source.xChannel = xChannel;
+			flow.source.zChannel = zChannel;
+		}
+	}
+	valid = ReadLocalFogMapping2D(
+		FindSerializedObjectField(*value, "mapping"), "flow", flow.mapping) && valid;
+	flow.fallbackDirectionLocalXZ = ReadSerializedFloat2ArrayField(
+		*value, "fallbackDirectionLocalXZ", flow.fallbackDirectionLocalXZ);
+	flow.speedMetersPerSecond = ReadFloatFieldClamped(
+		*value, "speedMetersPerSecond", flow.speedMetersPerSecond, 0.0f, 100000.0f);
+	flow.loopDistanceMeters = ReadFloatFieldClamped(
+		*value, "loopDistanceMeters", flow.loopDistanceMeters, 0.01f, 100000.0f);
+	flow.phaseOffset01 = ReadFloatFieldClamped(
+		*value, "phaseOffset01", flow.phaseOffset01, -100000.0f, 100000.0f);
+	flow.lodBias = ReadFloatFieldClamped(
+		*value, "lodBias", flow.lodBias, -16.0f, 16.0f);
+	if (!valid)
+		flow.enabled = false;
 }
 
 VansSceneTransformConfig BuildAuthoringObjectTransform(
@@ -1044,13 +1140,13 @@ VansSceneCameraMediaComponentConfig ReadAuthoringCameraMediaComponents(const Van
 		{
 			config.audio = VansSceneCameraMediaComponentReader::ReadAudio(
 				componentData,
-				[](const VansSerializedValue& source) { return RuntimeAssetNameFromReference(source); });
+				[](const VansSerializedValue& source) { return AssetGuidFromReference(source); });
 		}
 		else if (type == "Video")
 		{
 			config.video = VansSceneCameraMediaComponentReader::ReadVideo(
 				componentData,
-				[](const VansSerializedValue& source) { return RuntimeAssetNameFromReference(source); });
+				[](const VansSerializedValue& source) { return AssetGuidFromReference(source); });
 		}
 	}
 	return config;
@@ -1117,18 +1213,17 @@ std::optional<VansSceneAudioReverbZoneConfig> ReadAuthoringAudioReverbZoneCompon
 }
 
 std::optional<VansSceneLocalVolumetricFogComponentConfig>
-ReadAuthoringLocalVolumetricFogComponent(const VansSerializedValue& entity)
+ReadAuthoringLocalVolumetricFogComponentValue(const VansSerializedValue& component)
 {
-	const VansSerializedValue* component = FindComponent(entity, "LocalVolumetricFog");
-	if (!component)
+	if (ReadSerializedStringField(component, "type") != "LocalVolumetricFog")
 		return std::nullopt;
 
 	VansSerializedValue emptyData = VansSerializedValue::Object({});
-	const VansSerializedValue* data = FindSerializedObjectField(*component, "data");
+	const VansSerializedValue* data = FindSerializedObjectField(component, "data");
 	const VansSerializedValue& componentData = data ? *data : emptyData;
 
 	VansSceneLocalVolumetricFogComponentConfig config;
-	config.enabled = ReadSerializedBoolField(*component, "enabled", true);
+	config.enabled = ReadSerializedBoolField(component, "enabled", true);
 	config.visibilityDistanceMeters = ReadFloatFieldClamped(
 		componentData, "visibilityDistanceMeters",
 		config.visibilityDistanceMeters, 0.1f, 100000.0f);
@@ -1160,7 +1255,27 @@ ReadAuthoringLocalVolumetricFogComponent(const VansSerializedValue& entity)
 		config.skyLightingScale, 0.0f, 1000.0f);
 	config.receiveCloudShadows = ReadSerializedBoolField(
 		componentData, "receiveCloudShadows", config.receiveCloudShadows);
+	ReadLocalFogScalarLayer(componentData, "shapeMask", config.shapeMask);
+	ReadLocalFogScalarLayer(componentData, "detailNoise", config.detailNoise);
+	ReadLocalFogFlow(componentData, config.flow);
+	NormalizeLocalVolumetricFogConfig(config);
+	if (config.flow.enabled && config.detailNoise.enabled &&
+		config.flow.speedMetersPerSecond > 1.0e-6f &&
+		config.detailNoise.mapping.addressMode != VansLocalFogTextureAddressMode::Repeat)
+	{
+		VANS_LOG_ERROR("[LocalVolumetricFog] Flowed detailNoise requires addressMode 'repeat'; Flow is disabled for this component");
+		config.flow.enabled = false;
+	}
 	return config;
+}
+
+std::optional<VansSceneLocalVolumetricFogComponentConfig>
+ReadAuthoringLocalVolumetricFogComponent(const VansSerializedValue& entity)
+{
+	const VansSerializedValue* component = FindComponent(entity, "LocalVolumetricFog");
+	return component
+		? ReadAuthoringLocalVolumetricFogComponentValue(*component)
+		: std::nullopt;
 }
 
 std::optional<VansSceneMultiMeshRootConfig> ReadAuthoringMultiMeshRootComponent(
@@ -1216,41 +1331,29 @@ std::optional<VansGameplayActionHostSetup> ReadAuthoringActionHostComponent(
 			VansGameplayDirectGrant grant;
 			if (const VansSerializedValue* action = FindObjectField(item, "action"))
 				grant.action = ReadGameplayAssetReference(*action);
-			grant.level = FindObjectField(item, "level")
-				? ReadSerializedNumber(*FindObjectField(item, "level"), 1.0) : 1.0;
-			grant.inputBinding = ReadSerializedStringField(item, "inputBinding");
-			grant.charges = static_cast<std::int32_t>(ReadSerializedIntField(item, "charges", -1));
-			const std::string persistence = ReadSerializedStringField(item, "persistence", "OwnerLifetime");
-			if (persistence == "Transient") grant.persistence = VansActionGrantPersistence::Transient;
-			else if (persistence == "Persistent") grant.persistence = VansActionGrantPersistence::Persistent;
-			if (const VansSerializedValue* tags = FindSerializedArrayField(item, "dynamicTags"))
-				for (const VansSerializedValue& tag : tags->arrayItems)
-					if (tag.kind == VansSerializedValue::Kind::String)
-						grant.dynamicTags.push_back(tag.stringValue);
+			if (const VansSerializedValue* extensions =
+				FindSerializedArrayField(item, "extensions"))
+				for (const VansSerializedValue& extension : extensions->arrayItems)
+				{
+					if (extension.kind != VansSerializedValue::Kind::Object) continue;
+					const std::string type = ReadSerializedStringField(extension, "type");
+					const VansSerializedValue* inputs = FindObjectField(extension, "inputs");
+					if (!type.empty() && inputs &&
+						inputs->kind == VansSerializedValue::Kind::Object)
+						grant.extensions.push_back({ type, *inputs });
+				}
 			if (!grant.action.empty()) setup.grants.push_back(std::move(grant));
 		}
-	if (const VansSerializedValue* tags = FindSerializedArrayField(*data, "initialTags"))
-		for (const VansSerializedValue& item : tags->arrayItems)
-		{
-			VansGameplayInitialTag initial;
-			if (item.kind == VansSerializedValue::Kind::String) initial.tag = item.stringValue;
-			else if (item.kind == VansSerializedValue::Kind::Object)
-			{
-				initial.tag = ReadSerializedStringField(item, "tag");
-				initial.count = static_cast<std::uint32_t>(std::max<std::int64_t>(1,
-					ReadSerializedIntField(item, "count", 1)));
-			}
-			if (!initial.tag.empty()) setup.initialTags.push_back(std::move(initial));
-		}
-	if (const VansSerializedValue* attributes = FindSerializedArrayField(*data, "initialAttributes"))
-		for (const VansSerializedValue& item : attributes->arrayItems)
+	if (const VansSerializedValue* initializers = FindSerializedArrayField(*data, "initializers"))
+		for (const VansSerializedValue& item : initializers->arrayItems)
 		{
 			if (item.kind != VansSerializedValue::Kind::Object) continue;
-			VansGameplayInitialAttribute initial;
-			initial.attribute = ReadSerializedStringField(item, "attribute");
-			if (const VansSerializedValue* value = FindObjectField(item, "value"))
-				initial.value = ReadSerializedNumber(*value);
-			if (!initial.attribute.empty()) setup.initialAttributes.push_back(std::move(initial));
+			VansGameplayHostInitializer initializer;
+			initializer.type = ReadSerializedStringField(item, "type");
+			if (const VansSerializedValue* inputs = FindObjectField(item, "inputs");
+				inputs && inputs->kind == VansSerializedValue::Kind::Object)
+				initializer.inputs = *inputs;
+			if (!initializer.type.empty()) setup.initializers.push_back(std::move(initializer));
 		}
 	if (const VansSerializedValue* autoActivate = FindSerializedArrayField(*data, "autoActivate"))
 		for (const VansSerializedValue& item : autoActivate->arrayItems)
@@ -1277,8 +1380,6 @@ std::optional<VansSceneNavigationAgentConfig> ReadAuthoringNavigationAgentCompon
 		VansAssetGuid guid;
 		if (VansAssetGuid::TryParse(reference, guid))
 			config.runtime.navigationMeshGuid = reference;
-		config.runtime.navigationMeshPath = ProjectRelativeAssetPathFromGuid(
-			reference, VansAssetType::NavigationMesh, projectRoot, true);
 	}
 	auto readFloat = [&](const char* name, float current)
 	{
@@ -1313,8 +1414,6 @@ std::optional<VansSceneAIAgentConfig> ReadAuthoringAIAgentComponent(
 		VansAssetGuid guid;
 		if (VansAssetGuid::TryParse(reference, guid))
 			config.runtime.behaviorGuid = reference;
-		config.runtime.behaviorPath = ProjectRelativeAssetPathFromGuid(
-			reference, VansAssetType::AIBehavior, projectRoot, true);
 	}
 	config.runtime.targetTag = ReadSerializedStringField(
 		*data, "targetTag", config.runtime.targetTag);
@@ -1448,14 +1547,6 @@ bool AppendAuthoringEntityToContentPlan(
 	objectConfig.uiComponents = std::move(uiComponents);
 	objectConfig.multiMeshRoot = ReadAuthoringMultiMeshRootComponent(entity);
 	objectConfig.physicsComponents = VansScenePhysicsComponentReader::ReadAuthoringComponents(entity);
-	if (objectConfig.physicsComponents.cloth && objectConfig.physicsComponents.cloth->profilePath)
-	{
-		objectConfig.physicsComponents.cloth->profilePath = ProjectRelativeAssetPathFromGuid(
-			*objectConfig.physicsComponents.cloth->profilePath,
-			VansAssetType::ClothProfile,
-			projectRoot,
-			true);
-	}
 	objectConfig.vehicleObject = VansSceneVehicleComponentReader::ReadAuthoringComponents(entity);
 	objectConfig.lightComponents = ReadAuthoringLightComponents(entity);
 	objectConfig.cameraMediaComponents = ReadAuthoringCameraMediaComponents(entity);
@@ -1463,44 +1554,7 @@ bool AppendAuthoringEntityToContentPlan(
 	objectConfig.localVolumetricFog =
 		ReadAuthoringLocalVolumetricFogComponent(entity);
 	objectConfig.animation = VansSceneAnimationComponentReader::ReadFromAuthoringEntity(entity);
-	if (objectConfig.animation)
-	{
-		objectConfig.animation->animator = ProjectRelativeAssetPathFromGuid(
-			objectConfig.animation->animator,
-			VansAssetType::AnimatorController,
-			projectRoot,
-			true);
-		if (objectConfig.animation->retarget)
-		{
-			objectConfig.animation->retarget->sourceModel = ProjectRelativeAssetPathFromGuid(
-				objectConfig.animation->retarget->sourceModel,
-				VansAssetType::Model,
-				projectRoot,
-				false);
-			objectConfig.animation->retarget->sourceAnimator = ProjectRelativeAssetPathFromGuid(
-				objectConfig.animation->retarget->sourceAnimator,
-				VansAssetType::AnimatorController,
-				projectRoot,
-				false);
-		}
-		if (objectConfig.animation->ragdoll)
-		{
-			objectConfig.animation->ragdoll->profile = ProjectRelativeAssetPathFromGuid(
-				objectConfig.animation->ragdoll->profile,
-				VansAssetType::RagdollProfile,
-				projectRoot,
-				true);
-		}
-	}
 	objectConfig.particle = ReadAuthoringParticleComponent(entity);
-	if (objectConfig.particle)
-	{
-		objectConfig.particle->assetPath = ProjectRelativeAssetPathFromGuid(
-			objectConfig.particle->assetPath,
-			VansAssetType::Particle,
-			projectRoot,
-			false);
-	}
 	objectConfig.timeline = VansSceneTimelineComponentReader::ReadFromAuthoringEntity(entity);
 	if (objectConfig.timeline)
 	{
@@ -1518,11 +1572,65 @@ bool AppendAuthoringEntityToContentPlan(
 	plan.objects.objects.push_back(std::move(objectConfig));
 	return true;
 }
+
+bool AppendAuthoringEntitiesToContentPlan(
+	const VansSerializedValue& entities,
+	VansSceneContentBuildPlan& plan,
+	const std::string& projectRoot,
+	std::string& outError)
+{
+	if (entities.kind != VansSerializedValue::Kind::Array)
+	{
+		outError = "Runtime Scene entity payload must be an array";
+		return false;
+	}
+
+	plan.objects.objects.reserve(
+		plan.objects.objects.size() + entities.arrayItems.size());
+	for (const VansSerializedValue& entity : entities.arrayItems)
+	{
+		if (!AppendAuthoringEntityToContentPlan(entity, plan, projectRoot))
+		{
+			outError = "Invalid Scene entity";
+			return false;
+		}
+	}
+	return true;
+}
 }
 
 VansSerializedValue VansSceneRuntimeProjection::BuildSkinProfileMaterialParameters(const VansSkinProfile& profile)
 {
 	return BuildSkinProfileMaterialParametersValue(profile);
+}
+
+bool VansSceneRuntimeProjection::ProjectLocalVolumetricFogComponent(
+	const VansSerializedValue& component,
+	VansSceneLocalVolumetricFogComponentConfig& outConfig)
+{
+	const auto projected = ReadAuthoringLocalVolumetricFogComponentValue(component);
+	if (!projected)
+		return false;
+	outConfig = *projected;
+	return true;
+}
+
+bool VansSceneRuntimeProjection::BuildRuntimeSceneEntityPlan(
+	const VansSerializedValue& entities,
+	const std::string& projectRoot,
+	VansSceneContentBuildPlan& outPlan,
+	std::string& outError)
+{
+	outPlan = {};
+	outError.clear();
+	if (!AppendAuthoringEntitiesToContentPlan(
+		entities, outPlan, projectRoot, outError))
+	{
+		outPlan = {};
+		return false;
+	}
+	outPlan.valid = true;
+	return true;
 }
 
 bool VansSceneRuntimeProjection::BuildRuntimeSceneContentPlan(
@@ -1570,15 +1678,11 @@ bool VansSceneRuntimeProjection::BuildRuntimeSceneContentPlan(
 		}
 	}
 
-	outPlan.objects.objects.reserve(entities->arrayItems.size());
-	for (const VansSerializedValue& entity : entities->arrayItems)
+	if (!AppendAuthoringEntitiesToContentPlan(
+		*entities, outPlan, projectRoot, outError))
 	{
-		if (!AppendAuthoringEntityToContentPlan(entity, outPlan, projectRoot))
-		{
-			outError = "Invalid Scene entity";
-			outPlan = {};
-			return false;
-		}
+		outPlan = {};
+		return false;
 	}
 
 	if (settings)
@@ -1586,7 +1690,30 @@ bool VansSceneRuntimeProjection::BuildRuntimeSceneContentPlan(
 		if (const VansSerializedValue* terrain = FindSerializedObjectField(*settings, "terrain"))
 			outPlan.terrain = VansSceneEnvironmentNodeConfigReader::ReadTerrain(*terrain);
 		if (const VansSerializedValue* vegetation = FindSerializedObjectField(*settings, "vegetation"))
-			outPlan.vegetation = VansSceneEnvironmentNodeConfigReader::ReadVegetation(*vegetation, projectRoot);
+		{
+			VansAssetGuid vegetationGuid;
+			const std::string guidText =
+				VansVegetationConfigCodec::ReadReferenceGuid(*vegetation);
+			if (!VansAssetGuid::TryParse(guidText, vegetationGuid))
+			{
+				outError = "Scene vegetation reference must contain a valid asset GUID";
+				outPlan = {};
+				return false;
+			}
+			const std::shared_ptr<const VansVegetationConfigAsset> asset =
+				VansProjectManager::Get().GetAssetObjectRepository()
+					.ResolveLatest<VansVegetationConfigAsset>(vegetationGuid);
+			VansSceneVegetationNodeConfig resolvedVegetation;
+			if (!asset || !VansVegetationConfigCodec::ResolveReference(
+				*vegetation, *asset, resolvedVegetation, outError))
+			{
+				if (outError.empty())
+					outError = "Scene vegetation asset is not loaded in the object repository: " + guidText;
+				outPlan = {};
+				return false;
+			}
+			outPlan.vegetation = std::move(resolvedVegetation);
+		}
 		if (const VansSerializedValue* water = FindSerializedObjectField(*settings, "water"))
 			outPlan.water = VansSceneEnvironmentNodeConfigReader::ReadWater(*water);
 	}

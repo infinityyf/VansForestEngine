@@ -9,7 +9,6 @@ namespace Vans
 struct VansRuntimeNavigationAgentComponent
 {
 	std::string navigationMeshGuid;
-	std::string navigationMeshPath;
 	float maxSpeed = 3.2f;
 	float acceleration = 12.0f;
 	float stoppingDistance = 1.6f;
@@ -38,7 +37,6 @@ struct VansRuntimeAIFacingConfig
 struct VansRuntimeAIAgentComponent
 {
 	std::string behaviorGuid;
-	std::string behaviorPath;
 	std::string targetTag = "Target.Character.Player";
 	std::string readyAnimationState = "Idle1";
 	std::string movementParameter = "MoveState";

@@ -2,12 +2,16 @@
 
 #include "../../AnimationCore/Storage/VansAnimationRigStorage.h"
 #include "../../AnimationCore/VansAnimationController.h"
+#include "../../AssetCore/VansAssetGuid.h"
+#include "../../AssetCore/VansAssetObjectRepository.h"
+#include "../../ProjectSystem/VansProjectManager.h"
 #include "../../SceneRuntime/Transform/VansTransformGraph.h"
 
 #include <../../GLM/gtc/quaternion.hpp>
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <iterator>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -125,19 +129,55 @@ namespace Vans::EditorAPI
 			error = "Animation preview target has no compiled Animation Rig";
 			return false;
 		}
-		if (controller.GetAnimationRigAssetGuid().empty()
-			|| controller.GetAnimationRigAssetPath().empty())
+		if (controller.GetAnimationRigAssetGuid().empty())
 		{
 			error = "Animation preview target has no Animation Rig asset identity";
 			return false;
 		}
-		RigSessionState state;
-		if (!VansGraphics::VansAnimationRigStorage::Load(
-			controller.GetAnimationRigAssetPath(), state.workingAsset, error))
+		VansAssetGuid rigGuid;
+		if (!VansAssetGuid::TryParse(controller.GetAnimationRigAssetGuid(), rigGuid))
+		{
+			error = "Animation preview target has an invalid Animation Rig asset GUID";
 			return false;
+		}
+		auto& project = VansProjectManager::Get();
+		const auto rigAsset = project.GetAssetObjectRepository()
+			.ResolveLatest<VansGraphics::VansAnimationRigAsset>(rigGuid);
+		if (!rigAsset)
+		{
+			error = "Animation Rig memory object is unavailable for preview authoring";
+			return false;
+		}
+		// 场景控制器由内存对象编译，不携带作者文件路径。只在工具层解析保存目标，
+		// 并使用作者文档而非 cooked artifact；开始预览时不重新读取 Rig 文件。
+		const auto record = project.FindAssetRecord(rigGuid);
+		if (!record || record->type != VansAssetType::AnimationRig)
+		{
+			error = "Animation Rig asset record is unavailable for preview authoring";
+			return false;
+		}
+		std::filesystem::path authoringPath = record->authoringPath.empty()
+			? record->sourcePath : record->authoringPath;
+		if (record->memoryOnly || record->state == VansAssetState::Missing
+			|| authoringPath.empty())
+		{
+			error = "Animation Rig has no authoring document for Socket editing";
+			return false;
+		}
+		if (authoringPath.is_relative())
+		{
+			if (!project.IsProjectLoaded())
+			{
+				error = "Animation Rig authoring document requires a loaded project root";
+				return false;
+			}
+			authoringPath = std::filesystem::path(project.GetProjectRootPath()) / authoringPath;
+		}
+		RigSessionState state;
+		state.workingAsset = *rigAsset;
 		state.originalCompiledRig = *compiledRig;
 		state.rigAssetGuid = controller.GetAnimationRigAssetGuid();
-		state.rigAssetPath = controller.GetAnimationRigAssetPath();
+		state.rigAssetPath = authoringPath.lexically_normal().string();
 		Sessions().insert_or_assign(sessionId, std::move(state));
 		return true;
 	}

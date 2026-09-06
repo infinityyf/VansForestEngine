@@ -137,8 +137,11 @@ namespace VansGraphics
 
 	struct VansRenderParticleFrameData final
 	{
-		std::uint32_t particleRenderNodeIndex = 0;
+		std::uint32_t particleRenderNodeIndex = UINT32_MAX;
 		std::vector<VansParticleInstanceData> instances;
+		// 体积粒子为独立的可选帧通道；未启用时始终为空且 feature=false。
+		std::vector<VansVolumetricParticleInstanceData> volumetricInstances;
+		bool volumetricInjectionEnabled = false;
 	};
 
 	struct VansRenderRectLightVideoFrameData final

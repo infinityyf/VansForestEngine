@@ -1,0 +1,5 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#define VANS_NEAR_MEDIA_WITH_PARTICLE_REACTIVE_HISTORY 0
+#include "NearMediaTemporalResolveCommon.glsl"

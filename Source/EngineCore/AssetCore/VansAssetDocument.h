@@ -56,7 +56,11 @@ public:
     VansAssetDocument& operator=(const VansAssetDocument&) = delete;
 
     bool Load(const std::filesystem::path& path, std::string& error);
+	// 建立尚未落盘的新作者文档；首次显式保存仍执行缺失文件指纹检查。
+	bool InitializeNew(const std::filesystem::path& path, VansSerializedValue root, std::string& error);
     bool StageSave(VansAssetDocumentSaveStage& stage, std::string& error) const;
+	bool ObservePublishedSave(const VansAssetDocumentSaveStage& stage, std::string& error);
+	void AdoptObservedSave(const VansAssetDocumentSaveStage& stage);
     bool AdoptStagedSave(const VansAssetDocumentSaveStage& stage, std::string& error);
 
     const std::filesystem::path& Path() const { return m_Path; }

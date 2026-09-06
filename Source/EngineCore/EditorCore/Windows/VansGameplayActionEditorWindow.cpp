@@ -205,7 +205,6 @@ void VansGameplayActionEditorWindow::DrawOverview()
 		};
 		row("Asset", m_Document.assetKind);
 		row("Path", m_Document.sourcePath);
-		row("Schema", std::to_string(m_Document.schemaVersion));
 		row("State", m_Document.dirty ? "Modified" : "Saved");
 		ImGui::EndTable();
 	}
@@ -648,9 +647,7 @@ void VansGameplayActionEditorWindow::DrawGraph(
 			ApplyGraphOperation(editorAPI, std::move(request));
 		}
 		ImGui::EndDisabled();
-		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("%s%s", nodeType.type.c_str(),
-				nodeType.authorityOnly ? "\nAuthority only" : "");
+		if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", nodeType.type.c_str());
 		ImGui::PopID();
 	}
 	ImGui::EndChild();

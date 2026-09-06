@@ -34,6 +34,12 @@ const std::vector<VansBuiltInAssetEntry>& VansBuiltInAssetCatalog::Entries()
 			"b4b0a914-7e03-4b9a-92e9-fd6e73f32842",
 			"EngineAssets/Textures/Default/defaultSkinMask.png",
 			VansAssetType::Texture
+		},
+		{
+			nullptr,
+			BaseThemeGuid.data(),
+			"EngineAssets/ui/Themes/BaseTheme.xaml",
+			VansAssetType::UIXaml
 		}
 	};
 	return entries;

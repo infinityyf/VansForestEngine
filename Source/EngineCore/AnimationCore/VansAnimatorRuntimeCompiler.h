@@ -1,8 +1,8 @@
 #pragma once
 
+#include "VansAnimationClip.h"
 #include "VansAnimatorIO.h"
 
-#include <filesystem>
 #include <functional>
 #include <memory>
 
@@ -23,17 +23,18 @@ namespace VansGraphics
 		// Scene retarget targets may explicitly select a target-skeleton Rig while
 		// the Animator keeps its default Rig for direct/source evaluation.
 		std::string animationRigGuidOverride;
-		std::function<bool(const std::string&, std::filesystem::path&, std::string&)> rigResolver;
+		std::function<std::shared_ptr<const VansAnimationRigAsset>(
+			const std::string&, std::string&)> rigResolver;
 		VansGroundQueryProfileResolver queryProfileResolver;
 	};
 
 	using VansAnimatorClipResolver = std::function<bool(
 		const AnimatorClipRef&,
-		std::filesystem::path&,
+		std::shared_ptr<const VansAnimationClipAsset>&,
 		std::string&)>;
 	using VansAnimatorMaskResolver = std::function<bool(
 		const VansAnimationLayerDefinition&,
-		std::filesystem::path&,
+		std::shared_ptr<const VansBoneMaskAsset>&,
 		std::string&)>;
 
 	// The single Definition -> runtime Instance boundary shared by Scene build,

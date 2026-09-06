@@ -1,6 +1,5 @@
 #include "VansSceneContentBuildExecutor.h"
 
-#include "../../SceneCore/VansSceneDocumentLoader.h"
 #include "../../SceneCore/VansSceneRuntimeProjection.h"
 #include "../../ProjectSystem/VansProjectManager.h"
 #include "../../Util/VansLog.h"
@@ -26,53 +25,30 @@ void ApplyOptionalValue(const std::optional<T>& source, T& destination)
 	}
 }
 
-void LogSceneDocumentLoadDiagnostics(
-	const char* path,
-	const Vans::SceneDiagnostics& diagnostics)
-{
-	if (diagnostics.empty())
-	{
-		VANS_LOG_ERROR("[VansScene] Cannot load scene document: " << path);
-		return;
-	}
-
-	for (const Vans::SceneDiagnostic& diagnostic : diagnostics)
-	{
-		const char* severity = diagnostic.severity == Vans::SceneDiagnosticSeverity::Error
-			? "error"
-			: "warning";
-		VANS_LOG_ERROR("[VansScene] Scene document " << severity << " "
-			<< diagnostic.propertyPointer << ": " << diagnostic.message);
-	}
-}
 }
 
-bool VansSceneContentBuildExecutor::BuildFromFile(VansScene& scene, const char* path)
+bool VansSceneContentBuildExecutor::BuildFromDocument(
+	VansScene& scene,
+	const Vans::VansSerializedValue& sceneDocument,
+	const std::filesystem::path& sceneSourcePath)
 {
 	VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
 	VkDevice nativeDevice = vkDevice->GetLogicDevice();
 
-	Vans::SceneDocumentLoadResult loadResult = Vans::VansSceneDocumentLoader::Load(path);
-	if (!loadResult)
-	{
-		LogSceneDocumentLoadDiagnostics(path, loadResult.diagnostics);
-		return false;
-	}
-
-	const std::string projectRoot = ResolveProjectRootFromScenePath(path);
+	const std::string projectRoot = ResolveProjectRootFromScenePath(sceneSourcePath);
 	Vans::VansSceneContentBuildPlan buildPlan;
 	std::string planError;
 	if (!Vans::VansSceneRuntimeProjection::BuildRuntimeSceneContentPlan(
-		loadResult.document->SerializedRootSnapshot(),
+		sceneDocument,
 		projectRoot,
 		buildPlan,
 		planError))
 	{
-		VANS_LOG_ERROR("[VansScene] " << planError << ": " << path);
+		VANS_LOG_ERROR("[VansScene] " << planError << ": " << sceneSourcePath.string());
 		return false;
 	}
 
-	return BuildFromPlan(scene, nativeDevice, vkDevice, buildPlan, path, projectRoot);
+	return BuildFromPlan(scene, nativeDevice, vkDevice, buildPlan, sceneSourcePath, projectRoot);
 }
 
 bool VansSceneContentBuildExecutor::BuildFromPlan(
@@ -80,9 +56,10 @@ bool VansSceneContentBuildExecutor::BuildFromPlan(
 	VkDevice& nativeDevice,
 	VansVKDevice* vkDevice,
 	const Vans::VansSceneContentBuildPlan& buildPlan,
-	const char* path,
+	const std::filesystem::path& sceneSourcePath,
 	const std::string& projectRoot)
 {
+	const std::string sceneSourcePathString = sceneSourcePath.string();
 	const Vans::VansSceneRenderSettingsConfig& renderSettings = buildPlan.renderSettings;
 	scene.SetEnvironmentSettings(renderSettings.environment);
 	ApplyPostProcessSettings(*scene.GetMaterialManager(), renderSettings.postProcess);
@@ -93,7 +70,7 @@ bool VansSceneContentBuildExecutor::BuildFromPlan(
 			scene,
 			Vans::VansProjectManager::Get().GetProjectSettings().GetMainCameraHiZCullSettings());
 	}
-	scene.GetReflectionProbeSystem()->LoadFromSceneConfig(buildPlan.reflectionProbes, path);
+	scene.GetReflectionProbeSystem()->LoadFromSceneConfig(buildPlan.reflectionProbes, sceneSourcePathString);
 	ApplyGISettings(scene, renderSettings.globalIllumination);
 
 	if (!buildPlan.materials.empty())
@@ -117,7 +94,7 @@ bool VansSceneContentBuildExecutor::BuildFromPlan(
 	VansSceneRenderNodeBuilder::AddDeferredNode(scene, nativeDevice);
 	VansSceneRenderNodeBuilder::AddScreenSpaceFeatureNode(scene, nativeDevice);
 
-	VANS_LOG("[VansScene] Scene content loaded from: " << path);
+	VANS_LOG("[VansScene] Scene content loaded from: " << sceneSourcePathString);
 	return true;
 }
 
@@ -344,16 +321,13 @@ void VansSceneContentBuildExecutor::ApplyProjectMainCameraHiZCullSettings(
 	scene.SetMainCameraHiZCullSettings(settings);
 }
 
-std::string VansSceneContentBuildExecutor::ResolveProjectRootFromScenePath(const char* path)
+std::string VansSceneContentBuildExecutor::ResolveProjectRootFromScenePath(
+	const std::filesystem::path& sceneSourcePath)
 {
-	std::string scenePath(path);
-	std::string projectRoot = scenePath.substr(0, scenePath.find_last_of("/\\") + 1);
-	if (!projectRoot.empty())
-	{
-		size_t pos = projectRoot.substr(0, projectRoot.size() - 1).find_last_of("/\\");
-		if (pos != std::string::npos)
-			projectRoot = projectRoot.substr(0, pos + 1);
-	}
+	const std::filesystem::path projectRootPath = sceneSourcePath.parent_path().parent_path();
+	std::string projectRoot = projectRootPath.string();
+	if (!projectRoot.empty() && projectRoot.back() != '/' && projectRoot.back() != '\\')
+		projectRoot.push_back(std::filesystem::path::preferred_separator);
 	return projectRoot;
 }
 }

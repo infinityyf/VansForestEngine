@@ -1,7 +1,11 @@
 #include "VansClothProfileEditorWindow.h"
 
 #include "../../AssetCore/VansClothProfile.h"
-#include "../../AssetCore/Storage/VansClothProfileStorage.h"
+#include "../../AssetCore/Serialization/VansClothProfileJsonCodec.h"
+#include "../../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
+#include "../VansAssetDocumentEditService.h"
+#include "../VansAssetDocumentRegistry.h"
+#include "../VansEditorAssetSaveService.h"
 
 #include "../../Util/VansLog.h"
 
@@ -40,6 +44,7 @@
 #include <filesystem>
 
 #include <limits>
+#include <nlohmann/json.hpp>
 
 
 
@@ -207,7 +212,29 @@ namespace VansGraphics
 
     {
 
+        m_ActiveAPI = &api;
         m_ProjectRootPath = api.GetProjectRootPath();
+        if (m_Document && m_Document->sourceDocument.IsLoaded() &&
+            m_DocumentStateId != m_Document->sourceDocument.CurrentStateId())
+        {
+            const std::string previousModelPath = m_Profile->m_ModelPath;
+            if (DecodeProfileDocument())
+            {
+                if (previousModelPath != m_Profile->m_ModelPath)
+                {
+                    m_MeshLoaded = false;
+                    m_WeldedParticles.clear();
+                    m_WeldedTriangles.clear();
+                    if (!m_Profile->m_ModelPath.empty())
+                        LoadModelFromProfile();
+                }
+                m_EditorBones.clear();
+                m_SkeletonLoaded = false;
+                m_SkeletonLoadError.clear();
+                if (m_Profile->m_FollowBones && !m_Profile->m_ReferenceSkeletonPath.empty())
+                    LoadReferenceSkeleton();
+            }
+        }
 
         DrawProfileEditorContents();
 
@@ -243,7 +270,7 @@ namespace VansGraphics
 
         }
 
-        if (m_IsDirty)
+        if (m_Document && m_Document->IsDirty())
 
             title += " *";
 
@@ -295,19 +322,36 @@ namespace VansGraphics
 
                 {
 
-                    m_CurrentProfilePath = m_NewProfilePathBuf;
-
-                    *m_Profile = VansEngine::VansClothProfile{};
-
-                    m_Profile->m_Name     = fs::path(m_CurrentProfilePath).stem().string();
-
-                    m_MeshLoaded         = false;
-
-                    m_WeldedParticles.clear();
-
-                    m_WeldedTriangles.clear();
-
-                    m_IsDirty = true;
+                    fs::path requestedPath(m_NewProfilePathBuf);
+                    if (requestedPath.is_relative())
+                        requestedPath = fs::path(m_ProjectRootPath) / requestedPath;
+                    const fs::path directory = requestedPath.has_parent_path()
+                        ? requestedPath.parent_path()
+                        : fs::path(m_ProjectRootPath);
+                    const std::string name = requestedPath.stem().string();
+                    if (!m_ActiveAPI)
+                    {
+                        VANS_LOG_ERROR("[VansClothProfileEditor] Project asset API is unavailable");
+                    }
+                    else
+                    {
+                        const auto creation = m_ActiveAPI->CreateProjectAsset({
+                            directory.string(),
+                            Vans::EditorAPI::ProjectAssetCreationKind::ClothProfile,
+                            name.empty() ? std::string("Cloth Profile") : name });
+                        if (!creation.success)
+                        {
+                            VANS_LOG_ERROR("[VansClothProfileEditor] Profile creation failed: " << creation.message);
+                        }
+                        else
+                        {
+                            const auto refresh = m_ActiveAPI->RefreshProjectAsset(creation.assetPath, true);
+                            if (!refresh.success)
+                                VANS_LOG_ERROR("[VansClothProfileEditor] Profile import failed: " << refresh.message);
+                            else
+                                OpenProfile(creation.assetPath);
+                        }
+                    }
 
                 }
 
@@ -415,6 +459,9 @@ namespace VansGraphics
 
             m_CurrentProfilePath = "";
 
+            m_Document.reset();
+            m_DocumentStateId = 0;
+
             *m_Profile = VansEngine::VansClothProfile{};
 
             m_MeshLoaded         = false;
@@ -428,8 +475,6 @@ namespace VansGraphics
             m_SkeletonLoaded  = false;
 
             m_SkeletonLoadError.clear();
-
-            m_IsDirty = false;
 
             m_IsOpen  = true;
 
@@ -455,12 +500,8 @@ namespace VansGraphics
 
         m_SkeletonLoadError.clear();
 
-        m_IsDirty = false;
-
-
-
-        std::string loadError;
-        if (VansEngine::VansClothProfileStorage::Load(profilePath, *m_Profile, loadError))
+        m_Document = Vans::VansAssetDocumentRegistry::Get().GetOrOpen(profilePath);
+        if (DecodeProfileDocument())
 
         {
 
@@ -480,6 +521,9 @@ namespace VansGraphics
 
         {
 
+            const std::string loadError = m_Document
+                ? m_Document->lastError
+                : std::string("shared asset document is unavailable");
             VANS_LOG_WARN("[VansClothProfileEditor] Profile load failed: " << profilePath << " (" << loadError << ")");
 
         }
@@ -487,6 +531,56 @@ namespace VansGraphics
 
 
         m_IsOpen = true;
+
+    }
+
+    bool VansClothProfileEditorWindow::DecodeProfileDocument()
+
+    {
+
+        if (!m_Document || !m_Document->sourceDocument.IsLoaded())
+            return false;
+
+        const auto root = Vans::EncodeSerializedValueJson<nlohmann::ordered_json>(
+            m_Document->sourceDocument.SerializedRootSnapshot());
+        std::string error;
+        VansEngine::VansClothProfile decoded;
+        if (!VansEngine::VansClothProfileJsonCodec::Decode(
+                root, m_Document->sourcePath, decoded, error))
+        {
+            m_Document->lastError = error;
+            return false;
+        }
+
+        *m_Profile = std::move(decoded);
+        m_DocumentStateId = m_Document->sourceDocument.CurrentStateId();
+        m_Document->lastError.clear();
+        return true;
+
+    }
+
+    bool VansClothProfileEditorWindow::PublishProfileEdit()
+
+    {
+
+        if (!m_Document)
+        {
+            VANS_LOG_WARN("[VansClothProfileEditor] Create or open a Cloth Profile before editing");
+            return false;
+        }
+
+        const auto root = VansEngine::VansClothProfileJsonCodec::Encode(*m_Profile);
+        const auto result = Vans::VansAssetDocumentEditService::ReplaceRoot(
+            m_Document->sourceDocument,
+            Vans::DecodeSerializedValueJson(root));
+        if (!result)
+        {
+            m_Document->lastError = result.message;
+            VANS_LOG_ERROR("[VansClothProfileEditor] Working copy publication failed: " << result.message);
+            return false;
+        }
+        m_DocumentStateId = m_Document->sourceDocument.CurrentStateId();
+        return true;
 
     }
 
@@ -560,7 +654,7 @@ namespace VansGraphics
 
             m_Profile->m_Name = nameBuf;
 
-            m_IsDirty = true;
+            PublishProfileEdit();
 
         }
 
@@ -576,7 +670,7 @@ namespace VansGraphics
 
             m_Profile->m_Description = descBuf;
 
-            m_IsDirty = true;
+            PublishProfileEdit();
 
         }
 
@@ -592,7 +686,7 @@ namespace VansGraphics
 
             m_Profile->m_ModelPath = modelPathBuf;
 
-            m_IsDirty  = true;
+            PublishProfileEdit();
 
             m_MeshLoaded = false;
 
@@ -832,37 +926,37 @@ namespace VansGraphics
 
         if (ImGui::SliderFloat("刚度 (Stiffness)", &m_Profile->m_Stiffness, 0.0f, 1.0f))
 
-            m_IsDirty = true;
+            PublishProfileEdit();
 
 
 
         if (ImGui::SliderFloat("阻尼 (Damping)", &m_Profile->m_Damping, 0.0f, 1.0f))
 
-            m_IsDirty = true;
+            PublishProfileEdit();
 
 
 
         if (ImGui::SliderFloat("摩擦 (Friction)", &m_Profile->m_Friction, 0.0f, 1.0f))
 
-            m_IsDirty = true;
+            PublishProfileEdit();
 
 
 
         if (ImGui::SliderFloat("重力 Y (Gravity)", &m_Profile->m_Gravity, -30.0f, 0.0f))
 
-            m_IsDirty = true;
+            PublishProfileEdit();
 
 
 
         if (ImGui::Checkbox("自碰撞 (SelfCollision)", &m_Profile->m_SelfCollision))
 
-            m_IsDirty = true;
+            PublishProfileEdit();
 
 
 
         if (ImGui::SliderFloat("匹配容差 (MatchTol)", &m_Profile->m_PinnedMatchTolerance, 0.001f, 0.5f))
 
-            m_IsDirty = true;
+            PublishProfileEdit();
 
     }
 
@@ -904,7 +998,7 @@ namespace VansGraphics
 
                 p.m_IsPinned = false;
 
-            m_IsDirty = true;
+            PublishProfileEdit();
 
         }
 
@@ -1000,7 +1094,7 @@ namespace VansGraphics
 
                 }
 
-                m_IsDirty = true;
+                PublishProfileEdit();
 
                 continue;
 
@@ -1196,7 +1290,7 @@ namespace VansGraphics
 
                 SyncProfilePinnedVertices();
 
-                m_IsDirty = true;
+                PublishProfileEdit();
 
                 ImGui::PopID();
 
@@ -1256,7 +1350,7 @@ namespace VansGraphics
 
     {
 
-        if (m_CurrentProfilePath.empty())
+        if (m_CurrentProfilePath.empty() || !m_Document)
 
         {
 
@@ -1266,12 +1360,21 @@ namespace VansGraphics
 
         }
 
-        std::string saveError;
-        if (VansEngine::VansClothProfileStorage::SaveAtomic(m_CurrentProfilePath, *m_Profile, saveError))
+        if (!m_ActiveAPI)
 
         {
 
-            m_IsDirty = false;
+            VANS_LOG_ERROR("[VansClothProfileEditor] Save API is unavailable");
+
+            return;
+
+        }
+
+        const auto result = Vans::VansEditorAssetSaveService::Get().SaveAsset(
+            *m_ActiveAPI, m_Document);
+        if (result)
+
+        {
 
             VANS_LOG("[VansClothProfileEditor] Profile saved: " << m_CurrentProfilePath);
 
@@ -1281,7 +1384,7 @@ namespace VansGraphics
 
         {
 
-            VANS_LOG_ERROR("[VansClothProfileEditor] Profile save failed: " << m_CurrentProfilePath << " (" << saveError << ")");
+            VANS_LOG_ERROR("[VansClothProfileEditor] Profile save failed: " << m_CurrentProfilePath << " (" << result.message << ")");
 
         }
 
@@ -1301,11 +1404,29 @@ namespace VansGraphics
 
     {
 
-        if (m_CurrentProfilePath.empty()) return;
+        if (!m_Document) return;
 
-        OpenProfile(m_CurrentProfilePath);
+        const auto result = Vans::VansAssetDocumentEditService::RevertToSaved(
+            m_Document->sourceDocument);
+        if (!result || !DecodeProfileDocument())
+        {
+            const std::string message = !result
+                ? result.message
+                : m_Document->lastError;
+            VANS_LOG_ERROR("[VansClothProfileEditor] Profile revert failed: " << message);
+            return;
+        }
 
-        m_IsDirty = false;
+        m_MeshLoaded = false;
+        m_WeldedParticles.clear();
+        m_WeldedTriangles.clear();
+        m_EditorBones.clear();
+        m_SkeletonLoaded = false;
+        m_SkeletonLoadError.clear();
+        if (!m_Profile->m_ModelPath.empty())
+            LoadModelFromProfile();
+        if (m_Profile->m_FollowBones && !m_Profile->m_ReferenceSkeletonPath.empty())
+            LoadReferenceSkeleton();
 
     }
 
@@ -1336,9 +1457,6 @@ namespace VansGraphics
         if (ImGui::Checkbox("启用骨骼跟随", &m_Profile->m_FollowBones))
 
         {
-
-            m_IsDirty = true;
-
             if (!prevFollow && m_Profile->m_FollowBones)
 
             {
@@ -1348,6 +1466,8 @@ namespace VansGraphics
                 m_Profile->m_PinnedBoneBindings.clear();
 
             }
+
+            PublishProfileEdit();
 
         }
 
@@ -1375,7 +1495,7 @@ namespace VansGraphics
 
             m_Profile->m_ReferenceSkeletonPath = skelBuf;
 
-            m_IsDirty = true;
+            PublishProfileEdit();
 
         }
 
@@ -1437,7 +1557,7 @@ namespace VansGraphics
 
             m_Profile->m_SkeletonOffset.m_Position = glm::vec3(pos[0], pos[1], pos[2]);
 
-            m_IsDirty = true;
+            PublishProfileEdit();
 
             if (m_SkeletonLoaded)
 
@@ -1461,7 +1581,7 @@ namespace VansGraphics
 
             m_Profile->m_SkeletonOffset.m_Rotation = glm::vec3(rot[0], rot[1], rot[2]);
 
-            m_IsDirty = true;
+            PublishProfileEdit();
 
             if (m_SkeletonLoaded)
 
@@ -1485,7 +1605,7 @@ namespace VansGraphics
 
             m_Profile->m_SkeletonOffset.m_Scale = glm::vec3(scl[0], scl[1], scl[2]);
 
-            m_IsDirty = true;
+            PublishProfileEdit();
 
             if (m_SkeletonLoaded)
 
@@ -2221,7 +2341,7 @@ namespace VansGraphics
 
 
 
-        m_IsDirty = true;
+        PublishProfileEdit();
 
         m_BindResultMessage = "绑定完成，共处理 "
 

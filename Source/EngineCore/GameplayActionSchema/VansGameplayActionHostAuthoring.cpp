@@ -56,8 +56,7 @@ VansSerializedValue VansGameplayActionHostAuthoring::CreateDefaultData()
 	return Value::Object({
 		{ "actionSets", Value::Array({}) },
 		{ "grants", Value::Array({}) },
-		{ "initialTags", Value::Array({}) },
-		{ "initialAttributes", Value::Array({}) },
+		{ "initializers", Value::Array({}) },
 		{ "autoActivate", Value::Array({}) }
 	});
 }
@@ -69,23 +68,13 @@ std::optional<VansSerializedValue> VansGameplayActionHostAuthoring::CreateDefaul
 	if (fieldName == "grants")
 		return Value::Object({
 			{ "action", AssetReference() },
-			{ "level", Value::Float(1.0) },
-			{ "inputBinding", Value::String("") },
-			{ "dynamicTags", Value::Array({}) },
-			{ "charges", Value::Int(-1) },
-			{ "persistence", Value::String("OwnerLifetime") }
+			{ "extensions", Value::Array({}) }
 		});
-	if (fieldName == "initialTags")
+	if (fieldName == "initializers" || fieldName == "extensions")
 		return Value::Object({
-			{ "tag", Value::String("") },
-			{ "count", Value::Int(1) }
+			{ "type", Value::String("") },
+			{ "inputs", Value::Object({}) }
 		});
-	if (fieldName == "initialAttributes")
-		return Value::Object({
-			{ "attribute", Value::String("") },
-			{ "value", Value::Float(0.0) }
-		});
-	if (fieldName == "dynamicTags") return Value::String("");
 	return std::nullopt;
 }
 
@@ -96,6 +85,14 @@ VansGameplayDiagnostics VansGameplayActionHostAuthoring::Validate(const VansSeri
 	{
 		AddError(diagnostics, "GAF-HOST-ROOT", "ActionHost data must be an object", "/data");
 		return diagnostics;
+	}
+	for (const auto& [name, value] : data.objectFields)
+	{
+		(void)value;
+		if (name != "actionSets" && name != "grants" && name != "initializers" &&
+			name != "autoActivate")
+			AddError(diagnostics, "GAF-HOST-UNKNOWN-FIELD",
+				"ActionHost data contains an unknown field", "/" + name);
 	}
 	for (const char* field : { "actionSets", "autoActivate" })
 		if (const Value* references = RequireArray(data, field, diagnostics))
@@ -117,47 +114,65 @@ VansGameplayDiagnostics VansGameplayActionHostAuthoring::Validate(const VansSeri
 			if (!action || ReferenceString(*action).empty())
 				AddError(diagnostics, "GAF-HOST-GRANT-ACTION", "Action grant requires an Action asset",
 					path + "/action");
-			const double level = FindObjectField(grant, "level")
-				? ReadSerializedNumber(*FindObjectField(grant, "level"), 1.0) : 1.0;
-			if (!std::isfinite(level) || level <= 0.0)
-				AddError(diagnostics, "GAF-HOST-GRANT-LEVEL", "Action grant level must be positive",
-					path + "/level");
-			const std::int64_t charges = ReadSerializedIntField(grant, "charges", -1);
-			if (charges < -1)
-				AddError(diagnostics, "GAF-HOST-GRANT-CHARGES", "Charges must be -1 or non-negative",
-					path + "/charges");
-			const std::string persistence = ReadSerializedStringField(grant, "persistence", "OwnerLifetime");
-			if (persistence != "Transient" && persistence != "OwnerLifetime" && persistence != "Persistent")
-				AddError(diagnostics, "GAF-HOST-GRANT-PERSISTENCE", "Grant persistence is invalid",
-					path + "/persistence");
-			if (const Value* tags = FindObjectField(grant, "dynamicTags");
-				!tags || tags->kind != Value::Kind::Array)
-				AddError(diagnostics, "GAF-HOST-GRANT-TAGS", "Dynamic Tags must be an array",
-					path + "/dynamicTags");
+			for (const auto& [name, value] : grant.objectFields)
+			{
+				(void)value;
+				if (name != "action" && name != "extensions")
+					AddError(diagnostics, "GAF-HOST-GRANT-FIELD",
+						"Action grant contains an unknown field", path + "/" + name);
+			}
+			const Value* extensions = FindObjectField(grant, "extensions");
+			if (!extensions || extensions->kind != Value::Kind::Array)
+			{
+				AddError(diagnostics, "GAF-HOST-GRANT-EXTENSIONS",
+					"Action grant extensions must be an array", path + "/extensions");
+				continue;
+			}
+			for (std::size_t extensionIndex = 0;
+				extensionIndex < extensions->arrayItems.size(); ++extensionIndex)
+			{
+				const Value& extension = extensions->arrayItems[extensionIndex];
+				const std::string extensionPath =
+					path + "/extensions/" + std::to_string(extensionIndex);
+				const Value* inputs = extension.kind == Value::Kind::Object
+					? FindObjectField(extension, "inputs") : nullptr;
+				if (extension.kind != Value::Kind::Object ||
+					ReadSerializedStringField(extension, "type").empty() || !inputs ||
+					inputs->kind != Value::Kind::Object)
+					AddError(diagnostics, "GAF-HOST-GRANT-EXTENSION",
+						"Grant extension requires a TypeId and object inputs",
+						extensionPath);
+				if (extension.kind == Value::Kind::Object)
+					for (const auto& [name, value] : extension.objectFields)
+					{
+						(void)value;
+						if (name != "type" && name != "inputs")
+							AddError(diagnostics, "GAF-HOST-GRANT-EXTENSION-FIELD",
+								"Grant extension contains an unknown field",
+								extensionPath + "/" + name);
+					}
+			}
 		}
-	if (const Value* tags = RequireArray(data, "initialTags", diagnostics))
-		for (std::size_t index = 0; index < tags->arrayItems.size(); ++index)
+	if (const Value* initializers = RequireArray(data, "initializers", diagnostics))
+		for (std::size_t index = 0; index < initializers->arrayItems.size(); ++index)
 		{
-			const Value& item = tags->arrayItems[index];
-			const std::string path = "/initialTags/" + std::to_string(index);
-			const std::string tag = item.kind == Value::Kind::String
-				? item.stringValue : ReadSerializedStringField(item, "tag");
-			if (tag.empty()) AddError(diagnostics, "GAF-HOST-TAG", "Initial Tag is empty", path);
-			if (item.kind == Value::Kind::Object && ReadSerializedIntField(item, "count", 1) <= 0)
-				AddError(diagnostics, "GAF-HOST-TAG-COUNT", "Initial Tag count must be positive",
-					path + "/count");
-		}
-	if (const Value* attributes = RequireArray(data, "initialAttributes", diagnostics))
-		for (std::size_t index = 0; index < attributes->arrayItems.size(); ++index)
-		{
-			const Value& item = attributes->arrayItems[index];
-			const std::string path = "/initialAttributes/" + std::to_string(index);
-			if (item.kind != Value::Kind::Object || ReadSerializedStringField(item, "attribute").empty())
-				AddError(diagnostics, "GAF-HOST-ATTRIBUTE", "Initial Attribute requires a name", path);
-			if (const Value* value = FindObjectField(item, "value"); value &&
-				!std::isfinite(ReadSerializedNumber(*value)))
-				AddError(diagnostics, "GAF-HOST-ATTRIBUTE-VALUE", "Initial Attribute value must be finite",
-					path + "/value");
+			const Value& item = initializers->arrayItems[index];
+			const std::string path = "/initializers/" + std::to_string(index);
+			const Value* inputs = item.kind == Value::Kind::Object
+				? FindObjectField(item, "inputs") : nullptr;
+			if (item.kind != Value::Kind::Object ||
+				ReadSerializedStringField(item, "type").empty() || !inputs ||
+				inputs->kind != Value::Kind::Object)
+				AddError(diagnostics, "GAF-HOST-INITIALIZER",
+					"Host initializer requires a TypeId and object inputs", path);
+			if (item.kind == Value::Kind::Object)
+				for (const auto& [name, value] : item.objectFields)
+				{
+					(void)value;
+					if (name != "type" && name != "inputs")
+						AddError(diagnostics, "GAF-HOST-INITIALIZER-FIELD",
+							"Host initializer contains an unknown field", path + "/" + name);
+				}
 		}
 	return diagnostics;
 }

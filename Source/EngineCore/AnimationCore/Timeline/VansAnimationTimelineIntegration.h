@@ -4,10 +4,11 @@
 
 namespace Vans
 {
-class VansAssetResolver;
+class VansAssetObjectRepository;
 class VansRuntimeWorld;
 class VansTimelineTrackExtensionRegistry;
 bool VansRegisterAnimationTimelineExtensions(VansTimelineTrackExtensionRegistry&, std::string&);
 bool VansRegisterAnimationTimelineIntegration(
-	VansRuntimeWorld&, std::shared_ptr<VansAssetResolver>, VansTimelineApplierRegistry&, std::string&);
+	VansRuntimeWorld&, const VansAssetObjectRepository&,
+	VansTimelineApplierRegistry&, std::string&);
 }

@@ -11,6 +11,13 @@ namespace Vans
 {
 class VansTimelineBindingResolver;
 
+struct VansTimelineSessionScope
+{
+	std::string type;
+	VansGenerationHandle handle;
+	explicit operator bool() const { return !type.empty() && handle.IsValid(); }
+};
+
 using VansTimelineApplierSlot = std::uint32_t;
 inline constexpr VansTimelineApplierSlot VansInvalidTimelineApplierSlot = UINT32_MAX;
 
@@ -49,6 +56,7 @@ struct VansTimelineApplyContext
 	VansTimelineStableOrder order;
 	VansTimelineBlendMode blendMode = VansTimelineBlendMode::Override;
 	VansTimelineCompletionMode completion = VansTimelineCompletionMode::RestoreState;
+	const VansTimelineSessionScope* scope = nullptr;
 	VansTimelineBindingResolver* bindings = nullptr;
 	VansTimelineDiagnostics* diagnostics = nullptr;
 };
@@ -94,6 +102,7 @@ public:
 		const VansCompiledTimeline& timeline,
 		std::vector<VansTimelineEvaluationOutput>& outputs,
 		VansTimelineBindingResolver& bindings,
+		const VansTimelineSessionScope& scope,
 		class VansTimelineWriterRegistry& writers,
 		class VansTimelinePreAnimatedState& preAnimated,
 		VansTimelineDiagnostics& diagnostics) const;

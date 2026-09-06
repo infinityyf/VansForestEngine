@@ -9,13 +9,9 @@ namespace
 std::string ReadAssetReference(const VansSerializedValue& object, const char* key)
 {
 	const VansSerializedValue* field = FindObjectField(object, key);
-	if (!field)
+	if (!field || field->kind != VansSerializedValue::Kind::Object)
 		return {};
-	if (field->kind == VansSerializedValue::Kind::String)
-		return field->stringValue;
-	if (field->kind == VansSerializedValue::Kind::Object)
-		return ReadSerializedStringField(*field, "guid");
-	return {};
+	return ReadSerializedStringField(*field, "guid");
 }
 }
 
@@ -26,9 +22,9 @@ std::optional<VansSceneParticleComponentConfig> VansSceneParticleComponentReader
 		return std::nullopt;
 
 	VansSceneParticleComponentConfig config;
-	config.assetPath = ReadAssetReference(particleNode, "asset");
+	config.assetGuid = ReadAssetReference(particleNode, "asset");
 	config.playOnAwake = ReadSerializedBoolField(particleNode, "play_on_awake", true);
-	if (config.assetPath.empty())
+	if (config.assetGuid.empty())
 		return std::nullopt;
 
 	return config;

@@ -14,7 +14,6 @@ struct VansActionHostDebugSnapshot
 {
 	VansEntityHandle owner;
 	bool enabled = false;
-	bool commitFrozen = false;
 	std::vector<std::pair<VansGameplayTagId, std::uint32_t>> tags;
 	std::vector<VansAttributeSnapshot> attributes;
 	std::vector<VansActiveEffectSnapshot> effects;
@@ -45,7 +44,6 @@ enum class VansActionBreakpointKind : std::uint8_t
 	Node,
 	Event,
 	Error,
-	Prediction,
 	Attribute,
 	Window
 };
@@ -70,7 +68,6 @@ struct VansActionBreakpoint
 	std::string node;
 	std::string event;
 	VansActionError error = VansActionError::None;
-	VansPredictionKey prediction;
 	VansAttributeId attribute;
 	VansActionBreakpointComparison comparison = VansActionBreakpointComparison::Changed;
 	double value = 0.0;
@@ -106,7 +103,6 @@ private:
 
 struct VansGameplayTraceArchive
 {
-	std::uint32_t formatVersion = 1;
 	std::uint64_t contentManifestHash = 0;
 	std::vector<VansGameplayDebugSnapshot> frames;
 };

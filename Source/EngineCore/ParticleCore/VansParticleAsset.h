@@ -24,6 +24,8 @@ namespace VansGraphics
         float       m_Duration  = 5.f;
         bool        m_Loop      = true;
         bool        m_Prewarm   = false;
+        float       m_StartDelay = 0.0f;
+        bool        m_WorldAligned = false; // 跟随对象位置，发射方向和尺寸使用世界轴与米制。
         std::string m_SimSpace  = "Local";  // "Local" | "World"
 
         // ── Emitter 列表 ─────────────────────────────────────────

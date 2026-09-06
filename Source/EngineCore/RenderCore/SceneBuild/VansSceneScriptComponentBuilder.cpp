@@ -15,8 +15,8 @@ std::vector<VansScriptUIComponent*> VansSceneScriptComponentBuilder::BuildUICont
 	{
 		auto* uiComp = new VansScriptUIComponent();
 		uiComp->m_ComponentGuid = descriptor.componentGuid;
-		uiComp->m_AutoOpenScreens = descriptor.autoOpenScreens;
-		uiComp->m_PreloadScreens = descriptor.preloadScreens;
+		uiComp->m_AutoOpenScreenAssetGuids = descriptor.autoOpenScreenAssetGuids;
+		uiComp->m_PreloadScreenAssetGuids = descriptor.preloadScreenAssetGuids;
 		uiComp->m_Enabled = false;
 
 		object.AddComponent(uiComp);

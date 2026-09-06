@@ -35,6 +35,9 @@ namespace VansRuntime
         // 在 Vulkan 设备就绪后调用
         bool Initialize(const VansUIInitDesc& desc);
 
+        // 项目资产仓库发布完成后，从内存快照应用全局主题。
+        bool ApplyGlobalThemeFromMemory(std::string& error);
+
         // 释放所有 Noesis 资源，必须在 VansVKDevice 销毁前调用
         void Shutdown();
 
@@ -49,7 +52,7 @@ namespace VansRuntime
         void SetScreenSize(uint32_t width, uint32_t height);
 
         // 加载 / 卸载文档
-        std::shared_ptr<VansNoesisDocument> LoadDocument(const std::string& xamlPath);
+        std::shared_ptr<VansNoesisDocument> LoadDocument(const std::string& xamlUri);
         void UnloadDocument(const std::shared_ptr<VansNoesisDocument>& doc);
 
         // 查询输入捕获状态
@@ -90,7 +93,6 @@ namespace VansRuntime
         void SetupLicense(const VansUIInitDesc& desc);
         void InstallProviders();
         void RegisterTypes();
-        void LoadGlobalTheme();
         std::vector<std::shared_ptr<VansNoesisDocument>> SnapshotActiveDocuments() const;
 
         VansGraphics::VansVKDevice*                      m_Device         = nullptr;

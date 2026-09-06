@@ -13,6 +13,7 @@ namespace VansGraphics
         m_Velocity.resize(maxCount, glm::vec3(0.f));
         m_Color.resize(maxCount, glm::vec4(1.f));
         m_Size.resize(maxCount, 1.f);
+        m_InitialSize.resize(maxCount, 1.f);
         m_Rotation.resize(maxCount, 0.f);
         m_Age.resize(maxCount, 0.f);
         m_LifeTime.resize(maxCount, 1.f);
@@ -56,6 +57,7 @@ namespace VansGraphics
             m_Velocity[index]      = m_Velocity[last];
             m_Color[index]         = m_Color[last];
             m_Size[index]          = m_Size[last];
+            m_InitialSize[index]   = m_InitialSize[last];
             m_Rotation[index]      = m_Rotation[last];
             m_Age[index]           = m_Age[last];
             m_LifeTime[index]      = m_LifeTime[last];

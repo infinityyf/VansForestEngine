@@ -69,6 +69,25 @@ namespace VansGraphics
 
     };
 
+    // 可选的 Froxel 介质注入。默认关闭，关闭时所有字段均不参与 Runtime/GPU。
+    struct VansParticleVolumetricConfig
+    {
+        bool m_Enabled = false;
+        bool m_KeepSurfaceRenderer = false;
+        float m_RadiusScale = 1.0f;
+        float m_MaxDistanceMeters = 100.0f;
+        float m_DensityMultiplier = 1.0f;
+        float m_ExtinctionPerMeter = 0.1f;
+        glm::vec3 m_SingleScatteringAlbedo{ 0.9f };
+        float m_Anisotropy = 0.0f;
+        glm::vec3 m_EmissivePerMeter{ 0.0f };
+        float m_EdgeSoftness = 0.35f;
+        float m_DirectLightingScale = 1.0f;
+        float m_SkyLightingScale = 1.0f;
+        bool m_ReceiveCloudShadows = true;
+        std::uint32_t m_InjectionPriority = 128u;
+    };
+
     struct VansParticleRendererConfig
     {
         VansParticleRendererType  m_Type      = VansParticleRendererType::Billboard;
@@ -83,6 +102,7 @@ namespace VansGraphics
         VansParticleSortMode      m_SortMode  = VansParticleSortMode::None;
         VansParticleLightingMode   m_LightingMode = VansParticleLightingMode::UnlitFlipbook;
         VansParticleSixWayLightingConfig m_SixWayLighting;
+        VansParticleVolumetricConfig m_Volumetric;
         bool m_CastShadows    = false;
         bool m_ReceiveShadows = false;
 
@@ -126,6 +146,8 @@ namespace VansGraphics
 
         // 将存活粒子写入 GPU 实例数据缓冲
         void FillInstanceData(std::vector<VansParticleInstanceData>& outBuffer) const;
+        void FillVolumetricInstanceData(
+            std::vector<VansVolumetricParticleInstanceData>& outBuffer) const;
 
     private:
         // 发射新粒子并执行 Init 模块

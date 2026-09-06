@@ -4,6 +4,7 @@
 #include "../EngineCore/AnimationCore/Storage/VansAnimationRigStorage.h"
 #include "../EngineCore/AnimationCore/Storage/VansBoneMaskStorage.h"
 #include "../EngineCore/AnimationCore/Storage/VansRetargetProfileStorage.h"
+#include "../EngineCore/AnimationCore/Serialization/VansRetargetProfileJsonCodec.h"
 #include "../EngineCore/AssetCore/VansAssetDatabase.h"
 #include "../EngineCore/AssetCore/Importers/VansModelImporter.h"
 #include "../EngineCore/AssetCore/Storage/VansAssetMetaStorage.h"
@@ -34,6 +35,22 @@ namespace fs = std::filesystem;
 
 namespace
 {
+	bool LoadToolSkeletonFromModel(
+		const fs::path& modelPath,
+		VansGraphics::Skeleton& skeleton,
+		std::string& error)
+	{
+		Vans::VansAssetMeta meta;
+		if (!Vans::VansAssetMetaStorage::Load(
+			Vans::VansAssetMeta::MetaPathFor(modelPath), meta, error))
+		{
+			error = "Skeleton model metadata is required: " + error;
+			return false;
+		}
+		return VansGraphics::VansSkinnedMeshLoader::LoadSkeletonFromModelAsset(
+			modelPath.string(), Vans::ReadSkeletalMeshImportSettings(meta), skeleton, error);
+	}
+
 	enum class Command
 	{
 		Invalid,
@@ -362,8 +379,7 @@ namespace
 		}
 		VansGraphics::Skeleton skeleton;
 		std::string skeletonError;
-		if (!VansGraphics::VansSkinnedMeshLoader::LoadSkeletonFromModelAsset(
-			sourcePath.string(), skeleton, skeletonError))
+		if (!LoadToolSkeletonFromModel(sourcePath, skeleton, skeletonError))
 		{
 			std::cerr << skeletonError << ": " << sourcePath << '\n';
 			return 1;
@@ -532,8 +548,8 @@ namespace
 			|| skeletonExtension == ".glb")
 		{
 			std::string skeletonError;
-			skeletonLoaded = VansGraphics::VansSkinnedMeshLoader::LoadSkeletonFromModelAsset(
-				skeletonPath.string(), skeleton, skeletonError);
+			skeletonLoaded = LoadToolSkeletonFromModel(
+				skeletonPath, skeleton, skeletonError);
 			if (!skeletonLoaded && !skeletonError.empty())
 				std::cerr << skeletonError << '\n';
 		}
@@ -677,8 +693,7 @@ namespace
 				return 2;
 			}
 			std::string skeletonError;
-			if (!VansGraphics::VansSkinnedMeshLoader::LoadSkeletonFromModelAsset(
-				skeletonPath.string(), skeleton, skeletonError))
+			if (!LoadToolSkeletonFromModel(skeletonPath, skeleton, skeletonError))
 			{
 				std::cerr << skeletonError << '\n';
 				return 1;
@@ -995,8 +1010,7 @@ namespace
 		if (skeletonIt == skeletonCache.end())
 		{
 			VansGraphics::Skeleton skeleton;
-			if (!VansGraphics::VansSkinnedMeshLoader::LoadSkeletonFromModelAsset(
-				skeletonRecord->sourcePath.string(), skeleton, error))
+			if (!LoadToolSkeletonFromModel(skeletonRecord->sourcePath, skeleton, error))
 				return false;
 			skeletonIt = skeletonCache.emplace(asset.skeletonGuid, std::move(skeleton)).first;
 		}
@@ -1029,11 +1043,11 @@ namespace
 		if (!Vans::VansJsonFileStorage::Read(path, source, error))
 			return false;
 		VansGraphics::VansRetargetProfileAsset asset;
-		if (!VansGraphics::VansRetargetProfileStorage::DeserializeFromJsonObject(
+		if (!VansGraphics::VansRetargetProfileJsonCodec::Decode(
 			source, asset, error))
 			return false;
 		nlohmann::json canonical;
-		if (!VansGraphics::VansRetargetProfileStorage::SerializeToJsonObject(
+		if (!VansGraphics::VansRetargetProfileJsonCodec::Encode(
 			asset, canonical, error))
 			return false;
 		if (source == canonical)

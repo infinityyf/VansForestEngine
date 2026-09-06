@@ -4,20 +4,18 @@
 #include "VansGameplaySchemaTypes.h"
 
 #include <cstdint>
+#include <array>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 namespace Vans
 {
-enum class VansGAFNetworkMode : std::uint8_t
-{
-	Disabled,
-	Loopback,
-	ExternalTransport
-};
+class VansGAFSchemaRegistry;
+class VansGAFTypeRegistry;
 
 enum class VansGAFValidationStage : std::uint8_t
 {
@@ -37,12 +35,7 @@ struct VansGAFPerformanceBudget
 
 struct VansGAFSettings
 {
-	std::uint32_t schemaVersion = 1;
 	std::vector<std::string> defaultTagRoots;
-	VansGAFNetworkMode networkMode = VansGAFNetworkMode::Disabled;
-	bool predictionEnabled = false;
-	bool requireRollbackPlan = true;
-	bool failWithoutTransport = true;
 	bool deterministicCook = true;
 	bool stripEditorMetadata = true;
 	bool treatCookWarningsAsErrors = false;
@@ -53,9 +46,16 @@ struct VansGAFSettings
 struct VansGAFSchemaAllowlist
 {
 	std::unordered_set<std::string> nodeTypes;
-	std::unordered_set<std::string> services;
-	std::unordered_set<std::string> handlers;
-	std::unordered_set<std::string> bridges;
+	std::unordered_set<std::string> modules;
+	std::unordered_set<std::string> capabilities;
+	std::unordered_set<std::string> policies;
+	std::unordered_set<std::string> guards;
+	std::unordered_set<std::string> operations;
+	std::unordered_set<std::string> drivers;
+	std::unordered_set<std::string> extensions;
+	std::unordered_set<std::string> transitions;
+	std::unordered_set<std::string> signals;
+	std::unordered_set<std::string> valueTypes;
 };
 
 struct VansGAFValidationRules
@@ -66,10 +66,36 @@ struct VansGAFValidationRules
 	std::unordered_set<std::string> ciBlockingCodes;
 };
 
+struct VansGAFConfiguredInputField
+{
+	std::string name;
+	std::string valueType;
+	bool required = false;
+	VansSerializedValue defaultValue;
+};
+
+struct VansGAFConfiguredType
+{
+	std::string moduleId;
+	std::string typeId;
+	std::string displayName;
+	std::string kind;
+	std::vector<VansGAFConfiguredInputField> fields;
+};
+
+struct VansGAFProjectConfigurationDocuments
+{
+	VansSerializedValue settings = VansSerializedValue::Object({});
+	VansSerializedValue schemaRegistry = VansSerializedValue::Object({});
+	VansSerializedValue validationRules = VansSerializedValue::Object({});
+	VansSerializedValue templates = VansSerializedValue::Object({});
+};
+
 struct VansGAFProjectConfiguration
 {
 	VansGAFSettings settings;
 	VansGAFSchemaAllowlist allowlist;
+	std::vector<VansGAFConfiguredType> configuredTypes;
 	VansGAFValidationRules validation;
 	std::unordered_map<std::string, VansSerializedValue> templates;
 
@@ -82,6 +108,15 @@ struct VansGAFProjectConfiguration
 		const std::filesystem::path& builtInSettingsDirectory, std::string& error);
 	static bool Save(const std::filesystem::path& projectSettingsDirectory,
 		const VansGAFProjectConfiguration& configuration, std::string& error);
+	static std::array<std::string_view, 4> DocumentFileNames();
+	static bool DecodeDocuments(
+		const VansGAFProjectConfigurationDocuments& documents,
+		VansGAFProjectConfiguration& configuration,
+		std::string& error);
+	static VansGAFProjectConfigurationDocuments EncodeDocuments(
+		const VansGAFProjectConfiguration& configuration);
+	bool RegisterConfiguredTypes(VansGAFTypeRegistry& registry, std::string& error) const;
+	bool RegisterConfiguredSchemas(VansGAFSchemaRegistry& registry, std::string& error) const;
 	void ApplyValidationPolicy(VansGameplayDiagnostics& diagnostics) const;
 	bool IsBlockingDiagnostic(
 		const VansGameplayDiagnostic& diagnostic,

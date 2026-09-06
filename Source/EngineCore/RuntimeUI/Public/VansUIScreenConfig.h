@@ -73,19 +73,19 @@ namespace VansRuntime
 		std::uint32_t schemaVersion = 1;
 		std::string guid;
 		std::string name;
-		std::string xamlPath;
+		std::string xamlAssetGuid;
 		VansUIScreenLayer layer = VansUIScreenLayer::Screen;
 		std::int32_t zOrder = 0;
 		VansUIScreenInputPolicy inputPolicy;
 		VansUIScreenViewModelConfig viewModel;
-		std::vector<std::string> themes;
-		std::vector<std::string> tokens;
-		std::vector<std::string> localization;
+		std::vector<std::string> themeAssetGuids;
+		std::vector<std::string> tokenAssetGuids;
+		std::vector<std::string> localizationAssetGuids;
 		std::vector<std::string> dependencies;
 		std::vector<VansUIScreenEventBindingConfig> events;
 		std::vector<VansUIScreenStateGroupConfig> states;
 		std::unordered_map<std::string, std::string> animations;
 		VansUIScreenPerformanceBudget performanceBudget;
-		std::string sourceConfigPath;
+		std::string sourceAssetGuid;
 	};
 }

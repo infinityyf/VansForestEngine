@@ -50,8 +50,8 @@ struct VansScriptUIComponentDescriptor
 {
 	std::string componentGuid;
 	bool enabled = true;
-	std::vector<std::string> autoOpenScreens;
-	std::vector<std::string> preloadScreens;
+	std::vector<std::string> autoOpenScreenAssetGuids;
+	std::vector<std::string> preloadScreenAssetGuids;
 };
 
 using VansScriptUIComponentDescriptors = std::vector<VansScriptUIComponentDescriptor>;

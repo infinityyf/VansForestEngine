@@ -164,8 +164,8 @@ namespace VansGraphics
 		const BoneMatricesSSBO& GetBoneSSBO() const;
 
 		// .vanimator file path for editor/runtime diagnostics.
-		void SetAnimatorFilePath(const std::string& path) { m_AnimatorFilePath = path; }
-		std::string GetAnimatorFilePath() const { return m_AnimatorFilePath; }
+		void SetAnimatorAssetGuid(std::string guid) { m_AnimatorAssetGuid = std::move(guid); }
+		const std::string& GetAnimatorAssetGuid() const { return m_AnimatorAssetGuid; }
 
 	private:
 		std::string m_Name;
@@ -189,7 +189,7 @@ namespace VansGraphics
 		std::string m_LastRetargetSourceMMSelectedClip;
 
 		// .vanimator file path
-		std::string m_AnimatorFilePath;
+		std::string m_AnimatorAssetGuid;
 
 		// Root motion application
 		uint32_t m_TransformID           = 0;

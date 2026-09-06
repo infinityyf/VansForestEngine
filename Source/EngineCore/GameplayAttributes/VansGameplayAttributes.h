@@ -22,7 +22,6 @@ struct VansAttributeDefinition
 	double maximum = 0.0;
 	bool hasMinimum = false;
 	bool hasMaximum = false;
-	bool replicated = false;
 };
 
 class VansAttributeRegistry

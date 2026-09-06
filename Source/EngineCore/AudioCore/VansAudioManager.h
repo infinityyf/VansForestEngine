@@ -96,11 +96,11 @@ namespace VansEngine
         void Load(const std::vector<Vans::VansSceneAudioResourceRequest>& audios);
 
         // ── 场景级配置（LoadSceneObjects / LoadSceneContent 中调用） ────────
-        // Each record contains a resolved asset runtime name and optional overrides.
+        // Each record contains an asset GUID and optional runtime overrides.
         void ApplySceneConfig(const std::vector<Vans::VansSceneAudioRuntimeOverride>& audioSources);
 
-        // ── 按名称查找，未找到返回 nullptr ───────────────────────────────────
-        VansAudioNode* Get(const std::string& name) const;
+        // ── 按资产 GUID 查找，未找到返回 nullptr ─────────────────────────────
+        VansAudioNode* Get(const std::string& assetGuid) const;
         VansAudioOneShotHandle PlayOneShot(const VansAudioOneShotRequest& request);
         bool StopOneShot(VansAudioOneShotHandle handle);
 
@@ -148,7 +148,7 @@ namespace VansEngine
         size_t Count()   const { return m_Nodes.size();  }
 
     private:
-        // name → VansAudioNode（unique_ptr 持有所有权）
+        // asset GUID → VansAudioNode（unique_ptr 持有所有权）
         AudioBusState& EnsureBus(const std::string& busName);
         const AudioBusState* FindBus(const std::string& busName) const;
         bool HasSoloedBus() const;

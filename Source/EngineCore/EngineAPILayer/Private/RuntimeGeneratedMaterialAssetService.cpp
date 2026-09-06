@@ -4,11 +4,9 @@
 #include "../../AssetCore/VansAssetGuid.h"
 #include "../../AssetCore/VansAssetMeta.h"
 #include "../../AssetCore/VansMaterialAuthoringAsset.h"
+#include "../../AssetCore/Serialization/VansAssetMetaJsonCodec.h"
 #include "../../AssetCore/Serialization/VansSerializedValueAccess.h"
-#include "../../AssetCore/Storage/VansAssetMetaStorage.h"
-#include "../../AssetCore/Storage/VansMaterialAuthoringAssetStorage.h"
-#include "../../AssetCore/Storage/VansStagedFileTransaction.h"
-#include "../../ProjectSystem/VansProjectManager.h"
+#include "../../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 #include "../../RenderCore/VansMaterial.h"
 #include "../../RenderCore/VansRenderNode.h"
 #include "../../RenderCore/VulkanCore/VansMesh.h"
@@ -21,6 +19,7 @@
 #include <cctype>
 #include <cstdint>
 #include <filesystem>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <utility>
 
@@ -76,15 +75,6 @@ void AppendTransparentTexture(
 		{ "slot", Vans::VansSerializedValue::String(std::move(slot)) },
 		{ "texture", TextureReferenceValue(textureGuid) }
 	}));
-}
-
-Vans::VansAssetGuid ReadOrCreateMetaGuid(const std::filesystem::path& metaPath)
-{
-	Vans::VansAssetMeta meta;
-	std::string error;
-	if (Vans::VansAssetMetaStorage::Load(metaPath, meta, error) && meta.guid.IsValid())
-		return meta.guid;
-	return Vans::VansAssetGuid::New();
 }
 
 bool IsGuidString(const std::string& value)
@@ -443,22 +433,29 @@ std::string SanitizeRuntimeGeneratedMaterialText(std::string value)
 	return value;
 }
 
-std::string EnsureRuntimeGeneratedMaterialAsset(
+RuntimeGeneratedMaterialDraft BuildRuntimeGeneratedMaterialDraft(
 	const std::string& rootName,
 	VansGraphics::VansRenderNode* node,
-	const std::filesystem::path& assetsRoot)
+	Vans::VansAssetDatabase& database)
 {
+	RuntimeGeneratedMaterialDraft draft;
 	if (node == nullptr || node->m_Material == nullptr)
-		return {};
+		return draft;
 
 	const std::string materialName = SafeRuntimeAssetName(
 		rootName + "_" + node->m_Material->m_AssetName + "_" + std::to_string(node->m_SubmeshIndex));
-	const std::filesystem::path materialDir = assetsRoot / "Generated" / "MultiMeshMaterials" / SafeRuntimeAssetName(rootName);
+	const std::filesystem::path materialDir = database.AssetsRoot() / "Generated" / "MultiMeshMaterials" / SafeRuntimeAssetName(rootName);
 	const std::filesystem::path materialPath = materialDir / (materialName + ".mat");
-	const std::filesystem::path metaPath = materialPath.string() + ".meta";
-	const Vans::VansAssetGuid guid = ReadOrCreateMetaGuid(metaPath);
+	if (const auto existing = database.Find(materialPath);
+		existing && existing->state != Vans::VansAssetState::Missing)
+	{
+		draft.guid = existing->guid.ToString();
+		draft.sourcePath = existing->sourcePath.string();
+		return draft;
+	}
+	const Vans::VansAssetGuid guid = Vans::VansAssetGuid::FromStableName(
+		"ForestEngine.RuntimeGeneratedMaterial", materialPath.generic_string());
 
-	Vans::VansAssetDatabase* database = Vans::VansProjectManager::Get().GetAssetDatabase();
 	Vans::VansMaterialAuthoringAsset materialAsset;
 	if (node->m_SourceMesh != nullptr &&
 		node->m_SubmeshIndex != UINT32_MAX &&
@@ -467,12 +464,12 @@ std::string EnsureRuntimeGeneratedMaterialAsset(
 		const auto& materialInfos = node->m_SourceMesh->m_SubmeshMaterialInfos;
 		const VansGraphics::FBXSubmeshMaterialInfo& fbxInfo =
 			node->m_SubmeshIndex < materialInfos.size() ? materialInfos[node->m_SubmeshIndex] : materialInfos[0];
-		materialAsset = BuildFbxMaterialAsset(fbxInfo, database, rootName);
-		AddRuntimeBaseColorFallback(materialAsset, node->m_Material, database, rootName);
+		materialAsset = BuildFbxMaterialAsset(fbxInfo, &database, rootName);
+		AddRuntimeBaseColorFallback(materialAsset, node->m_Material, &database, rootName);
 	}
 	else
 	{
-		materialAsset = BuildRuntimeMaterialAsset(node->m_Material, database, rootName);
+		materialAsset = BuildRuntimeMaterialAsset(node->m_Material, &database, rootName);
 	}
 	materialAsset.guid = guid.ToString();
 	materialAsset.importSource = Vans::VansSerializedValue::Object({
@@ -485,39 +482,26 @@ std::string EnsureRuntimeGeneratedMaterialAsset(
 		{ "generatedFor", Vans::VansSerializedValue::String("runtimeMultiMeshExpansion") }
 	});
 
-	Vans::VansStagedFileTransaction transaction;
-	Vans::VansStagedFile materialStage;
-	std::string writeError;
-	if (!Vans::VansMaterialAuthoringAssetStorage::StageWrite(materialPath, materialAsset, materialStage, writeError))
-	{
-		VANS_LOG_ERROR("[MultiMeshMaterialGen] Failed staging generated material '"
-			<< materialPath.string() << "': " << writeError);
-		return {};
-	}
-	transaction.Add(std::move(materialStage));
-
 	Vans::VansAssetMeta meta;
 	meta.guid = guid;
 	meta.importer = "MaterialImporter";
 	meta.version = 1u;
 	meta.SetStringSetting("generatedFrom", rootName);
 	meta.SetStringSetting("generatedFor", "runtimeMultiMeshExpansion");
-	Vans::VansStagedFile metaStage;
-	if (!Vans::VansAssetMetaStorage::StageSave(metaPath, meta, metaStage, writeError))
+	std::string encodeError;
+	nlohmann::ordered_json metaRoot;
+	if (!Vans::VansAssetMetaJsonCodec::Encode(meta, metaRoot, encodeError))
 	{
-		VANS_LOG_ERROR("[MultiMeshMaterialGen] Failed staging generated material meta '"
-			<< metaPath.string() << "': " << writeError);
-		return {};
+		VANS_LOG_ERROR("[MultiMeshMaterialGen] Failed encoding generated material meta: "
+			<< encodeError);
+		return draft;
 	}
-	transaction.Add(std::move(metaStage));
-
-	if (!transaction.Publish(writeError))
-	{
-		VANS_LOG_ERROR("[MultiMeshMaterialGen] Failed publishing generated material pair '"
-			<< materialPath.string() << "': " << writeError);
-		return {};
-	}
-
-	return guid.ToString();
+	draft.guid = guid.ToString();
+	draft.sourcePath = materialPath.string();
+	draft.sourceCanonicalJson = Vans::EncodeSerializedValueJson<nlohmann::ordered_json>(
+		Vans::WriteMaterialAuthoringAssetRoot(materialAsset)).dump();
+	draft.metaCanonicalJson = metaRoot.dump();
+	draft.requiresSave = true;
+	return draft;
 }
 }

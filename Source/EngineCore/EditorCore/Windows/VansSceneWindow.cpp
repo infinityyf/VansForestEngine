@@ -611,22 +611,35 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
 						const ImU32 color = body.hit
 							? IM_COL32(255, 45, 45, 255) : IM_COL32(75, 255, 130, 225);
 						const glm::vec3 center = toGlm(body.center);
-						const glm::vec3 bottom = center - glm::vec3(0.0f, body.halfHeight, 0.0f);
-						const glm::vec3 top = center + glm::vec3(0.0f, body.halfHeight, 0.0f);
+						const glm::vec3 axis = glm::normalize(toGlm(body.axis));
+						const glm::vec3 bottom = center - axis * body.halfHeight;
+						const glm::vec3 top = center + axis * body.halfHeight;
+						const glm::vec3 radialU = glm::normalize(glm::cross(axis,
+							std::abs(axis.y) < 0.9f ? glm::vec3(0, 1, 0) : glm::vec3(0, 0, 1)));
+						const glm::vec3 radialV = glm::cross(axis, radialU);
 						drawLine(bottom, top, color, 2.0f);
 						constexpr int segmentCount = 24;
 						for (int segment = 0; segment < segmentCount; ++segment)
 						{
 							const float angleA = static_cast<float>(segment) / segmentCount * 6.28318530717958647692f;
 							const float angleB = static_cast<float>(segment + 1) / segmentCount * 6.28318530717958647692f;
-							const glm::vec3 radialA(std::cos(angleA) * body.radius, 0.0f,
-								std::sin(angleA) * body.radius);
-							const glm::vec3 radialB(std::cos(angleB) * body.radius, 0.0f,
-								std::sin(angleB) * body.radius);
+							const glm::vec3 radialA = body.radius * (std::cos(angleA) * radialU + std::sin(angleA) * radialV);
+							const glm::vec3 radialB = body.radius * (std::cos(angleB) * radialU + std::sin(angleB) * radialV);
 							drawLine(bottom + radialA, bottom + radialB, color, 1.5f);
 							drawLine(top + radialA, top + radialB, color, 1.5f);
 							if ((segment % 6) == 0)
 								drawLine(bottom + radialA, top + radialA, color, 1.0f);
+							// 两组大圆的外半圈显示胶囊端帽。
+							for (const glm::vec3& radial : { radialU, radialV })
+							{
+								const float a = angleA * 0.5f, b = angleB * 0.5f;
+								for (float sign : { -1.0f, 1.0f })
+								{
+									const glm::vec3 cap = center + axis * (sign * body.halfHeight);
+									drawLine(cap + body.radius * (radial * std::cos(a) + axis * (sign * std::sin(a))),
+										cap + body.radius * (radial * std::cos(b) + axis * (sign * std::sin(b))), color, 1.0f);
+								}
+							}
 						}
 						drawPoint(center, color, 3.5f);
 					}

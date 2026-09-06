@@ -1,4 +1,5 @@
 #include "VansActionExecutionGraph.h"
+#include "VansActionBinding.h"
 
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
 
@@ -35,49 +36,41 @@ const std::vector<VansActionGraphNodeDescriptor>& VansBuiltInActionGraphNodeDesc
 			return descriptor;
 		};
 		const auto add = [&](const char* stableName, const char* displayName,
-			const char* category, VansActionGraphNodeKind kind, bool predictable,
-			bool authorityOnly, std::vector<VansActionGraphPinDescriptor> pins,
+			const char* category, VansActionGraphNodeKind kind, std::vector<VansActionGraphPinDescriptor> pins,
 			std::vector<VansActionGraphPropertyDescriptor> properties = {})
 		{
 			result.push_back({
 				VansMakeStableId<VansActionGraphNodeTypeIdTag>(stableName), stableName,
-				displayName, category, kind, predictable, authorityOnly,
-				std::move(pins), std::move(properties) });
+				displayName, category, kind, std::move(pins), std::move(properties) });
 		};
 
-		add("Action.Graph.Sequence", "Sequence", "Flow", VansActionGraphNodeKind::Flow,
-			true, false, { pin("In", true), pin("Return", true, true),
+		add("Action.Graph.Sequence", "Sequence", "Flow", VansActionGraphNodeKind::Flow,  { pin("In", true), pin("Return", true, true),
 				pin("Step.*", false), pin("Success", false) },
 			{ property("steps", "Step Outputs", VansActionGraphPropertyKind::StringArray,
 				VansSerializedValue::Array({})),
 			  property("count", "Step Count", VansActionGraphPropertyKind::Int,
 				VansSerializedValue::Int(0), 0.0, 65535.0, true) });
-		add("Action.Graph.Parallel", "Parallel", "Flow", VansActionGraphNodeKind::Flow,
-			true, false, { pin("In", true), pin("BranchCompleted", true, true),
+		add("Action.Graph.Parallel", "Parallel", "Flow", VansActionGraphNodeKind::Flow,  { pin("In", true), pin("BranchCompleted", true, true),
 				pin("Branch", false, true), pin("Success", false) },
 			{ property("branches", "Branch Count", VansActionGraphPropertyKind::Int,
 				VansSerializedValue::Int(1), 1.0, 65535.0, true) });
-		add("Action.Graph.Race", "Race", "Flow", VansActionGraphNodeKind::Flow,
-			true, false, { pin("In", true), pin("BranchCompleted", true, true),
+		add("Action.Graph.Race", "Race", "Flow", VansActionGraphNodeKind::Flow,  { pin("In", true), pin("BranchCompleted", true, true),
 				pin("Branch", false, true), pin("Success", false) },
 			{ property("cancelNodes", "Losing Nodes", VansActionGraphPropertyKind::StringArray,
 				VansSerializedValue::Array({})) });
-		add("Action.Graph.Branch", "Branch", "Flow", VansActionGraphNodeKind::Flow,
-			true, false, { pin("In", true), pin("True", false), pin("False", false) },
+		add("Action.Graph.Branch", "Branch", "Flow", VansActionGraphNodeKind::Flow,  { pin("In", true), pin("True", false), pin("False", false) },
 			{ property("condition", "Condition", VansActionGraphPropertyKind::Bool,
 				VansSerializedValue::Bool(false)),
 			  property("variable", "Condition Variable", VansActionGraphPropertyKind::String,
 				VansSerializedValue::String("")) });
-		add("Action.Graph.Switch", "Switch", "Flow", VansActionGraphNodeKind::Flow,
-			true, false, { pin("In", true), pin("*", false, true), pin("Default", false) },
+		add("Action.Graph.Switch", "Switch", "Flow", VansActionGraphNodeKind::Flow,  { pin("In", true), pin("*", false, true), pin("Default", false) },
 			{ property("value", "Value", VansActionGraphPropertyKind::Payload,
 				VansSerializedValue::Null()),
 			  property("variable", "Value Variable", VansActionGraphPropertyKind::String,
 				VansSerializedValue::String("")),
 			  property("defaultOutput", "Default Output", VansActionGraphPropertyKind::String,
 				VansSerializedValue::String("Default")) });
-		add("Action.Graph.Loop", "Loop", "Flow", VansActionGraphNodeKind::Flow,
-			true, false, { pin("In", true), pin("Return", true), pin("Body", false),
+		add("Action.Graph.Loop", "Loop", "Flow", VansActionGraphNodeKind::Flow,  { pin("In", true), pin("Return", true), pin("Body", false),
 				pin("Completed", false), pin("Failure", false) },
 			{ property("condition", "Condition", VansActionGraphPropertyKind::Bool,
 				VansSerializedValue::Bool(true)),
@@ -85,19 +78,16 @@ const std::vector<VansActionGraphNodeDescriptor>& VansBuiltInActionGraphNodeDesc
 				VansSerializedValue::String("")),
 			  property("maximumIterations", "Maximum Iterations", VansActionGraphPropertyKind::Int,
 				VansSerializedValue::Int(1), 1.0, 65535.0, true) });
-		add("Action.Graph.Repeat", "Repeat", "Flow", VansActionGraphNodeKind::Flow,
-			true, false, { pin("In", true), pin("Return", true), pin("Body", false),
+		add("Action.Graph.Repeat", "Repeat", "Flow", VansActionGraphNodeKind::Flow,  { pin("In", true), pin("Return", true), pin("Body", false),
 				pin("Success", false), pin("Failure", false) },
 			{ property("count", "Count", VansActionGraphPropertyKind::Int,
 				VansSerializedValue::Int(1), 0.0, 65535.0, true) });
-		add("Action.Graph.Channel", "Channel", "Flow", VansActionGraphNodeKind::Flow,
-			true, false, { pin("In", true), pin("*", false, true), pin("Default", false) },
+		add("Action.Graph.Channel", "Channel", "Flow", VansActionGraphNodeKind::Flow,  { pin("In", true), pin("*", false, true), pin("Default", false) },
 			{ property("channel", "Channel", VansActionGraphPropertyKind::String,
 				VansSerializedValue::String("Default")),
 			  property("variable", "Channel Variable", VansActionGraphPropertyKind::String,
 				VansSerializedValue::String("")) });
-		add("Action.Graph.Gate", "Gate", "Flow", VansActionGraphNodeKind::Flow,
-			true, false, { pin("In", true), pin("Open", false), pin("Closed", false),
+		add("Action.Graph.Gate", "Gate", "Flow", VansActionGraphNodeKind::Flow,  { pin("In", true), pin("Open", false), pin("Closed", false),
 				pin("Failure", false) },
 			{ property("condition", "Open", VansActionGraphPropertyKind::Bool,
 				VansSerializedValue::Bool(false)),
@@ -105,45 +95,73 @@ const std::vector<VansActionGraphNodeDescriptor>& VansBuiltInActionGraphNodeDesc
 				VansSerializedValue::String("")),
 			  property("waitUntilOpen", "Wait Until Open", VansActionGraphPropertyKind::Bool,
 				VansSerializedValue::Bool(false)) });
-		add("Action.Graph.Wait", "Wait", "Latent", VansActionGraphNodeKind::Latent,
-			true, false, { pin("In", true), pin("Success", false), pin("Failure", false) },
+		add("Action.Graph.Wait", "Wait", "Latent", VansActionGraphNodeKind::Latent,  { pin("In", true), pin("Success", false), pin("Failure", false) },
 			{ property("seconds", "Seconds", VansActionGraphPropertyKind::Float,
 				VansSerializedValue::Float(0.0), 0.0, 86400.0, true) });
-		add("Action.Graph.Timeout", "Timeout", "Latent", VansActionGraphNodeKind::Latent,
-			true, false, { pin("In", true), pin("Timeout", false), pin("Failure", false) },
+		add("Action.Graph.Timeout", "Timeout", "Latent", VansActionGraphNodeKind::Latent,  { pin("In", true), pin("Timeout", false), pin("Failure", false) },
 			{ property("seconds", "Seconds", VansActionGraphPropertyKind::Float,
 				VansSerializedValue::Float(1.0), 0.0, 86400.0, true),
 			  property("fail", "Fail On Timeout", VansActionGraphPropertyKind::Bool,
 				VansSerializedValue::Bool(false)) });
-		add("Action.Graph.Command", "Command", "Command", VansActionGraphNodeKind::Command,
-			false, true, { pin("In", true), pin("Success", false), pin("Failure", false) },
-			{ property("service", "Service", VansActionGraphPropertyKind::String,
+		add("Core.Graph.Invoke", "Invoke", "Operation", VansActionGraphNodeKind::Command,  { pin("In", true), pin("Success", false), pin("Failure", false) },
+			{ property("capability", "Capability", VansActionGraphPropertyKind::String,
 				VansSerializedValue::String("")),
-			  property("command", "Command", VansActionGraphPropertyKind::String,
+			  property("operation", "Operation", VansActionGraphPropertyKind::String,
+				VansSerializedValue::String("")),
+			  property("inputs", "Inputs", VansActionGraphPropertyKind::Payload,
+				VansSerializedValue::Object({})),
+			  property("outputs", "Outputs", VansActionGraphPropertyKind::Payload,
+				VansSerializedValue::Object({})) });
+		add("Core.Graph.ReadBinding", "Read Binding", "Data", VansActionGraphNodeKind::Pure,
+			{ pin("In", true), pin("Success", false), pin("Failure", false) },
+			{ property("input", "Input", VansActionGraphPropertyKind::Payload,
+				VansSerializedValue::Object({})),
+			  property("output", "Output", VansActionGraphPropertyKind::Payload,
+				VansSerializedValue::Object({})) });
+		add("Core.Graph.WaitSignal", "Wait Signal", "Latent", VansActionGraphNodeKind::Latent,
+			{ pin("In", true), pin("Success", false), pin("Timeout", false), pin("Failure", false) },
+			{ property("signal", "Signal", VansActionGraphPropertyKind::String,
+				VansSerializedValue::String("")),
+			  property("timeoutSeconds", "Timeout", VansActionGraphPropertyKind::Float,
+				VansSerializedValue::Float(0.0), 0.0, 86400.0, true),
+			  property("payloadOutput", "Payload Output", VansActionGraphPropertyKind::Payload,
+				VansSerializedValue::Null()) });
+		add("Core.Graph.AwaitTask", "Await Task", "Latent", VansActionGraphNodeKind::Latent,
+			{ pin("In", true), pin("Success", false), pin("Failure", false), pin("Timeout", false) },
+			{ property("task", "Task", VansActionGraphPropertyKind::Payload,
+				VansSerializedValue::Object({})) });
+		add("Core.Graph.ReleaseResource", "Release Resource", "Resource",
+			VansActionGraphNodeKind::Command,
+			{ pin("In", true), pin("Success", false), pin("Failure", false) },
+			{ property("resource", "Resource", VansActionGraphPropertyKind::Payload,
+				VansSerializedValue::Object({})) });
+		add("Core.Graph.TransferResource", "Transfer Resource", "Resource",
+			VansActionGraphNodeKind::Command,
+			{ pin("In", true), pin("Success", false), pin("Failure", false) },
+			{ property("resource", "Resource", VansActionGraphPropertyKind::Payload,
+				VansSerializedValue::Object({})),
+			  property("destination", "Destination", VansActionGraphPropertyKind::String,
+				VansSerializedValue::String("Host")),
+			  property("output", "Output", VansActionGraphPropertyKind::Payload,
+				VansSerializedValue::Null()) });
+		add("Core.Graph.EmitSignal", "Emit Signal", "Signal", VansActionGraphNodeKind::Command,
+			{ pin("In", true), pin("Success", false), pin("Failure", false) },
+			{ property("signal", "Signal", VansActionGraphPropertyKind::String,
 				VansSerializedValue::String("")),
 			  property("payload", "Payload", VansActionGraphPropertyKind::Payload,
-				VansSerializedValue::Object({})),
-			  property("resultVariable", "Result Variable", VansActionGraphPropertyKind::String,
-				VansSerializedValue::String("")) });
-		add("Action.Graph.Complete", "Complete", "Terminal", VansActionGraphNodeKind::Flow,
-			true, false, { pin("In", true), pin("Success", false) });
-		add("Action.Graph.Fail", "Fail", "Terminal", VansActionGraphNodeKind::Flow,
-			true, false, { pin("In", true), pin("Failure", false) },
+				VansSerializedValue::Object({})) });
+		add("Action.Graph.Complete", "Complete", "Terminal", VansActionGraphNodeKind::Flow,  { pin("In", true), pin("Success", false) });
+		add("Action.Graph.Fail", "Fail", "Terminal", VansActionGraphNodeKind::Flow,  { pin("In", true), pin("Failure", false) },
 			{ property("message", "Message", VansActionGraphPropertyKind::String,
 				VansSerializedValue::String("Action Graph failed")) });
-		add("Action.Graph.SubAction", "Sub Action", "SubAction", VansActionGraphNodeKind::SubAction,
-			false, true, { pin("In", true), pin("Success", false), pin("Failure", false) },
+		add("Action.Graph.SubAction", "Sub Action", "SubAction", VansActionGraphNodeKind::SubAction,  { pin("In", true), pin("Success", false), pin("Failure", false) },
 			{ property("payload", "Activation", VansActionGraphPropertyKind::Payload,
 				VansSerializedValue::Object({})) });
-		add("Action.Graph.Transition", "Transition", "SubAction", VansActionGraphNodeKind::SubAction,
-			false, true, { pin("In", true), pin("Success", false), pin("Failure", false) },
+		add("Action.Graph.Transition", "Transition", "SubAction", VansActionGraphNodeKind::SubAction,  { pin("In", true), pin("Success", false), pin("Failure", false) },
 			{ property("payload", "Transition", VansActionGraphPropertyKind::Payload,
 				VansSerializedValue::Object({})) });
-		add("Action.Graph.Try", "Try", "Transaction", VansActionGraphNodeKind::Transaction,
-			true, false, { pin("In", true), pin("Try", false), pin("Failure", false) });
-		add("Action.Graph.Compensate", "Compensate", "Transaction",
-			VansActionGraphNodeKind::Transaction, true, false,
-			{ pin("In", true), pin("Success", false), pin("Failure", false) });
+		add("Action.Graph.Try", "Try", "Flow", VansActionGraphNodeKind::Flow,
+			{ pin("In", true), pin("Try", false), pin("Failure", false) });
 		return result;
 	}();
 	return descriptors;
@@ -231,7 +249,6 @@ public:
 		return VansMakeStableId<VansActionGraphNodeTypeIdTag>("Action.Graph.Sequence");
 	}
 	std::string_view StableName() const override { return "Action.Graph.Sequence"; }
-	bool SupportsPrediction() const override { return true; }
 	bool PreservesStateAcrossActivations() const override { return true; }
 	VansActionGraphNodeResult Start(VansActionExecutionContext&,
 		const VansCompiledActionGraphNode& node, VansSerializedValue& state) const override
@@ -242,7 +259,7 @@ public:
 			: IntegerProperty(node.properties, "count", 0);
 		if (count < 0)
 			return { VansActionGraphNodeStatus::Failed, "Failure",
-				VansActionError::DefinitionInvalid, "Sequence step count is invalid" };
+				VansActionError::InvalidDefinition, "Sequence step count is invalid" };
 		const std::int64_t index = StateInteger(state, "index");
 		if (index >= count)
 			return { VansActionGraphNodeStatus::Succeeded, "Success" };
@@ -274,7 +291,6 @@ public:
 		return VansMakeStableId<VansActionGraphNodeTypeIdTag>("Action.Graph.Repeat");
 	}
 	std::string_view StableName() const override { return "Action.Graph.Repeat"; }
-	bool SupportsPrediction() const override { return true; }
 	bool PreservesStateAcrossActivations() const override { return true; }
 	VansActionGraphNodeResult Start(VansActionExecutionContext&,
 		const VansCompiledActionGraphNode& node, VansSerializedValue& state) const override
@@ -282,7 +298,7 @@ public:
 		const std::int64_t count = IntegerProperty(node.properties, "count", 1);
 		if (count < 0)
 			return { VansActionGraphNodeStatus::Failed, "Failure",
-				VansActionError::DefinitionInvalid, "Repeat count is invalid" };
+				VansActionError::InvalidDefinition, "Repeat count is invalid" };
 		const std::int64_t iteration = StateInteger(state, "iteration");
 		if (iteration >= count)
 			return { VansActionGraphNodeStatus::Succeeded, "Success" };
@@ -306,7 +322,6 @@ public:
 		return VansMakeStableId<VansActionGraphNodeTypeIdTag>("Action.Graph.Loop");
 	}
 	std::string_view StableName() const override { return "Action.Graph.Loop"; }
-	bool SupportsPrediction() const override { return true; }
 	bool PreservesStateAcrossActivations() const override { return true; }
 	VansActionGraphNodeResult Start(VansActionExecutionContext& context,
 		const VansCompiledActionGraphNode& node, VansSerializedValue& state) const override
@@ -315,16 +330,16 @@ public:
 		const bool condition = ResolveNodeCondition(context, node, true, available);
 		if (!available)
 			return { VansActionGraphNodeStatus::Failed, "Failure",
-				VansActionError::DefinitionInvalid, "Loop variable is unavailable" };
+				VansActionError::InvalidDefinition, "Loop variable is unavailable" };
 		if (!condition) return { VansActionGraphNodeStatus::Succeeded, "Completed" };
 		const std::int64_t maximum = IntegerProperty(node.properties, "maximumIterations", 1);
 		const std::int64_t iteration = StateInteger(state, "iteration");
 		if (maximum <= 0)
 			return { VansActionGraphNodeStatus::Failed, "Failure",
-				VansActionError::DefinitionInvalid, "Loop maximumIterations must be positive" };
+				VansActionError::InvalidDefinition, "Loop maximumIterations must be positive" };
 		if (iteration >= maximum)
 			return { VansActionGraphNodeStatus::Failed, "Failure",
-				VansActionError::BudgetExceeded, "Loop exceeded maximumIterations" };
+				VansActionError::Budget, "Loop exceeded maximumIterations" };
 		SetStateInteger(state, "iteration", iteration + 1);
 		return { VansActionGraphNodeStatus::Succeeded, "Body" };
 	}
@@ -345,7 +360,6 @@ public:
 		return VansMakeStableId<VansActionGraphNodeTypeIdTag>("Action.Graph.Parallel");
 	}
 	std::string_view StableName() const override { return "Action.Graph.Parallel"; }
-	bool SupportsPrediction() const override { return true; }
 	bool PreservesStateAcrossActivations() const override { return true; }
 	VansActionGraphNodeResult Start(VansActionExecutionContext&,
 		const VansCompiledActionGraphNode& node, VansSerializedValue& state) const override
@@ -353,7 +367,7 @@ public:
 		const std::int64_t branches = IntegerProperty(node.properties, "branches", 1);
 		if (branches <= 0)
 			return { VansActionGraphNodeStatus::Failed, "Failure",
-				VansActionError::DefinitionInvalid, "Parallel branch count must be positive" };
+				VansActionError::InvalidDefinition, "Parallel branch count must be positive" };
 		if (StateInteger(state, "started") == 0)
 		{
 			SetStateInteger(state, "started", 1);
@@ -382,7 +396,6 @@ public:
 		return VansMakeStableId<VansActionGraphNodeTypeIdTag>("Action.Graph.Race");
 	}
 	std::string_view StableName() const override { return "Action.Graph.Race"; }
-	bool SupportsPrediction() const override { return true; }
 	bool PreservesStateAcrossActivations() const override { return true; }
 	VansActionGraphNodeResult Start(VansActionExecutionContext&,
 		const VansCompiledActionGraphNode&, VansSerializedValue& state) const override
@@ -417,7 +430,6 @@ public:
 		return VansMakeStableId<VansActionGraphNodeTypeIdTag>("Action.Graph.Complete");
 	}
 	std::string_view StableName() const override { return "Action.Graph.Complete"; }
-	bool SupportsPrediction() const override { return true; }
 	VansActionGraphNodeResult Start(VansActionExecutionContext&,
 		const VansCompiledActionGraphNode&, VansSerializedValue&) const override
 	{
@@ -440,11 +452,10 @@ public:
 		return VansMakeStableId<VansActionGraphNodeTypeIdTag>("Action.Graph.Fail");
 	}
 	std::string_view StableName() const override { return "Action.Graph.Fail"; }
-	bool SupportsPrediction() const override { return true; }
 	VansActionGraphNodeResult Start(VansActionExecutionContext&,
 		const VansCompiledActionGraphNode& node, VansSerializedValue&) const override
 	{
-		return { VansActionGraphNodeStatus::Failed, "Failure", VansActionError::ExecutionFailed,
+		return { VansActionGraphNodeStatus::Failed, "Failure", VansActionError::Execution,
 			ReadSerializedStringField(node.properties, "message", "Action Graph failed") };
 	}
 	VansActionGraphNodeResult Tick(VansActionExecutionContext& context,
@@ -464,14 +475,13 @@ public:
 		return VansMakeStableId<VansActionGraphNodeTypeIdTag>("Action.Graph.Wait");
 	}
 	std::string_view StableName() const override { return "Action.Graph.Wait"; }
-	bool SupportsPrediction() const override { return true; }
 	VansActionGraphNodeResult Start(VansActionExecutionContext&,
 		const VansCompiledActionGraphNode& node, VansSerializedValue& state) const override
 	{
 		const double seconds = NumberProperty(node.properties, "seconds", 0.0);
 		if (!std::isfinite(seconds) || seconds < 0.0)
 			return { VansActionGraphNodeStatus::Failed, "Failure",
-				VansActionError::DefinitionInvalid, "Wait node duration is invalid" };
+				VansActionError::InvalidDefinition, "Wait node duration is invalid" };
 		state = VansSerializedValue::Float(0.0);
 		return { seconds <= 0.0 ? VansActionGraphNodeStatus::Succeeded :
 			VansActionGraphNodeStatus::Waiting, "Success" };
@@ -497,7 +507,6 @@ public:
 		return VansMakeStableId<VansActionGraphNodeTypeIdTag>("Action.Graph.Branch");
 	}
 	std::string_view StableName() const override { return "Action.Graph.Branch"; }
-	bool SupportsPrediction() const override { return true; }
 	VansActionGraphNodeResult Start(VansActionExecutionContext& context,
 		const VansCompiledActionGraphNode& node, VansSerializedValue&) const override
 	{
@@ -509,7 +518,7 @@ public:
 				VansMakeStableId<VansActionFieldIdTag>(variable)) : nullptr;
 			if (!value)
 				return { VansActionGraphNodeStatus::Failed, "Failure",
-					VansActionError::DefinitionInvalid, "Branch variable is unavailable" };
+					VansActionError::InvalidDefinition, "Branch variable is unavailable" };
 			condition = ReadSerializedBool(*value, false);
 		}
 		return { VansActionGraphNodeStatus::Succeeded, condition ? "True" : "False" };
@@ -531,14 +540,13 @@ public:
 		return VansMakeStableId<VansActionGraphNodeTypeIdTag>("Action.Graph.Switch");
 	}
 	std::string_view StableName() const override { return "Action.Graph.Switch"; }
-	bool SupportsPrediction() const override { return true; }
 	VansActionGraphNodeResult Start(VansActionExecutionContext& context,
 		const VansCompiledActionGraphNode& node, VansSerializedValue&) const override
 	{
 		const VansSerializedValue* value = ResolveNodeValue(context, node, "value", "variable");
 		if (!value && !ReadSerializedStringField(node.properties, "variable").empty())
 			return { VansActionGraphNodeStatus::Failed, "Failure",
-				VansActionError::DefinitionInvalid, "Switch variable is unavailable" };
+				VansActionError::InvalidDefinition, "Switch variable is unavailable" };
 		return { VansActionGraphNodeStatus::Succeeded,
 			NodeOutputValue(value, ReadSerializedStringField(node.properties, "defaultOutput", "Default")) };
 	}
@@ -559,14 +567,13 @@ public:
 		return VansMakeStableId<VansActionGraphNodeTypeIdTag>("Action.Graph.Channel");
 	}
 	std::string_view StableName() const override { return "Action.Graph.Channel"; }
-	bool SupportsPrediction() const override { return true; }
 	VansActionGraphNodeResult Start(VansActionExecutionContext& context,
 		const VansCompiledActionGraphNode& node, VansSerializedValue&) const override
 	{
 		const VansSerializedValue* value = ResolveNodeValue(context, node, "channel", "variable");
 		if (!value && !ReadSerializedStringField(node.properties, "variable").empty())
 			return { VansActionGraphNodeStatus::Failed, "Failure",
-				VansActionError::DefinitionInvalid, "Channel variable is unavailable" };
+				VansActionError::InvalidDefinition, "Channel variable is unavailable" };
 		return { VansActionGraphNodeStatus::Succeeded,
 			NodeOutputValue(value, "Default") };
 	}
@@ -587,7 +594,6 @@ public:
 		return VansMakeStableId<VansActionGraphNodeTypeIdTag>("Action.Graph.Gate");
 	}
 	std::string_view StableName() const override { return "Action.Graph.Gate"; }
-	bool SupportsPrediction() const override { return true; }
 	VansActionGraphNodeResult Start(VansActionExecutionContext& context,
 		const VansCompiledActionGraphNode& node, VansSerializedValue&) const override
 	{
@@ -595,7 +601,7 @@ public:
 		const bool open = ResolveNodeCondition(context, node, false, available);
 		if (!available)
 			return { VansActionGraphNodeStatus::Failed, "Failure",
-				VansActionError::DefinitionInvalid, "Gate variable is unavailable" };
+				VansActionError::InvalidDefinition, "Gate variable is unavailable" };
 		if (!open && ReadSerializedBoolField(node.properties, "waitUntilOpen", false))
 			return { VansActionGraphNodeStatus::Waiting, "Closed" };
 		return { VansActionGraphNodeStatus::Succeeded, open ? "Open" : "Closed" };
@@ -617,14 +623,13 @@ public:
 		return VansMakeStableId<VansActionGraphNodeTypeIdTag>("Action.Graph.Timeout");
 	}
 	std::string_view StableName() const override { return "Action.Graph.Timeout"; }
-	bool SupportsPrediction() const override { return true; }
 	VansActionGraphNodeResult Start(VansActionExecutionContext&,
 		const VansCompiledActionGraphNode& node, VansSerializedValue& state) const override
 	{
 		const double seconds = NumberProperty(node.properties, "seconds", 0.0);
 		if (!std::isfinite(seconds) || seconds < 0.0)
 			return { VansActionGraphNodeStatus::Failed, "Failure",
-				VansActionError::DefinitionInvalid, "Timeout duration is invalid" };
+				VansActionError::InvalidDefinition, "Timeout duration is invalid" };
 		state = VansSerializedValue::Float(0.0);
 		if (seconds > 0.0) return { VansActionGraphNodeStatus::Waiting, "Pending" };
 		return Finish(node);
@@ -645,7 +650,7 @@ private:
 	{
 		if (ReadSerializedBoolField(node.properties, "fail", false))
 			return { VansActionGraphNodeStatus::Failed, "Timeout",
-				VansActionError::TimedOut, "Action Graph Timeout elapsed" };
+				VansActionError::Timeout, "Action Graph Timeout elapsed" };
 		return { VansActionGraphNodeStatus::Succeeded, "Timeout" };
 	}
 };
@@ -658,7 +663,6 @@ public:
 		return VansMakeStableId<VansActionGraphNodeTypeIdTag>("Action.Graph.Try");
 	}
 	std::string_view StableName() const override { return "Action.Graph.Try"; }
-	bool SupportsPrediction() const override { return true; }
 	VansActionGraphNodeResult Start(VansActionExecutionContext&,
 		const VansCompiledActionGraphNode&, VansSerializedValue&) const override
 	{
@@ -673,36 +677,276 @@ public:
 		VansSerializedValue&) const override {}
 };
 
-class VansCompensateGraphNode final : public IVansActionGraphNodeHandler
+bool DecodeGenerationHandle(const VansSerializedValue& value, VansGenerationHandle& handle)
+{
+	if (value.kind != VansSerializedValue::Kind::Object) return false;
+	const std::int64_t index = ReadSerializedIntField(value, "index", -1);
+	const std::int64_t generation = ReadSerializedIntField(value, "generation", 0);
+	if (index < 0 || generation <= 0) return false;
+	handle = { static_cast<std::uint32_t>(index), static_cast<std::uint32_t>(generation) };
+	return true;
+}
+
+VansSerializedValue EncodeGenerationHandle(VansGenerationHandle handle)
+{
+	return VansSerializedValue::Object({
+		{ "index", VansSerializedValue::Int(handle.index) },
+		{ "generation", VansSerializedValue::Int(handle.generation) }
+	});
+}
+
+bool ResolveBindingProperty(
+	VansActionExecutionContext& context,
+	const VansCompiledActionGraphNode& node,
+	const char* property,
+	VansSerializedValue& value,
+	std::string& error)
+{
+	const VansSerializedValue* encoded = FindObjectField(node.properties, property);
+	VansActionInputBinding binding;
+	return encoded && VansDecodeActionInputBinding(*encoded, binding, error) &&
+		VansResolveActionInputBinding(binding, context, value, error);
+}
+
+bool WriteBindingProperty(
+	VansActionExecutionContext& context,
+	const VansCompiledActionGraphNode& node,
+	const char* property,
+	VansSerializedValue value,
+	bool required,
+	std::string& error)
+{
+	const VansSerializedValue* encoded = FindObjectField(node.properties, property);
+	if (!encoded || encoded->IsNull())
+	{
+		if (!required) return true;
+		error = "Action Graph output binding is missing";
+		return false;
+	}
+	VansActionOutputBinding binding;
+	return VansDecodeActionOutputBinding(*encoded, binding, error) &&
+		VansWriteActionOutputBinding(binding, std::move(value), context, error);
+}
+
+class VansReadBindingGraphNode final : public IVansActionGraphNodeHandler
 {
 public:
 	VansActionGraphNodeTypeId TypeId() const override
 	{
-		return VansMakeStableId<VansActionGraphNodeTypeIdTag>("Action.Graph.Compensate");
+		return VansMakeStableId<VansActionGraphNodeTypeIdTag>("Core.Graph.ReadBinding");
 	}
-	std::string_view StableName() const override { return "Action.Graph.Compensate"; }
-	bool SupportsPrediction() const override { return true; }
+	std::string_view StableName() const override { return "Core.Graph.ReadBinding"; }
 	VansActionGraphNodeResult Start(VansActionExecutionContext& context,
-		const VansCompiledActionGraphNode&, VansSerializedValue&) const override
+		const VansCompiledActionGraphNode& node, VansSerializedValue&) const override
 	{
-		if (!context.resources)
+		VansSerializedValue value;
+		std::string error;
+		if (!ResolveBindingProperty(context, node, "input", value, error) ||
+			!WriteBindingProperty(context, node, "output", std::move(value), true, error))
 			return { VansActionGraphNodeStatus::Failed, "Failure",
-				VansActionError::InternalInvariant, "Compensate node has no ResourceLedger" };
-		std::vector<std::string> errors;
-		if (!context.resources->RollbackPredicted(errors))
-		{
-			std::string message = "Action Graph compensation failed";
-			for (const std::string& item : errors) message += "; " + item;
-			return { VansActionGraphNodeStatus::Failed, "Failure",
-				VansActionError::CommitFailed, std::move(message) };
-		}
+				VansActionError::InvalidDefinition, std::move(error) };
 		return { VansActionGraphNodeStatus::Succeeded, "Success" };
 	}
 	VansActionGraphNodeResult Tick(VansActionExecutionContext& context,
 		const VansCompiledActionGraphNode& node, VansSerializedValue& state) const override
+		{ return Start(context, node, state); }
+	void Cancel(VansActionExecutionContext&, const VansCompiledActionGraphNode&,
+		VansSerializedValue&) const override {}
+};
+
+class VansWaitSignalGraphNode final : public IVansActionGraphNodeHandler
+{
+public:
+	VansActionGraphNodeTypeId TypeId() const override
 	{
-		return Start(context, node, state);
+		return VansMakeStableId<VansActionGraphNodeTypeIdTag>("Core.Graph.WaitSignal");
 	}
+	std::string_view StableName() const override { return "Core.Graph.WaitSignal"; }
+	VansActionGraphNodeResult Start(VansActionExecutionContext& context,
+		const VansCompiledActionGraphNode& node, VansSerializedValue& state) const override
+	{
+		state = VansSerializedValue::Float(0.0);
+		return Tick(context, node, state);
+	}
+	VansActionGraphNodeResult Tick(VansActionExecutionContext& context,
+		const VansCompiledActionGraphNode& node, VansSerializedValue& state) const override
+	{
+		const std::string signal = ReadSerializedStringField(node.properties, "signal");
+		if (signal.empty())
+			return { VansActionGraphNodeStatus::Failed, "Failure",
+				VansActionError::InvalidDefinition, "WaitSignal signal is empty" };
+		if (context.events)
+			for (const VansActionEvent& event : *context.events)
+				if (event.stableName == signal || event.type ==
+					VansMakeStableId<VansActionFieldIdTag>(signal))
+				{
+					std::string error;
+					if (!WriteBindingProperty(context, node, "payloadOutput",
+						event.payload, false, error))
+						return { VansActionGraphNodeStatus::Failed, "Failure",
+							VansActionError::InvalidDefinition, std::move(error) };
+					return { VansActionGraphNodeStatus::Succeeded, "Success" };
+				}
+		state.kind = VansSerializedValue::Kind::Float;
+		state.floatValue += (std::max)(0.0, context.deltaSeconds);
+		const double timeout = NumberProperty(node.properties, "timeoutSeconds", 0.0);
+		if (!std::isfinite(timeout) || timeout < 0.0)
+			return { VansActionGraphNodeStatus::Failed, "Failure",
+				VansActionError::InvalidDefinition, "WaitSignal timeout is invalid" };
+		if (timeout > 0.0 && state.floatValue >= timeout)
+			return { VansActionGraphNodeStatus::Succeeded, "Timeout" };
+		return { VansActionGraphNodeStatus::Waiting, "Pending" };
+	}
+	void Cancel(VansActionExecutionContext&, const VansCompiledActionGraphNode&,
+		VansSerializedValue&) const override {}
+};
+
+class VansAwaitTaskGraphNode final : public IVansActionGraphNodeHandler
+{
+public:
+	VansActionGraphNodeTypeId TypeId() const override
+	{
+		return VansMakeStableId<VansActionGraphNodeTypeIdTag>("Core.Graph.AwaitTask");
+	}
+	std::string_view StableName() const override { return "Core.Graph.AwaitTask"; }
+	VansActionGraphNodeResult Start(VansActionExecutionContext& context,
+		const VansCompiledActionGraphNode& node, VansSerializedValue& state) const override
+		{ return Tick(context, node, state); }
+	VansActionGraphNodeResult Tick(VansActionExecutionContext& context,
+		const VansCompiledActionGraphNode& node, VansSerializedValue&) const override
+	{
+		if (!context.tasks)
+			return { VansActionGraphNodeStatus::Failed, "Failure",
+				VansActionError::Internal, "AwaitTask has no Action TaskSet" };
+		VansSerializedValue value;
+		std::string error;
+		VansGenerationHandle encodedHandle;
+		if (!ResolveBindingProperty(context, node, "task", value, error) ||
+			!DecodeGenerationHandle(value, encodedHandle))
+			return { VansActionGraphNodeStatus::Failed, "Failure",
+				VansActionError::InvalidDefinition, error.empty()
+					? "AwaitTask binding is not a Task handle" : std::move(error) };
+		const VansActionTaskHandle task{ encodedHandle };
+		const VansActionTaskState taskState = context.tasks->State(task);
+		if (taskState == VansActionTaskState::Waiting)
+			return { VansActionGraphNodeStatus::Waiting, "Pending" };
+		VansActionTaskState consumed{};
+		if (!context.tasks->Consume(task, consumed, error))
+			return { VansActionGraphNodeStatus::Failed, "Failure",
+				VansActionError::Internal, std::move(error) };
+		if (consumed == VansActionTaskState::Completed)
+			return { VansActionGraphNodeStatus::Succeeded, "Success" };
+		if (consumed == VansActionTaskState::TimedOut)
+			return { VansActionGraphNodeStatus::Succeeded, "Timeout" };
+		return { VansActionGraphNodeStatus::Failed, "Failure",
+			consumed == VansActionTaskState::Cancelled
+				? VansActionError::Cancelled : VansActionError::Execution,
+			"Awaited Action Task did not complete successfully" };
+	}
+	void Cancel(VansActionExecutionContext&, const VansCompiledActionGraphNode&,
+		VansSerializedValue&) const override {}
+};
+
+class VansReleaseResourceGraphNode final : public IVansActionGraphNodeHandler
+{
+public:
+	VansActionGraphNodeTypeId TypeId() const override
+	{
+		return VansMakeStableId<VansActionGraphNodeTypeIdTag>("Core.Graph.ReleaseResource");
+	}
+	std::string_view StableName() const override { return "Core.Graph.ReleaseResource"; }
+	VansActionGraphNodeResult Start(VansActionExecutionContext& context,
+		const VansCompiledActionGraphNode& node, VansSerializedValue&) const override
+	{
+		VansSerializedValue value;
+		VansGenerationHandle handle;
+		std::string error;
+		if (!context.resources || !ResolveBindingProperty(context, node, "resource", value, error) ||
+			!DecodeGenerationHandle(value, handle) ||
+			!context.resources->Release({ handle }, error))
+			return { VansActionGraphNodeStatus::Failed, "Failure",
+				VansActionError::Internal, error.empty()
+					? "ReleaseResource binding is invalid" : std::move(error) };
+		return { VansActionGraphNodeStatus::Succeeded, "Success" };
+	}
+	VansActionGraphNodeResult Tick(VansActionExecutionContext& context,
+		const VansCompiledActionGraphNode& node, VansSerializedValue& state) const override
+		{ return Start(context, node, state); }
+	void Cancel(VansActionExecutionContext&, const VansCompiledActionGraphNode&,
+		VansSerializedValue&) const override {}
+};
+
+class VansTransferResourceGraphNode final : public IVansActionGraphNodeHandler
+{
+public:
+	VansActionGraphNodeTypeId TypeId() const override
+	{
+		return VansMakeStableId<VansActionGraphNodeTypeIdTag>("Core.Graph.TransferResource");
+	}
+	std::string_view StableName() const override { return "Core.Graph.TransferResource"; }
+	VansActionGraphNodeResult Start(VansActionExecutionContext& context,
+		const VansCompiledActionGraphNode& node, VansSerializedValue&) const override
+	{
+		VansSerializedValue value;
+		VansGenerationHandle handle;
+		std::string error;
+		const std::string destinationName =
+			ReadSerializedStringField(node.properties, "destination", "Host");
+		VansActionResourceLedger* destination = destinationName == "Host"
+			? context.hostResources : destinationName == "World"
+				? context.worldResources : nullptr;
+		VansActionResourceHandle destinationHandle;
+		if (!context.resources || !destination ||
+			!ResolveBindingProperty(context, node, "resource", value, error) ||
+			!DecodeGenerationHandle(value, handle) ||
+			!context.resources->Transfer({ handle }, *destination, destinationHandle, error) ||
+			!WriteBindingProperty(context, node, "output",
+				EncodeGenerationHandle(destinationHandle.value), false, error))
+			return { VansActionGraphNodeStatus::Failed, "Failure",
+				VansActionError::Internal, error.empty()
+					? "TransferResource destination or binding is invalid" : std::move(error) };
+		return { VansActionGraphNodeStatus::Succeeded, "Success" };
+	}
+	VansActionGraphNodeResult Tick(VansActionExecutionContext& context,
+		const VansCompiledActionGraphNode& node, VansSerializedValue& state) const override
+		{ return Start(context, node, state); }
+	void Cancel(VansActionExecutionContext&, const VansCompiledActionGraphNode&,
+		VansSerializedValue&) const override {}
+};
+
+class VansEmitSignalGraphNode final : public IVansActionGraphNodeHandler
+{
+public:
+	VansActionGraphNodeTypeId TypeId() const override
+	{
+		return VansMakeStableId<VansActionGraphNodeTypeIdTag>("Core.Graph.EmitSignal");
+	}
+	std::string_view StableName() const override { return "Core.Graph.EmitSignal"; }
+	VansActionGraphNodeResult Start(VansActionExecutionContext& context,
+		const VansCompiledActionGraphNode& node, VansSerializedValue&) const override
+	{
+		const std::string signal = ReadSerializedStringField(node.properties, "signal");
+		VansSerializedValue payload;
+		std::string error;
+		if (signal.empty() || !context.context || !context.emitSignal ||
+			!ResolveBindingProperty(context, node, "payload", payload, error))
+			return { VansActionGraphNodeStatus::Failed, "Failure",
+				VansActionError::InvalidDefinition, error.empty()
+					? "EmitSignal configuration is incomplete" : std::move(error) };
+		VansActionEvent event;
+		event.type = VansMakeStableId<VansActionFieldIdTag>(signal);
+		event.stableName = signal;
+		event.source = context.context->Entity(VansActionContextSlots::Owner);
+		event.target = context.context->Entity(VansActionContextSlots::PrimaryTarget);
+		event.payload = std::move(payload);
+		if (!context.emitSignal(std::move(event), error))
+			return { VansActionGraphNodeStatus::Failed, "Failure",
+				VansActionError::Execution, std::move(error) };
+		return { VansActionGraphNodeStatus::Succeeded, "Success" };
+	}
+	VansActionGraphNodeResult Tick(VansActionExecutionContext& context,
+		const VansCompiledActionGraphNode& node, VansSerializedValue& state) const override
+		{ return Start(context, node, state); }
 	void Cancel(VansActionExecutionContext&, const VansCompiledActionGraphNode&,
 		VansSerializedValue&) const override {}
 };
@@ -714,37 +958,65 @@ VansActionGraphNodeResult ExecuteGraphCommand(
 	std::string defaultCommand,
 	const VansSerializedValue* payloadOverride = nullptr)
 {
-	const std::string serviceName = ReadSerializedStringField(
-		node.properties, "service", std::move(defaultService));
-	const std::string commandName = ReadSerializedStringField(
-		node.properties, "command", std::move(defaultCommand));
+	const bool genericInvocation = defaultService.empty() && defaultCommand.empty();
+	const std::string serviceName = genericInvocation
+		? ReadSerializedStringField(node.properties, "capability") : std::move(defaultService);
+	const std::string commandName = genericInvocation
+		? ReadSerializedStringField(node.properties, "operation") : std::move(defaultCommand);
 	if (!context.services || !context.context || serviceName.empty() || commandName.empty())
-		return { VansActionGraphNodeStatus::Failed, "Failure", VansActionError::ServiceMissing,
-			"Command node service, command or Action context is missing" };
+		return { VansActionGraphNodeStatus::Failed, "Failure", VansActionError::Dependency,
+			"Invoke node capability, operation or Action context is missing" };
 	VansActionCommand command;
 	command.service = VansMakeStableId<VansActionServiceIdTag>(serviceName);
 	command.command = VansMakeStableId<VansActionFieldIdTag>(commandName);
 	command.stableName = commandName;
 	command.action = context.action;
 	command.context = *context.context;
-	command.predicted = context.context->predictionKey.IsValid();
-	if (payloadOverride)
+	if (genericInvocation)
+	{
+		const VansSerializedValue* inputs = FindObjectField(node.properties, "inputs");
+		if (!inputs || inputs->kind != VansSerializedValue::Kind::Object)
+			return { VansActionGraphNodeStatus::Failed, "Failure",
+				VansActionError::InvalidDefinition, "Invoke inputs must be an object" };
+		command.payload = VansSerializedValue::Object({});
+		for (const auto& [name, encodedBinding] : inputs->objectFields)
+		{
+			VansActionInputBinding binding;
+			std::string bindingError;
+			VansSerializedValue value;
+			if (!VansDecodeActionInputBinding(encodedBinding, binding, bindingError) ||
+				!VansResolveActionInputBinding(binding, context, value, bindingError))
+				return { VansActionGraphNodeStatus::Failed, "Failure",
+					VansActionError::InvalidDefinition, std::move(bindingError) };
+			SetSerializedObjectField(command.payload, name, std::move(value));
+		}
+	}
+	else if (payloadOverride)
 		command.payload = *payloadOverride;
-	else if (const VansSerializedValue* payload = FindObjectField(node.properties, "payload"))
-		command.payload = *payload;
+	else command.payload = node.properties;
 	const VansActionCommandSchema* commandSchema =
 		context.services->ResolveCommandSchema(command.service, command.command);
 	VansGenerationHandle releasedResource;
-	if (commandSchema &&
-		commandSchema->resourcePolicy == VansActionCommandResourcePolicy::Release)
+	if (commandSchema && (commandSchema->resourcePolicy ==
+		VansActionCommandResourcePolicy::Update || commandSchema->resourcePolicy ==
+		VansActionCommandResourcePolicy::Release))
 	{
 		if (const VansSerializedValue* encoded = FindObjectField(command.payload, "resource"))
 		{
-			const std::int64_t index = ReadSerializedIntField(*encoded, "index", -1);
-			const std::int64_t generation = ReadSerializedIntField(*encoded, "generation", 0);
-			if (index >= 0 && generation > 0)
-				releasedResource = { static_cast<std::uint32_t>(index),
-					static_cast<std::uint32_t>(generation) };
+			VansGenerationHandle ledgerHandle;
+			VansActionServiceId resourceService;
+			VansGenerationHandle externalResource;
+			if (!context.resources || !DecodeGenerationHandle(*encoded, ledgerHandle) ||
+				!context.resources->ResolveExternal(
+					{ ledgerHandle }, resourceService, externalResource) ||
+				resourceService != command.service)
+				return { VansActionGraphNodeStatus::Failed, "Failure",
+					VansActionError::Internal,
+					"Invoke resource binding is stale or belongs to another capability" };
+			SetSerializedObjectField(command.payload, "resource",
+				EncodeGenerationHandle(externalResource));
+			if (commandSchema->resourcePolicy == VansActionCommandResourcePolicy::Release)
+				releasedResource = externalResource;
 		}
 	}
 	const VansActionCommandResult executed = context.services->Execute(command);
@@ -752,40 +1024,62 @@ VansActionGraphNodeResult ExecuteGraphCommand(
 		return { VansActionGraphNodeStatus::Failed, "Failure", executed.error, executed.message };
 	if (releasedResource && context.resources)
 		context.resources->ForgetExternalResource(command.service, releasedResource);
+	VansActionResourceHandle registeredResource;
 	if (executed.resource)
 	{
 		const std::shared_ptr<IVansActionService> service = context.services->Resolve(command.service);
 		if (!service || !context.resources)
-			return { VansActionGraphNodeStatus::Failed, "Failure", VansActionError::InternalInvariant,
+			return { VansActionGraphNodeStatus::Failed, "Failure", VansActionError::Internal,
 				"Command resource cannot be tracked" };
 		VansActionResourceEntry resource;
 		resource.type = "ActionService";
 		resource.debugName = serviceName + "." + commandName;
 		resource.service = command.service;
 		resource.externalResource = executed.resource;
-		resource.prediction = command.predicted
-			? VansActionPredictionResourcePolicy::UndoOnly
-			: VansActionPredictionResourcePolicy::NotPredictable;
 		resource.release = [service, handle = executed.resource]
 		{
 			std::string ignored;
 			return service->Release(handle, ignored);
 		};
-		if (command.predicted) resource.undo = resource.release;
 		std::string resourceError;
-		if (!context.resources->Register(std::move(resource), resourceError))
+		registeredResource = context.resources->Register(std::move(resource), resourceError);
+		if (!registeredResource)
 		{
 			std::string ignored;
 			service->Release(executed.resource, ignored);
-			return { VansActionGraphNodeStatus::Failed, "Failure", VansActionError::CommitFailed,
+			return { VansActionGraphNodeStatus::Failed, "Failure", VansActionError::Execution,
 				resourceError };
 		}
 	}
-	const std::string resultVariable = ReadSerializedStringField(node.properties, "resultVariable");
-	if (!resultVariable.empty() && (!context.variables || !context.variables->Set(
-		VansMakeStableId<VansActionFieldIdTag>(resultVariable), executed.payload)))
-		return { VansActionGraphNodeStatus::Failed, "Failure", VansActionError::DefinitionInvalid,
-			"Command result variable is unavailable" };
+	if (genericInvocation)
+	{
+		const VansSerializedValue* outputs = FindObjectField(node.properties, "outputs");
+		if (!outputs || outputs->kind != VansSerializedValue::Kind::Object)
+			return { VansActionGraphNodeStatus::Failed, "Failure",
+				VansActionError::InvalidDefinition, "Invoke outputs must be an object" };
+		for (const auto& [name, encodedBinding] : outputs->objectFields)
+		{
+			VansActionOutputBinding binding;
+			std::string bindingError;
+			VansSerializedValue value;
+			if (name == "result") value = executed.payload;
+			else if (name == "resource")
+				value = EncodeGenerationHandle(registeredResource.value);
+			else
+			{
+				const VansSerializedValue* field = FindObjectField(executed.payload, name);
+				if (!field)
+					return { VansActionGraphNodeStatus::Failed, "Failure",
+						VansActionError::InvalidDefinition,
+						"Invoke output is unavailable: " + name };
+				value = *field;
+			}
+			if (!VansDecodeActionOutputBinding(encodedBinding, binding, bindingError) ||
+				!VansWriteActionOutputBinding(binding, std::move(value), context, bindingError))
+				return { VansActionGraphNodeStatus::Failed, "Failure",
+					VansActionError::InvalidDefinition, std::move(bindingError) };
+		}
+	}
 	return { VansActionGraphNodeStatus::Succeeded, "Success" };
 }
 
@@ -794,10 +1088,9 @@ class VansCommandGraphNode final : public IVansActionGraphNodeHandler
 public:
 	VansActionGraphNodeTypeId TypeId() const override
 	{
-		return VansMakeStableId<VansActionGraphNodeTypeIdTag>("Action.Graph.Command");
+		return VansMakeStableId<VansActionGraphNodeTypeIdTag>("Core.Graph.Invoke");
 	}
-	std::string_view StableName() const override { return "Action.Graph.Command"; }
-	bool SupportsPrediction() const override { return false; }
+	std::string_view StableName() const override { return "Core.Graph.Invoke"; }
 	VansActionGraphNodeResult Start(VansActionExecutionContext& context,
 		const VansCompiledActionGraphNode& node, VansSerializedValue&) const override
 	{
@@ -820,7 +1113,6 @@ public:
 		return VansMakeStableId<VansActionGraphNodeTypeIdTag>("Action.Graph.SubAction");
 	}
 	std::string_view StableName() const override { return "Action.Graph.SubAction"; }
-	bool SupportsPrediction() const override { return false; }
 	VansActionGraphNodeResult Start(VansActionExecutionContext& context,
 		const VansCompiledActionGraphNode& node, VansSerializedValue&) const override
 	{
@@ -843,7 +1135,6 @@ public:
 		return VansMakeStableId<VansActionGraphNodeTypeIdTag>("Action.Graph.Transition");
 	}
 	std::string_view StableName() const override { return "Action.Graph.Transition"; }
-	bool SupportsPrediction() const override { return false; }
 	VansActionGraphNodeResult Start(VansActionExecutionContext& context,
 		const VansCompiledActionGraphNode& node, VansSerializedValue&) const override
 	{
@@ -926,7 +1217,7 @@ VansGameplayDiagnostics VansActionGraphRuntime::Initialize(
 		addError("GAF-GRAPH-REGISTRY", "Graph, sealed node registry or transition budget is invalid", "graph");
 		return diagnostics;
 	}
-	if (graph->version == 0 || graph->contentHash == 0 || graph->nodes.empty() ||
+	if (graph->contentHash == 0 || graph->nodes.empty() ||
 		graph->entryNode >= graph->nodes.size())
 	{
 		addError("GAF-GRAPH-IDENTITY", "Graph identity, entry or node list is invalid", "graph");
@@ -945,9 +1236,6 @@ VansGameplayDiagnostics VansActionGraphRuntime::Initialize(
 		if (!handler)
 			addError("GAF-GRAPH-NODE-TYPE", "Graph node handler is not registered",
 				"nodes[" + std::to_string(index) + "].type");
-		else if (node.predictable && !handler->SupportsPrediction())
-			addError("GAF-GRAPH-PREDICTION", "Predictable path contains a non-predictable node",
-				"nodes[" + std::to_string(index) + "]");
 	}
 	for (std::size_t index = 0; index < graph->edges.size(); ++index)
 	{
@@ -1014,7 +1302,7 @@ VansGameplayDiagnostics VansActionGraphRuntime::Initialize(
 VansActionExecutorResult VansActionGraphRuntime::Start(VansActionExecutionContext& context)
 {
 	if (!m_Graph || !m_Handlers || m_Started)
-		return { VansActionExecutorStatus::Failed, VansActionError::ExecutionFailed,
+		return { VansActionExecutorStatus::Failed, VansActionError::Execution,
 			"Action Graph is not initialized or already started" };
 	m_Started = true;
 	m_Ready.push_back(m_Graph->entryNode);
@@ -1044,7 +1332,7 @@ void VansActionGraphRuntime::Cancel(VansActionExecutionContext& context)
 	m_Ready.clear();
 	m_Terminal = true;
 	m_Failed = true;
-	m_Error = VansActionError::ExecutionFailed;
+	m_Error = VansActionError::Execution;
 	m_Message = "Action Graph cancelled";
 }
 
@@ -1083,7 +1371,7 @@ VansActionExecutorResult VansActionGraphRuntime::Advance(VansActionExecutionCont
 		{
 			m_Terminal = true;
 			m_Failed = true;
-			m_Error = VansActionError::ExecutionFailed;
+			m_Error = VansActionError::Execution;
 			m_Message = "Action Graph node handler disappeared";
 			break;
 		}
@@ -1101,7 +1389,7 @@ VansActionExecutorResult VansActionGraphRuntime::Advance(VansActionExecutionCont
 		{
 			m_Failed = true;
 			m_Error = result.error == VansActionError::None
-				? VansActionError::ExecutionFailed : result.error;
+				? VansActionError::Execution : result.error;
 			m_Message = result.message;
 		}
 	}
@@ -1110,7 +1398,7 @@ VansActionExecutorResult VansActionGraphRuntime::Advance(VansActionExecutionCont
 		if (++iterations > guardLimit)
 		{
 			m_Failed = true;
-			m_Error = VansActionError::BudgetExceeded;
+			m_Error = VansActionError::Budget;
 			m_Message = "Action Graph exceeded the configured transition budget";
 			break;
 		}
@@ -1122,7 +1410,7 @@ VansActionExecutorResult VansActionGraphRuntime::Advance(VansActionExecutionCont
 		if (!handler)
 		{
 			m_Failed = true;
-			m_Error = VansActionError::ExecutionFailed;
+			m_Error = VansActionError::Execution;
 			m_Message = "Action Graph node handler disappeared";
 			break;
 		}
@@ -1142,7 +1430,7 @@ VansActionExecutorResult VansActionGraphRuntime::Advance(VansActionExecutionCont
 		{
 			m_Failed = true;
 			m_Error = result.error == VansActionError::None
-				? VansActionError::ExecutionFailed : result.error;
+				? VansActionError::Execution : result.error;
 			m_Message = result.message;
 		}
 	}
@@ -1220,10 +1508,15 @@ bool VansRegisterBuiltInActionGraphNodes(
 		registry.Register(std::make_shared<VansChannelGraphNode>(), error) &&
 		registry.Register(std::make_shared<VansGateGraphNode>(), error) &&
 		registry.Register(std::make_shared<VansCommandGraphNode>(), error) &&
+		registry.Register(std::make_shared<VansReadBindingGraphNode>(), error) &&
+		registry.Register(std::make_shared<VansWaitSignalGraphNode>(), error) &&
+		registry.Register(std::make_shared<VansAwaitTaskGraphNode>(), error) &&
+		registry.Register(std::make_shared<VansReleaseResourceGraphNode>(), error) &&
+		registry.Register(std::make_shared<VansTransferResourceGraphNode>(), error) &&
+		registry.Register(std::make_shared<VansEmitSignalGraphNode>(), error) &&
 		registry.Register(std::make_shared<VansSubActionGraphNode>(), error) &&
 		registry.Register(std::make_shared<VansTransitionGraphNode>(), error) &&
-		registry.Register(std::make_shared<VansTryGraphNode>(), error) &&
-		registry.Register(std::make_shared<VansCompensateGraphNode>(), error);
+		registry.Register(std::make_shared<VansTryGraphNode>(), error);
 	if (!registered) return false;
 	for (const VansActionGraphNodeDescriptor& descriptor : VansBuiltInActionGraphNodeDescriptors())
 	{

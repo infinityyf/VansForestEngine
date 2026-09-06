@@ -18,6 +18,8 @@
 #include "../AnimationCore/Procedural/VansProceduralTypes.h"
 #include "../AnimationCore/Runtime/VansSkeletonAnchorRegistry.h"
 
+namespace Vans { struct VansProjectileSpawnRequest; struct VansProjectileSceneBackend; }
+
 #include "WaterCore/VansWaterConfig.h"
 
 
@@ -41,9 +43,9 @@ namespace VansGraphics { class VansTexture; }
 namespace Vans { struct VansSceneAudioResourceRequest; struct VansSceneVideoResourceRequest; }
 namespace Vans { struct VansSceneObjectBuildPlan; }
 namespace Vans { struct VansPackagedResourcePlan; }
+namespace Vans { struct VansSerializedValue; }
 namespace Vans { class VansTimelineRuntimeSystem; }
 namespace Vans { class VansGameplayRuntime; }
-namespace Vans { class VansCombatActionService; }
 namespace Vans { class VansAIWorld; }
 namespace VansGraphics { class VansCameraControlArbiter; }
 namespace VansGraphics { class VansVirtualCameraParameterStore; }
@@ -413,7 +415,6 @@ namespace VansGraphics
 		std::vector<std::string> m_PendingEntityDestructionGuids;
 		std::unique_ptr<Vans::VansRuntimeWorld> m_RuntimeWorld;
 		std::unique_ptr<Vans::VansGameplayRuntime> m_GameplayRuntime;
-		std::shared_ptr<Vans::VansCombatActionService> m_CombatActionService;
 		std::unique_ptr<Vans::VansAIWorld> m_AIWorld;
 		std::unique_ptr<Vans::VansTimelineRuntimeSystem> m_TimelineRuntime;
 		std::unique_ptr<VansCameraControlArbiter> m_CameraControlArbiter;
@@ -475,8 +476,6 @@ namespace VansGraphics
 		const Vans::VansRuntimeWorld* GetRuntimeWorld() const { return m_RuntimeWorld.get(); }
 		Vans::VansGameplayRuntime* GetGameplayRuntime() { return m_GameplayRuntime.get(); }
 		const Vans::VansGameplayRuntime* GetGameplayRuntime() const { return m_GameplayRuntime.get(); }
-		Vans::VansCombatActionService* GetCombatActionService() { return m_CombatActionService.get(); }
-		const Vans::VansCombatActionService* GetCombatActionService() const { return m_CombatActionService.get(); }
 		Vans::VansAIWorld* GetAIWorld() { return m_AIWorld.get(); }
 		const Vans::VansAIWorld* GetAIWorld() const { return m_AIWorld.get(); }
 		VansSkeletonInstanceHandle RegisterSkeletonInstance(VansAnimationNode& animationNode)
@@ -825,27 +824,31 @@ namespace VansGraphics
 
 		bool LoadProjectAssets(Vans::VansAssetDatabase& database,
 
-			const std::filesystem::path& scenePath, VansVKDevice* device);
+			const Vans::VansSerializedValue& sceneDocument,
+
+			const std::filesystem::path& sceneSourcePath, VansVKDevice* device);
 
 		bool LoadPackagedProjectAssets(const Vans::VansPackagedResourcePlan& packagePlan, VansVKDevice* device);
 
 
 
-		/// Load a scene file and prepare all GPU resources (PBR, transform,
+		/// Build a scene from an already loaded authoring snapshot and prepare
+
+		/// all GPU resources (PBR, transform,
 
 		/// descriptor sets, ray tracing).  Safe to call multiple times;
 
 		/// will unload the previous scene first.
 
-		bool LoadSceneForRendering(const char* scenePath, VansVKDevice* device, VansSceneLoadMode mode = VansSceneLoadMode::Editor);
+		bool LoadSceneForRendering(
 
+			const Vans::VansSerializedValue& sceneDocument,
 
+			const std::filesystem::path& sceneSourcePath,
 
-		/// Load scene content (materials, nodes, terrain, vegetation, etc.)
+			VansVKDevice* device,
 
-		/// from a scene file.  Assumes resources are already loaded via
-
-		bool LoadSceneContent(const char* path);
+			VansSceneLoadMode mode = VansSceneLoadMode::Editor);
 
 
 
@@ -884,6 +887,10 @@ namespace VansGraphics
 		// 脚本和事件回调不得在遍历生命周期列表时直接释放实体。
 		// 此接口把销毁推迟到下一个脚本帧边界，并统一清理实体拥有的全部子系统资源。
 		bool QueueDestroyEntity(VansScriptObject* obj);
+
+		// 创建独立动态实体，复用已加载静态渲染实体的网格和材质。
+		Vans::VansEntityHandle SpawnPhysicsInstance(const Vans::VansProjectileSpawnRequest& request, std::string& error);
+		Vans::VansProjectileSceneBackend MakeProjectileSceneBackend();
 
 		void FlushPendingEntityDestructions();
 
@@ -1044,7 +1051,8 @@ namespace VansGraphics
 
 
 
-		void UpdatePhysicsTransforms();
+    void UpdatePhysicsTransforms();
+    void SyncAnimatedHurtBodies();
 
 
 

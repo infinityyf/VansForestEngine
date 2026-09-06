@@ -15,7 +15,7 @@ namespace VansRuntime
     public:
         static VansUIComponentRegistry& Get();
 
-        std::shared_ptr<VansUIComponentInstance> LoadComponent(const std::string& configPath);
+        std::shared_ptr<VansUIComponentInstance> LoadComponent(const std::string& assetGuid);
         std::shared_ptr<VansUIComponentInstance> GetComponent(VansUIHandleId handle) const;
         void CloseComponent(VansUIHandleId handle);
         void CloseAll();

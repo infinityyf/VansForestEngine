@@ -73,7 +73,6 @@ struct VansGameplayAssetSchemaDescriptor
 	VansAssetType assetType = VansAssetType::Unknown;
 	std::string assetKind;
 	std::string extension;
-	std::uint32_t schemaVersion = 1;
 	bool editorOnly = false;
 	std::vector<VansGameplayPropertySchema> fields;
 };
@@ -97,4 +96,14 @@ private:
 	std::unordered_map<VansAssetType, VansGameplayAssetSchemaDescriptor> m_ByType;
 	std::unordered_map<std::string, VansAssetType> m_ByKind;
 };
+
+bool VansRegisterDefaultGameplayAssetSchemas(
+	VansGameplayAssetSchemaRegistry& registry,
+	std::string& error);
+bool VansRegisterCoreGameplayAssetSchemas(
+	VansGameplayAssetSchemaRegistry& registry,
+	std::string& error);
+bool VansRegisterGameplayPrimitiveAssetSchemas(
+	VansGameplayAssetSchemaRegistry& registry,
+	std::string& error);
 }

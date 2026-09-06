@@ -5,11 +5,11 @@
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <cstring>
-#include <fstream>
 #include <limits>
-#include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <cmath>
+#include <unordered_set>
 #include <type_traits>
 
 using json = nlohmann::json;
@@ -101,60 +101,27 @@ static bool ReadKeyframe(BinarySpanReader& reader, TransformKeyframe& kf)
 		reader.ReadBytes(&kf.scale, sizeof(glm::vec3));
 }
 
-static std::optional<bool> ReadNodeTransformChannelsSetting(const std::string& filePath)
-{
-	std::ifstream meta(filePath + ".meta", std::ios::binary);
-	if (!meta)
-		return std::nullopt;
-
-	json metaJson;
-	try
-	{
-		meta >> metaJson;
-	}
-	catch (const json::parse_error&)
-	{
-		return std::nullopt;
-	}
-
-	if (!metaJson.contains("settings") || !metaJson["settings"].is_object())
-		return std::nullopt;
-
-	const json& settings = metaJson["settings"];
-	if (settings.contains("nodeTransformChannels") && settings["nodeTransformChannels"].is_boolean())
-		return settings["nodeTransformChannels"].get<bool>();
-	return std::nullopt;
-}
-
-static bool ReadClipEnvelope(
-	const std::string& filePath,
-	std::string& bytes,
+static bool ReadClipEnvelopeBytes(
+	const std::string& sourceLabel,
+	const std::string& bytes,
 	uint32_t& version,
 	std::string& headerStr,
 	BinarySpanReader& payloadReader,
 	bool logFailures)
 {
-	std::string error;
-	if (!Vans::VansFileStorage::ReadAllBytes(filePath, bytes, error))
-	{
-		if (logFailures)
-			VANS_LOG_ERROR("[VansAnimationClipIO] Failed to open for reading: " << filePath);
-		return false;
-	}
-
 	BinarySpanReader reader(bytes.data(), bytes.size());
 	char magic[MAGIC_SIZE];
 	if (!reader.ReadBytes(magic, MAGIC_SIZE) || std::memcmp(magic, VCLIP_MAGIC, MAGIC_SIZE) != 0)
 	{
 		if (logFailures)
-			VANS_LOG_ERROR("[VansAnimationClipIO] Invalid magic in: " << filePath);
+			VANS_LOG_ERROR("[VansAnimationClipIO] Invalid magic in: " << sourceLabel);
 		return false;
 	}
 
 	if (!reader.ReadBytes(&version, sizeof(uint32_t)))
 	{
 		if (logFailures)
-			VANS_LOG_ERROR("[VansAnimationClipIO] Truncated version in: " << filePath);
+			VANS_LOG_ERROR("[VansAnimationClipIO] Truncated version in: " << sourceLabel);
 		return false;
 	}
 
@@ -165,14 +132,14 @@ static bool ReadClipEnvelope(
 		!reader.ReadString(headerSize, headerStr))
 	{
 		if (logFailures)
-			VANS_LOG_ERROR("[VansAnimationClipIO] Truncated header in: " << filePath);
+			VANS_LOG_ERROR("[VansAnimationClipIO] Truncated header in: " << sourceLabel);
 		return false;
 	}
 
 	if (payloadSize > reader.Remaining() || payloadSize > static_cast<uint64_t>((std::numeric_limits<size_t>::max)()))
 	{
 		if (logFailures)
-			VANS_LOG_ERROR("[VansAnimationClipIO] Truncated payload in: " << filePath);
+			VANS_LOG_ERROR("[VansAnimationClipIO] Truncated payload in: " << sourceLabel);
 		return false;
 	}
 
@@ -270,10 +237,37 @@ static bool EventValueFromJson(const json& source, AnimationEventValue& outValue
 //  Save
 // ════════════════════════════════════════════════════════════════
 
-bool VansGraphics::VansAnimationClipIO::Save(const std::string& filePath,
-                                              const VansAnimationClip& clip,
-                                              const Skeleton& skeleton)
+bool VansGraphics::VansValidateAnimationClipEvents(const VansAnimationClip& clip, std::string& error)
 {
+	std::unordered_set<std::string> occurrences;
+	for (const auto& event : clip.events)
+	{
+		if (event.name.empty() || !std::isfinite(event.time) || event.time < 0 || event.time > clip.duration)
+		{ error = "Animation Clip event name/time is invalid"; return false; }
+		if (!occurrences.insert(event.name + "@" + std::to_string(event.time)).second)
+		{ error = "Animation Clip contains duplicate event occurrences"; return false; }
+		bool finite = true;
+		std::visit([&](const auto& payload)
+		{
+			using T = std::decay_t<decltype(payload)>;
+			if constexpr (std::is_same_v<T, double>) finite = std::isfinite(payload);
+			else if constexpr (std::is_same_v<T, glm::vec3>)
+				finite = std::isfinite(payload.x) && std::isfinite(payload.y) && std::isfinite(payload.z);
+		}, event.payload);
+		if (!finite) { error = "Animation Clip event payload must be finite"; return false; }
+	}
+	return true;
+}
+
+bool VansGraphics::VansAnimationClipBinaryCodec::Encode(
+	const VansAnimationClip& clip,
+	const Skeleton& skeleton,
+	std::string& outBytes,
+	std::string& error)
+{
+	outBytes.clear();
+	error.clear();
+	if (!VansValidateAnimationClipEvents(clip, error)) return false;
 	// ── Build JSON header ──
 	json header;
 	header["clipName"]       = clip.clipName;
@@ -298,8 +292,7 @@ bool VansGraphics::VansAnimationClipIO::Save(const std::string& filePath,
 		json boneJson;
 		if (bone.id != static_cast<int>(b) || bone.guid.empty() || bone.canonicalPath.empty())
 		{
-			VANS_LOG_ERROR("[VansAnimationClipIO] Skeleton identity is incomplete for bone index "
-				<< b << " in: " << filePath);
+			error = "Skeleton identity is incomplete for bone index " + std::to_string(b);
 			return false;
 		}
 		boneJson["name"]         = bone.name;
@@ -416,21 +409,34 @@ bool VansGraphics::VansAnimationClipIO::Save(const std::string& filePath,
 
 	if (!file)
 	{
-		VANS_LOG_ERROR("[VansAnimationClipIO] Failed to serialize clip bytes: " << filePath);
+		error = "Animation Clip binary serialization failed";
 		return false;
 	}
+	outBytes = file.str();
+	return true;
+}
 
+bool VansGraphics::VansAnimationClipIO::Save(
+	const std::string& filePath,
+	const VansAnimationClip& clip,
+	const Skeleton& skeleton)
+{
+	std::string bytes;
 	std::string error;
-	if (!Vans::VansFileStorage::WriteAtomicBytes(filePath, file.str(), error))
+	if (!VansAnimationClipBinaryCodec::Encode(clip, skeleton, bytes, error))
+	{
+		VANS_LOG_ERROR("[VansAnimationClipIO] Failed to serialize: " << filePath
+			<< " (" << error << ")");
+		return false;
+	}
+	if (!Vans::VansFileStorage::WriteAtomicBytes(filePath, bytes, error))
 	{
 		VANS_LOG_ERROR("[VansAnimationClipIO] Failed to save: " << filePath << " (" << error << ")");
 		return false;
 	}
 
 	VANS_LOG("[VansAnimationClipIO] Saved: " << filePath
-	         << " (" << skeleton.bones.size() << " bones, " << totalKeyframes
-	         << " bone keyframes, " << clip.nodeTransformChannels.size()
-	         << " node transform channels)");
+		<< " (" << bytes.size() << " bytes)");
 	return true;
 }
 
@@ -438,16 +444,22 @@ bool VansGraphics::VansAnimationClipIO::Save(const std::string& filePath,
 //  Load
 // ════════════════════════════════════════════════════════════════
 
-bool VansGraphics::VansAnimationClipIO::Load(const std::string& filePath,
-                                              VansAnimationClip& outClip,
-                                              Skeleton& outSkeleton)
+bool VansGraphics::VansAnimationClipBinaryCodec::Decode(
+	const std::string& bytes,
+	VansAnimationClip& outClip,
+	Skeleton& outSkeleton,
+	std::string& error)
 {
-	std::string bytes;
+	error = "Animation Clip binary document is invalid";
+	constexpr const char* filePath = "memory Animation Clip";
 	std::string headerStr;
 	uint32_t version = 0;
 	BinarySpanReader payloadReader;
-	if (!ReadClipEnvelope(filePath, bytes, version, headerStr, payloadReader, true))
+	if (!ReadClipEnvelopeBytes(filePath, bytes, version, headerStr, payloadReader, true))
+	{
+		error = "Animation Clip envelope is invalid";
 		return false;
+	}
 
 	// ── Read binary header ──
 	if (version != VCLIP_VERSION)
@@ -541,13 +553,9 @@ bool VansGraphics::VansAnimationClipIO::Load(const std::string& filePath,
 	std::vector<uint32_t> nodeKeyframeCounts;
 	if (!header.contains("nodeTransformChannels") || !header["nodeTransformChannels"].is_array())
 	{
-		const std::optional<bool> nodeTransformChannels = ReadNodeTransformChannelsSetting(filePath);
-		if (!nodeTransformChannels || *nodeTransformChannels)
-		{
-			VANS_LOG_ERROR("[VansAnimationClipIO] Missing nodeTransformChannels in current clip format: "
-				<< filePath << " (set settings.nodeTransformChannels=false for skeletal-only clips)");
-			return false;
-		}
+		VANS_LOG_ERROR("[VansAnimationClipIO] Missing nodeTransformChannels in current clip format: "
+			<< filePath);
+		return false;
 	}
 	else
 	{
@@ -619,6 +627,7 @@ bool VansGraphics::VansAnimationClipIO::Load(const std::string& filePath,
 				[](const AnimationClipEvent& a, const AnimationClipEvent& b) { return a.time < b.time; });
 		}
 
+		if (!VansValidateAnimationClipEvents(outClip, error)) throw std::runtime_error(error);
 		if (header.contains("sync"))
 		{
 			const json& syncJson = header["sync"];
@@ -696,6 +705,7 @@ bool VansGraphics::VansAnimationClipIO::Load(const std::string& filePath,
 		return false;
 	}
 
+	error.clear();
 	return true;
 }
 
@@ -703,13 +713,33 @@ bool VansGraphics::VansAnimationClipIO::Load(const std::string& filePath,
 //  Peek (metadata only, no keyframes)
 // ════════════════════════════════════════════════════════════════
 
-bool VansGraphics::VansAnimationClipIO::Peek(const std::string& filePath,
-                                              VansAnimationClipInfo& outInfo)
+bool VansGraphics::VansAnimationClipIO::Load(
+	const std::string& filePath,
+	VansAnimationClip& outClip,
+	Skeleton& outSkeleton)
 {
 	std::string bytes;
+	std::string error;
+	if (!Vans::VansFileStorage::ReadAllBytes(filePath, bytes, error))
+	{
+		VANS_LOG_ERROR("[VansAnimationClipIO] Failed to open for reading: " << filePath);
+		return false;
+	}
+	if (VansAnimationClipBinaryCodec::Decode(bytes, outClip, outSkeleton, error))
+		return true;
+	VANS_LOG_ERROR("[VansAnimationClipIO] Failed to decode: " << filePath
+		<< " (" << error << ")");
+	return false;
+}
+
+bool VansGraphics::VansAnimationClipBinaryCodec::Peek(
+	const std::string& bytes,
+	VansAnimationClipInfo& outInfo)
+{
 	std::string headerStr;
 	BinarySpanReader payloadReader;
-	if (!ReadClipEnvelope(filePath, bytes, outInfo.version, headerStr, payloadReader, false))
+	if (!ReadClipEnvelopeBytes(
+		"memory Animation Clip", bytes, outInfo.version, headerStr, payloadReader, false))
 		return false;
 	if (outInfo.version != VCLIP_VERSION)
 		return false;
@@ -737,4 +767,14 @@ bool VansGraphics::VansAnimationClipIO::Peek(const std::string& filePath,
 	}
 
 	return true;
+}
+
+bool VansGraphics::VansAnimationClipIO::Peek(
+	const std::string& filePath,
+	VansAnimationClipInfo& outInfo)
+{
+	std::string bytes;
+	std::string error;
+	return Vans::VansFileStorage::ReadAllBytes(filePath, bytes, error) &&
+		VansAnimationClipBinaryCodec::Peek(bytes, outInfo);
 }

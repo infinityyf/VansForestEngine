@@ -61,6 +61,21 @@ void VansParticleEmitter::SpawnParticles(uint32_t count, const glm::mat4& localT
 	{
         m_ParticlePool.m_Flags[i] = VansParticlePool::FLAG_ALIVE;
 		m_ParticlePool.m_SeedRandom[i] = NextRandomSeed();
+		m_ParticlePool.m_Position[i] = glm::vec3(localToWorld[3]);
+		m_ParticlePool.m_Velocity[i] = glm::vec3(0.0f);
+		m_ParticlePool.m_Color[i] = glm::vec4(1.0f);
+		m_ParticlePool.m_Size[i] = 1.0f;
+		m_ParticlePool.m_InitialSize[i] = 1.0f;
+		m_ParticlePool.m_Rotation[i] = 0.0f;
+		m_ParticlePool.m_Age[i] = 0.0f;
+		m_ParticlePool.m_LifeTime[i] = 1.0f;
+		m_ParticlePool.m_NormalizedAge[i] = 0.0f;
+		if (!m_ParticlePool.m_AngularVelocity.empty())
+			m_ParticlePool.m_AngularVelocity[i] = 0.0f;
+		if (!m_ParticlePool.m_InitialVelocity.empty())
+			m_ParticlePool.m_InitialVelocity[i] = glm::vec3(0.0f);
+		if (!m_ParticlePool.m_FrameIndex.empty())
+			m_ParticlePool.m_FrameIndex[i] = 0.0f;
 	}
 
     m_ParticlePool.m_AliveCount = endIndex;
@@ -70,6 +85,10 @@ void VansParticleEmitter::SpawnParticles(uint32_t count, const glm::mat4& localT
         if (module && module->m_Enabled)
             module->ExecuteInit(m_ParticlePool, startIndex, endIndex, localToWorld);
     }
+	// Size Over Lifetime 与业界模块语义一致：曲线是相对生成尺寸的倍率，
+	// 不能逐帧乘在上一帧结果上。所有 Init 模块完成后统一冻结基准值。
+	for (uint32_t i = startIndex; i < endIndex; ++i)
+		m_ParticlePool.m_InitialSize[i] = m_ParticlePool.m_Size[i];
 
     for (auto& module : m_UpdateModules)
     {
@@ -115,6 +134,11 @@ void VansParticleEmitter::Update(float deltaTime, const glm::mat4& localToWorld)
             module->Execute(m_ParticlePool, deltaTime, localToWorld);
     }
 
+	// 位移积分属于粒子核心而不是 Gravity 模块。这样初速度、阻力、湍流等
+	// 任意速度模块都能独立组合，并确保每帧只积分一次位置。
+	for (uint32_t i = 0; i < m_ParticlePool.m_AliveCount; ++i)
+		m_ParticlePool.m_Position[i] += m_ParticlePool.m_Velocity[i] * deltaTime;
+
     uint32_t index = 0;
     while (index < m_ParticlePool.m_AliveCount)
     {
@@ -141,6 +165,48 @@ void VansParticleEmitter::FillInstanceData(std::vector<VansParticleInstanceData>
         instance.m_Rotation = glm::radians(m_ParticlePool.m_Rotation[i]);
         instance.m_FrameIndex = m_ParticlePool.m_FrameIndex.empty() ? 0.0f : m_ParticlePool.m_FrameIndex[i];
         instance.m_Padding = glm::vec2(0.0f);
+        outBuffer.push_back(instance);
+    }
+}
+
+void VansParticleEmitter::FillVolumetricInstanceData(
+    std::vector<VansVolumetricParticleInstanceData>& outBuffer) const
+{
+    const VansParticleVolumetricConfig& volumetric = m_RendererConfig.m_Volumetric;
+    if (!volumetric.m_Enabled)
+        return;
+
+    const glm::vec3 albedo = glm::clamp(
+        volumetric.m_SingleScatteringAlbedo, glm::vec3(0.0f), glm::vec3(1.0f));
+    const glm::vec3 emissive = glm::max(volumetric.m_EmissivePerMeter, glm::vec3(0.0f));
+    for (uint32_t i = 0; i < m_ParticlePool.m_AliveCount; ++i)
+    {
+        const glm::vec4 color = m_ParticlePool.m_Color[i];
+        const float radius = 0.5f * std::max(m_ParticlePool.m_Size[i], 0.0f) *
+            std::max(volumetric.m_RadiusScale, 0.0f);
+        const float density = std::max(color.a, 0.0f) *
+            std::max(volumetric.m_DensityMultiplier, 0.0f);
+        if (radius <= 1.0e-5f || density <= 1.0e-7f)
+            continue;
+
+        VansVolumetricParticleInstanceData instance{};
+        instance.m_WorldPositionRadius = glm::vec4(m_ParticlePool.m_Position[i], radius);
+        instance.m_ScatteringAlbedoExtinction = glm::vec4(
+            albedo * glm::max(glm::vec3(color), glm::vec3(0.0f)),
+            std::max(volumetric.m_ExtinctionPerMeter, 0.0f) * density);
+        instance.m_EmissiveAnisotropy = glm::vec4(
+            emissive * glm::max(glm::vec3(color), glm::vec3(0.0f)),
+            glm::clamp(volumetric.m_Anisotropy, -0.9f, 0.9f));
+        instance.m_LightingEdgeCloud = glm::vec4(
+            std::max(volumetric.m_DirectLightingScale, 0.0f),
+            std::max(volumetric.m_SkyLightingScale, 0.0f),
+            glm::clamp(volumetric.m_EdgeSoftness, 0.001f, 1.0f),
+            volumetric.m_ReceiveCloudShadows ? 1.0f : 0.0f);
+        instance.m_DistanceAndPadding.x =
+            std::max(volumetric.m_MaxDistanceMeters, 0.01f);
+        instance.m_Metadata.x = m_ParticlePool.m_SeedRandom.empty()
+            ? i + 1u : m_ParticlePool.m_SeedRandom[i];
+        instance.m_Metadata.w = volumetric.m_InjectionPriority;
         outBuffer.push_back(instance);
     }
 }

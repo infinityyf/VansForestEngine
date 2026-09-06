@@ -155,7 +155,7 @@ namespace VansEngine
         if (m_Actor)
         {
             // Remove from scene first
-            PxScene* scene = VansPhysicsSystem::GetInstance().GetScene();
+            PxScene* scene = m_Actor->getScene();
             if (scene)
             {
                 scene->removeActor(*m_Actor);
@@ -178,7 +178,8 @@ namespace VansEngine
             m_ConvexMesh = nullptr;
         }
 
-        // Material is released by PhysX automatically
+        // createMaterial 的初始引用由 Node 持有；Shape 只释放自己的引用。
+        if (m_Material) m_Material->release();
         m_Material = nullptr;
         m_Shape = nullptr;
         m_Enabled = false;
@@ -221,6 +222,8 @@ namespace VansEngine
             if (m_Properties.bodyType == PhysicsBodyType::Kinematic || needsKinematicUpgrade)
             {
                 dynamicActor->setRigidBodyFlag(PxRigidBodyFlag::eKINEMATIC, true);
+                if (!m_Properties.hitRegion.empty())
+                    dynamicActor->setRigidBodyFlag(PxRigidBodyFlag::eUSE_KINEMATIC_TARGET_FOR_SCENE_QUERIES, true);
             }
             else // Dynamic
             {
@@ -541,11 +544,27 @@ namespace VansEngine
         VansPhysicsSystem& physicsSystem = VansPhysicsSystem::GetInstance();
         PxPhysics* physics = physicsSystem.GetPhysics();
 
-        return physics->createMaterial(
+        auto* material = physics->createMaterial(
             m_Properties.material.staticFriction,
             m_Properties.material.dynamicFriction,
             m_Properties.material.restitution
         );
+        const auto combine = [](PhysicsMaterialCombineMode mode)
+        {
+            switch (mode)
+            {
+            case PhysicsMaterialCombineMode::Min: return PxCombineMode::eMIN;
+            case PhysicsMaterialCombineMode::Multiply: return PxCombineMode::eMULTIPLY;
+            case PhysicsMaterialCombineMode::Max: return PxCombineMode::eMAX;
+            default: return PxCombineMode::eAVERAGE;
+            }
+        };
+        if (material)
+        {
+            material->setFrictionCombineMode(combine(m_Properties.material.frictionCombine));
+            material->setRestitutionCombineMode(combine(m_Properties.material.restitutionCombine));
+        }
+        return material;
     }
 
     bool VansPhysicsNode::UpdateTransformFromPhysics()

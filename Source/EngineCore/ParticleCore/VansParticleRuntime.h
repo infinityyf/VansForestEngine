@@ -24,10 +24,17 @@ namespace VansGraphics
 
         // 发射器到世界的变换矩阵（每帧由 Component 写入）
         glm::mat4 m_LocalToWorld = glm::mat4(1.f);
+        // 实例级发射锚点；共享 Asset 不包含所属模型的原点偏移。
+        glm::vec3 m_EmitterPositionLocal{0.0f};
+        void SetOwnerWorldTransform(const glm::mat4& ownerWorld);
+        // 动态实例在当前帧中途出生；该帧已有的 delta 不属于它的寿命。
+        void DeferFirstUpdate() { m_DeferFirstUpdate = true; }
 
         // ── 双缓冲 InstanceData（CPU 侧）────────────────────────
         static constexpr int BUFFER_COUNT = 2;
         std::array<std::vector<VansParticleInstanceData>, BUFFER_COUNT> m_InstanceBuffers;
+        std::array<std::vector<VansVolumetricParticleInstanceData>, BUFFER_COUNT>
+            m_VolumetricInstanceBuffers;
 
         // 更新线程写入的 Buffer 索引（0 或 1）
         std::atomic<int> m_BackBufferIdx { 1 };
@@ -45,7 +52,7 @@ namespace VansGraphics
 
         // 由更新线程调用：推进所有 Emitter，填写 BackBuffer
         void Update(float deltaTime);
-		void Play() { m_IsPlaying = true; }
+		void Play();
 		void Pause() { m_IsPlaying = false; }
 		void Stop();
 		void Restart();
@@ -66,8 +73,19 @@ namespace VansGraphics
         {
             return m_InstanceBuffers[m_FrontBufferIdx.load(std::memory_order_acquire)];
         }
+        const std::vector<VansVolumetricParticleInstanceData>&
+            GetVolumetricRenderBuffer() const
+        {
+            return m_VolumetricInstanceBuffers[
+                m_FrontBufferIdx.load(std::memory_order_acquire)];
+        }
+        bool HasVolumetricInjectionEnabled() const;
 
 	private:
+		void Prewarm();
+		bool m_StartInitialized = false;
+		float m_DelayRemaining = 0.0f;
+		bool m_DeferFirstUpdate = false;
 		uint32_t m_RandomSeed = 0x9e3779b9u;
 		float m_SimulationRate = 1.0f;
     };

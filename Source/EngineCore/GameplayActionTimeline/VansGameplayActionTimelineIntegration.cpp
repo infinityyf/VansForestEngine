@@ -1,11 +1,13 @@
 #include "VansGameplayActionTimelineIntegration.h"
 
 #include "../GameplayActionCore/VansGameplayRuntime.h"
+#include "../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../TimelineCore/VansTimelineDependencyBuilder.h"
 #include "../TimelineCore/VansTimelineTrackExtensionRegistry.h"
 #include "../TimelineRuntime/VansTimelineEvaluator.h"
 #include "../TimelineRuntime/VansTimelineModuleApplierState.h"
 #include "../TimelineRuntime/VansTimelineSampleExtension.h"
+#include "../TimelineRuntime/VansTimelineRuntimeSystem.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -16,6 +18,31 @@
 
 namespace Vans
 {
+VansTimelineSessionScope VansMakeExactActionTimelineScope(VansActionHandle action)
+{
+	return { "Gameplay.Action.Exact", action.value };
+}
+
+bool VansRegisterTimelineGAFTypes(VansGAFTypeRegistry& registry, std::string& error)
+{
+	VansGAFTypeDescriptor descriptor;
+	descriptor.typeId = "Timeline.Driver.Session";
+	descriptor.displayName = descriptor.typeId;
+	descriptor.kind = VansGAFExtensionKind::Driver;
+	return registry.RegisterType(std::move(descriptor), error);
+}
+
+bool VansRegisterTimelineGAFSchemas(VansGAFSchemaRegistry& registry, std::string& error)
+{
+	VansGAFInputSchemaDescriptor descriptor;
+	descriptor.typeId = "Timeline.Driver.Session";
+	descriptor.fields = {
+		{ "timeline", "Core.Value.Reference", false, VansSerializedValue::Null() },
+		{ "timelines", "Core.Value.Array", false, VansSerializedValue::Array({}) }
+	};
+	return registry.Register(std::move(descriptor), error);
+}
+
 namespace
 {
 constexpr const char* EventTrack = "Action.Event";
@@ -24,6 +51,121 @@ constexpr const char* CueTrack = "Action.Cue";
 constexpr const char* ParameterTrack = "Action.Parameter";
 constexpr const char* SubActionTrack = "Action.SubAction";
 constexpr const char* MarkerTrack = "Action.Marker";
+
+std::string AssetReference(const VansSerializedValue* value)
+{
+	if (!value) return {};
+	if (value->kind == VansSerializedValue::Kind::String) return value->stringValue;
+	if (value->kind != VansSerializedValue::Kind::Object) return {};
+	for (const char* field : { "assetGuid", "stableId", "pathHint" })
+	{
+		const std::string reference = ReadSerializedStringField(*value, field);
+		if (!reference.empty()) return reference;
+	}
+	return {};
+}
+
+class TimelineSessionActionDriver final : public IVansActionSidecarDriver
+{
+public:
+	TimelineSessionActionDriver(
+		VansTimelineRuntimeSystem& runtime,
+		const VansCompiledActionRecord& record)
+		: m_Runtime(runtime)
+	{
+		if (const std::string primary = AssetReference(
+			FindObjectField(record.inputs, "timeline")); !primary.empty())
+			m_Assets.push_back(primary);
+		if (const VansSerializedValue* values = FindObjectField(record.inputs, "timelines");
+			values && values->kind == VansSerializedValue::Kind::Array)
+			for (const VansSerializedValue& value : values->arrayItems)
+				if (const std::string reference = AssetReference(&value); !reference.empty())
+					m_Assets.push_back(reference);
+	}
+
+	bool Start(VansActionExecutionContext& context, std::string& error) override
+	{
+		if (m_Assets.empty())
+		{
+			error = "Timeline.Driver.Session requires at least one Timeline asset";
+			return false;
+		}
+		m_Owner = context.owner;
+		m_Action = context.action;
+		if (!m_Runtime.IsReadyForActionSessions()) return true;
+		return StartSessions(error);
+	}
+
+	bool Tick(VansActionExecutionContext& context, std::string& error) override
+	{
+		if (!m_Started)
+		{
+			if (!m_Runtime.IsReadyForActionSessions()) return true;
+			if (!StartSessions(error)) return false;
+		}
+		for (VansTimelineSessionHandle session : m_Sessions)
+		{
+			m_Runtime.Sessions().Advance(session, context.deltaSeconds);
+			m_Runtime.Sessions().Evaluate(session, VansTimelineEvaluationPhase::PostScript);
+			const auto view = m_Runtime.Sessions().Query(session);
+			if (!view)
+			{
+				error = "Timeline Action Session became stale";
+				return false;
+			}
+			if (view->state == VansTimelinePlayerState::Error)
+			{
+				error = "Timeline Action Session failed";
+				return false;
+			}
+		}
+		return true;
+	}
+
+	void Finish(VansActionExecutionContext&, VansActionEndReason reason) override
+	{
+		ReleaseAll(reason == VansActionEndReason::Completed
+			? VansTimelineEndReason::Completed : VansTimelineEndReason::Stopped);
+	}
+
+	std::string_view StableName() const override { return "Timeline.Driver.Session"; }
+
+private:
+	bool StartSessions(std::string& error)
+	{
+		for (const std::string& asset : m_Assets)
+		{
+			VansTimelineSessionResult result = m_Runtime.CreateActionSession(
+				asset, m_Owner, VansMakeExactActionTimelineScope(m_Action));
+			if (!result || !m_Runtime.Sessions().Play(result.handle))
+			{
+				error = result.error.empty()
+					? "Timeline Action Session could not start" : std::move(result.error);
+				ReleaseAll(VansTimelineEndReason::Failed);
+				return false;
+			}
+			m_Sessions.push_back(result.handle);
+		}
+		m_Started = true;
+		return true;
+	}
+	void ReleaseAll(VansTimelineEndReason reason)
+	{
+		for (VansTimelineSessionHandle session : m_Sessions)
+		{
+			m_Runtime.Sessions().Stop(session, reason);
+			m_Runtime.Sessions().Release(session);
+		}
+		m_Sessions.clear();
+	}
+
+	VansTimelineRuntimeSystem& m_Runtime;
+	std::vector<std::string> m_Assets;
+	std::vector<VansTimelineSessionHandle> m_Sessions;
+	VansEntityHandle m_Owner;
+	VansActionHandle m_Action;
+	bool m_Started = false;
+};
 
 VansTimelineOutputTypeId OutputType(std::string_view track)
 {
@@ -78,14 +220,30 @@ std::shared_ptr<VansActionHost> ResolveHost(
 
 std::vector<VansActionHandle> MatchingActions(
 	const VansActionHost& host,
-	std::string_view actionName)
+	const VansTimelineApplyContext& context,
+	std::string_view actionName,
+	std::string_view actionScope)
 {
 	const VansActionId filter = actionName.empty()
 		? VansActionId{} : VansMakeStableId<VansActionIdTag>(actionName);
 	std::vector<VansActionHandle> result;
+	if (context.scope && context.scope->type == "Gameplay.Action.Exact")
+	{
+		const VansActionHandle exact{ context.scope->handle };
+		const auto instance = host.Query(exact);
+		if (instance && (!filter || instance->action == filter)) result.push_back(exact);
+		return result;
+	}
+	if (actionScope != "HostQuery") return result;
 	for (const VansActionInstanceSnapshot& instance : host.ActiveActions())
 		if (!filter || instance.action == filter) result.push_back(instance.handle);
 	return result;
+}
+
+std::uint64_t ActionCorrelation(VansActionHandle action)
+{
+	return (static_cast<std::uint64_t>(action.value.generation) << 32u) |
+		(static_cast<std::uint64_t>(action.value.index) + 1ull);
 }
 
 bool SendEvent(
@@ -139,7 +297,8 @@ public:
 		auto host = ResolveHost(m_Gameplay, target);
 		if (!host) return Failed("Timeline Action.Event requires a live ActionHost binding");
 		std::string error;
-		if (!SendEvent(*host, MatchingActions(*host, StringAt(context, 0)),
+		if (!SendEvent(*host, MatchingActions(*host, context,
+			StringAt(context, 0), StringAt(context, 3)),
 			StringAt(context, 1), PayloadAt(context, 2), error)) return Failed(std::move(error));
 		return { VansTimelineApplyStatus::Applied };
 	}
@@ -179,7 +338,8 @@ public:
 		const std::string window = StringAt(context, 1);
 		const std::string prefix = "Action.Window." + window;
 		const VansSerializedValue eventPayload = PayloadAt(context, 2);
-		const auto actions = MatchingActions(*host, StringAt(context, 0));
+		const auto actions = MatchingActions(
+			*host, context, StringAt(context, 0), StringAt(context, 3));
 		std::string error;
 		if (sample->entered && sample->exited && !sample->active)
 		{
@@ -269,28 +429,39 @@ public:
 		const VansCueId cue = VansMakeStableId<VansCueIdTag>(StringAt(context, 1));
 		const std::string mode = StringAt(context, 2);
 		VansGameplayCueParameters parameters;
-		parameters.context.owner = host->Owner();
+		parameters.context.SetEntity(VansActionContextSlots::Owner, host->Owner());
 		parameters.target = target.entity;
 		parameters.payload = PayloadAt(context, 4);
 		parameters.intensity = NumberAt(context, 5, 1.0);
-		VansGameplayCueKey key{ {}, cue,
-			static_cast<std::uint32_t>((context.order.sequence % UINT32_MAX) + 1u) };
+		const std::vector<VansActionHandle> actions =
+			MatchingActions(*host, context, StringAt(context, 0), StringAt(context, 6));
 		std::string error;
 		if (mode == "Execute")
 		{
 			if (!sample->entered) return { VansTimelineApplyStatus::Ignored };
-			if (!host->Cues().Execute(key, CueScope(StringAt(context, 3)), parameters, error))
-				return Failed(std::move(error));
+			for (std::size_t index = 0; index < actions.size(); ++index)
+			{
+				const VansGameplayCueKey key{ ActionCorrelation(actions[index]), cue,
+					static_cast<std::uint32_t>(((context.order.sequence + index) % UINT32_MAX) + 1u) };
+				if (!host->Cues().Execute(key, CueScope(StringAt(context, 3)), parameters, error))
+					return Failed(std::move(error));
+			}
 			return { VansTimelineApplyStatus::Applied };
 		}
 		if (!sample->active) return { VansTimelineApplyStatus::Ignored };
 		auto [restore, state] = m_State.Acquire(context.writer, [&]
 		{
 			CueState created{ context.writer, host, {} };
-			const VansCueHandle handle = host->Cues().Add(key,
-				CueScope(StringAt(context, 3)), parameters,
-				VansTimelineHandleKey(context.writer), error);
-			if (handle) created.cues.push_back(handle);
+			for (std::size_t index = 0; index < actions.size(); ++index)
+			{
+				const VansGameplayCueKey key{ ActionCorrelation(actions[index]), cue,
+					static_cast<std::uint32_t>(((context.order.sequence + index) % UINT32_MAX) + 1u) };
+				const VansCueHandle handle = host->Cues().Add(key,
+					CueScope(StringAt(context, 3)), parameters,
+					VansTimelineHandleKey(context.writer), error);
+				if (handle) created.cues.push_back(handle);
+				if (!error.empty()) break;
+			}
 			return created;
 		});
 		if (!error.empty()) { m_State.Release(restore); return Failed(std::move(error)); }
@@ -367,7 +538,7 @@ public:
 		const VansActionFieldId variable =
 			VansMakeStableId<VansActionFieldIdTag>(StringAt(context, 1));
 		const std::vector<VansActionHandle> actions =
-			MatchingActions(*host, StringAt(context, 0));
+			MatchingActions(*host, context, StringAt(context, 0), StringAt(context, 3));
 		std::string error;
 		auto [restore, state] = m_State.Acquire(context.writer, [&]
 		{
@@ -437,10 +608,10 @@ public:
 		auto host = ResolveHost(m_Gameplay, target);
 		if (!host) return Failed("Timeline Action.SubAction requires a live ActionHost binding");
 		VansActionContext actionContext;
-		actionContext.owner = host->Owner();
-		actionContext.instigator = host->Owner();
-		actionContext.source = host->Owner();
-		actionContext.payload = PayloadAt(context, 1);
+		actionContext.SetEntity(VansActionContextSlots::Owner, host->Owner());
+		actionContext.SetEntity(VansActionContextSlots::Instigator, host->Owner());
+		actionContext.SetEntity(VansActionContextSlots::Source, host->Owner());
+		actionContext.SetSerialized(VansActionContextSlots::Payload, PayloadAt(context, 1));
 		const VansActionResult result = host->ActivateAction(
 			VansMakeStableId<VansActionIdTag>(StringAt(context, 0)), std::move(actionContext));
 		if (!result && StringAt(context, 2) != "Ignore")
@@ -472,7 +643,8 @@ public:
 		auto host = ResolveHost(m_Gameplay, target);
 		if (!host) return Failed("Timeline Action.Marker requires a live ActionHost binding");
 		std::string error;
-		if (!SendEvent(*host, MatchingActions(*host, StringAt(context, 0)),
+		if (!SendEvent(*host, MatchingActions(*host, context,
+			StringAt(context, 0), StringAt(context, 3)),
 			"Action.Marker." + StringAt(context, 1), PayloadAt(context, 2), error))
 			return Failed(std::move(error));
 		return { VansTimelineApplyStatus::Applied };
@@ -532,6 +704,23 @@ void CollectGameplayDependency(const VansTimelineTrack& track,
 }
 }
 
+std::shared_ptr<const IVansGameplayModuleContributor> VansMakeTimelineGAFContributor(
+	VansTimelineRuntimeSystem& timelineRuntime)
+{
+	return VansMakeGAFModuleContributor(
+		VansMakeGAFModuleDescriptor("Timeline", "Timeline GAF Driver", { "Core" }),
+		VansRegisterTimelineGAFTypes,
+		VansRegisterTimelineGAFSchemas,
+		[&timelineRuntime](VansGAFRuntimeRegistry& registry, std::string& error)
+		{
+			return registry.RegisterSidecarDriver("Timeline.Driver.Session",
+				[&timelineRuntime](const VansCompiledActionRecord& record)
+				{
+					return std::make_unique<TimelineSessionActionDriver>(timelineRuntime, record);
+				}, error);
+		});
+}
+
 bool VansRegisterGameplayActionTimelineExtensions(
 	VansTimelineTrackExtensionRegistry& registry,
 	std::string& error)
@@ -549,16 +738,22 @@ bool VansRegisterGameplayActionTimelineExtensions(
 		return VansMakeTimelineSourceField("payload", VansTimelineValueType::Struct,
 			VansTimelineStructValue{ {}, VansSerializedValue::Object({}) });
 	};
+	const auto actionScope = []
+	{
+		return VansMakeTimelineSourceField("actionScope", VansTimelineValueType::Enum,
+			std::string("HostQuery"), true, { "HostQuery" });
+	};
 	auto event = VansMakeTimelinePointExtension(EventTrack, "Action Event", "Gameplay Action",
 		P::PostScript, B::Required, { { common(),
-			VansMakeTimelineSourceField("event", F::String, std::string(""), true), payload() }, {}, false, false },
+			VansMakeTimelineSourceField("event", F::String, std::string(""), true),
+			payload(), actionScope() }, {}, false, false },
 		CollectGameplayDependency);
 	event.validate = ValidateEvent;
 	if (!registry.Register(std::move(event), error)) return false;
 	auto window = VansMakeTimelineSampleExtension(WindowTrack, "Action Window", "Gameplay Action",
 		P::PostScript, B::Required, VansTimelineContinuousTrackFlags(false),
 		{ { common(), VansMakeTimelineSourceField("window", F::String, std::string(""), true),
-			payload() }, {}, false, false }, CollectGameplayDependency);
+			payload(), actionScope() }, {}, false, false }, CollectGameplayDependency);
 	window.validate = ValidateWindow;
 	if (!registry.Register(std::move(window), error)) return false;
 	auto cue = VansMakeTimelineSampleExtension(CueTrack, "Gameplay Cue", "Gameplay Action",
@@ -568,7 +763,8 @@ bool VansRegisterGameplayActionTimelineExtensions(
 				{ "Execute", "Sustained" }),
 			VansMakeTimelineSourceField("scope", F::Enum, std::string("Owner"), false,
 				{ "Owner", "Target", "Observers", "World", "LocalOnly" }),
-			payload(), VansMakeTimelineSourceField("intensity", F::Double, 1.0) }, {}, false, false },
+			payload(), VansMakeTimelineSourceField("intensity", F::Double, 1.0),
+			actionScope() }, {}, false, false },
 		CollectGameplayDependency);
 	cue.validate = ValidateCue;
 	if (!registry.Register(std::move(cue), error)) return false;
@@ -576,7 +772,8 @@ bool VansRegisterGameplayActionTimelineExtensions(
 		P::PostScript, B::Required, VansTimelineContinuousTrackFlags(),
 		{ { common(), VansMakeTimelineSourceField("variable", F::String, std::string(""), true),
 			VansMakeTimelineSourceField("valueType", F::Enum, std::string("Float"), false,
-				{ "Bool", "Int32", "Int64", "Float", "Double", "String", "Vec2", "Vec3", "Vec4" }) },
+				{ "Bool", "Int32", "Int64", "Float", "Double", "String", "Vec2", "Vec3", "Vec4" }),
+			actionScope() },
 			{ VansMakeTimelineChannelSchema("value", F::Float, true, "valueType") }, false, false },
 		CollectGameplayDependency);
 	parameter.validate = ValidateParameter;
@@ -591,7 +788,8 @@ bool VansRegisterGameplayActionTimelineExtensions(
 	if (!registry.Register(std::move(subAction), error)) return false;
 	auto marker = VansMakeTimelinePointExtension(MarkerTrack, "Action Marker", "Gameplay Action",
 		P::PostScript, B::Required, { { common(),
-			VansMakeTimelineSourceField("marker", F::String, std::string(""), true), payload() }, {}, false, false },
+			VansMakeTimelineSourceField("marker", F::String, std::string(""), true),
+			payload(), actionScope() }, {}, false, false },
 		CollectGameplayDependency);
 	marker.validate = ValidateMarker;
 	return registry.Register(std::move(marker), error);

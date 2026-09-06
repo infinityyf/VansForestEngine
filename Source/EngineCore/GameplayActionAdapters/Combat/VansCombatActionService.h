@@ -2,6 +2,7 @@
 
 #include "../../GameplayActionCore/VansActionServices.h"
 #include "../../RuntimeCore/VansGenerationPool.h"
+#include "../../GameplayTargeting/VansGameplayTargeting.h"
 
 #include <glm/glm.hpp>
 
@@ -14,6 +15,8 @@ namespace Vans
 {
 class VansGameplayRuntime;
 class VansRuntimeWorld;
+
+const VansActionServiceCapability& VansCombatActionCapability();
 
 struct VansCombatDebugMeleeWindow
 {
@@ -39,6 +42,9 @@ struct VansCombatDebugHurtBody
 	float radius = 0.0f;
 	float halfHeight = 0.0f;
 	bool hit = false;
+	glm::vec3 axis{ 1.0f, 0.0f, 0.0f };
+	std::string region;
+	std::string componentGuid;
 };
 
 struct VansCombatDebugSnapshot
@@ -67,6 +73,12 @@ bool VansContinuousWeaponPathIntersectsSphere(
 	const glm::vec3& center,
 	float combinedRadius);
 
+bool VansContinuousWeaponPathIntersectsCapsule(
+	const glm::vec3& previousBase, const glm::vec3& previousTip,
+	const glm::vec3& currentBase, const glm::vec3& currentTip,
+	const glm::vec3& capsuleStart, const glm::vec3& capsuleEnd,
+	float combinedRadius, glm::vec3* axisPoint = nullptr, glm::vec3* weaponPoint = nullptr);
+
 class VansCombatActionService final : public IVansActionService
 {
 public:
@@ -79,7 +91,7 @@ public:
 	VansActionCommandResult Execute(const VansActionCommand& command) override;
 	bool Release(VansGenerationHandle resource, std::string& error) override;
 
-	void Tick(double deltaSeconds);
+	void Tick(double deltaSeconds) override;
 	VansCombatDebugSnapshot CaptureDebugSnapshot() const;
 
 private:
@@ -116,8 +128,9 @@ private:
 		VansActionServiceCapability capability);
 
 	bool SampleWindow(MeleeWindow& window);
+	VansEntityHandle ResolveHitTarget(VansEntityHandle entity) const;
 	void EmitWindowEvent(MeleeWindow& window, std::string_view edge);
-	bool ActivateResponse(MeleeWindow& window, VansEntityHandle target);
+	bool ActivateResponse(MeleeWindow& window, const VansTargetHitResult& hit);
 
 	VansRuntimeWorld& m_World;
 	VansGameplayRuntime& m_GameplayRuntime;

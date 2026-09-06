@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace Vans
@@ -49,6 +50,7 @@ public:
 	bool Complete(VansActionTaskHandle handle, std::string& error);
 	bool Fail(VansActionTaskHandle handle, std::string& error);
 	bool Cancel(VansActionTaskHandle handle, std::string& error);
+	bool Consume(VansActionTaskHandle handle, VansActionTaskState& state, std::string& error);
 	void CancelAll();
 	void Tick(double deltaSeconds);
 	VansActionTaskState State(VansActionTaskHandle handle) const;
@@ -68,6 +70,7 @@ private:
 	bool End(VansActionTaskHandle handle, VansActionTaskState state, std::string& error);
 
 	VansGenerationPool<Task> m_Tasks;
+	std::unordered_map<VansActionTaskHandle, VansActionTaskState> m_TerminalTasks;
 	std::size_t m_MaximumTasks = 64;
 	bool m_AcceptingTasks = true;
 };

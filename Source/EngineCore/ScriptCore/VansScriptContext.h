@@ -178,7 +178,7 @@ class VansScriptClothComponent : public VansScriptComponent
 {
 public:
 	VansEngine::VansClothNode* m_ClothNode = nullptr;
-	std::string m_ProfilePath;
+	std::string m_ProfileAssetGuid;
 protected:
 	void OnEnable() override;
 	void OnDisable() override;
@@ -205,7 +205,7 @@ public:
 	VansScriptRagdollComponent();
 	VansGraphics::VansAnimationNode* m_AnimNode = nullptr;
 	VansEngine::RagdollDriveMode m_InitialDriveMode = VansEngine::RagdollDriveMode::Animation;
-	std::string m_ProfilePath;
+	std::string m_ProfileAssetGuid;
 	std::string m_ProfileName;
 	int m_ConfiguredBodyCount = 0;
 	int m_ConfiguredJointCount = 0;
@@ -369,7 +369,8 @@ class VansScriptParticleComponent : public VansScriptComponent
 {
 public:
 	VansScriptParticleComponent() { m_ComponentName = "Particle"; }
-	std::string m_ParticleAssetPath;
+	std::string m_ParticleAssetGuid;
+	std::shared_ptr<const VansGraphics::VansParticleAsset> m_ParticleAssetSource;
 	std::unique_ptr<VansGraphics::VansParticleAsset> m_ParticleAsset;
 	std::unique_ptr<VansGraphics::VansParticleRuntime> m_Runtime;
 	VansGraphics::VansParticleRenderNode* m_RenderNode = nullptr;
@@ -385,7 +386,7 @@ public:
 	void Restart();
 	void SetWorldPosition(float x, float y, float z);
 	void ClearWorldPositionOverride();
-	bool LoadAsset(const std::string& path);
+	bool LoadAssetGuid(const std::string& assetGuid);
 	void OnUpdate(float deltaTime);
 	void MirrorRuntimeEnabledState(bool selfEnabled, bool effectiveEnabled) override;
 
@@ -449,8 +450,8 @@ public:
 	VansScriptUIComponent() { m_ComponentName = "UIController"; }
 	~VansScriptUIComponent() override;
 
-	std::vector<std::string> m_AutoOpenScreens;
-	std::vector<std::string> m_PreloadScreens;
+	std::vector<std::string> m_AutoOpenScreenAssetGuids;
+	std::vector<std::string> m_PreloadScreenAssetGuids;
 	std::vector<VansRuntime::VansUIHandleId> m_OpenScreens;
 
 	void Preload();

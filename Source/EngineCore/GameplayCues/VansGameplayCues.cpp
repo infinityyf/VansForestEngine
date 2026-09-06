@@ -155,12 +155,12 @@ VansActionCommandResult VansActionServiceGameplayCueAdapter::Run(
 	VansGenerationHandle resource) const
 {
 	if (!m_Services || commandName.empty() || !commandId)
-		return { VansActionError::DefinitionInvalid, {}, VansSerializedValue::Object({}),
+		return { VansActionError::InvalidDefinition, {}, VansSerializedValue::Object({}),
 			"Gameplay Cue command is invalid" };
 	const VansActionCommandSchema* schema =
 		m_Services->ResolveCommandSchema(mapping.service, commandId);
 	if (!schema)
-		return { VansActionError::ServiceMissing, {}, VansSerializedValue::Object({}),
+		return { VansActionError::Dependency, {}, VansSerializedValue::Object({}),
 			"Gameplay Cue command schema is unavailable" };
 	VansSerializedValue payload = mapping.parameters;
 	const auto setIfDeclared = [&](std::string_view name, VansSerializedValue value)
@@ -183,7 +183,8 @@ VansActionCommandResult VansActionServiceGameplayCueAdapter::Run(
 	}
 	if (resource) setIfDeclared("resource", ResourceValue(resource));
 	const VansEntityHandle target = parameters.target.IsValid()
-		? parameters.target : parameters.context.primaryTarget;
+		? parameters.target
+		: parameters.context.Entity(VansActionContextSlots::PrimaryTarget);
 	setIfDeclared("target", EntityValue(target));
 	setIfDeclared("position", VectorValue(parameters.position));
 	setIfDeclared("origin", VectorValue(parameters.position));
@@ -198,7 +199,6 @@ VansActionCommandResult VansActionServiceGameplayCueAdapter::Run(
 	command.stableName = std::string(commandName);
 	command.context = parameters.context;
 	command.payload = std::move(payload);
-	command.predicted = parameters.context.predictionKey.IsValid();
 	return m_Services->Execute(command);
 }
 

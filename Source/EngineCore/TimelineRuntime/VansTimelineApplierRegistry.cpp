@@ -52,6 +52,7 @@ void VansTimelineApplierRegistry::Apply(
 	const VansCompiledTimeline& timeline,
 	std::vector<VansTimelineEvaluationOutput>& outputs,
 	VansTimelineBindingResolver& bindings,
+	const VansTimelineSessionScope& scope,
 	VansTimelineWriterRegistry& writers,
 	VansTimelinePreAnimatedState& preAnimated,
 	VansTimelineDiagnostics& diagnostics) const
@@ -97,6 +98,7 @@ void VansTimelineApplierRegistry::Apply(
 		output.writer = writers.Acquire(writerDesc);
 		VansTimelineApplyContext context{ timeline, *track, section, output.session, output.root,
 			output.sessionKind, output.writer, output.order, output.blendMode, output.completion };
+		context.scope = scope ? &scope : nullptr;
 		context.bindings = &bindings;
 		context.diagnostics = &diagnostics;
 		VansTimelineApplyResult result = applier->Apply(context, output.target, output.payload);

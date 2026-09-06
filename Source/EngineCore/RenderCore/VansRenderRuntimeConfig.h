@@ -50,6 +50,9 @@ namespace VansGraphics
 		float sliceDistributionPower = 2.0f;
 		bool temporalReprojection = true;
 		float historyWeight = 0.9f;
+		// 统一近场介质沿光线的 Beer-Lambert 采样质量。
+		std::uint32_t lightTransmittanceSamples = 12;
+		float lightTransmittanceMaxDistanceMeters = 32.0f;
 	};
 
 	struct VansCloudShadowQualityConfig

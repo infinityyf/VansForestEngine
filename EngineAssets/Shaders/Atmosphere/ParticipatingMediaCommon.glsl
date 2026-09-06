@@ -68,14 +68,14 @@ void ComposeParticipatingMediaInterval(
 }
 
 float ParticipatingMediaFroxelSliceCoordinate(
-    float distanceMeters,
-    float nearDistanceMeters,
-    float farDistanceMeters,
+    float viewDepthMeters,
+    float nearViewDepthMeters,
+    float farViewDepthMeters,
     float slicePower)
 {
     float normalizedDistance = clamp(
-        (distanceMeters - nearDistanceMeters) /
-        max(farDistanceMeters - nearDistanceMeters, 1.0e-5),
+        (viewDepthMeters - nearViewDepthMeters) /
+        max(farViewDepthMeters - nearViewDepthMeters, 1.0e-5),
         0.0, 1.0);
     return pow(normalizedDistance, 1.0 / max(slicePower, 1.0e-4));
 }
@@ -85,16 +85,16 @@ float ParticipatingMediaFroxelSliceCoordinate(
 vec4 SampleParticipatingMediaFroxel(
     sampler3D froxelTexture,
     vec2 screenUv,
-    float distanceMeters,
+    float viewDepthMeters,
     vec4 lightingAndDepthRange,
     vec4 gridAndSliceParameters)
 {
-    float nearDistance = lightingAndDepthRange.z;
-    float farDistance = lightingAndDepthRange.w;
-    if (distanceMeters < nearDistance || distanceMeters > farDistance)
+    float nearViewDepth = lightingAndDepthRange.z;
+    float farViewDepth = lightingAndDepthRange.w;
+    if (viewDepthMeters < nearViewDepth || viewDepthMeters > farViewDepth)
         return vec4(0.0);
     float slice = ParticipatingMediaFroxelSliceCoordinate(
-        distanceMeters, nearDistance, farDistance,
+        viewDepthMeters, nearViewDepth, farViewDepth,
         gridAndSliceParameters.z);
     return texture(froxelTexture,
         vec3(clamp(screenUv, vec2(0.0), vec2(1.0)), slice));

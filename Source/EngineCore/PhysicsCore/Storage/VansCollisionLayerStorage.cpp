@@ -21,12 +21,20 @@ namespace VansEngine
 		if (!Vans::VansJsonFileStorage::Read(path, root, error))
 			return VansCollisionLayerLoadStatus::ReadFailed;
 
-		if (!VansCollisionLayerJsonCodec::Decode(root, config))
+		if (!VansCollisionLayerJsonCodec::Decode(root, config, error))
 		{
-			error = "Invalid collision layer settings JSON";
 			return VansCollisionLayerLoadStatus::DecodeFailed;
 		}
 
 		return VansCollisionLayerLoadStatus::Loaded;
+	}
+
+	bool VansCollisionLayerStorage::SaveAtomic(
+		const std::string& path,
+		const VansCollisionLayerConfig& config,
+		std::string& error)
+	{
+		return Vans::VansJsonFileStorage::WriteAtomic(
+			path, VansCollisionLayerJsonCodec::Encode(config), error);
 	}
 }

@@ -222,13 +222,13 @@ std::uint64_t VansAIWorld::EntityKey(VansEntityHandle entity)
 
 bool VansAIWorld::Initialize(VansRuntimeWorld& world,
 	VansGameplayRuntime* gameplayRuntime,
-	std::filesystem::path projectRoot,
+	const VansAssetObjectRepository& assetObjects,
 	std::string& error)
 {
 	Shutdown();
 	m_World = &world;
 	m_GameplayRuntime = gameplayRuntime;
-	m_ProjectRoot = std::filesystem::absolute(std::move(projectRoot)).lexically_normal();
+	m_AssetObjects = &assetObjects;
 	m_Connections.Add(VansEventBus::Get().Subscribe<VansAIActivationRequested>(
 		[this](const VansAIActivationRequested& event)
 		{
@@ -257,50 +257,40 @@ void VansAIWorld::Shutdown()
 {
 	m_Connections.DisconnectAll();
 	m_Agents.clear();
-	m_BehaviorCache.clear();
-	m_NavigationCache.clear();
 	m_PendingActivation.clear();
 	m_PendingGameplayRelease.clear();
 	m_World = nullptr;
 	m_GameplayRuntime = nullptr;
-	m_ProjectRoot.clear();
+	m_AssetObjects = nullptr;
 }
 
-std::filesystem::path VansAIWorld::ResolveProjectPath(const std::string& path) const
+std::shared_ptr<const VansAIBehaviorAsset> VansAIWorld::ResolveBehavior(
+	const std::string& guidText, std::string& error) const
 {
-	if (path.empty()) return {};
-	std::filesystem::path value(path);
-	if (value.is_absolute() && value.has_root_name())
-		return value.lexically_normal();
-	std::string relative = value.generic_string();
-	while (!relative.empty() && (relative.front() == '/' || relative.front() == '\\'))
-		relative.erase(relative.begin());
-	return (m_ProjectRoot / std::filesystem::path(relative)).lexically_normal();
-}
-
-std::shared_ptr<VansAIBehaviorAsset> VansAIWorld::LoadBehavior(
-	const std::string& path, std::string& error)
-{
-	const std::filesystem::path resolved = ResolveProjectPath(path);
-	const std::string key = resolved.generic_string();
-	if (const auto found = m_BehaviorCache.find(key); found != m_BehaviorCache.end())
-		return found->second;
-	auto asset = std::make_shared<VansAIBehaviorAsset>();
-	if (!VansAIBehaviorAssetStorage::Load(resolved, *asset, error)) return nullptr;
-	m_BehaviorCache.emplace(key, asset);
+	VansAssetGuid guid;
+	if (!m_AssetObjects || !VansAssetGuid::TryParse(guidText, guid))
+	{
+		error = "AIAgent behavior must reference a valid asset GUID";
+		return nullptr;
+	}
+	auto asset = m_AssetObjects->ResolveLatest<VansAIBehaviorAsset>(guid);
+	if (!asset)
+		error = "AI Behavior asset is not loaded in the object repository: " + guidText;
 	return asset;
 }
 
-std::shared_ptr<VansNavigationMesh> VansAIWorld::LoadNavigationMesh(
-	const std::string& path, std::string& error)
+std::shared_ptr<const VansNavigationMesh> VansAIWorld::ResolveNavigationMesh(
+	const std::string& guidText, std::string& error) const
 {
-	const std::filesystem::path resolved = ResolveProjectPath(path);
-	const std::string key = resolved.generic_string();
-	if (const auto found = m_NavigationCache.find(key); found != m_NavigationCache.end())
-		return found->second;
-	auto asset = std::make_shared<VansNavigationMesh>();
-	if (!asset->Load(resolved, error)) return nullptr;
-	m_NavigationCache.emplace(key, asset);
+	VansAssetGuid guid;
+	if (!m_AssetObjects || !VansAssetGuid::TryParse(guidText, guid))
+	{
+		error = "NavigationAgent navigation mesh must reference a valid asset GUID";
+		return nullptr;
+	}
+	auto asset = m_AssetObjects->ResolveLatest<VansNavigationMesh>(guid);
+	if (!asset)
+		error = "Navigation Mesh asset is not loaded in the object repository: " + guidText;
 	return asset;
 }
 
@@ -309,9 +299,9 @@ bool VansAIWorld::InitializeAgent(AgentRuntime& runtime,
 	const VansRuntimeNavigationAgentComponent& navigation,
 	std::string& error)
 {
-	runtime.behavior = LoadBehavior(ai.behaviorPath, error);
+	runtime.behavior = ResolveBehavior(ai.behaviorGuid, error);
 	if (!runtime.behavior) return false;
-	runtime.navigationMesh = LoadNavigationMesh(navigation.navigationMeshPath, error);
+	runtime.navigationMesh = ResolveNavigationMesh(navigation.navigationMeshGuid, error);
 	if (!runtime.navigationMesh) return false;
 	if (!runtime.blackboard.Configure(runtime.behavior->blackboard, error)) return false;
 	if (ai.sight.enabled)

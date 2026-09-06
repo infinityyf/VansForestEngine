@@ -435,6 +435,14 @@ EditorAPI::RuntimeEntityPreviewChange BuildRuntimeEntityPreviewChange(
                 componentType,
                 ReadSerializedBoolField(component, "enabled", true)
             });
+			if (componentType == "LocalVolumetricFog")
+			{
+				change.localVolumetricFogEdits.push_back({
+					entityGuid,
+					componentGuid,
+					component
+				});
+			}
         }
     }
 

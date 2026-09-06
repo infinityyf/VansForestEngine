@@ -1,8 +1,6 @@
 ﻿#include "VansSkinnedMeshLoader.h"
-#include "VansAnimationClip.h"
 #include "../AssetCore/Importers/VansAssimpSkeletonTopology.h"
 #include "../AssetCore/VansAssetGuid.h"
-#include "../AssetCore/Storage/VansAssetMetaStorage.h"
 #include "../Util/VansLog.h"
 
 #include <assimp/Importer.hpp>
@@ -31,6 +29,7 @@ using namespace VansGraphics;
 
 bool VansGraphics::VansSkinnedMeshLoader::LoadSkeletonFromModelAsset(
 	const std::string& modelPath,
+	const Vans::VansSkeletalMeshImportSettings& importSettings,
 	Skeleton& outSkeleton,
 	std::string& error)
 {
@@ -42,15 +41,6 @@ bool VansGraphics::VansSkinnedMeshLoader::LoadSkeletonFromModelAsset(
 		return false;
 	}
 
-	Vans::VansAssetMeta meta;
-	if (!Vans::VansAssetMetaStorage::Load(
-		Vans::VansAssetMeta::MetaPathFor(modelPath), meta, error))
-	{
-		error = "Skeleton model metadata is required: " + error;
-		return false;
-	}
-	const Vans::VansSkeletalMeshImportSettings importSettings =
-		Vans::ReadSkeletalMeshImportSettings(meta);
 	if (importSettings.sourceSkeletonGuid.empty())
 	{
 		error = "Skeleton model metadata has no stable asset GUID";
@@ -373,27 +363,6 @@ static glm::vec3 ConvertAnimationScale(
 	return absoluteBasis * scale;
 }
 
-static bool AnimationHasNodeTransformChannels(
-	const aiScene* scene,
-	const aiAnimation* anim,
-	const Skeleton& skeleton)
-{
-	if (!scene || !anim)
-		return false;
-	for (uint32_t c = 0; c < anim->mNumChannels; ++c)
-	{
-		const aiNodeAnim* channel = anim->mChannels[c];
-		if (!channel)
-			continue;
-		const std::string nodeName = channel->mNodeName.C_Str();
-		if (skeleton.boneNameToIndex.find(nodeName) != skeleton.boneNameToIndex.end())
-			continue;
-		if (FindAiNodeByName(scene->mRootNode, nodeName) != nullptr)
-			return true;
-	}
-	return false;
-}
-
 static glm::mat4 ConvertNodeMatrixScaled(const aiMatrix4x4& m, float scaleFactor)
 {
 	glm::mat4 result = ConvertMat4(m);
@@ -667,7 +636,6 @@ bool VansGraphics::VansSkinnedMeshLoader::ProcessAnimatedMesh(
 
 		if (scene->HasAnimations())
 		{
-			std::string clipDir = GetParentDirectory(fbxFilePath);
 			std::string baseName = GetFileBaseName(fbxFilePath);
 			for (uint32_t i = 0; i < scene->mNumAnimations; i++)
 			{
@@ -681,26 +649,9 @@ bool VansGraphics::VansSkinnedMeshLoader::ProcessAnimatedMesh(
 						c = '_';
 				}
 
-				std::string vclipPath = clipDir + "/" + baseName + "_" + clipName + ".vclip";
 				VansAnimationClip clip;
-				if (FileExists(vclipPath))
-				{
-					Skeleton cachedSkeleton;
-					if (!VansAnimationClipIO::Load(vclipPath, clip, cachedSkeleton) ||
-						(AnimationHasNodeTransformChannels(scene, anim, outResult.skeleton) &&
-						 clip.nodeTransformChannels.empty()))
-					{
-						ExtractClipFromAssimp(anim, outResult.skeleton, clip, scene, scaleFactor);
-						clip.clipName = clipName;
-						VansAnimationClipIO::Save(vclipPath, clip, outResult.skeleton);
-					}
-				}
-				else
-				{
-					ExtractClipFromAssimp(anim, outResult.skeleton, clip, scene, scaleFactor);
-					clip.clipName = clipName;
-					VansAnimationClipIO::Save(vclipPath, clip, outResult.skeleton);
-				}
+				ExtractClipFromAssimp(anim, outResult.skeleton, clip, scene, scaleFactor);
+				clip.clipName = clipName;
 				if (!clip.nodeTransformChannels.empty())
 				{
 					outResult.clips.push_back(std::move(clip));
@@ -744,8 +695,8 @@ bool VansGraphics::VansSkinnedMeshLoader::ProcessAnimatedMesh(
 	ExtractVertexBoneData(scene, outResult.skeleton, totalVertexCount, outResult.vertexBoneData,
 		importSettings);
 
-	// Step 4: For each animation clip, check cache or extract
-	std::string clipDir  = GetParentDirectory(fbxFilePath);
+	// Step 4: Extract embedded clips into the model's in-memory import result.
+	// Serialized Animation Clip assets are published only by explicit import/save operations.
 	std::string baseName = GetFileBaseName(fbxFilePath);
 
 	for (uint32_t i = 0; i < scene->mNumAnimations; i++)
@@ -762,59 +713,9 @@ bool VansGraphics::VansSkinnedMeshLoader::ProcessAnimatedMesh(
 				c = '_';
 		}
 
-		// Expected cache path: same folder as source FBX
-		std::string vclipPath = clipDir + "/" + baseName + "_" + clipName + ".vclip";
-
 		VansAnimationClip clip;
-
-		if (FileExists(vclipPath))
-		{
-			// Fast path: load from cached .vclip
-			Skeleton cachedSkeleton;
-			if (VansAnimationClipIO::Load(vclipPath, clip, cachedSkeleton))
-			{
-				// Cache validity is an exact animation-layout contract: identity,
-				// ordering, hierarchy and bind pose must all match the fresh skeleton.
-				const bool cachedMissingNodeChannels =
-					AnimationHasNodeTransformChannels(scene, anim, outResult.skeleton) &&
-					clip.nodeTransformChannels.empty();
-				std::string skeletonMismatch;
-				const bool cachedSkeletonMatches = cachedSkeleton.MatchesAnimationLayout(
-					outResult.skeleton, &skeletonMismatch);
-				if (!cachedSkeletonMatches || cachedMissingNodeChannels)
-				{
-					VANS_LOG_WARN("[VansSkinnedMeshLoader] Cached clip stale (cachedBones="
-					              << cachedSkeleton.bones.size() << ", currentBones="
-					              << outResult.skeleton.bones.size()
-					              << ", skeletonMismatch=\"" << skeletonMismatch << "\""
-					              << ", missingNodeChannels=" << (cachedMissingNodeChannels ? 1 : 0)
-					              << "), re-extracting: " << vclipPath);
-					ExtractClipFromAssimp(anim, outResult.skeleton, clip, scene, scaleFactor);
-					clip.clipName = clipName;
-					VansAnimationClipIO::Save(vclipPath, clip, outResult.skeleton);
-				}
-				else
-				{
-					VANS_LOG("[VansSkinnedMeshLoader] Loaded cached clip: " << vclipPath);
-				}
-			}
-			else
-			{
-			// Cache is corrupt; re-extract.
-				VANS_LOG_WARN("[VansSkinnedMeshLoader] Failed to load cached clip, re-extracting: " << vclipPath);
-				ExtractClipFromAssimp(anim, outResult.skeleton, clip, scene, scaleFactor);
-				clip.clipName = clipName;
-				VansAnimationClipIO::Save(vclipPath, clip, outResult.skeleton);
-			}
-		}
-		else
-		{
-			// Slow path: extract from Assimp, then save cache
-			ExtractClipFromAssimp(anim, outResult.skeleton, clip, scene, scaleFactor);
-			clip.clipName = clipName;
-			VansAnimationClipIO::Save(vclipPath, clip, outResult.skeleton);
-			VANS_LOG("[VansSkinnedMeshLoader] Extracted and cached clip: " << vclipPath);
-		}
+		ExtractClipFromAssimp(anim, outResult.skeleton, clip, scene, scaleFactor);
+		clip.clipName = clipName;
 
 		outResult.clips.push_back(std::move(clip));
 	}
@@ -1576,21 +1477,10 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractClipFromAssimp(
 //  Utility functions
 // ---------------------------------------------------------------------------
 
-std::string VansGraphics::VansSkinnedMeshLoader::GetParentDirectory(const std::string& filePath)
-{
-	std::filesystem::path p(filePath);
-	return p.parent_path().string();
-}
-
 std::string VansGraphics::VansSkinnedMeshLoader::GetFileBaseName(const std::string& filePath)
 {
 	std::filesystem::path p(filePath);
 	return p.stem().string();
-}
-
-bool VansGraphics::VansSkinnedMeshLoader::FileExists(const std::string& filePath)
-{
-	return std::filesystem::exists(filePath);
 }
 
 // ---------------------------------------------------------------------------
@@ -1598,8 +1488,8 @@ bool VansGraphics::VansSkinnedMeshLoader::FileExists(const std::string& filePath
 //
 //  Opens an external FBX file and extracts ONLY animation clips,
 //  mapping bone channels to the origin model's skeleton by name.
-//  No bone weights are read; those come from the origin model.
-//  Clips are cached as .vclip files alongside the external FBX.
+//  No bone weights are read; those come from the origin model. The result is
+//  memory-only until an explicit authoring/import transaction serializes it.
 // ---------------------------------------------------------------------------
 
 bool VansGraphics::VansSkinnedMeshLoader::ExtractExternAnimationClips(
@@ -1615,7 +1505,7 @@ bool VansGraphics::VansSkinnedMeshLoader::ExtractExternAnimationClips(
 		return false;
 	}
 
-	if (!FileExists(externFbxPath))
+	if (!std::filesystem::is_regular_file(externFbxPath))
 	{
 		VANS_LOG_ERROR("[VansSkinnedMeshLoader] Extern animation file not found: " << externFbxPath);
 		return false;
@@ -1648,7 +1538,6 @@ bool VansGraphics::VansSkinnedMeshLoader::ExtractExternAnimationClips(
 	VANS_LOG("[VansSkinnedMeshLoader] Loading extern animation from: " << externFbxPath
 	         << " (" << scene->mNumAnimations << " clip(s))");
 
-	std::string clipDir  = GetParentDirectory(externFbxPath);
 	std::string baseName = GetFileBaseName(externFbxPath);
 
 	for (uint32_t i = 0; i < scene->mNumAnimations; i++)
@@ -1665,17 +1554,12 @@ bool VansGraphics::VansSkinnedMeshLoader::ExtractExternAnimationClips(
 				c = '_';
 		}
 
-		std::string vclipPath = clipDir + "/" + baseName + "_" + clipName + ".vclip";
-
 		VansAnimationClip clip;
 
-		// This entry point is an explicit import operation. Always rebuild from the
-		// FBX so changes to source data or coordinate conversion cannot be hidden by
-		// a stale adjacent cache.
+		// Raw source decoding produces only a memory object. The asset tool/editor
+		// owns the explicit transaction that publishes it to a .vclip document.
 		ExtractClipFromAssimp(anim, originSkeleton, clip, scene);
 		clip.clipName = clipName;
-		VansAnimationClipIO::Save(vclipPath, clip, originSkeleton);
-		VANS_LOG("[VansSkinnedMeshLoader] Imported extern clip: " << vclipPath);
 
 		outClips.push_back(std::move(clip));
 	}

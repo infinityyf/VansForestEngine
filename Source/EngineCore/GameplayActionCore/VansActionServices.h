@@ -11,13 +11,6 @@
 
 namespace Vans
 {
-enum class VansActionServicePredictionSupport : std::uint8_t
-{
-	AuthorityOnly,
-	Predictable,
-	PredictableWithRollback
-};
-
 enum class VansActionCommandValueKind : std::uint8_t
 {
 	Bool,
@@ -53,8 +46,6 @@ struct VansActionCommandSchema
 	VansActionFieldId command;
 	std::string stableName;
 	VansActionCommandResourcePolicy resourcePolicy = VansActionCommandResourcePolicy::None;
-	VansActionServicePredictionSupport prediction =
-		VansActionServicePredictionSupport::AuthorityOnly;
 	bool allowUnknownFields = false;
 	std::vector<VansActionCommandFieldSchema> fields;
 };
@@ -63,9 +54,6 @@ struct VansActionServiceCapability
 {
 	VansActionServiceId service;
 	std::string stableName;
-	std::uint32_t version = 1;
-	VansActionServicePredictionSupport prediction = VansActionServicePredictionSupport::AuthorityOnly;
-	std::vector<std::string> commands;
 	std::vector<VansActionCommandSchema> commandSchemas;
 };
 
@@ -77,7 +65,6 @@ struct VansActionCommand
 	VansActionHandle action;
 	VansActionContext context;
 	VansSerializedValue payload = VansSerializedValue::Object({});
-	bool predicted = false;
 };
 
 struct VansActionCommandResult
@@ -86,8 +73,14 @@ struct VansActionCommandResult
 	VansGenerationHandle resource;
 	VansSerializedValue payload = VansSerializedValue::Object({});
 	std::string message;
+	std::string reasonCode;
 
 	explicit operator bool() const { return error == VansActionError::None; }
+	std::string_view StableReasonCode() const
+	{
+		return reasonCode.empty() ? std::string_view(VansActionDefaultReasonCode(error))
+			: std::string_view(reasonCode);
+	}
 };
 
 class IVansActionService
@@ -97,6 +90,7 @@ public:
 	virtual const VansActionServiceCapability& Capability() const = 0;
 	virtual VansActionCommandResult Execute(const VansActionCommand& command) = 0;
 	virtual bool Release(VansGenerationHandle resource, std::string& error) = 0;
+	virtual void Tick(double) {}
 };
 
 class VansActionServiceRegistry
@@ -109,10 +103,12 @@ public:
 	const VansActionCommandSchema* ResolveCommandSchema(
 		VansActionServiceId service, VansActionFieldId command) const;
 	VansActionCommandResult Execute(const VansActionCommand& command) const;
+	void Tick(double deltaSeconds) const;
 	bool IsSealed() const { return m_Sealed; }
 
 private:
 	bool m_Sealed = false;
 	std::unordered_map<VansActionServiceId, std::shared_ptr<IVansActionService>> m_Services;
+	std::vector<std::shared_ptr<IVansActionService>> m_TickOrder;
 };
 }

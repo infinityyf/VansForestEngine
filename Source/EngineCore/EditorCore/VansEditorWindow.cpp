@@ -49,6 +49,7 @@
 #include "../AssetCore/VansAssetDatabase.h"
 #include "../GameplayActionSchema/VansGameplayAssetSchema.h"
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
+#include "../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 #include "../PackagingCore/VansGamePackageBuilder.h"
 #include "Windows/VansProjectSelector.h"
 #include "../SceneCore/VansSceneDocumentLoader.h"
@@ -78,10 +79,51 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <nlohmann/json.hpp>
 
 namespace
 {
     Vans::EditorAPI::EngineAPIImpl& GetMutableEditorAPI();
+
+    Vans::EditorAPI::RuntimeSceneDocumentSnapshot BuildRuntimeSceneDocumentSnapshot(
+        const Vans::VansSceneDocument& document)
+    {
+        Vans::EditorAPI::RuntimeSceneDocumentSnapshot snapshot;
+        snapshot.sourcePath = document.SourcePath().string();
+        snapshot.canonicalJson =
+            Vans::EncodeSerializedValueJson<nlohmann::ordered_json>(
+                document.SerializedRootSnapshot()).dump();
+        snapshot.authoringStateId = document.CurrentStateId();
+        return snapshot;
+    }
+
+	bool PublishOpenAssetWorkingCopy(
+		Vans::EditorAPI::IEngineEditorAPI& editorAPI,
+		const Vans::VansOpenAssetDocument& document,
+		std::string& error)
+	{
+		Vans::EditorAPI::AssetWorkingCopyPublishRequest request;
+		request.sourcePath = document.sourcePath.string();
+		request.sourceLoaded = document.sourceDocument.IsLoaded();
+		if (request.sourceLoaded)
+		{
+			request.sourceCanonicalJson =
+				Vans::EncodeSerializedValueJson<nlohmann::ordered_json>(
+					document.sourceDocument.SerializedRootSnapshot()).dump();
+		}
+		request.metaLoaded = document.metaDocument.IsLoaded();
+		if (request.metaLoaded)
+		{
+			request.metaCanonicalJson =
+				Vans::EncodeSerializedValueJson<nlohmann::ordered_json>(
+					document.metaDocument.SerializedRootSnapshot()).dump();
+		}
+
+		const Vans::EditorAPI::AssetWorkingCopyPublishResult result =
+			editorAPI.PublishAssetWorkingCopy(request);
+		error = result.message;
+		return result.success;
+	}
 
     template <typename T>
     T* AddEditorWindowComponent(std::vector<std::unique_ptr<VansGraphics::VansBaseWindowComponent>>& windows)
@@ -387,6 +429,55 @@ namespace
         });
     }
 
+	bool EnsureRuntimeGeneratedMaterialWorkingCopy(
+		Vans::EditorAPI::IEngineEditorAPI& editorAPI,
+		const Vans::EditorAPI::RuntimeMultiMeshChildSnapshot& child)
+	{
+		if (!child.materialRequiresSave)
+			return true;
+		const nlohmann::ordered_json sourceJson = nlohmann::ordered_json::parse(
+			child.materialSourceCanonicalJson, nullptr, false);
+		const nlohmann::ordered_json metaJson = nlohmann::ordered_json::parse(
+			child.materialMetaCanonicalJson, nullptr, false);
+		if (sourceJson.is_discarded() || !sourceJson.is_object() ||
+			metaJson.is_discarded() || !metaJson.is_object())
+		{
+			VANS_LOG_ERROR("[MultiMeshHierarchy] Generated material memory document is invalid");
+			return false;
+		}
+
+		std::string documentError;
+		auto document = Vans::VansAssetDocumentRegistry::Get().CreateInMemory(
+			child.materialSourcePath,
+			Vans::DecodeSerializedValueJson(sourceJson),
+			Vans::DecodeSerializedValueJson(metaJson),
+			true,
+			documentError);
+		if (!document)
+		{
+			VANS_LOG_ERROR("[MultiMeshHierarchy] Cannot create generated material document: "
+				<< documentError);
+			return false;
+		}
+
+		const Vans::EditorAPI::AssetWorkingCopyPublishResult publication =
+			editorAPI.PublishAssetWorkingCopy({
+				child.materialSourcePath,
+				true,
+				child.materialSourceCanonicalJson,
+				true,
+				child.materialMetaCanonicalJson });
+		if (!publication.success)
+		{
+			document->lastError = publication.message;
+			VANS_LOG_ERROR("[MultiMeshHierarchy] Cannot publish generated material memory object: "
+				<< publication.message);
+			return false;
+		}
+		document->lastError.clear();
+		return true;
+	}
+
     bool RecreateRuntimeMultiMeshExpansionEntities(
         Vans::EditorAPI::IEngineEditorAPI& editorAPI,
         const std::vector<std::string>& parentEntityIds,
@@ -587,7 +678,7 @@ void VansGraphics::VansEditorWindow::ProcessRuntimeMultiMeshHierarchyExpansion()
     if (!IsEditing() || !m_PendingScenePath.empty())
         return;
     auto& editorAPI = GetMutableEditorAPI();
-    if (!editorAPI.IsRuntimeSceneReady() || !m_SceneDocument || !m_SceneEditService || !m_SceneSaveService)
+    if (!editorAPI.IsRuntimeSceneReady() || !m_SceneDocument || !m_SceneEditService)
         return;
     const Vans::VansSerializedValue root = m_SceneDocument->SerializedRootSnapshot();
     const Vans::VansSerializedValue* sourceEntities = Vans::FindObjectField(root, "entities");
@@ -655,6 +746,8 @@ void VansGraphics::VansEditorWindow::ProcessRuntimeMultiMeshHierarchyExpansion()
         {
             if (childSnapshot.materialGuid.empty())
                 continue;
+			if (!EnsureRuntimeGeneratedMaterialWorkingCopy(editorAPI, childSnapshot))
+				continue;
 
             const std::string& sourceNode = childSnapshot.sourceNode;
             const std::string& sourceMaterial = childSnapshot.sourceMaterial;
@@ -721,25 +814,16 @@ void VansGraphics::VansEditorWindow::ProcessRuntimeMultiMeshHierarchyExpansion()
         return;
     }
 
-    editorAPI.ScanProjectAssets();
-
-    const Vans::SceneSaveResult saveResult = m_SceneSaveService->Save(*m_SceneDocument);
-    if (!saveResult)
-    {
-        VANS_LOG_ERROR("[MultiMeshHierarchy] Failed to save expanded scene: " << saveResult.message);
-        return;
-    }
-
     if (RecreateRuntimeMultiMeshExpansionEntities(
         editorAPI,
         runtimeParentEntityIdsToReplace,
         runtimeEntitiesToRecreate))
     {
-        VANS_LOG("[MultiMeshHierarchy] Runtime expansion persisted to scene and applied incrementally.");
+        VANS_LOG("[MultiMeshHierarchy] Runtime expansion applied to the in-memory scene document and runtime entities.");
         return;
     }
 
-    VANS_LOG_WARN("[MultiMeshHierarchy] Runtime expansion persisted to scene but incremental apply failed. Reloading editor scene.");
+    VANS_LOG_WARN("[MultiMeshHierarchy] Incremental runtime apply failed. Rebuilding the editor scene from its in-memory document.");
     ReloadCurrentSceneForEditing();
 }
 
@@ -1058,6 +1142,13 @@ void VansGraphics::VansEditorWindow::DrawBuildMenu()
             lastPackageOutputPath.clear();
             VANS_LOG_WARN("[Package] " << lastPackageStatus);
         }
+		else if (editorAPI.GetProjectConfigSnapshot().dirty)
+		{
+			lastPackageSucceeded = false;
+			lastPackageStatus = "Save dirty project documents before packaging";
+			lastPackageOutputPath.clear();
+			VANS_LOG_WARN("[Package] " << lastPackageStatus);
+		}
         else
         {
             Vans::VansGamePackageRequest request;
@@ -1199,8 +1290,14 @@ void VansGraphics::VansEditorWindow::ProcessPendingSceneLoad()
     VANS_LOG("[Editor] Loading deferred scene: " << m_PendingScenePath
              << " [mode=" << (m_PendingSceneLoadMode == Vans::EditorAPI::RuntimeSceneLoadMode::Editor ? "Editor" : "Runtime") << "]");
 
+	const std::filesystem::path pendingScenePath =
+		std::filesystem::path(m_PendingScenePath).lexically_normal();
+	const bool canReuseCurrentDocument =
+		m_SceneDocument != nullptr &&
+		m_SceneDocument->SourcePath().lexically_normal() == pendingScenePath;
 	Vans::SceneDocumentLoadResult pendingDocumentLoad;
-	if (m_PendingSceneLoadMode == Vans::EditorAPI::RuntimeSceneLoadMode::Editor)
+	Vans::VansSceneDocument* sceneDocument = m_SceneDocument.get();
+	if (!canReuseCurrentDocument)
 	{
 		pendingDocumentLoad = Vans::VansSceneDocumentLoader::Load(m_PendingScenePath);
 		if (!pendingDocumentLoad)
@@ -1211,11 +1308,15 @@ void VansGraphics::VansEditorWindow::ProcessPendingSceneLoad()
 			m_PendingScenePath.clear();
 			return;
 		}
+		sceneDocument = pendingDocumentLoad.document.get();
 	}
 
     auto& editorAPI = GetMutableEditorAPI();
+	Vans::EditorAPI::RuntimeSceneLoadRequest sceneLoadRequest;
+	sceneLoadRequest.document = BuildRuntimeSceneDocumentSnapshot(*sceneDocument);
+	sceneLoadRequest.mode = m_PendingSceneLoadMode;
     const Vans::EditorAPI::RuntimeSceneLoadResult sceneLoadResult =
-		editorAPI.LoadRuntimeScene(m_PendingScenePath, m_PendingSceneLoadMode);
+		editorAPI.LoadRuntimeScene(sceneLoadRequest);
     if (!sceneLoadResult)
     {
 		for (const auto& diagnostic : sceneLoadResult.diagnostics)
@@ -1228,11 +1329,15 @@ void VansGraphics::VansEditorWindow::ProcessPendingSceneLoad()
     // 记录当前已加载场景路径（用于 Play/Stop 时重载）
     m_CurrentLoadedScenePath = m_PendingScenePath;
 
-    if (m_PendingSceneLoadMode == Vans::EditorAPI::RuntimeSceneLoadMode::Editor)
-    {
+	if (!canReuseCurrentDocument)
+	{
 		m_SceneDocument = std::move(pendingDocumentLoad.document);
 		m_SceneEditService = std::make_unique<Vans::VansSceneEditService>(*m_SceneDocument);
 		m_RuntimeMultiMeshExpansionScannedStateId = 0;
+	}
+
+    if (m_PendingSceneLoadMode == Vans::EditorAPI::RuntimeSceneLoadMode::Editor)
+    {
 		VANS_LOG("[SceneDocument] Document ready: " << m_PendingScenePath
 			<< " [revision=" << sceneLoadResult.contentRevision << "]");
 
@@ -1278,6 +1383,12 @@ void VansGraphics::VansEditorWindow::ProcessPendingProjectLoad()
         m_PendingProjectLoad = {};
         return;
     }
+	if (GetMutableEditorAPI().GetProjectConfigSnapshot().dirty)
+	{
+		VANS_LOG_WARN("[Editor] Project switch cancelled: save or revert dirty project documents first");
+		m_PendingProjectLoad = {};
+		return;
+	}
 
     VansPendingProjectLoad pending = m_PendingProjectLoad;
     m_PendingProjectLoad = {};
@@ -1349,15 +1460,6 @@ void VansGraphics::VansEditorWindow::ProcessPendingProjectLoad()
 	{
 		VANS_LOG("[Editor] Automation skipping default scene load");
 	}
-
-    if (!skipDefaultSceneForAutomation && !projectOpenResult.defaultScenePath.empty())
-    {
-        if (!editorAPI.LoadRuntimeProjectAssetsForScene(projectOpenResult.defaultScenePath))
-        {
-            VANS_LOG_ERROR("[Editor] Scene project asset loading failed; scene load cancelled");
-            return;
-        }
-    }
 
     if (!skipDefaultSceneForAutomation && !projectOpenResult.defaultScenePath.empty())
     {
@@ -1489,6 +1591,14 @@ VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& device)
 		auto& editorAPI = GetMutableEditorAPI();
 		editorAPI.BindGlobalRuntime(&device);
 		m_EditorAPI = &editorAPI;
+		Vans::VansAssetDocumentRegistry::Get().SetWorkingCopyPublisher(
+			[editorAPIAddress = &editorAPI](
+				const Vans::VansOpenAssetDocument& document,
+				std::string& error)
+			{
+				return PublishOpenAssetWorkingCopy(*editorAPIAddress, document, error);
+			});
+		const bool hasDirtyProjectDocuments = editorAPI.GetProjectConfigSnapshot().dirty;
 		const std::string& selectedEntityGuid = Vans::VansEditorSelection::EntityGuid();
 		const auto selectedAnimationBinding = selectedEntityGuid.empty()
 			? Vans::EditorAPI::AnimationAssetBindingSnapshot{}
@@ -1586,24 +1696,58 @@ VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& device)
 			if (editorAPI.CanRedo())
 				editorAPI.Redo();
 		};
+		auto saveSceneAndOwnedAssets = [&]()
+		{
+			const Vans::VansAssetSaveResult assetResult =
+				Vans::VansEditorAssetSaveService::Get().SaveSceneOwnedAssets(editorAPI);
+			if (!assetResult)
+			{
+				for (const std::string& error : assetResult.errors)
+					VANS_LOG_ERROR("[SceneAssetSave] " << error);
+				return false;
+			}
+			if (sceneDocumentReady && m_SceneDocument->IsDirty())
+			{
+				const Vans::SceneSaveResult result = m_SceneSaveService->Save(*m_SceneDocument);
+				if (!result)
+				{
+					VANS_LOG_ERROR("[SceneSave] " << result.message);
+					return false;
+				}
+			}
+			return true;
+		};
+		auto saveAllAuthoringDocuments = [&]()
+		{
+			if (!saveSceneAndOwnedAssets())
+				return;
+			if (hasDirtyAssets)
+			{
+				const Vans::VansAssetSaveResult result =
+					Vans::VansEditorAssetSaveService::Get().SaveAllDirtyAssets(editorAPI);
+				if (!result)
+				{
+					for (const std::string& error : result.errors)
+						VANS_LOG_ERROR("[AssetSave] " << error);
+				}
+				else if (result.wroteFile)
+					ReloadCurrentSceneForEditing();
+			}
+			if (hasDirtyProjectDocuments)
+			{
+				const Vans::EditorAPI::ProjectConfigEditResult result =
+					editorAPI.SaveProjectDocuments();
+				if (!result.success)
+					VANS_LOG_ERROR("[ProjectSave] " << result.message);
+			}
+		};
 		if (editingMode && !io.WantTextInput && io.KeyCtrl)
 		{
 			if (io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_S, false))
-			{
-				const Vans::VansAssetSaveResult assetSaveResult =
-					Vans::VansEditorAssetSaveService::Get().SaveAllDirtyAssets(editorAPI);
-				if (!assetSaveResult)
-				{
-					for (const std::string& error : assetSaveResult.errors)
-						VANS_LOG_ERROR("[AssetSave] " << error);
-				}
-				else if (assetSaveResult.wroteFile)
-					ReloadCurrentSceneForEditing();
-			}
+				saveAllAuthoringDocuments();
 			else if (sceneDocumentReady && ImGui::IsKeyPressed(ImGuiKey_S, false))
 			{
-				const Vans::SceneSaveResult saveResult = m_SceneSaveService->Save(*m_SceneDocument);
-				if (!saveResult) VANS_LOG_ERROR("[SceneSave] " << saveResult.message);
+				saveSceneAndOwnedAssets();
 			}
 			else if ((canUndoAssetDocument || canUndoSceneDocument || canUndoRuntimeCommand) && ImGui::IsKeyPressed(ImGuiKey_Z, false))
 			{
@@ -1622,8 +1766,7 @@ VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& device)
 				if (ImGui::MenuItem("Save Scene", "Ctrl+S", false,
 					sceneDocumentReady && m_SceneDocument->IsDirty()))
 				{
-					const Vans::SceneSaveResult saveResult = m_SceneSaveService->Save(*m_SceneDocument);
-					if (!saveResult) VANS_LOG_ERROR("[SceneSave] " << saveResult.message);
+					saveSceneAndOwnedAssets();
 				}
 				if (ImGui::MenuItem("Save Asset", nullptr, false, selectedAssetDirty))
 				{
@@ -1637,18 +1780,16 @@ VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& device)
 					else if (assetSaveResult.wroteFile)
 						ReloadCurrentSceneForEditing();
 				}
-				if (ImGui::MenuItem("Save All Dirty Assets", "Ctrl+Shift+S", false, hasDirtyAssets))
+				if (ImGui::MenuItem("Save Project Documents", nullptr, false, hasDirtyProjectDocuments))
 				{
-					const Vans::VansAssetSaveResult assetSaveResult =
-						Vans::VansEditorAssetSaveService::Get().SaveAllDirtyAssets(editorAPI);
-					if (!assetSaveResult)
-					{
-						for (const std::string& error : assetSaveResult.errors)
-							VANS_LOG_ERROR("[AssetSave] " << error);
-					}
-					else if (assetSaveResult.wroteFile)
-						ReloadCurrentSceneForEditing();
+					const Vans::EditorAPI::ProjectConfigEditResult result =
+						editorAPI.SaveProjectDocuments();
+					if (!result.success) VANS_LOG_ERROR("[ProjectSave] " << result.message);
 				}
+				if (ImGui::MenuItem("Save All", "Ctrl+Shift+S", false,
+					(sceneDocumentReady && m_SceneDocument->IsDirty()) ||
+					hasDirtyAssets || hasDirtyProjectDocuments))
+					saveAllAuthoringDocuments();
 				ImGui::Separator();
                 if (ImGui::MenuItem("Exit"))
                 {
@@ -1656,6 +1797,8 @@ VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& device)
                         VANS_LOG_WARN("[Editor] Exit cancelled: save or undo current scene changes first");
                     else if (Vans::VansAssetDocumentRegistry::Get().HasDirtyDocuments())
                         VANS_LOG_WARN("[Editor] Exit cancelled: save or revert dirty asset changes first");
+					else if (hasDirtyProjectDocuments)
+						VANS_LOG_WARN("[Editor] Exit cancelled: save or revert dirty project documents first");
                     else
                         glfwSetWindowShouldClose(m_VansEditorWindow.m_VansGraphicsHandle, true);
                 }
@@ -2402,6 +2545,7 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(
 
 void VansGraphics::VansEditorWindow::DestroyVansEditorWindow()
 {
+    Vans::VansAssetDocumentRegistry::Get().ClearWorkingCopyPublisher();
     VansConsole::Get().ShutdownEventSubscription();
 
     m_ProjectSelector.reset();

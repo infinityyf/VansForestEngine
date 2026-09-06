@@ -1,6 +1,7 @@
 #pragma once
 #include "VansBaseWindowComponent.h"
 #include "../../EngineAPILayer/Public/EngineDTOs.h"
+#include "../../EngineAPILayer/Public/AnimationClipEventAuthoring.h"
 #include <imgui_node_editor.h>
 #include <memory>
 #include <cstdint>
@@ -64,6 +65,8 @@ namespace VansGraphics
 		bool m_NeedsDecode = false;
 		std::string              m_AnimatorFilePath;
 		std::string              m_LastError;
+		Vans::EditorAPI::AnimationClipEventDocument m_ClipEvents;
+		bool m_ClipEventsDirty = false;
 		std::unique_ptr<Vans::EditorAPI::AnimatorDocumentDTO> m_AssetData;
 		std::shared_ptr<Vans::VansOpenAssetDocument> m_Document;
 		std::uint64_t m_DocumentStateId = 0;

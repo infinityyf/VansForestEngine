@@ -43,6 +43,16 @@ VansSerializedValue Float(float value)
 }
 
 VansSerializedValue FloatArray(
+	float x,
+	float y)
+{
+	return VansSerializedValue::Array({
+		VansSerializedValue::Float(x),
+		VansSerializedValue::Float(y)
+	});
+}
+
+VansSerializedValue FloatArray(
     float x,
     float y,
     float z)
@@ -140,24 +150,7 @@ VansSerializedValue BuildLocalVolumetricFogComponent(
         { "type", String("LocalVolumetricFog") },
         { "version", Int(1) },
         { "enabled", Bool(settings.enabled) },
-        { "data", Object({
-            { "visibilityDistanceMeters", Float(settings.visibilityDistanceMeters) },
-            { "singleScatteringAlbedo", FloatArray(
-                settings.singleScatteringAlbedo[0],
-                settings.singleScatteringAlbedo[1],
-                settings.singleScatteringAlbedo[2]) },
-            { "anisotropy", Float(settings.anisotropy) },
-            { "emissivePerMeter", FloatArray(
-                settings.emissivePerMeter[0],
-                settings.emissivePerMeter[1],
-                settings.emissivePerMeter[2]) },
-            { "edgeFadeDistanceMeters", Float(settings.edgeFadeDistanceMeters) },
-            { "distanceFadeStartMeters", Float(settings.distanceFadeStartMeters) },
-            { "distanceFadeEndMeters", Float(settings.distanceFadeEndMeters) },
-            { "directLightingScale", Float(settings.directLightingScale) },
-            { "skyLightingScale", Float(settings.skyLightingScale) },
-            { "receiveCloudShadows", Bool(settings.receiveCloudShadows) }
-        }) }
+		{ "data", VansSceneEntityFactory::BuildLocalVolumetricFogComponentData(settings) }
     });
 }
 
@@ -167,6 +160,74 @@ void AppendSceneEntity(
 {
     result.entities.push_back(std::move(entity));
 }
+}
+
+VansSerializedValue VansSceneEntityFactory::BuildLocalVolumetricFogComponentData(
+	const VansSceneLocalVolumetricFogComponentConfig& inputSettings)
+{
+	VansSceneLocalVolumetricFogComponentConfig settings = inputSettings;
+	NormalizeLocalVolumetricFogConfig(settings);
+	auto buildMapping = [](const VansLocalFogTextureMapping2DConfig& mapping)
+	{
+		return Object({
+			{ "projection", String(ToString(mapping.projection)) },
+			{ "tiling", FloatArray(mapping.tiling[0], mapping.tiling[1]) },
+			{ "offset", FloatArray(mapping.offset[0], mapping.offset[1]) },
+			{ "addressMode", String(ToString(mapping.addressMode)) }
+		});
+	};
+	auto buildScalarLayer = [&](const VansLocalFogScalarDensityLayerConfig& layer)
+	{
+		return Object({
+			{ "enabled", Bool(layer.enabled) },
+			{ "source", Object({
+				{ "asset", GuidReference(layer.source.assetGuid) },
+				{ "channels", String(ToString(layer.source.channel)) }
+			}) },
+			{ "mapping", buildMapping(layer.mapping) },
+			{ "inputRange", FloatArray(layer.inputMinimum, layer.inputMaximum) },
+			{ "influence", Float(layer.influence) },
+			{ "lodBias", Float(layer.lodBias) },
+			{ "invert", Bool(layer.invert) }
+		});
+	};
+	std::string flowChannels = ToString(settings.flow.source.xChannel);
+	flowChannels += ToString(settings.flow.source.zChannel);
+	return Object({
+		{ "visibilityDistanceMeters", Float(settings.visibilityDistanceMeters) },
+		{ "singleScatteringAlbedo", FloatArray(
+			settings.singleScatteringAlbedo[0],
+			settings.singleScatteringAlbedo[1],
+			settings.singleScatteringAlbedo[2]) },
+		{ "anisotropy", Float(settings.anisotropy) },
+		{ "emissivePerMeter", FloatArray(
+			settings.emissivePerMeter[0],
+			settings.emissivePerMeter[1],
+			settings.emissivePerMeter[2]) },
+		{ "edgeFadeDistanceMeters", Float(settings.edgeFadeDistanceMeters) },
+		{ "distanceFadeStartMeters", Float(settings.distanceFadeStartMeters) },
+		{ "distanceFadeEndMeters", Float(settings.distanceFadeEndMeters) },
+		{ "directLightingScale", Float(settings.directLightingScale) },
+		{ "skyLightingScale", Float(settings.skyLightingScale) },
+		{ "receiveCloudShadows", Bool(settings.receiveCloudShadows) },
+		{ "shapeMask", buildScalarLayer(settings.shapeMask) },
+		{ "detailNoise", buildScalarLayer(settings.detailNoise) },
+		{ "flow", Object({
+			{ "enabled", Bool(settings.flow.enabled) },
+			{ "source", Object({
+				{ "asset", GuidReference(settings.flow.source.assetGuid) },
+				{ "channels", String(flowChannels) }
+			}) },
+			{ "mapping", buildMapping(settings.flow.mapping) },
+			{ "fallbackDirectionLocalXZ", FloatArray(
+				settings.flow.fallbackDirectionLocalXZ[0],
+				settings.flow.fallbackDirectionLocalXZ[1]) },
+			{ "speedMetersPerSecond", Float(settings.flow.speedMetersPerSecond) },
+			{ "loopDistanceMeters", Float(settings.flow.loopDistanceMeters) },
+			{ "phaseOffset01", Float(settings.flow.phaseOffset01) },
+			{ "lodBias", Float(settings.flow.lodBias) }
+		}) }
+	});
 }
 
 VansSerializedValue VansSceneEntityFactory::BuildEmptyEntity(

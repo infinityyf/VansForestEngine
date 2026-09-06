@@ -19,7 +19,6 @@ enum class VansActionGraphNodeKind : std::uint8_t
 	Latent,
 	State,
 	Flow,
-	Transaction,
 	Bridge,
 	SubAction
 };
@@ -74,8 +73,6 @@ struct VansActionGraphNodeDescriptor
 	std::string displayName;
 	std::string category;
 	VansActionGraphNodeKind kind = VansActionGraphNodeKind::Pure;
-	bool predictable = false;
-	bool authorityOnly = false;
 	std::vector<VansActionGraphPinDescriptor> pins;
 	std::vector<VansActionGraphPropertyDescriptor> properties;
 };
@@ -90,21 +87,12 @@ struct VansActionGraphNodeResult
 	std::string message;
 };
 
-enum class VansActionGraphRollbackPlan : std::uint8_t
-{
-	None,
-	Automatic,
-	Compensate
-};
-
 struct VansCompiledActionGraphNode
 {
 	std::string guid;
 	VansActionGraphNodeTypeId type;
 	VansActionGraphNodeKind kind = VansActionGraphNodeKind::Pure;
 	VansSerializedValue properties = VansSerializedValue::Object({});
-	bool predictable = false;
-	VansActionGraphRollbackPlan rollbackPlan = VansActionGraphRollbackPlan::None;
 };
 
 struct VansCompiledActionGraphEdge
@@ -118,7 +106,6 @@ struct VansCompiledActionGraphEdge
 struct VansCompiledActionGraph
 {
 	std::string name;
-	std::uint32_t version = 1;
 	std::uint64_t contentHash = 0;
 	std::uint32_t entryNode = 0;
 	std::vector<VansCompiledActionGraphNode> nodes;
@@ -131,7 +118,6 @@ public:
 	virtual ~IVansActionGraphNodeHandler() = default;
 	virtual VansActionGraphNodeTypeId TypeId() const = 0;
 	virtual std::string_view StableName() const = 0;
-	virtual bool SupportsPrediction() const = 0;
 	virtual bool PreservesStateAcrossActivations() const { return false; }
 	virtual VansActionGraphNodeResult Start(
 		VansActionExecutionContext& context,

@@ -2,7 +2,8 @@
 
 #include "../../PhysicsCore/VansClothNode.h"
 #include "../../AssetCore/VansClothProfile.h"
-#include "../../AssetCore/Storage/VansClothProfileStorage.h"
+#include "../../AssetCore/VansAssetObjectRepository.h"
+#include "../../ProjectSystem/VansProjectManager.h"
 #include "../../ScriptCore/VansScriptContext.h"
 #include "../../Util/VansLog.h"
 #include "../../AnimationCore/VansAnimationNode.h"
@@ -91,11 +92,11 @@ namespace
 				continue;
 
 			VANS_LOG("[Pass5] 找到布料对象: '" << object->m_ObjectName
-				<< "'，profilePath='" << clothComponent->m_ProfilePath << "'");
+				<< "'，profileGuid='" << clothComponent->m_ProfileAssetGuid << "'");
 
-			if (clothComponent->m_ProfilePath.empty())
+			if (clothComponent->m_ProfileAssetGuid.empty())
 			{
-				VANS_LOG_WARN("[Pass5] profilePath 为空，跳过对象 '" << object->m_ObjectName << "'");
+				VANS_LOG_WARN("[Pass5] profile GUID 为空，跳过对象 '" << object->m_ObjectName << "'");
 				continue;
 			}
 
@@ -146,18 +147,24 @@ namespace
 
 			VANS_LOG("[Pass5] 匹配成功：AnimNode='" << foundAnimationNode->GetName() << "'");
 
-			VansEngine::VansClothProfile profile;
-			std::string profileError;
-			if (VansEngine::VansClothProfileStorage::Load(clothComponent->m_ProfilePath, profile, profileError))
+			Vans::VansAssetGuid profileGuid;
+			if (!Vans::VansAssetGuid::TryParse(clothComponent->m_ProfileAssetGuid, profileGuid))
 			{
-				clothNode->LateBindBonesFromProfile(profile, foundAnimationNode);
-				VANS_LOG("[Pass5] 骨骼绑定完成：Cloth '" << clothNode->GetName()
-					<< "' → AnimNode '" << foundAnimationNode->GetName() << "'");
+				VANS_LOG_ERROR("[Pass5] Cloth Profile GUID 无效: "
+					<< clothComponent->m_ProfileAssetGuid);
+				continue;
 			}
-			else
+			const auto profile = Vans::VansProjectManager::Get().GetAssetObjectRepository()
+				.ResolveLatest<VansEngine::VansClothProfile>(profileGuid);
+			if (!profile)
 			{
-				VANS_LOG_ERROR("[Pass5] 无法加载 profile '" << clothComponent->m_ProfilePath << "' (" << profileError << ")");
+				VANS_LOG_ERROR("[Pass5] Cloth Profile 未加载到内存: "
+					<< clothComponent->m_ProfileAssetGuid);
+				continue;
 			}
+			clothNode->LateBindBonesFromProfile(*profile, foundAnimationNode);
+			VANS_LOG("[Pass5] 骨骼绑定完成：Cloth '" << clothNode->GetName()
+				<< "' → AnimNode '" << foundAnimationNode->GetName() << "'");
 		}
 	}
 }

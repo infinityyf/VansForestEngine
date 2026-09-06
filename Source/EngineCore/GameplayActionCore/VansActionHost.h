@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -22,6 +23,18 @@
 
 namespace Vans
 {
+struct VansActionRuntimeProjection;
+class VansActionHost;
+
+using VansActionSetInitializerCleanup =
+	std::function<bool(VansActionHost&, std::string&)>;
+using VansActionSetInitializerHandler = std::function<bool(
+	VansActionHost&,
+	std::uint64_t,
+	const VansSerializedValue&,
+	VansActionSetInitializerCleanup&,
+	std::string&)>;
+
 enum class VansActionGrantPersistence : std::uint8_t
 {
 	Transient,
@@ -39,44 +52,26 @@ enum class VansActionRevokePolicy : std::uint8_t
 struct VansActionGrantDesc
 {
 	VansActionId action;
-	double level = 1.0;
-	std::string inputBinding;
-	std::vector<VansGameplayTagId> dynamicTags;
-	std::int32_t charges = -1;
+	std::vector<VansCompiledActionRecord> extensions;
 	std::uint64_t source = 0;
-	VansActionGrantPersistence persistence = VansActionGrantPersistence::OwnerLifetime;
 	std::string actionReference;
 };
 
 struct VansActionSetDefinition
 {
-	struct AttributeOverride
-	{
-		VansAttributeId attribute;
-		double value = 0.0;
-	};
-
 	VansActionSetId id;
 	std::string name;
 	std::vector<VansActionGrantDesc> grants;
-	std::vector<VansEffectId> initialEffects;
-	std::vector<std::string> initialEffectReferences;
-	std::vector<AttributeOverride> attributeOverrides;
-	VansActionRevokePolicy revokePolicy = VansActionRevokePolicy::CancelRunning;
-	bool removeInitialEffectsOnRevoke = true;
+	std::vector<VansCompiledActionRecord> initializers;
+	std::vector<VansCompiledActionRecord> policies;
 };
 
 struct VansGrantedActionSpecSnapshot
 {
 	VansActionSpecHandle handle;
 	VansActionId action;
-	std::uint32_t definitionVersion = 0;
-	double level = 1.0;
-	std::string inputBinding;
-	std::vector<VansGameplayTagId> dynamicTags;
-	std::int32_t charges = -1;
+	std::vector<VansCompiledActionRecord> extensions;
 	std::uint64_t source = 0;
-	VansActionGrantPersistence persistence = VansActionGrantPersistence::OwnerLifetime;
 	bool pendingRemoval = false;
 };
 
@@ -121,14 +116,13 @@ struct VansActionInstanceSnapshot
 {
 	VansActionHandle handle;
 	VansActionId action;
-	std::uint32_t definitionVersion = 0;
 	VansActionSpecHandle sourceSpec;
 	VansActionInstanceState state = VansActionInstanceState::Created;
 	VansActionEndReason endReason = VansActionEndReason::Completed;
 	double elapsedSeconds = 0.0;
 	std::size_t taskCount = 0;
 	std::size_t resourceCount = 0;
-	VansPredictionKey prediction;
+	std::uint64_t correlationId = 0;
 	std::vector<VansActionTraceEntry> trace;
 	VansActionError error = VansActionError::None;
 	VansActionContext context;
@@ -145,9 +139,6 @@ struct VansActionActivationRequest
 {
 	VansActionSpecHandle spec;
 	VansActionContext context;
-	bool hasAuthority = true;
-	bool locallyControlled = true;
-	bool predicted = false;
 };
 
 struct VansActionStartedEvent
@@ -155,7 +146,7 @@ struct VansActionStartedEvent
 	VansEntityHandle owner;
 	VansActionHandle action;
 	VansActionId definition;
-	VansPredictionKey prediction;
+	std::uint64_t correlationId = 0;
 };
 
 struct VansActionQueuedEvent
@@ -164,7 +155,7 @@ struct VansActionQueuedEvent
 	VansActionHandle action;
 	VansActionId definition;
 	VansActionConcurrencyGroupId group;
-	VansPredictionKey prediction;
+	std::uint64_t correlationId = 0;
 };
 
 struct VansActionEndedEvent
@@ -174,7 +165,7 @@ struct VansActionEndedEvent
 	VansActionId definition;
 	VansActionEndReason reason = VansActionEndReason::Completed;
 	VansActionError error = VansActionError::None;
-	VansPredictionKey prediction;
+	std::uint64_t correlationId = 0;
 };
 
 struct VansActionHostLimits
@@ -187,7 +178,7 @@ struct VansActionHostLimits
 
 struct VansActionExternalCostRequest
 {
-	VansActionCostKind kind = VansActionCostKind::Inventory;
+	std::string operation;
 	std::string resource;
 	double amount = 0.0;
 	VansActionContext context;
@@ -200,18 +191,14 @@ public:
 	virtual ~IVansActionExternalCostProvider() = default;
 	virtual bool CanCommit(const VansActionExternalCostRequest& request,
 		std::string& error) const = 0;
-	virtual VansGenerationHandle Commit(const VansActionExternalCostRequest& request,
+	virtual bool Commit(const VansActionExternalCostRequest& request,
 		std::string& error) = 0;
-	virtual bool Settle(VansGenerationHandle receipt, bool refund, std::string& error) = 0;
 };
 
 struct VansPersistentActionGrantState
 {
 	VansActionId action;
-	double level = 1.0;
-	std::string inputBinding;
-	std::vector<VansGameplayTagId> dynamicTags;
-	std::int32_t charges = -1;
+	std::vector<VansCompiledActionRecord> extensions;
 	std::uint64_t source = 0;
 };
 
@@ -224,7 +211,6 @@ struct VansPersistentActionCooldownState
 
 struct VansActionHostPersistentState
 {
-	std::uint32_t version = 1;
 	std::vector<VansPersistentActionGrantState> grants;
 	std::vector<VansAttributeSnapshot> attributes;
 	std::vector<VansPersistentActionCooldownState> cooldowns;
@@ -234,6 +220,7 @@ struct VansActionHostDependencies
 {
 	const VansActionDefinitionRegistry* definitions = nullptr;
 	const VansActionExecutorRegistry* executors = nullptr;
+	const VansActionDriverRegistry* drivers = nullptr;
 	const VansGameplayTagDictionary* tagDictionary = nullptr;
 	const VansAttributeRegistry* attributeRegistry = nullptr;
 	const VansEffectRegistry* effectRegistry = nullptr;
@@ -241,8 +228,10 @@ struct VansActionHostDependencies
 	const VansTargetingPolicyRegistry* targetingPolicies = nullptr;
 	const VansTargetingHandlerRegistry* targetingHandlers = nullptr;
 	const VansActionServiceRegistry* services = nullptr;
+	const std::unordered_map<std::string, VansActionSetInitializerHandler>*
+		actionSetInitializers = nullptr;
 	IVansActionExternalCostProvider* externalCosts = nullptr;
-	bool predictionEnabled = true;
+	VansActionResourceLedger* worldResources = nullptr;
 	VansActionHostLimits limits;
 };
 
@@ -263,17 +252,16 @@ public:
 	VansActionResult Activate(const VansActionActivationRequest& request);
 	VansActionResult ActivateAction(VansActionId action, VansActionContext context);
 	VansActionResult ActivateInput(std::string_view inputBinding, VansActionContext context);
-	VansActionResult CanActivate(VansActionSpecHandle spec, const VansActionContext& context,
-		bool hasAuthority = true, bool predicted = false, bool locallyControlled = true) const;
-	VansActionResult CanActivateAction(VansActionId action, const VansActionContext& context,
-		bool hasAuthority = true, bool predicted = false, bool locallyControlled = true) const;
+	VansActionResult CanActivate(VansActionSpecHandle spec,
+		const VansActionContext& context) const;
+	VansActionResult CanActivateAction(VansActionId action,
+		const VansActionContext& context) const;
 	VansActionResult RequestTransition(
 		VansActionHandle source,
 		VansActionId targetAction,
 		VansActionContext context,
 		VansSerializedValue contextPatch,
-		bool cancelSource,
-		bool inheritPrimaryTarget);
+		bool cancelSource);
 	bool Cancel(VansActionHandle action, VansActionCancelReason reason, std::string& error);
 	bool Interrupt(VansActionHandle action, std::string& error);
 	bool EnqueueEvent(VansActionHandle action, VansActionEvent event, std::string& error);
@@ -285,8 +273,6 @@ public:
 		VansSerializedValue& value, std::string& error) const;
 	bool WriteVariable(VansActionHandle action, VansActionFieldId variable,
 		VansSerializedValue value, std::string& error);
-	bool RollbackPrediction(VansActionHandle action, std::vector<std::string>& errors);
-	bool ReplayPrediction(VansActionHandle action, std::vector<std::string>& errors);
 	bool CapturePersistentState(VansActionHostPersistentState& state, std::string& error) const;
 	bool RestorePersistentState(const VansActionHostPersistentState& state, std::string& error);
 	void Tick(double deltaSeconds);
@@ -299,7 +285,6 @@ public:
 	bool IsCooldownActive(VansActionId action) const;
 	VansEntityHandle Owner() const { return m_Owner; }
 	bool IsInitialized() const { return m_Initialized; }
-	bool IsCommitFrozen() const { return m_CommitFrozen; }
 	bool IsEnabled() const { return m_Enabled; }
 
 	VansGameplayTagContainer& Tags() { return m_Tags; }
@@ -315,6 +300,8 @@ private:
 	struct GrantedSpec
 	{
 		std::shared_ptr<const VansCompiledActionDefinition> definition;
+		std::shared_ptr<const VansActionRuntimeProjection> runtime;
+		std::vector<VansCompiledActionRecord> extensions;
 		double level = 1.0;
 		std::string inputBinding;
 		std::vector<VansGameplayTagId> dynamicTags;
@@ -328,24 +315,16 @@ private:
 	{
 		VansActionSetDefinition definition;
 		std::uint64_t source = 0;
+		VansActionRevokePolicy revokePolicy = VansActionRevokePolicy::CancelRunning;
 		std::vector<VansActionSpecHandle> specs;
-		std::vector<VansActiveEffectHandle> effects;
-		std::vector<VansAttributeModifierHandle> attributeOverrides;
-	};
-
-	struct CommittedCost
-	{
-		VansAttributeId attribute;
-		double amount = 0.0;
-		VansActionCostRefundPolicy policy = VansActionCostRefundPolicy::Never;
-		VansActionCostKind kind = VansActionCostKind::Attribute;
-		VansGenerationHandle externalReceipt;
+		std::vector<VansActionSetInitializerCleanup> initializerCleanup;
 	};
 
 	struct ActionInstance
 	{
 		VansActionSpecHandle sourceSpec;
 		std::shared_ptr<const VansCompiledActionDefinition> definition;
+		std::shared_ptr<const VansActionRuntimeProjection> runtime;
 		VansActionContext context;
 		VansActionInstanceState state = VansActionInstanceState::Created;
 		VansActionEndReason endReason = VansActionEndReason::Completed;
@@ -355,16 +334,12 @@ private:
 		VansActionTaskSet tasks;
 		VansActionResourceLedger resources;
 		std::unique_ptr<IVansActionExecutor> executor;
+		std::vector<std::unique_ptr<IVansActionSidecarDriver>> drivers;
 		std::vector<VansActionEvent> inbox;
 		std::vector<VansActionDebugEventSnapshot> recentEvents;
 		std::uint64_t nextEventSequence = 1;
 		std::vector<VansActionTraceEntry> trace;
-		std::vector<CommittedCost> committedCosts;
-		std::int32_t committedCharge = 0;
 		std::uint64_t source = 0;
-		bool hasAuthority = true;
-		bool locallyControlled = true;
-		bool predicted = false;
 	};
 
 	struct CooldownState
@@ -387,7 +362,6 @@ private:
 		std::int32_t priority = 0;
 		std::uint64_t sequence = 0;
 		bool cancelSource = true;
-		bool inheritPrimaryTarget = true;
 		bool allowEndedSource = false;
 	};
 
@@ -401,7 +375,7 @@ private:
 		VansActionResult& result,
 		bool ignoreConcurrencyOccupancy = false) const;
 	bool ValidateCommitRequirements(
-		const VansCompiledActionDefinition& definition,
+		const VansActionRuntimeProjection& runtime,
 		const VansActionContext& context,
 		const VansTargetData* targetData,
 		VansActionResult& result) const;
@@ -436,7 +410,6 @@ private:
 		std::string message);
 	void Transition(ActionInstance& instance, VansActionInstanceState state, std::string message);
 	VansActionInstanceSnapshot BuildSnapshot(VansActionHandle handle, const ActionInstance& instance) const;
-	void RefundCosts(ActionInstance& instance, VansActionEndReason reason);
 	bool HasRunningActionForSpec(VansActionSpecHandle spec) const;
 	void ReleaseDeferredSpecs();
 	void RecycleEnded();
@@ -452,6 +425,7 @@ private:
 	VansGameplayCueService m_Cues;
 	VansTargetDataStore m_TargetData;
 	VansGameplayEffectService m_Effects;
+	VansActionResourceLedger m_HostResources;
 	VansGenerationPool<GrantedSpec> m_Specs;
 	VansGenerationPool<ActionSetState> m_ActionSets;
 	VansGenerationPool<ActionInstance> m_Instances;
@@ -463,7 +437,6 @@ private:
 	std::deque<VansActionInstanceSnapshot> m_History;
 	bool m_Initialized = false;
 	bool m_ShuttingDown = false;
-	bool m_CommitFrozen = false;
 	bool m_LateContinuationRequested = false;
 	bool m_Enabled = true;
 	bool m_ProcessingTransitions = false;

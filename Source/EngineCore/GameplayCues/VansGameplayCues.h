@@ -27,14 +27,14 @@ enum class VansGameplayCueScope : std::uint8_t
 
 struct VansGameplayCueKey
 {
-	VansPredictionKey prediction;
+	std::uint64_t correlationId = 0;
 	VansCueId cue;
 	std::uint32_t sequence = 0;
 
 	bool IsValid() const { return cue.IsValid() && sequence != 0; }
 	friend bool operator==(const VansGameplayCueKey& left, const VansGameplayCueKey& right)
 	{
-		return left.prediction == right.prediction && left.cue == right.cue &&
+		return left.correlationId == right.correlationId && left.cue == right.cue &&
 			left.sequence == right.sequence;
 	}
 };
@@ -44,8 +44,8 @@ struct VansGameplayCueKeyHash
 	std::size_t operator()(const VansGameplayCueKey& key) const noexcept
 	{
 		std::size_t value = std::hash<std::uint64_t>{}(key.cue.value);
-		value ^= std::hash<std::uint32_t>{}(key.prediction.connection) + 0x9e3779b9u + (value << 6) + (value >> 2);
-		value ^= std::hash<std::uint32_t>{}(key.prediction.sequence) + 0x9e3779b9u + (value << 6) + (value >> 2);
+		value ^= std::hash<std::uint64_t>{}(key.correlationId) + 0x9e3779b9u +
+			(value << 6) + (value >> 2);
 		value ^= std::hash<std::uint32_t>{}(key.sequence) + 0x9e3779b9u + (value << 6) + (value >> 2);
 		return value;
 	}

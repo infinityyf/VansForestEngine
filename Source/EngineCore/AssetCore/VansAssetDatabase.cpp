@@ -5,6 +5,7 @@
 #include "../Util/VansLog.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cwctype>
 #include <mutex>
 #include <utility>
@@ -31,6 +32,7 @@ constexpr SerializedAssetTypeEntry SerializedAssetTypes[] = {
     { VansAssetType::AnimationClip, "animationClip" },
     { VansAssetType::AnimatorController, "animatorController" },
     { VansAssetType::AnimationRig, "animationRig" },
+    { VansAssetType::RetargetProfile, "retargetProfile" },
     { VansAssetType::BoneMask, "boneMask" },
     { VansAssetType::Timeline, "timeline" },
     { VansAssetType::NavigationMesh, "navigationMesh" },
@@ -53,7 +55,13 @@ constexpr SerializedAssetTypeEntry SerializedAssetTypes[] = {
     { VansAssetType::RagdollProfile, "ragdollProfile" },
     { VansAssetType::AudioReverbPreset, "audioReverbPreset" },
     { VansAssetType::AudioBusSnapshot, "audioBusSnapshot" },
-    { VansAssetType::AudioDuckingRules, "audioDuckingRules" }
+    { VansAssetType::AudioDuckingRules, "audioDuckingRules" },
+	{ VansAssetType::UIScreen, "uiScreen" },
+	{ VansAssetType::UIComponent, "uiComponent" },
+	{ VansAssetType::UIThemeTokens, "uiThemeTokens" },
+	{ VansAssetType::UILocalization, "uiLocalization" },
+	{ VansAssetType::UIXaml, "uiXaml" },
+	{ VansAssetType::VegetationConfig, "vegetationConfig" }
 };
 
 std::wstring LowerExtension(const std::filesystem::path& path)
@@ -61,6 +69,19 @@ std::wstring LowerExtension(const std::filesystem::path& path)
     std::wstring extension = path.extension().wstring();
     std::transform(extension.begin(), extension.end(), extension.begin(), [](wchar_t value) { return std::towlower(value); });
     return extension;
+}
+
+bool HasPathComponent(const std::filesystem::path& path, const std::wstring& expected)
+{
+	for (const std::filesystem::path& component : path)
+	{
+		std::wstring value = component.wstring();
+		std::transform(value.begin(), value.end(), value.begin(),
+			[](wchar_t character) { return static_cast<wchar_t>(std::towlower(character)); });
+		if (value == expected)
+			return true;
+	}
+	return false;
 }
 }
 
@@ -107,7 +128,12 @@ VansAssetScanResult VansAssetDatabase::Scan(const VansAssetOperationPolicy& poli
         std::unique_lock lock(m_Mutex);
         m_ByPath.clear();
         for (auto& [guid, record] : m_ByGuid)
-            record.state = VansAssetState::Missing;
+		{
+			if (record.memoryOnly)
+				m_ByPath[PathKey(record.sourcePath)] = guid;
+			else
+				record.state = VansAssetState::Missing;
+		}
     }
 
     for (std::filesystem::recursive_directory_iterator it(m_AssetsRoot, std::filesystem::directory_options::skip_permission_denied, ec), end;
@@ -271,6 +297,27 @@ bool VansAssetDatabase::RegisterOrRefresh(
         meta.subAssets.begin(), meta.subAssets.end(), [](const auto& subAsset) {
             return subAsset.first.rfind("bone:", 0) == 0;
         });
+	record.memoryOnly = false;
+	if (type == VansAssetType::Texture)
+	{
+		std::string colorSpace = meta.ReadStringSetting("colorSpace");
+		std::transform(colorSpace.begin(), colorSpace.end(), colorSpace.begin(),
+			[](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+		record.textureImport.available = true;
+		record.textureImport.linear = colorSpace.empty()
+			? !meta.ReadBoolSetting("sRGB", true)
+			: colorSpace == "linear";
+		record.textureImport.compressed =
+			meta.ReadBoolSetting("useCompress", "compress", true);
+		record.textureImport.mipmapped =
+			meta.ReadBoolSetting("needMip", "generateMip", true);
+		record.textureImport.channelCount = meta.ReadIntSetting("importChannel", 4);
+		record.textureImport.precision = meta.ReadStringSetting("precision", "low8");
+	}
+	else
+	{
+		record.textureImport = {};
+	}
     record.state = record.artifactPath.empty()
         ? VansAssetState::Discovered
         : VansAssetState::CpuReady;
@@ -278,6 +325,49 @@ bool VansAssetDatabase::RegisterOrRefresh(
     record.error = textureCookError;
     m_ByPath[key] = meta.guid;
     return true;
+}
+
+bool VansAssetDatabase::RegisterMemoryAsset(VansAssetRecord record, std::string& error)
+{
+	error.clear();
+	if (!record.guid.IsValid() || record.type == VansAssetType::Unknown || record.sourcePath.empty())
+	{
+		error = "Memory asset record has no valid identity";
+		return false;
+	}
+	record.sourcePath = Normalize(record.sourcePath);
+	record.metaPath = VansAssetMeta::MetaPathFor(record.sourcePath);
+	const std::filesystem::path relative = record.sourcePath.lexically_relative(m_AssetsRoot);
+	bool insideAssets = record.sourcePath == m_AssetsRoot ||
+		(!relative.empty() && !relative.is_absolute());
+	for (const std::filesystem::path& part : relative)
+		if (part == "..") insideAssets = false;
+	if (!insideAssets || Classify(record.sourcePath) != record.type)
+	{
+		error = "Memory asset path/type is outside the active Assets root";
+		return false;
+	}
+
+	std::unique_lock lock(m_Mutex);
+	const std::wstring key = PathKey(record.sourcePath);
+	if (const auto found = m_ByGuid.find(record.guid); found != m_ByGuid.end() &&
+		found->second.state != VansAssetState::Missing &&
+		PathKey(found->second.sourcePath) != key)
+	{
+		error = "Memory asset GUID collides with another asset";
+		return false;
+	}
+	if (const auto found = m_ByPath.find(key); found != m_ByPath.end() && found->second != record.guid)
+	{
+		error = "Memory asset path collides with another asset";
+		return false;
+	}
+	record.state = VansAssetState::CpuReady;
+	record.memoryOnly = true;
+	if (record.generation == 0) record.generation = 1;
+	m_ByGuid[record.guid] = record;
+	m_ByPath[key] = record.guid;
+	return true;
 }
 
 VansTextureArtifactEnsureResult VansAssetDatabase::EnsureTextureArtifact(VansAssetGuid guid)
@@ -459,7 +549,19 @@ VansAssetType VansAssetDatabase::Classify(const std::filesystem::path& sourcePat
         if (fileName.size() >= suffix.size() &&
             fileName.compare(fileName.size() - suffix.size(), suffix.size(), suffix) == 0)
             return VansAssetType::Shader;
+		const auto hasSuffix = [&](const std::wstring& value)
+		{
+			return fileName.size() >= value.size() &&
+				fileName.compare(fileName.size() - value.size(), value.size(), value) == 0;
+		};
+		if (hasSuffix(L".vui.json")) return VansAssetType::UIScreen;
+		if (hasSuffix(L".vcomp.json")) return VansAssetType::UIComponent;
+		if (hasSuffix(L".tokens.json")) return VansAssetType::UIThemeTokens;
+		if (hasSuffix(L".loc.json")) return VansAssetType::UILocalization;
+		if (HasPathComponent(sourcePath.parent_path(), L"vegetation"))
+			return VansAssetType::VegetationConfig;
     }
+	if (extension == L".xaml") return VansAssetType::UIXaml;
 	if (extension == L".wav" || extension == L".mp3" || extension == L".ogg" || extension == L".flac") return VansAssetType::Audio;
 	if (extension == L".mp4" || extension == L".mkv" || extension == L".avi" || extension == L".mov" || extension == L".webm") return VansAssetType::Video;
     if (extension == L".scene" || extension == L".vscene") return VansAssetType::Scene;
@@ -467,6 +569,7 @@ VansAssetType VansAssetDatabase::Classify(const std::filesystem::path& sourcePat
     if (extension == L".vclip") return VansAssetType::AnimationClip;
     if (extension == L".vanimator") return VansAssetType::AnimatorController;
 	if (extension == L".vanimrig") return VansAssetType::AnimationRig;
+	if (extension == L".vretarget") return VansAssetType::RetargetProfile;
 	if (extension == L".vbonemask") return VansAssetType::BoneMask;
     if (extension == L".vtimeline") return VansAssetType::Timeline;
 	if (extension == L".vnavmesh") return VansAssetType::NavigationMesh;
@@ -486,7 +589,7 @@ VansAssetType VansAssetDatabase::Classify(const std::filesystem::path& sourcePat
     if (extension == L".clothprofile") return VansAssetType::ClothProfile;
     if (extension == L".skinprofile") return VansAssetType::SkinProfile;
     if (extension == L".pprofile") return VansAssetType::PostProcessProfile;
-    if (extension == L".ragdoll") return VansAssetType::RagdollProfile;
+    if (extension == L".vragdoll") return VansAssetType::RagdollProfile;
     if (extension == L".vreverb") return VansAssetType::AudioReverbPreset;
     if (extension == L".vaudiosnapshot" || extension == L".vbusnapshot") return VansAssetType::AudioBusSnapshot;
     if (extension == L".vducking") return VansAssetType::AudioDuckingRules;
@@ -508,6 +611,7 @@ std::string VansAssetDatabase::ImporterFor(VansAssetType type)
     case VansAssetType::AnimationClip: return "AnimationClipImporter";
     case VansAssetType::AnimatorController: return "AnimatorControllerImporter";
 	case VansAssetType::AnimationRig: return "AnimationRigImporter";
+	case VansAssetType::RetargetProfile: return "RetargetProfileImporter";
 	case VansAssetType::BoneMask: return "BoneMaskImporter";
     case VansAssetType::Timeline: return "TimelineImporter";
 	case VansAssetType::NavigationMesh: return "NavigationMeshImporter";
@@ -531,6 +635,12 @@ std::string VansAssetDatabase::ImporterFor(VansAssetType type)
     case VansAssetType::AudioReverbPreset: return "AudioReverbPresetImporter";
     case VansAssetType::AudioBusSnapshot: return "AudioBusSnapshotImporter";
     case VansAssetType::AudioDuckingRules: return "AudioDuckingRulesImporter";
+	case VansAssetType::UIScreen: return "UIScreenImporter";
+	case VansAssetType::UIComponent: return "UIComponentImporter";
+	case VansAssetType::UIThemeTokens: return "UIThemeTokensImporter";
+	case VansAssetType::UILocalization: return "UILocalizationImporter";
+	case VansAssetType::UIXaml: return "UIXamlImporter";
+	case VansAssetType::VegetationConfig: return "VegetationConfigImporter";
     default: return {};
     }
 }

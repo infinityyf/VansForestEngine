@@ -138,8 +138,7 @@ Json ActionJson(const VansActionInstanceSnapshot& action)
 	for (const auto& resource : action.resources)
 		resources.push_back({ { "handle", HandleJson(resource.handle.value) },
 			{ "type", resource.type }, { "name", resource.debugName },
-			{ "dependsOn", HandleJson(resource.dependsOn.value) },
-			{ "prediction", static_cast<int>(resource.prediction) }, { "undone", resource.undone } });
+			{ "dependsOn", HandleJson(resource.dependsOn.value) } });
 	Json trace = Json::array();
 	for (const auto& entry : action.trace)
 		trace.push_back({ { "time", entry.elapsedSeconds },
@@ -148,22 +147,38 @@ Json ActionJson(const VansActionInstanceSnapshot& action)
 	for (const auto& event : action.recentEvents)
 		events.push_back({ { "sequence", std::to_string(event.sequence) },
 			{ "type", std::to_string(event.type.value) }, { "name", event.stableName } });
+	Json contextSlots = Json::array();
+	for (const VansActionContextSlot& slot : action.context.Slots())
+	{
+		Json value;
+		switch (slot.value.kind)
+		{
+		case VansActionValueKind::Serialized:
+			value = SerializedJson(slot.value.serialized);
+			break;
+		case VansActionValueKind::Entity:
+			value = HandleJson({ slot.value.entity.index, slot.value.entity.generation });
+			break;
+		case VansActionValueKind::TargetData:
+			value = HandleJson(slot.value.targetData.value);
+			break;
+		case VansActionValueKind::Resource:
+			value = HandleJson(slot.value.resource);
+			break;
+		}
+		contextSlots.push_back({ { "name", slot.name },
+			{ "kind", static_cast<int>(slot.value.kind) }, { "value", std::move(value) } });
+	}
 	return {
 		{ "handle", HandleJson(action.handle.value) }, { "action", std::to_string(action.action.value) },
-		{ "definitionVersion", action.definitionVersion }, { "sourceSpec", HandleJson(action.sourceSpec.value) },
+		{ "sourceSpec", HandleJson(action.sourceSpec.value) },
 		{ "state", static_cast<int>(action.state) }, { "endReason", static_cast<int>(action.endReason) },
 		{ "error", static_cast<int>(action.error) }, { "elapsed", action.elapsedSeconds },
-		{ "prediction", { { "connection", action.prediction.connection },
-			{ "sequence", action.prediction.sequence } } },
-		{ "context", { { "owner", HandleJson({ action.context.owner.index, action.context.owner.generation }) },
-			{ "instigator", HandleJson({ action.context.instigator.index, action.context.instigator.generation }) },
-			{ "source", HandleJson({ action.context.source.index, action.context.source.generation }) },
-			{ "target", HandleJson({ action.context.primaryTarget.index, action.context.primaryTarget.generation }) },
-			{ "targetData", HandleJson(action.context.targetData.value) },
+		{ "correlationId", std::to_string(action.correlationId) },
+		{ "context", { { "slots", std::move(contextSlots) },
 			{ "hasTargetData", action.hasTargetData },
 			{ "targetDataValue", std::move(targetDataValue) },
-			{ "randomSeed", std::to_string(action.context.randomSeed) },
-			{ "payload", SerializedJson(action.context.payload) } } },
+			{ "randomSeed", std::to_string(action.context.randomSeed) } } },
 		{ "variables", std::move(variables) }, { "tasks", std::move(tasks) },
 		{ "resources", std::move(resources) }, { "executor", action.executor.executor },
 		{ "activeNodes", action.executor.activeNodes }, { "waitingNodes", action.executor.waitingNodes },
@@ -193,30 +208,38 @@ bool DecodeAction(const Json& json, VansActionInstanceSnapshot& action)
 	action.handle = { handle };
 	action.sourceSpec = { spec };
 	action.action = { actionId };
-	action.definitionVersion = json.value("definitionVersion", 0u);
 	action.state = static_cast<VansActionInstanceState>(json.value("state", 0));
 	action.endReason = static_cast<VansActionEndReason>(json.value("endReason", 0));
 	action.error = static_cast<VansActionError>(json.value("error", 0));
 	action.elapsedSeconds = json.value("elapsed", 0.0);
-	const Json prediction = json.value("prediction", Json::object());
-	action.prediction = { prediction.value("connection", 0u), prediction.value("sequence", 0u) };
+	if (!ParseUnsigned(json.value("correlationId", Json{}), action.correlationId)) return false;
 	const Json context = json.value("context", Json::object());
-	auto decodeEntity = [&](const char* name, VansEntityHandle& entity, bool required)
+	if (!ParseUnsigned(context.value("randomSeed", Json{}), action.context.randomSeed)) return false;
+	for (const Json& slotJson : context.value("slots", Json::array()))
 	{
-		VansGenerationHandle raw;
-		if (!DecodeHandle(context.value(name, Json{}), raw, required)) return false;
-		entity = { raw.index, raw.generation };
-		return true;
-	};
-	if (!decodeEntity("owner", action.context.owner, true) ||
-		!decodeEntity("instigator", action.context.instigator, false) ||
-		!decodeEntity("source", action.context.source, false) ||
-		!decodeEntity("target", action.context.primaryTarget, false) ||
-		!ParseUnsigned(context.value("randomSeed", Json{}), action.context.randomSeed) ||
-		!DecodeSerialized(context.value("payload", Json{}), action.context.payload, 0)) return false;
-	VansGenerationHandle targetData;
-	if (!DecodeHandle(context.value("targetData", HandleJson({})), targetData, false)) return false;
-	action.context.targetData = { targetData };
+		const std::string name = slotJson.value("name", std::string{});
+		const int kindValue = slotJson.value("kind", -1);
+		if (name.empty() || kindValue < 0 || kindValue > static_cast<int>(VansActionValueKind::Resource))
+			return false;
+		const VansActionValueKind kind = static_cast<VansActionValueKind>(kindValue);
+		if (kind == VansActionValueKind::Serialized)
+		{
+			VansSerializedValue value;
+			if (!DecodeSerialized(slotJson.value("value", Json{}), value, 0)) return false;
+			action.context.SetSerialized(name, std::move(value));
+		}
+		else
+		{
+			VansGenerationHandle value;
+			if (!DecodeHandle(slotJson.value("value", Json{}), value, false)) return false;
+			if (kind == VansActionValueKind::Entity)
+				action.context.SetEntity(name, { value.index, value.generation });
+			else if (kind == VansActionValueKind::TargetData)
+				action.context.SetTargetData(name, { value });
+			else action.context.Set(name, VansActionValue::Resource(value));
+		}
+	}
+	if (!action.context.Entity(VansActionContextSlots::Owner).IsValid()) return false;
 	const bool hasTargetData = context.value("hasTargetData", false) ||
 		(context.contains("targetDataValue") && !context["targetDataValue"].is_null());
 	if (hasTargetData)
@@ -262,9 +285,6 @@ bool DecodeAction(const Json& json, VansActionInstanceSnapshot& action)
 		resource.type = resourceJson.value("type", "");
 		resource.debugName = resourceJson.value("name", "");
 		resource.dependsOn = { dependency };
-		resource.prediction = static_cast<VansActionPredictionResourcePolicy>(
-			resourceJson.value("prediction", 0));
-		resource.undone = resourceJson.value("undone", false);
 		action.resources.push_back(std::move(resource));
 	}
 	action.executor.executor = json.value("executor", "");
@@ -307,27 +327,24 @@ Json SnapshotJson(const VansGameplayDebugSnapshot& snapshot)
 			effects.push_back({ { "handle", HandleJson(effect.handle.value) },
 				{ "effect", std::to_string(effect.effect.value) }, { "source", std::to_string(effect.source) },
 				{ "remaining", effect.remainingSeconds }, { "period", effect.periodRemainingSeconds },
-			{ "stacks", effect.stacks }, { "prediction", {
-				{ "connection", effect.prediction.connection },
-				{ "sequence", effect.prediction.sequence } } } });
+				{ "stacks", effect.stacks }, { "correlationId", std::to_string(effect.correlationId) } });
 		Json grants = Json::array();
 		for (const auto& grant : host.grants)
 		{
-			Json dynamicTags = Json::array();
-			for (VansGameplayTagId tag : grant.dynamicTags)
-				dynamicTags.push_back(std::to_string(tag.value));
+			Json extensions = Json::array();
+			for (const VansCompiledActionRecord& extension : grant.extensions)
+				extensions.push_back({ { "type", extension.type },
+					{ "inputs", SerializedJson(extension.inputs) } });
 			grants.push_back({ { "handle", HandleJson(grant.handle.value) },
 				{ "action", std::to_string(grant.action.value) },
-				{ "definitionVersion", grant.definitionVersion }, { "level", grant.level },
-				{ "inputBinding", grant.inputBinding }, { "dynamicTags", std::move(dynamicTags) },
-				{ "charges", grant.charges }, { "source", std::to_string(grant.source) },
-				{ "persistence", static_cast<int>(grant.persistence) },
+				{ "extensions", std::move(extensions) },
+				{ "source", std::to_string(grant.source) },
 				{ "pendingRemoval", grant.pendingRemoval } });
 		}
 		Json actions = Json::array();
 		for (const auto& action : host.actions) actions.push_back(ActionJson(action));
 		hosts.push_back({ { "owner", HandleJson({ host.owner.index, host.owner.generation }) },
-			{ "enabled", host.enabled }, { "commitFrozen", host.commitFrozen },
+			{ "enabled", host.enabled },
 			{ "activeCues", host.activeCueCount }, { "tags", std::move(tags) },
 			{ "attributes", std::move(attributes) }, { "effects", std::move(effects) },
 			{ "grants", std::move(grants) }, { "actions", std::move(actions) } });
@@ -350,7 +367,6 @@ bool DecodeSnapshot(const Json& json, VansGameplayDebugSnapshot& snapshot)
 		VansActionHostDebugSnapshot host;
 		host.owner = { owner.index, owner.generation };
 		host.enabled = hostJson.value("enabled", false);
-		host.commitFrozen = hostJson.value("commitFrozen", false);
 		host.activeCueCount = hostJson.value("activeCues", 0u);
 		for (const auto& tagJson : hostJson.value("tags", Json::array()))
 		{
@@ -384,14 +400,8 @@ bool DecodeSnapshot(const Json& json, VansGameplayDebugSnapshot& snapshot)
 			effect.remainingSeconds = effectJson.value("remaining", 0.0);
 			effect.periodRemainingSeconds = effectJson.value("period", 0.0);
 			effect.stacks = effectJson.value("stacks", 1u);
-			const Json predictionJson = effectJson.value("prediction", Json::object());
-			if (predictionJson.is_object())
-				effect.prediction = { predictionJson.value("connection", 0u),
-					predictionJson.value("sequence", 0u) };
-			else if (predictionJson.is_array() && predictionJson.size() == 2)
-				effect.prediction = { predictionJson[0].get<std::uint32_t>(),
-					predictionJson[1].get<std::uint32_t>() };
-			else return false;
+			if (!ParseUnsigned(effectJson.value("correlationId", Json{}),
+				effect.correlationId)) return false;
 			if (!std::isfinite(effect.remainingSeconds) ||
 				!std::isfinite(effect.periodRemainingSeconds)) return false;
 			host.effects.push_back(effect);
@@ -407,20 +417,19 @@ bool DecodeSnapshot(const Json& json, VansGameplayDebugSnapshot& snapshot)
 			VansGrantedActionSpecSnapshot grant;
 			grant.handle = { grantHandle };
 			grant.action = { actionId };
-			grant.definitionVersion = grantJson.value("definitionVersion", 0u);
-			grant.level = grantJson.value("level", 1.0);
-			grant.inputBinding = grantJson.value("inputBinding", "");
-			grant.charges = grantJson.value("charges", -1);
 			grant.source = source;
-			grant.persistence = static_cast<VansActionGrantPersistence>(
-				grantJson.value("persistence", 0));
 			grant.pendingRemoval = grantJson.value("pendingRemoval", false);
-			if (!std::isfinite(grant.level)) return false;
-			for (const auto& tagJson : grantJson.value("dynamicTags", Json::array()))
+			const Json extensions = grantJson.value("extensions", Json::array());
+			if (!extensions.is_array()) return false;
+			for (const auto& extensionJson : extensions)
 			{
-				std::uint64_t tag = 0;
-				if (!ParseUnsigned(tagJson, tag)) return false;
-				grant.dynamicTags.push_back({ tag });
+				if (!extensionJson.is_object()) return false;
+				VansCompiledActionRecord extension;
+				extension.type = extensionJson.value("type", "");
+				if (extension.type.empty() || !extensionJson.contains("inputs") ||
+					!DecodeSerialized(extensionJson["inputs"], extension.inputs, 0) ||
+					extension.inputs.kind != VansSerializedValue::Kind::Object) return false;
+				grant.extensions.push_back(std::move(extension));
 			}
 			host.grants.push_back(std::move(grant));
 		}
@@ -472,7 +481,6 @@ VansGameplayDebugSnapshot VansGameplayActionDebugService::Capture(
 		VansActionHostDebugSnapshot snapshot;
 		snapshot.owner = host->Owner();
 		snapshot.enabled = host->IsEnabled();
-		snapshot.commitFrozen = host->IsCommitFrozen();
 		snapshot.tags = host->Tags().Snapshot();
 		snapshot.attributes = host->Attributes().Capture();
 		snapshot.effects = host->Effects().Snapshot();
@@ -626,10 +634,6 @@ std::vector<VansActionBreakpointHit> VansGameplayActionBreakpointSet::Evaluate(
 					hit = action.error == breakpoint.error && action.error != VansActionError::None &&
 						(old == oldActions.end() || old->second->error != action.error);
 					reason = "Action error reached"; break;
-				case VansActionBreakpointKind::Prediction:
-					hit = action.prediction == breakpoint.prediction &&
-						(old == oldActions.end() || !(old->second->prediction == action.prediction));
-					reason = "Prediction key matched"; break;
 				case VansActionBreakpointKind::Attribute:
 					break;
 				}
@@ -689,7 +693,7 @@ bool VansGameplayTraceRecorder::Save(
 {
 	Json frames = Json::array();
 	for (const auto& frame : archive.frames) frames.push_back(SnapshotJson(frame));
-	const Json root = { { "assetKind", "GAFTrace" }, { "formatVersion", archive.formatVersion },
+	const Json root = { { "assetKind", "GAFTrace" },
 		{ "contentManifestHash", std::to_string(archive.contentManifestHash) },
 		{ "frames", std::move(frames) } };
 	return VansFileStorage::WriteAtomicBytes(path, root.dump(2), error);
@@ -708,12 +712,10 @@ bool VansGameplayTraceRecorder::Load(
 	try
 	{
 		const Json root = Json::parse(bytes);
-		if (root.value("assetKind", "") != "GAFTrace" ||
-			root.value("formatVersion", 0u) != 1 || !root.contains("frames") ||
+		if (root.value("assetKind", "") != "GAFTrace" || !root.contains("frames") ||
 			!root["frames"].is_array() || root["frames"].size() > 100000)
 			{ error = "Gameplay trace archive header is invalid"; return false; }
 		VansGameplayTraceArchive decoded;
-		decoded.formatVersion = 1;
 		if (!ParseUnsigned(root.value("contentManifestHash", Json{}), decoded.contentManifestHash))
 			{ error = "Gameplay trace manifest hash is invalid"; return false; }
 		for (const auto& frameJson : root["frames"])
@@ -735,7 +737,7 @@ bool VansGameplayTraceRecorder::Load(
 
 bool VansGameplayReplaySession::Load(VansGameplayTraceArchive archive, std::string& error)
 {
-	if (archive.formatVersion != 1 || archive.frames.empty())
+	if (archive.frames.empty())
 		{ error = "Gameplay replay archive is empty or unsupported"; return false; }
 	for (const auto& frame : archive.frames)
 		if (!std::isfinite(frame.timeSeconds) ||

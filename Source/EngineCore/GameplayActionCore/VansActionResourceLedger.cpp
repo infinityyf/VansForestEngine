@@ -21,17 +21,7 @@ VansActionResourceHandle VansActionResourceLedger::Register(
 		error = "Action resource dependency is stale or not registered earlier";
 		return {};
 	}
-	if (entry.prediction == VansActionPredictionResourcePolicy::UndoOnly && !entry.undo)
-	{
-		error = "predicted Action resource needs Undo";
-		return {};
-	}
-	if (entry.prediction == VansActionPredictionResourcePolicy::UndoRedo && (!entry.undo || !entry.redo))
-	{
-		error = "predicted Action resource needs Undo and Redo";
-		return {};
-	}
-	const VansActionResourceHandle handle{ m_Entries.Emplace(State{ std::move(entry), false }) };
+	const VansActionResourceHandle handle{ m_Entries.Emplace(State{ std::move(entry) }) };
 	m_Order.push_back(handle);
 	return handle;
 }
@@ -52,6 +42,53 @@ bool VansActionResourceLedger::Release(VansActionResourceHandle handle, std::str
 	return m_Entries.Release(handle.value);
 }
 
+bool VansActionResourceLedger::Transfer(
+	VansActionResourceHandle handle,
+	VansActionResourceLedger& destination,
+	VansActionResourceHandle& destinationHandle,
+	std::string& error)
+{
+	destinationHandle = {};
+	if (&destination == this || !destination.CanAccept())
+	{
+		error = "Action resource transfer destination is invalid or released";
+		return false;
+	}
+	State* state = m_Entries.Resolve(handle.value);
+	if (!state)
+	{
+		error = "Action resource handle is stale";
+		return false;
+	}
+	bool hasDependent = false;
+	m_Entries.ForEach([&](VansGenerationHandle, const State& candidate)
+	{
+		hasDependent = hasDependent || candidate.entry.dependsOn == handle;
+	});
+	if (hasDependent)
+	{
+		error = "Action resource cannot transfer while Action-owned dependents remain";
+		return false;
+	}
+	VansActionResourceEntry transferred = state->entry;
+	transferred.dependsOn = {};
+	destinationHandle = destination.Register(std::move(transferred), error);
+	if (!destinationHandle) return false;
+	return m_Entries.Release(handle.value);
+}
+
+bool VansActionResourceLedger::ResolveExternal(
+	VansActionResourceHandle handle,
+	VansActionServiceId& service,
+	VansGenerationHandle& externalResource) const
+{
+	const State* state = m_Entries.Resolve(handle.value);
+	if (!state) return false;
+	service = state->entry.service;
+	externalResource = state->entry.externalResource;
+	return static_cast<bool>(service) && static_cast<bool>(externalResource);
+}
+
 bool VansActionResourceLedger::ForgetExternalResource(
 	VansActionServiceId service,
 	VansGenerationHandle resource)
@@ -62,7 +99,9 @@ bool VansActionResourceLedger::ForgetExternalResource(
 		State* state = m_Entries.Resolve(it->value);
 		if (!state || state->entry.service != service ||
 			state->entry.externalResource != resource) continue;
-		return m_Entries.Release(it->value);
+		const auto handle = it->value;
+		m_Order.erase(std::next(it).base());
+		return m_Entries.Release(handle);
 	}
 	return false;
 }
@@ -75,12 +114,6 @@ bool VansActionResourceLedger::ReleaseAll(std::vector<std::string>& errors)
 	{
 		State* state = m_Entries.Resolve(it->value);
 		if (!state) continue;
-		if (state->undone &&
-			state->entry.prediction == VansActionPredictionResourcePolicy::UndoOnly)
-		{
-			m_Entries.Release(it->value);
-			continue;
-		}
 		std::string error;
 		if (!Release(*it, error))
 		{
@@ -93,44 +126,6 @@ bool VansActionResourceLedger::ReleaseAll(std::vector<std::string>& errors)
 	return succeeded;
 }
 
-bool VansActionResourceLedger::RollbackPredicted(std::vector<std::string>& errors)
-{
-	bool succeeded = true;
-	for (auto it = m_Order.rbegin(); it != m_Order.rend(); ++it)
-	{
-		State* state = m_Entries.Resolve(it->value);
-		if (!state || state->undone ||
-			state->entry.prediction == VansActionPredictionResourcePolicy::NotPredictable) continue;
-		if (!state->entry.undo || !state->entry.undo())
-		{
-			errors.push_back("failed to Undo predicted Action resource: " + state->entry.debugName);
-			succeeded = false;
-			continue;
-		}
-		state->undone = true;
-	}
-	return succeeded;
-}
-
-bool VansActionResourceLedger::ReplayPredicted(std::vector<std::string>& errors)
-{
-	bool succeeded = true;
-	for (VansActionResourceHandle handle : m_Order)
-	{
-		State* state = m_Entries.Resolve(handle.value);
-		if (!state || !state->undone) continue;
-		if (state->entry.prediction != VansActionPredictionResourcePolicy::UndoRedo ||
-			!state->entry.redo || !state->entry.redo())
-		{
-			errors.push_back("failed to Redo predicted Action resource: " + state->entry.debugName);
-			succeeded = false;
-			continue;
-		}
-		state->undone = false;
-	}
-	return succeeded;
-}
-
 std::vector<VansActionResourceSnapshot> VansActionResourceLedger::Snapshot() const
 {
 	std::vector<VansActionResourceSnapshot> result;
@@ -138,59 +133,8 @@ std::vector<VansActionResourceSnapshot> VansActionResourceLedger::Snapshot() con
 	m_Entries.ForEach([&](VansGenerationHandle handle, const State& state)
 	{
 		result.push_back({ { handle }, state.entry.type, state.entry.debugName,
-			state.entry.dependsOn, state.entry.prediction, state.undone });
+			state.entry.dependsOn });
 	});
 	return result;
-}
-
-bool VansActionCommitTransaction::AddStep(VansActionCommitStep step, std::string& error)
-{
-	if (m_Committed || step.name.empty() || !step.preflight || !step.apply || !step.compensate)
-	{
-		error = "Action Commit step is invalid or transaction already committed";
-		return false;
-	}
-	m_Steps.push_back(std::move(step));
-	return true;
-}
-
-bool VansActionCommitTransaction::Commit(std::string& error)
-{
-	if (m_Committed)
-	{
-		error = "Action Commit transaction cannot be committed twice";
-		return false;
-	}
-	for (VansActionCommitStep& step : m_Steps)
-	{
-		if (!step.preflight(error))
-		{
-			error = "Action Commit preflight failed at " + step.name + ": " + error;
-			return false;
-		}
-	}
-	for (std::size_t index = 0; index < m_Steps.size(); ++index)
-	{
-		if (m_Steps[index].apply(error))
-		{
-			m_AppliedCount = index + 1;
-			continue;
-		}
-		error = "Action Commit apply failed at " + m_Steps[index].name + ": " + error;
-		for (std::size_t rollback = m_AppliedCount; rollback > 0; --rollback)
-		{
-			std::string compensationError;
-			if (!m_Steps[rollback - 1].compensate(compensationError))
-			{
-				m_CompensationFailed = true;
-				error += "; compensation failed at " + m_Steps[rollback - 1].name +
-					": " + compensationError;
-			}
-		}
-		m_AppliedCount = 0;
-		return false;
-	}
-	m_Committed = true;
-	return true;
 }
 }

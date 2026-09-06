@@ -55,6 +55,9 @@ struct VansTargetHitResult
 	std::array<double, 3> normal{};
 	double distance = 0.0;
 	VansGameplayTagId surface;
+	VansEntityHandle hitEntity;
+	std::string componentGuid;
+	std::string region;
 };
 struct VansDeferredTargetQuery
 {
@@ -75,7 +78,6 @@ using VansTargetDataValue = std::variant<
 
 struct VansTargetData
 {
-	std::uint32_t version = 1;
 	std::vector<VansTargetDataValue> values;
 };
 
@@ -108,21 +110,11 @@ private:
 	VansGenerationPool<VansTargetData> m_Data;
 };
 
-enum class VansTargetingStepKind : std::uint8_t
-{
-	Acquire,
-	Filter,
-	Sort,
-	Limit,
-	Lock
-};
-
 struct VansTargetingStep
 {
-	VansTargetingStepKind kind = VansTargetingStepKind::Acquire;
 	VansActionGraphNodeTypeId handler;
 	std::string stableName;
-	VansSerializedValue parameters = VansSerializedValue::Object({});
+	VansSerializedValue inputs = VansSerializedValue::Object({});
 };
 
 struct VansTargetingPolicy
@@ -170,6 +162,7 @@ public:
 	virtual ~IVansTargetingStepHandler() = default;
 	virtual VansActionGraphNodeTypeId TypeId() const = 0;
 	virtual std::string_view StableName() const = 0;
+	virtual bool BeginsPipeline() const { return false; }
 	virtual bool Execute(
 		const VansTargetingStep& step,
 		const VansActionContext& context,

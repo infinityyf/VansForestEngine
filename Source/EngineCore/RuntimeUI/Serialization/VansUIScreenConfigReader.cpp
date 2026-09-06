@@ -29,14 +29,34 @@ namespace VansRuntime
 			return VansUIInputMode::PassThrough;
 		}
 
+		std::string ReadGuidReference(const Vans::VansSerializedValue& root, const char* fieldName)
+		{
+			const Vans::VansSerializedValue* field = Vans::FindObjectField(root, fieldName);
+			if (!field || field->kind != Vans::VansSerializedValue::Kind::Object)
+				return {};
+			return Vans::ReadSerializedStringField(*field, "guid");
+		}
+
+		void ReadGuidReferenceArray(const Vans::VansSerializedValue& root, const char* fieldName, std::vector<std::string>& out)
+		{
+			const Vans::VansSerializedValue* field = Vans::FindObjectField(root, fieldName);
+			if (!field || field->kind != Vans::VansSerializedValue::Kind::Array)
+				return;
+			for (const Vans::VansSerializedValue& item : field->arrayItems)
+				if (item.kind == Vans::VansSerializedValue::Kind::Object)
+				{
+					const std::string guid = Vans::ReadSerializedStringField(item, "guid");
+					if (!guid.empty()) out.push_back(guid);
+				}
+		}
+
 		void ReadStringArray(const Vans::VansSerializedValue& root, const char* fieldName, std::vector<std::string>& out)
 		{
 			const Vans::VansSerializedValue* field = Vans::FindObjectField(root, fieldName);
 			if (!field || field->kind != Vans::VansSerializedValue::Kind::Array)
 				return;
 			for (const Vans::VansSerializedValue& item : field->arrayItems)
-				if (item.kind == Vans::VansSerializedValue::Kind::String)
-					out.push_back(item.stringValue);
+				if (item.kind == Vans::VansSerializedValue::Kind::String) out.push_back(item.stringValue);
 		}
 
 		VansUIVariant ReadVariant(const Vans::VansSerializedValue& value)
@@ -102,7 +122,7 @@ namespace VansRuntime
 			std::max<std::int64_t>(1, Vans::ReadSerializedIntField(root, "schemaVersion", 1)));
 		config.guid = Vans::ReadSerializedStringField(root, "guid");
 		config.name = Vans::ReadSerializedStringField(root, "name");
-		config.xamlPath = Vans::ReadSerializedStringField(root, "xaml");
+		config.xamlAssetGuid = ReadGuidReference(root, "xaml");
 		config.layer = ParseLayer(Vans::ReadSerializedStringField(root, "layer", "Screen"));
 		config.zOrder = static_cast<std::int32_t>(Vans::ReadSerializedIntField(root, "zOrder", 0));
 
@@ -115,9 +135,9 @@ namespace VansRuntime
 			config.inputPolicy.touch = ParseInputMode(Vans::ReadSerializedStringField(*inputPolicy, "touch", "PassThrough"));
 		}
 
-		ReadStringArray(root, "themes", config.themes);
-		ReadStringArray(root, "tokens", config.tokens);
-		ReadStringArray(root, "localization", config.localization);
+		ReadGuidReferenceArray(root, "themes", config.themeAssetGuids);
+		ReadGuidReferenceArray(root, "tokens", config.tokenAssetGuids);
+		ReadGuidReferenceArray(root, "localization", config.localizationAssetGuids);
 		ReadStringArray(root, "dependencies", config.dependencies);
 
 		if (const Vans::VansSerializedValue* viewModel = Vans::FindObjectField(root, "viewModel");
@@ -195,7 +215,7 @@ namespace VansRuntime
 			diagnostics.push_back("UI screen config is missing required field: guid.");
 		if (config.name.empty())
 			diagnostics.push_back("UI screen config is missing required field: name.");
-		if (config.xamlPath.empty())
+		if (config.xamlAssetGuid.empty())
 			diagnostics.push_back("UI screen config is missing required field: xaml.");
 
 		return diagnostics.empty();

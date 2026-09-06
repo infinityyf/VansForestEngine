@@ -1,5 +1,6 @@
 #include "VansGameplayAssetStorage.h"
 
+#include "../GameplayActionCore/VansGAFExtensionRegistry.h"
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 #include "../AssetCore/Storage/VansFileStorage.h"
@@ -8,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <iterator>
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <unordered_set>
@@ -16,9 +18,8 @@ namespace Vans
 {
 namespace
 {
-constexpr std::array<char, 8> kCookedMagic{ 'V', 'G', 'A', 'F', 'C', 'B', '0', '2' };
-constexpr std::uint32_t kCookedContainerVersion = 2;
-constexpr std::size_t kCookedHeaderSize = 8 + 4 + 8 + 8;
+constexpr std::array<char, 8> kCookedMagic{ 'V', 'G', 'A', 'F', 'C', 'O', 'O', 'K' };
+constexpr std::size_t kCookedHeaderSize = 8 + 8 + 8;
 
 bool HasErrors(const VansGameplayDiagnostics& diagnostics)
 {
@@ -44,21 +45,6 @@ void ValidateProjectAllowlists(
 	const VansGAFProjectConfiguration& configuration,
 	VansGameplayDiagnostics& diagnostics)
 {
-	const auto hasReference = [](const VansSerializedValue* value)
-	{
-		if (!value) return false;
-		if (value->kind == VansSerializedValue::Kind::String) return !value->stringValue.empty();
-		if (value->kind != VansSerializedValue::Kind::Object) return false;
-		for (const char* field : { "stableId", "id", "guid", "path", "assetGuid", "assetPath" })
-			if (!ReadSerializedStringField(*value, field).empty()) return true;
-		return false;
-	};
-	const auto validateBridge = [&](const std::string& bridge, const std::string& path)
-	{
-		if (!bridge.empty() && configuration.allowlist.bridges.find(bridge) ==
-			configuration.allowlist.bridges.end())
-			AddAllowlistDiagnostic(diagnostics, "GAF-PROJECT-BRIDGE-ALLOWLIST", bridge, path);
-	};
 	const auto validateArrayField = [&](const VansSerializedValue* values,
 		const char* member,
 		const std::unordered_set<std::string>& allowlist,
@@ -88,75 +74,162 @@ void ValidateProjectAllowlists(
 			{
 				const VansSerializedValue& node = nodes->arrayItems[index];
 				const std::string nodePath = "/nodes/" + std::to_string(index);
-				const std::string nodeType = ReadSerializedStringField(node, "type");
-				const std::string nodeKind = ReadSerializedStringField(node, "kind", "Pure");
 				const VansSerializedValue* properties =
 					FindObjectField(node, "properties");
-				const std::string service = properties
-					? ReadSerializedStringField(*properties, "service") : std::string{};
-				if (!service.empty() &&
-					configuration.allowlist.services.find(service) ==
-						configuration.allowlist.services.end())
-					AddAllowlistDiagnostic(diagnostics, "GAF-PROJECT-SERVICE-ALLOWLIST",
-						service, nodePath + "/properties/service");
-				if (nodeType.compare(0, 7, "Camera.") == 0)
-					validateBridge("Camera.Action", nodePath + "/type");
-				const std::string bridge = properties
-					? ReadSerializedStringField(*properties, "bridge") : std::string{};
-				validateBridge(bridge, nodePath + "/properties/bridge");
-				if (ReadSerializedStringField(node, "kind") == "Bridge" && bridge.empty())
-					diagnostics.push_back({ VansGameplayDiagnosticSeverity::Error,
-						"GAF-GRAPH-BRIDGE-MISSING", "Bridge node must declare properties.bridge",
-						{}, nodePath + "/properties/bridge" });
-				const bool sideEffecting = nodeKind == "Command" || nodeKind == "Transaction" ||
-					nodeKind == "Bridge";
-				if (configuration.settings.predictionEnabled &&
-					configuration.settings.requireRollbackPlan && sideEffecting &&
-					ReadSerializedBoolField(node, "predictable", false) &&
-					ReadSerializedStringField(node, "rollbackPlan", "None") == "None")
-					diagnostics.push_back({ VansGameplayDiagnosticSeverity::Error,
-						"GAF-PROJECT-ROLLBACK-PLAN",
-						"Predictable side-effecting node must declare Automatic or Compensate rollback",
-						{}, nodePath + "/rollbackPlan" });
+				const std::string capability = properties
+					? ReadSerializedStringField(*properties, "capability") : std::string{};
+				if (!capability.empty() &&
+					configuration.allowlist.capabilities.find(capability) ==
+						configuration.allowlist.capabilities.end())
+					AddAllowlistDiagnostic(diagnostics, "GAF-PROJECT-CAPABILITY-ALLOWLIST",
+						capability, nodePath + "/properties/capability");
 			}
 	}
 	else if (type == VansAssetType::ActionDefinition)
 	{
-		validateArrayField(FindSerializedPointer(source, "/dependencies/services"), nullptr,
-			configuration.allowlist.services, "GAF-PROJECT-SERVICE-ALLOWLIST",
-			"/dependencies/services");
-		bool usesTimeline = hasReference(FindSerializedPointer(source, "/execution/timeline"));
-		const VansSerializedValue* timelines = FindSerializedPointer(source, "/execution/timelines");
-		if (timelines && timelines->kind == VansSerializedValue::Kind::Array)
-			for (const VansSerializedValue& timeline : timelines->arrayItems)
-				usesTimeline = usesTimeline || hasReference(&timeline);
-		if (usesTimeline) validateBridge("Timeline.Action", "/execution/timeline");
-		validateArrayField(FindSerializedPointer(source, "/extensions"), "bridge",
-			configuration.allowlist.bridges, "GAF-PROJECT-BRIDGE-ALLOWLIST", "/extensions");
+		validateArrayField(FindSerializedPointer(source, "/policies"), "type",
+			configuration.allowlist.policies, "GAF-PROJECT-POLICY-ALLOWLIST", "/policies");
+		for (const char* path : { "/phases/activate/guards", "/phases/commit/guards" })
+			validateArrayField(FindSerializedPointer(source, path), "type",
+				configuration.allowlist.guards, "GAF-PROJECT-GUARD-ALLOWLIST", path);
+		for (const char* path : { "/phases/activate/operations", "/phases/commit/operations",
+			"/phases/execute/operations", "/phases/finish/operations",
+			"/phases/cancel/operations" })
+			validateArrayField(FindSerializedPointer(source, path), "type",
+				configuration.allowlist.operations, "GAF-PROJECT-OPERATION-ALLOWLIST", path);
+		validateArrayField(FindSerializedPointer(source, "/phases/execute/drivers"), "type",
+			configuration.allowlist.drivers, "GAF-PROJECT-DRIVER-ALLOWLIST",
+			"/phases/execute/drivers");
+		validateArrayField(FindSerializedPointer(source, "/transitions"), "type",
+			configuration.allowlist.transitions, "GAF-PROJECT-TRANSITION-ALLOWLIST",
+			"/transitions");
+		validateArrayField(FindSerializedPointer(source, "/extensions"), "type",
+			configuration.allowlist.extensions, "GAF-PROJECT-EXTENSION-ALLOWLIST",
+			"/extensions");
+		validateArrayField(FindSerializedPointer(source, "/context/schema"), "type",
+			configuration.allowlist.valueTypes, "GAF-PROJECT-VALUE-TYPE-ALLOWLIST",
+			"/context/schema");
+		validateArrayField(FindSerializedPointer(source, "/dependencies/capabilities"), nullptr,
+			configuration.allowlist.capabilities, "GAF-PROJECT-CAPABILITY-ALLOWLIST",
+			"/dependencies/capabilities");
+		validateArrayField(FindSerializedPointer(source, "/dependencies/modules"), nullptr,
+			configuration.allowlist.modules, "GAF-PROJECT-MODULE-ALLOWLIST",
+			"/dependencies/modules");
+	}
+	else if (type == VansAssetType::ActionSet)
+	{
+		validateArrayField(FindSerializedPointer(source, "/initializers"), "type",
+			configuration.allowlist.extensions, "GAF-PROJECT-EXTENSION-ALLOWLIST",
+			"/initializers");
+		validateArrayField(FindSerializedPointer(source, "/policies"), "type",
+			configuration.allowlist.extensions, "GAF-PROJECT-EXTENSION-ALLOWLIST",
+			"/policies");
+		if (const VansSerializedValue* grants = FindSerializedPointer(source, "/grants");
+			grants && grants->kind == VansSerializedValue::Kind::Array)
+			for (std::size_t index = 0; index < grants->arrayItems.size(); ++index)
+			{
+				const VansSerializedValue* extensions =
+					FindObjectField(grants->arrayItems[index], "extensions");
+				const std::string path = "/grants/" + std::to_string(index) + "/extensions";
+				validateArrayField(extensions, "type", configuration.allowlist.extensions,
+					"GAF-PROJECT-EXTENSION-ALLOWLIST", path.c_str());
+			}
 	}
 	else if (type == VansAssetType::GameplayCue)
 	{
-		validateArrayField(FindSerializedPointer(source, "/adapters"), "service",
-			configuration.allowlist.services, "GAF-PROJECT-SERVICE-ALLOWLIST", "/adapters");
+		validateArrayField(FindSerializedPointer(source, "/bindings"), "type",
+			configuration.allowlist.extensions, "GAF-PROJECT-EXTENSION-ALLOWLIST", "/bindings");
+		if (const VansSerializedValue* bindings = FindSerializedPointer(source, "/bindings");
+			bindings && bindings->kind == VansSerializedValue::Kind::Array)
+			for (std::size_t index = 0; index < bindings->arrayItems.size(); ++index)
+			{
+				const VansSerializedValue* inputs = FindObjectField(bindings->arrayItems[index], "inputs");
+				const std::string capability = inputs
+					? ReadSerializedStringField(*inputs, "capability") : std::string{};
+				if (!capability.empty() && configuration.allowlist.capabilities.find(capability) ==
+					configuration.allowlist.capabilities.end())
+					AddAllowlistDiagnostic(diagnostics, "GAF-PROJECT-CAPABILITY-ALLOWLIST",
+						capability, "/bindings/" + std::to_string(index) + "/inputs/capability");
+			}
 	}
 	else if (type == VansAssetType::TargetingPolicy)
 	{
-		validateArrayField(FindSerializedPointer(source, "/steps"), "handler",
-			configuration.allowlist.handlers, "GAF-PROJECT-HANDLER-ALLOWLIST", "/steps");
+		validateArrayField(FindSerializedPointer(source, "/steps"), "type",
+			configuration.allowlist.operations, "GAF-PROJECT-OPERATION-ALLOWLIST", "/steps");
 	}
+}
+
+void AppendDiagnostics(
+	VansGameplayDiagnostics& destination,
+	VansGameplayDiagnostics source)
+{
+	destination.insert(destination.end(),
+		std::make_move_iterator(source.begin()), std::make_move_iterator(source.end()));
+}
+
+void ValidateTypedRecordArray(
+	const VansSerializedValue& source,
+	std::string_view path,
+	VansGAFExtensionKind kind,
+	const VansGAFSchemaRegistry& schemas,
+	VansGameplayDiagnostics& diagnostics)
+{
+	const VansSerializedValue* records = FindSerializedPointer(source, std::string(path));
+	if (!records || records->kind != VansSerializedValue::Kind::Array) return;
+	for (std::size_t index = 0; index < records->arrayItems.size(); ++index)
+	{
+		const VansSerializedValue& record = records->arrayItems[index];
+		const std::string recordPath = std::string(path) + "/" + std::to_string(index);
+		const std::string typeId = ReadSerializedStringField(record, "type");
+		const VansSerializedValue* inputs = FindObjectField(record, "inputs");
+		AppendDiagnostics(diagnostics, schemas.Validate(kind, typeId,
+			inputs ? *inputs : VansSerializedValue::Null(), recordPath));
+	}
+}
+
+void ValidateValueDeclarations(
+	const VansSerializedValue& source,
+	std::string_view path,
+	const VansGAFSchemaRegistry& schemas,
+	VansGameplayDiagnostics& diagnostics)
+{
+	const VansSerializedValue* declarations = FindSerializedPointer(source, std::string(path));
+	if (!declarations || declarations->kind != VansSerializedValue::Kind::Array) return;
+	for (std::size_t index = 0; index < declarations->arrayItems.size(); ++index)
+	{
+		const std::string typeId = ReadSerializedStringField(
+			declarations->arrayItems[index], "type");
+		if (!schemas.ResolveValueType(typeId))
+			diagnostics.push_back({ VansGameplayDiagnosticSeverity::Error,
+				"GAF-VALUE-TYPE-UNREGISTERED",
+				"GAF value declaration uses an unregistered TypeId", {},
+				std::string(path) + "/" + std::to_string(index) + "/type" });
+	}
+}
+
+bool BuildExtensionRegistries(
+	const VansGAFProjectConfiguration* configuration,
+	VansGAFTypeRegistry& types,
+	VansGAFSchemaRegistry& schemas,
+	std::string& error)
+{
+	if (!VansRegisterDefaultEngineGAFTypes(types, error) ||
+		(configuration && !configuration->RegisterConfiguredTypes(types, error)) ||
+		!types.Seal(error)) return false;
+	schemas.BindTypes(types);
+	return VansRegisterDefaultEngineGAFSchemas(schemas, error) &&
+		(!configuration || configuration->RegisterConfiguredSchemas(schemas, error)) &&
+		schemas.Seal(error);
 }
 
 std::string CookPolicyFingerprint(const VansGAFProjectConfiguration& configuration)
 {
-	std::string result = "|gaf-cook-policy-v1|deterministic=" +
+	std::string result = "|gaf-cook-policy|deterministic=" +
 		std::to_string(configuration.settings.deterministicCook ? 1 : 0) +
 		"|stripEditorMetadata=" +
 		std::to_string(configuration.settings.stripEditorMetadata ? 1 : 0) +
 		"|warningsAsErrors=" +
-		std::to_string(configuration.settings.treatCookWarningsAsErrors ? 1 : 0) +
-		"|prediction=" + std::to_string(configuration.settings.predictionEnabled ? 1 : 0) +
-		"|requireRollback=" +
-		std::to_string(configuration.settings.requireRollbackPlan ? 1 : 0);
+		std::to_string(configuration.settings.treatCookWarningsAsErrors ? 1 : 0);
 	const auto appendSet = [&](const char* name, const std::unordered_set<std::string>& values)
 	{
 		std::vector<std::string> sorted(values.begin(), values.end());
@@ -167,9 +240,16 @@ std::string CookPolicyFingerprint(const VansGAFProjectConfiguration& configurati
 		for (const std::string& value : sorted) { result += value; result += ";"; }
 	};
 	appendSet("nodes", configuration.allowlist.nodeTypes);
-	appendSet("services", configuration.allowlist.services);
-	appendSet("handlers", configuration.allowlist.handlers);
-	appendSet("bridges", configuration.allowlist.bridges);
+	appendSet("modules", configuration.allowlist.modules);
+	appendSet("capabilities", configuration.allowlist.capabilities);
+	appendSet("policies", configuration.allowlist.policies);
+	appendSet("guards", configuration.allowlist.guards);
+	appendSet("operations", configuration.allowlist.operations);
+	appendSet("drivers", configuration.allowlist.drivers);
+	appendSet("extensions", configuration.allowlist.extensions);
+	appendSet("transitions", configuration.allowlist.transitions);
+	appendSet("signals", configuration.allowlist.signals);
+	appendSet("valueTypes", configuration.allowlist.valueTypes);
 	return result;
 }
 
@@ -302,6 +382,65 @@ void VansGameplayAssetStorage::AppendProjectDiagnostics(
 	ValidateProjectAllowlists(type, source, configuration, diagnostics);
 }
 
+void VansGameplayAssetStorage::AppendExtensionDiagnostics(
+	VansAssetType type,
+	const VansSerializedValue& source,
+	const VansGAFSchemaRegistry& schemas,
+	VansGameplayDiagnostics& diagnostics)
+{
+	if (type == VansAssetType::ActionSet)
+	{
+		ValidateTypedRecordArray(source, "/initializers", VansGAFExtensionKind::Extension,
+			schemas, diagnostics);
+		ValidateTypedRecordArray(source, "/policies", VansGAFExtensionKind::Extension,
+			schemas, diagnostics);
+		if (const VansSerializedValue* grants = FindSerializedPointer(source, "/grants");
+			grants && grants->kind == VansSerializedValue::Kind::Array)
+			for (std::size_t index = 0; index < grants->arrayItems.size(); ++index)
+				ValidateTypedRecordArray(source,
+					"/grants/" + std::to_string(index) + "/extensions",
+					VansGAFExtensionKind::Extension, schemas, diagnostics);
+		return;
+	}
+	if (type == VansAssetType::TargetingPolicy)
+	{
+		ValidateTypedRecordArray(source, "/steps", VansGAFExtensionKind::Operation,
+			schemas, diagnostics);
+		return;
+	}
+	if (type == VansAssetType::GameplayEffect)
+	{
+		ValidateTypedRecordArray(source, "/extensions", VansGAFExtensionKind::Extension,
+			schemas, diagnostics);
+		return;
+	}
+	if (type == VansAssetType::GameplayCue)
+	{
+		ValidateTypedRecordArray(source, "/bindings", VansGAFExtensionKind::Extension,
+			schemas, diagnostics);
+		return;
+	}
+	if (type != VansAssetType::ActionDefinition) return;
+	ValidateValueDeclarations(source, "/context/schema", schemas, diagnostics);
+	ValidateValueDeclarations(source, "/variables", schemas, diagnostics);
+	ValidateTypedRecordArray(source, "/policies", VansGAFExtensionKind::Policy,
+		schemas, diagnostics);
+	for (const char* path : { "/phases/activate/guards", "/phases/commit/guards" })
+		ValidateTypedRecordArray(source, path, VansGAFExtensionKind::Guard,
+			schemas, diagnostics);
+	for (const char* path : { "/phases/activate/operations", "/phases/commit/operations",
+		"/phases/execute/operations", "/phases/finish/operations",
+		"/phases/cancel/operations" })
+		ValidateTypedRecordArray(source, path, VansGAFExtensionKind::Operation,
+			schemas, diagnostics);
+	ValidateTypedRecordArray(source, "/phases/execute/drivers",
+		VansGAFExtensionKind::Driver, schemas, diagnostics);
+	ValidateTypedRecordArray(source, "/transitions", VansGAFExtensionKind::Transition,
+		schemas, diagnostics);
+	ValidateTypedRecordArray(source, "/extensions", VansGAFExtensionKind::Extension,
+		schemas, diagnostics);
+}
+
 bool VansGameplayAssetStorage::SaveSourceAtomic(
 	const std::filesystem::path& path,
 	const VansSerializedValue& root,
@@ -316,6 +455,14 @@ bool VansGameplayAssetStorage::SaveSourceAtomic(
 		return false;
 	}
 	VansGameplayDiagnostics diagnostics = schemas.Validate(type, root);
+	VansGAFTypeRegistry extensionTypes;
+	VansGAFSchemaRegistry extensionSchemas;
+	if (!BuildExtensionRegistries(configuration, extensionTypes, extensionSchemas, error))
+	{
+		error = "GAF extension registry construction failed: " + error;
+		return false;
+	}
+	AppendExtensionDiagnostics(type, root, extensionSchemas, diagnostics);
 	if (configuration)
 	{
 		AppendProjectDiagnostics(type, root, *configuration, diagnostics);
@@ -347,7 +494,8 @@ VansGameplayCookResult VansGameplayAssetStorage::Cook(
 	VansAssetType type,
 	const VansSerializedValue& source,
 	const VansGameplayAssetSchemaRegistry& schemas,
-	const VansGAFProjectConfiguration* configuration)
+	const VansGAFProjectConfiguration* configuration,
+	const VansGAFSchemaRegistry* extensionSchemas)
 {
 	VansGameplayCookResult result;
 	result.asset.assetType = type;
@@ -362,13 +510,22 @@ VansGameplayCookResult VansGameplayAssetStorage::Cook(
 		result.error = "editor-only GAF asset cannot be cooked";
 		return result;
 	}
-	VansSerializedValue migratedSource = source;
-	if (!VansGameplayAssetMigrationRegistry::BuiltIns().Migrate(
-		type, descriptor->schemaVersion, migratedSource, result.migrations, result.error))
-		return result;
-	result.diagnostics = schemas.Validate(type, migratedSource);
+	VansSerializedValue currentSource = source;
+	result.diagnostics = schemas.Validate(type, currentSource);
+	VansGAFTypeRegistry localTypes;
+	VansGAFSchemaRegistry localSchemas;
+	if (!extensionSchemas)
+	{
+		if (!BuildExtensionRegistries(configuration, localTypes, localSchemas, result.error))
+		{
+			result.error = "GAF extension registry construction failed: " + result.error;
+			return result;
+		}
+		extensionSchemas = &localSchemas;
+	}
+	AppendExtensionDiagnostics(type, currentSource, *extensionSchemas, result.diagnostics);
 	if (configuration)
-		AppendProjectDiagnostics(type, migratedSource, *configuration, result.diagnostics);
+		AppendProjectDiagnostics(type, currentSource, *configuration, result.diagnostics);
 	if (configuration) configuration->ApplyValidationPolicy(result.diagnostics);
 	const bool blocked = configuration
 		? configuration->HasBlockingDiagnostics(result.diagnostics, VansGAFValidationStage::Cook)
@@ -388,9 +545,8 @@ VansGameplayCookResult VansGameplayAssetStorage::Cook(
 			}
 		return result;
 	}
-	result.asset.schemaVersion = descriptor->schemaVersion;
-	result.asset.dependencies = schemas.CollectDependencies(type, migratedSource);
-	result.asset.runtimeDocument = std::move(migratedSource);
+	result.asset.dependencies = schemas.CollectDependencies(type, currentSource);
+	result.asset.runtimeDocument = std::move(currentSource);
 	for (const VansGameplayPropertySchema& field : descriptor->fields)
 	{
 		if (!field.cook)
@@ -419,7 +575,7 @@ bool VansGameplayAssetStorage::SaveCookedAtomic(
 	std::string& error)
 {
 	if (!VansGameplayAssetSchemaRegistry::IsGameplayAssetType(asset.assetType) ||
-		asset.assetType == VansAssetType::GAFEditorLayout || asset.schemaVersion == 0 ||
+		asset.assetType == VansAssetType::GAFEditorLayout ||
 		asset.contentHash == 0)
 	{
 		error = "cooked GAF asset header is invalid";
@@ -430,7 +586,6 @@ bool VansGameplayAssetStorage::SaveCookedAtomic(
 	dependencies.erase(std::unique(dependencies.begin(), dependencies.end()), dependencies.end());
 	nlohmann::ordered_json root = nlohmann::ordered_json::array();
 	root.push_back(AssetTypeName(asset.assetType));
-	root.push_back(asset.schemaVersion);
 	root.push_back(asset.contentHash);
 	root.push_back(std::move(dependencies));
 	root.push_back(EncodeSerializedValueJson<nlohmann::ordered_json>(asset.runtimeDocument));
@@ -445,7 +600,6 @@ bool VansGameplayAssetStorage::SaveCookedAtomic(
 	std::string bytes;
 	bytes.reserve(kCookedHeaderSize + payload.size());
 	bytes.append(kCookedMagic.data(), kCookedMagic.size());
-	AppendLittleEndian(bytes, kCookedContainerVersion);
 	AppendLittleEndian(bytes, static_cast<std::uint64_t>(payload.size()));
 	AppendLittleEndian(bytes, VansStableHash64(payload));
 	bytes.append(payload);
@@ -466,15 +620,13 @@ bool VansGameplayAssetStorage::LoadCooked(
 		return false;
 	}
 	std::size_t offset = kCookedMagic.size();
-	std::uint32_t containerVersion = 0;
 	std::uint64_t payloadSize = 0;
 	std::uint64_t payloadHash = 0;
-	if (!ReadLittleEndian(bytes, offset, containerVersion) ||
-		!ReadLittleEndian(bytes, offset, payloadSize) ||
+	if (!ReadLittleEndian(bytes, offset, payloadSize) ||
 		!ReadLittleEndian(bytes, offset, payloadHash) ||
-		containerVersion != kCookedContainerVersion || payloadSize != bytes.size() - offset)
+		payloadSize != bytes.size() - offset)
 	{
-		error = "cooked GAF asset container version or length is invalid";
+		error = "cooked GAF asset container length is invalid";
 		return false;
 	}
 	const std::string_view payload(bytes.data() + offset, static_cast<std::size_t>(payloadSize));
@@ -493,9 +645,8 @@ bool VansGameplayAssetStorage::LoadCooked(
 		error = std::string("cooked GAF asset CBOR is invalid: ") + exception.what();
 		return false;
 	}
-	if (!root.is_array() || root.size() != 6 || !root[0].is_string() ||
-		!root[1].is_number_unsigned() || !root[2].is_number_unsigned() ||
-		!root[3].is_array() || !root[5].is_string())
+	if (!root.is_array() || root.size() != 5 || !root[0].is_string() ||
+		!root[1].is_number_unsigned() || !root[2].is_array() || !root[4].is_string())
 	{
 		error = "cooked GAF asset envelope is invalid";
 		return false;
@@ -509,14 +660,13 @@ bool VansGameplayAssetStorage::LoadCooked(
 	}
 	asset = {};
 	asset.assetType = descriptor->assetType;
-	asset.schemaVersion = root[1].get<std::uint32_t>();
-	asset.contentHash = root[2].get<std::uint64_t>();
-	asset.dependencies = root[3].get<std::vector<std::string>>();
-	asset.runtimeDocument = DecodeSerializedValueJson(root[4]);
-	asset.cookPolicyFingerprint = root[5].get<std::string>();
-	if (asset.schemaVersion != descriptor->schemaVersion || asset.contentHash == 0)
+	asset.contentHash = root[1].get<std::uint64_t>();
+	asset.dependencies = root[2].get<std::vector<std::string>>();
+	asset.runtimeDocument = DecodeSerializedValueJson(root[3]);
+	asset.cookPolicyFingerprint = root[4].get<std::string>();
+	if (asset.contentHash == 0)
 	{
-		error = "cooked GAF asset version or ContentHash is invalid";
+		error = "cooked GAF asset ContentHash is invalid";
 		return false;
 	}
 	if (CalculateCookedContentHash(asset.runtimeDocument, asset.cookPolicyFingerprint) !=

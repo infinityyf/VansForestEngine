@@ -13,5 +13,8 @@ public:
 	static bool Load(const std::filesystem::path& path,
 		VansAIBehaviorAsset& outAsset,
 		std::string& error);
+	static bool SaveAtomic(const std::filesystem::path& path,
+		const VansAIBehaviorAsset& asset,
+		std::string& error);
 };
 }

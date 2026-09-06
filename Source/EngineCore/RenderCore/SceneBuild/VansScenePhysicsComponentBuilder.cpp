@@ -9,7 +9,6 @@ VansScenePhysicsBuildResult VansScenePhysicsComponentBuilder::BuildPhysicsClothA
 	VansScene& scene,
 	VansScriptObject& object,
 	const Vans::VansScenePhysicsComponentsConfig& components,
-	const std::string& projectRoot,
 	bool hasObjectTransform,
 	const std::function<void()>& ensureObjectTransform)
 {
@@ -44,20 +43,15 @@ VansScenePhysicsBuildResult VansScenePhysicsComponentBuilder::BuildPhysicsClothA
 	{
 		auto* renderComp = object.GetComponent<VansScriptRenderComponent>();
 		VansRenderNode* associatedNode = renderComp ? renderComp->m_RenderNode : nullptr;
-		std::string profilePath;
-		Vans::VansSceneClothNodeConfig clothConfig = *components.cloth;
-		if (clothConfig.profilePath && !projectRoot.empty())
-		{
-			clothConfig.profilePath = projectRoot + *clothConfig.profilePath;
-		}
-
-		VansEngine::VansClothNode* clothNode = LoadClothNode(scene, clothConfig, associatedNode, &profilePath);
+		std::string profileGuid;
+		VansEngine::VansClothNode* clothNode = LoadClothNode(
+			scene, *components.cloth, associatedNode, &profileGuid);
 		if (clothNode)
 		{
 			auto* clothComp = new VansScriptClothComponent();
 			clothComp->m_ComponentName = "cloth";
 			clothComp->m_ClothNode = clothNode;
-			clothComp->m_ProfilePath = profilePath;
+			clothComp->m_ProfileAssetGuid = profileGuid;
 			object.AddComponent(clothComp);
 			result.cloth = clothComp;
 		}

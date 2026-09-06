@@ -2,6 +2,7 @@
 #define VANS_ATMOSPHERE_MEDIA_COMPOSITION_GLSL
 
 #include "AtmosphereCommon.glsl"
+#include "NearMediaDepthCommon.glsl"
 
 vec3 SampleFarAerialScatteringAt(vec2 uv, float distanceMeters)
 {
@@ -29,24 +30,18 @@ vec3 SampleFarAerialOpticalDepthAt(vec2 uv, float distanceMeters)
         atmosphereAerialOpticalDepth, vec3(uv, centeredSlice)).rgb;
 }
 
-float NearMediaSliceCoordinate(float distanceMeters)
+vec3 SampleNearMediaScatteringAt(vec2 uv, float viewDepthMeters)
 {
-    float nearDistance = uLocalMedia.nearMediaDepthRangeAndGrid.x;
-    float farDistance = uLocalMedia.nearMediaDepthRangeAndGrid.y;
-    float normalized = clamp((distanceMeters - nearDistance) /
-        max(farDistance - nearDistance, 1.0e-5), 0.0, 1.0);
-    return pow(normalized, 1.0 /
-        max(uLocalMedia.nearMediaSliceHistoryAndVolumeCount.x, 1.0e-4));
-}
-
-vec3 SampleNearMediaScatteringAt(vec2 uv, float distanceMeters)
-{
-    float nearDistance = uLocalMedia.nearMediaDepthRangeAndGrid.x;
-    if (distanceMeters <= nearDistance)
+    float nearViewDepth = uLocalMedia.nearMediaDepthRangeAndGrid.x;
+    if (viewDepthMeters <= nearViewDepth)
         return vec3(0.0);
     float sliceCount =
         max(textureSize(atmosphereLocalMediaScattering, 0).z, 1);
-    float slice = NearMediaSliceCoordinate(distanceMeters);
+    float slice = ParticipatingMediaFroxelSliceCoordinate(
+        viewDepthMeters,
+        nearViewDepth,
+        uLocalMedia.nearMediaDepthRangeAndGrid.y,
+        uLocalMedia.nearMediaSliceHistoryAndVolumeCount.x);
     float firstIntervalWeight = min(slice * sliceCount, 1.0);
     float textureZ = clamp(slice - 0.5 / sliceCount,
         0.5 / sliceCount, 1.0 - 0.5 / sliceCount);
@@ -54,14 +49,18 @@ vec3 SampleNearMediaScatteringAt(vec2 uv, float distanceMeters)
         vec3(uv, textureZ)).rgb * firstIntervalWeight;
 }
 
-vec3 SampleNearMediaOpticalDepthAt(vec2 uv, float distanceMeters)
+vec3 SampleNearMediaOpticalDepthAt(vec2 uv, float viewDepthMeters)
 {
-    float nearDistance = uLocalMedia.nearMediaDepthRangeAndGrid.x;
-    if (distanceMeters <= nearDistance)
+    float nearViewDepth = uLocalMedia.nearMediaDepthRangeAndGrid.x;
+    if (viewDepthMeters <= nearViewDepth)
         return vec3(0.0);
     float sliceCount =
         max(textureSize(atmosphereLocalMediaOpticalDepth, 0).z, 1);
-    float slice = NearMediaSliceCoordinate(distanceMeters);
+    float slice = ParticipatingMediaFroxelSliceCoordinate(
+        viewDepthMeters,
+        nearViewDepth,
+        uLocalMedia.nearMediaDepthRangeAndGrid.y,
+        uLocalMedia.nearMediaSliceHistoryAndVolumeCount.x);
     float firstIntervalWeight = min(slice * sliceCount, 1.0);
     float textureZ = clamp(slice - 0.5 / sliceCount,
         0.5 / sliceCount, 1.0 - 0.5 / sliceCount);
@@ -114,16 +113,16 @@ void ExtractFarAerialInterval(
 
 void ExtractNearMediaInterval(
     vec2 uv,
-    float startDistance,
-    float endDistance,
+    float startViewDepth,
+    float endViewDepth,
     out vec3 intervalScattering,
     out vec3 intervalOpticalDepth)
 {
     ExtractCumulativeInterval(
-        SampleNearMediaScatteringAt(uv, startDistance),
-        SampleNearMediaOpticalDepthAt(uv, startDistance),
-        SampleNearMediaScatteringAt(uv, endDistance),
-        SampleNearMediaOpticalDepthAt(uv, endDistance),
+        SampleNearMediaScatteringAt(uv, startViewDepth),
+        SampleNearMediaOpticalDepthAt(uv, startViewDepth),
+        SampleNearMediaScatteringAt(uv, endViewDepth),
+        SampleNearMediaOpticalDepthAt(uv, endViewDepth),
         intervalScattering,
         intervalOpticalDepth);
 }
@@ -160,10 +159,10 @@ void ExtractBaseMediaInterval(
     if (endDistance <= startDistance)
         return;
 
-    float nearRangeStart =
-        uLocalMedia.nearMediaDepthRangeAndGrid.x;
-    float nearRangeEnd =
-        uLocalMedia.nearMediaDepthRangeAndGrid.y;
+    float nearRangeStart = NearMediaRayDistanceFromViewDepth(
+        rayDirection, uLocalMedia.nearMediaDepthRangeAndGrid.x);
+    float nearRangeEnd = NearMediaRayDistanceFromViewDepth(
+        rayDirection, uLocalMedia.nearMediaDepthRangeAndGrid.y);
     float overlapStart = max(startDistance, nearRangeStart);
     float overlapEnd = min(endDistance, nearRangeEnd);
 
@@ -175,7 +174,12 @@ void ExtractBaseMediaInterval(
     {
         vec3 nearScattering;
         vec3 nearOpticalDepth;
-        ExtractNearMediaInterval(uv, overlapStart, overlapEnd,
+        float overlapStartViewDepth = NearMediaViewDepthFromRayDistance(
+            rayDirection, overlapStart);
+        float overlapEndViewDepth = NearMediaViewDepthFromRayDistance(
+            rayDirection, overlapEnd);
+        ExtractNearMediaInterval(uv,
+            overlapStartViewDepth, overlapEndViewDepth,
             nearScattering, nearOpticalDepth);
         ComposeInterval(intervalScattering, intervalOpticalDepth,
             nearScattering, nearOpticalDepth);

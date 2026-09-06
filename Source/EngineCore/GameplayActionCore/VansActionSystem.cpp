@@ -61,63 +61,53 @@ VansActivationReport Report(VansActionSpecHandle spec, const VansActionResult& r
 VansActivationReport VansActionSystem::CanActivate(
 	VansActionHostRef host,
 	VansActionSpecHandle spec,
-	const VansActionContext& context,
-	bool hasAuthority,
-	bool predicted) const
+	const VansActionContext& context) const
 {
 	auto resolved = Resolve(host);
-	if (!resolved) return { false, VansActionError::InvalidHandle, "Action Host was not found", spec };
-	return Report(spec, resolved->CanActivate(spec, context, hasAuthority, predicted));
+	if (!resolved) return { false, VansActionError::Internal, "Action Host was not found", spec };
+	return Report(spec, resolved->CanActivate(spec, context));
 }
 
 VansActivationReport VansActionSystem::CanActivate(
 	VansActionHostRef host,
 	VansActionId action,
-	const VansActionContext& context,
-	bool hasAuthority,
-	bool predicted) const
+	const VansActionContext& context) const
 {
 	auto resolved = Resolve(host);
-	if (!resolved) return { false, VansActionError::InvalidHandle, "Action Host was not found", {} };
+	if (!resolved) return { false, VansActionError::Internal, "Action Host was not found", {} };
 	const auto grants = resolved->GrantedActions();
 	const auto spec = std::find_if(grants.begin(), grants.end(),
 		[action](const auto& value) { return value.action == action; });
 	const VansActionSpecHandle handle = spec == grants.end()
 		? VansActionSpecHandle{} : spec->handle;
-	return Report(handle, resolved->CanActivateAction(action, context, hasAuthority, predicted));
+	return Report(handle, resolved->CanActivateAction(action, context));
 }
 
 VansActionResult VansActionSystem::TryActivate(
 	VansActionHostRef host,
 	VansActionSpecHandle spec,
-	VansActionContext context,
-	bool hasAuthority,
-	bool predicted)
+	VansActionContext context)
 {
 	auto resolved = Resolve(host);
-	if (!resolved) return { VansActionError::InvalidHandle, {}, "Action Host was not found" };
+	if (!resolved) return { VansActionError::Internal, {}, "Action Host was not found" };
 	VansActionActivationRequest request;
 	request.spec = spec;
 	request.context = std::move(context);
-	request.hasAuthority = hasAuthority;
-	request.predicted = predicted;
 	return resolved->Activate(request);
 }
 
 VansActionResult VansActionSystem::TryActivate(
 	VansActionHostRef host,
 	VansActionId action,
-	VansActionContext context,
-	bool hasAuthority,
-	bool predicted)
+	VansActionContext context)
 {
 	auto resolved = Resolve(host);
-	if (!resolved) return { VansActionError::InvalidHandle, {}, "Action Host was not found" };
+	if (!resolved) return { VansActionError::Internal, {}, "Action Host was not found" };
 	const auto grants = resolved->GrantedActions();
 	const auto spec = std::find_if(grants.begin(), grants.end(),
 		[action](const auto& value) { return value.action == action; });
-	if (spec == grants.end()) return { VansActionError::NotGranted, {}, "Action is not granted" };
-	return TryActivate(host, spec->handle, std::move(context), hasAuthority, predicted);
+	if (spec == grants.end()) return { VansActionError::Rejected, {}, "Action is not granted" };
+	return TryActivate(host, spec->handle, std::move(context));
 }
 
 bool VansActionSystem::RequestCancel(
@@ -135,7 +125,6 @@ bool VansActionSystem::Matches(const VansActionView& view, const VansActionQuery
 	if (query.host && view.host.owner != query.host.owner) return false;
 	if (query.action && view.instance.action != query.action) return false;
 	if (query.state && view.instance.state != *query.state) return false;
-	if (query.prediction && !(view.instance.prediction == *query.prediction)) return false;
 	return true;
 }
 

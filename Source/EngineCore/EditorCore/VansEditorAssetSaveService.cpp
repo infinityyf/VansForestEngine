@@ -106,7 +106,7 @@ VansAssetSaveResult VansEditorAssetSaveService::SaveAsset(
 
         for (StagedAssetDocument& item : staged)
         {
-            if (item.document && !item.document->AdoptStagedSave(item.stage, document->lastError))
+            if (item.document && !item.document->ObservePublishedSave(item.stage, document->lastError))
             {
                 AppendError(result, item.stage.targetPath, document->lastError);
                 return result;
@@ -120,7 +120,12 @@ VansAssetSaveResult VansEditorAssetSaveService::SaveAsset(
         const EditorAPI::AssetRefreshResult refresh =
             editorAPI.RefreshProjectAsset(document->sourcePath.string(), false);
         if (!refresh.success)
+        {
             AppendError(result, document->sourcePath, "Asset refresh failed: " + refresh.message);
+			return result;
+		}
+		for (StagedAssetDocument& item : staged)
+			if (item.document) item.document->AdoptObservedSave(item.stage);
         if (result)
             result.savedDocuments = 1;
     }
@@ -144,5 +149,24 @@ VansAssetSaveResult VansEditorAssetSaveService::SaveAllDirtyAssets(EditorAPI::IE
         }
     }
     return result;
+}
+
+VansAssetSaveResult VansEditorAssetSaveService::SaveSceneOwnedAssets(
+	EditorAPI::IEngineEditorAPI& editorAPI)
+{
+	VansAssetSaveResult result;
+	for (const auto& document : VansAssetDocumentRegistry::Get().SceneOwnedDirtyDocuments())
+	{
+		VansAssetSaveResult item = SaveAsset(editorAPI, document);
+		result.wroteFile = result.wroteFile || item.wroteFile;
+		result.savedDocuments += item.savedDocuments;
+		if (!item)
+		{
+			result.ok = false;
+			result.errors.insert(result.errors.end(), item.errors.begin(), item.errors.end());
+			if (result.message.empty()) result.message = item.message;
+		}
+	}
+	return result;
 }
 }

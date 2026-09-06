@@ -211,6 +211,7 @@ const char* ToString(EditorAPI::AssetType assetType)
     case EditorAPI::AssetType::AnimationClip: return "AnimationClip";
     case EditorAPI::AssetType::AnimatorController: return "AnimatorController";
 	case EditorAPI::AssetType::AnimationRig: return "AnimationRig";
+	case EditorAPI::AssetType::RetargetProfile: return "RetargetProfile";
     case EditorAPI::AssetType::BoneMask: return "BoneMask";
 	case EditorAPI::AssetType::Timeline: return "Timeline";
 	case EditorAPI::AssetType::ActionDefinition: return "ActionDefinition";
@@ -232,6 +233,12 @@ const char* ToString(EditorAPI::AssetType assetType)
     case EditorAPI::AssetType::AudioReverbPreset: return "AudioReverbPreset";
     case EditorAPI::AssetType::AudioBusSnapshot: return "AudioBusSnapshot";
     case EditorAPI::AssetType::AudioDuckingRules: return "AudioDuckingRules";
+	case EditorAPI::AssetType::UIScreen: return "UIScreen";
+	case EditorAPI::AssetType::UIComponent: return "UIComponent";
+	case EditorAPI::AssetType::UIThemeTokens: return "UIThemeTokens";
+	case EditorAPI::AssetType::UILocalization: return "UILocalization";
+	case EditorAPI::AssetType::UIXaml: return "UIXaml";
+	case EditorAPI::AssetType::VegetationConfig: return "VegetationConfig";
     default: return "Unknown";
     }
 }
@@ -269,6 +276,7 @@ EditorAPI::AssetType EditorAssetTypeFromString(const std::string& value)
     if (type == "skinprofile") return EditorAPI::AssetType::SkinProfile;
     if (type == "postprocessprofile") return EditorAPI::AssetType::PostProcessProfile;
     if (type == "ragdollprofile") return EditorAPI::AssetType::RagdollProfile;
+    if (type == "retargetprofile") return EditorAPI::AssetType::RetargetProfile;
     if (type == "audioreverbpreset") return EditorAPI::AssetType::AudioReverbPreset;
     if (type == "audiobussnapshot") return EditorAPI::AssetType::AudioBusSnapshot;
     if (type == "audioduckingrules") return EditorAPI::AssetType::AudioDuckingRules;

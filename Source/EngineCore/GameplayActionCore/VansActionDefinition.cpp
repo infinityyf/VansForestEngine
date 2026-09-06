@@ -1,11 +1,12 @@
 #include "VansActionDefinition.h"
 
+#include <algorithm>
 #include <cmath>
 #include <unordered_set>
 
 namespace Vans
 {
-bool VansActionDefinitionRegistry::RegisterRevision(
+bool VansActionDefinitionRegistry::Register(
 	std::shared_ptr<const VansCompiledActionDefinition> definition,
 	std::string& error)
 {
@@ -24,40 +25,63 @@ bool VansActionDefinitionRegistry::RegisterRevision(
 			return false;
 		}
 	}
-	RevisionMap& revisions = m_Definitions[definition->id];
-	if (!revisions.emplace(definition->definitionVersion, std::move(definition)).second)
+	if (!m_Definitions.emplace(definition->id, std::move(definition)).second)
 	{
-		error = "Action Definition revision already exists";
+		error = "Action Definition stable ID already exists";
 		return false;
 	}
 	return true;
 }
 
-std::shared_ptr<const VansCompiledActionDefinition> VansActionDefinitionRegistry::ResolveLatest(
+bool VansActionDefinitionRegistry::Replace(
+	std::shared_ptr<const VansCompiledActionDefinition> definition,
+	std::string& error)
+{
+	if (!definition)
+	{
+		error = "Action Definition is null";
+		return false;
+	}
+	const VansGameplayDiagnostics diagnostics = Validate(*definition);
+	for (const VansGameplayDiagnostic& diagnostic : diagnostics)
+		if (diagnostic.severity == VansGameplayDiagnosticSeverity::Error ||
+			diagnostic.severity == VansGameplayDiagnosticSeverity::Fatal)
+		{
+			error = diagnostic.code + ": " + diagnostic.message;
+			return false;
+		}
+	const auto found = m_Definitions.find(definition->id);
+	if (found == m_Definitions.end())
+	{
+		error = "Action Definition stable ID is not registered";
+		return false;
+	}
+	found->second = std::move(definition);
+	return true;
+}
+
+std::shared_ptr<const VansCompiledActionDefinition> VansActionDefinitionRegistry::Resolve(
 	VansActionId id) const
 {
 	const auto found = m_Definitions.find(id);
-	if (found == m_Definitions.end() || found->second.empty()) return nullptr;
-	auto latest = found->second.begin();
-	for (auto revision = found->second.begin(); revision != found->second.end(); ++revision)
-		if (revision->first > latest->first) latest = revision;
-	return latest->second;
+	return found == m_Definitions.end() ? nullptr : found->second;
 }
 
-std::shared_ptr<const VansCompiledActionDefinition> VansActionDefinitionRegistry::ResolveRevision(
-	VansActionId id,
-	std::uint32_t definitionVersion) const
+std::vector<std::shared_ptr<const VansCompiledActionDefinition>>
+VansActionDefinitionRegistry::Definitions() const
 {
-	const auto found = m_Definitions.find(id);
-	if (found == m_Definitions.end()) return nullptr;
-	const auto revision = found->second.find(definitionVersion);
-	return revision == found->second.end() ? nullptr : revision->second;
-}
-
-std::uint32_t VansActionDefinitionRegistry::LatestRevision(VansActionId id) const
-{
-	const auto latest = ResolveLatest(id);
-	return latest ? latest->definitionVersion : 0;
+	std::vector<std::shared_ptr<const VansCompiledActionDefinition>> result;
+	result.reserve(m_Definitions.size());
+	for (const auto& [id, definition] : m_Definitions)
+	{
+		(void)id;
+		result.push_back(definition);
+	}
+	std::sort(result.begin(), result.end(), [](const auto& left, const auto& right)
+	{
+		return left->name < right->name;
+	});
+	return result;
 }
 
 VansGameplayDiagnostics VansActionDefinitionRegistry::Validate(
@@ -71,98 +95,68 @@ VansGameplayDiagnostics VansActionDefinitionRegistry::Validate(
 	};
 	if (!definition.id || definition.name.empty())
 		error("GAF-ACTION-IDENTITY", "Action identity is invalid", "identity");
-	if (definition.definitionVersion == 0 || definition.schemaVersion == 0 || definition.contentHash == 0)
-		error("GAF-ACTION-VERSION", "Action version and content hash must be non-zero", "identity.version");
+	if (definition.contentHash == 0)
+		error("GAF-ACTION-CONTENT", "Action content hash must be non-zero", "identity.contentHash");
 	if (!definition.executor && definition.executionGraphAsset.empty())
-		error("GAF-ACTION-EXECUTION", "Action needs an Executor or ExecutionGraph", "execution");
+		error("GAF-ACTION-EXECUTION", "Action needs a registered execution Driver",
+			"phases.execute.drivers");
 	if (definition.executor == VansMakeStableId<VansActionExecutorIdTag>("Action.Executor.Graph") &&
 		definition.executionGraphAsset.empty())
 		error("GAF-ACTION-GRAPH", "Graph Executor requires an Action Graph asset",
-			"execution.graph");
+			"phases.execute.drivers.Core.Driver.Graph.inputs.graph");
 	if (definition.concurrencyPolicy != VansActionConcurrencyPolicy::Allow && !definition.concurrencyGroup)
 		error("GAF-ACTION-CONCURRENCY-GROUP", "Restricted concurrency requires a stable group",
-			"commit.concurrency.group");
+			"policies.Core.Policy.Concurrency.inputs.group");
 	if (definition.concurrencyLimit == 0)
 		error("GAF-ACTION-CONCURRENCY-LIMIT", "Concurrency limit must be positive",
-			"commit.concurrency.limit");
+			"policies.Core.Policy.Concurrency.inputs.limit");
 	if (!std::isfinite(definition.concurrencyQueueTimeoutSeconds) ||
 		definition.concurrencyQueueTimeoutSeconds < 0.0)
 		error("GAF-ACTION-CONCURRENCY-TIMEOUT", "Concurrency queue timeout is invalid",
-			"commit.concurrency.queueTimeout");
-	std::unordered_set<VansGameplayTagId> cooldownTags;
-	for (std::size_t index = 0; index < definition.cooldowns.size(); ++index)
+			"policies.Core.Policy.Concurrency.inputs.queueTimeout");
+	const auto validateRecords = [&](const std::vector<VansCompiledActionRecord>& records,
+		const std::string& field)
 	{
-		const VansActionCooldownDefinition& cooldown = definition.cooldowns[index];
-		if (!std::isfinite(cooldown.durationSeconds) || cooldown.durationSeconds <= 0.0)
-			error("GAF-ACTION-COOLDOWN", "Action cooldown duration must be positive",
-				"commit.cooldowns[" + std::to_string(index) + "]");
-		if (cooldown.cooldownTag && !cooldownTags.insert(cooldown.cooldownTag).second)
-			error("GAF-ACTION-COOLDOWN-DUPLICATE", "Action contains duplicate cooldown Tags",
-				"commit.cooldowns[" + std::to_string(index) + "]");
-	}
-	std::unordered_set<VansAttributeId> costAttributes;
-	for (std::size_t index = 0; index < definition.commitRequirements.size(); ++index)
-	{
-		const VansActionRequirementDefinition& requirement = definition.commitRequirements[index];
-		const std::string field = "commit.requirements[" + std::to_string(index) + "]";
-		if (requirement.kind == VansActionRequirementKind::Attribute &&
-			(!requirement.attribute || !std::isfinite(requirement.value)))
-			error("GAF-ACTION-REQUIREMENT", "Attribute requirement is invalid", field);
-		if ((requirement.kind == VansActionRequirementKind::PrimaryTarget ||
-			requirement.kind == VansActionRequirementKind::TargetData) &&
-			requirement.minimumTargets == 0)
-			error("GAF-ACTION-REQUIREMENT", "Target requirement count must be positive", field);
-		if (requirement.kind == VansActionRequirementKind::Service && !requirement.service)
-			error("GAF-ACTION-REQUIREMENT", "Service requirement is invalid", field);
-	}
-	for (const VansActionCostDefinition& cost : definition.costs)
-	{
-		if (!std::isfinite(cost.amount) || cost.amount < 0.0 ||
-			(cost.kind == VansActionCostKind::Attribute && !cost.attribute) ||
-			(cost.kind != VansActionCostKind::Attribute && cost.resource.empty()) ||
-			cost.payload.kind != VansSerializedValue::Kind::Object)
-			error("GAF-ACTION-COST", "Action contains an invalid cost", "commit.costs");
-		if (cost.kind == VansActionCostKind::Attribute &&
-			!costAttributes.insert(cost.attribute).second)
-			error("GAF-ACTION-COST-DUPLICATE", "Action contains duplicate Attribute costs", "commit.costs");
-	}
+		for (std::size_t index = 0; index < records.size(); ++index)
+			if (records[index].type.empty() ||
+				records[index].inputs.kind != VansSerializedValue::Kind::Object)
+				error("GAF-ACTION-RECORD", "Compiled Action record is invalid",
+					field + "[" + std::to_string(index) + "]");
+	};
+	validateRecords(definition.program.policies, "policies");
+	validateRecords(definition.program.activate.guards, "activate.guards");
+	validateRecords(definition.program.activate.operations, "activate.operations");
+	validateRecords(definition.program.activate.drivers, "activate.drivers");
+	validateRecords(definition.program.commit.guards, "commit.guards");
+	validateRecords(definition.program.commit.operations, "commit.operations");
+	validateRecords(definition.program.commit.drivers, "commit.drivers");
+	validateRecords(definition.program.execute.guards, "execute.guards");
+	validateRecords(definition.program.execute.operations, "execute.operations");
+	validateRecords(definition.program.execute.drivers, "execute.drivers");
+	validateRecords(definition.program.finish.guards, "finish.guards");
+	validateRecords(definition.program.finish.operations, "finish.operations");
+	validateRecords(definition.program.finish.drivers, "finish.drivers");
+	validateRecords(definition.program.cancel.guards, "cancel.guards");
+	validateRecords(definition.program.cancel.operations, "cancel.operations");
+	validateRecords(definition.program.cancel.drivers, "cancel.drivers");
+	validateRecords(definition.program.transitions, "transitions");
+	validateRecords(definition.program.extensions, "extensions");
 	std::unordered_set<VansActionFieldId> variables;
 	for (const VansActionVariableDefinition& variable : definition.variables)
 	{
 		if (!variable.id || variable.name.empty() || !variables.insert(variable.id).second)
-			error("GAF-ACTION-VARIABLE", "Action variable identity is invalid or duplicated", "execution.variables");
+			error("GAF-ACTION-VARIABLE", "Action variable identity is invalid or duplicated", "variables");
 	}
-	std::unordered_set<VansActionServiceId> services;
-	for (VansActionServiceId service : definition.requiredServices)
-		if (!service || !services.insert(service).second)
-			error("GAF-ACTION-SERVICE", "Action service dependency is invalid or duplicated", "dependencies.services");
-	std::unordered_set<std::string> transitionNames;
-	for (std::size_t index = 0; index < definition.transitionRules.size(); ++index)
-	{
-		const VansActionTransitionRule& rule = definition.transitionRules[index];
-		const std::string field = "transitions.rules[" + std::to_string(index) + "]";
-		if (rule.name.empty() || !transitionNames.insert(rule.name).second || !rule.targetAction)
-			error("GAF-ACTION-TRANSITION-ID", "Transition identity or target is invalid or duplicated", field);
-		if ((rule.trigger == VansActionTransitionTrigger::Event && !rule.event) ||
-			(rule.trigger == VansActionTransitionTrigger::Input && rule.inputBinding.empty()))
-			error("GAF-ACTION-TRANSITION-TRIGGER", "Transition trigger is incomplete", field);
-		if (!std::isfinite(rule.minimumTimeSeconds) || !std::isfinite(rule.maximumTimeSeconds) ||
-			rule.minimumTimeSeconds < 0.0 ||
-			(rule.maximumTimeSeconds >= 0.0 &&
-				rule.maximumTimeSeconds < rule.minimumTimeSeconds))
-			error("GAF-ACTION-TRANSITION-WINDOW", "Transition time window is invalid", field);
-		if (rule.contextPatch.kind != VansSerializedValue::Kind::Object)
-			error("GAF-ACTION-TRANSITION-PATCH", "Transition context patch must be an object", field);
-	}
-	if (!std::isfinite(definition.inputBuffer.durationSeconds) ||
-		definition.inputBuffer.durationSeconds < 0.0 || definition.inputBuffer.maximumEntries == 0 ||
-		(definition.inputBuffer.enabled && definition.inputBuffer.durationSeconds <= 0.0))
-		error("GAF-ACTION-INPUT-BUFFER", "Action input buffer policy is invalid",
-			"transitions.inputBuffer");
-	if (definition.failureFallback.action &&
-		definition.failureFallback.contextPatch.kind != VansSerializedValue::Kind::Object)
-		error("GAF-ACTION-FAILURE-FALLBACK", "Failure fallback context patch must be an object",
-			"transitions.failureFallback");
+	std::unordered_set<std::string> capabilities;
+	for (const std::string& capability : definition.program.capabilities)
+		if (capability.empty() || !capabilities.insert(capability).second)
+			error("GAF-ACTION-CAPABILITY", "Action capability is invalid or duplicated",
+				"dependencies.capabilities");
+	std::unordered_set<std::string> modules;
+	for (const std::string& module : definition.program.modules)
+		if (module.empty() || !modules.insert(module).second)
+			error("GAF-ACTION-MODULE", "Action module is invalid or duplicated",
+				"dependencies.modules");
 	return diagnostics;
 }
 }

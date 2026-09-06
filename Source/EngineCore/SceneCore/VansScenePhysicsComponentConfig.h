@@ -32,6 +32,7 @@ struct VansScenePhysicsNodeConfig
 	std::optional<float> capsuleHalfHeight;
 	std::optional<std::string> layer;
 	std::optional<bool> isTrigger;
+	std::optional<std::string> hitRegion;
 	std::optional<std::string> mesh;
 	std::optional<std::string> name;
 };
@@ -44,7 +45,7 @@ struct VansSceneClothCollisionSphereConfig
 
 struct VansSceneClothNodeConfig
 {
-	std::optional<std::string> profilePath;
+	std::optional<std::string> profileGuid;
 	std::optional<float> physicsAttachOffsetY;
 	std::vector<VansSceneClothCollisionSphereConfig> collisionSpheres;
 };

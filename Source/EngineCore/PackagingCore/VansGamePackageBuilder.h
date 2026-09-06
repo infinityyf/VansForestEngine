@@ -25,7 +25,6 @@ namespace Vans
 		bool includeLibrary = true;
 		bool includeBinaries = true;
 		bool overwriteExisting = true;
-		bool useCookedResourcePlan = true;
 		bool prewarmResourceCaches = true;
 	};
 

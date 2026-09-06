@@ -3,7 +3,9 @@
 #include "VansNoesisRenderDevice.h"
 #include "VansNoesisProviders.h"
 #include "VansNoesisInputAdapter.h"
+#include "../../VansUIAssetResolver.h"
 
+#include "../../../AssetCore/VansBuiltInAssetCatalog.h"
 #include "../../../ProjectSystem/VansProjectManager.h"
 #include "../../../Util/VansLog.h"
 #include "../../../RuntimeCore/VansThreadContract.h"
@@ -89,11 +91,41 @@ bool VansNoesisUISystem::Initialize(const VansUIInitDesc& desc)
         static_cast<float>(m_ScreenWidth),
         static_cast<float>(m_ScreenHeight));
 
-    // 9. 加载引擎全局基础主题
-    LoadGlobalTheme();
-
     m_Initialized = true;
     VANS_LOG("[NoesisUI] Initialized OK  screen=" << m_ScreenWidth << "x" << m_ScreenHeight);
+    return true;
+}
+
+bool VansNoesisUISystem::ApplyGlobalThemeFromMemory(std::string& error)
+{
+    error.clear();
+    if (!m_Initialized)
+    {
+        error = "Noesis UI is not initialized";
+        return false;
+    }
+
+    std::string baseThemeUri;
+    if (!VansUIAssetResolver::ResolveXamlUri(
+        std::string(Vans::VansBuiltInAssetCatalog::BaseThemeGuid),
+        baseThemeUri,
+        error))
+    {
+        return false;
+    }
+
+    Noesis::Ptr<Noesis::ResourceDictionary> theme =
+        Noesis::GUI::LoadXaml<Noesis::ResourceDictionary>(baseThemeUri.c_str());
+    if (!theme)
+    {
+        error = "Noesis failed to instantiate the global theme from memory asset " +
+            std::string(Vans::VansBuiltInAssetCatalog::BaseThemeGuid);
+        return false;
+    }
+
+    Noesis::GUI::SetApplicationResources(theme);
+    VANS_LOG("[NoesisUI] Applied global theme from memory asset "
+        << Vans::VansBuiltInAssetCatalog::BaseThemeGuid);
     return true;
 }
 
@@ -330,18 +362,18 @@ void VansNoesisUISystem::SetScreenSize(uint32_t width, uint32_t height)
     }
 }
 
-std::shared_ptr<VansNoesisDocument> VansNoesisUISystem::LoadDocument(const std::string& xamlPath)
+std::shared_ptr<VansNoesisDocument> VansNoesisUISystem::LoadDocument(const std::string& xamlUri)
 {
     VANS_ASSERT_MAIN_THREAD();
     assert(m_Initialized && "VansNoesisUISystem: 调用 LoadDocument 前必须先 Initialize");
 
     // Load XAML root element
     Noesis::Ptr<Noesis::FrameworkElement> content =
-        Noesis::GUI::LoadXaml<Noesis::FrameworkElement>(xamlPath.c_str());
+        Noesis::GUI::LoadXaml<Noesis::FrameworkElement>(xamlUri.c_str());
 
     if (!content)
     {
-        VANS_LOG_ERROR("[NoesisUI] LoadXaml returned null for: " << xamlPath);
+        VANS_LOG_ERROR("[NoesisUI] LoadXaml returned null for: " << xamlUri);
         return nullptr;
     }
 
@@ -360,7 +392,7 @@ std::shared_ptr<VansNoesisDocument> VansNoesisUISystem::LoadDocument(const std::
     auto doc = std::make_shared<VansNoesisDocument>(
         std::move(view),
         std::move(content),
-        xamlPath,
+        xamlUri,
         m_InputAdapter.get());
 
     {
@@ -487,21 +519,6 @@ void VansNoesisUISystem::RegisterTypes()
     // 用于注册项目层 ViewModel 的 Noesis Reflection
     // 实际注册在 VansNoesisTypeRegistry.cpp 中通过 NS_REGISTER_COMPONENT 宏完成
     // 该函数目前为占位接口，未来可扫描注册表自动调用
-}
-
-void VansNoesisUISystem::LoadGlobalTheme()
-{
-    // 加载引擎内置基础主题（engine:// 协议指向 EngineAssets/UI/Themes/）
-    // 若文件不存在则跳过，不阻断初始化流程
-    const char* baseThemeUri = "engine://UI/Themes/BaseTheme.xaml";
-
-    Noesis::Ptr<Noesis::ResourceDictionary> theme =
-        Noesis::GUI::LoadXaml<Noesis::ResourceDictionary>(baseThemeUri);
-
-    if (theme)
-    {
-        Noesis::GUI::SetApplicationResources(theme);
-    }
 }
 
 } // namespace VansRuntime

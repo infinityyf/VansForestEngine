@@ -163,20 +163,6 @@ void VansProjectSettingsWindow::DrawGAFSettings(
 	if (!ImGui::BeginTabBar("GAFProjectConfigurationTabs")) return;
 	if (ImGui::BeginTabItem("Runtime"))
 	{
-		if (ImGui::BeginCombo("Network Mode", m_GAFConfiguration.networkMode.c_str()))
-		{
-			for (const char* mode : { "Disabled", "Loopback", "ExternalTransport" })
-				if (ImGui::Selectable(mode, m_GAFConfiguration.networkMode == mode))
-					m_GAFConfiguration.networkMode = mode;
-			ImGui::EndCombo();
-		}
-		ImGui::BeginDisabled(m_GAFConfiguration.networkMode == "Disabled");
-		ImGui::Checkbox("Prediction Enabled", &m_GAFConfiguration.predictionEnabled);
-		ImGui::Checkbox("Require Rollback Plan", &m_GAFConfiguration.requireRollbackPlan);
-		ImGui::EndDisabled();
-		ImGui::BeginDisabled(m_GAFConfiguration.networkMode != "ExternalTransport");
-		ImGui::Checkbox("Fail Without External Transport", &m_GAFConfiguration.failWithoutTransport);
-		ImGui::EndDisabled();
 		ImGui::Checkbox("Deterministic Cook", &m_GAFConfiguration.deterministicCook);
 		ImGui::Checkbox("Strip Editor Metadata", &m_GAFConfiguration.stripEditorMetadata);
 		ImGui::Checkbox("Treat Cook Warnings As Errors", &m_GAFConfiguration.treatCookWarningsAsErrors);
@@ -205,12 +191,20 @@ void VansProjectSettingsWindow::DrawGAFSettings(
 	{
 		ImGui::SeparatorText("Node Types");
 		DrawStringList("NodeTypes", m_GAFConfiguration.allowedNodeTypes, "Action.Graph.NewNode");
-		ImGui::SeparatorText("Services");
-		DrawStringList("Services", m_GAFConfiguration.allowedServices, "Service.NewService");
-		ImGui::SeparatorText("Handlers");
-		DrawStringList("Handlers", m_GAFConfiguration.allowedHandlers, "Handler.NewHandler");
-		ImGui::SeparatorText("Bridges");
-		DrawStringList("Bridges", m_GAFConfiguration.bridgeAllowlist, "Bridge.NewBridge");
+		ImGui::SeparatorText("Modules");
+		DrawStringList("Modules", m_GAFConfiguration.allowedModules, "Project.Module");
+		ImGui::SeparatorText("Capabilities");
+		DrawStringList("Capabilities", m_GAFConfiguration.allowedCapabilities, "Project.Capability");
+		ImGui::SeparatorText("Policies");
+		DrawStringList("Policies", m_GAFConfiguration.allowedPolicies, "Core.Policy");
+		ImGui::SeparatorText("Guards");
+		DrawStringList("Guards", m_GAFConfiguration.allowedGuards, "Project.Guard");
+		ImGui::SeparatorText("Drivers");
+		DrawStringList("Drivers", m_GAFConfiguration.allowedDrivers, "Project.Driver");
+		ImGui::SeparatorText("Signals");
+		DrawStringList("Signals", m_GAFConfiguration.allowedSignals, "Project.Signal");
+		ImGui::SeparatorText("Value Types");
+		DrawStringList("ValueTypes", m_GAFConfiguration.allowedValueTypes, "Project.Value");
 		ImGui::EndTabItem();
 	}
 	if (ImGui::BeginTabItem("Validation"))
@@ -319,6 +313,17 @@ void VansProjectSettingsWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 		ReloadGAF(editorAPI, snapshot.projectRootPath);
 	}
 
+	ImGui::BeginDisabled(!snapshot.dirty);
+	if (ImGui::Button("Save Project Documents"))
+		s_LastEditResult = editorAPI.SaveProjectDocuments();
+	ImGui::EndDisabled();
+	ImGui::SameLine();
+	ImGui::TextDisabled(snapshot.dirty
+		? "Unsaved project configuration changes"
+		: "Project configuration is saved");
+	DrawEditResult(s_LastEditResult);
+	ImGui::Separator();
+
 	if (ImGui::BeginTabBar("ProjectSettingsTabs"))
 	{
 		if (ImGui::BeginTabItem("General"))
@@ -333,8 +338,6 @@ void VansProjectSettingsWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 			if (ImGui::Button("Apply Default Scene"))
 			{
 				s_LastEditResult = editorAPI.SetProjectDefaultScene(s_DefaultScene.data());
-				if (s_LastEditResult.success)
-					s_LastEditResult = editorAPI.SaveProjectConfig();
 			}
 			DrawEditResult(s_LastEditResult);
 			ImGui::EndTabItem();
@@ -374,8 +377,6 @@ void VansProjectSettingsWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 					s_LastEditResult = editorAPI.SetProjectPathField(
 						Vans::EditorAPI::ProjectPathField::CollisionLayerSettings,
 						s_CollisionLayers.data());
-				if (s_LastEditResult.success)
-					s_LastEditResult = editorAPI.SaveProjectConfig();
 			}
 			DrawEditResult(s_LastEditResult);
 			ImGui::EndTabItem();

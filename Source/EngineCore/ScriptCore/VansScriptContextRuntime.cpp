@@ -16,13 +16,14 @@
 #include "../AICore/VansAIEvents.h"
 #include "../AnimationCore/VansAnimationController.h"
 #include "../AnimationCore/VansAnimationNode.h"
+#include "../AudioCore/VansAudioBusSnapshotAsset.h"
+#include "../AudioCore/VansAudioDuckingRulesAsset.h"
 #include "../AudioCore/VansAudioManager.h"
 #include "../AudioCore/VansAudioNode.h"
-#include "../AudioCore/Storage/VansAudioBusSnapshotAssetStorage.h"
-#include "../AudioCore/Storage/VansAudioDuckingRulesAssetStorage.h"
+#include "../AssetCore/VansAssetGuid.h"
 #include "../Configration/VansConfigration.h"
 #include "../EventCore/VansEventBus.h"
-#include "../ParticleCore/Storage/VansParticleAssetStorage.h"
+#include "../ParticleCore/Serialization/VansParticleAssetJsonCodec.h"
 #include "../ParticleCore/VansParticleManager.h"
 #include "../PhysicsCore/VansCharacterControllerNode.h"
 #include "../PhysicsCore/VansClothNode.h"
@@ -62,6 +63,7 @@
 #include <optional>
 #include <stdexcept>
 #include <utility>
+#include <nlohmann/json.hpp>
 
 extern "C"
 {
@@ -898,10 +900,10 @@ int LuaComponentUIOpenScreen(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
 	auto* ui = dynamic_cast<VansScriptUIComponent*>(component);
-	const char* path = luaL_checkstring(L, 2);
-	if (ui && path && VansRuntime::VansUISystem::Get().IsInitialized())
+	const char* assetGuid = luaL_checkstring(L, 2);
+	if (ui && assetGuid && VansRuntime::VansUISystem::Get().IsInitialized())
 	{
-		auto screen = VansRuntime::VansUISystem::Get().LoadScreen(path);
+		auto screen = VansRuntime::VansUISystem::Get().LoadScreen(assetGuid);
 		if (screen)
 			ui->m_OpenScreens.push_back(screen->GetHandleId());
 	}
@@ -920,11 +922,11 @@ int LuaComponentUIPreload(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
 	auto* ui = dynamic_cast<VansScriptUIComponent*>(component);
-	const char* path = luaL_checkstring(L, 2);
-	if (ui && path && VansRuntime::VansUISystem::Get().IsInitialized())
+	const char* assetGuid = luaL_checkstring(L, 2);
+	if (ui && assetGuid && VansRuntime::VansUISystem::Get().IsInitialized())
 	{
-		ui->m_PreloadScreens.push_back(path);
-		VansRuntime::VansUISystem::Get().PreloadScreen(path);
+		ui->m_PreloadScreenAssetGuids.push_back(assetGuid);
+		VansRuntime::VansUISystem::Get().PreloadScreen(assetGuid);
 	}
 	return 0;
 }
@@ -1663,24 +1665,6 @@ int LuaAudioApplyNamedSnapshot(lua_State* L)
 	return 1;
 }
 
-std::filesystem::path AudioControlAssetReadPath(const Vans::VansAssetRecord& record)
-{
-	if (!record.authoringPath.empty())
-		return record.authoringPath;
-	if (!record.artifactPath.empty() && record.artifactFormat == Vans::VansAssetArtifactFormat::Source)
-		return record.artifactPath;
-	return record.sourcePath;
-}
-
-std::optional<Vans::VansAssetRecord> FindAudioControlAssetRecord(const std::string& token)
-{
-	auto& projectManager = Vans::VansProjectManager::Get();
-	Vans::VansAssetGuid guid;
-	if (Vans::VansAssetGuid::TryParse(token, guid))
-		return projectManager.FindAssetRecord(guid);
-	return std::nullopt;
-}
-
 int LuaAudioApplySnapshotAsset(lua_State* L)
 {
 	auto* manager = AudioManager();
@@ -1691,28 +1675,24 @@ int LuaAudioApplySnapshotAsset(lua_State* L)
 	}
 
 	const std::string token = luaL_checkstring(L, 1);
-	const auto record = FindAudioControlAssetRecord(token);
-	if (!record || record->type != Vans::VansAssetType::AudioBusSnapshot)
+	Vans::VansAssetGuid guid;
+	const auto asset = Vans::VansAssetGuid::TryParse(token, guid)
+		? Vans::VansProjectManager::Get().GetAssetObjectRepository()
+			.ResolveLatest<Vans::VansAudioBusSnapshotAsset>(guid)
+		: nullptr;
+	if (!asset)
 	{
-		VANS_LOG_WARN("[LuaAudio] Audio bus snapshot asset not found: " << token);
+		VANS_LOG_WARN("[LuaAudio] Audio bus snapshot memory asset not found: " << token);
 		lua_pushinteger(L, 0);
 		return 1;
 	}
 
-	Vans::VansAudioBusSnapshotAsset asset;
-	std::string error;
-	if (!Vans::VansAudioBusSnapshotAssetStorage::Load(AudioControlAssetReadPath(*record), asset, error))
-	{
-		VANS_LOG_WARN("[LuaAudio] Failed to load audio bus snapshot asset '" << token << "': " << error);
-		lua_pushinteger(L, 0);
-		return 1;
-	}
-
+	VansEngine::AudioBusSnapshot snapshot = asset->snapshot;
 	if (lua_isnumber(L, 2))
-		asset.snapshot.fadeSeconds = static_cast<float>(lua_tonumber(L, 2));
+		snapshot.fadeSeconds = static_cast<float>(lua_tonumber(L, 2));
 
-	manager->ApplyBusSnapshot(asset.snapshot);
-	lua_pushinteger(L, static_cast<lua_Integer>(asset.snapshot.buses.size()));
+	manager->ApplyBusSnapshot(snapshot);
+	lua_pushinteger(L, static_cast<lua_Integer>(snapshot.buses.size()));
 	return 1;
 }
 
@@ -1797,19 +1777,14 @@ int LuaAudioLoadDuckingRulesAsset(lua_State* L)
 	}
 
 	const std::string token = luaL_checkstring(L, 1);
-	const auto record = FindAudioControlAssetRecord(token);
-	if (!record || record->type != Vans::VansAssetType::AudioDuckingRules)
+	Vans::VansAssetGuid guid;
+	const auto asset = Vans::VansAssetGuid::TryParse(token, guid)
+		? Vans::VansProjectManager::Get().GetAssetObjectRepository()
+			.ResolveLatest<Vans::VansAudioDuckingRulesAsset>(guid)
+		: nullptr;
+	if (!asset)
 	{
-		VANS_LOG_WARN("[LuaAudio] Audio ducking rules asset not found: " << token);
-		lua_pushinteger(L, 0);
-		return 1;
-	}
-
-	Vans::VansAudioDuckingRulesAsset asset;
-	std::string error;
-	if (!Vans::VansAudioDuckingRulesAssetStorage::Load(AudioControlAssetReadPath(*record), asset, error))
-	{
-		VANS_LOG_WARN("[LuaAudio] Failed to load audio ducking rules asset '" << token << "': " << error);
+		VANS_LOG_WARN("[LuaAudio] Audio ducking rules memory asset not found: " << token);
 		lua_pushinteger(L, 0);
 		return 1;
 	}
@@ -1819,9 +1794,9 @@ int LuaAudioLoadDuckingRulesAsset(lua_State* L)
 		: true;
 	if (clearExisting)
 		manager->ClearDuckingRules();
-	for (VansEngine::AudioDuckingRule rule : asset.rules)
+	for (VansEngine::AudioDuckingRule rule : asset->rules)
 		manager->AddDuckingRule(std::move(rule));
-	lua_pushinteger(L, static_cast<lua_Integer>(asset.rules.size()));
+	lua_pushinteger(L, static_cast<lua_Integer>(asset->rules.size()));
 	return 1;
 }
 
@@ -1929,7 +1904,7 @@ int LuaComponentGetFilePath(lua_State* L)
 	else if (auto* video = dynamic_cast<VansScriptVideoComponent*>(component))
 		lua_pushstring(L, video->m_VideoName.c_str());
 	else if (auto* particle = dynamic_cast<VansScriptParticleComponent*>(component))
-		lua_pushstring(L, particle->m_ParticleAssetPath.c_str());
+		lua_pushstring(L, particle->m_ParticleAssetGuid.c_str());
 	else
 		lua_pushstring(L, "");
 	return 1;
@@ -2372,9 +2347,9 @@ int LuaComponentGetName(lua_State* L)
 int LuaComponentLoadParticle(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
-	const char* path = luaL_checkstring(L, 2);
+	const char* assetGuid = luaL_checkstring(L, 2);
 	auto* particle = dynamic_cast<VansScriptParticleComponent*>(component);
-	lua_pushboolean(L, particle ? particle->LoadAsset(path) : false);
+	lua_pushboolean(L, particle ? particle->LoadAssetGuid(assetGuid) : false);
 	return 1;
 }
 
@@ -2416,22 +2391,22 @@ int LuaComponentGetPlayTime(lua_State* L)
 	return 1;
 }
 
-int LuaComponentGetAssetPath(lua_State* L)
+int LuaComponentGetAssetGuid(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
 	if (auto* particle = dynamic_cast<VansScriptParticleComponent*>(component))
-		lua_pushstring(L, particle->m_ParticleAssetPath.c_str());
+		lua_pushstring(L, particle->m_ParticleAssetGuid.c_str());
 	else
 		lua_pushstring(L, "");
 	return 1;
 }
 
-int LuaComponentSetAssetPath(lua_State* L)
+int LuaComponentSetAssetGuid(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
-	const char* path = luaL_checkstring(L, 2);
+	const char* assetGuid = luaL_checkstring(L, 2);
 	auto* particle = dynamic_cast<VansScriptParticleComponent*>(component);
-	lua_pushboolean(L, particle ? particle->LoadAsset(path) : false);
+	lua_pushboolean(L, particle ? particle->LoadAssetGuid(assetGuid) : false);
 	return 1;
 }
 
@@ -2751,6 +2726,8 @@ void PushPhysicsHit(lua_State* L, const physx::PxRaycastHit& hit)
 	auto* node = hit.actor ? static_cast<VansEngine::VansPhysicsNode*>(hit.actor->userData) : nullptr;
 	lua_pushstring(L, node ? node->GetName().c_str() : (hit.actor && hit.actor->getName() ? hit.actor->getName() : ""));
 	lua_setfield(L, -2, "object_name");
+	lua_pushstring(L, node ? node->GetProperties().hitRegion.c_str() : "");
+	lua_setfield(L, -2, "hit_region");
 	const int transformID = node ? static_cast<int>(node->GetTransformID()) : -1;
 	lua_pushinteger(L, transformID);
 	lua_setfield(L, -2, "transform_id");
@@ -2764,6 +2741,8 @@ void PushOverlapHit(lua_State* L, const physx::PxOverlapHit& hit)
 	auto* node = hit.actor ? static_cast<VansEngine::VansPhysicsNode*>(hit.actor->userData) : nullptr;
 	lua_pushstring(L, node ? node->GetName().c_str() : (hit.actor && hit.actor->getName() ? hit.actor->getName() : ""));
 	lua_setfield(L, -2, "object_name");
+	lua_pushstring(L, node ? node->GetProperties().hitRegion.c_str() : "");
+	lua_setfield(L, -2, "hit_region");
 	const int transformID = node ? static_cast<int>(node->GetTransformID()) : -1;
 	lua_pushinteger(L, transformID);
 	lua_setfield(L, -2, "transform_id");
@@ -3315,16 +3294,16 @@ void VansScriptUIComponent::Preload()
 {
 	if (!VansRuntime::VansUISystem::Get().IsInitialized())
 		return;
-	for (const std::string& screenPath : m_PreloadScreens)
-		VansRuntime::VansUISystem::Get().PreloadScreen(screenPath);
+	for (const std::string& assetGuid : m_PreloadScreenAssetGuids)
+		VansRuntime::VansUISystem::Get().PreloadScreen(assetGuid);
 }
 
 void VansScriptUIComponent::ReleasePreloaded()
 {
 	if (!VansRuntime::VansUISystem::Get().IsInitialized())
 		return;
-	for (const std::string& screenPath : m_PreloadScreens)
-		VansRuntime::VansUISystem::Get().ReleaseScreen(screenPath);
+	for (const std::string& assetGuid : m_PreloadScreenAssetGuids)
+		VansRuntime::VansUISystem::Get().ReleaseScreen(assetGuid);
 }
 
 void VansScriptUIComponent::OpenConfiguredScreens()
@@ -3332,9 +3311,9 @@ void VansScriptUIComponent::OpenConfiguredScreens()
 	if (!VansRuntime::VansUISystem::Get().IsInitialized())
 		return;
 
-	for (const std::string& screenPath : m_AutoOpenScreens)
+	for (const std::string& assetGuid : m_AutoOpenScreenAssetGuids)
 	{
-		auto screen = VansRuntime::VansUISystem::Get().LoadScreen(screenPath);
+		auto screen = VansRuntime::VansUISystem::Get().LoadScreen(assetGuid);
 		if (screen)
 			m_OpenScreens.push_back(screen->GetHandleId());
 	}
@@ -3497,8 +3476,9 @@ void VansScriptVideoComponent::OnDestroy()
 void VansScriptParticleComponent::Play()
 {
 	if (!m_Runtime) return;
+	m_Runtime->Play();
 	m_IsPlaying = true;
-	m_Runtime->m_IsPlaying = true;
+	m_PlayTime = m_Runtime->m_PlayTime;
 	if (auto* scene = Scene())
 		scene->SyncRuntimeParticleComponentFromFacade(*this);
 }
@@ -3506,13 +3486,9 @@ void VansScriptParticleComponent::Play()
 void VansScriptParticleComponent::Stop()
 {
 	if (!m_Runtime) return;
+	m_Runtime->Stop();
 	m_IsPlaying = false;
-	m_PlayTime = 0.0f;
-	m_Runtime->m_IsPlaying = false;
-	m_Runtime->m_PlayTime = 0.0f;
-	m_Runtime->m_AliveInstanceCount.store(0, std::memory_order_release);
-	for (auto& buffer : m_Runtime->m_InstanceBuffers)
-		buffer.clear();
+	m_PlayTime = m_Runtime->m_PlayTime;
 	if (auto* scene = Scene())
 		scene->SyncRuntimeParticleComponentFromFacade(*this);
 }
@@ -3557,13 +3533,25 @@ void VansScriptParticleComponent::ClearWorldPositionOverride()
 		scene->SyncRuntimeParticleComponentFromFacade(*this);
 }
 
-bool VansScriptParticleComponent::LoadAsset(const std::string& path)
+bool VansScriptParticleComponent::LoadAssetGuid(const std::string& assetGuidText)
 {
+	Vans::VansAssetGuid assetGuid;
+	if (!Vans::VansAssetGuid::TryParse(assetGuidText, assetGuid))
+		return false;
+	const auto source = Vans::VansProjectManager::Get().GetAssetObjectRepository()
+		.ResolveLatest<VansGraphics::VansParticleAsset>(assetGuid);
+	if (!source)
+		return false;
+
 	auto newAsset = std::make_unique<VansGraphics::VansParticleAsset>();
 	std::string error;
-	if (!VansGraphics::VansParticleAssetStorage::Load(path, *newAsset, error))
+	const Vans::ParticleJson encoded =
+		VansGraphics::VansParticleAssetJsonCodec::Encode(*source);
+	if (!VansGraphics::VansParticleAssetJsonCodec::Decode(
+		encoded, "<Particle memory object>", *newAsset, error))
 		return false;
-	m_ParticleAssetPath = path;
+	m_ParticleAssetGuid = assetGuid.ToString();
+	m_ParticleAssetSource = source;
 	m_ParticleAsset = std::move(newAsset);
 	m_Runtime = std::make_unique<VansGraphics::VansParticleRuntime>();
 	m_Runtime->m_Asset = m_ParticleAsset.get();
@@ -4121,8 +4109,8 @@ void VansScriptContext::RegisterLuaBindings()
 		{ "get_resolved_forward", LuaComponentGetResolvedForward },
 		{ "world_to_viewport", LuaComponentWorldToViewport },
 		{ "load_asset", LuaComponentLoadParticle },
-		{ "set_asset_path", LuaComponentSetAssetPath },
-		{ "get_asset_path", LuaComponentGetAssetPath },
+		{ "set_asset_guid", LuaComponentSetAssetGuid },
+		{ "get_asset_guid", LuaComponentGetAssetGuid },
 		{ "get_play_time", LuaComponentGetPlayTime },
 		{ "get_emitter_count", LuaComponentGetEmitterCount },
 		{ "get_emitter_name", LuaComponentGetEmitterName },

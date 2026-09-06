@@ -22,6 +22,7 @@ namespace VansGraphics
         std::vector<glm::vec3> m_Velocity;      // 速度
         std::vector<glm::vec4> m_Color;         // RGBA，[0,1]
         std::vector<float>     m_Size;          // 统一缩放大小
+        std::vector<float>     m_InitialSize;   // 生成时大小，供生命周期倍率曲线稳定求值
         std::vector<float>     m_Rotation;      // 绕视图轴旋转角（度）
         std::vector<float>     m_Age;           // 当前年龄（秒）
         std::vector<float>     m_LifeTime;      // 总生命周期（秒）

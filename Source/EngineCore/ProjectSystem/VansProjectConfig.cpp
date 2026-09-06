@@ -1,6 +1,7 @@
 #include "VansProjectConfig.h"
 
 #include "Storage/VansProjectConfigStorage.h"
+#include "../AssetCore/Storage/VansFileStorage.h"
 #include "../Util/VansLog.h"
 
 #include <algorithm>
@@ -108,6 +109,8 @@ std::string GetRecentProjectsFilePath()
 
 std::vector<RecentProjectEntry> Load()
 {
+	VansScopedIOContext ioContext(
+		VansIODomain::UserPreference, "RecentProjects.Load", true);
 	std::vector<RecentProjectEntry> entries;
 	std::string error;
 	VansProjectConfigStorage::LoadRecentProjects(GetRecentProjectsFilePath(), entries, error);
@@ -116,6 +119,8 @@ std::vector<RecentProjectEntry> Load()
 
 void Save(const std::vector<RecentProjectEntry>& entries)
 {
+	VansScopedIOContext ioContext(
+		VansIODomain::UserPreference, "RecentProjects.Save", true);
 	const std::string path = GetRecentProjectsFilePath();
 	std::string error;
 	if (!VansProjectConfigStorage::SaveRecentProjects(path, entries, kMaxRecent, error))

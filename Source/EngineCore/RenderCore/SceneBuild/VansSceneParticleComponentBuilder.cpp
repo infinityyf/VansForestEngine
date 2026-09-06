@@ -43,24 +43,23 @@ VansScriptParticleComponent* VansSceneParticleComponentBuilder::BuildParticle(
 	const glm::vec3& objectRotation,
 	const glm::vec3& objectScale)
 {
-	if (particleConfig.assetPath.empty())
+	if (particleConfig.assetGuid.empty())
 	{
 		return nullptr;
 	}
 
-	const std::string absPath = projectRoot + "/" + particleConfig.assetPath;
-
 	auto* particleComp = new VansScriptParticleComponent();
-	particleComp->m_ParticleAssetPath = particleConfig.assetPath;
 	particleComp->m_PlayOnAwake = particleConfig.playOnAwake;
 
-	if (particleComp->LoadAsset(absPath))
+	if (particleComp->LoadAssetGuid(particleConfig.assetGuid))
 	{
 		auto* renderNode = new VansParticleRenderNode(device);
 		if (renderNode->InitQuadBuffers(device))
 		{
 			renderNode->SetName(object.m_ObjectName);
-			if (object.m_TransformID != 0)
+			const bool ownsOrSharesTransform = object.m_OwnsTransform ||
+				object.GetComponent<VansScriptRenderComponent>() != nullptr;
+			if (ownsOrSharesTransform && VansTransformStore::IsAllocated(object.m_TransformID))
 			{
 				renderNode->ShareTransform(object.m_TransformID);
 			}
@@ -118,6 +117,10 @@ VansScriptParticleComponent* VansSceneParticleComponentBuilder::BuildParticle(
 			}
 
 			particleComp->m_RenderNode = renderNode;
+			// Play/Prewarm 会立即模拟粒子；必须先同步场景世界变换，避免预热粒子
+			// 在原点生成后再被整体搬到对象位置。
+			if (particleComp->m_Runtime)
+				particleComp->m_Runtime->SetOwnerWorldTransform(renderNode->GetTransformMatrix());
 
 			VansParticleManager::Instance().Initialize();
 			VansParticleManager::Instance().RegisterRuntime(particleComp->m_Runtime.get());
@@ -129,7 +132,7 @@ VansScriptParticleComponent* VansSceneParticleComponentBuilder::BuildParticle(
 
 			scene.RegistRenderNode(renderNode, PARTICLE_NODE);
 
-			VANS_LOG("[LoadSceneObjects] Particle component '" << particleConfig.assetPath
+			VANS_LOG("[LoadSceneObjects] Particle component '" << particleConfig.assetGuid
 				<< "' attached to object: " << object.m_ObjectName);
 		}
 		else
@@ -141,7 +144,7 @@ VansScriptParticleComponent* VansSceneParticleComponentBuilder::BuildParticle(
 	}
 	else
 	{
-		VANS_LOG_WARN("[LoadSceneObjects] Particle asset load failed '" << absPath
+		VANS_LOG_WARN("[LoadSceneObjects] Particle memory asset is unavailable '" << particleConfig.assetGuid
 			<< "' for object: " << object.m_ObjectName);
 	}
 

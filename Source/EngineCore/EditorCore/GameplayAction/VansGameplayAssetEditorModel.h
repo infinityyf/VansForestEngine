@@ -1,7 +1,6 @@
 #pragma once
 
 #include "../../GameplayActionSchema/VansGAFProjectConfiguration.h"
-#include "../../GameplayActionSchema/VansGameplayAssetMigration.h"
 #include "../../GameplayActionSchema/VansGameplayAssetStorage.h"
 #include "../VansAssetDocumentEditService.h"
 #include "../VansAssetDocumentRegistry.h"
@@ -74,10 +73,6 @@ public:
 		std::size_t to);
 	AssetDocumentEditResult Undo();
 	AssetDocumentEditResult Redo();
-	AssetDocumentEditResult MigrateToCurrent(
-		const VansGameplayAssetMigrationRegistry& migrations,
-		std::vector<VansGameplayMigrationRecord>& report);
-
 	std::vector<VansGameplaySemanticDiffEntry> DiffAgainst(
 		const VansSerializedValue& other) const;
 

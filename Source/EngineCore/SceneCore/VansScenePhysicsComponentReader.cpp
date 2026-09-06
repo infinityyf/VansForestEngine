@@ -33,8 +33,6 @@ std::optional<std::string> ReadOptionalAssetReferenceField(const VansSerializedV
 	const VansSerializedValue* found = FindObjectField(object, key);
 	if (!found)
 		return std::nullopt;
-	if (found->kind == VansSerializedValue::Kind::String)
-		return found->stringValue;
 	if (found->kind == VansSerializedValue::Kind::Object)
 	{
 		const std::string guid = ReadSerializedStringField(*found, "guid");
@@ -202,6 +200,7 @@ VansScenePhysicsNodeConfig VansScenePhysicsComponentReader::ReadPhysicsNode(
 	config.capsuleHalfHeight = ReadOptionalFloatField(physicsNode, "capsuleHalfHeight");
 	config.layer = ReadOptionalStringField(physicsNode, "layer");
 	config.isTrigger = ReadOptionalBoolField(physicsNode, "isTrigger");
+	config.hitRegion = ReadOptionalStringField(physicsNode, "hitRegion");
 	config.mesh = ReadOptionalStringField(physicsNode, "mesh");
 	config.name = ReadOptionalStringField(physicsNode, "name");
 	return config;
@@ -214,7 +213,7 @@ VansSceneClothNodeConfig VansScenePhysicsComponentReader::ReadClothNode(
 	if (clothNode.kind != VansSerializedValue::Kind::Object)
 		return config;
 
-	config.profilePath = ReadOptionalAssetReferenceField(clothNode, "profilePath");
+	config.profileGuid = ReadOptionalAssetReferenceField(clothNode, "profile");
 	config.physicsAttachOffsetY = ReadOptionalFloatField(clothNode, "physicsAttachOffsetY");
 	config.collisionSpheres = ReadCollisionSpheres(clothNode);
 	return config;

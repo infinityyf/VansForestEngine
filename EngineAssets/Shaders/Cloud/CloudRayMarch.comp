@@ -21,6 +21,7 @@
 #include "../Common/CameraData.glsl"
 #include "../Atmosphere/AtmosphereCommon.glsl"
 #include "../Atmosphere/AtmosphereViewCommon.glsl"
+#include "../Atmosphere/NearMediaDepthCommon.glsl"
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -118,6 +119,7 @@ const float MARCH_MAX_STEP_M = 80.0;   // 单步最大路径长度（米），�
 const int   MARCH_STEPS_MIN  = 32;     // 最少步数（防止极薄云欠采样）
 const int   MARCH_STEPS_MAX  = 128;    // 最多步数（性能上限，对应 128 × 80m = 10240m）
 const float TRANSMIT_CUTOFF  = 0.01;   // 透射率低于此值时提前终止
+const float OPAQUE_OPTICAL_DEPTH = 13.815510558;
 
 float CloudSurfaceTerminalDistance(vec2 uv)
 {
@@ -199,6 +201,7 @@ void main()
 	vec3 storedOpticalDepth = vec3(0.0);
 	float storedCloudOnlyOpticalDepth = 0.0;
 	bool intervalStarted = false;
+	bool terminatedByCloudOpacity = false;
 
     for (int i = 0; i < marchSteps; i++)
     {
@@ -228,25 +231,30 @@ void main()
 		// composite 随后只替换该区间，不能截断云后的介质。
 		AtmosphereMedium atmosphereMedium = EvaluateNearMediaSegmentMedium(
 			positionRelativeToCamera, rayDir, segmentStart, segmentEnd);
+		float cloudSunOpticalDepth = 0.0;
+		vec3 cloudSourceRadiance = EvaluateHPCloudSourceRadiance(
+			pos, stepSize, lightingEnv, cloudMedium, cloudSunOpticalDepth);
+		float cloudSunTransmittance =
+			exp(-min(cloudSunOpticalDepth, 80.0));
 		ParticipatingMediaSample medium = EmptyParticipatingMediaSample();
 		AddParticipatingMediaSample(medium,
-			EvaluateAtmosphereScatteringSource(
-				positionRelativeToCamera, rayDir, atmosphereMedium),
+			EvaluateAtmosphereScatteringSourceWithPrimaryCloudTransmittance(
+				positionRelativeToCamera, rayDir, atmosphereMedium,
+				vec3(cloudSunTransmittance)),
 			atmosphereMedium.extinction);
 		if (cloudMedium.sigmaTView > 0.0)
 		{
 			AddParticipatingMediaSample(medium,
-				EvaluateHPCloudSourceRadiance(
-					pos, stepSize, lightingEnv, cloudMedium) *
-					cloudMedium.sigmaTView,
+				cloudSourceRadiance * cloudMedium.sigmaTView,
 				vec3(cloudMedium.sigmaTView));
 		}
 		float localNear = uLocalMedia.nearMediaDepthRangeAndGrid.x;
 		float localFar = uLocalMedia.nearMediaDepthRangeAndGrid.y;
-		if (t >= localNear && t <= localFar)
+		float localViewDepth = NearMediaViewDepthFromRayDistance(rayDir, t);
+		if (localViewDepth >= localNear && localViewDepth <= localFar)
 		{
 			vec4 localFroxel = SampleParticipatingMediaFroxel(
-				localMediaInjection, uv, t,
+				localMediaInjection, uv, localViewDepth,
 				vec4(0.0, 0.0, localNear, localFar),
 				vec4(uLocalMedia.nearMediaDepthRangeAndGrid.zw,
 					uLocalMedia.nearMediaSliceHistoryAndVolumeCount.x, 0.0));
@@ -268,10 +276,16 @@ void main()
 			storedCloudOnlyOpticalDepth = cloudOnlyOpticalDepth;
 		}
 
-        // 提前终止
-		vec3 transmittance = exp(-min(opticalDepth, vec3(80.0)));
-		if (max(max(transmittance.r, transmittance.g), transmittance.b) < TRANSMIT_CUTOFF)
+		// 这里只能由云自身的不透明度触发提前终止。若省略后续云段，最终
+		// 输出也必须把背景透射率闭合；否则 1% 的残留足以泄漏高动态范围
+		// 的太阳附近 Mie 散射，并在低分辨率重建后形成亮带。
+		float cloudTransmittance =
+			exp(-min(cloudOnlyOpticalDepth, 80.0));
+		if (cloudTransmittance < TRANSMIT_CUTOFF)
+		{
+			terminatedByCloudOpacity = true;
 			break;
+		}
     }
 
 	if (!intervalStarted || intervalEnd <= intervalStart ||
@@ -281,6 +295,14 @@ void main()
 		imageStore(cloudDepth, pixelCoord, vec4(0.0));
 		imageStore(cloudOpticalDepth, pixelCoord, vec4(0.0));
 		return;
+	}
+	if (terminatedByCloudOpacity)
+	{
+		float missingCloudOpticalDepth = max(
+			OPAQUE_OPTICAL_DEPTH - storedCloudOnlyOpticalDepth, 0.0);
+		storedOpticalDepth += vec3(missingCloudOpticalDepth);
+		storedCloudOnlyOpticalDepth = max(
+			storedCloudOnlyOpticalDepth, OPAQUE_OPTICAL_DEPTH);
 	}
 	vec3 transmittance = exp(-min(storedOpticalDepth, vec3(80.0)));
 	imageStore(cloudResult, pixelCoord,

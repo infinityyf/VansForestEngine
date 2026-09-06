@@ -1,8 +1,8 @@
 #include "VansAnimationTimelineIntegration.h"
 
-#include "../Storage/VansBoneMaskStorage.h"
 #include "../VansAnimationClip.h"
 #include "../VansAnimationNode.h"
+#include "../../AssetCore/VansAssetObjectRepository.h"
 #include "../../AssetCore/VansAssetResolver.h"
 #include "../../SceneRuntime/VansRuntimeComponentTypes.h"
 #include "../../SceneRuntime/VansRuntimeWorld.h"
@@ -174,8 +174,9 @@ struct AnimationRestoreState
 class AnimationTimelineApplier final : public IVansTimelineOutputApplier
 {
 public:
-	AnimationTimelineApplier(VansRuntimeWorld& world, std::shared_ptr<VansAssetResolver> resolver)
-		: m_World(world), m_Resolver(std::move(resolver)) {}
+	AnimationTimelineApplier(VansRuntimeWorld& world,
+		const VansAssetObjectRepository& repository)
+		: m_World(world), m_Repository(repository) {}
 	VansTimelineOutputTypeId OutputType() const override
 	{ return VansMakeStableId<VansTimelineOutputTypeTag>(std::string(TimelineNames::AnimationClip) + ".Output"); }
 	std::string_view StableName() const override { return "Animation.AnimationClipTimelineApplier"; }
@@ -212,15 +213,16 @@ public:
 			std::string clipName = controllerClip;
 			if (clipName.empty() && !context.section->assetGuid.empty())
 			{
-				const VansResolvedAsset clipAsset = m_Resolver->Resolve(
-					context.section->assetGuid, VansAssetType::AnimationClip);
-				if (clipAsset.valid)
+				VansAssetGuid clipGuid;
+				if (VansAssetGuid::TryParse(context.section->assetGuid, clipGuid))
 				{
-					VansAnimationClip clip; Skeleton skeleton;
-					if (VansAnimationClipIO::Load(clipAsset.readPath.string(), clip, skeleton))
+					const auto clipAsset =
+						m_Repository.ResolveLatest<VansAnimationClipAsset>(clipGuid);
+					if (clipAsset)
 					{
-						clipName = clip.clipName;
-						if (!controller->GetClip(clipName)) controller->AddClip(clipName, std::move(clip));
+						clipName = clipAsset->clip.clipName;
+						if (!controller->GetClip(clipName))
+							controller->AddClip(clipName, clipAsset->clip);
 					}
 				}
 			}
@@ -246,12 +248,12 @@ public:
 			const std::string maskGuid = String(reader, context.section->extensionData, 4);
 			if (!maskGuid.empty())
 			{
-				const VansResolvedAsset maskAsset = m_Resolver->Resolve(maskGuid, VansAssetType::BoneMask);
-				if (!maskAsset.valid) return AnimationRestoreState{ context.writer, component, {} };
-				VansBoneMaskAsset mask; std::string maskError;
-				if (!VansBoneMaskStorage::Load(maskAsset.readPath, mask, maskError))
+				VansAssetGuid guid;
+				if (!VansAssetGuid::TryParse(maskGuid, guid))
 					return AnimationRestoreState{ context.writer, component, {} };
-				VansCompiledBoneMask compiled = VansBoneMaskCompiler::Compile(mask, runtime->animationNode->GetSkeleton());
+				const auto mask = m_Repository.ResolveLatest<VansBoneMaskAsset>(guid);
+				if (!mask) return AnimationRestoreState{ context.writer, component, {} };
+				VansCompiledBoneMask compiled = VansBoneMaskCompiler::Compile(*mask, runtime->animationNode->GetSkeleton());
 				if (!compiled.valid) return AnimationRestoreState{ context.writer, component, {} };
 				request.boneMaskWeights = std::move(compiled.weights);
 			}
@@ -289,7 +291,7 @@ public:
 	void ReleaseAll() override { m_State.Clear(); }
 private:
 	VansRuntimeWorld& m_World;
-	std::shared_ptr<VansAssetResolver> m_Resolver;
+	const VansAssetObjectRepository& m_Repository;
 	VansTimelineModuleApplierState<AnimationRestoreState> m_State;
 };
 
@@ -556,11 +558,12 @@ bool VansRegisterAnimationTimelineExtensions(VansTimelineTrackExtensionRegistry&
 				VansMakeTimelineChannelSchema("scale", F::Vec3) }, false, false }), error);
 }
 
-bool VansRegisterAnimationTimelineIntegration(VansRuntimeWorld& world, std::shared_ptr<VansAssetResolver> resolver,
+bool VansRegisterAnimationTimelineIntegration(VansRuntimeWorld& world,
+	const VansAssetObjectRepository& repository,
 	VansTimelineApplierRegistry& registry, std::string& error)
 {
-	if (!resolver) { error = "Animation Timeline integration requires an asset resolver"; return false; }
-	if (!registry.Register(std::make_shared<AnimationTimelineApplier>(world, std::move(resolver)), error)) return false;
+	if (!registry.Register(std::make_shared<AnimationTimelineApplier>(
+		world, repository), error)) return false;
 	if (!registry.Register(std::make_shared<AnimatorParameterTimelineApplier>(world), error)) return false;
 	return registry.Register(std::make_shared<BoneOverrideTimelineApplier>(world), error);
 }

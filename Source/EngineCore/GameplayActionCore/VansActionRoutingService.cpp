@@ -30,7 +30,6 @@ VansActionCommandSchema ActionCommand(
 	result.command = VansMakeStableId<VansActionFieldIdTag>(name);
 	result.stableName = std::move(name);
 	result.resourcePolicy = VansActionCommandResourcePolicy::None;
-	result.prediction = VansActionServicePredictionSupport::AuthorityOnly;
 	result.fields = std::move(fields);
 	return result;
 }
@@ -41,15 +40,11 @@ VansActionRoutingService::VansActionRoutingService(VansActionScheduler& schedule
 {
 	m_Capability.service = VansMakeStableId<VansActionServiceIdTag>("Service.Action");
 	m_Capability.stableName = "Service.Action";
-	m_Capability.version = 1;
-	m_Capability.prediction = VansActionServicePredictionSupport::AuthorityOnly;
 	m_Capability.commandSchemas.push_back(ActionCommand("ActivateSubAction",
 	{
 		ActionField("action", VansActionCommandValueKind::String, true),
 		ActionField("contextPatch", VansActionCommandValueKind::Object, false,
-			VansSerializedValue::Object({})),
-		ActionField("inheritPrimaryTarget", VansActionCommandValueKind::Bool, false,
-			VansSerializedValue::Bool(true))
+			VansSerializedValue::Object({}))
 	}));
 	m_Capability.commandSchemas.push_back(ActionCommand("Transition",
 	{
@@ -57,22 +52,19 @@ VansActionRoutingService::VansActionRoutingService(VansActionScheduler& schedule
 		ActionField("contextPatch", VansActionCommandValueKind::Object, false,
 			VansSerializedValue::Object({})),
 		ActionField("cancelSource", VansActionCommandValueKind::Bool, false,
-			VansSerializedValue::Bool(true)),
-		ActionField("inheritPrimaryTarget", VansActionCommandValueKind::Bool, false,
 			VansSerializedValue::Bool(true))
 	}));
-	for (const VansActionCommandSchema& command : m_Capability.commandSchemas)
-		m_Capability.commands.push_back(command.stableName);
 }
 
 VansActionCommandResult VansActionRoutingService::Execute(const VansActionCommand& command)
 {
 	if (!m_Scheduler)
-		return { VansActionError::InvalidState, {}, VansSerializedValue::Object({}),
+		return { VansActionError::Internal, {}, VansSerializedValue::Object({}),
 			"Action routing service is detached" };
-	const std::shared_ptr<VansActionHost> host = m_Scheduler->FindByOwner(command.context.owner);
+	const std::shared_ptr<VansActionHost> host = m_Scheduler->FindByOwner(
+		command.context.Entity(VansActionContextSlots::Owner));
 	if (!host)
-		return { VansActionError::InvalidHandle, {}, VansSerializedValue::Object({}),
+		return { VansActionError::Internal, {}, VansSerializedValue::Object({}),
 			"Action routing service could not resolve the source Host" };
 	const std::string actionName = ReadSerializedStringField(command.payload, "action");
 	const VansActionId target = VansMakeStableId<VansActionIdTag>(actionName);
@@ -80,15 +72,12 @@ VansActionCommandResult VansActionRoutingService::Execute(const VansActionComman
 	const bool transition = command.stableName == "Transition";
 	const bool cancelSource = transition &&
 		ReadSerializedBoolField(command.payload, "cancelSource", true);
-	const bool inheritPrimaryTarget =
-		ReadSerializedBoolField(command.payload, "inheritPrimaryTarget", true);
 	const VansActionResult queued = host->RequestTransition(
 		command.action,
 		target,
 		command.context,
 		patch ? *patch : VansSerializedValue::Object({}),
-		cancelSource,
-		inheritPrimaryTarget);
+		cancelSource);
 	if (!queued)
 		return { queued.error, {}, VansSerializedValue::Object({}), queued.message };
 	VansSerializedValue payload = VansSerializedValue::Object({});

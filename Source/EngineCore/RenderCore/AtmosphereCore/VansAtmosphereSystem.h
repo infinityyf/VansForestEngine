@@ -90,6 +90,7 @@ namespace VansGraphics
 		VansVKImage m_MultiScatteringLut;
 		VansVKImage m_SkyViewLut;
 		VansVKImage m_AerialScattering;
+		VansVKImage m_AerialClearScattering;
 		VansVKImage m_AerialOpticalDepth;
 		VansVKImage m_NeutralCloudShadow;
 		VansVKImage m_NeutralCloudResult;

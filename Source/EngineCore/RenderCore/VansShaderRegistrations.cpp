@@ -321,7 +321,11 @@ void RegisterEngineShaders()
 	reg.RegisterComputeShaderFile("AtmosphereAerialPerspective", "EngineAssets/Shaders/Atmosphere", "AerialPerspective.comp");
 	reg.RegisterComputeShaderFile("AtmosphereComposite", "EngineAssets/Shaders/Atmosphere", "AtmosphereComposite.comp");
 	reg.RegisterComputeShaderFile("LocalMediaInjection", "EngineAssets/Shaders/Atmosphere", "LocalMediaInjection.comp");
+	reg.RegisterComputeShaderFile("NearMediaLighting", "EngineAssets/Shaders/Atmosphere", "NearMediaLighting.comp");
+	reg.RegisterComputeShaderFile("LocalMediaTemporalResolve", "EngineAssets/Shaders/Atmosphere", "LocalMediaTemporalResolve.comp");
 	reg.RegisterComputeShaderFile("LocalMediaIntegration", "EngineAssets/Shaders/Atmosphere", "LocalMediaIntegration.comp");
+	reg.RegisterComputeShaderFile("NearMediaUnifiedInjection", "EngineAssets/Shaders/Atmosphere", "NearMediaUnifiedInjection.comp");
+	reg.RegisterComputeShaderFile("VolumetricParticleTemporalResolve", "EngineAssets/Shaders/Atmosphere", "VolumetricParticleTemporalResolve.comp");
 	reg.RegisterComputeShaderFile("VolumetricCloudRayMarch", "EngineAssets/Shaders/Cloud", "CloudRayMarch.comp");
 	reg.RegisterComputeShaderFile("VolumetricCloudShadow", "EngineAssets/Shaders/Cloud", "CloudShadow.comp");
     reg.RegisterComputeShader("TileLightBuild", "EngineAssets/Shaders/TileLight");

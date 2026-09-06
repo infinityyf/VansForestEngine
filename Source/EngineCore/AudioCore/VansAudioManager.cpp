@@ -107,9 +107,9 @@ void VansAudioManager::ApplySceneConfig(
     }
 }
 
-VansAudioNode* VansAudioManager::Get(const std::string& name) const
+VansAudioNode* VansAudioManager::Get(const std::string& assetGuid) const
 {
-    auto it = m_Nodes.find(name);
+    auto it = m_Nodes.find(assetGuid);
     return (it != m_Nodes.end()) ? it->second.get() : nullptr;
 }
 
