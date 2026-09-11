@@ -191,6 +191,13 @@ void VansSceneContentBuildExecutor::ApplyGISettings(
 	VansGISettings giSettings{};
 	if (config.has_value())
 	{
+		ApplyOptionalValue(config->placement.enabled, giSettings.placement.enabled);
+		ApplyOptionalValue(config->placement.minProbeSpacing, giSettings.placement.minProbeSpacing);
+		ApplyOptionalValue(config->placement.maxProbeSpacing, giSettings.placement.maxProbeSpacing);
+		ApplyOptionalValue(config->placement.parentProbeMaxSize, giSettings.placement.parentProbeMaxSize);
+		ApplyOptionalValue(config->placement.maxProbeCount, giSettings.placement.maxProbeCount);
+		ApplyOptionalValue(config->placement.maxProbeUpdatesPerFrame, giSettings.placement.maxProbeUpdatesPerFrame);
+		ApplyOptionalValue(config->placement.maxRaysPerFrame, giSettings.placement.maxRaysPerFrame);
 		if (!config->regions.empty())
 		{
 			giSettings.regions.clear();
@@ -225,8 +232,6 @@ void VansSceneContentBuildExecutor::ApplyGISettings(
 					region.overrideGridDimensions = true;
 				}
 				ApplyOptionalValue(sourceRegion.raysPerProbe, region.raysPerProbe);
-				ApplyOptionalValue(sourceRegion.spatialUpdateDivisor, region.spatialUpdateDivisor);
-				ApplyOptionalValue(sourceRegion.directionUpdateSlices, region.directionUpdateSlices);
 				ApplyOptionalValue(sourceRegion.maxRayDistance, region.maxRayDistance);
 				ApplyOptionalValue(sourceRegion.normalBias, region.normalBias);
 				ApplyOptionalValue(sourceRegion.volumeFadeDistance, region.volumeFadeDistance);
@@ -234,8 +239,7 @@ void VansSceneContentBuildExecutor::ApplyGISettings(
 				giSettings.regions.push_back(region);
 			}
 		}
-		if (config->environmentIntensity.has_value())
-			giSettings.environmentIntensity = std::max(*config->environmentIntensity, 0.0f);
+
 		if (config->maxIndirectRadiance.has_value())
 			giSettings.maxIndirectRadiance = std::max(*config->maxIndirectRadiance, 0.0f);
 		if (config->maxProbeRadiance.has_value())
@@ -246,8 +250,6 @@ void VansSceneContentBuildExecutor::ApplyGISettings(
 			giSettings.distanceHysteresis = *config->distanceHysteresis;
 		if (config->distanceSharpness.has_value())
 			giSettings.distanceSharpness = *config->distanceSharpness;
-		if (config->brightnessChangeThreshold.has_value())
-			giSettings.brightnessChangeThreshold = *config->brightnessChangeThreshold;
 		ApplyOptionalValue(config->showProbeGizmos, giSettings.showProbeGizmos);
 		ApplyOptionalValue(config->showProbeVolume, giSettings.showProbeVolume);
 		if (config->gizmoStride.has_value())
@@ -262,9 +264,8 @@ void VansSceneContentBuildExecutor::ApplyGISettings(
 	for (const GIProbeRegionDesc& desc : giSettings.regions)
 	{
 		const GIResolvedRegion region = ResolveGIRegion(desc);
-		const GIProbeUpdateBatch batch = BuildGIProbeUpdateBatch(region, 0u);
 		totalProbeCount += region.enabled ? region.probeCount : 0u;
-		totalRayCacheEntries += region.enabled ? batch.activeRayCount : 0u;
+		totalRayCacheEntries += region.enabled ? GIProbeRayCapacity(region.probeCount, region.raysPerProbe, giSettings.placement) : 0u;
 	}
 	VANS_LOG("[GISettings] regions=" << giSettings.regions.size()
 		<< " activeProbes=" << totalProbeCount

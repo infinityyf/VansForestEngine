@@ -9,6 +9,9 @@
 #include <cstdint>
 #include <limits>
 #include <mutex>
+#include <map>
+#include <string>
+#include <vector>
 
 namespace Vans
 {
@@ -91,6 +94,72 @@ namespace Vans
         bool         overflow           = false;
         ProfileTrack tracks[MAX_TRACKS] = {};
         ProfileEvent events[MAX_EVENTS] = {};
+    };
+
+    // 仅用于显式启用的自动性能验收；保存紧凑统计，不复制完整事件帧。
+    class VansProfileCapture
+    {
+    public:
+        struct Settings
+        {
+            uint32_t windowFrames = 120;
+            uint32_t stableWindows = 3;
+            uint32_t measurementFrames = 120;
+            double minimumWindowSeconds = 5.0;
+            double relativeDrift = 0.10;
+            double maximumP95Spread = 0.25;
+            double maximumSpikeRatio = 3.0;
+        };
+        enum class Phase { Settling, Measuring, Complete };
+        struct Statistics
+        {
+            double minimum = 0.0, maximum = 0.0, mean = 0.0;
+            double median = 0.0, p95 = 0.0, p99 = 0.0;
+        };
+        struct Sample
+        {
+            uint64_t frameIndex = 0;
+            double observedSeconds = 0.0, cpuUs = 0.0, gpuUs = 0.0;
+        };
+
+        void Start(const Settings& settings, uint64_t firstFrameIndex);
+        void Cancel();
+        void Observe(const ProfileFrame& frame, double nowSeconds);
+        bool IsActive() const { return m_Active; }
+        Phase GetPhase() const { return m_Phase; }
+        uint32_t GetStableWindows() const { return m_StableWindows; }
+        uint64_t GetRestartCount() const { return m_Restarts; }
+        uint64_t GetMissingFrames() const { return m_MissingFrames; }
+        uint64_t GetNextFrameIndex() const { return m_HasLastFrame ? m_LastFrameIndex + 1 : m_FirstFrameIndex; }
+        uint64_t GetDiscardedMeasurementSamples() const { return m_DiscardedMeasurementSamples; }
+        const std::vector<Sample>& GetSamples() const { return m_Samples; }
+        bool DumpJson(const char* outputDir) const;
+        static Statistics Summarize(std::vector<double> values);
+
+    private:
+        void Restart();
+        bool WindowStable(const Statistics& cpu, const Statistics& gpu) const;
+        void CollectGpuScopes(const ProfileFrame& frame);
+        void CollectCpuScopes(const ProfileFrame& frame);
+        struct CpuScopeSamples
+        {
+            std::string trackName;
+            bool wait = false;
+            std::vector<double> inclusive, exclusive, calls;
+        };
+        Settings m_Settings;
+        bool m_Active = false;
+        Phase m_Phase = Phase::Settling;
+        uint64_t m_FirstFrameIndex = 0, m_LastFrameIndex = 0;
+        bool m_HasLastFrame = false;
+        double m_LastObservedSeconds = 0.0;
+        uint64_t m_ObservedFrames = 0, m_MissingFrames = 0, m_InvalidFrames = 0;
+        uint64_t m_Restarts = 0, m_RejectedWindows = 0, m_DiscardedMeasurementSamples = 0;
+        uint32_t m_StableWindows = 0;
+        Statistics m_BaselineCpu, m_BaselineGpu;
+        std::vector<Sample> m_Window, m_Samples;
+        std::map<std::string, std::vector<double>> m_GpuScopes;
+        std::map<std::pair<uint32_t, std::string>, CpuScopeSamples> m_CpuScopes;
     };
 
     class VansCpuProfiler
@@ -215,14 +284,15 @@ namespace Vans
             void* device,
             void* physDevice,
             uint32_t graphicsQueueFamily,
-            uint32_t computeQueueFamily);
+            uint32_t computeQueueFamily,
+            bool hostQueryResetEnabled);
         void Destroy();
 
         void BeginFrame(uint64_t frameIndex);
         void BeginQueue(void* cmd, VansGpuQueueLane lane);
         bool Push(void* cmd, const char* name, VansGpuQueueLane lane = VansGpuQueueLane::Graphics);
         void Pop(void* cmd, VansGpuQueueLane lane = VansGpuQueueLane::Graphics);
-        void EndFrame(void* device);
+        void EndFrame();
 
         bool IsInitialized() const;
         bool IsFrameCaptureActive() const;
@@ -240,7 +310,8 @@ namespace Vans
         {
             Free,
             Recording,
-            Pending
+            Pending,
+            Retired
         };
 
         struct ScopeSlot
@@ -258,7 +329,7 @@ namespace Vans
         {
             FrameSlotState state = FrameSlotState::Free;
             uint64_t frameIndex = VansCpuProfiler::INVALID_FRAME_INDEX;
-            bool laneResetRecorded[LANE_COUNT] = {};
+            bool laneBegun[LANE_COUNT] = {};
             bool overflow = false;
             uint32_t droppedEvents = 0;
             uint32_t scopeCount[LANE_COUNT] = {};
@@ -274,8 +345,8 @@ namespace Vans
             uint64_t available = 0;
         };
 
-        void PollPendingFrames(void* device);
-        bool TryResolveFrame(uint32_t frameSlotIndex, void* device, VansGpuResolvedFrame& result);
+        void PollPendingFrames();
+        bool TryResolveFrame(uint32_t frameSlotIndex, VansGpuResolvedFrame& result);
         void SubmitDroppedFrame(uint64_t frameIndex, uint32_t droppedEvents = 0);
         static void CopyText(char* dst, uint32_t dstSize, const char* src);
         static int64_t TimestampDelta(uint64_t value, uint64_t reference, uint32_t validBits);
@@ -316,7 +387,7 @@ namespace Vans
         uint64_t GetActiveFrameIndex() const;
 
         void BeginRenderFrame(uint64_t frameIndex);
-        void EndRenderFrame(uint64_t frameIndex, void* device);
+        void EndRenderFrame(uint64_t frameIndex);
         void SubmitGpuFrame(const VansGpuResolvedFrame& frame);
 
         void SetCaptureEnabled(bool enabled);
@@ -328,6 +399,9 @@ namespace Vans
         const ProfileFrame& GetTimeline() const;
         void PrintTimeline() const;
         void DumpFrameJson(const char* outputDir = "LOG") const;
+        void StartStableCapture(const VansProfileCapture::Settings& settings);
+        void CancelStableCapture();
+        const VansProfileCapture& GetStableCapture() const { return m_StableCapture; }
 
     private:
         static constexpr uint32_t ASSEMBLY_COUNT = 8;
@@ -365,6 +439,7 @@ namespace Vans
         std::atomic<uint64_t> m_ActiveFrameIndex{ INVALID_FRAME_INDEX };
         std::atomic_bool m_CaptureRequested{ false };
         std::atomic_bool m_Paused{ false };
+        VansProfileCapture m_StableCapture;
     };
 
     class VansProfilerFrameScope

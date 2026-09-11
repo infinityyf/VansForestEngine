@@ -4,8 +4,11 @@
 #include "../GameplayActionCore/VansGameplayRuntime.h"
 #include "../GameplayActionSchema/VansGAFProjectConfiguration.h"
 #include "Projectile/VansProjectileActionService.h"
+#include "Decal/VansDecalActionService.h"
 
 #include <functional>
+
+namespace VansEngine { class VansAudioManager; }
 
 namespace Vans
 {
@@ -20,6 +23,8 @@ struct VansSceneGameplayContributorContext
 	VansTimelineRuntimeSystem& timeline;
 	std::function<bool(VansEntityHandle, glm::vec3&)> resolveEntityPosition;
 	VansProjectileSceneBackend projectileBackend;
+	VansEngine::VansAudioManager* audio = nullptr;
+	VansDecalSceneBackend decalBackend;
 };
 
 // Scene code supplies stable engine facilities only. Domain modules own their

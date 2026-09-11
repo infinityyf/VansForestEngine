@@ -26,6 +26,8 @@ namespace VansGraphics
 		uint32_t m_RenderHeight;
 
 	public :
+		virtual ~VansGraphicsDevice() = default;
+
 		//初始化渲染资源
 		virtual bool BeforeRendering() = 0;
 		virtual void PrepareRenderingFrame() {}

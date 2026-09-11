@@ -4,6 +4,7 @@
 
 #include "../Common/Common.glsl"
 #include "../Common/CameraData.glsl"
+#include "../SSGI/SSGISurface.glsl"
 #include "../Lights/LightsData.glsl"
 #include "../BRDF/ReflectionProbeData.glsl"
 
@@ -22,6 +23,7 @@ const int SSGI_SURFACE_SHARED_TEXELS =
 
 shared vec4 sharedProbeCacheRadiance[SSGI_PROBE_CACHE_SHARED_TEXELS];
 shared vec4 sharedProbeCacheSurface[SSGI_PROBE_CACHE_SHARED_TEXELS];
+shared vec4 sharedProbeCachePosition[SSGI_PROBE_CACHE_SHARED_TEXELS];
 shared vec4 sharedSurfacePosition[SSGI_SURFACE_SHARED_TEXELS];
 
 layout(set = 1, binding = 0) uniform sampler2D inputNormal;
@@ -52,15 +54,10 @@ layout(set = 1, binding = 6) uniform ssgiInfo
 
 layout(set = 1, binding = 10) uniform sampler2D hizDepth;
 layout(set = 1, binding = 11) uniform sampler2D inputMaterial;
-layout(set = 1, binding = 20) uniform sampler2D screenIrradianceAtlas[8];
+layout(set = 1, binding = 20) uniform sampler2D irradianceAtlas[8];
 layout(set = 1, binding = 21) uniform sampler2D visibilityAtlas[8];
 
-struct GIProbeState
-{
-    vec4 relocationAndConfidence;
-    vec4 distanceStats;
-    uvec4 metadata;
-};
+#include "../GI/GIProbeStateData.glsl"
 layout(set = 1, binding = 22, std430) readonly buffer ProbeStateBuffer
 {
     GIProbeState states[];
@@ -77,6 +74,13 @@ GIProbeState LoadFullResolutionProbeState(
 
 #define GI_LOAD_PROBE_STATE(regionIndex, probeLinearIndex) \
     LoadFullResolutionProbeState(regionIndex, probeLinearIndex)
+#define GI_LAYOUT_SET 1
+#define GI_LAYOUT_BINDING 25
+#include "../GI/GIProbeLayoutData.glsl"
+#define GI_RECEIVER_BINDING 26
+#define GI_RECEIVER_BIAS_BINDING 27
+#include "../GIReceiverBias/GIReceiverBiasCommon.glsl"
+#include "../GI/GIReceiverVisibilityRead.glsl"
 #include "../GI/GIProbeCommon.glsl"
 
 ivec2 GetSharedProbeCacheOrigin()
@@ -106,6 +110,8 @@ void PrefetchSSGISharedInputs(ivec2 cacheSize, ivec2 imageSize)
             texelFetch(probeCacheRadiance, cacheCoord, 0);
         sharedProbeCacheSurface[localIndex] =
             texelFetch(probeCacheSurface, cacheCoord, 0);
+        ivec2 anchor = min(cacheCoord * SSGI_PROBE_CACHE_TILE_SIZE + ivec2(SSGI_PROBE_CACHE_TILE_SIZE / 2), imageSize - 1);
+        sharedProbeCachePosition[localIndex] = texelFetch(inputPosition, anchor, 0);
     }
 
     // The 8x8 workgroup needs its own pixels plus a one-pixel halo to reproduce
@@ -169,7 +175,7 @@ float GetVegetationTranslucency(ivec2 pixelCoord, float normalAlpha)
     return vegetationMaterial ? clamp(normalAlpha, 0.0, 1.0) : 0.0;
 }
 
-vec3 ComputeSSGIGINormal(ivec2 pixelCoord, ivec2 imgSize, vec3 centerPosition, vec3 shadingNormal)
+vec3 ComputeSSGIGINormal(ivec2 pixelCoord, ivec2 imgSize, vec3 centerPosition, vec3 shadingNormal, out float footprint)
 {
     // The caller normalizes the GBuffer normal once.  Keeping that unit-vector
     // contract avoids repeating normalize throughout the cache fallback chain.
@@ -182,19 +188,11 @@ vec3 ComputeSSGIGINormal(ivec2 pixelCoord, ivec2 imgSize, vec3 centerPosition, v
     ivec2 downCoord = ivec2(pixelCoord.x, max(pixelCoord.y - 1, 0));
     ivec2 upCoord = ivec2(pixelCoord.x, min(pixelCoord.y + 1, imgSize.y - 1));
 
-    vec3 dxLeft = centerPosition - LoadSharedSurfacePosition(leftCoord).xyz;
-    vec3 dxRight = LoadSharedSurfacePosition(rightCoord).xyz - centerPosition;
-    vec3 dyDown = centerPosition - LoadSharedSurfacePosition(downCoord).xyz;
-    vec3 dyUp = LoadSharedSurfacePosition(upCoord).xyz - centerPosition;
-
-    vec3 dx = dot(dxRight, dxRight) < dot(dxLeft, dxLeft) ? dxRight : dxLeft;
-    vec3 dy = dot(dyUp, dyUp) < dot(dyDown, dyDown) ? dyUp : dyDown;
-    vec3 geometric = cross(dx, dy);
-    if (dot(geometric, geometric) <= 1e-8)
-        return fallback;
-
-    geometric = normalize(geometric);
-    return dot(geometric, fallback) < 0.0 ? -geometric : geometric;
+    vec4 center = vec4(centerPosition, 1.0);
+    vec3 dx = SSGI_SurfaceDerivative(center, LoadSharedSurfacePosition(leftCoord), LoadSharedSurfacePosition(rightCoord));
+    vec3 dy = SSGI_SurfaceDerivative(center, LoadSharedSurfacePosition(downCoord), LoadSharedSurfacePosition(upCoord));
+    footprint = max(length(dx), length(dy));
+    return SSGI_NormalFromDerivatives(dx, dy, fallback);
 }
 
 vec3 EvaluateDynamicSkyDiffuse(vec3 direction)
@@ -213,9 +211,9 @@ vec3 SampleFullResolutionRegionDDGI(
     ivec3 probeCounts = ivec3(region.gridDimensionsAndPriority.xyz);
     int probesPerAtlasRow = max(int(round(region.volumeMin.w)), 0);
     int probesPerAtlasColumn = max(int(round(region.traceParams.w)), 0);
-    return GI_SampleProbeIrradianceAtlasScreenVisiblePrefiltered(
+    return GI_SampleProbeIrradianceAtlas(
         regionIndex, probeCounts,
-        screenIrradianceAtlas[nonuniformEXT(regionIndex)],
+        irradianceAtlas[nonuniformEXT(regionIndex)],
         visibilityAtlas[nonuniformEXT(regionIndex)],
         worldPosition, normal,
         region.volumeMin.xyz, region.volumeSizeAndBias.xyz,
@@ -284,150 +282,69 @@ vec3 EvaluateSSGICacheMissFallback(
     return mix(frontIrradiance, max(frontIrradiance, backIrradiance), backWeight);
 }
 
-bool TrySampleProbeCache(
-    ivec2 pixelCoord,
-    ivec2 cacheSize,
-    float surfaceLinearDepth,
-    vec3 normal,
-    out vec3 cachedIrradiance,
-    out float cachedScreenHitConfidence)
+// 缓存与像素使用同一世界空间平面误差，避免斜面仅因 view-Z 不同而断开。
+float ProbeCacheSurfaceWeight(ivec2 cacheCoord, vec4 position, vec3 normal)
 {
-    const float cacheTileSize = float(SSGI_PROBE_CACHE_TILE_SIZE);
-    vec2 cachePosition = (vec2(pixelCoord) + 0.5) / cacheTileSize - 0.5;
+    vec4 surface = LoadProbeCacheSurface(cacheCoord);
+    int sharedIndex = GetSharedProbeCacheIndex(cacheCoord);
+    ivec2 anchor = min(cacheCoord * SSGI_PROBE_CACHE_TILE_SIZE + ivec2(SSGI_PROBE_CACHE_TILE_SIZE / 2), ivec2(screenSize.xy) - 1);
+    vec4 cachePosition = sharedIndex >= 0 ? sharedProbeCachePosition[sharedIndex] : texelFetch(inputPosition, anchor, 0);
+    if (cachePosition.w <= 0.0) return 0.0;
+    vec3 delta = cachePosition.xyz - position.xyz;
+    float tolerance = SSGI_PlaneTolerance(position);
+    return smoothstep(0.85, 0.98, dot(normal, surface.xyz)) *
+        min(SSGI_PlaneWeight(delta, normal, tolerance), SSGI_PlaneWeight(delta, surface.xyz, tolerance));
+}
+
+bool TrySampleProbeCache(ivec2 pixelCoord, ivec2 cacheSize, vec4 position, vec3 normal,
+    out vec3 cachedIrradiance, out float cachedScreenHitConfidence, out bool receiverTransport)
+{
+    // anchor 位于像素索引 4*c+2，重建必须使用同一中心，不能偏移半个像素。
+    vec2 cachePosition = (vec2(pixelCoord) - float(SSGI_PROBE_CACHE_TILE_SIZE / 2)) / float(SSGI_PROBE_CACHE_TILE_SIZE);
     ivec2 base = ivec2(floor(cachePosition));
-    vec2 fraction = clamp(fract(cachePosition), vec2(0.0), vec2(1.0));
-    // ComputeSSGIGINormal always returns a unit vector.
-    vec3 N = normal;
-    // GBuffer2.w is authored as positive view-space linear depth by every
-    // deferred material path. Reconstructing it again from the stored world
-    // position costs a full matrix multiply in every full-resolution thread.
-    float linearDepth = max(surfaceLinearDepth, NearPlane);
-    float depthThreshold = max(linearDepth * 0.04, 0.25);
-
-    vec3 weightedIrradiance = vec3(0.0);
-    float weightedScreenHitConfidence = 0.0;
-    float totalWeight = 0.0;
-
-    // 每个 screen probe 只有一条 Hi-Z 射线；当它偶然命中比周围探针更亮的
-    // 表面时，普通双线性重建会把单个 cache texel 扩散成随镜头移动的亮点。
-    // 利用已经驻留在共享内存中的四个同表面候选建立稳健基线。仅剔除其中
-    // 最大亮度可保留连续照明梯度，同时在下方重建时压低孤立 Monte-Carlo
-    // 离群值，不增加纹理读取、射线或额外 pass。
-    float candidateLuminanceSum = 0.0;
-    float candidateLuminanceMax = 0.0;
-    int candidateCount = 0;
-    for (int y = 0; y <= 1; ++y)
-    for (int x = 0; x <= 1; ++x)
+    vec2 fraction = fract(cachePosition);
+    cachedIrradiance = vec3(0.0);
+    cachedScreenHitConfidence = 0.0;
+    receiverTransport = false;
+    // 首先尝试 2x2，必要时扩大为 3x3；只按同一表面及空间权重重建。
+    for (int search = 0; search < 2; ++search)
     {
-        ivec2 cacheCoord = clamp(base + ivec2(x, y), ivec2(0), cacheSize - 1);
-        vec4 radiance = LoadProbeCacheRadiance(cacheCoord);
-        if (radiance.a < 0.5)
-            continue;
+        int width = search == 0 ? 2 : 3;
+        float totalWeight = 0.0;
+        ivec2 origin = search == 0 ? base : ivec2(round(cachePosition)) - 1;
+        vec4 samples[9];
+        float weights[9];
+        for (int y = 0; y < width; ++y)
+        for (int x = 0; x < width; ++x)
+        {
+            int index = y * width + x;
+            ivec2 coord = clamp(origin + ivec2(x, y), ivec2(0), cacheSize - 1);
+            samples[index] = LoadProbeCacheRadiance(coord);
+            float match = abs(samples[index].a) >= 0.5 ? ProbeCacheSurfaceWeight(coord, position, normal) : 0.0;
+            vec2 bilinear = mix(1.0 - fraction, fraction, vec2(x, y));
+            vec2 delta = vec2(coord) - cachePosition;
+            float spatial = search == 0 ? bilinear.x * bilinear.y : 1.0 / (1.0 + dot(delta, delta));
+            weights[index] = match * spatial;
+            totalWeight += weights[index];
 
-        vec4 surface = LoadProbeCacheSurface(cacheCoord);
-        float normalAgreement = dot(N, surface.xyz);
-        float depthDifference = abs(linearDepth - surface.w);
-        if (normalAgreement < 0.85 || depthDifference > depthThreshold)
-            continue;
-
-        float candidateLuminance = Luminance(max(radiance.rgb, vec3(0.0)));
-        candidateLuminanceSum += candidateLuminance;
-        candidateLuminanceMax = max(candidateLuminanceMax, candidateLuminance);
-        ++candidateCount;
-    }
-
-    float isolatedLuminanceLimit = 1e20;
-    if (candidateCount >= 3)
-    {
-        float trimmedMean =
-            (candidateLuminanceSum - candidateLuminanceMax) /
-            float(candidateCount - 1);
-        isolatedLuminanceLimit = trimmedMean * 1.75 + 0.08;
-    }
-
-    for (int y = 0; y <= 1; ++y)
-    for (int x = 0; x <= 1; ++x)
-    {
-        ivec2 cacheCoord = clamp(base + ivec2(x, y), ivec2(0), cacheSize - 1);
-        vec4 radiance = LoadProbeCacheRadiance(cacheCoord);
-        if (radiance.a < 0.5)
-            continue;
-
-        vec4 surface = LoadProbeCacheSurface(cacheCoord);
-        // Probe Cache 写入阶段已经保证几何法线为单位向量。这里直接点乘，
-        // 避免四分之一分辨率重建在每个候选样本上重复执行 normalize。
-        float normalAgreement = dot(N, surface.xyz);
-        float depthDifference = abs(linearDepth - surface.w);
-        if (normalAgreement < 0.85 || depthDifference > depthThreshold)
-            continue;
-
-        vec2 bilinear = mix(1.0 - fraction, fraction, vec2(x, y));
-        float weight = bilinear.x * bilinear.y;
-        weight *= smoothstep(0.85, 0.98, normalAgreement);
-        weight *= 1.0 - smoothstep(depthThreshold * 0.25, depthThreshold, depthDifference);
-        float radianceLuminance = Luminance(max(radiance.rgb, vec3(0.0)));
-        float outlierScale = min(
-            1.0,
-            isolatedLuminanceLimit / max(radianceLuminance, 1e-5));
-        weightedIrradiance += radiance.rgb * outlierScale * weight;
-        // 被压低的 cache texel 不能继续保留完整 screen-hit confidence，
-        // 否则 Temporal 会按可信屏幕命中继续保留该噪声样本。
-        weightedScreenHitConfidence +=
-            clamp(radiance.a - 1.0, 0.0, 1.0) * outlierScale * weight;
-        totalWeight += weight;
-    }
-
-    if (totalWeight > 0.2)
-    {
-        cachedIrradiance = weightedIrradiance / totalWeight;
-        cachedScreenHitConfidence = weightedScreenHitConfidence / totalWeight;
+        }
+        if (totalWeight <= 0.2) continue;
+        vec3 sum = vec3(0.0);
+        float confidence = 0.0;
+        float transportWeight = 0.0;
+        for (int i = 0; i < width * width; ++i)
+        {
+            sum += samples[i].rgb * weights[i];
+            confidence += clamp(abs(samples[i].a) - 1.0, 0.0, 1.0) * weights[i];
+            if(samples[i].a<0.0) transportWeight+=weights[i];
+        }
+        cachedIrradiance = sum / totalWeight;
+        cachedScreenHitConfidence = confidence / totalWeight;
+        // 标记有补算参与，避免跨过 50% 权重时反复重置相同表面的历史。
+        receiverTransport=transportWeight>0.0;
         return true;
     }
-
-    // 2x2 重建在轮廓和薄几何处失败时，先寻找严格匹配的邻近缓存项，
-    // 避免这些少量像素重新触发完整的 DDGI atlas 查询。
-    weightedIrradiance = vec3(0.0);
-    weightedScreenHitConfidence = 0.0;
-    totalWeight = 0.0;
-    ivec2 nearestCenter = ivec2(round(cachePosition));
-    float strictDepthThreshold = depthThreshold * 0.5;
-    for (int y = -1; y <= 1; ++y)
-    for (int x = -1; x <= 1; ++x)
-    {
-        ivec2 cacheCoord = nearestCenter + ivec2(x, y);
-        if (any(lessThan(cacheCoord, ivec2(0))) || any(greaterThanEqual(cacheCoord, cacheSize)))
-            continue;
-
-        vec4 radiance = LoadProbeCacheRadiance(cacheCoord);
-        if (radiance.a < 0.5)
-            continue;
-
-        vec4 surface = LoadProbeCacheSurface(cacheCoord);
-        float normalAgreement = dot(N, surface.xyz);
-        float depthDifference = abs(linearDepth - surface.w);
-        if (normalAgreement < 0.92 || depthDifference > strictDepthThreshold)
-            continue;
-
-        vec2 delta = vec2(cacheCoord) - cachePosition;
-        float spatialWeight = 1.0 / (1.0 + dot(delta, delta));
-        float weight = spatialWeight * smoothstep(0.92, 0.99, normalAgreement);
-        weight *= 1.0 - smoothstep(
-            strictDepthThreshold * 0.25, strictDepthThreshold, depthDifference);
-        weightedIrradiance += radiance.rgb * weight;
-        weightedScreenHitConfidence += clamp(radiance.a - 1.0, 0.0, 1.0) * weight;
-        totalWeight += weight;
-    }
-
-    // 这里已经通过更严格的法线和深度门槛；权重只用于候选间归一化，
-    // 不再用其绝对值二次拒绝有效样本并触发完整的每像素 DDGI 查询。
-    const bool hasStrictCacheMatch = totalWeight > 1e-4;
-    cachedIrradiance = hasStrictCacheMatch
-        ? weightedIrradiance / totalWeight
-        : vec3(0.0);
-    cachedScreenHitConfidence = hasStrictCacheMatch
-        ? weightedScreenHitConfidence / totalWeight
-        : 0.0;
-    return hasStrictCacheMatch;
+    return false;
 }
 
 void main()
@@ -460,20 +377,23 @@ void main()
     vec4 normalData = texelFetch(inputNormal, pixelCoord, 0);
     vec3 normal = normalize(normalData.xyz);
     vec3 surfacePosition = surfaceData.xyz;
-    vec3 giNormal = ComputeSSGIGINormal(pixelCoord, imgSize, surfacePosition, normal);
+    float footprint;
+    vec3 giNormal = ComputeSSGIGINormal(pixelCoord, imgSize, surfacePosition, normal, footprint);
     float vegetationTranslucency = GetVegetationTranslucency(
         pixelCoord, normalData.w);
     vec3 fallbackIrradiance;
     float screenHitConfidence = 0.0;
+    bool receiverTransport=false;
     if (!TrySampleProbeCache(
-        pixelCoord, probeCacheSize, surfaceData.w, giNormal,
-        fallbackIrradiance, screenHitConfidence))
+        pixelCoord, probeCacheSize, surfaceData, giNormal,
+        fallbackIrradiance, screenHitConfidence, receiverTransport))
+    {
+        GI_SetReceiverVisibility(pixelCoord, surfaceData, giNormal, round(texelFetch(inputMaterial,pixelCoord,0).z), footprint);
         fallbackIrradiance = EvaluateSSGICacheMissFallback(
             surfacePosition, giNormal, vegetationTranslucency);
+    }
     vec3 irradiance = fallbackIrradiance;
 
-    // Alpha carries the screen-hit confidence into temporal accumulation.
-    // Probe-only fallback remains valid lighting but starts with shorter
-    // history so newly revealed regions converge without stale persistence.
-    imageStore(resultR, pixelCoord, vec4(max(irradiance, vec3(0.0)), screenHitConfidence));
+    // Alpha 只携带当前屏幕命中置信度；历史长度由 Temporal 独立管理。
+    imageStore(resultR, pixelCoord, vec4(max(irradiance, vec3(0.0)), receiverTransport ? -1.0-screenHitConfidence : screenHitConfidence));
 }

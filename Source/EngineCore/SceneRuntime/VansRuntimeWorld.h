@@ -30,6 +30,7 @@ public:
 	bool IsComponentSelfEnabled(VansComponentHandle component) const;
 	bool IsComponentEffectivelyEnabled(VansComponentHandle component) const;
 	std::vector<VansComponentHandle> CollectComponentsOwnedBy(VansEntityHandle entity) const;
+	VansComponentHandle FindComponentOwnedBy(VansEntityHandle entity, std::uint16_t typeId) const;
 	std::vector<VansComponentHandle> CollectComponentsInSubtree(VansEntityHandle entity) const;
 	bool SetParent(VansEntityHandle entity, VansEntityHandle parent);
 	bool IsAlive(VansEntityHandle entity) const { return m_Entities.IsAlive(entity); }

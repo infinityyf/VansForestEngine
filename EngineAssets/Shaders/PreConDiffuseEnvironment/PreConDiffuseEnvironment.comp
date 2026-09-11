@@ -13,7 +13,7 @@ layout(set = 0, binding = 3) uniform EnvironmentFilterInfo
 };
 layout(set = 0, std430, binding = 4) buffer SHCoefficientsBuffer
 {
-    float shCoefficients[27];
+    float shCoefficients[27]; // 按 R[9]、G[9]、B[9] 排列，匹配现有材质的数据约定。
 };
 
 vec2 EnvironmentHammersley(uint index, uint sampleCount)
@@ -61,9 +61,9 @@ void UpdateSHCoefficients()
         for (int basisIndex = 0; basisIndex < 9; ++basisIndex)
         {
             float weightedBasis = SHBasis(basisIndex, direction) * weight;
-            shCoefficients[basisIndex * 3 + 0] += color.r * weightedBasis;
-            shCoefficients[basisIndex * 3 + 1] += color.g * weightedBasis;
-            shCoefficients[basisIndex * 3 + 2] += color.b * weightedBasis;
+            shCoefficients[basisIndex] += color.r * weightedBasis;
+            shCoefficients[9 + basisIndex] += color.g * weightedBasis;
+            shCoefficients[18 + basisIndex] += color.b * weightedBasis;
         }
     }
 }

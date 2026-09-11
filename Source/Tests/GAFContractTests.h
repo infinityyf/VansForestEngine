@@ -17,6 +17,8 @@ bool TestGAFDemoHallPlayerAttackContract();
 bool TestDemoHallPlayerThrowContract();
 bool TestProjectileSmokeContract();
 bool TestGAFDemoHallMeleeHitRuntimeContract();
+bool TestGAFDemoHallPistolHitRuntimeContract();
+bool TestGAFPistolAudioRuntimeContract();
 bool TestDemoHallHurtBodiesContract();
 bool TestDemoHallCrouchLocomotionContract();
 bool TestDemoHallPlayerVaultContract();

@@ -94,6 +94,12 @@ bool VansRuntimeWorld::IsComponentEffectivelyEnabled(VansComponentHandle compone
 	return header ? header->effectiveEnabled : false;
 }
 
+VansComponentHandle VansRuntimeWorld::FindComponentOwnedBy(VansEntityHandle entity, std::uint16_t typeId) const
+{
+	const IVansComponentStorage* storage = m_Entities.IsAlive(entity) ? FindStorage(typeId) : nullptr;
+	return storage ? storage->FindFirstOwnedBy(entity) : VansComponentHandle{};
+}
+
 std::vector<VansComponentHandle> VansRuntimeWorld::CollectComponentsOwnedBy(VansEntityHandle entity) const
 {
 	std::vector<VansComponentHandle> components;

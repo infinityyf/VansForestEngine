@@ -101,11 +101,12 @@ namespace Vans::EditorAPI
 		virtual void RebuildReflectionProbeResources() = 0;
 		virtual void BakeQueuedReflectionProbesNow() = 0;
 		virtual ReflectionProbeSettingsSnapshot GetReflectionProbeSettings() const = 0;
-		virtual void ApplyReflectionProbeSettings(const ReflectionProbeSettingsSnapshot& settings) = 0;
+		virtual bool ApplyReflectionProbeSettings(const ReflectionProbeSettingsSnapshot& settings) = 0;
 		virtual GIInspectorSettingsSnapshot GetGISettings() const = 0;
-		virtual void ApplyGISettings(const GIInspectorSettingsSnapshot& settings) = 0;
-		virtual GIProbeDebugSnapshot CaptureGIProbeDebugSnapshot(std::uint32_t stride, float exposure) = 0;
-		virtual GIProbeDebugSnapshot GetGIProbeDebugSnapshot() const = 0;
+		virtual bool ApplyGISettings(const GIInspectorSettingsSnapshot& settings) = 0;
+		virtual void SaveGIConfiguration() = 0;
+		virtual void SetGIProbeVisualization(bool showPositions, bool showVolume, std::uint32_t stride) = 0;
+		virtual std::shared_ptr<const GIProbeDebugSnapshot> GetGIProbeDebugSnapshot() const = 0;
 		virtual MainCameraHiZCullDebugSnapshot GetMainCameraHiZCullDebugSnapshot() const = 0;
 		virtual std::vector<RenderTexturePreview> RequestGIRTPreviews(
 			std::uint32_t zSlice,

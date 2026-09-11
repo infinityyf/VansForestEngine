@@ -1,4 +1,6 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+#include "../SkyLighting/SkyLighting.glsl"
 
 layout(location = 0) in vec2 ndcPosition;
 layout(location = 0) out vec4 outColor;
@@ -16,6 +18,6 @@ void main()
 {
     vec4 world = captureCamera.inverseViewProjection * vec4(ndcPosition, 1.0, 1.0);
     vec3 direction = normalize(world.xyz / max(world.w, 1e-5) - captureCamera.position.xyz);
-    vec3 sky = textureLod(PreConvSpecularEnvironment, direction, 0.0).rgb;
+    vec3 sky = SampleSkySpecularCube(PreConvSpecularEnvironment, direction, 0.0);
     outColor = vec4(max(sky, vec3(0.0)), 1.0);
 }

@@ -112,6 +112,12 @@ void VansGraphics::VansVKBuffer::DestroyVulkanBuffer(VkDevice& logical_device)
 	}
 
 	VansVKMemoryAllocator::Get().DestroyBuffer(m_VansVKBuffer, m_VansVKBufferAllocation);
+	// 释放后容量也必须失效，否则按容量复用的调用者会跳过重新分配。
+	m_BufferSize = 0;
+	m_BufferFormat = VK_FORMAT_UNDEFINED;
+	m_BufferStride = 0;
+	m_ExplicitlyMapped = false;
+	m_BufferMemoryBarriers.clear();
 }
 
 void VansGraphics::VansVKBuffer::AddTransitionBufferAccess(BufferTransition& transition)

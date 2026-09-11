@@ -61,6 +61,14 @@ namespace VansGraphics
 			return static_cast<float>(Vans::ReadSerializedNumber(raw, fallback));
 		}
 
+		bool ReadMaterialBoolField(const Vans::VansSceneMaterialConfig& material, const char* key, bool fallback)
+		{
+			const Vans::VansSerializedValue* found = FindMaterialField(material, key);
+			if (!found)
+				return fallback;
+			return Vans::ReadSerializedBool(UnwrapMaterialValue(*found), fallback);
+		}
+
 		std::string ReadMaterialStringField(const Vans::VansSceneMaterialConfig& material, const char* key, const std::string& fallback)
 		{
 			const Vans::VansSerializedValue* found = FindMaterialField(material, key);
@@ -514,6 +522,25 @@ void VansSceneMaterialBuilder::PopulateMaterial(
         pbr->m_BasePBRParam.m_metallic = ReadMaterialFloatField(sceneMaterial, "metallic", 0.0f);
         pbr->m_BasePBRParam.m_roughness = ReadMaterialFloatField(sceneMaterial, "roughness", 0.5f);
         pbr->m_BasePBRParam.m_ao = ReadMaterialFloatField(sceneMaterial, "ao", 1.0f);
+        pbr->m_AlphaTestEnabled = ReadMaterialBoolField(sceneMaterial, "alphaTest", false);
+        pbr->m_AlphaCutoff = std::clamp(ReadMaterialFloatField(sceneMaterial, "alphaCutoff", 0.5f), 0.0f, 1.0f);
+        pbr->m_BasePBRParam.padding = pbr->m_AlphaTestEnabled ? pbr->m_AlphaCutoff : 0.0f;
+        if (pbr->m_AlphaTestEnabled)
+        {
+            const auto bindAlphaTestShader = [&](const char* passName, const char* shaderName)
+            {
+                if (pbr->HasPass(passName) &&
+                    pbr->m_PassShaderOverrides.find(passName) == pbr->m_PassShaderOverrides.end())
+                {
+                    pbr->m_PassShaderOverrides[passName] = shaderName;
+                }
+            };
+
+            // 仅显式启用 Alpha Test 的材质使用独立变体；其他材质保持原 Shader 和零额外开销。
+            bindAlphaTestShader(VansPass::GBUFFER, "UnlitAlphaTest");
+            bindAlphaTestShader(VansPass::SHADOW, "ShadowAlphaTest");
+            bindAlphaTestShader(VansPass::PUNCTUAL_SHADOW, "PunctualShadowAlphaTest");
+        }
         if (const Vans::VansSerializedValue* leaf = FindDirectMaterialField(sceneMaterial, "leaf");
             leaf && leaf->kind == Vans::VansSerializedValue::Kind::Object)
         {
@@ -935,18 +962,20 @@ void VansSceneMaterialBuilder::PopulateMaterial(
     case VansMaterialType::VAN_DECAL:
     {
         auto* decal = static_cast<VansDecalMaterial*>(material);
-        glm::vec3 decalColor = ReadMaterialVec3Field(sceneMaterial, "color", glm::vec3(1.0f));
-        decalColor = ReadMaterialVec3Field(sceneMaterial, "basecolor", decalColor);
-        decalColor = ReadMaterialVec3Field(sceneMaterial, "baseColor", decalColor);
-        decal->m_BasePBRParam.m_albedo = ReadMaterialVec3Field(sceneMaterial, "albedo", decalColor);
-        decal->m_BasePBRParam.m_metallic = ReadMaterialFloatField(sceneMaterial, "metallic", 0.0f);
-        decal->m_BasePBRParam.m_roughness = ReadMaterialFloatField(sceneMaterial, "roughness", 0.5f);
-        decal->m_BasePBRParam.m_ao = ReadMaterialFloatField(sceneMaterial, "ao", 1.0f);
-        decal->m_BaseColorTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "basecolor_texture", "defaultAlbedo");
-        decal->m_NormalTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "normal_texture", "defaultNormal");
-        decal->m_MetalTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "metal_texture", "defaultMetal");
-        decal->m_RoughnessTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "roughness_texture", "defaultRoughness");
-        decal->m_AoTexture = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "ao_texture", "defaultAo");
+        auto unit = [&](const char* key, float fallback) {
+            return std::clamp(ReadMaterialFloatField(sceneMaterial, key, fallback), 0.0f, 1.0f);
+        };
+        decal->m_CustomMaterialPayload.values[0] = glm::vec4(
+            ReadMaterialVec3Field(sceneMaterial, "albedo", glm::vec3(1.0f)), unit("opacity", 1.0f));
+        decal->m_CustomMaterialPayload.values[1] = glm::vec4(unit("roughness", 0.5f),
+            unit("colorWeight", 1.0f), unit("normalWeight", 1.0f), unit("roughnessWeight", 1.0f));
+        decal->m_CustomMaterialPayload.values[2].x = std::round(std::clamp(
+            ReadMaterialFloatField(sceneMaterial, "sortPriority", 0.0f), -32768.0f, 32767.0f));
+        decal->m_CustomTextureSlots = {{"basecolor", 0}, {"normal", 1}, {"roughness", 2}, {"coverage", 3}};
+        decal->m_CustomTextures["basecolor"] = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "basecolor_texture", "defaultAlbedo");
+        decal->m_CustomTextures["normal"] = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "normal_texture", "defaultNormal");
+        decal->m_CustomTextures["roughness"] = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "roughness_texture", "defaultRoughness");
+        decal->m_CustomTextures["coverage"] = ResolveMaterialTextureOrDefault(scene, sceneMaterial, "coverage_texture", "defaultAo");
         break;
     }
     default:

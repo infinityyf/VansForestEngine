@@ -9,10 +9,12 @@
 #include "VegetationCore/VansVegetationSystem.h"
 #include "VansParticleRenderNode.h"
 #include "../Util/VansLog.h"
+#include "../Util/VansProfiler.h"
 #include "VulkanCore/VansRenderPass.h"
 #include "../RuntimeCore/VansFramePhase.h"
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 // ===========================================================================
 // Draw commands — one per render pass type
@@ -39,7 +41,10 @@ void VansGraphics::VansScene::DrawShadowNodes(VansVKCommandBuffer& cmd, GlobalSt
 {
     VansDrawSubmissionList submission;
     if (BuildShadowDrawSubmission(globalStateData, submission))
+    {
+        VANS_PROFILE_SCOPE("Shadow::RecordBatches", Vans::ProfileCategory::CommandRecord);
         VansDrawSubmission::Record(cmd, submission, 0, submission.batches.size());
+    }
     DrawVegetationShadowNode(cmd, globalStateData);
 }
 
@@ -47,6 +52,7 @@ bool VansGraphics::VansScene::BuildShadowDrawSubmission(
     GlobalStateData globalStateData,
     VansDrawSubmissionList& submission)
 {
+    VANS_PROFILE_SCOPE("Shadow::BuildSubmission", Vans::ProfileCategory::CommandRecord);
     VANS_ASSERT_FRAME_PHASE(VansFramePhase::GPURecord);
 
     submission.Clear();
@@ -74,16 +80,9 @@ bool VansGraphics::VansScene::BuildShadowDrawSubmission(
         if (cascadeWorldToClip != nullptr)
         {
             const VansRenderProxyHandle proxy = FindMainRenderProxyHandle(node);
-            const auto casterIt = std::find_if(
-                frameScene.punctualShadow.casters.begin(),
-                frameScene.punctualShadow.casters.end(),
-                [proxy](const VansRenderPunctualShadowCasterInput& caster)
-                {
-                    return caster.proxy == proxy;
-                });
-            if (casterIt != frameScene.punctualShadow.casters.end() &&
-                casterIt->hasBounds &&
-                !RenderBoundsIntersectsClipFrustum(casterIt->bounds, *cascadeWorldToClip))
+            const auto* caster = vkDevice->FindCurrentShadowCaster(proxy);
+            if (caster != nullptr && caster->hasBounds &&
+                !RenderBoundsIntersectsClipFrustum(caster->bounds, *cascadeWorldToClip))
             {
                 return;
             }
@@ -122,6 +121,7 @@ bool VansGraphics::VansScene::BuildShadowDrawSubmission(
     for (VansRenderNode* node : m_HairRenderNodes)
         appendCaster(node, true, stableOrder++);
 
+    VANS_PROFILE_SCOPE("Shadow::FinalizeSubmission", Vans::ProfileCategory::CommandRecord);
     return FinalizeDrawSubmission(VansDrawSortPolicy::State, submission);
 }
 
@@ -164,10 +164,7 @@ void VansGraphics::VansScene::DrawPunctualShadowJob(const VansPunctualShadowRend
 		const VansRenderProxyHandle casterHandle =
 			FindMainRenderProxyHandle(node);
 		return casterHandle.IsValid() &&
-			std::find(
-				job.casterHandles.begin(),
-				job.casterHandles.end(),
-				casterHandle) != job.casterHandles.end();
+			job.casterHandles.find(casterHandle) != job.casterHandles.end();
 	};
 
     VansDrawSubmissionList submission;
@@ -625,13 +622,26 @@ bool VansGraphics::VansScene::BuildDecalDrawSubmission(
         if (!ShouldDrawMainCameraNode(node)) continue;
         VansDrawPacket packet;
         if (node->BuildPrimaryDrawPacket(
-            vkDevice->GetLogicDevice(), globalStateData, VansPass::DECAL_GBUFFER,
+            vkDevice->GetLogicDevice(), globalStateData, VansPass::DECAL_MODIFIER,
             0, 0, nodeIndex, 0.0f, packet))
         {
             submission.packets.push_back(std::move(packet));
         }
     }
 
+    const auto& payloadBytes = vkDevice->GetCurrentRenderSceneSnapshot().materials.custom.bytes;
+    auto priority = [&](const VansDrawPacket& packet) {
+        const size_t offset = static_cast<size_t>(packet.instanceData.materialIndex) * sizeof(VansCustomMaterialPayload);
+        VansCustomMaterialPayload payload;
+        if (offset <= payloadBytes.size() && sizeof(payload) <= payloadBytes.size() - offset)
+            std::memcpy(&payload, payloadBytes.data() + offset, sizeof(payload));
+        return payload.values[2].x;
+    };
+    std::sort(submission.packets.begin(), submission.packets.end(),
+        [&](const VansDrawPacket& lhs, const VansDrawPacket& rhs) {
+            const float leftPriority = priority(lhs), rightPriority = priority(rhs);
+            return leftPriority != rightPriority ? leftPriority < rightPriority : lhs.stableOrder < rhs.stableOrder;
+        });
     return FinalizeDrawSubmission(VansDrawSortPolicy::PreserveOrder, submission);
 }
 

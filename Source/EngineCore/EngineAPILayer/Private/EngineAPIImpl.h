@@ -27,6 +27,7 @@ namespace VansRuntime
 namespace VansGraphics
 {
 	class VansRenderSystem;
+	struct GIProbeLayoutSnapshot;
 }
 
 namespace Vans
@@ -135,11 +136,12 @@ namespace Vans::EditorAPI
 		void RebuildReflectionProbeResources() override;
 		void BakeQueuedReflectionProbesNow() override;
 		ReflectionProbeSettingsSnapshot GetReflectionProbeSettings() const override;
-		void ApplyReflectionProbeSettings(const ReflectionProbeSettingsSnapshot& settings) override;
+		bool ApplyReflectionProbeSettings(const ReflectionProbeSettingsSnapshot& settings) override;
 		GIInspectorSettingsSnapshot GetGISettings() const override;
-		void ApplyGISettings(const GIInspectorSettingsSnapshot& settings) override;
-		GIProbeDebugSnapshot CaptureGIProbeDebugSnapshot(std::uint32_t stride, float exposure) override;
-		GIProbeDebugSnapshot GetGIProbeDebugSnapshot() const override;
+		bool ApplyGISettings(const GIInspectorSettingsSnapshot& settings) override;
+		void SaveGIConfiguration() override;
+		void SetGIProbeVisualization(bool showPositions, bool showVolume, std::uint32_t stride) override;
+		std::shared_ptr<const GIProbeDebugSnapshot> GetGIProbeDebugSnapshot() const override;
 		MainCameraHiZCullDebugSnapshot GetMainCameraHiZCullDebugSnapshot() const override;
 		std::vector<RenderTexturePreview> RequestGIRTPreviews(
 			std::uint32_t zSlice,
@@ -326,7 +328,8 @@ namespace Vans::EditorAPI
 		std::string m_GAFTracePath;
 		std::uint64_t m_GAFDebugFrame = 0;
 		bool m_AllowNextCommandMerge = true;
-		GIProbeDebugSnapshot m_GIProbeDebugSnapshot;
+		mutable std::shared_ptr<const VansGraphics::GIProbeLayoutSnapshot> m_GIProbeDebugLayout;
+		mutable std::shared_ptr<const GIProbeDebugSnapshot> m_GIProbeDebugSnapshot;
 		UIDocumentId m_NextUIDocumentId = 1;
 		UIPreviewId m_NextUIPreviewId = 1;
 		std::unordered_map<UIDocumentId, std::shared_ptr<VansRuntime::VansUIDocument>> m_UIDocuments;

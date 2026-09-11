@@ -8,7 +8,7 @@ layout(location = 0) rayPayloadInEXT RayTracePayload prd;
 
 void main()
 {
-    prd.positionHit = vec4(gl_WorldRayDirectionEXT, 0.0);
+    prd.hitDistance = -1.0;
     prd.normalHit = vec4(-gl_WorldRayDirectionEXT, 0.0);
     prd.albedoRoughness = vec4(0.0);
     prd.emissiveRadiance = vec4(0.0);

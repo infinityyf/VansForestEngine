@@ -272,7 +272,8 @@ float RadicalInverse_VdC(uint bits)
 
 struct RayTracePayload
 {
-    vec4 positionHit;
+    float hitDistance;
+    uint geometryOnly;
     vec4 normalHit;
     vec4 albedoRoughness;
     vec4 emissiveRadiance;

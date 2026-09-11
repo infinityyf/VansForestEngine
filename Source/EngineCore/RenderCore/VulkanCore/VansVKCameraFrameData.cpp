@@ -1,7 +1,10 @@
 #include "VansVKDevice.h"
 
 #include "../BRDFData/VansLight.h"
+#include "../VansScene.h"
+#include "../VansMaterial.h"
 #include "../VansRenderFrame.h"
+#include "../../Util/VansProfiler.h"
 
 bool VansGraphics::VansVKDevice::InitializeCameraFrameResources()
 {
@@ -70,16 +73,18 @@ bool VansGraphics::VansVKDevice::UploadRenderLightFrameData(
 		return false;
 	}
 
-	return m_LightDataBuffer.SetBufferData(
-		payload.data(),
-		0,
-		expectedSize);
+    if (m_Scene)
+        m_Scene->GetReflectionProbeSystem()->SetSkyLightingSource(
+            m_Scene->GetMaterialManager()->m_SkyLighting.CaptureSourceKey(frameData.skyLighting.intensity));
+    return m_LightDataBuffer.SetBufferData(payload.data(), 0, expectedSize) &&
+        m_Scene && m_Scene->GetMaterialManager()->m_SkyLighting.UploadFrame(frameData.skyLighting);
 }
 
 VansGraphics::VansRenderSubmissionPrepareResult
 VansGraphics::VansVKDevice::PrepareRenderSubmission(
 	VansRenderFrameSubmission& submission)
 {
+	VANS_PROFILE_SCOPE("Render::PrepareSubmission", Vans::ProfileCategory::RenderPrepare);
 	if (!m_RenderWorld.Apply(submission.MutationsBeforeFrame()))
 	{
 		m_HasCurrentRenderView = false;
@@ -173,6 +178,8 @@ VansGraphics::VansVKDevice::PrepareRenderSubmission(
 	m_CameraData.cameraDirection = glm::vec4(view.forward, 0.0f);
 	if (resetHistory)
 	{
+        if (m_Scene && m_Scene->GetMaterialManager())
+            m_Scene->GetMaterialManager()->m_GIReceiverVisibility.frame = 0;
 		m_CameraData.lastPreviousViewMatrix = view.view;
 		m_CameraData.lastPreviousProjectionMatrix = jitteredProjection;
 		m_CameraData.lastPreviousViewProjectionMatrix = viewProjection;

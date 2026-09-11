@@ -9,7 +9,7 @@ namespace VansGraphics
 	class VansSceneRenderPreparationExecutor
 	{
 	public:
-		static void PrepareAfterSceneContentLoaded(VansScene& scene, VansVKDevice& device);
+		static bool PrepareAfterSceneContentLoaded(VansScene& scene, VansVKDevice& device);
 
 	private:
 		static void BindVideoComponentsToPreparedMaterials(VansScene& scene);

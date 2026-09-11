@@ -857,7 +857,7 @@ bool VansGraphics::VansScene::LoadSceneObjects(
 		const Vans::VansSceneGameplayContributorContext contributorContext{
 			*m_RuntimeWorld, *m_GameplayRuntime, m_CameraControlArbiter->CoreRuntime(),
 			*m_TimelineRuntime,
-			std::move(resolvePosition), MakeProjectileSceneBackend() };
+			std::move(resolvePosition), MakeProjectileSceneBackend(), &m_AudioManager, MakeDecalSceneBackend() };
 		if (!Vans::VansDiscoverSceneGameplayContributors(
 			*gameplayConfiguration, contributorContext, gameplayDependencies, gameplayError))
 		{

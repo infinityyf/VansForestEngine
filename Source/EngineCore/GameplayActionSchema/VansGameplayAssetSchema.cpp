@@ -310,6 +310,14 @@ void CollectConventionalReferences(const VansSerializedValue& value, std::vector
 	if (value.kind != VansSerializedValue::Kind::Object) return;
 	for (const auto& field : value.objectFields)
 	{
+		// Graph Invoke 的资产输入包在 Literal 表达式内，打包闭包仍需追踪其 GUID。
+		if (isGuidReferenceField(field.first) && field.second.kind == VansSerializedValue::Kind::Object
+			&& ReadSerializedStringField(field.second, "source") == "Literal")
+		{
+			const auto literal = ReadSerializedStringField(field.second, "value");
+			VansAssetGuid guid;
+			if (VansAssetGuid::TryParse(literal, guid)) result.push_back(literal);
+		}
 		if (field.second.kind == VansSerializedValue::Kind::String)
 		{
 			if (isGuidReferenceField(field.first))

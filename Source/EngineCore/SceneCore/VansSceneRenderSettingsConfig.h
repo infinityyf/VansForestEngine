@@ -155,8 +155,11 @@ struct VansSceneVolumetricCloudSettingsConfig
 	VansSceneCloudShadowSettingsConfig shadow;
 };
 
+struct VansSceneSkyLightingSettingsConfig { float intensity = 1.0f; };
+
 struct VansSceneEnvironmentSettingsConfig
 {
+    VansSceneSkyLightingSettingsConfig skyLighting;
 	VansScenePlanetSettingsConfig planet;
 	VansScenePhysicalAtmosphereSettingsConfig physicalAtmosphere;
 	VansSceneHeightFogSettingsConfig heightFog;
@@ -216,24 +219,32 @@ struct VansSceneGIRegionSettingsConfig
 	std::optional<float> probeSpacing;
 	std::optional<std::array<float, 3>> probeSpacingAxes;
 	std::optional<uint32_t> raysPerProbe;
-	std::optional<uint32_t> spatialUpdateDivisor;
-	std::optional<uint32_t> directionUpdateSlices;
 	std::optional<float> maxRayDistance;
 	std::optional<float> normalBias;
 	std::optional<float> volumeFadeDistance;
 	std::optional<float> priority;
 };
 
+struct VansSceneGIProbePlacementConfig
+{
+	std::optional<bool> enabled;
+	std::optional<float> minProbeSpacing;
+	std::optional<float> maxProbeSpacing;
+	std::optional<float> parentProbeMaxSize;
+	std::optional<uint32_t> maxProbeCount;
+	std::optional<uint32_t> maxProbeUpdatesPerFrame;
+	std::optional<uint32_t> maxRaysPerFrame;
+};
+
 struct VansSceneGISettingsConfig
 {
+	VansSceneGIProbePlacementConfig placement;
 	std::vector<VansSceneGIRegionSettingsConfig> regions;
-	std::optional<float> environmentIntensity;
 	std::optional<float> maxIndirectRadiance;
 	std::optional<float> maxProbeRadiance;
 	std::optional<float> irradianceHysteresis;
 	std::optional<float> distanceHysteresis;
 	std::optional<float> distanceSharpness;
-	std::optional<float> brightnessChangeThreshold;
 	std::optional<bool> showProbeGizmos;
 	std::optional<bool> showProbeVolume;
 	std::optional<uint32_t> gizmoStride;

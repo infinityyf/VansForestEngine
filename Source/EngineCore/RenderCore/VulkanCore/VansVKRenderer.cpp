@@ -22,16 +22,9 @@
 #include "../../ProjectSystem/VansProjectManager.h"
 #include "../../RuntimeUI/Public/VansUISystem.h"
 #include <algorithm>
-#include <cmath>
-#include <cstdlib>
-#include <cstring>
-#include <filesystem>
-#include <fstream>
-#include <iostream>
-#include <limits>
-#include <sstream>
 #include <thread>
 #include <utility>
+#include <stdexcept>
 
 namespace VansGraphics
 {
@@ -81,65 +74,11 @@ namespace VansGraphics
 				});
 		}
 
-		bool IsDeferredProbeOnlyDebugOutput(
+		bool IsIsolatedDeferredDebugOutput(
 			const VansRenderSceneFrameSnapshot& snapshot)
 		{
-			return snapshot.gi.prepared &&
-				IsGIProbeOnlyDeferredOutputEnabled(snapshot.gi.settings);
-		}
-
-		float HalfToFloat(uint16_t value)
-		{
-			const uint32_t sign = uint32_t(value & 0x8000u) << 16u;
-			int32_t exponent = int32_t((value >> 10u) & 0x1fu);
-			uint32_t mantissa = value & 0x03ffu;
-			uint32_t bits = 0u;
-			if (exponent == 0)
-			{
-				if (mantissa == 0u)
-				{
-					bits = sign;
-				}
-				else
-				{
-					exponent = 1;
-					while ((mantissa & 0x0400u) == 0u)
-					{
-						mantissa <<= 1u;
-						--exponent;
-					}
-					mantissa &= 0x03ffu;
-					bits = sign | (uint32_t(exponent + 112) << 23u) | (mantissa << 13u);
-				}
-			}
-			else if (exponent == 31)
-			{
-				bits = sign | 0x7f800000u | (mantissa << 13u);
-			}
-			else
-			{
-				bits = sign | (uint32_t(exponent + 112) << 23u) | (mantissa << 13u);
-			}
-			float result = 0.0f;
-			std::memcpy(&result, &bits, sizeof(result));
-			return result;
-		}
-
-		uint8_t DisplayByteFromLinearHalf(uint16_t value)
-		{
-			float linear = HalfToFloat(value);
-			if (!std::isfinite(linear) || linear <= 0.0f)
-				linear = 0.0f;
-			const float mapped = linear / (1.0f + linear);
-			return static_cast<uint8_t>(std::clamp(mapped, 0.0f, 1.0f) * 255.0f + 0.5f);
-		}
-
-		uint8_t DisplayByteFromLinearFloat(float linear)
-		{
-			if (!std::isfinite(linear) || linear <= 0.0f)
-				linear = 0.0f;
-			const float mapped = linear / (1.0f + linear);
-			return static_cast<uint8_t>(std::clamp(mapped, 0.0f, 1.0f) * 255.0f + 0.5f);
+			return snapshot.reflectionProbeIsolatedDebugOutput || (snapshot.gi.prepared &&
+				snapshot.gi.settings.probeOnlyDeferredOutput);
 		}
 
 		constexpr uint64_t kRenderGraphFnvOffsetBasis = 14695981039346656037ull;
@@ -430,6 +369,7 @@ namespace VansGraphics
 
 	void VansVKDevice::ResetAsyncFrameCommandBuffersAfterFailure()
 	{
+        rayTracingContext.DiscardGIProbeUpdate();
 		m_VansVKCommandBuffer.ResetCommandBuffer(false);
 		m_VansVKShadowMapsCommandBuffer.ResetCommandBuffer(false);
 		m_VansVKHairShadowCommandBuffer.ResetCommandBuffer(false);
@@ -492,32 +432,9 @@ namespace VansGraphics
 		}
 
 		VkExtent2D newDisplayExtent = m_VansVKSurface.m_VansVKSwapChainImageExtent;
-		if (m_FrameContextRingResourcesReady)
-		{
-			m_SwapchainImageInFlightFences.assign(
-				static_cast<size_t>(m_VansVKSurface.m_VansVKImageCount),
-				VK_NULL_HANDLE);
-			if (!RecreateFrameContextPresentSemaphores())
-			{
-				VANS_LOG_ERROR("[VansVKDevice] Frame-context ring disabled because swapchain present semaphore recreation failed.");
-				DestroyFrameContextRingResources();
-				m_EnableFrameContextRing = false;
-				m_ConfiguredFramesInFlight = 1;
-				BindCurrentFrameContextToLegacyResources();
-			}
-			else
-			{
-				m_LastSubmittedGraphicsFence = VK_NULL_HANDLE;
-				m_LastSubmittedGraphicsFencePending = false;
-				for (VansFrameContextRingSlot& slot : m_FrameContextRingSlots)
-				{
-					slot.gpuWorkPending = false;
-					slot.commandBufferRecording = false;
-					slot.graphicsCommandBuffer.ResetCommandBuffer(false);
-					slot.deferredDeletes.Flush();
-				}
-			}
-		}
+		if (!RecreateSwapchainPresentSemaphores())
+			throw std::runtime_error("Failed to recreate swapchain present semaphores");
+		m_SwapchainImageInFlightFences.assign(m_VansVKSurface.m_VansVKImageCount, VK_NULL_HANDLE);
 
 		auto renderPassManager = VansRenderPassManager::GetInstance();
 		renderPassManager->RecreateUIRenderPass(
@@ -540,7 +457,7 @@ namespace VansGraphics
 	bool VansVKDevice::BeforeRendering()
 	{
 		if (!CreateVKSemaphore(m_SwapChainImageAcquiredSemaphore) ||
-			!CreateVKSemaphore(m_CommandBufferReadyToPresentSemaphore))
+			!RecreateSwapchainPresentSemaphores())
 		{
 			VANS_LOG_ERROR("[VansVKDevice] Failed to initialize renderer semaphores.");
 			return false;
@@ -575,8 +492,8 @@ namespace VansGraphics
 		SetupHairLightingDescriptors(renderPassManager);
 		SetupHairCompositeDescriptors(renderPassManager);
 		SetupTransmissionGlassDescriptors(renderPassManager);
-		// 贴花 Pass：引用 GBuffer 图像，必须在 SetupVansDeferredRenderPass 之后调用。
-		renderPassManager->SetupVansDecalRenderPass(m_VansVKLogicDevice, { m_RenderWidth, m_RenderHeight });
+		// 贴花只读主深度与接收材质，输出独立修饰附件。
+		renderPassManager->SetupVansDecalRenderPass(m_VansVKLogicDevice, m_VansVKCommandBuffer, m_VansVKGraphicsQueue, { m_RenderWidth, m_RenderHeight });
 		renderPassManager->SetupVansScreenSpaceEffectsPass(m_VansVKLogicDevice, { m_RenderWidth, m_RenderHeight });
 		// 水面 GBuffer Pass：必须在 SetupVansDeferredRenderPass 之后调用，依赖已创建的深度图像。
 		renderPassManager->SetupVansWaterGBufferPass(m_VansVKLogicDevice, { m_RenderWidth, m_RenderHeight });
@@ -656,6 +573,7 @@ namespace VansGraphics
 
 	void VansVKDevice::BuildCurrentRenderFramePlan(VansRenderPassManager* renderPassManager)
 	{
+		VANS_PROFILE_SCOPE("Render::BuildRenderFramePlan", Vans::ProfileCategory::RenderPrepare);
 		(void)renderPassManager;
 
 		if (!IsFrameContextRingActive())
@@ -835,7 +753,9 @@ namespace VansGraphics
 	void VansVKDevice::BindCurrentFrameContextToLegacyResources()
 	{
 		m_CurrentFrameContext.imageAcquiredSemaphore = m_SwapChainImageAcquiredSemaphore;
-		m_CurrentFrameContext.renderFinishedSemaphore = m_CommandBufferReadyToPresentSemaphore;
+		m_CurrentFrameContext.renderFinishedSemaphore =
+			m_SwapChainImageIndex < m_SwapchainImageRenderFinishedSemaphores.size()
+			? m_SwapchainImageRenderFinishedSemaphores[m_SwapChainImageIndex] : VK_NULL_HANDLE;
 		m_CurrentFrameContext.graphicsFence = m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence;
 		m_CurrentFrameContext.ssaoRawFence = m_VansVKSSAORawCommandBuffer.m_CommandBufferFinishSubmitFence;
 		m_CurrentFrameContext.graphicsScreenFence = m_VansVKGraphicsScreenCommandBuffer.m_CommandBufferFinishSubmitFence;
@@ -929,12 +849,6 @@ namespace VansGraphics
 		m_SwapchainImageInFlightFences.assign(
 			static_cast<size_t>(m_VansVKSurface.m_VansVKImageCount),
 			VK_NULL_HANDLE);
-		if (!RecreateFrameContextPresentSemaphores())
-		{
-			VANS_LOG_ERROR("[VansVKDevice] Failed to create per-swapchain-image present semaphores.");
-			DestroyFrameContextRingResources();
-			return false;
-		}
 		m_LastSubmittedGraphicsFence = VK_NULL_HANDLE;
 		m_LastSubmittedGraphicsFencePending = false;
 		m_FrameContextRingResourcesReady = true;
@@ -942,7 +856,7 @@ namespace VansGraphics
 		return true;
 	}
 
-	bool VansVKDevice::RecreateFrameContextPresentSemaphores()
+	bool VansVKDevice::RecreateSwapchainPresentSemaphores()
 	{
 		for (VkSemaphore& semaphore : m_SwapchainImageRenderFinishedSemaphores)
 			DestroyVKSemaphore(semaphore);
@@ -971,6 +885,9 @@ namespace VansGraphics
 
 		for (VansFrameContextRingSlot& slot : m_FrameContextRingSlots)
 		{
+            // 此销毁事务已经等待设备空闲，先退役反馈，再销毁它对应的 fence。
+            if (slot.gpuWorkPending)
+                rayTracingContext.CompleteGIProbeUpdate(slot.graphicsCommandBuffer.m_CommandBufferFinishSubmitFence);
 			slot.deferredDeletes.Flush();
 			DestroyVKSemaphore(slot.imageAcquiredSemaphore);
 			DestroyVKFence(slot.graphicsCommandBuffer.m_CommandBufferFinishSubmitFence);
@@ -981,9 +898,6 @@ namespace VansGraphics
 			slot.commandBufferRecording = false;
 			slot.frameSubmitSucceeded = true;
 		}
-		for (VkSemaphore& semaphore : m_SwapchainImageRenderFinishedSemaphores)
-			DestroyVKSemaphore(semaphore);
-		m_SwapchainImageRenderFinishedSemaphores.clear();
 
 		m_SwapchainImageInFlightFences.clear();
 		m_ActiveFrameContextSlot = nullptr;
@@ -1004,6 +918,8 @@ namespace VansGraphics
 			slot.frameSubmitSucceeded = false;
 			return false;
 		}
+
+		rayTracingContext.CompleteGIProbeUpdate(fence);
 
 		if (!slot.graphicsCommandBuffer.ResetCommandBuffer(false))
 		{
@@ -1125,20 +1041,7 @@ namespace VansGraphics
 		m_ActiveFrameContextSlot = &slot;
 		BindCurrentFrameContextToSlot(slot);
 
-		// 现阶段 camera/global/pass uniform 仍是单份资源。开启 frame ring 时延迟到下一帧开头等待，
-		// 可以避免 Present 内硬阻塞，同时保证 CPU 不会覆盖上一帧 GPU 仍在读取的动态数据。
-		if (m_LastSubmittedGraphicsFencePending)
-		{
-			for (VansFrameContextRingSlot& pendingSlot : m_FrameContextRingSlots)
-			{
-				if (pendingSlot.graphicsCommandBuffer.m_CommandBufferFinishSubmitFence == m_LastSubmittedGraphicsFence)
-				{
-					if (!WaitForFrameContextRingSlot(pendingSlot))
-						return false;
-					break;
-				}
-			}
-		}
+		// 共享 camera/global/pass 数据的上一帧生命周期已在 PrepareRenderingFrame 统一完成。
 
 		VkResult acquireResult = VK_ERROR_INITIALIZATION_FAILED;
 		{
@@ -1222,6 +1125,12 @@ namespace VansGraphics
 				VANS_LOG_ERROR("[VansVKDevice] Swapchain image acquisition failed. VkResult=" << static_cast<int>(acquireResult));
 				return;
 			}
+			if (m_SwapChainImageIndex >= m_SwapchainImageRenderFinishedSemaphores.size())
+			{
+				m_CurrentFrameContext.frameSubmitSucceeded = false;
+				return;
+			}
+			m_CurrentFrameContext.renderFinishedSemaphore = m_SwapchainImageRenderFinishedSemaphores[m_SwapChainImageIndex];
 			ResetFrameStageUploadAllocator();
 		}
 
@@ -1255,12 +1164,14 @@ namespace VansGraphics
 			m_CurrentRenderSceneSnapshot,
 			frameResourceSlot,
 			m_CurrentFrameContext.frameNumber);
+		// GI 重建会替换资源并标记绑定失效，必须先于本帧节点更新。
+		// 否则切换当帧仍会使用上一套已释放的 atlas 和 probe state。
+		ProcessPendingGISettings();
 		m_Scene->PrepareRenderBackendData(
 			m_CurrentRenderView,
 			m_CurrentRenderSceneSnapshot,
 			m_RenderWorld);
 		m_DrawInstanceArena.BeginFrame(frameResourceSlot);
-		ProcessPendingGISettings();
 		VANS_SET_FRAME_PHASE(VansFramePhase::GPURecord);
 
 		auto renderPassManager = VansRenderPassManager::GetInstance();
@@ -1501,7 +1412,7 @@ namespace VansGraphics
 				m_globalRenderStateData,
 				[&]()
 				{
-					if (!IsDeferredProbeOnlyDebugOutput(m_CurrentRenderSceneSnapshot))
+					if (!IsIsolatedDeferredDebugOutput(m_CurrentRenderSceneSnapshot))
 						m_Scene->DrawForwardOpaquePreAtmosphereNodes();
 				});
 			// 主深度已经包含 Deferred 与 Forward Opaque；云步进在最近表面终止，
@@ -1509,7 +1420,7 @@ namespace VansGraphics
 			RecordFrameStep(m_CurrentFramePlan, VansRenderPassNames::VolumetricCloud,
 				[&]() { UpdateVolumetricCloud(frameGraphicsCommandBuffer); });
 			// Generate water coverage only after opaque custom materials have populated main depth.
-			if (!IsDeferredProbeOnlyDebugOutput(m_CurrentRenderSceneSnapshot) &&
+			if (!IsIsolatedDeferredDebugOutput(m_CurrentRenderSceneSnapshot) &&
 				IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::WaterGBuffer))
 			{
 				auto* waterSys = m_Scene->GetWaterSystem();
@@ -1554,7 +1465,7 @@ namespace VansGraphics
 						[&]() { m_Scene->DrawWaterGBufferNode(); });
 				}
 			}
-			if (!IsDeferredProbeOnlyDebugOutput(m_CurrentRenderSceneSnapshot))
+			if (!IsIsolatedDeferredDebugOutput(m_CurrentRenderSceneSnapshot))
 			{
 				RecordFrameGpuStep(
 					m_CurrentFramePlan,
@@ -1568,7 +1479,7 @@ namespace VansGraphics
 					});
 			}
 			// Water effects consume the coverage generated against the updated main depth.
-			if (!IsDeferredProbeOnlyDebugOutput(m_CurrentRenderSceneSnapshot) &&
+			if (!IsIsolatedDeferredDebugOutput(m_CurrentRenderSceneSnapshot) &&
 				IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::WaterPreCompute))
 			{
 				VANS_GPU_SCOPE(cmd, "Water Pre-Compute");
@@ -1605,7 +1516,7 @@ namespace VansGraphics
 				m_CurrentFramePlan,
 				VansRenderPassNames::AtmosphereComposite,
 				[&]() { CompositeAtmosphere(frameGraphicsCommandBuffer); });
-			if (!IsDeferredProbeOnlyDebugOutput(m_CurrentRenderSceneSnapshot) &&
+			if (!IsIsolatedDeferredDebugOutput(m_CurrentRenderSceneSnapshot) &&
 				IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::HairVisibility))
 			{
 				ClearHairOITResources(renderPassManager, frameGraphicsCommandBuffer);
@@ -1621,7 +1532,7 @@ namespace VansGraphics
 				PrepareHairOITForResolve(renderPassManager, frameGraphicsCommandBuffer);
 			}
 
-					if (!IsDeferredProbeOnlyDebugOutput(m_CurrentRenderSceneSnapshot))
+					if (!IsIsolatedDeferredDebugOutput(m_CurrentRenderSceneSnapshot))
 			{
 				RecordFrameGraphicsPass(
 					m_CurrentFramePlan,
@@ -1649,7 +1560,7 @@ namespace VansGraphics
 						{ sceneColorToPostProcess });
 
 					UploadPostProcessProfileIfDirty();
-					if (!IsDeferredProbeOnlyDebugOutput(m_CurrentRenderSceneSnapshot))
+					if (!IsIsolatedDeferredDebugOutput(m_CurrentRenderSceneSnapshot))
 					{
 						UpdateDepthOfField(renderPassManager, frameGraphicsCommandBuffer);
 					}
@@ -1665,7 +1576,7 @@ namespace VansGraphics
 				});
 
 			// Composite transparent content into HDR SceneColor before FSR.
-					if (!IsDeferredProbeOnlyDebugOutput(m_CurrentRenderSceneSnapshot))
+					if (!IsIsolatedDeferredDebugOutput(m_CurrentRenderSceneSnapshot))
 			{
 				RecordFrameStep(
 					m_CurrentFramePlan,
@@ -2208,7 +2119,7 @@ namespace VansGraphics
 				m_globalRenderStateData,
 				[&]()
 				{
-					if (!IsDeferredProbeOnlyDebugOutput(m_CurrentRenderSceneSnapshot))
+					if (!IsIsolatedDeferredDebugOutput(m_CurrentRenderSceneSnapshot))
 						m_Scene->DrawForwardOpaquePreAtmosphereNodes();
 				});
 			RecordFrameStep(
@@ -2222,7 +2133,7 @@ namespace VansGraphics
 						Vans::VansGpuQueueLane::Graphics);
 					UpdateVolumetricCloud(m_VansVKCommandBuffer);
 				});
-			if (!IsDeferredProbeOnlyDebugOutput(m_CurrentRenderSceneSnapshot) &&
+			if (!IsIsolatedDeferredDebugOutput(m_CurrentRenderSceneSnapshot) &&
 				IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::WaterGBuffer))
 			{
 				auto* waterSys = m_Scene->GetWaterSystem();
@@ -2268,7 +2179,7 @@ namespace VansGraphics
 				}
 			}
 
-			if (!IsDeferredProbeOnlyDebugOutput(m_CurrentRenderSceneSnapshot))
+			if (!IsIsolatedDeferredDebugOutput(m_CurrentRenderSceneSnapshot))
 			{
 				RecordFrameGpuStep(
 					m_CurrentFramePlan,
@@ -2282,7 +2193,7 @@ namespace VansGraphics
 					});
 			}
 
-			if (!IsDeferredProbeOnlyDebugOutput(m_CurrentRenderSceneSnapshot) &&
+			if (!IsIsolatedDeferredDebugOutput(m_CurrentRenderSceneSnapshot) &&
 				IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::WaterPreCompute))
 			{
 				VANS_GPU_SCOPE(cmd, "Water Pre-Compute");
@@ -2318,7 +2229,7 @@ namespace VansGraphics
 				m_CurrentFramePlan,
 				VansRenderPassNames::AtmosphereComposite,
 				[&]() { CompositeAtmosphere(m_VansVKCommandBuffer); });
-			if (!IsDeferredProbeOnlyDebugOutput(m_CurrentRenderSceneSnapshot) &&
+			if (!IsIsolatedDeferredDebugOutput(m_CurrentRenderSceneSnapshot) &&
 				IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::HairVisibility))
 			{
 				ClearHairOITResources(renderPassManager, m_VansVKCommandBuffer);
@@ -2334,7 +2245,7 @@ namespace VansGraphics
 				PrepareHairOITForResolve(renderPassManager, m_VansVKCommandBuffer);
 			}
 
-					if (!IsDeferredProbeOnlyDebugOutput(m_CurrentRenderSceneSnapshot))
+					if (!IsIsolatedDeferredDebugOutput(m_CurrentRenderSceneSnapshot))
 			{
 				RecordFrameGraphicsPass(
 					m_CurrentFramePlan,
@@ -2362,7 +2273,7 @@ namespace VansGraphics
 						{ sceneColorToPostProcess });
 
 					UploadPostProcessProfileIfDirty();
-					if (!IsDeferredProbeOnlyDebugOutput(m_CurrentRenderSceneSnapshot))
+					if (!IsIsolatedDeferredDebugOutput(m_CurrentRenderSceneSnapshot))
 					{
 						UpdateDepthOfField(renderPassManager, m_VansVKCommandBuffer);
 					}
@@ -2377,7 +2288,7 @@ namespace VansGraphics
 						{ postProcessComputeToFragment });
 				});
 
-					if (!IsDeferredProbeOnlyDebugOutput(m_CurrentRenderSceneSnapshot))
+					if (!IsIsolatedDeferredDebugOutput(m_CurrentRenderSceneSnapshot))
 			{
 				RecordFrameStep(
 					m_CurrentFramePlan,
@@ -2412,7 +2323,7 @@ namespace VansGraphics
 				{ sceneColorToPostProcess });
 			UploadPostProcessProfileIfDirty();
 			UpdateExposure(renderPassManager, postTransparentCommandBuffer);
-					if (!IsDeferredProbeOnlyDebugOutput(m_CurrentRenderSceneSnapshot))
+					if (!IsIsolatedDeferredDebugOutput(m_CurrentRenderSceneSnapshot))
 			{
 				UpdateBloom(renderPassManager, postTransparentCommandBuffer);
 			}
@@ -2538,489 +2449,90 @@ namespace VansGraphics
 		});
 	}
 
-	void VansVKDevice::MaybeDumpGIDebugFrame(VansRenderPassManager* renderPassManager)
+
+	void VansVKDevice::PrepareRenderingFrame()
 	{
-		const char* dumpRootEnv = std::getenv("FORESTENGINE_GI_DEBUG_DUMP_DIR");
-		if (dumpRootEnv == nullptr || dumpRootEnv[0] == '\0' || renderPassManager == nullptr ||
-			m_Scene == nullptr || !m_Scene->IsSceneReady())
+		// 必须早于 PrepareRenderSubmission 的 camera/light/transform 等单份资源写入。
+		if (!RetireSubmittedFrame())
+			throw std::runtime_error("Failed to retire submitted GPU frame");
+		ProcessPendingUpscalerConfig();
+		m_PipelineCacheService.TickPersistence();
+	}
+
+	bool VansVKDevice::RetireSubmittedFrame()
+	{
+		if (!m_FrameSubmitOrchestrator.HasPendingWork()) return true;
+		if (!m_FrameSubmitOrchestrator.WaitForCompletion()) return false;
+		rayTracingContext.CompleteGIProbeUpdate(m_SubmittedFrameUsesAsyncCompute
+			? m_CurrentFrameContext.rayTracingFence : m_CurrentFrameContext.graphicsFence);
+		if (IsFrameContextRingActive() && m_ActiveFrameContextSlot != nullptr)
 		{
-			return;
+			if (!WaitForFrameContextRingSlot(*m_ActiveFrameContextSlot)) return false;
 		}
-		static uint32_t readyFrameCount = 0u;
-		static bool dumped = false;
-		if (dumped)
-			return;
-		++readyFrameCount;
-		uint32_t targetFrame = 160u;
-		if (const char* frameEnv = std::getenv("FORESTENGINE_GI_DEBUG_DUMP_FRAME"))
+		else
 		{
-			char* endPtr = nullptr;
-			const unsigned long parsed = std::strtoul(frameEnv, &endPtr, 10);
-			if (endPtr != frameEnv && parsed > 0ul)
-				targetFrame = static_cast<uint32_t>(std::min<unsigned long>(parsed, 4096ul));
+			VkFence graphicsFence = m_CurrentFrameContext.graphicsFence;
+			if (vkResetFences(m_VansVKLogicDevice, 1, &graphicsFence) != VK_SUCCESS) return false;
+			if (!m_VansVKCommandBuffer.ResetCommandBuffer(false)) return false;
 		}
-		if (readyFrameCount < targetFrame)
-			return;
-
-		if (IsFrameContextRingActive())
+		if (m_SubmittedFrameUsesAsyncCompute)
 		{
-			VANS_LOG("[GIDebugDump] Frame-context ring active; waiting for GPU idle before one-shot readback.");
-			if (!WaitForDevice())
 			{
-				VANS_LOG_ERROR("[GIDebugDump] Failed to wait for GPU idle before readback.");
-				dumped = true;
-				return;
+				VANS_PROFILE_SCOPE("Vulkan::ResetAsyncFrameCommandBuffers", Vans::ProfileCategory::VulkanSubmit);
+				std::vector<VkFence> submittedFences = {
+					m_CurrentFrameContext.shadowMapsFence,
+					m_CurrentFrameContext.hairShadowFence,
+					m_CurrentFrameContext.gbufferFence,
+					m_CurrentFrameContext.gbufferMaterialFence,
+					m_CurrentFrameContext.ssaoRawFence,
+					m_CurrentFrameContext.graphicsScreenFence,
+					m_CurrentFrameContext.vegetationFence,
+					m_CurrentFrameContext.earlyAuxFence,
+					m_CurrentFrameContext.asyncAtmosphereFence,
+					m_CurrentFrameContext.asyncHZBFence,
+					m_CurrentFrameContext.rayTracingFence,
+					m_CurrentFrameContext.giDataFence
+				};
+				if (VansGraphics::vkResetFences(
+					m_VansVKLogicDevice,
+					static_cast<uint32_t>(submittedFences.size()),
+					submittedFences.data()) != VK_SUCCESS)
+				{
+					m_CurrentFrameContext.frameSubmitSucceeded = false;
+					VANS_LOG_ERROR("[VansVKDevice] Failed to reset async frame fences.");
+				}
+
+				auto resetCommandBuffer = [&](const char* name, VansVKCommandBuffer& commandBuffer)
+				{
+					if (commandBuffer.ResetCommandBuffer(false))
+						return;
+					m_CurrentFrameContext.frameSubmitSucceeded = false;
+					VANS_LOG_ERROR("[VansVKDevice] Failed to reset " << name << " command buffer.");
+				};
+				resetCommandBuffer("shadow maps", m_VansVKShadowMapsCommandBuffer);
+				resetCommandBuffer("hair-shadow", m_VansVKHairShadowCommandBuffer);
+				resetCommandBuffer("GBuffer", m_VansVKGBufferCommandBuffer);
+				resetCommandBuffer("GBuffer-material", m_VansVKGBufferMaterialCommandBuffer);
+				resetCommandBuffer("SSAO-raw", m_VansVKSSAORawCommandBuffer);
+				resetCommandBuffer("graphics-screen", m_VansVKGraphicsScreenCommandBuffer);
+				resetCommandBuffer("vegetation", m_VansVKVegetationCommandBuffer);
+				resetCommandBuffer("early auxiliary", m_VansVKEarlyAuxCommandBuffer);
+				resetCommandBuffer("async atmosphere", m_VansVKAsyncAtmosphereCommandBuffer);
+				resetCommandBuffer("async HZB", m_VansVKAsyncHZBCommandBuffer);
+				resetCommandBuffer("ray-tracing", m_VansVKRayTracingCommandBuffer);
+				resetCommandBuffer("GI-data", m_VansVKGIDataCommandBuffer);
 			}
 		}
-
-		namespace fs = std::filesystem;
-		const fs::path dumpRoot(dumpRootEnv);
-		std::error_code createError;
-		fs::create_directories(dumpRoot, createError);
-		if (createError)
-		{
-			VANS_LOG_ERROR("[GIDebugDump] Failed to create dump directory '" << dumpRoot.string()
-				<< "': " << createError.message());
-			dumped = true;
-			return;
-		}
-
-		auto dumpImage = [&](const char* label, VansVKImage& image) -> bool
-		{
-			const VkExtent3D extent = image.GetImageDimension();
-			if (extent.width == 0u || extent.height == 0u || image.GetImage() == VK_NULL_HANDLE)
-				return false;
-			const VkFormat imageFormat = image.GetImageCreateInfo().format;
-			const bool isDepth = imageFormat == VK_FORMAT_D32_SFLOAT_S8_UINT ||
-				imageFormat == VK_FORMAT_D32_SFLOAT;
-			const bool isFloat32 = imageFormat == VK_FORMAT_R32G32B32A32_SFLOAT;
-			const bool isHalfFloat = imageFormat == VK_FORMAT_R16G16B16A16_SFLOAT ||
-				imageFormat == VK_FORMAT_R16G16_SFLOAT;
-			const uint32_t channelCount = isDepth ? 1u :
-				(imageFormat == VK_FORMAT_R16G16B16A16_SFLOAT ? 4u :
-					(imageFormat == VK_FORMAT_R16G16_SFLOAT ? 2u :
-					(imageFormat == VK_FORMAT_R32G32B32A32_SFLOAT ? 4u : 0u)));
-			if (channelCount == 0u)
-			{
-				VANS_LOG_ERROR("[GIDebugDump] Unsupported image format for '" << label << "'.");
-				return false;
-			}
-
-			const VkDeviceSize componentBytes = (isFloat32 || isDepth) ? sizeof(float) : sizeof(uint16_t);
-			const VkDeviceSize pixelBytes = channelCount * componentBytes;
-			const VkDeviceSize imageBytes = VkDeviceSize(extent.width) * extent.height * pixelBytes;
-			VansVKBuffer readback;
-			if (!readback.CreatVulkanBuffer(m_VansVKLogicDevice, imageBytes, VK_FORMAT_R16_UINT,
-				VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
-			{
-				VANS_LOG_ERROR("[GIDebugDump] Failed to create readback buffer for '" << label << "'.");
-				return false;
-			}
-			if (!readback.PersistentMap())
-			{
-				readback.DestroyVulkanBuffer(m_VansVKLogicDevice);
-				VANS_LOG_ERROR("[GIDebugDump] Failed to map readback buffer for '" << label << "'.");
-				return false;
-			}
-
-			VkBufferImageCopy region{};
-			const VkImageAspectFlags imageAspect = isDepth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
-			region.imageSubresource = { imageAspect, 0, 0, 1 };
-			region.imageExtent = { extent.width, extent.height, 1u };
-			VansVKCommandBuffer& cmd = m_ImmediateGraphicsCommandBuffer;
-			const VkImageLayout oldLayout = image.GetImageLayout();
-			cmd.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-			image.SetImageMemoryBarrier(cmd,
-				VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-				VK_PIPELINE_STAGE_TRANSFER_BIT,
-				{
-					image.GetImage(),
-					VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
-					VK_ACCESS_TRANSFER_READ_BIT,
-					oldLayout,
-					VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-					VK_QUEUE_FAMILY_IGNORED,
-					VK_QUEUE_FAMILY_IGNORED,
-					imageAspect
-				});
-			VansVKMemoryManager::CopyImageToBuffer(cmd, image, readback,
-				VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, { region });
-			image.SetImageMemoryBarrier(cmd,
-				VK_PIPELINE_STAGE_TRANSFER_BIT,
-				VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-				{
-					image.GetImage(),
-					VK_ACCESS_TRANSFER_READ_BIT,
-					VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
-					VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-					oldLayout,
-					VK_QUEUE_FAMILY_IGNORED,
-					VK_QUEUE_FAMILY_IGNORED,
-					imageAspect
-				});
-			cmd.EndCommandBufferRecord();
-			const bool submitted = VansVKCommandBuffer::SubmitCommands(
-				m_VansVKGraphicsQueue, m_VansVKLogicDevice,
-				{ cmd.GetVKCommandBuffer() }, {}, {}, cmd.m_CommandBufferFinishSubmitFence);
-			cmd.ResetCommandBuffer(false);
-			if (!submitted)
-			{
-				readback.Unmap();
-				readback.DestroyVulkanBuffer(m_VansVKLogicDevice);
-				VANS_LOG_ERROR("[GIDebugDump] Failed to submit readback for '" << label << "'.");
-				return false;
-			}
-			readback.InvalidateMappedRange(0, imageBytes);
-
-			const void* mapped = readback.GetMappedPtr();
-			const uint16_t* half = isHalfFloat ? static_cast<const uint16_t*>(mapped) : nullptr;
-			const float* float32 = (isFloat32 || isDepth) ? static_cast<const float*>(mapped) : nullptr;
-			bool success = mapped != nullptr;
-			std::vector<uint8_t> ppmPixels(size_t(extent.width) * extent.height * 3u);
-			double sum[3] = { 0.0, 0.0, 0.0 };
-			double alphaSum = 0.0;
-			float minValue[3] = {
-				std::numeric_limits<float>::max(),
-				std::numeric_limits<float>::max(),
-				std::numeric_limits<float>::max()
-			};
-			float maxValue[3] = { 0.0f, 0.0f, 0.0f };
-			float minAlpha = std::numeric_limits<float>::max();
-			float maxAlpha = 0.0f;
-			uint64_t invalidCount = 0u;
-			for (uint32_t y = 0u; success && y < extent.height; ++y)
-			{
-				for (uint32_t x = 0u; x < extent.width; ++x)
-				{
-					const size_t pixelIndex = size_t(y) * extent.width + x;
-					for (uint32_t c = 0u; c < 3u; ++c)
-					{
-						if (isDepth)
-						{
-							const float depth = float32[pixelIndex];
-							if (!std::isfinite(depth))
-							{
-								++invalidCount;
-							}
-							else if (c == 0u)
-							{
-								sum[0] += depth;
-								minValue[0] = std::min(minValue[0], depth);
-								maxValue[0] = std::max(maxValue[0], depth);
-							}
-							const float visibleDepth = std::isfinite(depth) ? std::clamp(depth, 0.0f, 1.0f) : 1.0f;
-							ppmPixels[pixelIndex * 3u + c] = static_cast<uint8_t>(
-								std::clamp(visibleDepth, 0.0f, 1.0f) * 255.0f + 0.5f);
-						}
-						else if (c < channelCount)
-						{
-							const float linear = isFloat32
-								? float32[pixelIndex * channelCount + c]
-								: HalfToFloat(half[pixelIndex * channelCount + c]);
-							if (!std::isfinite(linear))
-							{
-								++invalidCount;
-							}
-							else
-							{
-								sum[c] += linear;
-								minValue[c] = std::min(minValue[c], linear);
-								maxValue[c] = std::max(maxValue[c], linear);
-							}
-							ppmPixels[pixelIndex * 3u + c] =
-								isFloat32
-								? DisplayByteFromLinearFloat(linear)
-								: DisplayByteFromLinearHalf(half[pixelIndex * channelCount + c]);
-						}
-						else
-						{
-							ppmPixels[pixelIndex * 3u + c] = 0u;
-						}
-					}
-					if (!isDepth && channelCount >= 4u)
-					{
-						const float alpha = isFloat32
-							? float32[pixelIndex * channelCount + 3u]
-							: HalfToFloat(half[pixelIndex * channelCount + 3u]);
-						if (!std::isfinite(alpha))
-						{
-							++invalidCount;
-						}
-						else
-						{
-							alphaSum += alpha;
-							minAlpha = std::min(minAlpha, alpha);
-							maxAlpha = std::max(maxAlpha, alpha);
-						}
-					}
-				}
-			}
-
-			const fs::path ppmPath = dumpRoot / (std::string(label) + ".ppm");
-			const fs::path statsPath = dumpRoot / (std::string(label) + ".txt");
-			if (success)
-			{
-				std::ofstream ppm(ppmPath, std::ios::binary);
-				success = static_cast<bool>(ppm);
-				if (success)
-				{
-					ppm << "P6\n" << extent.width << ' ' << extent.height << "\n255\n";
-					ppm.write(reinterpret_cast<const char*>(ppmPixels.data()),
-						static_cast<std::streamsize>(ppmPixels.size()));
-					success = static_cast<bool>(ppm);
-				}
-			}
-			if (success)
-			{
-				const double denom = std::max<double>(double(extent.width) * double(extent.height), 1.0);
-				std::ofstream stats(statsPath);
-				stats << "label=" << label << '\n'
-					<< "size=" << extent.width << "x" << extent.height << '\n'
-					<< "channels=" << channelCount << '\n'
-					<< "mean_rgb=" << (sum[0] / denom) << ','
-					<< (sum[1] / denom) << ',' << (sum[2] / denom) << '\n'
-					<< "min_rgb=" << (minValue[0] == std::numeric_limits<float>::max() ? 0.0f : minValue[0]) << ','
-					<< (minValue[1] == std::numeric_limits<float>::max() ? 0.0f : minValue[1]) << ','
-					<< (minValue[2] == std::numeric_limits<float>::max() ? 0.0f : minValue[2]) << '\n'
-					<< "max_rgb=" << maxValue[0] << ',' << maxValue[1] << ',' << maxValue[2] << '\n'
-					<< "mean_alpha=" << (alphaSum / denom) << '\n'
-					<< "min_alpha=" << (minAlpha == std::numeric_limits<float>::max() ? 0.0f : minAlpha) << '\n'
-					<< "max_alpha=" << maxAlpha << '\n'
-					<< "invalid_channels=" << invalidCount << '\n'
-					<< "display_mapping=reinhard_per_channel\n";
-			}
-
-			readback.Unmap();
-			readback.DestroyVulkanBuffer(m_VansVKLogicDevice);
-			if (success)
-			{
-				VANS_LOG("[GIDebugDump] Wrote " << ppmPath.string());
-			}
-			else
-			{
-				VANS_LOG_ERROR("[GIDebugDump] Failed to write dump for '" << label << "'.");
-			}
-			return success;
-		};
-
-		auto dumpProbeState = [&](const char* label, const VansVKBuffer* stateBuffer) -> bool
-		{
-			if (stateBuffer == nullptr || stateBuffer->GetNativeBuffer() == VK_NULL_HANDLE ||
-				stateBuffer->GetBufferSize() < 48u)
-			{
-				return false;
-			}
-
-			const VkDeviceSize bufferBytes = stateBuffer->GetBufferSize();
-			VansVKBuffer readback;
-			if (!readback.CreatVulkanBuffer(m_VansVKLogicDevice, bufferBytes, VK_FORMAT_R32_UINT,
-				VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
-			{
-				VANS_LOG_ERROR("[GIDebugDump] Failed to create probe-state readback buffer.");
-				return false;
-			}
-			if (!readback.PersistentMap())
-			{
-				readback.DestroyVulkanBuffer(m_VansVKLogicDevice);
-				VANS_LOG_ERROR("[GIDebugDump] Failed to map probe-state readback buffer.");
-				return false;
-			}
-
-			VansVKCommandBuffer& cmd = m_ImmediateGraphicsCommandBuffer;
-			cmd.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-			const_cast<VansVKBuffer*>(stateBuffer)->SetBufferMemoryBarrier(cmd,
-				VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-				VK_PIPELINE_STAGE_TRANSFER_BIT,
-				{
-					stateBuffer->GetNativeBuffer(),
-					VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
-					VK_ACCESS_TRANSFER_READ_BIT,
-					VK_QUEUE_FAMILY_IGNORED,
-					VK_QUEUE_FAMILY_IGNORED
-				});
-			cmd.CopyBuffer(stateBuffer->GetNativeBuffer(), readback.GetNativeBuffer(), 0, 0, bufferBytes);
-			const_cast<VansVKBuffer*>(stateBuffer)->SetBufferMemoryBarrier(cmd,
-				VK_PIPELINE_STAGE_TRANSFER_BIT,
-				VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-				{
-					stateBuffer->GetNativeBuffer(),
-					VK_ACCESS_TRANSFER_READ_BIT,
-					VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
-					VK_QUEUE_FAMILY_IGNORED,
-					VK_QUEUE_FAMILY_IGNORED
-				});
-			cmd.EndCommandBufferRecord();
-			const bool submitted = VansVKCommandBuffer::SubmitCommands(
-				m_VansVKGraphicsQueue, m_VansVKLogicDevice,
-				{ cmd.GetVKCommandBuffer() }, {}, {}, cmd.m_CommandBufferFinishSubmitFence);
-			cmd.ResetCommandBuffer(false);
-			if (!submitted)
-			{
-				readback.Unmap();
-				readback.DestroyVulkanBuffer(m_VansVKLogicDevice);
-				VANS_LOG_ERROR("[GIDebugDump] Failed to submit probe-state readback.");
-				return false;
-			}
-			readback.InvalidateMappedRange(0, bufferBytes);
-
-			struct ProbeStateDump
-			{
-				float relocationAndConfidence[4];
-				float distanceStats[4];
-				uint32_t metadata[4];
-			};
-			static_assert(sizeof(ProbeStateDump) == 48u);
-			const ProbeStateDump* states = static_cast<const ProbeStateDump*>(readback.GetMappedPtr());
-			const size_t stateCount = static_cast<size_t>(bufferBytes / sizeof(ProbeStateDump));
-			uint64_t zeroClassification = 0u;
-			uint64_t activeClassification = 0u;
-			uint64_t inactiveClassification = 0u;
-			uint64_t otherClassification = 0u;
-			double confidenceSum = 0.0;
-			float maxConfidence = 0.0f;
-			double updateCountSum = 0.0;
-			uint32_t maxUpdateCount = 0u;
-			double minFrontDistanceSum = 0.0;
-			double meanFrontDistanceSum = 0.0;
-			double backfaceRatioSum = 0.0;
-			double relocationLengthSum = 0.0;
-			float minFrontDistanceMin = std::numeric_limits<float>::max();
-			float minFrontDistanceMax = 0.0f;
-			float backfaceRatioMax = 0.0f;
-			float relocationLengthMax = 0.0f;
-			uint64_t nearSurfaceProbeCount = 0u;
-			uint64_t backfaceHeavyProbeCount = 0u;
-			for (size_t i = 0; states != nullptr && i < stateCount; ++i)
-			{
-				const uint32_t classification = states[i].metadata[0];
-				if (classification == 0u) ++zeroClassification;
-				else if (classification == 1u) ++activeClassification;
-				else if (classification == 2u) ++inactiveClassification;
-				else ++otherClassification;
-				const float confidence = states[i].relocationAndConfidence[3];
-				if (std::isfinite(confidence))
-				{
-					confidenceSum += confidence;
-					maxConfidence = std::max(maxConfidence, confidence);
-				}
-				const uint32_t updateCount = states[i].metadata[2];
-				updateCountSum += double(updateCount);
-				maxUpdateCount = std::max(maxUpdateCount, updateCount);
-
-				const float minFrontDistance = states[i].distanceStats[0];
-				const float meanFrontDistance = states[i].distanceStats[1];
-				const float backfaceRatio = states[i].distanceStats[2];
-				const float rx = states[i].relocationAndConfidence[0];
-				const float ry = states[i].relocationAndConfidence[1];
-				const float rz = states[i].relocationAndConfidence[2];
-				const float relocationLength = std::sqrt(rx * rx + ry * ry + rz * rz);
-				if (std::isfinite(minFrontDistance))
-				{
-					minFrontDistanceSum += minFrontDistance;
-					minFrontDistanceMin = std::min(minFrontDistanceMin, minFrontDistance);
-					minFrontDistanceMax = std::max(minFrontDistanceMax, minFrontDistance);
-					if (minFrontDistance < 0.15f)
-						++nearSurfaceProbeCount;
-				}
-				if (std::isfinite(meanFrontDistance))
-					meanFrontDistanceSum += meanFrontDistance;
-				if (std::isfinite(backfaceRatio))
-				{
-					backfaceRatioSum += backfaceRatio;
-					backfaceRatioMax = std::max(backfaceRatioMax, backfaceRatio);
-					if (backfaceRatio > 0.35f)
-						++backfaceHeavyProbeCount;
-				}
-				if (std::isfinite(relocationLength))
-				{
-					relocationLengthSum += relocationLength;
-					relocationLengthMax = std::max(relocationLengthMax, relocationLength);
-				}
-			}
-
-			const fs::path statsPath = dumpRoot / (std::string(label) + ".txt");
-			std::ofstream stats(statsPath);
-			stats << "label=" << label << '\n'
-				<< "states=" << stateCount << '\n'
-				<< "classification_zero=" << zeroClassification << '\n'
-				<< "classification_active=" << activeClassification << '\n'
-				<< "classification_inactive=" << inactiveClassification << '\n'
-				<< "classification_other=" << otherClassification << '\n'
-				<< "mean_confidence=" << (confidenceSum / std::max<double>(double(stateCount), 1.0)) << '\n'
-				<< "max_confidence=" << maxConfidence << '\n'
-				<< "mean_update_count=" << (updateCountSum / std::max<double>(double(stateCount), 1.0)) << '\n'
-				<< "max_update_count=" << maxUpdateCount << '\n'
-				<< "mean_min_front_distance=" << (minFrontDistanceSum / std::max<double>(double(stateCount), 1.0)) << '\n'
-				<< "min_front_distance_min=" << (minFrontDistanceMin == std::numeric_limits<float>::max() ? 0.0f : minFrontDistanceMin) << '\n'
-				<< "min_front_distance_max=" << minFrontDistanceMax << '\n'
-				<< "mean_front_distance=" << (meanFrontDistanceSum / std::max<double>(double(stateCount), 1.0)) << '\n'
-				<< "mean_backface_ratio=" << (backfaceRatioSum / std::max<double>(double(stateCount), 1.0)) << '\n'
-				<< "max_backface_ratio=" << backfaceRatioMax << '\n'
-				<< "near_surface_probe_count=" << nearSurfaceProbeCount << '\n'
-				<< "backface_heavy_probe_count=" << backfaceHeavyProbeCount << '\n'
-				<< "mean_relocation_length=" << (relocationLengthSum / std::max<double>(double(stateCount), 1.0)) << '\n'
-				<< "max_relocation_length=" << relocationLengthMax << '\n';
-			const bool success = static_cast<bool>(stats);
-			readback.Unmap();
-			readback.DestroyVulkanBuffer(m_VansVKLogicDevice);
-			if (success)
-				VANS_LOG("[GIDebugDump] Wrote " << statsPath.string());
-			else
-				VANS_LOG_ERROR("[GIDebugDump] Failed to write probe-state dump.");
-			return success;
-		};
-
-		bool wroteAny = false;
-		wroteAny = dumpImage("scene_color", renderPassManager->GetColor()) || wroteAny;
-		wroteAny = dumpImage("final_display", renderPassManager->GetFinalDisplayColor()) || wroteAny;
-		if (m_FSREnabled)
-			wroteAny = dumpImage("upscaler", m_UpscalerOutputImage) || wroteAny;
-		wroteAny = dumpImage("depth", renderPassManager->GetDepth()) || wroteAny;
-		wroteAny = dumpImage("gbuffer_normal", renderPassManager->GetNormal()) || wroteAny;
-		wroteAny = dumpImage("gbuffer0_albedo_roughness", renderPassManager->GetGbuffer0()) || wroteAny;
-		wroteAny = dumpImage("gbuffer1_material", renderPassManager->GetGbuffer1()) || wroteAny;
-		wroteAny = dumpImage("gbuffer2_world_position", renderPassManager->GetGbuffer2()) || wroteAny;
-		wroteAny = dumpImage("diffuse_exitant_radiance_history", renderPassManager->GetDiffuseExitantRadianceHistory()) || wroteAny;
-		if (VansMaterialManager* materialManager = m_Scene != nullptr ? m_Scene->GetMaterialManager() : nullptr)
-		{
-			if (VansTexture* screenSpaceShadow = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_SCREEN_SPACE_SHADOW_RESULT))
-				wroteAny = dumpImage("screen_space_shadow", screenSpaceShadow->GetImage()) || wroteAny;
-			if (VansTexture* ssgiResult = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_SSGI_RESULT))
-				wroteAny = dumpImage("ssgi_raw", ssgiResult->GetImage()) || wroteAny;
-			if (VansTexture* ssgiProbeCacheRadiance = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_SSGI_PROBE_CACHE_RADIANCE))
-				wroteAny = dumpImage("ssgi_screen_probe_cache_radiance", ssgiProbeCacheRadiance->GetImage()) || wroteAny;
-			if (VansTexture* ssgiProbeCacheSurface = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_SSGI_PROBE_CACHE_SURFACE))
-				wroteAny = dumpImage("ssgi_screen_probe_cache_surface", ssgiProbeCacheSurface->GetImage()) || wroteAny;
-			if (VansTexture* ssgiTemporalA = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_SSGI_TEMPORAL_A))
-				wroteAny = dumpImage("ssgi_temporal_a", ssgiTemporalA->GetImage()) || wroteAny;
-			if (VansTexture* ssgiTemporalB = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_SSGI_TEMPORAL_B))
-				wroteAny = dumpImage("ssgi_temporal_b", ssgiTemporalB->GetImage()) || wroteAny;
-			if (VansTexture* ssgiMomentsA = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_SSGI_MOMENTS_A))
-				wroteAny = dumpImage("ssgi_moments_a", ssgiMomentsA->GetImage()) || wroteAny;
-			if (VansTexture* ssgiMomentsB = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_SSGI_MOMENTS_B))
-				wroteAny = dumpImage("ssgi_moments_b", ssgiMomentsB->GetImage()) || wroteAny;
-			if (VansTexture* ssgiFilter = materialManager->GetRuntimeRenderTexture(VansMaterialManager::RT_SSGI_FILTER_RESULT))
-				wroteAny = dumpImage("ssgi_filtered", ssgiFilter->GetImage()) || wroteAny;
-		}
-		if (VansTexture* irradianceAtlas = rayTracingContext.GetGIRegionIrradianceAtlas(0u))
-			wroteAny = dumpImage("gi_irradiance_region0", irradianceAtlas->GetImage()) || wroteAny;
-		if (VansTexture* visibilityAtlas = rayTracingContext.GetGIRegionVisibilityAtlas(0u))
-			wroteAny = dumpImage("gi_visibility_region0", visibilityAtlas->GetImage()) || wroteAny;
-		wroteAny = dumpProbeState("gi_probe_state_region0", rayTracingContext.GetGIRegionProbeStateBuffer(0u)) || wroteAny;
-		dumped = true;
-		if (wroteAny && std::getenv("FORESTENGINE_GI_DEBUG_DUMP_EXIT") != nullptr)
-		{
-			VANS_LOG("[GIDebugDump] Exit requested after dump.");
-			std::exit(0);
-		}
+		if (!ResetGBufferSecondaryCommandBuffersIfNeeded()) return false;
+		return m_CurrentFrameContext.frameSubmitSucceeded;
 	}
 
 	void VansVKDevice::Present()
 	{
+		VANS_PROFILE_SCOPE("Vulkan::Present", Vans::ProfileCategory::VulkanSubmit);
 		if (!m_CurrentFrameContext.frameSubmitSucceeded)
 		{
+			rayTracingContext.DiscardGIProbeUpdate();
 			VANS_LOG_ERROR("[VansVKDevice] Skipping present because frame recording failed before submit.");
 			return;
 		}
@@ -3055,11 +2567,14 @@ namespace VansGraphics
 				};
 				graphics.externalSignals = { m_CurrentFrameContext.renderFinishedSemaphore };
 				graphics.fence = m_CurrentFrameContext.graphicsFence;
-				graphics.waitForCompletion = !IsFrameContextRingActive();
+				m_SubmittedFrameUsesAsyncCompute = false;
 				m_FrameSubmitOrchestrator.AddNode(std::move(graphics));
 				m_CurrentFrameContext.frameSubmitSucceeded = m_FrameSubmitOrchestrator.Execute();
 				if (m_CurrentFrameContext.frameSubmitSucceeded)
+                {
 					NotifyPunctualShadowJobsSubmitted();
+                }
+                else rayTracingContext.DiscardGIProbeUpdate();
 				if (!m_CurrentFrameContext.frameSubmitSucceeded)
 				{
 					VANS_LOG_ERROR("[VansVKDevice] Graphics frame submit failed: "
@@ -3081,20 +2596,6 @@ namespace VansGraphics
 				if (!m_CurrentFrameContext.frameSubmitSucceeded)
 				{
 					CurrentGraphicsCommandBuffer().ResetCommandBuffer(false);
-				}
-			}
-			else
-			{
-				VANS_PROFILE_SCOPE("Vulkan::ResetCommandBuffer", Vans::ProfileCategory::VulkanSubmit);
-				if (!m_VansVKCommandBuffer.ResetCommandBuffer(false))
-				{
-					m_CurrentFrameContext.frameSubmitSucceeded = false;
-					VANS_LOG_ERROR("[VansVKDevice] Failed to reset main graphics command buffer.");
-				}
-				if (!ResetGBufferSecondaryCommandBuffersIfNeeded())
-				{
-					m_CurrentFrameContext.frameSubmitSucceeded = false;
-					VANS_LOG_ERROR("[VansVKDevice] Failed to reset GBuffer secondary command buffers.");
 				}
 			}
 
@@ -3319,11 +2820,11 @@ namespace VansGraphics
 						VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, true, false, true, false },
 					{ "HZB", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
 						VK_IMAGE_LAYOUT_GENERAL, true, false, true, false },
-					{ "RayTracingGI", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
+					{ "RayTracingGI", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, VK_ACCESS_SHADER_READ_BIT,
 						VK_IMAGE_LAYOUT_GENERAL, true, false, true, false },
 					{ "PreConvolvedDiffuseEnvironment", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
 						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, true, false, true, false },
-					{ "GIData", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+					{ "GIData", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, VK_ACCESS_SHADER_WRITE_BIT,
 						VK_IMAGE_LAYOUT_GENERAL, true, true, true, false }
 				};
 				giData.fence = m_CurrentFrameContext.giDataFence;
@@ -3463,12 +2964,15 @@ namespace VansGraphics
 						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, true, true, true, false }
 				};
 				graphicsMain.fence = m_CurrentFrameContext.graphicsFence;
-				graphicsMain.waitForCompletion = true;
+				m_SubmittedFrameUsesAsyncCompute = true;
 				m_FrameSubmitOrchestrator.AddNode(std::move(graphicsMain));
 
 				m_CurrentFrameContext.frameSubmitSucceeded = m_FrameSubmitOrchestrator.Execute();
 				if (m_CurrentFrameContext.frameSubmitSucceeded)
+                {
 					NotifyPunctualShadowJobsSubmitted();
+                }
+                else rayTracingContext.DiscardGIProbeUpdate();
 				if (!m_CurrentFrameContext.frameSubmitSucceeded)
 				{
 					VANS_LOG_ERROR("[VansVKDevice] Async frame graph submit failed: " << m_FrameSubmitOrchestrator.GetLastError());
@@ -3476,65 +2980,7 @@ namespace VansGraphics
 					return;
 				}
 			}
-			{
-				VANS_PROFILE_SCOPE("Vulkan::ResetCommandBuffer.CB2", Vans::ProfileCategory::VulkanSubmit);
-				if (!m_VansVKCommandBuffer.ResetCommandBuffer(false))
-				{
-					m_CurrentFrameContext.frameSubmitSucceeded = false;
-					VANS_LOG_ERROR("[VansVKDevice] Failed to reset graphics CB2 command buffer.");
-				}
-			}
 
-			{
-				VANS_PROFILE_SCOPE("Vulkan::ResetAsyncFrameCommandBuffers", Vans::ProfileCategory::VulkanSubmit);
-				std::vector<VkFence> submittedFences = {
-					m_CurrentFrameContext.shadowMapsFence,
-					m_CurrentFrameContext.hairShadowFence,
-					m_CurrentFrameContext.gbufferFence,
-					m_CurrentFrameContext.gbufferMaterialFence,
-					m_CurrentFrameContext.ssaoRawFence,
-					m_CurrentFrameContext.graphicsScreenFence,
-					m_CurrentFrameContext.vegetationFence,
-					m_CurrentFrameContext.earlyAuxFence,
-					m_CurrentFrameContext.asyncAtmosphereFence,
-					m_CurrentFrameContext.asyncHZBFence,
-					m_CurrentFrameContext.rayTracingFence,
-					m_CurrentFrameContext.giDataFence
-				};
-				if (VansGraphics::vkResetFences(
-					m_VansVKLogicDevice,
-					static_cast<uint32_t>(submittedFences.size()),
-					submittedFences.data()) != VK_SUCCESS)
-				{
-					m_CurrentFrameContext.frameSubmitSucceeded = false;
-					VANS_LOG_ERROR("[VansVKDevice] Failed to reset async frame fences.");
-				}
-
-				auto resetCommandBuffer = [&](const char* name, VansVKCommandBuffer& commandBuffer)
-				{
-					if (commandBuffer.ResetCommandBuffer(false))
-						return;
-					m_CurrentFrameContext.frameSubmitSucceeded = false;
-					VANS_LOG_ERROR("[VansVKDevice] Failed to reset " << name << " command buffer.");
-				};
-				resetCommandBuffer("shadow maps", m_VansVKShadowMapsCommandBuffer);
-				resetCommandBuffer("hair-shadow", m_VansVKHairShadowCommandBuffer);
-				resetCommandBuffer("GBuffer", m_VansVKGBufferCommandBuffer);
-				resetCommandBuffer("GBuffer-material", m_VansVKGBufferMaterialCommandBuffer);
-				resetCommandBuffer("SSAO-raw", m_VansVKSSAORawCommandBuffer);
-				resetCommandBuffer("graphics-screen", m_VansVKGraphicsScreenCommandBuffer);
-				resetCommandBuffer("vegetation", m_VansVKVegetationCommandBuffer);
-				resetCommandBuffer("early auxiliary", m_VansVKEarlyAuxCommandBuffer);
-				resetCommandBuffer("async atmosphere", m_VansVKAsyncAtmosphereCommandBuffer);
-				resetCommandBuffer("async HZB", m_VansVKAsyncHZBCommandBuffer);
-				resetCommandBuffer("ray-tracing", m_VansVKRayTracingCommandBuffer);
-				resetCommandBuffer("GI-data", m_VansVKGIDataCommandBuffer);
-			}
-			if (!ResetGBufferSecondaryCommandBuffersIfNeeded())
-			{
-				m_CurrentFrameContext.frameSubmitSucceeded = false;
-				VANS_LOG_ERROR("[VansVKDevice] Failed to reset GBuffer secondary command buffers.");
-			}
 		}
 
 		if (!m_CurrentFrameContext.frameSubmitSucceeded)
@@ -3549,27 +2995,23 @@ namespace VansGraphics
 		if (m_Scene->IsSceneReady()
 			&& IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::ReflectionProbeBakeQueue))
 		{
-			if (IsFrameContextRingActive() && m_ActiveFrameContextSlot != nullptr)
-			{
-				// ReflectionProbe bake samples this frame's shadow map. Wait for GPU completion here,
-				// but keep the frame slot pending until the next reuse so present synchronization
-				// and per-slot deferred deletes remain intact.
-				if (!WaitForFrameContextRingSlotGpuIdle(*m_ActiveFrameContextSlot))
-				{
-					m_CurrentFrameContext.frameSubmitSucceeded = false;
-					VANS_LOG_ERROR("[VansVKDevice] Failed to wait frame slot before reflection probe bake.");
-					return;
-				}
-			}
 			static uint32_t reflectionProbeFrame = 0;
 			auto* reflectionProbes = m_Scene->GetReflectionProbeSystem();
-			const uint32_t probeFrame = reflectionProbeFrame++;
-			const uint32_t faceBudget = reflectionProbes->GetBakeFaceBudget();
-			for (uint32_t face = 0; face < faceBudget; ++face)
-				reflectionProbes->ProcessBakeQueue(*m_Scene, *this, m_ImmediateGraphicsCommandBuffer, probeFrame);
+			// 每帧只更新一次实时队列；没有实际捕获任务时不串行等待整帧 GPU。
+			reflectionProbes->UpdateRealtimeProbes(reflectionProbeFrame++);
+			if (reflectionProbes->HasCaptureWork())
+			{
+				if (!RetireSubmittedFrame())
+				{
+					m_CurrentFrameContext.frameSubmitSucceeded = false;
+					return;
+				}
+				const uint32_t faceBudget = reflectionProbes->GetBakeFaceBudget();
+				for (uint32_t face = 0; face < faceBudget; ++face)
+					reflectionProbes->ProcessBakeQueue(*m_Scene, *this, m_ImmediateGraphicsCommandBuffer);
+			}
 		}
 
-		MaybeDumpGIDebugFrame(VansRenderPassManager::GetInstance());
 
 		{
 			VANS_PROFILE_SCOPE("Vulkan::PresentImage", Vans::ProfileCategory::VulkanSubmit);
@@ -3593,18 +3035,10 @@ namespace VansGraphics
 
 	void VansVKDevice::AfterRendering()
 	{
+		WaitForDevice();
 		// Noesis IRenderer instances are RT-affine and must be shut down before
 		// their render passes and Vulkan device resources are destroyed.
 		VansRuntime::VansUISystem::Get().ShutdownRendering();
-		const bool frameContextGpuWorkPending = std::any_of(
-			m_FrameContextRingSlots.begin(),
-			m_FrameContextRingSlots.end(),
-			[](const VansFrameContextRingSlot& slot)
-			{
-				return slot.gpuWorkPending;
-			});
-		if (m_FrameContextRingResourcesReady && frameContextGpuWorkPending)
-			WaitForDevice();
 		DestroyParallelCommandRecording();
 		DestroyHairLightingDescriptors();
 		DestroyHairCompositeDescriptors();
@@ -3617,7 +3051,9 @@ namespace VansGraphics
 		DestroyCameraFrameResources();
 
 		DestroyVKSemaphore(m_SwapChainImageAcquiredSemaphore);
-		DestroyVKSemaphore(m_CommandBufferReadyToPresentSemaphore);
+		for (VkSemaphore& semaphore : m_SwapchainImageRenderFinishedSemaphores)
+			DestroyVKSemaphore(semaphore);
+		m_SwapchainImageRenderFinishedSemaphores.clear();
 		DestroyFrameContextRingResources();
 	}
 
@@ -3963,11 +3399,9 @@ namespace VansGraphics
 			VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS);
 		std::vector<VkCommandBuffer> serialExecutableBuffer = { executableBuffers.back() };
 		executableBuffers.pop_back();
-		{
-			VkCommandBuffer primaryCmd = commandBuffer.GetVKCommandBuffer();
-			VANS_GPU_SCOPE(primaryCmd, "GBuffer Opaque");
-			commandBuffer.ExecuteSecondaryCommandBuffer(executableBuffers);
-		}
+		// SECONDARY_COMMAND_BUFFERS 子通道内，主命令流不能插入 timestamp。
+		// 完整 GBuffer 由外层 pass scope 计时；这里仅执行已录制的绘制命令。
+		commandBuffer.ExecuteSecondaryCommandBuffer(executableBuffers);
 		commandBuffer.ExecuteSecondaryCommandBuffer(serialExecutableBuffer);
 		renderPassManager->EndRenderPass(commandBuffer, m_globalRenderStateData);
 		m_GBufferSecondaryCommandBuffersNeedReset = true;
@@ -4141,7 +3575,7 @@ namespace VansGraphics
 	// ============================================================
 	void VansVKDevice::DrawSceneTransparentPost(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& commandBuffer)
 	{
-					if (!IsDeferredProbeOnlyDebugOutput(m_CurrentRenderSceneSnapshot))
+					if (!IsIsolatedDeferredDebugOutput(m_CurrentRenderSceneSnapshot))
 		{
 			DrawHairComposite(renderPassManager, commandBuffer);
 			m_Scene->DrawTransParentNodes();
@@ -4788,5 +4222,3 @@ namespace VansGraphics
 	}
 
 }
-
-

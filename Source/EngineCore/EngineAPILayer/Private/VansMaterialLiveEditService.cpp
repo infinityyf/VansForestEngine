@@ -136,8 +136,7 @@ int MaterialGlobalTextureBaseIndex(VansMaterial& material)
 		return pbr->m_MaterialIndex * 5;
 	if (auto* emissive = dynamic_cast<VansEmissiveMaterial*>(&material))
 		return emissive->m_MaterialIndex * 5;
-	if (auto* decal = dynamic_cast<VansDecalMaterial*>(&material))
-		return decal->m_MaterialIndex * 5;
+
 	if (auto* sss = dynamic_cast<VansSubsurfaceMaterial*>(&material))
 		return sss->m_MaterialIndex * 5;
 	if (auto* cloth = dynamic_cast<VansClothMaterial*>(&material))
@@ -220,22 +219,6 @@ bool SetMaterialTexturePointer(VansMaterial& material, const std::string& slot, 
 			emissive->m_RoughnessTexture = texture;
 		else if (slot == "emissive" || slot == "mask")
 			emissive->m_EmissiveTexture = texture;
-		else
-			return false;
-		return true;
-	}
-	if (auto* decal = dynamic_cast<VansDecalMaterial*>(&material))
-	{
-		if (slot == "basecolor" || slot == "albedo" || slot == "diffuse")
-			decal->m_BaseColorTexture = texture;
-		else if (slot == "normal")
-			decal->m_NormalTexture = texture;
-		else if (slot == "metal" || slot == "metallic")
-			decal->m_MetalTexture = texture;
-		else if (slot == "roughness")
-			decal->m_RoughnessTexture = texture;
-		else if (slot == "ao" || slot == "occlusion")
-			decal->m_AoTexture = texture;
 		else
 			return false;
 		return true;
@@ -582,7 +565,7 @@ bool VansMaterialLiveEditService::ApplyMaterialTexture(
 			scene->GetGlobalDescriptorSet());
 	}
 	else if (material->m_MaterialType == VAN_CUSTOM_SHADER ||
-		material->m_MaterialType == VAN_PBR_TRANSMISSION)
+		material->m_MaterialType == VAN_PBR_TRANSMISSION || material->m_MaterialType == VAN_DECAL)
 	{
 		const int globalIndex = CustomMaterialTextureGlobalIndex(*material, normalizedSlot);
 		if (globalIndex >= 0)

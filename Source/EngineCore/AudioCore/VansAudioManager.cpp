@@ -117,7 +117,7 @@ VansAudioOneShotHandle VansAudioManager::PlayOneShot(const VansAudioOneShotReque
 {
     if (request.sourceName.empty() || !Get(request.sourceName)) return {};
     auto binding = std::make_unique<VansAudioSourceBinding>();
-    if (!binding->Bind(this, request.sourceName) || !binding->IsBound()) return {};
+    if (!binding->Bind(this, request.sourceName) || !binding->UsesIndependentPlayback()) return {};
     binding->SetVolume(request.volume);
     binding->SetPitch(request.pitch);
     binding->SetStereoPan(request.stereoPan);
@@ -129,6 +129,9 @@ VansAudioOneShotHandle VansAudioManager::PlayOneShot(const VansAudioOneShotReque
     binding->SetRolloff(request.rolloff);
     binding->SetReverbSend(request.reverbSend);
     binding->SetPosition(request.positionX, request.positionY, request.positionZ);
+    binding->SetBusGain(GetEffectiveBusGain(request.bus));
+    binding->SetBusLowpassHighFrequencyGain(GetBusState("Master").lowpassHighFrequencyGain *
+        (NormalizeAudioBusName(request.bus) == "Master" ? 1.0f : GetBusState(request.bus).lowpassHighFrequencyGain));
     if (request.startSeconds > 0.0) binding->Seek(request.startSeconds);
     binding->Play();
     return m_OneShots.Emplace(OneShot{ std::move(binding), true });
@@ -176,6 +179,11 @@ void VansAudioManager::TickAll(
     {
         if (!oneShot.binding) { completedOneShots.push_back(handle); return; }
         oneShot.binding->Tick();
+        oneShot.binding->UpdateDistanceGain(camPosX, camPosY, camPosZ);
+        const auto& bus = oneShot.binding->GetBusName();
+        oneShot.binding->SetBusGain(GetEffectiveBusGain(bus));
+        oneShot.binding->SetBusLowpassHighFrequencyGain(GetBusState("Master").lowpassHighFrequencyGain *
+            (NormalizeAudioBusName(bus) == "Master" ? 1.0f : GetBusState(bus).lowpassHighFrequencyGain));
         oneShot.observedPlaying = oneShot.observedPlaying || oneShot.binding->IsPlaying();
         if (oneShot.observedPlaying && !oneShot.binding->IsPlaying() && !oneShot.binding->IsPaused())
             completedOneShots.push_back(handle);

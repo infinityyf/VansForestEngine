@@ -1,92 +1,58 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 #extension GL_EXT_nonuniform_qualifier : require
-
 #include "../Common/CameraData.glsl"
 #include "../Common/ModelData.glsl"
 #include "../Common/VansDrawSubmission.glsl"
-#include "../BRDF/BRDFData.glsl"
+#include "../Common/CustomMaterialData.glsl"
+#include "DecalResponse.glsl"
+#include "DecalReceiverFilter.glsl"
 
-// ── 顶点着色器输入 ─────────────────────────────────────────────────────────
-layout( location = 0 ) in vec2  frag_uv;
-layout( location = 1 ) in vec3  normal_ws;
-layout( location = 2 ) in vec3  tangent_ws;
-layout( location = 3 ) in vec3  bitangent_ws;
-layout( location = 4 ) in vec3  position_world;
-layout( location = 5 ) in vec3  position_local;   // OBB 模型空间坐标
-
-// ── Set 0, binding 50: Bindless PBR 纹理阵列 ──────────────────────────────
-layout( set = 0, binding = 50 ) uniform sampler2D globalPBRTextures[];
-
-// ── Set 1, binding 0: GBuffer2 重建世界坐标和深度 ──────────────────────────
-// GBuffer2 = (worldPos.xyz, -linearDepth)
-layout( set = 1, binding = 0 ) uniform sampler2D gBuffer2Sampler;
-
-// ── MRT 输出（3 个颜色附件，与 DecalRenderPass 附件顺序一致） ──────────────
-// 附件 0: Normal
-layout( location = 0 ) out vec4 outNormal;
-// 附件 1: GBuffer0 (albedo.rgb, roughness)
-layout( location = 1 ) out vec4 outGBuffer0;
-// 附件 2: GBuffer1 (metallic, AO, *, *)
-// colorWriteMask 在 pipeline 中已设置为 R+G 仅写，B (materialID) 和 A 不变
-layout( location = 2 ) out vec4 outGBuffer1;
+layout(set = 0, binding = 50) uniform sampler2D globalPBRTextures[];
+layout(set = 1, binding = 0) uniform sampler2D gBuffer2Sampler;
+layout(set = 1, binding = 1) uniform sampler2D gBuffer1Sampler;
+layout(set = 1, binding = 2) uniform sampler2D normalSampler;
+layout(location = 0) out vec4 outDecalColor;
+layout(location = 1) out vec4 outDecalNormal;
+layout(location = 2) out vec4 outDecalRoughness;
 
 void main()
 {
     VansDrawData drawData = VansGetDrawData();
-    // ── 1. 从 GBuffer2 重建被遮挡表面的世界坐标 ──────────────────────────────
-    vec2 screenUV = gl_FragCoord.xy * ScreenParams.zw;
-    vec4 gbuf2    = texture(gBuffer2Sampler, screenUV);
+    ivec2 pixel = ivec2(gl_FragCoord.xy);
+    // 逐像素读取，避免轮廓两侧混合 material ID 和世界坐标。
+    vec4 surface = texelFetch(gBuffer2Sampler, pixel, 0);
+    if (surface.w <= 0.0) discard;
+    vec4 receiver = texelFetch(gBuffer1Sampler, pixel, 0);
+    int receiverID = DecodeDecalReceiverMaterialID(receiver.z);
+    vec3 response = DecalReceiverResponse(receiverID);
+    if (all(equal(response, vec3(0.0)))) discard;
 
-    // w <= 0 表示空像素（清除值 0）或天空，丢弃
-    if (gbuf2.w <= 0.0)
-        discard;
+    mat4 model = ModelBuffer.transforms[drawData.transformIndex].ModelMatrix;
+    float receiverGroup = ModelBuffer.transforms[drawData.transformIndex].Position.w;
+    if (!DecalReceiverMatches(receiverID, receiver.w, receiverGroup)) discard;
+    float minimumDot = ModelBuffer.transforms[drawData.transformIndex].Scale.w;
+    if (minimumDot >= 0.0 && !DecalNormalMatches(texelFetch(normalSampler, pixel, 0).xyz, model[1].xyz, minimumDot)) discard;
+    if (abs(determinant(mat3(model))) < 1e-8) discard;
+    vec3 localPosition = (inverse(model) * vec4(surface.xyz, 1.0)).xyz;
+    if (any(greaterThan(abs(localPosition), vec3(1.0)))) discard;
+    vec2 uv = localPosition.xz * 0.5 + 0.5;
 
-    vec3 surfaceWS = gbuf2.xyz;
+    CustomMaterialPayload material = customMaterialDataBuffer.materials[drawData.materialIndex];
+    vec4 colorSample = texture(globalPBRTextures[nonuniformEXT(material.textureIndices.x)], uv, MaterialMipBias);
+    vec4 normalSample = texture(globalPBRTextures[nonuniformEXT(material.textureIndices.y)], uv, MaterialMipBias);
+    vec4 roughnessSample = texture(globalPBRTextures[nonuniformEXT(material.textureIndices.z)], uv, MaterialMipBias);
+    vec3 coverageMask = texture(globalPBRTextures[nonuniformEXT(material.textureIndices.w)], uv, MaterialMipBias).rgb;
+    // 每种属性使用自己的 texture alpha；opacity 控制整体，权重控制单通道覆盖。
+    vec3 coverage = DecalAttributeCoverage(vec3(colorSample.a, normalSample.a, roughnessSample.a),
+        coverageMask, material.values[0].a, material.values[1].yzw, response);
+    if (all(lessThanEqual(coverage, vec3(0.0)))) discard;
 
-    // ── 2. OBB 越界测试 ──────────────────────────────────────────────────────
-    int objectIndex  = drawData.transformIndex;
-    mat4 ModelMatrix = ModelBuffer.transforms[objectIndex].ModelMatrix;
-    mat4 invModel    = inverse(ModelMatrix);
-    vec4 localPos    = invModel * vec4(surfaceWS, 1.0);
-
-    // cube.obj 顶点范围 [-1, 1]^3；超出则不在 OBB 内，丢弃
-    if (any(greaterThan(abs(localPos.xyz), vec3(1.0))))
-        discard;
-
-    // ── 3. XZ 平面投影 → UV ────────────────────────────────────────────────
-    vec2 decal_uv = localPos.xz * 0.5 + 0.5;
-
-    // ── 4. 采样贴花 PBR 纹理 ────────────────────────────────────────────────
-    int mi = nonuniformEXT(drawData.materialIndex);
-    MaterialPayload matData = materialDataBuffer.materials[mi];
-
-    vec4 albedoSample    = texture(globalPBRTextures[mi * 5 + 0], decal_uv, MaterialMipBias);
-    vec3 normalSample    = texture(globalPBRTextures[mi * 5 + 1], decal_uv, MaterialMipBias).rgb;
-    float metallicSample = texture(globalPBRTextures[mi * 5 + 2], decal_uv, MaterialMipBias).r;
-    float aoSample       = texture(globalPBRTextures[mi * 5 + 4], decal_uv, MaterialMipBias).r;
-
-    // 临时规则：贴花 albedo 贴图暂时只作为遮罩使用，R 通道控制覆盖强度。
-    // alpha 为 0 的区域直接丢弃，避免贴花 OBB 边界参与 GBuffer 写入。
-    float alpha = albedoSample.r;
-    if (alpha <= 0.0)
-        discard;
-
-    float metallic = matData.metallic   * metallicSample;
-    float ao       = matData.ao         * aoSample;
-
-    // 法线贴图：贴花使用 XZ 投影，局部 +Y 是投影法线。
-    // 由于 T=+X、N=+Y 时，右手系副切线应为 B=N×T=-Z，不能直接使用模型 +Z 轴。
-    vec3 N = normalize(vec3(ModelMatrix[1].xyz));  // OBB +Y 轴（投影法线）
-    vec3 T = normalize(vec3(ModelMatrix[0].xyz));  // OBB +X 轴（U 方向）
-    T = normalize(T - N * dot(T, N));
-    vec3 B = normalize(cross(N, T));                // V 方向，保持 T×B=N
-    mat3 TBN       = mat3(T, B, N);
-    normalSample   = normalSample * 2.0 - 1.0;
-    vec3 normal    = normalize(TBN * normalSample);
-
-    outNormal   = vec4(normal, alpha);
-    // 暂不写入 albedo/roughness：GBuffer0 使用 alpha=0，保持原有表面颜色不变。
-    outGBuffer0 = vec4(0.0);
-    outGBuffer1 = vec4(metallic, ao, 0.0, alpha);
+    vec3 N = DecalSafeNormal(model[1].xyz, vec3(0.0, 1.0, 0.0));
+    vec3 T = DecalSafeNormal(model[0].xyz - N * dot(model[0].xyz, N), vec3(1.0, 0.0, 0.0));
+    vec3 B = DecalSafeNormal(cross(N, T), vec3(0.0, 0.0, -1.0));
+    vec3 normalWS = DecalSafeNormal(mat3(T, B, N) * (normalSample.rgb * 2.0 - 1.0), N);
+    outDecalColor = vec4(clamp(material.values[0].rgb * colorSample.rgb, 0.0, 1.0), coverage.x);
+    outDecalNormal = vec4(normalWS, coverage.y);
+    outDecalRoughness = vec4(clamp(material.values[1].x * roughnessSample.r, 0.0, 1.0), 0.0, 0.0, coverage.z);
 }

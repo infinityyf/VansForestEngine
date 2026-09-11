@@ -56,7 +56,6 @@ namespace VansGraphics
 		glm::vec3 color = glm::vec3(1.0f);
 		float intensity = 1.0f;
 		float skyDiffuseScale = 1.0f;
-		float skySpecularScale = 1.0f;
 		float moonBlend = 0.0f;
 	};
 

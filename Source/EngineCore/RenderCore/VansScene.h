@@ -1,6 +1,7 @@
 #pragma once
 
 #include "VansRenderNode.h"
+#include "GICore/VansGIInstanceMaterial.h"
 #include "VansDrawSubmission.h"
 #include "VansRenderFrame.h"
 #include "VansRenderFrameSource.h"
@@ -19,6 +20,8 @@
 #include "../AnimationCore/Runtime/VansSkeletonAnchorRegistry.h"
 
 namespace Vans { struct VansProjectileSpawnRequest; struct VansProjectileSceneBackend; }
+namespace Vans { struct VansDecalSceneBackend; }
+namespace VansGraphics { class VansImpactDecalSystem; }
 
 #include "WaterCore/VansWaterConfig.h"
 
@@ -415,6 +418,7 @@ namespace VansGraphics
 		std::vector<std::string> m_PendingEntityDestructionGuids;
 		std::unique_ptr<Vans::VansRuntimeWorld> m_RuntimeWorld;
 		std::unique_ptr<Vans::VansGameplayRuntime> m_GameplayRuntime;
+		std::unique_ptr<VansImpactDecalSystem> m_ImpactDecals;
 		std::unique_ptr<Vans::VansAIWorld> m_AIWorld;
 		std::unique_ptr<Vans::VansTimelineRuntimeSystem> m_TimelineRuntime;
 		std::unique_ptr<VansCameraControlArbiter> m_CameraControlArbiter;
@@ -700,7 +704,7 @@ namespace VansGraphics
 
 		void UpdateGlobalTileLightDescriptors();
 
-		void PrepareReflectionProbeRuntime(VansVKDevice& device);
+		bool PrepareReflectionProbeRuntime(VansVKDevice& device);
 
 		void BindWaterSystemGlobalDescriptors();
 
@@ -891,6 +895,9 @@ namespace VansGraphics
 		// 创建独立动态实体，复用已加载静态渲染实体的网格和材质。
 		Vans::VansEntityHandle SpawnPhysicsInstance(const Vans::VansProjectileSpawnRequest& request, std::string& error);
 		Vans::VansProjectileSceneBackend MakeProjectileSceneBackend();
+		Vans::VansDecalSceneBackend MakeDecalSceneBackend();
+		bool PrepareImpactDecalPools();
+		const VansImpactDecalSystem* GetImpactDecals() const { return m_ImpactDecals.get(); }
 
 		void FlushPendingEntityDestructions();
 
@@ -1308,6 +1315,7 @@ namespace VansGraphics
 
 
 		VkAccelerationStructureKHR& GetTopAS() { return m_TopLevelAS; }
+        uint64_t GetRayTracingGeometryRevision() const { return m_RayTracingGeometryRevision; }
 
 
 
@@ -1327,7 +1335,7 @@ namespace VansGraphics
 
 
 
-		std::vector<uint32_t>& GetTLASInstanceTextureIndex() { return m_TlasInstanceTextureIndex; }
+		std::vector<GIInstanceMaterialGPU>& GetTLASInstanceMaterials() { return m_TlasInstanceMaterials; }
 
 		// Per-TLAS-instance multiplier for radiance emitted by opaque GI hit
 		// shading.  It stays instance-local because one mesh can be reused by
@@ -1338,7 +1346,11 @@ namespace VansGraphics
 
 
 
-		bool HasDecalNodes() const { return !m_DecalRenderNodes.empty(); }
+		bool HasDecalNodes() const
+		{
+			for (const auto* node : m_DecalRenderNodes) if (node && node->IsEnabled()) return true;
+			return false;
+		}
 
 
 
@@ -1353,6 +1365,7 @@ namespace VansGraphics
 
 
 		VkAccelerationStructureKHR m_TopLevelAS = VK_NULL_HANDLE;
+        uint64_t m_RayTracingGeometryRevision = 0;
 
 
 
@@ -1400,7 +1413,7 @@ namespace VansGraphics
 
 
 
-		std::vector<uint32_t> m_TlasInstanceTextureIndex;
+		std::vector<GIInstanceMaterialGPU> m_TlasInstanceMaterials;
 
 		std::vector<glm::vec4> m_TlasInstanceGIEmission;
 
@@ -1475,4 +1488,3 @@ namespace VansGraphics
 
 
 extern VansGraphics::VansScene* m_Scene;
-

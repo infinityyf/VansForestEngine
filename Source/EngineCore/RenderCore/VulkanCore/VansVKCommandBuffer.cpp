@@ -8,6 +8,7 @@
 #include "VansPipeline.h"
 #include "VansVKDevice.h"
 #include "../../Util/VansLog.h"
+#include "../../Util/VansProfiler.h"
 #include <iostream>
 #include <cassert>
 
@@ -311,6 +312,19 @@ void VansGraphics::VansVKCommandBuffer::CopyBuffer(VkBuffer srcBuffer, VkBuffer 
 void VansGraphics::VansVKCommandBuffer::FillBuffer(VkBuffer buffer, VkDeviceSize offset, VkDeviceSize size, uint32_t data)
 {
 	VansGraphics::vkCmdFillBuffer(m_VansVKCommandBuffer, buffer, offset, size, data);
+}
+
+bool VansGraphics::VansVKCommandBuffer::UpdateBuffer(VkBuffer buffer, VkDeviceSize offset, VkDeviceSize size, const void* data)
+{
+	if (!buffer || !data || offset % 4u || size % 4u) return false;
+	const auto* bytes = static_cast<const uint8_t*>(data);
+	while (size)
+	{
+		const VkDeviceSize chunk = (std::min)(size, VkDeviceSize(65536u));
+		VansGraphics::vkCmdUpdateBuffer(m_VansVKCommandBuffer, buffer, offset, chunk, bytes);
+		offset += chunk; bytes += chunk; size -= chunk;
+	}
+	return true;
 }
 
 void VansGraphics::VansVKCommandBuffer::ExecuteSecondaryCommandBuffer(std::vector<VkCommandBuffer>& secondary_command_buffers)
@@ -969,6 +983,7 @@ bool VansGraphics::VansVKCommandBuffer::WaitForFence(VkDevice& device, const VkF
 {
 	if (fence != VK_NULL_HANDLE)
 	{
+		VANS_PROFILE_WAIT("Vulkan::WaitFence.Submission");
 		VkResult result = VansGraphics::vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
 		if (result != VK_SUCCESS)
 		{

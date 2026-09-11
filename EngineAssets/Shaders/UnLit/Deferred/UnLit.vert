@@ -18,11 +18,13 @@ layout( location = 3 ) out vec3 bitangent_ws;
 layout( location = 4 ) out vec3 position_world;
 layout( location = 5 ) out vec4 motion_current_clip;
 layout( location = 6 ) out vec4 motion_previous_clip;
+layout(location = 14) flat out float decalReceiverGroup;
 
 void main() 
 {
     VansDrawData drawData = VansGetDrawData();
     int objectIndex = drawData.transformIndex;
+    decalReceiverGroup = ModelBuffer.transforms[objectIndex].Position.w;
     mat4 ModelMatrix  = ModelBuffer.transforms[objectIndex].ModelMatrix;
     mat4 PreviousModelMatrix = ModelBuffer.transforms[objectIndex].PrevModelMatrix;
     mat4 NormalMatrix = ModelBuffer.transforms[objectIndex].NormalMatrix;

@@ -314,7 +314,15 @@ void VansGraphics::VansLightWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
     }
 
 	ImGui::Separator();
-	DrawPhysicalAtmosphereParameters(editorAPI);
+	// 天空数据源的作者控制独立于物理大气和 Reflection Probe 配置。
+    if (ImGui::CollapsingHeader("Sky Lighting", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        auto environment = editorAPI.GetEnvironmentSettings();
+        if (ImGui::DragFloat("Intensity", &environment.skyLighting.intensity, 0.01f, 0.0f, 1000.0f, "%.3f"))
+            editorAPI.ApplyEnvironmentSettings(environment);
+        if (ImGui::IsItemDeactivatedAfterEdit()) editorAPI.CommitEnvironmentSettings();
+    }
+    DrawPhysicalAtmosphereParameters(editorAPI);
 	DrawHeightFogParameters(editorAPI);
     DrawCloudParameters(editorAPI);
 

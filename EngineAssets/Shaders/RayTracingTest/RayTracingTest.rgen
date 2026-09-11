@@ -4,21 +4,22 @@
 
 #include "../Common/Common.glsl"
 #include "../GI/GIProbeUpdateCommon.glsl"
+#define GI_WORK_SET 0
+#define GI_WORK_BINDING 12
+#define GI_LAYOUT_SET 0
+#define GI_LAYOUT_BINDING 13
+#include "../GI/GIProbeLayoutData.glsl"
+#include "../GI/GIProbeWorkData.glsl"
 
 layout(location = 0) rayPayloadEXT RayTracePayload hitResult;
 
 layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
 layout(set = 0, binding = 1, rgba16f) uniform image3D resultImage;
-layout(set = 0, binding = 2, std430) buffer hitPositionBuffer { f16vec4 hitPosition[]; } hitPositionInfoBuffer;
+layout(set = 0, binding = 2, std430) buffer hitPositionBuffer { float hitDistance[]; } hitPositionInfoBuffer;
 layout(set = 0, binding = 6, std430) buffer hitNormalBuffer { f16vec4 hitNormal[]; } hitNormalInfoBuffer;
 layout(set = 0, binding = 8, std430) buffer hitAlbedoRoughnessBuffer { f16vec4 albedoRoughness[]; } hitAlbedoRoughnessInfoBuffer;
 layout(set = 0, binding = 11, std430) buffer hitEmissionBuffer { f16vec4 emission[]; } hitEmissionInfoBuffer;
-struct GIProbeState
-{
-    vec4 relocationAndConfidence;
-    vec4 distanceStats;
-    uvec4 metadata;
-};
+#include "../GI/GIProbeStateData.glsl"
 layout(set = 0, binding = 9, std430) readonly buffer ProbeStateBuffer { GIProbeState states[]; } probeStates;
 
 layout(push_constant) uniform PushConstants
@@ -34,46 +35,35 @@ layout(push_constant) uniform PushConstants
 void main()
 {
     ivec3 probeCounts = ivec3(pushConstants.dispatchParams.xyz);
-    uint spatialDivisor = max(uint(pushConstants.frameParams.y), 1u);
-    uint directionSlices = max(uint(pushConstants.frameParams.z), 1u);
-    uint raysPerSlice = uint((int(pushConstants.dispatchParams.w) + int(directionSlices) - 1) / int(directionSlices));
-
-    // TraceRays X packs the active probe and its current direction-slice ray.
-    ivec3 activeProbe = ivec3(int(gl_LaunchIDEXT.x / raysPerSlice), int(gl_LaunchIDEXT.y), int(gl_LaunchIDEXT.z));
-    uint localRay = gl_LaunchIDEXT.x % raysPerSlice;
-    ivec3 probeIndex = activeProbe * ivec3(GI_UpdateSpatialDivisors(uvec3(probeCounts), spatialDivisor)) +
-        ivec3(GI_UpdateSpatialOffset(uint(pushConstants.frameParams.x), uvec3(probeCounts), spatialDivisor));
-    if (any(greaterThanEqual(probeIndex, probeCounts)))
-        return;
+    uint raysPerUpdate = giProbeWork.header.y;
+    uint activeProbeLinear = gl_LaunchIDEXT.x / raysPerUpdate;
+    if (activeProbeLinear >= giProbeWork.header.x) return;
+    uint localRay = gl_LaunchIDEXT.x % raysPerUpdate;
+    uvec4 work = giProbeWork.entries[activeProbeLinear];
+    ivec3 probeIndex = GI_WorkProbeCoordinate(work.x, probeCounts);
 
     vec3 volumeMin = pushConstants.regionParams.xyz - vec3(probeCounts) * pushConstants.gridParams.xyz * 0.5;
-    uint probeLinear = GI_ProbeLinearIndex(probeIndex, probeCounts);
-    vec3 probeWorld = volumeMin + (vec3(probeIndex) + 0.5) * pushConstants.gridParams.xyz +
+    uint probeLinear = work.x;
+    vec3 probeWorld = (giProbeWork.header.w != 0u ? GI_LayoutPosition(giProbeWork.header.z, work.x).xyz
+        : volumeMin + (vec3(probeIndex) + 0.5) * pushConstants.gridParams.xyz) +
         probeStates.states[probeLinear].relocationAndConfidence.xyz;
-    bool fixedClassificationRay;
-    vec3 rayDirection = GI_ProbeRayDirection(
-        probeIndex, probeCounts, uint(pushConstants.dispatchParams.w), localRay, raysPerSlice,
-        GI_UpdateDirectionSlice(uint(pushConstants.frameParams.x), uvec3(probeCounts), spatialDivisor, directionSlices),
-        directionSlices,
-        GI_UpdateCycleIndex(uint(pushConstants.frameParams.x), uvec3(probeCounts), spatialDivisor, directionSlices),
-        fixedClassificationRay);
-
+    GIProbeRayDirectionContext context = GI_BuildProbeRayDirectionContext(
+        probeIndex, probeCounts, uint(pushConstants.dispatchParams.w), work.z);
+    bool fixedGeometryRay;
+    vec3 rayDirection = GI_ProbeRayDirectionPrepared(context, localRay, fixedGeometryRay);
+    hitResult.geometryOnly = fixedGeometryRay ? 1u : 0u;
     // Alpha-tested surfaces use the program's any-hit stage.  Fully transparent
     // materials are excluded from the GI TLAS during scene construction.
     traceRayEXT(tlas, gl_RayFlagsNoneEXT, 0xFF, 0, 0, 0, probeWorld, 0.001,
         rayDirection, pushConstants.gridParams.w, 0);
 
-    uvec3 activeDimensions = GI_UpdateDispatchDimensions(uvec3(probeCounts), spatialDivisor,
-        uint(pushConstants.frameParams.x));
-    uint activeProbeLinear = uint(activeProbe.z) * activeDimensions.x * activeDimensions.y +
-        uint(activeProbe.y) * activeDimensions.x + uint(activeProbe.x);
-    uint bufferIndex = activeProbeLinear * raysPerSlice + localRay;
-    hitPositionInfoBuffer.hitPosition[bufferIndex] = f16vec4(hitResult.positionHit);
+    uint bufferIndex = GI_WorkRayOffset(activeProbeLinear) + localRay;
+    hitPositionInfoBuffer.hitDistance[bufferIndex] = hitResult.hitDistance;
     hitNormalInfoBuffer.hitNormal[bufferIndex] = f16vec4(hitResult.normalHit);
     hitAlbedoRoughnessInfoBuffer.albedoRoughness[bufferIndex] = f16vec4(hitResult.albedoRoughness);
     hitEmissionInfoBuffer.emission[bufferIndex] = f16vec4(hitResult.emissiveRadiance);
 
-    // Per-probe debug summary is intentionally written by every active ray;
-    // its data is diagnostic only and never feeds lighting.
-    imageStore(resultImage, probeIndex, vec4(1.0 - hitResult.positionHit.w, float(fixedClassificationRay), 0.0, 1.0));
+    // 唯一写入者消除诊断图像的同址竞争；完整命中率由预览读取工作集计算。
+    if (localRay == 0u)
+        imageStore(resultImage, probeIndex, vec4(hitResult.hitDistance < 0.0 ? 1.0 : 0.0, 1.0, 0.0, 1.0));
 }

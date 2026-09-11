@@ -13,7 +13,7 @@ struct VansSceneReflectionProbeLightingConfig
 	std::optional<uint32_t> maxBlendCount;
 	std::optional<float> ssrRoughnessFadeStart;
 	std::optional<float> ssrRoughnessFadeEnd;
-	std::optional<float> skyIntensity;
+
 };
 
 struct VansSceneReflectionProbePlacementConfig
@@ -23,6 +23,7 @@ struct VansSceneReflectionProbePlacementConfig
 	std::optional<std::array<float, 3>> volumeMin;
 	std::optional<std::array<float, 3>> volumeMax;
 	std::optional<float> cellSize;
+	std::optional<float> minCaptureClearance;
 	std::optional<float> indoorSpacing;
 	std::optional<float> corridorSpacing;
 	std::optional<float> outdoorSpacing;
@@ -68,5 +69,6 @@ struct VansSceneReflectionProbeConfig
 	VansSceneReflectionProbeLightingConfig lighting;
 	VansSceneReflectionProbePlacementConfig placement;
 	std::vector<VansSceneReflectionProbeDescConfig> probes;
+	std::vector<VansSceneReflectionProbeDescConfig> placementOverrides;
 };
 }

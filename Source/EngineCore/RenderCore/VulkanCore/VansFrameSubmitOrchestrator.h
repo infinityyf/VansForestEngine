@@ -78,7 +78,6 @@ namespace VansGraphics
 		std::vector<VkSemaphore> externalSignals;
 		std::vector<VansSubmitResourceAccess> resources;
 		VkFence fence = VK_NULL_HANDLE;
-		bool waitForCompletion = false;
 	};
 
 	bool HasSubmitDependencyPath(
@@ -99,6 +98,9 @@ namespace VansGraphics
 
 		bool Validate(std::string* error = nullptr) const;
 		bool Execute();
+		// 提交与完成分离；调用方在复用资源前退役，fence 重置由资源所有者负责。
+		bool WaitForCompletion();
+		bool HasPendingWork() const { return m_PendingFence != VK_NULL_HANDLE; }
 		std::string BuildDebugSummary() const;
 		const std::string& GetLastError() const { return m_LastError; }
 
@@ -106,12 +108,14 @@ namespace VansGraphics
 		VkQueue ResolveQueue(VansQueueRole role) const;
 		bool CreateEdgeSemaphore(VkSemaphore& semaphore);
 		void RecycleEdgeSemaphores();
+		void DestroyActiveEdgeSemaphores();
 		void DestroySemaphorePool();
-		bool Fail(const std::string& message, bool waitForDevice);
+		bool Fail(const std::string& message);
 
 		VkDevice m_Device = VK_NULL_HANDLE;
 		VkQueue m_GraphicsQueue = VK_NULL_HANDLE;
 		VkQueue m_ComputeQueue = VK_NULL_HANDLE;
+		VkFence m_PendingFence = VK_NULL_HANDLE;
 		std::vector<VansFrameSubmitNode> m_Nodes;
 		std::vector<VkSemaphore> m_ActiveEdgeSemaphores;
 		std::vector<VkSemaphore> m_AvailableEdgeSemaphores;

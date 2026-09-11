@@ -496,10 +496,10 @@ namespace VansGraphics
 			const VkImageLayout originalLayout = destImage.m_ImageLayout;
 			const VkPipelineStageFlags beforeStage = originalLayout == VK_IMAGE_LAYOUT_UNDEFINED
 				? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
-				: VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+				: VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
 			const VkAccessFlags beforeAccess = originalLayout == VK_IMAGE_LAYOUT_UNDEFINED
 				? 0
-				: VK_ACCESS_SHADER_READ_BIT;
+				: VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
 			destImage.SetImageMemoryBarrier(cmd, beforeStage, VK_PIPELINE_STAGE_TRANSFER_BIT,
 				{
 					destImage.m_VansVKImage,
@@ -520,7 +520,8 @@ namespace VansGraphics
 
 			if (upload.finalLayout != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
 			{
-				destImage.SetImageMemoryBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+				// 完整 mip 上传也供计算/光追消费者使用，不能只对片元着色可见。
+				destImage.SetImageMemoryBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
 					{
 						destImage.m_VansVKImage,
 						VK_ACCESS_TRANSFER_WRITE_BIT,

@@ -1,0 +1,27 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "../SSGI/SSGISurface.glsl"
+#include "../GI/GIReceiverVisibilityData.glsl"
+layout(local_size_x=64) in;
+layout(set=1,binding=4) uniform Info { vec4 screenSize; };
+layout(set=1,binding=9,std430) readonly buffer History { uvec4 header; GIReceiverVisibilityRecord history[]; };
+layout(set=1,binding=12,std430) buffer Anchors { uint anchors[]; };
+layout(push_constant) uniform Params { uvec4 frame; mat4 viewProjection; };
+// 优化 4：将真实世界锚点散射到当前屏幕格，不以格子的新中心改写锚点。
+// 冲突使用确定性原子选择；空洞由 Prepare 的原有历史查找和新射线补齐。
+void main()
+{
+    uint index = gl_GlobalInvocationID.x;
+    if (index >= frame.x * frame.y || frame.z == 0u || frame.w == 0u || header.x == 0u) return;
+    GIReceiverVisibilityRecord record = history[index];
+    if (record.metadata.z == 0u) return;
+    vec4 clip = viewProjection * vec4(record.surface.xyz, 1.0);
+    if (clip.w <= 0.0 || clip.z < 0.0 || clip.z > clip.w) return;
+    vec2 uv = clip.xy / clip.w * vec2(0.5, -0.5) + 0.5;
+    if (any(lessThan(uv, vec2(0.0))) || any(greaterThanEqual(uv, vec2(1.0)))) return;
+    // UV 使用实际渲染尺寸，避免非四倍数分辨率下边缘格漂移。
+    ivec2 fullSize = ivec2(screenSize.xy);
+    uvec2 cell = uvec2(uv * vec2(fullSize)) / 4u;
+    if (any(greaterThanEqual(cell, frame.xy))) return;
+    atomicMin(anchors[cell.y * frame.x + cell.x], index);
+}

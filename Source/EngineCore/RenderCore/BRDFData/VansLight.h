@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "../../ScriptCore/VansCommonUtils.h"
 #include "VansLightFrameTypes.h"
 #include "../VansRenderSceneSnapshot.h"
@@ -72,10 +72,6 @@ namespace VansGraphics
 		float GetSkyDiffuseScale() const
 		{
 			return m_MainCelestialLightingState.skyDiffuseScale;
-		}
-		float GetSkySpecularScale() const
-		{
-			return m_MainCelestialLightingState.skySpecularScale;
 		}
 
 		std::vector<VansDirectionalLight>& GetDirectionLights() { return m_DirectionalLights; }

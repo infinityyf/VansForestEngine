@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -17,6 +18,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <unordered_map>
 
 #ifdef _WIN32
   #include <Windows.h>
@@ -477,9 +479,16 @@ void Vans::VansGpuProfiler::Init(
     void* device,
     void* physDevice,
     uint32_t graphicsQueueFamily,
-    uint32_t computeQueueFamily)
+    uint32_t computeQueueFamily,
+    bool hostQueryResetEnabled)
 {
     Destroy();
+
+    if (!hostQueryResetEnabled)
+    {
+        VANS_LOG_WARN("[Profiler] GPU timestamp capture unavailable: hostQueryReset is not enabled.");
+        return;
+    }
 
     const VkDevice vkDevice = static_cast<VkDevice>(device);
     const VkPhysicalDevice vkPhysicalDevice = static_cast<VkPhysicalDevice>(physDevice);
@@ -583,6 +592,12 @@ void Vans::VansGpuProfiler::BeginFrame(uint64_t frameIndex)
         if (m_FrameSlots[frameSlot].state != FrameSlotState::Free)
             continue;
 
+        // 复用前在 host 上清除旧 availability；GPU 上尚未执行的 reset 会让
+        // 非阻塞查询误读上次时间戳。Free 只来自未使用槽或所有时间戳已完成的槽。
+        for (uint32_t lane = 0; lane < LANE_COUNT; ++lane)
+            if (m_LaneSupported[lane])
+                VansGraphics::VansVKDevice::ResetQueryPool(static_cast<VkDevice>(m_Device),
+                    static_cast<VkQueryPool>(m_Pools[lane][frameSlot]), 0, QUERY_COUNT);
         m_FrameSlots[frameSlot] = FrameSlot{};
         m_FrameSlots[frameSlot].state = FrameSlotState::Recording;
         m_FrameSlots[frameSlot].frameIndex = frameIndex;
@@ -603,19 +618,14 @@ void Vans::VansGpuProfiler::BeginQueue(void* cmd, VansGpuQueueLane lane)
         return;
 
     FrameSlot& frame = m_FrameSlots[m_ActiveFrameSlot];
-    if (frame.state != FrameSlotState::Recording || frame.laneResetRecorded[laneIndex])
+    if (frame.state != FrameSlotState::Recording || frame.laneBegun[laneIndex])
         return;
 
     const VkQueryPool pool = static_cast<VkQueryPool>(m_Pools[laneIndex][m_ActiveFrameSlot]);
     if (pool == VK_NULL_HANDLE)
         return;
 
-    VansGraphics::VansVKDevice::CmdResetQueryPool(
-        static_cast<VkCommandBuffer>(cmd),
-        pool,
-        0u,
-        QUERY_COUNT);
-    frame.laneResetRecorded[laneIndex] = true;
+    frame.laneBegun[laneIndex] = true;
 }
 
 bool Vans::VansGpuProfiler::Push(void* cmd, const char* name, VansGpuQueueLane lane)
@@ -628,7 +638,7 @@ bool Vans::VansGpuProfiler::Push(void* cmd, const char* name, VansGpuQueueLane l
         return false;
 
     FrameSlot& frame = m_FrameSlots[m_ActiveFrameSlot];
-    if (frame.state != FrameSlotState::Recording || !frame.laneResetRecorded[laneIndex])
+    if (frame.state != FrameSlotState::Recording || !frame.laneBegun[laneIndex])
         return false;
 
     const uint32_t scopeIndex = frame.scopeCount[laneIndex];
@@ -711,14 +721,14 @@ int64_t Vans::VansGpuProfiler::TimestampDelta(
 
 bool Vans::VansGpuProfiler::TryResolveFrame(
     uint32_t frameSlotIndex,
-    void* device,
     VansGpuResolvedFrame& result)
 {
     FrameSlot& frame = m_FrameSlots[frameSlotIndex];
     if (frame.state != FrameSlotState::Pending)
         return false;
 
-    const VkDevice vkDevice = static_cast<VkDevice>(device);
+    // 查询池只属于 Init 时保存的设备；帧末不再接收外部类型擦除的句柄或句柄地址。
+    const VkDevice vkDevice = static_cast<VkDevice>(m_Device);
     bool hasQueries = false;
     uint32_t commonValidBits = 64u;
     uint64_t referenceTimestamp = 0u;
@@ -743,6 +753,8 @@ bool Vans::VansGpuProfiler::TryResolveFrame(
             VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
         if (queryResult != VK_SUCCESS && queryResult != VK_NOT_READY)
         {
+            // 错误不能证明 GPU 已完成；隔离该槽直到既有设备卸载，禁止 host reset 复用。
+            frame.state = FrameSlotState::Retired;
             result = VansGpuResolvedFrame{};
             result.frameIndex = frame.frameIndex;
             result.droppedEvents = std::max<uint32_t>(1u, frame.droppedEvents);
@@ -835,9 +847,9 @@ bool Vans::VansGpuProfiler::TryResolveFrame(
     return true;
 }
 
-void Vans::VansGpuProfiler::PollPendingFrames(void* device)
+void Vans::VansGpuProfiler::PollPendingFrames()
 {
-    if (device == nullptr || !IsInitialized())
+    if (!IsInitialized())
         return;
 
     for (uint32_t frameSlot = 0u; frameSlot < FRAME_SLOT_COUNT; ++frameSlot)
@@ -846,15 +858,16 @@ void Vans::VansGpuProfiler::PollPendingFrames(void* device)
             continue;
 
         VansGpuResolvedFrame result{};
-        if (!TryResolveFrame(frameSlot, device, result))
+        if (!TryResolveFrame(frameSlot, result))
             continue;
 
         VansProfiler::Get().SubmitGpuFrame(result);
-        m_FrameSlots[frameSlot] = FrameSlot{};
+        if (m_FrameSlots[frameSlot].state != FrameSlotState::Retired)
+            m_FrameSlots[frameSlot] = FrameSlot{};
     }
 }
 
-void Vans::VansGpuProfiler::EndFrame(void* device)
+void Vans::VansGpuProfiler::EndFrame()
 {
     if (m_ActiveFrameSlot < FRAME_SLOT_COUNT)
     {
@@ -879,7 +892,7 @@ void Vans::VansGpuProfiler::EndFrame(void* device)
         m_ActiveFrameSlot = INVALID_SLOT;
     }
 
-    PollPendingFrames(device);
+    PollPendingFrames();
 }
 
 Vans::VansGpuScopeQuery::VansGpuScopeQuery(
@@ -944,9 +957,9 @@ void Vans::VansProfiler::BeginRenderFrame(uint64_t frameIndex)
     VansGpuProfiler::Get().BeginFrame(frameIndex);
 }
 
-void Vans::VansProfiler::EndRenderFrame(uint64_t frameIndex, void* device)
+void Vans::VansProfiler::EndRenderFrame(uint64_t frameIndex)
 {
-    VansGpuProfiler::Get().EndFrame(device);
+    VansGpuProfiler::Get().EndFrame();
     VansCpuProfiler::Get().EndRenderFrame(frameIndex);
 }
 
@@ -1144,11 +1157,26 @@ void Vans::VansProfiler::PublishLatestReadyAssembly()
             continue;
         if (m_Assemblies[index].occupied && m_Assemblies[index].frameIndex < latestFrame)
         {
+            // 最新 UI 快照可先显示，但自动验收尚未消费的旧帧仍要等 CPU/GPU 配齐。
+            if (m_StableCapture.IsActive()
+                && m_Assemblies[index].frameIndex >= m_StableCapture.GetNextFrameIndex())
+                continue;
             std::memset(&m_Assemblies[index], 0, sizeof(FrameAssembly));
             m_Assemblies[index].frameIndex = INVALID_FRAME_INDEX;
             m_Assemblies[index].gpu.frameIndex = INVALID_FRAME_INDEX;
         }
     }
+}
+
+void Vans::VansProfiler::StartStableCapture(const VansProfileCapture::Settings& settings)
+{
+    // 不接纳开关之前仍在 GPU ring 中的暖机帧。
+    m_StableCapture.Start(settings, m_NextFrameIndex);
+}
+
+void Vans::VansProfiler::CancelStableCapture()
+{
+    m_StableCapture.Cancel();
 }
 
 void Vans::VansProfiler::ProcessCompletedFrames()
@@ -1173,7 +1201,327 @@ void Vans::VansProfiler::ProcessCompletedFrames()
 
     for (FrameAssembly& assembly : m_Assemblies)
         ComposeAssembly(assembly);
+    if (m_StableCapture.IsActive() && !IsPaused())
+    {
+        // UI 只发布最新快照；验收在丢弃旧快照前按帧序接收全部完整结果。
+        std::array<const FrameAssembly*, ASSEMBLY_COUNT> ready{};
+        size_t count = 0;
+        for (const FrameAssembly& assembly : m_Assemblies)
+            if (assembly.occupied)
+                ready[count++] = &assembly;
+        std::sort(ready.begin(), ready.begin() + count,
+            [](const FrameAssembly* a, const FrameAssembly* b) { return a->frameIndex < b->frameIndex; });
+        const double nowSeconds = static_cast<double>(NowNs()) * 1.0e-9;
+        for (size_t index = 0; index < count; ++index)
+        {
+            const uint64_t expected = m_StableCapture.GetNextFrameIndex();
+            if (ready[index]->frameIndex < expected)
+                continue;
+            // CPU/GPU 完成可以错开。只保留原有有限 ring，不阻塞、不扩大 GPU 队列。
+            // 超出整轮 ring 容量仍未返回才交给采集器报告缺帧并重新稳定。
+            const bool expired = m_NextFrameIndex > expected
+                && m_NextFrameIndex - expected > ASSEMBLY_COUNT;
+            if (!ready[index]->composed)
+            {
+                if (expired) continue;
+                break;
+            }
+            if (ready[index]->frameIndex > expected && !expired)
+                break;
+            m_StableCapture.Observe(ready[index]->frame, nowSeconds);
+        }
+    }
     PublishLatestReadyAssembly();
+}
+
+Vans::VansProfileCapture::Statistics Vans::VansProfileCapture::Summarize(std::vector<double> values)
+{
+    Statistics result;
+    if (values.empty())
+        return result;
+    std::sort(values.begin(), values.end());
+    const auto percentile = [&](double fraction)
+    {
+        const double position = fraction * static_cast<double>(values.size() - 1);
+        const size_t lower = static_cast<size_t>(position);
+        const size_t upper = std::min(lower + 1, values.size() - 1);
+        return values[lower] + (values[upper] - values[lower]) * (position - lower);
+    };
+    result.minimum = values.front();
+    result.maximum = values.back();
+    for (double value : values)
+        result.mean += value / static_cast<double>(values.size());
+    result.median = percentile(0.5);
+    result.p95 = percentile(0.95);
+    result.p99 = percentile(0.99);
+    return result;
+}
+
+void Vans::VansProfileCapture::Start(const Settings& settings, uint64_t firstFrameIndex)
+{
+    *this = VansProfileCapture{};
+    if (settings.windowFrames < 2 || settings.stableWindows < 2 || settings.measurementFrames < 2
+        || !std::isfinite(settings.minimumWindowSeconds) || settings.minimumWindowSeconds < 0.0
+        || !std::isfinite(settings.relativeDrift) || settings.relativeDrift < 0.0
+        || !std::isfinite(settings.maximumP95Spread) || settings.maximumP95Spread < 0.0
+        || !std::isfinite(settings.maximumSpikeRatio) || settings.maximumSpikeRatio < 1.0)
+        return;
+    m_Settings = settings;
+    m_FirstFrameIndex = firstFrameIndex;
+    m_Active = true;
+    m_Window.reserve(settings.windowFrames);
+    m_Samples.reserve(settings.measurementFrames);
+}
+
+void Vans::VansProfileCapture::Cancel()
+{
+    m_Active = false;
+}
+
+void Vans::VansProfileCapture::Restart()
+{
+    ++m_Restarts;
+    m_DiscardedMeasurementSamples += m_Samples.size();
+    m_Phase = Phase::Settling;
+    m_StableWindows = 0;
+    m_Window.clear();
+    m_Samples.clear();
+    m_GpuScopes.clear();
+    m_CpuScopes.clear();
+    m_BaselineCpu = {};
+    m_BaselineGpu = {};
+}
+
+bool Vans::VansProfileCapture::WindowStable(const Statistics& cpu, const Statistics& gpu) const
+{
+    const auto stable = [&](const Statistics& value, const Statistics& baseline)
+    {
+        if (value.p95 > value.median * (1.0 + m_Settings.maximumP95Spread)
+            || value.maximum > value.median * m_Settings.maximumSpikeRatio)
+            return false;
+        // 与本轮首个稳定窗口比较，避免每个窗口稍微变慢却不断放宽基准。
+        return m_StableWindows == 0
+            || (std::abs(value.median - baseline.median) <= baseline.median * m_Settings.relativeDrift
+                && std::abs(value.p95 - baseline.p95) <= baseline.p95 * m_Settings.relativeDrift);
+    };
+    return stable(cpu, m_BaselineCpu) && stable(gpu, m_BaselineGpu);
+}
+
+void Vans::VansProfileCapture::CollectGpuScopes(const ProfileFrame& frame)
+{
+    const size_t sampleCount = m_Samples.size();
+    for (auto& scope : m_GpuScopes)
+        scope.second.push_back(0.0);
+    for (uint32_t index = 0; index < frame.eventCount; ++index)
+    {
+        const ProfileEvent& event = frame.events[index];
+        if ((event.flags & ProfileEventFlagGpu) == 0)
+            continue;
+        const char* trackName = "GPU";
+        if (event.trackId > 0 && event.trackId <= frame.trackCount)
+            trackName = frame.tracks[event.trackId - 1].name;
+        auto& values = m_GpuScopes[std::string(trackName) + "/" + event.name];
+        values.resize(sampleCount, 0.0);
+        values.back() += event.endUs - event.startUs;
+    }
+}
+
+void Vans::VansProfileCapture::CollectCpuScopes(const ProfileFrame& frame)
+{
+    const size_t sampleCount = m_Samples.size();
+    for (auto& entry : m_CpuScopes)
+    {
+        entry.second.inclusive.push_back(0.0);
+        entry.second.exclusive.push_back(0.0);
+        entry.second.calls.push_back(0.0);
+    }
+    // CPU eventId 在帧内唯一；跨线程父子关系不能扣减到另一个线程的 self time。
+    std::unordered_map<uint32_t, const ProfileEvent*> events;
+    std::unordered_map<uint32_t, double> childDurations;
+    for (uint32_t index = 0; index < frame.eventCount; ++index)
+    {
+        const auto& event = frame.events[index];
+        if ((event.flags & ProfileEventFlagGpu) == 0)
+            events.emplace(event.eventId, &event);
+    }
+    for (const auto& entry : events)
+    {
+        const auto& child = *entry.second;
+        const auto parent = events.find(child.parentEventId);
+        if (parent != events.end() && parent->second->trackId == child.trackId)
+            childDurations[child.parentEventId] += std::max(0.0,
+                std::min(child.endUs, parent->second->endUs) - std::max(child.startUs, parent->second->startUs));
+    }
+    for (const auto& entry : events)
+    {
+        const auto& event = *entry.second;
+        auto& samples = m_CpuScopes[{event.trackId, event.name}];
+        samples.trackName = event.trackId > 0 && event.trackId <= frame.trackCount
+            ? frame.tracks[event.trackId - 1].name : "CPU";
+        samples.wait = samples.wait || (event.flags & ProfileEventFlagWait) != 0;
+        samples.inclusive.resize(sampleCount, 0.0);
+        samples.exclusive.resize(sampleCount, 0.0);
+        samples.calls.resize(sampleCount, 0.0);
+        const double duration = std::max(0.0, event.endUs - event.startUs);
+        samples.inclusive.back() += duration;
+        samples.exclusive.back() += std::max(0.0, duration - childDurations[event.eventId]);
+        samples.calls.back() += 1.0;
+    }
+}
+
+void Vans::VansProfileCapture::Observe(const ProfileFrame& frame, double nowSeconds)
+{
+    if (!m_Active || m_Phase == Phase::Complete || frame.frameIndex < m_FirstFrameIndex
+        || (m_HasLastFrame && frame.frameIndex <= m_LastFrameIndex))
+        return;
+    // 尚未完成的查询不能提前占用帧号，也不能作为零耗时样本。
+    if (frame.gpuExpected && !frame.gpuComplete)
+        return;
+    const uint64_t expected = m_HasLastFrame ? m_LastFrameIndex + 1 : m_FirstFrameIndex;
+    if (frame.frameIndex > expected)
+    {
+        m_MissingFrames += frame.frameIndex - expected;
+        Restart();
+    }
+    m_LastFrameIndex = frame.frameIndex;
+    m_HasLastFrame = true;
+    bool valid = frame.gpuExpected && frame.gpuComplete && !frame.overflow
+        && frame.droppedCpuEvents == 0 && frame.droppedGpuEvents == 0
+        && frame.eventCount <= ProfileFrame::MAX_EVENTS && frame.trackCount <= ProfileFrame::MAX_TRACKS
+        && std::isfinite(frame.frameDurationUs) && frame.frameDurationUs > 0.0
+        && std::isfinite(frame.gpuDurationUs) && frame.gpuDurationUs > 0.0
+        && std::isfinite(nowSeconds) && nowSeconds >= m_LastObservedSeconds;
+    bool hasGpuEvent = false;
+    if (valid)
+    {
+        for (uint32_t index = 0; index < frame.eventCount; ++index)
+        {
+            const ProfileEvent& event = frame.events[index];
+            hasGpuEvent = hasGpuEvent || (event.flags & ProfileEventFlagGpu) != 0;
+            valid = valid && std::isfinite(event.startUs) && std::isfinite(event.endUs)
+                && event.endUs >= event.startUs && (event.flags & ProfileEventFlagOverflow) == 0;
+        }
+    }
+    if (!valid || !hasGpuEvent)
+    {
+        ++m_InvalidFrames;
+        Restart();
+        return;
+    }
+    m_LastObservedSeconds = nowSeconds;
+    ++m_ObservedFrames;
+    const Sample sample{ frame.frameIndex, nowSeconds, frame.frameDurationUs, frame.gpuDurationUs };
+    auto& batch = m_Phase == Phase::Measuring ? m_Samples : m_Window;
+    batch.push_back(sample);
+    if (m_Phase == Phase::Measuring)
+    {
+        CollectGpuScopes(frame);
+        CollectCpuScopes(frame);
+    }
+    const uint32_t requiredFrames = m_Phase == Phase::Measuring
+        ? m_Settings.measurementFrames : m_Settings.windowFrames;
+    if (batch.size() < requiredFrames
+        || nowSeconds - batch.front().observedSeconds < m_Settings.minimumWindowSeconds)
+        return;
+    std::vector<double> cpu, gpu;
+    cpu.reserve(batch.size());
+    gpu.reserve(batch.size());
+    for (const Sample& value : batch)
+    {
+        cpu.push_back(value.cpuUs);
+        gpu.push_back(value.gpuUs);
+    }
+    const Statistics cpuStats = Summarize(std::move(cpu));
+    const Statistics gpuStats = Summarize(std::move(gpu));
+    if (!WindowStable(cpuStats, gpuStats))
+    {
+        ++m_RejectedWindows;
+        Restart();
+        return;
+    }
+    if (m_Phase == Phase::Measuring)
+    {
+        m_Phase = Phase::Complete;
+        return;
+    }
+    if (m_StableWindows == 0)
+    {
+        m_BaselineCpu = cpuStats;
+        m_BaselineGpu = gpuStats;
+    }
+    ++m_StableWindows;
+    m_Window.clear();
+    if (m_StableWindows >= m_Settings.stableWindows)
+        m_Phase = Phase::Measuring;
+}
+
+bool Vans::VansProfileCapture::DumpJson(const char* outputDir) const
+{
+    if (!m_Active || outputDir == nullptr || *outputDir == '\0')
+        return false;
+    const auto statisticsJson = [](const Statistics& stats)
+    {
+        return json{ {"minimum", stats.minimum}, {"maximum", stats.maximum}, {"mean", stats.mean},
+            {"median", stats.median}, {"p95", stats.p95}, {"p99", stats.p99} };
+    };
+    json report;
+    report["accepted"] = m_Phase == Phase::Complete;
+    report["phase"] = m_Phase == Phase::Complete ? "complete" : m_Phase == Phase::Measuring ? "measuring" : "settling";
+    report["units"] = "microseconds";
+    report["settings"] = { {"windowFrames", m_Settings.windowFrames}, {"stableWindows", m_Settings.stableWindows},
+        {"measurementFrames", m_Settings.measurementFrames}, {"minimumWindowSeconds", m_Settings.minimumWindowSeconds},
+        {"relativeDrift", m_Settings.relativeDrift}, {"maximumP95Spread", m_Settings.maximumP95Spread},
+        {"maximumSpikeRatio", m_Settings.maximumSpikeRatio} };
+    report["firstEligibleFrame"] = m_FirstFrameIndex;
+    report["observedFrames"] = m_ObservedFrames;
+    report["missingFrames"] = m_MissingFrames;
+    report["invalidFrames"] = m_InvalidFrames;
+    report["restarts"] = m_Restarts;
+    report["rejectedWindows"] = m_RejectedWindows;
+    report["discardedMeasurementSamples"] = m_DiscardedMeasurementSamples;
+    report["stableWindows"] = m_StableWindows;
+    report["sampleCount"] = m_Samples.size();
+    report["samples"] = json::array();
+    std::vector<double> cpu, gpu;
+    for (const Sample& sample : m_Samples)
+    {
+        report["samples"].push_back({ {"frameIndex", sample.frameIndex}, {"observedSeconds", sample.observedSeconds},
+            {"cpuUs", sample.cpuUs}, {"gpuUs", sample.gpuUs} });
+        cpu.push_back(sample.cpuUs);
+        gpu.push_back(sample.gpuUs);
+    }
+    report["cpuFrameUs"] = statisticsJson(Summarize(std::move(cpu)));
+    report["gpuTimestampSpanUs"] = statisticsJson(Summarize(std::move(gpu)));
+    report["baselineCpuFrameUs"] = statisticsJson(m_BaselineCpu);
+    report["baselineGpuTimestampSpanUs"] = statisticsJson(m_BaselineGpu);
+    report["gpuScopesUs"] = json::object();
+    for (const auto& scope : m_GpuScopes)
+        report["gpuScopesUs"][scope.first] = statisticsJson(Summarize(scope.second));
+    report["cpuScopes"] = json::array();
+    for (const auto& entry : m_CpuScopes)
+    {
+        const auto& scope = entry.second;
+        report["cpuScopes"].push_back({ {"trackId", entry.first.first}, {"track", scope.trackName},
+            {"name", entry.first.second}, {"wait", scope.wait},
+            {"inclusiveUs", statisticsJson(Summarize(scope.inclusive))},
+            {"exclusiveUs", statisticsJson(Summarize(scope.exclusive))},
+            {"callsPerFrame", statisticsJson(Summarize(scope.calls))} });
+    }
+    report["scopeAccounting"] = "Same-name scopes are summed per track per frame; absent scopes contribute zero. CPU exclusive time excludes direct children on the same thread. CPU scopes retain their recorded intervals, including waits extending beyond the main frame. Nested scopes and concurrent threads overlap; their sum is not frame time.";
+    report["acceptanceScope"] = "Timing stability only; verify scene, camera, DLSS initialization and background work separately before using this capture as a performance comparison.";
+    try
+    {
+        std::filesystem::create_directories(outputDir);
+        std::ofstream output(std::filesystem::path(outputDir) / "profile_capture.json");
+        output << report.dump(2);
+        output.close();
+        return !output.fail();
+    }
+    catch (const std::exception& error)
+    {
+        VANS_LOG_ERROR("[Profiler] Capture report failed: " << error.what());
+        return false;
+    }
 }
 
 void Vans::VansProfiler::SetCaptureEnabled(bool enabled)

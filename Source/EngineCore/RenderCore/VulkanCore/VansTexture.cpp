@@ -1,5 +1,6 @@
-﻿#include "../../../Graphics/Vulkan/VansVKFunctions.h"
+#include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansTexture.h"
+#include <glm/gtc/packing.hpp>
 #include "VansVKDevice.h"
 #include "VansVKCommandBuffer.h"
 #include "../../AssetCore/Importers/VansTextureCooker.h"
@@ -221,6 +222,8 @@ namespace VansGraphics
 
 	VansTexture::~VansTexture()
 	{
+		// 空纹理可在设备创建前或显式释放后析构，不应再访问全局设备指针。
+		if (!m_Image.HasResources()) return;
 		m_Image.DestroyVulkanImage(*(VkDevice*)m_GraphicsDevice->GetNativeGraphicsDevice());
 	}
 
@@ -1016,7 +1019,7 @@ namespace VansGraphics
 		return true;
 	}
 
-	void VansTexture::LoadCubeTexture(VansVKCommandBuffer& command_buffer, std::string texture_parent_path, bool isSRGB)
+	std::uint64_t VansTexture::LoadCubeTexture(VansVKCommandBuffer& command_buffer, std::string texture_parent_path, bool isSRGB)
 	{
 		VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
 		VkDevice device = vkDevice->GetLogicDevice();
@@ -1024,27 +1027,48 @@ namespace VansGraphics
 
 		const char* faceNames[] = { "/Right.hdr", "/Left.hdr", "/Top.hdr", "/Bottom.hdr", "/Front.hdr", "/Back.hdr" };
 		bool imageCreated = false;
+        uint64_t contentHash = 14695981039346656037ull;
+        bool sourceHDR = false;
+        int cubeWidth = 0, cubeHeight = 0;
 
 		for (int face = 0; face < 6; ++face)
 		{
 			std::string path = texture_parent_path + faceNames[face];
 			int width = 0, height = 0, num_components = 0;
-			std::unique_ptr<unsigned char, void(*)(void*)> stbi_data(
-				stbi_load(path.c_str(), &width, &height, &num_components, 4), stbi_image_free);
-
-			if (!stbi_data || width <= 0 || height <= 0)
-			{
-				VANS_LOG_ERROR("Could not read image!");
-				return;
-			}
-
-			num_components = 4;
-			int dataSize = width * height * num_components;
+            const bool hdr = stbi_is_hdr(path.c_str()) != 0;
+            std::unique_ptr<void, void(*)(void*)> pixels(hdr
+                ? static_cast<void*>(stbi_loadf(path.c_str(), &width, &height, &num_components, 4))
+                : static_cast<void*>(stbi_load(path.c_str(), &width, &height, &num_components, 4)), stbi_image_free);
+            if (!pixels || width <= 0 || height <= 0 || width != height ||
+                (imageCreated && (hdr != sourceHDR || width != cubeWidth || height != cubeHeight)))
+                throw std::runtime_error("Cubemap faces must be readable, square, equal-size and have consistent precision: " + path);
+            sourceHDR = hdr; cubeWidth = width; cubeHeight = height;
+            num_components = 4;
+            std::vector<uint16_t> linearHalf;
+            void* uploadPixels = pixels.get();
+            if (hdr)
+            {
+                const float* linear = static_cast<const float*>(pixels.get());
+                linearHalf.resize(size_t(width) * height * 4u);
+                for (size_t component = 0; component < linearHalf.size(); ++component)
+                {
+                    if (!std::isfinite(linear[component]) || std::abs(linear[component]) > 65504.0f)
+                        throw std::runtime_error("Cubemap radiance exceeds finite RGBA16F range: " + path);
+                    linearHalf[component] = glm::packHalf1x16(linear[component]);
+                }
+                uploadPixels = linearHalf.data();
+            }
+            const size_t dataSize = size_t(width) * height * 4u * (hdr ? sizeof(uint16_t) : sizeof(uint8_t));
+            const auto* content = static_cast<const uint8_t*>(uploadPixels);
+            for (size_t byte = 0; byte < dataSize; ++byte)
+            { contentHash ^= content[byte]; contentHash *= 1099511628211ull; }
+            if (dataSize > static_cast<size_t>((std::numeric_limits<int>::max)()))
+                throw std::runtime_error("Cubemap face exceeds upload size limit: " + path);
 
 			if (!imageCreated)
 			{
 				VkExtent3D extent = { (uint32_t)width, (uint32_t)height, 1 };
-				VkFormat format = ChooseFormat(num_components, LOW_PRES_8, isSRGB);
+				VkFormat format = hdr ? VK_FORMAT_R16G16B16A16_SFLOAT : ChooseFormat(num_components, LOW_PRES_8, isSRGB);
 				m_Image.CreateVulkanImage(device, extent, format, 1, 1,
 					VK_IMAGE_TYPE_2D, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
 					VK_SAMPLE_COUNT_1_BIT, true, true, true);
@@ -1053,11 +1077,11 @@ namespace VansGraphics
 
 			VkOffset3D offset = { 0, 0, 0 };
 			VkExtent3D extent = { (uint32_t)width, (uint32_t)height, 1 };
-			if (!vkDevice->SetDeviceImageData(m_Image, command_buffer, stbi_data.get(), 0, dataSize, offset, extent, 0, face))
+			if (!vkDevice->SetDeviceImageData(m_Image, command_buffer, uploadPixels, 0, static_cast<int>(dataSize), offset, extent, 0, face))
 			{
 				RecordTextureUploadFailure();
 				VANS_LOG_ERROR("Cube texture upload failed at face " << face << ": " << path);
-				return;
+				throw std::runtime_error("Cubemap upload failed: " + path);
 			}
 
 			if (face == 0)
@@ -1072,7 +1096,7 @@ namespace VansGraphics
 		{
 			RecordTextureUploadFailure();
 			VANS_LOG_ERROR("Cube texture final layout command buffer begin failed: " << texture_parent_path);
-			return;
+			throw std::runtime_error("Cubemap layout transition failed: " + texture_parent_path);
 		}
 		m_Image.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 			{
@@ -1089,7 +1113,9 @@ namespace VansGraphics
 		{
 			RecordTextureUploadFailure();
 			VANS_LOG_ERROR("Cube texture final layout submit failed: " << texture_parent_path);
+            throw std::runtime_error("Cubemap layout submit failed: " + texture_parent_path);
 		}
+	    return contentHash;
 	}
 
 	void VansTexture::LoadFromMemory(VansVKCommandBuffer& command_buffer,
@@ -1423,13 +1449,18 @@ namespace VansGraphics
 		return true;
 	}
 
-	void VansTexture::InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int slice, VkFormat format, bool isCube, bool generateMip, bool enableRandomWrite, VkSamplerAddressMode addressMode)
+	bool VansTexture::InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int slice, VkFormat format, bool isCube, bool generateMip, bool enableRandomWrite, VkSamplerAddressMode addressMode)
 	{
+		VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+		if (!vkDevice || width <= 0 || height <= 0 || slice <= 0)
+		{
+			RecordTextureUploadFailure();
+			return false;
+		}
 		m_TextureWidth = width;
 		m_TextureHeight = height;
 		m_TextureSlice = slice;
 
-		VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
 		VkDevice device = vkDevice->GetLogicDevice();
 		VkQueue queue = vkDevice->GetGraphicsQueue();
 
@@ -1437,10 +1468,14 @@ namespace VansGraphics
 		int mipLevels = CalculateMipLevels(width, height, generateMip);
 
 		VkExtent3D extent = { (uint32_t)width, (uint32_t)height, (uint32_t)slice };
-		m_Image.CreateVulkanImage(device, extent, format, mipLevels, 1,
+		if (!m_Image.CreateVulkanImage(device, extent, format, mipLevels, 1,
 			is3D ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D,
 			VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-			VK_SAMPLE_COUNT_1_BIT, isCube, true, true, addressMode);
+			VK_SAMPLE_COUNT_1_BIT, isCube, true, true, addressMode))
+		{
+			RecordTextureUploadFailure();
+			return false;
+		}
 
 		VkImageLayout targetLayout = enableRandomWrite ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
@@ -1448,7 +1483,7 @@ namespace VansGraphics
 		{
 			RecordTextureUploadFailure();
 			VANS_LOG_ERROR("InitTextureWithoutData: initial layout command buffer begin failed.");
-			return;
+			return false;
 		}
 		m_Image.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 			{
@@ -1465,142 +1500,46 @@ namespace VansGraphics
 		{
 			RecordTextureUploadFailure();
 			VANS_LOG_ERROR("InitTextureWithoutData: initial layout submit failed.");
-		}
-	}
-
-	static uint16_t FloatToHalf(float value)
-	{
-		uint32_t bits = 0; std::memcpy(&bits, &value, sizeof(bits));
-		const uint32_t sign = (bits >> 16) & 0x8000u;
-		int32_t exponent = int32_t((bits >> 23) & 0xffu) - 127 + 15;
-		uint32_t mantissa = bits & 0x7fffffu;
-		if (exponent <= 0)
-		{
-			if (exponent < -10) return (uint16_t)sign;
-			mantissa = (mantissa | 0x800000u) >> (1 - exponent);
-			return (uint16_t)(sign | ((mantissa + 0x1000u) >> 13));
-		}
-		if (exponent >= 31) return (uint16_t)(sign | 0x7c00u);
-		return (uint16_t)(sign | (uint32_t(exponent) << 10) | ((mantissa + 0x1000u) >> 13));
-	}
-
-	bool VansTexture::LoadHDRTextureLayer(VansVKCommandBuffer& command_buffer,
-		const std::string& texturePath, int layerIndex)
-	{
-		if (layerIndex < 0 || layerIndex >= m_TextureSlice ||
-			m_Image.GetImageCreateInfo().format != VK_FORMAT_R16G16B16A16_SFLOAT) return false;
-		int fileW = 0, fileH = 0, components = 0, bytes = 0;
-		float* pixels = static_cast<float*>(ReadTextureFile(texturePath, HIGH_PRES_32, bytes, fileW, fileH, components, 4));
-		if (!pixels || fileW <= 0 || fileH <= 0) return false;
-		std::vector<uint16_t> upload(size_t(m_TextureWidth) * m_TextureHeight * 4u);
-		const float scaleX = float(fileW) / float(m_TextureWidth);
-		const float scaleY = float(fileH) / float(m_TextureHeight);
-		for (int y = 0; y < m_TextureHeight; ++y)
-		for (int x = 0; x < m_TextureWidth; ++x)
-		{
-			const int sx = std::min(int(x * scaleX), fileW - 1);
-			const int sy = std::min(int(y * scaleY), fileH - 1);
-			for (int c = 0; c < 4; ++c)
-				upload[(size_t(y) * m_TextureWidth + x) * 4u + c] = FloatToHalf(pixels[(size_t(sy) * fileW + sx) * 4u + c]);
-		}
-		stbi_image_free(pixels);
-		VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
-		const VkExtent3D extent = { (uint32_t)m_TextureWidth, (uint32_t)m_TextureHeight, 1u };
-		const VkOffset3D offset = { 0, 0, 0 };
-		if (!vkDevice->SetDeviceImageData(m_Image, command_buffer, upload.data(), 0,
-			(int)(upload.size() * sizeof(uint16_t)), offset, extent, 0, layerIndex,
-			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL))
-		{
-			RecordTextureUploadFailure();
-			VANS_LOG_ERROR("LoadHDRTextureLayer: GPU upload failed for layer " << layerIndex << ": " << texturePath);
-			return false;
-		}
-		VkQueue queue = vkDevice->GetGraphicsQueue(); VkDevice device = vkDevice->GetLogicDevice();
-		if (!command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
-		{
-			RecordTextureUploadFailure();
-			VANS_LOG_ERROR("LoadHDRTextureLayer: final layout command buffer begin failed for layer " << layerIndex << ": " << texturePath);
-			return false;
-		}
-		FinalizeUploadedLayer(command_buffer, m_TextureWidth, m_TextureHeight, layerIndex);
-		if (!SubmitAndWait(command_buffer, queue, device))
-		{
-			RecordTextureUploadFailure();
-			VANS_LOG_ERROR("LoadHDRTextureLayer: final layout submit failed for layer " << layerIndex << ": " << texturePath);
 			return false;
 		}
 		return true;
 	}
 
-	bool VansTexture::UpdateHDRArrayLayerFromPixels(VansVKCommandBuffer& command_buffer,
-		const float* rgbaPixels, int srcWidth, int srcHeight, int layerIndex)
-	{
-		if (!rgbaPixels || srcWidth <= 0 || srcHeight <= 0 || layerIndex < 0 || layerIndex >= m_TextureSlice ||
-			m_Image.GetImageCreateInfo().format != VK_FORMAT_R16G16B16A16_SFLOAT) return false;
-		std::vector<uint16_t> upload(size_t(m_TextureWidth) * m_TextureHeight * 4u);
-		const float scaleX = float(srcWidth) / float(m_TextureWidth);
-		const float scaleY = float(srcHeight) / float(m_TextureHeight);
-		for (int y = 0; y < m_TextureHeight; ++y) for (int x = 0; x < m_TextureWidth; ++x)
-		{
-			const int sx = std::min(int(x * scaleX), srcWidth - 1);
-			const int sy = std::min(int(y * scaleY), srcHeight - 1);
-			for (int c = 0; c < 4; ++c) upload[(size_t(y) * m_TextureWidth + x) * 4u + c] = FloatToHalf(rgbaPixels[(size_t(sy) * srcWidth + sx) * 4u + c]);
-		}
-		VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
-		const VkExtent3D extent = { (uint32_t)m_TextureWidth, (uint32_t)m_TextureHeight, 1u };
-		const VkOffset3D offset = { 0, 0, 0 };
-		if (!vkDevice->SetDeviceImageData(m_Image, command_buffer, upload.data(), 0, (int)(upload.size() * sizeof(uint16_t)), offset, extent, 0, layerIndex,
-			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL))
-		{
-			RecordTextureUploadFailure();
-			VANS_LOG_ERROR("UpdateHDRArrayLayerFromPixels: GPU upload failed for layer " << layerIndex);
-			return false;
-		}
-		VkQueue queue = vkDevice->GetGraphicsQueue(); VkDevice device = vkDevice->GetLogicDevice();
-		if (!command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
-		{
-			RecordTextureUploadFailure();
-			VANS_LOG_ERROR("UpdateHDRArrayLayerFromPixels: final layout command buffer begin failed for layer " << layerIndex);
-			return false;
-		}
-		FinalizeUploadedLayer(command_buffer, m_TextureWidth, m_TextureHeight, layerIndex);
-		if (!SubmitAndWait(command_buffer, queue, device))
-		{
-			RecordTextureUploadFailure();
-			VANS_LOG_ERROR("UpdateHDRArrayLayerFromPixels: final layout submit failed for layer " << layerIndex);
-			return false;
-		}
-		return true;
-	}
-
-	void VansTexture::InitCubeTextureArray(VansVKCommandBuffer& command_buffer,
+	bool VansTexture::InitCubeTextureArray(VansVKCommandBuffer& command_buffer,
 		int width, int height, int cubeCount, int numComponents,
 		bool generateMip, TexturePrecision texturePrecision, VkSamplerAddressMode addressMode)
 	{
+		VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
+		if (!vkDevice || width <= 0 || height != width || cubeCount <= 0
+			|| uint32_t(cubeCount) > vkDevice->GetDeviceProperties().limits.maxImageArrayLayers / 6u)
+			return false;
 		m_TextureType = TEXTURE_CUBE;
 		m_TextureWidth = width;
 		m_TextureHeight = height;
 		m_TextureSlice = std::max(cubeCount, 1) * 6;
 
-		VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
 		VkDevice device = vkDevice->GetLogicDevice();
 		VkQueue queue = vkDevice->GetGraphicsQueue();
 		const VkFormat format = ChooseFormat(numComponents, texturePrecision);
 		const int mipLevels = CalculateMipLevels(width, height, generateMip);
 		const VkExtent3D extent = { (uint32_t)width, (uint32_t)height, 1u };
 
-		m_Image.CreateVulkanImage(device, extent, format, mipLevels,
+		if (!m_Image.CreateVulkanImage(device, extent, format, mipLevels,
 			(uint32_t)std::max(cubeCount, 1), VK_IMAGE_TYPE_2D,
 			VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
 			VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
 			VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-			VK_SAMPLE_COUNT_1_BIT, true, true, true, addressMode);
+			VK_SAMPLE_COUNT_1_BIT, true, true, true, addressMode))
+		{
+			RecordTextureUploadFailure();
+			return false;
+		}
 
 		if (!command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
 		{
 			RecordTextureUploadFailure();
 			VANS_LOG_ERROR("Cube texture array initial layout command buffer begin failed.");
-			return;
+			return false;
 		}
 		m_Image.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
 			VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
@@ -1612,7 +1551,9 @@ namespace VansGraphics
 		{
 			RecordTextureUploadFailure();
 			VANS_LOG_ERROR("Cube texture array initial layout submit failed.");
+			return false;
 		}
+		return true;
 	}
 
 	bool VansTexture::LoadTexture3DFromSlices(VansVKCommandBuffer& command_buffer,

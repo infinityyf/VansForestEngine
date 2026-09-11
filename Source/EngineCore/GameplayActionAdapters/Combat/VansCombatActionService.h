@@ -130,7 +130,10 @@ private:
 	bool SampleWindow(MeleeWindow& window);
 	VansEntityHandle ResolveHitTarget(VansEntityHandle entity) const;
 	void EmitWindowEvent(MeleeWindow& window, std::string_view edge);
-	bool ActivateResponse(MeleeWindow& window, const VansTargetHitResult& hit);
+	VansActionCommandResult FireHitscan(const VansActionCommand& command);
+	bool ConfirmHit(VansActionHandle action, VansEntityHandle owner, VansEntityHandle instigator,
+		const std::string& responseAction, const std::string& hitName, std::string_view hitType,
+		const VansTargetHitResult& hit);
 
 	VansRuntimeWorld& m_World;
 	VansGameplayRuntime& m_GameplayRuntime;

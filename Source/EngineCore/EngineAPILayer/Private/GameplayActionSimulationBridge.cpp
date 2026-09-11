@@ -9,6 +9,7 @@
 #include "../../GameplayActionAdapters/Camera/VansCameraActionService.h"
 #include "../../GameplayActionAdapters/Character/VansCharacterActionServices.h"
 #include "../../GameplayActionAdapters/Combat/VansCombatActionService.h"
+#include "../../GameplayActionAdapters/Decal/VansDecalActionService.h"
 #include "../../GameplayActionAdapters/Physics/VansPhysicsQueryActionCapability.h"
 #include "../../GameplayActionAdapters/Projectile/VansProjectileActionCapability.h"
 #include "../../GameplayActionAdapters/Projectile/VansProjectileActionService.h"
@@ -38,6 +39,7 @@ std::vector<std::shared_ptr<VansFakeActionService>> CreateSimulationActionServic
 		&VansAudioActionCapability(),
 		&VansVFXActionCapability(),
 		&VansCombatActionCapability(),
+		&VansDecalActionCapability(),
 		&VansPhysicsQueryActionCapability(),
 		&VansProjectileActionCapability(),
 		&VansAnimationEventActionCapability(),

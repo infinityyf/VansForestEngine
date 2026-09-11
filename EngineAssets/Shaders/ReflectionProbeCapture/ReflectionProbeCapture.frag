@@ -1,6 +1,7 @@
 #version 450
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_GOOGLE_include_directive : enable
+#include "../SkyLighting/SkyLighting.glsl"
 
 #include "../GI/GIProbeStateData.glsl"
 
@@ -79,14 +80,17 @@ layout(set = 0, binding = 50) uniform sampler2D globalPBRTextures[];
 
 layout(set = 1, binding = 1) uniform sampler2DArray cascadeShadowMap;
 layout(set = 1, binding = 3) uniform samplerCube skyDiffuseEnvironment;
-layout(set = 1, binding = 4) uniform sampler2D giIrradianceAtlas;
-layout(set = 1, binding = 5) uniform sampler2D giVisibilityAtlas;
+layout(set = 1, binding = 4) uniform sampler2D giIrradianceAtlas[8];
+layout(set = 1, binding = 5) uniform sampler2D giVisibilityAtlas[8];
 layout(set = 1, binding = 6, std430) readonly buffer ProbeStateBuffer
 {
     GIProbeState states[];
-} giProbeStates;
+} giProbeStates[8];
 
-#define GI_LOAD_PROBE_STATE(regionIndex, probeLinearIndex) giProbeStates.states[probeLinearIndex]
+#define GI_LOAD_PROBE_STATE(regionIndex, probeLinearIndex) giProbeStates[nonuniformEXT(regionIndex)].states[probeLinearIndex]
+#define GI_LAYOUT_SET 1
+#define GI_LAYOUT_BINDING 7
+#include "../GI/GIProbeLayoutData.glsl"
 #include "../GI/GIProbeCommon.glsl"
 
 layout(set = 1, binding = 0) uniform CaptureCamera
@@ -109,6 +113,16 @@ layout(push_constant) uniform CaptureDraw
 
 vec3 SampleIndirectDiffuseRadiance(vec3 worldPosition, vec3 normal)
 {
+    if (GI_LayoutIsSparse())
+    {
+        uint region = GI_LayoutSelectRegion(worldPosition);
+        if (region == GI_INVALID_ADDRESS)
+            return max(SampleSkyDiffuseIrradiance(skyDiffuseEnvironment, normal) / PI, vec3(0.0));
+        return GI_SampleProbeIrradianceAtlasVisible(region, ivec3(1),
+            giIrradianceAtlas[nonuniformEXT(region)], giVisibilityAtlas[nonuniformEXT(region)],
+            worldPosition, normal, GI_LayoutRegionMin(region).xyz, GI_LayoutRegionSize(region).xyz,
+            GI_LayoutRegionSize(region).w, 0.0);
+    }
     vec3 samplePosition = worldPosition + normalize(normal) * captureCamera.giVolumeSizeAndBias.w;
     bool insideGIVolume = GI_IsInsideVolume(
         samplePosition,
@@ -116,7 +130,7 @@ vec3 SampleIndirectDiffuseRadiance(vec3 worldPosition, vec3 normal)
         captureCamera.giVolumeSizeAndBias.xyz);
 
 	vec3 probeLighting = GI_SampleProbeIrradianceAtlasVisible(
-		0u, ivec3(captureCamera.giGridDimensions.xyz), giIrradianceAtlas, giVisibilityAtlas,
+		0u, ivec3(captureCamera.giGridDimensions.xyz), giIrradianceAtlas[0], giVisibilityAtlas[0],
 		worldPosition, normal, captureCamera.giVolumeMin.xyz,
 		captureCamera.giVolumeSizeAndBias.xyz, captureCamera.giVolumeSizeAndBias.w, 0.0);
 
@@ -125,7 +139,7 @@ vec3 SampleIndirectDiffuseRadiance(vec3 worldPosition, vec3 normal)
 
     // sky diffuse cubemap 存的是 irradiance；这里返回 lighting 项，
     // 和 GI probe helper 一样在调用处再乘 baseColor/kD。
-    return max(texture(skyDiffuseEnvironment, normal).rgb / PI, vec3(0.0));
+    return max(SampleSkyDiffuseIrradiance(skyDiffuseEnvironment, normal) / PI, vec3(0.0));
 }
 
 float DistributionGGX(vec3 N, vec3 H, float roughness)

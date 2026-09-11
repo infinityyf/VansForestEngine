@@ -232,6 +232,8 @@ namespace VansGraphics
 		void CopyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize srcOffset, VkDeviceSize dstOffset, VkDeviceSize size);
 
 		void FillBuffer(VkBuffer buffer, VkDeviceSize offset, VkDeviceSize size, uint32_t data);
+		// 记录少量动态 SSBO 数据；命令保存输入副本，不等待 GPU、不创建临时提交。
+		bool UpdateBuffer(VkBuffer buffer, VkDeviceSize offset, VkDeviceSize size, const void* data);
 
 		// ── Pipeline barrier ──
 		void PipelineBarrier(

@@ -1,239 +1,136 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
-
 #include "../Common/Common.glsl"
 #include "../Common/CameraData.glsl"
+#include "../SSGI/SSGISurface.glsl"
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
-
-layout(set = 1, binding = 0) uniform sampler2D inputDepth;
+layout(set = 1, binding = 0) uniform sampler2D inputPosition;
 layout(set = 1, binding = 1) uniform sampler2D inputMotionVector;
 layout(set = 1, binding = 2) uniform sampler2D inputHistoryGI;
 layout(set = 1, binding = 3, rgba16f) readonly uniform image2D inputCurrentGI;
 layout(set = 1, binding = 4, rgba16f) writeonly uniform image2D outputAccumulatedGI;
-
 layout(set = 1, binding = 5) uniform ssgiTemporalInfo
 {
-    vec4 screenSize;  // xy = resolution, zw = 1 / resolution
-    vec4 frameParams; // x = temporal frame index, 0 means reset history
+    vec4 screenSize;
+    vec4 frameParams; // x = 历史帧号（0 重置），yz = previous jitter UV - current jitter UV
 };
 layout(set = 1, binding = 6) uniform sampler2D inputHistoryMoments;
-// Only the luminance mean and second moment are consumed on the next frame.
-// Their range is bounded by the GI radiance limits, so RG16F retains enough
-// temporal precision while halving this full-resolution history's bandwidth
-// once more relative to RG32F.
 layout(set = 1, binding = 7, rg16f) writeonly uniform image2D outputMoments;
 layout(set = 1, binding = 8) uniform sampler2D inputHistorySurface;
 layout(set = 1, binding = 9) uniform sampler2D inputNormal;
 layout(set = 1, binding = 10) uniform sampler2D inputMaterial;
 layout(set = 1, binding = 11, rgba32f) writeonly uniform image2D outputSurface;
 
-const int SSGI_TEMPORAL_GROUP_SIZE = 8;
-const int SSGI_TEMPORAL_TILE_BORDER = 1;
-const int SSGI_TEMPORAL_TILE_SIZE = SSGI_TEMPORAL_GROUP_SIZE + SSGI_TEMPORAL_TILE_BORDER * 2;
-const int SSGI_TEMPORAL_TILE_TEXELS = SSGI_TEMPORAL_TILE_SIZE * SSGI_TEMPORAL_TILE_SIZE;
-// Keep the squared moment finite in RG16F.  This only caps the variance
-// estimator for extreme HDR outliers; accumulated GI is stored independently.
-const float SSGI_MOMENT_LUMINANCE_MAX = 255.0;
-
-// 一个 8x8 workgroup 的 3x3 邻域只有 10x10 个唯一 texel。
-// 先放入共享内存，避免 64 个线程分别重复读取同一批 raw GI 与 depth。
-shared vec4 temporalTileGI[SSGI_TEMPORAL_TILE_TEXELS];
-shared float temporalTileDepth[SSGI_TEMPORAL_TILE_TEXELS];
-
-vec2 EncodeNormalOctahedron(vec3 n)
-{
-    n /= max(abs(n.x) + abs(n.y) + abs(n.z), 1e-6);
-    vec2 encoded = n.xz;
-    if (n.y < 0.0)
-        encoded = (1.0 - abs(encoded.yx)) * sign(encoded);
-    return encoded * 0.5 + 0.5;
-}
-
-vec3 DecodeNormalOctahedron(vec2 encoded)
-{
-    vec2 f = encoded * 2.0 - 1.0;
-    vec3 n = vec3(f.x, 1.0 - abs(f.x) - abs(f.y), f.y);
-    if (n.y < 0.0)
-        n.xz = (1.0 - abs(n.zx)) * sign(n.xz);
-    return normalize(n);
-}
-
-float FetchLinearDepth(ivec2 coord, ivec2 imgSize)
-{
-    float rawDepth = texelFetch(inputDepth, clamp(coord, ivec2(0), imgSize - 1), 0).r;
-    return (rawDepth >= 0.9999) ? FarPlane : LinearizeDepth(rawDepth, NearPlane, FarPlane);
-}
-
-float SampleLinearDepth(vec2 uv)
-{
-    float rawDepth = texture(inputDepth, uv).r;
-    return (rawDepth >= 0.9999) ? FarPlane : LinearizeDepth(rawDepth, NearPlane, FarPlane);
-}
-
-void ComputeNeighborhoodBoundsAndFilter(
-    ivec2 localCoord,
-    vec4 centerGI,
-    float centerDepth,
-    out vec4 boundsMin,
-    out vec4 boundsMax,
-    out vec4 filteredColor)
-{
-    float edgeThreshold = max(centerDepth * 0.015, 0.08);
-
-    vec4 m1 = vec4(0.0);
-    vec4 m2 = vec4(0.0);
-    float totalWeight = 0.0;
-
-    for (int y = -1; y <= 1; ++y)
-    {
-        for (int x = -1; x <= 1; ++x)
-        {
-            ivec2 tileCoord = localCoord + ivec2(x, y) + ivec2(SSGI_TEMPORAL_TILE_BORDER);
-            int tileIndex = tileCoord.y * SSGI_TEMPORAL_TILE_SIZE + tileCoord.x;
-            vec4 sampleGI = temporalTileGI[tileIndex];
-
-            // 深度先线性化到视空间米制距离，再做边界过滤。
-            // 这样可避免 raw depth 的非线性分布让远处和斜边跨表面混色。
-            float tapDepth = temporalTileDepth[tileIndex];
-            float depthDiff = abs(centerDepth - tapDepth);
-            if (depthDiff > edgeThreshold)
-                continue;
-
-            float w = exp(-depthDiff / max(centerDepth * 0.008, 0.04));
-            m1 += sampleGI * w;
-            m2 += sampleGI * sampleGI * w;
-            totalWeight += w;
-        }
-    }
-
-    m1 = (totalWeight > 1e-5) ? (m1 / totalWeight) : centerGI;
-    m2 = (totalWeight > 1e-5) ? (m2 / totalWeight) : (m1 * m1);
-    vec4 sigma = sqrt(max(m2 - m1 * m1, vec4(0.0)));
-
-    // 只用同一深度面的样本生成 AABB，避免门框、墙角另一侧颜色进入 history clamp 范围。
-    boundsMin = m1 - sigma * 1.25;
-    boundsMax = m1 + sigma * 1.25;
-    filteredColor = m1;
-}
+const int TILE_SIZE = 10;
+shared vec4 tileGI[100];
+shared vec4 tilePosition[100];
+shared vec4 tileNormalMaterial[100];
 
 void main()
 {
     ivec2 id = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 imgSize = imageSize(outputAccumulatedGI);
+    ivec2 size = imageSize(outputAccumulatedGI);
     ivec2 localCoord = ivec2(gl_LocalInvocationID.xy);
-    ivec2 groupBase = ivec2(gl_WorkGroupID.xy) * SSGI_TEMPORAL_GROUP_SIZE;
-
-    // barrier 前所有 invocation 都必须参与 tile 填充，边缘 workgroup 的越界
-    // invocation 也不能提前 return。
-    int localLinear = int(gl_LocalInvocationIndex);
-    for (int tileIndex = localLinear; tileIndex < SSGI_TEMPORAL_TILE_TEXELS;
-        tileIndex += SSGI_TEMPORAL_GROUP_SIZE * SSGI_TEMPORAL_GROUP_SIZE)
+    ivec2 groupBase = ivec2(gl_WorkGroupID.xy) * 8;
+    // 边缘 workgroup 的越界线程仍须参加共享 tile 和 barrier。
+    for (int i = int(gl_LocalInvocationIndex); i < 100; i += 64)
     {
-        ivec2 tileCoord = ivec2(
-            tileIndex % SSGI_TEMPORAL_TILE_SIZE,
-            tileIndex / SSGI_TEMPORAL_TILE_SIZE);
-        ivec2 sourceCoord = clamp(
-            groupBase + tileCoord - ivec2(SSGI_TEMPORAL_TILE_BORDER),
-            ivec2(0), imgSize - 1);
-        temporalTileGI[tileIndex] = imageLoad(inputCurrentGI, sourceCoord);
-        temporalTileDepth[tileIndex] = FetchLinearDepth(sourceCoord, imgSize);
+        ivec2 coord = clamp(groupBase + ivec2(i % TILE_SIZE, i / TILE_SIZE) - 1, ivec2(0), size - 1);
+        tileGI[i] = imageLoad(inputCurrentGI, coord);
+        tilePosition[i] = texelFetch(inputPosition, coord, 0);
+        tileNormalMaterial[i] = vec4(texelFetch(inputNormal, coord, 0).xyz, texelFetch(inputMaterial, coord, 0).z);
     }
     barrier();
-
-    if (any(greaterThanEqual(id, imgSize)))
+    if (any(greaterThanEqual(id, size))) return;
+    int center = (localCoord.y + 1) * TILE_SIZE + localCoord.x + 1;
+    vec4 position = tilePosition[center];
+    if (position.w <= 0.0 || position.w >= FarPlane)
+    {
+        imageStore(outputAccumulatedGI, id, vec4(0.0));
+        imageStore(outputMoments, id, vec4(0.0));
+        imageStore(outputSurface, id, vec4(0.0));
         return;
-
-    vec2 invImgSize = 1.0 / vec2(imgSize);
-    vec2 uv = (vec2(id) + 0.5) * invImgSize;
-
-    float currentRawDepth = texture(inputDepth, uv).r;
-    int centerTileIndex = (localCoord.y + SSGI_TEMPORAL_TILE_BORDER) * SSGI_TEMPORAL_TILE_SIZE +
-        localCoord.x + SSGI_TEMPORAL_TILE_BORDER;
-    float currentDepth = temporalTileDepth[centerTileIndex];
-    vec4 currentGI = temporalTileGI[centerTileIndex];
-    vec3 currentNormal = normalize(texture(inputNormal, uv).xyz);
-    float currentMaterialID = texture(inputMaterial, uv).z;
-
-    vec2 motionVector = texture(inputMotionVector, uv).xy;
-    vec2 prevUV = uv - motionVector;
-    float velocityLen = length(motionVector * screenSize.xy);
-
-    bool valid = all(greaterThan(prevUV, vec2(0.001))) &&
-                 all(lessThan(prevUV, vec2(0.999))) &&
-                 currentRawDepth < 0.9999;
-
+    }
+    vec3 normal = normalize(tileNormalMaterial[center].xyz);
+    float material = tileNormalMaterial[center].w;
+    vec3 dx = SSGI_SurfaceDerivative(position, tilePosition[center - 1], tilePosition[center + 1]);
+    vec3 dy = SSGI_SurfaceDerivative(position, tilePosition[center - TILE_SIZE], tilePosition[center + TILE_SIZE]);
+    vec3 geometricNormal = SSGI_NormalFromDerivatives(dx, dy, normal);
+    float footprint = max(length(dx), length(dy));
+    float tolerance = SSGI_PlaneTolerance(position);
+    vec3 mean = vec3(0.0), second = vec3(0.0);
+    float totalWeight = 0.0;
+    for (int y = -1; y <= 1; ++y)
+    for (int x = -1; x <= 1; ++x)
+    {
+        int tap = center + y * TILE_SIZE + x;
+        if (tilePosition[tap].w <= 0.0 || abs(round(material) - round(tileNormalMaterial[tap].w)) > 0.25) continue;
+        float weight = SSGI_PlaneWeight(tilePosition[tap].xyz - position.xyz, geometricNormal, tolerance);
+        weight *= pow(max(dot(normal, normalize(tileNormalMaterial[tap].xyz)), 0.0), 8.0);
+        vec3 value = tileGI[tap].rgb;
+        mean += value * weight;
+        second += value * value * weight;
+        totalWeight += weight;
+    }
+    mean /= max(totalWeight, 1e-5);
+    vec3 sigma = sqrt(max(second / max(totalWeight, 1e-5) - mean * mean, vec3(0.0)));
+    vec2 uv = (vec2(id) + 0.5) / vec2(size);
+    vec2 motion = texelFetch(inputMotionVector, id, 0).xy;
+    vec2 previousUV = uv - motion + frameParams.yz;
+    vec4 previousClip = LastVPMatrix * vec4(position.xyz, 1.0);
+    vec2 historyPixel = previousUV * vec2(size) - 0.5;
+    ivec2 base = ivec2(floor(historyPixel));
+    vec2 fraction = fract(historyPixel);
+    vec3 historyColor = vec3(0.0);
+    vec2 historyMoments = vec2(0.0);
+    float historyLength = 0.0, historyWeight = 0.0;
+    if (frameParams.x >= 0.5 && previousClip.w > 0.0 &&
+        all(greaterThanEqual(previousUV, vec2(0.0))) && all(lessThan(previousUV, vec2(1.0))))
+    {
+        // 先验证各 tap 的世界表面，再插值颜色；禁止插值打包的法线/材质。
+        for (int y = 0; y <= 1; ++y)
+        for (int x = 0; x <= 1; ++x)
+        {
+            ivec2 coord = base + ivec2(x, y);
+            if (any(lessThan(coord, ivec2(0))) || any(greaterThanEqual(coord, size))) continue;
+            if (!SSGI_HistorySurfaceMatches(texelFetch(inputHistorySurface, coord, 0),
+                position, geometricNormal, normal, material, footprint)) continue;
+            vec2 bilinear = mix(1.0 - fraction, fraction, vec2(x, y));
+            float weight = bilinear.x * bilinear.y;
+            vec4 history = texelFetch(inputHistoryGI, coord, 0);
+            // 仅重置局部光照来源切换的像素；正常路径的历史参数不变。
+            if((history.a<0.0)!=(tileGI[center].a<0.0)) continue;
+            historyColor += history.rgb * weight;
+            // Alpha 只表示历史帧数，绝不参与当前 confidence 的邻域裁剪。
+            historyLength += round(clamp(abs(history.a) * 255.0, 0.0, 255.0)) * weight;
+            historyMoments += texelFetch(inputHistoryMoments, coord, 0).xy * weight;
+            historyWeight += weight;
+        }
+    }
+    bool valid = historyWeight > 0.2;
     if (valid)
     {
-        // True previous-frame surface data, rather than sampling the current
-        // depth buffer at prevUV. This rejects disocclusions and moving
-        // silhouette crossings that current-frame depth cannot represent.
-        vec4 previousSurface = texture(inputHistorySurface, prevUV);
-        float prevDepth = previousSurface.x;
-        float depthDiff = abs(currentDepth - prevDepth);
-        valid = depthDiff < max(currentDepth * 0.02, 0.12);
-        vec3 previousNormal = DecodeNormalOctahedron(previousSurface.yz);
-        valid = valid && dot(currentNormal, previousNormal) >= 0.82;
-        valid = valid && abs(currentMaterialID - previousSurface.w) < 0.25;
+        historyColor /= historyWeight;
+        historyLength /= historyWeight;
+        historyMoments /= historyWeight;
     }
-
-    vec4 boundsMin;
-    vec4 boundsMax;
-    vec4 spatialFilteredGI;
-    ComputeNeighborhoodBoundsAndFilter(
-        localCoord, currentGI, currentDepth, boundsMin, boundsMax, spatialFilteredGI);
-
-    vec4 historyGI = valid ? texture(inputHistoryGI, prevUV) : spatialFilteredGI;
-    if (valid)
-        historyGI = clamp(historyGI, boundsMin, boundsMax);
-
-    // 主光或 GI 配置变化时 CPU 会把 frameParams.x 置为 0。
-    // reset 帧直接采用当前 GI，避免旧亮度在 SSGI temporal history 里继续残留。
-    bool resetHistory = frameParams.x < 0.5;
-    float historyLength = clamp(historyGI.a * 255.0, 0.0, 255.0);
-    vec4 historyMoments = valid ? texture(inputHistoryMoments, prevUV) : vec4(0.0);
-    float historyMeanLum = max(historyMoments.x, 0.0);
-    float historyVariance = max(historyMoments.y - historyMeanLum * historyMeanLum, 0.0);
-    // boundsMax - boundsMin 已经等于 2.5 * sigma。旧逻辑再次开平方，
-    // 会把平滑区域的微小色差严重放大，导致 Temporal 错把稳定像素当成
-    // 高方差样本并过量采用当前帧，镜头运动时表现为残余闪烁。
-    vec3 neighborhoodSigma =
-        max(boundsMax.rgb - boundsMin.rgb, vec3(0.0)) * 0.4;
-    float neighborhoodStdDev = Luminance(neighborhoodSigma);
-    float luminanceVariance = max(sqrt(historyVariance), neighborhoodStdDev);
-    float screenConfidence = clamp(currentGI.a, 0.0, 1.0);
-    float motionPenalty = clamp(velocityLen / 8.0, 0.0, 1.0);
-    // Probe Cache 的离群值已经在 trace 阶段处理。所有通过表面重投影
-    // 验证的样本都可以保留更多历史，可信 screen hit 再适度加强稳定；
-    // 深度/法线/材质不匹配时 valid 会直接失效，因此不会跨遮挡拖出旧 GI。
-    float stabilizedMotionPenalty = motionPenalty *
-        mix(0.55, 0.35, screenConfidence);
-    float variancePenalty = clamp(luminanceVariance / max(Luminance(spatialFilteredGI.rgb), 0.05), 0.0, 1.0);
-    float baseBlend = 1.0 / max(historyLength + 1.0, 1.0);
-    float blendFactor = clamp(max(baseBlend, 0.04 + stabilizedMotionPenalty * 0.35 + variancePenalty * 0.30 +
-        (1.0 - screenConfidence) * 0.05), 0.04, 1.0);
-    if (!valid || resetHistory)
-        blendFactor = 1.0;
-
-    vec3 accumulated = mix(historyGI.rgb, spatialFilteredGI.rgb, blendFactor);
-    float newHistoryLength = (valid && !resetHistory)
-        ? min(historyLength + 1.0, 255.0)
-        : 1.0;
-    imageStore(outputAccumulatedGI, id, vec4(accumulated, newHistoryLength / 255.0));
-
-    float luminance = min(
-        Luminance(max(accumulated, vec3(0.0))),
-        SSGI_MOMENT_LUMINANCE_MAX);
-    float momentBlend = clamp(blendFactor, 0.04, 1.0);
-    float meanLum = (valid && !resetHistory)
-        ? mix(historyMeanLum, luminance, momentBlend)
-        : luminance;
-    float meanLumSq = (valid && !resetHistory)
-        ? mix(max(historyMoments.y, 0.0), luminance * luminance, momentBlend)
-        : luminance * luminance;
-    imageStore(outputMoments, id,
-        vec4(meanLum, max(meanLumSq, meanLum * meanLum), 0.0, 0.0));
-
-    imageStore(outputSurface, id, vec4(currentDepth,
-        EncodeNormalOctahedron(currentNormal), currentMaterialID));
+    bool receiverTransport=tileGI[center].a<0.0;
+    float confidence = clamp(receiverTransport ? -tileGI[center].a-1.0 : tileGI[center].a, 0.0, 1.0);
+    float motionPenalty = clamp(length(motion * screenSize.xy) / 8.0, 0.0, 1.0);
+    float blend = valid ? max(1.0 / (historyLength + 1.0),
+        mix(0.06, 0.04, confidence) + motionPenalty * 0.06) : 1.0;
+    // Moments 来自尚未时域积累的输入，避免对降噪输出再估计一次方差。
+    float luminance = min(Luminance(max(tileGI[center].rgb, vec3(0.0))), 255.0);
+    vec2 moments = vec2(luminance, luminance * luminance);
+    if (valid) moments = mix(historyMoments, moments, blend);
+    float temporalSigma = sqrt(max(moments.y - moments.x * moments.x, 0.0));
+    // 缓存相关噪声可使空间 sigma 为零；历史方差仍应允许时间积分。
+    vec3 radius = max(sigma * 1.5, vec3(temporalSigma * 1.5));
+    if (valid) historyColor = clamp(historyColor, max(mean - radius, vec3(0.0)), mean + radius);
+    vec3 accumulated = valid ? mix(historyColor, mean, blend) : mean;
+    float newLength = valid ? min(historyLength + 1.0, 255.0) : 1.0;
+    imageStore(outputAccumulatedGI, id, vec4(accumulated, (receiverTransport ? -1.0 : 1.0)*newLength / 255.0));
+    imageStore(outputMoments, id, vec4(moments.x, max(moments.y, moments.x * moments.x), 0.0, 0.0));
+    imageStore(outputSurface, id, SSGI_EncodeSurface(position.xyz, normal, material));
 }

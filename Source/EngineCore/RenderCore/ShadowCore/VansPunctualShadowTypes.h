@@ -6,6 +6,7 @@
 #include <array>
 #include <cstdint>
 #include <limits>
+#include <unordered_set>
 #include <vector>
 
 namespace VansGraphics
@@ -224,7 +225,8 @@ namespace VansGraphics
 		uint32_t shadowCasterMask = 0xffffffffu;
 		VansShadowRect atlasRect;
 		glm::mat4 worldToShadow = glm::mat4(1.0f);
-		std::vector<VansRenderProxyHandle> casterHandles;
+		// 仅用于成员查询；实际绘制顺序仍由场景节点的 stableOrder 决定。
+		std::unordered_set<VansRenderProxyHandle, VansRenderProxyHandleHash> casterHandles;
 	};
 
 	struct VansPunctualShadowBudget

@@ -3,6 +3,7 @@
 //#include "VulkanCore/VansMesh.h"
 #include "../VansNode.h"
 #include "VansMaterial.h"
+#include "../SceneCore/VansSceneImpactDecalConfig.h"
 #include "VansRenderBounds.h"
 #include "VansVertexDeformationState.h"
 #include "../ScriptCore/VansTransform.h"
@@ -10,6 +11,7 @@
 #include <cstdint>
 #include <vector>
 #include <queue>
+#include <optional>
 
 namespace VansGraphics
 {
@@ -71,6 +73,10 @@ namespace VansGraphics
 			// Per-instance GI ray-tracing participation. Transparent/transmission
 			// materials are always disabled even when the serialized mode is "auto".
 			bool m_RayTracingEnabled = true;
+
+			// Position.w / Scale.w 是保留实例分量；通过帧快照携带贴花接收组与角度阈值。
+			uint32_t m_DecalReceiverId = 0;
+			float m_DecalMinimumNormalDot = -1.0f;
 
 			// Vertex deformation state owns shader-facing skinning resources.
 			VansVertexDeformationState m_VertexDeformationState;
@@ -331,6 +337,7 @@ namespace VansGraphics
 	public:
 
 		VansDeferredRenderNode(VkDevice& device, RenderNodeType type) : VansRenderNode(device, type) {}
+        void Draw(VansVKCommandBuffer& cmd, GlobalStateData& globalState) override;
 
 		void CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager) override;
 
@@ -423,11 +430,12 @@ namespace VansGraphics
 
 	};
 
-	// ── Decal render node — OBB decal, overwrites GBuffer Normal/GBuffer0/GBuffer1 ──
+	// OBB 贴花节点：采样接收表面，只输出独立的材质修饰属性。
 	class VansDecalRenderNode : public VansRenderNode
 	{
 	public:
 		VansDecalRenderNode(VkDevice& device) : VansRenderNode(device, DECAL_NODE) {}
+		std::optional<Vans::VansSceneImpactDecalConfig> m_ImpactPoolConfig;
 
 		void CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager) override;
 

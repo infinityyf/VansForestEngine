@@ -26,9 +26,11 @@ void VansGIWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 	Vans::EditorAPI::GIInspectorSettingsSnapshot settings = editorAPI.GetGISettings();
 	static Vans::EditorAPI::GIInspectorSettingsSnapshot draftSettings;
 	static bool draftInitialized = false;
+	static bool applyFailed = false;
 	if (!settings.available)
 	{
 		draftInitialized = false;
+		applyFailed = false;
 		ImGui::TextDisabled("GI system is not available.");
 		ImGui::End();
 		return;
@@ -72,9 +74,7 @@ void VansGIWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 			static float lastPositionScale = -1.0f;
 
 			const int maxZSlice = std::max(0, static_cast<int>(selectedRuntimeRegion.gridDimensions.z) - 1);
-			const int raysPerActiveProbe = std::max(1, static_cast<int>(
-				(selectedRuntimeRegion.raysPerProbe + selectedRuntimeRegion.directionUpdateSlices - 1u) /
-				std::max(selectedRuntimeRegion.directionUpdateSlices, 1u)));
+			const int raysPerActiveProbe = static_cast<int>(selectedRuntimeRegion.raysPerProbe);
 			const int maxRayIndex = raysPerActiveProbe - 1;
 			zSlice = std::clamp(zSlice, 0, maxZSlice);
 			if (rayIndex < 0)
@@ -83,7 +83,7 @@ void VansGIWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 			ImGui::Checkbox("Follow Current Active Z Slice", &followActiveSlice);
 			if (!followActiveSlice)
 				ImGui::SliderInt("Probe Z Slice", &zSlice, 0, maxZSlice);
-			ImGui::SliderInt("Active Slice Ray", &rayIndex, 0, maxRayIndex);
+			ImGui::SliderInt("Probe Ray", &rayIndex, 0, maxRayIndex);
 			ImGui::DragFloat("Position Display Scale", &positionScale, 0.001f, 0.0001f, 10.0f, "%.4f");
 			ImGui::DragFloat("RT Preview Exposure", &previewExposure, 0.05f, 0.001f, 128.0f, "%.3f");
 
@@ -122,7 +122,7 @@ void VansGIWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 				static_cast<unsigned>(selectedRuntimeRegion.gridDimensions.x),
 				static_cast<unsigned>(selectedRuntimeRegion.gridDimensions.y),
 				sliceLabel.c_str());
-			ImGui::TextDisabled("All RT, DDGI and SSGI Probe Cache diagnostic targets refresh together. Active Slice Ray addresses the current 16-ray update slice.");
+			ImGui::TextDisabled("All RT, DDGI and SSGI Probe Cache diagnostic targets refresh together. Probe Ray addresses the current complete probe update.");
 			ImGui::TextDisabled("Screen Probe Cache Radiance is the 1/4-resolution Hi-Z screen query blended with DDGI/sky fallback; Surface stores geometric normal.xyz and linear depth.a for reconstruction validation.");
 			if (previews.empty())
 			{
@@ -147,6 +147,20 @@ void VansGIWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 
 	drawGIRTPreview();
 
+	if (ImGui::CollapsingHeader("Placement", ImGuiTreeNodeFlags_DefaultOpen))
+	{
+		auto& placement = draftSettings.placement;
+		ImGui::Checkbox("Automatic GI Placement", &placement.enabled);
+		ImGui::DragFloat("Minimum Probe Spacing (m)", &placement.minProbeSpacing, 0.01f, 0.001f, 100.0f, "%.3f");
+		ImGui::DragFloat("Maximum Probe Spacing (m)", &placement.maxProbeSpacing, 0.05f, 0.001f, 1000.0f, "%.3f");
+		ImGui::DragFloat("Parent GI Maximum Cell Size (m)", &placement.parentProbeMaxSize, 0.05f, 0.001f, 1000.0f, "%.3f");
+		ImGui::InputScalar("Probe Budget", ImGuiDataType_U32, &placement.maxProbeCount);
+		ImGui::InputScalar("Probe Updates Per Frame", ImGuiDataType_U32, &placement.maxProbeUpdatesPerFrame);
+		ImGui::InputScalar("Rays Per Frame", ImGuiDataType_U32, &placement.maxRaysPerFrame);
+		ImGui::TextDisabled("GI placement is independent of reflection placement. 0.5 m is a configurable default.");
+		ImGui::TextDisabled("Apply changes the runtime preview. Store Runtime GI in Scene stages the applied settings; Save Scene writes the file.");
+	}
+
 	if (ImGui::CollapsingHeader("Probe Volume", ImGuiTreeNodeFlags_DefaultOpen))
 	{
 		int gridDimensions[3] = {
@@ -155,6 +169,7 @@ void VansGIWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 			static_cast<int>(draftRegion.gridDimensions.z) };
 		if (ImGui::DragInt3("Grid Dimensions XYZ", gridDimensions, 1.0f, 1, 256))
 		{
+			draftRegion.overrideGridDimensions = true;
 			draftRegion.gridDimensions = {
 				static_cast<float>(std::clamp(gridDimensions[0], 1, 256)),
 				static_cast<float>(std::clamp(gridDimensions[1], 1, 256)),
@@ -182,10 +197,10 @@ void VansGIWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 			static_cast<unsigned>(selectedRuntimeRegion.gridDimensions.x),
 			static_cast<unsigned>(selectedRuntimeRegion.gridDimensions.y),
 			static_cast<unsigned>(selectedRuntimeRegion.gridDimensions.z));
-		ImGui::Text("GI Regions: %u, Active Probes: %u",
+		ImGui::Text("GI Regions: %u, Regular Layout Probes: %u",
 			static_cast<unsigned>(settings.regions.size()),
 			static_cast<unsigned>(settings.totalProbeCount));
-		ImGui::Text("Active Ray Working Set: %llu, Estimated GI Memory: %.1f MB",
+		ImGui::Text("Ray Capacity Bound: %llu, Estimated Memory: %.1f MB",
 			static_cast<unsigned long long>(settings.totalRayCacheEntries),
 			settings.totalEstimatedMemoryMB);
 		ImGui::Text("Draft Total Probes: %u", draftTotalProbeCount);
@@ -212,44 +227,38 @@ void VansGIWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 	if (ImGui::CollapsingHeader("Update", ImGuiTreeNodeFlags_DefaultOpen))
 	{
 		int raysPerProbe = static_cast<int>(draftRegion.raysPerProbe);
-		if (ImGui::DragInt("Rays Per Probe", &raysPerProbe, 1.0f, 1, 4096))
-			draftRegion.raysPerProbe = static_cast<std::uint32_t>(std::clamp(raysPerProbe, 1, 4096));
+		if (ImGui::DragInt("Rays Per Probe", &raysPerProbe, 1.0f, 2, 4096))
+			draftRegion.raysPerProbe = static_cast<std::uint32_t>(std::clamp(raysPerProbe, 2, 4096));
 
-		int spatialUpdateDivisor = static_cast<int>(draftRegion.spatialUpdateDivisor);
-		const int minGridDimension = std::max(1, static_cast<int>(std::min({
-			draftRegion.gridDimensions.x, draftRegion.gridDimensions.y, draftRegion.gridDimensions.z })));
-		if (ImGui::DragInt("Spatial Update Divisor", &spatialUpdateDivisor, 1.0f, 1, minGridDimension))
-			draftRegion.spatialUpdateDivisor = static_cast<std::uint32_t>(std::clamp(spatialUpdateDivisor, 1, minGridDimension));
-
-		int directionUpdateSlices = static_cast<int>(draftRegion.directionUpdateSlices);
-		if (ImGui::DragInt("Direction Update Slices", &directionUpdateSlices, 1.0f, 1, std::max(1, static_cast<int>(draftRegion.raysPerProbe))))
-			draftRegion.directionUpdateSlices = static_cast<std::uint32_t>(std::clamp(directionUpdateSlices, 1, std::max(1, static_cast<int>(draftRegion.raysPerProbe))));
-
-		ImGui::DragFloat("Environment Intensity", &draftSettings.environmentIntensity, 0.05f, 0.0f, 1000.0f, "%.3f");
 		ImGui::DragFloat("Max Indirect Radiance", &draftSettings.maxIndirectRadiance, 0.05f, 0.0f, 1000.0f, "%.3f");
 		ImGui::DragFloat("Max Probe Radiance", &draftSettings.maxProbeRadiance, 0.05f, 0.0f, 1000.0f, "%.3f");
 		ImGui::DragFloat("Irradiance Hysteresis", &draftSettings.irradianceHysteresis, 0.001f, 0.0f, 0.999f, "%.3f");
 		ImGui::DragFloat("Distance Hysteresis", &draftSettings.distanceHysteresis, 0.001f, 0.0f, 0.999f, "%.3f");
 		ImGui::DragFloat("Distance Sharpness", &draftSettings.distanceSharpness, 0.1f, 8.0f, 16.0f, "%.2f");
-		ImGui::DragFloat("Brightness Change Threshold", &draftSettings.brightnessChangeThreshold, 0.05f, 0.001f, 1000.0f, "%.3f");
 
-		const std::uint64_t divisor = std::max(1u, draftRegion.spatialUpdateDivisor);
-		const std::uint64_t spatialPhaseCount = divisor * divisor * divisor;
-		const std::uint64_t fullRefreshFrames = spatialPhaseCount * std::max(1u, draftRegion.directionUpdateSlices);
-		ImGui::Text("DDGI Full Probe/Direction Cycle: %llu frames", static_cast<unsigned long long>(fullRefreshFrames));
-		ImGui::TextDisabled("Default 256 rays / spatial divisor 2 / 16 slices = 128 frames.");
+        ImGui::TextDisabled("Each scheduled probe traces and integrates all directions. Frame budgets apply to every layout.");
+        ImGui::TextDisabled("Hysteresis is history retained per complete probe update.");
 	}
 
 	if (ImGui::CollapsingHeader("Visualization", ImGuiTreeNodeFlags_DefaultOpen))
 	{
-		ImGui::Checkbox("Show GI Probe Positions", &draftSettings.showProbeGizmos);
-		ImGui::Checkbox("Show GI Volume Bounds", &draftSettings.showProbeVolume);
+		draftSettings.showProbeGizmos = settings.showProbeGizmos;
+		draftSettings.showProbeVolume = settings.showProbeVolume;
+		draftSettings.gizmoStride = settings.gizmoStride;
+		bool visualizationChanged = ImGui::Checkbox("Show GI Probe Positions", &draftSettings.showProbeGizmos);
+		visualizationChanged |= ImGui::Checkbox("Show GI Volume Bounds", &draftSettings.showProbeVolume);
 
 		int stride = static_cast<int>(draftSettings.gizmoStride);
 		const int maxGridDimension = std::max(1, static_cast<int>(std::max({
-			draftRegion.gridDimensions.x, draftRegion.gridDimensions.y, draftRegion.gridDimensions.z })));
+			selectedRuntimeRegion.gridDimensions.x, selectedRuntimeRegion.gridDimensions.y, selectedRuntimeRegion.gridDimensions.z })));
 		if (ImGui::SliderInt("Probe Gizmo Stride", &stride, 1, maxGridDimension))
+		{
 			draftSettings.gizmoStride = static_cast<std::uint32_t>(std::max(1, stride));
+			visualizationChanged = true;
+		}
+		if (visualizationChanged)
+			editorAPI.SetGIProbeVisualization(draftSettings.showProbeGizmos, draftSettings.showProbeVolume, draftSettings.gizmoStride);
+		ImGui::TextDisabled("Display changes apply immediately. Stride 1 shows every probe.");
 
 		ImGui::DragFloat("DDGI Atlas Exposure", &draftSettings.debugExposure, 0.05f, 0.001f, 64.0f, "%.3f");
 		ImGui::Separator();
@@ -258,27 +267,32 @@ void VansGIWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 		ImGui::TextDisabled("Directly displays the per-pixel DDGI atlas sample. SSGI, sky, direct lighting and BRDF are skipped.");
 
 		ImGui::Separator();
-		if (ImGui::Button("Capture DDGI Probe State"))
+		const auto debugSnapshot = editorAPI.GetGIProbeDebugSnapshot();
+		if (debugSnapshot && debugSnapshot->available)
 		{
-			editorAPI.CaptureGIProbeDebugSnapshot(draftSettings.gizmoStride, draftSettings.debugExposure);
+			ImGui::Text("Physical probes: %u; displayed: %u", debugSnapshot->physicalProbeCount, static_cast<unsigned>(debugSnapshot->probes.size()));
+			ImGui::TextDisabled("Generated positions refresh with the layout. Relocation and lighting are shown in RT Preview.");
 		}
-		const Vans::EditorAPI::GIProbeDebugSnapshot debugSnapshot = editorAPI.GetGIProbeDebugSnapshot();
-		ImGui::Text("Captured Probes: %u", static_cast<unsigned>(debugSnapshot.probes.size()));
-		if (!debugSnapshot.status.empty())
-			ImGui::TextWrapped("%s", debugSnapshot.status.c_str());
+		else if (draftSettings.showProbeGizmos && settings.placement.enabled)
+			ImGui::TextDisabled("No generated positions are available for the selected GI region.");
 	}
 
 	if (ImGui::Button("Apply Runtime GI Settings"))
 	{
 		draftSettings.available = true;
-		editorAPI.ApplyGISettings(draftSettings);
-		draftInitialized = false;
+		applyFailed = !editorAPI.ApplyGISettings(draftSettings);
+		if (!applyFailed) draftInitialized = false;
 	}
 	ImGui::SameLine();
 	if (ImGui::Button("Reset Draft From Runtime"))
 	{
 		draftSettings = settings;
+		applyFailed = false;
 	}
+	if (applyFailed)
+		ImGui::TextWrapped("GI settings could not be applied. Previous lighting is retained; see the log for details.");
+	if (ImGui::Button("Store Runtime GI in Scene"))
+		editorAPI.SaveGIConfiguration();
 
 	ImGui::End();
 }

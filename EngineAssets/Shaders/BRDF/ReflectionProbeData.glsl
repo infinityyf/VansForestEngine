@@ -1,5 +1,6 @@
 #ifndef REFLECTION_PROBE_DATA_INCLUDED
 #define REFLECTION_PROBE_DATA_INCLUDED
+#extension GL_EXT_nonuniform_qualifier : require
 
 const uint REFLECTION_PROBE_ENABLED = 1u;
 const uint REFLECTION_PROBE_BOX_PROJECTION = 2u;
@@ -16,7 +17,7 @@ struct ReflectionProbeGPU
     vec4 specularAndMip;
 };
 
-layout(set = 0, binding = 13) uniform samplerCubeArray ReflectionProbeSpecular;
+layout(set = 0, binding = 13) uniform samplerCubeArray ReflectionProbeSpecular[64];
 layout(set = 0, binding = 14, std430) readonly buffer ReflectionProbeBuffer
 {
     uint reflectionProbeCount;
@@ -30,6 +31,26 @@ layout(set = 0, binding = 14, std430) readonly buffer ReflectionProbeBuffer
     ReflectionProbeGPU reflectionProbes[];
 };
 
+layout(set = 0, binding = 36, std430) readonly buffer ReflectionProbeSpatialIndex
+{
+    vec4 reflectionProbeIndexOrigin;
+    vec4 reflectionProbeIndexInverseCellSize;
+    uvec4 reflectionProbeIndexDimensionsAndCellCount;
+    uint reflectionProbeIndexWords[];
+};
+
+uvec2 ReflectionProbeCandidateRange(vec3 P)
+{
+    vec3 gridPosition = (P - reflectionProbeIndexOrigin.xyz) * reflectionProbeIndexInverseCellSize.xyz;
+    uvec3 dimensions = reflectionProbeIndexDimensionsAndCellCount.xyz;
+    if (any(isnan(gridPosition)) || any(isinf(gridPosition)) ||
+        any(lessThan(gridPosition, vec3(0.0))) ||
+        any(greaterThanEqual(gridPosition, vec3(dimensions)))) return uvec2(0u);
+    uvec3 cell = uvec3(floor(gridPosition));
+    uint index = cell.x + dimensions.x * (cell.y + dimensions.y * cell.z);
+    return uvec2(reflectionProbeIndexWords[index * 2u], reflectionProbeIndexWords[index * 2u + 1u]);
+}
+
 struct ReflectionProbeSample
 {
     vec3 specular;
@@ -39,25 +60,7 @@ struct ReflectionProbeSample
     vec3 parallaxDelta;
 };
 
-float GetSkyDiffuseCubeIntensity()
-{
-    return max(reflectionProbeLightingParams.w, 0.0);
-}
-
-float GetSkySpecularCubeIntensity()
-{
-    return max(reflectionProbeLightingParams.z, 0.0);
-}
-
-vec3 SampleSkyDiffuseCube(samplerCube skyDiffuse, vec3 direction)
-{
-    return texture(skyDiffuse, normalize(direction)).rgb * GetSkyDiffuseCubeIntensity();
-}
-
-vec3 SampleSkySpecularCube(samplerCube skySpecular, vec3 direction, float lod)
-{
-    return textureLod(skySpecular, normalize(direction), lod).rgb * GetSkySpecularCubeIntensity();
-}
+#include "../SkyLighting/SkyLighting.glsl"
 
 bool ReflectionProbeContainsBox(vec3 P, ReflectionProbeGPU probe)
 {
@@ -119,14 +122,12 @@ void ReflectionProbeInsertCandidate(float weight, int index,
     indices[target] = index;
 }
 
-ReflectionProbeSample SampleReflectionProbes(vec3 P, vec3 N, vec3 R, float roughness)
+void ReflectionProbeGatherCandidates(vec3 P,
+    out float weights[REFLECTION_PROBE_MAX_BLEND], out int indices[REFLECTION_PROBE_MAX_BLEND], out float coverageSum)
 {
-    ReflectionProbeSample result;
-    result.specular = vec3(0.0); result.coverage = 0.0;
-    result.topWeight = 0.0; result.topIndex = -1; result.parallaxDelta = vec3(0.0);
-    float weights[REFLECTION_PROBE_MAX_BLEND] = float[](0.0, 0.0, 0.0, 0.0);
-    int indices[REFLECTION_PROBE_MAX_BLEND] = int[](-1, -1, -1, -1);
-    float coverageSum = 0.0;
+    weights = float[](0.0, 0.0, 0.0, 0.0);
+    indices = int[](-1, -1, -1, -1);
+    coverageSum = 0.0;
     if (reflectionProbeUniformGridDimensionsAndFlags.w != 0u)
     {
 		vec3 gridPosition = (P - reflectionProbeUniformGridOrigin.xyz) *
@@ -164,15 +165,29 @@ ReflectionProbeSample SampleReflectionProbes(vec3 P, vec3 N, vec3 R, float rough
     }
     else
     {
-        for (uint i = 0u; i < reflectionProbeCount; ++i)
+        // 非规则布局读取完整局部候选；规则布局保留解析查询及并列权重顺序。
+        uvec2 candidateRange = ReflectionProbeCandidateRange(P);
+        for (uint candidate = 0u; candidate < candidateRange.y; ++candidate)
         {
+            uint i = reflectionProbeIndexWords[candidateRange.x + candidate];
             float influence = ReflectionProbeInfluence(P, reflectionProbes[i]);
             coverageSum += influence;
-			ReflectionProbeInsertCandidate(
-				ReflectionProbeWeightFromInfluence(influence, reflectionProbes[i]),
-				int(i), weights, indices);
+            ReflectionProbeInsertCandidate(
+                ReflectionProbeWeightFromInfluence(influence, reflectionProbes[i]), int(i), weights, indices);
         }
     }
+
+}
+
+ReflectionProbeSample SampleReflectionProbes(vec3 P, vec3 N, vec3 R, float roughness)
+{
+    ReflectionProbeSample result;
+    result.specular = vec3(0.0); result.coverage = 0.0;
+    result.topWeight = 0.0; result.topIndex = -1; result.parallaxDelta = vec3(0.0);
+    float weights[REFLECTION_PROBE_MAX_BLEND];
+    int indices[REFLECTION_PROBE_MAX_BLEND];
+    float coverageSum;
+    ReflectionProbeGatherCandidates(P, weights, indices, coverageSum);
 
     float weightSum = 0.0;
     int sampleCount = roughness > 0.75 ? 1 : clamp(int(reflectionProbeMaxBlendCount), 1, REFLECTION_PROBE_MAX_BLEND);
@@ -190,7 +205,8 @@ ReflectionProbeSample SampleReflectionProbes(vec3 P, vec3 N, vec3 R, float rough
             sampleDirection = ReflectionProbeBoxProject(P, R, probe);
         float layer = probe.capturePositionAndLayer.w;
         float maxMip = max(probe.specularAndMip.z, 0.0);
-        vec3 specular = textureLod(ReflectionProbeSpecular, vec4(sampleDirection, layer), clamp(roughness * maxMip, 0.0, maxMip)).rgb;
+        vec3 specular = textureLod(ReflectionProbeSpecular[nonuniformEXT(probe.regionAndFlags.w)],
+            vec4(sampleDirection, layer), clamp(roughness * maxMip, 0.0, maxMip)).rgb;
         result.specular += specular * weights[slot] * probe.specularAndMip.y;
         weightSum += weights[slot];
         if (slot == 0)

@@ -1,0 +1,25 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "../../../EngineAssets/Shaders/SSGI/SSGISurface.glsl"
+#include "../../../EngineAssets/Shaders/GI/GIReceiverVisibilityData.glsl"
+layout(local_size_x=16) in;
+layout(set=1,binding=10,std430) readonly buffer Input { uvec4 receiverHeader; GIReceiverVisibilityRecord receiverRecords[]; };
+layout(set=1,binding=11,std430) buffer Output { float result[]; };
+#include "../../../EngineAssets/Shaders/GIReceiverTransport/GIReceiverTransportBoundary.glsl"
+void main()
+{
+    uint i=gl_LocalInvocationID.x;
+    ivec2 pixel=ivec2(16,16);vec4 position=vec4(0,0,1,1);vec3 normal=vec3(0,0,1);uint region=0u;float material=0.0;
+    if(i<=5u) {pixel.x+=int(i);position.x=float(i)*0.04;}
+    if(i==6u) pixel=ivec2(0);
+    if(i==7u) region=1u;
+    if(i==8u) material=1.0;
+    if(i==9u) normal=-normal;
+    if(i==10u) position.z+=0.1;
+    if(i==11u) pixel=ivec2(48,16);
+    if(i==12u) pixel=ivec2(16,48);
+    if(i==13u) pixel=ivec2(48,48);
+    if(i==14u) position.y=0.16;
+    if(i==15u) position.y=0.08;
+    result[i]=GI_ReceiverTransportBoundaryWeight(pixel,region,position,normal,material,0.01);
+}

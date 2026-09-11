@@ -1,4 +1,4 @@
-﻿#include "../../../Graphics/Vulkan/VansVKFunctions.h"
+#include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansVKDevice.h"
 #include "VansVKDescriptorManager.h"
 #include "VansDescriptorSetLayouts.h"
@@ -16,6 +16,7 @@
 #include <vector>
 #include <cstdint>
 #include <unordered_set>
+#include <stdexcept>
 
 namespace VansGraphics
 {
@@ -99,7 +100,8 @@ namespace VansGraphics
 		{
 			const int payloadIndex = static_cast<int>(materialManager->m_GlobalCustomMaterialParamData.size());
 			if (material->m_MaterialType == VansMaterialType::VAN_CUSTOM_SHADER ||
-				material->m_MaterialType == VansMaterialType::VAN_PBR_TRANSMISSION)
+				material->m_MaterialType == VansMaterialType::VAN_PBR_TRANSMISSION ||
+                material->m_MaterialType == VansMaterialType::VAN_DECAL)
 				material->m_MaterialIndex = payloadIndex;
 			VansCustomMaterialPayload payload = material->m_CustomMaterialPayload;
 			payload.textureIndices = glm::ivec4(-1);
@@ -163,20 +165,10 @@ namespace VansGraphics
 				appendTextureSlot(material, "roughness", emissive->m_RoughnessTexture, "defaultRoughness");
 				appendTextureSlot(material, "emissive", emissive->m_EmissiveTexture, "defaultAlbedo");
 			}
-			else if (material->m_MaterialType == VansMaterialType::VAN_DECAL)
-			{
-				VansDecalMaterial* decal = static_cast<VansDecalMaterial*>(material);
-				decal->m_MaterialIndex = pbrMaterialIndex++;
-				materialManager->m_GlobalPBRParamData.push_back(decal->m_BasePBRParam);
-				materialManager->m_GlobalClothParamData.push_back(defaultClothPayload);
-				materialManager->m_GlobalTreeLeafParamData.push_back(defaultTreeLeafPayload);
-				materialManager->m_GlobalSkinParamData.push_back(defaultSkinPayload);
-				appendTextureSlot(material, "baseColor", decal->m_BaseColorTexture, "defaultAlbedo");
-				appendTextureSlot(material, "normal", decal->m_NormalTexture, "defaultNormal");
-				appendTextureSlot(material, "metal", decal->m_MetalTexture, "defaultMetal");
-				appendTextureSlot(material, "roughness", decal->m_RoughnessTexture, "defaultRoughness");
-				appendTextureSlot(material, "ao", decal->m_AoTexture, "defaultAo");
-			}
+            else if (material->m_MaterialType == VansMaterialType::VAN_DECAL)
+            {
+                appendCustomMaterialData(material);
+            }
 			else if (material->m_MaterialType == VansMaterialType::VAN_SUBSURFACE)
 			{
 				VansSubsurfaceMaterial* sss = static_cast<VansSubsurfaceMaterial*>(material);
@@ -272,6 +264,13 @@ namespace VansGraphics
 			appendTextureSlot(nullptr, "custom", pendingTexture.texture, "defaultAlbedo");
 		}
 
+        for (auto* rawMaterial : allmaterials)
+        {
+            auto* material = static_cast<VansMaterial*>(rawMaterial);
+            if (material->m_MaterialType == VAN_DECAL)
+                material->m_CustomMaterialPayload.textureIndices =
+                    materialManager->m_GlobalCustomMaterialParamData[material->m_MaterialIndex].textureIndices;
+        }
 		if (materialManager->m_GlobalClothParamData.size() != materialManager->m_GlobalPBRParamData.size())
 		{
 			VANS_LOG_ERROR("[PreparePBRMaterialData] GlobalClothData index alignment is broken: clothPayloads="
@@ -507,19 +506,8 @@ namespace VansGraphics
 		auto vansConfigration = VansConfigration::GetInstance();
 		std::string projectRoot = vansConfigration->GetProjectRootPath();
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
-		manager->m_EnvironmentRadiance = new VansTexture();
-		manager->m_EnvironmentRadiance->LoadCubeTexture(
-			m_VansVKCommandBuffer,
-			(projectRoot + "EngineAssets/Textures/SkyBox").c_str());
-		VansTexture* environmentRadiance = manager->m_EnvironmentRadiance;
-		manager->m_PreConvDiffuse = new VansTexture();
-		manager->m_PreConvDiffuse->InitTextureWithoutData(
-			m_VansVKCommandBuffer, 512, 512, 1,
-			VK_FORMAT_R32G32B32A32_SFLOAT, true, false, true);
-		manager->m_PreConvSpecular = new VansTexture();
-		manager->m_PreConvSpecular->InitTextureWithoutData(
-			m_VansVKCommandBuffer, 512, 512, 1,
-			VK_FORMAT_R32G32B32A32_SFLOAT, true, true, true);
+		manager->m_SkyLighting.Initialize(*this, m_VansVKCommandBuffer,
+            projectRoot + "EngineAssets/Textures/SkyBox");
 
 		auto loadEngineTexture = [&](VansTexture* texture,
 			const std::string& path,
@@ -653,186 +641,6 @@ namespace VansGraphics
 				VansMaterialManager::RT_RECT_LIGHT_EMISSIVE, manager->m_RectLightEmissiveArray);
 		}
 
-		// 保持 Git 基线的 IBL 生命周期：固定 SkyBox 只在引擎初始化时卷积一次。
-		// 场景雾、物理天空和主光变化只改变各自的运行时参数，绝不触发重卷积。
-		constexpr std::uint32_t environmentResolution = 512u;
-		constexpr std::uint32_t maxShaderMipCount = 12u;
-		const std::uint32_t mipCount =
-			manager->m_PreConvSpecular->GetImage().GetImageCreateInfo().mipLevels;
-		const std::array<std::uint32_t, 4> filterParameters = {
-			environmentResolution, mipCount, 64u, 128u
-		};
-		const std::array<float, 27> zeroSH{};
-
-		VansVKBuffer filterParametersBuffer;
-		if (!filterParametersBuffer.CreatVulkanBuffer(
-			m_VansVKLogicDevice,
-			sizeof(filterParameters),
-			VK_FORMAT_R32_UINT,
-			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
-		{
-			VANS_LOG_ERROR("[VansVKDevice] IBL filter parameter buffer creation failed.");
-			return;
-		}
-		filterParametersBuffer.SetBufferData(
-			filterParameters.data(), 0, sizeof(filterParameters));
-
-		if (!manager->m_SkySHResultBuffer.CreatVulkanBuffer(
-			m_VansVKLogicDevice,
-			sizeof(zeroSH),
-			VK_FORMAT_R32_SFLOAT,
-			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
-		{
-			VANS_LOG_ERROR("[VansVKDevice] IBL SH buffer creation failed.");
-			filterParametersBuffer.DestroyVulkanBuffer(m_VansVKLogicDevice);
-			return;
-		}
-		manager->m_SkySHResultBuffer.SetBufferData(
-			zeroSH.data(), 0, sizeof(zeroSH));
-
-		VansComputeShader* diffuseShader =
-			VansShaderManager::Get().FindComputeShader("PreConDiffuseEnvironment");
-		VansComputeShader* specularShader =
-			VansShaderManager::Get().FindComputeShader("PreConSpecularEnvironment");
-		if (!diffuseShader || !specularShader || mipCount == 0u ||
-			mipCount > maxShaderMipCount)
-		{
-			VANS_LOG_ERROR("[VansVKDevice] IBL filter shaders or mip contract are invalid.");
-			filterParametersBuffer.DestroyVulkanBuffer(m_VansVKLogicDevice);
-			return;
-		}
-
-		VkDescriptorSetLayout filterLayout = VK_NULL_HANDLE;
-		std::vector<VkDescriptorSet> filterSets;
-		if (!VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom(
-			{
-				{ PassBinding::TEXTURE_0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-					VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
-				{ PassBinding::UAV_IMAGE_0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1,
-					VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
-				{ PassBinding::UAV_IMAGE_1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-					maxShaderMipCount, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
-				{ PassBinding::CBUFFER_3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
-					VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
-				{ PassBinding::BUFFER_4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
-					VK_SHADER_STAGE_COMPUTE_BIT, nullptr }
-			},
-			filterLayout,
-			filterSets) || filterSets.empty())
-		{
-			VANS_LOG_ERROR("[VansVKDevice] IBL filter descriptor allocation failed.");
-			filterParametersBuffer.DestroyVulkanBuffer(m_VansVKLogicDevice);
-			return;
-		}
-
-		std::vector<VkDescriptorImageInfo> specularMipDescriptors;
-		specularMipDescriptors.reserve(maxShaderMipCount);
-		for (std::uint32_t mip = 0; mip < maxShaderMipCount; ++mip)
-		{
-			const std::uint32_t imageMip = (std::min)(mip, mipCount - 1u);
-			specularMipDescriptors.push_back({
-				manager->m_PreConvSpecular->GetImage().GetSampler(),
-				manager->m_PreConvSpecular->GetImage().GetImageMipView(
-					static_cast<int>(imageMip)),
-				VK_IMAGE_LAYOUT_GENERAL
-			});
-		}
-
-		auto* descriptors = VansVKDescriptorManager::GetInstance();
-		descriptors->BeginDescriptorUpdate();
-		descriptors->WriteImageDescriptor(
-			filterSets[0], PassBinding::TEXTURE_0,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{{ environmentRadiance->GetImage().GetSampler(),
-			   environmentRadiance->GetImage().GetImageView(),
-			   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
-		descriptors->WriteImageDescriptor(
-			filterSets[0], PassBinding::UAV_IMAGE_0,
-			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-			{{ manager->m_PreConvDiffuse->GetImage().GetSampler(),
-			   manager->m_PreConvDiffuse->GetImage().GetImageView(),
-			   VK_IMAGE_LAYOUT_GENERAL }});
-		descriptors->WriteImageDescriptor(
-			filterSets[0], PassBinding::UAV_IMAGE_1,
-			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-			specularMipDescriptors);
-		descriptors->WriteBufferDescriptor(
-			filterSets[0], PassBinding::CBUFFER_3,
-			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-			{{ filterParametersBuffer.GetNativeBuffer(), 0,
-			   filterParametersBuffer.GetBufferSize() }});
-		descriptors->WriteBufferDescriptor(
-			filterSets[0], PassBinding::BUFFER_4,
-			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			{{ manager->m_SkySHResultBuffer.GetNativeBuffer(), 0,
-			   manager->m_SkySHResultBuffer.GetBufferSize() }});
-		descriptors->CommitDescriptorUpdates();
-
-		const std::uint32_t workgroups = (environmentResolution + 7u) / 8u;
-		bool submitted = m_VansVKCommandBuffer.BeginCommandBufferRecord(
-			VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-		if (submitted)
-		{
-			m_VansVKCommandBuffer.EnsureComputeShader(*diffuseShader, { filterLayout });
-			m_VansVKCommandBuffer.DispatchCompute(
-				*diffuseShader, workgroups, workgroups, 6u, filterSets);
-			m_VansVKCommandBuffer.EnsureComputeShader(*specularShader, { filterLayout });
-			m_VansVKCommandBuffer.DispatchCompute(
-				*specularShader, workgroups, workgroups, 6u * mipCount, filterSets);
-
-			auto transitionForSampling = [&](VansTexture* texture)
-			{
-				texture->GetImage().SetImageMemoryBarrier(
-					m_VansVKCommandBuffer,
-					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-					VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
-						VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-					{
-						texture->GetImage().GetImage(),
-						VK_ACCESS_SHADER_WRITE_BIT,
-						VK_ACCESS_SHADER_READ_BIT,
-						VK_IMAGE_LAYOUT_GENERAL,
-						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-						VK_QUEUE_FAMILY_IGNORED,
-						VK_QUEUE_FAMILY_IGNORED,
-						texture->GetImage().GetImageAspect()
-					});
-			};
-			transitionForSampling(manager->m_PreConvDiffuse);
-			transitionForSampling(manager->m_PreConvSpecular);
-
-			VkBufferMemoryBarrier shBarrier{};
-			shBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-			shBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-			shBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-			shBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			shBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			shBarrier.buffer = manager->m_SkySHResultBuffer.GetNativeBuffer();
-			shBarrier.offset = 0;
-			shBarrier.size = manager->m_SkySHResultBuffer.GetBufferSize();
-			m_VansVKCommandBuffer.PipelineBarrier(
-				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-				VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
-					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-				{}, { shBarrier }, {});
-
-			submitted = m_VansVKCommandBuffer.EndCommandBufferRecord() &&
-				VansVKCommandBuffer::SubmitCommands(
-					m_VansVKGraphicsQueue,
-					m_VansVKLogicDevice,
-					{ m_VansVKCommandBuffer.GetVKCommandBuffer() },
-					{}, {}, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence) &&
-				m_VansVKCommandBuffer.ResetCommandBuffer(false);
-		}
-		if (!submitted)
-			VANS_LOG_ERROR("[VansVKDevice] One-time IBL convolution submit failed.");
-
-		WaitForDevice();
-		descriptors->DestroyDescriptorSet(filterSets);
-		descriptors->DestroyDescriptorSetLayout(filterLayout);
-		filterParametersBuffer.DestroyVulkanBuffer(m_VansVKLogicDevice);
 
 	}
 
@@ -927,6 +735,7 @@ namespace VansGraphics
 			VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSGI_ATROUS_A, ssgiAtrousA);
 		manager->m_SSGITemporalFrame = 0;
+		PrepareGIReceiverVisibility(probeCacheWidth, probeCacheHeight);
 
 		auto vansConfigration = VansConfigration::GetInstance();
 		std::string projectRoot = vansConfigration->GetProjectRootPath();
@@ -1178,7 +987,7 @@ namespace VansGraphics
 			VK_FORMAT_R32G32B32A32_SFLOAT, false, false, true);
 		manager->RegisterRuntimeRenderTexture(VansMaterialManager::RT_SSAO_FILTER_RESULT, ssaoFilterResult);
 
-		VansDescriptorSetLayoutFactory::CreateAndAllocate_BilateralFilter(manager->m_BilateralFilterSetLayout, manager->m_BilateralFilterDescriptorSets, 3);
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_BilateralFilter(manager->m_BilateralFilterSetLayout, manager->m_BilateralFilterDescriptorSets, 1);
 
 		// Wider spatial filter to smooth residual noise after temporal accumulation.
 		// radius=5 (11×11 kernel) with sigmaSpace=4.0 provides better coverage for
@@ -1419,7 +1228,9 @@ namespace VansGraphics
 		// ---- UBO 创建与初始化 ----
 		VansPostProcessProfile& defaultProfile = manager->m_PostProcessProfile;
 		VansPostProcessParamsGPU ppParams  = defaultProfile.ToGPUParams();
-		ppParams.m_DebugPassthrough = IsGIProbeOnlyDeferredOutputEnabled(m_Scene->GetGISettings()) ? 1.0f : 0.0f;
+		const auto reflectionDebugView = m_Scene->GetReflectionProbeSystem()->GetEditorState().debugView;
+		ppParams.m_DebugPassthrough = IsReflectionProbeIsolatedDebugView(reflectionDebugView) ?
+			ReflectionProbeDebugDisplayMode(reflectionDebugView) : (m_Scene->GetGISettings().probeOnlyDeferredOutput ? 1.0f : 0.0f);
 		VansExposureAdaptParamsGPU exposureParams = defaultProfile.ToExposureAdaptParams(0.0f);
 		VansBloomParamsGPU bloomParams     = defaultProfile.ToBloomParams();
 		VansBloomShapeParamsGPU bloomShapeParams = defaultProfile.ToBloomShapeParams();
@@ -1474,9 +1285,9 @@ namespace VansGraphics
 			return;
 		}
 		m_Scene->ReleaseASTempBuffer(this);
-		rayTracingContext.CreateRayTracingResource(this, &m_VansVKCommandBuffer, m_Scene);
 		const VansGISettings& sceneGISettings = m_Scene->GetGISettings();
-		rayTracingContext.UpdateGISettings(sceneGISettings);
+		if (!rayTracingContext.CreateRayTracingResource(this, &m_VansVKCommandBuffer, m_Scene, sceneGISettings))
+			throw std::runtime_error(rayTracingContext.GetResourceError());
 		// 首次场景准备早于第一份渲染快照。这里必须使用刚完成构建的场景
 		// 设置；读取 m_CurrentRenderSceneSnapshot 会拿到启动默认值，并且只会
 		// 在 Play/Stop 重载后偶然恢复正确。

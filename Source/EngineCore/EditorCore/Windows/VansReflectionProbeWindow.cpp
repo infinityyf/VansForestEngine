@@ -65,56 +65,98 @@ void VansReflectionProbeWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 		changed |= ImGui::Checkbox("Show Placement Grid", &settings.editor.showPlacementGrid);
 		changed |= ImGui::Checkbox("Show Regions", &settings.editor.showRegions);
 
+	}
+
+	if (ImGui::CollapsingHeader("Viewport Diagnostics", ImGuiTreeNodeFlags_DefaultOpen))
+	{
 		const char* debugViews[] = {
 			"None", "Influence", "Probe Color", "SSR Confidence",
-			"Region Id", "Parallax", "Fallback Only", "SSR Only"
+			"Region Id", "Parallax", "Fallback Only", "SSR Only",
+			"Local Probe Radiance (No Material)", "Probe + Sky Radiance (No Material)",
+			"Sky Fallback Contribution (No Material)", "Local Probe Coverage",
+			"Indirect Specular (Material + SSR)", "Indirect Diffuse (Material + GI)", "Direct Lighting (Material)"
 		};
-		int debugIndex = std::clamp(settings.editor.debugView, 0, 7);
+		int debugIndex = std::clamp(settings.editor.debugView, 0, int(IM_ARRAYSIZE(debugViews)) - 1);
 		if (ImGui::Combo("Debug View", &debugIndex, debugViews, IM_ARRAYSIZE(debugViews)))
 		{
 			settings.editor.debugView = debugIndex;
 			changed = true;
 		}
+		if (settings.editor.debugView >= 8)
+		{
+			if (settings.editor.debugView <= 10) changed |= ImGui::SliderFloat("Diagnostic Roughness", &settings.editor.debugRoughness, 0.0f, 1.0f, "%.2f");
+			if (settings.editor.debugView != 11)
+				changed |= ImGui::SliderFloat("Diagnostic Exposure (EV)", &settings.editor.debugExposureEV, -10.0f, 10.0f, "%.1f");
+			if (settings.editor.debugView <= 11) ImGui::TextWrapped("Uses geometric normals and fixed roughness. No surface textures, BRDF, AO, SSR, fog or bloom. Captured scene lighting remains in the cubemap.");
+			if (settings.editor.debugView >= 12)
+				ImGui::TextWrapped("Actual opaque lighting contribution, including material properties. Compare all three at the same EV. No auto exposure, fog or bloom.");
+			if (settings.editor.debugView == 8)
+				ImGui::TextWrapped("Normalized local probe radiance before coverage fade. Black: no valid local probe.");
+			else if (settings.editor.debugView == 11)
+				ImGui::TextWrapped("White: full local coverage. Black: full sky fallback. Gray: blended coverage.");
+			ImGui::Text("Pending captures: %u", settings.pendingCaptureCount);
+		}
 	}
 
+	static std::string placementScene;
+	static Vans::EditorAPI::ReflectionProbePlacementSettingsSnapshot placementDraft;
+	static bool placementDirty = false;
+	if (placementScene != settings.scenePath || !placementDirty)
+	{
+		placementScene = settings.scenePath; placementDraft = settings.placement; placementDirty = false;
+	}
 	if (ImGui::CollapsingHeader("Placement", ImGuiTreeNodeFlags_DefaultOpen))
 	{
-		changed |= ImGui::Checkbox("Auto Placement Enabled", &settings.placement.enabled);
-		changed |= EditVec3("Volume Min", settings.placement.volumeMin, 0.25f);
-		changed |= EditVec3("Volume Max", settings.placement.volumeMax, 0.25f);
-		changed |= ImGui::DragFloat("Uniform Spacing", &settings.placement.uniformSpacing, 0.1f, 0.5f, 100.0f, "%.2f");
-		changed |= ImGui::DragFloat("Uniform Box Scale", &settings.placement.uniformBoxSizeScale, 0.01f, 0.05f, 1.0f, "%.2f");
-
-		int uniformResolution = static_cast<int>(settings.placement.uniformProbeResolution);
-		if (ImGui::InputInt("Uniform Resolution", &uniformResolution))
+		placementDirty |= ImGui::Checkbox("Automatic Reflection Placement", &placementDraft.enabled);
+		placementDirty |= EditVec3("Volume Min", placementDraft.volumeMin, 0.25f);
+		placementDirty |= EditVec3("Volume Max", placementDraft.volumeMax, 0.25f);
+		placementDirty |= ImGui::DragFloat("Surface Analysis Cell (m)", &placementDraft.cellSize, 0.1f, 0.05f, 100.0f, "%.2f");
+		placementDirty |= ImGui::DragFloat("Surface Clearance (m)", &placementDraft.minCaptureClearance, 0.01f, 0.001f, 10.0f, "%.3f");
+		placementDirty |= ImGui::DragFloat("Indoor Spacing (m)", &placementDraft.indoorSpacing, 0.1f, 0.05f, 1000.0f, "%.2f");
+		placementDirty |= ImGui::DragFloat("Corridor Spacing (m)", &placementDraft.corridorSpacing, 0.1f, 0.05f, 1000.0f, "%.2f");
+		placementDirty |= ImGui::DragFloat("Outdoor Spacing (m)", &placementDraft.outdoorSpacing, 0.1f, 0.05f, 1000.0f, "%.2f");
+		float targetCoverage = 100.0f * (1.0f - placementDraft.refinementThreshold);
+		if (ImGui::SliderFloat("Coverage Target (%)", &targetCoverage, 90.0f, 100.0f, "%.1f"))
+		{ placementDraft.refinementThreshold = 1.0f - targetCoverage * 0.01f; placementDirty = true; }
+		int resolution = static_cast<int>(placementDraft.uniformProbeResolution);
+		if (ImGui::InputInt("Capture Resolution", &resolution))
+		{ placementDraft.uniformProbeResolution = static_cast<std::uint32_t>(std::clamp(resolution, 32, 512)); placementDirty = true; }
+		int count = static_cast<int>(placementDraft.maxProbeCount);
+		if (ImGui::InputInt("Probe Budget", &count))
+		{ placementDraft.maxProbeCount = static_cast<std::uint32_t>(std::clamp(count, 1, 4096)); placementDirty = true; }
+		ImGui::BeginDisabled(!placementDirty);
+		if (ImGui::Button("Apply Placement"))
 		{
-			settings.placement.uniformProbeResolution = static_cast<std::uint32_t>(std::clamp(uniformResolution, 32, 512));
-			changed = true;
+			settings.placement = placementDraft;
+			const bool applied = editorAPI.ApplyReflectionProbeSettings(settings); changed = false;
+			settings = editorAPI.GetReflectionProbeSettings();
+			if (applied) { placementDraft = settings.placement; placementDirty = false; }
 		}
-
-		int maxProbeCount = static_cast<int>(settings.placement.maxProbeCount);
-		if (ImGui::InputInt("Max Probe Count", &maxProbeCount))
+		ImGui::EndDisabled();
+		ImGui::SameLine();
+		ImGui::BeginDisabled(placementDirty || !settings.placement.enabled);
+		if (ImGui::Button("Regenerate"))
 		{
-			settings.placement.maxProbeCount = static_cast<std::uint32_t>(std::clamp(maxProbeCount, 1, 4096));
-			changed = true;
-		}
-
-		if (ImGui::Button("Generate Auto Probes"))
-		{
-			if (changed)
-			{
-				editorAPI.ApplyReflectionProbeSettings(settings);
-				changed = false;
-			}
 			editorAPI.GenerateAutoReflectionProbes();
 			settings = editorAPI.GetReflectionProbeSettings();
 		}
+		ImGui::EndDisabled();
 		ImGui::SameLine();
-		if (ImGui::Button("Clear Auto Probes"))
+		ImGui::BeginDisabled(!settings.placement.enabled);
+		if (ImGui::Button("Restore Authored Layout"))
 		{
-			editorAPI.ClearAutoReflectionProbes();
-			settings = editorAPI.GetReflectionProbeSettings();
+			editorAPI.ClearAutoReflectionProbes(); settings = editorAPI.GetReflectionProbeSettings();
+			placementDraft = settings.placement; placementDirty = false;
 		}
+		ImGui::EndDisabled();
+		if (settings.placement.enabled)
+		{
+			ImGui::Text("Covered receiver samples: %u / %u", settings.coveredReceiverCount, settings.receiverCount);
+			ImGui::Text("Visible surface area: %.1f%%", settings.coveredSurfaceFraction * 100.0f);
+			ImGui::Text("Area reachable by candidates: %.1f%%", settings.reachableSurfaceFraction * 100.0f);
+			ImGui::TextWrapped("Coverage requires a visible capture inside its full influence box. Hidden and inaccessible geometry remains in the total area. Influence colors alone do not prove visibility.");
+		}
+		ImGui::TextDisabled("Apply updates the preview. Store Runtime Config in Scene stages the applied settings; Save Scene writes the file.");
 	}
 
 	if (ImGui::CollapsingHeader("Lighting", ImGuiTreeNodeFlags_DefaultOpen))
@@ -127,20 +169,19 @@ void VansReflectionProbeWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 		}
 		changed |= ImGui::DragFloat("SSR Roughness Fade Start", &settings.lighting.ssrRoughnessFadeStart, 0.01f, 0.0f, 1.0f, "%.2f");
 		changed |= ImGui::DragFloat("SSR Roughness Fade End", &settings.lighting.ssrRoughnessFadeEnd, 0.01f, 0.0f, 1.0f, "%.2f");
-		changed |= ImGui::DragFloat("Sky Intensity", &settings.lighting.skyIntensity, 0.01f, 0.0f, 20.0f, "%.2f");
 	}
 
 	if (ImGui::CollapsingHeader("Bake", ImGuiTreeNodeFlags_DefaultOpen))
 	{
-		ImGui::Text("Array Resolution: %u", settings.arrayResolution);
-		ImGui::Text("Mip Count: %u", settings.mipCount);
+		ImGui::Text("Texture Pages: %u", settings.texturePageCount);
+		ImGui::Text("Texture Data: %.2f MiB", double(settings.residentTextureBytes) / (1024.0 * 1024.0));
 		if (ImGui::Button("Request Bake All"))
 			editorAPI.RequestReflectionProbeBakeAll();
 		ImGui::SameLine();
 		if (ImGui::Button("Bake Queue Now"))
 			editorAPI.BakeQueuedReflectionProbesNow();
 		ImGui::SameLine();
-		if (ImGui::Button("Save Config"))
+		if (ImGui::Button("Store Runtime Config in Scene"))
 			editorAPI.SaveReflectionProbeConfiguration();
 	}
 
@@ -180,7 +221,9 @@ void VansReflectionProbeWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 				else
 				{
 					ImGui::PushID(i);
+					ImGui::BeginDisabled(!probe.editable);
 					changed |= ImGui::Checkbox("##enabled", &probe.enabled);
+					ImGui::EndDisabled();
 					ImGui::PopID();
 				}
 			}
@@ -195,6 +238,8 @@ void VansReflectionProbeWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 			auto& probe = settings.probes[selectedIndex];
 			ImGui::Text("Selected: %s", probe.name.c_str());
 
+			if (!probe.editable) ImGui::TextDisabled("Convert to manual to edit this generated probe.");
+			ImGui::BeginDisabled(!probe.editable);
 			changed |= EditVec3("Position", probe.position, 0.1f);
 			changed |= EditVec3("Capture Position", probe.capturePosition, 0.1f);
 			if (probe.shape == 1)
@@ -211,6 +256,7 @@ void VansReflectionProbeWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 			changed |= ImGui::DragFloat("Intensity", &probe.intensity, 0.05f, 0.0f, 100.0f, "%.2f");
 			changed |= ImGui::DragFloat("Specular Intensity", &probe.specularIntensity, 0.05f, 0.0f, 100.0f, "%.2f");
 			changed |= ImGui::DragFloat("Priority", &probe.priority, 0.05f, -1000.0f, 1000.0f, "%.2f");
+			ImGui::EndDisabled();
 
 			if (probe.type != 2)
 			{
@@ -247,7 +293,7 @@ void VansReflectionProbeWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ed
 
 				if (settings.editor.previewCubemap)
 				{
-					const std::uint32_t mipCount = std::max(1u, settings.mipCount);
+					const std::uint32_t mipCount = std::max(1u, probe.mipCount);
 					const std::uint32_t mip = static_cast<std::uint32_t>(
 						std::round(std::clamp(settings.editor.previewRoughness, 0.0f, 1.0f) * float(mipCount - 1)));
 					Vans::EditorAPI::RenderTextureFilter filter;

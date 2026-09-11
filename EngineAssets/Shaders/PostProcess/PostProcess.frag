@@ -111,7 +111,7 @@ void main()
         vec3 debugColor = hdr;
         if (any(isnan(debugColor)) || any(isinf(debugColor)))
             debugColor = vec3(1.0, 0.0, 1.0);
-        else
+        else if (uPP.m_DebugPassthrough < 1.5)
             debugColor = debugColor / (vec3(1.0) + max(debugColor, vec3(0.0)));
         outColor = vec4(clamp(debugColor, 0.0, 1.0), 1.0);
         return;

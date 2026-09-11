@@ -26,6 +26,8 @@ const VansActionServiceCapability& VansAudioActionCapability()
 		VansActionServiceCapabilityDescriptor("Service.Audio", {
 			VansActionCommandCapability("Audio.OneShot", R::None, {
 				asset("sound"), normalized("volume"), pitch(),
+				VansActionCommandField("emitter", V::String, false,
+					VansSerializedValue::String({})),
 				VansActionCommandField("spatial", V::Bool, false,
 					VansSerializedValue::Bool(true))
 			}),

@@ -1,4 +1,5 @@
 #pragma once
+#include "SkyLightingCore/VansSkyLightingTypes.h"
 
 #include "VansRenderBounds.h"
 #include "VansRenderWorld.h"
@@ -96,6 +97,7 @@ namespace VansGraphics
 	// indices and packs the exact shader ABI only after its shadow state is ready.
 	struct VansRenderLightFrameData final
 	{
+        VansSkyLightingFrame skyLighting;
 		std::vector<VansDirectionalLight> directionalLights;
 		std::vector<VansPointLight> pointLights;
 		std::vector<VansSpotLight> spotLights;
@@ -198,6 +200,7 @@ namespace VansGraphics
 	{
 		std::uint64_t sceneEpoch = 0;
 		bool sceneReady = false;
+		bool reflectionProbeIsolatedDebugOutput = false;
 		VansRenderLightFrameData light;
 		std::vector<VansRenderTransformFrameData> transforms;
 		std::vector<VansRenderAnimationFrameData> animations;

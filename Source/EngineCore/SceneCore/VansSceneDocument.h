@@ -39,6 +39,8 @@ struct SceneDocumentSnapshot
     SceneDocumentSnapshot& operator=(SceneDocumentSnapshot&&) noexcept = default;
 
     VansSerializedValue SerializedRootSnapshot() const;
+    // 引用由当前快照持有；文档编辑发布新根，不会使旧快照失效。
+    const VansSerializedValue& Root() const;
     bool HasRoot() const { return static_cast<bool>(m_Root); }
 
     std::filesystem::path sourcePath;
@@ -100,7 +102,7 @@ private:
     void MarkSaved(const std::filesystem::path& path,
         const SceneFileFingerprint& fingerprint, SceneStateId savedStateId);
 
-    std::unique_ptr<VansSerializedValue> m_Root;
+    std::shared_ptr<const VansSerializedValue> m_Root;
     std::filesystem::path m_SourcePath;
     SceneFileFingerprint m_LoadedFingerprint;
     SceneDiagnostics m_Diagnostics;

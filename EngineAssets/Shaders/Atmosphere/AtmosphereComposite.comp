@@ -2,6 +2,7 @@
 #extension GL_GOOGLE_include_directive : require
 
 #include "../Common/CameraData.glsl"
+#include "../BRDF/ReflectionProbeDebug.glsl"
 #include "AtmosphereCommon.glsl"
 #include "AtmosphereViewCommon.glsl"
 #include "AtmosphereMediaComposition.glsl"
@@ -178,6 +179,12 @@ void main()
     ivec2 extent = imageSize(atmosphereSceneColorOutput);
     if (any(greaterThanEqual(pixel, extent)))
         return;
+    // 独立反射诊断仍写入正常合成目标，但不叠加天空背景、雾或体积云。
+    if (ReflectionProbeIsIsolatedDebugView())
+    {
+        imageStore(atmosphereSceneColorOutput, pixel, texelFetch(rawOpaqueSceneColor, pixel, 0));
+        return;
+    }
     vec2 uv = (vec2(pixel) + 0.5) / vec2(extent);
     float deviceDepth = texelFetch(atmosphereSceneDepth, pixel, 0).r;
     bool hasOpaqueSurface = AtmosphereHasSurfaceDepth(deviceDepth);

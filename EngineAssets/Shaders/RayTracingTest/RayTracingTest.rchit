@@ -35,10 +35,7 @@ layout(set = 0, binding = 5, std430) buffer InstanceDataBuffer
     uint instances[];
 } instanceData;
 
-layout(set = 0, binding = 7, std430) buffer InstanceToTextureIndexBuffer
-{
-    uint indexs[];
-} textureIndexData;
+#include "../GI/GIInstanceMaterial.glsl"
 
 layout(set = 0, binding = 10, std430) readonly buffer InstanceGIEmissionBuffer
 {
@@ -52,12 +49,18 @@ layout(set = 0, binding = 50) uniform sampler2D PBRTextures[];
 #define METALLIC_INDEX 2
 #define ROUGHNESS_INDEX 3
 #define AO_INDEX 4
-#define GI_TEXTURE_INDEX_MASK 0x3FFFFFFFu
-#define GI_PURE_EMISSIVE_FLAG 0x40000000u
-#define GI_PBR_EMISSIVE_FLAG 0x80000000u
 
 void main()
 {
+    prd.hitDistance = gl_HitTEXT;
+    prd.albedoRoughness = vec4(0.0);
+    prd.emissiveRadiance = vec4(0.0);
+    if (prd.geometryOnly != 0u)
+    {
+        prd.normalHit = vec4(0.0, 0.0, 0.0, gl_HitKindEXT == gl_HitKindBackFacingTriangleEXT ? -1.0 : 1.0);
+        return;
+    }
+
     uint instanceID = gl_InstanceID;
     uint primitiveID = gl_PrimitiveID;
 
@@ -72,7 +75,6 @@ void main()
     Vertex v1 = vertexBuffers[modelIndex].vertices[i1];
     Vertex v2 = vertexBuffers[modelIndex].vertices[i2];
 
-    vec3 position = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT;
     vec3 barycentrics = vec3(1.0 - attribs.x - attribs.y, attribs.x, attribs.y);
 
     vec3 normal =
@@ -85,7 +87,6 @@ void main()
     if (!frontFace)
         worldNormal = -worldNormal;
 
-    prd.positionHit = vec4(position, 1.0);
     // xyz is the shading normal used by hit shading; w preserves the
     // geometric facing classification for relocation/state updates.
     prd.normalHit = vec4(worldNormal, frontFace ? 1.0 : -1.0);
@@ -93,7 +94,7 @@ void main()
     // texture/material payloads are emitted one per TLAS instance.  modelIndex
     // identifies a shared BLAS and is therefore wrong whenever a mesh has more
     // than one material instance.
-    uint packedTextureIndex = textureIndexData.indexs[instanceID];
+    uint packedTextureIndex = instanceMaterialData.materials[instanceID].packedTextureIndex;
     uint textureIndex = packedTextureIndex & GI_TEXTURE_INDEX_MASK;
     bool pureEmissive = (packedTextureIndex & GI_PURE_EMISSIVE_FLAG) != 0u;
     bool pbrEmissive = (packedTextureIndex & GI_PBR_EMISSIVE_FLAG) != 0u;

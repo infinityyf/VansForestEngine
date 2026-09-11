@@ -1,4 +1,4 @@
-﻿#include "VansLight.h"
+#include "VansLight.h"
 #include "../../../EngineCore/RenderCore/VulkanCore/VansVKDescriptorManager.h"
 #include "../../../EngineCore/RenderCore/VulkanCore/VansDescriptorSetLayouts.h"
 #include "../../../EngineCore/Configration/VansConfigration.h"
@@ -401,12 +401,8 @@ VansGraphics::VansLightManager::ComputeCelestialLightingState(
 		-0.06f, 0.24f, moonDirection.y);
 	const float nightDiffuseScale = glm::mix(
 		0.018f, 0.065f, moonElevation);
-	const float nightSpecularScale = glm::mix(
-		0.025f, 0.085f, moonElevation);
 	state.skyDiffuseScale = glm::mix(
 		1.0f, nightDiffuseScale, nightBlend);
-	state.skySpecularScale = glm::mix(
-		1.0f, nightSpecularScale, nightBlend);
 	return state;
 }
 

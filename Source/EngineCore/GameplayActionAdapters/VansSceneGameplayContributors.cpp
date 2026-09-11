@@ -6,6 +6,7 @@
 #include "Character/VansCharacterActionServices.h"
 #include "Character/VansAnimationEventActionService.h"
 #include "Combat/VansCombatActionService.h"
+#include "Audio/VansAudioActionService.h"
 #include "../GameplayActionTimeline/VansGameplayActionTimelineIntegration.h"
 
 #include <array>
@@ -122,7 +123,7 @@ bool VansDiscoverSceneGameplayContributors(
 	static const std::unordered_set<std::string> supportedModules{
 		"Core", "Core.Graph", "Gameplay.Primitives", "Timeline", "Project.Script",
 		"Gameplay.Camera", "Gameplay.Combat", "Gameplay.Animation", "Gameplay.Navigation",
-		"Gameplay.AnimationEvents", "Gameplay.Projectile", "Gameplay.Attachment"
+		"Gameplay.AnimationEvents", "Gameplay.Projectile", "Gameplay.Attachment", "Gameplay.Audio", "Gameplay.Decal"
 	};
 	for (const std::string& moduleId : configuration.allowlist.modules)
 		if (supportedModules.find(moduleId) == supportedModules.end())
@@ -147,6 +148,27 @@ bool VansDiscoverSceneGameplayContributors(
 		dependencies.contributors.push_back(CameraContributor(context));
 	if (Enabled(configuration, "Gameplay.Combat"))
 		dependencies.contributors.push_back(CombatContributor(context));
+	if (Enabled(configuration, "Gameplay.Audio"))
+	{
+		if (!context.audio) { error = "Gameplay.Audio requires the scene audio manager"; return false; }
+		dependencies.contributors.push_back(VansMakeGAFModuleContributor(
+			VansMakeGAFModuleDescriptor("Gameplay.Audio", "Audio Action Adapter", { "Core" }), {}, {},
+			[&world = context.world, audio = context.audio, resolver = context.resolveEntityPosition]
+			(VansGAFRuntimeRegistry& registry, std::string& serviceError)
+			{
+				return registry.InstantiateService([&world, audio, resolver]
+					(const VansGameplayAssetLibrary&, std::string&) -> std::shared_ptr<IVansActionService>
+					{ return std::make_shared<VansAudioActionService>(world, *audio, resolver); }, serviceError);
+			}));
+	}
+	if (Enabled(configuration, "Gameplay.Decal"))
+		dependencies.contributors.push_back(VansMakeGAFModuleContributor(
+			VansMakeGAFModuleDescriptor("Gameplay.Decal", "Impact Decal Adapter", { "Core" }), {}, {},
+			[backend = context.decalBackend](VansGAFRuntimeRegistry& registry, std::string& serviceError)
+			{
+				return registry.InstantiateService([backend](const VansGameplayAssetLibrary&, std::string&)
+					-> std::shared_ptr<IVansActionService> { return std::make_shared<VansDecalActionService>(backend); }, serviceError);
+			}));
 	if (Enabled(configuration, "Gameplay.Animation"))
 		dependencies.contributors.push_back(AnimationContributor(context));
 	if (Enabled(configuration, "Gameplay.Navigation"))

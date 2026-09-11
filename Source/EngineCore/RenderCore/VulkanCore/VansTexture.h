@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "VansVKImage.h"
 #include "VansVKCommandBuffer.h"
 #include "../VansAsset.h"
@@ -66,13 +66,14 @@ namespace VansGraphics
 			int import_channel = 4,
 			VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT);
 		
-		void LoadCubeTexture(VansVKCommandBuffer& command_buffer, std::string texture_path, bool isSRGB = true);
+		// 返回实际上传像素的内容指纹；加载失败抛出异常。
+		std::uint64_t LoadCubeTexture(VansVKCommandBuffer& command_buffer, std::string texture_path, bool isSRGB = true);
 
 		//直接创建一个GPU上的texture
 		// Runtime render/storage resources must declare their exact Vulkan format.
 		// TexturePrecision remains an import policy only and must never be used as
 		// a proxy for a shader storage-image format.
-		void InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int slice, VkFormat format, bool isCube, bool generateMip, bool enableRandomWrite, VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT);
+		bool InitTextureWithoutData(VansVKCommandBuffer& command_buffer, int width, int height, int slice, VkFormat format, bool isCube, bool generateMip, bool enableRandomWrite, VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT);
 
 		// 从按 Z 轴编号导出的 PNG 切片组装 3D 纹理。
 		// slicePathFormat 需要包含一个整数格式占位符，例如 "Slice_Z_%03d.png"。
@@ -98,7 +99,7 @@ namespace VansGraphics
 
 		// Creates a samplerCubeArray. cubeCount is the number of cubemaps, while
 		// uploads address physical faces as [cubeIndex * 6 + faceIndex].
-		void InitCubeTextureArray(VansVKCommandBuffer& command_buffer,
+		bool InitCubeTextureArray(VansVKCommandBuffer& command_buffer,
 			int width, int height, int cubeCount, int numComponents,
 			bool generateMip, TexturePrecision texturePrecision = MID_PRES_16,
 			VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
@@ -109,13 +110,6 @@ namespace VansGraphics
 		bool LoadTextureLayer(VansVKCommandBuffer& command_buffer,
 			const std::string& texturePath, int layerIndex, bool isSRGB = true,
 			VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
-
-		// Uploads an HDR/PNG face into an RGBA16F array layer.
-		bool LoadHDRTextureLayer(VansVKCommandBuffer& command_buffer,
-			const std::string& texturePath, int layerIndex);
-
-		bool UpdateHDRArrayLayerFromPixels(VansVKCommandBuffer& command_buffer,
-			const float* rgbaPixels, int srcWidth, int srcHeight, int layerIndex);
 
 		// 将已在 CPU 内存中的 RGBA8 像素上传到贴图数组的指定层（mip 0）并重新生成 mip 链。
 		// 像素格式必须为 RGBA8（与数组一致）。srcW/srcH 可与数组不一致，内部做最近邻缩放。

@@ -121,7 +121,7 @@ VansSceneReflectionProbeConfig VansSceneReflectionProbeConfigReader::Read(
 		config.lighting.maxBlendCount = ReadOptionalUIntField(*lighting, "maxBlendCount");
 		config.lighting.ssrRoughnessFadeStart = ReadOptionalFloatField(*lighting, "ssrRoughnessFadeStart");
 		config.lighting.ssrRoughnessFadeEnd = ReadOptionalFloatField(*lighting, "ssrRoughnessFadeEnd");
-		config.lighting.skyIntensity = ReadOptionalFloatField(*lighting, "skyIntensity");
+
 	}
 
 	if (const VansSerializedValue* placement = ReadObjectField(*block, "placement"))
@@ -131,6 +131,7 @@ VansSceneReflectionProbeConfig VansSceneReflectionProbeConfigReader::Read(
 		config.placement.volumeMin = ReadOptionalFloat3Field(*placement, "volumeMin");
 		config.placement.volumeMax = ReadOptionalFloat3Field(*placement, "volumeMax");
 		config.placement.cellSize = ReadOptionalFloatField(*placement, "cellSize");
+		config.placement.minCaptureClearance = ReadOptionalFloatField(*placement, "minCaptureClearance");
 		config.placement.indoorSpacing = ReadOptionalFloatField(*placement, "indoorSpacing");
 		config.placement.corridorSpacing = ReadOptionalFloatField(*placement, "corridorSpacing");
 		config.placement.outdoorSpacing = ReadOptionalFloatField(*placement, "outdoorSpacing");
@@ -140,6 +141,10 @@ VansSceneReflectionProbeConfig VansSceneReflectionProbeConfigReader::Read(
 		config.placement.uniformSpacing = ReadOptionalFloatField(*placement, "uniformSpacing");
 		config.placement.uniformBoxSizeScale = ReadOptionalFloatField(*placement, "uniformBoxSizeScale");
 		config.placement.uniformProbeResolution = ReadOptionalUIntField(*placement, "uniformProbeResolution");
+		if (const VansSerializedValue* overrides = ReadArrayField(*placement, "overrides"))
+			for (const auto& probe : overrides->arrayItems)
+				if (probe.kind == VansSerializedValue::Kind::Object)
+					config.placementOverrides.push_back(DecodeProbe(probe));
 	}
 
 	if (const VansSerializedValue* probes = ReadArrayField(*block, "probes"))

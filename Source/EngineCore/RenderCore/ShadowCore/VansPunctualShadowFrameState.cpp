@@ -1,6 +1,7 @@
 #include "VansPunctualShadowFrameState.h"
 
 #include "../VansRenderBounds.h"
+#include "../../Util/VansProfiler.h"
 
 #include <algorithm>
 #include <unordered_set>
@@ -66,6 +67,7 @@ bool VansGraphics::VansPunctualShadowFrameState::PrepareFrame(
 	VansRenderSceneFrameSnapshot& snapshot,
 	std::uint64_t frameIndex)
 {
+	VANS_PROFILE_SCOPE("Shadow::PrepareFrame", Vans::ProfileCategory::RenderPrepare);
 	if (!ValidateFrameInput(snapshot))
 		return false;
 
@@ -169,7 +171,7 @@ void VansGraphics::VansPunctualShadowFrameState::BuildCasterLists(
 			if (!caster.second.hasBounds ||
 				RenderBoundsIntersectsClipFrustum(caster.second.bounds, job.worldToShadow))
 			{
-				job.casterHandles.push_back(caster.first);
+				job.casterHandles.insert(caster.first);
 			}
 		}
 	}

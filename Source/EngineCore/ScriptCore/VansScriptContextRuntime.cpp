@@ -36,6 +36,7 @@
 #include "../RenderCore/BRDFData/VansLight.h"
 #include "../RenderCore/VansRenderNode.h"
 #include "../RenderCore/VansScene.h"
+#include "../RenderCore/Decal/VansImpactDecalSystem.h"
 #include "../RenderCore/VansVideoManager.h"
 #include "../RenderCore/VulkanCore/VansVideoTexture.h"
 #include "../RuntimeCore/VansFramePhase.h"
@@ -2538,6 +2539,32 @@ int LuaFindObject(lua_State* L)
 	return 1;
 }
 
+// 按需只读快照，供运行时诊断和回归；正常游戏帧不复制池数据。
+int LuaImpactDecalSnapshot(lua_State* L)
+{
+	const auto* scene = Scene();
+	const auto* system = scene ? scene->GetImpactDecals() : nullptr;
+	lua_newtable(L);
+	lua_pushinteger(L, system ? system->Capacity() : 0); lua_setfield(L,-2,"capacity");
+	lua_pushinteger(L, system ? system->SpawnCount() : 0); lua_setfield(L,-2,"spawned");
+	lua_newtable(L);
+	int index = 0;
+	if (system) for (const auto& entry : system->CaptureDebug())
+	{
+		if (!entry.active) continue;
+		lua_newtable(L);
+		lua_pushinteger(L,entry.receiver); lua_setfield(L,-2,"receiver");
+		lua_pushnumber(L,entry.remainingSeconds); lua_setfield(L,-2,"remaining_seconds");
+		PushVec3(L,entry.position); lua_setfield(L,-2,"position");
+		PushVec3(L,entry.normal); lua_setfield(L,-2,"normal");
+		PushVec3(L,entry.scale); lua_setfield(L,-2,"scale");
+		lua_rawseti(L,-2,++index);
+	}
+	lua_setfield(L,-2,"entries");
+	lua_pushinteger(L,index); lua_setfield(L,-2,"active");
+	return 1;
+}
+
 int LuaLog(lua_State* L)
 {
 	int top = lua_gettop(L);
@@ -4126,6 +4153,7 @@ void VansScriptContext::RegisterLuaBindings()
 
 	lua_newtable(L);
 	lua_pushcfunction(L, LuaLog); lua_setfield(L, -2, "log");
+	lua_pushcfunction(L, LuaImpactDecalSnapshot); lua_setfield(L,-2,"impact_decals");
 	lua_pushcfunction(L, LuaFindObject); lua_setfield(L, -2, "find_object");
 	lua_pushcfunction(L, LuaTimeSeconds); lua_setfield(L, -2, "time_seconds");
 

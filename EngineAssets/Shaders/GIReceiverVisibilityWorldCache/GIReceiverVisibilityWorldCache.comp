@@ -1,0 +1,63 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_nonuniform_qualifier : require
+#include "../SSGI/SSGISurface.glsl"
+#include "../GI/GIReceiverVisibilityData.glsl"
+#include "../GI/GIReceiverVisibilityWorld.glsl"
+#include "../GI/GIProbeStateData.glsl"
+layout(local_size_x=64) in;
+layout(set=1,binding=7,std430) readonly buffer State { GIProbeState states[]; } currentStates[8];
+layout(set=1,binding=8,std430) readonly buffer PreviousState { GIProbeState states[]; } previousStates[8];
+layout(set=1,binding=10,std430) readonly buffer Current { uvec4 header; GIReceiverVisibilityRecord records[]; };
+layout(set=1,binding=13,std430) buffer World { uvec4 worldHeader; GIReceiverVisibilityRecord worldRecords[]; };
+layout(set=1,binding=14,std430) buffer Claims { uint claims[]; };
+layout(push_constant) uniform Params { uvec4 frame; uvec4 operation; };
+void main()
+{
+    uint index = gl_GlobalInvocationID.x;
+    if (operation.x == 0u)
+    {
+        if (index >= GI_RECEIVER_WORLD_CAPACITY) return;
+        if (index == 0u) worldHeader = uvec4(frame.w, 0u, 0u, 0u);
+        // 即使表面已离屏，也逐 Probe 检查位置变化，不能只比较重新入屏那一帧的状态。
+        GIReceiverVisibilityRecord record = worldRecords[index];
+        if (frame.z == 0u || frame.w == 0u || frame.z - record.metadata.y > GI_RECEIVER_WORLD_MAX_AGE)
+            record.metadata.zw = uvec2(0u);
+        else if (record.metadata.z != 0u)
+        {
+            for (uint i = 0u; i < 16u; ++i)
+            {
+                uint bit = 1u << i;
+                if ((record.metadata.z & bit) == 0u) continue;
+                uint probe = GI_ReceiverProbe(record, i);
+                GIProbeState a = currentStates[nonuniformEXT(record.metadata.x)].states[probe];
+                GIProbeState b = previousStates[nonuniformEXT(record.metadata.x)].states[probe];
+                if (a.metadata.x != 1u || b.metadata.x != 1u ||
+                    any(notEqual(a.traceOffsetAndBackface.xyz, b.traceOffsetAndBackface.xyz)))
+                    record.metadata.zw &= uvec2(~bit);
+            }
+        }
+        worldRecords[index].metadata.zw = record.metadata.zw;
+        return;
+    }
+    if (operation.x == 1u)
+    {
+        if (index >= frame.x * frame.y || frame.w == 0u) return;
+        GIReceiverVisibilityRecord record = records[index];
+        uint age = frame.z - record.metadata.y;
+        if (record.metadata.z == 0u || age > GI_RECEIVER_WORLD_MAX_AGE) return;
+        // 先竞争标量 owner，再由下一次 dispatch 唯一写完整记录；禁止并发读取半条记录。
+        // 低 24 位覆盖 16384x16384 渲染尺寸的全部四分之一分辨率格。
+        if (index >= 0x1000000u) return;
+        uint claim = (age << 24u) | index;
+        atomicMin(claims[GI_ReceiverWorldBucket(record)], claim);
+        return;
+    }
+    if (index >= GI_RECEIVER_WORLD_CAPACITY || frame.w == 0u) return;
+    uint claim = claims[index];
+    if (claim == 0xffffffffu) return;
+    GIReceiverVisibilityRecord record = records[claim & 0xffffffu];
+    GIReceiverVisibilityRecord old = worldRecords[index];
+    if (old.metadata.z == 0u || frame.z - record.metadata.y <= frame.z - old.metadata.y)
+        worldRecords[index] = record;
+}

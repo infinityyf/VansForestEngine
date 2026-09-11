@@ -257,6 +257,7 @@ void VansGraphics::VansRenderDebugWindow::ShowWindow(Vans::EditorAPI::IEngineEdi
 	if (VansGraphics::VansEditorWindow::m_RenderDebugWindowOpen)
 	{
 		ImGui::Begin("Render Debug", &VansGraphics::VansEditorWindow::m_RenderDebugWindowOpen);
+		ImGui::TextWrapped("SSAO: white = unoccluded, black = fully occluded. Filtered is the SSAO input to Deferred lighting, before material AO.");
 		Vans::EditorAPI::RenderTextureFilter filter;
 		filter.category = "render_debug";
 		DrawPreviewTable("RenderDebugTable", editorAPI.QueryRenderTexturePreviews(filter));

@@ -15,6 +15,7 @@ layout( location = 3 ) in vec3 bitangent_ws;
 layout( location = 4 ) in vec3 position_world;
 layout( location = 5 ) in vec4 motion_current_clip;
 layout( location = 6 ) in vec4 motion_previous_clip;
+layout(location = 14) flat in float decalReceiverGroup;
 // layout( set=2, binding=0 ) uniform sampler2D baseColor;
 // layout( set=2, binding=1 ) uniform sampler2D normalMap;
 // layout( set=2, binding=2 ) uniform sampler2D metalMap;
@@ -56,7 +57,9 @@ void main()
     
     outNormal = vec4(normal, 1.0);
     outGBuffer0 = vec4(albedo, roughness);
-    outGBuffer1 = vec4(metallic, ao, float(MATERIAL_ID_PBR), 1.0);
+    // PBR 的 w 未参与材质计算；负整数携带弹坑接收组，0 表示未绑定。
+    outGBuffer1 = vec4(metallic, ao, float(MATERIAL_ID_PBR),
+        -decalReceiverGroup);
 
     float linearDepth = (ViewMatrix * vec4(position_world, 1.0)).z;
     outGBuffer2 = vec4(position_world, -linearDepth);

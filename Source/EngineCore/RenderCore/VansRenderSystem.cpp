@@ -222,6 +222,7 @@ VansGraphics::VansRenderFrameSubmitResult VansGraphics::VansRenderSystem::Submit
 	if (m_IndependentRenderThreadEnabled && m_LastAcceptedFrameId.has_value() &&
 		!m_OutcomeLedger.LeadCreditReleasedFor(*m_LastAcceptedFrameId))
 	{
+		VANS_PROFILE_WAIT("Render::WaitPreviousFrameOutcome");
 		const VansRenderOutcomeWaitResult previous =
 			m_OutcomeLedger.WaitForOutcome(*m_LastAcceptedFrameId);
 		if (previous.status != VansRenderOutcomeWaitStatus::OutcomeAvailable ||
@@ -551,6 +552,7 @@ void VansGraphics::VansRenderSystem::RenderThreadMain()
 			Vans::VansProfiler::Get().BeginRenderFrame(item.profilerFrameIndex);
 			try
 			{
+				VANS_PROFILE_SCOPE("Render::ExecuteFrame", Vans::ProfileCategory::Frame);
 				m_Backend.PrepareRenderingFrame();
 				VANS_SET_FRAME_PHASE(VansFramePhase::RenderThreadConsume);
 				prepareResult = m_Backend.PrepareRenderSubmission(*item.frame);
@@ -570,9 +572,7 @@ void VansGraphics::VansRenderSystem::RenderThreadMain()
 					"Unhandled exception escaped render-thread frame execution"
 				};
 			}
-			Vans::VansProfiler::Get().EndRenderFrame(
-				item.profilerFrameIndex,
-				m_Backend.GetNativeGraphicsDevice());
+			Vans::VansProfiler::Get().EndRenderFrame(item.profilerFrameIndex);
 
 			if (prepareResult && overlaySucceeded && m_Backend.CanRecordCurrentFrame())
 			{
@@ -615,7 +615,8 @@ void VansGraphics::VansRenderSystem::RenderThreadMain()
 			bool succeeded = false;
 			try
 			{
-				succeeded = item.transaction && item.transaction->Execute(m_Backend);
+				// 维护事务可替换 GPU 资源；已排队的 Present 不代表这些资源已空闲。
+				succeeded = item.transaction && m_Backend.WaitForIdle() && item.transaction->Execute(m_Backend);
 			}
 			catch (...)
 			{

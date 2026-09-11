@@ -19,6 +19,11 @@
 #include "../EngineCore/GameplayActionAdapters/VansActionServiceAdapter.h"
 #include "../EngineCore/GameplayActionAdapters/VansGameplayPrimitivesContributor.h"
 #include "../EngineCore/GameplayActionAdapters/Audio/VansAudioActionCapability.h"
+#include "../EngineCore/GameplayActionAdapters/Decal/VansDecalActionService.h"
+#include "../EngineCore/GameplayActionAdapters/Audio/VansAudioActionService.h"
+#include "../EngineCore/AudioCore/VansAudioManager.h"
+#include "../EngineCore/AudioCore/VansAudioSystem.h"
+#include "../EngineCore/SceneCore/VansSceneResourcePlan.h"
 #include "../EngineCore/GameplayActionAdapters/Camera/VansCameraActionService.h"
 #include "../EngineCore/GameplayActionAdapters/Camera/VansCameraGameplayAssetCompiler.h"
 #include "../EngineCore/GameplayActionAdapters/Character/VansCharacterActionServices.h"
@@ -74,6 +79,8 @@
 #include "../EngineCore/PhysicsCore/VansCharacterControllerNode.h"
 #include "../EngineCore/PhysicsCore/VansPhysics.h"
 #include "../EngineCore/PhysicsCore/VansPhysicsNode.h"
+#include "../EngineCore/PhysicsCore/VansCollisionLayerManager.h"
+#include "../EngineCore/PhysicsCore/Storage/VansCollisionLayerStorage.h"
 #include "../EngineCore/SceneCore/VansSceneAnimationComponentReader.h"
 #include "../EngineCore/SceneCore/VansAssetObjectBootstrapper.h"
 #include "../EngineCore/SceneRuntime/VansRuntimeComponentTypes.h"
@@ -97,6 +104,8 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
+#include <chrono>
+#include <thread>
 
 extern "C"
 {
@@ -4559,7 +4568,7 @@ bool TestDemoHallHurtBodiesContract()
 	return true;
 }
 
-bool TestGAFDemoHallMeleeHitRuntimeContract()
+static bool TestDemoHallCombatHitRuntime(bool hitscan)
 {
 	namespace fs = std::filesystem;
 	fs::path workspace = fs::current_path();
@@ -4567,7 +4576,7 @@ bool TestGAFDemoHallMeleeHitRuntimeContract()
 		workspace = workspace.parent_path();
 	const fs::path projectRoot = workspace / "DemoHallProject";
 	const fs::path temporaryRoot =
-		fs::temp_directory_path() / "ForestGAFDemoHallMeleeHitRuntimeContract";
+		fs::temp_directory_path() / (hitscan ? "ForestGAFDemoHallPistolHitRuntimeContract" : "ForestGAFDemoHallMeleeHitRuntimeContract");
 	std::error_code filesystemError;
 	fs::remove_all(temporaryRoot, filesystemError);
 	struct TemporaryCleanup
@@ -4602,6 +4611,15 @@ bool TestGAFDemoHallMeleeHitRuntimeContract()
 			"DemoHall TagTree could not be copied for the runtime hit test")) return false;
 	}
 
+	if (hitscan)
+	{
+		fs::copy(projectRoot / "Assets/GAF/PlayerPistol", assetsRoot / "PlayerPistol",
+			fs::copy_options::recursive | fs::copy_options::overwrite_existing, filesystemError);
+		if (!ExpectGAF(!filesystemError, "Pistol assets could not be copied for the hit test")) return false;
+		for (const char* file : { "usp_03_spatial.wav", "usp_03_spatial.wav.meta" })
+			fs::copy_file(projectRoot / "Assets/Audio/Weapons" / file, assetsRoot / file);
+	}
+
 	Vans::VansGAFProjectConfiguration configuration;
 	std::string error;
 	if (!Vans::VansGAFProjectConfiguration::LoadForProject(
@@ -4611,7 +4629,7 @@ bool TestGAFDemoHallMeleeHitRuntimeContract()
 		temporaryRoot / "Assets", temporaryRoot / "Library/Artifacts");
 	const Vans::VansAssetScanResult scan =
 		database.Scan(Vans::VansAssetOperationPolicy::Authoring());
-	if (!ExpectGAF(scan && database.All().size() == 16,
+	if (!ExpectGAF(scan && database.All().size() == (hitscan ? 28 : 16),
 		"DemoHall melee runtime fixture did not scan as sixteen GAF assets")) return false;
 
 	VansGraphics::VansAnimationClip referenceClip;
@@ -4660,9 +4678,9 @@ bool TestGAFDemoHallMeleeHitRuntimeContract()
 	const Vans::VansEntityHandle attacker = world.CreateEntity({
 		"demohall-melee-attacker", "Survival Runtime Attacker" });
 	const Vans::VansEntityHandle hitBase = world.CreateEntity({
-		"928f6ad1-4aac-4b57-a244-8a021f518401", "Survival_Axe_Hit_Base", attacker });
+		(hitscan ? "e132c11e-1ed8-4c25-b8c7-7ffcf8c23901" : "928f6ad1-4aac-4b57-a244-8a021f518401"), "Weapon Hit Base", attacker });
 	const Vans::VansEntityHandle hitTip = world.CreateEntity({
-		"c28c047e-aebd-4668-8ca6-04de3f348402", "Survival_Axe_Hit_Tip", attacker });
+		(hitscan ? "e132c11e-1ed8-4c25-b8c7-7ffcf8c23902" : "c28c047e-aebd-4668-8ca6-04de3f348402"), "Weapon Hit Tip", attacker });
 	const Vans::VansEntityHandle whisper = world.CreateEntity({
 		"demohall-melee-whisper", "Whisper Runtime Target" });
 	if (!ExpectGAF(attacker.IsValid() && hitBase.IsValid() && hitTip.IsValid() &&
@@ -4713,6 +4731,14 @@ bool TestGAFDemoHallMeleeHitRuntimeContract()
 		for (std::uint32_t id : transformIds) VansGraphics::VansTransformStore::FreeTransform(id);
 		return false;
 	}
+	if (hitscan)
+	{
+		VansEngine::VansCollisionLayerConfig layers;
+		if (!ExpectGAF(VansEngine::VansCollisionLayerStorage::Load(
+			(projectRoot / "ProjectSettings/PhysicsLayers.json").string(), layers, error)
+			== VansEngine::VansCollisionLayerLoadStatus::Loaded, error.c_str())) return false;
+		VansEngine::VansCollisionLayerManager::Get().ApplyConfig(layers);
+	}
 	VansEngine::VansPhysicsNode hurtBody;
 	VansEngine::PhysicsNodeProperties hurtBodyProperties;
 	hurtBodyProperties.enabled = true;
@@ -4731,13 +4757,13 @@ bool TestGAFDemoHallMeleeHitRuntimeContract()
 	armProperties.hitRegion = "RightForearm";
 	armProperties.capsuleRadius = .08f;
 	armProperties.capsuleHalfHeight = .18f;
-	armProperties.shapeOffset.x = .45f;
+	armProperties.shapeOffset.x = hitscan ? 2.0f : .45f;
 	armBody.SetName("Whisper_RightForearm_HurtBody");
 	armBody.Initialize(armProperties, whisperTransform);
 	VansEngine::VansPhysicsNode playerBody;
 	auto playerProperties = armProperties;
 	playerProperties.hitRegion = "Head";
-	playerProperties.layerName = "Player";
+	playerProperties.layerName = hitscan ? "Enemy" : "Player";
 	playerProperties.shapeOffset = glm::vec3(0);
 	const auto playerHead = world.CreateEntity({ "survival-head", "Survival Head", attacker });
 	const auto playerHeadTransform = addTransform(playerHead, "survival-head-transform", glm::vec3(0,1.05f,0));
@@ -4810,6 +4836,13 @@ bool TestGAFDemoHallMeleeHitRuntimeContract()
 		"Gameplay.Animation", { animationService }));
 	dependencies.contributors.push_back(MakeTestRuntimeContributor(
 		"Gameplay.Navigation", { navigationService }));
+	if (hitscan) dependencies.contributors.push_back(MakeTestRuntimeContributor(
+		"Gameplay.AnimationEvents", { std::make_shared<Vans::VansFakeActionService>(
+			Vans::VansAnimationEventActionCapability()) }));
+	if (hitscan) dependencies.contributors.push_back(MakeTestRuntimeContributor(
+		"Gameplay.Audio", { std::make_shared<Vans::VansFakeActionService>(Vans::VansAudioActionCapability()) }));
+	if (hitscan) dependencies.contributors.push_back(MakeTestRuntimeContributor(
+		"Gameplay.Decal", { std::make_shared<Vans::VansDecalActionService>(Vans::VansDecalSceneBackend{}) }));
 	Vans::VansAssetObjectRepository assetObjects;
 	if (!BootstrapGameplayMemory(database.All(), assetObjects, error))
 		return ExpectGAF(false, error.c_str());
@@ -4820,11 +4853,151 @@ bool TestGAFDemoHallMeleeHitRuntimeContract()
 	Vans::VansGameplayActionHostSetup attackerSetup;
 	attackerSetup.actionSets.push_back("4534ddf1-e858-468e-a1ab-9e8b98cf6129");
 	AddHostTagInitializer(attackerSetup, "Target.Character.Player");
+	if (hitscan)
+	{
+		attackerSetup.actionSets.push_back("8ffba417-35f5-5961-a151-789cb8e1d107");
+		AddHostTagInitializer(attackerSetup, "State.Weapon.Pistol.Equipped");
+		AddHostTagInitializer(attackerSetup, "State.Weapon.Pistol.Aiming");
+	}
+
 	const auto attackerHost = gameplayRuntime.CreateHost(attacker, attackerSetup, error);
 	Vans::VansGameplayActionHostSetup whisperSetup;
 	whisperSetup.actionSets.push_back("269218a3-6809-48f6-b055-97891161c303");
 	AddHostTagInitializer(whisperSetup, "Target.Character.Enemy");
 	const auto whisperHost = gameplayRuntime.CreateHost(whisper, whisperSetup, error);
+
+	if (hitscan)
+	{
+		if (!ExpectGAF(attackerHost && whisperHost, "Pistol hit test hosts are unavailable")) return false;
+		const auto shotAction = gameplayRuntime.Assets().ResolveAction("Gameplay.DemoHall.Player.Pistol.Shot");
+		if (!ExpectGAF(shotAction != nullptr, "Pistol Shot Action did not resolve")) return false;
+		std::vector<std::unique_ptr<VansEngine::VansPhysicsNode>> extraBodies;
+		const auto addBody = [&](const char* id, const char* region, glm::vec3 position, bool trigger,
+			Vans::VansEntityHandle parent, const char* layer)
+		{
+			const auto entity = world.CreateEntity({ id, id, parent });
+			const auto transform = addTransform(entity, id, position);
+			auto body = std::make_unique<VansEngine::VansPhysicsNode>();
+			auto properties = hurtBodyProperties;
+			properties.hitRegion = region; properties.layerName = layer;
+			properties.isTrigger = trigger; properties.shapeOffset = glm::vec3(0);
+			properties.colliderType = trigger ? VansEngine::PhysicsColliderType::Capsule : VansEngine::PhysicsColliderType::Box;
+			properties.capsuleRadius = .12f; properties.capsuleHalfHeight = .15f;
+			properties.boxExtents = glm::vec3(.2f);
+			body->SetName(id); body->Initialize(properties, transform);
+			world.AddComponent(entity, Vans::VansRuntimeComponentType_Physics,
+				Vans::VansRuntimePhysicsComponent{body.get()}, id);
+			auto* result = body.get(); extraBodies.push_back(std::move(body)); return result;
+		};
+		addBody("whisper-head-body", "Head", glm::vec3(-2,1.05f,-1.1f), true, whisper, "Enemy");
+		addBody("whisper-shin-body", "LeftShin", glm::vec3(-4,1.05f,-1.1f), true, whisper, "Enemy");
+		addBody("whisper-far-body", "Abdomen", glm::vec3(0,1.05f,-3), true, whisper, "Enemy");
+		auto* wall = addBody("pistol-wall", "", glm::vec3(0,1.05f,.8f), false, {}, "Environment");
+		wall->SetEnabled(false);
+		// 普通 Trigger 与移动胶囊不得抢占人体肢体命中。
+		addBody("pistol-trigger", "", glm::vec3(0,1.05f,.5f), true, {}, "Enemy");
+		VansEngine::CharControllerProperties cctProperties;
+		cctProperties.m_LayerName = "Default";
+		if (!ExpectGAF(whisperCct.Initialize(cctProperties, whisperTransform,
+			physicsSystem.GetControllerManager(), physicsSystem.GetDefaultMaterial(), glm::vec3(0,1.05f,.2f)),
+			"Pistol CCT exclusion fixture did not initialize")) return false;
+		Vans::VansActionContext context;
+		context.SetEntity(Vans::VansActionContextSlots::Owner, attacker);
+		context.SetEntity(Vans::VansActionContextSlots::Instigator, attacker);
+		context.SetEntity(Vans::VansActionContextSlots::Source, attacker);
+		context.SetEntity(Vans::VansActionContextSlots::PrimaryTarget, attacker);
+		int shots = 0, hits = 0;
+		Vans::VansActionHandle previousResponse;
+		const auto fire = [&](float x, const std::string& region)
+		{
+			VansGraphics::VansTransformStore::GetTransform(baseTransform).m_Position = glm::vec3(x,1.05f,2);
+			VansGraphics::VansTransformStore::GetTransform(tipTransform).m_Position = glm::vec3(x,1.05f,1);
+			const auto shot = attackerHost->ActivateAction(shotAction->id, context);
+			if (!ExpectGAF(static_cast<bool>(shot), shot.message.c_str())) return false;
+			++shots;
+			if (!ExpectGAF(!attackerHost->ActivateAction(shotAction->id, context), "Pistol accepted a duplicate fire during the same animation")) return false;
+			gameplayRuntime.TickEarly(0.0);
+			if (!region.empty())
+			{
+				++hits;
+				const auto responses = whisperHost->ActiveActions();
+				if (!ExpectGAF(responses.size() == 1 && whisperCct.IsGameplayMovementBlocked()
+					&& whisperController->GetCurrentStateName() == "TakingDamage1", "Pistol did not start Whisper hit feedback")) return false;
+				const auto& response = responses.front();
+				const auto* hit = response.targetData.values.size() == 1 ? std::get_if<Vans::VansTargetHitResult>(&response.targetData.values.front()) : nullptr;
+				if (!ExpectGAF(hit && hit->entity == whisper && hit->hitEntity != whisper && hit->region == region
+					&& !hit->componentGuid.empty() && hit->distance > 0 && hit->distance < 4
+					&& response.handle != previousResponse, "Pistol hit lost region, closest contact or response restart")) return false;
+				previousResponse = response.handle;
+				Vans::VansTargetData decoded;
+				if (!Vans::VansDecodeTargetData(Vans::VansEncodeTargetData(response.targetData), decoded, error)) return false;
+				const auto& roundTrip = std::get<Vans::VansTargetHitResult>(decoded.values.front());
+				if (!ExpectGAF(roundTrip.hitEntity == hit->hitEntity && roundTrip.region == region
+					&& roundTrip.componentGuid == hit->componentGuid && roundTrip.position == hit->position,
+					"Pistol TargetData round trip lost body identity")) return false;
+			}
+			else if (!ExpectGAF(whisperHost->ActiveActions().empty() && !whisperCct.IsGameplayMovementBlocked(),
+				"Miss or occluded shot triggered a hit response")) return false;
+			const auto active = attackerHost->ActiveActions();
+			if (!ExpectGAF(active.size() == 1, "Pistol lost its animation wait")) return false;
+			const auto countEvent = [&](const char* name) { return std::count_if(active.front().recentEvents.begin(),
+				active.front().recentEvents.end(), [&](const auto& event) { return event.stableName == name; }); };
+			if (!ExpectGAF(countEvent("Combat.Shot") == 1 && countEvent("Combat.Hit") == (region.empty() ? 0 : 1),
+				"Pistol emitted missing or duplicate combat events")) return false;
+			// 本夹具隔离射击与受击交互；完整场景另用真实射击动画发送此完成信号。
+			Vans::VansActionEvent finished;
+			finished.stableName = "Pistol_Shot.Finished";
+			finished.type = Vans::VansMakeStableId<Vans::VansActionFieldIdTag>(finished.stableName);
+			finished.source = finished.target = attacker;
+			if (!attackerHost->EnqueueEvent(shot.action, std::move(finished), error)) return false;
+			gameplayRuntime.TickEarly(.31);
+			return ExpectGAF(attackerHost->ActiveActions().empty(), "Pistol did not finish after its animation signal");
+		};
+		if (!fire(0, "Chest") || !fire(2, "RightForearm") || !fire(-2, "Head") || !fire(-4, "LeftShin")) return false;
+		gameplayRuntime.TickEarly(1.4);
+		if (!ExpectGAF(whisperHost->ActiveActions().empty() && !whisperCct.IsGameplayMovementBlocked()
+			&& whisperController->GetCurrentStateName() == stateBeforeHit, "Repeated shots left hit animation or movement locked")) return false;
+		wall->SetEnabled(true);
+		if (!fire(0, "")) return false;
+		wall->SetEnabled(false);
+		if (!fire(10, "")) return false;
+		if (!fire(0, "Chest")) return false;
+		gameplayRuntime.TickEarly(1.4);
+		// 从正式图读取命令参数，验证超距与非法方向不产生受击。
+		nlohmann::ordered_json graph;
+		std::ifstream(projectRoot / "Assets/GAF/PlayerPistol/PistolShot.vactiongraph") >> graph;
+		nlohmann::ordered_json payload;
+		for (const auto& node : graph["nodes"])
+			if (node["guid"] == "fire-hitscan") for (const auto& input : node["properties"]["inputs"].items())
+				payload[input.key()] = input.value()["value"];
+		Vans::VansActionCommand query;
+		query.stableName = "Combat.FireHitscan"; query.context = context;
+		payload["range"] = .1; query.payload = Vans::DecodeSerializedValueJson(payload);
+		const auto outOfRange = combatService->Execute(query);
+		if (!ExpectGAF(outOfRange && !Vans::ReadSerializedBoolField(outOfRange.payload, "hit")
+			&& whisperHost->ActiveActions().empty(), "Out-of-range shot triggered a response")) return false;
+		payload["range"] = 100.0;
+		wall->SetEnabled(true);
+		query.payload = Vans::DecodeSerializedValueJson(payload);
+		const auto wallResult = combatService->Execute(query);
+		Vans::VansSurfaceImpact wallImpact;
+		const auto* surfaceImpact = Vans::FindObjectField(wallResult.payload, "surfaceImpact");
+		if (!ExpectGAF(wallResult && !Vans::ReadSerializedBoolField(wallResult.payload,"hit") &&
+			Vans::ReadSerializedBoolField(wallResult.payload,"blocked") && surfaceImpact &&
+			Vans::VansDecodeSurfaceImpact(*surfaceImpact,wallImpact,error) && wallImpact.kind==Vans::VansSurfaceImpactKind::Rigid &&
+			wallImpact.hit.hitEntity==world.Entities().FindByGuid("pistol-wall") && wallImpact.hit.componentGuid=="pistol-wall" &&
+			std::abs(wallImpact.hit.position[2]-1.0)<.001 && wallImpact.hit.normal[2]>.99 && wallImpact.hit.distance>.9,
+			"Wall impact lost real collider, contact point or normal, or altered damage semantics")) return false;
+		wall->SetEnabled(false);
+		payload["targetLayer"] = "MissingLayer"; query.payload = Vans::DecodeSerializedValueJson(payload);
+		if (!ExpectGAF(!combatService->Execute(query), "Unknown hitscan layer silently selected Default")) return false;
+		payload["targetLayer"] = "Enemy"; query.payload = Vans::DecodeSerializedValueJson(payload);
+		VansGraphics::VansTransformStore::GetTransform(tipTransform).m_Position = VansGraphics::VansTransformStore::GetTransform(baseTransform).m_Position;
+		if (!ExpectGAF(!combatService->Execute(query), "Zero-length shot direction was accepted")) return false;
+		std::cout << "[GAF] Pistol hitscan passed shots=" << shots << " hits=" << hits
+			<< " regions=Chest,RightForearm,Head,LeftShin nearestOnly=1 selfAndCctExcluded=1 wallAndMiss=1 repeatedFeedback=1 cleanup=1\n";
+		return true;
+	}
 	const auto crowbarAttack = gameplayRuntime.Assets().ResolveAction(
 		"Gameplay.DemoHall.Player.Attack.Crowbar");
 	if (!ExpectGAF(attackerHost && whisperHost && crowbarAttack,
@@ -4935,6 +5108,9 @@ bool TestGAFDemoHallMeleeHitRuntimeContract()
 		" hits=1 response=TakingDamage1 movementBlockReleased=1\n";
 	return true;
 }
+
+bool TestGAFDemoHallMeleeHitRuntimeContract() { return TestDemoHallCombatHitRuntime(false); }
+bool TestGAFDemoHallPistolHitRuntimeContract() { return TestDemoHallCombatHitRuntime(true); }
 
 bool TestDemoHallCrouchLocomotionContract()
 {
@@ -6721,6 +6897,149 @@ bool TestDemoHallWhisperAIContract()
 		fs::is_regular_file(animationV2WhisperRoot / "Animation/Whisper.vanimator") &&
 		fs::is_regular_file(animationV2WhisperRoot / "Animation/Whisper.vanimrig"),
 		"Frame_Stand_4 pickup is not wired through Whisper wake, AI chase, navigation, CCT, and locomotion");
+}
+
+bool TestGAFPistolAudioRuntimeContract()
+{
+	namespace fs = std::filesystem;
+	using namespace Vans;
+	fs::path workspace = fs::current_path();
+	for (int i = 0; i < 6 && !fs::exists(workspace / "DemoHallProject"); ++i) workspace = workspace.parent_path();
+	auto& system = VansEngine::VansAudioSystem::GetInstance();
+	if (!ExpectGAF(system.Initialize(), "Pistol audio could not initialize OpenAL")) return false;
+	struct AudioCleanup { ~AudioCleanup() { VansEngine::VansAudioSystem::GetInstance().Shutdown(); } } audioCleanup;
+	const std::string sound = "1df96c75-8ca2-4d25-b247-59eff5c0a703";
+	for (const char* name : { "DemoHallProject", "DustV3Project" })
+	{
+		const bool demo = std::string(name) == "DemoHallProject";
+		const fs::path project = workspace / name;
+		const fs::path gaf = project / (demo ? "Assets/GAF" : "Assets/Survival/GAF");
+		const fs::path temp = fs::temp_directory_path() / (std::string("ForestPistolAudio_") + name + "_"
+			+ std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+		fs::create_directories(temp / "Assets");
+		struct FilesCleanup { fs::path path; ~FilesCleanup() { std::error_code ec; fs::remove_all(path, ec); } } filesCleanup{temp};
+		fs::copy(gaf / "PlayerPistol", temp / "Assets/PlayerPistol", fs::copy_options::recursive);
+		for (const char* file : { "PlayerOwner.vtargeting", "PlayerOwner.vtargeting.meta" })
+			fs::copy_file(gaf / "PlayerAttack" / file, temp / "Assets" / file);
+		for (const char* suffix : { "", ".meta" })
+		{
+			const auto tags = gaf / (demo ? "WindowBreak/DemoHallTags.vtagtree" : "SurvivalTags.vtagtree");
+			fs::copy_file(tags.string() + suffix, temp / "Assets" / ("Tags.vtagtree" + std::string(suffix)));
+		}
+		for (const char* file : { "usp_03_spatial.wav", "usp_03_spatial.wav.meta" })
+			fs::copy_file(project / "Assets/Audio/Weapons" / file, temp / "Assets" / file);
+		VansAssetDatabase database(temp / "Assets", temp / "Library");
+		if (!ExpectGAF(static_cast<bool>(database.Scan(VansAssetOperationPolicy::Authoring())), "Audio fixture scan failed")) return false;
+		std::string error;
+		VansGAFProjectConfiguration configuration;
+		if (!VansGAFProjectConfiguration::LoadForProject(project, workspace / "ForestEngine/ForestEngine", configuration, error))
+			return ExpectGAF(false, error.c_str());
+		VansSerializedValue graph;
+		if (!VansGameplayAssetStorage::LoadSource(gaf / "PlayerPistol/PistolShot.vactiongraph", graph, error)) return false;
+		const auto refs = VansGameplayAssetSchemaRegistry::BuiltIns().CollectDependencies(VansAssetType::ActionGraph, graph);
+		if (!ExpectGAF(std::find(refs.begin(), refs.end(), sound) != refs.end(), "Cook closure lost the literal sound GUID")) return false;
+		VansEngine::VansAudioManager audio;
+		VansSceneAudioResourceRequest request;
+		request.assetGuid = sound; request.name = "USP_PistolShot";
+		request.path = (project / "Assets/Audio/Weapons/usp_03_spatial.wav").string();
+		request.volume = .9f; request.spatial = true; request.referenceDistance = 3.0f; request.maxDistance = 80.0f;
+		audio.Load({request});
+		if (!ExpectGAF(audio.Get(sound) && !audio.Get(sound)->IsPlaying(), "Pistol asset failed to decode or auto-played")) return false;
+		const auto baseLeases = system.GetActiveSourceLeaseCount();
+		VansRuntimeWorld world;
+		const auto owner = world.CreateEntity({"audio-shooter", "Audio Shooter"});
+		const auto emitter = world.CreateEntity({"e132c11e-1ed8-4c25-b8c7-7ffcf8c23901", "Pistol Audio Emitter", owner});
+		int positionReads = 0;
+		auto service = std::make_shared<VansAudioActionService>(world, audio,
+			[&](VansEntityHandle entity, glm::vec3& position) { ++positionReads; position = glm::vec3(1, 2, 3); return entity == emitter; });
+		VansGameplayRuntime runtime;
+		VansGameplayRuntimeDependencies deps;
+		deps.contributors.push_back(VansMakeGameplayPrimitivesGAFContributor());
+		deps.contributors.push_back(MakeProjectSchemaContributor(configuration));
+		deps.contributors.push_back(MakeTestRuntimeContributor("Gameplay.Audio", {service}));
+		deps.contributors.push_back(MakeTestRuntimeContributor("Gameplay.AnimationEvents",
+			{std::make_shared<VansFakeActionService>(VansAnimationEventActionCapability())}));
+		auto shotQuery = std::make_shared<VansActionServiceAdapter>(VansCombatActionCapability());
+		shotQuery->Bind("Combat.FireHitscan", [](const VansActionCommand&) {
+			return VansActionCommandResult{VansActionError::None, {}, VansSerializedValue::Object({
+				{"surfaceImpact", VansEncodeSurfaceImpact({})}}), {}};
+		}, error);
+		deps.contributors.push_back(MakeTestRuntimeContributor("Gameplay.Combat", {shotQuery}));
+		deps.contributors.push_back(MakeTestRuntimeContributor("Gameplay.Decal",
+			{std::make_shared<VansDecalActionService>(VansDecalSceneBackend{})}));
+		VansAssetObjectRepository objects;
+		if (!BootstrapGameplayMemory(database.All(), objects, error)
+			|| !runtime.Initialize(database.All(), objects, configuration.settings, deps, error)) return ExpectGAF(false, error.c_str());
+		VansGameplayActionHostSetup setup;
+		setup.actionSets = {"8ffba417-35f5-5961-a151-789cb8e1d107"};
+		const auto unarmed = runtime.CreateHost(world.CreateEntity({"unarmed", "Unarmed"}), setup, error);
+		AddHostTagInitializer(setup, "State.Weapon.Pistol.Equipped");
+		AddHostTagInitializer(setup, "State.Weapon.Pistol.Aiming");
+		const auto host = runtime.CreateHost(owner, setup, error);
+		const auto shot = runtime.Assets().ResolveAction("Gameplay.DemoHall.Player.Pistol.Shot");
+		if (!ExpectGAF(host && unarmed && shot, "Pistol audio action or host is unavailable")) return false;
+		VansActionContext context; context.SetEntity(VansActionContextSlots::Owner, owner);
+		if (!ExpectGAF(!unarmed->ActivateAction(shot->id, context) && system.GetActiveSourceLeaseCount() == baseLeases,
+			"Rejected shot played audio")) return false;
+		for (int i = 1; i <= 3; ++i)
+		{
+			const auto active = host->ActivateAction(shot->id, context);
+			if (!ExpectGAF(static_cast<bool>(active), active.message.c_str())) return false;
+			runtime.TickEarly(0.0);
+			if (!ExpectGAF(positionReads == i && system.GetActiveSourceLeaseCount() == baseLeases + i,
+				"Shot did not create exactly one independent OpenAL voice at the emitter")) return false;
+			if (!ExpectGAF(!host->ActivateAction(shot->id, context), "Duplicate shot was accepted")) return false;
+			runtime.TickEarly(0.0);
+			VansActionEvent finished; finished.stableName = "Pistol_Shot.Finished";
+			finished.type = VansMakeStableId<VansActionFieldIdTag>(finished.stableName);
+			finished.source = finished.target = owner;
+			if (!host->EnqueueEvent(active.action, std::move(finished), error)) return false;
+			runtime.TickEarly(0.0);
+			if (!ExpectGAF(host->ActiveActions().empty() && positionReads == i
+				&& system.GetActiveSourceLeaseCount() == baseLeases + i, "Animation completion duplicated or cut off the shot tail")) return false;
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(1750));
+		audio.TickAll(1.75, 0,0,0, 0,0,-1, 0,1,0);
+		if (!ExpectGAF(system.GetActiveSourceLeaseCount() == baseLeases, "Finished shot voices were not reclaimed")) return false;
+		VansActionServiceRegistry registry;
+		if (!registry.Register(service, error) || !registry.Seal(error)) return ExpectGAF(false, error.c_str());
+		const auto invoke = [&](const char* operation, VansSerializedValue payload)
+		{
+			VansActionCommand command;
+			command.service = service->Capability().service;
+			command.command = VansMakeStableId<VansActionFieldIdTag>(operation);
+			command.stableName = operation; command.payload = std::move(payload);
+			return registry.Execute(command);
+		};
+		const auto loop = invoke("Audio.Loop", VansSerializedValue::Object({{"sound", VansSerializedValue::String(sound)}}));
+		if (!ExpectGAF(loop && loop.resource.IsValid() && system.GetActiveSourceLeaseCount() == baseLeases + 1,
+			"Audio loop did not allocate an owned independent voice")) return false;
+		const auto resource = VansSerializedValue::Object({{"resource", VansSerializedValue::Object({
+			{"index", VansSerializedValue::Int(loop.resource.index)}, {"generation", VansSerializedValue::Int(loop.resource.generation)}})}});
+		auto update = resource;
+		SetSerializedObjectField(update, "volume", VansSerializedValue::Float(.4));
+		if (!ExpectGAF(static_cast<bool>(invoke("Audio.Update", update)), "Audio loop update failed")) return false;
+		auto stop = resource;
+		SetSerializedObjectField(stop, "fadeOut", VansSerializedValue::Float(.1));
+		if (!ExpectGAF(static_cast<bool>(invoke("Audio.Stop", stop)), "Audio fade-out failed")) return false;
+		service->Tick(.05);
+		if (!ExpectGAF(!invoke("Audio.Update", update) && system.GetActiveSourceLeaseCount() == baseLeases + 1,
+			"Stopped handle remained usable or fade ended early")) return false;
+		service->Tick(.06);
+		if (!ExpectGAF(system.GetActiveSourceLeaseCount() == baseLeases, "Audio fade did not release its voice")) return false;
+		const auto owned = invoke("Audio.Loop", VansSerializedValue::Object({{"sound", VansSerializedValue::String(sound)}}));
+		if (!ExpectGAF(owned && service->Release(owned.resource, error) && !service->Release(owned.resource, error)
+			&& system.GetActiveSourceLeaseCount() == baseLeases, "Audio action resource cleanup or stale-handle rejection failed")) return false;
+		// 音频资源失效仍让正式 Shot 图继续等待动画，不把已射击的动作卡住。
+		audio.Clear();
+		const auto silent = host->ActivateAction(shot->id, context);
+		runtime.TickEarly(0.0);
+		if (!ExpectGAF(silent && host->ActiveActions().size() == 1, "Missing audio interrupted the shot animation wait")) return false;
+		runtime.Shutdown();
+		std::cout << "[GAF] Pistol audio passed project=" << name
+			<< " shots=3 overlap=3 rejectedSilent=1 emitter=1 completionKeepsTail=1 naturalCleanup=1 missingAudioContinues=1 cookedReference=1\n";
+	}
+	return true;
 }
 
 bool TestDemoHallPlayerThrowContract()

@@ -50,6 +50,17 @@ namespace VansGraphics
 		return jitterTranslation * unjitteredProjection;
 	}
 
+    // 从 clip-space 平移提取 framebuffer UV 偏移，兼容透视和正交投影。
+    inline glm::vec2 ExtractTemporalJitterUV(const glm::mat4& jitteredVP, const glm::mat4& unjitteredVP)
+    {
+        int column = 0;
+        for (int i = 1; i < 4; ++i)
+            if (std::abs(unjitteredVP[i].w) > std::abs(unjitteredVP[column].w)) column = i;
+        const float w = unjitteredVP[column].w;
+        if (std::abs(w) <= 1e-6f) return glm::vec2(0.0f);
+        return glm::vec2(jitteredVP[column] - unjitteredVP[column]) / w * glm::vec2(0.5f, -0.5f);
+    }
+
 	struct VansDeviceDepthRange
 	{
 		float nearDistance = 0.0f;

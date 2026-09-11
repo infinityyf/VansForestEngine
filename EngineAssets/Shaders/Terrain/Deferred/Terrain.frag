@@ -109,7 +109,8 @@ void main() {
     // 4. 写入 GBuffer。
     outNormal   = vec4(finalNormal, 1.0);
     outGbuffer0 = vec4(blendedAlbedo, blendedRoughness);
-    outGbuffer1 = vec4(0.0, blendedAO, float(MATERIAL_ID_PBR), 1.0);
+    // 场景唯一地形使用保留接收组；不与有限的刚体接收组复用。
+    outGbuffer1 = vec4(0.0, blendedAO, float(MATERIAL_ID_PBR), -1024.0);
 
     float linearDepth = (ViewMatrix * vec4(inWorldPos, 1.0)).z;
     outGbuffer2 = vec4(inWorldPos, -linearDepth);

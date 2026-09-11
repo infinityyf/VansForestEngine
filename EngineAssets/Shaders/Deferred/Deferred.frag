@@ -3,12 +3,15 @@
 
 // TileLight：先引入 CameraData（提供 ScreenParams），再定义 TILE_LIGHT，再引入 TileLightData
 #include "../Common/CameraData.glsl"
+#include "../SSGI/SSGISurface.glsl"
 #define TILE_LIGHT
 #define SCREEN_SPACE_PUNCTUAL_SHADOW
 #include "../Common/TileLightData.glsl"
 
 #include "../Lights/LightsData.glsl"
 #include "../BRDF/BRDFData.glsl"
+#include "../BRDF/ReflectionProbeDebug.glsl"
+#include "../Decal/DecalResponse.glsl"
 // 面光源发光贴图数组：最多 32 层，每层 256×256，完整 mip（在 RectLightLTC.glsl 引入前声明）。
 #define RECT_LIGHT_EMISSIVE_ENABLED
 layout( set = 1, binding = 15 ) uniform sampler2DArray rectLightEmissive;
@@ -62,6 +65,15 @@ layout(set = 1, binding = 1) uniform sampler2D gbufferInput0;
 layout(set = 1, binding = 2) uniform sampler2D gbufferInput1;
 layout(set = 1, binding = 3) uniform sampler2D gbufferInput2;
 layout(set = 1, binding = 4) uniform sampler2D depthInput;
+layout(set = 1, binding = 30) uniform sampler2D decalColorInput;
+layout(set = 1, binding = 31) uniform sampler2D decalNormalInput;
+layout(set = 1, binding = 32) uniform sampler2D decalRoughnessInput;
+
+void ApplySurfaceDecals(vec2 uv, int materialID, inout vec3 albedo, inout vec3 normal, inout float roughness)
+{
+    ApplyDecalModifiers(materialID, texture(decalColorInput, uv), texture(decalNormalInput, uv),
+        texture(decalRoughnessInput, uv), albedo, normal, roughness);
+}
 
 layout(set = 1, binding = 5, rgba32f ) uniform image2D ssao;
 layout(set = 1, binding = 6) uniform sampler2D ssgi;
@@ -109,6 +121,11 @@ GIProbeState LoadDeferredGIProbeState(uint regionIndex, uint probeLinearIndex)
     }
 }
 #define GI_LOAD_PROBE_STATE(regionIndex, probeLinearIndex) LoadDeferredGIProbeState(regionIndex, probeLinearIndex)
+#define GI_LAYOUT_SET 1
+#define GI_LAYOUT_BINDING 33
+#include "../GI/GIProbeLayoutData.glsl"
+#define GI_RECEIVER_BINDING 34
+#include "../GI/GIReceiverVisibilityRead.glsl"
 #include "../GI/GIProbeCommon.glsl"
 
 layout(location = 0) in vec2 fragTexCoord;
@@ -124,35 +141,35 @@ vec3 SampleDeferredProbeIrradianceForRegion(uint regionIndex, GIRegionParams reg
     switch (regionIndex)
     {
     case 0u:
-        return GI_SampleProbeIrradianceAtlasScreenVisible(0u, probeCounts,
+        return GI_SampleProbeIrradianceAtlasVisible(0u, probeCounts,
             giIrradianceAtlas[0], giVisibilityAtlas[0], worldPos, normal,
             volumeMin, volumeSize, region.volumeSizeAndBias.w, region.traceParams.z);
     case 1u:
-        return GI_SampleProbeIrradianceAtlasScreenVisible(1u, probeCounts,
+        return GI_SampleProbeIrradianceAtlasVisible(1u, probeCounts,
             giIrradianceAtlas[1], giVisibilityAtlas[1], worldPos, normal,
             volumeMin, volumeSize, region.volumeSizeAndBias.w, region.traceParams.z);
     case 2u:
-        return GI_SampleProbeIrradianceAtlasScreenVisible(2u, probeCounts,
+        return GI_SampleProbeIrradianceAtlasVisible(2u, probeCounts,
             giIrradianceAtlas[2], giVisibilityAtlas[2], worldPos, normal,
             volumeMin, volumeSize, region.volumeSizeAndBias.w, region.traceParams.z);
     case 3u:
-        return GI_SampleProbeIrradianceAtlasScreenVisible(3u, probeCounts,
+        return GI_SampleProbeIrradianceAtlasVisible(3u, probeCounts,
             giIrradianceAtlas[3], giVisibilityAtlas[3], worldPos, normal,
             volumeMin, volumeSize, region.volumeSizeAndBias.w, region.traceParams.z);
     case 4u:
-        return GI_SampleProbeIrradianceAtlasScreenVisible(4u, probeCounts,
+        return GI_SampleProbeIrradianceAtlasVisible(4u, probeCounts,
             giIrradianceAtlas[4], giVisibilityAtlas[4], worldPos, normal,
             volumeMin, volumeSize, region.volumeSizeAndBias.w, region.traceParams.z);
     case 5u:
-        return GI_SampleProbeIrradianceAtlasScreenVisible(5u, probeCounts,
+        return GI_SampleProbeIrradianceAtlasVisible(5u, probeCounts,
             giIrradianceAtlas[5], giVisibilityAtlas[5], worldPos, normal,
             volumeMin, volumeSize, region.volumeSizeAndBias.w, region.traceParams.z);
     case 6u:
-        return GI_SampleProbeIrradianceAtlasScreenVisible(6u, probeCounts,
+        return GI_SampleProbeIrradianceAtlasVisible(6u, probeCounts,
             giIrradianceAtlas[6], giVisibilityAtlas[6], worldPos, normal,
             volumeMin, volumeSize, region.volumeSizeAndBias.w, region.traceParams.z);
     default:
-        return GI_SampleProbeIrradianceAtlasScreenVisible(7u, probeCounts,
+        return GI_SampleProbeIrradianceAtlasVisible(7u, probeCounts,
             giIrradianceAtlas[7], giVisibilityAtlas[7], worldPos, normal,
             volumeMin, volumeSize, region.volumeSizeAndBias.w, region.traceParams.z);
     }
@@ -171,6 +188,9 @@ float DielectricF0FromIOR(float ior)
 
 vec3 SampleDeferredProbeIrradiance(vec3 worldPos, vec3 normal)
 {
+    vec4 position = texture(gbufferInput2, fragTexCoord);
+    GI_SetReceiverVisibility(ivec2(gl_FragCoord.xy), position, normal,
+        round(texture(gbufferInput1, fragTexCoord).z), max(length(dFdx(worldPos)), length(dFdy(worldPos))));
     vec3 probeIrradiance = vec3(0.0);
     float probeWeight = 0.0;
     float selectedPriority = -3.402823e38;
@@ -208,11 +228,7 @@ vec3 ComputeDeferredGINormal(vec3 worldPos, vec3 shadingNormal)
         : vec3(0.0, 1.0, 0.0);
     vec3 dx = dFdx(worldPos);
     vec3 dy = dFdy(worldPos);
-    vec3 geometric = cross(dx, dy);
-    if (dot(geometric, geometric) <= 1e-8)
-        return fallback;
-    geometric = normalize(geometric);
-    return dot(geometric, fallback) < 0.0 ? -geometric : geometric;
+    return SSGI_NormalFromDerivatives(dx, dy, fallback);
 }
 
 bool EvaluateSubsurfaceSourceAtUV(vec2 uv, int centerMaterialIndex,
@@ -226,7 +242,7 @@ bool EvaluateSubsurfaceSourceAtUV(vec2 uv, int centerMaterialIndex,
     vec4 sampleGBuffer1 = texture(gbufferInput1, uv);
     vec4 sampleGBuffer2 = texture(gbufferInput2, uv);
 
-    int sampleMaterialID = int(round(sampleGBuffer1.z));
+    int sampleMaterialID = DecodeDecalReceiverMaterialID(sampleGBuffer1.z);
     int sampleMaterialIndex = int(round(sampleGBuffer1.w));
     if (sampleMaterialID != MATERIAL_ID_SUBSURFACE ||
         sampleMaterialIndex != centerMaterialIndex)
@@ -244,9 +260,12 @@ bool EvaluateSubsurfaceSourceAtUV(vec2 uv, int centerMaterialIndex,
     // Pre-and-post scatter texturing: half of the apparent albedo is applied
     // before diffusion and half after it. This prevents texture detail from
     // being blurred twice while retaining wavelength-dependent color bleed.
-    sampleBRDF.albedo = sqrt(max(sampleGBuffer0.rgb, vec3(0.0)));
-    sampleBRDF.normal = normalize(sampleNormalData.xyz);
-    sampleBRDF.roughness = clamp(sampleGBuffer0.w, 0.045, 1.0);
+    sampleBRDF.albedo = sampleGBuffer0.rgb;
+    sampleBRDF.normal = DecalSafeNormal(sampleNormalData.xyz, vec3(0.0, 1.0, 0.0));
+    sampleBRDF.roughness = sampleGBuffer0.w;
+    ApplySurfaceDecals(uv, sampleMaterialID, sampleBRDF.albedo, sampleBRDF.normal, sampleBRDF.roughness);
+    sampleBRDF.albedo = sqrt(max(sampleBRDF.albedo, vec3(0.0)));
+    sampleBRDF.roughness = clamp(sampleBRDF.roughness, 0.045, 1.0);
     sampleBRDF.metallic = 0.0;
     sampleBRDF.ao = pow(clamp(sampleAO, 0.0, 1.0), 2.0);
     sampleBRDF.fresnel0 = vec3(DielectricF0FromIOR(sampleIOR));
@@ -357,32 +376,17 @@ void main()
     vec4 gbufferData2 = texture(gbufferInput2, fragTexCoord);
     vec4 depthData = texture(depthInput, fragTexCoord);
 
-    vec3 normal = normalData.xyz;
+    vec3 normal = DecalSafeNormal(normalData.xyz, vec3(0.0, 1.0, 0.0));
     vec3 color = gbufferData0.xyz;
     float roughness = gbufferData0.w;
     float metallic = gbufferData1.x;
     float ao = gbufferData1.y;
     float materialID = gbufferData1.z;
-    int matID = int(round(materialID));
+    int matID = DecodeDecalReceiverMaterialID(materialID);
+    ApplySurfaceDecals(fragTexCoord, matID, color, normal, roughness);
     vec3 position_world = gbufferData2.xyz;
     float depth = depthData.x;
     float linearDepth = gbufferData2.w;
-
-    // Dedicated DDGI diagnostic: output only the current pixel's direct probe
-    // atlas sample. This intentionally bypasses SSGI, sky, direct lights and
-    // every material/BRDF path so the volume transport can be inspected alone.
-    if (deferredProbeDebug.x > 0.5)
-    {
-        vec3 probeIrradiance = SampleDeferredProbeIrradiance(
-            position_world, ComputeDeferredGINormal(position_world, normal));
-        vec3 debugColor = probeIrradiance * max(deferredProbeDebug.y, 0.001);
-        if (any(isnan(debugColor)) || any(isinf(debugColor)))
-            debugColor = vec3(1.0, 0.0, 1.0);
-        outColor = vec4(max(debugColor, vec3(0.0)), 1.0);
-        outDiffuseExitantRadiance = vec4(max(debugColor, vec3(0.0)), 1.0);
-        return;
-    }
-
 
     //获取ssao：这里先使用原始半分辨率结果的安全采样，避免深度加权上采样把 AO 错误压黑。
     ivec2 ssaoSize = imageSize(ssao);
@@ -442,7 +446,7 @@ void main()
         AmbientBRDF_Skin(brdfData, skin, viewDirection, lightResult.ambientDiffuse, lightResult.ambientSpecular);
 
         vec3 skinDebugColor = vec3(0.0);
-        if (TrySkinDebugView(brdfData, skin, curvature, lightResult, skinDebugColor))
+        if (!ReflectionProbeIsIsolatedDebugView() && deferredProbeDebug.x <= 0.5 && TrySkinDebugView(brdfData, skin, curvature, lightResult, skinDebugColor))
         {
             outDiffuseExitantRadiance = vec4(
                 max(lightResult.directDiffuse + lightResult.ambientDiffuse, vec3(0.0)), 1.0);
@@ -580,6 +584,43 @@ void main()
     outDiffuseExitantRadiance = vec4(
         max(lightResult.directDiffuse + lightResult.ambientDiffuse, vec3(0.0)), 1.0);
 
+    // 仅覆盖显示；供 SSGI 使用的真实漫反射反馈保持上面的正常结果。
+    if (ReflectionProbeIsIsolatedDebugView())
+    {
+        if (linearDepth <= 0.0)
+            outColor = vec4(0.0, 0.0, 0.0, 1.0);
+        else if (reflectionProbeDebugView >= 12u)
+        {
+            vec3 contribution = reflectionProbeDebugView == 12u ? lightResult.ambientSpecular
+                : (reflectionProbeDebugView == 13u ? lightResult.ambientDiffuse
+                    : lightResult.directDiffuse + lightResult.directSpecular);
+            outColor = vec4(max(contribution, vec3(0.0)) * reflectionProbeLightingParams.w, 1.0);
+        }
+        else
+        {
+            ivec2 diagnosticPixel = ivec2(fragTexCoord * vec2(textureSize(gbufferInput2, 0)));
+            vec3 diagnosticNormal = ReflectionProbeDebugSurfaceNormal(gbufferInput2, diagnosticPixel, viewDirection);
+            vec3 diagnosticDirection = reflect(-viewDirection, diagnosticNormal);
+            float diagnosticRoughness = clamp(reflectionProbeLightingParams.z, 0.0, 1.0);
+            ReflectionProbeSample probe = SampleReflectionProbes(position_world, diagnosticNormal, diagnosticDirection, diagnosticRoughness);
+            vec3 sky = vec3(0.0);
+            if (reflectionProbeDebugView == 9u || reflectionProbeDebugView == 10u)
+                sky = SampleSkySpecularCube(PreConvSpecularEnvironment, diagnosticDirection, GetMipLevelFromRoughness(diagnosticRoughness));
+            outColor = vec4(ReflectionProbeDebugRadiance(probe, sky, reflectionProbeDebugView, reflectionProbeLightingParams.w), 1.0);
+        }
+        return;
+    }
+
+    // 调试只覆盖显示颜色；供下一帧 trace 使用的真实漫反射辐亮度已写入。
+    if (deferredProbeDebug.x > 0.5)
+    {
+        vec3 debugColor = SampleDeferredProbeIrradiance(position_world,
+            ComputeDeferredGINormal(position_world, normal)) * max(deferredProbeDebug.y, 0.001);
+        if (any(isnan(debugColor)) || any(isinf(debugColor))) debugColor = vec3(1.0, 0.0, 1.0);
+        outColor = vec4(max(debugColor, vec3(0.0)), 1.0);
+        return;
+    }
+
     outColor.rgb = lightResult.directDiffuse + lightResult.directSpecular;
     outColor.rgb += lightResult.ambientDiffuse + lightResult.ambientSpecular;
     if (reflectionProbeDebugView != 0u)
@@ -601,7 +642,11 @@ void main()
             outColor = vec4(regionColor, 1.0);
         }
         else if (reflectionProbeDebugView == 5u) outColor = vec4(abs(debugProbe.parallaxDelta), 1.0);
-        else if (reflectionProbeDebugView == 6u) outColor = vec4(debugProbe.specular, 1.0);
+        else if (reflectionProbeDebugView == 6u)
+        {
+            vec3 sky = SampleSkySpecularCube(PreConvSpecularEnvironment, reflectionDir, GetMipLevelFromRoughness(roughness));
+            outColor = vec4(mix(sky, debugProbe.specular, debugProbe.coverage), 1.0);
+        }
         else if (reflectionProbeDebugView == 7u) outColor = vec4(brdfData.indirectSpecular.rgb, 1.0);
         return;
     }

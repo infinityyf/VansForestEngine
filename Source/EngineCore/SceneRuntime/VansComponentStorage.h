@@ -2,6 +2,7 @@
 
 #include "VansRuntimeHandle.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -36,6 +37,7 @@ public:
 	virtual bool Remove(VansComponentHandle handle) = 0;
 	virtual void RemoveOwnedBy(VansEntityHandle owner) = 0;
 	virtual void CollectOwnedBy(VansEntityHandle owner, std::vector<VansComponentHandle>& outComponents) const = 0;
+	virtual VansComponentHandle FindFirstOwnedBy(VansEntityHandle owner) const = 0;
 	virtual void RecomputeEffectiveEnabled(const std::function<bool(VansEntityHandle)>& activeQuery) = 0;
 	virtual std::size_t Size() const = 0;
 };
@@ -84,6 +86,7 @@ public:
 		m_Data.push_back(std::move(value));
 		m_Headers.push_back(std::move(header));
 		m_SlotToDense[slot] = dense;
+		m_OwnerDenseIndices[OwnerKey(owner)].push_back(dense);
 		if (!m_Headers.back().stableGuid.empty())
 			m_GuidIndex[m_Headers.back().stableGuid] = handle;
 		return handle;
@@ -114,12 +117,6 @@ public:
 		return dense == VansInvalidRuntimeIndex ? nullptr : &m_Data[dense];
 	}
 
-	VansComponentHeader* GetHeader(VansComponentHandle handle)
-	{
-		const std::uint32_t dense = DenseIndexFor(handle);
-		return dense == VansInvalidRuntimeIndex ? nullptr : &m_Headers[dense];
-	}
-
 	const VansComponentHeader* GetHeader(VansComponentHandle handle) const
 	{
 		const std::uint32_t dense = DenseIndexFor(handle);
@@ -133,7 +130,7 @@ public:
 
 	bool SetEnabled(VansComponentHandle handle, bool enabled, bool ownerActive)
 	{
-		VansComponentHeader* header = GetHeader(handle);
+		VansComponentHeader* header = MutableHeader(handle);
 		if (!header)
 			return false;
 		header->selfEnabled = enabled;
@@ -146,7 +143,7 @@ public:
 		bool enabled,
 		const std::function<bool(VansEntityHandle)>& activeQuery) override
 	{
-		VansComponentHeader* header = GetHeader(handle);
+		VansComponentHeader* header = MutableHeader(handle);
 		if (!header)
 			return false;
 		header->selfEnabled = enabled;
@@ -162,9 +159,14 @@ public:
 
 		if (!m_Headers[dense].stableGuid.empty())
 			m_GuidIndex.erase(m_Headers[dense].stableGuid);
+		RemoveOwnerDenseIndex(m_Headers[dense].owner, dense);
 		const std::uint32_t last = static_cast<std::uint32_t>(m_Data.size() - 1);
 		if (dense != last)
 		{
+			// swap-remove 后仍按 dense 顺序返回，保持既有首组件和遍历语义。
+			auto& movedIndices = m_OwnerDenseIndices.at(OwnerKey(m_Headers[last].owner));
+			movedIndices.erase(std::lower_bound(movedIndices.begin(), movedIndices.end(), last));
+			movedIndices.insert(std::lower_bound(movedIndices.begin(), movedIndices.end(), dense), dense);
 			m_Data[dense] = std::move(m_Data[last]);
 			m_Headers[dense] = std::move(m_Headers[last]);
 			m_SlotToDense[m_Headers[dense].self.index] = dense;
@@ -182,19 +184,28 @@ public:
 
 	void RemoveOwnedBy(VansEntityHandle owner) override
 	{
-		for (std::uint32_t dense = static_cast<std::uint32_t>(m_Headers.size()); dense > 0; --dense)
+		for (;;)
 		{
-			const VansComponentHeader& header = m_Headers[dense - 1];
-			if (header.owner == owner)
-				Remove(header.self);
+			const auto found = m_OwnerDenseIndices.find(OwnerKey(owner));
+			if (found == m_OwnerDenseIndices.end())
+				break;
+			Remove(m_Headers[found->second.back()].self);
 		}
 	}
 
 	void CollectOwnedBy(VansEntityHandle owner, std::vector<VansComponentHandle>& outComponents) const override
 	{
-		for (const VansComponentHeader& header : m_Headers)
-			if (header.owner == owner)
-				outComponents.push_back(header.self);
+		const auto found = m_OwnerDenseIndices.find(OwnerKey(owner));
+		if (found != m_OwnerDenseIndices.end())
+			for (std::uint32_t dense : found->second)
+				outComponents.push_back(m_Headers[dense].self);
+	}
+
+	VansComponentHandle FindFirstOwnedBy(VansEntityHandle owner) const override
+	{
+		const auto found = m_OwnerDenseIndices.find(OwnerKey(owner));
+		return found == m_OwnerDenseIndices.end()
+			? VansComponentHandle{} : m_Headers[found->second.front()].self;
 	}
 
 	void RecomputeEffectiveEnabled(const std::function<bool(VansEntityHandle)>& activeQuery) override
@@ -206,9 +217,29 @@ public:
 	const std::vector<T>& DenseData() const { return m_Data; }
 	std::vector<T>& DenseData() { return m_Data; }
 	const std::vector<VansComponentHeader>& Headers() const { return m_Headers; }
-	std::vector<VansComponentHeader>& Headers() { return m_Headers; }
 
 private:
+	static std::uint64_t OwnerKey(VansEntityHandle owner)
+	{
+		return (static_cast<std::uint64_t>(owner.generation) << 32) | owner.index;
+	}
+
+	VansComponentHeader* MutableHeader(VansComponentHandle handle)
+	{
+		const std::uint32_t dense = DenseIndexFor(handle);
+		return dense == VansInvalidRuntimeIndex ? nullptr : &m_Headers[dense];
+	}
+
+	void RemoveOwnerDenseIndex(VansEntityHandle owner, std::uint32_t dense)
+	{
+		auto found = m_OwnerDenseIndices.find(OwnerKey(owner));
+		auto& indices = found->second;
+		indices.erase(std::lower_bound(indices.begin(), indices.end(), dense));
+		if (indices.empty())
+			m_OwnerDenseIndices.erase(found);
+	}
+
+	std::unordered_map<std::uint64_t, std::vector<std::uint32_t>> m_OwnerDenseIndices;
 	std::uint32_t DenseIndexFor(VansComponentHandle handle) const
 	{
 		if (handle.typeId != m_TypeId ||

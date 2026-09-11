@@ -211,7 +211,8 @@ namespace Vans
         {
             Job job;
             {
-                VANS_PROFILE_SCOPE("JobSystem::WaitJob", Vans::ProfileCategory::Wait);
+                // 无任务的条件变量等待不属于任何一帧，不能用帧 scope 持有采样缓冲。
+                // Worker 轨道中的空白区间表示空闲；任务及依赖等待仍独立采样。
                 std::unique_lock<std::mutex> lock(m_WorkerQueueMutex);
                 m_WorkerCondition.wait(lock, [this] {
                     return !m_WorkerQueue.empty() || !m_Running;
@@ -224,6 +225,7 @@ namespace Vans
 
                 if (!m_WorkerQueue.empty())
                 {
+                    VANS_PROFILE_SCOPE("JobSystem::DequeueJob", Vans::ProfileCategory::JobSystem);
                     job = m_WorkerQueue.front();
                     m_WorkerQueue.pop();
                 }

@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <cstdlib>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -31,8 +30,6 @@ namespace VansGraphics
 		bool overrideGridDimensions = false;
 
 		uint32_t raysPerProbe = 256;
-		uint32_t spatialUpdateDivisor = 2;
-		uint32_t directionUpdateSlices = 16;
 
 		float maxRayDistance = 100.0f;
 		float normalBias = 0.25f;
@@ -53,8 +50,6 @@ namespace VansGraphics
 		float probeSpacing = 0.5f;
 
 		uint32_t raysPerProbe = 256;
-		uint32_t spatialUpdateDivisor = 2;
-		uint32_t directionUpdateSlices = 16;
 
 		float maxRayDistance = 100.0f;
 		float normalBias = 0.25f;
@@ -64,46 +59,64 @@ namespace VansGraphics
 		uint64_t probeCount = 512000u;
 	};
 
-	// Probe GI 的调度必须与相机/SSGI 的时域索引解耦。这个 batch 是
-	// RayTracing、Probe Shade、Probe Blend、调试统计共用的唯一真相来源。
-	// 默认 256 rays、D=2、S=16 时，一个 probe 的完整方向周期严格为 128 帧。
-	struct GIProbeUpdateBatch
+	struct GIProbePlacementSettings
 	{
-		uint32_t spatialPhaseCount = 1;
-		uint32_t spatialPhase = 0;
-		glm::uvec3 spatialOffset = glm::uvec3(0u);
-		uint32_t directionSlice = 0;
-		uint64_t cycleIndex = 0;
-
-		glm::uvec3 activeGridDimensions = glm::uvec3(1u);
-		uint32_t raysPerActiveProbe = 1;
-		uint64_t activeProbeCount = 1;
-		uint64_t activeRayCount = 1;
-		uint64_t fullUpdateCycleFrameCount = 1;
+		bool enabled = false;
+		// 可配置的细分终止间距；0.5 m 仅为默认值，不是算法硬下限。
+		float minProbeSpacing = 0.5f;
+		float maxProbeSpacing = 4.0f;
+		// 父层真实采光的最大单元边长；小于等于该尺寸的覆盖节点保留独立数据。
+		float parentProbeMaxSize = 5.0f;
+		uint32_t maxProbeCount = 65536u;
+		uint32_t maxProbeUpdatesPerFrame = 4096u;
+		uint32_t maxRaysPerFrame = 65536u;
 	};
+
+	inline void NormalizeGIProbePlacementSettings(GIProbePlacementSettings& settings)
+	{
+		settings.minProbeSpacing = std::isfinite(settings.minProbeSpacing) && settings.minProbeSpacing > 0.0f
+			? std::max(settings.minProbeSpacing, 0.001f) : 0.5f;
+		settings.maxProbeSpacing = std::isfinite(settings.maxProbeSpacing) && settings.maxProbeSpacing > 0.0f
+			? std::max(settings.maxProbeSpacing, settings.minProbeSpacing) : std::max(4.0f, settings.minProbeSpacing);
+		settings.parentProbeMaxSize = std::isfinite(settings.parentProbeMaxSize) && settings.parentProbeMaxSize > 0.0f
+			? std::max(settings.parentProbeMaxSize, settings.minProbeSpacing) : std::max(5.0f, settings.minProbeSpacing);
+		settings.maxProbeCount = std::max(settings.maxProbeCount, 8u);
+		settings.maxProbeUpdatesPerFrame = std::max(settings.maxProbeUpdatesPerFrame, 1u);
+		settings.maxRaysPerFrame = std::max(settings.maxRaysPerFrame, 1u);
+	}
+
+	inline bool GIProbePlacementResourceLayoutEquals(
+		const GIProbePlacementSettings& left, const GIProbePlacementSettings& right)
+	{
+		if (left.enabled != right.enabled) return false;
+		if (left.maxProbeUpdatesPerFrame != right.maxProbeUpdatesPerFrame ||
+            left.maxRaysPerFrame != right.maxRaysPerFrame) return false;
+        if (!left.enabled) return true;
+		return left.minProbeSpacing == right.minProbeSpacing && left.maxProbeSpacing == right.maxProbeSpacing &&
+			left.parentProbeMaxSize == right.parentProbeMaxSize &&
+			left.maxProbeCount == right.maxProbeCount && left.maxProbeUpdatesPerFrame == right.maxProbeUpdatesPerFrame &&
+			left.maxRaysPerFrame == right.maxRaysPerFrame;
+	}
 
 	struct VansGISettings
 	{
+		GIProbePlacementSettings placement;
 		std::vector<GIProbeRegionDesc> regions = { GIProbeRegionDesc{} };
 		uint32_t selectedRegionIndex = 0;
-		// Multiplier for unfiltered environment radiance injected into DDGI.
-		// One is the physical baseline; the historical value five only
-		// compensated for the old non-normalized probe reconstruction.
-		float environmentIntensity = 1.0f;
+		// 高亮及反馈保护上限；天光强度由统一 Sky Lighting 数据源控制。
 		float maxIndirectRadiance = 2.0f;
 		float maxProbeRadiance = 8.0f;
+		// 每次完整球面更新保留的历史比例，与帧率和等待间隔无关。
 		float irradianceHysteresis = 0.97f;
 		float distanceHysteresis = 0.95f;
 		float distanceSharpness = 12.0f;
-		float brightnessChangeThreshold = 2.0f;
 		float volumeFadeDistance = 1.0f;
 		bool showProbeGizmos = false;
 		bool showProbeVolume = false;
 		uint32_t debugView = 0;
 		float debugExposure = 1.0f;
 		// Explicit diagnostic mode for inspecting per-pixel DDGI irradiance.
-		// Keep the default on the normal final composite; GI Inspector or
-		// FORESTENGINE_GI_PROBE_ONLY can enable this when debugging transport.
+		// 由 GI Inspector 显式切换，默认使用正常最终合成。
 		bool probeOnlyDeferredOutput = false;
 		float probeOnlyDeferredExposure = 1.0f;
 		uint32_t gizmoStride = 8;
@@ -135,15 +148,7 @@ namespace VansGraphics
 		resolved.gridDimensions = ResolveGIGridDimensions(region);
 		resolved.volumeSize = glm::vec3(resolved.gridDimensions) * resolved.probeSpacing;
 		resolved.volumeMin = resolved.center - resolved.volumeSize * 0.5f;
-		resolved.raysPerProbe = std::max(region.raysPerProbe, 1u);
-		resolved.spatialUpdateDivisor = std::clamp(
-			std::max(region.spatialUpdateDivisor, 1u),
-			1u,
-			std::max({ 1u, resolved.gridDimensions.x, resolved.gridDimensions.y, resolved.gridDimensions.z }));
-		resolved.directionUpdateSlices = std::clamp(
-			std::max(region.directionUpdateSlices, 1u),
-			1u,
-			resolved.raysPerProbe);
+		resolved.raysPerProbe = std::clamp(region.raysPerProbe, 2u, 4096u);
 		resolved.maxRayDistance = std::max(region.maxRayDistance, 0.001f);
 		resolved.normalBias = std::max(region.normalBias, 0.0f);
 		resolved.volumeFadeDistance = std::max(region.volumeFadeDistance, 0.0f);
@@ -153,43 +158,10 @@ namespace VansGraphics
 		return resolved;
 	}
 
-	inline GIProbeUpdateBatch BuildGIProbeUpdateBatch(
-		const GIResolvedRegion& region,
-		uint64_t updateFrameIndex)
-	{
-		GIProbeUpdateBatch batch;
-		const uint32_t divisor = std::max(region.spatialUpdateDivisor, 1u);
-		const uint32_t directionSlices = std::max(region.directionUpdateSlices, 1u);
-		const uint32_t rayCount = std::max(region.raysPerProbe, 1u);
-
-		const glm::uvec3 axisDivisors = glm::min(
-			glm::uvec3(divisor),
-			glm::max(region.gridDimensions, glm::uvec3(1u)));
-		batch.spatialPhaseCount = axisDivisors.x * axisDivisors.y * axisDivisors.z;
-		batch.spatialPhase = static_cast<uint32_t>(updateFrameIndex % batch.spatialPhaseCount);
-		batch.spatialOffset = glm::uvec3(
-			batch.spatialPhase % axisDivisors.x,
-			(batch.spatialPhase / axisDivisors.x) % axisDivisors.y,
-			batch.spatialPhase / (axisDivisors.x * axisDivisors.y));
-		batch.directionSlice = static_cast<uint32_t>(
-			(updateFrameIndex / batch.spatialPhaseCount) % directionSlices);
-		batch.cycleIndex = updateFrameIndex /
-			(static_cast<uint64_t>(batch.spatialPhaseCount) * directionSlices);
-		const auto activeAxisCount = [](uint32_t dimension, uint32_t offset, uint32_t axisDivisor)
-		{
-			return dimension > offset ? ((dimension - 1u - offset) / axisDivisor + 1u) : 0u;
-		};
-		batch.activeGridDimensions = glm::uvec3(
-			activeAxisCount(region.gridDimensions.x, batch.spatialOffset.x, axisDivisors.x),
-			activeAxisCount(region.gridDimensions.y, batch.spatialOffset.y, axisDivisors.y),
-			activeAxisCount(region.gridDimensions.z, batch.spatialOffset.z, axisDivisors.z));
-		batch.raysPerActiveProbe = (rayCount + directionSlices - 1u) / directionSlices;
-		batch.activeProbeCount = static_cast<uint64_t>(batch.activeGridDimensions.x) *
-			batch.activeGridDimensions.y * batch.activeGridDimensions.z;
-		batch.activeRayCount = batch.activeProbeCount * batch.raysPerActiveProbe;
-		batch.fullUpdateCycleFrameCount = static_cast<uint64_t>(batch.spatialPhaseCount) * directionSlices;
-		return batch;
-	}
+    // 固定几何射线独立于调度；小样本配置也必须保留动态光照方向。
+    inline uint32_t GIProbeFixedRayCount(uint32_t rays) { return std::min(32u, rays / 2u); }
+    inline uint64_t GIProbeRayCapacity(uint64_t probes, uint32_t rays, const GIProbePlacementSettings& budget)
+    { return std::min(uint64_t(budget.maxRaysPerFrame), std::min(probes, uint64_t(budget.maxProbeUpdatesPerFrame)) * rays); }
 
 	inline const GIProbeRegionDesc& GetPrimaryGIRegionDesc(const VansGISettings& settings)
 	{
@@ -221,6 +193,7 @@ namespace VansGraphics
 
 	inline void NormalizeGISettings(VansGISettings& settings)
 	{
+		NormalizeGIProbePlacementSettings(settings.placement);
 		if (settings.regions.empty())
 		{
 			settings.regions.push_back(GIProbeRegionDesc{});
@@ -236,16 +209,11 @@ namespace VansGraphics
 				region.name = "GI Region " + std::to_string(region.stableId);
 			region.probeSpacing = std::max(region.probeSpacing, 0.001f);
 			region.gridDimensions = ResolveGIGridDimensions(region);
-			region.size = glm::vec3(region.gridDimensions) * region.probeSpacing;
-			region.raysPerProbe = std::clamp(region.raysPerProbe, 1u, 4096u);
-			region.spatialUpdateDivisor = std::clamp(
-				std::max(region.spatialUpdateDivisor, 1u),
-				1u,
-				std::max({ 1u, region.gridDimensions.x, region.gridDimensions.y, region.gridDimensions.z }));
-			region.directionUpdateSlices = std::clamp(
-				std::max(region.directionUpdateSlices, 1u),
-				1u,
-				region.raysPerProbe);
+			// 作者输入尺寸与实际覆盖尺寸分开；反复 Apply 不得把 size 扩大后写回作者配置。
+			region.size = region.overrideGridDimensions
+				? glm::vec3(region.gridDimensions) * region.probeSpacing
+				: glm::max(region.size, glm::vec3(region.probeSpacing));
+			region.raysPerProbe = std::clamp(region.raysPerProbe, 2u, 4096u);
 			region.maxRayDistance = std::max(region.maxRayDistance, 0.001f);
 			region.normalBias = std::max(region.normalBias, 0.0f);
 			region.volumeFadeDistance = std::max(region.volumeFadeDistance, 0.0f);
@@ -257,22 +225,8 @@ namespace VansGraphics
 		settings.irradianceHysteresis = std::clamp(settings.irradianceHysteresis, 0.0f, 0.999f);
 		settings.distanceHysteresis = std::clamp(settings.distanceHysteresis, 0.0f, 0.999f);
 		settings.distanceSharpness = std::clamp(settings.distanceSharpness, 8.0f, 16.0f);
-		settings.brightnessChangeThreshold = std::max(settings.brightnessChangeThreshold, 0.001f);
 		settings.probeOnlyDeferredExposure = std::max(settings.probeOnlyDeferredExposure, 0.001f);
 
-	}
-
-	inline bool IsGIProbeOnlyDeferredOutputEnabled(const VansGISettings& settings)
-	{
-		if (const char* probeOnlyEnv = std::getenv("FORESTENGINE_GI_PROBE_ONLY"))
-		{
-			const std::string value = probeOnlyEnv;
-			if (value == "0" || value == "false" || value == "False")
-				return false;
-			if (value == "1" || value == "true" || value == "True")
-				return true;
-		}
-		return settings.probeOnlyDeferredOutput;
 	}
 
 	inline bool GIRegionResourceLayoutEquals(
@@ -286,6 +240,7 @@ namespace VansGraphics
 			leftResolved.volumeSize == rightResolved.volumeSize &&
 			leftResolved.gridDimensions == rightResolved.gridDimensions &&
 			leftResolved.probeSpacing == rightResolved.probeSpacing &&
+			leftResolved.stableId == rightResolved.stableId &&
 			leftResolved.raysPerProbe == rightResolved.raysPerProbe &&
 			leftResolved.maxRayDistance == rightResolved.maxRayDistance;
 	}
@@ -296,11 +251,19 @@ namespace VansGraphics
 	{
 		NormalizeGISettings(left);
 		NormalizeGISettings(right);
+		if (!GIProbePlacementResourceLayoutEquals(left.placement, right.placement))
+			return false;
 		if (left.regions.size() != right.regions.size())
+			return false;
+		if (left.selectedRegionIndex != right.selectedRegionIndex)
 			return false;
 		for (size_t index = 0; index < left.regions.size(); ++index)
 		{
 			if (!GIRegionResourceLayoutEquals(left.regions[index], right.regions[index]))
+				return false;
+			if (left.placement.enabled &&
+				(left.regions[index].normalBias != right.regions[index].normalBias ||
+				 left.regions[index].priority != right.regions[index].priority))
 				return false;
 		}
 		return true;

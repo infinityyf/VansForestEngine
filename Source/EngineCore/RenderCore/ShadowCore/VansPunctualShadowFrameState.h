@@ -22,6 +22,11 @@ namespace VansGraphics
 		VansPunctualShadowFrameState& operator=(const VansPunctualShadowFrameState&) = delete;
 
 		bool PrepareFrame(VansRenderSceneFrameSnapshot& snapshot, std::uint64_t frameIndex);
+		const VansRenderPunctualShadowCasterInput* FindCaster(VansRenderProxyHandle proxy) const
+		{
+			const auto found = m_Casters.find(proxy);
+			return found != m_Casters.end() ? &found->second : nullptr;
+		}
 		void NotifyRenderJobsSubmitted();
 
 		const std::vector<VansPunctualShadowGPU>& GetGPUShadowData() const

@@ -1,4 +1,6 @@
 #include "VansScene.h"
+#include "Decal/VansImpactDecalSystem.h"
+#include <initializer_list>
 
 #include "Animation/VansAnimationWorldQueryBatch.h"
 #include "../RuntimeCore/VansFramePhase.h"
@@ -207,17 +209,31 @@ namespace
 		const Vans::VansRuntimeWorld& runtimeWorld,
 		Vans::VansEntityHandle entity)
 	{
-		for (Vans::VansComponentHandle component : runtimeWorld.CollectComponentsOwnedBy(entity))
+		const auto component = runtimeWorld.FindComponentOwnedBy(
+			entity, Vans::VansRuntimeComponentType_Transform);
+		const auto* transform = GetRuntimeComponentPayload<Vans::VansRuntimeTransformComponent>(
+			runtimeWorld, component, Vans::VansRuntimeComponentType_Transform);
+		return transform ? transform->transformStoreId : UINT32_MAX;
+	}
+
+	// 只收集目标组件的 owner，随后仍按实体顺序及 storage 原有顺序处理。
+	// 保持同优先级音频区域的混合顺序，并避免空系统扫描整个场景。
+	template <typename T>
+	std::vector<Vans::VansEntityHandle> CollectRuntimeComponentOwners(
+		const Vans::VansRuntimeWorld& world, std::initializer_list<std::uint16_t> types)
+	{
+		std::vector<Vans::VansEntityHandle> owners;
+		for (std::uint16_t type : types)
 		{
-			if (const auto* transform = GetRuntimeComponentPayload<Vans::VansRuntimeTransformComponent>(
-				runtimeWorld,
-				component,
-				Vans::VansRuntimeComponentType_Transform))
-			{
-				return transform->transformStoreId;
-			}
+			const auto* storage = static_cast<const Vans::VansComponentStorage<T>*>(world.FindStorage(type));
+			if (storage)
+				for (const auto& header : storage->Headers())
+					if (world.IsAlive(header.owner))
+						owners.push_back(header.owner);
 		}
-		return UINT32_MAX;
+		std::sort(owners.begin(), owners.end(), [](auto left, auto right) { return left.index < right.index; });
+		owners.erase(std::unique(owners.begin(), owners.end()), owners.end());
+		return owners;
 	}
 
 	struct RuntimeSceneDestroyReferences
@@ -972,8 +988,8 @@ void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
         GLOBAL_BINDING_PRECONV_DIFFUSE,
         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
         {{
-            m_MaterialManager.m_PreConvDiffuse->GetImage().GetSampler(),
-            m_MaterialManager.m_PreConvDiffuse->GetImage().GetImageView(),
+            m_MaterialManager.m_SkyLighting.DiffuseIrradiance()->GetImage().GetSampler(),
+            m_MaterialManager.m_SkyLighting.DiffuseIrradiance()->GetImage().GetImageView(),
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
         }});
 
@@ -983,10 +999,14 @@ void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
         GLOBAL_BINDING_PRECONV_SPECULAR,
         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
         {{
-            m_MaterialManager.m_PreConvSpecular->GetImage().GetSampler(),
-            m_MaterialManager.m_PreConvSpecular->GetImage().GetImageView(),
+            m_MaterialManager.m_SkyLighting.SpecularRadiance()->GetImage().GetSampler(),
+            m_MaterialManager.m_SkyLighting.SpecularRadiance()->GetImage().GetImageView(),
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
         }});
+
+    descManager->WriteBufferDescriptor(m_GlobalDescriptorSet, GLOBAL_BINDING_SKY_LIGHTING,
+        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, {{ m_MaterialManager.m_SkyLighting.Parameters().GetNativeBuffer(),
+            0, m_MaterialManager.m_SkyLighting.Parameters().GetBufferSize() }});
 
     // Binding 6: 同一固定 SkyBox 的 SH 系数。
     descManager->WriteBufferDescriptor(
@@ -994,9 +1014,9 @@ void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
         GLOBAL_BINDING_SH_COEFFICIENTS,
         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
         {{
-            m_MaterialManager.m_SkySHResultBuffer.GetNativeBuffer(),
+            m_MaterialManager.m_SkyLighting.SH().GetNativeBuffer(),
             0,
-            m_MaterialManager.m_SkySHResultBuffer.GetBufferSize()
+            m_MaterialManager.m_SkyLighting.SH().GetBufferSize()
         }});
 
     // Binding 7: Skin pre-integrated BSDF LUT
@@ -1112,15 +1132,19 @@ void VansGraphics::VansScene::UpdateGlobalTileLightDescriptors()
     descManager->CommitDescriptorUpdates();
 }
 
-void VansGraphics::VansScene::PrepareReflectionProbeRuntime(VansVKDevice& device)
+bool VansGraphics::VansScene::PrepareReflectionProbeRuntime(VansVKDevice& device)
 {
-    if (m_ReflectionProbeSystem.GetPlacementSettings().enabled &&
-        m_ReflectionProbeSystem.GetProbes().size() <= 1)
-    {
-        m_ReflectionProbeSystem.GenerateAutoProbes(*this, true);
-    }
-    m_ReflectionProbeSystem.CreateGPUResources(device, device.GetImmediateGraphicsCommandBuffer());
+    if (m_ReflectionProbeSystem.GetPlacementSettings().enabled
+        && !m_ReflectionProbeSystem.GenerateAutoProbes(*this, device))
+        return false;
+    const auto skyFrame = BuildSkyLightingFrame(m_EnvironmentSettings.skyLighting.intensity,
+        m_LightManager.GetSkyDiffuseScale());
+    m_MaterialManager.m_SkyLighting.UploadFrame(skyFrame);
+    m_ReflectionProbeSystem.SetSkyLightingSource(m_MaterialManager.m_SkyLighting.CaptureSourceKey(skyFrame.intensity));
+    if (!m_ReflectionProbeSystem.CreateGPUResources(device, device.GetImmediateGraphicsCommandBuffer()))
+        return false;
     m_ReflectionProbeSystem.UpdateGlobalDescriptors(m_GlobalDescriptorSet);
+    return true;
 }
 
 void VansGraphics::VansScene::BindWaterSystemGlobalDescriptors()
@@ -1245,6 +1269,7 @@ void VansGraphics::VansScene::UnLoadScene()
 		m_AIWorld->Shutdown();
 	if (m_GameplayRuntime)
 		m_GameplayRuntime->Shutdown();
+	m_ImpactDecals.reset();
 	if (m_TimelineRuntime)
 		m_TimelineRuntime->Clear();
 	if (m_VirtualCameraParameters)
@@ -1529,7 +1554,7 @@ void VansGraphics::VansScene::UnLoadScene()
     VANS_UNLOAD_STEP(14, "娓呯悊 Ray Tracing TLAS/BLAS 鍦烘櫙璧勬簮");
 	if (vkDevice)
 	{
-		vkDevice->GetRayTracingContext().CleanupSceneResources(nativeDevice, &m_MaterialManager);
+		vkDevice->GetRayTracingContext().CleanupSceneResources(nativeDevice);
 	}
 
 	// 清理 Scene 持有的 TLAS 数据
@@ -1550,7 +1575,7 @@ void VansGraphics::VansScene::UnLoadScene()
 	m_BLASVertexData.clear();
 	m_BLASIndexData.clear();
 	m_TLASInstaneData.clear();
-	m_TlasInstanceTextureIndex.clear();
+	m_TlasInstanceMaterials.clear();
 	m_TlasInstanceGIEmission.clear();
 	m_TlasInstanceTextures.clear();
 	m_TlasInstanceMaterialToIndex.clear();
@@ -1745,6 +1770,8 @@ VansGraphics::VansScene::PrepareMainThreadRenderFrame(
     const float deltaTime = static_cast<float>(context.timing.deltaSeconds);
 	VansRenderSceneFrameSnapshot& snapshot = output.scene;
 	snapshot.sceneReady = true;
+	const auto reflectionDebugView = m_ReflectionProbeSystem.GetEditorState().debugView;
+	snapshot.reflectionProbeIsolatedDebugOutput = IsReflectionProbeIsolatedDebugView(reflectionDebugView);
 	snapshot.mainCameraHiZCullSettings = m_MainCameraHiZCullSettings;
 	snapshot.gi.settings = m_GISettings;
 	snapshot.gi.rebuildProbeResources = m_GIProbeResourcesDirty;
@@ -1756,7 +1783,8 @@ VansGraphics::VansScene::PrepareMainThreadRenderFrame(
 		VansPostProcessProfile& profile = m_MaterialManager.m_PostProcessProfile;
 		snapshot.postProcess.params = profile.ToGPUParams();
 		snapshot.postProcess.params.m_DebugPassthrough =
-			IsGIProbeOnlyDeferredOutputEnabled(snapshot.gi.settings) ? 1.0f : 0.0f;
+			snapshot.reflectionProbeIsolatedDebugOutput ? ReflectionProbeDebugDisplayMode(reflectionDebugView) :
+			(snapshot.gi.settings.probeOnlyDeferredOutput ? 1.0f : 0.0f);
 		snapshot.postProcess.exposure = profile.ToExposureAdaptParams(
 			static_cast<float>(context.timing.renderDeltaSeconds));
 		snapshot.postProcess.bloom = profile.ToBloomParams();
@@ -1800,6 +1828,7 @@ VansGraphics::VansScene::PrepareMainThreadRenderFrame(
         m_TransformGraph.Resolve();
         SyncAnimatedHurtBodies();
     }
+	if (m_ImpactDecals) m_ImpactDecals->Tick(deltaTime);
 	if (m_LoadMode == VansSceneLoadMode::Runtime && m_GameplayRuntime)
 	{
 		const auto service = std::dynamic_pointer_cast<Vans::VansAnimationEventActionService>(
@@ -1921,9 +1950,8 @@ VansGraphics::VansScene::PrepareMainThreadRenderFrame(
     {
         VANS_PROFILE_SCOPE("Light::BuildFrameData", Vans::ProfileCategory::RenderPrepare);
 		snapshot.light = m_LightManager.BuildRenderLightFrameData();
-		m_ReflectionProbeSystem.SetRuntimeSkyCubeScales(
-			m_LightManager.GetSkyDiffuseScale(),
-			m_LightManager.GetSkySpecularScale());
+        snapshot.light.skyLighting = BuildSkyLightingFrame(m_EnvironmentSettings.skyLighting.intensity,
+            m_LightManager.GetSkyDiffuseScale());
     }
     {
         VANS_PROFILE_SCOPE("Cloth::Simulate", Vans::ProfileCategory::Physics);
@@ -2259,7 +2287,9 @@ void VansGraphics::VansScene::SyncLightTransforms()
     if (!m_RuntimeWorld)
         return;
 
-    for (Vans::VansEntityHandle entity : m_RuntimeWorld->Entities().CollectAliveEntities())
+    for (Vans::VansEntityHandle entity : CollectRuntimeComponentOwners<Vans::VansRuntimeLightComponent>(
+        *m_RuntimeWorld, { Vans::VansRuntimeComponentType_DirectionalLight, Vans::VansRuntimeComponentType_PointLight,
+            Vans::VansRuntimeComponentType_SpotLight, Vans::VansRuntimeComponentType_RectLight }))
     {
         const std::uint32_t transformId = ResolveRuntimeEntityTransformId(*m_RuntimeWorld, entity);
         if (transformId >= VansTransformStore::GlobalTransforms.size())
@@ -2270,6 +2300,11 @@ void VansGraphics::VansScene::SyncLightTransforms()
             m_RuntimeWorld->CollectComponentsOwnedBy(entity);
         for (Vans::VansComponentHandle component : components)
         {
+            if (component.typeId != Vans::VansRuntimeComponentType_DirectionalLight &&
+                component.typeId != Vans::VansRuntimeComponentType_PointLight &&
+                component.typeId != Vans::VansRuntimeComponentType_SpotLight &&
+                component.typeId != Vans::VansRuntimeComponentType_RectLight)
+                continue;
             const auto* runtimeLight = GetRuntimeComponentPayload<Vans::VansRuntimeLightComponent>(
                 *m_RuntimeWorld,
                 component,
@@ -2658,7 +2693,8 @@ void VansGraphics::VansScene::UpdateAudioReverbEnvironment(float deltaTime)
     bool hasZone = false;
     std::vector<VansEngine::AudioReverbZoneEvaluation> evaluations;
 
-    for (Vans::VansEntityHandle entity : m_RuntimeWorld->Entities().CollectAliveEntities())
+    for (Vans::VansEntityHandle entity : CollectRuntimeComponentOwners<Vans::VansRuntimeAudioReverbZoneComponent>(
+        *m_RuntimeWorld, { Vans::VansRuntimeComponentType_AudioReverbZone, Vans::VansRuntimeComponentType_AudioVolume }))
     {
         const std::uint32_t transformId = ResolveRuntimeEntityTransformId(*m_RuntimeWorld, entity);
         if (transformId >= VansTransformStore::GlobalTransforms.size())
@@ -2962,6 +2998,7 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
     uint32_t skippedMissingMesh = 0;
     uint32_t skippedNoRayTracing = 0;
 	uint32_t skippedTransparentMaterial = 0;
+	uint32_t alphaTestInstances = 0;
     for (auto& node : m_OpaqueRenderNodes)
     {
 		if (!node || !node->IsEnabled())
@@ -3026,7 +3063,14 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
         instance.instanceCustomIndex = 0;
         instance.mask = 0xFF;
         instance.instanceShaderBindingTableRecordOffset = 0;
-        instance.flags = 0;// VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+        // BLAS 保持 mesh 级不透明标记；实例材质按需覆盖，兼容同网格不同材质。
+        const auto* alphaMaterial = node->m_Material && node->m_Material->m_MaterialType == VAN_PBR
+            ? static_cast<const VansPBRMaterial*>(node->m_Material) : nullptr;
+        GIInstanceMaterialGPU instanceMaterial = GIInstanceMaterialGPU::Resolve(0xffffffffu,
+            alphaMaterial && alphaMaterial->m_AlphaTestEnabled,
+            alphaMaterial ? alphaMaterial->m_AlphaCutoff : 0.0f);
+        instance.flags = instanceMaterial.InstanceFlags();
+        if (instanceMaterial.alphaCutoff > 0.0f) ++alphaTestInstances;
 
         // 获取BLAS地址
         VkAccelerationStructureDeviceAddressInfoKHR asAddressInfo{};
@@ -3112,7 +3156,8 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
 				}
 			}
 		}
-		m_TlasInstanceTextureIndex.push_back(packedTextureIndex);
+		instanceMaterial.packedTextureIndex = packedTextureIndex;
+		m_TlasInstanceMaterials.push_back(instanceMaterial);
 		m_TlasInstanceGIEmission.push_back(emissionScale);
 		++nodeIdx;
     }
@@ -3124,7 +3169,9 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
 		<< ", skippedAnimated=" << skippedAnimated
         << ", skippedMissingMesh=" << skippedMissingMesh
 		<< ", skippedNoRayTracing=" << skippedNoRayTracing
-		<< ", skippedTransparentMaterial=" << skippedTransparentMaterial << ")");
+		<< ", skippedTransparentMaterial=" << skippedTransparentMaterial
+		<< ", alphaTestInstances=" << alphaTestInstances
+		<< ", opaqueInstances=" << countInstance - alphaTestInstances << ")");
 
     // No RT instances to build — skip TLAS entirely
     if (countInstance == 0)
@@ -3265,6 +3312,7 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
     
     vans_commandBuffer->BuildAccelerationStructures(&buildInfo, ppRangeInfos);
 
+    ++m_RayTracingGeometryRevision;
     VANS_LOG("[BuildRayTracingAS] TLAS build recorded");
 }
 
@@ -4367,5 +4415,4 @@ bool VansGraphics::VansScene::DestroyEntity(VansScriptObject* obj)
         << "' active=" << m_TransformSlotAllocator.GetActiveCount());
     return true;
 }
-
 

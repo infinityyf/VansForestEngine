@@ -1,6 +1,7 @@
 #include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansFrameSubmitOrchestrator.h"
 #include "../../Util/VansLog.h"
+#include "../../Util/VansProfiler.h"
 
 #include <iomanip>
 #include <queue>
@@ -86,7 +87,10 @@ void VansGraphics::VansFrameSubmitOrchestrator::Bind(
 
 void VansGraphics::VansFrameSubmitOrchestrator::Shutdown()
 {
+	if (!WaitForCompletion() && m_Device != VK_NULL_HANDLE)
+		VansGraphics::vkDeviceWaitIdle(m_Device);
 	DestroySemaphorePool();
+	m_PendingFence = VK_NULL_HANDLE;
 	m_Nodes.clear();
 	m_LastError.clear();
 	m_Device = VK_NULL_HANDLE;
@@ -96,9 +100,7 @@ void VansGraphics::VansFrameSubmitOrchestrator::Shutdown()
 
 void VansGraphics::VansFrameSubmitOrchestrator::Reset()
 {
-	// Active edges are recycled by Execute after the final completion fence, or
-	// by the failure path after device idle. Reaching Reset with active edges is
-	// a lifecycle error, so keep them visible to validation instead of reusing them.
+	// Reset 只开始构建下一张图，不得回收尚由 GPU 使用的同步资源。
 	m_Nodes.clear();
 	m_LastError.clear();
 }
@@ -121,7 +123,7 @@ bool VansGraphics::VansFrameSubmitOrchestrator::Validate(std::string* error) con
 		return setError("frame submit orchestrator has no Vulkan device");
 	if (m_Nodes.empty())
 		return setError("frame submit graph contains no nodes");
-	if (!m_ActiveEdgeSemaphores.empty())
+	if (HasPendingWork() || !m_ActiveEdgeSemaphores.empty())
 		return setError("previous frame still owns active sync semaphores");
 
 	std::unordered_map<VansSyncPoint, size_t, EnumHash> producers;
@@ -172,11 +174,8 @@ bool VansGraphics::VansFrameSubmitOrchestrator::Validate(std::string* error) con
 				return setError(std::string("sync dependency is not topologically ordered: ") + ToString(wait.point));
 		}
 	}
-	bool hasInternalWait = false;
-	for (const VansFrameSubmitNode& node : m_Nodes)
-		hasInternalWait = hasInternalWait || !node.waits.empty();
-	if (hasInternalWait && !m_Nodes.back().waitForCompletion)
-		return setError("binary sync edges require a completion fence on the final node");
+	if (m_Nodes.back().fence == VK_NULL_HANDLE)
+		return setError("frame submit graph requires a completion fence on the final node");
 	std::string resourceError;
 	if (!m_ResourceStateTracker.ValidateAndBuild(m_Nodes, &resourceError))
 		return setError(resourceError);
@@ -216,8 +215,7 @@ std::string VansGraphics::VansFrameSubmitOrchestrator::BuildDebugSummary() const
 		const VansFrameSubmitNode& node = m_Nodes[nodeIndex];
 		stream << "  [" << nodeIndex << "] " << node.name
 			<< " queue=" << ToString(node.queue)
-			<< " commandBuffers=" << node.commandBuffers.size()
-			<< " waitForCompletion=" << (node.waitForCompletion ? "true" : "false") << '\n';
+			<< " commandBuffers=" << node.commandBuffers.size() << '\n';
 		for (const VansSubmitSyncWait& wait : node.waits)
 		{
 			stream << "    wait " << ToString(wait.point)
@@ -252,7 +250,7 @@ bool VansGraphics::VansFrameSubmitOrchestrator::Execute()
 	m_LastError.clear();
 	std::string validationError;
 	if (!Validate(&validationError))
-		return Fail(validationError, false);
+		return Fail(validationError);
 	std::unordered_map<VansSyncPoint, size_t, EnumHash> producers;
 	for (size_t nodeIndex = 0; nodeIndex < m_Nodes.size(); ++nodeIndex)
 	{
@@ -271,7 +269,10 @@ bool VansGraphics::VansFrameSubmitOrchestrator::Execute()
 			edge.point = wait.point;
 			edge.stages = wait.stages;
 			if (!CreateEdgeSemaphore(edge.semaphore))
-				return Fail(std::string("failed to create semaphore for sync point: ") + ToString(wait.point), false);
+			{
+				RecycleEdgeSemaphores(); // 尚未提交，全部信号量仍未 signaled。
+				return Fail(std::string("failed to create semaphore for sync point: ") + ToString(wait.point));
+			}
 			edges.emplace_back(edge);
 		}
 	}
@@ -303,7 +304,7 @@ bool VansGraphics::VansFrameSubmitOrchestrator::Execute()
 			waits,
 			signals,
 			node.fence,
-			node.waitForCompletion))
+			false))
 		{
 			if (anySubmitSucceeded)
 			{
@@ -311,17 +312,27 @@ bool VansGraphics::VansFrameSubmitOrchestrator::Execute()
 				if (!submittedFences.empty())
 					VansGraphics::vkResetFences(m_Device, static_cast<uint32_t>(submittedFences.size()), submittedFences.data());
 			}
-			return Fail("queue submit failed for node: " + node.name, false);
+			// 部分提交可能留下已 signal、未 wait 的 binary semaphore，不能放回可复用池。
+			DestroyActiveEdgeSemaphores();
+			return Fail("queue submit failed for node: " + node.name);
 		}
 		anySubmitSucceeded = true;
-		if (node.fence != VK_NULL_HANDLE && !node.waitForCompletion)
+		if (node.fence != VK_NULL_HANDLE)
 			submittedFences.push_back(node.fence);
 	}
 
-	// Edge semaphores are frame-local. A completion wait on the final node proves
-	// all transitive producers and consumers are no longer using them.
-	if (m_Nodes.back().waitForCompletion)
-		RecycleEdgeSemaphores();
+	m_PendingFence = m_Nodes.back().fence;
+	return true;
+}
+
+bool VansGraphics::VansFrameSubmitOrchestrator::WaitForCompletion()
+{
+	if (!HasPendingWork()) return true;
+	VANS_PROFILE_WAIT("Vulkan::WaitFence.FrameGraph");
+	if (VansGraphics::vkWaitForFences(m_Device, 1, &m_PendingFence, VK_TRUE, UINT64_MAX) != VK_SUCCESS)
+		return Fail("failed to retire submitted frame graph");
+	RecycleEdgeSemaphores();
+	m_PendingFence = VK_NULL_HANDLE;
 	return true;
 }
 
@@ -366,7 +377,7 @@ void VansGraphics::VansFrameSubmitOrchestrator::RecycleEdgeSemaphores()
 	m_ActiveEdgeSemaphores.clear();
 }
 
-void VansGraphics::VansFrameSubmitOrchestrator::DestroySemaphorePool()
+void VansGraphics::VansFrameSubmitOrchestrator::DestroyActiveEdgeSemaphores()
 {
 	if (m_Device != VK_NULL_HANDLE)
 	{
@@ -375,23 +386,28 @@ void VansGraphics::VansFrameSubmitOrchestrator::DestroySemaphorePool()
 			if (semaphore != VK_NULL_HANDLE)
 				VansGraphics::vkDestroySemaphore(m_Device, semaphore, nullptr);
 		}
+	}
+	m_ActiveEdgeSemaphores.clear();
+}
+
+void VansGraphics::VansFrameSubmitOrchestrator::DestroySemaphorePool()
+{
+	DestroyActiveEdgeSemaphores();
+	if (m_Device != VK_NULL_HANDLE)
+	{
 		for (VkSemaphore semaphore : m_AvailableEdgeSemaphores)
 		{
 			if (semaphore != VK_NULL_HANDLE)
 				VansGraphics::vkDestroySemaphore(m_Device, semaphore, nullptr);
 		}
 	}
-	m_ActiveEdgeSemaphores.clear();
 	m_AvailableEdgeSemaphores.clear();
 }
 
-bool VansGraphics::VansFrameSubmitOrchestrator::Fail(const std::string& message, bool waitForDevice)
+bool VansGraphics::VansFrameSubmitOrchestrator::Fail(const std::string& message)
 {
 	m_LastError = message;
 	VANS_LOG_ERROR("[FrameSubmitOrchestrator] " << message);
-	if (waitForDevice && m_Device != VK_NULL_HANDLE)
-		VansGraphics::vkDeviceWaitIdle(m_Device);
-	RecycleEdgeSemaphores();
 	return false;
 }
 

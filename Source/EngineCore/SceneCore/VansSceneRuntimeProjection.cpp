@@ -993,6 +993,20 @@ bool TryBuildAuthoringRenderNode(
 	outRender.material = ResolveMaterialOverride(*data);
 	outRender.type = ReadSerializedStringField(*data, "renderType", "opaque");
 	outRender.rayTracingMode = ReadSerializedStringField(*data, "rayTracingMode", "auto");
+	if (const auto* pool = FindSerializedObjectField(*data, "impactPool"))
+	{
+		VansSceneImpactDecalConfig config;
+		config.capacity = ReadSerializedUInt32Field(*pool, "capacity").value_or(0);
+		const auto number = [&](const char* name, float fallback) {
+			const auto* value = FindObjectField(*pool, name);
+			return value ? static_cast<float>(ReadSerializedNumber(*value, fallback)) : fallback;
+		};
+		config.lifetimeSeconds = number("lifetimeSeconds", config.lifetimeSeconds);
+		config.diameter = number("diameter", config.diameter);
+		config.depth = number("depth", config.depth);
+		config.minimumNormalDot = number("minimumNormalDot", config.minimumNormalDot);
+		outRender.impactPool = config;
+	}
 	outRender.supportShadow = ReadSerializedBoolField(*data, "castShadows", true);
 	outRender.shadowCasterMask = ReadSerializedUInt32Field(*data, "shadowCasterMask").value_or(0xffffffffu);
 	outRender.submeshMaterialOverrides = DecodeSubmeshMaterialOverrides(*data);

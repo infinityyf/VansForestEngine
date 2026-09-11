@@ -1,6 +1,7 @@
 #include "../EngineCore/AssetCore/VansAssetDatabase.h"
 #include "../EngineCore/AssetCore/VansAssetObjectRepository.h"
 #include "NavigationAIContractTests.h"
+#include "../Graphics/Vulkan/VansVKFunctions.h"
 #include "../EngineCore/AssetCore/VansAssetResolver.h"
 #include "../EngineCore/AssetCore/VansBuiltInAssetCatalog.h"
 #include "../EngineCore/AssetCore/VansMaterialAuthoringAsset.h"
@@ -171,6 +172,7 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <memory>
 #include <iterator>
 #include <limits>
 #include <nlohmann/json.hpp>
@@ -198,6 +200,11 @@ public:
 	{
 		m_RenderWidth = 1280;
 		m_RenderHeight = 720;
+	}
+	~TestRenderSystemDevice() override
+	{
+		if (destructionCount)
+			++(*destructionCount);
 	}
 
 	bool BeforeRendering() override
@@ -271,6 +278,7 @@ public:
 	void* GetNativeCommandBuffer() override { return nullptr; }
 
 	std::uint32_t beforeCount = 0;
+	std::uint32_t* destructionCount = nullptr;
 	bool beforeSucceeded = true;
 	std::uint32_t renderCount = 0;
 	std::uint32_t presentCount = 0;
@@ -372,6 +380,16 @@ private:
 
 bool TestRenderSystemLifecycleContract()
 {
+	// 引擎通过基类指针释放设备，必须执行具体后端的析构。
+	std::uint32_t destructionCount = 0;
+	{
+		auto ownedDevice = std::make_unique<TestRenderSystemDevice>();
+		ownedDevice->destructionCount = &destructionCount;
+		std::unique_ptr<VansGraphics::VansGraphicsDevice> baseOwner = std::move(ownedDevice);
+	}
+	if (destructionCount != 1)
+		return false;
+
 	TestRenderSystemDevice device;
 	TestRenderFrameSource frameSource;
 	int frameSequence = 0;
@@ -437,7 +455,7 @@ bool TestRenderSystemLifecycleContract()
 			std::make_unique<TestRenderThreadTransaction>(
 				transactionThread, transactionCount)) ||
 		transactionCount != 1 || transactionThread != device.beforeThread ||
-		transactionThread == mainThread)
+		transactionThread == mainThread || device.waitCount != 1)
 	{
 		return false;
 	}
@@ -449,9 +467,9 @@ bool TestRenderSystemLifecycleContract()
 	// 同一 work generation 上的重复 idle 必须合并，避免连续触发
 	// device-wide stall；Quiesce 复用同一条已完成 barrier。
 	if (!renderSystem.WaitForIdle() || !renderSystem.WaitForIdle() ||
-		device.waitCount != 1 || !renderSystem.Quiesce() ||
+		device.waitCount != 2 || !renderSystem.Quiesce() ||
 		renderSystem.GetState() != VansGraphics::VansRenderSystemState::Quiesced ||
-		device.waitCount != 1 || device.waitThread != device.beforeThread)
+		device.waitCount != 2 || device.waitThread != device.beforeThread)
 	{
 		return false;
 	}
@@ -463,7 +481,7 @@ bool TestRenderSystemLifecycleContract()
 		return false;
 	}
 
-	return renderSystem.WaitForIdle() && device.waitCount == 1;
+	return renderSystem.WaitForIdle() && device.waitCount == 2;
 }
 
 bool TestProfilerSnapshotContract()
@@ -514,6 +532,231 @@ bool TestProfilerSnapshotContract()
 #else
 	return true;
 #endif
+}
+
+bool TestProfilerStableCaptureContract()
+{
+#if VANS_PROFILER_ENABLED
+    using Capture = Vans::VansProfileCapture;
+    Capture::Settings settings;
+    settings.windowFrames = 4;
+    settings.measurementFrames = 4;
+    settings.minimumWindowSeconds = 2.0;
+    Capture capture;
+    capture.Start(settings, 10);
+    auto frame = std::make_unique<Vans::ProfileFrame>();
+    frame->frameIndex = 10;
+    frame->gpuExpected = frame->gpuComplete = true;
+    frame->eventCount = 1;
+    frame->events[0].flags = Vans::ProfileEventFlagGpu;
+    std::strcpy(frame->events[0].name, "Frame");
+    frame->events[0].endUs = 8000.0;
+    frame->events[1].flags = Vans::ProfileEventFlagGpu;
+    std::strcpy(frame->events[1].name, "Intermittent");
+    frame->events[1].endUs = 2000.0;
+    double now = 0.0;
+    const auto feed = [&](double cpu = 10000.0, double gpu = 8000.0)
+    {
+        frame->frameDurationUs = cpu;
+        frame->gpuDurationUs = gpu;
+        capture.Observe(*frame, now);
+        ++frame->frameIndex;
+        now += 1.0;
+    };
+    const auto check = [](bool condition, const char* label)
+    {
+        if (!condition)
+            std::cerr << "Profiler stability contract failed: " << label << '\n';
+        return condition;
+    };
+    feed(); feed(); feed(); feed(100000.0, 80000.0);
+    if (!check(capture.GetStableWindows() == 0 && capture.GetRestartCount() == 1, "startup spike rejected"))
+        return false;
+    for (int i = 0; i < 12; ++i) feed();
+    if (!check(capture.GetPhase() == Capture::Phase::Measuring && capture.GetSamples().empty(), "settling excluded"))
+        return false;
+    feed(); feed(); feed(); feed(100000.0);
+    if (!check(capture.GetPhase() == Capture::Phase::Settling && capture.GetDiscardedMeasurementSamples() == 4,
+        "whole measurement batch discarded on late CPU stall"))
+        return false;
+    for (int i = 0; i < 12; ++i) feed();
+    // 同一帧的未完成结果和重复快照均不能提前增加样本。
+    frame->gpuComplete = false;
+    capture.Observe(*frame, now);
+    if (!check(capture.GetSamples().empty(), "pending query ignored")) return false;
+    frame->gpuComplete = true;
+    for (int i = 0; i < 4; ++i)
+    {
+        frame->eventCount = i % 2 == 0 ? 2 : 1;
+        feed();
+        --frame->frameIndex;
+        capture.Observe(*frame, now);
+        ++frame->frameIndex;
+        if (!check(capture.GetSamples().size() == static_cast<size_t>(i + 1), "duplicate ignored")) return false;
+    }
+    if (!check(capture.GetPhase() == Capture::Phase::Complete && capture.GetMissingFrames() == 0,
+        "stable contiguous batch accepted")) return false;
+
+    const auto reportDir = std::filesystem::temp_directory_path()
+        / ("ForestProfilerCapture_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    if (!check(capture.DumpJson(reportDir.string().c_str()), "report written")) return false;
+    nlohmann::json report;
+    { std::ifstream input(reportDir / "profile_capture.json"); input >> report; }
+    std::filesystem::remove(reportDir / "profile_capture.json");
+    std::filesystem::remove(reportDir);
+    if (!check(report.at("accepted").get<bool>() && report.at("sampleCount") == 4
+        && report.at("discardedMeasurementSamples") == 4
+        && report.at("cpuFrameUs").at("median") == 10000.0
+        && report.at("gpuScopesUs").at("GPU/Intermittent").at("mean") == 1000.0,
+        "report and absent-scope accounting")) return false;
+
+    // 直接父子扣减、同名多次调用、同名不同线程和缺席帧归零。
+    settings.minimumWindowSeconds = 0.0;
+    capture.Start(settings, frame->frameIndex);
+    frame->eventCount = 1;
+    for (int i = 0; i < 12; ++i) feed();
+    frame->trackCount = 2;
+    frame->tracks[0].trackId = 1;
+    frame->tracks[1].trackId = 2;
+    std::strcpy(frame->tracks[0].name, "Main");
+    std::strcpy(frame->tracks[1].name, "Worker");
+    const auto cpuEvent = [&](int index, uint32_t id, uint32_t parent, uint32_t track,
+        const char* name, double start, double end, uint16_t flags = 0)
+    {
+        auto& event = frame->events[index];
+        event = {};
+        event.eventId = id;
+        event.parentEventId = parent;
+        event.trackId = track;
+        std::strcpy(event.name, name);
+        event.startUs = start;
+        event.endUs = end;
+        event.flags = flags;
+    };
+    cpuEvent(1, 10, 0, 1, "Parent", 0, 100);
+    cpuEvent(2, 11, 10, 1, "Child", 10, 40);
+    cpuEvent(3, 12, 10, 1, "Child", 50, 60);
+    cpuEvent(4, 13, 11, 1, "Leaf", 20, 30);
+    cpuEvent(5, 14, 10, 2, "Parent", 0, 20000, Vans::ProfileEventFlagWait);
+    for (int i = 0; i < 4; ++i)
+    {
+        frame->eventCount = i % 2 == 0 ? 6 : 1;
+        feed();
+    }
+    if (!check(capture.DumpJson(reportDir.string().c_str()), "CPU report written")) return false;
+    { std::ifstream input(reportDir / "profile_capture.json"); input >> report; }
+    std::filesystem::remove_all(reportDir);
+    const auto findScope = [&](uint32_t track, const char* name) -> nlohmann::json
+    {
+        for (const auto& scope : report.at("cpuScopes"))
+            if (scope.at("trackId") == track && scope.at("name") == name) return scope;
+        return {};
+    };
+    if (!check(findScope(1, "Parent").at("inclusiveUs").at("mean") == 50.0
+        && findScope(1, "Parent").at("exclusiveUs").at("mean") == 30.0
+        && findScope(1, "Child").at("inclusiveUs").at("mean") == 20.0
+        && findScope(1, "Child").at("exclusiveUs").at("mean") == 15.0
+        && findScope(1, "Child").at("callsPerFrame").at("mean") == 1.0
+        && findScope(2, "Parent").at("inclusiveUs").at("mean") == 10000.0
+        && findScope(2, "Parent").at("wait") == true, "CPU hierarchy, tracks and absent samples")) return false;
+    settings.minimumWindowSeconds = 2.0;
+
+    capture.Start(settings, frame->frameIndex);
+    frame->eventCount = 1;
+    for (int i = 0; i < 12; ++i) feed();
+    feed(); feed();
+    frame->droppedGpuEvents = 1;
+    feed();
+    frame->droppedGpuEvents = 0;
+    if (!check(capture.GetPhase() == Capture::Phase::Settling
+        && capture.GetDiscardedMeasurementSamples() == 2, "dropped GPU event resets batch")) return false;
+    feed();
+    frame->frameIndex += 2;
+    feed();
+    if (!check(capture.GetMissingFrames() == 2 && capture.GetStableWindows() == 0, "missing frames reset window")) return false;
+    for (int i = 0; i < 3; ++i) feed();
+    for (int i = 0; i < 4; ++i) feed(10000.0, 12000.0);
+    if (!check(capture.GetStableWindows() == 0, "GPU drift rejected independently")) return false;
+
+    settings.minimumWindowSeconds = 10.0;
+    capture.Start(settings, frame->frameIndex);
+    for (int i = 0; i < 4; ++i) feed();
+    if (!check(capture.GetStableWindows() == 0, "frame count alone cannot qualify")) return false;
+    for (int i = 0; i < 7; ++i) feed();
+    if (!check(capture.GetStableWindows() == 1, "wall duration also required")) return false;
+    capture.Cancel();
+    feed();
+    if (!check(!capture.IsActive() && capture.GetStableWindows() == 1, "cancel freezes capture")) return false;
+    const auto stats = Capture::Summarize({1, 2, 3, 4, 5});
+    if (!check(stats.mean == 3.0 && stats.median == 3.0 && std::abs(stats.p95 - 4.8) < 1e-9
+        && std::abs(stats.p99 - 4.96) < 1e-9, "percentiles")) return false;
+    std::cout << "Profiler stability contract PASS: warmup spikes, batch rejection, missing/duplicate frames, wall duration, GPU scopes and percentiles\n";
+#endif
+    return true;
+}
+
+bool TestProfilerOutOfOrderCompletionContract()
+{
+#if VANS_PROFILER_ENABLED
+    auto& profiler = Vans::VansProfiler::Get();
+    Vans::VansProfileCapture::Settings settings;
+    settings.windowFrames = 2;
+    settings.stableWindows = 2;
+    settings.measurementFrames = 2;
+    settings.minimumWindowSeconds = 0.0;
+    // 此用例验证组帧顺序；耗时门槛由上一个合成时序用例独立验证。
+    settings.relativeDrift = settings.maximumP95Spread = settings.maximumSpikeRatio = 1000.0;
+    profiler.SetCaptureEnabled(true);
+    profiler.StartStableCapture(settings);
+    const auto cpuFrame = [&]()
+    {
+        profiler.BeginFrame();
+        const uint64_t index = profiler.GetActiveFrameIndex();
+        profiler.MarkCurrentFrameHasRender();
+        profiler.EndFrame();
+        Vans::VansCpuProfiler::Get().BindCurrentThreadToFrame(index);
+        Vans::VansCpuProfiler::Get().EndRenderFrame(index);
+        return index;
+    };
+    const auto gpuFrame = [&](uint64_t index)
+    {
+        Vans::VansGpuResolvedFrame gpu;
+        gpu.frameIndex = index;
+        gpu.eventCount = gpu.laneEventCount[0] = 1;
+        gpu.durationUs = 10.0;
+        gpu.events[0].trackId = gpu.events[0].eventId = 1;
+        gpu.events[0].flags = Vans::ProfileEventFlagGpu;
+        gpu.events[0].endUs = 10.0;
+        std::strcpy(gpu.events[0].name, "Reordered GPU");
+        profiler.SubmitGpuFrame(gpu);
+    };
+    const uint64_t first = cpuFrame();
+    const uint64_t second = cpuFrame();
+    gpuFrame(second);
+    const uint64_t third = cpuFrame();
+    const bool waiting = profiler.GetStableCapture().GetNextFrameIndex() == first;
+    gpuFrame(first);
+    const uint64_t fourth = cpuFrame();
+    const auto& capture = profiler.GetStableCapture();
+    const bool recovered = capture.GetNextFrameIndex() == second + 1
+        && capture.GetStableWindows() == 1 && capture.GetMissingFrames() == 0;
+    profiler.CancelStableCapture();
+    gpuFrame(third);
+    gpuFrame(fourth);
+    profiler.SetCaptureEnabled(false);
+    profiler.BeginFrame();
+    profiler.EndFrame();
+    if (!waiting || !recovered)
+    {
+        std::cerr << "Profiler out-of-order completion contract failed: first=" << first
+            << " second=" << second << " waiting=" << waiting << " recovered=" << recovered
+            << " next=" << capture.GetNextFrameIndex() << " windows=" << capture.GetStableWindows()
+            << " missing=" << capture.GetMissingFrames() << " restarts=" << capture.GetRestartCount() << '\n';
+        return false;
+    }
+    std::cout << "Profiler out-of-order completion contract PASS: late CPU/GPU assembly retained before UI publication\n";
+#endif
+    return true;
 }
 
 bool TestRenderSystemStartupFailureContract()
@@ -980,10 +1223,14 @@ bool TestPunctualShadowBackendOwnershipContract()
 		!first.features.hasPunctualShadowJobs ||
 		first.light.spotLights.front().m_ShadowMetaIndex == VANS_INVALID_SHADOW_INDEX ||
 		first.punctualShadowJobs.front().casterHandles.size() != 1 ||
-		first.punctualShadowJobs.front().casterHandles.front() != VansRenderProxyHandle{ 3u, 2u })
+		first.punctualShadowJobs.front().casterHandles.count(VansRenderProxyHandle{ 3u, 2u }) != 1)
 	{
 		return false;
 	}
+	if (backendState.FindCaster({3u, 2u}) == nullptr ||
+		backendState.FindCaster({3u, 2u})->hasBounds ||
+		backendState.FindCaster({3u, 1u}) != nullptr)
+		return false;
 	std::vector<std::uint8_t> packedLightBuffer;
 	if (!VansLightManager::BuildRenderLightBufferPayload(
 		first.light,
@@ -1020,8 +1267,16 @@ bool TestPunctualShadowBackendOwnershipContract()
 	}
 
 	VansRenderSceneFrameSnapshot unloaded;
+	VansRenderSceneFrameSnapshot reused = makeFrame();
+	reused.punctualShadow.casters.front().proxy = {3u, 3u};
+	if (!backendState.PrepareFrame(reused, 3) || backendState.FindCaster({3u, 2u}) != nullptr ||
+		backendState.FindCaster({3u, 3u}) == nullptr)
+		return false;
+	reused.punctualShadow.casters.clear();
+	if (!backendState.PrepareFrame(reused, 4) || backendState.FindCaster({3u, 3u}) != nullptr)
+		return false;
 	unloaded.sceneEpoch = 10;
-	if (!backendState.PrepareFrame(unloaded, 3))
+	if (!backendState.PrepareFrame(unloaded, 5) || backendState.FindCaster({3u, 2u}) != nullptr)
 		return false;
 	const VansPunctualShadowDebugSnapshot resetSnapshot =
 		backendState.CaptureDebugSnapshot();
@@ -3451,6 +3706,40 @@ bool TestRuntimeWorldComponentEnabledContract()
 
 bool TestRuntimeWorldComponentLifetimeContract()
 {
+	// 以未索引的 header 顺序作行为参照，覆盖任意位置删除及 slot/generation 复用。
+	{
+		Vans::VansComponentStorage<int> storage(100);
+		std::vector<Vans::VansComponentHandle> handles;
+		for (std::uint32_t i = 0; i < 257; ++i)
+			handles.push_back(storage.Add({ i % 13, 1 + i % 3 }, static_cast<int>(i)));
+		const auto verifyOwners = [&]()
+		{
+			for (std::uint32_t owner = 0; owner < 14; ++owner)
+				for (std::uint32_t generation = 1; generation < 5; ++generation)
+				{
+					const Vans::VansEntityHandle entity{ owner, generation };
+					std::vector<Vans::VansComponentHandle> expected, actual;
+					for (const auto& header : storage.Headers())
+						if (header.owner == entity) expected.push_back(header.self);
+					storage.CollectOwnedBy(entity, actual);
+					if (actual != expected || storage.FindFirstOwnedBy(entity) !=
+						(expected.empty() ? Vans::VansComponentHandle{} : expected.front()))
+						return false;
+				}
+			return true;
+		};
+		for (std::uint32_t i = 0; i < 180; ++i)
+		{
+			const auto removed = handles[(i * 37) % handles.size()];
+			storage.Remove(removed);
+			if (!Expect(!storage.Contains(removed), "Removed component handle remained live")) return false;
+			storage.Add({ i % 13, 2 + i % 3 }, static_cast<int>(i));
+			if (!Expect(verifyOwners(), "Owner index changed dense order or leaked another generation")) return false;
+		}
+		storage.RemoveOwnedBy({ 5, 2 });
+		if (!Expect(verifyOwners() && !storage.FindFirstOwnedBy({ 5, 2 }).IsValid(),
+			"Owner removal left stale components after dense compaction")) return false;
+	}
 	Vans::VansRuntimeWorld world;
 	Vans::VansEntityHandle parent = world.CreateEntity({ "parent-guid", "Parent" });
 	Vans::VansEntityHandle child = world.CreateEntity({ "child-guid", "Child", parent });
@@ -6512,15 +6801,16 @@ bool TestAnimationV2RetargetMotionMatchingSceneContract()
 		"AnimationV2 UEFN source Animator is missing the canonical Pivot clip set");
 }
 
-bool TestDemoHallPistolPoseContract()
+bool TestSurvivalPistolPoseContract(const char* projectName, const fs::path& assetDirectory)
 {
     // 使用正式导入器、采样器和重定向器检查姿态，不向项目写临时证据。
     fs::path workspace = fs::current_path();
-    for (int depth = 0; depth < 6 && !fs::exists(workspace / "DemoHallProject"); ++depth)
+    for (int depth = 0; depth < 6 && !fs::exists(workspace / projectName); ++depth)
         workspace = workspace.parent_path();
-    const fs::path project = workspace / "DemoHallProject";
-    if (!fs::exists(project)) return true;
-    const fs::path model = project / "Assets/Characters/Survival/Models/survival_character.fbx";
+    const fs::path project = workspace / projectName;
+    if (!Expect(fs::exists(project), "Pistol test project is missing")) return false;
+    const fs::path assets = project / assetDirectory;
+    const fs::path model = assets / "Characters/Survival/Models/survival_character.fbx";
     Vans::VansAssetMeta meta;
     std::string error;
     if (!Expect(Vans::VansAssetMetaStorage::Load(Vans::VansAssetMeta::MetaPathFor(model), meta, error), error.c_str())) return false;
@@ -6530,22 +6820,22 @@ bool TestDemoHallPistolPoseContract()
     Skeleton target;
     VansSkinnedMeshLoader::ExtractSkeleton(scene, target, 1.0f, Vans::ReadSkeletalMeshImportSettings(meta));
     VansAnimationRigAsset rig;
-    if (!Expect(VansAnimationRigStorage::Load(project / "Assets/AnimationRigs/Survival.vanimrig", rig, error), error.c_str())) return false;
+    if (!Expect(VansAnimationRigStorage::Load(assets / "AnimationRigs/Survival.vanimrig", rig, error), error.c_str())) return false;
     VansCompiledAnimationRig compiled;
     if (!Expect(VansAnimationRigCompiler::Compile(rig, target, compiled, error), error.c_str())) return false;
     VansRetargetProfileAsset profile;
-    if (!Expect(VansRetargetProfileStorage::Load(project / "Assets/Retarget/RTG_UEFN_To_Survival.vretarget", profile, error), error.c_str())) return false;
+    if (!Expect(VansRetargetProfileStorage::Load(assets / "Retarget/RTG_UEFN_To_Survival.vretarget", profile, error), error.c_str())) return false;
     VansRetargetRuntimeDesc desc;
     desc.translationScaleMode = profile.translationScaleMode;
     desc.translationScale = profile.explicitTranslationScale;
     desc.rootAlignment = profile.rootAlignment;
     desc.targetModelSpaceAlignment = profile.targetModelSpaceAlignment;
     desc.limbChains = profile.limbChains;
-    for (const std::string name : { "AS_idle_to_aim", "AS_aim_to_idle", "AS_shot" })
+    for (const std::string file : { "AS_idle_to_aim_Unreal_Take.vclip", "AS_aim_to_idle_Unreal_Take.vclip", "Pistol_Shot.vclip" })
     {
         VansAnimationClip clip;
         Skeleton source;
-        if (!Expect(VansAnimationClipIO::Load((project / "Assets/Animations/Combat/Pistol" / (name + "_Unreal_Take.vclip")).string(), clip, source), "Pistol clip load failed")) return false;
+        if (!Expect(VansAnimationClipIO::Load((assets / "Animations/Combat/Pistol" / file).string(), clip, source), "Pistol clip load failed")) return false;
         VansRetargetProcessor retarget;
         if (!Expect(retarget.Build(source, target, compiled, desc), "Pistol retarget build failed")) return false;
         for (int index = 0; index <= 20; ++index)
@@ -6578,17 +6868,18 @@ bool TestDemoHallPistolPoseContract()
     return true;
 }
 
-bool TestDemoHallPistolOverlayContract()
+bool TestSurvivalPistolOverlayContract(const char* projectName, const fs::path& assetDirectory, const char* sceneFile)
 {
     // 正式项目的同一套输入分别进入基础图与叠层图，比较实际 MM 和重定向输出。
     fs::path workspace = fs::current_path();
-    for (int depth = 0; depth < 6 && !fs::exists(workspace / "DemoHallProject"); ++depth)
+    for (int depth = 0; depth < 6 && !fs::exists(workspace / projectName); ++depth)
         workspace = workspace.parent_path();
-    const fs::path project = workspace / "DemoHallProject";
-    if (!fs::exists(project)) return true;
+    const fs::path project = workspace / projectName;
+    if (!Expect(fs::exists(project), "Pistol test project is missing")) return false;
+    const fs::path assets = project / assetDirectory;
     std::string error;
     AnimatorAssetData asset, baselineAsset;
-    if (!Expect(VansAnimatorIO::Load((project / "Assets/MotionMatchDataBase/UEFN_Mannequin.vanimator").string(), asset), "Pistol Animator load failed")) return false;
+    if (!Expect(VansAnimatorIO::Load((assets / "MotionMatchDataBase/UEFN_Mannequin.vanimator").string(), asset), "Pistol Animator load failed")) return false;
     AnimGraphJson baselineJson;
     if (!Expect(VansAnimatorIO::SerializeToJsonObject(asset, baselineJson, error), error.c_str())) return false;
     baselineJson["layers"].erase(1);
@@ -6607,8 +6898,8 @@ bool TestDemoHallPistolOverlayContract()
     const Skeleton& source = clips.at(raiseRef->assetGuid)->skeleton;
     auto rig = std::make_shared<VansAnimationRigAsset>();
     auto mask = std::make_shared<VansBoneMaskAsset>();
-    if (!Expect(VansAnimationRigStorage::Load(project / "Assets/AnimationRigs/UEFN.vanimrig", *rig, error)
-        && VansBoneMaskStorage::Load(project / "Assets/Animations/Combat/Pistol/Pistol_UpperBody.vbonemask", *mask, error), error.c_str())) return false;
+    if (!Expect(VansAnimationRigStorage::Load(assets / "AnimationRigs/UEFN.vanimrig", *rig, error)
+        && VansBoneMaskStorage::Load(assets / "Animations/Combat/Pistol/Pistol_UpperBody.vbonemask", *mask, error), error.c_str())) return false;
     VansAnimatorRuntimeCompileOptions options;
     options.enableTargetPostProcess = false;
     options.enableRootMotion = true;
@@ -6619,7 +6910,7 @@ bool TestDemoHallPistolOverlayContract()
     auto layered = VansAnimatorRuntimeCompiler::Compile(asset, source, clipResolver, maskResolver, options, error);
     if (!Expect(baseline && layered, error.c_str())) return false;
     nlohmann::json sceneJson;
-    std::ifstream(project / "Scenes/DemoHall.json") >> sceneJson;
+    std::ifstream(project / "Scenes" / sceneFile) >> sceneJson;
     std::optional<MotionMatchingSettings> settings;
     for (const auto& entity : sceneJson["entities"])
         for (const auto& component : entity["components"])
@@ -6627,7 +6918,7 @@ bool TestDemoHallPistolOverlayContract()
                 settings = Vans::VansSceneAnimationComponentReader::ReadAuthoringAnimationComponent(Vans::DecodeSerializedValueJson(component)).motionMatching;
     if (!Expect(settings && settings->enabled, "Survival MM settings were not read")) return false;
     if (!Expect(baseline->ConfigureMotionMatching(*settings, error) && layered->ConfigureMotionMatching(*settings, error), error.c_str())) return false;
-    const fs::path model = project / "Assets/Characters/Survival/Models/survival_character.fbx";
+    const fs::path model = assets / "Characters/Survival/Models/survival_character.fbx";
     Vans::VansAssetMeta meta;
     if (!Expect(Vans::VansAssetMetaStorage::Load(Vans::VansAssetMeta::MetaPathFor(model), meta, error), error.c_str())) return false;
     Assimp::Importer importer;
@@ -6638,9 +6929,9 @@ bool TestDemoHallPistolOverlayContract()
     VansAnimationRigAsset targetRig;
     VansCompiledAnimationRig compiledRig;
     VansRetargetProfileAsset profile;
-    if (!Expect(VansAnimationRigStorage::Load(project / "Assets/AnimationRigs/Survival.vanimrig", targetRig, error)
+    if (!Expect(VansAnimationRigStorage::Load(assets / "AnimationRigs/Survival.vanimrig", targetRig, error)
         && VansAnimationRigCompiler::Compile(targetRig, target, compiledRig, error)
-        && VansRetargetProfileStorage::Load(project / "Assets/Retarget/RTG_UEFN_To_Survival.vretarget", profile, error), error.c_str())) return false;
+        && VansRetargetProfileStorage::Load(assets / "Retarget/RTG_UEFN_To_Survival.vretarget", profile, error), error.c_str())) return false;
     VansRetargetRuntimeDesc desc;
     desc.translationScaleMode = profile.translationScaleMode; desc.translationScale = profile.explicitTranslationScale;
     desc.rootAlignment = profile.rootAlignment; desc.targetModelSpaceAlignment = profile.targetModelSpaceAlignment; desc.limbChains = profile.limbChains;
@@ -6745,7 +7036,7 @@ bool TestDemoHallPistolOverlayContract()
     if (!Expect(VansPoseMath::TryDecompose(source.bones[facingRoot].localTransform, facingBind),
         "Pistol facing fixture could not read the source root bind transform")) return false;
     auto makeFacingController = [&](const std::string& turnName, const std::string& upperName,
-                                    bool normalizedInput, bool withOverlay)
+                                    bool normalizedInput, bool withOverlay, float upperSampleTime = -1.0f)
     {
         auto controller = std::make_unique<VansAnimationController>();
         std::vector<VansAnimationLayerSetup> layers;
@@ -6758,6 +7049,23 @@ bool TestDemoHallPistolOverlayContract()
                 [&](const auto& candidate) { return candidate.name == names[layerIndex]; });
             if (ref == asset.clipRefs.end()) return std::unique_ptr<VansAnimationController>{};
             VansAnimationClip clip = clips.at(ref->assetGuid)->clip;
+            if (layerIndex == 1 && upperSampleTime >= 0.0f)
+            {
+                VansAnimationSampleRequest request;
+                request.currentTime = upperSampleTime;
+                request.loop = false;
+                VansPosePayload held;
+                if (!VansAnimationSampler::Sample(clip, source, request, held))
+                    return std::unique_ptr<VansAnimationController>{};
+                for (std::size_t bone = 0; bone < clip.boneKeyframes.size(); ++bone)
+                    for (auto& key : clip.boneKeyframes[bone])
+                    {
+                        key.position = held.localPose[bone].translation;
+                        key.rotation = held.localPose[bone].rotation;
+                        key.scale = held.localPose[bone].scale;
+                    }
+                clip.events.clear();
+            }
             if (normalizedInput)
                 for (auto& key : clip.boneKeyframes[facingRoot])
                 {
@@ -6834,15 +7142,58 @@ bool TestDemoHallPistolOverlayContract()
         }
     }
     if (!Expect(facingRootMotionError < 1.e-6f, "Pistol facing correction changed turn-clip root motion")) return false;
-    nlohmann::json report = {{"frames",1200},{"motionMatchingFrames",mmFrames},{"stanceTransitionFrames",crouchFrames},
+    // 直接比较 Aim 与 Shot 的首尾姿态，经过正式 Mesh 遮罩、根参考系和 Survival 重定向。
+    // 此检查不同于上面的转身稳定性检查：旧 Shot 基础姿态不一致时必须失败。
+    const auto shotAlignmentRef = std::find_if(asset.clipRefs.begin(), asset.clipRefs.end(),
+        [](const auto& ref) { return ref.name == "Pistol_Shot"; });
+    if (!Expect(shotAlignmentRef != asset.clipRefs.end(), "Missing configured pistol shot")) return false;
+    const float shotAlignmentDuration = clips.at(shotAlignmentRef->assetGuid)->clip.duration;
+    const int pistolSocketIndex = compiledRig.FindSocketByName("RightHand_Pistol");
+    if (!Expect(pistolSocketIndex >= 0, "Missing right-hand pistol socket")) return false;
+    const auto& pistolSocket = compiledRig.sockets[pistolSocketIndex];
+    float shotEndpointSocketError = 0.0f, shotEndpointHandError = 0.0f;
+    int shotEndpointFrames = 0;
+    for (const std::string turn : { "IdleTurn_L_090", "IdleTurn_R_090", "IdleTurn_L_180", "IdleTurn_R_180" })
+    {
+        for (const float time : { 0.0f, shotAlignmentDuration })
+        {
+            auto shot = makeFacingController(turn, "Pistol_Shot", false, true, time);
+            auto aim = makeFacingController(turn, "Pistol_Aim", false, true, 0.0f);
+            if (!Expect(shot && aim, "Pistol endpoint controller creation failed")) return false;
+            const int frames = static_cast<int>(std::ceil(shot->GetClip(turn)->duration / dt));
+            for (int frame = 0; frame <= frames; ++frame)
+            {
+                shot->Update(frame == 0 ? 0.0f : dt, source);
+                aim->Update(frame == 0 ? 0.0f : dt, source);
+                std::vector<glm::mat4> shotTarget, aimTarget;
+                if (!Expect(layerRetarget.Process(shot->GetCachedGlobalTransforms(), source, target, shotTarget)
+                    && baseRetarget.Process(aim->GetCachedGlobalTransforms(), source, target, aimTarget),
+                    "Pistol endpoint retarget failed")) return false;
+                const glm::mat4 shotSocket = shotTarget[pistolSocket.boneIndex] * pistolSocket.localTransform;
+                const glm::mat4 aimSocket = aimTarget[pistolSocket.boneIndex] * pistolSocket.localTransform;
+                shotEndpointSocketError = std::max(shotEndpointSocketError, matrixError(shotSocket, aimSocket));
+                for (const char* hand : { "hand_l", "hand_r" })
+                {
+                    const int bone = target.boneNameToIndex.at(hand);
+                    shotEndpointHandError = std::max(shotEndpointHandError, matrixError(shotTarget[bone], aimTarget[bone]));
+                }
+                if (!Expect(shotEndpointSocketError < .002f && shotEndpointHandError < .002f,
+                    "Pistol Shot endpoints do not align with Aim after the layer and Survival retarget")) return false;
+                ++shotEndpointFrames;
+            }
+        }
+    }
+    nlohmann::json report = {{"project",projectName},{"frames",1200},{"motionMatchingFrames",mmFrames},{"stanceTransitionFrames",crouchFrames},
         {"distinctMotionClips",activeClips},{"sourceLowerMaxMatrixError",sourceLowerError},{"targetLowerMaxMatrixError",targetLowerError},
         {"inactiveLayerMaxMatrixError",offError},{"upperBodyDifference",upperDifference},{"rootMotionMaxError",rootError},{"events",events},
         {"facingCases",facingCases},{"facingFrames",facingFrames},{"sourceFacingMaxMatrixError",sourceFacingError},
-        {"survivalFacingMaxMatrixError",targetFacingError},{"facingRootMotionMaxError",facingRootMotionError}};
+        {"survivalFacingMaxMatrixError",targetFacingError},{"facingRootMotionMaxError",facingRootMotionError},
+        {"shotEndpointFrames",shotEndpointFrames},{"shotEndpointSocketMaxMatrixError",shotEndpointSocketError},
+        {"shotEndpointHandMaxMatrixError",shotEndpointHandError}};
     std::cout << report.dump(2) << '\n';
     // 完成回调与下一次输入同帧发生时，相位值没有经过中间采样；显式触发仍须重播。
     AnimatorAssetData weaponAsset;
-    if (!Expect(VansAnimatorIO::Load((project / "Assets/Imported/Pistol_9mm/Animation/Pistol.vanimator").string(), weaponAsset), "Weapon Animator load failed")) return false;
+    if (!Expect(VansAnimatorIO::Load((assets / "Imported/Pistol_9mm/Animation/Pistol.vanimator").string(), weaponAsset), "Weapon Animator load failed")) return false;
     Skeleton weaponSkeleton;
     for (const auto& ref : weaponAsset.clipRefs)
     {
@@ -6854,11 +7205,29 @@ bool TestDemoHallPistolOverlayContract()
     VansAnimatorRuntimeCompileOptions weaponOptions;
     weaponOptions.enableTargetPostProcess = false;
     auto weaponRig = std::make_shared<VansAnimationRigAsset>();
-    if (!Expect(VansAnimationRigStorage::Load(project / "Assets/Imported/Pistol_9mm/Animation/Pistol.vanimrig", *weaponRig, error), error.c_str())) return false;
+    if (!Expect(VansAnimationRigStorage::Load(assets / "Imported/Pistol_9mm/Animation/Pistol.vanimrig", *weaponRig, error), error.c_str())) return false;
     weaponOptions.rigResolver = [weaponRig](const auto&, auto&) { return weaponRig; };
     auto weapon = VansAnimatorRuntimeCompiler::Compile(weaponAsset, weaponSkeleton, clipResolver, maskResolver, weaponOptions, error);
     if (!Expect(weapon != nullptr, error.c_str())) return false;
     weapon->Play();
+    // 验证正式状态机的实际完成时间；动作仍由动画事件结束，不另设玩法计时器。
+    for (const auto& phase : { std::make_pair(1, "Pistol_Raise.Finished"), std::make_pair(4, "Pistol_Lower.Finished") })
+    {
+        layered->SetInt("PistolPhase", phase.first);
+        layered->SetFloat("PistolUpperBodyWeight", 1.0f);
+        layered->SetTrigger("PistolActionStart");
+        int finishes = 0;
+        float finishedAt = 0.0f;
+        for (int frame = 0; frame < 90; ++frame)
+        {
+            layered->Update(dt, source);
+            for (const auto& event : layered->GetSampledEvents())
+                if (event.name == phase.second) { ++finishes; finishedAt = (frame + 1) * dt; }
+        }
+        std::cout << "Pistol timing " << phase.second << " seconds=" << finishedAt << '\n';
+        if (!Expect(finishes == 1 && std::abs(finishedAt - 1.0f) <= 2.0f * dt,
+            "Pistol raise/lower must finish once in one second")) return false;
+    }
     for (int shot = 0; shot < 3; ++shot)
     {
         layered->SetInt("PistolPhase", 2); layered->SetInt("PistolPhase", 3);
@@ -6867,21 +7236,29 @@ bool TestDemoHallPistolOverlayContract()
         if (shot == 1) layered->SwitchGraphSet("graph-set-crouch-enter");
         if (shot == 2) layered->SwitchGraphSet("graph-set-default");
         int finishes = 0;
+        float finishedAt = 0.0f;
         for (int frame = 0; frame < 80; ++frame)
         {
             layered->Update(dt, source); weapon->Update(dt, weaponSkeleton);
             for (const auto& event : layered->GetSampledEvents())
-                if (event.name == "Pistol_Shot.Finished") ++finishes;
+                if (event.name == "Pistol_Shot.Finished") { ++finishes; finishedAt = (frame + 1) * dt; }
             if (frame == 1)
             {
                 const auto upper = layered->GetLayerRuntimeDebugInfo().at(1);
                 const auto mechanism = weapon->GetLayerRuntimeDebugInfo().at(0);
-                if (!Expect(upper.state == "PistolShot" && upper.playbackTime < .1f
-                    && mechanism.state == "Recoil" && mechanism.playbackTime < .2f,
+                const auto shotRef = std::find_if(asset.clipRefs.begin(), asset.clipRefs.end(),
+                    [](const auto& ref) { return ref.name == "Pistol_Shot"; });
+                const float bodyProgress = upper.playbackTime / clips.at(shotRef->assetGuid)->clip.duration;
+                const float weaponProgress = mechanism.playbackTime / clips.at(weaponAsset.clipRefs.front().assetGuid)->clip.duration;
+                if (!Expect(upper.state == "PistolShot" && bodyProgress < .15f
+                    && mechanism.state == "Recoil" && weaponProgress < .15f
+                    && std::abs(bodyProgress - weaponProgress) < .01f,
                     "Consecutive shot did not restart body and weapon")) return false;
             }
         }
-        if (!Expect(finishes == 1 && !layered->IsTriggerSet("PistolActionStart") && !weapon->IsTriggerSet("PistolActionStart"),
+        std::cout << "Pistol timing shot=" << shot << " seconds=" << finishedAt << '\n';
+        if (!Expect(finishes == 1 && std::abs(finishedAt - .30f) <= 2.0f * dt
+            && !layered->IsTriggerSet("PistolActionStart") && !weapon->IsTriggerSet("PistolActionStart"),
             "Consecutive shot trigger was lost or repeated")) return false;
     }
     return Expect(mmFrames > 1000 && activeClips.size() > 4 && sourceLowerError < .001f && targetLowerError < .001f
@@ -11085,7 +11462,9 @@ bool TestAudioReverbZoneRuntimeProjection()
     using Value = Vans::VansSerializedValue;
     const Value sceneRoot = Value::Object({
         { "schemaVersion", Value::Int(Vans::VansSceneSchemaVersion) },
-        { "settings", Value::Object({}) },
+        { "settings", Value::Object({
+            { "environment", BuildValidEnvironmentSettingsForTest() }
+        }) },
         { "entities", Value::Array({
             Value::Object({
                 { "id", Value::String("zone-entity") },
@@ -11157,11 +11536,12 @@ bool TestAudioReverbZoneRuntimeProjection()
 
     Vans::VansSceneContentBuildPlan plan;
     std::string error;
-    if (!Expect(Vans::VansSceneRuntimeProjection::BuildRuntimeSceneContentPlan(
+    const bool projected = Vans::VansSceneRuntimeProjection::BuildRuntimeSceneContentPlan(
         sceneRoot,
         "",
         plan,
-        error), error.c_str()))
+        error);
+    if (!Expect(projected, error.c_str()))
     {
         return false;
     }
@@ -11383,6 +11763,7 @@ Vans::VansSerializedValue BuildValidEnvironmentSettingsForTest()
 {
 	using Value = Vans::VansSerializedValue;
 	return Value::Object({
+        { "skyLighting", Value::Object({ { "intensity", Value::Float(1.0) } }) },
 		{ "planet", Value::Object({
 			{ "centerWorldMeters", Value::Array({ Value::Float(0.0), Value::Float(-6340200.0), Value::Float(0.0) }) },
 			{ "bottomRadiusMeters", Value::Float(6340000.0) },
@@ -11868,81 +12249,21 @@ bool TestPointShadowAtlasUpdatePolicy()
 bool TestGIProbeUpdateScheduleContract()
 {
 	using namespace VansGraphics;
-	GIProbeRegionDesc desc;
-	desc.gridDimensions = glm::uvec3(80u, 80u, 80u);
-	desc.overrideGridDimensions = true;
-	desc.raysPerProbe = 256u;
-	desc.spatialUpdateDivisor = 2u;
-	desc.directionUpdateSlices = 16u;
-	const GIResolvedRegion region = ResolveGIRegion(desc);
-
-	const GIProbeUpdateBatch first = BuildGIProbeUpdateBatch(region, 0u);
-	if (!Expect(first.spatialPhaseCount == 8u, "GI scheduler changed the 2x2x2 spatial phase count"))
-		return false;
-	if (!Expect(first.raysPerActiveProbe == 16u, "GI scheduler changed the 256/16 ray batch size"))
-		return false;
-	if (!Expect(first.fullUpdateCycleFrameCount == 128u, "GI scheduler changed the 128-frame complete update period"))
-		return false;
-
-	std::array<uint32_t, 8> spatialPhaseVisits{};
-	std::array<uint32_t, 16> directionSliceVisits{};
-	for (uint64_t frame = 0; frame < 128u; ++frame)
-	{
-		const GIProbeUpdateBatch batch = BuildGIProbeUpdateBatch(region, frame);
-		if (!Expect(batch.activeRayCount == batch.activeProbeCount * 16u,
-			"GI scheduler exceeded the fixed active-probe ray budget"))
-			return false;
-		++spatialPhaseVisits[batch.spatialPhase];
-		++directionSliceVisits[batch.directionSlice];
-	}
-
-	for (uint32_t visits : spatialPhaseVisits)
-	{
-		if (!Expect(visits == 16u, "GI scheduler did not visit every spatial phase for every direction slice"))
-			return false;
-	}
-	for (uint32_t visits : directionSliceVisits)
-	{
-		if (!Expect(visits == 8u, "GI scheduler did not visit every direction slice for every spatial phase"))
-			return false;
-	}
-
-	const GIProbeUpdateBatch nextCycle = BuildGIProbeUpdateBatch(region, 128u);
-	if (!Expect(nextCycle.cycleIndex == 1u && nextCycle.spatialPhase == 0u && nextCycle.directionSlice == 0u,
-		"GI scheduler did not begin the next cycle at frame 128"))
-		return false;
-
-	GIProbeRegionDesc oddDesc = desc;
-	oddDesc.gridDimensions = glm::uvec3(5u, 3u, 1u);
-	const GIResolvedRegion oddRegion = ResolveGIRegion(oddDesc);
-	const GIProbeUpdateBatch oddBatch = BuildGIProbeUpdateBatch(oddRegion, 1u);
-	if (!Expect(oddBatch.spatialPhaseCount == 4u,
-		"GI scheduler created empty phases for a degenerate grid axis"))
-		return false;
-	constexpr std::array<uint64_t, 4> expectedOddPhaseProbeCounts{ 6u, 4u, 3u, 2u };
-	uint64_t oddVisitedProbes = 0u;
-	for (uint64_t phase = 0u; phase < oddBatch.spatialPhaseCount; ++phase)
-	{
-		const GIProbeUpdateBatch phaseBatch = BuildGIProbeUpdateBatch(oddRegion, phase);
-		if (!Expect(phaseBatch.activeProbeCount == expectedOddPhaseProbeCounts[phase],
-			"GI scheduler over-counted active probes for an odd-sized grid phase"))
-			return false;
-		oddVisitedProbes += phaseBatch.activeProbeCount;
-	}
-	if (!Expect(oddVisitedProbes == oddRegion.probeCount,
-		"GI scheduler did not cover every odd-sized grid probe exactly once per spatial cycle"))
-		return false;
+    GIProbeRegionDesc desc; desc.raysPerProbe = 256;
+    const auto region = ResolveGIRegion(desc);
+    GIProbePlacementSettings budget;
+    if (!Expect(GIProbeFixedRayCount(region.raysPerProbe) == 32u &&
+        GIProbeRayCapacity(region.probeCount, region.raysPerProbe, budget) == 65536u,
+        "GI full-sphere budget or fixed geometry ray count changed")) return false;
 
 	VansGISettings temporalSettings;
 	temporalSettings.irradianceHysteresis = 2.0f;
 	temporalSettings.distanceHysteresis = -1.0f;
 	temporalSettings.distanceSharpness = 2.0f;
-	temporalSettings.brightnessChangeThreshold = -4.0f;
 	NormalizeGISettings(temporalSettings);
 	if (!Expect(temporalSettings.irradianceHysteresis == 0.999f &&
 		temporalSettings.distanceHysteresis == 0.0f &&
-		temporalSettings.distanceSharpness == 8.0f &&
-		temporalSettings.brightnessChangeThreshold == 0.001f,
+		temporalSettings.distanceSharpness == 8.0f,
 		"GI temporal stability parameters were not normalized to their canonical ranges"))
 		return false;
 
@@ -11997,6 +12318,74 @@ bool TestGIProbeUpdateScheduleContract()
 
 	return true;
 }
+}
+
+bool TestFrameSubmitRetirementContract()
+{
+	using namespace VansGraphics;
+	struct Calls { int submit = 0, wait = 0, reset = 0, idle = 0, created = 0, destroyed = 0, failSubmit = 0; };
+	static Calls calls;
+	calls = {};
+	struct RestoreFunctions
+	{
+		PFN_vkQueueSubmit submit = VansGraphics::vkQueueSubmit;
+		PFN_vkWaitForFences wait = VansGraphics::vkWaitForFences;
+		PFN_vkResetFences reset = VansGraphics::vkResetFences;
+		PFN_vkDeviceWaitIdle idle = VansGraphics::vkDeviceWaitIdle;
+		PFN_vkCreateSemaphore create = VansGraphics::vkCreateSemaphore;
+		PFN_vkDestroySemaphore destroy = VansGraphics::vkDestroySemaphore;
+		~RestoreFunctions()
+		{
+			VansGraphics::vkQueueSubmit = submit; VansGraphics::vkWaitForFences = wait; VansGraphics::vkResetFences = reset;
+			VansGraphics::vkDeviceWaitIdle = idle; VansGraphics::vkCreateSemaphore = create; VansGraphics::vkDestroySemaphore = destroy;
+		}
+	} restore;
+	VansGraphics::vkQueueSubmit = [](VkQueue, uint32_t, const VkSubmitInfo*, VkFence) -> VkResult
+	{
+		return ++calls.submit == calls.failSubmit ? VK_ERROR_OUT_OF_HOST_MEMORY : VK_SUCCESS;
+	};
+	VansGraphics::vkWaitForFences = [](VkDevice, uint32_t, const VkFence*, VkBool32, uint64_t) -> VkResult
+	{ ++calls.wait; return VK_SUCCESS; };
+	VansGraphics::vkResetFences = [](VkDevice, uint32_t, const VkFence*) -> VkResult
+	{ ++calls.reset; return VK_SUCCESS; };
+	VansGraphics::vkDeviceWaitIdle = [](VkDevice) -> VkResult { ++calls.idle; return VK_SUCCESS; };
+	VansGraphics::vkCreateSemaphore = [](VkDevice, const VkSemaphoreCreateInfo*, const VkAllocationCallbacks*, VkSemaphore* result) -> VkResult
+	{ *result = reinterpret_cast<VkSemaphore>(uintptr_t(100 + ++calls.created)); return VK_SUCCESS; };
+	VansGraphics::vkDestroySemaphore = [](VkDevice, VkSemaphore, const VkAllocationCallbacks*) { ++calls.destroyed; };
+	VansFrameSubmitOrchestrator graph;
+	graph.Bind(reinterpret_cast<VkDevice>(uintptr_t(1)), reinterpret_cast<VkQueue>(uintptr_t(2)), reinterpret_cast<VkQueue>(uintptr_t(3)));
+	const auto build = [&]()
+	{
+		graph.Reset();
+		VansFrameSubmitNode producer;
+		producer.name = "Producer";
+		producer.queue = VansQueueRole::Compute;
+		producer.commandBuffers = {reinterpret_cast<VkCommandBuffer>(uintptr_t(4))};
+		producer.signals = {VansSyncPoint::TileLightReady};
+		producer.fence = reinterpret_cast<VkFence>(uintptr_t(6));
+		graph.AddNode(std::move(producer));
+		VansFrameSubmitNode consumer;
+		consumer.name = "Consumer";
+		consumer.commandBuffers = {reinterpret_cast<VkCommandBuffer>(uintptr_t(5))};
+		consumer.waits = {{VansSyncPoint::TileLightReady, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT}};
+		consumer.fence = reinterpret_cast<VkFence>(uintptr_t(7));
+		graph.AddNode(std::move(consumer));
+	};
+	build();
+	bool valid = graph.Execute() && graph.HasPendingWork() && calls.wait == 0 && calls.created == 1;
+	build();
+	valid = valid && !graph.Execute() && graph.HasPendingWork() && calls.destroyed == 0;
+	valid = valid && graph.WaitForCompletion() && !graph.HasPendingWork() && calls.wait == 1 && calls.reset == 0;
+	valid = valid && graph.Execute() && calls.created == 1; // 已完成的边才复用。
+	valid = valid && graph.WaitForCompletion();
+	build();
+	calls.failSubmit = calls.submit + 2; // 生产者成功，消费者失败；可能已 signal 的边必须销毁。
+	valid = valid && !graph.Execute() && !graph.HasPendingWork() && calls.idle == 1 && calls.destroyed == 1;
+	build();
+	calls.failSubmit = 0;
+	valid = valid && graph.Execute() && calls.created == 2;
+	graph.Shutdown(); // 关闭也必须等待最后一张提交图。
+	return valid && calls.wait == 3 && calls.destroyed == 2;
 }
 
 bool TestAsyncComputeSubmitGraphContract()
@@ -12130,7 +12519,7 @@ bool TestAsyncComputeSubmitGraphContract()
 		{ "TileLightLists", VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
 			VK_IMAGE_LAYOUT_UNDEFINED, false, false, false, false }
 	};
-	consumer.waitForCompletion = true;
+	consumer.fence = reinterpret_cast<VkFence>(uintptr_t(6));
 	graph.AddNode(std::move(consumer));
 	std::string validationError;
 	if (!graph.Validate(&validationError))
@@ -12171,7 +12560,7 @@ bool TestAsyncComputeSubmitGraphContract()
 		{ "PunctualShadowAtlas1", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
 			VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, true, false, true, false }
 	};
-	shadowConsumer.waitForCompletion = true;
+	shadowConsumer.fence = reinterpret_cast<VkFence>(uintptr_t(6));
 	graph.AddNode(std::move(shadowConsumer));
 	if (!graph.Validate(&validationError))
 		return false;
@@ -12194,7 +12583,7 @@ bool TestAsyncComputeSubmitGraphContract()
 	uncoveredFinal.name = "UncoveredFinal";
 	uncoveredFinal.queue = VansQueueRole::Graphics;
 	uncoveredFinal.commandBuffers = { fakeGraphicsCmd };
-	uncoveredFinal.waitForCompletion = true;
+	uncoveredFinal.fence = reinterpret_cast<VkFence>(uintptr_t(6));
 	graph.AddNode(std::move(uncoveredFinal));
 	if (graph.Validate(&validationError)
 		|| validationError.find("not covered by the final completion fence") == std::string::npos)
@@ -12221,7 +12610,7 @@ bool TestAsyncComputeSubmitGraphContract()
 		{ "SharedBuffer", VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
 			VK_IMAGE_LAYOUT_UNDEFINED, false, false, true, false }
 	};
-	unsafeConsumer.waitForCompletion = true;
+	unsafeConsumer.fence = reinterpret_cast<VkFence>(uintptr_t(6));
 	graph.AddNode(std::move(unsafeConsumer));
 	if (graph.Validate(&validationError)
 		|| validationError.find("cross-queue resource hazard") == std::string::npos)
@@ -13062,13 +13451,10 @@ bool TestAtmosphereMathAndDataContract()
 		glm::dot(dayState.direction, dayLight.m_Direction) > 0.999f &&
 		std::abs(dayState.intensity - dayLight.m_Intensity) < 1.0e-6f &&
 		std::abs(dayState.skyDiffuseScale - 1.0f) < 1.0e-6f &&
-		std::abs(dayState.skySpecularScale - 1.0f) < 1.0e-6f &&
 		glm::dot(nightState.direction, -nightLight.m_Direction) > 0.999f &&
 		std::abs(nightState.intensity - nightLight.m_Intensity * 0.035f) < 1.0e-6f &&
 		nightState.skyDiffuseScale < 0.1f &&
-		nightState.skySpecularScale < 0.1f &&
-		nightState.skyDiffuseScale < dayState.skyDiffuseScale &&
-		nightState.skySpecularScale < dayState.skySpecularScale,
+		nightState.skyDiffuseScale < dayState.skyDiffuseScale,
 		"Main-light day/night derivation no longer preserves surface and SkyBox IBL scaling"))
 	{
 		return false;
@@ -13483,22 +13869,22 @@ bool TestAtmosphereMathAndDataContract()
 	if (!Expect(
 		giPointLight.find("layout(set = 1, binding = 4) uniform samplerCube environmentMap") !=
 			std::string::npos &&
-		giPointLight.find("texture(environmentMap, rayDirection).rgb * pushConstants.lightingParams.x") !=
+		giPointLight.find("SampleSkyRadiance(environmentMap, rayDirection)") !=
 			std::string::npos &&
-		giPointLight.find("uDirectionLight.color.rgb * uDirectionLight.intensity") !=
+		giPointLight.find("EvaluateGIMissSkyRadiance") ==
 			std::string::npos &&
 		giPointLight.find("GetSkyDiffuseCubeIntensity") == std::string::npos &&
 		reflectionProbeCapture.find(
 			"layout(set = 1, binding = 3) uniform samplerCube skyDiffuseEnvironment") !=
 			std::string::npos &&
 		reflectionProbeCapture.find(
-			"texture(skyDiffuseEnvironment, normal).rgb / PI") != std::string::npos &&
+			"SampleSkyDiffuseIrradiance(skyDiffuseEnvironment, normal) / PI") != std::string::npos &&
 		reflectionProbeCaptureSky.find(
-			"textureLod(PreConvSpecularEnvironment, direction, 0.0).rgb") !=
+			"SampleSkySpecularCube(PreConvSpecularEnvironment, direction, 0.0)") !=
 			std::string::npos &&
 		reflectionProbeCapture.find("atmosphericFog") == std::string::npos &&
 		reflectionProbeCaptureSky.find("atmosphericFog") == std::string::npos,
-		"Git-baseline GI or Reflection Probe SkyBox sampling was replaced by atmosphere media"))
+		"Unified static sky source routing or unchanged atmosphere boundary regressed"))
 	{
 		return false;
 	}
@@ -13690,7 +14076,8 @@ bool TestAtmosphereMathAndDataContract()
 		("Current atmosphere schema was rejected: " + error).c_str()))
 		return false;
 	if (!Expect(
-		decodedSettings.environment.physicalAtmosphere.enabled &&
+		decodedSettings.environment.skyLighting.intensity == 1.0f &&
+        decodedSettings.environment.physicalAtmosphere.enabled &&
 		std::abs(decodedSettings.environment.physicalAtmosphere
 			.aerialPerspective.distanceScale - 1.0f) < 1.0e-6f &&
 		std::abs(decodedSettings.environment.heightFog.visibilityAtGroundMeters -
@@ -13701,6 +14088,14 @@ bool TestAtmosphereMathAndDataContract()
 			.shadow.atmosphereStrength - 0.75f) < 1.0e-6f,
 		"Current atmosphere fields were not decoded"))
 		return false;
+
+    for (double intensity : {-1.0, std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()})
+    {
+        Value invalid = BuildValidEnvironmentSettingsForTest();
+        Vans::SetSerializedObjectField(*Vans::FindObjectField(invalid, "skyLighting"), "intensity", Value::Float(intensity));
+        if (!Expect(!Vans::VansSceneRenderSettingsConfigReader::Read(Value::Object({{"environment", invalid}}), decodedSettings, error),
+            "Invalid sky source intensity was accepted")) return false;
+    }
 
 	Value legacyEnvironment = BuildValidEnvironmentSettingsForTest();
 	for (auto& field : legacyEnvironment.objectFields)
@@ -14031,6 +14426,27 @@ bool TestSceneMemoryDependencyPlanContract()
 	if (!Expect(static_cast<bool>(sceneLoad),
 		"Could not load the scene memory-load fixture"))
 		return false;
+	{
+		const auto original = sceneLoad.document->CreateSnapshot();
+		const auto same = sceneLoad.document->CreateSnapshot();
+		if (!Expect(&original.Root() == &same.Root(), "Read-only scene snapshots copied their root")) return false;
+		const auto originalName = Vans::ReadSerializedStringField(original.Root(), "name");
+		Vans::VansSceneEditService edits(*sceneLoad.document);
+		if (!Expect(static_cast<bool>(edits.Set(
+			Vans::MakeDocumentPropertyPath(Vans::DocumentPropertySpace::Scene, "/name"),
+			Vans::VansSerializedValue::String("Edited snapshot"))), "Snapshot edit failed")) return false;
+		const auto edited = sceneLoad.document->CreateSnapshot();
+		if (!Expect(&edited.Root() != &original.Root() &&
+			Vans::ReadSerializedStringField(original.Root(), "name") == originalName &&
+			Vans::ReadSerializedStringField(edited.Root(), "name") == "Edited snapshot",
+			"Publishing an edited document changed a live read-only snapshot")) return false;
+		if (!Expect(static_cast<bool>(edits.Undo()) &&
+			Vans::ReadSerializedStringField(sceneLoad.document->CreateSnapshot().Root(), "name") == originalName &&
+			static_cast<bool>(edits.Redo()) &&
+			Vans::ReadSerializedStringField(original.Root(), "name") == originalName &&
+			Vans::ReadSerializedStringField(edited.Root(), "name") == "Edited snapshot",
+			"Undo/redo invalidated retained immutable snapshots")) return false;
+	}
 	const auto loadIOEvents = Vans::VansIOAudit::Snapshot();
 	const std::size_t sceneReads = static_cast<std::size_t>(std::count_if(
 		loadIOEvents.begin(), loadIOEvents.end(),
@@ -15834,9 +16250,89 @@ bool TestVolumetricParticleInjectionContract()
 		"DemoHall smoke modules are incomplete or its standalone emitter remains");
 }
 
+bool TestDecalRenderingContract();
+bool TestImpactDecalRuntimeContract();
+bool TestDecalGpuContract();
+bool TestReflectionProbeSpatialIndexContract();
+bool TestReflectionProbePlacementContract();
+bool MeasureReflectionProbePlacement(const char*, const char*, const char*);
+bool TestProbeSceneDefaultsContract(const char* workspaceRoot);
+bool TestTriangleGeometryQueryContract();
+bool TestMeshGeometryGpuContract(bool deviceOnly);
+bool TestReflectionProbeGpuContract(const char* scenePath);
+bool TestReflectionProbePagesGpuContract();
+bool TestReflectionProbePublicationGpuContract();
+bool TestReflectionProbeResourcesGpuContract();
+bool TestGIProbeResourcesGpuContract();
+bool TestReflectionProbeCacheContract();
+bool TestReflectionProbeCacheGpuContract();
+bool TestGIProbeWorkContract(const Vans::VansSerializedValue& environment);
+bool TestGIProbeLayoutContract();
+bool TestGIProbeLayoutGpuContract();
+bool TestGIProbeSamplingGpuContract();
+bool TestGIReceiverVisibilityGpuContract();
+bool TestGIProbeFeedbackGpuContract();
+bool TestGIProbePublicationGpuContract();
+bool TestGIProbeIntegrationGpuContract();
+bool TestSkyLightingGpuContract();
+bool TestSSGIGpuContract();
 int main(int argc, char** argv)
 {
 	VANS_INIT_MAIN_THREAD();
+    if (argc == 5 && std::string(argv[1]) == "--reflection-probe-placement-scene")
+        return MeasureReflectionProbePlacement(argv[2], argv[3], argv[4]) ? 0 : 186;
+    if (argc == 2 && std::string(argv[1]) == "--gi-receiver-visibility-gpu")
+        return TestGIReceiverVisibilityGpuContract() ? 0 : 194;
+	if (argc == 2 && std::string(argv[1]) == "--ssgi-gpu")
+        return TestSSGIGpuContract() ? 0 : 199;
+	if (argc == 2 && std::string(argv[1]) == "--sky-lighting-gpu")
+        return TestSkyLightingGpuContract() ? 0 : 198;
+	if (argc == 2 && std::string(argv[1]) == "--gi-probe-resources-gpu")
+		return TestGIProbeResourcesGpuContract() ? 0 : 197;
+	if (argc == 2 && std::string(argv[1]) == "--reflection-probe-resources-gpu")
+		return TestReflectionProbeResourcesGpuContract() ? 0 : 196;
+	if (argc == 2 && std::string(argv[1]) == "--reflection-probe-cache")
+		return TestReflectionProbeCacheContract() ? 0 : 194;
+	if (argc == 2 && std::string(argv[1]) == "--reflection-probe-cache-gpu")
+		return TestReflectionProbeCacheGpuContract() ? 0 : 195;
+	if (argc == 2 && std::string(argv[1]) == "--reflection-probe-publication-gpu")
+		return TestReflectionProbePublicationGpuContract() ? 0 : 192;
+	if (argc == 2 && std::string(argv[1]) == "--reflection-probe-pages-gpu")
+		return TestReflectionProbePagesGpuContract() ? 0 : 188;
+	if (argc == 2 && std::string(argv[1]) == "--gi-probe-work")
+		return TestGIProbeWorkContract(BuildValidEnvironmentSettingsForTest()) ? 0 : 189;
+	if (argc == 2 && std::string(argv[1]) == "--gi-probe-integration-gpu")
+        return TestGIProbeIntegrationGpuContract() ? 0 : 193;
+	if (argc == 2 && std::string(argv[1]) == "--gi-probe-publication-gpu")
+        return TestGIProbePublicationGpuContract() ? 0 : 193;
+	if (argc == 2 && std::string(argv[1]) == "--gi-probe-feedback-gpu")
+        return TestGIProbeFeedbackGpuContract() ? 0 : 193;
+	if (argc == 2 && std::string(argv[1]) == "--gi-probe-layout-gpu")
+		return TestGIProbeLayoutGpuContract() ? 0 : 191;
+	if (argc == 2 && std::string(argv[1]) == "--gi-probe-sampling-gpu")
+		return TestGIProbeSamplingGpuContract() ? 0 : 191;
+	if (argc == 2 && std::string(argv[1]) == "--gi-probe-layout")
+		return TestGIProbeLayoutContract() ? 0 : 190;
+	if (argc == 2 && std::string(argv[1]) == "--reflection-probe-placement")
+		return TestReflectionProbePlacementContract() ? 0 : 186;
+	if (argc == 3 && std::string(argv[1]) == "--probe-scene-defaults")
+		return TestProbeSceneDefaultsContract(argv[2]) ? 0 : 187;
+	if (argc == 2 && std::string(argv[1]) == "--mesh-geometry-gpu")
+		return TestMeshGeometryGpuContract(false) ? 0 : 185;
+	if (argc == 2 && std::string(argv[1]) == "--mesh-geometry-gpu-device")
+		return TestMeshGeometryGpuContract(true) ? 0 : 185;
+	if (argc == 2 && std::string(argv[1]) == "--geometry-query")
+		return TestTriangleGeometryQueryContract() ? 0 : 184;
+	if ((argc == 2 || argc == 3) && std::string(argv[1]) == "--reflection-probe-gpu")
+		return TestReflectionProbeGpuContract(argc == 3 ? argv[2] : nullptr) ? 0 : 183;
+	if (argc == 2 && std::string(argv[1]) == "--reflection-probe-index")
+		return TestReflectionProbeSpatialIndexContract() ? 0 : 182;
+	if (argc == 2 && std::string(argv[1]) == "--decal-rendering")
+		return TestDecalRenderingContract() ? 0 : 180;
+	if (argc == 2 && std::string(argv[1]) == "--impact-decal")
+		return TestImpactDecalRuntimeContract() ? 0 : 180;
+	if (argc == 2 && std::string(argv[1]) == "--decal-gpu")
+		return TestDecalGpuContract() ? 0 : 181;
 	if (argc == 2 && std::string(argv[1]) == "--packaged-resource-plan")
 		return TestPackagedAudioResourcePlanRoundTrip() &&
 			TestMediaComponentGuidProjection() ? 0 : 168;
@@ -15900,8 +16396,15 @@ int main(int argc, char** argv)
 			TestDrawSubmissionContract() &&
 			TestGIProbeUpdateScheduleContract() &&
 			TestFramePhaseThreadLocalContract() ? 0 : 139;
+	if (argc == 2 && std::string(argv[1]) == "--frame-submit")
+		return TestAsyncComputeSubmitGraphContract() && TestFrameSubmitRetirementContract() ? 0 : 139;
+	if (argc == 2 && std::string(argv[1]) == "--audio-environment")
+		return TestAudioReverbEnvironmentContract() && TestAudioReverbZoneRuntimeProjection()
+			&& TestAudioReverbPresetAssetContract() && TestAudioBusSnapshotAssetContract()
+			&& TestAudioDuckingRulesAssetContract() && TestScriptLightIndexRebindFacadeContract() ? 0 : 139;
 	if (argc == 2 && std::string(argv[1]) == "--profiler")
-		return TestProfilerSnapshotContract() ? 0 : 140;
+		return TestProfilerSnapshotContract() && TestProfilerStableCaptureContract()
+            && TestProfilerOutOfOrderCompletionContract() ? 0 : 140;
 	if (argc == 2 && std::string(argv[1]) == "--asset-type-serialization")
 		return TestAssetTypeSerializationContract() ? 0 : 136;
 	if (argc == 2 && std::string(argv[1]) == "--navigation-ai")
@@ -15909,9 +16412,13 @@ int main(int argc, char** argv)
 	if (argc == 2 && std::string(argv[1]) == "--animation-project-assets")
 		return TestAnimationProjectAnimatorAssetsCanonicalContract() ? 0 : 137;
 	if (argc == 2 && std::string(argv[1]) == "--demohall-pistol-poses")
-		return TestDemoHallPistolPoseContract() ? 0 : 139;
+		return TestSurvivalPistolPoseContract("DemoHallProject", "Assets") ? 0 : 139;
 	if (argc == 2 && std::string(argv[1]) == "--demohall-pistol-overlay")
-		return TestDemoHallPistolOverlayContract() ? 0 : 139;
+		return TestSurvivalPistolOverlayContract("DemoHallProject", "Assets", "DemoHall.json") ? 0 : 139;
+	if (argc == 2 && std::string(argv[1]) == "--dustv3-pistol-poses")
+		return TestSurvivalPistolPoseContract("DustV3Project", "Assets/Survival") ? 0 : 139;
+	if (argc == 2 && std::string(argv[1]) == "--dustv3-pistol-overlay")
+		return TestSurvivalPistolOverlayContract("DustV3Project", "Assets/Survival", "MainScene.json") ? 0 : 139;
 	if (argc == 2 && std::string(argv[1]) == "--demohall-survival-back-axe")
 		return TestDemoHallSurvivalBackAxeSceneContract() ? 0 : 138;
 	if (argc == 2 && std::string(argv[1]) == "--scene-entity-factory")
@@ -15961,6 +16468,10 @@ int main(int argc, char** argv)
 		return TestGAFDemoHallPlayerAttackContract() ? 0 : 140;
 	if (argc == 2 && std::string(argv[1]) == "--demohall-player-throw")
 		return TestDemoHallPlayerThrowContract() ? 0 : 154;
+	if (argc == 2 && std::string(argv[1]) == "--gaf-demohall-pistol-hit")
+		return TestGAFDemoHallPistolHitRuntimeContract() ? 0 : 144;
+	if (argc == 2 && std::string(argv[1]) == "--gaf-pistol-audio")
+		return TestGAFPistolAudioRuntimeContract() ? 0 : 144;
 	if (argc == 2 && std::string(argv[1]) == "--gaf-demohall-melee-hit")
 		return TestGAFDemoHallMeleeHitRuntimeContract() ? 0 : 153;
 	if (argc == 2 && std::string(argv[1]) == "--demohall-hurt-bodies")
@@ -16044,6 +16555,8 @@ int main(int argc, char** argv)
 		return 128;
 	if (!RunNavigationAIContractTests())
 		return 148;
+	if (!TestDecalRenderingContract())
+		return 180;
 	if (!TestDrawSubmissionContract())
 		return 127;
 	if (!TestLuaInspectorProjectModuleSearchPathContract())
@@ -16058,7 +16571,7 @@ int main(int argc, char** argv)
 		return 123;
 	if (!TestUnifiedUpscalerJitterContract())
 		return 124;
-	if (!TestAsyncComputeSubmitGraphContract())
+	if (!TestAsyncComputeSubmitGraphContract() || !TestFrameSubmitRetirementContract())
 		return 93;
 	if (!TestFSRTemporalProjectionContract())
 		return 116;
@@ -16332,6 +16845,12 @@ int main(int argc, char** argv)
 		return 76;
 	if (!TestGIProbeUpdateScheduleContract())
 		return 75;
+    if (!TestReflectionProbeSpatialIndexContract())
+        return 182;
+    if (!TestTriangleGeometryQueryContract())
+        return 184;
+    if (!TestReflectionProbePlacementContract())
+        return 186;
     std::cout << "Forest contract tests passed\n";
     return 0;
 }

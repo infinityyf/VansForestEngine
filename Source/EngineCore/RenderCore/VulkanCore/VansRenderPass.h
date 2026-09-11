@@ -138,6 +138,10 @@ namespace VansGraphics
 
 
 		VansVKImage m_NormalImage;
+        VansVKImage m_DecalColorImage;
+        VansVKImage m_DecalNormalImage;
+        VansVKImage m_DecalRoughnessImage;
+        VansVKImage m_EmptyDecalImage;
 
 		VansVKImage m_GBufferImage0; // albedo + roughness
 
@@ -180,7 +184,7 @@ namespace VansGraphics
 		// 最终布局为 SHADER_READ_ONLY_OPTIMAL，供 ImGui 场景窗口采样
 		VansVKRenderPass m_VansSceneUIPass;
 
-		// 贴花 pass：只写 Normal / GBuffer0 / GBuffer1（LOAD 现有内容，alpha blend 叠写）
+		// 贴花只写独立的 Color / Normal / Roughness 修饰附件。
 		VansVKRenderPass m_VansDecalPass;
 
 		// ── 水面 GBuffer pass ─────────────────────────────────────────────
@@ -244,8 +248,13 @@ namespace VansGraphics
 			const VkExtent2D& displayExtent);
 		void DestroyDisplayPostProcessPass();
 
-		// 贴花 pass：引用现有 GBuffer 图像（Normal/GBuffer0/GBuffer1），LOAD 内容并 alpha blend 叠写
-		void SetupVansDecalRenderPass(VkDevice& logic_device, const VkExtent2D& renderResolution);
+		// 与主渲染分辨率一起创建、销毁；空纹理仅在创建时清零。
+        void SetupVansDecalRenderPass(VkDevice& logic_device, VansVKCommandBuffer& commandBuffer,
+            VkQueue& queue, const VkExtent2D& renderResolution);
+        VansVKImage& GetDecalColor() { return m_DecalColorImage; }
+        VansVKImage& GetDecalNormal() { return m_DecalNormalImage; }
+        VansVKImage& GetDecalRoughness() { return m_DecalRoughnessImage; }
+        VansVKImage& GetEmptyDecal() { return m_EmptyDecalImage; }
 
 		// ── 水面 GBuffer pass ──────────────────────────────────────────────
 		// 须在 SetupVansDeferredRenderPass 之后调用（依赖已创建的 m_DepthImage）

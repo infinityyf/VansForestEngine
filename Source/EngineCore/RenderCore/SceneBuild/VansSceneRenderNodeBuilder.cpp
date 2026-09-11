@@ -419,6 +419,8 @@ VansRenderNode* VansSceneRenderNodeBuilder::LoadSingleRenderNode(
     renderNode->m_EntityGuid = sceneRenderNode.entityGuid;
     renderNode->m_ParentEntityGuid = sceneRenderNode.parentEntityGuid;
     renderNode->m_Material = material;
+	if (auto* decal = dynamic_cast<VansDecalRenderNode*>(renderNode))
+		decal->m_ImpactPoolConfig = sceneRenderNode.impactPool;
 	const std::string rayTracingMode = sceneRenderNode.rayTracingMode;
 	const bool transparentForGI = material &&
 		(material->m_MaterialType == VansMaterialType::VAN_TRANSPARENT ||

@@ -12,6 +12,7 @@
 #include "../../SceneCore/VansSceneDocument.h"
 #include "../../SceneCore/VansSceneParentReference.h"
 #include "../../Util/VansLog.h"
+#include "../../Util/VansProfiler.h"
 
 #include "imgui.h"
 
@@ -172,11 +173,12 @@ void ReparentDroppedEntity(
 
 void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
+    VANS_PROFILE_SCOPE("Editor::HierarchyWindow", Vans::ProfileCategory::Editor);
     ImGui::Begin("Hierarchy");
 
     const Vans::VansSceneDocument* document = VansEditorWindow::GetSceneDocument();
-    const Vans::VansSerializedValue sceneRoot =
-        document ? document->SerializedRootSnapshot() : Vans::VansSerializedValue::Null();
+    const auto snapshot = document ? document->CreateSnapshot() : Vans::SceneDocumentSnapshot{};
+    const Vans::VansSerializedValue& sceneRoot = snapshot.Root();
     const Vans::VansSerializedValue* entities = Vans::FindObjectField(sceneRoot, "entities");
     if (!entities || entities->kind != Vans::VansSerializedValue::Kind::Array)
     {

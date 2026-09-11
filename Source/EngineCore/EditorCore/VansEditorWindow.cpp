@@ -70,6 +70,7 @@
 #include <iostream>
 #include <cstdint>
 #include <initializer_list>
+#include <typeinfo>
 #include <string>
 #include <filesystem>
 #include <algorithm>
@@ -156,37 +157,6 @@ namespace
             [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         return normalized.empty() ||
             (normalized != "0" && normalized != "false" && normalized != "off" && normalized != "no");
-    }
-
-    void ApplyAutomationGISettings()
-    {
-        const char* probeOnlyEnv = std::getenv("FORESTENGINE_AUTOMATION_GI_PROBE_ONLY");
-        const char* exposureEnv = std::getenv("FORESTENGINE_AUTOMATION_GI_PROBE_EXPOSURE");
-        if (probeOnlyEnv == nullptr && exposureEnv == nullptr)
-            return;
-
-        auto& editorAPI = GetMutableEditorAPI();
-        Vans::EditorAPI::GIInspectorSettingsSnapshot settings = editorAPI.GetGISettings();
-        if (!settings.available)
-        {
-            VANS_LOG_WARN("[Editor] Automation GI settings skipped: runtime GI settings are unavailable.");
-            return;
-        }
-
-        if (probeOnlyEnv != nullptr)
-            settings.probeOnlyDeferredOutput = ReadAutomationBoolEnv("FORESTENGINE_AUTOMATION_GI_PROBE_ONLY");
-        if (exposureEnv != nullptr)
-        {
-            char* endPtr = nullptr;
-            const float exposure = std::strtof(exposureEnv, &endPtr);
-            if (endPtr != exposureEnv && exposure > 0.0f)
-                settings.probeOnlyDeferredExposure = exposure;
-        }
-        settings.available = true;
-        editorAPI.ApplyGISettings(settings);
-        VANS_LOG("[Editor] Automation applied GI settings: probeOnlyDeferredOutput="
-            << (settings.probeOnlyDeferredOutput ? "true" : "false")
-            << " probeOnlyDeferredExposure=" << settings.probeOnlyDeferredExposure);
     }
 
     Vans::EditorAPI::EngineAPIImpl& GetMutableEditorAPI()
@@ -680,13 +650,13 @@ void VansGraphics::VansEditorWindow::ProcessRuntimeMultiMeshHierarchyExpansion()
     auto& editorAPI = GetMutableEditorAPI();
     if (!editorAPI.IsRuntimeSceneReady() || !m_SceneDocument || !m_SceneEditService)
         return;
-    const Vans::VansSerializedValue root = m_SceneDocument->SerializedRootSnapshot();
-    const Vans::VansSerializedValue* sourceEntities = Vans::FindObjectField(root, "entities");
-    if (!sourceEntities || sourceEntities->kind != Vans::VansSerializedValue::Kind::Array)
-        return;
-
     const std::uint64_t documentStateId = m_SceneDocument->CurrentStateId();
     if (m_RuntimeMultiMeshExpansionScannedStateId == documentStateId)
+        return;
+
+    const auto snapshot = m_SceneDocument->CreateSnapshot();
+    const Vans::VansSerializedValue* sourceEntities = Vans::FindObjectField(snapshot.Root(), "entities");
+    if (!sourceEntities || sourceEntities->kind != Vans::VansSerializedValue::Kind::Array)
         return;
 
     const std::unordered_set<std::string> parentEntityIds = CollectParentEntityIds(*sourceEntities);
@@ -1360,7 +1330,6 @@ void VansGraphics::VansEditorWindow::ProcessPendingSceneLoad()
 
     // 更新场景管理器当前场景（尽量使用相对路径）
     GetMutableEditorAPI().SetCurrentProjectScenePath(m_PendingScenePath);
-    ApplyAutomationGISettings();
 
     m_PendingScenePath.clear();
 }
@@ -1973,6 +1942,7 @@ VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& device)
         //绘制所有窗口
         for (const auto& window : m_Windows)
         {
+            VANS_PROFILE_SCOPE(typeid(*window).name(), Vans::ProfileCategory::Editor);
             window->ShowWindow(editorAPI);
         }
 
@@ -2214,23 +2184,25 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(
 	}
 
 #if VANS_PROFILER_ENABLED
-    // 默认关闭。自动化测试可以在场景稳定后连续采集 GPU timestamp，并在真正
-    // 回读到 GPU 队列事件时导出一次 JSON，避免双缓冲查询池首帧尚无结果。
+    // 默认关闭。先暖机，再检查连续窗口，最后导出多帧统计；启动帧不作性能证据。
     std::string automationGpuProfileOutputDir;
     if (const char* value = std::getenv("FORESTENGINE_GPU_PROFILE_DUMP_DIR"))
         automationGpuProfileOutputDir = value;
 
-    std::uint64_t automationGpuProfileWarmupFrames = 32u;
+    std::uint64_t automationGpuProfileWarmupFrames = 128u;
     if (const char* value = std::getenv("FORESTENGINE_GPU_PROFILE_WARMUP_FRAMES"))
     {
         char* end = nullptr;
         const unsigned long long parsed = std::strtoull(value, &end, 10);
-        if (end != value)
+        if (end != value && *end == '\0' && value[0] != '-')
             automationGpuProfileWarmupFrames = parsed;
     }
 
     std::uint64_t automationGpuProfileReadyFrames = 0u;
-    std::uint32_t automationGpuProfileCaptureFrames = 0u;
+    auto automationGpuProfileReadyAt = automationStartedAt;
+    constexpr double automationGpuProfileMinimumWarmupSeconds = 30.0;
+    std::uint32_t automationGpuProfileLastStableWindows = 0;
+    std::uint64_t automationGpuProfileLastRestarts = 0;
     bool automationGpuProfileDumped = false;
     const bool automationGpuProfileExitAfterDump =
         ReadAutomationBoolEnv("FORESTENGINE_GPU_PROFILE_EXIT_AFTER_DUMP");
@@ -2239,37 +2211,37 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(
         if (!capturedThisFrame || automationGpuProfileDumped)
             return;
 
-        ++automationGpuProfileCaptureFrames;
-        if (automationGpuProfileCaptureFrames < 2u)
-            return;
-
-        const Vans::ProfileFrame& frame = Vans::VansProfiler::Get().GetTimeline();
-        // 跳过 Profiler 刚启用时可能触发的延迟管线创建，同时覆盖 query
-        // ring 的多次轮转，导出的必须是持续采集后的完整帧。
-        if (frame.frameIndex < 4u)
-            return;
-        bool hasGpuEvents = false;
-        for (std::uint32_t eventIndex = 0u; eventIndex < frame.eventCount; ++eventIndex)
+        const auto& capture = Vans::VansProfiler::Get().GetStableCapture();
+        if (capture.GetStableWindows() != automationGpuProfileLastStableWindows
+            || capture.GetRestartCount() != automationGpuProfileLastRestarts)
         {
-            if ((frame.events[eventIndex].flags & Vans::ProfileEventFlagGpu) != 0u)
-            {
-                hasGpuEvents = true;
-                break;
-            }
+            automationGpuProfileLastStableWindows = capture.GetStableWindows();
+            automationGpuProfileLastRestarts = capture.GetRestartCount();
+            VANS_LOG("[Profiler] Stability windows=" << capture.GetStableWindows()
+                << "/3 restarts=" << capture.GetRestartCount()
+                << " missingFrames=" << capture.GetMissingFrames());
         }
-        if (!hasGpuEvents)
+        if (capture.GetPhase() != Vans::VansProfileCapture::Phase::Complete)
             return;
 
-        Vans::VansProfiler::Get().DumpFrameJson(automationGpuProfileOutputDir.c_str());
+        const bool saved = capture.DumpJson(automationGpuProfileOutputDir.c_str());
         automationGpuProfileDumped = true;
-        VANS_LOG("[Profiler] Automation dumped GPU frame " << frame.frameIndex
-            << " to " << automationGpuProfileOutputDir);
+        if (saved)
+        {
+            Vans::VansProfiler::Get().DumpFrameJson(automationGpuProfileOutputDir.c_str());
+            VANS_LOG("[Profiler] Stable capture saved samples=" << capture.GetSamples().size()
+                << " first=" << capture.GetSamples().front().frameIndex
+                << " last=" << capture.GetSamples().back().frameIndex
+                << " restarts=" << capture.GetRestartCount() << " to " << automationGpuProfileOutputDir);
+        }
+        else
+            VANS_LOG_ERROR("[Profiler] Stable capture report could not be saved");
+        // 导出后结束聚合和旧快照保留；继续运行时不留下自动验收开销。
+        Vans::VansProfiler::Get().CancelStableCapture();
         if (automationGpuProfileExitAfterDump)
         {
-            // 与 GI debug dump 的自动化退出保持一致。正常窗口关闭会进入
-            // 编辑器完整卸载流程；一次性采样不应把已知的卸载问题误报为
-            // Profiler/渲染回归，也不需要继续保留 GPU/编辑器状态。
-            std::_Exit(0);
+            // 自动采样也走既有窗口关闭及完整卸载流程。
+            glfwSetWindowShouldClose(m_VansEditorWindow.m_VansGraphicsHandle, true);
         }
     };
 #endif
@@ -2281,6 +2253,14 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(
 			&& std::chrono::duration<double>(std::chrono::steady_clock::now()
 				- automationStartedAt).count() >= automationCloseSeconds)
 		{
+#if VANS_PROFILER_ENABLED
+            if (!automationGpuProfileOutputDir.empty() && !automationGpuProfileDumped)
+            {
+                const auto& capture = Vans::VansProfiler::Get().GetStableCapture();
+                capture.DumpJson(automationGpuProfileOutputDir.c_str());
+                VANS_LOG("[Profiler] Capture timeout; stability/measurement not completed, no performance acceptance");
+            }
+#endif
 			VANS_LOG("[Editor] Automation close timeout reached");
 			glfwSetWindowShouldClose(m_VansEditorWindow.m_VansGraphicsHandle, true);
 			continue;
@@ -2291,22 +2271,41 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(
         const bool profilerFrameActive = m_ProjectLoaded;
 #if VANS_PROFILER_ENABLED
         bool automationGpuProfileCapture = false;
-        if (!automationGpuProfileOutputDir.empty() && !automationGpuProfileDumped && profilerFrameActive)
+        if (!automationGpuProfileOutputDir.empty() && !automationGpuProfileDumped)
         {
             auto& profilerEditorAPI = GetMutableEditorAPI();
-            const bool sceneStable = profilerEditorAPI.IsRuntimeSceneReady()
+            const bool sceneReady = profilerFrameActive && profilerEditorAPI.IsRuntimeSceneReady()
                 && !profilerEditorAPI.IsRuntimeSceneSwitching();
-            if (sceneStable)
+            if (sceneReady)
             {
-                if (automationGpuProfileReadyFrames < automationGpuProfileWarmupFrames)
-                    ++automationGpuProfileReadyFrames;
-                else
+                const auto now = std::chrono::steady_clock::now();
+                if (automationGpuProfileReadyFrames == 0)
+                {
+                    automationGpuProfileReadyAt = now;
+                    VANS_LOG("[Profiler] Scene ready; starting warmup, minimum 30 seconds and "
+                        << automationGpuProfileWarmupFrames << " frames");
+                }
+                ++automationGpuProfileReadyFrames;
+                const double readySeconds = std::chrono::duration<double>(now - automationGpuProfileReadyAt).count();
+                if (automationGpuProfileReadyFrames >= automationGpuProfileWarmupFrames
+                    && readySeconds >= automationGpuProfileMinimumWarmupSeconds)
+                {
                     automationGpuProfileCapture = true;
+                    if (!Vans::VansProfiler::Get().GetStableCapture().IsActive())
+                    {
+                        Vans::VansProfiler::Get().SetPaused(false);
+                        Vans::VansProfiler::Get().StartStableCapture(Vans::VansProfileCapture::Settings{});
+                        VANS_LOG("[Profiler] Warmup finished after " << readySeconds << " seconds / "
+                            << automationGpuProfileReadyFrames << " frames; checking CPU/GPU timing stability");
+                    }
+                }
             }
             else
             {
                 automationGpuProfileReadyFrames = 0u;
-                automationGpuProfileCaptureFrames = 0u;
+                automationGpuProfileLastStableWindows = 0;
+                automationGpuProfileLastRestarts = 0;
+                Vans::VansProfiler::Get().CancelStableCapture();
             }
         }
         Vans::VansProfiler::Get().SetCaptureEnabled(

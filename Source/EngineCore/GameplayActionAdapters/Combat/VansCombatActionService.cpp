@@ -1,10 +1,12 @@
 #include "VansCombatActionService.h"
+#include "../../GameplayTargeting/VansSurfaceImpact.h"
 
 #include "../VansActionServiceAdapter.h"
 #include "../../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../../GameplayActionCore/VansActionHost.h"
 #include "../../GameplayActionCore/VansGameplayRuntime.h"
 #include "../../PhysicsCore/VansPhysicsNode.h"
+#include "../../PhysicsCore/VansCollisionLayerManager.h"
 #include "../../RuntimeCore/VansCharacterMotion.h"
 #include "../../SceneRuntime/VansComponentStorage.h"
 #include "../../SceneRuntime/VansRuntimeComponentTypes.h"
@@ -34,6 +36,14 @@ const VansActionServiceCapability& VansCombatActionCapability()
 	};
 	static const VansActionServiceCapability capability =
 		VansActionServiceCapabilityDescriptor("Service.Combat", {
+			VansActionCommandCapability("Combat.FireHitscan", ResourcePolicy::None, {
+				asset("sourceBase"), asset("sourceTip"), asset("targetLayer"),
+				optionalString("targetTag"), optionalString("responseAction"),
+				VansActionCommandField("blockingLayers", ValueKind::Array, true,
+					VansSerializedValue::Array({})),
+				VansActionCommandNumberField("range", ValueKind::Float, true,
+					VansSerializedValue::Float(100.0), 0.001, 1000000.0)
+			}),
 			VansActionCommandCapability("Combat.BeginMeleeWindow", ResourcePolicy::Create, {
 				asset("sourceBase"), asset("sourceTip"), optionalString("targetLayer"),
 				optionalString("targetTag"), optionalString("responseAction"), optionalString("window"),
@@ -395,10 +405,11 @@ std::shared_ptr<VansCombatActionService> VansCombatActionService::Create(
 
 VansActionCommandResult VansCombatActionService::Execute(const VansActionCommand& command)
 {
+	if (command.stableName == "Combat.FireHitscan") return FireHitscan(command);
 	if (command.stableName != "Combat.BeginMeleeWindow")
 	{
 		return { VansActionError::InvalidDefinition, {}, VansSerializedValue::Object({}),
-			"The production Combat service currently requires Combat.BeginMeleeWindow" };
+			"The production Combat service does not implement this command" };
 	}
 	MeleeWindow window;
 	window.action = command.action;
@@ -437,6 +448,190 @@ VansActionCommandResult VansCombatActionService::Execute(const VansActionCommand
 	return { VansActionError::None, resource, VansSerializedValue::Object({}), {} };
 }
 
+VansActionCommandResult VansCombatActionService::FireHitscan(const VansActionCommand& command)
+{
+	const auto reject = [](std::string message)
+	{
+		return VansActionCommandResult{ VansActionError::Rejected, {}, {}, std::move(message) };
+	};
+	const auto owner = command.context.Entity(VansActionContextSlots::Owner);
+	auto instigator = command.context.Entity(VansActionContextSlots::Instigator);
+	if (!instigator.IsValid()) instigator = owner;
+	const auto sourceBase = m_World.Entities().FindByGuid(ReadSerializedStringField(command.payload, "sourceBase"));
+	const auto sourceTip = m_World.Entities().FindByGuid(ReadSerializedStringField(command.payload, "sourceTip"));
+	const auto belongsTo = [&](VansEntityHandle entity, VansEntityHandle ancestor)
+	{
+		while (m_World.IsAlive(entity))
+		{
+			if (entity == ancestor) return true;
+			const auto* record = m_World.Entities().Get(entity);
+			entity = record ? record->parent : VansEntityHandle{};
+		}
+		return false;
+	};
+	VansGraphics::VansTransform base, tip;
+	if (!m_GameplayRuntime.FindHost(owner) || !belongsTo(sourceBase, owner) || !belongsTo(sourceTip, owner)
+		|| !ResolveWorldTransform(m_World, sourceBase, base) || !ResolveWorldTransform(m_World, sourceTip, tip))
+		return reject("Hitscan requires two source points belonging to the shooting ActionHost");
+	const glm::vec3 delta = tip.m_Position - base.m_Position;
+	const float length = glm::length(delta);
+	const float range = ReadNumberField(command.payload, "range", 0.0f);
+	if (!std::isfinite(glm::length(base.m_Position)) || !std::isfinite(length) || length < kGeometryEpsilon
+		|| !std::isfinite(range) || range <= 0.0f || range > 1000000.0f)
+		return reject("Hitscan source direction or range is invalid");
+	const glm::vec3 direction = delta / length;
+	const std::string targetLayer = ReadSerializedStringField(command.payload, "targetLayer");
+	const std::string targetTag = ReadSerializedStringField(command.payload, "targetTag");
+	const std::string response = ReadSerializedStringField(command.payload, "responseAction");
+	auto& layers = VansEngine::VansCollisionLayerManager::Get();
+	int targetIndex = 0;
+	if (!layers.TryGetLayerIndex(targetLayer, targetIndex)) return reject("Hitscan target layer is unknown");
+	const auto* blockers = FindObjectField(command.payload, "blockingLayers");
+	if (!blockers || blockers->kind != VansSerializedValue::Kind::Array)
+		return reject("Hitscan blockingLayers must be an array of layer names");
+	std::uint32_t blockingMask = 0;
+	for (const auto& layer : blockers->arrayItems)
+	{
+		int index = 0;
+		if (layer.kind != VansSerializedValue::Kind::String || !layers.TryGetLayerIndex(layer.stringValue, index))
+			return reject("Hitscan blocking layer is unknown");
+		blockingMask |= 1u << index;
+	}
+	const auto* tag = targetTag.empty() ? nullptr : m_GameplayRuntime.Assets().Tags().Find(targetTag);
+	if (!targetTag.empty() && !tag) return reject("Hitscan target tag is unknown");
+	if (!response.empty() && !m_GameplayRuntime.Assets().ResolveAction(response))
+		return reject("Hitscan response Action is unknown");
+
+	struct Body
+	{
+		bool query = false;
+		bool regional = false;
+		VansTargetHitResult hit;
+	};
+	// 仅在开枪时建立原生 Actor 到场景组件的映射，避免把 CCT 的 userData 当作 PhysicsNode。
+	std::unordered_map<const physx::PxRigidActor*, Body> bodies;
+	if (const auto* storage = FindStorage<VansRuntimePhysicsComponent>(m_World, VansRuntimeComponentType_Physics))
+	{
+		const auto& headers = storage->Headers();
+		const auto& data = storage->DenseData();
+		for (std::size_t i = 0; i < headers.size() && i < data.size(); ++i)
+		{
+			const auto* node = data[i].physicsNode;
+			if (!node || !node->GetActor()) continue;
+			auto& body = bodies[node->GetActor()];
+			if (!headers[i].effectiveEnabled || !node->IsEnabled()
+				|| belongsTo(headers[i].owner, owner) || belongsTo(headers[i].owner, instigator)) continue;
+			const auto& properties = node->GetProperties();
+			int layer = 0;
+			if (!layers.TryGetLayerIndex(properties.layerName, layer)) continue;
+			body.regional = properties.isTrigger && !properties.hitRegion.empty() && layer == targetIndex;
+			body.query = body.regional || (!properties.isTrigger && (blockingMask & (1u << layer)) != 0);
+			body.hit.entity = ResolveHitTarget(headers[i].owner);
+			body.hit.hitEntity = headers[i].owner;
+			body.hit.componentGuid = headers[i].stableGuid;
+			body.hit.region = properties.hitRegion;
+		}
+	}
+	class Filter final : public physx::PxQueryFilterCallback
+	{
+	public:
+		const std::unordered_map<const physx::PxRigidActor*, Body>& bodies;
+		std::unordered_set<const physx::PxRigidActor*> controllers;
+		std::uint32_t blockingMask;
+		Filter(const decltype(bodies)& mapped, std::uint32_t mask) : bodies(mapped), blockingMask(mask) {}
+		physx::PxQueryHitType::Enum preFilter(const physx::PxFilterData&, const physx::PxShape* shape,
+			const physx::PxRigidActor* actor, physx::PxHitFlags&) override
+		{
+			if (controllers.count(actor)) return physx::PxQueryHitType::eNONE;
+			const auto found = bodies.find(actor);
+			if (found != bodies.end()) return found->second.query ? physx::PxQueryHitType::eBLOCK : physx::PxQueryHitType::eNONE;
+			// 地形等原生环境 Actor 同样遮挡射线；普通 Trigger 不充当墙体。
+			const auto filter = shape->getQueryFilterData();
+			return !shape->getFlags().isSet(physx::PxShapeFlag::eTRIGGER_SHAPE) && filter.word0 < 32u
+				&& (blockingMask & (1u << filter.word0)) != 0 ? physx::PxQueryHitType::eBLOCK : physx::PxQueryHitType::eNONE;
+		}
+		physx::PxQueryHitType::Enum postFilter(const physx::PxFilterData&, const physx::PxQueryHit&,
+			const physx::PxShape*, const physx::PxRigidActor*) override { return physx::PxQueryHitType::eBLOCK; }
+	} filter(bodies, blockingMask);
+	physx::PxRaycastBuffer ray;
+	bool terrainImpact = false;
+	auto& physics = VansEngine::VansPhysicsSystem::GetInstance();
+	auto* scene = physics.GetScene();
+	if (!scene) return reject("Hitscan physics scene is unavailable");
+	{
+		std::lock_guard<std::mutex> lock(physics.GetSimulationMutex());
+		physx::PxSceneReadLock readLock(*scene);
+		if (auto* manager = physics.GetControllerManager())
+			for (physx::PxU32 i = 0; i < manager->getNbControllers(); ++i)
+				filter.controllers.insert(manager->getController(i)->getActor());
+		physx::PxQueryFilterData query;
+		query.flags = physx::PxQueryFlag::eSTATIC | physx::PxQueryFlag::eDYNAMIC | physx::PxQueryFlag::ePREFILTER;
+		scene->raycast(physx::PxVec3(base.m_Position.x, base.m_Position.y, base.m_Position.z),
+			physx::PxVec3(direction.x, direction.y, direction.z), range, ray, physx::PxHitFlag::eDEFAULT, query, &filter);
+		terrainImpact = ray.hasBlock && ray.block.shape &&
+			ray.block.shape->getGeometry().getType() == physx::PxGeometryType::eHEIGHTFIELD;
+	}
+	VansTargetData hits;
+	VansSurfaceImpact impact;
+	bool confirmed = false, responseActivated = false;
+	if (ray.hasBlock)
+	{
+		const auto body = bodies.find(ray.block.actor);
+		if (body != bodies.end())
+		{
+			impact.kind = body->second.regional ? VansSurfaceImpactKind::Regional : VansSurfaceImpactKind::Rigid;
+			impact.hit = body->second.hit;
+		}
+		else impact.kind = terrainImpact
+			? VansSurfaceImpactKind::Terrain : VansSurfaceImpactKind::Unmapped;
+		impact.hit.position = {ray.block.position.x, ray.block.position.y, ray.block.position.z};
+		impact.hit.normal = {ray.block.normal.x, ray.block.normal.y, ray.block.normal.z};
+		impact.hit.distance = ray.block.distance;
+		if (body != bodies.end() && body->second.regional)
+		{
+			auto hit = body->second.hit;
+			const auto host = m_GameplayRuntime.FindHost(hit.entity);
+			if (host && (!tag || host->Tags().Has(tag->id)))
+			{
+				hit.position = { ray.block.position.x, ray.block.position.y, ray.block.position.z };
+				hit.normal = { ray.block.normal.x, ray.block.normal.y, ray.block.normal.z };
+				hit.distance = ray.block.distance;
+				confirmed = true;
+				hits.values.emplace_back(hit);
+				// 解开物理锁之后进入目标 GAF，受击动画和移动占用沿用目标自己的配置。
+				const bool accepted = ConfirmHit(command.action, owner, instigator, response, "Shot", "hitscan", hit);
+				responseActivated = !response.empty() && accepted;
+			}
+		}
+	}
+	const auto encodeVector = [](const glm::vec3& value)
+	{
+		return VansSerializedValue::Object({ { "x", VansSerializedValue::Float(value.x) },
+			{ "y", VansSerializedValue::Float(value.y) }, { "z", VansSerializedValue::Float(value.z) } });
+	};
+	VansSerializedValue output = VansSerializedValue::Object({
+		{ "hit", VansSerializedValue::Bool(confirmed) }, { "blocked", VansSerializedValue::Bool(ray.hasBlock && !confirmed) },
+		{ "responseActivated", VansSerializedValue::Bool(responseActivated) },
+		{ "origin", encodeVector(base.m_Position) }, { "direction", encodeVector(direction) },
+		{ "distance", VansSerializedValue::Float(ray.hasBlock ? ray.block.distance : range) },
+		{ "targetData", VansEncodeTargetData(hits) }
+		, { "surfaceImpact", VansEncodeSurfaceImpact(impact) }
+	});
+	VansActionEvent event;
+	event.stableName = "Combat.Shot";
+	event.type = VansMakeStableId<VansActionFieldIdTag>(event.stableName);
+	event.source = owner;
+	event.target = owner;
+	event.payload = output;
+	std::string eventError;
+	if (!m_GameplayRuntime.FindHost(owner)->EnqueueEvent(command.action, std::move(event), eventError))
+		VANS_LOG_WARN("[GAF Combat] Could not emit shot event: " << eventError);
+	VANS_LOG("[GAF Combat] Hitscan shot source=" << owner.index << " hit=" << confirmed
+		<< " blocked=" << (ray.hasBlock && !confirmed) << " response=" << responseActivated);
+	// 空枪也是一次成功执行的射击，动画按原来的完成事件结束。
+	return { VansActionError::None, {}, std::move(output), {} };
+}
+
 void VansCombatActionService::EmitWindowEvent(MeleeWindow& window, std::string_view edge)
 {
 	const std::shared_ptr<VansActionHost> host = m_GameplayRuntime.FindHost(window.owner);
@@ -454,26 +649,47 @@ void VansCombatActionService::EmitWindowEvent(MeleeWindow& window, std::string_v
 		VANS_LOG_WARN("[GAF Combat] Could not emit window edge: " << error);
 }
 
-bool VansCombatActionService::ActivateResponse(MeleeWindow& window, const VansTargetHitResult& hit)
+bool VansCombatActionService::ConfirmHit(VansActionHandle action, VansEntityHandle owner,
+	VansEntityHandle instigator, const std::string& responseAction, const std::string& hitName,
+	std::string_view hitType, const VansTargetHitResult& hit)
 {
+	// 命中确认与受击表现共用一条通路，保留实际肢体和所属角色的双重身份。
+	if (const auto sourceHost = m_GameplayRuntime.FindHost(owner))
+	{
+		VansActionEvent event;
+		event.stableName = "Combat.Hit";
+		event.type = VansMakeStableId<VansActionFieldIdTag>(event.stableName);
+		event.source = owner;
+		event.target = hit.entity;
+		event.payload = VansSerializedValue::Object({
+			{ "hitWindow", VansSerializedValue::String(hitName) },
+			{ "hitType", VansSerializedValue::String(std::string(hitType)) },
+			{ "hitRegion", VansSerializedValue::String(hit.region) },
+			{ "targetData", VansEncodeTargetData(VansTargetData{ { hit } }) }
+		});
+		std::string error;
+		if (!sourceHost->EnqueueEvent(action, std::move(event), error))
+			VANS_LOG_WARN("[GAF Combat] Could not emit hit event: " << error);
+	}
 	const VansEntityHandle target = hit.entity;
-	if (window.responseAction.empty()) return true;
+	if (responseAction.empty()) return true;
 	const std::shared_ptr<VansActionHost> host = m_GameplayRuntime.FindHost(target);
-	const auto response = m_GameplayRuntime.Assets().ResolveAction(window.responseAction);
+	const auto response = m_GameplayRuntime.Assets().ResolveAction(responseAction);
 	if (!host || !response) return false;
 	VansActionContext context;
 	context.SetEntity(VansActionContextSlots::Owner, target);
-	context.SetEntity(VansActionContextSlots::Instigator, window.instigator);
-	context.SetEntity(VansActionContextSlots::Source, window.owner);
-	context.SetEntity(VansActionContextSlots::PrimaryTarget, window.owner);
+	context.SetEntity(VansActionContextSlots::Instigator, instigator);
+	context.SetEntity(VansActionContextSlots::Source, owner);
+	context.SetEntity(VansActionContextSlots::PrimaryTarget, owner);
 	context.SetSerialized(VansActionContextSlots::Payload, VansSerializedValue::Object({
-		{ "hitWindow", VansSerializedValue::String(window.windowName) },
+		{ "hitWindow", VansSerializedValue::String(hitName) },
+		{ "hitType", VansSerializedValue::String(std::string(hitType)) },
 		{ "hitRegion", VansSerializedValue::String(hit.region) },
 		{ "hitComponentGuid", VansSerializedValue::String(hit.componentGuid) },
 		{ "hit", VansEncodeTargetData(VansTargetData{ { hit } }) },
 		{ "sourceEntity", VansSerializedValue::Object({
-			{ "index", VansSerializedValue::Int(window.owner.index) },
-			{ "generation", VansSerializedValue::Int(window.owner.generation) }
+			{ "index", VansSerializedValue::Int(owner.index) },
+			{ "generation", VansSerializedValue::Int(owner.generation) }
 		}) }
 	}));
 	const auto targetData = host->StoreTargetData(VansTargetData{ { hit } });
@@ -483,13 +699,13 @@ bool VansCombatActionService::ActivateResponse(MeleeWindow& window, const VansTa
 	{
 		host->ReleaseTargetData(targetData);
 		VANS_LOG_WARN("[GAF Combat] Hit response activation failed target=" << target.index
-			<< " action='" << window.responseAction << "': " << result.message);
+			<< " action='" << responseAction << "': " << result.message);
 		return false;
 	}
-	VANS_LOG("[GAF Combat] Validated melee hit source=" << window.owner.index
-		<< " target=" << target.index << " window='" << window.windowName
+	VANS_LOG("[GAF Combat] Validated " << hitType << " hit source=" << owner.index
+		<< " target=" << target.index << " window='" << hitName
 		<< "' region='" << hit.region
-		<< "' response='" << window.responseAction << "'");
+		<< "' response='" << responseAction << "'");
 	return true;
 }
 
@@ -625,24 +841,8 @@ bool VansCombatActionService::SampleWindow(MeleeWindow& window)
 		const auto key = EntityKey(hit.entity);
 		if (window.hitTargets.count(key)) continue;
 		window.hitTargets.insert(key);
-		// 检测独立于表现响应；接收者可通过 Combat.Hit 使用完整部位数据。
-		if (const auto host = m_GameplayRuntime.FindHost(window.owner))
-		{
-			VansActionEvent event;
-			event.stableName = "Combat.Hit";
-			event.type = VansMakeStableId<VansActionFieldIdTag>(event.stableName);
-			event.source = window.owner;
-			event.target = hit.entity;
-			event.payload = VansSerializedValue::Object({
-				{ "hitWindow", VansSerializedValue::String(window.windowName) },
-				{ "hitRegion", VansSerializedValue::String(hit.region) },
-				{ "targetData", VansEncodeTargetData(VansTargetData{ { hit } }) }
-			});
-			std::string error;
-			if (!host->EnqueueEvent(window.action, std::move(event), error))
-				VANS_LOG_WARN("[GAF Combat] Could not emit hit event: " << error);
-		}
-		ActivateResponse(window, hit);
+		ConfirmHit(window.action, window.owner, window.instigator,
+			window.responseAction, window.windowName, "melee", hit);
 		for (auto& body : m_DebugSnapshot.hurtBodies)
 			if (body.componentGuid == hit.componentGuid) body.hit = true;
 	}

@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include <vulkan/vulkan.h>
 #include <array>
 #include <vector>
@@ -57,6 +57,8 @@ namespace VansGraphics
 		GLOBAL_BINDING_VOLUMETRIC_CLOUD_UBO       = 33,
 		GLOBAL_BINDING_CLOUD_DEPTH                = 34,
 		GLOBAL_BINDING_CLOUD_OPTICAL_DEPTH        = 35,
+		GLOBAL_BINDING_REFLECTION_PROBE_INDEX     = 36,
+        GLOBAL_BINDING_SKY_LIGHTING               = 37,
 		GLOBAL_BINDING_BINDLESS_TEXTURES        = 50,  // Variable count
 	};
 
@@ -253,6 +255,9 @@ namespace VansGraphics
 		DEFERRED_BINDING_GI_VISIBILITY = 20,
 		DEFERRED_BINDING_GI_IRRADIANCE = 21,
 		DEFERRED_BINDING_GI_PROBE_STATE = 22,
+        DEFERRED_BINDING_DECAL_COLOR = 30,
+        DEFERRED_BINDING_DECAL_NORMAL = 31,
+        DEFERRED_BINDING_DECAL_ROUGHNESS = 32,
 	};
 
 	// --- Screen-Space Pass (SSAO etc.) ---
@@ -356,7 +361,7 @@ namespace VansGraphics
 		SSGI_BINDING_INFO_UBO     = 6,
 		SSGI_BINDING_HIZ_DEPTH    = 10,
 		SSGI_BINDING_MATERIAL     = 11,
-		SSGI_BINDING_SCREEN_IRRADIANCE = 20,
+		SSGI_BINDING_GI_IRRADIANCE = 20,
 		SSGI_BINDING_GI_VISIBILITY = 21,
 		SSGI_BINDING_GI_PROBE_STATE = 22,
 		SSGI_BINDING_PROBE_CACHE_RADIANCE = 23,
@@ -379,6 +384,9 @@ namespace VansGraphics
 		SSGI_PROBE_CACHE_BINDING_GI_PROBE_STATE = 10,
 		SSGI_PROBE_CACHE_BINDING_COLOR = 18,
 		SSGI_PROBE_CACHE_BINDING_HIZ_DEPTH = 19,
+		SSGI_PROBE_CACHE_BINDING_HISTORY_SURFACE = 21,
+		SSGI_PROBE_CACHE_BINDING_MOTION_VECTOR = 22,
+		SSGI_PROBE_CACHE_BINDING_HISTORY_INFO = 23,
 	};
 
 	// --- Screen Space Shadow Compute Pass ---
@@ -403,7 +411,7 @@ namespace VansGraphics
 	// --- SSGI Temporal Accumulation Pass ---
 	enum SSGITemporalPassBinding : uint32_t
 	{
-		SSGI_TEMPORAL_BINDING_DEPTH          = 0,
+		SSGI_TEMPORAL_BINDING_POSITION          = 0,
 		SSGI_TEMPORAL_BINDING_MOTION_VECTOR  = 1,
 		SSGI_TEMPORAL_BINDING_HISTORY_GI     = 2,
 		SSGI_TEMPORAL_BINDING_CURRENT_GI     = 3,
@@ -487,7 +495,7 @@ namespace VansGraphics
 	{
 		SSGI_ATROUS_BINDING_INPUT_GI = 0,
 		SSGI_ATROUS_BINDING_NORMAL = 1,
-		SSGI_ATROUS_BINDING_DEPTH = 2,
+		SSGI_ATROUS_BINDING_POSITION = 2,
 		SSGI_ATROUS_BINDING_MATERIAL = 3,
 		SSGI_ATROUS_BINDING_OUTPUT_GI = 4,
 	};
@@ -503,7 +511,9 @@ namespace VansGraphics
 	// 贴花节点 Pass-level 描述符集：GBuffer2（世界坐标重建）
 	enum DecalPassBinding : uint32_t
 	{
-		DECAL_PASS_BINDING_GBUFFER2 = 0,  // GBuffer2 采样器，用于重建世界坐标
+		DECAL_PASS_BINDING_GBUFFER2 = 0,  // 接收表面的世界坐标
+        DECAL_PASS_BINDING_GBUFFER1 = 1,  // 接收材质 ID
+        DECAL_PASS_BINDING_NORMAL = 2,   // 法线方向过滤
 	};
 
 	// --- GI ray-tracing intermediate preview (Set 0) ---
@@ -551,7 +561,8 @@ namespace VansGraphics
 		GI_VISIBILITY_BINDING_RADIANCE     = 2,
 		GI_VISIBILITY_BINDING_IRRADIANCE   = 3,
 		GI_VISIBILITY_BINDING_PROBE_STATE  = 4,
-		GI_VISIBILITY_BINDING_SCREEN_IRRADIANCE = 5,
+		GI_VISIBILITY_BINDING_WORK = 5,
+		GI_VISIBILITY_BINDING_LAYOUT = 6,
 	};
 
 	// --- Water GBuffer Pass（Set 1）---
@@ -865,7 +876,7 @@ namespace VansGraphics
 		static void CreateAndAllocate_Empty(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_Terrain(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_SSGI(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
-		static void CreateAndAllocate_SSGIProbeCache(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_SSGIProbeCache(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 2);
 		static void CreateAndAllocate_ScreenSpaceShadow(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_CascadeShadowMinMax(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount);
 		static void CreateAndAllocate_SSGITemporal(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 2);
@@ -873,13 +884,13 @@ namespace VansGraphics
 		static void CreateAndAllocate_SSR_Trace(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_SSR_Resolve(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_SSR_TemporalAA(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
-		static void CreateAndAllocate_BilateralFilter(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 3);
+		static void CreateAndAllocate_BilateralFilter(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_HIZ(std::vector<VkDescriptorSetLayout>& outLayouts, std::vector<VkDescriptorSet>& outSets, uint32_t mipCount);
 		static void CreateAndAllocate_HIZSeed(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_MainCameraHiZCull(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
-		static void CreateAndAllocate_GIRTPreview(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
-		static void CreateAndAllocate_GIPointLight(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
-		static void CreateAndAllocate_GIVisibilityUpdate(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static bool CreateAndAllocate_GIRTPreview(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static bool CreateAndAllocate_GIPointLight(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static bool CreateAndAllocate_GIVisibilityUpdate(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_RayTracing(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_SkinTexture(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_ClothTexture(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);

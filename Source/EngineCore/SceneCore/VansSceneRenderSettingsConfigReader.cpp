@@ -299,8 +299,6 @@ std::optional<VansSceneGIRegionSettingsConfig> DecodeGIRegionSettings(const Vans
 	config.probeSpacing = ReadOptionalFloatField(regionNode, "probeSpacing");
 	config.probeSpacingAxes = ReadOptionalFloat3Field(regionNode, "probeSpacingAxes");
 	config.raysPerProbe = ReadOptionalUIntField(regionNode, "raysPerProbe");
-	config.spatialUpdateDivisor = ReadOptionalUIntField(regionNode, "spatialUpdateDivisor");
-	config.directionUpdateSlices = ReadOptionalUIntField(regionNode, "directionUpdateSlices");
 	config.maxRayDistance = ReadOptionalFloatField(regionNode, "maxRayDistance");
 	config.normalBias = ReadOptionalFloatField(regionNode, "normalBias");
 	config.volumeFadeDistance = ReadOptionalFloatField(regionNode, "volumeFadeDistance");
@@ -450,6 +448,7 @@ bool DecodeEnvironment(
 	std::string& error)
 {
 	const VansSerializedValue* environment = nullptr;
+	const VansSerializedValue* skyLighting = nullptr;
 	const VansSerializedValue* planet = nullptr;
 	const VansSerializedValue* atmosphere = nullptr;
 	const VansSerializedValue* rayleigh = nullptr;
@@ -461,6 +460,8 @@ bool DecodeEnvironment(
 	const VansSerializedValue* clouds = nullptr;
 
 	if (!RequireObjectField(sceneSettings, "environment", "/settings", environment, error) ||
+        !RequireObjectField(*environment, "skyLighting", "/settings/environment", skyLighting, error) ||
+        !RequireFloatField(*skyLighting, "intensity", "/settings/environment/skyLighting", config.skyLighting.intensity, error) ||
 		!RequireObjectField(*environment, "planet", "/settings/environment", planet, error) ||
 		!RequireDouble3Field(*planet, "centerWorldMeters", "/settings/environment/planet",
 			config.planet.centerWorldMeters, error) ||
@@ -471,6 +472,9 @@ bool DecodeEnvironment(
 	{
 		return false;
 	}
+
+    if (!std::isfinite(config.skyLighting.intensity) || config.skyLighting.intensity < 0.0f)
+    { error = "/settings/environment/skyLighting/intensity must be nonnegative"; return false; }
 
 	if (!std::isfinite(config.planet.bottomRadiusMeters) ||
 		config.planet.bottomRadiusMeters <= 0.0 ||
@@ -776,6 +780,16 @@ std::optional<VansSceneGISettingsConfig> DecodeGISettings(const VansSerializedVa
 	}
 
 	VansSceneGISettingsConfig config;
+	if (const VansSerializedValue* placement = ReadObjectField(*gi, "placement"))
+	{
+		config.placement.enabled = ReadOptionalBoolField(*placement, "enabled");
+		config.placement.minProbeSpacing = ReadOptionalFloatField(*placement, "minProbeSpacing");
+		config.placement.maxProbeSpacing = ReadOptionalFloatField(*placement, "maxProbeSpacing");
+		config.placement.parentProbeMaxSize = ReadOptionalFloatField(*placement, "parentProbeMaxSize");
+		config.placement.maxProbeCount = ReadOptionalUIntField(*placement, "maxProbeCount");
+		config.placement.maxProbeUpdatesPerFrame = ReadOptionalUIntField(*placement, "maxProbeUpdatesPerFrame");
+		config.placement.maxRaysPerFrame = ReadOptionalUIntField(*placement, "maxRaysPerFrame");
+	}
 	if (const VansSerializedValue* regions = ReadArrayField(*gi, "regions"))
 	{
 		for (const VansSerializedValue& regionNode : regions->arrayItems)
@@ -786,13 +800,11 @@ std::optional<VansSceneGISettingsConfig> DecodeGISettings(const VansSerializedVa
 			}
 		}
 	}
-	config.environmentIntensity = ReadOptionalFloatField(*gi, "environmentIntensity");
 	config.maxIndirectRadiance = ReadOptionalFloatField(*gi, "maxIndirectRadiance");
 	config.maxProbeRadiance = ReadOptionalFloatField(*gi, "maxProbeRadiance");
 	config.irradianceHysteresis = ReadOptionalFloatField(*gi, "irradianceHysteresis");
 	config.distanceHysteresis = ReadOptionalFloatField(*gi, "distanceHysteresis");
 	config.distanceSharpness = ReadOptionalFloatField(*gi, "distanceSharpness");
-	config.brightnessChangeThreshold = ReadOptionalFloatField(*gi, "brightnessChangeThreshold");
 	config.showProbeGizmos = ReadOptionalBoolField(*gi, "showProbeGizmos");
 	config.showProbeVolume = ReadOptionalBoolField(*gi, "showProbeVolume");
 	config.gizmoStride = ReadOptionalUIntField(*gi, "gizmoStride");

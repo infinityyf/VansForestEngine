@@ -258,11 +258,7 @@ namespace VansGraphics
 
 		//初始化被渲染的数据
 		bool BeforeRendering() override;
-		void PrepareRenderingFrame() override
-		{
-			ProcessPendingUpscalerConfig();
-			m_PipelineCacheService.TickPersistence();
-		}
+		void PrepareRenderingFrame() override;
 		VansRenderSubmissionPrepareResult PrepareRenderSubmission(
 			VansRenderFrameSubmission& submission) override;
 
@@ -288,6 +284,10 @@ namespace VansGraphics
 		}
 		const VansRenderTransformFrameData* FindCurrentRenderTransform(
 			VansRenderProxyHandle proxy) const;
+		const VansRenderPunctualShadowCasterInput* FindCurrentShadowCaster(VansRenderProxyHandle proxy) const
+		{
+			return m_PunctualShadowFrameState.FindCaster(proxy);
+		}
 		const VansRenderViewSnapshot& GetCurrentRenderViewSnapshot() const
 		{
 			return m_CurrentRenderView;
@@ -449,7 +449,7 @@ namespace VansGraphics
 			uint32_t queueFamilyIndex);
 		static bool CreateQueryPool(VkDevice device, const VkQueryPoolCreateInfo& createInfo, VkQueryPool& pool);
 		static void DestroyQueryPool(VkDevice device, VkQueryPool& pool);
-		static void CmdResetQueryPool(VkCommandBuffer commandBuffer, VkQueryPool pool, uint32_t firstQuery, uint32_t queryCount);
+		static void ResetQueryPool(VkDevice device, VkQueryPool pool, uint32_t firstQuery, uint32_t queryCount);
 		static void CmdWriteTimestamp(VkCommandBuffer commandBuffer, VkPipelineStageFlagBits pipelineStage, VkQueryPool pool, uint32_t query);
 		static void CmdBeginDebugLabel(VkCommandBuffer commandBuffer, const VkDebugUtilsLabelEXT& labelInfo);
 		static void CmdEndDebugLabel(VkCommandBuffer commandBuffer);
@@ -494,6 +494,8 @@ namespace VansGraphics
 		// 上传逐帧曝光参数，并在配置变化时更新 Bloom / DOF 参数。
 		void UploadPostProcessProfileIfDirty();
 		void ProcessPendingGISettings();
+		// 调用方保证位于渲染安全点；结构修改须先等待在途 GPU 工作完成。
+		bool ApplyGISettingsAtSafePoint(const VansGISettings& settings, bool forceRebuild = false);
 
 	private:
 
@@ -542,17 +544,17 @@ namespace VansGraphics
 
 		void UpdateSSGI(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 		void UpdateSSGIProbeCache(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
+        void PrepareGIReceiverVisibility(uint32_t width, uint32_t height);
+        void UpdateGIReceiverVisibility(VansVKCommandBuffer& command, const glm::vec2& jitterDelta);
+
 
 		void TemporalFilterSSGI(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
-		void BilateralFilterSSGI(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 		void AtrousFilterSSGI(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
 		void BilateralFilterSSAO(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
 	private:
-
-		void MaybeDumpGIDebugFrame(VansRenderPassManager* renderPassManager);
 
 		void UpdateGIDataDescriptorSets(VansRenderPassManager* renderPassManager);
 		void UpdateSSAOFilterDescriptorSet(VansRenderPassManager* renderPassManager);
@@ -640,7 +642,9 @@ namespace VansGraphics
 
 		bool IsFrameContextRingActive() const;
 		bool EnsureFrameContextRingResources();
-		bool RecreateFrameContextPresentSemaphores();
+		bool RecreateSwapchainPresentSemaphores();
+		bool RetireSubmittedFrame();
+		bool m_SubmittedFrameUsesAsyncCompute = false;
 		void DestroyFrameContextRingResources();
 		bool BeginFrameContextRingFrame();
 		bool WaitForFrameContextRingSlot(VansFrameContextRingSlot& slot);
@@ -658,7 +662,6 @@ namespace VansGraphics
 
 		VkSemaphore m_SwapChainImageAcquiredSemaphore;
 
-		VkSemaphore m_CommandBufferReadyToPresentSemaphore;
 
 		bool m_AsyncComputeRequested = false;
 		VansAtmosphereQualityConfig m_AtmosphereQualityConfig;
@@ -852,7 +855,7 @@ namespace VansGraphics
 			
 		}
 
-		~VansVKDevice()
+		~VansVKDevice() override
 		{
 			m_GraphicsAPI = GRAPHICS_API::INVALIDE;
 			if (m_VulkanInitialized)

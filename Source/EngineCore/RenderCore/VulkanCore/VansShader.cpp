@@ -1,4 +1,4 @@
-﻿#include "../../../Graphics/Vulkan/VansVKFunctions.h"
+#include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansPipeline.h"
 #include "VansShader.h"
 #include "VansVKCommandBuffer.h"
@@ -448,21 +448,9 @@ VansGraphics::VansVKGraphicsPipeline* VansGraphics::VansGraphicsShader::GetGraph
 		? static_cast<uint32_t>(m_PushConstantSize) : 0;
 	const auto* vertexBindings = global_state_data.vertexInputBindingDescriptions;
 	const auto* vertexAttributes = global_state_data.vertexInputAttributeDescriptions;
-	const uint64_t variantHash = VansPipelineDescriptorBuilder::BuildVariantHash(
-		m_PipelineProgramDesc,
-		global_state_data.currentRenderPass,
-		global_state_data.currentSubpass,
-		descriptorset_layouts,
-		pushConstantSize,
-		vertexBindings,
-		vertexAttributes,
-		global_state_data.rasterizationSamples,
-		global_state_data.sampleShadingEnable);
-
 	auto matchesRequest = [&](const GraphicsPipelineVariantEntry& entry)
 	{
-		return entry.identity.hash == variantHash &&
-			VansPipelineDescriptorBuilder::MatchesVariant(
+		return VansPipelineDescriptorBuilder::MatchesVariant(
 				entry.identity,
 				m_PipelineProgramDesc,
 				global_state_data.currentRenderPass,
@@ -481,6 +469,11 @@ VansGraphics::VansVKGraphicsPipeline* VansGraphics::VansGraphicsShader::GetGraph
 		return m_GraphicsPipeline.get();
 	}
 
+	// 高频连续绘制通常沿用上一变体；完整字段相等已足以证明命中，不必先逐字节重算 hash。
+	const uint64_t variantHash = VansPipelineDescriptorBuilder::BuildVariantHash(
+		m_PipelineProgramDesc, global_state_data.currentRenderPass, global_state_data.currentSubpass,
+		descriptorset_layouts, pushConstantSize, vertexBindings, vertexAttributes,
+		global_state_data.rasterizationSamples, global_state_data.sampleShadingEnable);
 	const auto variantRange = m_GraphicsPipelineVariants.equal_range(variantHash);
 	for (auto it = variantRange.first; it != variantRange.second; ++it)
 	{
@@ -680,27 +673,14 @@ void InitAttachmentBlendStates(std::vector<VkPipelineColorBlendAttachmentState>&
 			});
 	}
 	else if (enableDecalBlend)
-	{
-		// 贴花 MRT 混合：3 个 GBuffer 颜色附件（Normal / GBuffer0 / GBuffer1），全部开启 Alpha Blend
-		// GBuffer1 只写入 R（metallic）和 G（AO），跳过 B（materialID）和 A
-		VkPipelineColorBlendAttachmentState alphaBlendState =
-		{
-			VK_TRUE,
-			VK_BLEND_FACTOR_SRC_ALPHA,
-			VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-			VK_BLEND_OP_ADD,
-			VK_BLEND_FACTOR_ONE,
-			VK_BLEND_FACTOR_ZERO,
-			VK_BLEND_OP_ADD,
-			VK_COLOR_COMPONENT_R_BIT |
-			VK_COLOR_COMPONENT_G_BIT |
-			VK_COLOR_COMPONENT_B_BIT |
-			VK_COLOR_COMPONENT_A_BIT
-		};
-		states.resize(3, alphaBlendState);
-		// GBuffer1（索引2）：跳过 B（materialID）和 A，仅写 R+G
-		states[2].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT;
-	}
+    {
+        // RGB 在黑底上累积为预乘值，每种属性独立保存 coverage。
+        states.assign(3, { VK_TRUE, VK_BLEND_FACTOR_SRC_ALPHA,
+            VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_OP_ADD,
+            VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_OP_ADD,
+            VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT });
+    }
 	else if (enableAlphaBlend)
 	{
 		// Standard alpha blending: srcColor * srcAlpha + dstColor * (1 - srcAlpha)
@@ -1054,12 +1034,16 @@ VansGraphics::VansVKRayTracingPipeline* VansGraphics::VansRayTracingShader::GetR
 	}
 
 	//创建并设置SBT
-	CreateShaderBindingTable(device);
+	if (!CreateShaderBindingTable(device))
+	{
+		TriggerReCreateRayTracingPipeline();
+		return nullptr;
+	}
 
 	return m_VansVkRayTracingPipeline.get();
 }
 
-void VansGraphics::VansRayTracingShader::CreateShaderBindingTable(VansVKDevice* device)
+bool VansGraphics::VansRayTracingShader::CreateShaderBindingTable(VansVKDevice* device)
 {
 	//Shader Binding Table(SBT) : 
 	//the structure that makes this runtime shader selection possible.
@@ -1089,7 +1073,7 @@ void VansGraphics::VansRayTracingShader::CreateShaderBindingTable(VansVKDevice* 
 	m_VansVkRayTracingPipeline->m_HitShaderBindingTable.stride = handleSizeAligned;
 	m_VansVkRayTracingPipeline->m_HitShaderBindingTable.size = AlignUp(hitCount * handleSizeAligned, properties.shaderGroupBaseAlignment);
 
-	m_SBTBuffer.CreatVulkanBuffer(
+	if (!m_SBTBuffer.CreatVulkanBuffer(
 		m_LogicDevice,
 		m_VansVkRayTracingPipeline->m_RaygenShaderBindingTable.size + 
 		m_VansVkRayTracingPipeline->m_MissShaderBindingTable.size + 
@@ -1097,7 +1081,7 @@ void VansGraphics::VansRayTracingShader::CreateShaderBindingTable(VansVKDevice* 
 		m_VansVkRayTracingPipeline->m_CallableShaderBindingTable.size,
 		VK_FORMAT_R32_SFLOAT,
 		VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) return false;
 
 	//从pipeline中获取handle的数据
 	std::vector<uint8_t> handles(groupCount * handleSize);
@@ -1112,18 +1096,18 @@ void VansGraphics::VansRayTracingShader::CreateShaderBindingTable(VansVKDevice* 
 	if (result != VK_SUCCESS)
 	{
 		VANS_LOG_ERROR("Could not get ray tracing shader group handles. VkResult: " << result);
-		return;
+		return false;
 	}
 
 	uint8_t* handleData = handles.data();
 	VkDeviceSize offset = 0;
-	m_SBTBuffer.SetBufferData(handleData, offset, handleSize);
+	if (!m_SBTBuffer.SetBufferData(handleData, offset, handleSize)) return false;
 	handleData += handleSize;
 	offset = m_VansVkRayTracingPipeline->m_RaygenShaderBindingTable.size;
 	//miss
 	for (uint32_t i = 0; i < missCount; i++)
 	{
-		m_SBTBuffer.SetBufferData(handleData, offset, handleSize);
+		if (!m_SBTBuffer.SetBufferData(handleData, offset, handleSize)) return false;
 		handleData += handleSize;
 		offset += m_VansVkRayTracingPipeline->m_MissShaderBindingTable.stride;
 	}
@@ -1132,12 +1116,13 @@ void VansGraphics::VansRayTracingShader::CreateShaderBindingTable(VansVKDevice* 
 	// Hit
 	for (uint32_t i = 0; i < hitCount; i++)
 	{
-		m_SBTBuffer.SetBufferData(handleData, offset, handleSize);
+		if (!m_SBTBuffer.SetBufferData(handleData, offset, handleSize)) return false;
 		handleData += handleSize;
 		offset += m_VansVkRayTracingPipeline->m_HitShaderBindingTable.stride;
 	}
 
 	const VkDeviceAddress sbtAddress = m_SBTBuffer.GetDeviceAddress(m_LogicDevice);
+	if (sbtAddress == 0) return false;
 
 	// 射线生成区域
 	m_VansVkRayTracingPipeline->m_RaygenShaderBindingTable.deviceAddress = sbtAddress;
@@ -1150,6 +1135,7 @@ void VansGraphics::VansRayTracingShader::CreateShaderBindingTable(VansVKDevice* 
 	m_VansVkRayTracingPipeline->m_HitShaderBindingTable.deviceAddress =
 		m_VansVkRayTracingPipeline->m_MissShaderBindingTable.deviceAddress + 
 		m_VansVkRayTracingPipeline->m_MissShaderBindingTable.size;
+	return true;
 }
 
 bool VansGraphics::VansRayTracingShader::CreateRayTracingPipeline(VkDevice& logic_device, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts)
@@ -1188,9 +1174,9 @@ bool VansGraphics::VansRayTracingShader::CreateRayTracingPipeline(VkDevice& logi
 	const auto raygenIt = stageIndices.find(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
 	const auto missIt = stageIndices.find(VK_SHADER_STAGE_MISS_BIT_KHR);
 	const auto closestHitIt = stageIndices.find(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR);
-	if (raygenIt == stageIndices.end() || missIt == stageIndices.end() || closestHitIt == stageIndices.end())
+	if (raygenIt == stageIndices.end() || missIt == stageIndices.end())
 	{
-		VANS_LOG_ERROR("Ray tracing program is missing required raygen, miss, or closest-hit stage");
+		VANS_LOG_ERROR("Ray tracing program is missing required raygen or miss stage");
 		return false;
 	}
 
@@ -1216,7 +1202,8 @@ bool VansGraphics::VansRayTracingShader::CreateRayTracingPipeline(VkDevice& logi
 	hitGroup.sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
 	hitGroup.type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
 	hitGroup.generalShader = VK_SHADER_UNUSED_KHR;
-	hitGroup.closestHitShader = closestHitIt->second;
+	// 纯遮挡程序通过 miss 返回可见，不需要 closest-hit 阶段。
+	hitGroup.closestHitShader = closestHitIt != stageIndices.end() ? closestHitIt->second : VK_SHADER_UNUSED_KHR;
 	hitGroup.anyHitShader = VK_SHADER_UNUSED_KHR;
 	hitGroup.intersectionShader = VK_SHADER_UNUSED_KHR;
 	if (const auto anyHitIt = stageIndices.find(VK_SHADER_STAGE_ANY_HIT_BIT_KHR); anyHitIt != stageIndices.end())

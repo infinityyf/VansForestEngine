@@ -26,6 +26,18 @@ namespace VansGraphics
 		return result;
 	}
 
+	VkImageView VansVKImage::CreateCubeMipView(VkDevice device, uint32_t mipLevel) const
+	{
+		if (mipLevel >= m_ImageCreateInfo.mipLevels || m_ImageCreateInfo.imageType != VK_IMAGE_TYPE_2D ||
+			!(m_ImageCreateInfo.flags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT)) return VK_NULL_HANDLE;
+		VkImageViewCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+		info.image = m_VansVKImage;
+		info.viewType = VK_IMAGE_VIEW_TYPE_CUBE_ARRAY; info.format = m_ImageCreateInfo.format;
+		info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mipLevel, 1, 0, m_ImageCreateInfo.arrayLayers};
+		VkImageView result = VK_NULL_HANDLE;
+		return VansGraphics::vkCreateImageView(device, &info, nullptr, &result) == VK_SUCCESS ? result : VK_NULL_HANDLE;
+	}
+
 	VkImageView VansVKImage::CreateMipArrayView(VkDevice device, uint32_t mipLevel) const
 	{
 		if (mipLevel >= m_ImageCreateInfo.mipLevels) return VK_NULL_HANDLE;
@@ -298,6 +310,16 @@ namespace VansGraphics
 
 
         return true;
+    }
+
+    bool VansVKImage::HasResources() const
+    {
+        if (m_VansVKImage != VK_NULL_HANDLE || m_VansVKImageAllocation != nullptr ||
+            m_VansVKImageView != VK_NULL_HANDLE || m_DepthStencilView != VK_NULL_HANDLE || m_Sampler != VK_NULL_HANDLE)
+            return true;
+        for (const auto view : m_VansVKImageMipViews)
+            if (view != VK_NULL_HANDLE) return true;
+        return false;
     }
 
     void VansVKImage::DestroyVulkanImage(VkDevice& logical_device)

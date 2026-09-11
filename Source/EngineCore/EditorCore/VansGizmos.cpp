@@ -1,4 +1,4 @@
-﻿#define IMGUI_DEFINE_MATH_OPERATORS
+#define IMGUI_DEFINE_MATH_OPERATORS
 #include "VansGizmos.h"
 #include "VansEditorWindow.h"
 #include "VansEditorSelection.h"
@@ -219,31 +219,21 @@ void VansGizmos::Draw(Vans::EditorAPI::IEngineEditorAPI& api,
             if (giSettings.showProbeVolume)
                 drawBox(volumeMin, volumeMax, IM_COL32(255, 180, 40, 220), 1.5f);
 
-            Vans::EditorAPI::GIProbeDebugSnapshot giProbeDebug;
+            std::shared_ptr<const Vans::EditorAPI::GIProbeDebugSnapshot> giProbeDebug;
             if (giSettings.showProbeGizmos)
                 giProbeDebug = api.GetGIProbeDebugSnapshot();
-            if (giSettings.showProbeGizmos && giProbeDebug.available && !giProbeDebug.probes.empty())
+            if (giSettings.showProbeGizmos && giSettings.placement.enabled && giProbeDebug && giProbeDebug->available)
             {
-                for (const auto& probe : giProbeDebug.probes)
+                for (const auto& probe : giProbeDebug->probes)
                 {
                     ImVec2 screen;
-                    if (!project(ToGlm(probe.position), screen))
+                    if (!project(ToGlm(probe.position), screen) || screen.x < windowPos.x || screen.y < windowPos.y ||
+                        screen.x > windowPos.x + windowSize.x || screen.y > windowPos.y + windowSize.y)
                         continue;
-
-                    const float r = std::clamp(probe.l0Diffuse.x, 0.0f, 1.0f);
-                    const float g = std::clamp(probe.l0Diffuse.y, 0.0f, 1.0f);
-                    const float b = std::clamp(probe.l0Diffuse.z, 0.0f, 1.0f);
-                    const ImU32 fillColor = IM_COL32(
-                        static_cast<int>(r * 255.0f),
-                        static_cast<int>(g * 255.0f),
-                        static_cast<int>(b * 255.0f),
-                        230);
-                    const float radius = 2.0f + std::clamp(probe.l1Ratio, 0.0f, 1.0f) * 3.0f;
-                    drawList->AddCircleFilled(screen, radius, fillColor, 12);
-                    drawList->AddCircle(screen, radius + 1.0f, IM_COL32(255, 255, 255, 120), 12, 1.0f);
+                    drawList->AddCircleFilled(screen, 3.0f, IM_COL32(255, 210, 80, 230), 8);
                 }
 			}
-			else if (giSettings.showProbeGizmos &&
+			else if (giSettings.showProbeGizmos && !giSettings.placement.enabled &&
 					 selectedRegion.gridDimensions.x > 0.0f && selectedRegion.gridDimensions.y > 0.0f && selectedRegion.gridDimensions.z > 0.0f &&
 					 selectedRegion.probeSpacing > 0.0f)
             {
@@ -530,4 +520,3 @@ void VansGizmos::HandleHotkeys()
 }
 
 } // namespace VansGraphics
-

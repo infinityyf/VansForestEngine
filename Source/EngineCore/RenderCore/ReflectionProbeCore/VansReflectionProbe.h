@@ -13,25 +13,36 @@ namespace VansGraphics
 	enum class ReflectionProbeDebugView : int32_t
 	{
 		None, Influence, ProbeColor, SSRConfidence, RegionId, Parallax,
-		FallbackOnly, SSROnly
+		FallbackOnly, SSROnly,
+		LocalRadiance, EnvironmentRadiance, SkyFallbackRadiance, LocalCoverage,
+		IndirectSpecularContribution, IndirectDiffuseContribution, DirectLightingContribution
 	};
+
+	inline bool IsReflectionProbeIsolatedDebugView(ReflectionProbeDebugView view)
+	{
+		return view >= ReflectionProbeDebugView::LocalRadiance && view <= ReflectionProbeDebugView::DirectLightingContribution;
+	}
+
+	inline float ReflectionProbeDebugDisplayMode(ReflectionProbeDebugView view)
+	{
+		return view == ReflectionProbeDebugView::LocalCoverage ? 2.0f : (IsReflectionProbeIsolatedDebugView(view) ? 1.0f : 0.0f);
+	}
 
 	struct ReflectionProbePlacementSettings
 	{
-		bool enabled = true;
+		bool enabled = false;
 		bool geometryOnly = true;
 		glm::vec3 volumeMin = glm::vec3(-20.0f, -14.0f, -20.0f);
 		glm::vec3 volumeMax = glm::vec3(20.0f, 26.0f, 20.0f);
 		float cellSize = 4.0f;
+		float minCaptureClearance = 0.25f;
 		float indoorSpacing = 8.0f;
 		float corridorSpacing = 8.0f;
 		float outdoorSpacing = 28.0f;
 		float solidThreshold = 0.25f;
 		float refinementThreshold = 0.05f;
 		uint32_t maxProbeCount = 256;
-		// Uniform grid placement spacing.  When > 0, GenerateAutoProbes
-		// produces a regular 3D grid inside [volumeMin, volumeMax] instead
-		// of the adaptive geometry-aware pipeline.
+		// 已保存规则布局的解析查询提示；自动布局始终使用真实表面需求。
 		float uniformSpacing = 7.0f;
 		// Influence-box edge length relative to each uniform grid cell.
 		// This does not change probe count or capture positions.
@@ -44,7 +55,7 @@ namespace VansGraphics
 		uint32_t maxBlendCount = 4;
 		float ssrRoughnessFadeStart = 0.35f;
 		float ssrRoughnessFadeEnd = 0.75f;
-		float skyIntensity = 1.0f;
+
 	};
 
 	enum class ProbeCellClass : uint8_t { Unknown, Solid, Empty, Boundary, Exterior };
@@ -139,6 +150,7 @@ namespace VansGraphics
 		uint32_t maxBlendCount = 4;
 		uint32_t debugView = 0;
 		glm::vec4 lightingParams = glm::vec4(0.35f, 0.75f, 1.0f, 1.0f);
+		// 规则布局的解析式局部索引，与自动排布是否开启无关。
 		glm::vec4 uniformGridOrigin = glm::vec4(0.0f);
 		glm::vec4 uniformGridInvCellSize = glm::vec4(0.0f);
 		glm::uvec4 uniformGridDimensionsAndFlags = glm::uvec4(0u);
@@ -149,6 +161,7 @@ namespace VansGraphics
 		bool valid = false;
 		bool dirty = true;
 		uint32_t arrayLayer = 0;
+		uint32_t texturePage = 0;
 		uint32_t mipCount = 1;
 		uint64_t revision = 0;
 		std::string cachePath;
@@ -167,5 +180,7 @@ namespace VansGraphics
 		int previewFace = 0;
 		float previewRoughness = 0.0f;
 		ReflectionProbeDebugView debugView = ReflectionProbeDebugView::None;
+		float debugRoughness = 0.0f;
+		float debugExposureEV = 0.0f;
 	};
 }

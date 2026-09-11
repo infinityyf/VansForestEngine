@@ -1,0 +1,154 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_nonuniform_qualifier : require
+#include "../Common/Common.glsl"
+#include "../SSGI/SSGISurface.glsl"
+#include "../GI/GIReceiverVisibilityData.glsl"
+#include "../GI/GIProbeStateData.glsl"
+layout(local_size_x=8,local_size_y=8) in;
+layout(set=1,binding=0) uniform sampler2D inputPosition;
+layout(set=1,binding=1) uniform sampler2D inputNormal;
+layout(set=1,binding=2) uniform sampler2D inputMaterial;
+layout(set=1,binding=3) uniform sampler2D inputMotion;
+struct Region { vec4 minimum; vec4 sizeBias; vec4 trace; vec4 countsPriority; };
+layout(set=1,binding=4) uniform Info { vec4 screenSize; vec4 regionInfo; Region regions[8]; vec4 debug; };
+#define GI_LAYOUT_SET 1
+#define GI_LAYOUT_BINDING 6
+#include "../GI/GIProbeLayoutData.glsl"
+layout(set=1,binding=7,std430) readonly buffer State { GIProbeState states[]; } currentStates[8];
+layout(set=1,binding=8,std430) readonly buffer PreviousState { GIProbeState states[]; } previousStates[8];
+#define GI_LOAD_PROBE_STATE(r,p) currentStates[nonuniformEXT(r)].states[p]
+#define GI_RECEIVER_BIAS_BINDING 15
+#include "../GIReceiverBias/GIReceiverBiasCommon.glsl"
+#include "../GI/GIProbeCommon.glsl"
+layout(set=1,binding=9,std430) readonly buffer History { uvec4 historyHeader; GIReceiverVisibilityRecord history[]; };
+layout(set=1,binding=10,std430) buffer Output { uvec4 outputHeader; GIReceiverVisibilityRecord records[]; };
+layout(set=1,binding=11,std430) buffer Work { uvec4 counters; uvec2 tasks[]; };
+layout(push_constant) uniform Params { uvec4 frame; vec4 jitter; }; // cache size, independent frame, enabled
+layout(set=1,binding=12,std430) readonly buffer Anchors { uint anchors[]; };
+#include "../GI/GIReceiverVisibilityReuse.glsl"
+#include "../GI/GIReceiverVisibilityPersistentReuse.glsl"
+// 优化 4 读取入口；Reproject 阶段被注释时映射全为空，自然使用基础历史路径。
+void GI_ReuseStableReceiverAnchor(uint index, vec4 position, vec3 normal, float material,
+    float footprint, uint count, uint maximumAge,
+    inout GIReceiverVisibilityRecord record, inout float bestDistance)
+{
+    uint previous = anchors[index];
+    if (previous >= frame.x * frame.y) return;
+    GI_ConsiderReceiverHistory(history[previous], position, normal, material, footprint,
+        count, maximumAge, record, bestDistance);
+}
+void main()
+{
+    uvec2 coord=gl_GlobalInvocationID.xy;
+    if (any(greaterThanEqual(coord,frame.xy))) return;
+    uint index=coord.y*frame.x+coord.x;
+    uint total=frame.x*frame.y;
+    // 历史至少覆盖一次完整轮转，分辨率升高时不能先过期再等刷新。
+    uint maximumAge=GI_RECEIVER_REFRESH_FRAMES+(total+GI_RECEIVER_FAIR_ANCHORS-1u)/GI_RECEIVER_FAIR_ANCHORS;
+    if(index==0u) outputHeader=uvec4(frame.w,frame.xy,0u);
+    GIReceiverVisibilityRecord record;
+    record.surface=vec4(0.0); record.metadata=uvec4(0u); record.anchor=vec4(0.0);
+    for(uint i=0u;i<4u;++i) record.probes[i]=uvec4(0xffffffffu);
+    records[index]=record;
+    if(frame.w==0u) return;
+    ivec2 fullSize=ivec2(screenSize.xy);
+    ivec2 pixel=min(ivec2(coord)*4+2,fullSize-1);
+    vec4 position=texelFetch(inputPosition,pixel,0);
+    if(position.w<=0.0) return;
+    vec4 shading=texelFetch(inputNormal,pixel,0);
+    vec3 dx=SSGI_SurfaceDerivative(position,
+        texelFetch(inputPosition,max(pixel-ivec2(1,0),ivec2(0)),0),
+        texelFetch(inputPosition,min(pixel+ivec2(1,0),fullSize-1),0));
+    vec3 dy=SSGI_SurfaceDerivative(position,
+        texelFetch(inputPosition,max(pixel-ivec2(0,1),ivec2(0)),0),
+        texelFetch(inputPosition,min(pixel+ivec2(0,1),fullSize-1),0));
+    vec3 N=SSGI_NormalFromDerivatives(dx,dy,normalize(shading.xyz));
+    float footprint=max(length(dx),length(dy));
+    float material=round(texelFetch(inputMaterial,pixel,0).z);
+    uint selected=0xffffffffu; float priority=-3.402823e38,fade=-1.0;
+    for(uint r=0u;r<min(uint(regionInfo.x),8u);++r)
+    {
+        Region v=regions[r];
+        if(!GI_IsInsideVolume(position.xyz,v.minimum.xyz,v.sizeBias.xyz)) continue;
+        float f=GI_VolumeFade(position.xyz,v.minimum.xyz,v.sizeBias.xyz,max(v.trace.z,0.0));
+        if(selected==0xffffffffu || v.countsPriority.w>priority || (v.countsPriority.w==priority && f>fade))
+        { selected=r;priority=v.countsPriority.w;fade=f; }
+    }
+    if(selected==0xffffffffu) return;
+    record.surface=SSGI_EncodeSurface(position.xyz,N,material);
+    record.metadata.xy=uvec2(selected,frame.z);
+    record.anchor=vec4(footprint,0.0,0.0,0.0);
+    GI_SetReceiverBias(pixel,position,N,material,footprint);
+    uint count=0u;
+    bool twoSided=(int(material)==MATERIAL_ID_GRASS || int(material)==MATERIAL_ID_TREE) && shading.w>0.001;
+    for(uint hemisphere=0u;hemisphere<(twoSided?2u:1u);++hemisphere)
+    {
+        Region v=regions[selected];
+        GIProbeCandidates c=GI_GatherProbeCandidates(selected,ivec3(v.countsPriority.xyz),position.xyz,
+            hemisphere==0u?N:-N,v.minimum.xyz,v.sizeBias.xyz,v.sizeBias.w);
+        for(uint i=0u;i<8u;++i)
+        {
+            uint p=c.probes[i];
+            if(p==0xffffffffu || c.weights[i]<=0.0 || currentStates[nonuniformEXT(selected)].states[p].metadata.x!=1u) continue;
+            bool duplicate=false;
+            for(uint j=0u;j<count;++j) duplicate=duplicate || GI_ReceiverProbe(record,j)==p;
+            if(!duplicate) { record.probes[count>>2u][count&3u]=p; ++count; }
+        }
+    }
+    if(count==0u) return;
+    uint mask=(1u<<count)-1u;
+    float bestDistance=3.402823e38;
+    if(frame.z!=0u && historyHeader.x!=0u)
+    {
+        GI_ReuseStableReceiverAnchor(index,position,N,material,footprint,count,maximumAge,record,bestDistance);
+        vec2 uv=(vec2(pixel)+0.5)/vec2(fullSize)-texelFetch(inputMotion,pixel,0).xy+jitter.xy;
+        vec2 cachePixel=(uv*vec2(fullSize)-2.5)*0.25;
+        ivec2 base=ivec2(floor(cachePixel));
+        if(record.metadata.z!=mask)
+            for(int y=0;y<2;++y) for(int x=0;x<2;++x)
+                GI_SearchReceiverHistoryTap(base+ivec2(x,y),position,N,material,footprint,
+                    count,maximumAge,record,bestDistance);
+        GI_SearchExtendedReceiverHistory(cachePixel,base,position,N,material,footprint,
+            count,maximumAge,record,bestDistance); // 优化 3 独立入口
+    }
+    GI_ReusePersistentReceiverHistory(position,N,material,footprint,count,maximumAge,
+        record,bestDistance); // 优化 5 独立读取入口
+    records[index]=record;
+    uint missing=mask & ~record.metadata.z;
+    // 全遮挡的旧锚点优先在当前点确认；未获得预算时保留原记录，不把未验证误当可见。
+    float originScale=max(max(abs(position.x),abs(position.y)),abs(position.z));
+    bool confirmBlocked=record.metadata.z==mask && record.metadata.w==0u &&
+        length(record.surface.xyz-position.xyz)>max(footprint*0.25, max(1e-5,originScale*4.7683716e-7));
+    bool refresh=record.metadata.z!=0u && frame.z-record.metadata.y>=GI_RECEIVER_REFRESH_FRAMES;
+    if(missing==0u && !refresh && !confirmBlocked) return;
+    uint start=(frame.z%total)*GI_RECEIVER_FAIR_ANCHORS%total;
+    uint fairSlot=(index+total-start)%total;
+    uint slot=0xffffffffu;
+    // 轮转可刷新整组；紧急预算只补缺失项，不能丢弃已知项，也不能洗新它们的时间。
+    uint traceMask=confirmBlocked ? mask : missing;
+    if(fairSlot<min(total,GI_RECEIVER_FAIR_ANCHORS))
+    {
+        slot=fairSlot*16u;
+        if(refresh) traceMask=mask;
+    }
+    else if(traceMask!=0u)
+    {
+        uint urgent=atomicAdd(counters.x,uint(bitCount(traceMask)));
+        if(urgent+uint(bitCount(traceMask))<=GI_RECEIVER_RAY_BUDGET-GI_RECEIVER_FAIR_RAYS)
+            slot=GI_RECEIVER_FAIR_RAYS+urgent;
+    }
+    if(slot==0xffffffffu) return;
+    if(confirmBlocked)
+    {
+        record.surface=SSGI_EncodeSurface(position.xyz,N,material);
+        record.anchor=vec4(footprint,0.0,0.0,0.0);
+    }
+    if(traceMask==mask) record.metadata.y=frame.z;
+    record.metadata.zw &= uvec2(~traceMask);
+    records[index]=record;
+    uint taskCount=0u;
+    for(uint i=0u;i<count;++i)
+        if((traceMask & (1u<<i))!=0u) tasks[slot+taskCount++]=uvec2(index,i);
+    atomicAdd(counters.y,taskCount);
+}

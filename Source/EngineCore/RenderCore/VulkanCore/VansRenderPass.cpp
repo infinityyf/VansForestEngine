@@ -340,7 +340,7 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 		1,
 		1,
 		VK_IMAGE_TYPE_2D,
-		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
 		VK_SAMPLE_COUNT_1_BIT,
 		false,
 		false,
@@ -354,7 +354,7 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 		1,
 		1,
 		VK_IMAGE_TYPE_2D,
-		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
 		VK_SAMPLE_COUNT_1_BIT,
 		false,
 		false,
@@ -368,7 +368,7 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 		1,
 		1,
 		VK_IMAGE_TYPE_2D,
-		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
 		VK_SAMPLE_COUNT_1_BIT,
 		false,
 		false,
@@ -1437,110 +1437,71 @@ void VansGraphics::VansRenderPassManager::SetupVansDisplayPostProcessPass(
 }
 
 void VansGraphics::VansRenderPassManager::SetupVansDecalRenderPass(
-	VkDevice& logic_device, const VkExtent2D& renderResolution)
+    VkDevice& logic_device, VansVKCommandBuffer& commandBuffer, VkQueue& queue,
+    const VkExtent2D& renderResolution)
 {
-	// 贴花 Pass — 3 个颜色附件 + 只读深度附件
-	// 颜色附件：Normal / GBuffer0 / GBuffer1
-	//   LOAD + STORE：保留 GBuffer pass 写入的内容，贴花以 alpha blend 叠写
-	// 深度附件：只读加载，不写入（depthWriteEnable = VK_FALSE in pipeline）
-	//   initialLayout = SHADER_READ_ONLY_OPTIMAL（GBuffer pass finalLayout）
-	//   finalLayout   = SHADER_READ_ONLY_OPTIMAL（供后续 Deferred pass 采样）
-	//   subpass reference layout = DEPTH_STENCIL_READ_ONLY_OPTIMAL
-	//   → 允许硬件深度测试（读）同时不破坏深度缓冲内容
-	std::vector<VkAttachmentDescription> attachments =
-	{
-		// 附件 0: Normal（R16G16B16A16_SFLOAT）
-		{
-			0, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT,
-			VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE,
-			VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
-		},
-		// 附件 1: GBuffer0 albedo（R16G16B16A16_SFLOAT）
-		{
-			0, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT,
-			VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE,
-			VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-		},
-		// 附件 2: GBuffer1 metallic+AO（R16G16B16A16_SFLOAT），colorWriteMask 在 pipeline 中限制为 R+G
-		{
-			0, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT,
-			VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE,
-			VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-		},
-		// 附件 3: Depth（D32_SFLOAT_S8_UINT）— 只读，供深度测试，不写入
-		//   LOAD：保留 GBuffer pass 写入的深度值
-		//   STORE：保留深度供后续 Deferred pass 使用
-		{
-			0, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_SAMPLE_COUNT_1_BIT,
-			VK_ATTACHMENT_LOAD_OP_LOAD,       VK_ATTACHMENT_STORE_OP_STORE,
-			VK_ATTACHMENT_LOAD_OP_DONT_CARE,  VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
-		},
-	};
+    const VkFormat formats[] = { VK_FORMAT_R8G8B8A8_UNORM,
+        VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R8G8B8A8_UNORM };
+    VansVKImage* images[] = { &m_DecalColorImage, &m_DecalNormalImage, &m_DecalRoughnessImage };
+    std::vector<VkAttachmentDescription> attachments;
+    std::vector<VkImageView> views;
+    for (size_t i = 0; i < 3; ++i)
+    {
+        images[i]->CreateVulkanImage(logic_device,
+            { renderResolution.width, renderResolution.height, 1 }, formats[i], 1, 1,
+            VK_IMAGE_TYPE_2D, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_SAMPLE_COUNT_1_BIT,
+            false, false, true, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+        attachments.push_back({ 0, formats[i], VK_SAMPLE_COUNT_1_BIT,
+            VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE,
+            VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL });
+        views.push_back(images[i]->GetImageView());
+        images[i]->SetTrackedImageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    }
+    attachments.push_back({ 0, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_SAMPLE_COUNT_1_BIT,
+        VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE,
+        VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE,
+        VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL });
+    views.push_back(m_DepthImage.GetDepthStencilView());
+    VkAttachmentReference depthRef = { 3, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
+    std::vector<SubpassParameters> subpasses = {{ VK_PIPELINE_BIND_POINT_GRAPHICS, {},
+        {{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL}, {1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
+         {2, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL}}, {}, &depthRef, {} }};
+    std::vector<VkSubpassDependency> dependencies = {
+        // GBuffer 写入和上一帧的修饰采样必须完成，才能重用修饰附件。
+        { VK_SUBPASS_EXTERNAL, 0,
+          VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+              VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+          VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+              VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+          VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT,
+          VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+              VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT, 0 },
+        { 0, VK_SUBPASS_EXTERNAL, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+          VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+          VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, 0 }
+    };
+    m_VansDecalPass.m_ClearValues.assign(3, VkClearValue{});
+    m_VansDecalPass.CreateRenderPass(logic_device, attachments, subpasses, dependencies, renderResolution);
+    m_VansDecalPass.m_FrameBuffers.resize(1);
+    m_VansDecalPass.m_FrameBuffers[0].CreateFrameBuffer(logic_device, m_VansDecalPass.m_RenderPass,
+        views, { renderResolution.width, renderResolution.height, 1 });
 
-	// 深度 subpass reference 使用 DEPTH_STENCIL_READ_ONLY_OPTIMAL：
-	// 允许深度测试（读）的同时也允许 fragment shader 通过 sampler 读取深度，
-	// 且 pipeline depthWriteEnable=VK_FALSE 保证不写入深度。
-	VkAttachmentReference depthRef = { 3, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
-
-	std::vector<SubpassParameters> subpassParams =
-	{
-		{
-			VK_PIPELINE_BIND_POINT_GRAPHICS,
-			{},
-			{
-				{ 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL },
-				{ 1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL },
-				{ 2, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL }
-			},
-			{},
-			&depthRef,
-			{}
-		}
-	};
-
-	std::vector<VkSubpassDependency> dependencies =
-	{
-		// GBuffer Pass → Decal Pass：颜色写入 + 深度写入完成后才可开始 decal
-		{
-			VK_SUBPASS_EXTERNAL, 0,
-			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-			VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-			VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
-			VK_DEPENDENCY_BY_REGION_BIT
-		},
-		// Decal Pass → Deferred/Compute：贴花写入完成后，后续 pass 可读取 GBuffer
-		{
-			0, VK_SUBPASS_EXTERNAL,
-			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-			VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-			VK_ACCESS_SHADER_READ_BIT,
-			VK_DEPENDENCY_BY_REGION_BIT
-		}
-	};
-
-	// 贴花 pass 不需要 clear（颜色 LOAD，深度 LOAD）
-	m_VansDecalPass.m_ClearValues = {};
-
-	m_VansDecalPass.CreateRenderPass(logic_device, attachments, subpassParams, dependencies, renderResolution);
-
-	// 单一 framebuffer，引用现有 GBuffer 图像的 ImageView + 深度图像的 DepthStencilView
-	m_VansDecalPass.m_FrameBuffers.resize(1);
-	std::vector<VkImageView> fbViews =
-	{
-		m_NormalImage.GetImageView(),
-		m_GBufferImage0.GetImageView(),
-		m_GBufferImage1.GetImageView(),
-		m_DepthImage.GetDepthStencilView(),   // 只读深度，供硬件深度测试
-	};
-	m_VansDecalPass.m_FrameBuffers[0].CreateFrameBuffer(
-		logic_device, m_VansDecalPass.m_RenderPass, fbViews,
-		{ renderResolution.width, renderResolution.height, 1 });
+    m_EmptyDecalImage.CreateVulkanImage(logic_device, {1, 1, 1}, VK_FORMAT_R8G8B8A8_UNORM, 1, 1,
+        VK_IMAGE_TYPE_2D, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        VK_SAMPLE_COUNT_1_BIT, false, false, true, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+    commandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+    m_EmptyDecalImage.SetImageMemoryBarrier(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT, { m_EmptyDecalImage.GetImage(), 0, VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, VK_IMAGE_ASPECT_COLOR_BIT });
+    commandBuffer.ClearColorImage(m_EmptyDecalImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VkClearColorValue{});
+    m_EmptyDecalImage.SetImageMemoryBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, { m_EmptyDecalImage.GetImage(), VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, VK_IMAGE_ASPECT_COLOR_BIT });
+    EndSubmitAndResetOneTimeCommand(commandBuffer, queue, logic_device, "SetupVansDecalRenderPass");
 }
 
 void VansGraphics::VansRenderPassManager::SetupVansScreenSpaceEffectsPass(
@@ -2031,6 +1992,10 @@ void VansGraphics::VansRenderPassManager::DestroySceneResolutionRenderPasses()
 	m_DepthImage.DestroyVulkanImage(m_LogicDevice);
 	m_MotionVectorImage.DestroyVulkanImage(m_LogicDevice);
 	m_NormalImage.DestroyVulkanImage(m_LogicDevice);
+    m_DecalColorImage.DestroyVulkanImage(m_LogicDevice);
+    m_DecalNormalImage.DestroyVulkanImage(m_LogicDevice);
+    m_DecalRoughnessImage.DestroyVulkanImage(m_LogicDevice);
+    m_EmptyDecalImage.DestroyVulkanImage(m_LogicDevice);
 	m_GBufferImage0.DestroyVulkanImage(m_LogicDevice);
 	m_GBufferImage1.DestroyVulkanImage(m_LogicDevice);
 	m_GBufferImage2.DestroyVulkanImage(m_LogicDevice);

@@ -1,4 +1,6 @@
 #pragma once
+#include "GICore/VansGIReceiverVisibility.h"
+#include "SkyLightingCore/VansSkyLighting.h"
 
 #include "VulkanCore/VansShader.h"
 
@@ -91,7 +93,7 @@ namespace VansGraphics
 
 		glm::vec4 screenSize;
 
-		glm::vec4 frameParams; // x = temporal frame index, yzw = reserved
+		glm::vec4 frameParams; // x = 历史帧号，yz = previous jitter UV - current jitter UV，w = reserved
 
 	};
 
@@ -100,7 +102,7 @@ namespace VansGraphics
 	struct alignas(16) SSGIAtrousPushConstants
 	{
 		uint32_t stepWidth = 1;
-		float depthSigma = 0.04f;
+		float planeToleranceScale = 1.0f;
 		float normalPower = 32.0f;
 		float materialWeight = 0.0f;
 	};
@@ -180,7 +182,7 @@ namespace VansGraphics
 
 
 
-		static constexpr const char* DECAL_GBUFFER    = "decalGBuffer";
+		static constexpr const char* DECAL_MODIFIER    = "decalModifier";
 
 	}
 
@@ -409,6 +411,7 @@ namespace VansGraphics
 		// clamping instead of deriving it only from the current 3x3 neighborhood.
 		static constexpr const char* RT_SSGI_MOMENTS_A = "Runtime.SSGI.MomentsA";
 		static constexpr const char* RT_SSGI_MOMENTS_B = "Runtime.SSGI.MomentsB";
+		// RGBA32F：xyz 世界坐标；w 为 SSGISurface.glsl 定义的法线/材质整数数值。
 		static constexpr const char* RT_SSGI_SURFACE_HISTORY_A = "Runtime.SSGI.SurfaceHistoryA";
 		static constexpr const char* RT_SSGI_SURFACE_HISTORY_B = "Runtime.SSGI.SurfaceHistoryB";
 		static constexpr const char* RT_SSGI_ATROUS_A = "Runtime.SSGI.AtrousA";
@@ -681,10 +684,7 @@ namespace VansGraphics
 
 		VkDescriptorSet m_VideoBindlessDescriptorSet = VK_NULL_HANDLE;
 
-		// Git 原有 IBL 资源：启动时从 SkyBox 一次性生成，运行时只采样。
-		VansTexture* m_PreConvDiffuse = nullptr;
-		VansTexture* m_EnvironmentRadiance = nullptr;
-		VansTexture* m_PreConvSpecular = nullptr;
+        VansSkyLighting m_SkyLighting;
 
 
 
@@ -746,6 +746,7 @@ namespace VansGraphics
 
 		VansComputeShader* m_SSGIShader = nullptr;
 		VansComputeShader* m_SSGIProbeCacheShader = nullptr;
+		VansGIReceiverVisibility m_GIReceiverVisibility;
 
 
 
@@ -766,7 +767,7 @@ namespace VansGraphics
 
 		VansVKBuffer m_SSGICBBuffer;
 
-		VansVKBuffer m_SkySHResultBuffer;
+
 
 
 
@@ -1041,6 +1042,8 @@ namespace VansGraphics
 
 
 		VansBasePBRParam m_BasePBRParam;
+		bool m_AlphaTestEnabled = false;
+		float m_AlphaCutoff = 0.5f;
 		VansTreeLeafParamsGPU m_TreeLeafParams;
 
 
@@ -1115,38 +1118,18 @@ namespace VansGraphics
 
 	// ============================================================
 
-	class VansDecalMaterial : public VansMaterial
-
-	{
-
-	public:
-
-		VansTexture* m_BaseColorTexture  = nullptr;
-
-		VansTexture* m_NormalTexture     = nullptr;
-
-		VansTexture* m_MetalTexture      = nullptr;
-
-		VansTexture* m_RoughnessTexture  = nullptr;
-
-		VansTexture* m_AoTexture         = nullptr;
-
-
-
-		VansBasePBRParam m_BasePBRParam;
-
-
-
-
-
-	};
-
-
-
-	// ============================================================
-
-
-	// ============================================================
+    // 通用材质 payload：values[0]=albedo/opacity，values[1]=roughness/三种属性权重，
+    // values[2].x=sortPriority；textureIndices=颜色/法线/粗糙度/三通道覆盖遮罩。
+    class VansDecalMaterial : public VansMaterial
+    {
+    public:
+        VansDecalMaterial()
+        {
+            m_MaterialType = VAN_DECAL;
+            m_CustomMaterialPayload.values[0] = glm::vec4(1.0f);
+            m_CustomMaterialPayload.values[1] = glm::vec4(0.5f, 1.0f, 1.0f, 1.0f);
+        }
+    };
 
 	class VansTransparentMaterial : public VansMaterial
 

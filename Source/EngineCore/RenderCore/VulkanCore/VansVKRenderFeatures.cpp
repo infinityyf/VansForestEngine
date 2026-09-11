@@ -5,6 +5,7 @@
 #include "VansRenderPass.h"
 
 #include "../VansScene.h"
+#include "../VansTemporalProjection.h"
 #include "../AtmosphereCore/VansAtmosphereSystem.h"
 
 #include "../VansPostProcessProfile.h"
@@ -17,6 +18,10 @@
 #include <cstddef>
 
 #include <cmath>
+#include <cstdlib>
+#include <stdexcept>
+#include "../VansShaderManager.h"
+#include "../../Util/VansLog.h"
 
 namespace VansGraphics
 
@@ -70,7 +75,7 @@ namespace VansGraphics
 			data.regionInfo = glm::vec4(
 				static_cast<float>(regionCount), maxTraceDistance, fadeStartRatio, 0.0f);
 			data.deferredProbeDebug = glm::vec4(
-				IsGIProbeOnlyDeferredOutputEnabled(gi) ? 1.0f : 0.0f,
+				gi.probeOnlyDeferredOutput ? 1.0f : 0.0f,
 				gi.probeOnlyDeferredExposure,
 				0.0f,
 				0.0f);
@@ -102,8 +107,20 @@ namespace VansGraphics
 		if (manager == nullptr || manager->m_SSGICBBuffer.GetNativeBuffer() == VK_NULL_HANDLE)
 			return;
 
-		const SSGIParamsGPU data = BuildSSGIParamsFromGISettings(
+		SSGIParamsGPU data = BuildSSGIParamsFromGISettings(
 			settings, m_RenderWidth, m_RenderHeight);
+        if (rayTracingContext.IsReady())
+        {
+            data.regionInfo.x = float(rayTracingContext.GetGIRegionCount());
+            data.regionInfo.w = rayTracingContext.UsesSparseGI() ? 1.0f : 0.0f;
+            for (uint32_t index = 0; index < rayTracingContext.GetGIRegionCount(); ++index)
+            {
+                const uint32_t count = std::max(1u, rayTracingContext.GetGIRegionPhysicalProbeCount(index));
+                const uint32_t columns = uint32_t(std::ceil(std::sqrt(float(count))));
+                data.regions[index].volumeMin.w = float(columns);
+                data.regions[index].traceParams.w = float((count + columns - 1u) / columns);
+            }
+        }
 		manager->m_SSGICBBuffer.SetBufferData(&data, 0, sizeof(data));
 	}
 
@@ -127,7 +144,7 @@ namespace VansGraphics
 	{
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
 		if (manager == nullptr || manager->m_SSGIProbeCacheShader == nullptr ||
-			manager->m_SSGIProbeCacheDescriptorSets.empty())
+			manager->m_SSGIProbeCacheDescriptorSets.size() < 2u)
 		{
 			return;
 		}
@@ -137,6 +154,32 @@ namespace VansGraphics
 		if (output == nullptr)
 			return;
 
+        auto& receiver = manager->m_GIReceiverVisibility;
+        auto& rayTracing = rayTracingContext;
+        bool transportReady = false;
+        transportReady = rayTracing.IsReady() && receiver.enabled; // 注释这一行即可独立移除局部传输补算。
+        // 独立队列：保留上一帧需求用于均匀抽样，再清空本帧计数。
+        VkMemoryBarrier transportBarrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        transportBarrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        transportBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+        computeCmd.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, {transportBarrier});
+        auto work = receiver.transportWork.GetNativeBuffer();
+        if (manager->m_SSGITemporalFrame == 0u)
+            computeCmd.FillBuffer(work, 0, 12, 0u);
+        else
+        {
+            computeCmd.CopyBuffer(work, work, 0, 8, 4);
+            // 源计数读完后才允许清零。
+            transportBarrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            transportBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            computeCmd.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, {transportBarrier});
+            computeCmd.FillBuffer(work, 0, 8, 0u);
+        }
+        computeCmd.FillBuffer(work, 12, 4, transportReady ? 1u : 0u);
+        transportBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        transportBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        computeCmd.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, {transportBarrier});
 		computeCmd.EnsureComputeShader(
 			*manager->m_SSGIProbeCacheShader,
 			{ m_Scene->GetGlobalDescriptorSetLayout(), manager->m_SSGIProbeCacheSetLayout });
@@ -145,7 +188,21 @@ namespace VansGraphics
 			(output->GetWidth() + 7u) / 8u,
 			(output->GetHeight() + 7u) / 8u,
 			1,
-			{ m_Scene->GetGlobalDescriptorSet(), manager->m_SSGIProbeCacheDescriptorSets[0] });
+			{ m_Scene->GetGlobalDescriptorSet(), manager->m_SSGIProbeCacheDescriptorSets[manager->m_SSGITemporalFrame % 2u] });
+        // 与上方入队条件配对的局部传输阶段。
+        if (transportReady)
+        {
+            transportBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            transportBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+            computeCmd.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, {transportBarrier});
+            if (!rayTracing.DispatchReceiverTransport(this, computeCmd, m_Scene,
+                manager->m_SSGIProbeCacheSetLayout,
+                manager->m_SSGIProbeCacheDescriptorSets[manager->m_SSGITemporalFrame % 2u]))
+                throw std::runtime_error("Failed to dispatch GI receiver transport");
+            computeCmd.PipelineBarrier(VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, {transportBarrier});
+        }
 	}
 
 
@@ -157,48 +214,13 @@ namespace VansGraphics
 
 		uint32_t writeIdx = manager->m_SSGITemporalFrame % 2;
 
-		SSGITemporalParamsGPU temporalData{};
-		const float width = static_cast<float>(std::max(m_RenderWidth, 1u));
-		const float height = static_cast<float>(std::max(m_RenderHeight, 1u));
-		temporalData.screenSize = glm::vec4(width, height, 1.0f / width, 1.0f / height);
-		temporalData.frameParams = glm::vec4(static_cast<float>(manager->m_SSGITemporalFrame), 0.0f, 0.0f, 0.0f);
-		manager->m_SSGITemporalCBBuffer.SetBufferData(&temporalData, 0, sizeof(temporalData));
+
 
 
 
 		computeCmd.EnsureComputeShader(*manager->m_SSGITemporalShader, { m_Scene->GetGlobalDescriptorSetLayout(), manager->m_SSGITemporalSetLayout });
 
 		computeCmd.DispatchCompute(*manager->m_SSGITemporalShader, (m_RenderWidth + 7) / 8, (m_RenderHeight + 7) / 8, 1, { m_Scene->GetGlobalDescriptorSet(), manager->m_SSGITemporalDescriptorSets[writeIdx] });
-
-	}
-
-
-
-	void VansVKDevice::BilateralFilterSSGI(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)
-
-	{
-
-		VansMaterialManager* manager = m_Scene->GetMaterialManager();
-
-		uint32_t writeIdx = manager->m_SSGITemporalFrame % 2;
-
-		uint32_t bilateralSetIdx = (writeIdx == 0) ? 1 : 2;
-
-		manager->m_BilateralFilterPushConstant.sigmaSpace = 2.0f;
-
-		manager->m_BilateralFilterPushConstant.sigmaDepth = 0.12f;
-
-		manager->m_BilateralFilterPushConstant.radius = 3;
-
-		manager->m_BilateralFilterPushConstant.depthThreshold = 0.20f;
-
-		manager->m_BilateralFilterPushConstant.depthMode = 0;
-
-		manager->m_BilateralFilterShader->SetPushConstantData(&(manager->m_BilateralFilterPushConstant));
-
-		computeCmd.EnsureComputeShader(*manager->m_BilateralFilterShader, { m_Scene->GetGlobalDescriptorSetLayout(), manager->m_BilateralFilterSetLayout });
-
-		computeCmd.DispatchCompute(*manager->m_BilateralFilterShader, (m_RenderWidth + 7) / 8, (m_RenderHeight + 7) / 8, 1, { m_Scene->GetGlobalDescriptorSet(), manager->m_BilateralFilterDescriptorSets[bilateralSetIdx] });
 
 	}
 
@@ -297,9 +319,9 @@ namespace VansGraphics
 			return;
 
 		VansMaterialManager* manager = m_Scene->GetMaterialManager();
-		if (manager == nullptr || manager->m_PreConvDiffuse == nullptr)
+		if (manager == nullptr || manager->m_SkyLighting.DiffuseIrradiance() == nullptr)
 			return;
-		VansVKImage& skyDiffuse = manager->m_PreConvDiffuse->GetImage();
+		VansVKImage& skyDiffuse = manager->m_SkyLighting.DiffuseIrradiance()->GetImage();
 
 
 
@@ -314,21 +336,19 @@ namespace VansGraphics
 
 		VansTexture* ssgiResult = getRuntimeTexture(VansMaterialManager::RT_SSGI_RESULT);
 
-		std::vector<VansTexture*> giScreenIrradianceAtlases;
+		std::vector<VansTexture*> giIrradianceAtlases;
 		std::vector<VansTexture*> giVisibilityAtlases;
 		std::vector<const VansVKBuffer*> giProbeStateBuffers;
 		const uint32_t availableGIRegions = std::min(rayTracingContext.GetGIRegionCount(), VANS_SSGI_MAX_GI_REGIONS);
 		for (uint32_t regionIndex = 0u; regionIndex < availableGIRegions; ++regionIndex)
 		{
 			VansTexture* irradiance = rayTracingContext.GetGIRegionIrradianceAtlas(regionIndex);
-			VansTexture* screenIrradiance =
-				rayTracingContext.GetGIRegionScreenIrradianceAtlas(regionIndex);
 			VansTexture* visibility = rayTracingContext.GetGIRegionVisibilityAtlas(regionIndex);
 			const VansVKBuffer* probeState = rayTracingContext.GetGIRegionProbeStateBuffer(regionIndex);
-			if (irradiance != nullptr && screenIrradiance != nullptr && visibility != nullptr &&
+			if (irradiance != nullptr && visibility != nullptr &&
 				probeState != nullptr && probeState->GetNativeBuffer() != VK_NULL_HANDLE)
 			{
-				giScreenIrradianceAtlases.push_back(screenIrradiance);
+				giIrradianceAtlases.push_back(irradiance);
 				giVisibilityAtlases.push_back(visibility);
 				giProbeStateBuffers.push_back(probeState);
 			}
@@ -355,7 +375,10 @@ namespace VansGraphics
 
 
 
-		if (ssgiResult == nullptr || giScreenIrradianceAtlases.empty() ||
+		if (manager->m_SSGIProbeCacheDescriptorSets.size() < 2u ||
+            manager->m_SSGITemporalDescriptorSets.size() < 2u ||
+            manager->m_SSGIDescriptorSets.empty() ||
+            ssgiResult == nullptr || giIrradianceAtlases.empty() ||
 			giVisibilityAtlases.empty() ||
 			giProbeStateBuffers.empty() || hzbResult == nullptr || ssgiTemporalA == nullptr || ssgiTemporalB == nullptr ||
 
@@ -516,29 +539,29 @@ namespace VansGraphics
 
 				}, 0);
 
-		std::vector<VkDescriptorImageInfo> screenIrradianceInfos;
-		screenIrradianceInfos.reserve(VANS_SSGI_MAX_GI_REGIONS);
+		std::vector<VkDescriptorImageInfo> irradianceInfos;
+		irradianceInfos.reserve(VANS_SSGI_MAX_GI_REGIONS);
 		std::vector<VkDescriptorImageInfo> visibilityInfos;
 		visibilityInfos.reserve(VANS_SSGI_MAX_GI_REGIONS);
 		std::vector<VkDescriptorBufferInfo> probeStateInfos;
 		probeStateInfos.reserve(VANS_SSGI_MAX_GI_REGIONS);
-		for (size_t regionIndex = 0; regionIndex < giScreenIrradianceAtlases.size(); ++regionIndex)
+		for (size_t regionIndex = 0; regionIndex < giIrradianceAtlases.size(); ++regionIndex)
 		{
-			screenIrradianceInfos.push_back({ giScreenIrradianceAtlases[regionIndex]->GetImage().GetSampler(), giScreenIrradianceAtlases[regionIndex]->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL });
+			irradianceInfos.push_back({ giIrradianceAtlases[regionIndex]->GetImage().GetSampler(), giIrradianceAtlases[regionIndex]->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL });
 			visibilityInfos.push_back({ giVisibilityAtlases[regionIndex]->GetImage().GetSampler(), giVisibilityAtlases[regionIndex]->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL });
 			probeStateInfos.push_back({ giProbeStateBuffers[regionIndex]->GetNativeBuffer(), 0, giProbeStateBuffers[regionIndex]->GetBufferSize() });
 		}
-		while (screenIrradianceInfos.size() < VANS_SSGI_MAX_GI_REGIONS)
+		while (irradianceInfos.size() < VANS_SSGI_MAX_GI_REGIONS)
 		{
-			screenIrradianceInfos.push_back(screenIrradianceInfos.front());
+			irradianceInfos.push_back(irradianceInfos.front());
 			visibilityInfos.push_back(visibilityInfos.front());
 			probeStateInfos.push_back(probeStateInfos.front());
 		}
 		VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(
 			manager->m_SSGIDescriptorSets[0],
-			SSGI_BINDING_SCREEN_IRRADIANCE,
+			SSGI_BINDING_GI_IRRADIANCE,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			screenIrradianceInfos,
+			irradianceInfos,
 			0);
 		VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(
 			manager->m_SSGIDescriptorSets[0],
@@ -565,87 +588,147 @@ namespace VansGraphics
 			{{ ssgiProbeCacheSurface->GetImage().GetSampler(), ssgiProbeCacheSurface->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }},
 			0);
 
-		const VkDescriptorSet probeCacheSet = manager->m_SSGIProbeCacheDescriptorSets[0];
-		VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(
-			probeCacheSet, SSGI_PROBE_CACHE_BINDING_NORMAL,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{{ normal.GetSampler(), normal.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }}, 0);
-		VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(
-			probeCacheSet, SSGI_PROBE_CACHE_BINDING_DEPTH,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{{ depth.GetSampler(), depth.GetImageView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL }}, 0);
-		VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(
-			probeCacheSet, SSGI_PROBE_CACHE_BINDING_POSITION,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{{ positionGbuffer.GetSampler(), positionGbuffer.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }}, 0);
-		VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(
-			probeCacheSet, SSGI_PROBE_CACHE_BINDING_MATERIAL,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{{ materialGbuffer.GetSampler(), materialGbuffer.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }}, 0);
-		VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(
-			probeCacheSet, SSGI_PROBE_CACHE_BINDING_SKY_DIFFUSE,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{{ skyDiffuse.GetSampler(), skyDiffuse.GetImageView(),
-				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }}, 0);
-		VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(
-			probeCacheSet, SSGI_PROBE_CACHE_BINDING_OUTPUT_RADIANCE,
-			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-			{{ ssgiProbeCacheRadiance->GetImage().GetSampler(), ssgiProbeCacheRadiance->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }}, 0);
-		VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(
-			probeCacheSet, SSGI_PROBE_CACHE_BINDING_OUTPUT_SURFACE,
-			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-			{{ ssgiProbeCacheSurface->GetImage().GetSampler(), ssgiProbeCacheSurface->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }}, 0);
-		VansVKDescriptorManager::GetInstance()->WriteBufferDescriptor(
-			probeCacheSet, SSGI_PROBE_CACHE_BINDING_INFO_UBO,
-			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-			{{ manager->m_SSGICBBuffer.GetNativeBuffer(), 0, manager->m_SSGICBBuffer.GetBufferSize() }}, 0);
-		VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(
-			probeCacheSet, SSGI_PROBE_CACHE_BINDING_SCREEN_IRRADIANCE,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, screenIrradianceInfos, 0);
-		VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(
-			probeCacheSet, SSGI_PROBE_CACHE_BINDING_GI_VISIBILITY,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, visibilityInfos, 0);
-		// New shader path indexes the eight state buffers through one native
-		// descriptor array, removing an eight-way switch from every probe tap.
-		VansVKDescriptorManager::GetInstance()->WriteBufferDescriptor(
-			probeCacheSet,
-			SSGI_PROBE_CACHE_BINDING_GI_PROBE_STATE,
-			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			probeStateInfos,
-			0);
-		// Keep bindings 11-17 populated for an older cached SPIR-V.  Binding 10
-		// element zero already supplies the legacy region-zero descriptor.
-		for (size_t regionSlot = 1; regionSlot < probeStateInfos.size(); ++regionSlot)
-		{
-			VansVKDescriptorManager::GetInstance()->WriteBufferDescriptor(
-				probeCacheSet,
-				SSGI_PROBE_CACHE_BINDING_GI_PROBE_STATE + static_cast<uint32_t>(regionSlot),
-				VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-				{ probeStateInfos[regionSlot] },
-				0);
-		}
-		VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(
-			probeCacheSet,
-			SSGI_PROBE_CACHE_BINDING_COLOR,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{{ diffuseExitantRadianceHistory.GetSampler(), diffuseExitantRadianceHistory.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }},
-			0);
-		VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(
-			probeCacheSet,
-			SSGI_PROBE_CACHE_BINDING_HIZ_DEPTH,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{{ hzbResult->GetImage().GetSampler(), hzbResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }},
-			0);
+        const auto& layoutBuffer = rayTracingContext.GetGIProbeLayoutBuffer();
+        auto& receiver = manager->m_GIReceiverVisibility;
+        auto* descriptorManager = VansVKDescriptorManager::GetInstance();
+        const VkDescriptorBufferInfo receiverInfo{receiver.current.GetNativeBuffer(), 0, receiver.current.GetBufferSize()};
+        descriptorManager->WriteBufferDescriptor(manager->m_SSGIDescriptorSets[0], 26u, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {receiverInfo});
+        for (auto set : manager->m_SSGIProbeCacheDescriptorSets)
+            descriptorManager->WriteBufferDescriptor(set, 24u, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {receiverInfo});
+        const VkDescriptorBufferInfo biasInfo{receiver.bias.GetNativeBuffer(), 0, receiver.bias.GetBufferSize()};
+        descriptorManager->WriteBufferDescriptor(manager->m_SSGIDescriptorSets[0], 27u, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {biasInfo});
+        for (auto set : manager->m_SSGIProbeCacheDescriptorSets)
+            descriptorManager->WriteBufferDescriptor(set, 30u, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {biasInfo});
+        const VkDescriptorSet receiverSet = receiver.sets.at(0);
+        descriptorManager->WriteBufferDescriptor(receiverSet, 15u, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {biasInfo});
+        VansVKImage* receiverImages[] = {&positionGbuffer, &normal, &materialGbuffer, &renderPassManager->GetMotionVector()};
+        for (uint32_t i = 0; i < 4; ++i)
+            descriptorManager->WriteImageDescriptor(receiverSet, i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                {{receiverImages[i]->GetSampler(), receiverImages[i]->GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}});
+        descriptorManager->WriteBufferDescriptor(receiverSet, 4u, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            {{manager->m_SSGICBBuffer.GetNativeBuffer(), 0, manager->m_SSGICBBuffer.GetBufferSize()}});
+        descriptorManager->WriteBufferDescriptor(receiverSet, 6u, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            {{layoutBuffer.GetNativeBuffer(), 0, layoutBuffer.GetBufferSize()}});
+        descriptorManager->WriteBufferDescriptor(receiverSet, 7u, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, probeStateInfos);
+        std::vector<VkDescriptorBufferInfo> previousStateInfos;
+        for (uint32_t i = 0; i < VANS_SSGI_MAX_GI_REGIONS; ++i)
+        {
+            auto* previous = rayTracingContext.GetGIRegionPreviousProbeStateBuffer(i < availableGIRegions ? i : 0u);
+            previousStateInfos.push_back({previous->GetNativeBuffer(), 0, previous->GetBufferSize()});
+        }
+        descriptorManager->WriteBufferDescriptor(receiverSet, 8u, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, previousStateInfos);
+        descriptorManager->WriteBufferDescriptor(receiverSet, 9u, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            {{receiver.history.GetNativeBuffer(), 0, receiver.history.GetBufferSize()}});
+        descriptorManager->WriteBufferDescriptor(receiverSet, 10u, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {receiverInfo});
+        descriptorManager->WriteBufferDescriptor(receiverSet, 11u, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            {{receiver.work.GetNativeBuffer(), 0, receiver.work.GetBufferSize()}});
+        descriptorManager->WriteBufferDescriptor(receiverSet, 12u, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            {{receiver.anchors.GetNativeBuffer(), 0, receiver.anchors.GetBufferSize()}});
+        descriptorManager->WriteBufferDescriptor(receiverSet, 13u, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            {{receiver.world.GetNativeBuffer(), 0, receiver.world.GetBufferSize()}});
+        descriptorManager->WriteBufferDescriptor(receiverSet, 14u, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            {{receiver.worldClaims.GetNativeBuffer(), 0, receiver.worldClaims.GetBufferSize()}});
+        receiver.frame = 0; // 场景/布局/资源 generation 变化；光照参数更新不触发此重置。
+
+        VansVKDescriptorManager::GetInstance()->WriteBufferDescriptor(manager->m_SSGIDescriptorSets[0],
+            25u, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {{layoutBuffer.GetNativeBuffer(), 0, layoutBuffer.GetBufferSize()}});
+		auto& motionVector = renderPassManager->GetMotionVector();
+        for (uint32_t historyWrite = 0u; historyWrite < 2u; ++historyWrite)
+        {
+            const VkDescriptorSet probeCacheSet = manager->m_SSGIProbeCacheDescriptorSets[historyWrite];
+            descriptorManager->WriteBufferDescriptor(probeCacheSet, 25u, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                {{receiver.transportWork.GetNativeBuffer(), 0, receiver.transportWork.GetBufferSize()}});
+            auto& transportSky = manager->m_SkyLighting.Radiance()->GetImage();
+            descriptorManager->WriteImageDescriptor(probeCacheSet, 26u, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                {{transportSky.GetSampler(), transportSky.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}});
+            auto& transportHistory = (historyWrite == 0u ? ssgiTemporalB : ssgiTemporalA)->GetImage();
+            descriptorManager->WriteImageDescriptor(probeCacheSet, 27u, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                {{transportHistory.GetSampler(), transportHistory.GetImageView(), VK_IMAGE_LAYOUT_GENERAL}});
+            descriptorManager->WriteImageDescriptor(probeCacheSet, 28u, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                {{renderPassManager->GetCascadeShadowSampler(), renderPassManager->GetCascadeShadowLayerView(1),
+                    VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL}});
+            descriptorManager->WriteImageDescriptor(probeCacheSet, 29u, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                renderPassManager->GetPunctualShadowDescriptorInfos());
+            VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(
+                probeCacheSet, SSGI_PROBE_CACHE_BINDING_NORMAL,
+                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                {{ normal.GetSampler(), normal.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }}, 0);
+            VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(
+                probeCacheSet, SSGI_PROBE_CACHE_BINDING_DEPTH,
+                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                {{ depth.GetSampler(), depth.GetImageView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL }}, 0);
+            VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(
+                probeCacheSet, SSGI_PROBE_CACHE_BINDING_POSITION,
+                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                {{ positionGbuffer.GetSampler(), positionGbuffer.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }}, 0);
+            VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(
+                probeCacheSet, SSGI_PROBE_CACHE_BINDING_MATERIAL,
+                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                {{ materialGbuffer.GetSampler(), materialGbuffer.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }}, 0);
+            VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(
+                probeCacheSet, SSGI_PROBE_CACHE_BINDING_SKY_DIFFUSE,
+                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                {{ skyDiffuse.GetSampler(), skyDiffuse.GetImageView(),
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }}, 0);
+            VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(
+                probeCacheSet, SSGI_PROBE_CACHE_BINDING_OUTPUT_RADIANCE,
+                VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                {{ ssgiProbeCacheRadiance->GetImage().GetSampler(), ssgiProbeCacheRadiance->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }}, 0);
+            VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(
+                probeCacheSet, SSGI_PROBE_CACHE_BINDING_OUTPUT_SURFACE,
+                VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                {{ ssgiProbeCacheSurface->GetImage().GetSampler(), ssgiProbeCacheSurface->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }}, 0);
+            VansVKDescriptorManager::GetInstance()->WriteBufferDescriptor(
+                probeCacheSet, SSGI_PROBE_CACHE_BINDING_INFO_UBO,
+                VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                {{ manager->m_SSGICBBuffer.GetNativeBuffer(), 0, manager->m_SSGICBBuffer.GetBufferSize() }}, 0);
+            VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(
+                probeCacheSet, SSGI_PROBE_CACHE_BINDING_SCREEN_IRRADIANCE,
+                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, irradianceInfos, 0);
+            VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(
+                probeCacheSet, SSGI_PROBE_CACHE_BINDING_GI_VISIBILITY,
+                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, visibilityInfos, 0);
+            // New shader path indexes the eight state buffers through one native
+            // descriptor array, removing an eight-way switch from every probe tap.
+            VansVKDescriptorManager::GetInstance()->WriteBufferDescriptor(
+                probeCacheSet,
+                SSGI_PROBE_CACHE_BINDING_GI_PROBE_STATE,
+                VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                probeStateInfos,
+                0);
+            VansVKDescriptorManager::GetInstance()->WriteBufferDescriptor(probeCacheSet,
+                20u, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {{layoutBuffer.GetNativeBuffer(), 0, layoutBuffer.GetBufferSize()}});
+            VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(
+                probeCacheSet,
+                SSGI_PROBE_CACHE_BINDING_COLOR,
+                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                {{ diffuseExitantRadianceHistory.GetSampler(), diffuseExitantRadianceHistory.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }},
+                0);
+            VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(
+                probeCacheSet,
+                SSGI_PROBE_CACHE_BINDING_HIZ_DEPTH,
+                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                {{ hzbResult->GetImage().GetSampler(), hzbResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }},
+                0);
+
+            VansTexture* historySurface = historyWrite == 0u ? ssgiSurfaceHistoryB : ssgiSurfaceHistoryA;
+            VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(probeCacheSet, SSGI_PROBE_CACHE_BINDING_HISTORY_SURFACE,
+                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {{historySurface->GetImage().GetSampler(), historySurface->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL}});
+            VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(probeCacheSet, SSGI_PROBE_CACHE_BINDING_MOTION_VECTOR,
+                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {{motionVector.GetSampler(), motionVector.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}});
+            VansVKDescriptorManager::GetInstance()->WriteBufferDescriptor(probeCacheSet, SSGI_PROBE_CACHE_BINDING_HISTORY_INFO,
+                VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, {{manager->m_SSGITemporalCBBuffer.GetNativeBuffer(), 0, manager->m_SSGITemporalCBBuffer.GetBufferSize()}});
+        }
 
 		VansVKDescriptorManager::GetInstance()->CommitDescriptorUpdates();
 
 
 
-		auto& motionVector = renderPassManager->GetMotionVector();
+
 
 		VansVKDescriptorManager::GetInstance()->BeginDescriptorUpdate();
 
-		VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(manager->m_SSGITemporalDescriptorSets[0], SSGITemporalPassBinding::SSGI_TEMPORAL_BINDING_DEPTH, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, { { depth.GetSampler(), depth.GetImageView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL } }, 0);
+		VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(manager->m_SSGITemporalDescriptorSets[0], SSGITemporalPassBinding::SSGI_TEMPORAL_BINDING_POSITION, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, { { positionGbuffer.GetSampler(), positionGbuffer.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }, 0);
 
 		VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(manager->m_SSGITemporalDescriptorSets[0], SSGITemporalPassBinding::SSGI_TEMPORAL_BINDING_MOTION_VECTOR, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, { { motionVector.GetSampler(), motionVector.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }, 0);
 
@@ -669,7 +752,7 @@ namespace VansGraphics
 
 		VansVKDescriptorManager::GetInstance()->BeginDescriptorUpdate();
 
-		VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(manager->m_SSGITemporalDescriptorSets[1], SSGITemporalPassBinding::SSGI_TEMPORAL_BINDING_DEPTH, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, { { depth.GetSampler(), depth.GetImageView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL } }, 0);
+		VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(manager->m_SSGITemporalDescriptorSets[1], SSGITemporalPassBinding::SSGI_TEMPORAL_BINDING_POSITION, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, { { positionGbuffer.GetSampler(), positionGbuffer.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }, 0);
 
 		VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(manager->m_SSGITemporalDescriptorSets[1], SSGITemporalPassBinding::SSGI_TEMPORAL_BINDING_MOTION_VECTOR, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, { { motionVector.GetSampler(), motionVector.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }, 0);
 
@@ -691,95 +774,6 @@ namespace VansGraphics
 
 
 
-		VansVKDescriptorManager::GetInstance()->BeginDescriptorUpdate();
-
-		VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(manager->m_BilateralFilterDescriptorSets[1], PassBinding::TEXTURE_0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {
-
-					{
-
-						ssgiTemporalA->GetImage().GetSampler(),
-
-						ssgiTemporalA->GetImage().GetImageView(),
-
-						VK_IMAGE_LAYOUT_GENERAL
-
-					}
-
-				}, 0);
-
-		VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(manager->m_BilateralFilterDescriptorSets[1], PassBinding::TEXTURE_1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {
-
-					{
-
-						depth.GetSampler(),
-
-						depth.GetImageView(),
-
-						VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
-
-					}
-
-				}, 0);
-
-		VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(manager->m_BilateralFilterDescriptorSets[1], PassBinding::UAV_IMAGE_1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, {
-
-					{
-
-						ssgiFilterResult->GetImage().GetSampler(),
-
-						ssgiFilterResult->GetImage().GetImageView(),
-
-						VK_IMAGE_LAYOUT_GENERAL
-
-					}
-
-				}, 0);
-
-
-
-		VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(manager->m_BilateralFilterDescriptorSets[2], PassBinding::TEXTURE_0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {
-
-					{
-
-						ssgiTemporalB->GetImage().GetSampler(),
-
-						ssgiTemporalB->GetImage().GetImageView(),
-
-						VK_IMAGE_LAYOUT_GENERAL
-
-					}
-
-				}, 0);
-
-		VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(manager->m_BilateralFilterDescriptorSets[2], PassBinding::TEXTURE_1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {
-
-					{
-
-						depth.GetSampler(),
-
-						depth.GetImageView(),
-
-						VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
-
-					}
-
-				}, 0);
-
-		VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(manager->m_BilateralFilterDescriptorSets[2], PassBinding::UAV_IMAGE_1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, {
-
-					{
-
-						ssgiFilterResult->GetImage().GetSampler(),
-
-						ssgiFilterResult->GetImage().GetImageView(),
-
-						VK_IMAGE_LAYOUT_GENERAL
-
-					}
-
-				}, 0);
-
-		VansVKDescriptorManager::GetInstance()->CommitDescriptorUpdates();
 		MarkFeatureDescriptorCurrent(m_GIDataDescSetGeneration);
 
 	}
@@ -954,7 +948,7 @@ namespace VansGraphics
 			return;
 
 		auto& normal = renderPassManager->GetNormal();
-		auto& depth = renderPassManager->GetDepth();
+		auto& position = renderPassManager->GetGbuffer2();
 		auto& material = renderPassManager->GetGbuffer1();
 		auto* descriptorManager = VansVKDescriptorManager::GetInstance();
 		auto bindPass = [&](VkDescriptorSet set, VansTexture* input, VansTexture* output)
@@ -963,8 +957,8 @@ namespace VansGraphics
 				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {{ input->GetImage().GetSampler(), input->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
 			descriptorManager->WriteImageDescriptor(set, SSGI_ATROUS_BINDING_NORMAL,
 				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {{ normal.GetSampler(), normal.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
-			descriptorManager->WriteImageDescriptor(set, SSGI_ATROUS_BINDING_DEPTH,
-				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {{ depth.GetSampler(), depth.GetImageView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL }});
+			descriptorManager->WriteImageDescriptor(set, SSGI_ATROUS_BINDING_POSITION,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {{ position.GetSampler(), position.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
 			descriptorManager->WriteImageDescriptor(set, SSGI_ATROUS_BINDING_MATERIAL,
 				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {{ material.GetSampler(), material.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
 			descriptorManager->WriteImageDescriptor(set, SSGI_ATROUS_BINDING_OUTPUT_GI,
@@ -990,7 +984,7 @@ namespace VansGraphics
 			params.stepWidth = 1u << iteration;
 			// 第一轮保留小尺度法线细节，第二轮适度放宽曲面和法线贴图的邻域权重。
 			// 深度与材质 ID 仍保持严格边界，不会用曲面降噪换来跨物体漏光。
-			params.depthSigma = iteration == 0u ? 0.04f : 0.05f;
+			params.planeToleranceScale = iteration == 0u ? 1.0f : 1.25f;
 			params.normalPower = iteration == 0u ? 24.0f : 12.0f;
 			params.materialWeight = 0.0f;
 			computeCmd.DispatchCompute(*manager->m_SSGIAtrousShader, (m_RenderWidth + 7u) / 8u,
@@ -1935,10 +1929,22 @@ namespace VansGraphics
 			return;
 		}
 
+        // Cache trace 和 Temporal 必须读取同一帧历史与 jitter；在两者之前统一上传。
+		SSGITemporalParamsGPU temporalData{};
+		const float width = static_cast<float>(std::max(m_RenderWidth, 1u));
+		const float height = static_cast<float>(std::max(m_RenderHeight, 1u));
+		temporalData.screenSize = glm::vec4(width, height, 1.0f / width, 1.0f / height);
+        const glm::vec2 jitterDelta =
+            ExtractTemporalJitterUV(m_CameraData.lastViewProjectionMatrix, m_CameraData.lastUnjitteredViewProjectionMatrix) -
+            ExtractTemporalJitterUV(m_CameraData.viewProjectionMatrix, m_CameraData.unjitteredViewProjectionMatrix);
+        temporalData.frameParams = glm::vec4(static_cast<float>(manager->m_SSGITemporalFrame), jitterDelta, 0.0f);
+		manager->m_SSGITemporalCBBuffer.SetBufferData(&temporalData, 0, sizeof(temporalData));
+
 		const VkCommandBuffer commandBuffer = computeCmd.GetVKCommandBuffer();
 		const Vans::VansGpuQueueLane queueLane = m_AsyncComputeEnabled
 			? Vans::VansGpuQueueLane::Compute
 			: Vans::VansGpuQueueLane::Graphics;
+		UpdateGIReceiverVisibility(computeCmd, jitterDelta);
 		{
 			VANS_GPU_SCOPE_LANE(commandBuffer, "SSGI.ScreenProbeCacheTrace", queueLane);
 			UpdateSSGIProbeCache(renderPassManager, computeCmd);
@@ -2341,3 +2347,198 @@ namespace VansGraphics
 	}
 
 } // namespace VansGraphics
+
+void VansGraphics::VansVKDevice::PrepareGIReceiverVisibility(uint32_t width, uint32_t height)
+{
+    auto& receiver = m_Scene->GetMaterialManager()->m_GIReceiverVisibility;
+    const auto usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    const VkDeviceSize bytes = 16 + VkDeviceSize(width) * height * sizeof(VansGIReceiverVisibility::Record);
+    if (!m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
+        throw std::runtime_error("Failed to begin GI receiver visibility initialization");
+    for (auto* buffer : {&receiver.current, &receiver.history, &receiver.world, &receiver.transportWork, &receiver.bias})
+    {
+        const VkDeviceSize allocation = buffer == &receiver.bias ? 16 + VkDeviceSize(width) * height * 32 :
+            buffer == &receiver.transportWork ? VansGIReceiverVisibility::TransportBytes :
+            (buffer == &receiver.world ? VansGIReceiverVisibility::WorldBytes : bytes);
+        if (!buffer->CreatVulkanBuffer(m_VansVKLogicDevice, allocation, VK_FORMAT_R32_UINT, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
+            throw std::runtime_error("Failed to allocate GI receiver visibility history");
+        m_VansVKCommandBuffer.FillBuffer(buffer->GetNativeBuffer(), 0, allocation, 0u);
+    }
+    VkMemoryBarrier initialized{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    initialized.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    initialized.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    m_VansVKCommandBuffer.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+        {initialized});
+    if (!m_VansVKCommandBuffer.EndCommandBufferRecord() ||
+        !VansVKCommandBuffer::SubmitCommands(GetGraphicsQueue(), m_VansVKLogicDevice,
+            {m_VansVKCommandBuffer.GetVKCommandBuffer()}, {}, {}, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence) ||
+        !m_VansVKCommandBuffer.ResetCommandBuffer(false))
+        throw std::runtime_error("Failed to initialize GI receiver visibility history");
+    if (!receiver.work.CreatVulkanBuffer(m_VansVKLogicDevice, VansGIReceiverVisibility::WorkBytes, VK_FORMAT_R32_UINT,
+        usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) throw std::runtime_error("Failed to allocate GI receiver visibility work");
+    if (!receiver.anchors.CreatVulkanBuffer(m_VansVKLogicDevice, VkDeviceSize(width) * height * 4, VK_FORMAT_R32_UINT,
+        usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ||
+        !receiver.worldClaims.CreatVulkanBuffer(m_VansVKLogicDevice, VkDeviceSize(VansGIReceiverVisibility::WorldCapacity) * 4,
+            VK_FORMAT_R32_UINT, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
+        throw std::runtime_error("Failed to allocate GI receiver visibility cache indices");
+    const VkShaderStageFlags stages = VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+    std::vector<VkDescriptorSetLayoutBinding> bindings;
+    for (uint32_t i = 0; i < 4; ++i) bindings.push_back({i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, stages, nullptr});
+    bindings.push_back({4, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, stages, nullptr});
+    for (uint32_t i : {6u, 7u, 8u, 9u, 10u, 11u, 12u, 13u, 14u, 15u})
+        bindings.push_back({i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, (i == 7u || i == 8u) ? 8u : 1u, stages, nullptr});
+    if (!VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom(bindings, receiver.layout, receiver.sets))
+        throw std::runtime_error("Failed to create GI receiver visibility descriptors");
+    receiver.prepareShader = VansShaderManager::Get().FindComputeShader("GIReceiverVisibilityPrepare");
+    receiver.reprojectShader = VansShaderManager::Get().FindComputeShader("GIReceiverVisibilityReproject");
+    receiver.worldShader = VansShaderManager::Get().FindComputeShader("GIReceiverVisibilityWorldCache");
+    if (!receiver.prepareShader || !receiver.reprojectShader || !receiver.worldShader)
+        throw std::runtime_error("GI receiver visibility shaders are unavailable");
+    receiver.frame = 0;
+    receiver.enabled = std::getenv("FOREST_DISABLE_GI_RECEIVER_VISIBILITY") == nullptr;
+    VANS_LOG("[GIReceiverVisibility] cache=" << width << "x" << height << ", rayBudget=" << VansGIReceiverVisibility::RayBudget
+        << ", historyBytes=" << bytes * 2 << ", worldBytes=" << VansGIReceiverVisibility::WorldBytes
+        << ", anchorBytes=" << receiver.anchors.GetBufferSize() << ", enabled=" << receiver.enabled);
+}
+
+namespace
+{
+void GIReceiverComputeDependency(VansGraphics::VansVKCommandBuffer& command)
+{
+    VkMemoryBarrier memory{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    memory.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+    memory.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    command.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+        VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, {memory});
+}
+// 优化 4 独立 GPU 阶段。移除此调用后，已清空的映射使 Prepare 自动使用基础历史查找。
+void RecordGIReceiverStableAnchors(VansGraphics::VansVKCommandBuffer& command,
+    VansGraphics::VansGIReceiverVisibility& receiver, VkDescriptorSetLayout globalLayout,
+    VkDescriptorSet globalSet, const glm::uvec4& frame, const glm::mat4& viewProjection)
+{
+    struct alignas(16) Params { glm::uvec4 frame; glm::mat4 viewProjection; };
+    const Params params{frame, viewProjection};
+    command.EnsureComputeShader(*receiver.reprojectShader, {globalLayout, receiver.layout});
+    command.DispatchCompute(*receiver.reprojectShader, (frame.x * frame.y + 63u) / 64u, 1, 1,
+        {globalSet, receiver.sets[0]}, &params, sizeof(params));
+    GIReceiverComputeDependency(command);
+}
+// 优化 5 生命周期：读取前维护离屏记录，追踪后用 Claim -> Publish 分离写入竞争。
+void RecordGIReceiverWorldCache(VansGraphics::VansVKCommandBuffer& command,
+    VansGraphics::VansGIReceiverVisibility& receiver, VkDescriptorSetLayout globalLayout,
+    VkDescriptorSet globalSet, const glm::uvec4& frame, bool publish)
+{
+    struct alignas(16) Params { glm::uvec4 frame; glm::uvec4 operation; };
+    command.EnsureComputeShader(*receiver.worldShader, {globalLayout, receiver.layout});
+    if (publish)
+    {
+        VkMemoryBarrier recycle{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        recycle.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        recycle.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        command.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, {recycle});
+        command.FillBuffer(receiver.worldClaims.GetNativeBuffer(), 0, receiver.worldClaims.GetBufferSize(), 0xffffffffu);
+        GIReceiverComputeDependency(command);
+        const Params claim{frame, glm::uvec4(1u, 0u, 0u, 0u)};
+        command.DispatchCompute(*receiver.worldShader, (frame.x * frame.y + 63u) / 64u, 1, 1,
+            {globalSet, receiver.sets[0]}, &claim, sizeof(claim));
+        GIReceiverComputeDependency(command);
+    }
+    const Params params{frame, glm::uvec4(publish ? 2u : 0u, 0u, 0u, 0u)};
+    command.DispatchCompute(*receiver.worldShader, (VansGraphics::VansGIReceiverVisibility::WorldCapacity + 63u) / 64u,
+        1, 1, {globalSet, receiver.sets[0]}, &params, sizeof(params));
+    GIReceiverComputeDependency(command);
+}
+}
+
+void VansGraphics::VansVKDevice::UpdateGIReceiverVisibility(VansVKCommandBuffer& command, const glm::vec2& jitterDelta)
+{
+    auto* manager = m_Scene->GetMaterialManager();
+    auto& receiver = manager->m_GIReceiverVisibility;
+    if (!receiver.prepareShader || receiver.sets.empty()) return;
+    // 启动时的诊断关闭使用已清零的 header，连预计算和历史拷贝也跳过，便于测量真实增量。
+    if (!receiver.enabled) return;
+    if (receiver.geometryRevision != m_Scene->GetRayTracingGeometryRevision())
+    {
+        receiver.frame = 0;
+        receiver.geometryRevision = m_Scene->GetRayTracingGeometryRevision();
+    }
+    const uint32_t width = (m_RenderWidth + 3u) / 4u, height = (m_RenderHeight + 3u) / 4u;
+    struct alignas(16) Params { glm::uvec4 frame; glm::vec4 jitter; };
+    const Params params{glm::uvec4(width, height, receiver.frame, receiver.enabled && rayTracingContext.IsReady()),
+        glm::vec4(jitterDelta, 0.0f, 0.0f)};
+    auto barrier = [&command](VkPipelineStageFlags source, VkPipelineStageFlags destination, VkAccessFlags read, VkAccessFlags write)
+    {
+        VkMemoryBarrier memory{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        memory.srcAccessMask = read; memory.dstAccessMask = write;
+        command.PipelineBarrier(source, destination, {memory});
+    };
+    const auto handle = command.GetVKCommandBuffer();
+    VANS_GPU_SCOPE_LANE(handle, "DDGI.ReceiverVisibility",
+        (m_AsyncComputeEnabled ? Vans::VansGpuQueueLane::Compute : Vans::VansGpuQueueLane::Graphics));
+    // 同一 compute queue 上按 Prepare -> RT -> Cache 消费顺序执行，无 CPU 回读或新增提交等待。
+    {
+        VANS_GPU_SCOPE_LANE(handle, "DDGI.ReceiverVisibilityPrepare", (m_AsyncComputeEnabled ? Vans::VansGpuQueueLane::Compute : Vans::VansGpuQueueLane::Graphics));
+        barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+            VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+        // 注释下方 DDGI.ReceiverBias 独立阶段即可恢复原偏移；清零 header 防止读取旧测量。
+        command.FillBuffer(receiver.bias.GetNativeBuffer(), 0, 16, 0u);
+        command.FillBuffer(receiver.work.GetNativeBuffer(), 0, 16, 0u);
+        command.FillBuffer(receiver.work.GetNativeBuffer(), 16, VansGIReceiverVisibility::WorkBytes - 16, 0xffffffffu);
+        command.FillBuffer(receiver.anchors.GetNativeBuffer(), 0, receiver.anchors.GetBufferSize(), 0xffffffffu);
+        barrier(VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+            VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+        {
+            VANS_GPU_SCOPE_LANE(handle, "DDGI.ReceiverStableAnchors", (m_AsyncComputeEnabled ? Vans::VansGpuQueueLane::Compute : Vans::VansGpuQueueLane::Graphics));
+            RecordGIReceiverStableAnchors(command, receiver, m_Scene->GetGlobalDescriptorSetLayout(),
+                m_Scene->GetGlobalDescriptorSet(), params.frame, m_CameraData.viewProjectionMatrix);
+        }
+        {
+            VANS_GPU_SCOPE_LANE(handle, "DDGI.ReceiverWorldCacheMaintain", (m_AsyncComputeEnabled ? Vans::VansGpuQueueLane::Compute : Vans::VansGpuQueueLane::Graphics));
+            RecordGIReceiverWorldCache(command, receiver, m_Scene->GetGlobalDescriptorSetLayout(),
+                m_Scene->GetGlobalDescriptorSet(), params.frame, false);
+        }
+        // 独立模块入口：仅注释 recordReceiverBias()，消费者便按清零 header 使用原偏移。
+        const auto recordReceiverBias = [&]()
+        {
+            if (params.frame.w != 0u)
+            {
+                VANS_GPU_SCOPE_LANE(handle, "DDGI.ReceiverBias", (m_AsyncComputeEnabled ? Vans::VansGpuQueueLane::Compute : Vans::VansGpuQueueLane::Graphics));
+                barrier(VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                    VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+                if (!rayTracingContext.DispatchReceiverBias(this, command, m_Scene, receiver.layout, receiver.sets[0], width, height))
+                    throw std::runtime_error("GI receiver bias pipeline is unavailable");
+                GIReceiverComputeDependency(command);
+            }
+        };
+        recordReceiverBias();
+        command.EnsureComputeShader(*receiver.prepareShader, {m_Scene->GetGlobalDescriptorSetLayout(), receiver.layout});
+        command.DispatchCompute(*receiver.prepareShader, (width + 7) / 8, (height + 7) / 8, 1,
+            {m_Scene->GetGlobalDescriptorSet(), receiver.sets[0]}, &params, sizeof(params));
+    }
+    barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+        VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+    if (params.frame.w != 0u)
+    {
+        VANS_GPU_SCOPE_LANE(handle, "DDGI.ReceiverVisibilityTrace", (m_AsyncComputeEnabled ? Vans::VansGpuQueueLane::Compute : Vans::VansGpuQueueLane::Graphics));
+        if (!rayTracingContext.DispatchReceiverVisibility(this, command, m_Scene, receiver.layout, receiver.sets[0]))
+            throw std::runtime_error("GI receiver visibility trace pipeline is unavailable");
+    }
+    GIReceiverComputeDependency(command);
+    {
+        VANS_GPU_SCOPE_LANE(handle, "DDGI.ReceiverWorldCachePublish", (m_AsyncComputeEnabled ? Vans::VansGpuQueueLane::Compute : Vans::VansGpuQueueLane::Graphics));
+        RecordGIReceiverWorldCache(command, receiver, m_Scene->GetGlobalDescriptorSetLayout(),
+            m_Scene->GetGlobalDescriptorSet(), params.frame, true);
+    }
+    barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+        VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT);
+    command.CopyBuffer(receiver.current.GetNativeBuffer(), receiver.history.GetNativeBuffer(), 0, 0, receiver.current.GetBufferSize());
+    rayTracingContext.CopyPublishedProbeStateHistory(command);
+    barrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+    ++receiver.frame;
+}

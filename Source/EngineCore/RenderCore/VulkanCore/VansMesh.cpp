@@ -609,8 +609,9 @@ bool VansGraphics::VansMesh::UploadRawMeshToGpu(
 		return false;
 	}
 
-	VkBufferUsageFlags vertexUsage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-	VkBufferUsageFlags indexUsage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+	// 排布工具按需读取当前 GPU 几何，无须常驻一份 CPU 顶点副本或重新访问导入源文件。
+	VkBufferUsageFlags vertexUsage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+	VkBufferUsageFlags indexUsage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
 	if (m_SupportRayTracing)
 	{
 		vertexUsage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
@@ -1270,14 +1271,14 @@ void VansGraphics::VansMesh::InitFromRawData(
 	// Vertex buffer
 	VkDeviceSize vbSize = static_cast<VkDeviceSize>(vertexStride) * vertexCount;
 	m_VertexBuffer.CreatVulkanBuffer(device, vbSize, VK_FORMAT_R32_SFLOAT,
-		VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+		VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
 		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 	m_VertexBuffer.SetBufferData(vertexData, 0, vbSize);
 
 	// Index buffer
 	VkDeviceSize ibSize = sizeof(uint32_t) * indexCount;
 	m_IndexBuffer.CreatVulkanBuffer(device, ibSize, VK_FORMAT_R32_UINT,
-		VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+		VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
 		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 	m_IndexBuffer.SetBufferData(indexData, 0, ibSize);
 }

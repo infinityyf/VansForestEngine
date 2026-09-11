@@ -267,7 +267,7 @@ namespace VansGraphics
 
 		std::shared_ptr<VansVKRayTracingPipeline> m_VansVkRayTracingPipeline;
 
-		void CreateShaderBindingTable(VansVKDevice* device);
+		bool CreateShaderBindingTable(VansVKDevice* device);
 
 		bool CreateRayTracingPipeline(VkDevice& logic_device, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts);
 	};

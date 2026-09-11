@@ -1,4 +1,5 @@
 #pragma once
+#include "VansSceneImpactDecalConfig.h"
 
 #include <array>
 #include <cstdint>
@@ -27,6 +28,7 @@ struct VansSceneRenderNodeConfig
 	std::string parent;
 	std::string submeshSlotName;
 	std::string rayTracingMode = "auto";
+	std::optional<VansSceneImpactDecalConfig> impactPool;
 	std::optional<uint32_t> submesh;
 	std::optional<VansSceneTransformConfig> transform;
 	bool supportShadow = false;

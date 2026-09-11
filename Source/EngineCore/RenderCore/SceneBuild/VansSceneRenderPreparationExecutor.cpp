@@ -7,8 +7,9 @@
 
 namespace VansGraphics
 {
-void VansSceneRenderPreparationExecutor::PrepareAfterSceneContentLoaded(VansScene& scene, VansVKDevice& device)
+bool VansSceneRenderPreparationExecutor::PrepareAfterSceneContentLoaded(VansScene& scene, VansVKDevice& device)
 {
+	if (!scene.PrepareImpactDecalPools()) return false;
 	device.PreparePBRMaterialData();
 	BindVideoComponentsToPreparedMaterials(scene);
 
@@ -17,7 +18,8 @@ void VansSceneRenderPreparationExecutor::PrepareAfterSceneContentLoaded(VansScen
 	if (!scene.InitializeEnvironmentRendering(device))
 		VANS_LOG_ERROR("[SceneRenderPreparation] Atmosphere system initialization failed");
 
-	scene.PrepareReflectionProbeRuntime(device);
+	if (!scene.PrepareReflectionProbeRuntime(device))
+		return false;
 	scene.BindWaterSystemGlobalDescriptors();
 	scene.BindMaterialVideoDescriptorSet();
 	scene.UpdateGlobalTileLightDescriptors();
@@ -26,7 +28,7 @@ void VansSceneRenderPreparationExecutor::PrepareAfterSceneContentLoaded(VansScen
 
 	scene.CreateSceneNodeDescriptorSets();
 	device.PrepareRayTracingData();
-
+	return true;
 }
 
 void VansSceneRenderPreparationExecutor::BindVideoComponentsToPreparedMaterials(VansScene& scene)

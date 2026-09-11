@@ -1,5 +1,6 @@
 #include "VansMaterial.h"
 #include "VansRenderSceneSnapshot.h"
+#include "VansShaderManager.h"
 #include "../RuntimeCore/VansThreadContract.h"
 #include "../Util/VansLog.h"
 #include <algorithm>
@@ -194,6 +195,16 @@ bool ReadMaterialFloat(const VansMaterialParameterValue& value, float& out)
 				return false;
 			}
 		}, value);
+}
+
+bool ReadMaterialBool(const VansMaterialParameterValue& value, bool& out)
+{
+	if (const auto* enabled = std::get_if<bool>(&value))
+	{
+		out = *enabled;
+		return true;
+	}
+	return false;
 }
 
 bool ReadMaterialString(const VansMaterialParameterValue& value, std::string& out)
@@ -635,7 +646,7 @@ VansGraphics::VansMaterial* VansGraphics::VansMaterialManager::AcquireRuntimeMat
 	std::unique_ptr<VansMaterial> clone = CloneRuntimeMaterial(source);
 	if (!clone) return nullptr;
 	const bool customPayload = source.m_MaterialType == VansMaterialType::VAN_CUSTOM_SHADER ||
-		source.m_MaterialType == VansMaterialType::VAN_PBR_TRANSMISSION;
+		source.m_MaterialType == VansMaterialType::VAN_PBR_TRANSMISSION || source.m_MaterialType == VansMaterialType::VAN_DECAL;
 	std::vector<int>& freeIndices = customPayload ? m_FreeRuntimeCustomIndices : m_FreeRuntimePBRIndices;
 	if (freeIndices.empty()) return nullptr;
 	const int poolIndex = freeIndices.back();
@@ -779,6 +790,18 @@ void VansGraphics::VansMaterialManager::ClearResolutionDependentRenderData(VkDev
 	descMgr->DestroyDescriptorSetLayout(m_SSGITexSetLayout);
 	descMgr->DestroyDescriptorSet(m_SSGIProbeCacheDescriptorSets);
 	descMgr->DestroyDescriptorSetLayout(m_SSGIProbeCacheSetLayout);
+    descMgr->DestroyDescriptorSet(m_GIReceiverVisibility.sets);
+    descMgr->DestroyDescriptorSetLayout(m_GIReceiverVisibility.layout);
+    m_GIReceiverVisibility.bias.DestroyVulkanBuffer(device);
+    m_GIReceiverVisibility.transportWork.DestroyVulkanBuffer(device);
+    m_GIReceiverVisibility.current.DestroyVulkanBuffer(device);
+    m_GIReceiverVisibility.history.DestroyVulkanBuffer(device);
+    m_GIReceiverVisibility.work.DestroyVulkanBuffer(device);
+    m_GIReceiverVisibility.anchors.DestroyVulkanBuffer(device);
+    m_GIReceiverVisibility.world.DestroyVulkanBuffer(device);
+    m_GIReceiverVisibility.worldClaims.DestroyVulkanBuffer(device);
+    m_GIReceiverVisibility.frame = 0;
+
 	for (VkDescriptorSetLayout& layout : m_HZBTexSetLayouts)
 		descMgr->DestroyDescriptorSetLayout(layout);
 	m_HZBTexSetLayouts.clear();
@@ -1162,9 +1185,6 @@ void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
 	ClearResolutionDependentRenderData(device);
 	ClearRuntimeRenderTextures();
 	m_RectLightEmissiveArray = nullptr;
-	deleteTexture(m_PreConvDiffuse);
-	deleteTexture(m_EnvironmentRadiance);
-	deleteTexture(m_PreConvSpecular);
 	deleteTexture(m_BRDFIntegralLUT);
 	deleteTexture(m_SkinBSDFLUT);
 	deleteTexture(m_SkinProfileLUTArray);
@@ -1178,7 +1198,7 @@ void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
 	m_GlobalTreeLeafDataBuffer.DestroyVulkanBuffer(device);
 	m_GlobalSkinDataBuffer.DestroyVulkanBuffer(device);
 	m_GlobalCustomMaterialDataBuffer.DestroyVulkanBuffer(device);
-	m_SkySHResultBuffer.DestroyVulkanBuffer(device);
+	m_SkyLighting.Destroy(device);
 
 	// Release descriptor sets and layouts.
 	auto descMgr = VansVKDescriptorManager::GetInstance();
@@ -1208,8 +1228,7 @@ bool VansGraphics::VansMaterialManager::FlushMaterialPayload(VansMaterial& mater
 		return stagePbrPayload(pbr->m_BasePBRParam);
 	if (auto* emissive = dynamic_cast<VansEmissiveMaterial*>(&material))
 		return stagePbrPayload(emissive->m_BasePBRParam);
-	if (auto* decal = dynamic_cast<VansDecalMaterial*>(&material))
-		return stagePbrPayload(decal->m_BasePBRParam);
+
 	if (auto* sss = dynamic_cast<VansSubsurfaceMaterial*>(&material))
 		return stagePbrPayload(sss->m_BasePBRParam);
 	if (auto* skin = dynamic_cast<VansSkinMaterial*>(&material))
@@ -1427,6 +1446,71 @@ bool VansGraphics::VansMaterialManager::ApplyMaterialParameter(
 	}
 	if (auto* pbr = dynamic_cast<VansPBRMaterial*>(&material))
 	{
+		if (material.m_MaterialType == VansMaterialType::VAN_PBR)
+		{
+			bool alphaTestEnabled = false;
+			if (key == "alphaTest" && ReadMaterialBool(value, alphaTestEnabled))
+			{
+				struct AlphaTestPassBinding
+				{
+					const char* passName;
+					const char* enabledShaderName;
+					const char* disabledShaderName;
+					VansGraphicsShader* shader = nullptr;
+					bool replace = false;
+				};
+
+				AlphaTestPassBinding bindings[] = {
+					{ VansPass::GBUFFER, "UnlitAlphaTest", "Unlit" },
+					{ VansPass::SHADOW, "ShadowAlphaTest", "Shadow" },
+					{ VansPass::PUNCTUAL_SHADOW, "PunctualShadowAlphaTest", "PunctualShadow" },
+				};
+
+				for (AlphaTestPassBinding& binding : bindings)
+				{
+					if (!material.HasPass(binding.passName))
+						continue;
+
+					const auto overrideIt = material.m_PassShaderOverrides.find(binding.passName);
+					if (overrideIt != material.m_PassShaderOverrides.end() &&
+						overrideIt->second != binding.enabledShaderName &&
+						overrideIt->second != binding.disabledShaderName)
+					{
+						// 显式自定义 Pass 由其自身负责 Alpha Test，不覆盖用户路由。
+						continue;
+					}
+
+					binding.shader = VansShaderManager::Get().FindGraphicsShader(
+						alphaTestEnabled ? binding.enabledShaderName : binding.disabledShaderName);
+					if (!binding.shader)
+						return false;
+					binding.replace = true;
+				}
+
+				pbr->m_AlphaTestEnabled = alphaTestEnabled;
+				pbr->m_BasePBRParam.padding = alphaTestEnabled ? pbr->m_AlphaCutoff : 0.0f;
+				for (const AlphaTestPassBinding& binding : bindings)
+				{
+					if (!binding.replace)
+						continue;
+					material.m_PassShaderOverrides[binding.passName] =
+						alphaTestEnabled ? binding.enabledShaderName : binding.disabledShaderName;
+					material.m_PassShaders[binding.passName] = binding.shader;
+				}
+				FlushMaterialPayload(material);
+				return true;
+			}
+
+			float alphaCutoff = 0.0f;
+			if (key == "alphaCutoff" && ReadMaterialFloat(value, alphaCutoff))
+			{
+				pbr->m_AlphaCutoff = std::clamp(alphaCutoff, 0.0f, 1.0f);
+				pbr->m_BasePBRParam.padding = pbr->m_AlphaTestEnabled ? pbr->m_AlphaCutoff : 0.0f;
+				FlushMaterialPayload(material);
+				return true;
+			}
+		}
+
 		glm::vec3 color;
 		if ((key == "albedo" || key == "baseColor" || key == "basecolor") && ReadMaterialVec3(value, color))
 		{
@@ -1646,35 +1730,28 @@ bool VansGraphics::VansMaterialManager::ApplyMaterialParameter(
 			return true;
 		}
 	}
-	else if (auto* decal = dynamic_cast<VansDecalMaterial*>(&material))
-	{
-		glm::vec3 color;
-		if ((key == "albedo" || key == "baseColor" || key == "basecolor" || key == "color") && ReadMaterialVec3(value, color))
-		{
-			decal->m_BasePBRParam.m_albedo = color;
-			FlushMaterialPayload(material);
-			return true;
-		}
-		float scalar = 0.0f;
-		if (key == "roughness" && ReadMaterialFloat(value, scalar))
-		{
-			decal->m_BasePBRParam.m_roughness = scalar;
-			FlushMaterialPayload(material);
-			return true;
-		}
-		if (key == "metallic" && ReadMaterialFloat(value, scalar))
-		{
-			decal->m_BasePBRParam.m_metallic = scalar;
-			FlushMaterialPayload(material);
-			return true;
-		}
-		if (key == "ao" && ReadMaterialFloat(value, scalar))
-		{
-			decal->m_BasePBRParam.m_ao = scalar;
-			FlushMaterialPayload(material);
-			return true;
-		}
-	}
+    else if (auto* decal = dynamic_cast<VansDecalMaterial*>(&material))
+    {
+        auto& payload = decal->m_CustomMaterialPayload;
+        glm::vec3 color;
+        float scalar = 0.0f;
+        if (key == "albedo" && ReadMaterialVec3(value, color))
+            payload.values[0] = glm::vec4(color, payload.values[0].w);
+        else if (ReadMaterialFloat(value, scalar))
+        {
+            const float unit = std::clamp(scalar, 0.0f, 1.0f);
+            if (key == "opacity") payload.values[0].w = unit;
+            else if (key == "roughness") payload.values[1].x = unit;
+            else if (key == "colorWeight") payload.values[1].y = unit;
+            else if (key == "normalWeight") payload.values[1].z = unit;
+            else if (key == "roughnessWeight") payload.values[1].w = unit;
+            else if (key == "sortPriority") payload.values[2].x = std::round(std::clamp(scalar, -32768.0f, 32767.0f));
+            else return false;
+        }
+        else return false;
+        FlushMaterialPayload(material);
+        return true;
+    }
 	else if (auto* emissive = dynamic_cast<VansEmissiveMaterial*>(&material))
 	{
 		glm::vec3 color;

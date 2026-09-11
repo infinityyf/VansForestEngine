@@ -277,6 +277,8 @@ namespace VansGraphics
 			return false;
 		}
 
+		if (!RetireSubmittedFrame()) return false;
+
 		// VansGraphics::vkDeviceWaitIdle 之后所有已提交的 CB fence 都处于 signaled 状态。
 		// 若不在此处 reset，下一帧 async 路径直接用 signaled fence 提交 vkQueueSubmit
 		// 会触发 Vulkan Validation Error（NSight 对此会直接 crash）。
@@ -428,9 +430,9 @@ namespace VansGraphics
 		}
 	}
 
-	void VansVKDevice::CmdResetQueryPool(VkCommandBuffer commandBuffer, VkQueryPool pool, uint32_t firstQuery, uint32_t queryCount)
+	void VansVKDevice::ResetQueryPool(VkDevice device, VkQueryPool pool, uint32_t firstQuery, uint32_t queryCount)
 	{
-		VansGraphics::vkCmdResetQueryPool(commandBuffer, pool, firstQuery, queryCount);
+		VansGraphics::vkResetQueryPool(device, pool, firstQuery, queryCount);
 	}
 
 	void VansVKDevice::CmdWriteTimestamp(VkCommandBuffer commandBuffer, VkPipelineStageFlagBits pipelineStage, VkQueryPool pool, uint32_t query)
@@ -475,7 +477,8 @@ namespace VansGraphics
 			GetLogicDevice(),
 			GetPhysicalDevice(),
 			GetGraphicsQueueFamilyIndex(),
-			GetComputeQueueFamilyIndex());
+			GetComputeQueueFamilyIndex(),
+			m_Features12.hostQueryReset == VK_TRUE);
 #endif
 	}
 

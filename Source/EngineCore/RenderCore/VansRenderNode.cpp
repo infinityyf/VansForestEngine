@@ -150,8 +150,8 @@ void VansGraphics::VansRenderNode::ComputeModelDataFromTransform()
 	
 	m_ModelData.ModelMatrix = glm::scale(m_ModelData.ModelMatrix, transform.m_Scale);
 	m_ModelData.NormalMatrix = glm::transpose(glm::inverse(m_ModelData.ModelMatrix));
-	m_ModelData.Postion = glm::vec4(transform.m_Position, 1.0f);
-	m_ModelData.Scale = glm::vec4(transform.m_Scale, 1.0f);
+	m_ModelData.Postion = glm::vec4(transform.m_Position, static_cast<float>(m_DecalReceiverId));
+	m_ModelData.Scale = glm::vec4(transform.m_Scale, m_DecalMinimumNormalDot);
 }
 
 void VansGraphics::VansRenderNode::UpdateWorldBoundsFromModelData()
@@ -236,7 +236,7 @@ static const char* GetPrimaryPassName(VansGraphics::RenderNodeType type)
 	case POSTPROCESS_NODE:  return VansPass::POST_PROCESS;
 	case DEFERRED_NODE:     return VansPass::DEFERRED;
 	case SCREEN_SPACE_NODE: return VansPass::SCREEN_SPACE;
-	case DECAL_NODE:        return VansPass::DECAL_GBUFFER;
+	case DECAL_NODE:        return VansPass::DECAL_MODIFIER;
 	default:                return VansPass::GBUFFER;
 	}
 }
@@ -807,7 +807,7 @@ void VansGraphics::VansDeferredRenderNode::CreateDescriptorSets(VansCamera* came
 	m_UsedDescSets.push_back(m_Scene->GetGlobalDescriptorSet());
 
 	// Set 1: Per-Pass (GBuffer inputs + screen-space effect textures merged)
-	VansDescriptorSetLayoutFactory::CreateAndAllocate_DeferredLighting(frameBufferInputLayout, frameBufferInputDescriptorSets);
+	VansDescriptorSetLayoutFactory::CreateAndAllocate_DeferredLighting(frameBufferInputLayout, frameBufferInputDescriptorSets, 2);
 
 	m_UsedDescSetLayouts.push_back(frameBufferInputLayout);
 	m_UsedDescSets.push_back(frameBufferInputDescriptorSets[0]);
@@ -888,53 +888,79 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescriptorSets(VansMaterialMana
 	auto* descMgr = VansVKDescriptorManager::GetInstance();
 	auto* rp = VansRenderPassManager::GetInstance();
 	descMgr->BeginDescriptorUpdate();
+    // 两套不可变 descriptor：无贴花的帧选择全零纹理，避免上一帧残留或逐帧改写绑定。
+    for (size_t setIndex = 0; setIndex < frameBufferInputDescriptorSets.size(); ++setIndex)
+    {
 
-	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[setIndex], 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{ { rp->GetNormal().GetSampler(), rp->GetNormal().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[setIndex], 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{ { rp->GetGbuffer0().GetSampler(), rp->GetGbuffer0().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[setIndex], 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{ { rp->GetGbuffer1().GetSampler(), rp->GetGbuffer1().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[setIndex], 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{ { rp->GetGbuffer2().GetSampler(), rp->GetGbuffer2().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[setIndex], 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{ { rp->GetDepth().GetSampler(), rp->GetDepth().GetImageView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL } });
-	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 5, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[setIndex], 5, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 		{ { ssaoFilterResult->GetImage().GetSampler(), ssaoFilterResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
-	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[setIndex], 6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{ { ssgiFilterResult->GetImage().GetSampler(), ssgiFilterResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
-	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 7, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[setIndex], 7, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 		{ { ssrAaResult->GetImage().GetSampler(), ssrAaResult->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
-	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[setIndex], 8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{ { rp->GetCascadeShadowSampler(), rp->GetCascadeShadowArrayView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL } });
-	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], 9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[setIndex], 9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		rp->GetPunctualShadowDescriptorInfos());
-	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], DEFERRED_BINDING_SCREEN_SPACE_SHADOW, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[setIndex], DEFERRED_BINDING_SCREEN_SPACE_SHADOW, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{ { screenSpaceShadow->GetImage().GetSampler(), screenSpaceShadow->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
-	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], DEFERRED_BINDING_RECT_LIGHT_EMISSIVE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[setIndex], DEFERRED_BINDING_RECT_LIGHT_EMISSIVE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{ { rectLightEmissive->GetImage().GetSampler(), rectLightEmissive->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], DEFERRED_BINDING_IES_PROFILES, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[setIndex], DEFERRED_BINDING_IES_PROFILES, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{ { m_Scene->GetIESProfileManager()->GetIESProfileTexture().GetSampler(), m_Scene->GetIESProfileManager()->GetIESProfileTexture().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], DEFERRED_BINDING_SCREEN_SPACE_SHADOW_HIZ, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[setIndex], DEFERRED_BINDING_SCREEN_SPACE_SHADOW_HIZ, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{ { screenSpaceShadowHZB->GetImage().GetSampler(), screenSpaceShadowHZB->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
-	descMgr->WriteBufferDescriptor(frameBufferInputDescriptorSets[0], DEFERRED_BINDING_SCREEN_SPACE_SHADOW_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+	descMgr->WriteBufferDescriptor(frameBufferInputDescriptorSets[setIndex], DEFERRED_BINDING_SCREEN_SPACE_SHADOW_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 		{ { materialManager.m_ScreenSpaceShadowParamsCBBuffer.GetNativeBuffer(), 0, materialManager.m_ScreenSpaceShadowParamsCBBuffer.GetBufferSize() } });
-	descMgr->WriteBufferDescriptor(frameBufferInputDescriptorSets[0], DEFERRED_BINDING_GI_INFO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+	descMgr->WriteBufferDescriptor(frameBufferInputDescriptorSets[setIndex], DEFERRED_BINDING_GI_INFO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 		{ { materialManager.m_SSGICBBuffer.GetNativeBuffer(), 0, materialManager.m_SSGICBBuffer.GetBufferSize() } });
-	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], DEFERRED_BINDING_GI_VISIBILITY, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[setIndex], DEFERRED_BINDING_GI_VISIBILITY, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		giVisibilityInfos);
-	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[0], DEFERRED_BINDING_GI_IRRADIANCE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[setIndex], DEFERRED_BINDING_GI_IRRADIANCE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		giIrradianceInfos);
+    const auto& receiverVisibility = materialManager.m_GIReceiverVisibility.current;
+    descMgr->WriteBufferDescriptor(frameBufferInputDescriptorSets[setIndex], 34u, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        {{receiverVisibility.GetNativeBuffer(), 0, receiverVisibility.GetBufferSize()}});
+    const auto& layoutBuffer = rayTracing.GetGIProbeLayoutBuffer();
+    descMgr->WriteBufferDescriptor(frameBufferInputDescriptorSets[setIndex], 33u, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        {{layoutBuffer.GetNativeBuffer(), 0, layoutBuffer.GetBufferSize()}});
 	for (size_t regionSlot = 0; regionSlot < giProbeStateInfos.size(); ++regionSlot)
 	{
 		descMgr->WriteBufferDescriptor(
-			frameBufferInputDescriptorSets[0],
+			frameBufferInputDescriptorSets[setIndex],
 			DEFERRED_BINDING_GI_PROBE_STATE + static_cast<uint32_t>(regionSlot),
 			VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 			{ giProbeStateInfos[regionSlot] });
 	}
+        VansVKImage* modifiers[] = { &rp->GetDecalColor(), &rp->GetDecalNormal(), &rp->GetDecalRoughness() };
+        for (uint32_t channel = 0; channel < 3; ++channel)
+        {
+            auto& image = setIndex == 0 ? *modifiers[channel] : rp->GetEmptyDecal();
+            descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[setIndex],
+                DEFERRED_BINDING_DECAL_COLOR + channel, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                {{image.GetSampler(), image.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}});
+        }
+    }
 	descMgr->CommitDescriptorUpdates();
 	m_DescriptorsetsDirty = false;
+}
+
+void VansGraphics::VansDeferredRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalStateData& globalState)
+{
+    const auto* device = m_Scene->GetRuntimeResourceDevice();
+    const bool hasDecal = device && device->GetCurrentRenderSceneSnapshot().features.hasDecal;
+    m_UsedDescSets[1] = frameBufferInputDescriptorSets[hasDecal ? 0 : 1];
+    VansRenderNode::Draw(cmd, globalState);
 }
 
 void VansGraphics::VansScreenSpaceRenderNode::CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager)
@@ -1212,11 +1238,11 @@ void VansGraphics::VansVegetationRenderNode::DrawPunctualShadow(VansVKCommandBuf
 void VansGraphics::VansDecalRenderNode::CreateDescriptorSets(
 	VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager)
 {
-	// Set 0: Global（Camera / Lights / PBR SSBO / Bindless 纹理）
+	// Set 0: Global（Camera / Lights / 材质 payload / Bindless 纹理）
 	m_UsedDescSetLayouts.push_back(m_Scene->GetGlobalDescriptorSetLayout());
 	m_UsedDescSets.push_back(m_Scene->GetGlobalDescriptorSet());
 
-	// Set 1: DecalPass（仅绑定 GBuffer2 用于世界坐标重建）
+	// Set 1: DecalPass（GBuffer2 重建世界坐标，GBuffer1 判定接收材质）
 	VansDescriptorSetLayoutFactory::CreateAndAllocate_DecalPass(textureResourceLayout, textureResourceDescriptorSets);
 	m_UsedDescSetLayouts.push_back(textureResourceLayout);
 	m_UsedDescSets.push_back(textureResourceDescriptorSets[0]);
@@ -1251,6 +1277,13 @@ void VansGraphics::VansDecalRenderNode::UpdateDescriptorSets(VansMaterialManager
 			VansRenderPassManager::GetInstance()->GetGbuffer2().GetImageView(),
 			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 		} });
+    auto& receiver = VansRenderPassManager::GetInstance()->GetGbuffer1();
+    descMgr->WriteImageDescriptor(textureResourceDescriptorSets[0], DECAL_PASS_BINDING_GBUFFER1,
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        {{receiver.GetSampler(), receiver.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}});
+    auto& normal = VansRenderPassManager::GetInstance()->GetNormal();
+    descMgr->WriteImageDescriptor(textureResourceDescriptorSets[0], DECAL_PASS_BINDING_NORMAL,
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        {{normal.GetSampler(), normal.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}});
 	descMgr->CommitDescriptorUpdates();
 }
-

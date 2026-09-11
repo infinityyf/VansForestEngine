@@ -30,8 +30,14 @@ SceneDocumentSnapshot::~SceneDocumentSnapshot() = default;
 
 VansSerializedValue SceneDocumentSnapshot::SerializedRootSnapshot() const
 {
+    return Root();
+}
+
+const VansSerializedValue& SceneDocumentSnapshot::Root() const
+{
+    static const VansSerializedValue emptyRoot = VansSerializedValue::Object({});
     if (!m_Root)
-        return VansSerializedValue::Object({});
+        return emptyRoot;
     return *m_Root;
 }
 
@@ -43,7 +49,7 @@ bool SceneFileFingerprint::operator==(const SceneFileFingerprint& other) const
 }
 
 VansSceneDocument::VansSceneDocument()
-    : m_Root(std::make_unique<VansSerializedValue>(VansSerializedValue::Object({})))
+    : m_Root(std::make_shared<const VansSerializedValue>(VansSerializedValue::Object({})))
 {
 }
 
@@ -67,7 +73,7 @@ bool VansSceneDocument::IsHealthy() const
 SceneDocumentSnapshot VansSceneDocument::CreateSnapshot() const
 {
     return {
-        std::make_shared<VansSerializedValue>(*m_Root),
+        m_Root,
         m_SourcePath,
         m_LoadedFingerprint,
         m_CurrentStateId
@@ -138,14 +144,14 @@ SceneStateId VansSceneDocument::AllocateStateId()
 
 SceneStateId VansSceneDocument::ApplyEditedSerializedRoot(VansSerializedValue root)
 {
-    *m_Root = std::move(root);
+    m_Root = std::make_shared<const VansSerializedValue>(std::move(root));
     m_CurrentStateId = AllocateStateId();
     return m_CurrentStateId;
 }
 
 void VansSceneDocument::RestoreEditedSerializedRoot(VansSerializedValue root, SceneStateId stateId)
 {
-    *m_Root = std::move(root);
+    m_Root = std::make_shared<const VansSerializedValue>(std::move(root));
     m_CurrentStateId = stateId;
     if (m_CurrentStateId >= m_NextStateId)
         m_NextStateId = m_CurrentStateId + 1;

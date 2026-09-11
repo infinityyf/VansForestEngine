@@ -3,50 +3,6 @@
 
 #include "../Common/Common.glsl"
 
-// DDGI 的采样节奏与 C++ BuildGIProbeUpdateBatch 必须保持一致：
-// D^3 个空间 phase，S 个方向 slice。默认 D=2、S=16、R=256，完整周期为 128 帧。
-uvec3 GI_UpdateSpatialDivisors(uvec3 probeCounts, uint spatialDivisor)
-{
-    return min(uvec3(max(spatialDivisor, 1u)), max(probeCounts, uvec3(1u)));
-}
-
-uint GI_UpdateSpatialPhaseCount(uvec3 probeCounts, uint spatialDivisor)
-{
-    uvec3 divisors = GI_UpdateSpatialDivisors(probeCounts, spatialDivisor);
-    return divisors.x * divisors.y * divisors.z;
-}
-
-uvec3 GI_UpdateSpatialOffset(uint frameIndex, uvec3 probeCounts, uint spatialDivisor)
-{
-    uvec3 divisors = GI_UpdateSpatialDivisors(probeCounts, spatialDivisor);
-    uint phaseCount = divisors.x * divisors.y * divisors.z;
-    uint spatialPhase = frameIndex % phaseCount;
-    return uvec3(
-        spatialPhase % divisors.x,
-        (spatialPhase / divisors.x) % divisors.y,
-        spatialPhase / (divisors.x * divisors.y));
-}
-
-uint GI_UpdateDirectionSlice(uint frameIndex, uvec3 probeCounts, uint spatialDivisor, uint directionSlices)
-{
-    return (frameIndex / GI_UpdateSpatialPhaseCount(probeCounts, spatialDivisor)) % directionSlices;
-}
-
-uint GI_UpdateCycleIndex(uint frameIndex, uvec3 probeCounts, uint spatialDivisor, uint directionSlices)
-{
-    return frameIndex / (GI_UpdateSpatialPhaseCount(probeCounts, spatialDivisor) * directionSlices);
-}
-
-uvec3 GI_UpdateDispatchDimensions(uvec3 probeCounts, uint spatialDivisor, uint frameIndex)
-{
-    uvec3 divisors = GI_UpdateSpatialDivisors(probeCounts, spatialDivisor);
-    uvec3 offset = GI_UpdateSpatialOffset(frameIndex, probeCounts, spatialDivisor);
-    // Do not use a phase-0 ceil here: on odd dimensions later phases contain
-    // fewer probes. This count must match C++ BuildGIProbeUpdateBatch or the
-    // packed transient-ray buffer gets holes/over-counted entries.
-    return (probeCounts - uvec3(1u) - offset) / divisors + uvec3(1u);
-}
-
 uint GI_Hash(uint value)
 {
     value ^= value >> 16u;
@@ -90,9 +46,10 @@ vec3 GI_RotateByQuaternion(vec3 direction, vec4 rotation)
     return normalize(direction + rotation.w * t + cross(q, t));
 }
 
-uint GI_ProbeLinearIndex(ivec3 probeIndex, ivec3 probeCounts);
-bool GI_IsFixedClassificationRay(uint localRayIndex, uint raysPerSlice);
 
+uint GI_ProbeLinearIndex(ivec3 index, ivec3 counts)
+{ return uint((index.z * counts.y + index.y) * counts.x + index.x); }
+uint GI_FixedRayCount(uint raysPerProbe) { return min(32u, raysPerProbe / 2u); }
 struct GIProbeRayDirectionContext
 {
     uint fixedRayCount;
@@ -100,85 +57,28 @@ struct GIProbeRayDirectionContext
     vec4 stableRotation;
     vec4 cycleRotation;
 };
-
 GIProbeRayDirectionContext GI_BuildProbeRayDirectionContext(
-    ivec3 probeIndex,
-    ivec3 probeCounts,
-    uint raysPerProbe,
-    uint directionSlices,
-    uint cycleIndex)
+    ivec3 probeIndex, ivec3 probeCounts, uint raysPerProbe, uint cycleIndex)
 {
     GIProbeRayDirectionContext context;
-    context.fixedRayCount = min(
-        raysPerProbe, min(32u, max(directionSlices * 2u, 2u)));
-    context.dynamicRayCount = max(raysPerProbe - context.fixedRayCount, 1u);
-    uint probeSeed = GI_HashCombine(
-        GI_ProbeLinearIndex(probeIndex, probeCounts),
-        uint(probeCounts.x * 73856093 ^ probeCounts.y * 19349663 ^
-            probeCounts.z * 83492791));
-    context.stableRotation = GI_UniformRotationQuaternion(probeSeed);
-    context.cycleRotation = GI_UniformRotationQuaternion(
-        GI_HashCombine(probeSeed, cycleIndex));
+    context.fixedRayCount = GI_FixedRayCount(raysPerProbe);
+    context.dynamicRayCount = raysPerProbe - context.fixedRayCount;
+    uint seed = GI_HashCombine(GI_ProbeLinearIndex(probeIndex, probeCounts),
+        uint(probeCounts.x * 73856093 ^ probeCounts.y * 19349663 ^ probeCounts.z * 83492791));
+    context.stableRotation = GI_UniformRotationQuaternion(seed);
+    context.cycleRotation = GI_UniformRotationQuaternion(GI_HashCombine(seed, cycleIndex));
     return context;
 }
-
-vec3 GI_ProbeRayDirectionPrepared(
-    GIProbeRayDirectionContext context,
-    uint localRayIndex,
-    uint raysPerSlice,
-    uint directionSlice,
-    uint directionSlices,
-    out bool fixedClassificationRay)
+// 默认 32 条稳定几何方向和 224 条旋转光照方向，各自覆盖完整球面。
+vec3 GI_ProbeRayDirectionPrepared(GIProbeRayDirectionContext context, uint localRay, out bool fixedRay)
 {
-    fixedClassificationRay = GI_IsFixedClassificationRay(
-        localRayIndex, raysPerSlice);
-    if (fixedClassificationRay)
-    {
-        uint fixedIndex = localRayIndex * directionSlices + directionSlice;
-        vec3 fixedDirection = SampleSphere(
-            int(fixedIndex % context.fixedRayCount),
-            int(context.fixedRayCount));
-        return GI_RotateByQuaternion(fixedDirection, context.stableRotation);
-    }
-
-    uint dynamicLocalIndex = localRayIndex - min(2u, raysPerSlice);
-    uint dynamicIndex = dynamicLocalIndex * directionSlices + directionSlice;
-    vec3 dynamicDirection = SampleSphere(
-        int(dynamicIndex % context.dynamicRayCount),
-        int(context.dynamicRayCount));
-    return GI_RotateByQuaternion(
-        GI_RotateByQuaternion(dynamicDirection, context.stableRotation),
-        context.cycleRotation);
+    fixedRay = localRay < context.fixedRayCount;
+    uint index = fixedRay ? localRay : localRay - context.fixedRayCount;
+    uint count = fixedRay ? context.fixedRayCount : context.dynamicRayCount;
+    vec3 direction = GI_RotateByQuaternion(SampleSphere(int(index), int(count)), context.stableRotation);
+    return fixedRay ? direction : GI_RotateByQuaternion(direction, context.cycleRotation);
 }
-
-uint GI_ProbeLinearIndex(ivec3 probeIndex, ivec3 probeCounts)
-{
-    return uint(probeIndex.z * probeCounts.x * probeCounts.y +
-        probeIndex.y * probeCounts.x + probeIndex.x);
-}
-
-bool GI_IsFixedClassificationRay(uint localRayIndex, uint raysPerSlice)
-{
-    // 在默认 256/16 配置下，每个 slice 前两条为固定方向，16 个 slice 合计 32 条。
-    return raysPerSlice >= 2u && localRayIndex < 2u;
-}
-
-vec3 GI_ProbeRayDirection(
-    ivec3 probeIndex,
-    ivec3 probeCounts,
-    uint raysPerProbe,
-    uint localRayIndex,
-    uint raysPerSlice,
-    uint directionSlice,
-    uint directionSlices,
-    uint cycleIndex,
-    out bool fixedClassificationRay)
-{
-    GIProbeRayDirectionContext context = GI_BuildProbeRayDirectionContext(
-        probeIndex, probeCounts, raysPerProbe, directionSlices, cycleIndex);
-    return GI_ProbeRayDirectionPrepared(
-        context, localRayIndex, raysPerSlice, directionSlice,
-        directionSlices, fixedClassificationRay);
-}
-
+// 每次完整球面估计贡献一个样本，稀疏调度的等待间隔不消耗历史。
+float GI_HistoryBlend(float hysteresis)
+{ return 1.0 - clamp(hysteresis, 0.0, 0.999); }
 #endif

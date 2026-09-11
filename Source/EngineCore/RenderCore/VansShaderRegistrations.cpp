@@ -29,6 +29,19 @@ void RegisterEngineShaders()
         0, false, false, 5
     });
 
+    VansGraphics::VansShaderEntry unlitAlphaTest{
+        "UnlitAlphaTest",
+        "EngineAssets/Shaders/UnLit/AlphaTest",
+        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
+        0, false, false, 5
+    };
+    unlitAlphaTest.explicitStageFiles = {
+        { VK_SHADER_STAGE_VERTEX_BIT, "../Deferred/UnLit.vert" },
+        { VK_SHADER_STAGE_FRAGMENT_BIT, "UnLitAlphaTest.frag" },
+    };
+    unlitAlphaTest.materialPasses = { VansGraphics::VansPass::GBUFFER };
+    reg.RegisterGraphicsShader("UnlitAlphaTest", std::move(unlitAlphaTest));
+
     VansGraphics::VansShaderEntry cascadeShadow{
         "Shadow",
         "EngineAssets/Shaders/Shadow",
@@ -37,6 +50,16 @@ void RegisterEngineShaders()
     };
     cascadeShadow.colorAttachmentCount = 0;
     reg.RegisterGraphicsShader("Shadow", std::move(cascadeShadow));
+
+    VansGraphics::VansShaderEntry cascadeShadowAlphaTest{
+        "ShadowAlphaTest",
+        "EngineAssets/Shaders/Shadow/AlphaTest",
+        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
+        0, false
+    };
+    cascadeShadowAlphaTest.colorAttachmentCount = 0;
+    cascadeShadowAlphaTest.materialPasses = { VansGraphics::VansPass::SHADOW };
+    reg.RegisterGraphicsShader("ShadowAlphaTest", std::move(cascadeShadowAlphaTest));
 
     VansGraphics::VansShaderEntry punctualShadow = {
         "PunctualShadow",
@@ -50,6 +73,16 @@ void RegisterEngineShaders()
     // 聚光灯所看到的内侧背面，避免这些背面写入 shadowmap。
     punctualShadow.frontFace = VK_FRONT_FACE_CLOCKWISE;
     reg.RegisterGraphicsShader("PunctualShadow", std::move(punctualShadow));
+
+    VansGraphics::VansShaderEntry punctualShadowAlphaTest = {
+        "PunctualShadowAlphaTest",
+        "EngineAssets/Shaders/PunctualShadow/AlphaTest",
+        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
+        0, false
+    };
+    punctualShadowAlphaTest.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    punctualShadowAlphaTest.materialPasses = { VansGraphics::VansPass::PUNCTUAL_SHADOW };
+    reg.RegisterGraphicsShader("PunctualShadowAlphaTest", std::move(punctualShadowAlphaTest));
 
     reg.RegisterGraphicsShader("Skin", {
         "Skin",
@@ -299,6 +332,12 @@ void RegisterEngineShaders()
     reg.RegisterComputeShader("PreConSpecularEnvironment", "EngineAssets/Shaders/PreConSpecularEnvironment");
     reg.RegisterComputeShader("SSGI", "EngineAssets/Shaders/SSGI");
     reg.RegisterComputeShader("SSGIProbeCache", "EngineAssets/Shaders/SSGIProbeCache");
+    reg.RegisterComputeShader("GIReceiverVisibilityPrepare", "EngineAssets/Shaders/GIReceiverVisibilityPrepare", 32);
+    reg.RegisterComputeShader("GIReceiverVisibilityReproject", "EngineAssets/Shaders/GIReceiverVisibilityReproject", 80);
+    reg.RegisterComputeShader("GIReceiverVisibilityWorldCache", "EngineAssets/Shaders/GIReceiverVisibilityWorldCache", 32);
+    reg.RegisterRayTracingShader("GIReceiverBias", "EngineAssets/Shaders/GIReceiverBias");
+    reg.RegisterRayTracingShader("GIReceiverVisibilityTrace", "EngineAssets/Shaders/GIReceiverVisibilityTrace");
+    reg.RegisterRayTracingShader("GIReceiverTransport", "EngineAssets/Shaders/GIReceiverTransport", 16);
     reg.RegisterComputeShader("SSGITemporal", "EngineAssets/Shaders/SSGITemporal");
     reg.RegisterComputeShader("SSGIAtrous", "EngineAssets/Shaders/SSGIAtrous", sizeof(VansGraphics::SSGIAtrousPushConstants));
     reg.RegisterComputeShader("HIZ", "EngineAssets/Shaders/HIZ");
@@ -436,8 +475,8 @@ void RegisterEngineShaders()
         { VansGraphics::VansPass::PUNCTUAL_SHADOW,  "PunctualShadow" },
     });
 
-    // Decal: only participates in DecalGBuffer, without shadow or depth writes.
+    // Decal 仅参与独立修饰附件合成，不写入阴影和深度。
     reg.RegisterMaterialPasses(VansGraphics::VAN_DECAL, {
-        { VansGraphics::VansPass::DECAL_GBUFFER,    "Decal"          },
+        { VansGraphics::VansPass::DECAL_MODIFIER,    "Decal"          },
     });
 }

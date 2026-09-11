@@ -128,7 +128,7 @@ SceneDocumentLoadResult VansSceneDocumentLoader::Load(const std::filesystem::pat
             return result;
         }
         document->m_Diagnostics = VansSceneSchema::ValidateSceneJson(parsedRoot);
-        document->m_Root = std::make_unique<VansSerializedValue>(
+        document->m_Root = std::make_shared<const VansSerializedValue>(
             DecodeSerializedValueJson(parsedRoot));
         document->m_SourcePath = std::filesystem::absolute(path).lexically_normal();
         document->m_LoadedFingerprint =

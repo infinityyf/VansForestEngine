@@ -106,7 +106,7 @@ namespace
 			if (m_Operation == SceneGpuMaintenanceOperation::RebuildRenderer)
 				device->PrepareRenderingData();
 			else if (m_Operation == SceneGpuMaintenanceOperation::PrepareScene)
-				VansSceneRenderPreparationExecutor::PrepareAfterSceneContentLoaded(
+				return VansSceneRenderPreparationExecutor::PrepareAfterSceneContentLoaded(
 					m_Scene, *device);
 			return true;
 		}

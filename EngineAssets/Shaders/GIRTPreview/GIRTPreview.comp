@@ -5,12 +5,18 @@
 
 #include "../GI/GIProbeCommon.glsl"
 #include "../GI/GIProbeUpdateCommon.glsl"
+#define GI_WORK_SET 0
+#define GI_WORK_BINDING 9
+#include "../GI/GIProbeWorkData.glsl"
+#define GI_LAYOUT_SET 0
+#define GI_LAYOUT_BINDING 10
+#include "../GI/GIProbeLayoutData.glsl"
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 layout(set = 0, binding = 0, std430) readonly buffer HitPositionBuffer
 {
-    f16vec4 values[];
+    float values[];
 } hitPositionBuffer;
 
 layout(set = 0, binding = 1, std430) readonly buffer HitNormalBuffer
@@ -31,12 +37,7 @@ layout(set = 0, binding = 3, std430) readonly buffer DirectLightBuffer
 layout(set = 0, binding = 4, rgba16f) readonly uniform image3D raySummaryImage;
 layout(set = 0, binding = 5) uniform sampler2D irradianceAtlas;
 layout(set = 0, binding = 6) uniform sampler2D visibilityAtlas;
-struct GIProbeState
-{
-    vec4 relocationAndConfidence;
-    vec4 distanceStats;
-    uvec4 metadata;
-};
+#include "../GI/GIProbeStateData.glsl"
 layout(set = 0, binding = 7, std430) readonly buffer ProbeStateBuffer
 {
     GIProbeState states[];
@@ -48,7 +49,7 @@ layout(push_constant) uniform PreviewConstants
     vec4 gridParams;       // xyz = grid dimensions, w = rays per probe
     vec4 selectionParams;  // x = mode, y = z slice, z = ray index, w = exposure
     vec4 displayParams;    // x = signed world-position scale
-	vec4 updateParams;     // x = update frame, y = spatial divisor, z = direction slices, w = rays in active slice
+	vec4 updateParams;     // x = update frame, yz = reserved, w = rays per complete probe
 } preview;
 
 vec3 TonemapPositive(vec3 value, float exposure)
@@ -71,26 +72,21 @@ void main()
 
     int raysPerProbe = max(int(preview.gridParams.w), 1);
     int zSlice = clamp(int(preview.selectionParams.y), 0, grid.z - 1);
-    int raysPerActiveProbe = max(int(preview.updateParams.w), 1);
+    int raysPerActiveProbe = max(int(giProbeWork.header.y), 1);
     int rayIndex = clamp(int(preview.selectionParams.z), 0, raysPerActiveProbe - 1);
     int mode = int(preview.selectionParams.x);
     float exposure = max(preview.selectionParams.w, 0.001);
     ivec3 probeCoord = ivec3(pixel, zSlice);
     int probeIndex = zSlice * grid.x * grid.y + pixel.y * grid.x + pixel.x;
-    uint updateFrame = uint(max(preview.updateParams.x, 0.0));
-    uint spatialDivisor = max(uint(preview.updateParams.y), 1u);
-    uvec3 divisors = GI_UpdateSpatialDivisors(uvec3(grid), spatialDivisor);
-    uvec3 offset = GI_UpdateSpatialOffset(updateFrame, uvec3(grid), spatialDivisor);
-    ivec3 probeOffset = probeCoord - ivec3(offset);
-    bool activeProbe = all(greaterThanEqual(probeOffset, ivec3(0))) &&
-        all(equal(uvec3(probeOffset) % divisors, uvec3(0u)));
-    uvec3 activeDimensions = GI_UpdateDispatchDimensions(uvec3(grid), spatialDivisor, updateFrame);
-    uvec3 activeProbeCoord = activeProbe ? uvec3(probeOffset) / divisors : uvec3(0u);
-    uint activeLinear = activeProbeCoord.z * activeDimensions.x * activeDimensions.y +
-        activeProbeCoord.y * activeDimensions.x + activeProbeCoord.x;
-    uint sampleIndex = activeLinear * uint(raysPerActiveProbe) + uint(rayIndex);
+    if (GI_LayoutIsSparse() && uint(probeIndex) >= GI_LayoutProbeCount(0u))
+    { imageStore(outputImage, pixel, vec4(0.0)); return; }
+    uint activeLinear = GI_FindWorkEntry(uint(probeIndex));
+    bool activeProbe = activeLinear != 0xffffffffu;
+    if (!activeProbe) activeLinear = 0u;
+    rayIndex = min(rayIndex, raysPerActiveProbe - 1);
+    uint sampleIndex = GI_WorkRayOffset(activeLinear) + uint(rayIndex);
 
-    // Raw ray-tracing buffers exist only for the current spatial phase.  A
+    // Raw ray-tracing buffers exist only for the current work list.  A
     // black cell therefore means "not updated this frame", never a synthetic
     // zero normal/position that could be mistaken for valid data.
     if (!activeProbe && mode <= 6)
@@ -99,10 +95,23 @@ void main()
         return;
     }
 
-    vec4 hitPosition = vec4(hitPositionBuffer.values[sampleIndex]);
-    vec4 hitNormal = vec4(hitNormalBuffer.values[sampleIndex]);
-    vec4 hitPBR = vec4(hitPBRBuffer.values[sampleIndex]);
-    vec4 directLight = vec4(directLightBuffer.values[sampleIndex]);
+    float hitT = activeProbe ? hitPositionBuffer.values[sampleIndex] : -1.0;
+    vec4 hitPosition = vec4(0.0);
+    if (activeProbe)
+    {
+        uvec4 work = giProbeWork.entries[activeLinear];
+        GIProbeRayDirectionContext context = GI_BuildProbeRayDirectionContext(probeCoord, grid, uint(raysPerProbe), work.z);
+        bool fixedRay;
+        vec3 direction = GI_ProbeRayDirectionPrepared(context, uint(rayIndex), fixedRay);
+        vec3 origin = GI_LayoutIsSparse() ? GI_LayoutPosition(giProbeWork.header.z, work.x).xyz :
+            GI_LayoutRegionMin(giProbeWork.header.z).xyz + (vec3(probeCoord) + 0.5) *
+            GI_LayoutRegionSize(giProbeWork.header.z).xyz / vec3(grid);
+        origin += probeStates.states[probeIndex].traceOffsetAndBackface.xyz;
+        hitPosition = vec4(hitT >= 0.0 ? origin + direction * hitT : direction, hitT >= 0.0 ? 1.0 : 0.0);
+    }
+    vec4 hitNormal = activeProbe ? vec4(hitNormalBuffer.values[sampleIndex]) : vec4(0.0);
+    vec4 hitPBR = activeProbe ? vec4(hitPBRBuffer.values[sampleIndex]) : vec4(0.0);
+    vec4 directLight = activeProbe ? vec4(directLightBuffer.values[sampleIndex]) : vec4(0.0);
     ivec2 irradianceSize = textureSize(irradianceAtlas, 0);
     ivec2 visibilitySize = textureSize(visibilityAtlas, 0);
     vec3 debugDirection = vec3(0.0, 1.0, 0.0);
@@ -115,14 +124,14 @@ void main()
     vec3 color = vec3(0.0);
     if (mode == 0)
     {
-        // 当前活动 Probe 的完整 16-ray batch 命中率。不能读取
+        // 当前活动 Probe 的完整 ray batch 命中率。不能读取
         // raySummaryImage 的最后写入值：那只代表某一条未定义顺序的射线，
         // 会把单射线结果误标为 Probe 统计。
         float hitCount = 0.0;
         for (int localRay = 0; localRay < raysPerActiveProbe; ++localRay)
         {
-            uint batchIndex = activeLinear * uint(raysPerActiveProbe) + uint(localRay);
-            hitCount += clamp(float(hitPositionBuffer.values[batchIndex].w), 0.0, 1.0);
+            uint batchIndex = GI_WorkRayOffset(activeLinear) + uint(localRay);
+            hitCount += (hitPositionBuffer.values[batchIndex] >= 0.0 ? 1.0 : 0.0);
         }
         color = vec3(1.0 - hitCount / float(raysPerActiveProbe));
     }
@@ -169,10 +178,7 @@ void main()
     }
     else
     {
-		uint classification = probeState.metadata.x;
-		color = classification == 1u ? vec3(0.15, 0.95, 0.2) :
-			classification == 2u ? vec3(0.95, 0.15, 0.1) :
-			classification == 3u ? vec3(0.2, 0.35, 0.95) : vec3(0.95, 0.75, 0.1);
+		color = probeState.metadata.x == 1u ? vec3(0.15, 0.95, 0.2) : vec3(0.95, 0.75, 0.1);
     }
 
     imageStore(outputImage, pixel, vec4(color, 1.0));
