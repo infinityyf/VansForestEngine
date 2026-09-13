@@ -109,6 +109,7 @@
 #include "../EngineCore/EditorCore/VansSceneEditService.h"
 #include "../EngineCore/EditorCore/VansEditorRuntimePreviewProjector.h"
 #include "../EngineCore/EditorCore/Animation/VansAnimationRigSaveService.h"
+#include "../EngineCore/EditorCore/Animation/VansSceneAnimationSaveService.h"
 #include "../EngineCore/AssetCore/Serialization/VansSerializedValue.h"
 #include "../EngineCore/AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 #include "../EngineCore/AssetCore/Storage/VansMaterialAuthoringAssetStorage.h"
@@ -138,6 +139,7 @@
 #include "../EngineCore/AnimationCore/MotionMatching/VansTurnInPlaceWarping.h"
 #include "../EngineCore/EngineAPILayer/Private/AnimationAuthoringBridge.h"
 #include "../EngineCore/EngineAPILayer/Private/AnimationPreviewRigAuthoringService.h"
+#include "../EngineCore/EngineAPILayer/Private/AnimationPreviewParameterEditing.h"
 #include "../EngineCore/EngineAPILayer/Private/RuntimeGeneratedMaterialAssetService.h"
 #include "../EngineCore/EngineAPILayer/Private/VansLocalFogFieldPreviewService.h"
 #include "../EngineCore/EngineAPILayer/Public/EngineDTOs.h"
@@ -4226,18 +4228,12 @@ bool TestRuntimeWorldCommandBufferContract()
 		"Runtime world command buffer did not store video component data"))
 		return false;
 
-	auto* particleRuntime =
-		reinterpret_cast<VansGraphics::VansParticleRuntime*>(static_cast<std::uintptr_t>(0x4567));
-	auto* particleRenderNode =
-		reinterpret_cast<VansGraphics::VansParticleRenderNode*>(static_cast<std::uintptr_t>(0x6789));
+	const Vans::VansGenerationHandle particleRuntime{7, 9};
 	world.Commands().AddParticleComponent(
 		queued,
 		"queued-particle-guid",
 		particleRuntime,
-		particleRenderNode,
 		true,
-		false,
-		4.25f,
 		true,
 		1.5f,
 		2.5f,
@@ -4253,11 +4249,8 @@ bool TestRuntimeWorldCommandBufferContract()
 		particleStorage ? particleStorage->Get(particleComponent) : nullptr;
 	if (!Expect(
 		particleComponentData &&
-			particleComponentData->runtime == particleRuntime &&
-			particleComponentData->renderNode == particleRenderNode &&
+			particleComponentData->instance == particleRuntime &&
 			particleComponentData->playOnAwake &&
-			!particleComponentData->isPlaying &&
-			particleComponentData->playTime == 4.25f &&
 			particleComponentData->hasWorldPositionOverride &&
 			particleComponentData->worldPositionOverrideX == 1.5f &&
 			particleComponentData->worldPositionOverrideY == 2.5f &&
@@ -4464,23 +4457,18 @@ bool TestScriptComponentRuntimeEnabledMirrorHasNoBackendCallbacksContract()
 
 bool TestScriptParticleRuntimeEnabledMirrorContract()
 {
-	VansScriptParticleComponent component;
-	component.m_Runtime = std::make_unique<VansGraphics::VansParticleRuntime>();
-
-	component.MirrorRuntimeEnabledState(true, true);
-	if (!Expect(component.IsEnabled() && component.IsEffectivelyEnabled(),
-		"Particle runtime mirror did not update enabled state"))
-		return false;
-	if (!Expect(component.m_IsPlaying && component.m_Runtime->m_IsPlaying,
-		"Particle runtime mirror did not start playback state"))
-		return false;
-
-	component.MirrorRuntimeEnabledState(true, false);
-	if (!Expect(component.IsEnabled() && !component.IsEffectivelyEnabled(),
-		"Particle runtime mirror did not preserve self enabled state while disabling effective state"))
-		return false;
-	return Expect(!component.m_IsPlaying && !component.m_Runtime->m_IsPlaying,
-		"Particle runtime mirror did not pause playback state");
+    VansGraphics::VansParticleManager manager;
+    VansScriptParticleComponent component;
+    component.m_Manager = &manager;
+    component.m_Instance = manager.Create(std::make_shared<VansGraphics::VansParticleAsset>());
+    component.Play(); manager.Prepare();
+    component.MirrorRuntimeEnabledState(true, false); manager.Prepare();
+    if (!Expect(component.IsPlaying() && !component.GetRuntime()->IsEffectivelyEnabled(),
+        "Effective enablement overwrote explicit playback state")) return false;
+    component.MirrorRuntimeEnabledState(true, true); manager.Prepare();
+    component.Pause(); manager.Prepare();
+    return Expect(!component.IsPlaying() && component.GetRuntime()->IsEffectivelyEnabled(),
+        "Explicit pause overwrote component enablement");
 }
 
 bool TestScriptUIRuntimeOpenScreensMirrorContract()
@@ -4970,6 +4958,30 @@ bool TestAnimationEditorPreviewPolicyContract()
 {
 	using namespace VansGraphics;
 	using namespace Vans::EditorAPI;
+	{
+		// Imported bind offsets need not cancel to identity (e.g. FBX axis conversion).
+		Skeleton skeleton;
+		skeleton.bones.resize(2);
+		skeleton.bones[0].parentIndex = 1;
+		skeleton.bones[0].localTransform = glm::translate(glm::mat4(1), glm::vec3(2, 0, 0));
+		skeleton.bones[0].offsetMatrix = glm::translate(glm::mat4(1), glm::vec3(-1, 0, 0));
+		skeleton.bones[1].children = {0};
+		skeleton.bones[1].localTransform = glm::rotate(glm::mat4(1), glm::radians(90.0f), glm::vec3(0, 0, 1));
+		skeleton.bones[1].offsetMatrix = glm::rotate(glm::mat4(1), glm::radians(90.0f), glm::vec3(1, 0, 0));
+		skeleton.BuildTopologicalOrder();
+		VansAnimationNode attachment("DisabledSkinnedAttachment");
+		attachment.SetEnabled(false);
+		attachment.SetSkeleton(skeleton);
+		const auto& initial = attachment.GetBoneSSBO();
+		if (!Expect(glm::length(glm::vec3(initial.boneMatrices[0] * glm::vec4(1, 0, 0, 1)) - glm::vec3(0, 2, 0)) < 0.0001f
+			&& glm::length(glm::vec3(initial.boneMatrices[1] * glm::vec4(0, 1, 0, 1)) - glm::vec3(0, 0, 1)) < 0.0001f,
+			"A disabled attachment must have its imported bind pose before its first animation tick"))
+			return false;
+		attachment.SetSkeleton(Skeleton{});
+		if (!Expect(attachment.GetBoneSSBO().boneMatrices[0] == glm::mat4(1),
+			"Replacing a skeleton must clear stale initial skinning transforms"))
+			return false;
+	}
 
 	const VansAnimationFrameContext gameplay{
 		VansAnimationEvaluationPurpose::Gameplay, 1.0f / 60.0f };
@@ -5147,6 +5159,28 @@ bool TestAnimationSocketAttachmentAuthoringContract()
 	{
 		return false;
 	}
+
+	const fs::path scenePath=temporary.path / "IKScene.json";
+	if(!Expect(Vans::VansSceneFileStorage::CreateEmptySceneDocument(scenePath,error),error.c_str()))return false;
+	auto sceneDocument=Vans::VansSceneDocumentLoader::Load(scenePath);
+	if(!Expect(bool(sceneDocument),"IK save Scene fixture failed"))return false;
+	Vans::VansSceneEditService sceneEdits(*sceneDocument.document);
+	if(!Expect(bool(sceneEdits.Set({Vans::DocumentPropertySpace::Scene,"/name"},
+		Vans::VansSerializedValue::String("Saved IK Scene"))),"IK Scene edit failed"))return false;
+	rigJson["name"]="Saved IK Rig";
+	Vans::VansAssetDocumentEditService::ReplaceRoot(rigDocument->sourceDocument,Vans::DecodeSerializedValueJson(rigJson));
+	if(!Expect(Vans::VansSceneAnimationSaveService::Save(*sceneDocument.document,{rigDocument},error),error.c_str()))return false;
+	auto reopened=Vans::VansSceneDocumentLoader::Load(scenePath);
+	if(!Expect(bool(reopened) && !sceneDocument.document->IsDirty() && !rigDocument->IsDirty() &&
+		Vans::ReadSerializedStringField(reopened.document->SerializedRootSnapshot(),"name")=="Saved IK Scene",
+		"Scene and Rig transaction did not survive reopen"))return false;
+	const auto originalFingerprint=Vans::VansSceneDocumentLoader::Fingerprint(scenePath);
+	sceneEdits.Set({Vans::DocumentPropertySpace::Scene,"/name"},Vans::VansSerializedValue::String("Rejected IK Scene"));
+	rigJson["sockets"]="invalid array";
+	Vans::VansAssetDocumentEditService::ReplaceRoot(rigDocument->sourceDocument,Vans::DecodeSerializedValueJson(rigJson));
+	if(!Expect(!Vans::VansSceneAnimationSaveService::Save(*sceneDocument.document,{rigDocument},error) &&
+		Vans::VansSceneDocumentLoader::Fingerprint(scenePath)==originalFingerprint && sceneDocument.document->IsDirty(),
+		"Invalid Rig partially published the Scene"))return false;
 
 	AnimationPreviewAttachmentBindingRequest previewBinding;
 	previewBinding.entityGuid = "scene-object";
@@ -6935,6 +6969,91 @@ bool TestSurvivalPistolOverlayContract(const char* projectName, const fs::path& 
     VansRetargetRuntimeDesc desc;
     desc.translationScaleMode = profile.translationScaleMode; desc.translationScale = profile.explicitTranslationScale;
     desc.rootAlignment = profile.rootAlignment; desc.targetModelSpaceAlignment = profile.targetModelSpaceAlignment; desc.limbChains = profile.limbChains;
+    // 使用面板同一条参数编辑入口，验证真实 Pistol 图经过 Node 的 Retarget 同步后仍然生效。
+    if (std::string(projectName) == "DemoHallProject")
+    {
+        using namespace Vans::EditorAPI;
+        auto previewSource = VansAnimatorRuntimeCompiler::Compile(asset, source, clipResolver, maskResolver, options, error);
+        VansAnimationController previewTarget;
+        if (!Expect(previewSource && previewTarget.SetAnimationRig(compiledRig, {}, error), error.c_str())) return false;
+        previewTarget.ReplaceParameterDefinitions(*previewSource, false);
+        VansAnimationNode previewNode("PistolParameterPreviewContract");
+        previewNode.SetSkeleton(target);
+        if (!Expect(previewNode.SetController(&previewTarget) && previewNode.ConfigureRetargetSource(
+            source, std::move(previewSource), desc, error), error.c_str())) return false;
+        previewNode.Play(VansAnimationEvaluationPurpose::EditorPreview);
+        auto* motion = previewNode.GetCharacterMotionController();
+        auto step = [&](int frames) { for (int i=0; i<frames; ++i)
+            previewNode.Update({VansAnimationEvaluationPurpose::EditorPreview, 1.0f/60.0f}); };
+        // 旧面板写入 Source，下一帧会被组件里的默认值覆盖。
+        motion->SetInt("PistolPhase", 2);
+        motion->SetFloat("PistolUpperBodyWeight", 1.0f);
+        step(1);
+        if (!Expect(motion->GetInt("PistolPhase") == 0 && motion->GetFloat("PistolUpperBodyWeight") == 0,
+            "Retarget parameter overwrite reproducer no longer matches the component contract")) return false;
+        const int hand = previewNode.GetSkeleton().boneNameToIndex.at("hand_r");
+        const auto idleHand = glm::vec3(previewTarget.GetCachedGlobalTransform(hand)[3]);
+        auto setFloat = [&](const char* name, float number)
+        {
+            AnimationPreviewParameterValue value;
+            value.name=name; value.type=AnimationPreviewParameterType::Float; value.floatValue=number;
+            return AnimationPreviewParameterEditing::Apply(previewNode,value);
+        };
+        auto setPhase = [&](int phase)
+        {
+            AnimationPreviewParameterValue value;
+            value.name="PistolPhase"; value.type=AnimationPreviewParameterType::Int; value.intValue=phase;
+            return AnimationPreviewParameterEditing::Apply(previewNode,value);
+        };
+        AnimationPreviewParameterValue mode;
+        mode.name="UseMotionMatching"; mode.type=AnimationPreviewParameterType::Bool; mode.boolValue=false;
+        AnimationPreviewParameterValue direction;
+        direction.name="PistolAimDirection"; direction.type=AnimationPreviewParameterType::Vector3; direction.vectorValue={0,1,0};
+        if (!Expect(AnimationPreviewParameterEditing::Apply(previewNode,mode)
+            && AnimationPreviewParameterEditing::Apply(previewNode,direction)
+            && setFloat("PistolUpperBodyWeight",1) && setFloat("PistolGripWeight",1) && setPhase(2),
+            "Preview parameter edits were rejected")) return false;
+        step(30);
+        auto debug = motion->GetLayerRuntimeDebugInfo();
+        const float handTravel = glm::length(glm::vec3(previewTarget.GetCachedGlobalTransform(hand)[3]) - idleHand);
+        if (!Expect(debug.size()==2 && debug[1].state=="PistolAim" && debug[1].weight>0.99f && handTravel>1.0f
+            && motion->GetInt("PistolPhase")==2 && previewTarget.GetFloat("PistolGripWeight")==1.0f
+            && motion->GetFloat("PistolGripWeight")==1.0f && !motion->GetBool("UseMotionMatching")
+            && glm::length(motion->GetVector3("PistolAimDirection")-glm::vec3(0,1,0))<1.e-6f,
+            "Preview parameter values did not drive the Aim state, target hand pose, or IK owner")) return false;
+        AnimationPreviewParameterValue trigger;
+        trigger.name="PistolActionStart"; trigger.type=AnimationPreviewParameterType::Trigger;
+        if (!Expect(setPhase(3) && AnimationPreviewParameterEditing::Apply(previewNode,trigger),
+            "Shot preview request was rejected")) return false;
+        step(6);
+        debug = motion->GetLayerRuntimeDebugInfo();
+        if (!Expect(debug[1].state=="PistolShot" && debug[1].playbackTime>0.01f
+            && !previewTarget.IsTriggerSet("PistolActionStart"), "Shot trigger did not reach the source state machine exactly once")) return false;
+        step(12);
+        const float completedTime = motion->GetLayerRuntimeDebugInfo()[1].playbackTime;
+        if (!Expect(AnimationPreviewParameterEditing::Apply(previewNode,trigger), "Repeated shot was rejected")) return false;
+        step(2);
+        if (!Expect(motion->GetLayerRuntimeDebugInfo()[1].playbackTime<completedTime,
+            "Repeated Shot preview did not restart playback")) return false;
+        if (!Expect(setFloat("PistolGripWeight",0.25f), "Paused grip edit was rejected")) return false;
+        previewNode.Update({VansAnimationEvaluationPurpose::EditorPreview,0.0f});
+        if (!Expect(previewTarget.GetFloat("PistolGripWeight")==0.25f && motion->GetFloat("PistolGripWeight")==0.25f,
+            "Paused frame lost the edited IK weight")) return false;
+        // 无重定向的组件与独立预览继续写自己的控制器。
+        VansAnimationController directController;
+        directController.AddParameter("PistolPhase",VansGraphics::AnimatorParamType::Int);
+        VansAnimationNode directNode("DirectParameterPreviewContract");
+        if (!Expect(directNode.SetController(&directController), "Direct preview fixture setup failed")) return false;
+        AnimationPreviewParameterValue directValue;
+        directValue.name="PistolPhase"; directValue.type=AnimationPreviewParameterType::Int; directValue.intValue=2;
+        if (!Expect(AnimationPreviewParameterEditing::Apply(directNode,directValue) && directController.GetInt("PistolPhase")==2,
+            "Direct scene preview parameter routing changed")) return false;
+        directValue.intValue=3;
+        if (!Expect(AnimationPreviewParameterEditing::Apply(directController,directValue) && directController.GetInt("PistolPhase")==3,
+            "Isolated preview parameter routing changed")) return false;
+        std::cout << "[PistolPreviewParameters] old source write overwritten; Aim/Shot/retrigger/paused IK passed; target hand travel="
+            << handTravel << '\n';
+    }
     VansRetargetProcessor baseRetarget, layerRetarget;
     if (!Expect(baseRetarget.Build(source, target, compiledRig, desc) && layerRetarget.Build(source, target, compiledRig, desc), "Retarget build failed")) return false;
     auto matrixError = [](const glm::mat4& a, const glm::mat4& b)
@@ -6947,6 +7066,28 @@ bool TestSurvivalPistolOverlayContract(const char* projectName, const fs::path& 
     {
         return name == "root" || name == "pelvis" || name.find("thigh") == 0 || name.find("calf") == 0
             || name.find("foot") == 0 || name.find("ball") == 0 || name.find("ankle") == 0 || name.find("ik_foot") == 0;
+    };
+    // 正式目标后处理图独立接收重定向姿态，验证肩带、头部和 MM 隔离。
+    VansAnimationController aimController, aimOffController;
+    AnimGraphJson postJson;
+    asset.FindTargetPostProcessGraph()->SerializeToJsonObject(postJson);
+    for (auto* controller : { &aimController, &aimOffController })
+    {
+        controller->AddParameter("PistolAimDirection", AnimatorParamType::Vector3);
+        controller->AddParameter("PistolAimWeight", AnimatorParamType::Float);
+        if (!Expect(controller->SetAnimationRig(compiledRig,
+                [](const std::string&, std::uint32_t& mask, std::string&) { mask = 1; return true; }, error)
+            && controller->SetTargetPostProcessGraph(VansAnimGraph::DeserializeFromJsonObject(postJson), error), error.c_str())) return false;
+    }
+    const int aimLeft = target.boneNameToIndex.at("hand_l"), aimRight = target.boneNameToIndex.at("hand_r");
+    const int aimHead = target.boneNameToIndex.at("head"), aimChest = target.boneNameToIndex.at("spine_05");
+    float aimLowerError = 0.0f, aimDisabledError = 0.0f, aimGripError = 0.0f, aimMaxChestAngle = 0.0f;
+    float aimHeadHandError = 0.0f, aimSteadyPitchError = 0.0f;
+    auto rotationOf = [](const glm::mat4& value)
+    {
+        VansBoneTransform decomposed;
+        VansPoseMath::TryDecompose(value, decomposed);
+        return decomposed.rotation;
     };
     float sourceLowerError = 0.0f, targetLowerError = 0.0f, offError = 0.0f, upperDifference = 0.0f, rootError = 0.0f;
     int mmFrames = 0, crouchFrames = 0;
@@ -7028,7 +7169,56 @@ bool TestSurvivalPistolOverlayContract(const char* projectName, const fs::path& 
         if (!Expect(baseRetarget.Process(basePose, source, target, baseTarget) && layerRetarget.Process(layerPose, source, target, layerTarget), "Layered retarget failed")) return false;
         for (std::size_t bone = 0; bone < target.bones.size(); ++bone)
             if (lowerBone(target.bones[bone].name)) targetLowerError = std::max(targetLowerError, matrixError(baseTarget[bone], layerTarget[bone]));
+        const float pitchSamples[] = { -80.0f, -30.0f, 0.0f, 30.0f, 80.0f };
+        const float requestedPitch = pitchSamples[(frame / 120) % 5];
+        const bool aimActive = phase != 0 && !stanceClip;
+        VansAnimationExternalInputSnapshot aimInput;
+        aimInput.grounded = false;
+        aimInput.airborne = true;
+        aimInput.ownerWorld = glm::translate(glm::mat4(1.0f), trajectory.originWorld)
+            * glm::mat4_cast(glm::angleAxis(glm::radians(trajectory.currentFacingYaw), glm::vec3(0,1,0)))
+            * glm::mat4_cast(glm::angleAxis(glm::radians(-90.0f), glm::vec3(1,0,0)))
+            * glm::scale(glm::mat4(1.0f), glm::vec3(.01f));
+        const auto modelDirection = glm::vec3(0, -std::cos(glm::radians(requestedPitch)), std::sin(glm::radians(requestedPitch)));
+        const auto worldDirection = glm::normalize(glm::vec3(aimInput.ownerWorld * glm::vec4(modelDirection, 0)));
+        for (auto* controller : { &aimController, &aimOffController })
+        {
+            controller->SetAnimationExternalInput(aimInput);
+            controller->SetVector3("PistolAimDirection", worldDirection);
+            controller->SetFloat("PistolAimWeight", controller == &aimController && aimActive ? 1.0f : 0.0f);
+            if (!Expect(controller->SubmitExternalModelPose(layerTarget, target, dt,
+                VansExternalPoseEvaluationMode::TargetPostProcess), "Pistol target Aim evaluation failed")) return false;
+        }
+        const auto& aimed = aimController.GetCachedGlobalTransforms();
+        const auto& disabled = aimOffController.GetCachedGlobalTransforms();
+        for (std::size_t bone = 0; bone < target.bones.size(); ++bone)
+        {
+            aimDisabledError = std::max(aimDisabledError, matrixError(disabled[bone], layerTarget[bone]));
+            if (!aimActive) aimDisabledError = std::max(aimDisabledError, matrixError(aimed[bone], layerTarget[bone]));
+            if (lowerBone(target.bones[bone].name)) aimLowerError = std::max(aimLowerError, matrixError(aimed[bone], layerTarget[bone]));
+        }
+        aimGripError = std::max(aimGripError, matrixError(glm::inverse(aimed[aimRight]) * aimed[aimLeft],
+            glm::inverse(layerTarget[aimRight]) * layerTarget[aimLeft]));
+        const auto chestCorrection = rotationOf(aimed[aimChest]) * glm::inverse(rotationOf(layerTarget[aimChest]));
+        const auto handCorrection = rotationOf(aimed[aimRight]) * glm::inverse(rotationOf(layerTarget[aimRight]));
+        const auto headCorrection = rotationOf(aimed[aimHead]) * glm::inverse(rotationOf(layerTarget[aimHead]));
+        aimMaxChestAngle = std::max(aimMaxChestAngle, VansQuaternionAngleDegrees(chestCorrection));
+        aimHeadHandError = std::max(aimHeadHandError, VansQuaternionAngleDegrees(headCorrection * glm::inverse(handCorrection)));
+        if (aimActive && frame % 120 > 75 && !(frame >= 1080 && frame < 1100))
+        {
+            const auto expected = glm::angleAxis(glm::radians(-std::clamp(requestedPitch, -45.0f, 45.0f)), glm::vec3(1,0,0));
+            aimSteadyPitchError = std::max(aimSteadyPitchError, VansQuaternionAngleDegrees(expected * glm::inverse(handCorrection)));
+        }
+        if (!Expect(layered->GetMotionMatchingDebugData()->activeClip == b->activeClip
+            && layered->GetCachedGlobalTransforms() == layerPose, "Target Aim mutated source MM pose")) return false;
     }
+    std::cout << "[PistolAim] " << projectName << " lowerError=" << aimLowerError << " disabledError=" << aimDisabledError
+        << " gripError=" << aimGripError << " maxChestDegrees=" << aimMaxChestAngle
+        << " headHandDegrees=" << aimHeadHandError << " steadyPitchDegrees=" << aimSteadyPitchError << '\n';
+    if (!Expect(aimLowerError < .002f && aimDisabledError < .002f, "Aim changed lower body or disabled pose")
+        || !Expect(aimGripError < .01f, "Aim changed two-hand grip")
+        || !Expect(aimMaxChestAngle > 8.0f && aimMaxChestAngle < 9.1f, "Aim torso must only bend slightly")
+        || !Expect(aimHeadHandError < .1f && aimSteadyPitchError < .1f, "Arms/head did not receive full limited pitch")) return false;
     // 用正式转身片段锁定朝向回归：只在内存统一输入根参考系，作为独立对照。
     // 其余骨骼、正式遮罩和 Survival 重定向完全相同，资源本身不得被改写。
     const int facingRoot = source.boneNameToIndex.at("root");
@@ -9061,6 +9251,23 @@ bool TestAnimationPreviewRigSessionContract(
 			- edit.transform.position.x) < 1.0e-6f,
 		"Preview Rig save/adopt/stop did not preserve the authored target Socket"))
 		return false;
+
+	// 通用 Rig 定义编辑同样受编译与 revision 保护，取消时恢复已保存的基线。
+	Vans::VansIOAudit::Reset();
+	if (!Expect(AnimationPreviewRigAuthoringService::BeginSession(sessionId, controller, error), error.c_str())) return false;
+	auto candidate = nlohmann::json::parse(workingJson);
+	candidate["sockets"][0]["boneGuid"] = "00000000-0000-4000-8000-000000000099";
+	if (!Expect(!AnimationPreviewRigAuthoringService::SetDefinition(context, 0, candidate.dump()).success,
+		"Invalid Rig definition replaced the last good Rig")) return false;
+	candidate = nlohmann::json::parse(workingJson);
+	candidate["name"] = "Edited Rig definition";
+	const auto definitionEdit = AnimationPreviewRigAuthoringService::SetDefinition(context, 0, candidate.dump());
+	if (!Expect(definitionEdit.success && definitionEdit.acceptedRevision == 1
+		&& !AnimationPreviewRigAuthoringService::SetDefinition(context, 0, candidate.dump()).success
+		&& AnimationPreviewRigAuthoringService::EndSession(sessionId, &controller, error)
+		&& Vans::VansIOAudit::Snapshot().empty()
+		&& std::abs(controller.GetAnimationRig()->sockets.front().localTransform[3].x - edit.transform.position.x) < 1.0e-6f,
+		"Rig definition revision, rollback, or memory-only authoring contract failed")) return false;
 
 	record.sourcePath.clear();
 	record.authoringPath.clear();
@@ -14396,8 +14603,52 @@ bool TestProjectSettingsExplicitSaveContract()
 		"Conflict rejection overwrote the externally modified project document");
 }
 
+bool TestGAFParticleDependencyClosure()
+{
+    TemporaryDirectory temporary;
+    const fs::path assets = temporary.path / "Assets";
+    fs::create_directories(assets);
+    const std::string graphGuid = "9b1d5a11-bdef-4567-8000-000000000001";
+    const std::string particleGuid = "9b1d5a11-bdef-4567-8000-000000000002";
+    const std::string textureGuid = "9b1d5a11-bdef-4567-8000-000000000003";
+    const nlohmann::json graph = {{"effect",particleGuid}};
+    const nlohmann::json particle = {{"name","DependencySmoke"},{"global",nlohmann::json::object()},
+        {"emitters",nlohmann::json::array({{{"renderer",{{"type","Ribbon"},{"textureGuid",textureGuid}}}}})}};
+    std::ofstream(assets/"Shot.vactiongraph") << graph.dump();
+    std::ofstream(assets/"Smoke.particle") << particle.dump();
+    std::ofstream(assets/"Smoke.png") << "texture plan fixture";
+    for (const auto& item : std::vector<std::tuple<std::string,std::string,std::string>>{
+        {"Shot.vactiongraph",graphGuid,Vans::VansAssetDatabase::ImporterFor(Vans::VansAssetType::ActionGraph)},
+        {"Smoke.particle",particleGuid,Vans::VansAssetDatabase::ImporterFor(Vans::VansAssetType::Particle)},
+        {"Smoke.png",textureGuid,Vans::VansAssetDatabase::ImporterFor(Vans::VansAssetType::Texture)}})
+    {
+        const nlohmann::json meta={{"guid",std::get<1>(item)},{"importer",std::get<2>(item)},
+            {"version",1},{"settings",nlohmann::json::object()},{"subAssets",nlohmann::json::object()}};
+        std::ofstream(assets/(std::get<0>(item)+".meta")) << meta.dump();
+    }
+    Vans::VansAssetDatabase database(assets,temporary.path/"Artifacts");
+    const auto scan = database.Scan(Vans::VansAssetOperationPolicy::ReadOnly());
+    if (!Expect(scan.errors.empty() && scan.registered == 3,"Particle closure fixture did not scan")) return false;
+    Vans::VansAssetObjectRepository repository;
+    const auto bootstrap = Vans::VansAssetObjectBootstrapper::Publish(database.All(),repository);
+    if (!Expect(static_cast<bool>(bootstrap),bootstrap.errors.empty() ? "Particle closure bootstrap failed" : bootstrap.errors.front().c_str())) return false;
+    Vans::VansSceneData scene;
+    auto sceneJson = Vans::VansSceneSchema::SerializeSceneJson(scene);
+    sceneJson["requiredGraph"] = graphGuid;
+    const auto root = Vans::DecodeSerializedValueJson(sceneJson);
+    const auto result = Vans::VansSceneAssetDependencyBuilder::BuildResourcePlan(
+        database,root,temporary.path/"Scenes"/"Empty.json",{},repository);
+    if (!Expect(result.success && result.requiredAssets.count(particleGuid) == 1 &&
+        result.requiredTextures.count(textureGuid) == 1 && result.resourcePlan.textures.size() == 1 &&
+        result.resourcePlan.textures.front().assetGuid == textureGuid,
+        "A GAF-only particle texture did not enter the GPU resource plan on first load")) return false;
+    std::cout << "[ParticleDependencies] coldSourceGraph=1 particle=1 texture=1 gpuRequest=1\n";
+    return true;
+}
+
 bool TestSceneMemoryDependencyPlanContract()
 {
+    if (!TestGAFParticleDependencyClosure()) return false;
 	TemporaryDirectory temporary;
 	const fs::path assetsRoot = temporary.path / "Assets";
 	const fs::path sceneSourcePath = temporary.path / "Scenes" / "MemoryScene.json";
@@ -15868,12 +16119,11 @@ bool TestVolumetricParticleInjectionContract()
 {
 	using VansGraphics::VansParticleAsset;
 	using VansGraphics::VansParticleAssetJsonCodec;
-	Vans::ParticleJson legacy = {
-		{ "version", 1 },
-		{ "name", "LegacySurfaceParticle" },
+	Vans::ParticleJson surfaceDefinition = {
+		{ "name", "SurfaceParticle" },
 		{ "global", {
 			{ "duration", 5.0 }, { "loop", true }, { "prewarm", false },
-			{ "simulationSpace", "World" } } },
+			{ "emissionFrame", "World" } } },
 		{ "emitters", Vans::ParticleJson::array({ {
 			{ "name", "Emitter" }, { "enabled", true }, { "maxParticles", 16 },
 			{ "spawn", { { "type", "RateOverTime" }, { "rate", 10.0 } } },
@@ -15887,36 +16137,36 @@ bool TestVolumetricParticleInjectionContract()
 			}) },
 			{ "update", Vans::ParticleJson::array() },
 			{ "renderer", {
-				{ "type", "Billboard" }, { "texture", "" },
-				{ "blendMode", "Alpha" }, { "sortMode", "None" },
-				{ "castShadows", false }, { "receiveShadows", false } } }
+				{ "type", "Billboard" }, { "sortMode", "None" } } }
 		} }) }
 	};
 
 	std::string error;
-	VansParticleAsset surfaceAsset;
+	auto surfaceAssetOwner = std::make_shared<VansParticleAsset>();
+	auto& surfaceAsset = *surfaceAssetOwner;
 	if (!Expect(VansParticleAssetJsonCodec::Decode(
-		legacy, "legacy.particle", surfaceAsset, error),
-		"A legacy particle asset without renderer.volumetric was rejected") ||
+		surfaceDefinition, "surfaceDefinition.particle", surfaceAsset, error),
+		"A surfaceDefinition particle asset without renderer.volumetric was rejected") ||
 		!Expect(surfaceAsset.m_Emitters.size() == 1u &&
 			!surfaceAsset.m_Emitters[0]->m_RendererConfig.m_Volumetric.m_Enabled,
-			"Legacy particle assets did not default volumetric injection to disabled"))
+			"Surface particle assets did not default volumetric injection to disabled"))
 		return false;
 	VansGraphics::VansParticleRuntime surfaceRuntime;
-	surfaceRuntime.m_Asset = &surfaceAsset;
+	surfaceRuntime.SetAsset(surfaceAssetOwner);
 	surfaceRuntime.Play();
 	surfaceRuntime.Update(0.11f);
 	surfaceRuntime.SwapBuffers();
 	if (!Expect(!surfaceRuntime.GetRenderBuffer().empty() &&
 		surfaceRuntime.GetVolumetricRenderBuffer().empty() &&
 		!surfaceRuntime.HasVolumetricInjectionEnabled(),
-		"The disabled volumetric option changed the legacy surface-particle path"))
+		"The disabled volumetric option changed the surfaceDefinition surface-particle path"))
 		return false;
 
-	Vans::ParticleJson volumetric = legacy;
+	Vans::ParticleJson volumetric = surfaceDefinition;
 	volumetric["name"] = "VolumetricParticle";
+	volumetric["emitters"][0]["renderer"]["type"] = "None";
 	volumetric["emitters"][0]["renderer"]["volumetric"] = {
-		{ "enabled", true }, { "keepSurfaceRenderer", false },
+		{ "enabled", true },
 		{ "radiusScale", 1.25 }, { "maxDistanceMeters", 80.0 },
 		{ "densityMultiplier", 0.8 }, { "extinctionPerMeter", 1.5 },
 		{ "singleScatteringAlbedo", { 0.7, 0.8, 0.9 } },
@@ -15925,14 +16175,15 @@ bool TestVolumetricParticleInjectionContract()
 		{ "skyLightingScale", 0.3 }, { "receiveCloudShadows", true },
 		{ "injectionPriority", 201 }
 	};
-	VansParticleAsset volumetricAsset;
+	auto volumetricAssetOwner = std::make_shared<VansParticleAsset>();
+	auto& volumetricAsset = *volumetricAssetOwner;
 	error.clear();
 	if (!Expect(VansParticleAssetJsonCodec::Decode(
 		volumetric, "volumetric.particle", volumetricAsset, error),
 		("A valid volumetric particle asset was rejected: " + error).c_str()))
 		return false;
 	VansGraphics::VansParticleRuntime volumetricRuntime;
-	volumetricRuntime.m_Asset = &volumetricAsset;
+	volumetricRuntime.SetAsset(volumetricAssetOwner);
 	volumetricRuntime.Play();
 	volumetricRuntime.Update(0.11f);
 	volumetricRuntime.SwapBuffers();
@@ -15953,11 +16204,13 @@ bool TestVolumetricParticleInjectionContract()
 		encoded["emitters"][0]["renderer"]["volumetric"]["injectionPriority"].get<unsigned>() == 201u,
 		"Volumetric particle authoring parameters did not round-trip"))
 		return false;
-	auto& disabledTuning = volumetricAsset.m_Emitters[0]->m_RendererConfig.m_Volumetric;
-	disabledTuning.m_Enabled = false;
-	disabledTuning.m_ExtinctionPerMeter = 2.25f;
-	const Vans::ParticleJson disabledTuningEncoded =
-		VansParticleAssetJsonCodec::Encode(volumetricAsset);
+	auto disabledJson = volumetric;
+    disabledJson["emitters"][0]["renderer"]["volumetric"]["enabled"] = false;
+    disabledJson["emitters"][0]["renderer"]["volumetric"]["extinctionPerMeter"] = 2.25f;
+    VansParticleAsset disabledAsset;
+    if (!Expect(VansParticleAssetJsonCodec::Decode(disabledJson, "disabled.particle", disabledAsset, error),
+        "Disabled particle definition failed to decode")) return false;
+    const auto disabledTuningEncoded = VansParticleAssetJsonCodec::Encode(disabledAsset);
 	if (!Expect(
 		disabledTuningEncoded["emitters"][0]["renderer"].contains("volumetric") &&
 		!disabledTuningEncoded["emitters"][0]["renderer"]["volumetric"]["enabled"].get<bool>() &&
@@ -16004,14 +16257,14 @@ bool TestVolumetricParticleInjectionContract()
 		lifecycle, "lifecycle.particle", lifecycleAsset, error),
 		("A valid lifecycle-module particle was rejected: " + error).c_str()))
 		return false;
-	auto& lifecycleEmitter = *lifecycleAsset.m_Emitters[0];
+	VansGraphics::VansParticleEmitterRuntime lifecycleEmitter(*lifecycleAsset.m_Emitters[0]);
 	lifecycleEmitter.Update(0.11f, glm::mat4(1.0f));
 	lifecycleEmitter.Update(0.11f, glm::mat4(1.0f));
 	if (!Expect(lifecycleEmitter.m_ParticlePool.m_AliveCount == 1u &&
 		std::abs(lifecycleEmitter.m_ParticlePool.m_Size[0] - 4.0f) < 1.0e-5f,
 		"Size Over Lifetime compounded the previous frame instead of the initial size") ||
-		!Expect(lifecycleEmitter.m_ParticlePool.m_Position[0].y > 0.2f,
-			"Initial velocity did not move a particle without a Gravity module"))
+		!Expect(std::abs(lifecycleEmitter.m_ParticlePool.m_Position[0].y - 0.12f) < 1.0e-5f,
+			"Initial velocity must integrate only the 0.12 seconds since the scheduled birth at 0.1 seconds"))
 		return false;
 	lifecycleEmitter.Update(1.4f, glm::mat4(1.0f));
 	lifecycleEmitter.Update(0.1f, glm::mat4(1.0f));
@@ -16079,7 +16332,7 @@ bool TestVolumetricParticleInjectionContract()
 	const std::string inspector = readText(sourceRoot / "Source" / "EngineCore" /
 		"EditorCore" / "Windows" / "VansInspectorWindow.cpp");
 	const std::size_t prewarmTransform = particleBuilder.find("SetOwnerWorldTransform(");
-	const std::size_t playOnAwake = particleBuilder.find("particleComp->Play()");
+	const std::size_t playOnAwake = particleBuilder.find("component->Play()");
 	if (!Expect(
 		nearMedia.find("if (!featureRequested)") != std::string::npos &&
 		nearMedia.find("CreateVolumetricParticleResources()") != std::string::npos &&
@@ -16113,7 +16366,7 @@ bool TestVolumetricParticleInjectionContract()
 		nearMedia.find("header.y = OverflowCandidateCount") != std::string::npos &&
 		particleProvider.find("subFroxelJitter") == std::string::npos &&
 		inspector.find("DrawParticleModuleAddMenu") != std::string::npos &&
-		inspector.find("ParticleLifecycleScalarLimits") != std::string::npos &&
+		inspector.find("ParticleAssetScalarLimits") != std::string::npos &&
 		sharedInjection.find("ParticlePhase") == std::string::npos &&
 		sharedInjection.find("EvaluateParticlePunctualLighting") == std::string::npos &&
 		!fs::exists(shaderRoot / "VolumetricParticleInjection.comp") &&
@@ -16144,7 +16397,8 @@ bool TestVolumetricParticleInjectionContract()
 	const nlohmann::json demoAssetJson = nlohmann::json::parse(readText(demoAsset));
 	const nlohmann::json demoMetaJson = nlohmann::json::parse(readText(demoMeta));
 	const nlohmann::json demoSceneJson = nlohmann::json::parse(readText(demoScene));
-	VansParticleAsset decodedDemoAsset;
+	auto decodedDemoAssetOwner = std::make_shared<VansParticleAsset>();
+	auto& decodedDemoAsset = *decodedDemoAssetOwner;
 	error.clear();
 	if (!Expect(VansParticleAssetJsonCodec::Decode(
 		demoAssetJson, demoAsset.string(), decodedDemoAsset, error),
@@ -16158,7 +16412,7 @@ bool TestVolumetricParticleInjectionContract()
 	decodedDemoAsset.m_Prewarm = true;
 	decodedDemoAsset.m_StartDelay = 0.0f;
 	VansGraphics::VansParticleRuntime demoRuntime;
-	demoRuntime.m_Asset = &decodedDemoAsset;
+	demoRuntime.SetAsset(decodedDemoAssetOwner);
 	demoRuntime.m_LocalToWorld = glm::mat4(1.0f);
 	demoRuntime.m_LocalToWorld[3] = glm::vec4(-3.0f, 1.0f, 0.0f, 1.0f);
 	demoRuntime.Play();
@@ -16200,17 +16454,18 @@ bool TestVolumetricParticleInjectionContract()
 		"DemoHall prewarmed volume instances did not survive the first frame swap"))
 		return false;
 	VansScriptParticleComponent facadeComponent;
-	facadeComponent.m_Runtime = std::make_unique<VansGraphics::VansParticleRuntime>();
-	facadeComponent.m_Runtime->m_Asset = &decodedDemoAsset;
-	facadeComponent.Play();
-	if (!Expect(facadeComponent.m_IsPlaying &&
-		!facadeComponent.m_Runtime->GetVolumetricRenderBuffer().empty(),
+	VansGraphics::VansParticleManager facadeManager;
+    facadeComponent.m_Manager = &facadeManager;
+    facadeComponent.m_Instance = facadeManager.Create(decodedDemoAssetOwner);
+	facadeComponent.Play(); facadeManager.Prepare();
+	if (!Expect(facadeComponent.IsPlaying() &&
+		!facadeComponent.GetRuntime()->GetVolumetricRenderBuffer().empty(),
 		"Particle component Play bypassed runtime prewarm"))
 		return false;
-	facadeComponent.Stop();
-	if (!Expect(!facadeComponent.m_IsPlaying &&
-		facadeComponent.m_Runtime->GetRenderBuffer().empty() &&
-		facadeComponent.m_Runtime->GetVolumetricRenderBuffer().empty(),
+	facadeComponent.Stop(); facadeManager.Prepare();
+	if (!Expect(!facadeComponent.IsPlaying() &&
+		facadeComponent.GetRuntime()->GetRenderBuffer().empty() &&
+		facadeComponent.GetRuntime()->GetVolumetricRenderBuffer().empty(),
 		"Particle component Stop left stale surface or volume instances"))
 		return false;
 	const std::string demoGuid = demoMetaJson.value("guid", "");
@@ -16276,8 +16531,15 @@ bool TestGIProbePublicationGpuContract();
 bool TestGIProbeIntegrationGpuContract();
 bool TestSkyLightingGpuContract();
 bool TestSSGIGpuContract();
+bool TestParticleCoreContract();
+bool TestDescriptorLayoutSharingContract();
+
 int main(int argc, char** argv)
 {
+    if (argc == 2 && std::string(argv[1]) == "--descriptor-layout-sharing")
+        return TestDescriptorLayoutSharingContract() ? 0 : 201;
+    if (argc == 2 && std::string(argv[1]) == "--particle-core")
+        return TestParticleCoreContract() ? 0 : 170;
 	VANS_INIT_MAIN_THREAD();
     if (argc == 5 && std::string(argv[1]) == "--reflection-probe-placement-scene")
         return MeasureReflectionProbePlacement(argv[2], argv[3], argv[4]) ? 0 : 186;
@@ -16470,6 +16732,8 @@ int main(int argc, char** argv)
 		return TestDemoHallPlayerThrowContract() ? 0 : 154;
 	if (argc == 2 && std::string(argv[1]) == "--gaf-demohall-pistol-hit")
 		return TestGAFDemoHallPistolHitRuntimeContract() ? 0 : 144;
+	if (argc == 2 && std::string(argv[1]) == "--hit-feedback")
+		return TestHitFeedbackScriptContract() ? 0 : 144;
 	if (argc == 2 && std::string(argv[1]) == "--gaf-pistol-audio")
 		return TestGAFPistolAudioRuntimeContract() ? 0 : 144;
 	if (argc == 2 && std::string(argv[1]) == "--gaf-demohall-melee-hit")

@@ -428,11 +428,8 @@ void QueueParticleRuntimeComponent(
 	runtimeWorld.Commands().AddParticleComponent(
 		entity,
 		particleComponent->m_ComponentGuid,
-		particleComponent->m_Runtime.get(),
-		particleComponent->m_RenderNode,
+		particleComponent->m_Instance,
 		particleComponent->m_PlayOnAwake,
-		particleComponent->m_IsPlaying,
-		particleComponent->m_PlayTime,
 		particleComponent->m_HasWorldPositionOverride,
 		particleComponent->m_WorldPositionOverride.x,
 		particleComponent->m_WorldPositionOverride.y,
@@ -857,7 +854,7 @@ bool VansGraphics::VansScene::LoadSceneObjects(
 		const Vans::VansSceneGameplayContributorContext contributorContext{
 			*m_RuntimeWorld, *m_GameplayRuntime, m_CameraControlArbiter->CoreRuntime(),
 			*m_TimelineRuntime,
-			std::move(resolvePosition), MakeProjectileSceneBackend(), &m_AudioManager, MakeDecalSceneBackend() };
+			std::move(resolvePosition), MakeProjectileSceneBackend(), &m_AudioManager, MakeDecalSceneBackend(), MakeCombatSceneBackend(), MakeVFXSceneBackend() };
 		if (!Vans::VansDiscoverSceneGameplayContributors(
 			*gameplayConfiguration, contributorContext, gameplayDependencies, gameplayError))
 		{
@@ -1047,10 +1044,8 @@ bool VansGraphics::VansScene::LoadSceneObjects(
 			runtimeComponentBuildResults.particle =
 				VansSceneParticleComponentBuilder::BuildParticle(
 				*this,
-				device,
 				*obj,
 				*objectConfig.particle,
-				projectRoot,
 				hasObjTransform,
 				objPos,
 				objRot,

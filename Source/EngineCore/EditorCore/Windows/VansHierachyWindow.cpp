@@ -140,6 +140,7 @@ void ReparentDroppedEntity(
 				: Vans::EditorAPI::RuntimeParentKind::Socket;
 			runtimeRequest.newParent.animationComponentGuid = parent->animationComponentGuid.ToString();
 			runtimeRequest.newParent.anchorGuid = parent->anchorGuid.ToString();
+		runtimeRequest.newParent.poseCheckpoint = parent->poseCheckpoint;
 		}
 	}
 	const Vans::EditorAPI::RuntimeEntityReparentResult runtimeResult =

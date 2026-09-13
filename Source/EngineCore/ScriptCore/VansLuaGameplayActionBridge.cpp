@@ -6,6 +6,7 @@
 #include "../EventCore/VansEventBus.h"
 #include "../GameplayActionCore/VansActionSystem.h"
 #include "../RenderCore/VansScene.h"
+#include "../GameplayActionAdapters/Decal/VansDecalActionService.h"
 #include "../SceneRuntime/VansRuntimeWorld.h"
 #include "../Util/VansLog.h"
 
@@ -560,6 +561,13 @@ void DispatchLifecycle(const char* name, const Event& event)
 		lua_pushlstring(state, actionId.data(), actionId.size()); lua_setfield(state, -2, "action_id");
 		lua_pushinteger(state, static_cast<lua_Integer>(event.correlationId));
 		lua_setfield(state, -2, "correlation_id");
+		if constexpr (std::is_same_v<Event, Vans::VansActionMessageEvent>)
+		{
+			lua_pushinteger(state, static_cast<lua_Integer>(event.sequence)); lua_setfield(state, -2, "sequence");
+			PushSerialized(state, event.message.payload); lua_setfield(state, -2, "payload");
+			PushHandle(state, {event.message.source.index, event.message.source.generation}); lua_setfield(state, -2, "source");
+			PushHandle(state, {event.message.target.index, event.message.target.generation}); lua_setfield(state, -2, "target");
+		}
 		if constexpr (std::is_same_v<Event, Vans::VansActionEndedEvent>)
 		{
 			lua_pushinteger(state, static_cast<lua_Integer>(event.reason)); lua_setfield(state, -2, "end_reason");
@@ -577,6 +585,9 @@ void EnsureEventConnections()
 {
 	if (g_EventConnectionsInitialized) return;
 	auto& events = Vans::VansEventBus::Get();
+	g_EventConnections.Add(events.Subscribe<Vans::VansActionMessageEvent>(
+		[](const auto& event) { DispatchLifecycle(event.message.stableName.c_str(), event); },
+		Vans::VansEventLane::GameLogic, 0, "Lua.GAF.Message"));
 	g_EventConnections.Add(events.Subscribe<Vans::VansActionStartedEvent>(
 		[](const auto& event) { DispatchLifecycle("started", event); },
 		Vans::VansEventLane::GameLogic, 0, "Lua.GAF.Started"));
@@ -652,6 +663,23 @@ int TargetRay(lua_State* state)
 	return 1;
 }
 
+int SpawnImpactDecal(lua_State* state)
+{
+	const char* source = luaL_checkstring(state, 1);
+	Vans::VansSerializedValue value;
+	Vans::VansSurfaceImpact impact;
+	std::string error;
+	auto* context = ::VansScriptContext::GetInstance();
+	auto* scene = context ? context->GetScene() : nullptr;
+	auto backend = scene ? scene->MakeDecalSceneBackend() : Vans::VansDecalSceneBackend{};
+	const bool spawned = scene && LuaToSerialized(state, 2, value, 0, error)
+		&& Vans::VansDecodeSurfaceImpact(value, impact, error) && backend.spawnImpact
+		&& backend.spawnImpact(source, impact, error);
+	lua_pushboolean(state, spawned);
+	lua_pushlstring(state, error.data(), error.size());
+	return 2;
+}
+
 int TargetSet(lua_State* state)
 {
 	luaL_checktype(state, 1, LUA_TTABLE);
@@ -677,6 +705,10 @@ void VansLuaGameplayActionBridge::Register(lua_State* state)
 	lua_pushcfunction(state, SubscribeActionEvent); lua_setfield(state, -2, "subscribe_action_event");
 	lua_pushcfunction(state, UnsubscribeActionEvent); lua_setfield(state, -2, "unsubscribe_action_event");
 	lua_setfield(state, -2, "action");
+
+	lua_newtable(state);
+	lua_pushcfunction(state, SpawnImpactDecal); lua_setfield(state, -2, "spawn_impact");
+	lua_setfield(state, -2, "decal");
 
 	lua_newtable(state);
 	lua_pushcfunction(state, TargetEntity); lua_setfield(state, -2, "entity");

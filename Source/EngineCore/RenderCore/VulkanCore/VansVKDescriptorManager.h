@@ -10,6 +10,8 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <map>
+#include <mutex>
 
 
 namespace VansGraphics
@@ -80,6 +82,8 @@ namespace VansGraphics
 		uint32_t passPersistentSetCount = 0;
 		uint32_t uploadScratchSetCount = 0;
 		uint32_t rayTracingPersistentSetCount = 0;
+		uint32_t sharedLayoutCount = 0;
+		uint64_t layoutCacheHits = 0;
 	};
 
 	enum class VansDescriptorLifetimeRole : uint8_t
@@ -233,6 +237,11 @@ namespace VansGraphics
 		std::unordered_set<VkDescriptorSetLayout> m_UpdateAfterBindLayouts;
 		std::unordered_map<VkDescriptorSet, VkDescriptorPool> m_DescriptorSetPools;
 		std::unordered_map<VkDescriptorSet, VansDescriptorLifetimeRole> m_DescriptorSetRoles;
+		// 布局只描述接口，按完整结构共享并保持到设备销毁；实例仅拥有 descriptor set。
+		std::map<std::vector<uint64_t>, VkDescriptorSetLayout> m_SharedLayouts;
+		std::unordered_set<VkDescriptorSetLayout> m_SharedLayoutHandles;
+		uint64_t m_LayoutCacheHits = 0;
+		mutable std::mutex m_LayoutMutex;
 
 		bool CreateDescriptorPoolHandle(VkDescriptorPoolCreateFlags flags, VkDescriptorPool& outPool);
 		bool UsesUpdateAfterBindPool(const std::vector<VkDescriptorSetLayout>& descriptorSetLayouts) const;
@@ -270,7 +279,7 @@ namespace VansGraphics
 		bool CreateDesciptorSetLayout(const std::vector<VkDescriptorSetLayoutBinding>& bindings, VkDescriptorSetLayout& descriptor_set_layout);
 
 		// 支持 per-binding 标志位的布局创建接口，用于需要 UPDATE_AFTER_BIND 的 bindless 数组。
-		// bindingFlags 长度须与 bindings 相同，不需要特殊标志的 binding 填 0。
+		// bindingFlags 可为空（全部为 0），否则长度须与 bindings 相同。
 		// layoutFlags 通常为 VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT。
 		bool CreateDesciptorSetLayoutWithFlags(
 			const std::vector<VkDescriptorSetLayoutBinding>& bindings,
@@ -278,7 +287,8 @@ namespace VansGraphics
 			VkDescriptorSetLayoutCreateFlags                 layoutFlags,
 			VkDescriptorSetLayout&                           descriptor_set_layout);
 	
-		void DestroyDescriptorSetLayout(VkDescriptorSetLayout& descriptor_set_layout);
+		// 释放调用方引用；共享布局留存到设备关闭，含 immutable sampler 的布局立即销毁。
+		void ReleaseDescriptorSetLayout(VkDescriptorSetLayout& descriptor_set_layout);
 
 		bool AllocateDescriptorSet(
 			const std::vector<VkDescriptorSetLayout>& discriptor_set_layout,

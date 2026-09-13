@@ -57,7 +57,7 @@ namespace VansGraphics
             {
                 auto* descriptors = VansVKDescriptorManager::GetInstance();
                 if (!sets.empty()) descriptors->DestroyDescriptorSet(sets);
-                if (layout != VK_NULL_HANDLE) descriptors->DestroyDescriptorSetLayout(layout);
+                if (layout != VK_NULL_HANDLE) descriptors->ReleaseDescriptorSetLayout(layout);
                 parameters.DestroyVulkanBuffer(device);
             }
         } filter{logicalDevice};

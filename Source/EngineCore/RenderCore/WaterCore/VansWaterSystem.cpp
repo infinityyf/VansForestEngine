@@ -1322,17 +1322,17 @@ void VansWaterSystem::Shutdown()
         m_WaterFFT = nullptr;
     }
 
-    if (m_GBufPassLayout != VK_NULL_HANDLE)   { descMgr->DestroyDescriptorSetLayout(m_GBufPassLayout); m_GBufPassLayout = VK_NULL_HANDLE; }
-    if (m_CompPassLayout != VK_NULL_HANDLE)   { descMgr->DestroyDescriptorSetLayout(m_CompPassLayout); m_CompPassLayout = VK_NULL_HANDLE; }
-    if (m_WaveSimLayout != VK_NULL_HANDLE)    { descMgr->DestroyDescriptorSetLayout(m_WaveSimLayout);  m_WaveSimLayout  = VK_NULL_HANDLE; }
-    if (m_WaveParticleLayout != VK_NULL_HANDLE) { descMgr->DestroyDescriptorSetLayout(m_WaveParticleLayout); m_WaveParticleLayout = VK_NULL_HANDLE; }
-    if (m_FlowMapLayout != VK_NULL_HANDLE)    { descMgr->DestroyDescriptorSetLayout(m_FlowMapLayout);  m_FlowMapLayout  = VK_NULL_HANDLE; }
-    if (m_SSRLayout != VK_NULL_HANDLE)        { descMgr->DestroyDescriptorSetLayout(m_SSRLayout);      m_SSRLayout      = VK_NULL_HANDLE; }
-    if (m_RefractionLayout != VK_NULL_HANDLE) { descMgr->DestroyDescriptorSetLayout(m_RefractionLayout); m_RefractionLayout = VK_NULL_HANDLE; }
-    if (m_ThicknessLayout != VK_NULL_HANDLE)   { descMgr->DestroyDescriptorSetLayout(m_ThicknessLayout); m_ThicknessLayout = VK_NULL_HANDLE; }
-    if (m_VolumeLayout != VK_NULL_HANDLE) { descMgr->DestroyDescriptorSetLayout(m_VolumeLayout); m_VolumeLayout = VK_NULL_HANDLE; }
-    if (m_VolumeFilterLayout != VK_NULL_HANDLE) { descMgr->DestroyDescriptorSetLayout(m_VolumeFilterLayout); m_VolumeFilterLayout = VK_NULL_HANDLE; }
-    if (m_CausticsLayout != VK_NULL_HANDLE)  { descMgr->DestroyDescriptorSetLayout(m_CausticsLayout);  m_CausticsLayout  = VK_NULL_HANDLE; }
+    if (m_GBufPassLayout != VK_NULL_HANDLE)   { descMgr->ReleaseDescriptorSetLayout(m_GBufPassLayout); m_GBufPassLayout = VK_NULL_HANDLE; }
+    if (m_CompPassLayout != VK_NULL_HANDLE)   { descMgr->ReleaseDescriptorSetLayout(m_CompPassLayout); m_CompPassLayout = VK_NULL_HANDLE; }
+    if (m_WaveSimLayout != VK_NULL_HANDLE)    { descMgr->ReleaseDescriptorSetLayout(m_WaveSimLayout);  m_WaveSimLayout  = VK_NULL_HANDLE; }
+    if (m_WaveParticleLayout != VK_NULL_HANDLE) { descMgr->ReleaseDescriptorSetLayout(m_WaveParticleLayout); m_WaveParticleLayout = VK_NULL_HANDLE; }
+    if (m_FlowMapLayout != VK_NULL_HANDLE)    { descMgr->ReleaseDescriptorSetLayout(m_FlowMapLayout);  m_FlowMapLayout  = VK_NULL_HANDLE; }
+    if (m_SSRLayout != VK_NULL_HANDLE)        { descMgr->ReleaseDescriptorSetLayout(m_SSRLayout);      m_SSRLayout      = VK_NULL_HANDLE; }
+    if (m_RefractionLayout != VK_NULL_HANDLE) { descMgr->ReleaseDescriptorSetLayout(m_RefractionLayout); m_RefractionLayout = VK_NULL_HANDLE; }
+    if (m_ThicknessLayout != VK_NULL_HANDLE)   { descMgr->ReleaseDescriptorSetLayout(m_ThicknessLayout); m_ThicknessLayout = VK_NULL_HANDLE; }
+    if (m_VolumeLayout != VK_NULL_HANDLE) { descMgr->ReleaseDescriptorSetLayout(m_VolumeLayout); m_VolumeLayout = VK_NULL_HANDLE; }
+    if (m_VolumeFilterLayout != VK_NULL_HANDLE) { descMgr->ReleaseDescriptorSetLayout(m_VolumeFilterLayout); m_VolumeFilterLayout = VK_NULL_HANDLE; }
+    if (m_CausticsLayout != VK_NULL_HANDLE)  { descMgr->ReleaseDescriptorSetLayout(m_CausticsLayout);  m_CausticsLayout  = VK_NULL_HANDLE; }
 
     VansVKSampler::DestroySampler(dev, m_DetailNormalSampler);
     m_DetailNormalAnisotropy = 1.0f;

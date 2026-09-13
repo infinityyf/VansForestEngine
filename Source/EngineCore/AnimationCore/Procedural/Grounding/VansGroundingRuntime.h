@@ -14,6 +14,8 @@ namespace VansGraphics
 		               const VansCompiledGroundingSettings& settings,
 		               std::string& error);
 		void Reset(std::uint64_t resetToken = 0);
+		// 同一动画图替换 Rig 时保留未改变的接触配置；不复制未完成的查询事务。
+		void TransferStateForRigReplacement(const VansGroundingRuntime& source);
 
 		bool Prepare(VansPoseWorkspace& workspace,
 		             const VansAnimationExternalInputSnapshot& input,

@@ -12,24 +12,26 @@ namespace VansGraphics
     // VansScriptParticleComponent 引用（运行时每个 Component 有
     // 独立的 VansParticleRuntime 拷贝，不共享状态）。
     // ============================================================
+    enum class VansParticleEmissionFrame { Source, World };
     class VansParticleAsset
     {
     public:
         // ── 元信息 ───────────────────────────────────────────────
         std::string m_Name;
-        std::string m_FilePath;       // .particle 文件路径
-        int         m_Version  = 1;
 
         // ── 全局配置 ─────────────────────────────────────────────
         float       m_Duration  = 5.f;
         bool        m_Loop      = true;
         bool        m_Prewarm   = false;
         float       m_StartDelay = 0.0f;
-        bool        m_WorldAligned = false; // 跟随对象位置，发射方向和尺寸使用世界轴与米制。
-        std::string m_SimSpace  = "Local";  // "Local" | "World"
+        VansParticleEmissionFrame m_EmissionFrame = VansParticleEmissionFrame::Source;
+        float m_FixedStep = 0.0f; // 0 为帧步长，其余为受预算限制的固定步长。
+        uint32_t m_MaxSubsteps = 8;
+        float m_DrainFade = 0.0f; // 0 表示仅由点寿命决定结束；正值为停止后的淡出时长。
 
         // ── Emitter 列表 ─────────────────────────────────────────
-        std::vector<std::unique_ptr<VansParticleEmitter>> m_Emitters;
+        std::vector<std::unique_ptr<const VansParticleEmitter>> m_Emitters;
+        std::vector<Vans::VansAssetGuid> TextureDependencies() const;
 
     };
 

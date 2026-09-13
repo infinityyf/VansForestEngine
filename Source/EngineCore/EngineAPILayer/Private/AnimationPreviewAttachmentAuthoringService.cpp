@@ -1,6 +1,7 @@
 #include "AnimationPreviewAttachmentAuthoringService.h"
 
 #include "../../AssetCore/VansAssetGuid.h"
+#include "../../AnimationCore/VansAnimationNode.h"
 #include "../../RenderCore/VansScene.h"
 #include "../../SceneCore/VansSceneParentReference.h"
 #include "../../SceneRuntime/Transform/VansTransformGraph.h"
@@ -48,6 +49,7 @@ namespace Vans::EditorAPI
 			result.entityGuid = parent.entityGuid.ToString();
 			result.animationComponentGuid = parent.animationComponentGuid.ToString();
 			result.anchorGuid = parent.anchorGuid.ToString();
+			result.poseCheckpoint = parent.poseCheckpoint;
 			switch (parent.kind)
 			{
 			case VansSceneParentKind::Entity: result.kind = RuntimeParentKind::Entity; break;
@@ -65,8 +67,9 @@ namespace Vans::EditorAPI
 			parent.reset();
 			if (source.kind == RuntimeParentKind::None)
 				return source.entityGuid.empty() && source.animationComponentGuid.empty()
-					&& source.anchorGuid.empty();
+					&& source.anchorGuid.empty() && source.poseCheckpoint.empty();
 			VansSceneParentReference value;
+			value.poseCheckpoint = source.poseCheckpoint;
 			if (!VansAssetGuid::TryParse(source.entityGuid, value.entityGuid))
 			{
 				error = "Attachment parent entity GUID is invalid";
@@ -75,7 +78,7 @@ namespace Vans::EditorAPI
 			if (source.kind == RuntimeParentKind::Entity)
 			{
 				value.kind = VansSceneParentKind::Entity;
-				if (!source.animationComponentGuid.empty() || !source.anchorGuid.empty())
+				if (!source.animationComponentGuid.empty() || !source.anchorGuid.empty() || !source.poseCheckpoint.empty())
 				{
 					error = "Entity attachment parent must not contain anchor identity";
 					return false;
@@ -151,6 +154,35 @@ namespace Vans::EditorAPI
 				return false;
 			}
 			return true;
+		}
+
+		bool IsTargetTransform(VansGraphics::VansScene& scene, const std::string& object,
+			const std::string& owner, const std::string& component)
+		{
+			if (auto* runtime = scene.GetRuntimeWorld())
+			{
+				const auto handle = runtime->FindComponentByGuid(component, VansRuntimeComponentType_Animation);
+				const auto* header = runtime->GetComponentHeader(handle);
+				const auto* entity = header ? runtime->Entities().Get(header->owner) : nullptr;
+				const auto* storage = static_cast<const VansComponentStorage<VansRuntimeAnimationComponent>*>(
+					runtime->FindStorage(VansRuntimeComponentType_Animation));
+				const auto* value = storage ? storage->Get(handle) : nullptr;
+				if (entity && entity->stableGuid == owner && value && value->animationNode)
+					for (const auto& binding : value->animationNode->GetTargetBindings())
+						if (binding.targetEntityGuid == object) return true;
+			}
+			std::unordered_set<std::string> visited;
+			std::string current = object;
+			while (visited.insert(current).second)
+			{
+				VansSceneParentReference parent;
+				bool hasParent = false;
+				if (!scene.TryGetEntityParentReferenceByGuid(current, parent, hasParent) || !hasParent) return false;
+				if (parent.IsAnchor()) return parent.entityGuid.ToString() == owner &&
+					parent.animationComponentGuid.ToString() == component;
+				current = parent.entityGuid.ToString();
+			}
+			return false;
 		}
 
 		bool CaptureOriginal(
@@ -229,9 +261,7 @@ namespace Vans::EditorAPI
 			if (!scene.TryGetEntityParentReferenceByGuid(
 				object->m_EntityGuid, parent, hasParent))
 				continue;
-			const bool boundToTarget = hasParent && parent.IsAnchor()
-				&& parent.entityGuid.ToString() == entityGuid
-				&& parent.animationComponentGuid.ToString() == animationComponentGuid;
+			const bool boundToTarget = IsTargetTransform(scene, object->m_EntityGuid, entityGuid, animationComponentGuid);
 			const bool dirtyInSession = state->second.dirtyEntities.find(
 				object->m_EntityGuid) != state->second.dirtyEntities.end();
 			if (!boundToTarget && !dirtyInSession)
@@ -247,6 +277,15 @@ namespace Vans::EditorAPI
 			item.entityGuid = object->m_EntityGuid;
 			item.modelGuid = object->m_ModelAssetGuid;
 			item.parent = ToDTO(parent, hasParent);
+			const auto original = state->second.originals.find(item.entityGuid);
+			if (original != state->second.originals.end())
+			{
+				const auto& baseline = original->second;
+				item.temporary = hasParent != baseline.hasParent || (hasParent &&
+					(parent.kind != baseline.parent.kind || parent.entityGuid != baseline.parent.entityGuid ||
+					 parent.animationComponentGuid != baseline.parent.animationComponentGuid ||
+					 parent.anchorGuid != baseline.parent.anchorGuid || parent.poseCheckpoint != baseline.parent.poseCheckpoint));
+			}
 			item.localTransform = ToDTO(local, RuntimeTransformSpace::Local, item.entityGuid);
 			item.worldTransform = ToDTO(world, RuntimeTransformSpace::World, item.entityGuid);
 			item.editable = true;
@@ -279,10 +318,7 @@ namespace Vans::EditorAPI
 		}
 		VansSceneParentReference parent;
 		bool hasParent = false;
-		if (!scene.TryGetEntityParentReferenceByGuid(request.entityGuid, parent, hasParent)
-			|| !hasParent || !parent.IsAnchor()
-			|| parent.entityGuid.ToString() != targetEntityGuid
-			|| parent.animationComponentGuid.ToString() != targetAnimationComponentGuid)
+		if (!IsTargetTransform(scene, request.entityGuid, targetEntityGuid, targetAnimationComponentGuid))
 		{
 			result.message = "Attachment is not bound to this Animation Component";
 			return result;
@@ -368,6 +404,26 @@ namespace Vans::EditorAPI
 			result.localTransform = ToDTO(local, RuntimeTransformSpace::Local, request.entityGuid);
 		result.message = "Attachment preview binding updated";
 		return result;
+	}
+
+	bool AnimationPreviewAttachmentAuthoringService::AdoptLocalTransforms(
+		AnimationPreviewSessionId sessionId, VansGraphics::VansScene& scene,
+		const std::vector<std::string>& entities)
+	{
+		auto found = Sessions().find(sessionId);
+		if (found == Sessions().end()) return false;
+		for (const auto& entity : entities)
+		{
+			auto original = found->second.originals.find(entity);
+			if (original != found->second.originals.end())
+			{
+				VansLocalTransform local;
+				if (!scene.TryGetEntityLocalTransformByGuid(entity, local)) return false;
+				original->second.local = local;
+			}
+			found->second.dirtyEntities.erase(entity);
+		}
+		return true;
 	}
 
 	bool AnimationPreviewAttachmentAuthoringService::EndSession(

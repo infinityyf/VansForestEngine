@@ -106,8 +106,6 @@ namespace VansGraphics
         void CopyPublishedProbeStateHistory(VansVKCommandBuffer& command);
         bool DispatchReceiverBias(VansVKDevice* device, VansVKCommandBuffer& command,
             VansScene* scene, VkDescriptorSetLayout layout, VkDescriptorSet descriptor, uint32_t width, uint32_t height);
-        bool DispatchReceiverTransport(VansVKDevice* device, VansVKCommandBuffer& command,
-            VansScene* scene, VkDescriptorSetLayout layout, VkDescriptorSet descriptor);
         bool DispatchReceiverVisibility(VansVKDevice* device, VansVKCommandBuffer& command,
             VansScene* scene, VkDescriptorSetLayout layout, VkDescriptorSet descriptor);
 
@@ -173,8 +171,7 @@ namespace VansGraphics
 			VansRayTracingShader* m_VansRayTracingShader = nullptr;
 			VansRayTracingShader* m_ReceiverVisibilityShader = nullptr;
             VansRayTracingShader* m_ReceiverBiasShader = nullptr;
-            VansRayTracingShader* m_ReceiverTransportShader = nullptr;
-            VansVKBuffer m_ReceiverTransportMeshData;
+            VansVKBuffer m_ReceiverGeometryData;
 
 			VkDescriptorSetLayout m_RayTracingSetLayout = VK_NULL_HANDLE;
 			std::vector<VkDescriptorSet> m_RayTracingDescriptorSets;

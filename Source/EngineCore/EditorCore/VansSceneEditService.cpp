@@ -219,6 +219,7 @@ SceneEditResult RuntimeParentPreviewEditResult(
                 ? EditorAPI::RuntimeParentKind::Bone : EditorAPI::RuntimeParentKind::Socket;
             result.changedParent.animationComponentGuid = parent->animationComponentGuid.ToString();
             result.changedParent.anchorGuid = parent->anchorGuid.ToString();
+            result.changedParent.poseCheckpoint = parent->poseCheckpoint;
         }
     }
     result.runtimeParentPreviewSupported = !result.changedEntityGuid.empty();

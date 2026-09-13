@@ -305,6 +305,7 @@ namespace Vans::EditorAPI
 		std::string entityGuid;
 		std::string animationComponentGuid;
 		std::string anchorGuid;
+		std::string poseCheckpoint;
 	};
 
 	enum class RuntimeReparentTransformPolicy : std::uint8_t
@@ -719,6 +720,52 @@ namespace Vans::EditorAPI
 		std::uint64_t generation = 0;
 		std::string message;
 	};
+
+    struct ParticleRibbonPointSnapshot
+    {
+        Vec3 position;
+        float width = 0, alpha = 0, u = 0;
+        std::uint64_t sequence = 0;
+    };
+    struct ParticleRibbonSnapshot
+    {
+        std::uint64_t id = 0;
+        bool hasSourceRoot = false;
+        std::vector<ParticleRibbonPointSnapshot> points;
+    };
+    struct ParticleEffectSnapshot
+    {
+        std::uint32_t index = 0, generation = 0;
+        std::string effectGuid, sourceGuid, state;
+        Vec3 sourcePosition;
+        float playTime = 0;
+        bool detached = false;
+        std::uint64_t alivePoints = 0, droppedSpawns = 0, breaks = 0, substepOverruns = 0;
+        std::vector<ParticleRibbonSnapshot> ribbons;
+    };
+    struct ParticleDiagnosticsSnapshot
+    {
+        bool available = false;
+        std::uint64_t activeInstances = 0, pointCapacity = 0, rejectedInstances = 0;
+        std::uint64_t uploadBytes = 0, allocatedBytes = 0;
+        std::uint32_t drawCount = 0, droppedDraws = 0;
+        double simulationMilliseconds = 0, waitMilliseconds = 0, renderPrepareMilliseconds = 0;
+        std::vector<ParticleEffectSnapshot> effects;
+    };
+
+    struct ParticleAuthoringField
+    {
+        std::string pathPattern;
+        std::vector<std::string> choices;
+        bool hasLimits = false;
+        double minimum = 0, maximum = 0, step = 0.01;
+    };
+
+    struct ParticleAuthoringSchemaSnapshot
+    {
+        std::vector<ParticleAuthoringField> fields;
+        Vans::VansSerializedValue defaults;
+    };
 
 	struct ShaderAuthoringSchemaSnapshot
 	{
@@ -2277,6 +2324,19 @@ namespace Vans::EditorAPI
 		std::vector<SkeletonDebugSocketSnapshot> sockets;
 	};
 
+	struct ParticleDebugEmitter
+	{
+		std::uint32_t instanceIndex = 0, instanceGeneration = 0, emitterIndex = 0;
+		std::string effectName, emitterName;
+		std::vector<ParticleRibbonSnapshot> ribbons;
+	};
+	struct ParticleDebugSnapshot
+	{
+		bool available = false, truncated = false;
+		std::uint64_t sceneGeneration = 0, totalPoints = 0, capturedPoints = 0, totalEmitters = 0;
+		std::vector<ParticleDebugEmitter> emitters;
+	};
+
 	struct SkeletonDebugSnapshot
 	{
 		bool available = false;
@@ -2428,6 +2488,21 @@ namespace Vans::EditorAPI
 		Vec2 swingLimitDegrees{ 180.0f, 180.0f };
 	};
 
+	struct AnimationRigRotationRecipientDTO
+	{
+		std::string bone;
+		float fraction = 0.5f;
+	};
+
+	struct AnimationRigRotationDistributionDTO
+	{
+		std::string id;
+		std::string goal;
+		std::string baseBone;
+		float baseFraction = 0.0f;
+		std::vector<AnimationRigRotationRecipientDTO> recipients;
+	};
+
 	struct AnimationRigSoleSampleDTO
 	{
 		std::string id;
@@ -2461,6 +2536,7 @@ namespace Vans::EditorAPI
 		std::vector<AnimationRigGoalDTO> goals;
 		std::vector<AnimationRigChainDTO> chains;
 		std::vector<AnimationRigJointLimitDTO> jointLimits;
+		std::vector<AnimationRigRotationDistributionDTO> rotationDistributions;
 		std::vector<AnimationRigContactDTO> contacts;
 	};
 
@@ -2667,6 +2743,23 @@ namespace Vans::EditorAPI
 		RuntimeTransformSnapshot localTransform;
 	};
 
+	struct AnimationTargetBindingDTO
+	{
+		std::string id;
+		std::string targetEntityGuid;
+		std::string diagnostic;
+	};
+	struct AnimationPreviewTargetBindingsRequest
+	{
+		AnimationPreviewSessionId sessionId = 0;
+		std::uint64_t expectedRevision = 0;
+		std::vector<AnimationTargetBindingDTO> bindings;
+	};
+	struct AnimationPreviewSceneAdoptRequest
+	{
+		AnimationPreviewSessionId sessionId = 0;
+		std::vector<std::string> savedTransformEntities;
+	};
 	struct AnimationPreviewRigSnapshot
 	{
 		bool available = false;
@@ -2686,9 +2779,18 @@ namespace Vans::EditorAPI
 		std::vector<AnimationPreviewSocketSnapshot> sockets;
 		std::vector<AnimationPreviewAttachmentProfileSnapshot> attachmentProfiles;
 		std::vector<AnimationPreviewAttachmentSnapshot> attachments;
+		std::vector<AnimationTargetBindingDTO> targetBindings;
+		std::vector<std::string> constraintDiagnostics;
+		std::uint64_t bindingRevision = 0;
 		std::string diagnostic;
 	};
 
+	struct AnimationPreviewRigDefinitionRequest
+	{
+		AnimationPreviewSessionId sessionId = 0;
+		std::uint64_t expectedRigRevision = 0;
+		AnimationRigDocumentDTO document;
+	};
 	struct AnimationPreviewRigSocketTransformRequest
 	{
 		AnimationPreviewSessionId sessionId = 0;

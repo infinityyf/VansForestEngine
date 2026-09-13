@@ -25,13 +25,13 @@ namespace VansGraphics
         // deltaTime — 帧时间（秒）；Initialize 模块此值为 0
         // localToWorld — 发射器局部到世界变换矩阵
         virtual void Execute(VansParticlePool& pool, float deltaTime,
-                             const glm::mat4& localToWorld) = 0;
+                             const glm::mat4& localToWorld) const = 0;
 
         // 仅对新生成的粒子执行（Initialize 阶段）：
         // startIndex 到 endIndex（不含）之间的粒子刚被复活
         virtual void ExecuteInit(VansParticlePool& pool, uint32_t startIndex,
                                  uint32_t endIndex,
-                                 const glm::mat4& localToWorld)
+                                 const glm::mat4& localToWorld) const
         {
             // 默认不做任何事；Update 模块重写 Execute 即可
             (void)pool; (void)startIndex; (void)endIndex; (void)localToWorld;

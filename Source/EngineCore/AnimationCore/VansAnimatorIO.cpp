@@ -567,7 +567,8 @@ namespace
 			if ((requireGoalId && goal.goalId.empty())
 				|| !finiteVec3(goal.fixedPositionModel) || !finiteQuat(goal.fixedRotationModel)
 				|| glm::dot(goal.fixedRotationModel, goal.fixedRotationModel) <= 1.0e-8f
-				|| !finiteWeight(goal.fixedPositionWeight) || !finiteWeight(goal.fixedRotationWeight))
+				|| !finiteWeight(goal.fixedPositionWeight) || !finiteWeight(goal.fixedRotationWeight)
+				|| !hasParameter(goal.weightParameter, AnimatorParamType::Float, true))
 			{
 				error = owner + " has an invalid Goal id, transform, or weight";
 				return false;
@@ -631,6 +632,7 @@ namespace
 			}
 			std::size_t targetInputCount = 0;
 			bool targetInputReachable = false;
+			std::unordered_set<std::string> checkpointIds;
 			for (const auto& [nodeId, node] : graph.graph->GetNodes())
 			{
 				if (!node)
@@ -778,8 +780,15 @@ namespace
 				{
 					const auto* aim = static_cast<const AnimGraphAimConstraintNode*>(node.get());
 					const auto& settings = aim->m_Settings;
+					const bool pointMode = settings.mode == VansAimConstraintMode::LookAtPoint;
+					const bool directionMode = settings.mode == VansAimConstraintMode::LookAtDirection ||
+						settings.mode == VansAimConstraintMode::PitchOffset;
 					if (aim->m_ChainId.empty()
-						|| !validateGoal(aim->m_Target, false, "Aim Constraint in Graph '" + graph.name + "'")
+						|| (!pointMode && !directionMode)
+						|| (!aim->m_PivotBone.empty() && settings.mode != VansAimConstraintMode::PitchOffset)
+						|| (pointMode && !validateGoal(aim->m_Target, false, "Aim Constraint in Graph '" + graph.name + "'"))
+						|| (directionMode && (!hasParameter(aim->m_DirectionParameter, AnimatorParamType::Vector3) ||
+							(!aim->m_DirectionWeightParameter.empty() && !hasParameter(aim->m_DirectionWeightParameter, AnimatorParamType::Float))))
 						|| !std::isfinite(settings.yawLimitDegrees.x)
 						|| !std::isfinite(settings.yawLimitDegrees.y)
 						|| settings.yawLimitDegrees.x > settings.yawLimitDegrees.y
@@ -885,6 +894,18 @@ namespace
 						return false;
 					}
 				}
+				if (node->GetType() == AnimGraphNodeType::RotationDistribution &&
+					static_cast<const AnimGraphRotationDistributionNode*>(node.get())->m_RotationProfileId.empty())
+				{ error = "Rotation Distribution requires a Rig profile id"; return false; }
+				if (node->GetType() == AnimGraphNodeType::PoseCheckpoint)
+				{
+					const auto& checkpoint = *static_cast<const AnimGraphPoseCheckpointNode*>(node.get());
+					std::unordered_set<std::string> bones;
+					if (checkpoint.m_CheckpointId.empty() || !checkpointIds.insert(checkpoint.m_CheckpointId).second ||
+						checkpoint.m_Bones.empty() || std::any_of(checkpoint.m_Bones.begin(), checkpoint.m_Bones.end(),
+							[&](const auto& bone) { return bone.empty() || !bones.insert(bone).second; }))
+					{ error = "Pose Checkpoint requires unique identifiers and non-empty bones"; return false; }
+				}
 				if (node->GetType() == AnimGraphNodeType::TargetPoseInput)
 				{
 					++targetInputCount;
@@ -906,7 +927,9 @@ namespace
 						|| node->GetType() == AnimGraphNodeType::AimConstraint
 						|| node->GetType() == AnimGraphNodeType::Grounding
 						|| node->GetType() == AnimGraphNodeType::LimbIK
-						|| node->GetType() == AnimGraphNodeType::ChainIK)
+						|| node->GetType() == AnimGraphNodeType::ChainIK
+						|| node->GetType() == AnimGraphNodeType::PoseCheckpoint
+						|| node->GetType() == AnimGraphNodeType::RotationDistribution)
 					{
 						error = "Pose Graph '" + graph.name
 							+ "' cannot contain target procedural nodes";

@@ -1,10 +1,16 @@
 #include "ProceduralAnimationContractTests.h"
+#include "../EngineCore/AnimationCore/VansAnimGraph.h"
+#include "../EngineCore/SceneRuntime/Animation/VansAnimationTargetResolver.h"
+#include "../EngineCore/SceneCore/VansSceneParentReference.h"
+#include "../EngineCore/AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
 
 #include "../EngineCore/AnimationCore/MotionMatching/VansMotionMatching.h"
 #include "../EngineCore/AnimationCore/Procedural/Grounding/VansGroundingRuntime.h"
 #include "../EngineCore/AnimationCore/Procedural/Solvers/VansAimConstraintSolver.h"
 #include "../EngineCore/AnimationCore/Procedural/Solvers/VansChainIKSolver.h"
 #include "../EngineCore/AnimationCore/Procedural/Solvers/VansLimbIKSolver.h"
+#include "../EngineCore/AnimationCore/Procedural/Solvers/VansRotationDistributionSolver.h"
+#include "../EngineCore/EngineAPILayer/Private/AnimationAuthoringBridge.h"
 #include "../EngineCore/AnimationCore/Storage/VansAnimationRigStorage.h"
 #include "../EngineCore/AnimationCore/Serialization/VansRetargetProfileJsonCodec.h"
 #include "../EngineCore/AnimationCore/VansAnimationController.h"
@@ -1186,15 +1192,16 @@ namespace
 			return Check(false, error.c_str());
 		VansPoseWorkspace aimWorkspace;
 		aimWorkspace.Initialize(aimSkeleton, BuildLocalPose(aimSkeleton));
-		VansProceduralGoal aimGoal;
+		VansAimConstraintTarget aimGoal;
+		VansAimConstraintState aimState;
 		aimGoal.valid = true;
-		aimGoal.positionModel = glm::vec3(10.0f, 0.0f, 1.0f);
+		aimGoal.valueModel = glm::vec3(10.0f, 0.0f, 1.0f);
 		VansAimConstraintSettings aimSettings;
 		aimSettings.yawLimitDegrees = glm::vec2(-30.0f, 30.0f);
 		aimSettings.pitchLimitDegrees = glm::vec2(-20.0f, 20.0f);
 		aimSettings.maxAngularSpeedDegrees = 1000.0f;
 		const VansProceduralSolverResult aimResult = VansAimConstraintSolver::Solve(
-			aimWorkspace, aimRig, aimRig.chains.front(), aimGoal, 1.0f, aimSettings);
+			aimWorkspace, aimRig, aimRig.chains.front(), aimGoal, 1.0f, aimState, aimSettings);
 		if (!Check(aimResult.status == VansProceduralSolverStatus::Clamped
 			&& HasLimit(aimResult, VansProceduralLimitReason::Joint)
 			&& aimWorkspace.IsFinite(), "Aim constraint did not clamp a target outside yaw limits"))
@@ -1202,15 +1209,16 @@ namespace
 
 		aimWorkspace.Initialize(aimSkeleton, BuildLocalPose(aimSkeleton));
 		aimSettings.yawLimitDegrees = glm::vec2(-180.0f, 180.0f);
+		aimState = {};
 		aimSettings.pitchLimitDegrees = glm::vec2(-89.0f, 89.0f);
 		aimSettings.maxAngularSpeedDegrees = 1000.0f;
 		const VansProceduralSolverResult frameResult = VansAimConstraintSolver::Solve(
-			aimWorkspace, aimRig, aimRig.chains.front(), aimGoal, 1.0f, aimSettings);
+			aimWorkspace, aimRig, aimRig.chains.front(), aimGoal, 1.0f, aimState, aimSettings);
 		const glm::quat frameRotation = aimWorkspace.GetComponentRotation(
 			aimRig.chains.front().boneIndices.back());
 		const glm::vec3 finalAimOrigin = aimWorkspace.GetComponentPosition(
 			aimRig.chains.front().boneIndices.back());
-		const glm::vec3 finalAimDirection = glm::normalize(aimGoal.positionModel - finalAimOrigin);
+		const glm::vec3 finalAimDirection = glm::normalize(aimGoal.valueModel - finalAimOrigin);
 		if (!Check(frameResult.status == VansProceduralSolverStatus::Solved
 			&& glm::dot(glm::normalize(frameRotation * aimRig.chains.front().forwardAxisLocal),
 				finalAimDirection) > 0.999f
@@ -1220,14 +1228,45 @@ namespace
 
 		aimWorkspace.Initialize(aimSkeleton, BuildLocalPose(aimSkeleton));
 		aimSettings.maxAngularSpeedDegrees = 30.0f;
+		aimState = {};
 		const VansProceduralSolverResult speedResult = VansAimConstraintSolver::Solve(
-			aimWorkspace, aimRig, aimRig.chains.front(), aimGoal, 1.0f / 60.0f, aimSettings);
+			aimWorkspace, aimRig, aimRig.chains.front(), aimGoal, 1.0f / 60.0f, aimState, aimSettings);
 		const float appliedAngle = VansQuaternionAngleDegrees(
 			aimWorkspace.GetComponentRotation(aimRig.chains.front().boneIndices.back()));
-		return Check(speedResult.status == VansProceduralSolverStatus::Clamped
+		if (!Check(speedResult.status == VansProceduralSolverStatus::Clamped
 			&& HasLimit(speedResult, VansProceduralLimitReason::AngularSpeed)
 			&& appliedAngle <= 0.501f,
-			"Aim constraint exceeded its chain-wide angular-speed limit");
+			"Aim constraint exceeded its chain-wide angular-speed limit")) return false;
+		// 每帧重新输入原动画，连续限速仍须到达完整目标，不能卡在 speed * dt。
+		const auto animatedPose = BuildLocalPose(aimSkeleton);
+		for (auto mode : {VansAimConstraintMode::PitchOffset, VansAimConstraintMode::LookAtDirection})
+		for (int fps : {30, 60, 120})
+		for (float requested : {-80.0f, -30.0f, 0.0f, 30.0f, 80.0f})
+		{
+			aimState = {};
+			aimSettings.mode = mode;
+			aimSettings.pitchLimitDegrees = {-45,45};
+			aimSettings.maxAngularSpeedDegrees = 180.0f;
+			aimGoal.valueModel = {0, std::sin(glm::radians(requested)), std::cos(glm::radians(requested))};
+			for (int frame = 0; frame < fps; ++frame)
+			{
+				aimWorkspace.Initialize(aimSkeleton, animatedPose);
+				const auto solved = VansAimConstraintSolver::Solve(aimWorkspace, aimRig, aimRig.chains.front(), aimGoal,
+					1.0f/fps, aimState, aimSettings);
+				if (!Check(solved.status != VansProceduralSolverStatus::InvalidInput, "Continuous aim solve failed")) return false;
+			}
+			const auto finalForward = aimWorkspace.GetComponentRotation(aimRig.chains.front().boneIndices.back()) * aimRig.chains.front().forwardAxisLocal;
+			const float actualPitch = glm::degrees(std::asin(std::clamp(finalForward.y, -1.0f, 1.0f)));
+			if (!Check(std::abs(actualPitch-std::clamp(requested,-45.0f,45.0f)) < 0.06f,
+				"Continuous aim did not reach its pitch target independently of frame rate")) return false;
+			aimGoal.weight = 0;
+			aimWorkspace.Initialize(aimSkeleton, animatedPose);
+			const auto disabled = VansAimConstraintSolver::Solve(aimWorkspace, aimRig, aimRig.chains.front(), aimGoal, 1.0f/fps, aimState, aimSettings);
+			if (!Check(disabled.status == VansProceduralSolverStatus::NoEffect && !aimState.valid,
+				"Disabled aim retained its correction state")) return false;
+			aimGoal.weight = 1;
+		}
+		return true;
 	}
 
 	bool TestStrictRetargetAndContactConfiguration()
@@ -1309,6 +1348,401 @@ namespace
 			"Project scene is missing a character required by the procedural-animation configuration");
 	}
 
+
+
+	bool TestTransformTargetHierarchy()
+	{
+		struct Leases
+		{
+			std::vector<std::uint32_t> ids;
+			std::uint32_t Add(){const auto id=VansTransformStore::AllocateTransform();ids.push_back(id);auto& t=VansTransformStore::GetTransform(id);t.m_Position=glm::vec3(0);t.m_Rotation=glm::vec3(0);t.m_Scale=glm::vec3(1);return id;}
+			~Leases(){for(auto id:ids)VansTransformStore::FreeTransform(id);}
+		} leases;
+		struct Provider : Vans::IVansTransformAnchorProvider
+		{
+			bool ResolveModelSpaceTransform(const Vans::VansTransformAnchorHandle&,glm::mat4& m,std::uint64_t& r)const override
+			{m=glm::mat4(1);r=1;return true;}
+		} provider;
+		const auto owner=leases.Add(),gun=leases.Add(),grip=leases.Add();
+		Vans::VansTransformGraph graph(&provider);
+		Vans::VansLocalTransform rootLocal,gunLocal,gripLocal;
+		rootLocal.position={5,4,3};rootLocal.rotation=glm::angleAxis(glm::radians(90.0f),glm::vec3(0,1,0));rootLocal.scale=glm::vec3(0.01f);
+		gunLocal.position={0,5,0};gripLocal.position={1,2,3};
+		if (!Check(graph.SetWorldTransform(owner,rootLocal.ToMatrix()) &&
+			graph.SetParent(gun,owner,Vans::VansTransformReparentMode::Snap) &&
+			graph.SetLocalTransform(gun,gunLocal) &&
+			graph.SetParent(grip,gun,Vans::VansTransformReparentMode::Snap) &&
+			graph.SetLocalTransform(grip,gripLocal), "Target hierarchy fixture setup failed")) return false;
+		VansResolvedAnimationTarget target;
+		if(!Check(Vans::VansAnimationTargetResolver::Resolve(graph,grip,{},target),target.diagnostic.c_str()))return false;
+		// 根 Transform 的实际世界矩阵是权威值，90 度附近的 Euler 往返有浮点量化。
+		auto expected=glm::vec3(VansTransformStore::GetTransform(owner).GetModelMatrix()*
+			gunLocal.ToMatrix()*gripLocal.ToMatrix()*glm::vec4(0,0,0,1));
+		if(!Check(glm::length(target.positionWorld-expected)<1e-5f,"Target hierarchy world transform or owner scale incorrect"))
+		{
+			const auto actual = target.positionWorld;
+			const auto rotation = VansTransformStore::GetTransform(owner).m_Rotation;
+			std::cerr << "actual=" << actual.x << "," << actual.y << "," << actual.z
+				<< " expected=" << expected.x << "," << expected.y << "," << expected.z
+				<< " ownerEuler=" << rotation.x << "," << rotation.y << "," << rotation.z << std::endl;
+			return false;
+		}
+		Vans::VansTransformAnchorHandle handle{1,1,Vans::VansTransformAnchorKind::Socket,"socket","beforeIK"};
+		if(!Check(graph.SetAnchorWithLocalTransform(gun,owner,handle,gunLocal),"Target fixture anchor setup failed"))return false;
+		gripLocal.position={3,2,1};graph.SetLocalTransform(grip,gripLocal);
+		const glm::mat4 socket=glm::translate(glm::mat4(1),glm::vec3(2,0,0));
+		const auto own=[&](const Vans::VansTransformGraphLink&,Vans::VansAnimationTargetAnchor& anchor)
+		{anchor.sameSkeleton=true;anchor.boneIndex=4;anchor.boneToAnchor=socket;return true;};
+		if(!Check(Vans::VansAnimationTargetResolver::Resolve(graph,grip,own,target) && target.space==VansAnimationTargetSpace::Pose &&
+			target.poseCheckpoint=="beforeIK" && target.sourceBoneIndex==4,"Own-skeleton target did not retain checkpoint recipe"))return false;
+		expected=glm::vec3(socket*gunLocal.ToMatrix()*gripLocal.ToMatrix()*glm::vec4(0,0,0,1));
+		if(!Check(glm::length(glm::vec3(target.sourceLocal[3])-expected)<1e-5f,"Own target local chain reused stale world pose"))return false;
+		if(!Check(!Vans::VansAnimationTargetResolver::Resolve(graph,grip,{},target) && !target.valid,"Missing anchor retained last-frame target"))return false;
+		gripLocal.scale=glm::vec3(-1,1,1);graph.SetLocalTransform(grip,gripLocal);
+		if(!Check(!Vans::VansAnimationTargetResolver::Resolve(graph,grip,own,target),"Negative target scale accepted"))return false;
+		return true;
+	}
+
+	bool TestChainTargetOrientation()
+	{
+		LegFixture fixture;
+		if(!BuildLegFixture(fixture,false))return false;
+		fixture.asset.contacts.clear();
+		for(auto solver:{VansRigSolverKind::CCD,VansRigSolverKind::FABRIK})
+		{
+			fixture.asset.chains[0].solver=solver;
+			fixture.asset.chains[0].solveWeights={1,1};
+			std::string error;
+			if(!Check(VansAnimationRigCompiler::Compile(fixture.asset,fixture.skeleton,fixture.rig,error),error.c_str()))return false;
+			VansPoseWorkspace workspace;
+			workspace.Initialize(fixture.skeleton,fixture.localPose);
+			const int tip=fixture.rig.chains[0].boneIndices.back();
+			const auto position=workspace.GetComponentPosition(tip);
+			VansProceduralGoal goal;
+			goal.valid=true;goal.positionWeight=0;goal.rotationWeight=1;
+			goal.rotationModel=glm::angleAxis(glm::radians(37.0f),glm::vec3(0,1,0));
+			const auto result=VansChainIKSolver::Solve(workspace,fixture.rig,fixture.rig.chains[0],goal,{});
+			if(!Check(result.status==VansProceduralSolverStatus::Solved &&
+				std::abs(glm::dot(workspace.GetComponentRotation(tip),goal.rotationModel))>0.99999f &&
+				glm::length(position-workspace.GetComponentPosition(tip))<1e-6f,"Rotation-only chain IK changed position or missed orientation"))return false;
+		}
+		return true;
+	}
+
+	bool TestTransformTargetCheckpoint()
+	{
+		LegFixture fixture;
+		if (!BuildLegFixture(fixture, false)) return false;
+		VansAnimGraph graph;
+		const int inputId = graph.AddNode(std::make_unique<AnimGraphTargetPoseInputNode>());
+		auto goalNode = std::make_unique<AnimGraphGoalNode>();
+		goalNode->m_Goal.goalId = "leftFoot";
+		goalNode->m_Goal.binding = "grip";
+		goalNode->m_Goal.weightParameter = "gripWeight";
+		goalNode->m_Goal.fixedRotationWeight = 1;
+		const int goalId = graph.AddNode(std::move(goalNode));
+		auto checkpoint = std::make_unique<AnimGraphPoseCheckpointNode>();
+		checkpoint->m_CheckpointId = "beforeIK";
+		checkpoint->m_Bones = { "foot_l" };
+		const int checkpointId = graph.AddNode(std::move(checkpoint));
+		auto limb = std::make_unique<AnimGraphLimbIKNode>();
+		limb->m_ChainIds = { "leftLeg" };
+		const int limbId = graph.AddNode(std::move(limb));
+		const int outputId = graph.AddNode(std::make_unique<AnimGraphOutputNode>());
+		graph.AddLink(inputId,0,goalId,0);
+		graph.AddLink(goalId,0,checkpointId,0);
+		graph.AddLink(checkpointId,0,limbId,0);
+		graph.AddLink(limbId,0,outputId,0);
+		AnimGraphJson json;
+		graph.SerializeToJsonObject(json);
+		auto roundtrip = VansAnimGraph::DeserializeFromJsonObject(json);
+		if (!Check(roundtrip != nullptr, "Checkpoint graph roundtrip failed")) return false;
+		VansProceduralGraphRuntime runtime;
+		std::string error;
+		if (!Check(runtime.Configure(*roundtrip,fixture.rig,{},error),error.c_str())) return false;
+		float weight = 1;
+		VansProceduralParameterAccessor parameters;
+		parameters.context = &weight;
+		parameters.readFloat=[](const void* data,const std::string& name,float& out)
+		{out=*static_cast<const float*>(data);return name=="gripWeight";};
+		const int foot = fixture.skeleton.boneNameToIndex.at("foot_l");
+		VansAnimationExternalInputSnapshot input;
+		VansResolvedAnimationTarget target;
+		target.id="grip";target.valid=true;target.space=VansAnimationTargetSpace::Pose;
+		target.sourceBoneIndex=foot;target.poseCheckpoint="beforeIK";
+		target.sourceLocal=glm::translate(glm::mat4(1),glm::vec3(0.1f,0.12f,0));
+		input.targets={target};
+		std::vector<VansBoneTransform> output;
+		std::vector<VansWorldQueryRequest> requests;
+		bool needsResolve=false;
+		auto prepare=[&](float deltaTime = 1.0f/60){return runtime.Prepare(deltaTime,fixture.localPose,
+			{goalId,checkpointId,limbId},parameters,input,requests,output,needsResolve,error);};
+		if (!Check(prepare() && !needsResolve,error.c_str())) return false;
+		glm::mat4 checkpointMatrix;
+		if (!Check(runtime.TryGetCheckpointTransform("beforeIK",foot,checkpointMatrix),"Checkpoint was not published")) return false;
+		VansPoseWorkspace workspace;
+		workspace.Initialize(fixture.skeleton,output);
+		const auto expected=glm::vec3(checkpointMatrix*target.sourceLocal*glm::vec4(0,0,0,1));
+		if (!Check(glm::length(workspace.GetComponentPosition(foot)-expected)<0.003f,"IK did not reach current checkpoint target")) return false;
+		// 下一帧从输入姿态重新采样，不能把上一帧 IK 输出积累到目标上。
+		if (!Check(prepare(),error.c_str())) return false;
+		glm::mat4 next;
+		runtime.TryGetCheckpointTransform("beforeIK",foot,next);
+		if (!Check(glm::length(glm::vec3(next[3]-checkpointMatrix[3]))<1e-6f,"Checkpoint drifted across frames")) return false;
+		input.targets[0].sourceLocal = glm::translate(glm::mat4(1), glm::vec3(-0.12f, 0.16f, 0));
+		if (!Check(prepare(0.0f), error.c_str())) return false;
+		workspace.Initialize(fixture.skeleton, output);
+		const auto pausedTarget = glm::vec3(checkpointMatrix * input.targets[0].sourceLocal * glm::vec4(0,0,0,1));
+		if (!Check(glm::length(workspace.GetComponentPosition(foot) - pausedTarget) < 0.003f,
+			"Paused procedural evaluation ignored an edited target")) return false;
+		weight=0;
+		if(!Check(prepare(),error.c_str()))return false;
+		for(std::size_t i=0;i<output.size();++i)
+			if(!Check(glm::length(output[i].translation-fixture.localPose[i].translation)<1e-6f &&
+				std::abs(glm::dot(output[i].rotation,fixture.localPose[i].rotation))>0.999999f,"Zero weight changed input pose"))return false;
+		weight=1;input.targets[0].poseCheckpoint.clear();
+		if(!Check(prepare(),error.c_str()))return false;
+		bool cycleReported=false;
+		for(const auto& record:runtime.GetDebugRecords()) if(record.diagnostic.find("Target depends")!=std::string::npos)cycleReported=true;
+		if(!Check(cycleReported,"Self-dependent target was not diagnosed"))return false;
+		runtime.Reset();
+		if(!Check(!runtime.TryGetCheckpointTransform("beforeIK",foot,next),"Reset retained checkpoint pose"))return false;
+		Vans::VansSceneParentReference parent;
+		const auto parentJson=nlohmann::json{{"kind","socket"},{"entityGuid","00000000-0000-4000-8000-000000000002"},
+			{"animationComponentGuid","00000000-0000-4000-8000-000000000003"},{"anchorGuid","00000000-0000-4000-8000-000000000004"},{"poseCheckpoint","beforeIK"}};
+		if(!Check(Vans::TryReadSceneParentReference(Vans::DecodeSerializedValueJson(parentJson),parent,error) && parent.poseCheckpoint=="beforeIK","Checkpoint attachment serialization failed"))return false;
+		return true;
+	}
+
+	bool TestGroundingRigEditContinuity()
+	{
+		LegFixture fixture;
+		if (!BuildLegFixture(fixture, false)) return false;
+		auto settings = GroundingSettings(false); settings.pelvis.halfLife = 0.12f;
+		VansCompiledGroundingSettings compiled;
+		std::string error;
+		if (!VansCompileGroundingSettings(settings, fixture.rig, compiled, error)) return Check(false, error.c_str());
+		VansGroundingRuntime source;
+		if (!source.Configure(fixture.rig, compiled, error)) return Check(false, error.c_str());
+		VansPoseWorkspace pose;
+		VansAnimationExternalInputSnapshot input;
+		std::vector<VansProceduralGoal> goals;
+		VansProceduralSolverResult result;
+		for (int frame = 0; frame < 60; ++frame)
+		{
+			pose.Initialize(fixture.skeleton, fixture.localPose);
+			if (!ResolveGround(source, pose, input, {0,1,0}, {0,-0.15f,0}, goals, result)) return Check(false, "Grounding warmup failed");
+		}
+		auto changedRig = fixture.rig;
+		VansCompiledRigJointLimit limit; limit.boneIndex = fixture.skeleton.boneNameToIndex.at("foot_l");
+		changedRig.jointLimits.push_back(limit);
+		VansGroundingRuntime replacement;
+		if (!replacement.Configure(changedRig, compiled, error)) return Check(false, error.c_str());
+		replacement.TransferStateForRigReplacement(source);
+		const auto paused = [&](VansGroundingRuntime& runtime)
+		{
+			pose.Initialize(fixture.skeleton, fixture.localPose);
+			std::vector<VansWorldQueryRequest> requests;
+			if (!runtime.Prepare(pose, input, requests) || !runtime.Resolve(0, pose, input,
+				BuildPlaneResults(requests, {0,1,0}, {0,-0.15f,0}), goals, result)) return false;
+			runtime.CommitResolvedState(); return true;
+		};
+		if (!paused(source)) return Check(false, "Paused source grounding failed");
+		const int pelvis = fixture.skeleton.boneNameToIndex.at("pelvis");
+		const auto expected = pose.GetComponentPosition(pelvis);
+		if (!Check(std::abs(expected.y - 1) > 0.05f, "Grounding continuity fixture did not produce a pelvis offset")) return false;
+		if (!paused(replacement)) return Check(false, "Paused replacement grounding failed");
+		if (!Check(glm::length(pose.GetComponentPosition(pelvis) - expected) < 1.e-5f,
+			"Editing Rig limits reset unrelated grounding state")) return false;
+		changedRig.contacts[0].soleSamplesLocal[0].positionLocal.x += 0.01f;
+		VansGroundingRuntime incompatible;
+		if (!incompatible.Configure(changedRig, compiled, error)) return Check(false, error.c_str());
+		incompatible.TransferStateForRigReplacement(source);
+		if (!paused(incompatible)) return Check(false, "Changed contact grounding failed");
+		return Check(glm::length(pose.GetComponentPosition(pelvis) - expected) > 0.05f,
+			"Changed contact geometry incorrectly inherited stale grounding state");
+	}
+
+	bool TestRotationDistribution()
+	{
+		// 非人体骨名、三个模型轴、非单位绑定旋转与父层级，防止把 Survival 的轴写死。
+		for (const glm::vec3 axisLocal : {glm::vec3(1,0,0), glm::vec3(0,-1,0), glm::normalize(glm::vec3(1,2,3))})
+		{
+			Skeleton skeleton;
+			const int root = AddBone(skeleton, "mount", -1, {0,0,0});
+			const int base = AddBone(skeleton, "segment", root, {0,1,0});
+			const int tip = AddBone(skeleton, "tool", base, axisLocal);
+			const int helper = AddBone(skeleton, "sleeve", base, axisLocal * 0.4f);
+			const int childHelper = AddBone(skeleton, "sleeveEnd", helper, axisLocal * 0.3f);
+			AddBone(skeleton, "unrelated", root, {1,0,0});
+			skeleton.bones[root].localTransform *= glm::toMat4(glm::angleAxis(0.8f, glm::normalize(glm::vec3(2,1,-1))));
+			skeleton.bones[base].localTransform *= glm::toMat4(glm::angleAxis(0.4f, glm::vec3(0,0,1)));
+			skeleton.bones[tip].localTransform *= glm::toMat4(glm::angleAxis(0.6f, glm::vec3(0,1,0)));
+			skeleton.bones[helper].localTransform *= glm::toMat4(glm::angleAxis(-0.3f, glm::vec3(1,0,0)));
+			skeleton.sourceSkeletonGuid = "00000000-0000-4000-8000-000000000071";
+			skeleton.BuildTopologicalOrder();
+			VansAnimationRigAsset asset;
+			asset.name = "Rotation fixture"; asset.skeletonGuid = skeleton.sourceSkeletonGuid;
+			asset.goals = {{"toolGoal", "tool"}};
+			asset.rotationDistributions = {{"toolRotation", "toolGoal", "segment", 0.6f,
+				{{"sleeveEnd", 0.7f}, {"sleeve", 0.4f}}}};
+			VansCompiledAnimationRig rig;
+			std::string error;
+			if (!Check(VansAnimationRigCompiler::Compile(asset, skeleton, rig, error), error.c_str())) return false;
+			const auto input = BuildLocalPose(skeleton);
+			VansPoseWorkspace pose;
+			pose.Initialize(skeleton, input);
+			const auto baseRotation = pose.GetComponentRotation(base);
+			const auto tipRotation = pose.GetComponentRotation(tip);
+			const auto position = pose.GetComponentPosition(tip);
+			const auto axis = glm::normalize(position - pose.GetComponentPosition(base));
+			const auto helperRotation = pose.GetComponentRotation(helper);
+			const auto childRotation = pose.GetComponentRotation(childHelper);
+			VansProceduralGoal goal;
+			goal.valid = true; goal.rotationWeight = 1;
+			goal.rotationModel = glm::angleAxis(glm::radians(100.0f), axis) * tipRotation;
+			VansRotationDistributionState rotationState;
+			const auto solve = [&]() { return VansRotationDistributionSolver::Solve(pose, rig, rig.rotationDistributions[0], goal, rotationState); };
+			const auto closeRotation = [](const glm::quat& a, const glm::quat& b)
+			{ return std::abs(glm::dot(glm::normalize(a), glm::normalize(b))) > 0.99999f; };
+			if (!Check(solve().status == VansProceduralSolverStatus::Solved, "Rotation profile did not solve")) return false;
+			if (!Check(glm::length(pose.GetComponentPosition(tip) - position) < 1.e-5f &&
+				closeRotation(pose.GetComponentRotation(tip), goal.rotationModel) &&
+				closeRotation(pose.GetComponentRotation(base), glm::angleAxis(glm::radians(60.f), axis) * baseRotation) &&
+				closeRotation(pose.GetComponentRotation(helper), glm::angleAxis(glm::radians(40.f), axis) * helperRotation) &&
+				closeRotation(pose.GetComponentRotation(childHelper), glm::angleAxis(glm::radians(70.f), axis) * childRotation),
+				"Rotation fractions moved the endpoint or double-applied inherited twist")) return false;
+			pose.Initialize(skeleton, input); goal.rotationWeight = 0.5f; solve();
+			if (!Check(closeRotation(pose.GetComponentRotation(tip), glm::angleAxis(glm::radians(50.f), axis) * tipRotation) &&
+				closeRotation(pose.GetComponentRotation(base), glm::angleAxis(glm::radians(30.f), axis) * baseRotation),
+				"Rotation activation was applied more than once")) return false;
+			pose.Initialize(skeleton, input); goal.rotationWeight = 0;
+			if (!Check(solve().status == VansProceduralSolverStatus::NoEffect, "Disabled rotation profile was not a no-op")) return false;
+			for (std::size_t i = 0; i < input.size(); ++i)
+				if (!Check(pose.GetLocal(static_cast<int>(i)).rotation == input[i].rotation &&
+					pose.GetLocal(static_cast<int>(i)).translation == input[i].translation, "Zero activation changed pose")) return false;
+			goal.rotationWeight = 1;
+			goal.rotationModel = glm::quat(0, axis.x, axis.y, axis.z) * tipRotation;
+			pose.Initialize(skeleton, input); solve();
+			const auto firstHalfTurn = pose.GetComponentRotation(base);
+			goal.rotationModel = -goal.rotationModel;
+			pose.Initialize(skeleton, input); solve();
+			if (!Check(closeRotation(firstHalfTurn, pose.GetComponentRotation(base)), "q and -q chose different twist directions")) return false;
+			rotationState = {};
+			goal.rotationModel = glm::angleAxis(glm::radians(179.f), axis) * tipRotation;
+			pose.Initialize(skeleton, input); solve();
+			const auto beforeWrap = pose.GetComponentRotation(base);
+			goal.rotationModel = glm::angleAxis(glm::radians(181.f), axis) * tipRotation;
+			pose.Initialize(skeleton, input); solve();
+			if (!Check(VansQuaternionAngleDegrees(glm::inverse(beforeWrap) * pose.GetComponentRotation(base)) < 1.3f,
+				"Crossing 180 degrees flipped the upstream rotation")) return false;
+			goal.rotationWeight = 0; solve();
+			if (!Check(!rotationState.valid, "Disabling rotation retained a twist branch")) return false;
+			goal.rotationWeight = 1;
+			goal.rotationModel = glm::angleAxis(glm::radians(100.f), axis) * tipRotation;
+			VansRigJointLimitDefinition baseLimit;
+			baseLimit.bone = "segment"; baseLimit.kind = VansJointLimitKind::Hinge;
+			baseLimit.axisLocal = axisLocal; baseLimit.minDegrees = -25; baseLimit.maxDegrees = 25;
+			VansRigJointLimitDefinition tipLimit;
+			tipLimit.bone = "tool"; tipLimit.kind = VansJointLimitKind::SwingTwist;
+			tipLimit.axisLocal = glm::inverse(input[tip].rotation) * axisLocal;
+			tipLimit.swingReferenceAxisLocal = glm::normalize(glm::cross(tipLimit.axisLocal,
+				std::abs(tipLimit.axisLocal.z) < 0.9f ? glm::vec3(0,0,1) : glm::vec3(0,1,0)));
+			tipLimit.minDegrees = -20; tipLimit.maxDegrees = 20; tipLimit.swingLimitDegrees = {35,45};
+			asset.jointLimits = {baseLimit, tipLimit};
+			if (!Check(VansAnimationRigCompiler::Compile(asset, skeleton, rig, error), error.c_str())) return false;
+			pose.Initialize(skeleton, input);
+			const auto limited = solve();
+			if (!Check(limited.status == VansProceduralSolverStatus::Clamped && limited.rotationErrorDegrees > 54 &&
+				glm::length(pose.GetComponentPosition(tip) - position) < 1.e-5f &&
+				closeRotation(pose.GetComponentRotation(base), glm::angleAxis(glm::radians(25.f), axis) * baseRotation),
+				"Base/tip joint limits failed or displaced the solved endpoint")) return false;
+			for (int bone : {base, tip})
+				if (!Check(!VansApplyJointLimit(pose.GetLocal(bone).rotation, rig.FindJointLimit(bone)).limited,
+					"Rotation output violated a configured joint limit")) return false;
+			pose.Initialize(skeleton, input);
+			pose.SetComponentRotation(tip, goal.rotationModel);
+			const auto beforeFade = pose.GetComponentRotation(tip);
+			goal.rotationWeight = 0.001f;
+			solve();
+			if (!Check(VansQuaternionAngleDegrees(glm::inverse(beforeFade) * pose.GetComponentRotation(tip)) < 0.2f,
+				"Activating a limit on an out-of-range input pose caused a discontinuity")) return false;
+			goal.rotationWeight = 1;
+			for (float degrees : {160.f, 260.f, 360.f})
+			{
+				goal.rotationModel = glm::angleAxis(glm::radians(degrees), axis) * tipRotation;
+				pose.Initialize(skeleton, input); solve();
+				if (!Check(closeRotation(pose.GetComponentRotation(base), glm::angleAxis(glm::radians(25.f), axis) * baseRotation),
+					"A full turn wrapped through the base joint limit")) return false;
+			}
+			nlohmann::json json;
+			if (!Check(VansAnimationRigStorage::SerializeToJsonObject(asset, json, error), error.c_str())) return false;
+			auto dto = Vans::EditorAPI::AnimationAuthoringBridge::DecodeAnimationRig(json.dump());
+			if (!Check(dto.success && dto.document.rotationDistributions.size() == 1 && dto.document.jointLimits.size() == 2,
+				"Rig public DTO lost rotation profiles or limits")) return false;
+			auto encoded = Vans::EditorAPI::AnimationAuthoringBridge::EncodeAnimationRig(dto.document);
+			if (!Check(encoded.success && nlohmann::json::parse(encoded.canonicalJson) == json, "Rig editor roundtrip changed configuration")) return false;
+			auto invalid = asset;
+			invalid.rotationDistributions[0].recipients.push_back({"tool", 0.5f});
+			if (!Check(!VansAnimationRigCompiler::Compile(invalid, skeleton, rig, error), "Effector subtree accepted as an auxiliary recipient")) return false;
+			invalid = asset; invalid.rotationDistributions[0].baseBone = "mount";
+			if (!Check(!VansAnimationRigCompiler::Compile(invalid, skeleton, rig, error), "Non-segment hierarchy accepted for axial distribution")) return false;
+		}
+		return true;
+	}
+
+	bool TestRotationDistributionGraph()
+	{
+		LegFixture fixture;
+		if (!BuildLegFixture(fixture, true)) return false;
+		fixture.asset.rotationDistributions = {{"toolRotation", "leftFoot", "calf_l", 0.6f, {}}};
+		std::string error;
+		if (!Check(VansAnimationRigCompiler::Compile(fixture.asset, fixture.skeleton, fixture.rig, error), error.c_str())) return false;
+		VansAnimGraph graph;
+		const int inputId = graph.AddNode(std::make_unique<AnimGraphTargetPoseInputNode>());
+		auto goal = std::make_unique<AnimGraphGoalNode>();
+		goal->m_Goal.goalId = "leftFoot"; goal->m_Goal.binding = "toolAnchor"; goal->m_Goal.fixedRotationWeight = 1;
+		const int goalId = graph.AddNode(std::move(goal));
+		auto rotation = std::make_unique<AnimGraphRotationDistributionNode>(); rotation->m_RotationProfileId = "toolRotation";
+		const int rotationId = graph.AddNode(std::move(rotation));
+		const int outputId = graph.AddNode(std::make_unique<AnimGraphOutputNode>());
+		graph.AddLink(inputId, 0, goalId, 0); graph.AddLink(goalId, 0, rotationId, 0); graph.AddLink(rotationId, 0, outputId, 0);
+		AnimGraphJson json;
+		graph.SerializeToJsonObject(json);
+		auto loaded = VansAnimGraph::DeserializeFromJsonObject(json);
+		if (!Check(loaded && static_cast<AnimGraphRotationDistributionNode*>(loaded->GetNode(rotationId))->m_RotationProfileId == "toolRotation",
+			"Rotation graph properties did not roundtrip")) return false;
+		VansProceduralGraphRuntime runtime;
+		if (!Check(runtime.Configure(*loaded, fixture.rig, {}, error), error.c_str())) return false;
+		VansAnimationExternalInputSnapshot external;
+		VansResolvedAnimationTarget target;
+		target.id = "toolAnchor"; target.valid = true; target.rotationWorld = glm::angleAxis(glm::radians(90.f), glm::vec3(0,-1,0));
+		external.targets = {target};
+		std::vector<VansBoneTransform> output;
+		std::vector<VansWorldQueryRequest> requests;
+		bool needsResolve = false;
+		const auto prepare = [&]() { return runtime.Prepare(0, fixture.localPose, {goalId, rotationId}, {}, external, requests, output, needsResolve, error); };
+		if (!Check(prepare() && !needsResolve, error.c_str())) return false;
+		VansPoseWorkspace pose; pose.Initialize(fixture.skeleton, output);
+		const int base = fixture.skeleton.boneNameToIndex.at("calf_l");
+		const auto first = pose.GetComponentRotation(base);
+		if (!Check(std::abs(glm::dot(first, glm::angleAxis(glm::radians(54.f), glm::vec3(0,-1,0)))) > 0.99999f,
+			"Paused graph did not execute rotation distribution")) return false;
+		if (!Check(prepare(), error.c_str())) return false;
+		pose.Initialize(fixture.skeleton, output);
+		if (!Check(std::abs(glm::dot(first, pose.GetComponentRotation(base))) > 0.999999f, "Rotation graph accumulated pose between evaluations")) return false;
+		external.targets[0].space = VansAnimationTargetSpace::Pose;
+		external.targets[0].sourceBoneIndex = base;
+		if (!Check(prepare(), error.c_str())) return false;
+		if (!Check(runtime.GetDebugRecords().back().diagnostic.find("Target depends") != std::string::npos,
+			"Rotation write set was missing from target feedback detection")) return false;
+		auto duplicate = std::make_unique<AnimGraphRotationDistributionNode>(); duplicate->m_RotationProfileId = "toolRotation";
+		const int duplicateId = loaded->AddNode(std::move(duplicate));
+		for (const auto& link : loaded->GetLinks()) if (link.toNodeId == outputId) { loaded->RemoveLink(link.linkId); break; }
+		loaded->AddLink(rotationId, 0, duplicateId, 0); loaded->AddLink(duplicateId, 0, outputId, 0);
+		return Check(!runtime.Configure(*loaded, fixture.rig, {}, error), "Overlapping rotation profiles were accepted");
+	}
+
 	bool TestProjectSceneProceduralConfiguration()
 	{
 		std::filesystem::path workspace = std::filesystem::current_path();
@@ -1340,7 +1774,13 @@ namespace
 
 bool RunProceduralAnimationContractTests()
 {
-	return TestGroundingPlanesAndAirborne()
+	return TestGroundingRigEditContinuity()
+		&& TestRotationDistribution()
+		&& TestRotationDistributionGraph()
+		&& TestTransformTargetHierarchy()
+		&& TestChainTargetOrientation()
+		&& TestTransformTargetCheckpoint()
+		&& TestGroundingPlanesAndAirborne()
 		&& TestGroundingContactWeightingAndStaticSeams()
 		&& TestGroundingMovingSupport()
 		&& TestJointConstraintMath()

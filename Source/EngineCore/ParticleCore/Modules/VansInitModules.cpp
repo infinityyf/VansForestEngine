@@ -14,7 +14,7 @@ namespace VansGraphics
     void VansInitLifetimeModule::ExecuteInit(VansParticlePool& pool,
                                              uint32_t startIndex,
                                              uint32_t endIndex,
-                                             const glm::mat4&)
+                                             const glm::mat4&) const
     {
         for (uint32_t i = startIndex; i < endIndex; ++i)
         {
@@ -35,7 +35,7 @@ namespace VansGraphics
     void VansInitVelocityModule::ExecuteInit(VansParticlePool& pool,
                                              uint32_t startIndex,
                                              uint32_t endIndex,
-                                             const glm::mat4& localToWorld)
+                                             const glm::mat4& localToWorld) const
     {
         // 提取发射器的局部方向（默认向上 +Y 轴）
         glm::vec3 worldUp = glm::normalize(
@@ -98,7 +98,7 @@ namespace VansGraphics
     void VansInitSizeModule::ExecuteInit(VansParticlePool& pool,
                                          uint32_t startIndex,
                                          uint32_t endIndex,
-                                         const glm::mat4&)
+                                         const glm::mat4&) const
     {
         for (uint32_t i = startIndex; i < endIndex; ++i)
         {
@@ -115,7 +115,7 @@ namespace VansGraphics
     void VansInitColorModule::ExecuteInit(VansParticlePool& pool,
                                           uint32_t startIndex,
                                           uint32_t endIndex,
-                                          const glm::mat4&)
+                                          const glm::mat4&) const
     {
         for (uint32_t i = startIndex; i < endIndex; ++i)
             pool.m_Color[i] = m_Color;
@@ -128,7 +128,7 @@ namespace VansGraphics
     void VansInitRotationModule::ExecuteInit(VansParticlePool& pool,
                                               uint32_t startIndex,
                                               uint32_t endIndex,
-                                              const glm::mat4&)
+                                              const glm::mat4&) const
     {
         for (uint32_t i = startIndex; i < endIndex; ++i)
         {
@@ -145,7 +145,7 @@ namespace VansGraphics
     void VansInitPositionModule::ExecuteInit(VansParticlePool& pool,
                                               uint32_t startIndex,
                                               uint32_t endIndex,
-                                              const glm::mat4& localToWorld)
+                                              const glm::mat4& localToWorld) const
     {
         glm::vec3 origin = glm::vec3(localToWorld[3]);
 

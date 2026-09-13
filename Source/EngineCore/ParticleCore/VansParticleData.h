@@ -1,5 +1,6 @@
 #pragma once
 #include <vector>
+#include <algorithm>
 #include <cstdint>
 
 #include <glm/glm.hpp>
@@ -28,6 +29,7 @@ namespace VansGraphics
         std::vector<float>     m_LifeTime;      // 总生命周期（秒）
         std::vector<float>     m_NormalizedAge; // Age/LifeTime，[0,1]，预计算
         std::vector<uint32_t>  m_Flags;         // 位标记（alive/dead 等）
+        std::vector<float> m_StepDelta; // 当前步中每个点实际存活的时间，新生点只积分出生后的区间。
 
         // ── 可选扩展属性 ─────────────────────────────────────────
         // 仅在对应模块激活时分配，避免不必要的内存开销
@@ -35,6 +37,8 @@ namespace VansGraphics
         std::vector<glm::vec3> m_InitialVelocity;   // 初始速度（拉伸 Billboard 用）
         std::vector<float>     m_FrameIndex;         // Sprite Sheet 帧索引
         std::vector<uint32_t>  m_SeedRandom;         // 每粒子随机种子
+        std::vector<uint64_t> m_RibbonId;
+        std::vector<uint64_t> m_SpawnSequence;
 
         // ── 粒子标记位定义 ───────────────────────────────────────
         static constexpr uint32_t FLAG_ALIVE = 1u << 0;
@@ -49,6 +53,9 @@ namespace VansGraphics
         void AllocInitialVelocity();
         void AllocFrameIndex();
         void AllocSeedRandom();
+        void AllocRibbon();
+        float StepDelta(uint32_t index, float delta) const
+        { return m_StepDelta[index] < 0.0f ? delta : std::min(m_StepDelta[index], delta); }
 
         // 粒子死亡：将最后一个存活粒子填入空缺槽位，O(1) 删除
         void SwapRemoveAt(uint32_t index);

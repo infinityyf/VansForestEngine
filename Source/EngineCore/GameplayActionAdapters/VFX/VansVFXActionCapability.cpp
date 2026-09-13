@@ -1,38 +1,24 @@
 #include "VansVFXActionCapability.h"
-
 #include "../VansActionServiceAdapter.h"
-
 namespace Vans
 {
 const VansActionServiceCapability& VansVFXActionCapability()
 {
-	using V = VansActionCommandValueKind;
-	using R = VansActionCommandResourcePolicy;
-	const auto optionalString = [](std::string name)
-	{
-		return VansActionCommandField(std::move(name), V::String, false,
-			VansSerializedValue::String({}));
-	};
-	static const VansActionServiceCapability capability =
-		VansActionServiceCapabilityDescriptor("Service.VFX", {
-			VansActionCommandCapability("VFX.Spawn", R::Create, {
-				VansActionCommandField("effect", V::String, true), optionalString("socket"),
-				VansActionCommandField("parameters", V::Object, false,
-					VansSerializedValue::Object({}))
-			}),
-			VansActionCommandCapability("VFX.Attach", R::Update,
-				{ VansActionCommandResourceField(), optionalString("socket") }),
-			VansActionCommandCapability("VFX.Update", R::Update, {
-				VansActionCommandResourceField(),
-				VansActionCommandField("parameters", V::Object, true,
-					VansSerializedValue::Object({}))
-			}),
-			VansActionCommandCapability("VFX.Stop", R::Release, {
-				VansActionCommandResourceField(),
-				VansActionCommandField("immediate", V::Bool, false,
-					VansSerializedValue::Bool(false))
-			})
-		});
-	return capability;
+    using V = VansActionCommandValueKind;
+    using R = VansActionCommandResourcePolicy;
+    static const auto capability = VansActionServiceCapabilityDescriptor("Service.VFX", {
+        VansActionCommandCapability("VFX.Pulse",R::None,{
+            VansActionCommandField("effect",V::String,true),
+            VansActionCommandField("source",V::Object,true)}),
+        VansActionCommandCapability("VFX.Spawn",R::Create,{
+            VansActionCommandField("effect",V::String,true),
+            VansActionCommandField("source",V::Object,true),
+            VansActionCommandField("maxConcurrentPerSource",V::Int,false,VansSerializedValue::Int(16))}),
+        // 停止发射只改变播放状态，资源在真正消散后由账本完成协议释放。
+        VansActionCommandCapability("VFX.Stop",R::Update,{
+            VansActionCommandResourceField(),
+            VansActionCommandField("mode",V::String,false,VansSerializedValue::String("Drain"))})
+    });
+    return capability;
 }
 }

@@ -170,11 +170,8 @@ public:
 	void AddParticleComponent(
 		VansEntityHandle entity,
 		std::string stableGuid,
-		VansGraphics::VansParticleRuntime* runtime,
-		VansGraphics::VansParticleRenderNode* renderNode,
+		VansGenerationHandle instance,
 		bool playOnAwake,
-		bool isPlaying,
-		float playTime,
 		bool hasWorldPositionOverride,
 		float worldPositionOverrideX,
 		float worldPositionOverrideY,

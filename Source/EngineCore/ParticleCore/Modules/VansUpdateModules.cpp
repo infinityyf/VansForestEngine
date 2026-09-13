@@ -10,10 +10,10 @@ namespace VansGraphics
     // ──────────────────────────────────────────────────────────────────────
 
     void VansUpdateGravityModule::Execute(VansParticlePool& pool, float deltaTime,
-                                          const glm::mat4&)
+                                          const glm::mat4&) const
     {
         for (uint32_t i = 0; i < pool.m_AliveCount; ++i)
-            pool.m_Velocity[i] += m_Gravity * deltaTime;
+            pool.m_Velocity[i] += m_Gravity * pool.StepDelta(i, deltaTime);
     }
 
     // ──────────────────────────────────────────────────────────────────────
@@ -21,7 +21,7 @@ namespace VansGraphics
     // ──────────────────────────────────────────────────────────────────────
 
     void VansUpdateColorOverLifetime::Execute(VansParticlePool& pool, float,
-                                              const glm::mat4&)
+                                              const glm::mat4&) const
     {
         for (uint32_t i = 0; i < pool.m_AliveCount; ++i)
         {
@@ -55,7 +55,7 @@ namespace VansGraphics
     }
 
     void VansUpdateSizeOverLifetime::Execute(VansParticlePool& pool, float,
-                                             const glm::mat4&)
+                                             const glm::mat4&) const
     {
         for (uint32_t i = 0; i < pool.m_AliveCount; ++i)
         {
@@ -80,12 +80,12 @@ namespace VansGraphics
 
     void VansUpdateVelocityOverLifetime::Execute(VansParticlePool& pool,
                                                   float deltaTime,
-                                                  const glm::mat4&)
+                                                  const glm::mat4&) const
     {
         for (uint32_t i = 0; i < pool.m_AliveCount; ++i)
         {
             // 指数阻力在不同帧率和较大 deltaTime 下保持稳定，不会反向速度。
-            pool.m_Velocity[i] *= std::exp(-std::max(m_Drag, 0.0f) * deltaTime);
+            pool.m_Velocity[i] *= std::exp(-std::max(m_Drag, 0.0f) * pool.StepDelta(i, deltaTime));
 
             // 湍流扰动
             if (m_TurbulenceEnabled)
@@ -97,7 +97,7 @@ namespace VansGraphics
                     Noise3(pos + glm::vec3(1.234f,  scrollOffset, 5.678f)),
                     Noise3(pos + glm::vec3(9.101f,  scrollOffset, 3.456f))
                 );
-                pool.m_Velocity[i] += offset * m_TurbulenceStrength * deltaTime;
+                pool.m_Velocity[i] += offset * m_TurbulenceStrength * pool.StepDelta(i, deltaTime);
             }
         }
     }
@@ -109,7 +109,7 @@ namespace VansGraphics
     void VansUpdateRotationOverLifetime::ExecuteInit(VansParticlePool& pool,
                                                       uint32_t startIndex,
                                                       uint32_t endIndex,
-                                                      const glm::mat4&)
+                                                      const glm::mat4&) const
     {
         // 若角速度为随机模式，提前分配扩展数组并记录每粒子角速度
         if (m_AngularVelocity.m_Mode != FloatCurveMode::Constant)
@@ -126,14 +126,13 @@ namespace VansGraphics
 
     void VansUpdateRotationOverLifetime::Execute(VansParticlePool& pool,
                                                   float deltaTime,
-                                                  const glm::mat4&)
+                                                  const glm::mat4&) const
     {
         if (m_AngularVelocity.m_Mode == FloatCurveMode::Constant)
         {
             // 常量角速度：所有粒子相同
-            float delta = m_AngularVelocity.m_Value * deltaTime;
             for (uint32_t i = 0; i < pool.m_AliveCount; ++i)
-                pool.m_Rotation[i] += delta;
+                pool.m_Rotation[i] += m_AngularVelocity.m_Value * pool.StepDelta(i, deltaTime);
         }
         else
         {
@@ -141,7 +140,7 @@ namespace VansGraphics
             if (!pool.m_AngularVelocity.empty())
             {
                 for (uint32_t i = 0; i < pool.m_AliveCount; ++i)
-                    pool.m_Rotation[i] += pool.m_AngularVelocity[i] * deltaTime;
+                    pool.m_Rotation[i] += pool.m_AngularVelocity[i] * pool.StepDelta(i, deltaTime);
             }
         }
     }
@@ -153,7 +152,7 @@ namespace VansGraphics
     void VansUpdateSpriteAnimModule::ExecuteInit(VansParticlePool& pool,
                                                   uint32_t startIndex,
                                                   uint32_t endIndex,
-                                                  const glm::mat4&)
+                                                  const glm::mat4&) const
     {
         pool.AllocFrameIndex();
         for (uint32_t i = startIndex; i < endIndex; ++i)
@@ -161,7 +160,7 @@ namespace VansGraphics
     }
 
     void VansUpdateSpriteAnimModule::Execute(VansParticlePool& pool, float /*deltaTime*/,
-                                              const glm::mat4&)
+                                              const glm::mat4&) const
     {
         if (pool.m_FrameIndex.empty()) return;
 

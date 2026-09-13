@@ -1379,7 +1379,11 @@ bool VansActionHost::EnqueueEvent(
 		error = "Action event target or type is invalid";
 		return false;
 	}
-	instance->recentEvents.push_back({ instance->nextEventSequence++, event.type, event.stableName });
+	const auto sequence = instance->nextEventSequence++;
+	instance->recentEvents.push_back({ sequence, event.type, event.stableName });
+	VansEventBus::Get().Enqueue(VansActionMessageEvent{
+		m_Owner, handle, instance->definition->id, instance->context.correlationId, sequence, event },
+		VansEventLane::GameLogic);
 	constexpr std::size_t MaximumDebugEvents = 64;
 	if (instance->recentEvents.size() > MaximumDebugEvents)
 		instance->recentEvents.erase(instance->recentEvents.begin(),

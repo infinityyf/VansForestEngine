@@ -32,6 +32,7 @@ public:
 		const Vans::VansTransformAnchorHandle& handle,
 		glm::mat4& outModelTransform,
 		std::uint64_t& outPoseRevision) const override;
+	VansAnimationNode* FindAnimationNode(const Vans::VansTransformAnchorHandle& handle) const;
 	void Clear();
 
 private:

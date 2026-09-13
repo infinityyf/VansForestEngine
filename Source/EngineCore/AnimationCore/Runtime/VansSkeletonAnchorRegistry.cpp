@@ -70,31 +70,36 @@ bool VansSkeletonAnchorRegistry::ResolveModelSpaceTransform(
 	if (!pose.IsValid())
 		return false;
 
+	const VansAnimationController* controller = slot->animationNode->GetController();
+	int boneIndex = -1;
+	glm::mat4 local(1.0f);
 	if (handle.kind == Vans::VansTransformAnchorKind::Bone)
 	{
 		const auto bone = pose.skeleton->boneGuidToIndex.find(handle.anchorGuid);
-		if (bone == pose.skeleton->boneGuidToIndex.end())
-			return false;
-		outModelTransform = (*pose.modelTransforms)[static_cast<std::size_t>(bone->second)];
-		outPoseRevision = pose.revision;
-		return true;
+		if (bone == pose.skeleton->boneGuidToIndex.end()) return false;
+		boneIndex = bone->second;
 	}
-
-	const VansAnimationController* controller = slot->animationNode->GetController();
-	const VansCompiledAnimationRig* rig = controller ? controller->GetAnimationRig() : nullptr;
-	if (!rig)
+	else
+	{
+		const auto* rig = controller ? controller->GetAnimationRig() : nullptr;
+		const int socket = rig ? rig->FindSocketByGuid(handle.anchorGuid) : -1;
+		if (socket < 0) return false;
+		boneIndex = rig->sockets[socket].boneIndex;
+		local = rig->sockets[socket].localTransform;
+	}
+	if (boneIndex < 0 || boneIndex >= static_cast<int>(pose.modelTransforms->size())) return false;
+	if (handle.poseCheckpoint.empty()) outModelTransform = (*pose.modelTransforms)[boneIndex];
+	else if (!controller || !controller->TryGetPoseCheckpointTransform(handle.poseCheckpoint, boneIndex, outModelTransform))
 		return false;
-	const int socketIndex = rig->FindSocketByGuid(handle.anchorGuid);
-	if (socketIndex < 0 || socketIndex >= static_cast<int>(rig->sockets.size()))
-		return false;
-	const VansCompiledRigSocket& socket = rig->sockets[static_cast<std::size_t>(socketIndex)];
-	if (socket.boneIndex < 0
-		|| socket.boneIndex >= static_cast<int>(pose.modelTransforms->size()))
-		return false;
-	outModelTransform = (*pose.modelTransforms)[static_cast<std::size_t>(socket.boneIndex)]
-		* socket.localTransform;
+	outModelTransform *= local;
 	outPoseRevision = pose.revision;
 	return true;
+}
+
+VansAnimationNode* VansSkeletonAnchorRegistry::FindAnimationNode(const Vans::VansTransformAnchorHandle& handle) const
+{
+	const auto* slot = ResolveSlot(handle.instanceId, handle.instanceGeneration);
+	return slot ? slot->animationNode : nullptr;
 }
 
 void VansSkeletonAnchorRegistry::Clear()

@@ -10,17 +10,18 @@ namespace
 {
 bool HasExactFields(
 	const VansSerializedValue& value,
-	std::initializer_list<const char*> required)
+	std::initializer_list<const char*> required,
+	std::initializer_list<const char*> optional = {})
 {
-	if (value.kind != VansSerializedValue::Kind::Object
-		|| value.objectFields.size() != required.size())
+	if (value.kind != VansSerializedValue::Kind::Object)
 		return false;
 	std::unordered_set<std::string> fields;
 	for (const char* field : required)
 		fields.emplace(field);
+	std::unordered_set<std::string> allowed;
+	for (const char* field : optional) allowed.emplace(field);
 	for (const auto& [name, ignored] : value.objectFields)
-		if (fields.erase(name) == 0)
-			return false;
+		if (fields.erase(name) == 0 && allowed.erase(name) == 0) return false;
 	return fields.empty();
 }
 
@@ -46,8 +47,9 @@ const char* SceneParentKindName(VansSceneParentKind kind)
 bool VansSceneParentReference::IsValid() const
 {
 	return entityGuid.IsValid()
-		&& (kind == VansSceneParentKind::Entity
-			|| (animationComponentGuid.IsValid() && anchorGuid.IsValid()));
+		&& ((kind == VansSceneParentKind::Entity && poseCheckpoint.empty()
+				&& !animationComponentGuid.IsValid() && !anchorGuid.IsValid())
+			|| (IsAnchor() && animationComponentGuid.IsValid() && anchorGuid.IsValid()));
 }
 
 bool TryReadSceneParentReference(
@@ -87,13 +89,19 @@ bool TryReadSceneParentReference(
 	}
 
 	if (!HasExactFields(value,
-		{ "kind", "entityGuid", "animationComponentGuid", "anchorGuid" })
+		{ "kind", "entityGuid", "animationComponentGuid", "anchorGuid" }, { "poseCheckpoint" })
 		|| !ReadGuidField(value, "entityGuid", outReference.entityGuid)
 		|| !ReadGuidField(value, "animationComponentGuid", outReference.animationComponentGuid)
 		|| !ReadGuidField(value, "anchorGuid", outReference.anchorGuid))
 	{
 		error = "Bone/socket parent requires exactly kind, entityGuid, animationComponentGuid, and anchorGuid";
 		return false;
+	}
+	if (const auto* checkpoint = FindObjectField(value, "poseCheckpoint"))
+	{
+		if (checkpoint->kind != VansSerializedValue::Kind::String || checkpoint->stringValue.empty())
+		{ error = "Pose checkpoint must be a non-empty string when provided"; return false; }
+		outReference.poseCheckpoint = checkpoint->stringValue;
 	}
 	return true;
 }
@@ -110,6 +118,8 @@ VansSerializedValue WriteSceneParentReference(const VansSceneParentReference& re
 			VansSerializedValue::String(reference.animationComponentGuid.ToString()));
 		fields.emplace_back("anchorGuid",
 			VansSerializedValue::String(reference.anchorGuid.ToString()));
+		if (!reference.poseCheckpoint.empty())
+			fields.emplace_back("poseCheckpoint", VansSerializedValue::String(reference.poseCheckpoint));
 	}
 	return VansSerializedValue::Object(std::move(fields));
 }

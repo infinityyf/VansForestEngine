@@ -14,6 +14,10 @@ VansSerializedValue VansEncodeSurfaceImpact(const VansSurfaceImpact& impact)
         {"kind", VansSerializedValue::Int(static_cast<int>(impact.kind))},
         {"entityIndex", VansSerializedValue::Int(impact.hit.hitEntity.index)},
         {"entityGeneration", VansSerializedValue::Int(impact.hit.hitEntity.generation)},
+        {"targetIndex", VansSerializedValue::Int(impact.hit.entity.index)},
+        {"targetGeneration", VansSerializedValue::Int(impact.hit.entity.generation)},
+        {"region", VansSerializedValue::String(impact.hit.region)},
+        {"layer", VansSerializedValue::String(impact.layerName)},
         {"componentGuid", VansSerializedValue::String(impact.hit.componentGuid)},
         {"position", vector(impact.hit.position)}, {"normal", vector(impact.hit.normal)},
         {"distance", VansSerializedValue::Float(impact.hit.distance)}
@@ -24,7 +28,7 @@ bool VansDecodeSurfaceImpact(const VansSerializedValue& value, VansSurfaceImpact
 {
     impact = {};
     const auto kind = ReadSerializedIntField(value, "kind", -1);
-    if (kind < 0 || kind > static_cast<int>(VansSurfaceImpactKind::Unmapped))
+    if (kind < 0 || kind > static_cast<int>(VansSurfaceImpactKind::Render))
     { error = "Surface impact kind is invalid"; return false; }
     impact.kind = static_cast<VansSurfaceImpactKind>(kind);
     if (impact.kind == VansSurfaceImpactKind::None) return true;
@@ -46,7 +50,13 @@ bool VansDecodeSurfaceImpact(const VansSerializedValue& value, VansSurfaceImpact
         !readVector("position", impact.hit.position) || !readVector("normal", impact.hit.normal))
     { error = "Surface impact identity or vectors are invalid"; return false; }
     impact.hit.hitEntity = {static_cast<uint32_t>(index), static_cast<uint32_t>(generation)};
-    impact.hit.entity = impact.hit.hitEntity;
+    const auto targetIndex = ReadSerializedIntField(value, "targetIndex", -1);
+    const auto targetGeneration = ReadSerializedIntField(value, "targetGeneration", -1);
+    if (targetIndex < 0 || targetIndex > UINT32_MAX || targetGeneration < 0 || targetGeneration > UINT32_MAX)
+    { error = "Surface impact target identity is invalid"; return false; }
+    impact.hit.entity = {static_cast<uint32_t>(targetIndex), static_cast<uint32_t>(targetGeneration)};
+    impact.hit.region = ReadSerializedStringField(value, "region");
+    impact.layerName = ReadSerializedStringField(value, "layer");
     impact.hit.componentGuid = ReadSerializedStringField(value, "componentGuid");
     const auto* distance = FindObjectField(value, "distance");
     impact.hit.distance = distance ? ReadSerializedNumber(*distance, -1) : -1;
@@ -54,7 +64,8 @@ bool VansDecodeSurfaceImpact(const VansSerializedValue& value, VansSurfaceImpact
     for (double c : impact.hit.normal) normalLength += c*c;
     if (!std::isfinite(impact.hit.distance) || impact.hit.distance < 0 || impact.hit.distance > 1000000 ||
         normalLength < 0.99 || normalLength > 1.01 ||
-        ((impact.kind == VansSurfaceImpactKind::Rigid || impact.kind == VansSurfaceImpactKind::Regional) &&
+        ((impact.kind == VansSurfaceImpactKind::Rigid || impact.kind == VansSurfaceImpactKind::Regional ||
+          impact.kind == VansSurfaceImpactKind::Render) &&
          (!impact.hit.hitEntity.IsValid() || impact.hit.componentGuid.empty())))
     { error = "Surface impact distance, normal or collider identity is invalid"; return false; }
     return true;

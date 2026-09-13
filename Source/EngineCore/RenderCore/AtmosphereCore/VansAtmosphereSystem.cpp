@@ -774,7 +774,7 @@ void VansAtmosphereSystem::DestroyDescriptorResources()
 	}
 	if (m_PassLayout != VK_NULL_HANDLE)
 	{
-		descriptors->DestroyDescriptorSetLayout(m_PassLayout);
+		descriptors->ReleaseDescriptorSetLayout(m_PassLayout);
 		m_PassLayout = VK_NULL_HANDLE;
 	}
 }

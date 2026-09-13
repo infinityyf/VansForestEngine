@@ -61,6 +61,14 @@ namespace VansGraphics
 		return FindAndBackfill(m_Textures, m_TextureAssetLookup, name);
 	}
 
+    VansAsset* VansSceneAssetRegistry::FindTextureByGuid(const std::string& text) const
+    {
+        Vans::VansAssetGuid guid;
+        if (!Vans::VansAssetGuid::TryParse(text,guid)) return nullptr;
+        const auto found = m_TextureAssetsByGuid.find(guid);
+        return found == m_TextureAssetsByGuid.end() ? nullptr : found->second;
+    }
+
 	VansAsset* VansSceneAssetRegistry::FindMaterial(const std::string& name)
 	{
 		if (auto* material = FindInLookup(m_MaterialAssetLookup, name))
@@ -86,10 +94,13 @@ namespace VansGraphics
 		RegisterShader(asset);
 	}
 
-	void VansSceneAssetRegistry::AddTexture(VansAsset* asset)
+	void VansSceneAssetRegistry::AddTexture(VansAsset* asset, const std::string& text)
 	{
 		m_Textures.push_back(asset);
 		RegisterTexture(asset);
+        // 导入资产按身份索引；名称仍服务于明确命名的内建和运行时生成纹理。
+        Vans::VansAssetGuid guid;
+        if (asset && Vans::VansAssetGuid::TryParse(text,guid)) m_TextureAssetsByGuid[guid] = asset;
 	}
 
 	void VansSceneAssetRegistry::AddMaterial(VansAsset* asset)
@@ -187,6 +198,7 @@ namespace VansGraphics
 	{
 		m_Textures.clear();
 		m_TextureAssetLookup.clear();
+        m_TextureAssetsByGuid.clear();
 	}
 
 	void VansSceneAssetRegistry::ClearMaterials()

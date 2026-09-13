@@ -680,6 +680,7 @@ bool VansGraphics::VansScene::TryGetEntityParentReferenceByGuid(
 		if (!componentFound || !Vans::VansAssetGuid::TryParse(
 			link->anchor.anchorGuid, parent.anchorGuid))
 			return false;
+		parent.poseCheckpoint = link->anchor.poseCheckpoint;
 		parent.kind = link->anchor.kind == Vans::VansTransformAnchorKind::Bone
 			? Vans::VansSceneParentKind::Bone : Vans::VansSceneParentKind::Socket;
 	}
@@ -745,6 +746,7 @@ bool VansGraphics::VansScene::SetTransformAnchorReference(
 	anchor.kind = parent.kind == Vans::VansSceneParentKind::Bone
 		? Vans::VansTransformAnchorKind::Bone : Vans::VansTransformAnchorKind::Socket;
 	anchor.anchorGuid = parent.anchorGuid.ToString();
+	anchor.poseCheckpoint = parent.poseCheckpoint;
 	return anchorLocalTransform
 		? m_TransformGraph.SetAnchorWithLocalTransform(
 			childTransformID, ownerTransformID, std::move(anchor), *anchorLocalTransform)

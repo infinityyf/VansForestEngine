@@ -8,6 +8,7 @@ namespace VansGraphics
 class VansParticleEmitterJsonCodec
 {
 public:
+    static Vans::ParticleJson ModuleDefaults();
     static Vans::ParticleJson EncodeEmitter(const VansParticleEmitter& emitter);
     static void DecodeEmitter(const Vans::ParticleJson& root, VansParticleEmitter& emitter);
 };

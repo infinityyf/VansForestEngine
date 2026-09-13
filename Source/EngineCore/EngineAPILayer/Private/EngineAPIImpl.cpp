@@ -1,8 +1,10 @@
+#include "../../ParticleCore/Authoring/VansParticleAuthoringSchema.h"
 #include "EngineAPIImpl.h"
 
 #include "AnimationAuthoringBridge.h"
 #include "AnimationPreviewAttachmentAuthoringService.h"
 #include "AnimationPreviewRigAuthoringService.h"
+#include "AnimationPreviewParameterEditing.h"
 #include "GameplayActionAuthoringBridge.h"
 #include "GameplayActionSimulationBridge.h"
 #include "../../GameplayActionSchema/VansGAFProjectConfiguration.h"
@@ -231,9 +233,10 @@ namespace Vans::EditorAPI
 			output.reset();
 			if (source.kind == RuntimeParentKind::None)
 				return source.entityGuid.empty()
-					&& source.animationComponentGuid.empty() && source.anchorGuid.empty();
+					&& source.animationComponentGuid.empty() && source.anchorGuid.empty() && source.poseCheckpoint.empty();
 
 			Vans::VansSceneParentReference parent;
+			parent.poseCheckpoint = source.poseCheckpoint;
 			if (!Vans::VansAssetGuid::TryParse(source.entityGuid, parent.entityGuid))
 			{
 				error = "Parent entity GUID is invalid";
@@ -243,7 +246,7 @@ namespace Vans::EditorAPI
 			{
 			case RuntimeParentKind::Entity:
 				parent.kind = Vans::VansSceneParentKind::Entity;
-				if (!source.animationComponentGuid.empty() || !source.anchorGuid.empty())
+				if (!source.animationComponentGuid.empty() || !source.anchorGuid.empty() || !source.poseCheckpoint.empty())
 				{
 					error = "Entity parent must not contain animation or anchor GUIDs";
 					return false;
@@ -378,6 +381,7 @@ namespace Vans::EditorAPI
 		{
 			RenderTextureId id = 0;
 			VkImageView imageView = VK_NULL_HANDLE;
+			VkImageView opaqueView = VK_NULL_HANDLE;
 			VkSampler sampler = VK_NULL_HANDLE;
 			VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
 			EditorTextureHandle texture = nullptr;
@@ -640,6 +644,7 @@ namespace Vans::EditorAPI
 			for (auto& cache : GetImagePreviewCaches())
 			{
 				RetireEditorTexture(device, cache.texture);
+				RetireImageView(device, logicalDevice, cache.opaqueView);
 				cache = {};
 			}
 			GetImagePreviewCaches().clear();
@@ -667,7 +672,8 @@ namespace Vans::EditorAPI
 			const char* name,
 			VansGraphics::VansVKImage& image,
 			VkImageLayout layout,
-			VkSampler samplerOverride = VK_NULL_HANDLE)
+			VkSampler samplerOverride = VK_NULL_HANDLE,
+			bool opaque = false)
 		{
 			RenderTexturePreview preview;
 			preview.id = id;
@@ -687,15 +693,28 @@ namespace Vans::EditorAPI
 			if (it == caches.end())
 				it = caches.insert(caches.end(), PreviewTextureCache{ id });
 
-			if (!it->texture || it->imageView != imageView || it->sampler != sampler || it->layout != layout)
+			if (!it->texture || it->imageView != imageView || it->sampler != sampler || it->layout != layout ||
+				opaque != (it->opaqueView != VK_NULL_HANDLE))
 			{
 				RetireEditorTexture(device, it->texture);
+				it->texture = nullptr;
+				RetireImageView(device, device ? device->GetLogicDevice() : VK_NULL_HANDLE, it->opaqueView);
+				it->opaqueView = VK_NULL_HANDLE;
+				if (opaque)
+				{
+					if (!device) return preview;
+					// GI 的 alpha 存放置信度/历史长度；预览 RGB 时不能把它当透明度。
+					it->opaqueView = image.CreateLayerMipView(device->GetLogicDevice(), 0, 0,
+						{VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
+						 VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_ONE});
+					if (it->opaqueView == VK_NULL_HANDLE) return preview;
+				}
 				it->imageView = imageView;
 				it->sampler = sampler;
 				it->layout = layout;
 				it->texture = Vans::Editor::VansEditorTextureBridge::RegisterTexture(
 					sampler,
-					imageView,
+					opaque ? it->opaqueView : imageView,
 					layout);
 			}
 
@@ -1134,6 +1153,9 @@ namespace Vans::EditorAPI
 			float originalSpeed = 1.0f;
 			bool originalSceneStateCaptured = false;
 			bool replacedRetargetSourceController = false;
+			std::unique_ptr<VansGraphics::VansAnimGraph> originalTargetPostProcess;
+			std::vector<VansGraphics::VansAnimationTargetBinding> originalTargetBindings;
+			std::uint64_t bindingRevision = 0;
 			std::unique_ptr<VansGraphics::VansAnimationController>
 				originalSceneController;
 			std::vector<std::pair<Vans::VansComponentHandle, bool>>
@@ -3738,6 +3760,48 @@ namespace Vans::EditorAPI
 		return resolution;
 	}
 
+    ParticleDiagnosticsSnapshot EngineAPIImpl::GetParticleDiagnostics(bool includePoints) const
+    {
+        ParticleDiagnosticsSnapshot result;
+        const auto* scene = static_cast<const VansGraphics::VansScene*>(m_Scene);
+        if (!scene) return result;
+        const auto native = scene->CaptureParticleDiagnostics(includePoints);
+        result.available = true; result.activeInstances = native.activeInstances; result.pointCapacity = native.pointCapacity;
+        result.rejectedInstances = native.rejectedInstances; result.uploadBytes = native.rendering.uploadBytes;
+        result.allocatedBytes = native.rendering.allocatedBytes; result.drawCount = native.rendering.drawCount; result.droppedDraws = native.rendering.droppedDraws;
+        result.simulationMilliseconds = native.simulationMilliseconds; result.waitMilliseconds = native.waitMilliseconds;
+        result.renderPrepareMilliseconds = native.rendering.prepareMilliseconds;
+        for (const auto& effect : native.effects)
+        {
+            ParticleEffectSnapshot item;
+            item.index = effect.instance.index; item.generation = effect.instance.generation;
+            item.effectGuid = effect.effectGuid; item.sourceGuid = effect.sourceGuid; item.state = effect.state;
+            item.sourcePosition = {effect.sourcePosition.x,effect.sourcePosition.y,effect.sourcePosition.z};
+            item.playTime = effect.playTime; item.detached = effect.detached; item.alivePoints = effect.alivePoints;
+            item.droppedSpawns = effect.droppedSpawns; item.breaks = effect.breaks; item.substepOverruns = effect.substepOverruns;
+            for (const auto& strip : effect.ribbons)
+            {
+                ParticleRibbonSnapshot ribbon; ribbon.id = strip.ribbonId;
+                ribbon.hasSourceRoot = strip.hasSourceRoot;
+                for (const auto& point : strip.points)
+                    ribbon.points.push_back({{point.position.x,point.position.y,point.position.z},point.width,point.color.a,point.u,point.sequence});
+                item.ribbons.push_back(std::move(ribbon));
+            }
+            result.effects.push_back(std::move(item));
+        }
+        return result;
+    }
+
+    ParticleAuthoringSchemaSnapshot EngineAPIImpl::GetParticleAuthoringSchema() const
+    {
+        ParticleAuthoringSchemaSnapshot result;
+        for (const auto& field : VansGraphics::VansParticleAuthoringSchema::Fields())
+            result.fields.push_back({field.pathPattern, field.choices, field.hasLimits,
+                field.minimum, field.maximum, field.step});
+        result.defaults = Vans::DecodeSerializedValueJson(VansGraphics::VansParticleAuthoringSchema::Defaults());
+        return result;
+    }
+
 	ShaderAuthoringSchemaSnapshot EngineAPIImpl::GetShaderAuthoringSchema(
 		const std::string& shaderAssetGuid) const
 	{
@@ -5552,9 +5616,9 @@ namespace Vans::EditorAPI
 				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_SSR_RESULT))
 					previews.push_back(BuildImagePreview(device, 141, "SSR Resolve Result", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
 				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_SSGI_RESULT))
-					previews.push_back(BuildImagePreview(device, 142, "SSGI Reconstruct (Raw)", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
+					previews.push_back(BuildImagePreview(device, 142, "SSGI Reconstruct (Raw)", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL, VK_NULL_HANDLE, true));
 				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_SSGI_FILTER_RESULT))
-					previews.push_back(BuildImagePreview(device, 167, "SSGI Filtered (Deferred)", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
+					previews.push_back(BuildImagePreview(device, 167, "SSGI Filtered (Deferred)", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL, VK_NULL_HANDLE, true));
 				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_SCREEN_SPACE_SHADOW_RESULT))
 					previews.push_back(BuildImagePreview(device, 144, "Screen Space Shadow", texture->GetImage(), VK_IMAGE_LAYOUT_GENERAL));
 				if (auto* texture = materialManager->GetRuntimeRenderTexture(VansGraphics::VansMaterialManager::RT_EXPOSURE_LUMINANCE))
@@ -7095,7 +7159,7 @@ namespace Vans::EditorAPI
 					static_cast<RenderTextureId>(198u),
 					"SSGI Screen Probe Cache Radiance (1/4)",
 					cacheRadiance->GetImage(),
-					VK_IMAGE_LAYOUT_GENERAL));
+					VK_IMAGE_LAYOUT_GENERAL, VK_NULL_HANDLE, true));
 			}
 			if (VansGraphics::VansTexture* cacheSurface =
 				materialManager->GetRuntimeRenderTexture(
@@ -8362,6 +8426,40 @@ namespace Vans::EditorAPI
 		return snapshot;
 	}
 
+	ParticleDebugSnapshot EngineAPIImpl::GetParticleDebugSnapshot() const
+	{
+		ParticleDebugSnapshot result;
+		const auto* scene = static_cast<const VansGraphics::VansScene*>(m_Scene);
+		if (!scene || !IsRuntimeSceneReady() || IsRuntimeSceneSwitching()) return result;
+		const auto native = scene->CaptureParticleDebugSnapshot();
+		result.available = true;
+		result.sceneGeneration = scene->GetSceneObjectCollectionGeneration();
+		result.totalPoints = native.totalPoints;
+		result.capturedPoints = native.capturedPoints;
+		result.totalEmitters = native.totalEmitters;
+		result.truncated = native.truncated;
+		for (const auto& source : native.emitters)
+		{
+			ParticleDebugEmitter emitter;
+			emitter.instanceIndex = source.instance.index;
+			emitter.instanceGeneration = source.instance.generation;
+			emitter.emitterIndex = source.emitterIndex;
+			emitter.effectName = source.effectName;
+			emitter.emitterName = source.emitterName;
+			for (const auto& sourceRibbon : source.ribbons)
+			{
+				ParticleRibbonSnapshot ribbon;
+				ribbon.id = sourceRibbon.ribbonId;
+				ribbon.hasSourceRoot = sourceRibbon.hasSourceRoot;
+				for (const auto& point : sourceRibbon.points)
+					ribbon.points.push_back({{point.position.x, point.position.y, point.position.z}, point.width, point.color.a, point.u, point.sequence});
+				emitter.ribbons.push_back(std::move(ribbon));
+			}
+			result.emitters.push_back(std::move(emitter));
+		}
+		return result;
+	}
+
 	SkeletonDebugSnapshot EngineAPIImpl::GetSkeletonDebugSnapshot(const std::string& entityGuidFilter) const
 	{
 		SkeletonDebugSnapshot snapshot;
@@ -8779,6 +8877,10 @@ namespace Vans::EditorAPI
 			session->originalPlaybackState = node->GetState();
 			session->originalSpeed = node->GetSpeed();
 			session->originalSceneStateCaptured = true;
+			session->skeleton = compileSkeleton;
+			session->originalTargetBindings = node->GetTargetBindings();
+			if (useRetarget && node->GetController())
+				session->originalTargetPostProcess = node->GetController()->CloneTargetPostProcessGraph();
 			bool controllerExchanged = false;
 			if (useRetarget)
 			{
@@ -8917,12 +9019,6 @@ namespace Vans::EditorAPI
 			return result;
 		}
 		AnimationPreviewSessionState& session = *found->second;
-		if (session.targetKind == AnimationPreviewTargetKind::SceneAnimationComponent)
-		{
-			result.message =
-				"Scene animation preview owns the explicitly selected Animator asset; restart the session after saving Animator edits";
-			return result;
-		}
 		if (update.revision < session.requestedRevision)
 		{
 			result.message = "Stale animation preview revision was ignored";
@@ -8951,8 +9047,17 @@ namespace Vans::EditorAPI
 			return result;
 		}
 
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		auto* sceneNode = session.targetKind == AnimationPreviewTargetKind::SceneAnimationComponent
+			? ResolveSceneAnimationPreviewNode(scene, session.entityGuid, session.animationComponentGuid) : nullptr;
+		if (session.targetKind == AnimationPreviewTargetKind::SceneAnimationComponent &&
+			(!sceneNode || session.sceneContentRevision != m_SceneContentRevision))
+		{
+			result.message = "Scene preview target expired";
+			return result;
+		}
 		VansGraphics::VansAnimatorRuntimeCompileOptions options;
-		options.enableTargetPostProcess = true;
+		options.enableTargetPostProcess = !sceneNode;
 		options.enableRootMotion = true;
 		options.enableDebugMetrics = true;
 		options.rigResolver = [](const std::string& guid, std::string& error)
@@ -9005,6 +9110,67 @@ namespace Vans::EditorAPI
 		compiled->SetSpeed(session.speed);
 		if (session.playing) compiled->Play();
 		else compiled->Pause();
+		if (sceneNode)
+		{
+			auto* target = sceneNode->GetController();
+			if (!target)
+			{
+				result.message = "Scene animation controller is unavailable";
+				return result;
+			}
+			std::unique_ptr<VansGraphics::VansAnimGraph> post;
+			if (const auto* definition = asset.FindTargetPostProcessGraph())
+			{
+				VansGraphics::AnimGraphJson json;
+				definition->SerializeToJsonObject(json);
+				post = VansGraphics::VansAnimGraph::DeserializeFromJsonObject(json);
+			}
+			// 在独立候选 Controller 上验证目标骨架图，通过后才交换会话实例。
+			VansGraphics::VansAnimationController validation;
+			const auto* targetRig = target->GetAnimationRig();
+			if ((targetRig && (!validation.SetAnimationRig(*targetRig, options.queryProfileResolver, compileError)
+				|| !validation.BindAnimationRigSkeleton(sceneNode->GetSkeleton(), compileError)))
+				|| (post && !validation.SetTargetPostProcessGraph(std::move(post), compileError)))
+			{
+				result.message = compileError;
+				result.usingLastGoodDefinition = true;
+				return result;
+			}
+			if (auto* current = ResolveAnimationPreviewController(session, scene))
+			{
+				std::string transferDiagnostic;
+				compiled->TransferRuntimeStateFrom(*current, session.skeleton, transferDiagnostic);
+			}
+			std::unique_ptr<VansGraphics::VansAnimationController> previous;
+			if (sceneNode->IsRetargetEnabled())
+			{
+				target->ReplaceParameterDefinitions(*compiled, true);
+				if (!sceneNode->ExchangeRetargetSourceController(std::move(compiled), previous))
+				{ result.message = "Source Animator exchange failed"; return result; }
+				post = validation.CloneTargetPostProcessGraph();
+				if (post) target->SetTargetPostProcessGraph(std::move(post), compileError);
+				else target->ClearTargetPostProcessGraph();
+			}
+			else
+			{
+				if (targetRig && !compiled->ReplaceAnimationRig(*targetRig, compileError))
+				{ result.message = compileError; return result; }
+				compiled->SetAnimationRigAssetGuid(target->GetAnimationRigAssetGuid());
+				post = validation.CloneTargetPostProcessGraph();
+				if (post && !compiled->SetTargetPostProcessGraph(std::move(post), compileError))
+				{ result.message = compileError; return result; }
+				if (!scene->ExchangeAnimationRuntimeController(sceneNode, std::move(compiled), previous))
+				{ result.message = "Target Animator exchange failed"; return result; }
+			}
+			sceneNode->Resume();
+			scene->EvaluateEditorAnimationPreviewStep(sceneNode, 0.0f);
+			session.displayedRevision = update.revision;
+			session.slotHandles.clear();
+			session.diagnostic.clear();
+			result.success = true;
+			result.displayedRevision = update.revision;
+			return result;
+		}
 		session.controller = std::move(compiled);
 		{
 			std::string rigError;
@@ -9067,16 +9233,10 @@ namespace Vans::EditorAPI
 					return false;
 				session.lastScenePoseRevision = node->GetFinalPoseView().revision;
 			}
-			if (request.playing)
-			{
-				if (node->GetState() == VansGraphics::AnimationState::Paused)
-					node->Resume();
-				else if (node->GetState() == VansGraphics::AnimationState::Stopped)
-					node->Play(
-						VansGraphics::VansAnimationEvaluationPurpose::EditorPreview);
-			}
-			else
-				node->Pause();
+			// 暂停只冻结预览时钟，仍需重算编辑后的目标约束。
+			if (node->GetState() == VansGraphics::AnimationState::Paused) node->Resume();
+			else if (node->GetState() == VansGraphics::AnimationState::Stopped)
+				node->Play(VansGraphics::VansAnimationEvaluationPurpose::EditorPreview);
 			return true;
 		}
 
@@ -9109,29 +9269,18 @@ namespace Vans::EditorAPI
 		if (found == GetAnimationPreviewSessions().end() || !found->second
 			|| value.name.empty())
 			return false;
-		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
-		VansGraphics::VansAnimationController* resolved =
-			ResolveAnimationPreviewController(*found->second, scene);
-		if (!resolved)
-			return false;
-		auto& controller = *resolved;
-		if (!controller.HasParameter(value.name))
-			return false;
-		switch (value.type)
+		auto& session = *found->second;
+		if (session.targetKind == AnimationPreviewTargetKind::SceneAnimationComponent)
 		{
-		case AnimationPreviewParameterType::Float: controller.SetFloat(value.name, value.floatValue); break;
-		case AnimationPreviewParameterType::Bool: controller.SetBool(value.name, value.boolValue); break;
-		case AnimationPreviewParameterType::Int: controller.SetInt(value.name, value.intValue); break;
-		case AnimationPreviewParameterType::Trigger: controller.SetTrigger(value.name); break;
-		case AnimationPreviewParameterType::Vector3:
-			controller.SetVector3(value.name, glm::vec3(value.vectorValue.x, value.vectorValue.y, value.vectorValue.z)); break;
-		case AnimationPreviewParameterType::Quaternion:
-			controller.SetQuaternion(value.name, glm::quat(
-				value.quaternionValue.w, value.quaternionValue.x,
-				value.quaternionValue.y, value.quaternionValue.z)); break;
+			if (session.sceneContentRevision != m_SceneContentRevision) return false;
+			auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+			auto* node = ResolveSceneAnimationPreviewNode(scene, session.entityGuid, session.animationComponentGuid);
+			if (!node || !AnimationPreviewParameterEditing::Apply(*node, value)) return false;
 		}
-		if (found->second->targetKind == AnimationPreviewTargetKind::IsolatedModel)
+		else
 		{
+			if (!session.controller || !AnimationPreviewParameterEditing::Apply(*session.controller, value)) return false;
+			auto& controller = *session.controller;
 			const bool paused = controller.GetPlaybackState() ==
 				VansGraphics::AnimationState::Paused;
 			if (paused) controller.Resume();
@@ -9637,6 +9786,22 @@ namespace Vans::EditorAPI
 		if (session.targetKind == AnimationPreviewTargetKind::SceneAnimationComponent
 			&& scene)
 		{
+			snapshot.bindingRevision = session.bindingRevision;
+			if (auto* node = ResolveSceneAnimationPreviewNode(scene, session.entityGuid, session.animationComponentGuid))
+			{
+				if (node->GetController())
+					if (const auto* records = node->GetController()->GetProceduralDebugRecords())
+						for (const auto& record : *records)
+							if (!record.diagnostic.empty()) snapshot.constraintDiagnostics.push_back(record.diagnostic);
+				for (const auto& binding : node->GetTargetBindings())
+				{
+					AnimationTargetBindingDTO item{ binding.id, binding.targetEntityGuid, {} };
+					if (auto* controller = node->GetController())
+						for (const auto& target : controller->GetAnimationExternalInput().targets)
+							if (target.id == binding.id) item.diagnostic = target.diagnostic;
+					snapshot.targetBindings.push_back(std::move(item));
+				}
+			}
 			snapshot.attachments =
 				AnimationPreviewAttachmentAuthoringService::GetSnapshots(
 					sessionId, *scene, session.entityGuid,
@@ -9697,6 +9862,27 @@ namespace Vans::EditorAPI
 				return lhs.entityGuid < rhs.entityGuid;
 			});
 		return entities;
+	}
+
+	AnimationPreviewRigEditResult EngineAPIImpl::SetAnimationPreviewRigDefinition(const AnimationPreviewRigDefinitionRequest& request)
+	{
+		AnimationPreviewRigEditResult result;
+		auto found=GetAnimationPreviewSessions().find(request.sessionId);
+		if(found==GetAnimationPreviewSessions().end() || !found->second) return result;
+		auto& session=*found->second;
+		if(session.targetKind==AnimationPreviewTargetKind::SceneAnimationComponent &&
+			session.sceneContentRevision!=m_SceneContentRevision)
+		{result.message="Scene preview target expired";return result;}
+		const auto encoded=EncodeAnimationRigDocument(request.document);
+		if(!encoded.success){result.message=encoded.message;return result;}
+		result = AnimationPreviewRigAuthoringService::SetDefinition(ResolveAnimationPreviewRigContext(
+			session,static_cast<VansGraphics::VansScene*>(m_Scene)),request.expectedRigRevision,encoded.canonicalJson);
+		if (result.success)
+		{
+			session.renderDirty = true;
+			session.diagnostic.clear();
+		}
+		return result;
 	}
 
 	AnimationPreviewRigEditResult EngineAPIImpl::SetAnimationPreviewRigSocketTransform(
@@ -9762,6 +9948,49 @@ namespace Vans::EditorAPI
 			return result;
 		}
 		return AnimationAuthoringBridge::DecodeAnimationRig(canonicalJson);
+	}
+
+	AnimationPreviewRigEditResult EngineAPIImpl::SetAnimationPreviewTargetBindings(
+		const AnimationPreviewTargetBindingsRequest& request)
+	{
+		AnimationPreviewRigEditResult result;
+		auto found = GetAnimationPreviewSessions().find(request.sessionId);
+		if (found == GetAnimationPreviewSessions().end() || !found->second) return result;
+		auto& session = *found->second;
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		auto* node = ResolveSceneAnimationPreviewNode(scene, session.entityGuid, session.animationComponentGuid);
+		if (!node || session.sceneContentRevision != m_SceneContentRevision ||
+			request.expectedRevision != session.bindingRevision)
+		{ result.message = "Scene target or binding revision expired"; return result; }
+		std::unordered_set<std::string> ids;
+		std::vector<VansGraphics::VansAnimationTargetBinding> bindings;
+		for (const auto& item : request.bindings)
+		{
+			Vans::VansAssetGuid guid;
+			if (item.id.empty() || !ids.insert(item.id).second ||
+				!Vans::VansAssetGuid::TryParse(item.targetEntityGuid, guid))
+			{ result.message = "Binding IDs must be unique; target requires a Scene Entity GUID"; return result; }
+			bindings.push_back({ item.id, item.targetEntityGuid });
+		}
+		node->SetTargetBindings(std::move(bindings));
+		result.success = true;
+		result.acceptedRevision = ++session.bindingRevision;
+		result.message = "Transform target bindings applied to preview";
+		return result;
+	}
+
+	bool EngineAPIImpl::AdoptAnimationPreviewSceneChanges(const AnimationPreviewSceneAdoptRequest& request)
+	{
+		auto found = GetAnimationPreviewSessions().find(request.sessionId);
+		if (found == GetAnimationPreviewSessions().end() || !found->second) return false;
+		auto& session = *found->second;
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		auto* node = ResolveSceneAnimationPreviewNode(scene, session.entityGuid, session.animationComponentGuid);
+		if (!node || session.sceneContentRevision != m_SceneContentRevision) return false;
+		if (!AnimationPreviewAttachmentAuthoringService::AdoptLocalTransforms(
+			request.sessionId, *scene, request.savedTransformEntities)) return false;
+		session.originalTargetBindings = node->GetTargetBindings();
+		return true;
 	}
 
 	AnimationPreviewAttachmentEditResult EngineAPIImpl::SetAnimationPreviewAttachmentTransform(
@@ -9861,6 +10090,7 @@ namespace Vans::EditorAPI
 				VANS_LOG_ERROR("[AnimationPreview] Failed to restore attachment preview state: "
 					<< attachmentRestoreError);
 			}
+			if (node && node->GetController()) node->GetController()->ClearTargetPostProcessGraph();
 			std::string rigRestoreError;
 			if (!AnimationPreviewRigAuthoringService::EndSession(
 				sessionId, node ? node->GetController() : nullptr, rigRestoreError))
@@ -9871,6 +10101,15 @@ namespace Vans::EditorAPI
 			if (node)
 			{
 				std::unique_ptr<VansGraphics::VansAnimationController> previewController;
+				node->SetTargetBindings(session.originalTargetBindings);
+				if (session.replacedRetargetSourceController && node->GetController())
+				{
+					std::string graphError;
+					if (session.originalSceneController) node->GetController()->ReplaceParameterDefinitions(*session.originalSceneController, false);
+					if (session.originalTargetPostProcess)
+						node->GetController()->SetTargetPostProcessGraph(std::move(session.originalTargetPostProcess), graphError);
+					else node->GetController()->ClearTargetPostProcessGraph();
+				}
 				const bool controllerRestored = session.replacedRetargetSourceController
 					? node->ExchangeRetargetSourceController(
 						std::move(session.originalSceneController), previewController)

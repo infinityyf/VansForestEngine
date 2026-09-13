@@ -34,6 +34,7 @@
 #include "Windows/VansHiZCullWindow.h"
 #include "Windows/VansAudioDebugWindow.h"
 #include "Windows/VansSkeletonDebugWindow.h"
+#include "Windows/VansParticleDebugWindow.h"
 #include "Windows/VansMotionMatchingDebugWindow.h"
 
 #include "../Util/VansProfiler.h"
@@ -535,6 +536,7 @@ bool VansGraphics::VansEditorWindow::m_ProjectSettingsWindowOpen = false;
 bool VansGraphics::VansEditorWindow::m_AudioDebugWindowOpen = false;
 bool VansGraphics::VansEditorWindow::m_GAFDebuggerWindowOpen = false;
 bool VansGraphics::VansEditorWindow::m_SkeletonDebugWindowOpen = false;
+bool VansGraphics::VansEditorWindow::m_ParticleDebugWindowOpen = false;
 bool VansGraphics::VansEditorWindow::m_MotionMatchingDebugWindowOpen = false;
 
 bool VansGraphics::VansEditorWindow::m_WireframeMode = false;
@@ -597,6 +599,7 @@ VansGraphics::VansPcgWindow* VansGraphics::VansEditorWindow::m_PcgWindow;
 VansGraphics::VansHiZCullWindow* VansGraphics::VansEditorWindow::m_HiZCullWindow;
 VansGraphics::VansAudioDebugWindow* VansGraphics::VansEditorWindow::m_AudioDebugWindow;
 VansGraphics::VansSkeletonDebugWindow* VansGraphics::VansEditorWindow::m_SkeletonDebugWindow;
+VansGraphics::VansParticleDebugWindow* VansGraphics::VansEditorWindow::m_ParticleDebugWindow;
 VansGraphics::VansMotionMatchingDebugWindow* VansGraphics::VansEditorWindow::m_MotionMatchingDebugWindow;
 
 // Project selector overlay
@@ -1221,6 +1224,7 @@ void VansGraphics::VansEditorWindow::CreateWindowComponents()
     m_AudioDebugWindow = AddEditorWindowComponent<VansAudioDebugWindow>(m_Windows);
 
 	m_SkeletonDebugWindow = AddEditorWindowComponent<VansSkeletonDebugWindow>(m_Windows);
+	m_ParticleDebugWindow = AddEditorWindowComponent<VansParticleDebugWindow>(m_Windows);
 	m_MotionMatchingDebugWindow = AddEditorWindowComponent<VansMotionMatchingDebugWindow>(m_Windows);
 
 }
@@ -1896,6 +1900,7 @@ VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& device)
                 ImGui::MenuItem("Shadow Debugger", nullptr, &m_ShadowDebuggerWindowOpen);
                 ImGui::MenuItem("Water GBuffer Visualization", nullptr, &m_WaterGBufferWindowOpen);
                 ImGui::MenuItem("Render Debug", nullptr, &m_RenderDebugWindowOpen);
+                ImGui::MenuItem("Particle Debug", nullptr, &m_ParticleDebugWindowOpen);
                 ImGui::MenuItem("HiZ Occlusion Culling", nullptr, &m_HiZCullWindowOpen);
                 ImGui::MenuItem("Hair Debug", nullptr, &m_HairDebugWindowOpen);
                 ImGui::MenuItem("Water", nullptr, &m_WaterWindowOpen);
@@ -2577,6 +2582,7 @@ void VansGraphics::VansEditorWindow::DestroyVansEditorWindow()
     m_HiZCullWindow = nullptr;
     m_AudioDebugWindow = nullptr;
     m_SkeletonDebugWindow = nullptr;
+    m_ParticleDebugWindow = nullptr;
 
     // Destroy GPU profiler
 #if VANS_PROFILER_ENABLED

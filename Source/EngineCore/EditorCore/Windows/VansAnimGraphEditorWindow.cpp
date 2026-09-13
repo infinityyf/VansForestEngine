@@ -1532,6 +1532,8 @@ void VansAnimGraphEditorWindow::DrawGraphEditorCanvas()
 		if (targetPostProcess && ImGui::MenuItem("Grounding")) addNode(AnimGraphNodeType::Grounding);
 		if (targetPostProcess && ImGui::MenuItem("Limb IK")) addNode(AnimGraphNodeType::LimbIK);
 		if (targetPostProcess && ImGui::MenuItem("Chain IK")) addNode(AnimGraphNodeType::ChainIK);
+		if (targetPostProcess && ImGui::MenuItem("Pose Checkpoint")) addNode(AnimGraphNodeType::PoseCheckpoint);
+		if (targetPostProcess && ImGui::MenuItem("Rotation Distribution")) addNode(AnimGraphNodeType::RotationDistribution);
 		ImGui::EndPopup();
 	}
 
@@ -1727,16 +1729,17 @@ void VansAnimGraphEditorWindow::DrawPropertiesPanel()
 				AnimatorParamType::Vector3, false);
 			changed |= editParameterBinding("Rotation Parameter", goal.rotationParameter,
 				AnimatorParamType::Quaternion);
-			changed |= editParameterBinding("Weight Parameter", goal.weightParameter,
-				AnimatorParamType::Float);
+
 		}
 		else
 		{
 			changed |= ImGui::DragFloat3("Position", &goal.fixedPositionModel.x, 0.01f);
 			changed |= ImGui::DragFloat4("Rotation (xyzw)", &goal.fixedRotationModel.x, 0.01f);
-			changed |= ImGui::SliderFloat("Position Weight", &goal.fixedPositionWeight, 0.0f, 1.0f);
-			changed |= ImGui::SliderFloat("Rotation Weight", &goal.fixedRotationWeight, 0.0f, 1.0f);
+
 		}
+		changed |= ImGui::SliderFloat("Position Weight", &goal.fixedPositionWeight, 0.0f, 1.0f);
+		changed |= ImGui::SliderFloat("Rotation Weight", &goal.fixedRotationWeight, 0.0f, 1.0f);
+		changed |= editParameterBinding("Weight Parameter", goal.weightParameter, AnimatorParamType::Float);
 		return changed;
 	};
 	auto editStringList = [&](const char* label, std::vector<std::string>& values)
@@ -2114,7 +2117,23 @@ void VansAnimGraphEditorWindow::DrawPropertiesPanel()
 	{
 		auto* n = static_cast<AnimGraphAimConstraintNode*>(node);
 		if (EditStringProperty("Rig Chain ID", n->m_ChainId)) m_EditState->isDirty = true;
-		if (editGoal("Aim Target", n->m_Target)) m_EditState->isDirty = true;
+		int mode = static_cast<int>(n->m_AimSettings.mode);
+		if (ImGui::Combo("Aim Mode", &mode, "Look At Point\0Look At Direction\0Pitch Offset\0"))
+		{
+			n->m_AimSettings.mode = static_cast<Vans::EditorAPI::AnimationAimConstraintMode>(mode);
+			m_EditState->isDirty = true;
+		}
+		if (mode == 0)
+		{
+			if (editGoal("Aim Target", n->m_Target)) m_EditState->isDirty = true;
+		}
+		else
+		{
+			if (EditStringProperty("Direction Parameter", n->m_DirectionParameter)) m_EditState->isDirty = true;
+			if (EditStringProperty("Direction Weight Parameter", n->m_DirectionWeightParameter)) m_EditState->isDirty = true;
+			if (ImGui::Checkbox("World Space Direction", &n->m_DirectionIsWorldSpace)) m_EditState->isDirty = true;
+		}
+		if (mode == 2 && EditStringProperty("Pivot Bone (optional)", n->m_PivotBone)) m_EditState->isDirty = true;
 		if (ImGui::DragFloat2("Yaw Min / Max", &n->m_AimSettings.minYawDegrees, 0.5f, -180.0f, 180.0f)) m_EditState->isDirty = true;
 		if (ImGui::DragFloat2("Pitch Min / Max", &n->m_AimSettings.minPitchDegrees, 0.5f, -180.0f, 180.0f)) m_EditState->isDirty = true;
 		if (ImGui::DragFloat("Max Angular Speed", &n->m_AimSettings.maxAngularSpeedDegrees, 1.0f, 0.0f)) m_EditState->isDirty = true;
@@ -2179,6 +2198,13 @@ void VansAnimGraphEditorWindow::DrawPropertiesPanel()
 		if (ImGui::Checkbox("Commit Clamped Pose", &n->m_LimbSettings.commitClampedPose)) m_EditState->isDirty = true;
 		break;
 	}
+	case AnimGraphNodeType::PoseCheckpoint:
+		if (EditStringProperty("Checkpoint", node->m_CheckpointId) | editStringList("Captured Bones", node->m_CheckpointBones)) m_EditState->isDirty = true;
+		break;
+	case AnimGraphNodeType::RotationDistribution:
+		if (EditStringProperty("Rig Rotation Profile", node->m_RotationProfileId)) m_EditState->isDirty = true;
+		ImGui::TextWrapped("Connect after position IK. Rig defines the segment, recipients and limits; Goal supplies rotation and activation.");
+		break;
 	case AnimGraphNodeType::ChainIK:
 	{
 		auto* n = static_cast<AnimGraphChainIKNode*>(node);

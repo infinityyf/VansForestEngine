@@ -16,4 +16,5 @@ namespace VansGraphics
 		const VansCompiledRigJointLimit* limit);
 	glm::quat VansShortestArc(const glm::vec3& from, const glm::vec3& to);
 	float VansQuaternionAngleDegrees(const glm::quat& rotation);
+	float VansExtractTwistRadians(const glm::quat& rotation, const glm::vec3& unitAxis);
 }

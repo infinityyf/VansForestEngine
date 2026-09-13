@@ -151,10 +151,21 @@ bool VansImpactDecalSystem::Refresh(Entry& entry, bool force)
     }
     else
     {
-        auto* storage = Storage<Vans::VansRuntimePhysicsComponent>(m_World, Vans::VansRuntimeComponentType_Physics);
-        const auto* body = storage ? storage->Get(entry.collider) : nullptr;
-        if (!body || !body->physicsNode || !body->physicsNode->IsEnabled() ||
-            !m_World.IsComponentEffectivelyEnabled(entry.collider) ||
+        bool anchorEnabled = false;
+        if (entry.anchorComponent.typeId == Vans::VansRuntimeComponentType_Render)
+        {
+            auto* storage = Storage<Vans::VansRuntimeRenderComponent>(m_World, Vans::VansRuntimeComponentType_Render);
+            const auto* render = storage ? storage->Get(entry.anchorComponent) : nullptr;
+            if (render) for (auto* node : Nodes(*render))
+                anchorEnabled |= Supported(node) && node->m_TransformID == entry.transform;
+        }
+        else
+        {
+            auto* storage = Storage<Vans::VansRuntimePhysicsComponent>(m_World, Vans::VansRuntimeComponentType_Physics);
+            const auto* body = storage ? storage->Get(entry.anchorComponent) : nullptr;
+            anchorEnabled = body && body->physicsNode && body->physicsNode->IsEnabled();
+        }
+        if (!anchorEnabled || !m_World.IsComponentEffectivelyEnabled(entry.anchorComponent) ||
             !VansTransformStore::IsAllocated(entry.transform) ||
             VansTransformStore::GetGeneration(entry.transform) != entry.transformGeneration) return false;
         const auto pose = VansTransformStore::GetTransform(entry.transform);
@@ -175,12 +186,25 @@ bool VansImpactDecalSystem::Spawn(const std::string& source, const Vans::VansSur
     using namespace Vans;
     const auto pool = std::find_if(m_Pools.begin(), m_Pools.end(), [&](const auto& p) { return p.source == source; });
     if (pool == m_Pools.end()) { error = "Impact decal template is not prepared"; return false; }
-    if (impact.kind != VansSurfaceImpactKind::Rigid && impact.kind != VansSurfaceImpactKind::Terrain) return false;
+    if (impact.kind != VansSurfaceImpactKind::Rigid && impact.kind != VansSurfaceImpactKind::Terrain &&
+        impact.kind != VansSurfaceImpactKind::Render) return false;
     VansComponentHandle collider;
     glm::mat4 anchor(1);
     uint32_t transform = UINT32_MAX;
     std::vector<VansComponentHandle> receivers;
-    if (impact.kind == VansSurfaceImpactKind::Rigid)
+    if (impact.kind == VansSurfaceImpactKind::Render)
+    {
+        auto* storage = Storage<VansRuntimeRenderComponent>(m_World, VansRuntimeComponentType_Render);
+        collider = storage ? storage->FindByStableGuid(impact.hit.componentGuid) : VansComponentHandle{};
+        const auto* header = storage ? storage->GetHeader(collider) : nullptr;
+        const auto* render = storage ? storage->Get(collider) : nullptr;
+        if (!header || header->owner != impact.hit.hitEntity || !header->effectiveEnabled || !render) return false;
+        for (auto* node : Nodes(*render)) if (Supported(node)) { transform = node->m_TransformID; break; }
+        if (!VansTransformStore::IsAllocated(transform)) return false;
+        anchor = VansTransformStore::GetTransform(transform).GetModelMatrix();
+        receivers = {collider};
+    }
+    else if (impact.kind == VansSurfaceImpactKind::Rigid)
     {
         auto* storage = Storage<VansRuntimePhysicsComponent>(m_World, VansRuntimeComponentType_Physics);
         collider = storage ? storage->FindByStableGuid(impact.hit.componentGuid) : VansComponentHandle{};
@@ -208,7 +232,7 @@ bool VansImpactDecalSystem::Spawn(const std::string& source, const Vans::VansSur
     if (selected == end) selected = std::min_element(begin, end, [](const auto& a, const auto& b) { return a.sequence < b.sequence; });
     Retire(*selected);
     uint32_t receiver = TerrainReceiver;
-    if (impact.kind == VansSurfaceImpactKind::Rigid)
+    if (impact.kind == VansSurfaceImpactKind::Rigid || impact.kind == VansSurfaceImpactKind::Render)
     {
         size_t groupIndex = m_Groups.size();
         for (size_t i=0; i<m_Groups.size(); ++i)
@@ -229,7 +253,7 @@ bool VansImpactDecalSystem::Spawn(const std::string& source, const Vans::VansSur
     }
     auto& entry = *selected;
     entry.receiver = receiver;
-    entry.collider = collider;
+    entry.anchorComponent = collider;
     entry.transform = transform;
     entry.transformGeneration = VansTransformStore::GetGeneration(transform);
     entry.localPosition = glm::vec3(glm::inverse(anchor)*glm::vec4(point,1));

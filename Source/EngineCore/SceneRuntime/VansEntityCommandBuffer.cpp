@@ -263,11 +263,8 @@ void VansEntityCommandBuffer::AddVideoComponent(
 void VansEntityCommandBuffer::AddParticleComponent(
 	VansEntityHandle entity,
 	std::string stableGuid,
-	VansGraphics::VansParticleRuntime* runtime,
-	VansGraphics::VansParticleRenderNode* renderNode,
+	VansGenerationHandle instance,
 	bool playOnAwake,
-	bool isPlaying,
-	float playTime,
 	bool hasWorldPositionOverride,
 	float worldPositionOverrideX,
 	float worldPositionOverrideY,
@@ -277,11 +274,8 @@ void VansEntityCommandBuffer::AddParticleComponent(
 	VansEntityCommand command;
 	command.type = VansEntityCommandType::AddParticleComponent;
 	command.entity = entity;
-	command.particleComponent.runtime = runtime;
-	command.particleComponent.renderNode = renderNode;
+	command.particleComponent.instance = instance;
 	command.particleComponent.playOnAwake = playOnAwake;
-	command.particleComponent.isPlaying = isPlaying;
-	command.particleComponent.playTime = playTime;
 	command.particleComponent.hasWorldPositionOverride = hasWorldPositionOverride;
 	command.particleComponent.worldPositionOverrideX = worldPositionOverrideX;
 	command.particleComponent.worldPositionOverrideY = worldPositionOverrideY;

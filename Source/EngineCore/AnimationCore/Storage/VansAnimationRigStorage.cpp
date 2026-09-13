@@ -172,7 +172,7 @@ namespace VansGraphics
 		{
 			if (!RequireObjectFields(root,
 				{ "assetKind", "name", "skeletonGuid", "modelAxes", "semanticBones",
-				  "sockets", "attachmentProfiles", "goals", "chains", "jointLimits", "contacts" },
+				  "sockets", "attachmentProfiles", "goals", "chains", "jointLimits", "contacts", "rotationDistributions" },
 				{ "assetKind", "name", "skeletonGuid", "modelAxes", "semanticBones",
 				  "sockets", "attachmentProfiles", "goals", "chains", "jointLimits", "contacts" },
 				"Animation Rig", error))
@@ -460,6 +460,38 @@ namespace VansGraphics
 				}
 				asset.jointLimits.push_back(limit);
 			}
+			if (root.contains("rotationDistributions"))
+			{
+				if (!root["rotationDistributions"].is_array())
+				{ error = "rotationDistributions must be an array"; return false; }
+				for (const auto& value : root["rotationDistributions"])
+				{
+					if (!RequireObjectFields(value, {"id", "goal", "baseBone", "baseFraction", "recipients"},
+						{"id", "goal", "baseBone", "baseFraction", "recipients"}, "rotationDistribution", error) ||
+						!value["id"].is_string() || !value["goal"].is_string() || !value["baseBone"].is_string() ||
+						!value["baseFraction"].is_number() || !value["recipients"].is_array())
+					{ if (error.empty()) error = "Invalid rotationDistribution field type"; return false; }
+					VansRigRotationDistributionDefinition profile;
+					profile.id = value["id"].get<std::string>();
+					profile.goal = value["goal"].get<std::string>();
+					profile.baseBone = value["baseBone"].get<std::string>();
+					profile.baseFraction = value["baseFraction"].get<float>();
+					const auto fractionValid = [](float fraction) { return std::isfinite(fraction) && fraction >= 0 && fraction <= 1; };
+					if (profile.id.empty() || profile.goal.empty() || profile.baseBone.empty() || !fractionValid(profile.baseFraction))
+					{ error = "Rotation Distribution requires identities and a base fraction in [0, 1]"; return false; }
+					for (const auto& recipient : value["recipients"])
+					{
+						if (!RequireObjectFields(recipient, {"bone", "fraction"}, {"bone", "fraction"}, "rotation recipient", error) ||
+							!recipient["bone"].is_string() || !recipient["fraction"].is_number())
+						{ if (error.empty()) error = "Invalid rotation recipient field type"; return false; }
+						VansRigRotationRecipient item{recipient["bone"].get<std::string>(), recipient["fraction"].get<float>()};
+						if (item.bone.empty() || !fractionValid(item.fraction))
+						{ error = "Rotation recipient requires a bone and a fraction in [0, 1]"; return false; }
+						profile.recipients.push_back(std::move(item));
+					}
+					asset.rotationDistributions.push_back(std::move(profile));
+				}
+			}
 			for (const json& value : root["contacts"])
 			{
 				if (!RequireObjectFields(value,
@@ -537,6 +569,7 @@ namespace VansGraphics
 			{ "goals", json::array() },
 			{ "chains", json::array() },
 			{ "jointLimits", json::array() },
+			{ "rotationDistributions", json::array() },
 			{ "contacts", json::array() }
 		};
 		for (const VansRigSocketDefinition& socket : asset.sockets)
@@ -618,6 +651,14 @@ namespace VansGraphics
 					limit.swingLimitDegrees.x, limit.swingLimitDegrees.y };
 			}
 			root["jointLimits"].push_back(std::move(value));
+		}
+		for (const auto& profile : asset.rotationDistributions)
+		{
+			json recipients = json::array();
+			for (const auto& recipient : profile.recipients)
+				recipients.push_back({{"bone", recipient.bone}, {"fraction", recipient.fraction}});
+			root["rotationDistributions"].push_back({{"id", profile.id}, {"goal", profile.goal},
+				{"baseBone", profile.baseBone}, {"baseFraction", profile.baseFraction}, {"recipients", std::move(recipients)}});
 		}
 		for (const VansRigContactDefinition& contact : asset.contacts)
 		{

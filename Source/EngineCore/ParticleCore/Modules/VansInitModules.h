@@ -25,10 +25,10 @@ namespace VansGraphics
             m_Lifetime.m_Max   = 2.f;
         }
 
-        void Execute(VansParticlePool&, float, const glm::mat4&) override {}
+        void Execute(VansParticlePool&, float, const glm::mat4&) const override {}
 
         void ExecuteInit(VansParticlePool& pool, uint32_t startIndex,
-                         uint32_t endIndex, const glm::mat4&) override;
+                         uint32_t endIndex, const glm::mat4&) const override;
 
     };
 
@@ -43,10 +43,10 @@ namespace VansGraphics
         float                m_ConeAngle    = 25.f;  // 圆锥半角（度）
         float                m_Speed        = 2.f;   // 初速度大小
 
-        void Execute(VansParticlePool&, float, const glm::mat4&) override {}
+        void Execute(VansParticlePool&, float, const glm::mat4&) const override {}
 
         void ExecuteInit(VansParticlePool& pool, uint32_t startIndex,
-                         uint32_t endIndex, const glm::mat4& localToWorld) override;
+                         uint32_t endIndex, const glm::mat4& localToWorld) const override;
 
     };
 
@@ -63,10 +63,10 @@ namespace VansGraphics
             m_Size.m_Max  = 0.15f;
         }
 
-        void Execute(VansParticlePool&, float, const glm::mat4&) override {}
+        void Execute(VansParticlePool&, float, const glm::mat4&) const override {}
 
         void ExecuteInit(VansParticlePool& pool, uint32_t startIndex,
-                         uint32_t endIndex, const glm::mat4&) override;
+                         uint32_t endIndex, const glm::mat4&) const override;
 
     };
 
@@ -76,10 +76,10 @@ namespace VansGraphics
     public:
         glm::vec4 m_Color = glm::vec4(1.f);
 
-        void Execute(VansParticlePool&, float, const glm::mat4&) override {}
+        void Execute(VansParticlePool&, float, const glm::mat4&) const override {}
 
         void ExecuteInit(VansParticlePool& pool, uint32_t startIndex,
-                         uint32_t endIndex, const glm::mat4&) override;
+                         uint32_t endIndex, const glm::mat4&) const override;
 
     };
 
@@ -96,10 +96,10 @@ namespace VansGraphics
             m_Angle.m_Max  = 360.f;
         }
 
-        void Execute(VansParticlePool&, float, const glm::mat4&) override {}
+        void Execute(VansParticlePool&, float, const glm::mat4&) const override {}
 
         void ExecuteInit(VansParticlePool& pool, uint32_t startIndex,
-                         uint32_t endIndex, const glm::mat4&) override;
+                         uint32_t endIndex, const glm::mat4&) const override;
 
     };
 
@@ -113,10 +113,10 @@ namespace VansGraphics
         float            m_Radius = 0.2f;
         float            m_Arc    = 360.f;  // Cone/Disk 弧度范围（度）
 
-        void Execute(VansParticlePool&, float, const glm::mat4&) override {}
+        void Execute(VansParticlePool&, float, const glm::mat4&) const override {}
 
         void ExecuteInit(VansParticlePool& pool, uint32_t startIndex,
-                         uint32_t endIndex, const glm::mat4& localToWorld) override;
+                         uint32_t endIndex, const glm::mat4& localToWorld) const override;
 
     };
 

@@ -59,7 +59,7 @@ void main()
     vec3 geometricNormal = SSGI_NormalFromDerivatives(dx, dy, normal);
     float footprint = max(length(dx), length(dy));
     float tolerance = SSGI_PlaneTolerance(position);
-    vec3 mean = vec3(0.0), second = vec3(0.0);
+    vec3 mean = vec3(0.0);
     float totalWeight = 0.0;
     for (int y = -1; y <= 1; ++y)
     for (int x = -1; x <= 1; ++x)
@@ -70,11 +70,9 @@ void main()
         weight *= pow(max(dot(normal, normalize(tileNormalMaterial[tap].xyz)), 0.0), 8.0);
         vec3 value = tileGI[tap].rgb;
         mean += value * weight;
-        second += value * value * weight;
         totalWeight += weight;
     }
     mean /= max(totalWeight, 1e-5);
-    vec3 sigma = sqrt(max(second / max(totalWeight, 1e-5) - mean * mean, vec3(0.0)));
     vec2 uv = (vec2(id) + 0.5) / vec2(size);
     vec2 motion = texelFetch(inputMotionVector, id, 0).xy;
     vec2 previousUV = uv - motion + frameParams.yz;
@@ -99,11 +97,9 @@ void main()
             vec2 bilinear = mix(1.0 - fraction, fraction, vec2(x, y));
             float weight = bilinear.x * bilinear.y;
             vec4 history = texelFetch(inputHistoryGI, coord, 0);
-            // 仅重置局部光照来源切换的像素；正常路径的历史参数不变。
-            if((history.a<0.0)!=(tileGI[center].a<0.0)) continue;
             historyColor += history.rgb * weight;
-            // Alpha 只表示历史帧数，绝不参与当前 confidence 的邻域裁剪。
-            historyLength += round(clamp(abs(history.a) * 255.0, 0.0, 255.0)) * weight;
+            // Alpha 只表示历史帧数，与当前 confidence 无关。
+            historyLength += round(clamp(history.a * 255.0, 0.0, 255.0)) * weight;
             historyMoments += texelFetch(inputHistoryMoments, coord, 0).xy * weight;
             historyWeight += weight;
         }
@@ -115,8 +111,7 @@ void main()
         historyLength /= historyWeight;
         historyMoments /= historyWeight;
     }
-    bool receiverTransport=tileGI[center].a<0.0;
-    float confidence = clamp(receiverTransport ? -tileGI[center].a-1.0 : tileGI[center].a, 0.0, 1.0);
+    float confidence = clamp(tileGI[center].a, 0.0, 1.0);
     float motionPenalty = clamp(length(motion * screenSize.xy) / 8.0, 0.0, 1.0);
     float blend = valid ? max(1.0 / (historyLength + 1.0),
         mix(0.06, 0.04, confidence) + motionPenalty * 0.06) : 1.0;
@@ -124,13 +119,12 @@ void main()
     float luminance = min(Luminance(max(tileGI[center].rgb, vec3(0.0))), 255.0);
     vec2 moments = vec2(luminance, luminance * luminance);
     if (valid) moments = mix(historyMoments, moments, blend);
-    float temporalSigma = sqrt(max(moments.y - moments.x * moments.x, 0.0));
-    // 缓存相关噪声可使空间 sigma 为零；历史方差仍应允许时间积分。
-    vec3 radius = max(sigma * 1.5, vec3(temporalSigma * 1.5));
-    if (valid) historyColor = clamp(historyColor, max(mean - radius, vec3(0.0)), mean + radius);
+    // Raw 来自低采样缓存，同一亮块的邻域不是独立样本。按当前邻域裁剪
+    // 历史会把偶发高亮写入整块历史，产生偏亮的马赛克。表面验证通过后
+    // 使用原有权重累计；显露/材质变化由历史验证拒绝，灯光突变由帧重置处理。
     vec3 accumulated = valid ? mix(historyColor, mean, blend) : mean;
     float newLength = valid ? min(historyLength + 1.0, 255.0) : 1.0;
-    imageStore(outputAccumulatedGI, id, vec4(accumulated, (receiverTransport ? -1.0 : 1.0)*newLength / 255.0));
+    imageStore(outputAccumulatedGI, id, vec4(accumulated, newLength / 255.0));
     imageStore(outputMoments, id, vec4(moments.x, max(moments.y, moments.x * moments.x), 0.0, 0.0));
     imageStore(outputSurface, id, SSGI_EncodeSurface(position.xyz, normal, material));
 }

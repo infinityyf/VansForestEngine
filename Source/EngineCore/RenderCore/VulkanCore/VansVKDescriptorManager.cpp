@@ -3,6 +3,8 @@
 #include "../../Util/VansLog.h"
 #include <iostream>
 #include <unordered_map>
+#include <algorithm>
+#include <numeric>
 
 VansGraphics::VansVKDescriptorManager* VansGraphics::VansVKDescriptorManager::instance = nullptr;
 
@@ -35,6 +37,7 @@ bool VansGraphics::VansVKDescriptorManager::CreateDescriptorPoolHandle(VkDescrip
 
 bool VansGraphics::VansVKDescriptorManager::UsesUpdateAfterBindPool(const std::vector<VkDescriptorSetLayout>& descriptorSetLayouts) const
 {
+	std::lock_guard<std::mutex> lock(m_LayoutMutex);
 	for (VkDescriptorSetLayout layout : descriptorSetLayouts)
 	{
 		if (m_UpdateAfterBindLayouts.find(layout) != m_UpdateAfterBindLayouts.end())
@@ -109,11 +112,14 @@ void VansGraphics::VansVKDescriptorManager::CreateDescriptorPool(bool free_indiv
 
 VansGraphics::VansDescriptorPoolDiagnostics VansGraphics::VansVKDescriptorManager::GetDiagnostics() const
 {
+	std::lock_guard<std::mutex> lock(m_LayoutMutex);
 	VansDescriptorPoolDiagnostics diagnostics{};
 	diagnostics.standardPoolCount = static_cast<uint32_t>(m_DescriptorPools.size());
 	diagnostics.updateAfterBindPoolCount = static_cast<uint32_t>(m_UpdateAfterBindDescriptorPools.size());
 	diagnostics.trackedDescriptorSetCount = static_cast<uint32_t>(m_DescriptorSetPools.size());
 	diagnostics.updateAfterBindLayoutCount = static_cast<uint32_t>(m_UpdateAfterBindLayouts.size());
+	diagnostics.sharedLayoutCount = static_cast<uint32_t>(m_SharedLayouts.size());
+	diagnostics.layoutCacheHits = m_LayoutCacheHits;
 	for (const auto& descriptorRole : m_DescriptorSetRoles)
 	{
 		switch (descriptorRole.second)
@@ -174,6 +180,7 @@ bool VansGraphics::VansVKDescriptorManager::ResetDescriptorPool()
 
 void VansGraphics::VansVKDescriptorManager::DestroyDescriptorPool()
 {
+	std::lock_guard<std::mutex> lock(m_LayoutMutex);
 	for (VkDescriptorPool descriptorPool : m_UpdateAfterBindDescriptorPools)
 	{
 		if (descriptorPool != VK_NULL_HANDLE)
@@ -195,37 +202,18 @@ void VansGraphics::VansVKDescriptorManager::DestroyDescriptorPool()
 	m_UpdateAfterBindLayouts.clear();
 	m_DescriptorSetPools.clear();
 	m_DescriptorSetRoles.clear();
+	// 此处沿用设备关闭时已等待 GPU、释放管线的边界，只销毁一次共享布局。
+	for (const auto& entry : m_SharedLayouts)
+		VansGraphics::vkDestroyDescriptorSetLayout(m_LogicalDevice, entry.second, nullptr);
+	m_SharedLayouts.clear();
+	m_SharedLayoutHandles.clear();
+	m_LayoutCacheHits = 0;
 }
 
 
 bool VansGraphics::VansVKDescriptorManager::CreateDesciptorSetLayout(const std::vector<VkDescriptorSetLayoutBinding>& bindings, VkDescriptorSetLayout& descriptor_set_layout)
 {
-	//每一个资源都需要被一个descriptor set包含
-	//这里记录了梭有的bingding信息，binding point 和类型
-	//VkDescriptorSetLayoutBinding bindings = 
-	//{
-	//	0,
-	//	VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-	//	1,
-	//	VK_SHADER_STAGE_VERTEX_BIT,
-	//	nullptr
-	//};
-	VkDescriptorSetLayoutCreateInfo descriptor_set_layout_create_info = 
-	{
-		 VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-		 nullptr,
-		 0,
-		 static_cast<uint32_t>(bindings.size()),
-		 bindings.data()
-	};
-
-	VkResult result = VansGraphics::vkCreateDescriptorSetLayout(m_LogicalDevice, &descriptor_set_layout_create_info, nullptr, &descriptor_set_layout);
-	if (VK_SUCCESS != result) 
-	{
-		VANS_LOG_ERROR("Could not create a layout for descriptor sets.");
-		return false;
-	}
-	return true;
+	return CreateDesciptorSetLayoutWithFlags(bindings, {}, 0, descriptor_set_layout);
 }
 
 bool VansGraphics::VansVKDescriptorManager::CreateDesciptorSetLayoutWithFlags(
@@ -234,7 +222,35 @@ bool VansGraphics::VansVKDescriptorManager::CreateDesciptorSetLayoutWithFlags(
 	VkDescriptorSetLayoutCreateFlags                 layoutFlags,
 	VkDescriptorSetLayout&                           descriptor_set_layout)
 {
-	// bindingFlags 长度须与 bindings 一致
+	descriptor_set_layout = VK_NULL_HANDLE;
+	if (!bindingFlags.empty() && bindingFlags.size() != bindings.size()) return false;
+	std::lock_guard<std::mutex> lock(m_LayoutMutex);
+	std::vector<size_t> order(bindings.size());
+	std::iota(order.begin(), order.end(), size_t(0));
+	std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return bindings[a].binding < bindings[b].binding; });
+	std::vector<uint64_t> key{layoutFlags, static_cast<uint64_t>(bindings.size())};
+	bool shareable = true;
+	for (size_t n = 0; n < order.size(); ++n)
+	{
+		const size_t i = order[n];
+		const auto& binding = bindings[i];
+		if (n && binding.binding == bindings[order[n-1]].binding) return false;
+		key.insert(key.end(), {binding.binding, static_cast<uint64_t>(binding.descriptorType),
+			binding.descriptorCount, binding.stageFlags, bindingFlags.empty() ? 0u : bindingFlags[i]});
+		// immutable sampler 由调用方管理寿命，含此类引用的布局随调用方释放。
+		if (binding.pImmutableSamplers && binding.descriptorCount) shareable = false;
+	}
+	if (shareable)
+	{
+		const auto found = m_SharedLayouts.find(key);
+		if (found != m_SharedLayouts.end())
+		{
+			descriptor_set_layout = found->second;
+			++m_LayoutCacheHits;
+			return true;
+		}
+	}
+	// flags 与各 binding 成对参与完整结构比较，不把不同 bindless 语义合并。
 	VkDescriptorSetLayoutBindingFlagsCreateInfo flagsInfo{};
 	flagsInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
 	flagsInfo.bindingCount = static_cast<uint32_t>(bindingFlags.size());
@@ -242,7 +258,7 @@ bool VansGraphics::VansVKDescriptorManager::CreateDesciptorSetLayoutWithFlags(
 
 	VkDescriptorSetLayoutCreateInfo layoutCI{};
 	layoutCI.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutCI.pNext        = &flagsInfo;
+	layoutCI.pNext        = bindingFlags.empty() ? nullptr : &flagsInfo;
 	layoutCI.flags        = layoutFlags;
 	layoutCI.bindingCount = static_cast<uint32_t>(bindings.size());
 	layoutCI.pBindings    = bindings.data();
@@ -257,15 +273,24 @@ bool VansGraphics::VansVKDescriptorManager::CreateDesciptorSetLayoutWithFlags(
 	{
 		m_UpdateAfterBindLayouts.insert(descriptor_set_layout);
 	}
+	if (shareable)
+	{
+		m_SharedLayouts.emplace(std::move(key), descriptor_set_layout);
+		m_SharedLayoutHandles.insert(descriptor_set_layout);
+	}
 	return true;
 }
 
-void VansGraphics::VansVKDescriptorManager::DestroyDescriptorSetLayout(VkDescriptorSetLayout& descriptor_set_layout)
+void VansGraphics::VansVKDescriptorManager::ReleaseDescriptorSetLayout(VkDescriptorSetLayout& descriptor_set_layout)
 {
+	std::lock_guard<std::mutex> lock(m_LayoutMutex);
 	if (VK_NULL_HANDLE != descriptor_set_layout) 
 	{
-		m_UpdateAfterBindLayouts.erase(descriptor_set_layout);
-		VansGraphics::vkDestroyDescriptorSetLayout(m_LogicalDevice, descriptor_set_layout, nullptr);
+		if (m_SharedLayoutHandles.count(descriptor_set_layout) == 0)
+		{
+			m_UpdateAfterBindLayouts.erase(descriptor_set_layout);
+			VansGraphics::vkDestroyDescriptorSetLayout(m_LogicalDevice, descriptor_set_layout, nullptr);
+		}
 		descriptor_set_layout = VK_NULL_HANDLE;
 	}
 }

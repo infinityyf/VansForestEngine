@@ -20,7 +20,7 @@ namespace Vans::EditorAPI
 	{
 		Entry, Output, Clip, Blend, Blend1D, IfCondition, Switch, AdditiveBlend,
 		SpeedScale, StateMachine, MotionMatching, Slot, TargetPoseInput, Goal,
-		AimConstraint, Grounding, LimbIK, ChainIK
+		AimConstraint, Grounding, LimbIK, ChainIK, PoseCheckpoint, RotationDistribution
 	};
 	enum class AnimGraphPinType { Pose, Float, Bool, Int };
 	enum class AnimGraphPinKind { Input, Output };
@@ -106,8 +106,10 @@ namespace Vans::EditorAPI
 		float fixedRotationWeight = 0.0f;
 	};
 
+	enum class AnimationAimConstraintMode { LookAtPoint, LookAtDirection, PitchOffset };
 	struct AnimationAimConstraintSettingsDTO
 	{
+		AnimationAimConstraintMode mode = AnimationAimConstraintMode::LookAtPoint;
 		float minYawDegrees = -85.0f;
 		float maxYawDegrees = 85.0f;
 		float minPitchDegrees = -45.0f;
@@ -220,10 +222,17 @@ namespace Vans::EditorAPI
 		bool m_EnableFallbackInput = true;
 		std::string m_SlotId;
 
+		std::string m_CheckpointId;
+		std::vector<std::string> m_CheckpointBones;
 		AnimationGoalDefinitionDTO m_Goal;
 		AnimationGoalDefinitionDTO m_Target;
+		std::string m_DirectionParameter;
+		std::string m_DirectionWeightParameter;
+		bool m_DirectionIsWorldSpace = true;
+		std::string m_PivotBone;
 		std::string m_ChainId;
 		std::vector<std::string> m_ChainIds;
+		std::string m_RotationProfileId;
 		AnimationAimConstraintSettingsDTO m_AimSettings;
 		float m_TargetHalfLife = 0.08f;
 		AnimationGroundingSettingsDTO m_GroundingSettings;
@@ -453,6 +462,8 @@ namespace Vans::EditorAPI
 		case AnimGraphNodeType::Grounding: return "Grounding";
 		case AnimGraphNodeType::LimbIK: return "LimbIK";
 		case AnimGraphNodeType::ChainIK: return "ChainIK";
+		case AnimGraphNodeType::RotationDistribution: return "RotationDistribution";
+		case AnimGraphNodeType::PoseCheckpoint: return "PoseCheckpoint";
 		}
 		return "Unknown";
 	}
@@ -492,6 +503,8 @@ namespace Vans::EditorAPI
 		case AnimGraphNodeType::AimConstraint:
 		case AnimGraphNodeType::Grounding:
 		case AnimGraphNodeType::LimbIK:
+		case AnimGraphNodeType::RotationDistribution:
+		case AnimGraphNodeType::PoseCheckpoint:
 		case AnimGraphNodeType::ChainIK: return { input(0, "Pose"), output(0, "Pose") };
 		case AnimGraphNodeType::StateMachine: return { output(0, "Pose") };
 		case AnimGraphNodeType::MotionMatching:

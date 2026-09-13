@@ -1,6 +1,7 @@
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include "VansGizmos.h"
 #include "VansEditorWindow.h"
+#include "Windows/VansParticleDebugWindow.h"
 #include "VansEditorSelection.h"
 #include "VansScenePickingService.h"
 #include "VansSceneEditService.h"
@@ -314,6 +315,10 @@ void VansGizmos::Draw(Vans::EditorAPI::IEngineEditorAPI& api,
                 drawObb(node);
         }
     }
+
+    if (VansEditorWindow::m_ParticleDebugWindow)
+        VansEditorWindow::m_ParticleDebugWindow->DrawSceneOverlay(api,
+            camera->GetProjectiveMatrix() * camera->GetViewMatrix(), windowPos, windowSize);
 
     if (VansEditorWindow::m_SkeletonDebugGizmos)
     {

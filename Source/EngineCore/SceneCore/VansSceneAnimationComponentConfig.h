@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../AnimationCore/MotionMatching/VansMotionMatching.h"
+#include "../AnimationCore/Procedural/VansProceduralTypes.h"
 
 #include <optional>
 #include <string>
@@ -31,6 +32,7 @@ namespace Vans
 		std::string meshGroup;
 		std::string animatorGuid;
 		std::string rigGuid;
+		std::vector<VansGraphics::VansAnimationTargetBinding> targetBindings;
 		std::string externClips;
 		bool rootMotion = false;
 		bool autoPlay = true;

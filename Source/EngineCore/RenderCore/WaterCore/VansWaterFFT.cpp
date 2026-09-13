@@ -194,10 +194,10 @@ void VansWaterFFT::Shutdown(VkDevice logicDevice)
 {
     auto* descMgr = VansVKDescriptorManager::GetInstance();
 
-    if (m_InitLayout != VK_NULL_HANDLE) { descMgr->DestroyDescriptorSetLayout(m_InitLayout); m_InitLayout = VK_NULL_HANDLE; }
-    if (m_EvolveLayout != VK_NULL_HANDLE) { descMgr->DestroyDescriptorSetLayout(m_EvolveLayout); m_EvolveLayout = VK_NULL_HANDLE; }
-    if (m_IterLayout != VK_NULL_HANDLE) { descMgr->DestroyDescriptorSetLayout(m_IterLayout); m_IterLayout = VK_NULL_HANDLE; }
-    if (m_ExtractLayout != VK_NULL_HANDLE) { descMgr->DestroyDescriptorSetLayout(m_ExtractLayout); m_ExtractLayout = VK_NULL_HANDLE; }
+    if (m_InitLayout != VK_NULL_HANDLE) { descMgr->ReleaseDescriptorSetLayout(m_InitLayout); m_InitLayout = VK_NULL_HANDLE; }
+    if (m_EvolveLayout != VK_NULL_HANDLE) { descMgr->ReleaseDescriptorSetLayout(m_EvolveLayout); m_EvolveLayout = VK_NULL_HANDLE; }
+    if (m_IterLayout != VK_NULL_HANDLE) { descMgr->ReleaseDescriptorSetLayout(m_IterLayout); m_IterLayout = VK_NULL_HANDLE; }
+    if (m_ExtractLayout != VK_NULL_HANDLE) { descMgr->ReleaseDescriptorSetLayout(m_ExtractLayout); m_ExtractLayout = VK_NULL_HANDLE; }
 
     if (m_ParamsBufferCreated)
     {

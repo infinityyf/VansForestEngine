@@ -15,6 +15,7 @@
 #include "../GameplayActionSchema/VansGameplayAssetSchema.h"
 #include "../NavigationCore/VansNavigationMesh.h"
 #include "../PhysicsCore/VansRagdollTypes.h"
+#include "../ParticleCore/VansParticleAsset.h"
 #include "../RuntimeUI/Serialization/VansUIAssetDocument.h"
 #include "../SceneCore/VansSceneSchema.h"
 #include "../SceneCore/VansSceneLocalVolumetricFogComponentConfig.h"
@@ -324,6 +325,45 @@ namespace
 				if (before.find(dependency) == before.end()) pending.push_back(dependency);
 		}
 	}
+
+    void ExpandParticleDependencies(
+        const std::unordered_map<std::string,VansAssetRecord>& records,
+        const VansAssetObjectRepository& repository, VansSceneAssetDependencyBuildResult& result)
+    {
+        std::deque<std::string> pending(result.requiredAssets.begin(),result.requiredAssets.end());
+        std::unordered_set<std::string> expanded;
+        while (!pending.empty())
+        {
+            auto guid=std::move(pending.front()); pending.pop_front();
+            if (!expanded.insert(guid).second) continue;
+            const auto found=records.find(guid);
+            if (found==records.end()) continue;
+            const auto& record=found->second;
+            if (record.type==VansAssetType::Particle)
+            {
+                const auto asset=repository.ResolveLatest<VansGraphics::VansParticleAsset>(record.guid);
+                if (!asset) { AppendDependencyError(result,"Particle asset has no memory object: "+guid); continue; }
+                for (const auto& texture : asset->TextureDependencies())
+                {
+                    const auto textureRecord=records.find(texture.ToString());
+                    if (textureRecord==records.end() || textureRecord->second.type!=VansAssetType::Texture || textureRecord->second.state==VansAssetState::Missing)
+                        AppendDependencyError(result,"Particle "+guid+" requires a registered texture: "+texture.ToString());
+                    else { result.requiredTextures.insert(texture.ToString()); result.requiredAssets.insert(texture.ToString()); }
+                }
+            }
+            else if (VansGameplayAssetSchemaRegistry::IsGameplayAssetType(record.type))
+            {
+                VansAssetObjectSnapshotInfo info;
+                if (!repository.FindInfo(record.guid,info)) { AppendDependencyError(result,"Gameplay asset has no memory dependency snapshot: "+guid); continue; }
+                for (const auto& dependency : info.dependencies)
+                {
+                    const auto child=records.find(dependency.ToString());
+                    if (child!=records.end() && (child->second.type==VansAssetType::Particle || VansGameplayAssetSchemaRegistry::IsGameplayAssetType(child->second.type)))
+                    { result.requiredAssets.insert(child->first); pending.push_back(child->first); }
+                }
+            }
+        }
+    }
 
 	void CollectMaterialTextureDependencies(
 		VansAssetDatabase& database,
@@ -1029,6 +1069,9 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 	}
 	if (!result.errors.empty())
 		return result;
+
+    ExpandParticleDependencies(assetRecordsByGuid, objectRepository, result);
+    if (!result.errors.empty()) return result;
 
 	for (const VansAssetRecord& record : database.All())
 	{

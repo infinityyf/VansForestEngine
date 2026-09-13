@@ -6,7 +6,7 @@
 #extension GL_EXT_nonuniform_qualifier : require
 #include "../Common/Common.glsl"
 #define GI_RECEIVER_MESH_SET 0
-#include "../GI/GIReceiverTransportMesh.glsl"
+#include "../GI/GIReceiverGeometry.glsl"
 #define GI_INSTANCE_MATERIAL_SET 0
 #include "../GI/GIInstanceMaterial.glsl"
 layout(set=0,binding=50) uniform sampler2D PBRTextures[];

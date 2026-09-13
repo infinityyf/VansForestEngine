@@ -26,6 +26,8 @@ namespace Vans::EditorAPI
 		virtual ProjectBrowserRootSnapshot GetProjectBrowserRoot() const = 0;
 		virtual AssetDragPayload CreateAssetDragPayload(const std::string& assetPath) = 0;
 		virtual AssetGuidResolution ResolveAssetGuid(const std::string& assetGuid) const = 0;
+        virtual ParticleDiagnosticsSnapshot GetParticleDiagnostics(bool includePoints = false) const = 0;
+        virtual ParticleAuthoringSchemaSnapshot GetParticleAuthoringSchema() const = 0;
 		virtual ShaderAuthoringSchemaSnapshot GetShaderAuthoringSchema(
 			const std::string& shaderAssetGuid) const = 0;
 		virtual LocalFogFieldPreviewSnapshot GetLocalFogFieldPreview(
@@ -147,6 +149,7 @@ namespace Vans::EditorAPI
 		virtual SceneSkeletonNodePoseSnapshot GetSceneSkeletonNodePose(
 			const SceneSkeletonNodePoseRequest& request) const = 0;
 		virtual SkeletonDebugSnapshot GetSkeletonDebugSnapshot(const std::string& entityGuidFilter) const = 0;
+		virtual ParticleDebugSnapshot GetParticleDebugSnapshot() const = 0;
 		virtual AssetSkeletonSnapshot GetAssetSkeletonSnapshot(const std::string& assetGuid) const = 0;
 		virtual AnimatorDocumentDecodeResult DecodeAnimatorDocument(
 			const std::string& canonicalJson) const = 0;
@@ -181,10 +184,13 @@ namespace Vans::EditorAPI
 			QueryAnimationPreviewSceneEntities(AnimationPreviewSessionId sessionId) const = 0;
 		virtual AnimationRigDocumentDecodeResult GetAnimationPreviewWorkingRigDocument(
 			AnimationPreviewSessionId sessionId) const = 0;
+		virtual AnimationPreviewRigEditResult SetAnimationPreviewRigDefinition(const AnimationPreviewRigDefinitionRequest& request) = 0;
 		virtual AnimationPreviewRigEditResult SetAnimationPreviewRigSocketTransform(
 			const AnimationPreviewRigSocketTransformRequest& request) = 0;
 		virtual AnimationPreviewRigEditResult SetAnimationPreviewRigAttachmentProfile(
 			const AnimationPreviewRigAttachmentProfileRequest& request) = 0;
+		virtual AnimationPreviewRigEditResult SetAnimationPreviewTargetBindings(const AnimationPreviewTargetBindingsRequest& request) = 0;
+		virtual bool AdoptAnimationPreviewSceneChanges(const AnimationPreviewSceneAdoptRequest& request) = 0;
 		virtual AnimationPreviewAttachmentEditResult SetAnimationPreviewAttachmentTransform(
 			const AnimationPreviewAttachmentTransformRequest& request) = 0;
 		virtual AnimationPreviewAttachmentEditResult SetAnimationPreviewAttachmentBinding(

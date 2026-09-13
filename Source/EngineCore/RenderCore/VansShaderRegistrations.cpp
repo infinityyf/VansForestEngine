@@ -242,6 +242,28 @@ void RegisterEngineShaders()
         16, true
     });
 
+    VansGraphics::VansShaderEntry ribbon{
+        "ParticleRibbon", "EngineAssets/Shaders/ParticleRibbon",
+        VK_TRUE, VK_FALSE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
+        16, true
+    };
+    ribbon.explicitStageFiles = {
+        { VK_SHADER_STAGE_VERTEX_BIT, "ParticleRibbon.vert" },
+        { VK_SHADER_STAGE_FRAGMENT_BIT, "ParticleRibbon.frag" },
+    };
+    reg.RegisterGraphicsShader("ParticleRibbon", std::move(ribbon));
+    // 软交界按资产选择独立程序；关闭时不声明场景深度采样器。
+    VansGraphics::VansShaderEntry ribbonSoft{
+        "ParticleRibbonSoft", "EngineAssets/Shaders/ParticleRibbon",
+        VK_TRUE, VK_FALSE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
+        16, true
+    };
+    ribbonSoft.explicitStageFiles = {
+        { VK_SHADER_STAGE_VERTEX_BIT, "ParticleRibbon.vert" },
+        { VK_SHADER_STAGE_FRAGMENT_BIT, "ParticleRibbonSoft.frag" },
+    };
+    reg.RegisterGraphicsShader("ParticleRibbonSoft", std::move(ribbonSoft));
+
     // Six-way smoke lighting particle shader.
     // - Keeps the regular transparent particle render state.
     // - Set 1 binds positive/negative axis lightmaps.
@@ -337,7 +359,6 @@ void RegisterEngineShaders()
     reg.RegisterComputeShader("GIReceiverVisibilityWorldCache", "EngineAssets/Shaders/GIReceiverVisibilityWorldCache", 32);
     reg.RegisterRayTracingShader("GIReceiverBias", "EngineAssets/Shaders/GIReceiverBias");
     reg.RegisterRayTracingShader("GIReceiverVisibilityTrace", "EngineAssets/Shaders/GIReceiverVisibilityTrace");
-    reg.RegisterRayTracingShader("GIReceiverTransport", "EngineAssets/Shaders/GIReceiverTransport", 16);
     reg.RegisterComputeShader("SSGITemporal", "EngineAssets/Shaders/SSGITemporal");
     reg.RegisterComputeShader("SSGIAtrous", "EngineAssets/Shaders/SSGIAtrous", sizeof(VansGraphics::SSGIAtrousPushConstants));
     reg.RegisterComputeShader("HIZ", "EngineAssets/Shaders/HIZ");

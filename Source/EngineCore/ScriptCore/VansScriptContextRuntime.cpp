@@ -345,18 +345,6 @@ Vans::VansComponentHandle ResolveRuntimeComponentHandle(
 	return handle;
 }
 
-Vans::VansRuntimeParticleComponent* RuntimeParticleComponent(LuaComponentUserdata* handle)
-{
-	if (!handle || handle->runtimeComponent.typeId != Vans::VansRuntimeComponentType_Particle)
-		return nullptr;
-	auto* scene = Scene();
-	auto* runtimeWorld = scene ? scene->GetRuntimeWorld() : nullptr;
-	if (!runtimeWorld || !runtimeWorld->GetComponentHeader(handle->runtimeComponent))
-		return nullptr;
-	auto* storage = static_cast<Vans::VansComponentStorage<Vans::VansRuntimeParticleComponent>*>(
-		runtimeWorld->FindStorage(Vans::VansRuntimeComponentType_Particle));
-	return storage ? storage->Get(handle->runtimeComponent) : nullptr;
-}
 
 void SyncRuntimeAudioComponent(VansScriptAudioComponent* audio)
 {
@@ -649,6 +637,7 @@ int LuaObjectReparentToSocket(lua_State* L)
 			"reparent_to_socket mode must be keep_local, keep_world, or snap");
 
 	Vans::VansSceneParentReference parent;
+	parent.poseCheckpoint = luaL_optstring(L, 6, "");
 	parent.kind = Vans::VansSceneParentKind::Socket;
 	const bool validReference = owner
 		&& Vans::VansAssetGuid::TryParse(owner->m_EntityGuid, parent.entityGuid)
@@ -669,6 +658,7 @@ int LuaObjectBindToSocketProfile(lua_State* L)
 	const char* socketGuid = luaL_checkstring(L, 4);
 
 	Vans::VansSceneParentReference parent;
+	parent.poseCheckpoint = luaL_optstring(L, 5, "");
 	parent.kind = Vans::VansSceneParentKind::Socket;
 	const bool validReference = owner
 		&& Vans::VansAssetGuid::TryParse(owner->m_EntityGuid, parent.entityGuid)
@@ -679,6 +669,35 @@ int LuaObjectBindToSocketProfile(lua_State* L)
 		&& scene->BindEntityToAnimationAttachmentProfileByGuid(
 			child->m_EntityGuid, parent);
 	lua_pushboolean(L, bound);
+	return 1;
+}
+
+int LuaObjectGetGuid(lua_State* L)
+{
+	auto* object = ResolveObject(CheckObject(L, 1));
+	lua_pushstring(L, object ? object->m_EntityGuid.c_str() : "");
+	return 1;
+}
+
+int LuaObjectGetParent(lua_State* L)
+{
+	auto* object = ResolveObject(CheckObject(L, 1));
+	auto* scene = Scene();
+	auto* world = scene ? scene->GetRuntimeWorld() : nullptr;
+	const auto* record = object && world ? world->Entities().Get(world->Entities().FindByGuid(object->m_EntityGuid)) : nullptr;
+	const auto* parent = record ? world->Entities().Get(record->parent) : nullptr;
+	PushObject(L, parent ? scene->FindObjectByGuid(parent->stableGuid) : nullptr);
+	return 1;
+}
+
+int LuaFindEntity(lua_State* L)
+{
+	const auto index = luaL_checkinteger(L, 1), generation = luaL_checkinteger(L, 2);
+	auto* scene = Scene();
+	auto* world = scene ? scene->GetRuntimeWorld() : nullptr;
+	const auto* entity = world && index >= 0 && index < UINT32_MAX && generation > 0 && generation <= UINT32_MAX
+		? world->Entities().Get({static_cast<uint32_t>(index), static_cast<uint32_t>(generation)}) : nullptr;
+	PushObject(L, entity ? scene->FindObjectByGuid(entity->stableGuid) : nullptr);
 	return 1;
 }
 
@@ -964,10 +983,7 @@ int LuaComponentIsPlaying(lua_State* L)
 		value = video->m_VideoTex && video->m_VideoTex->IsPlaying();
 	else if (auto* particle = dynamic_cast<VansScriptParticleComponent*>(component))
 	{
-		if (auto* runtimeParticle = RuntimeParticleComponent(handle))
-			value = runtimeParticle->isPlaying;
-		else
-			value = particle->m_IsPlaying;
+		value = particle->IsPlaying();
 	}
 	lua_pushboolean(L, value);
 	return 1;
@@ -984,10 +1000,7 @@ int LuaComponentIsPaused(lua_State* L)
 		value = video->m_VideoTex && video->m_VideoTex->IsReady() && !video->m_VideoTex->IsPlaying();
 	else if (auto* particle = dynamic_cast<VansScriptParticleComponent*>(component))
 	{
-		if (auto* runtimeParticle = RuntimeParticleComponent(handle))
-			value = runtimeParticle->runtime != nullptr && !runtimeParticle->isPlaying;
-		else
-			value = particle->m_Runtime != nullptr && !particle->m_IsPlaying;
+		value = particle->GetRuntime() != nullptr && !particle->IsPlaying();
 	}
 	lua_pushboolean(L, value);
 	return 1;
@@ -1968,6 +1981,25 @@ int LuaComponentGetResolvedForward(lua_State* L)
 	return 2;
 }
 
+int LuaComponentGetResolvedViewForward(lua_State* L)
+{
+	auto* camera = dynamic_cast<VansScriptCameraComponent*>(CheckComponent(L, 1)->component);
+	auto* scene = Scene();
+	VansGraphics::VansCameraControlPose pose;
+	const bool resolved = camera && camera->m_Camera && scene && scene->GetCamera() == camera->m_Camera &&
+		scene->CameraControlArbiter().GetLastResolvedPose(pose);
+	glm::vec3 forward(0.0f);
+	if (resolved)
+	{
+		const auto angles = glm::radians(pose.rotationDegrees);
+		forward = glm::vec3(std::cos(angles.y) * std::cos(angles.x), std::sin(angles.x),
+			std::sin(angles.y) * std::cos(angles.x));
+	}
+	PushVec3(L, forward);
+	lua_pushboolean(L, resolved);
+	return 2;
+}
+
 int LuaComponentWorldToViewport(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
@@ -2368,6 +2400,14 @@ int LuaComponentSetWorldPosition(lua_State* L)
 	return 0;
 }
 
+int LuaComponentStopEmitting(lua_State* L)
+{
+    auto* particle = dynamic_cast<VansScriptParticleComponent*>(CheckComponent(L,1)->component);
+    lua_pushboolean(L, particle && particle->Control(lua_toboolean(L,2)
+        ? VansParticleControl::DetachAndDrain : VansParticleControl::StopEmitting));
+    return 1;
+}
+
 int LuaComponentClearWorldPosition(lua_State* L)
 {
 	auto* component = CheckComponent(L, 1)->component;
@@ -2382,10 +2422,7 @@ int LuaComponentGetPlayTime(lua_State* L)
 	auto* component = handle->component;
 	if (auto* particle = dynamic_cast<VansScriptParticleComponent*>(component))
 	{
-		if (auto* runtimeParticle = RuntimeParticleComponent(handle))
-			lua_pushnumber(L, runtimeParticle->playTime);
-		else
-			lua_pushnumber(L, particle->m_PlayTime);
+		lua_pushnumber(L, particle->GetPlayTime());
 	}
 	else
 		lua_pushnumber(L, 0.0f);
@@ -2411,14 +2448,10 @@ int LuaComponentSetAssetGuid(lua_State* L)
 	return 1;
 }
 
-VansGraphics::VansParticleEmitter* GetParticleEmitterAt(VansScriptParticleComponent* particle, lua_Integer index)
+VansGraphics::VansParticleEmitterRuntime* GetParticleEmitterAt(VansScriptParticleComponent* particle, lua_Integer index)
 {
-	if (!particle || !particle->m_ParticleAsset || index < 0)
-		return nullptr;
-	const auto& emitters = particle->m_ParticleAsset->m_Emitters;
-	if (static_cast<std::size_t>(index) >= emitters.size())
-		return nullptr;
-	return emitters[static_cast<std::size_t>(index)].get();
+	return particle && particle->GetRuntime() && index >= 0
+        ? particle->GetRuntime()->GetEmitter(static_cast<std::size_t>(index)) : nullptr;
 }
 
 int LuaComponentGetEmitterCount(lua_State* L)
@@ -2436,7 +2469,7 @@ int LuaComponentGetEmitterName(lua_State* L)
 	auto* component = CheckComponent(L, 1)->component;
 	auto* particle = dynamic_cast<VansScriptParticleComponent*>(component);
 	auto* emitter = GetParticleEmitterAt(particle, luaL_checkinteger(L, 2));
-	lua_pushstring(L, emitter ? emitter->m_Name.c_str() : "");
+	lua_pushstring(L, emitter ? emitter->Definition().m_Name.c_str() : "");
 	return 1;
 }
 
@@ -2450,8 +2483,8 @@ int LuaComponentGetAliveCount(lua_State* L)
 		lua_pushinteger(L, emitter ? static_cast<lua_Integer>(emitter->m_ParticlePool.m_AliveCount) : 0);
 		return 1;
 	}
-	lua_pushinteger(L, particle && particle->m_Runtime
-		? static_cast<lua_Integer>(particle->m_Runtime->m_AliveInstanceCount.load(std::memory_order_acquire))
+	lua_pushinteger(L, particle && particle->GetRuntime()
+		? static_cast<lua_Integer>(particle->GetRuntime()->m_AliveInstanceCount.load(std::memory_order_acquire))
 		: 0);
 	return 1;
 }
@@ -2463,7 +2496,7 @@ int LuaComponentGetMaxCount(lua_State* L)
 	if (lua_gettop(L) >= 2)
 	{
 		auto* emitter = GetParticleEmitterAt(particle, luaL_checkinteger(L, 2));
-		lua_pushinteger(L, emitter ? static_cast<lua_Integer>(emitter->m_MaxParticles) : 0);
+		lua_pushinteger(L, emitter ? static_cast<lua_Integer>(emitter->Definition().m_MaxParticles) : 0);
 		return 1;
 	}
 	lua_Integer total = 0;
@@ -2473,6 +2506,25 @@ int LuaComponentGetMaxCount(lua_State* L)
 			if (emitter) total += static_cast<lua_Integer>(emitter->m_MaxParticles);
 	}
 	lua_pushinteger(L, total);
+	return 1;
+}
+
+// 按需读取单个存活粒子，供脚本验证世界位置和可见性；不复制整个粒子池。
+int LuaComponentGetParticleSample(lua_State* L)
+{
+	auto* particle = dynamic_cast<VansScriptParticleComponent*>(CheckComponent(L, 1)->component);
+	const auto* emitter = GetParticleEmitterAt(particle, luaL_checkinteger(L, 2));
+	const auto index = luaL_checkinteger(L, 3);
+	if (!emitter || index < 0 || static_cast<uint64_t>(index) >= emitter->m_ParticlePool.m_AliveCount)
+	{ lua_pushnil(L); return 1; }
+	const auto& pool = emitter->m_ParticlePool;
+	lua_newtable(L);
+	PushVec3(L, pool.m_Position[index]); lua_setfield(L, -2, "position");
+	PushVec3(L, pool.m_Velocity[index]); lua_setfield(L, -2, "velocity");
+	lua_pushnumber(L, pool.m_Size[index]); lua_setfield(L, -2, "size");
+	lua_pushnumber(L, pool.m_Color[index].a); lua_setfield(L, -2, "alpha");
+	lua_pushnumber(L, pool.m_Age[index]); lua_setfield(L, -2, "age");
+	lua_pushnumber(L, pool.m_LifeTime[index]); lua_setfield(L, -2, "lifetime");
 	return 1;
 }
 
@@ -2490,8 +2542,8 @@ int LuaComponentSetEmitterEnabled(lua_State* L)
 	auto* component = CheckComponent(L, 1)->component;
 	auto* particle = dynamic_cast<VansScriptParticleComponent*>(component);
 	auto* emitter = GetParticleEmitterAt(particle, luaL_checkinteger(L, 2));
-	if (emitter)
-		emitter->m_Enabled = lua_toboolean(L, 3) != 0;
+    if (emitter) particle->Control(VansParticleControl::EmitterEnabled,
+        lua_toboolean(L, 3) ? 1.0f : 0.0f, static_cast<uint32_t>(luaL_checkinteger(L, 2)));
 	return 0;
 }
 
@@ -2540,6 +2592,46 @@ int LuaFindObject(lua_State* L)
 }
 
 // 按需只读快照，供运行时诊断和回归；正常游戏帧不复制池数据。
+int LuaParticleDiagnostics(lua_State* L)
+{
+    const auto* scene = Scene();
+    const auto snapshot = scene ? scene->CaptureParticleDiagnostics(lua_toboolean(L,1)) : VansSceneParticleDiagnostics{};
+    lua_newtable(L);
+    const auto number = [&](const char* name,double value) { lua_pushnumber(L,value); lua_setfield(L,-2,name); };
+    number("active_instances",snapshot.activeInstances); number("point_capacity",snapshot.pointCapacity);
+    number("rejected_instances",snapshot.rejectedInstances); number("simulation_ms",snapshot.simulationMilliseconds); number("wait_ms",snapshot.waitMilliseconds);
+    number("upload_bytes",snapshot.rendering.uploadBytes); number("allocated_bytes",snapshot.rendering.allocatedBytes);
+    number("draws",snapshot.rendering.drawCount); number("dropped_draws",snapshot.rendering.droppedDraws); number("render_prepare_ms",snapshot.rendering.prepareMilliseconds);
+    lua_newtable(L); int effectIndex=0;
+    for (const auto& effect : snapshot.effects)
+    {
+        lua_newtable(L); number("index",effect.instance.index); number("generation",effect.instance.generation);
+        lua_pushstring(L,effect.effectGuid.c_str()); lua_setfield(L,-2,"effect_guid");
+        lua_pushstring(L,effect.sourceGuid.c_str()); lua_setfield(L,-2,"source_guid");
+        lua_pushstring(L,effect.state.c_str()); lua_setfield(L,-2,"state");
+        lua_pushboolean(L,effect.detached); lua_setfield(L,-2,"detached");
+        PushVec3(L,effect.sourcePosition); lua_setfield(L,-2,"source_position");
+        number("play_time",effect.playTime); number("alive_points",effect.alivePoints); number("dropped_spawns",effect.droppedSpawns);
+        number("breaks",effect.breaks); number("substep_overruns",effect.substepOverruns);
+        lua_newtable(L); int stripIndex=0;
+        for (const auto& strip : effect.ribbons)
+        {
+            lua_newtable(L); number("id",strip.ribbonId);
+            lua_pushboolean(L,strip.hasSourceRoot); lua_setfield(L,-2,"has_source_root");
+            lua_newtable(L); int pointIndex=0;
+            for (const auto& point : strip.points)
+            {
+                lua_newtable(L); PushVec3(L,point.position); lua_setfield(L,-2,"position");
+                number("width",point.width); number("alpha",point.color.a); number("sequence",point.sequence); number("u",point.u);
+                lua_rawseti(L,-2,++pointIndex);
+            }
+            lua_setfield(L,-2,"points"); lua_rawseti(L,-2,++stripIndex);
+        }
+        lua_setfield(L,-2,"ribbons"); lua_rawseti(L,-2,++effectIndex);
+    }
+    lua_setfield(L,-2,"effects"); return 1;
+}
+
 int LuaImpactDecalSnapshot(lua_State* L)
 {
 	const auto* scene = Scene();
@@ -3303,12 +3395,12 @@ void VansScriptAudioComponent::OnDestroy()
 	m_Source.Stop();
 	SyncRuntimeAudioComponent(this);
 }
-void VansScriptParticleComponent::OnEnable() { Play(); }
-void VansScriptParticleComponent::OnDisable() { Pause(); }
+void VansScriptParticleComponent::OnEnable() { Control(VansParticleControl::EffectiveEnabled, 1); }
+void VansScriptParticleComponent::OnDisable() { Control(VansParticleControl::EffectiveEnabled, 0); }
 void VansScriptParticleComponent::OnDestroy()
 {
-	if (m_Runtime)
-		VansParticleManager::Instance().UnregisterRuntime(m_Runtime.get());
+    if (m_Manager) m_Manager->Destroy(m_Instance);
+    m_Instance = {};
 }
 
 VansScriptUIComponent::~VansScriptUIComponent()
@@ -3500,49 +3592,14 @@ void VansScriptVideoComponent::OnDestroy()
 	if (m_VideoTex) m_VideoTex->Pause();
 }
 
-void VansScriptParticleComponent::Play()
-{
-	if (!m_Runtime) return;
-	m_Runtime->Play();
-	m_IsPlaying = true;
-	m_PlayTime = m_Runtime->m_PlayTime;
-	if (auto* scene = Scene())
-		scene->SyncRuntimeParticleComponentFromFacade(*this);
-}
-
-void VansScriptParticleComponent::Stop()
-{
-	if (!m_Runtime) return;
-	m_Runtime->Stop();
-	m_IsPlaying = false;
-	m_PlayTime = m_Runtime->m_PlayTime;
-	if (auto* scene = Scene())
-		scene->SyncRuntimeParticleComponentFromFacade(*this);
-}
-
-void VansScriptParticleComponent::Pause()
-{
-	if (!m_Runtime) return;
-	m_IsPlaying = false;
-	m_Runtime->m_IsPlaying = false;
-	if (auto* scene = Scene())
-		scene->SyncRuntimeParticleComponentFromFacade(*this);
-}
-
+void VansScriptParticleComponent::Play() { Control(VansParticleControl::Play); }
+void VansScriptParticleComponent::Stop() { Control(VansParticleControl::Stop); }
+void VansScriptParticleComponent::Pause() { Control(VansParticleControl::Pause); }
+void VansScriptParticleComponent::Restart() { Control(VansParticleControl::Restart); }
 void VansScriptParticleComponent::MirrorRuntimeEnabledState(bool selfEnabled, bool effectiveEnabled)
 {
-	VansScriptComponent::MirrorRuntimeEnabledState(selfEnabled, effectiveEnabled);
-	m_IsPlaying = effectiveEnabled;
-	if (m_Runtime)
-		m_Runtime->m_IsPlaying = effectiveEnabled;
-	if (auto* scene = Scene())
-		scene->SyncRuntimeParticleComponentFromFacade(*this);
-}
-
-void VansScriptParticleComponent::Restart()
-{
-	Stop();
-	Play();
+    VansScriptComponent::MirrorRuntimeEnabledState(selfEnabled, effectiveEnabled);
+    Control(VansParticleControl::EffectiveEnabled, effectiveEnabled ? 1.0f : 0.0f);
 }
 
 void VansScriptParticleComponent::SetWorldPosition(float x, float y, float z)
@@ -3570,30 +3627,16 @@ bool VansScriptParticleComponent::LoadAssetGuid(const std::string& assetGuidText
 	if (!source)
 		return false;
 
-	auto newAsset = std::make_unique<VansGraphics::VansParticleAsset>();
-	std::string error;
-	const Vans::ParticleJson encoded =
-		VansGraphics::VansParticleAssetJsonCodec::Encode(*source);
-	if (!VansGraphics::VansParticleAssetJsonCodec::Decode(
-		encoded, "<Particle memory object>", *newAsset, error))
-		return false;
+    if (!m_Manager) return false;
+    const auto instance = m_Manager->Create(source);
+    if (!instance.IsValid()) return false;
+    if (m_Instance.IsValid()) m_Manager->Destroy(m_Instance);
+    m_Instance = instance;
 	m_ParticleAssetGuid = assetGuid.ToString();
-	m_ParticleAssetSource = source;
-	m_ParticleAsset = std::move(newAsset);
-	m_Runtime = std::make_unique<VansGraphics::VansParticleRuntime>();
-	m_Runtime->m_Asset = m_ParticleAsset.get();
+	m_ParticleAsset = source;
 	if (auto* scene = Scene())
 		scene->SyncRuntimeParticleComponentFromFacade(*this);
 	return true;
-}
-
-void VansScriptParticleComponent::OnUpdate(float deltaTime)
-{
-	if (!m_Runtime || !m_IsPlaying) return;
-	m_Runtime->Update(deltaTime);
-	m_PlayTime = m_Runtime->m_PlayTime;
-	if (auto* scene = Scene())
-		scene->SyncRuntimeParticleComponentFromFacade(*this);
 }
 
 VansLuaScriptComponent::~VansLuaScriptComponent()
@@ -3986,6 +4029,8 @@ void VansScriptContext::RegisterLuaBindings()
 		{ "is_valid", LuaObjectIsValid },
 		{ "isValid", LuaObjectIsValid },
 		{ "get_name", LuaObjectGetName },
+		{ "get_guid", LuaObjectGetGuid },
+		{ "get_parent", LuaObjectGetParent },
 		{ "getName", LuaObjectGetName },
 		{ "get_transform", LuaObjectGetTransform },
 		{ "getTransform", LuaObjectGetTransform },
@@ -4041,6 +4086,7 @@ void VansScriptContext::RegisterLuaBindings()
 		{ "play", LuaComponentPlay },
 		{ "pause", LuaComponentPause },
 		{ "stop", LuaComponentStop },
+        { "stop_emitting", LuaComponentStopEmitting },
 		{ "resume", LuaComponentResume },
 		{ "restart", LuaComponentRestart },
 		{ "open_screen", LuaComponentUIOpenScreen },
@@ -4134,6 +4180,7 @@ void VansScriptContext::RegisterLuaBindings()
 		{ "set_far_clip", LuaComponentSetFarClip },
 		{ "is_user_look_suppressed", LuaComponentIsUserLookSuppressed },
 		{ "get_resolved_forward", LuaComponentGetResolvedForward },
+		{ "get_resolved_view_forward", LuaComponentGetResolvedViewForward },
 		{ "world_to_viewport", LuaComponentWorldToViewport },
 		{ "load_asset", LuaComponentLoadParticle },
 		{ "set_asset_guid", LuaComponentSetAssetGuid },
@@ -4143,6 +4190,7 @@ void VansScriptContext::RegisterLuaBindings()
 		{ "get_emitter_name", LuaComponentGetEmitterName },
 		{ "get_alive_count", LuaComponentGetAliveCount },
 		{ "get_max_count", LuaComponentGetMaxCount },
+		{ "get_particle_sample", LuaComponentGetParticleSample },
 		{ "is_emitter_enabled", LuaComponentIsEmitterEnabled },
 		{ "set_emitter_enabled", LuaComponentSetEmitterEnabled },
 		{ "set_world_position", LuaComponentSetWorldPosition },
@@ -4153,8 +4201,10 @@ void VansScriptContext::RegisterLuaBindings()
 
 	lua_newtable(L);
 	lua_pushcfunction(L, LuaLog); lua_setfield(L, -2, "log");
+    lua_pushcfunction(L, LuaParticleDiagnostics); lua_setfield(L,-2,"particle_diagnostics");
 	lua_pushcfunction(L, LuaImpactDecalSnapshot); lua_setfield(L,-2,"impact_decals");
 	lua_pushcfunction(L, LuaFindObject); lua_setfield(L, -2, "find_object");
+	lua_pushcfunction(L, LuaFindEntity); lua_setfield(L, -2, "find_entity");
 	lua_pushcfunction(L, LuaTimeSeconds); lua_setfield(L, -2, "time_seconds");
 
 	lua_newtable(L);

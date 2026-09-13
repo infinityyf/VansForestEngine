@@ -28,6 +28,7 @@ namespace VansGraphics
 	{
 		ColorAttachmentWrite,
 		DepthStencilAttachmentRead,
+        DepthStencilAttachmentSampledRead,
 		DepthStencilAttachmentWrite,
 		SampledRead,
 		StorageRead,
@@ -632,6 +633,7 @@ namespace VansGraphics
 			{
 			case VansRenderResourceUsage::ColorAttachmentWrite: return "ColorAttachmentWrite";
 			case VansRenderResourceUsage::DepthStencilAttachmentRead: return "DepthStencilAttachmentRead";
+            case VansRenderResourceUsage::DepthStencilAttachmentSampledRead: return "DepthStencilAttachmentSampledRead";
 			case VansRenderResourceUsage::DepthStencilAttachmentWrite: return "DepthStencilAttachmentWrite";
 			case VansRenderResourceUsage::SampledRead: return "SampledRead";
 			case VansRenderResourceUsage::StorageRead: return "StorageRead";

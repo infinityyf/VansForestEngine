@@ -1677,7 +1677,7 @@ void VansNearMediaSystem::DestroyDescriptors()
 		descriptors->DestroyDescriptorSet(sets);
 	if (m_PassLayout != VK_NULL_HANDLE)
 	{
-		descriptors->DestroyDescriptorSetLayout(m_PassLayout);
+		descriptors->ReleaseDescriptorSetLayout(m_PassLayout);
 		m_PassLayout = VK_NULL_HANDLE;
 	}
 }
@@ -1696,7 +1696,7 @@ void VansNearMediaSystem::DestroyVolumetricParticleDescriptors()
 		descriptors->DestroyDescriptorSet(sets);
 	if (m_VolumetricParticlePassLayout != VK_NULL_HANDLE)
 	{
-		descriptors->DestroyDescriptorSetLayout(m_VolumetricParticlePassLayout);
+		descriptors->ReleaseDescriptorSetLayout(m_VolumetricParticlePassLayout);
 		m_VolumetricParticlePassLayout = VK_NULL_HANDLE;
 	}
 }

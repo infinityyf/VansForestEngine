@@ -65,14 +65,14 @@ std::shared_ptr<const IVansGameplayModuleContributor> CombatContributor(
 	return VansMakeGAFModuleContributor(
 		VansMakeGAFModuleDescriptor("Gameplay.Combat", "Combat Action Adapter", { "Core" }),
 		{}, {},
-		[&world = context.world, &gameplay = context.gameplay](
+		[&world = context.world, &gameplay = context.gameplay, backend = context.combatBackend](
 			VansGAFRuntimeRegistry& registry, std::string& error)
 		{
 			return registry.InstantiateService(
-				[&world, &gameplay](const VansGameplayAssetLibrary&,
+				[&world, &gameplay, backend](const VansGameplayAssetLibrary&,
 					std::string& factoryError) -> std::shared_ptr<IVansActionService>
 				{
-					return VansCombatActionService::Create(world, gameplay, factoryError);
+					return VansCombatActionService::Create(world, gameplay, factoryError, backend);
 				}, error);
 		});
 }
@@ -123,7 +123,7 @@ bool VansDiscoverSceneGameplayContributors(
 	static const std::unordered_set<std::string> supportedModules{
 		"Core", "Core.Graph", "Gameplay.Primitives", "Timeline", "Project.Script",
 		"Gameplay.Camera", "Gameplay.Combat", "Gameplay.Animation", "Gameplay.Navigation",
-		"Gameplay.AnimationEvents", "Gameplay.Projectile", "Gameplay.Attachment", "Gameplay.Audio", "Gameplay.Decal"
+		"Gameplay.AnimationEvents", "Gameplay.Projectile", "Gameplay.Attachment", "Gameplay.Audio", "Gameplay.Decal", "Gameplay.VFX"
 	};
 	for (const std::string& moduleId : configuration.allowlist.modules)
 		if (supportedModules.find(moduleId) == supportedModules.end())
@@ -161,6 +161,18 @@ bool VansDiscoverSceneGameplayContributors(
 					{ return std::make_shared<VansAudioActionService>(world, *audio, resolver); }, serviceError);
 			}));
 	}
+	if (Enabled(configuration, "Gameplay.VFX"))
+    {
+        if (!context.vfxBackend.spawn || !context.vfxBackend.stop || !context.vfxBackend.finished || !context.vfxBackend.destroy)
+        { error = "Gameplay.VFX requires the scene particle backend"; return false; }
+        dependencies.contributors.push_back(VansMakeGAFModuleContributor(
+            VansMakeGAFModuleDescriptor("Gameplay.VFX","Particle Effect Adapter",{"Core"}),{},{},
+            [&gameplay=context.gameplay,backend=context.vfxBackend](VansGAFRuntimeRegistry& registry,std::string& serviceError) {
+                return registry.InstantiateService([&gameplay,backend](const VansGameplayAssetLibrary&,std::string&) -> std::shared_ptr<IVansActionService> {
+                    return std::make_shared<VansVFXActionService>(gameplay,backend);
+                },serviceError);
+            }));
+    }
 	if (Enabled(configuration, "Gameplay.Decal"))
 		dependencies.contributors.push_back(VansMakeGAFModuleContributor(
 			VansMakeGAFModuleDescriptor("Gameplay.Decal", "Impact Decal Adapter", { "Core" }), {}, {},

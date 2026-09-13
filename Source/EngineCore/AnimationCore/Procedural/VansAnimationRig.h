@@ -52,6 +52,23 @@ namespace VansGraphics
 		glm::vec2 swingLimitDegrees{ 180.0f, 180.0f };
 	};
 
+	// 独立旋转节点的配置。比例表示相对基骨输入朝向的总扭转份额，
+	// 不是蒙皮权重，也不要求各骨骼的比例之和为 1。
+	struct VansRigRotationRecipient
+	{
+		std::string bone;
+		float fraction = 0.5f;
+	};
+
+	struct VansRigRotationDistributionDefinition
+	{
+		std::string id;
+		std::string goal;
+		std::string baseBone;
+		float baseFraction = 0.0f;
+		std::vector<VansRigRotationRecipient> recipients;
+	};
+
 	struct VansRigSoleSample
 	{
 		std::string id;
@@ -107,6 +124,7 @@ namespace VansGraphics
 		std::vector<VansRigGoalDefinition> goals;
 		std::vector<VansRigChainDefinition> chains;
 		std::vector<VansRigJointLimitDefinition> jointLimits;
+		std::vector<VansRigRotationDistributionDefinition> rotationDistributions;
 		std::vector<VansRigContactDefinition> contacts;
 	};
 
@@ -146,6 +164,24 @@ namespace VansGraphics
 		float minDegrees = -180.0f;
 		float maxDegrees = 180.0f;
 		glm::vec2 swingLimitDegrees{ 180.0f, 180.0f };
+	};
+
+	struct VansCompiledRotationRecipient
+	{
+		int boneIndex = -1;
+		float fraction = 0.5f;
+		glm::quat restRotationInBase{ 1.0f, 0.0f, 0.0f, 0.0f };
+	};
+
+	struct VansCompiledRotationDistribution
+	{
+		std::string id;
+		int goalIndex = -1;
+		int baseBoneIndex = -1;
+		int tipBoneIndex = -1;
+		float baseFraction = 0.0f;
+		glm::quat restTipRotationInBase{ 1.0f, 0.0f, 0.0f, 0.0f };
+		std::vector<VansCompiledRotationRecipient> recipients;
 	};
 
 	struct VansCompiledRigContact
@@ -195,6 +231,7 @@ namespace VansGraphics
 		std::vector<VansCompiledRigGoal> goals;
 		std::vector<VansCompiledRigChain> chains;
 		std::vector<VansCompiledRigJointLimit> jointLimits;
+		std::vector<VansCompiledRotationDistribution> rotationDistributions;
 		std::vector<VansCompiledRigContact> contacts;
 		std::unordered_map<std::string, int> goalIndexById;
 		std::unordered_map<std::string, int> socketIndexByGuid;
@@ -211,6 +248,7 @@ namespace VansGraphics
 			VansRigAttachmentParentKind parentKind,
 			const std::string& anchorGuid) const;
 		int FindChain(const std::string& id) const;
+		int FindRotationDistribution(const std::string& id) const;
 		int FindContact(const std::string& id) const;
 		const VansCompiledRigJointLimit* FindJointLimit(int boneIndex) const;
 		bool BindSkeleton(const Skeleton& targetSkeleton, std::string& error);

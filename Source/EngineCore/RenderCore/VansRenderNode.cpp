@@ -101,13 +101,13 @@ void VansGraphics::VansRenderNode::ResetDescriptorValidationFailureCount()
 
 void VansGraphics::VansRenderNode::DestroyDescriptorSets()
 {
-	VansVKDescriptorManager::GetInstance()->DestroyDescriptorSetLayout(modelBufferLayout);
+	VansVKDescriptorManager::GetInstance()->ReleaseDescriptorSetLayout(modelBufferLayout);
 	VansVKDescriptorManager::GetInstance()->DestroyDescriptorSet(modelBufferDescriptorSets);
 
-	VansVKDescriptorManager::GetInstance()->DestroyDescriptorSetLayout(textureResourceLayout);
+	VansVKDescriptorManager::GetInstance()->ReleaseDescriptorSetLayout(textureResourceLayout);
 	VansVKDescriptorManager::GetInstance()->DestroyDescriptorSet(textureResourceDescriptorSets);
 
-	VansVKDescriptorManager::GetInstance()->DestroyDescriptorSetLayout(frameBufferInputLayout);
+	VansVKDescriptorManager::GetInstance()->ReleaseDescriptorSetLayout(frameBufferInputLayout);
 	VansVKDescriptorManager::GetInstance()->DestroyDescriptorSet(frameBufferInputDescriptorSets);
 
 	modelBufferLayout = VK_NULL_HANDLE;
@@ -1243,9 +1243,8 @@ void VansGraphics::VansDecalRenderNode::CreateDescriptorSets(
 	m_UsedDescSets.push_back(m_Scene->GetGlobalDescriptorSet());
 
 	// Set 1: DecalPass（GBuffer2 重建世界坐标，GBuffer1 判定接收材质）
-	VansDescriptorSetLayoutFactory::CreateAndAllocate_DecalPass(textureResourceLayout, textureResourceDescriptorSets);
-	m_UsedDescSetLayouts.push_back(textureResourceLayout);
-	m_UsedDescSets.push_back(textureResourceDescriptorSets[0]);
+	m_UsedDescSetLayouts.push_back(m_Scene->GetDecalPassLayout());
+	m_UsedDescSets.push_back(m_Scene->GetDecalPassDescriptorSet());
 
 	// Set 2: Object（变换 SSBO）
 	m_UsedDescSetLayouts.push_back(m_Scene->GetObjectDescriptorSetLayout());
@@ -1261,29 +1260,6 @@ void VansGraphics::VansDecalRenderNode::UpdateRenderData(
 
 void VansGraphics::VansDecalRenderNode::UpdateDescriptorSets(VansMaterialManager& materialManager)
 {
-	if (!m_DescriptorsetsDirty)
-		return;
 	m_DescriptorsetsDirty = false;
-
-	auto* descMgr = VansVKDescriptorManager::GetInstance();
-	descMgr->BeginDescriptorUpdate();
-	// binding 0: GBuffer2（世界坐标 / 深度重建）
-	descMgr->WriteImageDescriptor(
-		textureResourceDescriptorSets[0],
-		DECAL_PASS_BINDING_GBUFFER2,
-		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		{ {
-			VansRenderPassManager::GetInstance()->GetGbuffer2().GetSampler(),
-			VansRenderPassManager::GetInstance()->GetGbuffer2().GetImageView(),
-			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-		} });
-    auto& receiver = VansRenderPassManager::GetInstance()->GetGbuffer1();
-    descMgr->WriteImageDescriptor(textureResourceDescriptorSets[0], DECAL_PASS_BINDING_GBUFFER1,
-        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        {{receiver.GetSampler(), receiver.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}});
-    auto& normal = VansRenderPassManager::GetInstance()->GetNormal();
-    descMgr->WriteImageDescriptor(textureResourceDescriptorSets[0], DECAL_PASS_BINDING_NORMAL,
-        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        {{normal.GetSampler(), normal.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}});
-	descMgr->CommitDescriptorUpdates();
+	m_Scene->UpdateDecalPassDescriptorSet();
 }

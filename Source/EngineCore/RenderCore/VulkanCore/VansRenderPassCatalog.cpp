@@ -369,7 +369,7 @@ namespace VansGraphics
 					  { "LocalMediaScattering", VansRenderResourceUsage::SampledRead },
 					  { "LocalMediaOpticalDepth", VansRenderResourceUsage::SampledRead },
 					  { "TileLightLists", VansRenderResourceUsage::StorageRead },
-					  { "Depth", VansRenderResourceUsage::DepthStencilAttachmentRead },
+					  { "Depth", VansRenderResourceUsage::DepthStencilAttachmentSampledRead },
 					  { "PunctualShadowAtlas0", VansRenderResourceUsage::SampledRead },
 					  { "PunctualShadowAtlas1", VansRenderResourceUsage::SampledRead },
 					  { "PunctualShadowMeta", VansRenderResourceUsage::StorageRead } },

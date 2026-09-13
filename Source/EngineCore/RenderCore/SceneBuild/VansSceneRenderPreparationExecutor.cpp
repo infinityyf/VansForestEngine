@@ -10,6 +10,7 @@ namespace VansGraphics
 bool VansSceneRenderPreparationExecutor::PrepareAfterSceneContentLoaded(VansScene& scene, VansVKDevice& device)
 {
 	if (!scene.PrepareImpactDecalPools()) return false;
+	if (!scene.PrepareCombatSurfaces(device)) return false;
 	device.PreparePBRMaterialData();
 	BindVideoComponentsToPreparedMaterials(scene);
 

@@ -1,4 +1,5 @@
 #pragma once
+#include "../AssetCore/VansAssetGuid.h"
 #include "VansParticleData.h"
 #include "VansParticleInstanceData.h"
 #include "Modules/VansInitModules.h"
@@ -18,19 +19,15 @@ namespace VansGraphics
     {
         RateOverTime,       // 按速率持续发射
         Burst,              // 爆发式发射
-        RateOverDistance,   // 按移动距离发射（暂为桩）
     };
 
     struct BurstConfig
     {
         float    time     = 0.f;  // 在 systemTime 等于该值时触发
         uint32_t count    = 10;   // 一次爆发数量
-        uint32_t cycles   = 1;    // 循环次数（-1 = 无限）
+        uint32_t cycles   = 1;    // 循环次数，0 为无限。
         float    interval = 0.1f; // 多次爆发的间隔（秒）
 
-        // 运行时状态（不参与序列化）
-        uint32_t cyclesDone = 0;
-        float    nextTime   = -1.f;
     };
 
     struct VansParticleSpawnConfig
@@ -45,21 +42,28 @@ namespace VansGraphics
     // 渲染配置
     // ============================================================
 
-    enum class VansParticleRendererType  { Billboard, StretchedBillboard, Mesh };
-    enum class VansParticleBlendMode     { Alpha, Additive, Multiply };
+    enum class VansParticleRendererType  { None, Billboard, Ribbon };
     enum class VansParticleSortMode      { None, ByDistance, OldestFirst, NewestFirst };
     enum class VansParticleLightingMode  { UnlitFlipbook, SixWayLit };
 
+    enum class VansRibbonRootMode { None, FollowSource };
+    enum class VansRibbonStopAttachment { KeepUntilInvisible, DetachOnStop };
+    struct VansParticleRibbonConfig
+    {
+        VansRibbonRootMode rootMode = VansRibbonRootMode::None;
+        VansRibbonStopAttachment stopAttachment = VansRibbonStopAttachment::KeepUntilInvisible;
+        float rootWidth = 0.008f;
+        glm::vec4 rootColor{0.55f, 0.55f, 0.55f, 0.25f};
+        float maxSegmentLength = 0.5f;
+        float uvFlowSpeed = 1.0f;
+        float softIntersection = 0.02f;
+        float tipFadeDistance = 0.0f;
+    };
+
     struct VansParticleSixWayLightingConfig
     {
-        bool        m_Enabled               = false;
-        std::string m_PositiveAxesTexture;
-        std::string m_NegativeAxesTexture;
-        int         m_Columns               = 1;
-        int         m_Rows                  = 1;
-        float       m_FPS                   = 0.f;
-        bool        m_AlphaFromPositiveA    = true;
-        bool        m_EmissiveFromNegativeA = true;
+        std::string m_PositiveAxesTextureGuid;
+        std::string m_NegativeAxesTextureGuid;
         float       m_LightIntensity        = 1.f;
         float       m_AmbientIntensity      = 0.25f;
         float       m_EmissiveIntensity     = 1.f;
@@ -73,7 +77,6 @@ namespace VansGraphics
     struct VansParticleVolumetricConfig
     {
         bool m_Enabled = false;
-        bool m_KeepSurfaceRenderer = false;
         float m_RadiusScale = 1.0f;
         float m_MaxDistanceMeters = 100.0f;
         float m_DensityMultiplier = 1.0f;
@@ -91,8 +94,7 @@ namespace VansGraphics
     struct VansParticleRendererConfig
     {
         VansParticleRendererType  m_Type      = VansParticleRendererType::Billboard;
-        std::string               m_Texture;
-        VansParticleBlendMode     m_BlendMode = VansParticleBlendMode::Additive;
+        std::string               m_TextureGuid = "34a4e372-93c5-44a1-a985-768a099c3c95";
 
         // Sprite Sheet
         bool     m_SpriteSheetEnabled = false;
@@ -103,59 +105,20 @@ namespace VansGraphics
         VansParticleLightingMode   m_LightingMode = VansParticleLightingMode::UnlitFlipbook;
         VansParticleSixWayLightingConfig m_SixWayLighting;
         VansParticleVolumetricConfig m_Volumetric;
-        bool m_CastShadows    = false;
-        bool m_ReceiveShadows = false;
+        VansParticleRibbonConfig m_Ribbon;
 
     };
 
-    // ============================================================
-    // VansParticleEmitter — 单个发射器
-    // ============================================================
+    // 不可变资产定义。解码阶段不创建模拟池；共享定义内没有运行时状态。
     class VansParticleEmitter
     {
     public:
-        // ── 基本配置 ─────────────────────────────────────────────
         std::string m_Name;
-        bool        m_Enabled      = true;
-        uint32_t    m_MaxParticles = 1000;
-
-        // ── Spawn ─────────────────────────────────────────────────
-        VansParticleSpawnConfig   m_SpawnConfig;
-        float                     m_SpawnAccum = 0.f;   // 发射余量累加
-
-        // ── 模块 Stack ────────────────────────────────────────────
-        std::vector<std::unique_ptr<VansParticleModule>> m_InitModules;
-        std::vector<std::unique_ptr<VansParticleModule>> m_UpdateModules;
-
-        // ── 渲染配置 ──────────────────────────────────────────────
+        bool m_Enabled = true;
+        uint32_t m_MaxParticles = 1000;
+        VansParticleSpawnConfig m_SpawnConfig;
+        std::vector<std::unique_ptr<const VansParticleModule>> m_InitModules;
+        std::vector<std::unique_ptr<const VansParticleModule>> m_UpdateModules;
         VansParticleRendererConfig m_RendererConfig;
-
-        // ── 粒子池 ────────────────────────────────────────────────
-        VansParticlePool           m_ParticlePool;
-
-        // ── 接口 ─────────────────────────────────────────────────
-
-        // 初始化粒子池（Resize）
-        void Initialize();
-		void ResetSimulation();
-		void SetRandomSeed(uint32_t seed);
-		void EmitBurst(uint32_t count, const glm::mat4& localToWorld);
-
-        // 每帧更新：Spawn + Init + Update + Age
-        void Update(float deltaTime, const glm::mat4& localToWorld);
-
-        // 将存活粒子写入 GPU 实例数据缓冲
-        void FillInstanceData(std::vector<VansParticleInstanceData>& outBuffer) const;
-        void FillVolumetricInstanceData(
-            std::vector<VansVolumetricParticleInstanceData>& outBuffer) const;
-
-    private:
-        // 发射新粒子并执行 Init 模块
-        void SpawnParticles(uint32_t count, const glm::mat4& localToWorld);
-		uint32_t NextRandomSeed();
-
-		uint32_t m_RandomSeed = 0x9e3779b9u;
-		uint32_t m_RandomState = 0x9e3779b9u;
     };
-
-} // namespace VansGraphics
+}

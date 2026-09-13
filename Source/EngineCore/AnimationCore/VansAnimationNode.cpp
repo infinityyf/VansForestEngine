@@ -338,6 +338,20 @@ void VansAnimationNode::SetRenderNodes(const std::vector<VansRenderNode*>& nodes
 void VansAnimationNode::SetSkeleton(const Skeleton& skeleton)
 {
 	m_Skeleton = skeleton;
+	std::vector<glm::mat4> bindModelTransforms;
+	bindModelTransforms.reserve(m_Skeleton.bones.size());
+	for (const auto& bone : m_Skeleton.bones)
+		bindModelTransforms.push_back(bone.localTransform);
+	for (int index : m_Skeleton.topologicalOrder)
+	{
+		const int parent = m_Skeleton.bones[index].parentIndex;
+		if (parent >= 0 && parent < static_cast<int>(bindModelTransforms.size()))
+			bindModelTransforms[index] = bindModelTransforms[parent] * bindModelTransforms[index];
+	}
+	for (std::size_t i = 0; i < MAX_BONES; ++i)
+		m_BoneMatricesSSBO.boneMatrices[i] = i < bindModelTransforms.size()
+			? bindModelTransforms[i] * m_Skeleton.bones[i].offsetMatrix
+			: glm::mat4(1.0f);
 	VANS_LOG("[VansAnimationNode] " << m_Name << ": skeleton set with "
 	         << m_Skeleton.bones.size() << " bones");
 }
@@ -1045,6 +1059,10 @@ bool VansAnimationNode::InitGPUResources(VkDevice device, uint32_t framesInFligh
 			VANS_LOG_ERROR("[VansAnimationNode] " << m_Name << ": failed to create previous bone buffer " << i);
 			return false;
 		}
+		// A visible skinned attachment may keep its Animation component disabled.
+		// Give both buffers a valid bind pose before any animation frame is evaluated.
+		m_BoneBuffers[i].SetBufferData(&m_BoneMatricesSSBO, 0, bufferSize);
+		m_PreviousBoneBuffers[i].SetBufferData(&m_BoneMatricesSSBO, 0, bufferSize);
 	}
 	m_HasUploadedBoneMatrices = false;
 

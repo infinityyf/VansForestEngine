@@ -276,6 +276,34 @@ namespace Vans::EditorAPI
 		return true;
 	}
 
+	AnimationPreviewRigEditResult AnimationPreviewRigAuthoringService::SetDefinition(
+		const AnimationPreviewRigContext& context, std::uint64_t expectedRevision,
+		const std::string& canonicalJson)
+	{
+		AnimationPreviewRigEditResult result;
+		auto found = Sessions().find(context.sessionId);
+		if (found == Sessions().end() || !context.controller || !context.skeleton ||
+			found->second.revision != expectedRevision)
+		{ result.message = "Animation Rig context or revision expired"; return result; }
+		VansGraphics::VansAnimationRigAsset candidate;
+		try
+		{
+			if (!VansGraphics::VansAnimationRigStorage::DeserializeFromJsonObject(
+				nlohmann::json::parse(canonicalJson),candidate,result.message)) return result;
+		}
+		catch (const std::exception& exception) {result.message=exception.what();return result;}
+		VansGraphics::VansCompiledAnimationRig compiled;
+		if (!VansGraphics::VansAnimationRigCompiler::Compile(candidate,*context.skeleton,compiled,result.message)
+			|| !context.controller->ReplaceAnimationRig(std::move(compiled),result.message))
+		{result.usingLastGoodRig=true;return result;}
+		found->second.workingAsset=std::move(candidate);
+		found->second.overrideActive=true;
+		result.acceptedRevision=++found->second.revision;
+		result.success=true;
+		result.message="Animation Rig working definition applied";
+		return result;
+	}
+
 	AnimationPreviewRigEditResult AnimationPreviewRigAuthoringService::SetSocketTransform(
 		const AnimationPreviewRigContext& context,
 		const AnimationPreviewRigSocketTransformRequest& request)

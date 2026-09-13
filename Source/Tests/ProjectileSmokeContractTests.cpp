@@ -23,19 +23,20 @@ bool TestProjectileSmokeContract()
     auto check = [](bool ok, const char* error) { if (!ok) std::cerr << "[ProjectileSmoke] " << error << '\n'; return ok; };
     std::string error;
     const auto particleJson = read(project / "Assets/Particles/VolumetricSmokeTest.particle");
-    VansParticleAsset asset;
+    auto assetOwner = std::make_shared<VansParticleAsset>();
+    auto& asset = *assetOwner;
     if (!VansParticleAssetJsonCodec::Decode(particleJson, {}, asset, error)) return check(false, error.c_str());
-    if (!check(asset.m_StartDelay == 2.0f && !asset.m_Prewarm && asset.m_WorldAligned && asset.m_Loop,
+    if (!check(asset.m_StartDelay == 2.0f && !asset.m_Prewarm && asset.m_EmissionFrame == VansGraphics::VansParticleEmissionFrame::World && asset.m_Loop,
         "Smoke must delay two seconds, start empty, remain upright and emit continuously")) return false;
     const auto roundTrip = VansParticleAssetJsonCodec::Encode(asset);
-    if (!check(roundTrip["global"]["startDelay"] == 2.0f && roundTrip["global"]["worldAligned"] == true,
+    if (!check(roundTrip["global"]["startDelay"] == 2.0f && roundTrip["global"]["emissionFrame"] == "World",
         "Particle authoring codec lost delayed playback or alignment")) return false;
     auto invalid = roundTrip;
     invalid["global"]["startDelay"] = -1;
     VansParticleAsset rejected;
     if (!check(!VansParticleAssetJsonCodec::Decode(invalid, {}, rejected, error), "Negative delay accepted")) return false;
     VansParticleRuntime particles;
-    particles.m_Asset = &asset;
+    particles.SetAsset(assetOwner);
     particles.m_EmitterPositionLocal = {0,100,0};
     const auto owner = glm::translate(glm::mat4(1), glm::vec3(4,2,6))
         * glm::rotate(glm::mat4(1), glm::radians(90.0f), glm::vec3(0,0,1))
@@ -58,7 +59,7 @@ bool TestProjectileSmokeContract()
     for (int i=0;i<120;++i) particles.Update(1.0f/120);
     if (!check(particles.m_AliveInstanceCount > firstCount+20, "Smoke emission was a one-shot burst")) return false;
     for (int i=0;i<3600;++i) particles.Update(1.0f/60);
-    const auto& pool = asset.m_Emitters.front()->m_ParticlePool;
+    const auto& pool = particles.GetEmitter(0)->m_ParticlePool;
     if (!check(pool.m_AliveCount > 180 && pool.m_AliveCount < 320, "Long-running smoke stopped emitting or stopped recycling particles")) return false;
     bool fresh = false;
     for (uint32_t i=0; i<pool.m_AliveCount; ++i)
@@ -72,7 +73,7 @@ bool TestProjectileSmokeContract()
     particles.Restart(); particles.Update(1.9f);
     if (!check(particles.m_AliveInstanceCount == 0, "Restart bypassed emission delay")) return false;
     particles.Stop();
-    std::cout << "[ProjectileSmoke] delay=2 noPrewarm=1 continuous=1 worldAligned=1 offset=1 pauseResume=1\n";
+    std::cout << "[ProjectileSmoke] delay=2 noPrewarm=1 continuous=1 worldEmissionFrame=1 offset=1 pauseResume=1\n";
 
     const auto graph = read(project / "Assets/GAF/PlayerThrow/ThrowSmoke.vactiongraph");
     nlohmann::ordered_json inputs;

@@ -13,7 +13,7 @@
 #include "../PhysicsCore/VansPhysicsEvents.h"
 #include "../PhysicsCore/VansRagdollSystem.h"
 #include "../ParticleCore/VansParticleAsset.h"
-#include "../ParticleCore/VansParticleRuntime.h"
+#include "../ParticleCore/VansParticleManager.h"
 #include "../RuntimeUI/Public/VansUIRuntimeHandles.h"
 #include "../SceneRuntime/VansRuntimeHandle.h"
 #include "../SceneCore/VansSceneLocalVolumetricFogComponentConfig.h"
@@ -45,7 +45,6 @@ class VansAnimationNode;
 class VansCamera;
 class VansLightManager;
 class VansMaterialManager;
-class VansParticleRenderNode;
 class VansRenderNode;
 class VansScene;
 class VansVideoManager;
@@ -370,13 +369,16 @@ class VansScriptParticleComponent : public VansScriptComponent
 public:
 	VansScriptParticleComponent() { m_ComponentName = "Particle"; }
 	std::string m_ParticleAssetGuid;
-	std::shared_ptr<const VansGraphics::VansParticleAsset> m_ParticleAssetSource;
-	std::unique_ptr<VansGraphics::VansParticleAsset> m_ParticleAsset;
-	std::unique_ptr<VansGraphics::VansParticleRuntime> m_Runtime;
-	VansGraphics::VansParticleRenderNode* m_RenderNode = nullptr;
+	std::shared_ptr<const VansGraphics::VansParticleAsset> m_ParticleAsset;
+    VansGraphics::VansParticleManager* m_Manager = nullptr;
+    Vans::VansGenerationHandle m_Instance;
+    VansGraphics::VansParticleRuntime* GetRuntime() const
+    { return m_Manager ? m_Manager->Resolve(m_Instance) : nullptr; }
+    bool IsPlaying() const { const auto* rt = GetRuntime(); return rt && rt->IsPlaying(); }
+    float GetPlayTime() const { const auto* rt = GetRuntime(); return rt ? rt->GetPlayTime() : 0.0f; }
+    bool Control(VansGraphics::VansParticleControl control, float value = 0, uint32_t index = 0)
+    { return m_Manager && m_Manager->Queue(m_Instance, control, value, index); }
 	bool m_PlayOnAwake = true;
-	bool m_IsPlaying = false;
-	float m_PlayTime = 0.0f;
 	bool m_HasWorldPositionOverride = false;
 	glm::vec3 m_WorldPositionOverride = glm::vec3(0.0f);
 
@@ -387,7 +389,6 @@ public:
 	void SetWorldPosition(float x, float y, float z);
 	void ClearWorldPositionOverride();
 	bool LoadAssetGuid(const std::string& assetGuid);
-	void OnUpdate(float deltaTime);
 	void MirrorRuntimeEnabledState(bool selfEnabled, bool effectiveEnabled) override;
 
 protected:

@@ -394,42 +394,42 @@ void DestroyMaterialOwnedTextureDescriptors(VansMaterial& material)
 	if (auto* trans = dynamic_cast<VansTransparentMaterial*>(&material))
 	{
 		descMgr->DestroyDescriptorSet(trans->m_TransparentOwnedDescSets);
-		descMgr->DestroyDescriptorSetLayout(trans->m_TransparentOwnedLayout);
+		descMgr->ReleaseDescriptorSetLayout(trans->m_TransparentOwnedLayout);
 		trans->m_TransparentOwnedLayout = VK_NULL_HANDLE;
 		trans->m_TransparentOwnedDescSets.clear();
 	}
 	else if (auto* skin = dynamic_cast<VansSkinMaterial*>(&material))
 	{
 		descMgr->DestroyDescriptorSet(skin->m_SkinOwnedDescSets);
-		descMgr->DestroyDescriptorSetLayout(skin->m_SkinOwnedLayout);
+		descMgr->ReleaseDescriptorSetLayout(skin->m_SkinOwnedLayout);
 		skin->m_SkinOwnedLayout = VK_NULL_HANDLE;
 		skin->m_SkinOwnedDescSets.clear();
 	}
 	else if (auto* cloth = dynamic_cast<VansClothMaterial*>(&material))
 	{
 		descMgr->DestroyDescriptorSet(cloth->m_ClothOwnedDescSets);
-		descMgr->DestroyDescriptorSetLayout(cloth->m_ClothOwnedLayout);
+		descMgr->ReleaseDescriptorSetLayout(cloth->m_ClothOwnedLayout);
 		cloth->m_ClothOwnedLayout = VK_NULL_HANDLE;
 		cloth->m_ClothOwnedDescSets.clear();
 	}
 	else if (auto* hair = dynamic_cast<VansHairMaterial*>(&material))
 	{
 		descMgr->DestroyDescriptorSet(hair->m_HairOwnedDescSets);
-		descMgr->DestroyDescriptorSetLayout(hair->m_HairOwnedLayout);
+		descMgr->ReleaseDescriptorSetLayout(hair->m_HairOwnedLayout);
 		hair->m_HairOwnedLayout = VK_NULL_HANDLE;
 		hair->m_HairOwnedDescSets.clear();
 	}
 	else if (auto* sss = dynamic_cast<VansSubsurfaceMaterial*>(&material))
 	{
 		descMgr->DestroyDescriptorSet(sss->m_SubsurfaceOwnedDescSets);
-		descMgr->DestroyDescriptorSetLayout(sss->m_SubsurfaceOwnedLayout);
+		descMgr->ReleaseDescriptorSetLayout(sss->m_SubsurfaceOwnedLayout);
 		sss->m_SubsurfaceOwnedLayout = VK_NULL_HANDLE;
 		sss->m_SubsurfaceOwnedDescSets.clear();
 	}
 	else if (auto* grass = dynamic_cast<VansGrassMaterial*>(&material))
 	{
 		descMgr->DestroyDescriptorSet(grass->m_GrassOwnedDescSets);
-		descMgr->DestroyDescriptorSetLayout(grass->m_GrassOwnedLayout);
+		descMgr->ReleaseDescriptorSetLayout(grass->m_GrassOwnedLayout);
 		grass->m_GrassOwnedLayout = VK_NULL_HANDLE;
 		grass->m_GrassOwnedDescSets.clear();
 	}

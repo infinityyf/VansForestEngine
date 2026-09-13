@@ -20,6 +20,7 @@ struct VansSceneParentReference
 	VansEntityGuid entityGuid;
 	VansComponentGuid animationComponentGuid;
 	VansAssetGuid anchorGuid;
+	std::string poseCheckpoint;
 
 	bool IsEntity() const { return kind == VansSceneParentKind::Entity; }
 	bool IsAnchor() const { return !IsEntity(); }

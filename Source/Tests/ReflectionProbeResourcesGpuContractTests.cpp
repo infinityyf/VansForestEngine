@@ -24,7 +24,7 @@ namespace
     using namespace VansGraphics;
     uint32_t errors = 0, candidateViews = 0, injectedFailures = 0;
     PFN_vkCreateImageView originalCreateView = nullptr;
-    PFN_vkCreateDescriptorSetLayout originalCreateLayout = nullptr;
+    PFN_vkAllocateDescriptorSets originalAllocateSets = nullptr;
     void Check(bool valid, const std::string& message)
     {
         if (!valid) throw std::runtime_error(message);
@@ -43,11 +43,11 @@ namespace
         if (result == VK_SUCCESS) ++candidateViews;
         return result;
     }
-    VKAPI_ATTR VkResult VKAPI_CALL FailCreateLayout(VkDevice, const VkDescriptorSetLayoutCreateInfo*,
-        const VkAllocationCallbacks*, VkDescriptorSetLayout* layout)
+    VKAPI_ATTR VkResult VKAPI_CALL FailAllocateSets(VkDevice, const VkDescriptorSetAllocateInfo* info,
+        VkDescriptorSet* sets)
     {
         ++injectedFailures;
-        *layout = VK_NULL_HANDLE;
+        for (uint32_t i = 0; i < info->descriptorSetCount; ++i) sets[i] = VK_NULL_HANDLE;
         return VK_ERROR_OUT_OF_HOST_MEMORY;
     }
     struct LateAllocationFailure
@@ -56,12 +56,13 @@ namespace
         {
             candidateViews = injectedFailures = 0;
             originalCreateView = vkCreateImageView;
-            originalCreateLayout = vkCreateDescriptorSetLayout;
+            originalAllocateSets = vkAllocateDescriptorSets;
             vkCreateImageView = CountCreateView;
-            vkCreateDescriptorSetLayout = FailCreateLayout;
+            // 布局已共享，改在实例仍须执行的 set 分配阶段注入晚期失败。
+            vkAllocateDescriptorSets = FailAllocateSets;
         }
         ~LateAllocationFailure()
-        { vkCreateImageView = originalCreateView; vkCreateDescriptorSetLayout = originalCreateLayout; }
+        { vkCreateImageView = originalCreateView; vkAllocateDescriptorSets = originalAllocateSets; }
     };
     struct Window final : INativeWindowProvider
     {
@@ -222,7 +223,7 @@ bool TestReflectionProbeResourcesGpuContract()
             Check(retiredMemory.size > 0, "Successful rebuild destroyed the current-frame preview early");
             Check(device->WaitForIdle(), "GPU idle failed before fixture cleanup");
             VansVKDescriptorManager::GetInstance()->DestroyDescriptorSet(sets);
-            VansVKDescriptorManager::GetInstance()->DestroyDescriptorSetLayout(layout);
+            VansVKDescriptorManager::GetInstance()->ReleaseDescriptorSetLayout(layout);
             probes.Clear(device->GetLogicDevice());
         }
         Check(errors == 0, "Vulkan validation errors during resource transaction checks");

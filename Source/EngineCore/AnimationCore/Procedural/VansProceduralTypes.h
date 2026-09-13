@@ -90,9 +90,22 @@ namespace VansGraphics
 	// SceneRuntime resolves authored binding names to stable world-space targets
 	// before animation evaluation. AnimationCore only consumes this immutable
 	// value snapshot and never reaches into Entity/Transform storage.
+	// 场景实例的作者绑定。AnimationCore 仅保存身份，不访问实体存储。
+	struct VansAnimationTargetBinding
+	{
+		std::string id;
+		std::string targetEntityGuid;
+	};
+
+	enum class VansAnimationTargetSpace { World, Pose };
 	struct VansResolvedAnimationTarget
 	{
 		std::string id;
+		VansAnimationTargetSpace space = VansAnimationTargetSpace::World;
+		int sourceBoneIndex = -1;
+		std::string poseCheckpoint;
+		glm::mat4 sourceLocal{ 1.0f };
+		std::string diagnostic;
 		glm::vec3 positionWorld{ 0.0f };
 		glm::quat rotationWorld{ 1.0f, 0.0f, 0.0f, 0.0f };
 		float positionWeight = 1.0f;

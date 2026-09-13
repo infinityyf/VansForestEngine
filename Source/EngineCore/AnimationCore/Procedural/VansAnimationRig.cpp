@@ -105,6 +105,13 @@ namespace VansGraphics
 		return found == contactIndexById.end() ? -1 : found->second;
 	}
 
+	int VansCompiledAnimationRig::FindRotationDistribution(const std::string& id) const
+	{
+		for (std::size_t i = 0; i < rotationDistributions.size(); ++i)
+			if (rotationDistributions[i].id == id) return static_cast<int>(i);
+		return -1;
+	}
+
 	const VansCompiledRigJointLimit* VansCompiledAnimationRig::FindJointLimit(int boneIndex) const
 	{
 		const auto found = std::find_if(jointLimits.begin(), jointLimits.end(),
@@ -271,11 +278,11 @@ namespace VansGraphics
 					&& source.solver != VansRigSolverKind::CCD
 					&& source.solver != VansRigSolverKind::FABRIK
 					&& source.solver != VansRigSolverKind::Aim)
-				|| source.id.empty() || source.bones.size() < 2
+				|| source.id.empty() || source.bones.size() < (source.solver == VansRigSolverKind::Aim ? 1u : 2u)
 				|| source.bones.size() > VansMaxProceduralChainBones
 				|| outRig.chainIndexById.find(source.id) != outRig.chainIndexById.end())
 			{
-				error = "Animation Rig chains require unique ids and 2..64 bones";
+				error = "Animation Rig chains require unique ids and 2..64 bones (Aim permits one bone)";
 				return false;
 			}
 			VansCompiledRigChain compiled;
@@ -440,6 +447,54 @@ namespace VansGraphics
 			outRig.jointLimits.push_back({ boneIndex, source.kind, compiledAxis,
 				compiledSwingReference,
 				rest.rotation, source.minDegrees, source.maxDegrees, source.swingLimitDegrees });
+		}
+
+		for (const auto& source : asset.rotationDistributions)
+		{
+			VansCompiledRotationDistribution profile;
+			profile.id = source.id;
+			profile.goalIndex = outRig.FindGoal(source.goal);
+			profile.baseBoneIndex = ResolveBone(skeleton, source.baseBone);
+			profile.baseFraction = source.baseFraction;
+			const auto validFraction = [](float value) { return std::isfinite(value) && value >= 0 && value <= 1; };
+			if (profile.id.empty() || outRig.FindRotationDistribution(profile.id) >= 0 ||
+				profile.goalIndex < 0 || profile.baseBoneIndex < 0 || !validFraction(profile.baseFraction) ||
+				source.recipients.size() > VansMaxProceduralChainBones)
+			{ error = "Rotation Distribution requires a unique id, existing goal/base and fractions in [0, 1]: " + source.id; return false; }
+			profile.tipBoneIndex = outRig.goals[profile.goalIndex].effectorBoneIndex;
+			VansBoneTransform tipRest;
+			if (skeleton.bones[profile.tipBoneIndex].parentIndex != profile.baseBoneIndex ||
+				!VansPoseMath::TryDecompose(skeleton.bones[profile.tipBoneIndex].localTransform, tipRest) ||
+				!ValidAxis(tipRest.translation))
+			{ error = "Rotation Distribution goal effector must be a non-zero-length direct child of its base: " + source.id; return false; }
+			profile.restTipRotationInBase = tipRest.rotation;
+			std::unordered_set<int> recipients;
+			std::unordered_map<int, int> depths;
+			for (const auto& recipient : source.recipients)
+			{
+				const int index = ResolveBone(skeleton, recipient.bone);
+				if (index < 0 || index == profile.baseBoneIndex || !recipients.insert(index).second ||
+					!validFraction(recipient.fraction))
+				{ error = "Rotation Distribution has a missing/duplicate recipient or invalid fraction: " + recipient.bone; return false; }
+				glm::quat relative(1, 0, 0, 0);
+				int depth = 0, bone = index;
+				for (; bone >= 0 && bone != profile.baseBoneIndex; bone = skeleton.bones[bone].parentIndex)
+				{
+					VansBoneTransform rest;
+					if (bone == profile.tipBoneIndex || ++depth > static_cast<int>(skeleton.bones.size()) ||
+						!VansPoseMath::TryDecompose(skeleton.bones[bone].localTransform, rest))
+					{ error = "Rotation recipients must be base descendants outside the effector subtree: " + recipient.bone; return false; }
+					relative = glm::normalize(rest.rotation * relative);
+				}
+				if (bone != profile.baseBoneIndex)
+				{ error = "Rotation recipient is not a descendant of its base: " + recipient.bone; return false; }
+				depths[index] = depth;
+				profile.recipients.push_back({index, recipient.fraction, relative});
+			}
+			// 父先子后写入组件旋转，避免层级继承把总份额重复叠加。
+			std::stable_sort(profile.recipients.begin(), profile.recipients.end(),
+				[&](const auto& a, const auto& b) { return depths[a.boneIndex] < depths[b.boneIndex]; });
+			outRig.rotationDistributions.push_back(std::move(profile));
 		}
 
 		for (const VansRigContactDefinition& source : asset.contacts)

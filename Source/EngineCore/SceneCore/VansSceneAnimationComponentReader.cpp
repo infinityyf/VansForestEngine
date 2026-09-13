@@ -4,6 +4,9 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <unordered_set>
+#include "../AssetCore/Serialization/VansSerializedObjectReference.h"
+#include "../AssetCore/VansAssetGuid.h"
 
 namespace Vans
 {
@@ -648,6 +651,25 @@ VansSceneAnimationComponentConfig VansSceneAnimationComponentReader::ReadAnimati
 	config.meshGroup = ReadSerializedStringField(animationNode, "mesh_group", "");
 	config.animatorGuid = ReadAssetReferenceField(animationNode, "animator", "");
 	config.rigGuid = ReadAssetReferenceField(animationNode, "rig", "");
+	if (const auto* bindings = FindObjectField(animationNode, "targetBindings"))
+	{
+		if (bindings->kind != VansSerializedValue::Kind::Array) { config.valid = false; return config; }
+		std::unordered_set<std::string> ids;
+		for (const auto& item : bindings->arrayItems)
+		{
+			VansGraphics::VansAnimationTargetBinding binding;
+			binding.id = ReadSerializedStringField(item, "id");
+			const auto* target = FindObjectField(item, "target");
+			SerializedObjectReferenceValue reference;
+			VansAssetGuid guid;
+			if (binding.id.empty() || !ids.insert(binding.id).second || !target ||
+				!TryReadSerializedObjectReference(*target, reference) || reference.domain != "SceneEntity" ||
+				!VansAssetGuid::TryParse(reference.entityGuid, guid))
+			{ config.valid = false; return config; }
+			binding.targetEntityGuid = guid.ToString();
+			config.targetBindings.push_back(std::move(binding));
+		}
+	}
 	config.externClips = ReadSerializedStringField(animationNode, "extern_clips", "");
 	config.rootMotion = ReadBoolField(animationNode, "root_motion", false);
 	config.autoPlay = ReadBoolField(animationNode, "auto_play", true);

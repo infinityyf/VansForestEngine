@@ -19,6 +19,7 @@ namespace VansGraphics
         m_LifeTime.resize(maxCount, 1.f);
         m_NormalizedAge.resize(maxCount, 0.f);
         m_Flags.resize(maxCount, 0u);
+        m_StepDelta.resize(maxCount, -1.0f);
     }
 
     void VansParticlePool::AllocAngularVelocity()
@@ -63,6 +64,12 @@ namespace VansGraphics
             m_LifeTime[index]      = m_LifeTime[last];
             m_NormalizedAge[index] = m_NormalizedAge[last];
             m_Flags[index]         = m_Flags[last];
+            m_StepDelta[index] = m_StepDelta[last];
+            if (!m_RibbonId.empty())
+            {
+                m_RibbonId[index] = m_RibbonId[last];
+                m_SpawnSequence[index] = m_SpawnSequence[last];
+            }
 
             // 可选扩展属性（按需复制）
             if (!m_AngularVelocity.empty())
@@ -76,6 +83,12 @@ namespace VansGraphics
         }
 
         --m_AliveCount;
+    }
+
+    void VansParticlePool::AllocRibbon()
+    {
+        m_RibbonId.resize(m_MaxCount);
+        m_SpawnSequence.resize(m_MaxCount);
     }
 
 } // namespace VansGraphics

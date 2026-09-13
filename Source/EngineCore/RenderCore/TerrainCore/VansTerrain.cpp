@@ -40,7 +40,7 @@ namespace VansGraphics
         // 释放地形专属描述符集和布局。
         auto descMgr = VansVKDescriptorManager::GetInstance();
         descMgr->DestroyDescriptorSet(m_DescriptorSets);
-        descMgr->DestroyDescriptorSetLayout(m_DescriptorSetLayout);
+        descMgr->ReleaseDescriptorSetLayout(m_DescriptorSetLayout);
     }
 
     void VansTerrain::Init(VansVKDevice* device, const TerrainConfig& config)

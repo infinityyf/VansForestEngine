@@ -368,6 +368,7 @@ bool VansSceneProjectResourceBuilder::LoadTextures(VansScene& scene,
     struct PendingCookedTexture
     {
         VansTexture* texture = nullptr;
+        std::string assetGuid;
         std::vector<std::uint8_t> storage;
         VansTextureMipChainUpload upload{};
     };
@@ -404,6 +405,7 @@ bool VansSceneProjectResourceBuilder::LoadTextures(VansScene& scene,
                 resolved.artifactPath.string());
             auto pending = std::make_unique<PendingCookedTexture>();
             pending->texture = texture;
+            pending->assetGuid = sceneTexture.assetGuid;
 			if (resolved.artifactAvailable &&
 				texture->TryPrepareCookedBatchUpload(*vkDevice, desc, pending->upload, pending->storage))
             {
@@ -423,7 +425,7 @@ bool VansSceneProjectResourceBuilder::LoadTextures(VansScene& scene,
             break;
         }
         texture->SetName(sceneTexture.name);
-        scene.AddTextureAsset(texture);
+        scene.AddTextureAsset(texture,sceneTexture.assetGuid);
     }
 
     if (!pendingCookedTextures.empty())
@@ -442,7 +444,7 @@ bool VansSceneProjectResourceBuilder::LoadTextures(VansScene& scene,
         }
 
         for (const auto& pending : pendingCookedTextures)
-            scene.AddTextureAsset(pending->texture);
+            scene.AddTextureAsset(pending->texture,pending->assetGuid);
     }
 
     VANS_LOG("[TextureBatchUpload] Prepared " << cookedBatchPreparedCount

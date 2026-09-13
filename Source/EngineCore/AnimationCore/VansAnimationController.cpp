@@ -1,4 +1,5 @@
 #include "VansAnimationController.h"
+#include <nlohmann/json.hpp>
 #include "VansAnimGraph.h"
 #include "VansAnimationSampler.h"
 #include "VansPoseMath.h"
@@ -714,6 +715,7 @@ bool VansAnimationController::SetAnimationRig(
 		if (!candidateRuntime->Configure(*m_TargetPostProcessGraph, *candidateRig,
 			queryProfileResolver, error))
 			return false;
+		if (m_ProceduralRuntime) candidateRuntime->TransferStateForRigReplacement(*m_ProceduralRuntime);
 	}
 	m_AnimationRig = std::move(candidateRig);
 	m_QueryProfileResolver = std::move(queryProfileResolver);
@@ -739,6 +741,14 @@ bool VansAnimationController::BindAnimationRigSkeleton(
 		return true;
 	}
 	return m_AnimationRig->BindSkeleton(skeleton, error);
+}
+
+std::unique_ptr<VansAnimGraph> VansAnimationController::CloneTargetPostProcessGraph() const
+{
+	if (!m_TargetPostProcessGraph) return nullptr;
+	AnimGraphJson json;
+	m_TargetPostProcessGraph->SerializeToJsonObject(json);
+	return VansAnimGraph::DeserializeFromJsonObject(json);
 }
 
 void VansAnimationController::ClearTargetPostProcessGraph()
@@ -1183,6 +1193,17 @@ void VansAnimationController::AddParameter(const std::string& name, AnimatorPara
 	m_Parameters[name] = param;
 }
 
+void VansAnimationController::ReplaceParameterDefinitions(const VansAnimationController& definitions, bool preserveValues)
+{
+	auto parameters = definitions.m_Parameters;
+	if (preserveValues) for (auto& [name, parameter] : parameters)
+	{
+		const auto old = m_Parameters.find(name);
+		if (old != m_Parameters.end() && old->second.type == parameter.type) parameter = old->second;
+	}
+	m_Parameters = std::move(parameters);
+}
+
 void VansAnimationController::RemoveParameter(const std::string& name)
 {
 	m_Parameters.erase(name);
@@ -1327,6 +1348,7 @@ bool VansAnimationController::SubmitExternalModelPose(
 
 	if (mode == VansExternalPoseEvaluationMode::DirectFinalPose)
 	{
+		if (m_ProceduralRuntime) m_ProceduralRuntime->Reset(m_ExternalInput.resetToken);
 		BuildFinalMatrices(modelSpaceTransforms, skeleton);
 		return true;
 	}
@@ -2079,6 +2101,17 @@ bool VansAnimationController::ResolvePreparedWorldQueries(
 	m_PreparedWorldQueries.clear();
 	m_HasPreparedFrame = false;
 	return true;
+}
+
+bool VansAnimationController::TryGetPoseCheckpointTransform(
+	const std::string& id, int bone, glm::mat4& transform) const
+{
+	return m_ProceduralRuntime && m_ProceduralRuntime->TryGetCheckpointTransform(id, bone, transform);
+}
+
+bool VansAnimationController::HasPoseCheckpointBone(const std::string& id, int bone) const
+{
+	return m_ProceduralRuntime && m_ProceduralRuntime->HasCheckpointBone(id, bone);
 }
 
 bool VansAnimationController::HasPreparedWorldQueries() const

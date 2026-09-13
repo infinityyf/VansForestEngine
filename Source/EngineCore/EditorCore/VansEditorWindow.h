@@ -58,6 +58,7 @@ namespace VansGraphics
 	class VansHiZCullWindow;
 	class VansAudioDebugWindow;
 	class VansSkeletonDebugWindow;
+	class VansParticleDebugWindow;
 	class VansMotionMatchingDebugWindow;
 	class VansRenderSystem;
 
@@ -89,6 +90,7 @@ namespace VansGraphics
 		static bool m_AudioDebugWindowOpen;
 		static bool m_GAFDebuggerWindowOpen;
 		static bool m_SkeletonDebugWindowOpen;
+		static bool m_ParticleDebugWindowOpen;
 		static bool m_MotionMatchingDebugWindowOpen;
 
 		static bool m_WireframeMode;
@@ -213,6 +215,7 @@ namespace VansGraphics
 
 		static VansAudioDebugWindow* m_AudioDebugWindow;
 		static VansSkeletonDebugWindow* m_SkeletonDebugWindow;
+		static VansParticleDebugWindow* m_ParticleDebugWindow;
 		static VansMotionMatchingDebugWindow* m_MotionMatchingDebugWindow;
 
 	private:

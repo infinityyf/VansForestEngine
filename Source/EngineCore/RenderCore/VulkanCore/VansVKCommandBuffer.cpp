@@ -203,7 +203,7 @@ void VansGraphics::VansVKCommandBuffer::ClearAttachment(std::vector<VkClearAttac
 }
 
 
-void VansGraphics::VansVKCommandBuffer::UpdatePushConstants(VansVKGraphicsPipeline& pipeline, VkShaderStageFlags flags, uint32_t offset, uint32_t size, void* data)
+void VansGraphics::VansVKCommandBuffer::UpdatePushConstants(VansVKGraphicsPipeline& pipeline, VkShaderStageFlags flags, uint32_t offset, uint32_t size, const void* data)
 {
 	VansGraphics::vkCmdPushConstants(
 		m_VansVKCommandBuffer,

@@ -297,7 +297,7 @@ float ProbeCacheSurfaceWeight(ivec2 cacheCoord, vec4 position, vec3 normal)
 }
 
 bool TrySampleProbeCache(ivec2 pixelCoord, ivec2 cacheSize, vec4 position, vec3 normal,
-    out vec3 cachedIrradiance, out float cachedScreenHitConfidence, out bool receiverTransport)
+    out vec3 cachedIrradiance, out float cachedScreenHitConfidence)
 {
     // anchor 位于像素索引 4*c+2，重建必须使用同一中心，不能偏移半个像素。
     vec2 cachePosition = (vec2(pixelCoord) - float(SSGI_PROBE_CACHE_TILE_SIZE / 2)) / float(SSGI_PROBE_CACHE_TILE_SIZE);
@@ -305,7 +305,6 @@ bool TrySampleProbeCache(ivec2 pixelCoord, ivec2 cacheSize, vec4 position, vec3 
     vec2 fraction = fract(cachePosition);
     cachedIrradiance = vec3(0.0);
     cachedScreenHitConfidence = 0.0;
-    receiverTransport = false;
     // 首先尝试 2x2，必要时扩大为 3x3；只按同一表面及空间权重重建。
     for (int search = 0; search < 2; ++search)
     {
@@ -320,7 +319,7 @@ bool TrySampleProbeCache(ivec2 pixelCoord, ivec2 cacheSize, vec4 position, vec3 
             int index = y * width + x;
             ivec2 coord = clamp(origin + ivec2(x, y), ivec2(0), cacheSize - 1);
             samples[index] = LoadProbeCacheRadiance(coord);
-            float match = abs(samples[index].a) >= 0.5 ? ProbeCacheSurfaceWeight(coord, position, normal) : 0.0;
+            float match = samples[index].a >= 0.5 ? ProbeCacheSurfaceWeight(coord, position, normal) : 0.0;
             vec2 bilinear = mix(1.0 - fraction, fraction, vec2(x, y));
             vec2 delta = vec2(coord) - cachePosition;
             float spatial = search == 0 ? bilinear.x * bilinear.y : 1.0 / (1.0 + dot(delta, delta));
@@ -331,17 +330,13 @@ bool TrySampleProbeCache(ivec2 pixelCoord, ivec2 cacheSize, vec4 position, vec3 
         if (totalWeight <= 0.2) continue;
         vec3 sum = vec3(0.0);
         float confidence = 0.0;
-        float transportWeight = 0.0;
         for (int i = 0; i < width * width; ++i)
         {
             sum += samples[i].rgb * weights[i];
-            confidence += clamp(abs(samples[i].a) - 1.0, 0.0, 1.0) * weights[i];
-            if(samples[i].a<0.0) transportWeight+=weights[i];
+            confidence += clamp(samples[i].a - 1.0, 0.0, 1.0) * weights[i];
         }
         cachedIrradiance = sum / totalWeight;
         cachedScreenHitConfidence = confidence / totalWeight;
-        // 标记有补算参与，避免跨过 50% 权重时反复重置相同表面的历史。
-        receiverTransport=transportWeight>0.0;
         return true;
     }
     return false;
@@ -383,10 +378,9 @@ void main()
         pixelCoord, normalData.w);
     vec3 fallbackIrradiance;
     float screenHitConfidence = 0.0;
-    bool receiverTransport=false;
     if (!TrySampleProbeCache(
         pixelCoord, probeCacheSize, surfaceData, giNormal,
-        fallbackIrradiance, screenHitConfidence, receiverTransport))
+        fallbackIrradiance, screenHitConfidence))
     {
         GI_SetReceiverVisibility(pixelCoord, surfaceData, giNormal, round(texelFetch(inputMaterial,pixelCoord,0).z), footprint);
         fallbackIrradiance = EvaluateSSGICacheMissFallback(
@@ -395,5 +389,5 @@ void main()
     vec3 irradiance = fallbackIrradiance;
 
     // Alpha 只携带当前屏幕命中置信度；历史长度由 Temporal 独立管理。
-    imageStore(resultR, pixelCoord, vec4(max(irradiance, vec3(0.0)), receiverTransport ? -1.0-screenHitConfidence : screenHitConfidence));
+    imageStore(resultR, pixelCoord, vec4(max(irradiance, vec3(0.0)), screenHitConfidence));
 }

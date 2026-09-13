@@ -59,6 +59,8 @@ namespace VansGraphics
 		// Skeleton
 		void SetSkeleton(const Skeleton& skeleton);
 		const Skeleton& GetSkeleton() const { return m_Skeleton; }
+		const std::vector<VansAnimationTargetBinding>& GetTargetBindings() const { return m_TargetBindings; }
+		void SetTargetBindings(std::vector<VansAnimationTargetBinding> bindings) { m_TargetBindings = std::move(bindings); }
 
 		// Controller binding
 		bool SetController(VansAnimationController* controller);
@@ -192,6 +194,7 @@ namespace VansGraphics
 		std::string m_AnimatorAssetGuid;
 
 		// Root motion application
+		std::vector<VansAnimationTargetBinding> m_TargetBindings;
 		uint32_t m_TransformID           = 0;
 		bool     m_HasTransformID        = false;
 		bool     m_CharacterMotionFramePrepared = false;

@@ -113,7 +113,7 @@ namespace VansGraphics
 
 		void EnsureComputeShader(VansComputeShader& shader, const std::vector<VkDescriptorSetLayout>& descriptorset_layouts);
 
-		void UpdatePushConstants(VansVKGraphicsPipeline& pipeline, VkShaderStageFlags flags, uint32_t offset, uint32_t size, void* data);
+		void UpdatePushConstants(VansVKGraphicsPipeline& pipeline, VkShaderStageFlags flags, uint32_t offset, uint32_t size, const void* data);
 
 		void SetViewport(uint32_t first_viewport,const std::vector<VkViewport>& viewports);
 

@@ -154,6 +154,9 @@ void GI_AccumulateProbeIrradiance(uint region, uint probe, sampler2D irradiance,
 }
 
 #include "GIProbeCandidates.glsl"
+#ifdef GI_RECEIVER_VISIBILITY
+#include "GIReceiverZeroSupportFallback.glsl"
+#endif
 
 // 空间权重、朝向、图集积分约定不变；可见性来源由调用者明确选择。
 vec3 GI_SampleProbeIrradianceAtlas(uint region, ivec3 counts,
@@ -172,6 +175,11 @@ vec3 GI_SampleProbeIrradianceAtlas(uint region, ivec3 counts,
             candidates.positions[i], candidates.samplePosition, N, candidates.weights[i],
             ivec2(columns, rows), sum, weightSum);
     }
+#ifdef GI_RECEIVER_VISIBILITY
+    // 独立回退入口；注释此调用可恢复严格的接收点 RT 剔除。
+    GI_ApplyReceiverZeroSupportFallback(region, irradiance, visibility, candidates, N,
+        ivec2(columns, rows), sum, weightSum);
+#endif
     support = weightSum;
     return weightSum > 0.0 ? sum / weightSum * volumeWeight * INV_PI : vec3(0.0);
 }

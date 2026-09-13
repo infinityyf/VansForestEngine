@@ -168,6 +168,17 @@ struct VansActionEndedEvent
 	std::uint64_t correlationId = 0;
 };
 
+// 已接受的动作消息在 GameLogic 队列转发，脚本不会在服务执行栈或物理锁内重入。
+struct VansActionMessageEvent
+{
+	VansEntityHandle owner;
+	VansActionHandle action;
+	VansActionId definition;
+	std::uint64_t correlationId = 0;
+	std::uint64_t sequence = 0;
+	VansActionEvent message;
+};
+
 struct VansActionHostLimits
 {
 	std::size_t maximumActiveActions = 64;

@@ -193,6 +193,34 @@ namespace VansGraphics
 		return true;
 	}
 
+	void VansGroundingRuntime::TransferStateForRigReplacement(const VansGroundingRuntime& source)
+	{
+		if (!m_Rig || !source.m_Rig || source.m_HasPreparedContacts || source.m_HasResolvedTransaction ||
+			m_Rig->skeletonSignature != source.m_Rig->skeletonSignature ||
+			m_Rig->modelUp != source.m_Rig->modelUp || m_Rig->modelForward != source.m_Rig->modelForward ||
+			m_Rig->semanticBoneIndices != source.m_Rig->semanticBoneIndices ||
+			m_Settings.query.collisionMask != source.m_Settings.query.collisionMask ||
+			m_Settings.contactIndices.size() != source.m_Settings.contactIndices.size()) return;
+		for (std::size_t i = 0; i < m_Settings.contactIndices.size(); ++i)
+		{
+			const auto& a = m_Rig->contacts[m_Settings.contactIndices[i]];
+			const auto& b = source.m_Rig->contacts[source.m_Settings.contactIndices[i]];
+			if (a.id != b.id || a.footBoneIndex != b.footBoneIndex || a.ballBoneIndex != b.ballBoneIndex ||
+				a.soleForwardLocal != b.soleForwardLocal || a.soleNormalLocal != b.soleNormalLocal ||
+				a.heelPivotLocal != b.heelPivotLocal || a.ballPivotLocal != b.ballPivotLocal ||
+				a.anklePivotLocal != b.anklePivotLocal || a.sweepRadius != b.sweepRadius ||
+				a.soleSamplesLocal.size() != b.soleSamplesLocal.size() ||
+				m_Rig->chains[a.chainIndex].boneIndices != source.m_Rig->chains[b.chainIndex].boneIndices) return;
+			for (std::size_t j = 0; j < a.soleSamplesLocal.size(); ++j)
+				if (a.soleSamplesLocal[j].id != b.soleSamplesLocal[j].id ||
+					a.soleSamplesLocal[j].positionLocal != b.soleSamplesLocal[j].positionLocal) return;
+		}
+		m_ContactStates = source.m_ContactStates;
+		m_PelvisOffsetModel = source.m_PelvisOffsetModel;
+		m_ResetToken = source.m_ResetToken;
+		m_QuerySequence = source.m_QuerySequence;
+	}
+
 	void VansGroundingRuntime::Reset(std::uint64_t resetToken)
 	{
 		m_ResetToken = resetToken;

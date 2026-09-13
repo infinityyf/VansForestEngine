@@ -22,7 +22,7 @@ namespace VansGraphics
 	using VansGroundQueryProfileResolver = std::function<bool(
 		const std::string& profile, std::uint32_t& collisionMask, std::string& error)>;
 
-	enum class VansProceduralDebugKind { Goal, Aim, Grounding, LimbIK, ChainIK };
+	enum class VansProceduralDebugKind { Goal, Aim, Grounding, LimbIK, ChainIK, PoseCheckpoint, RotationDistribution };
 
 	struct VansProceduralDebugRecord
 	{
@@ -32,6 +32,7 @@ namespace VansGraphics
 		int goalIndex = -1;
 		VansProceduralGoal goal;
 		VansProceduralSolverResult result;
+		std::string diagnostic;
 	};
 
 	// Compiled runtime for the only legal procedural execution boundary: the
@@ -51,6 +52,7 @@ namespace VansGraphics
 		               const VansGroundQueryProfileResolver& queryProfileResolver,
 		               std::string& error);
 		void Reset(std::uint64_t resetToken = 0);
+		void TransferStateForRigReplacement(const VansProceduralGraphRuntime& source);
 
 		bool Prepare(float deltaTime,
 		             const std::vector<VansBoneTransform>& localPose,
@@ -65,6 +67,8 @@ namespace VansGraphics
 		             std::vector<VansBoneTransform>& outCompletedPose,
 		             std::string& error);
 
+		bool TryGetCheckpointTransform(const std::string& id, int bone, glm::mat4& transform) const;
+		bool HasCheckpointBone(const std::string& id, int bone) const;
 		bool IsConfigured() const;
 		bool HasPreparedQueries() const;
 		const VansCompiledAnimationRig* GetRig() const;

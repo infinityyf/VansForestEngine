@@ -52,13 +52,8 @@ struct Fixture
     VkDebugUtilsMessengerEXT messenger{};
     PFN_vkDestroyDebugUtilsMessengerEXT destroyMessenger{};
     VkDescriptorSetLayout rootLayout{},passLayout{};
-    VkAccelerationStructureKHR transportTLAS{};
-    VansVKBuffer *transportVertex{}, *transportIndex{}, *transportInstance{}, *transportMaterial{};
-    std::vector<VkDescriptorSetLayout> transportLayouts;
-    std::vector<VkDescriptorSet> transportSets;
-    void TestTransport();
-    void TestTransportBoundary();
     void TestBias();
+    void TestZeroSupportFallback();
     std::vector<VkDescriptorSet> rootSets,passSets;
     VansRayTracingShader* trace{};
     VansComputeShader *prepare{}, *reproject{}, *worldShader{};
@@ -77,9 +72,7 @@ struct Fixture
         vkDeviceWaitIdle(device->GetLogicDevice());
         auto* descriptors=VansVKDescriptorManager::GetInstance();
         descriptors->DestroyDescriptorSet(rootSets);descriptors->DestroyDescriptorSet(passSets);
-        descriptors->DestroyDescriptorSet(transportSets);
-        for(auto& setLayout:transportLayouts) descriptors->DestroyDescriptorSetLayout(setLayout);
-        descriptors->DestroyDescriptorSetLayout(rootLayout);descriptors->DestroyDescriptorSetLayout(passLayout);
+        descriptors->ReleaseDescriptorSetLayout(rootLayout);descriptors->ReleaseDescriptorSetLayout(passLayout);
         for(auto as:acceleration) device->DestroyAccelerationStructure(as);
         textures.clear();
         for(auto& buffer:buffers) buffer->DestroyVulkanBuffer(device->GetLogicDevice());
@@ -279,7 +272,6 @@ void Fixture::Initialize()
     shaders.RegisterComputeShader("GIReceiverVisibilityPrepare","EngineAssets/Shaders/GIReceiverVisibilityPrepare",32);
     shaders.RegisterComputeShader("GIReceiverVisibilityReproject","EngineAssets/Shaders/GIReceiverVisibilityReproject",80);
     shaders.RegisterComputeShader("GIReceiverVisibilityWorldCache","EngineAssets/Shaders/GIReceiverVisibilityWorldCache",32);
-    shaders.RegisterRayTracingShader("GIReceiverTransport","EngineAssets/Shaders/GIReceiverTransport",16);
     shaders.RegisterRayTracingShader("GIReceiverBias","EngineAssets/Shaders/GIReceiverBias");
     Check(shaders.LoadAll(std::filesystem::current_path().generic_string()+"/",device->GetLogicDevice()),"production visibility shaders");
     trace=shaders.FindRayTracingShader("GIReceiverVisibilityTrace");prepare=shaders.FindComputeShader("GIReceiverVisibilityPrepare");
@@ -328,7 +320,6 @@ void Fixture::Initialize()
     geometry.geometry.instances.sType=VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
     geometry.geometry.instances.data.deviceAddress=Address(instanceBuffer);
     auto tlas=Build(VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,geometry,6);
-    transportTLAS=tlas;transportVertex=vertex;transportIndex=index;
     End(); // 纹理上传拥有自己的 immediate command 提交，先完成 AS 构建。
     std::cout << "[GIReceiverVisibilityGPU] AS ready" << std::endl;
     auto* transparent=Texture(1,1,{glm::vec4(0)});
@@ -337,7 +328,6 @@ void Fixture::Initialize()
     auto* hitVertex=Buffer(hitVertices.size()*2,hitVertices.data());
     uint32_t modelIds[6]={0,0,0,0,0,0};
     auto* model=Buffer(sizeof(modelIds),modelIds);auto* instanceMaterials=Buffer(sizeof(materials),materials.data());
-    transportInstance=model;transportMaterial=instanceMaterials;
     bias=Buffer(16+Count*32);
     current=Buffer(CacheBytes);history=Buffer(CacheBytes);work=Buffer(VansGIReceiverVisibility::WorkBytes);
     anchors=Buffer(Count*4);world=Buffer(VansGIReceiverVisibility::WorldBytes);
@@ -384,6 +374,115 @@ void Fixture::Initialize()
     viewProjection[3]=glm::vec4(1.0f/Width,-1.0f/Height,.5f,1.0f);
     std::cout << "[GIReceiverVisibilityGPU] resources ready" << std::endl;
 }
+void Fixture::TestZeroSupportFallback()
+{
+    std::ifstream file("Source/Tests/Shaders/GIReceiverZeroSupportFallback.comp.spv",std::ios::binary|std::ios::ate);
+    Check(bool(file),"fallback shader artifact");
+    const auto bytes=static_cast<size_t>(file.tellg());std::vector<uint32_t> code(bytes/4);
+    file.seekg(0);file.read(reinterpret_cast<char*>(code.data()),bytes);
+    struct PipelineScope
+    {
+        VkDevice device{};VkShaderModule module{};VkPipelineLayout layout{};VkPipeline pipeline{};VkImageView opaqueView{};
+        ~PipelineScope()
+        {
+            if(pipeline)vkDestroyPipeline(device,pipeline,nullptr);
+            if(layout)vkDestroyPipelineLayout(device,layout,nullptr);
+            if(module)vkDestroyShaderModule(device,module,nullptr);
+            VansVKImage::DestroyImageView(device,opaqueView);
+        }
+    } pipeline;
+    pipeline.device=device->GetLogicDevice();
+    VkShaderModuleCreateInfo module{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};module.codeSize=bytes;module.pCode=code.data();
+    Check(vkCreateShaderModule(pipeline.device,&module,nullptr,&pipeline.module)==VK_SUCCESS,"fallback module");
+    const VkDescriptorSetLayout layouts[]={rootLayout,passLayout};
+    VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};layoutInfo.setLayoutCount=2;layoutInfo.pSetLayouts=layouts;
+    Check(vkCreatePipelineLayout(pipeline.device,&layoutInfo,nullptr,&pipeline.layout)==VK_SUCCESS,"fallback layout");
+    VkComputePipelineCreateInfo compute{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};compute.layout=pipeline.layout;
+    compute.stage={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,nullptr,0,VK_SHADER_STAGE_COMPUTE_BIT,pipeline.module,"main",nullptr};
+    Check(vkCreateComputePipelines(pipeline.device,VK_NULL_HANDLE,1,&compute,nullptr,&pipeline.pipeline)==VK_SUCCESS,"fallback pipeline");
+
+    const std::vector<glm::vec4> previewPixels={glm::vec4(.2f,.4f,.6f,0),glm::vec4(.2f,.4f,.6f,-1),
+        glm::vec4(.2f,.4f,.6f,1.0f/255.0f),glm::vec4(.2f,.4f,.6f,2)};
+    auto* preview=Texture(4,1,previewPixels);
+    pipeline.opaqueView=preview->GetImage().CreateLayerMipView(pipeline.device,0,0,
+        {VK_COMPONENT_SWIZZLE_IDENTITY,VK_COMPONENT_SWIZZLE_IDENTITY,VK_COMPONENT_SWIZZLE_IDENTITY,VK_COMPONENT_SWIZZLE_ONE});
+    Check(pipeline.opaqueView!=VK_NULL_HANDLE,"opaque preview view");
+    auto* descriptors=VansVKDescriptorManager::GetInstance();
+    descriptors->BeginDescriptorUpdate();
+    descriptors->WriteImageDescriptor(passSets[0],2,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        {{preview->GetImage().GetSampler(),pipeline.opaqueView,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}});
+    descriptors->WriteImageDescriptor(passSets[0],3,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        {{preview->GetImage().GetSampler(),preview->GetImage().GetImageView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}});
+    descriptors->CommitDescriptorUpdates();
+
+    std::array<State,32> published{};
+    std::memcpy(states->GetMappedPtr(),published.data(),sizeof(published));
+    auto* records=reinterpret_cast<Record*>(static_cast<char*>(current->GetMappedPtr())+16);
+    for(uint32_t i=0;i<12;++i)
+    {
+        records[i]={};records[i].metadata=glm::uvec4(0,9,255,0);
+        for(uint32_t p=0;p<16;++p)records[i].probes[p/4][p%4]=p<8?p:~0u;
+    }
+    records[1].metadata.w=4; // 保留一个有光的可见 Probe。
+    records[2].metadata.w=255;
+    records[3].metadata.z=0; // 未知遮挡仍用距离矩。
+    records[6].metadata.w=1; // 可见 Probe 的 RGB 为黑，但支持权重非零。
+    records[7].metadata.x=1; // 不允许跨区域使用遮挡记录。
+    records[8].metadata.z=1;
+    for(auto& ids:records[11].probes)ids=glm::uvec4(24,25,26,27); // 候选身份不匹配。
+
+    auto close=[](glm::vec4 a,glm::vec4 b){return glm::all(glm::lessThanEqual(glm::abs(a-b),glm::vec4(2e-6f)));};
+    for(uint32_t variant=0;variant<3;++variant)
+    {
+        std::vector<glm::vec4> radiance(32*16),moments(64*32);
+        for(uint32_t y=0;y<16;++y)for(uint32_t x=0;x<32;++x)
+        {
+            uint32_t p=x/8+(y/8)*4;
+            radiance[y*32+x]=variant==2||p==0?glm::vec4(0):glm::vec4(float(p),.25f*float(p),.1f,1);
+        }
+        for(uint32_t y=0;y<32;++y)for(uint32_t x=0;x<64;++x)
+        {
+            uint32_t p=x/16+(y/16)*4;
+            moments[y*64+x]=variant==1?glm::vec4(0):p%2==0?glm::vec4(10,100,0,0):glm::vec4(.1f,.02f,0,0);
+        }
+        auto* atlas=Texture(32,16,radiance);auto* visibility=Texture(64,32,moments);
+        descriptors->BeginDescriptorUpdate();
+        descriptors->WriteImageDescriptor(passSets[0],0,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            {{atlas->GetImage().GetSampler(),atlas->GetImage().GetImageView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}});
+        descriptors->WriteImageDescriptor(passSets[0],1,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            {{visibility->GetImage().GetSampler(),visibility->GetImage().GetImageView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}});
+        descriptors->CommitDescriptorUpdates();
+        Begin();Barrier(VK_PIPELINE_STAGE_HOST_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_ACCESS_HOST_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT);
+        auto cmd=Command().GetVKCommandBuffer();const VkDescriptorSet sets[]={rootSets[0],passSets[0]};
+        vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,pipeline.pipeline);
+        vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,pipeline.layout,0,2,sets,0,nullptr);vkCmdDispatch(cmd,1,1,1);
+        Barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_HOST_BIT,VK_ACCESS_SHADER_WRITE_BIT,VK_ACCESS_HOST_READ_BIT);End();
+        const auto* values=static_cast<const glm::vec4*>(work->GetMappedPtr());
+        for(uint32_t i=0;i<12;++i)
+        {
+            auto actual=values[i*4],strict=values[i*4+1],baseline=values[i*4+2];
+            Check(close(actual,strict.w>0?strict:baseline),"zero-support fallback or supported-path preservation");
+            Check(values[i*4+3].x==(i==4?0.0f:1.0f) && values[i*4+3].y==float(records[i].metadata.z) &&
+                values[i*4+3].z==float(records[i].metadata.w),"fallback mutated visibility context");
+            if(i==5)Check(close(actual,glm::vec4(0)),"unpublished probes fabricated light/support");
+        }
+        if(variant==0)
+        {
+            Check(values[0].w>0 && values[0].x>0 && values[1].w==0,"all-blocked fallback did not restore original DDGI");
+            Check(values[6*4].w>0 && values[6*4].x==0,"legitimate black irradiance triggered fallback");
+            Check(!close(values[1*4],values[1*4+2]),"partial visibility fixture must distinguish baseline from strict sampling");
+        }
+        if(variant==1)Check(close(values[0],glm::vec4(0)),"baseline distance moments were bypassed");
+        if(variant==2)Check(values[0].w>0 && values[0].x==0,"black published DDGI lost support");
+        for(uint32_t i=0;i<4;++i)
+        {
+            Check(close(values[(12+i)*4],glm::vec4(glm::vec3(previewPixels[i]),1)),"GI RGB preview alpha is not opaque");
+            Check(close(values[(12+i)*4+1],previewPixels[i]),"preview changed runtime RGBA metadata");
+        }
+    }
+    std::cout<<"[GIReceiverZeroSupportGPU] 36 sampling cases + RGB-only preview: PASS"<<std::endl;
+}
+
 void Fixture::TestBias()
 {
     struct BiasRecord { glm::vec4 surface,limits; };
@@ -466,268 +565,6 @@ void Fixture::TestBias()
     std::cout<<"[GIReceiverBiasGPU] moving clearance, smooth boundary, directions, candidate cell, disabled path and vegetation passed; meanMs="<<milliseconds/6.0<<std::endl;
 }
 
-
-void Fixture::TestTransportBoundary()
-{
-    // 正式边界函数直接在 GPU 上执行；同时覆盖正常区域及跨表面拒绝。
-    std::ifstream file("Source/Tests/Shaders/GIReceiverTransportBoundary.comp.spv",std::ios::binary|std::ios::ate);
-    Check(bool(file),"boundary shader artifact");
-    const auto bytes=static_cast<size_t>(file.tellg());std::vector<uint32_t> code(bytes/4);
-    file.seekg(0);file.read(reinterpret_cast<char*>(code.data()),bytes);
-    struct PipelineScope
-    {
-        VkDevice device{};VkShaderModule module{};VkPipelineLayout layout{};VkPipeline pipeline{};
-        ~PipelineScope() {if(pipeline)vkDestroyPipeline(device,pipeline,nullptr);if(layout)vkDestroyPipelineLayout(device,layout,nullptr);if(module)vkDestroyShaderModule(device,module,nullptr);}
-    } pipeline;
-    pipeline.device=device->GetLogicDevice();
-    VkShaderModuleCreateInfo module{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};module.codeSize=bytes;module.pCode=code.data();
-    Check(vkCreateShaderModule(pipeline.device,&module,nullptr,&pipeline.module)==VK_SUCCESS,"boundary module");
-    const VkDescriptorSetLayout layouts[]={rootLayout,passLayout};
-    VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};layoutInfo.setLayoutCount=2;layoutInfo.pSetLayouts=layouts;
-    Check(vkCreatePipelineLayout(pipeline.device,&layoutInfo,nullptr,&pipeline.layout)==VK_SUCCESS,"boundary layout");
-    VkComputePipelineCreateInfo compute{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};compute.layout=pipeline.layout;
-    compute.stage={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,nullptr,0,VK_SHADER_STAGE_COMPUTE_BIT,pipeline.module,"main",nullptr};
-    Check(vkCreateComputePipelines(pipeline.device,VK_NULL_HANDLE,1,&compute,nullptr,&pipeline.pipeline)==VK_SUCCESS,"boundary pipeline");
-    std::vector<char> savedCurrent(current->GetBufferSize()),savedWork(work->GetBufferSize());
-    std::memcpy(savedCurrent.data(),current->GetMappedPtr(),savedCurrent.size());std::memcpy(savedWork.data(),work->GetMappedPtr(),savedWork.size());
-    std::memset(current->GetMappedPtr(),0,savedCurrent.size());
-    *static_cast<glm::uvec4*>(current->GetMappedPtr())=glm::uvec4(1,64,64,0);
-    auto* values=reinterpret_cast<Record*>(static_cast<char*>(current->GetMappedPtr())+16);
-    Record blocked{};blocked.surface=glm::vec4(0,0,1,130944.0f); // SSGI_EncodeSurface(+Z, material 0)
-    blocked.metadata=glm::uvec4(0,1,15,0);for(auto& probes:blocked.probes) probes=glm::uvec4(~0u);
-    blocked.probes[0]=glm::uvec4(0,1,2,3);blocked.anchor.x=.01f;
-    values[16*64+16]=blocked;
-    values[16*64+48]=blocked;values[16*64+48].metadata.z=1u;
-    values[48*64+16]=blocked;values[48*64+16].metadata.w=1u;
-    Begin();Barrier(VK_PIPELINE_STAGE_HOST_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_ACCESS_HOST_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT);
-    auto cmd=Command().GetVKCommandBuffer();const VkDescriptorSet sets[]={rootSets[0],passSets[0]};
-    vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,pipeline.pipeline);
-    vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,pipeline.layout,0,2,sets,0,nullptr);vkCmdDispatch(cmd,1,1,1);
-    Barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_HOST_BIT,VK_ACCESS_SHADER_WRITE_BIT,VK_ACCESS_HOST_READ_BIT);End();
-    const std::array<float,16> expected={1,1,20.0f/27,7.0f/27,0,0,0,0,0,0,0,0,0,0,0,20.0f/27};
-    const auto* actual=static_cast<const float*>(work->GetMappedPtr());bool valid=true;
-    for(size_t i=0;i<expected.size();++i) {std::cout<<"[GIReceiverBoundaryGPU] case="<<i<<" expected="<<expected[i]<<" actual="<<actual[i]<<std::endl;valid=valid&&std::abs(actual[i]-expected[i])<2e-5f;}
-    std::memcpy(current->GetMappedPtr(),savedCurrent.data(),savedCurrent.size());std::memcpy(work->GetMappedPtr(),savedWork.data(),savedWork.size());
-    Check(valid,"boundary continuity, outside radius, region, material, opposite face, plane and unknown rejection");
-}
-
-void Fixture::TestTransport()
-{
-    using Job=VansGIReceiverVisibility::TransportJob;
-    constexpr uint32_t N=9;
-    auto* descriptors=VansVKDescriptorManager::GetInstance();
-    const auto rgen=VK_SHADER_STAGE_RAYGEN_BIT_KHR;
-    const VkShaderStageFlags hit=VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR|VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
-    auto allocate=[&](const std::vector<VkDescriptorSetLayoutBinding>& bindings)
-    {
-        VkDescriptorSetLayout setLayout{}; std::vector<VkDescriptorSet> sets;
-        Check(VansDescriptorSetLayoutFactory::CreateAndAllocate_Custom(bindings,setLayout,sets),"transport descriptors");
-        transportLayouts.push_back(setLayout);transportSets.push_back(sets[0]);
-    };
-    allocate({{1,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,rgen,nullptr},
-        {37,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,1,rgen,nullptr},
-        {11,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,rgen,nullptr},
-        {12,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,rgen,nullptr}});
-    allocate({{5,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,1,rgen,nullptr},{7,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,1,rgen,nullptr},
-        {8,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,8,rgen,nullptr},{9,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,8,rgen,nullptr},
-        {10,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,8,rgen,nullptr},{20,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,rgen,nullptr},
-        {25,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,rgen,nullptr},{26,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,rgen,nullptr},
-        {28,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,rgen,nullptr},{29,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,2,rgen,nullptr}});
-    allocate({{0,VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,1,rgen,nullptr},
-        {3,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,hit,nullptr},{4,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,hit,nullptr},
-        {5,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,hit,nullptr},{7,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,hit,nullptr},
-        {10,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,hit,nullptr},{14,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,hit,nullptr},
-        {50,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,8,hit,nullptr}});
-    auto makeImage=[&](uint32_t width,bool cube)
-    {
-        auto texture=std::make_unique<VansTexture>();
-        Check(texture->InitTextureWithoutData(Command(),width,1,1,VK_FORMAT_R16G16B16A16_SFLOAT,cube,false,true),"transport image");
-        auto* result=texture.get();textures.push_back(std::move(texture));return result;
-    };
-    auto* output=makeImage(N,false); auto* cube=makeImage(1,true);
-    auto depth=std::make_unique<VansTexture>(); auto logical=device->GetLogicDevice();
-    Check(depth->GetImage().CreateVulkanImage(logical,{1,1,1},VK_FORMAT_D32_SFLOAT,1,1,VK_IMAGE_TYPE_2D,
-        VK_IMAGE_USAGE_SAMPLED_BIT|VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-        VK_SAMPLE_COUNT_1_BIT,false,false,true,VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,true),"transport compare depth");
-    auto* compare=depth.get();textures.push_back(std::move(depth));
-    Begin();
-    VkClearColorValue skyColor{}; for(float& v:skyColor.float32) v=1.0f;
-    VkImageSubresourceRange cubeRange{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,6};
-    vkCmdClearColorImage(Command().GetVKCommandBuffer(),cube->GetImage().GetImage(),VK_IMAGE_LAYOUT_GENERAL,&skyColor,1,&cubeRange);
-    VkClearColorValue sentinel{}; for(float& v:sentinel.float32) v=7.0f;
-    Command().ClearColorImage(output->GetImage(),VK_IMAGE_LAYOUT_GENERAL,sentinel);
-    auto& depthImage=compare->GetImage();
-    depthImage.SetImageMemoryBarrier(Command(),VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,
-        {depthImage.GetImage(),0,VK_ACCESS_TRANSFER_WRITE_BIT,VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_QUEUE_FAMILY_IGNORED,VK_QUEUE_FAMILY_IGNORED,VK_IMAGE_ASPECT_DEPTH_BIT});
-    VkClearDepthStencilValue clearDepth{1,0}; VkImageSubresourceRange range{VK_IMAGE_ASPECT_DEPTH_BIT,0,1,0,1};
-    vkCmdClearDepthStencilImage(Command().GetVKCommandBuffer(),depthImage.GetImage(),VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,&clearDepth,1,&range);
-    depthImage.SetImageMemoryBarrier(Command(),VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
-        {depthImage.GetImage(),VK_ACCESS_TRANSFER_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            VK_QUEUE_FAMILY_IGNORED,VK_QUEUE_FAMILY_IGNORED,VK_IMAGE_ASPECT_DEPTH_BIT});
-    Barrier(VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
-        VK_ACCESS_TRANSFER_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT);End();
-    auto* dummy=Texture(1,1,{glm::vec4(0.5f)});
-    auto* black=Texture(1,1,{glm::vec4(0.0f)});
-    auto* globals=Buffer(1024*1024); // 所有灯计数与强度为零，天空单独设为 1。
-    glm::vec4 sky(1,0,0,0);auto* skyInfo=Buffer(16,&sky);
-    SSGIParamsGPU transportInfo{};auto* parameters=Buffer(sizeof(transportInfo),&transportInfo);
-    auto* transportWork=Buffer(VansGIReceiverVisibility::TransportBytes);
-    auto* header=static_cast<glm::uvec4*>(transportWork->GetMappedPtr());*header=glm::uvec4(N-1,N-1,0,1);
-    auto* jobs=reinterpret_cast<Job*>(header+1);
-    for(uint32_t i=0;i<N-1;++i)
-    {
-        jobs[i].origin=glm::vec4(-.0287428f+.0001f,0,0,1);
-        jobs[i].destination=glm::uvec4(i,0,glm::floatBitsToUint(1.0f),0);
-        for(auto& direction:jobs[i].directions) direction=glm::vec4(1,0,0,1);
-    }
-    // 窄缝的外侧命中墙仍为黑；朝开口的射线才获得实际天空能量。
-    for(auto& direction:jobs[1].directions) direction=glm::vec4(0,1,0,1);
-    jobs[2].directions[2]=jobs[2].directions[3]=glm::vec4(0,1,0,1);
-    jobs[3].origin.x=5.0f-.0287428f+.0001f; // 透明裁剪平面应被跳过。
-    jobs[4].screenRadiance=glm::vec4(.2f,.2f,.2f,.75f);
-    for(auto& direction:jobs[4].directions) direction=glm::vec4(0,1,0,.25f);
-    jobs[5].screenRadiance=glm::vec4(.2f,.2f,.2f,1);
-    for(auto& direction:jobs[5].directions) direction.w=0;
-    jobs[6].origin.x=-.0287428f+.05f; // 原 5cm 偏移越过墙，作为反例必须看到天空。
-    // 局部过渡只混合估计；权重 1 的封闭区域继续保持零。
-    jobs[7].destination.z=glm::floatBitsToUint(.5f);
-    glm::uvec4 meshLayout[2]={glm::uvec4(12,0,~0u,~0u),glm::uvec4(1,0,0,0)};
-    auto* metadata=Buffer(sizeof(meshLayout),meshLayout);auto* emission=Buffer(6*16);
-    auto* readback=Buffer(N*8);
-    auto bindImage=[&](VkDescriptorSet set,uint32_t binding,VansTexture* texture,uint32_t count=1,bool storage=false)
-    {
-        auto& image=texture->GetImage();
-        descriptors->WriteImageDescriptor(set,binding,storage?VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            std::vector<VkDescriptorImageInfo>(count,{image.GetSampler(),image.GetImageView(),image.GetImageLayout()}));
-    };
-    descriptors->BeginDescriptorUpdate();
-    auto global=transportSets[0],pass=transportSets[1],rt=transportSets[2];
-    BindBuffer(global,1,globals);BindBuffer(global,37,skyInfo,1,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
-    bindImage(global,11,dummy);bindImage(global,12,dummy);
-    BindBuffer(pass,7,parameters,1,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);BindBuffer(pass,10,states,8);
-    BindBuffer(pass,20,layout);BindBuffer(pass,25,transportWork);
-    bindImage(pass,5,output,1,true);bindImage(pass,8,dummy,8);bindImage(pass,9,dummy,8);
-    bindImage(pass,26,cube);bindImage(pass,28,dummy);bindImage(pass,29,compare,2);
-    BindBuffer(rt,3,transportVertex);BindBuffer(rt,4,transportIndex);BindBuffer(rt,5,transportInstance);
-    BindBuffer(rt,7,transportMaterial);BindBuffer(rt,10,emission);BindBuffer(rt,14,metadata);
-    std::vector<VkDescriptorImageInfo> materialImages(8,{dummy->GetImage().GetSampler(),dummy->GetImage().GetImageView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
-    materialImages[0]={black->GetImage().GetSampler(),black->GetImage().GetImageView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    descriptors->WriteImageDescriptor(rt,50,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,materialImages);
-    descriptors->CommitDescriptorUpdates();
-    VkWriteDescriptorSetAccelerationStructureKHR asInfo{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
-    asInfo.accelerationStructureCount=1;asInfo.pAccelerationStructures=&transportTLAS;
-    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};write.pNext=&asInfo;write.dstSet=rt;
-    write.dstBinding=0;write.descriptorCount=1;write.descriptorType=VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
-    vkUpdateDescriptorSets(logical,1,&write,0,nullptr);
-    auto* shader=VansShaderManager::Get().FindRayTracingShader("GIReceiverTransport");
-    auto* pipeline=shader->GetRayTracingPipeline(device.get(),transportLayouts);Check(pipeline!=nullptr,"production receiver transport pipeline");
-    Begin();Barrier(VK_PIPELINE_STAGE_HOST_BIT,VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
-        VK_ACCESS_HOST_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT);
-    Command().BindRayTracingPipeline(*pipeline);Command().BindRayTracingDescriptorSets(*pipeline,0,transportSets);
-    glm::vec4 limits(10,10,0,0);
-    Command().UpdateRayTracingPushConstants(*pipeline,rgen|hit|VK_SHADER_STAGE_MISS_BIT_KHR,0,16,&limits);
-    Command().TraceRays(*pipeline,VansGIReceiverVisibility::TransportJobBudget,1,1);
-    Barrier(VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_SHADER_WRITE_BIT,VK_ACCESS_TRANSFER_READ_BIT);
-    VkBufferImageCopy copy{};copy.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};copy.imageExtent={N,1,1};
-    vkCmdCopyImageToBuffer(Command().GetVKCommandBuffer(),output->GetImage().GetImage(),VK_IMAGE_LAYOUT_GENERAL,readback->GetNativeBuffer(),1,&copy);
-    Barrier(VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_HOST_BIT,VK_ACCESS_TRANSFER_WRITE_BIT,VK_ACCESS_HOST_READ_BIT);End();
-    auto* result=static_cast<uint16_t*>(readback->GetMappedPtr());
-    const float expected[N]={0,1,.5f,1,.45f,.2f,1,3.5f,7};
-    for(uint32_t i=0;i<N;++i)
-    {
-        glm::vec4 value;for(uint32_t c=0;c<4;++c)value[c]=glm::unpackHalf1x16(result[4*i+c]);
-        std::cout<<"[GIReceiverTransportGPU] case="<<i<<" rgb="<<value.x<<","<<value.y<<","<<value.z<<" source="<<value.a<<std::endl;
-        Check(glm::all(glm::lessThan(glm::abs(glm::vec3(value)-glm::vec3(expected[i])),glm::vec3(.003f))),"transport energy / occlusion / queue boundary");
-        Check(i==N-1 ? value.a==7.0f : value.a<0,"transport source / untouched destination");
-    }
-    // 同一 BLAS 的命中材质读取改用 uint16 索引，仍须得到相同照明。
-    const auto indexCount=transportIndex->GetBufferSize()/sizeof(uint32_t);
-    auto* originalIndices=static_cast<uint32_t*>(transportIndex->GetMappedPtr());
-    std::vector<uint16_t> shortIndices(indexCount);
-    for(size_t i=0;i<indexCount;++i)shortIndices[i]=uint16_t(originalIndices[i]);
-    auto* shortIndex=Buffer(shortIndices.size()*sizeof(uint16_t),shortIndices.data());
-    static_cast<glm::uvec4*>(metadata->GetMappedPtr())[1].y=1u;
-    descriptors->BeginDescriptorUpdate();BindBuffer(rt,4,shortIndex);descriptors->CommitDescriptorUpdates();
-    Begin();
-    Barrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_MEMORY_READ_BIT|VK_ACCESS_MEMORY_WRITE_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
-    Command().ClearColorImage(output->GetImage(),VK_IMAGE_LAYOUT_GENERAL,sentinel);
-    Barrier(VK_PIPELINE_STAGE_TRANSFER_BIT|VK_PIPELINE_STAGE_HOST_BIT,VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
-        VK_ACCESS_TRANSFER_WRITE_BIT|VK_ACCESS_HOST_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT);
-    Command().BindRayTracingPipeline(*pipeline);Command().BindRayTracingDescriptorSets(*pipeline,0,transportSets);
-    Command().UpdateRayTracingPushConstants(*pipeline,rgen|hit|VK_SHADER_STAGE_MISS_BIT_KHR,0,16,&limits);
-    Command().TraceRays(*pipeline,VansGIReceiverVisibility::TransportJobBudget,1,1);
-    Barrier(VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_SHADER_WRITE_BIT,VK_ACCESS_TRANSFER_READ_BIT);
-    vkCmdCopyImageToBuffer(Command().GetVKCommandBuffer(),output->GetImage().GetImage(),VK_IMAGE_LAYOUT_GENERAL,readback->GetNativeBuffer(),1,&copy);
-    Barrier(VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_HOST_BIT,VK_ACCESS_TRANSFER_WRITE_BIT,VK_ACCESS_HOST_READ_BIT);End();
-    for(uint32_t i=0;i<N;++i)Check(std::abs(glm::unpackHalf1x16(result[4*i])-expected[i])<.003f,"uint16 material index addressing");
-    std::cout<<"[GIReceiverTransportGPU] narrow-gap, closed, open, alpha-cutout, replacement, no-demand and bounds passed"<<std::endl;
-    // 二次 GI 查询回归：射线命中窄缝另一侧后，偏移仍须留在空隙内。
-    // 受控图集按 x 方向给出两组不同照度，能从最终 RGB 检查实际取样位置。
-    transportInfo={};transportInfo.regionInfo=glm::vec4(1,0,0,0);
-    transportInfo.regions[0].volumeMin=glm::vec4(-.2f,-1,-1,0);
-    transportInfo.regions[0].volumeSizeAndBias=glm::vec4(.4f,2,2,.25f);
-    transportInfo.regions[0].gridDimensionsAndPriority=glm::vec4(2,2,2,0);
-    std::memcpy(parameters->GetMappedPtr(),&transportInfo,sizeof(transportInfo));
-    std::memset(layout->GetMappedPtr(),0,layout->GetBufferSize());
-    for(auto& state:probeStates)state={};
-    std::memcpy(states->GetMappedPtr(),probeStates.data(),sizeof(probeStates));
-    std::vector<glm::vec4> probeColors(32*16);
-    constexpr float pi=3.14159265358979323846f;
-    for(uint32_t y=0;y<16;++y)for(uint32_t x=0;x<32;++x)
-        probeColors[y*32+x]=glm::vec4(((x/8u)&1u)?pi:0.0f);
-    auto* bounceIrradiance=Texture(32,16,probeColors);
-    auto* uniformIrradiance=Texture(32,16,std::vector<glm::vec4>(32*16,glm::vec4(pi)));
-    auto* bounceVisibility=Texture(64,32,std::vector<glm::vec4>(64*32,glm::vec4(10,100,0,0)));
-    descriptors->BeginDescriptorUpdate();bindImage(pass,8,bounceIrradiance,8);bindImage(pass,9,bounceVisibility,8);descriptors->CommitDescriptorUpdates();
-    *header=glm::uvec4(1,1,0,1);jobs[0]={};jobs[0].destination=glm::uvec4(0,0,glm::floatBitsToUint(1.0f),0);
-    for(auto& direction:jobs[0].directions)direction=glm::vec4(1,0,0,1);
-    VkAccelerationStructureDeviceAddressInfoKHR blasAddress{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR};
-    blasAddress.accelerationStructure=acceleration.front();
-    const std::array<glm::vec2,4> bounceCases={glm::vec2(.4f,1),glm::vec2(.0287428f,0),glm::vec2(.099937f,0),glm::vec2(.0287428f,1)};
-    for(const auto& bounceCase:bounceCases)
-    {
-        const float gap=bounceCase.x;
-        const bool uniform=bounceCase.y>0.0f;
-        descriptors->BeginDescriptorUpdate();bindImage(pass,8,uniform?uniformIrradiance:bounceIrradiance,8);descriptors->CommitDescriptorUpdates();
-        VkAccelerationStructureInstanceKHR walls[2]{};
-        for(auto& wall:walls)
-        {
-            wall.transform.matrix[0][0]=wall.transform.matrix[1][1]=wall.transform.matrix[2][2]=1.0f;
-            wall.mask=255;wall.flags=VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR;
-            wall.accelerationStructureReference=vkGetAccelerationStructureDeviceAddressKHR(logical,&blasAddress);
-        }
-        walls[1].transform.matrix[0][3]=-gap;
-        auto* wallInstances=Buffer(sizeof(walls),walls,VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR);
-        VkAccelerationStructureGeometryKHR geometry{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};geometry.geometryType=VK_GEOMETRY_TYPE_INSTANCES_KHR;
-        geometry.geometry.instances.sType=VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
-        geometry.geometry.instances.data.deviceAddress=Address(wallInstances);
-        Begin();auto gapTLAS=Build(VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,geometry,2);End();
-        asInfo.pAccelerationStructures=&gapTLAS;vkUpdateDescriptorSets(logical,1,&write,0,nullptr);
-        jobs[0].origin=glm::vec4(-gap*.5f,0,0,1);
-        Begin();Barrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT|VK_PIPELINE_STAGE_HOST_BIT,VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
-            VK_ACCESS_MEMORY_WRITE_BIT|VK_ACCESS_HOST_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT);
-        Command().BindRayTracingPipeline(*pipeline);Command().BindRayTracingDescriptorSets(*pipeline,0,transportSets);
-        Command().UpdateRayTracingPushConstants(*pipeline,rgen|hit|VK_SHADER_STAGE_MISS_BIT_KHR,0,16,&limits);
-        Command().TraceRays(*pipeline,VansGIReceiverVisibility::TransportJobBudget,1,1);
-        Barrier(VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_SHADER_WRITE_BIT,VK_ACCESS_TRANSFER_READ_BIT);
-        vkCmdCopyImageToBuffer(Command().GetVKCommandBuffer(),output->GetImage().GetImage(),VK_IMAGE_LAYOUT_GENERAL,readback->GetNativeBuffer(),1,&copy);
-        Barrier(VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_HOST_BIT,VK_ACCESS_TRANSFER_WRITE_BIT,VK_ACCESS_HOST_READ_BIT);End();
-        // 图集左右各四个等距 Probe，左右照度分别为 0 / 1，命中材质漫反射率为 0.5。
-        const float queryX=std::max(-.1f,-std::min(.25f,gap*.8f));
-        const float rightFraction=(queryX+.1f)/.2f;
-        const float leftFacing=.5f+.5f*(queryX+.1f)/std::sqrt((queryX+.1f)*(queryX+.1f)+.5f);
-        const float rightFacing=.5f+.5f*(queryX-.1f)/std::sqrt((queryX-.1f)*(queryX-.1f)+.5f);
-        const float leftWeight=(1.0f-rightFraction)*leftFacing*leftFacing;
-        const float rightWeight=rightFraction*rightFacing*rightFacing;
-        const float expectedBounce=uniform?.5f:.5f*rightWeight/(leftWeight+rightWeight);
-        const float actual=glm::unpackHalf1x16(result[0]);
-        std::cout<<"[GIReceiverTransportGPU] secondary gap="<<gap<<" uniform="<<uniform<<" expected="<<expectedBounce<<" actual="<<actual<<std::endl;
-        Check(std::abs(actual-expectedBounce)<.002f,"secondary GI query must retain the safe side of narrow geometry and preserve open space");
-    }
-    std::cout<<"[GIReceiverTransportGPU] secondary query bias and unchanged open-space energy passed"<<std::endl;
-
-}
 
 }
 bool TestGIReceiverVisibilityGpuContract()
@@ -948,9 +785,8 @@ bool TestGIReceiverVisibilityGpuContract()
         Check(std::abs(newEdge->surface.z-1.0012f)<1e-5f,"Blocked receiver was retraced from its stale origin");
         std::cout<<"[GIReceiverVisibilityGPU] current receiver crosses occlusion edge: PASS"<<std::endl;
 
-        gpu.TestTransportBoundary();
-    gpu.TestTransport();
         gpu.TestBias();
+        gpu.TestZeroSupportFallback();
         Check(errors==0u,"Vulkan validation failed");
         std::cout<<"[GIReceiverVisibilityGPU] cold-start coverage="<<Fixture::Count<<", traced="<<total<<", history/light/origin/reset/budget checks passed\n";
         return true;

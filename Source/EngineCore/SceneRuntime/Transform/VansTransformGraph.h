@@ -28,6 +28,7 @@ struct VansTransformAnchorHandle
 	std::uint32_t instanceGeneration = 0;
 	VansTransformAnchorKind kind = VansTransformAnchorKind::Bone;
 	std::string anchorGuid;
+	std::string poseCheckpoint;
 
 	bool IsValid() const
 	{

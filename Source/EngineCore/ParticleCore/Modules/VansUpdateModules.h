@@ -17,9 +17,9 @@ namespace VansGraphics
         glm::vec3 m_Gravity = glm::vec3(0.f, -9.8f, 0.f);
 
         void Execute(VansParticlePool& pool, float deltaTime,
-                     const glm::mat4& localToWorld) override;
+                     const glm::mat4& localToWorld) const override;
 
-        void ExecuteInit(VansParticlePool&, uint32_t, uint32_t, const glm::mat4&) override {}
+        void ExecuteInit(VansParticlePool&, uint32_t, uint32_t, const glm::mat4&) const override {}
 
     };
 
@@ -39,9 +39,9 @@ namespace VansGraphics
         }
 
         void Execute(VansParticlePool& pool, float deltaTime,
-                     const glm::mat4& localToWorld) override;
+                     const glm::mat4& localToWorld) const override;
 
-        void ExecuteInit(VansParticlePool&, uint32_t, uint32_t, const glm::mat4&) override {}
+        void ExecuteInit(VansParticlePool&, uint32_t, uint32_t, const glm::mat4&) const override {}
 
     };
 
@@ -59,9 +59,9 @@ namespace VansGraphics
         }
 
         void Execute(VansParticlePool& pool, float deltaTime,
-                     const glm::mat4& localToWorld) override;
+                     const glm::mat4& localToWorld) const override;
 
-        void ExecuteInit(VansParticlePool&, uint32_t, uint32_t, const glm::mat4&) override {}
+        void ExecuteInit(VansParticlePool&, uint32_t, uint32_t, const glm::mat4&) const override {}
 
 
     private:
@@ -81,9 +81,9 @@ namespace VansGraphics
         float m_TurbulenceScrollSpeed = 0.2f;
 
         void Execute(VansParticlePool& pool, float deltaTime,
-                     const glm::mat4& localToWorld) override;
+                     const glm::mat4& localToWorld) const override;
 
-        void ExecuteInit(VansParticlePool&, uint32_t, uint32_t, const glm::mat4&) override {}
+        void ExecuteInit(VansParticlePool&, uint32_t, uint32_t, const glm::mat4&) const override {}
 
 
     private:
@@ -104,11 +104,11 @@ namespace VansGraphics
         }
 
         void Execute(VansParticlePool& pool, float deltaTime,
-                     const glm::mat4& localToWorld) override;
+                     const glm::mat4& localToWorld) const override;
 
         // ExecuteInit：在粒子生成时初始化角速度扩展数组（若需要随机角速度）
         void ExecuteInit(VansParticlePool& pool, uint32_t startIndex,
-                         uint32_t endIndex, const glm::mat4&) override;
+                         uint32_t endIndex, const glm::mat4&) const override;
 
     };
 
@@ -121,10 +121,10 @@ namespace VansGraphics
         float m_FPS      = 0.f;   // 0 表示按生命周期平均分配帧
 
         void Execute(VansParticlePool& pool, float deltaTime,
-                     const glm::mat4& localToWorld) override;
+                     const glm::mat4& localToWorld) const override;
 
         void ExecuteInit(VansParticlePool& pool, uint32_t startIndex,
-                         uint32_t endIndex, const glm::mat4&) override;
+                         uint32_t endIndex, const glm::mat4&) const override;
 
     };
 

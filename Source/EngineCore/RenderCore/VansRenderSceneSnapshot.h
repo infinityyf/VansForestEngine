@@ -1,4 +1,7 @@
 #pragma once
+#include "Particles/VansParticleRenderAsset.h"
+#include "../ParticleCore/VansParticleFrameData.h"
+#include "../RuntimeCore/VansGenerationPool.h"
 #include "SkyLightingCore/VansSkyLightingTypes.h"
 
 #include "VansRenderBounds.h"
@@ -137,14 +140,13 @@ namespace VansGraphics
 		std::vector<std::uint16_t> simulatedVertices;
 	};
 
-	struct VansRenderParticleFrameData final
-	{
-		std::uint32_t particleRenderNodeIndex = UINT32_MAX;
-		std::vector<VansParticleInstanceData> instances;
-		// 体积粒子为独立的可选帧通道；未启用时始终为空且 feature=false。
-		std::vector<VansVolumetricParticleInstanceData> volumetricInstances;
-		bool volumetricInjectionEnabled = false;
-	};
+    struct VansRenderParticleFrameData final
+    {
+        Vans::VansGenerationHandle instance;
+        std::shared_ptr<const VansParticleRenderAsset> asset;
+        VansParticleFrameData data;
+        bool volumetricInjectionEnabled = false;
+    };
 
 	struct VansRenderRectLightVideoFrameData final
 	{

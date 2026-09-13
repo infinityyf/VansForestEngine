@@ -29,6 +29,8 @@ namespace Vans::EditorAPI
 			VansGraphics::VansScene& scene,
 			const std::string& targetEntityGuid,
 			const std::string& targetAnimationComponentGuid);
+		static bool AdoptLocalTransforms(AnimationPreviewSessionId sessionId,
+			VansGraphics::VansScene& scene, const std::vector<std::string>& entities);
 		static bool EndSession(
 			AnimationPreviewSessionId sessionId,
 			VansGraphics::VansScene* scene,

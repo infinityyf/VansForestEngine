@@ -3,9 +3,38 @@
 #include "../../GameplayActionAdapters/Decal/VansDecalActionService.h"
 #include "../../PhysicsCore/VansTerrainPhysicsNode.h"
 #include "../../Util/VansLog.h"
+#include "../VulkanCore/VansVKDescriptorManager.h"
+#include "../VulkanCore/VansDescriptorSetLayouts.h"
+#include "../VulkanCore/VansRenderPass.h"
 
 namespace VansGraphics
 {
+void VansScene::UpdateDecalPassDescriptorSet()
+{
+    if (!m_DecalPassDescriptorSet) return;
+    auto* passes = VansRenderPassManager::GetInstance();
+    const auto image = [](VansVKImage& value) {
+        return VkDescriptorImageInfo{value.GetSampler(), value.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    };
+    const std::array<VkDescriptorImageInfo, 3> images{image(passes->GetGbuffer2()),
+        image(passes->GetGbuffer1()), image(passes->GetNormal())};
+    bool changed = m_DecalPassDescriptorsDirty;
+    for (size_t i=0; i<images.size(); ++i)
+        changed |= images[i].sampler != m_DecalPassImages[i].sampler
+            || images[i].imageView != m_DecalPassImages[i].imageView;
+    if (!changed) return;
+    // 调用点沿用渲染帧退役后的 descriptor 更新阶段，所有贴花只写这一套绑定。
+    auto* descriptors = VansVKDescriptorManager::GetInstance();
+    descriptors->BeginDescriptorUpdate();
+    const uint32_t bindings[] = {DECAL_PASS_BINDING_GBUFFER2, DECAL_PASS_BINDING_GBUFFER1, DECAL_PASS_BINDING_NORMAL};
+    for (size_t i=0; i<images.size(); ++i)
+        descriptors->WriteImageDescriptor(m_DecalPassDescriptorSet, bindings[i],
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {images[i]});
+    descriptors->CommitDescriptorUpdates();
+    m_DecalPassImages = images;
+    m_DecalPassDescriptorsDirty = false;
+}
+
 Vans::VansDecalSceneBackend VansScene::MakeDecalSceneBackend()
 {
     return {[this](const std::string& source, const Vans::VansSurfaceImpact& impact, std::string& error) {

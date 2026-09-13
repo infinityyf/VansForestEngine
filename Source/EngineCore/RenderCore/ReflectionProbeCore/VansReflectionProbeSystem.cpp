@@ -224,7 +224,7 @@ namespace VansGraphics
 
 		auto* descriptors = VansVKDescriptorManager::GetInstance();
 		if (!m_State->m_PrefilterSets.empty()) descriptors->DestroyDescriptorSet(m_State->m_PrefilterSets);
-		if (m_State->m_PrefilterLayout != VK_NULL_HANDLE) descriptors->DestroyDescriptorSetLayout(m_State->m_PrefilterLayout);
+		if (m_State->m_PrefilterLayout != VK_NULL_HANDLE) descriptors->ReleaseDescriptorSetLayout(m_State->m_PrefilterLayout);
 		for (VkImageView& view : m_State->m_PrefilterMipViews) VansVKImage::DestroyImageView(device, view);
 		for (VkImageView& view : m_State->m_PrefilterSourceViews) VansVKImage::DestroyImageView(device, view);
 		m_State->m_PrefilterSourceViews.clear();
@@ -1144,7 +1144,7 @@ namespace VansGraphics
 			descriptors->DestroyDescriptorSet(sets);
 			m_State->m_CaptureDescriptorSet = VK_NULL_HANDLE;
 		}
-		descriptors->DestroyDescriptorSetLayout(m_State->m_CaptureDescriptorLayout);
+		descriptors->ReleaseDescriptorSetLayout(m_State->m_CaptureDescriptorLayout);
 
 		for (VansFrameBuffer& framebuffer : m_State->m_CaptureFramebuffers)
 			framebuffer.DestroyFrameBuffer(m_State->m_Device);

@@ -29,7 +29,10 @@ namespace VansGraphics
 		glm::quat NormalizeHemisphere(glm::quat value)
 		{
 			value = glm::normalize(value);
-			return value.w < 0.0f ? -value : value;
+			// 180 度时 w 可以恰好为零，仍须让 q 与 -q 选择相同的扭转方向。
+			const bool reverse = value.w < 0.0f || (value.w == 0.0f &&
+				(value.x < 0.0f || (value.x == 0.0f && (value.y < 0.0f || (value.y == 0.0f && value.z < 0.0f)))));
+			return reverse ? -value : value;
 		}
 
 		void DecomposeSwingTwist(const glm::quat& rotation,
@@ -57,6 +60,13 @@ namespace VansGraphics
 			while (angle < -kPi) angle += 2.0f * kPi;
 			return angle;
 		}
+	}
+
+	float VansExtractTwistRadians(const glm::quat& rotation, const glm::vec3& unitAxis)
+	{
+		glm::quat swing, twist;
+		DecomposeSwingTwist(rotation, unitAxis, swing, twist);
+		return SignedTwistRadians(twist, unitAxis);
 	}
 
 	VansConstraintResult VansApplyJointLimit(

@@ -60,7 +60,7 @@ std::shared_ptr<Vans::VansTimelineApplierRegistry> BuildTimelineAppliers(
 	if (!Vans::VansRegisterPropertyTimelineIntegration(world,
 		Vans::VansTimelinePropertyAccessRegistry::BuiltIns(), *registry, error)) return {};
 	if (!Vans::VansRegisterAudioTimelineIntegration(world, *scene.GetAudioManager(), *registry, error)) return {};
-	if (!Vans::VansRegisterParticleTimelineIntegration(world, *registry, error)) return {};
+	if (!Vans::VansRegisterParticleTimelineIntegration(world, scene.GetParticleManager(), *registry, error)) return {};
 	if (!Vans::VansRegisterUITimelineIntegration(*registry, error)) return {};
 	if (!Vans::VansRegisterAnimationTimelineIntegration(
 		world, Vans::VansProjectManager::Get().GetAssetObjectRepository(),

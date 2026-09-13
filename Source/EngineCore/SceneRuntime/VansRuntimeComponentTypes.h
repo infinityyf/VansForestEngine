@@ -1,4 +1,5 @@
 #pragma once
+#include "../RuntimeCore/VansStableIdentity.h"
 
 #include "VansRuntimeHandle.h"
 
@@ -20,7 +21,6 @@ namespace VansGraphics
 class VansAnimationNode;
 class VansCamera;
 class VansLightManager;
-class VansParticleRenderNode;
 class VansParticleRuntime;
 class VansRenderNode;
 class VansVideoManager;
@@ -206,11 +206,8 @@ struct VansRuntimeVideoComponent
 
 struct VansRuntimeParticleComponent
 {
-	VansGraphics::VansParticleRuntime* runtime = nullptr;
-	VansGraphics::VansParticleRenderNode* renderNode = nullptr;
+	VansGenerationHandle instance;
 	bool playOnAwake = false;
-	bool isPlaying = false;
-	float playTime = 0.0f;
 	bool hasWorldPositionOverride = false;
 	float worldPositionOverrideX = 0.0f;
 	float worldPositionOverrideY = 0.0f;

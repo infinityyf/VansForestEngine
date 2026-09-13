@@ -57,7 +57,9 @@ namespace VansGraphics
 		AimConstraint,   // 多骨朝向约束
 		Grounding,       // 场景批查询的 Gather/Resolve 节点
 		LimbIK,          // Rig 中三骨 Limb 链求解
-		ChainIK          // Rig 中 CCD/FABRIK 链求解
+		ChainIK,         // Rig 中 CCD/FABRIK 链求解
+		PoseCheckpoint, // 显式记录本帧挂点姿态，供下游约束和附件共同读取
+		RotationDistribution // 显式配置的骨段扭转分配
 	};
 
 	// ─────────────────────────────────────────────────────────────
@@ -402,6 +404,16 @@ namespace VansGraphics
 		float fixedRotationWeight = 0.0f;
 	};
 
+	class AnimGraphPoseCheckpointNode : public VansAnimGraphNode
+	{
+	public:
+		AnimGraphPoseCheckpointNode();
+		std::vector<AnimGraphPin> GetPins() const override;
+		AnimGraphPose Evaluate(const AnimGraphContext& ctx, VansAnimGraphInstance& instance) const override;
+		std::string m_CheckpointId;
+		std::vector<std::string> m_Bones;
+	};
+
 	class AnimGraphGoalNode : public VansAnimGraphNode
 	{
 	public:
@@ -419,6 +431,10 @@ namespace VansGraphics
 		AnimGraphPose Evaluate(const AnimGraphContext& ctx, VansAnimGraphInstance& instance) const override;
 		std::string m_ChainId;
 		VansGraphGoalDefinition m_Target;
+		std::string m_DirectionParameter;
+		std::string m_DirectionWeightParameter;
+		bool m_DirectionIsWorldSpace = true;
+		std::string m_PivotBone;
 		VansAimConstraintSettings m_Settings;
 		float m_TargetHalfLife = 0.08f;
 	};
@@ -440,6 +456,15 @@ namespace VansGraphics
 		AnimGraphPose Evaluate(const AnimGraphContext& ctx, VansAnimGraphInstance& instance) const override;
 		std::vector<std::string> m_ChainIds;
 		VansLimbIKSettings m_Settings;
+	};
+
+	class AnimGraphRotationDistributionNode : public VansAnimGraphNode
+	{
+	public:
+		AnimGraphRotationDistributionNode();
+		std::vector<AnimGraphPin> GetPins() const override;
+		AnimGraphPose Evaluate(const AnimGraphContext& ctx, VansAnimGraphInstance& instance) const override;
+		std::string m_RotationProfileId;
 	};
 
 	class AnimGraphChainIKNode : public VansAnimGraphNode

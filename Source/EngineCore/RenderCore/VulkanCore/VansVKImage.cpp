@@ -9,7 +9,7 @@
 
 namespace VansGraphics
 {
-	VkImageView VansVKImage::CreateLayerMipView(VkDevice device, uint32_t arrayLayer, uint32_t mipLevel)
+	VkImageView VansVKImage::CreateLayerMipView(VkDevice device, uint32_t arrayLayer, uint32_t mipLevel, VkComponentMapping components)
 	{
 		if (arrayLayer >= m_ImageCreateInfo.arrayLayers || mipLevel >= m_ImageCreateInfo.mipLevels)
 			return VK_NULL_HANDLE;
@@ -18,8 +18,7 @@ namespace VansGraphics
 		info.image = m_VansVKImage;
 		info.viewType = VK_IMAGE_VIEW_TYPE_2D;
 		info.format = m_ImageCreateInfo.format;
-		info.components = { VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
-			VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY };
+		info.components = components;
 		info.subresourceRange = { m_ImageAspect, mipLevel, 1u, arrayLayer, 1u };
 		VkImageView result = VK_NULL_HANDLE;
 		if (VansGraphics::vkCreateImageView(device, &info, nullptr, &result) != VK_SUCCESS) return VK_NULL_HANDLE;

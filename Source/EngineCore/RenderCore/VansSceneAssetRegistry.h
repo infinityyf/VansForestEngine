@@ -1,6 +1,7 @@
 #pragma once
 
 #include "VansAsset.h"
+#include "../AssetCore/VansAssetGuid.h"
 
 #include <string>
 #include <unordered_map>
@@ -14,12 +15,13 @@ namespace VansGraphics
 		VansAsset* FindMesh(const std::string& name);
 		VansAsset* FindShader(const std::string& name);
 		VansAsset* FindTexture(const std::string& name);
+        VansAsset* FindTextureByGuid(const std::string& guid) const;
 		VansAsset* FindMaterial(const std::string& name);
 
 		void AddMesh(VansAsset* asset);
 		void AddSceneSubMesh(VansAsset* asset);
 		void AddShader(VansAsset* asset);
-		void AddTexture(VansAsset* asset);
+		void AddTexture(VansAsset* asset, const std::string& guid = {});
 		void AddMaterial(VansAsset* asset);
 
 		void RegisterMesh(VansAsset* asset);
@@ -67,6 +69,7 @@ namespace VansGraphics
 
 		std::vector<VansAsset*> m_Textures;
 		std::unordered_map<std::string, VansAsset*> m_TextureAssetLookup;
+        std::unordered_map<Vans::VansAssetGuid, VansAsset*> m_TextureAssetsByGuid;
 
 		std::vector<VansAsset*> m_Shaders;
 		std::unordered_map<std::string, VansAsset*> m_ShaderAssetLookup;

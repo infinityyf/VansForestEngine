@@ -21,6 +21,8 @@ namespace Vans::EditorAPI
 
 		static_assert(static_cast<int>(AnimGraphNodeType::ChainIK) ==
 			static_cast<int>(VansGraphics::AnimGraphNodeType::ChainIK));
+		static_assert(static_cast<int>(AnimGraphNodeType::RotationDistribution) ==
+			static_cast<int>(VansGraphics::AnimGraphNodeType::RotationDistribution));
 		static_assert(static_cast<int>(AnimatorParamType::Quaternion) ==
 			static_cast<int>(VansGraphics::AnimatorParamType::Quaternion));
 		static_assert(static_cast<int>(CompareOp::LessEqual) ==
@@ -266,6 +268,13 @@ namespace Vans::EditorAPI
 				result->m_SlotId = n.m_SlotId; result->m_EnableFallbackInput = n.m_EnableFallbackInput;
 				break;
 			}
+			case VansGraphics::AnimGraphNodeType::PoseCheckpoint:
+			{
+				const auto& n = static_cast<const VansGraphics::AnimGraphPoseCheckpointNode&>(source);
+				result->m_CheckpointId = n.m_CheckpointId;
+				result->m_CheckpointBones = n.m_Bones;
+				break;
+			}
 			case VansGraphics::AnimGraphNodeType::Goal:
 			{
 				result->m_Goal = ToDTO(static_cast<const VansGraphics::AnimGraphGoalNode&>(source).m_Goal);
@@ -276,6 +285,11 @@ namespace Vans::EditorAPI
 				const auto& n = static_cast<const VansGraphics::AnimGraphAimConstraintNode&>(source);
 				result->m_ChainId = n.m_ChainId;
 				result->m_Target = ToDTO(n.m_Target);
+				result->m_DirectionParameter = n.m_DirectionParameter;
+				result->m_DirectionWeightParameter = n.m_DirectionWeightParameter;
+				result->m_DirectionIsWorldSpace = n.m_DirectionIsWorldSpace;
+				result->m_PivotBone = n.m_PivotBone;
+				result->m_AimSettings.mode = static_cast<AnimationAimConstraintMode>(n.m_Settings.mode);
 				result->m_AimSettings.minYawDegrees = n.m_Settings.yawLimitDegrees.x;
 				result->m_AimSettings.maxYawDegrees = n.m_Settings.yawLimitDegrees.y;
 				result->m_AimSettings.minPitchDegrees = n.m_Settings.pitchLimitDegrees.x;
@@ -301,6 +315,9 @@ namespace Vans::EditorAPI
 				result->m_LimbSettings.commitClampedPose = n.m_Settings.commitClampedPose;
 				break;
 			}
+			case VansGraphics::AnimGraphNodeType::RotationDistribution:
+				result->m_RotationProfileId = static_cast<const VansGraphics::AnimGraphRotationDistributionNode&>(source).m_RotationProfileId;
+				break;
 			case VansGraphics::AnimGraphNodeType::ChainIK:
 			{
 				const auto& n = static_cast<const VansGraphics::AnimGraphChainIKNode&>(source);
@@ -387,6 +404,13 @@ namespace Vans::EditorAPI
 				n.m_SlotId = source.m_SlotId; n.m_EnableFallbackInput = source.m_EnableFallbackInput;
 				break;
 			}
+			case VansGraphics::AnimGraphNodeType::PoseCheckpoint:
+			{
+				auto& n = static_cast<VansGraphics::AnimGraphPoseCheckpointNode&>(*result);
+				n.m_CheckpointId = source.m_CheckpointId;
+				n.m_Bones = source.m_CheckpointBones;
+				break;
+			}
 			case VansGraphics::AnimGraphNodeType::Goal:
 			{
 				static_cast<VansGraphics::AnimGraphGoalNode&>(*result).m_Goal = ToNative(source.m_Goal);
@@ -397,6 +421,11 @@ namespace Vans::EditorAPI
 				auto& n = static_cast<VansGraphics::AnimGraphAimConstraintNode&>(*result);
 				n.m_ChainId = source.m_ChainId;
 				n.m_Target = ToNative(source.m_Target);
+				n.m_DirectionParameter = source.m_DirectionParameter;
+				n.m_DirectionWeightParameter = source.m_DirectionWeightParameter;
+				n.m_DirectionIsWorldSpace = source.m_DirectionIsWorldSpace;
+				n.m_PivotBone = source.m_PivotBone;
+				n.m_Settings.mode = static_cast<VansGraphics::VansAimConstraintMode>(source.m_AimSettings.mode);
 				n.m_Settings.yawLimitDegrees = { source.m_AimSettings.minYawDegrees, source.m_AimSettings.maxYawDegrees };
 				n.m_Settings.pitchLimitDegrees = { source.m_AimSettings.minPitchDegrees, source.m_AimSettings.maxPitchDegrees };
 				n.m_Settings.maxAngularSpeedDegrees = source.m_AimSettings.maxAngularSpeedDegrees;
@@ -420,6 +449,9 @@ namespace Vans::EditorAPI
 				n.m_Settings.commitClampedPose = source.m_LimbSettings.commitClampedPose;
 				break;
 			}
+			case VansGraphics::AnimGraphNodeType::RotationDistribution:
+				static_cast<VansGraphics::AnimGraphRotationDistributionNode&>(*result).m_RotationProfileId = source.m_RotationProfileId;
+				break;
 			case VansGraphics::AnimGraphNodeType::ChainIK:
 			{
 				auto& n = static_cast<VansGraphics::AnimGraphChainIKNode&>(*result);
@@ -765,6 +797,17 @@ namespace Vans::EditorAPI
 				item.swingLimitDegrees = { limit.swingLimitDegrees.x, limit.swingLimitDegrees.y };
 				result.jointLimits.push_back(std::move(item));
 			}
+			for (const auto& profile : source.rotationDistributions)
+			{
+				AnimationRigRotationDistributionDTO item;
+				item.id = profile.id;
+				item.goal = profile.goal;
+				item.baseBone = profile.baseBone;
+				item.baseFraction = profile.baseFraction;
+				for (const auto& recipient : profile.recipients)
+					item.recipients.push_back({recipient.bone, recipient.fraction});
+				result.rotationDistributions.push_back(std::move(item));
+			}
 			for (const auto& contact : source.contacts)
 			{
 				AnimationRigContactDTO item;
@@ -853,6 +896,17 @@ namespace Vans::EditorAPI
 				item.maxDegrees = limit.maxDegrees;
 				item.swingLimitDegrees = { limit.swingLimitDegrees.x, limit.swingLimitDegrees.y };
 				result.jointLimits.push_back(std::move(item));
+			}
+			for (const auto& profile : source.rotationDistributions)
+			{
+				VansGraphics::VansRigRotationDistributionDefinition item;
+				item.id = profile.id;
+				item.goal = profile.goal;
+				item.baseBone = profile.baseBone;
+				item.baseFraction = profile.baseFraction;
+				for (const auto& recipient : profile.recipients)
+					item.recipients.push_back({recipient.bone, recipient.fraction});
+				result.rotationDistributions.push_back(std::move(item));
 			}
 			for (const auto& contact : source.contacts)
 			{

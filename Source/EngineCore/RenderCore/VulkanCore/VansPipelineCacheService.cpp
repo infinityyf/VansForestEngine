@@ -418,7 +418,11 @@ namespace VansGraphics
 	{
 		std::vector<uint8_t> diskData;
 		if (!ReadCacheFile(diskData, false))
+		{
+			// 文件被移除或损坏时必须重新保存，不能命中上一次磁盘快照。
+			m_LastDiskPayloadHash = 0;
 			return true;
+		}
 
 		const uint64_t diskHash = HashBytes(diskData.data(), diskData.size());
 		if (diskHash == m_LastDiskPayloadHash)
@@ -521,6 +525,13 @@ namespace VansGraphics
 		header.headerSize = sizeof(CacheFileHeader);
 		header.payloadSize = payload.size();
 		header.payloadHash = HashBytes(payload.data(), payload.size());
+		// 新 VkPipeline 对象不代表驱动缓存有新内容；已有相同快照无需反复完整写盘。
+		if (header.payloadHash == m_LastDiskPayloadHash)
+		{
+			m_Dirty = false;
+			m_CreatesSinceFlush = 0;
+			return true;
+		}
 		header.vendorId = m_Identity.vendorId;
 		header.deviceId = m_Identity.deviceId;
 		header.driverVersion = m_Identity.driverVersion;

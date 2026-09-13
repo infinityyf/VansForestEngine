@@ -5,8 +5,12 @@
 #include "../EngineCore/SceneRuntime/VansRuntimeComponentTypes.h"
 #include "../EngineCore/PhysicsCore/VansPhysicsNode.h"
 #include "../EngineCore/RuntimeCore/VansThreadContract.h"
+#include "../EngineCore/RenderCore/GeometryCore/VansTriangleGeometryQuery.h"
 #include <iostream>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 
 bool TestImpactDecalRuntimeContract()
 {
@@ -96,6 +100,45 @@ bool TestImpactDecalRuntimeContract()
     system.Tick(0);
     for (const auto& entry : system.CaptureDebug()) if (entry.active) return check(false,"Reused component slot retained stale attachment");
     if (!check(!system.Spawn("template",impact,error),"Removed collider GUID remained usable")) return false;
+    // 真实 DemoHall 墙面三角形必须落入 2 cm 投影体，不能再使用包含装饰的外包盒表面。
+    auto workspace = std::filesystem::current_path();
+    for (int i=0; i<6 && !std::filesystem::exists(workspace/"DemoHallProject"); ++i) workspace=workspace.parent_path();
+    target.SetTransformData({0,0,0},{0,0,0},{1,1,1});
+    for (const char* wall : {"Hall_Wall_3M_Hall_Wall_3M_4300000_sm0.obj", "Hall_Wall_6M_Hall_Wall_6M_4300000_sm0.obj"})
+    {
+        std::ifstream file(workspace/"DemoHallProject/Assets/Models/DemoHall/Runtime"/wall);
+        if (!check(bool(file),"Production wall mesh unavailable")) return false;
+        std::vector<glm::vec3> vertices;
+        std::vector<VansGeometryTriangle> triangles;
+        float maximumZ = 0;
+        for (std::string line; std::getline(file,line);)
+        {
+            std::istringstream stream(line); std::string type; stream >> type;
+            if (type=="v") { glm::vec3 v; stream>>v.x>>v.y>>v.z; vertices.push_back(v); maximumZ=(std::max)(maximumZ,v.z); }
+            if (type=="f")
+            {
+                std::vector<uint32_t> indices;
+                for (std::string token; stream>>token;) indices.push_back(static_cast<uint32_t>(std::stoul(token))-1);
+                for (size_t i=1; i+1<indices.size(); ++i)
+                { VansGeometryTriangle t; t.a=vertices.at(indices[0]);t.b=vertices.at(indices[i]);t.c=vertices.at(indices[i+1]);triangles.push_back(t); }
+            }
+        }
+        VansTriangleGeometryQuery query; query.Build(std::move(triangles)); VansGeometryHit hit;
+        if (!check(query.Raycast({.25f,1.5f,2},{0,0,-1},10,hit) && std::abs(hit.position.z-.1f)<.0001f &&
+            maximumZ-hit.position.z>.1f,"Production wall ray did not distinguish rendered face from outer box")) return false;
+        impact.kind=VansSurfaceImpactKind::Render; impact.hit.componentGuid="decal-render";
+        impact.hit.position={hit.position.x,hit.position.y,hit.position.z};
+        impact.hit.normal={hit.normal.x,hit.normal.y,hit.normal.z}; impact.hit.distance=hit.distance;
+        if (!check(system.Spawn("template",impact,error),"Precise render surface without physics anchor did not spawn")) return false;
+        for (const auto& entry : system.CaptureDebug()) if (entry.active)
+            if (!check(glm::distance(entry.position,hit.position)<.0001f && std::abs(glm::dot(entry.normal,hit.normal))>.999f,
+                "Precise decal missed rendered wall or normal")) return false;
+        system.Tick(30.01);
+    }
+    if (!check(system.Spawn("template",impact,error),"Render receiver re-spawn failed")) return false;
+    const auto renderStorage=world.FindStorage(VansRuntimeComponentType_Render);
+    world.SetComponentEnabled(renderStorage->FindByStableGuid("decal-render"),false); system.Tick(0);
+    for (const auto& entry : system.CaptureDebug()) if (entry.active) return check(false,"Disabled render receiver retained decal");
     // 不同表面法线和负向投影，以及不受支持的材质/人物命中。
     for (glm::vec3 n : {glm::vec3(1,0,0),glm::vec3(0,-1,0),glm::vec3(0,0,1),glm::normalize(glm::vec3(1,2,3))})
     {

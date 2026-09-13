@@ -52,6 +52,11 @@ namespace VansGraphics
 			state.accessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 			state.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 			break;
+        case VansRenderResourceUsage::DepthStencilAttachmentSampledRead:
+            state.stageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+            state.accessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
+            state.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+            break;
 		case VansRenderResourceUsage::DepthStencilAttachmentRead:
 			state.stageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
 			state.accessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
@@ -128,6 +133,8 @@ namespace VansGraphics
 		{
 		case VansRenderResourceUsage::ColorAttachmentWrite:
 			return VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        case VansRenderResourceUsage::DepthStencilAttachmentSampledRead:
+            return VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
 		case VansRenderResourceUsage::DepthStencilAttachmentRead:
 		case VansRenderResourceUsage::DepthStencilAttachmentWrite:
 			return VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;

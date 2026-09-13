@@ -1,4 +1,5 @@
 #pragma once
+#include "VansCombatSceneBackend.h"
 
 #include "../../GameplayActionCore/VansActionServices.h"
 #include "../../RuntimeCore/VansGenerationPool.h"
@@ -85,7 +86,7 @@ public:
 	static std::shared_ptr<VansCombatActionService> Create(
 		VansRuntimeWorld& world,
 		VansGameplayRuntime& gameplayRuntime,
-		std::string& error);
+		std::string& error, VansCombatSceneBackend backend = {});
 
 	const VansActionServiceCapability& Capability() const override { return m_Capability; }
 	VansActionCommandResult Execute(const VansActionCommand& command) override;
@@ -125,7 +126,7 @@ private:
 	VansCombatActionService(
 		VansRuntimeWorld& world,
 		VansGameplayRuntime& gameplayRuntime,
-		VansActionServiceCapability capability);
+		VansActionServiceCapability capability, VansCombatSceneBackend backend);
 
 	bool SampleWindow(MeleeWindow& window);
 	VansEntityHandle ResolveHitTarget(VansEntityHandle entity) const;
@@ -138,6 +139,7 @@ private:
 	VansRuntimeWorld& m_World;
 	VansGameplayRuntime& m_GameplayRuntime;
 	VansActionServiceCapability m_Capability;
+	VansCombatSceneBackend m_Backend;
 	VansGenerationPool<MeleeWindow> m_Windows;
 	VansCombatDebugSnapshot m_DebugSnapshot;
 };

@@ -71,11 +71,45 @@ namespace VansGraphics
 		const VansProceduralGoal& goal,
 		const VansChainIKSettings& settings)
 	{
-		if (chain.solver == VansRigSolverKind::CCD)
-			return SolveCCD(workspace, rig, chain, goal, settings);
-		if (chain.solver == VansRigSolverKind::FABRIK)
-			return SolveFABRIK(workspace, rig, chain, goal, settings);
-		return {};
+		if (chain.boneIndices.size() < 2 || chain.boneIndices.size() > VansMaxProceduralChainBones
+			|| !std::isfinite(goal.rotationWeight) || goal.rotationWeight < 0 || goal.rotationWeight > 1
+			|| !std::isfinite(goal.rotationModel.x) || !std::isfinite(goal.rotationModel.y)
+			|| !std::isfinite(goal.rotationModel.z) || !std::isfinite(goal.rotationModel.w)
+			|| glm::dot(goal.rotationModel, goal.rotationModel) < kEpsilon * kEpsilon) return {};
+		std::array<VansBoneTransform, VansMaxProceduralChainBones> original{};
+		for (std::size_t i = 0; i < chain.boneIndices.size(); ++i)
+		{
+			if (!workspace.IsValidBone(chain.boneIndices[i])) return {};
+			original[i] = workspace.GetLocal(chain.boneIndices[i]);
+		}
+		auto solveSettings = settings;
+		solveSettings.commitClampedPose = true;
+		VansProceduralSolverResult result;
+		if (chain.solver == VansRigSolverKind::CCD) result = SolveCCD(workspace, rig, chain, goal, solveSettings);
+		else if (chain.solver == VansRigSolverKind::FABRIK) result = SolveFABRIK(workspace, rig, chain, goal, solveSettings);
+		if (result.status == VansProceduralSolverStatus::InvalidInput) return result;
+		const float rotationWeight = std::clamp(goal.rotationWeight * settings.weight, 0.0f, 1.0f);
+		if (rotationWeight > kEpsilon)
+		{
+			const int tip = chain.boneIndices.back();
+			const auto current = workspace.GetComponentRotation(tip);
+			auto target = glm::normalize(goal.rotationModel);
+			if (glm::dot(current, target) < 0) target = -target;
+			bool limited = false;
+			if (!workspace.SetComponentRotation(tip, glm::normalize(glm::slerp(current, target, rotationWeight)))
+				|| !ApplyLimit(workspace, rig, tip, limited))
+			{ Restore(workspace, chain.boneIndices, original); return {}; }
+			if (result.status == VansProceduralSolverStatus::NoEffect) result.status = VansProceduralSolverStatus::Solved;
+			if (limited)
+			{
+				result.limitReason |= VansProceduralLimitReason::Joint;
+				if (result.status == VansProceduralSolverStatus::Solved) result.status = VansProceduralSolverStatus::Clamped;
+			}
+			result.rotationErrorDegrees = VansQuaternionAngleDegrees(glm::inverse(workspace.GetComponentRotation(tip)) * target);
+		}
+		if (!settings.commitClampedPose && (result.status == VansProceduralSolverStatus::Clamped ||
+			result.status == VansProceduralSolverStatus::Unreachable)) Restore(workspace, chain.boneIndices, original);
+		return result;
 	}
 
 	VansProceduralSolverResult VansChainIKSolver::SolveCCD(

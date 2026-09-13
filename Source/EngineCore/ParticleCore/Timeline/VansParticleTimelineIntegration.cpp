@@ -1,6 +1,6 @@
 #include "VansParticleTimelineIntegration.h"
 
-#include "../VansParticleRuntime.h"
+#include "../VansParticleManager.h"
 #include "../../SceneRuntime/VansRuntimeComponentTypes.h"
 #include "../../SceneRuntime/VansRuntimeWorld.h"
 #include "../../TimelineCore/VansTimelineTrackExtensionRegistry.h"
@@ -14,16 +14,16 @@ namespace Vans
 {
 namespace
 {
-VansGraphics::VansParticleRuntime* ResolveParticle(
+VansGenerationHandle ResolveParticle(
 	VansRuntimeWorld& world, const VansResolvedTimelineTarget& target)
 {
 	auto* storage = static_cast<VansComponentStorage<VansRuntimeParticleComponent>*>(
 		world.FindStorage(VansRuntimeComponentType_Particle));
-	if (!storage || !world.IsAlive(target.entity)) return nullptr;
+	if (!storage || !world.IsAlive(target.entity)) return {};
 	for (VansComponentHandle component : world.CollectComponentsOwnedBy(target.entity))
 		if (component.typeId == VansRuntimeComponentType_Particle)
-			if (const auto* runtime = storage->Get(component)) return runtime->runtime;
-	return nullptr;
+			if (const auto* runtime = storage->Get(component)) return runtime->instance;
+	return {};
 }
 
 double Number(const VansTimelineValue* value, double fallback)
@@ -38,7 +38,7 @@ double Number(const VansTimelineValue* value, double fallback)
 struct ParticleRestoreState
 {
 	VansTimelineWriterHandle writer;
-	VansGraphics::VansParticleRuntime* particle = nullptr;
+	VansGenerationHandle particle;
 	bool playing = false;
 	float time = 0.0f;
 	std::uint32_t seed = 0;
@@ -48,7 +48,7 @@ struct ParticleRestoreState
 class ParticleTimelineApplier final : public IVansTimelineOutputApplier
 {
 public:
-	explicit ParticleTimelineApplier(VansRuntimeWorld& world) : m_World(world) {}
+	ParticleTimelineApplier(VansRuntimeWorld& world, VansGraphics::VansParticleManager& particles) : m_World(world), m_Particles(particles) {}
 	VansTimelineOutputTypeId OutputType() const override
 	{ return VansMakeStableId<VansTimelineOutputTypeTag>(std::string(TimelineNames::Particle) + ".Output"); }
 	std::string_view StableName() const override { return "Particle.ParticleTimelineApplier"; }
@@ -58,12 +58,16 @@ public:
 		const VansResolvedTimelineTarget& target, VansTimelineOutputPayloadView view) override
 	{
 		const auto* sample = view.As<VansTimelineSampleOutput>();
-		VansGraphics::VansParticleRuntime* particle = ResolveParticle(m_World, target);
+		const auto handle = ResolveParticle(m_World, target);
+        auto* particle = m_Particles.Resolve(handle);
 		if (!sample || !context.section || !particle)
 			return { VansTimelineApplyStatus::Failed, {}, "Particle binding is unavailable" };
+        // 移动烟带没有历史锚点轨迹，无法承诺时间跳转或退出恢复；在写命令前明确拒绝。
+        if (!particle->CanSeek())
+            return { VansTimelineApplyStatus::Failed, {}, "Moving Ribbon requires recorded source poses for Timeline resimulation" };
 		auto [restore, state] = m_State.Acquire(context.writer, [&]
 		{
-			return ParticleRestoreState{ context.writer, particle, particle->IsPlaying(), particle->GetPlayTime(),
+			return ParticleRestoreState{ context.writer, handle, particle->IsPlaying(), particle->GetPlayTime(),
 				particle->GetRandomSeed(), particle->GetSimulationRate() };
 		});
 		const VansTimelineCompiledDataReader reader(context.timeline.CompiledBytes(), context.timeline.CompiledValues());
@@ -77,23 +81,23 @@ public:
 		{
 			if (sample->entered || sample->rebuild)
 			{
-				particle->SetRandomSeed(static_cast<std::uint32_t>(std::max(0.0,
-					Number(reader.ValueAt(context.section->extensionData, 3), 0.0))));
-				particle->SetSimulationRate(static_cast<float>(std::max(0.0,
+				m_Particles.Queue(handle, VansGraphics::VansParticleControl::Seed, 0, static_cast<std::uint32_t>(std::max(0.0,
+                    Number(reader.ValueAt(context.section->extensionData, 3), 0.0))));
+				m_Particles.Queue(handle, VansGraphics::VansParticleControl::SimulationRate, static_cast<float>(std::max(0.0,
 					Number(reader.ValueAt(context.section->extensionData, 2), 1.0))));
 				const auto* reset = resetValue ? std::get_if<bool>(resetValue) : nullptr;
-				if (!reset || *reset) particle->Restart();
+				if (!reset || *reset) m_Particles.Queue(handle, VansGraphics::VansParticleControl::Restart);
 			}
-			if (action && *action == "Stop") particle->Stop();
-			else if (action && *action == "Pause") particle->Pause();
+			if (action && *action == "Stop") m_Particles.Queue(handle, VansGraphics::VansParticleControl::Stop);
+			else if (action && *action == "Pause") m_Particles.Queue(handle, VansGraphics::VansParticleControl::Pause);
 			else if (action && *action == "Burst")
 			{
-				if (sample->entered) particle->Burst();
-				particle->Pause();
+				if (sample->entered) m_Particles.Queue(handle, VansGraphics::VansParticleControl::Burst, 0, 1);
+				m_Particles.Queue(handle, VansGraphics::VansParticleControl::Pause);
 			}
 			else
 			{
-				if (action && *action == "Restart" && sample->entered) particle->Restart();
+				if (action && *action == "Restart" && sample->entered) m_Particles.Queue(handle, VansGraphics::VansParticleControl::Restart);
 				const double prewarm = VansTimelineTime::TickToSeconds(
 					static_cast<VansTimelineTick>(Number(reader.ValueAt(context.section->extensionData, 1), 0.0)),
 					context.timeline.Timebase());
@@ -101,33 +105,37 @@ public:
 					VansTimelineTime::TickToSeconds(sample->localTick, context.timeline.Timebase()) + prewarm));
 				if (seekPolicy && *seekPolicy == "DeterministicResimulate" &&
 					(sample->entered || sample->rebuild || std::abs(particle->GetPlayTime() - targetTime) > 0.05f))
-					particle->Seek(targetTime);
-				particle->Play();
+					m_Particles.Queue(handle, VansGraphics::VansParticleControl::Seek, targetTime);
+				m_Particles.Queue(handle, VansGraphics::VansParticleControl::Play);
 			}
 		}
 		else if (sample->exited)
 		{
 			const auto* clear = clearValue ? std::get_if<bool>(clearValue) : nullptr;
-			(clear && *clear) ? particle->Stop() : particle->Pause();
+			(clear && *clear) ? m_Particles.Queue(handle, VansGraphics::VansParticleControl::Stop) : m_Particles.Queue(handle, VansGraphics::VansParticleControl::Pause);
 		}
 		const VansTimelineResourceId resource{ VansStableHash64("Particle.Runtime"),
-			static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(particle)) };
+			(static_cast<std::uint64_t>(handle.generation) << 32) | handle.index };
 		return { VansTimelineApplyStatus::Applied, { restore, {}, {}, resource } };
 	}
 	bool Restore(VansTimelineRestoreToken token) override
 	{
 		ParticleRestoreState* state = m_State.Resolve(token.handle);
-		if (!state || !state->particle) return false;
-		state->particle->SetRandomSeed(state->seed);
-		state->particle->SetSimulationRate(state->rate);
-		state->particle->Seek(state->time);
-		state->playing ? state->particle->Play() : state->particle->Pause();
+        if (!state) return false;
+        const auto* particle = m_Particles.Resolve(state->particle);
+        if (!particle) return m_State.Release(token.handle);
+        if (!particle->CanSeek()) { m_State.Release(token.handle); return false; }
+        m_Particles.Queue(state->particle, VansGraphics::VansParticleControl::Seed, 0, state->seed);
+        m_Particles.Queue(state->particle, VansGraphics::VansParticleControl::SimulationRate, state->rate);
+        m_Particles.Queue(state->particle, VansGraphics::VansParticleControl::Seek, state->time);
+        m_Particles.Queue(state->particle, state->playing ? VansGraphics::VansParticleControl::Play : VansGraphics::VansParticleControl::Pause);
 		return m_State.Release(token.handle);
 	}
 	void ReleaseWriter(VansTimelineWriterHandle writer) override { m_State.ReleaseWriter(writer); }
 	void ReleaseAll() override { m_State.Clear(); }
 private:
 	VansRuntimeWorld& m_World;
+    VansGraphics::VansParticleManager& m_Particles;
 	VansTimelineModuleApplierState<ParticleRestoreState> m_State;
 };
 }
@@ -150,9 +158,9 @@ bool VansRegisterParticleTimelineExtensions(VansTimelineTrackExtensionRegistry& 
 				{ "DeterministicResimulate", "Disabled" }) }, {}, false, false }), error);
 }
 
-bool VansRegisterParticleTimelineIntegration(VansRuntimeWorld& world,
+bool VansRegisterParticleTimelineIntegration(VansRuntimeWorld& world, VansGraphics::VansParticleManager& particles,
 	VansTimelineApplierRegistry& registry, std::string& error)
 {
-	return registry.Register(std::make_shared<ParticleTimelineApplier>(world), error);
+	return registry.Register(std::make_shared<ParticleTimelineApplier>(world, particles), error);
 }
 }

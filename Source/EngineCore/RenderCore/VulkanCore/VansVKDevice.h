@@ -310,6 +310,9 @@ namespace VansGraphics
 		const VansRenderGraphDiagnosticsSnapshot& GetCurrentRenderGraphDiagnostics() const { return m_CurrentRenderGraphDiagnostics; }
 		const std::string& GetCurrentRenderGraphDebugSummary() const;
 		const VansFrameContext& GetCurrentFrameContext() const { return m_CurrentFrameContext; }
+        // 与本帧实际提交槽一致；异步计算和单帧回退都使用已等待完成的槽 0。
+        std::uint32_t GetFrameResourceSlot() const
+        { return m_ActiveFrameContextSlot ? m_ActiveFrameContextSlot->slotIndex : 0u; }
 		void RequestPunctualShadowDebugPreview()
 		{
 			m_PunctualShadowFrameState.RequestDebugPreview();

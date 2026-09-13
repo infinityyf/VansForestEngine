@@ -46,7 +46,7 @@ private:
         VansDecalRenderNode* node = nullptr;
         size_t pool = 0;
         uint32_t receiver = 0;
-        Vans::VansComponentHandle collider;
+        Vans::VansComponentHandle anchorComponent;
         uint32_t transform = UINT32_MAX, transformGeneration = 0;
         glm::vec3 localPosition{0}, localNormal{0,1,0}, localTangent{1,0,0};
         VansTransform lastAnchor;

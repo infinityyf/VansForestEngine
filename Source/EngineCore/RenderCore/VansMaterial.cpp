@@ -423,14 +423,14 @@ VansGraphics::VansTransparentMaterial::~VansTransparentMaterial()
 {
 	auto* descMgr = VansVKDescriptorManager::GetInstance();
 	descMgr->DestroyDescriptorSet(m_TransparentOwnedDescSets);
-	descMgr->DestroyDescriptorSetLayout(m_TransparentOwnedLayout);
+	descMgr->ReleaseDescriptorSetLayout(m_TransparentOwnedLayout);
 }
 
 VansGraphics::VansSkinMaterial::~VansSkinMaterial()
 {
 	auto* descMgr = VansVKDescriptorManager::GetInstance();
 	descMgr->DestroyDescriptorSet(m_SkinOwnedDescSets);
-	descMgr->DestroyDescriptorSetLayout(m_SkinOwnedLayout);
+	descMgr->ReleaseDescriptorSetLayout(m_SkinOwnedLayout);
 }
 
 bool VansGraphics::VansSkinMaterial::ApplySkinProfilePreset(const std::string& profileName)
@@ -494,7 +494,7 @@ VansGraphics::VansClothMaterial::~VansClothMaterial()
 {
 	auto* descMgr = VansVKDescriptorManager::GetInstance();
 	descMgr->DestroyDescriptorSet(m_ClothOwnedDescSets);
-	descMgr->DestroyDescriptorSetLayout(m_ClothOwnedLayout);
+	descMgr->ReleaseDescriptorSetLayout(m_ClothOwnedLayout);
 }
 
 VansGraphics::VansClothGPUParam VansGraphics::VansClothMaterial::BuildGPUParam() const
@@ -518,7 +518,7 @@ VansGraphics::VansHairMaterial::~VansHairMaterial()
 {
 	auto* descMgr = VansVKDescriptorManager::GetInstance();
 	descMgr->DestroyDescriptorSet(m_HairOwnedDescSets);
-	descMgr->DestroyDescriptorSetLayout(m_HairOwnedLayout);
+	descMgr->ReleaseDescriptorSetLayout(m_HairOwnedLayout);
 	if (m_ParamsDevice != VK_NULL_HANDLE && m_ParamsBuffer.GetNativeBuffer() != VK_NULL_HANDLE)
 	{
 		m_ParamsBuffer.DestroyVulkanBuffer(m_ParamsDevice);
@@ -529,14 +529,14 @@ VansGraphics::VansSubsurfaceMaterial::~VansSubsurfaceMaterial()
 {
 	auto* descMgr = VansVKDescriptorManager::GetInstance();
 	descMgr->DestroyDescriptorSet(m_SubsurfaceOwnedDescSets);
-	descMgr->DestroyDescriptorSetLayout(m_SubsurfaceOwnedLayout);
+	descMgr->ReleaseDescriptorSetLayout(m_SubsurfaceOwnedLayout);
 }
 
 VansGraphics::VansGrassMaterial::~VansGrassMaterial()
 {
 	auto* descMgr = VansVKDescriptorManager::GetInstance();
 	descMgr->DestroyDescriptorSet(m_GrassOwnedDescSets);
-	descMgr->DestroyDescriptorSetLayout(m_GrassOwnedLayout);
+	descMgr->ReleaseDescriptorSetLayout(m_GrassOwnedLayout);
 }
 
 VansGraphics::VansMaterialManager::VansMaterialManager()
@@ -787,13 +787,12 @@ void VansGraphics::VansMaterialManager::ClearResolutionDependentRenderData(VkDev
 
 	auto* descMgr = VansVKDescriptorManager::GetInstance();
 	descMgr->DestroyDescriptorSet(m_SSGIDescriptorSets);
-	descMgr->DestroyDescriptorSetLayout(m_SSGITexSetLayout);
+	descMgr->ReleaseDescriptorSetLayout(m_SSGITexSetLayout);
 	descMgr->DestroyDescriptorSet(m_SSGIProbeCacheDescriptorSets);
-	descMgr->DestroyDescriptorSetLayout(m_SSGIProbeCacheSetLayout);
+	descMgr->ReleaseDescriptorSetLayout(m_SSGIProbeCacheSetLayout);
     descMgr->DestroyDescriptorSet(m_GIReceiverVisibility.sets);
-    descMgr->DestroyDescriptorSetLayout(m_GIReceiverVisibility.layout);
+    descMgr->ReleaseDescriptorSetLayout(m_GIReceiverVisibility.layout);
     m_GIReceiverVisibility.bias.DestroyVulkanBuffer(device);
-    m_GIReceiverVisibility.transportWork.DestroyVulkanBuffer(device);
     m_GIReceiverVisibility.current.DestroyVulkanBuffer(device);
     m_GIReceiverVisibility.history.DestroyVulkanBuffer(device);
     m_GIReceiverVisibility.work.DestroyVulkanBuffer(device);
@@ -803,52 +802,52 @@ void VansGraphics::VansMaterialManager::ClearResolutionDependentRenderData(VkDev
     m_GIReceiverVisibility.frame = 0;
 
 	for (VkDescriptorSetLayout& layout : m_HZBTexSetLayouts)
-		descMgr->DestroyDescriptorSetLayout(layout);
+		descMgr->ReleaseDescriptorSetLayout(layout);
 	m_HZBTexSetLayouts.clear();
 	descMgr->DestroyDescriptorSet(m_HZBDescriptorSets);
 	for (VkDescriptorSetLayout& layout : m_OcclusionHZBTexSetLayouts)
-		descMgr->DestroyDescriptorSetLayout(layout);
+		descMgr->ReleaseDescriptorSetLayout(layout);
 	m_OcclusionHZBTexSetLayouts.clear();
 	descMgr->DestroyDescriptorSet(m_OcclusionHZBDescriptorSets);
 	descMgr->DestroyDescriptorSet(m_SSRTraceDescriptorSets);
-	descMgr->DestroyDescriptorSetLayout(m_SSRTraceSetLayout);
+	descMgr->ReleaseDescriptorSetLayout(m_SSRTraceSetLayout);
 	descMgr->DestroyDescriptorSet(m_ScreenSpaceShadowDescriptorSets);
-	descMgr->DestroyDescriptorSetLayout(m_ScreenSpaceShadowSetLayout);
+	descMgr->ReleaseDescriptorSetLayout(m_ScreenSpaceShadowSetLayout);
 	descMgr->DestroyDescriptorSet(m_CascadeShadowMinMaxDescriptorSets);
-	descMgr->DestroyDescriptorSetLayout(m_CascadeShadowMinMaxSetLayout);
+	descMgr->ReleaseDescriptorSetLayout(m_CascadeShadowMinMaxSetLayout);
 	m_CascadeShadowMinMaxMipCount = 0;
 	descMgr->DestroyDescriptorSet(m_MainCameraHiZCullDescriptorSets);
-	descMgr->DestroyDescriptorSetLayout(m_MainCameraHiZCullSetLayout);
+	descMgr->ReleaseDescriptorSetLayout(m_MainCameraHiZCullSetLayout);
 	descMgr->DestroyDescriptorSet(m_SSRResolveDescriptorSets);
-	descMgr->DestroyDescriptorSetLayout(m_SSRResolveSetLayout);
+	descMgr->ReleaseDescriptorSetLayout(m_SSRResolveSetLayout);
 	descMgr->DestroyDescriptorSet(m_SSRAADescriptorSets);
-	descMgr->DestroyDescriptorSetLayout(m_SSRAASetLayout);
+	descMgr->ReleaseDescriptorSetLayout(m_SSRAASetLayout);
 	descMgr->DestroyDescriptorSet(m_BilateralFilterDescriptorSets);
-	descMgr->DestroyDescriptorSetLayout(m_BilateralFilterSetLayout);
+	descMgr->ReleaseDescriptorSetLayout(m_BilateralFilterSetLayout);
 	descMgr->DestroyDescriptorSet(m_SSGITemporalDescriptorSets);
-	descMgr->DestroyDescriptorSetLayout(m_SSGITemporalSetLayout);
+	descMgr->ReleaseDescriptorSetLayout(m_SSGITemporalSetLayout);
 	descMgr->DestroyDescriptorSet(m_SSGIAtrousDescriptorSets);
-	descMgr->DestroyDescriptorSetLayout(m_SSGIAtrousSetLayout);
+	descMgr->ReleaseDescriptorSetLayout(m_SSGIAtrousSetLayout);
 	descMgr->DestroyDescriptorSet(m_HIZSeedDescriptorSets);
-	descMgr->DestroyDescriptorSetLayout(m_HIZSeedSetLayout);
+	descMgr->ReleaseDescriptorSetLayout(m_HIZSeedSetLayout);
 	descMgr->DestroyDescriptorSet(m_OcclusionHIZSeedDescriptorSets);
-	descMgr->DestroyDescriptorSetLayout(m_OcclusionHIZSeedSetLayout);
+	descMgr->ReleaseDescriptorSetLayout(m_OcclusionHIZSeedSetLayout);
 	descMgr->DestroyDescriptorSet(m_TileLightBuildDescriptorSets);
-	descMgr->DestroyDescriptorSetLayout(m_TileLightBuildSetLayout);
+	descMgr->ReleaseDescriptorSetLayout(m_TileLightBuildSetLayout);
 	descMgr->DestroyDescriptorSet(m_ExposureLuminanceDescriptorSets);
-	descMgr->DestroyDescriptorSetLayout(m_ExposureLuminanceSetLayout);
+	descMgr->ReleaseDescriptorSetLayout(m_ExposureLuminanceSetLayout);
 	descMgr->DestroyDescriptorSet(m_ExposureAdaptDescriptorSets);
-	descMgr->DestroyDescriptorSetLayout(m_ExposureAdaptSetLayout);
+	descMgr->ReleaseDescriptorSetLayout(m_ExposureAdaptSetLayout);
 	descMgr->DestroyDescriptorSet(m_BloomPrefilterDescriptorSets);
-	descMgr->DestroyDescriptorSetLayout(m_BloomPrefilterSetLayout);
+	descMgr->ReleaseDescriptorSetLayout(m_BloomPrefilterSetLayout);
 	descMgr->DestroyDescriptorSet(m_BloomDownsampleDescriptorSets);
-	descMgr->DestroyDescriptorSetLayout(m_BloomDownsampleSetLayout);
+	descMgr->ReleaseDescriptorSetLayout(m_BloomDownsampleSetLayout);
 	descMgr->DestroyDescriptorSet(m_BloomUpsampleDescriptorSets);
-	descMgr->DestroyDescriptorSetLayout(m_BloomUpsampleSetLayout);
+	descMgr->ReleaseDescriptorSetLayout(m_BloomUpsampleSetLayout);
 	descMgr->DestroyDescriptorSet(m_BloomShapeDescriptorSets);
-	descMgr->DestroyDescriptorSetLayout(m_BloomShapeSetLayout);
+	descMgr->ReleaseDescriptorSetLayout(m_BloomShapeSetLayout);
 	descMgr->DestroyDescriptorSet(m_DepthOfFieldDescriptorSets);
-	descMgr->DestroyDescriptorSetLayout(m_DepthOfFieldSetLayout);
+	descMgr->ReleaseDescriptorSetLayout(m_DepthOfFieldSetLayout);
 
 	m_HIZMipCount = 0;
 	m_SSGITemporalFrame = 0;
@@ -1203,11 +1202,11 @@ void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
 	// Release descriptor sets and layouts.
 	auto descMgr = VansVKDescriptorManager::GetInstance();
 	descMgr->DestroyDescriptorSet(m_GlobalPBRDataDescriptorSets);
-	descMgr->DestroyDescriptorSetLayout(m_GlobalPBRDataSetLayout);
+	descMgr->ReleaseDescriptorSetLayout(m_GlobalPBRDataSetLayout);
 	descMgr->DestroyDescriptorSet(m_GlobalPBRTexDescriptorSets);
-	descMgr->DestroyDescriptorSetLayout(m_GlobalPBRTexSetLayout);
+	descMgr->ReleaseDescriptorSetLayout(m_GlobalPBRTexSetLayout);
 	descMgr->DestroyDescriptorSet(m_PunctualShadowDebugDescriptorSets);
-	descMgr->DestroyDescriptorSetLayout(m_PunctualShadowDebugSetLayout);
+	descMgr->ReleaseDescriptorSetLayout(m_PunctualShadowDebugSetLayout);
 }
 
 bool VansGraphics::VansMaterialManager::FlushMaterialPayload(VansMaterial& material)

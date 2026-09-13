@@ -154,32 +154,6 @@ namespace VansGraphics
 		if (output == nullptr)
 			return;
 
-        auto& receiver = manager->m_GIReceiverVisibility;
-        auto& rayTracing = rayTracingContext;
-        bool transportReady = false;
-        transportReady = rayTracing.IsReady() && receiver.enabled; // 注释这一行即可独立移除局部传输补算。
-        // 独立队列：保留上一帧需求用于均匀抽样，再清空本帧计数。
-        VkMemoryBarrier transportBarrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-        transportBarrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-        transportBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
-        computeCmd.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
-            VK_PIPELINE_STAGE_TRANSFER_BIT, {transportBarrier});
-        auto work = receiver.transportWork.GetNativeBuffer();
-        if (manager->m_SSGITemporalFrame == 0u)
-            computeCmd.FillBuffer(work, 0, 12, 0u);
-        else
-        {
-            computeCmd.CopyBuffer(work, work, 0, 8, 4);
-            // 源计数读完后才允许清零。
-            transportBarrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-            transportBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            computeCmd.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, {transportBarrier});
-            computeCmd.FillBuffer(work, 0, 8, 0u);
-        }
-        computeCmd.FillBuffer(work, 12, 4, transportReady ? 1u : 0u);
-        transportBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        transportBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-        computeCmd.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, {transportBarrier});
 		computeCmd.EnsureComputeShader(
 			*manager->m_SSGIProbeCacheShader,
 			{ m_Scene->GetGlobalDescriptorSetLayout(), manager->m_SSGIProbeCacheSetLayout });
@@ -189,20 +163,7 @@ namespace VansGraphics
 			(output->GetHeight() + 7u) / 8u,
 			1,
 			{ m_Scene->GetGlobalDescriptorSet(), manager->m_SSGIProbeCacheDescriptorSets[manager->m_SSGITemporalFrame % 2u] });
-        // 与上方入队条件配对的局部传输阶段。
-        if (transportReady)
-        {
-            transportBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-            transportBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-            computeCmd.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, {transportBarrier});
-            if (!rayTracing.DispatchReceiverTransport(this, computeCmd, m_Scene,
-                manager->m_SSGIProbeCacheSetLayout,
-                manager->m_SSGIProbeCacheDescriptorSets[manager->m_SSGITemporalFrame % 2u]))
-                throw std::runtime_error("Failed to dispatch GI receiver transport");
-            computeCmd.PipelineBarrier(VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
-                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, {transportBarrier});
-        }
+
 	}
 
 
@@ -636,19 +597,6 @@ namespace VansGraphics
         for (uint32_t historyWrite = 0u; historyWrite < 2u; ++historyWrite)
         {
             const VkDescriptorSet probeCacheSet = manager->m_SSGIProbeCacheDescriptorSets[historyWrite];
-            descriptorManager->WriteBufferDescriptor(probeCacheSet, 25u, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                {{receiver.transportWork.GetNativeBuffer(), 0, receiver.transportWork.GetBufferSize()}});
-            auto& transportSky = manager->m_SkyLighting.Radiance()->GetImage();
-            descriptorManager->WriteImageDescriptor(probeCacheSet, 26u, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                {{transportSky.GetSampler(), transportSky.GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}});
-            auto& transportHistory = (historyWrite == 0u ? ssgiTemporalB : ssgiTemporalA)->GetImage();
-            descriptorManager->WriteImageDescriptor(probeCacheSet, 27u, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                {{transportHistory.GetSampler(), transportHistory.GetImageView(), VK_IMAGE_LAYOUT_GENERAL}});
-            descriptorManager->WriteImageDescriptor(probeCacheSet, 28u, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                {{renderPassManager->GetCascadeShadowSampler(), renderPassManager->GetCascadeShadowLayerView(1),
-                    VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL}});
-            descriptorManager->WriteImageDescriptor(probeCacheSet, 29u, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                renderPassManager->GetPunctualShadowDescriptorInfos());
             VansVKDescriptorManager::GetInstance()->WriteImageDescriptor(
                 probeCacheSet, SSGI_PROBE_CACHE_BINDING_NORMAL,
                 VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -2355,10 +2303,9 @@ void VansGraphics::VansVKDevice::PrepareGIReceiverVisibility(uint32_t width, uin
     const VkDeviceSize bytes = 16 + VkDeviceSize(width) * height * sizeof(VansGIReceiverVisibility::Record);
     if (!m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
         throw std::runtime_error("Failed to begin GI receiver visibility initialization");
-    for (auto* buffer : {&receiver.current, &receiver.history, &receiver.world, &receiver.transportWork, &receiver.bias})
+    for (auto* buffer : {&receiver.current, &receiver.history, &receiver.world, &receiver.bias})
     {
         const VkDeviceSize allocation = buffer == &receiver.bias ? 16 + VkDeviceSize(width) * height * 32 :
-            buffer == &receiver.transportWork ? VansGIReceiverVisibility::TransportBytes :
             (buffer == &receiver.world ? VansGIReceiverVisibility::WorldBytes : bytes);
         if (!buffer->CreatVulkanBuffer(m_VansVKLogicDevice, allocation, VK_FORMAT_R32_UINT, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
             throw std::runtime_error("Failed to allocate GI receiver visibility history");

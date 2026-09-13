@@ -1,3 +1,4 @@
+#include "../../AssetCore/Serialization/VansSerializedPathPattern.h"
 #include "VansInspectorWindow.h"
 
 #include "../VansAssetDocumentEditService.h"
@@ -661,117 +662,33 @@ bool LocalVolumetricFogScalarLimits(const std::string& label,
 	return false;
 }
 
-bool ParticleVolumetricScalarLimits(const std::string& label,
-    const std::string& pointer, float& minValue, float& maxValue, float& speed)
+const Vans::EditorAPI::ParticleAuthoringField* ParticleAssetField(
+    const Vans::EditorAPI::ParticleAuthoringSchemaSnapshot& schema, const std::string& pointer)
 {
-    const std::string path = Lower(pointer);
-    if (path.find("/renderer/volumetric/") == std::string::npos)
-        return false;
-
-    const std::string field = Lower(label);
-    if (field == "radiusscale")
-    {
-        minValue = 0.01f; maxValue = 32.0f; speed = 0.01f; return true;
-    }
-    if (field == "maxdistancemeters")
-    {
-        minValue = 0.1f; maxValue = 100000.0f; speed = 0.1f; return true;
-    }
-    if (field == "densitymultiplier" || field == "extinctionpermeter")
-    {
-        minValue = 0.0f; maxValue = 100.0f; speed = 0.01f; return true;
-    }
-    if (field == "anisotropy")
-    {
-        minValue = -0.9f; maxValue = 0.9f; speed = 0.01f; return true;
-    }
-    if (field == "edgesoftness")
-    {
-        minValue = 0.001f; maxValue = 1.0f; speed = 0.01f; return true;
-    }
-    if (field == "directlightingscale" || field == "skylightingscale")
-    {
-        minValue = 0.0f; maxValue = 100.0f; speed = 0.01f; return true;
-    }
-    if (field == "injectionpriority")
-    {
-        minValue = 0.0f; maxValue = 255.0f; speed = 1.0f; return true;
-    }
-    return false;
-}
-
-bool ParticleLifecycleScalarLimits(const std::string& label,
-    const std::string& pointer, float& minValue, float& maxValue, float& speed)
-{
-    const std::string path = Lower(pointer);
-    if (path.find("/asset/emitters/") == std::string::npos)
-        return false;
-
-    const std::string field = Lower(label);
-    if (field == "t" && (path.find("/curve/") != std::string::npos ||
-        path.find("/keys/") != std::string::npos ||
-        path.find("/stops/") != std::string::npos))
-    {
-        minValue = 0.0f; maxValue = 1.0f; speed = 0.01f; return true;
-    }
-    if (path.find("/lifetime/") != std::string::npos &&
-        (field == "value" || field == "min" || field == "max"))
-    {
-        minValue = 0.01f; maxValue = 3600.0f; speed = 0.05f; return true;
-    }
-    if ((path.find("/size/") != std::string::npos ||
-        path.find("/curve/") != std::string::npos) &&
-        (field == "value" || field == "min" || field == "max"))
-    {
-        minValue = 0.0f; maxValue = 64.0f; speed = 0.01f; return true;
-    }
-    if (field == "speed")
-    {
-        minValue = 0.0f; maxValue = 1000.0f; speed = 0.01f; return true;
-    }
-    if (field == "angle")
-    {
-        minValue = 0.0f; maxValue = 180.0f; speed = 0.25f; return true;
-    }
-    if (field == "drag")
-    {
-        minValue = 0.0f; maxValue = 100.0f; speed = 0.01f; return true;
-    }
-    if (field == "strength" || field == "frequency" || field == "scrollspeed")
-    {
-        minValue = 0.0f; maxValue = 100.0f; speed = 0.01f; return true;
-    }
-    if (field == "rate")
-    {
-        minValue = 0.0f; maxValue = 1000000.0f; speed = 0.1f; return true;
-    }
-    return false;
-}
-
-const std::vector<const char*>* ParticleAssetEnumOptions(
-    const std::string& label, const std::string& pointer,
-    const std::string& parentKey)
-{
-    const std::string path = Lower(pointer);
-    if (path.find("/asset/") == std::string::npos)
-        return nullptr;
-    const std::string field = Lower(label);
-    static const std::vector<const char*> curveModes{
-        "Constant", "RandomBetween", "Curve", "RandomBetweenCurves" };
-    static const std::vector<const char*> velocityModes{ "Cone", "Random" };
-    static const std::vector<const char*> shapes{
-        "Sphere", "Box", "Cone", "Disk", "Edge" };
-    static const std::vector<const char*> spawnTypes{
-        "RateOverTime", "Burst" };
-    static const std::vector<const char*> simulationSpaces{ "Local", "World" };
-    if (field == "mode")
-        return Lower(parentKey) == "initvelocity"
-            ? &velocityModes : &curveModes;
-    if (field == "shape") return &shapes;
-    if (field == "type" && path.find("/spawn/") != std::string::npos)
-        return &spawnTypes;
-    if (field == "simulationspace") return &simulationSpaces;
+    const auto offset = pointer.find("/asset/");
+    if (offset == std::string::npos) return nullptr;
+    const auto path = pointer.substr(offset + 6);
+    for (const auto& field : schema.fields)
+        if (Vans::MatchSerializedPathPattern(field.pathPattern, path)) return &field;
     return nullptr;
+}
+
+bool ParticleAssetScalarLimits(const Vans::EditorAPI::ParticleAuthoringSchemaSnapshot& schema,
+    const std::string& pointer, float& minimum, float& maximum, float& step)
+{
+    const auto* field = ParticleAssetField(schema, pointer);
+    if (!field || !field->hasLimits) return false;
+    minimum = static_cast<float>(field->minimum);
+    maximum = static_cast<float>(field->maximum);
+    step = static_cast<float>(field->step);
+    return true;
+}
+
+const std::vector<std::string>* ParticleAssetEnumOptions(
+    const Vans::EditorAPI::ParticleAuthoringSchemaSnapshot& schema, const std::string& pointer)
+{
+    const auto* field = ParticleAssetField(schema, pointer);
+    return field && !field->choices.empty() ? &field->choices : nullptr;
 }
 
 bool AudioComponentScalarLimits(const std::string& label, const std::string& componentType,
@@ -893,29 +810,20 @@ bool AudioControlAssetScalarLimits(const std::string& label, const std::string& 
 
 std::optional<Vans::VansSerializedValue> DefaultSerializedArrayElement(
     const std::string& label,
-	const std::string& pointer,
-	const std::string& componentType)
+    const std::string& pointer,
+    const std::string& componentType,
+    const Vans::EditorAPI::ParticleAuthoringSchemaSnapshot& particleSchema)
 {
     using Value = Vans::VansSerializedValue;
     const std::string field = Lower(label);
     const std::string path = Lower(pointer);
-	const bool particleAsset = path.find("/asset/emitters/") != std::string::npos;
-	if (particleAsset && (field == "curve" || field == "keys" ||
-		field == "minkeys" || field == "maxkeys"))
-	{
-		return Value::Object({
-			{ "t", Value::Float(1.0) },
-			{ "value", Value::Float(1.0) }
-		});
-	}
-	if (particleAsset && field == "stops")
-	{
-		return Value::Object({
-			{ "t", Value::Float(1.0) },
-			{ "color", Value::Array({ Value::Float(1.0), Value::Float(1.0),
-				Value::Float(1.0), Value::Float(0.0) }) }
-		});
-	}
+    if (path.find("/asset/") != std::string::npos)
+    {
+        if (label == "emitters")
+            if (const auto* item = Vans::FindObjectField(particleSchema.defaults, "emitter")) return *item;
+        if (const auto* items = Vans::FindObjectField(particleSchema.defaults, "arrayElements"))
+            if (const auto* item = Vans::FindObjectField(*items, label)) return *item;
+    }
 	if (Lower(componentType) == "actionhost")
 		if (auto item = Vans::VansGameplayActionHostAuthoring::CreateDefaultArrayElement(label))
 			return item;
@@ -958,126 +866,45 @@ bool EnsureSerializedField(
     return true;
 }
 
-void MergeParticleAuthoringSchema(Vans::VansSerializedValue& root)
+void MergeSerializedDefaults(Vans::VansSerializedValue& target, const Vans::VansSerializedValue& defaults)
 {
     using Value = Vans::VansSerializedValue;
-    Vans::VansSerializedValue* emitters = Vans::FindObjectField(root, "emitters");
-    if (!emitters || emitters->kind != Value::Kind::Array)
-        return;
-
-    for (Value& emitter : emitters->arrayItems)
+    if (target.kind != Value::Kind::Object || defaults.kind != Value::Kind::Object) return;
+    for (const auto& [name, fallback] : defaults.objectFields)
     {
-        if (emitter.kind != Value::Kind::Object)
-            continue;
-		for (const char* stackName : { "initialize", "update" })
-		{
-			Value* stack = Vans::FindObjectField(emitter, stackName);
-			if (!stack || stack->kind != Value::Kind::Array)
-				continue;
-			for (Value& module : stack->arrayItems)
-				if (module.kind == Value::Kind::Object)
-					EnsureSerializedField(module, "enabled", Value::Bool(true));
-		}
-        Value* renderer = Vans::FindObjectField(emitter, "renderer");
-        if (!renderer || renderer->kind != Value::Kind::Object)
-            continue;
-        Value* volumetric = Vans::FindObjectField(*renderer, "volumetric");
-        if (!volumetric)
-        {
-            Vans::SetSerializedObjectField(*renderer, "volumetric", Value::Object({}));
-            volumetric = Vans::FindObjectField(*renderer, "volumetric");
-        }
-        if (!volumetric || volumetric->kind != Value::Kind::Object)
-            continue;
-        EnsureSerializedField(*volumetric, "enabled", Value::Bool(false));
-        EnsureSerializedField(*volumetric, "keepSurfaceRenderer", Value::Bool(false));
-        EnsureSerializedField(*volumetric, "radiusScale", Value::Float(1.0));
-        EnsureSerializedField(*volumetric, "maxDistanceMeters", Value::Float(100.0));
-        EnsureSerializedField(*volumetric, "densityMultiplier", Value::Float(1.0));
-        EnsureSerializedField(*volumetric, "extinctionPerMeter", Value::Float(0.1));
-        EnsureSerializedField(*volumetric, "singleScatteringAlbedo", Value::Array({
-            Value::Float(0.9), Value::Float(0.9), Value::Float(0.9) }));
-        EnsureSerializedField(*volumetric, "anisotropy", Value::Float(0.0));
-        EnsureSerializedField(*volumetric, "emissivePerMeter", Value::Array({
-            Value::Float(0.0), Value::Float(0.0), Value::Float(0.0) }));
-        EnsureSerializedField(*volumetric, "edgeSoftness", Value::Float(0.35));
-        EnsureSerializedField(*volumetric, "directLightingScale", Value::Float(1.0));
-        EnsureSerializedField(*volumetric, "skyLightingScale", Value::Float(1.0));
-        EnsureSerializedField(*volumetric, "receiveCloudShadows", Value::Bool(true));
-        EnsureSerializedField(*volumetric, "injectionPriority", Value::Int(128));
+        if (auto* field = Vans::FindObjectField(target, name)) MergeSerializedDefaults(*field, fallback);
+        else Vans::SetSerializedObjectField(target, name, fallback);
     }
 }
 
-Vans::VansSerializedValue MakeParticleModuleAuthoringValue(const std::string& name)
+void MergeParticleAuthoringSchema(Vans::VansSerializedValue& root,
+    const Vans::EditorAPI::ParticleAuthoringSchemaSnapshot& schema)
 {
     using Value = Vans::VansSerializedValue;
-    const auto curve = [](double value)
+    if (const auto* asset = Vans::FindObjectField(schema.defaults, "asset")) MergeSerializedDefaults(root, *asset);
+    const auto* defaultEmitter = Vans::FindObjectField(schema.defaults, "emitter");
+    const auto* modules = Vans::FindObjectField(schema.defaults, "modules");
+    auto* emitters = Vans::FindObjectField(root, "emitters");
+    if (!defaultEmitter || !modules || !emitters || emitters->kind != Value::Kind::Array) return;
+    for (auto& emitter : emitters->arrayItems)
     {
-        return Value::Object({
-            { "mode", Value::String("Constant") },
-            { "value", Value::Float(value) }
-        });
-    };
-    if (name == "InitLifetime")
-        return Value::Object({ { "module", Value::String(name) },
-            { "enabled", Value::Bool(true) }, { "lifetime", curve(1.0) } });
-    if (name == "InitVelocity")
-        return Value::Object({ { "module", Value::String(name) },
-            { "enabled", Value::Bool(true) }, { "mode", Value::String("Cone") },
-            { "angle", Value::Float(25.0) }, { "speed", Value::Float(2.0) } });
-    if (name == "InitPositionShape")
-        return Value::Object({ { "module", Value::String(name) },
-            { "enabled", Value::Bool(true) }, { "shape", Value::String("Cone") },
-            { "radius", Value::Float(0.2) }, { "arc", Value::Float(360.0) } });
-    if (name == "InitSize")
-        return Value::Object({ { "module", Value::String(name) },
-            { "enabled", Value::Bool(true) }, { "size", curve(0.1) } });
-    if (name == "InitColor")
-        return Value::Object({ { "module", Value::String(name) },
-            { "enabled", Value::Bool(true) },
-            { "color", Value::Array({ Value::Float(1.0), Value::Float(1.0),
-                Value::Float(1.0), Value::Float(1.0) }) } });
-    if (name == "InitRotation")
-        return Value::Object({ { "module", Value::String(name) },
-            { "enabled", Value::Bool(true) }, { "angle", curve(0.0) } });
-    if (name == "UpdateGravity")
-        return Value::Object({ { "module", Value::String(name) },
-            { "enabled", Value::Bool(true) },
-            { "gravity", Value::Array({ Value::Float(0.0), Value::Float(-9.8),
-                Value::Float(0.0) }) } });
-    if (name == "UpdateColorOverLifetime")
-        return Value::Object({ { "module", Value::String(name) },
-            { "enabled", Value::Bool(true) },
-            { "gradient", Value::Object({ { "stops", Value::Array({
-                Value::Object({ { "t", Value::Float(0.0) },
-                    { "color", Value::Array({ Value::Float(1.0), Value::Float(1.0),
-                        Value::Float(1.0), Value::Float(1.0) }) } }),
-                Value::Object({ { "t", Value::Float(1.0) },
-                    { "color", Value::Array({ Value::Float(1.0), Value::Float(1.0),
-                        Value::Float(1.0), Value::Float(0.0) }) } }) }) } }) } });
-    if (name == "UpdateSizeOverLifetime")
-        return Value::Object({ { "module", Value::String(name) },
-            { "enabled", Value::Bool(true) }, { "curve", Value::Array({
-                Value::Object({ { "t", Value::Float(0.0) }, { "value", Value::Float(1.0) } }),
-                Value::Object({ { "t", Value::Float(1.0) }, { "value", Value::Float(1.0) } }) }) } });
-    if (name == "UpdateVelocityOverLifetime")
-        return Value::Object({ { "module", Value::String(name) },
-            { "enabled", Value::Bool(true) }, { "drag", Value::Float(0.1) },
-            { "turbulence", Value::Object({ { "enabled", Value::Bool(false) },
-                { "strength", Value::Float(0.5) }, { "frequency", Value::Float(1.0) },
-                { "scrollSpeed", Value::Float(0.2) } }) } });
-    if (name == "UpdateRotationOverLifetime")
-        return Value::Object({ { "module", Value::String(name) },
-            { "enabled", Value::Bool(true) }, { "angularVelocity", curve(45.0) } });
-    if (name == "UpdateSpriteAnim")
-        return Value::Object({ { "module", Value::String(name) },
-            { "enabled", Value::Bool(true) }, { "columns", Value::Int(4) },
-            { "rows", Value::Int(4) }, { "fps", Value::Float(0.0) } });
-    return Value::Object({});
+        MergeSerializedDefaults(emitter, *defaultEmitter);
+        for (const char* phase : {"initialize", "update"})
+        {
+            auto* stack = Vans::FindObjectField(emitter, phase);
+            if (!stack || stack->kind != Value::Kind::Array) continue;
+            for (auto& module : stack->arrayItems)
+                for (const auto& entry : modules->arrayItems)
+                    if (Vans::ReadSerializedStringField(entry, "phase") == phase)
+                        if (const auto* definition = Vans::FindObjectField(entry, "definition"))
+                            if (Vans::ReadSerializedStringField(*definition, "module") == Vans::ReadSerializedStringField(module, "module"))
+                                MergeSerializedDefaults(module, *definition);
+        }
+    }
 }
 
 bool DrawParticleModuleAddMenu(Vans::VansSerializedValue& stack,
-    const std::string& pointer)
+    const std::string& pointer, const Vans::EditorAPI::ParticleAuthoringSchemaSnapshot& schema)
 {
     using Value = Vans::VansSerializedValue;
     const std::string path = Lower(pointer);
@@ -1095,19 +922,17 @@ bool DrawParticleModuleAddMenu(Vans::VansSerializedValue& stack,
         return false;
     }
 
-    static constexpr std::array<const char*, 6> initializeModules{
-        "InitLifetime", "InitVelocity", "InitPositionShape",
-        "InitSize", "InitColor", "InitRotation" };
-    static constexpr std::array<const char*, 6> updateModules{
-        "UpdateGravity", "UpdateColorOverLifetime", "UpdateSizeOverLifetime",
-        "UpdateVelocityOverLifetime", "UpdateRotationOverLifetime", "UpdateSpriteAnim" };
+    const auto* modules = Vans::FindObjectField(schema.defaults, "modules");
+    if (!modules) return false;
     bool changed = false;
     if (ImGui::SmallButton("Add Module"))
         ImGui::OpenPopup("ParticleModuleMenu");
     if (ImGui::BeginPopup("ParticleModuleMenu"))
     {
-        const auto drawOption = [&](const char* moduleName)
+        const auto drawOption = [&](const Value& definition)
         {
+            const auto name = Vans::ReadSerializedStringField(definition, "module");
+            const char* moduleName = name.c_str();
             const bool exists = std::any_of(stack.arrayItems.begin(), stack.arrayItems.end(),
                 [moduleName](const Value& item)
                 {
@@ -1118,16 +943,15 @@ bool DrawParticleModuleAddMenu(Vans::VansSerializedValue& stack,
                 ImGui::BeginDisabled();
             if (ImGui::MenuItem(moduleName) && !exists)
             {
-                stack.arrayItems.push_back(MakeParticleModuleAuthoringValue(moduleName));
+                stack.arrayItems.push_back(definition);
                 changed = true;
             }
             if (exists)
                 ImGui::EndDisabled();
         };
-        if (initialize)
-            for (const char* moduleName : initializeModules) drawOption(moduleName);
-        if (update)
-            for (const char* moduleName : updateModules) drawOption(moduleName);
+        for (const auto& entry : modules->arrayItems)
+            if (Vans::ReadSerializedStringField(entry, "phase") == (initialize ? "initialize" : "update"))
+                if (const auto* definition = Vans::FindObjectField(entry, "definition")) drawOption(*definition);
         ImGui::EndPopup();
     }
     return changed;
@@ -1902,6 +1726,7 @@ struct VansInspectorWindow::Impl
     std::vector<std::string> m_CollisionLayerNames;
     VansEngine::VansAudioPreviewPlayer m_AudioPreview;
     Vans::EditorAPI::IEngineEditorAPI* m_ActiveAPI = nullptr;
+    Vans::EditorAPI::ParticleAuthoringSchemaSnapshot m_ParticleSchema;
     bool m_PendingVehicleRebuild = false;
     std::string m_PendingVehicleRebuildEntityGuid;
     std::optional<Vans::ObjectReferenceAssignment> m_PendingObjectReferenceEdit;
@@ -2451,9 +2276,9 @@ bool VansInspectorWindow::Impl::DrawSerializedValue(
             }
             if (!readOnly)
             {
-				changed |= DrawParticleModuleAddMenu(value, pointer);
+				changed |= DrawParticleModuleAddMenu(value, pointer, m_ParticleSchema);
 				if (std::optional<Vans::VansSerializedValue> defaultElement =
-					DefaultSerializedArrayElement(label, pointer, componentType))
+					DefaultSerializedArrayElement(label, pointer, componentType, m_ParticleSchema))
                 {
 					const std::string loweredLabel = Lower(label);
 					const std::string buttonLabel = loweredLabel == "rules" ? "Add Rule" :
@@ -2539,18 +2364,7 @@ bool VansInspectorWindow::Impl::DrawSerializedValue(
 				changed = true;
 			}
 		}
-        else if (ParticleLifecycleScalarLimits(label, pointer,
-            minValue, maxValue, speed))
-        {
-            float numeric = static_cast<float>(edited);
-            if (ImGui::DragFloat("##value", &numeric, speed, minValue, maxValue, "%.3f"))
-            {
-                value = Vans::VansSerializedValue::Float(
-                    std::clamp(numeric, minValue, maxValue));
-                changed = true;
-            }
-        }
-        else if (ParticleVolumetricScalarLimits(label, pointer,
+        else if (ParticleAssetScalarLimits(m_ParticleSchema, pointer,
             minValue, maxValue, speed))
         {
             float numeric = static_cast<float>(edited);
@@ -2658,17 +2472,7 @@ bool VansInspectorWindow::Impl::DrawSerializedValue(
 				changed = true;
 			}
 		}
-        else if (ParticleLifecycleScalarLimits(label, pointer,
-            minValue, maxValue, speed))
-        {
-            if (ImGui::DragFloat("##value", &edited, speed, minValue, maxValue, "%.3f"))
-            {
-                value = Vans::VansSerializedValue::Float(
-                    std::clamp(edited, minValue, maxValue));
-                changed = true;
-            }
-        }
-        else if (ParticleVolumetricScalarLimits(label, pointer,
+        else if (ParticleAssetScalarLimits(m_ParticleSchema, pointer,
             minValue, maxValue, speed))
         {
             if (ImGui::DragFloat("##value", &edited, speed, minValue, maxValue, "%.3f"))
@@ -2747,14 +2551,13 @@ bool VansInspectorWindow::Impl::DrawSerializedValue(
 				ImGui::EndCombo();
 			}
 		}
-		else if (const auto* options = ParticleAssetEnumOptions(
-			label, pointer, parentKey))
+		else if (const auto* options = ParticleAssetEnumOptions(m_ParticleSchema, pointer))
 		{
 			if (ImGui::BeginCombo("##value", current.c_str()))
 			{
-				for (const char* option : *options)
+				for (const auto& option : *options)
 				{
-					if (ImGui::Selectable(option, current == option))
+					if (ImGui::Selectable(option.c_str(), current == option))
 					{
 						value = Vans::VansSerializedValue::String(option);
 						changed = true;
@@ -3341,7 +3144,7 @@ void VansInspectorWindow::Impl::DrawAsset(Vans::EditorAPI::IEngineEditorAPI& api
             displayRootValue = Vans::VansSerializedValue::Object({});
         Vans::MergeMaterialAuthoringSchema(api, displayRootValue);
         if (selectedExtension == ".particle")
-            MergeParticleAuthoringSchema(displayRootValue);
+            MergeParticleAuthoringSchema(displayRootValue, m_ParticleSchema);
         for (auto& [propertyKey, propertyValue] : displayRootValue.objectFields)
         {
             const std::string propertyPointer = "/asset/" + EscapePointerToken(propertyKey);
@@ -3450,6 +3253,7 @@ void VansInspectorWindow::Impl::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& ap
     m_AudioPreview.Tick();
     ImGui::Begin("Inspector");
     m_ActiveAPI = &api;
+    if (m_ParticleSchema.fields.empty()) m_ParticleSchema = api.GetParticleAuthoringSchema();
     m_CollisionLayerNames = api.GetRuntimeCollisionLayerNames();
     m_PendingObjectReferenceEdit.reset();
 	const Vans::EditorObjectHandle& activeSelection =

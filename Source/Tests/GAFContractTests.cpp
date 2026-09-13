@@ -4820,8 +4820,19 @@ static bool TestDemoHallCombatHitRuntime(bool hitscan)
 		hurtBodyComponent.IsValid() && cctComponent.IsValid() && animationComponent.IsValid(),
 		"Whisper production hurt-body, CCT, or Animation component is unavailable")) return false;
 
+	glm::vec3 shotOrigin(0,1.05f,2), shotDirection(0,0,-1);
+	bool shotCameraAvailable = true, preciseWall = false;
+	Vans::VansSurfaceImpact preciseSurface;
 	auto combatService = Vans::VansCombatActionService::Create(
-		world, gameplayRuntime, error);
+		world, gameplayRuntime, error, {
+			[&](glm::vec3& origin, glm::vec3& direction) { origin=shotOrigin; direction=shotDirection; return shotCameraAvailable; },
+			[&](const auto&,const auto&,float range,uint32_t,auto,auto,Vans::VansSurfaceImpact& impact,std::string&) {
+				impact = preciseSurface;
+				if (impact.hit.distance > range) impact = {};
+				return true;
+			},
+			[&](Vans::VansEntityHandle entity) { return preciseWall && entity==world.Entities().FindByGuid("pistol-wall"); }
+		});
 	auto animationService = Vans::VansAnimationActionService::Create(world, error);
 	auto navigationService = Vans::VansNavigationActionService::Create(world, error);
 	if (!ExpectGAF(combatService && animationService && navigationService, error.c_str()))
@@ -4841,6 +4852,8 @@ static bool TestDemoHallCombatHitRuntime(bool hitscan)
 			Vans::VansAnimationEventActionCapability()) }));
 	if (hitscan) dependencies.contributors.push_back(MakeTestRuntimeContributor(
 		"Gameplay.Audio", { std::make_shared<Vans::VansFakeActionService>(Vans::VansAudioActionCapability()) }));
+    if (hitscan) dependencies.contributors.push_back(MakeTestRuntimeContributor(
+        "Gameplay.VFX", { std::make_shared<Vans::VansFakeActionService>(Vans::VansVFXActionCapability()) }));
 	if (hitscan) dependencies.contributors.push_back(MakeTestRuntimeContributor(
 		"Gameplay.Decal", { std::make_shared<Vans::VansDecalActionService>(Vans::VansDecalSceneBackend{}) }));
 	Vans::VansAssetObjectRepository assetObjects;
@@ -4873,7 +4886,7 @@ static bool TestDemoHallCombatHitRuntime(bool hitscan)
 		if (!ExpectGAF(shotAction != nullptr, "Pistol Shot Action did not resolve")) return false;
 		std::vector<std::unique_ptr<VansEngine::VansPhysicsNode>> extraBodies;
 		const auto addBody = [&](const char* id, const char* region, glm::vec3 position, bool trigger,
-			Vans::VansEntityHandle parent, const char* layer)
+			Vans::VansEntityHandle parent, const char* layer, bool mapped = true)
 		{
 			const auto entity = world.CreateEntity({ id, id, parent });
 			const auto transform = addTransform(entity, id, position);
@@ -4881,11 +4894,12 @@ static bool TestDemoHallCombatHitRuntime(bool hitscan)
 			auto properties = hurtBodyProperties;
 			properties.hitRegion = region; properties.layerName = layer;
 			properties.isTrigger = trigger; properties.shapeOffset = glm::vec3(0);
+			if (!trigger) properties.bodyType = VansEngine::PhysicsBodyType::Static;
 			properties.colliderType = trigger ? VansEngine::PhysicsColliderType::Capsule : VansEngine::PhysicsColliderType::Box;
 			properties.capsuleRadius = .12f; properties.capsuleHalfHeight = .15f;
 			properties.boxExtents = glm::vec3(.2f);
 			body->SetName(id); body->Initialize(properties, transform);
-			world.AddComponent(entity, Vans::VansRuntimeComponentType_Physics,
+			if (mapped) world.AddComponent(entity, Vans::VansRuntimeComponentType_Physics,
 				Vans::VansRuntimePhysicsComponent{body.get()}, id);
 			auto* result = body.get(); extraBodies.push_back(std::move(body)); return result;
 		};
@@ -4910,13 +4924,27 @@ static bool TestDemoHallCombatHitRuntime(bool hitscan)
 		Vans::VansActionHandle previousResponse;
 		const auto fire = [&](float x, const std::string& region)
 		{
-			VansGraphics::VansTransformStore::GetTransform(baseTransform).m_Position = glm::vec3(x,1.05f,2);
-			VansGraphics::VansTransformStore::GetTransform(tipTransform).m_Position = glm::vec3(x,1.05f,1);
+			shotOrigin = glm::vec3(x,1.05f,2);
+			// 故意使枪械节点与相机射线无关，防止退回枪身方向查询。
+			VansGraphics::VansTransformStore::GetTransform(baseTransform).m_Position = glm::vec3(100,100,100);
+			VansGraphics::VansTransformStore::GetTransform(tipTransform).m_Position = glm::vec3(100,100,100);
+			Vans::VansEventBus::Get().Flush(Vans::VansEventLane::GameLogic);
+			std::vector<Vans::VansActionMessageEvent> messages;
+			Vans::VansScopedEventConnections messageConnection;
+			messageConnection.Add(Vans::VansEventBus::Get().Subscribe<Vans::VansActionMessageEvent>(
+				[&](const auto& event) { if (event.owner == attacker && event.message.stableName == "Combat.Shot") messages.push_back(event); },
+				Vans::VansEventLane::GameLogic));
 			const auto shot = attackerHost->ActivateAction(shotAction->id, context);
 			if (!ExpectGAF(static_cast<bool>(shot), shot.message.c_str())) return false;
 			++shots;
 			if (!ExpectGAF(!attackerHost->ActivateAction(shotAction->id, context), "Pistol accepted a duplicate fire during the same animation")) return false;
 			gameplayRuntime.TickEarly(0.0);
+			Vans::VansEventBus::Get().Flush(Vans::VansEventLane::GameLogic);
+			Vans::VansSurfaceImpact delivered;
+			const auto* deliveredValue = messages.size() == 1 ? Vans::FindObjectField(messages.front().message.payload, "surfaceImpact") : nullptr;
+			if (!ExpectGAF(deliveredValue && Vans::VansDecodeSurfaceImpact(*deliveredValue, delivered, error)
+				&& (region.empty() || (delivered.layerName == "Enemy" && delivered.hit.region == region && delivered.hit.entity == whisper)),
+				"Accepted shot message lost target, layer or region, or duplicate input emitted feedback")) return false;
 			if (!region.empty())
 			{
 				++hits;
@@ -4992,7 +5020,34 @@ static bool TestDemoHallCombatHitRuntime(bool hitscan)
 		payload["targetLayer"] = "MissingLayer"; query.payload = Vans::DecodeSerializedValueJson(payload);
 		if (!ExpectGAF(!combatService->Execute(query), "Unknown hitscan layer silently selected Default")) return false;
 		payload["targetLayer"] = "Enemy"; query.payload = Vans::DecodeSerializedValueJson(payload);
-		VansGraphics::VansTransformStore::GetTransform(tipTransform).m_Position = VansGraphics::VansTransformStore::GetTransform(baseTransform).m_Position;
+		// 精确墙面替换凸出的简化盒面，仍按统一距离遮挡后方人物。
+		preciseWall = true; wall->SetEnabled(true);
+		preciseSurface.kind = Vans::VansSurfaceImpactKind::Render;
+		preciseSurface.hit.entity = preciseSurface.hit.hitEntity = world.Entities().FindByGuid("pistol-wall");
+		preciseSurface.hit.componentGuid = "precise-wall-render";
+		preciseSurface.hit.position = {0,1.05,.7}; preciseSurface.hit.normal = {0,0,1}; preciseSurface.hit.distance = 1.3;
+		const auto preciseResult = combatService->Execute(query);
+		surfaceImpact = Vans::FindObjectField(preciseResult.payload,"surfaceImpact");
+		if (!ExpectGAF(preciseResult && surfaceImpact && Vans::VansDecodeSurfaceImpact(*surfaceImpact,wallImpact,error) &&
+			wallImpact.kind==Vans::VansSurfaceImpactKind::Render && std::abs(wallImpact.hit.position[2]-.7)<.001 &&
+			whisperHost->ActiveActions().empty(),"Approximate wall still won over precise surface or failed to occlude character")) return false;
+		// 更近的原生物理物体获胜时，不能继承后方网格的实体与接收组件。
+		auto* nativeWall = addBody("native-pistol-wall", "", glm::vec3(0,1.05f,1.4f), false, {}, "Environment", false);
+		const auto nativeResult = combatService->Execute(query);
+		surfaceImpact = Vans::FindObjectField(nativeResult.payload,"surfaceImpact");
+		if (!ExpectGAF(nativeResult && surfaceImpact && Vans::VansDecodeSurfaceImpact(*surfaceImpact,wallImpact,error) &&
+			wallImpact.kind==Vans::VansSurfaceImpactKind::Unmapped && !wallImpact.hit.entity.IsValid() &&
+			!wallImpact.hit.hitEntity.IsValid() && wallImpact.hit.componentGuid.empty() &&
+			std::abs(wallImpact.hit.distance-.4)<.001,"Closer native hit inherited a rear mesh identity")) return false;
+		nativeWall->SetEnabled(false);
+		// 精确网格的洞口没有交点时，不能仍被同一个包围盒遮住。
+		preciseSurface = {};
+		const auto holeResult = combatService->Execute(query);
+		if (!ExpectGAF(holeResult && Vans::ReadSerializedBoolField(holeResult.payload,"hit"),"Empty mesh aperture was blocked by its collision box")) return false;
+		gameplayRuntime.TickEarly(1.4);
+		shotCameraAvailable = false;
+		if (!ExpectGAF(!combatService->Execute(query),"Missing camera silently used weapon direction")) return false;
+		shotCameraAvailable = true; shotDirection = glm::vec3(0);
 		if (!ExpectGAF(!combatService->Execute(query), "Zero-length shot direction was accepted")) return false;
 		std::cout << "[GAF] Pistol hitscan passed shots=" << shots << " hits=" << hits
 			<< " regions=Chest,RightForearm,Head,LeftShin nearestOnly=1 selfAndCctExcluded=1 wallAndMiss=1 repeatedFeedback=1 cleanup=1\n";
@@ -6965,6 +7020,8 @@ bool TestGAFPistolAudioRuntimeContract()
 				{"surfaceImpact", VansEncodeSurfaceImpact({})}}), {}};
 		}, error);
 		deps.contributors.push_back(MakeTestRuntimeContributor("Gameplay.Combat", {shotQuery}));
+        deps.contributors.push_back(MakeTestRuntimeContributor("Gameplay.VFX",
+            {std::make_shared<VansFakeActionService>(VansVFXActionCapability())}));
 		deps.contributors.push_back(MakeTestRuntimeContributor("Gameplay.Decal",
 			{std::make_shared<VansDecalActionService>(VansDecalSceneBackend{})}));
 		VansAssetObjectRepository objects;
@@ -7252,6 +7309,22 @@ bool TestDemoHallPlayerThrowContract()
 	if (!luaOk) error = lua_tostring(lua,-1);
 	lua_close(lua);
 	return ExpectGAF(luaOk, error.c_str());
+}
+
+bool TestHitFeedbackScriptContract()
+{
+	std::filesystem::path workspace = std::filesystem::current_path();
+	for (int i=0; i<6 && !std::filesystem::exists(workspace / "DemoHallProject"); ++i) workspace = workspace.parent_path();
+	lua_State* state = luaL_newstate();
+	if (!state) return false;
+	luaL_openlibs(state);
+	const auto project = (workspace / "DemoHallProject").generic_string();
+	lua_pushstring(state, project.c_str()); lua_setglobal(state, "feedback_project");
+	const auto path = workspace / "DemoHallProject/Tests/hit_feedback_contract.lua";
+	const bool ok = luaL_loadfile(state, path.string().c_str()) == LUA_OK && lua_pcall(state, 0, 0, 0) == LUA_OK;
+	const std::string error = ok ? "" : lua_tostring(state, -1);
+	lua_close(state);
+	return ExpectGAF(ok, error.c_str());
 }
 
 bool TestGAFLuaBridgeContract()

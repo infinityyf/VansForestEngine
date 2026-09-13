@@ -61,6 +61,8 @@ namespace Vans::EditorAPI
 		ProjectBrowserRootSnapshot GetProjectBrowserRoot() const override;
 		AssetDragPayload CreateAssetDragPayload(const std::string& assetPath) override;
 		AssetGuidResolution ResolveAssetGuid(const std::string& assetGuid) const override;
+        ParticleDiagnosticsSnapshot GetParticleDiagnostics(bool includePoints = false) const override;
+        ParticleAuthoringSchemaSnapshot GetParticleAuthoringSchema() const override;
 		ShaderAuthoringSchemaSnapshot GetShaderAuthoringSchema(
 			const std::string& shaderAssetGuid) const override;
 		LocalFogFieldPreviewSnapshot GetLocalFogFieldPreview(
@@ -182,6 +184,7 @@ namespace Vans::EditorAPI
 		SceneSkeletonNodePoseSnapshot GetSceneSkeletonNodePose(
 			const SceneSkeletonNodePoseRequest& request) const override;
 		SkeletonDebugSnapshot GetSkeletonDebugSnapshot(const std::string& entityGuidFilter) const override;
+		ParticleDebugSnapshot GetParticleDebugSnapshot() const override;
 		AssetSkeletonSnapshot GetAssetSkeletonSnapshot(const std::string& assetGuid) const override;
 		AnimatorDocumentDecodeResult DecodeAnimatorDocument(
 			const std::string& canonicalJson) const override;
@@ -216,10 +219,13 @@ namespace Vans::EditorAPI
 			QueryAnimationPreviewSceneEntities(AnimationPreviewSessionId sessionId) const override;
 		AnimationRigDocumentDecodeResult GetAnimationPreviewWorkingRigDocument(
 			AnimationPreviewSessionId sessionId) const override;
+		AnimationPreviewRigEditResult SetAnimationPreviewRigDefinition(const AnimationPreviewRigDefinitionRequest& request) override;
 		AnimationPreviewRigEditResult SetAnimationPreviewRigSocketTransform(
 			const AnimationPreviewRigSocketTransformRequest& request) override;
 		AnimationPreviewRigEditResult SetAnimationPreviewRigAttachmentProfile(
 			const AnimationPreviewRigAttachmentProfileRequest& request) override;
+		AnimationPreviewRigEditResult SetAnimationPreviewTargetBindings(const AnimationPreviewTargetBindingsRequest& request) override;
+		bool AdoptAnimationPreviewSceneChanges(const AnimationPreviewSceneAdoptRequest& request) override;
 		AnimationPreviewAttachmentEditResult SetAnimationPreviewAttachmentTransform(
 			const AnimationPreviewAttachmentTransformRequest& request) override;
 		AnimationPreviewAttachmentEditResult SetAnimationPreviewAttachmentBinding(

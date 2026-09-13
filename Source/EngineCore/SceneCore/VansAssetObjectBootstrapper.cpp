@@ -46,11 +46,14 @@
 #include <nlohmann/json.hpp>
 #include <unordered_map>
 #include <utility>
+#include <type_traits>
 
 namespace Vans
 {
 namespace
 {
+    void CollectParsedGuidDependencies(const VansSerializedValue& value, VansAssetGuid owner,
+        std::vector<VansAssetGuid>& dependencies);
 	template <typename Asset, typename Loader>
 	bool EnsurePublished(
 		const VansAssetRecord& record,
@@ -72,6 +75,23 @@ namespace
 
 		auto object = std::make_shared<Asset>();
 		if (!loader(*object, error)) return false;
+        // 首次文件加载与编辑后的内存发布必须得到同一依赖闭包。
+        if constexpr (std::is_same_v<Asset,VansGraphics::VansParticleAsset>)
+            dependencies = object->TextureDependencies();
+        else if constexpr (std::is_same_v<Asset,VansGameplayAssetMemoryObject>)
+        {
+            if (object->hasCookedAsset)
+            {
+                for (const auto& text : object->cookedAsset.dependencies)
+                {
+                    VansAssetGuid guid;
+                    if (VansAssetGuid::TryParse(text,guid) && guid != record.guid
+                        && std::find(dependencies.begin(),dependencies.end(),guid) == dependencies.end())
+                        dependencies.push_back(guid);
+                }
+            }
+            else CollectParsedGuidDependencies(object->sourceDocument,record.guid,dependencies);
+        }
 		if (!repository.Publish<Asset>(
 			record.guid,
 			record.type,
@@ -291,8 +311,9 @@ bool VansAssetObjectBootstrapper::PublishSerialized(
 	if (record.type == VansAssetType::Particle)
 	{
 		auto asset = std::make_shared<VansGraphics::VansParticleAsset>();
-		return VansGraphics::VansParticleAssetJsonCodec::Decode(json, record.sourcePath, *asset, error) &&
-			PublishDecoded(record, contentHash, std::move(asset), std::move(dependencies), repository, error);
+        if (!VansGraphics::VansParticleAssetJsonCodec::Decode(json,record.sourcePath,*asset,error)) return false;
+        dependencies = asset->TextureDependencies();
+        return PublishDecoded(record,contentHash,std::move(asset),std::move(dependencies),repository,error);
 	}
 	if (IsUIJsonAsset(record.type))
 	{

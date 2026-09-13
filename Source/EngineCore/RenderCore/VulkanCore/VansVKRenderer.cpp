@@ -4050,7 +4050,7 @@ namespace VansGraphics
 	{
 		auto* descManager = VansVKDescriptorManager::GetInstance();
 		descManager->DestroyDescriptorSet(m_HairLightingPassSets);
-		descManager->DestroyDescriptorSetLayout(m_HairLightingPassLayout);
+		descManager->ReleaseDescriptorSetLayout(m_HairLightingPassLayout);
 		m_HairLightingDescriptorsReady = false;
 	}
 
@@ -4090,7 +4090,7 @@ namespace VansGraphics
 	{
 		auto* descManager = VansVKDescriptorManager::GetInstance();
 		descManager->DestroyDescriptorSet(m_HairCompositePassSets);
-		descManager->DestroyDescriptorSetLayout(m_HairCompositePassLayout);
+		descManager->ReleaseDescriptorSetLayout(m_HairCompositePassLayout);
 		m_HairCompositeDescriptorsReady = false;
 	}
 
@@ -4167,7 +4167,7 @@ namespace VansGraphics
 	{
 		auto* descManager = VansVKDescriptorManager::GetInstance();
 		descManager->DestroyDescriptorSet(m_TransmissionGlassPassSets);
-		descManager->DestroyDescriptorSetLayout(m_TransmissionGlassPassLayout);
+		descManager->ReleaseDescriptorSetLayout(m_TransmissionGlassPassLayout);
 		m_TransmissionGlassDescriptorsReady = false;
 	}
 

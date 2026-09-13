@@ -158,6 +158,7 @@ namespace VansGraphics
 		// ─── 参数管理 ─────────────────────────────────────────────────
 		void AddParameter(const std::string& name, AnimatorParamType type);
 		void RemoveParameter(const std::string& name);
+		void ReplaceParameterDefinitions(const VansAnimationController& definitions, bool preserveValues);
 		bool HasParameter(const std::string& name) const;
 
 		void SetFloat(const std::string& name, float value);
@@ -301,6 +302,9 @@ namespace VansGraphics
 		}
 		const std::string& GetAnimationRigAssetGuid() const { return m_AnimationRigAssetGuid; }
 		void ClearTargetPostProcessGraph();
+		std::unique_ptr<VansAnimGraph> CloneTargetPostProcessGraph() const;
+		bool TryGetPoseCheckpointTransform(const std::string& id, int bone, glm::mat4& transform) const;
+		bool HasPoseCheckpointBone(const std::string& id, int bone) const;
 		bool HasTargetPostProcessGraph() const { return m_TargetPostProcessInstance != nullptr; }
 		bool HasGraphSets() const { return !m_GraphSetRuntimes.empty(); }
 		std::size_t GetLayerCount() const { return m_LayerRuntimes.size(); }

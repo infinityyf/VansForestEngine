@@ -7,7 +7,7 @@
 #include "TerrainCore/VansTerrain.h"
 #include "WaterCore/VansWaterSystem.h"
 #include "VegetationCore/VansVegetationSystem.h"
-#include "VansParticleRenderNode.h"
+#include "Particles/VansParticleRenderSystem.h"
 #include "../Util/VansLog.h"
 #include "../Util/VansProfiler.h"
 #include "VulkanCore/VansRenderPass.h"
@@ -399,42 +399,24 @@ void VansGraphics::VansScene::DrawTransParentNodes()
     GlobalStateData globalStateData = vkDevice->GetGlobalRenderStateData();
     const glm::mat4 viewMatrix = vkDevice->GetCurrentRenderViewSnapshot().view;
 
-    std::vector<VansRenderNode*> sortedNodes;
-    sortedNodes.reserve(m_TransParentRenderNodes.size() + m_ParticleRenderNodes.size());
+    struct TransparentItem
+    {
+        VansRenderNode* node = nullptr;
+        const VansParticleDrawItem* particle = nullptr;
+        float depth = 0;
+    };
+    std::vector<TransparentItem> sorted;
+    sorted.reserve(m_TransParentRenderNodes.size()+m_ParticleRenderSystem.DrawItems().size());
     for (auto* node : m_TransParentRenderNodes)
     {
-        if (IsRenderNodeEnabledForCurrentFrame(node))
-        {
-            sortedNodes.push_back(node);
-        }
+        if (!IsRenderNodeEnabledForCurrentFrame(node) || !ShouldDrawMainCameraNode(node)) continue;
+        const auto* transform = FindRenderNodeTransformForCurrentFrame(node);
+        const glm::vec3 center = transform ? glm::vec3(transform->position) : glm::vec3(0);
+        sorted.push_back({node,nullptr,-(viewMatrix*glm::vec4(center,1)).z});
     }
-    for (auto* particleNode : m_ParticleRenderNodes)
-    {
-        if (IsRenderNodeEnabledForCurrentFrame(particleNode))
-            sortedNodes.push_back(particleNode);
-    }
-
-    std::stable_sort(sortedNodes.begin(), sortedNodes.end(),
-        [this, viewMatrix](const VansRenderNode* a, const VansRenderNode* b)
-        {
-            const VansRenderTransformFrameData* transformA =
-                FindRenderNodeTransformForCurrentFrame(a);
-            const VansRenderTransformFrameData* transformB =
-                FindRenderNodeTransformForCurrentFrame(b);
-            const glm::vec3 pa = transformA != nullptr
-                ? glm::vec3(transformA->position)
-                : (a->GetNodeType() == PARTICLE_NODE
-                    ? static_cast<const VansParticleRenderNode*>(a)->GetSortCenterWS()
-                    : glm::vec3(0.0f));
-            const glm::vec3 pb = transformB != nullptr
-                ? glm::vec3(transformB->position)
-                : (b->GetNodeType() == PARTICLE_NODE
-                    ? static_cast<const VansParticleRenderNode*>(b)->GetSortCenterWS()
-                    : glm::vec3(0.0f));
-            const float da = -(viewMatrix * glm::vec4(pa, 1.0f)).z;
-            const float db = -(viewMatrix * glm::vec4(pb, 1.0f)).z;
-            return da > db;
-        });
+    for (const auto& particle : m_ParticleRenderSystem.DrawItems())
+        sorted.push_back({nullptr,&particle,-(viewMatrix*glm::vec4(particle.center,1)).z});
+    std::stable_sort(sorted.begin(),sorted.end(),[](const auto& a,const auto& b) { return a.depth > b.depth; });
 
     VansDrawSubmissionList submission;
     const auto flushPacketRun = [&]()
@@ -447,17 +429,15 @@ void VansGraphics::VansScene::DrawTransParentNodes()
     };
 
     std::uint64_t stableOrder = 0;
-    for (auto* node : sortedNodes)
+    for (const auto& item : sorted)
     {
-        if (!ShouldDrawMainCameraNode(node))
-            continue;
-        if (node->GetNodeType() == PARTICLE_NODE)
+        if (item.particle)
         {
             flushPacketRun();
-            node->Draw(cmd, globalStateData);
+            item.particle->material->Draw(cmd,globalStateData,m_ParticleRenderSystem.UploadBuffer(),*item.particle);
             continue;
         }
-
+        auto* node = item.node;
         VansDrawPacket packet;
         if (node->BuildPrimaryDrawPacket(
             vkDevice->GetLogicDevice(), globalStateData, VansPass::FORWARD_TRANSPARENT,

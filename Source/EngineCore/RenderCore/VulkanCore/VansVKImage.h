@@ -96,7 +96,7 @@ namespace VansGraphics
 
 		// Creates a caller-owned 2D view for one array layer and one mip. Used by
 		// editor previews of cubemap-array faces.
-		VkImageView CreateLayerMipView(VkDevice device, uint32_t arrayLayer, uint32_t mipLevel);
+		VkImageView CreateLayerMipView(VkDevice device, uint32_t arrayLayer, uint32_t mipLevel, VkComponentMapping components = {});
 		VkImageView CreateMipArrayView(VkDevice device, uint32_t mipLevel) const;
 		VkImageView CreateCubeMipView(VkDevice device, uint32_t mipLevel) const;
 		static void DestroyImageView(VkDevice device, VkImageView& imageView);

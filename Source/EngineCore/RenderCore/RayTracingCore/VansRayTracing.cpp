@@ -169,21 +169,21 @@ void VansGraphics::VansRayTracing::ReleaseSceneResources(VkDevice device, bool r
 
 	// 释放 RT descriptor set 和 layout
 	descMgr->DestroyDescriptorSet(m_State->m_RayTracingDescriptorSets);
-	descMgr->DestroyDescriptorSetLayout(m_State->m_RayTracingSetLayout);
+	descMgr->ReleaseDescriptorSetLayout(m_State->m_RayTracingSetLayout);
 
 	descMgr->DestroyDescriptorSet(m_State->m_GISamplePositionLightDescriptorSets);
-	descMgr->DestroyDescriptorSetLayout(m_State->m_GISamplePositionLightSetLayout);
+	descMgr->ReleaseDescriptorSetLayout(m_State->m_GISamplePositionLightSetLayout);
 
 	descMgr->DestroyDescriptorSet(m_State->m_GIVisibilityUpdateDescriptorSets);
-	descMgr->DestroyDescriptorSetLayout(m_State->m_GIVisibilityUpdateSetLayout);
+	descMgr->ReleaseDescriptorSetLayout(m_State->m_GIVisibilityUpdateSetLayout);
 	descMgr->DestroyDescriptorSet(m_State->m_GIProbeStateDescriptorSets);
-	descMgr->DestroyDescriptorSetLayout(m_State->m_GIProbeStateSetLayout);
+	descMgr->ReleaseDescriptorSetLayout(m_State->m_GIProbeStateSetLayout);
 
 	descMgr->DestroyDescriptorSet(m_State->m_GIRTPreviewDescriptorSets);
-	descMgr->DestroyDescriptorSetLayout(m_State->m_GIRTPreviewSetLayout);
+	descMgr->ReleaseDescriptorSetLayout(m_State->m_GIRTPreviewSetLayout);
 
 	// 释放 RT 相关 buffer
-	m_State->m_ReceiverTransportMeshData.DestroyVulkanBuffer(device);
+	m_State->m_ReceiverGeometryData.DestroyVulkanBuffer(device);
 	m_State->m_BLASInstanceBuffer.DestroyVulkanBuffer(device);
 	m_State->m_TLASInstanceMaterialBuffer.DestroyVulkanBuffer(device);
 	m_State->m_TLASInstanceGIEmissionBuffer.DestroyVulkanBuffer(device);
@@ -213,9 +213,6 @@ void VansGraphics::VansRayTracing::ReleaseSceneResources(VkDevice device, bool r
     if (releaseSharedPipeline && m_State->m_ReceiverBiasShader)
         m_State->m_ReceiverBiasShader->TriggerReCreateRayTracingPipeline();
     m_State->m_ReceiverBiasShader = nullptr;
-    if (releaseSharedPipeline && m_State->m_ReceiverTransportShader)
-        m_State->m_ReceiverTransportShader->TriggerReCreateRayTracingPipeline();
-    m_State->m_ReceiverTransportShader = nullptr;
 
 
 	// 标记脏以便下次 CreateRayTracingResource 重新绑定
@@ -571,7 +568,7 @@ void VansGraphics::VansRayTracing::InitializeSceneResources(VansVKDevice* device
     ), "Failed to allocate GI buffer");
     RequireGIResource(m_State->m_BLASInstanceBuffer.SetBufferData(instanceData.data(), 0, instanceData.size() * sizeof(uint32_t)), "Failed to upload GI instance data");
 
-    // 局部传输按实际 BLAS 顶点布局读取材质属性，不假定导入网格的步长。
+    // 接收点净空的透明裁剪按实际 BLAS 顶点布局读取 UV，不假定导入网格的步长。
     struct alignas(16) MeshLayout { glm::uvec4 offsets{0u, ~0u, ~0u, ~0u}; glm::uvec4 formats{0u}; };
     static_assert(sizeof(MeshLayout) == 32);
     std::vector<MeshLayout> meshLayouts(blasMeshCount);
@@ -595,10 +592,10 @@ void VansGraphics::VansRayTracing::InitializeSceneResources(VansVKDevice* device
             if (full) layout.formats.x |= 1u << attribute.location;
         }
     }
-    RequireGIResource(m_State->m_ReceiverTransportMeshData.CreatVulkanBuffer(device->GetLogicDevice(),
+    RequireGIResource(m_State->m_ReceiverGeometryData.CreatVulkanBuffer(device->GetLogicDevice(),
         meshLayouts.size() * sizeof(MeshLayout), VK_FORMAT_UNDEFINED, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT), "Failed to allocate receiver mesh layouts");
-    RequireGIResource(m_State->m_ReceiverTransportMeshData.SetBufferData(meshLayouts.data(), 0,
+    RequireGIResource(m_State->m_ReceiverGeometryData.SetBufferData(meshLayouts.data(), 0,
         meshLayouts.size() * sizeof(MeshLayout)), "Failed to upload receiver mesh layouts");
 
     // 统一上传实例贴图身份与 Alpha Test 阈值。
@@ -1778,8 +1775,8 @@ void VansGraphics::VansRayTracing::BindRayTracingData(VansVKDevice* device, Vans
         }});
 
     descManager->WriteBufferDescriptor(m_State->m_RayTracingDescriptorSets[regionIndex], 14u,
-        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {{m_State->m_ReceiverTransportMeshData.GetNativeBuffer(), 0,
-            m_State->m_ReceiverTransportMeshData.GetBufferSize()}});
+        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {{m_State->m_ReceiverGeometryData.GetNativeBuffer(), 0,
+            m_State->m_ReceiverGeometryData.GetBufferSize()}});
     std::vector<VkDescriptorBufferInfo> blasVertexBufferInfos;
     for (int blasMeshIndex = 0; blasMeshIndex < blasMeshCount; blasMeshIndex++)
     {
@@ -1950,28 +1947,5 @@ bool VansGraphics::VansRayTracing::DispatchReceiverBias(VansVKDevice* device, Va
     command.BindRayTracingPipeline(*pipeline);
     command.BindRayTracingDescriptorSets(*pipeline, 0u, {m_State->m_RayTracingDescriptorSets[0], descriptor});
     command.TraceRays(*pipeline, width, height, 1u);
-    return true;
-}
-
-bool VansGraphics::VansRayTracing::DispatchReceiverTransport(VansVKDevice* device, VansVKCommandBuffer& command,
-    VansScene* scene, VkDescriptorSetLayout layout, VkDescriptorSet descriptor)
-{
-    if (!IsReady() || m_State->m_GIRegions.empty()) return false;
-    if (!m_State->m_ReceiverTransportShader)
-        m_State->m_ReceiverTransportShader = VansShaderManager::Get().FindRayTracingShader("GIReceiverTransport");
-    if (!m_State->m_ReceiverTransportShader) return false;
-    auto* pipeline = m_State->m_ReceiverTransportShader->GetRayTracingPipeline(device,
-        {scene->GetGlobalDescriptorSetLayout(), layout, m_State->m_RayTracingSetLayout});
-    if (!pipeline) return false;
-    BindRayTracingData(device, scene, 0u);
-    command.BindRayTracingPipeline(*pipeline);
-    command.BindRayTracingDescriptorSets(*pipeline, 0u, {scene->GetGlobalDescriptorSet(), descriptor,
-        m_State->m_RayTracingDescriptorSets[0]});
-    const glm::vec4 limits(std::max(m_State->settings.maxIndirectRadiance, 0.0f),
-        std::max(m_State->settings.maxProbeRadiance, 0.0f), 0.0f, 0.0f);
-    command.UpdateRayTracingPushConstants(*pipeline, VK_SHADER_STAGE_RAYGEN_BIT_KHR |
-        VK_SHADER_STAGE_ANY_HIT_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR,
-        0u, sizeof(limits), &limits);
-    command.TraceRays(*pipeline, VansGIReceiverVisibility::TransportJobBudget, 1u, 1u);
     return true;
 }

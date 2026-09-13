@@ -676,6 +676,7 @@ namespace VansGraphics
 			}
 		}
 
+		animNode->SetTargetBindings(animConfig.targetBindings);
 		scene.RegisterAnimationRuntime(animNode, controller);
 		if (animConfig.autoPlay)
 			animNode->Play(scene.GetLoadMode() == VansSceneLoadMode::Runtime

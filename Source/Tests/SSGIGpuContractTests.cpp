@@ -374,6 +374,38 @@ bool TestSSGIGpuContract()
         {
             Fixture gpu; gpu.Initialize();
             constexpr uint32_t center = (Height / 2) * Width + Width / 2;
+            // 一个缓存块偶尔命中高亮时，历史裁剪不能将整块历史拉向当前离群样本。
+            // 完整周期的输入均值已知；直接调度正式 Shader 验证长期能量，而非仅检查变平滑。
+            gpu.Plane(90.0f);
+            double sparseEnergy = 0.0;
+            for (uint32_t frame = 0; frame < 512; ++frame)
+            {
+                const float value = frame % 32u == 31u ? 4.0f : 0.2f;
+                gpu.raw.assign(Count, glm::vec4(value, value, value, 1.0f));
+                gpu.Frame(frame);
+                if (frame >= 256u)
+                    sparseEnergy += gpu.Read(frame % 2 ? HistoryB : HistoryA)[center].x;
+            }
+            const double sparseMean = sparseEnergy / 256.0;
+            std::cout << "sparse sample mean=" << sparseMean << " expected=0.31875\n";
+            Expect(std::abs(sparseMean - 0.31875) < 0.015,
+                "Temporal clipping amplifies sparse high-energy cache samples");
+            // 真实持续高亮应保留 HDR 能量与颜色；显式灯光重置不能留下旧亮度。
+            gpu.Plane(90.0f);
+            const glm::vec3 bright(16.0f, 4.0f, 1.0f);
+            for (uint32_t frame = 0; frame < 160; ++frame)
+            {
+                gpu.raw.assign(Count, glm::vec4(frame < 64 ? glm::vec3(0.2f) : bright, 1.0f));
+                gpu.Frame(frame);
+            }
+            const glm::vec3 brightResult(gpu.Read(HistoryB)[center]);
+            Expect(glm::all(glm::lessThan(glm::abs(brightResult - bright) / bright, glm::vec3(0.035f))),
+                "Sustained HDR illumination lost energy or color");
+            gpu.raw.assign(Count, glm::vec4(0.05f, 0.1f, 0.2f, 1.0f));
+            gpu.Frame(0);
+            Expect(glm::length(glm::vec3(gpu.Read(HistoryA)[center]) - glm::vec3(0.05f, 0.1f, 0.2f)) < 0.001f,
+                "Lighting reset retained stale bright history");
+            std::cout << "sustained HDR color and immediate lighting reset: PASS\n";
             // Alpha/confidence 独立性，以及完整 40 帧真实图像 ping-pong。
             for (float confidence : {0.0f, 0.25f, 1.0f})
             {
@@ -390,20 +422,6 @@ bool TestSSGIGpuContract()
                 Expect(maxTailError < 0.1f, "Spatially correlated GI noise did not accumulate");
                 std::cout << "confidence=" << confidence << " history=40 maxTailError=" << maxTailError << '\n';
             }
-            // 局部传输来源切换只重置对应像素，负号保留历史长度及 A-trous 输出。
-            gpu.Plane(90.0f);
-            gpu.raw.assign(Count, glm::vec4(0.0f, 0.0f, 0.0f, 0.0f)); gpu.Frame(0); gpu.Frame(1);
-            gpu.raw.assign(Count, glm::vec4(0.8f, 0.8f, 0.8f, -1.0f)); gpu.Frame(2);
-            auto local = gpu.Read(HistoryA);
-            Expect(std::abs(local[center].x - .8f) < .002f && std::abs(local[center].a * 255.0f + 1.0f) < .01f,
-                "Local transport reused old black DDGI history");
-            gpu.Frame(3); local = gpu.Read(HistoryB);
-            Expect(std::abs(local[center].a * 255.0f + 2.0f) < .01f && gpu.Filter(1, 2)[center].a < 0,
-                "Local transport failed to accumulate or lost source identity");
-            gpu.raw.assign(Count, glm::vec4(.2f,.2f,.2f,0.0f)); gpu.Frame(4);
-            auto normalSource = gpu.Read(HistoryA);
-            Expect(std::abs(normalSource[center].x - .2f) < .002f && std::abs(normalSource[center].a * 255.0f - 1.0f) < .01f,
-                "Restored DDGI retained local transport history");
             // 同一采样图案在 90/30/5/3/1 度平面上的降噪响应应一致。
             std::vector<glm::vec4> reference, referenceFiltered;
             for (float angle : {90.0f, 30.0f, 5.0f, 3.0f, 1.0f})

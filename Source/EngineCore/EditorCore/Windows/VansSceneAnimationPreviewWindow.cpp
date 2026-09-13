@@ -1,6 +1,8 @@
 #include "VansSceneAnimationPreviewWindow.h"
 
 #include "../Animation/VansAnimationRigSaveService.h"
+#include "../VansEditorWindow.h"
+#include "../VansSceneEditService.h"
 #include "../VansAssetDocumentEditService.h"
 #include "../VansAssetDocumentRegistry.h"
 #include "../../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
@@ -80,6 +82,78 @@ namespace VansGraphics
 		StopPreview();
 	}
 
+	bool VansSceneAnimationPreviewWindow::NamePrefixFilter::Draw()
+	{
+		const float clearWidth = ImGui::CalcTextSize("Clear").x + ImGui::GetStyle().FramePadding.x * 2;
+		ImGui::SetNextItemWidth((std::max)(40.0f,
+			ImGui::GetContentRegionAvail().x - clearWidth - ImGui::GetStyle().ItemSpacing.x));
+		bool changed = ImGui::InputTextWithHint("##NamePrefix", "Name prefix...", text.data(), text.size());
+		ImGui::SameLine();
+		if (ImGui::Button("Clear"))
+		{
+			text.fill(0);
+			changed = true;
+		}
+		return changed;
+	}
+
+	bool VansSceneAnimationPreviewWindow::NamePrefixFilter::Matches(std::string_view name) const
+	{
+		std::string_view prefix(text.data());
+		const auto first = prefix.find_first_not_of(" \t\r\n");
+		if (first == std::string_view::npos) return true;
+		prefix = prefix.substr(first, prefix.find_last_not_of(" \t\r\n") - first + 1);
+		if (prefix.size() > name.size()) return false;
+		const auto fold = [](unsigned char c) { return c >= 'A' && c <= 'Z' ? c + ('a' - 'A') : c; };
+		for (std::size_t i = 0; i < prefix.size(); ++i)
+			if (fold(static_cast<unsigned char>(prefix[i])) != fold(static_cast<unsigned char>(name[i])))
+				return false;
+		return true;
+	}
+
+	bool VansSceneAnimationPreviewWindow::DrawSceneEntityCombo(
+		Vans::EditorAPI::IEngineEditorAPI& api, const char* label,
+		std::string& selectedGuid, NamePrefixFilter& filter)
+	{
+		const auto selected = std::find_if(m_SceneEntities.begin(), m_SceneEntities.end(),
+			[&](const auto& entity) { return entity.entityGuid == selectedGuid; });
+		const char* preview = selected == m_SceneEntities.end()
+			? (selectedGuid.empty() ? "Choose Scene Object..." : selectedGuid.c_str()) : selected->name.c_str();
+		if (!ImGui::BeginCombo(label, preview, ImGuiComboFlags_HeightLarge)) return false;
+		const bool opened = ImGui::IsWindowAppearing();
+		if (opened)
+		{
+			m_SceneEntities = api.QueryAnimationPreviewSceneEntities(m_SessionId);
+			ImGui::SetKeyboardFocusHere();
+		}
+		const bool filterChanged = filter.Draw();
+		std::vector<const Vans::EditorAPI::AnimationPreviewSceneEntitySnapshot*> matches;
+		for (const auto& entity : m_SceneEntities)
+			if (filter.Matches(entity.name)) matches.push_back(&entity);
+		ImGui::TextDisabled("%zu / %zu objects", matches.size(), m_SceneEntities.size());
+		bool changed = false;
+		ImGui::BeginChild("Matches", ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * 8));
+		if (opened || filterChanged) ImGui::SetScrollY(0);
+		if (matches.empty()) ImGui::TextDisabled("No matching objects");
+		ImGuiListClipper clipper;
+		clipper.Begin(static_cast<int>(matches.size()));
+		while (clipper.Step())
+			for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i)
+			{
+				const auto& entity = *matches[static_cast<std::size_t>(i)];
+				const std::string itemLabel = entity.name + (entity.active ? "" : " (inactive)") + "##" + entity.entityGuid;
+				if (ImGui::Selectable(itemLabel.c_str(), entity.entityGuid == selectedGuid))
+				{
+					selectedGuid = entity.entityGuid;
+					changed = true;
+					ImGui::CloseCurrentPopup();
+				}
+			}
+		ImGui::EndChild();
+		ImGui::EndCombo();
+		return changed;
+	}
+
 	void VansSceneAnimationPreviewWindow::SetOpen(bool open)
 	{
 		m_IsOpen = open;
@@ -90,8 +164,15 @@ namespace VansGraphics
 	void VansSceneAnimationPreviewWindow::StopPreview()
 	{
 		if (m_SessionId != 0 && m_ActiveAPI)
+		{
+			ReloadSceneTargetEdits(*m_ActiveAPI);
+			m_ActiveAPI->AdoptAnimationPreviewSceneChanges({m_SessionId,m_AppliedTargetTransforms});
 			m_ActiveAPI->DestroyAnimationPreview(m_SessionId);
+		}
 		m_SessionId = 0;
+		m_LimitDraft = {}; m_RotationDraft = {};
+		m_LimitOriginalBone.clear(); m_RotationOriginalId.clear();
+		m_LimitDraftDirty = m_RotationDraftDirty = false;
 		m_Snapshot = {};
 		m_RigSnapshot = {};
 		m_SceneEntities.clear();
@@ -120,11 +201,6 @@ namespace VansGraphics
 				: "Selected Animator document could not be opened";
 			return false;
 		}
-		if (document->IsDirty())
-		{
-			m_Message = "Save the Animator document before starting a Scene preview";
-			return false;
-		}
 		const nlohmann::json root = Vans::EncodeSerializedValueJson<nlohmann::json>(
 			document->sourceDocument.SerializedRootSnapshot());
 		auto decoded = editorAPI.DecodeAnimatorDocument(root.dump());
@@ -133,6 +209,7 @@ namespace VansGraphics
 			m_Message = decoded.message;
 			return false;
 		}
+		m_AnimatorDocumentStateId = document->sourceDocument.CurrentStateId();
 		m_AnimatorDocument = std::move(decoded.document);
 		ResetParameterValues();
 		m_SelectedGraphSetId = m_AnimatorDocument->defaultGraphSetId;
@@ -195,11 +272,30 @@ namespace VansGraphics
 			return;
 		}
 		m_SessionId = created.sessionId;
+		RefreshRigSnapshot(editorAPI);
+		m_TargetBindings = m_RigSnapshot.targetBindings;
+		m_AppliedTargetTransforms.clear();
+		// 预览始终从共享文档读取 Rig，保存后重开也能使用新增骨链。
+		m_RigDocumentStateId = 0;
+		if (!m_RigSnapshot.rigAssetPath.empty())
+		{
+			auto rig = Vans::VansAssetDocumentRegistry::Get().GetOrOpen(m_RigSnapshot.rigAssetPath);
+			if (!rig) { m_Message = "Target Rig document is unavailable"; StopPreview(); return; }
+			m_RigDocumentStateId = rig->sourceDocument.CurrentStateId();
+			const auto rigDefinition = editorAPI.DecodeAnimationRigDocument(
+				Vans::EncodeSerializedValueJson<nlohmann::json>(rig->sourceDocument.SerializedRootSnapshot()).dump());
+			if (!rigDefinition.success) { m_Message = rigDefinition.message; StopPreview(); return; }
+			const auto rigApplied = editorAPI.SetAnimationPreviewRigDefinition(
+				{m_SessionId, m_RigSnapshot.rigRevision, rigDefinition.document});
+			if (!rigApplied.success) { m_Message = rigApplied.message; StopPreview(); return; }
+		}
+		if (!ApplyAnimatorWorkingCopy(editorAPI, false)) { StopPreview(); return; }
 		m_Playing = true;
 		m_Speed = 1.0f;
 		m_Message = created.message;
 		RefreshRigSnapshot(editorAPI);
 		m_SceneEntities = editorAPI.QueryAnimationPreviewSceneEntities(m_SessionId);
+		m_TargetBindings = m_RigSnapshot.targetBindings;
 	}
 
 	void VansSceneAnimationPreviewWindow::RefreshRigSnapshot(
@@ -416,19 +512,19 @@ namespace VansGraphics
 		ImGui::TextDisabled("The Scene viewport handle edits the same selected Socket.");
 	}
 
-	void VansSceneAnimationPreviewWindow::DrawAttachmentTransform(
+	bool VansSceneAnimationPreviewWindow::DrawAttachmentPoseEditor(
 		Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 	{
 		const auto found = std::find_if(m_RigSnapshot.attachments.begin(),
 			m_RigSnapshot.attachments.end(),
 			[&](const auto& item) { return item.entityGuid == m_SelectedAttachmentGuid; });
 		if (found == m_RigSnapshot.attachments.end())
-			return;
+			return false;
 		auto attachment = *found;
-		ImGui::SeparatorText("Preview Object Transform");
 		ImGui::Text("%s", attachment.name.c_str());
+		ImGui::BeginDisabled(!attachment.editable);
 		int space = m_AttachmentEditSpace == Vans::EditorAPI::RuntimeTransformSpace::World ? 1 : 0;
-		if (ImGui::Combo("Edit Space##Attachment", &space, "Local (Socket)\0World\0"))
+		if (ImGui::Combo("Edit Space##Attachment", &space, "Local (Parent)\0World\0"))
 			m_AttachmentEditSpace = space == 0
 				? Vans::EditorAPI::RuntimeTransformSpace::Local
 				: Vans::EditorAPI::RuntimeTransformSpace::World;
@@ -448,6 +544,54 @@ namespace VansGraphics
 				attachment.localTransform = edited.localTransform;
 			RefreshRigSnapshot(editorAPI);
 		}
+		DrawSceneHandleControls();
+		ImGui::TextWrapped("Position and rotation update the preview immediately, including while paused. Ctrl+click a value to enter it directly.");
+		if (!attachment.temporary && (attachment.parent.kind == Vans::EditorAPI::RuntimeParentKind::Entity
+			|| attachment.parent.kind == Vans::EditorAPI::RuntimeParentKind::None))
+		{
+			if (ImGui::Button("Apply Anchor Transform to Scene"))
+			{
+				auto* edits = VansEditorWindow::GetSceneEditService();
+				if (edits)
+				{
+					const auto applied = edits->SetEntityTransform(attachment.entityGuid, attachment.localTransform);
+					m_Message = applied.message;
+					if (applied) m_AppliedTargetTransforms.push_back(attachment.entityGuid);
+				}
+			}
+			ImGui::TextWrapped("Apply supports Scene Undo. Save Animation Setup saves the anchor position and rotation with the animation setup.");
+		}
+		ImGui::EndDisabled();
+		return true;
+	}
+
+	void VansSceneAnimationPreviewWindow::DrawSceneHandleControls()
+	{
+		ImGui::PushID("PreviewSceneHandle");
+		if (ImGui::RadioButton("Move (T)", m_GizmoOperation == GizmoOperation::Translate))
+			m_GizmoOperation = GizmoOperation::Translate;
+		ImGui::SameLine();
+		if (ImGui::RadioButton("Rotate (R)", m_GizmoOperation == GizmoOperation::Rotate))
+			m_GizmoOperation = GizmoOperation::Rotate;
+		ImGui::SameLine();
+		if (ImGui::RadioButton("Scale (S)", m_GizmoOperation == GizmoOperation::Scale))
+			m_GizmoOperation = GizmoOperation::Scale;
+		ImGui::Checkbox("World Handle Axes", &m_GizmoWorldSpace);
+		ImGui::PopID();
+	}
+
+	void VansSceneAnimationPreviewWindow::DrawAttachmentTransform(
+		Vans::EditorAPI::IEngineEditorAPI& editorAPI, bool showPose)
+	{
+		if (showPose)
+		{
+			ImGui::SeparatorText("Preview Object Transform");
+			if (!DrawAttachmentPoseEditor(editorAPI)) return;
+		}
+		const auto found = std::find_if(m_RigSnapshot.attachments.begin(), m_RigSnapshot.attachments.end(),
+			[&](const auto& item) { return item.entityGuid == m_SelectedAttachmentGuid; });
+		if (found == m_RigSnapshot.attachments.end()) return;
+		const auto attachment = *found;
 		const auto savedProfile = std::find_if(m_RigSnapshot.attachmentProfiles.begin(),
 			m_RigSnapshot.attachmentProfiles.end(),
 			[&](const auto& profile)
@@ -543,6 +687,11 @@ namespace VansGraphics
 				: "Animation Rig document could not be opened";
 			return false;
 		}
+		if (document->sourceDocument.CurrentStateId() != m_RigDocumentStateId)
+		{
+			m_Message = "Rig was edited elsewhere; restart preview before saving";
+			return false;
+		}
 		const auto edit = Vans::VansAssetDocumentEditService::ReplaceRoot(
 			document->sourceDocument,
 			Vans::DecodeSerializedValueJson(nlohmann::json::parse(encoded.canonicalJson)));
@@ -551,6 +700,7 @@ namespace VansGraphics
 			m_Message = edit.message;
 			return false;
 		}
+		m_RigDocumentStateId = document->sourceDocument.CurrentStateId();
 		const auto saved = Vans::VansAnimationRigSaveService::Save(document);
 		if (!saved)
 		{
@@ -571,7 +721,7 @@ namespace VansGraphics
 	}
 
 	void VansSceneAnimationPreviewWindow::DrawSocketAndAttachmentEditor(
-		Vans::EditorAPI::IEngineEditorAPI& editorAPI)
+		Vans::EditorAPI::IEngineEditorAPI& editorAPI, bool inlineAnchorVisible)
 	{
 		if (!m_RigSnapshot.available)
 		{
@@ -592,8 +742,15 @@ namespace VansGraphics
 			ImGui::TableSetupColumn("Sockets");
 			ImGui::TableSetupColumn("Temporary Bindings");
 			ImGui::TableNextColumn();
+			ImGui::PushID("SocketList");
+			const bool socketFilterChanged = m_SocketFilter.Draw();
+			ImGui::BeginChild("Items", ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * 8));
+			if (socketFilterChanged) ImGui::SetScrollY(0);
+			int visibleSockets = 0;
 			for (const auto& socket : m_RigSnapshot.sockets)
 			{
+				if (!m_SocketFilter.Matches(socket.name)) continue;
+				++visibleSockets;
 				const std::string label = socket.name + " [" +
 					std::to_string(socket.attachmentCount) + "]##" + socket.guid;
 				if (ImGui::Selectable(label.c_str(), m_SelectedSocketGuid == socket.guid))
@@ -606,7 +763,15 @@ namespace VansGraphics
 					m_TransformTarget = TransformTarget::Socket;
 				}
 			}
+			if (visibleSockets == 0) ImGui::TextDisabled("No matching sockets");
+			ImGui::EndChild();
+			ImGui::PopID();
 			ImGui::TableNextColumn();
+			ImGui::PushID("AttachmentList");
+			const bool attachmentFilterChanged = m_AttachmentFilter.Draw();
+			ImGui::BeginChild("Items", ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * 8));
+			if (attachmentFilterChanged) ImGui::SetScrollY(0);
+			int visibleAttachments = 0;
 			for (const auto& attachment : m_RigSnapshot.attachments)
 			{
 				// A removed preview binding remains dirty until the session ends so
@@ -615,6 +780,8 @@ namespace VansGraphics
 				// one in the editor.
 				if (attachment.parent.kind == Vans::EditorAPI::RuntimeParentKind::None)
 					continue;
+				if (!m_AttachmentFilter.Matches(attachment.name)) continue;
+				++visibleAttachments;
 				if (ImGui::Selectable((attachment.name + "##" +
 					attachment.entityGuid).c_str(),
 					m_SelectedAttachmentGuid == attachment.entityGuid))
@@ -623,28 +790,13 @@ namespace VansGraphics
 					m_TransformTarget = TransformTarget::Attachment;
 				}
 			}
+			if (visibleAttachments == 0) ImGui::TextDisabled("No matching objects");
+			ImGui::EndChild();
+			ImGui::PopID();
 			ImGui::EndTable();
 		}
 
-		const auto selectedEntity = std::find_if(m_SceneEntities.begin(),
-			m_SceneEntities.end(), [&](const auto& item)
-			{ return item.entityGuid == m_SelectedSceneEntityGuid; });
-		const char* entityLabel = selectedEntity == m_SceneEntities.end()
-			? "Choose Scene Object..." : selectedEntity->name.c_str();
-		if (ImGui::BeginCombo("Scene Object", entityLabel))
-		{
-			m_SceneEntities =
-				editorAPI.QueryAnimationPreviewSceneEntities(m_SessionId);
-			for (const auto& entity : m_SceneEntities)
-			{
-				const std::string label = entity.name + (entity.active ? "" : " (inactive)")
-					+ "##" + entity.entityGuid;
-				if (ImGui::Selectable(label.c_str(),
-					entity.entityGuid == m_SelectedSceneEntityGuid))
-					m_SelectedSceneEntityGuid = entity.entityGuid;
-			}
-			ImGui::EndCombo();
-		}
+		DrawSceneEntityCombo(editorAPI, "Scene Object", m_SelectedSceneEntityGuid, m_SceneObjectFilter);
 		if (ImGui::BeginCombo("Attach To", m_SelectedBindAnchorLabel.c_str()))
 		{
 			if (ImGui::BeginMenu("Sockets"))
@@ -698,6 +850,16 @@ namespace VansGraphics
 				: policy == 1
 					? Vans::EditorAPI::RuntimeReparentTransformPolicy::KeepLocal
 					: Vans::EditorAPI::RuntimeReparentTransformPolicy::Snap;
+		if (ImGui::BeginCombo("Attachment Pose", m_BindPoseCheckpoint.empty() ? "Final Pose" : m_BindPoseCheckpoint.c_str()))
+		{
+			if (ImGui::Selectable("Final Pose", m_BindPoseCheckpoint.empty())) m_BindPoseCheckpoint.clear();
+			if (m_AnimatorDocument) for (const auto& graph : m_AnimatorDocument->graphs)
+				if (graph.graph) for (const auto& [id, node] : graph.graph->nodes)
+					if (node->GetType() == Vans::EditorAPI::AnimGraphNodeType::PoseCheckpoint &&
+						ImGui::Selectable(node->m_CheckpointId.c_str(), m_BindPoseCheckpoint == node->m_CheckpointId))
+						m_BindPoseCheckpoint = node->m_CheckpointId;
+			ImGui::EndCombo();
+		}
 		const bool canBind = !m_SelectedSceneEntityGuid.empty()
 			&& !m_SelectedBindAnchorGuid.empty()
 			&& (m_SelectedBindParentKind == Vans::EditorAPI::RuntimeParentKind::Bone
@@ -715,6 +877,7 @@ namespace VansGraphics
 			request.parent.animationComponentGuid =
 				m_RigSnapshot.animationComponentGuid;
 			request.parent.anchorGuid = m_SelectedBindAnchorGuid;
+			request.parent.poseCheckpoint = m_BindPoseCheckpoint;
 			request.transformPolicy = m_BindPolicy;
 			const auto bound = editorAPI.SetAnimationPreviewAttachmentBinding(request);
 			m_Message = bound.message;
@@ -763,15 +926,13 @@ namespace VansGraphics
 			"Scene state is restored when preview stops; saved offsets live in the Animation Rig.");
 
 		if (m_TransformTarget == TransformTarget::Socket)
+		{
 			DrawSocketTransform(editorAPI);
+			DrawSceneHandleControls();
+		}
 		else if (m_TransformTarget == TransformTarget::Attachment)
-			DrawAttachmentTransform(editorAPI);
+			DrawAttachmentTransform(editorAPI, !inlineAnchorVisible);
 
-		ImGui::SeparatorText("Scene Handle");
-		int operation = static_cast<int>(m_GizmoOperation);
-		if (ImGui::Combo("Operation", &operation, "Translate\0Rotate\0Scale\0"))
-			m_GizmoOperation = static_cast<GizmoOperation>(operation);
-		ImGui::Checkbox("World Space", &m_GizmoWorldSpace);
 		const bool dirty = m_RigSnapshot.rigRevision > 0;
 		ImGui::BeginDisabled(!dirty);
 		if (ImGui::Button("Save Rig Changes"))
@@ -893,7 +1054,8 @@ namespace VansGraphics
 				{
 					DrawParameters(editorAPI);
 					DrawGraphSetsAndSlots(editorAPI);
-					DrawSocketAndAttachmentEditor(editorAPI);
+					const bool inlineAnchorVisible = DrawTransformIKEditor(editorAPI);
+					DrawSocketAndAttachmentEditor(editorAPI, inlineAnchorVisible);
 				}
 			}
 		}
@@ -940,6 +1102,17 @@ namespace VansGraphics
 		}
 		if (!worldTransform || !IsUsableTransform(*worldTransform))
 			return false;
+
+		const auto& io = ImGui::GetIO();
+		const ImVec2 viewportEnd(viewportOrigin.x + viewportSize.x, viewportOrigin.y + viewportSize.y);
+		if (ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(viewportOrigin, viewportEnd)
+			&& !ImGui::IsAnyItemActive() && !io.WantTextInput && !io.KeyCtrl && !io.KeyAlt && !io.KeySuper
+			&& !ImGui::IsMouseDown(ImGuiMouseButton_Right) && !ImGuizmo::IsUsing())
+		{
+			if (ImGui::IsKeyPressed(ImGuiKey_T, false)) m_GizmoOperation = GizmoOperation::Translate;
+			if (ImGui::IsKeyPressed(ImGuiKey_R, false)) m_GizmoOperation = GizmoOperation::Rotate;
+			if (ImGui::IsKeyPressed(ImGuiKey_S, false)) m_GizmoOperation = GizmoOperation::Scale;
+		}
 
 		glm::mat4 matrix = BuildTransformMatrix(*worldTransform);
 		const glm::mat4 view = camera->GetViewMatrix();

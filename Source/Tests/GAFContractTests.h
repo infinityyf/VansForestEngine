@@ -24,3 +24,4 @@ bool TestDemoHallCrouchLocomotionContract();
 bool TestDemoHallPlayerVaultContract();
 bool TestDemoHallWhisperAIContract();
 bool TestGAFLuaBridgeContract();
+bool TestHitFeedbackScriptContract();

@@ -1,5 +1,7 @@
 #define VK_NO_PROTOTYPES
 #include "../Graphics/Vulkan/VansVKFunctions.h"
+#include "../EngineCore/RenderCore/VulkanCore/VansVKDescriptorManager.h"
+#include "../EngineCore/RenderCore/VulkanCore/VansPipelineCacheService.h"
 #include <string>
 #include <array>
 #include <filesystem>
@@ -7,6 +9,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <cmath>
+#include <cstdlib>
 
 std::filesystem::path DecalContractShaderPath();
 
@@ -52,7 +55,8 @@ struct GPU
             if (shader) vkDestroyShaderModule(device, shader, nullptr);
             if (commandPool) vkDestroyCommandPool(device, commandPool, nullptr);
             if (descriptorPool) vkDestroyDescriptorPool(device, descriptorPool, nullptr);
-            if (setLayout) vkDestroyDescriptorSetLayout(device, setLayout, nullptr);
+            VansVKDescriptorManager::GetInstance()->ReleaseDescriptorSetLayout(setLayout);
+            VansVKDescriptorManager::GetInstance()->DestroyDescriptorPool();
             if (buffer) vkDestroyBuffer(device, buffer, nullptr);
             if (memory) vkFreeMemory(device, memory, nullptr);
             vkDestroyDevice(device, nullptr);
@@ -97,7 +101,7 @@ bool TestDecalGpuContract()
         std::vector<VkPhysicalDevice> physicals(count);
         Require(vkEnumeratePhysicalDevices(gpu.instance, &count, physicals.data()), "read devices");
         if (physicals.empty()) throw std::runtime_error("No Vulkan GPU");
-        const auto physical = physicals.front();
+        auto physical = physicals.front();
         VkPhysicalDeviceProperties properties;
         vkGetPhysicalDeviceProperties(physical, &properties);
         std::cout << "[DecalGPU] " << properties.deviceName << '\n';
@@ -134,9 +138,19 @@ bool TestDecalGpuContract()
         Require(vkAllocateMemory(gpu.device, &allocation, nullptr, &gpu.memory), "allocate output memory");
         Require(vkBindBufferMemory(gpu.device, gpu.buffer, gpu.memory, 0), "bind output memory");
         VkDescriptorSetLayoutBinding binding{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
-        VkDescriptorSetLayoutCreateInfo setInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-        setInfo.bindingCount = 1; setInfo.pBindings = &binding;
-        Require(vkCreateDescriptorSetLayout(gpu.device, &setInfo, nullptr, &gpu.setLayout), "create descriptor layout");
+        auto* descriptors = VansVKDescriptorManager::GetInstance();
+        VkCommandBuffer unused{};
+        descriptors->BindDevice(physical, gpu.device, unused);
+        if (!descriptors->CreateDesciptorSetLayout({binding}, gpu.setLayout))
+            throw std::runtime_error("create shared descriptor layout");
+        // 在真实 GPU 提交前释放其他实例，证明共享布局仍能正确创建管线和绑定。
+        for (int i = 0; i < 256; ++i)
+        {
+            VkDescriptorSetLayout alias{};
+            if (!descriptors->CreateDesciptorSetLayout({binding}, alias) || alias != gpu.setLayout)
+                throw std::runtime_error("GPU layouts were not shared");
+            descriptors->ReleaseDescriptorSetLayout(alias);
+        }
         VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
         VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         poolInfo.maxSets = 1; poolInfo.poolSizeCount = 1; poolInfo.pPoolSizes = &poolSize;
@@ -205,8 +219,48 @@ bool TestDecalGpuContract()
         expect(28, {0,-1,0,0.8f}); expect(29, {0,1,0,0.8f}); expect(30, {0.2f,0.4f,0.6f,0.8f});
         expect(31, {1,0,0,1}); expect(32, {1,0,0,1}); expect(33, {1,1,0,0});
         vkUnmapMemory(gpu.device, gpu.memory);
+        // 隔离持久缓存：相同数据不重写；文件丢失或损坏后必须重新生成有效文件。
+        struct CacheFolder
+        {
+            std::filesystem::path path = std::filesystem::temp_directory_path() /
+                ("ForestDecalCacheContract-" + std::to_string(GetCurrentProcessId()));
+            std::string previous;
+            CacheFolder()
+            {
+                if (std::filesystem::exists(path)) throw std::runtime_error("Cache fixture path already exists");
+                if (const char* value = std::getenv("FORESTENGINE_PIPELINE_CACHE_DIR")) previous = value;
+                _putenv_s("FORESTENGINE_PIPELINE_CACHE_DIR", path.string().c_str());
+            }
+            ~CacheFolder()
+            {
+                _putenv_s("FORESTENGINE_PIPELINE_CACHE_DIR", previous.c_str());
+                std::error_code error; std::filesystem::remove_all(path, error);
+            }
+        } cacheFolder;
+        {
+            VansPipelineCacheService cache;
+            if (!cache.Initialize(physical, gpu.device)) throw std::runtime_error("cache initialize");
+            const auto flush = [&]() {
+                { auto access = cache.Acquire(); access.NotifyPipelineCreated(VansPipelineCachePipelineKind::Graphics); }
+                if (!cache.Flush(VansPipelineCacheFlushReason::Manual)) throw std::runtime_error("cache flush");
+            };
+            flush();
+            const auto path = cache.GetCacheFilePath();
+            const auto savedTime = std::filesystem::last_write_time(path) - std::chrono::hours(1);
+            std::filesystem::last_write_time(path, savedTime);
+            const auto diskTime = std::filesystem::last_write_time(path);
+            flush();
+            if (std::filesystem::last_write_time(path) != diskTime)
+                throw std::runtime_error("Identical pipeline cache was rewritten");
+            std::filesystem::remove(path);
+            flush();
+            if (!std::filesystem::exists(path)) throw std::runtime_error("Missing cache not recreated");
+            { std::ofstream corrupt(path, std::ios::binary | std::ios::trunc); corrupt << "invalid"; }
+            flush();
+            if (std::filesystem::file_size(path) <= 7) throw std::runtime_error("Invalid cache not repaired");
+        }
         success &= validationErrors == 0;
-        if (success) std::cout << "[DecalGPU] PASS 12 material IDs, independent coverage, zero/cancelled/NaN/Inf normals; validation errors=0\n";
+        if (success) std::cout << "[DecalGPU] PASS 12 material IDs, independent coverage, zero/cancelled/NaN/Inf normals; 256 shared layouts and released aliases; unchanged/missing/invalid cache; validation errors=0\n";
         return success;
     }
     catch (const std::exception& error) { std::cerr << "[DecalGPU] " << error.what() << '\n'; return false; }

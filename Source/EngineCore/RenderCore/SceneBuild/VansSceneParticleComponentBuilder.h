@@ -13,10 +13,8 @@ namespace VansGraphics
 	public:
 		static VansScriptParticleComponent* BuildParticle(
 			VansScene& scene,
-			VkDevice& device,
 			VansScriptObject& object,
 			const Vans::VansSceneParticleComponentConfig& particleConfig,
-			const std::string& projectRoot,
 			bool hasObjectTransform,
 			const glm::vec3& objectPosition,
 			const glm::vec3& objectRotation,

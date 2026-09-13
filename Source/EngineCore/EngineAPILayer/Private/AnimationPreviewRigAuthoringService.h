@@ -43,6 +43,8 @@ namespace Vans::EditorAPI
 			AnimationPreviewSessionId sessionId,
 			std::string& canonicalJson,
 			std::string& error);
+		static AnimationPreviewRigEditResult SetDefinition(const AnimationPreviewRigContext& context,
+			std::uint64_t expectedRevision, const std::string& canonicalJson);
 		static AnimationPreviewRigEditResult SetSocketTransform(
 			const AnimationPreviewRigContext& context,
 			const AnimationPreviewRigSocketTransformRequest& request);

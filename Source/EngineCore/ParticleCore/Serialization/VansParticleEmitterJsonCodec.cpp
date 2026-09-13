@@ -7,6 +7,8 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <array>
+#include <unordered_set>
 
 namespace VansGraphics
 {
@@ -115,59 +117,33 @@ void ValidateNonNegativeFloatCurve(const VansFloatCurve& curve,
 
 Vans::ParticleJson EncodeFloatCurve(const VansFloatCurve& curve)
 {
-    Vans::ParticleJson root;
+    const char* mode = "Constant";
     switch (curve.m_Mode)
     {
-    case FloatCurveMode::Constant:
-        root["mode"] = "Constant";
-        root["value"] = curve.m_Value;
-        break;
-    case FloatCurveMode::RandomBetween:
-        root["mode"] = "RandomBetween";
-        root["min"] = curve.m_Min;
-        root["max"] = curve.m_Max;
-        break;
-    case FloatCurveMode::Curve:
-        root["mode"] = "Curve";
-        root["keys"] = EncodeCurveKeys(curve.m_Keys);
-        break;
-    case FloatCurveMode::RandomBetweenCurves:
-        root["mode"] = "RandomBetweenCurves";
-        root["minKeys"] = EncodeCurveKeys(curve.m_MinKeys);
-        root["maxKeys"] = EncodeCurveKeys(curve.m_MaxKeys);
-        break;
+    case FloatCurveMode::RandomBetween: mode = "RandomBetween"; break;
+    case FloatCurveMode::Curve: mode = "Curve"; break;
+    case FloatCurveMode::RandomBetweenCurves: mode = "RandomBetweenCurves"; break;
+    default: break;
     }
-    return root;
+    return {{"mode", mode}, {"value", curve.m_Value}, {"min", curve.m_Min}, {"max", curve.m_Max},
+        {"keys", EncodeCurveKeys(curve.m_Keys)}, {"minKeys", EncodeCurveKeys(curve.m_MinKeys)},
+        {"maxKeys", EncodeCurveKeys(curve.m_MaxKeys)}};
 }
 
 void DecodeFloatCurve(const Vans::ParticleJson& root, VansFloatCurve& curve)
 {
     const std::string mode = root.value("mode", "Constant");
-    if (mode == "Constant")
-    {
-        curve.m_Mode = FloatCurveMode::Constant;
-        curve.m_Value = root.value("value", 1.0f);
-    }
-    else if (mode == "RandomBetween")
-    {
-        curve.m_Mode = FloatCurveMode::RandomBetween;
-        curve.m_Min = root.value("min", 0.0f);
-        curve.m_Max = root.value("max", 1.0f);
-    }
-    else if (mode == "Curve")
-    {
-        curve.m_Mode = FloatCurveMode::Curve;
-        if (root.contains("keys"))
-            DecodeCurveKeys(root["keys"], curve.m_Keys);
-    }
-    else if (mode == "RandomBetweenCurves")
-    {
-        curve.m_Mode = FloatCurveMode::RandomBetweenCurves;
-        if (root.contains("minKeys"))
-            DecodeCurveKeys(root["minKeys"], curve.m_MinKeys);
-        if (root.contains("maxKeys"))
-            DecodeCurveKeys(root["maxKeys"], curve.m_MaxKeys);
-    }
+    if (mode == "Constant") curve.m_Mode = FloatCurveMode::Constant;
+    else if (mode == "RandomBetween") curve.m_Mode = FloatCurveMode::RandomBetween;
+    else if (mode == "Curve") curve.m_Mode = FloatCurveMode::Curve;
+    else if (mode == "RandomBetweenCurves") curve.m_Mode = FloatCurveMode::RandomBetweenCurves;
+    else throw std::invalid_argument("Unknown float curve mode: " + mode);
+    curve.m_Value = root.value("value", curve.m_Value);
+    curve.m_Min = root.value("min", curve.m_Min);
+    curve.m_Max = root.value("max", curve.m_Max);
+    if (root.contains("keys")) DecodeCurveKeys(root["keys"], curve.m_Keys);
+    if (root.contains("minKeys")) DecodeCurveKeys(root["minKeys"], curve.m_MinKeys);
+    if (root.contains("maxKeys")) DecodeCurveKeys(root["maxKeys"], curve.m_MaxKeys);
 }
 
 Vans::ParticleJson EncodeColorGradient(const VansColorGradient& gradient)
@@ -207,43 +183,19 @@ void DecodeColorGradient(const Vans::ParticleJson& root, VansColorGradient& grad
 
 Vans::ParticleJson EncodeSpawnConfig(const VansParticleSpawnConfig& config)
 {
-    Vans::ParticleJson root;
-    switch (config.m_Type)
-    {
-    case VansSpawnType::RateOverTime:
-        root["type"] = "RateOverTime";
-        root["rate"] = config.m_Rate;
-        break;
-    case VansSpawnType::Burst:
-    {
-        root["type"] = "Burst";
-        auto bursts = Vans::ParticleJson::array();
-        for (const auto& burst : config.m_Bursts)
-        {
-            bursts.push_back({
-                {"time", burst.time},
-                {"count", burst.count},
-                {"cycles", burst.cycles},
-                {"interval", burst.interval}
-            });
-        }
-        root["bursts"] = std::move(bursts);
-        break;
-    }
-    default:
-        root["type"] = "RateOverTime";
-        root["rate"] = config.m_Rate;
-        break;
-    }
-    return root;
+    auto bursts = Vans::ParticleJson::array();
+    for (const auto& burst : config.m_Bursts)
+        bursts.push_back({{"time", burst.time}, {"count", burst.count}, {"cycles", burst.cycles}, {"interval", burst.interval}});
+    return {{"type", config.m_Type == VansSpawnType::Burst ? "Burst" : "RateOverTime"},
+        {"rate", config.m_Rate}, {"bursts", bursts}};
 }
 
 void DecodeSpawnConfig(const Vans::ParticleJson& root, VansParticleSpawnConfig& config)
 {
     const std::string type = root.value("type", "RateOverTime");
-    if (type == "Burst")
+    if (type != "Burst" && type != "RateOverTime") throw std::invalid_argument("Unsupported spawn.type: " + type);
+    config.m_Type = type == "Burst" ? VansSpawnType::Burst : VansSpawnType::RateOverTime;
     {
-        config.m_Type = VansSpawnType::Burst;
         config.m_Bursts.clear();
         if (root.contains("bursts"))
         {
@@ -254,28 +206,26 @@ void DecodeSpawnConfig(const Vans::ParticleJson& root, VansParticleSpawnConfig& 
                 burst.count = burstJson.value("count", 10u);
                 burst.cycles = burstJson.value("cycles", 1u);
                 burst.interval = burstJson.value("interval", 0.1f);
+                if (!std::isfinite(burst.time) || burst.time < 0 || burst.count == 0 || burst.count > 65536
+                    || burst.cycles > 100000 || !std::isfinite(burst.interval) || burst.interval < 0
+                    || (burst.cycles != 1 && burst.interval <= 0))
+                    throw std::invalid_argument("spawn.bursts contains an invalid time/count/cycles/interval");
                 config.m_Bursts.push_back(burst);
             }
         }
     }
-    else
     {
-        config.m_Type = VansSpawnType::RateOverTime;
         config.m_Rate = root.value("rate", 30.0f);
+        if (!std::isfinite(config.m_Rate) || config.m_Rate < 0 || config.m_Rate > 65536)
+            throw std::invalid_argument("spawn.rate must be finite and in [0,65536]");
     }
 }
 
 Vans::ParticleJson EncodeSixWayLighting(const VansParticleSixWayLightingConfig& config)
 {
     Vans::ParticleJson root;
-    root["enabled"] = config.m_Enabled;
-    root["positiveAxesTexture"] = config.m_PositiveAxesTexture;
-    root["negativeAxesTexture"] = config.m_NegativeAxesTexture;
-    root["columns"] = config.m_Columns;
-    root["rows"] = config.m_Rows;
-    root["fps"] = config.m_FPS;
-    root["alphaFromPositiveA"] = config.m_AlphaFromPositiveA;
-    root["emissiveFromNegativeA"] = config.m_EmissiveFromNegativeA;
+    root["positiveAxesTextureGuid"] = config.m_PositiveAxesTextureGuid;
+    root["negativeAxesTextureGuid"] = config.m_NegativeAxesTextureGuid;
     root["lightIntensity"] = config.m_LightIntensity;
     root["ambientIntensity"] = config.m_AmbientIntensity;
     root["emissiveIntensity"] = config.m_EmissiveIntensity;
@@ -287,14 +237,10 @@ Vans::ParticleJson EncodeSixWayLighting(const VansParticleSixWayLightingConfig& 
 
 void DecodeSixWayLighting(const Vans::ParticleJson& root, VansParticleSixWayLightingConfig& config)
 {
-    config.m_Enabled = root.value("enabled", false);
-    config.m_PositiveAxesTexture = root.value("positiveAxesTexture", "");
-    config.m_NegativeAxesTexture = root.value("negativeAxesTexture", "");
-    config.m_Columns = root.value("columns", 1);
-    config.m_Rows = root.value("rows", 1);
-    config.m_FPS = root.value("fps", 0.0f);
-    config.m_AlphaFromPositiveA = root.value("alphaFromPositiveA", true);
-    config.m_EmissiveFromNegativeA = root.value("emissiveFromNegativeA", true);
+    for (const char* field : {"enabled", "positiveAxesTexture", "negativeAxesTexture", "columns", "rows", "fps", "alphaFromPositiveA", "emissiveFromNegativeA"})
+        if (root.contains(field)) throw std::invalid_argument(std::string("Removed sixWayLighting field: ") + field);
+    config.m_PositiveAxesTextureGuid = root.value("positiveAxesTextureGuid", "");
+    config.m_NegativeAxesTextureGuid = root.value("negativeAxesTextureGuid", "");
     config.m_LightIntensity = root.value("lightIntensity", 1.0f);
     config.m_AmbientIntensity = root.value("ambientIntensity", 0.25f);
     config.m_EmissiveIntensity = root.value("emissiveIntensity", 1.0f);
@@ -307,7 +253,6 @@ Vans::ParticleJson EncodeVolumetricConfig(const VansParticleVolumetricConfig& co
 {
     return {
         { "enabled", config.m_Enabled },
-        { "keepSurfaceRenderer", config.m_KeepSurfaceRenderer },
         { "radiusScale", config.m_RadiusScale },
         { "maxDistanceMeters", config.m_MaxDistanceMeters },
         { "densityMultiplier", config.m_DensityMultiplier },
@@ -329,33 +274,11 @@ Vans::ParticleJson EncodeVolumetricConfig(const VansParticleVolumetricConfig& co
     };
 }
 
-bool ShouldEncodeVolumetricConfig(const VansParticleVolumetricConfig& config)
-{
-    // Keep legacy assets unchanged, but retain authored tuning while the optional
-    // renderer is disabled so artists can configure it before opting in.
-    const VansParticleVolumetricConfig defaults;
-    return config.m_Enabled != defaults.m_Enabled ||
-        config.m_KeepSurfaceRenderer != defaults.m_KeepSurfaceRenderer ||
-        config.m_RadiusScale != defaults.m_RadiusScale ||
-        config.m_MaxDistanceMeters != defaults.m_MaxDistanceMeters ||
-        config.m_DensityMultiplier != defaults.m_DensityMultiplier ||
-        config.m_ExtinctionPerMeter != defaults.m_ExtinctionPerMeter ||
-        glm::any(glm::notEqual(
-            config.m_SingleScatteringAlbedo, defaults.m_SingleScatteringAlbedo)) ||
-        config.m_Anisotropy != defaults.m_Anisotropy ||
-        glm::any(glm::notEqual(config.m_EmissivePerMeter, defaults.m_EmissivePerMeter)) ||
-        config.m_EdgeSoftness != defaults.m_EdgeSoftness ||
-        config.m_DirectLightingScale != defaults.m_DirectLightingScale ||
-        config.m_SkyLightingScale != defaults.m_SkyLightingScale ||
-        config.m_ReceiveCloudShadows != defaults.m_ReceiveCloudShadows ||
-        config.m_InjectionPriority != defaults.m_InjectionPriority;
-}
-
 void DecodeVolumetricConfig(
     const Vans::ParticleJson& root, VansParticleVolumetricConfig& config)
 {
+    if (root.contains("keepSurfaceRenderer")) throw std::invalid_argument("Use renderer.type=None for volume-only particles");
     config.m_Enabled = root.value("enabled", false);
-    config.m_KeepSurfaceRenderer = root.value("keepSurfaceRenderer", false);
     config.m_RadiusScale = root.value("radiusScale", 1.0f);
     config.m_MaxDistanceMeters = root.value("maxDistanceMeters", 100.0f);
     config.m_DensityMultiplier = root.value("densityMultiplier", 1.0f);
@@ -416,17 +339,9 @@ Vans::ParticleJson EncodeRendererConfig(const VansParticleRendererConfig& config
     auto typeToString = [](VansParticleRendererType type) -> std::string {
         switch (type)
         {
-        case VansParticleRendererType::StretchedBillboard: return "StretchedBillboard";
-        case VansParticleRendererType::Mesh: return "Mesh";
+        case VansParticleRendererType::None: return "None";
+        case VansParticleRendererType::Ribbon: return "Ribbon";
         default: return "Billboard";
-        }
-    };
-    auto blendToString = [](VansParticleBlendMode blend) -> std::string {
-        switch (blend)
-        {
-        case VansParticleBlendMode::Alpha: return "Alpha";
-        case VansParticleBlendMode::Multiply: return "Multiply";
-        default: return "Additive";
         }
     };
     auto sortToString = [](VansParticleSortMode sort) -> std::string {
@@ -448,8 +363,7 @@ Vans::ParticleJson EncodeRendererConfig(const VansParticleRendererConfig& config
 
     Vans::ParticleJson root;
     root["type"] = typeToString(config.m_Type);
-    root["texture"] = config.m_Texture;
-    root["blendMode"] = blendToString(config.m_BlendMode);
+    root["textureGuid"] = config.m_TextureGuid;
     root["spriteSheet"] = {
         {"enabled", config.m_SpriteSheetEnabled},
         {"columns", config.m_SpriteColumns},
@@ -458,26 +372,35 @@ Vans::ParticleJson EncodeRendererConfig(const VansParticleRendererConfig& config
     root["sortMode"] = sortToString(config.m_SortMode);
     root["lightingMode"] = lightingToString(config.m_LightingMode);
     root["sixWayLighting"] = EncodeSixWayLighting(config.m_SixWayLighting);
-    if (ShouldEncodeVolumetricConfig(config.m_Volumetric))
-        root["volumetric"] = EncodeVolumetricConfig(config.m_Volumetric);
-    root["castShadows"] = config.m_CastShadows;
-    root["receiveShadows"] = config.m_ReceiveShadows;
+    root["volumetric"] = EncodeVolumetricConfig(config.m_Volumetric);
+    {
+        const auto& ribbon = config.m_Ribbon;
+        root["ribbon"] = {
+            {"rootMode", ribbon.rootMode == VansRibbonRootMode::FollowSource ? "FollowSource" : "None"},
+            {"stopAttachment", ribbon.stopAttachment == VansRibbonStopAttachment::KeepUntilInvisible ? "KeepUntilInvisible" : "DetachOnStop"},
+            {"rootWidth", ribbon.rootWidth},
+            {"rootColor", {ribbon.rootColor.r, ribbon.rootColor.g, ribbon.rootColor.b, ribbon.rootColor.a}},
+            {"maxSegmentLength", ribbon.maxSegmentLength}, {"uvFlowSpeed", ribbon.uvFlowSpeed},
+            {"softIntersection", ribbon.softIntersection}, {"tipFadeDistance", ribbon.tipFadeDistance}
+        };
+    }
     return root;
 }
 
 void DecodeRendererConfig(const Vans::ParticleJson& root, VansParticleRendererConfig& config)
 {
     const std::string type = root.value("type", "Billboard");
-    if (type == "StretchedBillboard") config.m_Type = VansParticleRendererType::StretchedBillboard;
-    else if (type == "Mesh") config.m_Type = VansParticleRendererType::Mesh;
-    else config.m_Type = VansParticleRendererType::Billboard;
+    if (type == "None") config.m_Type = VansParticleRendererType::None;
+    else if (type == "Ribbon") config.m_Type = VansParticleRendererType::Ribbon;
+    else if (type == "Billboard") config.m_Type = VansParticleRendererType::Billboard;
+    else throw std::invalid_argument("Unsupported renderer.type: " + type);
 
-    config.m_Texture = root.value("texture", "");
-
-    const std::string blend = root.value("blendMode", "Additive");
-    if (blend == "Alpha") config.m_BlendMode = VansParticleBlendMode::Alpha;
-    else if (blend == "Multiply") config.m_BlendMode = VansParticleBlendMode::Multiply;
-    else config.m_BlendMode = VansParticleBlendMode::Additive;
+    if (root.contains("texture") || root.contains("blendMode") || root.contains("castShadows") || root.contains("receiveShadows"))
+        throw std::invalid_argument("Particle renderer contains removed properties; use explicit textureGuid and the current alpha surface schema");
+    config.m_TextureGuid = root.value("textureGuid", config.m_TextureGuid);
+    Vans::VansAssetGuid texture;
+    if (!Vans::VansAssetGuid::TryParse(config.m_TextureGuid, texture) || !texture.IsValid())
+        throw std::invalid_argument("renderer.textureGuid requires a valid asset GUID");
 
     if (root.contains("spriteSheet"))
     {
@@ -491,18 +414,22 @@ void DecodeRendererConfig(const Vans::ParticleJson& root, VansParticleRendererCo
     if (sort == "ByDistance") config.m_SortMode = VansParticleSortMode::ByDistance;
     else if (sort == "OldestFirst") config.m_SortMode = VansParticleSortMode::OldestFirst;
     else if (sort == "NewestFirst") config.m_SortMode = VansParticleSortMode::NewestFirst;
-    else config.m_SortMode = VansParticleSortMode::None;
+    else if (sort == "None") config.m_SortMode = VansParticleSortMode::None;
+    else throw std::invalid_argument("Invalid sortMode");
 
     const std::string lightingMode = root.value("lightingMode", "UnlitFlipbook");
     if (lightingMode == "SixWayLit") config.m_LightingMode = VansParticleLightingMode::SixWayLit;
-    else config.m_LightingMode = VansParticleLightingMode::UnlitFlipbook;
+    else if (lightingMode == "UnlitFlipbook") config.m_LightingMode = VansParticleLightingMode::UnlitFlipbook;
+    else throw std::invalid_argument("Invalid lightingMode");
 
     if (root.contains("sixWayLighting"))
     {
         DecodeSixWayLighting(root["sixWayLighting"], config.m_SixWayLighting);
-        if (config.m_SixWayLighting.m_Enabled)
-            config.m_LightingMode = VansParticleLightingMode::SixWayLit;
     }
+    if (config.m_Type != VansParticleRendererType::None && config.m_LightingMode == VansParticleLightingMode::SixWayLit)
+        for (const auto* guid : { &config.m_SixWayLighting.m_PositiveAxesTextureGuid, &config.m_SixWayLighting.m_NegativeAxesTextureGuid })
+            if (!Vans::VansAssetGuid::TryParse(*guid, texture) || !texture.IsValid())
+                throw std::invalid_argument("SixWayLit requires two texture asset GUIDs");
 
     if (root.contains("volumetric"))
     {
@@ -511,13 +438,38 @@ void DecodeRendererConfig(const Vans::ParticleJson& root, VansParticleRendererCo
         DecodeVolumetricConfig(root["volumetric"], config.m_Volumetric);
     }
 
-    if (config.m_SixWayLighting.m_Columns <= 1)
-        config.m_SixWayLighting.m_Columns = config.m_SpriteSheetEnabled ? config.m_SpriteColumns : 1;
-    if (config.m_SixWayLighting.m_Rows <= 1)
-        config.m_SixWayLighting.m_Rows = config.m_SpriteSheetEnabled ? config.m_SpriteRows : 1;
-
-    config.m_CastShadows = root.value("castShadows", false);
-    config.m_ReceiveShadows = root.value("receiveShadows", false);
+    if (config.m_Type == VansParticleRendererType::Ribbon &&
+        (config.m_LightingMode != VansParticleLightingMode::UnlitFlipbook || config.m_SpriteSheetEnabled))
+        throw std::invalid_argument("Ribbon requires UnlitFlipbook lighting and disabled spriteSheet");
+    // 未启用的配置也要往返保留，切换渲染类型不会丢失调好的参数。
+    {
+        const auto ribbon = root.value("ribbon", Vans::ParticleJson::object());
+        auto& target = config.m_Ribbon;
+        const std::string rootMode = ribbon.value("rootMode", "None");
+        if (rootMode != "None" && rootMode != "FollowSource") throw std::invalid_argument("Invalid ribbon.rootMode");
+        target.rootMode = rootMode == "FollowSource" ? VansRibbonRootMode::FollowSource : VansRibbonRootMode::None;
+        const std::string stop = ribbon.value("stopAttachment", "KeepUntilInvisible");
+        if (stop != "KeepUntilInvisible" && stop != "DetachOnStop") throw std::invalid_argument("Invalid ribbon.stopAttachment");
+        target.stopAttachment = stop == "DetachOnStop" ? VansRibbonStopAttachment::DetachOnStop : VansRibbonStopAttachment::KeepUntilInvisible;
+        target.rootWidth = ribbon.value("rootWidth", target.rootWidth);
+        target.maxSegmentLength = ribbon.value("maxSegmentLength", target.maxSegmentLength);
+        target.uvFlowSpeed = ribbon.value("uvFlowSpeed", target.uvFlowSpeed);
+        target.softIntersection = ribbon.value("softIntersection", target.softIntersection);
+        target.tipFadeDistance = ribbon.value("tipFadeDistance", target.tipFadeDistance);
+        if (ribbon.contains("rootColor"))
+        {
+            const auto& color = ribbon.at("rootColor");
+            if (!color.is_array() || color.size() != 4) throw std::invalid_argument("ribbon.rootColor requires RGBA");
+            for (int i=0; i<4; ++i) target.rootColor[i] = color[i].get<float>();
+        }
+        bool valid = std::isfinite(target.rootWidth) && target.rootWidth >= 0 && target.rootWidth <= 100
+            && std::isfinite(target.maxSegmentLength) && target.maxSegmentLength >= 0.001f && target.maxSegmentLength <= 100
+            && std::isfinite(target.uvFlowSpeed) && std::abs(target.uvFlowSpeed) <= 100
+            && std::isfinite(target.softIntersection) && target.softIntersection >= 0 && target.softIntersection <= 10
+            && std::isfinite(target.tipFadeDistance) && target.tipFadeDistance >= 0 && target.tipFadeDistance <= 10;
+        for (int i=0; i<4; ++i) valid &= std::isfinite(target.rootColor[i]) && target.rootColor[i] >= 0;
+        if (!valid || target.rootColor.a > 1) throw std::invalid_argument("Invalid finite Ribbon dimensions or color");
+    }
 }
 
 Vans::ParticleJson EncodeModule(const VansParticleModule& module)
@@ -632,25 +584,34 @@ Vans::ParticleJson EncodeModule(const VansParticleModule& module)
     return {};
 }
 
-std::unique_ptr<VansParticleModule> CreateModule(const Vans::ParticleJson& root)
+struct ModuleEntry
+{
+    const char* name;
+    bool initialize;
+    std::unique_ptr<VansParticleModule> (*create)();
+};
+template<class T> std::unique_ptr<VansParticleModule> MakeModule() { return std::make_unique<T>(); }
+const std::array<ModuleEntry, 12> ModuleCatalog{{
+    {"InitLifetime", true, MakeModule<VansInitLifetimeModule>},
+    {"InitVelocity", true, MakeModule<VansInitVelocityModule>},
+    {"InitSize", true, MakeModule<VansInitSizeModule>},
+    {"InitColor", true, MakeModule<VansInitColorModule>},
+    {"InitRotation", true, MakeModule<VansInitRotationModule>},
+    {"InitPositionShape", true, MakeModule<VansInitPositionModule>},
+    {"UpdateGravity", false, MakeModule<VansUpdateGravityModule>},
+    {"UpdateColorOverLifetime", false, MakeModule<VansUpdateColorOverLifetime>},
+    {"UpdateSizeOverLifetime", false, MakeModule<VansUpdateSizeOverLifetime>},
+    {"UpdateVelocityOverLifetime", false, MakeModule<VansUpdateVelocityOverLifetime>},
+    {"UpdateRotationOverLifetime", false, MakeModule<VansUpdateRotationOverLifetime>},
+    {"UpdateSpriteAnim", false, MakeModule<VansUpdateSpriteAnimModule>}
+}};
+
+std::unique_ptr<VansParticleModule> CreateModule(const Vans::ParticleJson& root, bool initialize)
 {
     const std::string name = root.value("module", "");
-    std::unique_ptr<VansParticleModule> module;
-
-    if (name == "InitLifetime") module = std::make_unique<VansInitLifetimeModule>();
-    else if (name == "InitVelocity") module = std::make_unique<VansInitVelocityModule>();
-    else if (name == "InitSize") module = std::make_unique<VansInitSizeModule>();
-    else if (name == "InitColor") module = std::make_unique<VansInitColorModule>();
-    else if (name == "InitRotation") module = std::make_unique<VansInitRotationModule>();
-    else if (name == "InitPositionShape") module = std::make_unique<VansInitPositionModule>();
-    else if (name == "UpdateGravity") module = std::make_unique<VansUpdateGravityModule>();
-    else if (name == "UpdateColorOverLifetime") module = std::make_unique<VansUpdateColorOverLifetime>();
-    else if (name == "UpdateSizeOverLifetime") module = std::make_unique<VansUpdateSizeOverLifetime>();
-    else if (name == "UpdateVelocityOverLifetime") module = std::make_unique<VansUpdateVelocityOverLifetime>();
-    else if (name == "UpdateRotationOverLifetime") module = std::make_unique<VansUpdateRotationOverLifetime>();
-    else if (name == "UpdateSpriteAnim") module = std::make_unique<VansUpdateSpriteAnimModule>();
-
-    return module;
+    for (const auto& entry : ModuleCatalog)
+        if (name == entry.name && entry.initialize == initialize) return entry.create();
+    throw std::invalid_argument("Unknown particle module or incorrect phase: " + name);
 }
 
 void DecodeModule(const Vans::ParticleJson& root, VansParticleModule& module)
@@ -779,6 +740,19 @@ void DecodeModule(const Vans::ParticleJson& root, VansParticleModule& module)
 }
 }
 
+Vans::ParticleJson VansParticleEmitterJsonCodec::ModuleDefaults()
+{
+    auto result = Vans::ParticleJson::array();
+    for (const auto& entry : ModuleCatalog)
+    {
+        auto module = entry.create();
+        auto definition = EncodeModule(*module);
+        definition["enabled"] = module->m_Enabled;
+        result.push_back({{"phase", entry.initialize ? "initialize" : "update"}, {"definition", definition}});
+    }
+    return result;
+}
+
 Vans::ParticleJson VansParticleEmitterJsonCodec::EncodeEmitter(const VansParticleEmitter& emitter)
 {
     Vans::ParticleJson root;
@@ -828,6 +802,8 @@ void VansParticleEmitterJsonCodec::DecodeEmitter(
     emitter.m_Name = root.value("name", "Emitter");
     emitter.m_Enabled = root.value("enabled", true);
     emitter.m_MaxParticles = root.value("maxParticles", 1000u);
+    if (emitter.m_MaxParticles == 0 || emitter.m_MaxParticles > 65536)
+        throw std::invalid_argument("maxParticles must be in [1,65536]");
 
     if (root.contains("spawn"))
         DecodeSpawnConfig(root["spawn"], emitter.m_SpawnConfig);
@@ -835,9 +811,12 @@ void VansParticleEmitterJsonCodec::DecodeEmitter(
     emitter.m_InitModules.clear();
     if (root.contains("initialize") && root["initialize"].is_array())
     {
+        std::unordered_set<std::string> names;
         for (const auto& moduleJson : root["initialize"])
         {
-            auto module = CreateModule(moduleJson);
+            if (!names.insert(moduleJson.value("module", "")).second)
+                throw std::invalid_argument("Duplicate particle module in initialize");
+            auto module = CreateModule(moduleJson, true);
             if (module)
             {
                 DecodeModule(moduleJson, *module);
@@ -849,9 +828,12 @@ void VansParticleEmitterJsonCodec::DecodeEmitter(
     emitter.m_UpdateModules.clear();
     if (root.contains("update") && root["update"].is_array())
     {
+        std::unordered_set<std::string> names;
         for (const auto& moduleJson : root["update"])
         {
-            auto module = CreateModule(moduleJson);
+            if (!names.insert(moduleJson.value("module", "")).second)
+                throw std::invalid_argument("Duplicate particle module in update");
+            auto module = CreateModule(moduleJson, false);
             if (module)
             {
                 DecodeModule(moduleJson, *module);
@@ -862,7 +844,10 @@ void VansParticleEmitterJsonCodec::DecodeEmitter(
 
     if (root.contains("renderer"))
         DecodeRendererConfig(root["renderer"], emitter.m_RendererConfig);
+    if (emitter.m_RendererConfig.m_Type == VansParticleRendererType::Ribbon
+        && (emitter.m_MaxParticles < 2 || emitter.m_SpawnConfig.m_Type != VansSpawnType::RateOverTime))
+        throw std::invalid_argument("Ribbon requires at least two points and RateOverTime emission");
 
-    emitter.Initialize();
+    // 发布的定义不包含活粒子；创建 Runtime 时才分配模拟池。
 }
 }

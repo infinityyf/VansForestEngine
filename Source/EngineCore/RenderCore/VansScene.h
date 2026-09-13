@@ -1,4 +1,8 @@
+#include "Particles/VansSceneParticleDiagnostics.h"
 #pragma once
+#include <array>
+#include "../ParticleCore/VansParticleManager.h"
+#include "Particles/VansParticleRenderSystem.h"
 
 #include "VansRenderNode.h"
 #include "GICore/VansGIInstanceMaterial.h"
@@ -21,6 +25,9 @@
 
 namespace Vans { struct VansProjectileSpawnRequest; struct VansProjectileSceneBackend; }
 namespace Vans { struct VansDecalSceneBackend; }
+namespace Vans { struct VansCombatSceneBackend; }
+namespace Vans { struct VansVFXSceneBackend; }
+namespace VansGraphics { class VansSceneSurfaceQuery; }
 namespace VansGraphics { class VansImpactDecalSystem; }
 
 #include "WaterCore/VansWaterConfig.h"
@@ -61,7 +68,6 @@ namespace VansGraphics { class VansAnimationController; }
 
 namespace VansGraphics { class VansVegetationSystem; }
 
-namespace VansGraphics { class VansParticleRenderNode; }
 namespace VansGraphics { class VansVKCommandBuffer; }
 
 class VansScriptObject;
@@ -302,6 +308,7 @@ namespace VansGraphics
 	public:
 
 		VansAsset* GetTextureAsset(const std::string& name);
+        VansAsset* FindTextureAssetByGuid(const std::string& guid) const { return m_AssetRegistry.FindTextureByGuid(guid); }
 
 
 
@@ -311,7 +318,7 @@ namespace VansGraphics
 
 		void AddShaderAsset(VansAsset* asset);
 
-		void AddTextureAsset(VansAsset* asset);
+		void AddTextureAsset(VansAsset* asset, const std::string& guid = {});
 
 		void AddMaterialAsset(VansAsset* asset);
 
@@ -377,7 +384,24 @@ namespace VansGraphics
 		std::vector<VansRenderNode*> m_PostProcessRenderNodes;
 		std::vector<VansRenderNode*> m_ScreenSpaceRenderNodes;
 		std::vector<VansRenderNode*> m_DecalRenderNodes;
-		std::vector<VansParticleRenderNode*> m_ParticleRenderNodes;
+        VansParticleRenderSystem m_ParticleRenderSystem;
+        std::unordered_map<const VansParticleAsset*,std::weak_ptr<const VansParticleRenderAsset>> m_ParticleRenderAssets;
+        struct ParticleSourceBinding
+        {
+            Vans::VansGenerationHandle instance;
+            Vans::VansEntityHandle owner;
+            Vans::VansEntityHandle sourceEntity;
+            Vans::VansAssetGuid effect;
+            Vans::VansSceneParentReference source;
+            Vans::VansTransformAnchorHandle anchor;
+            bool detached = false;
+            bool autoRelease = false, pendingStart = true;
+            glm::vec3 lastSourcePosition{0};
+        };
+        std::vector<ParticleSourceBinding> m_ParticleSources;
+        bool ResolveParticleSource(const ParticleSourceBinding& binding,glm::mat4& world) const;
+        void PrepareParticleSources();
+        void RetireCompletedParticlePulses();
 		std::unordered_map<std::string, MultiMeshGroup> m_MultiMeshGroups;
 		struct MainRenderProxyBinding final
 		{
@@ -416,9 +440,11 @@ namespace VansGraphics
 		// 仅在实体集合结构发生变化时递增，供上层空间注册表按需重建。
 		std::uint64_t m_SceneObjectCollectionGeneration = 0;
 		std::vector<std::string> m_PendingEntityDestructionGuids;
+		VansParticleManager m_ParticleManager;
 		std::unique_ptr<Vans::VansRuntimeWorld> m_RuntimeWorld;
 		std::unique_ptr<Vans::VansGameplayRuntime> m_GameplayRuntime;
 		std::unique_ptr<VansImpactDecalSystem> m_ImpactDecals;
+		std::unique_ptr<VansSceneSurfaceQuery> m_CombatSurfaces;
 		std::unique_ptr<Vans::VansAIWorld> m_AIWorld;
 		std::unique_ptr<Vans::VansTimelineRuntimeSystem> m_TimelineRuntime;
 		std::unique_ptr<VansCameraControlArbiter> m_CameraControlArbiter;
@@ -467,7 +493,7 @@ namespace VansGraphics
 
 		const std::vector<VansRenderNode*>& GetDecalRenderNodes() const { return m_DecalRenderNodes; }
 
-		const std::vector<VansParticleRenderNode*>& GetParticleRenderNodes() const { return m_ParticleRenderNodes; }
+        std::shared_ptr<const VansParticleRenderAsset> PrepareParticleRenderAsset(std::shared_ptr<const VansParticleAsset> asset);
 
 		const std::vector<VansAnimationNode*>& GetAnimationNodes() const { return m_AnimationNodes; }
 
@@ -476,6 +502,9 @@ namespace VansGraphics
 		{
 			return m_SceneObjectCollectionGeneration;
 		}
+        VansSceneParticleDiagnostics CaptureParticleDiagnostics(bool includePoints = false) const;
+        VansParticleDebugSnapshot CaptureParticleDebugSnapshot() const { return m_ParticleManager.CaptureDebugSnapshot(); }
+		VansParticleManager& GetParticleManager() { return m_ParticleManager; }
 		Vans::VansRuntimeWorld* GetRuntimeWorld() { return m_RuntimeWorld.get(); }
 		const Vans::VansRuntimeWorld* GetRuntimeWorld() const { return m_RuntimeWorld.get(); }
 		Vans::VansGameplayRuntime* GetGameplayRuntime() { return m_GameplayRuntime.get(); }
@@ -543,6 +572,10 @@ namespace VansGraphics
 		bool SetEntityWorldTransformByGuid(
 			const std::string& entityGuid,
 			const Vans::VansLocalTransform& transform);
+		void ResolveAnimationTargetBindings(VansAnimationNode& node);
+		std::vector<VansAnimationNode*> GetAnimationTargetDependencies(const VansAnimationNode& node) const;
+		std::uint32_t FindAnimationTargetTransform(const std::string& entityGuid) const;
+		bool EvaluateAnimationBatch(const std::vector<VansAnimationNode*>& nodes, float deltaTime, bool gameplay);
 		bool SetEntityNameByGuid(const std::string& entityGuid, const std::string& name);
 		bool SetEntityActiveByGuid(const std::string& entityGuid, bool active);
 
@@ -667,6 +700,16 @@ namespace VansGraphics
 		VkDescriptorSetLayout GetEmptyPassLayout() const { return m_EmptyPassLayout; }
 
 		VkDescriptorSet GetEmptyPassDescriptorSet() const { return m_EmptyPassDescriptorSet; }
+
+		VkDescriptorSetLayout GetDecalPassLayout() const { return m_DecalPassLayout; }
+		VkDescriptorSet GetDecalPassDescriptorSet() const { return m_DecalPassDescriptorSet; }
+		void UpdateDecalPassDescriptorSet();
+	private:
+		VkDescriptorSetLayout m_DecalPassLayout = VK_NULL_HANDLE;
+		VkDescriptorSet m_DecalPassDescriptorSet = VK_NULL_HANDLE;
+		bool m_DecalPassDescriptorsDirty = true;
+		std::array<VkDescriptorImageInfo, 3> m_DecalPassImages{};
+	public:
 
 
 
@@ -896,6 +939,9 @@ namespace VansGraphics
 		Vans::VansEntityHandle SpawnPhysicsInstance(const Vans::VansProjectileSpawnRequest& request, std::string& error);
 		Vans::VansProjectileSceneBackend MakeProjectileSceneBackend();
 		Vans::VansDecalSceneBackend MakeDecalSceneBackend();
+		Vans::VansCombatSceneBackend MakeCombatSceneBackend();
+        Vans::VansVFXSceneBackend MakeVFXSceneBackend();
+		bool PrepareCombatSurfaces(VansVKDevice& device);
 		bool PrepareImpactDecalPools();
 		const VansImpactDecalSystem* GetImpactDecals() const { return m_ImpactDecals.get(); }
 

@@ -52,6 +52,8 @@ namespace VansGraphics
 		case AnimGraphNodeType::Grounding:      return "Grounding";
 		case AnimGraphNodeType::LimbIK:         return "LimbIK";
 		case AnimGraphNodeType::ChainIK:        return "ChainIK";
+		case AnimGraphNodeType::RotationDistribution: return "RotationDistribution";
+		case AnimGraphNodeType::PoseCheckpoint: return "PoseCheckpoint";
 		}
 		return "Unknown";
 	}
@@ -1460,6 +1462,8 @@ namespace VansGraphics
 		case AnimGraphNodeType::Grounding:     return std::make_unique<AnimGraphGroundingNode>();
 		case AnimGraphNodeType::LimbIK:        return std::make_unique<AnimGraphLimbIKNode>();
 		case AnimGraphNodeType::ChainIK:       return std::make_unique<AnimGraphChainIKNode>();
+		case AnimGraphNodeType::RotationDistribution: return std::make_unique<AnimGraphRotationDistributionNode>();
+		case AnimGraphNodeType::PoseCheckpoint: return std::make_unique<AnimGraphPoseCheckpointNode>();
 		}
 		return nullptr;
 	}
@@ -1484,6 +1488,8 @@ namespace VansGraphics
 		if (typeName == "Grounding")      return CreateNodeByType(AnimGraphNodeType::Grounding);
 		if (typeName == "LimbIK")         return CreateNodeByType(AnimGraphNodeType::LimbIK);
 		if (typeName == "ChainIK")        return CreateNodeByType(AnimGraphNodeType::ChainIK);
+		if (typeName == "RotationDistribution") return CreateNodeByType(AnimGraphNodeType::RotationDistribution);
+		if (typeName == "PoseCheckpoint") return CreateNodeByType(AnimGraphNodeType::PoseCheckpoint);
 		return nullptr;
 	}
 
@@ -1723,6 +1729,12 @@ namespace VansGraphics
 			props["enableFallbackInput"] = n->m_EnableFallbackInput;
 			break;
 		}
+		case AnimGraphNodeType::PoseCheckpoint:
+		{
+			const auto* n = static_cast<const AnimGraphPoseCheckpointNode*>(node);
+			props = { { "checkpoint", n->m_CheckpointId }, { "bones", n->m_Bones } };
+			break;
+		}
 		case AnimGraphNodeType::TargetPoseInput:
 			break;
 		case AnimGraphNodeType::Goal:
@@ -1731,6 +1743,12 @@ namespace VansGraphics
 		{
 			const auto* n = static_cast<const AnimGraphAimConstraintNode*>(node);
 			props = { { "chain", n->m_ChainId }, { "target", SerializeGoal(n->m_Target) },
+				{ "mode", n->m_Settings.mode == VansAimConstraintMode::LookAtPoint ? "lookAtPoint" :
+					n->m_Settings.mode == VansAimConstraintMode::LookAtDirection ? "lookAtDirection" : "pitchOffset" },
+				{ "directionParameter", n->m_DirectionParameter },
+				{ "directionWeightParameter", n->m_DirectionWeightParameter },
+				{ "directionIsWorldSpace", n->m_DirectionIsWorldSpace },
+				{ "pivotBone", n->m_PivotBone },
 				{ "yawLimitDegrees", { n->m_Settings.yawLimitDegrees.x, n->m_Settings.yawLimitDegrees.y } },
 				{ "pitchLimitDegrees", { n->m_Settings.pitchLimitDegrees.x, n->m_Settings.pitchLimitDegrees.y } },
 				{ "targetHalfLife", n->m_TargetHalfLife },
@@ -1782,6 +1800,9 @@ namespace VansGraphics
 				{ "commitClampedPose", n->m_Settings.commitClampedPose } };
 			break;
 		}
+		case AnimGraphNodeType::RotationDistribution:
+			props = {{"profile", static_cast<const AnimGraphRotationDistributionNode*>(node)->m_RotationProfileId}};
+			break;
 		case AnimGraphNodeType::ChainIK:
 		{
 			const auto* n = static_cast<const AnimGraphChainIKNode*>(node);
@@ -1921,6 +1942,14 @@ namespace VansGraphics
 				n->m_EnableFallbackInput = props["enableFallbackInput"].get<bool>();
 			break;
 		}
+		case AnimGraphNodeType::PoseCheckpoint:
+		{
+			RequireOnlyFields(props, { "checkpoint", "bones" });
+			auto* n = static_cast<AnimGraphPoseCheckpointNode*>(node);
+			n->m_CheckpointId = props.at("checkpoint").get<std::string>();
+			n->m_Bones = props.at("bones").get<std::vector<std::string>>();
+			break;
+		}
 		case AnimGraphNodeType::TargetPoseInput:
 			RequireOnlyFields(props, {});
 			break;
@@ -1930,8 +1959,18 @@ namespace VansGraphics
 		case AnimGraphNodeType::AimConstraint:
 		{
 			RequireOnlyFields(props, { "chain", "target", "yawLimitDegrees",
-				"pitchLimitDegrees", "targetHalfLife", "maxAngularSpeedDegrees", "weight" });
+				"pitchLimitDegrees", "targetHalfLife", "maxAngularSpeedDegrees", "weight",
+				"mode", "directionParameter", "directionWeightParameter", "directionIsWorldSpace", "pivotBone" });
 			auto* n = static_cast<AnimGraphAimConstraintNode*>(node);
+			const auto mode = props.at("mode").get<std::string>();
+			if (mode == "lookAtPoint") n->m_Settings.mode = VansAimConstraintMode::LookAtPoint;
+			else if (mode == "lookAtDirection") n->m_Settings.mode = VansAimConstraintMode::LookAtDirection;
+			else if (mode == "pitchOffset") n->m_Settings.mode = VansAimConstraintMode::PitchOffset;
+			else throw std::invalid_argument("Invalid Aim Constraint mode");
+			n->m_DirectionParameter = props.at("directionParameter").get<std::string>();
+			n->m_DirectionWeightParameter = props.at("directionWeightParameter").get<std::string>();
+			n->m_DirectionIsWorldSpace = props.at("directionIsWorldSpace").get<bool>();
+			n->m_PivotBone = props.at("pivotBone").get<std::string>();
 			n->m_ChainId = props.at("chain").get<std::string>();
 			DeserializeGoal(props.at("target"), n->m_Target);
 			const auto& yaw = props.at("yawLimitDegrees");
@@ -2010,6 +2049,10 @@ namespace VansGraphics
 			n->m_Settings.commitClampedPose = props.at("commitClampedPose").get<bool>();
 			break;
 		}
+		case AnimGraphNodeType::RotationDistribution:
+			RequireOnlyFields(props, {"profile"});
+			static_cast<AnimGraphRotationDistributionNode*>(node)->m_RotationProfileId = props.at("profile").get<std::string>();
+			break;
 		case AnimGraphNodeType::ChainIK:
 		{
 			RequireOnlyFields(props, { "chains", "maxIterations", "positionTolerance",
@@ -2348,6 +2391,18 @@ namespace VansGraphics
 		}
 	}
 
+	AnimGraphPoseCheckpointNode::AnimGraphPoseCheckpointNode()
+	{
+		m_Type = AnimGraphNodeType::PoseCheckpoint;
+		m_Name = "Pose Checkpoint";
+	}
+	std::vector<AnimGraphPin> AnimGraphPoseCheckpointNode::GetPins() const { return ProceduralPosePins(); }
+	AnimGraphPose AnimGraphPoseCheckpointNode::Evaluate(
+		const AnimGraphContext& ctx, VansAnimGraphInstance& instance) const
+	{
+		return AppendProceduralNode(m_NodeId, ctx, instance);
+	}
+
 	AnimGraphGoalNode::AnimGraphGoalNode()
 	{
 		m_Type = AnimGraphNodeType::Goal;
@@ -2399,6 +2454,19 @@ namespace VansGraphics
 	std::vector<AnimGraphPin> AnimGraphLimbIKNode::GetPins() const { return ProceduralPosePins(); }
 
 	AnimGraphPose AnimGraphLimbIKNode::Evaluate(
+		const AnimGraphContext& ctx, VansAnimGraphInstance& instance) const
+	{
+		return AppendProceduralNode(m_NodeId, ctx, instance);
+	}
+
+	AnimGraphRotationDistributionNode::AnimGraphRotationDistributionNode()
+	{
+		m_Type = AnimGraphNodeType::RotationDistribution;
+		m_Name = "Rotation Distribution";
+	}
+
+	std::vector<AnimGraphPin> AnimGraphRotationDistributionNode::GetPins() const { return ProceduralPosePins(); }
+	AnimGraphPose AnimGraphRotationDistributionNode::Evaluate(
 		const AnimGraphContext& ctx, VansAnimGraphInstance& instance) const
 	{
 		return AppendProceduralNode(m_NodeId, ctx, instance);

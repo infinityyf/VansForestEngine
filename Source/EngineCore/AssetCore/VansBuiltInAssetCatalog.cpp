@@ -5,6 +5,12 @@ namespace Vans
 const std::vector<VansBuiltInAssetEntry>& VansBuiltInAssetCatalog::Entries()
 {
 	static const std::vector<VansBuiltInAssetEntry> entries = {
+        {
+            "particleWhite",
+            "34a4e372-93c5-44a1-a985-768a099c3c95",
+            "EngineAssets/Textures/Default/particleWhite.png",
+            VansAssetType::Texture
+        },
 		{
 			"fullScreenQuad",
 			"2c86c128-f3f0-4dbd-9e4e-0f0f0a61c9d1",

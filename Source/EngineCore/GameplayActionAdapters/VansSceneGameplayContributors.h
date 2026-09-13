@@ -5,6 +5,8 @@
 #include "../GameplayActionSchema/VansGAFProjectConfiguration.h"
 #include "Projectile/VansProjectileActionService.h"
 #include "Decal/VansDecalActionService.h"
+#include "Combat/VansCombatSceneBackend.h"
+#include "VFX/VansVFXActionService.h"
 
 #include <functional>
 
@@ -25,6 +27,8 @@ struct VansSceneGameplayContributorContext
 	VansProjectileSceneBackend projectileBackend;
 	VansEngine::VansAudioManager* audio = nullptr;
 	VansDecalSceneBackend decalBackend;
+	VansCombatSceneBackend combatBackend;
+    VansVFXSceneBackend vfxBackend;
 };
 
 // Scene code supplies stable engine facilities only. Domain modules own their

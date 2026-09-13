@@ -6,7 +6,6 @@
 #include "../Common/CameraData.glsl"
 #include "../SSGI/SSGISurface.glsl"
 #include "../GI/GIReceiverOrigin.glsl"
-#include "../GI/GIReceiverTransportData.glsl"
 #include "../BRDF/ReflectionProbeData.glsl"
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
@@ -54,13 +53,6 @@ layout(set = 1, binding = 23) uniform SSGIHistoryInfo
     vec4 historyScreenSize;
     vec4 historyFrameParams; // 与 Temporal 共用帧号及 previous-current jitter UV
 };
-
-layout(set=1,binding=25,std430) buffer ReceiverTransportWork
-{
-    uvec4 transportHeader; // 本帧需求、实际入队数、上一帧需求、RT 可用。
-    GIReceiverTransportJob transportJobs[];
-};
-layout(set=1,binding=27) uniform sampler2D inputGIHistory;
 
 GIProbeState LoadScreenCacheProbeState(uint regionIndex, uint probeLinearIndex)
 {
@@ -168,12 +160,10 @@ vec3 SampleRegionDDGI(
 vec3 EvaluateCachedFallback(
     vec3 worldPosition,
     vec3 normal,
-    float vegetationTranslucency,
-    out uint selectedRegion,
-    out float selectedProbeSupport)
+    float vegetationTranslucency)
 {
-    selectedRegion=0xffffffffu;
-    selectedProbeSupport=0.0;
+    uint selectedRegion=0xffffffffu;
+    float selectedProbeSupport=0.0;
     // ComputeCacheGeometricNormal always returns a unit vector.  Preserve that
     // contract through the cache-only fallback instead of normalizing it again
     // before this function and once more inside the DDGI query.
@@ -240,8 +230,6 @@ vec3 EvaluateCachedFallback(
     return mix(frontIrradiance, max(frontIrradiance, backIrradiance), backWeight);
 }
 
-#include "../GIReceiverTransport/GIReceiverTransportCache.glsl"
-
 void main()
 {
     ivec2 cacheCoord = ivec2(gl_GlobalInvocationID.xy);
@@ -280,18 +268,8 @@ void main()
         ? clamp(normalData.w, 0.0, 1.0)
         : 0.0;
     GI_SetReceiverVisibility(anchorCoord, positionData, geometricNormal, float(materialId), anchorFootprint);
-    uint fallbackRegion; float fallbackSupport;
     vec3 fallbackIrradiance = EvaluateCachedFallback(
-        worldPosition, geometricNormal, vegetationTranslucency, fallbackRegion, fallbackSupport);
-    float receiverTransportWeight=GI_ReceiverTransportWeight(cacheCoord,fallbackRegion,fallbackSupport,
-        positionData,geometricNormal,float(materialId),anchorFootprint,vegetationMaterial);
-    bool receiverTransport=receiverTransportWeight>0.0;
-    GIReceiverTransportJob transport;
-    transport.origin=vec4(worldPosition+geometricNormal*GI_ReceiverOriginEpsilon(worldPosition),
-        receiverTransport ? regions[fallbackRegion].traceParams.x : 0.0);
-    transport.destination=uvec4(cacheCoord,floatBitsToUint(receiverTransportWeight),0u);
-    vec3 screenContribution=vec3(0.0);
-    float missingScreenWeight=0.0;
+        worldPosition, geometricNormal, vegetationTranslucency);
     vec3 accumulatedIrradiance = vec3(0.0);
     float screenHitConfidence = 0.0;
 
@@ -299,7 +277,6 @@ void main()
     // probe 的代表像素执行一次；全分辨率阶段仅做法线/深度引导重建。
     vec3 shadingNormal = normalize(normalData.xyz);
     vec3 startPosition = worldPosition + shadingNormal * GI_ReceiverScreenBias();
-    if(receiverBiasLimits.w<=0.0 && receiverTransport) startPosition=transport.origin.xyz;
     vec3 tangent;
     vec3 bitangent;
     BuildTBN(shadingNormal, tangent, bitangent);
@@ -362,13 +339,10 @@ void main()
                     rayIrradiance = mix(
                         fallbackIrradiance, screenIrradiance, screenTraceWeight);
                     rayScreenConfidence = screenTraceWeight;
-                    screenContribution += screenIrradiance * screenTraceWeight;
                 }
             }
         }
 
-        transport.directions[rayIndex]=vec4(direction,1.0-rayScreenConfidence);
-        missingScreenWeight+=1.0-rayScreenConfidence;
         accumulatedIrradiance += rayIrradiance;
         screenHitConfidence += rayScreenConfidence;
     }
@@ -382,19 +356,8 @@ void main()
     // 0 means invalid cache texel.  Valid entries encode 1 + screen confidence
     // so reconstruction can preserve both validity and temporal confidence in
     // the existing RGBA16F resource without allocating another texture.
-    if(receiverTransport && missingScreenWeight>0.0)
-    {
-        transport.screenRadiance=vec4(screenContribution/float(SSGI_PROBE_RAY_COUNT),screenHitConfidence);
-        if(!GI_QueueReceiverTransport(transport,uint(cacheCoord.y*cacheSize.x+cacheCoord.x)))
-        {
-            vec3 history;
-            receiverTransport=GI_ReceiverTransportHistory(anchorCoord,positionData,geometricNormal,
-                float(materialId),anchorFootprint,history);
-            if(receiverTransport) irradiance=history;
-        }
-    }
     imageStore(outputRadiance, cacheCoord,
-        vec4(max(irradiance, vec3(0.0)), (receiverTransport ? -1.0 : 1.0)*(1.0 + screenHitConfidence)));
+        vec4(max(irradiance, vec3(0.0)), 1.0 + screenHitConfidence));
     imageStore(outputSurface, cacheCoord,
         vec4(geometricNormal, linearDepth));
 }
