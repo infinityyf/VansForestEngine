@@ -18,6 +18,8 @@
 #include "../EngineCore/GameplayActionDebug/VansGameplayActionDebug.h"
 #include "../EngineCore/GameplayActionAdapters/VansActionServiceAdapter.h"
 #include "../EngineCore/GameplayActionAdapters/VansGameplayPrimitivesContributor.h"
+#include "../EngineCore/GameplayActionAdapters/VansSceneGameplayContributors.h"
+#include "../EngineCore/TimelineRuntime/VansTimelineRuntimeSystem.h"
 #include "../EngineCore/GameplayActionAdapters/Audio/VansAudioActionCapability.h"
 #include "../EngineCore/GameplayActionAdapters/Decal/VansDecalActionService.h"
 #include "../EngineCore/GameplayActionAdapters/Audio/VansAudioActionService.h"
@@ -2257,6 +2259,17 @@ bool TestGAFPackagingContract()
 		sourceRoot / "EngineAssets/GAF/ProjectSettings", configuration, error))
 		return ExpectGAF(false, error.c_str());
 	failureStage = "initialize editable project configuration";
+	// 内置配置必须能被真实场景的模块发现入口消费，而不仅仅能解析和打包。
+	Vans::VansRuntimeWorld startupWorld;
+	Vans::VansGameplayRuntime startupGameplay;
+	Vans::VansCameraRuntime startupCamera;
+	Vans::VansTimelineRuntimeSystem startupTimeline;
+	const Vans::VansSceneGameplayContributorContext startupContext{
+		startupWorld, startupGameplay, startupCamera, startupTimeline, {}, {} };
+	Vans::VansGameplayRuntimeDependencies startupDependencies;
+	if (!Vans::VansDiscoverSceneGameplayContributors(
+		configuration, startupContext, startupDependencies, error))
+		return ExpectGAF(false, error.c_str());
 
 	const std::filesystem::path projectRoot =
 		std::filesystem::temp_directory_path() / "ForestGAFPackagingContract";
@@ -3783,7 +3796,7 @@ bool TestGAFDemoHallWindowBreakContract()
 			if (component.value("type", std::string{}) == "Script")
 			{
 				const auto fields = data.value("fields", nlohmann::ordered_json::object());
-				foundScriptBinding = fields.value("breakActionId", std::string{}) ==
+				foundScriptBinding = foundScriptBinding || fields.value("breakActionId", std::string{}) ==
 					"Gameplay.DemoHall.Window.Break";
 			}
 		}

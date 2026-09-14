@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 #include "VansPhysicsNode.h"
+#include "../TerrainCore/VansTerrainAsset.h"
+#include <memory>
 
 using namespace physx;
 
@@ -16,13 +18,11 @@ namespace VansEngine
     struct TerrainPhysicsProperties
     {
         bool enabled = false;
-        std::string heightmapPath;
+        std::shared_ptr<const Vans::VansTerrainAsset> surface;
         float terrainSize = 1024.0f;
         float maxHeight = 500.0f;
         float heightOffset = -23.0f;
         std::string layerName = "Environment";
-        bool flipX = false;
-        bool flipZ = false;
         PhysicsMaterialProperties material;
     };
 
@@ -33,6 +33,7 @@ namespace VansEngine
         ~VansTerrainPhysicsNode();
 
         bool Initialize(const TerrainPhysicsProperties& properties);
+        bool UpdateSurface(std::shared_ptr<const Vans::VansTerrainAsset> surface);
         void Shutdown();
 
         bool IsEnabled() const { return m_Enabled; }

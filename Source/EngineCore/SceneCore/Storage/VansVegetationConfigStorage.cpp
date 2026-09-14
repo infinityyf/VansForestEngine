@@ -29,7 +29,7 @@ bool VansVegetationConfigStorage::Load(
 
 bool VansVegetationConfigStorage::SaveAtomic(
 	const std::filesystem::path& path,
-	const VansSceneVegetationNodeConfig& config,
+	const VansPcgRecipeAsset& config,
 	std::string& error)
 {
 	VansSerializedValue serialized;

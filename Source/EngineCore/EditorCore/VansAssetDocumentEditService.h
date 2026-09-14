@@ -3,6 +3,7 @@
 #include "../AssetCore/Serialization/VansSerializedValue.h"
 #include "VansEditorObjectReference.h"
 
+#include <functional>
 #include <string>
 
 namespace Vans
@@ -25,6 +26,17 @@ public:
 	static AssetDocumentEditResult ReplaceRoot(
 		VansAssetDocument& document,
 		VansSerializedValue value);
+	// Records a sidecar/binary edit that has already been applied. Undo and redo
+	// callbacks restore the external payload while the document state id keeps
+	// save/discard semantics unified with ordinary JSON property edits.
+	static AssetDocumentEditResult RecordExternalEdit(
+		VansAssetDocument& document,
+		std::function<bool()> undo,
+		std::function<bool()> redo);
+	// 将映射定义和伴随像素作为同一个历史操作恢复。
+	static AssetDocumentEditResult RecordExternalEdit(
+		VansAssetDocument& document, VansSerializedValue root,
+		std::function<bool()> undo, std::function<bool()> redo);
 
     static AssetDocumentEditResult Set(
         VansAssetDocument& document,

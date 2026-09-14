@@ -1,4 +1,6 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+#include "../../Common/PcgSplineFields.glsl"
 
 layout(location = 0) in vec2 inMeshPos;
 layout(push_constant) uniform WaterPatchPC
@@ -199,6 +201,13 @@ void main()
     }
 
     vec3 worldPosition = vec3(worldXZ.x, pc.waterLevel, worldXZ.y) + surface.displacement;
+    float riverHeight;vec2 riverVelocity;
+    if(PcgRiverSurface(worldXZ,riverHeight,riverVelocity))
+    {
+        worldPosition=vec3(worldXZ.x,riverHeight,worldXZ.y);
+        vec2 gradient=PcgRiverHeightGradient(worldXZ,riverHeight);
+        surface.dPdx=vec3(1,gradient.x,0);surface.dPdz=vec3(0,gradient.y,1);surface.foam=0;
+    }
     vec3 worldNormal = normalize(cross(surface.dPdz, surface.dPdx));
     vec4 viewPosition = params.waterViewMatrix * vec4(worldPosition, 1.0);
     outWorldPos = worldPosition;

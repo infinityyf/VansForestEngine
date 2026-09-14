@@ -111,6 +111,8 @@ public:
 		return std::shared_ptr<const Asset>(std::move(object), typedObject);
 	}
 
+	// 后台任务持有不可变资产指针快照，不捕获项目仓库的生命周期。
+	std::shared_ptr<const VansAssetObjectRepository> CreateSnapshot() const;
 	bool FindInfo(VansAssetGuid guid, VansAssetObjectSnapshotInfo& outInfo) const;
 	bool Remove(VansAssetGuid guid);
 	void Clear();

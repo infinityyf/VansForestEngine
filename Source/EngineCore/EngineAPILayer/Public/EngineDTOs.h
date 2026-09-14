@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AnimationAuthoringDTOs.h"
+#include "PcgEditorDTOs.h"
 
 #include "EngineIds.h"
 #include "../../AssetCore/Serialization/VansSerializedValue.h"
@@ -564,7 +565,11 @@ namespace Vans::EditorAPI
 		UIThemeTokens,
 		UILocalization,
 		UIXaml,
-		VegetationConfig
+		VegetationConfig,
+		Terrain,
+		PlantType,
+		PcgMask,
+		PcgSpline
 	};
 
 	enum class AssetQueryCapability
@@ -1992,11 +1997,6 @@ namespace Vans::EditorAPI
 		bool thinSSSEnabled = true;
 		float maxThicknessDistance = 15.0f;
 		float deepWaterThicknessFallback = 0.8f;
-		bool causticsEnabled = false;
-		float causticsIntensity = 1.0f;
-		float causticsMaxDistance = 20.0f;
-		float causticsMaxGain = 3.0f;
-		float causticsFilterRadius = 0.5f;
 		bool refractionEnabled = true;
 		float refractionDistortionStrength = 0.025f;
 		bool ssrEnabled = true;
@@ -2984,8 +2984,7 @@ namespace Vans::EditorAPI
 		bool tessellationEnabled = false;
 		float tessellationDistance = 0.0f;
 		float maxTessellationLevel = 0.0f;
-		float tessellationPower = 0.0f;
-		float tessLodBias = 0.0f;
+		float tessellationTargetPixels = 0.0f;
 		bool noiseDetailEnabled = false;
 		float noiseStrength = 0.0f;
 		float noiseFrequency = 0.0f;
@@ -2995,8 +2994,108 @@ namespace Vans::EditorAPI
 		float noiseWarpStrength = 0.0f;
 		float noiseFadeStart = 0.0f;
 		float terrainSize = 0.0f;
-		float splitDistMult = 0.0f;
-		float lodDistanceRatio = 0.0f;
+		float lodBaseDistance = 0.0f;
+		float lodRangeRatio = 0.0f;
+		float morphStartRatio = 0.0f;
+	};
+
+	enum class TerrainBrushTool
+	{
+		Raise,
+		Lower,
+		SmoothHeight,
+		Flatten,
+		Noise,
+		PaintLayer,
+		EraseLayer,
+		SmoothWeights
+	};
+
+	enum class TerrainBrushPattern
+	{
+		SmoothCircle,
+		LinearCircle,
+		Sphere,
+		Tip,
+		SoftSquare,
+		Ridge,
+		Crater,
+		Rocky
+	};
+
+	struct TerrainLayerSnapshot
+	{
+		std::uint32_t index = 0;
+		std::string id;
+		std::string name;
+	};
+
+	struct TerrainEditorSnapshot
+	{
+		bool available = false;
+		bool editable = false;
+		bool brushEnabled = false;
+		bool dirty = false;
+		bool canUndo = false;
+		bool canRedo = false;
+		std::string assetGuid;
+		std::string sourcePath;
+		std::uint32_t width = 0;
+		std::uint32_t height = 0;
+		TerrainBrushTool tool = TerrainBrushTool::Raise;
+		float radius = 4.0f;
+		float strength = 0.02f;
+		float hardness = 0.5f;
+		TerrainBrushPattern pattern = TerrainBrushPattern::SmoothCircle;
+		float rotationRadians = 0.0f;
+		float flattenHeight = 0.5f;
+		std::uint32_t selectedLayer = 0;
+		std::vector<TerrainLayerSnapshot> layers;
+		std::string message;
+	};
+
+	struct TerrainBrushConfiguration
+	{
+		bool enabled = false;
+		TerrainBrushTool tool = TerrainBrushTool::Raise;
+		float radius = 4.0f;
+		float strength = 0.02f;
+		float hardness = 0.5f;
+		TerrainBrushPattern pattern = TerrainBrushPattern::SmoothCircle;
+		float rotationRadians = 0.0f;
+		float flattenHeight = 0.5f;
+		std::uint32_t selectedLayer = 0;
+	};
+
+	enum class TerrainBrushInputPhase
+	{
+		Hover,
+		Begin,
+		Update,
+		End
+	};
+
+	struct TerrainBrushInput
+	{
+		TerrainBrushInputPhase phase = TerrainBrushInputPhase::Hover;
+		Ray ray;
+		bool invert = false;
+		float deltaTimeSeconds = 1.0f / 60.0f;
+	};
+
+	struct TerrainBrushInputResult
+	{
+		bool success = false;
+		bool hit = false;
+		bool changed = false;
+		Vec3 worldPosition;
+		std::string message;
+	};
+
+	struct TerrainEditorOperationResult
+	{
+		bool success = false;
+		std::string message;
 	};
 
 	struct DirectionalLightSettings

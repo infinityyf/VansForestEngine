@@ -15,6 +15,7 @@ include(ForestThirdParty)
 include(ForestSourceGroups)
 
 forest_collect_engine_sources()
+include(ForestPcgSplineCompiler)
 
 add_library(ForestRuntimeCore STATIC
     ${FOREST_RUNTIME_CORE_SOURCES}

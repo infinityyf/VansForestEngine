@@ -22,6 +22,8 @@
 #include "../SceneCore/Serialization/VansVegetationConfigCodec.h"
 #include "../TimelineCore/VansTimelineDependencyBuilder.h"
 #include "../TimelineCore/VansTimelineValidator.h"
+#include "../TerrainCore/VansTerrainAsset.h"
+#include "../PcgCore/VansPcgResourcePlan.h"
 #include "../Util/VansLog.h"
 
 #include <algorithm>
@@ -323,6 +325,52 @@ namespace
 			CollectSerializedAssetReferences(memoryDocument->root, assetTypesByGuid, result);
 			for (const std::string& dependency : result.requiredAssets)
 				if (before.find(dependency) == before.end()) pending.push_back(dependency);
+		}
+	}
+
+	void ExpandTerrainDependencies(
+		const std::unordered_map<std::string, VansAssetRecord>& recordsByGuid,
+		const VansAssetObjectRepository& objectRepository,
+		VansSceneAssetDependencyBuildResult& result,
+		std::unordered_set<std::string>& heightTextures,
+		std::unordered_set<std::string>& splatTextures)
+	{
+		const std::vector<std::string> referencedAssets(
+			result.requiredAssets.begin(), result.requiredAssets.end());
+		for (const std::string& guid : referencedAssets)
+		{
+			const auto found = recordsByGuid.find(guid);
+			if (found == recordsByGuid.end() || found->second.type != VansAssetType::Terrain)
+				continue;
+			const auto terrain = ResolveMemoryAsset<VansTerrainAsset>(
+				objectRepository, found->second);
+			if (!terrain)
+			{
+				AppendDependencyError(result,
+					"Terrain asset '" + guid + "' has no memory object");
+				continue;
+			}
+			heightTextures.insert(terrain->heightmap.ToString());
+			for (const VansAssetGuid splat : terrain->splatmaps)
+				splatTextures.insert(splat.ToString());
+			for (const VansAssetGuid dependency : terrain->Dependencies())
+			{
+				const std::string textureGuid = dependency.ToString();
+				const auto texture = recordsByGuid.find(textureGuid);
+				if (texture == recordsByGuid.end() ||
+					texture->second.type != VansAssetType::Texture ||
+					texture->second.state == VansAssetState::Missing)
+				{
+					AppendDependencyError(result, "Terrain '" + guid +
+						"' requires an indexed texture: " + textureGuid);
+					continue;
+				}
+				result.requiredAssets.insert(textureGuid);
+				if (dependency != terrain->heightmap &&
+					dependency != terrain->splatmaps[0] &&
+					dependency != terrain->splatmaps[1])
+					result.requiredTextures.insert(textureGuid);
+			}
 		}
 	}
 
@@ -789,6 +837,10 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 		}
 	}
 	CollectSerializedAssetReferences(sceneDocument, assetTypesByGuid, result);
+	std::unordered_set<std::string> terrainHeightTextures;
+	std::unordered_set<std::string> terrainSplatTextures;
+	std::unordered_set<std::string> pcgPixelTextures;
+	std::unordered_set<std::string> pcgGrassModels;
 	ExpandUIAssetDependencies(assetRecordsByGuid, assetTypesByGuid, objectRepository, result);
 	std::vector<TypedAssetDependency> animationDependencies;
 	CollectSceneAnimationDependencies(sceneDocument, animationDependencies, result);
@@ -805,7 +857,7 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 		const std::string vegetationGuidText =
 			VansVegetationConfigCodec::ReadReferenceGuid(*vegetationConfig);
 		VansVegetationConfigAsset vegetationAsset;
-		VansSceneVegetationNodeConfig effectiveVegetation;
+		VansPcgRecipeAsset effectiveVegetation;
 		bool vegetationResolved = false;
 		std::string vegetationError;
 		VansAssetGuid vegetationGuid;
@@ -845,22 +897,26 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 				}
 			}
 		}
-		if (vegetationResolved && effectiveVegetation.valid)
+		if (vegetationResolved)
 		{
-			VansSerializedValue effectiveRoot;
-			if (!VansVegetationConfigCodec::Encode(
-				effectiveVegetation, effectiveRoot, vegetationError))
-				result.errors.push_back(std::move(vegetationError));
-			else
+			result.requiredAssets.insert(vegetationGuidText);
+			const auto pcg = BuildPcgResourcePlan(effectiveVegetation, objectRepository,
+				[&](VansAssetGuid guid) { return database.Find(guid); });
+			if (!pcg) result.errors.push_back(pcg.error);
+			else for (const auto& resource : pcg.resources)
 			{
-				CollectSerializedAssetReferences(effectiveRoot, assetTypesByGuid, result);
-				VANS_LOG("[AssetDatabase] Collected vegetation dependencies: "
-					<< result.requiredModels.size() << " models, "
-					<< result.requiredMaterials.size() << " materials, "
-					<< result.requiredTextures.size() << " textures");
+				const std::string guid = resource.guid.ToString();
+				result.requiredAssets.insert(guid);
+				if (resource.meshCpuData) pcgGrassModels.insert(guid);
+				if (resource.maskPixels) pcgPixelTextures.insert(guid);
+				else if (resource.type == VansAssetType::Model) result.requiredModels.insert(guid);
+				else if (resource.type == VansAssetType::Material) result.requiredMaterials.insert(guid);
 			}
 		}
 	}
+	// PCG 可以显式引用一个高度场，依赖处理不依赖它在场景中的先后位置。
+	ExpandTerrainDependencies(assetRecordsByGuid, objectRepository, result,
+		terrainHeightTextures, terrainSplatTextures);
 
 	result.requiredAssets.insert(result.requiredModels.begin(), result.requiredModels.end());
 	result.requiredAssets.insert(result.requiredMaterials.begin(), result.requiredMaterials.end());
@@ -1143,6 +1199,7 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 			request.needTangent = meta.ReadBoolSetting("generateTangents", true);
 			request.supportRayTracing = meta.ReadBoolSetting("buildRayTracingData", true);
 			request.needCpuData = meta.ReadBoolSetting("keepCpuMeshData", false) ||
+				pcgGrassModels.find(record.guid.ToString()) != pcgGrassModels.end() ||
 				meshColliderModels.find(record.guid.ToString()) != meshColliderModels.end();
 			request.scaleFactor = meta.ReadFloatSetting("scaleFactor", "scale", 1.0f);
 			request.loadMultiMesh = meta.ReadBoolSetting("loadMultiMesh", isFbx);
@@ -1151,6 +1208,34 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 		}
 		else if (record.type == VansAssetType::Texture)
 		{
+			const bool terrainHeight = terrainHeightTextures.find(record.guid.ToString()) !=
+				terrainHeightTextures.end() || pcgPixelTextures.count(record.guid.ToString()) != 0;
+			const bool terrainSplat = terrainSplatTextures.find(record.guid.ToString()) !=
+				terrainSplatTextures.end();
+			if (terrainHeight || terrainSplat)
+			{
+				const std::string colorSpace = LowerAsciiCopy(meta.ReadStringSetting("colorSpace"));
+				const bool linear = colorSpace == "linear" ||
+					(colorSpace.empty() && !meta.ReadBoolSetting("sRGB", true));
+				const bool uncompressed = !meta.ReadBoolSetting("useCompress", "compress", true);
+				const bool noMip = !meta.ReadBoolSetting("needMip", "generateMip", true);
+				const int channels = meta.ReadIntSetting("importChannel", terrainHeight ? 1 : 4);
+				const std::string precision = LowerAsciiCopy(meta.ReadStringSetting("precision"));
+				const std::string addressMode = LowerAsciiCopy(meta.ReadStringSetting("addressMode"));
+				const bool valid = linear && uncompressed && noMip && addressMode == "clamp" &&
+					(terrainHeight ? channels == 1 && precision == "mid16"
+						: channels == 4 && precision == "low8");
+				if (!valid)
+				{
+					AppendDependencyError(result,
+						std::string(terrainHeight ? "Height/PCG data texture " : "Terrain splat texture ") +
+						record.guid.ToString() +
+						(terrainHeight
+							? " must be linear, uncompressed, non-mipmapped, clamp, one-channel mid16"
+							: " must be linear, uncompressed, non-mipmapped, clamp, four-channel low8"));
+					continue;
+				}
+			}
 			if (result.requiredTextures.find(record.guid.ToString()) == result.requiredTextures.end())
 				continue;
 			const auto localFogField = localFogFieldTextureRequiredChannels.find(

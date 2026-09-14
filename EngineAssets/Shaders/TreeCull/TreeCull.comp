@@ -57,106 +57,19 @@ layout(push_constant) uniform TreeCullPC
     float padding1;
 } pc;
 
-struct Plane
-{
-    vec3 normal;
-    float d;
-};
-
-Plane extractPlane(mat4 m, int row, float sign)
-{
-    Plane p;
-    p.normal.x = m[0][3] + sign * m[0][row];
-    p.normal.y = m[1][3] + sign * m[1][row];
-    p.normal.z = m[2][3] + sign * m[2][row];
-    p.d = m[3][3] + sign * m[3][row];
-    float len = length(p.normal);
-    p.normal /= len;
-    p.d /= len;
-    return p;
-}
-
-shared Plane sharedFrustum[6];
-
-bool sphereInsideFrustum(vec3 center, float radius)
-{
-    for (int i = 0; i < 6; ++i)
-    {
-        if (dot(sharedFrustum[i].normal, center) + sharedFrustum[i].d + radius < 0.0)
-            return false;
-    }
-    return true;
-}
-
-float sampleHiZ(vec2 uv, int mipLevel, int mipMaxIndex)
-{
-    int lod = clamp(mipLevel, 0, mipMaxIndex);
-    ivec2 mipSize = textureSize(hizDepth, lod);
-    ivec2 cell = clamp(ivec2(uv * vec2(mipSize)), ivec2(0), mipSize - 1);
-    return texelFetch(hizDepth, cell, lod).r;
-}
-
-bool isHiZOccludedSample(vec2 uv, int mipLevel, int mipMaxIndex, float sphereNearZ, float bias)
-{
-    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)
-        return false;
-
-    float sceneMinZ = sampleHiZ(uv, mipLevel, mipMaxIndex);
-    if (sceneMinZ >= 1e4)
-        return false;
-
-    return sphereNearZ > sceneMinZ + bias;
-}
-
-bool conservativeHiZOccluded(vec3 center, float radius)
-{
-    vec4 viewCenter = ViewMatrix * vec4(center, 1.0);
-    float sphereNearZ = -viewCenter.z - radius;
-    if (sphereNearZ <= 0.001)
-        return false;
-
-    vec4 clipCenter = ProjectionMatrix * viewCenter;
-    if (clipCenter.w <= 0.0001)
-        return false;
-
-    vec3 ndcCenter = clipCenter.xyz / clipCenter.w;
-    vec2 hizUV = vec2(ndcCenter.x * 0.5 + 0.5, 0.5 - ndcCenter.y * 0.5);
-    float ndcRadius = radius / clipCenter.w;
-    float screenRadiusPx = ndcRadius * 0.5 * max(ScreenParams.x, ScreenParams.y);
-    vec2 uvRadius = vec2(screenRadiusPx * ScreenParams.z, screenRadiusPx * ScreenParams.w);
-    vec2 uvMin = hizUV - uvRadius;
-    vec2 uvMax = hizUV + uvRadius;
-
-    if (uvMin.x < 0.0 || uvMax.x > 1.0 || uvMin.y < 0.0 || uvMax.y > 1.0 || screenRadiusPx <= 0.5)
-        return false;
-
-    int mipLevel = min(int(floor(log2(max(screenRadiusPx * 0.25, 1.0)))), 2);
-    int mipMaxIndex = pc.hizMipCount - 1;
-
-    bool occluded = true;
-    occluded = occluded && isHiZOccludedSample(hizUV,                                  mipLevel, mipMaxIndex, sphereNearZ, pc.hizSampleBias);
-    occluded = occluded && isHiZOccludedSample(hizUV + vec2( uvRadius.x, 0.0),         mipLevel, mipMaxIndex, sphereNearZ, pc.hizSampleBias);
-    occluded = occluded && isHiZOccludedSample(hizUV + vec2(-uvRadius.x, 0.0),         mipLevel, mipMaxIndex, sphereNearZ, pc.hizSampleBias);
-    occluded = occluded && isHiZOccludedSample(hizUV + vec2(0.0,  uvRadius.y),         mipLevel, mipMaxIndex, sphereNearZ, pc.hizSampleBias);
-    occluded = occluded && isHiZOccludedSample(hizUV + vec2(0.0, -uvRadius.y),         mipLevel, mipMaxIndex, sphereNearZ, pc.hizSampleBias);
-    occluded = occluded && isHiZOccludedSample(hizUV + vec2( uvRadius.x,  uvRadius.y), mipLevel, mipMaxIndex, sphereNearZ, pc.hizSampleBias);
-    occluded = occluded && isHiZOccludedSample(hizUV + vec2(-uvRadius.x,  uvRadius.y), mipLevel, mipMaxIndex, sphereNearZ, pc.hizSampleBias);
-    occluded = occluded && isHiZOccludedSample(hizUV + vec2( uvRadius.x, -uvRadius.y), mipLevel, mipMaxIndex, sphereNearZ, pc.hizSampleBias);
-    occluded = occluded && isHiZOccludedSample(hizUV + vec2(-uvRadius.x, -uvRadius.y), mipLevel, mipMaxIndex, sphereNearZ, pc.hizSampleBias);
-    return occluded;
-}
+#include "../Common/VegetationCulling.glsl"
 
 void main()
 {
     // VPMatrix 在同一 workgroup 内相同，6 个视锥面只需提取一次。
     if (gl_LocalInvocationIndex < 6u)
     {
-        if (gl_LocalInvocationIndex == 0u) sharedFrustum[0] = extractPlane(VPMatrix, 0,  1.0);
-        if (gl_LocalInvocationIndex == 1u) sharedFrustum[1] = extractPlane(VPMatrix, 0, -1.0);
-        if (gl_LocalInvocationIndex == 2u) sharedFrustum[2] = extractPlane(VPMatrix, 1,  1.0);
-        if (gl_LocalInvocationIndex == 3u) sharedFrustum[3] = extractPlane(VPMatrix, 1, -1.0);
-        if (gl_LocalInvocationIndex == 4u) sharedFrustum[4] = extractPlane(VPMatrix, 2,  1.0);
-        if (gl_LocalInvocationIndex == 5u) sharedFrustum[5] = extractPlane(VPMatrix, 2, -1.0);
+        if (gl_LocalInvocationIndex == 0u) sharedFrustum[0] = extractPlane(UnjitteredVPMatrix, 0,  1.0);
+        if (gl_LocalInvocationIndex == 1u) sharedFrustum[1] = extractPlane(UnjitteredVPMatrix, 0, -1.0);
+        if (gl_LocalInvocationIndex == 2u) sharedFrustum[2] = extractPlane(UnjitteredVPMatrix, 1,  1.0);
+        if (gl_LocalInvocationIndex == 3u) sharedFrustum[3] = extractPlane(UnjitteredVPMatrix, 1, -1.0);
+        if (gl_LocalInvocationIndex == 4u) sharedFrustum[4] = extractPlane(UnjitteredVPMatrix, 2,  1.0);
+        if (gl_LocalInvocationIndex == 5u) sharedFrustum[5] = extractPlane(UnjitteredVPMatrix, 2, -1.0);
     }
     barrier();
 
@@ -172,16 +85,23 @@ void main()
     vec3 center = inst.boundsSphere.xyz;
     float radius = inst.boundsSphere.w;
 
-    if (distance(center, cameraPosition.xyz) > pc.cullDistance + radius)
-        return;
-
-    if (!sphereInsideFrustum(center, radius))
-        return;
-
-    if (pc.hizEnabled != 0 && conservativeHiZOccluded(center, radius))
+    // 与草一致：按根部 XZ 距离控制覆盖，不因相机高度改变植被范围。
+    bool cullingEnabled = pc.cullDistance >= 0.0;
+    if (cullingEnabled && distance(inst.modelMatrix[3].xz, cameraPosition.xz) > pc.cullDistance)
         return;
 
     TreeSpeciesCullInfo info = speciesInfos[visibilityGroupIndex];
+    // 阴影只使用距离筛选，保留主相机视野外但仍能投影到附近的树。
+    uint shadowSlot = atomicAdd(visibleCounts[pc.speciesCount + visibilityGroupIndex], 1u);
+    if (shadowSlot < info.maxCount)
+        visibleIndices[pc.instanceCount + info.visibleOffset + shadowSlot] = instanceID;
+
+    if (cullingEnabled && !sphereInsideFrustum(center, radius))
+        return;
+
+    if (cullingEnabled && pc.hizEnabled != 0 && FrameIndex >= 1.0 && conservativePreviousFrameHiZOccluded(center, radius))
+        return;
+
     uint slot = atomicAdd(visibleCounts[visibilityGroupIndex], 1u);
     if (slot < info.maxCount)
         visibleIndices[info.visibleOffset + slot] = instanceID;

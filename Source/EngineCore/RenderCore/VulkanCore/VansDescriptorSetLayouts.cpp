@@ -605,7 +605,7 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_Terrain(
 	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
 {
 	std::vector<VkDescriptorSetLayoutBinding> bindings = {
-		// binding 0: heightMap — VS, TCS (patch center), TES (displacement), FS (normal)
+		// binding 0: height map used by every terrain geometry stage.
 		{TERRAIN_BINDING_HEIGHT_MAP, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
 		 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT |
 		 VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
@@ -616,20 +616,22 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_Terrain(
 		{TERRAIN_BINDING_ALBEDO_ARRAY, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, TERRAIN_MAX_LAYERS,
 		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 		{TERRAIN_BINDING_NORMAL_ARRAY, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, TERRAIN_MAX_LAYERS,
-		 VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 		{TERRAIN_BINDING_ROUGHNESS_ARRAY, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, TERRAIN_MAX_LAYERS,
 		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-		// binding 6: terrainParams UBO — VS, TES (heightfieldParams), FS
+		// binding 6: shared terrain geometry and material parameters.
 		{TERRAIN_BINDING_PARAMS_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
-		 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT |
+		 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT |
+		 VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT |
 		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-		// binding 7: TessellationParams UBO — TCS + TES（TES 需要 tessDistance 做距离衰减）
+		// binding 7: tessellation density and the near-detail fade distance.
 		{TERRAIN_BINDING_TESSELLATION_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
-		 VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, nullptr},
-
-		// ── binding 8: NoiseDetailParams UBO — TES + FS ──
+		 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT |
+		 VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, nullptr},
+		// binding 8: geometry noise sampled by every terrain geometry stage.
 		{TERRAIN_BINDING_NOISE_DETAIL_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
-		 VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT |
+		 VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount, VansDescriptorLifetimeRole::ScenePersistent);
 }
@@ -1127,8 +1129,6 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterComposite(
 		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 		{WATER_COMP_BINDING_REFRACTION_DATA, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
 		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-		{WATER_COMP_BINDING_CAUSTICS,      VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 		{WATER_COMP_BINDING_GBUF_SCATTER,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
 		 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 		{WATER_COMP_BINDING_GBUF_ABSORPTION, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
@@ -1240,25 +1240,6 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterRefractionCompute(
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }
 
-// W-14: Receiver-space water caustics compute.
-void VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterCausticsCompute(
-	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
-{
-	std::vector<VkDescriptorSetLayoutBinding> bindings = {
-		{WATER_CAUSTICS_BINDING_WATER_SURFACE,   VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{WATER_CAUSTICS_BINDING_SCENE_NORMAL,    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{WATER_CAUSTICS_BINDING_SCENE_GBUF0,     VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{WATER_CAUSTICS_BINDING_SCENE_GBUF2,     VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{WATER_CAUSTICS_BINDING_REFRACTION_DATA, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{WATER_CAUSTICS_BINDING_DISPLACEMENT,    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{WATER_CAUSTICS_BINDING_DERIVATIVE,      VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{WATER_CAUSTICS_BINDING_FLOW_MAP,        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{WATER_CAUSTICS_BINDING_SURFACE_PARAMS,  VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{WATER_CAUSTICS_BINDING_PARAMS,          VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-		{WATER_CAUSTICS_BINDING_CAUSTICS_OUT,    VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-	};
-	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
-}
 
 // W-16: Water Thickness Compute
 void VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterThicknessCompute(
@@ -1308,6 +1289,17 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterVolumeFilterCompute(
 		{WATER_VOLUME_FILTER_BINDING_DEPTH_OUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_PcgSplineField(
+    VkDescriptorSetLayout& outLayout,std::vector<VkDescriptorSet>& outSets,uint32_t setCount)
+{
+    const VkShaderStageFlags stages=VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT|
+        VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT|VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+    std::vector<VkDescriptorSetLayoutBinding> bindings{{0,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,stages,nullptr}};
+    for(uint32_t binding=1;binding<=6;++binding)
+        bindings.push_back({binding,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,stages,nullptr});
+    CreateLayoutAndAllocateSets(bindings,outLayout,outSets,setCount);
 }
 
 } // namespace VansGraphics

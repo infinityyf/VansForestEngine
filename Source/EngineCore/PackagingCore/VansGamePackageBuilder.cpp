@@ -14,6 +14,9 @@
 #include "../RenderCore/VulkanCore/VansPipelineDescriptor.h"
 #include "../RuntimeCore/VansPackageManifest.h"
 #include "../AssetCore/VansAssetObjectRepository.h"
+#include "../PcgCore/Storage/VansPcgSplineFieldStorage.h"
+#include "../PcgCore/VansPcgMaskAsset.h"
+#include "../TerrainCore/VansTerrainAsset.h"
 #include "../SceneCore/VansPackagedResourcePlan.h"
 #include "../SceneCore/VansSceneAssetDependencyBuilder.h"
 #include "../SceneCore/VansAssetObjectBootstrapper.h"
@@ -1076,10 +1079,47 @@ namespace
 				? nullptr
 				: &cookedPlan.packagePlan.assetIndex[found->second];
 		};
+		// CPU 作者数据保留原始量化像素，不能仅复制 PNG 后留下空的运行时索引，
+		for (const auto& sourceAsset : indexedAssets)
+		{
+			if (sourceAsset.type != Vans::VansAssetType::PcgSpline ||
+				dependencyResult.requiredAssets.count(sourceAsset.guid.ToString()) == 0) continue;
+			const auto splines=objectRepository.ResolveLatest<Vans::VansPcgSplineAsset>(sourceAsset.guid);
+			const auto terrain=splines?objectRepository.ResolveLatest<Vans::VansTerrainAsset>(splines->terrain):nullptr;
+			if (!splines || !terrain) { error="Package spline terrain is unavailable.";return false; }
+			const auto cache=Vans::VansPcgSplineFieldStorage::CachePath(projectRoot,sourceAsset.guid);
+			auto field=Vans::VansPcgSplineFieldStorage::Load(cache,*splines,terrain,error);
+			if (!field)
+			{
+				field=Vans::VansPcgSplineFieldBuilder::Build(*splines,terrain,{},error);
+				if (!field || !Vans::VansPcgSplineFieldStorage::Save(cache,*field,error)) return false;
+			}
+			cookedPlan.cacheCopies.push_back({cache,fs::relative(cache,projectRoot),false});
+		}
+		// CPU 作者数据保留原始量化像素，不能仅复制 PNG 后留下空的运行时索引，
+		// 也不能被后续 GPU 纹理烘焙覆盖成内存资产加载器无法读取的格式。
+		std::unordered_set<std::string> dataPixelGuids;
+		for (const auto& sourceAsset : indexedAssets)
+		{
+			if (sourceAsset.type == Vans::VansAssetType::PcgMask)
+			{
+				const auto mask = objectRepository.ResolveLatest<Vans::VansPcgMaskAsset>(sourceAsset.guid);
+				if (mask) dataPixelGuids.insert(mask->pixelAsset.ToString());
+			}
+			else if (sourceAsset.type == Vans::VansAssetType::Terrain)
+			{
+				const auto terrain = objectRepository.ResolveLatest<Vans::VansTerrainAsset>(sourceAsset.guid);
+				if (!terrain) continue;
+				dataPixelGuids.insert(terrain->heightmap.ToString());
+				for (auto guid : terrain->splatmaps)
+					if (guid.IsValid()) dataPixelGuids.insert(guid.ToString());
+			}
+		}
 		for (const Vans::VansAssetRecord& sourceAsset : indexedAssets)
 		{
 			if (sourceAsset.state == Vans::VansAssetState::Missing ||
-				!Vans::VansAssetObjectBootstrapper::Supports(sourceAsset.type) ||
+				(!Vans::VansAssetObjectBootstrapper::Supports(sourceAsset.type) &&
+					dataPixelGuids.count(sourceAsset.guid.ToString()) == 0) ||
 				Vans::VansGameplayAssetSchemaRegistry::IsGameplayAssetType(sourceAsset.type))
 				continue;
 			std::error_code sourceError;
@@ -1241,7 +1281,8 @@ namespace
 		{
 			const Vans::VansResolvedSceneResourcePath resolved = packageBuildContext.ResolveTexture(texture);
 			const bool hasArtifact = resolved.artifactAvailable;
-			const bool needsSourceFallback = TextureNeedsPackagedSourceFallback(texture.path);
+			const bool needsSourceFallback = TextureNeedsPackagedSourceFallback(texture.path) ||
+				dataPixelGuids.count(texture.assetGuid) != 0;
 			Vans::VansAssetGuid guid;
 			std::optional<Vans::VansAssetRecord> sourceRecord;
 			if (Vans::VansAssetGuid::TryParse(texture.assetGuid, guid))

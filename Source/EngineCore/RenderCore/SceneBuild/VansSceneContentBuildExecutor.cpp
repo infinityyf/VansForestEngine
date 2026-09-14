@@ -7,6 +7,8 @@
 #include "VansSceneMaterialBuilder.h"
 #include "VansSceneRenderNodeBuilder.h"
 #include "../VulkanCore/VansVKDevice.h"
+#include "../../PcgCore/Storage/VansPcgSplineFieldStorage.h"
+#include "../WaterCore/VansWaterGeometryClipmap.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -82,11 +84,41 @@ bool VansSceneContentBuildExecutor::BuildFromPlan(
 	if (!buildPlan.renderNodes.empty())
 		VansSceneRenderNodeBuilder::LoadRenderNodes(scene, nativeDevice, buildPlan.renderNodes);
 
+	if (buildPlan.splines)
+	{
+		std::string error;
+		auto field = Vans::VansPcgSplineFieldStorage::Load(
+			Vans::VansPcgSplineFieldStorage::CachePath(projectRoot,buildPlan.splineAssetGuid),
+			*buildPlan.splines,buildPlan.terrain->asset,error);
+		if (field) VANS_LOG("[PCG] Loaded baked spline fields.");
+		else field=Vans::VansPcgSplineFieldBuilder::Build(*buildPlan.splines, buildPlan.terrain->asset, {}, error);
+		VansWaterGeometryConfig geometry;
+		if (buildPlan.water)
+		{
+			const auto& source=buildPlan.water->geometry;
+			if (source.meshDim) geometry.m_MeshDim=*source.meshDim;
+			if (source.lodCount) geometry.m_LodCount=*source.lodCount;
+			if (source.basePatchSize) geometry.m_BasePatchSize=*source.basePatchSize;
+		}
+		if (!field || (buildPlan.water && !VansWaterGeometryClipmap::ValidateRiverFieldBudget(*field,geometry,error)) ||
+			!scene.PublishSplineField(field, error))
+		{
+			VANS_LOG_ERROR("[PCG] Spline field build failed: " << error);
+			return false;
+		}
+		scene.SetSplineAssetGuid(buildPlan.splineAssetGuid);
+	}
 	if (buildPlan.terrain)
-		VansSceneEnvironmentNodeBuilder::AddTerrainNode(scene, vkDevice, *buildPlan.terrain);
+	{
+		auto terrain = *buildPlan.terrain;
+		if (const auto& field = scene.GetSplineFieldSnapshot()) terrain.asset = field->effectiveTerrain;
+		VansSceneEnvironmentNodeBuilder::AddTerrainNode(scene, vkDevice, terrain);
+	}
 
-	if (buildPlan.vegetation)
-		VansSceneEnvironmentNodeBuilder::AddVegetationNode(scene, nativeDevice, *buildPlan.vegetation, projectRoot);
+	// 空集合不分配植被 GPU 批次，允许随后在编辑器中绑定用户新建的配方。
+	if (!VansSceneEnvironmentNodeBuilder::AddVegetationNode(scene, nativeDevice,
+		buildPlan.vegetation ? *buildPlan.vegetation : Vans::VansPcgRecipeAsset{}))
+		return false;
 
 	if (buildPlan.water)
 		VansSceneEnvironmentNodeBuilder::AddWaterNode(scene, nativeDevice, *buildPlan.water);

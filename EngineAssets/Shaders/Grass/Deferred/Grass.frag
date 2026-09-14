@@ -28,10 +28,10 @@ layout( push_constant ) uniform GrassDrawPC
     uint boneCount;
     uint subBladeCount;
     float grassHeight;
-    float terrainSize;
-    float terrainMaxHeight;
-    float terrainHeightOffset;
-    int terrainEnabled;
+
+
+
+
     float lodMidDist;
     float lodFarDist;
     float aoStrength;

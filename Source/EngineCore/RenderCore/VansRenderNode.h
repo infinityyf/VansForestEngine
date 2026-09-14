@@ -359,18 +359,17 @@ namespace VansGraphics
 	};
 
 	// ── Vegetation render node — GPU-driven grass (indirect draw) ──────────────
-	class VansVegetationSystem;
+	class VansVegetationCollection;
 	class VansVegetationRenderNode : public VansRenderNode
 	{
 	private:
-		VansVegetationSystem* m_VegetationSystem = nullptr;
+		VansVegetationCollection* m_VegetationCollection = nullptr;
 
 	public:
 		VansVegetationRenderNode(VkDevice& device, RenderNodeType type)
 			: VansRenderNode(device, type) {}
 
-		void SetVegetationSystem(VansVegetationSystem* system) { m_VegetationSystem = system; }
-		VansVegetationSystem* GetVegetationSystem() const { return m_VegetationSystem; }
+		void SetVegetationCollection(VansVegetationCollection* collection) { m_VegetationCollection = collection; }
 
 		void CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager) override;
 
@@ -380,7 +379,6 @@ namespace VansGraphics
 
 		void Draw(VansVKCommandBuffer& cmd, GlobalStateData& global_state) override;
 		void DrawShadow(VansVKCommandBuffer& cmd, GlobalStateData& global_state);
-		void DrawPunctualShadow(VansVKCommandBuffer& cmd, GlobalStateData& global_state, int shadowViewIndex);
 	};
 
 	// ── Water render node — flat grid plane at waterLevel, driven by VansWaterConfig ──

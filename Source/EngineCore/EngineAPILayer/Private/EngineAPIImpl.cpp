@@ -1,5 +1,7 @@
 #include "../../ParticleCore/Authoring/VansParticleAuthoringSchema.h"
 #include "EngineAPIImpl.h"
+#include "../../RenderCore/PcgCore/VansPcgSplineFieldResources.h"
+#include "../../RenderCore/WaterCore/VansWaterGeometryClipmap.h"
 
 #include "AnimationAuthoringBridge.h"
 #include "AnimationPreviewAttachmentAuthoringService.h"
@@ -40,6 +42,9 @@
 #include "../../AudioCore/VansAudioReverbPreset.h"
 #include "../../Configration/VansConfigration.h"
 #include "../../ProjectSystem/VansProjectManager.h"
+#include "../../EditorCore/Terrain/VansTerrainAuthoringSession.h"
+#include "../../EditorCore/VansAssetDocumentEditService.h"
+#include "../../EditorCore/VansEditorAssetSaveService.h"
 #include "../../RenderCore/VansCamera.h"
 #include "../../RenderCore/VansRenderSystem.h"
 #include "../../RenderCore/VansAnimationPreviewRenderer.h"
@@ -69,11 +74,13 @@
 #include "../../SceneCore/VansSceneLocalVolumetricFogComponentConfig.h"
 #include "../../SceneCore/VansSceneRuntimeProjection.h"
 #include "../../SceneCore/VansSceneSchema.h"
+#include "../../SceneCore/Serialization/VansVegetationConfigCodec.h"
 #include "../../SceneCore/VansSceneRuntimeComponentKey.h"
 #include "../../SceneCore/VansSceneParentReference.h"
 #include "../../SceneCore/VansSceneContentBuildPlan.h"
 #include "../../SceneCore/VansSceneResourceLoadContext.h"
 #include "../../SceneCore/VansAssetObjectBootstrapper.h"
+#include "../../PcgCore/VansPcgMaskAsset.h"
 #include "../../TimelineCore/VansTimelineTypes.h"
 #include "../../TimelineCore/VansTimelineSerialization.h"
 #include "../../Util/VansFileFingerprint.h"
@@ -901,6 +908,10 @@ namespace Vans::EditorAPI
 			case Vans::VansAssetType::UILocalization: return AssetType::UILocalization;
 			case Vans::VansAssetType::UIXaml: return AssetType::UIXaml;
 			case Vans::VansAssetType::VegetationConfig: return AssetType::VegetationConfig;
+			case Vans::VansAssetType::Terrain: return AssetType::Terrain;
+			case Vans::VansAssetType::PlantType: return AssetType::PlantType;
+			case Vans::VansAssetType::PcgMask: return AssetType::PcgMask;
+			case Vans::VansAssetType::PcgSpline: return AssetType::PcgSpline;
 			default: return AssetType::Unknown;
 			}
 		}
@@ -2446,11 +2457,6 @@ namespace Vans::EditorAPI
 			settings.thinSSSEnabled = source.m_SSS.m_Enabled;
 			settings.maxThicknessDistance = source.m_SSS.m_MaxThicknessDistance;
 			settings.deepWaterThicknessFallback = source.m_SSS.m_DeepWaterThicknessFallback;
-			settings.causticsEnabled = source.m_Caustics.m_Enabled;
-			settings.causticsIntensity = source.m_Caustics.m_Intensity;
-			settings.causticsMaxDistance = source.m_Caustics.m_MaxDistance;
-			settings.causticsMaxGain = source.m_Caustics.m_MaxGain;
-			settings.causticsFilterRadius = source.m_Caustics.m_FilterRadius;
 			settings.refractionEnabled = source.m_Refraction.m_Enabled;
 			settings.refractionDistortionStrength = source.m_Refraction.m_DistortionStrength;
 			settings.ssrEnabled = source.m_SSR.m_Enabled;
@@ -2576,11 +2582,6 @@ namespace Vans::EditorAPI
 			destination.m_SSS.m_Enabled = settings.thinSSSEnabled;
 			destination.m_SSS.m_MaxThicknessDistance = settings.maxThicknessDistance;
 			destination.m_SSS.m_DeepWaterThicknessFallback = settings.deepWaterThicknessFallback;
-			destination.m_Caustics.m_Enabled = settings.causticsEnabled;
-			destination.m_Caustics.m_Intensity = settings.causticsIntensity;
-			destination.m_Caustics.m_MaxDistance = settings.causticsMaxDistance;
-			destination.m_Caustics.m_MaxGain = settings.causticsMaxGain;
-			destination.m_Caustics.m_FilterRadius = settings.causticsFilterRadius;
 			destination.m_Refraction.m_Enabled = settings.refractionEnabled;
 			destination.m_Refraction.m_DistortionStrength = settings.refractionDistortionStrength;
 			destination.m_SSR.m_Enabled = settings.ssrEnabled;
@@ -2876,13 +2877,6 @@ namespace Vans::EditorAPI
 					{ "enabled", ScenePropertyValues::Bool(config.m_SSS.m_Enabled) },
 					{ "maxThickness", ScenePropertyValues::Float(config.m_SSS.m_MaxThicknessDistance) },
 					{ "deepFallback", ScenePropertyValues::Float(config.m_SSS.m_DeepWaterThicknessFallback) }
-				}) },
-				{ "caustics", ScenePropertyValues::Object({
-					{ "enabled", ScenePropertyValues::Bool(config.m_Caustics.m_Enabled) },
-					{ "intensity", ScenePropertyValues::Float(config.m_Caustics.m_Intensity) },
-					{ "maxDistance", ScenePropertyValues::Float(config.m_Caustics.m_MaxDistance) },
-					{ "maxGain", ScenePropertyValues::Float(config.m_Caustics.m_MaxGain) },
-					{ "filterRadius", ScenePropertyValues::Float(config.m_Caustics.m_FilterRadius) }
 				}) },
 				{ "refraction", ScenePropertyValues::Object({
 					{ "enabled", ScenePropertyValues::Bool(config.m_Refraction.m_Enabled) },
@@ -3568,6 +3562,10 @@ namespace Vans::EditorAPI
 		m_Device = device;
 		if (runtimeChanged)
 		{
+			SelectPcgBrushTarget({}, false);
+			m_PcgSceneRecipeGuid.clear();
+			m_TerrainAuthoringSession.reset();
+			m_TerrainStrokeActive = false;
 			m_UndoStack.clear();
 			m_RedoStack.clear();
 			m_AllowNextCommandMerge = true;
@@ -4702,10 +4700,52 @@ namespace Vans::EditorAPI
 				result.message = "Refreshed asset is missing from the asset database";
 				return result;
 			}
+			if (refreshedRecord->type == Vans::VansAssetType::Terrain)
+			{
+				const auto terrain = Vans::VansProjectManager::Get().GetAssetObjectRepository()
+					.ResolveLatest<Vans::VansTerrainAsset>(refreshedRecord->guid);
+				if (terrain)
+				{
+					const std::array<Vans::VansAssetGuid, 3> images{
+						terrain->heightmap, terrain->splatmaps[0], terrain->splatmaps[1] };
+					for (const Vans::VansAssetGuid image : images)
+					{
+						const auto imageRecord = database->Find(image);
+						if (!imageRecord || !database->RegisterOrRefresh(
+							imageRecord->sourcePath,
+							VansAssetOperationPolicy::ReadOnly(), refreshError))
+						{
+							result.success = false;
+							result.message = "Terrain image refresh failed: " + refreshError;
+							return result;
+						}
+					}
+				}
+			}
+			std::vector<Vans::VansAssetRecord> bootstrapRecords = refreshedRecord->type == Vans::VansAssetType::Terrain
+				? database->All() : std::vector<Vans::VansAssetRecord>{ *refreshedRecord };
+			std::vector<Vans::VansAssetRecord> resourceRecords;
+			if (refreshedRecord->type == Vans::VansAssetType::PcgMask)
+			{
+				const auto mask = Vans::VansProjectManager::Get().GetAssetObjectRepository()
+					.ResolveLatest<Vans::VansPcgMaskAsset>(refreshedRecord->guid);
+				if (mask)
+				{
+					const auto pixels = database->Find(mask->pixelAsset);
+					if (!pixels || !database->RegisterOrRefresh(pixels->sourcePath, VansAssetOperationPolicy::ReadOnly(), refreshError))
+					{
+						result.success = false;
+						result.message = "PCG Mask pixel refresh failed: " + refreshError;
+						return result;
+					}
+					const auto refreshedPixels = database->Find(mask->pixelAsset);
+					if (refreshedPixels) bootstrapRecords.push_back(*refreshedPixels);
+				}
+				resourceRecords = database->All();
+			}
 			const Vans::VansAssetObjectBootstrapResult bootstrap =
-				Vans::VansAssetObjectBootstrapper::Publish(
-					{ *refreshedRecord },
-					Vans::VansProjectManager::Get().GetAssetObjectRepository());
+				Vans::VansAssetObjectBootstrapper::Publish(bootstrapRecords,
+					Vans::VansProjectManager::Get().GetAssetObjectRepository(), resourceRecords);
 			if (!bootstrap)
 			{
 				result.success = false;
@@ -5560,6 +5600,15 @@ namespace Vans::EditorAPI
 			RenderTexturePreview preview = BuildWaterTexturePreview(filter);
 			if (preview.texture)
 				previews.push_back(preview);
+			return previews;
+		}
+		if (filter.category == "pcg_splines")
+		{
+			const auto* scene=static_cast<VansGraphics::VansScene*>(m_Scene);
+			const auto* fields=scene?scene->GetSplineFieldResources():nullptr;
+			const char* names[]={"Height (road / river)","Velocity (world X / Z)","Coverage (road / river / terrain)","River coordinates and weights","River coordinate Jacobians","Spline vegetation exclusion"};
+			if (fields) for(std::size_t i=0;i<6;++i) if(auto* texture=fields->Texture(i))
+				previews.push_back(BuildImagePreview(device,380+i,names[i],texture->GetImage(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_NULL_HANDLE,true));
 			return previews;
 		}
 
@@ -7260,8 +7309,6 @@ namespace Vans::EditorAPI
 			return build(203, "Reflection", waterSystem->GetReflectionImage(), 0u);
 		if (textureName == "refraction")
 			return build(204, "Refraction", waterSystem->GetRefractionImage(), 0u);
-		if (textureName == "caustics")
-			return build(205, "Caustics", waterSystem->GetCausticsImage(), 0u);
 		if (textureName == "thickness")
 			return build(206, "Thickness", waterSystem->GetThicknessImage(), 0u);
 		if (textureName == "background_pyramid")
@@ -7317,6 +7364,12 @@ namespace Vans::EditorAPI
 		const VansGraphics::VansWaterConfig previousConfig = destinationConfig;
 		VansGraphics::VansWaterConfig nextConfig = previousConfig;
 		ApplyWaterSettingsToConfig(settings, nextConfig);
+		if (const auto field=scene->GetSplineFieldSnapshot())
+		{
+			std::string error;
+			if (!VansGraphics::VansWaterGeometryClipmap::ValidateRiverFieldBudget(*field,nextConfig.m_Geometry,error))
+			{ VANS_LOG_ERROR("[Water] " << error); return; }
+		}
 
 		auto* waterSystem = scene->GetWaterSystem();
 
@@ -7809,6 +7862,12 @@ namespace Vans::EditorAPI
 	RuntimeSceneLoadResult EngineAPIImpl::LoadRuntimeScene(const RuntimeSceneLoadRequest& request)
 	{
 		RuntimeSceneLoadResult result;
+		const auto splineFinished=FinishPcgSplineEdit();
+		if (!splineFinished.success)
+		{
+			result.diagnostics.push_back({"pcg_spline_edit_incomplete",splineFinished.message});
+			return result;
+		}
 		result.requestedMode = request.mode;
 		result.contentRevision = m_SceneContentRevision;
 
@@ -7901,6 +7960,13 @@ namespace Vans::EditorAPI
 			request.mode == RuntimeSceneLoadMode::Runtime
 				? VansGraphics::VansSceneLoadMode::Runtime
 				: VansGraphics::VansSceneLoadMode::Editor;
+		const auto pcgFinished = SelectPcgBrushTarget({}, false);
+		if (!pcgFinished.success)
+		{
+			result.diagnostics.push_back({ "pcg_stroke_failed", pcgFinished.message });
+			return result;
+		}
+		m_PcgSceneRecipeGuid.clear();
 		if (!scene->LoadSceneForRendering(sceneDocument, sceneSourcePath, device, runtimeMode) || !scene->IsSceneReady())
 		{
 			result.finalState = scene->IsSceneReady()
@@ -7913,11 +7979,17 @@ namespace Vans::EditorAPI
 		result.success = true;
 		result.finalState = RuntimeSceneLoadFinalState::Ready;
 		result.contentRevision = ++m_SceneContentRevision;
+		if (const auto* settings = Vans::FindObjectField(sceneDocument, "settings"))
+			if (const auto* vegetation = Vans::FindObjectField(*settings, "vegetation"))
+				m_PcgSceneRecipeGuid = Vans::VansVegetationConfigCodec::ReadReferenceGuid(*vegetation);
 		return result;
 	}
 
 	void EngineAPIImpl::UnloadRuntimeScene()
 	{
+		const auto pcgFinished = SelectPcgBrushTarget({}, false);
+		if (!pcgFinished.success) { VANS_LOG_ERROR("[PCG] " << pcgFinished.message); return; }
+		m_PcgSceneRecipeGuid.clear();
 		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
 		if (!scene)
 			return;
@@ -10164,35 +10236,80 @@ namespace Vans::EditorAPI
 		GetAnimationPreviewSessions().erase(found);
 	}
 
+	std::shared_ptr<Vans::VansTerrainAuthoringSession>
+	EngineAPIImpl::EnsureTerrainAuthoringSession(std::string& error) const
+	{
+		error.clear();
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		VansGraphics::VansTerrain* terrain = GetRuntimeTerrain(scene);
+		if (!terrain || !terrain->GetAssetGuid().IsValid())
+		{
+			error = "Scene has no editable terrain asset";
+			return {};
+		}
+		if (m_TerrainAuthoringSession &&
+			m_TerrainAuthoringSession->WorkingAsset().sourcePath ==
+				terrain->GetAssetSnapshot()->sourcePath)
+			return m_TerrainAuthoringSession;
+
+		auto& project = Vans::VansProjectManager::Get();
+		const auto record = project.FindAssetRecord(terrain->GetAssetGuid());
+		const auto asset = project.GetAssetObjectRepository()
+			.ResolveLatest<Vans::VansTerrainAsset>(terrain->GetAssetGuid());
+		if (!record || record->type != Vans::VansAssetType::Terrain || !asset)
+		{
+			error = "Terrain asset is not indexed or has no memory snapshot";
+			return {};
+		}
+		std::array<std::filesystem::path, 3> imagePaths;
+		const std::array<Vans::VansAssetGuid, 3> imageGuids{
+			asset->heightmap, asset->splatmaps[0], asset->splatmaps[1] };
+		for (std::size_t index = 0; index < imageGuids.size(); ++index)
+		{
+			const auto imageRecord = project.FindAssetRecord(imageGuids[index]);
+			if (!imageRecord || imageRecord->type != Vans::VansAssetType::Texture ||
+				imageRecord->state == Vans::VansAssetState::Missing)
+			{
+				error = "Terrain image dependency is missing: " + imageGuids[index].ToString();
+				return {};
+			}
+			imagePaths[index] = imageRecord->sourcePath;
+		}
+		m_TerrainAuthoringSession = Vans::VansTerrainAuthoringSession::Open(
+			*record, asset, std::move(imagePaths),
+			project.GetAssetObjectRepository(), error);
+		return m_TerrainAuthoringSession;
+	}
+
 	TerrainSettingsSnapshot EngineAPIImpl::GetTerrainSettings() const
 	{
 		TerrainSettingsSnapshot snapshot;
-		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
-		auto* terrain = GetRuntimeTerrain(scene);
-		if (!terrain)
+		std::string error;
+		const auto session = EnsureTerrainAuthoringSession(error);
+		if (!session)
 			return snapshot;
-
+		const Vans::VansTerrainAssetSettings& settings = session->WorkingAsset().settings;
 		snapshot.available = true;
-		snapshot.tessellationEnabled = terrain->IsTessellationEnabled();
-		snapshot.tessellationDistance = terrain->GetTessellationDistance();
-		snapshot.maxTessellationLevel = terrain->GetMaxTessellationLevel();
-		snapshot.tessellationPower = terrain->GetTessellationPower();
-		snapshot.tessLodBias = terrain->GetTessLodBias();
-		snapshot.noiseDetailEnabled = terrain->IsNoiseDetailEnabled();
-		snapshot.noiseStrength = terrain->GetNoiseStrength();
-		snapshot.noiseFrequency = terrain->GetNoiseFrequency();
-		snapshot.noiseOctaves = terrain->GetNoiseOctaves();
-		snapshot.noiseGain = terrain->GetNoiseGain();
-		snapshot.noiseLacunarity = terrain->GetNoiseLacunarity();
-		snapshot.noiseWarpStrength = terrain->GetNoiseWarpStrength();
-		snapshot.noiseFadeStart = terrain->GetNoiseFadeStart();
-		snapshot.terrainSize = terrain->GetTerrainSize();
-		snapshot.splitDistMult = terrain->GetSplitDistMult();
-		snapshot.lodDistanceRatio = terrain->GetLodDistanceRatio();
+		snapshot.tessellationEnabled = settings.tessellationEnabled;
+		snapshot.tessellationDistance = settings.tessellationDistance;
+		snapshot.maxTessellationLevel = settings.maxTessellationLevel;
+		snapshot.tessellationTargetPixels = settings.tessellationTargetPixels;
+		snapshot.noiseDetailEnabled = settings.noiseDetailEnabled;
+		snapshot.noiseStrength = settings.noiseStrength;
+		snapshot.noiseFrequency = settings.noiseFrequency;
+		snapshot.noiseOctaves = settings.noiseOctaves;
+		snapshot.noiseGain = settings.noiseGain;
+		snapshot.noiseLacunarity = settings.noiseLacunarity;
+		snapshot.noiseWarpStrength = settings.noiseWarpStrength;
+		snapshot.noiseFadeStart = settings.noiseFadeStart;
+		snapshot.terrainSize = settings.terrainSize;
+		snapshot.lodBaseDistance = settings.lodBaseDistance;
+		snapshot.lodRangeRatio = settings.lodRangeRatio;
+		snapshot.morphStartRatio = settings.morphStartRatio;
 		return snapshot;
 	}
 
-	void EngineAPIImpl::ApplyTerrainSettings(const TerrainSettingsSnapshot& settings)
+	void EngineAPIImpl::ApplyTerrainRuntimeSettings(const TerrainSettingsSnapshot& settings)
 	{
 		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
 		auto* terrain = GetRuntimeTerrain(scene);
@@ -10202,8 +10319,7 @@ namespace Vans::EditorAPI
 		terrain->SetTessellationEnabled(settings.tessellationEnabled);
 		terrain->SetTessellationDistance(settings.tessellationDistance);
 		terrain->SetMaxTessellationLevel(settings.maxTessellationLevel);
-		terrain->SetTessellationPower(settings.tessellationPower);
-		terrain->SetTessLodBias(settings.tessLodBias);
+		terrain->SetTessellationTargetPixels(settings.tessellationTargetPixels);
 		terrain->SetNoiseDetailEnabled(settings.noiseDetailEnabled);
 		terrain->SetNoiseStrength(settings.noiseStrength);
 		terrain->SetNoiseFrequency(settings.noiseFrequency);
@@ -10212,8 +10328,421 @@ namespace Vans::EditorAPI
 		terrain->SetNoiseLacunarity(settings.noiseLacunarity);
 		terrain->SetNoiseWarpStrength(settings.noiseWarpStrength);
 		terrain->SetNoiseFadeStart(settings.noiseFadeStart);
-		terrain->SetSplitDistMult(settings.splitDistMult);
-		terrain->SetLodDistanceRatio(settings.lodDistanceRatio);
+		terrain->SetLodBaseDistance(settings.lodBaseDistance);
+		terrain->SetLodRangeRatio(settings.lodRangeRatio);
+		terrain->SetMorphStartRatio(settings.morphStartRatio);
+	}
+
+	TerrainEditorOperationResult EngineAPIImpl::ApplyTerrainSettings(
+		const TerrainSettingsSnapshot& settings)
+	{
+		TerrainEditorOperationResult result;
+		if (m_PlayState != EnginePlayState::Edit)
+		{
+			result.message = "Terrain settings can be edited only in Edit mode";
+			return result;
+		}
+		std::string error;
+		const auto session = EnsureTerrainAuthoringSession(error);
+		if (!session)
+		{
+			result.message = std::move(error);
+			return result;
+		}
+		Vans::VansTerrainAssetSettings updated = session->WorkingAsset().settings;
+		updated.tessellationEnabled = settings.tessellationEnabled;
+		updated.tessellationDistance = settings.tessellationDistance;
+		updated.maxTessellationLevel = settings.maxTessellationLevel;
+		updated.tessellationTargetPixels = settings.tessellationTargetPixels;
+		updated.noiseDetailEnabled = settings.noiseDetailEnabled;
+		updated.noiseStrength = settings.noiseStrength;
+		updated.noiseFrequency = settings.noiseFrequency;
+		updated.noiseOctaves = settings.noiseOctaves;
+		updated.noiseGain = settings.noiseGain;
+		updated.noiseLacunarity = settings.noiseLacunarity;
+		updated.noiseWarpStrength = settings.noiseWarpStrength;
+		updated.noiseFadeStart = settings.noiseFadeStart;
+		updated.lodBaseDistance = settings.lodBaseDistance;
+		updated.lodRangeRatio = settings.lodRangeRatio;
+		updated.morphStartRatio = settings.morphStartRatio;
+		if (!session->ApplyDefinition(updated, error))
+		{
+			result.message = std::move(error);
+			return result;
+		}
+		ApplyTerrainRuntimeSettings(settings);
+		result.success = true;
+		return result;
+	}
+
+	TerrainEditorSnapshot EngineAPIImpl::GetTerrainEditorSnapshot() const
+	{
+		TerrainEditorSnapshot snapshot;
+		std::string error;
+		const auto session = EnsureTerrainAuthoringSession(error);
+		if (!session)
+		{
+			snapshot.message = std::move(error);
+			return snapshot;
+		}
+		const Vans::VansTerrainAsset& asset = session->WorkingAsset();
+		snapshot.available = true;
+		snapshot.editable = m_PlayState == EnginePlayState::Edit;
+		snapshot.brushEnabled = m_TerrainBrushConfiguration.enabled && snapshot.editable;
+		snapshot.dirty = session->Document()->IsDirty();
+		snapshot.canUndo = Vans::VansAssetDocumentEditService::CanUndo(
+			session->Document()->sourceDocument);
+		snapshot.canRedo = Vans::VansAssetDocumentEditService::CanRedo(
+			session->Document()->sourceDocument);
+		snapshot.assetGuid = GetRuntimeTerrain(static_cast<VansGraphics::VansScene*>(m_Scene))
+			->GetAssetGuid().ToString();
+		snapshot.sourcePath = asset.sourcePath.string();
+		snapshot.width = asset.width;
+		snapshot.height = asset.height;
+		snapshot.tool = m_TerrainBrushConfiguration.tool;
+		snapshot.radius = m_TerrainBrushConfiguration.radius;
+		snapshot.strength = m_TerrainBrushConfiguration.strength;
+		snapshot.hardness = m_TerrainBrushConfiguration.hardness;
+		snapshot.pattern = m_TerrainBrushConfiguration.pattern;
+		snapshot.rotationRadians = m_TerrainBrushConfiguration.rotationRadians;
+		snapshot.flattenHeight = m_TerrainBrushConfiguration.flattenHeight;
+		snapshot.selectedLayer = m_TerrainBrushConfiguration.selectedLayer;
+		for (std::uint32_t index = 0; index < asset.layers.size(); ++index)
+			snapshot.layers.push_back({ index, asset.layers[index].id, asset.layers[index].name });
+		return snapshot;
+	}
+
+	TerrainEditorOperationResult EngineAPIImpl::ConfigureTerrainBrush(
+		const TerrainBrushConfiguration& configuration)
+	{
+		TerrainEditorOperationResult result;
+		std::string error;
+		const auto session = EnsureTerrainAuthoringSession(error);
+		if (!session)
+		{
+			result.message = std::move(error);
+			return result;
+		}
+		if (m_PlayState != EnginePlayState::Edit)
+		{
+			result.message = "Terrain editing is available only in Edit mode";
+			return result;
+		}
+		if (!std::isfinite(configuration.radius) || configuration.radius <= 0.0f ||
+			!std::isfinite(configuration.strength) || configuration.strength < 0.0f || configuration.strength > 1.0f ||
+			!std::isfinite(configuration.hardness) || configuration.hardness < 0.0f || configuration.hardness > 1.0f ||
+			!std::isfinite(configuration.rotationRadians) ||
+			!std::isfinite(configuration.flattenHeight) || configuration.flattenHeight < 0.0f || configuration.flattenHeight > 1.0f ||
+			configuration.selectedLayer >= session->WorkingAsset().layers.size())
+		{
+			result.message = "Terrain brush configuration is outside its valid range";
+			return result;
+		}
+		if (m_TerrainStrokeActive &&
+			(!configuration.enabled ||
+			 configuration.tool != m_TerrainBrushConfiguration.tool ||
+			 configuration.selectedLayer != m_TerrainBrushConfiguration.selectedLayer))
+		{
+			if (!session->EndStroke(error))
+			{
+				result.message = std::move(error);
+				return result;
+			}
+			m_TerrainStrokeActive = false;
+			QueueTerrainPixelChange();
+		}
+		if (configuration.enabled)
+		{
+			const auto pcgFinished = SelectPcgBrushTarget({}, false);
+			if (!pcgFinished.success) { result.message = pcgFinished.message; return result; }
+		}
+		m_TerrainBrushConfiguration = configuration;
+		result.success = true;
+		return result;
+	}
+
+	namespace
+	{
+		Vans::VansTerrainBrushPattern ToTerrainBrushPattern(TerrainBrushPattern pattern)
+		{
+			switch (pattern)
+			{
+			case TerrainBrushPattern::SmoothCircle: return Vans::VansTerrainBrushPattern::SmoothCircle;
+			case TerrainBrushPattern::LinearCircle: return Vans::VansTerrainBrushPattern::LinearCircle;
+			case TerrainBrushPattern::Sphere: return Vans::VansTerrainBrushPattern::Sphere;
+			case TerrainBrushPattern::Tip: return Vans::VansTerrainBrushPattern::Tip;
+			case TerrainBrushPattern::SoftSquare: return Vans::VansTerrainBrushPattern::SoftSquare;
+			case TerrainBrushPattern::Ridge: return Vans::VansTerrainBrushPattern::Ridge;
+			case TerrainBrushPattern::Crater: return Vans::VansTerrainBrushPattern::Crater;
+			case TerrainBrushPattern::Rocky: return Vans::VansTerrainBrushPattern::Rocky;
+			}
+			return Vans::VansTerrainBrushPattern::SmoothCircle;
+		}
+
+		Vans::VansTerrainBrushOperation ToTerrainBrushOperation(
+			TerrainBrushTool tool, bool invert)
+		{
+			if (invert && tool == TerrainBrushTool::Raise) tool = TerrainBrushTool::Lower;
+			else if (invert && tool == TerrainBrushTool::Lower) tool = TerrainBrushTool::Raise;
+			else if (invert && tool == TerrainBrushTool::PaintLayer) tool = TerrainBrushTool::EraseLayer;
+			else if (invert && tool == TerrainBrushTool::EraseLayer) tool = TerrainBrushTool::PaintLayer;
+			switch (tool)
+			{
+			case TerrainBrushTool::Raise: return Vans::VansTerrainBrushOperation::Raise;
+			case TerrainBrushTool::Lower: return Vans::VansTerrainBrushOperation::Lower;
+			case TerrainBrushTool::SmoothHeight: return Vans::VansTerrainBrushOperation::SmoothHeight;
+			case TerrainBrushTool::Flatten: return Vans::VansTerrainBrushOperation::Flatten;
+			case TerrainBrushTool::Noise: return Vans::VansTerrainBrushOperation::Noise;
+			case TerrainBrushTool::PaintLayer: return Vans::VansTerrainBrushOperation::PaintLayer;
+			case TerrainBrushTool::EraseLayer: return Vans::VansTerrainBrushOperation::EraseLayer;
+			case TerrainBrushTool::SmoothWeights: return Vans::VansTerrainBrushOperation::SmoothWeights;
+			}
+			return Vans::VansTerrainBrushOperation::Raise;
+		}
+	}
+
+	void EngineAPIImpl::QueueTerrainPixelChange()
+	{
+		if (!m_TerrainAuthoringSession)
+			return;
+		const auto change = m_TerrainAuthoringSession->TakePendingPixelChange();
+		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+		auto* terrain = GetRuntimeTerrain(scene);
+		if (!change || !scene || !terrain)
+			return;
+		const Vans::VansTerrainAsset& asset = m_TerrainAuthoringSession->WorkingAsset();
+		const auto appendUpload = [&](VansGraphics::VansRenderTerrainTexture texture,
+			const void* pixels, std::size_t bytesPerPixel)
+		{
+			VansGraphics::VansRenderTerrainRegionUpload upload;
+			upload.assetGuid = terrain->GetAssetGuid().ToString();
+			upload.texture = texture;
+			upload.x = change->rect.minX;
+			upload.y = change->rect.minY;
+			upload.width = change->rect.Width();
+			upload.height = change->rect.Height();
+			upload.bytes.resize(static_cast<std::size_t>(upload.width) * upload.height * bytesPerPixel);
+			const auto* source = static_cast<const std::uint8_t*>(pixels);
+			for (std::uint32_t row = 0; row < upload.height; ++row)
+			{
+				const std::size_t sourceOffset =
+					(static_cast<std::size_t>(upload.y + row) * asset.width + upload.x) * bytesPerPixel;
+				const std::size_t destinationOffset = static_cast<std::size_t>(row) * upload.width * bytesPerPixel;
+				std::memcpy(upload.bytes.data() + destinationOffset,
+					source + sourceOffset, static_cast<std::size_t>(upload.width) * bytesPerPixel);
+			}
+			scene->QueueTerrainRegionUpload(std::move(upload));
+		};
+		if (change->height && scene->GetSplineAssetGuid().IsValid())
+		{
+			TickPcgSplineAuthoring();
+			RequestPcgSplinePreview();
+		}
+		else if (change->height)
+			appendUpload(VansGraphics::VansRenderTerrainTexture::Height,
+				asset.heights.data(), sizeof(std::uint16_t));
+		if (change->splat0)
+			appendUpload(VansGraphics::VansRenderTerrainTexture::Splat0,
+				asset.splatPixels[0].data(), sizeof(std::uint8_t) * 4u);
+		if (change->splat1)
+			appendUpload(VansGraphics::VansRenderTerrainTexture::Splat1,
+				asset.splatPixels[1].data(), sizeof(std::uint8_t) * 4u);
+	}
+
+	TerrainBrushInputResult EngineAPIImpl::ApplyTerrainBrushInput(
+		const TerrainBrushInput& input)
+	{
+		TerrainBrushInputResult result;
+		std::string error;
+		const auto session = EnsureTerrainAuthoringSession(error);
+		if (!session || m_PlayState != EnginePlayState::Edit || !m_TerrainBrushConfiguration.enabled)
+		{
+			result.message = session ? "Terrain brush is disabled in the current editor mode" : std::move(error);
+			return result;
+		}
+		std::array<float, 3> hit{};
+		float pixelX = 0.0f;
+		float pixelY = 0.0f;
+		result.hit = session->Raycast(
+			{ input.ray.origin.x, input.ray.origin.y, input.ray.origin.z },
+			{ input.ray.direction.x, input.ray.direction.y, input.ray.direction.z },
+			hit, pixelX, pixelY);
+		result.success = true;
+		if (result.hit)
+			result.worldPosition = { hit[0], hit[1], hit[2] };
+
+		if (input.phase == TerrainBrushInputPhase::End)
+		{
+			if (m_TerrainStrokeActive && !session->EndStroke(error))
+			{
+				result.success = false;
+				result.message = std::move(error);
+			}
+			m_TerrainStrokeActive = false;
+			QueueTerrainPixelChange();
+			return result;
+		}
+		if (input.phase == TerrainBrushInputPhase::Hover || !result.hit)
+			return result;
+
+		const Vans::VansTerrainBrushOperation requestedOperation =
+			ToTerrainBrushOperation(m_TerrainBrushConfiguration.tool, input.invert);
+		if (input.phase == TerrainBrushInputPhase::Begin)
+		{
+			if (m_TerrainStrokeActive)
+			{
+				if (!session->EndStroke(error))
+				{
+					result.success = false;
+					result.message = std::move(error);
+					return result;
+				}
+				m_TerrainStrokeActive = false;
+				QueueTerrainPixelChange();
+			}
+			if (!session->BeginStroke(requestedOperation, error))
+			{
+				result.success = false;
+				result.message = std::move(error);
+				return result;
+			}
+			m_TerrainStrokeActive = true;
+			m_ActiveTerrainStrokeTool = m_TerrainBrushConfiguration.tool;
+			m_TerrainStrokeLastPixelX = pixelX;
+			m_TerrainStrokeLastPixelY = pixelY;
+			++m_TerrainStrokeSeed;
+		}
+		if (!m_TerrainStrokeActive)
+			return result;
+
+		const Vans::VansTerrainBrushOperation operation =
+			ToTerrainBrushOperation(m_ActiveTerrainStrokeTool, input.invert);
+		const float radiusPixels = m_TerrainBrushConfiguration.radius /
+			session->WorkingAsset().settings.terrainSize *
+			static_cast<float>(session->WorkingAsset().width - 1u);
+		const float dx = pixelX - m_TerrainStrokeLastPixelX;
+		const float dy = pixelY - m_TerrainStrokeLastPixelY;
+		const float distance = std::sqrt(dx * dx + dy * dy);
+		const float spacing = std::max(radiusPixels * 0.2f, 1.0f);
+		const std::uint32_t dabCount = input.phase == TerrainBrushInputPhase::Begin
+			? 1u
+			: std::clamp(static_cast<std::uint32_t>(std::ceil(distance / spacing)), 1u, 64u);
+		const float frameScale = std::clamp(
+			std::isfinite(input.deltaTimeSeconds) ? input.deltaTimeSeconds * 60.0f : 1.0f,
+			0.25f, 4.0f);
+		for (std::uint32_t index = 1; index <= dabCount; ++index)
+		{
+			const float t = input.phase == TerrainBrushInputPhase::Begin
+				? 1.0f : static_cast<float>(index) / static_cast<float>(dabCount);
+			Vans::VansTerrainBrushDab dab;
+			dab.operation = operation;
+			dab.centerX = m_TerrainStrokeLastPixelX + dx * t;
+			dab.centerY = m_TerrainStrokeLastPixelY + dy * t;
+			dab.radius = radiusPixels;
+			dab.strength = std::min(1.0f,
+				m_TerrainBrushConfiguration.strength * frameScale /
+				static_cast<float>(dabCount));
+			dab.hardness = m_TerrainBrushConfiguration.hardness;
+			dab.pattern = ToTerrainBrushPattern(m_TerrainBrushConfiguration.pattern);
+			dab.rotationRadians = m_TerrainBrushConfiguration.rotationRadians;
+			dab.targetHeight = m_TerrainBrushConfiguration.flattenHeight;
+			dab.selectedLayer = m_TerrainBrushConfiguration.selectedLayer;
+			dab.weightBaseLayer = 0;
+			dab.noiseSeed = m_TerrainStrokeSeed;
+			const Vans::VansTerrainBrushResult applied = session->ApplyDab(dab);
+			if (!applied)
+			{
+				result.success = false;
+				result.message = applied.error;
+				return result;
+			}
+			result.changed |= applied.changed;
+		}
+		m_TerrainStrokeLastPixelX = pixelX;
+		m_TerrainStrokeLastPixelY = pixelY;
+		QueueTerrainPixelChange();
+		return result;
+	}
+
+	TerrainEditorOperationResult EngineAPIImpl::UndoTerrainEdit()
+	{
+		TerrainEditorOperationResult result;
+		if (m_PlayState != EnginePlayState::Edit)
+		{
+			result.message = "Terrain editing is available only in Edit mode";
+			return result;
+		}
+		std::string error;
+		const auto session = EnsureTerrainAuthoringSession(error);
+		if (!session) { result.message = std::move(error); return result; }
+		const Vans::AssetDocumentEditResult edit = Vans::VansAssetDocumentEditService::Undo(
+			session->Document()->sourceDocument);
+		if (!edit) { result.message = edit.message; return result; }
+		if (!session->SyncDefinitionFromDocument(error)) { result.message = std::move(error); return result; }
+		QueueTerrainPixelChange();
+		ApplyTerrainRuntimeSettings(GetTerrainSettings());
+		result.success = true;
+		return result;
+	}
+
+	TerrainEditorOperationResult EngineAPIImpl::RedoTerrainEdit()
+	{
+		TerrainEditorOperationResult result;
+		if (m_PlayState != EnginePlayState::Edit)
+		{
+			result.message = "Terrain editing is available only in Edit mode";
+			return result;
+		}
+		std::string error;
+		const auto session = EnsureTerrainAuthoringSession(error);
+		if (!session) { result.message = std::move(error); return result; }
+		const Vans::AssetDocumentEditResult edit = Vans::VansAssetDocumentEditService::Redo(
+			session->Document()->sourceDocument);
+		if (!edit) { result.message = edit.message; return result; }
+		if (!session->SyncDefinitionFromDocument(error)) { result.message = std::move(error); return result; }
+		QueueTerrainPixelChange();
+		ApplyTerrainRuntimeSettings(GetTerrainSettings());
+		result.success = true;
+		return result;
+	}
+
+	TerrainEditorOperationResult EngineAPIImpl::RevertTerrainEdits()
+	{
+		TerrainEditorOperationResult result;
+		if (m_PlayState != EnginePlayState::Edit)
+		{
+			result.message = "Terrain editing is available only in Edit mode";
+			return result;
+		}
+		std::string error;
+		const auto session = EnsureTerrainAuthoringSession(error);
+		if (!session) { result.message = std::move(error); return result; }
+		const Vans::AssetDocumentEditResult edit = Vans::VansAssetDocumentEditService::RevertToSaved(
+			session->Document()->sourceDocument);
+		if (!edit) { result.message = edit.message; return result; }
+		if (!session->SyncDefinitionFromDocument(error)) { result.message = std::move(error); return result; }
+		QueueTerrainPixelChange();
+		ApplyTerrainRuntimeSettings(GetTerrainSettings());
+		result.success = true;
+		return result;
+	}
+
+	TerrainEditorOperationResult EngineAPIImpl::SaveTerrainAsset()
+	{
+		TerrainEditorOperationResult result;
+		if (m_PlayState != EnginePlayState::Edit)
+		{
+			result.message = "Terrain authoring assets can be saved only in Edit mode";
+			return result;
+		}
+		std::string error;
+		const auto session = EnsureTerrainAuthoringSession(error);
+		if (!session) { result.message = std::move(error); return result; }
+		const Vans::VansAssetSaveResult saved =
+			Vans::VansEditorAssetSaveService::Get().SaveAsset(*this, session->Document());
+		result.success = static_cast<bool>(saved);
+		result.message = saved.message;
+		return result;
 	}
 
 	bool EngineAPIImpl::ApplyRuntimeEntityPreviewChange(const RuntimeEntityPreviewChange& change)
@@ -10920,6 +11449,22 @@ namespace Vans::EditorAPI
 			return;
 
 		const EnginePlayState previousState = m_PlayState;
+		if (previousState == EnginePlayState::Edit && state != EnginePlayState::Edit)
+		{
+			const auto splineFinished=FinishPcgSplineEdit();
+			if (!splineFinished.success) { VANS_LOG_ERROR("[PCG] " << splineFinished.message); return; }
+			const auto pcgFinished = SelectPcgBrushTarget({}, false);
+			if (!pcgFinished.success) { VANS_LOG_ERROR("[PCG] " << pcgFinished.message); return; }
+		}
+		if (previousState == EnginePlayState::Edit && state != EnginePlayState::Edit &&
+			m_TerrainStrokeActive && m_TerrainAuthoringSession)
+		{
+			std::string error;
+			if (!m_TerrainAuthoringSession->EndStroke(error))
+				VANS_LOG_ERROR("[TerrainEditor] " << error);
+			m_TerrainStrokeActive = false;
+			QueueTerrainPixelChange();
+		}
 		m_PlayState = state;
 		// 编辑器 Play 仍与完整编辑器 UI 共用一个原生窗口。GLFW 的捕获模式会
 		// 同时锁定并隐藏系统光标，因此编辑器内始终禁止脚本开启捕获；独立运行时

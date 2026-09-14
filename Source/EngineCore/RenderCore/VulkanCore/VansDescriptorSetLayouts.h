@@ -343,8 +343,8 @@ namespace VansGraphics
 		TERRAIN_BINDING_NORMAL_ARRAY        = 4,  // descriptorCount = 8
 		TERRAIN_BINDING_ROUGHNESS_ARRAY     = 5,  // descriptorCount = 8
 		TERRAIN_BINDING_PARAMS_UBO          = 6,
-		TERRAIN_BINDING_TESSELLATION_PARAMS = 7,  // TessellationParams UBO (read by TCS + TES)
-		TERRAIN_BINDING_NOISE_DETAIL_PARAMS = 8,  // NoiseDetailParams UBO (read by TES + FS)
+		TERRAIN_BINDING_TESSELLATION_PARAMS = 7,
+		TERRAIN_BINDING_NOISE_DETAIL_PARAMS = 8,
 	};
 
 	static constexpr uint32_t TERRAIN_MAX_LAYERS = 8;
@@ -602,14 +602,13 @@ namespace VansGraphics
 		WATER_COMP_BINDING_SCENE_GBUF2   = 3,   // 主场景 GBuffer2（worldPos.xyz + linearDepth.w）
 		WATER_COMP_BINDING_REFLECTION    = 4,   // WaterSSR/反射结果
 		WATER_COMP_BINDING_REFRACTION_DATA = 5, // xy=uvOffset, z=refracted depth, w=isWater
-		WATER_COMP_BINDING_CAUSTICS      = 6,   // 焦散结果
-		WATER_COMP_BINDING_GBUF_SCATTER  = 7,
-		WATER_COMP_BINDING_GBUF_ABSORPTION = 8,
-		WATER_COMP_BINDING_VOLUME_COLOR  = 9,
-		WATER_COMP_BINDING_VOLUME_TRANSMITTANCE = 10,
-		WATER_COMP_BINDING_VOLUME_DEPTH  = 11,
-		WATER_COMP_BINDING_SCENE_COLOR   = 12,
-		WATER_COMP_BINDING_CASCADE_SHADOW = 13,
+		WATER_COMP_BINDING_GBUF_SCATTER  = 6,
+		WATER_COMP_BINDING_GBUF_ABSORPTION = 7,
+		WATER_COMP_BINDING_VOLUME_COLOR  = 8,
+		WATER_COMP_BINDING_VOLUME_TRANSMITTANCE = 9,
+		WATER_COMP_BINDING_VOLUME_DEPTH  = 10,
+		WATER_COMP_BINDING_SCENE_COLOR   = 11,
+		WATER_COMP_BINDING_CASCADE_SHADOW = 12,
 	};
 
 	// --- Hair Composite Pass（Set 1）---
@@ -661,21 +660,6 @@ namespace VansGraphics
 		WATER_REFRACTION_BINDING_REFRACTION_DATA_OUT = 5,
 	};
 
-	// --- Water Caustics Compute（Set 0）- W-14 ---
-	enum WaterCausticsComputeBinding : uint32_t
-	{
-		WATER_CAUSTICS_BINDING_WATER_SURFACE   = 0,
-		WATER_CAUSTICS_BINDING_SCENE_NORMAL    = 1,
-		WATER_CAUSTICS_BINDING_SCENE_GBUF0     = 2,
-		WATER_CAUSTICS_BINDING_SCENE_GBUF2     = 3,
-		WATER_CAUSTICS_BINDING_REFRACTION_DATA = 4,
-		WATER_CAUSTICS_BINDING_DISPLACEMENT    = 5,
-		WATER_CAUSTICS_BINDING_DERIVATIVE      = 6,
-		WATER_CAUSTICS_BINDING_FLOW_MAP        = 7,
-		WATER_CAUSTICS_BINDING_SURFACE_PARAMS  = 8,
-		WATER_CAUSTICS_BINDING_PARAMS          = 9,
-		WATER_CAUSTICS_BINDING_CAUSTICS_OUT    = 10,
-	};
 
 	// --- Water Thickness Compute（Set 0）- W-16 ---
 	enum WaterThicknessComputeBinding : uint32_t
@@ -910,6 +894,7 @@ namespace VansGraphics
 		// --- 水面 Pass Layouts ---
 		// Water GBuffer Pass Set 1：WaterGBufferParams UBO（CDLOD LOD 参数）
 		static void CreateAndAllocate_WaterGBuffer(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
+		static void CreateAndAllocate_PcgSplineField(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		// Water Wave Compute Set 0：WaterGBufferParams UBO + 位移 Storage Image
 		static void CreateAndAllocate_WaterWaveCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_WaterFlowMapCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
@@ -924,7 +909,6 @@ namespace VansGraphics
 		// Phase 2 独立 CS Layouts
 		static void CreateAndAllocate_WaterSSRCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_WaterRefractionCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
-		static void CreateAndAllocate_WaterCausticsCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_WaterThicknessCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_WaterVolumeCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_WaterVolumeFilterCompute(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);

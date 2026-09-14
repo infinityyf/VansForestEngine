@@ -174,7 +174,7 @@ void main()
     float Gentry = max(dot(N, L), 0.0);
     float Gsss = 1.0 - Gentry;
     vec3 thinSSS = vec3(0.0);
-    if (params.effectFlags.w != 0)
+    if (params.effectFlags.z != 0)
     {
         thinSSS = PBRW_EvaluateThinSSS(
             Li, sigmaA, sigmaS, thickness01,

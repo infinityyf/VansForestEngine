@@ -1,6 +1,8 @@
 #pragma once
 
 #include "VansSceneEnvironmentNodeConfig.h"
+#include "../PcgCore/VansPcgRecipeAsset.h"
+#include "../PcgCore/VansPcgSplineAsset.h"
 #include "VansSceneMaterialConfig.h"
 #include "VansSceneObjectBuildPlan.h"
 #include "VansSceneReflectionProbeConfig.h"
@@ -22,7 +24,9 @@ struct VansSceneContentBuildPlan
 	VansSceneObjectBuildPlan objects;
 	VansSceneRenderNodeConfigs renderNodes;
 	std::optional<VansSceneTerrainNodeConfig> terrain;
-	std::optional<VansSceneVegetationNodeConfig> vegetation;
+	std::optional<VansPcgRecipeAsset> vegetation;
+	VansAssetGuid splineAssetGuid;
+	std::shared_ptr<const VansPcgSplineAsset> splines;
 	std::optional<VansSceneWaterNodeConfig> water;
 };
 }

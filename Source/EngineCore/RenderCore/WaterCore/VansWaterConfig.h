@@ -101,14 +101,6 @@ namespace VansGraphics
         glm::vec2 m_FallbackDirection = { 1.0f, 0.0f };
     };
 
-    struct VansWaterCausticsConfig
-    {
-        bool m_Enabled = false;
-        float m_Intensity = 1.0f;
-        float m_MaxDistance = 20.0f;
-        float m_MaxGain = 3.0f;
-        float m_FilterRadius = 0.5f;
-    };
 
     struct VansWaterRefractionConfig
     {
@@ -232,7 +224,6 @@ namespace VansGraphics
         VansWaterSpectrumConfig m_Spectrum;
         VansWaterWaveParticleConfig m_WaveParticle;
         VansWaterFlowMapConfig m_FlowMap;
-        VansWaterCausticsConfig m_Caustics;
         VansWaterRefractionConfig m_Refraction;
         VansWaterDetailNormalConfig m_DetailNormal;
         VansWaterEffectiveRoughnessConfig m_EffectiveRoughness;
@@ -304,10 +295,6 @@ namespace VansGraphics
             else
                 m_FlowMap.m_FallbackDirection = glm::normalize(m_FlowMap.m_FallbackDirection);
 
-            m_Caustics.m_Intensity = std::clamp(m_Caustics.m_Intensity, 0.0f, 10.0f);
-            m_Caustics.m_MaxDistance = std::clamp(m_Caustics.m_MaxDistance, 1.0f, 200.0f);
-            m_Caustics.m_MaxGain = std::clamp(m_Caustics.m_MaxGain, 0.0f, 16.0f);
-            m_Caustics.m_FilterRadius = std::clamp(m_Caustics.m_FilterRadius, 0.1f, 4.0f);
 
             m_Refraction.m_DistortionStrength = std::clamp(
                 m_Refraction.m_DistortionStrength, 0.0f, 0.1f);

@@ -42,6 +42,7 @@
 #include "AtmosphereCore/VansNearMediaSystem.h"
 #include "CloudCore/VansVolumetricCloudSystem.h"
 #include "VegetationCore/VansVegetationSystem.h"
+#include "VegetationCore/VansVegetationCollection.h"
 #include "Particles/VansParticleRenderSystem.h"
 #include "../ParticleCore/VansParticleManager.h"
 #include "../ParticleCore/VansParticleRuntime.h"
@@ -66,6 +67,7 @@
 #include <unordered_set>
 #include <filesystem>
 
+#include "PcgCore/VansPcgSplineFieldResources.h"
 #ifdef _DEBUG
 #define VANS_UNLOAD_STEP(index, reason) VANS_LOG("[VansScene][UnLoadScene Step " << index << "] " << reason)
 #else
@@ -1400,12 +1402,12 @@ void VansGraphics::VansScene::UnLoadScene()
 
 	// ── 7. 清理植被系统 ─────────────────────────────────────────────────
     VANS_UNLOAD_STEP(7, "娓呯悊妞嶈绯荤粺");
-	if (m_VegetationSystem)
-	{
-		m_VegetationSystem->Cleanup(nativeDevice);
-		delete m_VegetationSystem;
-		m_VegetationSystem = nullptr;
-	}
+	m_VegetationCollection.reset();
+	m_SplineField.reset();
+	m_SplineFieldResources.reset();
+	m_PendingSplineField.reset();
+	m_SplineAssetGuid = {};
+	m_PendingVegetationUpdates.clear();
         VANS_LOG("[VansScene] Step 7: vegetation system cleared");
 
 	// ── 8. 清理所有渲染节点（必须在动画节点之前，因为渲染节点的 descriptor
@@ -1418,6 +1420,7 @@ void VansGraphics::VansScene::UnLoadScene()
 	for (auto* node : m_OpaqueRenderNodes)
 		deleteRenderNode(node);
 	m_OpaqueRenderNodes.clear();
+	m_SplineRoads.clear();
 
 	for (auto* node : m_HairRenderNodes)
 		deleteRenderNode(node);
@@ -1765,6 +1768,11 @@ VansGraphics::VansScene::PrepareMainThreadRenderFrame(
     const float deltaTime = static_cast<float>(context.timing.deltaSeconds);
 	VansRenderSceneFrameSnapshot& snapshot = output.scene;
 	snapshot.sceneReady = true;
+	snapshot.terrainUploads = std::move(m_PendingTerrainUploads);
+	m_PendingTerrainUploads.clear();
+	snapshot.splineFieldUpdate = std::move(m_PendingSplineField);
+	snapshot.vegetationUpdates = std::move(m_PendingVegetationUpdates);
+	m_PendingVegetationUpdates.clear();
 	const auto reflectionDebugView = m_ReflectionProbeSystem.GetEditorState().debugView;
 	snapshot.reflectionProbeIsolatedDebugOutput = IsReflectionProbeIsolatedDebugView(reflectionDebugView);
 	snapshot.mainCameraHiZCullSettings = m_MainCameraHiZCullSettings;
@@ -2132,6 +2140,28 @@ void VansGraphics::VansScene::PrepareRenderBackendData(
 
     VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
     VkDevice nativeDevice = vkDevice ? vkDevice->GetLogicDevice() : VK_NULL_HANDLE;
+	if (vkDevice)
+	{
+		if (!m_SplineFieldResources) m_SplineFieldResources=std::make_unique<VansPcgSplineFieldResources>(*vkDevice);
+		if (sceneSnapshot.splineFieldUpdate || !m_SplineFieldResources->DescriptorSet())
+		{
+			std::string error;
+			if (!m_SplineFieldResources->Prepare(sceneSnapshot.splineFieldUpdate,error))
+				throw std::runtime_error("PCG spline GPU publication failed: "+error);
+		}
+		if (m_WaterSystem) m_WaterSystem->SetSplineFields(m_SplineFieldResources.get());
+	}
+	if (vkDevice && m_VegetationCollection) {
+		for (const auto& update : sceneSnapshot.vegetationUpdates)
+		{
+			std::string error;
+			if (update && !m_VegetationCollection->Apply(*this, nativeDevice, *update, vkDevice, error))
+				VANS_LOG_ERROR("[PCG] Batch update rejected; previous vegetation retained: " << error);
+		}
+		std::string error;
+		if (!m_VegetationCollection->UpdateResidency(*this,nativeDevice,*vkDevice,view.position.x,view.position.z,error))
+			VANS_LOG_ERROR("[PCG] Vegetation residency update failed: " << error);
+	}
 
     {
         VANS_PROFILE_SCOPE("Cloth::WriteResultsToStaging", Vans::ProfileCategory::Physics);
@@ -2188,11 +2218,32 @@ void VansGraphics::VansScene::PrepareRenderBackendData(
     }
 }
 
-void VansGraphics::VansScene::RecordVideoUploads(
+void VansGraphics::VansScene::RecordFrameUploads(
 	VansVKCommandBuffer& cmd,
 	const VansRenderSceneFrameSnapshot& sceneSnapshot)
 {
-    VANS_PROFILE_SCOPE("Video::Upload.RecordCommands", Vans::ProfileCategory::Video);
+    VANS_PROFILE_SCOPE("Frame::Upload.RecordCommands", Vans::ProfileCategory::RenderPrepare);
+	if (m_SplineFieldResources && !m_SplineFieldResources->RecordUploads(cmd))
+		throw std::runtime_error("PCG spline field upload failed.");
+	if (m_TerrainRenderNode && !sceneSnapshot.terrainUploads.empty())
+	{
+		auto* terrainNode = static_cast<VansTerrainRenderNode*>(m_TerrainRenderNode);
+		if (VansTerrain* terrain = terrainNode->GetTerrain())
+		{
+			const std::string runtimeGuid = terrain->GetAssetGuid().ToString();
+			for (const VansRenderTerrainRegionUpload& upload : sceneSnapshot.terrainUploads)
+			{
+				if (upload.assetGuid != runtimeGuid)
+					continue;
+				const std::uint32_t textureIndex =
+					upload.texture == VansRenderTerrainTexture::Height ? 0u :
+					upload.texture == VansRenderTerrainTexture::Splat0 ? 1u : 2u;
+				if (!terrain->RecordRegionUpload(cmd, textureIndex, upload.x, upload.y,
+					upload.width, upload.height, upload.bytes))
+					VANS_LOG_ERROR("[Terrain] Rejected a frame-local texture region upload.");
+			}
+		}
+	}
     m_VideoManager.RecordPendingUploads(cmd);
     m_MaterialManager.RecordPendingSkinProfileLUTUploads(cmd);
 
@@ -2215,6 +2266,31 @@ void VansGraphics::VansScene::RecordVideoUploads(
 				emissiveArray, cmd, binding.rectLightLayer);
         }
     }
+}
+
+void VansGraphics::VansScene::QueueTerrainRegionUpload(VansRenderTerrainRegionUpload upload)
+{
+	VANS_ASSERT_MAIN_THREAD();
+	if (upload.assetGuid.empty() || upload.width == 0 || upload.height == 0 || upload.bytes.empty())
+		return;
+	m_PendingTerrainUploads.push_back(std::move(upload));
+}
+
+void VansGraphics::VansScene::SetVegetationCollection(std::unique_ptr<VansVegetationCollection> collection)
+{
+	m_VegetationCollection = std::move(collection);
+}
+
+void VansGraphics::VansScene::QueueVegetationUpdate(std::shared_ptr<const Vans::VansPcgBatchUpdate> update)
+{
+	VANS_ASSERT_MAIN_THREAD();
+	if (update && update->replaceAll) m_PendingVegetationUpdates.clear();
+	if (update) m_PendingVegetationUpdates.push_back(std::move(update));
+}
+void VansGraphics::VansScene::DiscardPendingVegetationUpdates()
+{
+	VANS_ASSERT_MAIN_THREAD();
+	m_PendingVegetationUpdates.clear();
 }
 
 // ============================================================

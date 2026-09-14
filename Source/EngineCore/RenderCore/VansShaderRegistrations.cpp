@@ -200,6 +200,14 @@ void RegisterEngineShaders()
         sizeof(VansGraphics::GrassDrawPushConstants), false, false, 5  // P1: LOD distance parameters, 8 bytes.
     });
 
+    VansGraphics::VansShaderEntry grassCascadeShadow{
+        "GrassShadow", "EngineAssets/Shaders/Grass/Shadow",
+        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_NONE,
+        sizeof(VansGraphics::GrassShadowPushConstants), false
+    };
+    grassCascadeShadow.colorAttachmentCount = 0;
+    reg.RegisterGraphicsShader("GrassShadow", std::move(grassCascadeShadow));
+
     reg.RegisterGraphicsShader("TreeGBuffer", {
         "TreeGBuffer",
         "EngineAssets/Shaders/Tree/Deferred",
@@ -215,13 +223,6 @@ void RegisterEngineShaders()
     };
     treeCascadeShadow.colorAttachmentCount = 0;
     reg.RegisterGraphicsShader("TreeShadow", std::move(treeCascadeShadow));
-
-    reg.RegisterGraphicsShader("TreePunctualShadow", {
-        "TreePunctualShadow",
-        "EngineAssets/Shaders/Tree/PunctualShadow",
-        VK_TRUE, VK_TRUE, VK_COMPARE_OP_LESS_OR_EQUAL, VK_CULL_MODE_BACK_BIT,
-        sizeof(VansGraphics::TreePunctualShadowPushConstants), false
-    });
 
     reg.RegisterGraphicsShader("Emissive", {
         "Emissive",
@@ -410,7 +411,6 @@ void RegisterEngineShaders()
     reg.RegisterComputeShader("WaterFlowMap", "EngineAssets/Shaders/Water/FlowMap");
     reg.RegisterComputeShader("WaterSSR", "EngineAssets/Shaders/Water/SSR");
     reg.RegisterComputeShader("WaterRefraction", "EngineAssets/Shaders/Water/Refraction");
-    reg.RegisterComputeShader("WaterCaustics", "EngineAssets/Shaders/Water/Caustics");
     reg.RegisterComputeShader("WaterThickness", "EngineAssets/Shaders/Water/SSS");
     reg.RegisterComputeShader("WaterVolume", "EngineAssets/Shaders/Water/Volume");
     reg.RegisterComputeShader("WaterVolumeFilter", "EngineAssets/Shaders/Water/VolumeFilter");

@@ -5,7 +5,6 @@
 #include "../VulkanCore/VansShader.h"
 #include "../VulkanCore/VansVKDescriptorManager.h"
 #include "../VulkanCore/VansDescriptorSetLayouts.h"
-#include "../PcgCore/VansPcgMask.h"
 #include <glm/glm.hpp>
 #include <vector>
 #include <string>
@@ -24,20 +23,20 @@ namespace VansGraphics
 	// - Issues indirect draw calls into the GBuffer
 	// ========================================================================
 
-	// Per-instance data uploaded once at init
-	// Layout matches GLSL std430 exactly:
-	//   vec3 'position' has base alignment 16 but only occupies 12 bytes;
-	//   the following float 'scale' is placed at the next multiple of 4 → offset 12.
-	//   No padding is inserted between position and scale in std430.
-	// P4 优化: 预计算 sin/cos 旋转角，避免每帧在 GPU 重复计算三角函数
+	class VansMesh;
+	class VansMaterial;
+
+	// PCG 已确定完整变换；GPU 只模拟和绘制，不再生成或重新分配位置。
 	struct GrassInstance
 	{
-		glm::vec3 position;     // world XZ, Y = ground  (bytes  0-11)
-		float     scale;        // random in [0.8, 1.2]   (bytes 12-15)
-		float     cosR;         // cos(rotation)          (bytes 16-19)
-		float     sinR;         // sin(rotation)          (bytes 20-23)
-		uint32_t  padding[2];   // align to 32 bytes      (bytes 24-31)
+		glm::mat4 modelMatrix = glm::mat4(1.0f);
+		float boundsRadius = 0;
+		uint32_t randomSeed = 0;
+		uint32_t padding[2] = {};
 	};
+	static_assert(sizeof(GrassInstance) == 80, "Grass instance must match GLSL std430");
+	static_assert(offsetof(GrassInstance, boundsRadius) == 64 && offsetof(GrassInstance, randomSeed) == 68,
+		"Grass instance field offsets must match GLSL");
 
 	// Per-bone simulation state (GPU only after init)
 	struct GrassBone
@@ -61,10 +60,10 @@ namespace VansGraphics
 		float stiffness;
 		float damping;
 		float softness;        // 0.0 = rigid (hard), 1.0 = fully soft
-		float terrainSize;
-		float terrainMaxHeight;
-		float terrainHeightOffset;
-		int   terrainEnabled;
+
+
+
+
 		// LOD distances (camera position comes from global CameraData UBO, not push constant)
 		float lodFullDist;
 		float lodFadeDist;
@@ -84,10 +83,10 @@ namespace VansGraphics
 		uint32_t subBladeCount;
 		float    grassHeight;
 		// P6a: terrain params for VS heightmap sampling
-		float    terrainSize;
-		float    terrainMaxHeight;
-		float    terrainHeightOffset;
-		int      terrainEnabled;
+
+
+
+
 		// P1: 子叶片距离 LOD — 远距离减少子叶片数以降低 VS/FS 开销
 		float    lodMidDist;       // 中距离阈值，超过后子叶片数减半
 		float    lodFarDist;       // 远距离阈值，超过后子叶片数降至最少
@@ -96,7 +95,7 @@ namespace VansGraphics
 		float    rootAOIntensity;
 		float    rootAOHeight;
 	};
-	static_assert(sizeof(GrassDrawPushConstants) == 60, "Grass draw push constants must match GLSL");
+	static_assert(sizeof(GrassDrawPushConstants) == 44, "Grass draw push constants must match GLSL");
 
 	// P0: Push constants for GPU cull compute pass
 	struct GrassCullPushConstants
@@ -105,10 +104,10 @@ namespace VansGraphics
 		float    grassHeight;          // 草叶高度
 		uint32_t instanceCount;        // 总实例数
 		float    scatterRadiusMax;     // 子叶片最大散布半径—用于包围球扩展
-		float    terrainSize;          // 地形尺寸
-		float    terrainMaxHeight;     // 地形最大高度
-		float    terrainHeightOffset;  // 地形高度偏移
-		int      terrainEnabled;       // 是否启用地形
+
+
+
+
 		uint32_t subBladeCount;        // 子叶片数，用于 atomicAdd 直接计算 indirect instanceCount
 		// Hi-Z 遮挡剔除参数。输入为上一帧 max-depth occlusion HZB，shader 使用历史相机矩阵重投影。
 		float    hizSampleBias;        // 线性深度偏差，单位为米；只有超过该偏差才判为遮挡
@@ -125,56 +124,20 @@ namespace VansGraphics
 		glm::vec3 normal;
 	};
 
-	// ========================================================================
-	// Render config — one entry from JSON "renderConfigs" array.
-	// Each config maps to one draw call with a specific mesh + material.
-	// ========================================================================
+	// 每个 GPU 批次对应一个分布项的一种模型变体；所有部件共享同一实例列表。
 	struct GrassRenderConfig
 	{
-		std::string meshName;       // empty = use procedural blade
-		std::string materialName;
-		float       percent = 1.0f; // fraction of total instances [0,1]
+		VansMesh* mesh = nullptr;
+		VansMaterial* material = nullptr;
+		bool proceduralBlade = false;
 	};
 
-	enum class TreePartType : uint32_t
-	{
-		Trunk = 0,
-		Leaves = 1,
-		Custom = 2,
-	};
-
+	enum class TreePartType : uint32_t { Trunk = 0, Leaves = 1, Custom = 2 };
 	struct TreePartConfig
 	{
+		VansMesh* mesh = nullptr;
+		VansMaterial* material = nullptr;
 		TreePartType type = TreePartType::Custom;
-		std::string meshName;
-		std::string materialName;
-		int32_t submeshIndex = -1; // -1 = draw all drawable submeshes for this part
-	};
-
-	struct TreeSpeciesConfig
-	{
-		std::string name;
-		float boundsRadius = 1.0f;
-		std::vector<TreePartConfig> parts;
-	};
-
-	struct TreeInstanceConfig
-	{
-		std::string speciesName;
-		glm::vec3 position = glm::vec3(0.0f);
-		float yawDeg = 0.0f;
-		float scale = 1.0f;
-		int32_t submeshIndex = -1; // -1 = use species default; >=0 selects one multi-mesh submesh variant
-	};
-
-	struct TreeVegetationConfig
-	{
-		bool enabled = false;
-		float cullDistance = 800.0f;
-		bool cullEnabled = true;
-		bool hizEnabled = true;
-		std::vector<TreeSpeciesConfig> species;
-		std::vector<TreeInstanceConfig> instances;
 	};
 
 	struct TreeInstanceGPU
@@ -206,6 +169,15 @@ namespace VansGraphics
 		float padding1;
 	};
 
+	struct GrassShadowPushConstants
+	{
+		uint32_t boneCount;
+		uint32_t subBladeCount;
+		int32_t shadowIndex;
+		uint32_t visibleOffset = 0;
+	};
+	static_assert(sizeof(GrassShadowPushConstants) == 16);
+
 	struct TreeDrawPushConstants
 	{
 		int materialIndex;
@@ -223,16 +195,6 @@ namespace VansGraphics
 		uint32_t alphaTestEnabled;
 	};
 
-	struct TreePunctualShadowPushConstants
-	{
-		int shadowViewIndex;
-		int reserved;
-		int materialIndex;
-		int objectIndex;
-		uint32_t visibleOffset;
-		uint32_t alphaTestEnabled;
-	};
-
 	class VansMesh;
 	class VansMaterial;
 
@@ -246,11 +208,11 @@ namespace VansGraphics
 		VansVKBuffer  boneWeightBuffer;
 
 		// Instance remap buffer — uint[] maps [0, assignedCount) → global bone chain index
-		VansVKBuffer  instanceRemapBuffer;
 		uint32_t      assignedInstanceCount = 0;
 
 		// Indirect draw command
 		VansVKBuffer  indirectDrawBuffer;
+		VansVKBuffer  shadowIndirectDrawBuffer;
 
 		// Descriptor set for draw pass (Set 3)
 		VkDescriptorSet drawDescSet = VK_NULL_HANDLE;
@@ -273,6 +235,7 @@ namespace VansGraphics
 		uint32_t visibleOffset = 0;
 		uint32_t instanceCapacity = 0;
 		VansVKBuffer indirectDrawBuffer;
+		VansVKBuffer shadowIndirectDrawBuffer;
 		VkDescriptorSet drawDescSet = VK_NULL_HANDLE;
 	};
 
@@ -282,24 +245,20 @@ namespace VansGraphics
 		VansVegetationSystem() = default;
 		~VansVegetationSystem();
 
-		// ── Initialisation ──────────────────────────────────────────────
-		// P6b 优化: 默认骨骼数从 6 降为 4，减少 ~33% 顶点量和骨骼矩阵写入
-		void Init(VkDevice device, uint32_t instanceCount = 2000000,
-		          uint32_t boneCountPerInstance = 4);
-
-		// ── Render configs — call before Init() if JSON has renderConfigs ──
+		// 显式实例输入；零实例不会创建默认草叶或默认树。
+		void Init(VkDevice device, std::vector<GrassInstance> grass,
+			std::vector<TreeInstanceGPU> trees, uint32_t boneCountPerInstance);
 		void SetRenderConfigs(const std::vector<GrassRenderConfig>& configs) { m_RenderConfigs = configs; }
-		void SetTreeConfig(const TreeVegetationConfig& config) { m_TreeConfig = config; }
-
-		// ── Build per-config GPU resources (call after Init and after meshes & materials are loaded) ──
-		// meshLookup / materialLookup: callables that resolve name → pointer.
-		// For procedural-blade configs (empty meshName), system's own buffers are used.
-		void BuildRenderConfigs(
-			std::function<VansMesh*(const std::string&)> meshLookup,
-			std::function<VansMaterial*(const std::string&)> materialLookup);
-		void BuildTreeResources(
-			std::function<VansMesh*(const std::string&)> meshLookup,
-			std::function<VansMaterial*(const std::string&)> materialLookup);
+		void SetTreeParts(const std::vector<TreePartConfig>& parts) { m_TreeParts = parts; }
+		void BuildRenderConfigs();
+		void BuildTreeResources();
+		void SetRenderOptions(bool culling, float distance, bool castShadows)
+		{
+			m_CullEnabled = culling;
+			m_CullDistance = distance;
+			m_CastShadows = castShadows;
+		}
+		bool CastsShadows() const { return m_CastShadows; }
 
 		// ── Per-frame update: dispatches bone sim compute pass ─────────
 		void Update(VansVKCommandBuffer& computeCmd, float deltaTime, float time,
@@ -319,11 +278,14 @@ namespace VansGraphics
 			bool sameQueueGraphicsConsumer = true);
 
 		// ── Draw: issues one indirect indexed draw per render config ───
-		void Draw(VansVKCommandBuffer& graphicsCmd, VansGraphicsShader& shader,
+		void Draw(VansVKCommandBuffer& graphicsCmd,
 		          GlobalStateData& globalState,
 		          const std::vector<VkDescriptorSetLayout>& baseDescSetLayouts,
 		          const std::vector<VkDescriptorSet>& baseDescSets,
 		          int pushConstantTransformIndex);
+		void DrawGrassCascadeShadow(VansVKCommandBuffer& graphicsCmd, GlobalStateData& globalState,
+			const std::vector<VkDescriptorSetLayout>& baseDescSetLayouts,
+			const std::vector<VkDescriptorSet>& baseDescSets, int cascadeIndex);
 		void DrawTrees(VansVKCommandBuffer& graphicsCmd,
 		               GlobalStateData& globalState,
 		               const std::vector<VkDescriptorSetLayout>& baseDescSetLayouts,
@@ -334,19 +296,9 @@ namespace VansGraphics
 		                            const std::vector<VkDescriptorSetLayout>& baseDescSetLayouts,
 		                            const std::vector<VkDescriptorSet>& baseDescSets,
 		                            int pushConstantTransformIndex);
-		void DrawTreePunctualShadow(VansVKCommandBuffer& graphicsCmd,
-		                             GlobalStateData& globalState,
-		                             const std::vector<VkDescriptorSetLayout>& baseDescSetLayouts,
-		                             const std::vector<VkDescriptorSet>& baseDescSets,
-		                             int pushConstantTransformIndex,
-		                             int shadowViewIndex);
 
 		// ── Cleanup ────────────────────────────────────────────────────
 		void Cleanup(VkDevice device);
-
-		// ── Terrain Integration ────────────────────────────────────────
-		void SetTerrainHeightmap(VkImageView imageView, VkSampler sampler,
-		                         float terrainSize, float maxHeight, float heightOffset);
 
 		// ── Hi-Z 遮挡剔除 (HZB 必须在 cull descriptor 写入前就绪) ─────
 		void SetHiZDepth(VkImageView imageView, VkSampler sampler, uint32_t mipCount,
@@ -354,6 +306,7 @@ namespace VansGraphics
 
 		// ── Blade height — must be set before Init() ──────────────────────
 		void SetBladeHeight(float h) { m_BladeHeight = h; }
+		void SetBladeWidth(float w) { m_BladeWidthRoot = w; }
 
 		// ── Sub-blade tuft config — must be set before Init() ────────────────
 		void SetSubBladeParams(uint32_t count, float radiusMin, float radiusMax)
@@ -362,20 +315,10 @@ namespace VansGraphics
 			m_SubBladeScatterRadiusMin = radiusMin;
 			m_SubBladeScatterRadiusMax = radiusMax;
 		}
-
-		void SetPlacementBounds(const glm::vec2& minXZ, const glm::vec2& maxXZ)
+		void SetRestShape(float tipDegrees,float rootDegrees,uint32_t scatterSeed)
 		{
-			m_PlacementMinXZ = glm::min(minXZ, maxXZ);
-			m_PlacementMaxXZ = glm::max(minXZ, maxXZ);
+			m_RestTipBendDegrees=tipDegrees;m_RestRootBendDegrees=rootDegrees;m_SubBladeScatterSeed=scatterSeed;
 		}
-
-		void SetGrassScaleRange(float minScale, float maxScale)
-		{
-			m_GrassScaleMin = std::max(0.001f, std::min(minScale, maxScale));
-			m_GrassScaleMax = std::max(m_GrassScaleMin, std::max(minScale, maxScale));
-		}
-
-		void SetPlacementMask(const PcgPlacementMask& mask) { m_PlacementMask = mask; }
 
 		// ── Runtime simulation parameters (updated from JSON at load time) ─────
 		void SetSimParams(glm::vec2 windDir, float windStrength, float windFrequency,
@@ -478,29 +421,25 @@ namespace VansGraphics
 		void WriteTreeCullDescriptors();
 		void WriteTreeDrawDescriptors(TreeDrawConfigGPU& cfg);
 		void LoadTreeShaders(VkDevice device);
-		float SamplePlacementMask(const glm::vec2& worldXZ) const;
-		bool AcceptPlacementMask(const glm::vec2& worldXZ, float randomValue) const;
 
 		// ── Configuration ───────────────────────────────────────────────
 		uint32_t m_InstanceCount        = 0;
 		uint32_t m_BoneCountPerInstance = 0;
 		uint32_t m_VertexCount          = 0;     // procedural blade vertex count
 		uint32_t m_IndexCount           = 0;     // procedural blade index count
-		float    m_BladeHeight          = 0.5f;
-		float    m_BladeWidthRoot       = 0.04f;
-		uint32_t m_SubBladeCount        = 10;
-		float    m_SubBladeScatterRadiusMin = 0.3f;
-		float    m_SubBladeScatterRadiusMax = 1.0f;
+		float    m_BladeHeight          = 0.0f;
+		float    m_BladeWidthRoot       = 0.0f;
+		uint32_t m_SubBladeCount        = 1;
+		uint32_t m_SubBladeScatterSeed = 0;
+		float m_RestTipBendDegrees = 0;
+		float m_RestRootBendDegrees = 0;
+		float    m_SubBladeScatterRadiusMin = 0.0f;
+		float    m_SubBladeScatterRadiusMax = 0.0f;
 		glm::vec2 m_InitWindDir         = glm::vec2(1.0f, 0.0f);
-		float     m_InitLeanDeviation   = glm::radians(35.0f);
-		float     m_CullDistance        = 100.0f;  // P0: 最大绘制距离，超出则剔除
-		float     m_SubBladeLodMidDist  = 40.0f;   // P1: 中距离子叶片 LOD 阈值
-		float     m_SubBladeLodFarDist  = 70.0f;   // P1: 远距离子叶片 LOD 阈值
-		glm::vec2 m_PlacementMinXZ      = glm::vec2(-100.0f, -100.0f);
-		glm::vec2 m_PlacementMaxXZ      = glm::vec2( 100.0f,  100.0f);
-		float     m_GrassScaleMin       = 0.4f;
-		float     m_GrassScaleMax       = 1.5f;
-		PcgPlacementMask m_PlacementMask;
+		float     m_InitLeanDeviation   = 0.0f;
+		float     m_CullDistance        = 0.0f;  // P0: 最大绘制距离，超出则剔除
+		float     m_SubBladeLodMidDist  = 0.0f;   // P1: 中距离子叶片 LOD 阈值
+		float     m_SubBladeLodFarDist  = 0.0f;   // P1: 远距离子叶片 LOD 阈值
 		std::vector<GrassInstance> m_GrassInstancesCPU;
 
 		// ── Per-frame simulation parameters ─────────────────────────────
@@ -519,13 +458,13 @@ namespace VansGraphics
 		std::vector<GrassRenderConfig>    m_RenderConfigs;
 		std::vector<GrassRenderConfigGPU> m_RenderConfigsGPU;
 
-		TreeVegetationConfig m_TreeConfig;
+		std::vector<TreePartConfig> m_TreeParts;
+		bool m_CullEnabled = false;
+		bool m_CastShadows = false;
 		bool m_TreeEnabled = false;
-		float m_TreeCullDistance = 800.0f;
 		std::vector<TreeInstanceGPU> m_TreeInstancesCPU;
 		std::vector<TreeSpeciesCullInfo> m_TreeSpeciesInfosCPU;
 		std::vector<TreeDrawConfigGPU> m_TreeDrawConfigsGPU;
-		std::vector<uint32_t> m_TreeVisibleCountsZeroScratch; // 复用清零数据，避免每帧分配临时数组
 		VansVKBuffer m_TreeInstanceBuffer;
 		VansVKBuffer m_TreeVisibleCountsBuffer;
 		VansVKBuffer m_TreeVisibleIndexBuffer;
@@ -533,9 +472,9 @@ namespace VansGraphics
 		VkDescriptorSetLayout m_TreeDrawLayout = VK_NULL_HANDLE;
 		VkDescriptorSetLayout m_TreeCullLayout = VK_NULL_HANDLE;
 		std::vector<VkDescriptorSet> m_TreeCullDescSets;
+		VansGraphicsShader* m_GrassShadowShader = nullptr;
 		VansGraphicsShader* m_TreeGBufferShader = nullptr;
 		VansGraphicsShader* m_TreeShadowShader = nullptr;
-		VansGraphicsShader* m_TreePunctualShadowShader = nullptr;
 		VansComputeShader* m_TreeCullShader = nullptr;
 
 		// ── GPU Buffers ─────────────────────────────────────────────────
@@ -565,13 +504,6 @@ namespace VansGraphics
 		VkDescriptorSetLayout m_GlobalDescSetLayout = VK_NULL_HANDLE;
 		VkDescriptorSet       m_GlobalDescSet       = VK_NULL_HANDLE;
 
-		// ── Terrain heightmap (optional) ─────────────────────────────────
-		VkImageView m_TerrainHeightmapView    = VK_NULL_HANDLE;
-		VkSampler   m_TerrainHeightmapSampler = VK_NULL_HANDLE;
-		float       m_TerrainSize             = 1024.0f;
-		float       m_TerrainMaxHeight        = 500.0f;
-		float       m_TerrainHeightOffset     = -23.0f;
-		bool        m_TerrainEnabled          = false;
 		// ── Hi-Z depth pyramid (optional, 上一帧 max-depth occlusion HZB) ──
 		VkImageView m_HiZView        = VK_NULL_HANDLE;
 		VkSampler   m_HiZSampler     = VK_NULL_HANDLE;

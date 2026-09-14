@@ -1,7 +1,5 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
-#extension GL_EXT_shader_16bit_storage : require
-#extension GL_EXT_shader_explicit_arithmetic_types : require
 
 #include "../../Common/CameraData.glsl"
 #include "../TerrainCommon.glsl"
@@ -31,7 +29,6 @@ struct DirectionLightData
     vec4 cascadeFilterRadius;
 };
 
-// 地形阴影只读取方向光矩阵，SSBO 前缀布局必须与 LightsData.glsl 保持一致。
 layout(set = LightCBBind, binding = LightBinding, std430) readonly buffer TerrainShadowLightsData
 {
     uint uPointLightCount;
@@ -42,16 +39,14 @@ layout(set = LightCBBind, binding = LightBinding, std430) readonly buffer Terrai
     DirectionLightData uDirectionLight;
 };
 
-// 顶点输入（基础 16x16 patch，局部坐标 0..16）。
-layout(location = 0) in f16vec3 inPos;
-layout(location = 1) in f16vec2 inUV;
-layout(location = 2) in f16vec3 inNormal;
+layout(location = 0) in vec3 inPos;
+layout(location = 1) in vec2 inUV;
+layout(location = 2) in vec3 inNormal;
 
-// 实例输入。
 layout(location = 3) in vec2 instanceOffset;
 layout(location = 4) in float instanceScale;
-layout(location = 5) in float instanceLod;
-layout(location = 6) in float instanceStitchFlags;
+layout(location = 5) in uint instanceEdgeFlags;
+layout(location = 6) in vec2 instanceMorphRange;
 
 layout(location = 0) out float shadowDepth;
 
@@ -63,9 +58,15 @@ layout(push_constant) uniform CascadePushConst
 void main()
 {
     vec2 heightUV;
-    float height;
-    vec3 worldPos = TerrainBuildWorldPosition(inPos.xz, instanceOffset, instanceScale, instanceStitchFlags, heightUV, height);
-    worldPos = TerrainApplyGeometryNoise(worldPos);
+    float worldHeight;
+    vec3 worldPos = TerrainBuildWorldPosition(
+        vec2(inPos.xz),
+        instanceOffset,
+        instanceScale,
+        instanceEdgeFlags,
+        instanceMorphRange,
+        heightUV,
+        worldHeight);
 
     vec4 clipCoord = uDirectionLight.shadowMatrix[pushConst.cascadeIndex] * vec4(worldPos, 1.0);
     clipCoord.z = clipCoord.z * 0.5 + 0.5;

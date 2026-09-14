@@ -151,6 +151,48 @@ private:
     VansAssetDocumentStateId m_BeforeState = 0;
     VansAssetDocumentStateId m_AfterState = 0;
 };
+
+class ExternalAssetEditCommand final : public AssetDocumentEditCommand
+{
+public:
+	ExternalAssetEditCommand(VansSerializedValue root, std::function<bool()> undo, std::function<bool()> redo)
+		: m_Undo(std::move(undo)), m_Redo(std::move(redo)), m_AfterRoot(std::move(root))
+	{
+	}
+
+	AssetDocumentEditResult Execute(VansAssetDocument& document) override
+	{
+		if (!document.IsLoaded())
+			return { false, "Asset document is not loaded" };
+		m_BeforeState = document.CurrentStateId();
+		m_BeforeRoot = document.SerializedRootSnapshot();
+		m_AfterState = document.ApplyEditedSerializedRoot(m_AfterRoot);
+		return { true, {} };
+	}
+
+	AssetDocumentEditResult Undo(VansAssetDocument& document) override
+	{
+		if (!m_Undo || !m_Undo())
+			return { false, "External asset payload undo failed" };
+		document.RestoreEditedSerializedRoot(m_BeforeRoot, m_BeforeState);
+		return { true, {} };
+	}
+
+	AssetDocumentEditResult Redo(VansAssetDocument& document) override
+	{
+		if (!m_Redo || !m_Redo())
+			return { false, "External asset payload redo failed" };
+		document.RestoreEditedSerializedRoot(m_AfterRoot, m_AfterState);
+		return { true, {} };
+	}
+
+private:
+	std::function<bool()> m_Undo;
+	std::function<bool()> m_Redo;
+	VansSerializedValue m_BeforeRoot, m_AfterRoot;
+	VansAssetDocumentStateId m_BeforeState = 0;
+	VansAssetDocumentStateId m_AfterState = 0;
+};
 }
 
 namespace
@@ -200,6 +242,23 @@ AssetDocumentEditResult VansAssetDocumentEditService::ReplaceRoot(
 {
 	return ExecuteCommand(document, std::make_unique<EditorInternal::SetAssetPropertyCommand>(
 		std::string{}, std::move(value)));
+}
+
+AssetDocumentEditResult VansAssetDocumentEditService::RecordExternalEdit(
+	VansAssetDocument& document,
+	std::function<bool()> undo,
+	std::function<bool()> redo)
+{
+	return RecordExternalEdit(document, document.SerializedRootSnapshot(), std::move(undo), std::move(redo));
+}
+
+AssetDocumentEditResult VansAssetDocumentEditService::RecordExternalEdit(
+	VansAssetDocument& document, VansSerializedValue root,
+	std::function<bool()> undo, std::function<bool()> redo)
+{
+	return ExecuteCommand(document,
+		std::make_unique<EditorInternal::ExternalAssetEditCommand>(
+			std::move(root), std::move(undo), std::move(redo)));
 }
 
 AssetDocumentEditResult VansAssetDocumentEditService::Set(

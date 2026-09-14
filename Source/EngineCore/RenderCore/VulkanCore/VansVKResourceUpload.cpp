@@ -38,7 +38,8 @@ namespace VansGraphics
 		VkExtent3D imageSize,
 		int mipLevel,
 		int layerLevel,
-		VkImageLayout finalLayout)
+		VkImageLayout finalLayout,
+		VkPipelineStageFlags shaderReadStages)
 	{
 		if (!data || dataSize <= 0)
 			return false;
@@ -67,7 +68,7 @@ namespace VansGraphics
 			const VkImageLayout originalLayout = destImage.m_ImageLayout;
 			const VkPipelineStageFlags beforeStage = originalLayout == VK_IMAGE_LAYOUT_UNDEFINED
 				? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
-				: VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+				: shaderReadStages;
 			const VkAccessFlags beforeAccess = originalLayout == VK_IMAGE_LAYOUT_UNDEFINED
 				? 0
 				: VK_ACCESS_SHADER_READ_BIT;
@@ -122,7 +123,7 @@ namespace VansGraphics
 				toFinalBarrier.subresourceRange = toTransferBarrier.subresourceRange;
 				cmd.PipelineBarrier(
 					VK_PIPELINE_STAGE_TRANSFER_BIT,
-					VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+					shaderReadStages,
 					{}, {}, { toFinalBarrier });
 			}
 		}

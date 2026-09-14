@@ -1,4 +1,5 @@
 #include "VansWaterSystem.h"
+#include "../PcgCore/VansPcgSplineFieldResources.h"
 #include "VansWaterFFT.h"
 #include "../../Util/VansLog.h"
 #include "../../Configration/VansConfigration.h"
@@ -241,8 +242,8 @@ namespace
         params.effectFlags = glm::ivec4(
             config.m_SSR.m_Enabled ? 1 : 0,
             config.m_Refraction.m_Enabled ? 1 : 0,
-            config.m_Caustics.m_Enabled ? 1 : 0,
-            config.m_SSS.m_Enabled ? 1 : 0);
+            config.m_SSS.m_Enabled ? 1 : 0,
+            0);
         params.colorMipParams0 = glm::vec4(
             config.m_ColorMip.m_RefractionScatterScale,
             config.m_ColorMip.m_RefractionRoughnessScale,
@@ -396,12 +397,6 @@ namespace
         "WaterSSRParamsGPU edge offset must match std140 shader layout");
     static_assert(sizeof(WaterSSRParamsGPU) == 288,
         "WaterSSRParamsGPU size must match std140 shader layout");
-    static_assert(offsetof(WaterCausticsParamsGPU, mediumParams) == 48,
-        "WaterCausticsParamsGPU must match std140 shader layout");
-    static_assert(offsetof(WaterCausticsParamsGPU, shapingParams) == 64,
-        "WaterCausticsParamsGPU must match std140 shader layout");
-    static_assert(sizeof(WaterCausticsParamsGPU) == 80,
-        "WaterCausticsParamsGPU size must match std140 shader layout");
     static_assert(offsetof(WaterGBufferParamsGPU, geometryParams) == 144,
         "WaterGBufferParamsGPU geometry offset must match std140 shader layout");
     static_assert(offsetof(WaterGBufferParamsGPU, waveParticleParams0) == 224,
@@ -501,7 +496,6 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
     m_FlowMapShader = shaderManager.FindComputeShader("WaterFlowMap");
     m_WaterSSRShader = shaderManager.FindComputeShader("WaterSSR");
     m_WaterRefractionShader = shaderManager.FindComputeShader("WaterRefraction");
-    m_WaterCausticsShader = shaderManager.FindComputeShader("WaterCaustics");
     m_WaterThicknessShader = shaderManager.FindComputeShader("WaterThickness");
     m_WaterVolumeShader = shaderManager.FindComputeShader("WaterVolume");
     m_WaterVolumeFilterShader = shaderManager.FindComputeShader("WaterVolumeFilter");
@@ -509,7 +503,7 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
 
     if (!m_WaterGBufferShader || !m_WaterCompositeShader || !m_WaveSimShader ||
         !m_WaveParticleShader || !m_FlowMapShader ||
-        !m_WaterSSRShader || !m_WaterRefractionShader || !m_WaterCausticsShader ||
+        !m_WaterSSRShader || !m_WaterRefractionShader ||
         !m_WaterThicknessShader || !m_WaterVolumeShader || !m_WaterVolumeFilterShader)
     {
         VANS_LOG_ERROR("[VansWaterSystem] One or more managed water shaders are unavailable");
@@ -677,7 +671,6 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
     };
     createEffectImage(m_WaterReflectionImage);
     createEffectImage(m_WaterRefractionImage);
-    createEffectImage(m_WaterCausticsImage);
     // Thickness is declared as r16f in water_thickness.comp.  Keeping the
     // Vulkan image format identical to the storage-image declaration avoids
     // undefined format reinterpretation and saves 3 unused channels.
@@ -733,9 +726,6 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
         sizeof(WaterSSRParamsGPU),
         VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
 
-    CreateWaterBuffer(m_CausticsParamsBuffer, m_CausticsParamsBufferCreated,
-        sizeof(WaterCausticsParamsGPU),
-        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
 
     {
         CreateWaterBuffer(m_ThicknessParamsBuffer, m_ThicknessParamsBufferCreated,
@@ -1016,10 +1006,6 @@ void VansWaterSystem::SetupDescriptors(
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { m_WaterRefractionImage.GetSampler(), m_WaterRefractionImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
         descMgr->WriteImageDescriptor(
-            m_CompPassSet, WATER_COMP_BINDING_CAUSTICS,
-            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { m_WaterCausticsImage.GetSampler(), m_WaterCausticsImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
-        descMgr->WriteImageDescriptor(
             m_CompPassSet, WATER_COMP_BINDING_GBUF_SCATTER,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             { { renderPassManager->GetWaterGBufScatter().GetSampler(), renderPassManager->GetWaterGBufScatter().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
@@ -1082,61 +1068,6 @@ void VansWaterSystem::SetupDescriptors(
             m_RefractionSet, WATER_REFRACTION_BINDING_REFRACTION_DATA_OUT,
             VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
             { { m_WaterRefractionImage.GetSampler(), m_WaterRefractionImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
-
-        descMgr->CommitDescriptorUpdates();
-    }
-
-    {
-        std::vector<VkDescriptorSet> sets;
-        VansDescriptorSetLayoutFactory::CreateAndAllocate_WaterCausticsCompute(
-            m_CausticsLayout, sets, 1);
-        m_CausticsSet = sets[0];
-        descMgr->BeginDescriptorUpdate();
-
-        descMgr->WriteImageDescriptor(
-            m_CausticsSet, WATER_CAUSTICS_BINDING_WATER_SURFACE,
-            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { renderPassManager->GetWaterGBufLinearDepth().GetSampler(), renderPassManager->GetWaterGBufLinearDepth().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-        descMgr->WriteImageDescriptor(
-            m_CausticsSet, WATER_CAUSTICS_BINDING_SCENE_NORMAL,
-            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { renderPassManager->GetNormal().GetSampler(), renderPassManager->GetNormal().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-        descMgr->WriteImageDescriptor(
-            m_CausticsSet, WATER_CAUSTICS_BINDING_SCENE_GBUF0,
-            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { renderPassManager->GetGbuffer0().GetSampler(), renderPassManager->GetGbuffer0().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-        descMgr->WriteImageDescriptor(
-            m_CausticsSet, WATER_CAUSTICS_BINDING_SCENE_GBUF2,
-            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { renderPassManager->GetGbuffer2().GetSampler(), renderPassManager->GetGbuffer2().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
-        descMgr->WriteImageDescriptor(
-            m_CausticsSet, WATER_CAUSTICS_BINDING_REFRACTION_DATA,
-            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { m_WaterRefractionImage.GetSampler(), m_WaterRefractionImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
-        descMgr->WriteImageDescriptor(
-            m_CausticsSet, WATER_CAUSTICS_BINDING_DISPLACEMENT,
-            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { m_WaveDisplacementImage.GetSampler(), m_WaveDisplacementImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
-        descMgr->WriteImageDescriptor(
-            m_CausticsSet, WATER_CAUSTICS_BINDING_DERIVATIVE,
-            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { m_WaveDerivativeImage.GetSampler(), m_WaveDerivativeImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
-        descMgr->WriteImageDescriptor(
-            m_CausticsSet, WATER_CAUSTICS_BINDING_FLOW_MAP,
-            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            { { m_FlowMapImage.GetSampler(), m_FlowMapImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
-        descMgr->WriteBufferDescriptor(
-            m_CausticsSet, WATER_CAUSTICS_BINDING_SURFACE_PARAMS,
-            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            { { GetNativeBuffer(m_GBufParamsBuffer, m_GBufParamsBufferCreated), 0, sizeof(WaterGBufferParamsGPU) } });
-        descMgr->WriteBufferDescriptor(
-            m_CausticsSet, WATER_CAUSTICS_BINDING_PARAMS,
-            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            { { GetNativeBuffer(m_CausticsParamsBuffer, m_CausticsParamsBufferCreated), 0, sizeof(WaterCausticsParamsGPU) } });
-        descMgr->WriteImageDescriptor(
-            m_CausticsSet, WATER_CAUSTICS_BINDING_CAUSTICS_OUT,
-            VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-            { { m_WaterCausticsImage.GetSampler(), m_WaterCausticsImage.GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
 
         descMgr->CommitDescriptorUpdates();
     }
@@ -1306,7 +1237,6 @@ void VansWaterSystem::Shutdown()
     destroySet(m_ThicknessSet);
     destroySet(m_VolumeSet);
     destroySet(m_VolumeFilterSet);
-    destroySet(m_CausticsSet);
 
     // Geometry clipmap owns immutable patch mesh buffers.
     if (m_GeometryClipmap)
@@ -1332,7 +1262,6 @@ void VansWaterSystem::Shutdown()
     if (m_ThicknessLayout != VK_NULL_HANDLE)   { descMgr->ReleaseDescriptorSetLayout(m_ThicknessLayout); m_ThicknessLayout = VK_NULL_HANDLE; }
     if (m_VolumeLayout != VK_NULL_HANDLE) { descMgr->ReleaseDescriptorSetLayout(m_VolumeLayout); m_VolumeLayout = VK_NULL_HANDLE; }
     if (m_VolumeFilterLayout != VK_NULL_HANDLE) { descMgr->ReleaseDescriptorSetLayout(m_VolumeFilterLayout); m_VolumeFilterLayout = VK_NULL_HANDLE; }
-    if (m_CausticsLayout != VK_NULL_HANDLE)  { descMgr->ReleaseDescriptorSetLayout(m_CausticsLayout);  m_CausticsLayout  = VK_NULL_HANDLE; }
 
     VansVKSampler::DestroySampler(dev, m_DetailNormalSampler);
     m_DetailNormalAnisotropy = 1.0f;
@@ -1340,7 +1269,6 @@ void VansWaterSystem::Shutdown()
     DestroyWaterBuffer(m_GBufParamsBuffer, m_GBufParamsBufferCreated, dev);
     DestroyWaterBuffer(m_CompParamsBuffer, m_CompParamsBufferCreated, dev);
     DestroyWaterBuffer(m_SSRParamsBuffer, m_SSRParamsBufferCreated, dev);
-    DestroyWaterBuffer(m_CausticsParamsBuffer, m_CausticsParamsBufferCreated, dev);
     DestroyWaterBuffer(m_ThicknessParamsBuffer, m_ThicknessParamsBufferCreated, dev);
     DestroyWaterBuffer(m_WaveSSBO, m_WaveSSBOCreated, dev);
     DestroyWaterBuffer(m_WaveParticleSSBO, m_WaveParticleSSBOCreated, dev);
@@ -1354,7 +1282,6 @@ void VansWaterSystem::Shutdown()
     m_FlowMapReady = false;
     m_WaterReflectionImage.DestroyVulkanImage(dev);
     m_WaterRefractionImage.DestroyVulkanImage(dev);
-    m_WaterCausticsImage.DestroyVulkanImage(dev);
     m_WaterThicknessImage.DestroyVulkanImage(dev);
     m_WaterVolumeRawColorImage.DestroyVulkanImage(dev);
     m_WaterVolumeRawTransmittanceImage.DestroyVulkanImage(dev);
@@ -1364,7 +1291,6 @@ void VansWaterSystem::Shutdown()
     m_WaterVolumeDepthImage.DestroyVulkanImage(dev);
     m_ReflectionOutputReady = false;
     m_RefractionOutputReady = false;
-    m_CausticsOutputReady = false;
     m_ThicknessOutputReady = false;
     m_VolumeOutputReady = false;
     m_VolumeFilterOutputReady = false;
@@ -1377,7 +1303,6 @@ void VansWaterSystem::Shutdown()
     m_FlowMapShader = nullptr;
     m_WaterSSRShader = nullptr;
     m_WaterRefractionShader = nullptr;
-    m_WaterCausticsShader = nullptr;
     m_WaterThicknessShader = nullptr;
     m_WaterVolumeShader = nullptr;
     m_WaterVolumeFilterShader = nullptr;
@@ -1461,6 +1386,11 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
     {
         m_GeometryClipmap->ApplyConfig(geometry);
         m_GeometryClipmap->GeneratePatches(cameraPos);
+        const bool refined=!m_SplineFields || !m_SplineFields->Snapshot() ||
+            m_GeometryClipmap->RefineForRiverFields(*m_SplineFields->Snapshot());
+        if (!refined && !m_RiverGeometryBudgetError)
+            VANS_LOG_ERROR("[Water] River refinement exceeded its admitted patch budget; inspect the PCG field quality.");
+        m_RiverGeometryBudgetError=!refined;
         m_GeometryClipmap->FrustumCullPatches(vpMatrix, m_WaterLevel, displacementBound);
     }
 
@@ -1576,26 +1506,6 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
         m_SSRParamsBuffer.SetBufferData(&ssrParams, 0, sizeof(WaterSSRParamsGPU));
     }
 
-    if (m_Device != nullptr && m_CausticsParamsBufferCreated)
-    {
-        WaterCausticsParamsGPU causticParams = {};
-        causticParams.sunDirection     = glm::vec4(glm::normalize(mainLightDir), 0.0f);
-        causticParams.mainLightColor   = glm::vec4(mainLightColor, 1.0f);
-        const glm::vec3 extinction = config.m_Medium.m_AbsorptionCoeff + config.m_Medium.m_ScatteringCoeff;
-        causticParams.extinctionCoeff = glm::vec4(extinction, 0.0f);
-        causticParams.mediumParams = glm::vec4(
-            config.m_Medium.m_IOR,
-            m_WaterLevel,
-            config.m_Caustics.m_Enabled ? config.m_Caustics.m_Intensity : 0.0f,
-            config.m_Caustics.m_MaxDistance);
-        causticParams.shapingParams = glm::vec4(
-            config.m_Caustics.m_MaxGain,
-            config.m_Caustics.m_FilterRadius,
-            config.m_Refraction.m_Enabled ? 1.0f : 0.0f,
-            0.0f);
-
-        m_CausticsParamsBuffer.SetBufferData(&causticParams, 0, sizeof(WaterCausticsParamsGPU));
-    }
 
     if (m_Device != nullptr && m_ThicknessParamsBufferCreated)
     {
@@ -1808,6 +1718,7 @@ void VansWaterSystem::RenderWaterGBuffer(VansVKCommandBuffer& cmd, GlobalStateDa
 
     std::vector<VkDescriptorSetLayout> layouts = { m_GlobalLayout, m_GBufPassLayout };
     std::vector<VkDescriptorSet>       sets    = { m_GlobalSet,    m_GBufPassSet    };
+    if(m_SplineFields){layouts.push_back(m_SplineFields->Layout());sets.push_back(m_SplineFields->DescriptorSet());}
 
     cmd.EnsureGraphicsShader(*m_WaterGBufferShader, globalState, layouts);
     cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -1844,7 +1755,6 @@ void VansWaterSystem::RenderWaterGBuffer(VansVKCommandBuffer& cmd, GlobalStateDa
 }
 
 // ============================================================
-// DispatchWaterSSR / DispatchRefractionCS / DispatchCausticsCS
 // ============================================================
 void VansWaterSystem::DispatchWaterSSR(VansVKCommandBuffer& cmd)
 {
@@ -2006,110 +1916,6 @@ void VansWaterSystem::DispatchRefractionCS(VansVKCommandBuffer& cmd)
             {}, {}, { barrier });
     }
     m_RefractionOutputReady = true;
-}
-void VansWaterSystem::DispatchCausticsCS(VansVKCommandBuffer& cmd)
-{
-    if (!m_Initialized || !m_DescriptorsReady) return;
-
-    // Caustics are opt-in.  Do not leave the compute pass running when the
-    // material is unavailable or the effect is disabled in the Inspector.
-    if (!m_WaterMaterial || !m_WaterMaterial->m_Config.m_Caustics.m_Enabled)
-        return;
-
-    if (m_WaterCausticsShader == nullptr || m_CausticsSet == VK_NULL_HANDLE) return;
-
-    // The caustics solver samples the simulation fields directly. Their
-    // producer barriers primarily target the water raster pass, so establish
-    // compute visibility here without changing any wave-generation behavior.
-    {
-        std::vector<VkImageMemoryBarrier> inputBarriers;
-        auto addSimulationInput = [&](VansVKImage& image,
-                                      uint32_t layerCount,
-                                      bool ready)
-        {
-            if (!ready)
-                return;
-
-            VkImageMemoryBarrier barrier = {};
-            barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-            barrier.srcAccessMask       = VK_ACCESS_SHADER_WRITE_BIT;
-            barrier.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT;
-            barrier.oldLayout           = VK_IMAGE_LAYOUT_GENERAL;
-            barrier.newLayout           = VK_IMAGE_LAYOUT_GENERAL;
-            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            barrier.image               = image.GetImage();
-            barrier.subresourceRange    = {
-                VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, layerCount
-            };
-            inputBarriers.push_back(barrier);
-        };
-
-        addSimulationInput(
-            m_WaveDisplacementImage,
-            uint32_t(VansWaterConfig::MAX_SPECTRUM_CASCADES),
-            m_WaveDisplacementReady);
-        addSimulationInput(
-            m_WaveDerivativeImage,
-            uint32_t(VansWaterConfig::MAX_SPECTRUM_CASCADES * 2),
-            m_WaveDerivativeReady);
-        addSimulationInput(m_FlowMapImage, 1, m_FlowMapReady);
-
-        if (!inputBarriers.empty())
-        {
-            cmd.PipelineBarrier(
-                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                {}, {}, inputBarriers);
-        }
-    }
-
-    {
-        VkImageMemoryBarrier barrier = {};
-        barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        barrier.srcAccessMask       = m_CausticsOutputReady ? VK_ACCESS_SHADER_READ_BIT : 0;
-        barrier.dstAccessMask       = VK_ACCESS_SHADER_WRITE_BIT;
-        barrier.oldLayout           = m_CausticsOutputReady ? VK_IMAGE_LAYOUT_GENERAL
-                                                          : m_WaterCausticsImage.GetImageLayout();
-        barrier.newLayout           = VK_IMAGE_LAYOUT_GENERAL;
-        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.image               = m_WaterCausticsImage.GetImage();
-        barrier.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-        m_WaterCausticsImage.SetTrackedImageLayout(VK_IMAGE_LAYOUT_GENERAL);
-        cmd.PipelineBarrier(
-            m_CausticsOutputReady ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
-                                : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            {}, {}, { barrier });
-    }
-
-    if (m_GlobalLayout == VK_NULL_HANDLE || m_GlobalSet == VK_NULL_HANDLE)
-        return;
-    cmd.EnsureComputeShader(
-        *m_WaterCausticsShader, { m_GlobalLayout, m_CausticsLayout });
-    cmd.DispatchCompute(*m_WaterCausticsShader,
-        (m_RenderWidth  + 7u) / 8u,
-        (m_RenderHeight + 7u) / 8u,
-        1, { m_GlobalSet, m_CausticsSet });
-
-    {
-        VkImageMemoryBarrier barrier = {};
-        barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        barrier.srcAccessMask       = VK_ACCESS_SHADER_WRITE_BIT;
-        barrier.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT;
-        barrier.oldLayout           = VK_IMAGE_LAYOUT_GENERAL;
-        barrier.newLayout           = VK_IMAGE_LAYOUT_GENERAL;
-        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.image               = m_WaterCausticsImage.GetImage();
-        barrier.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-        cmd.PipelineBarrier(
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-            {}, {}, { barrier });
-    }
-    m_CausticsOutputReady = true;
 }
 
 // ============================================================

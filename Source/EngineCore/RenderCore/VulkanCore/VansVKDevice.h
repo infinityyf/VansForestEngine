@@ -119,7 +119,8 @@ namespace VansGraphics
 			VkExtent3D imageSize,
 			int mipLevel,
 			int layerLevel,
-			VkImageLayout finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+			VkImageLayout finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			VkPipelineStageFlags shaderReadStages = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
 
 		bool RecordDeviceImageBufferData(VansVKImage& destImage,
 			VansVKCommandBuffer& cmd,

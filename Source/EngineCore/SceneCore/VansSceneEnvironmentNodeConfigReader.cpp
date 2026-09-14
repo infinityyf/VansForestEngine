@@ -1,5 +1,6 @@
 #include "VansSceneEnvironmentNodeConfigReader.h"
 
+#include "../AssetCore/Serialization/VansSerializedObjectReference.h"
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
 #include "../Util/VansLog.h"
 
@@ -181,61 +182,6 @@ std::optional<VansSceneWaterWaveMode> ReadOptionalWaterWaveMode(const VansSerial
 	return std::nullopt;
 }
 
-VansSceneTerrainNoiseDetailConfig DecodeTerrainNoiseDetail(const VansSerializedValue& noiseNode)
-{
-	VansSceneTerrainNoiseDetailConfig config;
-	config.enabled = ReadOptionalBoolField(noiseNode, "enabled");
-	config.strength = ReadOptionalFloatField(noiseNode, "strength");
-	config.frequency = ReadOptionalFloatField(noiseNode, "frequency");
-	config.lacunarity = ReadOptionalFloatField(noiseNode, "lacunarity");
-	config.gain = ReadOptionalFloatField(noiseNode, "gain");
-	config.octaves = ReadOptionalIntField(noiseNode, "octaves");
-	config.warpStrength = ReadOptionalFloatField(noiseNode, "warpStrength");
-	config.fadeStart = ReadOptionalFloatField(noiseNode, "fadeStart");
-	return config;
-}
-
-VansSceneTerrainTessellationConfig DecodeTerrainTessellation(const VansSerializedValue& tessellationNode)
-{
-	VansSceneTerrainTessellationConfig config;
-	config.enabled = ReadOptionalBoolField(tessellationNode, "enabled");
-	config.distance = ReadOptionalFloatField(tessellationNode, "distance");
-	config.maxLevel = ReadOptionalFloatField(tessellationNode, "maxLevel");
-	config.power = ReadOptionalFloatField(tessellationNode, "power");
-	config.lodBias = ReadOptionalFloatField(tessellationNode, "lodBias");
-	config.displacementStrength = ReadOptionalFloatField(tessellationNode, "displacementStrength");
-	if (const VansSerializedValue* noiseDetail = ReadObjectField(tessellationNode, "noiseDetail"))
-		config.noiseDetail = DecodeTerrainNoiseDetail(*noiseDetail);
-	return config;
-}
-
-VansSceneTerrainLayerConfig DecodeTerrainLayer(const VansSerializedValue& layerNode)
-{
-	VansSceneTerrainLayerConfig config;
-	config.albedoTexture = ReadOptionalStringField(layerNode, "albedo_texture");
-	config.albedoPath = ReadOptionalStringField(layerNode, "albedo");
-	config.normalTexture = ReadOptionalStringField(layerNode, "normal_texture");
-	config.normalPath = ReadOptionalStringField(layerNode, "normal");
-	config.roughnessTexture = ReadOptionalStringField(layerNode, "roughness_texture");
-	config.roughnessPath = ReadOptionalStringField(layerNode, "roughness");
-	config.tiling = ReadOptionalFloatField(layerNode, "tiling");
-	return config;
-}
-
-std::vector<VansSceneTerrainLayerConfig> DecodeTerrainLayers(const VansSerializedValue& terrainNode)
-{
-	std::vector<VansSceneTerrainLayerConfig> layers;
-	const VansSerializedValue* found = FindObjectField(terrainNode, "layers");
-	if (!found || found->kind != VansSerializedValue::Kind::Array)
-		return layers;
-
-	layers.reserve(found->arrayItems.size());
-	for (const VansSerializedValue& layerNode : found->arrayItems)
-		if (layerNode.kind == VansSerializedValue::Kind::Object)
-			layers.push_back(DecodeTerrainLayer(layerNode));
-	return layers;
-}
-
 std::vector<std::string> DecodeStringArrayField(const VansSerializedValue& object, const char* key)
 {
 	std::vector<std::string> values;
@@ -263,12 +209,7 @@ VansSceneTerrainCollisionConfig DecodeTerrainCollision(const VansSerializedValue
 {
 	VansSceneTerrainCollisionConfig config;
 	config.enabled = ReadOptionalBoolField(collisionNode, "enabled");
-	config.terrainSize = ReadOptionalFloatField(collisionNode, "terrainSize");
-	config.maxHeight = ReadOptionalFloatField(collisionNode, "maxHeight");
-	config.heightOffset = ReadOptionalFloatField(collisionNode, "heightOffset");
 	config.layer = ReadOptionalStringField(collisionNode, "layer");
-	config.flipX = ReadOptionalBoolField(collisionNode, "flipX");
-	config.flipZ = ReadOptionalBoolField(collisionNode, "flipZ");
 	if (const VansSerializedValue* material = ReadObjectField(collisionNode, "material"))
 		config.material = DecodeTerrainPhysicsMaterial(*material);
 	return config;
@@ -361,16 +302,6 @@ VansSceneWaterFlowMapConfig DecodeWaterFlowMap(const VansSerializedValue& flowMa
 	return config;
 }
 
-VansSceneWaterCausticsConfig DecodeWaterCaustics(const VansSerializedValue& causticsNode)
-{
-	VansSceneWaterCausticsConfig config;
-	config.enabled = ReadOptionalBoolField(causticsNode, "enabled");
-	config.intensity = ReadOptionalFloatField(causticsNode, "intensity");
-	config.maxDistance = ReadOptionalFloatField(causticsNode, "maxDistance");
-	config.maxGain = ReadOptionalFloatField(causticsNode, "maxGain");
-	config.filterRadius = ReadOptionalFloatField(causticsNode, "filterRadius");
-	return config;
-}
 
 VansSceneWaterRefractionConfig DecodeWaterRefraction(const VansSerializedValue& refractionNode)
 {
@@ -511,325 +442,6 @@ VansSceneWaterGeometryConfig DecodeWaterGeometry(const VansSerializedValue& geom
 	return config;
 }
 
-std::optional<std::int32_t> ReadSubmeshIndex(const VansSerializedValue& node)
-{
-	if (node.kind != VansSerializedValue::Kind::Object)
-		return std::nullopt;
-	if (std::optional<std::int32_t> index = ReadOptionalInt32Field(node, "submeshIndex"))
-		return index;
-
-	const VansSerializedValue* submesh = FindObjectField(node, "submesh");
-	if (!submesh)
-		return std::nullopt;
-	if (submesh->kind == VansSerializedValue::Kind::Int)
-		return static_cast<std::int32_t>(submesh->intValue);
-	if (submesh->kind == VansSerializedValue::Kind::Object)
-		return ReadOptionalInt32Field(*submesh, "index");
-	return std::nullopt;
-}
-
-bool HasPcgMaskSource(const VansSerializedValue& maskNode)
-{
-	return FindObjectField(maskNode, "path") != nullptr
-		|| FindObjectField(maskNode, "texture") != nullptr
-		|| FindObjectField(maskNode, "guid") != nullptr
-		|| FindObjectField(maskNode, "textureGuid") != nullptr
-		|| FindObjectField(maskNode, "assetGuid") != nullptr
-		|| FindObjectField(maskNode, "asset") != nullptr;
-}
-
-VansScenePcgMaskConfig DecodePcgMaskConfig(
-	const VansSerializedValue& maskNode,
-	const std::string& fallbackId = {})
-{
-	VansScenePcgMaskConfig config;
-	if (maskNode.kind != VansSerializedValue::Kind::Object)
-		return config;
-
-	config.id = ReadOptionalStringField(maskNode, "id");
-	if (!config.id && !fallbackId.empty())
-		config.id = fallbackId;
-	config.path = ReadOptionalStringField(maskNode, "path");
-	config.assetGuid = ReadOptionalStringField(maskNode, "guid");
-	if (!config.assetGuid) config.assetGuid = ReadOptionalStringField(maskNode, "textureGuid");
-	if (!config.assetGuid) config.assetGuid = ReadOptionalStringField(maskNode, "assetGuid");
-	config.channel = ReadOptionalStringField(maskNode, "channel");
-	config.boundsMin = ReadOptionalFloat2Field(maskNode, "boundsMin");
-	config.boundsMax = ReadOptionalFloat2Field(maskNode, "boundsMax");
-	config.worldMin = ReadOptionalFloat2Field(maskNode, "worldMin");
-	config.worldMax = ReadOptionalFloat2Field(maskNode, "worldMax");
-	config.threshold = ReadOptionalFloatField(maskNode, "threshold");
-	config.densityScale = ReadOptionalFloatField(maskNode, "densityScale");
-	config.invert = ReadOptionalBoolField(maskNode, "invert");
-
-	if (const VansSerializedValue* texture = FindObjectField(maskNode, "texture"))
-	{
-		if (texture->kind == VansSerializedValue::Kind::Object)
-		{
-			if (!config.assetGuid) config.assetGuid = ReadOptionalStringField(*texture, "guid");
-		}
-		else if (texture->kind == VansSerializedValue::Kind::String)
-		{
-			config.textureValue = texture->stringValue;
-		}
-	}
-
-	if (const VansSerializedValue* asset = FindObjectField(maskNode, "asset"))
-	{
-		if (asset->kind == VansSerializedValue::Kind::Object)
-		{
-			if (!config.assetGuid) config.assetGuid = ReadOptionalStringField(*asset, "guid");
-		}
-		else if (asset->kind == VansSerializedValue::Kind::String)
-		{
-			config.assetGuid = asset->stringValue;
-		}
-	}
-
-	return config;
-}
-
-std::optional<VansScenePcgMaskReferenceConfig> DecodePcgMaskReference(const VansSerializedValue& ownerNode)
-{
-	if (ownerNode.kind != VansSerializedValue::Kind::Object)
-		return std::nullopt;
-
-	const VansSerializedValue* mask = FindObjectField(ownerNode, "mask");
-	if (!mask)
-		return std::nullopt;
-
-	VansScenePcgMaskReferenceConfig config;
-	if (mask->kind == VansSerializedValue::Kind::String)
-	{
-		config.ref = mask->stringValue;
-		return config;
-	}
-
-	if (mask->kind != VansSerializedValue::Kind::Object)
-		return std::nullopt;
-
-	const std::string ref = ReadOptionalStringField(*mask, "ref")
-		.value_or(ReadOptionalStringField(*mask, "id").value_or(std::string()));
-	if (!ref.empty() && !HasPcgMaskSource(*mask))
-	{
-		config.ref = ref;
-		return config;
-	}
-
-	config.inlineMask = DecodePcgMaskConfig(*mask, ref);
-	return config;
-}
-
-std::vector<VansScenePcgMaskConfig> DecodePcgMasks(const VansSerializedValue& vegetationNode)
-{
-	std::vector<VansScenePcgMaskConfig> masks;
-	const VansSerializedValue* masksNode = nullptr;
-	if (const VansSerializedValue* pcg = ReadObjectField(vegetationNode, "pcg"))
-	{
-		const VansSerializedValue* pcgMasks = FindObjectField(*pcg, "masks");
-		if (pcgMasks && (pcgMasks->kind == VansSerializedValue::Kind::Array ||
-			pcgMasks->kind == VansSerializedValue::Kind::Object))
-		{
-			masksNode = pcgMasks;
-		}
-	}
-	if (masksNode == nullptr)
-	{
-		const VansSerializedValue* found = FindObjectField(vegetationNode, "masks");
-		if (found && (found->kind == VansSerializedValue::Kind::Array ||
-			found->kind == VansSerializedValue::Kind::Object))
-		{
-			masksNode = found;
-		}
-	}
-	if (masksNode == nullptr)
-		return masks;
-
-	if (masksNode->kind == VansSerializedValue::Kind::Array)
-	{
-		masks.reserve(masksNode->arrayItems.size());
-		for (const VansSerializedValue& maskNode : masksNode->arrayItems)
-			if (maskNode.kind == VansSerializedValue::Kind::Object)
-				masks.push_back(DecodePcgMaskConfig(maskNode));
-	}
-	else if (masksNode->kind == VansSerializedValue::Kind::Object)
-	{
-		masks.reserve(masksNode->objectFields.size());
-		for (const auto& [id, maskNode] : masksNode->objectFields)
-			if (maskNode.kind == VansSerializedValue::Kind::Object)
-				masks.push_back(DecodePcgMaskConfig(maskNode, id));
-	}
-	return masks;
-}
-
-VansSceneVegetationPlacementConfig DecodeVegetationPlacement(const VansSerializedValue& placementNode)
-{
-	VansSceneVegetationPlacementConfig config;
-	config.boundsMin = ReadOptionalFloat2Field(placementNode, "boundsMin");
-	config.boundsMax = ReadOptionalFloat2Field(placementNode, "boundsMax");
-	config.grassScaleMin = ReadOptionalFloatField(placementNode, "grassScaleMin");
-	config.grassScaleMax = ReadOptionalFloatField(placementNode, "grassScaleMax");
-	config.mask = DecodePcgMaskReference(placementNode);
-	return config;
-}
-
-VansSceneVegetationTreePartType DecodeTreePartType(const std::string& type)
-{
-	std::string lower = type;
-	std::transform(lower.begin(), lower.end(), lower.begin(),
-		[](unsigned char value) { return static_cast<char>(std::tolower(value)); });
-	if (lower == "trunk") return VansSceneVegetationTreePartType::Trunk;
-	if (lower == "leaves" || lower == "leaf") return VansSceneVegetationTreePartType::Leaves;
-	return VansSceneVegetationTreePartType::Custom;
-}
-
-VansSceneVegetationTreePartConfig DecodeTreePart(const VansSerializedValue& partNode)
-{
-	VansSceneVegetationTreePartConfig config;
-	config.type = DecodeTreePartType(ReadOptionalStringField(partNode, "type").value_or("custom"));
-	config.mesh = ReadOptionalStringField(partNode, "mesh").value_or(std::string());
-	config.material = ReadOptionalStringField(partNode, "material").value_or(std::string());
-	config.submeshIndex = ReadSubmeshIndex(partNode);
-	return config;
-}
-
-VansSceneVegetationTreeSpeciesConfig DecodeTreeSpecies(const VansSerializedValue& speciesNode)
-{
-	VansSceneVegetationTreeSpeciesConfig config;
-	config.name = ReadOptionalStringField(speciesNode, "name").value_or("TreeSpecies");
-	config.boundsRadius = ReadOptionalFloatField(speciesNode, "boundsRadius");
-	const VansSerializedValue* parts = FindObjectField(speciesNode, "parts");
-	if (parts && parts->kind == VansSerializedValue::Kind::Array)
-	{
-		config.parts.reserve(parts->arrayItems.size());
-		for (const VansSerializedValue& partNode : parts->arrayItems)
-			if (partNode.kind == VansSerializedValue::Kind::Object)
-				config.parts.push_back(DecodeTreePart(partNode));
-	}
-	return config;
-}
-
-VansSceneVegetationTreeInstanceConfig DecodeTreeInstance(const VansSerializedValue& instanceNode)
-{
-	VansSceneVegetationTreeInstanceConfig config;
-	config.species = ReadOptionalStringField(instanceNode, "species");
-	config.position = ReadOptionalFloat3Field(instanceNode, "position");
-	config.yaw = ReadOptionalFloatField(instanceNode, "yaw");
-	config.scale = ReadOptionalFloatField(instanceNode, "scale");
-	config.submeshIndex = ReadSubmeshIndex(instanceNode);
-	return config;
-}
-
-VansSceneVegetationRandomTreeConfig DecodeRandomTreeConfig(const VansSerializedValue& randomNode)
-{
-	VansSceneVegetationRandomTreeConfig config;
-	config.count = ReadOptionalUInt32Field(randomNode, "count");
-	config.seed = ReadOptionalUInt32Field(randomNode, "seed");
-	config.scaleMin = ReadOptionalFloatField(randomNode, "scaleMin");
-	config.scaleMax = ReadOptionalFloatField(randomNode, "scaleMax");
-	config.boundsMin = ReadOptionalFloat2Field(randomNode, "boundsMin");
-	config.boundsMax = ReadOptionalFloat2Field(randomNode, "boundsMax");
-	config.species = ReadOptionalStringField(randomNode, "species");
-	config.submeshIndex = ReadSubmeshIndex(randomNode);
-	config.mask = DecodePcgMaskReference(randomNode);
-	return config;
-}
-
-VansSceneVegetationTreesConfig DecodeVegetationTrees(const VansSerializedValue& treesNode)
-{
-	VansSceneVegetationTreesConfig config;
-	config.enabled = ReadOptionalBoolField(treesNode, "enabled");
-	config.cullDistance = ReadOptionalFloatField(treesNode, "cullDistance");
-	config.cullEnabled = ReadOptionalBoolField(treesNode, "cullEnabled");
-	config.hizEnabled = ReadOptionalBoolField(treesNode, "hizEnabled");
-	config.fallbackCount = ReadOptionalUInt32Field(treesNode, "count");
-	config.placementRadius = ReadOptionalFloatField(treesNode, "placementRadius");
-	config.center = ReadOptionalFloat3Field(treesNode, "center");
-
-	const VansSerializedValue* species = FindObjectField(treesNode, "species");
-	if (species && species->kind == VansSerializedValue::Kind::Array)
-	{
-		config.species.reserve(species->arrayItems.size());
-		for (const VansSerializedValue& speciesNode : species->arrayItems)
-			if (speciesNode.kind == VansSerializedValue::Kind::Object)
-				config.species.push_back(DecodeTreeSpecies(speciesNode));
-	}
-
-	const VansSerializedValue* instances = FindObjectField(treesNode, "instances");
-	if (instances && instances->kind == VansSerializedValue::Kind::Array)
-	{
-		config.instances.reserve(instances->arrayItems.size());
-		for (const VansSerializedValue& instanceNode : instances->arrayItems)
-			if (instanceNode.kind == VansSerializedValue::Kind::Object)
-				config.instances.push_back(DecodeTreeInstance(instanceNode));
-	}
-
-	if (const VansSerializedValue* randomInstances = ReadObjectField(treesNode, "randomInstances"))
-		config.randomInstances = DecodeRandomTreeConfig(*randomInstances);
-	return config;
-}
-
-VansSceneVegetationRenderConfig DecodeVegetationRenderConfig(const VansSerializedValue& renderNode)
-{
-	VansSceneVegetationRenderConfig config;
-	config.mesh = ReadOptionalStringField(renderNode, "mesh");
-	config.material = ReadOptionalStringField(renderNode, "material");
-	config.percent = ReadOptionalFloatField(renderNode, "percent");
-	return config;
-}
-
-VansSceneVegetationNodeConfig DecodeVegetationObject(const VansSerializedValue& vegetationNode)
-{
-	VansSceneVegetationNodeConfig config;
-	if (vegetationNode.kind != VansSerializedValue::Kind::Object)
-	{
-		config.valid = false;
-		return config;
-	}
-
-	config.instanceCount = ReadOptionalUInt32Field(vegetationNode, "instanceCount");
-	config.boneCount = ReadOptionalUInt32Field(vegetationNode, "boneCount");
-	config.bladeHeight = ReadOptionalFloatField(vegetationNode, "bladeHeight");
-	config.windDirX = ReadOptionalFloatField(vegetationNode, "windDirX");
-	config.windDirZ = ReadOptionalFloatField(vegetationNode, "windDirZ");
-	config.leanDeviation = ReadOptionalFloatField(vegetationNode, "leanDeviation");
-	config.material = ReadOptionalStringField(vegetationNode, "material");
-	config.name = ReadOptionalStringField(vegetationNode, "name");
-	config.subBladeCount = ReadOptionalUInt32Field(vegetationNode, "subBladeCount");
-	config.subBladeScatterRadiusMin = ReadOptionalFloatField(vegetationNode, "subBladeScatterRadiusMin");
-	config.subBladeScatterRadiusMax = ReadOptionalFloatField(vegetationNode, "subBladeScatterRadiusMax");
-	config.windStrength = ReadOptionalFloatField(vegetationNode, "windStrength");
-	config.windFrequency = ReadOptionalFloatField(vegetationNode, "windFrequency");
-	config.windSpeed = ReadOptionalFloatField(vegetationNode, "windSpeed");
-	config.windBendMult = ReadOptionalFloatField(vegetationNode, "windBendMult");
-	config.stiffness = ReadOptionalFloatField(vegetationNode, "stiffness");
-	config.damping = ReadOptionalFloatField(vegetationNode, "damping");
-	config.softness = ReadOptionalFloatField(vegetationNode, "softness");
-	config.lodFullDist = ReadOptionalFloatField(vegetationNode, "lodFullDist");
-	config.lodFadeDist = ReadOptionalFloatField(vegetationNode, "lodFadeDist");
-	config.terrainMaxHeight = ReadOptionalFloatField(vegetationNode, "terrainMaxHeight");
-	config.terrainHeightOffset = ReadOptionalFloatField(vegetationNode, "terrainHeightOffset");
-	config.hizSampleBias = ReadOptionalFloatField(vegetationNode, "hizSampleBias");
-	config.grassScaleMin = ReadOptionalFloatField(vegetationNode, "grassScaleMin");
-	config.grassScaleMax = ReadOptionalFloatField(vegetationNode, "grassScaleMax");
-	config.pcgMasks = DecodePcgMasks(vegetationNode);
-
-	if (const VansSerializedValue* placement = ReadObjectField(vegetationNode, "placement"))
-		config.placement = DecodeVegetationPlacement(*placement);
-	if (const VansSerializedValue* trees = ReadObjectField(vegetationNode, "trees"))
-		config.trees = DecodeVegetationTrees(*trees);
-
-	const VansSerializedValue* renderConfigs = FindObjectField(vegetationNode, "renderConfigs");
-	if (renderConfigs && renderConfigs->kind == VansSerializedValue::Kind::Array)
-	{
-		config.renderConfigs.reserve(renderConfigs->arrayItems.size());
-		for (const VansSerializedValue& renderNode : renderConfigs->arrayItems)
-			if (renderNode.kind == VansSerializedValue::Kind::Object)
-				config.renderConfigs.push_back(DecodeVegetationRenderConfig(renderNode));
-	}
-
-	return config;
-}
 }
 
 VansSceneTerrainNodeConfig VansSceneEnvironmentNodeConfigReader::ReadTerrain(
@@ -839,19 +451,15 @@ VansSceneTerrainNodeConfig VansSceneEnvironmentNodeConfigReader::ReadTerrain(
 	if (terrainNode.kind != VansSerializedValue::Kind::Object)
 		return config;
 
-	config.heightmap = ReadOptionalStringField(terrainNode, "heightmap");
-	config.terrainSize = ReadOptionalFloatField(terrainNode, "terrainSize");
-	config.maxHeight = ReadOptionalFloatField(terrainNode, "maxHeight");
-	config.heightOffset = ReadOptionalFloatField(terrainNode, "heightOffset");
-	config.splitDistMult = ReadOptionalFloatField(terrainNode, "splitDistMult");
-	config.lodDistanceRatio = ReadOptionalFloatField(terrainNode, "lodDistanceRatio");
-	config.morphStartRatio = ReadOptionalFloatField(terrainNode, "morphStartRatio");
-	config.maxPatchInstances = ReadOptionalUIntField(terrainNode, "maxPatchInstances");
-	config.splatmaps = DecodeStringArrayField(terrainNode, "splatmaps");
-	config.layers = DecodeTerrainLayers(terrainNode);
+	const VansSerializedValue* assetValue = FindObjectField(terrainNode, "asset");
+	SerializedObjectReferenceValue reference;
+	if (assetValue && TryReadSerializedObjectReference(*assetValue, reference) &&
+		reference.domain == "ProjectAsset" && reference.assetType == "terrain")
+	{
+		config.assetGuid = reference.guid;
+		config.valid = true;
+	}
 	config.name = ReadOptionalStringField(terrainNode, "name");
-	if (const VansSerializedValue* tessellation = ReadObjectField(terrainNode, "tessellation"))
-		config.tessellation = DecodeTerrainTessellation(*tessellation);
 	if (const VansSerializedValue* collision = ReadObjectField(terrainNode, "collision"))
 		config.collision = DecodeTerrainCollision(*collision);
 	return config;
@@ -879,8 +487,6 @@ VansSceneWaterNodeConfig VansSceneEnvironmentNodeConfigReader::ReadWater(
 		config.waveParticle = DecodeWaterWaveParticles(*waveParticle);
 	if (const VansSerializedValue* flowMap = ReadObjectField(waterNode, "flowMap"))
 		config.flowMap = DecodeWaterFlowMap(*flowMap);
-	if (const VansSerializedValue* caustics = ReadObjectField(waterNode, "caustics"))
-		config.caustics = DecodeWaterCaustics(*caustics);
 	if (const VansSerializedValue* refraction = ReadObjectField(waterNode, "refraction"))
 		config.refraction = DecodeWaterRefraction(*refraction);
 	if (const VansSerializedValue* detailNormal = ReadObjectField(waterNode, "detailNormal"))
@@ -904,17 +510,4 @@ VansSceneWaterNodeConfig VansSceneEnvironmentNodeConfigReader::ReadWater(
 	return config;
 }
 
-VansSceneVegetationNodeConfig VansSceneEnvironmentNodeConfigReader::ReadVegetation(
-	const VansSerializedValue& vegetationNode)
-{
-	if (vegetationNode.kind != VansSerializedValue::Kind::Object)
-	{
-		VANS_LOG_ERROR("[SceneLoader] Vegetation config must be an object.");
-		VansSceneVegetationNodeConfig config;
-		config.valid = false;
-		return config;
-	}
-
-	return DecodeVegetationObject(vegetationNode);
-}
 }

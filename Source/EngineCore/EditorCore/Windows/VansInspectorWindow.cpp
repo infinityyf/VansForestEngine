@@ -129,6 +129,7 @@ const char* AssetTypeName(Vans::EditorAPI::AssetType type)
 	case Vans::EditorAPI::AssetType::UILocalization: return "UI Localization";
 	case Vans::EditorAPI::AssetType::UIXaml: return "UI XAML";
 	case Vans::EditorAPI::AssetType::VegetationConfig: return "Vegetation Config";
+	case Vans::EditorAPI::AssetType::Terrain: return "Terrain";
     default: return "Asset";
     }
 }

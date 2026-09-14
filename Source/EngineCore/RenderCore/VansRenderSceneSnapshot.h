@@ -13,6 +13,8 @@
 #include "VansPostProcessProfile.h"
 #include "../AnimationCore/VansAnimationTypes.h"
 #include "../ParticleCore/VansParticleInstanceData.h"
+#include "../PcgCore/VansPcgBatchPlan.h"
+#include "../PcgCore/VansPcgSplineField.h"
 
 #include <cstdint>
 #include <glm/glm.hpp>
@@ -196,6 +198,24 @@ namespace VansGraphics
 		bool prepared = false;
 	};
 
+	enum class VansRenderTerrainTexture : std::uint8_t
+	{
+		Height,
+		Splat0,
+		Splat1
+	};
+
+	struct VansRenderTerrainRegionUpload final
+	{
+		std::string assetGuid;
+		VansRenderTerrainTexture texture = VansRenderTerrainTexture::Height;
+		std::uint32_t x = 0;
+		std::uint32_t y = 0;
+		std::uint32_t width = 0;
+		std::uint32_t height = 0;
+		std::vector<std::uint8_t> bytes;
+	};
+
 	// Owned by VansRenderFramePacket after publication. No Scene/RenderNode/Vk
 	// pointers or borrowed spans are permitted here.
 	struct VansRenderSceneFrameSnapshot final
@@ -212,6 +232,9 @@ namespace VansGraphics
 		VansRenderMaterialFrameData materials;
 		VansRenderGIFrameData gi;
 		VansRenderPostProcessFrameData postProcess;
+		std::vector<VansRenderTerrainRegionUpload> terrainUploads;
+		std::shared_ptr<const Vans::VansPcgSplineFieldSnapshot> splineFieldUpdate;
+		std::vector<std::shared_ptr<const Vans::VansPcgBatchUpdate>> vegetationUpdates;
 		VansMainCameraHiZCullSettings mainCameraHiZCullSettings;
 		std::vector<VansRenderMainCameraCullInput> mainCameraCullInputs;
 		VansRenderPunctualShadowFrameInput punctualShadow;

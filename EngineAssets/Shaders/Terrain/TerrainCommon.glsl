@@ -1,13 +1,43 @@
-// Terrain 顶点阶段公共逻辑：统一高度参数、UV 映射和边缘缝合。
+#ifndef TERRAIN_COMMON_GLSL
+#define TERRAIN_COMMON_GLSL
 
 #include "TerrainNoise.glsl"
+#include "../Common/PcgSplineFields.glsl"
 
 layout(set = 1, binding = 0) uniform sampler2D heightMap;
-layout(set = 1, binding = 6) uniform TerrainParams {
+
+layout(set = 1, binding = 6) uniform TerrainParams
+{
     ivec4 layerCountPacked;
     float tilingFactors[8];
-    vec4 heightfieldParams; // x=terrainSize, y=maxHeight, z=heightOffset, w=patchGridSize
+    vec4 heightfieldParams; // x=terrainSize, y=maxHeight, z=heightOffset, w=patchGridResolution
 } terrainParams;
+
+layout(set = 1, binding = 7) uniform TessellationParams
+{
+    float maxTessLevel;
+    float tessDistance;
+    float targetEdgePixels;
+    float padding;
+} tessParams;
+
+layout(set = 1, binding = 8) uniform NoiseDetailParams
+{
+    float noiseStrength;
+    float noiseFrequency;
+    float noiseLacunarity;
+    float noiseGain;
+    int noiseOctaves;
+    float noiseWarpStrength;
+    float fadeStart;
+    float noisePadding;
+} noiseParams;
+
+const uint TerrainEdgeLeft = 1u;
+const uint TerrainEdgeRight = 2u;
+const uint TerrainEdgeTop = 4u;
+const uint TerrainEdgeBottom = 8u;
+const uint TerrainEdgeMask = 15u;
 
 float TerrainSize()
 {
@@ -24,125 +54,27 @@ float TerrainHeightOffset()
     return terrainParams.heightfieldParams.z;
 }
 
-float TerrainPatchGridSize()
+float TerrainPatchGridResolution()
 {
     return terrainParams.heightfieldParams.w;
 }
 
-vec2 TerrainWorldXZToHeightUV(vec2 worldPosXZ)
+vec2 TerrainWorldXZToHeightUV(vec2 worldXZ)
 {
-    return worldPosXZ / TerrainSize() + vec2(0.5);
+    return worldXZ / TerrainSize() + vec2(0.5);
 }
 
-float TerrainSampleRawHeight(vec2 heightUV)
+float TerrainSampleBaseWorldHeight(vec2 worldXZ)
 {
-    return texture(heightMap, heightUV).r * TerrainMaxHeight();
+    return texture(heightMap, TerrainWorldXZToHeightUV(worldXZ)).r * TerrainMaxHeight() + TerrainHeightOffset();
 }
-
-float TerrainRawHeightToWorldY(float rawHeight)
-{
-    return rawHeight + TerrainHeightOffset();
-}
-
-float TerrainSampleLocalRawHeight(vec2 localPos, vec2 instanceOffset, float instanceScale)
-{
-    vec2 worldPosXZ = localPos * instanceScale + instanceOffset;
-    return TerrainSampleRawHeight(TerrainWorldXZToHeightUV(worldPosXZ));
-}
-
-float TerrainSampleStitchedRawHeight(vec2 localPos, vec2 instanceOffset, float instanceScale, float stitchFlags)
-{
-    int flags = int(stitchFlags);
-    float patchSize = TerrainPatchGridSize();
-
-    bool isLeft = localPos.x < 0.1;
-    bool isRight = localPos.x > patchSize - 0.1;
-    bool isTop = localPos.y < 0.1;
-    bool isBottom = localPos.y > patchSize - 0.1;
-
-    bool stitchLeft = isLeft && ((flags & 1) != 0);
-    bool stitchRight = isRight && ((flags & 2) != 0);
-    bool stitchTop = isTop && ((flags & 4) != 0);
-    bool stitchBottom = isBottom && ((flags & 8) != 0);
-
-    // 细 LOD 与粗 LOD 相邻时，不能移动边缘 XZ；只把高度投影到粗 LOD 边缘线段上。
-    if (stitchLeft || stitchRight)
-    {
-        float edgeX = stitchLeft ? 0.0 : patchSize;
-        float coarse0 = clamp(floor(localPos.y * 0.5) * 2.0, 0.0, patchSize);
-        float coarse1 = min(coarse0 + 2.0, patchSize);
-        float denom = max(coarse1 - coarse0, 0.0001);
-        float t = clamp((localPos.y - coarse0) / denom, 0.0, 1.0);
-        float h0 = TerrainSampleLocalRawHeight(vec2(edgeX, coarse0), instanceOffset, instanceScale);
-        float h1 = TerrainSampleLocalRawHeight(vec2(edgeX, coarse1), instanceOffset, instanceScale);
-        return mix(h0, h1, t);
-    }
-
-    if (stitchTop || stitchBottom)
-    {
-        float edgeY = stitchTop ? 0.0 : patchSize;
-        float coarse0 = clamp(floor(localPos.x * 0.5) * 2.0, 0.0, patchSize);
-        float coarse1 = min(coarse0 + 2.0, patchSize);
-        float denom = max(coarse1 - coarse0, 0.0001);
-        float t = clamp((localPos.x - coarse0) / denom, 0.0, 1.0);
-        float h0 = TerrainSampleLocalRawHeight(vec2(coarse0, edgeY), instanceOffset, instanceScale);
-        float h1 = TerrainSampleLocalRawHeight(vec2(coarse1, edgeY), instanceOffset, instanceScale);
-        return mix(h0, h1, t);
-    }
-
-    return TerrainSampleLocalRawHeight(localPos, instanceOffset, instanceScale);
-}
-
-vec3 TerrainBuildWorldPosition(vec2 localPos, vec2 instanceOffset, float instanceScale, float stitchFlags, out vec2 heightUV, out float rawHeight)
-{
-    vec2 worldPosXZ = localPos * instanceScale + instanceOffset;
-    heightUV = TerrainWorldXZToHeightUV(worldPosXZ);
-    rawHeight = TerrainSampleStitchedRawHeight(localPos, instanceOffset, instanceScale, stitchFlags);
-    return vec3(worldPosXZ.x, TerrainRawHeightToWorldY(rawHeight), worldPosXZ.y);
-}
-
-// 细分参数（binding 7，TCS 与 TES 读取）。
-// 注：displacementStrength 已移除，原法线贴图 Y 位移逻辑由程序化噪声替代。
-layout(set = 1, binding = 7) uniform TessellationParams {
-    float maxTessLevel;
-    float tessDistance;
-    float tessPower;
-    float padding;  // 原 displacementStrength，现为 padding
-} tessParams;
-
-// 程序化噪声细节参数（binding 8，TES 与 FS 读取）。
-layout(set = 1, binding = 8) uniform NoiseDetailParams {
-    float noiseStrength;      // 噪声强度（世界单位），默认 0.03
-    float noiseFrequency;     // 基础频率（世界单位倒数），默认 0.8
-    float noiseLacunarity;    // 频率倍增系数，默认 2.0（与 hill() 一致）
-    float noiseGain;          // 振幅衰减系数，默认 0.52（与 hill() 一致）
-    int   noiseOctaves;       // octave 数量，默认 4
-    float noiseWarpStrength;  // 域扭曲强度，默认 0.0 表示关闭
-    float fadeStart;          // 距离衰减起始比例 [0,1]，默认 0.7
-    float noisePadding;
-} noiseParams;
 
 int TerrainGeometryNoiseOctaves()
 {
-    return min(noiseParams.noiseOctaves, 2);
+    return noiseParams.noiseOctaves;
 }
 
-float TerrainGeometryNoiseFade(vec3 worldPos)
-{
-    if (noiseParams.noiseStrength <= 0.0)
-    {
-        return 0.0;
-    }
-
-    float distToCamera = length(worldPos - cameraPosition.xyz);
-    return 1.0 - smoothstep(
-        tessParams.tessDistance * noiseParams.fadeStart,
-        tessParams.tessDistance,
-        distToCamera
-    );
-}
-
-float TerrainEvaluateGeometryNoise(vec2 worldXZ, int octaves)
+float TerrainEvaluateNoise(vec2 worldXZ, int octaves)
 {
     if (noiseParams.noiseWarpStrength > 0.001)
     {
@@ -151,52 +83,163 @@ float TerrainEvaluateGeometryNoise(vec2 worldXZ, int octaves)
             octaves,
             noiseParams.noiseGain,
             noiseParams.noiseLacunarity,
-            noiseParams.noiseWarpStrength
-        );
+            noiseParams.noiseWarpStrength);
     }
 
     return terrainDetailFbm(
         worldXZ * noiseParams.noiseFrequency,
         octaves,
         noiseParams.noiseGain,
-        noiseParams.noiseLacunarity
-    );
+        noiseParams.noiseLacunarity);
 }
 
-vec2 TerrainEvaluateGeometryNoiseGradient(vec2 worldXZ, int octaves, float gradEps)
+float TerrainNoiseFade(vec2 worldXZ, float baseWorldHeight)
 {
+    if (noiseParams.noiseStrength <= 0.0 || tessParams.tessDistance <= 0.0)
+        return 0.0;
+
+    float distanceToCamera = distance(vec3(worldXZ.x, baseWorldHeight, worldXZ.y), cameraPosition.xyz);
+    return 1.0 - smoothstep(
+        tessParams.tessDistance * noiseParams.fadeStart,
+        tessParams.tessDistance,
+        distanceToCamera);
+}
+
+float TerrainSampleDetailedWorldHeight(vec2 worldXZ)
+{
+    float baseHeight = TerrainSampleBaseWorldHeight(worldXZ);
+    float fade = TerrainNoiseFade(worldXZ, baseHeight);
+    if (fade <= 0.001)
+        return baseHeight;
+
+    return baseHeight + TerrainEvaluateNoise(worldXZ, TerrainGeometryNoiseOctaves()) *
+        noiseParams.noiseStrength * fade * (1.0-PcgCoverage(worldXZ).a);
+}
+
+vec2 TerrainDetailedNoiseGradient(vec3 worldPosition)
+{
+    float fade = TerrainNoiseFade(worldPosition.xz, worldPosition.y);
+    if (fade <= 0.001)
+        return vec2(0.0);
+
+    const float gradientStep = 0.02;
+    vec2 gradient;
     if (noiseParams.noiseWarpStrength > 0.001)
     {
-        return terrainDetailGradientWarped(
-            worldXZ,
+        gradient = terrainDetailGradientWarped(
+            worldPosition.xz,
             noiseParams.noiseFrequency,
-            octaves,
+            TerrainGeometryNoiseOctaves(),
             noiseParams.noiseGain,
             noiseParams.noiseLacunarity,
             noiseParams.noiseWarpStrength,
-            gradEps
-        );
+            gradientStep);
     }
-
-    return terrainDetailGradient(
-        worldXZ,
-        noiseParams.noiseFrequency,
-        octaves,
-        noiseParams.noiseGain,
-        noiseParams.noiseLacunarity,
-        gradEps
-    );
-}
-
-vec3 TerrainApplyGeometryNoise(vec3 worldPos)
-{
-    float noiseFade = TerrainGeometryNoiseFade(worldPos);
-    if (noiseFade <= 0.001)
+    else
     {
-        return worldPos;
+        gradient = terrainDetailGradient(
+            worldPosition.xz,
+            noiseParams.noiseFrequency,
+            TerrainGeometryNoiseOctaves(),
+            noiseParams.noiseGain,
+            noiseParams.noiseLacunarity,
+            gradientStep);
     }
 
-    float noiseDisp = TerrainEvaluateGeometryNoise(worldPos.xz, TerrainGeometryNoiseOctaves());
-    worldPos.y += noiseDisp * noiseParams.noiseStrength * noiseFade;
-    return worldPos;
+    if(pcgMetadata[0].y==0u)return gradient*noiseParams.noiseStrength*fade;
+    float suppression=PcgCoverage(worldPosition.xz).a;
+    vec2 suppressionGradient=vec2(
+        PcgCoverage(worldPosition.xz+vec2(gradientStep,0)).a-PcgCoverage(worldPosition.xz-vec2(gradientStep,0)).a,
+        PcgCoverage(worldPosition.xz+vec2(0,gradientStep)).a-PcgCoverage(worldPosition.xz-vec2(0,gradientStep)).a)/(2.0*gradientStep);
+    return (gradient*(1.0-suppression)-TerrainEvaluateNoise(worldPosition.xz,TerrainGeometryNoiseOctaves())*suppressionGradient)*noiseParams.noiseStrength*fade;
 }
+
+uint TerrainEdgesAtLocalPosition(vec2 localPosition)
+{
+    const float epsilon = 0.001;
+    const float patchSize = TerrainPatchGridResolution();
+    uint edges = 0u;
+    if (localPosition.x <= epsilon) edges |= TerrainEdgeLeft;
+    if (localPosition.x >= patchSize - epsilon) edges |= TerrainEdgeRight;
+    if (localPosition.y <= epsilon) edges |= TerrainEdgeTop;
+    if (localPosition.y >= patchSize - epsilon) edges |= TerrainEdgeBottom;
+    return edges;
+}
+
+float TerrainSampleCoarseSurfaceHeight(
+    vec2 localPosition,
+    vec2 instanceOffset,
+    float instanceScale)
+{
+    float patchSize = TerrainPatchGridResolution();
+    vec2 cellOrigin = min(floor(localPosition * 0.5) * 2.0, vec2(patchSize - 2.0));
+    vec2 cellCoord = clamp((localPosition - cellOrigin) * 0.5, vec2(0.0), vec2(1.0));
+
+    vec2 world00 = (cellOrigin + vec2(0.0, 0.0)) * instanceScale + instanceOffset;
+    vec2 world10 = (cellOrigin + vec2(2.0, 0.0)) * instanceScale + instanceOffset;
+    vec2 world01 = (cellOrigin + vec2(0.0, 2.0)) * instanceScale + instanceOffset;
+    vec2 world11 = (cellOrigin + vec2(2.0, 2.0)) * instanceScale + instanceOffset;
+    float height00 = TerrainSampleDetailedWorldHeight(world00);
+    float height10 = TerrainSampleDetailedWorldHeight(world10);
+    float height01 = TerrainSampleDetailedWorldHeight(world01);
+    float height11 = TerrainSampleDetailedWorldHeight(world11);
+
+    if (cellCoord.x + cellCoord.y <= 1.0)
+    {
+        return height00 +
+            cellCoord.x * (height10 - height00) +
+            cellCoord.y * (height01 - height00);
+    }
+
+    return height11 +
+        (1.0 - cellCoord.y) * (height10 - height11) +
+        (1.0 - cellCoord.x) * (height01 - height11);
+}
+
+float TerrainComputeMorphAlpha(vec3 fineWorldPosition, vec2 morphRange)
+{
+    if (morphRange.y <= morphRange.x)
+        return 0.0;
+    return smoothstep(
+        morphRange.x,
+        morphRange.y,
+        distance(fineWorldPosition, cameraPosition.xyz));
+}
+
+vec3 TerrainBuildWorldPosition(
+    vec2 localPosition,
+    vec2 instanceOffset,
+    float instanceScale,
+    uint edgeFlags,
+    vec2 morphRange,
+    out vec2 heightUV,
+    out float worldHeight)
+{
+    vec2 worldXZ = localPosition * instanceScale + instanceOffset;
+    heightUV = TerrainWorldXZToHeightUV(worldXZ);
+
+    float fineHeight = TerrainSampleDetailedWorldHeight(worldXZ);
+    vec3 fineWorldPosition = vec3(worldXZ.x, fineHeight, worldXZ.y);
+    float morphAlpha = TerrainComputeMorphAlpha(fineWorldPosition, morphRange);
+
+    uint positionEdges = TerrainEdgesAtLocalPosition(localPosition);
+    uint coarserEdges = edgeFlags & TerrainEdgeMask;
+    uint transitionEdges = (edgeFlags >> 4u) & TerrainEdgeMask;
+
+    // 跨 LOD 的粗侧保持自身顶点不变；细侧严格落到粗侧三角面上。
+    if ((positionEdges & transitionEdges) != 0u)
+        morphAlpha = 0.0;
+    if ((positionEdges & coarserEdges) != 0u)
+        morphAlpha = 1.0;
+
+    worldHeight = fineHeight;
+    if (morphAlpha > 0.001)
+    {
+        float coarseHeight = TerrainSampleCoarseSurfaceHeight(localPosition, instanceOffset, instanceScale);
+        worldHeight = mix(fineHeight, coarseHeight, morphAlpha);
+    }
+
+    return vec3(worldXZ.x, worldHeight, worldXZ.y);
+}
+
+#endif

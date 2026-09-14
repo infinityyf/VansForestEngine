@@ -16,6 +16,14 @@ std::uint64_t NextGeneration(std::uint64_t generation)
 }
 }
 
+std::shared_ptr<const VansAssetObjectRepository> VansAssetObjectRepository::CreateSnapshot() const
+{
+    auto snapshot=std::make_shared<VansAssetObjectRepository>();
+    std::shared_lock<std::shared_mutex> lock(m_Mutex);
+    snapshot->m_Entries=m_Entries;
+    return snapshot;
+}
+
 std::uint64_t VansAssetObjectRepository::PublishErased(
 	VansAssetGuid guid,
 	VansAssetType assetType,

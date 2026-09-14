@@ -346,14 +346,6 @@ void VansWaterWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
                 ImGui::TextDisabled("Cascade resource: %s", stats.shadowCascadeAvailable ? "available" : "unavailable");
             }
 
-            if (ImGui::CollapsingHeader("Caustics"))
-            {
-                changed |= ImGui::Checkbox("Enable##Caustics", &settings.causticsEnabled);
-                changed |= ImGui::DragFloat("Intensity##Caustics", &settings.causticsIntensity, 0.01f, 0.0f, 10.0f, "%.3f");
-                changed |= ImGui::DragFloat("Max Distance##Caustics", &settings.causticsMaxDistance, 0.25f, 1.0f, 200.0f, "%.2f m");
-                changed |= ImGui::DragFloat("Max Gain##Caustics", &settings.causticsMaxGain, 0.05f, 0.0f, 16.0f, "%.2f");
-                changed |= ImGui::DragFloat("Filter Radius##Caustics", &settings.causticsFilterRadius, 0.02f, 0.1f, 4.0f, "%.2f m");
-            }
 
             if (ImGui::CollapsingHeader("Refraction"))
             {
@@ -473,7 +465,6 @@ void VansWaterWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
                     DisplayWaterTexture(editorAPI, "Refraction", "refraction");
 
                     ImGui::TableNextColumn();
-                    DisplayWaterTexture(editorAPI, "Caustics", "caustics");
 
                     ImGui::TableNextColumn();
                     DisplayWaterTexture(editorAPI, "Thickness", "thickness");

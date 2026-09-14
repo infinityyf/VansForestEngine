@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../AssetCore/VansAssetDocument.h"
+#include "../AssetCore/Storage/VansStagedFileTransaction.h"
 
 #include <filesystem>
 #include <functional>
@@ -11,6 +12,16 @@
 
 namespace Vans
 {
+class IVansAssetDocumentCompanion
+{
+public:
+	virtual ~IVansAssetDocumentCompanion() = default;
+	virtual bool IsDirty() const = 0;
+	virtual bool StageSave(std::vector<VansStagedFile>& files, std::string& error) = 0;
+	virtual bool ObservePublishedSave(std::string& error) = 0;
+	virtual void AdoptObservedSave() = 0;
+};
+
 struct VansOpenAssetDocument
 {
     std::filesystem::path sourcePath;
@@ -19,8 +30,14 @@ struct VansOpenAssetDocument
     VansAssetDocument metaDocument;
     std::string lastError;
 	bool saveWithScene = false;
+	std::weak_ptr<IVansAssetDocumentCompanion> companion;
 
-    bool IsDirty() const { return sourceDocument.IsDirty() || metaDocument.IsDirty(); }
+    bool IsDirty() const
+	{
+		const auto sidecar = companion.lock();
+		return sourceDocument.IsDirty() || metaDocument.IsDirty() ||
+			(sidecar && sidecar->IsDirty());
+	}
 };
 
 class VansAssetDocumentRegistry

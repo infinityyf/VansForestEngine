@@ -66,7 +66,8 @@ namespace VansGraphics { class VansAnimationNode; }
 
 namespace VansGraphics { class VansAnimationController; }
 
-namespace VansGraphics { class VansVegetationSystem; }
+namespace VansGraphics { class VansVegetationCollection; }
+namespace VansGraphics { class VansPcgSplineFieldResources; }
 
 namespace VansGraphics { class VansVKCommandBuffer; }
 
@@ -371,7 +372,7 @@ namespace VansGraphics
 		std::vector<VansRenderNode*> m_HairRenderNodes;
 		VansRenderNode* m_TerrainRenderNode = nullptr;
 		VansRenderNode* m_VegetationRenderNode = nullptr;
-		VansVegetationSystem* m_VegetationSystem = nullptr;
+		std::unique_ptr<VansVegetationCollection> m_VegetationCollection;
 		VansRenderNode* m_WaterRenderNode = nullptr;
 		VansWaterMaterial* m_WaterMaterial = nullptr;
 		bool m_HasWater = false;
@@ -418,6 +419,20 @@ namespace VansGraphics
 		VansRenderProxyHandleAllocator m_RenderProxyHandleAllocator;
 		std::unordered_map<const VansRenderNode*, MainRenderProxyBinding> m_MainRenderProxyBindings;
 		VansRenderMutationBatch m_PendingRenderMutations;
+		std::vector<VansRenderTerrainRegionUpload> m_PendingTerrainUploads;
+		Vans::VansAssetGuid m_SplineAssetGuid;
+		std::shared_ptr<const Vans::VansPcgSplineFieldSnapshot> m_SplineField;
+		std::shared_ptr<const Vans::VansPcgSplineFieldSnapshot> m_PendingSplineField;
+		std::unique_ptr<VansPcgSplineFieldResources> m_SplineFieldResources;
+		struct SplineRoadRuntime
+		{
+			VansRenderNode* node = nullptr; // opaqueRenderNodes 统一销毁节点。
+			std::shared_ptr<VansMesh> mesh;
+			std::uint64_t fingerprint = 0;
+		};
+		std::map<std::string, SplineRoadRuntime> m_SplineRoads;
+		bool UpdateSplineRoadMeshes(const Vans::VansPcgSplineFieldSnapshot& field, std::string& error);
+		std::vector<std::shared_ptr<const Vans::VansPcgBatchUpdate>> m_PendingVegetationUpdates;
 		std::vector<VansAnimationNode*> m_AnimationNodes;
 		std::unordered_set<VansAnimationNode*> m_EditorPreviewDrivenAnimationNodes;
 		std::vector<VansAnimationController*> m_AnimationControllers;
@@ -474,9 +489,16 @@ namespace VansGraphics
 
 		void SetTerrainPhysicsNode(VansEngine::VansTerrainPhysicsNode* terrainPhysicsNode);
 
-		void SetVegetationSystem(VansVegetationSystem* vegetationSystem) { m_VegetationSystem = vegetationSystem; }
-
-		VansVegetationSystem* GetVegetationSystem() const { return m_VegetationSystem; }
+		void SetVegetationCollection(std::unique_ptr<VansVegetationCollection> collection);
+		VansVegetationCollection* GetVegetationCollection() const { return m_VegetationCollection.get(); }
+		void QueueVegetationUpdate(std::shared_ptr<const Vans::VansPcgBatchUpdate> update);
+		void DiscardPendingVegetationUpdates();
+		Vans::VansAssetGuid GetSplineAssetGuid() const { return m_SplineAssetGuid; }
+		void SetSplineAssetGuid(Vans::VansAssetGuid guid) { m_SplineAssetGuid = guid; }
+		const std::shared_ptr<const Vans::VansPcgSplineFieldSnapshot>& GetSplineFieldSnapshot() const { return m_SplineField; }
+		std::shared_ptr<const Vans::VansTerrainAsset> ResolveEffectiveTerrain(Vans::VansAssetGuid guid) const;
+		bool PublishSplineField(std::shared_ptr<const Vans::VansPcgSplineFieldSnapshot> field, std::string& error);
+		VansPcgSplineFieldResources* GetSplineFieldResources() const { return m_SplineFieldResources.get(); }
 
 		const std::vector<VansRenderNode*>& GetOpaqueRenderNodes() const { return m_OpaqueRenderNodes; }
 		VansDrawSubmissionList& GetOpaqueDrawSubmissionScratch() { return m_OpaqueDrawSubmissionScratch; }
@@ -1098,9 +1120,10 @@ namespace VansGraphics
 
 
 
-		void RecordVideoUploads(
+		void RecordFrameUploads(
 			VansVKCommandBuffer& cmd,
 			const VansRenderSceneFrameSnapshot& sceneSnapshot);
+		void QueueTerrainRegionUpload(VansRenderTerrainRegionUpload upload);
 
 
 

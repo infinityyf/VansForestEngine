@@ -13,7 +13,7 @@
 //
 // 渲染管线流程（与设计文档 §6.1 一致）：
 //   Pass 7:  Water GBuffer Pass  → 写 WaterGBuf_Normal + WaterGBuf_LinearDepth
-//   Pass 8:  Pre-Water Compute   → SSR、折射、焦散（Phase 2 实现）
+//   Pass 8:  Pre-Water Compute   → SSR、折射、体积积分
 //   Pass 9:  Water Composite     → 在大气合成后写回 SceneColor
 //
 // 类拆分（设计文档 W-02, W-03, W-09）：
@@ -23,6 +23,7 @@
 
 namespace VansGraphics
 {
+    class VansPcgSplineFieldResources;
     class VansVKCommandBuffer;
     class VansVKDevice;
     class VansGraphicsShader;
@@ -97,7 +98,7 @@ namespace VansGraphics
         glm::vec4 thinSSSParams;      // x=path scale, y=nonlinear strength, z=scatter boost, w=phase g
         glm::vec4 backlitParams;      // x=path scale, y=phase g, zw=padding
         glm::vec4 filterParams;       // x=spatial depth sensitivity, y=filter iterations, zw=padding
-        glm::ivec4 effectFlags;       // x=SSR, y=refraction, z=caustics, w=thin SSS
+        glm::ivec4 effectFlags;       // x=SSR, y=refraction, z=thin SSS, w=reserved
         glm::vec4 colorMipParams0;    // x=refraction scatter, y=roughness, z=forward scatter, w=LOD bias
         glm::vec4 colorMipParams1;    // x=background scatter, y=actual max mip, z=min path, w=debug enabled
         glm::vec4 shadowParams;       // x=enabled, y=quality, z=depth bias, w=normal bias
@@ -120,15 +121,6 @@ namespace VansGraphics
         glm::vec4 edgeParams;       // x=edge fade pixels, y=footprint safety
     };
 
-    // WaterCausticsParams GPU struct. Matches water_caustics.comp set=1 binding=9.
-    struct alignas(16) WaterCausticsParamsGPU
-    {
-        glm::vec4 sunDirection;
-        glm::vec4 mainLightColor;     // rgb = color, a = intensity multiplier
-        glm::vec4 extinctionCoeff;
-        glm::vec4 mediumParams;       // x=IOR, y=water level, z=intensity, w=max path distance
-        glm::vec4 shapingParams;      // x=max gain, y=filter radius, z=use refraction data
-    };
 
     class VansWaterSystem
     {
@@ -189,7 +181,6 @@ namespace VansGraphics
         void DispatchWaterVolumeFilterCS(VansVKCommandBuffer& cmd);
         void DispatchWaterSSR(VansVKCommandBuffer& cmd);
         void DispatchRefractionCS(VansVKCommandBuffer& cmd);
-        void DispatchCausticsCS(VansVKCommandBuffer& cmd);
 
         // ── N-01: Detail Normal compute ───────────────────────────
 
@@ -202,6 +193,7 @@ namespace VansGraphics
         // ── 参数 ─────────────────────────────────────────────────
         float GetWaterLevel() const { return m_WaterLevel; }
         void SetWaterMaterial(VansWaterMaterial* mat)      { m_WaterMaterial = mat; }
+        void SetSplineFields(VansPcgSplineFieldResources* fields) { m_SplineFields = fields; }
         void SetWaterLevel(float waterLevel) { m_WaterLevel = waterLevel; }
         bool  IsInitialized() const                        { return m_Initialized; }
         bool  IsDescriptorsReady() const                   { return m_DescriptorsReady; }
@@ -221,7 +213,6 @@ namespace VansGraphics
         VansVKImage& GetFlowMapImage()           { return m_FlowMapImage; }
         VansVKImage& GetReflectionImage()        { return m_WaterReflectionImage; }
         VansVKImage& GetRefractionImage()        { return m_WaterRefractionImage; }
-        VansVKImage& GetCausticsImage()          { return m_WaterCausticsImage; }
         VansVKImage& GetThicknessImage()         { return m_WaterThicknessImage; }
         VansVKImage& GetVolumeColorImage()       { return m_WaterVolumeColorImage; }
         VansVKImage& GetVolumeTransmittanceImage() { return m_WaterVolumeTransmittanceImage; }
@@ -245,6 +236,7 @@ namespace VansGraphics
         float m_WaterLevel       = 0.0f;
         float m_Time             = 0.0f;
         bool  m_Initialized      = false;
+        bool  m_RiverGeometryBudgetError = false;
         bool  m_DescriptorsReady = false;
 
         uint32_t m_RenderWidth  = 0;
@@ -260,7 +252,6 @@ namespace VansGraphics
         VansComputeShader*  m_WaterSSRShader       = nullptr;  // water_ssr.comp (HZB ray march)
         VansComputeShader*  m_WaveSimShader        = nullptr;  // water_wave_spectrum.comp (→ W-03)
         VansComputeShader*  m_WaterRefractionShader = nullptr;  // water_refraction.comp
-        VansComputeShader*  m_WaterCausticsShader   = nullptr;  // water_caustics.comp (W-14)
         VansComputeShader*  m_WaterThicknessShader  = nullptr;  // water_thickness.comp (W-16)
         VansComputeShader*  m_WaterVolumeShader     = nullptr;  // water_volume.comp
         VansComputeShader*  m_WaterVolumeFilterShader = nullptr; // water_volume_filter.comp
@@ -268,6 +259,7 @@ namespace VansGraphics
         VansComputeShader*  m_FlowMapShader         = nullptr;  // water_flowmap.comp
 
         // ── Descriptor Sets：Water GBuffer Pass（Set 1）──────────
+        VansPcgSplineFieldResources* m_SplineFields = nullptr;
         VkDescriptorSetLayout m_GBufPassLayout = VK_NULL_HANDLE;
         VkDescriptorSet       m_GBufPassSet    = VK_NULL_HANDLE;
 
@@ -286,9 +278,6 @@ namespace VansGraphics
         // ── Descriptor Sets：Water Refraction Compute（Set 0）─────
         VkDescriptorSetLayout m_RefractionLayout = VK_NULL_HANDLE;
         VkDescriptorSet       m_RefractionSet    = VK_NULL_HANDLE;
-        // ── Descriptor Sets：Water Caustics Compute（Set 1, W-14）───
-        VkDescriptorSetLayout m_CausticsLayout = VK_NULL_HANDLE;
-        VkDescriptorSet       m_CausticsSet    = VK_NULL_HANDLE;
 
         // ── W-16: Thickness Compute ───────────────────────────────
         VkDescriptorSetLayout m_ThicknessLayout = VK_NULL_HANDLE;
@@ -310,12 +299,10 @@ namespace VansGraphics
         VansVKBuffer m_GBufParamsBuffer;
         VansVKBuffer m_CompParamsBuffer;
         VansVKBuffer m_SSRParamsBuffer;
-        VansVKBuffer m_CausticsParamsBuffer;
         VansVKBuffer m_ThicknessParamsBuffer;   // W-16: 厚度图参数 UBO
         bool m_GBufParamsBufferCreated = false;
         bool m_CompParamsBufferCreated = false;
         bool m_SSRParamsBufferCreated = false;
-        bool m_CausticsParamsBufferCreated = false;
         bool m_ThicknessParamsBufferCreated = false;
         WaterGBufferParamsGPU m_GBufParamsCache = {};
         uint32_t m_VolumeWidth = 1;
@@ -333,7 +320,6 @@ namespace VansGraphics
         // ── 水体效果贴图：Pre-Water Compute 输出，Composite 采样 ───
         VansVKImage m_WaterReflectionImage;
         VansVKImage m_WaterRefractionImage;
-        VansVKImage m_WaterCausticsImage;
         VansVKImage m_WaterThicknessImage;    // W-16: SSS 厚度图
         VansVKImage m_WaterVolumeRawColorImage;
         VansVKImage m_WaterVolumeRawTransmittanceImage;
@@ -343,7 +329,6 @@ namespace VansGraphics
         VansVKImage m_WaterVolumeDepthImage;
         bool        m_ReflectionOutputReady = false;
         bool        m_RefractionOutputReady = false;
-        bool        m_CausticsOutputReady = false;
         bool        m_ThicknessOutputReady = false;
         bool        m_VolumeOutputReady = false;
         bool        m_VolumeFilterOutputReady = false;

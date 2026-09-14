@@ -1,6 +1,8 @@
 #include "../EngineCore/AssetCore/VansAssetDatabase.h"
 #include "../EngineCore/AssetCore/VansAssetObjectRepository.h"
 #include "NavigationAIContractTests.h"
+#include "PcgCoreContractTests.h"
+#include "PcgAssetContractTests.h"
 #include "../Graphics/Vulkan/VansVKFunctions.h"
 #include "../EngineCore/AssetCore/VansAssetResolver.h"
 #include "../EngineCore/AssetCore/VansBuiltInAssetCatalog.h"
@@ -58,6 +60,12 @@
 #include "../EngineCore/RenderCore/VansRenderFrame.h"
 #include "../EngineCore/RenderCore/VansRenderSystem.h"
 #include "../EngineCore/RenderCore/WaterCore/VansWaterConfig.h"
+#include "../EngineCore/RenderCore/TerrainCore/VansTerrainLod.h"
+#include "../EngineCore/TerrainCore/VansTerrainAsset.h"
+#include "../EngineCore/TerrainCore/VansTerrainBrush.h"
+#include "../EngineCore/TerrainCore/Serialization/VansTerrainAssetCodec.h"
+#include "../EngineCore/TerrainCore/Serialization/VansTerrainImageCodec.h"
+#include "../EngineCore/EditorCore/Terrain/VansTerrainAuthoringSession.h"
 #include "../EngineCore/RenderCore/AtmosphereCore/VansAtmosphereMath.h"
 #include "../EngineCore/RenderCore/SceneBuild/VansSceneResourceArtifactPrewarmer.h"
 #include "../EngineCore/RenderCore/VansTemporalProjection.h"
@@ -14899,13 +14907,7 @@ bool TestAuthoringCodecContract()
 	};
 	const nlohmann::json vegetationRoot = {
 		{ "name", "ContractGrass" },
-		{ "instanceCount", 128 },
-		{ "boneCount", 3 },
-		{ "material", "11111111-2222-4333-8444-555555555555" },
-		{ "placement", {
-			{ "boundsMin", { -10.0, -10.0 } },
-			{ "boundsMax", { 10.0, 10.0 } }
-		} }
+		{ "regions", nlohmann::json::array() }
 	};
 	Vans::VansVegetationConfigAsset vegetationAsset;
 	Vans::VansSerializedValue vegetationEncoded;
@@ -14919,7 +14921,7 @@ bool TestAuthoringCodecContract()
 					"5d5d1201-1ed8-4f3e-8cc6-641c5b1d0001") }
 			}) }
 		});
-	Vans::VansSceneVegetationNodeConfig resolvedVegetation;
+	Vans::VansPcgRecipeAsset resolvedVegetation;
 	if (!Expect(
 		Vans::VansVegetationConfigCodec::Decode(
 			vegetationSerialized, vegetationAsset, error) &&
@@ -14927,7 +14929,7 @@ bool TestAuthoringCodecContract()
 			vegetationAsset.config, vegetationEncoded, error) &&
 		Vans::VansVegetationConfigCodec::Decode(
 			vegetationEncoded, vegetationRoundTrip, error) &&
-		vegetationRoundTrip.config.instanceCount == vegetationAsset.config.instanceCount &&
+		vegetationRoundTrip.config.regions.size() == vegetationAsset.config.regions.size() &&
 		Vans::VansVegetationConfigCodec::ResolveReference(
 			vegetationReference, vegetationAsset, resolvedVegetation, error) &&
 		resolvedVegetation.name == vegetationAsset.config.name,
@@ -15486,13 +15488,7 @@ bool TestVegetationMemoryAssetContract()
 		return false;
 
 	Vans::VansVegetationConfigAsset vegetationAsset;
-	vegetationAsset.config.valid = true;
 	vegetationAsset.config.name = "MemoryVegetation";
-	vegetationAsset.config.instanceCount = 64;
-	vegetationAsset.config.boneCount = 3;
-	vegetationAsset.config.placement = Vans::VansSceneVegetationPlacementConfig{};
-	vegetationAsset.config.placement->boundsMin = Vans::VansSceneFloat2{ -4.0f, -4.0f };
-	vegetationAsset.config.placement->boundsMax = Vans::VansSceneFloat2{ 4.0f, 4.0f };
 	Vans::VansAssetMeta meta;
 	meta.guid = vegetationGuid;
 	meta.importer = Vans::VansAssetDatabase::ImporterFor(
@@ -16505,6 +16501,550 @@ bool TestVolumetricParticleInjectionContract()
 		"DemoHall smoke modules are incomplete or its standalone emitter remains");
 }
 
+bool TestTerrainAuthoringContract()
+{
+	using namespace Vans;
+	VansTerrainAsset terrain;
+	const auto parseGuid = [](const char* text)
+	{
+		VansAssetGuid guid;
+		VansAssetGuid::TryParse(text, guid);
+		return guid;
+	};
+	terrain.heightmap = parseGuid("20000000-0000-4000-8000-000000000001");
+	terrain.splatmaps[0] = parseGuid("20000000-0000-4000-8000-000000000002");
+	terrain.splatmaps[1] = parseGuid("20000000-0000-4000-8000-000000000003");
+	const VansAssetGuid albedo = parseGuid("20000000-0000-4000-8000-000000000004");
+	const VansAssetGuid normal = parseGuid("20000000-0000-4000-8000-000000000005");
+	const VansAssetGuid roughness = parseGuid("20000000-0000-4000-8000-000000000006");
+	for (std::uint32_t index = 0; index < VANS_TERRAIN_LAYER_COUNT; ++index)
+	{
+		VansTerrainLayerAsset layer;
+		layer.id = "layer_" + std::to_string(index);
+		layer.name = "Layer " + std::to_string(index + 1u);
+		layer.albedo = albedo;
+		layer.normal = normal;
+		layer.roughness = roughness;
+		layer.tiling = 16.0f + static_cast<float>(index);
+		terrain.layers.push_back(std::move(layer));
+	}
+	terrain.settings.terrainSize = 64.0f;
+	terrain.settings.maxHeight = 32.0f;
+	terrain.settings.heightOffset = -4.0f;
+	terrain.width = 9;
+	terrain.height = 7;
+	const std::size_t pixelCount = static_cast<std::size_t>(terrain.width) * terrain.height;
+	terrain.heights.resize(pixelCount);
+	for (std::size_t index = 0; index < pixelCount; ++index)
+		terrain.heights[index] = static_cast<std::uint16_t>((index * 1009u) & 0xffffu);
+	terrain.heights.front() = 0;
+	terrain.heights.back() = 65535;
+	for (auto& splat : terrain.splatPixels) splat.assign(pixelCount * 4u, 0);
+	for (std::size_t pixel = 0; pixel < pixelCount; ++pixel)
+		terrain.splatPixels[0][pixel * 4u] = 255;
+
+	VansSerializedValue encodedDefinition;
+	std::string error;
+	if (!Expect(VansTerrainAssetCodec::EncodeDefinition(
+		terrain, encodedDefinition, error), error.c_str()))
+		return false;
+	VansTerrainAsset decodedDefinition;
+	if (!Expect(VansTerrainAssetCodec::DecodeDefinition(
+		encodedDefinition, decodedDefinition, error), error.c_str()) ||
+		!Expect(decodedDefinition.layers.size() == VANS_TERRAIN_LAYER_COUNT &&
+			decodedDefinition.heightmap == terrain.heightmap &&
+			decodedDefinition.splatmaps == terrain.splatmaps,
+			"Terrain definition round trip changed required references"))
+		return false;
+	VansSerializedValue incompleteDefinition = encodedDefinition;
+	VansSerializedValue* splatmaps = FindObjectField(incompleteDefinition, "splatmaps");
+	if (!Expect(splatmaps && splatmaps->kind == VansSerializedValue::Kind::Array,
+		"Terrain contract fixture has no splat array"))
+		return false;
+	splatmaps->arrayItems.pop_back();
+	if (!Expect(!VansTerrainAssetCodec::DecodeDefinition(
+		incompleteDefinition, decodedDefinition, error) && !error.empty(),
+		"Terrain definition accepted a missing required splatmap"))
+		return false;
+
+	VansTerrainHeightImage heightImage{ terrain.width, terrain.height, terrain.heights };
+	std::string heightPng;
+	if (!Expect(VansTerrainImageCodec::EncodeHeight16(heightImage, heightPng, error), error.c_str()))
+		return false;
+	VansTerrainHeightImage decodedHeight;
+	if (!Expect(VansTerrainImageCodec::DecodeHeight16(heightPng, decodedHeight, error), error.c_str()) ||
+		!Expect(decodedHeight.width == terrain.width && decodedHeight.height == terrain.height &&
+			decodedHeight.pixels == terrain.heights,
+			"Terrain R16 PNG round trip lost height precision"))
+		return false;
+
+	for (std::size_t imageIndex = 0; imageIndex < terrain.splatPixels.size(); ++imageIndex)
+	{
+		VansTerrainWeightImage weightImage{
+			terrain.width, terrain.height, terrain.splatPixels[imageIndex] };
+		std::string weightPng;
+		VansTerrainWeightImage decodedWeights;
+		if (!Expect(VansTerrainImageCodec::EncodeWeightsRGBA8(
+			weightImage, weightPng, error), error.c_str()) ||
+			!Expect(VansTerrainImageCodec::DecodeWeightsRGBA8(
+				weightPng, decodedWeights, error), error.c_str()) ||
+			!Expect(decodedWeights.pixels == terrain.splatPixels[imageIndex],
+				"Terrain RGBA8 splat PNG round trip changed weights"))
+			return false;
+	}
+
+	const std::vector<std::uint16_t> uneditedHeights = terrain.heights;
+	VansTerrainBrushDab raise;
+	raise.operation = VansTerrainBrushOperation::Raise;
+	raise.centerX = 4.0f;
+	raise.centerY = 3.0f;
+	raise.radius = 2.5f;
+	raise.strength = 0.1f;
+	raise.hardness = 0.5f;
+	const VansTerrainBrushResult raised = VansTerrainBrush::Apply(terrain, raise);
+	if (!Expect(raised && raised.changed && raised.dirtyRect.valid &&
+		terrain.heights[3u * terrain.width + 4u] > uneditedHeights[3u * terrain.width + 4u],
+		"Terrain raise brush did not modify the heightfield"))
+		return false;
+
+	VansTerrainBrushDab patternProbe = raise;
+	patternProbe.centerX = 0.0f;
+	patternProbe.centerY = 0.0f;
+	patternProbe.radius = 10.0f;
+	patternProbe.strength = 1.0f;
+	patternProbe.hardness = 0.0f;
+	for (const VansTerrainBrushPattern pattern : {
+		VansTerrainBrushPattern::SmoothCircle,
+		VansTerrainBrushPattern::LinearCircle,
+		VansTerrainBrushPattern::Sphere,
+		VansTerrainBrushPattern::Tip,
+		VansTerrainBrushPattern::SoftSquare,
+		VansTerrainBrushPattern::Ridge,
+		VansTerrainBrushPattern::Crater,
+		VansTerrainBrushPattern::Rocky })
+	{
+		patternProbe.pattern = pattern;
+		const float influence = VansTerrainBrush::EvaluateInfluence(patternProbe, 5.0f, 0.0f);
+		if (!Expect(std::isfinite(influence) && influence >= 0.0f && influence <= 1.0f,
+			"Terrain brush pattern produced an invalid influence"))
+			return false;
+	}
+	patternProbe.pattern = VansTerrainBrushPattern::Ridge;
+	const float horizontalRidge = VansTerrainBrush::EvaluateInfluence(patternProbe, 5.0f, 0.0f);
+	const float verticalRidge = VansTerrainBrush::EvaluateInfluence(patternProbe, 0.0f, 5.0f);
+	patternProbe.rotationRadians = 1.57079632679489661923f;
+	const float rotatedVerticalRidge = VansTerrainBrush::EvaluateInfluence(patternProbe, 0.0f, 5.0f);
+	if (!Expect(horizontalRidge > verticalRidge * 10.0f &&
+		rotatedVerticalRidge > verticalRidge * 10.0f,
+		"Terrain ridge brush rotation did not rotate its directional mask"))
+		return false;
+	patternProbe.rotationRadians = 0.0f;
+	patternProbe.pattern = VansTerrainBrushPattern::Crater;
+	if (!Expect(
+		VansTerrainBrush::EvaluateInfluence(patternProbe, 6.2f, 0.0f) >
+		VansTerrainBrush::EvaluateInfluence(patternProbe, 0.0f, 0.0f),
+		"Terrain crater brush no longer emphasizes its rim"))
+		return false;
+	patternProbe.pattern = VansTerrainBrushPattern::Rocky;
+	const float rockyA = VansTerrainBrush::EvaluateInfluence(patternProbe, 3.0f, 2.0f);
+	const float rockyB = VansTerrainBrush::EvaluateInfluence(patternProbe, 3.0f, 2.0f);
+	if (!Expect(rockyA == rockyB,
+		"Terrain rocky brush mask is not deterministic within a stroke"))
+		return false;
+
+	VansTerrainBrushDab paint = raise;
+	paint.operation = VansTerrainBrushOperation::PaintLayer;
+	paint.selectedLayer = 5;
+	paint.weightBaseLayer = 0;
+	paint.strength = 0.65f;
+	const VansTerrainBrushResult painted = VansTerrainBrush::Apply(terrain, paint);
+	if (!Expect(painted && painted.changed,
+		"Terrain paint brush did not modify splat weights"))
+		return false;
+	for (std::size_t pixel = 0; pixel < pixelCount; ++pixel)
+	{
+		std::uint32_t total = 0;
+		for (std::uint32_t layer = 0; layer < VANS_TERRAIN_LAYER_COUNT; ++layer)
+			total += terrain.splatPixels[layer / 4u][pixel * 4u + layer % 4u];
+		if (!Expect(total == 255u,
+			"Terrain splat brush broke the normalized eight-channel weight invariant"))
+			return false;
+	}
+
+	TemporaryDirectory temporary;
+	const fs::path terrainPath = temporary.path / "Authoring.vterrain";
+	const std::array<fs::path, 3> imagePaths{
+		temporary.path / "Height.png", temporary.path / "Splat0.png", temporary.path / "Splat1.png" };
+	terrain.sourcePath = terrainPath;
+	const auto writeBytes = [](const fs::path& path, const std::string& bytes)
+	{
+		std::ofstream output(path, std::ios::binary | std::ios::trunc);
+		output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+		return output.good();
+	};
+	const std::string definitionJson =
+		EncodeSerializedValueJson<nlohmann::ordered_json>(encodedDefinition).dump(2) + "\n";
+	if (!Expect(writeBytes(terrainPath, definitionJson),
+		"Terrain authoring fixture could not write its documents"))
+		return false;
+	VansTerrainImageCodec::EncodeHeight16(
+		{ terrain.width, terrain.height, terrain.heights }, heightPng, error);
+	if (!Expect(writeBytes(imagePaths[0], heightPng),
+		"Terrain authoring fixture could not write its height image"))
+		return false;
+	for (std::size_t index = 0; index < 2; ++index)
+	{
+		std::string png;
+		if (!Expect(VansTerrainImageCodec::EncodeWeightsRGBA8(
+			{ terrain.width, terrain.height, terrain.splatPixels[index] }, png, error), error.c_str()) ||
+			!Expect(writeBytes(imagePaths[index + 1], png),
+				"Terrain authoring fixture could not write a splat image"))
+			return false;
+	}
+
+	std::string layerPng;
+	if (!Expect(VansTerrainImageCodec::EncodeWeightsRGBA8(
+		{ terrain.width, terrain.height, terrain.splatPixels[0] }, layerPng, error), error.c_str()))
+		return false;
+	const std::array<std::pair<fs::path, VansAssetGuid>, 3> layerImages{{
+		{ temporary.path / "Albedo.png", albedo },
+		{ temporary.path / "Normal.png", normal },
+		{ temporary.path / "Roughness.png", roughness }
+	}};
+	for (const auto& [path, guid] : layerImages)
+	{
+		(void)guid;
+		if (!Expect(writeBytes(path, layerPng),
+			"Terrain authoring fixture could not write a layer texture"))
+			return false;
+	}
+
+	const auto saveMeta = [&](const fs::path& path, VansAssetGuid guid,
+		VansAssetType type, VansSerializedValue settings)
+	{
+		VansAssetMeta meta;
+		meta.guid = guid;
+		meta.importer = VansAssetDatabase::ImporterFor(type);
+		meta.SetSerializedSettings(std::move(settings));
+		return VansAssetMetaStorage::SaveAtomic(VansAssetMeta::MetaPathFor(path), meta, error);
+	};
+	const auto terrainTextureSettings = [](int channels, const char* precision)
+	{
+		return VansSerializedValue::Object({
+			{ "colorSpace", VansSerializedValue::String("linear") },
+			{ "normalMap", VansSerializedValue::Bool(false) },
+			{ "useCompress", VansSerializedValue::Bool(false) },
+			{ "needMip", VansSerializedValue::Bool(false) },
+			{ "importChannel", VansSerializedValue::Int(channels) },
+			{ "precision", VansSerializedValue::String(precision) },
+			{ "addressMode", VansSerializedValue::String("clamp") }
+		});
+	};
+	const VansAssetGuid terrainGuid =
+		parseGuid("20000000-0000-4000-8000-000000000007");
+	if (!Expect(
+		saveMeta(terrainPath, terrainGuid, VansAssetType::Terrain,
+			VansSerializedValue::Object({})) &&
+		saveMeta(imagePaths[0], terrain.heightmap, VansAssetType::Texture,
+			terrainTextureSettings(1, "mid16")) &&
+		saveMeta(imagePaths[1], terrain.splatmaps[0], VansAssetType::Texture,
+			terrainTextureSettings(4, "low8")) &&
+		saveMeta(imagePaths[2], terrain.splatmaps[1], VansAssetType::Texture,
+			terrainTextureSettings(4, "low8")),
+		"Terrain authoring fixture could not write strict asset metadata"))
+		return false;
+	for (const auto& [path, guid] : layerImages)
+	{
+		if (!Expect(saveMeta(path, guid, VansAssetType::Texture,
+			VansSerializedValue::Object({
+				{ "colorSpace", VansSerializedValue::String("linear") },
+				{ "normalMap", VansSerializedValue::Bool(guid == normal) },
+				{ "useCompress", VansSerializedValue::Bool(false) },
+				{ "needMip", VansSerializedValue::Bool(true) },
+				{ "importChannel", VansSerializedValue::Int(4) },
+				{ "precision", VansSerializedValue::String("low8") }
+			})), "Terrain authoring fixture could not write layer metadata"))
+			return false;
+	}
+
+	VansAssetDatabase database(temporary.path, temporary.path / "Artifacts");
+	const VansAssetScanResult scan = database.Scan(VansAssetOperationPolicy::ReadOnly());
+	if (!Expect(scan.errors.empty() && scan.registered == 7u,
+		"Terrain asset fixture did not enter the strict asset database"))
+		return false;
+	VansAssetObjectRepository bootstrapRepository;
+	const VansAssetObjectBootstrapResult bootstrap =
+		VansAssetObjectBootstrapper::Publish(database.All(), bootstrapRepository);
+	if (!Expect(static_cast<bool>(bootstrap),
+		bootstrap.errors.empty() ? "Terrain memory bootstrap failed" : bootstrap.errors.front().c_str()) ||
+		!Expect(bootstrapRepository.ResolveLatest<VansTerrainAsset>(terrainGuid) != nullptr &&
+			bootstrapRepository.ResolveLatest<VansAssetMeta>(terrainGuid) != nullptr,
+			"Terrain source snapshot and metadata view were not published together"))
+		return false;
+
+	VansSceneData dependencyScene;
+	dependencyScene.sceneGuid = VansAssetGuid::New();
+	auto dependencyJson = VansSceneSchema::SerializeSceneJson(dependencyScene);
+	dependencyJson["terrainFixture"] = terrainGuid.ToString();
+	const VansSceneAssetDependencyBuildResult dependencyResult =
+		VansSceneAssetDependencyBuilder::BuildResourcePlan(
+			database, DecodeSerializedValueJson(dependencyJson),
+			temporary.path / "Scenes" / "Terrain.json", {}, bootstrapRepository);
+	if (!Expect(dependencyResult.success &&
+		dependencyResult.requiredAssets.count(terrainGuid.ToString()) == 1u &&
+		dependencyResult.requiredAssets.count(terrain.heightmap.ToString()) == 1u &&
+		dependencyResult.requiredAssets.count(terrain.splatmaps[0].ToString()) == 1u &&
+		dependencyResult.requiredAssets.count(terrain.splatmaps[1].ToString()) == 1u &&
+		dependencyResult.requiredTextures.count(terrain.heightmap.ToString()) == 0u &&
+		dependencyResult.requiredTextures.count(terrain.splatmaps[0].ToString()) == 0u &&
+		dependencyResult.requiredTextures.count(terrain.splatmaps[1].ToString()) == 0u &&
+		dependencyResult.requiredTextures.count(albedo.ToString()) == 1u &&
+		dependencyResult.requiredTextures.count(normal.ToString()) == 1u &&
+		dependencyResult.requiredTextures.count(roughness.ToString()) == 1u &&
+		dependencyResult.resourcePlan.textures.size() == 3u,
+		"Terrain dependency closure duplicated source maps or missed layer textures"))
+		return false;
+
+	const std::optional<VansAssetRecord> indexedTerrain = database.Find(terrainGuid);
+	if (!Expect(indexedTerrain.has_value(),
+		"Terrain asset fixture could not resolve its indexed record"))
+		return false;
+	VansAssetRecord record = *indexedTerrain;
+	VansAssetObjectRepository repository;
+	VansAssetDocumentRegistry::Get().Clear();
+	auto session = VansTerrainAuthoringSession::Open(
+		record, std::make_shared<const VansTerrainAsset>(terrain), imagePaths, repository, error);
+	if (!Expect(session != nullptr, error.c_str()))
+		return false;
+	const std::vector<std::uint16_t> strokeBaseline = session->WorkingAsset().heights;
+	const bool strokeBegan = session->BeginStroke(VansTerrainBrushOperation::Raise, error);
+	const VansTerrainBrushResult strokeDab = session->ApplyDab(raise);
+	VansTerrainBrushDab secondRaise = raise;
+	secondRaise.centerX = 1.0f;
+	secondRaise.centerY = 1.0f;
+	const VansTerrainBrushResult secondStrokeDab = session->ApplyDab(secondRaise);
+	const bool strokeEnded = session->EndStroke(error);
+	if (!Expect(strokeBegan, error.c_str()) ||
+		!Expect(strokeDab.changed, "Terrain authoring stroke did not apply its dab") ||
+		!Expect(secondStrokeDab.changed, "Terrain authoring stroke did not merge a second dab") ||
+		!Expect(strokeEnded, error.c_str()) ||
+		!Expect(session->Document()->IsDirty() &&
+			VansAssetDocumentEditService::CanUndo(session->Document()->sourceDocument),
+			"Terrain stroke was not registered as one undoable asset edit"))
+		return false;
+	if (!Expect(static_cast<bool>(VansAssetDocumentEditService::Undo(
+		session->Document()->sourceDocument)), "Terrain stroke undo failed") ||
+		!Expect(session->WorkingAsset().heights == strokeBaseline,
+			"Terrain stroke undo did not restore height pixels") ||
+		!Expect(static_cast<bool>(VansAssetDocumentEditService::Redo(
+			session->Document()->sourceDocument)), "Terrain stroke redo failed") ||
+		!Expect(session->WorkingAsset().heights != strokeBaseline,
+			"Terrain stroke redo did not restore edited height pixels"))
+		return false;
+
+	VansAssetDocumentSaveStage definitionStage;
+	std::vector<VansStagedFile> imageStages;
+	if (!Expect(session->Document()->sourceDocument.StageSave(definitionStage, error), error.c_str()) ||
+		!Expect(session->StageSave(imageStages, error) && imageStages.size() == 3u, error.c_str()))
+		return false;
+	VansStagedFileTransaction transaction;
+	transaction.Add({ definitionStage.targetPath, definitionStage.temporaryPath });
+	for (const VansStagedFile& stage : imageStages) transaction.Add(stage);
+	if (!Expect(transaction.Publish(error), error.c_str()) ||
+		!Expect(session->Document()->sourceDocument.ObservePublishedSave(definitionStage, error), error.c_str()) ||
+		!Expect(session->ObservePublishedSave(error), error.c_str()))
+		return false;
+	session->Document()->sourceDocument.AdoptObservedSave(definitionStage);
+	session->AdoptObservedSave();
+	if (!Expect(!session->Document()->IsDirty(),
+		"Terrain atomic save did not adopt all document and image states"))
+		return false;
+	VansTerrainHeightImage savedHeight;
+	if (!Expect(VansTerrainImageCodec::LoadHeight16(imagePaths[0], savedHeight, error), error.c_str()) ||
+		!Expect(savedHeight.pixels == session->WorkingAsset().heights,
+			"Terrain atomic save did not persist the edited heightfield"))
+		return false;
+	const float savedLodDistance = session->WorkingAsset().settings.lodBaseDistance;
+	VansTerrainAssetSettings changedSettings = session->WorkingAsset().settings;
+	changedSettings.lodBaseDistance = savedLodDistance + 1.0f;
+	if (!Expect(session->ApplyDefinition(changedSettings, error), error.c_str()) ||
+		!Expect(session->BeginStroke(VansTerrainBrushOperation::Lower, error), error.c_str()))
+		return false;
+	VansTerrainBrushDab lower = raise;
+	lower.operation = VansTerrainBrushOperation::Lower;
+	if (!Expect(session->ApplyDab(lower).changed,
+		"Terrain discard fixture did not modify its heightfield") ||
+		!Expect(session->EndStroke(error), error.c_str()) ||
+		!Expect(static_cast<bool>(VansAssetDocumentEditService::RevertToSaved(
+			session->Document()->sourceDocument)), "Terrain discard failed") ||
+		!Expect(session->SyncDefinitionFromDocument(error), error.c_str()) ||
+		!Expect(session->WorkingAsset().heights == savedHeight.pixels &&
+			session->WorkingAsset().settings.lodBaseDistance == savedLodDistance &&
+			!session->Document()->IsDirty(),
+			"Terrain discard did not restore definition and image payloads together"))
+		return false;
+	session.reset();
+	VansAssetDocumentRegistry::Get().Clear();
+	return true;
+}
+
+bool TestTerrainCdlodSelectionContract()
+{
+	using namespace VansGraphics;
+
+	TerrainLodSettings invalidSettings;
+	invalidSettings.terrainSize = 1000.0f;
+	VansTerrainLodSelector invalidSelector;
+	std::string error;
+	if (!Expect(!invalidSelector.Configure(invalidSettings, &error) && !error.empty(),
+		"Terrain CDLOD accepted a non-power-of-two quadtree extent"))
+		return false;
+
+	TerrainLodSettings settings;
+	settings.terrainSize = 1024.0f;
+	settings.minPatchSize = 16.0f;
+	settings.minHeight = -32.0f;
+	settings.maxHeight = 256.0f;
+	settings.baseDistance = 64.0f;
+	settings.distanceRatio = 2.0f;
+	settings.morphStartRatio = 0.70f;
+	VansTerrainLodSelector selector;
+	if (!Expect(selector.Configure(settings, &error),
+		"Terrain CDLOD rejected a valid regular-grid configuration"))
+		return false;
+
+	const std::array<glm::vec3, 4> cameraPositions = {
+		glm::vec3(0.0f, 32.0f, 0.0f),
+		glm::vec3(310.0f, 70.0f, -170.0f),
+		glm::vec3(-505.0f, 20.0f, 505.0f),
+		glm::vec3(900.0f, 80.0f, 0.0f)
+	};
+	constexpr uint32_t edges[] = {
+		TerrainEdge_Left, TerrainEdge_Right, TerrainEdge_Top, TerrainEdge_Bottom
+	};
+	constexpr uint32_t oppositeEdges[] = {
+		TerrainEdge_Right, TerrainEdge_Left, TerrainEdge_Bottom, TerrainEdge_Top
+	};
+
+	bool observedMultipleLevels = false;
+	bool observedLodTransition = false;
+	bool observedTessellationBoundary = false;
+	bool observedExpectedMorphRange = false;
+	for (const glm::vec3& cameraPosition : cameraPositions)
+	{
+		std::vector<TerrainLodPatch> patches;
+		selector.Select(cameraPosition, true, 90.0f, patches);
+		if (!Expect(selector.ValidateSelection(patches, &error),
+			"Terrain CDLOD emitted an invalid selection"))
+			return false;
+
+		std::vector<TerrainLodPatch> repeated;
+		selector.Select(cameraPosition, true, 90.0f, repeated);
+		if (!Expect(repeated.size() == patches.size(),
+			"Terrain CDLOD selection is not deterministic"))
+			return false;
+		for (size_t i = 0; i < patches.size(); ++i)
+		{
+			const TerrainLodPatch& a = patches[i];
+			const TerrainLodPatch& b = repeated[i];
+			if (!Expect(a.gridX == b.gridX && a.gridZ == b.gridZ &&
+				a.level == b.level && a.edgeFlags == b.edgeFlags &&
+				a.tessellated == b.tessellated,
+				"Terrain CDLOD selection order or flags changed for identical input"))
+				return false;
+		}
+
+		const uint32_t rootCells = selector.GetRootCellCount();
+		std::vector<int> cellOwner(static_cast<size_t>(rootCells) * rootCells, -1);
+		uint32_t minimumLevel = selector.GetMaxLevel();
+		uint32_t maximumLevel = 0;
+		for (size_t patchIndex = 0; patchIndex < patches.size(); ++patchIndex)
+		{
+			const TerrainLodPatch& patch = patches[patchIndex];
+			const uint32_t patchCells = 1u << patch.level;
+			minimumLevel = std::min(minimumLevel, patch.level);
+			maximumLevel = std::max(maximumLevel, patch.level);
+			if (patch.level == 1u &&
+				std::abs(patch.morphStart - 108.8f) < 0.001f &&
+				std::abs(patch.morphEnd - 128.0f) < 0.001f)
+			{
+				observedExpectedMorphRange = true;
+			}
+
+			for (uint32_t z = patch.gridZ; z < patch.gridZ + patchCells; ++z)
+			for (uint32_t x = patch.gridX; x < patch.gridX + patchCells; ++x)
+			{
+				int& owner = cellOwner[static_cast<size_t>(z) * rootCells + x];
+				if (!Expect(owner == -1, "Terrain CDLOD patches overlap"))
+					return false;
+				owner = static_cast<int>(patchIndex);
+			}
+		}
+		observedMultipleLevels |= minimumLevel != maximumLevel;
+		if (!Expect(std::find(cellOwner.begin(), cellOwner.end(), -1) == cellOwner.end(),
+			"Terrain CDLOD left an uncovered terrain cell"))
+			return false;
+
+		auto ownerAt = [&](int64_t x, int64_t z) -> int
+		{
+			if (x < 0 || z < 0 || x >= rootCells || z >= rootCells)
+				return -1;
+			return cellOwner[static_cast<size_t>(z) * rootCells + static_cast<size_t>(x)];
+		};
+
+		for (size_t patchIndex = 0; patchIndex < patches.size(); ++patchIndex)
+		{
+			const TerrainLodPatch& patch = patches[patchIndex];
+			const uint32_t patchCells = 1u << patch.level;
+			for (size_t edgeIndex = 0; edgeIndex < std::size(edges); ++edgeIndex)
+			{
+				const uint32_t edge = edges[edgeIndex];
+				for (uint32_t offset = 0; offset < patchCells; ++offset)
+				{
+					int64_t neighborX = patch.gridX;
+					int64_t neighborZ = patch.gridZ;
+					if (edge == TerrainEdge_Left) { neighborX -= 1; neighborZ += offset; }
+					if (edge == TerrainEdge_Right) { neighborX += patchCells; neighborZ += offset; }
+					if (edge == TerrainEdge_Top) { neighborX += offset; neighborZ -= 1; }
+					if (edge == TerrainEdge_Bottom) { neighborX += offset; neighborZ += patchCells; }
+					const int neighborIndex = ownerAt(neighborX, neighborZ);
+					if (neighborIndex < 0 || neighborIndex == static_cast<int>(patchIndex))
+						continue;
+
+					const TerrainLodPatch& neighbor = patches[static_cast<size_t>(neighborIndex)];
+					const int levelDelta = static_cast<int>(neighbor.level) - static_cast<int>(patch.level);
+					if (!Expect(std::abs(levelDelta) <= 1,
+						"Terrain CDLOD violates the 2:1 neighbor rule"))
+						return false;
+
+					const bool levelTransition = levelDelta != 0;
+					const bool tessellationTransition = levelTransition ||
+						patch.tessellated != neighbor.tessellated;
+					const uint32_t opposite = oppositeEdges[edgeIndex];
+					if (!Expect(((patch.edgeFlags >> 4u) & edge) != 0u == levelTransition &&
+						((neighbor.edgeFlags >> 4u) & opposite) != 0u == levelTransition,
+						"Terrain CDLOD LOD-transition flags are not symmetric"))
+						return false;
+					if (!Expect(((patch.edgeFlags >> 8u) & edge) != 0u == tessellationTransition &&
+						((neighbor.edgeFlags >> 8u) & opposite) != 0u == tessellationTransition,
+						"Terrain tessellation-boundary flags are not symmetric"))
+						return false;
+					if (!Expect(((patch.edgeFlags & edge) != 0u) == (levelDelta > 0),
+						"Terrain fine-side coarser-neighbor flag is incorrect"))
+						return false;
+
+					observedLodTransition |= levelTransition;
+					observedTessellationBoundary |= tessellationTransition;
+				}
+			}
+		}
+	}
+
+	return Expect(observedMultipleLevels && observedLodTransition &&
+		observedTessellationBoundary && observedExpectedMorphRange,
+		"Terrain CDLOD test did not exercise LOD, morph, and tessellation transitions");
+}
+
 bool TestDecalRenderingContract();
 bool TestImpactDecalRuntimeContract();
 bool TestDecalGpuContract();
@@ -16536,11 +17076,23 @@ bool TestDescriptorLayoutSharingContract();
 
 int main(int argc, char** argv)
 {
+	if (argc == 2 && std::string(argv[1]) == "--pcg-core")
+		return RunPcgCoreContractTests() ? 0 : 203;
+    if (argc == 2 && std::string(argv[1]) == "--terrain-cdlod")
+        return TestTerrainCdlodSelectionContract() ? 0 : 188;
     if (argc == 2 && std::string(argv[1]) == "--descriptor-layout-sharing")
         return TestDescriptorLayoutSharingContract() ? 0 : 201;
     if (argc == 2 && std::string(argv[1]) == "--particle-core")
         return TestParticleCoreContract() ? 0 : 170;
 	VANS_INIT_MAIN_THREAD();
+	if (argc == 2 && std::string(argv[1]) == "--pcg-assets")
+		return RunPcgAssetContractTests() ? 0 : 204;
+	if (argc == 2 && std::string(argv[1]) == "--pcg-editor-configuration")
+		return RunPcgEditorConfigurationContractTests() ? 0 : 206;
+	if (argc == 3 && std::string(argv[1]) == "--pcg-project")
+		return RunPcgProjectContractTests(argv[2]) ? 0 : 205;
+	if (argc == 2 && std::string(argv[1]) == "--terrain-authoring")
+		return TestTerrainAuthoringContract() ? 0 : 202;
     if (argc == 5 && std::string(argv[1]) == "--reflection-probe-placement-scene")
         return MeasureReflectionProbePlacement(argv[2], argv[3], argv[4]) ? 0 : 186;
     if (argc == 2 && std::string(argv[1]) == "--gi-receiver-visibility-gpu")
@@ -16819,10 +17371,18 @@ int main(int argc, char** argv)
 		return 128;
 	if (!RunNavigationAIContractTests())
 		return 148;
+	if (!RunPcgCoreContractTests())
+		return 203;
+	if (!RunPcgAssetContractTests())
+		return 204;
 	if (!TestDecalRenderingContract())
 		return 180;
 	if (!TestDrawSubmissionContract())
 		return 127;
+	if (!TestTerrainAuthoringContract())
+		return 202;
+	if (!TestTerrainCdlodSelectionContract())
+		return 188;
 	if (!TestLuaInspectorProjectModuleSearchPathContract())
 		return 125;
 	if (!TestSceneResourceArtifactPrewarmContract())

@@ -25,7 +25,8 @@ namespace Vans
 		static bool Supports(VansAssetType type);
 		static VansAssetObjectBootstrapResult Publish(
 			const std::vector<VansAssetRecord>& records,
-			VansAssetObjectRepository& repository);
+			VansAssetObjectRepository& repository,
+			const std::vector<VansAssetRecord>& resourceRecords = {});
 		static bool PublishSerialized(
 			const VansAssetRecord& record,
 			const VansSerializedValue& sourceRoot,

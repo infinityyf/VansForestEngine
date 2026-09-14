@@ -15,14 +15,13 @@ layout(set = 1, binding = 1) uniform sampler2D waterGBufPosDepth;
 layout(set = 1, binding = 3) uniform sampler2D sceneGBuf2;
 layout(set = 1, binding = 4) uniform sampler2D waterReflection;
 layout(set = 1, binding = 5) uniform sampler2D waterRefractionData;
-layout(set = 1, binding = 6) uniform sampler2D waterCaustics;
-layout(set = 1, binding = 7) uniform sampler2D waterGBufScatter;
-layout(set = 1, binding = 8) uniform sampler2D waterGBufAbsorption;
-layout(set = 1, binding = 9) uniform sampler2D waterVolumeColor;
-layout(set = 1, binding = 10) uniform sampler2D waterVolumeTransmittance;
-layout(set = 1, binding = 11) uniform sampler2D waterVolumeDepth;
-layout(set = 1, binding = 12) uniform sampler2D sceneColor;
-layout(set = 1, binding = 13) uniform sampler2DArrayShadow cascadeShadowMap;
+layout(set = 1, binding = 6) uniform sampler2D waterGBufScatter;
+layout(set = 1, binding = 7) uniform sampler2D waterGBufAbsorption;
+layout(set = 1, binding = 8) uniform sampler2D waterVolumeColor;
+layout(set = 1, binding = 9) uniform sampler2D waterVolumeTransmittance;
+layout(set = 1, binding = 10) uniform sampler2D waterVolumeDepth;
+layout(set = 1, binding = 11) uniform sampler2D sceneColor;
+layout(set = 1, binding = 12) uniform sampler2DArrayShadow cascadeShadowMap;
 
 #define PBR_WATER_PARAMS_SET 1
 #define PBR_WATER_PARAMS_BINDING 2
@@ -105,16 +104,12 @@ void main()
         screenUV, refractionData.xy, p.refractionParams.z, refractionColorLod);
     vec3 volumeDiffuse = textureLod(waterVolumeColor, screenUV, 0.0).rgb;
     vec3 volumeT = textureLod(waterVolumeTransmittance, screenUV, 0.0).rgb;
-    vec3 causticRadiance = p.effectFlags.z != 0
-        ? texelFetch(waterCaustics, pixel, 0).rgb : vec3(0.0);
 
     // Preserve the established water-volume fill light.  The visible physical
     // sky is not the material environment source; water IBL remains the
     // authored SkyBox cache and this term remains tied to the prepared key.
     vec3 atmosphere = max(p.mainLightColor.rgb, vec3(0.0)) * 0.015;
-    // The caustics pass outputs receiver-reflected radiance. Apply the return
-    // water path once; do not multiply already-lit scene radiance by a gain.
-    vec3 transmitted = (refractedScene + causticRadiance) * volumeT;
+    vec3 transmitted = refractedScene * volumeT;
     vec3 transmissionRadiance = volumeDiffuse + transmitted +
         atmosphere * (vec3(1.0) - volumeT);
     vec3 color = transmissionRadiance * transmissionWeight

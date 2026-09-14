@@ -55,7 +55,10 @@ VansAssetSaveResult VansEditorAssetSaveService::SaveAsset(
     const bool sourceDirty = document->sourceDocument.IsDirty();
     const bool metaDirty = document->metaDocument.IsDirty();
 
-    std::vector<StagedAssetDocument> staged;
+	std::vector<StagedAssetDocument> staged;
+	std::vector<VansStagedFile> companionStages;
+	const std::shared_ptr<IVansAssetDocumentCompanion> companion =
+		document->companion.lock();
     VansStagedFileTransaction transaction;
     if (sourceDirty)
     {
@@ -96,6 +99,17 @@ VansAssetSaveResult VansEditorAssetSaveService::SaveAsset(
         staged.push_back(std::move(item));
     }
 
+	if (companion && companion->IsDirty())
+	{
+		if (!companion->StageSave(companionStages, document->lastError))
+		{
+			AppendError(result, document->sourcePath, document->lastError);
+			return result;
+		}
+		for (const VansStagedFile& file : companionStages)
+			transaction.Add(file);
+	}
+
     if (!transaction.Empty())
     {
         if (!transaction.Publish(document->lastError))
@@ -112,6 +126,12 @@ VansAssetSaveResult VansEditorAssetSaveService::SaveAsset(
                 return result;
             }
         }
+		if (companion && !companionStages.empty() &&
+			!companion->ObservePublishedSave(document->lastError))
+		{
+			AppendError(result, document->sourcePath, document->lastError);
+			return result;
+		}
         result.wroteFile = true;
     }
 
@@ -126,6 +146,8 @@ VansAssetSaveResult VansEditorAssetSaveService::SaveAsset(
 		}
 		for (StagedAssetDocument& item : staged)
 			if (item.document) item.document->AdoptObservedSave(item.stage);
+		if (companion && !companionStages.empty())
+			companion->AdoptObservedSave();
         if (result)
             result.savedDocuments = 1;
     }

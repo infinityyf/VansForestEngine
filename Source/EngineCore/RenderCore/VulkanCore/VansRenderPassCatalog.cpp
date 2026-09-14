@@ -305,7 +305,7 @@ namespace VansGraphics
 					  { "WaterRefractionData", VansRenderResourceUsage::StorageWrite },
 					  { "WaterVolumeRaw", VansRenderResourceUsage::StorageWrite },
 					  { "WaterVolumeFiltered", VansRenderResourceUsage::StorageWrite } },
-					{ "PBRWater refraction data, volume integration/filter, SSR and caustics" } },
+					{ "PBRWater refraction data, volume integration/filter, SSR" } },
 				{ VansRenderPassNames::WaterCompositePreAtmosphere, VansRenderQueueClass::Graphics, true, false, VansRenderPassCondition::HasWater,
 					{ { "WaterGBuffer", VansRenderResourceUsage::SampledRead },
 					  { "GBuffer", VansRenderResourceUsage::SampledRead },

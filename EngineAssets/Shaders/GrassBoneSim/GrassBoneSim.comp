@@ -16,15 +16,7 @@ layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 // Set 1: vegetation simulation buffers
 // ── Instance data (read only) ───────────────────────────────────────────────
 // P4 优化: 预计算旋转的 sin/cos，GPU 直接读取避免每帧三角函数运算
-struct GrassInstance
-{
-    vec3  position;     // world root position
-    float scale;
-    float cosR;         // cos(rotation) — precomputed on CPU
-    float sinR;         // sin(rotation) — precomputed on CPU
-    int   padding0;
-    int   padding1;
-};
+#include "../Grass/GrassInstance.glsl"
 
 layout(std430, set = 1, binding = 0) readonly buffer InstanceBuffer
 {
@@ -51,7 +43,6 @@ layout(std430, set = 1, binding = 2) writeonly buffer BoneMatrixBuffer
 };
 
 // ── Terrain heightmap (read only, for ground placement) ────────────────────
-layout(set = 1, binding = 3) uniform sampler2D terrainHeightmap;
 
 // ── Per-instance LOD factor (write) ────────────────────────────────────────
 layout(std430, set = 1, binding = 4) writeonly buffer LodFactorBuffer
@@ -85,10 +76,10 @@ layout(push_constant) uniform PushConstants
     float stiffness;
     float damping;
     float softness;           // 0.0 = rigid (hard blade), 1.0 = fully soft
-    float terrainSize;        // terrain world size (e.g. 1024)
-    float terrainMaxHeight;   // max terrain height in world units
-    float terrainHeightOffset;// vertical offset (e.g. -23)
-    int   terrainEnabled;     // 0 = no terrain height, 1 = sample heightmap
+
+
+
+
     // LOD distances (camera position comes from CameraData UBO at set=0, not push constant)
     float lodFullDist;        // full simulation within this XZ radius
     float lodFadeDist;        // fade zone end; skip entirely beyond this
@@ -102,7 +93,6 @@ layout(push_constant) uniform PushConstants
 // BONE_COUNT is now driven by pc.boneCount (push constant) so the shader
 // works for any bone chain length without recompilation.
 // The constant below is kept only for the fallback initialiser guard.
-#define BONE_COUNT_FALLBACK 3u
 const float MAX_BEND_ANGLE_COS = 0.5;        // cos(60°)
 const float GRAVITY = -9.8;
 const float SEGMENT_MASS = 0.001;
@@ -193,46 +183,18 @@ void main()
     GrassInstance inst = instances[instanceID];
     // Derive segment length from the runtime blade height so JSON can control blade size.
     uint  BONE_COUNT = pc.boneCount;  // runtime bone count from push constant
-    float segLength = (pc.grassHeight / float(BONE_COUNT - 1u)) * inst.scale;
+    float segLength = (pc.grassHeight / float(BONE_COUNT - 1u)) * length(inst.modelMatrix[1].xyz);
     float dt = pc.deltaTime;
     uint boneBase = instanceID * BONE_COUNT;
 
     // ── LOD: compute XZ distance to camera (position from CameraData UBO) ──────
     vec2 camXZ   = vec2(cameraPosition.x, cameraPosition.z);
-    vec2 instXZ  = inst.position.xz;
+    vec2 instXZ  = grassRoot(inst).xz;
     float dist   = distance(instXZ, camXZ);
 
-    // ── Sample terrain heightmap to place root on terrain surface ─────────────
-    vec3 rootPos = inst.position;
-    if (pc.terrainEnabled != 0)
-    {
-        vec2 heightUV = rootPos.xz / pc.terrainSize + 0.5;
-        float terrainHeight = texture(terrainHeightmap, heightUV).r * pc.terrainMaxHeight + pc.terrainHeightOffset;
-        rootPos.y = terrainHeight;
-    }
-
-    // Root bone is always anchored to instance position (with terrain height).
-    // Before overwriting, capture the old Y so we can shift the upper bones to match,
-    // preserving the blade's arc shape when terrain moves the root up or down.
-    float oldRootY = bones[boneBase].position.y;
+    vec3 rootPos = grassRoot(inst);
     bones[boneBase].position = vec4(rootPos, 1.0);
     bones[boneBase].velocity = vec4(rootPos, 0.0);
-
-    float terrainDeltaY = rootPos.y - oldRootY;
-    if (abs(terrainDeltaY) > 0.001)
-    {
-        // Shift all non-root bones by the same vertical offset so the whole
-        // blade moves together (important for frozen far-LOD blades that are
-        // never individually updated by the Verlet integrator).
-        for (uint j = 1; j < BONE_COUNT; ++j)
-        {
-            bones[boneBase + j].position.y += terrainDeltaY;
-            bones[boneBase + j].velocity.y += terrainDeltaY;
-        }
-    }
-
-    // P6a: Sub-blade terrain Y 采样已移至顶点着色器。
-    // Bone sim 不再写入 subBladeRoots 数据。
 
     // ── Beyond fade distance: skip Verlet entirely, render in frozen rest-pose ─
     if (dist >= pc.lodFadeDist)
@@ -242,9 +204,7 @@ void main()
         // Only the smoothstep fade-zone can organically produce lod=0 (→ cull).
         lodFactors[instanceID] = 1.0;
         // P4: 直接读取预计算的 sin/cos，不再调用三角函数
-        float cosR = inst.cosR;
-        float sinR = inst.sinR;
-        vec3 seedRight = vec3(cosR, 0.0, sinR);
+        vec3 seedRight = grassBindFrame(inst)[0];
         vec3 prevRight = seedRight;
         for (uint j = 0; j < BONE_COUNT; ++j)
         {
@@ -255,7 +215,7 @@ void main()
             {
                 // Force root bone to be world-up so the blade base lies flat on terrain.
                 // Leaning starts from bone 1 upward.
-                tangent = vec3(0.0, 1.0, 0.0);
+                tangent = grassBindFrame(inst)[1];
             }
             else if (j < BONE_COUNT - 1)
             {
@@ -269,7 +229,7 @@ void main()
             // Store root-relative position so the vertex shader can add subRoot.xyz
             // (world-space) without double-counting the instance world translation.
             prevRight = buildBoneMatrixPT(pos - rootPos, tangent, prevRight, boneMat);
-            boneMatrices[instanceID * BONE_COUNT + j] = boneMat;
+            boneMatrices[instanceID * BONE_COUNT + j] = boneMat * grassInverseBind(inst, float(j) * segLength);
         }
         return;
     }
@@ -342,9 +302,7 @@ void main()
     // Seed the initial right vector from the instance rotation so that the
     // blade face stays consistent with the per-instance Y-axis rotation.
     // P4: 直接读取预计算的 sin/cos
-    float cosR = inst.cosR;
-    float sinR = inst.sinR;
-    vec3 seedRight = vec3(cosR, 0.0, sinR);  // rotated X-axis
+    vec3 seedRight = grassBindFrame(inst)[0];
 
     vec3 prevRight = seedRight;
     for (uint j = 0; j < BONE_COUNT; ++j)
@@ -355,7 +313,7 @@ void main()
         if (j == 0)
         {
             // Force root bone to be world-up so base vertices lie flat on terrain.
-            tangent = vec3(0.0, 1.0, 0.0);
+            tangent = grassBindFrame(inst)[1];
         }
         else if (j < BONE_COUNT - 1)
         {
@@ -370,6 +328,6 @@ void main()
         // Store root-relative position so the vertex shader can add subRoot.xyz
         // (world-space) without double-counting the instance world translation.
         prevRight = buildBoneMatrixPT(pos - rootPos, tangent, prevRight, boneMat);
-        boneMatrices[instanceID * BONE_COUNT + j] = boneMat;
+        boneMatrices[instanceID * BONE_COUNT + j] = boneMat * grassInverseBind(inst, float(j) * segLength);
     }
 }

@@ -38,13 +38,22 @@
 #include "../RuntimeUI/VansUIAssetResolver.h"
 #include "Serialization/VansVegetationConfigCodec.h"
 #include "Storage/VansVegetationConfigStorage.h"
+#include "../PcgCore/Serialization/VansPlantTypeAssetCodec.h"
+#include "../PcgCore/Storage/VansPlantTypeAssetStorage.h"
+#include "../PcgCore/Serialization/VansPcgMaskAssetCodec.h"
+#include "../PcgCore/Storage/VansPcgMaskAssetStorage.h"
+#include "../PcgCore/Serialization/VansPcgSplineAssetCodec.h"
+#include "../PcgCore/Storage/VansPcgSplineAssetStorage.h"
 #include "../TimelineCore/VansTimelineSerialization.h"
+#include "../TerrainCore/Serialization/VansTerrainAssetCodec.h"
+#include "../TerrainCore/Storage/VansTerrainAssetStorage.h"
 
 #include <algorithm>
 #include <filesystem>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <type_traits>
 
@@ -78,6 +87,12 @@ namespace
         // 首次文件加载与编辑后的内存发布必须得到同一依赖闭包。
         if constexpr (std::is_same_v<Asset,VansGraphics::VansParticleAsset>)
             dependencies = object->TextureDependencies();
+        else if constexpr (std::is_same_v<Asset, VansVegetationConfigAsset>)
+            dependencies = object->config.Dependencies();
+        else if constexpr (std::is_same_v<Asset, VansPlantTypeAsset>)
+            dependencies = object->Dependencies();
+        else if constexpr (std::is_same_v<Asset, VansPcgSplineAsset>)
+            dependencies = object->Dependencies();
         else if constexpr (std::is_same_v<Asset,VansGameplayAssetMemoryObject>)
         {
             if (object->hasCookedAsset)
@@ -239,8 +254,61 @@ bool VansAssetObjectBootstrapper::PublishSerialized(
 	if (record.type == VansAssetType::VegetationConfig)
 	{
 		auto asset = std::make_shared<VansVegetationConfigAsset>();
-		return VansVegetationConfigCodec::Decode(sourceRoot, *asset, error) &&
-			PublishDecoded(record, contentHash, std::move(asset), std::move(dependencies), repository, error);
+		if (!VansVegetationConfigCodec::Decode(sourceRoot, *asset, error)) return false;
+		dependencies = asset->config.Dependencies();
+		return PublishDecoded(record, contentHash, std::move(asset), std::move(dependencies), repository, error);
+	}
+	if (record.type == VansAssetType::PlantType)
+	{
+		auto asset = std::make_shared<VansPlantTypeAsset>();
+		if (!VansPlantTypeAssetCodec::Decode(sourceRoot, *asset, error)) return false;
+		dependencies = asset->Dependencies();
+		return PublishDecoded(record, contentHash, std::move(asset), std::move(dependencies), repository, error);
+	}
+	if (record.type == VansAssetType::PcgSpline)
+	{
+		auto asset = std::make_shared<VansPcgSplineAsset>();
+		if (!VansPcgSplineAssetCodec::Decode(sourceRoot, *asset, error)) return false;
+		dependencies = asset->Dependencies();
+		return PublishDecoded(record, contentHash, std::move(asset), std::move(dependencies), repository, error);
+	}
+	if (record.type == VansAssetType::PcgMask)
+	{
+		auto asset = std::make_shared<VansPcgMaskAsset>();
+		if (!VansPcgMaskAssetCodec::DecodeDefinition(sourceRoot, *asset, error)) return false;
+		const auto previous = repository.ResolveLatest<VansPcgMaskAsset>(record.guid);
+		if (!previous || asset->mask.target.maskId != record.guid.ToString() ||
+			!(asset->mask.target == previous->mask.target) || asset->pixelAsset != previous->pixelAsset ||
+			asset->mask.width != previous->mask.width || asset->mask.height != previous->mask.height ||
+			!(asset->mask.bounds == previous->mask.bounds))
+		{
+			error = "PCG Mask owner, pixel source or mapping changes require a mask authoring transaction";
+			return false;
+		}
+		asset->mask.pixels = previous->mask.pixels;
+		dependencies = asset->Dependencies();
+		// 文档属性发布必须保留会话已经发布的像素，不重新读取图片。
+		return PublishDecoded(record, contentHash, std::move(asset), std::move(dependencies), repository, error);
+	}
+	if (record.type == VansAssetType::Terrain)
+	{
+		auto asset = std::make_shared<VansTerrainAsset>();
+		if (!VansTerrainAssetCodec::DecodeDefinition(sourceRoot, *asset, error))
+			return false;
+		const auto previous = repository.ResolveLatest<VansTerrainAsset>(record.guid);
+		if (!previous || previous->heightmap != asset->heightmap ||
+			previous->splatmaps != asset->splatmaps || !previous->HasPixelData())
+		{
+			error = "Terrain working-copy definition requires an existing matching pixel snapshot";
+			return false;
+		}
+		asset->sourcePath = record.sourcePath;
+		asset->width = previous->width;
+		asset->height = previous->height;
+		asset->heights = previous->heights;
+		asset->splatPixels = previous->splatPixels;
+		return PublishDecoded(record, contentHash, std::move(asset),
+			previous->Dependencies(), repository, error);
 	}
 	if (record.type == VansAssetType::AIBehavior)
 	{
@@ -370,14 +438,35 @@ bool VansAssetObjectBootstrapper::PublishMetadataSerialized(
 
 VansAssetObjectBootstrapResult VansAssetObjectBootstrapper::Publish(
 	const std::vector<VansAssetRecord>& records,
-	VansAssetObjectRepository& repository)
+	VansAssetObjectRepository& repository,
+	const std::vector<VansAssetRecord>& resourceRecords)
 {
 	VansAssetObjectBootstrapResult result;
 	std::unordered_map<std::string, VansAssetGuid> indexedGuids;
+	std::unordered_map<VansAssetGuid, const VansAssetRecord*> indexedRecords;
+	std::unordered_map<VansAssetGuid, std::uint64_t> currentSourceContentHashes;
+	std::unordered_map<VansAssetGuid, VansAssetGuid> pcgPixelOwners;
+	std::unordered_set<VansAssetGuid> publishingGuids;
+	for (const auto& record : records) publishingGuids.insert(record.guid);
 	indexedGuids.reserve(records.size());
+	indexedRecords.reserve(records.size());
+	currentSourceContentHashes.reserve(records.size());
+	// 解析所需的资源索引与需要重新发布的对象分开，保存一个 Mask 不刷新其他未保存项。
+	for (const VansAssetRecord& record : resourceRecords)
+		if (record.state != VansAssetState::Missing)
+		{
+			indexedGuids.emplace(record.guid.ToString(), record.guid);
+			indexedRecords.emplace(record.guid, &record);
+			if (record.type == VansAssetType::PcgMask && !publishingGuids.count(record.guid))
+				if (const auto mask = repository.ResolveLatest<VansPcgMaskAsset>(record.guid))
+					pcgPixelOwners.emplace(mask->pixelAsset, record.guid);
+		}
 	for (const VansAssetRecord& record : records)
 		if (record.state != VansAssetState::Missing)
+		{
 			indexedGuids.emplace(record.guid.ToString(), record.guid);
+			indexedRecords.insert_or_assign(record.guid, &record);
+		}
 
 	for (const VansAssetRecord& record : records)
 	{
@@ -412,6 +501,81 @@ VansAssetObjectBootstrapResult VansAssetObjectBootstrapper::Publish(
 				[&](VansVegetationConfigAsset& asset, std::string& loadError)
 				{ return VansVegetationConfigStorage::Load(record.sourcePath, asset, loadError); },
 				{}, published, error);
+		else if (record.type == VansAssetType::PlantType)
+			success = EnsurePublished<VansPlantTypeAsset>(record, repository,
+				[&](VansPlantTypeAsset& asset, std::string& loadError)
+				{ return VansPlantTypeAssetStorage::Load(record.sourcePath, asset, loadError); },
+				{}, published, error);
+		else if (record.type == VansAssetType::PcgSpline)
+			success = EnsurePublished<VansPcgSplineAsset>(record, repository,
+				[&](VansPcgSplineAsset& asset, std::string& loadError)
+				{ return VansPcgSplineAssetStorage::Load(record.sourcePath, asset, loadError); },
+				{}, published, error);
+		else if (record.type == VansAssetType::PcgMask)
+		{
+			const auto resolvePixels = [&indexedRecords](VansAssetGuid guid) -> std::optional<std::filesystem::path>
+			{
+				const auto found = indexedRecords.find(guid);
+				if (found == indexedRecords.end() || found->second->type != VansAssetType::Texture ||
+					found->second->state == VansAssetState::Missing) return std::nullopt;
+				return found->second->sourcePath;
+			};
+			auto asset = std::make_shared<VansPcgMaskAsset>();
+			success = VansPcgMaskAssetStorage::Load(record.sourcePath, resolvePixels, *asset, error);
+			if (success && asset->mask.target.maskId != record.guid.ToString())
+			{ success = false; error = "PCG Mask owner GUID does not match its indexed asset"; }
+			if (success && !pcgPixelOwners.emplace(asset->pixelAsset, record.guid).second)
+			{ success = false; error = "PCG Mask pixel textures cannot be shared by different editable masks"; }
+			if (success)
+			{
+				std::uint64_t hash = AssetObjectContentHash(record);
+				hash ^= asset->mask.ContentHash() + 0x9e3779b97f4a7c15ull + (hash << 6u) + (hash >> 2u);
+				const auto dependencies = asset->Dependencies();
+				VansAssetObjectSnapshotInfo previous;
+				const bool unchanged = repository.FindInfo(record.guid, previous) && previous.contentHash == hash;
+				success = repository.Publish<VansPcgMaskAsset>(record.guid, record.type, hash,
+					std::move(asset), dependencies, error).IsValid();
+				published = success && !unchanged;
+			}
+		}
+		else if (record.type == VansAssetType::Terrain)
+		{
+			const auto resolveTexturePath = [&indexedRecords](VansAssetGuid guid)
+				-> std::optional<std::filesystem::path>
+			{
+				const auto found = indexedRecords.find(guid);
+				if (found == indexedRecords.end() || !found->second ||
+					found->second->type != VansAssetType::Texture ||
+					found->second->state == VansAssetState::Missing)
+					return std::nullopt;
+				return found->second->sourcePath;
+			};
+			auto asset = std::make_shared<VansTerrainAsset>();
+			success = VansTerrainAssetStorage::Load(
+				record.sourcePath, resolveTexturePath, *asset, error);
+			if (success)
+			{
+				std::uint64_t contentHash = AssetObjectContentHash(record);
+				const std::uint64_t pixelHash = HashTerrainAssetContent(*asset);
+				contentHash ^= pixelHash + 0x9e3779b97f4a7c15ull +
+					(contentHash << 6u) + (contentHash >> 2u);
+				if (contentHash == 0) contentHash = 1;
+				VansAssetObjectSnapshotInfo info;
+				if (repository.FindInfo(record.guid, info) &&
+					info.assetType == record.type && info.contentHash == contentHash &&
+					repository.ResolveLatest<VansTerrainAsset>(record.guid))
+				{
+					published = false;
+				}
+				else
+				{
+					const std::vector<VansAssetGuid> dependencies = asset->Dependencies();
+					success = repository.Publish<VansTerrainAsset>(record.guid, record.type,
+						contentHash, std::move(asset), dependencies, error).IsValid();
+					published = success;
+				}
+			}
+		}
 		else if (record.type == VansAssetType::AIBehavior)
 			success = EnsurePublished<VansAIBehaviorAsset>(record, repository,
 				[&](VansAIBehaviorAsset& asset, std::string& loadError)
@@ -546,8 +710,17 @@ VansAssetObjectBootstrapResult VansAssetObjectBootstrapper::Publish(
 			result.errors.push_back(
 				"Asset '" + record.guid.ToString() + "' cannot publish: " + error);
 		}
-		else if (published)
-			++result.published;
+		else
+		{
+			if (Supports(record.type))
+			{
+				VansAssetObjectSnapshotInfo info;
+				if (repository.FindInfo(record.guid, info) && info.assetType == record.type)
+					currentSourceContentHashes.emplace(record.guid, info.contentHash);
+			}
+			if (published)
+				++result.published;
+		}
 	}
 
 	for (const VansAssetRecord& record : records)
@@ -566,13 +739,11 @@ VansAssetObjectBootstrapResult VansAssetObjectBootstrapper::Publish(
 			continue;
 		}
 
-		const std::uint64_t contentHash = AssetObjectContentHash(record);
-		VansAssetObjectSnapshotInfo info;
-		if (repository.FindInfo(record.guid, info) &&
-			info.assetType == record.type && info.contentHash == contentHash)
+		const auto currentSource = currentSourceContentHashes.find(record.guid);
+		if (currentSource != currentSourceContentHashes.end())
 		{
 			if (!repository.PublishView<VansAssetMeta>(
-				record.guid, record.type, contentHash,
+				record.guid, record.type, currentSource->second,
 				std::make_shared<const VansAssetMeta>(std::move(meta)), error).IsValid())
 				result.errors.push_back(
 					"Asset metadata '" + record.guid.ToString() + "' cannot publish: " + error);
@@ -581,6 +752,7 @@ VansAssetObjectBootstrapResult VansAssetObjectBootstrapper::Publish(
 			continue;
 		}
 
+		const std::uint64_t contentHash = AssetObjectContentHash(record);
 		if (!Supports(record.type) &&
 			repository.Publish<VansAssetMeta>(
 				record.guid, record.type, contentHash,
@@ -607,6 +779,10 @@ bool VansAssetObjectBootstrapper::Supports(VansAssetType type)
 	case VansAssetType::SkinProfile:
 	case VansAssetType::PostProcessProfile:
 	case VansAssetType::VegetationConfig:
+	case VansAssetType::PlantType:
+	case VansAssetType::PcgMask:
+	case VansAssetType::PcgSpline:
+	case VansAssetType::Terrain:
 	case VansAssetType::AIBehavior:
 	case VansAssetType::NavigationMesh:
 	case VansAssetType::RetargetProfile:

@@ -2,7 +2,6 @@
 #include "VansCollisionLayerManager.h"
 #include "../Util/VansLog.h"
 
-#include <stb_image.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -29,9 +28,9 @@ namespace VansEngine
             return false;
         }
 
-        if (m_Properties.heightmapPath.empty())
+        if (!m_Properties.surface || !m_Properties.surface->HasPixelData())
         {
-            VANS_LOG_ERROR("[TerrainPhysics] heightmapPath is empty, terrain collision skipped.");
+            VANS_LOG_ERROR("[TerrainPhysics] Effective terrain pixels are unavailable.");
             return false;
         }
 
@@ -97,52 +96,58 @@ namespace VansEngine
 
     bool VansTerrainPhysicsNode::LoadHeightSamples(std::vector<PxHeightFieldSample>& samples, PxU32& rowCount, PxU32& columnCount)
     {
-        int width = 0;
-        int height = 0;
-        int channels = 0;
-        stbi_us* pixels = stbi_load_16(m_Properties.heightmapPath.c_str(), &width, &height, &channels, 1);
-        if (!pixels)
+        const auto& surface=m_Properties.surface;
+        if (!surface || !surface->HasPixelData()) return false;
+        rowCount=surface->width;columnCount=surface->height;
+        samples.resize(static_cast<size_t>(rowCount)*columnCount);
+        // 保留已有高度场网格布局和量化约定，数据改为共享的内存有效地形。
+        for (PxU32 row=0;row<rowCount;++row) for (PxU32 column=0;column<columnCount;++column)
         {
-            VANS_LOG_ERROR("[TerrainPhysics] Failed to load heightmap: " << m_Properties.heightmapPath);
-            return false;
+            const auto pixel=surface->heights[static_cast<size_t>(column)*rowCount+row];
+            auto& sample=samples[static_cast<size_t>(row)*columnCount+column];
+            sample.height=static_cast<PxI16>(std::lround(float(pixel)*32767.0f/65535.0f));
+            sample.materialIndex0=0;sample.materialIndex1=0;sample.clearTessFlag();
         }
+        return true;
+    }
 
-        if (width < 2 || height < 2)
+    bool VansTerrainPhysicsNode::UpdateSurface(std::shared_ptr<const Vans::VansTerrainAsset> surface)
+    {
+        if (!surface || !surface->HasPixelData()) return false;
+        auto properties=m_Properties;
+        properties.surface=surface;
+        properties.terrainSize=surface->settings.terrainSize;
+        properties.maxHeight=surface->settings.maxHeight;
+        properties.heightOffset=surface->settings.heightOffset;
+        if (!m_HeightField || !m_Shape || !m_Actor ||
+            m_HeightField->getNbRows()!=surface->width || m_HeightField->getNbColumns()!=surface->height ||
+            m_Properties.terrainSize!=properties.terrainSize || m_Properties.maxHeight!=properties.maxHeight ||
+            m_Properties.heightOffset!=properties.heightOffset)
         {
-            VANS_LOG_ERROR("[TerrainPhysics] Invalid heightmap size: " << width << "x" << height);
-            stbi_image_free(pixels);
-            return false;
+            VansTerrainPhysicsNode replacement;
+            if (!replacement.Initialize(properties)) return false;
+            std::swap(m_Properties,replacement.m_Properties);
+            std::swap(m_HeightField,replacement.m_HeightField);
+            std::swap(m_Shape,replacement.m_Shape);
+            std::swap(m_Actor,replacement.m_Actor);
+            std::swap(m_Material,replacement.m_Material);
+            std::swap(m_Enabled,replacement.m_Enabled);
+            return true;
         }
-
-        rowCount = static_cast<PxU32>(width);
-        columnCount = static_cast<PxU32>(height);
-        samples.resize(static_cast<size_t>(rowCount) * static_cast<size_t>(columnCount));
-
-        for (int row = 0; row < width; ++row)
-        {
-            const int sourceX = m_Properties.flipX ? (width - 1 - row) : row;
-            for (int column = 0; column < height; ++column)
-            {
-                const int sourceY = m_Properties.flipZ ? (height - 1 - column) : column;
-                const uint16_t pixel = pixels[sourceY * width + sourceX];
-                const float normalizedHeight = static_cast<float>(pixel) / 65535.0f;
-                const int sampleHeight = static_cast<int>(std::lround(normalizedHeight * 32767.0f));
-
-                PxHeightFieldSample& sample = samples[static_cast<size_t>(row) * columnCount + column];
-                sample.height = static_cast<PxI16>(std::clamp(sampleHeight, 0, 32767));
-                sample.materialIndex0 = 0;
-                sample.materialIndex1 = 0;
-                sample.clearTessFlag();
-            }
-        }
-
-        stbi_image_free(pixels);
-
-        VANS_LOG("[TerrainPhysics] Heightmap loaded: " << m_Properties.heightmapPath
-                 << " size=" << width << "x" << height
-                 << " channels=" << channels
-                 << " flipX=" << m_Properties.flipX
-                 << " flipZ=" << m_Properties.flipZ);
+        const auto old=m_Properties.surface;
+        m_Properties.surface=surface;
+        std::vector<PxHeightFieldSample> samples;PxU32 rows=0,columns=0;
+        if (!LoadHeightSamples(samples,rows,columns)) {m_Properties.surface=old;return false;}
+        PxHeightFieldDesc desc;desc.nbRows=rows;desc.nbColumns=columns;
+        desc.samples.data=samples.data();desc.samples.stride=sizeof(PxHeightFieldSample);
+        auto* scene=VansPhysicsSystem::GetInstance().GetScene();
+        if (!scene) {m_Properties.surface=old;return false;}
+        PxSceneWriteLock lock(*scene);
+        if (!m_HeightField->modifySamples(0,0,desc,true)) {m_Properties.surface=old;return false;}
+        const PxHeightFieldGeometry geometry(m_HeightField,PxMeshGeometryFlags(),
+            properties.maxHeight/32767.0f,properties.terrainSize/float(rows-1),properties.terrainSize/float(columns-1));
+        // PhysX 要求更新所有引用形状，刷新查询加速结构与边界。
+        m_Shape->setGeometry(geometry);
         return true;
     }
 

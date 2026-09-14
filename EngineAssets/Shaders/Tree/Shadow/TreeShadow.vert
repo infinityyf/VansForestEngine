@@ -42,8 +42,8 @@ layout(push_constant) uniform TreeShadowPC
 
 void main()
 {
-    uint visibleIndex = pc.visibleOffset + gl_InstanceIndex;
-    uint treeIndex = visibleIndices[visibleIndex];
+    // 独立的距离压缩列表，不受主相机视锥和遮挡剔除影响。
+    uint treeIndex = visibleIndices[pc.visibleOffset + gl_InstanceIndex];
     mat4 model = instances[treeIndex].modelMatrix;
 
     vec4 clipCoord = uDirectionLight.shadowMatrix[pc.cascadeIndex] * model * position;

@@ -61,7 +61,11 @@ constexpr SerializedAssetTypeEntry SerializedAssetTypes[] = {
 	{ VansAssetType::UIThemeTokens, "uiThemeTokens" },
 	{ VansAssetType::UILocalization, "uiLocalization" },
 	{ VansAssetType::UIXaml, "uiXaml" },
-	{ VansAssetType::VegetationConfig, "vegetationConfig" }
+	{ VansAssetType::VegetationConfig, "vegetationConfig" },
+	{ VansAssetType::Terrain, "terrain" },
+	{ VansAssetType::PlantType, "plantType" },
+	{ VansAssetType::PcgMask, "pcgMask" },
+	{ VansAssetType::PcgSpline, "pcgSpline" }
 };
 
 std::wstring LowerExtension(const std::filesystem::path& path)
@@ -592,7 +596,11 @@ VansAssetType VansAssetDatabase::Classify(const std::filesystem::path& sourcePat
     if (extension == L".vragdoll") return VansAssetType::RagdollProfile;
     if (extension == L".vreverb") return VansAssetType::AudioReverbPreset;
     if (extension == L".vaudiosnapshot" || extension == L".vbusnapshot") return VansAssetType::AudioBusSnapshot;
-    if (extension == L".vducking") return VansAssetType::AudioDuckingRules;
+	if (extension == L".vducking") return VansAssetType::AudioDuckingRules;
+	if (extension == L".vterrain") return VansAssetType::Terrain;
+	if (extension == L".vplant") return VansAssetType::PlantType;
+	if (extension == L".vpcgmask") return VansAssetType::PcgMask;
+	if (extension == L".vpcgspline") return VansAssetType::PcgSpline;
     return VansAssetType::Unknown;
 }
 
@@ -641,6 +649,10 @@ std::string VansAssetDatabase::ImporterFor(VansAssetType type)
 	case VansAssetType::UILocalization: return "UILocalizationImporter";
 	case VansAssetType::UIXaml: return "UIXamlImporter";
 	case VansAssetType::VegetationConfig: return "VegetationConfigImporter";
+	case VansAssetType::Terrain: return "TerrainImporter";
+	case VansAssetType::PlantType: return "PlantTypeImporter";
+	case VansAssetType::PcgMask: return "PcgMaskImporter";
+	case VansAssetType::PcgSpline: return "PcgSplineImporter";
     default: return {};
     }
 }

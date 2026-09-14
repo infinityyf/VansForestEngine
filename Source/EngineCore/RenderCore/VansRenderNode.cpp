@@ -1,4 +1,5 @@
 #include "VansRenderNode.h"
+#include "PcgCore/VansPcgSplineFieldResources.h"
 #include "VansPostProcessProfile.h"
 #include "VansDrawSubmission.h"
 #include "VansCamera.h"
@@ -10,6 +11,7 @@
 #include "VulkanCore/VansRenderPass.h"
 #include "../../EngineCore/RenderCore/TerrainCore/VansTerrain.h"
 #include "../Util/VansLog.h"
+#include "../Util/VansProfiler.h"
 #include "../AnimationCore/VansAnimationNode.h"
 #include <atomic>
 #include <iostream>
@@ -1112,24 +1114,31 @@ void VansGraphics::VansTerrainRenderNode::UpdateDescriptorSets(VansMaterialManag
 
 void VansGraphics::VansTerrainRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalStateData& global_state)
 {
-	m_Terrain->Draw(cmd, global_state, m_UsedDescSetLayouts, m_UsedDescSets);
+	auto layouts=m_UsedDescSetLayouts;auto sets=m_UsedDescSets;
+	if (const auto* fields=m_Scene->GetSplineFieldResources())
+	{layouts.push_back(fields->Layout());sets.push_back(fields->DescriptorSet());}
+	m_Terrain->Draw(cmd, global_state, layouts, sets);
 }
 
 void VansGraphics::VansTerrainRenderNode::DrawShadow(VansVKCommandBuffer& cmd, GlobalStateData& global_state)
 {
-	m_Terrain->DrawShadow(cmd, global_state, m_UsedDescSetLayouts, m_UsedDescSets);
+	auto layouts=m_UsedDescSetLayouts;auto sets=m_UsedDescSets;
+	if (const auto* fields=m_Scene->GetSplineFieldResources())
+	{layouts.push_back(fields->Layout());sets.push_back(fields->DescriptorSet());}
+	m_Terrain->DrawShadow(cmd, global_state, layouts, sets);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // VansVegetationRenderNode — GPU-driven grass (indirect draw)
 // ═══════════════════════════════════════════════════════════════════════════════
 #include "VegetationCore/VansVegetationSystem.h"
+#include "VegetationCore/VansVegetationCollection.h"
 
 void VansGraphics::VansVegetationRenderNode::CreateDescriptorSets(VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager)
 {
-	if (!m_VegetationSystem)
+	if (!m_VegetationCollection)
 	{
-		VANS_LOG_WARN("[VegetationRenderNode] Missing VegetationSystem — skipping descriptor set creation.");
+		VANS_LOG_WARN("[VegetationRenderNode] Missing vegetation collection.");
 		return;
 	}
 
@@ -1148,13 +1157,13 @@ void VansGraphics::VansVegetationRenderNode::CreateDescriptorSets(VansCamera* ca
 	// Set 3+ (draw desc + grass textures) are bound per-config inside
 	// VansVegetationSystem::Draw() and are NOT stored here.
 
-	// Wire global camera descriptor set into the vegetation system for bone sim compute
-	m_VegetationSystem->SetGlobalDescriptorSet(
+	m_VegetationCollection->ForEach([&](VansVegetationSystem& system) {
+	system.SetGlobalDescriptorSet(
 		m_Scene->GetGlobalDescriptorSetLayout(),
 		m_Scene->GetGlobalDescriptorSet());
 
 	// Ensure grass texture descriptors are built for every material in configs
-	for (auto& cfg : m_VegetationSystem->GetRenderConfigsGPU())
+	for (auto& cfg : system.GetRenderConfigsGPU())
 	{
 		if (cfg.material && cfg.material->m_MaterialType == VansMaterialType::VAN_GRASS)
 		{
@@ -1164,6 +1173,7 @@ void VansGraphics::VansVegetationRenderNode::CreateDescriptorSets(VansCamera* ca
 		}
 	}
 
+	});
 	m_DescriptorsetsSetDone = true;
 }
 
@@ -1182,58 +1192,38 @@ void VansGraphics::VansVegetationRenderNode::UpdateDescriptorSets(VansMaterialMa
 
 void VansGraphics::VansVegetationRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalStateData& global_state)
 {
-	if (!m_VegetationSystem)
-		return;
-
-	const bool hasTrees = m_VegetationSystem->HasTrees();
-
-	// Use the first config's material as the shader source (all configs share the
-	// same vertex/fragment shader; they only differ in descriptor bindings).
-	VansMaterial* drawMaterial = m_Material;
-	if (!drawMaterial)
-	{
-		const auto& configs = m_VegetationSystem->GetRenderConfigsGPU();
-		if (!configs.empty() && configs[0].material)
-			drawMaterial = configs[0].material;
-	}
-	if (drawMaterial)
-	{
-		auto* gbufferShader = drawMaterial->GetPassShader(VansPass::GBUFFER);
-		if (gbufferShader)
-		{
-			m_VegetationSystem->Draw(cmd, *gbufferShader, global_state,
-				m_UsedDescSetLayouts, m_UsedDescSets,
-				m_TransfromIndex);
-		}
-	}
-	else if (!hasTrees)
-	{
-		return;
-	}
-
-	m_VegetationSystem->DrawTrees(cmd, global_state,
-		m_UsedDescSetLayouts, m_UsedDescSets,
-		m_TransfromIndex);
+    if (!m_VegetationCollection) return;
+    {
+    VANS_GPU_SCOPE(cmd.GetVKCommandBuffer(), "Vegetation Grass GBuffer");
+    m_VegetationCollection->ForEach([&](VansVegetationSystem& system) {
+        system.Draw(cmd,global_state,m_UsedDescSetLayouts,m_UsedDescSets,m_TransfromIndex);
+    });
+    }
+    {
+    VANS_GPU_SCOPE(cmd.GetVKCommandBuffer(), "Vegetation Tree GBuffer");
+    m_VegetationCollection->ForEach([&](VansVegetationSystem& system) {
+        system.DrawTrees(cmd,global_state,m_UsedDescSetLayouts,m_UsedDescSets,m_TransfromIndex);
+    });
+    }
 }
-
 void VansGraphics::VansVegetationRenderNode::DrawShadow(VansVKCommandBuffer& cmd, GlobalStateData& global_state)
 {
-	if (!m_VegetationSystem)
-		return;
-	m_VegetationSystem->DrawTreeCascadeShadow(cmd, global_state,
-		m_UsedDescSetLayouts, m_UsedDescSets,
-		m_TransfromIndex);
+    if (!m_VegetationCollection) return;
+    // 植被仅参与最近两级平行光阴影；远级联不遍历或提交任何植被批次。
+    if (global_state.cascadeIndex < 0 || global_state.cascadeIndex >= 2) return;
+    {
+    VANS_GPU_SCOPE(cmd.GetVKCommandBuffer(), "Vegetation Grass Cascade Shadow");
+    m_VegetationCollection->ForEach([&](VansVegetationSystem& system) {
+        system.DrawGrassCascadeShadow(cmd,global_state,m_UsedDescSetLayouts,m_UsedDescSets,global_state.cascadeIndex);
+    });
+    }
+    {
+    VANS_GPU_SCOPE(cmd.GetVKCommandBuffer(), "Vegetation Tree Cascade Shadow");
+    m_VegetationCollection->ForEach([&](VansVegetationSystem& system) {
+        system.DrawTreeCascadeShadow(cmd,global_state,m_UsedDescSetLayouts,m_UsedDescSets,m_TransfromIndex);
+    });
+    }
 }
-
-void VansGraphics::VansVegetationRenderNode::DrawPunctualShadow(VansVKCommandBuffer& cmd, GlobalStateData& global_state, int shadowViewIndex)
-{
-	if (!m_VegetationSystem)
-		return;
-	m_VegetationSystem->DrawTreePunctualShadow(cmd, global_state,
-		m_UsedDescSetLayouts, m_UsedDescSets,
-		m_TransfromIndex, shadowViewIndex);
-}
-
 // ── VansDecalRenderNode ────────────────────────────────────────────────────
 void VansGraphics::VansDecalRenderNode::CreateDescriptorSets(
 	VansCamera* camera, VansLightManager& lightManager, VansMaterialManager& materialManager)

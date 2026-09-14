@@ -11,32 +11,35 @@
 #include <algorithm>
 #include <functional>
 #include <unordered_map>
+#include <stdexcept>
+#include <limits>
 
 using namespace VansGraphics;
 
 namespace
 {
-	int ResolveTreeMaterialIndex(VansMaterial* material)
+	bool SupportsTreeMaterial(const VansMaterial* material)
 	{
 		if (!material)
-			return -1;
+			return false;
 
 		switch (material->m_MaterialType)
 		{
 		case VansMaterialType::VAN_PBR:
-			return static_cast<VansPBRMaterial*>(material)->m_MaterialIndex;
 		case VansMaterialType::VAN_EMISSIVE:
 		case VansMaterialType::VAN_PBR_EMISSIVE:
-			return static_cast<VansEmissiveMaterial*>(material)->m_MaterialIndex;
 		case VansMaterialType::VAN_DECAL:
-			return static_cast<VansDecalMaterial*>(material)->m_MaterialIndex;
 		case VansMaterialType::VAN_SUBSURFACE:
-			return static_cast<VansSubsurfaceMaterial*>(material)->m_MaterialIndex;
 		case VansMaterialType::VAN_CUSTOM_SHADER:
-			return material->m_MaterialIndex;
+			return true;
 		default:
-			return -1;
+			return false;
 		}
+	}
+
+	int ResolveTreeMaterialIndex(const VansMaterial* material)
+	{
+		return SupportsTreeMaterial(material) ? material->GetGlobalMaterialIndex() : -1;
 	}
 }
 
@@ -51,25 +54,38 @@ VansVegetationSystem::~VansVegetationSystem()
 // ============================================================================
 // Init  - creates all GPU resources for the vegetation system
 // ============================================================================
-void VansVegetationSystem::Init(VkDevice device, uint32_t instanceCount, uint32_t boneCountPerInstance)
+void VansVegetationSystem::Init(VkDevice device, std::vector<GrassInstance> grass,
+	std::vector<TreeInstanceGPU> trees, uint32_t boneCountPerInstance)
 {
+	if (!grass.empty() && (boneCountPerInstance < 2 || boneCountPerInstance > 64 ||
+		grass.size() > static_cast<size_t>(std::numeric_limits<int>::max()) / (sizeof(glm::mat4) * boneCountPerInstance) ||
+		grass.size() > std::numeric_limits<uint32_t>::max() / m_SubBladeCount))
+		throw std::invalid_argument("Vegetation batch exceeds bone/upload/indirect capacity.");
 	m_Device = device;
-	m_InstanceCount = instanceCount;
+	m_GrassInstancesCPU = std::move(grass);
+	m_TreeInstancesCPU = std::move(trees);
+	m_InstanceCount = static_cast<uint32_t>(m_GrassInstancesCPU.size());
 	m_BoneCountPerInstance = boneCountPerInstance;
-
-	CreateTemplateMesh(device);
-	CreateInstanceBuffer(device);
-	CreateBoneBuffer(device);
-	CreateBoneMatrixBuffer(device);
-	CreateLodFactorsBuffer(device);
-	CreateScatterOffsetUBO(device);
-	CreateCullBuffers(device);
-	LoadComputeShaders(device);
-	LoadTreeShaders(device);
-	CreateDescriptorSets();
-
-	VANS_LOG("VansVegetationSystem initialized: " << m_InstanceCount << " instances, "
-		<< m_BoneCountPerInstance << " bones/instance, " << m_VertexCount << " verts/blade");
+	if (m_InstanceCount > 0)
+	{
+		if (std::any_of(m_RenderConfigs.begin(), m_RenderConfigs.end(), [](const auto& part) { return part.proceduralBlade; }))
+			CreateTemplateMesh(device);
+		CreateInstanceBuffer(device);
+		CreateBoneBuffer(device);
+		CreateBoneMatrixBuffer(device);
+		CreateLodFactorsBuffer(device);
+		CreateScatterOffsetUBO(device);
+		CreateCullBuffers(device);
+		LoadComputeShaders(device);
+		CreateDescriptorSets();
+		BuildRenderConfigs();
+	}
+	if (!m_TreeInstancesCPU.empty())
+	{
+		LoadTreeShaders(device);
+		CreateTreeDescriptorSets();
+		BuildTreeResources();
+	}
 }
 
 // ============================================================================
@@ -180,70 +196,14 @@ void VansVegetationSystem::CreateTemplateMesh(VkDevice device)
 		rawPositions);
 }
 
-// ============================================================================
-// CreateInstanceBuffer  - random grass positions in [-10, 10] XZ
-// ============================================================================
-float VansVegetationSystem::SamplePlacementMask(const glm::vec2& worldXZ) const
-{
-	return VansPcgMaskSampler::Sample(m_PlacementMask, worldXZ);
-}
-
-bool VansVegetationSystem::AcceptPlacementMask(const glm::vec2& worldXZ, float randomValue) const
-{
-	return VansPcgMaskSampler::Accept(m_PlacementMask, worldXZ, randomValue);
-}
+// 只上传 PCG 的确定结果，渲染层不拥有 Mask 或随机摆放规则。
 void VansVegetationSystem::CreateInstanceBuffer(VkDevice device)
 {
-	std::vector<GrassInstance> instances;
-	instances.reserve(m_InstanceCount);
-	std::mt19937 rng(42);
-	std::uniform_real_distribution<float> posXDist(m_PlacementMinXZ.x, m_PlacementMaxXZ.x);
-	std::uniform_real_distribution<float> posZDist(m_PlacementMinXZ.y, m_PlacementMaxXZ.y);
-	std::uniform_real_distribution<float> scaleDist(m_GrassScaleMin, m_GrassScaleMax);
-	std::uniform_real_distribution<float> rotDist(0.0f, 6.28318530718f);
-	std::uniform_real_distribution<float> acceptDist(0.0f, 1.0f);
-
-	const uint32_t requestedCount = m_InstanceCount;
-	const uint32_t maxAttempts = m_PlacementMask.enabled
-		? std::max(requestedCount * 32u, requestedCount)
-		: requestedCount;
-
-	for (uint32_t attempt = 0; attempt < maxAttempts && instances.size() < requestedCount; ++attempt)
-	{
-		// Keep the legacy deterministic draw order for unmasked placement.
-		float px               = posXDist(rng);
-		float pz               = posZDist(rng);
-		float scale            = scaleDist(rng);
-		// P4 优化: 预计 - sin/cos 并存入实例数据，GPU 端直接读 - 
-		float rot              = rotDist(rng);
-		if (m_PlacementMask.enabled && !AcceptPlacementMask(glm::vec2(px, pz), acceptDist(rng)))
-			continue;
-
-		GrassInstance instance = {};
-		instance.position  = glm::vec3(px, 0.0f, pz);
-		instance.scale     = scale;
-		instance.cosR      = cosf(rot);
-		instance.sinR      = sinf(rot);
-		instance.padding[0] = 0;
-		instance.padding[1] = 0;
-		instances.push_back(instance);
-	}
-
-	if (m_PlacementMask.enabled && instances.size() < requestedCount)
-	{
-		VANS_LOG_WARN("[VegetationSystem] PCG grass mask '" << m_PlacementMask.name
-			<< "' produced " << instances.size() << "/" << requestedCount
-			<< " requested instances after rejection sampling.");
-	}
-
-	m_InstanceCount = static_cast<uint32_t>(instances.size());
-	m_GrassInstancesCPU = instances;
-	VkDeviceSize bufferSize = sizeof(GrassInstance) * std::max(m_InstanceCount, 1u);
-	m_InstanceBuffer.CreatVulkanBuffer(device, bufferSize, VK_FORMAT_R32_SFLOAT,
+	const VkDeviceSize bytes = sizeof(GrassInstance) * m_GrassInstancesCPU.size();
+	m_InstanceBuffer.CreatVulkanBuffer(device, bytes, VK_FORMAT_R32_SFLOAT,
 		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-	if (m_InstanceCount > 0)
-		m_InstanceBuffer.SetBufferData(m_GrassInstancesCPU.data(), 0, static_cast<int>(sizeof(GrassInstance) * m_InstanceCount));
+	m_InstanceBuffer.SetBufferData(m_GrassInstancesCPU.data(), 0, static_cast<int>(bytes));
 }
 
 // ============================================================================
@@ -256,8 +216,7 @@ void VansVegetationSystem::CreateBoneBuffer(VkDevice device)
 
 	float baseSegLength = m_BladeHeight / static_cast<float>(m_BoneCountPerInstance - 1);
 
-	// Maximum tilt angle at the tip (radians). ~45° gives a natural relaxed arc.
-	const float maxTiltRad = glm::radians(45.0f);
+	const float maxTiltRad = glm::radians(m_RestTipBendDegrees);
 
 	// Bone roots come directly from the generated instances so mask rejection stays in sync.
 	const float windAngle = atan2f(m_InitWindDir.y, m_InitWindDir.x);
@@ -267,9 +226,11 @@ void VansVegetationSystem::CreateBoneBuffer(VkDevice device)
 	{
 		// Reuse the accepted grass instance for the corresponding bone chain.
 		const GrassInstance& instance = m_GrassInstancesCPU[i];
-		glm::vec3 pos = instance.position;
-		float scale = instance.scale;
-		float rot = atan2f(instance.sinR, instance.cosR);
+		glm::vec3 pos = glm::vec3(instance.modelMatrix[3]);
+		const glm::vec3 axisY = glm::normalize(glm::vec3(instance.modelMatrix[1]));
+		const float scale = glm::length(glm::vec3(instance.modelMatrix[1]));
+		const glm::vec3 axisX = glm::normalize(glm::vec3(instance.modelMatrix[0]));
+		float rot = static_cast<float>(instance.randomSeed) / static_cast<float>(UINT32_MAX) * twoPi;
 		if (rot < 0.0f)
 			rot += twoPi;
 
@@ -277,7 +238,10 @@ void VansVegetationSystem::CreateBoneBuffer(VkDevice device)
 		// (rot/twoPi)  - [0,1), remapped to [-1,+1] then scaled by the deviation limit.
 		float deviation = (rot / twoPi * 2.0f - 1.0f) * m_InitLeanDeviation;
 		float leanAngle = windAngle + deviation;
-		glm::vec3 leanDir = glm::normalize(glm::vec3(cosf(leanAngle), 0.0f, sinf(leanAngle)));
+		glm::vec3 leanDir(cosf(leanAngle), 0.0f, sinf(leanAngle));
+		leanDir -= axisY * glm::dot(leanDir, axisY);
+		leanDir = glm::length(leanDir) > 0.0001f ? glm::normalize(leanDir)
+			: glm::normalize(axisX - axisY * glm::dot(axisX, axisY));
 
 		// Per-instance segment length based on scale
 		float segLength = baseSegLength * scale;
@@ -293,8 +257,8 @@ void VansVegetationSystem::CreateBoneBuffer(VkDevice device)
 			{
 				// Root bone: anchored at ground; slight lean already in restOffset
 				glm::vec3 rootRestDir = glm::normalize(
-					glm::vec3(0.0f, 1.0f, 0.0f) * cosf(glm::radians(5.0f)) +
-					leanDir * sinf(glm::radians(5.0f)));
+					axisY * cosf(glm::radians(m_RestRootBendDegrees)) +
+					leanDir * sinf(glm::radians(m_RestRootBendDegrees)));
 				bones[idx].position   = glm::vec4(accumPos, 1.0f);
 				bones[idx].velocity   = glm::vec4(accumPos, 0.0f);
 				bones[idx].restOffset = glm::vec4(rootRestDir * segLength, 0.0f);
@@ -307,7 +271,7 @@ void VansVegetationSystem::CreateBoneBuffer(VkDevice device)
 
 				// Rest offset: rotate the up vector toward leanDir by tiltAngle
 				glm::vec3 restDir = glm::normalize(
-					glm::vec3(0.0f, 1.0f, 0.0f) * cosf(tiltAngle) +
+					axisY * cosf(tiltAngle) +
 					leanDir * sinf(tiltAngle));
 
 				bones[idx].restOffset = glm::vec4(restDir * segLength, 0.0f);
@@ -372,9 +336,9 @@ void VansVegetationSystem::CreateLodFactorsBuffer(VkDevice device)
 void VansVegetationSystem::CreateScatterOffsetUBO(VkDevice device)
 {
 	// 每个散布偏移 - vec4(dx, 0, dz, 0)，sub-blade 0 = (0,0,0,0)
-	std::vector<glm::vec4> offsets(m_SubBladeCount, glm::vec4(0.0f));
+	std::vector<glm::vec4> offsets(32, glm::vec4(0.0f));
 
-	std::mt19937 rngTuft(137);
+	std::mt19937 rngTuft(m_SubBladeScatterSeed);
 	std::uniform_real_distribution<float> radiusDist(m_SubBladeScatterRadiusMin, m_SubBladeScatterRadiusMax);
 	std::uniform_real_distribution<float> angleDist(0.0f, 6.28318530718f);
 
@@ -399,7 +363,7 @@ void VansVegetationSystem::CreateScatterOffsetUBO(VkDevice device)
 // CreateCullBuffers  - P0: GPU frustum + distance cull buffers
 //
 // VisibilityBuffer    : uint per instance (1=visible, 0=culled), device local
-// VisibleCountBuffer  : single uint (atomic counter), host visible for CPU reset
+// VisibleCountBuffer  : 主画面、阴影各一个计数器，在 GPU 命令流内清零
 // VisibleIndexBuffer  : compact list of visible instance indices, device local
 // ============================================================================
 void VansVegetationSystem::CreateCullBuffers(VkDevice device)
@@ -410,17 +374,17 @@ void VansVegetationSystem::CreateCullBuffers(VkDevice device)
 		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-	// Visible count  - single uint, host-visible so CPU can reset to 0 each frame
+	// 两个计数器分别驱动主画面与仅按距离筛选的阴影。
 	// TRANSFER_SRC 用于 GPU  - CopyBuffer  - indirect draw buffer  - instanceCount 字段
-	VkDeviceSize countSize = sizeof(uint32_t);
+	VkDeviceSize countSize = sizeof(uint32_t) * 2;
 	m_VisibleCountBuffer.CreatVulkanBuffer(device, countSize, VK_FORMAT_R32_UINT,
 		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
 		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-	uint32_t zero = 0;
-	m_VisibleCountBuffer.SetBufferData(&zero, 0, sizeof(uint32_t));
+	const uint32_t zeros[2] = {0, 0};
+	m_VisibleCountBuffer.SetBufferData(zeros, 0, sizeof(zeros));
 
 	// Visible index list  - uint per instance (worst case all visible)
-	VkDeviceSize idxSize = sizeof(uint32_t) * std::max(m_InstanceCount, 1u);
+	VkDeviceSize idxSize = sizeof(uint32_t) * std::max(m_InstanceCount, 1u) * 2;
 	m_VisibleIndexBuffer.CreatVulkanBuffer(device, idxSize, VK_FORMAT_R32_UINT,
 		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
@@ -437,24 +401,22 @@ void VansVegetationSystem::LoadComputeShaders(VkDevice device)
 	(void)device;
 	m_BoneSimShader = VansShaderManager::Get().FindComputeShader("GrassBoneSim");
 	m_CullShader = VansShaderManager::Get().FindComputeShader("GrassCull");
-	if (!m_BoneSimShader)
-		VANS_LOG_WARN("[VegetationSystem] GrassBoneSim shader not found.");
-	if (!m_CullShader)
-		VANS_LOG_WARN("[VegetationSystem] GrassCull shader not found.");
+	m_GrassShadowShader = VansShaderManager::Get().FindGraphicsShader("GrassShadow");
+	if (m_CastShadows && !m_GrassShadowShader)
+		throw std::invalid_argument("Grass shadow shaders are unavailable.");
+	if (!m_BoneSimShader || !m_CullShader)
+		throw std::invalid_argument("Grass simulation or culling shader is unavailable.");
 }
 
 void VansVegetationSystem::LoadTreeShaders(VkDevice device)
 {
 	m_TreeGBufferShader = VansShaderManager::Get().FindGraphicsShader("TreeGBuffer");
 	m_TreeShadowShader = VansShaderManager::Get().FindGraphicsShader("TreeShadow");
-	m_TreePunctualShadowShader = VansShaderManager::Get().FindGraphicsShader("TreePunctualShadow");
 	m_TreeCullShader = VansShaderManager::Get().FindComputeShader("TreeCull");
 	if (!m_TreeGBufferShader)
 		VANS_LOG_WARN("[VegetationSystem] TreeGBuffer shader not found.");
 	if (!m_TreeShadowShader)
 		VANS_LOG_WARN("[VegetationSystem] TreeShadow shader not found.");
-	if (!m_TreePunctualShadowShader)
-		VANS_LOG_WARN("[VegetationSystem] TreePunctualShadow shader not found.");
 	if (!m_TreeCullShader)
 		VANS_LOG_WARN("[VegetationSystem] TreeCull shader not found.");
 }
@@ -470,13 +432,12 @@ void VansVegetationSystem::CreateDescriptorSets()
 	// allocated later in BuildRenderConfigs().
 	{
 		std::vector<VkDescriptorSet> unused;
-		VansDescriptorSetLayoutFactory::CreateAndAllocate_VegetationDraw(m_VegDrawLayout, unused);
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_VegetationDraw(m_VegDrawLayout, unused, 0);
 		// We only need the layout handle; per-config sets are allocated individually.
 	}
 
 	// P0: Cull descriptor set (set=1 in GrassCull.comp)
 	VansDescriptorSetLayoutFactory::CreateAndAllocate_VegetationCull(m_CullLayout, m_CullDescSets);
-	CreateTreeDescriptorSets();
 
 	WriteBoneSimDescriptors();
 	WriteCullDescriptors();
@@ -485,7 +446,7 @@ void VansVegetationSystem::CreateDescriptorSets()
 void VansVegetationSystem::CreateTreeDescriptorSets()
 {
 	std::vector<VkDescriptorSet> unused;
-	VansDescriptorSetLayoutFactory::CreateAndAllocate_VegetationTreeDraw(m_TreeDrawLayout, unused);
+	VansDescriptorSetLayoutFactory::CreateAndAllocate_VegetationTreeDraw(m_TreeDrawLayout, unused, 0);
 	VansDescriptorSetLayoutFactory::CreateAndAllocate_VegetationTreeCull(m_TreeCullLayout, m_TreeCullDescSets);
 }
 
@@ -508,10 +469,7 @@ void VansVegetationSystem::WriteBoneSimDescriptors()
 		{{ m_BoneMatrixBuffer.GetNativeBuffer(), 0, m_BoneMatrixBuffer.GetBufferSize() }});
 
 	// Terrain heightmap (binding 3)  - always write a valid descriptor
-	if (m_TerrainEnabled && m_TerrainHeightmapView != VK_NULL_HANDLE && m_TerrainHeightmapSampler != VK_NULL_HANDLE)
-	{
-		descMgr->WriteImageDescriptor(m_BoneSimDescSets[0], VEG_SIM_BINDING_TERRAIN_HEIGHTMAP, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {{ m_TerrainHeightmapSampler, m_TerrainHeightmapView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
-	}
+
 
 	// LOD factors buffer (binding 4)
 	descMgr->WriteBufferDescriptor(m_BoneSimDescSets[0], VEG_SIM_BINDING_LOD_FACTORS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {{ m_LodFactorsBuffer.GetNativeBuffer(), 0, m_LodFactorsBuffer.GetBufferSize() }});
@@ -560,13 +518,7 @@ void VansVegetationSystem::WriteCullDescriptors()
 		{{ m_VisibleIndexBuffer.GetNativeBuffer(), 0, m_VisibleIndexBuffer.GetBufferSize() }});
 
 	// Binding 4: Terrain heightmap  - 用于采样实例的实际地面高度，修正包围 - Y 位置
-	if (m_TerrainEnabled && m_TerrainHeightmapView != VK_NULL_HANDLE && m_TerrainHeightmapSampler != VK_NULL_HANDLE)
-	{
-		descMgr->WriteImageDescriptor(
-			m_CullDescSets[0], VEG_CULL_BINDING_TERRAIN_HEIGHTMAP,
-			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{{ m_TerrainHeightmapSampler, m_TerrainHeightmapView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
-	}
+
 
 	// Binding 5: Hi-Z depth pyramid  - 用于保守遮挡剔除，判断实例是否被地形或建筑物遮挡
 	// 注意: HZB 全程保持 VK_IMAGE_LAYOUT_GENERAL ( - HIZ compute  - STORAGE_IMAGE 写入) - 
@@ -595,12 +547,9 @@ void VansVegetationSystem::WriteDrawDescriptors(GrassRenderConfigGPU& cfg)
 	// Binding 1: Bone weights (static, per-vertex)
 	descMgr->WriteBufferDescriptor(cfg.drawDescSet, VEG_DRAW_BINDING_BONE_WEIGHTS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {{ cfg.boneWeightBuffer.GetNativeBuffer(), 0, cfg.boneWeightBuffer.GetBufferSize() }});
 
-	// Binding 2: Instance remap (uint indices into global instance/bone arrays)
-	// 单配置快速路 -  使用 GPU cull 输出 - visibleIndices 替代静 - remap - 
-	// 这样 indirect draw 只启动可见实例的 VS，配 - CopyBuffer 更新 instanceCount
-	bool singleConfigFastPath = (m_RenderConfigsGPU.size() == 1);
-	VansVKBuffer& remapBuffer = singleConfigFastPath ? m_VisibleIndexBuffer : cfg.instanceRemapBuffer;
-	descMgr->WriteBufferDescriptor(cfg.drawDescSet, VEG_DRAW_BINDING_INSTANCE_REMAP, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {{ remapBuffer.GetNativeBuffer(), 0, remapBuffer.GetBufferSize() }});
+	// 一个批次的所有部件使用同一压缩列表，不再按材质拆分随机实例。
+	descMgr->WriteBufferDescriptor(cfg.drawDescSet, VEG_DRAW_BINDING_INSTANCE_REMAP,
+		VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {{ m_VisibleIndexBuffer.GetNativeBuffer(), 0, m_VisibleIndexBuffer.GetBufferSize() }});
 
 	// Binding 3: P6a  - Scatter offset UBO (shared sub-blade XZ offsets)
 	descMgr->WriteBufferDescriptor(cfg.drawDescSet, VEG_DRAW_BINDING_SCATTER_OFFSETS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, {{ m_ScatterOffsetUBO.GetNativeBuffer(), 0, m_ScatterOffsetUBO.GetBufferSize() }});
@@ -612,10 +561,7 @@ void VansVegetationSystem::WriteDrawDescriptors(GrassRenderConfigGPU& cfg)
 	descMgr->WriteBufferDescriptor(cfg.drawDescSet, VEG_DRAW_BINDING_INSTANCE_DATA, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {{ m_InstanceBuffer.GetNativeBuffer(), 0, m_InstanceBuffer.GetBufferSize() }});
 
 	// Binding 6: P6a  - Terrain heightmap for VS sub-blade Y sampling
-	if (m_TerrainEnabled && m_TerrainHeightmapView != VK_NULL_HANDLE && m_TerrainHeightmapSampler != VK_NULL_HANDLE)
-	{
-		descMgr->WriteImageDescriptor(cfg.drawDescSet, VEG_DRAW_BINDING_TERRAIN_HEIGHTMAP, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {{ m_TerrainHeightmapSampler, m_TerrainHeightmapView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
-	}
+
 
 	// Binding 7: P0  - Per-instance visibility flags from GPU cull
 	descMgr->WriteBufferDescriptor(cfg.drawDescSet, VEG_DRAW_BINDING_VISIBILITY_FLAGS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {{ m_VisibilityBuffer.GetNativeBuffer(), 0, m_VisibilityBuffer.GetBufferSize() }});
@@ -691,6 +637,7 @@ bool VansVegetationSystem::DispatchCullPass(
 	float cullDistance,
 	bool sameQueueGraphicsConsumer)
 {
+	if (m_InstanceCount == 0) return false;
 	if (!m_CullShader || m_CullDescSets.empty())
 	{
 		VANS_LOG_WARN("[VegetationSystem] CullPass skipped: cull shader or descriptor sets not ready.");
@@ -699,33 +646,26 @@ bool VansVegetationSystem::DispatchCullPass(
 	if (m_InstanceCount == 0)
 		return false;
 
-	bool singleConfigFastPath = (m_RenderConfigsGPU.size() == 1);
+	// 在命令流中清零，避免 CPU 提前覆写仍被上一帧 GPU 使用的计数器。
+	computeCmd.FillBuffer(m_VisibleCountBuffer.GetNativeBuffer(), 0, m_VisibleCountBuffer.GetBufferSize(), 0);
 
-	// ── 重置可见计数器为 0 (host-visible buffer, 直接 CPU 写入) ─────
-	uint32_t zero = 0;
-	m_VisibleCountBuffer.SetBufferData(&zero, 0, sizeof(uint32_t));
-
-	VkMemoryBarrier hostToCompute = {};
-	hostToCompute.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-	hostToCompute.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
-	hostToCompute.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+	VkMemoryBarrier transferToCompute = {};
+	transferToCompute.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+	transferToCompute.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+	transferToCompute.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
 	computeCmd.PipelineBarrier(
-		VK_PIPELINE_STAGE_HOST_BIT,
+		VK_PIPELINE_STAGE_TRANSFER_BIT,
 		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-		{ hostToCompute });
+		{ transferToCompute });
 
 	// ── Fill push constants ─────────────────────────────────────────
 	GrassCullPushConstants cullPC = {};
-	cullPC.cullDistance      = cullDistance;
+	cullPC.cullDistance      = m_CullEnabled ? cullDistance : -1.0f;
 	cullPC.grassHeight       = m_BladeHeight;
 	cullPC.instanceCount     = m_InstanceCount;
 	cullPC.scatterRadiusMax  = m_SubBladeScatterRadiusMax;
-	cullPC.terrainSize       = m_TerrainSize;
-	cullPC.terrainMaxHeight  = m_TerrainMaxHeight;
-	cullPC.terrainHeightOffset = m_TerrainHeightOffset;
-	cullPC.terrainEnabled    = m_TerrainEnabled ? 1 : 0;
 	// 每个可见实例 atomicAdd 此值， - visibleCount = 可见实例 - × subBladeCount
-	cullPC.subBladeCount     = singleConfigFastPath ? m_SubBladeCount : 1;
+	cullPC.subBladeCount     = m_SubBladeCount;
 	// Hi-Z 遮挡剔除参数
 	cullPC.hizSampleBias     = m_HiZSampleBias;
 	cullPC.hizMipCount       = static_cast<int>(m_HiZMipCount);
@@ -738,7 +678,6 @@ bool VansVegetationSystem::DispatchCullPass(
 	computeCmd.DispatchCompute(*m_CullShader, cullGroupsX, 1, 1,
 		{ m_GlobalDescSet, m_CullDescSets[0] }, &cullPC, sizeof(cullPC));
 
-	if (singleConfigFastPath)
 	{
 		// ── Barrier: compute write  - transfer read (CopyBuffer source) + VS read ─
 		VkMemoryBarrier computeToTransfer = {};
@@ -761,6 +700,9 @@ bool VansVegetationSystem::DispatchCullPass(
 				0,                                       // src offset = visibleCount
 				offsetof(VkDrawIndexedIndirectCommand, instanceCount), // dst offset = 4
 				sizeof(uint32_t));
+			computeCmd.CopyBuffer(m_VisibleCountBuffer.GetNativeBuffer(),
+				cfg.shadowIndirectDrawBuffer.GetNativeBuffer(), sizeof(uint32_t),
+				offsetof(VkDrawIndexedIndirectCommand, instanceCount), sizeof(uint32_t));
 		}
 
 		// ── Barrier: transfer write  - indirect command read ─────────
@@ -773,19 +715,6 @@ bool VansVegetationSystem::DispatchCullPass(
 			VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
 			{ transferToIndirect });
 	}
-	else
-	{
-		// ──  - config 回退路径:  - barrier compute  - VS (VS  - early-exit 剔除) ─
-		VkMemoryBarrier cullBarrier = {};
-		cullBarrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-		cullBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-		cullBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-		computeCmd.PipelineBarrier(
-			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
-				(sameQueueGraphicsConsumer ? VK_PIPELINE_STAGE_VERTEX_SHADER_BIT : 0u),
-			{ cullBarrier });
-	}
 	return true;
 }
 
@@ -795,27 +724,23 @@ void VansVegetationSystem::DispatchTreeCullPass(
 {
 	if (!m_TreeEnabled || !m_TreeCullShader || m_TreeCullDescSets.empty())
 		return;
-	if (!m_TreeConfig.cullEnabled)
-		return;
+	computeCmd.FillBuffer(m_TreeVisibleCountsBuffer.GetNativeBuffer(), 0,
+		m_TreeVisibleCountsBuffer.GetBufferSize(), 0);
 
-	m_TreeVisibleCountsZeroScratch.assign(m_TreeSpeciesInfosCPU.size(), 0u);
-	if (!m_TreeVisibleCountsZeroScratch.empty())
-		m_TreeVisibleCountsBuffer.SetBufferData(m_TreeVisibleCountsZeroScratch.data(), 0, static_cast<int>(sizeof(uint32_t) * m_TreeVisibleCountsZeroScratch.size()));
-
-	VkMemoryBarrier hostToCompute = {};
-	hostToCompute.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-	hostToCompute.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
-	hostToCompute.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+	VkMemoryBarrier transferToCompute = {};
+	transferToCompute.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+	transferToCompute.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+	transferToCompute.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
 	computeCmd.PipelineBarrier(
-		VK_PIPELINE_STAGE_HOST_BIT,
+		VK_PIPELINE_STAGE_TRANSFER_BIT,
 		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-		{ hostToCompute });
+		{ transferToCompute });
 
 	TreeCullPushConstants pc = {};
-	pc.cullDistance = m_TreeCullDistance;
+	pc.cullDistance = m_CullEnabled ? m_CullDistance : -1.0f;
 	pc.instanceCount = static_cast<uint32_t>(m_TreeInstancesCPU.size());
 	pc.speciesCount = static_cast<uint32_t>(m_TreeSpeciesInfosCPU.size());
-	pc.hizEnabled = (m_TreeConfig.hizEnabled && m_HiZEnabled && m_HiZView != VK_NULL_HANDLE) ? 1u : 0u;
+	pc.hizEnabled = (m_HiZEnabled && m_HiZView != VK_NULL_HANDLE) ? 1u : 0u;
 	pc.hizSampleBias = m_HiZSampleBias;
 	pc.hizMipCount = static_cast<int>(m_HiZMipCount);
 	computeCmd.EnsureComputeShader(*m_TreeCullShader, { m_GlobalDescSetLayout, m_TreeCullLayout });
@@ -841,6 +766,10 @@ void VansVegetationSystem::DispatchTreeCullPass(
 			sizeof(uint32_t) * cfg.visibilityGroupIndex,
 			offsetof(VkDrawIndexedIndirectCommand, instanceCount),
 			sizeof(uint32_t));
+		computeCmd.CopyBuffer(
+			m_TreeVisibleCountsBuffer.GetNativeBuffer(), cfg.shadowIndirectDrawBuffer.GetNativeBuffer(),
+			sizeof(uint32_t) * (m_TreeSpeciesInfosCPU.size() + cfg.visibilityGroupIndex),
+			offsetof(VkDrawIndexedIndirectCommand, instanceCount), sizeof(uint32_t));
 	}
 
 	VkMemoryBarrier transferToIndirect = {};
@@ -864,14 +793,14 @@ void VansVegetationSystem::Update(VansVKCommandBuffer& computeCmd, float deltaTi
 								   bool useCullVisibilityMask,
 								   bool sameQueueGraphicsConsumer)
 {
+	// 树木独立批次没有草骨骼资源，不参与草的模拟。
+	if (m_InstanceCount == 0)
+		return;
 	if (!m_BoneSimShader || m_BoneSimDescSets.empty())
 	{
 		VANS_LOG_WARN("[VegetationSystem] Update skipped: shaders or descriptor sets not ready.");
 		return;
 	}
-	if (m_InstanceCount == 0)
-		return;
-
 	// ── Pass 1: Bone Simulation ─────────────────────────────────────
 	GrassSimPushConstants simPC = {};
 	simPC.deltaTime     = deltaTime;
@@ -885,10 +814,6 @@ void VansVegetationSystem::Update(VansVKCommandBuffer& computeCmd, float deltaTi
 	simPC.stiffness     = stiffness;
 	simPC.damping       = damping;
 	simPC.softness      = softness;
-	simPC.terrainSize        = m_TerrainSize;
-	simPC.terrainMaxHeight   = m_TerrainMaxHeight;
-	simPC.terrainHeightOffset = m_TerrainHeightOffset;
-	simPC.terrainEnabled     = m_TerrainEnabled ? 1 : 0;
 	simPC.lodFullDist        = lodFullDist;
 	simPC.lodFadeDist        = lodFadeDist;
 	simPC.subBladeCount      = static_cast<int>(m_SubBladeCount);
@@ -919,7 +844,7 @@ void VansVegetationSystem::Update(VansVKCommandBuffer& computeCmd, float deltaTi
 // ============================================================================
 // Draw  - issues one indirect indexed draw call per render config
 // ============================================================================
-void VansVegetationSystem::Draw(VansVKCommandBuffer& graphicsCmd, VansGraphicsShader& shader,
+void VansVegetationSystem::Draw(VansVKCommandBuffer& graphicsCmd,
                                  GlobalStateData& globalState,
                                  const std::vector<VkDescriptorSetLayout>& baseDescSetLayouts,
                                  const std::vector<VkDescriptorSet>& baseDescSets,
@@ -930,6 +855,9 @@ void VansVegetationSystem::Draw(VansVKCommandBuffer& graphicsCmd, VansGraphicsSh
 	for (auto& cfg : m_RenderConfigsGPU)
 	{
 		if (cfg.assignedInstanceCount == 0) continue;
+		auto* passShader = cfg.material->GetPassShader(VansPass::GBUFFER);
+		if (!passShader) continue;
+		auto& shader = *passShader;
 
 		// ── Pipeline creation ───────────────────────────────────────
 		// Temporarily swap vertex input state so EnsureGraphicsShader
@@ -977,10 +905,6 @@ void VansVegetationSystem::Draw(VansVKCommandBuffer& graphicsCmd, VansGraphicsSh
 			pc.subBladeCount    = m_SubBladeCount;
 			pc.grassHeight      = m_BladeHeight;
 			// P6a: 传 - terrain 参数 - VS 用于子叶片地形采 - 
-			pc.terrainSize          = m_TerrainSize;
-			pc.terrainMaxHeight     = m_TerrainMaxHeight;
-			pc.terrainHeightOffset  = m_TerrainHeightOffset;
-			pc.terrainEnabled       = m_TerrainEnabled ? 1 : 0;
 			// P1: 子叶片距 - LOD 阈 - 
 			pc.lodMidDist           = m_SubBladeLodMidDist;
 			pc.lodFarDist           = m_SubBladeLodFarDist;
@@ -1000,6 +924,35 @@ void VansVegetationSystem::Draw(VansVKCommandBuffer& graphicsCmd, VansGraphicsSh
 			cfg.indirectDrawBuffer.GetNativeBuffer(), 0, 1,
 			sizeof(VkDrawIndexedIndirectCommand));
 	}
+}
+
+void VansVegetationSystem::DrawGrassCascadeShadow(VansVKCommandBuffer& graphicsCmd,
+    GlobalStateData& globalState,
+    const std::vector<VkDescriptorSetLayout>& baseDescSetLayouts,
+    const std::vector<VkDescriptorSet>& baseDescSets, int cascadeIndex)
+{
+    auto* shader = m_GrassShadowShader;
+    if (!m_CastShadows || !shader || m_RenderConfigsGPU.empty()) return;
+    for (const auto& part : m_RenderConfigsGPU)
+    {
+        auto* material = static_cast<VansGrassMaterial*>(part.material);
+        if (!part.assignedInstanceCount || !material || material->m_GrassOwnedDescSets.empty()) continue;
+        auto passState = globalState;
+        passState.vertexInputBindingDescriptions = &part.mesh->m_VertexInputBindingDescriptions;
+        passState.vertexInputAttributeDescriptions = &part.mesh->m_VertexInputAttributeDescriptions;
+        auto layouts = baseDescSetLayouts;
+        auto sets = baseDescSets;
+        layouts.push_back(m_VegDrawLayout); layouts.push_back(material->m_GrassOwnedLayout);
+        sets.push_back(part.drawDescSet); sets.push_back(material->m_GrassOwnedDescSets[0]);
+        graphicsCmd.EnsureGraphicsShader(*shader, passState, layouts);
+        graphicsCmd.BindGraphicsPipeline(*shader->GetGraphicsPipeline());
+        graphicsCmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *shader, 0, sets, {});
+        const GrassShadowPushConstants pc{m_BoneCountPerInstance, m_SubBladeCount, cascadeIndex, m_InstanceCount};
+        graphicsCmd.UpdatePushConstants(*shader->GetGraphicsPipeline(),
+            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
+        graphicsCmd.BindMesh(*part.mesh, 0, passState);
+        graphicsCmd.DrawIndexedIndirect(part.shadowIndirectDrawBuffer.GetNativeBuffer(), 0, 1, sizeof(VkDrawIndexedIndirectCommand));
+    }
 }
 
 void VansVegetationSystem::DrawTrees(VansVKCommandBuffer& graphicsCmd,
@@ -1064,7 +1017,7 @@ void VansVegetationSystem::DrawTreeCascadeShadow(VansVKCommandBuffer& graphicsCm
                                                  const std::vector<VkDescriptorSet>& baseDescSets,
                                                  int pushConstantTransformIndex)
 {
-	if (!m_TreeEnabled || !m_TreeShadowShader || m_TreeDrawConfigsGPU.empty())
+	if (!m_CastShadows || !m_TreeEnabled || !m_TreeShadowShader || m_TreeDrawConfigsGPU.empty())
 		return;
 
 	for (auto& cfg : m_TreeDrawConfigsGPU)
@@ -1101,7 +1054,7 @@ void VansVegetationSystem::DrawTreeCascadeShadow(VansVKCommandBuffer& graphicsCm
 		TreeShadowPushConstants pc = {};
 		pc.materialIndex = materialIndex;
 		pc.objectIndex = pushConstantTransformIndex;
-		pc.visibleOffset = cfg.visibleOffset;
+		pc.visibleOffset = cfg.visibleOffset + static_cast<uint32_t>(m_TreeInstancesCPU.size());
 		pc.cascadeIndex = globalState.cascadeIndex;
 		pc.alphaTestEnabled = cfg.partType == TreePartType::Leaves ? 1u : 0u;
 		graphicsCmd.UpdatePushConstants(*m_TreeShadowShader->GetGraphicsPipeline(),
@@ -1109,67 +1062,7 @@ void VansVegetationSystem::DrawTreeCascadeShadow(VansVKCommandBuffer& graphicsCm
 			0, m_TreeShadowShader->GetPushConstantSize(), &pc);
 
 		graphicsCmd.BindMesh(*cfg.mesh, 0, globalState);
-		graphicsCmd.DrawIndexedIndirect(
-			cfg.indirectDrawBuffer.GetNativeBuffer(), 0, 1,
-			sizeof(VkDrawIndexedIndirectCommand));
-	}
-}
-
-void VansVegetationSystem::DrawTreePunctualShadow(VansVKCommandBuffer& graphicsCmd,
-                                                  GlobalStateData& globalState,
-                                                  const std::vector<VkDescriptorSetLayout>& baseDescSetLayouts,
-                                                  const std::vector<VkDescriptorSet>& baseDescSets,
-                                                  int pushConstantTransformIndex,
-                                                  int shadowViewIndex)
-{
-	if (!m_TreeEnabled || !m_TreePunctualShadowShader || m_TreeDrawConfigsGPU.empty())
-		return;
-
-	for (auto& cfg : m_TreeDrawConfigsGPU)
-	{
-		if (!cfg.mesh || !cfg.material || cfg.instanceCapacity == 0)
-			continue;
-
-		const int materialIndex = ResolveTreeMaterialIndex(cfg.material);
-		if (materialIndex < 0)
-		{
-			VANS_LOG_WARN("[VegetationSystem] Tree punctual shadow skipped: material '"
-				<< cfg.material->m_AssetName << "' has no GPU PBR material index.");
-			continue;
-		}
-
-		auto* savedBindings = globalState.vertexInputBindingDescriptions;
-		auto* savedAttributes = globalState.vertexInputAttributeDescriptions;
-		globalState.vertexInputBindingDescriptions = &cfg.mesh->m_VertexInputBindingDescriptions;
-		globalState.vertexInputAttributeDescriptions = &cfg.mesh->m_VertexInputAttributeDescriptions;
-
-		std::vector<VkDescriptorSetLayout> layouts = baseDescSetLayouts;
-		layouts.push_back(m_TreeDrawLayout);
-		std::vector<VkDescriptorSet> sets = baseDescSets;
-		sets.push_back(cfg.drawDescSet);
-
-		graphicsCmd.EnsureGraphicsShader(*m_TreePunctualShadowShader, globalState, layouts);
-
-		globalState.vertexInputBindingDescriptions = savedBindings;
-		globalState.vertexInputAttributeDescriptions = savedAttributes;
-
-		graphicsCmd.BindGraphicsPipeline(*m_TreePunctualShadowShader->GetGraphicsPipeline());
-		graphicsCmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *m_TreePunctualShadowShader, 0, sets, {});
-
-		TreePunctualShadowPushConstants pc = {};
-		pc.shadowViewIndex = shadowViewIndex;
-		pc.materialIndex = materialIndex;
-		pc.objectIndex = pushConstantTransformIndex;
-		pc.visibleOffset = cfg.visibleOffset;
-		pc.alphaTestEnabled = cfg.partType == TreePartType::Leaves ? 1u : 0u;
-		graphicsCmd.UpdatePushConstants(*m_TreePunctualShadowShader->GetGraphicsPipeline(),
-			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-			0, m_TreePunctualShadowShader->GetPushConstantSize(), &pc);
-
-		graphicsCmd.BindMesh(*cfg.mesh, 0, globalState);
-		graphicsCmd.DrawIndexedIndirect(
-			cfg.indirectDrawBuffer.GetNativeBuffer(), 0, 1,
-			sizeof(VkDrawIndexedIndirectCommand));
+		graphicsCmd.DrawIndexedIndirect(cfg.shadowIndirectDrawBuffer.GetNativeBuffer(), 0, 1, sizeof(VkDrawIndexedIndirectCommand));
 	}
 }
 
@@ -1178,6 +1071,16 @@ void VansVegetationSystem::DrawTreePunctualShadow(VansVKCommandBuffer& graphicsC
 // ============================================================================
 void VansVegetationSystem::Cleanup(VkDevice device)
 {
+	auto* descriptors = VansVKDescriptorManager::GetInstance();
+	descriptors->DestroyDescriptorSet(m_BoneSimDescSets);
+	descriptors->DestroyDescriptorSet(m_CullDescSets);
+	descriptors->DestroyDescriptorSet(m_TreeCullDescSets);
+	std::vector<VkDescriptorSet> ownedDrawSets;
+	for (auto& part : m_RenderConfigsGPU) ownedDrawSets.push_back(part.drawDescSet);
+	for (auto& part : m_TreeDrawConfigsGPU) ownedDrawSets.push_back(part.drawDescSet);
+	descriptors->DestroyDescriptorSet(ownedDrawSets);
+	for (auto* layout : { &m_BoneSimLayout, &m_CullLayout, &m_VegDrawLayout, &m_TreeDrawLayout, &m_TreeCullLayout })
+		descriptors->ReleaseDescriptorSetLayout(*layout);
 	m_InstanceBuffer.DestroyVulkanBuffer(device);
 	m_BoneBuffer.DestroyVulkanBuffer(device);
 	m_BoneMatrixBuffer.DestroyVulkanBuffer(device);
@@ -1198,13 +1101,15 @@ void VansVegetationSystem::Cleanup(VkDevice device)
 	for (auto& cfg : m_RenderConfigsGPU)
 	{
 		cfg.boneWeightBuffer.DestroyVulkanBuffer(device);
-		cfg.instanceRemapBuffer.DestroyVulkanBuffer(device);
 		cfg.indirectDrawBuffer.DestroyVulkanBuffer(device);
+		cfg.shadowIndirectDrawBuffer.DestroyVulkanBuffer(device);
 	}
 	m_RenderConfigsGPU.clear();
 
-	for (auto& cfg : m_TreeDrawConfigsGPU)
+	for (auto& cfg : m_TreeDrawConfigsGPU) {
 		cfg.indirectDrawBuffer.DestroyVulkanBuffer(device);
+		cfg.shadowIndirectDrawBuffer.DestroyVulkanBuffer(device);
+	}
 	m_TreeDrawConfigsGPU.clear();
 	m_TreeInstanceBuffer.DestroyVulkanBuffer(device);
 	m_TreeVisibleCountsBuffer.DestroyVulkanBuffer(device);
@@ -1217,397 +1122,99 @@ void VansVegetationSystem::Cleanup(VkDevice device)
 	// resource rebuilds. Only release this subsystem's non-owning references.
 	m_BoneSimShader = nullptr;
 	m_CullShader = nullptr;
+	m_GrassShadowShader = nullptr;
 	m_TreeGBufferShader = nullptr;
 	m_TreeShadowShader = nullptr;
-	m_TreePunctualShadowShader = nullptr;
 	m_TreeCullShader = nullptr;
 }
 
 // ============================================================================
 // BuildRenderConfigs  - partition instances across configs, create GPU resources
 // ============================================================================
-void VansVegetationSystem::BuildRenderConfigs(
-	std::function<VansMesh*(const std::string&)> meshLookup,
-	std::function<VansMaterial*(const std::string&)> materialLookup)
+void VansVegetationSystem::BuildRenderConfigs()
 {
-	// If no render configs were set, create a single default (procedural blade mesh)
-	if (m_RenderConfigs.empty())
+	m_RenderConfigsGPU.reserve(m_RenderConfigs.size());
+	for (const auto& part : m_RenderConfigs)
 	{
-		GrassRenderConfig defaultCfg;
-		defaultCfg.meshName     = "";
-		defaultCfg.materialName = "";
-		defaultCfg.percent      = 1.0f;
-		m_RenderConfigs.push_back(defaultCfg);
-	}
-
-	// Normalise percentages so they sum to 1.0
-	float totalPercent = 0.0f;
-	for (auto& rc : m_RenderConfigs) totalPercent += rc.percent;
-	if (totalPercent > 0.0f)
-		for (auto& rc : m_RenderConfigs) rc.percent /= totalPercent;
-
-	// Shuffle instance indices for random distribution among configs
-	std::vector<uint32_t> instanceIndices(m_InstanceCount);
-	std::iota(instanceIndices.begin(), instanceIndices.end(), 0u);
-	std::mt19937 rng(1234); // deterministic shuffle
-	std::shuffle(instanceIndices.begin(), instanceIndices.end(), rng);
-
-	// Partition indices according to percent
-	uint32_t assignedSoFar = 0;
-	m_RenderConfigsGPU.resize(m_RenderConfigs.size());
-
-	for (size_t i = 0; i < m_RenderConfigs.size(); ++i)
-	{
-		auto& rc  = m_RenderConfigs[i];
-		auto& cfg = m_RenderConfigsGPU[i];
-
-		uint32_t count = (i == m_RenderConfigs.size() - 1)
-			? (m_InstanceCount - assignedSoFar)                      // last config gets remainder
-			: static_cast<uint32_t>(rc.percent * m_InstanceCount);
-		if (assignedSoFar + count > m_InstanceCount)
-			count = m_InstanceCount - assignedSoFar;
-
-		cfg.assignedInstanceCount = count;
-
-		// ── Resolve mesh ────────────────────────────────────────────
-		// External mesh from asset, or fall back to the procedural template blade.
-		VansMesh* mesh = nullptr;
-		if (!rc.meshName.empty() && meshLookup)
-			mesh = meshLookup(rc.meshName);
-
-		cfg.mesh = mesh ? mesh : m_TemplateMesh;
-
-		// ── Resolve material ────────────────────────────────────────
-		if (!rc.materialName.empty() && materialLookup)
-		{
-			cfg.material = materialLookup(rc.materialName);
-			// Grass materials don't have m_MaterialIndex (that's PBR-only).
-			// cfg.materialIndex stays at its default (the config index).
-			if (cfg.material)
-				cfg.materialIndex = static_cast<int>(i);
-		}
-
-		// ── Instance remap buffer ───────────────────────────────────
-		{
-			std::vector<uint32_t> remap(count);
-			for (uint32_t k = 0; k < count; ++k)
-				remap[k] = instanceIndices[assignedSoFar + k];
-
-			VkDeviceSize sz = sizeof(uint32_t) * std::max(count, 1u);
-			cfg.instanceRemapBuffer.CreatVulkanBuffer(m_Device, sz, VK_FORMAT_R32_UINT,
-				VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-			if (count > 0)
-				cfg.instanceRemapBuffer.SetBufferData(remap.data(), 0, static_cast<int>(sizeof(uint32_t) * count));
-		}
-
-		// ── Bone weight buffer ──────────────────────────────────────
+		GrassRenderConfigGPU cfg;
+		cfg.mesh = part.proceduralBlade ? m_TemplateMesh : part.mesh;
+		cfg.material = part.material;
+		if (!cfg.mesh || !cfg.material || cfg.mesh->GetIndexCount() == 0 ||
+			cfg.material->m_MaterialType != VansMaterialType::VAN_GRASS)
+			throw std::invalid_argument("Grass part requires drawable geometry and a compatible grass material.");
+		cfg.assignedInstanceCount = m_InstanceCount;
+		cfg.materialIndex = 0;
 		GenerateBoneWeights(cfg, cfg.mesh);
-
-		// ── Indirect draw buffer ────────────────────────────────────
-		{
-			VkDrawIndexedIndirectCommand cmd = {};
-			cmd.indexCount    = cfg.mesh->GetIndexCount();
-			cmd.instanceCount = count * m_SubBladeCount;
-			cmd.firstIndex    = 0;
-			cmd.vertexOffset  = 0;
-			cmd.firstInstance = 0;
-
-			VkDeviceSize sz = sizeof(VkDrawIndexedIndirectCommand);
-			cfg.indirectDrawBuffer.CreatVulkanBuffer(m_Device, sz, VK_FORMAT_R32_UINT,
-				VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-			cfg.indirectDrawBuffer.SetBufferData(&cmd, 0, static_cast<int>(sz));
-		}
-
-		// ── Allocate per-config descriptor set (Set 3) ──────────────
-		{
-			std::vector<VkDescriptorSet> sets;
-			VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet(
-				{ m_VegDrawLayout },
-				sets,
-				VansDescriptorLifetimeRole::ScenePersistent);
-			cfg.drawDescSet = sets.empty() ? VK_NULL_HANDLE : sets[0];
-		}
-
-		// ── Write descriptor set ────────────────────────────────────
+		VkDrawIndexedIndirectCommand command = {};
+		command.indexCount = cfg.mesh->GetIndexCount();
+		// 第一次 cull 之前保持零实例，避免读取尚未写入的压缩列表。
+		cfg.indirectDrawBuffer.CreatVulkanBuffer(m_Device, sizeof(command), VK_FORMAT_R32_UINT,
+			VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		cfg.indirectDrawBuffer.SetBufferData(&command, 0, sizeof(command));
+		cfg.shadowIndirectDrawBuffer.CreatVulkanBuffer(m_Device, sizeof(command), VK_FORMAT_R32_UINT,
+			VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		cfg.shadowIndirectDrawBuffer.SetBufferData(&command, 0, sizeof(command));
+		std::vector<VkDescriptorSet> sets;
+		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ m_VegDrawLayout },
+			sets, VansDescriptorLifetimeRole::ScenePersistent);
+		cfg.drawDescSet = sets.at(0);
 		WriteDrawDescriptors(cfg);
-
-		assignedSoFar += count;
-
-		VANS_LOG("[VegetationSystem] RenderConfig[" << i << "]: "
-			<< (mesh ? rc.meshName : std::string("procedural"))
-			<< ", material=" << rc.materialName
-			<< ", instances=" << count
-			<< " (" << (rc.percent * 100.0f) << "%)");
+		m_RenderConfigsGPU.push_back(std::move(cfg));
 	}
-
-	VANS_LOG("[VegetationSystem] BuildRenderConfigs done: " << m_RenderConfigsGPU.size()
-		<< " configs, " << assignedSoFar << "/" << m_InstanceCount << " instances assigned.");
 }
 
-void VansVegetationSystem::BuildTreeResources(
-	std::function<VansMesh*(const std::string&)> meshLookup,
-	std::function<VansMaterial*(const std::string&)> materialLookup)
+void VansVegetationSystem::BuildTreeResources()
 {
-	m_TreeEnabled = false;
-	m_TreeInstancesCPU.clear();
-	m_TreeSpeciesInfosCPU.clear();
-	m_TreeDrawConfigsGPU.clear();
-
-	if (!m_TreeConfig.enabled)
-		return;
-	if (m_TreeConfig.species.empty() || m_TreeConfig.instances.empty())
-	{
-		VANS_LOG_WARN("[VegetationSystem] Tree config enabled but has no species or instances.");
-		return;
-	}
-
-	std::unordered_map<std::string, uint32_t> speciesIndexByName;
-	for (uint32_t i = 0; i < static_cast<uint32_t>(m_TreeConfig.species.size()); ++i)
-		speciesIndexByName[m_TreeConfig.species[i].name] = i;
-
-	struct TreeVisibilityGroupBuildInfo
-	{
-		uint32_t speciesIndex = 0;
-		int32_t submeshIndex = -1;
-		uint32_t maxCount = 0;
+	const uint32_t count = static_cast<uint32_t>(m_TreeInstancesCPU.size());
+	if (count == 0 || m_TreeParts.empty()) return;
+	m_TreeSpeciesInfosCPU = { TreeSpeciesCullInfo{0, count, {0, 0}} };
+	const auto upload = [&](VansVKBuffer& buffer, const void* data, size_t bytes, VkBufferUsageFlags usage) {
+		if (bytes > static_cast<size_t>(std::numeric_limits<int>::max()))
+			throw std::invalid_argument("Tree batch exceeds the upload capacity.");
+		buffer.CreatVulkanBuffer(m_Device, bytes, VK_FORMAT_R32_UINT, usage,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		buffer.SetBufferData(data, 0, static_cast<int>(bytes));
 	};
-
-	std::vector<TreeVisibilityGroupBuildInfo> visibilityGroups;
-	std::unordered_map<uint64_t, uint32_t> visibilityGroupByKey;
-	auto makeVisibilityKey = [](uint32_t speciesIndex, int32_t submeshIndex) -> uint64_t
+	upload(m_TreeInstanceBuffer, m_TreeInstancesCPU.data(), count * sizeof(TreeInstanceGPU),
+		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+	const uint32_t visibleCount = m_CullEnabled ? 0u : count;
+	const uint32_t visibleCounts[2] = { visibleCount, visibleCount };
+	upload(m_TreeVisibleCountsBuffer, visibleCounts, sizeof(visibleCounts),
+		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+	std::vector<uint32_t> indices(static_cast<size_t>(count) * 2);
+	std::iota(indices.begin(), indices.begin() + count, 0u);
+	std::iota(indices.begin() + count, indices.end(), 0u);
+	upload(m_TreeVisibleIndexBuffer, indices.data(), indices.size() * sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+	upload(m_TreeSpeciesInfoBuffer, m_TreeSpeciesInfosCPU.data(), sizeof(TreeSpeciesCullInfo), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+	for (const auto& part : m_TreeParts)
 	{
-		const uint32_t encodedSubmesh = submeshIndex < 0
-			? 0xffffffffu
-			: static_cast<uint32_t>(submeshIndex);
-		return (static_cast<uint64_t>(speciesIndex) << 32ull) | encodedSubmesh;
-	};
-	auto getVisibilityGroup = [&](uint32_t speciesIndex, int32_t submeshIndex) -> uint32_t
-	{
-		const uint64_t key = makeVisibilityKey(speciesIndex, submeshIndex);
-		auto found = visibilityGroupByKey.find(key);
-		if (found != visibilityGroupByKey.end())
-			return found->second;
-
-		const uint32_t groupIndex = static_cast<uint32_t>(visibilityGroups.size());
-		visibilityGroupByKey[key] = groupIndex;
-		TreeVisibilityGroupBuildInfo info = {};
-		info.speciesIndex = speciesIndex;
-		info.submeshIndex = submeshIndex;
-		visibilityGroups.push_back(info);
-		return groupIndex;
-	};
-
-	for (uint32_t i = 0; i < static_cast<uint32_t>(m_TreeConfig.instances.size()); ++i)
-	{
-		const auto& src = m_TreeConfig.instances[i];
-		auto it = speciesIndexByName.find(src.speciesName);
-		if (it == speciesIndexByName.end())
-		{
-			VANS_LOG_WARN("[VegetationSystem] Tree instance references unknown species '" << src.speciesName << "'.");
-			continue;
-		}
-
-		uint32_t speciesIndex = it->second;
-		const auto& species = m_TreeConfig.species[speciesIndex];
-		float scale = std::max(src.scale, 0.001f);
-		float yawRad = glm::radians(src.yawDeg);
-
-		glm::mat4 model(1.0f);
-		model = glm::translate(model, src.position);
-		model = glm::rotate(model, yawRad, glm::vec3(0.0f, 1.0f, 0.0f));
-		model = glm::scale(model, glm::vec3(scale));
-
-		TreeInstanceGPU gpu = {};
-		gpu.modelMatrix = model;
-		float radius = std::max(species.boundsRadius * scale, 0.1f);
-		gpu.boundsSphere = glm::vec4(src.position + glm::vec3(0.0f, radius, 0.0f), radius);
-		gpu.speciesIndex = speciesIndex;
-		const int32_t requestedSubmesh = src.submeshIndex >= 0 ? src.submeshIndex : -1;
-		const uint32_t visibilityGroupIndex = getVisibilityGroup(speciesIndex, requestedSubmesh);
-		gpu.regionIndex = visibilityGroupIndex;
-		gpu.randomSeed = i * 9781u + 17u;
-		gpu.flags = requestedSubmesh >= 0 ? (static_cast<uint32_t>(requestedSubmesh) + 1u) : 0u;
-		m_TreeInstancesCPU.push_back(gpu);
-		visibilityGroups[visibilityGroupIndex].maxCount++;
+		// 场景内容构建早于材质 GPU 表准备；此处只校验材质类型，绘制时读取已分配的索引。
+		if (!part.mesh || part.mesh->GetIndexCount() == 0 || !SupportsTreeMaterial(part.material))
+			throw std::invalid_argument("Tree part requires drawable geometry and a compatible PBR material.");
+		TreeDrawConfigGPU cfg;
+		cfg.mesh = part.mesh;
+		cfg.material = part.material;
+		cfg.materialIndex = ResolveTreeMaterialIndex(part.material);
+		cfg.partType = part.type;
+		cfg.instanceCapacity = count;
+		VkDrawIndexedIndirectCommand command = {};
+		command.indexCount = part.mesh->GetIndexCount();
+		command.instanceCount = visibleCount;
+		upload(cfg.indirectDrawBuffer, &command, sizeof(command),
+			VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+		upload(cfg.shadowIndirectDrawBuffer, &command, sizeof(command),
+			VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+		std::vector<VkDescriptorSet> sets;
+		VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet({ m_TreeDrawLayout },
+			sets, VansDescriptorLifetimeRole::ScenePersistent);
+		cfg.drawDescSet = sets.at(0);
+		WriteTreeDrawDescriptors(cfg);
+		m_TreeDrawConfigsGPU.push_back(std::move(cfg));
 	}
-
-	if (m_TreeInstancesCPU.empty())
-	{
-		VANS_LOG_WARN("[VegetationSystem] Tree config produced zero valid instances.");
-		return;
-	}
-
-	uint32_t visibleOffset = 0;
-	m_TreeSpeciesInfosCPU.resize(visibilityGroups.size());
-	for (uint32_t i = 0; i < static_cast<uint32_t>(visibilityGroups.size()); ++i)
-	{
-		m_TreeSpeciesInfosCPU[i].visibleOffset = visibleOffset;
-		m_TreeSpeciesInfosCPU[i].maxCount = visibilityGroups[i].maxCount;
-		visibleOffset += visibilityGroups[i].maxCount;
-	}
-
-	VkDeviceSize instanceSize = sizeof(TreeInstanceGPU) * m_TreeInstancesCPU.size();
-	m_TreeInstanceBuffer.CreatVulkanBuffer(m_Device, instanceSize, VK_FORMAT_R32_SFLOAT,
-		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-	m_TreeInstanceBuffer.SetBufferData(m_TreeInstancesCPU.data(), 0, static_cast<int>(instanceSize));
-
-	VkDeviceSize countSize = sizeof(uint32_t) * std::max<size_t>(visibilityGroups.size(), 1);
-	std::vector<uint32_t> zeroCounts(visibilityGroups.size(), 0);
-	std::vector<uint32_t> initialCounts = zeroCounts;
-	if (!m_TreeConfig.cullEnabled)
-	{
-		for (uint32_t i = 0; i < static_cast<uint32_t>(m_TreeSpeciesInfosCPU.size()); ++i)
-			initialCounts[i] = m_TreeSpeciesInfosCPU[i].maxCount;
-	}
-	m_TreeVisibleCountsBuffer.CreatVulkanBuffer(m_Device, countSize, VK_FORMAT_R32_UINT,
-		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-	m_TreeVisibleCountsBuffer.SetBufferData(initialCounts.data(), 0, static_cast<int>(countSize));
-
-	VkDeviceSize visibleIndexSize = sizeof(uint32_t) * m_TreeInstancesCPU.size();
-	std::vector<uint32_t> initialVisibleIndices(m_TreeInstancesCPU.size(), 0);
-	std::vector<uint32_t> groupWriteOffsets(m_TreeSpeciesInfosCPU.size(), 0);
-	for (uint32_t i = 0; i < static_cast<uint32_t>(m_TreeInstancesCPU.size()); ++i)
-	{
-		const uint32_t groupIdx = m_TreeInstancesCPU[i].regionIndex;
-		if (groupIdx >= m_TreeSpeciesInfosCPU.size())
-			continue;
-		const uint32_t slot = groupWriteOffsets[groupIdx]++;
-		const uint32_t dst = m_TreeSpeciesInfosCPU[groupIdx].visibleOffset + slot;
-		if (dst < initialVisibleIndices.size())
-			initialVisibleIndices[dst] = i;
-	}
-	m_TreeVisibleIndexBuffer.CreatVulkanBuffer(m_Device, visibleIndexSize, VK_FORMAT_R32_UINT,
-		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-	m_TreeVisibleIndexBuffer.SetBufferData(initialVisibleIndices.data(), 0, static_cast<int>(visibleIndexSize));
-
-	VkDeviceSize speciesInfoSize = sizeof(TreeSpeciesCullInfo) * m_TreeSpeciesInfosCPU.size();
-	m_TreeSpeciesInfoBuffer.CreatVulkanBuffer(m_Device, speciesInfoSize, VK_FORMAT_R32_UINT,
-		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-	m_TreeSpeciesInfoBuffer.SetBufferData(m_TreeSpeciesInfosCPU.data(), 0, static_cast<int>(speciesInfoSize));
-
-	for (uint32_t speciesIdx = 0; speciesIdx < static_cast<uint32_t>(m_TreeConfig.species.size()); ++speciesIdx)
-	{
-		const auto& species = m_TreeConfig.species[speciesIdx];
-		for (uint32_t partIdx = 0; partIdx < static_cast<uint32_t>(species.parts.size()); ++partIdx)
-		{
-			const auto& part = species.parts[partIdx];
-			VansMesh* mesh = meshLookup ? meshLookup(part.meshName) : nullptr;
-			VansMaterial* material = materialLookup ? materialLookup(part.materialName) : nullptr;
-			if (!mesh || !material)
-			{
-				VANS_LOG_WARN("[VegetationSystem] Tree part skipped: species='" << species.name
-					<< "', mesh='" << part.meshName << "' (" << (mesh ? "ok" : "missing")
-					<< "), material='" << part.materialName << "' (" << (material ? "ok" : "missing") << ").");
-				continue;
-			}
-
-			struct DrawableTreeMesh
-			{
-				VansMesh* mesh = nullptr;
-				int32_t submeshIndex = -1;
-			};
-			std::vector<DrawableTreeMesh> drawableMeshes;
-			if (mesh->m_IsMultiMesh)
-			{
-				for (uint32_t submeshIdx = 0; submeshIdx < static_cast<uint32_t>(mesh->m_SubMeshes.size()); ++submeshIdx)
-				{
-					if (part.submeshIndex >= 0 && static_cast<uint32_t>(part.submeshIndex) != submeshIdx)
-						continue;
-					VansMesh* subMesh = mesh->m_SubMeshes[submeshIdx];
-					if (subMesh != nullptr && subMesh->GetIndexCount() > 0)
-						drawableMeshes.push_back({ subMesh, static_cast<int32_t>(submeshIdx) });
-				}
-				VANS_LOG("[VegetationSystem] Tree part species='" << species.name
-					<< "' expanded multi-mesh '" << part.meshName
-					<< "' to " << drawableMeshes.size() << " drawable submeshes.");
-			}
-			else if (mesh->GetIndexCount() > 0)
-			{
-				if (part.submeshIndex > 0)
-				{
-					VANS_LOG_WARN("[VegetationSystem] Tree part species='" << species.name
-						<< "' requested submesh " << part.submeshIndex
-						<< " on non-multi mesh '" << part.meshName << "'.");
-				}
-				else
-				{
-					drawableMeshes.push_back({ mesh, -1 });
-				}
-			}
-
-			if (drawableMeshes.empty())
-			{
-				VANS_LOG_WARN("[VegetationSystem] Tree part skipped: species='" << species.name
-					<< "', mesh='" << part.meshName << "' has no drawable indices.");
-				continue;
-			}
-
-			for (const DrawableTreeMesh& drawable : drawableMeshes)
-			{
-				for (uint32_t groupIdx = 0; groupIdx < static_cast<uint32_t>(visibilityGroups.size()); ++groupIdx)
-				{
-					const TreeVisibilityGroupBuildInfo& group = visibilityGroups[groupIdx];
-					if (group.speciesIndex != speciesIdx || group.maxCount == 0)
-						continue;
-					if (part.submeshIndex < 0 && group.submeshIndex >= 0 &&
-						drawable.submeshIndex >= 0 && drawable.submeshIndex != group.submeshIndex)
-						continue;
-
-					TreeDrawConfigGPU cfg = {};
-					cfg.mesh = drawable.mesh;
-					cfg.material = material;
-					cfg.materialIndex = std::max(ResolveTreeMaterialIndex(material), 0);
-					cfg.speciesIndex = speciesIdx;
-					cfg.partIndex = partIdx;
-					cfg.partType = part.type;
-					cfg.visibilityGroupIndex = groupIdx;
-					cfg.submeshIndex = drawable.submeshIndex;
-					cfg.visibleOffset = m_TreeSpeciesInfosCPU[groupIdx].visibleOffset;
-					cfg.instanceCapacity = group.maxCount;
-
-					VkDrawIndexedIndirectCommand draw = {};
-					draw.indexCount = drawable.mesh->GetIndexCount();
-					draw.instanceCount = m_TreeConfig.cullEnabled ? 0 : group.maxCount;
-					draw.firstIndex = 0;
-					draw.vertexOffset = 0;
-					draw.firstInstance = 0;
-					cfg.indirectDrawBuffer.CreatVulkanBuffer(m_Device, sizeof(VkDrawIndexedIndirectCommand), VK_FORMAT_R32_UINT,
-						VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-						VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-					cfg.indirectDrawBuffer.SetBufferData(&draw, 0, sizeof(VkDrawIndexedIndirectCommand));
-
-					std::vector<VkDescriptorSet> sets;
-					VansVKDescriptorManager::GetInstance()->AllocateDescriptorSet(
-						{ m_TreeDrawLayout },
-						sets,
-						VansDescriptorLifetimeRole::ScenePersistent);
-					cfg.drawDescSet = sets.empty() ? VK_NULL_HANDLE : sets[0];
-					WriteTreeDrawDescriptors(cfg);
-					m_TreeDrawConfigsGPU.push_back(std::move(cfg));
-				}
-			}
-		}
-	}
-
-	if (m_TreeDrawConfigsGPU.empty())
-	{
-		VANS_LOG_WARN("[VegetationSystem] Tree config produced no drawable parts.");
-		return;
-	}
-
-	m_TreeCullDistance = m_TreeConfig.cullDistance;
 	m_TreeEnabled = true;
 	WriteTreeCullDescriptors();
-	VANS_LOG("[VegetationSystem] Tree resources built: instances=" << m_TreeInstancesCPU.size()
-		<< ", species=" << m_TreeConfig.species.size()
-		<< ", visibilityGroups=" << visibilityGroups.size()
-		<< ", draws=" << m_TreeDrawConfigsGPU.size());
 }
 
 // ============================================================================
@@ -1691,48 +1298,20 @@ void VansVegetationSystem::GenerateBoneWeights(GrassRenderConfigGPU& cfg, VansMe
 // ============================================================================
 // SetTerrainHeightmap  - connects terrain height data for ground placement
 // ============================================================================
-void VansVegetationSystem::SetTerrainHeightmap(VkImageView imageView, VkSampler sampler,
-                                                float terrainSize, float maxHeight, float heightOffset)
-{
-	m_TerrainHeightmapView    = imageView;
-	m_TerrainHeightmapSampler = sampler;
-	m_TerrainSize             = terrainSize;
-	m_TerrainMaxHeight        = maxHeight;
-	m_TerrainHeightOffset     = heightOffset;
-	m_TerrainEnabled          = (imageView != VK_NULL_HANDLE && sampler != VK_NULL_HANDLE);
-
-	// Re-write bone sim descriptors to include the terrain heightmap
-	if (m_TerrainEnabled && !m_BoneSimDescSets.empty())
-	{
-		WriteBoneSimDescriptors();
-	}
-
-	// Re-write cull descriptors so terrain heightmap is available for correct Y sampling
-	if (m_TerrainEnabled && !m_CullDescSets.empty())
-	{
-		WriteCullDescriptors();
-	}
-
-	VANS_LOG("[VegetationSystem] Terrain heightmap " << (m_TerrainEnabled ? "enabled" : "disabled")
-		<< " (size=" << terrainSize << ", maxH=" << maxHeight << ", offset=" << heightOffset << ")");
-}
-
-// ============================================================================
-// SetHiZDepth  -  - Hi-Z depth pyramid 连接到植被剪除逻辑
-// 通常 - HZB 初始化后调用一次（HZB 畴病表不变，只需写一 - descriptor - 
-//  - mipCount: manager->m_HIZMipCount
-//  - sampleBias: 防止边界错剪的保守偏差，单位为米（默 - 0.2 - 
-// ============================================================================
 void VansVegetationSystem::SetHiZDepth(VkImageView imageView, VkSampler sampler,
                                         uint32_t mipCount, float sampleBias)
 {
+	if (m_HiZView == imageView && m_HiZSampler == sampler && m_HiZMipCount == mipCount && m_HiZSampleBias == sampleBias)
+		return;
 	m_HiZView        = imageView;
 	m_HiZSampler     = sampler;
 	m_HiZMipCount    = mipCount;
 	m_HiZSampleBias  = sampleBias;
 	m_HiZEnabled     = (imageView != VK_NULL_HANDLE && sampler != VK_NULL_HANDLE && mipCount > 0);
 
-	// 重写剪除 descriptor set 以包 - Hi-Z
+	if (m_TreeEnabled) WriteTreeCullDescriptors();
+
+	// 更新该批次自己的 Hi-Z 绑定。
 	if (m_HiZEnabled && !m_CullDescSets.empty())
 	{
 		WriteCullDescriptors();

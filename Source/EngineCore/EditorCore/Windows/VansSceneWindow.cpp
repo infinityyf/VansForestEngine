@@ -24,6 +24,21 @@
 
 void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
+	const auto pcgBrush = editorAPI.GetPcgBrushSnapshot();
+	const auto splineEditor = editorAPI.GetPcgSplineSnapshot();
+	const bool splineToolActive=splineEditor.editable && splineEditor.toolEnabled;
+	if (m_SplineGizmoDragging && (!ImGui::IsMouseDown(ImGuiMouseButton_Left) || ImGui::GetIO().AppFocusLost ||
+		ImGui::IsKeyPressed(ImGuiKey_Escape) || !splineToolActive))
+		FinishSplineGizmo(editorAPI,ImGui::IsKeyPressed(ImGuiKey_Escape)||!splineToolActive);
+	if (m_PcgBrushDragging && (!ImGui::IsMouseDown(ImGuiMouseButton_Left) || ImGui::GetIO().AppFocusLost ||
+		ImGui::IsKeyPressed(ImGuiKey_Escape) || !pcgBrush.enabled || !(pcgBrush.target == m_PcgDragTarget)))
+	{
+		Vans::EditorAPI::PcgBrushInput finish;
+		finish.target = m_PcgDragTarget;
+		finish.phase = ImGui::IsKeyPressed(ImGuiKey_Escape) ? Vans::EditorAPI::PcgBrushPhase::Cancel : Vans::EditorAPI::PcgBrushPhase::End;
+		editorAPI.ApplyPcgBrushInput(finish);
+		m_PcgBrushDragging = false;
+	}
     // -------------------------------------------------------------------------
     // 3. Scene 窗口 (游戏视图)
     // -------------------------------------------------------------------------
@@ -244,6 +259,11 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
             const ImVec2 sceneInputPos(
                 imageScreenPos.x - mainViewportPos.x,
                 imageScreenPos.y - mainViewportPos.y);
+			const Vans::EditorAPI::TerrainEditorSnapshot terrainEditor =
+				editorAPI.GetTerrainEditorSnapshot();
+			const bool terrainBrushActive = !splineToolActive && terrainEditor.available &&
+				terrainEditor.editable && terrainEditor.brushEnabled;
+			const bool pcgBrushActive = !splineToolActive && pcgBrush.available && pcgBrush.enabled && !pcgBrush.canvasStrokeActive;
 
             // VansInputManager reports GLFW client-area coordinates. ImGui item
             // rects are absolute when multi-viewport is enabled, so normalize the
@@ -278,7 +298,7 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
 					->DrawSceneViewportHandle(
 						editorAPI, m_Camera, imageScreenPos, drawSize);
 			}
-			if (!previewHandleActive)
+			if (!previewHandleActive && !terrainBrushActive && !pcgBrushActive && !splineToolActive)
 			{
 				m_Gizmos.HandleHotkeys();
 				m_Gizmos.Draw(editorAPI, m_Camera, imageScreenPos, drawSize);
@@ -677,9 +697,170 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
                 m_CameraController.Update(m_Camera, cameraInput);
             }
 
+			const auto buildTerrainRay = [&]()
+			{
+				Vans::EditorAPI::Ray ray;
+				if (!m_Camera || drawSize.x <= 0.0f || drawSize.y <= 0.0f)
+					return ray;
+				const float ndcX = 2.0f * (mousePos.x - imageScreenPos.x) / drawSize.x - 1.0f;
+				const float ndcY = 1.0f - 2.0f * (mousePos.y - imageScreenPos.y) / drawSize.y;
+				const glm::mat4 inverseViewProjection = glm::inverse(
+					m_Camera->GetProjectiveMatrix() * m_Camera->GetViewMatrix());
+				glm::vec4 nearPoint = inverseViewProjection * glm::vec4(ndcX, ndcY, 0.0f, 1.0f);
+				glm::vec4 farPoint = inverseViewProjection * glm::vec4(ndcX, ndcY, 1.0f, 1.0f);
+				nearPoint /= nearPoint.w;
+				farPoint /= farPoint.w;
+				const glm::vec3 direction = glm::normalize(glm::vec3(farPoint - nearPoint));
+				ray.origin = { nearPoint.x, nearPoint.y, nearPoint.z };
+				ray.direction = { direction.x, direction.y, direction.z };
+				return ray;
+			};
+
+			if (splineToolActive && m_Camera)
+			{
+				DrawSplineTools(editorAPI,splineEditor,{imageScreenPos.x,imageScreenPos.y},{drawSize.x,drawSize.y},mouseInsideSceneImage);
+				if (mouseInsideSceneImage && ImGui::IsKeyDown(ImGuiKey_LeftCtrl) && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !ImGuizmo::IsOver())
+					editorAPI.AppendPcgSplinePoint(buildTerrainRay());
+			}
+			if (terrainBrushActive && m_Camera)
+			{
+				Vans::EditorAPI::TerrainBrushInput input;
+				input.ray = buildTerrainRay();
+				input.invert = ImGui::IsKeyDown(ImGuiKey_LeftShift) ||
+					ImGui::IsKeyDown(ImGuiKey_RightShift);
+				input.deltaTimeSeconds = std::max(
+					static_cast<float>(VansTimer::GetEditorDeltaTime()), 1.0f / 240.0f);
+				bool submitBrushInput = false;
+				if (m_TerrainBrushDragging && ImGui::IsMouseReleased(ImGuiMouseButton_Left))
+				{
+					input.phase = Vans::EditorAPI::TerrainBrushInputPhase::End;
+					m_TerrainBrushDragging = false;
+					submitBrushInput = true;
+				}
+				else if (mouseInsideSceneImage &&
+					ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !ImGuizmo::IsOver())
+				{
+					input.phase = Vans::EditorAPI::TerrainBrushInputPhase::Begin;
+					m_TerrainBrushDragging = true;
+					submitBrushInput = true;
+				}
+				else if (m_TerrainBrushDragging && mouseInsideSceneImage &&
+					ImGui::IsMouseDown(ImGuiMouseButton_Left))
+				{
+					input.phase = Vans::EditorAPI::TerrainBrushInputPhase::Update;
+					submitBrushInput = true;
+				}
+				else if (mouseInsideSceneImage)
+				{
+					input.phase = Vans::EditorAPI::TerrainBrushInputPhase::Hover;
+					submitBrushInput = true;
+				}
+
+				if (submitBrushInput)
+				{
+					const auto brushResult = editorAPI.ApplyTerrainBrushInput(input);
+					m_TerrainBrushHit = brushResult.hit;
+					if (brushResult.hit)
+						m_TerrainBrushWorldPosition = brushResult.worldPosition;
+				}
+				else if (!m_TerrainBrushDragging)
+					m_TerrainBrushHit = false;
+
+				if (m_TerrainBrushHit)
+				{
+					const glm::mat4 viewProjection = m_Camera->GetProjectiveMatrix() *
+						m_Camera->GetViewMatrix();
+					const glm::vec3 center(m_TerrainBrushWorldPosition.x,
+						m_TerrainBrushWorldPosition.y + 0.05f,
+						m_TerrainBrushWorldPosition.z);
+					std::vector<ImVec2> ring;
+					ring.reserve(65);
+					for (int segment = 0; segment <= 64; ++segment)
+					{
+						const float angle = static_cast<float>(segment) / 64.0f * 6.28318530717958647692f;
+						const glm::vec3 world = center + terrainEditor.radius *
+							glm::vec3(std::cos(angle), 0.0f, std::sin(angle));
+						const glm::vec4 clip = viewProjection * glm::vec4(world, 1.0f);
+						if (clip.w <= 1.0e-5f) continue;
+						const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+						ring.emplace_back(
+							imageScreenPos.x + (ndc.x * 0.5f + 0.5f) * drawSize.x,
+							imageScreenPos.y + (-ndc.y * 0.5f + 0.5f) * drawSize.y);
+					}
+					if (ring.size() > 2)
+					{
+						const bool paintTool = terrainEditor.tool == Vans::EditorAPI::TerrainBrushTool::PaintLayer ||
+							terrainEditor.tool == Vans::EditorAPI::TerrainBrushTool::EraseLayer ||
+							terrainEditor.tool == Vans::EditorAPI::TerrainBrushTool::SmoothWeights;
+						ImDrawList* drawList = ImGui::GetWindowDrawList();
+						drawList->PushClipRect(imageScreenPos,
+							ImVec2(imageScreenPos.x + drawSize.x, imageScreenPos.y + drawSize.y), true);
+						drawList->AddPolyline(ring.data(), static_cast<int>(ring.size()),
+							paintTool ? IM_COL32(80, 235, 135, 245) : IM_COL32(255, 190, 55, 245),
+							ImDrawFlags_None, 2.0f);
+						drawList->PopClipRect();
+					}
+				}
+			}
+			else
+			{
+				m_TerrainBrushDragging = false;
+				m_TerrainBrushHit = false;
+			}
+
+
+            if (pcgBrushActive && m_Camera)
+            {
+                using namespace Vans::EditorAPI;
+                PcgBrushInput input;
+                input.target=pcgBrush.target;
+                const auto ray=buildTerrainRay();
+                input.rayOrigin={ray.origin.x,ray.origin.y,ray.origin.z};
+                input.rayDirection={ray.direction.x,ray.direction.y,ray.direction.z};
+                input.erase=ImGui::GetIO().KeyShift;
+                const bool canPaint=mouseInsideSceneImage && ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
+                    !ImGui::GetIO().AppFocusLost && !ImGui::IsMouseDown(ImGuiMouseButton_Right) &&
+                    !ImGuizmo::IsOver();
+                if (m_PcgBrushDragging && !canPaint) input.phase=PcgBrushPhase::Break;
+                else if (canPaint && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) input.phase=PcgBrushPhase::Begin;
+                else if (canPaint && m_PcgBrushDragging) input.phase=PcgBrushPhase::Update;
+                else input.phase=PcgBrushPhase::Hover;
+                if (canPaint || m_PcgBrushDragging)
+                {
+                    const auto result=editorAPI.ApplyPcgBrushInput(input);
+                    m_PcgBrushDragging=result.strokeActive;
+                    m_PcgDragTarget=input.target;
+                    if (!result.success && !result.message.empty()) m_PcgBrushMessage=result.message;
+                    else m_PcgBrushMessage.clear();
+                    if (canPaint && result.hit)
+                    {
+                        const glm::mat4 vp=m_Camera->GetProjectiveMatrix()*m_Camera->GetViewMatrix();
+                        auto* draw=ImGui::GetWindowDrawList();
+                        draw->PushClipRect(imageScreenPos,ImVec2(imageScreenPos.x+drawSize.x,imageScreenPos.y+drawSize.y),true);
+                        bool previousValid=false;
+                        ImVec2 previous;
+                        for (const auto& point : result.ring)
+                        {
+                            const glm::vec4 clip=vp*glm::vec4(point[0],point[1],point[2],1);
+                            if (!std::isfinite(clip.w) || clip.w<=0 || !std::isfinite(clip.x) || !std::isfinite(clip.y))
+                            { previousValid=false; continue; }
+                            const ImVec2 current(imageScreenPos.x+(clip.x/clip.w*.5f+.5f)*drawSize.x,
+                                imageScreenPos.y+(-clip.y/clip.w*.5f+.5f)*drawSize.y);
+                            if (previousValid) draw->AddLine(previous,current,
+                                input.erase?IM_COL32(245,110,85,255):IM_COL32(95,225,125,255),2);
+                            previous=current; previousValid=true;
+                        }
+                        draw->PopClipRect();
+                    }
+                }
+                if (!m_PcgBrushMessage.empty())
+                    ImGui::GetWindowDrawList()->AddText(ImVec2(imageScreenPos.x+10,imageScreenPos.y+10),
+                        IM_COL32(255,170,90,255),m_PcgBrushMessage.c_str());
+            }
+
             if (mouseInsideSceneImage
                 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)
-                && !ImGuizmo::IsOver())
+				&& !terrainBrushActive && !pcgBrushActive && !splineToolActive && !ImGuizmo::IsOver())
             {
                 m_Gizmos.TryPickObject(editorAPI, m_Camera, mousePos, imageScreenPos, drawSize);
             }

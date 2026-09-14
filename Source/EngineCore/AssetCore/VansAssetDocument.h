@@ -14,6 +14,7 @@ using VansAssetDocumentStateId = std::uint64_t;
 namespace EditorInternal
 {
 class SetAssetPropertyCommand;
+class ExternalAssetEditCommand;
 }
 
 struct VansAssetFileFingerprint
@@ -47,6 +48,7 @@ struct VansAssetDocumentSaveStage
 class VansAssetDocument
 {
     friend class EditorInternal::SetAssetPropertyCommand;
+	friend class EditorInternal::ExternalAssetEditCommand;
 
 public:
     VansAssetDocument();

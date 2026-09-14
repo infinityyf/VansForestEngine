@@ -239,6 +239,10 @@ const char* ToString(EditorAPI::AssetType assetType)
 	case EditorAPI::AssetType::UILocalization: return "UILocalization";
 	case EditorAPI::AssetType::UIXaml: return "UIXaml";
 	case EditorAPI::AssetType::VegetationConfig: return "VegetationConfig";
+	case EditorAPI::AssetType::Terrain: return "Terrain";
+	case EditorAPI::AssetType::PlantType: return "PlantType";
+	case EditorAPI::AssetType::PcgMask: return "PcgMask";
+	case EditorAPI::AssetType::PcgSpline: return "PcgSpline";
     default: return "Unknown";
     }
 }

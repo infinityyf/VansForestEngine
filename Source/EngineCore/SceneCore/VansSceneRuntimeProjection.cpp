@@ -1,4 +1,5 @@
 #include "VansSceneRuntimeProjection.h"
+#include "../AssetCore/Serialization/VansSerializedObjectReference.h"
 
 #include "../AssetCore/VansAssetDatabase.h"
 #include "../AssetCore/VansAssetMeta.h"
@@ -9,6 +10,7 @@
 #include "../AudioCore/VansAudioReverbEnvironment.h"
 #include "../AudioCore/VansAudioReverbPresetAsset.h"
 #include "../ProjectSystem/VansProjectManager.h"
+#include "../TerrainCore/VansTerrainAsset.h"
 #include "../Util/VansLog.h"
 #include "../ScriptCore/VansScriptComponentReader.h"
 #include "../ScriptCore/VansScriptUIComponentReader.h"
@@ -1702,7 +1704,28 @@ bool VansSceneRuntimeProjection::BuildRuntimeSceneContentPlan(
 	if (settings)
 	{
 		if (const VansSerializedValue* terrain = FindSerializedObjectField(*settings, "terrain"))
-			outPlan.terrain = VansSceneEnvironmentNodeConfigReader::ReadTerrain(*terrain);
+		{
+			VansSceneTerrainNodeConfig resolvedTerrain =
+				VansSceneEnvironmentNodeConfigReader::ReadTerrain(*terrain);
+			VansAssetGuid terrainGuid;
+			if (!resolvedTerrain.valid ||
+				!VansAssetGuid::TryParse(resolvedTerrain.assetGuid, terrainGuid))
+			{
+				outError = "Scene terrain must reference a valid ProjectAsset terrain GUID";
+				outPlan = {};
+				return false;
+			}
+			resolvedTerrain.asset = VansProjectManager::Get().GetAssetObjectRepository()
+				.ResolveLatest<VansTerrainAsset>(terrainGuid);
+			if (!resolvedTerrain.asset || !resolvedTerrain.asset->HasPixelData())
+			{
+				outError = "Scene terrain asset is not loaded in the object repository: " +
+					resolvedTerrain.assetGuid;
+				outPlan = {};
+				return false;
+			}
+			outPlan.terrain = std::move(resolvedTerrain);
+		}
 		if (const VansSerializedValue* vegetation = FindSerializedObjectField(*settings, "vegetation"))
 		{
 			VansAssetGuid vegetationGuid;
@@ -1717,7 +1740,7 @@ bool VansSceneRuntimeProjection::BuildRuntimeSceneContentPlan(
 			const std::shared_ptr<const VansVegetationConfigAsset> asset =
 				VansProjectManager::Get().GetAssetObjectRepository()
 					.ResolveLatest<VansVegetationConfigAsset>(vegetationGuid);
-			VansSceneVegetationNodeConfig resolvedVegetation;
+			VansPcgRecipeAsset resolvedVegetation;
 			if (!asset || !VansVegetationConfigCodec::ResolveReference(
 				*vegetation, *asset, resolvedVegetation, outError))
 			{
@@ -1727,6 +1750,20 @@ bool VansSceneRuntimeProjection::BuildRuntimeSceneContentPlan(
 				return false;
 			}
 			outPlan.vegetation = std::move(resolvedVegetation);
+		}
+		if (const VansSerializedValue* splines = FindSerializedObjectField(*settings, "pcgSplines"))
+		{
+			SerializedObjectReferenceValue reference;
+			if (!TryReadSerializedObjectReference(*splines, reference) || reference.domain != "ProjectAsset" ||
+				reference.assetType != "pcgSpline" || !VansAssetGuid::TryParse(reference.guid, outPlan.splineAssetGuid))
+			{
+				outError = "Scene pcgSplines must reference a pcgSpline asset."; outPlan = {}; return false;
+			}
+			outPlan.splines = VansProjectManager::Get().GetAssetObjectRepository().ResolveLatest<VansPcgSplineAsset>(outPlan.splineAssetGuid);
+			if (!outPlan.splines || !outPlan.terrain || outPlan.splines->terrain.ToString() != outPlan.terrain->assetGuid)
+			{
+				outError = "Scene splines must bind the scene's terrain asset."; outPlan = {}; return false;
+			}
 		}
 		if (const VansSerializedValue* water = FindSerializedObjectField(*settings, "water"))
 			outPlan.water = VansSceneEnvironmentNodeConfigReader::ReadWater(*water);

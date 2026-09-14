@@ -34,6 +34,11 @@ namespace Vans
 {
 	class VansGameplayTraceRecorder;
 	class VansGameplayReplaySession;
+	class VansTerrainAuthoringSession;
+	class VansPcgMaskAuthoringSession;
+	class VansSceneDocument;
+	class VansSceneEditService;
+	struct VansPcgBatchUpdate;
 }
 
 namespace Vans::EditorAPI
@@ -57,6 +62,33 @@ namespace Vans::EditorAPI
 		void BreakCommandMergeGroup() override;
 
 		std::vector<AssetEntry> QueryAssets(AssetTypeFilter filter) const override;
+		PcgEditorSnapshot GetPcgEditorSnapshot() const override;
+		PcgSplineSnapshot GetPcgSplineSnapshot() override;
+		PcgEditorOperationResult CreatePcgSplineAsset(const std::string& name) override;
+		PcgEditorOperationResult BindPcgSplineAsset(const std::string& guid) override;
+		PcgEditorOperationResult SelectPcgSpline(const std::string& spline,const std::string& point,bool toolEnabled) override;
+		PcgEditorOperationResult ApplyPcgSplineEdit(const PcgSplineEditRequest& request) override;
+		PcgEditorOperationResult ExecutePcgSplineCommand(const PcgSplineCommandRequest& request) override;
+		PcgEditorOperationResult AppendPcgSplinePoint(const Ray& ray) override;
+		void BindPcgSceneAuthoring(VansSceneDocument* document,VansSceneEditService* edits);
+		PcgLayerCreateResult CreatePcgLayer(const PcgLayerCreateRequest& request) override;
+		PcgEditorOperationResult RemovePcgLayer(const PcgBrushTarget& target) override;
+		PcgEditorOperationResult BindPcgRecipeToScene(const std::string& guid) override;
+		PcgPlantConfiguration GetPcgPlantConfiguration(const std::string& guid) override;
+		PcgLayerConfiguration GetPcgLayerConfiguration(const PcgBrushTarget& target) override;
+		PcgEditorOperationResult ApplyPcgPlantConfiguration(const PcgPlantConfiguration& configuration) override;
+		PcgEditorOperationResult ApplyPcgLayerConfiguration(const PcgBrushTarget& target,const PcgLayerConfiguration& configuration) override;
+		PcgEditorOperationResult EditPcgConfiguration(const std::string& guid,PcgConfigurationAction action) override;
+		PcgMaskPreviewSnapshot GetPcgMaskPreview(const std::string& maskGuid) const override;
+		PcgBrushSnapshot GetPcgBrushSnapshot() const override;
+		PcgEditorOperationResult SelectPcgBrushTarget(const PcgBrushTarget& target, bool enabled) override;
+		PcgEditorOperationResult ConfigurePcgBrush(const PcgBrushSettings& settings) override;
+		PcgBrushResult ApplyPcgBrushInput(const PcgBrushInput& input) override;
+		PcgEditorOperationResult EditPcgMaskDocument(PcgMaskDocumentAction action) override;
+		PcgEditorOperationResult EditPcgMaskData(const PcgMaskDataRequest& request) override;
+		PcgEditorOperationResult CreatePcgExclusionMask(const PcgBrushTarget& target) override;
+		PcgInstanceSnapshot GetPcgInstances(const PcgBrushTarget& target,uint64_t offset) override;
+		PcgEditorOperationResult EditPcgInstance(const PcgInstanceEditRequest& request) override;
 		AssetMetaSnapshot GetAssetMeta(AssetId id) const override;
 		ProjectBrowserRootSnapshot GetProjectBrowserRoot() const override;
 		AssetDragPayload CreateAssetDragPayload(const std::string& assetPath) override;
@@ -243,7 +275,17 @@ namespace Vans::EditorAPI
 		TimelinePreviewResult StopTimelinePreview(const std::string& previewId) override;
 		TimelinePreviewResult GetTimelinePreview(const std::string& previewId) const override;
 		TerrainSettingsSnapshot GetTerrainSettings() const override;
-		void ApplyTerrainSettings(const TerrainSettingsSnapshot& settings) override;
+		TerrainEditorOperationResult ApplyTerrainSettings(
+			const TerrainSettingsSnapshot& settings) override;
+		TerrainEditorSnapshot GetTerrainEditorSnapshot() const override;
+		TerrainEditorOperationResult ConfigureTerrainBrush(
+			const TerrainBrushConfiguration& configuration) override;
+		TerrainBrushInputResult ApplyTerrainBrushInput(
+			const TerrainBrushInput& input) override;
+		TerrainEditorOperationResult UndoTerrainEdit() override;
+		TerrainEditorOperationResult RedoTerrainEdit() override;
+		TerrainEditorOperationResult RevertTerrainEdits() override;
+		TerrainEditorOperationResult SaveTerrainAsset() override;
 		bool ApplyRuntimeEntityPreviewChange(const RuntimeEntityPreviewChange& change) override;
 		bool ApplyRuntimeMaterialPreviewChange(const RuntimeMaterialPreviewChange& change) override;
 
@@ -316,6 +358,26 @@ namespace Vans::EditorAPI
 			const std::string& componentType,
 			bool enabled);
 		bool ReloadSceneAnimationDefinitions(std::string& error);
+		std::shared_ptr<Vans::VansTerrainAuthoringSession> EnsureTerrainAuthoringSession(
+			std::string& error) const;
+		void QueueTerrainPixelChange();
+		void ApplyTerrainRuntimeSettings(const TerrainSettingsSnapshot& settings);
+		struct PcgAuthoringState;
+		struct PcgSplineAuthoringState;
+		std::shared_ptr<PcgSplineAuthoringState> m_PcgSplineAuthoring;
+		void TickPcgSplineAuthoring();
+		PcgEditorOperationResult RequestPcgSplinePreview();
+		PcgEditorOperationResult FinishPcgSplineEdit();
+		void EnsurePcgAuthoringContext() const;
+		PcgEditorOperationResult FinishPcgStroke(bool cancel);
+		PcgEditorOperationResult RefreshPcgMaskVegetation(bool force);
+		PcgEditorOperationResult RefreshPcgRecipePreview();
+		mutable std::shared_ptr<PcgAuthoringState> m_PcgAuthoring;
+		std::string m_PcgSceneRecipeGuid;
+		PcgEditorOperationResult CommitPcgPreview(std::shared_ptr<const VansPcgBatchUpdate> update);
+		VansSceneDocument* m_PcgSceneDocument = nullptr;
+		VansSceneEditService* m_PcgSceneEdits = nullptr;
+		std::uint64_t m_PcgSceneAuthoringState = 0;
 
 		RuntimeSceneHandle m_Scene = nullptr;
 		RuntimeRenderDeviceHandle m_Device = nullptr;
@@ -342,6 +404,13 @@ namespace Vans::EditorAPI
 		std::unordered_map<UIDocumentId, std::string> m_UIDocumentSourcePaths;
 		std::unordered_map<UIDocumentId, VansRuntime::VansUIHandleId> m_UIScreenPreviewHandles;
 		mutable VansLocalFogFieldPreviewService m_LocalFogFieldPreviewService;
+		mutable std::shared_ptr<Vans::VansTerrainAuthoringSession> m_TerrainAuthoringSession;
+		TerrainBrushConfiguration m_TerrainBrushConfiguration;
+		bool m_TerrainStrokeActive = false;
+		TerrainBrushTool m_ActiveTerrainStrokeTool = TerrainBrushTool::Raise;
+		std::uint32_t m_TerrainStrokeSeed = 1;
+		float m_TerrainStrokeLastPixelX = 0.0f;
+		float m_TerrainStrokeLastPixelY = 0.0f;
 
 		struct UIPreviewGpuResource
 		{

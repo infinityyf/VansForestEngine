@@ -1,208 +1,152 @@
 #include "VansPcgWindow.h"
-
-#include "../VansPcgDebugDataService.h"
 #include "../VansEditorWindow.h"
-
 #include "imgui.h"
-
 #include <algorithm>
-#include <cmath>
-#include <cstdio>
-#include <string>
-#include <vector>
-
+#include <cfloat>
 namespace VansGraphics
 {
-namespace
+void VansPcgWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& api)
 {
-std::string FormatVec2(const glm::vec2& value)
-{
-    char buffer[64] = {};
-    std::snprintf(buffer, sizeof(buffer), "%.2f, %.2f", value.x, value.y);
-    return buffer;
-}
-
-float PreviewValue(const PcgPlacementMask& mask, uint32_t x, uint32_t y)
-{
-    const size_t index = static_cast<size_t>(y) * mask.width + x;
-    if (index >= mask.values.size())
-        return 0.0f;
-
-    float value = mask.values[index];
-    if (mask.invert)
-        value = 1.0f - value;
-    value = std::clamp(value * std::max(mask.densityScale, 0.0f), 0.0f, 1.0f);
-    return value >= mask.threshold ? value : 0.0f;
-}
-
-void DrawMaskPreview(const PcgPlacementMask& mask)
-{
-    if (!mask.enabled || mask.width == 0 || mask.height == 0 || mask.values.empty())
+    using namespace Vans::EditorAPI;
+    const auto report=[&](const PcgEditorOperationResult& result) {m_Message=result.message;};
+    if (m_SplinePropertyDrag && (!VansEditorWindow::m_PcgWindowOpen || ImGui::IsKeyPressed(ImGuiKey_Escape) ||
+        (!ImGui::IsMouseDown(ImGuiMouseButton_Left) && !ImGui::IsAnyItemActive())))
     {
-        ImGui::TextDisabled("No preview data");
-        return;
+        PcgSplineEditRequest request;request.spline=m_SplineDraft;request.documentState=m_SplineDraftState;
+        request.phase=ImGui::IsKeyPressed(ImGuiKey_Escape)?PcgSplineEditPhase::Cancel:PcgSplineEditPhase::Commit;
+        report(api.ApplyPcgSplineEdit(request));m_SplinePropertyDrag=false;
     }
-
-    const float maxSide = 160.0f;
-    const float aspect = static_cast<float>(mask.width) / static_cast<float>(mask.height);
-    const float width = aspect >= 1.0f ? maxSide : maxSide * aspect;
-    const float height = aspect >= 1.0f ? maxSide / aspect : maxSide;
-    const ImVec2 start = ImGui::GetCursorScreenPos();
-    const ImVec2 size(width, height);
-
-    ImGui::InvisibleButton(("##pcgMaskPreview_" + mask.name).c_str(), size);
-
-    ImDrawList* drawList = ImGui::GetWindowDrawList();
-    drawList->AddRectFilled(start, ImVec2(start.x + width, start.y + height), IM_COL32(20, 20, 22, 255));
-
-    const uint32_t columns = std::min<uint32_t>(mask.width, 72u);
-    const uint32_t rows = std::min<uint32_t>(mask.height, 72u);
-    for (uint32_t y = 0; y < rows; ++y)
-    {
-        const uint32_t sourceY = std::min<uint32_t>(
-            mask.height - 1,
-            static_cast<uint32_t>((static_cast<float>(y) + 0.5f) * static_cast<float>(mask.height) / static_cast<float>(rows)));
-        const float y0 = start.y + height * static_cast<float>(y) / static_cast<float>(rows);
-        const float y1 = start.y + height * static_cast<float>(y + 1) / static_cast<float>(rows);
-        for (uint32_t x = 0; x < columns; ++x)
-        {
-            const uint32_t sourceX = std::min<uint32_t>(
-                mask.width - 1,
-                static_cast<uint32_t>((static_cast<float>(x) + 0.5f) * static_cast<float>(mask.width) / static_cast<float>(columns)));
-            const float value = PreviewValue(mask, sourceX, sourceY);
-            const int intensity = static_cast<int>(std::round(value * 255.0f));
-            const ImU32 color = IM_COL32(intensity, intensity, intensity, 255);
-            const float x0 = start.x + width * static_cast<float>(x) / static_cast<float>(columns);
-            const float x1 = start.x + width * static_cast<float>(x + 1) / static_cast<float>(columns);
-            drawList->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), color);
-        }
+    if (m_CanvasDragging && (!VansEditorWindow::m_PcgWindowOpen || !ImGui::IsMouseDown(ImGuiMouseButton_Left) || ImGui::IsKeyPressed(ImGuiKey_Escape))) {
+        PcgBrushInput input;input.target=m_CanvasTarget;input.space=PcgBrushSpace::MaskCanvas;
+        input.phase=ImGui::IsKeyPressed(ImGuiKey_Escape)?PcgBrushPhase::Cancel:PcgBrushPhase::End;
+        report(api.ApplyPcgBrushInput(input));m_CanvasDragging=false;
     }
-    drawList->AddRect(start, ImVec2(start.x + width, start.y + height), IM_COL32(90, 90, 96, 255));
-}
-
-void DrawMaskDetails(const PcgPlacementMask& mask)
-{
-    ImGui::Text("Name: %s", mask.name.c_str());
-    if (!mask.assetGuid.empty())
-        ImGui::TextWrapped("Asset GUID: %s", mask.assetGuid.c_str());
-    ImGui::Text("Size: %u x %u", mask.width, mask.height);
-    ImGui::Text("Channel: %s", mask.channel.c_str());
-    ImGui::Text("Bounds: [%s] -> [%s]",
-        FormatVec2(mask.worldMinXZ).c_str(),
-        FormatVec2(mask.worldMaxXZ).c_str());
-    ImGui::Text("Threshold: %.3f  Density: %.3f  Invert: %s",
-        mask.threshold,
-        mask.densityScale,
-        mask.invert ? "true" : "false");
-    if (!mask.sourcePath.empty())
-        ImGui::TextWrapped("Source: %s", mask.sourcePath.c_str());
-    if (!mask.resolvedPath.empty())
-        ImGui::TextWrapped("Resolved: %s", mask.resolvedPath.c_str());
-}
-
-void DrawMaskBlock(const char* title, const PcgPlacementMask& mask)
-{
-    if (!mask.enabled)
-        return;
-
-    if (ImGui::TreeNode(title))
-    {
-        DrawMaskPreview(mask);
-        ImGui::SameLine();
-        ImGui::BeginGroup();
-        DrawMaskDetails(mask);
-        ImGui::EndGroup();
-        ImGui::TreePop();
-    }
-}
-}
-
-void VansPcgWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
-{
     if (!VansEditorWindow::m_PcgWindowOpen)
-        return;
-
-    if (!ImGui::Begin("PCG", &VansEditorWindow::m_PcgWindowOpen))
     {
-        ImGui::End();
+        if (api.GetPcgBrushSnapshot().enabled) report(api.SelectPcgBrushTarget({},false));
+        if (api.GetPcgSplineSnapshot().toolEnabled) report(api.SelectPcgSpline({},{},false));
         return;
     }
-
-    ImGui::Text("Module: Source/EngineCore/RenderCore/PcgCore");
-    ImGui::Text("Masks: pcg.masks or legacy masks; use texture guid references; consumers: placement.mask, trees.randomInstances.mask");
-    ImGui::Separator();
-
-    const std::vector<PcgVegetationDebugEntry> entries =
-        VansPcgDebugDataService::Collect(editorAPI.GetProjectRootPath(), VansEditorWindow::GetSceneDocument());
-    if (entries.empty())
+    ImGui::SetNextWindowSize(ImVec2(960,720),ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(640,420),ImVec2(FLT_MAX,FLT_MAX));
+    if (!ImGui::Begin("PCG",&VansEditorWindow::m_PcgWindowOpen)) {ImGui::End();return;}
+    const auto snapshot=api.GetPcgEditorSnapshot();
+    for (const auto& error : snapshot.errors) ImGui::TextWrapped("%s",error.c_str());
+    if (!m_Message.empty()) ImGui::TextWrapped("%s",m_Message.c_str());
+    if (ImGui::BeginTabBar("PlantCategories"))
     {
-        ImGui::TextDisabled("No vegetation PCG configuration found in the current scene or Assets/Vegetation.");
-        ImGui::End();
-        return;
-    }
-
-    if (ImGui::BeginTable("PcgVegetationTable", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable))
-    {
-        ImGui::TableSetupColumn("Source");
-        ImGui::TableSetupColumn("Instances");
-        ImGui::TableSetupColumn("Placement");
-        ImGui::TableSetupColumn("Configured Masks");
-        ImGui::TableSetupColumn("References");
-        ImGui::TableHeadersRow();
-
-        for (const PcgVegetationDebugEntry& entry : entries)
+        for (int category=0;category<2;++category)
         {
-            ImGui::TableNextRow();
-            ImGui::TableSetColumnIndex(0);
-            ImGui::TextWrapped("%s", entry.label.c_str());
-            ImGui::TextDisabled("%s", entry.sourcePath.c_str());
-            ImGui::TableSetColumnIndex(1);
-            ImGui::Text("%u", entry.instanceCount);
-            ImGui::TableSetColumnIndex(2);
-            if (entry.hasPlacement)
-                ImGui::Text("[%s] -> [%s]",
-                    FormatVec2(entry.placementMinXZ).c_str(),
-                    FormatVec2(entry.placementMaxXZ).c_str());
-            else
-                ImGui::TextDisabled("default");
-            ImGui::TableSetColumnIndex(3);
-            ImGui::Text("%zu", entry.configuredMasks.size());
-            ImGui::TableSetColumnIndex(4);
-            ImGui::Text("grass: %s", entry.grassMaskRef.empty() ? "<none>" : entry.grassMaskRef.c_str());
-            ImGui::Text("trees: %s", entry.treeMaskRef.empty() ? "<none>" : entry.treeMaskRef.c_str());
+            if (!ImGui::BeginTabItem(category==0?"Grass":"Trees")) continue;
+            if (m_Category!=category) {report(api.SelectPcgBrushTarget({},false));api.SelectPcgSpline({},{},false);m_Category=category;}
+            ShowLayerActions(api,snapshot,category);
+            auto brush=api.GetPcgBrushSnapshot();
+            if (ImGui::BeginTable("PlantLayers",2,ImGuiTableFlags_Resizable|ImGuiTableFlags_BordersInnerV))
+            {
+                ImGui::TableSetupColumn("Layers",ImGuiTableColumnFlags_WidthFixed,200);
+                ImGui::TableSetupColumn("Configuration",ImGuiTableColumnFlags_WidthStretch);
+                ImGui::TableNextColumn();
+                ImGui::TextDisabled("Distribution layers");
+                bool any=false;
+                for (const auto& layer : snapshot.layers)
+                {
+                    if (layer.tree!=(category==1)) continue;
+                    any=true;
+                    PcgBrushTarget target{layer.recipeGuid,layer.regionId,layer.layerId,layer.densityMaskGuid};
+                    const bool selected=brush.target.recipeGuid==layer.recipeGuid &&
+                        brush.target.regionId==layer.regionId && brush.target.layerId==layer.layerId;
+                    ImGui::PushID((layer.recipeGuid+"/"+layer.regionId+"/"+layer.layerId).c_str());
+                    if (ImGui::Selectable(layer.name.c_str(),selected))
+                    {report(api.SelectPcgBrushTarget(target,false));brush=api.GetPcgBrushSnapshot();}
+                    ImGui::TextDisabled("%s / %s",layer.recipeName.c_str(),layer.regionName.c_str());
+                    ImGui::PopID();
+                }
+                if (!any) ImGui::TextWrapped("No distribution layers have been created.");
+                ImGui::TableNextColumn();
+                const auto selected=std::find_if(snapshot.layers.begin(),snapshot.layers.end(),[&](const auto& layer) {
+                    return layer.tree==(category==1) && layer.recipeGuid==brush.target.recipeGuid &&
+                        layer.regionId==brush.target.regionId && layer.layerId==brush.target.layerId;
+                });
+                if (selected!=snapshot.layers.end())
+                {
+                    const auto& layer=*selected;
+                    ImGui::TextUnformatted(layer.name.c_str());
+                    ImGui::Text("Plant: %s (%zu variants)",layer.plantName.c_str(),layer.variantCount);
+                    ImGui::Text("Source: %s  Density: %.3f / m2",layer.source.c_str(),layer.density);
+                    if (layer.tree && layer.source=="count") ImGui::Text("Target trees: %u",layer.treeTargetCount);
+                    ImGui::Text("Fixed: %zu  Added: %zu",layer.fixedCount,layer.addedCount);
+                    ImGui::Text("Bounds: %.2f, %.2f to %.2f, %.2f",layer.boundsMin[0],layer.boundsMin[1],layer.boundsMax[0],layer.boundsMax[1]);
+                    ShowConfiguration(api,layer);
+                    ImGui::Separator();
+                    const auto chooseMask=[&](const char* label,const std::string& guid) {
+                        if (guid.empty()) return;
+                        if (ImGui::RadioButton(label,brush.target.maskGuid==guid))
+                        {
+                            report(api.SelectPcgBrushTarget({layer.recipeGuid,layer.regionId,layer.layerId,guid},false));
+                            brush=api.GetPcgBrushSnapshot();
+                        }
+                    };
+                    chooseMask("Density Mask",layer.densityMaskGuid);
+                    if (!layer.exclusionMaskGuid.empty()) {ImGui::SameLine();chooseMask("Exclusion Mask",layer.exclusionMaskGuid);}
+                    else {
+                        ImGui::SameLine();ImGui::BeginDisabled(!brush.canvasEditable || brush.strokeActive);
+                        if (ImGui::Button("Create exclusion Mask")) report(api.CreatePcgExclusionMask(brush.target));
+                        ImGui::EndDisabled();
+                    }
+                    bool enabled=brush.enabled;
+                    ImGui::BeginDisabled(!brush.editable || layer.locked);
+                    if (ImGui::Checkbox("Paint in Scene",&enabled))
+                    {report(api.SelectPcgBrushTarget(brush.target,enabled));brush=api.GetPcgBrushSnapshot();}
+                    ImGui::EndDisabled();
+                    ImGui::TextDisabled("LMB: paint   Shift: erase   Esc: cancel stroke");
+                    if (layer.source=="count") ImGui::TextWrapped("Count mode refills the target across the region. Density mode controls local coverage.");
+                    if (layer.source=="fixed") ImGui::TextWrapped(layer.tree
+                        ? "Mask filters existing fixed trees at their roots. Erase hides them; paint restores them in place. Density does not add new trees."
+                        : "Fixed instances retain their authored transforms. This Mask affects generated distribution modes.");
+                    ImGui::BeginDisabled(brush.strokeActive || !brush.canvasEditable);
+                    if (!(m_BrushTarget==brush.target) || (!ImGui::IsAnyItemActive() && !m_BrushDraftEditing))
+                    {m_BrushTarget=brush.target;m_BrushDraft=brush.settings;}
+                    int operation=static_cast<int>(m_BrushDraft.operation);
+                    bool commit=ImGui::Combo("Operation",&operation,"Add\0Subtract\0Set value\0Smooth\0Erase\0");
+                    m_BrushDraft.operation=static_cast<PcgBrushOperation>(operation);
+                    const auto slider=[&](const char* label,float& value,float step,float minimum,float maximum) {
+                        ImGui::DragFloat(label,&value,step,minimum,maximum);
+                        if (ImGui::IsItemActive()) m_BrushDraftEditing=true;
+                        commit=ImGui::IsItemDeactivatedAfterEdit()||commit;
+                    };
+                    slider("Radius (m)",m_BrushDraft.radius,.05f,.01f,10000);
+                    slider("Strength",m_BrushDraft.strength,.01f,0,1);
+                    slider("Hardness",m_BrushDraft.hardness,.01f,0,1);
+                    slider("Target value",m_BrushDraft.targetValue,.01f,0,1);
+                    slider("Dab spacing / radius",m_BrushDraft.spacingFraction,.01f,.01f,1);
+                    if (commit) {report(api.ConfigurePcgBrush(m_BrushDraft));m_BrushDraftEditing=false;}
+                    ImGui::BeginDisabled(!brush.canUndo);
+                    if (ImGui::Button("Undo")) report(api.EditPcgMaskDocument(PcgMaskDocumentAction::Undo));
+                    ImGui::EndDisabled();ImGui::SameLine();
+                    ImGui::BeginDisabled(!brush.canRedo);
+                    if (ImGui::Button("Redo")) report(api.EditPcgMaskDocument(PcgMaskDocumentAction::Redo));
+                    ImGui::EndDisabled();ImGui::SameLine();
+                    if (ImGui::Button("Save Mask")) report(api.EditPcgMaskDocument(PcgMaskDocumentAction::Save));
+                    ImGui::EndDisabled();
+                    if (brush.dirty) {ImGui::SameLine();ImGui::TextUnformatted("*");}
+                    if (!brush.message.empty()) ImGui::TextWrapped("%s",brush.message.c_str());
+                    ShowMaskCanvas(api,api.GetPcgBrushSnapshot());
+                    ShowInstances(api,api.GetPcgBrushSnapshot());
+                }
+                else ImGui::TextDisabled("Select a distribution layer.");
+                ImGui::EndTable();
+            }
+            ImGui::EndTabItem();
         }
-        ImGui::EndTable();
-    }
-
-    ImGui::Separator();
-
-    for (const PcgVegetationDebugEntry& entry : entries)
-    {
-        if (!ImGui::TreeNode(entry.label.c_str()))
-            continue;
-
-        ImGui::TextWrapped("Source: %s", entry.sourcePath.c_str());
-        ImGui::TextWrapped("JSON: %s", entry.jsonPath.c_str());
-        ImGui::Text("Placement Bounds: [%s] -> [%s]",
-            FormatVec2(entry.placementMinXZ).c_str(),
-            FormatVec2(entry.placementMaxXZ).c_str());
-
-        if (entry.configuredMasks.empty())
+        for (int category=2;category<4;++category)
         {
-            ImGui::TextDisabled("No configured masks in pcg.masks / masks.");
+            if (!ImGui::BeginTabItem(category==2?"Roads":"Rivers")) continue;
+            if (m_Category!=category) {report(api.SelectPcgBrushTarget({},false));m_Category=category;}
+            ShowSplines(api,category==2?PcgSplineKind::Road:PcgSplineKind::River);
+            ImGui::EndTabItem();
         }
-        else
-        {
-            for (const PcgPlacementMask& mask : entry.configuredMasks)
-                DrawMaskBlock(mask.name.c_str(), mask);
-        }
-
-        DrawMaskBlock("Resolved Grass Mask", entry.grassMask);
-        DrawMaskBlock("Resolved Tree Mask", entry.treeMask);
-        ImGui::TreePop();
+        ImGui::EndTabBar();
     }
-
     ImGui::End();
 }
-
-} // namespace VansGraphics
+}

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../VansSceneEnvironmentNodeConfig.h"
+#include "../../PcgCore/VansPcgRecipeAsset.h"
 #include "../../AssetCore/Serialization/VansSerializedValue.h"
 
 #include <string>
@@ -10,8 +10,7 @@ namespace Vans
 {
 struct VansVegetationConfigAsset
 {
-	VansSerializedValue sourceRoot;
-	VansSceneVegetationNodeConfig config;
+	VansPcgRecipeAsset config;
 };
 
 class VansVegetationConfigCodec
@@ -22,16 +21,16 @@ public:
 		VansVegetationConfigAsset& asset,
 		std::string& error);
 	static bool Encode(
-		const VansSceneVegetationNodeConfig& config,
+		const VansPcgRecipeAsset& config,
 		VansSerializedValue& root,
 		std::string& error);
 	static std::vector<std::string> Validate(
-		const VansSceneVegetationNodeConfig& config);
+		const VansPcgRecipeAsset& config);
 	static std::string ReadReferenceGuid(const VansSerializedValue& reference);
 	static bool ResolveReference(
 		const VansSerializedValue& reference,
 		const VansVegetationConfigAsset& asset,
-		VansSceneVegetationNodeConfig& config,
+		VansPcgRecipeAsset& config,
 		std::string& error);
 };
 }

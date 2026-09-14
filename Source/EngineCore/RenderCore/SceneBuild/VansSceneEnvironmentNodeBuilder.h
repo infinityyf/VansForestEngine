@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../../PcgCore/VansPcgRecipeAsset.h"
+
 #include "../../SceneCore/VansSceneEnvironmentNodeConfig.h"
 #include <vulkan/vulkan.h>
 
@@ -15,6 +17,6 @@ class VansSceneEnvironmentNodeBuilder
 public:
     static void AddTerrainNode(VansScene& scene, VansVKDevice* device, const Vans::VansSceneTerrainNodeConfig& terrainConfig);
     static void AddWaterNode(VansScene& scene, VkDevice& device, const Vans::VansSceneWaterNodeConfig& waterConfig);
-    static void AddVegetationNode(VansScene& scene, VkDevice& device, const Vans::VansSceneVegetationNodeConfig& vegetationConfig, const std::string& projectRoot);
+    static bool AddVegetationNode(VansScene& scene, VkDevice& device, const Vans::VansPcgRecipeAsset& vegetationConfig);
 };
 }

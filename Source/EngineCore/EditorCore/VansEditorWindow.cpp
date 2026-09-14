@@ -1,4 +1,4 @@
-﻿#include "VansEditorWindow.h"
+#include "VansEditorWindow.h"
 #include "../RenderCore/VansCamera.h"
 #include "../RenderCore/VansRenderSystem.h"
 #include "../RuntimeUI/Public/VansUISystem.h"
@@ -163,6 +163,8 @@ namespace
     Vans::EditorAPI::EngineAPIImpl& GetMutableEditorAPI()
     {
         static Vans::EditorAPI::EngineAPIImpl editorAPI;
+        editorAPI.BindPcgSceneAuthoring(VansGraphics::VansEditorWindow::GetSceneDocument(),
+            VansGraphics::VansEditorWindow::GetSceneEditService());
         return editorAPI;
     }
 
@@ -1586,6 +1588,16 @@ VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& device)
 			Vans::VansAssetDocumentEditService::CanRedo(selectedAssetDocument->sourceDocument);
 		const bool canUndoRuntimeCommand = editorAPI.CanUndo();
 		const bool canRedoRuntimeCommand = editorAPI.CanRedo();
+		const auto splineEditor=editorAPI.GetPcgSplineSnapshot();
+		const bool splineEditingActive=splineEditor.editable && splineEditor.toolEnabled;
+		const bool canUndoSpline=splineEditingActive && splineEditor.canUndo;
+		const bool canRedoSpline=splineEditingActive && splineEditor.canRedo;
+		const Vans::EditorAPI::TerrainEditorSnapshot terrainEditor =
+			editorAPI.GetTerrainEditorSnapshot();
+		const bool terrainEditingActive = terrainEditor.available && terrainEditor.editable &&
+			terrainEditor.brushEnabled;
+		const bool canUndoTerrain = terrainEditingActive && terrainEditor.canUndo;
+		const bool canRedoTerrain = terrainEditingActive && terrainEditor.canRedo;
 		auto applySelectedAssetRuntimePatch = [&]()
 		{
 			if (!selectedAssetDocument || !selectedAssetDocument->sourceDocument.IsLoaded())
@@ -1631,6 +1643,17 @@ VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& device)
 		};
 		auto undoEditorChange = [&]()
 		{
+			if (splineEditingActive)
+			{
+				if (canUndoSpline) {Vans::EditorAPI::PcgSplineCommandRequest request;request.command=Vans::EditorAPI::PcgSplineCommand::Undo;editorAPI.ExecutePcgSplineCommand(request);}
+				return;
+			}
+			if (canUndoTerrain)
+			{
+				const auto result = editorAPI.UndoTerrainEdit();
+				if (!result.success) VANS_LOG_ERROR("[TerrainEdit] " << result.message);
+				return;
+			}
 			if (canUndoAssetDocument)
 			{
 				auto result = Vans::VansAssetDocumentEditService::Undo(selectedAssetDocument->sourceDocument);
@@ -1651,6 +1674,17 @@ VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& device)
 		};
 		auto redoEditorChange = [&]()
 		{
+			if (splineEditingActive)
+			{
+				if (canRedoSpline) {Vans::EditorAPI::PcgSplineCommandRequest request;request.command=Vans::EditorAPI::PcgSplineCommand::Redo;editorAPI.ExecutePcgSplineCommand(request);}
+				return;
+			}
+			if (canRedoTerrain)
+			{
+				const auto result = editorAPI.RedoTerrainEdit();
+				if (!result.success) VANS_LOG_ERROR("[TerrainEdit] " << result.message);
+				return;
+			}
 			if (canRedoAssetDocument)
 			{
 				auto result = Vans::VansAssetDocumentEditService::Redo(selectedAssetDocument->sourceDocument);
@@ -1722,11 +1756,11 @@ VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& device)
 			{
 				saveSceneAndOwnedAssets();
 			}
-			else if ((canUndoAssetDocument || canUndoSceneDocument || canUndoRuntimeCommand) && ImGui::IsKeyPressed(ImGuiKey_Z, false))
+			else if ((canUndoSpline || (!splineEditingActive && (canUndoTerrain || canUndoAssetDocument || canUndoSceneDocument || canUndoRuntimeCommand))) && ImGui::IsKeyPressed(ImGuiKey_Z, false))
 			{
 				undoEditorChange();
 			}
-			else if ((canRedoAssetDocument || canRedoSceneDocument || canRedoRuntimeCommand) && ImGui::IsKeyPressed(ImGuiKey_Y, false))
+			else if ((canRedoSpline || (!splineEditingActive && (canRedoTerrain || canRedoAssetDocument || canRedoSceneDocument || canRedoRuntimeCommand))) && ImGui::IsKeyPressed(ImGuiKey_Y, false))
 			{
 				redoEditorChange();
 			}
@@ -1852,12 +1886,12 @@ VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& device)
             if (ImGui::BeginMenu("Edit"))
             {
 				if (ImGui::MenuItem("Undo", "Ctrl+Z", false,
-					editingMode && (canUndoAssetDocument || canUndoSceneDocument || canUndoRuntimeCommand)))
+					editingMode && (canUndoSpline || (!splineEditingActive && (canUndoTerrain || canUndoAssetDocument || canUndoSceneDocument || canUndoRuntimeCommand)))))
 				{
 					undoEditorChange();
 				}
 				if (ImGui::MenuItem("Redo", "Ctrl+Y", false,
-					editingMode && (canRedoAssetDocument || canRedoSceneDocument || canRedoRuntimeCommand)))
+					editingMode && (canRedoSpline || (!splineEditingActive && (canRedoTerrain || canRedoAssetDocument || canRedoSceneDocument || canRedoRuntimeCommand)))))
 				{
 					redoEditorChange();
 				}

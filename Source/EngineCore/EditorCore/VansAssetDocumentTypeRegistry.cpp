@@ -9,6 +9,7 @@
 #include "../TimelineCore/VansTimelineSerialization.h"
 #include "../TimelineCore/VansTimelineValidator.h"
 #include "../TimelineCore/VansTimelineTrackExtensionRegistry.h"
+#include "../TerrainCore/Serialization/VansTerrainAssetCodec.h"
 #include "../EngineAPILayer/Public/AnimationAuthoringDocumentAnalysis.h"
 #include "../AICore/Serialization/VansAIBehaviorJsonCodec.h"
 #include "../AssetCore/VansMaterialAuthoringAsset.h"
@@ -23,6 +24,9 @@
 #include "../PhysicsCore/Serialization/VansRagdollProfileJsonCodec.h"
 #include "../RenderCore/Serialization/VansPostProcessProfileJsonCodec.h"
 #include "../SceneCore/Serialization/VansVegetationConfigCodec.h"
+#include "../PcgCore/Serialization/VansPlantTypeAssetCodec.h"
+#include "../PcgCore/Serialization/VansPcgMaskAssetCodec.h"
+#include "../PcgCore/Serialization/VansPcgSplineAssetCodec.h"
 #include "../RuntimeUI/Serialization/VansUIComponentConfigReader.h"
 #include "../RuntimeUI/Serialization/VansUIDocumentValidator.h"
 #include "../RuntimeUI/Serialization/VansUILocalizationReader.h"
@@ -365,6 +369,65 @@ VansAssetDocumentTypeRegistry::VansAssetDocumentTypeRegistry()
 	};
 	Register(VansAssetType::UILocalization, std::move(uiLocalization), ignored);
 
+	VansAssetDocumentTypeDescriptor plant;
+	plant.validateBeforeSave = [](
+		const std::filesystem::path&, const VansSerializedValue& root)
+	{
+		VansPlantTypeAsset asset;
+		std::string error;
+		if (VansPlantTypeAssetCodec::Decode(root, asset, error))
+			return std::vector<VansAssetDocumentDiagnostic>{};
+		return std::vector<VansAssetDocumentDiagnostic>{ {
+			VansAssetDocumentDiagnosticSeverity::Error, {}, std::move(error) } };
+	};
+	plant.collectDependencies = [](
+		const std::filesystem::path&, const VansSerializedValue& root)
+	{
+		VansPlantTypeAsset asset;
+		std::string error;
+		if (!VansPlantTypeAssetCodec::Decode(root, asset, error)) return std::vector<std::string>{};
+		std::vector<std::string> result;
+		for (const auto guid : asset.Dependencies()) result.push_back(guid.ToString());
+		return result;
+	};
+	Register(VansAssetType::PlantType, std::move(plant), ignored);
+
+	VansAssetDocumentTypeDescriptor spline;
+	spline.validateBeforeSave = [](const std::filesystem::path&, const VansSerializedValue& root)
+	{
+		VansPcgSplineAsset asset;
+		std::string error;
+		if (VansPcgSplineAssetCodec::Decode(root, asset, error)) return std::vector<VansAssetDocumentDiagnostic>{};
+		return std::vector<VansAssetDocumentDiagnostic>{{VansAssetDocumentDiagnosticSeverity::Error, {}, std::move(error)}};
+	};
+	spline.collectDependencies = [](const std::filesystem::path&, const VansSerializedValue& root)
+	{
+		VansPcgSplineAsset asset;
+		std::string error;
+		std::vector<std::string> result;
+		if (VansPcgSplineAssetCodec::Decode(root, asset, error))
+			for (const auto guid : asset.Dependencies()) result.push_back(guid.ToString());
+		return result;
+	};
+	Register(VansAssetType::PcgSpline, std::move(spline), ignored);
+
+	VansAssetDocumentTypeDescriptor pcgMask;
+	pcgMask.validateBeforeSave = [](const std::filesystem::path&, const VansSerializedValue& root)
+	{
+		VansPcgMaskAsset asset;
+		std::string error;
+		if (VansPcgMaskAssetCodec::DecodeDefinition(root, asset, error)) return std::vector<VansAssetDocumentDiagnostic>{};
+		return std::vector<VansAssetDocumentDiagnostic>{ { VansAssetDocumentDiagnosticSeverity::Error, {}, std::move(error) } };
+	};
+	pcgMask.collectDependencies = [](const std::filesystem::path&, const VansSerializedValue& root)
+	{
+		VansPcgMaskAsset asset;
+		std::string error;
+		if (!VansPcgMaskAssetCodec::DecodeDefinition(root, asset, error)) return std::vector<std::string>{};
+		return std::vector<std::string>{ asset.pixelAsset.ToString() };
+	};
+	Register(VansAssetType::PcgMask, std::move(pcgMask), ignored);
+
 	VansAssetDocumentTypeDescriptor vegetation;
 	vegetation.validateBeforeSave = [](
 		const std::filesystem::path&, const VansSerializedValue& root)
@@ -384,36 +447,35 @@ VansAssetDocumentTypeRegistry::VansAssetDocumentTypeRegistry()
 		if (!VansVegetationConfigCodec::Decode(root, asset, error))
 			return std::vector<std::string>{};
 		std::vector<std::string> dependencies;
-		const auto append = [&dependencies](const std::optional<std::string>& dependency)
-		{
-			if (dependency && !dependency->empty() &&
-				std::find(dependencies.begin(), dependencies.end(), *dependency) ==
-				dependencies.end())
-				dependencies.push_back(*dependency);
-		};
-		append(asset.config.material);
-		for (const VansSceneVegetationRenderConfig& render : asset.config.renderConfigs)
-		{
-			append(render.mesh);
-			append(render.material);
-		}
-		for (const VansScenePcgMaskConfig& mask : asset.config.pcgMasks)
-			append(mask.assetGuid);
-		if (asset.config.trees)
-		{
-			for (const VansSceneVegetationTreeSpeciesConfig& species :
-				asset.config.trees->species)
-			{
-				for (const VansSceneVegetationTreePartConfig& part : species.parts)
-				{
-					append(std::optional<std::string>(part.mesh));
-					append(std::optional<std::string>(part.material));
-				}
-			}
-		}
+		for (const auto guid : asset.config.Dependencies()) dependencies.push_back(guid.ToString());
 		return dependencies;
 	};
 	Register(VansAssetType::VegetationConfig, std::move(vegetation), ignored);
+
+	VansAssetDocumentTypeDescriptor terrain;
+	terrain.validateBeforeSave = [](
+		const std::filesystem::path&, const VansSerializedValue& root)
+	{
+		VansTerrainAsset asset;
+		std::string error;
+		if (VansTerrainAssetCodec::DecodeDefinition(root, asset, error))
+			return std::vector<VansAssetDocumentDiagnostic>{};
+		return std::vector<VansAssetDocumentDiagnostic>{ {
+			VansAssetDocumentDiagnosticSeverity::Error, {}, std::move(error) } };
+	};
+	terrain.collectDependencies = [](
+		const std::filesystem::path&, const VansSerializedValue& root)
+	{
+		VansTerrainAsset asset;
+		std::string error;
+		if (!VansTerrainAssetCodec::DecodeDefinition(root, asset, error))
+			return std::vector<std::string>{};
+		std::vector<std::string> dependencies;
+		for (const VansAssetGuid guid : asset.Dependencies())
+			dependencies.push_back(guid.ToString());
+		return dependencies;
+	};
+	Register(VansAssetType::Terrain, std::move(terrain), ignored);
 
 	const VansGameplayAssetSchemaRegistry& gameplaySchemas = VansGameplayAssetSchemaRegistry::BuiltIns();
 	const VansAssetType gameplayAssetTypes[] = {

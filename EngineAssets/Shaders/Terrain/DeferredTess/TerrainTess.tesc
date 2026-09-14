@@ -4,64 +4,91 @@
 #include "../../Common/CameraData.glsl"
 #include "../TerrainCommon.glsl"
 
-// 三角形细分：每个输入 patch 使用 3 个控制点。
 layout(vertices = 3) out;
 
-// 来自 VS 的每顶点数据。
-layout(location = 0) in vec2 vsOutUV[];
-layout(location = 1) in vec2 vsOutLocalXZ[];
-layout(location = 2) in vec2 vsOutOffset[];
-layout(location = 3) in float vsOutScale[];
-layout(location = 4) in float vsOutLod[];
-layout(location = 5) in float vsOutStitchFlags[];
+layout(location = 0) in vec2 vsOutLocalXZ[];
+layout(location = 1) in vec2 vsOutOffset[];
+layout(location = 2) in float vsOutScale[];
+layout(location = 3) flat in uint vsOutEdgeFlags[];
+layout(location = 4) in vec2 vsOutMorphRange[];
 
-// 输出到 TES 的每顶点数据。
-layout(location = 0) out vec2 tcsOutUV[];
-layout(location = 1) out vec2 tcsOutLocalXZ[];
-layout(location = 2) out vec2 tcsOutOffset[];
-layout(location = 3) out float tcsOutScale[];
-layout(location = 4) out float tcsOutLod[];
-layout(location = 5) out float tcsOutStitchFlags[];
+layout(location = 0) out vec2 tcsOutLocalXZ[];
+layout(location = 1) patch out vec2 tcsPatchOffset;
+layout(location = 2) patch out float tcsPatchScale;
+layout(location = 3) patch out uint tcsPatchEdgeFlags;
+layout(location = 4) patch out vec2 tcsPatchMorphRange;
 
-// 输出到 TES 的每 patch 常量数据。
-layout(location = 6) patch out vec2 tcsPatchOffset;
-layout(location = 7) patch out float tcsPatchScale;
-layout(location = 8) patch out float tcsPatchStitchFlags;
+uint TerrainControlEdge(vec2 a, vec2 b)
+{
+    const float epsilon = 0.001;
+    float patchSize = TerrainPatchGridResolution();
+    if (abs(a.x) <= epsilon && abs(b.x) <= epsilon) return TerrainEdgeLeft;
+    if (abs(a.x - patchSize) <= epsilon && abs(b.x - patchSize) <= epsilon) return TerrainEdgeRight;
+    if (abs(a.y) <= epsilon && abs(b.y) <= epsilon) return TerrainEdgeTop;
+    if (abs(a.y - patchSize) <= epsilon && abs(b.y - patchSize) <= epsilon) return TerrainEdgeBottom;
+    return 0u;
+}
 
-void main() {
-    // 透传内建控制点位置和实例数据。
+vec3 TerrainControlWorldPosition(vec2 localPosition)
+{
+    vec2 heightUV;
+    float worldHeight;
+    return TerrainBuildWorldPosition(
+        localPosition,
+        vsOutOffset[0],
+        vsOutScale[0],
+        vsOutEdgeFlags[0],
+        vsOutMorphRange[0],
+        heightUV,
+        worldHeight);
+}
+
+float TerrainEdgeTessLevel(vec2 localA, vec2 localB)
+{
+    uint patchEdge = TerrainControlEdge(localA, localB);
+    uint disabledEdges = (vsOutEdgeFlags[0] >> 8u) & TerrainEdgeMask;
+    if ((patchEdge & disabledEdges) != 0u)
+        return 1.0;
+
+    vec3 worldA = TerrainControlWorldPosition(localA);
+    vec3 worldB = TerrainControlWorldPosition(localB);
+    vec3 midpoint = (worldA + worldB) * 0.5;
+    float distanceFade = 1.0 - smoothstep(
+        tessParams.tessDistance * 0.8,
+        tessParams.tessDistance,
+        distance(midpoint, cameraPosition.xyz));
+    if (distanceFade <= 0.0)
+        return 1.0;
+
+    vec4 clipA = VPMatrix * vec4(worldA, 1.0);
+    vec4 clipB = VPMatrix * vec4(worldB, 1.0);
+    if (clipA.w <= 0.0 || clipB.w <= 0.0)
+        return 1.0;
+
+    vec2 ndcA = clipA.xy / clipA.w;
+    vec2 ndcB = clipB.xy / clipB.w;
+    float edgePixels = length((ndcA - ndcB) * 0.5 * ScreenParams.xy);
+    float desiredLevel = ceil(edgePixels * distanceFade / max(tessParams.targetEdgePixels, 1.0));
+    return clamp(desiredLevel, 1.0, tessParams.maxTessLevel);
+}
+
+void main()
+{
     gl_out[gl_InvocationID].gl_Position = gl_in[gl_InvocationID].gl_Position;
-    tcsOutUV[gl_InvocationID]           = vsOutUV[gl_InvocationID];
-    tcsOutLocalXZ[gl_InvocationID]      = vsOutLocalXZ[gl_InvocationID];
-    tcsOutOffset[gl_InvocationID]       = vsOutOffset[gl_InvocationID];
-    tcsOutScale[gl_InvocationID]        = vsOutScale[gl_InvocationID];
-    tcsOutLod[gl_InvocationID]          = vsOutLod[gl_InvocationID];
-    tcsOutStitchFlags[gl_InvocationID]  = vsOutStitchFlags[gl_InvocationID];
+    tcsOutLocalXZ[gl_InvocationID] = vsOutLocalXZ[gl_InvocationID];
 
-    // 仅 invocation 0 计算细分等级和每 patch 常量。
-    if (gl_InvocationID == 0) {
-        // 三个控制点共享同一份实例数据。
-        tcsPatchOffset       = vsOutOffset[0];
-        tcsPatchScale        = vsOutScale[0];
-        tcsPatchStitchFlags  = vsOutStitchFlags[0];
+    if (gl_InvocationID == 0)
+    {
+        tcsPatchOffset = vsOutOffset[0];
+        tcsPatchScale = vsOutScale[0];
+        tcsPatchEdgeFlags = vsOutEdgeFlags[0];
+        tcsPatchMorphRange = vsOutMorphRange[0];
 
-        // 基于 patch 中心到相机的距离计算细分等级。
-        vec3 localCenter = (gl_in[0].gl_Position.xyz +
-                            gl_in[1].gl_Position.xyz +
-                            gl_in[2].gl_Position.xyz) / 3.0;
-        vec2 worldXZ   = localCenter.xz * vsOutScale[0] + vsOutOffset[0];
-        vec2 heightUV  = TerrainWorldXZToHeightUV(worldXZ);
-        float rawHeight = TerrainSampleRawHeight(heightUV);
-        vec3 worldCenter = vec3(worldXZ.x, TerrainRawHeightToWorldY(rawHeight), worldXZ.y);
-
-        // 距离驱动的指数衰减细分因子。
-        float dist = distance(worldCenter, cameraPosition.xyz);
-        float t = 1.0 - clamp(dist / tessParams.tessDistance, 0.0, 1.0);
-        float tessLevel = max(1.0, tessParams.maxTessLevel * pow(t, tessParams.tessPower));
-
-        gl_TessLevelOuter[0] = tessLevel;
-        gl_TessLevelOuter[1] = tessLevel;
-        gl_TessLevelOuter[2] = tessLevel;
-        gl_TessLevelInner[0] = tessLevel;
+        gl_TessLevelOuter[0] = TerrainEdgeTessLevel(vsOutLocalXZ[1], vsOutLocalXZ[2]);
+        gl_TessLevelOuter[1] = TerrainEdgeTessLevel(vsOutLocalXZ[2], vsOutLocalXZ[0]);
+        gl_TessLevelOuter[2] = TerrainEdgeTessLevel(vsOutLocalXZ[0], vsOutLocalXZ[1]);
+        gl_TessLevelInner[0] = max(
+            gl_TessLevelOuter[0],
+            max(gl_TessLevelOuter[1], gl_TessLevelOuter[2]));
     }
 }

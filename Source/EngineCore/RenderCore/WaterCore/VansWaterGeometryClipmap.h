@@ -4,7 +4,9 @@
 #include "../VulkanCore/VansVKBuffer.h"
 #include <glm/glm.hpp>
 #include <vector>
+#include <string>
 #include <vulkan/vulkan.h>
+namespace Vans { struct VansPcgSplineFieldSnapshot; }
 
 namespace VansGraphics
 {
@@ -26,6 +28,9 @@ namespace VansGraphics
         float worldSize = 0.0f;
         int lodLevel = 0;
         std::uint32_t outerEdgeMask = EdgeNone;
+        bool riverInfluenced = false;
+        float minimumRiverHeight = 0;
+        float maximumRiverHeight = 0;
     };
 
     struct WaterPatchPushConstant
@@ -52,6 +57,9 @@ namespace VansGraphics
         // Topology-changing meshDim is immutable after Initialize; other values are cheap.
         void ApplyConfig(const VansWaterGeometryConfig& config);
         void GeneratePatches(const glm::vec3& cameraPos);
+        bool RefineForRiverFields(const Vans::VansPcgSplineFieldSnapshot& field);
+        static bool ValidateRiverFieldBudget(const Vans::VansPcgSplineFieldSnapshot& field,
+            const VansWaterGeometryConfig& config, std::string& error);
         std::uint32_t FrustumCullPatches(const glm::mat4& viewProj, float waterLevel, float displacementBound);
 
         const std::vector<WaterGeometryPatch>& GetPatches() const { return m_Patches; }

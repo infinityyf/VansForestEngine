@@ -1197,7 +1197,7 @@ namespace VansGraphics
 			RecordFrameStep(
 				m_CurrentFramePlan,
 				VansRenderPassNames::VideoTextureUpload,
-				[&]() { m_Scene->RecordVideoUploads(
+				[&]() { m_Scene->RecordFrameUploads(
 					frameGraphicsCommandBuffer, m_CurrentRenderSceneSnapshot); });
 
 			// Upload cloth simulation results from staging buffers to device-local vertex buffers
@@ -1496,7 +1496,6 @@ namespace VansGraphics
 					waterSys->DispatchWaterVolumeCS(frameGraphicsCommandBuffer);
 					waterSys->DispatchWaterVolumeFilterCS(frameGraphicsCommandBuffer);
 					waterSys->DispatchWaterSSR(frameGraphicsCommandBuffer);
-					waterSys->DispatchCausticsCS(frameGraphicsCommandBuffer);
 				}
 			}
 			RecordFrameGraphicsPass(
@@ -1825,7 +1824,7 @@ namespace VansGraphics
 				RecordFrameStep(
 					m_CurrentFramePlan,
 					VansRenderPassNames::VideoTextureUpload,
-					[&]() { m_Scene->RecordVideoUploads(
+					[&]() { m_Scene->RecordFrameUploads(
 						m_VansVKGBufferCommandBuffer, m_CurrentRenderSceneSnapshot); });
 				RecordFrameStep(
 					m_CurrentFramePlan,
@@ -2209,7 +2208,6 @@ namespace VansGraphics
 					waterSys->DispatchWaterVolumeCS(m_VansVKCommandBuffer);
 					waterSys->DispatchWaterVolumeFilterCS(m_VansVKCommandBuffer);
 					waterSys->DispatchWaterSSR(m_VansVKCommandBuffer);
-					waterSys->DispatchCausticsCS(m_VansVKCommandBuffer);
 				}
 			}
 			RecordFrameGraphicsPass(

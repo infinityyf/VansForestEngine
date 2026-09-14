@@ -7,6 +7,7 @@
 #include "TerrainCore/VansTerrain.h"
 #include "WaterCore/VansWaterSystem.h"
 #include "VegetationCore/VansVegetationSystem.h"
+#include "VegetationCore/VansVegetationCollection.h"
 #include "Particles/VansParticleRenderSystem.h"
 #include "../Util/VansLog.h"
 #include "../Util/VansProfiler.h"
@@ -198,9 +199,6 @@ void VansGraphics::VansScene::DrawPunctualShadowJob(const VansPunctualShadowRend
     if (FinalizeDrawSubmission(VansDrawSortPolicy::State, submission))
         VansDrawSubmission::Record(cmd, submission, 0, submission.batches.size());
 
-    if (IsRenderNodeEnabledForCurrentFrame(m_VegetationRenderNode))
-        static_cast<VansVegetationRenderNode*>(m_VegetationRenderNode)->DrawPunctualShadow(
-			cmd, globalStateData, shaderViewIndex);
 }
 
 void VansGraphics::VansScene::DrawOpaqueNodes()
@@ -357,40 +355,45 @@ void VansGraphics::VansScene::DrawWaterCompositeNode()
 // ===========================================================================
 void VansGraphics::VansScene::RecordVegetationCompute(VansVKCommandBuffer& cmd)
 {
-    if (m_VegetationSystem == nullptr)
+    if (!m_VegetationCollection) return;
+    const auto* device = dynamic_cast<const VansVKDevice*>(m_GraphicsDevice);
+    if (!device) return;
+    const auto& timing = device->GetCurrentRenderTimingSnapshot();
+    const bool sameQueue = !device->IsAsyncComputeEnabled();
+    const auto lane=sameQueue ? Vans::VansGpuQueueLane::Graphics : Vans::VansGpuQueueLane::Compute;
+    struct Work { VansVegetationSystem* system; bool cullReady=false; };
+    std::vector<Work> work;
+    work.reserve(m_VegetationCollection->BatchCount());
+    m_VegetationCollection->ForEach([&](VansVegetationSystem& value)
     {
-        return;
+        work.push_back({&value,false});
+    });
+    // 按阶段记录固定数量的 GPU 时间戳，避免每区块采样耗尽 query pool。
+    {
+        VANS_PROFILE_SCOPE("Vegetation::GrassCull", Vans::ProfileCategory::CommandRecord);
+        VANS_GPU_SCOPE_LANE(cmd.GetVKCommandBuffer(), "Vegetation Grass Cull", lane);
+        for (auto& item:work)
+            item.cullReady=item.system->DispatchCullPass(cmd,item.system->GetCullDistance(),sameQueue);
     }
-
-	const VansVKDevice* vkDevice = dynamic_cast<const VansVKDevice*>(m_GraphicsDevice);
-	const VansRenderFrameTimingSnapshot& frameTiming =
-		vkDevice->GetCurrentRenderTimingSnapshot();
-	const float deltaTime = static_cast<float>(frameTiming.deltaSeconds);
-	const float time = static_cast<float>(frameTiming.elapsedSeconds);
-	const bool sameQueueGraphicsConsumer = vkDevice == nullptr || !vkDevice->IsAsyncComputeEnabled();
-
-	// 先生成本帧可见性，再让 Grass 模拟跳过不可见实例，避免 cull 前模拟全量草实例。
-	const bool grassCullReady = m_VegetationSystem->DispatchCullPass(
-		cmd, m_VegetationSystem->GetCullDistance(), sameQueueGraphicsConsumer);
-	m_VegetationSystem->DispatchTreeCullPass(cmd, sameQueueGraphicsConsumer);
-
-    // Camera position is read directly in the shader via the global CameraData UBO (set=0)
-    // All simulation params are stored on the system (loaded from scene JSON via SetSimParams).
-    m_VegetationSystem->Update(cmd, deltaTime, time,
-        m_VegetationSystem->GetWindDirection(),
-        m_VegetationSystem->GetWindStrength(),
-        m_VegetationSystem->GetWindFrequency(),
-        m_VegetationSystem->GetWindSpeed(),
-        m_VegetationSystem->GetWindBendMult(),
-        m_VegetationSystem->GetStiffness(),
-        m_VegetationSystem->GetDamping(),
-		m_VegetationSystem->GetSoftness(),
-		m_VegetationSystem->GetLodFullDist(),
-		m_VegetationSystem->GetLodFadeDist(),
-		grassCullReady,
-		sameQueueGraphicsConsumer);
-
+    {
+        VANS_PROFILE_SCOPE("Vegetation::TreeCull", Vans::ProfileCategory::CommandRecord);
+        VANS_GPU_SCOPE_LANE(cmd.GetVKCommandBuffer(), "Vegetation Tree Cull", lane);
+        for (auto& item:work) item.system->DispatchTreeCullPass(cmd,sameQueue);
     }
+    {
+        VANS_PROFILE_SCOPE("Vegetation::GrassSimulation", Vans::ProfileCategory::CommandRecord);
+        VANS_GPU_SCOPE_LANE(cmd.GetVKCommandBuffer(), "Vegetation Grass Simulation", lane);
+        for (const auto& item:work) {
+        auto* system=item.system;
+        system->Update(cmd, static_cast<float>(timing.deltaSeconds), static_cast<float>(timing.elapsedSeconds),
+            system->GetWindDirection(), system->GetWindStrength(), system->GetWindFrequency(),
+            system->GetWindSpeed(), system->GetWindBendMult(), system->GetStiffness(),
+            system->GetDamping(), system->GetSoftness(), system->GetLodFullDist(),
+            // 投影草必须更新主相机视野外的骨骼，阴影不能读取过期或未初始化的形变。
+            system->GetLodFadeDist(), item.cullReady && !system->CastsShadows(), sameQueue);
+        }
+    }
+}
 
 void VansGraphics::VansScene::DrawTransParentNodes()
 {

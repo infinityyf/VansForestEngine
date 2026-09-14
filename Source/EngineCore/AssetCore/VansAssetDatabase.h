@@ -54,7 +54,11 @@ enum class VansAssetType
 	UIThemeTokens,
 	UILocalization,
 	UIXaml,
-	VegetationConfig
+	VegetationConfig,
+	Terrain,
+	PlantType,
+	PcgMask,
+	PcgSpline
 };
 
 enum class VansAssetState

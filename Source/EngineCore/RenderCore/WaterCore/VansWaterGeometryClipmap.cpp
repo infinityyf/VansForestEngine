@@ -169,8 +169,11 @@ namespace VansGraphics
         const float verticalExtent = (std::max)(displacementBound, 0.0f);
         m_Patches.erase(std::remove_if(m_Patches.begin(), m_Patches.end(), [&](const WaterGeometryPatch& patch)
         {
-            const glm::vec3 center(patch.worldCenter.x, waterLevel, patch.worldCenter.y);
-            const float radius = std::sqrt(0.5f * patch.worldSize * patch.worldSize + verticalExtent * verticalExtent);
+            float minimum=waterLevel-verticalExtent,maximum=waterLevel+verticalExtent;
+            if(patch.riverInfluenced){minimum=std::min(minimum,patch.minimumRiverHeight);maximum=std::max(maximum,patch.maximumRiverHeight);}
+            const glm::vec3 center(patch.worldCenter.x,(minimum+maximum)*.5f,patch.worldCenter.y);
+            const float heightRadius=(maximum-minimum)*.5f;
+            const float radius = std::sqrt(0.5f * patch.worldSize * patch.worldSize + heightRadius * heightRadius);
             for (const auto& plane : planes)
                 if (glm::dot(glm::vec3(plane), center) + plane.w < -radius)
                     return true;
