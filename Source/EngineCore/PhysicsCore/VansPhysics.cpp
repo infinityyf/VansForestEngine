@@ -1,6 +1,7 @@
 #include "VansPhysics.h"
 #include "VansPhysicsEventCallback.h"
 #include "VansClothSystem.h"
+#include "VansRagdollTypes.h"
 #include "../Util/VansLog.h"
 #include "../Util/VansProfiler.h"
 #include "../RuntimeCore/VansThreadContract.h"
@@ -32,11 +33,9 @@ namespace VansEngine
 		uint32_t layerB = filterData1.word0;
 		uint32_t maskA  = filterData0.word1;
 		uint32_t maskB  = filterData1.word1;
-		uint32_t groupA = filterData0.word3;
-		uint32_t groupB = filterData1.word3;
 
-		// Suppress contacts within one ragdoll group to avoid self-locking body parts.
-		if (groupA != 0 && groupA == groupB)
+		// 开启自身碰撞的布娃娃不排除任何身体对，包括相邻关节连接的刚体。
+		if (RagdollPairSuppressed(filterData0, filterData1))
 		{
 			return PxFilterFlag::eSUPPRESS;
 		}

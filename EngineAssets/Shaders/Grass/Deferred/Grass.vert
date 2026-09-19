@@ -12,32 +12,14 @@ layout( location = 2 ) in vec3 inNormal;
 // ── Varyings to fragment shader ────────────────────────────────────────────
 layout( location = 0 ) out vec2 frag_uv;
 layout( location = 1 ) out vec3 normal_ws;
-layout( location = 2 ) out vec3 tangent_ws;
-layout( location = 3 ) out vec3 bitangent_ws;
+layout(location=2) out vec4 current_clip;
+layout(location=3) out vec4 previous_clip;
 layout( location = 4 ) out vec3 position_world;
-layout( location = 5 ) out float blade_height01;
+
 
 // ── Push constants ─────────────────────────────────────────────────────────
-layout( push_constant ) uniform GrassDrawPC
-{
-    int   materialIndex;
-    int   objectIndex;
-    uint  vertexFeatureMask;
-    uint  boneCount;
-    uint  subBladeCount;
-    float grassHeight;
-    // P6a: terrain params for VS heightmap sampling
-
-
-
-
-    // P1: 子叶片距离 LOD 参数
-    float lodMidDist;       // 中距离阈值，超过后子叶片数减半
-    float lodFarDist;       // 远距离阈值，超过后子叶片降至最少
-    float aoStrength;
-    float rootAOIntensity;
-    float rootAOHeight;
-} pc;
+#include "../GrassDrawData.glsl"
+#include "../GrassSurfaceNormal.glsl"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Set 3: Vegetation Draw SSBOs
@@ -99,19 +81,22 @@ void main()
 
     // 子叶片跟随实例坐标系；根位置只由 PCG 或手工覆盖确定。
     mat3 modelBasis = mat3(inst.modelMatrix);
-    vec3 rotatedNrm = normalize(transpose(inverse(modelBasis)) * inNormal);
+    vec3 bladeNormal=inNormal;
+    if((pc.vertexFeatureMask&1u)!=0u)
+    {
+        // 程序化草用圆柱截面法线形成连续叶面高光；外部模型保留作者法线。
+        float side=(inUV.x*2.0-1.0)*0.6;
+        bladeNormal=vec3(side,0.0,sqrt(1.0-side*side));
+    }
     vec2 uv = inUV;
 
     // ── Dual-bone skinning ──────────────────────────────────────────
     uint globalBoneBase = globalInstIdx * pc.boneCount;
     vec4 bw = boneWeights[gl_VertexIndex]; // per-template-vertex weights
 
-    // 骨骼权重由 mesh AABB 的高度归一化生成。反解该坐标可让根部 AO
-    // 与风动画严格使用同一高度映射，同时兼容程序化草和外部 FBX。
-    float segmentCount = max(float(pc.boneCount - 1u), 1.0);
-    blade_height01 = clamp((bw.x + bw.w) / segmentCount, 0.0, 1.0);
-
-    vec3 skinnedNrm = skinNormal(rotatedNrm, globalBoneBase, bw);
+    mat3 skinning=mat3(boneMatrices[globalBoneBase+uint(bw.x)])*bw.z+
+        mat3(boneMatrices[globalBoneBase+uint(bw.y)])*bw.w;
+    vec3 skinnedNrm=GrassTransformNormal(skinning*modelBasis,bladeNormal);
 
     // ── Offset by sub-blade root (world-space XZ scatter + terrain Y) ─
     vec3 worldPos = grassWorldPosition(inPosition, globalInstIdx, subBladeIdx, pc.boneCount, bw);
@@ -120,19 +105,16 @@ void main()
     // Blade scale never changes — no size-based LOD collapse here,
     // which would create a visible discontinuity ring following the camera.
 
-    // ── Build tangent frame ─────────────────────────────────────────
-    vec3 N = normalize(skinnedNrm);
-    vec3 up = vec3(0.0, 1.0, 0.0);
-    vec3 T = normalize(cross(up, N));
-    if (length(cross(up, N)) < 0.001)
-        T = vec3(1.0, 0.0, 0.0);
-    vec3 B = cross(N, T);
+    vec3 N=normalize(skinnedNrm);
 
     // ── Output ──────────────────────────────────────────────────────
     gl_Position    = VPMatrix * vec4(worldPos, 1.0);
     frag_uv        = uv;
     normal_ws      = N;
-    tangent_ws     = T;
-    bitangent_ws   = B;
+    current_clip=UnjitteredVPMatrix*vec4(worldPos,1.0);
+    uint previousBase=(pc.instanceCount+globalInstIdx)*pc.boneCount;
+    vec3 previousPos=grassRoot(inst)+modelBasis*scatterOffsets[subBladeIdx].xyz+
+        skinPosition(modelBasis*inPosition,previousBase,bw);
+    previous_clip=LastUnjitteredVPMatrix*vec4(previousPos,1.0);
     position_world = worldPos;
 }

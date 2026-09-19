@@ -2,6 +2,7 @@
 #extension GL_GOOGLE_include_directive : require
 
 #include "../../Common/CameraData.glsl"
+#define TERRAIN_MATERIAL_DISPLACEMENT
 #include "../TerrainCommon.glsl"
 
 layout(triangles, equal_spacing, cw) in;
@@ -16,7 +17,7 @@ layout(location = 0) out vec2 outUV;
 layout(location = 1) out vec3 outWorldPos;
 layout(location = 2) out vec4 motionCurrentClip;
 layout(location = 3) out vec4 motionPreviousClip;
-layout(location = 4) out vec2 outNoiseGradient;
+layout(location = 4) out vec2 outHeightDetailGradient;
 
 void main()
 {
@@ -41,5 +42,5 @@ void main()
     motionPreviousClip = LastUnjitteredVPMatrix * vec4(worldPos, 1.0);
     outUV = heightUV;
     outWorldPos = worldPos;
-    outNoiseGradient = TerrainDetailedNoiseGradient(worldPos);
+    outHeightDetailGradient = TerrainMaterialHeightGradient(worldPos);
 }

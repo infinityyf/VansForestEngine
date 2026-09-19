@@ -1,5 +1,6 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
+#define VANS_SURFACE_COOKIES
 
 // TileLight：先引入 CameraData（提供 ScreenParams），再定义 TILE_LIGHT，再引入 TileLightData
 #include "../Common/CameraData.glsl"
@@ -21,6 +22,7 @@ layout( set = 1, binding = 15 ) uniform sampler2DArray rectLightEmissive;
 #include "../BRDF/BRDFSubsurface.glsl"
 #include "../BRDF/TreeLeafData.glsl"
 #include "../BRDF/BRDFVegetation.glsl"
+#include "../BRDF/BRDFGrass.glsl"
 #include "../Common/CameraData.glsl"
 
 // IES profile 纹理数组：最多 32 层，每层 256×128，格式 R16F，用于方向性光照衰减（binding=16）
@@ -132,47 +134,63 @@ layout(location = 0) in vec2 fragTexCoord;
 layout(location = 0) out vec4 outColor;
 layout(location = 1) out vec4 outDiffuseExitantRadiance;
 
-vec3 SampleDeferredProbeIrradianceForRegion(uint regionIndex, GIRegionParams region, vec3 worldPos, vec3 normal)
+vec4 SampleDeferredProbeIrradianceForRegion(uint regionIndex, vec3 worldPos, vec3 normal, float normalBiasScale)
 {
+    GIRegionParams region = regions[regionIndex];
     ivec3 probeCounts = ivec3(region.gridDimensionsAndPriority.xyz);
     vec3 volumeMin = region.volumeMin.xyz;
     vec3 volumeSize = region.volumeSizeAndBias.xyz;
 
+    GIProbeLighting value;
     switch (regionIndex)
     {
     case 0u:
-        return GI_SampleProbeIrradianceAtlasVisible(0u, probeCounts,
+        value = GI_SampleProbeIrradianceAtlasVisible(0u, probeCounts,
             giIrradianceAtlas[0], giVisibilityAtlas[0], worldPos, normal,
-            volumeMin, volumeSize, region.volumeSizeAndBias.w, region.traceParams.z);
+            volumeMin, volumeSize, region.volumeSizeAndBias.w * normalBiasScale, 0.0); break;
     case 1u:
-        return GI_SampleProbeIrradianceAtlasVisible(1u, probeCounts,
+        value = GI_SampleProbeIrradianceAtlasVisible(1u, probeCounts,
             giIrradianceAtlas[1], giVisibilityAtlas[1], worldPos, normal,
-            volumeMin, volumeSize, region.volumeSizeAndBias.w, region.traceParams.z);
+            volumeMin, volumeSize, region.volumeSizeAndBias.w * normalBiasScale, 0.0); break;
     case 2u:
-        return GI_SampleProbeIrradianceAtlasVisible(2u, probeCounts,
+        value = GI_SampleProbeIrradianceAtlasVisible(2u, probeCounts,
             giIrradianceAtlas[2], giVisibilityAtlas[2], worldPos, normal,
-            volumeMin, volumeSize, region.volumeSizeAndBias.w, region.traceParams.z);
+            volumeMin, volumeSize, region.volumeSizeAndBias.w * normalBiasScale, 0.0); break;
     case 3u:
-        return GI_SampleProbeIrradianceAtlasVisible(3u, probeCounts,
+        value = GI_SampleProbeIrradianceAtlasVisible(3u, probeCounts,
             giIrradianceAtlas[3], giVisibilityAtlas[3], worldPos, normal,
-            volumeMin, volumeSize, region.volumeSizeAndBias.w, region.traceParams.z);
+            volumeMin, volumeSize, region.volumeSizeAndBias.w * normalBiasScale, 0.0); break;
     case 4u:
-        return GI_SampleProbeIrradianceAtlasVisible(4u, probeCounts,
+        value = GI_SampleProbeIrradianceAtlasVisible(4u, probeCounts,
             giIrradianceAtlas[4], giVisibilityAtlas[4], worldPos, normal,
-            volumeMin, volumeSize, region.volumeSizeAndBias.w, region.traceParams.z);
+            volumeMin, volumeSize, region.volumeSizeAndBias.w * normalBiasScale, 0.0); break;
     case 5u:
-        return GI_SampleProbeIrradianceAtlasVisible(5u, probeCounts,
+        value = GI_SampleProbeIrradianceAtlasVisible(5u, probeCounts,
             giIrradianceAtlas[5], giVisibilityAtlas[5], worldPos, normal,
-            volumeMin, volumeSize, region.volumeSizeAndBias.w, region.traceParams.z);
+            volumeMin, volumeSize, region.volumeSizeAndBias.w * normalBiasScale, 0.0); break;
     case 6u:
-        return GI_SampleProbeIrradianceAtlasVisible(6u, probeCounts,
+        value = GI_SampleProbeIrradianceAtlasVisible(6u, probeCounts,
             giIrradianceAtlas[6], giVisibilityAtlas[6], worldPos, normal,
-            volumeMin, volumeSize, region.volumeSizeAndBias.w, region.traceParams.z);
+            volumeMin, volumeSize, region.volumeSizeAndBias.w * normalBiasScale, 0.0); break;
     default:
-        return GI_SampleProbeIrradianceAtlasVisible(7u, probeCounts,
+        value = GI_SampleProbeIrradianceAtlasVisible(7u, probeCounts,
             giIrradianceAtlas[7], giVisibilityAtlas[7], worldPos, normal,
-            volumeMin, volumeSize, region.volumeSizeAndBias.w, region.traceParams.z);
+            volumeMin, volumeSize, region.volumeSizeAndBias.w * normalBiasScale, 0.0); break;
     }
+    return vec4(value.irradiance, value.published);
+}
+
+#define GI_SAMPLE_REGION SampleDeferredProbeIrradianceForRegion
+#define GI_SAMPLE_SKY(N) SampleSkyDiffuseCube(PreConvDiffuseEnvironment, N)
+#include "../GI/GIRegionBlend.glsl"
+#undef GI_SAMPLE_REGION
+#undef GI_SAMPLE_SKY
+
+vec3 SampleGrassBackIrradiance(vec3 worldPos, vec3 frontNormal)
+{
+    receiverRecordValid = false;
+    // 薄片背面不沿法线偏入地下；只按区域边界在光照来源之间混合一次。
+    return GI_BlendRegionLighting(worldPos, -frontNormal, 0.0);
 }
 
 float SampleScreenSpaceShadow(vec2 uv)
@@ -191,34 +209,7 @@ vec3 SampleDeferredProbeIrradiance(vec3 worldPos, vec3 normal)
     vec4 position = texture(gbufferInput2, fragTexCoord);
     GI_SetReceiverVisibility(ivec2(gl_FragCoord.xy), position, normal,
         round(texture(gbufferInput1, fragTexCoord).z), max(length(dFdx(worldPos)), length(dFdy(worldPos))));
-    vec3 probeIrradiance = vec3(0.0);
-    float probeWeight = 0.0;
-    float selectedPriority = -3.402823e38;
-    uint selectedRegion = 0u;
-    const uint regionCount = min(uint(regionInfo.x), 8u);
-    for (uint regionIndex = 0u; regionIndex < regionCount; ++regionIndex)
-    {
-        GIRegionParams region = regions[regionIndex];
-        const float weight = GI_IsInsideVolume(worldPos, region.volumeMin.xyz, region.volumeSizeAndBias.xyz)
-            ? GI_VolumeFade(worldPos, region.volumeMin.xyz, region.volumeSizeAndBias.xyz,
-                max(region.traceParams.z, 0.0))
-            : 0.0;
-        const float priority = region.gridDimensionsAndPriority.w;
-        if (weight > 0.0 && (priority > selectedPriority ||
-            (priority == selectedPriority && weight > probeWeight)))
-        {
-            probeWeight = weight;
-            selectedPriority = priority;
-            selectedRegion = regionIndex;
-        }
-    }
-    if (probeWeight > 0.0)
-    {
-        probeIrradiance = SampleDeferredProbeIrradianceForRegion(
-            selectedRegion, regions[selectedRegion], worldPos,
-            normalize(normal));
-    }
-    return max(probeIrradiance * probeWeight, vec3(0.0));
+    return GI_BlendRegionLighting(worldPos, normalize(normal), 1.0);
 }
 
 vec3 ComputeDeferredGINormal(vec3 worldPos, vec3 shadingNormal)
@@ -509,25 +500,19 @@ void main()
     }
     else if (matID == MATERIAL_ID_GRASS)
     {
-        // --- Vegetation / Grass BRDF path ---
-        // Translucency was stored in normalInput.w by Grass.frag
-        float translucency = normalData.w;
-
-        // Grass AO — match the default PBR path's aggressive power curve
-        brdfData.ao = pow(min(ao, ssaoValue), 2.0);
-
-        VegetationParams veg;
-        veg.subsurfaceColor = brdfData.albedo * vec3(0.55, 0.85, 0.25) * clamp(translucency, 0.0, 1.0);
-        veg.opacity = 1.0;
-        veg.wrap = 0.5;
-        veg.scatterRoughness = 0.6;
-        veg.transmissionScale = 1.0;
-        veg.specularScale = 0.30;
-
-		CalculateDirectLight_Vegetation(brdfData, veg, punctualShadowMap, sssShadow, lightResult);
-        AmbientBRDF_Vegetation(brdfData, veg, viewDirection,
-                               lightResult.ambientDiffuse, lightResult.ambientSpecular);
-        lightResult.ambientSpecular = vec3(0.0); // grass blades: no ambient specular
+        float transmission=clamp(normalData.w,0.0,1.0);
+        brdfData.metallic=0.0;
+        brdfData.fresnel0=vec3(0.04);
+        brdfData.ao=clamp(min(ao,ssaoValue),0.0,1.0);
+        float backAO=clamp(min(ao,imageLoad(ssao,ssaoCoord).g),0.0,1.0);
+        vec3 backIrradiance=SampleGrassBackIrradiance(brdfData.positionWS,brdfData.normal);
+        vec3 L=normalize(uDirectionLight.direction.xyz);
+        float sunShadow=min(sssShadow,GrassContactShadow(brdfData.positionWS,L,
+            uSSS.directionalRayParams.x,uSSS.directionalRayParams,uSSS.fadeParams.z));
+        vec4 grassEnergy=GrassIntegratedEnergy(max(dot(brdfData.normal,brdfData.viewDirection),0.0),brdfData.roughness);
+        CalculateDirectLight_Grass(brdfData,transmission,grassEnergy,sunShadow,punctualShadowMap,lightResult);
+        AmbientBRDF_Grass(brdfData,backIrradiance,transmission,backAO,grassEnergy,
+            clamp(gbufferData1.w,0.0,2.0),lightResult);
     }
     else if (matID == MATERIAL_ID_TREE)
     {

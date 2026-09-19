@@ -1,5 +1,8 @@
+#include "../../SceneCore/VansSceneEnvironmentAuthoring.h"
+#include "../../RenderCore/VansCameraControlArbiter.h"
 #include "../../ParticleCore/Authoring/VansParticleAuthoringSchema.h"
 #include "EngineAPIImpl.h"
+#include "../../SceneCore/Prefab/VansPrefabAsset.h"
 #include "../../RenderCore/PcgCore/VansPcgSplineFieldResources.h"
 #include "../../RenderCore/WaterCore/VansWaterGeometryClipmap.h"
 
@@ -894,6 +897,7 @@ namespace Vans::EditorAPI
 			case Vans::VansAssetType::ActionGraph: return AssetType::ActionGraph;
 			case Vans::VansAssetType::CameraRigProfile: return AssetType::CameraRigProfile;
 			case Vans::VansAssetType::CameraShakeProfile: return AssetType::CameraShakeProfile;
+			case Vans::VansAssetType::DamageProfile: return AssetType::DamageProfile;
 			case Vans::VansAssetType::GAFEditorLayout: return AssetType::GAFEditorLayout;
 			case Vans::VansAssetType::ClothProfile: return AssetType::ClothProfile;
 			case Vans::VansAssetType::SkinProfile: return AssetType::SkinProfile;
@@ -912,6 +916,7 @@ namespace Vans::EditorAPI
 			case Vans::VansAssetType::PlantType: return AssetType::PlantType;
 			case Vans::VansAssetType::PcgMask: return AssetType::PcgMask;
 			case Vans::VansAssetType::PcgSpline: return AssetType::PcgSpline;
+			case Vans::VansAssetType::Prefab: return AssetType::Prefab;
 			default: return AssetType::Unknown;
 			}
 		}
@@ -1803,6 +1808,41 @@ namespace Vans::EditorAPI
 			return false;
 		}
 
+        LightCookieSettings ToEditorCookie(const VansGraphics::VansLightCookieSettings& source)
+        {
+            LightCookieSettings result;
+            result.enabled = source.enabled;
+            result.textureGuid = source.textureGuid;
+            result.strength = source.strength;
+            result.sizeX = source.sizeX;
+            result.sizeY = source.sizeY;
+            result.scaleX = source.scaleX;
+            result.scaleY = source.scaleY;
+            result.offsetX = source.offsetX;
+            result.offsetY = source.offsetY;
+            result.rotationDegrees = source.rotationDegrees;
+            result.repeat = source.repeat;
+            result.useAlpha = source.useAlpha;
+            return result;
+        }
+        VansGraphics::VansLightCookieSettings ToRuntimeCookie(const LightCookieSettings& source)
+        {
+            VansGraphics::VansLightCookieSettings result;
+            result.enabled = source.enabled;
+            result.textureGuid = source.textureGuid;
+            result.strength = source.strength;
+            result.sizeX = source.sizeX;
+            result.sizeY = source.sizeY;
+            result.scaleX = source.scaleX;
+            result.scaleY = source.scaleY;
+            result.offsetX = source.offsetX;
+            result.offsetY = source.offsetY;
+            result.rotationDegrees = source.rotationDegrees;
+            result.repeat = source.repeat;
+            result.useAlpha = source.useAlpha;
+            return result;
+        }
+
 		bool ApplyRuntimeLightPatch(
 			const RuntimeLightPatch& patch,
 			const RuntimeLightBinding& binding)
@@ -1810,6 +1850,9 @@ namespace Vans::EditorAPI
 			if (!binding.manager)
 				return false;
 
+            if (patch.writeCookie && binding.index >= 0 &&
+                VansGraphics::VansLightCookieOffset(static_cast<unsigned>(patch.type)) + binding.index < VansGraphics::VANS_LIGHT_COOKIE_COUNT)
+                binding.manager->Cookie(static_cast<unsigned>(patch.type), binding.index) = ToRuntimeCookie(patch.cookie);
 			switch (patch.type)
 			{
 			case RuntimeLightPatchType::Directional:
@@ -1909,6 +1952,7 @@ namespace Vans::EditorAPI
 			for (const auto& source : directionalLights)
 			{
 				DirectionalLightSettings light;
+                light.cookie = ToEditorCookie(lightManager->Cookie(0, static_cast<unsigned>(snapshot.directionalLights.size())));
 				light.direction = ToEditorVec3(source.m_Direction);
 				light.color = ToEditorVec3(source.m_Color);
 				light.intensity = source.m_Intensity;
@@ -1941,6 +1985,7 @@ namespace Vans::EditorAPI
 			{
 				const auto& source = pointLights[index];
 				PointLightSettings light;
+                light.cookie = ToEditorCookie(lightManager->Cookie(1, static_cast<unsigned>(snapshot.pointLights.size())));
 				light.position = ToEditorVec3(source.m_Position);
 				light.color = ToEditorVec3(source.m_Color);
 				light.intensity = source.m_Intensity;
@@ -1957,6 +2002,7 @@ namespace Vans::EditorAPI
 			{
 				const auto& source = spotLights[index];
 				SpotLightSettings light;
+                light.cookie = ToEditorCookie(lightManager->Cookie(2, static_cast<unsigned>(snapshot.spotLights.size())));
 				light.position = ToEditorVec3(source.m_Position);
 				light.direction = ToEditorVec3(source.m_Direction);
 				light.color = ToEditorVec3(source.m_Color);
@@ -1976,6 +2022,7 @@ namespace Vans::EditorAPI
 			{
 				const auto& source = rectLights[index];
 				RectLightSettings light;
+                light.cookie = ToEditorCookie(lightManager->Cookie(3, static_cast<unsigned>(snapshot.rectLights.size())));
 				light.position = ToEditorVec3(source.m_Position);
 				light.normal = ToEditorVec3(source.m_Normal);
 				light.color = ToEditorVec3(source.m_Color);
@@ -2003,6 +2050,7 @@ namespace Vans::EditorAPI
 			const std::size_t directionalCount = std::min(directionalLights.size(), settings.directionalLights.size());
 			for (std::size_t i = 0; i < directionalCount; ++i)
 			{
+                lightManager->Cookie(0, static_cast<unsigned>(i)) = ToRuntimeCookie(settings.directionalLights[i].cookie);
 				const DirectionalLightSettings& source = settings.directionalLights[i];
 				directionalLights[i].m_Direction = ToRuntimeVec3(source.direction);
 				directionalLights[i].m_Color = ToRuntimeVec3(source.color);
@@ -2040,6 +2088,7 @@ namespace Vans::EditorAPI
 			const std::size_t pointCount = std::min(pointLights.size(), settings.pointLights.size());
 			for (std::size_t i = 0; i < pointCount; ++i)
 			{
+                lightManager->Cookie(1, static_cast<unsigned>(i)) = ToRuntimeCookie(settings.pointLights[i].cookie);
 				const PointLightSettings& source = settings.pointLights[i];
 				pointLights[i].m_Position = ToRuntimeVec3(source.position);
 				pointLights[i].m_Color = ToRuntimeVec3(source.color);
@@ -2054,6 +2103,7 @@ namespace Vans::EditorAPI
 			const std::size_t spotCount = std::min(spotLights.size(), settings.spotLights.size());
 			for (std::size_t i = 0; i < spotCount; ++i)
 			{
+                lightManager->Cookie(2, static_cast<unsigned>(i)) = ToRuntimeCookie(settings.spotLights[i].cookie);
 				const SpotLightSettings& source = settings.spotLights[i];
 				spotLights[i].m_Position = ToRuntimeVec3(source.position);
 				spotLights[i].m_Direction = ToRuntimeVec3(source.direction);
@@ -2071,6 +2121,7 @@ namespace Vans::EditorAPI
 			const std::size_t rectCount = std::min(rectLights.size(), settings.rectLights.size());
 			for (std::size_t i = 0; i < rectCount; ++i)
 			{
+                lightManager->Cookie(3, static_cast<unsigned>(i)) = ToRuntimeCookie(settings.rectLights[i].cookie);
 				const RectLightSettings& source = settings.rectLights[i];
 				rectLights[i].m_Position = ToRuntimeVec3(source.position);
 				rectLights[i].m_Normal = ToRuntimeVec3(source.normal);
@@ -2189,7 +2240,8 @@ namespace Vans::EditorAPI
 						m_BeforePoint,
 						m_BeforeSpot,
 						m_BeforeRect);
-					if (!m_HasBefore)
+					m_BeforeCookie = binding.manager->Cookie(static_cast<unsigned>(m_Patch.type), binding.index);
+                    if (!m_HasBefore)
 						return;
 				}
 
@@ -2204,6 +2256,8 @@ namespace Vans::EditorAPI
 
 				auto* scene = static_cast<VansGraphics::VansScene*>(context.GetScene());
 				const RuntimeLightBinding binding = ResolveRuntimeLightBinding(scene, m_Patch);
+                if (binding.manager && binding.index >= 0)
+                    binding.manager->Cookie(static_cast<unsigned>(m_Patch.type), binding.index) = m_BeforeCookie;
 				RestoreRuntimeLight(
 					m_Patch,
 					binding,
@@ -2240,6 +2294,7 @@ namespace Vans::EditorAPI
 
 		private:
 			RuntimeLightPatch m_Patch;
+            VansGraphics::VansLightCookieSettings m_BeforeCookie;
 			VansGraphics::VansDirectionalLight m_BeforeDirectional{};
 			VansGraphics::VansPointLight m_BeforePoint{};
 			VansGraphics::VansSpotLight m_BeforeSpot{};
@@ -2313,27 +2368,6 @@ namespace Vans::EditorAPI
 			bool m_HasBefore = false;
 		};
 
-		float RaySphereIntersect(const glm::vec3& rayOrigin,
-			const glm::vec3& rayDirection,
-			const glm::vec3& center,
-			float radius)
-		{
-			const glm::vec3 oc = rayOrigin - center;
-			const float b = glm::dot(oc, rayDirection);
-			const float c = glm::dot(oc, oc) - radius * radius;
-			const float disc = b * b - c;
-			if (disc < 0.0f)
-				return -1.0f;
-			const float sqrtDisc = glm::sqrt(disc);
-			const float t0 = -b - sqrtDisc;
-			const float t1 = -b + sqrtDisc;
-			if (t0 > 0.0f)
-				return t0;
-			if (t1 > 0.0f)
-				return t1;
-			return -1.0f;
-		}
-
 		physx::PxVec3 VehicleAxisToPx(physx::vehicle2::PxVehicleAxes::Enum axis)
 		{
 			using physx::PxVec3;
@@ -2384,7 +2418,12 @@ namespace Vans::EditorAPI
 			settings.spectrum.repeatPeriod = source.m_Spectrum.m_RepeatPeriod;
 			settings.spectrum.randomSeed = source.m_Spectrum.m_RandomSeed;
 
-			settings.waveParticle.particlesPerCascade = source.m_WaveParticle.m_ParticlesPerCascade;
+			settings.river.maxHeight=source.m_River.m_MaxHeight;
+            settings.river.wavelength=source.m_River.m_Wavelength;
+            settings.river.lifetime=source.m_River.m_Lifetime;
+            settings.river.flowGridSize=source.m_River.m_FlowGridSize;
+            settings.river.fineDetailStrength=source.m_River.m_FineDetailStrength;
+            settings.waveParticle.particlesPerCascade = source.m_WaveParticle.m_ParticlesPerCascade;
 			settings.waveParticle.rmsAmplitude = source.m_WaveParticle.m_RmsAmplitude;
 			settings.waveParticle.packetWidth = source.m_WaveParticle.m_PacketWidth;
 			settings.waveParticle.dispersionScale = source.m_WaveParticle.m_DispersionScale;
@@ -2501,7 +2540,12 @@ namespace Vans::EditorAPI
 			destination.m_Spectrum.m_RepeatPeriod = settings.spectrum.repeatPeriod;
 			destination.m_Spectrum.m_RandomSeed = settings.spectrum.randomSeed;
 
-			destination.m_WaveParticle.m_ParticlesPerCascade = settings.waveParticle.particlesPerCascade;
+			destination.m_River.m_MaxHeight=settings.river.maxHeight;
+            destination.m_River.m_Wavelength=settings.river.wavelength;
+            destination.m_River.m_Lifetime=settings.river.lifetime;
+            destination.m_River.m_FlowGridSize=settings.river.flowGridSize;
+            destination.m_River.m_FineDetailStrength=settings.river.fineDetailStrength;
+            destination.m_WaveParticle.m_ParticlesPerCascade = settings.waveParticle.particlesPerCascade;
 			destination.m_WaveParticle.m_RmsAmplitude = settings.waveParticle.rmsAmplitude;
 			destination.m_WaveParticle.m_PacketWidth = settings.waveParticle.packetWidth;
 			destination.m_WaveParticle.m_DispersionScale = settings.waveParticle.dispersionScale;
@@ -2805,7 +2849,14 @@ namespace Vans::EditorAPI
 					{ "repeatPeriod", ScenePropertyValues::Float(config.m_Spectrum.m_RepeatPeriod) },
 					{ "randomSeed", ScenePropertyValues::Int(config.m_Spectrum.m_RandomSeed) }
 				}) },
-				{ "waveParticle", ScenePropertyValues::Object({
+				{ "river", ScenePropertyValues::Object({
+                    { "maxHeight", ScenePropertyValues::Float(config.m_River.m_MaxHeight) },
+                    { "wavelength", ScenePropertyValues::Float(config.m_River.m_Wavelength) },
+                    { "lifetime", ScenePropertyValues::Float(config.m_River.m_Lifetime) },
+                    { "flowGridSize", ScenePropertyValues::Float(config.m_River.m_FlowGridSize) },
+                    { "fineDetailStrength", ScenePropertyValues::Float(config.m_River.m_FineDetailStrength) }
+                }) },
+                { "waveParticle", ScenePropertyValues::Object({
 					{ "particlesPerCascade", ScenePropertyValues::Int(config.m_WaveParticle.m_ParticlesPerCascade) },
 					{ "rmsAmplitude", ScenePropertyValues::Float(config.m_WaveParticle.m_RmsAmplitude) },
 					{ "packetWidth", ScenePropertyValues::Float(config.m_WaveParticle.m_PacketWidth) },
@@ -3562,6 +3613,7 @@ namespace Vans::EditorAPI
 		m_Device = device;
 		if (runtimeChanged)
 		{
+			m_EditorSceneQueryCache.reset();
 			SelectPcgBrushTarget({}, false);
 			m_PcgSceneRecipeGuid.clear();
 			m_TerrainAuthoringSession.reset();
@@ -3683,6 +3735,7 @@ namespace Vans::EditorAPI
 			snapshot.projectLoaded = true;
 			snapshot.rootPath = projectManager.GetProjectRootPath();
 			snapshot.rootLabel = projectManager.GetProjectName();
+            if (const auto* database = projectManager.GetAssetDatabase()) snapshot.assetsRootPath = database->AssetsRoot().string();
 			return snapshot;
 		}
 
@@ -4672,6 +4725,39 @@ namespace Vans::EditorAPI
 	{
 		return GameplayActionSimulationBridge::Simulate(request);
 	}
+    EditorViewportCameraState EngineAPIImpl::CaptureEditorViewportCamera() const
+    {
+        EditorViewportCameraState result;
+        const auto* scene = static_cast<const VansGraphics::VansScene*>(m_Scene);
+        if (!scene || !scene->GetCamera()) return result;
+        const auto pose = scene->GetCamera()->CaptureControlPose();
+        result.available = true;
+        result.position = {pose.position.x, pose.position.y, pose.position.z};
+        result.rotationDegrees = {pose.rotationDegrees.x, pose.rotationDegrees.y, pose.rotationDegrees.z};
+        result.fieldOfView = pose.fieldOfView; result.nearClip = pose.nearClip; result.farClip = pose.farClip;
+        return result;
+    }
+
+    void EngineAPIImpl::RestoreEditorViewportCamera(const EditorViewportCameraState& state)
+    {
+        auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
+        if (!state.available || !scene || !scene->GetCamera() || m_PlayState != EnginePlayState::Edit) return;
+        if (m_RenderSystem && !m_RenderSystem->WaitForIdle()) return;
+        VansGraphics::VansCameraControlPose pose;
+        pose.position = {state.position.x, state.position.y, state.position.z};
+        pose.rotationDegrees = {state.rotationDegrees.x, state.rotationDegrees.y, state.rotationDegrees.z};
+        pose.fieldOfView = state.fieldOfView; pose.nearClip = state.nearClip; pose.farClip = state.farClip;
+        scene->GetCamera()->ApplyControlPose(pose);
+    }
+
+	ScenePropertyValue EngineAPIImpl::QueryPrefabAsset(const std::string& text) const
+	{
+		VansAssetGuid guid;
+		if (!VansAssetGuid::TryParse(text, guid)) return {};
+		const auto asset = VansProjectManager::Get().GetAssetObjectRepository().ResolveLatest<VansPrefabAsset>(guid);
+		return asset ? ScenePropertyValues::FromSerializedValue(VansPrefabCodec::Encode(*asset)) : ScenePropertyValue{};
+	}
+
 	AssetRefreshResult EngineAPIImpl::RefreshProjectAsset(const std::string& assetPath, bool importIfMissing)
 	{
 		AssetRefreshResult result;
@@ -5606,7 +5692,7 @@ namespace Vans::EditorAPI
 		{
 			const auto* scene=static_cast<VansGraphics::VansScene*>(m_Scene);
 			const auto* fields=scene?scene->GetSplineFieldResources():nullptr;
-			const char* names[]={"Height (road / river)","Velocity (world X / Z)","Coverage (road / river / terrain)","River coordinates and weights","River coordinate Jacobians","Spline vegetation exclusion"};
+			const char* names[]={"Height (road / river)","Velocity (world X / Z)","Coverage (R road / G river / B wetness / A terrain)","River coordinates and weights","River coordinate Jacobians","Spline vegetation exclusion"};
 			if (fields) for(std::size_t i=0;i<6;++i) if(auto* texture=fields->Texture(i))
 				previews.push_back(BuildImagePreview(device,380+i,names[i],texture->GetImage(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_NULL_HANDLE,true));
 			return previews;
@@ -6830,6 +6916,8 @@ namespace Vans::EditorAPI
 		settings.placement.maxProbeCount = gi.placement.maxProbeCount;
 		settings.placement.maxProbeUpdatesPerFrame = gi.placement.maxProbeUpdatesPerFrame;
 		settings.placement.maxRaysPerFrame = gi.placement.maxRaysPerFrame;
+		settings.world = {gi.world.enabled, gi.world.voxelSize, gi.world.coverageDistance, gi.world.extinctionScale,
+			gi.world.levelCount, gi.world.maxBricks, gi.world.bricksPerFrame, gi.world.maxTraceSteps};
 
 		settings.maxIndirectRadiance = gi.maxIndirectRadiance;
 		settings.maxProbeRadiance = gi.maxProbeRadiance;
@@ -6855,6 +6943,8 @@ namespace Vans::EditorAPI
 			regionSnapshot.stableId = region.stableId;
 			regionSnapshot.name = region.name;
 			regionSnapshot.enabled = region.enabled;
+			regionSnapshot.worldOnly = region.worldOnly;
+            regionSnapshot.followView = region.scrolling;
 			regionSnapshot.regionCenter = ToEditorVec3(region.center);
 			regionSnapshot.size = ToEditorVec3(regionDesc.size);
 			regionSnapshot.volumeMin = ToEditorVec3(region.volumeMin);
@@ -6875,7 +6965,7 @@ namespace Vans::EditorAPI
 				std::numeric_limits<std::uint32_t>::max()));
 			regionSnapshot.rayCacheEntries = VansGraphics::GIProbeRayCapacity(region.probeCount, region.raysPerProbe, gi.placement);
 			regionSnapshot.estimatedMemoryMB = estimateMemoryMB(region);
-			if (region.enabled)
+			if (region.enabled && (!region.worldOnly || gi.world.enabled))
 			{
 				settings.totalProbeCount += regionSnapshot.totalProbeCount;
 				settings.totalRayCacheEntries += regionSnapshot.rayCacheEntries;
@@ -6900,6 +6990,8 @@ namespace Vans::EditorAPI
 		gi.placement.maxProbeCount = settings.placement.maxProbeCount;
 		gi.placement.maxProbeUpdatesPerFrame = settings.placement.maxProbeUpdatesPerFrame;
 		gi.placement.maxRaysPerFrame = settings.placement.maxRaysPerFrame;
+		gi.world = {settings.world.enabled, settings.world.voxelSize, settings.world.coverageDistance, settings.world.extinctionScale,
+			settings.world.levelCount, settings.world.maxBricks, settings.world.bricksPerFrame, settings.world.maxTraceSteps};
 		auto clampDimension = [](float value, std::uint32_t fallback) {
 			if (!std::isfinite(value) || value < 1.0f)
 				return fallback;
@@ -6915,6 +7007,8 @@ namespace Vans::EditorAPI
 			region.stableId = snapshot.stableId != 0 ? snapshot.stableId : fallback.stableId;
 			region.name = snapshot.name.empty() ? fallback.name : snapshot.name;
 			region.enabled = snapshot.enabled;
+			region.worldOnly = snapshot.worldOnly;
+            region.followView = snapshot.followView;
 			region.center = glm::vec3(snapshot.regionCenter.x, snapshot.regionCenter.y, snapshot.regionCenter.z);
 			region.size = glm::vec3(
 				clampSpacing(snapshot.size.x, fallback.size.x),
@@ -7018,6 +7112,8 @@ namespace Vans::EditorAPI
 				{ "raysPerProbe", ScenePropertyValues::Int(region.raysPerProbe) },
 				{ "maxRayDistance", ScenePropertyValues::Float(region.maxRayDistance) },
 				{ "normalBias", ScenePropertyValues::Float(region.normalBias) },
+				{ "worldOnly", ScenePropertyValues::Bool(region.worldOnly) },
+                { "followView", ScenePropertyValues::Bool(region.followView) },
 				{ "volumeFadeDistance", ScenePropertyValues::Float(region.volumeFadeDistance) },
 				{ "priority", ScenePropertyValues::Float(region.priority) }
 			});
@@ -7043,6 +7139,16 @@ namespace Vans::EditorAPI
 
 			{ "maxIndirectRadiance", ScenePropertyValues::Float(gi.maxIndirectRadiance) },
 			{ "maxProbeRadiance", ScenePropertyValues::Float(gi.maxProbeRadiance) },
+			{ "world", ScenePropertyValues::Object({
+				{ "enabled", ScenePropertyValues::Bool(gi.world.enabled) },
+				{ "voxelSize", ScenePropertyValues::Float(gi.world.voxelSize) },
+				{ "coverageDistance", ScenePropertyValues::Float(gi.world.coverageDistance) },
+				{ "extinctionScale", ScenePropertyValues::Float(gi.world.extinctionScale) },
+				{ "levelCount", ScenePropertyValues::Int(gi.world.levelCount) },
+				{ "maxBricks", ScenePropertyValues::Int(gi.world.maxBricks) },
+				{ "bricksPerFrame", ScenePropertyValues::Int(gi.world.bricksPerFrame) },
+				{ "maxTraceSteps", ScenePropertyValues::Int(gi.world.maxTraceSteps) }
+			}) },
 			{ "irradianceHysteresis", ScenePropertyValues::Float(gi.irradianceHysteresis) },
 			{ "distanceHysteresis", ScenePropertyValues::Float(gi.distanceHysteresis) },
 			{ "distanceSharpness", ScenePropertyValues::Float(gi.distanceSharpness) },
@@ -7711,49 +7817,11 @@ namespace Vans::EditorAPI
 		Vans::VansSerializedValue entityArray =
 			Vans::VansSerializedValue::Array(std::move(entities));
 
-		Vans::VansSceneContentBuildPlan buildPlan;
-		std::string planError;
-		const std::string projectRoot = GetProjectRootPath();
-		if (!Vans::VansSceneRuntimeProjection::BuildRuntimeSceneEntityPlan(
-			entityArray,
-			projectRoot,
-			buildPlan,
-			planError))
-		{
-			result.message = planError.empty()
-				? "Could not build runtime scene entity plan"
-				: planError;
-			return result;
-		}
-		if (m_RenderSystem && !m_RenderSystem->WaitForIdle())
-		{
-			result.message = "Could not synchronize runtime entity creation with RenderThread";
-			return result;
-		}
-		const auto rollbackRuntimeEntities = [&]()
-		{
-			for (auto it = result.entityGuids.rbegin(); it != result.entityGuids.rend(); ++it)
-				if (VansScriptObject* object = scene->FindObjectByGuid(*it))
-					scene->DestroyEntity(object);
-		};
-
-		VkDevice logicalDevice = device->GetLogicDevice();
-		if (!scene->LoadSceneObjects(logicalDevice, buildPlan.objects, projectRoot))
-		{
-			rollbackRuntimeEntities();
-			result.message = "Runtime scene entity batch could not initialize its components";
-			return result;
-		}
-		for (const std::string& entityGuid : result.entityGuids)
-		{
-			if (!scene->FindObjectByGuid(entityGuid))
-			{
-				rollbackRuntimeEntities();
-				result.message = "Runtime scene entity was not created: " + entityGuid;
-				return result;
-			}
-		}
-		result.created = true;
+        if (m_RenderSystem && !m_RenderSystem->WaitForIdle())
+        { result.message = "Could not synchronize runtime entity creation with RenderThread"; return result; }
+        VkDevice logicalDevice = device->GetLogicDevice();
+        result.created = scene->CreateSceneEntityBatch(logicalDevice, entityArray,
+            GetProjectRootPath(), result.entityGuids, result.message);
 		return result;
 	}
 
@@ -7921,6 +7989,11 @@ namespace Vans::EditorAPI
 		}
 
 		const std::filesystem::path sceneSourcePath(request.document.sourcePath);
+        if (!m_RenderSystem || !m_RenderSystem->WaitForIdle())
+        {
+            result.diagnostics.push_back({"render_thread_idle_failed", "Render thread could not reach idle before scene load"});
+            return result;
+        }
 		if (!scene->AreResourcesLoaded())
 		{
 			Vans::VansAssetDatabase* database = Vans::VansProjectManager::Get().GetAssetDatabase();
@@ -7935,19 +8008,21 @@ namespace Vans::EditorAPI
 				return result;
 			}
 		}
+        else if (request.ensureResourceDependencies)
+        {
+            auto* database = Vans::VansProjectManager::Get().GetAssetDatabase();
+            if (!database || !scene->EnsureProjectAssetDependencies(*database, sceneDocument, sceneSourcePath))
+            {
+                result.diagnostics.push_back({"project_resource_load_failed", "Scene resource dependencies could not be loaded"});
+                return result;
+            }
+        }
 
 		// Scene preview sessions borrow Editor-scene animation nodes. End those
 		// sessions before replacing the scene so a session cannot outlive its
 		// target or restore state across the load boundary.
 		if (scene->IsSceneReady() || scene->IsSceneSwitching())
 		{
-			if (!m_RenderSystem || !m_RenderSystem->WaitForIdle())
-			{
-				result.diagnostics.push_back({
-					"render_thread_idle_failed",
-					"Render thread could not reach idle before scene switch" });
-				return result;
-			}
 			ClearEditorRenderTexturePreviewCaches(device);
 		}
 		for (AnimationPreviewSessionId previewId :
@@ -7967,6 +8042,7 @@ namespace Vans::EditorAPI
 			return result;
 		}
 		m_PcgSceneRecipeGuid.clear();
+		m_EditorSceneQueryCache.reset();
 		if (!scene->LoadSceneForRendering(sceneDocument, sceneSourcePath, device, runtimeMode) || !scene->IsSceneReady())
 		{
 			result.finalState = scene->IsSceneReady()
@@ -7987,6 +8063,7 @@ namespace Vans::EditorAPI
 
 	void EngineAPIImpl::UnloadRuntimeScene()
 	{
+		m_EditorSceneQueryCache.reset();
 		const auto pcgFinished = SelectPcgBrushTarget({}, false);
 		if (!pcgFinished.success) { VANS_LOG_ERROR("[PCG] " << pcgFinished.message); return; }
 		m_PcgSceneRecipeGuid.clear();
@@ -8021,6 +8098,7 @@ namespace Vans::EditorAPI
 
 	void EngineAPIImpl::UnloadRuntimeProjectResources()
 	{
+		m_EditorSceneQueryCache.reset();
 		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
 		auto* device = static_cast<VansGraphics::VansVKDevice*>(m_Device);
 		if (!scene)
@@ -10294,18 +10372,16 @@ namespace Vans::EditorAPI
 		snapshot.tessellationDistance = settings.tessellationDistance;
 		snapshot.maxTessellationLevel = settings.maxTessellationLevel;
 		snapshot.tessellationTargetPixels = settings.tessellationTargetPixels;
-		snapshot.noiseDetailEnabled = settings.noiseDetailEnabled;
-		snapshot.noiseStrength = settings.noiseStrength;
-		snapshot.noiseFrequency = settings.noiseFrequency;
-		snapshot.noiseOctaves = settings.noiseOctaves;
-		snapshot.noiseGain = settings.noiseGain;
-		snapshot.noiseLacunarity = settings.noiseLacunarity;
-		snapshot.noiseWarpStrength = settings.noiseWarpStrength;
-		snapshot.noiseFadeStart = settings.noiseFadeStart;
+		snapshot.heightDetailEnabled = settings.heightDetailEnabled;
+		snapshot.heightDetailStrength = settings.heightDetailStrength;
+		snapshot.heightDetailFadeStart = settings.heightDetailFadeStart;
 		snapshot.terrainSize = settings.terrainSize;
 		snapshot.lodBaseDistance = settings.lodBaseDistance;
 		snapshot.lodRangeRatio = settings.lodRangeRatio;
 		snapshot.morphStartRatio = settings.morphStartRatio;
+		snapshot.riverWetAlbedoScale = settings.riverWetness.albedoScale;
+		snapshot.riverWetRoughness = settings.riverWetness.roughness;
+		snapshot.riverWetDetailNormalScale = settings.riverWetness.detailNormalScale;
 		return snapshot;
 	}
 
@@ -10320,17 +10396,16 @@ namespace Vans::EditorAPI
 		terrain->SetTessellationDistance(settings.tessellationDistance);
 		terrain->SetMaxTessellationLevel(settings.maxTessellationLevel);
 		terrain->SetTessellationTargetPixels(settings.tessellationTargetPixels);
-		terrain->SetNoiseDetailEnabled(settings.noiseDetailEnabled);
-		terrain->SetNoiseStrength(settings.noiseStrength);
-		terrain->SetNoiseFrequency(settings.noiseFrequency);
-		terrain->SetNoiseOctaves(settings.noiseOctaves);
-		terrain->SetNoiseGain(settings.noiseGain);
-		terrain->SetNoiseLacunarity(settings.noiseLacunarity);
-		terrain->SetNoiseWarpStrength(settings.noiseWarpStrength);
-		terrain->SetNoiseFadeStart(settings.noiseFadeStart);
+		terrain->SetHeightDetailEnabled(settings.heightDetailEnabled);
+		terrain->SetHeightDetailStrength(settings.heightDetailStrength);
+		terrain->SetHeightDetailFadeStart(settings.heightDetailFadeStart);
 		terrain->SetLodBaseDistance(settings.lodBaseDistance);
 		terrain->SetLodRangeRatio(settings.lodRangeRatio);
 		terrain->SetMorphStartRatio(settings.morphStartRatio);
+		terrain->SetRiverWetnessResponse(
+			settings.riverWetAlbedoScale,
+			settings.riverWetRoughness,
+			settings.riverWetDetailNormalScale);
 	}
 
 	TerrainEditorOperationResult EngineAPIImpl::ApplyTerrainSettings(
@@ -10354,17 +10429,15 @@ namespace Vans::EditorAPI
 		updated.tessellationDistance = settings.tessellationDistance;
 		updated.maxTessellationLevel = settings.maxTessellationLevel;
 		updated.tessellationTargetPixels = settings.tessellationTargetPixels;
-		updated.noiseDetailEnabled = settings.noiseDetailEnabled;
-		updated.noiseStrength = settings.noiseStrength;
-		updated.noiseFrequency = settings.noiseFrequency;
-		updated.noiseOctaves = settings.noiseOctaves;
-		updated.noiseGain = settings.noiseGain;
-		updated.noiseLacunarity = settings.noiseLacunarity;
-		updated.noiseWarpStrength = settings.noiseWarpStrength;
-		updated.noiseFadeStart = settings.noiseFadeStart;
+		updated.heightDetailEnabled = settings.heightDetailEnabled;
+		updated.heightDetailStrength = settings.heightDetailStrength;
+		updated.heightDetailFadeStart = settings.heightDetailFadeStart;
 		updated.lodBaseDistance = settings.lodBaseDistance;
 		updated.lodRangeRatio = settings.lodRangeRatio;
 		updated.morphStartRatio = settings.morphStartRatio;
+		updated.riverWetness.albedoScale = settings.riverWetAlbedoScale;
+		updated.riverWetness.roughness = settings.riverWetRoughness;
+		updated.riverWetness.detailNormalScale = settings.riverWetDetailNormalScale;
 		if (!session->ApplyDefinition(updated, error))
 		{
 			result.message = std::move(error);
@@ -10802,6 +10875,57 @@ namespace Vans::EditorAPI
 
 		for (RuntimeLightEdit lightEdit : change.lights)
 		{
+			if (lightEdit.writeCookie && !lightEdit.cookie.textureGuid.empty() &&
+				!scene->GetTextureAsset(lightEdit.cookie.textureGuid))
+			{
+				auto& projects = Vans::VansProjectManager::Get();
+				Vans::VansAssetGuid guid;
+				const auto record = Vans::VansAssetGuid::TryParse(lightEdit.cookie.textureGuid, guid)
+					? projects.FindAssetRecord(guid) : std::optional<Vans::VansAssetRecord>{};
+				if (!record || record->type != Vans::VansAssetType::Texture ||
+					record->state == Vans::VansAssetState::Missing || !record->textureImport.available ||
+					!record->textureImport.linear || !m_RenderSystem)
+				{
+					VANS_LOG_ERROR("[LightCookie] Select an imported linear Texture2D: " << lightEdit.cookie.textureGuid);
+					failed = true;
+					continue;
+				}
+				Vans::VansSceneTextureResourceRequest request;
+				request.name = request.assetGuid = lightEdit.cookie.textureGuid;
+				request.path = record->sourcePath.string();
+				request.artifactPath = record->artifactPath.string();
+				request.textureType = 0;
+				request.srgb = false;
+				request.useCompress = record->textureImport.compressed;
+				request.needMip = record->textureImport.mipmapped;
+				request.precision = record->textureImport.precision;
+				request.importChannel = record->textureImport.channelCount;
+				request.addressMode = "clamp";
+				class CookieTextureTransaction final : public VansGraphics::IVansRenderThreadTransaction
+				{
+				public:
+					CookieTextureTransaction(VansGraphics::VansScene* scene,
+						Vans::VansSceneTextureResourceRequest request, Vans::VansSceneResourceLoadContext context)
+						: m_Scene(scene), m_Request(std::move(request)), m_Context(std::move(context)) {}
+					bool Execute(VansGraphics::VansGraphicsDevice& backend) override
+					{
+						VANS_ASSERT_RENDER_THREAD();
+						return backend.WaitForIdle() && VansGraphics::VansSceneProjectResourceBuilder::LoadTextures(
+							*m_Scene, {m_Request}, m_Context, m_Scene->GetRuntimeResourceDevice(), false);
+					}
+				private:
+					VansGraphics::VansScene* m_Scene;
+					Vans::VansSceneTextureResourceRequest m_Request;
+					Vans::VansSceneResourceLoadContext m_Context;
+				};
+				if (!m_RenderSystem->ExecuteRenderThreadTransaction(std::make_unique<CookieTextureTransaction>(
+					scene, std::move(request), Vans::VansSceneResourceLoadContext::ForEditor(
+						projects.GetProjectRootPath(), projects.GetPathResolver().GetEngineRoot(), projects.EnumerateAssetRecords()))))
+				{
+					failed = true;
+					continue;
+				}
+			}
 			SubmitCommand(std::make_unique<SetRuntimeLightPropertiesCommand>(std::move(lightEdit)));
 			applied = true;
 		}
@@ -11281,156 +11405,12 @@ namespace Vans::EditorAPI
 			ToRuntimeEnvironmentSettings(settings)));
 	}
 
-	void EngineAPIImpl::CommitEnvironmentSettings()
-	{
-		const EnvironmentSettings settings = GetEnvironmentSettings();
-		auto float3 = [](const std::array<float, 3>& value)
-		{
-			return ScenePropertyValues::Array({
-				ScenePropertyValues::Float(value[0]),
-				ScenePropertyValues::Float(value[1]),
-				ScenePropertyValues::Float(value[2])
-			});
-		};
-		auto double3 = [](const std::array<double, 3>& value)
-		{
-			return ScenePropertyValues::Array({
-				ScenePropertyValues::Float(value[0]),
-				ScenePropertyValues::Float(value[1]),
-				ScenePropertyValues::Float(value[2])
-			});
-		};
-		std::vector<ScenePropertyValue> celestialBodies;
-		celestialBodies.reserve(settings.physicalAtmosphere.celestialBodies.size());
-		for (const CelestialBodySettings& body :
-			settings.physicalAtmosphere.celestialBodies)
-		{
-			celestialBodies.push_back(ScenePropertyValues::Object({
-				{ "name", ScenePropertyValues::String(body.name) },
-				{ "lightEntityId", ScenePropertyValues::String(body.lightEntityId) },
-				{ "disk", ScenePropertyValues::Object({
-					{ "enabled", ScenePropertyValues::Bool(body.disk.enabled) },
-					{ "angularRadiusRadians", ScenePropertyValues::Float(body.disk.angularRadiusRadians) },
-					{ "featherRadians", ScenePropertyValues::Float(body.disk.featherRadians) },
-					{ "radianceScale", ScenePropertyValues::Float(body.disk.radianceScale) },
-					{ "occlusionStrength", ScenePropertyValues::Float(body.disk.occlusionStrength) }
-				}) }
-			}));
-		}
-		const CloudSettings& cloud = settings.volumetricClouds;
-		m_PendingScenePropertyEdits.push_back({
-			"/settings/environment",
-			ScenePropertyValues::Object({
-                { "skyLighting", ScenePropertyValues::Object({ { "intensity", ScenePropertyValues::Float(settings.skyLighting.intensity) } }) },
-				{ "planet", ScenePropertyValues::Object({
-					{ "centerWorldMeters", double3(settings.planet.centerWorldMeters) },
-					{ "bottomRadiusMeters", ScenePropertyValues::Float(settings.planet.bottomRadiusMeters) },
-					{ "atmosphereHeightMeters", ScenePropertyValues::Float(settings.planet.atmosphereHeightMeters) }
-				}) },
-				{ "physicalAtmosphere", ScenePropertyValues::Object({
-					{ "enabled", ScenePropertyValues::Bool(settings.physicalAtmosphere.enabled) },
-					{ "groundAlbedo", float3(settings.physicalAtmosphere.groundAlbedo) },
-					{ "rayleigh", ScenePropertyValues::Object({
-						{ "scatteringPerMeterAtGround", float3(settings.physicalAtmosphere.rayleigh.scatteringPerMeterAtGround) },
-						{ "densityScaleHeightMeters", ScenePropertyValues::Float(settings.physicalAtmosphere.rayleigh.densityScaleHeightMeters) }
-					}) },
-					{ "mie", ScenePropertyValues::Object({
-						{ "scatteringPerMeterAtGround", float3(settings.physicalAtmosphere.mie.scatteringPerMeterAtGround) },
-						{ "absorptionPerMeterAtGround", float3(settings.physicalAtmosphere.mie.absorptionPerMeterAtGround) },
-						{ "densityScaleHeightMeters", ScenePropertyValues::Float(settings.physicalAtmosphere.mie.densityScaleHeightMeters) },
-						{ "anisotropy", ScenePropertyValues::Float(settings.physicalAtmosphere.mie.anisotropy) }
-					}) },
-					{ "ozone", ScenePropertyValues::Object({
-						{ "absorptionPerMeter", float3(settings.physicalAtmosphere.ozone.absorptionPerMeter) },
-						{ "centerAltitudeMeters", ScenePropertyValues::Float(settings.physicalAtmosphere.ozone.centerAltitudeMeters) },
-						{ "halfWidthMeters", ScenePropertyValues::Float(settings.physicalAtmosphere.ozone.halfWidthMeters) }
-					}) },
-					{ "aerialPerspective", ScenePropertyValues::Object({
-						{ "distanceScale", ScenePropertyValues::Float(settings.physicalAtmosphere.aerialPerspective.distanceScale) }
-					}) },
-					{ "mainLightVolumetricScatteringScale", ScenePropertyValues::Float(
-						settings.physicalAtmosphere.mainLightVolumetricScatteringScale) },
-					{ "celestialBodies", ScenePropertyValues::Array(std::move(celestialBodies)) }
-				}) },
-				{ "heightFog", ScenePropertyValues::Object({
-					{ "enabled", ScenePropertyValues::Bool(settings.heightFog.enabled) },
-					{ "groundHeightWorldMeters", ScenePropertyValues::Float(settings.heightFog.groundHeightWorldMeters) },
-					{ "visibilityAtGroundMeters", ScenePropertyValues::Float(settings.heightFog.visibilityAtGroundMeters) },
-					{ "densityFalloffHeightMeters", ScenePropertyValues::Float(settings.heightFog.densityFalloffHeightMeters) },
-					{ "startDistanceMeters", ScenePropertyValues::Float(settings.heightFog.startDistanceMeters) },
-					{ "nearFadeDistanceMeters", ScenePropertyValues::Float(settings.heightFog.nearFadeDistanceMeters) },
-					{ "maximumDistanceMeters", ScenePropertyValues::Float(settings.heightFog.maximumDistanceMeters) },
-					{ "farFadeDistanceMeters", ScenePropertyValues::Float(settings.heightFog.farFadeDistanceMeters) },
-					{ "singleScatteringAlbedo", float3(settings.heightFog.singleScatteringAlbedo) },
-					{ "anisotropy", ScenePropertyValues::Float(settings.heightFog.anisotropy) },
-					{ "emissivePerMeter", float3(settings.heightFog.emissivePerMeter) },
-					{ "skyLightingScale", ScenePropertyValues::Float(settings.heightFog.skyLightingScale) },
-					{ "mainLightVolumetricScale", ScenePropertyValues::Float(settings.heightFog.mainLightVolumetricScale) },
-					{ "receiveCloudShadows", ScenePropertyValues::Bool(settings.heightFog.receiveCloudShadows) }
-				}) },
-				{ "volumetricClouds", ScenePropertyValues::Object({
-					{ "enabled", ScenePropertyValues::Bool(cloud.enabled) },
-					{ "cloudMinHeight", ScenePropertyValues::Float(cloud.cloudMinHeight) },
-					{ "cloudMaxHeight", ScenePropertyValues::Float(cloud.cloudMaxHeight) },
-					{ "density", ScenePropertyValues::Float(cloud.density) },
-					{ "coverage", ScenePropertyValues::Float(cloud.coverage) },
-					{ "sunBrightness", ScenePropertyValues::Float(cloud.sunBrightness) },
-					{ "mainTileMeters", ScenePropertyValues::Float(cloud.mainTileMeters) },
-					{ "detailTileMeters", ScenePropertyValues::Float(cloud.detailTileMeters) },
-					{ "mainHeightScale", ScenePropertyValues::Float(cloud.mainHeightScale) },
-					{ "detailHeightScale", ScenePropertyValues::Float(cloud.detailHeightScale) },
-					{ "thresholdLowCoverage", ScenePropertyValues::Float(cloud.thresholdLowCoverage) },
-					{ "thresholdHighCoverage", ScenePropertyValues::Float(cloud.thresholdHighCoverage) },
-					{ "densityRemapLow", ScenePropertyValues::Float(cloud.densityRemapLow) },
-					{ "densityRemapHigh", ScenePropertyValues::Float(cloud.densityRemapHigh) },
-					{ "mainErosionStrength", ScenePropertyValues::Float(cloud.mainErosionStrength) },
-					{ "detailErosionStrength", ScenePropertyValues::Float(cloud.detailErosionStrength) },
-					{ "edgeErosionStrength", ScenePropertyValues::Float(cloud.edgeErosionStrength) },
-					{ "verticalShapePower", ScenePropertyValues::Float(cloud.verticalShapePower) },
-					{ "detailErosionLow", ScenePropertyValues::Float(cloud.detailErosionLow) },
-					{ "detailErosionHigh", ScenePropertyValues::Float(cloud.detailErosionHigh) },
-					{ "detailEdgeStrength", ScenePropertyValues::Float(cloud.detailEdgeStrength) },
-					{ "sigmaTRef", ScenePropertyValues::Float(cloud.sigmaTRef) },
-					{ "viewAbsorption", ScenePropertyValues::Float(cloud.viewAbsorption) },
-					{ "lightAbsorption", ScenePropertyValues::Float(cloud.lightAbsorption) },
-					{ "singleScatteringAlbedo", ScenePropertyValues::Float(cloud.singleScatteringAlbedo) },
-					{ "forwardEccentricity", ScenePropertyValues::Float(cloud.forwardEccentricity) },
-					{ "backwardEccentricity", ScenePropertyValues::Float(cloud.backwardEccentricity) },
-					{ "msAttenuation", ScenePropertyValues::Float(cloud.msAttenuation) },
-					{ "msContribution", ScenePropertyValues::Float(cloud.msContribution) },
-					{ "msEccentricity", ScenePropertyValues::Float(cloud.msEccentricity) },
-					{ "scatteringTintR", ScenePropertyValues::Float(cloud.scatteringTintR) },
-					{ "scatteringTintG", ScenePropertyValues::Float(cloud.scatteringTintG) },
-					{ "scatteringTintB", ScenePropertyValues::Float(cloud.scatteringTintB) },
-					{ "scatterSourceODScale", ScenePropertyValues::Float(cloud.scatterSourceODScale) },
-					{ "scatterSourceCurvePow", ScenePropertyValues::Float(cloud.scatterSourceCurvePow) },
-					{ "aoUpwardScale", ScenePropertyValues::Float(cloud.aoUpwardScale) },
-					{ "ambientBottomStrength", ScenePropertyValues::Float(cloud.ambientBottomStrength) },
-					{ "ambientTopStrength", ScenePropertyValues::Float(cloud.ambientTopStrength) },
-					{ "ambientDuskWarmth", ScenePropertyValues::Float(cloud.ambientDuskWarmth) },
-					{ "boundaryConfidence", ScenePropertyValues::Float(cloud.boundaryConfidence) },
-					{ "boundaryWrap", ScenePropertyValues::Float(cloud.boundaryWrap) },
-					{ "phiFwdIntensity", ScenePropertyValues::Float(cloud.phiFwdIntensity) },
-					{ "phiFwdDepthPow", ScenePropertyValues::Float(cloud.phiFwdDepthPow) },
-					{ "phiFwdDepthBias", ScenePropertyValues::Float(cloud.phiFwdDepthBias) },
-					{ "phiFwdMSBuildScale", ScenePropertyValues::Float(cloud.phiFwdMSBuildScale) },
-					{ "phiFwdCompress", ScenePropertyValues::Float(cloud.phiFwdCompress) },
-					{ "phiFwdMaxDistance", ScenePropertyValues::Float(cloud.phiFwdMaxDistance) },
-					{ "phiFwdConeRatio", ScenePropertyValues::Float(cloud.phiFwdConeRatio) },
-					{ "phiFwdMinStep", ScenePropertyValues::Float(cloud.phiFwdMinStep) },
-					{ "lightStepCount", ScenePropertyValues::Float(cloud.lightStepCount) },
-					{ "boundaryGradientStep", ScenePropertyValues::Float(cloud.boundaryGradientStep) },
-					{ "boundaryGradientStrength", ScenePropertyValues::Float(cloud.boundaryGradientStrength) },
-					{ "shadingDebugMode", ScenePropertyValues::Float(cloud.shadingDebugMode) },
-					{ "shadow", ScenePropertyValues::Object({
-						{ "enabled", ScenePropertyValues::Bool(cloud.shadow.enabled) },
-						{ "atmosphereStrength", ScenePropertyValues::Float(cloud.shadow.atmosphereStrength) },
-						{ "ambientOcclusionStrength", ScenePropertyValues::Float(cloud.shadow.ambientOcclusionStrength) }
-					}) }
-				}) }
-			})
-		});
-	}
+    void EngineAPIImpl::CommitEnvironmentSettings()
+    {
+        m_PendingScenePropertyEdits.push_back({"/settings/environment",
+            ScenePropertyValues::FromSerializedValue(Vans::WriteSceneEnvironmentSettings(GetEnvironmentSettings()))});
+    }
+
 	std::vector<ScenePropertyEdit> EngineAPIImpl::ConsumeScenePropertyEdits()
 	{
 		std::vector<ScenePropertyEdit> edits = std::move(m_PendingScenePropertyEdits);
@@ -11442,6 +11422,18 @@ namespace Vans::EditorAPI
 	{
 		return m_PlayState;
 	}
+
+    void EngineAPIImpl::UpdateGameCursorViewport(bool interactive)
+    {
+        Vans::VansInputManager::Get().SetCursorContext(
+            interactive && m_PlayState == EnginePlayState::Play
+                ? Vans::VansCursorContext::Viewport : Vans::VansCursorContext::Inactive);
+    }
+
+    bool EngineAPIImpl::IsGameCursorHidden() const
+    {
+        return Vans::VansInputManager::Get().GetEffectiveCursorMode() == Vans::VansCursorMode::Hidden;
+    }
 
 	void EngineAPIImpl::SetPlayState(EnginePlayState state)
 	{
@@ -11466,109 +11458,11 @@ namespace Vans::EditorAPI
 			QueueTerrainPixelChange();
 		}
 		m_PlayState = state;
-		// 编辑器 Play 仍与完整编辑器 UI 共用一个原生窗口。GLFW 的捕获模式会
-		// 同时锁定并隐藏系统光标，因此编辑器内始终禁止脚本开启捕获；独立运行时
-		// 继续由 ForestRuntimeExports 显式开放该能力。
-		Vans::VansInputManager::Get().SetCursorCaptureAllowed(false);
+        UpdateGameCursorViewport(false);
+        if (state == EnginePlayState::Edit)
+            Vans::VansInputManager::Get().SetCursorMode(Vans::VansCursorMode::Visible);
 		Vans::VansEventBus::Get().PublishNow(
 			VansEditorPlayStateChangedEvent{ previousState, state });
-	}
-
-	EntityId EngineAPIImpl::RaycastScene(const Ray&) const
-	{
-		return InvalidEntityId;
-	}
-
-	std::string EngineAPIImpl::PickRuntimeEntity(const Ray& ray) const
-	{
-		auto* scene = static_cast<VansGraphics::VansScene*>(m_Scene);
-		if (!scene)
-			return {};
-
-		const glm::vec3 rayOrigin = ToRuntimeVec3(ray.origin);
-		const glm::vec3 rayDirection = glm::normalize(ToRuntimeVec3(ray.direction));
-		float bestT = FLT_MAX;
-		VansGraphics::VansRenderNode* bestNode = nullptr;
-
-		auto testNode = [&](VansGraphics::VansRenderNode* node)
-		{
-			if (!node || !node->m_Mesh)
-				return;
-
-			VansGraphics::VansTransform& transform =
-				VansGraphics::VansTransformStore::GetTransform(node->m_TransformID);
-			glm::vec3 center = transform.m_Position;
-			float radius = 1.0f;
-
-			const std::vector<float>& rawPositions = node->m_Mesh->GetMeshRawPositionData();
-			if (rawPositions.size() >= 3)
-			{
-				glm::vec3 localMin(FLT_MAX);
-				glm::vec3 localMax(-FLT_MAX);
-				for (std::size_t i = 0; i + 2 < rawPositions.size(); i += 3)
-				{
-					const glm::vec3 vertex(rawPositions[i], rawPositions[i + 1], rawPositions[i + 2]);
-					localMin = glm::min(localMin, vertex);
-					localMax = glm::max(localMax, vertex);
-				}
-
-				const glm::vec3 halfExtents = (localMax - localMin) * 0.5f * transform.m_Scale;
-				const glm::vec3 localCenter = (localMin + localMax) * 0.5f;
-				center += localCenter * transform.m_Scale;
-				radius = glm::length(halfExtents);
-			}
-			else
-			{
-				radius = glm::max(glm::length(transform.m_Scale) * 0.5f, 0.25f);
-			}
-
-			const float t = RaySphereIntersect(rayOrigin, rayDirection, center, radius);
-			if (t > 0.0f && t < bestT)
-			{
-				bestT = t;
-				bestNode = node;
-			}
-		};
-
-		for (auto* node : scene->CollectSSBOManagedRenderNodes())
-			testNode(node);
-
-		if (!bestNode)
-			return {};
-
-		if (!bestNode->m_EntityGuid.empty())
-			return bestNode->m_EntityGuid;
-		if (!bestNode->m_ParentEntityGuid.empty())
-			return bestNode->m_ParentEntityGuid;
-
-		const Vans::VansRuntimeWorld* runtimeWorld = scene->GetRuntimeWorld();
-		if (!runtimeWorld)
-			return {};
-
-		for (Vans::VansEntityHandle entity : runtimeWorld->Entities().CollectAliveEntities())
-		{
-			const Vans::VansEntityRecord* entityRecord = runtimeWorld->Entities().Get(entity);
-			if (!entityRecord)
-				continue;
-			const std::vector<Vans::VansComponentHandle> components =
-				runtimeWorld->CollectComponentsOwnedBy(entity);
-			for (Vans::VansComponentHandle component : components)
-			{
-				const auto* render = GetRuntimeComponentPayload<Vans::VansRuntimeRenderComponent>(
-					*runtimeWorld,
-					component,
-					Vans::VansRuntimeComponentType_Render);
-				if (!render)
-					continue;
-				if (render->renderNode == bestNode ||
-					std::find(render->renderNodes.begin(), render->renderNodes.end(), bestNode) !=
-						render->renderNodes.end())
-				{
-					return entityRecord->stableGuid;
-				}
-			}
-		}
-		return {};
 	}
 
 	RuntimeTransformSnapshot EngineAPIImpl::GetRuntimeTransform(
@@ -11641,7 +11535,8 @@ namespace Vans::EditorAPI
 				continue;
 
 			RuntimeMultiMeshGroupSnapshot snapshot;
-			snapshot.parentName = parentName;
+			snapshot.parentName = group.parentName;
+            snapshot.parentEntityGuid = group.parentEntityGuid;
 			snapshot.children.reserve(group.childNodes.size());
 
 			for (VansGraphics::VansRenderNode* childNode : group.childNodes)

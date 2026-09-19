@@ -1,15 +1,73 @@
 #include "../EngineCore/RenderCore/GICore/VansGIProbeLayout.h"
+#include "../EngineCore/RenderCore/GICore/VansGIScrollingGrid.h"
 #include <iostream>
 #include <map>
 #include <random>
 #include <set>
 #include <stdexcept>
 #include <cstring>
+#include <limits>
 
 namespace
 {
     using namespace VansGraphics;
     void Check(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
+    void ValidateScrollingGrid()
+    {
+        VansGIScrollingGrid grid;
+        std::string error;
+        Check(grid.Initialize({9,10,11}, 0.75f, {-0.01f,-10.0f,9.0f}, error), error.c_str());
+        std::mt19937 random(7319);
+        std::uniform_real_distribution<float> step(-2.0f,2.0f);
+        uint64_t checked = 0;
+        for (uint32_t iteration = 0; iteration < 150; ++iteration)
+        {
+            std::vector<glm::ivec3> previous(grid.ProbeCount());
+            for (uint32_t id = 0; id < previous.size(); ++id) previous[id] = grid.WorldCell(id);
+            const auto oldOrigin = grid.Origin();
+            const auto next = iteration % 19u == 0u ? grid.Center() + glm::vec3(100,-80,90) :
+                grid.Center() + glm::vec3(step(random), step(random), step(random));
+            std::vector<uint32_t> entering;
+            Check(grid.Move(next, entering, error), error.c_str());
+            const std::set<uint32_t> changed(entering.begin(), entering.end());
+            Check(changed.size() == entering.size() && std::is_sorted(entering.begin(), entering.end()), "scroll entering planes overlap");
+            std::set<uint32_t> addresses;
+            const auto dimensions = glm::ivec3(grid.Dimensions());
+            for (int z = 0; z < dimensions.z; ++z) for (int y = 0; y < dimensions.y; ++y) for (int x = 0; x < dimensions.x; ++x)
+            {
+                const auto world = grid.Origin() + glm::ivec3(x,y,z);
+                const uint32_t id = grid.PhysicalIndex(world);
+                Check(id < grid.ProbeCount() && addresses.insert(id).second && grid.WorldCell(id) == world,
+                    "scrolling world/physical mapping is not bijective");
+                const bool reused = glm::all(glm::greaterThanEqual(world, oldOrigin)) && glm::all(glm::lessThan(world, oldOrigin + dimensions));
+                Check((changed.count(id) == 0) == reused && (!reused || previous[id] == world),
+                    "scroll reused stale history or cleared an overlapping world position");
+                ++checked;
+            }
+            Check(glm::all(glm::greaterThanEqual(grid.BlendMinimum(), grid.Minimum() + 0.5f * grid.Spacing())) &&
+                glm::all(glm::lessThanEqual(grid.BlendMinimum() + grid.BlendSize(), grid.Minimum() + (glm::vec3(grid.Dimensions()) - 0.5f) * grid.Spacing())),
+                "continuous blend envelope escapes actual probe support");
+        }
+        std::vector<uint32_t> entering;
+        Check(grid.Move({0.7499f,0,0}, entering, error), error.c_str());
+        const auto before = grid.BlendMinimum();
+        Check(grid.Move({0.7501f,0,0}, entering, error), error.c_str());
+        Check(entering.size() == 110 && std::abs((grid.BlendMinimum().x-before.x)-0.0002f) < 1e-6f,
+            "single-plane scroll snapped the blend envelope or reset full volume");
+        const auto savedOrigin = grid.Origin(); const auto savedCenter = grid.Center(); const auto savedEntering = entering;
+        Check(!grid.Move({NAN,0,0}, entering, error) && grid.Origin() == savedOrigin && grid.Center() == savedCenter && entering == savedEntering,
+            "invalid scrolling input partially mutated state");
+        Check(!grid.Move({100000000.0f,0,0}, entering, error), "scrolling accepted imprecise world coordinates");
+        Check(!grid.Initialize({0,8,8}, 1, {}, error) && grid.Origin() == savedOrigin, "invalid scrolling dimensions replaced valid grid");
+        Check(grid.Move(savedCenter, entering, error) && entering.empty(), "stationary grid clears history");
+        GIResolvedRegion region; region.scrolling = true; region.scrollOffset = grid.RingOffset(); region.blendCenter = grid.Center();
+        region.volumeMin = grid.Minimum(); region.volumeSize = glm::vec3(grid.Dimensions())*grid.Spacing();
+        region.gridDimensions = grid.Dimensions(); region.probeSpacing = grid.Spacing(); region.probeCount = grid.ProbeCount();
+        const auto packet = BuildGIProbeLayoutGPUData({region}, nullptr);
+        Check(packet.size() == 11 && packet[3].w == 9 && packet[9] == glm::uvec4(grid.RingOffset(),1u) &&
+            glm::uintBitsToFloat(packet[10]) == glm::vec4(grid.Center(),0), "GPU scrolling metadata lost ring identity or continuous center");
+        std::cout << "[GIProbeLayout] scrolling: checked=" << checked << " negative coordinates, non-power dimensions, history overlap, teleport, continuous fade, atomic rejection PASS\n";
+    }
     void Report(const char* label, const VansGIProbeLayout& layout)
     {
         const auto& stats = layout.Stats();
@@ -148,6 +206,11 @@ namespace
         Check(!GISettingsResourceLayoutEquals(baseline, changed), "refinement priority did not rebuild automatic layout");
         changed = baseline; changed.regions[0].volumeFadeDistance += 0.25f;
         Check(GISettingsResourceLayoutEquals(baseline, changed), "query fade unnecessarily rebuilt geometry layout");
+        baseline.world.enabled = true; baseline.regions[1].worldOnly = true; baseline.regions[1].followView = true;
+        changed = baseline; changed.regions[1].normalBias += 0.125f; changed.regions[1].priority += 1.0f;
+        Check(GISettingsResourceLayoutEquals(baseline, changed), "rolling regular query parameters unnecessarily rebuilt fixed adaptive regions");
+        changed = baseline; changed.regions[1].followView = false;
+        Check(!GISettingsResourceLayoutEquals(baseline, changed), "scrolling mode switch reused incompatible layout metadata");
     }
     std::vector<VansGeometryTriangle> Floor()
     {
@@ -493,6 +556,6 @@ namespace
 
 bool TestGIProbeLayoutContract()
 {
-    try { Scenarios(); ValidateResourceInvalidation(); std::cout << "[GIProbeLayout] PASS: adaptive spacing, bounded lookup, balance, demand, shared corners, GPU packing, resource invalidation, budgets and atomic failure\n"; return true; }
+    try { ValidateScrollingGrid(); Scenarios(); ValidateResourceInvalidation(); std::cout << "[GIProbeLayout] PASS: adaptive spacing, bounded lookup, balance, demand, shared corners, GPU packing, resource invalidation, budgets and atomic failure\n"; return true; }
     catch (const std::exception& error) { std::cerr << "[GIProbeLayout] FAIL: " << error.what() << '\n'; return false; }
 }

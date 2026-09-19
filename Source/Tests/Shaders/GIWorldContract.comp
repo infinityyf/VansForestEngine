@@ -1,0 +1,220 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#define GI_WORLD_SET 0
+#include "../../../EngineAssets/Shaders/GIWorld/GIWorldQuery.glsl"
+#include "../../../EngineAssets/Shaders/GIWorld/GIWorldScattering.glsl"
+#include "../../../EngineAssets/Shaders/GI/GIProbeCommon.glsl"
+struct BlendRegion { vec4 volumeMin; vec4 volumeSizeAndBias; vec4 traceParams; vec4 gridDimensionsAndPriority; };
+BlendRegion regions[8];
+vec4 regionInfo;
+vec3 testLighting[8];
+float testPublished[8];
+bool testFeedback;
+bool testAllowed[8];
+vec4 TestRegion(uint region,vec3 p,vec3 n,float biasScale) { return vec4(testLighting[region],testPublished[region]); }
+#define GI_SAMPLE_REGION TestRegion
+#define GI_SAMPLE_SKY(N) vec3((N).y>0.0?1.0:0.25)
+#define GI_BLEND_NORMALIZE_FEEDBACK testFeedback
+#define GI_BLEND_REGION_ALLOWED(region) testAllowed[region]
+#include "../../../EngineAssets/Shaders/GI/GIRegionBlend.glsl"
+layout(local_size_x=32) in;
+layout(set=0,binding=7,std430) buffer Output { vec4 results[]; };
+void main()
+{
+    uint i=gl_GlobalInvocationID.x;if(i>=39u)return;GIWorldHit h;
+    if(i==38u)
+    {
+        h=GIWorldTraceVoxels(vec3(.1,.5,.5),vec3(1,0,0),0,6,true,0,-1,GIWorldScatterStepBudget());
+        results[76]=vec4(h.t,h.transmission,h.valid?1:0,float(h.failure));
+        results[77]=GIWorldTraceHeight(vec3(-4,2,-4),vec3(0,-1,0),0,10).material;return;
+    }
+    if(i==37u)
+    {
+        vec3 scattered=GIWorldSparseScatterRadiance(vec3(1),vec3(2),1.0,1.0,8.0);
+        vec3 selected=GIWorldCompositeRadiance(vec3(2),.5,scattered,8.0);
+        results[74]=vec4(selected,GI_WORLD_SCATTER_PROBABILITY);
+        results[75]=vec4(selected*GI_WORLD_SCATTER_PROBABILITY+vec3(1)*(1-GI_WORLD_SCATTER_PROBABILITY),float(GIWorldScatterStepBudget()));
+        return;
+    }
+    if(i==32u || i==33u || i==35u)
+    {
+        vec3 radiance=vec3(0);bool valid=true;float lastT=0,transmission=1;
+        for(uint sampleIndex=0u;sampleIndex<1024u;++sampleIndex)
+        {
+            float tau=GIWorldScatterOpticalDepth((float(sampleIndex)+.5)/1024.0);
+            vec3 origin=i==33u?vec3(-1,.5,.5):vec3(.1,.5,.5);
+            float distance=i==32u?.8:(i==33u?4.0:6.0);
+            h=GIWorldTraceVoxels(origin,vec3(1,0,0),0,distance,true,i==35u?GIWorldScatterFootprint(4.0):0.0,tau);
+            valid=valid&&h.valid;lastT=h.t;transmission=h.transmission;
+            if(h.scattering.w>=0.0)
+            {
+                valid=valid&&h.scattering.w>=0.0&&h.scattering.w<h.t;
+                radiance+=GIWorldScatterRadiance(h.scattering.rgb,vec3(1),1.0,1.0);
+            }
+        }
+        radiance/=1024.0;
+        results[i*2]=vec4(radiance,transmission);
+        results[i*2+1]=vec4(GIWorldCompositeRadiance(vec3(1),transmission,radiance,8.0),valid?lastT:-1.0);
+        return;
+    }
+    if(i==34u)
+    {
+        h=GIWorldTraceVoxels(vec3(.1,.5,.5),vec3(1,0,0),0,.8,false,0,0);
+        results[68]=vec4(h.scattering.w,h.t,h.transmission,h.valid?1:0);
+        h=GIWorldTraceVoxels(vec3(4,3,3),vec3(1,0,0),0,2,true,0,0);
+        results[69].x=h.scattering.w;
+        h=GIWorldTraceVoxels(vec3(.1,.5,.5),vec3(1,0,0),0,.8,true,0,10);
+        results[69].y=h.scattering.w;
+        h=GIWorldTraceVoxels(vec3(1.1,.5,.5),vec3(1,0,0),0,.8,true,0,0);
+        results[69].z=h.scattering.w;results[69].w=h.t;
+        return;
+    }
+    if(i==36u)
+    {
+        GIWorldHit blocked=GIWorldTrace(vec3(.5,.5,.5),vec3(1,0,0),0,2.5,true);
+        GIWorldHit incoming=GIWorldTrace(vec3(.5,.5,.5),vec3(0,1,0),0,2.5,true);
+        results[72]=vec4(blocked.t,blocked.valid?1:0,incoming.transmission,incoming.valid?1:0);
+        vec3 black=GIWorldScatterRadiance(vec3(1),vec3(1),blocked.t<2.5?0:blocked.transmission,1);
+        vec3 green=GIWorldSparseScatterRadiance(vec3(.1,.7,.2),vec3(1),incoming.transmission,.5,8.0);
+        results[73]=vec4(green,black.r);
+        return;
+    }
+    testFeedback=false;
+    for(uint region=0u;region<8u;++region)testAllowed[region]=true;
+    if(i==31u)
+    {
+        testFeedback=true;regionInfo=vec4(2,0,0,0);
+        regions[0]=BlendRegion(vec4(0),vec4(10),vec4(0,0,2,0),vec4(0));
+        regions[1]=BlendRegion(vec4(-20),vec4(50),vec4(0,0,2,0),vec4(0,0,0,-1));
+        testLighting[0]=vec3(.2);testLighting[1]=vec3(.6);
+        testPublished[0]=testPublished[1]=1;
+        vec3 p=vec3(1,5,5),n=vec3(0,1,0);
+        results[62].x=GI_BlendRegionLighting(p,n,1).x;
+        testPublished[0]=0;
+        results[62].y=GI_BlendRegionLighting(vec3(2,5,5),n,1).x;
+        testPublished[0]=1;testLighting[0]=vec3(0);
+        results[62].z=GI_BlendRegionLighting(vec3(2,5,5),n,1).x;
+        testPublished[0]=testPublished[1]=0;
+        results[62].w=GI_BlendRegionLighting(p,n,1).x;
+        testPublished[0]=testPublished[1]=1;testLighting[0]=vec3(.2);
+        testAllowed[0]=false;
+        results[63].x=GI_BlendRegionLighting(vec3(2,5,5),n,1).x;
+        testAllowed[0]=true;testPublished[0]=.5;
+        results[63].y=GI_BlendRegionLighting(vec3(2,5,5),n,1).x;
+        testPublished[0]=1;regionInfo.x=1;
+        results[63].z=GI_BlendRegionLighting(vec3(.001,5,5),n,1).x;
+        results[63].w=GI_BlendRegionLighting(vec3(-1,5,5),n,1).x;
+        return;
+    }
+    if(i>=26u)
+    {
+        float footprint=i==26u?0.0:(i==29u?1.0:(i==28u?64.0:2.0));
+        if(i==30u)h=GIWorldTrace(vec3(.1,3.5,.5),vec3(1,0,0),0,6,true,footprint);
+        else h=GIWorldTraceVoxels(vec3(.1,.5,.5),vec3(1,0,0),0,6,true,footprint);
+        results[i*2]=vec4(h.t,h.transmission,h.valid?1:0,0);
+        results[i*2+1]=vec4(float(h.failure),0,0,0);return;
+    }
+    if(i>=20u)
+    {
+        // 远级射线的 t 达到数百米后，固定 1e-5 小于 float 的相邻数间距。
+        if(i==20u)h=GIWorldTraceHeight(vec3(-512,-.5,-4),vec3(1,0,0),0,520);
+        else if(i==21u)h=GIWorldTraceHeight(vec3(512,.5,-4),vec3(-1,0,0),0,520);
+        else if(i==22u)h=GIWorldTraceVoxels(vec3(-512,.5,.5),vec3(1,0,0),512,514,true);
+        else if(i==23u)h=GIWorldTraceVoxels(vec3(512,.5,.5),vec3(-1,0,0),509,512,true);
+        else if(i==24u)h=GIWorldTraceVoxels(vec3(-512,3,3.5),normalize(vec3(1,-.0002,0)),512,514,true);
+        else h=GIWorldTraceVoxels(vec3(512,3,3.5),normalize(vec3(-1,-.0002,0)),509,511,true);
+        if(i==20u || i==21u)
+        {
+            // 同一直线只平移射线起点，首个地表交点应保持一致。
+            for(uint shift=0u;shift<10u;++shift)
+            {
+                float distance=16.0*float(1u<<shift),sign=i==20u?1.0:-1.0;
+                GIWorldHit shifted=GIWorldTraceHeight(vec3(-sign*distance,-sign*.5,-4),vec3(sign,0,0),0,distance+8);
+                if(!shifted.valid || abs(shifted.t-(distance-2))>.002)h.valid=false;
+            }
+        }
+        results[i*2]=vec4(h.t,h.transmission,h.valid?1:0,h.backface?1:0);return;
+    }
+    if(i>=18u)
+    {
+        h=GIWorldTraceHeight(vec3(-4,i==18u?.75:.5,-4),normalize(vec3(1,0,1)),0,11.3137085);
+        results[i*2]=vec4(h.t,h.transmission,h.valid?1:0,h.backface?1:0);return;
+    }
+    if(i>=13u)
+    {
+        regions[0]=BlendRegion(vec4(0),vec4(10),vec4(0,0,2,0),vec4(0));
+        regions[1]=BlendRegion(vec4(-20),vec4(50),vec4(0,0,2,0),vec4(0,0,0,-1));
+        testLighting[0]=vec3(.2);testLighting[1]=vec3(.6);regionInfo=vec4(1,0,0,0);
+        testPublished[0]=testPublished[1]=1.0;
+        vec3 N=vec3(0,1,0);
+        if(i==13u)
+        {
+            results[i*2]=vec4(GI_BlendRegionLighting(vec3(-.01,5,5),N,1).x,
+                GI_BlendRegionLighting(vec3(0,5,5),N,1).x,
+                GI_BlendRegionLighting(vec3(1,5,5),N,1).x,
+                GI_BlendRegionLighting(vec3(2,5,5),N,1).x);
+            results[i*2+1]=vec4(GI_BlendRegionLighting(vec3(.001,5,5),N,1).x);
+        }
+        else if(i==14u)
+        {
+            regionInfo.x=2;
+            results[i*2]=vec4(GI_BlendRegionLighting(vec3(0,5,5),N,1).x,
+                GI_BlendRegionLighting(vec3(1,5,5),N,1).x,
+                GI_BlendRegionLighting(vec3(2,5,5),N,1).x,0);
+            testLighting[0]=vec3(0);
+            results[i*2].w=GI_BlendRegionLighting(vec3(2,5,5),N,1).x;
+            regions[1].volumeMin=regions[0].volumeMin;regions[1].volumeSizeAndBias=regions[0].volumeSizeAndBias;
+            testLighting[0]=vec3(.2);
+            results[i*2+1]=vec4(GI_BlendRegionLighting(vec3(1,5,5),N,1).x);
+        }
+        else if(i==15u)
+        {
+            results[i*2]=vec4(GI_BlendRegionLighting(vec3(-1,5,5),N,1).x,
+                GI_BlendRegionLighting(vec3(-1,5,5),-N,0).x,0,0);
+            regions[0].traceParams.z=0;
+            results[i*2].z=GI_BlendRegionLighting(vec3(0,5,5),N,1).x;
+            regionInfo.x=2;regions[1].gridDimensionsAndPriority.w=1;
+            results[i*2].w=GI_BlendRegionLighting(vec3(2,5,5),N,1).x;
+        }
+        else if(i==16u)
+        {
+            regionInfo.x=2;testPublished[0]=0;
+            results[i*2].x=GI_BlendRegionLighting(vec3(2,5,5),N,1).x;
+            testPublished[0]=.5;
+            results[i*2].y=GI_BlendRegionLighting(vec3(2,5,5),N,1).x;
+            testPublished[0]=1;testLighting[0]=vec3(0);
+            results[i*2].z=GI_BlendRegionLighting(vec3(2,5,5),N,1).x;
+            testPublished[0]=testPublished[1]=0;
+            results[i*2].w=GI_BlendRegionLighting(vec3(2,5,5),N,1).x;
+        }
+        else
+        {
+            testPublished[0]=0;
+            results[i*2]=vec4(GI_BlendRegionLighting(vec3(1,5,5),N,1).x,
+                GI_BlendRegionLighting(vec3(2,5,5),N,1).x,
+                GI_BlendRegionLighting(vec3(-1,5,5),N,1).x,0);
+        }
+        return;
+    }
+    if(i==0u)h=GIWorldTraceHeight(vec3(-4,2,-4),vec3(0,-1,0),0,10);
+    else if(i==1u)h=GIWorldTraceHeight(vec3(0,2,0),vec3(0,-1,0),0,10);
+    else if(i==2u)h=GIWorldTraceVoxels(vec3(.1,.5,.5),vec3(1,0,0),0,.8,true);
+    else if(i==3u)h=GIWorldTraceVoxels(vec3(-1,.5,.5),vec3(1,0,0),0,4,true);
+    else if(i==4u)h=GIWorldTraceVoxels(vec3(4,3,3),vec3(1,0,0),0,2,true);
+    else if(i==5u)h=GIWorldTraceVoxels(vec3(8.1,.5,.5),vec3(1,0,0),0,1,true);
+    else if(i==6u)h=GIWorldTraceVoxels(vec3(-3,3,3),vec3(1,0,0),0,100,true);
+    else if(i==7u)h=GIWorldTraceHeight(vec3(-4,-2,-4),vec3(0,1,0),0,10);
+    else if(i==8u)h=GIWorldTraceVoxels(vec3(2.5,3.0,3.5),normalize(vec3(1,-0.0002,0)),0,0.25,true);
+    else
+    {
+        // 同一近地表起点：地形修正后向上的射线可见，普通物体不能被提升穿过地形。
+        bool terrainReceiver=i!=10u;
+        vec3 p=GIWorldReceiverPosition(vec3(-4,-1.02,-4),terrainReceiver,0.0001);
+        if(i==11u)p=GIWorldReceiverPosition(vec3(-4,-.8,-4),true,0.0001);
+        if(i==12u)p=GIWorldReceiverPosition(vec3(-40,-1.02,-4),true,0.0001);
+        h=GIWorldTraceHeight(p,vec3(0,1,0),0,1);
+        results[i*2+1]=vec4(p,0);
+    }
+    results[i*2]=vec4(h.t,h.transmission,h.valid?1:0,h.backface?1:0);
+    if(i<9u)results[i*2+1]=vec4(h.normal,float(h.failure));
+}

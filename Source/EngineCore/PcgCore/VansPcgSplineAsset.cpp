@@ -39,13 +39,21 @@ std::vector<std::string> ValidatePcgSplineAsset(const VansPcgSplineAsset& asset,
         range(spline.blendWidth, 0.001f, 1000, path + ".blendWidth");
         range(spline.surfaceOffset, 0, 1, path + ".surfaceOffset");
         range(spline.waterSurfaceDrop, 0, 100, path + ".waterSurfaceDrop");
+        if (spline.kind == VansPcgSplineKind::River)
+        {
+            range(spline.waterBlendWidthMeters, 0, 1000, path + ".waterBlendWidthMeters");
+            range(spline.waterBlendStartMeters, 0, 1000000, path + ".waterBlendStartMeters");
+            range(spline.waterBlendEndMeters, 0, 1000000, path + ".waterBlendEndMeters");
+            range(spline.wetBankWidthMeters, 4.0f * asset.fieldTexelSize, 1000,
+                path + ".wetBankWidthMeters");
+            range(spline.wetnessStrength, 0, 1, path + ".wetnessStrength");
+        }
         range(spline.textureRepeat, 0.01f, 10000, path + ".textureRepeat");
         range(spline.fadeInDistance, 0, 1000000, path + ".fadeInDistance");
         range(spline.fadeOutDistance, 0, 1000000, path + ".fadeOutDistance");
         range(spline.coordinateOffset, -10000000, 10000000, path + ".coordinateOffset");
         range(spline.envelopeOffset, 0, 10000000, path + ".envelopeOffset");
         range(spline.envelopeLength, 0, 10000000, path + ".envelopeLength");
-        range(spline.flowCycleSeconds, 0.05f, 60, path + ".flowCycleSeconds");
         if (spline.flowSign != 1 && spline.flowSign != -1) errors.push_back(path + ".flowSign must be +1 or -1.");
         if (spline.coordinateSign != 1 && spline.coordinateSign != -1) errors.push_back(path + ".coordinateSign must be +1 or -1.");
         if (spline.continuation && spline.envelopeLength <= 0) errors.push_back(path + " requires a positive continuation envelope.");

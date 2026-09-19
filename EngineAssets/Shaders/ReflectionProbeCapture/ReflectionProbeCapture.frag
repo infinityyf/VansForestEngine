@@ -98,9 +98,6 @@ layout(set = 1, binding = 0) uniform CaptureCamera
     mat4 viewProjection;
     mat4 inverseViewProjection;
     vec4 position;
-    vec4 giVolumeMin;
-    vec4 giVolumeSizeAndBias;
-	vec4 giGridDimensions;
 } captureCamera;
 
 layout(push_constant) uniform CaptureDraw
@@ -111,36 +108,28 @@ layout(push_constant) uniform CaptureDraw
     vec4 params;
 } drawData;
 
-vec3 SampleIndirectDiffuseRadiance(vec3 worldPosition, vec3 normal)
+vec4 SampleCaptureGIRegion(uint region, vec3 position, vec3 normal, float biasScale)
 {
-    if (GI_LayoutIsSparse())
-    {
-        uint region = GI_LayoutSelectRegion(worldPosition);
-        if (region == GI_INVALID_ADDRESS)
-            return max(SampleSkyDiffuseIrradiance(skyDiffuseEnvironment, normal) / PI, vec3(0.0));
-        return GI_SampleProbeIrradianceAtlasVisible(region, ivec3(1),
-            giIrradianceAtlas[nonuniformEXT(region)], giVisibilityAtlas[nonuniformEXT(region)],
-            worldPosition, normal, GI_LayoutRegionMin(region).xyz, GI_LayoutRegionSize(region).xyz,
-            GI_LayoutRegionSize(region).w, 0.0);
-    }
-    vec3 samplePosition = worldPosition + normalize(normal) * captureCamera.giVolumeSizeAndBias.w;
-    bool insideGIVolume = GI_IsInsideVolume(
-        samplePosition,
-        captureCamera.giVolumeMin.xyz,
-        captureCamera.giVolumeSizeAndBias.xyz);
-
-	vec3 probeLighting = GI_SampleProbeIrradianceAtlasVisible(
-		0u, ivec3(captureCamera.giGridDimensions.xyz), giIrradianceAtlas[0], giVisibilityAtlas[0],
-		worldPosition, normal, captureCamera.giVolumeMin.xyz,
-		captureCamera.giVolumeSizeAndBias.xyz, captureCamera.giVolumeSizeAndBias.w, 0.0);
-
-    if (insideGIVolume)
-        return probeLighting;
-
-    // sky diffuse cubemap 存的是 irradiance；这里返回 lighting 项，
-    // 和 GI probe helper 一样在调用处再乘 baseColor/kD。
-    return max(SampleSkyDiffuseIrradiance(skyDiffuseEnvironment, normal) / PI, vec3(0.0));
+    GIProbeLighting sampleValue = GI_SampleProbeIrradianceAtlasVisible(region,
+        ivec3(GI_LayoutRegionWord(region, 2u).xyz),
+        giIrradianceAtlas[nonuniformEXT(region)], giVisibilityAtlas[nonuniformEXT(region)],
+        position, normal, GI_LayoutRegionMin(region).xyz, GI_LayoutRegionSize(region).xyz,
+        GI_LayoutRegionSize(region).w * biasScale, 0.0);
+    return vec4(sampleValue.irradiance, sampleValue.published);
 }
+
+// 反射采集与屏幕接收共享同一混合规则，规则网格也必须查询所有区域。
+#define GI_BLEND_REGION_COUNT GI_LayoutRegionCount()
+#define GI_BLEND_REGION_MIN(region) GI_LayoutRegionMin(region).xyz
+#define GI_BLEND_REGION_SIZE(region) GI_LayoutRegionSize(region).xyz
+#define GI_BLEND_REGION_FADE(region) GI_LayoutRegionTrace(region).y
+#define GI_BLEND_REGION_PRIORITY(region) GI_LayoutRegionTrace(region).z
+#define GI_SAMPLE_REGION SampleCaptureGIRegion
+#define GI_SAMPLE_SKY(N) max(SampleSkyDiffuseIrradiance(skyDiffuseEnvironment, N) / PI, vec3(0.0))
+#include "../GI/GIRegionBlend.glsl"
+
+vec3 SampleIndirectDiffuseRadiance(vec3 worldPosition, vec3 normal)
+{ return GI_BlendRegionLighting(worldPosition, normal, 1.0); }
 
 float DistributionGGX(vec3 N, vec3 H, float roughness)
 {

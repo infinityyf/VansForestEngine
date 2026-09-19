@@ -1,4 +1,4 @@
-﻿#include "VansSceneWindow.h"
+#include "VansSceneWindow.h"
 
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include "imgui.h"
@@ -11,6 +11,9 @@
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include "../VansEditorSelection.h"
+#include "../VansEditorSceneMath.h"
+#include "../VansScenePickingService.h"
+#include "../VansSceneViewCommands.h"
 #include "../VansEditorObjectReference.h"
 #include "../VansSceneAssetPlacementService.h"
 #include "../VansEditorWindow.h"
@@ -24,6 +27,7 @@
 
 void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
+    m_GameCursorViewportInteractive = false;
 	const auto pcgBrush = editorAPI.GetPcgBrushSnapshot();
 	const auto splineEditor = editorAPI.GetPcgSplineSnapshot();
 	const bool splineToolActive=splineEditor.editable && splineEditor.toolEnabled;
@@ -134,6 +138,9 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
         // ── No scene loaded: show an empty black region ───────────────────
         if (!editorAPI.IsRuntimeSceneReady())
         {
+            m_CameraController.Reset(m_Camera);
+            Vans::VansSceneViewCommands::Clear();
+            m_ObjectPickPressed = false;
             ImVec2 cursor = ImGui::GetCursorScreenPos();
             ImDrawList* drawList = ImGui::GetWindowDrawList();
             drawList->AddRectFilled(cursor, ImVec2(cursor.x + viewportSize.x, cursor.y + viewportSize.y), IM_COL32(0, 0, 0, 255));
@@ -180,6 +187,12 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
             ImGui::SetCursorPos(ImVec2(cursor.x + offset.x, cursor.y + offset.y));
 
             ImGui::Image(sceneTexture, drawSize);
+            const bool sceneImageHovered = ImGui::IsItemHovered();
+            // 只允许主原生窗口的游戏图像区域接管显隐，排除遮挡、弹窗和工具栏。
+            m_GameCursorViewportInteractive = ImGui::IsItemHovered() &&
+                ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+                ImGui::GetWindowViewport() == ImGui::GetMainViewport() &&
+                !ImGui::GetIO().AppFocusLost;
 
             // ── Gizmo overlay (drawn on top of the scene image) ───────────────
             // Use the exact screen-space rect of the rendered texture, not the
@@ -200,7 +213,7 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
                             static_cast<std::size_t>(payload->DataSize),
                             droppedHandle) &&
                             droppedHandle.domain == Vans::EditorObjectDomain::ProjectAsset &&
-                            droppedHandle.assetType == Vans::EditorAPI::AssetType::Model;
+                            (droppedHandle.assetType == Vans::EditorAPI::AssetType::Model || droppedHandle.assetType == Vans::EditorAPI::AssetType::Prefab);
                         if (validModelDrop)
                         {
                             // Screen -> world: ray-ground plane intersection.
@@ -237,7 +250,9 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
                             }
 
                             auto* editService = VansEditorWindow::GetSceneEditService();
-                            if (editService)
+                            if (droppedHandle.assetType == Vans::EditorAPI::AssetType::Prefab)
+                                VansEditorWindow::QueuePrefabPlacement(droppedHandle.guid, {}, worldPos.x, worldPos.y, worldPos.z);
+                            else if (editService)
                             {
                                 const VansSceneAssetPlacementService::Result result =
                                     VansSceneAssetPlacementService::PlaceModelAsset(
@@ -669,6 +684,7 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
             // ── Object picking: LMB click when gizmo is not being dragged ─────
             const ImVec2 mousePos = ImGui::GetMousePos();
             const bool mouseInsideSceneImage =
+                ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
                 mousePos.x >= imageScreenPos.x &&
                 mousePos.y >= imageScreenPos.y &&
                 mousePos.x <= imageScreenPos.x + drawSize.x &&
@@ -676,12 +692,24 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
 
             if (m_Camera)
             {
+                const bool canFrame = !ImGui::GetIO().WantTextInput && !ImGui::IsAnyItemActive() &&
+                    !ImGuizmo::IsUsing() && !previewHandleActive && !terrainBrushActive && !pcgBrushActive &&
+                    !splineToolActive && !ImGui::IsMouseDown(ImGuiMouseButton_Right) &&
+                    editorAPI.GetPlayState() == Vans::EditorAPI::EnginePlayState::Edit;
+                if (canFrame && (sceneImageHovered || ImGui::IsWindowFocused()) && ImGui::IsKeyPressed(ImGuiKey_F, false))
+                    Vans::VansSceneViewCommands::RequestFrameSelection();
+                Vans::EditorAPI::EditorSceneBounds frameBounds;
+                if (Vans::VansSceneViewCommands::ConsumeFrameSelection(editorAPI, frameBounds))
+                    m_CameraController.Frame(m_Camera, frameBounds, drawSize.x / std::max(drawSize.y, 1.0f));
                 const ImVec2 mouseDelta = ImGui::GetIO().MouseDelta;
                 VansEditorCameraInputState cameraInput;
                 cameraInput.editMode = editorAPI.GetPlayState() == Vans::EditorAPI::EnginePlayState::Edit;
                 cameraInput.viewportHovered = mouseInsideSceneImage;
                 cameraInput.rightMouseClicked = ImGui::IsMouseClicked(ImGuiMouseButton_Right);
                 cameraInput.rightMouseDown = ImGui::IsMouseDown(ImGuiMouseButton_Right);
+                cameraInput.cancelFraming = ImGui::GetIO().AppFocusLost || ImGui::IsKeyPressed(ImGuiKey_Escape) ||
+                    (mouseInsideSceneImage && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) ||
+                    ImGuizmo::IsUsing() || splineToolActive;
                 cameraInput.mouseDeltaX = mouseDelta.x;
                 cameraInput.mouseDeltaY = mouseDelta.y;
                 cameraInput.forwardAxis =
@@ -858,11 +886,32 @@ void VansGraphics::VansSceneWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI
                         IM_COL32(255,170,90,255),m_PcgBrushMessage.c_str());
             }
 
-            if (mouseInsideSceneImage
-                && ImGui::IsMouseClicked(ImGuiMouseButton_Left)
-				&& !terrainBrushActive && !pcgBrushActive && !splineToolActive && !ImGuizmo::IsOver())
+            const bool canPick = !terrainBrushActive && !pcgBrushActive && !splineToolActive &&
+                !previewHandleActive && !ImGuizmo::IsOver() && !ImGuizmo::IsUsing() &&
+                !ImGui::IsMouseDown(ImGuiMouseButton_Right) && !ImGui::GetIO().KeyAlt &&
+                !ImGui::GetIO().AppFocusLost && !ImGui::GetDragDropPayload();
+            if (sceneImageHovered && canPick && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
             {
-                m_Gizmos.TryPickObject(editorAPI, m_Camera, mousePos, imageScreenPos, drawSize);
+                m_ObjectPickPressed = true;
+                m_ObjectPickStart = mousePos;
+            }
+            if (!canPick || ImGui::IsMouseDragging(ImGuiMouseButton_Left, 4.0f)) m_ObjectPickPressed = false;
+            if (ImGui::IsMouseReleased(ImGuiMouseButton_Left))
+            {
+                if (m_ObjectPickPressed && sceneImageHovered && canPick && m_Camera)
+                {
+                    Vans::EditorAPI::Ray ray;
+                    float length = 0;
+                    const glm::vec2 uv((m_ObjectPickStart.x - imageScreenPos.x) / drawSize.x,
+                        (m_ObjectPickStart.y - imageScreenPos.y) / drawSize.y);
+                    if (Vans::BuildEditorSceneRay(m_Camera->GetProjectiveMatrix() * m_Camera->GetViewMatrix(), uv, ray, length))
+                    {
+                        const auto result = Vans::VansScenePickingService::Pick(editorAPI, ray, length,
+                            ImGui::GetIO().KeyCtrl, ImGui::GetIO().KeyShift);
+                        if (!result.success && !result.message.empty()) VANS_LOG_WARN("[ScenePicking] " << result.message);
+                    }
+                }
+                m_ObjectPickPressed = false;
             }
         }
 

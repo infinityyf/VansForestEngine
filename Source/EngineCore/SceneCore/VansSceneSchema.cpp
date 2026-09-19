@@ -1,3 +1,5 @@
+#include "VansSceneEnvironmentAuthoring.h"
+#include "VansSceneRenderSettingsConfig.h"
 #include "VansSceneSchema.h"
 
 #include "../AssetCore/Serialization/VansSerializedValueJsonAdapter.h"
@@ -50,6 +52,16 @@ VansSerializedValue SerializedObject(std::initializer_list<SerializedField> fiel
 }
 }
 
+VansSerializedValue VansSceneSchema::MakeDefaultSettings()
+{
+    VansSceneEnvironmentSettingsConfig environment;
+    // 空场景尚无天体光源；天气由用户显式配置后启用。
+    environment.physicalAtmosphere.enabled = false;
+    environment.heightFog.enabled = false;
+    environment.volumetricClouds.enabled = false;
+    return VansSerializedValue::Object({{"environment", WriteSceneEnvironmentSettings(environment)}});
+}
+
 SceneDiagnostics VansSceneSchema::ValidateSceneJson(const Json& root)
 {
     SceneDiagnostics diagnostics;
@@ -70,14 +82,27 @@ SceneDiagnostics VansSceneSchema::ValidateSceneJson(const Json& root)
         return diagnostics;
     }
 
+    const auto graphDiagnostics = ValidateEntityGraph(root["entities"]);
+    diagnostics.insert(diagnostics.end(), graphDiagnostics.begin(), graphDiagnostics.end());
+    return diagnostics;
+}
+
+SceneDiagnostics VansSceneSchema::ValidateEntityGraph(const Json& entities)
+{
+    SceneDiagnostics diagnostics;
+    if (!entities.is_array())
+    {
+        Error(diagnostics, "/entities", "Object graph requires an entities array");
+        return diagnostics;
+    }
     std::unordered_set<VansEntityGuid> entityIds;
     std::unordered_set<VansComponentGuid> componentIds;
 	std::vector<std::pair<std::string, VansSceneParentReference>> parents;
     std::unordered_map<VansEntityGuid, VansEntityGuid> parentByEntity;
 	std::unordered_map<VansComponentGuid, std::pair<VansEntityGuid, std::string>> componentOwners;
-    for (std::size_t entityIndex = 0; entityIndex < root["entities"].size(); ++entityIndex)
+    for (std::size_t entityIndex = 0; entityIndex < entities.size(); ++entityIndex)
     {
-        const Json& entity = root["entities"][entityIndex];
+        const Json& entity = entities[entityIndex];
         const std::string pointer = "/entities/" + std::to_string(entityIndex);
         if (!entity.is_object())
         {

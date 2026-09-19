@@ -21,6 +21,7 @@ struct SerializedAssetTypeEntry
 };
 
 constexpr SerializedAssetTypeEntry SerializedAssetTypes[] = {
+    { VansAssetType::Prefab, "prefab" },
     { VansAssetType::Model, "model" },
     { VansAssetType::Texture, "texture" },
     { VansAssetType::Material, "material" },
@@ -48,6 +49,7 @@ constexpr SerializedAssetTypeEntry SerializedAssetTypes[] = {
     { VansAssetType::ActionGraph, "actionGraph" },
     { VansAssetType::CameraRigProfile, "cameraRigProfile" },
     { VansAssetType::CameraShakeProfile, "cameraShakeProfile" },
+    { VansAssetType::DamageProfile, "damageProfile" },
     { VansAssetType::GAFEditorLayout, "gafEditorLayout" },
     { VansAssetType::ClothProfile, "clothProfile" },
     { VansAssetType::SkinProfile, "skinProfile" },
@@ -282,13 +284,13 @@ bool VansAssetDatabase::RegisterOrRefresh(
     record.metaPath = metaPath;
 	record.authoringPath = type == VansAssetType::Material || type == VansAssetType::Shader ||
 		type == VansAssetType::Timeline || type == VansAssetType::ActionDefinition ||
-		type == VansAssetType::AIBehavior ||
+		type == VansAssetType::AIBehavior || type == VansAssetType::Prefab ||
 		type == VansAssetType::ActionSet || type == VansAssetType::GameplayEffect ||
 		type == VansAssetType::GameplayCue || type == VansAssetType::AttributeSet ||
 		type == VansAssetType::TargetingPolicy || type == VansAssetType::GameplayTagTree ||
 		type == VansAssetType::PayloadSchema || type == VansAssetType::ActionGraph ||
 		type == VansAssetType::CameraRigProfile || type == VansAssetType::CameraShakeProfile ||
-		type == VansAssetType::GAFEditorLayout
+		type == VansAssetType::DamageProfile || type == VansAssetType::GAFEditorLayout
 		? normalized
 		: std::filesystem::path{};
     record.artifactPath = cookedArtifactPath;
@@ -588,6 +590,8 @@ VansAssetType VansAssetDatabase::Classify(const std::filesystem::path& sourcePat
 	if (extension == L".vpayloadschema") return VansAssetType::PayloadSchema;
 	if (extension == L".vactiongraph") return VansAssetType::ActionGraph;
 	if (extension == L".vcamerarig") return VansAssetType::CameraRigProfile;
+	if (extension == L".vdamage") return VansAssetType::DamageProfile;
+    if (extension == L".vprefab") return VansAssetType::Prefab;
 	if (extension == L".vcamerashake") return VansAssetType::CameraShakeProfile;
 	if (extension == L".gafeditorlayout") return VansAssetType::GAFEditorLayout;
     if (extension == L".clothprofile") return VansAssetType::ClothProfile;
@@ -635,6 +639,8 @@ std::string VansAssetDatabase::ImporterFor(VansAssetType type)
 	case VansAssetType::ActionGraph: return "GameplayActionGraphImporter";
 	case VansAssetType::CameraRigProfile: return "CameraRigProfileImporter";
 	case VansAssetType::CameraShakeProfile: return "CameraShakeProfileImporter";
+	case VansAssetType::DamageProfile: return "DamageProfileImporter";
+    case VansAssetType::Prefab: return "PrefabImporter";
 	case VansAssetType::GAFEditorLayout: return "GAFEditorLayoutImporter";
     case VansAssetType::ClothProfile: return "ClothProfileImporter";
     case VansAssetType::SkinProfile: return "SkinProfileImporter";

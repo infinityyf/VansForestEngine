@@ -702,6 +702,7 @@ namespace VansGraphics
 
 
 		VansTexture* m_ClothBRDFLUT = nullptr;
+        VansTexture* m_GrassEnergyLUT = nullptr;
 
 
 
@@ -1457,41 +1458,19 @@ namespace VansGraphics
 
 	// Textures: albedo, normal, roughness, translucency, AO
 
-	// Parameters: GrassParams struct uploaded to global PBR SSBO
+	// Grass 材质参数通过绘制常量上传。
 
-	// Only participates in GBUFFER pass (no shadows)
+	// Masked GBuffer 与可选的级联阴影共享几何。
 
 	// ============================================================
 
 	struct GrassParams
-
-	{
-
-		glm::vec4 baseColor       = glm::vec4(0.2f, 0.6f, 0.1f, 1.0f); // sRGB base tint
-
-		float     roughness       = 0.6f;
-
-		float     metallic        = 0.0f;
-
-		float     translucency    = 0.5f;   // 0..1 scatter strength
-
-		float     scatterWidth    = 0.5f;   // wrap lighting half-angle
-
-		float     sssDistortion   = 0.2f;   // normal distortion for back-scatter
-
-		float     sssAmbient      = 0.1f;   // ambient scatter floor
-
-		float     sssPower        = 3.0f;   // exponent for view-dependent scatter
-
-		float     aoStrength      = 1.0f;   // AO contribution
-
-		// 草根微遮蔽。高度范围使用骨骼权重生成时的同一 0..1 坐标，
-		// 因此程序化草和外部 FBX 使用完全一致的映射。
-		float     rootAOIntensity = 0.35f;
-
-		float     rootAOHeight    = 0.35f;
-
-	};
+    {
+        float aoStrength = 1.0f;           // 叶片微结构 AO；不承担草丛体遮蔽。
+        float normalStrength = 1.0f;
+        float transmissionStrength = 0.5f;
+        float indirectDiffuseStrength = 1.0f; // 草专用环境漫反射/透射倍率，不改变直接光或镜面反射。
+    };
 
 
 

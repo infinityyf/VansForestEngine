@@ -60,6 +60,7 @@ bool VansRagdollProfileJsonCodec::Decode(
 
     RagdollProfile decoded;
     decoded.name = root["name"].get<std::string>();
+    decoded.selfCollision = root.value("self_collision", false);
     std::unordered_set<std::string> bodyBones;
 
     for (const auto& item : root["bodies"])
@@ -79,18 +80,22 @@ bool VansRagdollProfileJsonCodec::Decode(
         if (!ReadVec3(item, "box_extents", body.boxExtents, body.boxExtents, error)) return false;
         body.sphereRadius = item.value("sphere_radius", body.sphereRadius);
         body.mass = item.value("mass", body.mass);
+        body.inertiaScale = item.value("inertia_scale", body.inertiaScale);
         body.staticFriction = item.value("static_friction", body.staticFriction);
         body.dynamicFriction = item.value("dynamic_friction", body.dynamicFriction);
         body.restitution = item.value("restitution", body.restitution);
         if (!ReadVec3(item, "offset_position", body.offsetPosition, body.offsetPosition, error) ||
-            !ReadVec3(item, "offset_rotation", body.offsetRotation, body.offsetRotation, error))
+            !ReadVec3(item, "offset_rotation", body.offsetRotation, body.offsetRotation, error) ||
+            !ReadVec3(item, "stationary_angular_velocity", body.stationaryAngularVelocity, body.stationaryAngularVelocity, error) ||
+            !ReadVec3(item, "stationary_impulse", body.stationaryImpulse, body.stationaryImpulse, error))
             return false;
         body.layerName = item.value("layer", body.layerName);
         if (body.boneName.empty() || !bodyBones.insert(body.boneName).second ||
             (body.shapeType != "capsule" && body.shapeType != "box" && body.shapeType != "sphere") ||
-            !std::isfinite(body.mass) || body.mass <= 0.0f)
+            !std::isfinite(body.mass) || body.mass <= 0.0f ||
+            !std::isfinite(body.inertiaScale) || body.inertiaScale <= 0.0f)
         {
-            error = "Ragdoll bodies require unique bones, a canonical shape_type, and positive mass";
+            error = "Ragdoll bodies require unique bones, a canonical shape_type, and positive mass/inertia scale";
             return false;
         }
         decoded.bodies.push_back(std::move(body));
@@ -107,6 +112,15 @@ bool VansRagdollProfileJsonCodec::Decode(
         }
         RagdollJointConfig joint;
         joint.childBoneName = item["child_bone_name"].get<std::string>();
+        int frames = 0;
+        for (const char* key : {"parent_frame_position", "parent_frame_rotation", "child_frame_position", "child_frame_rotation"})
+            frames += item.contains(key) ? 1 : 0;
+        if (frames != 0 && frames != 4) { error = "Ragdoll joint requires complete local frames"; return false; }
+        joint.hasLocalFrames = frames == 4;
+        if (!ReadVec3(item,"parent_frame_position",{},joint.parentFramePosition,error) ||
+            !ReadVec3(item,"parent_frame_rotation",{},joint.parentFrameRotation,error) ||
+            !ReadVec3(item,"child_frame_position",{},joint.childFramePosition,error) ||
+            !ReadVec3(item,"child_frame_rotation",{},joint.childFrameRotation,error)) return false;
         joint.swingYLimit = item.value("swing_y_limit", joint.swingYLimit);
         joint.swingZLimit = item.value("swing_z_limit", joint.swingZLimit);
         joint.twistLowLimit = item.value("twist_low_limit", joint.twistLowLimit);
@@ -118,6 +132,13 @@ bool VansRagdollProfileJsonCodec::Decode(
         joint.driveStiffness = item.value("drive_stiffness", joint.driveStiffness);
         joint.driveDamping = item.value("drive_damping", joint.driveDamping);
         joint.driveForceLimit = item.value("drive_force_limit", joint.driveForceLimit);
+        if (!std::isfinite(joint.swingYLimit) || !std::isfinite(joint.swingZLimit) ||
+            joint.swingYLimit < 0 || joint.swingYLimit >= 180 || joint.swingZLimit < 0 || joint.swingZLimit >= 180 ||
+            !std::isfinite(joint.twistLowLimit) || !std::isfinite(joint.twistHighLimit) ||
+            (joint.twistLowLimit >= joint.twistHighLimit && !(joint.twistLowLimit == 0 && joint.twistHighLimit == 0)) ||
+            joint.twistLowLimit <= -180 || joint.twistHighLimit >= 180 ||
+            !std::isfinite(joint.limitStiffness) || joint.limitStiffness < 0 || !std::isfinite(joint.limitDamping) || joint.limitDamping < 0)
+        { error = "Ragdoll joint angular limits or springs are invalid"; return false; }
         if (joint.childBoneName.empty() || !jointBones.insert(joint.childBoneName).second ||
             bodyBones.find(joint.childBoneName) == bodyBones.end())
         {
@@ -145,6 +166,7 @@ bool VansRagdollProfileJsonCodec::Encode(
 {
     root = {
         { "name", profile.name },
+        { "self_collision", profile.selfCollision },
         { "bodies", RagdollJson::array() },
         { "joints", RagdollJson::array() }
     };
@@ -158,12 +180,15 @@ bool VansRagdollProfileJsonCodec::Encode(
             { "box_extents", { body.boxExtents.x, body.boxExtents.y, body.boxExtents.z } },
             { "sphere_radius", body.sphereRadius },
             { "mass", body.mass },
+            { "inertia_scale", body.inertiaScale },
             { "static_friction", body.staticFriction },
             { "dynamic_friction", body.dynamicFriction },
             { "restitution", body.restitution },
             { "offset_position", { body.offsetPosition.x, body.offsetPosition.y, body.offsetPosition.z } },
             { "offset_rotation", { body.offsetRotation.x, body.offsetRotation.y, body.offsetRotation.z } },
-            { "layer", body.layerName }
+            { "layer", body.layerName },
+            { "stationary_angular_velocity", { body.stationaryAngularVelocity.x, body.stationaryAngularVelocity.y, body.stationaryAngularVelocity.z } },
+            { "stationary_impulse", { body.stationaryImpulse.x, body.stationaryImpulse.y, body.stationaryImpulse.z } }
         });
     }
     for (const RagdollJointConfig& joint : profile.joints)
@@ -182,6 +207,15 @@ bool VansRagdollProfileJsonCodec::Encode(
             { "drive_damping", joint.driveDamping },
             { "drive_force_limit", joint.driveForceLimit }
         });
+        if (joint.hasLocalFrames)
+        {
+            auto& item = root["joints"].back();
+            const auto vec = [](const glm::vec3& v) { return RagdollJson::array({v.x,v.y,v.z}); };
+            item["parent_frame_position"] = vec(joint.parentFramePosition);
+            item["parent_frame_rotation"] = vec(joint.parentFrameRotation);
+            item["child_frame_position"] = vec(joint.childFramePosition);
+            item["child_frame_rotation"] = vec(joint.childFrameRotation);
+        }
     }
     RagdollProfile verified;
     return Decode(root, verified, error);

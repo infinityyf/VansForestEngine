@@ -442,7 +442,7 @@ std::unordered_set<uint32_t> VansSceneVehicleComponentBuilder::ResolveVehicles(
 						continue;
 
 					if (rn->m_ParentEntityGuid == bodyObj->m_EntityGuid ||
-						rn->m_ParentGroupName == bodyObj->m_ObjectName ||
+						rn->m_ParentGroupKey == bodyObj->m_EntityGuid ||
 						candidate == bodyObj)
 					{
 						bodyRenderNodesForBounds.push_back(rn);

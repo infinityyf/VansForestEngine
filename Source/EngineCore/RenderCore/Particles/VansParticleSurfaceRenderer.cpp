@@ -52,7 +52,7 @@ bool VansParticleSurfaceRenderer::Initialize(VansScene& scene, const VansParticl
     {
         write(1,textures.negativeAxes->GetImage(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         manager->WriteImageDescriptor(m_OwnedSets[0],2,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            {{passes->GetCascadeShadowSampler(),passes->GetCascadeShadowArrayView(),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}});
+            {{passes->GetCascadeShadowSampler(),passes->GetCascadeShadowArrayView(),VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL}});
         manager->WriteImageDescriptor(m_OwnedSets[0],3,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             passes->GetPunctualShadowDescriptorInfos());
     }
@@ -108,7 +108,7 @@ void VansParticleSurfaceRenderer::Draw(VansVKCommandBuffer& cmd, GlobalStateData
     {
         const glm::vec4 constants = item.ribbon ? glm::vec4(m_Config.m_Ribbon.softIntersection,0,0,0)
             : glm::vec4(m_Config.m_SpriteSheetEnabled ? m_Config.m_SpriteColumns : 1,m_Config.m_SpriteSheetEnabled ? m_Config.m_SpriteRows : 1,0,0);
-        cmd.UpdatePushConstants(*pipeline,item.ribbon ? VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT : VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(constants),&constants);
+        cmd.UpdatePushConstants(*pipeline,VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(constants),&constants);
     }
     const VkBuffer buffers[] = {buffer,buffer};
     const VkDeviceSize offsets[] = {item.vertexOffset,item.instanceOffset};

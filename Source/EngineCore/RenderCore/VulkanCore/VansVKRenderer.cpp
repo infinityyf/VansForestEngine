@@ -1399,6 +1399,12 @@ namespace VansGraphics
 				frameGraphicsCommandBuffer,
 				m_globalRenderStateData,
 				[&]() { DrawSceneRawOpaqueLighting(renderPassManager, frameGraphicsCommandBuffer); });
+            if (IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::RawOpaqueLighting))
+            {
+                // RenderPass 的隐式 finalLayout 已生效；后续拷贝不能仍按 UNDEFINED 丢弃这些输出。
+                renderPassManager->GetRawOpaqueSceneColor().SetTrackedImageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                renderPassManager->GetDiffuseExitantRadianceHistory().SetTrackedImageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            }
 
 			// Custom shaders with depthWrite=true are automatically routed here.
 			// This pass writes SceneColor and the main scene depth before water coverage is generated.
@@ -1440,9 +1446,10 @@ namespace VansGraphics
 						mainLightColor = glm::max(dirLights[0].m_Color, glm::vec3(0.0f)) *
 							(std::max)(dirLights[0].m_Intensity, 0.0f);
 					}
-					const float frameDelta = static_cast<float>(
-						m_CurrentRenderTiming.deltaSeconds);
-					waterSys->Update(frameDelta, camPos, viewMatrix,
+					// 水面预览使用渲染帧时间，编辑/暂停状态不冻结；其他系统仍使用游戏时间。
+					const float waterDelta = static_cast<float>(
+						m_CurrentRenderTiming.renderDeltaSeconds);
+					waterSys->Update(waterDelta, camPos, viewMatrix,
 						vpMatrix, mainLightDir, mainLightColor);
 					RecordFrameGpuStep(
 						m_CurrentFramePlan,
@@ -1452,7 +1459,7 @@ namespace VansGraphics
 						[&]()
 						{
 							waterSys->UpdateWaveSimulation(
-								frameGraphicsCommandBuffer, frameDelta);
+								frameGraphicsCommandBuffer, waterDelta);
 						});
 					RecordFrameGraphicsPass(
 						m_CurrentFramePlan,
@@ -2108,6 +2115,12 @@ namespace VansGraphics
 				m_VansVKCommandBuffer,
 				m_globalRenderStateData,
 				[&]() { DrawSceneRawOpaqueLighting(renderPassManager, m_VansVKCommandBuffer); });
+            if (IsFramePassEnabled(m_CurrentFramePlan, VansRenderPassNames::RawOpaqueLighting))
+            {
+                // RenderPass 的隐式 finalLayout 已生效；后续拷贝不能仍按 UNDEFINED 丢弃这些输出。
+                renderPassManager->GetRawOpaqueSceneColor().SetTrackedImageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                renderPassManager->GetDiffuseExitantRadianceHistory().SetTrackedImageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            }
 			RecordFrameGraphicsPass(
 				m_CurrentFramePlan,
 				VansRenderPassNames::ForwardOpaquePreAtmosphere,
@@ -2152,9 +2165,10 @@ namespace VansGraphics
 						mainLightColor = glm::max(dirLights[0].m_Color, glm::vec3(0.0f)) *
 							(std::max)(dirLights[0].m_Intensity, 0.0f);
 					}
-					const float frameDelta = static_cast<float>(
-						m_CurrentRenderTiming.deltaSeconds);
-					waterSys->Update(frameDelta, camPos, viewMatrix,
+					// 与同步路径一致，仅水系统使用不受游戏暂停影响的渲染帧时间。
+					const float waterDelta = static_cast<float>(
+						m_CurrentRenderTiming.renderDeltaSeconds);
+					waterSys->Update(waterDelta, camPos, viewMatrix,
 						vpMatrix, mainLightDir, mainLightColor);
 				RecordFrameGpuStep(
 					m_CurrentFramePlan,
@@ -2164,7 +2178,7 @@ namespace VansGraphics
 					[&]()
 					{
 						waterSys->UpdateWaveSimulation(
-							m_VansVKCommandBuffer, frameDelta);
+								m_VansVKCommandBuffer, waterDelta);
 					});
 				RecordFrameGraphicsPass(
 					m_CurrentFramePlan,
@@ -2361,6 +2375,9 @@ namespace VansGraphics
 				const bool dispatched = PrepareDLSSDispatchResources(frameGraphicsCommandBuffer) &&
 					BuildDLSSDispatch(dispatch) &&
 					m_DLSSController.Dispatch(dispatch);
+				// Streamline records pipelines/descriptors outside our binding cache,
+				// including on failed evaluation. Force subsequent passes to rebind.
+				frameGraphicsCommandBuffer.InvalidateExternalBindings();
 				if (dispatched)
 				{
 					m_UpscalerManager.GetHistory().OnTemporalDispatchSucceeded();
@@ -3915,7 +3932,7 @@ namespace VansGraphics
 			{{
 				renderPassManager->GetHairDeepOpacity().GetSampler(),
 				renderPassManager->GetHairDeepOpacity().GetImageView(),
-				VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 			}});
 		descManager->WriteImageDescriptor(
 			m_HairLightingPassSets[0],
@@ -4150,7 +4167,7 @@ namespace VansGraphics
 			{{
 				renderPassManager->GetCascadeShadowSampler(),
 				renderPassManager->GetCascadeShadowArrayView(),
-				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+				VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
 			}});
 		descManager->WriteImageDescriptor(
 			m_TransmissionGlassPassSets[0],

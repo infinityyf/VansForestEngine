@@ -36,11 +36,10 @@ void main()
     vec3 P=vec3(1.0),N=vec3(0,1,0);
     float bias=i==9u?0.2:0.0;
     float volumeWeight=i==10u?0.35:1.0;
-    float support;
-    vec3 value=GI_SampleProbeIrradianceAtlas(0u,ivec3(2),irradianceAtlas,visibilityAtlas,
-        P,N,vec3(0),vec3(2),bias,volumeWeight,4,2,support);
-    result[i*4u]=vec4(value,support);
-    result[i*4u+3u]=vec4(receiverRecordValid?1.0:0.0,vec3(receiverRecord.metadata.zw,0));
+    GIProbeLighting value=GI_SampleProbeIrradianceAtlas(0u,ivec3(2),irradianceAtlas,visibilityAtlas,
+        P,N,vec3(0),vec3(2),bias,volumeWeight,4,2);
+    result[i*4u]=vec4(value.irradiance,value.support);
+    result[i*4u+3u]=vec4(receiverRecordValid?1.0:0.0,vec2(receiverRecord.metadata.zw),value.published);
 
     // 独立参考：使用正式候选和累加函数，但不调用新的零支持回退入口。
     GIProbeCandidates candidates=GI_GatherProbeCandidates(0u,ivec3(2),P,N,vec3(0),vec3(2),bias);
@@ -51,6 +50,6 @@ void main()
     result[i*4u+1u]=vec4(strictSupport>0.0?strictSum/strictSupport*volumeWeight*INV_PI:vec3(0),strictSupport);
     receiverRecordValid=false;
     value=GI_SampleProbeIrradianceAtlas(0u,ivec3(2),irradianceAtlas,visibilityAtlas,
-        P,N,vec3(0),vec3(2),bias,volumeWeight,4,2,support);
-    result[i*4u+2u]=vec4(value,support);
+        P,N,vec3(0),vec3(2),bias,volumeWeight,4,2);
+    result[i*4u+2u]=vec4(value.irradiance,value.support);
 }

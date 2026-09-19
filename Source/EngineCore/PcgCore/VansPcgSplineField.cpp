@@ -7,6 +7,52 @@
 
 namespace Vans
 {
+glm::vec3 VansPcgSplineFieldSnapshot::SampleWaterBlend(glm::vec2 world) const
+{
+    if(resolution==0 || worldSize<=0 || !std::isfinite(world.x) || !std::isfinite(world.y))return glm::vec3(0);
+    const glm::vec2 pixel=(world/worldSize+.5f)*float(resolution);
+    if(glm::any(glm::lessThan(pixel,glm::vec2(0))) || glm::any(glm::greaterThanEqual(pixel,glm::vec2(resolution))))return glm::vec3(0);
+    const auto index=glm::uvec2(glm::floor(pixel/float(VANS_SPLINE_TILE_SIZE)));
+    const auto* tile=FindTile(index.x,index.y);if(!tile || !tile->hasRiver)return glm::vec3(0);
+    const auto at=pixel-glm::vec2(index)*float(VANS_SPLINE_TILE_SIZE)+float(VANS_SPLINE_TILE_BORDER)-.5f;
+    const auto origin=glm::ivec2(glm::floor(at));const auto f=glm::fract(at);
+    float v[4];
+    for(int z=0;z<2;++z)for(int x=0;x<2;++x)
+    {
+        const auto p=glm::clamp(origin+glm::ivec2(x,z),glm::ivec2(0),glm::ivec2(VANS_SPLINE_TILE_EXTENT-1));
+        v[z*2+x]=tile->waterBlend[std::size_t(p.y)*VANS_SPLINE_TILE_EXTENT+p.x];
+    }
+    const float w=std::clamp(glm::mix(glm::mix(v[0],v[1],f.x),glm::mix(v[2],v[3],f.x),f.y),0.f,1.f);
+    const auto gradient=glm::vec2(glm::mix(v[1]-v[0],v[3]-v[2],f.y),glm::mix(v[2]-v[0],v[3]-v[1],f.x))*(float(resolution)/worldSize);
+    return {w*w*(3-2*w),gradient*(6*w*(1-w))};
+}
+
+bool VansPcgSplineFieldSnapshot::SampleRiver(glm::vec2 world,float& height,glm::vec2& velocity,glm::vec4& properties) const
+{
+    height=0;velocity=glm::vec2(0);properties=glm::vec4(0);
+    if(resolution==0 || worldSize<=0)return false;
+    const glm::vec2 pixel=(world/worldSize+.5f)*float(resolution);
+    if(glm::any(glm::lessThan(pixel,glm::vec2(0))) || glm::any(glm::greaterThanEqual(pixel,glm::vec2(resolution))))return false;
+    const auto tileIndex=glm::uvec2(glm::floor(pixel/float(VANS_SPLINE_TILE_SIZE)));
+    const auto* tile=FindTile(tileIndex.x,tileIndex.y);if(!tile || !tile->hasRiver)return false;
+    const auto at=pixel-glm::vec2(tileIndex)*float(VANS_SPLINE_TILE_SIZE)+float(VANS_SPLINE_TILE_BORDER)-.5f;
+    const auto origin=glm::ivec2(glm::floor(at));const auto f=glm::fract(at);float sum=0,waterBlend=0;
+    for(int z=0;z<2;++z)for(int x=0;x<2;++x)
+    {
+        const auto p=glm::clamp(origin+glm::ivec2(x,z),glm::ivec2(0),glm::ivec2(VANS_SPLINE_TILE_EXTENT-1));
+        const auto i=std::size_t(p.y)*VANS_SPLINE_TILE_EXTENT+p.x;
+        const float b=(x?f.x:1-f.x)*(z?f.y:1-f.y),w=b*tile->coverage[i].y;
+        height+=w*tile->heights[i].y;velocity+=w*tile->velocities[i];sum+=w;
+        properties+=b*tile->riverProperties[i];
+        waterBlend+=b*tile->waterBlend[i];
+    }
+    if(sum<=0)return false;
+    height/=sum;velocity/=sum;
+    // 波包搬运和 GPU 流动法线使用同一水面衰减；不能仅淡出图像而保留满速河流。
+    waterBlend=std::clamp(waterBlend,0.f,1.f);
+    velocity*=waterBlend*waterBlend*(3-2*waterBlend);
+    return true;
+}
 namespace
 {
 struct Curve
@@ -29,7 +75,6 @@ struct Contribution
     float lateral = 0;
     float edgeDistance = 0;
     float endDistance = 0;
-    glm::vec4 jacobian{};
 };
 glm::vec2 XZ(glm::vec3 v) { return {v.x,v.z}; }
 void Hash(std::uint64_t& h, std::uint64_t value)
@@ -74,16 +119,7 @@ Contribution EvaluateAt(const Curve& curve, const Candidate& candidate, glm::vec
         result.endDistance=0;
         if (segment==0 && raw<0) result.endDistance=-raw*std::sqrt(length2);
         if (segment+2==curve.evaluated.samples.size() && raw>1) result.endDistance=(raw-1)*std::sqrt(length2);
-        const float ds=b.distance-a.distance;
-        const auto longitudinal=(XZ(b.position-a.position)+result.lateral*XZ(b.right-a.right))/std::max(ds,1e-6f);
-        const auto transverse=XZ(p.right);
-        const float determinant=longitudinal.x*transverse.y-longitudinal.y*transverse.x;
-        if (determinant>0.02f)
-        {
-            const float factor=curve.source->coordinateSign/determinant;
-            result.jacobian={transverse.y*factor,-transverse.x*factor,-longitudinal.y*factor,longitudinal.x*factor};
-        }
-        else result.jacobian=glm::vec4(0);
+
     }
     return result;
 }
@@ -91,9 +127,18 @@ Contribution EvaluateAt(const Curve& curve, const Candidate& candidate, glm::vec
 float DeformationWeight(const Curve& curve, const Contribution& c)
 {
     if (!c.valid) return 0;
+    if (curve.source->kind==VansPcgSplineKind::River && !curve.source->carveRiverbed) return 0;
     const float outside=std::max(-c.edgeDistance,c.endDistance);
     if (outside<=0) return 1;
     return curve.source->shoulder>0?1-VansPcgSplineEvaluator::SmoothWeight(outside/curve.source->shoulder):0;
+}
+
+float RiverWetnessWeight(const Curve& curve, const Contribution& c)
+{
+    if (!c.valid || curve.source->kind!=VansPcgSplineKind::River) return 0;
+    const float outside=std::max(-c.edgeDistance,c.endDistance);
+    return curve.source->wetnessStrength*
+        (1-VansPcgSplineEvaluator::SmoothWeight(outside/curve.source->wetBankWidthMeters));
 }
 
 float DeformHeight(float base, const Curve& curve, const Contribution& c)
@@ -213,7 +258,9 @@ std::shared_ptr<const VansPcgSplineFieldSnapshot> VansPcgSplineFieldBuilder::Bui
         shape.excludeVegetation=false;shape.vegetationFade=2;
         shape.name.clear();shape.locked=false;shape.material={};shape.surfaceOffset=0;shape.textureRepeat=1;
         shape.flowSign=1;shape.fadeInDistance=shape.fadeOutDistance=0;shape.coordinateOffset=0;shape.coordinateSign=1;
-        shape.continuation=false;shape.envelopeOffset=shape.envelopeLength=0;shape.flowCycleSeconds=2;shape.normalFlowEnabled=false;
+        shape.continuation=false;shape.envelopeOffset=shape.envelopeLength=0;shape.normalFlowEnabled=false;
+        shape.wetBankWidthMeters=3;shape.wetnessStrength=0;
+        shape.waterBlendWidthMeters=2;shape.waterBlendStartMeters=shape.waterBlendEndMeters=0;
         for (auto& point:shape.points) point.speed=0;
         curve.terrainShapeHash=VansPcgSplineAssetCodec::ContentHash(identity);
         curves.push_back(std::move(curve));
@@ -232,8 +279,11 @@ std::shared_ptr<const VansPcgSplineFieldSnapshot> VansPcgSplineFieldBuilder::Bui
         for (std::size_t si=0;si+1<curve.evaluated.samples.size();++si)
         {
             const auto& a=curve.evaluated.samples[si];const auto& b=curve.evaluated.samples[si+1];
+            const float influence=std::max({curve.source->shoulder,
+                curve.source->excludeVegetation?curve.source->vegetationFade:0.f,
+                curve.source->kind==VansPcgSplineKind::River?curve.source->wetBankWidthMeters:0.f});
             const float radius=std::max({a.leftWidth,a.rightWidth,b.leftWidth,b.rightWidth})+
-                std::max(curve.source->shoulder,curve.source->excludeVegetation?curve.source->vegetationFade:0.f)+2*output->texelSize;
+                influence+2*output->texelSize;
             const auto minimum=glm::min(XZ(a.position),XZ(b.position))-radius;
             const auto maximum=glm::max(XZ(a.position),XZ(b.position))+radius;
             if (maximum.x < -size*.5f || maximum.y < -size*.5f || minimum.x >= size*.5f || minimum.y >= size*.5f) continue;
@@ -252,18 +302,6 @@ std::shared_ptr<const VansPcgSplineFieldSnapshot> VansPcgSplineFieldBuilder::Bui
         }
     }
     if (index.size()>VANS_SPLINE_MAX_ATLAS_PAGES) {error="Spline field resident tile budget exceeded (2048).";return {};}
-    std::size_t domainPages=0;
-    for (const auto& [key,candidates]:index)
-    {
-        const auto count=std::count_if(candidates.begin(),candidates.end(),[&](const auto& candidate) {
-            return curves[candidate.curve].source->kind==VansPcgSplineKind::River;
-        });
-        if (count>VANS_SPLINE_MAX_DOMAINS_PER_TILE)
-        {error="River coordinate domains exceed tile budget (8).";return {};}
-        domainPages+=count;
-        if (domainPages>VANS_SPLINE_MAX_ATLAS_PAGES)
-        {error="River coordinate page budget exceeded (2048).";return {};}
-    }
     auto effective=std::make_shared<VansTerrainAsset>(*terrain);
     const auto terrainRegion=[&](std::uint32_t tx,std::uint32_t tz) {
         const double x0=double(tx)*VANS_SPLINE_TILE_SIZE/output->resolution;
@@ -295,17 +333,8 @@ std::shared_ptr<const VansPcgSplineFieldSnapshot> VansPcgSplineFieldBuilder::Bui
             constexpr auto count=VANS_SPLINE_TILE_EXTENT*VANS_SPLINE_TILE_EXTENT;
             tile->vegetationExclusion.resize(count);
             tile->heights.resize(count);tile->velocities.resize(count);tile->coverage.resize(count);
-            std::vector<int> domainIndices(candidates.size(),-1);
-            for (std::size_t ci=0;ci<candidates.size();++ci) if (curves[candidates[ci].curve].source->kind==VansPcgSplineKind::River)
-            {
-                if (tile->domains.size()>=VANS_SPLINE_MAX_DOMAINS_PER_TILE)
-                {error="River coordinate domains exceed tile budget (8); split spatial coverage before publishing.";return {};}
-                const auto& source=*curves[candidates[ci].curve].source;
-                domainIndices[ci]=static_cast<int>(tile->domains.size());
-                VansPcgRiverCoordinateTile domain;domain.splineId=source.id;
-                domain.cycleSeconds=source.flowCycleSeconds;domain.flowEnabled=source.normalFlowEnabled;
-                domain.coordinates.resize(count);domain.jacobians.resize(count);tile->domains.push_back(std::move(domain));
-            }
+            tile->riverProperties.resize(count);
+            tile->waterBlend.resize(count);
             tile->minimumWaterHeight=std::numeric_limits<float>::max();tile->maximumWaterHeight=-tile->minimumWaterHeight;
             tile->minimumRiverWidth=std::numeric_limits<float>::max();
             for (std::uint32_t z=0;z<VANS_SPLINE_TILE_EXTENT;++z) for (std::uint32_t x=0;x<VANS_SPLINE_TILE_EXTENT;++x)
@@ -315,6 +344,7 @@ std::shared_ptr<const VansPcgSplineFieldSnapshot> VansPcgSplineFieldBuilder::Bui
                     glm::vec2(x,z)+.5f-float(VANS_SPLINE_TILE_BORDER))*output->texelSize-size*.5f;
                 float weightSum=0,flowWeightSum=0,heightSum=0,minimum=std::numeric_limits<float>::max(),maximum=-minimum;
                 glm::vec2 velocitySum(0);
+                glm::vec4 riverProperties(0);
                 for (std::size_t ci=0;ci<candidates.size();++ci)
                 {
                     const auto& candidate=candidates[ci];const auto& curve=curves[candidate.curve];
@@ -327,7 +357,6 @@ std::shared_ptr<const VansPcgSplineFieldSnapshot> VansPcgSplineFieldBuilder::Bui
                         tile->vegetationExclusion[pixel]=std::max(tile->vegetationExclusion[pixel],exclusion);
                     }
                     const float deformation=DeformationWeight(curve,c);
-                    tile->coverage[pixel].z=std::max(tile->coverage[pixel].z,deformation);
                     tile->coverage[pixel].w=std::max(tile->coverage[pixel].w,deformation);
                     if (curve.source->kind==VansPcgSplineKind::Road)
                     {
@@ -338,27 +367,36 @@ std::shared_ptr<const VansPcgSplineFieldSnapshot> VansPcgSplineFieldBuilder::Bui
                         }
                         continue;
                     }
-                    const float flowWeight=c.endDistance==0?VansPcgSplineEvaluator::SmoothWeight(c.edgeDistance/curve.source->blendWidth):0;
+                    tile->coverage[pixel].z=std::max(
+                        tile->coverage[pixel].z,RiverWetnessWeight(curve,c));
+                    // 汇入口的贡献本身也淡出，不能在端点突然移除一整份归一化权重。
+                    const float flowWeight=c.endDistance==0?VansPcgSplineEvaluator::SmoothWeight(c.edgeDistance/curve.source->blendWidth)*
+                        VansPcgSplineEvaluator::EndpointFade(*curve.source,c.sample.distance,curve.evaluated.length):0;
                     // Height coverage continues underneath the banks. The return to
                     // the original global water level must occur behind terrain.
                     const float buriedWidth=curve.source->shoulder*.5f;
                     const float surfaceBlend=std::min(curve.source->blendWidth,buriedWidth);
                     const float weight=VansPcgSplineEvaluator::SmoothWeight((c.edgeDistance+buriedWidth)/surfaceBlend)*
                         VansPcgSplineEvaluator::SmoothWeight((buriedWidth-c.endDistance)/surfaceBlend);
-                    if (c.edgeDistance >= -2*output->texelSize && c.endDistance <= 2*output->texelSize)
-                    {
-                        auto& domain=tile->domains[domainIndices[ci]];
-                        if (flowWeight>0 && glm::dot(c.jacobian,c.jacobian)<1e-9f)
-                        {error="River coordinate frame folds inside coverage: "+curve.source->name;return {};}
-                        domain.coordinates[pixel]={curve.source->coordinateOffset+curve.source->coordinateSign*c.sample.distance,
-                            curve.source->coordinateSign*c.lateral,flowWeight,1};
-                        domain.jacobians[pixel]=c.jacobian;
-                    }
                     if (weight<=0) continue;
+                    // 独立水面场：边界向河内过渡，首尾可延长；汇流区取并集，避免支流端点在主河上挖洞。
+                    const float transitionWidth=std::max(curve.source->waterBlendWidthMeters,4*output->texelSize);
+                    const float sideBlend=VansPcgSplineEvaluator::SmoothWeight((c.edgeDistance+buriedWidth)/transitionWidth);
+                    const float endBlend=VansPcgSplineEvaluator::SmoothWeight((buriedWidth-c.endDistance)/std::min(transitionWidth,buriedWidth));
+                    const float endpointBlend=VansPcgSplineEvaluator::WaterEndpointWeight(*curve.source,c.sample.distance,curve.evaluated.length,4*output->texelSize);
+                    // 在整个场的外边缘也收敛到全局水面，不能在地图裁切处留下硬边。
+                    const float fieldEdge=size*.5f-std::max(std::abs(world.x),std::abs(world.y));
+                    const float fieldBlend=VansPcgSplineEvaluator::SmoothWeight((fieldEdge-output->texelSize)/transitionWidth);
+                    // 五次平滑多项式在浮点舍入下可能略大于 1，发布/烘焙前保证场的严格范围。
+                    tile->waterBlend[pixel]=std::max(tile->waterBlend[pixel],std::clamp(sideBlend*endBlend*endpointBlend*fieldBlend,0.f,1.f));
                     const float waterHeight=c.sample.position.y-curve.source->waterSurfaceDrop;
                     weightSum+=weight;heightSum+=weight*waterHeight;
                     velocitySum+=flowWeight*VansPcgSplineEvaluator::Velocity(*curve.source,c.sample,curve.evaluated.length);
                     flowWeightSum+=flowWeight;
+                    riverProperties.x=std::max(riverProperties.x,flowWeight);
+                    riverProperties.y+=flowWeight*(curve.source->normalFlowEnabled?1.f:0.f);
+                    riverProperties.z+=weight*c.sample.depth;
+                    riverProperties.w+=weight*curve.source->waterSurfaceDrop;
                     minimum=std::min(minimum,waterHeight);maximum=std::max(maximum,waterHeight);
                     tile->coverage[pixel].y=std::max(tile->coverage[pixel].y,weight);
                     tile->minimumRiverWidth=std::min(tile->minimumRiverWidth,c.sample.leftWidth+c.sample.rightWidth);
@@ -366,6 +404,7 @@ std::shared_ptr<const VansPcgSplineFieldSnapshot> VansPcgSplineFieldBuilder::Bui
                 if (weightSum>0)
                 {
                     tile->heights[pixel].y=heightSum/weightSum;tile->velocities[pixel]=flowWeightSum>0?velocitySum/flowWeightSum:glm::vec2(0);
+                    tile->riverProperties[pixel]={riverProperties.x,flowWeightSum>0?riverProperties.y/flowWeightSum:0,riverProperties.z/weightSum,riverProperties.w/weightSum};
                     tile->hasRiver=true;tile->minimumWaterHeight=std::min(tile->minimumWaterHeight,tile->heights[pixel].y);
                     tile->maximumWaterHeight=std::max(tile->maximumWaterHeight,tile->heights[pixel].y);
                     tile->maximumHeightConflict=std::max(tile->maximumHeightConflict,maximum-minimum);
@@ -424,7 +463,7 @@ std::shared_ptr<const VansPcgSplineFieldSnapshot> VansPcgSplineFieldBuilder::Bui
                 "). Lower the spline water level; terrain is never raised (clearance short by "+std::to_string(deficit)+" m).");
         }
     }
-    // Motion-only edits must not invalidate terrain collision, uploads or vegetation.
+    // 不改变地形形状的字段编辑复用不可变地形快照，避免重建碰撞与高度上传。
     if (previous && previous->terrainFingerprint==output->terrainFingerprint &&
         previous->effectiveTerrain->heights==effective->heights)
         output->effectiveTerrain=previous->effectiveTerrain;

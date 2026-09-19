@@ -1517,7 +1517,7 @@ namespace VansGraphics
 
 						motionVectorSSR.GetImageView(),
 
-						VK_IMAGE_LAYOUT_GENERAL
+						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 
 					}
 
@@ -1955,12 +1955,11 @@ namespace VansGraphics
 		uint32_t groupsY = (manager->m_TileLightGridY + 7) / 8;
 		cmd.EnsureComputeShader(*manager->m_TileLightBuildShader, { m_Scene->GetGlobalDescriptorSetLayout(), manager->m_TileLightBuildSetLayout });
 		cmd.DispatchCompute(*manager->m_TileLightBuildShader, groupsX, groupsY, 1, { m_Scene->GetGlobalDescriptorSet(), manager->m_TileLightBuildDescriptorSets[0] });
-		// 同一 command buffer 的 Fog compute 与 Deferred fragment 都会消费该
-		// 列表；异步路径的 semaphore 继续负责跨 queue 可见性。
+		// 计算队列只声明本队列的读阶段；Deferred 的跨队列读取由 semaphore 保证。
 		RecordShaderWriteToReadMemoryDependency(
 			cmd,
 			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | (m_AsyncComputeEnabled?0u:VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT));
 	}
 
 	void VansVKDevice::UploadPostProcessProfileIfDirty()
@@ -2405,10 +2404,10 @@ void VansGraphics::VansVKDevice::UpdateGIReceiverVisibility(VansVKCommandBuffer&
     if (!receiver.prepareShader || receiver.sets.empty()) return;
     // 启动时的诊断关闭使用已清零的 header，连预计算和历史拷贝也跳过，便于测量真实增量。
     if (!receiver.enabled) return;
-    if (receiver.geometryRevision != m_Scene->GetRayTracingGeometryRevision())
+    if (receiver.geometryRevision != (m_Scene->GetRayTracingGeometryRevision() ^ rayTracingContext.GetWorldGeometryRevision()))
     {
         receiver.frame = 0;
-        receiver.geometryRevision = m_Scene->GetRayTracingGeometryRevision();
+        receiver.geometryRevision = m_Scene->GetRayTracingGeometryRevision() ^ rayTracingContext.GetWorldGeometryRevision();
     }
     const uint32_t width = (m_RenderWidth + 3u) / 4u, height = (m_RenderHeight + 3u) / 4u;
     struct alignas(16) Params { glm::uvec4 frame; glm::vec4 jitter; };

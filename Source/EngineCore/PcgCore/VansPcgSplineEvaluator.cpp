@@ -138,6 +138,17 @@ float VansPcgSplineEvaluator::EndpointFade(const VansPcgSpline& spline, float di
     return start * end;
 }
 
+float VansPcgSplineEvaluator::WaterEndpointWeight(const VansPcgSpline& spline, float distance, float length, float minimumWidth)
+{
+    const float envelopeLength = spline.continuation ? spline.envelopeLength : length;
+    const float along = (spline.continuation ? spline.envelopeOffset : 0) + distance;
+    // 字段保留线性过渡坐标，CPU/GPU 重建时统一 smoothstep 一次。
+    // 双重平滑会把衰减挤到过渡带中段，使进入坡面后仍长时间接近满强度。
+    const float start = spline.waterBlendStartMeters > 0 ? std::clamp(along / std::max(spline.waterBlendStartMeters, minimumWidth),0.f,1.f) : 1;
+    const float end = spline.waterBlendEndMeters > 0 ? std::clamp((envelopeLength - along) / std::max(spline.waterBlendEndMeters, minimumWidth),0.f,1.f) : 1;
+    return std::clamp(start * end,0.f,1.f);
+}
+
 glm::vec2 VansPcgSplineEvaluator::Velocity(const VansPcgSpline& spline, const VansPcgSplineSample& sample, float length)
 {
     return glm::vec2(sample.tangent.x, sample.tangent.z) *
@@ -206,6 +217,7 @@ void VansPcgSplineEvaluator::ReversePointOrder(VansPcgSpline& spline, float leng
         if (i+1<spline.points.size()) p.outgoing=segments[spline.points.size()-2-i];
     }
     spline.flowSign=-spline.flowSign;
+    std::swap(spline.waterBlendStartMeters,spline.waterBlendEndMeters);
     spline.coordinateOffset += spline.coordinateSign*length;
     spline.coordinateSign=-spline.coordinateSign;
     if (spline.continuation) spline.envelopeOffset=spline.envelopeLength-spline.envelopeOffset-length;

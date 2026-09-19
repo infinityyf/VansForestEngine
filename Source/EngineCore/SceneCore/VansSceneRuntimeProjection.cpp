@@ -1,3 +1,4 @@
+#include <unordered_set>
 #include "VansSceneRuntimeProjection.h"
 #include "../AssetCore/Serialization/VansSerializedObjectReference.h"
 
@@ -1310,6 +1311,40 @@ std::optional<VansSceneMultiMeshRootConfig> ReadAuthoringMultiMeshRootComponent(
 	return config;
 }
 
+std::optional<VansSceneLodGroupComponentConfig> ReadAuthoringLodGroupComponent(
+	const VansSerializedValue& entity)
+{
+	const VansSerializedValue* component = FindComponent(entity, "LODGroup");
+	if (!component)
+		return std::nullopt;
+	VansSceneLodGroupComponentConfig config;
+	const VansSerializedValue* data = FindSerializedObjectField(*component, "data");
+	if (!data)
+		return config;
+	config.mode = ReadSerializedStringField(*data, "mode", config.mode);
+	config.pixelErrorBudget = ReadFloatFieldClamped(*data, "pixelErrorBudget", 1.0f, 0.01f, 1000.0f);
+	config.qualityBias = ReadFloatFieldClamped(*data, "qualityBias", 1.0f, 0.01f, 16.0f);
+	config.hysteresis = ReadFloatFieldClamped(*data, "hysteresis", 0.1f, 0.0f, 0.49f);
+	if (const VansSerializedValue* levels = FindSerializedArrayField(*data, "levels"))
+	{
+		for (const VansSerializedValue& levelValue : levels->arrayItems)
+		{
+			if (levelValue.kind != VansSerializedValue::Kind::Object)
+				continue;
+			VansSceneLodGroupLevelConfig level;
+			level.screenHeight = ReadFloatFieldClamped(levelValue, "screenHeight", 0.0f, 0.0f, 1.0f);
+			if (const VansSerializedValue* meshes = FindSerializedArrayField(levelValue, "meshes"))
+				for (const VansSerializedValue& mesh : meshes->arrayItems)
+					level.modelGuids.push_back(ReadSerializedString(mesh));
+			if (const VansSerializedValue* errors = FindSerializedArrayField(levelValue, "errors"))
+				for (const VansSerializedValue& error : errors->arrayItems)
+					level.errors.push_back(std::max(0.0f, static_cast<float>(ReadSerializedNumber(error, 0.0))));
+			config.levels.push_back(std::move(level));
+		}
+	}
+	return config;
+}
+
 std::string ReadGameplayAssetReference(const VansSerializedValue& value)
 {
 	if (value.kind == VansSerializedValue::Kind::String) return value.stringValue;
@@ -1562,6 +1597,7 @@ bool AppendAuthoringEntityToContentPlan(
 		objectConfig.componentGuids);
 	objectConfig.uiComponents = std::move(uiComponents);
 	objectConfig.multiMeshRoot = ReadAuthoringMultiMeshRootComponent(entity);
+	objectConfig.lodGroup = ReadAuthoringLodGroupComponent(entity);
 	objectConfig.physicsComponents = VansScenePhysicsComponentReader::ReadAuthoringComponents(entity);
 	objectConfig.vehicleObject = VansSceneVehicleComponentReader::ReadAuthoringComponents(entity);
 	objectConfig.lightComponents = ReadAuthoringLightComponents(entity);
@@ -1601,6 +1637,7 @@ bool AppendAuthoringEntitiesToContentPlan(
 		return false;
 	}
 
+    if (!VansSceneRuntimeProjection::ValidateEntityComponentTypes(entities, outError)) return false;
 	plan.objects.objects.reserve(
 		plan.objects.objects.size() + entities.arrayItems.size());
 	for (const VansSerializedValue& entity : entities.arrayItems)
@@ -1613,6 +1650,29 @@ bool AppendAuthoringEntitiesToContentPlan(
 	}
 	return true;
 }
+}
+
+bool VansSceneRuntimeProjection::ValidateEntityComponentTypes(const VansSerializedValue& entities, std::string& error)
+{
+    static const std::unordered_set<std::string> types{
+        "Transform", "ModelRenderer", "MultiMeshRoot", "Physics", "Cloth", "CharacterController", "Vehicle",
+        "DirectionalLight", "PointLight", "SpotLight", "RectLight", "Camera", "Audio", "Video", "Particle",
+        "AudioReverbZone", "AudioVolume", "LocalVolumetricFog", "Animation", "Timeline", "ActionHost",
+        "GameplayActionHost", "NavigationAgent", "AIAgent", "LODGroup", "Script", "UIController"
+    };
+    if (entities.kind != VansSerializedValue::Kind::Array) { error = "Entities must be an array"; return false; }
+    for (const auto& entity : entities.arrayItems)
+    {
+        const auto* components = FindSerializedArrayField(entity, "components");
+        if (!components) { error = "Entity has no components array"; return false; }
+        for (const auto& component : components->arrayItems)
+        {
+            const auto type = ReadSerializedStringField(component, "type");
+            if (!types.count(type))
+            { error = "Unsupported runtime component '" + type + "' on entity '" + ReadSerializedStringField(entity, "name") + "'"; return false; }
+        }
+    }
+    return true;
 }
 
 VansSerializedValue VansSceneRuntimeProjection::BuildSkinProfileMaterialParameters(const VansSkinProfile& profile)

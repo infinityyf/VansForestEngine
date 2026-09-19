@@ -38,7 +38,7 @@ namespace
 
 				if (!parentName.empty()
 					&& (ownedRenderNode->m_NodeName == parentName
-						|| ownedRenderNode->m_ParentGroupName == parentName))
+						|| ownedRenderNode->m_ParentGroupKey == parentName))
 					return animationNode;
 
 				if (parentTransformID != UINT32_MAX
@@ -123,12 +123,12 @@ namespace
 			}
 
 			const std::string& nodeName = renderComponent->m_RenderNode->m_NodeName;
-			const std::string& parentName = renderComponent->m_RenderNode->m_ParentGroupName;
+			const std::string& parentName = renderComponent->m_RenderNode->m_ParentGroupKey;
 			const uint32_t clothTransformID = renderComponent->m_RenderNode->m_TransformID;
 			const uint32_t parentTransformID = scene.GetParentTransformID(clothTransformID);
 
 			VANS_LOG("[Pass5] RenderNode.m_NodeName='" << nodeName
-				<< "'，m_ParentGroupName='" << parentName
+				<< "'，m_ParentGroupKey='" << parentName
 				<< "'，clothTransformID=" << clothTransformID
 				<< "，parentTransformID=" << parentTransformID);
 

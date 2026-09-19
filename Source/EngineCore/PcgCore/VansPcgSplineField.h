@@ -9,18 +9,7 @@ namespace Vans
 constexpr std::uint32_t VANS_SPLINE_TILE_SIZE = 64;
 constexpr std::uint32_t VANS_SPLINE_TILE_BORDER = 1;
 constexpr std::uint32_t VANS_SPLINE_TILE_EXTENT = VANS_SPLINE_TILE_SIZE + 2 * VANS_SPLINE_TILE_BORDER;
-constexpr std::uint32_t VANS_SPLINE_MAX_DOMAINS_PER_TILE = 8;
 constexpr std::uint32_t VANS_SPLINE_MAX_ATLAS_PAGES = 2048;
-
-struct VansPcgRiverCoordinateTile
-{
-    std::string splineId;
-    float cycleSeconds = 2;
-    bool flowEnabled = true;
-    // xy=连续米制坐标，z=未归一化融合权重，w=该域属性有效；域身份属于页，不能线性过滤。
-    std::vector<glm::vec4> coordinates;
-    std::vector<glm::vec4> jacobians;
-};
 
 struct VansPcgSplineFieldTile
 {
@@ -29,10 +18,14 @@ struct VansPcgSplineFieldTile
     std::uint64_t terrainShapeFingerprint = 0;
     std::vector<glm::vec2> heights;
     std::vector<glm::vec2> velocities;
+    // R=道路核心，G=河流水面有效区，B=河流地表湿润，A=地形变形/细节抑制。
     std::vector<glm::vec4> coverage;
     // 独立派生排除场，不修改任何植被作者 Mask。
     std::vector<float> vegetationExclusion;
-    std::vector<VansPcgRiverCoordinateTile> domains;
+    // x=河内过渡权重，y=法线流动权重，z=水深，w=岸沿高差。
+    std::vector<glm::vec4> riverProperties;
+    // 独立于流速与湿岸的水面混合场，0=全局水面，1=河流水面。
+    std::vector<float> waterBlend;
     float minimumWaterHeight = 0;
     float maximumWaterHeight = 0;
     float minimumRiverWidth = 0;
@@ -78,6 +71,9 @@ struct VansPcgSplineFieldSnapshot
 
     static std::uint64_t TileKey(std::uint32_t x, std::uint32_t z) { return (std::uint64_t(z) << 32) | x; }
     float SampleVegetationExclusion(float x, float z) const;
+    bool SampleRiver(glm::vec2 world, float& height, glm::vec2& velocity, glm::vec4& properties) const;
+    // x=混合权重，yz=对世界 XZ 的导数；与 GPU 双线性重建和端部平滑一致。
+    glm::vec3 SampleWaterBlend(glm::vec2 world) const;
     const VansPcgSplineFieldTile* FindTile(std::uint32_t x, std::uint32_t z) const;
 };
 

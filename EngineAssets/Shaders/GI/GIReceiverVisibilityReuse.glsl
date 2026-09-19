@@ -5,7 +5,8 @@ void GI_ConsiderReceiverHistory(GIReceiverVisibilityRecord old, vec4 position, v
     float material, float footprint, uint count, uint maximumAge,
     inout GIReceiverVisibilityRecord record, inout float bestDistance)
 {
-    if (old.metadata.x != record.metadata.x || old.metadata.z == 0u ||
+    if (old.metadata.x != record.metadata.x || old.anchor.y != record.anchor.y ||
+        floatBitsToUint(old.anchor.z) != floatBitsToUint(record.anchor.z) || old.metadata.z == 0u ||
         frame.z - old.metadata.y > maximumAge ||
         !GI_ReceiverSurfaceMatches(old.surface, position, normal, material, footprint)) return;
     uint known = GI_CompleteReceiverHistory(old, record, count);

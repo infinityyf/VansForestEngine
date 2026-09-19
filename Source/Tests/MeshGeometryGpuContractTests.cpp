@@ -17,6 +17,8 @@
 #include <stdexcept>
 #include <crtdbg.h>
 
+void TestEditorScenePickingGpu(VansGraphics::VansVKDevice& device, VansGraphics::VansMesh& imported);
+
 namespace
 {
     using namespace VansGraphics;
@@ -133,6 +135,7 @@ bool TestMeshGeometryGpuContract(bool deviceOnly)
             Check(imported.GetIndexBufferParameter().IndexType == VK_INDEX_TYPE_UINT16, "Imported mesh must exercise 16-bit indices");
             Check(device->WaitForIdle(), "GPU idle failed");
             std::cerr << "[MeshGeometryGPU] Device idle finished" << std::endl;
+            TestEditorScenePickingGpu(*device, imported);
             std::vector<VansMeshGeometryData> output;
             std::string error;
             Check(VansMeshGeometryReadback::Read(*device, {&procedural, &imported}, output, error), error);

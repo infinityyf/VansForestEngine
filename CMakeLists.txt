@@ -16,6 +16,7 @@ include(ForestSourceGroups)
 
 forest_collect_engine_sources()
 include(ForestPcgSplineCompiler)
+include(ForestModelLod)
 
 add_library(ForestRuntimeCore STATIC
     ${FOREST_RUNTIME_CORE_SOURCES}
@@ -67,6 +68,7 @@ target_link_libraries(ForestEditorCore
         ForestExternalImGui
     PRIVATE
         ForestPackagingCore
+        meshoptimizer
 )
 add_executable(ForestEditor
     Source/Application/ForestEngineEntry.cpp
@@ -160,6 +162,7 @@ if(MSVC)
     target_compile_options(ForestContractTests PRIVATE /bigobj)
 endif()
 add_test(NAME ForestContractTests COMMAND ForestContractTests)
+add_test(NAME ForestEditorSceneInteraction COMMAND ForestContractTests --editor-scene-interaction)
 
 add_custom_target(ForestGamePackageBinaries
     DEPENDS

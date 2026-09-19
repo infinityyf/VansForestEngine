@@ -128,13 +128,13 @@ float GI_EvaluateProbeVisibilityTile(sampler2D visibilityAtlas, ivec2 tileIndex,
 
 #ifdef GI_LOAD_PROBE_STATE
 // 两类布局共用完全相同的单 probe 贡献规则：空间权重 × 朝向 × DDGI 可见性。
-void GI_AccumulateProbeIrradiance(uint region, uint probe, sampler2D irradiance, sampler2D visibility,
+bool GI_AccumulateProbeIrradiance(uint region, uint probe, sampler2D irradiance, sampler2D visibility,
     vec3 probePosition, vec3 samplePos, vec3 N, float spatialWeight, ivec2 tileGrid,
     inout vec3 sum, inout float weightSum)
 {
-    if (spatialWeight <= 0.0) return;
+    if (spatialWeight <= 0.0) return false;
     GIProbeState state = GI_LOAD_PROBE_STATE(region, probe);
-    if (state.metadata.x != 1u) return; // 首次完整发布之前，图集尚无可读数据。
+    if (state.metadata.x != 1u) return false; // 首次完整发布之前，图集尚无可读数据。
     ivec2 tile = GI_AtlasTileIndex(probe, tileGrid.x);
     vec2 irradianceTexel = GI_OctahedralEncode(N) * float(GI_IRRADIANCE_INTERIOR_RES) + float(GI_ATLAS_BORDER);
     vec3 value = textureLod(irradiance, GI_AtlasUVFromTileIndex(tile, irradianceTexel,
@@ -151,6 +151,7 @@ void GI_AccumulateProbeIrradiance(uint region, uint probe, sampler2D irradiance,
     float weight = spatialWeight * facing * facing * visibilityWeight;
     sum += max(value, vec3(0.0)) * weight;
     weightSum += weight;
+    return true;
 }
 
 #include "GIProbeCandidates.glsl"
@@ -158,42 +159,49 @@ void GI_AccumulateProbeIrradiance(uint region, uint probe, sampler2D irradiance,
 #include "GIReceiverZeroSupportFallback.glsl"
 #endif
 
+// 发布比例只由空间候选和发布身份决定，与 RGB 和遮挡支持分离。
+struct GIProbeLighting { vec3 irradiance; float support; float published; };
 // 空间权重、朝向、图集积分约定不变；可见性来源由调用者明确选择。
-vec3 GI_SampleProbeIrradianceAtlas(uint region, ivec3 counts,
+GIProbeLighting GI_SampleProbeIrradianceAtlas(uint region, ivec3 counts,
     sampler2D irradiance, sampler2D visibility, vec3 worldPos, vec3 N,
     vec3 volumeMin, vec3 volumeSize, float normalBias, float volumeWeight,
-    int columns, int rows, out float support)
+    int columns, int rows)
 {
     GIProbeCandidates candidates = GI_GatherProbeCandidates(
         region, counts, worldPos, N, volumeMin, volumeSize, normalBias);
     vec3 sum = vec3(0.0);
     float weightSum = 0.0;
+    float spatialSum = 0.0, publishedSum = 0.0;
     for (uint i = 0u; i < 8u; ++i)
     {
         if (candidates.probes[i] == 0xffffffffu) continue;
-        GI_AccumulateProbeIrradiance(region, candidates.probes[i], irradiance, visibility,
+        spatialSum += candidates.weights[i];
+        bool published = GI_AccumulateProbeIrradiance(region, candidates.probes[i], irradiance, visibility,
             candidates.positions[i], candidates.samplePosition, N, candidates.weights[i],
             ivec2(columns, rows), sum, weightSum);
+        if (published) publishedSum += candidates.weights[i];
     }
 #ifdef GI_RECEIVER_VISIBILITY
     // 独立回退入口；注释此调用可恢复严格的接收点 RT 剔除。
     GI_ApplyReceiverZeroSupportFallback(region, irradiance, visibility, candidates, N,
         ivec2(columns, rows), sum, weightSum);
 #endif
-    support = weightSum;
-    return weightSum > 0.0 ? sum / weightSum * volumeWeight * INV_PI : vec3(0.0);
+    return GIProbeLighting(weightSum > 0.0 ? sum / weightSum * volumeWeight * INV_PI : vec3(0.0),
+        weightSum, spatialSum > 0.0 ? clamp(publishedSum / spatialSum, 0.0, 1.0) : 0.0);
 }
 
-vec3 GI_SampleProbeIrradianceAtlasVisible(uint region, ivec3 counts,
+GIProbeLighting GI_SampleProbeIrradianceAtlasVisible(uint region, ivec3 counts,
     sampler2D irradiance, sampler2D visibility, vec3 worldPos, vec3 normal,
     vec3 volumeMin, vec3 volumeSize, float normalBias, float fadeDistance)
 {
-    if (!GI_IsInsideVolume(worldPos, volumeMin, volumeSize)) return vec3(0.0);
+#ifdef GI_PROBE_LAYOUT_DATA_GLSL
+    GI_LayoutQueryBounds(region, counts, volumeMin, volumeSize);
+#endif
+    if (!GI_IsInsideVolume(worldPos, volumeMin, volumeSize)) return GIProbeLighting(vec3(0), 0, 0);
     ivec2 grid = textureSize(irradiance, 0) / GI_IRRADIANCE_OCTA_RES;
-    float support;
     return GI_SampleProbeIrradianceAtlas(region, counts, irradiance, visibility,
         worldPos, normalize(normal), volumeMin, volumeSize, normalBias,
-        GI_VolumeFade(worldPos, volumeMin, volumeSize, fadeDistance), grid.x, grid.y, support);
+        GI_VolumeFade(worldPos, volumeMin, volumeSize, fadeDistance), grid.x, grid.y);
 }
 #endif
 #endif

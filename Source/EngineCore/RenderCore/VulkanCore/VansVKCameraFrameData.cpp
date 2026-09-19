@@ -3,8 +3,10 @@
 #include "../BRDFData/VansLight.h"
 #include "../VansScene.h"
 #include "../VansMaterial.h"
+#include "VansDescriptorSetLayouts.h"
 #include "../VansRenderFrame.h"
 #include "../../Util/VansProfiler.h"
+#include "../../Util/VansLog.h"
 
 bool VansGraphics::VansVKDevice::InitializeCameraFrameResources()
 {
@@ -44,6 +46,14 @@ bool VansGraphics::VansVKDevice::InitializeLightFrameResources()
 			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
 			VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
 		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+    if (m_LightFrameResourcesReady && !m_LightCookieDataBuffer.CreatVulkanBuffer(
+        m_VansVKLogicDevice, sizeof(VansLightCookieGPU) * VANS_LIGHT_COOKIE_COUNT,
+        VK_FORMAT_R32_SFLOAT, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
+    {
+        m_LightDataBuffer.DestroyVulkanBuffer(m_VansVKLogicDevice);
+        m_LightFrameResourcesReady = false;
+    }
 	return m_LightFrameResourcesReady;
 }
 
@@ -52,6 +62,10 @@ void VansGraphics::VansVKDevice::DestroyLightFrameResources()
 	if (!m_LightFrameResourcesReady)
 		return;
 
+    m_LightCookieDataBuffer.DestroyVulkanBuffer(m_VansVKLogicDevice);
+    m_LightCookieDescriptors.clear();
+    m_InvalidLightCookies.clear();
+    m_LightCookieDescriptorSet = VK_NULL_HANDLE;
 	m_LightDataBuffer.DestroyVulkanBuffer(m_VansVKLogicDevice);
 	m_LightFrameResourcesReady = false;
 }
@@ -76,7 +90,7 @@ bool VansGraphics::VansVKDevice::UploadRenderLightFrameData(
     if (m_Scene)
         m_Scene->GetReflectionProbeSystem()->SetSkyLightingSource(
             m_Scene->GetMaterialManager()->m_SkyLighting.CaptureSourceKey(frameData.skyLighting.intensity));
-    return m_LightDataBuffer.SetBufferData(payload.data(), 0, expectedSize) &&
+    return UploadLightCookies(frameData.cookies) && m_LightDataBuffer.SetBufferData(payload.data(), 0, expectedSize) &&
         m_Scene && m_Scene->GetMaterialManager()->m_SkyLighting.UploadFrame(frameData.skyLighting);
 }
 
@@ -261,4 +275,53 @@ VansGraphics::VansVKDevice::CaptureTemporalCameraSnapshot() const
 	snapshot.farClip = m_CameraData.cameraParams.y;
 	snapshot.fovRadians = glm::radians(m_CameraData.cameraParams.z);
 	return snapshot;
+}
+
+bool VansGraphics::VansVKDevice::UploadLightCookies(const VansLightCookieFrame& frame)
+{
+    if (!m_Scene) return false;
+    auto* neutral = static_cast<VansTexture*>(m_Scene->GetTextureAsset("defaultAlbedo"));
+    if (!neutral) return false;
+    auto data = frame.data;
+    std::vector<VkDescriptorImageInfo> infos(VANS_LIGHT_COOKIE_COUNT,
+        {neutral->GetImage().GetSampler(), neutral->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
+    for (unsigned i = 0; i < VANS_LIGHT_COOKIE_COUNT; ++i)
+    {
+        if (frame.textures[i].empty() || data[i].options.x <= 0) continue;
+        auto* texture = static_cast<VansTexture*>(m_Scene->GetTextureAsset(frame.textures[i]));
+        const bool ready = texture && texture->m_TextureType == TEXTURE_2D &&
+            texture->GetImage().GetImageView() != VK_NULL_HANDLE;
+        const auto format = ready ? texture->GetImage().GetImageCreateInfo().format : VK_FORMAT_UNDEFINED;
+        const bool linear = format == VK_FORMAT_R8_UNORM || format == VK_FORMAT_R8G8_UNORM ||
+            format == VK_FORMAT_R8G8B8A8_UNORM || format == VK_FORMAT_R16_SFLOAT || format == VK_FORMAT_R16G16B16A16_SFLOAT ||
+            format == VK_FORMAT_BC1_RGB_UNORM_BLOCK || format == VK_FORMAT_BC1_RGBA_UNORM_BLOCK ||
+            format == VK_FORMAT_BC2_UNORM_BLOCK || format == VK_FORMAT_BC3_UNORM_BLOCK ||
+            format == VK_FORMAT_BC4_UNORM_BLOCK || format == VK_FORMAT_BC5_UNORM_BLOCK ||
+            format == VK_FORMAT_BC6H_UFLOAT_BLOCK || format == VK_FORMAT_BC7_UNORM_BLOCK;
+        if (!ready || !linear || (data[i].options.y == 1 && texture->GetWidth() != 2 * texture->GetHeight()))
+        {
+            data[i].options.x = 0;
+            if (m_InvalidLightCookies.insert(frame.textures[i]).second)
+                VANS_LOG_WARN("[LightCookie] Expected a ready linear Texture2D (point: 2:1 panorama): " << frame.textures[i]);
+            continue;
+        }
+        infos[i] = {texture->GetImage().GetSampler(), texture->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    }
+    const VkDescriptorSet set = m_Scene->GetGlobalDescriptorSet();
+    bool changed = set != m_LightCookieDescriptorSet || infos.size() != m_LightCookieDescriptors.size();
+    if (!changed) for (size_t i = 0; i < infos.size(); ++i)
+        changed |= infos[i].imageView != m_LightCookieDescriptors[i].imageView || infos[i].sampler != m_LightCookieDescriptors[i].sampler;
+    if (changed)
+    {
+        // 只有资源切换才等待在途提交；逐帧姿态/强度不会改写描述符。
+        if (!WaitForDevice()) return false;
+        auto* manager = VansVKDescriptorManager::GetInstance();
+        manager->BeginDescriptorUpdate();
+        manager->WriteImageDescriptor(set, GLOBAL_BINDING_LIGHT_COOKIE_TEXTURES,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, infos);
+        manager->CommitDescriptorUpdates();
+        m_LightCookieDescriptors = std::move(infos);
+        m_LightCookieDescriptorSet = set;
+    }
+    return m_LightCookieDataBuffer.SetBufferData(data.data(), 0, sizeof(data));
 }

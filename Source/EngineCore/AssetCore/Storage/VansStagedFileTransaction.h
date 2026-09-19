@@ -10,6 +10,7 @@ struct VansStagedFile
 {
     std::filesystem::path targetPath;
     std::filesystem::path temporaryPath;
+    bool requireAbsent = false;
 };
 
 class VansStagedFileTransaction
@@ -24,6 +25,8 @@ public:
     void Add(VansStagedFile file);
     bool Empty() const { return m_Files.empty(); }
     bool Publish(std::string& error);
+    bool PreparePublish(std::string& error);
+    void Commit();
     void Cleanup();
 
 private:
@@ -37,7 +40,8 @@ private:
     };
 
     std::vector<FileState> m_Files;
-    bool m_Finalized = false;
+    enum class Phase { Staging, Prepared, Committed, RolledBack };
+    Phase m_Phase = Phase::Staging;
 
     void Rollback(std::string& error);
 };

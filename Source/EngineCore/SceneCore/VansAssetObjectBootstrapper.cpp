@@ -1,4 +1,6 @@
 #include "VansAssetObjectBootstrapper.h"
+#include "Prefab/VansPrefabAsset.h"
+#include "../AssetCore/Serialization/VansJsonDocumentCodec.h"
 
 #include "../AICore/VansAIBehaviorAsset.h"
 #include "../AICore/Serialization/VansAIBehaviorJsonCodec.h"
@@ -63,6 +65,26 @@ namespace
 {
     void CollectParsedGuidDependencies(const VansSerializedValue& value, VansAssetGuid owner,
         std::vector<VansAssetGuid>& dependencies);
+    std::vector<VansAssetGuid> PrefabDependencies(const VansPrefabAsset& asset, VansAssetGuid owner)
+    {
+        std::vector<VansAssetGuid> dependencies;
+        auto graph = asset.entities;
+        std::string ignored;
+        VisitSceneObjectReferences(graph, [](VansSceneObjectReference& ref, std::string&) { ref.entityGuid.clear(); ref.componentGuid.clear(); return true; }, ignored);
+        std::unordered_set<std::string> local;
+        for (const auto& entity : asset.entities.arrayItems)
+        {
+            for (const auto& field : entity.objectFields)
+            {
+                if (field.first == "id") local.insert(field.second.stringValue);
+                if (field.first == "components") for (const auto& component : field.second.arrayItems)
+                    for (const auto& value : component.objectFields) if (value.first == "id") local.insert(value.second.stringValue);
+            }
+        }
+        CollectParsedGuidDependencies(graph, owner, dependencies);
+        dependencies.erase(std::remove_if(dependencies.begin(), dependencies.end(), [&](auto guid) { return local.count(guid.ToString()); }), dependencies.end());
+        return dependencies;
+    }
 	template <typename Asset, typename Loader>
 	bool EnsurePublished(
 		const VansAssetRecord& record,
@@ -85,7 +107,9 @@ namespace
 		auto object = std::make_shared<Asset>();
 		if (!loader(*object, error)) return false;
         // 首次文件加载与编辑后的内存发布必须得到同一依赖闭包。
-        if constexpr (std::is_same_v<Asset,VansGraphics::VansParticleAsset>)
+        if constexpr (std::is_same_v<Asset,VansPrefabAsset>)
+            dependencies = PrefabDependencies(*object, record.guid);
+        else if constexpr (std::is_same_v<Asset,VansGraphics::VansParticleAsset>)
             dependencies = object->TextureDependencies();
         else if constexpr (std::is_same_v<Asset, VansVegetationConfigAsset>)
             dependencies = object->config.Dependencies();
@@ -227,6 +251,13 @@ bool VansAssetObjectBootstrapper::PublishSerialized(
 			std::move(dependencies), repository, error);
 	}
 
+	if (record.type == VansAssetType::Prefab)
+    {
+        auto asset = std::make_shared<VansPrefabAsset>();
+        if (!VansPrefabCodec::Decode(sourceRoot, *asset, error)) return false;
+        dependencies = PrefabDependencies(*asset, record.guid);
+        return PublishDecoded(record, contentHash, std::move(asset), std::move(dependencies), repository, error);
+    }
 	if (record.type == VansAssetType::Material)
 	{
 		auto asset = std::make_shared<VansMaterialAuthoringAsset>();
@@ -476,7 +507,17 @@ VansAssetObjectBootstrapResult VansAssetObjectBootstrapper::Publish(
 		bool success = false;
 		std::string error;
 
-		if (record.type == VansAssetType::Material)
+        if (record.type == VansAssetType::Prefab)
+            success = EnsurePublished<VansPrefabAsset>(record, repository,
+                [&](VansPrefabAsset& asset, std::string& loadError)
+                {
+                    std::string bytes;
+                    nlohmann::ordered_json json;
+                    return VansFileStorage::ReadAllBytes(record.sourcePath, bytes, loadError) &&
+                        VansJsonDocumentCodec::Parse(bytes, json, loadError) &&
+                        VansPrefabCodec::Decode(DecodeSerializedValueJson(json), asset, loadError);
+                }, {}, published, error);
+		else if (record.type == VansAssetType::Material)
 			success = EnsurePublished<VansMaterialAuthoringAsset>(record, repository,
 				[&](VansMaterialAuthoringAsset& asset, std::string& loadError)
 				{ return VansMaterialAuthoringAssetStorage::Load(record.authoringPath, asset, loadError); },
@@ -774,6 +815,7 @@ bool VansAssetObjectBootstrapper::Supports(VansAssetType type)
 		return true;
 	switch (type)
 	{
+    case VansAssetType::Prefab:
 	case VansAssetType::Material:
 	case VansAssetType::Shader:
 	case VansAssetType::SkinProfile:

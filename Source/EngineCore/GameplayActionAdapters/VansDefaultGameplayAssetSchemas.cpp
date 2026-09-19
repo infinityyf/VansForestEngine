@@ -2,6 +2,7 @@
 #include "../GameplayActionSchema/VansGameplayAssetCompiler.h"
 
 #include "Camera/VansCameraGameplayAssetCompiler.h"
+#include "Combat/VansDamageProfile.h"
 #include "../GameplayActionTimeline/VansGameplayActionTimelineIntegration.h"
 
 namespace Vans
@@ -14,6 +15,7 @@ const VansGameplayAssetSchemaRegistry& VansGameplayAssetSchemaRegistry::BuiltIns
 		std::string error;
 		VansRegisterDefaultGameplayAssetSchemas(value, error);
 		VansRegisterCameraGameplayAssetSchemas(value, error);
+		VansRegisterCombatGameplayAssetSchemas(value, error);
 		value.Seal(error);
 		return value;
 	}();
@@ -40,6 +42,7 @@ bool VansRegisterDefaultGameplayAssetCompilers(
 {
 	return VansRegisterCoreGameplayAssetCompilers(registry, error) &&
 		VansRegisterGameplayPrimitiveAssetCompilers(registry, error) &&
-		VansRegisterCameraGameplayAssetCompilers(registry, error);
+		VansRegisterCameraGameplayAssetCompilers(registry, error) &&
+		VansRegisterCombatGameplayAssetCompilers(registry, error);
 }
 }

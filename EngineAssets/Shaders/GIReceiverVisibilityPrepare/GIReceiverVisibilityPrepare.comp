@@ -70,15 +70,18 @@ void main()
     for(uint r=0u;r<min(uint(regionInfo.x),8u);++r)
     {
         Region v=regions[r];
-        if(!GI_IsInsideVolume(position.xyz,v.minimum.xyz,v.sizeBias.xyz)) continue;
-        float f=GI_VolumeFade(position.xyz,v.minimum.xyz,v.sizeBias.xyz,max(v.trace.z,0.0));
+        vec3 minimum=v.minimum.xyz,size=v.sizeBias.xyz;
+        GI_LayoutBlendBounds(r,minimum,size);
+        if(!GI_IsInsideVolume(position.xyz,minimum,size)) continue;
+        float f=GI_VolumeFade(position.xyz,minimum,size,max(v.trace.z,0.0));
         if(selected==0xffffffffu || v.countsPriority.w>priority || (v.countsPriority.w==priority && f>fade))
         { selected=r;priority=v.countsPriority.w;fade=f; }
     }
     if(selected==0xffffffffu) return;
     record.surface=SSGI_EncodeSurface(position.xyz,N,material);
     record.metadata.xy=uvec2(selected,frame.z);
-    record.anchor=vec4(footprint,0.0,0.0,0.0);
+    record.anchor=vec4(footprint,texelFetch(inputMaterial,pixel,0).w==-1024.0?1.0:0.0,0.0,0.0);
+    record.anchor.z=uintBitsToFloat(GI_LayoutScrollEpoch(selected));
     GI_SetReceiverBias(pixel,position,N,material,footprint);
     uint count=0u;
     bool twoSided=(int(material)==MATERIAL_ID_GRASS || int(material)==MATERIAL_ID_TREE) && shading.w>0.001;
@@ -142,7 +145,7 @@ void main()
     if(confirmBlocked)
     {
         record.surface=SSGI_EncodeSurface(position.xyz,N,material);
-        record.anchor=vec4(footprint,0.0,0.0,0.0);
+        record.anchor=vec4(footprint,texelFetch(inputMaterial,pixel,0).w==-1024.0?1.0:0.0,0.0,0.0);
     }
     if(traceMask==mask) record.metadata.y=frame.z;
     record.metadata.zw &= uvec2(~traceMask);

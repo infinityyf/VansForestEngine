@@ -1,0 +1,19 @@
+#version 450
+layout(local_size_x=8,local_size_y=8) in;
+layout(set=0,binding=0) uniform sampler2D sourceTexture;
+layout(set=0,binding=1,std430) writeonly buffer Output { vec4 pixels[]; };
+layout(push_constant) uniform Extent { uvec4 extent; };
+void main()
+{
+    uvec2 p=gl_GlobalInvocationID.xy;if(any(greaterThanEqual(p,extent.xy)))return;
+    if(extent.z==4u)
+    {
+        ivec2 size=textureSize(sourceTexture,0);
+        ivec2 first=ivec2(floor((vec2(p)+0.5)*vec2(size)/vec2(extent.xy)-0.5));
+        for(uint corner=0u;corner<4u;++corner)
+            pixels[(p.y*extent.x+p.x)*4u+corner]=texelFetch(sourceTexture,
+                clamp(first+ivec2(corner&1u,corner>>1u),ivec2(0),size-1),0);
+        return;
+    }
+    pixels[p.y*extent.x+p.x]=textureLod(sourceTexture,(vec2(p)+0.5)/vec2(extent.xy),0);
+}

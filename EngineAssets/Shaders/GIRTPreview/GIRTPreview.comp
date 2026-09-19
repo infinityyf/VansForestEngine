@@ -103,9 +103,8 @@ void main()
         GIProbeRayDirectionContext context = GI_BuildProbeRayDirectionContext(probeCoord, grid, uint(raysPerProbe), work.z);
         bool fixedRay;
         vec3 direction = GI_ProbeRayDirectionPrepared(context, uint(rayIndex), fixedRay);
-        vec3 origin = GI_LayoutIsSparse() ? GI_LayoutPosition(giProbeWork.header.z, work.x).xyz :
-            GI_LayoutRegionMin(giProbeWork.header.z).xyz + (vec3(probeCoord) + 0.5) *
-            GI_LayoutRegionSize(giProbeWork.header.z).xyz / vec3(grid);
+        vec3 origin = GI_LayoutProbePosition(giProbeWork.header.z, work.x, grid,
+            GI_LayoutRegionMin(giProbeWork.header.z).xyz, GI_LayoutRegionSize(giProbeWork.header.z).xyz / vec3(grid));
         origin += probeStates.states[probeIndex].traceOffsetAndBackface.xyz;
         hitPosition = vec4(hitT >= 0.0 ? origin + direction * hitT : direction, hitT >= 0.0 ? 1.0 : 0.0);
     }

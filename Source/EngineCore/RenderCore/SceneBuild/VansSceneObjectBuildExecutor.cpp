@@ -227,9 +227,12 @@ void RegisterDeferredAnimationRuntimeComponents(
 
 		if (auto* ragdollComponent = object->GetComponent<VansScriptRagdollComponent>())
 		{
+			// Ragdoll 由 Animation 的内嵌配置延迟创建；必须同步门面和 ECS 的稳定身份。
+			ragdollComponent->m_ComponentGuid = Vans::VansAssetGuid::FromStableName(
+				"Animation.Ragdoll", FindRuntimeComponentGuid(objectConfig.componentGuids, "animation")).ToString();
 			runtimeWorld.Commands().AddRagdollComponent(
 				entity,
-				FindRuntimeComponentGuid(objectConfig.componentGuids, "ragdoll"),
+				ragdollComponent->m_ComponentGuid,
 				ragdollComponent->m_AnimNode,
 				static_cast<std::uint8_t>(ragdollComponent->m_InitialDriveMode),
 				ragdollComponent->m_ProfileAssetGuid,
@@ -918,7 +921,7 @@ bool VansGraphics::VansScene::LoadSceneObjects(
 
 			if (!rn)
 			{
-				auto groupIt = m_MultiMeshGroups.find(renderConfig.name);
+				auto groupIt = m_MultiMeshGroups.find(objectConfig.entityGuid);
 				if (groupIt != m_MultiMeshGroups.end() && !groupIt->second.childNodes.empty())
 				{
 					rn = groupIt->second.childNodes[0];
@@ -958,6 +961,44 @@ bool VansGraphics::VansScene::LoadSceneObjects(
 				}
 
 			}
+		}
+
+		if (objectConfig.lodGroup && runtimeComponentBuildResults.render)
+		{
+			auto* lodGroup = new VansScriptLodGroupComponent();
+			lodGroup->m_ComponentName = "LODGroup";
+			lodGroup->m_ComponentGuid = FindRuntimeComponentGuid(objectConfig.componentGuids, "lod_group");
+			lodGroup->m_SelectionMode = objectConfig.lodGroup->mode;
+			lodGroup->m_PixelErrorBudget = objectConfig.lodGroup->pixelErrorBudget;
+			lodGroup->m_QualityBias = objectConfig.lodGroup->qualityBias;
+			lodGroup->m_Hysteresis = objectConfig.lodGroup->hysteresis;
+			lodGroup->m_RenderNodes = runtimeComponentBuildResults.render->m_RenderNodes;
+			lodGroup->m_LevelMeshes.push_back({});
+			for (VansRenderNode* node : lodGroup->m_RenderNodes)
+				lodGroup->m_LevelMeshes[0].push_back(node ? node->m_Mesh : nullptr);
+			lodGroup->m_LevelErrors.push_back(0.0f);
+			lodGroup->m_LevelScreenHeights.push_back(0.0f);
+			for (const auto& levelConfig : objectConfig.lodGroup->levels)
+			{
+				std::vector<VansMesh*> meshes;
+				meshes.reserve(lodGroup->m_RenderNodes.size());
+				for (const std::string& guid : levelConfig.modelGuids)
+				{
+					VansMesh* mesh = guid.empty()
+						? nullptr : static_cast<VansMesh*>(FindMeshAsset(guid));
+					if (mesh && mesh->m_SubMeshes.size() == 1)
+						mesh = mesh->m_SubMeshes.front();
+					meshes.push_back(mesh);
+				}
+				while (meshes.size() < lodGroup->m_RenderNodes.size()) meshes.push_back(nullptr);
+				if (meshes.size() > lodGroup->m_RenderNodes.size()) meshes.resize(lodGroup->m_RenderNodes.size());
+				lodGroup->m_LevelMeshes.push_back(std::move(meshes));
+				const float levelError = levelConfig.errors.empty() ? 0.0f :
+					*std::max_element(levelConfig.errors.begin(), levelConfig.errors.end());
+				lodGroup->m_LevelErrors.push_back(levelError);
+				lodGroup->m_LevelScreenHeights.push_back(levelConfig.screenHeight);
+			}
+			obj->AddComponent(lodGroup);
 		}
 		// A scene Transform is a runtime component even when the object has no
 		// render, physics, camera, or other component that would otherwise force
@@ -1177,7 +1218,7 @@ bool VansGraphics::VansScene::LoadSceneObjects(
 			continue;
 		}
 
-		MultiMeshGroup& group = m_MultiMeshGroups[parentName];
+		MultiMeshGroup& group = m_MultiMeshGroups[parentGuid];
 		group.parentName = parentName;
 		group.parentEntityGuid = parentGuid;
 		group.sourceMesh = sourceMesh;
@@ -1217,7 +1258,7 @@ bool VansGraphics::VansScene::LoadSceneObjects(
 			{
 				if (m_TransformGraph.HasParent(oldTransformID))
 					m_TransformGraph.ClearParent(oldTransformID);
-				node->m_ParentGroupName = parentName;
+				node->m_ParentGroupKey = parentGuid;
 				group.childNodes.push_back(node);
 				continue;
 			}
@@ -1226,7 +1267,7 @@ bool VansGraphics::VansScene::LoadSceneObjects(
 			{
 				if (m_TransformGraph.HasParent(oldTransformID))
 					m_TransformGraph.ClearParent(oldTransformID);
-				node->m_ParentGroupName = parentName;
+				node->m_ParentGroupKey = parentGuid;
 				group.childNodes.push_back(node);
 				continue;
 			}
@@ -1240,7 +1281,7 @@ bool VansGraphics::VansScene::LoadSceneObjects(
 			childObj->m_TransformID = group.sharedTransformID;
 			childObj->m_OwnsTransform = false;
 
-			node->m_ParentGroupName = parentName;
+			node->m_ParentGroupKey = parentGuid;
 			group.childNodes.push_back(node);
 		}
 
@@ -1271,20 +1312,22 @@ bool VansGraphics::VansScene::LoadSceneObjects(
 
 	// === [VansSceneLoadPass::Pass5_ClothAnimationBinding] ===
 	VansSceneClothAnimationBindingExecutor::Execute(*this);
-	ConfigureTimelineRuntime();
-	m_AIWorld = std::make_unique<Vans::VansAIWorld>();
-	std::string aiError;
-	if (!m_AIWorld->Initialize(
-		*m_RuntimeWorld,
-		m_GameplayRuntime.get(),
-		Vans::VansProjectManager::Get().GetAssetObjectRepository(),
-		aiError))
-	{
-		VANS_LOG_ERROR("[SceneBuild] Could not initialize AI World: " << aiError);
-		m_AIWorld.reset();
-		return false;
-	}
+    // 批量追加对象不能重新初始化已在运行的 Timeline/AI 或重播已有资源音频。
+    const bool initialRuntimeSetup = !m_AIWorld;
+    if (!m_TimelineRuntime) ConfigureTimelineRuntime();
+    if (!m_AIWorld)
+    {
+        auto ai = std::make_unique<Vans::VansAIWorld>();
+        std::string aiError;
+        if (!ai->Initialize(*m_RuntimeWorld, m_GameplayRuntime.get(),
+            Vans::VansProjectManager::Get().GetAssetObjectRepository(), aiError))
+        {
+            VANS_LOG_ERROR("[SceneBuild] Could not initialize AI World: " << aiError);
+            return false;
+        }
+        m_AIWorld = std::move(ai);
+    }
+    if (initialRuntimeSetup) m_AudioManager.PlayAutoPlay();
 
-	m_AudioManager.PlayAutoPlay();
 	return true;
 }

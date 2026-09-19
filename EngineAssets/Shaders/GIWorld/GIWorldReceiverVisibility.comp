@@ -1,0 +1,53 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+#extension GL_EXT_nonuniform_qualifier : require
+#include "../Common/Common.glsl"
+#include "../SSGI/SSGISurface.glsl"
+#include "../GI/GIReceiverVisibilityData.glsl"
+#include "../GI/GIProbeStateData.glsl"
+#include "GIWorldQuery.glsl"
+layout(local_size_x=64) in;
+struct Region { vec4 minimum; vec4 sizeBias; vec4 trace; vec4 countsPriority; };
+layout(set=1,binding=4) uniform Info { vec4 screenSize; vec4 regionInfo; Region regions[8]; vec4 debug; };
+#define GI_LAYOUT_SET 1
+#define GI_LAYOUT_BINDING 6
+#include "../GI/GIProbeLayoutData.glsl"
+layout(set=1,binding=7,std430) readonly buffer State { GIProbeState states[]; } currentStates[8];
+layout(set=1,binding=10,std430) buffer Output { uvec4 header; GIReceiverVisibilityRecord records[]; };
+layout(set=1,binding=11,std430) readonly buffer Work { uvec4 counters; uvec2 tasks[]; };
+uint visible;
+void main()
+{
+    uint ray=gl_GlobalInvocationID.x;
+    if(ray>=GI_RECEIVER_RAY_BUDGET) return;
+    uvec2 task=tasks[ray];
+    if(task.x==0xffffffffu) return;
+    vec4 surface=records[task.x].surface;
+    uint region=records[task.x].metadata.x;
+    if(!GI_LayoutRegionUsesWorld(region))return;
+    uint probe=records[task.x].probes[task.y>>2u][task.y&3u];
+    GIProbeState state=currentStates[nonuniformEXT(region)].states[probe];
+    ivec3 counts=ivec3(regions[region].countsPriority.xyz);
+    vec3 Q=GI_LayoutProbePosition(region,probe,counts,regions[region].minimum.xyz,regions[region].sizeBias.xyz/vec3(counts));
+    Q+=state.traceOffsetAndBackface.xyz;
+    uint packed=uint(surface.w);
+    vec3 N=SSGI_DecodeNormal(vec2(packed&255u,(packed>>8u)&255u)/255.0);
+    uint material=(packed>>16u)-1u;
+    if(material==uint(MATERIAL_ID_GRASS) || material==uint(MATERIAL_ID_TREE))
+        N*=dot(Q-surface.xyz,N)>=0.0?1.0:-1.0;
+    float scale=max(max(abs(surface.x),abs(surface.y)),abs(surface.z));
+    float epsilon=max(0.0001,scale*2.3841858e-7);
+    vec3 P=GIWorldReceiverPosition(surface.xyz,records[task.x].anchor.y>0.5,epsilon)+N*epsilon;
+    vec3 delta=Q-P;
+    float distance=length(delta);
+
+    uint bit=1u<<task.y;
+    if(gwTable.w!=0u && (records[task.x].metadata.z&bit)!=0u && (records[task.x].metadata.w&bit)==0u)return;
+    GIWorldHit hit=GIWorldMiss(distance);
+    if(distance>epsilon*2)hit=GIWorldTrace(P,delta/distance,0.0,distance-epsilon,false);
+    if(!hit.valid){atomicAnd(records[task.x].metadata.z,~bit);atomicAnd(records[task.x].metadata.w,~bit);return;}
+    if(hit.t<distance-epsilon)atomicAnd(records[task.x].metadata.w,~bit);
+    else atomicOr(records[task.x].metadata.w,bit);
+    atomicOr(records[task.x].metadata.z,bit);
+}

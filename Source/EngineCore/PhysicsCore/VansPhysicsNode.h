@@ -105,6 +105,9 @@ namespace VansEngine
 
     public:
         // Dynamic body control
+        bool ApplyImpulseAtPosition(const glm::vec3& impulse, const glm::vec3& worldPoint, float maxAngularDelta);
+        bool ResetMotion(const glm::vec3& position, const glm::vec3& rotationDegrees,
+            const glm::vec3& linearVelocity, const glm::vec3& angularVelocity);
         void AddForce(const glm::vec3& force, PxForceMode::Enum mode = PxForceMode::eFORCE);
         void AddTorque(const glm::vec3& torque, PxForceMode::Enum mode = PxForceMode::eFORCE);
         void SetLinearVelocity(const glm::vec3& velocity);

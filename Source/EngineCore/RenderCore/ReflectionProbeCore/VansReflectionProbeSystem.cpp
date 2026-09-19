@@ -61,9 +61,6 @@ namespace VansGraphics
 			glm::mat4 viewProjection;
 			glm::mat4 inverseViewProjection;
 			glm::vec4 position;
-			glm::vec4 giVolumeMin;
-			glm::vec4 giVolumeSizeAndBias;
-			glm::vec4 giGridDimensions;
 		};
 
 		struct CaptureDrawData
@@ -1174,16 +1171,10 @@ namespace VansGraphics
 		const float captureFar = std::max(probe.farPlane, std::max(glm::length(placementSize) * 2.0f, 1000.0f));
 		glm::mat4 view = glm::lookAt(probe.capturePosition, probe.capturePosition + directions[face], up[face]);
 		glm::mat4 projection = glm::perspective(glm::radians(90.0f), 1.0f, captureNear, captureFar);
-		VansGISettings gi = scene.GetGISettings();
-		NormalizeGISettings(gi);
-		const GIResolvedRegion primaryRegion = ResolveGIRegion(GetPrimaryGIRegionDesc(gi));
 		CaptureCameraData cameraData{};
 		cameraData.viewProjection = projection * view;
 		cameraData.inverseViewProjection = glm::inverse(cameraData.viewProjection);
 		cameraData.position = glm::vec4(probe.capturePosition, 1.0f);
-		cameraData.giVolumeMin = glm::vec4(primaryRegion.volumeMin, 0.0f);
-		cameraData.giVolumeSizeAndBias = glm::vec4(primaryRegion.volumeSize, primaryRegion.normalBias);
-		cameraData.giGridDimensions = glm::vec4(glm::vec3(primaryRegion.gridDimensions), 0.0f);
 		m_State->m_CaptureCameraBuffer.SetBufferData(&cameraData, 0, sizeof(cameraData));
 
 		if (!commandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT)) return false;

@@ -279,6 +279,8 @@ namespace
 void VansGraphics::VansLightManager::AddDirectionalLight(const VansDirectionalLight& light)
 {
 	m_DirectionalLights.push_back(light);
+    m_Cookies[0].emplace_back();
+    m_CookieTransforms[0].emplace_back(0.0f);
 }
 
 void VansGraphics::VansLightManager::AddPointLight(
@@ -288,6 +290,8 @@ void VansGraphics::VansLightManager::AddPointLight(
 	VansPointLight gpuLight = light;
 	gpuLight.m_ShadowMetaIndex = VANS_INVALID_SHADOW_INDEX;
 	m_PointLights.push_back(gpuLight);
+    m_Cookies[1].emplace_back();
+    m_CookieTransforms[1].emplace_back(0.0f);
 	VansPunctualShadowSettings pointShadowSettings = shadowSettings;
 	pointShadowSettings.updateMode = VansShadowUpdateMode::EveryFrame;
 	m_PointShadowRegistrations.push_back({ m_NextStableLightId++, pointShadowSettings });
@@ -300,6 +304,8 @@ void VansGraphics::VansLightManager::AddSpotLight(
 	VansSpotLight gpuLight = light;
 	gpuLight.m_ShadowMetaIndex = VANS_INVALID_SHADOW_INDEX;
 	m_SpotLights.push_back(gpuLight);
+    m_Cookies[2].emplace_back();
+    m_CookieTransforms[2].emplace_back(0.0f);
 	m_SpotShadowRegistrations.push_back({ m_NextStableLightId++, shadowSettings });
 }
 
@@ -310,6 +316,8 @@ void VansGraphics::VansLightManager::AddRectLight(
 	VansRectLight gpuLight = light;
 	gpuLight.m_ShadowMetaIndex = VANS_INVALID_SHADOW_INDEX;
 	m_RectLights.push_back(gpuLight);
+    m_Cookies[3].emplace_back();
+    m_CookieTransforms[3].emplace_back(0.0f);
 	m_RectShadowRegistrations.push_back({ m_NextStableLightId++, shadowSettings });
 }
 
@@ -322,6 +330,10 @@ bool VansGraphics::VansLightManager::RemovePointLight(uint32_t index)
 		m_PointLights[index] = m_PointLights.back();
 		m_PointShadowRegistrations[index] = m_PointShadowRegistrations.back();
 	}
+    m_Cookies[1][index] = std::move(m_Cookies[1].back());
+    m_CookieTransforms[1][index] = m_CookieTransforms[1].back();
+    m_Cookies[1].pop_back();
+    m_CookieTransforms[1].pop_back();
 	m_PointLights.pop_back();
 	m_PointShadowRegistrations.pop_back();
 	return true;
@@ -336,6 +348,10 @@ bool VansGraphics::VansLightManager::RemoveSpotLight(uint32_t index)
 		m_SpotLights[index] = m_SpotLights.back();
 		m_SpotShadowRegistrations[index] = m_SpotShadowRegistrations.back();
 	}
+    m_Cookies[2][index] = std::move(m_Cookies[2].back());
+    m_CookieTransforms[2][index] = m_CookieTransforms[2].back();
+    m_Cookies[2].pop_back();
+    m_CookieTransforms[2].pop_back();
 	m_SpotLights.pop_back();
 	m_SpotShadowRegistrations.pop_back();
 	return true;
@@ -350,6 +366,10 @@ bool VansGraphics::VansLightManager::RemoveRectLight(uint32_t index)
 		m_RectLights[index] = m_RectLights.back();
 		m_RectShadowRegistrations[index] = m_RectShadowRegistrations.back();
 	}
+    m_Cookies[3][index] = std::move(m_Cookies[3].back());
+    m_CookieTransforms[3][index] = m_CookieTransforms[3].back();
+    m_Cookies[3].pop_back();
+    m_CookieTransforms[3].pop_back();
 	m_RectLights.pop_back();
 	m_RectShadowRegistrations.pop_back();
 	return true;
@@ -651,12 +671,15 @@ VansGraphics::VansLightManager::BuildRenderLightFrameData()
 	frameData.punctualShadowMapWidth =
 		static_cast<uint32_t>(vansConfigration->GetPunctualShadowMapWidth());
 	frameData.frameSequence = m_LightFrameSequence += 1.0f;
+	BuildCookieFrame(frameData);
 	frameData.prepared = true;
 	return frameData;
 }
 
 void VansGraphics::VansLightManager::ClearLights()
 {
+	m_Cookies = {};
+	m_CookieTransforms = {};
 	m_DirectionalLights.clear();
 	m_PointLights.clear();
 	m_SpotLights.clear();
@@ -669,3 +692,66 @@ void VansGraphics::VansLightManager::ClearLights()
 	m_MainCelestialLightingState = VansCelestialLightingState{};
 }
 
+
+void VansGraphics::VansLightManager::BuildCookieFrame(VansRenderLightFrameData& frame) const
+{
+    frame.cookies = {};
+    const unsigned counts[] = {static_cast<unsigned>(frame.directionalLights.size()),
+        static_cast<unsigned>(frame.pointLights.size()), static_cast<unsigned>(frame.spotLights.size()),
+        static_cast<unsigned>(frame.rectLights.size())};
+    for (unsigned kind = 0; kind < 4; ++kind)
+    for (unsigned i = 0; i < counts[kind]; ++i)
+    {
+        const unsigned slot = VansLightCookieOffset(kind) + i;
+        if (i >= m_Cookies[kind].size()) continue;
+        const auto& c = m_Cookies[kind][i];
+        if (!c.enabled || c.textureGuid.empty() || !std::isfinite(c.strength) || c.strength <= 0.0f) continue;
+        auto& gpu = frame.cookies.data[slot];
+        glm::mat4 world = m_CookieTransforms[kind][i];
+        if (glm::abs(glm::determinant(world)) < 1e-6f)
+        {
+            world = glm::mat4(1.0f);
+            if (kind == 1) world[3] = glm::vec4(frame.pointLights[i].m_Position, 1);
+            if (kind == 2)
+            {
+                const auto& light = frame.spotLights[i];
+                glm::vec3 z = light.m_Direction;
+                if (glm::length(z) < 1e-5f) z = {0,0,1};
+                z = glm::normalize(z);
+                const glm::vec3 x = glm::normalize(glm::cross(ChooseStableUpVector(z), z));
+                world[0] = glm::vec4(x,0); world[1] = glm::vec4(glm::cross(z,x),0);
+                world[2] = glm::vec4(z,0); world[3] = glm::vec4(light.m_Position,1);
+            }
+            if (kind == 3)
+            {
+                const auto& light = frame.rectLights[i];
+                if (glm::length(light.m_Right) > 1e-5f && glm::length(light.m_Up) > 1e-5f && glm::length(light.m_Normal) > 1e-5f)
+                {
+                    world[0] = glm::vec4(glm::normalize(light.m_Right),0);
+                    world[1] = glm::vec4(glm::normalize(light.m_Up),0);
+                    world[2] = glm::vec4(glm::normalize(light.m_Normal),0);
+                }
+                world[3] = glm::vec4(light.m_Position,1);
+            }
+        }
+        // 最终天体方向可能与原始太阳方向不同；原点保持世界锚定。
+        if (kind == 0)
+        {
+            const glm::vec3 forward = -frame.directionalLights[i].m_Direction;
+            glm::vec3 up(world[1]);
+            if (glm::length(glm::cross(forward, up)) < 1e-4f) up = ChooseStableUpVector(forward);
+            const glm::vec3 right = glm::normalize(glm::cross(up, forward));
+            world[0] = glm::vec4(right, 0); world[1] = glm::vec4(glm::cross(forward, right), 0);
+            world[2] = glm::vec4(forward, 0);
+        }
+        gpu.worldToLight = glm::inverse(world);
+        auto finite = [](float v, float fallback) { return std::isfinite(v) ? v : fallback; };
+        gpu.scaleOffset = {finite(c.scaleX, 1), finite(c.scaleY, 1), finite(c.offsetX, 0), finite(c.offsetY, 0)};
+        const float angle = glm::radians(finite(c.rotationDegrees, 0));
+        gpu.projection = {glm::max(finite(c.sizeX, 10), 0.001f), glm::max(finite(c.sizeY, 10), 0.001f), std::cos(angle), std::sin(angle)};
+        if (kind == 2)
+            gpu.projection.x = gpu.projection.y = 2.0f * std::tan(glm::clamp(frame.spotLights[i].m_OuterCutOff, 0.001f, 1.55334f));
+        gpu.options = {glm::clamp(c.strength, 0.0f, 1.0f), float(kind), c.repeat ? 1.0f : 0.0f, c.useAlpha ? 1.0f : 0.0f};
+        frame.cookies.textures[slot] = c.textureGuid;
+    }
+}

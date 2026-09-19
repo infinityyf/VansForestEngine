@@ -903,6 +903,7 @@ bool VansAnimationController::TransferRuntimeStateFrom(
 	m_GlobalSpeed = previous.m_GlobalSpeed;
 	m_RootMotionEnabled = previous.m_RootMotionEnabled;
 	m_RootMotionApplyToOwner = previous.m_RootMotionApplyToOwner;
+	m_NormalizeRootPose = previous.m_NormalizeRootPose;
 	m_RootBoneIndex = previous.m_RootBoneIndex;
 	m_OwnerWorldTransform = previous.m_OwnerWorldTransform;
 	m_LastRootMotionDelta = glm::vec3(0.0f);
@@ -1858,7 +1859,7 @@ bool VansAnimationController::EvaluateGraphSet(
 			m_RootBoneIndex = DetectRootBoneIndex(skeleton);
 		const bool hasPoseRoot = m_RootBoneIndex >= 0
 			&& m_RootBoneIndex < static_cast<int>(sampled.localPose.size());
-		if (hasPoseRoot)
+		if (m_NormalizeRootPose && hasPoseRoot)
 			RestoreRootReference(sampled.localPose[m_RootBoneIndex],
 				skeleton.bones[m_RootBoneIndex].localTransform);
 
@@ -1876,7 +1877,7 @@ bool VansAnimationController::EvaluateGraphSet(
 		}
 		VansAnimationFrameVector<VansBoneTransform> referencePose = bindPose;
 		ResolveLayerReferencePose(layer, binding, skeleton, referencePose);
-		if (hasPoseRoot)
+		if (m_NormalizeRootPose && hasPoseRoot)
 			RestoreRootReference(referencePose[m_RootBoneIndex],
 				skeleton.bones[m_RootBoneIndex].localTransform);
 		outPayload = VansAnimationLayerMixer::ApplyLayer(
@@ -1977,7 +1978,7 @@ bool VansAnimationController::FinalizeLocalPose(
 	auto& localTransforms = m_LocalTransformScratch;
 	VansPoseMath::ToMatrices(pose.localPose, localTransforms);
 	ApplyBoneOverrides(localTransforms, skeleton);
-	if (normalizeRoot)
+	if (normalizeRoot && m_NormalizeRootPose)
 	{
 		if (m_RootBoneIndex < 0)
 			m_RootBoneIndex = DetectRootBoneIndex(skeleton);

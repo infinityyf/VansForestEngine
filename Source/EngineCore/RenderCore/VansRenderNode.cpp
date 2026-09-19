@@ -262,7 +262,10 @@ void VansGraphics::VansRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalStateDat
 	if (!ValidateDescriptorBindings(GetPrimaryPassName(m_NodeType), m_UsedDescSetLayouts, m_UsedDescSets))
 		return;
 
-	cmd.BindMesh(*m_Mesh, 0, globalStateData);
+	VansMesh* drawMesh = GetDrawMesh();
+	if (drawMesh == nullptr)
+		return;
+	cmd.BindMesh(*drawMesh, 0, globalStateData);
 
 	VansVKGraphicsPipeline* pipeline = cmd.EnsureGraphicsShader(*shader, globalStateData, m_UsedDescSetLayouts);
 	if (pipeline == nullptr)
@@ -270,7 +273,7 @@ void VansGraphics::VansRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalStateDat
 
 	cmd.BindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, *pipeline, 0, m_UsedDescSets, {});
 
-	cmd.DrawMesh(*m_Mesh, *pipeline, 1);
+	cmd.DrawMesh(*drawMesh, *pipeline, 1);
 }
 
 static bool UsesDrawSubmission(VansGraphics::RenderNodeType type)
@@ -348,7 +351,7 @@ bool VansGraphics::VansRenderNode::BuildPassDrawPacket(
 
 bool VansGraphics::VansRenderNode::PreparePipelineForDraw(VkDevice& device, GlobalStateData global_state)
 {
-	if (m_Mesh == nullptr || m_Material == nullptr)
+	if (GetDrawMesh() == nullptr || m_Material == nullptr)
 		return true;
 
 	VansGraphicsShader* shader = m_Material->GetPassShader(GetPrimaryPassName(m_NodeType));
@@ -362,7 +365,8 @@ bool VansGraphics::VansRenderNode::PreparePipelineForShader(
 	const std::vector<VkDescriptorSetLayout>& layouts,
 	const std::vector<VkDescriptorSet>& sets)
 {
-	if (m_Mesh == nullptr || shader == nullptr)
+	VansMesh* drawMesh = GetDrawMesh();
+	if (drawMesh == nullptr || shader == nullptr)
 		return true;
 
 	if (layouts.size() != sets.size())
@@ -373,8 +377,8 @@ bool VansGraphics::VansRenderNode::PreparePipelineForShader(
 			return true;
 	}
 
-	global_state.vertexInputAttributeDescriptions = &m_Mesh->m_VertexInputAttributeDescriptions;
-	global_state.vertexInputBindingDescriptions = &m_Mesh->m_VertexInputBindingDescriptions;
+	global_state.vertexInputAttributeDescriptions = &drawMesh->m_VertexInputAttributeDescriptions;
+	global_state.vertexInputBindingDescriptions = &drawMesh->m_VertexInputBindingDescriptions;
 	return shader->GetGraphicsPipeline(device, global_state, layouts) != nullptr;
 }
 
@@ -919,7 +923,7 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescriptorSets(VansMaterialMana
 	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[setIndex], DEFERRED_BINDING_RECT_LIGHT_EMISSIVE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{ { rectLightEmissive->GetImage().GetSampler(), rectLightEmissive->GetImage().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
 	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[setIndex], DEFERRED_BINDING_IES_PROFILES, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		{ { m_Scene->GetIESProfileManager()->GetIESProfileTexture().GetSampler(), m_Scene->GetIESProfileManager()->GetIESProfileTexture().GetImageView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
+		{ { m_Scene->GetIESProfileManager()->GetIESProfileTexture().GetSampler(), m_Scene->GetIESProfileManager()->GetIESProfileArrayView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
 	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[setIndex], DEFERRED_BINDING_SCREEN_SPACE_SHADOW_HIZ, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{ { screenSpaceShadowHZB->GetImage().GetSampler(), screenSpaceShadowHZB->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
 	descMgr->WriteBufferDescriptor(frameBufferInputDescriptorSets[setIndex], DEFERRED_BINDING_SCREEN_SPACE_SHADOW_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,

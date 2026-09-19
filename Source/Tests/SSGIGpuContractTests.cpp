@@ -3,6 +3,7 @@
 #include "../EngineCore/RenderCore/VansCameraFrameData.h"
 #include "../EngineCore/RenderCore/VansTemporalProjection.h"
 #include "../EngineCore/RenderCore/VansMaterial.h"
+#include "../EngineCore/RenderCore/VegetationCore/GrassEnergyLUT.h"
 #include "../EngineCore/RenderCore/VulkanCore/VansDescriptorSetLayouts.h"
 #include <glm/gtc/packing.hpp>
 #include <array>
@@ -18,7 +19,7 @@ namespace
 {
     using namespace VansGraphics;
     constexpr uint32_t Width = 17, Height = 13, Count = Width * Height;
-    enum ImageSlot { Position, Motion, Normal, Material, Raw, HistoryA, HistoryB, MomentsA, MomentsB, SurfaceA, SurfaceB, Atrous, ImageCount };
+    enum ImageSlot { Position, Motion, Normal, Material, Raw, HistoryA, HistoryB, MomentsA, MomentsB, SurfaceA, SurfaceB, Atrous, GrassEnergy, ImageCount };
     std::atomic<uint32_t> validationErrors{0};
     VKAPI_ATTR VkBool32 VKAPI_CALL Validation(VkDebugUtilsMessageSeverityFlagBitsEXT,
         VkDebugUtilsMessageTypeFlagsEXT, const VkDebugUtilsMessengerCallbackDataEXT* message, void*)
@@ -57,11 +58,12 @@ namespace
         uint32_t family = 0; VkDebugUtilsMessengerEXT messenger{};
         PFN_vkDestroyDebugUtilsMessengerEXT destroyMessenger{};
         VkCommandPool commands{}; VkCommandBuffer command{}; VkDescriptorPool pool{}; VkSampler sampler{};
+        VkSampler grassEnergySampler{};
         VkDescriptorSetLayout cameraLayout{}; VkDescriptorSet cameraSet{};
         std::array<VkDescriptorSet, 2> temporalSets{}, atrousSets{};
         std::array<Image, ImageCount> images{};
         std::array<Buffer, 4> buffers{}; // camera, temporal params, upload, readback
-        std::array<Pipeline, 2> pipelines{};
+        std::array<Pipeline, 3> pipelines{};
         VkDeviceSize uploadOffset = 0;
         VansCameraDataGPU camera{};
         std::vector<glm::vec4> position, motion, normal, material, raw;
@@ -81,6 +83,7 @@ namespace
                 if (pool) vkDestroyDescriptorPool(device, pool, nullptr);
                 if (cameraLayout) vkDestroyDescriptorSetLayout(device, cameraLayout, nullptr);
                 if (sampler) vkDestroySampler(device, sampler, nullptr);
+                if (grassEnergySampler) vkDestroySampler(device, grassEnergySampler, nullptr);
                 for (auto& i : images)
                 {
                     if (i.view) vkDestroyImageView(device, i.view, nullptr);
@@ -184,7 +187,7 @@ namespace
         }
         void BindImage(VkDescriptorSet set, uint32_t binding, ImageSlot slot, bool storage = false)
         {
-            VkDescriptorImageInfo info{sampler, images[slot].view, VK_IMAGE_LAYOUT_GENERAL};
+            VkDescriptorImageInfo info{slot==GrassEnergy?grassEnergySampler:sampler, images[slot].view, VK_IMAGE_LAYOUT_GENERAL};
             VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
             write.dstSet = set; write.dstBinding = binding; write.descriptorCount = 1;
             write.descriptorType = storage ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -290,7 +293,7 @@ namespace
         Expect(family < count, "No compute queue");
         float priority = 1.0f;
         VkDeviceQueueCreateInfo queueInfo{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO}; queueInfo.queueFamilyIndex = family; queueInfo.queueCount = 1; queueInfo.pQueuePriorities = &priority;
-        VkPhysicalDeviceFeatures features{}; features.shaderStorageImageExtendedFormats = VK_TRUE;
+        VkPhysicalDeviceFeatures features{}; features.shaderStorageImageExtendedFormats = VK_TRUE; features.imageCubeArray = VK_TRUE;
         VkDeviceCreateInfo deviceInfo{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO}; deviceInfo.pEnabledFeatures = &features; deviceInfo.queueCreateInfoCount = 1; deviceInfo.pQueueCreateInfos = &queueInfo;
         Require(vkCreateDevice(physical, &deviceInfo, nullptr, &device), "create device");
         if (!LoadVulkanDeviceLevelFunctions(device)) throw std::runtime_error("Vulkan device functions unavailable");
@@ -305,16 +308,19 @@ namespace
         VkSamplerCreateInfo samplerInfo{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO}; samplerInfo.minFilter = samplerInfo.magFilter = VK_FILTER_NEAREST;
         samplerInfo.addressModeU = samplerInfo.addressModeV = samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         Require(vkCreateSampler(device, &samplerInfo, nullptr, &sampler), "sampler");
+        samplerInfo.minFilter=samplerInfo.magFilter=VK_FILTER_LINEAR;
+        Require(vkCreateSampler(device,&samplerInfo,nullptr,&grassEnergySampler),"grass energy sampler");
         CreateBuffer(0, sizeof(camera)); CreateBuffer(1, sizeof(SSGITemporalParamsGPU)); CreateBuffer(2, 1024 * 1024); CreateBuffer(3, Count * sizeof(glm::vec4));
         Begin();
         for (uint32_t slot = 0; slot < ImageCount; ++slot)
         {
             auto& image = images[slot];
             image.components = slot == MomentsA || slot == MomentsB ? 2u : 4u;
-            image.half = slot == Raw || slot == HistoryA || slot == HistoryB || slot == MomentsA || slot == MomentsB || slot == Atrous;
+            image.half = slot == Raw || slot == HistoryA || slot == HistoryB || slot == MomentsA || slot == MomentsB || slot == Atrous || slot == GrassEnergy;
             image.format = image.half ? (image.components == 2 ? VK_FORMAT_R16G16_SFLOAT : VK_FORMAT_R16G16B16A16_SFLOAT) : VK_FORMAT_R32G32B32A32_SFLOAT;
             VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO}; info.imageType = VK_IMAGE_TYPE_2D; info.format = image.format;
             info.extent = {Width, Height, 1}; info.mipLevels = 1; info.arrayLayers = 1; info.samples = VK_SAMPLE_COUNT_1_BIT;
+            if(slot==GrassEnergy) info.extent={GrassEnergyLUT::Size,GrassEnergyLUT::Size,1};
             info.tiling = VK_IMAGE_TILING_OPTIMAL; info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
             Require(vkCreateImage(device, &info, nullptr, &image.image), "create image");
             VkMemoryRequirements requirements; vkGetImageMemoryRequirements(device, image.image, &requirements);
@@ -328,11 +334,20 @@ namespace
             vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
             VkClearColorValue zero{}; vkCmdClearColorImage(command, image.image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &view.subresourceRange);
         }
-        Submit();
-        VkDescriptorSetLayoutBinding binding{0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
-        VkDescriptorSetLayoutCreateInfo cameraInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO}; cameraInfo.bindingCount = 1; cameraInfo.pBindings = &binding;
+        Barrier();
+        std::memcpy(buffers[2].mapped,GrassEnergyLUT::Pixels,sizeof(GrassEnergyLUT::Pixels));
+        VkBufferImageCopy energyCopy{};
+        energyCopy.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};
+        energyCopy.imageExtent={GrassEnergyLUT::Size,GrassEnergyLUT::Size,1};
+        vkCmdCopyBufferToImage(command,buffers[2].buffer,images[GrassEnergy].image,VK_IMAGE_LAYOUT_GENERAL,1,&energyCopy);
+        Barrier();Submit();
+        VkDescriptorSetLayoutBinding bindings[]={
+            {0,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr},
+            {GLOBAL_BINDING_GRASS_ENERGY_LUT,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr}};
+        VkDescriptorSetLayoutCreateInfo cameraInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO}; cameraInfo.bindingCount = 2; cameraInfo.pBindings = bindings;
         Require(vkCreateDescriptorSetLayout(device, &cameraInfo, nullptr, &cameraLayout), "camera set layout");
         cameraSet = Allocate(cameraLayout); BindBuffer(cameraSet, 0, 0);
+        BindImage(cameraSet,GLOBAL_BINDING_GRASS_ENERGY_LUT,GrassEnergy);
         constexpr auto texture = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         constexpr auto storage = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         CreatePipeline(0, "SSGITemporal/SSGITemporalcomp.spv", {texture, texture, texture, storage, storage, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, texture, storage, texture, texture, texture, storage}, 0);
@@ -510,4 +525,108 @@ bool TestSSGIGpuContract()
     {
         std::cerr << "SSGI_GPU_CONTRACT_FAIL: " << error.what() << '\n'; return false;
     }
+}
+
+// Grass 与 SSGI 共用图像夹具，测试入口独立，不更改原 SSGI 用例。
+bool TestGrassLightingGpuContract()
+{
+    try {
+        {
+            VansMaterialManager materials;
+            VansGrassMaterial grass;
+            Expect(grass.m_GrassParams.indirectDiffuseStrength==1.0f,"Grass indirect default must preserve unit lighting");
+            Expect(materials.ApplyMaterialParameter(grass,"indirectDiffuseStrength",0.35f)
+                && grass.m_GrassParams.indirectDiffuseStrength==0.35f
+                && grass.m_GrassParams.transmissionStrength==0.5f
+                && grass.m_GrassParams.normalStrength==1.0f,"Grass indirect parameter affects unrelated material controls");
+            Expect(materials.ApplyMaterialParameter(grass,"indirectDiffuseStrength",-1.0f)
+                && grass.m_GrassParams.indirectDiffuseStrength==0.0f,"Grass indirect strength lower bound");
+            Expect(materials.ApplyMaterialParameter(grass,"indirectDiffuseStrength",3.0f)
+                && grass.m_GrassParams.indirectDiffuseStrength==2.0f,"Grass indirect strength upper bound");
+            std::cout<<"Grass indirect material parameter default, runtime edit, bounds, isolation: PASS\n";
+        }
+        validationErrors=0;
+        {
+            Fixture gpu;gpu.Initialize();
+            constexpr auto texture=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            gpu.CreatePipeline(2,"../../Source/Tests/Shaders/GrassLightingContract.comp.spv",
+                {texture,texture,texture,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE},4);
+            auto set=gpu.Allocate(gpu.pipelines[2].setLayout);
+            gpu.BindImage(set,0,Position);gpu.BindImage(set,1,Material);gpu.BindImage(set,2,ImageSlot::Normal);gpu.BindImage(set,3,Raw,true);
+            gpu.camera.viewMatrix=glm::mat4(1);
+            gpu.camera.projectionMatrix=glm::perspective(glm::radians(60.0f),float(Width)/Height,0.1f,100.0f);
+            gpu.position.assign(Count,glm::vec4(0));gpu.material.assign(Count,glm::vec4(0,0,8,0));gpu.normal.assign(Count,glm::vec4(0,0,1,0));
+            const uint32_t center=(Height/2)*Width+Width/2;
+            auto dispatch=[&](uint32_t mode) {
+                std::memcpy(gpu.buffers[0].mapped,&gpu.camera,sizeof(gpu.camera));
+                gpu.Begin();gpu.Upload(Position,gpu.position);gpu.Upload(Material,gpu.material);gpu.Upload(ImageSlot::Normal,gpu.normal);gpu.Barrier();
+                VkDescriptorSet sets[]={gpu.cameraSet,set};auto& p=gpu.pipelines[2];
+                vkCmdBindPipeline(gpu.command,VK_PIPELINE_BIND_POINT_COMPUTE,p.pipeline);
+                vkCmdBindDescriptorSets(gpu.command,VK_PIPELINE_BIND_POINT_COMPUTE,p.layout,0,2,sets,0,nullptr);
+                vkCmdPushConstants(gpu.command,p.layout,VK_SHADER_STAGE_COMPUTE_BIT,0,4,&mode);
+                vkCmdDispatch(gpu.command,(Width+7)/8,(Height+7)/8,1);gpu.Submit();return gpu.Read(Raw);
+            };
+            auto open=dispatch(0);Expect(open[center].x==1 && open[center].y==1,"Empty screen must leave both hemispheres open");
+            for(uint32_t y=0;y<Height;++y) for(uint32_t x=0;x<Width;++x) {
+                const float depth=0.8f;
+                const float nx=(float(x)+0.5f)/Width*2-1,ny=1-(float(y)+0.5f)/Height*2;
+                gpu.position[y*Width+x]=glm::vec4(nx*depth/gpu.camera.projectionMatrix[0][0],ny*depth/gpu.camera.projectionMatrix[1][1],-depth,depth);
+                gpu.material[y*Width+x].z=1;
+            }
+            auto blocked=dispatch(0);
+            Expect(blocked[center].x<0.98f,"Screen occluder must reduce front hemisphere visibility");
+            Expect(blocked[center].y>blocked[center].x,"Front and back occlusion must stay independent");
+            std::cout<<"Grass AO open="<<open[center].x<<","<<open[center].y<<" blocked="<<blocked[center].x<<","<<blocked[center].y<<'\n';
+            for(auto& m:gpu.material) m.z=8;
+            auto thin=dispatch(0);Expect(thin[center].x>=blocked[center].x,"Thin grass must not occlude more than opaque geometry");
+            for(float depth:{0.61f,0.73f,0.87f,1.0f,1.19f,1.37f,2.1f})
+            {
+                for(uint32_t y=0;y<Height;++y) for(uint32_t x=0;x<Width;++x)
+                {
+                    float nx=(float(x)+0.5f)/Width*2-1,ny=1-(float(y)+0.5f)/Height*2;
+                    gpu.position[y*Width+x]=glm::vec4(nx*depth/gpu.camera.projectionMatrix[0][0],ny*depth/gpu.camera.projectionMatrix[1][1],-depth,depth);
+                }
+                auto ray=dispatch(11)[center];
+                if(depth==1.0f || depth>2.0f) Expect(ray.x==0 && ray.y==0,"Grass AO self surface / out-of-range surface falsely blocks");
+                else if(depth<1.0f) Expect(ray.x>0.2f && ray.y==0,"Thin foreground missed / blocks reverse hemisphere");
+                else Expect(ray.y>0.2f && ray.x==0,"Thin background missed / blocks reverse hemisphere");
+            }
+            std::cout<<"Grass AO segment crossings, finite thickness, receiver rejection, range: PASS\n";
+            auto normals=dispatch(5);
+            for(uint32_t x=0;x<Width;++x) {
+                glm::vec3 expected(0.3f,0.4f,std::sqrt(0.75f));
+                if(x%6==2) expected.x=-expected.x;
+                if(x%6==3) expected.y=-expected.y;
+                if(x%6==4) expected=glm::vec3(0,0,1);
+                if(x%6==5) expected=-expected;
+                const auto sample=normals[(Height/2)*Width+x];
+                Expect(glm::length(glm::vec3(sample)-expected)<0.002f && std::abs(sample.w-1.0f)<0.002f,
+                    "Grass pixel normal fails screen-handedness / mirrored-UV / backface / degenerate-UV contract");
+            }
+            std::cout<<"Grass normal screen flip, mirrored U/V, neutral degenerate UV, backside, unit length: PASS\n";
+            for(const auto& n:dispatch(6)) Expect(std::abs(n.x)<0.002f && std::abs(n.y)<0.002f && std::abs(n.z-1.0f)<0.002f,
+                "Grass normal is not perpendicular to scaled/sheared/mirrored deformation tangents");
+            std::cout<<"Grass inverse-transpose nonuniform scale, shear, mirror: PASS\n";
+            auto front=dispatch(1),back=dispatch(2),opaqueBack=dispatch(3),sweep=dispatch(4);
+            Expect(back[center].x>0 && opaqueBack[center].x==0,"Backlight requires transmission");
+            for(const auto& pixel:sweep) for(int c=0;c<4;++c) Expect(std::isfinite(pixel[c]) && pixel[c]>=0,"Grass BSDF produces invalid grazing/opposition values");
+            Expect(front[center].w>0,"Grass must retain front specular reflection");
+            Expect(back[center].w==0,"Backlight must not create front surface reflection");
+            std::cout<<"Grass back transmission="<<back[center].x<<" front specular="<<front[center].w<<'\n';
+            float maxFurnace=0,maxDifference=0;
+            for(uint32_t mode:{7u,8u,9u}) for(const auto& sample:dispatch(mode))
+            {
+                maxFurnace=std::max(maxFurnace,sample.x);
+                maxDifference=std::max(maxDifference,std::abs(sample.x-sample.y));
+                Expect(std::isfinite(sample.x) && sample.x<=1.004f && sample.y<=1.001f,"Grass white furnace creates energy");
+                Expect(std::abs(sample.x-sample.y)<0.004f,"Grass direct / ambient integration mismatch");
+                Expect(std::abs(sample.z-sample.w)<0.004f,"Grass specular LUT differs from actual GGX integral");
+            }
+            for(const auto& sample:dispatch(10))
+                Expect(std::isfinite(sample.x) && sample.x<0.002f && sample.y<0.002f,"Grass LUT endpoints wrap or are discontinuous");
+            std::cout<<"Grass white furnace max="<<maxFurnace<<" direct/ambient difference="<<maxDifference<<" LUT endpoints: PASS\n";
+        }
+        Expect(validationErrors==0,"Grass Vulkan validation errors");
+        std::cout<<"GRASS_LIGHTING_GPU_CONTRACT_PASS validationErrors=0\n";return true;
+    } catch(const std::exception& e) {std::cerr<<"GRASS_LIGHTING_GPU_CONTRACT_FAIL: "<<e.what()<<'\n';return false;}
 }

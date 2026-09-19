@@ -361,6 +361,31 @@ bool VansGraphics::VansScene::LoadPackagedProjectAssets(
 	}
 }
 
+bool VansGraphics::VansScene::EnsureProjectAssetDependencies(Vans::VansAssetDatabase& database,
+    const Vans::VansSerializedValue& sceneDocument, const std::filesystem::path& sceneSourcePath)
+{
+    VANS_ASSERT_MAIN_THREAD();
+    auto& project = Vans::VansProjectManager::Get();
+    auto batch = Vans::VansSceneAssetDependencyBuilder::BuildResourcePlan(database, sceneDocument,
+        sceneSourcePath, project.GetConfig().runtimeAssetBindings, project.GetAssetObjectRepository(),
+        project.GetBuiltInAssetDatabase());
+    if (!batch.success) return false;
+    auto& plan = batch.resourcePlan;
+    const auto removeLoaded = [](auto& entries, const auto& loaded)
+    { entries.erase(std::remove_if(entries.begin(), entries.end(), loaded), entries.end()); };
+    removeLoaded(plan.meshes, [this](const auto& entry) { return GetMeshAsset(entry.name) != nullptr; });
+    removeLoaded(plan.textures, [this](const auto& entry) { return m_AssetRegistry.FindTextureByGuid(entry.assetGuid) != nullptr; });
+    removeLoaded(plan.shaders, [this](const auto& entry) { return GetShaderAsset(entry.name) != nullptr; });
+    removeLoaded(plan.audios, [this](const auto& entry) { return m_AudioManager.Get(entry.assetGuid) != nullptr; });
+    removeLoaded(plan.videos, [this](const auto& entry) { return m_VideoManager.GetByAssetGuid(entry.assetGuid) != nullptr; });
+    plan.includeDefaultTextureSet = false;
+    plan.loadRegisteredShaders = !plan.shaders.empty();
+    if (plan.meshes.empty() && plan.textures.empty() && plan.shaders.empty() && plan.audios.empty() && plan.videos.empty())
+        return true;
+    // 项目资源按身份复用；编辑预览仅追加缺失资源，不清空正在被原场景使用的媒体和网格。
+    return VansSceneResourceBatchExecutor::Execute(*this, plan);
+}
+
 bool VansGraphics::VansScene::LoadSceneForRendering(
 	const Vans::VansSerializedValue& sceneDocument,
 	const std::filesystem::path& sceneSourcePath,
@@ -851,4 +876,3 @@ VansGraphics::VansRenderNode* VansGraphics::VansScene::FindPrimaryRenderNodeByEn
 
 
 }
-

@@ -46,6 +46,7 @@ class VansCamera;
 class VansLightManager;
 class VansMaterialManager;
 class VansRenderNode;
+class VansMesh;
 class VansScene;
 class VansVideoManager;
 class VansVideoTexture;
@@ -164,6 +165,22 @@ protected:
 	void OnDisable() override;
 };
 
+// LODGroup 是场景作者组件；它只保存已加载的视觉 Mesh 绑定和选择历史。
+// 源 RenderNode::m_Mesh 不会被替换，物理与加速结构继续使用源几何。
+class VansScriptLodGroupComponent : public VansScriptComponent
+{
+public:
+	std::vector<VansGraphics::VansRenderNode*> m_RenderNodes;
+	std::vector<std::vector<VansGraphics::VansMesh*>> m_LevelMeshes;
+	std::vector<float> m_LevelErrors;
+	std::vector<float> m_LevelScreenHeights;
+	std::string m_SelectionMode = "autoScreenError";
+	float m_PixelErrorBudget = 1.0f;
+	float m_QualityBias = 1.0f;
+	float m_Hysteresis = 0.1f;
+	std::int32_t m_PreviousLevel = -1;
+};
+
 class VansScriptPhysicsComponent : public VansScriptComponent
 {
 public:
@@ -208,6 +225,8 @@ public:
 	std::string m_ProfileName;
 	int m_ConfiguredBodyCount = 0;
 	int m_ConfiguredJointCount = 0;
+	std::shared_ptr<const VansEngine::RagdollProfile> m_Profile;
+	float m_BlendWeight = 0.f;
 
 	void SetDriveMode(int mode);
 	void SetDriveModeWithVelocity(int mode, float vx, float vy, float vz);
@@ -218,6 +237,9 @@ public:
 	int GetRuntimeBodyCount() const;
 	int GetRuntimeJointCount() const;
 	void ApplyImpulse(const std::string& boneName, float ix, float iy, float iz);
+	bool AddLinearVelocity(const glm::vec3& delta);
+	bool AddVelocityAtPosition(const std::string& boneName, const glm::vec3& velocityDelta,
+		const glm::vec3& worldPosition, float maxAngularVelocityDelta);
 
 protected:
 	void OnEnable() override;

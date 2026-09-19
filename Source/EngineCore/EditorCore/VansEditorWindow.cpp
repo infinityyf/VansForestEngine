@@ -1,4 +1,5 @@
 #include "VansEditorWindow.h"
+#include "VansPrefabEditService.h"
 #include "../RenderCore/VansCamera.h"
 #include "../RenderCore/VansRenderSystem.h"
 #include "../RuntimeUI/Public/VansUISystem.h"
@@ -54,7 +55,6 @@
 #include "../PackagingCore/VansGamePackageBuilder.h"
 #include "Windows/VansProjectSelector.h"
 #include "../SceneCore/VansSceneDocumentLoader.h"
-#include "../SceneCore/VansSceneSaveService.h"
 #include "../SceneCore/VansSceneParentReference.h"
 #include "VansAssetDocumentRegistry.h"
 #include "VansEditorAssetSaveService.h"
@@ -615,8 +615,6 @@ Vans::EditorAPI::RuntimeSceneLoadMode VansGraphics::VansEditorWindow::m_PendingS
 VansGraphics::VansEditorWindow::VansPendingProjectLoad VansGraphics::VansEditorWindow::m_PendingProjectLoad;
 std::unique_ptr<Vans::VansSceneDocument> VansGraphics::VansEditorWindow::m_SceneDocument;
 std::unique_ptr<Vans::VansSceneEditService> VansGraphics::VansEditorWindow::m_SceneEditService;
-std::unique_ptr<Vans::VansSceneSaveService> VansGraphics::VansEditorWindow::m_SceneSaveService =
-    std::make_unique<Vans::VansSceneSaveService>();
 Vans::EditorAPI::IEngineEditorAPI* VansGraphics::VansEditorWindow::m_EditorAPI = nullptr;
 std::uint64_t VansGraphics::VansEditorWindow::m_RuntimeMultiMeshExpansionScannedStateId = 0;
 
@@ -642,6 +640,7 @@ bool VansGraphics::VansEditorWindow::IsEditing()
 
 void VansGraphics::VansEditorWindow::ReloadCurrentSceneForEditing()
 {
+    if (HasPrefabSession()) { RefreshActiveScenePreview(); return; }
 	if (!IsEditing() || m_CurrentLoadedScenePath.empty())
 		return;
 	m_PendingSceneLoadMode = Vans::EditorAPI::RuntimeSceneLoadMode::Editor;
@@ -675,10 +674,10 @@ void VansGraphics::VansEditorWindow::ProcessRuntimeMultiMeshHierarchyExpansion()
     std::vector<std::string> runtimeParentEntityIdsToReplace;
     bool changed = false;
     const auto groups = editorAPI.BuildRuntimeMultiMeshExpansionSnapshot();
-    std::unordered_map<std::string, const Vans::EditorAPI::RuntimeMultiMeshGroupSnapshot*> groupsByName;
-    groupsByName.reserve(groups.size());
+    std::unordered_map<std::string, const Vans::EditorAPI::RuntimeMultiMeshGroupSnapshot*> groupsByEntity;
+    groupsByEntity.reserve(groups.size());
     for (const auto& group : groups)
-        groupsByName[group.parentName] = &group;
+        groupsByEntity[group.parentEntityGuid] = &group;
 
     for (Vans::VansSerializedValue& entity : newEntities.arrayItems)
     {
@@ -708,8 +707,8 @@ void VansGraphics::VansEditorWindow::ProcessRuntimeMultiMeshHierarchyExpansion()
         if (modelGuid.empty())
             continue;
 
-        auto groupIt = groupsByName.find(entityName);
-        if (groupIt == groupsByName.end())
+        auto groupIt = groupsByEntity.find(entityId);
+        if (groupIt == groupsByEntity.end())
             continue;
         const Vans::EditorAPI::RuntimeMultiMeshGroupSnapshot& group = *groupIt->second;
         if (group.children.empty())
@@ -857,6 +856,12 @@ void VansGraphics::VansEditorWindow::OnPlay()
     if (!IsEditing())
         return;
 
+    if (HasPrefabSession())
+    {
+        VANS_LOG_WARN("[Prefab] Close Prefab mode before playing the scene");
+        return;
+    }
+
     if (m_CurrentLoadedScenePath.empty())
     {
         VANS_LOG_WARN("[Editor] OnPlay: no scene loaded, cannot start");
@@ -968,6 +973,7 @@ void VansGraphics::VansEditorWindow::OpenTimelineInstance(
 void VansGraphics::VansEditorWindow::OpenAssetForAuthoring(const std::string& sourcePath)
 {
 	const std::string extension = std::filesystem::path(sourcePath).extension().string();
+    if (extension == ".vprefab") { QueuePrefabOpen(sourcePath); return; }
 	if (extension == ".vanimator")
 	{
 		if (m_AnimGraphEditorWindow) m_AnimGraphEditorWindow->Open(sourcePath);
@@ -1251,6 +1257,7 @@ void VansGraphics::VansEditorWindow::ProcessPendingSceneLoad()
 {
     if (m_PendingScenePath.empty())
         return;
+    if (HasPrefabSession()) { VANS_LOG_WARN("[Prefab] Close Prefab mode before switching scenes or playing"); m_PendingScenePath.clear(); return; }
 
 
     if (m_SceneDocument && m_SceneDocument->IsDirty() &&
@@ -1275,7 +1282,7 @@ void VansGraphics::VansEditorWindow::ProcessPendingSceneLoad()
 	Vans::VansSceneDocument* sceneDocument = m_SceneDocument.get();
 	if (!canReuseCurrentDocument)
 	{
-		pendingDocumentLoad = Vans::VansSceneDocumentLoader::Load(m_PendingScenePath);
+		pendingDocumentLoad = Vans::VansSceneDocumentLoader::Load(m_PendingScenePath, Vans::VansPrefabEditService::Lookup(GetMutableEditorAPI()));
 		if (!pendingDocumentLoad)
 		{
 			for (const auto& diagnostic : pendingDocumentLoad.diagnostics)
@@ -1288,6 +1295,9 @@ void VansGraphics::VansEditorWindow::ProcessPendingSceneLoad()
 	}
 
     auto& editorAPI = GetMutableEditorAPI();
+    std::string prefabError;
+    if (!sceneDocument->RefreshPrefabView(prefabError))
+    { VANS_LOG_ERROR("[Prefab] " << prefabError); m_PendingScenePath.clear(); return; }
 	Vans::EditorAPI::RuntimeSceneLoadRequest sceneLoadRequest;
 	sceneLoadRequest.document = BuildRuntimeSceneDocumentSnapshot(*sceneDocument);
 	sceneLoadRequest.mode = m_PendingSceneLoadMode;
@@ -1309,6 +1319,7 @@ void VansGraphics::VansEditorWindow::ProcessPendingSceneLoad()
 	{
 		m_SceneDocument = std::move(pendingDocumentLoad.document);
 		m_SceneEditService = std::make_unique<Vans::VansSceneEditService>(*m_SceneDocument);
+        m_SceneEditService->SetPrefabPreviewRefresh([] { return RefreshActiveScenePreview(); });
 		m_RuntimeMultiMeshExpansionScannedStateId = 0;
 	}
 
@@ -1344,6 +1355,7 @@ void VansGraphics::VansEditorWindow::ProcessPendingProjectLoad()
 {
     if (!m_PendingProjectLoad.m_Requested)
         return;
+    if (HasPrefabSession()) { VANS_LOG_WARN("[Prefab] Close Prefab mode before switching projects"); m_PendingProjectLoad = {}; return; }
 
 
     if (m_SceneDocument && m_SceneDocument->IsDirty())
@@ -1468,7 +1480,15 @@ VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& device)
 {
     // Start the Dear ImGui frame
     m_GUIBackEnd->BeginFrame();
+    // 游戏正在隐藏光标时，暂时停用 ImGui 的平台光标写入，避免每帧先显示再隐藏。
+    // 只修改这次平台更新；普通编辑器的光标形状和其他配置继续由 ImGui 管理。
+    auto& cursorIO = ImGui::GetIO();
+    const bool cursorChangesDisabled = (cursorIO.ConfigFlags & ImGuiConfigFlags_NoMouseCursorChange) != 0;
+    if (GetMutableEditorAPI().IsGameCursorHidden())
+        cursorIO.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
     ImGui_ImplGlfw_NewFrame();
+    if (!cursorChangesDisabled)
+        cursorIO.ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
     ImGui::NewFrame();
 	// ImGuizmo 在整个编辑器 ImGui 帧中共享状态，统一初始化一次，所有工具窗口
 	// 才能在 Scene 窗口关闭或未绘制时继续使用视口手柄。
@@ -1510,6 +1530,8 @@ VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& device)
         default:
             break;
         }
+
+        editorAPI.UpdateGameCursorViewport(false);
 
         // Render the ImGui frame (project selector only)
         ImGui::Render();
@@ -1705,22 +1727,14 @@ VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& device)
 		};
 		auto saveSceneAndOwnedAssets = [&]()
 		{
+            if (HasPrefabSession()) return SavePrefabSession();
 			const Vans::VansAssetSaveResult assetResult =
-				Vans::VansEditorAssetSaveService::Get().SaveSceneOwnedAssets(editorAPI);
+				Vans::VansEditorAssetSaveService::Get().SaveSceneAndOwnedAssets(editorAPI, sceneDocumentReady ? m_SceneDocument.get() : nullptr);
 			if (!assetResult)
 			{
 				for (const std::string& error : assetResult.errors)
 					VANS_LOG_ERROR("[SceneAssetSave] " << error);
 				return false;
-			}
-			if (sceneDocumentReady && m_SceneDocument->IsDirty())
-			{
-				const Vans::SceneSaveResult result = m_SceneSaveService->Save(*m_SceneDocument);
-				if (!result)
-				{
-					VANS_LOG_ERROR("[SceneSave] " << result.message);
-					return false;
-				}
 			}
 			return true;
 		};
@@ -2000,6 +2014,11 @@ VansGraphics::VansEditorWindow::DrawEditorWindows(VansGraphicsDevice& device)
     }
 
 
+
+    auto& cursorAPI = GetMutableEditorAPI();
+    cursorAPI.UpdateGameCursorViewport(m_SceneWindow && m_SceneWindow->IsGameCursorViewportInteractive() &&
+        !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel) &&
+        ImGui::GetDragDropPayload() == nullptr);
 
     //GUI handle rendeing
     ImGui::Render();
@@ -2512,7 +2531,7 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(
 		// by immutable frame snapshots.  It is rare structural maintenance, so
 		// drain the ordered RT stream before touching those objects; steady-state
 		// gameplay keeps the one-frame overlap and never takes this barrier.
-		if ((m_PendingProjectLoad.m_Requested || !m_PendingScenePath.empty()) &&
+		if ((m_PendingProjectLoad.m_Requested || !m_PendingScenePath.empty() || HasPendingPrefabRequests()) &&
 			!renderSystem.WaitForIdle())
 		{
 			VANS_LOG_ERROR("[Editor] Failed to drain render work before structural scene maintenance.");
@@ -2530,6 +2549,7 @@ void VansGraphics::VansEditorWindow::StartEditorLoop(
         {
             VANS_PROFILE_SCOPE("Resource::ProcessPendingSceneLoad", Vans::ProfileCategory::IO);
             ProcessPendingSceneLoad();
+            ProcessPrefabRequests();
         }
         {
             VANS_PROFILE_SCOPE("Editor::ProcessRuntimeMultiMeshExpansion", Vans::ProfileCategory::IO);

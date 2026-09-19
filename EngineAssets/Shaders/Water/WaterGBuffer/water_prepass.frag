@@ -11,6 +11,7 @@ layout(location = 3) flat in int inLodLevel;
 layout(location = 4) in vec2 inWorldXZ;
 layout(location = 5) in vec3 inMacroDPdx;
 layout(location = 6) in vec3 inMacroDPdz;
+layout(location = 7) in vec2 inRiverGeometryFilter;
 
 layout(set = 1, binding = 0) uniform WaterSurfaceParams
 {
@@ -36,8 +37,10 @@ layout(set = 1, binding = 0) uniform WaterSurfaceParams
     vec4 detailLayerStrengthFade[4];
     ivec4 detailLayerEnabled;
     vec4 effectiveRoughnessParams;
+    vec4 riverRendering;
 } params;
 layout(set = 1, binding = 6) uniform sampler2D detailNormalMap;
+#include "river_wave_particles.glsl"
 
 layout(location = 0) out vec4 outWaterNormal;
 layout(location = 1) out vec4 outWaterScatterThickness;
@@ -125,69 +128,66 @@ vec2 RiverNormalSlope(vec2 uv,vec2 dx,vec2 dy)
     return xy/max(sqrt(max(1.0-dot(xy,xy),1e-5)),1e-3);
 }
 
-vec3 BuildRiverDetailNormal(float height,vec2 velocity,vec2 worldDx,vec2 worldDy)
+// 单个网格样本内只做刚体旋转和平移，空间变化只参与最终斜率混合。
+vec2 RiverFlowCell(vec2 anchor,vec2 worldDx,vec2 worldDy,float distanceToCamera)
 {
-    vec2 heightGradient=PcgRiverHeightGradient(inWorldXZ,height);
-    vec3 normal=normalize(vec3(-heightGradient.x,1,-heightGradient.y));
-    if(params.detailNormalFlags.x==0 || params.detailNormalFlags.y==0)return normal;
-    uvec4 page;vec2 local;if(!PcgLocate(inWorldXZ,page,local))return normal;
-    float texelSize=uintBitsToFloat(pcgMetadata[0].x)/float(pcgMetadata[0].y);
-    float unusedHeight;vec2 vx0,vx1,vz0,vz1;
-    PcgRiverSurface(inWorldXZ-vec2(texelSize,0),unusedHeight,vx0);
-    PcgRiverSurface(inWorldXZ+vec2(texelSize,0),unusedHeight,vx1);
-    PcgRiverSurface(inWorldXZ-vec2(0,texelSize),unusedHeight,vz0);
-    PcgRiverSurface(inWorldXZ+vec2(0,texelSize),unusedHeight,vz1);
-    vec3 totalPerturbation=vec3(0);float weightSum=0;
-    float distanceToCamera=distance(inWorldPos,params.waterCameraPosition.xyz);
-    for(uint domain=0u;domain<page.z;++domain)
+    float height;vec2 velocity;
+    if(!PcgRiverSurface(anchor,height,velocity))return vec2(0);
+    vec4 properties=PcgRiverProperties(anchor);
+    float speed=length(velocity);
+    vec2 along=speed>1e-5?velocity/speed:vec2(1,0);
+    vec2 across=vec2(-along.y,along.x);
+    // 在停滞点消退有方向的纹理，避免接近零的向量方向放大噪声。
+    float directionalWeight=smoothstep(.015,.08,speed);
+    vec2 result=vec2(0);
+    for(int layer=0;layer<4;++layer)
     {
-        uvec4 info=pcgMetadata[page.y+domain];
-        vec4 coordinates=PcgCoordinates(info.x,local);float weight=coordinates.z;
-        if(weight<=0)continue;
-        mat2 J=PcgJacobian(info.x,local);
-        if(abs(determinant(J))<1e-6)continue;
-        mat2 inverseJ=inverse(J);
-        vec2 xu=inverseJ[0],xv=inverseJ[1];
-        vec3 tangent=normalize(vec3(xu.x,dot(heightGradient,xu),xu.y));
-        vec3 bitangent=normalize(cross(normal,tangent));
-        if(dot(bitangent,vec3(xv.x,dot(heightGradient,xv),xv.y))<0)bitangent=-bitangent;
-        vec2 qDot=info.z!=0u?J*velocity:vec2(0);
-        vec2 qDotX=info.z!=0u?(PcgJacobian(info.x,local+vec2(1,0))*vx1-PcgJacobian(info.x,local-vec2(1,0))*vx0)/(2*texelSize):vec2(0);
-        vec2 qDotZ=info.z!=0u?(PcgJacobian(info.x,local+vec2(0,1))*vz1-PcgJacobian(info.x,local-vec2(0,1))*vz0)/(2*texelSize):vec2(0);
-        mat2 velocityGradient=mat2(qDotX,qDotZ);
-        float cycle=max(uintBitsToFloat(info.y),.05);
-        float phase0=fract(params.detailNormalGlobal.x/cycle);
-        float phase1=fract(phase0+.5);
-        float phaseWeight=pow(sin(3.14159265359*phase0),2.0);
-        vec2 times=(vec2(phase0,phase1)-.5)*cycle;
-        vec3 perturbation=vec3(0);
-        for(int layer=0;layer<4;++layer)
-        {
-            if(params.detailLayerEnabled[layer]==0)continue;
-            vec4 motion=params.detailLayerUvMotion[layer],strength=params.detailLayerStrengthFade[layer];
-            vec2 direction=dot(motion.yz,motion.yz)>1e-8?normalize(motion.yz):vec2(1,0);
-            vec2 perpendicular=vec2(-direction.y,direction.x);
-            mat2 R=mat2(direction.x,perpendicular.x,direction.y,perpendicular.y);
-            mat2 M=R*max(motion.x,1e-6);
-            vec2 offset=vec2(strength.y,0);
-            vec2 uv0=M*(coordinates.xy-qDot*times.x)+offset;
-            vec2 uv1=M*(coordinates.xy-qDot*times.y)+offset;
-            mat2 gradient0=M*(J-times.x*velocityGradient)*exp2(params.detailNormalGlobal.w);
-            mat2 gradient1=M*(J-times.y*velocityGradient)*exp2(params.detailNormalGlobal.w);
-            vec2 slope=mix(RiverNormalSlope(uv1,gradient1*worldDx,gradient1*worldDy),
-                RiverNormalSlope(uv0,gradient0*worldDx,gradient0*worldDy),phaseWeight);
-            vec3 textureTangent=tangent*direction.x+bitangent*direction.y;
-            vec3 textureBitangent=tangent*perpendicular.x+bitangent*perpendicular.y;
-            float fade=1.0-smoothstep(strength.z,max(strength.w,strength.z+.01),distanceToCamera);
-            perturbation+=(textureTangent*slope.x+textureBitangent*slope.y)*strength.x*params.detailNormalGlobal.y*fade;
-        }
-        totalPerturbation+=weight*perturbation;weightSum+=weight;
+        if(params.detailLayerEnabled[layer]==0)continue;
+        vec4 motion=params.detailLayerUvMotion[layer],strength=params.detailLayerStrengthFade[layer];
+        vec2 direction=dot(motion.yz,motion.yz)>1e-8?normalize(motion.yz):vec2(1,0);
+        vec2 u=along*direction.x+across*direction.y;
+        vec2 v=-along*direction.y+across*direction.x;
+        mat2 worldToUv=transpose(mat2(u,v))*max(motion.x,1e-6);
+        // 锚点固定到世界网格；相位抖动固定到锚点，跨 PCG 页和镜头移动均连续。
+        vec2 jitter=fract(sin(vec2(dot(anchor,vec2(12.9898,78.233)),dot(anchor,vec2(39.346,11.135))))*43758.5453);
+        vec2 uv=worldToUv*(inWorldXZ-anchor-velocity*params.detailNormalGlobal.x*properties.y)+jitter+vec2(strength.y,0);
+        mat2 gradient=worldToUv*exp2(params.detailNormalGlobal.w);
+        vec2 slope=RiverNormalSlope(uv,gradient*worldDx,gradient*worldDy);
+        float fade=1-smoothstep(strength.z,max(strength.w,strength.z+.01),distanceToCamera);
+        result+=(u*slope.x+v*slope.y)*strength.x*fade;
     }
-    if(weightSum<=0)return normal;
-    totalPerturbation/=weightSum;
-    float magnitude=length(totalPerturbation),limit=max(params.detailNormalGlobal.z,.01);
-    if(magnitude>limit)totalPerturbation*=limit/magnitude;
-    return normalize(normal+totalPerturbation);
+    return result*directionalWeight;
+}
+
+vec2 RiverFlowGrid(vec2 offset,vec2 worldDx,vec2 worldDy,float distanceToCamera)
+{
+    float spacing=max(params.riverRendering.x,.25);
+    vec2 grid=inWorldXZ/spacing-offset;
+    vec2 base=floor(grid),f=fract(grid);
+    vec2 slope=vec2(0);
+    for(int y=0;y<2;++y)for(int x=0;x<2;++x)
+    {
+        vec2 anchor=(base+vec2(x,y)+offset)*spacing;
+        float weight=(x==0?1-f.x:f.x)*(y==0?1-f.y:f.y);
+        slope+=weight*RiverFlowCell(anchor,worldDx,worldDy,distanceToCamera);
+    }
+    return slope;
+}
+
+vec3 BuildRiverDetailNormal(vec3 macroNormal,vec2 worldDx,vec2 worldDy)
+{
+    // 宏观法线来自实际波包位移，不能再覆盖成水位 Mask 的平面法线。
+    vec3 normal=normalize(macroNormal);
+    if(params.detailNormalFlags.x==0 || params.detailNormalFlags.y==0)return normal;
+    float distanceToCamera=distance(inWorldPos,params.waterCameraPosition.xyz);
+    vec2 slope=.5*(RiverFlowGrid(vec2(0),worldDx,worldDy,distanceToCamera)+
+        RiverFlowGrid(vec2(.5),worldDx,worldDy,distanceToCamera));
+    slope*=params.detailNormalGlobal.y*PcgRiverProperties(inWorldXZ).x;
+    vec3 perturbation=vec3(slope.x,0,slope.y);
+    perturbation-=normal*dot(normal,perturbation);
+    float magnitude=length(perturbation),limit=max(params.detailNormalGlobal.z,.01);
+    if(magnitude>limit)perturbation*=limit/magnitude;
+    return normalize(normal+perturbation);
 }
 
 float ComputeEffectiveRoughness()
@@ -209,12 +209,31 @@ float ComputeEffectiveRoughness()
 
 void main()
 {
-    // 在区域分支前求屏幕导数，重叠域循环只使用显式梯度。
+    // 在区域分支前求屏幕导数，网格采样循环只使用显式梯度。
     vec2 worldDx=dFdx(inWorldXZ),worldDy=dFdy(inWorldXZ);
-    float riverHeight;vec2 riverVelocity;
-    bool river=PcgRiverSurface(inWorldXZ,riverHeight,riverVelocity);
-    vec3 finalNormal = river?BuildRiverDetailNormal(riverHeight,riverVelocity,worldDx,worldDy):
-        BuildDetailNormal(inWorldNormal,worldDx,worldDy);
+    vec3 blend=PcgWaterBlend(inWorldXZ);
+    float riverWeight=blend.x;
+    vec3 base=normalize(inWorldNormal);
+    if(riverWeight>0 && params.riverRendering.z>0)
+    {
+        float pixelFootprint=max(max(length(worldDx),length(worldDy)),1e-4);
+        vec3 fineWave=RiverWaveHeightGradient(inWorldXZ,pixelFootprint,inRiverGeometryFilter);
+        // 未被几何解析的波高也服从同一混合权重，保留对应的乘积法则项。
+        vec2 fineSlope=(riverWeight*fineWave.yz+fineWave.x*blend.yz)*params.riverRendering.z;
+        fineSlope/=sqrt(1+dot(fineSlope,fineSlope)/.36);
+        base=normalize(vec3(base.x-fineSlope.x*base.y,base.y,base.z-fineSlope.y*base.y));
+    }
+    vec3 finalNormal;
+    if(riverWeight>=1)finalNormal=BuildRiverDetailNormal(base,worldDx,worldDy);
+    else if(riverWeight<=0)finalNormal=BuildDetailNormal(base,worldDx,worldDy);
+    else
+    {
+        // 两套细节在同一宏观法线切平面内混合斜率，不重复叠加宏观坡度。
+        vec3 riverNormal=BuildRiverDetailNormal(base,worldDx,worldDy);
+        vec3 oceanNormal=BuildDetailNormal(base,worldDx,worldDy);
+        finalNormal=normalize(mix(oceanNormal/max(dot(oceanNormal,base),1e-3),
+            riverNormal/max(dot(riverNormal,base),1e-3),riverWeight));
+    }
     float roughness = ComputeEffectiveRoughness();
     float foam = 0.0;
     outWaterNormal = vec4(finalNormal, roughness);

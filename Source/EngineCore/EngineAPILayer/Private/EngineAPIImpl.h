@@ -16,6 +16,7 @@
 namespace Vans::EditorAPI
 {
 	class EngineAPIImpl;
+	class VansEditorSceneQuery;
 }
 
 class VansScriptContext;
@@ -74,7 +75,9 @@ namespace Vans::EditorAPI
 		PcgLayerCreateResult CreatePcgLayer(const PcgLayerCreateRequest& request) override;
 		PcgEditorOperationResult RemovePcgLayer(const PcgBrushTarget& target) override;
 		PcgEditorOperationResult BindPcgRecipeToScene(const std::string& guid) override;
-		PcgPlantConfiguration GetPcgPlantConfiguration(const std::string& guid) override;
+		ModelLodBuildResult BuildModelLods(const ModelLodBuildRequest& request) override;
+        PcgEditorOperationResult BuildPcgPlantLods(const std::string& guid) override;
+        PcgPlantConfiguration GetPcgPlantConfiguration(const std::string& guid) override;
 		PcgLayerConfiguration GetPcgLayerConfiguration(const PcgBrushTarget& target) override;
 		PcgEditorOperationResult ApplyPcgPlantConfiguration(const PcgPlantConfiguration& configuration) override;
 		PcgEditorOperationResult ApplyPcgLayerConfiguration(const PcgBrushTarget& target,const PcgLayerConfiguration& configuration) override;
@@ -100,6 +103,9 @@ namespace Vans::EditorAPI
 		LocalFogFieldPreviewSnapshot GetLocalFogFieldPreview(
 			const LocalFogFieldPreviewRequest& request) const override;
 		ProjectAssetCreateResult CreateProjectAsset(const ProjectAssetCreateRequest& request) override;
+        EditorViewportCameraState CaptureEditorViewportCamera() const override;
+        void RestoreEditorViewportCamera(const EditorViewportCameraState& state) override;
+		ScenePropertyValue QueryPrefabAsset(const std::string& guid) const override;
 		AssetRefreshResult RefreshProjectAsset(const std::string& assetPath, bool importIfMissing) override;
 		AssetWorkingCopyPublishResult PublishAssetWorkingCopy(
 			const AssetWorkingCopyPublishRequest& request) override;
@@ -300,10 +306,12 @@ namespace Vans::EditorAPI
 		void CommitEnvironmentSettings() override;
 		std::vector<ScenePropertyEdit> ConsumeScenePropertyEdits() override;
 
+        void UpdateGameCursorViewport(bool interactive) override;
+        bool IsGameCursorHidden() const override;
 		EnginePlayState GetPlayState() const override;
 		void SetPlayState(EnginePlayState state) override;
-		EntityId RaycastScene(const Ray& ray) const override;
-		std::string PickRuntimeEntity(const Ray& ray) const override;
+		EditorScenePickResult PickEditorScene(const EditorScenePickRequest& request) override;
+		EditorSceneBounds QueryEditorSceneBounds(const std::vector<std::string>& entityGuids) override;
 		RuntimeTransformSnapshot GetRuntimeTransform(
 			const std::string& entityGuid, RuntimeTransformSpace space) const override;
 		RuntimeTransformEditResult ApplyRuntimeTransform(
@@ -350,6 +358,7 @@ namespace Vans::EditorAPI
 		void Redo() override;
 
 	private:
+		std::shared_ptr<VansEditorSceneQuery> m_EditorSceneQueryCache;
 		RenderTexturePreview BuildReflectionProbePreview(RenderTextureFilter filter) const;
 		RenderTexturePreview BuildWaterTexturePreview(RenderTextureFilter filter) const;
 		bool SetRuntimeComponentEnabled(

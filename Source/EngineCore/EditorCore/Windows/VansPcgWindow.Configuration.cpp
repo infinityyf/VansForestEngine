@@ -217,6 +217,14 @@ void VansPcgWindow::ShowConfiguration(Vans::EditorAPI::IEngineEditorAPI& api,con
                         ImGui::PopID();
                         if (removePart) variant.parts.erase(variant.parts.begin()+partIndex);else ++partIndex;
                     }
+                    if(p.tree && ImGui::TreeNode("Automatic mesh LOD")) {
+                        ImGui::DragFloat2("Triangle ratios",variant.lodRatios.data(),.01f,.01f,.99f);
+                        Number("Maximum simplification error",variant.lodMaximumError);
+                        ImGui::TextUnformatted(variant.lodBuildKey.empty()?"Not built. Save plant builds LODs automatically.":"Built model LODs are referenced by this plant.");
+                        for(size_t level=0;level<variant.lodLevels.size();++level){unsigned triangles=0;for(const auto& part:variant.lodLevels[level].parts)triangles+=part.triangleCount;
+                            ImGui::Text("LOD %zu: %u triangles",level+1,triangles);}
+                        ImGui::TreePop();
+                    }
                     remove=ImGui::Button("Remove model variant");ImGui::TreePop();
                 }
                 ImGui::PopID();
@@ -246,7 +254,12 @@ void VansPcgWindow::ShowConfiguration(Vans::EditorAPI::IEngineEditorAPI& api,con
                 ImGui::TreePop();
             }
             if (ImGui::TreeNode("Render settings")) {
-                ImGui::Checkbox("Culling",&p.render.cullingEnabled);Number("Cull distance",p.render.cullDistance);
+                ImGui::Checkbox("Culling",&p.render.cullingEnabled);Number(p.tree?"Shadow distance":"Cull distance",p.render.cullDistance);
+                if(p.tree) {
+                    ImGui::DragFloat2("Tree LOD distances (m)",p.render.lodDistances.data(),1.f,1.f,100000.f);
+                    Number("Tree LOD hysteresis",p.render.lodHysteresis);
+                    ImGui::TextUnformatted("Shared by every tree variant. Distant trees retain their lowest mesh LOD.");
+                }
                 ImGui::Checkbox("Hi-Z",&p.render.hizEnabled);Number("Hi-Z bias",p.render.hizBias);
                 ImGui::Checkbox("Cast directional shadows (first 2 cascades)",&p.render.castShadows);
                 ImGui::TreePop();
@@ -255,6 +268,9 @@ void VansPcgWindow::ShowConfiguration(Vans::EditorAPI::IEngineEditorAPI& api,con
             ImGui::SameLine();
             if (ImGui::Button("Save plant")) if (report(api.ApplyPcgPlantConfiguration(p))) {
                 report(api.EditPcgConfiguration(p.guid,PcgConfigurationAction::Save));reload();
+            }
+            if(p.tree && ImGui::Button("Build model LODs")) if(report(api.ApplyPcgPlantConfiguration(p))) {
+                report(api.BuildPcgPlantLods(p.guid));reload();
             }
             history(p.guid,p.canUndo,p.canRedo);
         }

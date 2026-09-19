@@ -182,6 +182,7 @@ bool VansAssetDocument::StageSave(VansAssetDocumentSaveStage& stage, std::string
 
     stage.targetPath = m_Path;
     stage.stateId = m_CurrentStateId;
+    stage.requireAbsent = !m_LoadedFingerprint.exists;
 
     AssetDocumentJson root = EncodeSerializedValueJson<AssetDocumentJson>(*m_Root);
     VansStagedFile fileStage;
@@ -213,10 +214,10 @@ bool VansAssetDocument::ObservePublishedSave(
         error = "Asset document save stage target mismatch: " + stage.targetPath.string();
         return false;
     }
-    m_LoadedFingerprint = Fingerprint(m_Path, error);
+    m_ObservedFingerprint = Fingerprint(m_Path, error);
     if (!error.empty())
         return false;
-    if (!m_LoadedFingerprint.exists)
+    if (!m_ObservedFingerprint.exists)
     {
         error = "Saved asset document is missing: " + m_Path.string();
         return false;
@@ -227,6 +228,7 @@ bool VansAssetDocument::ObservePublishedSave(
 void VansAssetDocument::AdoptObservedSave(const VansAssetDocumentSaveStage& stage)
 {
 	if (!m_Loaded) return;
+    m_LoadedFingerprint = m_ObservedFingerprint;
 	m_SavedStateId = stage.stateId != 0 ? stage.stateId : m_CurrentStateId;
 }
 }

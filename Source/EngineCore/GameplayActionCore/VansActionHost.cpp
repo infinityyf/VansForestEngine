@@ -1366,6 +1366,13 @@ bool VansActionHost::Interrupt(VansActionHandle handle, std::string& error)
 	return Cancel(handle, VansActionCancelReason::Interrupted, error);
 }
 
+void VansActionHost::PublishGameplayEvent(VansActionEvent event)
+{
+    if (!m_Initialized || m_ShuttingDown || !event.type) return;
+    VansEventBus::Get().Enqueue(VansActionMessageEvent{
+        m_Owner, {}, {}, 0, m_NextHostEventSequence++, std::move(event)}, VansEventLane::GameLogic);
+}
+
 bool VansActionHost::EnqueueEvent(
 	VansActionHandle handle,
 	VansActionEvent event,

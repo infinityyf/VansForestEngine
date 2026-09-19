@@ -921,7 +921,7 @@ namespace
 		}
 
 		Vans::SceneDocumentLoadResult sceneDocumentLoad =
-			Vans::VansSceneDocumentLoader::Load(scenePath);
+			Vans::VansSceneDocumentLoader::Load(scenePath, Vans::VansPrefabResolver::FromRepository(objectRepository));
 		if (!sceneDocumentLoad)
 		{
 			error = "Cannot load scene document for cooked resource plan";

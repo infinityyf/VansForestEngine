@@ -1,5 +1,6 @@
 #include "VansLuaScriptInspectorService.h"
 #include "VansScriptContext.h"
+#include "../Util/VansCursorMode.h"
 
 #include "lua.h"
 #include "lauxlib.h"
@@ -54,6 +55,19 @@ int LuaStubTimeSeconds(lua_State* state)
     return 1;
 }
 
+// 字段检查使用独立 Lua 状态，只校验参数，不改变运行中的光标。
+int LuaStubSetCursorMode(lua_State* state)
+{
+    luaL_checkoption(state, 1, nullptr, VansCursorModeNames);
+    return 0;
+}
+
+int LuaStubCursorMode(lua_State* state)
+{
+    lua_pushstring(state, "visible");
+    return 1;
+}
+
 void InstallEditorLuaStubs(lua_State* state)
 {
     lua_newtable(state);
@@ -74,6 +88,12 @@ void InstallEditorLuaStubs(lua_State* state)
     lua_setfield(state, -2, "is_key_released");
     lua_pushcfunction(state, LuaStubMouseDelta);
     lua_setfield(state, -2, "get_mouse_delta");
+    lua_pushcfunction(state, LuaStubSetCursorMode);
+    lua_setfield(state, -2, "set_cursor_mode");
+    lua_pushcfunction(state, LuaStubCursorMode);
+    lua_setfield(state, -2, "get_cursor_mode");
+    lua_pushcfunction(state, LuaStubCursorMode);
+    lua_setfield(state, -2, "get_effective_cursor_mode");
     lua_setfield(state, -2, "input");
 
     lua_setglobal(state, "vans");

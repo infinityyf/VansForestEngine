@@ -14,6 +14,8 @@
 #include "../../RenderCore/GICore/VansGISettings.h"
 #include "../../RenderCore/GICore/VansGIProbeWorkScheduler.h"
 #include "../../RenderCore/GICore/VansGIProbeLayout.h"
+#include "../../RenderCore/GICore/VansGIWorld.h"
+#include "../../RenderCore/GICore/VansGIScrollingGrid.h"
 #include "../../ScriptCore/VansCommonUtils.h"
 namespace VansGraphics
 {
@@ -92,6 +94,20 @@ namespace VansGraphics
 		void UpdateGISettings(const VansGISettings& settings);
 
 		bool IsReady() const { return m_State->m_RTResourcesReady; }
+		void InvalidateWorldSources() { if(m_State->world)m_State->world->InvalidateSources(); }
+        bool QueueWorldSourceChanges(GIVoxelSourceChanges changes);
+        bool NeedsWorldSourceRebuild() const { return m_State->world && m_State->world->SourcesDirty(); }
+        GIWorldSourceUpdateStats GetWorldSourceUpdateStats() const { return m_State->world?m_State->world->SourceUpdateStats():GIWorldSourceUpdateStats{}; }
+        void PrepareWorldUpdates();
+        bool HasPendingWorldUpdates() const { return m_State->world && m_State->world->HasPendingUpdates(); }
+        void InvalidateWorldGeometry(const GIWorldDirtyRegions& changed);
+        bool ApplyWorldHeightPatch(uint32_t x,uint32_t z,uint32_t w,uint32_t h,
+            const std::vector<uint8_t>& pixels);
+        bool ApplyWorldColorPatch(uint32_t map,uint32_t x,uint32_t y,uint32_t w,uint32_t h,
+            const std::vector<uint8_t>& pixels);
+        void SetWorldViewCenter(glm::vec3 center);
+        uint64_t GetWorldGeometryRevision() const { return m_State->world ? m_State->world->Revision() : 0; }
+		uint64_t GetWorldAllocatedBytes() const { return m_State->world ? m_State->world->AllocatedBytes() : 0; }
 
 		void RequestGIRTPreviews(uint32_t zSlice, uint32_t rayIndex, float exposure, float positionScale);
 		VansTexture* GetGIRTPreviewTexture(uint32_t mode) const
@@ -114,13 +130,19 @@ namespace VansGraphics
 		uint32_t GetGIRegionPhysicalProbeCount(uint32_t index) const
 		{ return index < m_State->m_GIRegions.size() ? m_State->m_GIRegions[index].physicalProbeCount : 0u; }
 		bool UsesSparseGI() const { return m_State->m_AutomaticGIWork; }
+        const GIResolvedRegion* GetGIRegionResolved(uint32_t index) const
+        { return index < m_State->m_GIRegions.size() ? &m_State->m_GIRegions[index].resolved : nullptr; }
 		std::shared_ptr<const GIProbeLayoutSnapshot> GetGIProbeLayoutSnapshot() const
 		{ return std::atomic_load(&m_PublishedGIProbeLayout); }
 	private:
+
+        void RecordWorldProbeInvalidation(VansVKCommandBuffer& command);
+        void QueueLayoutParameters(const std::vector<GIResolvedRegion>& resolved);
 		std::shared_ptr<const GIProbeLayoutSnapshot> m_PublishedGIProbeLayout;
 		struct GIRegionRuntime
 		{
 			GIResolvedRegion resolved;
+            VansGIScrollingGrid scrollingGrid;
 			glm::uvec3 storageDimensions{1u};
 			uint32_t physicalProbeCount = 0u;
 			RayTracingPushConstant constants{};
@@ -144,6 +166,7 @@ namespace VansGraphics
             bool stateAuditPending = false;
             uint32_t stateAuditFrame = 0;
 			GIProbeRegionWork work;
+            std::vector<uint32_t> pendingStateClears;
 
 			bool rayTracingDescriptorSetIsDirty = true;
 			bool giPointLightDescriptorSetIsDirty = true;
@@ -154,12 +177,16 @@ namespace VansGraphics
 
 		struct RuntimeState
 		{
+			std::unique_ptr<VansGIWorld> world;
+			bool hasHardwareGeometry = false;
 			std::vector<GIRegionRuntime> m_GIRegions;
 			VansGIProbeWorkScheduler m_WorkScheduler;
             std::chrono::steady_clock::time_point m_LastGIUpdateTime{};
 			VansGIProbeLayout m_ProbeLayout;
 			VansVKBuffer m_ProbeLayoutBuffer;
 			std::vector<glm::uvec4> m_PendingLayoutRegionData;
+            std::vector<glm::uvec4> m_PendingScrollData;
+            uint32_t m_ScrollDataOffset = 0;
 			bool m_AutomaticGIWork = false;
             bool m_GIStateAuditEnabled = false;
 			VkFence m_GIFeedbackFence = VK_NULL_HANDLE;

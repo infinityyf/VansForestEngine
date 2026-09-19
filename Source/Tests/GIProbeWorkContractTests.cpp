@@ -1,4 +1,5 @@
 #include "../EngineCore/RenderCore/GICore/VansGIProbeWorkScheduler.h"
+#include "../EngineCore/RenderCore/GICore/VansGIScrollingGrid.h"
 #include "../EngineCore/RenderCore/VansScene.h"
 #include "../EngineCore/EngineAPILayer/Private/EngineAPIImpl.h"
 #include "../EngineCore/EngineAPILayer/Private/ScenePropertyValueBuilders.h"
@@ -12,6 +13,7 @@
 #include <nlohmann/json.hpp>
 #include <iostream>
 #include <map>
+#include <limits>
 #include <array>
 #include <set>
 #include <stdexcept>
@@ -21,6 +23,38 @@ namespace
     using namespace VansGraphics;
     void Check(bool passed, const char* message) { if (!passed) throw std::runtime_error(message); }
 
+
+    void LocalLightingEdits()
+    {
+        VansGIProbeWorkScheduler scheduler;std::string error;
+        Check(scheduler.Configure({GIProbeWorkRegion{64,{0,2,4,6}},GIProbeWorkRegion{64,{1,3,5,7}}},8,512,error),"Lighting fixture configuration failed");
+        auto first=scheduler.NextFrame();
+        Check(!scheduler.InvalidateLighting(0,{2},error),"Lighting edit accepted pending feedback");
+        for(size_t r=0;r<first.size();++r)for(auto entry:first[r].entries)
+            Check(scheduler.ApplyFeedback(r,entry,{entry.probeIndex,1,entry.elapsedSeconds,entry.cycleIndex}),"Lighting fixture feedback failed");
+        const auto coverage=scheduler.RegionCoverage(0);
+        Check(!scheduler.InvalidateLighting(0,{0,9},error) && !scheduler.InvalidateLighting(2,{0},error),"Invalid lighting address accepted");
+        for(int i=0;i<40;++i)Check(scheduler.InvalidateLighting(0,{2,6,2},error),"Repeated local edit rejected");
+        Check(scheduler.PlacedProbes(0)==std::vector<uint32_t>({0,2,4,6}) && scheduler.RegionCoverage(0).minCompletedUpdates==coverage.minCompletedUpdates,
+            "Color edit changed layout or completed history");
+        for(int frame=0;frame<3;++frame)
+        {
+            const auto batch=scheduler.NextFrame();
+            for(size_t r=0;r<batch.size();++r)
+            {
+                std::set<uint32_t> unique;
+                for(auto entry:batch[r].entries)
+                {
+                    Check(unique.insert(entry.probeIndex).second && entry.cycleIndex==uint32_t(frame+1),"Color priority duplicated or reset probe sequence");
+                    const bool dirty=frame==0 && r==0 && (entry.probeIndex==2 || entry.probeIndex==6);
+                    Check(entry.flags==(dirty?GIWorkResetLighting:0u),"Color edit lost targeted reset, retained duplicate request or reset unrelated region");
+                    Check(scheduler.ApplyFeedback(r,entry,{entry.probeIndex,1,entry.elapsedSeconds,entry.cycleIndex}),"Local edit feedback failed");
+                }
+                Check(unique.size()==4,"Color edit changed full frame capacity");
+            }
+        }
+        std::cout<<"[GIProbeWork] targeted lighting invalidation, duplicates, atomic rejection and indoor isolation PASS\n";
+    }
 
     void CompleteBudgetWork()
     {
@@ -65,6 +99,252 @@ namespace
         scheduler.ResetLighting(); auto fresh = scheduler.NextFrame()[0].entries[0];
         Check(fresh.flags == GIWorkResetLighting && fresh.cycleIndex != old.cycleIndex, "reset reused stale sequence");
         Check(!scheduler.ApplyFeedback(0, old, {4,1,old.elapsedSeconds,old.cycleIndex}), "pre-reset feedback accepted");
+    }
+
+    void EditedPlacement()
+    {
+        VansGIProbeWorkScheduler scheduler;std::string error;
+        Check(scheduler.Configure({GIProbeWorkRegion{32,{1,4},4}},4,128,error),"Dynamic placement configuration failed");
+        const auto issued=scheduler.NextFrame()[0].entries;
+        Check(!scheduler.UpdatePlacedProbes(0,{1,2,4},{},error),"Placement changed before feedback retired");
+        for(auto e:issued)Check(scheduler.ApplyFeedback(0,e,{e.probeIndex,1,e.elapsedSeconds,e.cycleIndex}),"Placement fixture feedback failed");
+        Check(scheduler.UpdatePlacedProbes(0,{1,2,4},{4},error),"Localized placement update failed");
+        auto work=scheduler.NextFrame()[0];Check(work.RayCount()==96 && scheduler.RegionCapacity(0)==4,"Dynamic placement exceeded or shrank its capacity");
+        for(auto e:work.entries)
+        {
+            Check(e.flags==(e.probeIndex==1?0u:GIWorkResetLighting),"Placement lost unrelated history or failed to reset changed lighting");
+            Check(scheduler.ApplyFeedback(0,e,{e.probeIndex,1,e.elapsedSeconds,e.cycleIndex}),"Edited placement feedback failed");
+        }
+        Check(scheduler.UpdatePlacedProbes(0,{}, {},error),"Removing all placed probes failed");
+        Check(scheduler.NextFrame()[0].entries.empty() && scheduler.RegionCapacity(0)==4,"Empty active list lost reserved capacity");
+        Check(scheduler.UpdatePlacedProbes(0,{1,2,3,4},{},error),"Digging terrain could not reactivate probes");
+        for(auto e:scheduler.NextFrame()[0].entries)
+        {
+            Check(e.flags==GIWorkResetLighting && e.cycleIndex>work.entries.back().cycleIndex,"Reactivated address reused stale identity/history");
+            Check(!scheduler.ApplyFeedback(0,issued[0],{issued[0].probeIndex,1,issued[0].elapsedSeconds,issued[0].cycleIndex}),"Retired terrain placement feedback accepted");
+            Check(scheduler.ApplyFeedback(0,e,{e.probeIndex,1,e.elapsedSeconds,e.cycleIndex}),"Reactivated feedback failed");
+        }
+        Check(!scheduler.UpdatePlacedProbes(0,{0,1,2,3,4},{},error),"Placement overflow accepted");
+        Check(scheduler.PlacedProbes(0)==std::vector<uint32_t>({1,2,3,4}),"Rejected placement mutated work addresses");
+        GIProbeWorkRegion large;large.raysPerProbe=32;large.maxPlacedProbes=101;
+        for(uint32_t i=0;i<100;++i)large.probeIndices.push_back(i);
+        Check(scheduler.Configure({large},100,3200,error),"Priority fixture configure failed");
+        for(auto e:scheduler.NextFrame()[0].entries)Check(scheduler.ApplyFeedback(0,e,{e.probeIndex,1,e.elapsedSeconds,e.cycleIndex}),"Priority initial completion failed");
+        large.probeIndices.push_back(100);
+        Check(scheduler.UpdatePlacedProbes(0,large.probeIndices,{99},error),"Priority edit failed");
+        const auto batch=scheduler.NextFrame()[0];std::set<uint32_t> unique;
+        for(auto e:batch.entries)unique.insert(e.probeIndex);
+        Check(unique.size()==batch.entries.size() && unique.count(99) && unique.count(100),"Dirty priority duplicated work or starved new probes");
+    }
+
+    void ScrollingPlacement()
+    {
+        VansGIScrollingGrid grid;std::string error;
+        Check(grid.Initialize({9,10,11},1,{0,0,0},error),error.c_str());
+        GIProbeWorkRegion region;region.raysPerProbe=32;
+        for(uint32_t id=0;id<grid.ProbeCount();++id)region.probeIndices.push_back(id);
+        VansGIProbeWorkScheduler scheduler;
+        Check(scheduler.Configure({region},16,512,error),error.c_str());
+        std::vector<GIProbeWorkEntry> old(grid.ProbeCount());
+        for(uint32_t frame=0;frame<62;++frame)
+            for(const auto e:scheduler.NextFrame()[0].entries)
+            { old[e.probeIndex]=e;Check(scheduler.ApplyFeedback(0,e,{e.probeIndex,1,e.elapsedSeconds,e.cycleIndex}),"Scrolling initial feedback failed"); }
+        const uint32_t capacity=scheduler.RegionCapacity(0);
+        std::vector<uint32_t> entering;
+        Check(grid.Move({1.01f,0,0},entering,error),error.c_str());
+        Check(scheduler.UpdatePlacedProbes(0,region.probeIndices,{},error,entering),error.c_str());
+        Check(scheduler.RegionCoverage(0).updated==grid.ProbeCount()-entering.size() && scheduler.RegionCapacity(0)==capacity,
+            "Recycled probes retained old coverage or resized frame resources");
+        std::set<uint32_t> pending(entering.begin(),entering.end());
+        for(uint32_t frame=0;frame<80;++frame)
+        {
+            const auto batch=scheduler.NextFrame()[0];
+            Check(batch.entries.size()<=16 && batch.RayCount()<=512,"Scrolling escaped shared ray/update budget");
+            for(const auto e:batch.entries)
+            {
+                const bool fresh=pending.erase(e.probeIndex)!=0;
+                Check(e.flags==(fresh?GIWorkResetLighting:0u),"Scroll reset unchanged probe or failed to reset new world position");
+                const auto stale=old[e.probeIndex];
+                Check(!scheduler.ApplyFeedback(0,stale,{stale.probeIndex,1,stale.elapsedSeconds,stale.cycleIndex}),"Scroll accepted feedback from old world identity");
+                Check(scheduler.ApplyFeedback(0,e,{e.probeIndex,1,e.elapsedSeconds,e.cycleIndex}),"Scrolling feedback failed");
+            }
+        }
+        Check(pending.empty() && scheduler.RegionCoverage(0).updated==grid.ProbeCount(),"Scrolling new planes starved under fixed budget");
+        std::cout << "[GIProbeWork] scrolling: recycled=" << entering.size() << " retained=" << grid.ProbeCount()-entering.size()
+            << " raysPerFrame<=512 staleFeedbackRejected=1 PASS\n";
+    }
+
+    void BalancedWorldSweeps()
+    {
+        std::vector<GIProbeWorkRegion> regions(2);
+        for(uint32_t i=0;i<65856;++i)regions[0].probeIndices.push_back(i);
+        for(uint32_t i=0;i<4800;++i)regions[1].probeIndices.push_back(i);
+        VansGIProbeWorkScheduler scheduler;std::string error;
+        Check(scheduler.Configure(regions,4096,65536,error,true),"Balanced world scheduler configuration failed");
+        for(uint32_t frame=0;frame<277;++frame)
+        {
+            uint64_t rays=0;
+            const auto& batch=scheduler.NextFrame();
+            for(size_t r=0;r<batch.size();++r)
+            {
+                rays+=batch[r].RayCount();
+                for(const auto& e:batch[r].entries)
+                    Check(scheduler.ApplyFeedback(r,e,{e.probeIndex,1,e.elapsedSeconds,e.cycleIndex}),"Balanced feedback failed");
+            }
+            Check(rays<=65536,"Balanced world work exceeded shared budget");
+            Check(batch[0].entries.size()>=237&&batch[1].entries.size()<=19,"Small outdoor region stole the indoor update budget");
+        }
+        Check(scheduler.RegionCoverage(0).minCompletedUpdates>=1&&scheduler.RegionCoverage(1).minCompletedUpdates>=1,
+            "Balanced regions did not complete the same sweep");
+    }
+
+    void WorldPrewarmBudget()
+    {
+        const auto run=[](bool warm)
+        {
+            std::vector<GIProbeWorkRegion> regions(4);
+            const uint32_t counts[]={65856,6912,6912,6912},rays[]={256,256,128,64};
+            for(size_t r=0;r<4;++r)
+            {
+                regions[r].raysPerProbe=rays[r];
+                if(warm && r)regions[r].prewarmSpacing=float(1u<<(2u*uint32_t(r)));
+                for(uint32_t id=0;id<counts[r];++id)regions[r].probeIndices.push_back(id);
+            }
+            VansGIProbeWorkScheduler scheduler;std::string error;
+            Check(scheduler.Configure(regions,4096,65536,error,true),"World prewarm configure failed");
+            const auto step=[&](std::set<uint32_t>* pending)
+            {
+                const auto& batch=scheduler.NextFrame();uint64_t rayCount=0,updates=0,warmRays=0;
+                for(size_t r=0;r<batch.size();++r)
+                {
+                    rayCount+=batch[r].RayCount();updates+=batch[r].entries.size();std::set<uint32_t> unique;
+                    warmRays+=uint64_t(batch[r].prewarmUpdates)*batch[r].raysPerProbeUpdate;
+                    for(const auto e:batch[r].entries)
+                    {
+                        Check(unique.insert(e.probeIndex).second,"Prewarm duplicated a regular update in one frame");
+                        if(r==1 && pending)pending->erase(e.probeIndex);
+                        Check(scheduler.ApplyFeedback(r,e,{e.probeIndex,GIProbeComplete,e.elapsedSeconds,e.cycleIndex}),"Prewarm feedback failed");
+                    }
+                }
+                Check(rayCount<=65536 && updates<=4096,"Prewarm exceeded shared work/ray budget");
+                Check(warmRays<=8192 && (warm || warmRays==0),"Prewarm exceeded its reserved fraction or ran while disabled");
+            };
+            for(uint32_t frame=0;frame<1000;++frame)step(nullptr);
+            std::vector<uint32_t> entering;for(uint32_t id=counts[1]-288;id<counts[1];++id)entering.push_back(id);
+            Check(scheduler.UpdatePlacedProbes(1,regions[1].probeIndices,{},error,entering),"Prewarm plane recycle failed");
+            std::set<uint32_t> pending(entering.begin(),entering.end());uint32_t latency=0;
+            while(!pending.empty() && latency<128){step(&pending);++latency;}
+            Check(pending.empty(),"New world plane did not publish within the bounded fixture interval");
+            if(warm)
+            {
+                const auto indoorBefore=scheduler.RegionCoverage(0).minCompletedUpdates;
+                const auto farBefore=scheduler.RegionCoverage(3).minCompletedUpdates;
+                for(uint32_t frame=0;frame<700;++frame)
+                {
+                    if(frame%4==0)
+                    {
+                        entering.clear();const uint32_t start=512+(frame/4*128)%(counts[1]-1024);
+                        for(uint32_t id=start;id<start+128;++id)entering.push_back(id);
+                        Check(scheduler.UpdatePlacedProbes(1,regions[1].probeIndices,{},error,entering),"Continuous prewarm recycle failed");
+                    }
+                    step(nullptr);
+                }
+                Check(scheduler.RegionCoverage(0).minCompletedUpdates>indoorBefore && scheduler.RegionCoverage(3).minCompletedUpdates>farBefore,
+                    "Continuous near prewarm starved indoor or far regular sweeps");
+                Check(scheduler.RegionCoverage(0).oldestAttemptAge<400 && scheduler.RegionCoverage(3).oldestAttemptAge<400,
+                    "Prewarm broke the retained-region update-age bound");
+            }
+            return latency;
+        };
+        const auto baseline=run(false),prewarm=run(true);
+        Check(prewarm<=12 && prewarm*2<baseline,"Global prewarm did not accelerate the new near plane");
+
+        VansGIProbeWorkScheduler scheduler;std::string error;GIProbeWorkRegion first,late;
+        first.raysPerProbe=late.raysPerProbe=32;late.maxPlacedProbes=32;late.prewarmSpacing=4;
+        for(uint32_t id=0;id<64;++id)first.probeIndices.push_back(id);
+        Check(scheduler.Configure({first,late},1,32,error,true),"Late activation configure failed");
+        const auto finish=[&](uint32_t* ordinary)
+        {
+            const auto& batch=scheduler.NextFrame();
+            for(size_t r=0;r<batch.size();++r)for(auto e:batch[r].entries)
+            {if(r==0 && ordinary)++*ordinary;Check(scheduler.ApplyFeedback(r,e,{e.probeIndex,GIProbeComplete,e.elapsedSeconds,e.cycleIndex}),"Late activation feedback failed");}
+        };
+        for(uint32_t frame=0;frame<640;++frame)finish(nullptr);
+        for(uint32_t id=0;id<32;++id)late.probeIndices.push_back(id);
+        Check(scheduler.UpdatePlacedProbes(1,late.probeIndices,{},error),"Late activation failed");
+        uint32_t ordinary=0;for(uint32_t frame=0;frame<16;++frame)finish(&ordinary);
+        Check(ordinary>=6,"Late region tried to catch up on nonexistent historical work");
+        for(uint32_t frame=0;frame<104;++frame)finish(nullptr);
+        Check(scheduler.RegionCoverage(1).updated==32,"Single-probe budget starved prewarm or normal work");
+        GIProbeWorkRegion retries{32,{0,1,2,3},4,4.0f};
+        Check(scheduler.Configure({retries},2,64,error,true),"Prewarm retry configure failed");
+        uint64_t issuedWarm=0;
+        for(uint32_t frame=0;frame<40;++frame)
+        {
+            const auto batch=scheduler.NextFrame()[0];issuedWarm+=batch.prewarmUpdates;
+            std::set<uint32_t> unique;
+            for(auto e:batch.entries)
+            {
+                Check(unique.insert(e.probeIndex).second,"Prewarm retry duplicated a work item");
+                const uint32_t status=e.probeIndex==0 && frame<24?GIProbeVoxelPage:GIProbeComplete;
+                Check(scheduler.ApplyFeedback(0,e,{e.probeIndex,status,e.elapsedSeconds,e.cycleIndex},true),"Prewarm incomplete feedback failed");
+            }
+            Check(issuedWarm<=uint64_t(frame+1)*2/8,"Tiny work budget exceeded cumulative prewarm credit");
+        }
+        Check(scheduler.RegionCoverage(0).updated==4 && scheduler.RegionCoverage(0).incompleteAttempts>0,
+            "Page readiness did not resume prewarm or blocked other probes");
+        GIProbeWorkRegion cold{32,{},16,4.0f};for(uint32_t id=0;id<16;++id)cold.probeIndices.push_back(id);
+        Check(scheduler.Configure({cold},8,256,error,true),"Readiness gate configure failed");
+        for(uint32_t frame=0;frame<13;++frame)
+        {
+            const bool ready=frame>=10;scheduler.SetPrewarmReady(ready);
+            const auto batch=scheduler.NextFrame()[0];
+            Check(batch.entries.size()==8 && (ready || batch.prewarmUpdates==0),"Unready sources wasted extra prewarm budget or blocked ordinary work");
+            if(frame==10)Check(batch.prewarmUpdates==1,"Published coarse field did not resume prewarm");
+            for(auto e:batch.entries)Check(scheduler.ApplyFeedback(0,e,{e.probeIndex,ready?GIProbeComplete:GIProbeVoxelPage,e.elapsedSeconds,e.cycleIndex},true),
+                "Readiness gate feedback failed");
+        }
+        Check(scheduler.RegionCoverage(0).updated==16,"Coarse publication failed to drain cold prewarm requests");
+        late.prewarmSpacing=std::numeric_limits<float>::quiet_NaN();
+        Check(!scheduler.Configure({late},1,32,error,true),"Invalid prewarm scale accepted");
+        std::cout<<"[GIProbeWork] global prewarm: near plane baseline="<<baseline<<" frames prewarm="<<prewarm
+            <<" frames; continuous movement retains indoor/far sweeps; late empty activation and tiny budget PASS\n";
+    }
+
+    void ActiveUpdateAges()
+    {
+        VansGIProbeWorkScheduler scheduler;std::string error;
+        Check(scheduler.Configure({{32,{1,2,3},4}},1,32,error),"Age fixture configure failed");
+        for(uint32_t frame=0;frame<9;++frame)
+            for(const auto e:scheduler.NextFrame()[0].entries)
+                Check(scheduler.ApplyFeedback(0,e,{e.probeIndex,e.probeIndex==1?uint32_t(GIProbeVoxelBudget):uint32_t(GIProbeComplete),e.elapsedSeconds,e.cycleIndex},true),
+                    "Age fixture completion failed");
+        auto coverage=scheduler.RegionCoverage(0);
+        Check(coverage.placed==3 && coverage.attempted==3 && coverage.updated==2 && coverage.incompleteAttempts==3 &&
+            coverage.oldestAttemptAge==2 && coverage.oldestCompletionAge==1 && coverage.oldestUnpublishedAge==9 &&
+            coverage.stepFailures==3 && coverage.heightFailures==0 && coverage.pageFailures==0 && coverage.coverageFailures==0,
+            "Audit did not distinguish scheduled unknown probes from successful lighting");
+        Check(scheduler.UpdatePlacedProbes(0,{2,3,4},{},error,{4}),"Age fixture recycle failed");
+        coverage=scheduler.RegionCoverage(0);
+        Check(coverage.attempted==2 && coverage.updated==2 && coverage.incompleteAttempts==0 && coverage.oldestUnpublishedAge==0,
+            "Removed probes or old world identities leaked into active age statistics");
+        for(const auto e:scheduler.NextFrame()[0].entries)
+            Check(scheduler.ApplyFeedback(0,e,{e.probeIndex,1,e.elapsedSeconds,e.cycleIndex}),"Age fixture prewarm failed");
+        coverage=scheduler.RegionCoverage(0);
+        Check(coverage.attempted==3 && coverage.updated==3 && coverage.oldestCompletionAge==2,
+            "New placement age started at scene creation or lost retained completion history");
+        std::cout<<"[GIProbeWork] active ages: unknown retries, success, removal and recycled identity PASS\n";
+        for(uint32_t reason:{2u,4u,8u,16u,30u})
+        {
+            const auto e=scheduler.NextFrame()[0].entries[0];
+            Check(!scheduler.ApplyFeedback(0,e,{e.probeIndex,reason,e.elapsedSeconds,e.cycleIndex}),"Hardware feedback accepted a world failure");
+            Check(!scheduler.ApplyFeedback(0,e,{e.probeIndex,reason|1u,e.elapsedSeconds,e.cycleIndex},true),"Mixed success/failure feedback accepted");
+            Check(!scheduler.ApplyFeedback(0,e,{e.probeIndex,32u,e.elapsedSeconds,e.cycleIndex},true),"Unknown failure bit accepted");
+            Check(scheduler.ApplyFeedback(0,e,{e.probeIndex,reason,e.elapsedSeconds,e.cycleIndex},true),"World failure reason rejected");
+        }
+        coverage=scheduler.RegionCoverage(0);
+        Check(coverage.heightFailures==2 && coverage.pageFailures==2 && coverage.stepFailures==5 && coverage.coverageFailures==2,
+            "Failure reason accounting changed across placement or combined causes");
     }
 
     void AllPlacedCoverage()
@@ -151,6 +431,11 @@ namespace
         Check(!retry.ApplyFeedback(1,fresh,{4,0,fresh.elapsedSeconds,fresh.cycleIndex}), "unfinished GPU work counted as complete");
         Check(retry.ApplyFeedback(1,fresh,{4,1,fresh.elapsedSeconds,fresh.cycleIndex}), "retry completion rejected");
         Check(retry.RegionCoverage(1).minCompletedUpdates == 1, "dropped work inflated coverage");
+        retry.ResetLighting();
+        const auto pending=retry.NextFrame()[1].entries[0];
+        Check(retry.ApplyFeedback(1,pending,{4,0,pending.elapsedSeconds,pending.cycleIndex},true),"World unknown feedback was not consumed");
+        Check(retry.RegionCoverage(1).minCompletedUpdates==1,"World unknown feedback inflated completion count");
+        Check(retry.NextFrame()[1].entries[0].flags==GIWorkResetLighting,"World unknown feedback lost the reset request");
         std::cout << "[GIProbeWork] all placed repeated coverage, mixed-cost fairness, DustV3 65536 probes / 256-frame sweep, reset and completion retry PASS\n";
     }
 
@@ -165,7 +450,7 @@ namespace
         initial.regions[0].size = {13.2f, 8.1f, 6.7f}; initial.regions[0].probeSpacing = 1.25f;
         initial.regions[0].center = {-7,-11,3}; initial.regions[0].overrideGridDimensions = false;
         initial.regions[1].stableId = 8; initial.regions[1].name = "Authored explicit grid";
-        initial.regions[1].overrideGridDimensions = true; initial.regions[1].gridDimensions = {5,7,3};
+        initial.regions[1].overrideGridDimensions = true; initial.regions[1].gridDimensions = {9,10,11};
         initial.regions[1].probeSpacing = 2.5f; initial.regions[1].enabled = false;
         scene->SetGISettings(initial);
         scene->ClearGIProbeResourcesDirty();
@@ -205,6 +490,10 @@ namespace
         {
             const auto fingerprint = Vans::VansSceneDocumentLoader::Fingerprint(path);
             auto settings = api.GetGISettings();
+            settings.world.enabled=enabled;settings.world.voxelSize=.5f;settings.world.coverageDistance=128;
+            settings.regions[1].worldOnly=true;
+            settings.regions[1].followView=true;
+            settings.world.extinctionScale=1.25f;settings.world.levelCount=4;settings.world.maxBricks=2048;settings.world.bricksPerFrame=32;settings.world.maxTraceSteps=384;
             settings.placement.enabled = enabled;
             settings.placement.minProbeSpacing = 0.125f;
             settings.placement.maxProbeSpacing = 3.25f;
@@ -215,6 +504,10 @@ namespace
             Check(api.ApplyGISettings(settings), "GI authoring settings Apply failed");
             Check(api.ConsumeScenePropertyEdits().empty(), "Apply GI implicitly staged a scene write");
             const auto& applied = scene->GetGISettings();
+            Check(applied.regions[1].worldOnly&&!applied.regions[0].worldOnly,"World region scope did not pass the editor API");
+            Check(applied.regions[1].followView&&!applied.regions[0].followView,"Scrolling mode did not pass the editor API");
+            Check(applied.world.enabled==enabled&&applied.world.voxelSize==.5f&&applied.world.coverageDistance==128&&applied.world.extinctionScale==1.25f&&
+                applied.world.levelCount==4&&applied.world.maxBricks==2048&&applied.world.bricksPerFrame==32&&applied.world.maxTraceSteps==384,"World GI controls did not reach native settings");
             Check(applied.placement.enabled == enabled && applied.placement.minProbeSpacing == 0.125f
                 && applied.placement.maxProbeSpacing == 3.25f && applied.placement.parentProbeMaxSize == 2.75f && applied.placement.maxProbeCount == 90001
                 && applied.placement.maxProbeUpdatesPerFrame == 777 && applied.placement.maxRaysPerFrame == 23456,
@@ -240,6 +533,10 @@ namespace
                 throw std::runtime_error("GI saved settings failed production decode: " + error);
             Check(config.globalIllumination.has_value(), "GI saved settings missing after production decode");
             const auto& decoded = *config.globalIllumination;
+            Check(decoded.regions[1].worldOnly==true && decoded.regions[0].worldOnly==false,"World region scope lost during explicit save/reload");
+            Check(decoded.regions[1].followView==true && decoded.regions[0].followView==false,"Scrolling mode lost during explicit save/reload");
+            Check(decoded.world.enabled==enabled&&decoded.world.voxelSize==.5f&&decoded.world.coverageDistance==128&&decoded.world.extinctionScale==1.25f&&
+                decoded.world.levelCount==4&&decoded.world.maxBricks==2048&&decoded.world.bricksPerFrame==32&&decoded.world.maxTraceSteps==384,"World GI settings lost values during explicit save/reload");
             Check(decoded.placement.enabled == enabled && decoded.placement.minProbeSpacing == 0.125f
                 && decoded.placement.maxProbeSpacing == 3.25f && decoded.placement.parentProbeMaxSize == 2.75f && decoded.placement.maxProbeCount == 90001
                 && decoded.placement.maxProbeUpdatesPerFrame == 777 && decoded.placement.maxRaysPerFrame == 23456,
@@ -260,7 +557,7 @@ bool TestGIProbeWorkContract(const Vans::VansSerializedValue& environment)
 {
     try
     {
-        CompleteBudgetWork(); AllPlacedCoverage(); ConfigurationOwnership(environment);
+        LocalLightingEdits(); CompleteBudgetWork(); EditedPlacement(); ScrollingPlacement(); BalancedWorldSweeps(); WorldPrewarmBudget(); ActiveUpdateAges(); AllPlacedCoverage(); ConfigurationOwnership(environment);
         std::cout << "[GIProbeWork] PASS: complete probe sequence, cost-aware budgets, native API controls, independent ownership and explicit save/reload\n";
         return true;
     }

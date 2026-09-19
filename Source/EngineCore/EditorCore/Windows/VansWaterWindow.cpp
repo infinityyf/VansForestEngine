@@ -283,6 +283,16 @@ void VansWaterWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
                 }
             }
 
+            if (ImGui::CollapsingHeader("River waves and flow"))
+            {
+                ImGui::TextDisabled("Local wave particles driven by river flow masks");
+                changed |= ImGui::DragFloat("Maximum wave height (m)", &settings.river.maxHeight, .01f, 0.0f, 1.0f);
+                changed |= ImGui::DragFloat("River wavelength (m)", &settings.river.wavelength, .01f, 1.0f, 5.0f);
+                changed |= ImGui::DragFloat("Packet lifetime (s)", &settings.river.lifetime, .01f, 2.0f, 20.0f);
+                changed |= ImGui::DragFloat("Flow blend spacing (m)", &settings.river.flowGridSize, .01f, 0.5f, 8.0f);
+                changed |= ImGui::DragFloat("Fine wave detail", &settings.river.fineDetailStrength, .01f, 0.f, 2.f);
+            }
+
             if (ImGui::CollapsingHeader("Geometry LOD"))
             {
                 changed |= ImGui::SliderInt("LOD Count", &settings.geometry.lodCount, 1, 10);

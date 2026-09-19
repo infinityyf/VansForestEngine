@@ -27,8 +27,8 @@ void VansPcgWindow::ShowSplines(Vans::EditorAPI::IEngineEditorAPI& api,Vans::Edi
     if (ImGui::Button("Save splines")) command(PcgSplineCommand::Save);
     ImGui::SameLine();if (ImGui::Button("Bake fields")) command(PcgSplineCommand::Bake);
     ImGui::EndDisabled();
-    ImGui::Text("%s | %zu field tiles | %zu coordinate tiles | rebuilt %zu",snapshot.building?"Updating":"Ready",
-        snapshot.activeTiles,snapshot.domainTiles,snapshot.rebuiltTiles);
+    ImGui::Text("%s | %zu field tiles | rebuilt %zu",snapshot.building?"Updating":"Ready",
+        snapshot.activeTiles,snapshot.rebuiltTiles);
     if (snapshot.dirty) {ImGui::SameLine();ImGui::TextUnformatted("*");}
     if (!snapshot.message.empty()) ImGui::TextWrapped("%s",snapshot.message.c_str());
     for (const auto& warning:snapshot.warnings) ImGui::TextWrapped("%s",warning.c_str());
@@ -140,11 +140,23 @@ void VansPcgWindow::ShowSplines(Vans::EditorAPI::IEngineEditorAPI& api,Vans::Edi
             {
                 bool reverse=m_SplineDraft.flowSign<0;
                 live(ImGui::DragFloat("Water surface drop (m)",&m_SplineDraft.waterSurfaceDrop,.01f,0,100));
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Water level = spline height - drop. Bed depth is measured below this water level. Terrain is only lowered.");
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Water level = spline height - drop. Bed depth is measured below this water level.");
+                ImGui::TextUnformatted("Water Level transition");
+                live(ImGui::DragFloat("Boundary blend (m)",&m_SplineDraft.waterBlendWidthMeters,.25f,0,1000));
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Blend water height, waves and normals inward from the buried mask edge. Minimum effective width: four field texels. Does not change terrain.");
+                live(ImGui::DragFloat("Start blend (m)",&m_SplineDraft.waterBlendStartMeters,.5f,0,1000000));
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Distance from the first point to full river waves. 0 keeps only the buried boundary blend. Independent of flow direction.");
+                live(ImGui::DragFloat("End blend (m)",&m_SplineDraft.waterBlendEndMeters,.5f,0,1000000));
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Distance from the last point to full river waves. Increase at a lake/sea outlet; use 0 at tributary junctions. Nonzero distances span at least four field texels.");
+                if (ImGui::Checkbox("Carve riverbed",&m_SplineDraft.carveRiverbed)) submit(PcgSplineEditPhase::Apply);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Disable when the riverbed is sculpted directly into the terrain.");
+                live(ImGui::DragFloat("Wet bank width (m)",&m_SplineDraft.wetBankWidthMeters,.1f,
+                    std::max(4.f*snapshot.fieldTexelSize,.2f),1000));
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Terrain stays fully wet below the river and fades to dry across this distance beyond each bank.");
+                live(ImGui::SliderFloat("Wetness strength",&m_SplineDraft.wetnessStrength,0,1,"%.2f"));
                 if (ImGui::Checkbox("Reverse water flow",&reverse)) {m_SplineDraft.flowSign=reverse?-1.f:1.f;submit(PcgSplineEditPhase::Apply);}
                 live(ImGui::DragFloat("Upstream fade (m)",&m_SplineDraft.fadeInDistance,.1f,0,10000));
                 live(ImGui::DragFloat("Downstream fade (m)",&m_SplineDraft.fadeOutDistance,.1f,0,10000));
-                live(ImGui::DragFloat("Flow cycle (s)",&m_SplineDraft.flowCycleSeconds,.05f,.1f,30));
                 if (ImGui::Checkbox("Normal flow",&m_SplineDraft.normalFlowEnabled)) submit(PcgSplineEditPhase::Apply);
             }
             if (ImGui::Button("Duplicate")) command(PcgSplineCommand::Duplicate);

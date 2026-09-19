@@ -44,7 +44,8 @@ namespace VansGraphics
 			return;
 
 		const VansRenderGIFrameData& giFrame = m_CurrentRenderSceneSnapshot.gi;
-		const bool rebuildProbeResources = giFrame.rebuildProbeResources;
+		const bool rebuildProbeResources = giFrame.rebuildProbeResources ||
+            (giFrame.settings.world.enabled && rayTracingContext.NeedsWorldSourceRebuild());
 		const bool updateParams = giFrame.updateParameters;
 		if (!rebuildProbeResources && !updateParams)
 			return;
@@ -58,6 +59,7 @@ namespace VansGraphics
 
 	void VansVKDevice::UpdateRayTracing(VansVKCommandBuffer& computeCmd)
 	{
+        rayTracingContext.SetWorldViewCenter(m_CurrentRenderView.position);
 		VansMaterialManager* materialManager = m_Scene->GetMaterialManager();
 		rayTracingContext.PrepareGIProbeUpdate(
 			m_CurrentRenderSceneSnapshot.light, materialManager,

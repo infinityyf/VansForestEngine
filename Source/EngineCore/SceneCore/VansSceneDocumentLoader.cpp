@@ -89,6 +89,9 @@ bool VansSceneDocumentLoader::IsSceneDocumentFile(const std::filesystem::path& p
         return false;
     }
 
+    if (parsedRoot.is_object() && parsedRoot.contains("prefabInstances"))
+        return parsedRoot.contains("sceneGuid") && parsedRoot.contains("schemaVersion") &&
+            parsedRoot.contains("entities") && parsedRoot["entities"].is_array() && parsedRoot["prefabInstances"].is_array();
     const SceneDiagnostics diagnostics = VansSceneSchema::ValidateSceneJson(parsedRoot);
     const bool hasSchemaError = std::any_of(
         diagnostics.begin(),
@@ -105,7 +108,7 @@ bool VansSceneDocumentLoader::IsSceneDocumentFile(const std::filesystem::path& p
     return true;
 }
 
-SceneDocumentLoadResult VansSceneDocumentLoader::Load(const std::filesystem::path& path)
+SceneDocumentLoadResult VansSceneDocumentLoader::Load(const std::filesystem::path& path, VansPrefabLookup prefabLookup)
 {
 	VansScopedIOContext ioContext(
 		VansIODomain::Authoring, "SceneDocument.Load", false);
@@ -127,9 +130,13 @@ SceneDocumentLoadResult VansSceneDocumentLoader::Load(const std::filesystem::pat
             result.diagnostics.push_back({ SceneDiagnosticSeverity::Error, "", error });
             return result;
         }
-        document->m_Diagnostics = VansSceneSchema::ValidateSceneJson(parsedRoot);
         document->m_Root = std::make_shared<const VansSerializedValue>(
             DecodeSerializedValueJson(parsedRoot));
+        if (!document->SetPrefabLookup(std::move(prefabLookup), error))
+            document->m_Diagnostics.push_back({ SceneDiagnosticSeverity::Error, "/prefabInstances", error });
+        else
+            document->m_Diagnostics = VansSceneSchema::ValidateSceneJson(
+                EncodeSerializedValueJson<SceneJson>(document->SerializedRootSnapshot()));
         document->m_SourcePath = std::filesystem::absolute(path).lexically_normal();
         document->m_LoadedFingerprint =
             FingerprintLoadedBytes(document->m_SourcePath, bytes, &error);

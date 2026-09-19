@@ -1325,6 +1325,12 @@ void VansGraphics::VansSkinnedMeshLoader::ExtractClipFromAssimp(
 	double ticksPerSecond = (anim->mTicksPerSecond > 0.0) ? anim->mTicksPerSecond : 25.0;
 	outClip.ticksPerSecond = (float)ticksPerSecond;
 	outClip.duration       = (float)(anim->mDuration / ticksPerSecond);
+	// A single-key animation is a valid static pose, but glTF/Assimp reports
+	// its duration as zero.  Downstream state-machine sampling needs a positive
+	// interval even though every sample resolves to the same key.  Publish one
+	// source tick rather than rejecting the pose or adding duplicate keys.
+	if (outClip.duration <= 0.0f && anim->mNumChannels > 0)
+		outClip.duration = 1.0f / (std::max)(outClip.ticksPerSecond, 1.0f);
 
 	uint32_t boneCount = (uint32_t)skeleton.bones.size();
 	outClip.boneKeyframes.resize(boneCount);

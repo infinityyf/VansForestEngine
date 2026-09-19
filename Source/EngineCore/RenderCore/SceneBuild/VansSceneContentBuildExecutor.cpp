@@ -224,6 +224,14 @@ void VansSceneContentBuildExecutor::ApplyGISettings(
 	if (config.has_value())
 	{
 		ApplyOptionalValue(config->placement.enabled, giSettings.placement.enabled);
+		ApplyOptionalValue(config->world.enabled, giSettings.world.enabled);
+		ApplyOptionalValue(config->world.voxelSize, giSettings.world.voxelSize);
+		ApplyOptionalValue(config->world.coverageDistance, giSettings.world.coverageDistance);
+		ApplyOptionalValue(config->world.extinctionScale, giSettings.world.extinctionScale);
+		ApplyOptionalValue(config->world.levelCount, giSettings.world.levelCount);
+		ApplyOptionalValue(config->world.maxBricks, giSettings.world.maxBricks);
+		ApplyOptionalValue(config->world.bricksPerFrame, giSettings.world.bricksPerFrame);
+		ApplyOptionalValue(config->world.maxTraceSteps, giSettings.world.maxTraceSteps);
 		ApplyOptionalValue(config->placement.minProbeSpacing, giSettings.placement.minProbeSpacing);
 		ApplyOptionalValue(config->placement.maxProbeSpacing, giSettings.placement.maxProbeSpacing);
 		ApplyOptionalValue(config->placement.parentProbeMaxSize, giSettings.placement.parentProbeMaxSize);
@@ -241,6 +249,8 @@ void VansSceneContentBuildExecutor::ApplyGISettings(
 				region.stableId = sourceRegion.stableId.value_or(static_cast<uint32_t>(index + 1u));
 				region.name = sourceRegion.name.value_or(index == 0 ? std::string("Default") : ("GI Region " + std::to_string(index + 1u)));
 				ApplyOptionalValue(sourceRegion.enabled, region.enabled);
+				ApplyOptionalValue(sourceRegion.worldOnly, region.worldOnly);
+                ApplyOptionalValue(sourceRegion.followView, region.followView);
 				if (sourceRegion.center.has_value())
 					region.center = glm::vec3((*sourceRegion.center)[0], (*sourceRegion.center)[1], (*sourceRegion.center)[2]);
 				if (sourceRegion.size.has_value())

@@ -37,6 +37,7 @@ public:
     static bool Evaluate(const VansPcgSpline& spline, float spacing, float tolerance,
         VansPcgEvaluatedSpline& result, std::string& error);
     static float EndpointFade(const VansPcgSpline& spline, float distance, float length);
+    static float WaterEndpointWeight(const VansPcgSpline& spline, float distance, float length, float minimumWidth);
     static glm::vec2 Velocity(const VansPcgSpline& spline, const VansPcgSplineSample& sample, float length);
     static bool InsertPoint(VansPcgSpline& spline, std::size_t segment, float parameter,
         const std::string& pointId, std::string& error);

@@ -1,0 +1,82 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+#include "../Common/Common.glsl"
+#include "../SSGI/SSGISurface.glsl"
+#include "../GI/GIReceiverOrigin.glsl"
+#include "../GIReceiverBias/GIReceiverBiasCommon.glsl"
+#include "GIWorldQuery.glsl"
+layout(local_size_x=8,local_size_y=8) in;
+layout(set=1,binding=0) uniform sampler2D inputPosition;
+layout(set=1,binding=1) uniform sampler2D inputNormal;
+layout(set=1,binding=2) uniform sampler2D inputMaterial;
+struct Region { vec4 minimum; vec4 sizeBias; vec4 trace; vec4 countsPriority; };
+layout(set=1,binding=4) uniform Info { vec4 screenSize; vec4 regionInfo; Region regions[8]; vec4 debug; };
+#define GI_LAYOUT_SET 1
+#define GI_LAYOUT_BINDING 6
+#include "../GI/GIProbeLayoutData.glsl"
+layout(set=1,binding=15,std430) buffer ReceiverBiasOutput
+{
+    uvec4 header;
+    GIReceiverBiasRecord records[];
+};
+
+float MeasureClearance(vec3 position,vec3 direction,float requested,float epsilon)
+{
+    if(requested<=epsilon) return -1.0;
+    GIWorldHit hit=GIWorldTrace(position+direction*epsilon,direction,0.0,requested*1.25-epsilon,false);
+    // 未完成查询不是命中，不能覆盖硬件已经测得的净空。
+    if(!hit.valid)return -1.0;
+    return hit.t<requested*1.25-epsilon?hit.t+epsilon:-1.0;
+}
+void main()
+{
+    uvec2 coord=gl_GlobalInvocationID.xy;
+    uvec2 size=(uvec2(screenSize.xy)+3u)/4u;
+    if(any(greaterThanEqual(coord,size))) return;
+    uint index=coord.y*size.x+coord.x;
+    if(index==0u) header=uvec4(1u,size,0u);
+    vec4 oldLimits=records[index].limits;
+    // 常规区域直接保留刚完成的硬件测量，不让世界场改写原有室内采样。
+    if(gwTable.w==0u){records[index].surface=vec4(0.0);records[index].limits=vec4(0.0);}
+    ivec2 fullSize=ivec2(screenSize.xy);
+    ivec2 pixel=min(ivec2(coord)*4+2,fullSize-1);
+    vec4 position=texelFetch(inputPosition,pixel,0);
+    if(position.w<=0.0) return;
+    vec4 materialData=texelFetch(inputMaterial,pixel,0);
+    float material=round(materialData.z);
+    if(int(material)==MATERIAL_ID_GRASS || int(material)==MATERIAL_ID_TREE) return;
+    vec3 shading=normalize(texelFetch(inputNormal,pixel,0).xyz);
+    vec3 dx=SSGI_SurfaceDerivative(position,
+        texelFetch(inputPosition,max(pixel-ivec2(1,0),ivec2(0)),0),
+        texelFetch(inputPosition,min(pixel+ivec2(1,0),fullSize-1),0));
+    vec3 dy=SSGI_SurfaceDerivative(position,
+        texelFetch(inputPosition,max(pixel-ivec2(0,1),ivec2(0)),0),
+        texelFetch(inputPosition,min(pixel+ivec2(0,1),fullSize-1),0));
+    vec3 N=SSGI_NormalFromDerivatives(dx,dy,shading);
+    uint selected=0xffffffffu;float priority=-3.402823e38,fade=-1.0;
+    for(uint r=0u;r<min(uint(regionInfo.x),8u);++r)
+    {
+        Region v=regions[r];
+        if(any(lessThan(position.xyz,v.minimum.xyz)) || any(greaterThan(position.xyz,v.minimum.xyz+v.sizeBias.xyz))) continue;
+        vec3 edge=min(position.xyz-v.minimum.xyz,v.minimum.xyz+v.sizeBias.xyz-position.xyz);
+        float f=v.trace.z>1e-4?smoothstep(0.0,v.trace.z,min(min(edge.x,edge.y),edge.z)):1.0;
+        if(selected==0xffffffffu || v.countsPriority.w>priority || (v.countsPriority.w==priority && f>fade))
+        {selected=r;priority=v.countsPriority.w;fade=f;}
+    }
+    if(selected==0xffffffffu) return;
+    if(!GI_LayoutRegionUsesWorld(selected))return;
+    float requested=max(regions[selected].sizeBias.w,0.0);
+    float epsilon=GI_ReceiverOriginEpsilon(position.xyz);
+    // 相同方向只测一次；不同方向分别测量，不能拿任意 Probe 射线距离代替法向净空。
+    bool sameDirection=dot(N,shading)>0.999999;
+    // 每个 4x4 锚点只追踪偏移长度内的短线段；不能把未抽样位置伪造成零净空。
+    // 只为地形的世界场查询匹配高度图表面，硬件起点和屏幕表面身份保持原样。
+    vec3 worldPosition=GIWorldReceiverPosition(position.xyz,materialData.w==-1024.0,epsilon);
+    float normalDistance=MeasureClearance(worldPosition,N,sameDirection?max(requested,0.05):requested,epsilon);
+    float screenDistance=sameDirection?normalDistance:MeasureClearance(worldPosition,shading,0.05,epsilon);
+    records[index].surface=SSGI_EncodeSurface(position.xyz,N,material);
+    records[index].limits=vec4(GI_ClampReceiverBias(requested,normalDistance,epsilon),
+        GI_ClampReceiverBias(0.05,screenDistance,epsilon),0.0,float(selected+1u));
+    if(gwTable.w!=0u && oldLimits.w>0.0) records[index].limits.xy=min(records[index].limits.xy,oldLimits.xy);
+}

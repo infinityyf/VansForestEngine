@@ -18,6 +18,7 @@
 #include "VansShaderManager.h"
 #include "VansCamera.h"
 #include "VansCameraControlArbiter.h"
+#include "Lod/VansLodSelection.h"
 #include "BRDFData/VansLight.h"
 #include "../Configration/VansConfigration.h"
 #include "../AudioCore/VansAudioReverbEnvironment.h"
@@ -995,6 +996,10 @@ void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
         VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, {{ m_MaterialManager.m_SkyLighting.Parameters().GetNativeBuffer(),
             0, m_MaterialManager.m_SkyLighting.Parameters().GetBufferSize() }});
 
+    descManager->WriteBufferDescriptor(m_GlobalDescriptorSet, GLOBAL_BINDING_LIGHT_COOKIE_DATA,
+        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, {{vkDevice->GetLightCookieDataBuffer().GetNativeBuffer(),
+            0, vkDevice->GetLightCookieDataBuffer().GetBufferSize()}});
+
     // Binding 6: 同一固定 SkyBox 的 SH 系数。
     descManager->WriteBufferDescriptor(
         m_GlobalDescriptorSet,
@@ -1039,6 +1044,13 @@ void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
         }});
 
+    // 草专用积分表，与共享 BRDF LUT 的数据和采样方式独立。
+    descManager->WriteImageDescriptor(m_GlobalDescriptorSet, GLOBAL_BINDING_GRASS_ENERGY_LUT,
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, {{
+            m_MaterialManager.m_GrassEnergyLUT->GetImage().GetSampler(),
+            m_MaterialManager.m_GrassEnergyLUT->GetImage().GetImageView(),
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
+
     // Binding 11/12: LTC LUTs (area-light BRDF, runtime-uploaded RGBA16F 64x64)
     if (m_MaterialManager.m_LTC1 && m_MaterialManager.m_LTC2)
     {
@@ -1066,6 +1078,13 @@ void VansGraphics::VansScene::UpdateGlobalDescriptorSet()
     auto& textures = m_MaterialManager.m_GlobalPBRTextures;
     if (!textures.empty())
     {
+		if (!IsBindlessTextureCountSupported(textures.size()))
+		{
+			VANS_LOG_ERROR("[Scene] Refusing global bindless descriptor write: requested="
+				<< textures.size() << ", capacity=" << MAX_BINDLESS_TEXTURES);
+			descManager->CommitDescriptorUpdates();
+			return;
+		}
         std::vector<VkDescriptorImageInfo> bindlessInfos;
         bindlessInfos.reserve(textures.size());
         for (size_t i = 0; i < textures.size(); ++i)
@@ -1183,9 +1202,9 @@ void VansGraphics::VansScene::SetTerrainPhysicsNode(VansEngine::VansTerrainPhysi
 
 VansGraphics::MultiMeshGroup* VansGraphics::VansScene::FindAnimationMultiMeshGroup(
     const std::string& meshGroupName,
-    const std::string& objectName)
+    const std::string& objectName, const std::string& entityGuid)
 {
-    auto groupIt = m_MultiMeshGroups.find(meshGroupName);
+    auto groupIt = m_MultiMeshGroups.find(entityGuid);
     if (groupIt != m_MultiMeshGroups.end())
         return &groupIt->second;
 
@@ -1241,6 +1260,7 @@ void VansGraphics::VansScene::UnLoadScene()
 {
     m_ParticleManager.WaitForUpdateAndSwap();
     VANS_ASSERT_MAIN_THREAD();
+	m_GIVoxelSourceManager.Clear();
 	++m_RenderSceneEpoch;
 
 	VANS_LOG("[VansScene] UnLoadScene started");
@@ -1826,11 +1846,67 @@ VansGraphics::VansScene::PrepareMainThreadRenderFrame(
 			snapshot.animations.emplace_back(std::move(frameData));
 		}
     }
-    {
-        VANS_PROFILE_SCOPE("Transform::ResolveParentChild", Vans::ProfileCategory::RenderPrepare);
-        m_TransformGraph.Resolve();
-        SyncAnimatedHurtBodies();
-    }
+	{
+		VANS_PROFILE_SCOPE("Transform::ResolveParentChild", Vans::ProfileCategory::RenderPrepare);
+		m_TransformGraph.Resolve();
+		SyncAnimatedHurtBodies();
+	}
+	{
+		VANS_PROFILE_SCOPE("LODGroup::SelectDrawMeshes", Vans::ProfileCategory::RenderPrepare);
+		const glm::vec2 viewport(static_cast<float>(view.viewportWidth), static_cast<float>(view.viewportHeight));
+		for (VansScriptObject* object : m_SceneObjects)
+		{
+			if (!object) continue;
+			auto* lod = object->GetComponent<VansScriptLodGroupComponent>();
+			if (!lod || lod->m_RenderNodes.empty() || lod->m_LevelMeshes.empty()) continue;
+			VansRenderAABB groupAabb;
+			bool hasGroupBounds = false;
+			for (VansRenderNode* node : lod->m_RenderNodes)
+			{
+				if (!node) continue;
+				node->UpdateWorldBoundsFromTransform();
+				if (!node->HasWorldBounds()) continue;
+				const VansRenderAABB& nodeAabb = node->GetWorldBounds().aabb;
+				groupAabb.min = hasGroupBounds ? glm::min(groupAabb.min, nodeAabb.min) : nodeAabb.min;
+				groupAabb.max = hasGroupBounds ? glm::max(groupAabb.max, nodeAabb.max) : nodeAabb.max;
+				hasGroupBounds = true;
+			}
+			if (!hasGroupBounds) continue;
+			VansLodSelectionInput input;
+			input.bounds = MakeRenderBoundsFromLocalAABB(
+				groupAabb.min, groupAabb.max, glm::mat4(1.0f));
+			input.view = view.view;
+			input.projection = view.projection;
+			input.viewportSize = viewport;
+			input.nearPlane = view.nearClip;
+			input.pixelErrorBudget = lod->m_PixelErrorBudget;
+			input.qualityBias = lod->m_QualityBias;
+			input.hysteresis = lod->m_Hysteresis;
+			input.previousLevel = lod->m_PreviousLevel;
+			input.resetHistory = HasRenderViewHistoryReset(view.historyReset, VansRenderViewHistoryReset::CameraCut) ||
+				HasRenderViewHistoryReset(view.historyReset, VansRenderViewHistoryReset::SceneChanged);
+			input.mode = lod->m_SelectionMode == "screenRelativeHeight"
+				? VansLodSelectionMode::ScreenRelativeHeight : VansLodSelectionMode::AutoScreenError;
+			for (std::size_t level = 0; level < lod->m_LevelMeshes.size(); ++level)
+			{
+				VansLodLevelMetric metric;
+				metric.available = level == 0 || std::any_of(lod->m_LevelMeshes[level].begin(), lod->m_LevelMeshes[level].end(),
+					[](VansMesh* mesh) { return mesh != nullptr; });
+				metric.value = input.mode == VansLodSelectionMode::ScreenRelativeHeight
+					? (level < lod->m_LevelScreenHeights.size() ? lod->m_LevelScreenHeights[level] : 0.0f)
+					: (level < lod->m_LevelErrors.size() ? lod->m_LevelErrors[level] : 0.0f);
+				input.levels.push_back(metric);
+			}
+			const VansLodSelectionResult result = SelectLod(input);
+			if (!result.valid) continue;
+			lod->m_PreviousLevel = result.level;
+			const auto& selected = lod->m_LevelMeshes[static_cast<std::size_t>(result.level)];
+			for (std::size_t i = 0; i < lod->m_RenderNodes.size(); ++i)
+				if (lod->m_RenderNodes[i])
+					lod->m_RenderNodes[i]->SetDrawMesh(i < selected.size() && selected[i]
+						? selected[i] : lod->m_RenderNodes[i]->m_Mesh);
+		}
+	}
 	if (m_ImpactDecals) m_ImpactDecals->Tick(deltaTime);
 	if (m_LoadMode == VansSceneLoadMode::Runtime && m_GameplayRuntime)
 	{
@@ -2151,6 +2227,31 @@ void VansGraphics::VansScene::PrepareRenderBackendData(
 		}
 		if (m_WaterSystem) m_WaterSystem->SetSplineFields(m_SplineFieldResources.get());
 	}
+	if (vkDevice && sceneSnapshot.gi.settings.world.enabled)
+	{
+		// 体素来源管理器是 PCG、地形与具体 GI 实现之间的唯一桥接。
+		m_GIVoxelSourceManager.Bind([vkDevice](GIVoxelSourceChanges changes)
+		{
+			auto& gi=vkDevice->GetRayTracingContext();
+			if (!gi.GetWorldAllocatedBytes()) return false;
+			if (!gi.QueueWorldSourceChanges(std::move(changes)))
+			{
+				gi.InvalidateWorldSources();
+				return false;
+			}
+			return true;
+		});
+		m_GIVoxelSourceManager.BindTerrainPatchers(
+			[vkDevice](uint32_t x,uint32_t z,uint32_t w,uint32_t h,const std::vector<uint8_t>& bytes)
+			{ return vkDevice->GetRayTracingContext().ApplyWorldHeightPatch(x,z,w,h,bytes); },
+			[vkDevice](uint32_t map,uint32_t x,uint32_t y,uint32_t w,uint32_t h,const std::vector<uint8_t>& bytes)
+			{ return vkDevice->GetRayTracingContext().ApplyWorldColorPatch(map,x,y,w,h,bytes); });
+	}
+	else
+	{
+		// 开关关闭时不保留提交器；PCG 仍可正常绘制，但不会捕获、分配或重试体素来源。
+		m_GIVoxelSourceManager.Clear();
+	}
 	if (vkDevice && m_VegetationCollection) {
 		for (const auto& update : sceneSnapshot.vegetationUpdates)
 		{
@@ -2158,6 +2259,7 @@ void VansGraphics::VansScene::PrepareRenderBackendData(
 			if (update && !m_VegetationCollection->Apply(*this, nativeDevice, *update, vkDevice, error))
 				VANS_LOG_ERROR("[PCG] Batch update rejected; previous vegetation retained: " << error);
 		}
+		m_VegetationCollection->RetryUnavailableGIVoxelSources(*this);
 		std::string error;
 		if (!m_VegetationCollection->UpdateResidency(*this,nativeDevice,*vkDevice,view.position.x,view.position.z,error))
 			VANS_LOG_ERROR("[PCG] Vegetation residency update failed: " << error);
@@ -2241,6 +2343,15 @@ void VansGraphics::VansScene::RecordFrameUploads(
 				if (!terrain->RecordRegionUpload(cmd, textureIndex, upload.x, upload.y,
 					upload.width, upload.height, upload.bytes))
 					VANS_LOG_ERROR("[Terrain] Rejected a frame-local texture region upload.");
+				else
+				{
+					const bool applied=textureIndex==0u
+						? m_GIVoxelSourceManager.SubmitHeightPatch(upload.x,upload.y,upload.width,upload.height,upload.bytes)
+						: m_GIVoxelSourceManager.SubmitColorPatch(textureIndex-1u,upload.x,upload.y,upload.width,upload.height,upload.bytes);
+					if(!applied)
+						if(auto* device=dynamic_cast<VansVKDevice*>(m_GraphicsDevice))
+							device->GetRayTracingContext().InvalidateWorldSources();
+				}
 			}
 		}
 	}
@@ -2274,6 +2385,12 @@ void VansGraphics::VansScene::QueueTerrainRegionUpload(VansRenderTerrainRegionUp
 	if (upload.assetGuid.empty() || upload.width == 0 || upload.height == 0 || upload.bytes.empty())
 		return;
 	m_PendingTerrainUploads.push_back(std::move(upload));
+}
+
+void VansGraphics::VansScene::CollectGIVoxelSources(std::vector<GIVoxelSource>& sources)
+{
+    // 场景聚合来源；体素构建器只消费通用输入，后续来源在此扩展。
+    if (m_VegetationCollection) m_VegetationCollection->CollectGIVoxelSources(*this, sources);
 }
 
 void VansGraphics::VansScene::SetVegetationCollection(std::unique_ptr<VansVegetationCollection> collection)
@@ -2328,6 +2445,14 @@ void VansGraphics::VansScene::SyncLightTransforms()
                 component.typeId);
             if (!runtimeLight || !runtimeLight->lightManager || runtimeLight->lightIndex < 0)
                 continue;
+
+            glm::mat4 cookieWorld = glm::translate(glm::mat4(1.0f), t.m_Position);
+            cookieWorld = glm::rotate(cookieWorld, glm::radians(t.m_Rotation.z), glm::vec3(0,0,1));
+            cookieWorld = glm::rotate(cookieWorld, glm::radians(t.m_Rotation.y), glm::vec3(0,1,0));
+            cookieWorld = glm::rotate(cookieWorld, glm::radians(t.m_Rotation.x), glm::vec3(1,0,0));
+            const unsigned cookieKind = static_cast<unsigned>(runtimeLight->kind);
+            if (VansLightCookieOffset(cookieKind) + runtimeLight->lightIndex < VANS_LIGHT_COOKIE_COUNT)
+                runtimeLight->lightManager->SetCookieTransform(cookieKind, runtimeLight->lightIndex, cookieWorld);
 
             if (component.typeId == Vans::VansRuntimeComponentType_DirectionalLight)
             {
@@ -2986,8 +3111,8 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
     uint32_t skippedNoRayTracing = 0;
 	uint32_t skippedTransparentMaterial = 0;
 	uint32_t alphaTestInstances = 0;
-    for (auto& node : m_OpaqueRenderNodes)
-    {
+	for (auto& node : m_OpaqueRenderNodes)
+	{
 		if (!node || !node->IsEnabled())
 		{
 			++skippedDisabled;
@@ -3002,7 +3127,7 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
             continue;
         }
         // 多网格父容器节点没有自身 Mesh，静默跳过。
-        if (!node->m_Mesh)
+		if (!node->m_Mesh)
         {
             ++skippedMissingMesh;
             ++nodeIdx;
@@ -3062,13 +3187,13 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
         // 获取BLAS地址
         VkAccelerationStructureDeviceAddressInfoKHR asAddressInfo{};
         asAddressInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
-        asAddressInfo.accelerationStructure = node->m_Mesh->GetBLAS();
+		asAddressInfo.accelerationStructure = node->m_Mesh->GetBLAS();
         asAddressInfo.pNext = nullptr;
         instance.accelerationStructureReference = vans_device->GetAccelerationAddress(&asAddressInfo);
 
         m_TlasInstancesInfos.push_back(instance);
 
-        m_TLASInstaneData.push_back(node->m_Mesh->GetBLASIndex());
+		m_TLASInstaneData.push_back(node->m_Mesh->GetBLASIndex());
 
 		// The texture table is indexed by TLAS instance, not BLAS index.  Keep
 		// material class flags in the high bits and the five-texture base index
@@ -3241,7 +3366,7 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
         device,
         buildSizesInfo.buildScratchSize + vans_device->GetAccelerationStructureScratchAlignment() - 1,
         VK_FORMAT_R32_SFLOAT,
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
     const VkDeviceSize scratchAlignment = vans_device->GetAccelerationStructureScratchAlignment();
@@ -3255,7 +3380,7 @@ void VansGraphics::VansScene::BuildRayTracingAS(VansVKDevice* vans_device, VansV
         device,
         buildSizesInfo.accelerationStructureSize,
         VK_FORMAT_R32_SFLOAT,
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
     // 构建TLAS
@@ -4222,9 +4347,9 @@ bool VansGraphics::VansScene::DestroyEntity(VansScriptObject* obj)
     //  若 DestroyEntity 作用于 multi-mesh 实体，必须清理 group 元数据
     //  和非首子节点（VansScriptRenderComponent 仅持有 childNodes[0]）。
     // ══════════════════════════════════════════════════════════════════════════════
-    if (renderNode && !renderNode->m_ParentGroupName.empty())
+    if (renderNode && !renderNode->m_ParentGroupKey.empty())
     {
-        auto groupIt = m_MultiMeshGroups.find(renderNode->m_ParentGroupName);
+        auto groupIt = m_MultiMeshGroups.find(renderNode->m_ParentGroupKey);
         if (groupIt != m_MultiMeshGroups.end())
         {
             const auto& group = groupIt->second;

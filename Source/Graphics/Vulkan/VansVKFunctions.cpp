@@ -1,4 +1,4 @@
-﻿#include "VansVKFunctions.h"
+#include "VansVKFunctions.h"
 #include "../../Source/EngineCore/Util/VansLog.h"
 #include "VansStreamlineRuntime.h"
 #include <iostream>

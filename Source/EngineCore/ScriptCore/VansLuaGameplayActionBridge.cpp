@@ -362,6 +362,19 @@ void PushActionView(lua_State* state, const Vans::VansActionInstanceSnapshot& vi
 	lua_setfield(state, -2, "variables");
 }
 
+int ReadAttribute(lua_State* state)
+{
+    Vans::VansGameplayRuntime* runtime = nullptr;
+    std::shared_ptr<Vans::VansActionHost> host;
+    std::string error;
+    if (!ResolveHost(state, 1, runtime, host, error)) return Fail(state, error);
+    const char* name = luaL_checkstring(state, 2);
+    const auto id = Vans::VansMakeStableId<Vans::VansAttributeIdTag>(name);
+    if (!runtime->Assets().Attributes().Resolve(id)) return Fail(state, "Unknown attribute");
+    lua_pushnumber(state, host->Attributes().Current(id));
+    return 1;
+}
+
 int GiveAction(lua_State* state)
 {
 	Vans::VansGameplayRuntime* runtime = nullptr;
@@ -693,6 +706,7 @@ int TargetSet(lua_State* state)
 void VansLuaGameplayActionBridge::Register(lua_State* state)
 {
 	lua_newtable(state);
+	lua_pushcfunction(state, ReadAttribute); lua_setfield(state, -2, "read_attribute");
 	lua_pushcfunction(state, GiveAction); lua_setfield(state, -2, "give_action");
 	lua_pushcfunction(state, RevokeAction); lua_setfield(state, -2, "revoke_action");
 	lua_pushcfunction(state, ApplyActionSet); lua_setfield(state, -2, "apply_action_set");

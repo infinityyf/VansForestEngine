@@ -13,14 +13,60 @@ uvec4 GI_LayoutRegionWord(uint region, uint slot)
 vec4 GI_LayoutRegionMin(uint region) { return uintBitsToFloat(GI_LayoutRegionWord(region, 0u)); }
 vec4 GI_LayoutRegionSize(uint region) { return uintBitsToFloat(GI_LayoutRegionWord(region, 1u)); }
 vec4 GI_LayoutRegionTrace(uint region) { return uintBitsToFloat(GI_LayoutRegionWord(region, 4u)); }
+bool GI_LayoutRegionUsesWorld(uint region) { return GI_LayoutRegionTrace(region).w>0.5; }
 uint GI_LayoutProbeCount(uint region) { return GI_LayoutRegionWord(region, 3u).w; }
+bool GI_LayoutRegionScrolls(uint region)
+{ return region < GI_LayoutRegionCount() && giLayout.words[3].w != 0u && giLayout.words[giLayout.words[3].w + region * 2u].w != 0u; }
+bool GI_LayoutRegionIsSparse(uint region) { return GI_LayoutIsSparse() && !GI_LayoutRegionScrolls(region); }
+uvec3 GI_LayoutRingOffset(uint region) { return giLayout.words[giLayout.words[3].w + region * 2u].xyz; }
+uint GI_LayoutScrollEpoch(uint region)
+{ return GI_LayoutRegionScrolls(region) ? giLayout.words[giLayout.words[3].w + region * 2u + 1u].w : 0u; }
+// 参数 UBO 的固定作者边界不能覆盖运行时滚动后的查询范围。
+void GI_LayoutQueryBounds(uint region, inout ivec3 counts, inout vec3 minimum, inout vec3 size)
+{
+    if (!GI_LayoutRegionScrolls(region)) return;
+    counts = ivec3(GI_LayoutRegionWord(region, 2u).xyz);
+    minimum = GI_LayoutRegionMin(region).xyz; size = GI_LayoutRegionSize(region).xyz;
+}
+void GI_LayoutBlendBounds(uint region, inout vec3 minimum, inout vec3 size)
+{
+    if (!GI_LayoutRegionScrolls(region)) return;
+    vec4 gridMinimum = GI_LayoutRegionMin(region);
+    size = GI_LayoutRegionSize(region).xyz - vec3(4.0 * gridMinimum.w);
+    vec3 center = uintBitsToFloat(giLayout.words[giLayout.words[3].w + region * 2u + 1u]).xyz;
+    minimum = center - size * 0.5;
+}
+uint GI_LayoutRegularAddress(uint region, ivec3 logical, ivec3 counts)
+{
+    if (GI_LayoutRegionScrolls(region)) logical = ivec3((uvec3(logical) + GI_LayoutRingOffset(region)) % uvec3(counts));
+    return uint((logical.z * counts.y + logical.y) * counts.x + logical.x);
+}
 vec4 GI_LayoutPosition(uint region, uint localProbe)
 {
+    if (GI_LayoutRegionScrolls(region))
+    {
+        uvec3 counts = GI_LayoutRegionWord(region, 2u).xyz;
+        uvec3 physical = uvec3(localProbe % counts.x, (localProbe / counts.x) % counts.y, localProbe / (counts.x * counts.y));
+        uvec3 logical = (physical + counts - GI_LayoutRingOffset(region)) % counts;
+        vec4 minimum = GI_LayoutRegionMin(region);
+        return vec4(minimum.xyz + (vec3(logical) + 0.5) * minimum.w, minimum.w);
+    }
     uint globalProbe = GI_LayoutRegionWord(region, 3u).z + localProbe;
     return uintBitsToFloat(giLayout.words[giLayout.words[1].z + globalProbe * 2u]);
 }
+vec3 GI_LayoutProbePosition(uint region, uint localProbe, ivec3 counts, vec3 minimum, vec3 spacing)
+{
+    if (GI_LayoutRegionIsSparse(region) || GI_LayoutRegionScrolls(region)) return GI_LayoutPosition(region, localProbe).xyz;
+    ivec3 p = ivec3(int(localProbe) % counts.x, (int(localProbe) / counts.x) % counts.y, int(localProbe) / (counts.x * counts.y));
+    return minimum + (vec3(p) + 0.5) * spacing;
+}
 float GI_LayoutVisibilityRange(uint region, uint localProbe)
 {
+    if (GI_LayoutRegionScrolls(region))
+    {
+        float spacing = GI_LayoutRegionMin(region).w;
+        return length(vec3(spacing)) + 0.45 * spacing;
+    }
     uint globalProbe = GI_LayoutRegionWord(region, 3u).z + localProbe;
     return uintBitsToFloat(giLayout.words[giLayout.words[1].z + globalProbe * 2u + 1u].y);
 }
@@ -123,6 +169,7 @@ uint GI_LayoutSelectRegion(vec3 worldPos)
     {
         vec3 minimum = GI_LayoutRegionMin(region).xyz;
         vec3 size = GI_LayoutRegionSize(region).xyz;
+        GI_LayoutBlendBounds(region, minimum, size);
         vec3 edge = min(worldPos - minimum, minimum + size - worldPos);
         if (any(lessThan(edge, vec3(0.0)))) continue;
         vec4 trace = GI_LayoutRegionTrace(region);

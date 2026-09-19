@@ -19,6 +19,7 @@ bool VansSceneFileStorage::CreateEmptySceneDocument(const std::filesystem::path&
 {
 	VansSceneData sceneData;
 	sceneData.sceneGuid = VansAssetGuid::New();
+    sceneData.settings = VansSceneSchema::MakeDefaultSettings();
 	const SceneJson root = VansSceneSchema::SerializeSceneJson(sceneData);
 	return WriteSceneDocument(path, root, error);
 }

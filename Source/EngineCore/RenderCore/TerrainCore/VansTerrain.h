@@ -38,6 +38,7 @@ namespace VansGraphics
         glm::ivec4 layerCountPacked;
         float tilingFactors[TERRAIN_MAX_LAYERS * 4];
         glm::vec4 heightfieldParams; // x=terrainSize, y=maxHeight, z=heightOffset, w=patchGridResolution
+        glm::vec4 riverWetnessParams; // x=albedoScale, y=roughness, z=detailNormalScale
     };
 
     struct alignas(16) TerrainTessellationParamsGPU
@@ -48,17 +49,14 @@ namespace VansGraphics
         float padding;
     };
 
-    struct alignas(16) TerrainNoiseDetailParamsGPU
+    struct alignas(16) TerrainHeightDetailParamsGPU
     {
-        float noiseStrength = 0.03f;
-        float noiseFrequency = 0.8f;
-        float noiseLacunarity = 2.0f;
-        float noiseGain = 0.52f;
-        int32_t noiseOctaves = 4;
-        float noiseWarpStrength = 0.0f;
+        float heightDetailStrength = 0.03f;
         float fadeStart = 0.7f;
-        float noisePadding = 0.0f;
+        float padding[2]{};
     };
+
+    static_assert(sizeof(TerrainHeightDetailParamsGPU) == 16, "Terrain height detail UBO must match std140");
 
     struct TerrainInstanceData
     {
@@ -121,23 +119,14 @@ namespace VansGraphics
         void SetLodRangeRatio(float value);
         void SetMorphStartRatio(float value);
 
-        bool IsNoiseDetailEnabled() const { return m_EnableNoiseDetail; }
-        float GetNoiseStrength() const { return m_NoiseStrength; }
-        float GetNoiseFrequency() const { return m_NoiseFrequency; }
-        float GetNoiseLacunarity() const { return m_NoiseLacunarity; }
-        float GetNoiseGain() const { return m_NoiseGain; }
-        int GetNoiseOctaves() const { return m_NoiseOctaves; }
-        float GetNoiseWarpStrength() const { return m_NoiseWarpStrength; }
-        float GetNoiseFadeStart() const { return m_NoiseFadeStart; }
+        bool IsHeightDetailEnabled() const { return m_EnableHeightDetail; }
+        float GetHeightDetailStrength() const { return m_HeightDetailStrength; }
+        float GetHeightDetailFadeStart() const { return m_HeightDetailFadeStart; }
 
-        void SetNoiseDetailEnabled(bool value);
-        void SetNoiseStrength(float value);
-        void SetNoiseFrequency(float value);
-        void SetNoiseLacunarity(float value);
-        void SetNoiseGain(float value);
-        void SetNoiseOctaves(int value);
-        void SetNoiseWarpStrength(float value);
-        void SetNoiseFadeStart(float value);
+        void SetHeightDetailEnabled(bool value);
+        void SetHeightDetailStrength(float value);
+        void SetHeightDetailFadeStart(float value);
+        void SetRiverWetnessResponse(float albedoScale, float roughness, float detailNormalScale);
 
         VkDescriptorSetLayout m_DescriptorSetLayout = VK_NULL_HANDLE;
         std::vector<VkDescriptorSet> m_DescriptorSets;
@@ -149,7 +138,8 @@ namespace VansGraphics
         void EnsureInstanceBufferCapacity(uint32_t requiredCapacity);
         TerrainInstanceData BuildInstanceData(const TerrainLodPatch& patch) const;
         void UpdateTessellationUBO();
-        void UpdateNoiseDetailUBO();
+        void UpdateHeightDetailUBO();
+        void UpdateRiverWetnessUBO();
 
         VansVKDevice* m_Device = nullptr;
         Vans::VansAssetGuid m_AssetGuid;
@@ -165,7 +155,7 @@ namespace VansGraphics
 
         VansVKBuffer m_ParamsUBO;
         VansVKBuffer m_TessParamsUBO;
-        VansVKBuffer m_NoiseDetailUBO;
+        VansVKBuffer m_HeightDetailUBO;
 
         VansMesh* m_BasePatchMesh = nullptr;
         std::vector<VkVertexInputAttributeDescription> m_TerrainInstanceInputAttributeDescriptions;
@@ -200,14 +190,12 @@ namespace VansGraphics
         float m_MaxTessellationLevel = 32.0f;
         float m_TessellationTargetPixels = 12.0f;
 
-        bool m_EnableNoiseDetail = true;
-        float m_NoiseStrength = 0.03f;
-        float m_NoiseFrequency = 0.8f;
-        float m_NoiseLacunarity = 2.0f;
-        float m_NoiseGain = 0.52f;
-        int m_NoiseOctaves = 4;
-        float m_NoiseWarpStrength = 0.0f;
-        float m_NoiseFadeStart = 0.7f;
+        bool m_EnableHeightDetail = true;
+        float m_HeightDetailStrength = 0.03f;
+        float m_HeightDetailFadeStart = 0.7f;
+        float m_RiverWetAlbedoScale = 0.72f;
+        float m_RiverWetRoughness = 0.18f;
+        float m_RiverWetDetailNormalScale = 0.70f;
 
         // A 33x33 regular grid is the conventional CDLOD patch topology. The
         // finest patch remains 16 world units wide, giving 0.5-unit vertices

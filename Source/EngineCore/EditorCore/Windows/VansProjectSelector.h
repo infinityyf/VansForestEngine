@@ -13,6 +13,7 @@
 
 #include <string>
 #include <vector>
+#include <chrono>
 
 namespace Vans::EditorAPI
 {
@@ -61,6 +62,7 @@ private:
 	std::string                        m_NewProjectName;
 	int                                m_SelectedRecentIndex = -1;
 	bool                               m_RecentProjectsLoaded = false;
+	std::chrono::steady_clock::time_point m_LastRecentRefresh{};
 
 	// Error / status message
 	std::string                        m_StatusMessage;

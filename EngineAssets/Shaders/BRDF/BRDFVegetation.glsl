@@ -93,7 +93,7 @@ void CalculateDirectLight_Vegetation(BRDFData brdfData, VegetationParams veg,
         DirectBRDF_Vegetation(brdfData, uDirectionLight.direction.rgb, veg, 1.0, shadow, dR, sR, tR);
 
         vec3 lightEnergy =
-            uDirectionLight.color.rgb * uDirectionLight.intensity;
+            uDirectionLight.color.rgb * uDirectionLight.intensity * SampleSurfaceLightCookie(0, brdfData.positionWS);
         lightResult.directDiffuse  += (dR * shadow + tR) * lightEnergy;
         lightResult.directSpecular += sR * shadow * lightEnergy;
     }
@@ -101,6 +101,7 @@ void CalculateDirectLight_Vegetation(BRDFData brdfData, VegetationParams veg,
     for (uint i = 0; i < uPointLightCount; ++i)
     {
         PointLightData pointLight = GetPointLight(int(i));
+        pointLight.color.rgb *= SampleSurfaceLightCookie(1 + int(i), brdfData.positionWS);
         vec3 lightDirection = pointLight.position.xyz - brdfData.positionWS;
         float distance = length(lightDirection);
         if (distance > pointLight.radius) continue;
@@ -129,6 +130,7 @@ void CalculateDirectLight_Vegetation(BRDFData brdfData, VegetationParams veg,
     for (uint i = 0; i < uSpotLightCount; ++i)
     {
         SpotLightData spotLight = GetSpotLight(int(i));
+        spotLight.color.rgb *= SampleSurfaceLightCookie(65 + int(i), brdfData.positionWS);
         vec3 lightDirection = spotLight.position.xyz - brdfData.positionWS;
         float distance = length(lightDirection);
         if (distance > spotLight.radius) continue;

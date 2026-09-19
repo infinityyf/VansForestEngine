@@ -1,4 +1,5 @@
 #pragma once
+#include "VansGIWorldSettings.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -21,7 +22,10 @@ namespace VansGraphics
 		uint32_t stableId = 1;
 		std::string name = "Default";
 		bool enabled = true;
+		// 世界场专属区域；主开关关闭时不进入布局、分配或调度。
+		bool worldOnly = false;
 		GIProbeRegionMode mode = GIProbeRegionMode::RegularGrid;
+        bool followView = false; // 世界场区域使用固定容量的滚动网格。
 
 		glm::vec3 center = glm::vec3(0.0f, 6.0f, 0.0f);
 		glm::vec3 size = glm::vec3(40.0f);
@@ -42,6 +46,7 @@ namespace VansGraphics
 		uint32_t stableId = 1;
 		std::string name = "Default";
 		bool enabled = true;
+		bool worldOnly = false;
 
 		glm::vec3 center = glm::vec3(0.0f, 6.0f, 0.0f);
 		glm::vec3 volumeMin = glm::vec3(-20.0f, -14.0f, -20.0f);
@@ -57,6 +62,12 @@ namespace VansGraphics
 		float priority = 0.0f;
 
 		uint64_t probeCount = 512000u;
+
+        // 运行时滚动地址，不序列化为作者区域的固定中心。
+        bool scrolling = false;
+        glm::uvec3 scrollOffset = glm::uvec3(0u);
+        glm::vec3 blendCenter = glm::vec3(0.0f);
+        uint32_t scrollEpoch = 0u;
 	};
 
 	struct GIProbePlacementSettings
@@ -100,6 +111,7 @@ namespace VansGraphics
 
 	struct VansGISettings
 	{
+		GIWorldSettings world;
 		GIProbePlacementSettings placement;
 		std::vector<GIProbeRegionDesc> regions = { GIProbeRegionDesc{} };
 		uint32_t selectedRegionIndex = 0;
@@ -143,9 +155,12 @@ namespace VansGraphics
 		resolved.stableId = region.stableId;
 		resolved.name = region.name;
 		resolved.enabled = region.enabled;
+		resolved.worldOnly = region.worldOnly;
+        resolved.scrolling = region.worldOnly && region.followView;
 		resolved.center = region.center;
 		resolved.probeSpacing = std::max(region.probeSpacing, 0.001f);
 		resolved.gridDimensions = ResolveGIGridDimensions(region);
+        if (resolved.scrolling) resolved.gridDimensions = glm::clamp(resolved.gridDimensions, glm::uvec3(8), glm::uvec3(256));
 		resolved.volumeSize = glm::vec3(resolved.gridDimensions) * resolved.probeSpacing;
 		resolved.volumeMin = resolved.center - resolved.volumeSize * 0.5f;
 		resolved.raysPerProbe = std::clamp(region.raysPerProbe, 2u, 4096u);
@@ -181,11 +196,11 @@ namespace VansGraphics
 		const uint32_t selected = std::min<uint32_t>(
 			settings.selectedRegionIndex,
 			static_cast<uint32_t>(settings.regions.size() - 1u));
-		if (settings.regions[selected].enabled)
+		if (settings.regions[selected].enabled && (!settings.regions[selected].worldOnly || settings.world.enabled))
 			ordered.push_back(&settings.regions[selected]);
 		for (uint32_t index = 0; index < settings.regions.size(); ++index)
 		{
-			if (index != selected && settings.regions[index].enabled)
+			if (index != selected && settings.regions[index].enabled && (!settings.regions[index].worldOnly || settings.world.enabled))
 				ordered.push_back(&settings.regions[index]);
 		}
 		return ordered;
@@ -193,6 +208,7 @@ namespace VansGraphics
 
 	inline void NormalizeGISettings(VansGISettings& settings)
 	{
+		NormalizeGIWorldSettings(settings.world);
 		NormalizeGIProbePlacementSettings(settings.placement);
 		if (settings.regions.empty())
 		{
@@ -236,6 +252,8 @@ namespace VansGraphics
 		const GIResolvedRegion leftResolved = ResolveGIRegion(left);
 		const GIResolvedRegion rightResolved = ResolveGIRegion(right);
 		return leftResolved.enabled == rightResolved.enabled &&
+			leftResolved.worldOnly == rightResolved.worldOnly &&
+            leftResolved.scrolling == rightResolved.scrolling &&
 			leftResolved.center == rightResolved.center &&
 			leftResolved.volumeSize == rightResolved.volumeSize &&
 			leftResolved.gridDimensions == rightResolved.gridDimensions &&
@@ -251,6 +269,7 @@ namespace VansGraphics
 	{
 		NormalizeGISettings(left);
 		NormalizeGISettings(right);
+		if (!GIWorldResourceLayoutEquals(left.world, right.world)) return false;
 		if (!GIProbePlacementResourceLayoutEquals(left.placement, right.placement))
 			return false;
 		if (left.regions.size() != right.regions.size())
@@ -261,7 +280,7 @@ namespace VansGraphics
 		{
 			if (!GIRegionResourceLayoutEquals(left.regions[index], right.regions[index]))
 				return false;
-			if (left.placement.enabled &&
+			if (left.placement.enabled && !ResolveGIRegion(left.regions[index]).scrolling &&
 				(left.regions[index].normalBias != right.regions[index].normalBias ||
 				 left.regions[index].priority != right.regions[index].priority))
 				return false;

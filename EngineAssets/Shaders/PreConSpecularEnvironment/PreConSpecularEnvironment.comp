@@ -3,6 +3,7 @@
 
 #include "../Common/Common.glsl"
 #include "../Common/CubemapDirection.glsl"
+#include "../Common/EnvironmentFilter.glsl"
 
 const uint MAX_ENVIRONMENT_MIPS = 12u;
 
@@ -39,6 +40,8 @@ vec3 ImportanceSampleGGX(vec2 xi, vec3 normal, float roughness)
 vec3 EvaluateSpecularRadiance(vec3 reflection, float roughness)
 {
     uint sampleCount = max(filterInfo.w, 1u);
+    float faceResolution = float(textureSize(inputCubemap, 0).x);
+    float maxLod = float(textureQueryLevels(inputCubemap) - 1);
     vec3 sum = vec3(0.0);
     float totalWeight = 0.0;
     for (uint sampleIndex = 0u; sampleIndex < sampleCount; ++sampleIndex)
@@ -50,7 +53,15 @@ vec3 EvaluateSpecularRadiance(vec3 reflection, float roughness)
         float weight = max(dot(reflection, lightDirection), 0.0);
         if (weight > 0.0)
         {
-            sum += textureLod(inputCubemap, lightDirection, 0.0).rgb * weight;
+            // V=N 时 GGX 方向 pdf = D/4；粗糙反射也必须覆盖其积分足迹。
+            float noH = max(dot(reflection, halfVector), 0.0);
+            float alpha = roughness * roughness;
+            float alpha2 = alpha * alpha;
+            float denominator = noH * noH * (alpha2 - 1.0) + 1.0;
+            float pdf = alpha2 / max(4.0 * PI * denominator * denominator, 1e-12);
+            float lod = EnvironmentSampleLod(lightDirection, pdf,
+                sampleCount, faceResolution, maxLod);
+            sum += textureLod(inputCubemap, lightDirection, lod).rgb * weight;
             totalWeight += weight;
         }
     }

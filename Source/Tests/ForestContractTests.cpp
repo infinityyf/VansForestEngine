@@ -162,6 +162,7 @@
 #include "../EngineCore/ProjectSystem/Storage/VansProjectSettingsStorage.h"
 #include "../EngineCore/GameplayActionSchema/VansGAFProjectConfiguration.h"
 #include "../EngineCore/AssetCore/Storage/VansFileStorage.h"
+#include "../EngineCore/ProjectSystem/Storage/VansProjectConfigStorage.h"
 #include "../EngineCore/RuntimeUI/VansUIAssetResolver.h"
 #include "../EngineCore/ScriptCore/VansScriptContext.h"
 #include "../EngineCore/ScriptCore/VansLuaScriptInspectorService.h"
@@ -9834,8 +9835,29 @@ bool TestAnimationLayerRootReferenceFrameContract()
             ++cases;
         }
     }
+    // Viewmodel-style clips may intentionally author a coordinate-basis
+    // transform on the animated root while root motion remains disabled.  The
+    // generic opt-out must preserve that pose; normalization stays enabled by
+    // default for locomotion and all existing serialized components.
+    auto preservedRoot = makeController(90.0f, false, false,
+        VansLayerBlendMode::Override, VansAdditiveReferenceMode::BindPose);
+    if (!Expect(preservedRoot != nullptr, error.c_str())) return false;
+    preservedRoot->EnableRootMotion(false);
+    preservedRoot->SetNormalizeRootPose(false);
+    preservedRoot->Update(0.0f, skeleton);
+    VansBoneTransform authoredRoot;
+    if (!Expect(!preservedRoot->ShouldNormalizeRootPose()
+        && VansPoseMath::TryDecompose(
+            glm::inverse(preservedRoot->GetCachedGlobalTransform(0))
+                * preservedRoot->GetCachedGlobalTransform(1),
+            authoredRoot)
+        && glm::length(authoredRoot.translation - bind[1].translation) > 3.5f
+        && std::abs(glm::dot(glm::normalize(authoredRoot.rotation),
+            glm::normalize(bind[1].rotation))) < 0.8f,
+        "Animation root normalization opt-out discarded the authored root basis"))
+        return false;
     std::cout << "[ForestContractTests] Layer root reference frame: " << cases
-        << " cases, mesh override/additive, partial mask, root ancestry and scale preserved\n";
+        << " cases, mesh override/additive, partial mask, root ancestry, scale and configurable root pose preserved\n";
     return true;
 }
 
@@ -13783,8 +13805,10 @@ bool TestAtmosphereMathAndDataContract()
 		"Source/EngineCore/EditorCore/Windows/VansLightWindow.cpp");
 	const std::string cloudLighting = readText(
 		"EngineAssets/Shaders/Common/CloudLightingHP.glsl");
-	const std::string giPointLight = readText(
+	const std::string giPointLightEntry = readText(
 		"EngineAssets/Shaders/GIPointLight/GIPointLight.comp");
+	const std::string giPointLight = giPointLightEntry + readText(
+		"EngineAssets/Shaders/GIPointLight/GIPointLightMain.glsl");
 	const std::string reflectionProbeCapture = readText(
 		"EngineAssets/Shaders/ReflectionProbeCapture/ReflectionProbeCapture.frag");
 	const std::string reflectionProbeCaptureSky = readText(
@@ -14082,6 +14106,7 @@ bool TestAtmosphereMathAndDataContract()
 		return false;
 	}
 	if (!Expect(
+		giPointLightEntry.find("#include \"GIPointLightMain.glsl\"") != std::string::npos &&
 		giPointLight.find("layout(set = 1, binding = 4) uniform samplerCube environmentMap") !=
 			std::string::npos &&
 		giPointLight.find("SampleSkyRadiance(environmentMap, rayDirection)") !=
@@ -14093,7 +14118,8 @@ bool TestAtmosphereMathAndDataContract()
 			"layout(set = 1, binding = 3) uniform samplerCube skyDiffuseEnvironment") !=
 			std::string::npos &&
 		reflectionProbeCapture.find(
-			"SampleSkyDiffuseIrradiance(skyDiffuseEnvironment, normal) / PI") != std::string::npos &&
+			"#define GI_SAMPLE_SKY(N) max(SampleSkyDiffuseIrradiance(skyDiffuseEnvironment, N) / PI") != std::string::npos &&
+		reflectionProbeCapture.find("GI_BlendRegionLighting(worldPosition, normal, 1.0)") != std::string::npos &&
 		reflectionProbeCaptureSky.find(
 			"SampleSkySpecularCube(PreConvSpecularEnvironment, direction, 0.0)") !=
 			std::string::npos &&
@@ -14403,6 +14429,61 @@ bool TestAtmosphereMathAndDataContract()
 	{
 		return false;
 	}
+	return true;
+}
+
+bool TestRecentProjectsPruningContract()
+{
+	TemporaryDirectory temporary;
+	Vans::VansScopedIOContext io(Vans::VansIODomain::UserPreference, "RecentProjects.Contract", true);
+	const auto file = temporary.path / "RecentProjects.json";
+	const auto first = temporary.path / "First";
+	const auto second = temporary.path / "Second";
+	const auto missingConfig = temporary.path / "MissingConfig";
+	const auto directoryConfig = temporary.path / "DirectoryConfig";
+	fs::create_directories(first);
+	fs::create_directories(second);
+	fs::create_directories(missingConfig);
+	fs::create_directories(directoryConfig / "ForestProject.json");
+	std::ofstream(first / "ForestProject.json") << "{}";
+	std::ofstream(second / "ForestProject.json") << "{}";
+	std::vector<Vans::RecentProjectEntry> entries;
+	for (const auto& path : {first, temporary.path / "Deleted", missingConfig, directoryConfig, second})
+	{
+		Vans::RecentProjectEntry entry;
+		entry.name = path.filename().string();
+		entry.path = path.generic_string() + "/";
+		entry.lastOpened = "2026-09-18T12:00:00";
+		entry.engineVersion = "0.1.0";
+		entries.push_back(entry);
+	}
+	entries.emplace_back(); // 空路径不能误指向当前工作目录。
+	std::string error;
+	if (!Expect(Vans::VansProjectConfigStorage::SaveRecentProjects(file.string(), entries, 20, error),
+		"Could not prepare recent-projects fixture")) return false;
+	if (!Expect(Vans::VansProjectConfigStorage::LoadRecentProjects(file.string(), entries, error) &&
+		entries.size() == 2 && entries[0].name == "First" && entries[1].name == "Second" &&
+		entries[0].lastOpened == "2026-09-18T12:00:00",
+		"Recent projects did not prune missing/non-file/empty paths while retaining order and metadata")) return false;
+	nlohmann::json saved;
+	std::ifstream(file) >> saved;
+	if (!Expect(saved["recentProjects"].size() == 2 && saved["maxRecentCount"] == 20,
+		"Pruned recent projects were not persisted")) return false;
+	const auto writeTime = fs::last_write_time(file);
+	if (!Expect(Vans::VansProjectConfigStorage::LoadRecentProjects(file.string(), entries, error) &&
+		fs::last_write_time(file) == writeTime, "Unchanged refresh rewrote recent projects")) return false;
+	fs::remove(first / "ForestProject.json");
+	if (!Expect(Vans::VansProjectConfigStorage::LoadRecentProjects(file.string(), entries, error) &&
+		entries.size() == 1 && entries[0].name == "Second", "Deletion after first load was not pruned")) return false;
+	// 解析失败时不持久化部分结果，用户文件保持原样。
+	const std::string invalid = R"({"recentProjects":[{"name":"valid","path":"missing"},{"path":42}]})";
+	std::ofstream(file, std::ios::trunc) << invalid;
+	if (!Expect(!Vans::VansProjectConfigStorage::LoadRecentProjects(file.string(), entries, error) && entries.empty(),
+		"Malformed recent projects exposed partial records")) return false;
+	std::ifstream input(file);
+	const std::string actual((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+	if (!Expect(actual == invalid, "Malformed preference file was overwritten")) return false;
+	std::cout << "[RecentProjects] PASS: missing paths, missing/non-file configs, persistent pruning, stable refresh, deletion after load, malformed input preservation\n";
 	return true;
 }
 
@@ -14839,6 +14920,37 @@ bool TestAuthoringCodecContract()
 		"Ragdoll pure Codec did not round-trip the current schema"))
 		return false;
 	nlohmann::json legacyRagdoll = ragdollRoot;
+	// 全部自身碰撞和显式关节坐标必须能往返，旧 Profile 保持默认关闭。
+	if (!Expect(!ragdoll.selfCollision, "Ragdoll default self collision changed")) return false;
+	ragdoll.selfCollision = true;
+	ragdoll.bodies.front().inertiaScale = 16.f;
+	VansEngine::RagdollJointConfig knee;
+	knee.childBoneName = "pelvis"; knee.hasLocalFrames = true;
+	knee.parentFramePosition = glm::vec3(0, 0.4f, 0);
+	knee.childFrameRotation = glm::vec3(0, 15, 0);
+	knee.swingYLimit = knee.swingZLimit = 0;
+	knee.twistLowLimit = 0; knee.twistHighLimit = 135;
+	knee.limitStiffness = knee.limitDamping = 0;
+	ragdoll.joints.push_back(knee);
+	if (!Expect(VansEngine::VansRagdollProfileJsonCodec::Encode(ragdoll, ragdollEncoded, error) &&
+		VansEngine::VansRagdollProfileJsonCodec::Decode(ragdollEncoded, ragdollRoundTrip, error) &&
+		ragdollRoundTrip.selfCollision && ragdollRoundTrip.bodies.front().inertiaScale == 16.f &&
+		ragdollRoundTrip.joints.front().hasLocalFrames &&
+		ragdollRoundTrip.joints.front().childFrameRotation.y == 15 &&
+		ragdollRoundTrip.joints.front().swingYLimit == 0,
+		"Ragdoll full collision and anatomical frames did not round-trip")) return false;
+	ragdollEncoded["joints"][0]["twist_high_limit"] = 0;
+	if (!Expect(VansEngine::VansRagdollProfileJsonCodec::Decode(ragdollEncoded,ragdollRoundTrip,error),
+		"Ragdoll rejected a fully locked joint")) return false;
+	ragdollEncoded["joints"][0].erase("parent_frame_rotation");
+	if (!Expect(!VansEngine::VansRagdollProfileJsonCodec::Decode(ragdollEncoded,ragdollRoundTrip,error),
+		"Ragdoll accepted incomplete joint frames")) return false;
+	physx::PxFilterData selfA(7,1u<<7,2,123),selfB(7,1u<<7,2,123);
+	if (!Expect(!VansEngine::RagdollPairSuppressed(selfA,selfB),"Full self collision suppressed body pair")) return false;
+	selfB.word2=0;
+	if (!Expect(VansEngine::RagdollPairSuppressed(selfA,selfB),"Disabled self collision was not suppressed")) return false;
+	selfB.word3=124;
+	if (!Expect(!VansEngine::RagdollPairSuppressed(selfA,selfB),"Different ragdolls were treated as one")) return false;
 	legacyRagdoll["bodies"][0].erase("bone_name");
 	legacyRagdoll["bodies"][0]["boneName"] = "pelvis";
 	if (!Expect(!VansEngine::VansRagdollProfileJsonCodec::Decode(
@@ -16531,6 +16643,12 @@ bool TestTerrainAuthoringContract()
 	terrain.settings.terrainSize = 64.0f;
 	terrain.settings.maxHeight = 32.0f;
 	terrain.settings.heightOffset = -4.0f;
+	terrain.settings.heightDetailEnabled = false;
+	terrain.settings.heightDetailStrength = 0.04f;
+	terrain.settings.heightDetailFadeStart = 0.65f;
+	terrain.settings.riverWetness.albedoScale = 0.63f;
+	terrain.settings.riverWetness.roughness = 0.21f;
+	terrain.settings.riverWetness.detailNormalScale = 0.74f;
 	terrain.width = 9;
 	terrain.height = 7;
 	const std::size_t pixelCount = static_cast<std::size_t>(terrain.width) * terrain.height;
@@ -16553,8 +16671,52 @@ bool TestTerrainAuthoringContract()
 		encodedDefinition, decodedDefinition, error), error.c_str()) ||
 		!Expect(decodedDefinition.layers.size() == VANS_TERRAIN_LAYER_COUNT &&
 			decodedDefinition.heightmap == terrain.heightmap &&
-			decodedDefinition.splatmaps == terrain.splatmaps,
+			decodedDefinition.splatmaps == terrain.splatmaps &&
+			decodedDefinition.settings.heightDetailEnabled == terrain.settings.heightDetailEnabled &&
+			decodedDefinition.settings.heightDetailStrength == terrain.settings.heightDetailStrength &&
+			decodedDefinition.settings.heightDetailFadeStart == terrain.settings.heightDetailFadeStart &&
+			decodedDefinition.settings.riverWetness.albedoScale == terrain.settings.riverWetness.albedoScale &&
+			decodedDefinition.settings.riverWetness.roughness == terrain.settings.riverWetness.roughness &&
+			decodedDefinition.settings.riverWetness.detailNormalScale == terrain.settings.riverWetness.detailNormalScale,
 			"Terrain definition round trip changed required references"))
+		return false;
+	const VansSerializedValue* tessellation = FindObjectField(encodedDefinition, "tessellation");
+	const VansSerializedValue* heightDetail = tessellation ? FindObjectField(*tessellation, "heightDetail") : nullptr;
+	if (!Expect(heightDetail && heightDetail->kind == VansSerializedValue::Kind::Object &&
+		heightDetail->objectFields.size() == 3u &&
+		FindObjectField(*heightDetail, "enabled") && FindObjectField(*heightDetail, "strength") &&
+		FindObjectField(*heightDetail, "fadeStart"),
+		"Terrain height detail must serialize only enabled, strength and fadeStart"))
+		return false;
+	VansSerializedValue missingHeightDetail = encodedDefinition;
+	auto* missingHeightTessellation = FindObjectField(missingHeightDetail, "tessellation");
+	missingHeightTessellation->objectFields.erase(std::remove_if(
+		missingHeightTessellation->objectFields.begin(), missingHeightTessellation->objectFields.end(),
+		[](const auto& field) { return field.first == "heightDetail"; }), missingHeightTessellation->objectFields.end());
+	if (!Expect(!VansTerrainAssetCodec::DecodeDefinition(missingHeightDetail, decodedDefinition, error) && !error.empty(),
+		"Terrain definition accepted missing material height detail settings"))
+		return false;
+	for (const float invalidStrength : { -0.01f, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN() })
+	{
+		auto invalid = terrain;
+		invalid.settings.heightDetailStrength = invalidStrength;
+		if (!Expect(!ValidateTerrainAsset(invalid, false).empty(), "Terrain accepted invalid height detail strength"))
+			return false;
+	}
+	for (const float invalidFade : { -0.01f, 1.0f, std::numeric_limits<float>::quiet_NaN() })
+	{
+		auto invalid = terrain;
+		invalid.settings.heightDetailFadeStart = invalidFade;
+		if (!Expect(!ValidateTerrainAsset(invalid, false).empty(), "Terrain accepted invalid height detail fade"))
+			return false;
+	}
+	VansSerializedValue missingWetness = encodedDefinition;
+	missingWetness.objectFields.erase(std::remove_if(
+		missingWetness.objectFields.begin(), missingWetness.objectFields.end(),
+		[](const auto& field) { return field.first == "riverWetness"; }), missingWetness.objectFields.end());
+	if (!Expect(!VansTerrainAssetCodec::DecodeDefinition(
+		missingWetness, decodedDefinition, error) && !error.empty(),
+		"Terrain definition accepted missing river wetness settings"))
 		return false;
 	VansSerializedValue incompleteDefinition = encodedDefinition;
 	VansSerializedValue* splatmaps = FindObjectField(incompleteDefinition, "splatmaps");
@@ -16867,7 +17029,14 @@ bool TestTerrainAuthoringContract()
 	const float savedLodDistance = session->WorkingAsset().settings.lodBaseDistance;
 	VansTerrainAssetSettings changedSettings = session->WorkingAsset().settings;
 	changedSettings.lodBaseDistance = savedLodDistance + 1.0f;
+	changedSettings.heightDetailEnabled = true;
+	changedSettings.heightDetailStrength = 0.08f;
+	changedSettings.heightDetailFadeStart = 0.8f;
 	if (!Expect(session->ApplyDefinition(changedSettings, error), error.c_str()) ||
+		!Expect(session->WorkingAsset().settings.heightDetailEnabled &&
+			session->WorkingAsset().settings.heightDetailStrength == 0.08f &&
+			session->WorkingAsset().settings.heightDetailFadeStart == 0.8f,
+			"Terrain authoring did not apply material height detail settings") ||
 		!Expect(session->BeginStroke(VansTerrainBrushOperation::Lower, error), error.c_str()))
 		return false;
 	VansTerrainBrushDab lower = raise;
@@ -16880,6 +17049,9 @@ bool TestTerrainAuthoringContract()
 		!Expect(session->SyncDefinitionFromDocument(error), error.c_str()) ||
 		!Expect(session->WorkingAsset().heights == savedHeight.pixels &&
 			session->WorkingAsset().settings.lodBaseDistance == savedLodDistance &&
+			session->WorkingAsset().settings.heightDetailEnabled == terrain.settings.heightDetailEnabled &&
+			session->WorkingAsset().settings.heightDetailStrength == terrain.settings.heightDetailStrength &&
+			session->WorkingAsset().settings.heightDetailFadeStart == terrain.settings.heightDetailFadeStart &&
 			!session->Document()->IsDirty(),
 			"Terrain discard did not restore definition and image payloads together"))
 		return false;
@@ -17059,6 +17231,7 @@ bool TestReflectionProbePagesGpuContract();
 bool TestReflectionProbePublicationGpuContract();
 bool TestReflectionProbeResourcesGpuContract();
 bool TestGIProbeResourcesGpuContract();
+bool TestGIWorldContract();
 bool TestReflectionProbeCacheContract();
 bool TestReflectionProbeCacheGpuContract();
 bool TestGIProbeWorkContract(const Vans::VansSerializedValue& environment);
@@ -17071,11 +17244,78 @@ bool TestGIProbePublicationGpuContract();
 bool TestGIProbeIntegrationGpuContract();
 bool TestSkyLightingGpuContract();
 bool TestSSGIGpuContract();
+bool TestGrassLightingGpuContract();
 bool TestParticleCoreContract();
 bool TestDescriptorLayoutSharingContract();
 
+bool TestLightCookieContract()
+{
+    using namespace VansGraphics;
+    VansLightManager lights;
+    VansRenderLightFrameData frame;
+    lights.AddDirectionalLight(VansDirectionalLight{});
+    lights.AddPointLight(VansPointLight{}); lights.AddPointLight(VansPointLight{});
+    lights.AddSpotLight(VansSpotLight{}); lights.AddRectLight(VansRectLight{});
+    frame.directionalLights.resize(1); frame.directionalLights[0].m_Direction = {0,0,-1};
+    frame.pointLights.resize(2); frame.spotLights.resize(1); frame.rectLights.resize(1);
+    frame.spotLights[0].m_OuterCutOff = glm::radians(30.0f);
+    lights.BuildCookieFrame(frame);
+    for (const auto& c : frame.cookies.data) if (c.options.x != 0) return false;
+    for (unsigned kind = 0; kind < 4; ++kind)
+    {
+        auto& c = lights.Cookie(kind,0); c.enabled = true; c.textureGuid = "test-cookie";
+        c.strength = 0.75f; c.sizeX = 4; c.sizeY = 6;
+        glm::mat4 world = glm::translate(glm::mat4(1),glm::vec3(3,4,5));
+        lights.SetCookieTransform(kind,0,world);
+    }
+    lights.BuildCookieFrame(frame);
+    for (unsigned kind = 0; kind < 4; ++kind)
+    {
+        const unsigned slot = VansLightCookieOffset(kind); const auto& c = frame.cookies.data[slot];
+        if (c.options.x != 0.75f || c.options.y != float(kind) || frame.cookies.textures[slot] != "test-cookie") return false;
+        const auto p = c.worldToLight * glm::vec4(3,4,5,1);
+        if (glm::length(glm::vec3(p)) > 1e-5f) return false;
+    }
+    const auto& spot = frame.cookies.data[65];
+    const auto edge = spot.worldToLight * glm::vec4(3 + std::tan(glm::radians(30.0f))*5,4,0,1);
+    if (std::abs(edge.x / (-edge.z * spot.projection.x) - 0.5f) > 1e-5f) return false;
+    // 同一帧对象重复构建时，关闭必须清掉旧结果。
+    lights.Cookie(2,0).enabled = false; lights.BuildCookieFrame(frame);
+    if (frame.cookies.data[65].options.x != 0 || !frame.cookies.textures[65].empty()) return false;
+    // 删除采用 swap-pop；Cookie 必须跟随被交换的灯而不是旧槽位。
+    lights.Cookie(1,1).textureGuid = "second";
+    if (!lights.RemovePointLight(0) || lights.Cookie(1,0).textureGuid != "second") return false;
+    // Authoring may contain more lights than the rendered prefix; CPU settings must not overlap kinds.
+    for (int i = 0; i < 80; ++i) lights.AddPointLight(VansPointLight{});
+    lights.Cookie(1,80).enabled = true;
+    if (lights.Cookie(2,0).enabled) return false;
+    lights.ClearLights();
+    lights.AddDirectionalLight(VansDirectionalLight{}); lights.AddPointLight(VansPointLight{});
+    if (lights.Cookie(0,0).enabled || lights.Cookie(1,0).enabled) return false;
+    std::cout << "LIGHT_COOKIE_CONTRACT_PASS defaults=4 transforms=4 spotEdge=1 disable=1 remove=1 clear=1 ABI=unchanged\n";
+    return true;
+}
+
+bool RunModelLodContractTests();
+bool RunTreeLodGpuContractTests();
+bool TestEditorSceneInteractionContract();
+
+bool RunCursorContractTests();
+bool RunCursorWindowContractTests();
+bool RunCursorProjectContractTests();
+
+void RunPrefabContractTests();
+
 int main(int argc, char** argv)
 {
+    if (argc == 2 && std::string(argv[1]) == "--prefab")
+    {
+        VANS_INIT_MAIN_THREAD();
+        try { RunPrefabContractTests(); return 0; }
+        catch (const std::exception& error) { std::cerr << "PREFAB_CONTRACT_FAIL " << error.what() << '\n'; return 1; }
+    }
+    if (argc == 2 && std::string(argv[1]) == "--editor-scene-interaction") return TestEditorSceneInteractionContract() ? 0 : 209;
+    if (argc == 2 && std::string(argv[1]) == "--light-cookie") return TestLightCookieContract() ? 0 : 1;
 	if (argc == 2 && std::string(argv[1]) == "--pcg-core")
 		return RunPcgCoreContractTests() ? 0 : 203;
     if (argc == 2 && std::string(argv[1]) == "--terrain-cdlod")
@@ -17085,6 +17325,12 @@ int main(int argc, char** argv)
     if (argc == 2 && std::string(argv[1]) == "--particle-core")
         return TestParticleCoreContract() ? 0 : 170;
 	VANS_INIT_MAIN_THREAD();
+    if (argc == 2 && std::string(argv[1]) == "--recent-projects") return TestRecentProjectsPruningContract() ? 0 : 1;
+    if (argc == 2 && std::string(argv[1]) == "--cursor") return RunCursorContractTests() ? 0 : 1;
+    if (argc == 2 && std::string(argv[1]) == "--cursor-projects") return RunCursorProjectContractTests() ? 0 : 1;
+    if (argc == 2 && std::string(argv[1]) == "--cursor-window") return RunCursorWindowContractTests() ? 0 : 1;
+    if(argc==2 && std::string(argv[1])=="--model-lod")return RunModelLodContractTests()?0:207;
+    if(argc==2 && std::string(argv[1])=="--tree-lod-gpu")return RunTreeLodGpuContractTests()?0:208;
 	if (argc == 2 && std::string(argv[1]) == "--pcg-assets")
 		return RunPcgAssetContractTests() ? 0 : 204;
 	if (argc == 2 && std::string(argv[1]) == "--pcg-editor-configuration")
@@ -17097,10 +17343,14 @@ int main(int argc, char** argv)
         return MeasureReflectionProbePlacement(argv[2], argv[3], argv[4]) ? 0 : 186;
     if (argc == 2 && std::string(argv[1]) == "--gi-receiver-visibility-gpu")
         return TestGIReceiverVisibilityGpuContract() ? 0 : 194;
+    if (argc == 2 && std::string(argv[1]) == "--grass-lighting-gpu")
+        return TestGrassLightingGpuContract() ? 0 : 199;
 	if (argc == 2 && std::string(argv[1]) == "--ssgi-gpu")
         return TestSSGIGpuContract() ? 0 : 199;
 	if (argc == 2 && std::string(argv[1]) == "--sky-lighting-gpu")
         return TestSkyLightingGpuContract() ? 0 : 198;
+	if (argc == 2 && std::string(argv[1]) == "--gi-world")
+		return TestGIWorldContract() ? 0 : 201;
 	if (argc == 2 && std::string(argv[1]) == "--gi-probe-resources-gpu")
 		return TestGIProbeResourcesGpuContract() ? 0 : 197;
 	if (argc == 2 && std::string(argv[1]) == "--reflection-probe-resources-gpu")
@@ -17284,8 +17534,14 @@ int main(int argc, char** argv)
 		return TestDemoHallPlayerThrowContract() ? 0 : 154;
 	if (argc == 2 && std::string(argv[1]) == "--gaf-demohall-pistol-hit")
 		return TestGAFDemoHallPistolHitRuntimeContract() ? 0 : 144;
+	if (argc == 2 && std::string(argv[1]) == "--gaf-damage")
+		return TestGAFDamageRuntimeContract() ? 0 : 144;
 	if (argc == 2 && std::string(argv[1]) == "--hit-feedback")
 		return TestHitFeedbackScriptContract() ? 0 : 144;
+	if (argc == 2 && std::string(argv[1]) == "--death-hit-reaction")
+		return TestDeathHitReactionScriptContract() ? 0 : 144;
+	if (argc == 2 && std::string(argv[1]) == "--weapon-death-drop")
+		return TestWeaponDeathDropContract() ? 0 : 144;
 	if (argc == 2 && std::string(argv[1]) == "--gaf-pistol-audio")
 		return TestGAFPistolAudioRuntimeContract() ? 0 : 144;
 	if (argc == 2 && std::string(argv[1]) == "--gaf-demohall-melee-hit")
@@ -17373,6 +17629,7 @@ int main(int argc, char** argv)
 		return 148;
 	if (!RunPcgCoreContractTests())
 		return 203;
+    if(!RunModelLodContractTests())return 207;
 	if (!RunPcgAssetContractTests())
 		return 204;
 	if (!TestDecalRenderingContract())
@@ -17675,6 +17932,8 @@ int main(int argc, char** argv)
         return 184;
     if (!TestReflectionProbePlacementContract())
         return 186;
+    if (!TestLightCookieContract()) return 1;
+    if (!RunCursorContractTests()) return 1;
     std::cout << "Forest contract tests passed\n";
     return 0;
 }

@@ -9,6 +9,52 @@
 
 namespace VansEngine
 {
+    bool VansPhysicsNode::ResetMotion(const glm::vec3& position, const glm::vec3& rotationDegrees,
+        const glm::vec3& linearVelocity, const glm::vec3& angularVelocity)
+    {
+        const PxVec3 p(position.x,position.y,position.z), linear(linearVelocity.x,linearVelocity.y,linearVelocity.z),
+            angular(angularVelocity.x,angularVelocity.y,angularVelocity.z);
+        const auto q = glm::quat(glm::radians(rotationDegrees));
+        const PxQuat rotation(q.x,q.y,q.z,q.w);
+        if (!p.isFinite() || !rotation.isFinite() || !linear.isFinite() || !angular.isFinite()) return false;
+        std::lock_guard<std::mutex> lock(VansPhysicsSystem::GetInstance().GetSimulationMutex());
+        auto* body = m_Actor ? m_Actor->is<PxRigidDynamic>() : nullptr;
+        if (!body || m_Properties.bodyType != PhysicsBodyType::Dynamic) return false;
+        // 允许对暂时离开场景的池对象复位，重新启用前清掉旧力和旧速度。
+        body->setGlobalPose(PxTransform(p,rotation),false);
+        // 离场对象没有场景模拟器；removeActor 已移除待积累的力，不能访问其力累加器。
+        if (body->getScene())
+        {
+            body->clearForce(PxForceMode::eFORCE); body->clearForce(PxForceMode::eIMPULSE);
+            body->clearTorque(PxForceMode::eFORCE); body->clearTorque(PxForceMode::eIMPULSE);
+        }
+        body->setLinearVelocity(linear,false); body->setAngularVelocity(angular,false);
+        if (body->getScene()) body->wakeUp();
+        auto& transform = VansGraphics::VansTransformStore::GetTransform(m_TransformID);
+        transform.m_Position = position; transform.m_Rotation = rotationDegrees;
+        return true;
+    }
+
+    bool VansPhysicsNode::ApplyImpulseAtPosition(const glm::vec3& impulse, const glm::vec3& worldPoint, float maxAngularDelta)
+    {
+        const PxVec3 force(impulse.x, impulse.y, impulse.z), point(worldPoint.x, worldPoint.y, worldPoint.z);
+        if (!force.isFinite() || !point.isFinite() || !std::isfinite(maxAngularDelta) || maxAngularDelta < 0) return false;
+        std::lock_guard<std::mutex> lock(VansPhysicsSystem::GetInstance().GetSimulationMutex());
+        auto* body = m_Actor ? m_Actor->is<PxRigidDynamic>() : nullptr;
+        if (!IsEnabled() || !body || !body->getScene() || body->getRigidBodyFlags().isSet(PxRigidBodyFlag::eKINEMATIC)) return false;
+        PxVec3 linearDelta, angularDelta;
+        PxRigidBodyExt::computeVelocityDeltaFromImpulse(*body, body->getGlobalPose(), point, force,
+            1.0f, 1.0f, linearDelta, angularDelta);
+        const float angularSpeed = angularDelta.magnitude();
+        if (!linearDelta.isFinite() || !angularDelta.isFinite() || !std::isfinite(angularSpeed)) return false;
+        if (angularSpeed > maxAngularDelta) angularDelta *= maxAngularDelta / angularSpeed;
+        const auto linear = body->getLinearVelocity() + linearDelta, angular = body->getAngularVelocity() + angularDelta;
+        if (!linear.isFinite() || !angular.isFinite()) return false;
+        body->setLinearVelocity(linear, true);
+        body->setAngularVelocity(angular, true);
+        return true;
+    }
+
     // Helper: Convert glm to PxVec3
     inline PxVec3 ToPxVec3(const glm::vec3& v) { return PxVec3(v.x, v.y, v.z); }
     
@@ -138,6 +184,7 @@ namespace VansEngine
 
         if (!m_Properties.enabled)
         {
+            m_Enabled = false;
             return;
         }
 
@@ -225,11 +272,6 @@ namespace VansEngine
                 if (!m_Properties.hitRegion.empty())
                     dynamicActor->setRigidBodyFlag(PxRigidBodyFlag::eUSE_KINEMATIC_TARGET_FOR_SCENE_QUERIES, true);
             }
-            else // Dynamic
-            {
-                // Set mass and calculate inertia
-                PxRigidBodyExt::setMassAndUpdateInertia(*dynamicActor, m_Properties.mass);
-            }
             
             m_Actor = dynamicActor;
         }
@@ -242,6 +284,10 @@ namespace VansEngine
 
         // Create and attach collision shape
         CreateCollisionShape();
+
+        // 惯量必须根据已挂载的形状计算；空 actor 上计算会丢失配置质量和惯量。
+        if (m_Shape && m_Properties.bodyType == PhysicsBodyType::Dynamic && !needsKinematicUpgrade)
+            PxRigidBodyExt::setMassAndUpdateInertia(*m_Actor->is<PxRigidDynamic>(), m_Properties.mass);
 
         // 设置碰撞 Layer 的 FilterData
         ApplyFilterData();
@@ -630,16 +676,21 @@ namespace VansEngine
 
     void VansPhysicsNode::OnEnable()
     {
+        auto& physSys = VansEngine::VansPhysicsSystem::GetInstance();
+        std::lock_guard<std::mutex> lock(physSys.GetSimulationMutex());
         if (!m_Actor)
         {
             // Actor 尚未创建（例如 Initialize 时 enabled=false），按需创建
             CreatePhysicsActor();
+            if (!m_Actor || !m_Shape)
+            {
+                VANS_LOG_ERROR("[PhysX] Deferred physics activation failed: " << m_Name);
+                Shutdown();
+            }
         }
         else
         {
             // 将已有 actor 重新加入 PhysX Scene
-            auto& physSys = VansEngine::VansPhysicsSystem::GetInstance();
-            std::lock_guard<std::mutex> lock(physSys.GetSimulationMutex());
             PxScene* scene = physSys.GetScene();
             if (scene)
                 scene->addActor(*m_Actor);

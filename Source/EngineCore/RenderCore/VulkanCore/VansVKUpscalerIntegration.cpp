@@ -619,6 +619,37 @@ namespace VansGraphics
 				<< outputExtent.width << "x" << outputExtent.height);
 			return false;
 		}
+		// The DLSS/FSR descriptors publish this image as GENERAL before the
+		// first frame transition. Establish that state on the GPU once, so a
+		// freshly-created output cannot be observed as UNDEFINED by validation.
+		{
+			VansVKCommandBuffer& initCommand = GetImmediateGraphicsCommandBuffer();
+			bool initialized = initCommand.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+			if (initialized)
+			{
+				m_UpscalerOutputImage.SetImageMemoryBarrier(
+					initCommand,
+					VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+					{ m_UpscalerOutputImage.GetImage(), VK_ACCESS_NONE,
+					  VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+					  m_UpscalerOutputImage.GetImageLayout(), VK_IMAGE_LAYOUT_GENERAL,
+					  VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
+					  VK_IMAGE_ASPECT_COLOR_BIT });
+				initialized = initCommand.EndCommandBufferRecord()
+					&& VansVKCommandBuffer::SubmitCommands(
+						GetGraphicsQueue(), m_VansVKLogicDevice,
+						{ initCommand.GetVKCommandBuffer() }, {}, {},
+						initCommand.m_CommandBufferFinishSubmitFence, true)
+					&& initCommand.ResetCommandBuffer(false);
+			}
+			if (!initialized)
+			{
+				VANS_LOG_ERROR("[Upscaler] Failed to establish GENERAL layout for output image");
+				CleanupUpscalerOutputImage();
+				return false;
+			}
+		}
 		m_UpscalerOutputExtent = outputExtent;
 		return true;
 	}

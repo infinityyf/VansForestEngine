@@ -47,6 +47,15 @@ struct VansPcgSpline
     float surfaceOffset = 0.025f;
     // 河流实际水位低于作者样条（岸沿）高度；深度从实际水面向下计算。
     float waterSurfaceDrop = 0.15f;
+    // 水面与 Water Level 的混合宽度；首尾按点序，0 表示只在埋岸边界过渡。
+    float waterBlendWidthMeters = 2;
+    float waterBlendStartMeters = 0;
+    float waterBlendEndMeters = 0;
+    // 已在源高度图雕刻河床时关闭；水位、流速和湿岸仍独立生效。
+    bool carveRiverbed = true;
+    // 河床内部保持完整湿润，越过河岸后在该世界空间宽度内平滑衰减。
+    float wetBankWidthMeters = 3.0f;
+    float wetnessStrength = 0.85f;
     float textureRepeat = 4;
     int flowSign = 1;
     float fadeInDistance = 5;
@@ -58,7 +67,6 @@ struct VansPcgSpline
     float envelopeOffset = 0;
     float envelopeLength = 0;
     bool normalFlowEnabled = true;
-    float flowCycleSeconds = 2;
     std::vector<VansPcgSplinePoint> points;
 };
 

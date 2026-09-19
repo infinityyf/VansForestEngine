@@ -366,8 +366,8 @@ FOREST_RUNTIME_API int ForestRuntime_CreateWindow(ForestRuntimeHandle* runtime, 
 		return 0;
 	}
 	Vans::VansInputManager::Get().Initialize(runtime->window->GetGLFWWindow());
-	Vans::VansInputManager::Get().SetCursorCaptureAllowed(true);
-	Vans::VansInputManager::Get().SetCursorCaptureEnabled(true);
+	Vans::VansInputManager::Get().SetCursorContext(Vans::VansCursorContext::Standalone);
+	Vans::VansInputManager::Get().SetCursorMode(Vans::VansCursorMode::Captured);
 
 	auto device = std::make_unique<VansGraphics::VansVKDevice>(
 		VkExtent2D{
@@ -446,21 +446,11 @@ FOREST_RUNTIME_API int ForestRuntime_LoadCurrentScene(ForestRuntimeHandle* runti
 
 	Vans::VansProjectManager& projectManager = Vans::VansProjectManager::Get();
 	const fs::path scenePath = (runtime->contentRoot / runtime->loadedScene).lexically_normal();
-	Vans::SceneDocumentLoadResult sceneDocumentLoad = Vans::VansSceneDocumentLoader::Load(scenePath);
-	if (!sceneDocumentLoad)
-	{
-		std::string message = "Cannot load packaged scene document: " + scenePath.string();
-		if (!sceneDocumentLoad.diagnostics.empty() && !sceneDocumentLoad.diagnostics.front().message.empty())
-			message += " (" + sceneDocumentLoad.diagnostics.front().message + ")";
-		SetError(runtime, message);
-		return 0;
-	}
-	const Vans::VansSerializedValue sceneDocument =
-		sceneDocumentLoad.document->SerializedRootSnapshot();
+	// Prefab 解析依赖包内配置仓库，必须先发布索引中的内存资产。
+	Vans::VansPackagedResourcePlan packagePlan;
 	if (!runtime->resourcePlan.empty())
 	{
 		const fs::path resourcePlanPath = (runtime->contentRoot / runtime->resourcePlan).lexically_normal();
-		Vans::VansPackagedResourcePlan packagePlan;
 		std::string planError;
 		if (!Vans::VansPackagedResourcePlanIO::Load(resourcePlanPath, runtime->contentRoot, packagePlan, planError))
 		{
@@ -479,6 +469,20 @@ FOREST_RUNTIME_API int ForestRuntime_LoadCurrentScene(ForestRuntimeHandle* runti
 				bootstrap.errors.front());
 			return 0;
 		}
+	}
+	Vans::SceneDocumentLoadResult sceneDocumentLoad = Vans::VansSceneDocumentLoader::Load(scenePath, Vans::VansPrefabResolver::FromRepository(projectManager.GetAssetObjectRepository()));
+	if (!sceneDocumentLoad)
+	{
+		std::string message = "Cannot load packaged scene document: " + scenePath.string();
+		if (!sceneDocumentLoad.diagnostics.empty() && !sceneDocumentLoad.diagnostics.front().message.empty())
+			message += " (" + sceneDocumentLoad.diagnostics.front().message + ")";
+		SetError(runtime, message);
+		return 0;
+	}
+	const Vans::VansSerializedValue sceneDocument =
+		sceneDocumentLoad.document->SerializedRootSnapshot();
+	if (!runtime->resourcePlan.empty())
+	{
 		if (!runtime->scene->LoadPackagedProjectAssets(packagePlan, runtime->device.get()))
 		{
 			SetError(runtime, "Packaged project asset loading failed for scene: " + scenePath.string());

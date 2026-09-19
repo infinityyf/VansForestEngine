@@ -29,6 +29,13 @@ namespace
     constexpr int kGIVisibilityOctaRes = 16;
     constexpr int kGIIrradianceOctaRes = 8;
 
+    void ApplyScrollingGrid(VansGraphics::GIResolvedRegion& region, const VansGraphics::VansGIScrollingGrid& grid)
+    {
+        region.volumeMin = grid.Minimum();
+        region.center = region.volumeMin + region.volumeSize * 0.5f;
+        region.scrollOffset = grid.RingOffset(); region.blendCenter = grid.Center();
+    }
+
     VansGraphics::RayTracingPushConstant BuildGIRegionPushConstant(
         const VansGraphics::GIResolvedRegion& region,
         float maxIndirectRadiance,
@@ -222,7 +229,10 @@ void VansGraphics::VansRayTracing::ReleaseSceneResources(VkDevice device, bool r
 	m_State->m_ProbeLayoutBuffer.DestroyVulkanBuffer(device);
 	m_State->m_ProbeLayout = {};
 	m_State->m_PendingLayoutRegionData.clear();
+    m_State->m_PendingScrollData.clear(); m_State->m_ScrollDataOffset = 0;
 	m_State->m_RTResourcesReady = false;
+    m_State->world.reset();
+    m_State->hasHardwareGeometry = false;
 
 	VANS_LOG("[VansRayTracing] Scene RT resources cleaned up");
 }
@@ -322,7 +332,8 @@ void VansGraphics::VansRayTracing::InitializeSceneResources(VansVKDevice* device
 	std::vector<glm::vec4>& instanceGIEmission = scene->GetTLASInstanceGIEmission();
 
     // No RT geometry in the scene – nothing to set up.
-    if (blasMeshCount == 0 || instanceData.empty())
+    m_State->hasHardwareGeometry = blasMeshCount != 0 && !instanceData.empty();
+    if (!m_State->hasHardwareGeometry && !settings.world.enabled)
     {
         VANS_LOG_WARN("[CreateRayTracingResource] No ray-tracing geometry found, skipping RT resource creation.");
         m_State->m_RTResourcesReady = false;
@@ -353,14 +364,36 @@ void VansGraphics::VansRayTracing::InitializeSceneResources(VansVKDevice* device
     if (activeRegions.size() > VANS_SSGI_MAX_GI_REGIONS)
         throw std::runtime_error("GI authoring region count exceeds the shared descriptor capacity");
     std::vector<GIResolvedRegion> resolvedRegions;
-    for (const auto* description : activeRegions) resolvedRegions.push_back(ResolveGIRegion(*description));
+    std::vector<VansGIScrollingGrid> scrollingGrids(activeRegions.size());
+    for (const auto* description : activeRegions)
+    {
+        auto resolved=ResolveGIRegion(*description);
+        if (resolved.scrolling)
+        {
+            auto& grid = scrollingGrids[resolvedRegions.size()]; std::string error;
+            if (!grid.Initialize(resolved.gridDimensions, resolved.probeSpacing, resolved.center, error)) throw std::runtime_error(error);
+            ApplyScrollingGrid(resolved, grid);
+        }
+        if(gi.world.enabled && !m_State->hasHardwareGeometry)resolved.worldOnly=true;
+        resolvedRegions.push_back(resolved);
+    }
+    if (gi.world.enabled)
+    {
+        m_State->world = std::make_unique<VansGIWorld>();
+        m_State->world->Initialize(*device,*scene,gi.world,m_State->hasHardwareGeometry,gi.placement.maxRaysPerFrame);
+        VANS_LOG("[GIWorld] enabled bytes=" << m_State->world->AllocatedBytes()
+            << " pendingBricks=" << m_State->world->PendingBricks());
+    }
     if (m_State->m_AutomaticGIWork)
     {
         VansSceneGeometrySnapshot geometry;
         std::string error;
         if (!VansSceneGeometrySnapshot::Capture(*scene, *device, geometry, error))
             throw std::runtime_error("GI geometry capture failed: " + error);
-        if (!m_State->m_ProbeLayout.Build(resolvedRegions, gi.placement, geometry, error))
+        if(m_State->world)m_State->world->AddLayoutQueries(geometry);
+        auto fixedRegions = resolvedRegions;
+        for (auto& region : fixedRegions) if (region.scrolling) region.enabled = false;
+        if (!m_State->m_ProbeLayout.Build(fixedRegions, gi.placement, geometry, error))
             throw std::runtime_error("GI sparse layout failed: " + error);
         const auto& stats = m_State->m_ProbeLayout.Stats();
         VANS_LOG("[GILayout] leaves=" << m_State->m_ProbeLayout.Leaves().size() << " nodes=" << m_State->m_ProbeLayout.Nodes().size()
@@ -372,32 +405,50 @@ void VansGraphics::VansRayTracing::InitializeSceneResources(VansVKDevice* device
     {
         std::string error;
         std::vector<GIProbeWorkRegion> workRegions;
+        VansSceneGeometrySnapshot worldRegularQueries;
+        if(m_State->world)m_State->world->AddLayoutQueries(worldRegularQueries);
         for (uint32_t index = 0; index < resolvedRegions.size(); ++index)
         {
             const auto& resolved = resolvedRegions[index];
             GIProbeWorkRegion work;
             work.raysPerProbe = resolved.raysPerProbe;
-            const uint32_t count = m_State->m_AutomaticGIWork ? m_State->m_ProbeLayout.Regions()[index].metadata.w : uint32_t(resolved.probeCount);
+            if(resolved.scrolling && resolved.worldOnly)work.prewarmSpacing=resolved.probeSpacing;
+            const bool sparse = m_State->m_AutomaticGIWork && !resolved.scrolling;
+            const uint32_t count = sparse ? m_State->m_ProbeLayout.Regions()[index].metadata.w : uint32_t(resolved.probeCount);
+            if(resolved.worldOnly && !sparse)work.maxPlacedProbes=count;
             work.probeIndices.reserve(count);
-            for (uint32_t probe = 0; probe < count; ++probe) work.probeIndices.push_back(probe);
+            for (uint32_t probe = 0; probe < count; ++probe)
+            {
+                if(resolved.worldOnly && !sparse && worldRegularQueries.additionalPositionValid)
+                {
+                    const auto dims=resolved.gridDimensions;
+                    const glm::uvec3 cell(probe%dims.x,(probe/dims.x)%dims.y,probe/(dims.x*dims.y));
+                    const auto position=resolved.scrolling ? scrollingGrids[index].Position(probe) : resolved.volumeMin+(glm::vec3(cell)+.5f)*resolved.probeSpacing;
+                    // 规则地址保持不变；地表下和木质内部的位置不进入更新表，也不发布为空间采样。
+                    if(!worldRegularQueries.additionalPositionValid(position,(std::min)(.02f,resolved.probeSpacing*.04f)))continue;
+                }
+                work.probeIndices.push_back(probe);
+            }
             VANS_LOG("[GILayout] Region '" << resolved.name << "' regular=" << resolved.probeCount
-                << " physical=" << count);
+                << " physical=" << count << " scheduled=" << work.probeIndices.size());
             workRegions.push_back(std::move(work));
         }
         if (!m_State->m_WorkScheduler.Configure(std::move(workRegions), gi.placement.maxProbeUpdatesPerFrame,
-            gi.placement.maxRaysPerFrame, error)) throw std::runtime_error(error);
+            gi.placement.maxRaysPerFrame, error, gi.world.enabled && std::any_of(resolvedRegions.begin(),resolvedRegions.end(),
+                [](const auto& region){return region.worldOnly;}))) throw std::runtime_error(error);
     }
     const auto layoutData = BuildGIProbeLayoutGPUData(resolvedRegions, m_State->m_AutomaticGIWork ? &m_State->m_ProbeLayout : nullptr);
+    m_State->m_ScrollDataOffset = layoutData[3].w;
     const VkDeviceSize layoutBytes = layoutData.size() * sizeof(glm::uvec4);
     if (layoutBytes > device->GetDeviceProperties().limits.maxStorageBufferRange ||
         !m_State->m_ProbeLayoutBuffer.CreatVulkanBuffer(device->GetLogicDevice(), layoutBytes, VK_FORMAT_R32G32B32A32_UINT,
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
         throw std::runtime_error("Failed to publish GI layout buffer");
 
     auto& shaderManager = VansShaderManager::Get();
-    m_State->m_VansRayTracingShader = shaderManager.FindRayTracingShader("RayTracingTest");
-    if (!m_State->m_VansRayTracingShader)
+    m_State->m_VansRayTracingShader = m_State->hasHardwareGeometry ? shaderManager.FindRayTracingShader("RayTracingTest") : nullptr;
+    if (m_State->hasHardwareGeometry && !m_State->m_VansRayTracingShader)
     {
         throw std::runtime_error("[CreateRayTracingResource] Managed RayTracingTest shader is unavailable");
     }
@@ -406,7 +457,8 @@ void VansGraphics::VansRayTracing::InitializeSceneResources(VansVKDevice* device
     {
         m_State->m_GIRegions.emplace_back();
         GIRegionRuntime& regionRuntime = m_State->m_GIRegions.back();
-        regionRuntime.resolved = ResolveGIRegion(*regionDesc);
+        regionRuntime.resolved = resolvedRegions[m_State->m_GIRegions.size()-1u];
+        regionRuntime.scrollingGrid = scrollingGrids[m_State->m_GIRegions.size()-1u];
         regionRuntime.constants = BuildGIRegionPushConstant(
             regionRuntime.resolved,
             gi.maxIndirectRadiance,
@@ -415,10 +467,10 @@ void VansGraphics::VansRayTracing::InitializeSceneResources(VansVKDevice* device
             gi.distanceHysteresis,
             gi.distanceSharpness);
 
-        regionRuntime.physicalProbeCount = m_State->m_AutomaticGIWork
+        regionRuntime.physicalProbeCount = m_State->m_AutomaticGIWork && !regionRuntime.resolved.scrolling
             ? m_State->m_ProbeLayout.Regions()[m_State->m_GIRegions.size() - 1u].metadata.w : uint32_t(regionRuntime.resolved.probeCount);
         regionRuntime.storageDimensions = regionRuntime.resolved.gridDimensions;
-        if (m_State->m_AutomaticGIWork)
+        if (m_State->m_AutomaticGIWork && !regionRuntime.resolved.scrolling)
         {
             // 三维图像只负责预览和稳定射线散列，真实世界位置从只读布局表取得。
             const uint32_t side = std::max(1u, uint32_t(std::ceil(std::cbrt(double(regionRuntime.physicalProbeCount)))));
@@ -528,7 +580,7 @@ void VansGraphics::VansRayTracing::InitializeSceneResources(VansVKDevice* device
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT), "Failed to allocate GI buffer");
         RequireGIResource(regionRuntime.previousProbeStateBuffer.CreatVulkanBuffer(device->GetLogicDevice(),
             regionRuntime.probeStateBuffer.GetBufferSize(), VK_FORMAT_R32G32B32A32_SFLOAT,
-            VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT), "Failed to allocate GI visibility origin history");
         if (m_State->m_GIStateAuditEnabled)
             RequireGIResource(regionRuntime.stateAuditReadback.CreatVulkanBuffer(device->GetLogicDevice(),
@@ -556,6 +608,8 @@ void VansGraphics::VansRayTracing::InitializeSceneResources(VansVKDevice* device
 		device->GetDeviceProperties().limits.minStorageBufferOffsetAlignment,
 		1u);
 
+    if (m_State->hasHardwareGeometry)
+    {
     //提前生成pipeline
     CreateRayTraceDescriptorSets(device, blasMeshCount);
 
@@ -622,6 +676,8 @@ void VansGraphics::VansRayTracing::InitializeSceneResources(VansVKDevice* device
 		instanceGIEmission.size() * sizeof(glm::vec4)), "Failed to upload GI instance data");
 
     // 冷启动时部分 probe 尚未完成首次更新；显式清零资源并由发布状态控制读取。
+    }
+
     if (commandBuffer->BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
     {
         // 大布局驻留显存；复用既有初始化提交上传，不让像素查询依赖 host 内存。
@@ -698,7 +754,7 @@ void VansGraphics::VansRayTracing::InitializeSceneResources(VansVKDevice* device
 	}
 	CreateGIRTPreviewDescriptorSets(device);
 
-    RequireGIResource(m_State->m_VansRayTracingShader->GetRayTracingPipeline(
+    if (m_State->hasHardwareGeometry) RequireGIResource(m_State->m_VansRayTracingShader->GetRayTracingPipeline(
         device, { m_State->m_RayTracingSetLayout }) != nullptr, "Failed to create GI ray tracing pipeline");
 
     m_State->m_HasLastGIMainLight = false;
@@ -724,6 +780,12 @@ void VansGraphics::VansRayTracing::UpdateGISettings(const VansGISettings& settin
     {
         const GIRegionRuntime& region = m_State->m_GIRegions[regionIndex];
         resolved.push_back(ResolveGIRegion(*activeRegions[regionIndex]));
+        if (resolved.back().scrolling)
+        {
+            ApplyScrollingGrid(resolved.back(), region.scrollingGrid);
+            resolved.back().scrollEpoch = region.resolved.scrollEpoch;
+        }
+        if(gi.world.enabled && !m_State->hasHardwareGeometry)resolved.back().worldOnly=true;
         auto value = BuildGIRegionPushConstant(
             resolved.back(),
             gi.maxIndirectRadiance,
@@ -736,25 +798,100 @@ void VansGraphics::VansRayTracing::UpdateGISettings(const VansGISettings& settin
         constants.push_back(value);
     }
     // 参数变更在现有命令流中更新区域记录，不能由 host 改写在途查询缓冲。
-    const auto records = BuildGIProbeLayoutGPUData(resolved, nullptr);
-    std::vector<glm::uvec4> pendingRecords(records.begin() + 4, records.end());
-    if (m_State->m_AutomaticGIWork)
-    {
-        for (size_t index = 0; index < m_State->m_GIRegions.size(); ++index)
-        {
-            const auto& region = m_State->m_ProbeLayout.Regions()[index];
-            std::memcpy(pendingRecords.data() + index * 5u, &region, sizeof(region));
-        }
-    }
+    QueueLayoutParameters(resolved);
     // 所有可能分配的准备工作完成后再更新运行数据，保留现有光照历史。
     for (size_t index = 0; index < updateCount; ++index)
     {
         m_State->m_GIRegions[index].resolved = std::move(resolved[index]);
         m_State->m_GIRegions[index].constants = constants[index];
     }
-    m_State->m_PendingLayoutRegionData = std::move(pendingRecords);
     m_State->settings = std::move(gi);
     m_ResourceError.clear();
+}
+
+void VansGraphics::VansRayTracing::QueueLayoutParameters(const std::vector<GIResolvedRegion>& resolved)
+{
+    const auto records = BuildGIProbeLayoutGPUData(resolved, nullptr);
+    const size_t regionEnd = 4u + resolved.size() * 5u;
+    std::vector<glm::uvec4> regionRecords(records.begin() + 4u, records.begin() + regionEnd);
+    std::vector<glm::uvec4> scrollRecords(records.begin() + regionEnd, records.end());
+    if (m_State->m_AutomaticGIWork)
+        for (size_t index = 0; index < resolved.size(); ++index)
+        {
+            if (resolved[index].scrolling) continue;
+            auto region = m_State->m_ProbeLayout.Regions()[index];
+            region.volumeSizeAndBias.w = resolved[index].normalBias;
+            std::memcpy(regionRecords.data() + index * 5u, &region, sizeof(region));
+        }
+    m_State->m_PendingLayoutRegionData = std::move(regionRecords);
+    m_State->m_PendingScrollData = std::move(scrollRecords);
+}
+
+void VansGraphics::VansRayTracing::SetWorldViewCenter(glm::vec3 center)
+{
+    if (!m_State->world) return;
+    if (!std::any_of(m_State->m_GIRegions.begin(), m_State->m_GIRegions.end(),
+        [center](const auto& region){return region.resolved.scrolling && center != region.scrollingGrid.Center();}))
+    { m_State->world->SetViewCenter(center); return; }
+    if (m_State->m_GIFeedbackFence != VK_NULL_HANDLE)
+        throw std::logic_error("GI scrolling requires retired previous-frame feedback");
+    const size_t count = m_State->m_GIRegions.size();
+    bool moved = false, recycled = false;
+    std::vector<GIResolvedRegion> resolved; resolved.reserve(count);
+    std::vector<VansGIScrollingGrid> grids(count);
+    std::vector<std::vector<uint32_t>> entering(count), clears(count);
+    std::string error;
+    // 先验证全部级联，再发布；任一坐标失败都不能留下半个已移动场景。
+    for (size_t index = 0; index < count; ++index)
+    {
+        const auto& region = m_State->m_GIRegions[index];
+        resolved.push_back(region.resolved); grids[index] = region.scrollingGrid;
+        if (!region.resolved.scrolling || center == grids[index].Center()) continue;
+        if (!grids[index].Move(center, entering[index], error)) throw std::runtime_error(error);
+        moved = true;
+        if (!entering[index].empty()) { recycled = true; ++resolved.back().scrollEpoch; }
+        ApplyScrollingGrid(resolved.back(), grids[index]);
+    }
+    if (!moved) { m_State->world->SetViewCenter(center); return; }
+    std::unique_ptr<VansGIProbeWorkScheduler> scheduler;
+    if (recycled)
+    {
+        scheduler = std::make_unique<VansGIProbeWorkScheduler>(m_State->m_WorkScheduler);
+        VansSceneGeometrySnapshot queries; m_State->world->AddLayoutQueries(queries);
+        for (size_t index = 0; index < count; ++index)
+        {
+            if (entering[index].empty()) continue;
+            const auto& region = m_State->m_GIRegions[index];
+            const auto& old = scheduler->PlacedProbes(index);
+            std::vector<uint32_t> placed; placed.reserve(region.physicalProbeCount);
+            size_t oldCursor = 0, newCursor = 0;
+            for (uint32_t id = 0; id < region.physicalProbeCount; ++id)
+            {
+                bool valid = oldCursor < old.size() && old[oldCursor] == id;
+                if (valid) ++oldCursor;
+                if (newCursor < entering[index].size() && entering[index][newCursor] == id)
+                {
+                    ++newCursor;
+                    valid = !queries.additionalPositionValid || queries.additionalPositionValid(grids[index].Position(id),
+                        (std::min)(.02f, resolved[index].probeSpacing * .04f));
+                }
+                if (valid) placed.push_back(id);
+            }
+            if (!scheduler->UpdatePlacedProbes(index, std::move(placed), {}, error, entering[index])) throw std::runtime_error(error);
+            clears[index] = region.pendingStateClears;
+            clears[index].insert(clears[index].end(), entering[index].begin(), entering[index].end());
+        }
+    }
+    QueueLayoutParameters(resolved);
+    if (scheduler) m_State->m_WorkScheduler = std::move(*scheduler);
+    for (size_t index = 0; index < count; ++index)
+    {
+        auto& region = m_State->m_GIRegions[index];
+        region.resolved = std::move(resolved[index]); region.scrollingGrid = grids[index];
+        region.constants.regionParams = glm::vec4(region.resolved.center, region.resolved.normalBias);
+        if (!entering[index].empty()) region.pendingStateClears = std::move(clears[index]);
+    }
+    m_State->world->SetViewCenter(center);
 }
 
 void VansGraphics::VansRayTracing::RequestGIRTPreviews(
@@ -800,6 +937,91 @@ void VansGraphics::VansRayTracing::RequestGIRTPreviews(
     // The editor refreshes this lease while the preview is visible. It avoids
     // paying for the gather pass after the window is closed.
     m_State->m_GIRTPreviewRequestFrames = 3;
+}
+
+bool VansGraphics::VansRayTracing::ApplyWorldColorPatch(uint32_t map,uint32_t x,uint32_t y,uint32_t w,uint32_t h,const std::vector<uint8_t>& pixels)
+{
+    return !m_State->world || m_State->world->ApplyColorPatch(map,x,y,w,h,pixels);
+}
+
+bool VansGraphics::VansRayTracing::ApplyWorldHeightPatch(uint32_t x,uint32_t z,uint32_t w,uint32_t h,const std::vector<uint8_t>& pixels)
+{
+    if(!m_State->world)return true;
+    // 几何自适应布局有增删位置的需求，待其增量拓扑事务接入；不能沿用已失效的位置表。
+    if(m_State->m_GIFeedbackFence!=VK_NULL_HANDLE)return false;
+    if(m_State->m_AutomaticGIWork && std::any_of(m_State->m_GIRegions.begin(),m_State->m_GIRegions.end(),
+        [](const auto& region){return region.resolved.worldOnly && !region.resolved.scrolling;}))return false;
+    GIWorldHeightData::Patch changed;
+    if(!m_State->world->ApplyHeightPatch(x,z,w,h,pixels,changed))return false;
+    InvalidateWorldGeometry(GIWorldDirtyRegions({{changed.minimum,changed.maximum}}));
+    return true;
+}
+
+bool VansGraphics::VansRayTracing::QueueWorldSourceChanges(GIVoxelSourceChanges changes)
+{
+    if(!m_State->world)return true;
+    if(m_State->m_AutomaticGIWork && std::any_of(m_State->m_GIRegions.begin(),m_State->m_GIRegions.end(),
+        [](const auto& region){return region.resolved.worldOnly && !region.resolved.scrolling;}))return false;
+    return m_State->world->QueueSourceChanges(std::move(changes));
+}
+
+void VansGraphics::VansRayTracing::InvalidateWorldGeometry(const GIWorldDirtyRegions& changed)
+{
+    VansSceneGeometrySnapshot queries;m_State->world->AddLayoutQueries(queries);
+    for(uint32_t index=0;index<m_State->m_GIRegions.size();++index)
+    {
+        auto& region=m_State->m_GIRegions[index];const auto& resolved=region.resolved;
+        if(!resolved.worldOnly)continue;
+        const auto& old=m_State->m_WorkScheduler.PlacedProbes(index);
+        std::vector<uint32_t> placed,reset,clear;placed.reserve(region.physicalProbeCount);
+        size_t cursor=0;const auto dims=resolved.gridDimensions;const float spacing=resolved.probeSpacing;
+        for(uint32_t probe=0;probe<region.physicalProbeCount;++probe)
+        {
+            const bool existed=cursor<old.size() && old[cursor]==probe;if(existed)++cursor;
+            const glm::uvec3 cell(probe%dims.x,(probe/dims.x)%dims.y,probe/(dims.x*dims.y));
+            const auto position=resolved.scrolling ? region.scrollingGrid.Position(probe) : resolved.volumeMin+(glm::vec3(cell)+.5f)*spacing;
+            const bool nearSurface=changed.Intersects({position-glm::vec3(spacing),position+glm::vec3(spacing)});
+            const bool valid=nearSurface?queries.additionalPositionValid(position,std::min(.02f,spacing*.04f)):existed;
+            if(valid)placed.push_back(probe);
+            if(valid && changed.Intersects({position,position},resolved.maxRayDistance))reset.push_back(probe);
+            // 新旧几何附近的 relocation 和发布状态一起清除，远处保留已发布历史。
+            if(existed!=valid || nearSurface)clear.push_back(probe);
+        }
+        std::string error;
+        if(!m_State->m_WorkScheduler.UpdatePlacedProbes(index,std::move(placed),reset,error))
+            throw std::runtime_error(error);
+        region.pendingStateClears.insert(region.pendingStateClears.end(),clear.begin(),clear.end());
+    }
+}
+
+void VansGraphics::VansRayTracing::PrepareWorldUpdates()
+{
+    if(m_State->m_GIFeedbackFence!=VK_NULL_HANDLE)
+        throw std::logic_error("World geometry publication requires retired GI feedback");
+    if(m_State->world)if(const auto changed=m_State->world->PrepareUpdates())InvalidateWorldGeometry(*changed);
+}
+
+void VansGraphics::VansRayTracing::RecordWorldProbeInvalidation(VansVKCommandBuffer& command)
+{
+    for(auto& region:m_State->m_GIRegions)
+    {
+        auto& cleared=region.pendingStateClears;if(cleared.empty())continue;
+        std::sort(cleared.begin(),cleared.end());cleared.erase(std::unique(cleared.begin(),cleared.end()),cleared.end());
+        VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        barrier.srcAccessMask=VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT|VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;
+        command.PipelineBarrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,{barrier});
+        for(size_t begin=0;begin<cleared.size();)
+        {
+            size_t end=begin+1;while(end<cleared.size() && cleared[end]==cleared[end-1]+1)++end;
+            const VkDeviceSize offset=VkDeviceSize(cleared[begin])*48,bytes=VkDeviceSize(end-begin)*48;
+            command.FillBuffer(region.probeStateBuffer.GetNativeBuffer(),offset,bytes,0);
+            command.FillBuffer(region.previousProbeStateBuffer.GetNativeBuffer(),offset,bytes,0);begin=end;
+        }
+        barrier.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;barrier.dstAccessMask=VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT|VK_ACCESS_TRANSFER_READ_BIT;
+        command.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,{barrier});
+        cleared.clear();
+    }
 }
 
 bool VansGraphics::VansRayTracing::UpdateLightingResponseState(
@@ -859,7 +1081,7 @@ void VansGraphics::VansRayTracing::CompleteGIProbeUpdate(VkFence completionFence
         const auto* records = static_cast<const GIProbeFeedback*>(region.feedbackReadback.GetMappedPtr());
         uint32_t rejectedFeedback = 0;
         for (size_t entry = 0; entry < region.work.entries.size(); ++entry)
-            rejectedFeedback += !m_State->m_WorkScheduler.ApplyFeedback(index, region.work.entries[entry], records[entry]);
+            rejectedFeedback += !m_State->m_WorkScheduler.ApplyFeedback(index, region.work.entries[entry], records[entry], m_State->world && region.resolved.worldOnly);
         if (rejectedFeedback)
             VANS_LOG_ERROR("[GIProbeUpdate] region=" << index << " rejected completion records=" << rejectedFeedback);
         if (region.stateAuditPending)
@@ -875,7 +1097,7 @@ void VansGraphics::VansRayTracing::CompleteGIProbeUpdate(VkFence completionFence
             {
                 const auto& state = states[probe];
                 unseen += state.metadata.x == 0u; updated += state.metadata.x == 1u;
-                if (m_State->m_AutomaticGIWork)
+                if (m_State->m_AutomaticGIWork && !region.resolved.scrolling)
                 {
                     const uint32_t first = m_State->m_ProbeLayout.Regions()[index].metadata.z;
                     if (m_State->m_ProbeLayout.Positions()[first + probe].metadata.z == 1u)
@@ -896,6 +1118,15 @@ void VansGraphics::VansRayTracing::CompleteGIProbeUpdate(VkFence completionFence
                 << " unpublishedUpdated=" << updated - published << " invalidFields=" << invalid
                 << " completedProbes=" << coverage.updated << " minCompletedUpdates=" << coverage.minCompletedUpdates
                 << " maxCompletedUpdates=" << coverage.maxCompletedUpdates << " oldestUpdateAge=" << oldestUpdateAge
+                << " activePlaced=" << coverage.placed << " activeAttempted=" << coverage.attempted
+                << " activeIncompleteAttempts=" << coverage.incompleteAttempts
+                << " activeOldestAttemptAge=" << coverage.oldestAttemptAge
+                << " activeOldestCompletionAge=" << coverage.oldestCompletionAge
+                << " activeOldestUnpublishedAge=" << coverage.oldestUnpublishedAge
+                << " heightFailures=" << coverage.heightFailures << " pageFailures=" << coverage.pageFailures
+                << " stepFailures=" << coverage.stepFailures << " coverageFailures=" << coverage.coverageFailures
+                << " batchPrewarm=" << region.work.prewarmUpdates
+                << " coarseReady=" << (!m_State->world || m_State->world->CoarseReady())
                 << " parentTotal=" << parentTotal << " parentUpdated=" << parentUpdated);
             region.stateAuditPending = false;
         }
@@ -922,6 +1153,39 @@ void VansGraphics::VansRayTracing::PrepareGIProbeUpdate(
 
     if (m_State->m_GIFeedbackFence != VK_NULL_HANDLE || completionFence == VK_NULL_HANDLE)
         throw std::runtime_error("GI feedback reused before its frame completion");
+    PrepareWorldUpdates();
+    if(m_State->world)if(const auto changed=m_State->world->TakeLightingChanges())
+    {
+        // 上帧反馈退役后再标脏；只更新能采到刷绘区域的户外探针，不改变室内历史。
+        for(size_t index=0;index<m_State->m_GIRegions.size();++index)
+        {
+            const auto& region=m_State->m_GIRegions[index];const auto& resolved=region.resolved;
+            if(!resolved.worldOnly)continue;
+            std::vector<uint32_t> dirty;
+            for(auto probe:m_State->m_WorkScheduler.PlacedProbes(index))
+            {
+                glm::vec3 position;float spacing=resolved.probeSpacing;
+                if(resolved.scrolling)position=region.scrollingGrid.Position(probe);
+                else if(m_State->m_AutomaticGIWork)
+                {
+                    const auto first=m_State->m_ProbeLayout.Regions()[index].metadata.z;
+                    const auto p=m_State->m_ProbeLayout.Positions()[first+probe].positionAndSpacing;
+                    position=glm::vec3(p);spacing=p.w;
+                }
+                else
+                {
+                    const auto dims=resolved.gridDimensions;
+                    const glm::uvec3 cell(probe%dims.x,(probe/dims.x)%dims.y,probe/(dims.x*dims.y));
+                    position=resolved.volumeMin+(glm::vec3(cell)+.5f)*spacing;
+                }
+                const auto distance=glm::max(glm::max(changed->minimum-position,position-changed->maximum),glm::vec3(0));
+                const float reach=resolved.maxRayDistance+spacing;
+                if(glm::dot(distance,distance)<=reach*reach)dirty.push_back(probe);
+            }
+            std::string error;
+            if(!dirty.empty() && !m_State->m_WorkScheduler.InvalidateLighting(index,dirty,error))throw std::runtime_error(error);
+        }
+    }
     m_State->m_GIFeedbackFence = completionFence;
 
 	const bool lightingChanged = UpdateLightingResponseState(lightFrame);
@@ -934,6 +1198,7 @@ void VansGraphics::VansRayTracing::PrepareGIProbeUpdate(
     const double elapsed = m_State->m_LastGIUpdateTime.time_since_epoch().count() == 0 ? 1.0 / 60.0 :
         std::chrono::duration<double>(now - m_State->m_LastGIUpdateTime).count();
     m_State->m_LastGIUpdateTime = now;
+    m_State->m_WorkScheduler.SetPrewarmReady(!m_State->world || m_State->world->CoarseReady());
     const auto& scheduled = m_State->m_WorkScheduler.NextFrame(elapsed);
     for (size_t index = 0; index < m_State->m_GIRegions.size(); ++index)
     {
@@ -951,9 +1216,7 @@ void VansGraphics::VansRayTracing::UpdateGIProbe(
     if (!m_State->m_RTResourcesReady || m_State->m_GIRegions.empty())
         return;
 
-    commandBuffer->EnsureComputeShader(
-        *m_State->m_RayTracingPointLighting,
-        { m_Scene->GetGlobalDescriptorSetLayout(), m_State->m_GISamplePositionLightSetLayout });
+
 	const VkCommandBuffer nativeCommandBuffer = commandBuffer->GetVKCommandBuffer();
 	const Vans::VansGpuQueueLane queueLane = device != nullptr && device->IsAsyncComputeEnabled()
 		? Vans::VansGpuQueueLane::Compute
@@ -974,14 +1237,20 @@ void VansGraphics::VansRayTracing::UpdateGIProbe(
         const glm::uvec3 groupCount(std::min(shadeGroups, m_State->m_MaxComputeGroupsX),
             CeilDivide(shadeGroups, m_State->m_MaxComputeGroupsX), 1u);
 
+        const bool useWorld=m_State->world && region.resolved.worldOnly;
+        auto* lighting=useWorld?&m_State->world->Lighting():m_State->m_RayTracingPointLighting;
+        std::vector<VkDescriptorSetLayout> lightingLayouts{m_Scene->GetGlobalDescriptorSetLayout(),m_State->m_GISamplePositionLightSetLayout};
+        std::vector<VkDescriptorSet> lightingSets{m_Scene->GetGlobalDescriptorSet(),m_State->m_GISamplePositionLightDescriptorSets[regionIndex]};
+        if(useWorld){lightingLayouts.push_back(m_State->world->Layout());lightingSets.push_back(m_State->world->Descriptor());}
+        commandBuffer->EnsureComputeShader(*lighting,lightingLayouts);
 		{
 			VANS_GPU_SCOPE_LANE(nativeCommandBuffer, "DDGI.RadianceShade", queueLane);
 			commandBuffer->DispatchCompute(
-				*m_State->m_RayTracingPointLighting,
+				*lighting,
 				groupCount.x,
 				groupCount.y,
 				groupCount.z,
-				{ m_Scene->GetGlobalDescriptorSet(), m_State->m_GISamplePositionLightDescriptorSets[regionIndex] },
+				lightingSets,
 				&region.constants,
 				sizeof(region.constants));
 		}
@@ -1006,14 +1275,16 @@ void VansGraphics::VansRayTracing::UpdateGIProbe(
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             { shadeToAtlasBarrier });
 
-        if (m_State->m_GIVisibilityUpdateShader != nullptr)
+        auto* atlas=m_State->world && region.resolved.worldOnly?&m_State->world->Atlas():m_State->m_GIVisibilityUpdateShader;
+        auto* state=m_State->world && region.resolved.worldOnly?&m_State->world->State():m_State->m_GIProbeStateShader;
+        if (atlas != nullptr)
         {
             BindGIVisibilityData(materialManager, regionIndex);
-            commandBuffer->EnsureComputeShader(*m_State->m_GIVisibilityUpdateShader, { m_State->m_GIVisibilityUpdateSetLayout });
+            commandBuffer->EnsureComputeShader(*atlas, { m_State->m_GIVisibilityUpdateSetLayout });
 			{
 				VANS_GPU_SCOPE_LANE(nativeCommandBuffer, "DDGI.AtlasPrefilter", queueLane);
 				commandBuffer->DispatchCompute(
-					*m_State->m_GIVisibilityUpdateShader,
+					*atlas,
 					probeGroups.x,
 					probeGroups.y,
 					probeGroups.z,
@@ -1037,14 +1308,14 @@ void VansGraphics::VansRayTracing::UpdateGIProbe(
                 { atlasToNextBatchBarrier });
         }
 
-        if (m_State->m_GIProbeStateShader != nullptr)
+        if (state != nullptr)
         {
             BindGIProbeStateData(regionIndex);
-            commandBuffer->EnsureComputeShader(*m_State->m_GIProbeStateShader, { m_State->m_GIProbeStateSetLayout });
+            commandBuffer->EnsureComputeShader(*state, { m_State->m_GIProbeStateSetLayout });
 			{
 				VANS_GPU_SCOPE_LANE(nativeCommandBuffer, "DDGI.ProbeState", queueLane);
 				commandBuffer->DispatchCompute(
-					*m_State->m_GIProbeStateShader,
+					*state,
 					probeGroups.x,
 					probeGroups.y,
 					probeGroups.z,
@@ -1062,7 +1333,7 @@ void VansGraphics::VansRayTracing::UpdateGIProbe(
             stateToTraceBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
             commandBuffer->PipelineBarrier(
                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+                VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | (m_State->world ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT : 0),
                 { stateToTraceBarrier });
         }
 
@@ -1205,7 +1476,7 @@ void VansGraphics::VansRayTracing::BindGIPointLightData(uint32_t regionIndex)
         {{
             VansRenderPassManager::GetInstance()->GetCascadeShadowSampler(),
             VansRenderPassManager::GetInstance()->GetCascadeShadowLayerView(1),  // matches RAYTRACING_CASCADE_INDEX in Common.glsl
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+            VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
         }});
     descManager->WriteImageDescriptor(
         descriptorSet,
@@ -1488,7 +1759,10 @@ void VansGraphics::VansRayTracing::DispatchRayTracing(VansVKDevice* device, Vans
         return;
     }
 
-    VansVKRayTracingPipeline* vansPipeline = m_State->m_VansRayTracingShader->GetRayTracingPipeline(device, { m_State->m_RayTracingSetLayout });
+    VansVKRayTracingPipeline* vansPipeline = m_State->hasHardwareGeometry ?
+        m_State->m_VansRayTracingShader->GetRayTracingPipeline(device, { m_State->m_RayTracingSetLayout }) : nullptr;
+    if(m_State->world)m_State->world->RecordUpdates(*commandBuffer);
+    RecordWorldProbeInvalidation(*commandBuffer);
 
     // Make prior AS build/updates visible to RT stage (use a memory barrier)
     {
@@ -1503,22 +1777,35 @@ void VansGraphics::VansRayTracing::DispatchRayTracing(VansVKDevice* device, Vans
             { mb });
     }
 
-    commandBuffer->BindRayTracingPipeline(*vansPipeline);
+    if(vansPipeline)commandBuffer->BindRayTracingPipeline(*vansPipeline);
     // 与现有 RT -> GI 提交链共同排序，不在 CPU 修改仍可能被上一帧读取的 SSBO。
     VkMemoryBarrier workToTransfer{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-    workToTransfer.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    workToTransfer.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
     workToTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     commandBuffer->PipelineBarrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, {workToTransfer});
+    if(m_State->world)
+    {
+        std::array<uint32_t,8> rayCounts{};
+        for(size_t i=0;i<m_State->m_GIRegions.size();++i)
+            if(m_State->m_GIRegions[i].resolved.worldOnly)rayCounts[i]=uint32_t(m_State->m_GIRegions[i].work.RayCount());
+        m_State->world->RecordScatterRanges(*commandBuffer,rayCounts);
+    }
     if (!m_State->m_PendingLayoutRegionData.empty())
     {
         commandBuffer->UpdateBuffer(m_State->m_ProbeLayoutBuffer.GetNativeBuffer(), 4u * sizeof(glm::uvec4),
             m_State->m_PendingLayoutRegionData.size() * sizeof(glm::uvec4), m_State->m_PendingLayoutRegionData.data());
         m_State->m_PendingLayoutRegionData.clear();
     }
+    if (!m_State->m_PendingScrollData.empty())
+    {
+        commandBuffer->UpdateBuffer(m_State->m_ProbeLayoutBuffer.GetNativeBuffer(), m_State->m_ScrollDataOffset * sizeof(glm::uvec4),
+            m_State->m_PendingScrollData.size() * sizeof(glm::uvec4), m_State->m_PendingScrollData.data());
+        m_State->m_PendingScrollData.clear();
+    }
     for (auto& region : m_State->m_GIRegions)
     {
         const glm::uvec4 header = {uint32_t(region.work.entries.size()), region.work.raysPerProbeUpdate,
-            uint32_t(&region - m_State->m_GIRegions.data()), m_State->m_AutomaticGIWork ? 1u : 0u};
+            uint32_t(&region - m_State->m_GIRegions.data()), m_State->m_AutomaticGIWork && !region.resolved.scrolling ? 1u : 0u};
         commandBuffer->UpdateBuffer(region.workBuffer.GetNativeBuffer(), 0u, sizeof(header), &header);
         if (!region.work.entries.empty()) commandBuffer->UpdateBuffer(region.workBuffer.GetNativeBuffer(), sizeof(header),
             region.work.entries.size() * sizeof(GIProbeWorkEntry), region.work.entries.data());
@@ -1534,6 +1821,8 @@ void VansGraphics::VansRayTracing::DispatchRayTracing(VansVKDevice* device, Vans
         const auto& work = region.work;
         if (work.entries.empty() || !work.raysPerProbeUpdate)
             continue;
+        if(vansPipeline)
+        {
         BindRayTracingData(device, scene, regionIndex);
 
         commandBuffer->BindRayTracingDescriptorSets(
@@ -1557,11 +1846,25 @@ void VansGraphics::VansRayTracing::DispatchRayTracing(VansVKDevice* device, Vans
             VkMemoryBarrier rtToComputeBarrier{};
             rtToComputeBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
             rtToComputeBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-            rtToComputeBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            rtToComputeBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | (m_State->world ? VK_ACCESS_SHADER_WRITE_BIT : 0);
             commandBuffer->PipelineBarrier(
                 VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                 { rtToComputeBarrier });
+        }
+
+        }
+        if(m_State->world && region.resolved.worldOnly)
+        {
+            BindGIPointLightData(regionIndex);
+            auto& shader=m_State->world->Trace();
+            commandBuffer->EnsureComputeShader(shader,{scene->GetGlobalDescriptorSetLayout(),m_State->m_GISamplePositionLightSetLayout,m_State->world->Layout()});
+            uint32_t groups=CeilDivide(uint32_t(work.RayCount()),64u);
+            commandBuffer->DispatchCompute(shader,std::min(groups,m_State->m_MaxComputeGroupsX),CeilDivide(groups,m_State->m_MaxComputeGroupsX),1,
+                {scene->GetGlobalDescriptorSet(),m_State->m_GISamplePositionLightDescriptorSets[regionIndex],m_State->world->Descriptor()},
+                &region.constants,sizeof(region.constants));
+            VkMemoryBarrier ready{VK_STRUCTURE_TYPE_MEMORY_BARRIER};ready.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;ready.dstAccessMask=VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT;
+            commandBuffer->PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,{ready});
         }
 
     }
@@ -1887,7 +2190,16 @@ void VansGraphics::VansRayTracing::BindRayTracingData(VansVKDevice* device, Vans
 	//绑定bindless贴图数组
     auto& bindlessTextures = scene->GetTLASInstanceTextures();
 	std::vector<VkDescriptorImageInfo> bindlessTextureInfos;
-    for(size_t i = 0; i < bindlessTextures.size(); i++)
+	const std::size_t bindlessTextureCount = (std::min)(
+		bindlessTextures.size(), static_cast<std::size_t>(MAX_BINDLESS_TEXTURES));
+	if (!IsBindlessTextureCountSupported(bindlessTextures.size()))
+	{
+		VANS_LOG_ERROR("[RayTracing] Bindless texture heap overflow: requested="
+			<< bindlessTextures.size() << ", capacity=" << MAX_BINDLESS_TEXTURES
+			<< ". Excess descriptors will not be submitted.");
+	}
+	bindlessTextureInfos.reserve(bindlessTextureCount);
+    for(size_t i = 0; i < bindlessTextureCount; i++)
     {
         bindlessTextureInfos.push_back(
             {
@@ -1922,6 +2234,8 @@ bool VansGraphics::VansRayTracing::DispatchReceiverVisibility(VansVKDevice* devi
     VansScene* scene, VkDescriptorSetLayout layout, VkDescriptorSet descriptor)
 {
     if (!IsReady() || m_State->m_GIRegions.empty()) return false;
+    if(m_State->hasHardwareGeometry)
+    {
     if (!m_State->m_ReceiverVisibilityShader)
         m_State->m_ReceiverVisibilityShader = VansShaderManager::Get().FindRayTracingShader("GIReceiverVisibilityTrace");
     if (!m_State->m_ReceiverVisibilityShader) return false;
@@ -1931,6 +2245,16 @@ bool VansGraphics::VansRayTracing::DispatchReceiverVisibility(VansVKDevice* devi
     command.BindRayTracingPipeline(*pipeline);
     command.BindRayTracingDescriptorSets(*pipeline, 0u, {m_State->m_RayTracingDescriptorSets[0], descriptor});
     command.TraceRays(*pipeline, VansGIReceiverVisibility::RayBudget, 1u, 1u);
+    }
+    if(m_State->world)
+    {
+        VkMemoryBarrier ready{VK_STRUCTURE_TYPE_MEMORY_BARRIER};ready.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;ready.dstAccessMask=VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT;
+        command.PipelineBarrier(VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR|VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,{ready});
+        auto& shader=m_State->world->Visibility();
+        command.EnsureComputeShader(shader,{scene->GetGlobalDescriptorSetLayout(),layout,m_State->world->Layout()});
+        command.DispatchCompute(shader,VansGIReceiverVisibility::RayBudget/64u,1u,1u,{scene->GetGlobalDescriptorSet(),descriptor,m_State->world->Descriptor()});
+        command.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,{ready});
+    }
     return true;
 }
 
@@ -1938,6 +2262,8 @@ bool VansGraphics::VansRayTracing::DispatchReceiverBias(VansVKDevice* device, Va
     VansScene* scene, VkDescriptorSetLayout layout, VkDescriptorSet descriptor, uint32_t width, uint32_t height)
 {
     if (!IsReady() || m_State->m_GIRegions.empty()) return false;
+    if(m_State->hasHardwareGeometry)
+    {
     if (!m_State->m_ReceiverBiasShader)
         m_State->m_ReceiverBiasShader = VansShaderManager::Get().FindRayTracingShader("GIReceiverBias");
     if (!m_State->m_ReceiverBiasShader) return false;
@@ -1947,5 +2273,15 @@ bool VansGraphics::VansRayTracing::DispatchReceiverBias(VansVKDevice* device, Va
     command.BindRayTracingPipeline(*pipeline);
     command.BindRayTracingDescriptorSets(*pipeline, 0u, {m_State->m_RayTracingDescriptorSets[0], descriptor});
     command.TraceRays(*pipeline, width, height, 1u);
+    }
+    if(m_State->world)
+    {
+        VkMemoryBarrier ready{VK_STRUCTURE_TYPE_MEMORY_BARRIER};ready.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;ready.dstAccessMask=VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT;
+        command.PipelineBarrier(VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR|VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,{ready});
+        auto& shader=m_State->world->Bias();
+        command.EnsureComputeShader(shader,{scene->GetGlobalDescriptorSetLayout(),layout,m_State->world->Layout()});
+        command.DispatchCompute(shader,(width+7u)/8u,(height+7u)/8u,1u,{scene->GetGlobalDescriptorSet(),descriptor,m_State->world->Descriptor()});
+        command.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,{ready});
+    }
     return true;
 }

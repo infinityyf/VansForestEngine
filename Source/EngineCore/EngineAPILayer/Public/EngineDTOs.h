@@ -111,6 +111,28 @@ namespace Vans::EditorAPI
 		Vec3 direction;
 	};
 
+	struct EditorScenePickRequest
+	{
+		Ray ray;
+		float maxDistance = 0.0f;
+		// 只允许命中文档中可定位的实体；运行时内部节点映射到最近的文档祖先。
+		std::vector<std::string> selectableEntities;
+	};
+
+	struct EditorScenePickResult
+	{
+		bool success = false;
+		std::string entityGuid;
+		std::string message;
+	};
+
+	struct EditorSceneBounds
+	{
+		bool available = false;
+		Vec3 minimum;
+		Vec3 maximum;
+	};
+
 	struct AudioBusDebugState
 	{
 		std::string name;
@@ -251,8 +273,19 @@ namespace Vans::EditorAPI
 		Rect
 	};
 
+    struct LightCookieSettings
+    {
+        bool enabled = false;
+        std::string textureGuid;
+        float strength = 1, sizeX = 10, sizeY = 10, scaleX = 1, scaleY = 1;
+        float offsetX = 0, offsetY = 0, rotationDegrees = 0;
+        bool repeat = false, useAlpha = false;
+    };
+
 	struct RuntimeLightEdit
 	{
+        bool writeCookie = false;
+        LightCookieSettings cookie;
 		RuntimePreviewLightType type = RuntimePreviewLightType::Directional;
 		std::string entityGuid;
 		bool writeColor = false;
@@ -385,6 +418,7 @@ namespace Vans::EditorAPI
 	struct RuntimeMultiMeshGroupSnapshot
 	{
 		std::string parentName;
+        std::string parentEntityGuid;
 		std::vector<RuntimeMultiMeshChildSnapshot> children;
 	};
 
@@ -429,6 +463,7 @@ namespace Vans::EditorAPI
 	{
 		RuntimeSceneDocumentSnapshot document;
 		RuntimeSceneLoadMode mode = RuntimeSceneLoadMode::Editor;
+        bool ensureResourceDependencies = false;
 	};
 
 	struct RuntimeSceneLoadDiagnostic
@@ -569,7 +604,9 @@ namespace Vans::EditorAPI
 		Terrain,
 		PlantType,
 		PcgMask,
-		PcgSpline
+		PcgSpline,
+		DamageProfile,
+        Prefab
 	};
 
 	enum class AssetQueryCapability
@@ -603,8 +640,16 @@ namespace Vans::EditorAPI
 		std::vector<PropertyEntry> settings;
 	};
 
+    struct EditorViewportCameraState
+    {
+        bool available = false;
+        Vec3 position, rotationDegrees;
+        float fieldOfView = 45, nearClip = 0.1f, farClip = 10000;
+    };
+
 	struct ProjectBrowserRootSnapshot
 	{
+        std::string assetsRootPath;
 		bool projectLoaded = false;
 		std::string rootPath;
 		std::string rootLabel;
@@ -1751,6 +1796,8 @@ namespace Vans::EditorAPI
 
 	struct GIRegionSettingsSnapshot
 	{
+		bool worldOnly = false;
+        bool followView = false;
 		std::uint32_t stableId = 0;
 		std::string name;
 		bool enabled = true;
@@ -1782,10 +1829,18 @@ namespace Vans::EditorAPI
 		std::uint32_t maxRaysPerFrame = 65536u;
 	};
 
+	struct GIWorldSettingsSnapshot
+	{
+		bool enabled = false;
+		float voxelSize = 0.25f, coverageDistance = 256.0f, extinctionScale = 1.0f;
+		std::uint32_t levelCount = 5, maxBricks = 6144, bricksPerFrame = 64, maxTraceSteps = 256;
+	};
+
 	struct GIInspectorSettingsSnapshot
 	{
 		bool available = false;
 		GIProbePlacementSettingsSnapshot placement;
+		GIWorldSettingsSnapshot world;
 
 		float maxIndirectRadiance = 0.0f;
 		float maxProbeRadiance = 0.0f;
@@ -1872,6 +1927,15 @@ namespace Vans::EditorAPI
 		float depth = 10000.0f;
 		float repeatPeriod = 0.0f;
 		std::uint32_t randomSeed = 1337u;
+	};
+
+	struct RiverWaterSettings
+	{
+		float maxHeight=.08f;
+		float wavelength=1.8f;
+		float lifetime=8.f;
+		float flowGridSize=2.f;
+        float fineDetailStrength=1.f;
 	};
 
 	struct WaterWaveParticleSettings
@@ -1987,6 +2051,7 @@ namespace Vans::EditorAPI
 		WaterGeometrySettings geometry;
 		WaterSpectrumSettings spectrum;
 		WaterWaveParticleSettings waveParticle;
+        RiverWaterSettings river;
 		WaterFlowMapSettings flowMap;
 		WaterOpticsSettings optics;
 		WaterVolumeSettings volume;
@@ -2985,18 +3050,16 @@ namespace Vans::EditorAPI
 		float tessellationDistance = 0.0f;
 		float maxTessellationLevel = 0.0f;
 		float tessellationTargetPixels = 0.0f;
-		bool noiseDetailEnabled = false;
-		float noiseStrength = 0.0f;
-		float noiseFrequency = 0.0f;
-		int noiseOctaves = 0;
-		float noiseGain = 0.0f;
-		float noiseLacunarity = 0.0f;
-		float noiseWarpStrength = 0.0f;
-		float noiseFadeStart = 0.0f;
+		bool heightDetailEnabled = false;
+		float heightDetailStrength = 0.0f;
+		float heightDetailFadeStart = 0.0f;
 		float terrainSize = 0.0f;
 		float lodBaseDistance = 0.0f;
 		float lodRangeRatio = 0.0f;
 		float morphStartRatio = 0.0f;
+		float riverWetAlbedoScale = 0.0f;
+		float riverWetRoughness = 0.0f;
+		float riverWetDetailNormalScale = 0.0f;
 	};
 
 	enum class TerrainBrushTool
@@ -3100,6 +3163,7 @@ namespace Vans::EditorAPI
 
 	struct DirectionalLightSettings
 	{
+        LightCookieSettings cookie;
 		Vec3 direction = { 0.0f, -1.0f, 0.0f };
 		Vec3 color = { 1.0f, 1.0f, 1.0f };
 		float intensity = 1.0f;
@@ -3107,6 +3171,7 @@ namespace Vans::EditorAPI
 
 	struct PointLightSettings
 	{
+        LightCookieSettings cookie;
 		struct PunctualShadowSettings
 		{
 			bool castShadows = true;
@@ -3134,6 +3199,7 @@ namespace Vans::EditorAPI
 
 	struct SpotLightSettings
 	{
+        LightCookieSettings cookie;
 		Vec3 position;
 		Vec3 direction = { 0.0f, -1.0f, 0.0f };
 		Vec3 color = { 1.0f, 1.0f, 1.0f };
@@ -3146,6 +3212,7 @@ namespace Vans::EditorAPI
 
 	struct RectLightSettings
 	{
+        LightCookieSettings cookie;
 		Vec3 position;
 		Vec3 normal = { 0.0f, 0.0f, 1.0f };
 		Vec3 color = { 1.0f, 1.0f, 1.0f };

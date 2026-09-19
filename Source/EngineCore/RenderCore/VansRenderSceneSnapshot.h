@@ -1,4 +1,5 @@
 #pragma once
+#include "BRDFData/VansLightCookie.h"
 #include "Particles/VansParticleRenderAsset.h"
 #include "../ParticleCore/VansParticleFrameData.h"
 #include "../RuntimeCore/VansGenerationPool.h"
@@ -103,6 +104,7 @@ namespace VansGraphics
 	struct VansRenderLightFrameData final
 	{
         VansSkyLightingFrame skyLighting;
+        VansLightCookieFrame cookies;
 		std::vector<VansDirectionalLight> directionalLights;
 		std::vector<VansPointLight> pointLights;
 		std::vector<VansSpotLight> spotLights;

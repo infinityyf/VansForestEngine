@@ -2,6 +2,7 @@
 
 #include "../AssetCore/Serialization/VansSerializedValue.h"
 #include "VansSceneDiagnostics.h"
+#include "Prefab/VansPrefabAsset.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -39,6 +40,8 @@ struct SceneDocumentSnapshot
     SceneDocumentSnapshot& operator=(SceneDocumentSnapshot&&) noexcept = default;
 
     VansSerializedValue SerializedRootSnapshot() const;
+    VansSerializedValue AuthoringRootSnapshot() const;
+    std::shared_ptr<const VansSerializedValue> authoringRoot;
     // 引用由当前快照持有；文档编辑发布新根，不会使旧快照失效。
     const VansSerializedValue& Root() const;
     bool HasRoot() const { return static_cast<bool>(m_Root); }
@@ -65,6 +68,7 @@ class VansRemoveScenePropertyCommand;
 class VansAppendSceneEntitiesCommand;
 class VansReparentSceneEntityCommand;
 class VansSetSceneEntityTransformCommand;
+class VansReplaceSceneRootCommand;
 
 class VansSceneDocument
 {
@@ -76,6 +80,11 @@ public:
     VansSceneDocument& operator=(const VansSceneDocument&) = delete;
 
     VansSerializedValue SerializedRootSnapshot() const;
+    static std::unique_ptr<VansSceneDocument> CreateInMemory(VansSerializedValue root, VansPrefabLookup lookup, std::string& error);
+    VansSerializedValue AuthoringRootSnapshot() const { return *m_Root; }
+    bool SetPrefabLookup(VansPrefabLookup lookup, std::string& error);
+    bool RefreshPrefabView(std::string& error);
+    const VansPrefabLookup& PrefabLookup() const { return m_PrefabLookup; }
     const std::filesystem::path& SourcePath() const { return m_SourcePath; }
     const SceneDiagnostics& Diagnostics() const { return m_Diagnostics; }
     SceneStateId CurrentStateId() const { return m_CurrentStateId; }
@@ -85,6 +94,8 @@ public:
     SceneDocumentSnapshot CreateSnapshot() const;
     bool StageSave(SceneDocumentSaveStage& stage, std::string& error) const;
     bool AdoptStagedSave(const SceneDocumentSaveStage& stage, std::string& error);
+    bool ObservePublishedSave(const SceneDocumentSaveStage& stage, std::string& error);
+    void AdoptObservedSave(const SceneDocumentSaveStage& stage);
 
 private:
     friend class VansSceneDocumentLoader;
@@ -95,7 +106,10 @@ private:
     friend class VansAppendSceneEntitiesCommand;
     friend class VansReparentSceneEntityCommand;
     friend class VansSetSceneEntityTransformCommand;
+    friend class VansReplaceSceneRootCommand;
+    friend class VansApplyPrefabCommand;
 
+    void RestoreAuthoringRoot(VansSerializedValue root, SceneStateId state);
     SceneStateId AllocateStateId();
     SceneStateId ApplyEditedSerializedRoot(VansSerializedValue root);
     void RestoreEditedSerializedRoot(VansSerializedValue root, SceneStateId stateId);
@@ -103,8 +117,11 @@ private:
         const SceneFileFingerprint& fingerprint, SceneStateId savedStateId);
 
     std::shared_ptr<const VansSerializedValue> m_Root;
+    std::shared_ptr<const VansSerializedValue> m_ResolvedRoot;
+    VansPrefabLookup m_PrefabLookup;
     std::filesystem::path m_SourcePath;
     SceneFileFingerprint m_LoadedFingerprint;
+    SceneFileFingerprint m_ObservedFingerprint;
     SceneDiagnostics m_Diagnostics;
     SceneStateId m_CurrentStateId = 1;
     SceneStateId m_SavedStateId = 1;

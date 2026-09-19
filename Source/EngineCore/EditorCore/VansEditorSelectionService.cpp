@@ -104,9 +104,7 @@ namespace Vans
 		m_Snapshot.active = active;
 		if (m_Snapshot.objects.empty())
 			m_Snapshot.active = {};
-		else if (!SameObject(active, {}) && !Contains(active))
-			m_Snapshot.objects.push_back(active);
-		else if (SameObject(active, {}))
+		else if (SameObject(active, {}) || !Contains(active))
 			m_Snapshot.active = m_Snapshot.objects.back();
 
 		m_Snapshot.source = source;

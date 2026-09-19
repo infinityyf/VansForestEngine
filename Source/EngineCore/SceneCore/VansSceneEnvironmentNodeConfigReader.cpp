@@ -483,6 +483,14 @@ VansSceneWaterNodeConfig VansSceneEnvironmentNodeConfigReader::ReadWater(
 		config.medium = DecodeWaterMedium(*medium);
 	if (const VansSerializedValue* spectrum = ReadObjectField(waterNode, "spectrum"))
 		DecodeWaterSpectrumFields(*spectrum, config.spectrum);
+    if (const VansSerializedValue* river = ReadObjectField(waterNode, "river"))
+    {
+        config.river.maxHeight=ReadOptionalFloatField(*river,"maxHeight");
+        config.river.wavelength=ReadOptionalFloatField(*river,"wavelength");
+        config.river.lifetime=ReadOptionalFloatField(*river,"lifetime");
+        config.river.flowGridSize=ReadOptionalFloatField(*river,"flowGridSize");
+        config.river.fineDetailStrength=ReadOptionalFloatField(*river,"fineDetailStrength");
+    }
 	if (const VansSerializedValue* waveParticle = ReadObjectField(waterNode, "waveParticle"))
 		config.waveParticle = DecodeWaterWaveParticles(*waveParticle);
 	if (const VansSerializedValue* flowMap = ReadObjectField(waterNode, "flowMap"))

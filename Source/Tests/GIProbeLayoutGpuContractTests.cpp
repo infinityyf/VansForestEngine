@@ -1,6 +1,7 @@
 #define VK_NO_PROTOTYPES
 #include "../Graphics/Vulkan/VansVKFunctions.h"
 #include "../EngineCore/RenderCore/GICore/VansGIProbeLayout.h"
+#include "../EngineCore/RenderCore/GICore/VansGIScrollingGrid.h"
 #include <algorithm>
 #include <limits>
 #include <iomanip>
@@ -1004,12 +1005,78 @@ namespace
         return mismatches == 0 && cpuMismatches == 0 && validationErrors == 0;
     }
 }
+namespace
+{
+    bool RunScrollingGPU()
+    {
+        VansGIScrollingGrid grid;
+        std::string error;
+        if (!grid.Initialize({9,10,11}, 0.75f, {-4.1f,-7.7f,2.1f}, error)) throw std::runtime_error(error);
+        const std::array<glm::vec3,6> centers = {glm::vec3(-4.1f,-7.7f,2.1f), glm::vec3(-3.1f,-6.7f,1.1f),
+            glm::vec3(-8.1f,-10.7f,-0.1f), glm::vec3(70,-99,30), glm::vec3(0.7499f,0,0), glm::vec3(0.7501f,0,0)};
+        uint64_t samples = 0, corners = 0;
+        float previousFade = 0, fadeJump = 0;
+        for (uint32_t frame = 0; frame < centers.size(); ++frame)
+        {
+            std::vector<uint32_t> entering;
+            if (!grid.Move(centers[frame], entering, error)) throw std::runtime_error(error);
+            GIResolvedRegion region;
+            region.scrolling = true; region.worldOnly = true; region.scrollOffset = grid.RingOffset(); region.blendCenter = grid.Center();
+            region.volumeMin = grid.Minimum(); region.volumeSize = glm::vec3(grid.Dimensions())*grid.Spacing();
+            region.gridDimensions = grid.Dimensions(); region.probeSpacing = grid.Spacing(); region.probeCount = grid.ProbeCount();
+            region.volumeFadeDistance = 0.75f;
+            std::vector<glm::vec4> queries;
+            for (uint32_t id = 0; id < grid.ProbeCount(); ++id)
+            {
+                queries.emplace_back(grid.Position(id), 0.0f);
+                queries.emplace_back(grid.Position(id) + glm::vec3(.2f,.37f,-.13f), 0.0f);
+            }
+            queries.emplace_back(-.85f,0,0,0); // 同一个接收点跨越离散滚动边界。
+            const auto results = Dispatch(BuildGIProbeLayoutGPUData({region}, nullptr), queries);
+            for (size_t query = 0; query < queries.size(); ++query)
+            {
+                const auto& value = results[query]; const glm::vec3 point(queries[query]);
+                const auto expectedSample = glm::clamp(point, grid.Minimum()+0.5f*grid.Spacing(),
+                    grid.Minimum()+(glm::vec3(grid.Dimensions())-0.5f)*grid.Spacing());
+                const bool inside = glm::all(glm::greaterThanEqual(point,grid.BlendMinimum())) &&
+                    glm::all(glm::lessThanEqual(point,grid.BlendMinimum()+grid.BlendSize()));
+                if (value.metadata != glm::uvec4(GIInvalidAddress,inside?0u:GIInvalidAddress,8u,2u) ||
+                    glm::length(glm::vec3(value.samplePositionAndLeaf)-expectedSample)>0.0001f ||
+                    glm::length(glm::vec3(value.minimumAndSpacing)-grid.BlendMinimum())>0.0001f)
+                    throw std::runtime_error("GPU scrolling bounds or envelope differ from CPU world grid");
+                glm::vec3 reconstructed(0); float weightSum=0;
+                for (uint32_t i=0;i<8;++i)
+                {
+                    const uint32_t id=value.corners[i];
+                    if (id>=grid.ProbeCount() || glm::length(glm::vec3(value.positions[i])-grid.Position(id))>0.0001f ||
+                        value.positions[i].w>0.0001f || value.weights[i]<0.0f)
+                        throw std::runtime_error("GPU receiver candidates and ray origins disagree on recycled physical slots");
+                    reconstructed+=glm::vec3(value.positions[i])*value.weights[i]; weightSum+=value.weights[i]; ++corners;
+                }
+                if (std::abs(weightSum-1.0f)>0.00001f || glm::length(reconstructed-expectedSample)>0.0001f)
+                    throw std::runtime_error("GPU scrolling interpolation changed a linear world-space lighting field");
+                const auto edge=glm::min(point-grid.BlendMinimum(),grid.BlendMinimum()+grid.BlendSize()-point);
+                const float t=glm::clamp(std::min(edge.x,std::min(edge.y,edge.z))/region.volumeFadeDistance,0.0f,1.0f);
+                if (std::abs(value.samplePositionAndLeaf.w-t*t*(3.0f-2.0f*t))>0.00001f)
+                    throw std::runtime_error("GPU scrolling fade does not follow continuous camera envelope");
+                ++samples;
+            }
+            if (frame==4) previousFade=results.back().samplePositionAndLeaf.w;
+            if (frame==5) fadeJump=std::abs(results.back().samplePositionAndLeaf.w-previousFade);
+        }
+        if (fadeJump>0.001f) throw std::runtime_error("GPU scrolling one cell snaps fade to a new boundary");
+        std::cout << "[GIProbeLayoutGPU] scrolling samples=" << samples << " corners=" << corners
+            << " singleCellFadeJump=" << fadeJump << " validationErrors=" << validationErrors << '\n';
+        return validationErrors==0;
+    }
+}
 bool TestGIProbeLayoutGpuContract()
 {
     try
     {
         validationErrors = 0;
-        bool passed = RunCase("regular_off", 0.5f, glm::vec3(0), false);
+        bool passed = RunScrollingGPU();
+        passed = RunCase("regular_off", 0.5f, glm::vec3(0), false) && passed;
         passed = RunCase("adaptive_0.5", 0.5f, glm::vec3(0), true) && passed;
         passed = RunCase("adaptive_0.3", 0.3f, glm::vec3(0), true) && passed;
         passed = RunCase("offset_0.125", 0.125f, {1024.25f, -64.5f, -256.375f}, true) && passed;
@@ -1142,7 +1209,7 @@ namespace
             if(std::memcmp(&states.back(),&untouched,sizeof(untouched)))throw std::runtime_error("publication touched unscheduled state");
             for(uint32_t probe=0;probe<workCount;++probe)
             {
-                if(states[probe].metadata.x!=1u||feedback[probe].completed!=1u||
+                if(states[probe].metadata.x!=1u||feedback[probe].status!=GIProbeComplete||
                     states[probe].relocation.w!=1.0f||!states[probe].metadata.z)
                     throw std::runtime_error("placed probe lost publication during relocation or backface hits");
                 if(probe==129 && (states[probe].metadata.w!=32u || states[probe].distance.w!=1.0f))
@@ -1179,6 +1246,7 @@ bool TestGIProbeFeedbackGpuContract()
     try
     {
         validationErrors = 0;
+        for(bool world : {false,true})
         {
             GPU gpu; InitializeGPU(gpu);
             struct alignas(16) State { glm::vec4 relocation, distance; glm::uvec4 metadata; };
@@ -1207,7 +1275,8 @@ bool TestGIProbeFeedbackGpuContract()
             gpu.Buffer(2,sizes[2],states.data()); gpu.Buffer(3,sizes[3],work.data()); gpu.Buffer(4,sizes[4],layout.data());
             gpu.Buffer(5,sizes[5],nullptr); gpu.Buffer(6,sizes[5],nullptr);
             VkDescriptorSet set;
-            const auto shaderPath=ShaderPath().parent_path().parent_path().parent_path()/"Shaders/GIProbeState/GIProbeStatecomp.spv";
+            const auto shaderPath=ShaderPath().parent_path().parent_path().parent_path()/
+                (world?"Shaders/GIWorld/GIWorldStatecomp.spv":"Shaders/GIProbeState/GIProbeStatecomp.spv");
             CreateCompute(gpu,set,sizes,shaderPath,96u);
             VkCommandPoolCreateInfo pool{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
             pool.queueFamilyIndex=gpu.queueFamily; pool.flags=VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -1225,15 +1294,19 @@ bool TestGIProbeFeedbackGpuContract()
                 void* memory; Require(vkMapMemory(gpu.device,gpu.memories[slot],0,bytes,0,&memory),"feedback map update");
                 std::memcpy(memory,source,bytes); vkUnmapMemory(gpu.device,gpu.memories[slot]);
             };
-            for (uint32_t phase=0; phase<2; ++phase)
+            for (uint32_t phase=0; phase<(world?8u:2u); ++phase)
             {
+                const uint32_t failureReasons[]={GIProbeHeightBudget,GIProbeVoxelPage,GIProbeVoxelBudget,GIProbeVoxelCoverage,GIProbeFailureMask};
+                const uint32_t failure=phase>=2 && phase<7?failureReasons[phase-2]:0u;
+                const auto retained=states;
                 if (phase)
                 {
-                    work[0]={1,256,0,1}; work[1]={1,0,9,GIWorkResetLighting};
+                    work[0]={1,256,0,1}; work[1]={1,0,8+phase,GIWorkResetLighting};
                     upload(3,work.data(),sizes[3]);
                     for (auto& normal:normals) normal=half({0,1,0,1});
                     upload(1,normals.data(),sizes[1]);
                     std::fill(positions.begin(), positions.end(), 2.0f);
+                    if(failure)positions[17]=-2.0f-float(failure);
                     upload(0,positions.data(),sizes[0]);
                 }
                 Require(vkResetCommandBuffer(command,0),"reset feedback command");
@@ -1270,20 +1343,26 @@ bool TestGIProbeFeedbackGpuContract()
                 {
                     for (uint32_t i=0;i<3;++i)
                     {
-                        if (feedback[i].probeIndex!=i || feedback[i].completed!=1u ||
+                        if (feedback[i].probeIndex!=i || feedback[i].status!=GIProbeComplete ||
                             glm::floatBitsToUint(feedback[i].elapsedSeconds)!=work[1+i].y || feedback[i].cycleIndex!=work[1+i].z ||
                             states[i].metadata.x!=1u || states[i].relocation.w!=1.0f ||
                             states[i].metadata.w!=(i==1?0u:32u))
                             throw std::runtime_error("complete update publication or packed ray offset mismatch");
                     }
                 }
-                else if (feedback[0].probeIndex!=1 || feedback[0].completed!=1 || states[1].metadata.x!=1 ||
+                else if(failure)
+                {
+                    if(feedback[0].probeIndex!=1 || feedback[0].status!=failure || feedback[0].cycleIndex!=work[1].z ||
+                        std::memcmp(states.data(),retained.data(),sizeof(states)))
+                        throw std::runtime_error("World failure reason lost identity or overwrote published state");
+                }
+                else if (feedback[0].probeIndex!=1 || feedback[0].status!=GIProbeComplete || states[1].metadata.x!=1 ||
                     states[1].metadata.z!=1 || std::abs(states[1].relocation.w-1.0f)>1e-6f)
                     throw std::runtime_error("reset did not rebuild confidence from the complete lighting update");
             }
         }
         std::cout<<"[GIProbeFeedbackGPU] "<<(validationErrors?"FAIL":"PASS")
-            <<" production state shader, full 256-ray work for all placed probes, backface publication, reset, untouched state, completion readback; validationErrors="
+            <<" production hardware/world state shaders, full 256-ray work, backface publication, reset, failure reasons, retained state and recovery; validationErrors="
             <<validationErrors<<'\n';
         return validationErrors==0;
     }
@@ -1296,6 +1375,7 @@ bool TestGIProbeIntegrationGpuContract()
     try
     {
         validationErrors = 0;
+        for (bool world : {false, true})
         for (bool sparse : {false, true})
         for (float spacing : {0.5f, 1000.0f})
         for (uint32_t rays : {33u, 256u, 4096u})
@@ -1345,7 +1425,7 @@ bool TestGIProbeIntegrationGpuContract()
             constexpr VkDeviceSize readBytes=(16u*16u+8u*8u)*3u*8u;
             gpu.Buffer(8,readBytes,nullptr);
             VkDescriptorSet set;
-            CreateCompute(gpu,set,sizes,ShaderPath().parent_path().parent_path().parent_path()/"Shaders/GIVisibilityUpdate/GIVisibilityUpdatecomp.spv",96u,{}, {1u,3u});
+            CreateCompute(gpu,set,sizes,ShaderPath().parent_path().parent_path().parent_path()/(world?"Shaders/GIWorld/GIWorldAtlascomp.spv":"Shaders/GIVisibilityUpdate/GIVisibilityUpdatecomp.spv"),96u,{}, {1u,3u});
             VkCommandPoolCreateInfo pool{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO}; pool.queueFamilyIndex=gpu.queueFamily;
             pool.flags=VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
             Require(vkCreateCommandPool(gpu.device,&pool,nullptr,&gpu.commands),"integration command pool");
@@ -1361,6 +1441,7 @@ bool TestGIProbeIntegrationGpuContract()
                     for(auto& r:radiance) r=glm::uvec2(glm::packHalf2x16({0.5f,1.0f}),glm::packHalf2x16({.25f,1.0f}));
                     for(auto& st:states) st.metadata.z=8;
                     std::fill(hitT.begin(),hitT.end(),200.0f);
+                    if(world&&iteration==2)hitT.back()=-2.f;
                     // 同一次完整估计，相隔 1/60 秒或 10 秒都应保留相同的采样历史。
                     work[1].y=glm::floatBitsToUint(1.0f/60.0f);work[2].y=glm::floatBitsToUint(10.0f);
                     // 下一轮真的从新位置追踪后，应重建旧位置的距离/辐照度历史。
@@ -1428,12 +1509,13 @@ bool TestGIProbeIntegrationGpuContract()
                             else { uint16_t value[4];std::memcpy(value,data.data()+index,8);for(auto v:value)if(glm::unpackHalf1x16(v)!=.125f)throw std::runtime_error("untouched irradiance changed"); }
                             continue;
                         }
+                        const uint32_t sampleIteration=world&&iteration==2&&probe==2?1u:iteration;
                         if(slot==0)
                         {
                             float value[2];std::memcpy(value,data.data()+index,8);
                             const float range = std::min(300.0f, spacing * (sparse ? 3.0f : std::sqrt(3.0f) + .45f));
                             const float first = std::min(300.0f, range), later = std::min(200.0f, range);
-                            const float historyWeight = iteration == 2 && probe == 0 ? 0.0f : std::pow(.95f, float(iteration));
+                            const float historyWeight = iteration == 2 && probe == 0 ? 0.0f : std::pow(.95f, float(sampleIteration));
                             const float mean = later + (first - later) * historyWeight;
                             const float second = later * later + (first * first - later * later) * historyWeight;
                             if(!std::isfinite(value[0])||!std::isfinite(value[1])||std::abs(value[0]-mean)>0.01f||std::abs(value[1]-second)>4.0f)
@@ -1442,7 +1524,7 @@ bool TestGIProbeIntegrationGpuContract()
                         else
                         {
                             uint16_t value[4];std::memcpy(value,data.data()+index,8);
-                            const float scale=iteration==2&&probe==0?.5f:.5f+.5f*std::pow(.97f,float(iteration));
+                            const float scale=iteration==2&&probe==0?.5f:.5f+.5f*std::pow(.97f,float(sampleIteration));
                             const float tolerance=rays==33?.15f:.025f;
                             const float expected[3]={3.14159265f,6.2831853f,1.5707963f};
                             for(uint32_t c=0;c<3;++c)
@@ -1462,7 +1544,7 @@ bool TestGIProbeIntegrationGpuContract()
                     offset+=uint64_t(size)*size*probeCount*8u;
                 }
             }
-            std::cout<<"[GIProbeIntegrationGPU] sparse="<<sparse<<" spacing="<<spacing<<" rays="<<rays<<" analytic pi L, 300m/90000m2, 1/60s vs 10s history, origin reset, borders, untouched tiles PASS\n";
+            std::cout<<"[GIProbeIntegrationGPU] world="<<world<<" sparse="<<sparse<<" spacing="<<spacing<<" rays="<<rays<<" analytic pi L, 300m/90000m2, 1/60s vs 10s history, origin reset, borders, untouched tiles PASS\n";
         }
         return validationErrors==0;
     }

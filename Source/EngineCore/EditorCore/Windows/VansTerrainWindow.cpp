@@ -254,6 +254,19 @@ void VansTerrainWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 				ImGui::SameLine();
 				ImGui::TextDisabled("%s.%c  %s", mapName, channel, layer.id.c_str());
 			}
+			ImGui::SeparatorText("River Wetness");
+			ImGui::TextDisabled("River splines define the wet area; terrain settings define its material response.");
+			ImGui::BeginDisabled(!terrain.editable);
+			ImGui::SliderFloat("Wet albedo scale", &m_SettingsDraft.riverWetAlbedoScale, 0.0f, 1.0f, "%.2f");
+			if (ImGui::IsItemDeactivatedAfterEdit()) applySettings();
+			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Linear-space color multiplier at full wetness.");
+			ImGui::SliderFloat("Wet roughness", &m_SettingsDraft.riverWetRoughness, 0.0f, 1.0f, "%.2f");
+			if (ImGui::IsItemDeactivatedAfterEdit()) applySettings();
+			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Maximum target roughness. Already smoother layers remain unchanged.");
+			ImGui::SliderFloat("Wet detail normal", &m_SettingsDraft.riverWetDetailNormalScale, 0.0f, 1.0f, "%.2f");
+			if (ImGui::IsItemDeactivatedAfterEdit()) applySettings();
+			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Micro-normal strength at full wetness; the heightfield normal is preserved.");
+			ImGui::EndDisabled();
 			ImGui::EndTabItem();
 		}
 
@@ -283,40 +296,20 @@ void VansTerrainWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Target screen-space length per tessellated edge. Lower values add detail and GPU cost.");
 
             ImGui::Separator();
-            ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "Procedural Noise Detail");
+            ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "Material Height Detail");
 
-            if (ImGui::Checkbox("Enable Noise Detail", &m_SettingsDraft.noiseDetailEnabled))
+            if (ImGui::Checkbox("Enable Height Detail", &m_SettingsDraft.heightDetailEnabled))
 				applySettings();
 
-            if (m_SettingsDraft.noiseDetailEnabled)
+            if (m_SettingsDraft.heightDetailEnabled)
             {
-                ImGui::DragFloat("Strength (m)", &m_SettingsDraft.noiseStrength, 0.001f, 0.0f, 0.5f, "%.3f");
+                ImGui::DragFloat("Strength (m)", &m_SettingsDraft.heightDetailStrength, 0.001f, 0.0f, 0.5f, "%.3f");
 				if (ImGui::IsItemDeactivatedAfterEdit()) applySettings();
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Noise displacement in world meters. 0.03 = 3cm micro-detail.");
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Mask-map height displacement in world meters. 0.03 = up to 3cm. Only active on tessellated terrain.");
 
-                ImGui::DragFloat("Frequency", &m_SettingsDraft.noiseFrequency, 0.01f, 0.01f, 10.0f, "%.2f");
+                ImGui::SliderFloat("Fade Start", &m_SettingsDraft.heightDetailFadeStart, 0.0f, 1.0f, "%.2f");
 				if (ImGui::IsItemDeactivatedAfterEdit()) applySettings();
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Base noise frequency. Higher = finer detail pattern.");
-
-                ImGui::SliderInt("Octaves", &m_SettingsDraft.noiseOctaves, 1, 4);
-				if (ImGui::IsItemDeactivatedAfterEdit()) applySettings();
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Number of noise layers. More = richer detail but more GPU cost.");
-
-                ImGui::DragFloat("Gain", &m_SettingsDraft.noiseGain, 0.01f, 0.01f, 1.0f, "%.2f");
-				if (ImGui::IsItemDeactivatedAfterEdit()) applySettings();
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Amplitude falloff per octave. 0.52 = original ShaderToy hill().");
-
-                ImGui::DragFloat("Lacunarity", &m_SettingsDraft.noiseLacunarity, 0.1f, 1.0f, 4.0f, "%.1f");
-				if (ImGui::IsItemDeactivatedAfterEdit()) applySettings();
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Frequency multiplier per octave. 2.0 = standard.");
-
-                ImGui::DragFloat("Warp Strength", &m_SettingsDraft.noiseWarpStrength, 0.01f, 0.0f, 1.0f, "%.2f");
-				if (ImGui::IsItemDeactivatedAfterEdit()) applySettings();
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Domain warping. 0=off, 0.2~0.3 = visible ridge-like distortion (HIGH/ULTRA quality).");
-
-                ImGui::SliderFloat("Fade Start", &m_SettingsDraft.noiseFadeStart, 0.0f, 1.0f, "%.2f");
-				if (ImGui::IsItemDeactivatedAfterEdit()) applySettings();
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Distance ratio where noise begins fading out. 0.7 = fade starts at 70%% of tess distance.");
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Distance ratio where height detail begins fading out. 0.7 = fade starts at 70%% of tess distance.");
             }
 
             ImGui::Separator();

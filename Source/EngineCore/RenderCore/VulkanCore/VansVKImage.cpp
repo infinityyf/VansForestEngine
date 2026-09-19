@@ -179,7 +179,6 @@ namespace VansGraphics
             VANS_LOG_ERROR("Could not create image / allocate memory (VMA).");
             return false;
         }
-
         //create image view
         VkImageViewType view_type = ConvertImageViewType(type, isCube, layer_num);
         // m_ImageAspect 包含所有平面（depth+stencil），用于 pipeline barrier 覆盖全部平面

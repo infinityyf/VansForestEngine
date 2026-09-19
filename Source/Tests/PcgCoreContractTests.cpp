@@ -7,6 +7,7 @@
 #include "../EngineCore/PcgCore/Serialization/VansPcgSplineAssetCodec.h"
 #include "../EngineCore/PcgCore/Storage/VansPcgSplineFieldStorage.h"
 #include "../EngineCore/RenderCore/WaterCore/VansWaterGeometryClipmap.h"
+#include "../EngineCore/RenderCore/WaterCore/VansRiverWaveSimulation.h"
 #include "../EngineCore/RenderCore/VegetationCore/VansVegetationCollection.h"
 
 #include <algorithm>
@@ -391,6 +392,8 @@ bool RunPcgCoreContractTests()
 		first.id="first";first.position={-50,10,0};first.outgoing=VansPcgSplineSegmentMode::Line;
 		last.id="last";last.position={50,10,0};river.points={first,last};
 		river.fadeInDistance=10;river.fadeOutDistance=20;
+		river.waterBlendStartMeters=10;river.waterBlendEndMeters=20;
+		river.wetBankWidthMeters=4;river.wetnessStrength=.8f;
 		std::string error;VansPcgEvaluatedSpline evaluated;
 		if (!Check(VansPcgSplineEvaluator::Evaluate(river,.5f,.01f,evaluated,error),error)) return false;
 		if (!Check(std::abs(evaluated.length-100)<.001f &&
@@ -399,6 +402,19 @@ bool RunPcgCoreContractTests()
 			std::abs(VansPcgSplineEvaluator::EndpointFade(river,5,100)-.5f)<1e-6f,
 			"Spline endpoint speed envelope is incorrect")) return false;
 		auto reversed=river;VansPcgSplineEvaluator::ReversePointOrder(reversed,100);
+        for(float along:{0.f,3.f,8.f,40.f,85.f,98.f,100.f})
+        {
+            const float weight=VansPcgSplineEvaluator::WaterEndpointWeight(river,along,100,2);
+            if(!Check(std::abs(weight-VansPcgSplineEvaluator::WaterEndpointWeight(reversed,100-along,100,2))<1e-6f,
+                "Point reversal moved the Water Level transition"))return false;
+            auto flowReversed=river;flowReversed.flowSign=-1;
+            if(!Check(weight==VansPcgSplineEvaluator::WaterEndpointWeight(flowReversed,along,100,2),
+                "Changing flow direction moved the Water Level transition"))return false;
+            auto continuation=river;continuation.continuation=true;continuation.envelopeOffset=along;
+            continuation.envelopeLength=100;
+            if(!Check(weight==VansPcgSplineEvaluator::WaterEndpointWeight(continuation,0,100-along,2),
+                "Continuation restarted the Water Level transition"))return false;
+        }
 		VansPcgEvaluatedSpline reverseSamples;
 		if (!Check(VansPcgSplineEvaluator::Evaluate(reversed,.5f,.01f,reverseSamples,error),error)) return false;
 		if (!Check(glm::length(VansPcgSplineEvaluator::Velocity(river,evaluated.samples[20],100)-
@@ -410,16 +426,176 @@ bool RunPcgCoreContractTests()
 		VansSerializedValue encoded;VansPcgSplineAsset decoded;
 		if (!Check(VansPcgSplineAssetCodec::Encode(asset,encoded,error) && VansPcgSplineAssetCodec::Decode(encoded,decoded,error) &&
 			VansPcgSplineAssetCodec::ContentHash(asset)==VansPcgSplineAssetCodec::ContentHash(decoded),"Spline serialization changed author data: "+error)) return false;
+		auto missingWetness=encoded;
+		const auto encodedSplines=std::find_if(missingWetness.objectFields.begin(),missingWetness.objectFields.end(),
+			[](const auto& field){return field.first=="splines";});
+		if (!Check(encodedSplines!=missingWetness.objectFields.end() && !encodedSplines->second.arrayItems.empty(),
+			"Spline wetness fixture is missing its river")) return false;
+		auto& riverFields=encodedSplines->second.arrayItems.front().objectFields;
+		riverFields.erase(std::remove_if(riverFields.begin(),riverFields.end(),
+			[](const auto& field){return field.first=="wetnessStrength";}),riverFields.end());
+		if (!Check(!VansPcgSplineAssetCodec::Decode(missingWetness,decoded,error),
+			"River spline accepted a missing required wetness field")) return false;
 		auto terrain=std::make_shared<VansTerrainAsset>();terrain->width=terrain->height=256;
 		terrain->settings.terrainSize=128;terrain->settings.maxHeight=32;terrain->settings.heightOffset=0;
 		terrain->heights.assign(256*256,32768);for(auto& splat:terrain->splatPixels)splat.resize(256*256*4);
 		const auto base=terrain->heights;
 		auto field=VansPcgSplineFieldBuilder::Build(asset,terrain,{},error);
 		if (!Check(bool(field),error)) return false;
+		const auto coverageAt=[](const VansPcgSplineFieldSnapshot& snapshot,float x,float z) {
+			const float gx=(x+snapshot.worldSize*.5f)/snapshot.texelSize-.5f;
+			const float gz=(z+snapshot.worldSize*.5f)/snapshot.texelSize-.5f;
+			const int ix=static_cast<int>(std::floor(gx)),iz=static_cast<int>(std::floor(gz));
+			const float fx=gx-ix,fz=gz-iz;glm::vec4 value(0);
+			for(int dz=0;dz<2;++dz)for(int dx=0;dx<2;++dx)
+			{
+				const int px=ix+dx,pz=iz+dz;
+				if(px<0||pz<0||px>=int(snapshot.resolution)||pz>=int(snapshot.resolution))continue;
+				const auto* tile=snapshot.FindTile(px/VANS_SPLINE_TILE_SIZE,pz/VANS_SPLINE_TILE_SIZE);
+				if(!tile)continue;
+				const auto pixel=std::size_t(pz%VANS_SPLINE_TILE_SIZE+VANS_SPLINE_TILE_BORDER)*
+					VANS_SPLINE_TILE_EXTENT+px%VANS_SPLINE_TILE_SIZE+VANS_SPLINE_TILE_BORDER;
+				value+=(dx?fx:1-fx)*(dz?fz:1-fz)*tile->coverage[pixel];
+			}
+			return value;
+		};
+		const glm::vec4 wetCenter=coverageAt(*field,0,0);
+		const glm::vec4 wetBank=coverageAt(*field,0,4);
+		const glm::vec4 wetOuter=coverageAt(*field,0,6);
+		const glm::vec4 dryOutside=coverageAt(*field,0,8);
+		if(!Check(wetCenter.z>.79f && wetCenter.w>.99f && wetCenter.z<wetCenter.w &&
+			wetBank.z<wetCenter.z && wetBank.z>wetOuter.z && wetOuter.z>0 && dryOutside.z<1e-5f,
+			"River wetness must fill the bed and fade monotonically beyond the bank independently of deformation")) return false;
+		auto lessWet=asset;lessWet.splines.front().wetnessStrength=.4f;
+		const auto lessWetField=VansPcgSplineFieldBuilder::Build(lessWet,terrain,field,error);
+		if(!Check(lessWetField && lessWetField->effectiveTerrain==field->effectiveTerrain &&
+			coverageAt(*lessWetField,0,0).z>.39f && coverageAt(*lessWetField,0,0).z<.41f,
+			"Wetness-only edits must rebuild coverage without invalidating terrain geometry")) return false;
+        float sampledHeight;glm::vec2 sampledVelocity;glm::vec4 sampledProperties;
+        if(!Check(field->SampleRiver({0,0},sampledHeight,sampledVelocity,sampledProperties) &&
+            std::abs(sampledHeight-9.85f)<1e-4f && sampledVelocity.x>0 && sampledProperties.x>.99f,
+            "Runtime river sampler lost water level, velocity or interior weight"))return false;
+        if(!Check(!field->SampleRiver({1000,1000},sampledHeight,sampledVelocity,sampledProperties),
+            "River sampling outside the field must not read stale pages"))return false;
+        const auto startBlend=field->SampleWaterBlend({-50,0});
+        const auto endBlend=field->SampleWaterBlend({50,0});
+        if(!Check(startBlend.x<.001f && endBlend.x<.001f &&
+            std::abs(field->SampleWaterBlend({-45,0}).x-.5f)<.002f &&
+            std::abs(field->SampleWaterBlend({40,0}).x-.5f)<.002f &&
+            field->SampleWaterBlend({0,0}).x==1 && field->SampleWaterBlend({0,10})==glm::vec3(0) &&
+            field->SampleWaterBlend({1000,0})==glm::vec3(0),
+            "Water Level transitions must reach ocean at endpoints, river inside, and zero outside"))return false;
+        float previousBlend=-1;
+        for(int i=0;i<=10000;++i)
+        {
+            const float weight=VansPcgSplineEvaluator::WaterEndpointWeight(river,i*.01f,100,2);
+            if(!Check(weight>=0 && weight<=1,"Water blend polynomial exceeded its finite storage range"))return false;
+        }
+        for(int i=0;i<=100;++i)
+        {
+            const float value=field->SampleWaterBlend({-51+i*.12f,0}).x;
+            if(!Check(value>=previousBlend && value>=0 && value<=1,"River mouth blend is not monotonic"))return false;
+            previousBlend=value;
+        }
+        for(const glm::vec2 position:{glm::vec2(-44.9f,.1f),glm::vec2(40.1f,.1f),glm::vec2(.1f,3.1f)})
+        {
+            const auto blend=field->SampleWaterBlend(position);
+            constexpr float epsilon=.01f;
+            const glm::vec2 numeric(
+                (field->SampleWaterBlend(position+glm::vec2(epsilon,0)).x-field->SampleWaterBlend(position-glm::vec2(epsilon,0)).x)/(2*epsilon),
+                (field->SampleWaterBlend(position+glm::vec2(0,epsilon)).x-field->SampleWaterBlend(position-glm::vec2(0,epsilon)).x)/(2*epsilon));
+            if(!Check(glm::length(glm::vec2(blend.y,blend.z)-numeric)<.001f,
+                "Water transition derivatives disagree with finite differences"))return false;
+        }
+        if(!Check(glm::length(field->SampleWaterBlend({-.001f,3.1f})-field->SampleWaterBlend({.001f,3.1f}))<.001f,
+            "Water transition changed across a PCG tile guard"))return false;
+        auto wider=asset;wider.splines[0].waterBlendWidthMeters=4;wider.splines[0].waterBlendEndMeters=40;
+        // 关闭旧的流速端部淡出，单独验证水面过渡会减慢真实搬运速度，不能仅减小图像权重。
+        auto coastFlow=asset;coastFlow.splines[0].fadeInDistance=coastFlow.splines[0].fadeOutDistance=0;
+        const auto coastFlowField=VansPcgSplineFieldBuilder::Build(coastFlow,terrain,field,error);
+        if(!Check(bool(coastFlowField),error))return false;
+        float previousSpeed=3;
+        for(float x:{30.1f,35.1f,40.1f,45.1f,48.1f})
+        {
+            if(!Check(coastFlowField->SampleRiver({x,0},sampledHeight,sampledVelocity,sampledProperties),
+                "Coastal flow fixture lost its river"))return false;
+            const float speed=glm::length(sampledVelocity),blend=coastFlowField->SampleWaterBlend({x,0}).x;
+            if(!Check(speed<previousSpeed && std::abs(speed-2*blend)<1e-5f,
+                "River flow must slow with the wave transition, independently of old endpoint fades"))return false;
+            previousSpeed=speed;
+        }
+        const auto widerField=VansPcgSplineFieldBuilder::Build(wider,terrain,field,error);
+        if(!Check(widerField && widerField->effectiveTerrain==field->effectiveTerrain && widerField->rebuiltTileCount>0 &&
+            widerField->SampleWaterBlend({0,3}).x<field->SampleWaterBlend({0,3}).x &&
+            widerField->SampleWaterBlend({40,0}).x<field->SampleWaterBlend({40,0}).x,
+            "Transition edits must affect blend without rebuilding terrain"))return false;
+        auto invalidBlend=asset;invalidBlend.splines[0].waterBlendWidthMeters=-1;
+        if(!Check(!ValidatePcgSplineAsset(invalidBlend,false).empty(),"Negative water blend width was accepted"))return false;
+        // 河流汇流采用并集：端部消退的支流不能把另一条完整河流混回全局水面。
+        auto overlap=asset;auto tributary=river;tributary.id="blend-tributary";
+        for(auto& point:tributary.points)point.id="blend-"+point.id;
+        tributary.waterBlendStartMeters=tributary.waterBlendEndMeters=1000;overlap.splines.push_back(tributary);
+        const auto overlapField=VansPcgSplineFieldBuilder::Build(overlap,terrain,field,error);
+        if(!Check(overlapField && overlapField->SampleWaterBlend({0,0}).x==1,
+            "Tributary endpoint erased the main river blend"))return false;
+        VansGraphics::VansRiverWaveSimulation packets60,packets30;
+        for(int frame=0;frame<180;++frame)packets60.Update(1.f/60,field.get(),{0,0},1.8f,8);
+        for(int frame=0;frame<90;++frame)packets30.Update(1.f/30,field.get(),{0,0},1.8f,8);
+        const auto before=packets60.GpuData();
+        if(!Check(before==packets30.GpuData() && before.size()>1026 &&
+            before.size()<=VansGraphics::VansRiverWaveSimulation::MaxGpuVectors,
+            "River packets must be frame-rate independent and fit their bounded spatial index"))return false;
+        bool leftHeading=false,rightHeading=false,shortWave=false,longWave=false;
+        for(int bucket=0;bucket<1024;++bucket)
+        {
+            const auto range=before[2+bucket];
+            if(!Check(std::size_t(range.x+range.y*VansGraphics::VansRiverWaveSimulation::PacketVectorCount)<=before.size(),"Invalid river particle bucket"))return false;
+            for(int i=0;i<int(range.y);++i)
+            {
+                const auto p=before[int(range.x)+i*VansGraphics::VansRiverWaveSimulation::PacketVectorCount];const auto wave=before[int(range.x)+i*VansGraphics::VansRiverWaveSimulation::PacketVectorCount+1];
+                if(!Check(std::isfinite(p.x) && std::isfinite(wave.w) && wave.x>.945f && std::abs(wave.y)<.32f,
+                    "River packet direction spread exceeded its local flow cone"))return false;
+                leftHeading|=wave.y<-.1f;rightHeading|=wave.y>.1f;
+                const float wavelength=6.28318530718f/wave.z;
+                shortWave|=wavelength<1.5f;longWave|=wavelength>2.1f;
+                const auto medium=before[int(range.x)+i*VansGraphics::VansRiverWaveSimulation::PacketVectorCount+2];
+                const auto fine=before[int(range.x)+i*VansGraphics::VansRiverWaveSimulation::PacketVectorCount+3];
+                if(!Check(medium.z>wave.z*2 && fine.z>medium.z*1.5f &&
+                    std::isfinite(medium.w) && std::isfinite(fine.w) &&
+                    glm::dot(glm::vec2(medium),glm::vec2(wave))>.9f &&
+                    glm::dot(glm::vec2(fine),glm::vec2(wave))>.9f,
+                    "River detail carriers must retain separate frequency bands within the flow direction cone"))return false;
+            }
+        }
+        if(!Check(leftHeading && rightHeading && shortWave && longWave,
+            "River packets lost their balanced heading spread or wavelength distribution"))return false;
+        packets60.Update(1.f/60,field.get(),{0,0},1.8f,8);
+        if(!Check(packets60.GpuData()!=before,"River packets did not advance"))return false;
+        packets60.Update(1,nullptr,{0,0},1.8f,8);
+        if(!Check(packets60.GpuData().size()==1026 && packets60.GpuData()[0].w==0,
+            "Removing river fields must clear their wave simulation"))return false;
 		if (!Check(terrain->heights==base && field->roads.empty() && field->effectiveTerrain->heights!=base,
 			"River must carve a derived terrain without creating mesh or overwriting base pixels")) return false;
 		const auto unchanged=VansPcgSplineFieldBuilder::Build(asset,terrain,field,error);
 		if (!Check(unchanged==field,"Unchanged author inputs regenerated the field")) return false;
+		// 手工河床模式必须保留源地形，同时保留水位、流向和湿岸；来回切换应使缓存正确失效。
+		auto sculpted=asset;sculpted.splines.front().carveRiverbed=false;
+		VansSerializedValue sculptedEncoded;VansPcgSplineAsset sculptedDecoded;
+		if (!Check(VansPcgSplineAssetCodec::Encode(sculpted,sculptedEncoded,error) &&
+			VansPcgSplineAssetCodec::Decode(sculptedEncoded,sculptedDecoded,error) &&
+			!sculptedDecoded.splines.front().carveRiverbed &&
+			VansPcgSplineAssetCodec::ContentHash(sculptedDecoded)!=VansPcgSplineAssetCodec::ContentHash(asset),
+			"Riverbed authoring mode was lost in serialization or content hashing")) return false;
+		const auto sculptedField=VansPcgSplineFieldBuilder::Build(sculptedDecoded,terrain,field,error);
+		if (!Check(sculptedField && sculptedField->effectiveTerrain->heights==base && sculptedField->roads.empty() &&
+			coverageAt(*sculptedField,0,0).w==0 &&
+			std::abs(coverageAt(*sculptedField,0,4).z-wetBank.z)<1e-6f &&
+			sculptedField->SampleRiver({0,0},sampledHeight,sampledVelocity,sampledProperties) &&
+			std::abs(sampledHeight-9.85f)<1e-4f && sampledVelocity.x>0 && sampledProperties.x>.99f,
+			"Disabling river carving must preserve terrain, water, flow and wet banks")) return false;
+		const auto restoredCarving=VansPcgSplineFieldBuilder::Build(asset,terrain,sculptedField,error);
+		if (!Check(restoredCarving && restoredCarving->effectiveTerrain->heights==field->effectiveTerrain->heights,
+			"Re-enabling river carving reused stale manually sculpted terrain")) return false;
 		const auto heightAt=[](const VansPcgSplineFieldSnapshot& surface,unsigned row) {
 			return surface.effectiveTerrain->heights[std::size_t(row)*256+128]*(32.f/65535.f);
 		};
@@ -482,15 +658,18 @@ bool RunPcgCoreContractTests()
 		const auto* tile=merged->FindTile(2,2);
 		const std::size_t center=VANS_SPLINE_TILE_EXTENT+1;
 		if (!Check(tile && tile->hasRiver && std::abs(tile->heights[center].y-10.85f)<1e-4f &&
-			glm::length(tile->velocities[center])<1e-5f && tile->domains.size()==2 && !merged->warnings.empty(),
-			"Overlapping rivers did not blend height, cancel opposing velocities, or retain coordinate domains")) return false;
+			glm::length(tile->velocities[center])<1e-5f && tile->riverProperties[center].x>0 && !merged->warnings.empty(),
+			"Overlapping rivers did not blend height, cancel opposing velocities, or retain river coverage")) return false;
 		const auto cachePath=std::filesystem::temp_directory_path()/(VansAssetGuid::New().ToString()+".pcgfields");
 		struct CacheCleanup {std::filesystem::path path;~CacheCleanup(){std::error_code ignored;std::filesystem::remove(path,ignored);}} cleanup{cachePath};
 		if (!Check(VansPcgSplineFieldStorage::Save(cachePath,*merged,error),error)) return false;
 		const auto restored=VansPcgSplineFieldStorage::Load(cachePath,asset,terrain,error);
 		if (!Check(restored && restored->effectiveTerrain->heights==merged->effectiveTerrain->heights &&
 			restored->tiles.size()==merged->tiles.size() && restored->FindTile(2,2)->velocities==tile->velocities &&
-			restored->FindTile(2,2)->domains[1].coordinates==tile->domains[1].coordinates,"Baked fields changed after reload: "+error)) return false;
+			restored->FindTile(2,2)->riverProperties==tile->riverProperties &&
+            restored->FindTile(2,2)->waterBlend==tile->waterBlend,"Baked fields changed after reload: "+error)) return false;
+        auto staleBlend=asset;staleBlend.splines[0].waterBlendEndMeters+=1;
+        if(!Check(!VansPcgSplineFieldStorage::Load(cachePath,staleBlend,terrain,error),"Stale water transition bake was accepted"))return false;
 		auto edited=asset;edited.splines[0].points[0].speed+=1;
 		if (!Check(!VansPcgSplineFieldStorage::Load(cachePath,edited,terrain,error),"Stale authored flow cache was accepted")) return false;
 		auto terrainEdit=std::make_shared<VansTerrainAsset>(*terrain);terrainEdit->heights[0]+=1;
@@ -507,7 +686,7 @@ bool RunPcgCoreContractTests()
         road.material=VansAssetGuid::New();road.points={first,last};road.textureRepeat=6;
         road.points.front().leftWidth=2;road.points.front().rightWidth=3;
         road.points.back().leftWidth=4;road.points.back().rightWidth=5;
-        for(auto& p:road.points)p.bankAngleDegrees=12;
+        for(auto& p:road.points){p.bankAngleDegrees=12;p.linkedWidth=false;}
         asset.splines={road};const auto roadField=VansPcgSplineFieldBuilder::Build(asset,terrain,{},error);
         if (!Check(roadField && roadField->roads.size()==1,error)) return false;
         const auto& vertices=roadField->roads.at(road.id)->vertices;
@@ -531,6 +710,7 @@ bool RunPcgCoreContractTests()
                 glm::length(vertices[i].uv-reversedVertices[vertices.size()-1-i].uv)<1e-4f,
                 "Reversing a road changed physical texture placement")) return false;
 		std::cout<<"[PcgSpline] Spline serialization, projected flow, overlap, incremental reuse and terrain restoration passed\n";
+        std::cout<<"[PcgSpline] Water Level blend endpoints, derivatives, tile guards, reversal, continuation and bake reload passed\n";
 		return true;
 	};
 	if (!splineContracts()) return false;

@@ -1,4 +1,4 @@
-﻿#include "VansProjectWindow.h"
+#include "VansProjectWindow.h"
 #include "../VansEditorWindow.h"
 #include "../VansEditorObjectReference.h"
 #include "../../SceneCore/VansSceneDocumentLoader.h"
@@ -195,8 +195,21 @@ void VansGraphics::VansProjectWindow::DrawProjectContents(Vans::EditorAPI::IEngi
         if (m_CachedRootPath != rootPath)
         {
             m_CachedRootPath = rootPath;
-            m_CurrentDirectory = rootPath;
+            m_CurrentDirectory = root.projectLoaded ? root.assetsRootPath : rootPath;
         }
+
+        auto acceptPrefabCreation = [&](const std::filesystem::path& directory)
+        {
+            if (!root.projectLoaded || !ImGui::BeginDragDropTarget()) return;
+            if (const auto* payload = ImGui::AcceptDragDropPayload(Vans::VansObjectReferenceDragPayloadType))
+            {
+                Vans::EditorObjectHandle object;
+                if (Vans::TryDeserializeEditorObjectHandle(payload->Data, static_cast<std::size_t>(payload->DataSize), object) &&
+                    object.domain == Vans::EditorObjectDomain::SceneEntity)
+                    VansEditorWindow::QueuePrefabCreation(object.entityGuid, directory.string(), object.path);
+            }
+            ImGui::EndDragDropTarget();
+        };
 
         // Left Panel: Directory Tree
         ImGui::BeginChild("LeftPanel", ImVec2(200, 0), true);
@@ -206,6 +219,7 @@ void VansGraphics::VansProjectWindow::DrawProjectContents(Vans::EditorAPI::IEngi
             for (const auto& entry : std::filesystem::directory_iterator(path)) {
                 if (entry.is_directory()) {
                     bool open = ImGui::TreeNode(entry.path().filename().string().c_str());
+                    acceptPrefabCreation(entry.path());
                     if (ImGui::IsItemClicked()) {
                         m_CurrentDirectory = entry.path();
                     }
@@ -291,7 +305,7 @@ void VansGraphics::VansProjectWindow::DrawProjectContents(Vans::EditorAPI::IEngi
 							const bool gameplayAsset = Vans::VansGameplayAssetSchemaRegistry::IsGameplayAssetType(
 								Vans::VansAssetDatabase::Classify(entry.path()));
 							if (extension == ".vanimator" || extension == ".vbonemask" ||
-								extension == ".vtimeline" || gameplayAsset)
+								extension == ".vtimeline" || extension == ".vprefab" || gameplayAsset)
 							{
 								VansEditorWindow::OpenAssetForAuthoring(entry.path().string());
 							}
@@ -315,6 +329,7 @@ void VansGraphics::VansProjectWindow::DrawProjectContents(Vans::EditorAPI::IEngi
             ImGui::EndTable();
         }
         ImGui::EndChild();
+        acceptPrefabCreation(m_CurrentDirectory);
 
         ImGui::End();
     }

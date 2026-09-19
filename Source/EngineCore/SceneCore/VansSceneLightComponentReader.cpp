@@ -109,10 +109,32 @@ VansSceneLightShadowConfig DecodeShadowConfig(const VansSerializedValue& lightNo
 }
 }
 
+VansSceneLightCookieConfig DecodeCookieConfig(const VansSerializedValue& lightNode)
+{
+    VansSceneLightCookieConfig c;
+    const auto* node = ReadObjectField(lightNode, "cookie");
+    if (!node) return c;
+    c.enabled = ReadOptionalBoolField(*node, "enabled").value_or(false);
+    if (const auto* texture = ReadObjectField(*node, "texture"))
+        c.textureGuid = ReadOptionalStringField(*texture, "guid").value_or("");
+    c.strength = ReadOptionalFloatField(*node, "strength").value_or(1.0f);
+    c.sizeX = ReadOptionalFloatField(*node, "sizeX").value_or(10.0f);
+    c.sizeY = ReadOptionalFloatField(*node, "sizeY").value_or(10.0f);
+    c.scaleX = ReadOptionalFloatField(*node, "scaleX").value_or(1.0f);
+    c.scaleY = ReadOptionalFloatField(*node, "scaleY").value_or(1.0f);
+    c.offsetX = ReadOptionalFloatField(*node, "offsetX").value_or(0.0f);
+    c.offsetY = ReadOptionalFloatField(*node, "offsetY").value_or(0.0f);
+    c.rotationDegrees = ReadOptionalFloatField(*node, "rotationDegrees").value_or(0.0f);
+    c.repeat = ReadOptionalBoolField(*node, "repeat").value_or(false);
+    c.useAlpha = ReadOptionalBoolField(*node, "useAlpha").value_or(false);
+    return c;
+}
+
 VansSceneDirectionalLightComponentConfig VansSceneLightComponentReader::ReadDirectionalLight(
 	const VansSerializedValue& lightNode)
 {
 	VansSceneDirectionalLightComponentConfig config;
+	config.cookie = DecodeCookieConfig(lightNode);
 	config.color = ReadOptionalColorField(lightNode);
 	config.intensity = ReadOptionalFloatField(lightNode, "intensity");
 	return config;
@@ -122,6 +144,7 @@ VansScenePointLightComponentConfig VansSceneLightComponentReader::ReadPointLight
 	const VansSerializedValue& lightNode)
 {
 	VansScenePointLightComponentConfig config;
+	config.cookie = DecodeCookieConfig(lightNode);
 	config.color = ReadOptionalColorField(lightNode);
 	config.intensity = ReadOptionalFloatField(lightNode, "intensity");
 	config.radius = ReadOptionalFloatField(lightNode, "radius");
@@ -134,6 +157,7 @@ VansSceneSpotLightComponentConfig VansSceneLightComponentReader::ReadSpotLight(
 	const VansSerializedValue& lightNode)
 {
 	VansSceneSpotLightComponentConfig config;
+	config.cookie = DecodeCookieConfig(lightNode);
 	config.color = ReadOptionalColorField(lightNode);
 	config.intensity = ReadOptionalFloatField(lightNode, "intensity");
 	config.radius = ReadOptionalFloatField(lightNode, "radius");
@@ -149,6 +173,7 @@ VansSceneRectLightComponentConfig VansSceneLightComponentReader::ReadRectLight(
 	const VansSerializedValue& lightNode)
 {
 	VansSceneRectLightComponentConfig config;
+	config.cookie = DecodeCookieConfig(lightNode);
 	config.color = ReadOptionalColorField(lightNode);
 	config.intensity = ReadOptionalFloatField(lightNode, "intensity");
 	config.width = ReadOptionalFloatField(lightNode, "width");

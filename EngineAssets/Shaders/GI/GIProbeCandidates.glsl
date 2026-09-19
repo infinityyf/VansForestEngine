@@ -49,7 +49,7 @@ GIProbeCandidates GI_GatherProbeCandidates(uint region, ivec3 counts,
 #endif
     GIProbeCandidates result = GI_EmptyProbeCandidates(worldPos);
 #ifdef GI_PROBE_LAYOUT_DATA_GLSL
-    if (GI_LayoutIsSparse())
+    if (GI_LayoutRegionIsSparse(region))
     {
         vec3 samplePos;
         uint node = GI_LayoutLocateSampleNode(region, worldPos, N, normalBias, samplePos);
@@ -81,6 +81,7 @@ GIProbeCandidates GI_GatherProbeCandidates(uint region, ivec3 counts,
         }
         return GI_EmptyProbeCandidates(samplePos);
     }
+    GI_LayoutQueryBounds(region, counts, volumeMin, volumeSize);
 #endif
     vec3 spacing = volumeSize / vec3(counts);
     result.samplePosition = clamp(worldPos + N * max(normalBias, 0.0),
@@ -94,6 +95,9 @@ GIProbeCandidates GI_GatherProbeCandidates(uint region, ivec3 counts,
         ivec3 tap = clamp(base + corner, ivec3(0), counts - 1);
         vec3 blend = mix(1.0 - fraction, fraction, vec3(corner));
         result.probes[i] = GI_ProbeAtlasLinearIndex(tap, counts);
+#ifdef GI_PROBE_LAYOUT_DATA_GLSL
+        result.probes[i] = GI_LayoutRegularAddress(region, tap, counts);
+#endif
         result.positions[i] = volumeMin + (vec3(tap) + 0.5) * spacing;
         result.weights[i] = blend.x * blend.y * blend.z;
     }

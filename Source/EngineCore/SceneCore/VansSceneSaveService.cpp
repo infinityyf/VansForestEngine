@@ -33,9 +33,9 @@ SceneSaveResult VansSceneSaveService::SaveSnapshot(VansSceneDocument& document,
 	VansScopedIOContext ioContext(
 		VansIODomain::Authoring, "SceneDocument.Save", true);
     const SceneJson snapshotRoot =
-        EncodeSerializedValueJson<SceneJson>(snapshot.SerializedRootSnapshot());
+        EncodeSerializedValueJson<SceneJson>(snapshot.AuthoringRootSnapshot());
     if (!document.IsHealthy() || !snapshotRoot.is_object() ||
-        !VansSceneSchema::ValidateSceneJson(snapshotRoot).empty())
+        !VansSceneSchema::ValidateSceneJson(EncodeSerializedValueJson<SceneJson>(snapshot.SerializedRootSnapshot())).empty())
         return { SceneSaveError::InvalidDocument, "Cannot save an invalid scene document", rawTarget, false };
     if (rawTarget.empty())
         return { SceneSaveError::InvalidTarget, "Scene save target is empty", rawTarget, false };

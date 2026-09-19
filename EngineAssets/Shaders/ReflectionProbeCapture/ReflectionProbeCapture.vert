@@ -1,19 +1,16 @@
 #version 450
-#extension GL_EXT_shader_16bit_storage : require
-#extension GL_EXT_shader_explicit_arithmetic_types : require
 
-layout(location = 0) in f16vec3 inPosition;
-layout(location = 1) in f16vec2 inUV;
-layout(location = 2) in f16vec3 inNormal;
-layout(location = 3) in f16vec4 inTangentFrame;
+// 顶点缓冲仍为半精度；固定功能读取转换为 float，无需 StorageInputOutput16。
+layout(location = 0) in vec3 inPosition;
+layout(location = 1) in vec2 inUV;
+layout(location = 2) in vec3 inNormal;
+layout(location = 3) in vec4 inTangentFrame;
 
 layout(set = 1, binding = 0) uniform CaptureCamera
 {
     mat4 viewProjection;
     mat4 inverseViewProjection;
     vec4 position;
-    vec4 giVolumeMin;
-    vec4 giVolumeSizeAndBias;
 } captureCamera;
 
 layout(push_constant) uniform CaptureDraw

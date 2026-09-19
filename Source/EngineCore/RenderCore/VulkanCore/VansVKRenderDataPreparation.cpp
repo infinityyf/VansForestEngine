@@ -9,6 +9,7 @@
 #include "../../Configration/VansConfigration.h"
 #include "../../Util/VansLog.h"
 #include "../LTC/LTCData.h"
+#include "../VegetationCore/GrassEnergyLUT.h"
 #include "../VansPostProcessProfile.h"
 #include <cmath>
 #include <algorithm>
@@ -262,6 +263,13 @@ namespace VansGraphics
 			else
 				payload.values[5][pendingTexture.textureSlot - 4] = static_cast<float>(globalTextureIndex);
 			appendTextureSlot(nullptr, "custom", pendingTexture.texture, "defaultAlbedo");
+		}
+		if (!IsBindlessTextureCountSupported(materialManager->m_GlobalPBRTextures.size()))
+		{
+			VANS_LOG_ERROR("[PreparePBRMaterialData] Bindless texture heap overflow: requested="
+				<< materialManager->m_GlobalPBRTextures.size() << ", capacity="
+				<< MAX_BINDLESS_TEXTURES << ". Excess descriptors will not be submitted.");
+			materialManager->m_GlobalPBRTextures.resize(MAX_BINDLESS_TEXTURES);
 		}
 
         for (auto* rawMaterial : allmaterials)
@@ -531,6 +539,12 @@ namespace VansGraphics
 
 		manager->m_BRDFIntegralLUT = new VansTexture();
 		loadEngineTexture(manager->m_BRDFIntegralLUT, projectRoot + "EngineAssets/Textures/BRDFIntegralLUT.png", false, false, false);
+
+        manager->m_GrassEnergyLUT = new VansTexture();
+        manager->m_GrassEnergyLUT->LoadFromMemory(m_VansVKCommandBuffer,
+            GrassEnergyLUT::Pixels, sizeof(GrassEnergyLUT::Pixels),
+            GrassEnergyLUT::Size, GrassEnergyLUT::Size, VK_FORMAT_R16G16B16A16_SFLOAT,
+            VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 
 		const std::string skinLutPath = projectRoot + "EngineAssets/Textures/SkinBSDFLUT.png";
 		manager->m_SkinBSDFLUT = new VansTexture();

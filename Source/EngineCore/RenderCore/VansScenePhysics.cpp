@@ -286,9 +286,6 @@ VansEngine::VansPhysicsNode* VansGraphics::VansScenePhysicsComponentBuilder::Loa
     if (config.enabled)
         properties.enabled = *config.enabled;
     
-    if (!properties.enabled)
-        return nullptr;
-
     if (config.bodyType)
         ApplyBodyType(*config.bodyType, properties);
     if (config.colliderType)
@@ -361,7 +358,7 @@ VansEngine::VansPhysicsNode* VansGraphics::VansScenePhysicsComponentBuilder::Loa
 	if (config.name)
 		physicsNode->SetName(*config.name);
     physicsNode->Initialize(properties, transformID, mesh);
-	if (!physicsNode->IsEnabled() || physicsNode->GetActor() == nullptr)
+	if (properties.enabled && (!physicsNode->IsEnabled() || physicsNode->GetActor() == nullptr))
 	{
 		VANS_LOG_ERROR("[VansScene] Failed to initialize physics component '"
 			<< physicsNode->GetName() << "'");

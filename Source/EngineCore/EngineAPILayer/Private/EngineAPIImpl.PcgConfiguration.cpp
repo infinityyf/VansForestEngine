@@ -81,6 +81,7 @@ PcgPlantConfiguration EngineAPIImpl::GetPcgPlantConfiguration(const std::string&
     result.render.castShadows=plant.render.castShadows;
     result.render.cullDistance=plant.render.cullDistance;
     result.render.hizBias=plant.render.hizBias;
+    result.render.lodDistances=plant.render.lodDistances;result.render.lodHysteresis=plant.render.lodHysteresis;
     for (const auto& variant : plant.variants) {
         PcgPlantVariant item;
         item.id=variant.id;item.name=variant.name;item.geometry=static_cast<PcgGeometry>(variant.geometry);
@@ -91,6 +92,11 @@ PcgPlantConfiguration EngineAPIImpl::GetPcgPlantConfiguration(const std::string&
     item.offset=variant.offset;
     item.scale=variant.scale;
     item.rotation=variant.rotation;
+    item.lodRatios=variant.lodSettings.ratios;item.lodMaximumError=variant.lodSettings.maximumError;
+    item.lodBuildKey=variant.lod.buildKey;
+    for(const auto& level:variant.lod.levels){ModelLodLevel output;for(const auto& part:level.parts)
+        output.parts.push_back({part.model.ToString(),part.material.ToString(),part.submesh,part.sourcePart,part.triangleCount,part.error});
+        item.lodLevels.push_back(std::move(output));}
         for (const auto& part : variant.parts) {
             PcgPlantPart value;
             value.id=part.id;value.kind=static_cast<PcgPartKind>(part.kind);value.submesh=part.submesh;
@@ -175,6 +181,7 @@ PcgEditorOperationResult EngineAPIImpl::ApplyPcgPlantConfiguration(const PcgPlan
     plant.render.castShadows=configuration.render.castShadows;
     plant.render.cullDistance=configuration.render.cullDistance;
     plant.render.hizBias=configuration.render.hizBias;
+    plant.render.lodDistances=configuration.render.lodDistances;plant.render.lodHysteresis=configuration.render.lodHysteresis;
     for (const auto& variant : configuration.variants) {
         VansPlantVariant item;
         item.id=variant.id.empty()?VansAssetGuid::New().ToString():variant.id;
@@ -193,6 +200,12 @@ PcgEditorOperationResult EngineAPIImpl::ApplyPcgPlantConfiguration(const PcgPlan
             if (!ReadGuid(part.mesh,value.mesh,error) || !ReadGuid(part.material,value.material,error)) return {false,error};
             item.parts.push_back(std::move(value));
         }
+        item.lodSettings.ratios=variant.lodRatios;item.lodSettings.maximumError=variant.lodMaximumError;
+
+        const auto old=std::find_if(previous.variants.begin(),previous.variants.end(),[&](const auto& v){return v.id==item.id;});
+        if(old!=previous.variants.end() && old->lodSettings.ratios==item.lodSettings.ratios && old->lodSettings.maximumError==item.lodSettings.maximumError &&
+            old->parts.size()==item.parts.size() && std::equal(old->parts.begin(),old->parts.end(),item.parts.begin(),[](const auto& a,const auto& b){
+                return a.mesh==b.mesh&&a.material==b.material&&a.submesh==b.submesh&&a.kind==b.kind;}))item.lod=old->lod;
         plant.variants.push_back(std::move(item));
     }
     VansSerializedValue root;

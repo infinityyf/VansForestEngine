@@ -2,6 +2,7 @@
 
 #include "VansTriangleGeometryQuery.h"
 #include <string>
+#include <functional>
 
 namespace VansGraphics
 {
@@ -18,6 +19,9 @@ namespace VansGraphics
         VansTriangleGeometryQuery opaque;
         std::vector<VansGeometryTriangle> transmissionReceivers;
         std::vector<VansGeometryReceiverBounds> dynamicReceivers;
+        // Optional native scene fields supply layout constraints without triangle or entity proxies.
+        std::function<bool(glm::vec3,float)> additionalPositionValid;
+        std::function<VansGeometrySurfaceMeasure(glm::vec3,glm::vec3)> additionalSurface;
         uint32_t meshCount = 0;
         uint32_t staticInstanceCount = 0;
         uint32_t dynamicInstanceCount = 0;

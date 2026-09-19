@@ -1,7 +1,6 @@
 #ifndef TERRAIN_COMMON_GLSL
 #define TERRAIN_COMMON_GLSL
 
-#include "TerrainNoise.glsl"
 #include "../Common/PcgSplineFields.glsl"
 
 layout(set = 1, binding = 0) uniform sampler2D heightMap;
@@ -11,6 +10,7 @@ layout(set = 1, binding = 6) uniform TerrainParams
     ivec4 layerCountPacked;
     float tilingFactors[8];
     vec4 heightfieldParams; // x=terrainSize, y=maxHeight, z=heightOffset, w=patchGridResolution
+    vec4 riverWetnessParams; // x=albedoScale, y=roughness, z=detailNormalScale
 } terrainParams;
 
 layout(set = 1, binding = 7) uniform TessellationParams
@@ -20,18 +20,6 @@ layout(set = 1, binding = 7) uniform TessellationParams
     float targetEdgePixels;
     float padding;
 } tessParams;
-
-layout(set = 1, binding = 8) uniform NoiseDetailParams
-{
-    float noiseStrength;
-    float noiseFrequency;
-    float noiseLacunarity;
-    float noiseGain;
-    int noiseOctaves;
-    float noiseWarpStrength;
-    float fadeStart;
-    float noisePadding;
-} noiseParams;
 
 const uint TerrainEdgeLeft = 1u;
 const uint TerrainEdgeRight = 2u;
@@ -69,89 +57,19 @@ float TerrainSampleBaseWorldHeight(vec2 worldXZ)
     return texture(heightMap, TerrainWorldXZToHeightUV(worldXZ)).r * TerrainMaxHeight() + TerrainHeightOffset();
 }
 
-int TerrainGeometryNoiseOctaves()
-{
-    return noiseParams.noiseOctaves;
-}
-
-float TerrainEvaluateNoise(vec2 worldXZ, int octaves)
-{
-    if (noiseParams.noiseWarpStrength > 0.001)
-    {
-        return terrainDetailFbmWarped(
-            worldXZ * noiseParams.noiseFrequency,
-            octaves,
-            noiseParams.noiseGain,
-            noiseParams.noiseLacunarity,
-            noiseParams.noiseWarpStrength);
-    }
-
-    return terrainDetailFbm(
-        worldXZ * noiseParams.noiseFrequency,
-        octaves,
-        noiseParams.noiseGain,
-        noiseParams.noiseLacunarity);
-}
-
-float TerrainNoiseFade(vec2 worldXZ, float baseWorldHeight)
-{
-    if (noiseParams.noiseStrength <= 0.0 || tessParams.tessDistance <= 0.0)
-        return 0.0;
-
-    float distanceToCamera = distance(vec3(worldXZ.x, baseWorldHeight, worldXZ.y), cameraPosition.xyz);
-    return 1.0 - smoothstep(
-        tessParams.tessDistance * noiseParams.fadeStart,
-        tessParams.tessDistance,
-        distanceToCamera);
-}
+// 材质高度只进入细分求值阶段；普通顶点和阴影保持基础高度场。
+#ifdef TERRAIN_MATERIAL_DISPLACEMENT
+#include "TerrainMaterialHeight.glsl"
+#endif
 
 float TerrainSampleDetailedWorldHeight(vec2 worldXZ)
 {
     float baseHeight = TerrainSampleBaseWorldHeight(worldXZ);
-    float fade = TerrainNoiseFade(worldXZ, baseHeight);
-    if (fade <= 0.001)
-        return baseHeight;
-
-    return baseHeight + TerrainEvaluateNoise(worldXZ, TerrainGeometryNoiseOctaves()) *
-        noiseParams.noiseStrength * fade * (1.0-PcgCoverage(worldXZ).a);
-}
-
-vec2 TerrainDetailedNoiseGradient(vec3 worldPosition)
-{
-    float fade = TerrainNoiseFade(worldPosition.xz, worldPosition.y);
-    if (fade <= 0.001)
-        return vec2(0.0);
-
-    const float gradientStep = 0.02;
-    vec2 gradient;
-    if (noiseParams.noiseWarpStrength > 0.001)
-    {
-        gradient = terrainDetailGradientWarped(
-            worldPosition.xz,
-            noiseParams.noiseFrequency,
-            TerrainGeometryNoiseOctaves(),
-            noiseParams.noiseGain,
-            noiseParams.noiseLacunarity,
-            noiseParams.noiseWarpStrength,
-            gradientStep);
-    }
-    else
-    {
-        gradient = terrainDetailGradient(
-            worldPosition.xz,
-            noiseParams.noiseFrequency,
-            TerrainGeometryNoiseOctaves(),
-            noiseParams.noiseGain,
-            noiseParams.noiseLacunarity,
-            gradientStep);
-    }
-
-    if(pcgMetadata[0].y==0u)return gradient*noiseParams.noiseStrength*fade;
-    float suppression=PcgCoverage(worldPosition.xz).a;
-    vec2 suppressionGradient=vec2(
-        PcgCoverage(worldPosition.xz+vec2(gradientStep,0)).a-PcgCoverage(worldPosition.xz-vec2(gradientStep,0)).a,
-        PcgCoverage(worldPosition.xz+vec2(0,gradientStep)).a-PcgCoverage(worldPosition.xz-vec2(0,gradientStep)).a)/(2.0*gradientStep);
-    return (gradient*(1.0-suppression)-TerrainEvaluateNoise(worldPosition.xz,TerrainGeometryNoiseOctaves())*suppressionGradient)*noiseParams.noiseStrength*fade;
+#ifdef TERRAIN_MATERIAL_DISPLACEMENT
+    return baseHeight + TerrainSampleMaterialDisplacement(worldXZ, baseHeight);
+#else
+    return baseHeight;
+#endif
 }
 
 uint TerrainEdgesAtLocalPosition(vec2 localPosition)

@@ -38,6 +38,10 @@ const AssetReferenceRule* ResolveDeclaredAssetReferenceRule(
     const std::string& field)
 {
     static constexpr AssetReferenceRule rules[] = {
+        { "directionallight", "cookie", "texture", EditorAPI::AssetType::Texture, ObjectReferenceStoragePolicy::GuidObject },
+        { "pointlight", "cookie", "texture", EditorAPI::AssetType::Texture, ObjectReferenceStoragePolicy::GuidObject },
+        { "spotlight", "cookie", "texture", EditorAPI::AssetType::Texture, ObjectReferenceStoragePolicy::GuidObject },
+        { "rectlight", "cookie", "texture", EditorAPI::AssetType::Texture, ObjectReferenceStoragePolicy::GuidObject },
         { "modelrenderer", "data", "model", EditorAPI::AssetType::Model, ObjectReferenceStoragePolicy::GuidObject },
         { "modelrenderer", "materialoverrides", "", EditorAPI::AssetType::Material, ObjectReferenceStoragePolicy::GuidObject },
         { "audio", "data", "source", EditorAPI::AssetType::Audio, ObjectReferenceStoragePolicy::GuidObject },

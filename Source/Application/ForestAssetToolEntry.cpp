@@ -1,3 +1,5 @@
+#include "../EngineCore/EditorCore/ModelLod/VansModelLodBuilder.h"
+#include "../EngineCore/PcgCore/Storage/VansPlantTypeAssetStorage.h"
 #include "../EngineCore/AnimationCore/VansAnimatorIO.h"
 #include "../EngineCore/AnimationCore/VansAnimationClip.h"
 #include "../EngineCore/AnimationCore/VansSkinnedMeshLoader.h"
@@ -61,7 +63,8 @@ namespace
 		RefreshSkeletonSubAssets,
 		InspectSkeleton,
 		ValidateLuaScript,
-		BakeNavigation
+		BakeNavigation,
+		BuildPcgLods
 	};
 
 	struct Options
@@ -85,10 +88,11 @@ namespace
 		std::cout
 			<< "ForestAssetTool\n"
 			<< "Usage:\n"
+            << "  ForestAssetTool build-pcg-lods --project <path> --source <asset-relative-vplant> --write\n"
 			<< "  ForestAssetTool rewrite-animation-assets --project <path> --dry-run\n"
 			<< "  ForestAssetTool rewrite-animation-assets --project <path> --write\n"
 			<< "  ForestAssetTool validate-animation-assets --project <path>\n"
-			<< "  ForestAssetTool import-animation-fbx --project <path> --source <asset-relative-fbx>"
+			<< "  ForestAssetTool import-animation-fbx --project <path> --source <asset-relative-fbx|gltf|glb>"
 				" --skeleton <asset-relative-vclip|model>\n"
 			<< "  ForestAssetTool rebuild-animation-clips --project <path>"
 				" --source-root <path>... --destination-root <asset-relative-directory>"
@@ -118,6 +122,7 @@ namespace
 		else if (command == "refresh-skeleton-subassets") options.command = Command::RefreshSkeletonSubAssets;
 		else if (command == "inspect-skeleton") options.command = Command::InspectSkeleton;
 		else if (command == "validate-lua-script") options.command = Command::ValidateLuaScript;
+		else if (command == "build-pcg-lods") options.command = Command::BuildPcgLods;
 		else if (command == "bake-navigation") options.command = Command::BakeNavigation;
 		else if (command == "--help" || command == "-h") options.showHelp = true;
 		else
@@ -276,6 +281,8 @@ namespace
 			error = "Lua validation requires --script and --entry and does not accept a rewrite mode.";
 			return false;
 		}
+        if (options.command == Command::BuildPcgLods && (modeCount != 1 || !options.write || options.sourcePath.empty()))
+        { error = "LOD build requires --source and --write."; return false; }
 		if (options.command == Command::BakeNavigation
 			&& (modeCount != 1 || !options.write || options.sourcePath.empty()
 				|| options.outputPath.empty()))
@@ -520,10 +527,15 @@ namespace
 	{
 		std::error_code fileError;
 		const fs::path sourcePath = fs::weakly_canonical(projectRoot / options.sourcePath, fileError);
-		if (fileError || !fs::is_regular_file(sourcePath) || sourcePath.extension() != ".fbx"
+		std::string sourceExtension = sourcePath.extension().string();
+		std::transform(sourceExtension.begin(), sourceExtension.end(), sourceExtension.begin(),
+			[](unsigned char character) { return static_cast<char>(std::tolower(character)); });
+		const bool supportedAnimationSource = sourceExtension == ".fbx"
+			|| sourceExtension == ".gltf" || sourceExtension == ".glb";
+		if (fileError || !fs::is_regular_file(sourcePath) || !supportedAnimationSource
 			|| !IsWithin(sourcePath, assetsRoot))
 		{
-			std::cerr << "Invalid project FBX source: " << options.sourcePath << '\n';
+			std::cerr << "Invalid project animation source: " << options.sourcePath << '\n';
 			return 2;
 		}
 
@@ -580,7 +592,9 @@ namespace
 		{
 			std::string clipName = clip.clipName;
 			for (char& character : clipName)
-				if (character == ' ' || character == '/' || character == '\\' || character == ':')
+				if (character == ' ' || character == '/' || character == '\\' || character == ':' ||
+					character == '|' || character == '?' || character == '*' || character == '"' ||
+					character == '<' || character == '>')
 					character = '_';
 			const fs::path clipPath = sourcePath.parent_path() / (baseName + "_" + clipName + ".vclip");
 
@@ -647,7 +661,9 @@ namespace
 	std::string SanitizeAnimationName(std::string name)
 	{
 		for (char& character : name)
-			if (character == ' ' || character == '/' || character == '\\' || character == ':')
+			if (character == ' ' || character == '/' || character == '\\' || character == ':' ||
+				character == '|' || character == '?' || character == '*' || character == '"' ||
+				character == '<' || character == '>')
 				character = '_';
 		return name;
 	}
@@ -1061,6 +1077,30 @@ namespace
 		return !write || VansGraphics::VansRetargetProfileStorage::SaveAtomic(path, asset, error);
 	}
 
+    int BuildPcgLods(const fs::path& assetsRoot, const Options& options)
+    {
+        const auto path=fs::weakly_canonical(assetsRoot/options.sourcePath);
+        if (!IsWithin(path,assetsRoot)) { std::cerr<<"Plant must be inside project Assets.\n";return 2; }
+        Vans::VansAssetDatabase database(assetsRoot);
+        const auto scan=database.Scan(Vans::VansAssetOperationPolicy::ReadOnly());
+        if(!scan){for(const auto& error:scan.errors)std::cerr<<error<<'\n';return 2;}
+        Vans::VansPlantTypeAsset plant;std::string error;
+        if(!Vans::VansPlantTypeAssetStorage::Load(path,plant,error)){std::cerr<<error<<'\n';return 1;}
+        if(plant.category!=Vans::VansPlantCategory::Tree){std::cerr<<"Select a tree plant.\n";return 1;}
+        for(auto& variant:plant.variants){
+            if(variant.geometry!=Vans::VansPlantGeometry::Mesh || variant.parts.empty())continue;
+            std::vector<Vans::VansModelLodSourcePart> sources;
+            for(const auto& part:variant.parts)sources.push_back({part.mesh,part.material,part.submesh,part.kind==Vans::VansPlantPartKind::Leaves});
+            if(!Vans::VansModelLodBuilder::Build(database,sources,variant.lodSettings,variant.lod,error)){std::cerr<<error<<'\n';return 1;}
+            std::cout<<variant.id<<" key="<<variant.lod.buildKey;
+            for(size_t l=0;l<variant.lod.levels.size();++l){uint64_t triangles=0;for(const auto& part:variant.lod.levels[l].parts)triangles+=part.triangleCount;
+                std::cout<<" LOD"<<l+1<<"="<<triangles;}
+            std::cout<<'\n';
+        }
+        if(!Vans::VansPlantTypeAssetStorage::SaveAtomic(path,plant,error)){std::cerr<<error<<'\n';return 1;}
+        return 0;
+    }
+
 	int Run(const Options& options)
 	{
 		std::error_code fileError;
@@ -1076,6 +1116,8 @@ namespace
 			std::cerr << "Project has no Assets directory: " << assetsRoot << '\n';
 			return 2;
 		}
+		if (options.command == Command::BuildPcgLods)
+            return BuildPcgLods(fs::weakly_canonical(assetsRoot),options);
 		if (options.command == Command::ImportAnimationFbx)
 			return ImportAnimationFbx(projectRoot, fs::weakly_canonical(assetsRoot), options);
 		if (options.command == Command::RebuildAnimationClips)

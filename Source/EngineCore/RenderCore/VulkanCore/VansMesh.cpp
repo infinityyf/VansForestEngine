@@ -1,4 +1,4 @@
-﻿#include "../../../Graphics/Vulkan/VansVKFunctions.h"
+#include "../../../Graphics/Vulkan/VansVKFunctions.h"
 #include "VansMesh.h"
 #include "VansVKCommandBuffer.h"
 #include "VansVKDevice.h"
@@ -1191,7 +1191,7 @@ void VansGraphics::VansMesh::BuildBLAS(VansVKDevice& device, VansVKCommandBuffer
 		logic_device,
 		buildSizesInfo.accelerationStructureSize,
 		VK_FORMAT_R32_SFLOAT,
-		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR,
+		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR,
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
 	VkAccelerationStructureCreateInfoKHR accelCreateInfo = {};
@@ -1208,7 +1208,7 @@ void VansGraphics::VansMesh::BuildBLAS(VansVKDevice& device, VansVKCommandBuffer
 		logic_device,
 		buildSizesInfo.buildScratchSize + device.GetAccelerationStructureScratchAlignment() - 1,
 		VK_FORMAT_R32_SFLOAT,
-		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
 	const VkDeviceSize scratchAlignment = device.GetAccelerationStructureScratchAlignment();

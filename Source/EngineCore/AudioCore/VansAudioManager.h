@@ -101,6 +101,15 @@ namespace VansEngine
 
         // ── 按资产 GUID 查找，未找到返回 nullptr ─────────────────────────────
         VansAudioNode* Get(const std::string& assetGuid) const;
+        // 按音频资产自身配置创建一次性播放实例；GAF 与脚本空间音效共用同一条路径。
+        VansAudioOneShotHandle PlayAssetOneShot(
+            const std::string& sourceName,
+            float volumeScale = 1.0f,
+            float pitchScale = 1.0f,
+            bool spatial = false,
+            float positionX = 0.0f,
+            float positionY = 0.0f,
+            float positionZ = 0.0f);
         VansAudioOneShotHandle PlayOneShot(const VansAudioOneShotRequest& request);
         bool StopOneShot(VansAudioOneShotHandle handle);
 

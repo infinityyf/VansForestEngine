@@ -71,6 +71,15 @@ namespace VansGraphics
         std::uint32_t m_RandomSeed = 1337;
     };
 
+    struct VansRiverWaterConfig
+    {
+        float m_MaxHeight=.08f;
+        float m_Wavelength=1.8f;
+        float m_Lifetime=8.f;
+        float m_FlowGridSize=2.f;
+        float m_FineDetailStrength=1.f;
+    };
+
     struct VansWaterWaveParticleConfig
     {
         // 每个频谱 cascade 使用独立的波包集合。固定上限使 SSBO 可以按
@@ -223,6 +232,7 @@ namespace VansGraphics
         VansWaterGeometryConfig m_Geometry;
         VansWaterSpectrumConfig m_Spectrum;
         VansWaterWaveParticleConfig m_WaveParticle;
+        VansRiverWaterConfig m_River;
         VansWaterFlowMapConfig m_FlowMap;
         VansWaterRefractionConfig m_Refraction;
         VansWaterDetailNormalConfig m_DetailNormal;
@@ -270,6 +280,11 @@ namespace VansGraphics
             else
                 m_Spectrum.m_WindDirection = glm::normalize(m_Spectrum.m_WindDirection);
 
+            m_River.m_MaxHeight=std::clamp(m_River.m_MaxHeight,0.0f,1.0f);
+            m_River.m_Wavelength=std::clamp(m_River.m_Wavelength,1.0f,5.0f);
+            m_River.m_Lifetime=std::clamp(m_River.m_Lifetime,2.0f,20.0f);
+            m_River.m_FlowGridSize=std::clamp(m_River.m_FlowGridSize,0.5f,8.0f);
+            m_River.m_FineDetailStrength=std::clamp(m_River.m_FineDetailStrength,0.f,2.f);
             m_WaveParticle.m_ParticlesPerCascade = std::clamp(
                 m_WaveParticle.m_ParticlesPerCascade, 0, MAX_WAVE_PARTICLES_PER_CASCADE);
             m_WaveParticle.m_RmsAmplitude = std::clamp(

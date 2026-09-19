@@ -25,14 +25,25 @@ struct VansSceneLightShadowConfig
 	std::optional<uint32_t> shadowCasterMask;
 };
 
+struct VansSceneLightCookieConfig
+{
+    bool enabled = false;
+    std::string textureGuid;
+    float strength = 1, sizeX = 10, sizeY = 10, scaleX = 1, scaleY = 1;
+    float offsetX = 0, offsetY = 0, rotationDegrees = 0;
+    bool repeat = false, useAlpha = false;
+};
+
 struct VansSceneDirectionalLightComponentConfig
 {
+    VansSceneLightCookieConfig cookie;
 	std::optional<std::array<float, 3>> color;
 	std::optional<float> intensity;
 };
 
 struct VansScenePointLightComponentConfig
 {
+    VansSceneLightCookieConfig cookie;
 	std::optional<std::array<float, 3>> color;
 	std::optional<float> intensity;
 	std::optional<float> radius;
@@ -42,6 +53,7 @@ struct VansScenePointLightComponentConfig
 
 struct VansSceneSpotLightComponentConfig
 {
+    VansSceneLightCookieConfig cookie;
 	std::optional<std::array<float, 3>> color;
 	std::optional<float> intensity;
 	std::optional<float> radius;
@@ -54,6 +66,7 @@ struct VansSceneSpotLightComponentConfig
 
 struct VansSceneRectLightComponentConfig
 {
+    VansSceneLightCookieConfig cookie;
 	std::optional<std::array<float, 3>> color;
 	std::optional<float> intensity;
 	std::optional<float> width;

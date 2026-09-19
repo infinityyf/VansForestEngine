@@ -229,6 +229,8 @@ namespace VansGraphics
 		bool IsRootMotionEnabled() const;
 		void SetRootMotionApplyToOwner(bool apply) { m_RootMotionApplyToOwner = apply; }
 		bool ShouldApplyRootMotionToOwner() const { return m_RootMotionApplyToOwner; }
+		void SetNormalizeRootPose(bool normalize) { m_NormalizeRootPose = normalize; }
+		bool ShouldNormalizeRootPose() const { return m_NormalizeRootPose; }
 		glm::vec3 GetRootMotionDelta() const;
 		glm::quat GetRootRotationDelta() const;
 		bool HasRootMotionDelta() const { return m_LastRootMotionValid; }
@@ -368,6 +370,7 @@ namespace VansGraphics
 		// ─── Root Motion ───
 		bool      m_RootMotionEnabled     = false;
 		bool      m_RootMotionApplyToOwner = true;
+		bool      m_NormalizeRootPose = true;
 		int       m_RootBoneIndex         = -1;
 		glm::vec3 m_LastRootMotionDelta   = glm::vec3(0.0f);
 		glm::quat m_LastRootRotationDelta = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);

@@ -1,5 +1,6 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
+#define VANS_SURFACE_COOKIES
 
 #include "../../BRDF/ReflectionProbeData.glsl"
 #include "../../Common/CameraData.glsl"
@@ -86,7 +87,7 @@ void main()
     vec3 directIrradiance = max(p.mainLightColor.rgb, vec3(0.0));
     vec3 directSpec = PBRW_EvaluateDirectSpecular(
         N, V, L, F0, roughness, p.surfaceParams.w) *
-        directIrradiance * surfaceVisibility;
+        directIrradiance * surfaceVisibility * SampleSurfaceLightCookie(0, W);
 
     vec4 refractionData = texelFetch(waterRefractionData, pixel, 0);
     float refractionPathLength = clamp(

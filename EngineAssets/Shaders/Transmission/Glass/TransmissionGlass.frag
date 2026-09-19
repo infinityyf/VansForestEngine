@@ -1,5 +1,6 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
+#define VANS_SURFACE_COOKIES
 #extension GL_EXT_nonuniform_qualifier : enable
 
 #include "../../Common/CameraData.glsl"
@@ -276,7 +277,7 @@ void EvaluateDirectLighting(BRDFData brdf, float transmission, out vec3 diffuse,
         brdf.positionWS, brdf.normal, cascadeShadowMap, viewDepth);
     AccumulatePunctualBRDF(
         brdf, normalize(uDirectionLight.direction.xyz),
-        uDirectionLight.color.rgb * uDirectionLight.intensity,
+        uDirectionLight.color.rgb * uDirectionLight.intensity * SampleSurfaceLightCookie(0, brdf.positionWS),
         directionShadow, transmission, diffuse, specular);
 
     TileLightHeader tileHeader = GetFragTileLightHeader();
@@ -284,6 +285,7 @@ void EvaluateDirectLighting(BRDFData brdf, float transmission, out vec3 diffuse,
     {
         uint lightIndex = tileLightIndices[tileHeader.pointOffset + tileIndex];
         PointLightData light = GetPointLight(int(lightIndex));
+        light.color.rgb *= SampleSurfaceLightCookie(1 + int(lightIndex), brdf.positionWS);
         vec3 L = light.position.xyz - brdf.positionWS;
         float distanceToLight = length(L);
         if (distanceToLight <= 1e-5 || distanceToLight > light.radius) continue;
@@ -302,6 +304,7 @@ void EvaluateDirectLighting(BRDFData brdf, float transmission, out vec3 diffuse,
     {
         uint lightIndex = tileLightIndices[tileHeader.spotOffset + tileIndex];
         SpotLightData light = GetSpotLight(int(lightIndex));
+        light.color.rgb *= SampleSurfaceLightCookie(65 + int(lightIndex), brdf.positionWS);
         vec3 L = light.position.xyz - brdf.positionWS;
         float distanceToLight = length(L);
         if (distanceToLight <= 1e-5 || distanceToLight > light.radius) continue;
@@ -326,6 +329,7 @@ void EvaluateDirectLighting(BRDFData brdf, float transmission, out vec3 diffuse,
     {
         uint lightIndex = tileLightIndices[tileHeader.rectOffset + tileIndex];
         RectLightData light = GetRectLight(int(lightIndex));
+        light.color_twoSided.rgb *= SampleSurfaceLightCookie(129 + int(lightIndex), brdf.positionWS);
         vec3 rectDiffuse = vec3(0.0);
         vec3 rectSpecular = vec3(0.0);
         EvaluateRectLightLTC(light, brdf.normal, brdf.viewDirection, brdf.positionWS,

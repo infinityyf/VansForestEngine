@@ -1,4 +1,5 @@
 #pragma once
+#include "VansCursorMode.h"
 #include <unordered_map>
 #include <unordered_set>
 #include <string>
@@ -64,12 +65,11 @@ namespace Vans
         void Initialize(GLFWwindow* window);
         void Shutdown();
 
-        // Cursor capture is allowed for standalone runtime windows. The editor
-        // keeps this disabled so gameplay scripts cannot lock the whole editor UI.
-        void SetCursorCaptureAllowed(bool allowed);
-        bool IsCursorCaptureAllowed() const { return m_CursorCaptureAllowed; }
-        void SetCursorCaptureEnabled(bool enabled);
-        bool IsCursorCaptureEnabled() const { return m_CursorCaptureEnabled; }
+        // 请求状态与宿主/焦点约束后的生效状态分别查询。修改仅允许主线程。
+        void SetCursorMode(VansCursorMode mode);
+        VansCursorMode GetCursorMode() const { return m_RequestedCursorMode; }
+        VansCursorMode GetEffectiveCursorMode() const { return m_EffectiveCursorMode; }
+        void SetCursorContext(VansCursorContext context);
 
         // Call once per frame at the start of the update loop
         void Update();
@@ -148,6 +148,10 @@ namespace Vans
         static void GLFWMousePosCallback(GLFWwindow* window, double xpos, double ypos);
         static void GLFWMouseButtonCallback(GLFWwindow* window, int button, int action, int mods);
         static void GLFWScrollCallback(GLFWwindow* window, double xoffset, double yoffset);
+        static void GLFWWindowFocusCallback(GLFWwindow* window, int focused);
+        void ApplyCursorMode();
+        void ResetMouseDelta();
+        void UpdateWindowFocus(bool focused);
 
     private:
         GLFWwindow* m_Window = nullptr;
@@ -167,9 +171,10 @@ namespace Vans
         double m_MouseDeltaX = 0.0;
         double m_MouseDeltaY = 0.0;
         bool   m_FirstMouseUpdate = true;
-        bool   m_CursorCaptureAllowed = false;
-        bool   m_CursorCaptureRequested = false;
-        bool   m_CursorCaptureEnabled = false;
+        VansCursorContext m_CursorContext = VansCursorContext::Inactive;
+        VansCursorMode m_RequestedCursorMode = VansCursorMode::Visible;
+        VansCursorMode m_EffectiveCursorMode = VansCursorMode::Visible;
+        bool m_WindowFocused = false;
 
         // Scroll
         double m_ScrollDeltaX = 0.0;

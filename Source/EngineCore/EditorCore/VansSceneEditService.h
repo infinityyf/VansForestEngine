@@ -16,6 +16,7 @@ namespace Vans
 {
 class VansSceneDocument;
 class VansSceneEditCommand;
+struct VansOpenAssetDocument;
 using SceneStateId = std::uint64_t;
 
 enum class ReparentTransformPolicy : std::uint8_t
@@ -51,6 +52,8 @@ public:
     explicit VansSceneEditService(VansSceneDocument& document);
     ~VansSceneEditService();
 
+    SceneEditResult ApplyPrefab(std::shared_ptr<VansOpenAssetDocument> asset, VansSerializedValue source, VansSerializedValue authoring);
+    SceneEditResult ReplaceRoot(VansSerializedValue root, SceneEditLifecycleHooks hooks = {});
     SceneEditResult Set(const DocumentPropertyPath& path, VansSerializedValue value);
     SceneEditResult SetAndAssignObjectReference(
         const DocumentPropertyPath& path,
@@ -71,6 +74,7 @@ public:
     SceneEditResult Undo();
     SceneEditResult Redo();
     void ClearHistory();
+    void SetPrefabPreviewRefresh(std::function<bool()> callback) { m_PrefabPreviewRefresh = std::move(callback); }
     bool CanUndo() const { return !m_Undo.empty(); }
     bool CanRedo() const { return !m_Redo.empty(); }
 
@@ -80,6 +84,7 @@ private:
     SceneEditResult Remove(const std::string& propertyPointer, SceneEditLifecycleHooks hooks = {});
 
     VansSceneDocument& m_Document;
+    std::function<bool()> m_PrefabPreviewRefresh;
     std::vector<std::unique_ptr<VansSceneEditCommand>> m_Undo;
     std::vector<std::unique_ptr<VansSceneEditCommand>> m_Redo;
 };

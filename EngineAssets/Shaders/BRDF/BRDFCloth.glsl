@@ -263,7 +263,7 @@ void CalculateDirectLight_Cloth(BRDFData brdf, ClothMaterialPayload cloth,
 
 		float shadow = directionalShadow;
 		vec3 directionalIrradiance =
-			uDirectionLight.color.rgb * uDirectionLight.intensity;
+			uDirectionLight.color.rgb * uDirectionLight.intensity * SampleSurfaceLightCookie(0, brdf.positionWS);
 		lightResult.directDiffuse += dR * directionalIrradiance * shadow;
 		lightResult.directSpecular += sR * directionalIrradiance * shadow;
     }
@@ -275,6 +275,7 @@ void CalculateDirectLight_Cloth(BRDFData brdf, ClothMaterialPayload cloth,
     {
         uint i = tileLightIndices[tileLightHdr.pointOffset + ptk];
         PointLightData pl = GetPointLight(int(i));
+        pl.color.rgb *= SampleSurfaceLightCookie(1 + int(i), brdf.positionWS);
         vec3 lightDir = pl.position.xyz - brdf.positionWS;
         float dist = length(lightDir);
         if (dist > pl.radius) continue;
@@ -309,6 +310,7 @@ void CalculateDirectLight_Cloth(BRDFData brdf, ClothMaterialPayload cloth,
     {
         uint i = tileLightIndices[tileLightHdr.spotOffset + spk];
         SpotLightData sl = GetSpotLight(int(i));
+        sl.color.rgb *= SampleSurfaceLightCookie(65 + int(i), brdf.positionWS);
         vec3 lightDir = sl.position.xyz - brdf.positionWS;
         float dist = length(lightDir);
         if (dist > sl.radius) continue;
@@ -350,6 +352,7 @@ void CalculateDirectLight_Cloth(BRDFData brdf, ClothMaterialPayload cloth,
     for (uint i = 0u; i < uPointLightCount; ++i)
     {
         PointLightData pl = GetPointLight(int(i));
+        pl.color.rgb *= SampleSurfaceLightCookie(1 + int(i), brdf.positionWS);
         vec3 lightDir = pl.position.xyz - brdf.positionWS;
         float dist = length(lightDir);
         if (dist > pl.radius) continue;
@@ -376,6 +379,7 @@ void CalculateDirectLight_Cloth(BRDFData brdf, ClothMaterialPayload cloth,
     for (uint i = 0u; i < uSpotLightCount; ++i)
     {
         SpotLightData sl = GetSpotLight(int(i));
+        sl.color.rgb *= SampleSurfaceLightCookie(65 + int(i), brdf.positionWS);
         vec3 lightDir = sl.position.xyz - brdf.positionWS;
         float dist = length(lightDir);
         if (dist > sl.radius) continue;

@@ -35,6 +35,5 @@ private:
     std::shared_ptr<const Vans::VansPcgSplineFieldSnapshot> m_Field;
     std::vector<Upload> m_Uploads;
     std::map<std::uint64_t,std::uint32_t> m_TilePages;
-    std::map<std::pair<std::uint64_t,std::string>,std::uint32_t> m_DomainPages;
 };
 }

@@ -63,22 +63,6 @@ vec3 skinPosition(vec3 localPos, uint globalBoneBase, vec4 bw)
     return p0 * w0 + p1 * w1;
 }
 
-vec3 skinNormal(vec3 localNrm, uint globalBoneBase, vec4 bw)
-{
-    uint b0 = uint(bw.x);
-    uint b1 = uint(bw.y);
-    float w0 = bw.z;
-    float w1 = bw.w;
-
-    mat3 m0 = mat3(boneMatrices[globalBoneBase + b0]);
-    mat3 m1 = mat3(boneMatrices[globalBoneBase + b1]);
-
-    vec3 n0 = m0 * localNrm;
-    vec3 n1 = m1 * localNrm;
-    return normalize(n0 * w0 + n1 * w1);
-}
-
-
 vec3 grassWorldPosition(vec3 localPosition, uint instanceIndex, uint subBladeIndex, uint boneCount, vec4 weights)
 {
     GrassInstance instance = instances[instanceIndex];

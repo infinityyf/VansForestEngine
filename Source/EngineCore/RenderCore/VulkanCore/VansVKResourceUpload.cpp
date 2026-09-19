@@ -286,32 +286,26 @@ namespace VansGraphics
 			return false;
 		}
 
-		// 必须在第一个 barrier 调用之前保存原始 layout。
-		// SetImageMemoryBarrier 会立即更新 m_ImageLayout = NewLayout，
-		// 若此处不缓存，第二个 barrier 将错误地使用已更新后的 TRANSFER_DST_OPTIMAL
-		// 作为目标 layout，导致图像永久停留在 TRANSFER_DST_OPTIMAL，
-		// GPU 采样时触发未定义行为并最终崩溃（VK_ERROR_DEVICE_LOST）。
-		const VkImageLayout originalLayout = dest_image.m_ImageLayout;
-
-		const VkPipelineStageFlags beforeStage = originalLayout == VK_IMAGE_LAYOUT_UNDEFINED
-			? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
-			: VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-		const VkAccessFlags beforeAccess = originalLayout == VK_IMAGE_LAYOUT_UNDEFINED
-			? 0
-			: VK_ACCESS_SHADER_READ_BIT;
-
-		dest_image.SetImageMemoryBarrier(cmd, beforeStage, VK_PIPELINE_STAGE_TRANSFER_BIT,
-			{
-				dest_image.m_VansVKImage,
-				beforeAccess,
-				VK_ACCESS_TRANSFER_WRITE_BIT,
-				originalLayout,
-				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-				VK_QUEUE_FAMILY_IGNORED,
-				VK_QUEUE_FAMILY_IGNORED,
-				dest_image.m_ImageAspect
-			}
-		);
+        // 首次上传初始化整张图像的布局；后续上传只转换目标 mip/layer，
+        // 避免逐层更新把已完成的其他层遗留在 TRANSFER_DST。
+        const VkImageLayout originalLayout = dest_image.m_ImageLayout;
+        const bool firstUpload = originalLayout == VK_IMAGE_LAYOUT_UNDEFINED;
+        VkImageMemoryBarrier uploadBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        uploadBarrier.srcAccessMask = firstUpload ? 0 :
+            (originalLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ? VK_ACCESS_TRANSFER_WRITE_BIT :
+                VK_ACCESS_SHADER_READ_BIT | (originalLayout == VK_IMAGE_LAYOUT_GENERAL ? VK_ACCESS_SHADER_WRITE_BIT : 0));
+        uploadBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        uploadBarrier.oldLayout = originalLayout;
+        uploadBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        uploadBarrier.srcQueueFamilyIndex = uploadBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        uploadBarrier.image = dest_image.m_VansVKImage;
+        uploadBarrier.subresourceRange = firstUpload
+            ? VkImageSubresourceRange{dest_image.m_ImageAspect, 0, dest_image.m_ImageCreateInfo.mipLevels,
+                0, dest_image.m_ImageCreateInfo.arrayLayers}
+            : VkImageSubresourceRange{dest_image.m_ImageAspect, static_cast<uint32_t>(mip_level), 1,
+                static_cast<uint32_t>(layer_level), 1};
+        cmd.PipelineBarrier(firstUpload ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, {}, {}, {uploadBarrier});
 
 		VkImageSubresourceLayers destination_image_subresource =
 		{
@@ -333,21 +327,19 @@ namespace VansGraphics
 				}
 			});
 
-		if (finalLayout != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
-		{
-			dest_image.SetImageMemoryBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-				{
-					dest_image.m_VansVKImage,
-					VK_ACCESS_TRANSFER_WRITE_BIT,
-					VK_ACCESS_SHADER_READ_BIT,
-					VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-					finalLayout,
-					VK_QUEUE_FAMILY_IGNORED,
-					VK_QUEUE_FAMILY_IGNORED,
-					dest_image.m_ImageAspect
-				}
-			);
-		}
+        if (finalLayout != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+        {
+            uploadBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            uploadBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT
+                | (finalLayout == VK_IMAGE_LAYOUT_GENERAL ? VK_ACCESS_SHADER_WRITE_BIT : 0);
+            uploadBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            uploadBarrier.newLayout = finalLayout;
+            cmd.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                {}, {}, {uploadBarrier});
+        }
+        // TRANSFER_DST 是上传后立即生成目标层 mip 的暂态；FinalizeUploadedLayer
+        // 完成该层后恢复整图 SHADER_READ_ONLY，再允许下一次层上传/采样。
+        dest_image.SetTrackedImageLayout(finalLayout);
 
 		if (!cmd.EndCommandBufferRecord())
 		{

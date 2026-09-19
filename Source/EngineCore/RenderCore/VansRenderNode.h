@@ -55,9 +55,14 @@ namespace VansGraphics
 
 			// If non-empty, this node was auto-generated as part of a multi-mesh group.
 			// The hierarchy window uses this to group children under a parent tree node.
-			std::string m_ParentGroupName;
+			std::string m_ParentGroupKey;
 
 			VansMesh* m_Mesh = nullptr;
+
+			// Optional visual geometry selected for the current draw submission. This
+			// is intentionally separate from m_Mesh: LOD only changes draw packets.
+			// A null value keeps the source mesh as the draw geometry.
+			VansMesh* m_DrawMesh = nullptr;
 
 			// Original model asset and serialized submesh identity.
 			// m_Mesh may point at the current runtime slice implementation
@@ -66,6 +71,9 @@ namespace VansGraphics
 			uint32_t m_SubmeshIndex = UINT32_MAX;
 			std::string m_EntityGuid;
 			std::string m_ParentEntityGuid;
+
+			VansMesh* GetDrawMesh() const { return m_DrawMesh ? m_DrawMesh : m_Mesh; }
+			void SetDrawMesh(VansMesh* mesh) { m_DrawMesh = mesh; }
 
 			VansMaterial* m_Material = nullptr;
 

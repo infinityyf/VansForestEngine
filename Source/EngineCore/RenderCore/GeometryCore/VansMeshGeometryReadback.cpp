@@ -48,7 +48,7 @@ namespace VansGraphics
             VkDeviceSize vertexOffset = 0, vertexBytes = 0, indexOffset = 0, indexBytes = 0;
             uint32_t stride = 0, vertexCount = 0, indexCount = 0;
             VkIndexType indexType = VK_INDEX_TYPE_UINT32;
-            VkVertexInputAttributeDescription position{}, normal{};
+            VkVertexInputAttributeDescription position{}, normal{}, uv{};
         };
         bool Finite(const glm::vec3& v)
         {
@@ -57,7 +57,7 @@ namespace VansGraphics
     }
 
     bool VansMeshGeometryReadback::Read(VansVKDevice& device, const std::vector<VansMesh*>& meshes,
-        std::vector<VansMeshGeometryData>& output, std::string& error)
+        std::vector<VansMeshGeometryData>& output, std::string& error, bool includeTexcoords)
     {
         output.clear(); error.clear();
         if (meshes.empty()) return true;
@@ -75,6 +75,7 @@ namespace VansGraphics
             {
                 if (attribute.location == 0) copy.position = attribute;
                 if (attribute.location == 2) copy.normal = attribute;
+                if (includeTexcoords && attribute.location == 1) copy.uv = attribute;
             }
             if (copy.stride == 0 || copy.vertexCount == 0 || !AttributeBytes(copy.position.format)
                 || copy.position.binding != 0 || copy.position.offset + AttributeBytes(copy.position.format) > copy.stride)
@@ -87,6 +88,10 @@ namespace VansGraphics
             if ((copy.indexCount ? copy.indexCount : copy.vertexCount) % 3u != 0)
                 return fail("Geometry readback requires triangle-list topology");
             copy.vertexBytes = VkDeviceSize(copy.stride) * copy.vertexCount;
+            if (includeTexcoords && (copy.uv.binding != 0 ||
+                (copy.uv.format != VK_FORMAT_R16G16_SFLOAT && copy.uv.format != VK_FORMAT_R32G32_SFLOAT) ||
+                copy.uv.offset + (copy.uv.format == VK_FORMAT_R16G16_SFLOAT ? 4u : 8u) > copy.stride))
+                return fail("GI voxelization requires a valid UV attribute");
             copy.indexBytes = VkDeviceSize(copy.indexCount) * (copy.indexType == VK_INDEX_TYPE_UINT16 ? 2u : 4u);
             if (!mesh->GetBLASVertexBuffer().GetNativeBuffer() || copy.vertexBytes > mesh->GetBLASVertexBuffer().GetBufferSize()
                 || (copy.indexBytes && (!mesh->GetIndexBuffer().GetNativeBuffer() || copy.indexBytes > mesh->GetIndexBuffer().GetBufferSize())))
@@ -134,11 +139,18 @@ namespace VansGraphics
             {
                 const auto& copy = copies[i]; auto& geometry = output[i];
                 geometry.positions.resize(copy.vertexCount);
+                if (includeTexcoords) geometry.texcoords.resize(copy.vertexCount);
                 if (copy.normal.format != VK_FORMAT_UNDEFINED) geometry.normals.resize(copy.vertexCount);
                 for (uint32_t vertex = 0; vertex < copy.vertexCount; ++vertex)
                 {
                     const auto* source = data + copy.vertexOffset + VkDeviceSize(vertex) * copy.stride;
                     geometry.positions[vertex] = DecodeAttribute(source + copy.position.offset, copy.position.format);
+                    if (includeTexcoords)
+                    {
+                        if (copy.uv.format == VK_FORMAT_R16G16_SFLOAT)
+                        { uint32_t packed; std::memcpy(&packed,source+copy.uv.offset,4);geometry.texcoords[vertex]=glm::unpackHalf2x16(packed); }
+                        else std::memcpy(&geometry.texcoords[vertex],source+copy.uv.offset,8);
+                    }
                     if (!Finite(geometry.positions[vertex])) return fail("Geometry readback found a non-finite position");
                     if (!geometry.normals.empty())
                     {

@@ -141,6 +141,24 @@ bool AppendRuntimeLightPreview(
     if (edit.entityGuid.empty())
         return false;
 
+    if (const auto* cookie = FindObjectField(*data, "cookie"))
+    {
+        edit.writeCookie = true;
+        edit.cookie.enabled = ReadSerializedBoolField(*cookie, "enabled", false);
+        edit.cookie.repeat = ReadSerializedBoolField(*cookie, "repeat", false);
+        edit.cookie.useAlpha = ReadSerializedBoolField(*cookie, "useAlpha", false);
+        if (const auto* texture = FindObjectField(*cookie, "texture"))
+            edit.cookie.textureGuid = ReadSerializedStringField(*texture, "guid");
+        if (const auto* value = FindObjectField(*cookie, "strength")) edit.cookie.strength = static_cast<float>(ReadSerializedNumber(*value));
+        if (const auto* value = FindObjectField(*cookie, "sizeX")) edit.cookie.sizeX = static_cast<float>(ReadSerializedNumber(*value));
+        if (const auto* value = FindObjectField(*cookie, "sizeY")) edit.cookie.sizeY = static_cast<float>(ReadSerializedNumber(*value));
+        if (const auto* value = FindObjectField(*cookie, "scaleX")) edit.cookie.scaleX = static_cast<float>(ReadSerializedNumber(*value));
+        if (const auto* value = FindObjectField(*cookie, "scaleY")) edit.cookie.scaleY = static_cast<float>(ReadSerializedNumber(*value));
+        if (const auto* value = FindObjectField(*cookie, "offsetX")) edit.cookie.offsetX = static_cast<float>(ReadSerializedNumber(*value));
+        if (const auto* value = FindObjectField(*cookie, "offsetY")) edit.cookie.offsetY = static_cast<float>(ReadSerializedNumber(*value));
+        if (const auto* value = FindObjectField(*cookie, "rotationDegrees")) edit.cookie.rotationDegrees = static_cast<float>(ReadSerializedNumber(*value));
+    }
+
     if (ReadPreviewColor(*data, edit.color))
         edit.writeColor = true;
     if (const VansSerializedValue* intensity = FindObjectField(*data, "intensity"))
@@ -202,7 +220,7 @@ bool AppendRuntimeLightPreview(
         }
     }
 
-    if (edit.writeColor || edit.writeIntensity || edit.writeRadius ||
+    if (edit.writeCookie || edit.writeColor || edit.writeIntensity || edit.writeRadius ||
         edit.writeInnerCutoff || edit.writeOuterCutoff ||
         edit.writeRectWidth || edit.writeRectHeight || edit.writeRectRange ||
         edit.writeRectTwoSided || edit.writeRectShadow)

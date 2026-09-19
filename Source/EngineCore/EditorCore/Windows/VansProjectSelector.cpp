@@ -16,6 +16,15 @@
 
 namespace fs = std::filesystem;
 
+namespace
+{
+bool ProjectConfigExists(const std::string& path)
+{
+	std::error_code error;
+	return fs::is_regular_file(fs::u8path(path) / "ForestProject.json", error);
+}
+}
+
 namespace Vans {
 
 // -----------------------------------------------------------------------
@@ -28,7 +37,13 @@ VansProjectSelector::VansProjectSelector()
 void VansProjectSelector::RefreshRecentProjects(EditorAPI::IEngineEditorAPI& editorAPI)
 {
 	m_RecentProjects = editorAPI.GetRecentProjects();
+	// 刷新后按路径恢复选择，避免删除前面的条目后误开另一个项目。
+	m_SelectedRecentIndex = -1;
+	for (size_t i = 0; i < m_RecentProjects.size(); ++i)
+		if (m_RecentProjects[i].path == m_SelectedPath)
+			m_SelectedRecentIndex = static_cast<int>(i);
 	m_RecentProjectsLoaded = true;
+	m_LastRecentRefresh = std::chrono::steady_clock::now();
 }
 
 // -----------------------------------------------------------------------
@@ -37,7 +52,8 @@ void VansProjectSelector::RefreshRecentProjects(EditorAPI::IEngineEditorAPI& edi
 ProjectSelectorResult VansProjectSelector::Render(EditorAPI::IEngineEditorAPI& editorAPI)
 {
 	m_Result = ProjectSelectorResult::None;
-	if (!m_RecentProjectsLoaded)
+	if (!m_RecentProjectsLoaded ||
+		std::chrono::steady_clock::now() - m_LastRecentRefresh >= std::chrono::seconds(1))
 		RefreshRecentProjects(editorAPI);
 
 	// Full viewport overlay
@@ -165,10 +181,6 @@ void VansProjectSelector::RenderRecentProjectsList()
 		std::replace(configPath.begin(), configPath.end(), '\\', '/');
 		if (!configPath.empty() && configPath.back() != '/')
 			configPath += '/';
-		bool exists = fs::exists(configPath + "ForestProject.json");
-
-		if (!exists)
-			ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 1.0f));
 
 		bool isSelected = (m_SelectedRecentIndex == static_cast<int>(i));
 
@@ -176,10 +188,10 @@ void VansProjectSelector::RenderRecentProjectsList()
 		if (ImGui::Selectable(("##entry" + std::to_string(i)).c_str(), isSelected,
 			ImGuiSelectableFlags_AllowDoubleClick, ImVec2(0, 52)))
 		{
-			if (exists)
+			if (ProjectConfigExists(configPath))
 			{
 				m_SelectedRecentIndex = static_cast<int>(i);
-				m_SelectedPath = configPath;
+				m_SelectedPath = entry.path;
 				m_StatusMessage.clear();
 
 				if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
@@ -189,6 +201,8 @@ void VansProjectSelector::RenderRecentProjectsList()
 			}
 			else
 			{
+				m_RecentProjectsLoaded = false;
+				m_SelectedRecentIndex = -1;
 				m_StatusMessage = "Project folder no longer exists: " + entry.path;
 				m_StatusIsError = true;
 			}
@@ -203,9 +217,6 @@ void VansProjectSelector::RenderRecentProjectsList()
 		ImGui::TextDisabled("%s", entry.path.c_str());
 		ImGui::SetCursorScreenPos(ImVec2(itemMin.x + 8.0f, itemMin.y + 40.0f));
 		ImGui::TextDisabled("%s", entry.lastOpened.c_str());
-
-		if (!exists)
-			ImGui::PopStyleColor();
 
 		ImGui::PopID();
 	}
@@ -225,13 +236,15 @@ void VansProjectSelector::RenderRecentProjectsList()
 		if (!path.empty() && path.back() != '/')
 			path += '/';
 
-		if (fs::exists(path + "ForestProject.json"))
+		if (ProjectConfigExists(path))
 		{
 			m_SelectedPath = path;
 			m_Result = ProjectSelectorResult::OpenExisting;
 		}
 		else
 		{
+			m_RecentProjectsLoaded = false;
+			m_SelectedRecentIndex = -1;
 			m_StatusMessage = "Project folder no longer exists.";
 			m_StatusIsError = true;
 		}
@@ -278,7 +291,7 @@ void VansProjectSelector::RenderOpenProjectPanel()
 		if (!path.empty() && path.back() != '/')
 			path += '/';
 
-		if (fs::exists(path + "ForestProject.json"))
+		if (ProjectConfigExists(path))
 		{
 			m_SelectedPath = path;
 			m_Result = ProjectSelectorResult::OpenExisting;

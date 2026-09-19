@@ -44,8 +44,7 @@ void main()
 
     vec3 volumeMin = pushConstants.regionParams.xyz - vec3(probeCounts) * pushConstants.gridParams.xyz * 0.5;
     uint probeLinear = work.x;
-    vec3 probeWorld = (giProbeWork.header.w != 0u ? GI_LayoutPosition(giProbeWork.header.z, work.x).xyz
-        : volumeMin + (vec3(probeIndex) + 0.5) * pushConstants.gridParams.xyz) +
+    vec3 probeWorld = GI_LayoutProbePosition(giProbeWork.header.z, work.x, probeCounts, volumeMin, pushConstants.gridParams.xyz) +
         probeStates.states[probeLinear].relocationAndConfidence.xyz;
     GIProbeRayDirectionContext context = GI_BuildProbeRayDirectionContext(
         probeIndex, probeCounts, uint(pushConstants.dispatchParams.w), work.z);

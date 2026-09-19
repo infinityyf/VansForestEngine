@@ -34,7 +34,7 @@ namespace VansGraphics
     // ─────────────────────────────────────────────────────────────────────────
     //  VansGizmos
     //
-    //  Thin wrapper around ImGuizmo. Runtime picking and transform writes go
+    //  Thin wrapper around ImGuizmo. Transform writes go
     //  through IEngineEditorAPI; document sync remains in the editor layer.
     // ─────────────────────────────────────────────────────────────────────────
     class VansGizmos
@@ -50,12 +50,6 @@ namespace VansGraphics
         void Draw(Vans::EditorAPI::IEngineEditorAPI& api,
                   VansCamera* camera, ImVec2 windowPos, ImVec2 windowSize);
 
-        // Screen-space left-click picking via ray–sphere test.
-        // Call when LMB is pressed inside the Scene window and ImGuizmo is not active.
-        void TryPickObject(Vans::EditorAPI::IEngineEditorAPI& api,
-                           VansCamera* camera, ImVec2 mousePos,
-                           ImVec2 windowPos, ImVec2 windowSize);
-
         // Handle W / E / R / X / Escape hotkeys.
         // Call once per frame inside the Scene window.
         void HandleHotkeys();
@@ -70,15 +64,6 @@ namespace VansGraphics
         static void SyncTransformToSceneDocument(const std::string& entityGuid,
                                                  const Vans::EditorAPI::RuntimeTransformSnapshot& transform);
 
-        // Shoot a world-space ray from the camera through the given NDC pixel.
-        // Returns origin (camera position) and normalised direction.
-        static void UnprojectRay(VansCamera* camera,
-                                 float ndcX, float ndcY,
-                                 float viewportAspect,
-                                 glm::vec3& outOrigin,
-                                 glm::vec3& outDir);
-
-        // Ray–sphere intersection.  Returns the smallest positive t, or -1 if no hit.
     };
 
 } // namespace VansGraphics

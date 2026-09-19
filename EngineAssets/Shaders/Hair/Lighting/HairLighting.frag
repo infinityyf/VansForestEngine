@@ -1,5 +1,6 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
+#define VANS_SURFACE_COOKIES
 
 #include "../../Common/CameraData.glsl"
 #define LightCBBind 0
@@ -124,7 +125,7 @@ vec4 ShadeHairNode(HairOITNode node, float surfaceVisibility, float sharedHairOp
     vec3 positionWS = ReconstructWorldPosition(fragUV, linearDepth);
     vec3 V = normalize(cameraPosition.xyz - positionWS);
     vec3 L = normalize(uDirectionLight.direction.xyz);
-    vec3 lightColor = uDirectionLight.color.rgb * uDirectionLight.intensity;
+    vec3 lightColor = uDirectionLight.color.rgb * uDirectionLight.intensity * SampleSurfaceLightCookie(0, positionWS);
 
     HairData hair;
     hair.positionWS = positionWS;

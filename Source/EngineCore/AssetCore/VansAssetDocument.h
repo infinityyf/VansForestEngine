@@ -43,10 +43,12 @@ struct VansAssetDocumentSaveStage
     std::filesystem::path targetPath;
     std::filesystem::path temporaryPath;
     VansAssetDocumentStateId stateId = 0;
+    bool requireAbsent = false;
 };
 
 class VansAssetDocument
 {
+    friend class VansApplyPrefabCommand;
     friend class EditorInternal::SetAssetPropertyCommand;
 	friend class EditorInternal::ExternalAssetEditCommand;
 
@@ -79,6 +81,7 @@ private:
     std::filesystem::path m_Path;
     std::unique_ptr<VansSerializedValue> m_Root;
     VansAssetFileFingerprint m_LoadedFingerprint;
+    VansAssetFileFingerprint m_ObservedFingerprint;
     bool m_Loaded = false;
     VansAssetDocumentStateId m_CurrentStateId = 1;
     VansAssetDocumentStateId m_SavedStateId = 1;

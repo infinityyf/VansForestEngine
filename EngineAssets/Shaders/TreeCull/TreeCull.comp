@@ -23,7 +23,7 @@ struct TreeSpeciesCullInfo
     uint padding1;
 };
 
-layout(std430, set = 1, binding = 0) readonly buffer TreeInstances
+layout(std430, set = 1, binding = 0) buffer TreeInstances
 {
     TreeInstanceGPU instances[];
 };
@@ -47,14 +47,18 @@ layout(set = 1, binding = 4) uniform sampler2D hizDepth;
 
 layout(push_constant) uniform TreeCullPC
 {
-    float cullDistance;
+    float shadowDistance;
     uint instanceCount;
-    uint speciesCount;
+    uint lodCount;
     uint hizEnabled;
     float hizSampleBias;
     int hizMipCount;
-    float padding0;
-    float padding1;
+    float lodMidDistance;
+    float lodFarDistance;
+    float hysteresis;
+    uint cullingEnabled;
+    uint padding0;
+    uint padding1;
 } pc;
 
 #include "../Common/VegetationCulling.glsl"
@@ -78,31 +82,32 @@ void main()
         return;
 
     TreeInstanceGPU inst = instances[instanceID];
-    uint visibilityGroupIndex = inst.regionIndex;
-    if (visibilityGroupIndex >= pc.speciesCount)
-        return;
-
-    vec3 center = inst.boundsSphere.xyz;
-    float radius = inst.boundsSphere.w;
-
-    // 与草一致：按根部 XZ 距离控制覆盖，不因相机高度改变植被范围。
-    bool cullingEnabled = pc.cullDistance >= 0.0;
-    if (cullingEnabled && distance(inst.modelMatrix[3].xz, cameraPosition.xz) > pc.cullDistance)
-        return;
-
-    TreeSpeciesCullInfo info = speciesInfos[visibilityGroupIndex];
-    // 阴影只使用距离筛选，保留主相机视野外但仍能投影到附近的树。
-    uint shadowSlot = atomicAdd(visibleCounts[pc.speciesCount + visibilityGroupIndex], 1u);
-    if (shadowSlot < info.maxCount)
-        visibleIndices[pc.instanceCount + info.visibleOffset + shadowSlot] = instanceID;
-
+    vec3 center=inst.boundsSphere.xyz;
+    float radius=inst.boundsSphere.w;
+    // 按相机到树根的三维距离切换，最后一级不会再因距离被裁掉。
+    float cameraDistance=distance(inst.modelMatrix[3].xyz,cameraPosition.xyz);
+    uint lod=min(inst.flags,pc.lodCount-1u);
+    float thresholds[2]=float[2](pc.lodMidDistance,pc.lodFarDistance);
+    while(lod+1u<pc.lodCount && cameraDistance>thresholds[lod]*(1.0+pc.hysteresis))++lod;
+    while(lod>0u && cameraDistance<thresholds[lod-1u]*(1.0-pc.hysteresis))--lod;
+    instances[instanceID].flags=lod;
+    // 阴影独立保留视野外投影者，并使用不高于主画面的网格精度。
+    uint shadowLod=min(lod+1u,pc.lodCount-1u);
+    if(distance(inst.modelMatrix[3].xz,cameraPosition.xz)<=pc.shadowDistance) {
+        TreeSpeciesCullInfo shadowInfo=speciesInfos[shadowLod];
+        uint shadowSlot=atomicAdd(visibleCounts[pc.lodCount+shadowLod],1u);
+        if(shadowSlot<shadowInfo.maxCount)
+            visibleIndices[pc.instanceCount*pc.lodCount+shadowInfo.visibleOffset+shadowSlot]=instanceID;
+    }
+    bool cullingEnabled=pc.cullingEnabled!=0u;
+    TreeSpeciesCullInfo info=speciesInfos[lod];
     if (cullingEnabled && !sphereInsideFrustum(center, radius))
         return;
 
     if (cullingEnabled && pc.hizEnabled != 0 && FrameIndex >= 1.0 && conservativePreviousFrameHiZOccluded(center, radius))
         return;
 
-    uint slot = atomicAdd(visibleCounts[visibilityGroupIndex], 1u);
+    uint slot = atomicAdd(visibleCounts[lod], 1u);
     if (slot < info.maxCount)
         visibleIndices[info.visibleOffset + slot] = instanceID;
 }

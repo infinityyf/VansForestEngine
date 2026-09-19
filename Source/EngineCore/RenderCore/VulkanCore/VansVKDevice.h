@@ -1,4 +1,6 @@
 #pragma once
+#include <unordered_set>
+#include "../BRDFData/VansLightCookie.h"
 #include "../VansGraphicsDevice.h"
 #include "../VansCameraFrameData.h"
 #include "../VansRenderRuntimeConfig.h"
@@ -60,6 +62,12 @@ namespace VansGraphics
 		VansTemporalJitter m_CameraTemporalJitter{};
 		VansVKBuffer m_CameraDataBuffer;
 		VansVKBuffer m_LightDataBuffer;
+        VansVKBuffer m_LightCookieDataBuffer;
+        std::vector<VkDescriptorImageInfo> m_LightCookieDescriptors;
+        VkDescriptorSet m_LightCookieDescriptorSet = VK_NULL_HANDLE;
+        std::unordered_set<std::string> m_InvalidLightCookies;
+        bool UploadLightCookies(const VansLightCookieFrame& frame);
+
 		VansVKDrawInstanceArena m_DrawInstanceArena;
 		std::uint32_t m_CameraRenderFrameIndex = 0;
 		std::uint32_t m_CurrentCameraFrameIndex = 0;
@@ -272,6 +280,7 @@ namespace VansGraphics
 		bool WaitForIdle() override { return WaitForDevice(); }
 		VansVKBuffer& GetCameraDataBuffer() { return m_CameraDataBuffer; }
 		VansVKBuffer& GetLightDataBuffer() { return m_LightDataBuffer; }
+        VansVKBuffer& GetLightCookieDataBuffer() { return m_LightCookieDataBuffer; }
 		VansVKDrawInstanceArena& GetDrawInstanceArena() { return m_DrawInstanceArena; }
 		const VansVKDrawInstanceArena& GetDrawInstanceArena() const { return m_DrawInstanceArena; }
 		bool ShouldDrawMainCameraProxy(VansRenderProxyHandle proxy)

@@ -476,7 +476,10 @@ namespace VansGraphics
 			VANS_LOG_ERROR("[VansTexture] Failed to end texture upload command buffer.");
 			return false;
 		}
-		if (!VansVKCommandBuffer::SubmitCommands(queue, device, { command_buffer.GetVKCommandBuffer() }, {}, {}, command_buffer.m_CommandBufferFinishSubmitFence))
+		// Upload/initial-layout work is consumed immediately by the next render
+		// pass.  Wait before resetting this one-time command buffer so the image
+		// transition is complete on the GPU, not only in m_ImageLayout tracking.
+		if (!VansVKCommandBuffer::SubmitCommands(queue, device, { command_buffer.GetVKCommandBuffer() }, {}, {}, command_buffer.m_CommandBufferFinishSubmitFence, true))
 		{
 			VANS_LOG_ERROR("[VansTexture] Failed to submit texture upload command buffer.");
 			return false;
@@ -1069,8 +1072,8 @@ namespace VansGraphics
 			{
 				VkExtent3D extent = { (uint32_t)width, (uint32_t)height, 1 };
 				VkFormat format = hdr ? VK_FORMAT_R16G16B16A16_SFLOAT : ChooseFormat(num_components, LOW_PRES_8, isSRGB);
-				m_Image.CreateVulkanImage(device, extent, format, 1, 1,
-					VK_IMAGE_TYPE_2D, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+				m_Image.CreateVulkanImage(device, extent, format, CalculateMipLevels(width, height, true), 1,
+					VK_IMAGE_TYPE_2D, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
 					VK_SAMPLE_COUNT_1_BIT, true, true, true);
 				imageCreated = true;
 			}
@@ -1091,24 +1094,35 @@ namespace VansGraphics
 			}
 		}
 
-		//切换layout到SHADER_READ_ONLY_OPTIMAL
+		// 静态天空提供完整辐射 mip 链，供 IBL 按积分样本的立体角过滤。
 		if (!command_buffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
 		{
 			RecordTextureUploadFailure();
 			VANS_LOG_ERROR("Cube texture final layout command buffer begin failed: " << texture_parent_path);
 			throw std::runtime_error("Cubemap layout transition failed: " + texture_parent_path);
 		}
-		m_Image.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+		m_Image.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
 			{
 				m_Image.GetImage(),
-				VK_ACCESS_NONE,
-				VK_ACCESS_NONE,
+				VK_ACCESS_SHADER_READ_BIT,
+				VK_ACCESS_TRANSFER_WRITE_BIT,
 				m_Image.GetImageLayout(),
-				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 				VK_QUEUE_FAMILY_IGNORED,
 				VK_QUEUE_FAMILY_IGNORED,
 				m_Image.GetImageAspect()
 			});
+		for (int face = 0; face < 6; ++face)
+			GenerateMipmapsForLayer(command_buffer, cubeWidth, cubeHeight,
+				static_cast<int>(m_Image.GetImageCreateInfo().mipLevels), face,
+				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
+				VK_PIPELINE_STAGE_TRANSFER_BIT);
+		m_Image.SetImageMemoryBarrier(command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			{ m_Image.GetImage(), VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT,
+			  VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_QUEUE_FAMILY_IGNORED,
+			  VK_QUEUE_FAMILY_IGNORED, m_Image.GetImageAspect() });
 		if (!SubmitAndWait(command_buffer, queue, device))
 		{
 			RecordTextureUploadFailure();

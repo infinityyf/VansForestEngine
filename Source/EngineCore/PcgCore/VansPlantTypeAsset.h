@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../AssetCore/VansAssetGuid.h"
+#include "../AssetCore/VansModelLod.h"
 
 #include <array>
 #include <cstdint>
@@ -35,6 +36,8 @@ struct VansPlantVariant
 	std::array<float, 4> rotation{ 0, 0, 0, 1 };
 	std::array<float, 3> scale{ 1, 1, 1 };
 	std::vector<VansPlantPart> parts;
+	VansModelLodSettings lodSettings;
+	VansModelLodAsset lod;
 };
 
 struct VansPlantGrassSettings
@@ -69,6 +72,9 @@ struct VansPlantRenderSettings
 	float cullDistance = 0;
 	float hizBias = 0;
 	bool castShadows = false;
+	std::array<float, 2> lodDistances{60.f, 180.f};
+	float lodHysteresis = 0.1f;
+
 };
 
 // 植物外观是独立用户资产，不包含场景范围、分布点、Mask 或内置植物配方。

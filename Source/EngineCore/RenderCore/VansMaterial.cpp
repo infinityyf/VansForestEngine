@@ -1108,7 +1108,13 @@ bool VansGraphics::VansMaterialManager::RewriteGlobalBindlessTextureDescriptors(
 {
 	std::lock_guard<std::mutex> lock(m_GlobalPBRTexturesMutex);
 	if (m_GlobalPBRTextures.empty())
+		return true; // 空场景没有需要重写的材质纹理描述符。
+	if (!IsBindlessTextureCountSupported(m_GlobalPBRTextures.size()))
+	{
+		VANS_LOG_ERROR("[Material] Refusing bindless descriptor rewrite: requested="
+			<< m_GlobalPBRTextures.size() << ", capacity=" << MAX_BINDLESS_TEXTURES);
 		return false;
+	}
 
 	std::vector<VkDescriptorImageInfo> infos;
 	infos.reserve(m_GlobalPBRTextures.size());
@@ -1188,6 +1194,7 @@ void VansGraphics::VansMaterialManager::ClearScenePBRData(VkDevice device)
 	deleteTexture(m_SkinBSDFLUT);
 	deleteTexture(m_SkinProfileLUTArray);
 	deleteTexture(m_ClothBRDFLUT);
+    deleteTexture(m_GrassEnergyLUT);
 	deleteTexture(m_LTC1);
 	deleteTexture(m_LTC2);
 
@@ -1884,16 +1891,21 @@ bool VansGraphics::VansMaterialManager::ApplyMaterialParameter(
 			grass->m_GrassParams.aoStrength = std::clamp(scalar, 0.0f, 1.0f);
 			return true;
 		}
-		if (key == "rootAOIntensity" && ReadMaterialFloat(value, scalar))
+		if (key == "normalStrength" && ReadMaterialFloat(value, scalar))
 		{
-			grass->m_GrassParams.rootAOIntensity = std::clamp(scalar, 0.0f, 0.85f);
+			grass->m_GrassParams.normalStrength = std::clamp(scalar, 0.0f, 2.0f);
 			return true;
 		}
-		if (key == "rootAOHeight" && ReadMaterialFloat(value, scalar))
+		if (key == "transmissionStrength" && ReadMaterialFloat(value, scalar))
 		{
-			grass->m_GrassParams.rootAOHeight = std::clamp(scalar, 0.01f, 1.0f);
+			grass->m_GrassParams.transmissionStrength = std::clamp(scalar, 0.0f, 1.0f);
 			return true;
 		}
+        if (key == "indirectDiffuseStrength" && ReadMaterialFloat(value, scalar))
+        {
+            grass->m_GrassParams.indirectDiffuseStrength = std::clamp(scalar, 0.0f, 2.0f);
+            return true;
+        }
 	}
 
 	return false;

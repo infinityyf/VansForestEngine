@@ -249,6 +249,8 @@ namespace VansGraphics
 		//同步fence
 		//应该每个commandbuffer对象对应一个
 		VkFence m_CommandBufferFinishSubmitFence;
+		// Call after a third-party renderer records directly into the native buffer.
+		void InvalidateExternalBindings() { ResetBindingState(); }
 	private:
 		VkCommandPool m_VansVKCommandPool;
 

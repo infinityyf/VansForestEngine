@@ -3,6 +3,7 @@
 #include "glm/glm.hpp"
 #include "VansWaterMaterial.h"
 #include "VansWaterConfig.h"
+#include "VansRiverWaveSimulation.h"
 #include "VansWaterGeometryClipmap.h"
 #include "../VulkanCore/VansVKImage.h"
 #include "../VulkanCore/VansVKBuffer.h"
@@ -82,6 +83,7 @@ namespace VansGraphics
         glm::vec4 detailLayerStrengthFade[VansWaterDetailNormalConfig::MAX_LAYER_COUNT];
         glm::ivec4 detailLayerEnabled;
         glm::vec4 effectiveRoughnessParams; // x=mode, y=distance start, z=distance end, w=strength
+        glm::vec4 riverRendering; // x=flow grid metres, y=river wave bound, z=fine wave detail strength
     };
 
     // PBRWaterParams GPU struct. Matches PBRWater surface/refraction/volume/composite shaders.
@@ -334,6 +336,9 @@ namespace VansGraphics
         bool        m_VolumeFilterOutputReady = false;
 
         // ── SSBO：Gerstner 波分量（W-04）───────────────────────────
+        VansRiverWaveSimulation m_RiverWaves;
+        VansVKBuffer m_RiverWaveBuffer;
+        bool m_RiverWaveBufferCreated=false;
         VansVKBuffer   m_WaveSSBO;
         bool           m_WaveSSBOCreated = false;
         static constexpr uint32_t MAX_WAVE_COUNT = 64;

@@ -115,6 +115,7 @@ const char* AssetTypeName(Vans::EditorAPI::AssetType type)
 	case Vans::EditorAPI::AssetType::ActionGraph: return "Action Graph";
 	case Vans::EditorAPI::AssetType::CameraRigProfile: return "Camera Rig Profile";
 	case Vans::EditorAPI::AssetType::CameraShakeProfile: return "Camera Shake Profile";
+	case Vans::EditorAPI::AssetType::DamageProfile: return "Damage Profile";
 	case Vans::EditorAPI::AssetType::GAFEditorLayout: return "GAF Editor Layout";
     case Vans::EditorAPI::AssetType::ClothProfile: return "Cloth Profile";
     case Vans::EditorAPI::AssetType::SkinProfile: return "Skin Profile";
@@ -273,6 +274,14 @@ Vans::VansSerializedValue DefaultSerializedComponentData(const std::string& type
             { "orphanOverrides", Value::Object({}) },
             { "renderType", Value::String("opaque") }
         });
+    if (type == "LODGroup")
+        return Value::Object({
+            { "mode", Value::String("autoScreenError") },
+            { "pixelErrorBudget", Value::Float(1.0) },
+            { "qualityBias", Value::Float(1.0) },
+            { "hysteresis", Value::Float(0.1) },
+            { "levels", Value::Array({}) }
+        });
     if (type == "Physics")
         return Value::Object({
             { "name", Value::String("Physics") },
@@ -305,14 +314,23 @@ Vans::VansSerializedValue DefaultSerializedComponentData(const std::string& type
             { "layer", Value::String("Default") },
             { "positionOffset", vec3(0.0, 0.9, 0.0) }
         });
+    const auto lightCookie = []() { return Value::Object({
+        {"enabled", Value::Bool(false)},
+        {"texture", Value::Object({{"domain", Value::String("ProjectAsset")}, {"guid", Value::String("")}, {"assetType", Value::String("texture")}})},
+        {"strength", Value::Float(1)}, {"sizeX", Value::Float(10)}, {"sizeY", Value::Float(10)},
+        {"scaleX", Value::Float(1)}, {"scaleY", Value::Float(1)},
+        {"offsetX", Value::Float(0)}, {"offsetY", Value::Float(0)}, {"rotationDegrees", Value::Float(0)},
+        {"repeat", Value::Bool(false)}, {"useAlpha", Value::Bool(false)}}); };
     if (type == "DirectionalLight")
         return Value::Object({
+            {"cookie", lightCookie()},
             { "color", vec3(1.0, 1.0, 1.0) },
             { "intensity", Value::Float(1.0) }
         });
     if (type == "PointLight" || type == "SpotLight")
     {
         std::vector<std::pair<std::string, Value>> fields{
+            {"cookie", lightCookie()},
             { "color", vec3(1.0, 1.0, 1.0) },
             { "intensity", Value::Float(1.0) },
             { "radius", Value::Float(10.0) }
@@ -330,6 +348,7 @@ Vans::VansSerializedValue DefaultSerializedComponentData(const std::string& type
     if (type == "RectLight")
     {
         std::vector<std::pair<std::string, Value>> fields{
+            {"cookie", lightCookie()},
             { "color", vec3(1.0, 1.0, 1.0) },
             { "intensity", Value::Float(1.0) },
             { "width", Value::Float(1.0) },
@@ -455,6 +474,13 @@ bool MaterialScalarLimits(const std::string& label, const std::string& parentKey
         return false;
 
     const std::string field = Lower(label);
+    if (field == "indirectdiffusestrength")
+    {
+        minValue = 0.0f;
+        maxValue = 2.0f;
+        speed = 0.01f;
+        return true;
+    }
     if (field == "ior")
     {
         minValue = 1.0f;
@@ -2075,6 +2101,17 @@ bool VansInspectorWindow::Impl::DrawSerializedValue(
 {
     ImGui::PushID(pointer.c_str());
     bool changed = false;
+    if (!readOnly && label == "data" && value.kind == Vans::VansSerializedValue::Kind::Object &&
+        (componentType == "DirectionalLight" || componentType == "PointLight" || componentType == "SpotLight" || componentType == "RectLight") &&
+        !Vans::FindObjectField(value, "cookie") && ImGui::Button("Add Cookie Settings"))
+    {
+        const auto defaults = DefaultSerializedComponentData(componentType);
+        if (const auto* cookie = Vans::FindObjectField(defaults, "cookie"))
+        {
+            value.objectFields.emplace_back("cookie", *cookie);
+            changed = true;
+        }
+    }
     const Vans::EditorPropertyDescriptor propertyDescriptor =
         Vans::VansEditorPropertyDescriptorRegistry::Resolve(componentType, parentKey, label);
     const Vans::ObjectReferenceSlotDescriptor* objectReferenceSlot =
@@ -2899,18 +2936,60 @@ void VansInspectorWindow::Impl::DrawSceneEntity(Vans::EditorAPI::IEngineEditorAP
                 }
                 else ++componentIndex;
             }
+			for (Vans::VansSerializedValue& component : editedComponents->arrayItems)
+			{
+				if (Vans::ReadSerializedStringField(component, "type") != "LODGroup") continue;
+				if (ImGui::Button("Generate / Refresh LOD Assets", ImVec2(-1.0f, 0.0f)))
+				{
+					Vans::EditorAPI::ModelLodBuildRequest request;
+					request.entityGuid = selected;
+					const auto built = api.BuildModelLods(request);
+					static std::string lodBuildMessage;
+					lodBuildMessage = built.message;
+					if (built.success)
+					{
+						using Value = Vans::VansSerializedValue;
+						std::vector<Value> levels;
+						for (std::size_t levelIndex = 0; levelIndex < built.levels.size(); ++levelIndex)
+						{
+							std::vector<Value> meshes;
+							std::vector<Value> errors;
+							for (const auto& part : built.levels[levelIndex].parts)
+							{
+								meshes.push_back(Value::String(part.model));
+								// meshoptimizer 返回相对源包围球的误差；LOD 选择器消费
+								// object-space 误差，因此在资源绑定时完成一次尺度换算。
+								errors.push_back(Value::Float(part.error * built.centerRadius[3]));
+							}
+							levels.push_back(Value::Object({
+								{ "meshes", Value::Array(std::move(meshes)) },
+								{ "errors", Value::Array(std::move(errors)) },
+								{ "screenHeight", Value::Float(levelIndex == 0 ? 0.2 : 0.05) }
+							}));
+						}
+						Value* data = Vans::FindObjectField(component, "data");
+						if (data)
+						{
+							Vans::SetSerializedObjectField(*data, "levels", Value::Array(std::move(levels)));
+							changed = true;
+							structuralRuntimeRebuild = true;
+						}
+					}
+					if (!lodBuildMessage.empty()) ImGui::TextWrapped("%s", lodBuildMessage.c_str());
+				}
+			}
         }
 
         if (ImGui::Button("Add Component", ImVec2(-1.0f, 0.0f))) ImGui::OpenPopup("AddComponent");
         if (ImGui::BeginPopup("AddComponent"))
         {
-            static const char* types[] = { "ModelRenderer", "Physics", "Camera", "Animation",
+            static const char* types[] = { "ModelRenderer", "LODGroup", "Physics", "Camera", "Animation",
                 "CharacterController", "DirectionalLight", "PointLight", "SpotLight", "RectLight",
 				"Audio", "AudioVolume", "AudioReverbZone", "LocalVolumetricFog", "Video", "Particle", "Cloth", "Vehicle",
 				"ActionHost", "Script" };
             for (const char* type : types)
             {
-				const bool singleton = std::strcmp(type, "ModelRenderer") == 0 ||
+				const bool singleton = std::strcmp(type, "ModelRenderer") == 0 || std::strcmp(type, "LODGroup") == 0 ||
 					std::strcmp(type, "Physics") == 0 || std::strcmp(type, "ActionHost") == 0;
                 bool alreadyPresent = false;
                 if (singleton)

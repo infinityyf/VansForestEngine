@@ -411,7 +411,7 @@ namespace
         "WaterGBufferParamsGPU detail layer offset must match std140 shader layout");
     static_assert(offsetof(WaterGBufferParamsGPU, effectiveRoughnessParams) == 528,
         "WaterGBufferParamsGPU roughness offset must match std140 shader layout");
-    static_assert(sizeof(WaterGBufferParamsGPU) == 544,
+    static_assert(sizeof(WaterGBufferParamsGPU) == 560,
         "WaterGBufferParamsGPU size must match std140 shader layout");
     static_assert(sizeof(WaveParticleGPU) == 48,
         "WaveParticleGPU must match std430 shader layout");
@@ -493,6 +493,11 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
 
     m_WaveSimShader = shaderManager.FindComputeShader("WaterWave");
     m_WaveParticleShader = shaderManager.FindComputeShader("WaterWaveParticle");
+    m_RiverWaves.Clear();
+    CreateWaterBuffer(m_RiverWaveBuffer,m_RiverWaveBufferCreated,
+        VansRiverWaveSimulation::MaxGpuVectors*sizeof(glm::vec4),VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    if(m_RiverWaveBufferCreated)m_RiverWaveBuffer.SetBufferData(m_RiverWaves.GpuData().data(),0,
+        m_RiverWaves.GpuData().size()*sizeof(glm::vec4));
     m_FlowMapShader = shaderManager.FindComputeShader("WaterFlowMap");
     m_WaterSSRShader = shaderManager.FindComputeShader("WaterSSR");
     m_WaterRefractionShader = shaderManager.FindComputeShader("WaterRefraction");
@@ -706,6 +711,64 @@ void VansWaterSystem::Initialize(VansVKDevice* device,
     createVolumeImage(m_WaterVolumeTransmittanceImage, VK_FORMAT_R16G16B16A16_SFLOAT);
     createVolumeImage(m_WaterVolumeDepthImage, VK_FORMAT_R16_SFLOAT);
 
+    // All water compute outputs are advertised to descriptors as GENERAL.  A
+    // freshly-created VkImage is still in UNDEFINED until a real GPU barrier
+    // is submitted; merely updating the engine-side layout tracker is not
+    // sufficient for descriptor validation.  Establish the common initial
+    // state once during setup, before any water descriptor set is published.
+    {
+        VansVKCommandBuffer& initCommand = device->GetImmediateGraphicsCommandBuffer();
+        bool initialized = initCommand.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+        if (initialized)
+        {
+            auto initializeGeneral = [&](VansVKImage& image)
+            {
+                if (!image.HasResources())
+                    return;
+                image.SetImageMemoryBarrier(
+                    initCommand,
+                    VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                    {
+                        image.GetImage(),
+                        VK_ACCESS_NONE,
+                        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                        image.GetImageLayout(),
+                        VK_IMAGE_LAYOUT_GENERAL,
+                        VK_QUEUE_FAMILY_IGNORED,
+                        VK_QUEUE_FAMILY_IGNORED,
+                        VK_IMAGE_ASPECT_COLOR_BIT
+                    });
+            };
+
+            initializeGeneral(m_WaveDisplacementImage);
+            initializeGeneral(m_WaveDerivativeImage);
+            initializeGeneral(m_FlowMapImage);
+            initializeGeneral(m_WaterReflectionImage);
+            initializeGeneral(m_WaterRefractionImage);
+            initializeGeneral(m_WaterThicknessImage);
+            initializeGeneral(m_WaterVolumeRawColorImage);
+            initializeGeneral(m_WaterVolumeRawTransmittanceImage);
+            initializeGeneral(m_WaterVolumeRawDepthImage);
+            initializeGeneral(m_WaterVolumeColorImage);
+            initializeGeneral(m_WaterVolumeTransmittanceImage);
+            initializeGeneral(m_WaterVolumeDepthImage);
+
+            initialized = initCommand.EndCommandBufferRecord()
+                && VansVKCommandBuffer::SubmitCommands(
+                    device->GetGraphicsQueue(),
+                    logicDev,
+                    { initCommand.GetVKCommandBuffer() },
+                    {},
+                    {},
+                    initCommand.m_CommandBufferFinishSubmitFence,
+                    true)
+                && initCommand.ResetCommandBuffer(false);
+        }
+        if (!initialized)
+            VANS_LOG_ERROR("[VansWaterSystem] Failed to establish GENERAL layout for water compute images.");
+    }
+
     // PBRWater shared optics/composite UBO.
     CreateWaterBuffer(m_CompParamsBuffer, m_CompParamsBufferCreated,
         sizeof(PBRWaterParamsGPU),
@@ -821,6 +884,8 @@ void VansWaterSystem::SetupDescriptors(
             m_GBufPassLayout, sets, 1);
         m_GBufPassSet = sets[0];
         descMgr->BeginDescriptorUpdate();
+        descMgr->WriteBufferDescriptor(m_GBufPassSet,WATER_GBUF_BINDING_RIVER_PARTICLES,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            {{GetNativeBuffer(m_RiverWaveBuffer,m_RiverWaveBufferCreated),0,VansRiverWaveSimulation::MaxGpuVectors*sizeof(glm::vec4)}});
 
         descMgr->WriteBufferDescriptor(
             m_GBufPassSet,
@@ -1185,12 +1250,16 @@ void VansWaterSystem::ReinitializeResolutionResources(
     VansTexture* detailNormal = m_DetailNormalTexture;
     VansTexture* neutralNormal = m_NeutralNormalTexture;
     const float preservedTime = m_Time;
+    auto preservedRiverWaves=std::move(m_RiverWaves);
 
     Shutdown();
     m_Time = preservedTime;
     m_WaterMaterial = material;
     SetDetailNormalTextures(detailNormal, neutralNormal);
     Initialize(device, renderWidth, renderHeight);
+    m_RiverWaves=std::move(preservedRiverWaves);
+    if(m_RiverWaveBufferCreated)m_RiverWaveBuffer.SetBufferData(m_RiverWaves.GpuData().data(),0,
+        m_RiverWaves.GpuData().size()*sizeof(glm::vec4));
     SetupDescriptors(
         renderPassManager, globalLayout, globalSet, sceneHZBImage);
 }
@@ -1271,6 +1340,8 @@ void VansWaterSystem::Shutdown()
     DestroyWaterBuffer(m_SSRParamsBuffer, m_SSRParamsBufferCreated, dev);
     DestroyWaterBuffer(m_ThicknessParamsBuffer, m_ThicknessParamsBufferCreated, dev);
     DestroyWaterBuffer(m_WaveSSBO, m_WaveSSBOCreated, dev);
+    m_RiverWaves.Clear();
+    DestroyWaterBuffer(m_RiverWaveBuffer,m_RiverWaveBufferCreated,dev);
     DestroyWaterBuffer(m_WaveParticleSSBO, m_WaveParticleSSBOCreated, dev);
     m_GBufParamsCache = {};
 
@@ -1374,6 +1445,10 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
     const auto& particle = config.m_WaveParticle;
     const auto& flowMap = config.m_FlowMap;
     m_WaterLevel = config.m_WaterLevel;
+    m_RiverWaves.Update(deltaTime,m_SplineFields?m_SplineFields->Snapshot():nullptr,
+        glm::vec2(cameraPos.x,cameraPos.z),config.m_River.m_Wavelength,config.m_River.m_Lifetime);
+    if(m_RiverWaveBufferCreated)m_RiverWaveBuffer.SetBufferData(m_RiverWaves.GpuData().data(),0,
+        m_RiverWaves.GpuData().size()*sizeof(glm::vec4));
 
     const float windLength = spectrum.m_WindSpeed * spectrum.m_WindSpeed / 9.81f;
     const float spectralFourSigma = 5.5f * windLength
@@ -1381,7 +1456,7 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
     const float particleBound = spectrum.m_Mode == VansWaveMode::WaveParticle
         ? particle.m_RmsAmplitude * 4.0f : 0.0f;
     const float displacementBound = spectrum.m_SwellAmplitude * 2.0f
-        + spectralFourSigma + particleBound;
+        + spectralFourSigma + particleBound + config.m_River.m_MaxHeight;
     if (m_GeometryClipmap)
     {
         m_GeometryClipmap->ApplyConfig(geometry);
@@ -1395,6 +1470,7 @@ void VansWaterSystem::Update(float deltaTime, const glm::vec3& cameraPos,
     }
 
     WaterGBufferParamsGPU gbufParams = {};
+    gbufParams.riverRendering=glm::vec4(config.m_River.m_FlowGridSize,config.m_River.m_MaxHeight,config.m_River.m_FineDetailStrength,0);
     gbufParams.VPMatrix = vpMatrix;
     gbufParams.ViewMatrix = viewMatrix;
     gbufParams.cameraPosition = glm::vec4(cameraPos, 1.0f);
@@ -1747,7 +1823,7 @@ void VansWaterSystem::RenderWaterGBuffer(VansVKCommandBuffer& cmd, GlobalStateDa
 
         cmd.UpdatePushConstants(
             *m_WaterGBufferShader->GetGraphicsPipeline(),
-            VK_SHADER_STAGE_VERTEX_BIT,
+            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
             0, sizeof(WaterPatchPushConstant), &pc);
 
         cmd.DrawIndexed(indexCount, 1, 0, 0, 0);
@@ -1773,6 +1849,8 @@ void VansWaterSystem::DispatchWaterSSR(VansVKCommandBuffer& cmd)
         beforeSSR.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
         beforeSSR.oldLayout = m_WaterReflectionImage.GetImageLayout();
         beforeSSR.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        beforeSSR.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        beforeSSR.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         beforeSSR.image = m_WaterReflectionImage.GetImage();
         beforeSSR.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
         m_WaterReflectionImage.SetTrackedImageLayout(VK_IMAGE_LAYOUT_GENERAL);
@@ -1792,6 +1870,8 @@ void VansWaterSystem::DispatchWaterSSR(VansVKCommandBuffer& cmd)
         afterSSR.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
         afterSSR.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
         afterSSR.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        afterSSR.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        afterSSR.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         afterSSR.image = m_WaterReflectionImage.GetImage();
         afterSSR.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
         cmd.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,

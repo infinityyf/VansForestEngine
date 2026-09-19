@@ -11,7 +11,6 @@ namespace Vans
 {
     class VansSceneDocument;
     class VansSceneEditService;
-    class VansSceneSaveService;
     class VansProjectSelector;
 }
 
@@ -119,6 +118,18 @@ namespace VansGraphics
 		static Vans::VansSceneEditService* GetSceneEditService();
 		static Vans::EditorAPI::IEngineEditorAPI* GetEditorAPI();
 		static void ReloadCurrentSceneForEditing();
+        static void QueuePrefabCreation(std::string entity, std::string directory, std::string documentToken);
+        static void QueuePrefabPlacement(std::string asset, std::string parent, float x, float y, float z);
+        static void QueuePrefabOpen(std::string path);
+        static void QueuePrefabDuplicate(std::string root);
+        static void QueuePrefabDelete(std::string root);
+        static void ProcessPrefabRequests();
+        static void DrawPrefabToolbar();
+        static bool SavePrefabSession();
+        static bool HasPrefabSession();
+        static bool HasPendingPrefabRequests();
+        static bool RefreshActiveScenePreview();
+        static std::string ActiveDocumentToken();
 		// Automation-only entry point. Normal editor startup is unchanged unless
 		// the application explicitly queues a project path.
 		static void QueueProjectOpenForAutomation(const std::string& projectPath);
@@ -244,7 +255,6 @@ namespace VansGraphics
 
 		static std::unique_ptr<Vans::VansSceneDocument> m_SceneDocument;
 		static std::unique_ptr<Vans::VansSceneEditService> m_SceneEditService;
-		static std::unique_ptr<Vans::VansSceneSaveService> m_SceneSaveService;
 		static Vans::EditorAPI::IEngineEditorAPI* m_EditorAPI;
 		static std::uint64_t m_RuntimeMultiMeshExpansionScannedStateId;
 

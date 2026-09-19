@@ -13,7 +13,7 @@ layout(location = 2) out vec4 outGbuffer1;
 layout(location = 3) out vec4 outGbuffer2;
 layout(location = 4) out vec2 outMotionVector;
 
-vec3 TerrainHeightfieldNormal(vec2 heightUV, vec2 noiseGradient)
+vec3 TerrainHeightfieldNormal(vec2 heightUV, vec2 heightDetailGradient)
 {
     ivec2 heightSize = max(textureSize(heightMap, 0), ivec2(2));
     vec2 texelUV = 1.0 / vec2(heightSize - ivec2(1));
@@ -24,8 +24,8 @@ vec3 TerrainHeightfieldNormal(vec2 heightUV, vec2 noiseGradient)
     float heightTop = texture(heightMap, heightUV - vec2(0.0, texelUV.y)).r * TerrainMaxHeight();
     float heightBottom = texture(heightMap, heightUV + vec2(0.0, texelUV.y)).r * TerrainMaxHeight();
 
-    float slopeX = (heightRight - heightLeft) / (2.0 * worldStep.x) + noiseGradient.x;
-    float slopeZ = (heightBottom - heightTop) / (2.0 * worldStep.y) + noiseGradient.y;
+    float slopeX = (heightRight - heightLeft) / (2.0 * worldStep.x) + heightDetailGradient.x;
+    float slopeZ = (heightBottom - heightTop) / (2.0 * worldStep.y) + heightDetailGradient.y;
     return normalize(vec3(-slopeX, 1.0, -slopeZ));
 }
 
@@ -60,7 +60,7 @@ void TerrainWriteDeferred(
     vec3 worldPosition,
     vec4 currentClip,
     vec4 previousClip,
-    vec2 noiseGradient)
+    vec2 heightDetailGradient)
 {
     vec4 splat0 = texture(splatMap0, terrainUV);
     vec4 splat1 = texture(splatMap1, terrainUV);
@@ -105,7 +105,17 @@ void TerrainWriteDeferred(
     if (dot(blendedTangentNormal, blendedTangentNormal) <= 1e-8)
         blendedTangentNormal = vec3(0.0, 0.0, 1.0);
 
-    vec3 geometricNormal = TerrainHeightfieldNormal(terrainUV, noiseGradient);
+    // 湿润响应作用于 splat 材质结果：吸水使颜色变深，薄水膜集中高光并压低微表面法线。
+    float riverWetness = clamp(PcgRiverWetness(worldPosition.xz), 0.0, 1.0);
+    blendedAlbedo *= mix(1.0, terrainParams.riverWetnessParams.x, riverWetness);
+    blendedRoughness = mix(
+        blendedRoughness,
+        min(blendedRoughness, terrainParams.riverWetnessParams.y),
+        riverWetness);
+    blendedTangentNormal.xy *= mix(
+        1.0, terrainParams.riverWetnessParams.z, riverWetness);
+
+    vec3 geometricNormal = TerrainHeightfieldNormal(terrainUV, heightDetailGradient);
     mat3 tangentFrame = TerrainCotangentFrame(geometricNormal, worldPosition, terrainUV);
     vec3 finalNormal = normalize(tangentFrame * normalize(blendedTangentNormal));
 

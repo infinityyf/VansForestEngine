@@ -2,6 +2,7 @@
 
 #include "EngineDTOs.h"
 #include "PcgSplineDTOs.h"
+#include "ModelLodDTOs.h"
 #include "IEngineCommand.h"
 
 #include <memory>
@@ -14,6 +15,8 @@ namespace Vans::EditorAPI
 	{
 	public:
 		virtual ~IEngineEditorAPI() = default;
+		virtual ModelLodBuildResult BuildModelLods(const ModelLodBuildRequest& request) = 0;
+		virtual PcgEditorOperationResult BuildPcgPlantLods(const std::string& guid) = 0;
 		virtual PcgSplineSnapshot GetPcgSplineSnapshot() = 0;
 		virtual PcgEditorOperationResult CreatePcgSplineAsset(const std::string& name) = 0;
 		virtual PcgEditorOperationResult BindPcgSplineAsset(const std::string& guid) = 0;
@@ -60,6 +63,9 @@ namespace Vans::EditorAPI
 		virtual LocalFogFieldPreviewSnapshot GetLocalFogFieldPreview(
 			const LocalFogFieldPreviewRequest& request) const = 0;
 		virtual ProjectAssetCreateResult CreateProjectAsset(const ProjectAssetCreateRequest& request) = 0;
+        virtual EditorViewportCameraState CaptureEditorViewportCamera() const = 0;
+        virtual void RestoreEditorViewportCamera(const EditorViewportCameraState& state) = 0;
+		virtual ScenePropertyValue QueryPrefabAsset(const std::string& guid) const = 0;
 		virtual AssetRefreshResult RefreshProjectAsset(const std::string& assetPath, bool importIfMissing) = 0;
 		virtual AssetWorkingCopyPublishResult PublishAssetWorkingCopy(
 			const AssetWorkingCopyPublishRequest& request) = 0;
@@ -260,10 +266,13 @@ namespace Vans::EditorAPI
 		virtual void CommitEnvironmentSettings() = 0;
 		virtual std::vector<ScenePropertyEdit> ConsumeScenePropertyEdits() = 0;
 
+        // 编辑器只开放游戏视口局部隐藏，绝不捕获整窗鼠标。
+        virtual void UpdateGameCursorViewport(bool interactive) = 0;
+        virtual bool IsGameCursorHidden() const = 0;
 		virtual EnginePlayState GetPlayState() const = 0;
 		virtual void SetPlayState(EnginePlayState state) = 0;
-		virtual EntityId RaycastScene(const Ray& ray) const = 0;
-		virtual std::string PickRuntimeEntity(const Ray& ray) const = 0;
+		virtual EditorScenePickResult PickEditorScene(const EditorScenePickRequest& request) = 0;
+		virtual EditorSceneBounds QueryEditorSceneBounds(const std::vector<std::string>& entityGuids) = 0;
 		virtual RuntimeTransformSnapshot GetRuntimeTransform(
 			const std::string& entityGuid, RuntimeTransformSpace space) const = 0;
 		virtual RuntimeTransformEditResult ApplyRuntimeTransform(

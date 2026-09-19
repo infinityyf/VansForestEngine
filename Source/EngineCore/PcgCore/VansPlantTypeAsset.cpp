@@ -14,6 +14,10 @@ std::vector<VansAssetGuid> VansPlantTypeAsset::Dependencies() const
 		if (part.mesh.IsValid()) result.push_back(part.mesh);
 		if (part.material.IsValid()) result.push_back(part.material);
 	}
+    for (const auto& variant:variants) for(const auto& level:variant.lod.levels) for(const auto& part:level.parts) {
+        if(part.model.IsValid())result.push_back(part.model);
+        if(part.material.IsValid())result.push_back(part.material);
+    }
 	std::sort(result.begin(), result.end());
 	result.erase(std::unique(result.begin(), result.end()), result.end());
 	return result;
@@ -32,6 +36,11 @@ std::vector<std::string> ValidatePlantTypeAsset(const VansPlantTypeAsset& asset,
 	finiteNonnegative(asset.render.hizBias, "render.hizBias");
 	if (asset.render.cullingEnabled && asset.render.cullDistance <= 0)
 		errors.push_back("Enabled plant culling requires a positive distance");
+    if(asset.category==VansPlantCategory::Tree) {
+            if(!std::isfinite(asset.render.lodDistances[0])||!std::isfinite(asset.render.lodDistances[1])||asset.render.lodDistances[0]>=asset.render.lodDistances[1]||
+                asset.render.lodDistances[0]<=0||!std::isfinite(asset.render.lodHysteresis)||asset.render.lodHysteresis<0||asset.render.lodHysteresis>.3f)
+                errors.push_back("Tree render has invalid LOD distances or hysteresis");
+    }
 	std::unordered_set<std::string> variantIds;
 	double totalWeight = 0;
 	bool procedural = false;
@@ -62,6 +71,24 @@ std::vector<std::string> ValidatePlantTypeAsset(const VansPlantTypeAsset& asset,
 			if (requireReady && (variant.bladeWidth <= 0 || variant.parts.size() != 1))
 				errors.push_back(label + " requires a blade width and exactly one material part");
 		}
+        if(asset.category==VansPlantCategory::Tree) {
+            const auto& settings=variant.lodSettings;
+            if(!std::isfinite(settings.ratios[0])||!std::isfinite(settings.ratios[1])||settings.ratios[0]>=1||settings.ratios[1]<=0||settings.ratios[1]>=settings.ratios[0]||
+                !std::isfinite(settings.maximumError)||settings.maximumError<=0||settings.maximumError>.25f)
+                errors.push_back(label+" has invalid LOD build settings");
+            if(!variant.lod.levels.empty()) {
+                if(variant.lod.levels.size()!=2||variant.lod.buildKey.empty()||variant.lod.centerRadius[3]<=0)
+                    errors.push_back(label+" has incomplete LOD resources");
+                for(float f:variant.lod.centerRadius)if(!std::isfinite(f))errors.push_back(label+" has invalid LOD bounds");
+                for(const auto& level:variant.lod.levels) {
+                    if(level.parts.size()!=variant.parts.size())errors.push_back(label+" LOD parts do not match source parts");
+                    std::unordered_set<uint32_t> sources;
+                    for(const auto& part:level.parts) if(!part.model.IsValid()||!part.material.IsValid()||part.submesh<0||part.sourcePart>=variant.parts.size()||
+                        !sources.insert(part.sourcePart).second||part.triangleCount==0||!std::isfinite(part.error)||part.error<0)
+                        errors.push_back(label+" has invalid LOD part resources");
+                }
+            }
+        }
 		std::unordered_set<std::string> partIds;
 		for (const auto& part : variant.parts)
 		{

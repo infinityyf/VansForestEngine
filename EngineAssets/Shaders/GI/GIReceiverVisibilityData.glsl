@@ -11,7 +11,7 @@ struct GIReceiverVisibilityRecord
     vec4 surface;
     uvec4 metadata; // region, traceFrame, knownMask, visibleMask
     uvec4 probes[4];
-    vec4 anchor; // x：锚点建立时的像素世界尺寸；其余保留为零。
+    vec4 anchor; // x：锚点建立时的像素世界尺寸；y：地形接收面；z：滚动身份位模式；w 保留。
 };
 uint GI_ReceiverProbe(GIReceiverVisibilityRecord r, uint i) { return r.probes[i >> 2u][i & 3u]; }
 bool GI_ReceiverSurfaceMatches(vec4 previous, vec4 position, vec3 normal, float material, float footprint)

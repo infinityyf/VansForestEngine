@@ -5,6 +5,8 @@
 #include "../../AssetCore/Storage/VansJsonFileStorage.h"
 
 #include <nlohmann/json.hpp>
+#include <algorithm>
+#include <filesystem>
 
 namespace Vans
 {
@@ -46,7 +48,33 @@ namespace Vans
 		nlohmann::json root;
 		if (!VansJsonFileStorage::Read(filePath, root, error))
 			return false;
-		return VansProjectConfigJsonCodec::DecodeRecentProjects(root, entries, error);
+		if (!VansProjectConfigJsonCodec::DecodeRecentProjects(root, entries, error))
+		{
+			entries.clear(); // 不用部分解析结果覆盖损坏的偏好文件。
+			return false;
+		}
+		const auto oldSize = entries.size();
+		entries.erase(std::remove_if(entries.begin(), entries.end(),
+			[](const RecentProjectEntry& entry)
+			{
+				if (entry.path.empty()) return true;
+				std::error_code statusError;
+				const auto status = std::filesystem::status(
+					std::filesystem::u8path(entry.path) / "ForestProject.json", statusError);
+				// 权限/临时 I/O 失败不能当作已删除；只移除已确认不存在的项目。
+				if (statusError)
+					return statusError == std::errc::no_such_file_or_directory ||
+						statusError == std::errc::not_a_directory;
+				return !std::filesystem::is_regular_file(status);
+			}), entries.end());
+		if (entries.size() != oldSize)
+		{
+			// 持久清理，不只在 UI 隐藏。其余偏好字段和条目顺序保持不变。
+			root["recentProjects"] = VansProjectConfigJsonCodec::EncodeRecentProjects(entries, 20)["recentProjects"];
+			if (!VansJsonFileStorage::WriteAtomic(filePath, root, error))
+				return false;
+		}
+		return true;
 	}
 
 	bool VansProjectConfigStorage::SaveRecentProjects(

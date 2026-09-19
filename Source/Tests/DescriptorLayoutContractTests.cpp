@@ -42,6 +42,12 @@ bool TestDescriptorLayoutSharingContract()
     creates = destroys = 0;
     try
     {
+		Check(MAX_BINDLESS_TEXTURES == 4096,
+			"Global bindless capacity no longer covers large material scenes");
+		Check(IsBindlessTextureCountSupported(MAX_BINDLESS_TEXTURES)
+			&& !IsBindlessTextureCountSupported(
+				static_cast<std::uint64_t>(MAX_BINDLESS_TEXTURES) + 1u),
+			"Bindless descriptor capacity guard is not exact");
         std::vector<VkDescriptorSetLayoutBinding> bindings{
             {0,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_FRAGMENT_BIT,nullptr},
             {2,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_VERTEX_BIT,nullptr}};

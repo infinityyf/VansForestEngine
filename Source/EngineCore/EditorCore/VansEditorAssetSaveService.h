@@ -14,6 +14,7 @@ class IEngineEditorAPI;
 
 namespace Vans
 {
+class VansSceneDocument;
 struct VansAssetSaveResult
 {
     bool ok = true;
@@ -33,6 +34,9 @@ public:
     VansAssetSaveResult SaveAsset(EditorAPI::IEngineEditorAPI& editorAPI, const std::filesystem::path& sourcePath);
     VansAssetSaveResult SaveAsset(EditorAPI::IEngineEditorAPI& editorAPI, const std::shared_ptr<VansOpenAssetDocument>& document);
     VansAssetSaveResult SaveAllDirtyAssets(EditorAPI::IEngineEditorAPI& editorAPI);
-	VansAssetSaveResult SaveSceneOwnedAssets(EditorAPI::IEngineEditorAPI& editorAPI);
+    VansAssetSaveResult SaveSceneAndOwnedAssets(EditorAPI::IEngineEditorAPI& editorAPI, VansSceneDocument* scene);
+private:
+    VansAssetSaveResult SaveDocuments(EditorAPI::IEngineEditorAPI& editorAPI,
+        const std::vector<std::shared_ptr<VansOpenAssetDocument>>& documents, VansSceneDocument* scene);
 };
 }

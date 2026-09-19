@@ -172,6 +172,20 @@ VansSceneLightBuildResult VansSceneLightComponentBuilder::BuildLights(
 		auto* dlComp = new VansScriptDirectionalLightComponent();
 		dlComp->m_LightManager = &lightManager;
 		dlComp->m_LightIndex = idx;
+        auto& cookie = lightManager.Cookie(0, idx);
+        cookie.enabled = dl.cookie.enabled;
+        cookie.textureGuid = dl.cookie.textureGuid;
+        cookie.strength = dl.cookie.strength;
+        cookie.sizeX = dl.cookie.sizeX;
+        cookie.sizeY = dl.cookie.sizeY;
+        cookie.scaleX = dl.cookie.scaleX;
+        cookie.scaleY = dl.cookie.scaleY;
+        cookie.offsetX = dl.cookie.offsetX;
+        cookie.offsetY = dl.cookie.offsetY;
+        cookie.rotationDegrees = dl.cookie.rotationDegrees;
+        cookie.repeat = dl.cookie.repeat;
+        cookie.useAlpha = dl.cookie.useAlpha;
+
 		object.AddComponent(dlComp);
 		result.directionalLight = dlComp;
 		VANS_LOG("[LoadSceneObjects] 创建方向光组件 '" << object.m_ObjectName << "' idx=" << idx);
@@ -206,6 +220,20 @@ VansSceneLightBuildResult VansSceneLightComponentBuilder::BuildLights(
 		auto* plComp = new VansScriptPointLightComponent();
 		plComp->m_LightManager = &lightManager;
 		plComp->m_LightIndex = idx;
+        auto& cookie = lightManager.Cookie(1, idx);
+        cookie.enabled = pl.cookie.enabled;
+        cookie.textureGuid = pl.cookie.textureGuid;
+        cookie.strength = pl.cookie.strength;
+        cookie.sizeX = pl.cookie.sizeX;
+        cookie.sizeY = pl.cookie.sizeY;
+        cookie.scaleX = pl.cookie.scaleX;
+        cookie.scaleY = pl.cookie.scaleY;
+        cookie.offsetX = pl.cookie.offsetX;
+        cookie.offsetY = pl.cookie.offsetY;
+        cookie.rotationDegrees = pl.cookie.rotationDegrees;
+        cookie.repeat = pl.cookie.repeat;
+        cookie.useAlpha = pl.cookie.useAlpha;
+
 		object.AddComponent(plComp);
 		result.pointLight = plComp;
 		VANS_LOG("[LoadSceneObjects] 创建点光源组件 '" << object.m_ObjectName << "' idx=" << idx);
@@ -245,6 +273,20 @@ VansSceneLightBuildResult VansSceneLightComponentBuilder::BuildLights(
 		auto* slComp = new VansScriptSpotLightComponent();
 		slComp->m_LightManager = &lightManager;
 		slComp->m_LightIndex = idx;
+        auto& cookie = lightManager.Cookie(2, idx);
+        cookie.enabled = sl.cookie.enabled;
+        cookie.textureGuid = sl.cookie.textureGuid;
+        cookie.strength = sl.cookie.strength;
+        cookie.sizeX = sl.cookie.sizeX;
+        cookie.sizeY = sl.cookie.sizeY;
+        cookie.scaleX = sl.cookie.scaleX;
+        cookie.scaleY = sl.cookie.scaleY;
+        cookie.offsetX = sl.cookie.offsetX;
+        cookie.offsetY = sl.cookie.offsetY;
+        cookie.rotationDegrees = sl.cookie.rotationDegrees;
+        cookie.repeat = sl.cookie.repeat;
+        cookie.useAlpha = sl.cookie.useAlpha;
+
 		object.AddComponent(slComp);
 		result.spotLight = slComp;
 		VANS_LOG("[LoadSceneObjects] 创建聚光灯组件 '" << object.m_ObjectName << "' idx=" << idx);
@@ -281,6 +323,20 @@ VansSceneLightBuildResult VansSceneLightComponentBuilder::BuildLights(
 		auto* rlComp = new VansScriptRectLightComponent();
 		rlComp->m_LightManager = &lightManager;
 		rlComp->m_LightIndex = idx;
+        auto& cookie = lightManager.Cookie(3, idx);
+        cookie.enabled = rl.cookie.enabled;
+        cookie.textureGuid = rl.cookie.textureGuid;
+        cookie.strength = rl.cookie.strength;
+        cookie.sizeX = rl.cookie.sizeX;
+        cookie.sizeY = rl.cookie.sizeY;
+        cookie.scaleX = rl.cookie.scaleX;
+        cookie.scaleY = rl.cookie.scaleY;
+        cookie.offsetX = rl.cookie.offsetX;
+        cookie.offsetY = rl.cookie.offsetY;
+        cookie.rotationDegrees = rl.cookie.rotationDegrees;
+        cookie.repeat = rl.cookie.repeat;
+        cookie.useAlpha = rl.cookie.useAlpha;
+
 		rlComp->m_EmissiveTexturePath = emissiveTexPath;
 
 		if (!emissiveVideoName.empty() && idx < 32)

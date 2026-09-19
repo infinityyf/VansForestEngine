@@ -58,10 +58,9 @@ bool VansPcgSplineFieldStorage::Save(const std::filesystem::path& path,const Van
     w.Value(std::uint32_t(field.tiles.size()));
     for(const auto& [key,pointer]:field.tiles)
     {
-        const auto& t=*pointer;w.Value(key);w.Value(t.fingerprint);w.Value(t.terrainShapeFingerprint);w.Array(t.heights);w.Array(t.velocities);w.Array(t.coverage);w.Array(t.vegetationExclusion);
+        const auto& t=*pointer;w.Value(key);w.Value(t.fingerprint);w.Value(t.terrainShapeFingerprint);w.Array(t.heights);w.Array(t.velocities);w.Array(t.coverage);w.Array(t.vegetationExclusion);w.Array(t.riverProperties);
+        w.Array(t.waterBlend);
         w.Value(t.minimumWaterHeight);w.Value(t.maximumWaterHeight);w.Value(t.minimumRiverWidth);w.Value(t.maximumHeightConflict);w.Value(std::uint8_t(t.hasRiver));
-        w.Value(std::uint32_t(t.domains.size()));
-        for(const auto& d:t.domains){w.Text(d.splineId);w.Value(d.cycleSeconds);w.Value(std::uint8_t(d.flowEnabled));w.Array(d.coordinates);w.Array(d.jacobians);}
     }
     w.Value(std::uint32_t(field.roads.size()));
     for(const auto& [id,road]:field.roads){w.Text(id);w.Text(road->material.ToString());w.Value(road->fingerprint);w.Array(road->vertices);w.Array(road->indices);}
@@ -99,26 +98,19 @@ std::shared_ptr<const VansPcgSplineFieldSnapshot> VansPcgSplineFieldStorage::Loa
         field->effectiveTerrain=terrain;
         field->hasVegetationExclusion=std::any_of(source.splines.begin(),source.splines.end(),[](const auto& s){return s.enabled && s.points.size()>=2 && s.excludeVegetation;});
         const auto pixels=std::size_t(VANS_SPLINE_TILE_EXTENT)*VANS_SPLINE_TILE_EXTENT;
-        const auto tileCount=r.Count(VANS_SPLINE_MAX_ATLAS_PAGES);std::size_t totalDomains=0;
+        const auto tileCount=r.Count(VANS_SPLINE_MAX_ATLAS_PAGES);
         const auto axisTiles=(field->resolution+VANS_SPLINE_TILE_SIZE-1)/VANS_SPLINE_TILE_SIZE;
         for(std::uint32_t i=0;i<tileCount;++i)
         {
             auto t=std::make_shared<VansPcgSplineFieldTile>();const auto key=r.Value<std::uint64_t>();
             t->x=std::uint32_t(key);t->z=std::uint32_t(key>>32);t->fingerprint=r.Value<std::uint64_t>();t->terrainShapeFingerprint=r.Value<std::uint64_t>();
             if(t->x>=axisTiles||t->z>=axisTiles||field->tiles.count(key))throw std::runtime_error("Invalid baked tile identity.");
-            t->heights=r.Array<glm::vec2>(pixels);t->velocities=r.Array<glm::vec2>(pixels);t->coverage=r.Array<glm::vec4>(pixels);t->vegetationExclusion=r.Array<float>(pixels);
-            if(t->heights.size()!=pixels||t->velocities.size()!=pixels||t->coverage.size()!=pixels||t->vegetationExclusion.size()!=pixels)throw std::runtime_error("Invalid baked tile extent.");
+            t->heights=r.Array<glm::vec2>(pixels);t->velocities=r.Array<glm::vec2>(pixels);t->coverage=r.Array<glm::vec4>(pixels);t->vegetationExclusion=r.Array<float>(pixels);t->riverProperties=r.Array<glm::vec4>(pixels);
+            if(t->heights.size()!=pixels||t->velocities.size()!=pixels||t->coverage.size()!=pixels||t->vegetationExclusion.size()!=pixels||t->riverProperties.size()!=pixels)throw std::runtime_error("Invalid baked tile extent.");
+            t->waterBlend=r.Array<float>(pixels);
+            if(t->waterBlend.size()!=pixels || std::any_of(t->waterBlend.begin(),t->waterBlend.end(),[](float v){return !std::isfinite(v)||v<0||v>1;}))
+                throw std::runtime_error("Invalid baked water transition field.");
             t->minimumWaterHeight=r.Value<float>();t->maximumWaterHeight=r.Value<float>();t->minimumRiverWidth=r.Value<float>();t->maximumHeightConflict=r.Value<float>();t->hasRiver=r.Value<std::uint8_t>()!=0;
-            const auto domains=r.Count(VANS_SPLINE_MAX_DOMAINS_PER_TILE);totalDomains+=domains;
-            if(totalDomains>VANS_SPLINE_MAX_ATLAS_PAGES)throw std::runtime_error("Too many river coordinate pages.");
-            for(std::uint32_t j=0;j<domains;++j)
-            {
-                VansPcgRiverCoordinateTile d;d.splineId=r.Text();d.cycleSeconds=r.Value<float>();d.flowEnabled=r.Value<std::uint8_t>()!=0;
-                d.coordinates=r.Array<glm::vec4>(pixels);d.jacobians=r.Array<glm::vec4>(pixels);
-                if(d.coordinates.size()!=pixels||d.jacobians.size()!=pixels||!std::isfinite(d.cycleSeconds)||d.cycleSeconds<=0)
-                    throw std::runtime_error("Invalid river coordinate page.");
-                t->domains.push_back(std::move(d));
-            }
             field->tiles.emplace(key,std::move(t));field->changedTiles.push_back(key);
         }
         const auto roads=r.Count(16384);

@@ -26,14 +26,8 @@ void main()
     uint region=records[task.x].metadata.x;
     uint probe=records[task.x].probes[task.y>>2u][task.y&3u];
     GIProbeState state=currentStates[nonuniformEXT(region)].states[probe];
-    vec3 Q;
-    if(GI_LayoutIsSparse()) Q=GI_LayoutPosition(region,probe).xyz;
-    else
-    {
-        uvec3 counts=uvec3(regions[region].countsPriority.xyz);
-        uvec3 cell=uvec3(probe%counts.x,(probe/counts.x)%counts.y,probe/(counts.x*counts.y));
-        Q=regions[region].minimum.xyz+(vec3(cell)+0.5)*regions[region].sizeBias.xyz/vec3(counts);
-    }
+    ivec3 counts=ivec3(regions[region].countsPriority.xyz);
+    vec3 Q=GI_LayoutProbePosition(region,probe,counts,regions[region].minimum.xyz,regions[region].sizeBias.xyz/vec3(counts));
     Q+=state.traceOffsetAndBackface.xyz;
     uint packed=uint(surface.w);
     vec3 N=SSGI_DecodeNormal(vec2(packed&255u,(packed>>8u)&255u)/255.0);

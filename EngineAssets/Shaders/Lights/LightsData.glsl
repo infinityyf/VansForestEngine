@@ -1,4 +1,9 @@
 #include "../Common/Common.glsl"
+#ifdef VANS_SURFACE_COOKIES
+#include "LightCookie.glsl"
+#else
+#define SampleSurfaceLightCookie(slot, positionWS) 1.0
+#endif
 #include "../BRDF/BRDFData.glsl"
 
 struct DirectionLightData
@@ -1010,6 +1015,11 @@ void CalculateDirectDiffuse(vec3 positionWS, vec3 normalWS, sampler2D shadowMap,
     // GI stores outgoing diffuse radiance, including the Lambert albedo / PI term.
     float dirNoL = max(dot(normalWS, uDirectionLight.direction.xyz), 0.0);
     float dirShadow = SampleGICascadeShadow(samplePos, normalWS, shadowMap);
+#ifdef GI_WORLD_ENABLED
+    // 合并可见性而非重复乘两次植被阴影；未完成的场不注入无依据的直射亮度。
+    GIWorldHit worldSun=GIWorldTrace(samplePos+normalWS*max(gwGrid.x*.75,0.01),normalize(uDirectionLight.direction.xyz),0.001,gwGrid.y*2.0,true);
+    dirShadow=min(dirShadow,worldSun.valid?(worldSun.t<gwGrid.y*2.0?0.0:worldSun.transmission):0.0);
+#endif
     vec3 directionalIrradiance =
         uDirectionLight.color.rgb * uDirectionLight.intensity;
     diffuseResult += dirNoL * directionalIrradiance * dirShadow * albedo * INV_PI;
@@ -1118,7 +1128,7 @@ void CalculateDirectLight(BRDFData brdfData, float directionalShadow,
     vec3 specularResult = vec3(0);
     DirectBRDF(brdfData, uDirectionLight.direction.rgb, diffuseResult, specularResult);
     vec3 directionalIrradiance =
-        uDirectionLight.color.rgb * uDirectionLight.intensity;
+        uDirectionLight.color.rgb * uDirectionLight.intensity * SampleSurfaceLightCookie(0, brdfData.positionWS);
     diffuseResult *= directionalIrradiance;
     specularResult *= directionalIrradiance;
 
@@ -1138,6 +1148,7 @@ void CalculateDirectLight(BRDFData brdfData, float directionalShadow,
     {
         uint i = tileLightIndices[_tileLightHdr.pointOffset + _ptk];
         PointLightData pointLight = GetPointLight(int(i));
+        pointLight.color.rgb *= SampleSurfaceLightCookie(1 + int(i), brdfData.positionWS);
         vec3 lightDirection = pointLight.position.xyz - brdfData.positionWS;
         float distance = length(lightDirection);
         if (distance > pointLight.radius) continue;
@@ -1180,6 +1191,7 @@ void CalculateDirectLight(BRDFData brdfData, float directionalShadow,
     {
         uint i = tileLightIndices[_tileLightHdr.spotOffset + _spk];
         SpotLightData spotLight = GetSpotLight(int(i));
+        spotLight.color.rgb *= SampleSurfaceLightCookie(65 + int(i), brdfData.positionWS);
         vec3 lightDirection = spotLight.position.xyz - brdfData.positionWS;
         float distance = length(lightDirection);
         if (distance > spotLight.radius) continue;
@@ -1234,6 +1246,7 @@ void CalculateDirectLight(BRDFData brdfData, float directionalShadow,
         {
             uint i = tileLightIndices[_tileLightHdr.rectOffset + _rck];
             RectLightData rl = GetRectLight(int(i));
+        rl.color_twoSided.rgb *= SampleSurfaceLightCookie(129 + int(i), brdfData.positionWS);
             vec3 rectD = vec3(0.0);
             vec3 rectS = vec3(0.0);
             EvaluateRectLightLTC(
@@ -1267,6 +1280,7 @@ void CalculateDirectLight(BRDFData brdfData, float directionalShadow,
     for (uint i = 0; i < uPointLightCount; ++i)
     {
         PointLightData pointLight = GetPointLight(int(i));
+        pointLight.color.rgb *= SampleSurfaceLightCookie(1 + int(i), brdfData.positionWS);
         vec3 lightDirection = pointLight.position.xyz - brdfData.positionWS;
         float distance = length(lightDirection);
         if (distance > pointLight.radius) continue;
@@ -1300,6 +1314,7 @@ void CalculateDirectLight(BRDFData brdfData, float directionalShadow,
     for (uint i = 0; i < uSpotLightCount; ++i)
     {
         SpotLightData spotLight = GetSpotLight(int(i));
+        spotLight.color.rgb *= SampleSurfaceLightCookie(65 + int(i), brdfData.positionWS);
         vec3 lightDirection = spotLight.position.xyz - brdfData.positionWS;
         float distance = length(lightDirection);
         if (distance > spotLight.radius) continue;
@@ -1350,6 +1365,7 @@ void CalculateDirectLight(BRDFData brdfData, float directionalShadow,
             for (uint i = 0u; i < rectCount && i < uint(MAX_RECT_LIGHTS); ++i)
             {
                 RectLightData rl = GetRectLight(int(i));
+        rl.color_twoSided.rgb *= SampleSurfaceLightCookie(129 + int(i), brdfData.positionWS);
                 vec3 rectD = vec3(0.0);
                 vec3 rectS = vec3(0.0);
                 EvaluateRectLightLTC(

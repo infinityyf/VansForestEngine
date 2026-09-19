@@ -1,3 +1,5 @@
+#include "VansSceneRuntimeProjection.h"
+#include "Prefab/VansPrefabAsset.h"
 #include "VansSceneAssetDependencyBuilder.h"
 
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
@@ -490,11 +492,31 @@ namespace
 			for (const VansSerializedValue& component : components->arrayItems)
 			{
 				const std::string componentType = ReadSerializedStringField(component, "type");
-				if (componentType != "ModelRenderer" && componentType != "MultiMeshRoot")
+				if (componentType != "ModelRenderer" && componentType != "MultiMeshRoot" &&
+					componentType != "LODGroup")
 					continue;
 				const VansSerializedValue* data = ReadSerializedObjectField(component, "data");
 				if (data == nullptr)
 					continue;
+				if (componentType == "LODGroup")
+				{
+					const VansSerializedValue* levels = ReadSerializedArrayField(*data, "levels");
+					if (levels == nullptr)
+						continue;
+					for (const VansSerializedValue& level : levels->arrayItems)
+					{
+						const VansSerializedValue* meshes =
+							ReadSerializedArrayField(level, "meshes");
+						if (meshes == nullptr)
+							continue;
+						for (const VansSerializedValue& mesh : meshes->arrayItems)
+						{
+							const std::string model = ReadAssetGuidReference(mesh);
+							if (!model.empty()) requiredModels.insert(model);
+						}
+					}
+					continue;
+				}
 				const VansSerializedValue* modelReference = FindObjectField(*data, "model");
 				const std::string model = modelReference ? ReadAssetGuidReference(*modelReference) : std::string{};
 				if (!model.empty()) requiredModels.insert(model);
@@ -785,13 +807,14 @@ namespace
 
 VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResourcePlan(
 	VansAssetDatabase& database,
-	const VansSerializedValue& sceneDocument,
+	const VansSerializedValue& inputDocument,
 	const std::filesystem::path& sceneSourcePath,
 	const std::unordered_map<std::string, std::string>& runtimeAssetBindings,
 	const VansAssetObjectRepository& objectRepository,
 	VansAssetDatabase* builtInAssetDatabase)
 {
 	VansSceneAssetDependencyBuildResult result;
+    VansSerializedValue sceneDocument = inputDocument;
 
 	const std::filesystem::path projectRoot = database.AssetsRoot().parent_path();
 	for (const auto& [alias, guid] : runtimeAssetBindings)
@@ -815,10 +838,6 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 		return result;
 	}
 
-	CollectSceneModelRendererDependencies(sceneDocument, result.requiredModels, result.requiredMaterials);
-	std::unordered_set<std::string> meshColliderModels;
-	CollectScenePhysicsMeshColliderDependencies(sceneDocument, meshColliderModels);
-	result.requiredModels.insert(meshColliderModels.begin(), meshColliderModels.end());
 
 	const std::vector<VansAssetRecord> allRecords = database.All();
 	std::unordered_map<std::string, VansAssetType> assetTypesByGuid;
@@ -836,7 +855,47 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 			assetRecordsByGuid.emplace(record.guid.ToString(), record);
 		}
 	}
+    if (const auto* declared = FindObjectField(sceneDocument, "prefabAssets"))
+    {
+        if (declared->kind != VansSerializedValue::Kind::Array)
+        { result.errors.push_back("/prefabAssets must be an array of Prefab GUIDs"); return result; }
+        for (const auto& reference : declared->arrayItems)
+        {
+            const auto found = assetTypesByGuid.find(reference.stringValue);
+            if (reference.kind != VansSerializedValue::Kind::String || found == assetTypesByGuid.end() || found->second != VansAssetType::Prefab)
+            { result.errors.push_back("Missing or invalid dynamic Prefab asset: " + reference.stringValue); return result; }
+            result.requiredAssets.insert(reference.stringValue);
+        }
+    }
 	CollectSerializedAssetReferences(sceneDocument, assetTypesByGuid, result);
+    // 实例覆盖来自展开场景；动态模板默认值也进入相同组件依赖遍历。
+    std::unordered_set<std::string> expandedPrefabs;
+    for (;;)
+    {
+        std::string pending;
+        for (const auto& guid : result.requiredAssets)
+            if (assetTypesByGuid[guid] == VansAssetType::Prefab && !expandedPrefabs.count(guid))
+            { pending = guid; break; }
+        if (pending.empty()) break;
+        expandedPrefabs.insert(pending);
+        VansAssetGuid guid; VansAssetGuid::TryParse(pending, guid);
+        const auto asset = objectRepository.ResolveLatest<VansPrefabAsset>(guid);
+        if (!asset) { result.errors.push_back("Prefab memory asset missing: " + pending); return result; }
+        std::string error; VansSerializedValue objects;
+        const auto instance = VansPrefabResolver::MakeInstance(guid);
+        if (!VansPrefabResolver::Instantiate(*asset, instance, objects, error))
+        { result.errors.push_back("Prefab " + pending + ": " + error); return result; }
+        if (!VansSceneRuntimeProjection::ValidateEntityComponentTypes(objects, error))
+        { result.errors.push_back("Prefab " + pending + ": " + error); return result; }
+        CollectSerializedAssetReferences(objects, assetTypesByGuid, result);
+        for (auto& field : sceneDocument.objectFields) if (field.first == "entities")
+            field.second.arrayItems.insert(field.second.arrayItems.end(), objects.arrayItems.begin(), objects.arrayItems.end());
+    }
+	CollectSceneModelRendererDependencies(sceneDocument, result.requiredModels, result.requiredMaterials);
+	std::unordered_set<std::string> meshColliderModels;
+	CollectScenePhysicsMeshColliderDependencies(sceneDocument, meshColliderModels);
+	result.requiredModels.insert(meshColliderModels.begin(), meshColliderModels.end());
+
 	std::unordered_set<std::string> terrainHeightTextures;
 	std::unordered_set<std::string> terrainSplatTextures;
 	std::unordered_set<std::string> pcgPixelTextures;
@@ -1409,6 +1468,24 @@ VansSceneAssetDependencyBuildResult VansSceneAssetDependencyBuilder::BuildResour
 	result.requiredAssets.insert(result.requiredSkinProfiles.begin(), result.requiredSkinProfiles.end());
 	if (!result.errors.empty())
 		return result;
+	// 根集合中的模型、材质等也必须验证；只遍历已有记录会静默漏掉缺失资源。
+	for (const auto& guid : result.requiredAssets)
+	{
+		const auto found = assetRecordsByGuid.find(guid);
+		if (found == assetRecordsByGuid.end() || found->second.state == VansAssetState::Missing)
+		{
+			AppendDependencyError(result, "Required asset is missing: " + guid);
+			continue;
+		}
+		const auto type = found->second.type;
+		if ((result.requiredModels.count(guid) && type != VansAssetType::Model) ||
+			(result.requiredMaterials.count(guid) && type != VansAssetType::Material) ||
+			(result.requiredTextures.count(guid) && type != VansAssetType::Texture) ||
+			(result.requiredShaders.count(guid) && type != VansAssetType::Shader) ||
+			(result.requiredSkinProfiles.count(guid) && type != VansAssetType::SkinProfile))
+			AppendDependencyError(result, "Required asset has the wrong type: " + guid);
+	}
+	if (!result.errors.empty()) return result;
 	result.success = true;
 	return result;
 }

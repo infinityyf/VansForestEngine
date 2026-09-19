@@ -58,7 +58,9 @@ enum class VansAssetType
 	Terrain,
 	PlantType,
 	PcgMask,
-	PcgSpline
+	PcgSpline,
+	DamageProfile,
+        Prefab
 };
 
 enum class VansAssetState

@@ -1,4 +1,5 @@
 #include "VansCombatActionService.h"
+#include "VansDamageProfile.h"
 #include "../../GameplayTargeting/VansSurfaceImpact.h"
 
 #include "../VansActionServiceAdapter.h"
@@ -42,7 +43,15 @@ const VansActionServiceCapability& VansCombatActionCapability()
 				VansActionCommandField("blockingLayers", ValueKind::Array, true,
 					VansSerializedValue::Array({})),
 				VansActionCommandNumberField("range", ValueKind::Float, true,
-					VansSerializedValue::Float(100.0), 0.001, 1000000.0)
+					VansSerializedValue::Float(100.0), 0.001, 1000000.0),
+				VansActionCommandNumberField("pitchOffsetDegrees", ValueKind::Float, false,
+					VansSerializedValue::Float(0.0), -89.0, 89.0),
+				VansActionCommandNumberField("yawOffsetDegrees", ValueKind::Float, false,
+					VansSerializedValue::Float(0.0), -180.0, 180.0),
+				VansActionCommandNumberField("spreadRight", ValueKind::Float, false,
+					VansSerializedValue::Float(0.0), -2.0, 2.0),
+				VansActionCommandNumberField("spreadUp", ValueKind::Float, false,
+					VansSerializedValue::Float(0.0), -2.0, 2.0)
 			}),
 			VansActionCommandCapability("Combat.BeginMeleeWindow", ResourcePolicy::Create, {
 				asset("sourceBase"), asset("sourceTip"), optionalString("targetLayer"),
@@ -407,6 +416,7 @@ std::shared_ptr<VansCombatActionService> VansCombatActionService::Create(
 VansActionCommandResult VansCombatActionService::Execute(const VansActionCommand& command)
 {
 	if (command.stableName == "Combat.FireHitscan") return FireHitscan(command);
+	if (command.stableName == "Combat.ApplyDamageProfile") return ApplyDamageProfile(command);
 	if (command.stableName != "Combat.BeginMeleeWindow")
 	{
 		return { VansActionError::InvalidDefinition, {}, VansSerializedValue::Object({}),
@@ -477,6 +487,25 @@ VansActionCommandResult VansCombatActionService::FireHitscan(const VansActionCom
 		|| !std::isfinite(range) || range <= 0.0f || range > 1000000.0f)
 		return reject("Hitscan source direction or range is invalid");
 	direction /= length;
+	// 弹道偏转只作用于本发查询，不改相机；未配置的动作继续使用原视线。
+	const float pitchOffset = ReadNumberField(command.payload, "pitchOffsetDegrees", 0.0f);
+	const float yawOffset = ReadNumberField(command.payload, "yawOffsetDegrees", 0.0f);
+	const float spreadRight = ReadNumberField(command.payload, "spreadRight", 0.0f);
+	const float spreadUp = ReadNumberField(command.payload, "spreadUp", 0.0f);
+	if (!std::isfinite(pitchOffset) || std::abs(pitchOffset) > 89.0f ||
+		!std::isfinite(yawOffset) || std::abs(yawOffset) > 180.0f ||
+		!std::isfinite(spreadRight) || std::abs(spreadRight) > 2.0f ||
+		!std::isfinite(spreadUp) || std::abs(spreadUp) > 2.0f)
+		return reject("Hitscan ballistic offsets are invalid");
+	if (pitchOffset != 0.0f || yawOffset != 0.0f || spreadRight != 0.0f || spreadUp != 0.0f)
+	{
+		const float yaw = std::atan2(direction.z, direction.x) + glm::radians(yawOffset);
+		const float pitch = std::asin(glm::clamp(direction.y, -1.0f, 1.0f)) + glm::radians(pitchOffset);
+		const glm::vec3 forward(std::cos(pitch) * std::cos(yaw), std::sin(pitch), std::cos(pitch) * std::sin(yaw));
+		const glm::vec3 right(-std::sin(yaw), 0.0f, std::cos(yaw));
+		const glm::vec3 up = glm::cross(right, forward);
+		direction = glm::normalize(forward + right * spreadRight + up * spreadUp);
+	}
 	const std::string targetLayer = ReadSerializedStringField(command.payload, "targetLayer");
 	const std::string targetTag = ReadSerializedStringField(command.payload, "targetTag");
 	const std::string response = ReadSerializedStringField(command.payload, "responseAction");
@@ -617,12 +646,17 @@ VansActionCommandResult VansCombatActionService::FireHitscan(const VansActionCom
 			}
 		}
 	}
+	const auto shotId = m_NextShotId++;
+	auto& receipt = m_Shots[shotId % m_Shots.size()];
+	receipt = {shotId, command.action, owner, instigator,
+		confirmed ? std::get<VansTargetHitResult>(hits.values.front()) : VansTargetHitResult{}, direction, false};
 	const auto encodeVector = [](const glm::vec3& value)
 	{
 		return VansSerializedValue::Object({ { "x", VansSerializedValue::Float(value.x) },
 			{ "y", VansSerializedValue::Float(value.y) }, { "z", VansSerializedValue::Float(value.z) } });
 	};
 	VansSerializedValue output = VansSerializedValue::Object({
+		{ "shot", VansSerializedValue::Object({{"id", VansSerializedValue::Int(shotId)}}) },
 		{ "hit", VansSerializedValue::Bool(confirmed) }, { "blocked", VansSerializedValue::Bool(impact.kind != VansSurfaceImpactKind::None && !confirmed) },
 		{ "responseActivated", VansSerializedValue::Bool(responseActivated) },
 		{ "origin", encodeVector(origin) }, { "direction", encodeVector(direction) },
@@ -665,6 +699,71 @@ void VansCombatActionService::EmitWindowEvent(MeleeWindow& window, std::string_v
 	std::string error;
 	if (!host->EnqueueEvent(window.action, std::move(event), error))
 		VANS_LOG_WARN("[GAF Combat] Could not emit window edge: " << error);
+}
+
+VansActionCommandResult VansCombatActionService::ApplyDamageProfile(const VansActionCommand& command)
+{
+    using V = VansSerializedValue;
+    const auto skip = [](const char* reason) {
+        return VansActionCommandResult{VansActionError::None, {},
+            V::Object({{"applied", V::Bool(false)}, {"reason", V::String(reason)}}), {}};
+    };
+    const auto reject = [](const char* reason) {
+        return VansActionCommandResult{VansActionError::Rejected, {}, V::Object({}), reason};
+    };
+    const auto* target = FindObjectField(command.payload, "target");
+    const auto id = target ? ReadSerializedIntField(*target, "id", 0) : 0;
+    if (id <= 0) return reject("Damage requires a hitscan receipt");
+    auto& shot = m_Shots[static_cast<std::uint64_t>(id) % m_Shots.size()];
+    const auto owner = command.context.Entity(VansActionContextSlots::Owner);
+    if (shot.id != static_cast<std::uint64_t>(id) || shot.owner != owner || shot.action != command.action)
+        return reject("Damage receipt is stale or belongs to another Action");
+    if (shot.consumed) return skip("AlreadyApplied");
+    const auto* profile = m_GameplayRuntime.Assets().ResolveExtensionAssetAs<VansDamageProfile>(
+        ReadSerializedStringField(command.payload, "damageProfile"), VansDamageProfileType);
+    if (!profile) return reject("Damage profile is unresolved");
+    const auto healthId = VansMakeStableId<VansAttributeIdTag>(profile->healthAttribute);
+    if (!m_GameplayRuntime.Assets().Attributes().Resolve(healthId)) return reject("Damage Health attribute is unknown");
+    const auto* scaleField = FindObjectField(command.payload, "scale");
+    const double scale = scaleField ? ReadSerializedNumber(*scaleField, 1) : 1;
+    if (!std::isfinite(scale) || scale < 0 || scale > 1000000) return reject("Damage scale is invalid");
+    const auto host = m_GameplayRuntime.FindHost(shot.hit.entity);
+    if (!host || !m_World.IsAlive(shot.hit.entity)) { shot.consumed = true; return skip("NoTarget"); }
+    const auto region = profile->regionMultipliers.find(shot.hit.region);
+    if (region == profile->regionMultipliers.end()) return reject("Damage profile does not define the hit region");
+    const auto previous = host->Attributes().Current(healthId);
+    if (previous <= 0) { shot.consumed = true; return skip("Dead"); }
+    const double damage = profile->baseDamage * region->second * scale *
+        std::pow(profile->rangeModifier, shot.hit.distance / profile->rangeStepMeters);
+    if (!std::isfinite(damage) || damage < 0) return reject("Damage calculation is invalid");
+    // 先消耗凭据和提交 HP，再异步通知表现层；致死同帧到达的下一发只能看到 0 HP。
+    shot.consumed = true;
+    const double applied = (std::min)(previous, damage);
+    if (!host->Attributes().AddBase(healthId, -applied)) return reject("Damage Health update failed");
+    const double remaining = host->Attributes().Current(healthId);
+    const bool lethal = remaining <= 0;
+    const auto vector = [](const glm::vec3& v) {
+        return V::Object({{"x", V::Float(v.x)}, {"y", V::Float(v.y)}, {"z", V::Float(v.z)}});
+    };
+    V result = V::Object({{"applied", V::Bool(true)}, {"shotId", V::Int(id)},
+        {"damage", V::Float(damage)}, {"appliedDamage", V::Float(applied)},
+        {"oldHealth", V::Float(previous)}, {"newHealth", V::Float(remaining)}, {"lethal", V::Bool(lethal)},
+        {"hitRegion", V::String(shot.hit.region)}, {"hitComponentGuid", V::String(shot.hit.componentGuid)},
+        {"hit", VansEncodeTargetData(VansTargetData{{shot.hit}})},
+        {"position", V::Array({V::Float(shot.hit.position[0]), V::Float(shot.hit.position[1]), V::Float(shot.hit.position[2])})},
+        {"direction", vector(shot.direction)}, {"distance", V::Float(shot.hit.distance)},
+        {"deathImpulse", V::Float(profile->deathImpulse)}, {"weapon", V::String(profile->stableName)}});
+    for (const char* name : {"Combat.DamageReceived", "Combat.Died"})
+    {
+        if (!lethal && std::string_view(name) == "Combat.Died") continue;
+        VansActionEvent event;
+        event.stableName = name; event.type = VansMakeStableId<VansActionFieldIdTag>(name);
+        event.source = owner; event.target = shot.hit.entity; event.payload = result;
+        host->PublishGameplayEvent(std::move(event));
+    }
+    VANS_LOG("[GAF Damage] shot=" << id << " target=" << shot.hit.entity.index << " region=" << shot.hit.region
+        << " damage=" << damage << " health=" << previous << "->" << remaining << " lethal=" << lethal);
+    return {VansActionError::None, {}, std::move(result), {}};
 }
 
 bool VansCombatActionService::ConfirmHit(VansActionHandle action, VansEntityHandle owner,

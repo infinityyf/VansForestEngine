@@ -35,6 +35,7 @@ inline std::string CanonicalRuntimeComponentKeyForName(std::string componentName
 	if (componentName == "aiagent" || componentName == "ai_agent") return "ai_agent";
 	if (componentName == "ragdoll") return "ragdoll";
 	if (componentName == "vehicle") return "vehicle";
+	if (componentName == "lodgroup" || componentName == "lod_group") return "lod_group";
 	if (componentName == "uicontroller") return "ui";
 	if (componentName == "luascript") return "script";
 	return componentName;

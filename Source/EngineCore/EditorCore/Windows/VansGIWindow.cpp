@@ -146,6 +146,24 @@ void VansGIWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 	};
 
 	drawGIRTPreview();
+	if (ImGui::CollapsingHeader("Terrain and PCG GI"))
+	{
+		auto& world = draftSettings.world;
+		ImGui::Checkbox("Enable Terrain and PCG GI", &world.enabled);
+		ImGui::BeginDisabled(!world.enabled);
+		ImGui::DragFloat("Finest Voxel Size (m)", &world.voxelSize, 0.025f, 0.125f, 4.0f);
+		ImGui::DragFloat("Detail Coverage Radius (m)", &world.coverageDistance, 1.0f, 16.0f, 2048.0f);
+		ImGui::DragFloat("Canopy Extinction", &world.extinctionScale, 0.01f, 0.0f, 16.0f);
+		ImGui::InputScalar("Minimum Voxel Levels", ImGuiDataType_U32, &world.levelCount);
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Far voxels become coarser when needed to keep half the brick budget available for nearby detail.");
+		ImGui::InputScalar("World Brick Budget", ImGuiDataType_U32, &world.maxBricks);
+		ImGui::InputScalar("Brick Updates Per Frame", ImGuiDataType_U32, &world.bricksPerFrame);
+		ImGui::InputScalar("World Trace Step Budget", ImGuiDataType_U32, &world.maxTraceSteps);
+		ImGui::EndDisabled();
+		ImGui::TextDisabled("Trees and shrubs use whole-model voxels. Grass only receives GI.");
+		ImGui::TextDisabled("Disabled: no world GI resources or updates. Apply uses the safe resource transaction.");
+	}
 
 	if (ImGui::CollapsingHeader("Placement", ImGuiTreeNodeFlags_DefaultOpen))
 	{
@@ -163,6 +181,11 @@ void VansGIWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 
 	if (ImGui::CollapsingHeader("Probe Volume", ImGuiTreeNodeFlags_DefaultOpen))
 	{
+		ImGui::Checkbox("Terrain / PCG Region", &draftRegion.worldOnly);
+        ImGui::BeginDisabled(!draftRegion.worldOnly);
+        ImGui::Checkbox("Follow View", &draftRegion.followView);
+        ImGui::EndDisabled();
+		ImGui::TextDisabled("Active only with Terrain and PCG GI. Ordinary regions keep their original lighting.");
 		int gridDimensions[3] = {
 			static_cast<int>(draftRegion.gridDimensions.x),
 			static_cast<int>(draftRegion.gridDimensions.y),
@@ -180,7 +203,9 @@ void VansGIWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 		{
 			draftRegion.probeSpacing = std::max(draftRegion.probeSpacing, 0.001f);
 		}
+        ImGui::BeginDisabled(draftRegion.worldOnly && draftRegion.followView);
 		ImGui::DragFloat3("Region Center", &draftRegion.regionCenter.x, 0.05f);
+        ImGui::EndDisabled();
 		ImGui::DragFloat("Normal Bias", &draftRegion.normalBias, 0.005f, 0.0f, 10.0f, "%.3f");
 		ImGui::DragFloat("Max Ray Distance", &draftRegion.maxRayDistance, 0.1f, 0.001f, 10000.0f, "%.2f");
 		ImGui::DragFloat("Volume Fade Distance", &draftRegion.volumeFadeDistance, 0.05f, 0.0f, 1000.0f, "%.2f");

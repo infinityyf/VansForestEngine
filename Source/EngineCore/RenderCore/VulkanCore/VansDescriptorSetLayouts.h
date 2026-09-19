@@ -59,6 +59,9 @@ namespace VansGraphics
 		GLOBAL_BINDING_CLOUD_OPTICAL_DEPTH        = 35,
 		GLOBAL_BINDING_REFLECTION_PROBE_INDEX     = 36,
         GLOBAL_BINDING_SKY_LIGHTING               = 37,
+        GLOBAL_BINDING_LIGHT_COOKIE_TEXTURES = 38,
+        GLOBAL_BINDING_LIGHT_COOKIE_DATA = 39,
+        GLOBAL_BINDING_GRASS_ENERGY_LUT = 40,
 		GLOBAL_BINDING_BINDLESS_TEXTURES        = 50,  // Variable count
 	};
 
@@ -223,7 +226,13 @@ namespace VansGraphics
 	// ====================================================================
 	// Constants
 	// ====================================================================
-	static constexpr uint32_t MAX_BINDLESS_TEXTURES = 2048;
+	// 内置 PBR 仍使用 materialIndex * 5 的固定槽位约定。大型场景还会在同一
+	// heap 中追加自定义材质贴图，因此容量必须覆盖静态材质和运行时预留。
+	static constexpr uint32_t MAX_BINDLESS_TEXTURES = 4096;
+	constexpr bool IsBindlessTextureCountSupported(std::uint64_t count) noexcept
+	{
+		return count <= MAX_BINDLESS_TEXTURES;
+	}
 
 	// ====================================================================
 	// Set 1 Per-Pass Binding Indices
@@ -344,7 +353,7 @@ namespace VansGraphics
 		TERRAIN_BINDING_ROUGHNESS_ARRAY     = 5,  // descriptorCount = 8
 		TERRAIN_BINDING_PARAMS_UBO          = 6,
 		TERRAIN_BINDING_TESSELLATION_PARAMS = 7,
-		TERRAIN_BINDING_NOISE_DETAIL_PARAMS = 8,
+		TERRAIN_BINDING_HEIGHT_DETAIL_PARAMS = 8,
 	};
 
 	static constexpr uint32_t TERRAIN_MAX_LAYERS = 8;
@@ -573,7 +582,8 @@ namespace VansGraphics
 		WATER_GBUF_BINDING_DISPLACEMENT  = 1,   // Compute 输出的水面位移贴图 Texture2DArray（Vertex 采样）
 		WATER_GBUF_BINDING_DERIVATIVE    = 4,   // dPdx/dPdz Texture2DArray
 		WATER_GBUF_BINDING_FLOW_MAP      = 5,   // Generated flow map sampler
-		WATER_GBUF_BINDING_DETAIL_NORMAL = 6,   // Built-in RG detail normal texture
+		WATER_GBUF_BINDING_RIVER_PARTICLES = 7,
+        WATER_GBUF_BINDING_DETAIL_NORMAL = 6,   // Built-in RG detail normal texture
 	};
 
 	// --- Water Wave Compute Pass（Set 0）---

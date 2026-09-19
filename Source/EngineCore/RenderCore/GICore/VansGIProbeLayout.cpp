@@ -28,7 +28,7 @@ namespace VansGraphics
         {
             const auto& source = regions[i];
             GIProbeLayoutRegion region;
-            if (layout) region = layout->Regions()[i];
+            if (layout && !source.scrolling) region = layout->Regions()[i];
             else
             {
                 region.volumeMinAndRootSpacing = glm::vec4(source.volumeMin, source.probeSpacing);
@@ -38,7 +38,7 @@ namespace VansGraphics
             }
             region.volumeSizeAndBias.w = source.normalBias;
             append(&region, sizeof(region));
-            const glm::vec4 trace(source.maxRayDistance, source.volumeFadeDistance, source.priority, 0.0f);
+            const glm::vec4 trace(source.maxRayDistance, source.volumeFadeDistance, source.priority, source.worldOnly ? 1.0f : 0.0f);
             append(&trace, sizeof(trace));
         }
         if (layout)
@@ -55,6 +55,16 @@ namespace VansGraphics
             data[3].x = uint32_t(layout->Stencils().size());
             data[3].y = append(layout->ParentCells().data(), layout->ParentCells().size() * sizeof(GIProbeLayoutCell));
             data[3].z = uint32_t(layout->ParentCells().size());
+        }
+        if (std::any_of(regions.begin(), regions.end(), [](const GIResolvedRegion& region) { return region.scrolling; }))
+        {
+            data[3].w = uint32_t(data.size());
+            for (const auto& region : regions)
+            {
+                const glm::uvec4 address(region.scrollOffset, region.scrolling ? 1u : 0u);
+                const glm::uvec4 center(glm::floatBitsToUint(region.blendCenter), region.scrollEpoch);
+                append(&address, sizeof(address)); append(&center, sizeof(center));
+            }
         }
         return data;
     }
@@ -174,6 +184,7 @@ namespace VansGraphics
                         }
                     }
                 }
+                if(value.valid&&descriptions[region].worldOnly&&geometry.additionalPositionValid)value.valid=geometry.additionalPositionValid(position,clearance);
                 if (!value.valid) ++stats.rejectedPositions;
                 return value;
             }
@@ -193,10 +204,13 @@ namespace VansGraphics
                 for (const auto& receiver : geometry.dynamicReceivers)
                     if (!cell.supported) cell.supported = glm::all(glm::lessThanEqual(receiver.minimum, expandedHi))
                         && glm::all(glm::greaterThanEqual(receiver.maximum, expandedLo));
+                VansGeometrySurfaceMeasure fieldMeasure;
+                if(description.worldOnly&&geometry.additionalSurface){fieldMeasure=geometry.additionalSurface(expandedLo,expandedHi);cell.supported=cell.supported||fieldMeasure.area>0;}
                 if (!cell.supported) return cell;
                 auto measure = geometry.opaque.MeasureSurface(lo, hi);
                 const auto transparentMeasure = transmission.MeasureSurface(lo, hi);
                 measure.area += transparentMeasure.area; measure.areaNormal += transparentMeasure.areaNormal;
+                measure.area+=fieldMeasure.area;measure.areaNormal+=fieldMeasure.areaNormal;
                 cell.area = measure.area;
                 const double coherence = measure.area > 1e-12 ? glm::length(measure.areaNormal) / measure.area : 1.0;
                 cell.error = spacing * (1.0 - std::clamp(coherence, 0.0, 1.0));

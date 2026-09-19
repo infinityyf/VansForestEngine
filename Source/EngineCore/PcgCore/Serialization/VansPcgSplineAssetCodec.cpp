@@ -36,11 +36,20 @@ bool VansPcgSplineAssetCodec::Decode(const Value& root, VansPcgSplineAsset& asse
         r.Bool("excludeVegetation",s.excludeVegetation); r.Float("vegetationFade",s.vegetationFade);
         r.Float("shoulder",s.shoulder); r.Float("blendWidth",s.blendWidth);
         r.Float("waterSurfaceDrop",s.waterSurfaceDrop);
+        if (s.kind==VansPcgSplineKind::River)
+        {
+            r.Float("waterBlendWidthMeters",s.waterBlendWidthMeters);
+            r.Float("waterBlendStartMeters",s.waterBlendStartMeters);
+            r.Float("waterBlendEndMeters",s.waterBlendEndMeters);
+            r.Bool("carveRiverbed",s.carveRiverbed);
+            r.Float("wetBankWidthMeters",s.wetBankWidthMeters);
+            r.Float("wetnessStrength",s.wetnessStrength);
+        }
         r.Float("surfaceOffset",s.surfaceOffset); r.Float("textureRepeat",s.textureRepeat);
         r.IntegerField("flowSign",s.flowSign); r.Float("fadeInDistance",s.fadeInDistance); r.Float("fadeOutDistance",s.fadeOutDistance);
         r.Float("coordinateOffset",s.coordinateOffset); r.Float("coordinateSign",s.coordinateSign);
         r.Bool("continuation",s.continuation); r.Float("envelopeOffset",s.envelopeOffset); r.Float("envelopeLength",s.envelopeLength);
-        r.Bool("normalFlowEnabled",s.normalFlowEnabled); r.Float("flowCycleSeconds",s.flowCycleSeconds);
+        r.Bool("normalFlowEnabled",s.normalFlowEnabled);
         if (const auto* points=r.Array("points")) for (const auto& value:*points)
         {
             VansPcgSplinePoint p; PcgValue::Reader k(&value,"spline["+s.id+"].point",error);
@@ -77,20 +86,31 @@ bool VansPcgSplineAssetCodec::Encode(const VansPcgSplineAsset& asset, Value& roo
             {"leftWidth",Value::Float(p.leftWidth)},{"rightWidth",Value::Float(p.rightWidth)},
             {"linkedWidth",Value::Bool(p.linkedWidth)},{"bankAngleDegrees",Value::Float(p.bankAngleDegrees)},
             {"depth",Value::Float(p.depth)},{"bankSteepness",Value::Float(p.bankSteepness)},{"speed",Value::Float(p.speed)}}));
-        splines.push_back(Value::Object({
+        std::vector<std::pair<std::string,Value>> splineFields={
             {"id",Value::String(s.id)},{"name",Value::String(s.name)},
             {"kind",Value::String(s.kind==VansPcgSplineKind::Road?"road":"river")},
             {"enabled",Value::Bool(s.enabled)},{"locked",Value::Bool(s.locked)},{"priority",Value::Int(s.priority)},
             {"material",PcgValue::Reference(s.material,"material")},
             {"excludeVegetation",Value::Bool(s.excludeVegetation)},{"vegetationFade",Value::Float(s.vegetationFade)},
             {"shoulder",Value::Float(s.shoulder)},{"blendWidth",Value::Float(s.blendWidth)},
-            {"waterSurfaceDrop",Value::Float(s.waterSurfaceDrop)},
+            {"waterSurfaceDrop",Value::Float(s.waterSurfaceDrop)}};
+        if (s.kind==VansPcgSplineKind::River)
+        {
+            splineFields.emplace_back("waterBlendWidthMeters",Value::Float(s.waterBlendWidthMeters));
+            splineFields.emplace_back("waterBlendStartMeters",Value::Float(s.waterBlendStartMeters));
+            splineFields.emplace_back("waterBlendEndMeters",Value::Float(s.waterBlendEndMeters));
+            splineFields.emplace_back("carveRiverbed",Value::Bool(s.carveRiverbed));
+            splineFields.emplace_back("wetBankWidthMeters",Value::Float(s.wetBankWidthMeters));
+            splineFields.emplace_back("wetnessStrength",Value::Float(s.wetnessStrength));
+        }
+        splineFields.insert(splineFields.end(),{
             {"surfaceOffset",Value::Float(s.surfaceOffset)},{"textureRepeat",Value::Float(s.textureRepeat)},
             {"flowSign",Value::Int(s.flowSign)},{"fadeInDistance",Value::Float(s.fadeInDistance)},{"fadeOutDistance",Value::Float(s.fadeOutDistance)},
             {"coordinateOffset",Value::Float(s.coordinateOffset)},{"coordinateSign",Value::Float(s.coordinateSign)},
             {"continuation",Value::Bool(s.continuation)},{"envelopeOffset",Value::Float(s.envelopeOffset)},{"envelopeLength",Value::Float(s.envelopeLength)},
-            {"normalFlowEnabled",Value::Bool(s.normalFlowEnabled)},{"flowCycleSeconds",Value::Float(s.flowCycleSeconds)},
-            {"points",Value::Array(std::move(points))}}));
+            {"normalFlowEnabled",Value::Bool(s.normalFlowEnabled)},
+            {"points",Value::Array(std::move(points))}});
+        splines.push_back(Value::Object(std::move(splineFields)));
     }
     root=Value::Object({{"name",Value::String(asset.name)},{"terrain",PcgValue::Reference(asset.terrain,"terrain")},
         {"fieldTexelSize",Value::Float(asset.fieldTexelSize)},{"sampleSpacing",Value::Float(asset.sampleSpacing)},

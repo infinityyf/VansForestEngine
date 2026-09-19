@@ -1,0 +1,15 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#define GI_WORLD_SET 0
+#include "../../../EngineAssets/Shaders/GIWorld/GIWorldScatterData.glsl"
+layout(local_size_x=64) in;
+layout(push_constant) uniform Parameters { uvec4 value; } parameters;
+void main()
+{
+    uint region=gl_GlobalInvocationID.x/8u,ray=gl_GlobalInvocationID.x%8u;
+    if(region>=8u)return;
+    uint begin=GIWorldScatterAddress(region,0u);
+    uint end=region==7u?parameters.value.x:GIWorldScatterAddress(region+1u,0u);
+    if(ray>=end-begin)return;
+    gwScatterEvents[GIWorldScatterAddress(region,ray)]=vec4(region,ray,begin+ray,100.125+float(begin+ray));
+}

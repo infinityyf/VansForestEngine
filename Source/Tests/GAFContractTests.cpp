@@ -32,6 +32,7 @@
 #include "../EngineCore/GameplayActionAdapters/Character/VansAnimationEventActionService.h"
 #include "../EngineCore/GameplayActionAdapters/Projectile/VansProjectileActionService.h"
 #include "../EngineCore/GameplayActionAdapters/Combat/VansCombatActionService.h"
+#include "../EngineCore/GameplayActionAdapters/Combat/VansDamageProfile.h"
 #include "../EngineCore/GameplayActionAdapters/Physics/VansPhysicsQueryActionCapability.h"
 #include "../EngineCore/GameplayActionAdapters/Projectile/VansProjectileActionCapability.h"
 #include "../EngineCore/GameplayActionAdapters/UI/VansUIActionCapability.h"
@@ -3684,6 +3685,43 @@ bool TestGAFDemoHallWindowBreakContract()
 
 	Vans::VansGAFProjectConfiguration configuration;
 	std::string error;
+	nlohmann::ordered_json windowActionSource;
+	nlohmann::ordered_json windowActionSetSource;
+	nlohmann::ordered_json windowTimelineSource;
+	if (!Vans::VansJsonFileStorage::Read(
+		projectRoot / "Assets/GAF/WindowBreak/WindowBreak.vaction", windowActionSource, error) ||
+		!Vans::VansJsonFileStorage::Read(
+		projectRoot / "Assets/GAF/WindowBreak/WindowBreak.vactionset", windowActionSetSource, error) ||
+		!Vans::VansJsonFileStorage::Read(
+		projectRoot / "Assets/Cinematics/GlassBreakImpact.vtimeline", windowTimelineSource, error))
+		return ExpectGAF(false, error.c_str());
+	bool hasInputTrigger = false;
+	for (const auto& policy : windowActionSource.value(
+		"policies", nlohmann::ordered_json::array()))
+	{
+		hasInputTrigger = hasInputTrigger ||
+			policy.value("type", std::string{}) == "Core.Policy.Trigger";
+	}
+	bool hasInputGrant = false;
+	for (const auto& grant : windowActionSetSource.value(
+		"grants", nlohmann::ordered_json::array()))
+	{
+		for (const auto& extension : grant.value(
+			"extensions", nlohmann::ordered_json::array()))
+		{
+			hasInputGrant = hasInputGrant ||
+				extension.value("type", std::string{}) == "Gameplay.Input.Binding";
+		}
+	}
+	const auto windowTracks = windowTimelineSource.value(
+		"tracks", nlohmann::ordered_json::array());
+	const bool audioOnlyTimeline = windowTracks.size() == 1 &&
+		windowTracks.front().value("id", std::string{}) == "track-glass-break-audio" &&
+		windowTracks.front().value("extensionData", nlohmann::ordered_json::object())
+			.value("spatial", false) &&
+		windowTracks.front().value("sections", nlohmann::ordered_json::array()).size() == 1 &&
+		windowTracks.front().value("sections", nlohmann::ordered_json::array()).front()
+			.value("assetGuid", std::string{}) == "b37efcbd-2a4d-42e8-a91a-d4ae485e1a78";
 	if (!Vans::VansGAFProjectConfiguration::LoadForProject(
 		projectRoot, workspace / "ForestEngine/ForestEngine", configuration, error))
 		return ExpectGAF(false, error.c_str());
@@ -3755,7 +3793,7 @@ bool TestGAFDemoHallWindowBreakContract()
 	const Vans::VansEntityHandle player{ 702, 1 };
 	Vans::VansGameplayActionHostSetup setup;
 	setup.actionSets.push_back("4d408a1b-97bc-4453-b3b0-c8e1426b7e1b");
-	AddHostTagInitializer(setup, "Target.Interactable.Window");
+	AddHostTagInitializer(setup, "Target.Destructible.Glass");
 	const auto host = runtime.CreateHost(owner, setup, error);
 	if (!ExpectGAF(host && host->GrantedActions().size() == 1,
 		"DemoHall window ActionHost did not receive its ActionSet")) return false;
@@ -3778,40 +3816,101 @@ bool TestGAFDemoHallWindowBreakContract()
 	nlohmann::ordered_json scene;
 	if (!Vans::VansJsonFileStorage::Read(projectRoot / "Scenes/DemoHall.json", scene, error))
 		return ExpectGAF(false, error.c_str());
-	bool foundHost = false;
-	bool foundScriptBinding = false;
+	std::size_t glassCount = 0;
+	std::size_t glassHostCount = 0;
+	std::size_t glassScriptCount = 0;
+	std::size_t glassColliderCount = 0;
+	std::vector<std::string> fracturedGlassGuids;
 	for (const auto& entity : scene.value("entities", nlohmann::ordered_json::array()))
 	{
-		if (entity.value("id", std::string{}) != "f6bb9edd-c1e1-56f0-8079-d7442b568b46")
+		if (entity.value("name", std::string{}) != "Glass_Plane_1_Thick")
 			continue;
+		++glassCount;
+		bool foundHost = false;
+		bool foundScript = false;
+		bool foundCollider = false;
 		for (const auto& component : entity.value("components", nlohmann::ordered_json::array()))
 		{
 			const auto data = component.value("data", nlohmann::ordered_json::object());
 			if (component.value("type", std::string{}) == "ActionHost")
 			{
 				const auto sets = data.value("actionSets", nlohmann::ordered_json::array());
-				foundHost = !sets.empty() && sets.front().value("guid", std::string{}) ==
-					"4d408a1b-97bc-4453-b3b0-c8e1426b7e1b";
+				foundHost = foundHost || (!sets.empty() && sets.front().value("guid", std::string{}) ==
+					"4d408a1b-97bc-4453-b3b0-c8e1426b7e1b");
 			}
-			if (component.value("type", std::string{}) == "Script")
+			if (component.value("type", std::string{}) == "Physics")
+			{
+				foundCollider = data.value("bodyType", std::string{}) == "static" &&
+					data.value("colliderType", std::string{}) == "box" &&
+					data.value("layer", std::string{}) == "Environment";
+			}
+			if (component.value("type", std::string{}) == "Script" &&
+				data.value("entry", std::string{}) == "GlassBreakShotReceiver")
 			{
 				const auto fields = data.value("fields", nlohmann::ordered_json::object());
-				foundScriptBinding = foundScriptBinding || fields.value("breakActionId", std::string{}) ==
-					"Gameplay.DemoHall.Window.Break";
+				const auto fractured = fields.value(
+					"fracturedGlass", nlohmann::ordered_json::object());
+				const auto collider = fields.value(
+					"hitCollider", nlohmann::ordered_json::object());
+				foundScript = fields.value("breakActionId", std::string{}) ==
+						"Gameplay.DemoHall.Window.Break" &&
+					fields.value("shotOwnerGuid", std::string{}) ==
+						"38dbe7af-653a-4aeb-bfa7-1ca72e2b972c" &&
+					fields.value("glassImpactSoundGuid", std::string{}) ==
+						"11b7141b-7e92-4497-9339-72551a297a58" &&
+					collider.value("domain", std::string{}) == "SceneComponent" &&
+					!collider.value("componentGuid", std::string{}).empty() &&
+					!fractured.value("entityGuid", std::string{}).empty();
+				if (foundScript)
+					fracturedGlassGuids.push_back(fractured.value("entityGuid", std::string{}));
 			}
+		}
+		glassHostCount += foundHost ? 1u : 0u;
+		glassScriptCount += foundScript ? 1u : 0u;
+		glassColliderCount += foundCollider ? 1u : 0u;
+	}
+	std::size_t configuredFractures = 0;
+	for (const std::string& fractureGuid : fracturedGlassGuids)
+	{
+		for (const auto& entity : scene.value("entities", nlohmann::ordered_json::array()))
+		{
+			if (entity.value("id", std::string{}) != fractureGuid) continue;
+			bool disabledRenderer = false;
+			bool disabledAnimation = false;
+			for (const auto& component : entity.value("components", nlohmann::ordered_json::array()))
+			{
+				disabledRenderer = disabledRenderer ||
+					(component.value("type", std::string{}) == "ModelRenderer" &&
+					 !component.value("enabled", true));
+				disabledAnimation = disabledAnimation ||
+					(component.value("type", std::string{}) == "Animation" &&
+					 !component.value("enabled", true));
+			}
+			configuredFractures += disabledRenderer && disabledAnimation ? 1u : 0u;
+			break;
 		}
 	}
 	std::string script;
 	if (!Vans::VansFileStorage::ReadAllBytes(
 		projectRoot / "Scripts/forest_lua_behaviors.lua", script, error))
 		return ExpectGAF(false, error.c_str());
-	return ExpectGAF(foundHost && foundScriptBinding &&
-		script.find("vans.action.try_activate") != std::string::npos &&
-		script.find("play_break_presentation") != std::string::npos &&
-		script.find("GlassBreakInteractable:update_interaction_session") != std::string::npos &&
-		script.find("timeline.state(timelineGuid)") != std::string::npos &&
-		script.find("timelineStallSeconds >= 0.35") != std::string::npos,
-		"DemoHall scene or Lua Script.Action bridge is not wired to the window ActionHost");
+	const std::size_t shotReceiverBegin = script.find("M.GlassBreakShotReceiver");
+	const std::size_t shotReceiverEnd = script.find("M.DemoHallInteractionController", shotReceiverBegin);
+	const std::string shotReceiverScript = shotReceiverBegin != std::string::npos &&
+		shotReceiverEnd != std::string::npos
+		? script.substr(shotReceiverBegin, shotReceiverEnd - shotReceiverBegin)
+		: std::string{};
+	return ExpectGAF(!hasInputTrigger && !hasInputGrant && audioOnlyTimeline &&
+		glassCount == 10 && glassHostCount == 10 && glassScriptCount == 10 &&
+		glassColliderCount == 10 && configuredFractures == 10 &&
+		shotReceiverScript.find("Combat.Shot") != std::string::npos &&
+		shotReceiverScript.find("vans.action.try_activate") != std::string::npos &&
+		shotReceiverScript.find("play_break_presentation") != std::string::npos &&
+		shotReceiverScript.find("vans.audio.play_one_shot_at") != std::string::npos &&
+		shotReceiverScript.find("self.hitCollider:set_enabled(false)") != std::string::npos &&
+		shotReceiverScript.find("interactions.") == std::string::npos &&
+		shotReceiverScript.find("runtime.set_mode") == std::string::npos,
+		"DemoHall glass shot response is not wired through all window ActionHosts");
 }
 
 bool TestGAFDemoHallPlayerAttackContract()
@@ -4581,7 +4680,7 @@ bool TestDemoHallHurtBodiesContract()
 	return true;
 }
 
-static bool TestDemoHallCombatHitRuntime(bool hitscan)
+static bool TestDemoHallCombatHitRuntime(bool hitscan, bool damageTest = false)
 {
 	namespace fs = std::filesystem;
 	fs::path workspace = fs::current_path();
@@ -4604,6 +4703,15 @@ static bool TestDemoHallCombatHitRuntime(bool hitscan)
 
 	const fs::path assetsRoot = temporaryRoot / "Assets/PlayerAttack";
 	fs::create_directories(assetsRoot, filesystemError);
+	if (damageTest)
+	{
+		for (const auto& source : {workspace / "DustV3Project/Assets/CS2/FirstPerson/AK47/GAF/AK47.vdamage",
+			workspace / "DustV3Project/Assets/CS2/Characters/T_Phoenix_A/GAF/Character.vattributeset"})
+		{
+			fs::copy_file(source, assetsRoot / source.filename(), fs::copy_options::overwrite_existing);
+			fs::copy_file(source.string()+".meta", (assetsRoot / source.filename()).string()+".meta", fs::copy_options::overwrite_existing);
+		}
+	}
 	fs::copy(projectRoot / "Assets/GAF/PlayerAttack", assetsRoot,
 		fs::copy_options::recursive | fs::copy_options::overwrite_existing,
 		filesystemError);
@@ -4642,7 +4750,7 @@ static bool TestDemoHallCombatHitRuntime(bool hitscan)
 		temporaryRoot / "Assets", temporaryRoot / "Library/Artifacts");
 	const Vans::VansAssetScanResult scan =
 		database.Scan(Vans::VansAssetOperationPolicy::Authoring());
-	if (!ExpectGAF(scan && database.All().size() == (hitscan ? 28 : 16),
+	if (!ExpectGAF(scan && database.All().size() == (hitscan ? 28 : 16) + (damageTest ? 2 : 0),
 		"DemoHall melee runtime fixture did not scan as sixteen GAF assets")) return false;
 
 	VansGraphics::VansAnimationClip referenceClip;
@@ -4855,7 +4963,7 @@ static bool TestDemoHallCombatHitRuntime(bool hitscan)
 		Vans::VansMakeGameplayPrimitivesGAFContributor());
 	dependencies.contributors.push_back(MakeProjectSchemaContributor(configuration));
 	dependencies.contributors.push_back(MakeTestRuntimeContributor(
-		"Gameplay.Combat", { combatService }));
+		"Gameplay.Combat", { combatService }, Vans::VansRegisterCombatGameplayAssetCompilers, Vans::VansRegisterCombatGameplayAssetSchemas));
 	dependencies.contributors.push_back(MakeTestRuntimeContributor(
 		"Gameplay.Animation", { animationService }));
 	dependencies.contributors.push_back(MakeTestRuntimeContributor(
@@ -5033,6 +5141,26 @@ static bool TestDemoHallCombatHitRuntime(bool hitscan)
 		payload["targetLayer"] = "MissingLayer"; query.payload = Vans::DecodeSerializedValueJson(payload);
 		if (!ExpectGAF(!combatService->Execute(query), "Unknown hitscan layer silently selected Default")) return false;
 		payload["targetLayer"] = "Enemy"; query.payload = Vans::DecodeSerializedValueJson(payload);
+		// 偏转必须同时送入精确网格和 PhysX，并返回真正使用的方向。
+		payload["spreadRight"] = 1.0;
+		query.payload = Vans::DecodeSerializedValueJson(payload);
+		const auto spreadResult = combatService->Execute(query);
+		const auto* spreadDirection = Vans::FindObjectField(spreadResult.payload, "direction");
+		if (!ExpectGAF(spreadResult && spreadDirection &&
+			std::abs(Vans::ReadSerializedNumber(*Vans::FindObjectField(*spreadDirection, "x"), 0) - std::sqrt(.5)) < .0001 &&
+			!Vans::ReadSerializedBoolField(spreadResult.payload, "hit"), "Spread did not change the physical shot ray")) return false;
+		payload["spreadRight"] = 0.0; payload["pitchOffsetDegrees"] = 30.0;
+		query.payload = Vans::DecodeSerializedValueJson(payload);
+		const auto elevated = combatService->Execute(query);
+		const auto* elevatedDirection = Vans::FindObjectField(elevated.payload, "direction");
+		if (!ExpectGAF(elevated && elevatedDirection &&
+			std::abs(Vans::ReadSerializedNumber(*Vans::FindObjectField(*elevatedDirection, "y"), 0) - .5) < .0001,
+			"Positive ballistic pitch must raise the ray without changing the view")) return false;
+		payload["pitchOffsetDegrees"] = 90.0;
+		query.payload = Vans::DecodeSerializedValueJson(payload);
+		if (!ExpectGAF(!combatService->Execute(query), "Invalid ballistic pitch accepted")) return false;
+		payload.erase("pitchOffsetDegrees"); payload.erase("spreadRight");
+		query.payload = Vans::DecodeSerializedValueJson(payload);
 		// 精确墙面替换凸出的简化盒面，仍按统一距离遮挡后方人物。
 		preciseWall = true; wall->SetEnabled(true);
 		preciseSurface.kind = Vans::VansSurfaceImpactKind::Render;
@@ -5062,6 +5190,57 @@ static bool TestDemoHallCombatHitRuntime(bool hitscan)
 		if (!ExpectGAF(!combatService->Execute(query),"Missing camera silently used weapon direction")) return false;
 		shotCameraAvailable = true; shotDirection = glm::vec3(0);
 		if (!ExpectGAF(!combatService->Execute(query), "Zero-length shot direction was accepted")) return false;
+		if (damageTest)
+		{
+			using V = Vans::VansSerializedValue;
+			const auto health = Vans::VansMakeStableId<Vans::VansAttributeIdTag>("Health");
+			preciseSurface={}; preciseWall=false; wall->SetEnabled(false);
+			shotDirection=glm::vec3(0,0,-1); payload["responseAction"]=""; payload["targetTag"]="";
+			query.payload=Vans::DecodeSerializedValueJson(payload);
+			int damageEvents=0, deathEvents=0;
+			Vans::VansScopedEventConnections connection;
+			connection.Add(Vans::VansEventBus::Get().Subscribe<Vans::VansActionMessageEvent>([&](const auto& event) {
+				if (event.owner!=whisper) return;
+				if (event.message.stableName=="Combat.DamageReceived") ++damageEvents;
+				if (event.message.stableName=="Combat.Died") ++deathEvents;
+			},Vans::VansEventLane::GameLogic));
+			const auto damageShot = [&](float x, bool expectedHit, double expectedBase) {
+				shotOrigin=glm::vec3(x,1.05f,2);
+				const auto hit=combatService->Execute(query);
+				if (!hit) return false;
+				Vans::VansActionCommand apply; apply.stableName="Combat.ApplyDamageProfile";
+				apply.context=context; apply.action=query.action;
+				apply.payload=V::Object({{"target",*Vans::FindObjectField(hit.payload,"shot")},
+					{"damageProfile",V::String("Damage.DustV3.AK47")},{"scale",V::Float(1)}});
+				const double before=whisperHost->Attributes().Current(health);
+				const auto result=combatService->Execute(apply);
+				if (!ExpectGAF(result && Vans::ReadSerializedBoolField(result.payload,"applied")==expectedHit,
+					"Damage hit/miss result incorrect")) return false;
+				if (expectedHit) {
+					const double distance=Vans::ReadSerializedNumber(*Vans::FindObjectField(hit.payload,"distance"));
+					const double expected=(std::max)(0.,before-expectedBase*std::pow(.98,distance/12.7));
+					if (!ExpectGAF(std::abs(whisperHost->Attributes().Current(health)-expected)<1e-5,"Regional/range damage incorrect")) return false;
+				}
+				const auto again=combatService->Execute(apply);
+				if (!ExpectGAF(again && !Vans::ReadSerializedBoolField(again.payload,"applied"),"Shot damaged twice")) return false;
+				apply.action={{999,1}};
+				if (!ExpectGAF(!combatService->Execute(apply),"Cross-action receipt accepted")) return false;
+				return true;
+			};
+			whisperHost->Attributes().SetBase(health,100);
+			if (!damageShot(10,false,0)) return false;
+			wall->SetEnabled(true); if (!damageShot(0,false,0)) return false; wall->SetEnabled(false);
+			if (!damageShot(0,true,36) || !damageShot(2,true,36) || !damageShot(-4,true,27)) return false;
+			if (!ExpectGAF(whisperHost->Attributes().Current(health)>0,"Mixed nonlethal shots killed target early")) return false;
+			if (!damageShot(-2,true,144) || !damageShot(0,false,0)) return false;
+			Vans::VansEventBus::Get().Flush(Vans::VansEventLane::GameLogic);
+			if (!ExpectGAF(damageEvents==4 && deathEvents==1 && whisperHost->Attributes().Current(health)==0,
+				"Target damage/death events or Health clamp incorrect")) return false;
+			whisperHost->Attributes().SetBase(health,100);
+			hurtBody.SetEnabled(false); armBody.SetEnabled(false);
+			if (!damageShot(0,true,45)) return false;
+			std::cout << "[GAF Damage] PASS regions=5 range=1 wall=1 miss=1 dedup=1 crossAction=1 lethalOnce=1 deadReject=1\n";
+		}
 		std::cout << "[GAF] Pistol hitscan passed shots=" << shots << " hits=" << hits
 			<< " regions=Chest,RightForearm,Head,LeftShin nearestOnly=1 selfAndCctExcluded=1 wallAndMiss=1 repeatedFeedback=1 cleanup=1\n";
 		return true;
@@ -5179,6 +5358,7 @@ static bool TestDemoHallCombatHitRuntime(bool hitscan)
 
 bool TestGAFDemoHallMeleeHitRuntimeContract() { return TestDemoHallCombatHitRuntime(false); }
 bool TestGAFDemoHallPistolHitRuntimeContract() { return TestDemoHallCombatHitRuntime(true); }
+bool TestGAFDamageRuntimeContract() { return TestDemoHallCombatHitRuntime(true, true); }
 
 bool TestDemoHallCrouchLocomotionContract()
 {
@@ -6714,7 +6894,7 @@ bool TestDemoHallWhisperAIContract()
 			tag.value("name", std::string{}) == "Target.DemoHall.WhisperWake";
 	}
 	const std::size_t pickupScriptBegin = script.find("M.InteractablePickup");
-	const std::size_t pickupScriptEnd = script.find("M.GlassBreakInteractable", pickupScriptBegin);
+	const std::size_t pickupScriptEnd = script.find("M.GlassBreakShotReceiver", pickupScriptBegin);
 	const std::string pickupScript = pickupScriptBegin != std::string::npos
 		? script.substr(pickupScriptBegin, pickupScriptEnd - pickupScriptBegin) : std::string{};
 	const std::size_t pickupCommitBegin = pickupScript.find(
@@ -7338,6 +7518,95 @@ bool TestHitFeedbackScriptContract()
 	const std::string error = ok ? "" : lua_tostring(state, -1);
 	lua_close(state);
 	return ExpectGAF(ok, error.c_str());
+}
+
+bool TestDeathHitReactionScriptContract()
+{
+	std::filesystem::path workspace = std::filesystem::current_path();
+	for (int i=0; i<6 && !std::filesystem::exists(workspace / "DustV3Project"); ++i) workspace = workspace.parent_path();
+	lua_State* state = luaL_newstate();
+	if (!state) return false;
+	luaL_openlibs(state);
+	const auto project = (workspace / "DustV3Project").generic_string();
+	lua_pushstring(state, project.c_str()); lua_setglobal(state, "reaction_project");
+	const auto path = workspace / "DustV3Project/Tests/death_hit_reaction_contract.lua";
+	const bool ok = luaL_loadfile(state, path.string().c_str()) == LUA_OK && lua_pcall(state, 0, 0, 0) == LUA_OK;
+	const std::string error = ok ? "" : lua_tostring(state, -1);
+	lua_close(state);
+	return ExpectGAF(ok, error.c_str());
+}
+
+bool TestWeaponDeathDropContract()
+{
+	std::filesystem::path workspace = std::filesystem::current_path();
+	for (int i=0; i<6 && !std::filesystem::exists(workspace / "DustV3Project"); ++i) workspace = workspace.parent_path();
+	lua_State* state = luaL_newstate();
+	if (!state) return false;
+	luaL_openlibs(state);
+	const auto project = (workspace / "DustV3Project").generic_string();
+	lua_pushstring(state, project.c_str()); lua_setglobal(state, "reaction_project");
+	const auto path = workspace / "DustV3Project/Tests/weapon_death_drop_contract.lua";
+	const bool luaOk = luaL_loadfile(state, path.string().c_str()) == LUA_OK && lua_pcall(state, 0, 0, 0) == LUA_OK;
+	const std::string error = luaOk ? "" : lua_tostring(state, -1);
+	lua_close(state);
+	if (!ExpectGAF(luaOk, error.c_str())) return false;
+
+	auto& physics = VansEngine::VansPhysicsSystem::GetInstance();
+	if (!ExpectGAF(physics.Initialize(), "Deferred rigid body physics initialization failed")) return false;
+	const auto id = VansGraphics::VansTransformStore::AllocateTransform();
+	const auto floorId = VansGraphics::VansTransformStore::AllocateTransform();
+	auto& transform = VansGraphics::VansTransformStore::GetTransform(id);
+	transform.m_Position = glm::vec3(0); transform.m_Rotation = glm::vec3(0); transform.m_Scale = glm::vec3(1);
+	auto& ground = VansGraphics::VansTransformStore::GetTransform(floorId);
+	ground.m_Position = glm::vec3(0); ground.m_Rotation = glm::vec3(0); ground.m_Scale = glm::vec3(1);
+	VansEngine::PhysicsNodeProperties properties;
+	properties.enabled = false; properties.bodyType = VansEngine::PhysicsBodyType::Dynamic;
+	properties.mass = 3.3f; properties.boxExtents = glm::vec3(.474f,.036f,.136f);
+	properties.material.restitution = 0;
+	VansEngine::VansPhysicsNode body, floor;
+	body.Initialize(properties, id);
+	bool ok = ExpectGAF(!body.IsEnabled() && !body.GetActor(), "Disabled body created a physics actor");
+	transform.m_Position = glm::vec3(2,4,1);
+	body.SetEnabled(true);
+	auto* dynamic = body.GetActor() ? body.GetActor()->is<physx::PxRigidDynamic>() : nullptr;
+	ok &= ExpectGAF(dynamic && dynamic->getGlobalPose().p == physx::PxVec3(2,4,1), "Activation did not use current world pose");
+	if (dynamic)
+	{
+		ok &= ExpectGAF(std::abs(dynamic->getMass()-3.3f)<1e-5f, "Rigid body configured mass was lost");
+		const auto inertia = dynamic->getMassSpaceInertiaTensor();
+		ok &= ExpectGAF(std::abs(inertia.x - 3.3f/3.0f*(.036f*.036f+.136f*.136f))<1e-5f,
+			"Rigid body inertia was calculated before its shape existed");
+		body.SetEnabled(true);
+		ok &= ExpectGAF(body.GetActor()==dynamic, "Repeated activation recreated the actor");
+		properties.enabled = true; properties.bodyType = VansEngine::PhysicsBodyType::Static;
+		properties.boxExtents = glm::vec3(10,.1f,10); floor.Initialize(properties,floorId);
+		for (int frame=0;frame<240;++frame)
+		{
+			physics.GetScene()->simulate(1.0f/120.0f); physics.GetScene()->fetchResults(true);
+		}
+		ok &= ExpectGAF(dynamic->getGlobalPose().p.y>.1f && dynamic->getGlobalPose().p.y<.2f,
+			"Dropped body did not land on the floor");
+		const auto point = dynamic->getGlobalPose().p;
+		const auto velocity = body.GetLinearVelocity();
+		ok &= ExpectGAF(body.ApplyImpulseAtPosition(glm::vec3(0,0,-6), glm::vec3(point.x+.3f,point.y,point.z),4), "Dropped body rejected impulse");
+		ok &= ExpectGAF(std::abs(body.GetLinearVelocity().z-velocity.z+6.0f/3.3f)<1e-5f, "Impulse ignored body mass");
+		ok &= ExpectGAF(glm::length(body.GetAngularVelocity())>.1f && glm::length(body.GetAngularVelocity())<4.01f, "Off-center impulse did not produce bounded rotation");
+		ok &= ExpectGAF(!floor.ApplyImpulseAtPosition(glm::vec3(1),glm::vec3(0),4), "Static body accepted impulse");
+		ok &= ExpectGAF(!body.ApplyImpulseAtPosition(glm::vec3(1),glm::vec3(0),-1), "Negative angular limit accepted");
+		body.SetEnabled(false);
+		ok &= ExpectGAF(!body.ApplyImpulseAtPosition(glm::vec3(1),glm::vec3(0),4), "Disabled body accepted impulse");
+		ok &= ExpectGAF(!dynamic->getScene(), "Disabling body did not remove it from physics");
+		ok &= ExpectGAF(body.ResetMotion(glm::vec3(9,4,1),glm::vec3(0,45,0),glm::vec3(1,2,3),glm::vec3(4,5,6)), "Disabled pool body failed to reset");
+		ok &= ExpectGAF(dynamic->getGlobalPose().p==physx::PxVec3(9,4,1) && body.GetLinearVelocity()==glm::vec3(1,2,3)
+			&& !dynamic->getScene(), "Pool reset changed activation or lost motion");
+		body.SetEnabled(true);
+		ok &= ExpectGAF(body.GetAngularVelocity()==glm::vec3(4,5,6), "Pool activation lost reset velocity");
+		body.SetEnabled(false);
+	}
+	body.Shutdown(); floor.Shutdown(); physics.Shutdown();
+	VansGraphics::VansTransformStore::FreeTransform(id); VansGraphics::VansTransformStore::FreeTransform(floorId);
+	if (ok) std::cout << "WEAPON_DEATH_DROP_PHYSICS_PASS deferred=1 currentPose=1 mass=3.3 inertia=1 gravity=1 floor=1\n";
+	return ok;
 }
 
 bool TestGAFLuaBridgeContract()

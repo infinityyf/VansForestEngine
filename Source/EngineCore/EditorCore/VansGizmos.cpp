@@ -3,7 +3,6 @@
 #include "VansEditorWindow.h"
 #include "Windows/VansParticleDebugWindow.h"
 #include "VansEditorSelection.h"
-#include "VansScenePickingService.h"
 #include "VansSceneEditService.h"
 #include "imgui.h"
 #include "../Util/VansInputManager.h"
@@ -65,29 +64,6 @@ glm::mat4 BuildModelMatrix(const Vans::EditorAPI::RuntimeTransformSnapshot& tran
     model = glm::scale(model, scale);
     return model;
 }
-
-void VansGizmos::UnprojectRay(VansCamera*  camera,
-                               float        ndcX,
-                               float        ndcY,
-                               float        viewportAspect,
-                               glm::vec3&   outOrigin,
-                               glm::vec3&   outDir)
-{
-    const glm::mat4 invView = glm::inverse(camera->GetViewMatrix());
-    const glm::vec3 cameraPosition = glm::vec3(camera->GetPosition());
-    const glm::vec3 right = glm::normalize(glm::vec3(invView[0]));
-    const glm::vec3 up = glm::normalize(glm::vec3(invView[1]));
-    const glm::vec3 forward = glm::normalize(-glm::vec3(invView[2]));
-    const float aspect = viewportAspect > 0.0f ? viewportAspect : camera->GetAspectRatio();
-    const float tanHalfFov = std::tan(glm::radians(camera->GetFov()) * 0.5f);
-
-    outOrigin = cameraPosition;
-    outDir = glm::normalize(
-        forward +
-        right * (ndcX * tanHalfFov * aspect) +
-        up * (ndcY * tanHalfFov));
-}
-
 
 //  VansGizmos::Draw
 
@@ -473,34 +449,6 @@ void VansGizmos::Draw(Vans::EditorAPI::IEngineEditorAPI& api,
     }
     m_WasUsing = isUsing;
 }
-
-
-//  VansGizmos::TryPickObject
-
-
-void VansGizmos::TryPickObject(Vans::EditorAPI::IEngineEditorAPI& api,
-                                VansCamera* camera,
-                                ImVec2      mousePos,
-                                ImVec2      windowPos,
-                                ImVec2      windowSize)
-{
-    if (!camera) return;
-    if (windowSize.x <= 0.0f || windowSize.y <= 0.0f) return;
-
-    // Convert the mouse position to NDC in [-1, 1].
-    float ndcX = 2.0f * (mousePos.x - windowPos.x) / windowSize.x - 1.0f;
-    float ndcY = 1.0f - 2.0f * (mousePos.y - windowPos.y) / windowSize.y;
-
-    glm::vec3 rayOrigin, rayDir;
-    const float viewportAspect = windowSize.x / windowSize.y;
-    UnprojectRay(camera, ndcX, ndcY, viewportAspect, rayOrigin, rayDir);
-
-    Vans::EditorAPI::Ray ray;
-    ray.origin = ToEditorVec3(rayOrigin);
-    ray.direction = ToEditorVec3(rayDir);
-    Vans::VansScenePickingService::PickRuntimeEntity(api, ray, "SceneViewport");
-}
-
 
 
 //  VansGizmos::HandleHotkeys

@@ -47,9 +47,13 @@ PcgSplineItem ToPublic(const VansPcgSpline& source)
     result.excludeVegetation=source.excludeVegetation;result.vegetationFade=source.vegetationFade;
     result.priority=source.priority;result.shoulder=source.shoulder;result.blendWidth=source.blendWidth;
     result.waterSurfaceDrop=source.waterSurfaceDrop;
+    result.waterBlendWidthMeters=source.waterBlendWidthMeters;
+    result.waterBlendStartMeters=source.waterBlendStartMeters;result.waterBlendEndMeters=source.waterBlendEndMeters;
+    result.carveRiverbed=source.carveRiverbed;
+    result.wetBankWidthMeters=source.wetBankWidthMeters;result.wetnessStrength=source.wetnessStrength;
     result.surfaceOffset=source.surfaceOffset;result.textureRepeat=source.textureRepeat;result.flowSign=static_cast<float>(source.flowSign);
     result.fadeInDistance=source.fadeInDistance;result.fadeOutDistance=source.fadeOutDistance;
-    result.normalFlowEnabled=source.normalFlowEnabled;result.flowCycleSeconds=source.flowCycleSeconds;
+    result.normalFlowEnabled=source.normalFlowEnabled;
     for (const auto& p:resolved.points)
     {
         PcgSplinePoint q;q.id=p.id;q.position=p.position;q.arrive=p.arrive;q.leave=p.leave;
@@ -69,9 +73,13 @@ bool FromPublic(const PcgSplineItem& source,VansPcgSpline& result,std::string& e
     result.excludeVegetation=source.excludeVegetation;result.vegetationFade=source.vegetationFade;
     result.shoulder=source.shoulder;result.blendWidth=source.blendWidth;result.surfaceOffset=source.surfaceOffset;
     result.waterSurfaceDrop=source.waterSurfaceDrop;
+    result.waterBlendWidthMeters=source.waterBlendWidthMeters;
+    result.waterBlendStartMeters=source.waterBlendStartMeters;result.waterBlendEndMeters=source.waterBlendEndMeters;
+    result.carveRiverbed=source.carveRiverbed;
+    result.wetBankWidthMeters=source.wetBankWidthMeters;result.wetnessStrength=source.wetnessStrength;
     result.textureRepeat=source.textureRepeat;result.flowSign=source.flowSign<0?-1:1;
     result.fadeInDistance=source.fadeInDistance;result.fadeOutDistance=source.fadeOutDistance;
-    result.normalFlowEnabled=source.normalFlowEnabled;result.flowCycleSeconds=source.flowCycleSeconds;
+    result.normalFlowEnabled=source.normalFlowEnabled;
     const auto previousPoints=result.points;
     result.points.clear();
     for (const auto& p:source.points)
@@ -420,7 +428,6 @@ PcgSplineSnapshot EngineAPIImpl::GetPcgSplineSnapshot()
         const auto& field=*scene->GetSplineFieldSnapshot();result.warnings=field.warnings;
         for (const auto& p:field.uncoveredBankPoints) result.uncoveredBankPoints.push_back({p.x,p.y,p.z});
         result.activeTiles=field.tiles.size();result.rebuiltTiles=field.rebuiltTileCount;
-        for (const auto& [key,tile]:field.tiles) result.domainTiles+=tile->domains.size();
         if (state.toolEnabled)
         {
             PcgSplineGuide flow;flow.id="resolved-flow";

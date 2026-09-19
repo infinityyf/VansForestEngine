@@ -71,12 +71,15 @@ std::vector<std::string> ValidateTerrainAsset(const VansTerrainAsset& asset, boo
 		asset.settings.maxTessellationLevel > 64.0f ||
 		!FinitePositive(asset.settings.tessellationTargetPixels))
 		diagnostics.emplace_back("Terrain tessellation settings are invalid");
-	if (asset.settings.noiseStrength < 0.0f || !FinitePositive(asset.settings.noiseFrequency) ||
-		asset.settings.noiseLacunarity < 1.0f || asset.settings.noiseGain <= 0.0f ||
-		asset.settings.noiseGain > 1.0f || asset.settings.noiseOctaves < 1 ||
-		asset.settings.noiseOctaves > 4 || asset.settings.noiseWarpStrength < 0.0f ||
-		asset.settings.noiseFadeStart < 0.0f || asset.settings.noiseFadeStart >= 1.0f)
-		diagnostics.emplace_back("Terrain procedural detail settings are invalid");
+	if (!std::isfinite(asset.settings.heightDetailStrength) || asset.settings.heightDetailStrength < 0.0f ||
+		!std::isfinite(asset.settings.heightDetailFadeStart) ||
+		asset.settings.heightDetailFadeStart < 0.0f || asset.settings.heightDetailFadeStart >= 1.0f)
+		diagnostics.emplace_back("Terrain material height detail settings are invalid");
+	const auto& wetness = asset.settings.riverWetness;
+	if (!std::isfinite(wetness.albedoScale) || wetness.albedoScale < 0.0f || wetness.albedoScale > 1.0f ||
+		!std::isfinite(wetness.roughness) || wetness.roughness < 0.0f || wetness.roughness > 1.0f ||
+		!std::isfinite(wetness.detailNormalScale) || wetness.detailNormalScale < 0.0f || wetness.detailNormalScale > 1.0f)
+		diagnostics.emplace_back("Terrain river wetness material settings are invalid");
 	if (asset.layers.empty() || asset.layers.size() > VANS_TERRAIN_LAYER_COUNT)
 		diagnostics.emplace_back("Terrain requires between one and eight material layers");
 	std::unordered_set<std::string> layerIds;

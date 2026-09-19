@@ -28,9 +28,12 @@ struct PcgSplineItem
     bool enabled=true,locked=false,excludeVegetation=false;
     float vegetationFade=2;
     float waterSurfaceDrop=.15f;
+    float waterBlendWidthMeters=2,waterBlendStartMeters=0,waterBlendEndMeters=0;
+    bool carveRiverbed=true;
+    float wetBankWidthMeters=3.f,wetnessStrength=.85f;
     int priority=0;
     float shoulder=3,blendWidth=1,surfaceOffset=.025f,textureRepeat=4;
-    float flowSign=1,fadeInDistance=5,fadeOutDistance=5,flowCycleSeconds=2;
+    float flowSign=1,fadeInDistance=5,fadeOutDistance=5;
     bool normalFlowEnabled=true;
     std::vector<PcgSplinePoint> points;
 };
@@ -50,7 +53,7 @@ struct PcgSplineSnapshot
     std::vector<PcgSplineGuide> guides;
     std::vector<std::string> warnings;
     std::vector<std::array<float,3>> uncoveredBankPoints;
-    std::size_t activeTiles=0,domainTiles=0,rebuiltTiles=0;
+    std::size_t activeTiles=0,rebuiltTiles=0;
 };
 enum class PcgSplineEditPhase { Apply, Begin, Update, Commit, Cancel };
 struct PcgSplineEditRequest

@@ -225,6 +225,7 @@ const char* ToString(EditorAPI::AssetType assetType)
 	case EditorAPI::AssetType::ActionGraph: return "ActionGraph";
 	case EditorAPI::AssetType::CameraRigProfile: return "CameraRigProfile";
 	case EditorAPI::AssetType::CameraShakeProfile: return "CameraShakeProfile";
+	case EditorAPI::AssetType::DamageProfile: return "DamageProfile";
 	case EditorAPI::AssetType::GAFEditorLayout: return "GAFEditorLayout";
     case EditorAPI::AssetType::ClothProfile: return "ClothProfile";
     case EditorAPI::AssetType::SkinProfile: return "SkinProfile";
@@ -243,6 +244,7 @@ const char* ToString(EditorAPI::AssetType assetType)
 	case EditorAPI::AssetType::PlantType: return "PlantType";
 	case EditorAPI::AssetType::PcgMask: return "PcgMask";
 	case EditorAPI::AssetType::PcgSpline: return "PcgSpline";
+    case EditorAPI::AssetType::Prefab: return "Prefab";
     default: return "Unknown";
     }
 }
@@ -251,6 +253,7 @@ const char* ToString(EditorAPI::AssetType assetType)
 EditorAPI::AssetType EditorAssetTypeFromString(const std::string& value)
 {
     const std::string type = NormalizeAssetTypeToken(value);
+    if (type == "prefab") return EditorAPI::AssetType::Prefab;
     if (type == "model") return EditorAPI::AssetType::Model;
     if (type == "texture") return EditorAPI::AssetType::Texture;
     if (type == "material") return EditorAPI::AssetType::Material;
@@ -275,6 +278,7 @@ EditorAPI::AssetType EditorAssetTypeFromString(const std::string& value)
 	if (type == "actiongraph") return EditorAPI::AssetType::ActionGraph;
 	if (type == "camerarigprofile") return EditorAPI::AssetType::CameraRigProfile;
 	if (type == "camerashakeprofile") return EditorAPI::AssetType::CameraShakeProfile;
+	if (type == "damageprofile") return EditorAPI::AssetType::DamageProfile;
 	if (type == "gafeditorlayout") return EditorAPI::AssetType::GAFEditorLayout;
     if (type == "clothprofile") return EditorAPI::AssetType::ClothProfile;
     if (type == "skinprofile") return EditorAPI::AssetType::SkinProfile;

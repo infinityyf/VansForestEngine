@@ -3,6 +3,7 @@
 #include <chrono>
 #include <system_error>
 #include <utility>
+#include <stdexcept>
 
 #ifdef _WIN32
 #define NOMINMAX
@@ -63,6 +64,8 @@ VansStagedFileTransaction::~VansStagedFileTransaction()
 
 void VansStagedFileTransaction::Add(VansStagedFile file)
 {
+    if (m_Phase != Phase::Staging)
+        throw std::logic_error("Cannot add a file after publishing a transaction");
     FileState state;
     state.file = std::move(file);
     m_Files.push_back(std::move(state));
@@ -70,8 +73,20 @@ void VansStagedFileTransaction::Add(VansStagedFile file)
 
 bool VansStagedFileTransaction::Publish(std::string& error)
 {
-    if (m_Finalized)
+    if (!PreparePublish(error)) return false;
+    Commit();
+    return true;
+}
+
+bool VansStagedFileTransaction::PreparePublish(std::string& error)
+{
+    if (m_Phase == Phase::Prepared || m_Phase == Phase::Committed)
         return true;
+    if (m_Phase == Phase::RolledBack)
+    {
+        error = "Cannot publish a rolled-back file transaction";
+        return false;
+    }
 
     for (FileState& state : m_Files)
     {
@@ -91,6 +106,8 @@ bool VansStagedFileTransaction::Publish(std::string& error)
             return false;
         }
 
+        if (state.targetExisted && state.file.requireAbsent)
+        { error = "New asset target already exists: " + state.file.targetPath.string(); Rollback(error); return false; }
         if (state.targetExisted)
         {
             state.backupPath = MakeBackupPath(state.file.targetPath);
@@ -110,28 +127,30 @@ bool VansStagedFileTransaction::Publish(std::string& error)
         state.published = true;
     }
 
+    m_Phase = Phase::Prepared;
+    return true;
+}
+
+void VansStagedFileTransaction::Commit()
+{
+    if (m_Phase == Phase::Committed) return;
+    if (m_Phase != Phase::Prepared)
+        throw std::logic_error("File transaction must be prepared before commit");
     for (FileState& state : m_Files)
     {
         RemoveQuietly(state.backupPath);
         state.backupCreated = false;
     }
-    m_Finalized = true;
-    return true;
+    m_Phase = Phase::Committed;
 }
 
 void VansStagedFileTransaction::Cleanup()
 {
-    if (m_Finalized)
+    if (m_Phase == Phase::Committed || m_Phase == Phase::RolledBack)
         return;
 
-    for (FileState& state : m_Files)
-    {
-        if (!state.published)
-            RemoveQuietly(state.file.temporaryPath);
-        if (state.backupCreated && !state.published)
-            RemoveQuietly(state.backupPath);
-    }
-    m_Finalized = true;
+    std::string error;
+    Rollback(error);
 }
 
 void VansStagedFileTransaction::Rollback(std::string& error)
@@ -160,6 +179,6 @@ void VansStagedFileTransaction::Rollback(std::string& error)
 
     if (!rollbackError.empty())
         error += " Rollback failed: " + rollbackError;
-    m_Finalized = true;
+    m_Phase = Phase::RolledBack;
 }
 }

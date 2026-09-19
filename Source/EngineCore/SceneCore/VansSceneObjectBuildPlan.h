@@ -9,6 +9,7 @@
 #include "VansSceneParentReference.h"
 #include "VansScenePhysicsComponentConfig.h"
 #include "VansSceneRenderNodeConfig.h"
+#include "VansSceneLodGroupComponentConfig.h"
 #include "VansSceneTimelineComponentConfig.h"
 #include "VansSceneVehicleComponentConfig.h"
 #include "../GameplayActionCore/VansGameplayRuntime.h"
@@ -34,6 +35,7 @@ struct VansSceneObjectBuildConfig
 	bool active = true;
 	std::optional<VansSceneTransformConfig> transform;
 	std::optional<VansSceneRenderNodeConfig> render;
+	std::optional<VansSceneLodGroupComponentConfig> lodGroup;
 	bool renderEnabled = true;
 	std::optional<VansSceneMultiMeshRootConfig> multiMeshRoot;
 	VansScenePhysicsComponentsConfig physicsComponents;

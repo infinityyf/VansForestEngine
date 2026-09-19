@@ -113,7 +113,13 @@ std::vector<RecentProjectEntry> Load()
 		VansIODomain::UserPreference, "RecentProjects.Load", true);
 	std::vector<RecentProjectEntry> entries;
 	std::string error;
-	VansProjectConfigStorage::LoadRecentProjects(GetRecentProjectsFilePath(), entries, error);
+	const auto path = GetRecentProjectsFilePath();
+	if (!VansProjectConfigStorage::LoadRecentProjects(path, entries, error))
+	{
+		std::error_code statusError;
+		if (fs::exists(path, statusError))
+			VANS_LOG_WARN("[ProjectConfig] Cannot refresh recent projects: " << error);
+	}
 	return entries;
 }
 

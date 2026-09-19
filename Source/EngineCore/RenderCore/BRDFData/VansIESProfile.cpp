@@ -351,98 +351,53 @@ namespace VansGraphics
     // =======================================================================
     void VansIESProfileManager::CreateGPUResources(VkDevice& logicDevice)
     {
-        if (m_Profiles.empty())
+        if (m_GPUResourcesCreated)
+            return;
+
+        const bool placeholder = m_Profiles.empty();
+        const uint32_t layerCount = placeholder ? 1u : static_cast<uint32_t>(m_Profiles.size());
+        const VkExtent3D extent = placeholder ? VkExtent3D{1, 1, 1}
+            : VkExtent3D{static_cast<uint32_t>(kBakeWidth), static_cast<uint32_t>(kBakeHeight), 1};
+        if (!m_IESTextureArray.CreateVulkanImage(
+            logicDevice, extent, VK_FORMAT_R16_SFLOAT, 1, layerCount, VK_IMAGE_TYPE_2D,
+            VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            VK_SAMPLE_COUNT_1_BIT, false, false, true, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE))
         {
-            // 没有任何 IES 文件被加载，创建一个 1×1×1 的占位纹理
-            // 以确保 Descriptor Set 可以绑定有效资源
-            VkExtent3D extent = { 1, 1, 1 };
-            m_IESTextureArray.CreateVulkanImage(
-                logicDevice,
-                extent,
-                VK_FORMAT_R16_SFLOAT,
-                1,    // mip_num
-                1,    // layer_num
-                VK_IMAGE_TYPE_2D,
-                VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                VK_SAMPLE_COUNT_1_BIT,
-                false, // isCube
-                false, // need_raw_Data（不使用线性布局）
-                true,  // combined_sampler
-                VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE
-            );
-            m_GPUResourcesCreated = true;
-            VANS_LOG("[VansIESProfileManager] 无 IES profile，创建占位纹理");
+            DestroyGPUResources(logicDevice);
+            VANS_LOG_ERROR("[VansIESProfileManager] IES image creation failed");
             return;
         }
-
-        int layerCount = static_cast<int>(m_Profiles.size());
-
-        // 创建 sampler2DArray：256×128 × layerCount，格式 R16F，单 mip，clamp 采样
-        VkExtent3D extent = { (uint32_t)kBakeWidth, (uint32_t)kBakeHeight, 1 };
-        m_IESTextureArray.CreateVulkanImage(
-            logicDevice,
-            extent,
-            VK_FORMAT_R16_SFLOAT,
-            1,                    // mip_num
-            (uint32_t)layerCount, // layer_num
-            VK_IMAGE_TYPE_2D,
-            VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            VK_SAMPLE_COUNT_1_BIT,
-            false, // isCube
-            false, // need_raw_Data
-            true,  // combined_sampler
-            VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE
-        );
-
+        // shader 始终使用 sampler2DArray；零/单 profile 的一层图像也必须使用数组 view。
+        m_IESArrayView = m_IESTextureArray.CreateMipArrayView(logicDevice, 0);
+        if (m_IESArrayView == VK_NULL_HANDLE)
+        {
+            DestroyGPUResources(logicDevice);
+            VANS_LOG_ERROR("[VansIESProfileManager] IES array view creation failed");
+            return;
+        }
         m_GPUResourcesCreated = true;
-        VANS_LOG("[VansIESProfileManager] 创建 IES GPU 纹理数组：256×128×" << layerCount);
+        VANS_LOG("[VansIESProfileManager] IES GPU array " << extent.width << "x" << extent.height << "x" << layerCount);
     }
 
     // =======================================================================
     // 将所有已加载的 profile 上传到 GPU（需在 CreateGPUResources 之后调用）
-    // 流程：
-    //   1. 初始 layout 转换 UNDEFINED → SHADER_READ_ONLY_OPTIMAL
-    //   2. 逐层 bake→FP16，调用 SetDeviceImageData（内部含 SHADER_READ_ONLY
-    //      ↔ TRANSFER_DST 的往返 barrier 及 submit/wait）
+    // SetDeviceImageData 负责初始/后续布局转换和同步上传，不提前发布未初始化的数据。
     // =======================================================================
     void VansIESProfileManager::UploadAllProfiles(VansVKDevice* device, VansVKCommandBuffer& cmd)
     {
         if (!m_GPUResourcesCreated || !device)
             return;
 
-        VkQueue    queue       = device->GetGraphicsQueue();
-        VkDevice   logicDevice = device->GetLogicDevice();
-
-        // ── 步骤 1：将整张纹理数组从 UNDEFINED 转换到 SHADER_READ_ONLY_OPTIMAL ──
-        // 与 VansTexture::InitTextureArray 相同模式，确保 SetDeviceImageData 中
-        // originalLayout = SHADER_READ_ONLY_OPTIMAL，避免 undefined-layout 往返
-        cmd.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-		m_IESTextureArray.SetImageMemoryBarrier(
-			cmd,
-			VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-            {
-                m_IESTextureArray.GetImage(),
-                VK_ACCESS_NONE,
-                VK_ACCESS_SHADER_READ_BIT,
-                m_IESTextureArray.GetImageLayout(),
-                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                VK_QUEUE_FAMILY_IGNORED,
-                VK_QUEUE_FAMILY_IGNORED,
-                m_IESTextureArray.GetImageAspect()
-            });
-        cmd.EndCommandBufferRecord();
-        VansVKCommandBuffer::SubmitCommands(queue, logicDevice,
-            { cmd.GetVKCommandBuffer() }, {}, {}, cmd.m_CommandBufferFinishSubmitFence);
-        cmd.ResetCommandBuffer(false);
-
         if (m_Profiles.empty())
         {
-            VANS_LOG("[VansIESProfileManager] 无 IES profile，跳过 GPU 上传");
+            // 无配置时使用中性强度，避免占位资源内容未定义。
+            uint16_t neutral = FloatToHalf(1.0f);
+            if (!device->SetDeviceImageData(m_IESTextureArray, cmd, &neutral, 0, sizeof(neutral),
+                {0, 0, 0}, {1, 1, 1}, 0, 0))
+                VANS_LOG_ERROR("[VansIESProfileManager] IES placeholder upload failed");
             return;
         }
 
-        // ── 步骤 2：逐层烘焙并上传 ──
         std::vector<float>    fp32;
         std::vector<uint16_t> fp16;
         const VkOffset3D      zeroOffset = { 0, 0, 0 };
@@ -482,11 +437,10 @@ namespace VansGraphics
     // =======================================================================
     void VansIESProfileManager::DestroyGPUResources(VkDevice& logicDevice)
     {
-        if (m_GPUResourcesCreated)
-        {
+        VansVKImage::DestroyImageView(logicDevice, m_IESArrayView);
+        if (m_IESTextureArray.HasResources())
             m_IESTextureArray.DestroyVulkanImage(logicDevice);
-            m_GPUResourcesCreated = false;
-        }
+        m_GPUResourcesCreated = false;
     }
 
     VansIESProfileManager::~VansIESProfileManager()

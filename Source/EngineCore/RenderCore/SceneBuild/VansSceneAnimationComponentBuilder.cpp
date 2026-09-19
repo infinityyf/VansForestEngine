@@ -263,6 +263,7 @@ namespace VansGraphics
 		VansScene& scene,
 		const Vans::VansSceneAnimationComponentConfig& animConfig,
 		const std::string& objectName,
+        const std::string& entityGuid,
 		const std::string& projectRoot)
 	{
 		VansVKDevice* vkDevice = dynamic_cast<VansVKDevice*>(m_GraphicsDevice);
@@ -282,7 +283,7 @@ namespace VansGraphics
 			return nullptr;
 		}
 
-		MultiMeshGroup* animationGroup = scene.FindAnimationMultiMeshGroup(meshGroupName, objectName);
+		MultiMeshGroup* animationGroup = scene.FindAnimationMultiMeshGroup(meshGroupName, objectName, entityGuid);
 		if (!animationGroup)
 		{
 			VANS_LOG_WARN("[LoadAnimComp] mesh_group '" << meshGroupName << "' not found for object '" << objectName << "'");
@@ -486,6 +487,7 @@ namespace VansGraphics
 
 		if (enableRootMotion && !retargetRequested)
 			controller->EnableRootMotion(true);
+		controller->SetNormalizeRootPose(animConfig.normalizeRootPose);
 
 		if (animConfig.motionMatching && !retargetRequested)
 		{
@@ -733,22 +735,24 @@ namespace VansGraphics
 			return false;
 		}
 
-		if (!VansEngine::VansRagdollSystem::GetInstance().CreateRagdoll(animNode, *profile))
-			return false;
-
 		const VansEngine::RagdollDriveMode mode = ParseRagdollDriveMode(ragdollConfig.driveMode);
 		const float blendWeight = ragdollConfig.blendWeight;
 
-		VansEngine::VansRagdollSystem::GetInstance().SetBlendWeight(animNode, blendWeight);
-		VansEngine::VansRagdollSystem::GetInstance().SetDriveMode(animNode, mode);
-
 		auto* ragdollComp = new VansScriptRagdollComponent();
 		ragdollComp->m_AnimNode = animNode;
+		ragdollComp->m_Profile = profile;
 		ragdollComp->m_InitialDriveMode = mode;
 		ragdollComp->m_ProfileAssetGuid = profileGuid;
 		ragdollComp->m_ProfileName = profile->name;
 		ragdollComp->m_ConfiguredBodyCount = static_cast<int>(profile->bodies.size());
 		ragdollComp->m_ConfiguredJointCount = static_cast<int>(profile->joints.size());
+		ragdollComp->SetBlendWeight(blendWeight);
+		ragdollComp->SetDriveMode(static_cast<int>(mode));
+		if (mode != VansEngine::RagdollDriveMode::Animation && !ragdollComp->HasRuntimeRagdoll())
+		{
+			delete ragdollComp;
+			return false;
+		}
 		obj->AddComponent(ragdollComp);
 
 		auto* cctComp = obj->GetComponent<VansScriptCharacterControllerComponent>();
@@ -782,6 +786,7 @@ namespace VansGraphics
 				scene,
 				*pending.animationConfig,
 				pending.objectName,
+                pending.obj ? pending.obj->m_EntityGuid : std::string{},
 				projectRoot);
 			pending.component->m_AnimNode = animationNode;
 

@@ -11,9 +11,9 @@ layout(location = 0) in vec2 inUV;
 layout(location = 1) in vec3 inWorldPos;
 layout(location = 2) in vec4 motionCurrentClip;
 layout(location = 3) in vec4 motionPreviousClip;
-layout(location = 4) in vec2 inNoiseGradient;
+layout(location = 4) in vec2 inHeightDetailGradient;
 
 void main()
 {
-    TerrainWriteDeferred(inUV, inWorldPos, motionCurrentClip, motionPreviousClip, inNoiseGradient);
+    TerrainWriteDeferred(inUV, inWorldPos, motionCurrentClip, motionPreviousClip, inHeightDetailGradient);
 }

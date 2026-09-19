@@ -9,6 +9,7 @@
 #include <vector>
 #include <string>
 #include <cstdint>
+#include <cstddef>
 #include <algorithm>
 #include <functional>
 
@@ -75,27 +76,23 @@ namespace VansGraphics
 
 	// Push constants for VS-skinning draw (grass vertex shader)
 	struct GrassDrawPushConstants
-	{
-		int   materialIndex;
-		int   objectIndex;
-		uint32_t vertexFeatureMask;
-		uint32_t boneCount;
-		uint32_t subBladeCount;
-		float    grassHeight;
-		// P6a: terrain params for VS heightmap sampling
-
-
-
-
-		// P1: 子叶片距离 LOD — 远距离减少子叶片数以降低 VS/FS 开销
-		float    lodMidDist;       // 中距离阈值，超过后子叶片数减半
-		float    lodFarDist;       // 远距离阈值，超过后子叶片数降至最少
-		// 材质 AO 与基于骨骼高度的根部微遮蔽参数（FS 使用）
-		float    aoStrength;
-		float    rootAOIntensity;
-		float    rootAOHeight;
-	};
-	static_assert(sizeof(GrassDrawPushConstants) == 44, "Grass draw push constants must match GLSL");
+    {
+        int materialIndex;
+        int objectIndex;
+        uint32_t vertexFeatureMask;
+        uint32_t boneCount;
+        uint32_t subBladeCount;
+        float grassHeight;
+        float lodMidDist;
+        float lodFarDist;
+        float aoStrength;
+        float normalStrength;
+        float transmissionStrength;
+        uint32_t instanceCount;
+        float indirectDiffuseStrength;
+    };
+    static_assert(sizeof(GrassDrawPushConstants) == 52);
+    static_assert(offsetof(GrassDrawPushConstants, indirectDiffuseStrength) == 48);
 
 	// P0: Push constants for GPU cull compute pass
 	struct GrassCullPushConstants
@@ -138,6 +135,7 @@ namespace VansGraphics
 		VansMesh* mesh = nullptr;
 		VansMaterial* material = nullptr;
 		TreePartType type = TreePartType::Custom;
+        uint32_t lod = 0;
 	};
 
 	struct TreeInstanceGPU
@@ -147,8 +145,10 @@ namespace VansGraphics
 		uint32_t speciesIndex = 0;
 		uint32_t regionIndex = 0; // visibility group index for GPU cull output
 		uint32_t randomSeed = 0;
-		uint32_t flags = 0;
+		uint32_t flags = 0; // GPU 保存上一帧 LOD，用于距离滞回。
 	};
+
+	static_assert(sizeof(TreeInstanceGPU)==96 && offsetof(TreeInstanceGPU,flags)==92);
 
 	struct TreeSpeciesCullInfo
 	{
@@ -157,17 +157,16 @@ namespace VansGraphics
 		uint32_t padding[2] = { 0, 0 };
 	};
 
-	struct TreeCullPushConstants
-	{
-		float cullDistance;
-		uint32_t instanceCount;
-		uint32_t speciesCount;
-		uint32_t hizEnabled;
-		float hizSampleBias;
-		int hizMipCount;
-		float padding0;
-		float padding1;
-	};
+    struct TreeCullPushConstants
+    {
+        float shadowDistance;
+        uint32_t instanceCount,lodCount,hizEnabled;
+        float hizSampleBias;
+        int hizMipCount;
+        float lodMidDistance,lodFarDistance,hysteresis;
+        uint32_t cullingEnabled,padding0=0,padding1=0;
+    };
+    static_assert(sizeof(TreeCullPushConstants)==48);
 
 	struct GrassShadowPushConstants
 	{
@@ -250,6 +249,7 @@ namespace VansGraphics
 			std::vector<TreeInstanceGPU> trees, uint32_t boneCountPerInstance);
 		void SetRenderConfigs(const std::vector<GrassRenderConfig>& configs) { m_RenderConfigs = configs; }
 		void SetTreeParts(const std::vector<TreePartConfig>& parts) { m_TreeParts = parts; }
+        void SetTreeLodSettings(float midDistance,float farDistance,float hysteresis) {m_TreeLodMidDistance=midDistance;m_TreeLodFarDistance=farDistance;m_TreeLodHysteresis=hysteresis;}
 		void BuildRenderConfigs();
 		void BuildTreeResources();
 		void SetRenderOptions(bool culling, float distance, bool castShadows)
@@ -459,6 +459,8 @@ namespace VansGraphics
 		std::vector<GrassRenderConfigGPU> m_RenderConfigsGPU;
 
 		std::vector<TreePartConfig> m_TreeParts;
+        uint32_t m_TreeLodCount=1;
+        float m_TreeLodMidDistance=60.f,m_TreeLodFarDistance=180.f,m_TreeLodHysteresis=.1f;
 		bool m_CullEnabled = false;
 		bool m_CastShadows = false;
 		bool m_TreeEnabled = false;

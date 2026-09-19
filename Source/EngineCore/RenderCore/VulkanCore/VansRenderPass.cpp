@@ -36,13 +36,18 @@ namespace
 			VANS_LOG_ERROR(context << ": failed to end one-time command buffer.");
 			return false;
 		}
+		// These barriers establish the initial layout for images that the very
+		// next frame uses.  Wait before resetting/reusing the one-time command
+		// buffer; otherwise the GPU can observe UNDEFINED while the tracker says
+		// GENERAL/SHADER_READ_ONLY during first submit.
 		if (!VansGraphics::VansVKCommandBuffer::SubmitCommands(
 			queue,
 			device,
 			{ commandBuffer.GetVKCommandBuffer() },
 			{},
 			{},
-			commandBuffer.m_CommandBufferFinishSubmitFence))
+			commandBuffer.m_CommandBufferFinishSubmitFence,
+			true))
 		{
 			VANS_LOG_ERROR(context << ": failed to submit one-time command buffer.");
 			return false;
@@ -374,7 +379,6 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 		false,
 		true
 	);
-
 #ifdef _DEBUG
 	VkDebugUtilsObjectNameInfoEXT nameInfo = {};
 	nameInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
@@ -501,11 +505,11 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 	// 延迟光照只写 RawOpaqueSceneColor 与 diffuse-exitant history。
 	std::vector<VkAttachmentDescription> rawOpaqueLightingAttachmentDescs =
 	{
-		// 附件 0：SceneColor（CLEAR，UNDEFINED initialLayout — Deferred 从黑色开始写入）
+		// 附件 0：SceneColor（CLEAR，先显式初始化为 shader-read，再由子通道切到 color attachment）
 		{ 0, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT,
 		  VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE,
 		  VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
-		  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+		  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
 		// 附件 1：clean diffuse exitant radiance.  SSGI samples this next frame;
 		// it is separate from SceneColor to avoid temporal GI feedback from fog,
 		// specular or post processing.
@@ -709,6 +713,22 @@ void VansGraphics::VansRenderPassManager::SetupVansDeferredRenderPass(VkDevice& 
 			VK_QUEUE_FAMILY_IGNORED,
 			VK_QUEUE_FAMILY_IGNORED,
 			m_ColorImage.m_ImageAspect
+		});
+	// RawOpaqueSceneColor is consumed by the following forward/atmosphere passes.
+	// Keep its tracked layout concrete before the first render pass instead of
+	// relying on an implicit UNDEFINED transition, which leaves validation and
+	// the VansVKImage tracker disagreeing after recreation.
+	m_RawOpaqueSceneColorImage.SetImageMemoryBarrier(command_buffer,
+		VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+		{
+			m_RawOpaqueSceneColorImage.m_VansVKImage,
+			VK_ACCESS_NONE,
+			VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+			m_RawOpaqueSceneColorImage.m_ImageLayout,
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			VK_QUEUE_FAMILY_IGNORED,
+			VK_QUEUE_FAMILY_IGNORED,
+			m_RawOpaqueSceneColorImage.m_ImageAspect
 		});
 
 	// The first SSGI dispatch happens before the first Deferred pass writes this
@@ -1272,7 +1292,8 @@ void VansGraphics::VansRenderPassManager::SetupVansUIRenderPass(VkDevice& logic_
 			VK_ATTACHMENT_STORE_OP_STORE,
 			VK_ATTACHMENT_LOAD_OP_DONT_CARE,
 			VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			VK_IMAGE_LAYOUT_GENERAL,
+			// 每帧 CLEAR 覆盖整张呈现图像，不依赖首次 UNDEFINED 或后续 PRESENT 的内容。
+			VK_IMAGE_LAYOUT_UNDEFINED,
 			VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
 		},
 	};
@@ -1556,16 +1577,6 @@ void VansGraphics::VansRenderPassManager::SetupVansScreenSpaceEffectsPass(
 		{ halfResolution.width, halfResolution.height, 1 });
 }
 
-// ============================================================
-// SetupVansWaterGBufferPass — 水面 GBuffer render pass 初始化
-//
-// 设计文档 §6.2 "Water GBuffer Pass"：
-//   输出 Attachment 0：WaterGBuf_Normal（RG16_SFLOAT）
-//   输出 Attachment 1：WaterGBuf_LinearDepth（R32F）
-//   深度 Attachment：复用场景深度（TEST 只读，depthWriteEnable=VK_FALSE）
-//
-// 调用时机：在 SetupVansDeferredRenderPass 之后（须先创建 m_DepthImage）。
-// ============================================================
 void VansGraphics::VansRenderPassManager::SetupVansHairVisibilityPass(
 	VkDevice& logic_device, const VkExtent2D& renderResolution)
 {
@@ -1765,6 +1776,7 @@ void VansGraphics::VansRenderPassManager::SetupVansHairDeepOpacityPass(
 void VansGraphics::VansRenderPassManager::SetupVansWaterGBufferPass(
 	VkDevice& logic_device, const VkExtent2D& renderResolution)
 {
+	// 四个颜色输出与 Water GBuffer shader 对应；主深度只参与只读测试。
 	// 创建 Water GBuffer 纹理
 	m_WaterGBufNormalImage.CreateVulkanImage(
 		logic_device,
@@ -1809,7 +1821,7 @@ void VansGraphics::VansRenderPassManager::SetupVansWaterGBufferPass(
 	// render pass attachments
 	std::vector<VkAttachmentDescription> attachments =
 	{
-		// Attachment 0：WaterGBuf_Normal（RG16F，每帧 CLEAR）
+		// Attachment 0：WaterGBuf_Normal（RGBA16F，每帧 CLEAR）
 		{
 			0, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT,
 			VK_ATTACHMENT_LOAD_OP_CLEAR,  VK_ATTACHMENT_STORE_OP_STORE,
@@ -1857,8 +1869,7 @@ void VansGraphics::VansRenderPassManager::SetupVansWaterGBufferPass(
 				{ 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL },
 				{ 1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL },
 				{ 2, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL },
-				{ 3, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL },
-				{ 4, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL }
+				{ 3, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL }
 			},
 			{},
 			&depthRef,

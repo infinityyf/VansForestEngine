@@ -6,6 +6,7 @@
 
 #include "VansRenderNode.h"
 #include "GICore/VansGIInstanceMaterial.h"
+#include "GICore/VansGIVoxelSourceManager.h"
 #include "VansDrawSubmission.h"
 #include "VansRenderFrame.h"
 #include "VansRenderFrameSource.h"
@@ -66,7 +67,7 @@ namespace VansGraphics { class VansAnimationNode; }
 
 namespace VansGraphics { class VansAnimationController; }
 
-namespace VansGraphics { class VansVegetationCollection; }
+namespace VansGraphics { class VansVegetationCollection; struct GIVoxelSource; }
 namespace VansGraphics { class VansPcgSplineFieldResources; }
 
 namespace VansGraphics { class VansVKCommandBuffer; }
@@ -254,7 +255,7 @@ namespace VansGraphics
 
 
 
-		VansCamera* m_Camera;
+		VansCamera* m_Camera = nullptr;
 
 
 
@@ -373,6 +374,7 @@ namespace VansGraphics
 		VansRenderNode* m_TerrainRenderNode = nullptr;
 		VansRenderNode* m_VegetationRenderNode = nullptr;
 		std::unique_ptr<VansVegetationCollection> m_VegetationCollection;
+		VansGIVoxelSourceManager m_GIVoxelSourceManager;
 		VansRenderNode* m_WaterRenderNode = nullptr;
 		VansWaterMaterial* m_WaterMaterial = nullptr;
 		bool m_HasWater = false;
@@ -490,6 +492,8 @@ namespace VansGraphics
 		void SetTerrainPhysicsNode(VansEngine::VansTerrainPhysicsNode* terrainPhysicsNode);
 
 		void SetVegetationCollection(std::unique_ptr<VansVegetationCollection> collection);
+        void CollectGIVoxelSources(std::vector<GIVoxelSource>& sources);
+		VansGIVoxelSourceManager& GetGIVoxelSourceManager() { return m_GIVoxelSourceManager; }
 		VansVegetationCollection* GetVegetationCollection() const { return m_VegetationCollection.get(); }
 		void QueueVegetationUpdate(std::shared_ptr<const Vans::VansPcgBatchUpdate> update);
 		void DiscardPendingVegetationUpdates();
@@ -556,7 +560,7 @@ namespace VansGraphics
 
 		MultiMeshGroup& GetOrCreateMultiMeshGroup(const std::string& name) { return m_MultiMeshGroups[name]; }
 
-		MultiMeshGroup* FindAnimationMultiMeshGroup(const std::string& meshGroupName, const std::string& objectName);
+		MultiMeshGroup* FindAnimationMultiMeshGroup(const std::string& meshGroupName, const std::string& objectName, const std::string& entityGuid);
 
 		uint32_t GetParentTransformID(uint32_t childTransformID) const { return m_TransformGraph.GetParent(childTransformID); }
 		void MarkTransformOffsetDirty(uint32_t childTransformID) { m_TransformGraph.MarkWorldDirty(childTransformID); }
@@ -898,6 +902,8 @@ namespace VansGraphics
 			const std::filesystem::path& sceneSourcePath, VansVKDevice* device);
 
 		bool LoadPackagedProjectAssets(const Vans::VansPackagedResourcePlan& packagePlan, VansVKDevice* device);
+        bool EnsureProjectAssetDependencies(Vans::VansAssetDatabase& database,
+            const Vans::VansSerializedValue& sceneDocument, const std::filesystem::path& sceneSourcePath);
 
 
 
@@ -924,6 +930,11 @@ namespace VansGraphics
 
 
 		// Creates VansScriptObjects from a typed scene object build plan.
+        // 在主线程和渲染同步点调用；资源须由场景依赖计划预加载。
+        bool CreateSceneEntityBatch(VkDevice& device, const Vans::VansSerializedValue& entities,
+            const std::string& projectRoot, std::vector<std::string>& created, std::string& error);
+        bool InstantiatePrefab(VkDevice& device, const std::string& assetGuid,
+            const Vans::VansSerializedValue& placement, std::string& rootEntity, std::string& error);
 		bool LoadSceneObjects(VkDevice& device, const Vans::VansSceneObjectBuildPlan& objectBuildPlan, const std::string& projectRoot);
 
 

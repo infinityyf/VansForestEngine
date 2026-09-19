@@ -210,6 +210,8 @@ struct VansScenePostProcessSettingsConfig
 
 struct VansSceneGIRegionSettingsConfig
 {
+	std::optional<bool> worldOnly;
+    std::optional<bool> followView;
 	std::optional<uint32_t> stableId;
 	std::optional<std::string> name;
 	std::optional<bool> enabled;
@@ -236,8 +238,16 @@ struct VansSceneGIProbePlacementConfig
 	std::optional<uint32_t> maxRaysPerFrame;
 };
 
+struct VansSceneGIWorldConfig
+{
+	std::optional<bool> enabled;
+	std::optional<float> voxelSize, coverageDistance, extinctionScale;
+	std::optional<uint32_t> levelCount, maxBricks, bricksPerFrame, maxTraceSteps;
+};
+
 struct VansSceneGISettingsConfig
 {
+	VansSceneGIWorldConfig world;
 	VansSceneGIProbePlacementConfig placement;
 	std::vector<VansSceneGIRegionSettingsConfig> regions;
 	std::optional<float> maxIndirectRadiance;

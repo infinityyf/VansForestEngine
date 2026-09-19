@@ -3,6 +3,7 @@
 #include "../Util/VansLog.h"
 
 #include <algorithm>
+#include "GICore/VansGIWorld.h"
 
 namespace VansGraphics
 {
@@ -357,6 +358,9 @@ bool VansShaderManager::ExportCookedShaderArtifacts(
 			Vans::VansShaderArtifactCache::ResolveArtifactRoot(request)
 		});
 	}
+    // Cook lazy programs without creating runtime Vulkan modules while the feature is disabled.
+    auto* gi=FindComputeShader("GIPointLight");
+    if(gi&&!VansGIWorld::CookShaders(std::filesystem::path(gi->GetShaderFolder()).parent_path().string(),programs,error))return false;
 	return Vans::VansShaderArtifactCache::Get().ExportCookedArtifacts(
 		programs, destinationRoot, error);
 }

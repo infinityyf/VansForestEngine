@@ -23,6 +23,13 @@ struct VansTerrainLayerAsset
 	float tiling = 64.0f;
 };
 
+struct VansTerrainRiverWetnessSettings
+{
+	float albedoScale = 0.72f;
+	float roughness = 0.18f;
+	float detailNormalScale = 0.70f;
+};
+
 struct VansTerrainAssetSettings
 {
 	float terrainSize = 1024.0f;
@@ -35,14 +42,10 @@ struct VansTerrainAssetSettings
 	float tessellationDistance = 300.0f;
 	float maxTessellationLevel = 32.0f;
 	float tessellationTargetPixels = 12.0f;
-	bool noiseDetailEnabled = true;
-	float noiseStrength = 0.03f;
-	float noiseFrequency = 0.8f;
-	float noiseLacunarity = 2.0f;
-	float noiseGain = 0.52f;
-	int noiseOctaves = 4;
-	float noiseWarpStrength = 0.0f;
-	float noiseFadeStart = 0.70f;
+	bool heightDetailEnabled = true;
+	float heightDetailStrength = 0.03f;
+	float heightDetailFadeStart = 0.70f;
+	VansTerrainRiverWetnessSettings riverWetness;
 };
 
 // 地形资产是编辑、运行时渲染和 Play 初始化共享的不可变数据快照。

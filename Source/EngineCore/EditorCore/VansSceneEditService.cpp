@@ -1,4 +1,5 @@
 #include "VansSceneEditService.h"
+#include "VansAssetDocumentRegistry.h"
 
 #include "VansSceneObjectReferenceResolver.h"
 #include "../AssetCore/Serialization/VansSerializedValueAccess.h"
@@ -7,6 +8,7 @@
 
 #include <cstddef>
 #include <exception>
+#include <stdexcept>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -25,10 +27,113 @@ public:
     virtual ~VansSceneEditCommand() = default;
 
 private:
+    VansSerializedValue authoringBefore, authoringAfter;
+    SceneStateId authoringBeforeState = 0, authoringAfterState = 0;
+    bool usesPrefabHistory = false;
+protected:
+    bool managesPrefabHistory = false;
+private:
     virtual SceneEditResult Execute(VansSceneDocument& document) = 0;
     virtual SceneEditResult Undo(VansSceneDocument& document) = 0;
     virtual SceneEditResult Redo(VansSceneDocument& document) = 0;
 };
+
+class VansApplyPrefabCommand final : public VansSceneEditCommand
+{
+public:
+    VansApplyPrefabCommand(std::shared_ptr<VansOpenAssetDocument> asset, VansSerializedValue source,
+        VansSerializedValue authoring, std::function<bool()> refresh)
+        : m_Asset(std::move(asset)), m_SourceAfter(std::move(source)), m_SceneAfter(std::move(authoring)), m_Refresh(std::move(refresh))
+    { managesPrefabHistory = true; }
+private:
+    SceneEditResult Switch(VansSceneDocument& document, bool forward)
+    {
+        auto& source = m_Asset->sourceDocument;
+        const auto expected = forward ? m_SourceBeforeState : m_SourceAfterState;
+        if (source.CurrentStateId() != expected) return {false, "Prefab has newer edits; undo those edits before this Apply"};
+        const auto oldSource = source.SerializedRootSnapshot();
+        const auto oldScene = document.AuthoringRootSnapshot();
+        const auto oldSceneState = document.CurrentStateId();
+        try
+        {
+            source.RestoreEditedSerializedRoot(forward ? m_SourceAfter : m_SourceBefore,
+                forward ? m_SourceAfterState : m_SourceBeforeState);
+            if (!VansAssetDocumentRegistry::Get().PublishWorkingCopy(source)) throw std::runtime_error("Prefab publication failed");
+            document.RestoreAuthoringRoot(forward ? m_SceneAfter : m_SceneBefore,
+                forward ? m_SceneAfterState : m_SceneBeforeState);
+            if (m_Refresh && !m_Refresh()) throw std::runtime_error("Prefab preview failed");
+            SceneEditResult result{true, {}}; result.runtimeChangeApplied = static_cast<bool>(m_Refresh); return result;
+        }
+        catch (const std::exception& e)
+        {
+            source.RestoreEditedSerializedRoot(oldSource, expected);
+            VansAssetDocumentRegistry::Get().PublishWorkingCopy(source);
+            document.RestoreAuthoringRoot(oldScene, oldSceneState);
+            if (m_Refresh) m_Refresh();
+            return {false, e.what()};
+        }
+    }
+    SceneEditResult Execute(VansSceneDocument& document) override
+    {
+        m_SourceBefore = m_Asset->sourceDocument.SerializedRootSnapshot();
+        m_SourceBeforeState = m_Asset->sourceDocument.CurrentStateId();
+        m_SourceAfterState = m_Asset->sourceDocument.AllocateStateId();
+        m_SceneBefore = document.AuthoringRootSnapshot(); m_SceneBeforeState = document.CurrentStateId();
+        m_SceneAfterState = document.AllocateStateId();
+        return Switch(document, true);
+    }
+    SceneEditResult Undo(VansSceneDocument& document) override { return Switch(document, false); }
+    SceneEditResult Redo(VansSceneDocument& document) override { return Switch(document, true); }
+    std::shared_ptr<VansOpenAssetDocument> m_Asset;
+    VansSerializedValue m_SourceBefore, m_SourceAfter, m_SceneBefore, m_SceneAfter;
+    SceneStateId m_SceneBeforeState = 0, m_SceneAfterState = 0;
+    VansAssetDocumentStateId m_SourceBeforeState = 0, m_SourceAfterState = 0;
+    std::function<bool()> m_Refresh;
+};
+
+SceneEditResult VansSceneEditService::ApplyPrefab(std::shared_ptr<VansOpenAssetDocument> asset,
+    VansSerializedValue source, VansSerializedValue authoring)
+{
+    return Execute(std::make_unique<VansApplyPrefabCommand>(std::move(asset), std::move(source), std::move(authoring), m_PrefabPreviewRefresh));
+}
+
+class VansReplaceSceneRootCommand final : public VansSceneEditCommand
+{
+public:
+    VansReplaceSceneRootCommand(VansSerializedValue root, SceneEditLifecycleHooks hooks)
+        : m_After(std::move(root)), m_Hooks(std::move(hooks)) {}
+private:
+    SceneEditResult Execute(VansSceneDocument& d) override
+    {
+        m_Before = d.SerializedRootSnapshot(); m_BeforeState = d.CurrentStateId();
+        m_AfterState = d.ApplyEditedSerializedRoot(m_After);
+        if (m_Hooks.afterExecute && !m_Hooks.afterExecute())
+        { d.RestoreEditedSerializedRoot(m_Before, m_BeforeState); m_Hooks.afterExecute(); return {false, "Prefab preview failed"}; }
+        return {true, {}};
+    }
+    SceneEditResult Undo(VansSceneDocument& d) override
+    {
+        d.RestoreEditedSerializedRoot(m_Before, m_BeforeState);
+        if (m_Hooks.afterUndo && !m_Hooks.afterUndo())
+        { d.RestoreEditedSerializedRoot(m_After, m_AfterState); return {false, "Prefab undo preview failed"}; }
+        return {true, {}};
+    }
+    SceneEditResult Redo(VansSceneDocument& d) override
+    {
+        d.RestoreEditedSerializedRoot(m_After, m_AfterState);
+        if (m_Hooks.afterRedo && !m_Hooks.afterRedo())
+        { d.RestoreEditedSerializedRoot(m_Before, m_BeforeState); return {false, "Prefab redo preview failed"}; }
+        return {true, {}};
+    }
+    VansSerializedValue m_Before, m_After;
+    SceneStateId m_BeforeState = 0, m_AfterState = 0;
+    SceneEditLifecycleHooks m_Hooks;
+};
+
+SceneEditResult VansSceneEditService::ReplaceRoot(VansSerializedValue root, SceneEditLifecycleHooks hooks)
+{
+    return Execute(std::make_unique<VansReplaceSceneRootCommand>(std::move(root), std::move(hooks)));
+}
 
 class VansSetScenePropertyCommand final : public VansSceneEditCommand
 {
@@ -767,9 +872,20 @@ SceneEditResult VansSceneEditService::Execute(std::unique_ptr<VansSceneEditComma
 {
     if (!command)
         return { false, "Scene edit command is null" };
-    SceneEditResult result = command->Execute(m_Document);
+    SceneEditResult result;
+    const auto authoringBefore = m_Document.AuthoringRootSnapshot();
+    const auto stateBefore = m_Document.CurrentStateId();
+    try { result = command->Execute(m_Document); }
+    catch (const std::exception& error) { return { false, error.what() }; }
     if (!result)
         return result;
+    const auto authoringAfter = m_Document.AuthoringRootSnapshot();
+    if (!command->managesPrefabHistory && (FindObjectField(authoringBefore, "prefabInstances") || FindObjectField(authoringAfter, "prefabInstances")))
+    {
+        command->usesPrefabHistory = true;
+        command->authoringBefore = authoringBefore; command->authoringAfter = authoringAfter;
+        command->authoringBeforeState = stateBefore; command->authoringAfterState = m_Document.CurrentStateId();
+    }
     m_Undo.push_back(std::move(command));
     m_Redo.clear();
     return result;
@@ -918,7 +1034,19 @@ SceneEditResult VansSceneEditService::Undo()
         return { false, "No scene edit to undo" };
     std::unique_ptr<VansSceneEditCommand> command = std::move(m_Undo.back());
     m_Undo.pop_back();
-    SceneEditResult result = command->Undo(m_Document);
+    SceneEditResult result;
+    try
+    {
+        if (command->usesPrefabHistory)
+        {
+            m_Document.RestoreAuthoringRoot(command->authoringBefore, command->authoringBeforeState);
+            if (m_PrefabPreviewRefresh && !m_PrefabPreviewRefresh())
+            { m_Document.RestoreAuthoringRoot(command->authoringAfter, command->authoringAfterState); m_PrefabPreviewRefresh(); result = {false, "Prefab undo preview failed"}; }
+            else { result.success = true; result.runtimeChangeApplied = static_cast<bool>(m_PrefabPreviewRefresh); }
+        }
+        else result = command->Undo(m_Document);
+    }
+    catch (const std::exception& error) { result = { false, error.what() }; }
     if (result)
         m_Redo.push_back(std::move(command));
     else
@@ -932,7 +1060,19 @@ SceneEditResult VansSceneEditService::Redo()
         return { false, "No scene edit to redo" };
     std::unique_ptr<VansSceneEditCommand> command = std::move(m_Redo.back());
     m_Redo.pop_back();
-    SceneEditResult result = command->Redo(m_Document);
+    SceneEditResult result;
+    try
+    {
+        if (command->usesPrefabHistory)
+        {
+            m_Document.RestoreAuthoringRoot(command->authoringAfter, command->authoringAfterState);
+            if (m_PrefabPreviewRefresh && !m_PrefabPreviewRefresh())
+            { m_Document.RestoreAuthoringRoot(command->authoringBefore, command->authoringBeforeState); m_PrefabPreviewRefresh(); result = {false, "Prefab redo preview failed"}; }
+            else { result.success = true; result.runtimeChangeApplied = static_cast<bool>(m_PrefabPreviewRefresh); }
+        }
+        else result = command->Redo(m_Document);
+    }
+    catch (const std::exception& error) { result = { false, error.what() }; }
     if (result)
         m_Undo.push_back(std::move(command));
     else

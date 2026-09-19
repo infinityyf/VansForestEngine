@@ -8,6 +8,7 @@
 #include <glm/glm.hpp>
 
 #include <memory>
+#include <array>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -132,6 +133,19 @@ private:
 	VansEntityHandle ResolveHitTarget(VansEntityHandle entity) const;
 	void EmitWindowEvent(MeleeWindow& window, std::string_view edge);
 	VansActionCommandResult FireHitscan(const VansActionCommand& command);
+	VansActionCommandResult ApplyDamageProfile(const VansActionCommand& command);
+	// 有界命中凭据：伤害只接受同一 Action 的真实查询结果，不重做射线。
+	struct ShotReceipt
+	{
+		std::uint64_t id = 0;
+		VansActionHandle action;
+		VansEntityHandle owner, instigator;
+		VansTargetHitResult hit;
+		glm::vec3 direction{0.0f};
+		bool consumed = false;
+	};
+	std::array<ShotReceipt, 256> m_Shots{};
+	std::uint64_t m_NextShotId = 1;
 	bool ConfirmHit(VansActionHandle action, VansEntityHandle owner, VansEntityHandle instigator,
 		const std::string& responseAction, const std::string& hitName, std::string_view hitType,
 		const VansTargetHitResult& hit);

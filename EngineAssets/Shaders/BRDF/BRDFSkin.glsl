@@ -582,7 +582,7 @@ void CalculateDirectLight_Skin(BRDFData brdfData, float curvature,
     DirectBRDF_Skin(brdfData, uDirectionLight.direction.rgb, curvature, skin,
                     diffuseResult, specularResult, transmissionResult);
     vec3 directionalIrradiance =
-        uDirectionLight.color.rgb * uDirectionLight.intensity;
+        uDirectionLight.color.rgb * uDirectionLight.intensity * SampleSurfaceLightCookie(0, brdfData.positionWS);
     diffuseResult *= directionalIrradiance;
     specularResult *= directionalIrradiance;
     transmissionResult *= directionalIrradiance;
@@ -605,6 +605,7 @@ void CalculateDirectLight_Skin(BRDFData brdfData, float curvature,
     {
         uint i = tileLightIndices[tileLightHdr.pointOffset + ptk];
         PointLightData pointLight = GetPointLight(int(i));
+        pointLight.color.rgb *= SampleSurfaceLightCookie(1 + int(i), brdfData.positionWS);
         vec3 lightDirection = pointLight.position.xyz - brdfData.positionWS;
         float distance = length(lightDirection);
         if (distance > pointLight.radius) continue;
@@ -645,6 +646,7 @@ void CalculateDirectLight_Skin(BRDFData brdfData, float curvature,
     {
         uint i = tileLightIndices[tileLightHdr.spotOffset + spk];
         SpotLightData spotLight = GetSpotLight(int(i));
+        spotLight.color.rgb *= SampleSurfaceLightCookie(65 + int(i), brdfData.positionWS);
         vec3 lightDirection = spotLight.position.xyz - brdfData.positionWS;
         float distance = length(lightDirection);
         if (distance > spotLight.radius) continue;
@@ -694,6 +696,7 @@ void CalculateDirectLight_Skin(BRDFData brdfData, float curvature,
     {
         uint i = tileLightIndices[tileLightHdr.rectOffset + rck];
         RectLightData rectLight = GetRectLight(int(i));
+        rectLight.color_twoSided.rgb *= SampleSurfaceLightCookie(129 + int(i), brdfData.positionWS);
         vec3 rectD = vec3(0.0);
         vec3 rectS = vec3(0.0);
         EvaluateRectLight_Skin(rectLight, brdfData, curvature, skin, rectD, rectS);
@@ -722,6 +725,7 @@ void CalculateDirectLight_Skin(BRDFData brdfData, float curvature,
     for (uint i = 0; i < uPointLightCount; ++i)
     {
         PointLightData pointLight = GetPointLight(int(i));
+        pointLight.color.rgb *= SampleSurfaceLightCookie(1 + int(i), brdfData.positionWS);
         vec3  lightDirection = pointLight.position.xyz - brdfData.positionWS;
         float distance = length(lightDirection);
         if (distance > pointLight.radius) continue;
@@ -758,6 +762,7 @@ void CalculateDirectLight_Skin(BRDFData brdfData, float curvature,
     for (uint i = 0; i < uSpotLightCount; ++i)
     {
         SpotLightData spotLight = GetSpotLight(int(i));
+        spotLight.color.rgb *= SampleSurfaceLightCookie(65 + int(i), brdfData.positionWS);
         vec3  lightDirection = spotLight.position.xyz - brdfData.positionWS;
         float distance = length(lightDirection);
         if (distance > spotLight.radius) continue;
@@ -803,6 +808,7 @@ void CalculateDirectLight_Skin(BRDFData brdfData, float curvature,
     for (uint i = 0u; i < rectCount && i < uint(MAX_RECT_LIGHTS); ++i)
     {
         RectLightData rectLight = GetRectLight(int(i));
+        rectLight.color_twoSided.rgb *= SampleSurfaceLightCookie(129 + int(i), brdfData.positionWS);
         vec3 rectD = vec3(0.0);
         vec3 rectS = vec3(0.0);
         EvaluateRectLight_Skin(rectLight, brdfData, curvature, skin, rectD, rectS);

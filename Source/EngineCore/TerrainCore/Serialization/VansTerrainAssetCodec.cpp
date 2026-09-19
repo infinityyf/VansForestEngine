@@ -51,15 +51,6 @@ bool ReadBool(const VansSerializedValue& object, const char* name, bool& result)
 	return true;
 }
 
-bool ReadInt(const VansSerializedValue& object, const char* name, int& result)
-{
-	const VansSerializedValue* field = FindObjectField(object, name);
-	if (!field || field->kind != VansSerializedValue::Kind::Int)
-		return false;
-	result = static_cast<int>(field->intValue);
-	return true;
-}
-
 VansSerializedValue Reference(VansAssetGuid guid, const char* assetType)
 {
 	return MakeSerializedProjectAssetObjectReference(guid.ToString(), assetType);
@@ -83,13 +74,14 @@ bool VansTerrainAssetCodec::DecodeDefinition(
 	const VansSerializedValue* splatmaps = FindObjectField(root, "splatmaps");
 	const VansSerializedValue* lod = ObjectField(root, "lod");
 	const VansSerializedValue* tessellation = ObjectField(root, "tessellation");
-	const VansSerializedValue* noise = tessellation ? ObjectField(*tessellation, "noiseDetail") : nullptr;
+	const VansSerializedValue* heightDetail = tessellation ? ObjectField(*tessellation, "heightDetail") : nullptr;
+	const VansSerializedValue* riverWetness = ObjectField(root, "riverWetness");
 	const VansSerializedValue* layers = FindObjectField(root, "layers");
 	if (!heightmap || !splatmaps || splatmaps->kind != VansSerializedValue::Kind::Array ||
-		splatmaps->arrayItems.size() != 2 || !lod || !tessellation || !noise ||
+		splatmaps->arrayItems.size() != 2 || !lod || !tessellation || !heightDetail || !riverWetness ||
 		!layers || layers->kind != VansSerializedValue::Kind::Array)
 	{
-		error = "Terrain asset is missing required heightmap, splatmaps, lod, tessellation, or layers fields";
+		error = "Terrain asset is missing required heightmap, splatmaps, lod, tessellation.heightDetail, riverWetness, or layers fields";
 		return false;
 	}
 	if (!ReadGuidReference(*heightmap, "texture", asset.heightmap, error) ||
@@ -108,14 +100,12 @@ bool VansTerrainAssetCodec::DecodeDefinition(
 		!ReadNumber(*tessellation, "distance", settings.tessellationDistance) ||
 		!ReadNumber(*tessellation, "maxLevel", settings.maxTessellationLevel) ||
 		!ReadNumber(*tessellation, "targetPixels", settings.tessellationTargetPixels) ||
-		!ReadBool(*noise, "enabled", settings.noiseDetailEnabled) ||
-		!ReadNumber(*noise, "strength", settings.noiseStrength) ||
-		!ReadNumber(*noise, "frequency", settings.noiseFrequency) ||
-		!ReadNumber(*noise, "lacunarity", settings.noiseLacunarity) ||
-		!ReadNumber(*noise, "gain", settings.noiseGain) ||
-		!ReadInt(*noise, "octaves", settings.noiseOctaves) ||
-		!ReadNumber(*noise, "warpStrength", settings.noiseWarpStrength) ||
-		!ReadNumber(*noise, "fadeStart", settings.noiseFadeStart))
+		!ReadBool(*heightDetail, "enabled", settings.heightDetailEnabled) ||
+		!ReadNumber(*heightDetail, "strength", settings.heightDetailStrength) ||
+		!ReadNumber(*heightDetail, "fadeStart", settings.heightDetailFadeStart) ||
+		!ReadNumber(*riverWetness, "albedoScale", settings.riverWetness.albedoScale) ||
+		!ReadNumber(*riverWetness, "roughness", settings.riverWetness.roughness) ||
+		!ReadNumber(*riverWetness, "detailNormalScale", settings.riverWetness.detailNormalScale))
 	{
 		error = "Terrain asset contains missing or invalid numeric settings";
 		return false;
@@ -195,16 +185,16 @@ bool VansTerrainAssetCodec::EncodeDefinition(
 			{ "distance", VansSerializedValue::Float(settings.tessellationDistance) },
 			{ "maxLevel", VansSerializedValue::Float(settings.maxTessellationLevel) },
 			{ "targetPixels", VansSerializedValue::Float(settings.tessellationTargetPixels) },
-			{ "noiseDetail", VansSerializedValue::Object({
-				{ "enabled", VansSerializedValue::Bool(settings.noiseDetailEnabled) },
-				{ "strength", VansSerializedValue::Float(settings.noiseStrength) },
-				{ "frequency", VansSerializedValue::Float(settings.noiseFrequency) },
-				{ "lacunarity", VansSerializedValue::Float(settings.noiseLacunarity) },
-				{ "gain", VansSerializedValue::Float(settings.noiseGain) },
-				{ "octaves", VansSerializedValue::Int(settings.noiseOctaves) },
-				{ "warpStrength", VansSerializedValue::Float(settings.noiseWarpStrength) },
-				{ "fadeStart", VansSerializedValue::Float(settings.noiseFadeStart) }
+			{ "heightDetail", VansSerializedValue::Object({
+				{ "enabled", VansSerializedValue::Bool(settings.heightDetailEnabled) },
+				{ "strength", VansSerializedValue::Float(settings.heightDetailStrength) },
+				{ "fadeStart", VansSerializedValue::Float(settings.heightDetailFadeStart) }
 			}) }
+		}) },
+		{ "riverWetness", VansSerializedValue::Object({
+			{ "albedoScale", VansSerializedValue::Float(settings.riverWetness.albedoScale) },
+			{ "roughness", VansSerializedValue::Float(settings.riverWetness.roughness) },
+			{ "detailNormalScale", VansSerializedValue::Float(settings.riverWetness.detailNormalScale) }
 		}) },
 		{ "layers", VansSerializedValue::Array(std::move(layerValues)) }
 	});

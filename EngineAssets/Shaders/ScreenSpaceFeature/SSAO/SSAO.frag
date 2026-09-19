@@ -3,6 +3,7 @@
 
 #include "../../Common/CameraData.glsl"
 #include "../../Common/Common.glsl"
+#include "../../Grass/GrassScreenAO.glsl"
 
 layout( location = 0 ) in vec2 fragTexCoord;
 layout(set = 1, binding = 0) uniform sampler2D  normalInput;
@@ -39,6 +40,14 @@ void main()
         return;
     }
     normal = normalize(normal);
+
+    if(int(round(texture(gbufferInput1,fragTexCoord).z))==MATERIAL_ID_GRASS)
+    {
+        float front=GrassHemisphereAO(gbufferInput2,gbufferInput1,position_world,normal);
+        float back=GrassHemisphereAO(gbufferInput2,gbufferInput1,position_world,-normal);
+        imageStore(outColor,outPixel,vec4(front,back,1.0,1.0));
+        return;
+    }
 
     vec3 viewDirection = normalize(cameraPosition.xyz - position_world);
 

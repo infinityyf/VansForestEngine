@@ -672,6 +672,7 @@ VansSceneAnimationComponentConfig VansSceneAnimationComponentReader::ReadAnimati
 	}
 	config.externClips = ReadSerializedStringField(animationNode, "extern_clips", "");
 	config.rootMotion = ReadBoolField(animationNode, "root_motion", false);
+	config.normalizeRootPose = ReadBoolField(animationNode, "normalize_root_pose", true);
 	config.autoPlay = ReadBoolField(animationNode, "auto_play", true);
 	config.loop = ReadBoolField(animationNode, "loop", true);
 	config.rootBone = ReadSerializedStringField(animationNode, "root_bone", "");

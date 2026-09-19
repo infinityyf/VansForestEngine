@@ -1,5 +1,6 @@
 #ifndef GI_PROBE_WORK_DATA_GLSL_INCLUDED
 #define GI_PROBE_WORK_DATA_GLSL_INCLUDED
+#include "GIProbeFeedbackStatus.glsl"
 
 // 每项都是完整 probe 更新，统一射线步长，共享有上限的射线缓存。
 layout(set = GI_WORK_SET, binding = GI_WORK_BINDING, std430) readonly buffer GIProbeWorkBuffer

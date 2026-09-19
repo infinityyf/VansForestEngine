@@ -25,6 +25,10 @@ using namespace VansGraphics;
 
 namespace
 {
+	constexpr PxU32 kFullCollisionPositionIterations = 255;
+	constexpr PxU32 kFullCollisionVelocityIterations = 16;
+	static_assert(kFullCollisionPositionIterations > 0 && kFullCollisionPositionIterations <= 255 &&
+		kFullCollisionVelocityIterations <= 255, "PhysX solver iteration counts exceed their packed range");
 	PxVec3 ToPxVec3(const glm::vec3& v)
 	{
 		return PxVec3(v.x, v.y, v.z);
@@ -96,8 +100,9 @@ namespace
 
 	PxU32 MakeRagdollCollisionGroup(const VansAnimationNode* animNode)
 	{
-		uintptr_t raw = reinterpret_cast<uintptr_t>(animNode);
-		return 0x52000000u | static_cast<PxU32>((raw >> 4) & 0x00FFFFFFu);
+		static PxU32 nextGroup = 1;
+		const PxU32 group = nextGroup++ & 0xFFFFFFu;
+		return group ? group : (nextGroup++ & 0xFFFFFFu);
 	}
 
 	void SetActorRagdollContactsEnabled(PxRigidDynamic* body, bool enabled)
@@ -120,6 +125,7 @@ namespace
 			PxFilterData filterData = shape->getSimulationFilterData();
 			int layerIndex = static_cast<int>(filterData.word0);
 			filterData.word1 = enabled ? layerMgr.GetCollisionMask(layerIndex) : 0u;
+			if (enabled && (filterData.word2 & 2u)) filterData.word1 |= 1u << layerIndex;
 			shape->setSimulationFilterData(filterData);
 			shape->setQueryFilterData(filterData);
 		}
@@ -273,8 +279,9 @@ bool VansRagdollSystem::CreateRagdoll(VansAnimationNode* animNode, const Ragdoll
 	glm::mat4 rootWorld = VansTransformStore::GetTransform(rootTransformID).GetModelMatrix();
 	PxU32 ragdollCollisionGroup = MakeRagdollCollisionGroup(animNode);
 
-	for (const auto& bodyConfig : profile.bodies)
+	for (size_t bodyIndex = 0; bodyIndex < profile.bodies.size(); ++bodyIndex)
 	{
+		const auto& bodyConfig = profile.bodies[bodyIndex];
 		auto boneIt = skeleton.boneNameToIndex.find(bodyConfig.boneName);
 		if (boneIt == skeleton.boneNameToIndex.end())
 		{
@@ -334,7 +341,7 @@ bool VansRagdollSystem::CreateRagdoll(VansAnimationNode* animNode, const Ragdoll
 		// Animation 模式下保持 shape 在 broadphase 中，但先禁用接触过滤。
 		// 切 Physics 时只更新 filterData，避免动态切换 eSIMULATION_SHAPE 触发 ABP 重新插入崩溃。
 		filterData.word1 = 0u;
-		filterData.word2 = 0;
+		filterData.word2 = profile.selfCollision ? 2u : 0u;
 		filterData.word3 = ragdollCollisionGroup;
 		shape->setSimulationFilterData(filterData);
 		shape->setQueryFilterData(filterData);
@@ -342,9 +349,12 @@ bool VansRagdollSystem::CreateRagdoll(VansAnimationNode* animNode, const Ragdoll
 		body->attachShape(*shape);
 		shape->release();
 		PxRigidBodyExt::setMassAndUpdateInertia(*body, (std::max)(0.001f, bodyConfig.mass));
-		body->setSolverIterationCounts(12, 4);
+		body->setMassSpaceInertiaTensor(body->getMassSpaceInertiaTensor() * bodyConfig.inertiaScale);
+		// PhysX 的迭代计数必须在 1..255 内。
+		body->setSolverIterationCounts(profile.selfCollision ? kFullCollisionPositionIterations : 12,
+			profile.selfCollision ? kFullCollisionVelocityIterations : 4);
 		body->setLinearDamping(0.05f);
-		body->setAngularDamping(0.2f);
+		body->setAngularDamping(profile.selfCollision ? 2.0f : 0.2f);
 		body->setMaxDepenetrationVelocity(2.0f);
 		body->setSleepThreshold(0.0001f);
 		body->setRigidBodyFlag(PxRigidBodyFlag::eKINEMATIC, true);
@@ -359,6 +369,8 @@ bool VansRagdollSystem::CreateRagdoll(VansAnimationNode* animNode, const Ragdoll
 		entry.material = material;
 		entry.shapeOffset = shapeOffset;
 		entry.shapeOffsetInverse = glm::inverse(shapeOffset);
+		entry.stationaryAngularVelocity = bodyConfig.stationaryAngularVelocity;
+		entry.stationaryImpulse = bodyConfig.stationaryImpulse;
 
 		int entryIndex = static_cast<int>(inst.boneEntries.size());
 		inst.boneNameToEntryIndex[entry.boneName] = entryIndex;
@@ -386,27 +398,37 @@ bool VansRagdollSystem::CreateRagdoll(VansAnimationNode* animNode, const Ragdoll
 		RagdollBoneEntry& parentEntry = inst.boneEntries[parentEntryIndex];
 		PxTransform parentPose = parentEntry.body->getGlobalPose();
 		PxTransform childPose = childEntry.body->getGlobalPose();
-		PxTransform parentFrame = parentPose.transformInv(childPose);
-		PxTransform childFrame(PxIdentity);
+		// 关节固定在骨骼原点，不是偏移后的碰撞体中心；否则弯曲动作转物理时会被拉回。
+		PxTransform jointWorld = childPose * GlmToPx(childEntry.shapeOffsetInverse);
+		PxTransform parentFrame = parentPose.transformInv(jointWorld);
+		PxTransform childFrame = childPose.transformInv(jointWorld);
+		if (jointConfig.hasLocalFrames)
+		{
+			parentFrame = GlmToPx(parentEntry.shapeOffsetInverse * MakeTRS(
+				jointConfig.parentFramePosition, jointConfig.parentFrameRotation, glm::vec3(1)));
+			childFrame = GlmToPx(childEntry.shapeOffsetInverse * MakeTRS(
+				jointConfig.childFramePosition, jointConfig.childFrameRotation, glm::vec3(1)));
+		}
 
 		PxD6Joint* joint = PxD6JointCreate(*physics, parentEntry.body, parentFrame, childEntry.body, childFrame);
 		if (joint == nullptr)
 			continue;
 
-		joint->setConstraintFlag(PxConstraintFlag::eCOLLISION_ENABLED, false);
+		joint->setConstraintFlag(PxConstraintFlag::eCOLLISION_ENABLED, profile.selfCollision);
 
 		joint->setMotion(PxD6Axis::eX, PxD6Motion::eLOCKED);
 		joint->setMotion(PxD6Axis::eY, PxD6Motion::eLOCKED);
 		joint->setMotion(PxD6Axis::eZ, PxD6Motion::eLOCKED);
-		joint->setMotion(PxD6Axis::eSWING1, PxD6Motion::eLIMITED);
-		joint->setMotion(PxD6Axis::eSWING2, PxD6Motion::eLIMITED);
-		joint->setMotion(PxD6Axis::eTWIST, PxD6Motion::eLIMITED);
+		joint->setMotion(PxD6Axis::eSWING1, jointConfig.swingYLimit > 0 ? PxD6Motion::eLIMITED : PxD6Motion::eLOCKED);
+		joint->setMotion(PxD6Axis::eSWING2, jointConfig.swingZLimit > 0 ? PxD6Motion::eLIMITED : PxD6Motion::eLOCKED);
+		const bool lockTwist = jointConfig.twistLowLimit == 0.f && jointConfig.twistHighLimit == 0.f;
+		joint->setMotion(PxD6Axis::eTWIST, lockTwist ? PxD6Motion::eLOCKED : PxD6Motion::eLIMITED);
 
 		PxSpring spring(jointConfig.limitStiffness, jointConfig.limitDamping);
-		joint->setSwingLimit(PxJointLimitCone(glm::radians(jointConfig.swingYLimit),
-		                                     glm::radians(jointConfig.swingZLimit),
+		joint->setSwingLimit(PxJointLimitCone(glm::radians((std::max)(0.01f, jointConfig.swingYLimit)),
+		                                     glm::radians((std::max)(0.01f, jointConfig.swingZLimit)),
 		                                     spring));
-		joint->setTwistLimit(PxJointAngularLimitPair(glm::radians(jointConfig.twistLowLimit),
+		if (!lockTwist) joint->setTwistLimit(PxJointAngularLimitPair(glm::radians(jointConfig.twistLowLimit),
 		                                           glm::radians(jointConfig.twistHighLimit),
 		                                           spring));
 		if (jointConfig.enableDrive)
@@ -522,6 +544,55 @@ int VansRagdollSystem::GetJointCount(VansAnimationNode* animNode) const
 	return jointCount;
 }
 
+RagdollDiagnostics VansRagdollSystem::GetDiagnostics(VansAnimationNode* animNode) const
+{
+	RagdollDiagnostics result;
+	const auto* inst = FindInstance(animNode);
+	if (!inst) return result;
+	std::lock_guard<std::mutex> lock(VansPhysicsSystem::GetInstance().GetSimulationMutex());
+	for (size_t i = 0; i < inst->boneEntries.size(); ++i)
+	{
+		const auto& entry = inst->boneEntries[i];
+		result.maxLinearSpeed = (std::max)(result.maxLinearSpeed, entry.body->getLinearVelocity().magnitude());
+		if (auto* joint = entry.joint)
+		{
+			PxRigidActor *a = nullptr, *b = nullptr; joint->getActors(a,b);
+			const auto p = a->getGlobalPose()*joint->getLocalPose(PxJointActorIndex::eACTOR0);
+			const auto q = b->getGlobalPose()*joint->getLocalPose(PxJointActorIndex::eACTOR1);
+			const float anchorError = (p.p-q.p).magnitude();
+			if (anchorError > result.maxAnchorError) { result.maxAnchorError=anchorError; result.anchorBone=entry.boneName; }
+			const auto principal = [](float angle) { return std::remainder(angle, 2.f*PxPi); };
+			const auto twist = joint->getTwistLimit(); const float angle = principal(joint->getTwistAngle());
+			float error = joint->getMotion(PxD6Axis::eTWIST)==PxD6Motion::eLOCKED ? std::abs(angle) :
+				(std::max)(twist.lower-angle,angle-twist.upper);
+			const auto swing = joint->getSwingLimit();
+			error = (std::max)(error,std::abs(principal(joint->getSwingYAngle()))-
+				(joint->getMotion(PxD6Axis::eSWING1)==PxD6Motion::eLOCKED ? 0.f : swing.yAngle));
+			error = (std::max)(error,std::abs(principal(joint->getSwingZAngle()))-
+				(joint->getMotion(PxD6Axis::eSWING2)==PxD6Motion::eLOCKED ? 0.f : swing.zAngle));
+			if (glm::degrees(error) > result.maxAngularErrorDegrees)
+			{
+				result.maxAngularErrorDegrees=glm::degrees(error); result.angularBone=entry.boneName;
+				result.worstJointAnglesDegrees=glm::degrees(glm::vec3(angle,
+					principal(joint->getSwingYAngle()),principal(joint->getSwingZAngle())));
+			}
+		}
+		for (size_t j = i+1; j < inst->boneEntries.size(); ++j)
+		{
+			auto* other = inst->boneEntries[j].body;
+			PxShape *a = nullptr, *b = nullptr; entry.body->getShapes(&a,1); other->getShapes(&b,1);
+			PxPairFlags flags;
+			if (VansCollisionFilterShader(0,a->getSimulationFilterData(),0,b->getSimulationFilterData(),flags,nullptr,0)&PxFilterFlag::eSUPPRESS) continue;
+			++result.collidingBodyPairs;
+			PxVec3 direction; PxReal depth;
+			if (PxGeometryQuery::computePenetration(direction,depth,a->getGeometry(),entry.body->getGlobalPose()*a->getLocalPose(),
+				b->getGeometry(),other->getGlobalPose()*b->getLocalPose()))
+				if (depth > result.maxPenetration) { result.maxPenetration=depth; result.penetrationPair=entry.boneName+":"+inst->boneEntries[j].boneName; }
+		}
+	}
+	return result;
+}
+
 std::vector<std::string> VansRagdollSystem::GetBodyBoneNames(VansAnimationNode* animNode) const
 {
 	std::vector<std::string> names;
@@ -576,6 +647,60 @@ void VansRagdollSystem::ApplyImpulse(VansAnimationNode* animNode,
 	VansPhysicsSystem& physicsSystem = VansPhysicsSystem::GetInstance();
 	std::lock_guard<std::mutex> simLock(physicsSystem.GetSimulationMutex());
 	entry.body->addForce(ToPxVec3(worldImpulse), PxForceMode::eIMPULSE, true);
+}
+
+bool VansRagdollSystem::AddLinearVelocity(VansAnimationNode* animNode, const glm::vec3& velocityDelta)
+{
+    const PxVec3 delta = ToPxVec3(velocityDelta);
+    if (!delta.isFinite()) return false;
+    auto* inst = FindInstance(animNode);
+    if (!inst || inst->driveMode != RagdollDriveMode::Physics || inst->boneEntries.empty()) return false;
+    std::lock_guard<std::mutex> lock(VansPhysicsSystem::GetInstance().GetSimulationMutex());
+    // 先验证整组，再一次性叠加，避免部分节点成功而部分失败。
+    for (const auto& entry : inst->boneEntries)
+        if (!entry.body || entry.body->getRigidBodyFlags().isSet(PxRigidBodyFlag::eKINEMATIC)
+            || !(entry.body->getLinearVelocity() + delta).isFinite()) return false;
+    for (auto& entry : inst->boneEntries)
+        entry.body->setLinearVelocity(entry.body->getLinearVelocity() + delta, true);
+    return true;
+}
+
+bool VansRagdollSystem::AddVelocityAtPosition(VansAnimationNode* animNode,
+    const std::string& boneName, const glm::vec3& worldVelocityDelta,
+    const glm::vec3& worldPosition, float maxAngularVelocityDelta)
+{
+	const PxVec3 delta = ToPxVec3(worldVelocityDelta), point = ToPxVec3(worldPosition);
+	if (!delta.isFinite() || !point.isFinite() || !std::isfinite(maxAngularVelocityDelta)
+		|| maxAngularVelocityDelta < 0.0f)
+		return false;
+	RagdollInstance* inst = FindInstance(animNode);
+	if (!inst || inst->driveMode == RagdollDriveMode::Animation)
+		return false;
+	const auto found = inst->boneNameToEntryIndex.find(boneName);
+	if (found == inst->boneNameToEntryIndex.end())
+		return false;
+	PxRigidDynamic* body = inst->boneEntries[found->second].body;
+	std::lock_guard<std::mutex> lock(VansPhysicsSystem::GetInstance().GetSimulationMutex());
+	if (!body || body->getRigidBodyFlags().isSet(PxRigidBodyFlag::eKINEMATIC))
+		return false;
+	// 按质量换算冲量，使轻手掌和重躯干获得相同的线速度增量。
+	PxVec3 linearDelta, angularDelta;
+	PxRigidBodyExt::computeVelocityDeltaFromImpulse(*body, body->getGlobalPose(), point,
+		delta * body->getMass(), 1.0f, 1.0f, linearDelta, angularDelta);
+	if (!linearDelta.isFinite() || !angularDelta.isFinite())
+		return false;
+	const float angularSpeed = angularDelta.magnitude();
+	if (!std::isfinite(angularSpeed))
+		return false;
+	if (angularSpeed > maxAngularVelocityDelta)
+		angularDelta *= maxAngularVelocityDelta / angularSpeed;
+	const PxVec3 linear = body->getLinearVelocity() + linearDelta;
+	const PxVec3 angular = body->getAngularVelocity() + angularDelta;
+	if (!linear.isFinite() || !angular.isFinite())
+		return false;
+	body->setLinearVelocity(linear, true);
+	body->setAngularVelocity(angular, true);
+	return true;
 }
 
 void VansRagdollSystem::PostAnimationUpdate(VansAnimationNode* animNode)
@@ -715,17 +840,12 @@ void VansRagdollSystem::WarmStartBodies(RagdollInstance& inst, const glm::vec3& 
 		SetActorRagdollContactsEnabled(entry.body, true);
 		entry.body->setRigidBodyFlag(PxRigidBodyFlag::eKINEMATIC, false);
 		entry.body->setLinearVelocity(ToPxVec3(initialVelocity), true);
-		PxVec3 angularVelocity(0.0f);
-		if (!hasInitialVelocity)
-		{
-			if (entry.boneName == "pelvis" || entry.boneName == "spine_01" || entry.boneName == "spine_02" || entry.boneName == "spine_03")
-				angularVelocity = PxVec3(0.0f, 0.0f, 1.4f);
-		}
+		PxVec3 angularVelocity = hasInitialVelocity ? PxVec3(0.0f) : ToPxVec3(entry.stationaryAngularVelocity);
 		entry.body->setAngularVelocity(angularVelocity, true);
 		entry.body->clearForce(PxForceMode::eFORCE);
 		entry.body->clearTorque(PxForceMode::eFORCE);
-		if (!hasInitialVelocity && entry.boneName == "spine_03")
-			entry.body->addForce(PxVec3(0.0f, 0.0f, -18.0f), PxForceMode::eIMPULSE, true);
+		if (!hasInitialVelocity)
+			entry.body->addForce(ToPxVec3(entry.stationaryImpulse), PxForceMode::eIMPULSE, true);
 		entry.body->wakeUp();
 	}
 }

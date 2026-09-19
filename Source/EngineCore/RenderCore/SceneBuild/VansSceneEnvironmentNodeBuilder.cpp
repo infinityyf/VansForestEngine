@@ -155,6 +155,12 @@ void VansSceneEnvironmentNodeBuilder::AddWaterNode(
     if (spectrum.repeatPeriod) config.m_Spectrum.m_RepeatPeriod = *spectrum.repeatPeriod;
     if (spectrum.randomSeed) config.m_Spectrum.m_RandomSeed = *spectrum.randomSeed;
 
+    if(waterData.river.maxHeight)config.m_River.m_MaxHeight=*waterData.river.maxHeight;
+    if(waterData.river.wavelength)config.m_River.m_Wavelength=*waterData.river.wavelength;
+    if(waterData.river.lifetime)config.m_River.m_Lifetime=*waterData.river.lifetime;
+    if(waterData.river.flowGridSize)config.m_River.m_FlowGridSize=*waterData.river.flowGridSize;
+    if(waterData.river.fineDetailStrength)config.m_River.m_FineDetailStrength=*waterData.river.fineDetailStrength;
+
     const Vans::VansSceneWaterWaveParticleConfig& waveParticle = waterData.waveParticle;
     if (waveParticle.particlesPerCascade) config.m_WaveParticle.m_ParticlesPerCascade = *waveParticle.particlesPerCascade;
     if (waveParticle.rmsAmplitude) config.m_WaveParticle.m_RmsAmplitude = *waveParticle.rmsAmplitude;

@@ -53,31 +53,21 @@ VansActionCommandResult VansAudioActionService::Execute(const VansActionCommand&
 		const float pitch = Number(command.payload, "pitch", 1.0f);
 		if (is("Audio.OneShot"))
 		{
-			VansEngine::VansAudioOneShotRequest request;
-			request.sourceName = sound;
-			request.volume = asset->GetVolume() * volume;
-			request.pitch = asset->GetPitch() * pitch;
-			request.spatial = ReadSerializedBoolField(command.payload, "spatial", true);
-			request.bus = asset->GetBusName();
-			request.referenceDistance = asset->GetRefDist();
-			request.maxDistance = asset->GetMaxDist();
-			request.rolloff = asset->GetRolloff();
-			request.reverbSend = asset->GetReverbSend();
-			if (request.spatial)
+			const bool spatial = ReadSerializedBoolField(command.payload, "spatial", true);
+			glm::vec3 position(0.0f);
+			if (spatial)
 			{
 				const auto emitterGuid = ReadSerializedStringField(command.payload, "emitter");
 				const auto emitter = emitterGuid.empty() ? command.context.Entity(VansActionContextSlots::Owner)
 					: m_World.Entities().FindByGuid(emitterGuid);
-				glm::vec3 position(0.0f);
 				if (!m_World.IsAlive(emitter) || !m_ResolvePosition || !m_ResolvePosition(emitter, position)
 					|| !std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z))
 					return Failure("Audio emitter has no valid world position");
-				request.positionX = position.x;
-				request.positionY = position.y;
-				request.positionZ = position.z;
 			}
 			// 射击已经发生后，尾音由音频管理器持有，不随动作结束或取消截断。
-			if (!m_Audio.PlayOneShot(request).IsValid()) return Failure("Audio one-shot could not start: " + sound);
+			if (!m_Audio.PlayAssetOneShot(sound, volume, pitch, spatial,
+				position.x, position.y, position.z).IsValid())
+				return Failure("Audio one-shot could not start: " + sound);
 			return {};
 		}
 		auto source = std::make_unique<VansEngine::VansAudioSourceBinding>();

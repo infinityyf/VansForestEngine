@@ -34,6 +34,10 @@ bool VansPlantTypeAssetCodec::Decode(const Value& root, VansPlantTypeAsset& asse
 	render.Float("cullDistance", decoded.render.cullDistance);
 	render.Float("hizBias", decoded.render.hizBias);
 	render.Bool("castShadows", decoded.render.castShadows);
+    if (decoded.category == VansPlantCategory::Tree) {
+        render.Vector("lodDistances",decoded.render.lodDistances);
+        render.Float("lodHysteresis",decoded.render.lodHysteresis);
+    }
 	render.Finish();
 	if (decoded.category == VansPlantCategory::Grass)
 	{
@@ -76,6 +80,30 @@ bool VansPlantTypeAssetCodec::Decode(const Value& root, VansPlantTypeAsset& asse
 			partReader.Finish();
 			variant.parts.push_back(std::move(part));
 		}
+
+        if (decoded.category == VansPlantCategory::Tree) {
+            auto lod=item.Object("lod");
+            lod.Vector("ratios",variant.lodSettings.ratios);
+            lod.Float("maximumError",variant.lodSettings.maximumError);
+            lod.String("buildKey",variant.lod.buildKey);
+            lod.Vector("centerRadius",variant.lod.centerRadius);
+            const auto* levels=lod.Array("levels");
+            if (levels) for (const auto& value:*levels) {
+                VansModelLodLevel level;
+                PcgValue::Reader levelReader(&value,path+".lod.levels",error);
+                const auto* values=levelReader.Array("parts");
+                if (values) for (const auto& valuePart:*values) {
+                    VansModelLodPart part;
+                    PcgValue::Reader p(&valuePart,path+".lod.levels.parts",error);
+                    p.Reference("model","model",part.model);p.Reference("material","material",part.material);
+                    p.IntegerField("submesh",part.submesh);p.IntegerField("sourcePart",part.sourcePart);
+                    p.IntegerField("triangles",part.triangleCount);p.Float("error",part.error);p.Finish();
+                    level.parts.push_back(part);
+                }
+                levelReader.Finish();variant.lod.levels.push_back(std::move(level));
+            }
+            lod.Finish();
+        }
 		item.Finish();
 		decoded.variants.push_back(std::move(variant));
 	}
@@ -111,6 +139,22 @@ bool VansPlantTypeAssetCodec::Encode(const VansPlantTypeAsset& asset, Value& roo
 			{ "offset", PcgValue::Vector(variant.offset) }, { "rotation", PcgValue::Vector(variant.rotation) },
 			{ "scale", PcgValue::Vector(variant.scale) }, { "parts", Value::Array(std::move(parts)) }
 		}));
+        if (asset.category == VansPlantCategory::Tree) {
+            std::vector<Value> levels;
+            for (const auto& level:variant.lod.levels) {
+                std::vector<Value> entries;
+                for (const auto& part:level.parts) entries.push_back(Value::Object({
+                    {"model",PcgValue::Reference(part.model,"model")},{"material",PcgValue::Reference(part.material,"material")},
+                    {"submesh",Value::Int(part.submesh)},{"sourcePart",Value::Int(part.sourcePart)},
+                    {"triangles",Value::Int(part.triangleCount)},{"error",Value::Float(part.error)}}));
+                levels.push_back(Value::Object({{"parts",Value::Array(std::move(entries))}}));
+            }
+            variants.back().objectFields.emplace_back("lod",Value::Object({
+                {"ratios",PcgValue::Vector(variant.lodSettings.ratios)},{"maximumError",Value::Float(variant.lodSettings.maximumError)},
+                {"buildKey",Value::String(variant.lod.buildKey)},{"centerRadius",PcgValue::Vector(variant.lod.centerRadius)},
+                {"levels",Value::Array(std::move(levels))}}));
+        }
+
 	}
 	Fields fields{
 		{ "name", Value::String(asset.name) }, { "category", Value::String(asset.category == VansPlantCategory::Grass ? "grass" : "tree") },
@@ -121,6 +165,11 @@ bool VansPlantTypeAssetCodec::Encode(const VansPlantTypeAsset& asset, Value& roo
 			{ "castShadows", Value::Bool(asset.render.castShadows) }
 		}) }
 	};
+    if (asset.category == VansPlantCategory::Tree) {
+        auto& render=fields.back().second.objectFields;
+        render.emplace_back("lodDistances",PcgValue::Vector(asset.render.lodDistances));
+        render.emplace_back("lodHysteresis",Value::Float(asset.render.lodHysteresis));
+    }
 	if (asset.category == VansPlantCategory::Grass)
 	{
 		Fields grass{

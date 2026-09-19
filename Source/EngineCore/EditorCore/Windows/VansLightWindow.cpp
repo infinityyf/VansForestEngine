@@ -290,6 +290,29 @@ namespace
 	}
 }
 
+namespace
+{
+bool DrawLightCookie(Vans::EditorAPI::LightCookieSettings& c)
+{
+    bool changed = false;
+    if (!ImGui::TreeNode("Cookie")) return false;
+    changed |= ImGui::Checkbox("Enabled", &c.enabled);
+    ImGui::TextDisabled("Select the cookie texture in the light component Inspector.");
+    changed |= ImGui::SliderFloat("Strength", &c.strength, 0.0f, 1.0f);
+    changed |= ImGui::DragFloat("Width", &c.sizeX, 0.1f, 0.001f, 10000.0f);
+    changed |= ImGui::DragFloat("Height", &c.sizeY, 0.1f, 0.001f, 10000.0f);
+    changed |= ImGui::DragFloat("Scale X", &c.scaleX, 0.01f);
+    changed |= ImGui::DragFloat("Scale Y", &c.scaleY, 0.01f);
+    changed |= ImGui::DragFloat("Offset X", &c.offsetX, 0.01f);
+    changed |= ImGui::DragFloat("Offset Y", &c.offsetY, 0.01f);
+    changed |= ImGui::DragFloat("Rotation", &c.rotationDegrees, 1.0f);
+    changed |= ImGui::Checkbox("Repeat", &c.repeat);
+    changed |= ImGui::Checkbox("Use Alpha", &c.useAlpha);
+    ImGui::TreePop();
+    return changed;
+}
+}
+
 void VansGraphics::VansLightWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 {
     if (!VansEditorWindow::m_LightWindowOpen)
@@ -350,6 +373,7 @@ bool VansGraphics::VansLightWindow::DrawDirectionalLights(std::vector<Vans::Edit
         {
             changed |= EditDirection3("Direction", directionLights[lightIndex].direction);
             changed |= EditColor3("Color", directionLights[lightIndex].color);
+            changed |= DrawLightCookie(directionLights[lightIndex].cookie);
             changed |= DragFloatTracked("Intensity", &directionLights[lightIndex].intensity, 0.1f, 0.0f, 1000.0f, "%.2f");
             ImGui::TreePop();
         }
@@ -375,6 +399,7 @@ bool VansGraphics::VansLightWindow::DrawPointLights(std::vector<Vans::EditorAPI:
         {
             changed |= EditFloat3("Position", pointLights[lightIndex].position, 0.05f, -10000.0f, 10000.0f, "%.3f");
             changed |= EditColor3("Color", pointLights[lightIndex].color);
+            changed |= DrawLightCookie(pointLights[lightIndex].cookie);
             changed |= DragFloatTracked("Intensity", &pointLights[lightIndex].intensity, 0.1f, 0.0f, 1000.0f, "%.2f");
             changed |= DragFloatTracked("Radius", &pointLights[lightIndex].radius, 0.1f, 0.01f, 10000.0f, "%.2f");
             pointLights[lightIndex].radius = std::max(pointLights[lightIndex].radius, 0.01f);
@@ -404,6 +429,7 @@ bool VansGraphics::VansLightWindow::DrawSpotLights(std::vector<Vans::EditorAPI::
             changed |= EditFloat3("Position", spotLights[lightIndex].position, 0.05f, -10000.0f, 10000.0f, "%.3f");
             changed |= EditDirection3("Direction", spotLights[lightIndex].direction);
             changed |= EditColor3("Color", spotLights[lightIndex].color);
+            changed |= DrawLightCookie(spotLights[lightIndex].cookie);
             changed |= DragFloatTracked("Intensity", &spotLights[lightIndex].intensity, 0.1f, 0.0f, 1000.0f, "%.2f");
             changed |= DragFloatTracked("Radius", &spotLights[lightIndex].radius, 0.1f, 0.01f, 10000.0f, "%.2f");
 
@@ -447,6 +473,7 @@ bool VansGraphics::VansLightWindow::DrawRectLights(std::vector<Vans::EditorAPI::
             changed |= EditFloat3("Position", light.position, 0.05f, -10000.0f, 10000.0f, "%.3f");
             changed |= EditDirection3("Normal", light.normal);
             changed |= EditColor3("Color", light.color);
+            changed |= DrawLightCookie(light.cookie);
             changed |= DragFloatTracked("Intensity", &light.intensity, 0.1f, 0.0f, 1000.0f, "%.2f");
             changed |= DragFloatTracked("Width", &light.width, 0.02f, 0.01f, 10000.0f, "%.2f");
             changed |= DragFloatTracked("Height", &light.height, 0.02f, 0.01f, 10000.0f, "%.2f");

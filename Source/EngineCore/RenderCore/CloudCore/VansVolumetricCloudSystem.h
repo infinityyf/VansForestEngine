@@ -40,8 +40,8 @@ namespace VansGraphics
 		bool LoadNoiseResources();
 		bool CreateDescriptors();
 		void UploadParameters();
-		void TransitionForWrite(VansVKCommandBuffer&, VansVKImage&, bool);
-		void BarrierForSampling(VansVKCommandBuffer&, VansVKImage&);
+		void TransitionForWrite(VansVKCommandBuffer&, VansVKImage&, bool, VkPipelineStageFlags readers);
+		void BarrierForSampling(VansVKCommandBuffer&, VansVKImage&, VkPipelineStageFlags readers);
 		void DestroyDescriptors();
 		void DestroyViewResources();
 		void DestroyPersistentResources();
@@ -63,6 +63,7 @@ namespace VansGraphics
 		VansTexture* m_DetailNoise = nullptr;
 		VkDescriptorSetLayout m_PassLayout = VK_NULL_HANDLE;
 		VkDescriptorSet m_PassSet = VK_NULL_HANDLE;
+		VkDescriptorSet m_ShadowPassSet = VK_NULL_HANDLE;
 		VansComputeShader* m_RayMarchShader = nullptr;
 		VansComputeShader* m_ShadowShader = nullptr;
 		bool m_ResultInitialized = false;

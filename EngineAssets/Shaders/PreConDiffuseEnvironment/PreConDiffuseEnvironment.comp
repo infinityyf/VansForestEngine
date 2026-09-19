@@ -3,6 +3,7 @@
 
 #include "../Common/Common.glsl"
 #include "../Common/CubemapDirection.glsl"
+#include "../Common/EnvironmentFilter.glsl"
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 layout(set = 0, binding = 0) uniform samplerCube inputCubemap;
@@ -37,6 +38,8 @@ vec3 EvaluateDiffuseIrradiance(vec3 normal)
     vec3 tangent = normalize(cross(up, normal));
     vec3 bitangent = cross(normal, tangent);
     uint sampleCount = max(filterInfo.z, 1u);
+    float faceResolution = float(textureSize(inputCubemap, 0).x);
+    float maxLod = float(textureQueryLevels(inputCubemap) - 1);
     vec3 sum = vec3(0.0);
     for (uint sampleIndex = 0u; sampleIndex < sampleCount; ++sampleIndex)
     {
@@ -44,7 +47,9 @@ vec3 EvaluateDiffuseIrradiance(vec3 normal)
             EnvironmentHammersley(sampleIndex, sampleCount));
         vec3 sampleDirection = normalize(
             tangent * local.x + bitangent * local.y + normal * local.z);
-        sum += textureLod(inputCubemap, sampleDirection, 0.0).rgb;
+        float lod = EnvironmentSampleLod(sampleDirection, local.z / PI,
+            sampleCount, faceResolution, maxLod);
+        sum += textureLod(inputCubemap, sampleDirection, lod).rgb;
     }
     return PI * sum / float(sampleCount);
 }
@@ -57,7 +62,10 @@ void UpdateSHCoefficients()
     for (int sampleIndex = 0; sampleIndex < SH_SAMPLE_COUNT; ++sampleIndex)
     {
         vec3 direction = SampleSphere(sampleIndex, SH_SAMPLE_COUNT);
-        vec3 color = textureLod(inputCubemap, direction, 0.0).rgb;
+        float lod = EnvironmentSampleLod(direction, 1.0 / FOUR_PI,
+            uint(SH_SAMPLE_COUNT), float(textureSize(inputCubemap, 0).x),
+            float(textureQueryLevels(inputCubemap) - 1));
+        vec3 color = textureLod(inputCubemap, direction, lod).rgb;
         for (int basisIndex = 0; basisIndex < 9; ++basisIndex)
         {
             float weightedBasis = SHBasis(basisIndex, direction) * weight;

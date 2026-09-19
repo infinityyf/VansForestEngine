@@ -276,6 +276,8 @@ public:
 	bool Cancel(VansActionHandle action, VansActionCancelReason reason, std::string& error);
 	bool Interrupt(VansActionHandle action, std::string& error);
 	bool EnqueueEvent(VansActionHandle action, VansActionEvent event, std::string& error);
+	// Host 级消息不依附某个运行中的动作，延迟到 GameLogic 分发。
+	void PublishGameplayEvent(VansActionEvent event);
 	VansTargetDataHandle StoreTargetData(VansTargetData data) { return m_TargetData.Store(std::move(data)); }
 	const VansTargetData* ResolveTargetData(VansTargetDataHandle handle) const
 		{ return m_TargetData.Resolve(handle); }
@@ -453,6 +455,7 @@ private:
 	bool m_ProcessingTransitions = false;
 	double m_ElapsedSeconds = 0.0;
 	std::uint64_t m_NextTransitionSequence = 1;
+	std::uint64_t m_NextHostEventSequence = 1;
 	std::uint32_t m_NextCueSequence = 1;
 };
 }

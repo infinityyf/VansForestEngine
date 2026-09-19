@@ -20,6 +20,7 @@ namespace Vans
 	class VansSceneRuntimeProjection
 	{
 	public:
+        static bool ValidateEntityComponentTypes(const VansSerializedValue& entities, std::string& error);
 		static VansSerializedValue BuildSkinProfileMaterialParameters(const VansSkinProfile& profile);
 
 		// 使用与完整场景投影相同的当前 schema 读取器，为编辑器实时预览生成运行时配置。

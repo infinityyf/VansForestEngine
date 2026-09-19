@@ -2,6 +2,7 @@
 #include "VansInputEvents.h"
 #include "VansLog.h"
 #include "../EventCore/VansEventBus.h"
+#include "../RuntimeCore/VansThreadContract.h"
 #include "GLFW/glfw3.h"
 
 #include <iostream>
@@ -25,6 +26,8 @@ namespace Vans
     // -------------------------------------------------------------------------
     void VansInputManager::Initialize(GLFWwindow* window)
     {
+        VANS_ASSERT_MAIN_THREAD();
+        if (!window) return;
         if (m_Initialized)
         {
             VANS_LOG_WARN("[VansInputManager] Already initialized.");
@@ -35,20 +38,25 @@ namespace Vans
         m_Initialized = true;
         m_FirstMouseUpdate = true;
 
+        m_WindowFocused = glfwGetWindowAttrib(window, GLFW_FOCUSED) == GLFW_TRUE;
+
         // Install GLFW callbacks
         glfwSetKeyCallback(window, GLFWKeyCallback);
         glfwSetCursorPosCallback(window, GLFWMousePosCallback);
         glfwSetMouseButtonCallback(window, GLFWMouseButtonCallback);
         glfwSetScrollCallback(window, GLFWScrollCallback);
+        glfwSetWindowFocusCallback(window, GLFWWindowFocusCallback);
+        ApplyCursorMode();
 
         VANS_LOG("[VansInputManager] Initialized.");
     }
 
     void VansInputManager::Shutdown()
     {
+        VANS_ASSERT_MAIN_THREAD();
         if (!m_Initialized) return;
 
-        SetCursorCaptureEnabled(false);
+        SetCursorMode(VansCursorMode::Visible);
 
         // Remove callbacks
         if (m_Window)
@@ -57,6 +65,7 @@ namespace Vans
             glfwSetCursorPosCallback(m_Window, nullptr);
             glfwSetMouseButtonCallback(m_Window, nullptr);
             glfwSetScrollCallback(m_Window, nullptr);
+            glfwSetWindowFocusCallback(m_Window, nullptr);
         }
 
         m_KeyStates.clear();
@@ -65,56 +74,75 @@ namespace Vans
         m_AxisBindings.clear();
         m_Window = nullptr;
         m_Initialized = false;
-        m_CursorCaptureAllowed = false;
-        m_CursorCaptureRequested = false;
-        m_CursorCaptureEnabled = false;
+        m_CursorContext = VansCursorContext::Inactive;
+        m_RequestedCursorMode = VansCursorMode::Visible;
+        m_EffectiveCursorMode = VansCursorMode::Visible;
+        m_WindowFocused = false;
 
         VANS_LOG("[VansInputManager] Shutdown.");
     }
 
-    void VansInputManager::SetCursorCaptureAllowed(bool allowed)
+    void VansInputManager::SetCursorContext(VansCursorContext context)
     {
-        m_CursorCaptureAllowed = allowed;
-        SetCursorCaptureEnabled(m_CursorCaptureRequested);
+        VANS_ASSERT_MAIN_THREAD();
+        m_CursorContext = context;
+        ApplyCursorMode();
     }
 
-    void VansInputManager::SetCursorCaptureEnabled(bool enabled)
+    void VansInputManager::SetCursorMode(VansCursorMode mode)
     {
-        m_CursorCaptureRequested = enabled;
+        VANS_ASSERT_MAIN_THREAD();
+        m_RequestedCursorMode = mode;
+        ApplyCursorMode();
+    }
 
+    void VansInputManager::ApplyCursorMode()
+    {
         if (!m_Initialized || !m_Window)
         {
-            m_CursorCaptureEnabled = false;
+            m_EffectiveCursorMode = VansCursorMode::Visible;
             return;
         }
+        const auto effective = ResolveCursorMode(m_RequestedCursorMode, m_CursorContext, m_WindowFocused);
+        if (m_EffectiveCursorMode == effective) return;
+        const bool captureChanged = (m_EffectiveCursorMode == VansCursorMode::Captured) !=
+            (effective == VansCursorMode::Captured);
+        const int nativeMode = effective == VansCursorMode::Captured ? GLFW_CURSOR_DISABLED :
+            effective == VansCursorMode::Hidden ? GLFW_CURSOR_HIDDEN : GLFW_CURSOR_NORMAL;
+        // 先关闭原始输入，再退出捕获；仅显隐切换不改变输入采样。
+        if (captureChanged && effective != VansCursorMode::Captured && glfwRawMouseMotionSupported())
+            glfwSetInputMode(m_Window, GLFW_RAW_MOUSE_MOTION, GLFW_FALSE);
+        glfwSetInputMode(m_Window, GLFW_CURSOR, nativeMode);
+        m_EffectiveCursorMode = effective;
+        if (captureChanged && effective == VansCursorMode::Captured && glfwRawMouseMotionSupported())
+            glfwSetInputMode(m_Window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        if (captureChanged) ResetMouseDelta();
+    }
 
-        const bool effectiveEnabled = enabled && m_CursorCaptureAllowed;
-        if (m_CursorCaptureEnabled == effectiveEnabled)
-            return;
-
-        m_CursorCaptureEnabled = effectiveEnabled;
-        glfwSetInputMode(
-            m_Window,
-            GLFW_CURSOR,
-            effectiveEnabled ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
-
-        if (glfwRawMouseMotionSupported())
-        {
-            glfwSetInputMode(
-                m_Window,
-                GLFW_RAW_MOUSE_MOTION,
-                effectiveEnabled ? GLFW_TRUE : GLFW_FALSE);
-        }
-
+    void VansInputManager::ResetMouseDelta()
+    {
+        if (!m_Window) return;
         glfwGetCursorPos(m_Window, &m_MouseX, &m_MouseY);
         m_LastMouseX = m_MouseX;
         m_LastMouseY = m_MouseY;
         m_MouseDeltaX = 0.0;
         m_MouseDeltaY = 0.0;
         m_FirstMouseUpdate = true;
+    }
 
-        VANS_LOG("[VansInputManager] Cursor capture "
-            << (effectiveEnabled ? "enabled" : "disabled"));
+    void VansInputManager::UpdateWindowFocus(bool focused)
+    {
+        if (m_WindowFocused == focused) return;
+        m_WindowFocused = focused;
+        ApplyCursorMode();
+        ResetMouseDelta();
+    }
+
+    void VansInputManager::GLFWWindowFocusCallback(GLFWwindow* window, int focused)
+    {
+        auto& self = Get();
+        if (self.m_Initialized && self.m_Window == window)
+            self.UpdateWindowFocus(focused == GLFW_TRUE);
     }
 
     // -------------------------------------------------------------------------
@@ -151,6 +179,8 @@ namespace Vans
     {
         if (!m_Initialized || !m_Window)
             return;
+
+        UpdateWindowFocus(glfwGetWindowAttrib(m_Window, GLFW_FOCUSED) == GLFW_TRUE);
 
         // GLFW callbacks are still the event source for listeners, but polling keeps
         // gameplay input robust if a held key starts before a callback is observed.

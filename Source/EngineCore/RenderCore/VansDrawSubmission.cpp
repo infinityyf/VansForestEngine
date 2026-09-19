@@ -134,7 +134,8 @@ bool VansGraphics::VansDrawSubmission::BuildPacket(
 	VansDrawPacket& packet)
 {
 	VANS_ASSERT_FRAME_PHASE(VansFramePhase::GPURecord);
-	if (node.m_Mesh == nullptr || node.m_Material == nullptr || node.m_TransfromIndex < 0)
+	VansMesh* drawMesh = node.GetDrawMesh();
+	if (drawMesh == nullptr || node.m_Material == nullptr || node.m_TransfromIndex < 0)
 		return false;
 	if (shader.GetPushConstantSize() != 0)
 	{
@@ -151,8 +152,8 @@ bool VansGraphics::VansDrawSubmission::BuildPacket(
 			return false;
 	}
 
-	globalState.vertexInputAttributeDescriptions = &node.m_Mesh->m_VertexInputAttributeDescriptions;
-	globalState.vertexInputBindingDescriptions = &node.m_Mesh->m_VertexInputBindingDescriptions;
+	globalState.vertexInputAttributeDescriptions = &drawMesh->m_VertexInputAttributeDescriptions;
+	globalState.vertexInputBindingDescriptions = &drawMesh->m_VertexInputBindingDescriptions;
 	VansVKGraphicsPipeline* pipeline = shader.GetGraphicsPipeline(device, globalState, descriptorSetLayouts);
 	if (pipeline == nullptr || pipeline->GetNativePipeline() == VK_NULL_HANDLE ||
 		pipeline->GetNativePipelineLayout() == VK_NULL_HANDLE)
@@ -166,8 +167,8 @@ bool VansGraphics::VansDrawSubmission::BuildPacket(
 		return false;
 	}
 
-	const VertexBufferParameters vertex = node.m_Mesh->GetVertexBufferParameter();
-	const IndexBufferParameters index = node.m_Mesh->GetIndexBufferParameter();
+	const VertexBufferParameters vertex = drawMesh->GetVertexBufferParameter();
+	const IndexBufferParameters index = drawMesh->GetIndexBufferParameter();
 
 	packet = {};
 	packet.pipeline = pipeline->GetNativePipeline();
@@ -178,7 +179,7 @@ bool VansGraphics::VansDrawSubmission::BuildPacket(
 	packet.geometry.indexBuffer = index.Buffer;
 	packet.geometry.indexOffset = index.MemoryOffset;
 	packet.geometry.indexType = index.IndexType;
-	packet.geometry.indexCount = node.m_Mesh->GetIndexCount();
+	packet.geometry.indexCount = drawMesh->GetIndexCount();
 	packet.instanceData.transformIndex = node.m_TransfromIndex;
 	packet.instanceData.materialIndex = materialIndex;
 	packet.instanceData.vertexFeatureMask = node.BuildVertexFeatureMask();

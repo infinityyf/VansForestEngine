@@ -38,11 +38,17 @@ namespace VansEngine
 		float GetBlendWeight(VansGraphics::VansAnimationNode* animNode) const;
 		int GetBodyCount(VansGraphics::VansAnimationNode* animNode) const;
 		int GetJointCount(VansGraphics::VansAnimationNode* animNode) const;
+		RagdollDiagnostics GetDiagnostics(VansGraphics::VansAnimationNode* animNode) const;
 		std::vector<std::string> GetBodyBoneNames(VansGraphics::VansAnimationNode* animNode) const;
 
 		void ApplyImpulse(VansGraphics::VansAnimationNode* animNode,
 		                  const std::string& boneName,
 		                  const glm::vec3& worldImpulse);
+		// 在世界命中点给指定刚体叠加速度；角速度增量单独限幅，单位 rad/s。
+		bool AddLinearVelocity(VansGraphics::VansAnimationNode* animNode, const glm::vec3& delta);
+		bool AddVelocityAtPosition(VansGraphics::VansAnimationNode* animNode,
+		                          const std::string& boneName, const glm::vec3& worldVelocityDelta,
+		                          const glm::vec3& worldPosition, float maxAngularVelocityDelta);
 
 		void PostAnimationUpdate(VansGraphics::VansAnimationNode* animNode);
 

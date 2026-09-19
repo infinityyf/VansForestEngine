@@ -1,4 +1,5 @@
 #include "VansAssetDocumentTypeRegistry.h"
+#include "../SceneCore/Prefab/VansPrefabAsset.h"
 
 #include "VansEditorPropertyDescriptorRegistry.h"
 
@@ -82,6 +83,14 @@ VansAssetDocumentTypeRegistry::VansAssetDocumentTypeRegistry()
 	};
 	std::string ignored;
 	Register(VansAssetType::Timeline, std::move(timeline), ignored);
+    VansAssetDocumentTypeDescriptor prefab;
+    prefab.validateBeforeSave = [](const std::filesystem::path&, const VansSerializedValue& root)
+    {
+        VansPrefabAsset asset; std::string error;
+        if (VansPrefabCodec::Decode(root, asset, error)) return std::vector<VansAssetDocumentDiagnostic>{};
+        return ToDocumentErrors({error});
+    };
+    Register(VansAssetType::Prefab, std::move(prefab), ignored);
 
 	VansAssetDocumentTypeDescriptor animationRig;
 	animationRig.validateBeforeSave = [](
@@ -490,6 +499,7 @@ VansAssetDocumentTypeRegistry::VansAssetDocumentTypeRegistry()
 		VansAssetType::ActionGraph,
 		VansAssetType::CameraRigProfile,
 		VansAssetType::CameraShakeProfile,
+		VansAssetType::DamageProfile,
 		VansAssetType::GAFEditorLayout
 	};
 	for (const VansAssetType assetType : gameplayAssetTypes)

@@ -113,6 +113,35 @@ VansAudioNode* VansAudioManager::Get(const std::string& assetGuid) const
     return (it != m_Nodes.end()) ? it->second.get() : nullptr;
 }
 
+VansAudioOneShotHandle VansAudioManager::PlayAssetOneShot(
+    const std::string& sourceName,
+    float volumeScale,
+    float pitchScale,
+    bool spatial,
+    float positionX,
+    float positionY,
+    float positionZ)
+{
+    auto* asset = Get(sourceName);
+    if (!asset)
+        return {};
+
+    VansAudioOneShotRequest request;
+    request.sourceName = sourceName;
+    request.volume = asset->GetVolume() * volumeScale;
+    request.pitch = asset->GetPitch() * pitchScale;
+    request.spatial = spatial;
+    request.bus = asset->GetBusName();
+    request.referenceDistance = asset->GetRefDist();
+    request.maxDistance = asset->GetMaxDist();
+    request.rolloff = asset->GetRolloff();
+    request.reverbSend = asset->GetReverbSend();
+    request.positionX = positionX;
+    request.positionY = positionY;
+    request.positionZ = positionZ;
+    return PlayOneShot(request);
+}
+
 VansAudioOneShotHandle VansAudioManager::PlayOneShot(const VansAudioOneShotRequest& request)
 {
     if (request.sourceName.empty() || !Get(request.sourceName)) return {};

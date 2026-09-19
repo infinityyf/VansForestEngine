@@ -12,8 +12,8 @@ namespace
 {
 constexpr std::uint32_t AtlasColumns=16;
 constexpr VkFormat Formats[]={VK_FORMAT_R32G32_SFLOAT,VK_FORMAT_R16G16_SFLOAT,VK_FORMAT_R8G8B8A8_UNORM,
-    VK_FORMAT_R32G32B32A32_SFLOAT,VK_FORMAT_R16G16B16A16_SFLOAT,VK_FORMAT_R8_UNORM};
-constexpr std::size_t BytesPerPixel[]={8,4,4,16,8,1};
+    VK_FORMAT_R32G32B32A32_SFLOAT,VK_FORMAT_R8_UNORM,VK_FORMAT_R32_SFLOAT};
+constexpr std::size_t BytesPerPixel[]={8,4,4,16,1,4};
 std::uint32_t Bits(float value) {std::uint32_t bits;std::memcpy(&bits,&value,4);return bits;}
 template<class T> std::vector<std::uint8_t> Bytes(const std::vector<T>& values)
 {
@@ -79,11 +79,9 @@ bool VansPcgSplineFieldResources::Prepare(std::shared_ptr<const Vans::VansPcgSpl
     if (m_Set && field==m_Field) return true;
     // 页地址在一次驻留生命周期内稳定，删除后复用空闲页，避免长时间编辑单调增长。
     std::set<std::uint64_t> liveTiles;
-    std::set<std::pair<std::uint64_t,std::string>> liveDomains;
     if (field) for (const auto& [key,tile]:field->tiles)
     {
         liveTiles.insert(key);
-        for (const auto& domain:tile->domains) liveDomains.emplace(key,domain.splineId);
     }
     const auto assign=[](auto& pages,const auto& live) {
         for(auto it=pages.begin();it!=pages.end();)if(!live.count(it->first))it=pages.erase(it);else ++it;
@@ -91,15 +89,14 @@ bool VansPcgSplineFieldResources::Prepare(std::shared_ptr<const Vans::VansPcgSpl
         std::uint32_t next=0;
         for(const auto& key:live)if(!pages.count(key)){while(used.count(next))++next;pages[key]=next;used.insert(next);}
     };
-    assign(m_TilePages,liveTiles);assign(m_DomainPages,liveDomains);
-    std::uint32_t corePages=1,domainPages=1;
+    assign(m_TilePages,liveTiles);
+    std::uint32_t corePages=1;
     for(const auto& [key,page]:m_TilePages)corePages=std::max(corePages,page+1);
-    for(const auto& [key,page]:m_DomainPages)domainPages=std::max(domainPages,page+1);
     bool reallocated=false;
     for(std::size_t i=0;i<m_Images.size();++i)
     {
         const auto old=m_Capacities[i];
-        if(!ResizeAtlas(i,(i<3 || i==5)?corePages:domainPages,error))return false;
+        if(!ResizeAtlas(i,corePages,error))return false;
         reallocated=reallocated || old!=m_Capacities[i];
     }
     const std::uint32_t tiles=field?(field->resolution+Vans::VANS_SPLINE_TILE_SIZE-1)/Vans::VANS_SPLINE_TILE_SIZE:0;
@@ -110,9 +107,7 @@ bool VansPcgSplineFieldResources::Prepare(std::shared_ptr<const Vans::VansPcgSpl
     {
         const auto page=m_TilePages.at(key);
         const auto row=2+std::size_t(tile->z)*tiles+tile->x;
-        metadata[row]={page+1,static_cast<std::uint32_t>(metadata.size()),static_cast<std::uint32_t>(tile->domains.size()),0};
-        for(const auto& domain:tile->domains)
-            metadata.emplace_back(m_DomainPages.at({key,domain.splineId}),Bits(domain.cycleSeconds),domain.flowEnabled?1u:0u,0u);
+        metadata[row]={page+1,0,0,0};
         const auto old=m_Field?m_Field->tiles.find(key):field->tiles.end();
         if(!reallocated && m_Field && old!=m_Field->tiles.end() && old->second==tile)continue;
         m_Uploads.push_back({0,page,Bytes(tile->heights)});
@@ -124,15 +119,10 @@ bool VansPcgSplineFieldResources::Prepare(std::shared_ptr<const Vans::VansPcgSpl
         m_Uploads.push_back({2,page,Bytes(masks)});
         std::vector<std::uint8_t> exclusion;exclusion.reserve(tile->vegetationExclusion.size());
         for (float value:tile->vegetationExclusion) exclusion.push_back(static_cast<std::uint8_t>(std::lround(std::clamp(value,0.f,1.f)*255.f)));
-        m_Uploads.push_back({5,page,Bytes(exclusion)});
-        for(const auto& domain:tile->domains)
-        {
-            const auto dp=m_DomainPages.at({key,domain.splineId});
-            m_Uploads.push_back({3,dp,Bytes(domain.coordinates)});
-            std::vector<glm::u16vec4> jacobians;jacobians.reserve(domain.jacobians.size());
-            for(const auto v:domain.jacobians)jacobians.push_back({glm::packHalf1x16(v.x),glm::packHalf1x16(v.y),glm::packHalf1x16(v.z),glm::packHalf1x16(v.w)});
-            m_Uploads.push_back({4,dp,Bytes(jacobians)});
-        }
+        m_Uploads.push_back({4,page,Bytes(exclusion)});
+        m_Uploads.push_back({3,page,Bytes(tile->riverProperties)});
+        m_Uploads.push_back({5,page,Bytes(tile->waterBlend)});
+
     }
     UpdateDescriptors(metadata);m_Field=std::move(field);return true;
 }

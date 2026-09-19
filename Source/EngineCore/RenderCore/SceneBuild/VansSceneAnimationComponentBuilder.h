@@ -35,6 +35,7 @@ namespace VansGraphics
 			VansScene& scene,
 			const Vans::VansSceneAnimationComponentConfig& animationConfig,
 			const std::string& objectName,
+            const std::string& entityGuid,
 			const std::string& projectRoot);
 
 		static bool LoadRagdollComponent(

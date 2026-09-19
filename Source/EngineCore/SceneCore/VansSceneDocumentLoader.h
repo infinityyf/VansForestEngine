@@ -18,7 +18,7 @@ class VansSceneDocumentLoader
 {
 public:
     static bool IsSceneDocumentFile(const std::filesystem::path& path, std::string* error = nullptr);
-    static SceneDocumentLoadResult Load(const std::filesystem::path& path);
+    static SceneDocumentLoadResult Load(const std::filesystem::path& path, VansPrefabLookup prefabLookup = {});
     static SceneFileFingerprint Fingerprint(const std::filesystem::path& path, std::string* error = nullptr);
 };
 }

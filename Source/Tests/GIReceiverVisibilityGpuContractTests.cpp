@@ -465,6 +465,7 @@ void Fixture::TestZeroSupportFallback()
             Check(values[i*4+3].x==(i==4?0.0f:1.0f) && values[i*4+3].y==float(records[i].metadata.z) &&
                 values[i*4+3].z==float(records[i].metadata.w),"fallback mutated visibility context");
             if(i==5)Check(close(actual,glm::vec4(0)),"unpublished probes fabricated light/support");
+            Check(std::abs(values[i*4+3].w-(i==5?0.f:1.f))<1e-5f,"Published support confused occlusion or legal black with an unpublished probe");
         }
         if(variant==0)
         {
@@ -637,6 +638,10 @@ bool TestGIReceiverVisibilityGpuContract()
         gpu.Frame(20, true, false, false, false);
         Check(records[target].metadata.z == 255u && records[target].metadata.w == 0x55u,
             "candidate reorder must remap visibility by probe identity");
+        seedHistory();
+        for (uint32_t i=0;i<Fixture::Count;++i) historyRecords[i].anchor.z=glm::uintBitsToFloat(1u);
+        gpu.Frame(20, true, true, false, false);
+        Check(records[target].metadata.z==0u,"Old scrolling epoch reused visibility for another world position");
         seedHistory();
         historyRecords[target].metadata.z &= ~128u;
         historyRecords[target].metadata.w &= ~128u;

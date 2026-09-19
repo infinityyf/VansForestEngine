@@ -899,10 +899,12 @@ void VansSceneMaterialBuilder::PopulateMaterial(
         grass->m_AOTexture = ResolveMaterialTextureWithFallback(scene, sceneMaterial, "ao_texture", "defaultAo");
         grass->m_GrassParams.aoStrength = std::clamp(
             ReadMaterialFloatField(sceneMaterial, "aoStrength", grass->m_GrassParams.aoStrength), 0.0f, 1.0f);
-        grass->m_GrassParams.rootAOIntensity = std::clamp(
-            ReadMaterialFloatField(sceneMaterial, "rootAOIntensity", grass->m_GrassParams.rootAOIntensity), 0.0f, 0.85f);
-        grass->m_GrassParams.rootAOHeight = std::clamp(
-            ReadMaterialFloatField(sceneMaterial, "rootAOHeight", grass->m_GrassParams.rootAOHeight), 0.01f, 1.0f);
+        grass->m_GrassParams.normalStrength = std::clamp(
+            ReadMaterialFloatField(sceneMaterial, "normalStrength", grass->m_GrassParams.normalStrength), 0.0f, 2.0f);
+        grass->m_GrassParams.transmissionStrength = std::clamp(
+            ReadMaterialFloatField(sceneMaterial, "transmissionStrength", grass->m_GrassParams.transmissionStrength), 0.0f, 1.0f);
+        grass->m_GrassParams.indirectDiffuseStrength = std::clamp(
+            ReadMaterialFloatField(sceneMaterial, "indirectDiffuseStrength", grass->m_GrassParams.indirectDiffuseStrength), 0.0f, 2.0f);
         break;
     }
     case VansMaterialType::VAN_EMISSIVE:

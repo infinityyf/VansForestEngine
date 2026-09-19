@@ -15,6 +15,7 @@
 #include <nlohmann/json.hpp>
 #include <filesystem>
 #include <iostream>
+#include <fstream>
 bool RunPcgEditorConfigurationContractTests()
 {
     using namespace Vans;
@@ -58,6 +59,17 @@ bool RunPcgEditorConfigurationContractTests()
     VansSerializedValue plantRoot,recipeRoot;
     {
         VansScopedIOContext scope(VansIODomain::Authoring,"PcgConfiguration.Fixture",true);
+        const auto modelPath=directory/"Assets/Fixture.obj";
+        const std::string geometry="o bark\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\no leaves\nv 0 0 1\nv 1 0 1\nv 0 1 1\nf 4 5 6\n";
+        {std::ofstream output(modelPath);output<<geometry;}
+        VansAssetMeta modelMeta;modelMeta.guid=plant.variants[0].parts[0].mesh;modelMeta.importer="ModelImporter";
+        modelMeta.SetSerializedSettings(VansSerializedValue::Object({{"loadMultiMesh",VansSerializedValue::Bool(true)},{"scaleFactor",VansSerializedValue::Float(1)}}));
+        plant.variants[0].parts[1].mesh=modelMeta.guid;
+        if(!check(VansAssetMetaStorage::SaveAtomic(VansAssetMeta::MetaPathFor(modelPath),modelMeta,error),error))return false;
+        for(size_t i=0;i<2;++i){
+            const auto materialPath=directory/"Assets"/("Fixture"+std::to_string(i)+".mat");
+            if(!check(write(materialPath,plant.variants[0].parts[i].material,VansAssetType::Material,VansSerializedValue::Object({})),error))return false;
+        }
         if (!check(project.SaveToFile((directory/"ForestProject.json").string()) &&
             VansPlantTypeAssetCodec::Encode(plant,plantRoot,error) && VansVegetationConfigCodec::Encode(recipe,recipeRoot,error) &&
             write(plantPath,plantGuid,VansAssetType::PlantType,plantRoot) &&

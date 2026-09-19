@@ -58,7 +58,7 @@ void VansVegetationSystem::Init(VkDevice device, std::vector<GrassInstance> gras
 	std::vector<TreeInstanceGPU> trees, uint32_t boneCountPerInstance)
 {
 	if (!grass.empty() && (boneCountPerInstance < 2 || boneCountPerInstance > 64 ||
-		grass.size() > static_cast<size_t>(std::numeric_limits<int>::max()) / (sizeof(glm::mat4) * boneCountPerInstance) ||
+		grass.size() > static_cast<size_t>(std::numeric_limits<int>::max()) / (sizeof(glm::mat4) * boneCountPerInstance * 2u) ||
 		grass.size() > std::numeric_limits<uint32_t>::max() / m_SubBladeCount))
 		throw std::invalid_argument("Vegetation batch exceeds bone/upload/indirect capacity.");
 	m_Device = device;
@@ -293,22 +293,22 @@ void VansVegetationSystem::CreateBoneBuffer(VkDevice device)
 }
 
 // ============================================================================
-// CreateBoneMatrixBuffer  - uninitialized, written by compute
+// CreateBoneMatrixBuffer - current and previous-frame matrices, initialized to rest pose
 // ============================================================================
 void VansVegetationSystem::CreateBoneMatrixBuffer(VkDevice device)
 {
 	uint32_t totalMatrices = m_InstanceCount * m_BoneCountPerInstance;
-	VkDeviceSize bufferSize = sizeof(glm::mat4) * std::max(totalMatrices, 1u);
+	VkDeviceSize bufferSize = sizeof(glm::mat4) * std::max(totalMatrices * 2u, 2u);
 
 	// Pre-fill with identity matrices so that the first rendered frame (before the
 	// first compute dispatch) shows blades in rest-pose instead of at position (0,0,0).
-	std::vector<glm::mat4> identities(totalMatrices, glm::mat4(1.0f));
+	std::vector<glm::mat4> identities(totalMatrices * 2u, glm::mat4(1.0f));
 
 	m_BoneMatrixBuffer.CreatVulkanBuffer(device, bufferSize, VK_FORMAT_R32_SFLOAT,
 		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 	if (totalMatrices > 0)
-		m_BoneMatrixBuffer.SetBufferData(identities.data(), 0, static_cast<int>(sizeof(glm::mat4) * totalMatrices));
+		m_BoneMatrixBuffer.SetBufferData(identities.data(), 0, static_cast<int>(sizeof(glm::mat4) * totalMatrices * 2u));
 }
 
 // (CreateSkinnedBuffers and CreateIndirectDrawBuffer removed  - skinning
@@ -729,17 +729,19 @@ void VansVegetationSystem::DispatchTreeCullPass(
 
 	VkMemoryBarrier transferToCompute = {};
 	transferToCompute.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-	transferToCompute.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+	transferToCompute.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT;
 	transferToCompute.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
 	computeCmd.PipelineBarrier(
-		VK_PIPELINE_STAGE_TRANSFER_BIT,
+		VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 		{ transferToCompute });
 
 	TreeCullPushConstants pc = {};
-	pc.cullDistance = m_CullEnabled ? m_CullDistance : -1.0f;
+	pc.shadowDistance=m_CullDistance;
+    pc.cullingEnabled=m_CullEnabled?1u:0u;
+    pc.lodMidDistance=m_TreeLodMidDistance;pc.lodFarDistance=m_TreeLodFarDistance;pc.hysteresis=m_TreeLodHysteresis;
 	pc.instanceCount = static_cast<uint32_t>(m_TreeInstancesCPU.size());
-	pc.speciesCount = static_cast<uint32_t>(m_TreeSpeciesInfosCPU.size());
+	pc.lodCount = m_TreeLodCount;
 	pc.hizEnabled = (m_HiZEnabled && m_HiZView != VK_NULL_HANDLE) ? 1u : 0u;
 	pc.hizSampleBias = m_HiZSampleBias;
 	pc.hizMipCount = static_cast<int>(m_HiZMipCount);
@@ -751,7 +753,9 @@ void VansVegetationSystem::DispatchTreeCullPass(
 	VkMemoryBarrier computeToTransfer = {};
 	computeToTransfer.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
 	computeToTransfer.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-	computeToTransfer.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
+	// 异步队列的顶点读取由 VegetationReady 信号量同步，此处仅衔接计数器拷贝。
+	computeToTransfer.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT |
+		(sameQueueGraphicsConsumer ? VK_ACCESS_SHADER_READ_BIT : 0u);
 	computeCmd.PipelineBarrier(
 		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 		VK_PIPELINE_STAGE_TRANSFER_BIT |
@@ -900,17 +904,17 @@ void VansVegetationSystem::Draw(VansVKCommandBuffer& graphicsCmd,
 			GrassDrawPushConstants pc = {};
 			pc.materialIndex    = cfg.materialIndex;
 			pc.objectIndex      = pushConstantTransformIndex;
-			pc.vertexFeatureMask = 0u;
+			pc.vertexFeatureMask = cfg.mesh == m_TemplateMesh ? 1u : 0u;
 			pc.boneCount        = m_BoneCountPerInstance;
 			pc.subBladeCount    = m_SubBladeCount;
 			pc.grassHeight      = m_BladeHeight;
-			// P6a: 传 - terrain 参数 - VS 用于子叶片地形采 - 
-			// P1: 子叶片距 - LOD 阈 - 
 			pc.lodMidDist           = m_SubBladeLodMidDist;
 			pc.lodFarDist           = m_SubBladeLodFarDist;
 			pc.aoStrength           = grassMat ? grassMat->m_GrassParams.aoStrength : 1.0f;
-			pc.rootAOIntensity      = grassMat ? grassMat->m_GrassParams.rootAOIntensity : 0.35f;
-			pc.rootAOHeight         = grassMat ? grassMat->m_GrassParams.rootAOHeight : 0.35f;
+			pc.normalStrength = grassMat ? grassMat->m_GrassParams.normalStrength : 1.0f;
+			pc.transmissionStrength = grassMat ? grassMat->m_GrassParams.transmissionStrength : 0.5f;
+            pc.indirectDiffuseStrength = grassMat ? grassMat->m_GrassParams.indirectDiffuseStrength : 1.0f;
+			pc.instanceCount = m_InstanceCount;
 			graphicsCmd.UpdatePushConstants(*shader.GetGraphicsPipeline(),
 				VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 				0, shader.GetPushConstantSize(), &pc);
@@ -1054,7 +1058,7 @@ void VansVegetationSystem::DrawTreeCascadeShadow(VansVKCommandBuffer& graphicsCm
 		TreeShadowPushConstants pc = {};
 		pc.materialIndex = materialIndex;
 		pc.objectIndex = pushConstantTransformIndex;
-		pc.visibleOffset = cfg.visibleOffset + static_cast<uint32_t>(m_TreeInstancesCPU.size());
+		pc.visibleOffset = cfg.visibleOffset + static_cast<uint32_t>(m_TreeInstancesCPU.size()) * m_TreeLodCount;
 		pc.cascadeIndex = globalState.cascadeIndex;
 		pc.alphaTestEnabled = cfg.partType == TreePartType::Leaves ? 1u : 0u;
 		graphicsCmd.UpdatePushConstants(*m_TreeShadowShader->GetGraphicsPipeline(),
@@ -1169,25 +1173,29 @@ void VansVegetationSystem::BuildTreeResources()
 {
 	const uint32_t count = static_cast<uint32_t>(m_TreeInstancesCPU.size());
 	if (count == 0 || m_TreeParts.empty()) return;
-	m_TreeSpeciesInfosCPU = { TreeSpeciesCullInfo{0, count, {0, 0}} };
+	m_TreeLodCount=1;
+    for(const auto& part:m_TreeParts)m_TreeLodCount=std::max(m_TreeLodCount,part.lod+1);
+    if(m_TreeLodCount>3 || uint64_t(count)*m_TreeLodCount*2>std::numeric_limits<uint32_t>::max())
+        throw std::invalid_argument("Tree LOD instance capacity exceeded.");
+    m_TreeSpeciesInfosCPU.clear();
+    for(uint32_t lod=0;lod<m_TreeLodCount;++lod)m_TreeSpeciesInfosCPU.push_back(TreeSpeciesCullInfo{lod*count,count,{0,0}});
 	const auto upload = [&](VansVKBuffer& buffer, const void* data, size_t bytes, VkBufferUsageFlags usage) {
 		if (bytes > static_cast<size_t>(std::numeric_limits<int>::max()))
 			throw std::invalid_argument("Tree batch exceeds the upload capacity.");
-		buffer.CreatVulkanBuffer(m_Device, bytes, VK_FORMAT_R32_UINT, usage,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-		buffer.SetBufferData(data, 0, static_cast<int>(bytes));
+        if(!buffer.CreatVulkanBuffer(m_Device, bytes, VK_FORMAT_R32_UINT, usage,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) ||
+            !buffer.SetBufferData(data, 0, bytes))
+            throw std::runtime_error("Tree batch GPU upload failed.");
 	};
 	upload(m_TreeInstanceBuffer, m_TreeInstancesCPU.data(), count * sizeof(TreeInstanceGPU),
 		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-	const uint32_t visibleCount = m_CullEnabled ? 0u : count;
-	const uint32_t visibleCounts[2] = { visibleCount, visibleCount };
-	upload(m_TreeVisibleCountsBuffer, visibleCounts, sizeof(visibleCounts),
-		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
-	std::vector<uint32_t> indices(static_cast<size_t>(count) * 2);
-	std::iota(indices.begin(), indices.begin() + count, 0u);
-	std::iota(indices.begin() + count, indices.end(), 0u);
-	upload(m_TreeVisibleIndexBuffer, indices.data(), indices.size() * sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-	upload(m_TreeSpeciesInfoBuffer, m_TreeSpeciesInfosCPU.data(), sizeof(TreeSpeciesCullInfo), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    const uint32_t visibleCount=0;
+    std::vector<uint32_t> visibleCounts(m_TreeLodCount*2,0);
+    upload(m_TreeVisibleCountsBuffer,visibleCounts.data(),visibleCounts.size()*sizeof(uint32_t),
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    std::vector<uint32_t> indices(size_t(count)*m_TreeLodCount*2,0);
+    upload(m_TreeVisibleIndexBuffer,indices.data(),indices.size()*sizeof(uint32_t),VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    upload(m_TreeSpeciesInfoBuffer,m_TreeSpeciesInfosCPU.data(),m_TreeSpeciesInfosCPU.size()*sizeof(TreeSpeciesCullInfo),VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 	for (const auto& part : m_TreeParts)
 	{
 		// 场景内容构建早于材质 GPU 表准备；此处只校验材质类型，绘制时读取已分配的索引。
@@ -1198,6 +1206,7 @@ void VansVegetationSystem::BuildTreeResources()
 		cfg.material = part.material;
 		cfg.materialIndex = ResolveTreeMaterialIndex(part.material);
 		cfg.partType = part.type;
+        cfg.visibilityGroupIndex=part.lod;cfg.visibleOffset=part.lod*count;
 		cfg.instanceCapacity = count;
 		VkDrawIndexedIndirectCommand command = {};
 		command.indexCount = part.mesh->GetIndexCount();

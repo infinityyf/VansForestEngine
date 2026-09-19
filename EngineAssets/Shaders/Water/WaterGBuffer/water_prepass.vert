@@ -37,10 +37,13 @@ layout(set = 1, binding = 0) uniform WaterSurfaceParams
     vec4 detailLayerStrengthFade[4];
     ivec4 detailLayerEnabled;
     vec4 effectiveRoughnessParams;
+    vec4 riverRendering;
 } params;
 layout(set = 1, binding = 1) uniform sampler2DArray displacementMap;
 layout(set = 1, binding = 4) uniform sampler2DArray derivativeMap;
 layout(set = 1, binding = 5) uniform sampler2D flowMap;
+
+#include "river_wave_particles.glsl"
 
 const uint EDGE_LEFT = 1u;
 const uint EDGE_RIGHT = 2u;
@@ -178,6 +181,7 @@ layout(location = 3) flat out int outLodLevel;
 layout(location = 4) out vec2 outWorldXZ;
 layout(location = 5) out vec3 outMacroDPdx;
 layout(location = 6) out vec3 outMacroDPdz;
+layout(location = 7) out vec2 outRiverGeometryFilter;
 
 void main()
 {
@@ -190,23 +194,46 @@ void main()
         meshPosition = mix(inMeshPos, parentGrid, morph);
     }
     vec2 worldXZ = pc.patchWorldOrigin + meshPosition * pc.patchWorldSize;
-    SurfaceData surface = SampleSurface(worldXZ, pc.patchWorldSize);
-    if (morph > 0.0 && pc.lodLevel + 1 < params.geometryParams.x)
-    {
-        SurfaceData parent = SampleSurface(worldXZ, pc.patchWorldSize * params.geometryScale.w);
-        surface.displacement = mix(surface.displacement, parent.displacement, morph);
-        surface.dPdx = mix(surface.dPdx, parent.dPdx, morph);
-        surface.dPdz = mix(surface.dPdz, parent.dPdz, morph);
-        surface.foam = mix(surface.foam, parent.foam, morph);
-    }
-
-    vec3 worldPosition = vec3(worldXZ.x, pc.waterLevel, worldXZ.y) + surface.displacement;
+    vec3 blend=PcgWaterBlend(worldXZ);
     float riverHeight;vec2 riverVelocity;
-    if(PcgRiverSurface(worldXZ,riverHeight,riverVelocity))
+    bool river=blend.x>0 && PcgRiverSurface(worldXZ,riverHeight,riverVelocity);
+    if(!river)blend=vec3(0);
+    outRiverGeometryFilter=vec2(pc.patchWorldSize/float(max(params.geometryParams.y-1,1)),
+        pc.lodLevel+1<params.geometryParams.x?morph:0);
+    SurfaceData surface;
+    vec3 worldPosition;
+    if(river)
     {
-        worldPosition=vec3(worldXZ.x,riverHeight,worldXZ.y);
-        vec2 gradient=PcgRiverHeightGradient(worldXZ,riverHeight);
-        surface.dPdx=vec3(1,gradient.x,0);surface.dPdz=vec3(0,gradient.y,1);surface.foam=0;
+        float footprint=pc.patchWorldSize/float(max(params.geometryParams.y-1,1));
+        vec3 wave=RiverWaveHeightGradient(worldXZ,footprint,vec2(0));
+        if(morph>0 && pc.lodLevel+1<params.geometryParams.x)
+            wave=mix(wave,RiverWaveHeightGradient(worldXZ,footprint*params.geometryScale.w,vec2(0)),morph);
+        vec2 gradient=PcgRiverHeightGradient(worldXZ,riverHeight)+wave.yz;
+        surface.dPdx=vec3(1,gradient.x,0);surface.dPdz=vec3(0,gradient.y,1);
+        surface.displacement=vec3(0,wave.x,0);surface.foam=0;
+        worldPosition=vec3(worldXZ.x,riverHeight+wave.x,worldXZ.y);
+    }
+    if(blend.x<1)
+    {
+        SurfaceData ocean=SampleSurface(worldXZ,pc.patchWorldSize);
+        if(morph>0 && pc.lodLevel+1<params.geometryParams.x)
+        {
+            SurfaceData parent=SampleSurface(worldXZ,pc.patchWorldSize*params.geometryScale.w);
+            ocean.displacement=mix(ocean.displacement,parent.displacement,morph);
+            ocean.dPdx=mix(ocean.dPdx,parent.dPdx,morph);
+            ocean.dPdz=mix(ocean.dPdz,parent.dPdz,morph);
+            ocean.foam=mix(ocean.foam,parent.foam,morph);
+        }
+        vec3 oceanPosition=vec3(worldXZ.x,pc.waterLevel,worldXZ.y)+ocean.displacement;
+        if(river)
+        {
+            // 对完整位置求导：水位差、垂直浪高和水平 choppiness 都要包含权重的乘积法则项。
+            vec3 delta=worldPosition-oceanPosition;
+            surface.dPdx=mix(ocean.dPdx,surface.dPdx,blend.x)+delta*blend.y;
+            surface.dPdz=mix(ocean.dPdz,surface.dPdz,blend.x)+delta*blend.z;
+            worldPosition=mix(oceanPosition,worldPosition,blend.x);
+        }
+        else {surface=ocean;worldPosition=oceanPosition;}
     }
     vec3 worldNormal = normalize(cross(surface.dPdz, surface.dPdx));
     vec4 viewPosition = params.waterViewMatrix * vec4(worldPosition, 1.0);

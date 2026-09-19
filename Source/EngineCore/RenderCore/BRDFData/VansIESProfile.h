@@ -69,6 +69,7 @@ namespace VansGraphics
 
         // 获取 GPU sampler2DArray（Deferred pass binding=16 使用）
         VansVKImage& GetIESProfileTexture() { return m_IESTextureArray; }
+        VkImageView GetIESProfileArrayView() const { return m_IESArrayView; }
 
         // 步骤 1：创建 GPU 纹理对象（仅分配 VkImage，不上传数据）
         void CreateGPUResources(VkDevice& logicDevice);
@@ -98,6 +99,7 @@ namespace VansGraphics
 
         std::vector<IESProfileData> m_Profiles;
         VansVKImage                 m_IESTextureArray;  // sampler2DArray，格式 VK_FORMAT_R16_SFLOAT
+        VkImageView                 m_IESArrayView = VK_NULL_HANDLE;
         bool                        m_GPUResourcesCreated = false;
     };
 }

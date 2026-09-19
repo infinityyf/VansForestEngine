@@ -293,6 +293,8 @@ std::optional<VansSceneGIRegionSettingsConfig> DecodeGIRegionSettings(const Vans
 	config.stableId = ReadOptionalUIntField(regionNode, "stableId");
 	config.name = ReadOptionalStringField(regionNode, "name");
 	config.enabled = ReadOptionalBoolField(regionNode, "enabled");
+	config.worldOnly = ReadOptionalBoolField(regionNode, "worldOnly");
+    config.followView = ReadOptionalBoolField(regionNode, "followView");
 	config.center = ReadOptionalFloat3Field(regionNode, "center");
 	config.size = ReadOptionalFloat3Field(regionNode, "size");
 	config.gridDimensions = ReadOptionalUInt3Field(regionNode, "gridDimensions");
@@ -780,6 +782,17 @@ std::optional<VansSceneGISettingsConfig> DecodeGISettings(const VansSerializedVa
 	}
 
 	VansSceneGISettingsConfig config;
+	if (const auto* world = ReadObjectField(*gi, "world"))
+	{
+		config.world.enabled = ReadOptionalBoolField(*world, "enabled");
+		config.world.voxelSize = ReadOptionalFloatField(*world, "voxelSize");
+		config.world.coverageDistance = ReadOptionalFloatField(*world, "coverageDistance");
+		config.world.extinctionScale = ReadOptionalFloatField(*world, "extinctionScale");
+		config.world.levelCount = ReadOptionalUIntField(*world, "levelCount");
+		config.world.maxBricks = ReadOptionalUIntField(*world, "maxBricks");
+		config.world.bricksPerFrame = ReadOptionalUIntField(*world, "bricksPerFrame");
+		config.world.maxTraceSteps = ReadOptionalUIntField(*world, "maxTraceSteps");
+	}
 	if (const VansSerializedValue* placement = ReadObjectField(*gi, "placement"))
 	{
 		config.placement.enabled = ReadOptionalBoolField(*placement, "enabled");

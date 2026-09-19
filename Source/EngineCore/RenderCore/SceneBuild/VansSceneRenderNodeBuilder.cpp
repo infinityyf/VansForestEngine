@@ -514,7 +514,9 @@ void VansSceneRenderNodeBuilder::ExpandMultiMeshToRenderNodes(VansScene& scene,
     if (!multiMesh || !multiMesh->m_IsMultiMesh)
         return;
 
-    const std::string resolvedParentName = MakeUniqueMultiMeshGroupName(scene, parentName);
+    const std::string resolvedParentName = parentEntityGuid.empty()
+        ? MakeUniqueMultiMeshGroupName(scene, parentName) : parentName;
+    const std::string groupKey = parentEntityGuid.empty() ? resolvedParentName : parentEntityGuid;
     if (resolvedParentName != parentName)
     {
         VANS_LOG_WARN("[ExpandMultiMesh] Parent group name conflict for '" << parentName
@@ -522,7 +524,7 @@ void VansSceneRenderNodeBuilder::ExpandMultiMeshToRenderNodes(VansScene& scene,
     }
 
     // ── Create or retrieve the multi-mesh group for hierarchy display ─────
-    MultiMeshGroup& group = scene.GetOrCreateMultiMeshGroup(resolvedParentName);
+    MultiMeshGroup& group = scene.GetOrCreateMultiMeshGroup(groupKey);
     group.parentName = resolvedParentName;
     group.parentEntityGuid = parentEntityGuid;
     group.sourceMesh = multiMesh;
@@ -689,7 +691,7 @@ void VansSceneRenderNodeBuilder::ExpandMultiMeshToRenderNodes(VansScene& scene,
         renderNode->m_SourceMesh = multiMesh;
         renderNode->m_SubmeshIndex = static_cast<uint32_t>(i);
         renderNode->m_Material = material;
-        renderNode->m_ParentGroupName = resolvedParentName;
+        renderNode->m_ParentGroupKey = groupKey;
         renderNode->m_ParentEntityGuid = parentEntityGuid;
 		renderNode->m_RayTracingEnabled =
 			matType != VansMaterialType::VAN_TRANSPARENT &&

@@ -1,6 +1,8 @@
 #include "VansHierachyWindow.h"
+#include "../VansPrefabEditService.h"
 
 #include "../VansEditorSelection.h"
+#include "../VansSceneViewCommands.h"
 #include "../VansEditorWindow.h"
 #include "../VansEditorObjectReference.h"
 #include "../VansSceneHierarchyService.h"
@@ -60,13 +62,11 @@ std::string AnchorHierarchyKey(
 
 bool IsSelectedHandle(const Vans::EditorObjectHandle& handle)
 {
-	const Vans::EditorObjectHandle& active =
-		Vans::VansEditorSelectionService::Get().Snapshot().active;
-	return active.domain == handle.domain
-		&& active.entityGuid == handle.entityGuid
-		&& active.componentGuid == handle.componentGuid
-		&& active.subObjectKind == handle.subObjectKind
-		&& active.subObjectGuid == handle.subObjectGuid;
+	for (const auto& selected : Vans::VansEditorSelectionService::Get().Snapshot().objects)
+		if (selected.domain == handle.domain && selected.entityGuid == handle.entityGuid &&
+			selected.componentGuid == handle.componentGuid && selected.subObjectKind == handle.subObjectKind &&
+			selected.subObjectGuid == handle.subObjectGuid) return true;
+	return false;
 }
 
 std::optional<Vans::VansSceneParentReference> ParentReferenceFromHandle(
@@ -176,6 +176,12 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
 {
     VANS_PROFILE_SCOPE("Editor::HierarchyWindow", Vans::ProfileCategory::Editor);
     ImGui::Begin("Hierarchy");
+    VansEditorWindow::DrawPrefabToolbar();
+    if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+        !ImGui::GetIO().WantTextInput && !ImGui::IsAnyItemActive() &&
+        !ImGui::IsMouseDown(ImGuiMouseButton_Right) && ImGui::IsKeyPressed(ImGuiKey_F, false) &&
+        editorAPI.GetPlayState() == Vans::EditorAPI::EnginePlayState::Edit)
+        Vans::VansSceneViewCommands::RequestFrameSelection();
 
     const Vans::VansSceneDocument* document = VansEditorWindow::GetSceneDocument();
     const auto snapshot = document ? document->CreateSnapshot() : Vans::SceneDocumentSnapshot{};
@@ -303,6 +309,7 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
 
 	std::unordered_map<std::string, std::vector<std::size_t>> children;
 	std::unordered_set<std::string> entitiesWithAnimation;
+	std::unordered_map<std::string, std::string> parentKeys, anchorOwners;
     for (std::size_t index = 0; index < entities->arrayItems.size(); ++index)
     {
         const Vans::VansSerializedValue& entity = entities->arrayItems[index];
@@ -330,10 +337,71 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
 				hierarchyParent = parent.IsAnchor()
 					? AnchorHierarchyKey(parent.animationComponentGuid.ToString(), parent.anchorGuid.ToString())
 					: parent.entityGuid.ToString();
+				if (parent.IsAnchor()) anchorOwners[hierarchyParent] = parent.entityGuid.ToString();
 			}
 		}
 		children[hierarchyParent].push_back(index);
+		parentKeys[entityGuid] = hierarchyParent;
     }
+
+    const auto selection = Vans::VansEditorSelectionService::Get().Snapshot();
+    const bool reveal = selection.revision != m_SelectionRevision && selection.source != "Hierarchy";
+    m_SelectionRevision = selection.revision;
+    std::unordered_set<std::string> revealAncestors;
+    std::string revealTarget;
+    if (reveal)
+    {
+        const auto& active = selection.active;
+        const auto addRigPaths = [&](const std::string& entity)
+        {
+            const auto skeleton = editorAPI.GetSceneSkeletonHierarchy(entity);
+            for (const auto& rig : skeleton.rigs)
+            {
+                for (const auto& bone : rig.bones)
+                    parentKeys[AnchorHierarchyKey(rig.animationComponentGuid, bone.guid)] =
+                        bone.parentIndex >= 0 && bone.parentIndex < static_cast<int>(rig.bones.size())
+                        ? AnchorHierarchyKey(rig.animationComponentGuid, rig.bones[bone.parentIndex].guid) : rig.entityGuid;
+                for (const auto& socket : rig.sockets)
+                    parentKeys[AnchorHierarchyKey(rig.animationComponentGuid, socket.guid)] =
+                        socket.parentBoneIndex >= 0 && socket.parentBoneIndex < static_cast<int>(rig.bones.size())
+                        ? AnchorHierarchyKey(rig.animationComponentGuid, rig.bones[socket.parentBoneIndex].guid) : rig.entityGuid;
+            }
+        };
+        if (active.domain == Vans::EditorObjectDomain::SceneEntity)
+            revealTarget = active.entityGuid.empty() ? active.guid : active.entityGuid;
+        else if (active.domain == Vans::EditorObjectDomain::SceneSubObject)
+        {
+            addRigPaths(active.entityGuid);
+            revealTarget = AnchorHierarchyKey(active.componentGuid, active.subObjectGuid);
+        }
+        std::unordered_set<std::string> visited;
+        std::string key = revealTarget;
+        while (!key.empty() && visited.insert(key).second)
+        {
+            if (!parentKeys.count(key))
+            {
+                const auto owner = anchorOwners.find(key);
+                if (owner != anchorOwners.end()) addRigPaths(owner->second);
+            }
+            const auto parent = parentKeys.find(key);
+            if (parent == parentKeys.end()) break;
+            key = parent->second;
+            if (!key.empty()) revealAncestors.insert(key);
+        }
+    }
+    const auto revealRow = [&](const std::string& key)
+    {
+        if (reveal && key == revealTarget) ImGui::SetScrollHereY(.5f);
+    };
+    const auto selectRow = [&](const Vans::EditorObjectHandle& handle)
+    {
+        if (!ImGui::IsItemClicked() || ImGui::IsItemToggledOpen()) return;
+        auto& service = Vans::VansEditorSelectionService::Get();
+        service.Apply(ImGui::GetIO().KeyCtrl ? Vans::EditorSelectionOperation::Toggle :
+            ImGui::GetIO().KeyShift ? Vans::EditorSelectionOperation::Add : Vans::EditorSelectionOperation::Replace,
+            {handle}, handle, "Hierarchy");
+        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) Vans::VansSceneViewCommands::RequestFrameSelection();
+    };
 
 	std::function<void(const std::string&)> drawChildren;
 	std::function<void(const Vans::EditorAPI::SceneSkeletonHierarchyRig&, int)> drawBone;
@@ -373,9 +441,10 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
 		if (IsSelectedHandle(handle))
 			flags |= ImGuiTreeNodeFlags_Selected;
 		const std::string nodeId = "bone/" + rig.animationComponentGuid + "/" + bone.guid;
+		if (revealAncestors.count(boneKey)) ImGui::SetNextItemOpen(true);
 		const bool open = ImGui::TreeNodeEx(nodeId.c_str(), flags, "%s", bone.name.c_str());
-		if (ImGui::IsItemClicked())
-			Vans::VansEditorSelection::SelectSceneSubObject(handle);
+		revealRow(boneKey);
+		selectRow(handle);
 		if (ImGui::BeginPopupContextItem((nodeId + "/context").c_str()))
 		{
 			if (ImGui::MenuItem("Create Empty Child"))
@@ -423,10 +492,11 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
 			if (IsSelectedHandle(socketHandle))
 				socketFlags |= ImGuiTreeNodeFlags_Selected;
 			const std::string socketId = "socket/" + rig.animationComponentGuid + "/" + socket->guid;
+			if (revealAncestors.count(socketKey)) ImGui::SetNextItemOpen(true);
 			const bool socketOpen = ImGui::TreeNodeEx(
 				socketId.c_str(), socketFlags, "[Socket] %s", socket->name.c_str());
-			if (ImGui::IsItemClicked())
-				Vans::VansEditorSelection::SelectSceneSubObject(socketHandle);
+			revealRow(socketKey);
+			selectRow(socketHandle);
 			if (ImGui::BeginPopupContextItem((socketId + "/context").c_str()))
 			{
 				if (ImGui::MenuItem("Create Empty Child"))
@@ -477,15 +547,16 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
             ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_OpenOnArrow;
             if (!hasChildren)
                 flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
-			const Vans::EditorObjectHandle& active =
-				Vans::VansEditorSelectionService::Get().Snapshot().active;
-            if (active.domain == Vans::EditorObjectDomain::SceneEntity
-				&& Vans::VansEditorSelection::EntityGuid() == id)
+            Vans::EditorObjectHandle rowHandle;
+            rowHandle.domain = Vans::EditorObjectDomain::SceneEntity;
+            rowHandle.guid = rowHandle.entityGuid = id;
+            if (Vans::VansEditorSelectionService::Get().Contains(rowHandle))
                 flags |= ImGuiTreeNodeFlags_Selected;
 
+            if (revealAncestors.count(id)) ImGui::SetNextItemOpen(true);
             const bool open = ImGui::TreeNodeEx(id.c_str(), flags, "%s", name.c_str());
-            if (ImGui::IsItemClicked())
-                Vans::VansEditorSelection::SelectEntity(id);
+            revealRow(id);
+            selectRow(rowHandle);
 
             if (!id.empty() && ImGui::BeginDragDropSource())
             {
@@ -494,6 +565,7 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
                 handle.guid = id;
                 handle.entityGuid = id;
                 handle.displayName = name;
+                handle.path = VansEditorWindow::ActiveDocumentToken();
                 const std::string payload = Vans::SerializeEditorObjectHandle(handle);
                 ImGui::SetDragDropPayload(Vans::VansObjectReferenceDragPayloadType,
                     payload.c_str(),
@@ -503,6 +575,13 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
             }
             if (!id.empty() && ImGui::BeginDragDropTarget())
             {
+                if (const auto* payload = ImGui::AcceptDragDropPayload(Vans::VansObjectReferenceDragPayloadType))
+                {
+                    Vans::EditorObjectHandle asset;
+                    if (Vans::TryDeserializeEditorObjectHandle(payload->Data, static_cast<std::size_t>(payload->DataSize), asset) &&
+                        asset.domain == Vans::EditorObjectDomain::ProjectAsset && asset.assetType == Vans::EditorAPI::AssetType::Prefab)
+                        VansEditorWindow::QueuePrefabPlacement(asset.guid, id, 0, 0, 0);
+                }
                 std::string droppedEntityGuid;
                 if (AcceptSceneEntityDrop(droppedEntityGuid))
 				{
@@ -519,6 +598,9 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
                 if (id.empty())
                     return;
 
+                if (const auto* doc = VansEditorWindow::GetSceneDocument())
+                    if (!Vans::VansPrefabEditService::SourceAsset(*doc, id).empty())
+                    { VansEditorWindow::QueuePrefabDelete(id); return; }
                 for (std::size_t i = 0; i < entities->arrayItems.size(); ++i)
                 {
                     const Vans::VansSerializedValue& entity = entities->arrayItems[i];
@@ -611,6 +693,8 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
                 if (!editService)
                     return;
 
+                if (Vans::FindObjectField(document->AuthoringRootSnapshot(), "prefabInstances"))
+                { VansEditorWindow::QueuePrefabDuplicate(id); return; }
                 Vans::SceneEntityDuplicateResult duplicate =
                     Vans::DuplicateSceneEntitySubtree(*document, id);
                 if (!duplicate)
@@ -730,6 +814,18 @@ void VansHierachuWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI
     };
 
     drawChildren({});
+    ImGui::InvisibleButton("HierarchyEmptyDrop", ImVec2(-1, std::max(32.0f, ImGui::GetContentRegionAvail().y)));
+    if (ImGui::BeginDragDropTarget())
+    {
+        if (const auto* payload = ImGui::AcceptDragDropPayload(Vans::VansObjectReferenceDragPayloadType))
+        {
+            Vans::EditorObjectHandle asset;
+            if (Vans::TryDeserializeEditorObjectHandle(payload->Data, static_cast<std::size_t>(payload->DataSize), asset) &&
+                asset.domain == Vans::EditorObjectDomain::ProjectAsset && asset.assetType == Vans::EditorAPI::AssetType::Prefab)
+                VansEditorWindow::QueuePrefabPlacement(asset.guid, {}, 0, 0, 0);
+        }
+        ImGui::EndDragDropTarget();
+    }
     ImGui::End();
 }
 }

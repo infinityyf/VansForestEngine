@@ -32,6 +32,8 @@ VansPcgResourcePlan BuildPcgResourcePlan(const VansPcgRecipeAsset& recipe,
     if (!plant || plant->category!=layer.category) { result.error="PCG plant snapshot/category is invalid: "+layer.plant.ToString(); return result; }
     const auto plantErrors=ValidatePlantTypeAsset(*plant,false);
     if (!plantErrors.empty()) { result.error=plantErrors.front(); return result; }
+    for(const auto& variant:plant->variants) for(const auto& level:variant.lod.levels) for(const auto& part:level.parts)
+     if(!add(part.model,VansAssetType::Model)||!add(part.material,VansAssetType::Material))return result;
     for (const auto& variant : plant->variants) for (const auto& part : variant.parts) {
      if (!add(part.mesh,VansAssetType::Model,plant->category==VansPlantCategory::Grass) ||
          !add(part.material,VansAssetType::Material)) return result;

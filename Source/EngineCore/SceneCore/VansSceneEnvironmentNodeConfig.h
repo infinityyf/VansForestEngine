@@ -74,6 +74,15 @@ struct VansSceneWaterSpectrumConfig
 	std::optional<std::uint32_t> randomSeed;
 };
 
+struct VansSceneRiverWaterConfig
+{
+    std::optional<float> maxHeight;
+    std::optional<float> wavelength;
+    std::optional<float> lifetime;
+    std::optional<float> flowGridSize;
+    std::optional<float> fineDetailStrength;
+};
+
 struct VansSceneWaterWaveParticleConfig
 {
 	std::optional<int> particlesPerCascade;
@@ -223,6 +232,7 @@ struct VansSceneWaterNodeConfig
 	VansSceneWaterMediumConfig medium;
 	VansSceneWaterSpectrumConfig spectrum;
 	VansSceneWaterWaveParticleConfig waveParticle;
+    VansSceneRiverWaterConfig river;
 	VansSceneWaterFlowMapConfig flowMap;
 	VansSceneWaterRefractionConfig refraction;
 	VansSceneWaterDetailNormalConfig detailNormal;

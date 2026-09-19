@@ -43,7 +43,7 @@ namespace VansGraphics
             m_ParamsUBO.DestroyVulkanBuffer(device);
             m_InstanceBuffer.DestroyVulkanBuffer(device);
             m_TessParamsUBO.DestroyVulkanBuffer(device);
-            m_NoiseDetailUBO.DestroyVulkanBuffer(device);
+            m_HeightDetailUBO.DestroyVulkanBuffer(device);
         }
 
         if (m_DescriptorSetLayout != VK_NULL_HANDLE)
@@ -74,14 +74,17 @@ namespace VansGraphics
         {
             throw std::invalid_argument("Terrain tessellation settings are invalid.");
         }
-        if (!std::isfinite(settings.noiseStrength) || settings.noiseStrength < 0.0f ||
-            !IsFinitePositive(settings.noiseFrequency) || !std::isfinite(settings.noiseLacunarity) || settings.noiseLacunarity < 1.0f ||
-            !std::isfinite(settings.noiseGain) || settings.noiseGain <= 0.0f || settings.noiseGain > 1.0f ||
-            settings.noiseOctaves < 1 || settings.noiseOctaves > 4 ||
-            !std::isfinite(settings.noiseWarpStrength) || settings.noiseWarpStrength < 0.0f ||
-            !std::isfinite(settings.noiseFadeStart) || settings.noiseFadeStart < 0.0f || settings.noiseFadeStart >= 1.0f)
+        if (!std::isfinite(settings.heightDetailStrength) || settings.heightDetailStrength < 0.0f ||
+            !std::isfinite(settings.heightDetailFadeStart) || settings.heightDetailFadeStart < 0.0f || settings.heightDetailFadeStart >= 1.0f)
         {
-            throw std::invalid_argument("Terrain noise settings are invalid.");
+            throw std::invalid_argument("Terrain material height detail settings are invalid.");
+        }
+        const auto& wetness=settings.riverWetness;
+        if (!std::isfinite(wetness.albedoScale) || wetness.albedoScale<0 || wetness.albedoScale>1 ||
+            !std::isfinite(wetness.roughness) || wetness.roughness<0 || wetness.roughness>1 ||
+            !std::isfinite(wetness.detailNormalScale) || wetness.detailNormalScale<0 || wetness.detailNormalScale>1)
+        {
+            throw std::invalid_argument("Terrain river wetness material settings are invalid.");
         }
 
         for (const TerrainLayerConfig& layer : config.layers)
@@ -127,14 +130,12 @@ namespace VansGraphics
         m_TessellationDistance = settings.tessellationDistance;
         m_MaxTessellationLevel = settings.maxTessellationLevel;
         m_TessellationTargetPixels = settings.tessellationTargetPixels;
-        m_EnableNoiseDetail = settings.noiseDetailEnabled;
-        m_NoiseStrength = settings.noiseStrength;
-        m_NoiseFrequency = settings.noiseFrequency;
-        m_NoiseLacunarity = settings.noiseLacunarity;
-        m_NoiseGain = settings.noiseGain;
-        m_NoiseOctaves = settings.noiseOctaves;
-        m_NoiseWarpStrength = settings.noiseWarpStrength;
-        m_NoiseFadeStart = settings.noiseFadeStart;
+        m_EnableHeightDetail = settings.heightDetailEnabled;
+        m_HeightDetailStrength = settings.heightDetailStrength;
+        m_HeightDetailFadeStart = settings.heightDetailFadeStart;
+        m_RiverWetAlbedoScale = settings.riverWetness.albedoScale;
+        m_RiverWetRoughness = settings.riverWetness.roughness;
+        m_RiverWetDetailNormalScale = settings.riverWetness.detailNormalScale;
         ConfigureLodSelector();
 
         m_HeightMap = new VansTexture();
@@ -162,6 +163,24 @@ namespace VansGraphics
             m_LayerRoughness[i] = layer.roughness;
         }
 
+        // 材质纹理原先只供片元阶段使用，在首次细分采样前发布上传和 mip 写入。
+        // 只在地形初始化执行，不增加每帧同步，也不改变其他材质的上传流程。
+        auto& uploadCommand = device->GetCommandBuffer();
+        if (!uploadCommand.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
+            throw std::runtime_error("Terrain height texture publication could not begin.");
+        VkMemoryBarrier heightTexturesReady{ VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+        heightTexturesReady.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+        heightTexturesReady.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        uploadCommand.PipelineBarrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT, { heightTexturesReady }, {}, {});
+        VkQueue uploadQueue = device->GetGraphicsQueue();
+        VkDevice uploadDevice = device->GetLogicDevice();
+        if (!uploadCommand.EndCommandBufferRecord() ||
+            !VansVKCommandBuffer::SubmitCommands(uploadQueue, uploadDevice,
+                { uploadCommand.GetVKCommandBuffer() }, {}, {}, uploadCommand.m_CommandBufferFinishSubmitFence) ||
+            !uploadCommand.ResetCommandBuffer(false))
+            throw std::runtime_error("Terrain height texture publication failed.");
+
         BuildPatchMesh();
         m_TerrainInstanceInputAttributeDescriptions = {
             { 3, 1, VK_FORMAT_R32G32_SFLOAT, offsetof(TerrainInstanceData, offset) },
@@ -188,6 +207,8 @@ namespace VansGraphics
             params.tilingFactors[i * 4] = i < m_LayerCount ? config.layers[i].tiling : 1.0f;
         params.heightfieldParams = glm::vec4(
             m_TerrainSize, m_MaxHeight, m_HeightOffset, static_cast<float>(PatchGridResolution));
+        params.riverWetnessParams = glm::vec4(
+            m_RiverWetAlbedoScale,m_RiverWetRoughness,m_RiverWetDetailNormalScale,0.0f);
         m_ParamsUBO.CreatVulkanBuffer(device->GetLogicDevice(), sizeof(TerrainParamsGPU),
             VK_FORMAT_R32_SFLOAT, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
@@ -204,10 +225,10 @@ namespace VansGraphics
             VK_FORMAT_R32_SFLOAT, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         UpdateTessellationUBO();
-        m_NoiseDetailUBO.CreatVulkanBuffer(device->GetLogicDevice(), sizeof(TerrainNoiseDetailParamsGPU),
+        m_HeightDetailUBO.CreatVulkanBuffer(device->GetLogicDevice(), sizeof(TerrainHeightDetailParamsGPU),
             VK_FORMAT_R32_SFLOAT, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        UpdateNoiseDetailUBO();
+        UpdateHeightDetailUBO();
 
         VansDescriptorSetLayoutFactory::CreateAndAllocate_Terrain(m_DescriptorSetLayout, m_DescriptorSets, 1);
         if (m_DescriptorSets.empty())
@@ -250,9 +271,9 @@ namespace VansGraphics
         descriptorManager->WriteBufferDescriptor(m_DescriptorSets[0], TERRAIN_BINDING_TESSELLATION_PARAMS,
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
             {{ m_TessParamsUBO.GetNativeBuffer(), 0, sizeof(TerrainTessellationParamsGPU) }});
-        descriptorManager->WriteBufferDescriptor(m_DescriptorSets[0], TERRAIN_BINDING_NOISE_DETAIL_PARAMS,
+        descriptorManager->WriteBufferDescriptor(m_DescriptorSets[0], TERRAIN_BINDING_HEIGHT_DETAIL_PARAMS,
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            {{ m_NoiseDetailUBO.GetNativeBuffer(), 0, sizeof(TerrainNoiseDetailParamsGPU) }});
+            {{ m_HeightDetailUBO.GetNativeBuffer(), 0, sizeof(TerrainHeightDetailParamsGPU) }});
         descriptorManager->CommitDescriptorUpdates();
     }
 
@@ -358,9 +379,9 @@ namespace VansGraphics
         m_NearInstanceScratch.reserve(m_SelectedPatches.size());
         m_ShadowInstanceScratch.reserve(m_SelectedPatches.size());
 
-        float noisePadding = 0.0f;
-        if (m_EnableNoiseDetail)
-            noisePadding = std::abs(m_NoiseStrength);
+        float heightDetailPadding = 0.0f;
+        if (m_EnableHeightDetail)
+            heightDetailPadding = std::abs(m_HeightDetailStrength);
 
         for (const TerrainLodPatch& patch : m_SelectedPatches)
         {
@@ -369,8 +390,8 @@ namespace VansGraphics
 
             const glm::vec2 origin = m_LodSelector.GetPatchWorldOrigin(patch);
             const float size = m_LodSelector.GetPatchWorldSize(patch);
-            const glm::vec3 boundsMin(origin.x, m_HeightOffset - noisePadding, origin.y);
-            const glm::vec3 boundsMax(origin.x + size, m_HeightOffset + m_MaxHeight + noisePadding, origin.y + size);
+            const glm::vec3 boundsMin(origin.x, m_HeightOffset - heightDetailPadding, origin.y);
+            const glm::vec3 boundsMax(origin.x + size, m_HeightOffset + m_MaxHeight + heightDetailPadding, origin.y + size);
             if (!RenderAABBIntersectsClipFrustum(boundsMin, boundsMax, viewProjection))
                 continue;
 
@@ -481,7 +502,7 @@ namespace VansGraphics
         {
             const int cascadeIndex = globalState.cascadeIndex;
             cmd.UpdatePushConstants(*m_TerrainShadowShader->GetGraphicsPipeline(),
-                VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(cascadeIndex), &cascadeIndex);
+                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(cascadeIndex), &cascadeIndex);
         }
         cmd.DrawIndexed(m_BasePatchMesh->GetIndexCount(), m_ShadowInstanceCount,
             0, 0, m_ShadowInstanceOffset);
@@ -537,64 +558,46 @@ namespace VansGraphics
         ConfigureLodSelector();
     }
 
-    void VansTerrain::UpdateNoiseDetailUBO()
+    void VansTerrain::UpdateHeightDetailUBO()
     {
-        TerrainNoiseDetailParamsGPU params{};
-        params.noiseStrength = m_EnableNoiseDetail ? m_NoiseStrength : 0.0f;
-        params.noiseFrequency = m_NoiseFrequency;
-        params.noiseLacunarity = m_NoiseLacunarity;
-        params.noiseGain = m_NoiseGain;
-        params.noiseOctaves = m_NoiseOctaves;
-        params.noiseWarpStrength = m_NoiseWarpStrength;
-        params.fadeStart = m_NoiseFadeStart;
-        m_NoiseDetailUBO.SetBufferData(&params, 0, sizeof(params));
+        TerrainHeightDetailParamsGPU params{};
+        params.heightDetailStrength = m_EnableHeightDetail ? m_HeightDetailStrength : 0.0f;
+        params.fadeStart = m_HeightDetailFadeStart;
+        m_HeightDetailUBO.SetBufferData(&params, 0, sizeof(params));
     }
 
-    void VansTerrain::SetNoiseDetailEnabled(bool value)
+    void VansTerrain::SetHeightDetailEnabled(bool value)
     {
-        m_EnableNoiseDetail = value;
-        UpdateNoiseDetailUBO();
+        m_EnableHeightDetail = value;
+        UpdateHeightDetailUBO();
     }
 
-    void VansTerrain::SetNoiseStrength(float value)
+    void VansTerrain::SetHeightDetailStrength(float value)
     {
-        m_NoiseStrength = std::max(value, 0.0f);
-        UpdateNoiseDetailUBO();
+        m_HeightDetailStrength = std::max(value, 0.0f);
+        UpdateHeightDetailUBO();
     }
 
-    void VansTerrain::SetNoiseFrequency(float value)
+    void VansTerrain::SetHeightDetailFadeStart(float value)
     {
-        m_NoiseFrequency = std::max(value, 0.01f);
-        UpdateNoiseDetailUBO();
+        m_HeightDetailFadeStart = std::clamp(value, 0.0f, 0.95f);
+        UpdateHeightDetailUBO();
     }
 
-    void VansTerrain::SetNoiseLacunarity(float value)
+    void VansTerrain::UpdateRiverWetnessUBO()
     {
-        m_NoiseLacunarity = std::max(value, 1.0f);
-        UpdateNoiseDetailUBO();
+        const glm::vec4 params(
+            m_RiverWetAlbedoScale,m_RiverWetRoughness,m_RiverWetDetailNormalScale,0.0f);
+        m_ParamsUBO.SetBufferData(
+            &params,offsetof(TerrainParamsGPU,riverWetnessParams),sizeof(params));
     }
 
-    void VansTerrain::SetNoiseGain(float value)
+    void VansTerrain::SetRiverWetnessResponse(
+        float albedoScale,float roughness,float detailNormalScale)
     {
-        m_NoiseGain = std::clamp(value, 0.01f, 1.0f);
-        UpdateNoiseDetailUBO();
-    }
-
-    void VansTerrain::SetNoiseOctaves(int value)
-    {
-        m_NoiseOctaves = std::clamp(value, 1, 4);
-        UpdateNoiseDetailUBO();
-    }
-
-    void VansTerrain::SetNoiseWarpStrength(float value)
-    {
-        m_NoiseWarpStrength = std::max(value, 0.0f);
-        UpdateNoiseDetailUBO();
-    }
-
-    void VansTerrain::SetNoiseFadeStart(float value)
-    {
-        m_NoiseFadeStart = std::clamp(value, 0.0f, 0.95f);
-        UpdateNoiseDetailUBO();
+        m_RiverWetAlbedoScale=std::clamp(albedoScale,0.0f,1.0f);
+        m_RiverWetRoughness=std::clamp(roughness,0.0f,1.0f);
+        m_RiverWetDetailNormalScale=std::clamp(detailNormalScale,0.0f,1.0f);
+        UpdateRiverWetnessUBO();
     }
 }

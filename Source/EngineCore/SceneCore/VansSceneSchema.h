@@ -50,7 +50,9 @@ struct VansSceneData
 class VansSceneSchema
 {
 public:
+    static VansSerializedValue MakeDefaultSettings();
     static SceneDiagnostics ValidateSceneJson(const SceneJson& root);
+    static SceneDiagnostics ValidateEntityGraph(const SceneJson& entities);
     static bool DeserializeSceneJson(const SceneJson& root, VansSceneData& scene, SceneDiagnostics& diagnostics);
     static SceneJson SerializeSceneJson(const VansSceneData& scene);
 

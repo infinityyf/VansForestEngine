@@ -1,4 +1,5 @@
 #pragma once
+#include "ModelLodDTOs.h"
 #include <array>
 #include <cstdint>
 #include <string>
@@ -22,6 +23,10 @@ struct PcgPlantVariant
     std::array<float,3> offset{},scale{1,1,1};
     std::array<float,4> rotation{0,0,0,1};
     std::vector<PcgPlantPart> parts;
+    std::array<float,2> lodRatios{.5f,.18f};
+    float lodMaximumError=.04f;
+    std::string lodBuildKey;
+    std::vector<ModelLodLevel> lodLevels;
 };
 struct PcgGrassSettings
 {
@@ -38,6 +43,8 @@ struct PcgRenderSettings
 {
     bool cullingEnabled=false,hizEnabled=false,castShadows=false;
     float cullDistance=0,hizBias=0;
+    std::array<float,2> lodDistances{60.f,180.f};
+    float lodHysteresis=.1f;
 };
 struct PcgPlantConfiguration
 {

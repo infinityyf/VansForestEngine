@@ -6,6 +6,7 @@
 #include "Character/VansCharacterActionServices.h"
 #include "Character/VansAnimationEventActionService.h"
 #include "Combat/VansCombatActionService.h"
+#include "Combat/VansDamageProfile.h"
 #include "Audio/VansAudioActionService.h"
 #include "../GameplayActionTimeline/VansGameplayActionTimelineIntegration.h"
 
@@ -74,7 +75,7 @@ std::shared_ptr<const IVansGameplayModuleContributor> CombatContributor(
 				{
 					return VansCombatActionService::Create(world, gameplay, factoryError, backend);
 				}, error);
-		});
+		}, VansRegisterCombatGameplayAssetCompilers, VansRegisterCombatGameplayAssetSchemas);
 }
 
 std::shared_ptr<const IVansGameplayModuleContributor> AnimationContributor(

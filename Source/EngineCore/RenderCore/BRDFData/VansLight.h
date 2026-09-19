@@ -1,6 +1,7 @@
 #pragma once
 #include "../../ScriptCore/VansCommonUtils.h"
 #include "VansLightFrameTypes.h"
+#include "VansLightCookie.h"
 #include "../VansRenderSceneSnapshot.h"
 #include <cstddef>
 #include <cstdint>
@@ -23,11 +24,17 @@ namespace VansGraphics
 		VansCelestialLightingState m_MainCelestialLightingState;
 		uint32_t m_NextStableLightId = 1;
 
+        std::array<std::vector<VansLightCookieSettings>, 4> m_Cookies{};
+        std::array<std::vector<glm::mat4>, 4> m_CookieTransforms{};
+
 		float m_LightFrameSequence = 0.0f;
 
 		std::vector<VansDirectionalLight> BuildPreparedDirectionalLights();
 
 	public:
+        VansLightCookieSettings& Cookie(unsigned kind, unsigned index) { return m_Cookies.at(kind).at(index); }
+        void SetCookieTransform(unsigned kind, unsigned index, const glm::mat4& rigidWorld) { m_CookieTransforms.at(kind).at(index) = rigidWorld; }
+        void BuildCookieFrame(VansRenderLightFrameData& frame) const;
 		static std::size_t GetLightBufferPayloadSize();
 		static bool BuildRenderLightBufferPayload(
 			const VansRenderLightFrameData& frameData,

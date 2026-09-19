@@ -34,6 +34,7 @@ AssetType ToEditorAssetType(VansAssetType type)
 	case VansAssetType::ActionGraph: return AssetType::ActionGraph;
 	case VansAssetType::CameraRigProfile: return AssetType::CameraRigProfile;
 	case VansAssetType::CameraShakeProfile: return AssetType::CameraShakeProfile;
+	case VansAssetType::DamageProfile: return AssetType::DamageProfile;
 	case VansAssetType::GAFEditorLayout: return AssetType::GAFEditorLayout;
 	default: return AssetType::Unknown;
 	}

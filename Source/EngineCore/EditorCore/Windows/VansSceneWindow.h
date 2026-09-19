@@ -12,6 +12,8 @@ namespace VansGraphics
 	{
 	public:
 
+        bool IsGameCursorViewportInteractive() const { return m_GameCursorViewportInteractive; }
+
 		void RegistCamera(VansCamera* camera)
 		{
 			m_Camera = camera;
@@ -19,8 +21,11 @@ namespace VansGraphics
 
 	private:
 
+        bool m_GameCursorViewportInteractive = false;
 		VansGraphics::VansCamera* m_Camera = nullptr;
 		VansEditorCameraController m_CameraController;
+		bool m_ObjectPickPressed = false;
+		ImVec2 m_ObjectPickStart;
 		bool m_TerrainBrushDragging = false;
 		bool m_TerrainBrushHit = false;
 		Vans::EditorAPI::Vec3 m_TerrainBrushWorldPosition;

@@ -122,39 +122,43 @@ bool VansVolumetricCloudSystem::CreateDescriptors()
 	if (!descriptors->CreateDesciptorSetLayout(bindings, m_PassLayout))
 		return false;
 	std::vector<VkDescriptorSet> sets;
-	if (!descriptors->AllocateDescriptorSet({ m_PassLayout }, sets,
-		VansDescriptorLifetimeRole::ScenePersistent) || sets.empty())
+	if (!descriptors->AllocateDescriptorSet({ m_PassLayout, m_PassLayout }, sets,
+		VansDescriptorLifetimeRole::ScenePersistent) || sets.size()!=2)
 		return false;
-	m_PassSet = sets.front();
+	m_PassSet = sets[0];m_ShadowPassSet = sets[1];
+	// 阴影命令先录制；后续更新本帧雾注入绑定不能使它已绑定的 descriptor 失效。
 	descriptors->BeginDescriptorUpdate();
-	descriptors->WriteImageDescriptor(m_PassSet, 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-		{{ m_Result.GetSampler(), m_Result.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-	descriptors->WriteImageDescriptor(m_PassSet, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-		{{ m_Depth.GetSampler(), m_Depth.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-	descriptors->WriteBufferDescriptor(m_PassSet, 2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-		{{ m_ParamsBuffer.GetNativeBuffer(), 0, sizeof(VansVolumetricCloudRuntimeParamsGPU) }});
-	descriptors->WriteImageDescriptor(m_PassSet, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		{{ m_MainNoise->GetImage().GetSampler(), m_MainNoise->GetImage().GetImageView(),
-		   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
-	descriptors->WriteImageDescriptor(m_PassSet, 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		{{ m_DetailNoise->GetImage().GetSampler(), m_DetailNoise->GetImage().GetImageView(),
-		   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
-	descriptors->WriteImageDescriptor(m_PassSet, 5, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-		{{ m_Shadow.GetSampler(), m_Shadow.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-	descriptors->WriteImageDescriptor(m_PassSet, 6, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-		{{ m_OpticalDepth.GetSampler(), m_OpticalDepth.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
-	if (auto* nearMedia = m_Scene->GetNearMediaSystem())
+	for(auto set:{m_PassSet,m_ShadowPassSet})
 	{
-		descriptors->WriteImageDescriptor(m_PassSet, 7,
+		descriptors->WriteImageDescriptor(set, 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			{{ m_Result.GetSampler(), m_Result.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
+		descriptors->WriteImageDescriptor(set, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			{{ m_Depth.GetSampler(), m_Depth.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
+		descriptors->WriteBufferDescriptor(set, 2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			{{ m_ParamsBuffer.GetNativeBuffer(), 0, sizeof(VansVolumetricCloudRuntimeParamsGPU) }});
+		descriptors->WriteImageDescriptor(set, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{ m_MainNoise->GetImage().GetSampler(), m_MainNoise->GetImage().GetImageView(),
+			   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
+		descriptors->WriteImageDescriptor(set, 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			{{ m_DetailNoise->GetImage().GetSampler(), m_DetailNoise->GetImage().GetImageView(),
+			   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }});
+		descriptors->WriteImageDescriptor(set, 5, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			{{ m_Shadow.GetSampler(), m_Shadow.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
+		descriptors->WriteImageDescriptor(set, 6, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			{{ m_OpticalDepth.GetSampler(), m_OpticalDepth.GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
+		if (auto* nearMedia = m_Scene->GetNearMediaSystem())
+		{
+			descriptors->WriteImageDescriptor(set, 7,
+				VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				{ nearMedia->GetCurrentInjectionDescriptor() });
+		}
+		auto* renderPasses = VansRenderPassManager::GetInstance();
+		descriptors->WriteImageDescriptor(set, 8,
 			VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			{ nearMedia->GetCurrentInjectionDescriptor() });
+			{{ renderPasses->GetDepth().GetSampler(),
+			   renderPasses->GetDepth().GetImageView(),
+			   VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL }});
 	}
-	auto* renderPasses = VansRenderPassManager::GetInstance();
-	descriptors->WriteImageDescriptor(m_PassSet, 8,
-		VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		{{ renderPasses->GetDepth().GetSampler(),
-		   renderPasses->GetDepth().GetImageView(),
-		   VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL }});
 	descriptors->CommitDescriptorUpdates();
 	return true;
 }
@@ -211,7 +215,7 @@ void VansVolumetricCloudSystem::UploadParameters()
 }
 
 void VansVolumetricCloudSystem::TransitionForWrite(VansVKCommandBuffer& commandBuffer,
-	VansVKImage& image, bool initialized)
+	VansVKImage& image, bool initialized, VkPipelineStageFlags readers)
 {
 	VkImageMemoryBarrier barrier{};
 	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -225,8 +229,7 @@ void VansVolumetricCloudSystem::TransitionForWrite(VansVKCommandBuffer& commandB
 	barrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0,
 		image.GetImageCreateInfo().arrayLayers };
 	commandBuffer.PipelineBarrier(initialized
-		? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
-			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+		? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | readers
 		: VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
 		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 		{}, {}, { barrier });
@@ -234,7 +237,7 @@ void VansVolumetricCloudSystem::TransitionForWrite(VansVKCommandBuffer& commandB
 }
 
 void VansVolumetricCloudSystem::BarrierForSampling(VansVKCommandBuffer& commandBuffer,
-	VansVKImage& image)
+	VansVKImage& image, VkPipelineStageFlags readers)
 {
 	VkImageMemoryBarrier barrier{};
 	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -248,7 +251,7 @@ void VansVolumetricCloudSystem::BarrierForSampling(VansVKCommandBuffer& commandB
 	barrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0,
 		image.GetImageCreateInfo().arrayLayers };
 	commandBuffer.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+		readers,
 		{}, {}, { barrier });
 }
 
@@ -260,13 +263,16 @@ void VansVolumetricCloudSystem::RecordShadow(VansVKCommandBuffer& commandBuffer)
 	const std::vector<VkDescriptorSetLayout> layouts = {
 		m_Scene->GetGlobalDescriptorSetLayout(), m_PassLayout };
 	const std::vector<VkDescriptorSet> sets = {
-		m_Scene->GetGlobalDescriptorSet(), m_PassSet };
-	TransitionForWrite(commandBuffer, m_Shadow, m_ShadowInitialized);
+		m_Scene->GetGlobalDescriptorSet(), m_ShadowPassSet };
+	// 图形队列读由提交 semaphore 排序；专用计算队列内只声明计算读写。
+	const VkPipelineStageFlags readers=VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+		(m_Device->IsAsyncComputeEnabled()?0u:VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+	TransitionForWrite(commandBuffer, m_Shadow, m_ShadowInitialized, readers);
 	commandBuffer.EnsureComputeShader(*m_ShadowShader, layouts);
 	commandBuffer.DispatchCompute(*m_ShadowShader,
 		DivideRoundUp(m_Quality.resolution, 8u),
 		DivideRoundUp(m_Quality.resolution, 8u), m_Quality.clipmapCount, sets);
-	BarrierForSampling(commandBuffer, m_Shadow);
+	BarrierForSampling(commandBuffer, m_Shadow, readers);
 	m_ShadowInitialized = true;
 }
 
@@ -288,15 +294,16 @@ void VansVolumetricCloudSystem::RecordRayMarch(VansVKCommandBuffer& commandBuffe
 		m_Scene->GetGlobalDescriptorSetLayout(), m_PassLayout };
 	const std::vector<VkDescriptorSet> sets = {
 		m_Scene->GetGlobalDescriptorSet(), m_PassSet };
-	TransitionForWrite(commandBuffer, m_Result, m_ResultInitialized);
-	TransitionForWrite(commandBuffer, m_Depth, m_ResultInitialized);
-	TransitionForWrite(commandBuffer, m_OpticalDepth, m_ResultInitialized);
+	const VkPipelineStageFlags readers=VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+	TransitionForWrite(commandBuffer, m_Result, m_ResultInitialized, readers);
+	TransitionForWrite(commandBuffer, m_Depth, m_ResultInitialized, readers);
+	TransitionForWrite(commandBuffer, m_OpticalDepth, m_ResultInitialized, readers);
 	commandBuffer.EnsureComputeShader(*m_RayMarchShader, layouts);
 	commandBuffer.DispatchCompute(*m_RayMarchShader,
 		DivideRoundUp(m_CloudWidth, 8u), DivideRoundUp(m_CloudHeight, 8u), 1u, sets);
-	BarrierForSampling(commandBuffer, m_Result);
-	BarrierForSampling(commandBuffer, m_Depth);
-	BarrierForSampling(commandBuffer, m_OpticalDepth);
+	BarrierForSampling(commandBuffer, m_Result, readers);
+	BarrierForSampling(commandBuffer, m_Depth, readers);
+	BarrierForSampling(commandBuffer, m_OpticalDepth, readers);
 	m_ResultInitialized = true;
 }
 
@@ -352,12 +359,11 @@ bool VansVolumetricCloudSystem::Reinitialize(const VansCloudShadowQualityConfig&
 void VansVolumetricCloudSystem::DestroyDescriptors()
 {
 	auto* descriptors = VansVKDescriptorManager::GetInstance();
-	if (m_PassSet != VK_NULL_HANDLE)
-	{
-		std::vector<VkDescriptorSet> sets{ m_PassSet };
-		descriptors->DestroyDescriptorSet(sets);
-		m_PassSet = VK_NULL_HANDLE;
-	}
+	std::vector<VkDescriptorSet> sets;
+	if(m_PassSet!=VK_NULL_HANDLE)sets.push_back(m_PassSet);
+	if(m_ShadowPassSet!=VK_NULL_HANDLE)sets.push_back(m_ShadowPassSet);
+	if(!sets.empty())descriptors->DestroyDescriptorSet(sets);
+	m_PassSet=m_ShadowPassSet=VK_NULL_HANDLE;
 	if (m_PassLayout != VK_NULL_HANDLE)
 	{
 		descriptors->ReleaseDescriptorSetLayout(m_PassLayout);
