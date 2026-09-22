@@ -164,6 +164,18 @@ void VansGIWindow::ShowWindow(Vans::EditorAPI::IEngineEditorAPI& editorAPI)
 		ImGui::TextDisabled("Trees and shrubs use whole-model voxels. Grass only receives GI.");
 		ImGui::TextDisabled("Disabled: no world GI resources or updates. Apply uses the safe resource transaction.");
 	}
+	if (ImGui::CollapsingHeader("Ambient Sky Reflection Visibility"))
+	{
+		auto& sky = draftSettings.ambientSkyCache;
+		ImGui::Checkbox("Enable Ambient Sky Cache", &sky.enabled);
+		ImGui::BeginDisabled(!sky.enabled);
+		ImGui::DragFloat("Cache Cell Spacing (m)", &sky.gridSpacing, 0.1f, 2.0f, 16.0f, "%.1f");
+		ImGui::InputScalar("Direction Queries Per Frame", ImGuiDataType_U32, &sky.queriesPerFrame);
+		sky.queriesPerFrame = std::clamp(sky.queriesPerFrame, 1u, 256u);
+		ImGui::EndDisabled();
+		ImGui::TextDisabled("Only the uncovered sky part of ambient specular is attenuated; SSR, local probes, SSGI and direct lighting remain unchanged.");
+		ImGui::TextDisabled("The cache traces the terrain and vegetation GIWorld and falls back to full sky visibility while coverage is unavailable.");
+	}
 
 	if (ImGui::CollapsingHeader("Placement", ImGuiTreeNodeFlags_DefaultOpen))
 	{

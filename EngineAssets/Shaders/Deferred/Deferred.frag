@@ -5,6 +5,8 @@
 // TileLight：先引入 CameraData（提供 ScreenParams），再定义 TILE_LIGHT，再引入 TileLightData
 #include "../Common/CameraData.glsl"
 #include "../SSGI/SSGISurface.glsl"
+#define AMBIENT_SKY_CACHE_ENABLED
+#include "../BRDF/AmbientSkyTransmittance.glsl"
 #define TILE_LIGHT
 #define SCREEN_SPACE_PUNCTUAL_SHADOW
 #include "../Common/TileLightData.glsl"
@@ -608,6 +610,18 @@ void main()
 
     outColor.rgb = lightResult.directDiffuse + lightResult.directSpecular;
     outColor.rgb += lightResult.ambientDiffuse + lightResult.ambientSpecular;
+	if (AmbientSkyCacheDebugMode() != 0u)
+	{
+		vec3 debugReflection = reflect(-viewDirection, normal);
+		AmbientSkyTransmittanceSample skyVisibility = SampleAmbientSkyTransmittance(position_world, debugReflection, roughness);
+		if (AmbientSkyCacheDebugMode() == 1u)
+			outColor = vec4(vec3(skyVisibility.visibility), 1.0);
+		else if (AmbientSkyCacheDebugMode() == 2u)
+			outColor = vec4(vec3(skyVisibility.confidence), 1.0);
+		else
+			outColor = vec4(vec3(1.0 - skyVisibility.visibility), 1.0);
+		return;
+	}
     if (reflectionProbeDebugView != 0u)
     {
         vec3 reflectionDir = reflect(-viewDirection, normal);

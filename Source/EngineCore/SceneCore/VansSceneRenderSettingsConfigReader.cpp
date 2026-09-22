@@ -803,6 +803,12 @@ std::optional<VansSceneGISettingsConfig> DecodeGISettings(const VansSerializedVa
 		config.placement.maxProbeUpdatesPerFrame = ReadOptionalUIntField(*placement, "maxProbeUpdatesPerFrame");
 		config.placement.maxRaysPerFrame = ReadOptionalUIntField(*placement, "maxRaysPerFrame");
 	}
+	if (const VansSerializedValue* ambientSkyCache = ReadObjectField(*gi, "ambientSkyCache"))
+	{
+		config.ambientSkyCache.enabled = ReadOptionalBoolField(*ambientSkyCache, "enabled");
+		config.ambientSkyCache.gridSpacing = ReadOptionalFloatField(*ambientSkyCache, "gridSpacing");
+		config.ambientSkyCache.queriesPerFrame = ReadOptionalUIntField(*ambientSkyCache, "queriesPerFrame");
+	}
 	if (const VansSerializedValue* regions = ReadArrayField(*gi, "regions"))
 	{
 		for (const VansSerializedValue& regionNode : regions->arrayItems)

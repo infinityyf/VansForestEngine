@@ -164,6 +164,11 @@ namespace
 		return value == VansRotationBlendSpace::Local ? "local" : "mesh";
 	}
 
+	const char* ToString(VansLayerActivationCurve value)
+	{
+		return value == VansLayerActivationCurve::Linear ? "linear" : "smoothStep";
+	}
+
 	const char* ToString(VansAdditiveReferenceMode value)
 	{
 		switch (value)
@@ -366,7 +371,23 @@ namespace
 				{ "source", layer.useWeightParameter ? "parameter" : "constant" },
 				{ "value", layer.fixedWeight },
 				{ "parameter", layer.weightParameter },
-				{ "smoothingTime", layer.weightSmoothingTime }
+				{ "smoothingTime", layer.weightSmoothingTime },
+				{ "curve", layer.weightCurve },
+				{ "curveDefault", layer.weightCurveDefault }
+			} },
+			{ "activation", {
+				{ "blendInSeconds", layer.activationBlendInSeconds },
+				{ "blendOutSeconds", layer.activationBlendOutSeconds },
+				{ "curve", ToString(layer.activationCurve) },
+				{ "restartOnRise", layer.restartOnActivation }
+			} },
+			{ "dynamicAdditive", {
+				{ "enabled", layer.dynamicAdditive },
+				{ "weight", layer.dynamicAdditiveWeight }
+			} },
+			{ "inertialization", {
+				{ "halfLife", layer.inertializationHalfLife },
+				{ "maxDuration", layer.inertializationMaxDuration }
 			} },
 			{ "outputs", {
 				{ "rootMotion", ToString(layer.rootMotion) },
@@ -389,7 +410,8 @@ namespace
 	{
 		std::string unknown;
 		if (!HasOnlyFields(source,
-			{ "id", "name", "kind", "mask", "blend", "weight", "outputs", "sync", "updateWhenWeightIsZero" },
+			{ "id", "name", "kind", "mask", "blend", "weight", "activation", "dynamicAdditive",
+			  "inertialization", "outputs", "sync", "updateWhenWeightIsZero" },
 			unknown))
 		{
 			error = "Invalid or unknown Layer field: " + unknown;
@@ -412,11 +434,17 @@ namespace
 		const json& mask = source["mask"];
 		const json& blend = source["blend"];
 		const json& weight = source["weight"];
+		const json activation = source.value("activation", json::object());
+		const json dynamicAdditive = source.value("dynamicAdditive", json::object());
+		const json inertialization = source.value("inertialization", json::object());
 		const json& outputs = source["outputs"];
 		const json& sync = source["sync"];
 		if (!HasOnlyFields(mask, { "guid", "pathHint" }, unknown)
 			|| !HasOnlyFields(blend, { "mode", "rotationSpace", "additiveReference" }, unknown)
-			|| !HasOnlyFields(weight, { "source", "value", "parameter", "smoothingTime" }, unknown)
+			|| !HasOnlyFields(weight, { "source", "value", "parameter", "smoothingTime", "curve", "curveDefault" }, unknown)
+			|| !HasOnlyFields(activation, { "blendInSeconds", "blendOutSeconds", "curve", "restartOnRise" }, unknown)
+			|| !HasOnlyFields(dynamicAdditive, { "enabled", "weight" }, unknown)
+			|| !HasOnlyFields(inertialization, { "halfLife", "maxDuration" }, unknown)
 			|| !HasOnlyFields(outputs, { "rootMotion", "curves", "events", "nodeTracks", "eventWeightThreshold" }, unknown)
 			|| !HasOnlyFields(sync, { "mode", "leaderLayerId" }, unknown))
 		{
@@ -446,6 +474,15 @@ namespace
 			layer.fixedWeight = weight.at("value").get<float>();
 			layer.weightParameter = weight.at("parameter").get<std::string>();
 			layer.weightSmoothingTime = weight.at("smoothingTime").get<float>();
+			layer.weightCurve = weight.value("curve", "");
+			layer.weightCurveDefault = weight.value("curveDefault", 1.0f);
+			layer.activationBlendInSeconds = activation.value("blendInSeconds", 0.0f);
+			layer.activationBlendOutSeconds = activation.value("blendOutSeconds", 0.0f);
+			layer.restartOnActivation = activation.value("restartOnRise", false);
+			layer.dynamicAdditive = dynamicAdditive.value("enabled", false);
+			layer.dynamicAdditiveWeight = dynamicAdditive.value("weight", 0.0f);
+			layer.inertializationHalfLife = inertialization.value("halfLife", 0.0f);
+			layer.inertializationMaxDuration = inertialization.value("maxDuration", 0.0f);
 			layer.syncLeaderLayerId = sync.at("leaderLayerId").get<std::string>();
 			layer.eventWeightThreshold = outputs.at("eventWeightThreshold").get<float>();
 			layer.updateWhenWeightIsZero = source["updateWhenWeightIsZero"].get<bool>();
@@ -477,6 +514,14 @@ namespace
 				error = "Layer contains an unknown enum value";
 				return false;
 			}
+			const std::string activationCurve = activation.value("curve", "smoothStep");
+			if (!ParseEnum(activationCurve,
+				{ { "linear", VansLayerActivationCurve::Linear },
+				  { "smoothStep", VansLayerActivationCurve::SmoothStep } }, layer.activationCurve))
+			{
+				error = "Layer activation contains an unknown curve";
+				return false;
+			}
 
 			const std::string weightSource = weight.at("source").get<std::string>();
 			if (weightSource != "constant" && weightSource != "parameter")
@@ -485,6 +530,24 @@ namespace
 				return false;
 			}
 			layer.useWeightParameter = weightSource == "parameter";
+			const bool finiteActivation = std::isfinite(layer.activationBlendInSeconds)
+				&& std::isfinite(layer.activationBlendOutSeconds)
+				&& layer.activationBlendInSeconds >= 0.0f
+				&& layer.activationBlendOutSeconds >= 0.0f;
+			const bool finiteDynamicAdditive = std::isfinite(layer.dynamicAdditiveWeight)
+				&& layer.dynamicAdditiveWeight >= 0.0f
+				&& layer.dynamicAdditiveWeight <= 1.0f;
+			const bool finiteInertialization = std::isfinite(layer.inertializationHalfLife)
+				&& std::isfinite(layer.inertializationMaxDuration)
+				&& layer.inertializationHalfLife >= 0.0f
+				&& layer.inertializationMaxDuration >= 0.0f;
+			const bool finiteCurveWeight = std::isfinite(layer.weightCurveDefault)
+				&& layer.weightCurveDefault >= 0.0f && layer.weightCurveDefault <= 1.0f;
+			if (!finiteActivation || !finiteDynamicAdditive || !finiteInertialization || !finiteCurveWeight)
+			{
+				error = "Layer activation, dynamic additive, and inertialization values must be finite and non-negative";
+				return false;
+			}
 		}
 		catch (const json::exception& exception)
 		{
@@ -720,6 +783,21 @@ namespace
 							[](float value) { return !std::isfinite(value); }))
 					{
 						error = "Blend1D node in Graph '" + graph.name + "' requires a float parameter and sorted finite thresholds";
+						return false;
+					}
+				}
+				else if (node->GetType() == AnimGraphNodeType::BlendSpace2D)
+				{
+					const auto* blend = static_cast<const AnimGraphBlendSpace2DNode*>(node.get());
+					bool finiteSamples = !blend->m_Samples.empty();
+					for (const auto& sample : blend->m_Samples)
+						finiteSamples = finiteSamples && std::isfinite(sample.x) && std::isfinite(sample.y);
+					if (!hasParameter(blend->m_XParamName, AnimatorParamType::Float)
+						|| !hasParameter(blend->m_YParamName, AnimatorParamType::Float)
+						|| !finiteSamples)
+					{
+						error = "BlendSpace2D node in Graph '" + graph.name
+							+ "' requires two float parameters and finite samples";
 						return false;
 					}
 				}
@@ -1307,7 +1385,7 @@ namespace
 		for (const VansAnimationSlotDefinition& slot : data.slots)
 		{
 			slotArray.push_back({
-				{ "id", slot.id }, { "name", slot.name }, { "layerId", slot.layerId },
+				{ "id", slot.id }, { "name", slot.name }, { "layerId", slot.layerId }, { "group", slot.group },
 				{ "concurrency", ToString(slot.concurrency) },
 				{ "maxQueueDepth", slot.maxQueueDepth }, { "defaultBlendIn", slot.defaultBlendIn },
 				{ "defaultBlendOut", slot.defaultBlendOut }, { "interruptible", slot.interruptible }
@@ -1638,7 +1716,7 @@ static bool DeserializeAnimatorRoot(
 		{
 			std::string unknown;
 			if (!HasOnlyFields(source,
-				{ "id", "name", "layerId", "concurrency", "maxQueueDepth", "defaultBlendIn", "defaultBlendOut", "interruptible" },
+				{ "id", "name", "layerId", "group", "concurrency", "maxQueueDepth", "defaultBlendIn", "defaultBlendOut", "interruptible" },
 				unknown))
 			{
 				VANS_LOG_ERROR("[VansAnimatorIO] Invalid Slot field '" << unknown << "' in: " << filePath);
@@ -1648,6 +1726,7 @@ static bool DeserializeAnimatorRoot(
 			slot.id = source.at("id").get<std::string>();
 			slot.name = source.at("name").get<std::string>();
 			slot.layerId = source.at("layerId").get<std::string>();
+			slot.group = source.value("group", "");
 			slot.maxQueueDepth = source.at("maxQueueDepth").get<std::uint32_t>();
 			slot.defaultBlendIn = source.at("defaultBlendIn").get<float>();
 			slot.defaultBlendOut = source.at("defaultBlendOut").get<float>();

@@ -13,6 +13,11 @@ namespace VansGraphics
 		float positionTolerance = 0.001f;
 		float weight = 1.0f;
 		bool commitClampedPose = true;
+		// Optional model-space pole supplied by retargeting. Normal graph IK keeps
+		// using the authored chain pole; retargeting can override it from the
+		// source pose so the target elbow follows the source bend plane.
+		glm::vec3 poleDirectionModel{ 0.0f };
+		bool hasPoleDirectionModel = false;
 	};
 
 	class VansLimbIKSolver

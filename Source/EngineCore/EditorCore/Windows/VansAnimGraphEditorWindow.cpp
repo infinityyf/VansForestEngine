@@ -30,6 +30,7 @@ namespace VansGraphics
 	using AnimGraphClipNode = Vans::EditorAPI::AnimationNodeDTO;
 	using AnimGraphBlendNode = Vans::EditorAPI::AnimationNodeDTO;
 	using AnimGraphBlend1DNode = Vans::EditorAPI::AnimationNodeDTO;
+	using AnimGraphBlendSpace2DNode = Vans::EditorAPI::AnimationNodeDTO;
 	using AnimGraphIfConditionNode = Vans::EditorAPI::AnimationNodeDTO;
 	using AnimGraphSwitchNode = Vans::EditorAPI::AnimationNodeDTO;
 	using AnimGraphAdditiveBlendNode = Vans::EditorAPI::AnimationNodeDTO;
@@ -59,6 +60,7 @@ namespace VansGraphics
 	using VansLayerEventMode = Vans::EditorAPI::VansLayerEventMode;
 	using VansLayerNodeTrackMode = Vans::EditorAPI::VansLayerNodeTrackMode;
 	using VansLayerSyncMode = Vans::EditorAPI::VansLayerSyncMode;
+	using VansLayerActivationCurve = Vans::EditorAPI::VansLayerActivationCurve;
 	using VansSlotConcurrency = Vans::EditorAPI::VansSlotConcurrency;
 	using AnimationGoalSource = Vans::EditorAPI::AnimationGoalSource;
 	using AnimationGoalDefinition = Vans::EditorAPI::AnimationGoalDefinitionDTO;
@@ -1165,6 +1167,25 @@ void VansAnimGraphEditorWindow::DrawLayersPanel()
 				}
 				else if (ImGui::SliderFloat("Weight", &layer.fixedWeight, 0.0f, 1.0f)) m_EditState->isDirty = true;
 				if (ImGui::DragFloat("Weight Smoothing", &layer.weightSmoothingTime, 0.01f, 0.0f)) m_EditState->isDirty = true;
+				if (EditStringProperty("Weight Curve", layer.weightCurve)) m_EditState->isDirty = true;
+				if (!layer.weightCurve.empty()
+					&& ImGui::SliderFloat("Curve Default", &layer.weightCurveDefault, 0.0f, 1.0f))
+					m_EditState->isDirty = true;
+				if (ImGui::DragFloat("Activation Blend In", &layer.activationBlendInSeconds, 0.01f, 0.0f)) m_EditState->isDirty = true;
+				if (ImGui::DragFloat("Activation Blend Out", &layer.activationBlendOutSeconds, 0.01f, 0.0f)) m_EditState->isDirty = true;
+				int activationCurve = static_cast<int>(layer.activationCurve);
+				if (ImGui::Combo("Activation Curve", &activationCurve, "Linear\0Smooth Step\0"))
+				{
+					layer.activationCurve = static_cast<VansLayerActivationCurve>(activationCurve);
+					m_EditState->isDirty = true;
+				}
+				if (ImGui::Checkbox("Restart On Activation", &layer.restartOnActivation)) m_EditState->isDirty = true;
+				if (ImGui::Checkbox("Dynamic Additive", &layer.dynamicAdditive)) m_EditState->isDirty = true;
+				if (layer.dynamicAdditive
+					&& ImGui::SliderFloat("Dynamic Additive Weight", &layer.dynamicAdditiveWeight, 0.0f, 1.0f))
+					m_EditState->isDirty = true;
+				if (ImGui::DragFloat("Inertialization Half Life", &layer.inertializationHalfLife, 0.01f, 0.0f)) m_EditState->isDirty = true;
+				if (ImGui::DragFloat("Inertialization Max Duration", &layer.inertializationMaxDuration, 0.01f, 0.0f)) m_EditState->isDirty = true;
 			}
 
 			int rootMotion = static_cast<int>(layer.rootMotion);
@@ -1520,6 +1541,7 @@ void VansAnimGraphEditorWindow::DrawGraphEditorCanvas()
 		if (!targetPostProcess && ImGui::MenuItem("Clip")) addNode(AnimGraphNodeType::Clip);
 		if (ImGui::MenuItem("Blend")) addNode(AnimGraphNodeType::Blend);
 		if (ImGui::MenuItem("Blend 1D")) addNode(AnimGraphNodeType::Blend1D);
+		if (ImGui::MenuItem("Blend Space 2D")) addNode(AnimGraphNodeType::BlendSpace2D);
 		if (ImGui::MenuItem("If Condition")) addNode(AnimGraphNodeType::IfCondition);
 		if (ImGui::MenuItem("Switch")) addNode(AnimGraphNodeType::Switch);
 		if (ImGui::MenuItem("Additive Blend")) addNode(AnimGraphNodeType::AdditiveBlend);
@@ -1553,6 +1575,7 @@ static ImU32 GetNodeHeaderColor(AnimGraphNodeType type)
     case AnimGraphNodeType::Clip:          return IM_COL32(80,  140, 220, 255);  // 蓝
     case AnimGraphNodeType::Blend:         return IM_COL32(160, 100, 220, 255);  // 紫
 	case AnimGraphNodeType::Blend1D:       return IM_COL32(140, 110, 200, 255);
+	case AnimGraphNodeType::BlendSpace2D:  return IM_COL32(120, 100, 220, 255);
 	case AnimGraphNodeType::IfCondition:   return IM_COL32(230, 160, 50,  255);  // ?
 	case AnimGraphNodeType::Switch:        return IM_COL32(210, 200, 60,  255);  // ?
 	case AnimGraphNodeType::AdditiveBlend: return IM_COL32(100, 180, 180, 255);  // ?
@@ -1582,6 +1605,11 @@ static const char* GetNodeSubtitle(VansAnimGraphNode* node)
 	{
 		auto* n = static_cast<AnimGraphBlend1DNode*>(node);
 		return n->m_ParamName.c_str();
+	}
+	case AnimGraphNodeType::BlendSpace2D:
+	{
+		auto* n = static_cast<AnimGraphBlendSpace2DNode*>(node);
+		return n->m_XParamName.c_str();
 	}
 	case AnimGraphNodeType::IfCondition:
 	{
@@ -1793,6 +1821,21 @@ void VansAnimGraphEditorWindow::DrawPropertiesPanel()
 		{
 			ImGui::PushID(index);
 			if (ImGui::DragFloat("##Threshold", &n->m_Thresholds[index], 0.01f))
+				m_EditState->isDirty = true;
+			ImGui::PopID();
+		}
+		break;
+	}
+	case AnimGraphNodeType::BlendSpace2D:
+	{
+		auto* n = static_cast<AnimGraphBlendSpace2DNode*>(node);
+		if (EditStringProperty("X Parameter", n->m_XParamName)) m_EditState->isDirty = true;
+		if (EditStringProperty("Y Parameter", n->m_YParamName)) m_EditState->isDirty = true;
+		ImGui::Text("Samples: %d", static_cast<int>(n->m_BlendSpaceSamples.size()));
+		for (int index = 0; index < static_cast<int>(n->m_BlendSpaceSamples.size()); ++index)
+		{
+			ImGui::PushID(index);
+			if (ImGui::DragFloat2("##Sample", &n->m_BlendSpaceSamples[static_cast<size_t>(index)].x, 0.01f))
 				m_EditState->isDirty = true;
 			ImGui::PopID();
 		}

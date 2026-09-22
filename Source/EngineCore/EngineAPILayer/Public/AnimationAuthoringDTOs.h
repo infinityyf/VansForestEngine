@@ -13,12 +13,14 @@ namespace Vans::EditorAPI
 {
 	struct AnimationVector3DTO { float x = 0.0f, y = 0.0f, z = 0.0f; };
 	struct AnimationQuaternionDTO { float x = 0.0f, y = 0.0f, z = 0.0f, w = 1.0f; };
+	struct AnimationBlendSpaceSampleDTO { float x = 0.0f, y = 0.0f; };
 
 	enum class AnimatorParamType { Float, Bool, Int, Trigger, Vector3, Quaternion };
 	enum class CompareOp { Greater, Less, Equal, NotEqual, GreaterEqual, LessEqual };
 	enum class AnimGraphNodeType
 	{
 		Entry, Output, Clip, Blend, Blend1D, IfCondition, Switch, AdditiveBlend,
+		BlendSpace2D,
 		SpeedScale, StateMachine, MotionMatching, Slot, TargetPoseInput, Goal,
 		AimConstraint, Grounding, LimbIK, ChainIK, PoseCheckpoint, RotationDistribution
 	};
@@ -37,6 +39,7 @@ namespace Vans::EditorAPI
 	enum class VansLayerEventMode { Ignore, ActiveOnly, Always };
 	enum class VansLayerNodeTrackMode { Ignore, Override };
 	enum class VansLayerSyncMode { Independent, NormalizedTime, MarkerSync, SyncedGraph };
+	enum class VansLayerActivationCurve { Linear, SmoothStep };
 	enum class VansSlotConcurrency { Replace, Queue, Reject };
 	enum class VansGraphSetBlendCurve { Linear, SmoothStep };
 	enum class VansGraphSetPhasePolicy { Restart, MatchNormalizedTime, MatchMarker };
@@ -205,10 +208,14 @@ namespace Vans::EditorAPI
 		std::string m_ClipName;
 		float m_Speed = 1.0f;
 		bool m_Loop = true;
+		bool m_RootMotion = true;
 		std::string m_ParamName;
 		float m_FixedAlpha = 0.5f;
 		bool m_UseParam = true;
 		std::vector<float> m_Thresholds;
+		std::string m_XParamName;
+		std::string m_YParamName;
+		std::vector<AnimationBlendSpaceSampleDTO> m_BlendSpaceSamples;
 		CompareOp m_CompareOp = CompareOp::Greater;
 		float m_FloatVal = 0.0f;
 		bool m_BoolVal = false;
@@ -302,6 +309,16 @@ namespace Vans::EditorAPI
 		float fixedWeight = 1.0f;
 		bool useWeightParameter = false;
 		float weightSmoothingTime = 0.0f;
+		std::string weightCurve;
+		float weightCurveDefault = 1.0f;
+		float activationBlendInSeconds = 0.0f;
+		float activationBlendOutSeconds = 0.0f;
+		VansLayerActivationCurve activationCurve = VansLayerActivationCurve::SmoothStep;
+		bool restartOnActivation = false;
+		bool dynamicAdditive = false;
+		float dynamicAdditiveWeight = 0.0f;
+		float inertializationHalfLife = 0.0f;
+		float inertializationMaxDuration = 0.0f;
 		VansLayerRootMotionMode rootMotion = VansLayerRootMotionMode::Ignore;
 		VansLayerCurveMode curves = VansLayerCurveMode::Blend;
 		VansLayerEventMode events = VansLayerEventMode::ActiveOnly;
@@ -347,6 +364,7 @@ namespace Vans::EditorAPI
 	struct AnimationSlotDTO
 	{
 		std::string id, name, layerId;
+		std::string group;
 		VansSlotConcurrency concurrency = VansSlotConcurrency::Replace;
 		std::uint32_t maxQueueDepth = 4;
 		float defaultBlendIn = 0.08f;
@@ -449,6 +467,7 @@ namespace Vans::EditorAPI
 		case AnimGraphNodeType::Clip: return "Clip";
 		case AnimGraphNodeType::Blend: return "Blend";
 		case AnimGraphNodeType::Blend1D: return "Blend1D";
+		case AnimGraphNodeType::BlendSpace2D: return "BlendSpace2D";
 		case AnimGraphNodeType::IfCondition: return "IfCondition";
 		case AnimGraphNodeType::Switch: return "Switch";
 		case AnimGraphNodeType::AdditiveBlend: return "AdditiveBlend";
@@ -484,6 +503,14 @@ namespace Vans::EditorAPI
 		{
 			std::vector<AnimGraphPinDTO> pins;
 			for (int index = 0; index < static_cast<int>(m_Thresholds.size()); ++index)
+				pins.push_back(input(index, "Pose " + std::to_string(index)));
+			pins.push_back(output(0, "Pose"));
+			return pins;
+		}
+		case AnimGraphNodeType::BlendSpace2D:
+		{
+			std::vector<AnimGraphPinDTO> pins;
+			for (int index = 0; index < static_cast<int>(m_BlendSpaceSamples.size()); ++index)
 				pins.push_back(input(index, "Pose " + std::to_string(index)));
 			pins.push_back(output(0, "Pose"));
 			return pins;
@@ -528,6 +555,8 @@ namespace Vans::EditorAPI
 		node->m_Type = type;
 		node->m_Name = AnimationNodeDTO::TypeToString(type);
 		if (type == AnimGraphNodeType::Blend1D) node->m_Thresholds = { 0.0f, 1.0f };
+		if (type == AnimGraphNodeType::BlendSpace2D)
+			node->m_BlendSpaceSamples = { { 0.0f, 0.0f }, { 1.0f, 0.0f }, { 0.0f, 1.0f } };
 		if (type == AnimGraphNodeType::Slot) node->m_EnableFallbackInput = true;
 		return node;
 	}

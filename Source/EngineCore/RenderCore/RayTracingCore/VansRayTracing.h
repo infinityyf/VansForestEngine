@@ -106,7 +106,8 @@ namespace VansGraphics
         bool ApplyWorldColorPatch(uint32_t map,uint32_t x,uint32_t y,uint32_t w,uint32_t h,
             const std::vector<uint8_t>& pixels);
         void SetWorldViewCenter(glm::vec3 center);
-        uint64_t GetWorldGeometryRevision() const { return m_State->world ? m_State->world->Revision() : 0; }
+		uint64_t GetWorldGeometryRevision() const { return m_State->world ? m_State->world->Revision() : 0; }
+		VansGIWorld* GetGIWorld() const { return m_State->world.get(); }
 		uint64_t GetWorldAllocatedBytes() const { return m_State->world ? m_State->world->AllocatedBytes() : 0; }
 
 		void RequestGIRTPreviews(uint32_t zSlice, uint32_t rayIndex, float exposure, float positionScale);

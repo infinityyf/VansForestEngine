@@ -2841,6 +2841,12 @@ namespace VansGraphics
 						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, true, false, true, false },
 					{ "GIData", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, VK_ACCESS_SHADER_WRITE_BIT,
 						VK_IMAGE_LAYOUT_GENERAL, true, true, true, false }
+					,{ "AmbientSkyCacheX", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+						VK_IMAGE_LAYOUT_GENERAL, true, true, true, false }
+					,{ "AmbientSkyCacheY", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+						VK_IMAGE_LAYOUT_GENERAL, true, true, true, false }
+					,{ "AmbientSkyCacheZ", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+						VK_IMAGE_LAYOUT_GENERAL, true, true, true, false }
 				};
 				giData.fence = m_CurrentFrameContext.giDataFence;
 				m_FrameSubmitOrchestrator.AddNode(std::move(giData));
@@ -2969,6 +2975,12 @@ namespace VansGraphics
 					{ "LocalMediaOpticalDepth", VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
 						VK_IMAGE_LAYOUT_GENERAL, true, false, true, false },
 					{ "GIData", VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
+						VK_IMAGE_LAYOUT_GENERAL, true, false, true, false },
+					{ "AmbientSkyCacheX", VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
+						VK_IMAGE_LAYOUT_GENERAL, true, false, true, false },
+					{ "AmbientSkyCacheY", VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
+						VK_IMAGE_LAYOUT_GENERAL, true, false, true, false },
+					{ "AmbientSkyCacheZ", VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
 						VK_IMAGE_LAYOUT_GENERAL, true, false, true, false },
 					{ "SSAO", VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
 						VK_IMAGE_LAYOUT_GENERAL, true, false, false, false },

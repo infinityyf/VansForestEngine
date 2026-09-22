@@ -132,6 +132,26 @@ void VansPcgWindow::ShowSplines(Vans::EditorAPI::IEngineEditorAPI& api,Vans::Edi
                         {m_SplineDraft.materialGuid=asset.guid;submit(PcgSplineEditPhase::Apply);}
                     ImGui::EndCombo();
                 }
+                // 切换模式前也可设置独立材质，避免未赋材质的投影模式无法提交。
+                if (ImGui::BeginCombo("Road decal material",m_SplineDraft.roadDecalMaterialGuid.empty()?"Choose PBR material":m_SplineDraft.roadDecalMaterialGuid.c_str()))
+                {
+                    for (const auto& asset:api.QueryAssets({AssetType::Material}))
+                        if (ImGui::Selectable((asset.name+"##road-decal-"+asset.guid).c_str(),asset.guid==m_SplineDraft.roadDecalMaterialGuid))
+                        {m_SplineDraft.roadDecalMaterialGuid=asset.guid;submit(PcgSplineEditPhase::Apply);}
+                    ImGui::EndCombo();
+                }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Independent PBR surface material for Road Decal. Uses road UV projection, not the ordinary Decal shader.");
+                int roadRenderMode=static_cast<int>(m_SplineDraft.roadRenderMode);
+                if (ImGui::Combo("Road render",&roadRenderMode,"Road mesh\0Projected decal\0"))
+                {
+                    m_SplineDraft.roadRenderMode=static_cast<PcgRoadRenderMode>(roadRenderMode);
+                    submit(PcgSplineEditPhase::Apply);
+                }
+                if (m_SplineDraft.roadRenderMode==PcgRoadRenderMode::ProjectedDecal)
+                {
+                    live(ImGui::DragFloat("Projection depth (m)",&m_SplineDraft.projectedDepth,.1f,.05f,100));
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("The proxy volume extends downward only to rasterize the road onto terrain.");
+                }
                 live(ImGui::DragFloat("Road surface offset (m)",&m_SplineDraft.surfaceOffset,.005f,0,1));
                 live(ImGui::DragFloat("Along-road repeat (m)",&m_SplineDraft.textureRepeat,.1f,.01f,1000));
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("One texture across the full road width; repeat along the spline. U runs across, V runs along the road.");

@@ -152,6 +152,8 @@ namespace Vans::EditorAPI
 		CommandRecordingSettingsSnapshot GetCommandRecordingSettings() const override;
 		void SetCommandRecordingSettings(const CommandRecordingSettingsSnapshot& settings) override;
 		std::vector<RenderTexturePreview> QueryRenderTexturePreviews(RenderTextureFilter filter) const override;
+		std::uint32_t GetAmbientSkyCacheDebugMode() const override;
+		void SetAmbientSkyCacheDebugMode(std::uint32_t mode) override;
 		void RequestPunctualShadowDebugPreview() override;
 		PunctualShadowDebugSnapshot GetPunctualShadowDebugSnapshot() const override;
 		void ApplyPunctualScreenSpaceShadowSettings(

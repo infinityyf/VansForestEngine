@@ -385,6 +385,20 @@ bool VansRetargetProcessor::Process(
 			settings.positionTolerance = 0.001f;
 			settings.weight = 1.0f;
 			settings.commitClampedPose = true;
+			const glm::vec3 sourceBend = sourceMid - sourceRoot;
+			const float sourceRootToTipLengthSq = glm::dot(sourceRootToTip, sourceRootToTip);
+			if (sourceRootToTipLengthSq > 1.0e-8f)
+			{
+				const glm::vec3 sourcePole = sourceBend
+					- sourceRootToTip * (glm::dot(sourceBend, sourceRootToTip)
+						/ sourceRootToTipLengthSq);
+				const glm::vec3 targetPole = sourceToTargetRotation * sourcePole;
+				if (glm::dot(targetPole, targetPole) > 1.0e-8f)
+				{
+					settings.poleDirectionModel = glm::normalize(targetPole);
+					settings.hasPoleDirectionModel = true;
+				}
+			}
 			const VansProceduralSolverResult result = VansLimbIKSolver::Solve(
 				workspace, m_TargetRig, targetChain, target, settings);
 			if (result.status == VansProceduralSolverStatus::InvalidInput)

@@ -238,6 +238,9 @@ void VansSceneContentBuildExecutor::ApplyGISettings(
 		ApplyOptionalValue(config->placement.maxProbeCount, giSettings.placement.maxProbeCount);
 		ApplyOptionalValue(config->placement.maxProbeUpdatesPerFrame, giSettings.placement.maxProbeUpdatesPerFrame);
 		ApplyOptionalValue(config->placement.maxRaysPerFrame, giSettings.placement.maxRaysPerFrame);
+		ApplyOptionalValue(config->ambientSkyCache.enabled, giSettings.ambientSkyCache.enabled);
+		ApplyOptionalValue(config->ambientSkyCache.gridSpacing, giSettings.ambientSkyCache.gridSpacing);
+		ApplyOptionalValue(config->ambientSkyCache.queriesPerFrame, giSettings.ambientSkyCache.queriesPerFrame);
 		if (!config->regions.empty())
 		{
 			giSettings.regions.clear();

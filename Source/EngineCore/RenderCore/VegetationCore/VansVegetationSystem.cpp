@@ -972,6 +972,17 @@ void VansVegetationSystem::DrawTrees(VansVKCommandBuffer& graphicsCmd,
 	{
 		if (!cfg.mesh || !cfg.material || cfg.instanceCapacity == 0)
 			continue;
+		static bool loggedTreeDrawConfig = false;
+		if (!loggedTreeDrawConfig)
+		{
+			const auto* pbr = dynamic_cast<const VansPBRMaterial*>(cfg.material);
+			VANS_LOG("[VegetationTreeDiag] material=" << cfg.material->m_AssetName
+				<< " type=" << static_cast<uint32_t>(cfg.partType)
+				<< " materialIndex=" << ResolveTreeMaterialIndex(cfg.material)
+				<< " alphaClip=" << (pbr ? pbr->m_TreeLeafParams.scattering.w : -1.0f)
+				<< " indexCount=" << cfg.mesh->GetIndexCount());
+			loggedTreeDrawConfig = true;
+		}
 
 		const int materialIndex = ResolveTreeMaterialIndex(cfg.material);
 		if (materialIndex < 0)

@@ -66,6 +66,33 @@ void VansSceneWindow::DrawSplineTools(Vans::EditorAPI::IEngineEditorAPI& api,con
             line(vec(guide.left[i-1]),vec(guide.left[i]),IM_COL32(90,210,240,180),1);
             line(vec(guide.right[i-1]),vec(guide.right[i]),IM_COL32(90,210,240,180),1);
         }
+        if (selected)
+        {
+            const auto spline=std::find_if(snapshot.splines.begin(),snapshot.splines.end(),
+                [&](const auto& item){return item.id==guide.id;});
+            if (spline!=snapshot.splines.end() && spline->kind==PcgSplineKind::Road &&
+                spline->roadRenderMode==PcgRoadRenderMode::ProjectedDecal)
+            {
+                const float depth=std::max(spline->projectedDepth,.05f);
+                const auto lower=[&](const std::array<float,3>& value) {
+                    auto p=vec(value);p.y-=depth;return p;
+                };
+                const auto proxyColor=IM_COL32(255,120,80,210);
+                for (std::size_t i=1;i<guide.center.size();++i)
+                {
+                    line(lower(guide.left[i-1]),lower(guide.left[i]),proxyColor,1.5f);
+                    line(lower(guide.right[i-1]),lower(guide.right[i]),proxyColor,1.5f);
+                }
+                for (std::size_t i=0;i<guide.center.size();i+=std::max<std::size_t>(1,guide.center.size()/48))
+                {
+                    line(vec(guide.left[i]),lower(guide.left[i]),proxyColor,1);
+                    line(vec(guide.right[i]),lower(guide.right[i]),proxyColor,1);
+                }
+                if (!guide.center.empty())
+                    draw->AddText(ImVec2(origin.x+12,origin.y+32),proxyColor,
+                        "Road decal proxy volume (downward)");
+            }
+        }
     }
     std::string hitSpline,hitPoint;int hitHandle=0;float nearest=100;
     for (const auto& p:snapshot.uncoveredBankPoints)

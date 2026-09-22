@@ -245,10 +245,18 @@ struct VansSceneGIWorldConfig
 	std::optional<uint32_t> levelCount, maxBricks, bricksPerFrame, maxTraceSteps;
 };
 
+struct VansSceneGIAmbientSkyCacheConfig
+{
+	std::optional<bool> enabled;
+	std::optional<float> gridSpacing;
+	std::optional<uint32_t> queriesPerFrame;
+};
+
 struct VansSceneGISettingsConfig
 {
 	VansSceneGIWorldConfig world;
 	VansSceneGIProbePlacementConfig placement;
+	VansSceneGIAmbientSkyCacheConfig ambientSkyCache;
 	std::vector<VansSceneGIRegionSettingsConfig> regions;
 	std::optional<float> maxIndirectRadiance;
 	std::optional<float> maxProbeRadiance;

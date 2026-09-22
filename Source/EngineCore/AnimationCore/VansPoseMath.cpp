@@ -202,6 +202,29 @@ namespace VansGraphics::VansPoseMath
 		                                      clampedWeight, referenceTransform));
 	}
 
+	glm::mat4 ApplyMeshSpaceAdditiveTransform(const glm::mat4& baseModel,
+	                                           const glm::mat4& additiveModel,
+	                                           const glm::mat4& referenceModel,
+	                                           float weight)
+	{
+		const float clampedWeight = std::clamp(weight, 0.0f, 1.0f);
+		if (clampedWeight <= 0.0f)
+			return baseModel;
+
+		// The authored additive is expressed relative to the reference pose in
+		// mesh space.  Interpolating the complete delta (translation, rotation,
+		// and scale) from identity preserves UE's Apply Mesh Space Additive
+		// semantics instead of treating translation as a local-space offset.
+		const glm::mat4 delta = glm::inverse(referenceModel) * additiveModel;
+		VansBoneTransform deltaTransform;
+		if (!TryDecompose(delta, deltaTransform))
+			return baseModel;
+		const VansBoneTransform identity;
+		const VansBoneTransform weightedDelta = BlendTransforms(
+			identity, deltaTransform, clampedWeight);
+		return baseModel * Compose(weightedDelta);
+	}
+
 	void BlendPoses(const std::vector<glm::mat4>& first,
 	                const std::vector<glm::mat4>& second,
 	                float alpha,

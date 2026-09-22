@@ -9,6 +9,7 @@
 namespace Vans
 {
 enum class VansPcgSplineKind { Road, River };
+enum class VansPcgRoadRenderMode { Mesh, ProjectedDecal };
 enum class VansPcgSplineTangentMode { Auto, Aligned, Mirrored, Broken };
 enum class VansPcgSplineSegmentMode { Curve, Line };
 
@@ -36,15 +37,19 @@ struct VansPcgSpline
     std::string id;
     std::string name;
     VansPcgSplineKind kind = VansPcgSplineKind::Road;
+    VansPcgRoadRenderMode roadRenderMode = VansPcgRoadRenderMode::Mesh;
     bool enabled = true;
     bool locked = false;
     int priority = 0;
     VansAssetGuid material;
+    // 投影道路独立材质；其 UV/采样语义与普通道路材质分开维护。
+    VansAssetGuid roadDecalMaterial;
     bool excludeVegetation = false;
     float vegetationFade = 2;
     float shoulder = 3;
     float blendWidth = 1;
     float surfaceOffset = 0.025f;
+    float projectedDepth = 2.0f;
     // 河流实际水位低于作者样条（岸沿）高度；深度从实际水面向下计算。
     float waterSurfaceDrop = 0.15f;
     // 水面与 Water Level 的混合宽度；首尾按点序，0 表示只在埋岸边界过渡。

@@ -15,7 +15,8 @@
 #ifndef GI_BLEND_NORMALIZE_FEEDBACK
 #define GI_BLEND_NORMALIZE_FEEDBACK false
 #endif
-vec3 GI_BlendRegionLighting(vec3 worldPosition, vec3 normal, float normalBiasScale)
+vec3 GI_BlendRegionLightingMode(vec3 worldPosition, vec3 normal, float normalBiasScale,
+    bool allowSkyForUnpublished)
 {
     uint order[8];
     float weights[8];
@@ -48,6 +49,12 @@ vec3 GI_BlendRegionLighting(vec3 worldPosition, vec3 normal, float normalBiasSca
     for (uint slot = 0u; slot < count && remaining > 0.0; ++slot)
     {
         vec4 sampleValue = GI_SAMPLE_REGION(order[slot], worldPosition, normal, normalBiasScale);
+        if (allowSkyForUnpublished && sampleValue.a <= 0.0)
+        {
+            // 叶片可能落在区域范围内但尚未有已发布 probe；保留天空残差，
+            // 避免把“未发布”错误解释成封闭空间的纯黑。
+            continue;
+        }
         float weight = remaining * weights[slot] * clamp(sampleValue.a, 0.0, 1.0);
         lighting += weight * sampleValue.rgb;
         resolvedWeight += weight;
@@ -61,5 +68,10 @@ vec3 GI_BlendRegionLighting(vec3 worldPosition, vec3 normal, float normalBiasSca
         return resolvedWeight > 0.0 ? lighting / resolvedWeight : vec3(0.0);
     if (remaining > 0.0) lighting += min(remaining, skyWeight) * GI_SAMPLE_SKY(normal);
     return lighting;
+}
+
+vec3 GI_BlendRegionLighting(vec3 worldPosition, vec3 normal, float normalBiasScale)
+{
+    return GI_BlendRegionLightingMode(worldPosition, normal, normalBiasScale, false);
 }
 #endif

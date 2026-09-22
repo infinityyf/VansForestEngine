@@ -17,6 +17,7 @@
 #include <chrono>
 #include <cstring>
 #include <cmath>
+#include <string_view>
 #include <unordered_set>
 
 using namespace VansGraphics;
@@ -74,6 +75,13 @@ namespace
 	{
 		const float t = std::clamp(progress, 0.0f, 1.0f);
 		return curve == VansGraphSetBlendCurve::SmoothStep
+			? t * t * (3.0f - 2.0f * t) : t;
+	}
+
+	float EvaluateLayerActivationCurve(VansLayerActivationCurve curve, float progress)
+	{
+		const float t = std::clamp(progress, 0.0f, 1.0f);
+		return curve == VansLayerActivationCurve::SmoothStep
 			? t * t * (3.0f - 2.0f * t) : t;
 	}
 
@@ -615,6 +623,27 @@ VansGraphSetSwitchResult VansAnimationController::SwitchGraphSet(
 	return VansGraphSetSwitchResult::Started;
 }
 
+bool VansAnimationController::RestartLayer(const std::string& layerId)
+{
+	if (layerId.empty())
+		return false;
+	const auto layer = std::find_if(m_LayerRuntimes.begin(), m_LayerRuntimes.end(),
+		[&layerId](const LayerRuntime& runtime) { return runtime.definition.id == layerId; });
+	if (layer == m_LayerRuntimes.end())
+		return false;
+	const std::size_t layerIndex = static_cast<std::size_t>(
+		std::distance(m_LayerRuntimes.begin(), layer));
+	for (GraphSetRuntime& graphSet : m_GraphSetRuntimes)
+	{
+		if (layerIndex >= graphSet.bindings.size())
+			continue;
+		GraphBindingRuntime& binding = graphSet.bindings[layerIndex];
+		if (binding.instance)
+			binding.instance->Reset();
+	}
+	return true;
+}
+
 void VansAnimationController::CompleteGraphSetTransition()
 {
 	if (!IsGraphSetTransitioning())
@@ -1062,6 +1091,12 @@ const MotionMatchingDebugData* VansAnimationController::GetMotionMatchingDebugDa
 {
 	const VansMotionMatchingRuntime* runtime = GetOutputMotionMatchingRuntime();
 	return runtime ? &runtime->GetDebugData() : nullptr;
+}
+
+bool VansAnimationController::IsMotionMatchingUsedThisFrame() const
+{
+	const VansMotionMatchingRuntime* runtime = GetOutputMotionMatchingRuntime();
+	return runtime && runtime->WasUsedThisFrame();
 }
 
 const MotionMatchingSettings* VansAnimationController::GetMotionMatchingSettings() const
@@ -1730,10 +1765,32 @@ bool VansAnimationController::PrepareLayerStack(
 					? parameter->second.floatVal : 0.0f;
 		}
 		targetWeight = std::clamp(targetWeight, 0.0f, 1.0f);
+		const float previousWeight = layer.state.currentWeight;
 		if (!layer.state.initialized)
 		{
 			layer.state.currentWeight = targetWeight;
+			layer.state.targetWeight = targetWeight;
 			layer.state.initialized = true;
+		}
+		else if (layer.definition.kind == VansAnimationLayerKind::Overlay
+			&& (layer.definition.activationBlendInSeconds > 0.0f
+				|| layer.definition.activationBlendOutSeconds > 0.0f))
+		{
+			layer.state.activationRisePending = previousWeight <= 1.0e-6f
+				&& targetWeight > 1.0e-6f;
+			const bool rising = targetWeight > previousWeight;
+			const float duration = rising ? layer.definition.activationBlendInSeconds
+				: layer.definition.activationBlendOutSeconds;
+			if (duration <= 0.0f || std::abs(targetWeight - previousWeight) <= 1.0e-6f)
+				layer.state.currentWeight = targetWeight;
+			else
+			{
+				const float progress = std::clamp(deltaTime / duration, 0.0f, 1.0f);
+				const float alpha = EvaluateLayerActivationCurve(
+					layer.definition.activationCurve, progress);
+				layer.state.currentWeight = glm::mix(previousWeight, targetWeight, alpha);
+			}
+			layer.state.targetWeight = targetWeight;
 		}
 		else if (layer.definition.weightSmoothingTime > 0.0f)
 		{
@@ -1743,6 +1800,15 @@ bool VansAnimationController::PrepareLayerStack(
 		}
 		else
 			layer.state.currentWeight = targetWeight;
+		if (layer.state.activationRisePending && layer.definition.restartOnActivation)
+		{
+			for (GraphSetRuntime& graphSet : m_GraphSetRuntimes)
+			{
+				if (layerIndex < graphSet.bindings.size()
+					&& graphSet.bindings[layerIndex].instance)
+					graphSet.bindings[layerIndex].instance->Reset();
+			}
+		}
 	}
 	return true;
 }
@@ -1851,6 +1917,30 @@ bool VansAnimationController::EvaluateGraphSet(
 				return false;
 			continue;
 		}
+		if (layer.state.activationRisePending
+			&& layer.definition.inertializationMaxDuration > 0.0f
+			&& layer.definition.inertializationHalfLife > 0.0f
+			&& layer.state.previousPose.size() == sampled.localPose.size())
+		{
+			layer.state.inertializationActive = true;
+			layer.state.inertializationElapsed = 0.0f;
+		}
+		if (layer.state.inertializationActive
+			&& layer.state.previousPose.size() == sampled.localPose.size())
+		{
+			layer.state.inertializationElapsed += std::max(0.0f, deltaTime);
+			const float alpha = 1.0f - std::exp(-std::max(0.0f, deltaTime)
+				/ std::max(1.0e-4f, layer.definition.inertializationHalfLife));
+			for (std::size_t bone = 0; bone < sampled.localPose.size(); ++bone)
+				sampled.localPose[bone] = VansPoseMath::BlendTransforms(
+					layer.state.previousPose[bone], sampled.localPose[bone],
+					std::clamp(alpha, 0.0f, 1.0f));
+			if (layer.state.inertializationElapsed
+				>= layer.definition.inertializationMaxDuration)
+				layer.state.inertializationActive = false;
+		}
+		layer.state.previousPose.assign(sampled.localPose.begin(), sampled.localPose.end());
+		layer.state.activationRisePending = false;
 
 		// 图已经独立提取 Root Motion；只统一返回姿态的根参考系，
 		// 不修改 MM 的采样历史，也不把原始转身烘进 Mesh Space 叠层。
@@ -1875,6 +1965,18 @@ bool VansAnimationController::EvaluateGraphSet(
 			outPayload = std::move(sampled);
 			continue;
 		}
+		float sampledLayerWeight = layer.state.currentWeight;
+		if (!layer.definition.weightCurve.empty())
+		{
+			float curveValue = layer.definition.weightCurveDefault;
+			for (const VansAnimationCurveSample& curve : sampled.curves)
+				if (curve.present && curve.name == std::string_view(layer.definition.weightCurve))
+				{
+					curveValue = curve.value;
+					break;
+				}
+			sampledLayerWeight *= std::clamp(curveValue, 0.0f, 1.0f);
+		}
 		VansAnimationFrameVector<VansBoneTransform> referencePose = bindPose;
 		ResolveLayerReferencePose(layer, binding, skeleton, referencePose);
 		if (m_NormalizeRootPose && hasPoseRoot)
@@ -1882,7 +1984,7 @@ bool VansAnimationController::EvaluateGraphSet(
 				skeleton.bones[m_RootBoneIndex].localTransform);
 		outPayload = VansAnimationLayerMixer::ApplyLayer(
 			outPayload, sampled, layer.definition, layer.compiledMask,
-			skeleton, referencePose, layer.state.currentWeight);
+			skeleton, referencePose, sampledLayerWeight);
 	}
 	return outPayload.valid;
 }

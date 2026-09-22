@@ -67,6 +67,19 @@ VansSlotPlaybackHandle VansAnimationSlotRuntime::Play(
 	const std::size_t slotIndex = definitionIt->second;
 	const VansAnimationSlotDefinition& definition = m_Definitions[slotIndex];
 	SlotState& state = m_States[slotIndex];
+	if (!definition.group.empty())
+	{
+		for (std::size_t otherIndex = 0; otherIndex < m_Definitions.size(); ++otherIndex)
+		{
+			if (otherIndex == slotIndex || m_Definitions[otherIndex].group != definition.group)
+				continue;
+			SlotState& other = m_States[otherIndex];
+			if (other.active)
+				BeginBlendOut(otherIndex, VansSlotLifecycleEventType::Interrupted,
+					other.active->blendOut);
+			other.queue.clear();
+		}
+	}
 	RequestRuntime runtime;
 	runtime.handle.value = m_NextHandle++;
 	runtime.request = request;

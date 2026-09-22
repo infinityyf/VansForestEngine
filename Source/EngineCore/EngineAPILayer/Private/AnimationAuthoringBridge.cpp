@@ -213,6 +213,7 @@ namespace Vans::EditorAPI
 			{
 				const auto& n = static_cast<const VansGraphics::AnimGraphClipNode&>(source);
 				result->m_ClipName = n.m_ClipName; result->m_Speed = n.m_Speed; result->m_Loop = n.m_Loop;
+				result->m_RootMotion = n.m_RootMotion;
 				break;
 			}
 			case VansGraphics::AnimGraphNodeType::Blend:
@@ -225,6 +226,15 @@ namespace Vans::EditorAPI
 			{
 				const auto& n = static_cast<const VansGraphics::AnimGraphBlend1DNode&>(source);
 				result->m_ParamName = n.m_ParamName; result->m_Thresholds = n.m_Thresholds;
+				break;
+			}
+			case VansGraphics::AnimGraphNodeType::BlendSpace2D:
+			{
+				const auto& n = static_cast<const VansGraphics::AnimGraphBlendSpace2DNode&>(source);
+				result->m_XParamName = n.m_XParamName;
+				result->m_YParamName = n.m_YParamName;
+				for (const auto& sample : n.m_Samples)
+					result->m_BlendSpaceSamples.push_back({ sample.x, sample.y });
 				break;
 			}
 			case VansGraphics::AnimGraphNodeType::IfCondition:
@@ -349,6 +359,7 @@ namespace Vans::EditorAPI
 			{
 				auto& n = static_cast<VansGraphics::AnimGraphClipNode&>(*result);
 				n.m_ClipName = source.m_ClipName; n.m_Speed = source.m_Speed; n.m_Loop = source.m_Loop;
+				n.m_RootMotion = source.m_RootMotion;
 				break;
 			}
 			case VansGraphics::AnimGraphNodeType::Blend:
@@ -361,6 +372,15 @@ namespace Vans::EditorAPI
 			{
 				auto& n = static_cast<VansGraphics::AnimGraphBlend1DNode&>(*result);
 				n.m_ParamName = source.m_ParamName; n.m_Thresholds = source.m_Thresholds;
+				break;
+			}
+			case VansGraphics::AnimGraphNodeType::BlendSpace2D:
+			{
+				auto& n = static_cast<VansGraphics::AnimGraphBlendSpace2DNode&>(*result);
+				n.m_XParamName = source.m_XParamName;
+				n.m_YParamName = source.m_YParamName;
+				for (const auto& sample : source.m_BlendSpaceSamples)
+					n.m_Samples.push_back({ sample.x, sample.y });
 				break;
 			}
 			case VansGraphics::AnimGraphNodeType::IfCondition:
@@ -556,6 +576,15 @@ namespace Vans::EditorAPI
 				item.referenceClipName = layer.referenceClipName; item.referenceTime = layer.referenceTime;
 				item.weightParameter = layer.weightParameter; item.fixedWeight = layer.fixedWeight;
 				item.useWeightParameter = layer.useWeightParameter; item.weightSmoothingTime = layer.weightSmoothingTime;
+				item.weightCurve = layer.weightCurve; item.weightCurveDefault = layer.weightCurveDefault;
+				item.activationBlendInSeconds = layer.activationBlendInSeconds;
+				item.activationBlendOutSeconds = layer.activationBlendOutSeconds;
+				item.activationCurve = BridgeEnum<VansLayerActivationCurve>(layer.activationCurve);
+				item.restartOnActivation = layer.restartOnActivation;
+				item.dynamicAdditive = layer.dynamicAdditive;
+				item.dynamicAdditiveWeight = layer.dynamicAdditiveWeight;
+				item.inertializationHalfLife = layer.inertializationHalfLife;
+				item.inertializationMaxDuration = layer.inertializationMaxDuration;
 				item.rootMotion = BridgeEnum<VansLayerRootMotionMode>(layer.rootMotion);
 				item.curves = BridgeEnum<VansLayerCurveMode>(layer.curves);
 				item.events = BridgeEnum<VansLayerEventMode>(layer.events);
@@ -597,7 +626,7 @@ namespace Vans::EditorAPI
 			for (const auto& slot : source.slots)
 			{
 				AnimationSlotDTO item;
-				item.id = slot.id; item.name = slot.name; item.layerId = slot.layerId;
+				item.id = slot.id; item.name = slot.name; item.layerId = slot.layerId; item.group = slot.group;
 				item.concurrency = BridgeEnum<VansSlotConcurrency>(slot.concurrency); item.maxQueueDepth = slot.maxQueueDepth;
 				item.defaultBlendIn = slot.defaultBlendIn; item.defaultBlendOut = slot.defaultBlendOut; item.interruptible = slot.interruptible;
 				result->slots.push_back(std::move(item));
@@ -646,6 +675,15 @@ namespace Vans::EditorAPI
 				item.referenceClipName = layer.referenceClipName; item.referenceTime = layer.referenceTime;
 				item.weightParameter = layer.weightParameter; item.fixedWeight = layer.fixedWeight;
 				item.useWeightParameter = layer.useWeightParameter; item.weightSmoothingTime = layer.weightSmoothingTime;
+				item.weightCurve = layer.weightCurve; item.weightCurveDefault = layer.weightCurveDefault;
+				item.activationBlendInSeconds = layer.activationBlendInSeconds;
+				item.activationBlendOutSeconds = layer.activationBlendOutSeconds;
+				item.activationCurve = BridgeEnum<VansGraphics::VansLayerActivationCurve>(layer.activationCurve);
+				item.restartOnActivation = layer.restartOnActivation;
+				item.dynamicAdditive = layer.dynamicAdditive;
+				item.dynamicAdditiveWeight = layer.dynamicAdditiveWeight;
+				item.inertializationHalfLife = layer.inertializationHalfLife;
+				item.inertializationMaxDuration = layer.inertializationMaxDuration;
 				item.rootMotion = BridgeEnum<VansGraphics::VansLayerRootMotionMode>(layer.rootMotion);
 				item.curves = BridgeEnum<VansGraphics::VansLayerCurveMode>(layer.curves);
 				item.events = BridgeEnum<VansGraphics::VansLayerEventMode>(layer.events);
@@ -687,7 +725,7 @@ namespace Vans::EditorAPI
 			for (const auto& slot : source.slots)
 			{
 				VansGraphics::VansAnimationSlotDefinition item;
-				item.id = slot.id; item.name = slot.name; item.layerId = slot.layerId;
+				item.id = slot.id; item.name = slot.name; item.layerId = slot.layerId; item.group = slot.group;
 				item.concurrency = BridgeEnum<VansGraphics::VansSlotConcurrency>(slot.concurrency); item.maxQueueDepth = slot.maxQueueDepth;
 				item.defaultBlendIn = slot.defaultBlendIn; item.defaultBlendOut = slot.defaultBlendOut; item.interruptible = slot.interruptible;
 				result.slots.push_back(std::move(item));

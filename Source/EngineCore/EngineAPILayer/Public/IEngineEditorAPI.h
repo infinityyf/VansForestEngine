@@ -112,6 +112,8 @@ namespace Vans::EditorAPI
 		virtual CommandRecordingSettingsSnapshot GetCommandRecordingSettings() const = 0;
 		virtual void SetCommandRecordingSettings(const CommandRecordingSettingsSnapshot& settings) = 0;
 		virtual std::vector<RenderTexturePreview> QueryRenderTexturePreviews(RenderTextureFilter filter) const = 0;
+		virtual std::uint32_t GetAmbientSkyCacheDebugMode() const = 0;
+		virtual void SetAmbientSkyCacheDebugMode(std::uint32_t mode) = 0;
 		virtual void RequestPunctualShadowDebugPreview() = 0;
 		virtual PunctualShadowDebugSnapshot GetPunctualShadowDebugSnapshot() const = 0;
 		virtual void ApplyPunctualScreenSpaceShadowSettings(

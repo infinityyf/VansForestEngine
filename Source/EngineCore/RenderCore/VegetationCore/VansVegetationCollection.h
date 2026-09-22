@@ -5,6 +5,7 @@
 #include <memory>
 #include <mutex>
 #include <set>
+#include <string>
 #include <vulkan/vulkan_core.h>
 namespace VansGraphics
 {

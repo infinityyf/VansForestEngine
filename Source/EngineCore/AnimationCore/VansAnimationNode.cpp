@@ -446,6 +446,12 @@ VansGraphSetSwitchResult VansAnimationNode::SwitchGraphSet(const std::string& gr
 		: VansGraphSetSwitchResult::UnknownGraphSet;
 }
 
+bool VansAnimationNode::RestartLayer(const std::string& layerId)
+{
+	VansAnimationController* controller = GetCharacterMotionController();
+	return controller && controller->RestartLayer(layerId);
+}
+
 const std::string& VansAnimationNode::GetActiveGraphSetId() const
 {
 	const VansAnimationController* controller = m_RetargetEnabled && m_SourceController

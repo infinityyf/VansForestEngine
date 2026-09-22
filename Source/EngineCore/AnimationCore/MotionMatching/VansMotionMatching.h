@@ -343,6 +343,7 @@ namespace VansGraphics
 		struct Sample
 		{
 			std::string clipName;
+			float duration = 0.0f;
 			float time = 0.0f;
 			FeatureVector rawFeature{};
 			FeatureVector feature{};
@@ -354,6 +355,10 @@ namespace VansGraphics
 			bool pivotLike = false;
 			bool turnLike = false;
 			bool paceTransitionLike = false;
+			bool airLike = false;
+			bool airStartLike = false;
+			bool airFallLike = false;
+			bool airLandLike = false;
 			int sourceMoveState = -1;
 			int targetMoveState = 0;
 			int sourceDirectionBucket = -1;

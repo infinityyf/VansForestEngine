@@ -44,6 +44,8 @@ PcgSplineItem ToPublic(const VansPcgSpline& source)
     PcgSplineItem result;
     result.id=source.id;result.name=source.name;result.materialGuid=source.material.IsValid()?source.material.ToString():"";
     result.kind=static_cast<PcgSplineKind>(source.kind);result.enabled=source.enabled;result.locked=source.locked;
+    result.roadDecalMaterialGuid=source.roadDecalMaterial.IsValid()?source.roadDecalMaterial.ToString():"";
+    result.roadRenderMode=static_cast<PcgRoadRenderMode>(source.roadRenderMode);result.projectedDepth=source.projectedDepth;
     result.excludeVegetation=source.excludeVegetation;result.vegetationFade=source.vegetationFade;
     result.priority=source.priority;result.shoulder=source.shoulder;result.blendWidth=source.blendWidth;
     result.waterSurfaceDrop=source.waterSurfaceDrop;
@@ -70,8 +72,11 @@ bool FromPublic(const PcgSplineItem& source,VansPcgSpline& result,std::string& e
     result.name=source.name;result.enabled=source.enabled;result.locked=source.locked;result.priority=source.priority;
     if (source.materialGuid.empty()) result.material={};
     else if (!VansAssetGuid::TryParse(source.materialGuid,result.material)) {error="Invalid road material reference.";return false;}
+    if (source.roadDecalMaterialGuid.empty()) result.roadDecalMaterial={};
+    else if (!VansAssetGuid::TryParse(source.roadDecalMaterialGuid,result.roadDecalMaterial)) {error="Invalid road decal material reference.";return false;}
     result.excludeVegetation=source.excludeVegetation;result.vegetationFade=source.vegetationFade;
     result.shoulder=source.shoulder;result.blendWidth=source.blendWidth;result.surfaceOffset=source.surfaceOffset;
+    result.roadRenderMode=static_cast<VansPcgRoadRenderMode>(source.roadRenderMode);result.projectedDepth=source.projectedDepth;
     result.waterSurfaceDrop=source.waterSurfaceDrop;
     result.waterBlendWidthMeters=source.waterBlendWidthMeters;
     result.waterBlendStartMeters=source.waterBlendStartMeters;result.waterBlendEndMeters=source.waterBlendEndMeters;

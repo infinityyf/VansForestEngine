@@ -758,6 +758,7 @@ void VansGraphics::VansMaterialManager::ClearResolutionDependentRenderData(VkDev
 		RT_SSGI_MOMENTS_A, RT_SSGI_MOMENTS_B,
 		RT_SSGI_SURFACE_HISTORY_A, RT_SSGI_SURFACE_HISTORY_B,
 		RT_SSGI_ATROUS_A,
+		RT_AMBIENT_SKY_CACHE_X, RT_AMBIENT_SKY_CACHE_Y, RT_AMBIENT_SKY_CACHE_Z,
 		RT_HZB_RESULT, RT_HZB_OCCLUSION_RESULT,
 		RT_SCREEN_SPACE_SHADOW_RESULT, RT_CASCADE_SHADOW_MIN_MAX,
 		RT_SSR_HIT_INFO, RT_SSR_RAY_PDF, RT_SSR_RESULT,
@@ -774,6 +775,8 @@ void VansGraphics::VansMaterialManager::ClearResolutionDependentRenderData(VkDev
 	m_ScreenSpaceShadowParamsCBBuffer.DestroyVulkanBuffer(device);
 	m_SSGITemporalCBBuffer.DestroyVulkanBuffer(device);
 	m_SSGICBBuffer.DestroyVulkanBuffer(device);
+	m_AmbientSkyCacheParamsCBBuffer.DestroyVulkanBuffer(device);
+	m_AmbientSkyCacheInfoCBBuffer.DestroyVulkanBuffer(device);
 	m_TileLightHeaderBuffer.DestroyVulkanBuffer(device);
 	m_TileLightIndexBuffer.DestroyVulkanBuffer(device);
 	m_TileLightBuildParamsCBBuffer.DestroyVulkanBuffer(device);
@@ -828,6 +831,9 @@ void VansGraphics::VansMaterialManager::ClearResolutionDependentRenderData(VkDev
 	descMgr->ReleaseDescriptorSetLayout(m_SSGITemporalSetLayout);
 	descMgr->DestroyDescriptorSet(m_SSGIAtrousDescriptorSets);
 	descMgr->ReleaseDescriptorSetLayout(m_SSGIAtrousSetLayout);
+	descMgr->DestroyDescriptorSet(m_AmbientSkyCacheDescriptorSets);
+	descMgr->ReleaseDescriptorSetLayout(m_AmbientSkyCacheSetLayout);
+	m_AmbientSkyCacheShader = nullptr;
 	descMgr->DestroyDescriptorSet(m_HIZSeedDescriptorSets);
 	descMgr->ReleaseDescriptorSetLayout(m_HIZSeedSetLayout);
 	descMgr->DestroyDescriptorSet(m_OcclusionHIZSeedDescriptorSets);
@@ -851,6 +857,25 @@ void VansGraphics::VansMaterialManager::ClearResolutionDependentRenderData(VkDev
 
 	m_HIZMipCount = 0;
 	m_SSGITemporalFrame = 0;
+}
+
+void VansGraphics::VansMaterialManager::ClearAmbientSkyCacheRenderData(VkDevice device)
+{
+	RemoveRuntimeRenderTexture(RT_AMBIENT_SKY_CACHE_X);
+	RemoveRuntimeRenderTexture(RT_AMBIENT_SKY_CACHE_Y);
+	RemoveRuntimeRenderTexture(RT_AMBIENT_SKY_CACHE_Z);
+	m_AmbientSkyCacheParamsCBBuffer.DestroyVulkanBuffer(device);
+	m_AmbientSkyCacheInfoCBBuffer.DestroyVulkanBuffer(device);
+	if (auto* descriptorManager = VansVKDescriptorManager::GetInstance())
+	{
+		descriptorManager->DestroyDescriptorSet(m_AmbientSkyCacheDescriptorSets);
+		descriptorManager->ReleaseDescriptorSetLayout(m_AmbientSkyCacheSetLayout);
+	}
+	m_AmbientSkyCacheShader = nullptr;
+	m_AmbientSkyCacheOrigin = glm::vec3(0.0f);
+	m_AmbientSkyCacheRingOffset = glm::ivec3(0);
+	m_AmbientSkyCacheInitialized = false;
+	m_AmbientSkyCacheFrameOffset = 0u;
 }
 
 void VansGraphics::VansMaterialManager::ReleaseSkinProfileLUTLayerForMaterial(int materialIndex)

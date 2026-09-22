@@ -225,7 +225,7 @@ void VansGraphics::VansRenderNode::PrepareModelDataForRenderFrame()
 }
 
 // Helper: map node type to its primary render-pass name.
-static const char* GetPrimaryPassName(VansGraphics::RenderNodeType type)
+static const char* GetPrimaryPassName(VansGraphics::RenderNodeType type, bool roadDecal = false)
 {
 	using namespace VansGraphics;
 	switch (type)
@@ -238,7 +238,7 @@ static const char* GetPrimaryPassName(VansGraphics::RenderNodeType type)
 	case POSTPROCESS_NODE:  return VansPass::POST_PROCESS;
 	case DEFERRED_NODE:     return VansPass::DEFERRED;
 	case SCREEN_SPACE_NODE: return VansPass::SCREEN_SPACE;
-	case DECAL_NODE:        return VansPass::DECAL_MODIFIER;
+	case DECAL_NODE:        return roadDecal ? VansPass::ROAD_DECAL_MODIFIER : VansPass::DECAL_MODIFIER;
 	default:                return VansPass::GBUFFER;
 	}
 }
@@ -256,10 +256,10 @@ void VansGraphics::VansRenderNode::Draw(VansVKCommandBuffer& cmd, GlobalStateDat
 		return;
 	}
 
-	VansGraphicsShader* shader = m_Material->GetPassShader(GetPrimaryPassName(m_NodeType));
+	VansGraphicsShader* shader = m_Material->GetPassShader(GetPrimaryPassName(m_NodeType, m_UsesRoadDecalPass));
 	if (!shader) return;
 
-	if (!ValidateDescriptorBindings(GetPrimaryPassName(m_NodeType), m_UsedDescSetLayouts, m_UsedDescSets))
+	if (!ValidateDescriptorBindings(GetPrimaryPassName(m_NodeType, m_UsesRoadDecalPass), m_UsedDescSetLayouts, m_UsedDescSets))
 		return;
 
 	VansMesh* drawMesh = GetDrawMesh();
@@ -354,7 +354,7 @@ bool VansGraphics::VansRenderNode::PreparePipelineForDraw(VkDevice& device, Glob
 	if (GetDrawMesh() == nullptr || m_Material == nullptr)
 		return true;
 
-	VansGraphicsShader* shader = m_Material->GetPassShader(GetPrimaryPassName(m_NodeType));
+	VansGraphicsShader* shader = m_Material->GetPassShader(GetPrimaryPassName(m_NodeType, m_UsesRoadDecalPass));
 	return PreparePipelineForShader(device, global_state, shader, m_UsedDescSetLayouts, m_UsedDescSets);
 }
 
@@ -837,12 +837,17 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescriptorSets(VansMaterialMana
 	VansTexture* screenSpaceShadow = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_SCREEN_SPACE_SHADOW_RESULT);
 	VansTexture* screenSpaceShadowHZB = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_HZB_RESULT);
 	VansTexture* rectLightEmissive = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_RECT_LIGHT_EMISSIVE);
+	VansTexture* ambientSkyCacheX = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_AMBIENT_SKY_CACHE_X);
+	VansTexture* ambientSkyCacheY = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_AMBIENT_SKY_CACHE_Y);
+	VansTexture* ambientSkyCacheZ = materialManager.GetRuntimeRenderTexture(VansMaterialManager::RT_AMBIENT_SKY_CACHE_Z);
 	VansVKDevice* runtimeDevice = m_Scene->GetRuntimeResourceDevice();
 
 	if (ssaoFilterResult == nullptr || ssgiFilterResult == nullptr || ssrAaResult == nullptr ||
 		screenSpaceShadow == nullptr || screenSpaceShadowHZB == nullptr || rectLightEmissive == nullptr ||
+		ambientSkyCacheX == nullptr || ambientSkyCacheY == nullptr || ambientSkyCacheZ == nullptr ||
 		runtimeDevice == nullptr ||
 		materialManager.m_SSGICBBuffer.GetNativeBuffer() == VK_NULL_HANDLE ||
+		materialManager.m_AmbientSkyCacheInfoCBBuffer.GetNativeBuffer() == VK_NULL_HANDLE ||
 		!m_Scene->GetIESProfileManager()->IsGPUResourcesCreated())
 	{
 		// 不清除 dirty 标记，下帧重试（运行时纹理尚未就绪）
@@ -926,6 +931,14 @@ void VansGraphics::VansDeferredRenderNode::UpdateDescriptorSets(VansMaterialMana
 		{ { m_Scene->GetIESProfileManager()->GetIESProfileTexture().GetSampler(), m_Scene->GetIESProfileManager()->GetIESProfileArrayView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } });
 	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[setIndex], DEFERRED_BINDING_SCREEN_SPACE_SHADOW_HIZ, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		{ { screenSpaceShadowHZB->GetImage().GetSampler(), screenSpaceShadowHZB->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[setIndex], DEFERRED_BINDING_AMBIENT_SKY_CACHE_X, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		{ { ambientSkyCacheX->GetImage().GetSampler(), ambientSkyCacheX->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[setIndex], DEFERRED_BINDING_AMBIENT_SKY_CACHE_Y, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		{ { ambientSkyCacheY->GetImage().GetSampler(), ambientSkyCacheY->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
+	descMgr->WriteImageDescriptor(frameBufferInputDescriptorSets[setIndex], DEFERRED_BINDING_AMBIENT_SKY_CACHE_Z, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		{ { ambientSkyCacheZ->GetImage().GetSampler(), ambientSkyCacheZ->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL } });
+	descMgr->WriteBufferDescriptor(frameBufferInputDescriptorSets[setIndex], DEFERRED_BINDING_AMBIENT_SKY_CACHE_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+		{ { materialManager.m_AmbientSkyCacheInfoCBBuffer.GetNativeBuffer(), 0, materialManager.m_AmbientSkyCacheInfoCBBuffer.GetBufferSize() } });
 	descMgr->WriteBufferDescriptor(frameBufferInputDescriptorSets[setIndex], DEFERRED_BINDING_SCREEN_SPACE_SHADOW_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 		{ { materialManager.m_ScreenSpaceShadowParamsCBBuffer.GetNativeBuffer(), 0, materialManager.m_ScreenSpaceShadowParamsCBBuffer.GetBufferSize() } });
 	descMgr->WriteBufferDescriptor(frameBufferInputDescriptorSets[setIndex], DEFERRED_BINDING_GI_INFO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,

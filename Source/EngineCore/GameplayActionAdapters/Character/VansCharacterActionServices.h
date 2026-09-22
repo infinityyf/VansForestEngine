@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../GameplayActionCore/VansActionServices.h"
+#include "../../AnimationCore/Runtime/VansAnimationSlotRuntime.h"
 #include "../../RuntimeCore/VansGenerationPool.h"
 
 #include <memory>
@@ -40,6 +41,7 @@ private:
 		VansGraphics::VansAnimationController* controller = nullptr;
 		std::string previousState;
 		float previousRate = 1.0f;
+		VansGraphics::VansSlotPlaybackHandle slotHandle;
 	};
 
 	VansAnimationActionService(

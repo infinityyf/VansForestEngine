@@ -114,8 +114,16 @@ void AmbientBRDF_Grass(BRDFData b,vec3 backIrradiance,float transmission,float b
     vec3 reflection=reflect(-b.viewDirection,b.normal);
     ReflectionProbeSample probe=SampleReflectionProbes(b.positionWS,b.normal,reflection,b.roughness);
     vec3 environment=probe.specular;
-    if(probe.coverage<1.0) environment=mix(SampleSkySpecularCube(PreConvSpecularEnvironment,reflection,
-        GetMipLevelFromRoughness(b.roughness)),probe.specular,probe.coverage);
+    if(probe.coverage<1.0)
+    {
+        vec3 skySpecular = SampleSkySpecularCube(PreConvSpecularEnvironment,reflection,
+            GetMipLevelFromRoughness(b.roughness));
+        #ifdef AMBIENT_SKY_CACHE_ENABLED
+            AmbientSkyTransmittanceSample skyVisibility = SampleAmbientSkyTransmittance(b.positionWS, reflection, b.roughness);
+            skySpecular *= skyVisibility.visibility;
+        #endif
+        environment=mix(skySpecular,probe.specular,probe.coverage);
+    }
     float ssrWeight=clamp(b.indirectSpecular.a*(1.0-smoothstep(reflectionProbeLightingParams.x,reflectionProbeLightingParams.y,b.roughness)),0.0,1.0);
     environment=mix(environment,b.indirectSpecular.rgb,ssrWeight);
     float NoV=max(dot(b.normal,b.viewDirection),0.0);

@@ -172,7 +172,9 @@ std::shared_ptr<VansPcgRoadMesh> BuildRoad(const Curve& curve)
 {
     auto mesh=std::make_shared<VansPcgRoadMesh>();
     const auto& spline=*curve.source;
-    mesh->splineId=spline.id;mesh->material=spline.material;mesh->fingerprint=curve.roadHash;
+    mesh->splineId=spline.id;mesh->material=spline.material;mesh->roadDecalMaterial=spline.roadDecalMaterial;
+    mesh->renderMode=spline.roadRenderMode;
+    mesh->projectedDepth=spline.projectedDepth;mesh->fingerprint=curve.roadHash;
     for (const auto& p:curve.evaluated.samples)
     {
         auto right=p.right; right.y=std::tan(glm::radians(p.bankAngleDegrees));
@@ -251,12 +253,18 @@ std::shared_ptr<const VansPcgSplineFieldSnapshot> VansPcgSplineFieldBuilder::Bui
         Curve curve;curve.source=&spline;
         if (!VansPcgSplineEvaluator::Evaluate(spline,asset.sampleSpacing,asset.curveTolerance,curve.evaluated,error))
         {error=spline.name+": "+error;return {};}
-        auto identity=asset;identity.splines={spline};curve.hash=VansPcgSplineAssetCodec::ContentHash(identity);
+        auto identity=asset;identity.splines={spline};
         auto& shape=identity.splines.front();
+        // 道路显示方式和投影深度只影响渲染代理，不应使地形/植被控制纹理失效。
+        shape.roadRenderMode=VansPcgRoadRenderMode::Mesh;shape.projectedDepth=2.0f;shape.roadDecalMaterial={};
+        curve.hash=VansPcgSplineAssetCodec::ContentHash(identity);
+        shape.roadRenderMode=spline.roadRenderMode;shape.projectedDepth=spline.projectedDepth;
+        shape.roadDecalMaterial=spline.roadDecalMaterial;
         shape.excludeVegetation=false;shape.vegetationFade=2;shape.name.clear();shape.locked=false;
         curve.roadHash=VansPcgSplineAssetCodec::ContentHash(identity);
         shape.excludeVegetation=false;shape.vegetationFade=2;
         shape.name.clear();shape.locked=false;shape.material={};shape.surfaceOffset=0;shape.textureRepeat=1;
+        shape.roadRenderMode=VansPcgRoadRenderMode::Mesh;shape.projectedDepth=2.0f;shape.roadDecalMaterial={};
         shape.flowSign=1;shape.fadeInDistance=shape.fadeOutDistance=0;shape.coordinateOffset=0;shape.coordinateSign=1;
         shape.continuation=false;shape.envelopeOffset=shape.envelopeLength=0;shape.normalFlowEnabled=false;
         shape.wetBankWidthMeters=3;shape.wetnessStrength=0;

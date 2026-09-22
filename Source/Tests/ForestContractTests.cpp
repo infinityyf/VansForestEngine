@@ -5201,6 +5201,163 @@ bool TestAnimationSocketAttachmentAuthoringContract()
 		"Temporary Scene attachment binding was not represented independently");
 }
 
+bool TestDemoHallMotionMatchingMovementLibraryContract()
+{
+	fs::path workspace = fs::current_path();
+	for (int depth = 0; depth < 6 && !fs::exists(workspace / "DemoHallProject"); ++depth)
+	{
+		if (!workspace.has_parent_path() || workspace.parent_path() == workspace)
+			break;
+		workspace = workspace.parent_path();
+	}
+	const fs::path projectRoot = workspace / "DemoHallProject";
+	const fs::path scenePath = projectRoot / "Scenes" / "DemoHall.json";
+	const fs::path animatorPath = projectRoot / "Assets" / "MotionMatchDataBase" /
+		"UEFN_Mannequin.vanimator";
+	if (!fs::exists(scenePath) || !fs::exists(animatorPath))
+		return true;
+
+	nlohmann::json scene;
+	nlohmann::json animator;
+	const auto readJsonText = [](const fs::path& path)
+	{
+		std::ifstream input(path, std::ios::binary);
+		return std::string((std::istreambuf_iterator<char>(input)),
+			std::istreambuf_iterator<char>());
+	};
+	try
+	{
+		scene = nlohmann::json::parse(readJsonText(scenePath));
+		animator = nlohmann::json::parse(readJsonText(animatorPath));
+	}
+	catch (const std::exception& error)
+	{
+		return Expect(false, ("DemoHall Motion Matching movement assets are invalid: " +
+			std::string(error.what())).c_str());
+	}
+
+	const auto isActionClip = [](const std::string& name)
+	{
+		return name.rfind("AlbomBreak", 0) == 0 ||
+			name.rfind("Attack_", 0) == 0 || name.rfind("Pistol_", 0) == 0 ||
+			name.rfind("Throw", 0) == 0 || name.rfind("Vault", 0) == 0;
+	};
+	std::unordered_set<std::string> movementClips;
+	std::unordered_set<std::string> actionClips;
+	for (const nlohmann::json& clip : animator.value("clips", nlohmann::json::array()))
+	{
+		const std::string name = clip.value("name", "");
+		if (isActionClip(name))
+			actionClips.insert(name);
+		else if (!name.empty())
+			movementClips.insert(name);
+	}
+	if (!Expect(movementClips.size() == 195 && actionClips.size() == 10 &&
+		movementClips.size() + actionClips.size() == animator.value("clips", nlohmann::json::array()).size(),
+		"UEFN_Mannequin movement inventory is incomplete or contains an unclassified action"))
+		return false;
+
+	// 资源清单统一由 Animator 持有，移动必须经过 Base Graph 的 MM 节点。
+	// 动作可由 GAF 动态提交 Slot，因此不能要求每个动作都有静态状态引用。
+	bool baseGraphHasMotionMatching = false;
+	for (const nlohmann::json& graphDocument :
+		 animator.value("graphs", nlohmann::json::array()))
+	{
+		if (graphDocument.value("id", "") != "graph-base")
+			continue;
+		for (const nlohmann::json& node :
+			 graphDocument.value("graph", nlohmann::json::object()).value(
+				 "nodes", nlohmann::json::array()))
+			baseGraphHasMotionMatching = baseGraphHasMotionMatching ||
+				node.value("type", "") == "MotionMatching";
+	}
+	if (!Expect(baseGraphHasMotionMatching,
+		"Base Graph lost its Motion Matching node"))
+		return false;
+
+	std::size_t activeCharacters = 0;
+	for (const nlohmann::json& entity : scene.value("entities", nlohmann::json::array()))
+	{
+		for (const nlohmann::json& component :
+			 entity.value("components", nlohmann::json::array()))
+		{
+			if (component.value("type", "") != "Animation" ||
+				!component.contains("data") ||
+				!component.at("data").contains("motion_matching"))
+				continue;
+			const nlohmann::json& motion = component.at("data").at("motion_matching");
+			if (!motion.value("enabled", false))
+				continue;
+			++activeCharacters;
+			const nlohmann::json& model = motion.at("motion_model");
+			if (!Expect(model.value("drive_mode", "") == "capsule" &&
+			motion.value("search_throttle", 1.0f) <= 0.0001f &&
+			motion.value("min_switch_interval", 1.0f) <= 0.0001f,
+			"DemoHall locomotion must use responsive Capsule/Movement authority"))
+			return false;
+
+		std::unordered_set<std::string> indexed;
+		bool hasAirDatabase = false;
+		bool hasSecondaryDatabase = false;
+		for (const nlohmann::json& database :
+			 motion.value("databases", nlohmann::json::array()))
+		{
+			const std::string databaseName = database.value("name", "");
+			hasAirDatabase = hasAirDatabase || databaseName == "PSD_DemoHall_Air_Movement";
+			hasSecondaryDatabase = hasSecondaryDatabase ||
+				databaseName == "PSD_DemoHall_Secondary_Movement";
+			for (const nlohmann::json& clip :
+				 database.value("clips", nlohmann::json::array()))
+			{
+				const std::string name = clip.value("name", "");
+				if (!name.empty()) indexed.insert(name);
+				if (databaseName == "PSD_DemoHall_Air_Movement" && name == "Jump_Fall" &&
+					!Expect(clip.value("loop", false),
+						"Jump_Fall must hold as the airborne loop until the CCT reports landing"))
+					return false;
+			}
+			// Empty token databases are intentionally part of the resource index;
+			// runtime auto-build expands them from the same UEFN clip inventory.
+			for (const nlohmann::json& token :
+				 database.value("include_tokens", nlohmann::json::array()))
+			{
+				const std::string needle = token.get<std::string>();
+				for (const std::string& name : movementClips)
+					if (name.find(needle) != std::string::npos)
+						indexed.insert(name);
+			}
+		}
+		if (!Expect(hasAirDatabase && hasSecondaryDatabase,
+			"DemoHall movement databases are missing Air or secondary movement coverage"))
+			return false;
+		for (const std::string& name : movementClips)
+			if (!Expect(indexed.count(name) > 0,
+				("UE movement clip is absent from the Motion Matching resource index: " + name).c_str()))
+				return false;
+		for (const std::string& name : actionClips)
+			if (!Expect(indexed.count(name) == 0,
+				("Gameplay Action clip leaked into the locomotion Motion Matching index: " + name).c_str()))
+				return false;
+		for (const nlohmann::json& row :
+			 motion.value("selector", nlohmann::json::array()))
+		{
+			if (row.value("name", "") != "AirMovement")
+				continue;
+			const auto selectedDatabases = row.value("databases", nlohmann::json::array());
+			const bool selectsAirDatabase = std::find(
+				selectedDatabases.begin(), selectedDatabases.end(),
+				nlohmann::json("PSD_DemoHall_Air_Movement")) != selectedDatabases.end();
+			if (!Expect(row.value("phase", "") == "Air" &&
+				selectsAirDatabase,
+				"DemoHall Air movement selector does not activate the Air database"))
+				return false;
+		}
+	}
+	}
+	return Expect(activeCharacters == 2,
+		"DemoHall must keep both Motion Matching characters on the movement path");
+}
+
 bool TestMotionMatchingCameraFacingTurnContract()
 {
     using namespace VansGraphics;
@@ -6925,8 +7082,37 @@ bool TestSurvivalPistolOverlayContract(const char* projectName, const fs::path& 
     if (!Expect(VansAnimatorIO::Load((assets / "MotionMatchDataBase/UEFN_Mannequin.vanimator").string(), asset), "Pistol Animator load failed")) return false;
     AnimGraphJson baselineJson;
     if (!Expect(VansAnimatorIO::SerializeToJsonObject(asset, baselineJson, error), error.c_str())) return false;
-    baselineJson["layers"].erase(1);
-    for (auto& set : baselineJson["graphSets"]) set["bindings"].erase(1);
+    // This contract isolates the pre-existing pistol overlay path.  Survival
+    // owns a separate attack layer and is validated by the GAF attack contract.
+    baselineJson["layers"].erase(std::remove_if(baselineJson["layers"].begin(),
+        baselineJson["layers"].end(), [](const auto& layer)
+        {
+            return layer.value("id", std::string{}) == "layer-survival-attack-upper";
+        }), baselineJson["layers"].end());
+    for (auto& set : baselineJson["graphSets"])
+    {
+        auto& bindings = set["bindings"];
+        bindings.erase(std::remove_if(bindings.begin(), bindings.end(),
+            [](const auto& binding)
+            {
+                return binding.value("layerId", std::string{}) == "layer-survival-attack-upper";
+            }), bindings.end());
+    }
+    if (!Expect(VansAnimatorIO::DeserializeFromJsonObject(baselineJson, asset, error), error.c_str())) return false;
+    // The production animator may contain more than one overlay layer.  Build
+    // the baseline from the base layer explicitly so adding Survival's attack
+    // overlay cannot accidentally turn it into a second overlay fixture.
+    const auto baseLayer = baselineJson["layers"].at(0);
+    baselineJson["layers"] = nlohmann::json::array({ baseLayer });
+    for (auto& set : baselineJson["graphSets"])
+    {
+        auto& bindings = set["bindings"];
+        bindings.erase(std::remove_if(bindings.begin(), bindings.end(),
+            [](const auto& binding)
+            {
+                return binding.value("layerId", std::string{}) != "layer-base";
+            }), bindings.end());
+    }
     for (auto& rule : baselineJson["graphSetTransitions"]["rules"]) rule["policy"]["phase"] = "restart";
     if (!Expect(VansAnimatorIO::DeserializeFromJsonObject(baselineJson, baselineAsset, error), error.c_str())) return false;
     std::unordered_map<std::string, std::shared_ptr<const VansAnimationClipAsset>> clips;
@@ -7552,7 +7738,7 @@ bool TestDemoHallSurvivalBackAxeSceneContract()
 					idleTurnClips.insert(clip.value("name", ""));
 				}
 			}
-			if (!Expect(motionModel.value("drive_mode", "") == "root_motion"
+			if (!Expect(motionModel.value("drive_mode", "") == "capsule"
 				&& motionModel.value("root_rotation_weight", 0.0f) == 1.0f
 				&& turnWarping.value("enabled", false)
 				&& turnWarping.value("min_root_yaw_scale_ratio", 0.0f) == 0.75f
@@ -7565,7 +7751,7 @@ bool TestDemoHallSurvivalBackAxeSceneContract()
 				&& idleTurnClips.count("IdleTurn_L_180") > 0
 				&& idleTurnClips.count("IdleTurn_R_045") > 0
 				&& idleTurnClips.count("IdleTurn_R_180") > 0,
-				"DemoHall Turn warping authority or left/right Turn database coverage is incomplete"))
+				"DemoHall Capsule movement authority or left/right Turn database coverage is incomplete"))
 			{
 				return false;
 			}
@@ -8444,6 +8630,18 @@ bool TestRetargetConfiguredLimbChainContract()
 		}
 		return transforms;
 	};
+	auto buildModelTransforms = [](const Skeleton& skeleton,
+		const std::vector<glm::mat4>& localTransforms)
+	{
+		std::vector<glm::mat4> transforms = localTransforms;
+		for (int boneIndex : skeleton.topologicalOrder)
+		{
+			const int parentIndex = skeleton.bones[boneIndex].parentIndex;
+			if (parentIndex >= 0)
+				transforms[boneIndex] = transforms[parentIndex] * transforms[boneIndex];
+		}
+		return transforms;
+	};
 
 	const Skeleton sourceSkeleton = buildSkeleton(true);
 	const Skeleton targetSkeleton = buildSkeleton(false);
@@ -8510,6 +8708,52 @@ bool TestRetargetConfiguredLimbChainContract()
 		"Unconfigured retarget unexpectedly changed the target arm bind direction") &&
 		Expect(glm::dot(sourceDirection, correctedDirection) > 0.999f,
 			"Configured retarget Limb chain did not match the source end-effector direction"))
+	{
+		return false;
+	}
+
+	// The source elbow plane must drive a configured retarget chain. A static
+	// target pole can otherwise twist a differently authored target wrist even
+	// when the hand position is correct.
+	std::vector<glm::mat4> bentSourceLocals;
+	bentSourceLocals.reserve(sourceSkeleton.bones.size());
+	for (const BoneInfo& bone : sourceSkeleton.bones)
+		bentSourceLocals.push_back(bone.localTransform);
+	const int sourceLowerArm = sourceSkeleton.boneNameToIndex.at("lowerarm_l");
+	const glm::vec3 sourceLowerTranslation = glm::vec3(
+		bentSourceLocals[static_cast<std::size_t>(sourceLowerArm)][3]);
+	bentSourceLocals[static_cast<std::size_t>(sourceLowerArm)] =
+		glm::translate(glm::mat4(1.0f), sourceLowerTranslation) *
+		glm::rotate(glm::mat4(1.0f), glm::radians(45.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+	const std::vector<glm::mat4> bentSourcePose =
+		buildModelTransforms(sourceSkeleton, bentSourceLocals);
+	std::vector<glm::mat4> bentTargetPose;
+	if (!Expect(chainProcessor.Process(bentSourcePose, sourceSkeleton,
+		targetSkeleton, bentTargetPose),
+		"Configured retarget Limb chain failed on a bent source elbow pose"))
+	{
+		return false;
+	}
+	const glm::vec3 bentSourceRoot = glm::vec3(bentSourcePose[sourceRoot][3]);
+	const glm::vec3 bentSourceMid = glm::vec3(bentSourcePose[
+		sourceSkeleton.boneNameToIndex.at("lowerarm_l")][3]);
+	const glm::vec3 bentSourceTip = glm::vec3(bentSourcePose[sourceTip][3]);
+	const glm::vec3 bentSourceDirection = bentSourceTip - bentSourceRoot;
+	const glm::vec3 bentSourcePole = glm::normalize(
+		(bentSourceMid - bentSourceRoot) - bentSourceDirection *
+		(glm::dot(bentSourceMid - bentSourceRoot, bentSourceDirection) /
+			glm::dot(bentSourceDirection, bentSourceDirection)));
+	const glm::vec3 bentTargetRoot = glm::vec3(bentTargetPose[targetRoot][3]);
+	const glm::vec3 bentTargetMid = glm::vec3(bentTargetPose[
+		targetSkeleton.boneNameToIndex.at("lowerarm_l")][3]);
+	const glm::vec3 bentTargetTip = glm::vec3(bentTargetPose[targetTip][3]);
+	const glm::vec3 bentTargetDirection = bentTargetTip - bentTargetRoot;
+	const glm::vec3 bentTargetPole = glm::normalize(
+		(bentTargetMid - bentTargetRoot) - bentTargetDirection *
+		(glm::dot(bentTargetMid - bentTargetRoot, bentTargetDirection) /
+			glm::dot(bentTargetDirection, bentTargetDirection)));
+	if (!Expect(glm::dot(bentSourcePole, bentTargetPole) > 0.999f,
+		"Configured retarget Limb chain did not preserve the source elbow bend plane"))
 	{
 		return false;
 	}
@@ -17550,6 +17794,8 @@ int main(int argc, char** argv)
 		return TestDemoHallHurtBodiesContract() ? 0 : 153;
 	if (argc == 2 && std::string(argv[1]) == "--demohall-crouch-locomotion")
 		return TestDemoHallCrouchLocomotionContract() ? 0 : 147;
+	if (argc == 2 && std::string(argv[1]) == "--demohall-motion-matching-movement")
+		return TestDemoHallMotionMatchingMovementLibraryContract() ? 0 : 216;
 	if (argc == 2 && std::string(argv[1]) == "--demohall-player-vault")
 		return TestDemoHallPlayerVaultContract() ? 0 : 144;
 	if (argc == 2 && std::string(argv[1]) == "--demohall-whisper-ai")
@@ -17666,6 +17912,8 @@ int main(int argc, char** argv)
 		return 109;
 	if (!TestMotionMatchingAutoBuildLocomotionMetadataContract())
 		return 31;
+	if (!TestDemoHallMotionMatchingMovementLibraryContract())
+		return 216;
 	if (!TestTurnInPlaceWarpingMathContract())
 		return 142;
 	if (!TestAnimationEditorPreviewPolicyContract())

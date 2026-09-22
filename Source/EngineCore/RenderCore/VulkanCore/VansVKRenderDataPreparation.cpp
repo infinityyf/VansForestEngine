@@ -6,6 +6,7 @@
 #include "VansMesh.h"
 #include "VansShader.h"
 #include "../VansScene.h"
+#include "../VansCamera.h"
 #include "../../Configration/VansConfigration.h"
 #include "../../Util/VansLog.h"
 #include "../LTC/LTCData.h"
@@ -1302,6 +1303,7 @@ namespace VansGraphics
 		const VansGISettings& sceneGISettings = m_Scene->GetGISettings();
 		if (!rayTracingContext.CreateRayTracingResource(this, &m_VansVKCommandBuffer, m_Scene, sceneGISettings))
 			throw std::runtime_error(rayTracingContext.GetResourceError());
+		PrepareAmbientSkyCacheRenderData();
 		// 首次场景准备早于第一份渲染快照。这里必须使用刚完成构建的场景
 		// 设置；读取 m_CurrentRenderSceneSnapshot 会拿到启动默认值，并且只会
 		// 在 Play/Stop 重载后偶然恢复正确。
@@ -1310,6 +1312,88 @@ namespace VansGraphics
 		m_Scene->MarkRenderNodeDescriptorSetsDirty();
 		m_Scene->ClearGIProbeResourcesDirty();
 		m_Scene->ClearGIParametersDirty();
+	}
+
+	void VansVKDevice::PrepareAmbientSkyCacheRenderData()
+	{
+		VansMaterialManager* manager = m_Scene ? m_Scene->GetMaterialManager() : nullptr;
+		if (manager == nullptr)
+			return;
+		const auto& settings = m_Scene->GetGISettings().ambientSkyCache;
+		const bool cacheEnabled = settings.enabled && rayTracingContext.GetGIWorld() != nullptr;
+		VANS_LOG("[AmbientSkyCache] prepare enabled=" << (cacheEnabled ? 1 : 0)
+			<< " spacing=" << settings.gridSpacing << " queriesPerFrame=" << settings.queriesPerFrame);
+
+		const uint32_t gridX = cacheEnabled ? 16u : 1u;
+		const uint32_t gridY = cacheEnabled ? 8u : 1u;
+		const uint32_t gridZ = cacheEnabled ? 16u : 1u;
+		const float spacing = settings.gridSpacing;
+		const glm::vec3 cameraPosition = m_Scene->GetCamera()
+			? glm::vec3(m_Scene->GetCamera()->GetPosition()) : glm::vec3(0.0f);
+		const glm::vec3 snapped = glm::floor(cameraPosition / spacing) * spacing;
+		manager->m_AmbientSkyCacheOrigin = cacheEnabled
+			? snapped - glm::vec3(gridX, gridY, gridZ) * spacing * 0.5f
+			: cameraPosition;
+		manager->m_AmbientSkyCacheRingOffset = glm::ivec3(0);
+		manager->m_AmbientSkyCacheInitialized = cacheEnabled;
+		manager->m_AmbientSkyCacheFrameOffset = 0u;
+
+		auto createCache = [&](const char* name)
+		{
+			VansTexture* texture = new VansTexture();
+			if (!texture->InitTextureWithoutData(m_VansVKCommandBuffer, gridX, gridY, gridZ,
+				VK_FORMAT_R16G16B16A16_SFLOAT, false, false, true,
+				VK_SAMPLER_ADDRESS_MODE_REPEAT))
+			{
+				delete texture;
+				return static_cast<VansTexture*>(nullptr);
+			}
+			manager->RegisterRuntimeRenderTexture(name, texture);
+			return texture;
+		};
+		VansTexture* cacheX = createCache(VansMaterialManager::RT_AMBIENT_SKY_CACHE_X);
+		VansTexture* cacheY = createCache(VansMaterialManager::RT_AMBIENT_SKY_CACHE_Y);
+		VansTexture* cacheZ = createCache(VansMaterialManager::RT_AMBIENT_SKY_CACHE_Z);
+		if (cacheX == nullptr || cacheY == nullptr || cacheZ == nullptr)
+			return;
+
+		if (m_VansVKCommandBuffer.BeginCommandBufferRecord(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT))
+		{
+			const VkClearColorValue unknown{};
+			m_VansVKCommandBuffer.ClearColorImage(cacheX->GetImage(), VK_IMAGE_LAYOUT_GENERAL, unknown);
+			m_VansVKCommandBuffer.ClearColorImage(cacheY->GetImage(), VK_IMAGE_LAYOUT_GENERAL, unknown);
+			m_VansVKCommandBuffer.ClearColorImage(cacheZ->GetImage(), VK_IMAGE_LAYOUT_GENERAL, unknown);
+			m_VansVKCommandBuffer.EndCommandBufferRecord();
+			VansVKCommandBuffer::SubmitCommands(m_VansVKGraphicsQueue, m_VansVKLogicDevice,
+				{ m_VansVKCommandBuffer.GetVKCommandBuffer() }, {}, {}, m_VansVKCommandBuffer.m_CommandBufferFinishSubmitFence);
+			m_VansVKCommandBuffer.ResetCommandBuffer(false);
+		}
+
+		AmbientSkyCacheInfoGPU info{};
+		info.originAndSpacing = glm::vec4(manager->m_AmbientSkyCacheOrigin, spacing);
+		info.gridAndQuery = glm::uvec4(gridX, gridY, gridZ, 0u);
+		info.ringOffset = glm::ivec4(manager->m_AmbientSkyCacheRingOffset, 0);
+		manager->m_AmbientSkyCacheInfoCBBuffer.CreatVulkanBuffer(
+			m_VansVKLogicDevice, sizeof(info), VK_FORMAT_R32_SFLOAT,
+			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+		manager->m_AmbientSkyCacheInfoCBBuffer.SetBufferData(&info, 0, sizeof(info));
+
+		if (!cacheEnabled)
+			return;
+
+		manager->m_AmbientSkyCacheShader = VansGraphics::VansShaderManager::Get().FindComputeShader("AmbientSkyTransmittance");
+		VansDescriptorSetLayoutFactory::CreateAndAllocate_AmbientSkyCache(
+			manager->m_AmbientSkyCacheSetLayout, manager->m_AmbientSkyCacheDescriptorSets, 1);
+		AmbientSkyCacheParamsGPU params{};
+		params.originAndSpacing = glm::vec4(manager->m_AmbientSkyCacheOrigin, spacing);
+		params.ringOffset = glm::ivec4(manager->m_AmbientSkyCacheRingOffset, 0);
+		const uint32_t directionBudget = std::clamp(settings.queriesPerFrame, 1u, 256u);
+		const uint32_t cellQueries = std::max(1u, (directionBudget + 5u) / 6u);
+		params.gridAndQuery = glm::uvec4(gridX, gridY, gridZ, cellQueries);
+		manager->m_AmbientSkyCacheParamsCBBuffer.CreatVulkanBuffer(
+			m_VansVKLogicDevice, sizeof(params), VK_FORMAT_R32_SFLOAT,
+			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+		manager->m_AmbientSkyCacheParamsCBBuffer.SetBufferData(&params, 0, sizeof(params));
 	}
 
 	void VansVKDevice::PrepareGlobalIllumiationData()

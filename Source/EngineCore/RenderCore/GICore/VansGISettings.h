@@ -83,6 +83,21 @@ namespace VansGraphics
 		uint32_t maxRaysPerFrame = 65536u;
 	};
 
+	// Probe 外 sky residual 的固定容量低频透射缓存。只读 GIWorld，不改写 GI atlas。
+	struct GIAmbientSkyCacheSettings
+	{
+		bool enabled = false;
+		float gridSpacing = 4.0f;
+		uint32_t queriesPerFrame = 128u;
+	};
+
+	inline void NormalizeGIAmbientSkyCacheSettings(GIAmbientSkyCacheSettings& settings)
+	{
+		settings.gridSpacing = std::isfinite(settings.gridSpacing)
+			? std::clamp(settings.gridSpacing, 2.0f, 16.0f) : 4.0f;
+		settings.queriesPerFrame = std::clamp(settings.queriesPerFrame, 1u, 256u);
+	}
+
 	inline void NormalizeGIProbePlacementSettings(GIProbePlacementSettings& settings)
 	{
 		settings.minProbeSpacing = std::isfinite(settings.minProbeSpacing) && settings.minProbeSpacing > 0.0f
@@ -113,6 +128,7 @@ namespace VansGraphics
 	{
 		GIWorldSettings world;
 		GIProbePlacementSettings placement;
+		GIAmbientSkyCacheSettings ambientSkyCache;
 		std::vector<GIProbeRegionDesc> regions = { GIProbeRegionDesc{} };
 		uint32_t selectedRegionIndex = 0;
 		// 高亮及反馈保护上限；天光强度由统一 Sky Lighting 数据源控制。
@@ -210,6 +226,7 @@ namespace VansGraphics
 	{
 		NormalizeGIWorldSettings(settings.world);
 		NormalizeGIProbePlacementSettings(settings.placement);
+		NormalizeGIAmbientSkyCacheSettings(settings.ambientSkyCache);
 		if (settings.regions.empty())
 		{
 			settings.regions.push_back(GIProbeRegionDesc{});
@@ -271,6 +288,10 @@ namespace VansGraphics
 		NormalizeGISettings(right);
 		if (!GIWorldResourceLayoutEquals(left.world, right.world)) return false;
 		if (!GIProbePlacementResourceLayoutEquals(left.placement, right.placement))
+			return false;
+		if (left.ambientSkyCache.enabled != right.ambientSkyCache.enabled ||
+			left.ambientSkyCache.gridSpacing != right.ambientSkyCache.gridSpacing ||
+			left.ambientSkyCache.queriesPerFrame != right.ambientSkyCache.queriesPerFrame)
 			return false;
 		if (left.regions.size() != right.regions.size())
 			return false;

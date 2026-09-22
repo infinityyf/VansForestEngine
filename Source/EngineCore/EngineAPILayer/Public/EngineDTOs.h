@@ -1836,11 +1836,19 @@ namespace Vans::EditorAPI
 		std::uint32_t levelCount = 5, maxBricks = 6144, bricksPerFrame = 64, maxTraceSteps = 256;
 	};
 
+	struct GIAmbientSkyCacheSettingsSnapshot
+	{
+		bool enabled = false;
+		float gridSpacing = 4.0f;
+		std::uint32_t queriesPerFrame = 128u;
+	};
+
 	struct GIInspectorSettingsSnapshot
 	{
 		bool available = false;
 		GIProbePlacementSettingsSnapshot placement;
 		GIWorldSettingsSnapshot world;
+		GIAmbientSkyCacheSettingsSnapshot ambientSkyCache;
 
 		float maxIndirectRadiance = 0.0f;
 		float maxProbeRadiance = 0.0f;

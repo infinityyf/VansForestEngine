@@ -287,6 +287,12 @@ void RegisterEngineShaders()
         VK_TRUE, VK_FALSE, VK_COMPARE_OP_GREATER_OR_EQUAL, VK_CULL_MODE_FRONT_BIT,
         0, false, true
     });
+    reg.RegisterGraphicsShader("RoadDecal", {
+        "RoadDecal",
+        "EngineAssets/Shaders/RoadDecal",
+        VK_TRUE, VK_FALSE, VK_COMPARE_OP_GREATER_OR_EQUAL, VK_CULL_MODE_FRONT_BIT,
+        0, false, true
+    });
 
     // -----------------------------------------------------------------------
 
@@ -354,6 +360,7 @@ void RegisterEngineShaders()
     reg.RegisterComputeShader("PreConDiffuseEnvironment", "EngineAssets/Shaders/PreConDiffuseEnvironment");
     reg.RegisterComputeShader("PreConSpecularEnvironment", "EngineAssets/Shaders/PreConSpecularEnvironment");
     reg.RegisterComputeShader("SSGI", "EngineAssets/Shaders/SSGI");
+	reg.RegisterComputeShader("AmbientSkyTransmittance", "EngineAssets/Shaders/AmbientSkyTransmittance", sizeof(AmbientSkyCachePushConstants));
     reg.RegisterComputeShader("SSGIProbeCache", "EngineAssets/Shaders/SSGIProbeCache");
     reg.RegisterComputeShader("GIReceiverVisibilityPrepare", "EngineAssets/Shaders/GIReceiverVisibilityPrepare", 32);
     reg.RegisterComputeShader("GIReceiverVisibilityReproject", "EngineAssets/Shaders/GIReceiverVisibilityReproject", 80);
@@ -428,6 +435,7 @@ void RegisterEngineShaders()
         { VansGraphics::VansPass::GBUFFER,          "Unlit"          },
         { VansGraphics::VansPass::SHADOW,           "Shadow"         },
         { VansGraphics::VansPass::PUNCTUAL_SHADOW,  "PunctualShadow" },
+        { VansGraphics::VansPass::ROAD_DECAL_MODIFIER, "RoadDecal"    },
     });
 
     reg.RegisterMaterialPasses(VansGraphics::VAN_COAT, {

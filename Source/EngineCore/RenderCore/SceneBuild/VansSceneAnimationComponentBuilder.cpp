@@ -513,6 +513,8 @@ namespace VansGraphics
 		}
 
 		VansAnimationNode* animNode = new VansAnimationNode(nodeName);
+		if (animConfig.motionModel)
+			animNode->SetCharacterMotionSettings(*animConfig.motionModel);
 		animNode->SetSkeleton(meshAsset->m_AnimImportResult.skeleton);
 		animNode->SetRenderNodes(group.childNodes);
 		animNode->InitGPUResources(device, 1);

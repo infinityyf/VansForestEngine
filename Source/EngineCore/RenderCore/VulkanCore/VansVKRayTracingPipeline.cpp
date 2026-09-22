@@ -20,6 +20,11 @@ namespace VansGraphics
 			{
 				if (!rayTracingContext.CreateRayTracingResource(this, &m_VansVKCommandBuffer, m_Scene, settings))
 					return false;
+				if (auto* materials = m_Scene->GetMaterialManager())
+				{
+					materials->ClearAmbientSkyCacheRenderData(m_VansVKLogicDevice);
+				}
+				PrepareAmbientSkyCacheRenderData();
 				// 新资源发布后才废弃消费者绑定；失败时旧光照和预览仍然有效。
 				m_Scene->GetReflectionProbeSystem()->ReleaseGILightingBindings();
 				if (auto* materials = m_Scene->GetMaterialManager()) materials->m_SSGITemporalFrame = 0;

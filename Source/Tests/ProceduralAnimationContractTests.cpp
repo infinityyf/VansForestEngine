@@ -1743,6 +1743,35 @@ namespace
 		return Check(!runtime.Configure(*loaded, fixture.rig, {}, error), "Overlapping rotation profiles were accepted");
 	}
 
+	bool TestBlendSpace2DGraph()
+	{
+		VansAnimGraph graph;
+		const int entryId = graph.AddNode(std::make_unique<AnimGraphEntryNode>());
+		auto blend = std::make_unique<AnimGraphBlendSpace2DNode>();
+		blend->m_XParamName = "AimYaw";
+		blend->m_YParamName = "AimPitch";
+		blend->m_Samples = { { -1.0f, 0.0f }, { 1.0f, 0.0f }, { 0.0f, 1.0f } };
+		const int blendId = graph.AddNode(std::move(blend));
+		const int outputId = graph.AddNode(std::make_unique<AnimGraphOutputNode>());
+		graph.AddLink(entryId, 0, blendId, 0);
+		graph.AddLink(blendId, 0, outputId, 0);
+		AnimGraphJson json;
+		graph.SerializeToJsonObject(json);
+		auto loaded = VansAnimGraph::DeserializeFromJsonObject(json);
+		if (!Check(loaded != nullptr, "BlendSpace2D graph did not deserialize"))
+			return false;
+		const auto* loadedNode = loaded->GetNode(blendId);
+		if (!Check(loadedNode && loadedNode->GetType() == AnimGraphNodeType::BlendSpace2D,
+			"BlendSpace2D node type did not roundtrip"))
+			return false;
+		const auto* loadedBlend = static_cast<const AnimGraphBlendSpace2DNode*>(loadedNode);
+		return Check(loadedBlend->m_XParamName == "AimYaw"
+			&& loadedBlend->m_YParamName == "AimPitch"
+			&& loadedBlend->m_Samples.size() == 3
+			&& loadedBlend->m_Samples[1].x == 1.0f,
+			"BlendSpace2D parameters or samples did not roundtrip");
+	}
+
 	bool TestProjectSceneProceduralConfiguration()
 	{
 		std::filesystem::path workspace = std::filesystem::current_path();
@@ -1775,6 +1804,7 @@ namespace
 bool RunProceduralAnimationContractTests()
 {
 	return TestGroundingRigEditContinuity()
+		&& TestBlendSpace2DGraph()
 		&& TestRotationDistribution()
 		&& TestRotationDistributionGraph()
 		&& TestTransformTargetHierarchy()

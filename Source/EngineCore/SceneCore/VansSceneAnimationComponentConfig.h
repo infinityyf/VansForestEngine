@@ -41,6 +41,7 @@ namespace Vans
 		std::string rootBone;
 		std::string name;
 		std::optional<VansSceneAnimationRetargetConfig> retarget;
+		std::optional<VansCharacterMotionSettings> motionModel;
 		std::optional<VansGraphics::MotionMatchingSettings> motionMatching;
 		std::optional<VansSceneRagdollComponentConfig> ragdoll;
 	};

@@ -1,4 +1,5 @@
 #include "VansScene.h"
+#include "Decal/VansRoadDecalGeometry.h"
 #include "../ProjectSystem/VansProjectManager.h"
 #include "../PhysicsCore/VansTerrainPhysicsNode.h"
 #include "TerrainCore/VansTerrain.h"
@@ -10,19 +11,23 @@
 #include <cstring>
 #include <mutex>
 #include <cmath>
+#include <algorithm>
 
 namespace VansGraphics
 {
 namespace
 {
+constexpr std::uint32_t PcgRoadTerrainReceiverGroup = 1024;
+
 class SplineRoadMutationBarrier final : public IVansRenderThreadTransaction
 {
 public:
     bool Execute(VansGraphicsDevice& backend) override { return backend.WaitForIdle(); }
 };
+
 }
 
-bool VansScene::UpdateSplineRoadMeshes(const Vans::VansPcgSplineFieldSnapshot& field, std::string& error)
+bool VansScene::UpdateSplineRoadRenderNodes(const Vans::VansPcgSplineFieldSnapshot& field, std::string& error)
 {
     VANS_ASSERT_MAIN_THREAD();
     bool changed = field.roads.size() != m_SplineRoads.size();
@@ -30,8 +35,17 @@ bool VansScene::UpdateSplineRoadMeshes(const Vans::VansPcgSplineFieldSnapshot& f
     {
         if (!GetMaterialAsset(road->material.ToString()))
         { error = "Road material is not loaded: " + road->material.ToString(); return false; }
+        if (road->renderMode == Vans::VansPcgRoadRenderMode::ProjectedDecal)
+        {
+            const auto* material=static_cast<VansMaterial*>(GetMaterialAsset(road->roadDecalMaterial.ToString()));
+            if (!material || material->m_MaterialType!=VAN_PBR)
+            { error = "Road decal requires a loaded PBR surface material: " + road->roadDecalMaterial.ToString(); return false; }
+        }
         const auto old = m_SplineRoads.find(id);
-        changed |= old == m_SplineRoads.end() || old->second.fingerprint != road->fingerprint;
+        const bool isDecal = road->renderMode == Vans::VansPcgRoadRenderMode::ProjectedDecal;
+        changed |= old == m_SplineRoads.end() || old->second.fingerprint != road->fingerprint ||
+            (old != m_SplineRoads.end() &&
+                (old->second.node->GetNodeType() == DECAL_NODE) != isDecal);
     }
     if (!changed) return true;
     // 与普通运行时节点的结构修改共用线程事务边界，旧帧退出后才能替换其网格。
@@ -41,7 +55,7 @@ bool VansScene::UpdateSplineRoadMeshes(const Vans::VansPcgSplineFieldSnapshot& f
     auto* device = static_cast<VansVKDevice*>(m_GraphicsDevice);
     auto native = device->GetLogicDevice();
     std::map<std::string, std::shared_ptr<VansMesh>> prepared;
-    std::map<std::string, std::unique_ptr<VansCommonRenderNode>> added;
+    std::map<std::string, std::unique_ptr<VansRenderNode>> added;
     const auto rollback = [&]() {
         for (const auto& [id, node] : added)
             if (node->m_TransfromIndex >= 0) m_TransformSlotAllocator.FreeSlot(node->m_TransfromIndex);
@@ -51,33 +65,80 @@ bool VansScene::UpdateSplineRoadMeshes(const Vans::VansPcgSplineFieldSnapshot& f
         for (const auto& [id, road] : field.roads)
         {
             const auto old = m_SplineRoads.find(id);
-            if (old != m_SplineRoads.end() && old->second.fingerprint == road->fingerprint) continue;
+            const bool isDecal = road->renderMode == Vans::VansPcgRoadRenderMode::ProjectedDecal;
+            if (old != m_SplineRoads.end() && old->second.fingerprint == road->fingerprint &&
+                (old->second.node->GetNodeType() == DECAL_NODE) == isDecal)
+                continue;
             using Vertex = Vans::VansPcgRoadVertex;
+            std::vector<VansRoadDecalVertex> decalVertices;
+            std::vector<std::uint32_t> decalIndices;
+            const void* vertexData=road->vertices.data();
+            std::uint32_t vertexCount=static_cast<std::uint32_t>(road->vertices.size());
+            std::size_t vertexStride=sizeof(Vertex);
+            const std::uint32_t* indexData=road->indices.data();
+            std::uint32_t indexCount=static_cast<std::uint32_t>(road->indices.size());
+            std::vector<VkVertexInputAttributeDescription> attributes;
+            if (isDecal)
+            {
+                BuildRoadDecalGeometry(*road,decalVertices,decalIndices);
+                vertexData = decalVertices.data();
+                vertexCount = static_cast<std::uint32_t>(decalVertices.size());
+                vertexStride = sizeof(VansRoadDecalVertex);
+                indexData = decalIndices.data();
+                indexCount = static_cast<std::uint32_t>(decalIndices.size());
+                attributes = {{0,0,VK_FORMAT_R32G32B32_SFLOAT,offsetof(VansRoadDecalVertex,position)},
+                    {1,0,VK_FORMAT_R32G32B32A32_SFLOAT,offsetof(VansRoadDecalVertex,originDepth)},
+                    {2,0,VK_FORMAT_R32G32B32_SFLOAT,offsetof(VansRoadDecalVertex,edge1)},
+                    {3,0,VK_FORMAT_R32G32B32_SFLOAT,offsetof(VansRoadDecalVertex,edge2)},
+                    {4,0,VK_FORMAT_R32G32B32A32_SFLOAT,offsetof(VansRoadDecalVertex,uv01)},
+                    {5,0,VK_FORMAT_R32G32_SFLOAT,offsetof(VansRoadDecalVertex,uv2)}};
+            }
+            else
+                attributes = {{ 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position) },
+                    { 1, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv) },
+                    { 2, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal) },
+                    { 3, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, tangent) }};
             auto mesh = std::make_shared<VansMesh>(true, false);
             std::vector<float> positions;
-            positions.reserve(road->vertices.size()*3);
-            for (const auto& vertex : road->vertices)
-                positions.insert(positions.end(), {vertex.position.x,vertex.position.y,vertex.position.z});
-            mesh->InitFromRawData(native,road->vertices.data(),static_cast<uint32_t>(road->vertices.size()),sizeof(Vertex),
-                road->indices.data(),static_cast<uint32_t>(road->indices.size()),{{0,sizeof(Vertex),VK_VERTEX_INPUT_RATE_VERTEX}},
-                {{0,0,VK_FORMAT_R32G32B32_SFLOAT,offsetof(Vertex,position)},
-                 {1,0,VK_FORMAT_R32G32_SFLOAT,offsetof(Vertex,uv)},
-                 {2,0,VK_FORMAT_R32G32B32_SFLOAT,offsetof(Vertex,normal)},
-                 {3,0,VK_FORMAT_R32G32B32A32_SFLOAT,offsetof(Vertex,tangent)}},positions);
+            positions.reserve(std::size_t(vertexCount) * 3);
+            if (isDecal)
+                for (const auto& vertex : decalVertices)
+                    positions.insert(positions.end(), { vertex.position.x, vertex.position.y, vertex.position.z });
+            else
+                for (const auto& vertex : road->vertices)
+                    positions.insert(positions.end(), { vertex.position.x, vertex.position.y, vertex.position.z });
+            mesh->InitFromRawData(native, vertexData, vertexCount, static_cast<uint32_t>(vertexStride),
+                indexData, indexCount,
+                {{ 0, static_cast<uint32_t>(vertexStride), VK_VERTEX_INPUT_RATE_VERTEX }}, attributes, positions);
             prepared.emplace(id,std::move(mesh));
-            if (old == m_SplineRoads.end())
+            if (old == m_SplineRoads.end() ||
+                (old->second.node->GetNodeType() == DECAL_NODE) != isDecal)
             {
-                auto node = std::make_unique<VansCommonRenderNode>(native,OPAQUE_NODE);
+                std::unique_ptr<VansRenderNode> node;
+                if (isDecal) node=std::make_unique<VansDecalRenderNode>(native);
+                else node=std::make_unique<VansCommonRenderNode>(native,OPAQUE_NODE);
                 node->SetName("PCG Road " + id);
-                node->m_SupportShadow = true;
                 node->m_RayTracingEnabled = false;
-                node->m_Material = static_cast<VansMaterial*>(GetMaterialAsset(road->material.ToString()));
+                node->m_Material = static_cast<VansMaterial*>(GetMaterialAsset(
+                    isDecal ? road->roadDecalMaterial.ToString() : road->material.ToString()));
                 node->m_Mesh = node->m_SourceMesh = prepared.at(id).get();
+                if (isDecal)
+                {
+                    node->m_UsesRoadDecalPass = true;
+                    node->m_DecalReceiverId = PcgRoadTerrainReceiverGroup;
+                    node->m_DecalMinimumNormalDot=-1.0f;
+                }
+                else static_cast<VansCommonRenderNode*>(node.get())->m_SupportShadow=true;
                 node->SetTransformData();
                 if (IsSceneReady())
                 {
                     const auto slot = AllocateTransformSlot();
-                    if (slot == UINT32_MAX) { rollback(); error="Road transform capacity exhausted."; return false; }
+                    if (slot == UINT32_MAX)
+                    {
+                        rollback();
+                        error = "Road transform capacity exhausted.";
+                        return false;
+                    }
                     node->m_TransfromIndex = static_cast<int>(slot);
                     added.emplace(id,std::move(node));
                     added.at(id)->CreateDescriptorSets(m_Camera,m_LightManager,m_MaterialManager);
@@ -99,16 +160,35 @@ bool VansScene::UpdateSplineRoadMeshes(const Vans::VansPcgSplineFieldSnapshot& f
     for (auto& [id, mesh] : prepared)
     {
         auto& runtime=m_SplineRoads[id];
+        const bool isDecal = field.roads.at(id)->renderMode == Vans::VansPcgRoadRenderMode::ProjectedDecal;
+        if (runtime.node && (runtime.node->GetNodeType() == DECAL_NODE) != isDecal)
+        {
+            ReleaseMainRenderProxyBinding(runtime.node,m_PendingRenderMutations);
+            if (runtime.node->m_TransfromIndex >= 0)
+                m_TransformSlotAllocator.FreeSlot(runtime.node->m_TransfromIndex);
+            RemoveRenderNodeFromVector(runtime.node);
+            delete runtime.node;
+            runtime.node = nullptr;
+        }
         if (!runtime.node)
         {
             runtime.node=added.at(id).release();
-            RegistRenderNode(runtime.node,OPAQUE_NODE);
+            RegistRenderNode(runtime.node, isDecal ? DECAL_NODE : OPAQUE_NODE);
         }
         else ReleaseMainRenderProxyBinding(runtime.node,m_PendingRenderMutations);
         runtime.node->m_Mesh=runtime.node->m_SourceMesh=mesh.get();
-        runtime.node->m_Material=static_cast<VansMaterial*>(GetMaterialAsset(field.roads.at(id)->material.ToString()));
+        runtime.node->m_Material = static_cast<VansMaterial*>(GetMaterialAsset(
+            isDecal ? field.roads.at(id)->roadDecalMaterial.ToString() :
+                field.roads.at(id)->material.ToString()));
+        if (isDecal)
+        {
+            runtime.node->m_UsesRoadDecalPass = true;
+            runtime.node->m_DecalReceiverId = PcgRoadTerrainReceiverGroup;
+            runtime.node->m_DecalMinimumNormalDot = -1.0f;
+        }
         runtime.node->MarkDescriptorSetsDirty();
-        runtime.mesh=std::move(mesh);runtime.fingerprint=field.roads.at(id)->fingerprint;
+        runtime.mesh = std::move(mesh);
+        runtime.fingerprint = field.roads.at(id)->fingerprint;
     }
     return true;
 }
@@ -124,7 +204,7 @@ bool VansScene::PublishSplineField(std::shared_ptr<const Vans::VansPcgSplineFiel
     if (!field || !field->effectiveTerrain) {error="Incomplete spline field cannot be published.";return false;}
     if (field==m_SplineField) return true;
     if (m_WaterSystem && !VansWaterGeometryClipmap::ValidateRiverFieldBudget(*field,GetWaterConfig().m_Geometry,error)) return false;
-    if (!UpdateSplineRoadMeshes(*field,error)) return false;
+    if (!UpdateSplineRoadRenderNodes(*field,error)) return false;
     const bool terrainChanged=!m_SplineField || m_SplineField->effectiveTerrain!=field->effectiveTerrain;
     if (terrainChanged && m_TerrainPhysicsNode)
     {
@@ -139,7 +219,7 @@ bool VansScene::PublishSplineField(std::shared_ptr<const Vans::VansPcgSplineFiel
         {
             std::string rollbackError;
             const Vans::VansPcgSplineFieldSnapshot empty;
-            UpdateSplineRoadMeshes(m_SplineField?*m_SplineField:empty,rollbackError);
+            UpdateSplineRoadRenderNodes(m_SplineField?*m_SplineField:empty,rollbackError);
             error="Effective terrain collision update failed.";
             if (!rollbackError.empty()) error+=" Road rollback: "+rollbackError;
             return false;

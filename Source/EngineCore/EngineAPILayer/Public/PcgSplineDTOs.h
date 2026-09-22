@@ -8,6 +8,7 @@
 namespace Vans::EditorAPI
 {
 enum class PcgSplineKind { Road, River };
+enum class PcgRoadRenderMode { Mesh, ProjectedDecal };
 enum class PcgSplineTangentMode { Auto, Aligned, Mirrored, Broken };
 enum class PcgSplineSegmentMode { Curve, Line };
 struct PcgSplinePoint
@@ -24,7 +25,9 @@ struct PcgSplinePoint
 struct PcgSplineItem
 {
     std::string id,name,materialGuid;
+    std::string roadDecalMaterialGuid;
     PcgSplineKind kind=PcgSplineKind::Road;
+    PcgRoadRenderMode roadRenderMode=PcgRoadRenderMode::Mesh;
     bool enabled=true,locked=false,excludeVegetation=false;
     float vegetationFade=2;
     float waterSurfaceDrop=.15f;
@@ -33,6 +36,7 @@ struct PcgSplineItem
     float wetBankWidthMeters=3.f,wetnessStrength=.85f;
     int priority=0;
     float shoulder=3,blendWidth=1,surfaceOffset=.025f,textureRepeat=4;
+    float projectedDepth=2;
     float flowSign=1,fadeInDistance=5,fadeOutDistance=5;
     bool normalFlowEnabled=true;
     std::vector<PcgSplinePoint> points;

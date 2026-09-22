@@ -3,6 +3,7 @@
 #include "../VansNode.h"
 #include "VansAnimationTypes.h"
 #include "VansAnimationController.h"
+#include "../RuntimeCore/VansCharacterMotion.h"
 #include "Retargeting/VansRetargetProcessor.h"
 #include "../ScriptCore/VansTransform.h"
 #include "../RenderCore/VulkanCore/VansVKBuffer.h"
@@ -15,6 +16,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -65,6 +67,17 @@ namespace VansGraphics
 		// Controller binding
 		bool SetController(VansAnimationController* controller);
 		VansAnimationController* GetController() const { return m_Controller; }
+		void SetCharacterMotionSettings(const Vans::VansCharacterMotionSettings& settings)
+		{
+			m_CharacterMotionSettings = settings;
+		}
+		bool TryGetCharacterMotionSettings(Vans::VansCharacterMotionSettings& settings) const
+		{
+			if (!m_CharacterMotionSettings)
+				return false;
+			settings = *m_CharacterMotionSettings;
+			return true;
+		}
 		VansSkeletonPoseView GetFinalPoseView() const
 		{
 			return m_Controller ? m_Controller->GetFinalPoseView(m_Skeleton)
@@ -102,6 +115,7 @@ namespace VansGraphics
 		void Resume();
 		void Stop();
 		VansGraphSetSwitchResult SwitchGraphSet(const std::string& graphSetId);
+		bool RestartLayer(const std::string& layerId);
 		const std::string& GetActiveGraphSetId() const;
 		const std::string& GetIncomingGraphSetId() const;
 		bool IsGraphSetTransitioning() const;
@@ -180,6 +194,7 @@ namespace VansGraphics
 
 		// Scene-owned target controller plus optional source-proxy controller.
 		VansAnimationController* m_Controller = nullptr;
+		std::optional<Vans::VansCharacterMotionSettings> m_CharacterMotionSettings;
 		Skeleton m_SourceSkeleton;
 		std::unique_ptr<VansAnimationController> m_SourceController;
 		VansRetargetRuntimeDesc m_RetargetDesc;

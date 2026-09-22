@@ -63,7 +63,7 @@ bool VansPcgSplineFieldStorage::Save(const std::filesystem::path& path,const Van
         w.Value(t.minimumWaterHeight);w.Value(t.maximumWaterHeight);w.Value(t.minimumRiverWidth);w.Value(t.maximumHeightConflict);w.Value(std::uint8_t(t.hasRiver));
     }
     w.Value(std::uint32_t(field.roads.size()));
-    for(const auto& [id,road]:field.roads){w.Text(id);w.Text(road->material.ToString());w.Value(road->fingerprint);w.Array(road->vertices);w.Array(road->indices);}
+    for(const auto& [id,road]:field.roads){w.Text(id);w.Text(road->material.ToString());w.Text(road->roadDecalMaterial.ToString());w.Value(road->fingerprint);w.Array(road->vertices);w.Array(road->indices);}
     w.Value(std::uint32_t(field.warnings.size()));for(const auto& warning:field.warnings)w.Text(warning);
     w.Array(field.uncoveredBankPoints);
     w.Value(Digest(w.bytes.data(),w.bytes.size()));
@@ -118,6 +118,9 @@ std::shared_ptr<const VansPcgSplineFieldSnapshot> VansPcgSplineFieldStorage::Loa
         {
             auto road=std::make_shared<VansPcgRoadMesh>();road->splineId=r.Text();
             if(!VansAssetGuid::TryParse(r.Text(),road->material))throw std::runtime_error("Invalid baked road material.");
+            const auto roadDecalMaterial=r.Text();
+            if(!roadDecalMaterial.empty() && !VansAssetGuid::TryParse(roadDecalMaterial,road->roadDecalMaterial))
+                throw std::runtime_error("Invalid baked road decal material.");
             road->fingerprint=r.Value<std::uint64_t>();road->vertices=r.Array<VansPcgRoadVertex>(524288);road->indices=r.Array<std::uint32_t>(1572864);
             for(const auto index:road->indices)if(index>=road->vertices.size())throw std::runtime_error("Invalid baked road index.");
             if(!field->roads.emplace(road->splineId,road).second)throw std::runtime_error("Duplicate baked road.");

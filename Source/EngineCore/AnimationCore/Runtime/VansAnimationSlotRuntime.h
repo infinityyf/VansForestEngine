@@ -29,6 +29,10 @@ namespace VansGraphics
 		std::string id;
 		std::string name;
 		std::string layerId;
+		// Slots in the same group follow UE's AnimSlot group rule: starting a
+		// new request interrupts the active request in that group while slots in
+		// different groups continue to blend independently.
+		std::string group;
 		VansSlotConcurrency concurrency = VansSlotConcurrency::Replace;
 		std::uint32_t maxQueueDepth = 4;
 		float defaultBlendIn = 0.08f;

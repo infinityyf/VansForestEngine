@@ -48,6 +48,15 @@ namespace VansGraphics::VansPoseMath
 	                                 float weight,
 	                                 const glm::mat4& reference = glm::mat4(1.0f));
 
+	// Applies an additive transform authored in mesh/model space.  The
+	// reference and additive poses are converted to a model-space delta first;
+	// the weighted delta is then composed onto the base model transform.  This
+	// is the transform-level equivalent of UE ALS Apply Mesh Space Additive.
+	glm::mat4 ApplyMeshSpaceAdditiveTransform(const glm::mat4& baseModel,
+	                                           const glm::mat4& additiveModel,
+	                                           const glm::mat4& referenceModel,
+	                                           float weight);
+
 	void BlendPoses(const std::vector<glm::mat4>& first,
 	                const std::vector<glm::mat4>& second,
 	                float alpha,

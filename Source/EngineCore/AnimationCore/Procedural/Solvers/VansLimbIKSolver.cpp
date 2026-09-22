@@ -168,16 +168,28 @@ namespace VansGraphics
 			std::abs(upperLength - lowerLength) + kEpsilon, upperLength + lowerLength - kEpsilon);
 		const glm::vec3 effectiveTarget = root + targetDirection * effectiveDistance;
 
-		// The authored pole is compiled into the chain-root parent's bind space.
-		// Following the parent keeps the knee aligned with the character while
-		// preventing Motion Matching changes in the source thigh twist from moving
-		// the bend plane sideways for an otherwise stable planted-foot goal.
-		const int rootParent = rig.skeleton->bones[
-			static_cast<std::size_t>(rootIndex)].parentIndex;
-		const glm::quat poleFrame = workspace.IsValidBone(rootParent)
-			? workspace.GetComponentRotation(rootParent)
-			: glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
-		glm::vec3 pole = poleFrame * chain.poleAxisParentLocal;
+		glm::vec3 pole(0.0f);
+		if (settings.hasPoleDirectionModel && Finite(settings.poleDirectionModel)
+			&& glm::dot(settings.poleDirectionModel, settings.poleDirectionModel)
+				> kEpsilon * kEpsilon)
+		{
+			// Retargeting supplies the source pose's bend plane directly in model
+			// space. This avoids forcing a SWAT-specific authored pole onto a
+			// differently proportioned UEFN arm pose.
+			pole = glm::normalize(settings.poleDirectionModel);
+		}
+		else
+		{
+			// The authored pole is compiled into the chain-root parent's bind space.
+			// Following the parent keeps the chain aligned with the character while
+			// retaining the existing stable frame for ordinary graph IK.
+			const int rootParent = rig.skeleton->bones[
+				static_cast<std::size_t>(rootIndex)].parentIndex;
+			const glm::quat poleFrame = workspace.IsValidBone(rootParent)
+				? workspace.GetComponentRotation(rootParent)
+				: glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+			pole = poleFrame * chain.poleAxisParentLocal;
+		}
 		pole -= targetDirection * glm::dot(pole, targetDirection);
 		if (glm::length(pole) <= kEpsilon)
 			pole = mid - root - targetDirection * glm::dot(mid - root, targetDirection);

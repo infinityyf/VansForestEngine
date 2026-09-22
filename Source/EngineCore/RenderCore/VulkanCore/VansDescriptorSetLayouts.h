@@ -267,6 +267,10 @@ namespace VansGraphics
         DEFERRED_BINDING_DECAL_COLOR = 30,
         DEFERRED_BINDING_DECAL_NORMAL = 31,
         DEFERRED_BINDING_DECAL_ROUGHNESS = 32,
+		DEFERRED_BINDING_AMBIENT_SKY_CACHE_X = 35,
+		DEFERRED_BINDING_AMBIENT_SKY_CACHE_Y = 36,
+		DEFERRED_BINDING_AMBIENT_SKY_CACHE_Z = 37,
+		DEFERRED_BINDING_AMBIENT_SKY_CACHE_PARAMS = 38,
 	};
 
 	// --- Screen-Space Pass (SSAO etc.) ---
@@ -507,6 +511,14 @@ namespace VansGraphics
 		SSGI_ATROUS_BINDING_POSITION = 2,
 		SSGI_ATROUS_BINDING_MATERIAL = 3,
 		SSGI_ATROUS_BINDING_OUTPUT_GI = 4,
+	};
+
+	enum AmbientSkyCachePassBinding : uint32_t
+	{
+		AMBIENT_SKY_CACHE_OUTPUT_X = 0,
+		AMBIENT_SKY_CACHE_OUTPUT_Y = 1,
+		AMBIENT_SKY_CACHE_OUTPUT_Z = 2,
+		AMBIENT_SKY_CACHE_PARAMS = 3,
 	};
 
 	enum MainCameraHiZCullPassBinding : uint32_t
@@ -875,6 +887,7 @@ namespace VansGraphics
 		static void CreateAndAllocate_CascadeShadowMinMax(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount);
 		static void CreateAndAllocate_SSGITemporal(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 2);
 		static void CreateAndAllocate_SSGIAtrous(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 2);
+		static void CreateAndAllocate_AmbientSkyCache(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_SSR_Trace(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_SSR_Resolve(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);
 		static void CreateAndAllocate_SSR_TemporalAA(VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount = 1);

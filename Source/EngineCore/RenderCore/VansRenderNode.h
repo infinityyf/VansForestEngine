@@ -79,7 +79,9 @@ namespace VansGraphics
 
 			// Per-instance GI ray-tracing participation. Transparent/transmission
 			// materials are always disabled even when the serialized mode is "auto".
-			bool m_RayTracingEnabled = true;
+		bool m_RayTracingEnabled = true;
+		// PCG 道路投影使用独立 pass，避免复用普通弹坑贴花的材质语义。
+		bool m_UsesRoadDecalPass = false;
 
 			// Position.w / Scale.w 是保留实例分量；通过帧快照携带贴花接收组与角度阈值。
 			uint32_t m_DecalReceiverId = 0;

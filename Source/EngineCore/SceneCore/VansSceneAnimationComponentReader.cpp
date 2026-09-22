@@ -255,6 +255,52 @@ VansSceneAnimationRetargetConfig DecodeRetarget(const VansSerializedValue& retar
 	return config;
 }
 
+bool DecodeCharacterMotionModel(
+	const VansSerializedValue& motionModel,
+	VansCharacterMotionSettings& settings)
+{
+		const std::string driveMode = ReadSerializedStringField(motionModel, "drive_mode", "hybrid");
+		if (driveMode == "capsule")
+			settings.driveMode = VansLocomotionDriveMode::Capsule;
+		else if (driveMode == "root_motion")
+			settings.driveMode = VansLocomotionDriveMode::RootMotion;
+		else if (driveMode == "hybrid")
+			settings.driveMode = VansLocomotionDriveMode::Hybrid;
+		else
+			return false;
+		settings.velocityHalfLife = ReadFloatField(
+			motionModel, "velocity_half_life", settings.velocityHalfLife);
+		settings.facingHalfLife = ReadFloatField(
+			motionModel, "facing_half_life", settings.facingHalfLife);
+		settings.facingVelocityHalfLife = ReadFloatField(
+			motionModel, "facing_velocity_half_life", settings.facingVelocityHalfLife);
+		settings.movementReferenceYawRateHalfLife = ReadFloatField(
+			motionModel,
+			"movement_reference_yaw_rate_half_life",
+			settings.movementReferenceYawRateHalfLife);
+		settings.maxFacingYawRate = ReadFloatField(
+			motionModel, "max_facing_yaw_rate", settings.maxFacingYawRate);
+		settings.maxAcceleration = ReadFloatField(
+			motionModel, "max_acceleration", settings.maxAcceleration);
+		settings.maxDeceleration = ReadFloatField(
+			motionModel, "max_deceleration", settings.maxDeceleration);
+		settings.actualVelocityFeedbackHalfLife = ReadFloatField(
+			motionModel,
+			"actual_velocity_feedback_half_life",
+			settings.actualVelocityFeedbackHalfLife);
+		settings.predictionStep = ReadFloatField(
+			motionModel, "prediction_step", settings.predictionStep);
+		settings.rootMotionToWorldScale = ReadFloatField(
+			motionModel, "root_motion_to_world_scale", settings.rootMotionToWorldScale);
+		settings.loopRootMotionWeight = ReadFloatField(
+			motionModel, "loop_root_motion_weight", settings.loopRootMotionWeight);
+		settings.transitionRootMotionWeight = ReadFloatField(
+			motionModel, "transition_root_motion_weight", settings.transitionRootMotionWeight);
+		settings.rootRotationWeight = ReadFloatField(
+			motionModel, "root_rotation_weight", settings.rootRotationWeight);
+	return true;
+	}
+
 bool DecodeMotionMatching(const VansSerializedValue& mmJson, MotionMatchingSettings& settings)
 {
 	settings = {};
@@ -262,45 +308,8 @@ bool DecodeMotionMatching(const VansSerializedValue& mmJson, MotionMatchingSetti
 	settings.autoBuild = ReadBoolField(mmJson, "auto_build", true);
 	if (const VansSerializedValue* motionModel = ReadObjectField(mmJson, "motion_model"))
 	{
-		const std::string driveMode = ReadSerializedStringField(*motionModel, "drive_mode", "hybrid");
-		if (driveMode == "capsule")
-			settings.motionModel.driveMode = VansLocomotionDriveMode::Capsule;
-		else if (driveMode == "root_motion")
-			settings.motionModel.driveMode = VansLocomotionDriveMode::RootMotion;
-		else if (driveMode == "hybrid")
-			settings.motionModel.driveMode = VansLocomotionDriveMode::Hybrid;
-		else
+		if (!DecodeCharacterMotionModel(*motionModel, settings.motionModel))
 			return false;
-		settings.motionModel.velocityHalfLife = ReadFloatField(
-			*motionModel, "velocity_half_life", settings.motionModel.velocityHalfLife);
-		settings.motionModel.facingHalfLife = ReadFloatField(
-			*motionModel, "facing_half_life", settings.motionModel.facingHalfLife);
-		settings.motionModel.facingVelocityHalfLife = ReadFloatField(
-			*motionModel, "facing_velocity_half_life", settings.motionModel.facingVelocityHalfLife);
-		settings.motionModel.movementReferenceYawRateHalfLife = ReadFloatField(
-			*motionModel,
-			"movement_reference_yaw_rate_half_life",
-			settings.motionModel.movementReferenceYawRateHalfLife);
-		settings.motionModel.maxFacingYawRate = ReadFloatField(
-			*motionModel, "max_facing_yaw_rate", settings.motionModel.maxFacingYawRate);
-		settings.motionModel.maxAcceleration = ReadFloatField(
-			*motionModel, "max_acceleration", settings.motionModel.maxAcceleration);
-		settings.motionModel.maxDeceleration = ReadFloatField(
-			*motionModel, "max_deceleration", settings.motionModel.maxDeceleration);
-		settings.motionModel.actualVelocityFeedbackHalfLife = ReadFloatField(
-			*motionModel,
-			"actual_velocity_feedback_half_life",
-			settings.motionModel.actualVelocityFeedbackHalfLife);
-		settings.motionModel.predictionStep = ReadFloatField(
-			*motionModel, "prediction_step", settings.motionModel.predictionStep);
-		settings.motionModel.rootMotionToWorldScale = ReadFloatField(
-			*motionModel, "root_motion_to_world_scale", settings.motionModel.rootMotionToWorldScale);
-		settings.motionModel.loopRootMotionWeight = ReadFloatField(
-			*motionModel, "loop_root_motion_weight", settings.motionModel.loopRootMotionWeight);
-		settings.motionModel.transitionRootMotionWeight = ReadFloatField(
-			*motionModel, "transition_root_motion_weight", settings.motionModel.transitionRootMotionWeight);
-		settings.motionModel.rootRotationWeight = ReadFloatField(
-			*motionModel, "root_rotation_weight", settings.motionModel.rootRotationWeight);
 	}
 	settings.sampleRate = ReadFloatField(mmJson, "sample_rate", 30.0f);
 	settings.nonLoopSamplingEndMargin = ReadFloatField(
@@ -677,6 +686,17 @@ VansSceneAnimationComponentConfig VansSceneAnimationComponentReader::ReadAnimati
 	config.loop = ReadBoolField(animationNode, "loop", true);
 	config.rootBone = ReadSerializedStringField(animationNode, "root_bone", "");
 	config.name = ReadSerializedStringField(animationNode, "name", "");
+	if (const VansSerializedValue* motionModel = FindObjectField(animationNode, "motion_model"))
+	{
+		VansCharacterMotionSettings settings;
+		if (motionModel->kind != VansSerializedValue::Kind::Object ||
+			!DecodeCharacterMotionModel(*motionModel, settings))
+		{
+			config.valid = false;
+			return config;
+		}
+		config.motionModel = settings;
+	}
 
 	if (const VansSerializedValue* motionMatchingField = FindObjectField(animationNode, "motion_matching"))
 	{

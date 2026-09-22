@@ -45,6 +45,7 @@ namespace VansGraphics
 		Clip,            // 播放单个 AnimationClip，输出 Pose
 		Blend,           // 双输入线性混合（alpha 参数驱动）
 		Blend1D,         // 1D 混合空间（float 参数映射到多个 Clip 权重）
+		BlendSpace2D,    // 2D 混合空间（两个 float 参数映射到采样点三角插值）
 		IfCondition,     // 条件选择：根据参数比较结果选择两路 Pose 之一
 		Switch,          // 多路选择：根据 int 参数选择 N 路 Pose 之一
 		AdditiveBlend,   // 叠加混合：将相对参考姿态的 local TRS delta 施加到 base
@@ -59,7 +60,10 @@ namespace VansGraphics
 		LimbIK,          // Rig 中三骨 Limb 链求解
 		ChainIK,         // Rig 中 CCD/FABRIK 链求解
 		PoseCheckpoint, // 显式记录本帧挂点姿态，供下游约束和附件共同读取
-		RotationDistribution // 显式配置的骨段扭转分配
+		RotationDistribution, // 显式配置的骨段扭转分配
+		SaveCachedPose,   // UE Save Cached Pose equivalent
+		UseCachedPose,    // UE Use Cached Pose equivalent
+		LayeredBlendPerBone // Explicit regional layer composition
 	};
 
 	// ─────────────────────────────────────────────────────────────
@@ -205,6 +209,11 @@ namespace VansGraphics
 		std::string m_ClipName;
 		float       m_Speed     = 1.0f;
 		bool        m_Loop      = true;
+		// Animation assets can retain extracted root tracks while a graph node
+		// decides whether this pose is allowed to drive the owner.  Locomotion
+		// samples therefore keep their authored tracks available for actions but
+		// explicitly suppress them at the node boundary.
+		bool        m_RootMotion = true;
 
 	};
 
@@ -249,6 +258,29 @@ namespace VansGraphics
 		// 配置
 		std::string        m_ParamName;    // 驱动混合的 Float 参数名
 		std::vector<float> m_Thresholds;   // 每个输入 Pin 对应的阈值（升序）
+	};
+
+	// ─── BlendSpace2DNode ───────────────────────────────────────
+	//  2D 混合空间：根据两个 float 参数在采样点构成的三角形内插值。
+	//  每个采样点对应一个输入 Pose Pin，采样点顺序与 Pins 保持一致。
+	//  参数落在采样网格外时，使用最近的三个采样点进行稳定的距离权重退化。
+	struct AnimGraphBlendSpaceSample
+	{
+		float x = 0.0f;
+		float y = 0.0f;
+	};
+
+	class AnimGraphBlendSpace2DNode : public VansAnimGraphNode
+	{
+	public:
+		AnimGraphBlendSpace2DNode();
+		std::vector<AnimGraphPin> GetPins() const override;
+		AnimGraphPose Evaluate(const AnimGraphContext& ctx,
+		                       VansAnimGraphInstance& instance) const override;
+
+		std::string m_XParamName;
+		std::string m_YParamName;
+		std::vector<AnimGraphBlendSpaceSample> m_Samples;
 	};
 
 	// ─── IfConditionNode ────────────────────────────────────────
@@ -373,6 +405,42 @@ namespace VansGraphics
 
 		std::string m_SlotId;
 		bool m_EnableFallbackInput = true;
+	};
+
+	class AnimGraphSaveCachedPoseNode : public VansAnimGraphNode
+	{
+	public:
+		AnimGraphSaveCachedPoseNode();
+		std::vector<AnimGraphPin> GetPins() const override;
+		AnimGraphPose Evaluate(const AnimGraphContext& ctx,
+		                       VansAnimGraphInstance& instance) const override;
+		std::string m_CacheName;
+	};
+
+	class AnimGraphUseCachedPoseNode : public VansAnimGraphNode
+	{
+	public:
+		AnimGraphUseCachedPoseNode();
+		std::vector<AnimGraphPin> GetPins() const override;
+		AnimGraphPose Evaluate(const AnimGraphContext& ctx,
+		                       VansAnimGraphInstance& instance) const override;
+		std::string m_CacheName;
+	};
+
+	class AnimGraphLayeredBlendPerBoneNode : public VansAnimGraphNode
+	{
+	public:
+		AnimGraphLayeredBlendPerBoneNode();
+		std::vector<AnimGraphPin> GetPins() const override;
+		AnimGraphPose Evaluate(const AnimGraphContext& ctx,
+		                       VansAnimGraphInstance& instance) const override;
+		VansBoneMaskAsset m_Mask;
+		VansLayerBlendMode m_BlendMode = VansLayerBlendMode::Override;
+		VansRotationBlendSpace m_RotationSpace = VansRotationBlendSpace::Mesh;
+		std::string m_WeightParameter;
+		float m_FixedWeight = 1.0f;
+		bool m_UseWeightParameter = false;
+		bool m_ApplyAdditiveInput = false;
 	};
 
 	// The only legal pose source for a Target Post Process Graph. It makes the
@@ -580,6 +648,8 @@ namespace VansGraphics
 		void AdvanceTime(float deltaTime, const AnimGraphContext& ctx);
 		void Reset();
 		bool PlayState(const std::string& stateName);
+		void SetCachedPose(const std::string& name, const AnimGraphPose& pose);
+		const AnimGraphPose* FindCachedPose(const std::string& name) const;
 		std::string GetCurrentStateName() const;
 		float GetPrimaryPlaybackTime() const;
 		const std::string& GetPrimaryClipName() const;
@@ -601,6 +671,7 @@ namespace VansGraphics
 		std::unordered_map<int, VansAnimGraphClipRuntimeState> m_ClipStates;
 		std::unordered_map<int, VansAnimGraphStateMachineRuntimeState> m_StateMachineStates;
 		std::unordered_map<int, AnimGraphPose> m_EvaluationCache;
+		std::unordered_map<std::string, AnimGraphPose> m_CachedPoses;
 		std::unordered_map<int, bool> m_EvaluatedNodes;
 		std::unordered_map<int, bool> m_EvaluatingNodes;
 		std::unordered_map<int, bool> m_PreviousActiveNodes;

@@ -10,8 +10,13 @@ std::vector<VansAssetGuid> VansPcgSplineAsset::Dependencies() const
     std::vector<VansAssetGuid> result;
     if (terrain.IsValid()) result.push_back(terrain);
     for (const auto& spline : splines)
+    {
         if (spline.material.IsValid() && std::find(result.begin(), result.end(), spline.material) == result.end())
             result.push_back(spline.material);
+        if (spline.kind == VansPcgSplineKind::Road && spline.roadDecalMaterial.IsValid() &&
+            std::find(result.begin(), result.end(), spline.roadDecalMaterial) == result.end())
+            result.push_back(spline.roadDecalMaterial);
+    }
     return result;
 }
 
@@ -34,10 +39,18 @@ std::vector<std::string> ValidatePcgSplineAsset(const VansPcgSplineAsset& asset,
         if (spline.id.empty() || !identities.insert(spline.id).second) errors.push_back(path + " requires a unique ID.");
         if (spline.kind != VansPcgSplineKind::Road && spline.kind != VansPcgSplineKind::River)
             errors.push_back(path + " has an invalid kind.");
+        if (spline.kind == VansPcgSplineKind::Road && spline.roadRenderMode != VansPcgRoadRenderMode::Mesh &&
+            spline.roadRenderMode != VansPcgRoadRenderMode::ProjectedDecal)
+            errors.push_back(path + ".roadRenderMode is invalid.");
+        if (spline.kind == VansPcgSplineKind::Road && spline.roadRenderMode == VansPcgRoadRenderMode::ProjectedDecal &&
+            !spline.roadDecalMaterial.IsValid())
+            errors.push_back(path + ".roadDecalMaterial is required for projected decal roads.");
         range(spline.vegetationFade, 0.05f, 1000, path + ".vegetationFade");
         range(spline.shoulder, 0, 1000, path + ".shoulder");
         range(spline.blendWidth, 0.001f, 1000, path + ".blendWidth");
         range(spline.surfaceOffset, 0, 1, path + ".surfaceOffset");
+        if (spline.kind == VansPcgSplineKind::Road)
+            range(spline.projectedDepth, 0.05f, 100, path + ".projectedDepth");
         range(spline.waterSurfaceDrop, 0, 100, path + ".waterSurfaceDrop");
         if (spline.kind == VansPcgSplineKind::River)
         {

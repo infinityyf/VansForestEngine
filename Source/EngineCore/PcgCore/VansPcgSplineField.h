@@ -45,6 +45,9 @@ struct VansPcgRoadMesh
 {
     std::string splineId;
     VansAssetGuid material;
+    VansAssetGuid roadDecalMaterial;
+    VansPcgRoadRenderMode renderMode = VansPcgRoadRenderMode::Mesh;
+    float projectedDepth = 2.0f;
     std::uint64_t fingerprint = 0;
     std::vector<VansPcgRoadVertex> vertices;
     std::vector<std::uint32_t> indices;

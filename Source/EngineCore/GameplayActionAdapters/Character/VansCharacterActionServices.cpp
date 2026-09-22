@@ -10,6 +10,7 @@
 #include "../../SceneRuntime/VansRuntimeWorld.h"
 
 #include <utility>
+#include <limits>
 
 namespace Vans
 {
@@ -44,8 +45,6 @@ const VansActionServiceCapability& VansAnimationActionCapability()
 				VansActionCommandField("clip", ValueKind::String, true),
 				VansActionCommandField("slot", ValueKind::String, false,
 					VansSerializedValue::String({})),
-				VansActionCommandNumberField("layer", ValueKind::Int, false,
-					VansSerializedValue::Int(0), 0.0, 255.0),
 				VansActionCommandNumberField("rate", ValueKind::Float, false,
 					VansSerializedValue::Float(1.0), 0.01, 100.0),
 				VansActionCommandField("loop", ValueKind::Bool, false,
@@ -136,6 +135,8 @@ VansActionCommandResult VansAnimationActionService::Execute(
 	const VansSerializedValue* rateValue = FindObjectField(command.payload, "rate");
 	const float rate = rateValue
 		? static_cast<float>(ReadSerializedNumber(*rateValue, 1.0)) : 1.0f;
+	const std::string slot = ReadSerializedStringField(command.payload, "slot");
+	const bool loop = ReadSerializedBoolField(command.payload, "loop", false);
 	if (!controller || state.empty())
 	{
 		return { VansActionError::Rejected, {}, VansSerializedValue::Object({}),
@@ -143,10 +144,29 @@ VansActionCommandResult VansAnimationActionService::Execute(
 	}
 	PlaybackResource playback;
 	playback.controller = controller;
-	playback.previousState = controller->GetCurrentStateName();
 	playback.previousRate = controller->GetSpeed();
-	controller->SetSpeed(rate);
-	controller->Play(state);
+	if (!slot.empty())
+	{
+		if (!controller->GetClip(state) || !controller->FindSlotDefinition(slot))
+			return { VansActionError::Rejected, {}, VansSerializedValue::Object({}),
+				"Animation.Play requires a valid Slot and controller Clip" };
+		VansGraphics::VansSlotPlayRequest request;
+		request.clipName = state;
+		request.playRate = rate;
+		request.loopCount = loop ? std::numeric_limits<int>::max() : 1;
+		request.priority = 0;
+		request.tag = "Animation.Play";
+		playback.slotHandle = controller->PlaySlot(slot, request);
+		if (!playback.slotHandle)
+			return { VansActionError::Rejected, {}, VansSerializedValue::Object({}),
+				"Animation.Play Slot request was rejected" };
+	}
+	else
+	{
+		playback.previousState = controller->GetCurrentStateName();
+		controller->SetSpeed(rate);
+		controller->Play(state);
+	}
 	const VansGenerationHandle resource = m_Playbacks.Emplace(std::move(playback));
 	return { VansActionError::None, resource, VansSerializedValue::Object({}), {} };
 }
@@ -161,8 +181,13 @@ bool VansAnimationActionService::Release(
 		error = "Animation playback resource is stale";
 		return false;
 	}
-	playback->controller->SetSpeed(playback->previousRate);
-	if (!playback->previousState.empty())
+	if (playback->slotHandle)
+		playback->controller->StopSlot(playback->slotHandle, 0.12f, true);
+	else
+	{
+		playback->controller->SetSpeed(playback->previousRate);
+	}
+	if (!playback->slotHandle && !playback->previousState.empty())
 		playback->controller->Play(playback->previousState);
 	return m_Playbacks.Release(resource);
 }

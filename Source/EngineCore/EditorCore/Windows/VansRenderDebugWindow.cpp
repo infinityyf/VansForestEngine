@@ -4,6 +4,7 @@
 
 #include <cfloat>
 #include <cstdint>
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -258,6 +259,15 @@ void VansGraphics::VansRenderDebugWindow::ShowWindow(Vans::EditorAPI::IEngineEdi
 	{
 		ImGui::Begin("Render Debug", &VansGraphics::VansEditorWindow::m_RenderDebugWindowOpen);
 		ImGui::TextWrapped("SSAO: white = unoccluded, black = fully occluded. Filtered is the SSAO input to Deferred lighting, before material AO.");
+		if (ImGui::CollapsingHeader("Ambient Reflection Sky Cache", ImGuiTreeNodeFlags_DefaultOpen))
+		{
+			int mode = static_cast<int>(editorAPI.GetAmbientSkyCacheDebugMode());
+			const char* modes[] = { "Off", "Cached Visibility", "Cache Confidence", "Sky Residual" };
+			if (ImGui::Combo("Visualization", &mode, modes, IM_ARRAYSIZE(modes)))
+				editorAPI.SetAmbientSkyCacheDebugMode(static_cast<std::uint32_t>(std::max(mode, 0)));
+			ImGui::TextDisabled("Only the uncovered sky residual is attenuated; SSR and local probes remain unchanged.");
+		}
+		ImGui::Separator();
 		Vans::EditorAPI::RenderTextureFilter filter;
 		filter.category = "render_debug";
 		DrawPreviewTable("RenderDebugTable", editorAPI.QueryRenderTexturePreviews(filter));

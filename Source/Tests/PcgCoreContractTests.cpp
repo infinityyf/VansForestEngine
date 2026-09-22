@@ -426,6 +426,29 @@ bool RunPcgCoreContractTests()
 		VansSerializedValue encoded;VansPcgSplineAsset decoded;
 		if (!Check(VansPcgSplineAssetCodec::Encode(asset,encoded,error) && VansPcgSplineAssetCodec::Decode(encoded,decoded,error) &&
 			VansPcgSplineAssetCodec::ContentHash(asset)==VansPcgSplineAssetCodec::ContentHash(decoded),"Spline serialization changed author data: "+error)) return false;
+		auto projectedRoad=river;projectedRoad.id="projectedRoad";projectedRoad.name="Projected road";projectedRoad.kind=VansPcgSplineKind::Road;projectedRoad.material=VansAssetGuid::New();
+        projectedRoad.roadRenderMode=VansPcgRoadRenderMode::ProjectedDecal;projectedRoad.projectedDepth=3.5f;
+        projectedRoad.roadDecalMaterial=VansAssetGuid::New();
+		VansPcgSplineAsset roadAsset;roadAsset.name="Road rendering contracts";roadAsset.terrain=asset.terrain;roadAsset.splines={projectedRoad};
+		VansSerializedValue roadEncoded;VansPcgSplineAsset roadDecoded,projectedRoadDecoded;
+        if (!Check(VansPcgSplineAssetCodec::Encode(roadAsset,roadEncoded,error) && VansPcgSplineAssetCodec::Decode(roadEncoded,roadDecoded,error) &&
+            roadDecoded.splines.front().roadRenderMode==VansPcgRoadRenderMode::ProjectedDecal &&
+            std::abs(roadDecoded.splines.front().projectedDepth-3.5f)<1e-6f &&
+            roadDecoded.splines.front().roadDecalMaterial==projectedRoad.roadDecalMaterial,
+            "Road projected decal settings were lost in serialization: "+error)) return false;
+		auto meshOnlyRoadEncoded=roadEncoded;
+		const auto meshOnlyRoadList=std::find_if(meshOnlyRoadEncoded.objectFields.begin(),meshOnlyRoadEncoded.objectFields.end(),[](const auto& field){return field.first=="splines";});
+		if (!Check(meshOnlyRoadList!=meshOnlyRoadEncoded.objectFields.end() && !meshOnlyRoadList->second.arrayItems.empty(),
+			"Road serialization fixture is missing its spline")) return false;
+		auto& meshOnlyRoadFields=meshOnlyRoadList->second.arrayItems.front().objectFields;
+		meshOnlyRoadFields.erase(std::remove_if(meshOnlyRoadFields.begin(),meshOnlyRoadFields.end(),[](const auto& field) {
+			return field.first=="roadRenderMode" || field.first=="projectedDepth";
+		}),meshOnlyRoadFields.end());
+		if (!Check(VansPcgSplineAssetCodec::Decode(meshOnlyRoadEncoded,roadDecoded,error) &&
+			roadDecoded.splines.front().roadRenderMode==VansPcgRoadRenderMode::Mesh &&
+			std::abs(roadDecoded.splines.front().projectedDepth-2.0f)<1e-6f,
+			"Road assets without the additive render fields lost their defaults: "+error)) return false;
+		if (!Check(VansPcgSplineAssetCodec::Decode(roadEncoded,projectedRoadDecoded,error),"Road projected decal fixture could not be restored: "+error)) return false;
 		auto missingWetness=encoded;
 		const auto encodedSplines=std::find_if(missingWetness.objectFields.begin(),missingWetness.objectFields.end(),
 			[](const auto& field){return field.first=="splines";});
@@ -439,6 +462,12 @@ bool RunPcgCoreContractTests()
 		auto terrain=std::make_shared<VansTerrainAsset>();terrain->width=terrain->height=256;
 		terrain->settings.terrainSize=128;terrain->settings.maxHeight=32;terrain->settings.heightOffset=0;
 		terrain->heights.assign(256*256,32768);for(auto& splat:terrain->splatPixels)splat.resize(256*256*4);
+		auto projectedRoadField=VansPcgSplineFieldBuilder::Build(projectedRoadDecoded,terrain,{},error);
+        if (!Check(bool(projectedRoadField) && projectedRoadField->roads.count("projectedRoad") &&
+            projectedRoadField->roads.at("projectedRoad")->renderMode==VansPcgRoadRenderMode::ProjectedDecal &&
+            std::abs(projectedRoadField->roads.at("projectedRoad")->projectedDepth-3.5f)<1e-6f &&
+            projectedRoadField->roads.at("projectedRoad")->roadDecalMaterial==projectedRoad.roadDecalMaterial,
+            "Road projected decal settings did not reach the generated road field: "+error)) return false;
 		const auto base=terrain->heights;
 		auto field=VansPcgSplineFieldBuilder::Build(asset,terrain,{},error);
 		if (!Check(bool(field),error)) return false;

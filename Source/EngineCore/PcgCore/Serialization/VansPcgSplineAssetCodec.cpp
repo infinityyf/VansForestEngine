@@ -18,6 +18,10 @@ const char* TangentName(VansPcgSplineTangentMode mode)
     }
     return "";
 }
+const char* RoadRenderModeName(VansPcgRoadRenderMode mode)
+{
+    return mode==VansPcgRoadRenderMode::ProjectedDecal?"projectedDecal":"mesh";
+}
 }
 bool VansPcgSplineAssetCodec::Decode(const Value& root, VansPcgSplineAsset& asset, std::string& error)
 {
@@ -31,8 +35,11 @@ bool VansPcgSplineAssetCodec::Decode(const Value& root, VansPcgSplineAsset& asse
         VansPcgSpline s; PcgValue::Reader r(&item,"spline",error);
         r.String("id",s.id); r.String("name",s.name);
         r.EnumField("kind",s.kind,{{"road",VansPcgSplineKind::Road},{"river",VansPcgSplineKind::River}});
+        if (s.kind==VansPcgSplineKind::Road)
+            r.OptionalEnumField("roadRenderMode",s.roadRenderMode,{{"mesh",VansPcgRoadRenderMode::Mesh},{"projectedDecal",VansPcgRoadRenderMode::ProjectedDecal}});
         r.Bool("enabled",s.enabled); r.Bool("locked",s.locked); r.IntegerField("priority",s.priority);
         r.Reference("material","material",s.material);
+        if (s.kind==VansPcgSplineKind::Road) r.OptionalReference("roadDecalMaterial","material",s.roadDecalMaterial);
         r.Bool("excludeVegetation",s.excludeVegetation); r.Float("vegetationFade",s.vegetationFade);
         r.Float("shoulder",s.shoulder); r.Float("blendWidth",s.blendWidth);
         r.Float("waterSurfaceDrop",s.waterSurfaceDrop);
@@ -46,6 +53,7 @@ bool VansPcgSplineAssetCodec::Decode(const Value& root, VansPcgSplineAsset& asse
             r.Float("wetnessStrength",s.wetnessStrength);
         }
         r.Float("surfaceOffset",s.surfaceOffset); r.Float("textureRepeat",s.textureRepeat);
+        if (s.kind==VansPcgSplineKind::Road) r.OptionalFloat("projectedDepth",s.projectedDepth);
         r.IntegerField("flowSign",s.flowSign); r.Float("fadeInDistance",s.fadeInDistance); r.Float("fadeOutDistance",s.fadeOutDistance);
         r.Float("coordinateOffset",s.coordinateOffset); r.Float("coordinateSign",s.coordinateSign);
         r.Bool("continuation",s.continuation); r.Float("envelopeOffset",s.envelopeOffset); r.Float("envelopeLength",s.envelopeLength);
@@ -94,6 +102,12 @@ bool VansPcgSplineAssetCodec::Encode(const VansPcgSplineAsset& asset, Value& roo
             {"excludeVegetation",Value::Bool(s.excludeVegetation)},{"vegetationFade",Value::Float(s.vegetationFade)},
             {"shoulder",Value::Float(s.shoulder)},{"blendWidth",Value::Float(s.blendWidth)},
             {"waterSurfaceDrop",Value::Float(s.waterSurfaceDrop)}};
+        if (s.kind==VansPcgSplineKind::Road)
+        {
+            splineFields.emplace_back("roadDecalMaterial",PcgValue::Reference(s.roadDecalMaterial,"material"));
+            splineFields.emplace_back("roadRenderMode",Value::String(RoadRenderModeName(s.roadRenderMode)));
+            splineFields.emplace_back("projectedDepth",Value::Float(s.projectedDepth));
+        }
         if (s.kind==VansPcgSplineKind::River)
         {
             splineFields.emplace_back("waterBlendWidthMeters",Value::Float(s.waterBlendWidthMeters));

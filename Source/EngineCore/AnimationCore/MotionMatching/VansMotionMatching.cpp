@@ -805,6 +805,8 @@ void VansMotionMatchingRuntime::ResolveActiveDatabases(
 	const bool currentMoving = currentSample && IsMovingPlaybackSample(*currentSample);
 	const bool startingFromIdle = !currentMoving && desiredMoving;
 	const bool stoppingToIdle = currentMoving && !desiredMoving;
+	const bool desiredAirborne = ReadAirborneParam(parameters);
+	const bool landingFromAir = currentSample && currentSample->airLike && !desiredAirborne;
 	const bool changingPace =
 		IsPaceTransitionState(currentMoveState) &&
 		IsPaceTransitionState(desiredMoveState) &&
@@ -816,7 +818,9 @@ void VansMotionMatchingRuntime::ResolveActiveDatabases(
 	const bool desiredCrouchStance = desiredMoveState == m_Settings.states.crouchState;
 	const std::string desiredStance = desiredCrouchStance ? "crouch" : "stand";
 	std::string desiredPhase = "Move";
-	if (startingFromIdle)
+	if (desiredAirborne || landingFromAir)
+		desiredPhase = "Air";
+	else if (startingFromIdle)
 		desiredPhase = "Start";
 	else if (stoppingToIdle)
 		desiredPhase = "Stop";
@@ -1669,6 +1673,7 @@ bool VansMotionMatchingRuntime::BuildDatabase(const std::unordered_map<std::stri
 			{
 				Sample sample;
 				sample.clipName = databaseClip.name;
+				sample.duration = clip.duration;
 				sample.time = t;
 				sample.rawFeature = ExtractDatabaseFeature(clip, t, databaseClip.loop, skeleton, m_Rig);
 				sample.feature = sample.rawFeature;
@@ -1682,8 +1687,17 @@ bool VansMotionMatchingRuntime::BuildDatabase(const std::unordered_map<std::stri
 				sample.pivotLike = phase == "pivot";
 				sample.turnLike = phase == "turn";
 				sample.paceTransitionLike = phase == "transition";
+				sample.airLike = phase == "air";
+				if (sample.airLike)
+				{
+					const std::string lowerClipName = ToLower(databaseClip.name);
+					sample.airStartLike = lowerClipName.find("jumpstart") != std::string::npos;
+					sample.airFallLike = lowerClipName.find("fall") != std::string::npos;
+					sample.airLandLike = lowerClipName.find("land") != std::string::npos;
+				}
 				sample.transitionLike = sample.startLike || sample.stopLike ||
 				                        sample.pivotLike || sample.turnLike || sample.paceTransitionLike;
+				sample.transitionLike = sample.transitionLike || sample.airLike;
 				sample.sourceMoveState = databaseClip.sourceMoveState;
 				sample.targetMoveState = databaseClip.targetMoveState;
 				sample.sourceDirectionBucket = databaseClip.sourceDirectionBucket;
@@ -1844,6 +1858,7 @@ bool VansMotionMatchingRuntime::ShouldConsiderSampleForParameters(
 	const int desiredMoveState = m_EffectiveMoveState;
 	const bool currentMoving = currentSample && IsMovingPlaybackSample(*currentSample);
 	const bool desiredMoving = !wantsIdle;
+	const bool desiredAirborne = ReadAirborneParam(parameters);
 	const bool startingFromIdle = !currentMoving && desiredMoving;
 	const bool stoppingToIdle = currentMoving && !desiredMoving;
 	const bool changingPace =
@@ -1916,10 +1931,37 @@ bool VansMotionMatchingRuntime::ShouldConsiderSampleForParameters(
 		return sample.loopLike &&
 		       sample.targetMoveState == desiredMoveState;
 	// A selector may intentionally hand an externally completed transition to a
-	// stable target database. In that case the target loop is the legal handoff,
-	// even though the retained source sample still reports a stance change.
+	// stable target database. A currently playing authored transition remains a
+	// continuing pose until its own end; otherwise a target loop with a cheaper
+	// pose cost would replace the first frame of every Start/Stop/Pace clip.
 	if (currentSampleOutsideSearchDomain && sample.loopLike)
+	{
+		if (currentSample && currentSample->transitionLike && !forceFinishedTransitionExit)
+			return false;
 		return sample.targetMoveState == desiredMoveState;
+	}
+	if (sample.airLike)
+	{
+		// Air clips are selected as a small explicit domain. JumpStart/Fall are
+		// valid while airborne; JumpLand is the only legal handoff when the CCT
+		// has become grounded again. They must never compete with a grounded loop
+		// simply because their pose happens to be cheaper for one frame.
+		if (desiredAirborne)
+		{
+			if (!currentSample || !currentSample->airLike)
+				return sample.airStartLike;
+			// Do not jump from JumpStart to Fall halfway through the authored
+			// takeoff. Once airborne, Fall is a held loop until the CCT reports
+			// grounded; it must never restart JumpStart on a cheap pose match.
+			if (currentSample->airStartLike && !currentSample->airFallLike &&
+				!currentSample->airLandLike &&
+				!currentSample->loopLike &&
+				m_CurrentTime + 1.0e-4f < currentSample->duration)
+				return sample.clipName == currentSample->clipName;
+			return sample.airFallLike;
+		}
+		return currentSample && currentSample->airLike && sample.airLandLike;
+	}
 
 	if (sample.transitionLike)
 	{
@@ -2625,15 +2667,29 @@ bool VansMotionMatchingRuntime::Update(float deltaTime,
 	m_LastFacingTurnDirectionSign = m_FacingTurnDirectionSign;
 	const bool continueCompletedFacingTurn =
 		activeTransitionComplete && activeSample->turnLike && m_FacingTurnRequested;
+	// Air clips are a single authored jump/fall/land chain.  Their completed
+	// sample must remain in the Air domain until the airborne parameter changes;
+	// otherwise the generic transition-exit rule can briefly expose a grounded
+	// database between JumpStart/Fall/Land and create a visible hitch.
+	const bool keepCompletedAirSample =
+		activeSample && activeSample->airLike &&
+		(isAirborne || !activeSample->airLandLike);
 	const bool forceFinishedTransitionExit =
-		activeTransitionComplete && !continueCompletedFacingTurn;
+		activeTransitionComplete && !continueCompletedFacingTurn &&
+		!keepCompletedAirSample;
 	ResolveActiveDatabases(parameters, forceFinishedTransitionExit);
-	// Selector rows define the legal search domain. Once that domain changes,
-	// an excluded sample cannot remain active only because its continuation cost is low.
+	// Selector rows define where a *new* sample may be selected. They do not
+	// invalidate an authored transition that is already playing. UE keeps the
+	// continuing pose separate from the candidate databases for exactly this
+	// reason: Start/Stop/Pace/Pivot may finish even after the selector moves to
+	// the target locomotion domain.
+	const bool activeAuthoredTransitionInProgress =
+		activeSample && activeSample->transitionLike && !activeTransitionComplete;
 	const bool activeSampleOutsideSearchDomain =
 		activeSample && !m_ActiveDatabaseIndices.empty() &&
 		std::find(m_ActiveDatabaseIndices.begin(), m_ActiveDatabaseIndices.end(),
-			activeSample->databaseIndex) == m_ActiveDatabaseIndices.end();
+			activeSample->databaseIndex) == m_ActiveDatabaseIndices.end() &&
+		!activeAuthoredTransitionInProgress;
 	m_DebugData.activeDatabases.clear();
 	for (const int databaseIndex : m_ActiveDatabaseIndices)
 	{

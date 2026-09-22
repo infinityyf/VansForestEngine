@@ -385,6 +385,10 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_DeferredLighting(
         {DEFERRED_BINDING_DECAL_ROUGHNESS, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {33u, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1u, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {34u, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1u, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{DEFERRED_BINDING_AMBIENT_SKY_CACHE_X, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{DEFERRED_BINDING_AMBIENT_SKY_CACHE_Y, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{DEFERRED_BINDING_AMBIENT_SKY_CACHE_Z, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+		{DEFERRED_BINDING_AMBIENT_SKY_CACHE_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
 }
@@ -670,6 +674,18 @@ void VansDescriptorSetLayoutFactory::CreateAndAllocate_SSGIAtrous(
 		{SSGI_ATROUS_BINDING_OUTPUT_GI, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 	};
 	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount);
+}
+
+void VansDescriptorSetLayoutFactory::CreateAndAllocate_AmbientSkyCache(
+	VkDescriptorSetLayout& outLayout, std::vector<VkDescriptorSet>& outSets, uint32_t setCount)
+{
+	const std::vector<VkDescriptorSetLayoutBinding> bindings = {
+		{AMBIENT_SKY_CACHE_OUTPUT_X, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{AMBIENT_SKY_CACHE_OUTPUT_Y, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{AMBIENT_SKY_CACHE_OUTPUT_Z, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+		{AMBIENT_SKY_CACHE_PARAMS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+	};
+	CreateLayoutAndAllocateSets(bindings, outLayout, outSets, setCount, VansDescriptorLifetimeRole::ScenePersistent);
 }
 
 bool VansDescriptorSetLayoutFactory::CreateAndAllocate_GIRTPreview(

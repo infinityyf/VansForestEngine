@@ -225,6 +225,10 @@ void AmbientBRDF_Cloth(BRDFData brdf, ClothMaterialPayload cloth,
 		{
 			float lod = GetMipLevelFromRoughness(roughness);
 			vec3 skySpec = SampleSkySpecularCube(PreConvSpecularEnvironment, R, lod);
+			#ifdef AMBIENT_SKY_CACHE_ENABLED
+				AmbientSkyTransmittanceSample skyVisibility = SampleAmbientSkyTransmittance(brdf.positionWS, R, roughness);
+				skySpec *= skyVisibility.visibility;
+			#endif
 			iblSpec = mix(skySpec, probeSample.specular, probeSample.coverage);
 		}
 		specLighting = mix(iblSpec, brdf.indirectSpecular.rgb, ssrMask);

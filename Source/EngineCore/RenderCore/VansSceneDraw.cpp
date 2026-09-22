@@ -605,7 +605,8 @@ bool VansGraphics::VansScene::BuildDecalDrawSubmission(
         if (!ShouldDrawMainCameraNode(node)) continue;
         VansDrawPacket packet;
         if (node->BuildPrimaryDrawPacket(
-            vkDevice->GetLogicDevice(), globalStateData, VansPass::DECAL_MODIFIER,
+            vkDevice->GetLogicDevice(), globalStateData,
+            node->m_UsesRoadDecalPass ? VansPass::ROAD_DECAL_MODIFIER : VansPass::DECAL_MODIFIER,
             0, 0, nodeIndex, 0.0f, packet))
         {
             submission.packets.push_back(std::move(packet));
@@ -614,6 +615,8 @@ bool VansGraphics::VansScene::BuildDecalDrawSubmission(
 
     const auto& payloadBytes = vkDevice->GetCurrentRenderSceneSnapshot().materials.custom.bytes;
     auto priority = [&](const VansDrawPacket& packet) {
+        // 道路使用 PBR payload，不能把同索引的普通贴花 custom payload 当成排序参数。
+        if (m_DecalRenderNodes[packet.stableOrder]->m_UsesRoadDecalPass) return 0.0f;
         const size_t offset = static_cast<size_t>(packet.instanceData.materialIndex) * sizeof(VansCustomMaterialPayload);
         VansCustomMaterialPayload payload;
         if (offset <= payloadBytes.size() && sizeof(payload) <= payloadBytes.size() - offset)

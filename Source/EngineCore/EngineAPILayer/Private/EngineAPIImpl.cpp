@@ -5799,6 +5799,18 @@ namespace Vans::EditorAPI
 		return previews;
 	}
 
+	std::uint32_t EngineAPIImpl::GetAmbientSkyCacheDebugMode() const
+	{
+		const auto* device = static_cast<const VansGraphics::VansVKDevice*>(m_Device);
+		return device ? device->GetAmbientSkyCacheDebugMode() : 0u;
+	}
+
+	void EngineAPIImpl::SetAmbientSkyCacheDebugMode(std::uint32_t mode)
+	{
+		if (auto* device = static_cast<VansGraphics::VansVKDevice*>(m_Device))
+			device->SetAmbientSkyCacheDebugMode(mode);
+	}
+
 	void EngineAPIImpl::RequestPunctualShadowDebugPreview()
 	{
 		auto* device = static_cast<VansGraphics::VansVKDevice*>(m_Device);
@@ -6918,6 +6930,7 @@ namespace Vans::EditorAPI
 		settings.placement.maxRaysPerFrame = gi.placement.maxRaysPerFrame;
 		settings.world = {gi.world.enabled, gi.world.voxelSize, gi.world.coverageDistance, gi.world.extinctionScale,
 			gi.world.levelCount, gi.world.maxBricks, gi.world.bricksPerFrame, gi.world.maxTraceSteps};
+		settings.ambientSkyCache = {gi.ambientSkyCache.enabled, gi.ambientSkyCache.gridSpacing, gi.ambientSkyCache.queriesPerFrame};
 
 		settings.maxIndirectRadiance = gi.maxIndirectRadiance;
 		settings.maxProbeRadiance = gi.maxProbeRadiance;
@@ -6992,6 +7005,9 @@ namespace Vans::EditorAPI
 		gi.placement.maxRaysPerFrame = settings.placement.maxRaysPerFrame;
 		gi.world = {settings.world.enabled, settings.world.voxelSize, settings.world.coverageDistance, settings.world.extinctionScale,
 			settings.world.levelCount, settings.world.maxBricks, settings.world.bricksPerFrame, settings.world.maxTraceSteps};
+		gi.ambientSkyCache.enabled = settings.ambientSkyCache.enabled;
+		gi.ambientSkyCache.gridSpacing = settings.ambientSkyCache.gridSpacing;
+		gi.ambientSkyCache.queriesPerFrame = settings.ambientSkyCache.queriesPerFrame;
 		auto clampDimension = [](float value, std::uint32_t fallback) {
 			if (!std::isfinite(value) || value < 1.0f)
 				return fallback;
@@ -7148,6 +7164,11 @@ namespace Vans::EditorAPI
 				{ "maxBricks", ScenePropertyValues::Int(gi.world.maxBricks) },
 				{ "bricksPerFrame", ScenePropertyValues::Int(gi.world.bricksPerFrame) },
 				{ "maxTraceSteps", ScenePropertyValues::Int(gi.world.maxTraceSteps) }
+			}) },
+			{ "ambientSkyCache", ScenePropertyValues::Object({
+				{ "enabled", ScenePropertyValues::Bool(gi.ambientSkyCache.enabled) },
+				{ "gridSpacing", ScenePropertyValues::Float(gi.ambientSkyCache.gridSpacing) },
+				{ "queriesPerFrame", ScenePropertyValues::Int(gi.ambientSkyCache.queriesPerFrame) }
 			}) },
 			{ "irradianceHysteresis", ScenePropertyValues::Float(gi.irradianceHysteresis) },
 			{ "distanceHysteresis", ScenePropertyValues::Float(gi.distanceHysteresis) },

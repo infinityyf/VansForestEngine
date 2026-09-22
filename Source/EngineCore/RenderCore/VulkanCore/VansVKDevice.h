@@ -470,6 +470,8 @@ namespace VansGraphics
 
 	public:
 		VansRayTracing& GetRayTracingContext() { return rayTracingContext; }
+		uint32_t GetAmbientSkyCacheDebugMode() const { return m_AmbientSkyCacheDebugMode; }
+		void SetAmbientSkyCacheDebugMode(uint32_t mode) { m_AmbientSkyCacheDebugMode = std::min(mode, 3u); }
 
 		/// 场景卸载时调用：重置所有渲染 Feature 的 descriptor set 一次性写入标记，
 		/// 使下次场景加载后重新绑定运行时纹理，避免引用已销毁的 VkImageView。
@@ -479,6 +481,7 @@ namespace VansGraphics
 		}
 
 		void UpdateGIData(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
+		void UpdateAmbientSkyCache(VansVKCommandBuffer& computeCmd);
 
 		void UpdateHZB(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd);
 
@@ -636,6 +639,7 @@ namespace VansGraphics
 
 		// 后处理 Compute Pass RT 与 Shader 准备
 		void PreparePostProcessRenderData();
+		void PrepareAmbientSkyCacheRenderData();
 
 	private:
 		static constexpr uint32_t kMaxFrameContextsInFlight = 2;
@@ -772,6 +776,7 @@ namespace VansGraphics
 		mutable std::string m_CurrentRenderGraphDebugSummary;
 		mutable uint64_t m_CurrentRenderGraphDebugSummaryRevision = 0;
 		VansRayTracing rayTracingContext;
+		uint32_t m_AmbientSkyCacheDebugMode = 0u;
 		
 		VansVKCommandBuffer m_ImmediateGraphicsCommandBuffer;
 		std::unique_ptr<VansVKSecondaryCommandContext> m_ShadowSecondaryCommandContext;

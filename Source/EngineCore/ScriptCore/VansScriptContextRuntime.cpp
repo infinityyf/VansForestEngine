@@ -8,6 +8,8 @@
 #include <Windows.h>
 #endif
 
+#include <limits>
+
 #include "VansScriptContext.h"
 
 #include "VansLuaUIBridge.h"
@@ -1221,6 +1223,56 @@ int LuaComponentAnimSetFloat(lua_State* L)
 	if (anim && anim->m_AnimNode && anim->m_AnimNode->GetController())
 		anim->m_AnimNode->GetController()->SetFloat(name, value);
 	return 0;
+}
+
+int LuaComponentAnimRestartLayer(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	const char* layerId = luaL_checkstring(L, 2);
+	auto* anim = dynamic_cast<VansScriptAnimationComponent*>(component);
+	const bool restarted = anim && anim->m_AnimNode
+		&& anim->m_AnimNode->RestartLayer(layerId);
+	lua_pushboolean(L, restarted ? 1 : 0);
+	return 1;
+}
+
+int LuaComponentAnimPlaySlot(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	const char* slotId = luaL_checkstring(L, 2);
+	const char* clipName = luaL_checkstring(L, 3);
+	const bool loop = lua_toboolean(L, 4) != 0;
+	const float rate = static_cast<float>(luaL_optnumber(L, 5, 1.0));
+	const int priority = static_cast<int>(luaL_optinteger(L, 6, 0));
+	auto* anim = dynamic_cast<VansScriptAnimationComponent*>(component);
+	if (!anim || !anim->m_AnimNode || !anim->m_AnimNode->GetController()
+		|| !anim->m_AnimNode->GetController()->GetClip(clipName)
+		|| !anim->m_AnimNode->GetController()->FindSlotDefinition(slotId))
+	{
+		lua_pushinteger(L, 0);
+		return 1;
+	}
+	VansGraphics::VansSlotPlayRequest request;
+	request.clipName = clipName;
+	request.playRate = rate;
+	request.loopCount = loop ? std::numeric_limits<int>::max() : 1;
+	request.priority = priority;
+	const auto handle = anim->m_AnimNode->GetController()->PlaySlot(slotId, request);
+	lua_pushinteger(L, static_cast<lua_Integer>(handle.value));
+	return 1;
+}
+
+int LuaComponentAnimStopSlot(lua_State* L)
+{
+	auto* component = CheckComponent(L, 1)->component;
+	const auto handle = VansGraphics::VansSlotPlaybackHandle{
+		static_cast<std::uint64_t>(luaL_checkinteger(L, 2))};
+	const float blendOut = static_cast<float>(luaL_optnumber(L, 3, 0.12));
+	auto* anim = dynamic_cast<VansScriptAnimationComponent*>(component);
+	const bool stopped = anim && anim->m_AnimNode && anim->m_AnimNode->GetController()
+		&& anim->m_AnimNode->GetController()->StopSlot(handle, blendOut, true);
+	lua_pushboolean(L, stopped ? 1 : 0);
+	return 1;
 }
 
 int LuaComponentAnimSetInt(lua_State* L)
@@ -4311,6 +4363,9 @@ void VansScriptContext::RegisterLuaBindings()
 		{ "set_bool", LuaComponentAnimSetBool },
 		{ "set_root_motion_enabled", LuaComponentAnimSetRootMotionEnabled },
 		{ "set_float", LuaComponentAnimSetFloat },
+		{ "restart_layer", LuaComponentAnimRestartLayer },
+		{ "play_slot", LuaComponentAnimPlaySlot },
+		{ "stop_slot", LuaComponentAnimStopSlot },
 		{ "set_int", LuaComponentAnimSetInt },
 		{ "set_vector3", LuaComponentAnimSetVector3 },
 		{ "set_trigger", LuaComponentAnimSetTrigger },

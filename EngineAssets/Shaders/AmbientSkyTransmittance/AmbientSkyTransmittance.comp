@@ -1,0 +1,116 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "../GIWorld/GIWorldQuery.glsl"
+#include "../GIWorld/GIWorldScattering.glsl"
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+layout(set = 1, binding = 0, rgba16f) uniform image3D outputX;
+layout(set = 1, binding = 1, rgba16f) uniform image3D outputY;
+layout(set = 1, binding = 2, rgba16f) uniform image3D outputZ;
+layout(set = 1, binding = 3) uniform AmbientSkyCacheParams
+{
+    vec4 originAndSpacing;
+    uvec4 gridAndQuery; // xyz = dimensions, w = query count
+    ivec4 ringOffset; // xyz = logical-to-physical toroidal offset
+};
+
+layout(push_constant) uniform AmbientSkyCachePush
+{
+    uvec4 control; // x = frame offset, y = 0 trace / 1 clear newly exposed cells
+    vec4 previousOriginAndSpacing;
+};
+
+vec3 AmbientSkyCacheDirection(uint direction)
+{
+    if (direction == 0u) return vec3(1.0, 0.0, 0.0);
+    if (direction == 1u) return vec3(-1.0, 0.0, 0.0);
+    if (direction == 2u) return vec3(0.0, 1.0, 0.0);
+    if (direction == 3u) return vec3(0.0, -1.0, 0.0);
+    if (direction == 4u) return vec3(0.0, 0.0, 1.0);
+    return vec3(0.0, 0.0, -1.0);
+}
+
+void StoreAmbientSkyCache(uint direction, ivec3 cell, float transmission, float confidence)
+{
+    vec4 current;
+    if (direction < 2u)
+    {
+        current = imageLoad(outputX, cell);
+        if (direction == 0u) current.rg = vec2(transmission * confidence, confidence);
+        else current.ba = vec2(transmission * confidence, confidence);
+        imageStore(outputX, cell, current);
+    }
+    else if (direction < 4u)
+    {
+        current = imageLoad(outputY, cell);
+        if (direction == 2u) current.rg = vec2(transmission * confidence, confidence);
+        else current.ba = vec2(transmission * confidence, confidence);
+        imageStore(outputY, cell, current);
+    }
+    else
+    {
+        current = imageLoad(outputZ, cell);
+        if (direction == 4u) current.rg = vec2(transmission * confidence, confidence);
+        else current.ba = vec2(transmission * confidence, confidence);
+        imageStore(outputZ, cell, current);
+    }
+}
+
+void ClearAmbientSkyCacheCell(ivec3 cell)
+{
+    imageStore(outputX, cell, vec4(0.0));
+    imageStore(outputY, cell, vec4(0.0));
+    imageStore(outputZ, cell, vec4(0.0));
+}
+
+ivec3 PhysicalCell(ivec3 logicalCell, ivec3 dimensions)
+{
+    return (logicalCell + ringOffset.xyz) % dimensions;
+}
+
+void main()
+{
+    uint invocation = gl_GlobalInvocationID.x;
+    uint totalCells = gridAndQuery.x * gridAndQuery.y * gridAndQuery.z;
+    if (invocation >= totalCells)
+        return;
+
+    ivec3 dimensions = ivec3(gridAndQuery.xyz);
+    uint cellIndex = invocation;
+    ivec3 cell = ivec3(cellIndex % gridAndQuery.x,
+        (cellIndex / gridAndQuery.x) % gridAndQuery.y,
+        cellIndex / (gridAndQuery.x * gridAndQuery.y));
+    vec3 position = originAndSpacing.xyz + (vec3(cell) + 0.5) * originAndSpacing.w;
+	ivec3 physicalCell = PhysicalCell(cell, dimensions);
+	if (control.y == 1u)
+	{
+		vec3 previousMin = previousOriginAndSpacing.xyz;
+		vec3 previousMax = previousMin + vec3(gridAndQuery.xyz) * previousOriginAndSpacing.w;
+		if (any(lessThan(position, previousMin)) || any(greaterThanEqual(position, previousMax)))
+			ClearAmbientSkyCacheCell(physicalCell);
+		return;
+	}
+
+	uint queryCount = gridAndQuery.w;
+	if (invocation >= queryCount)
+		return;
+	cellIndex = (control.x + invocation) % max(totalCells, 1u);
+	cell = ivec3(cellIndex % gridAndQuery.x,
+		(cellIndex / gridAndQuery.x) % gridAndQuery.y,
+		cellIndex / (gridAndQuery.x * gridAndQuery.y));
+	physicalCell = PhysicalCell(cell, dimensions);
+	position = originAndSpacing.xyz + (vec3(cell) + 0.5) * originAndSpacing.w;
+    float maximum = GIWorldEnvironmentDistance(position);
+    for (uint directionIndex = 0u; directionIndex < 6u; ++directionIndex)
+    {
+        vec3 direction = AmbientSkyCacheDirection(directionIndex);
+        GIWorldHit hit = GIWorldTrace(position, direction, 0.02, maximum, true, 0.0, -1.0,
+            min(gwTable.z, 64u));
+        float transmission = clamp(hit.transmission, 0.0, 1.0);
+        float confidence = hit.valid ? 1.0 : 0.0;
+        if (hit.valid && hit.t < maximum - 0.02)
+            transmission = 0.0;
+        StoreAmbientSkyCache(directionIndex, physicalCell, transmission, confidence);
+    }
+}

@@ -4233,11 +4233,43 @@ bool TestGAFDemoHallPlayerAttackContract()
 		projectRoot / "Assets/MotionMatchDataBase/UEFN_Mannequin.vanimator", animator, error))
 		return ExpectGAF(false, error.c_str());
 	bool foundAttackSet = false;
-	for (const auto& graphSet : animator.value("graphSets", nlohmann::ordered_json::array()))
-		foundAttackSet = foundAttackSet ||
-			graphSet.value("id", std::string{}) == "graph-set-attack";
+	bool foundSurvivalAttackSet = false;
+	bool survivalAttackSetBindingsValid = false;
+	const auto graphSets = animator.value("graphSets", nlohmann::ordered_json::array());
+	for (const auto& graphSet : graphSets)
+	{
+		const std::string graphSetId = graphSet.value("id", std::string{});
+		foundAttackSet = foundAttackSet || graphSetId == "graph-set-attack";
+		if (graphSetId == "graph-set-default")
+		{
+			const auto bindings = graphSet.value("bindings", nlohmann::ordered_json::array());
+			const auto findBinding = [&bindings](const char* layerId)
+				-> nlohmann::ordered_json
+			{
+				for (const auto& binding : bindings)
+					if (binding.value("layerId", std::string{}) == layerId)
+						return binding;
+				return {};
+			};
+			const auto base = findBinding("layer-base");
+			const auto survivalUpper = findBinding("layer-survival-attack-upper");
+			const auto pistolUpper = findBinding("layer-pistol-upper");
+			foundSurvivalAttackSet = std::none_of(
+				graphSets.begin(), graphSets.end(),
+				[](const auto& set) { return set.value("id", std::string{}) == "graph-set-survival-attack"; });
+			survivalAttackSetBindingsValid = bindings.size() == 3 &&
+				base.value("graphId", std::string{}) == "graph-base" &&
+				base.value("enabled", false) &&
+				survivalUpper.value("graphId", std::string{}) == "graph-survival-attack" &&
+				survivalUpper.value("enabled", false) &&
+				pistolUpper.value("graphId", std::string{}) == "graph-pistol-upper" &&
+				pistolUpper.value("enabled", false);
+		}
+	}
 	bool attackGraphIsNonMotionMatching = false;
 	bool attackStatesUseRootMotion = false;
+	bool survivalAttackGraphIsUpperBodyOnly = false;
+	bool survivalAttackStatesDisableRootMotion = false;
 	int closeCombatClipRefs = 0;
 	for (const auto& clipRef : animator.value("clips", nlohmann::ordered_json::array()))
 	{
@@ -4262,6 +4294,59 @@ bool TestGAFDemoHallPlayerAttackContract()
 		}
 		attackStatesUseRootMotion = rootMotionStates == 2;
 	}
+	for (const auto& graph : animator.value("graphs", nlohmann::ordered_json::array()))
+	{
+		if (graph.value("id", std::string{}) != "graph-survival-attack") continue;
+		bool hasStateMachine = false;
+		bool hasFullBodySlot = false;
+		int rootMotionStates = 0;
+		for (const auto& node : graph.value("graph", nlohmann::ordered_json::object())
+			.value("nodes", nlohmann::ordered_json::array()))
+		{
+			const std::string nodeType = node.value("type", std::string{});
+			hasStateMachine = hasStateMachine || nodeType == "StateMachine";
+			hasFullBodySlot = hasFullBodySlot ||
+				(nodeType == "Slot" && node.value("properties", nlohmann::ordered_json::object())
+					.value("slotId", std::string{}) == "slot-window-break-full-body");
+			for (const auto& state : node.value("properties", nlohmann::ordered_json::object())
+				.value("states", nlohmann::ordered_json::array()))
+				if (state.value("rootMotion", false)) ++rootMotionStates;
+		}
+		survivalAttackGraphIsUpperBodyOnly = hasStateMachine && !hasFullBodySlot;
+		survivalAttackStatesDisableRootMotion = rootMotionStates == 0;
+	}
+	bool survivalAttackLayerIsUpperBodyOnly = false;
+	for (const auto& layer : animator.value("layers", nlohmann::ordered_json::array()))
+	{
+		if (layer.value("id", std::string{}) != "layer-survival-attack-upper") continue;
+		const auto outputs = layer.value("outputs", nlohmann::ordered_json::object());
+		const auto weight = layer.value("weight", nlohmann::ordered_json::object());
+		const auto mask = layer.value("mask", nlohmann::ordered_json::object());
+		survivalAttackLayerIsUpperBodyOnly =
+			layer.value("kind", std::string{}) == "overlay" &&
+			mask.value("pathHint", std::string{}) ==
+				"Assets/Animations/Combat/CloseCombat/Survival_Attack_UpperBody.vbonemask" &&
+			weight.value("source", std::string{}) == "parameter" &&
+			weight.value("parameter", std::string{}) == "SurvivalAttackWeight" &&
+			outputs.value("rootMotion", std::string{}) == "ignore" &&
+			layer.value("activation", nlohmann::ordered_json::object())
+				.value("restartOnRise", false) &&
+			layer.value("dynamicAdditive", nlohmann::ordered_json::object())
+				.value("enabled", false) &&
+			layer.value("inertialization", nlohmann::ordered_json::object())
+				.value("halfLife", 0.0f) > 0.0f;
+	}
+	nlohmann::ordered_json survivalMask;
+	if (!Vans::VansJsonFileStorage::Read(
+		projectRoot / "Assets/Animations/Combat/CloseCombat/Survival_Attack_UpperBody.vbonemask",
+		survivalMask, error)) return ExpectGAF(false, error.c_str());
+	const auto explicitMaskWeights = survivalMask.value(
+		"explicitWeights", nlohmann::ordered_json::object());
+	survivalAttackLayerIsUpperBodyOnly = survivalAttackLayerIsUpperBodyOnly &&
+		explicitMaskWeights.value("root", 1.0f) == 0.0f &&
+		explicitMaskWeights.value("pelvis", 1.0f) == 0.0f &&
+		explicitMaskWeights.value("neck_01", 0.0f) > 0.0f &&
+		explicitMaskWeights.value("head", 0.0f) > 0.0f;
 
 	VansGraphics::Skeleton sceneSkeleton;
 	if (!LoadContractSkeletonFromModel(
@@ -4354,6 +4439,7 @@ bool TestGAFDemoHallPlayerAttackContract()
 	bool foundMannequinController = false;
 	bool foundSurvivalHost = false;
 	bool foundSurvivalController = false;
+	bool survivalControllerUsesUpperBodyAttack = false;
 	bool foundAxeHitBase = false;
 	bool foundAxeHitTip = false;
 	bool foundWhisperHurtBody = false;
@@ -4458,11 +4544,22 @@ bool TestGAFDemoHallPlayerAttackContract()
 						"Gameplay.DemoHall.Player.Attack.Crowbar" &&
 					fields.value("crowbarTakedownAttackerActionId", std::string{}) ==
 						"Gameplay.DemoHall.Player.Attack.Takedown.Crowbar.Attacker" &&
-					fields.value("attackGraphSetId", std::string{}) == "graph-set-attack" &&
+					fields.value("attackGraphSetId", std::string{}) ==
+						"graph-set-attack" &&
+					(!isSurvival ||
+						(fields.value("attackLayerId", std::string{}) ==
+							"layer-survival-attack-upper" &&
+						 fields.value("attackWeightParameter", std::string{}) ==
+							"SurvivalAttackWeight")) &&
 					fields.value("locomotionGraphSetId", std::string{}) == "graph-set-default" &&
 					weaponConfigured;
 				if (isMannequin) foundMannequinController = configured;
-				if (isSurvival) foundSurvivalController = configured;
+				if (isSurvival)
+				{
+					foundSurvivalController = configured;
+					survivalControllerUsesUpperBodyAttack =
+						fields.value("upperBodyAttack", false);
+				}
 			}
 		}
 	}
@@ -4488,9 +4585,13 @@ bool TestGAFDemoHallPlayerAttackContract()
 	const std::size_t attackScriptEnd = script.find("\nM.", attackScriptBegin);
 	const std::string attackScript = attackScriptBegin != std::string::npos
 		? script.substr(attackScriptBegin, attackScriptEnd - attackScriptBegin) : std::string{};
-	return ExpectGAF(foundAttackSet && attackGraphIsNonMotionMatching && closeCombatClipRefs == 2 &&
+	return ExpectGAF(foundAttackSet && foundSurvivalAttackSet &&
+		survivalAttackSetBindingsValid && attackGraphIsNonMotionMatching &&
+		survivalAttackGraphIsUpperBodyOnly && survivalAttackStatesDisableRootMotion &&
+		survivalAttackLayerIsUpperBodyOnly && closeCombatClipRefs == 2 &&
 		attackStatesUseRootMotion && foundMannequinHost && foundMannequinController &&
-		foundSurvivalHost && foundSurvivalController && foundAxeHitBase && foundAxeHitTip &&
+		foundSurvivalHost && foundSurvivalController && survivalControllerUsesUpperBodyAttack &&
+		foundAxeHitBase && foundAxeHitTip &&
 		foundWhisperHurtBody && foundWhisperResponseHost && foundWhisperHitAnimation &&
 		attackScript.find("is_key_pressed(\"J\")") != std::string::npos &&
 		attackScript.find("self.characterName ~= (character_state.activeName") != std::string::npos &&
@@ -4499,13 +4600,21 @@ bool TestGAFDemoHallPlayerAttackContract()
 		attackScript.find("vans.action") != std::string::npos &&
 		attackScript.find("try_activate") != std::string::npos &&
 		attackScript.find("switch_graph_set") != std::string::npos &&
+		attackScript.find("upperBodyAttack") != std::string::npos &&
+		attackScript.find("character_state.upperBodyAttackActive") != std::string::npos &&
+		attackScript.find("anim:set_root_motion_enabled(not self.upperBodyAttack)") !=
+			std::string::npos &&
+		attackScript.find("attackLayerId") != std::string::npos &&
+		attackScript.find("attackWeightParameter") != std::string::npos &&
+		attackScript.find("anim:restart_layer(self.attackLayerId)") != std::string::npos &&
+		attackScript.find("anim:set_root_motion_enabled(true)") == std::string::npos &&
 		attackScript.find("bind_to_socket_profile") != std::string::npos &&
 		attackScript.find("self:restore_attack_weapon()") != std::string::npos &&
 		attackScript.find("weapon:bind_to_socket_profile(") != std::string::npos &&
 		attackScript.find("self.weaponAnimationComponentGuid, socketGuid") != std::string::npos &&
 		attackScript.find("configured_string") != std::string::npos &&
 		attackScript.find("request_cancel") == std::string::npos,
-		"DemoHall player attack is not wired through GAF into the non-MM root-motion Graph Set");
+		"DemoHall player attack is not wired through GAF into the full-body Graph Set and Survival upper-body layer");
 }
 
 bool TestDemoHallHurtBodiesContract()

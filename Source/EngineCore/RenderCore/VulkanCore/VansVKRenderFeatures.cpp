@@ -5,6 +5,7 @@
 #include "VansRenderPass.h"
 
 #include "../VansScene.h"
+#include "../VansCamera.h"
 #include "../VansTemporalProjection.h"
 #include "../AtmosphereCore/VansAtmosphereSystem.h"
 
@@ -1861,8 +1862,123 @@ namespace VansGraphics
 		computeCmd.DispatchCompute(*manager->m_SSRTemporalAAShader, (m_RenderWidth + 7) / 8, (m_RenderHeight + 7) / 8, 1, { m_Scene->GetGlobalDescriptorSet(), manager->m_SSRAADescriptorSets[0] });
 	}
 
+	void VansVKDevice::UpdateAmbientSkyCache(VansVKCommandBuffer& computeCmd)
+	{
+		VansMaterialManager* manager = m_Scene ? m_Scene->GetMaterialManager() : nullptr;
+		const auto& settings = m_Scene->GetGISettings().ambientSkyCache;
+		if (manager == nullptr || !settings.enabled || manager->m_AmbientSkyCacheShader == nullptr ||
+			manager->m_AmbientSkyCacheDescriptorSets.empty() ||
+			manager->m_AmbientSkyCacheParamsCBBuffer.GetNativeBuffer() == VK_NULL_HANDLE)
+			return;
+
+		VansTexture* cacheX = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_AMBIENT_SKY_CACHE_X);
+		VansTexture* cacheY = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_AMBIENT_SKY_CACHE_Y);
+		VansTexture* cacheZ = manager->GetRuntimeRenderTexture(VansMaterialManager::RT_AMBIENT_SKY_CACHE_Z);
+		if (cacheX == nullptr || cacheY == nullptr || cacheZ == nullptr || rayTracingContext.GetGIWorld() == nullptr)
+			return;
+
+		constexpr uint32_t gridX = 16u, gridY = 8u, gridZ = 16u;
+		const float spacing = settings.gridSpacing;
+		const glm::vec3 cameraPosition = m_Scene->GetCamera()
+			? glm::vec3(m_Scene->GetCamera()->GetPosition()) : glm::vec3(0.0f);
+		const glm::vec3 cacheDimensions = glm::vec3(gridX, gridY, gridZ);
+		const glm::vec3 cacheSize = cacheDimensions * spacing;
+		const glm::vec3 cacheMin = manager->m_AmbientSkyCacheOrigin;
+		// Keep the current logical grid while the camera remains in its inner
+		// half.  This avoids re-centering on ordinary camera jitter and preserves
+		// all already queried cells when a real shift is needed.
+		const bool outsideInnerCache =
+			!manager->m_AmbientSkyCacheInitialized ||
+			glm::any(glm::lessThan(cameraPosition, cacheMin + cacheSize * 0.25f)) ||
+			glm::any(glm::greaterThanEqual(cameraPosition, cacheMin + cacheSize * 0.75f));
+		const glm::vec3 previousOrigin = manager->m_AmbientSkyCacheOrigin;
+		bool recentered = false;
+		if (outsideInnerCache)
+		{
+			const glm::vec3 snapped = glm::floor(cameraPosition / spacing) * spacing;
+			const glm::vec3 newOrigin = snapped - cacheSize * 0.5f;
+			const glm::ivec3 deltaCells = glm::ivec3(glm::round((newOrigin - previousOrigin) / spacing));
+			auto wrap = [](int value, int dimension)
+			{
+				const int remainder = value % dimension;
+				return remainder < 0 ? remainder + dimension : remainder;
+			};
+			manager->m_AmbientSkyCacheRingOffset = glm::ivec3(
+				wrap(manager->m_AmbientSkyCacheRingOffset.x + deltaCells.x, static_cast<int>(gridX)),
+				wrap(manager->m_AmbientSkyCacheRingOffset.y + deltaCells.y, static_cast<int>(gridY)),
+				wrap(manager->m_AmbientSkyCacheRingOffset.z + deltaCells.z, static_cast<int>(gridZ)));
+			manager->m_AmbientSkyCacheOrigin = newOrigin;
+			manager->m_AmbientSkyCacheFrameOffset = 0u;
+			manager->m_AmbientSkyCacheInitialized = true;
+			recentered = glm::dot(newOrigin - previousOrigin, newOrigin - previousOrigin) > 1e-6f;
+			if (recentered)
+			{
+				VANS_LOG("[AmbientSkyCache] recenter origin=(" << newOrigin.x << "," << newOrigin.y << "," << newOrigin.z
+					<< ") ring=(" << manager->m_AmbientSkyCacheRingOffset.x << ","
+					<< manager->m_AmbientSkyCacheRingOffset.y << "," << manager->m_AmbientSkyCacheRingOffset.z << ")");
+			}
+		}
+
+		AmbientSkyCacheParamsGPU params{};
+		params.originAndSpacing = glm::vec4(manager->m_AmbientSkyCacheOrigin, spacing);
+		params.ringOffset = glm::ivec4(manager->m_AmbientSkyCacheRingOffset, 0);
+		// The compute shader owns one cell and evaluates its six axis directions.
+		// Convert the public direction budget to a cell budget so the actual GI
+		// trace work remains bounded by the configured value.
+		const uint32_t directionBudget = std::clamp(settings.queriesPerFrame, 1u, 256u);
+		const uint32_t cellQueries = std::max(1u, (directionBudget + 5u) / 6u);
+		params.gridAndQuery = glm::uvec4(gridX, gridY, gridZ, cellQueries);
+		manager->m_AmbientSkyCacheParamsCBBuffer.SetBufferData(&params, 0, sizeof(params));
+		AmbientSkyCacheInfoGPU info = params;
+		info.gridAndQuery.w = GetAmbientSkyCacheDebugMode();
+		manager->m_AmbientSkyCacheInfoCBBuffer.SetBufferData(&info, 0, sizeof(info));
+
+		auto* descriptors = VansVKDescriptorManager::GetInstance();
+		descriptors->BeginDescriptorUpdate();
+		descriptors->WriteImageDescriptor(manager->m_AmbientSkyCacheDescriptorSets[0], AMBIENT_SKY_CACHE_OUTPUT_X,
+			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, {{ cacheX->GetImage().GetSampler(), cacheX->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
+		descriptors->WriteImageDescriptor(manager->m_AmbientSkyCacheDescriptorSets[0], AMBIENT_SKY_CACHE_OUTPUT_Y,
+			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, {{ cacheY->GetImage().GetSampler(), cacheY->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
+		descriptors->WriteImageDescriptor(manager->m_AmbientSkyCacheDescriptorSets[0], AMBIENT_SKY_CACHE_OUTPUT_Z,
+			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, {{ cacheZ->GetImage().GetSampler(), cacheZ->GetImage().GetImageView(), VK_IMAGE_LAYOUT_GENERAL }});
+		descriptors->WriteBufferDescriptor(manager->m_AmbientSkyCacheDescriptorSets[0], AMBIENT_SKY_CACHE_PARAMS,
+			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, {{ manager->m_AmbientSkyCacheParamsCBBuffer.GetNativeBuffer(), 0, manager->m_AmbientSkyCacheParamsCBBuffer.GetBufferSize() }});
+		descriptors->CommitDescriptorUpdates();
+
+		computeCmd.EnsureComputeShader(*manager->m_AmbientSkyCacheShader,
+			{ m_Scene->GetGlobalDescriptorSetLayout(), manager->m_AmbientSkyCacheSetLayout, rayTracingContext.GetGIWorld()->Layout() });
+		if (recentered)
+		{
+			AmbientSkyCachePushConstants clearPush{};
+			clearPush.control = glm::uvec4(0u, 1u, 0u, 0u);
+			clearPush.previousOriginAndSpacing = glm::vec4(previousOrigin, spacing);
+			computeCmd.DispatchCompute(*manager->m_AmbientSkyCacheShader,
+				(gridX * gridY * gridZ + 63u) / 64u, 1u, 1u,
+				{ m_Scene->GetGlobalDescriptorSet(), manager->m_AmbientSkyCacheDescriptorSets[0], rayTracingContext.GetGIWorld()->Descriptor() },
+				&clearPush, sizeof(clearPush));
+			RecordShaderWriteToReadMemoryDependency(computeCmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+		}
+
+		const uint32_t frameOffset = manager->m_AmbientSkyCacheFrameOffset;
+		manager->m_AmbientSkyCacheFrameOffset = (frameOffset + cellQueries) % (gridX * gridY * gridZ);
+		if (manager->m_SSGITemporalFrame < 2u)
+		{
+			VANS_LOG("[AmbientSkyCache] update directionBudget=" << directionBudget
+				<< " cells=" << cellQueries << " giTraces=" << (cellQueries * 6u)
+				<< " dispatchGroups=" << ((cellQueries + 63u) / 64u));
+		}
+		AmbientSkyCachePushConstants updatePush{};
+		updatePush.control = glm::uvec4(frameOffset, 0u, 0u, 0u);
+		computeCmd.DispatchCompute(*manager->m_AmbientSkyCacheShader,
+			(cellQueries + 63u) / 64u, 1u, 1u,
+			{ m_Scene->GetGlobalDescriptorSet(), manager->m_AmbientSkyCacheDescriptorSets[0], rayTracingContext.GetGIWorld()->Descriptor() },
+			&updatePush, sizeof(updatePush));
+		RecordShaderWriteToReadMemoryDependency(computeCmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+	}
+
 	void VansVKDevice::UpdateGIData(VansRenderPassManager* renderPassManager, VansVKCommandBuffer& computeCmd)
 	{
+		UpdateAmbientSkyCache(computeCmd);
 		UpdateGIDataDescriptorSets(renderPassManager);
 		if (!IsFeatureDescriptorCurrent(m_GIDataDescSetGeneration))
 			return;

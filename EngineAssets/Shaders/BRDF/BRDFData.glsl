@@ -247,6 +247,10 @@ void AmbientBRDF(BRDFData brdf, vec3 viewDirection, inout vec3 diffuse, inout ve
 		{
 			float lod = GetMipLevelFromRoughness(brdf.roughness);
 			vec3 skySpecular = SampleSkySpecularCube(PreConvSpecularEnvironment, reflection, lod);
+			#ifdef AMBIENT_SKY_CACHE_ENABLED
+				AmbientSkyTransmittanceSample skyVisibility = SampleAmbientSkyTransmittance(brdf.positionWS, reflection, brdf.roughness);
+				skySpecular *= skyVisibility.visibility;
+			#endif
 			probeAndSky = mix(skySpecular, probeSample.specular, probeSample.coverage);
 		}
 		prefilteredColor = mix(probeAndSky, brdf.indirectSpecular.rgb, ssrWeight);

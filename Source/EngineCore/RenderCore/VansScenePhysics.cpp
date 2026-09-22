@@ -545,8 +545,9 @@ void VansGraphics::VansScene::PrepareCharacterLocomotion(float deltaTime)
 		Vans::VansCharacterMotionSettings motionSettings;
 		VansAnimationController* controller =
 			animation ? animation->GetCharacterMotionController() : nullptr;
-		const bool hasConfiguredMotionModel = controller &&
-			controller->TryGetCharacterMotionSettings(motionSettings);
+		const bool hasConfiguredMotionModel =
+			(animation && animation->TryGetCharacterMotionSettings(motionSettings)) ||
+			(controller && controller->TryGetCharacterMotionSettings(motionSettings));
 
 		const bool animationRoutesOwnerMotion = animation && controller &&
 			animation->IsRootMotionEnabled() &&
@@ -580,6 +581,18 @@ void VansGraphics::VansScene::PrepareCharacterLocomotion(float deltaTime)
 			rootRotation = animation->GetRootRotationDelta();
 			rootMotionValid = animationRoutesOwnerMotion && animation->HasRootMotionDelta();
 			rootMotionPreferred = controller->CharacterMotionPrefersRootMotion();
+			if (hasConfiguredMotionModel && !controller->IsMotionMatchingConfigured())
+				rootMotionPreferred = true;
+			// Capsule-driven locomotion follows the UE contract, but an active
+			// Graph Set without a Motion Matching node (GAF attack/throw/vault,
+			// montage-like action) still owns its authored Root Motion. The frame
+			// usage test keeps that action path intact without letting a locomotion
+			// MM transition move the capsule a second time.
+			if (hasConfiguredMotionModel &&
+				motionSettings.driveMode == Vans::VansLocomotionDriveMode::Capsule)
+			{
+				rootMotionPreferred = !controller->IsMotionMatchingUsedThisFrame();
+			}
 		}
 		cct->ResolveLocomotion(
 			rootDelta, rootRotation, rootMotionValid, rootMotionPreferred,

@@ -29,6 +29,12 @@ public:
 		if (!field) Fail(std::string("is missing '") + name + "'");
 		return field;
 	}
+	const VansSerializedValue* OptionalField(const char* name)
+	{
+		// 新增作者字段允许省略，缺省值由目标结构体提供；仍会拒绝未知字段。
+		m_Read.insert(name);
+		return m_Value ? FindObjectField(*m_Value, name) : nullptr;
+	}
 	Reader Object(const char* name) { return Reader(Field(name), m_Path + "." + name, m_Error); }
 	void String(const char* name, std::string& output)
 	{
@@ -82,6 +88,15 @@ public:
 			reference.assetType != type || !VansAssetGuid::TryParse(reference.guid, output) || !output.IsValid())
 			Fail(std::string(name) + " requires a typed ProjectAsset reference to " + type);
 	}
+	void OptionalReference(const char* name, const char* type, VansAssetGuid& output)
+	{
+		const auto* field = OptionalField(name);
+		if (!field || field->kind == VansSerializedValue::Kind::Null) { output = {}; return; }
+		SerializedObjectReferenceValue reference;
+		if (!TryReadSerializedObjectReference(*field, reference) || reference.domain != "ProjectAsset" ||
+			reference.assetType != type || !VansAssetGuid::TryParse(reference.guid, output) || !output.IsValid())
+			Fail(std::string(name) + " requires a typed ProjectAsset reference to " + type);
+	}
 	template <typename Enum> void EnumField(const char* name, Enum& output,
 		std::initializer_list<std::pair<const char*, Enum>> choices)
 	{
@@ -89,6 +104,31 @@ public:
 		String(name, value);
 		for (const auto& choice : choices) if (value == choice.first) { output = choice.second; return; }
 		Fail(std::string(name) + " has an unknown value '" + value + "'");
+	}
+	template <typename Enum> void OptionalEnumField(const char* name, Enum& output,
+		std::initializer_list<std::pair<const char*, Enum>> choices)
+	{
+		const auto* field = OptionalField(name);
+		if (!field) return;
+		if (field->kind != VansSerializedValue::Kind::String)
+		{
+			Fail(std::string(name) + " must be a string");
+			return;
+		}
+		for (const auto& choice : choices) if (field->stringValue == choice.first) { output = choice.second; return; }
+		Fail(std::string(name) + " has an unknown value '" + field->stringValue + "'");
+	}
+	void OptionalFloat(const char* name, float& output)
+	{
+		const auto* field = OptionalField(name);
+		if (!field) return;
+		if (field->kind != VansSerializedValue::Kind::Float && field->kind != VansSerializedValue::Kind::Int)
+		{
+			Fail(std::string(name) + " must be a number");
+			return;
+		}
+		output = static_cast<float>(ReadSerializedNumber(*field));
+		if (!std::isfinite(output)) Fail(std::string(name) + " must be finite");
 	}
 	const std::vector<VansSerializedValue>* Array(const char* name)
 	{

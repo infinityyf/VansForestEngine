@@ -99,6 +99,25 @@ namespace VansGraphics
 
 	static_assert(sizeof(SSGITemporalParamsGPU) == 32, "SSGI temporal parameter layout must match GLSL");
 
+	struct alignas(16) AmbientSkyCacheParamsGPU
+	{
+		glm::vec4 originAndSpacing;
+		glm::uvec4 gridAndQuery;
+		// Physical 3D texture offset for the logical cache origin.  The offset
+		// makes camera recentering a toroidal shift instead of a full clear.
+		glm::ivec4 ringOffset;
+	};
+	static_assert(sizeof(AmbientSkyCacheParamsGPU) == 48, "Ambient sky cache parameter layout must match GLSL");
+	using AmbientSkyCacheInfoGPU = AmbientSkyCacheParamsGPU;
+
+	struct alignas(16) AmbientSkyCachePushConstants
+	{
+		// control.x = frame offset, control.y = 0 for trace / 1 for clearing
+		glm::uvec4 control{};
+		glm::vec4 previousOriginAndSpacing{};
+	};
+	static_assert(sizeof(AmbientSkyCachePushConstants) == 32, "Ambient sky cache push constant layout must match GLSL");
+
 	struct alignas(16) SSGIAtrousPushConstants
 	{
 		uint32_t stepWidth = 1;
@@ -183,6 +202,7 @@ namespace VansGraphics
 
 
 		static constexpr const char* DECAL_MODIFIER    = "decalModifier";
+		static constexpr const char* ROAD_DECAL_MODIFIER = "roadDecalModifier";
 
 	}
 
@@ -352,6 +372,7 @@ namespace VansGraphics
 		friend class VansMaterial;
 
 		friend class VansRenderNode;
+		friend class VansVKDevice;
 
 
 
@@ -437,7 +458,10 @@ namespace VansGraphics
 
 		static constexpr const char* RT_SSRAA_RESULT = "Runtime.SSR.AA.Result";
 
-		static constexpr const char* RT_SSGI_FILTER_RESULT = "Runtime.SSGI.FilterResult";
+	static constexpr const char* RT_SSGI_FILTER_RESULT = "Runtime.SSGI.FilterResult";
+		static constexpr const char* RT_AMBIENT_SKY_CACHE_X = "Runtime.AmbientSkyCache.X";
+		static constexpr const char* RT_AMBIENT_SKY_CACHE_Y = "Runtime.AmbientSkyCache.Y";
+		static constexpr const char* RT_AMBIENT_SKY_CACHE_Z = "Runtime.AmbientSkyCache.Z";
 
 		static constexpr const char* RT_SSAO_FILTER_RESULT = "Runtime.SSAO.FilterResult";
 
@@ -515,6 +539,10 @@ namespace VansGraphics
 		// Releases only render-size-dependent transient resources. Scene materials,
 		// fixed lookup textures, and global bindless state remain valid.
 		void ClearResolutionDependentRenderData(VkDevice device);
+
+		// Releases the ambient-sky cache resources without disturbing other
+		// resolution-dependent GI and post-process resources.
+		void ClearAmbientSkyCacheRenderData(VkDevice device);
 
 
 
@@ -755,6 +783,15 @@ namespace VansGraphics
 
 		VansComputeShader* m_SSGITemporalShader;
 		VansComputeShader* m_SSGIAtrousShader = nullptr;
+		VansComputeShader* m_AmbientSkyCacheShader = nullptr;
+		VkDescriptorSetLayout m_AmbientSkyCacheSetLayout = VK_NULL_HANDLE;
+		std::vector<VkDescriptorSet> m_AmbientSkyCacheDescriptorSets;
+		VansVKBuffer m_AmbientSkyCacheParamsCBBuffer;
+		VansVKBuffer m_AmbientSkyCacheInfoCBBuffer;
+		glm::vec3 m_AmbientSkyCacheOrigin{0.0f};
+		glm::ivec3 m_AmbientSkyCacheRingOffset{0};
+		bool m_AmbientSkyCacheInitialized = false;
+		uint32_t m_AmbientSkyCacheFrameOffset = 0u;
 
 		VkDescriptorSetLayout m_SSGITemporalSetLayout = VK_NULL_HANDLE;
 
